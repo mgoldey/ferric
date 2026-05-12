@@ -296,6 +296,7 @@ fn compute_t2_and_integrals(
 /// Returns (p_oo, p_vv) where:
 ///   p_oo[i,j] = -sum_{kab} t_{ik,ab} (2 t_{jk,ab} - t_{jk,ba})
 ///   p_vv[a,b] =  sum_{ijc} t_{ij,ac} (2 t_{ij,bc} - t_{ij,cb})
+#[allow(dead_code)]
 fn build_mp2_density(
     t2: &[f64],
     nocc: usize,
