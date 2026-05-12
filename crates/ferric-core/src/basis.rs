@@ -171,6 +171,11 @@ pub fn bundled(name: &str) -> Result<BasisSet, FerricError> {
         "6-31g" => include_str!("basis/bundled/6-31g.json"),
         "cc-pvdz" => include_str!("basis/bundled/cc-pvdz.json"),
         "def2-svp" => include_str!("basis/bundled/def2-svp.json"),
+        "cc-pvdz-ri" => include_str!("basis/bundled/cc-pvdz-ri.json"),
+        "def2-svp-rifit" => include_str!("basis/bundled/def2-svp-rifit.json"),
+        "def2-tzvp-rifit" => include_str!("basis/bundled/def2-tzvp-rifit.json"),
+        "def2-tzvpp-rifit" => include_str!("basis/bundled/def2-tzvpp-rifit.json"),
+        "def2-qzvpp-rifit" => include_str!("basis/bundled/def2-qzvpp-rifit.json"),
         _ => return Err(FerricError::Basis(format!("unknown bundled basis {name:?}"))),
     };
     let mut bs = parse_bse_json(json, &cn)?;
@@ -253,5 +258,21 @@ mod tests {
         assert_eq!(num_functions(1, true), 3);  // p
         assert_eq!(num_functions(2, true), 5);  // 5d
         assert_eq!(num_functions(3, true), 7);  // 7f
+    }
+
+    #[test]
+    fn test_bundled_ccpvdz_ri() {
+        let bs = bundled("cc-pvdz-ri").unwrap();
+        let o_shells = bs.for_element(8).unwrap();
+        assert!(!o_shells.is_empty(), "cc-pVDZ-RI should have oxygen shells");
+        let max_l = o_shells.iter().map(|s| s.l).max().unwrap();
+        assert!(max_l >= 3, "cc-pVDZ-RI oxygen should have at least f functions, got max_l={max_l}");
+    }
+
+    #[test]
+    fn test_bundled_def2svp_rifit() {
+        let bs = bundled("def2-svp-rifit").unwrap();
+        let h_shells = bs.for_element(1).unwrap();
+        assert!(!h_shells.is_empty(), "def2-SVP-RIFIT should have hydrogen shells");
     }
 }
