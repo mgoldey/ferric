@@ -1,9 +1,19 @@
+//! Gaussian basis sets: data structures, parsers, and bundled library.
+//!
+//! Supports BSE-JSON and Gaussian-94 input formats, plus a set of bundled
+//! basis sets compiled into the binary via `include_str!`.
+
 use crate::elements::symbol_to_z;
 use crate::FerricError;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
 
+/// A single contracted Gaussian shell.
+///
+/// `l` is the angular momentum quantum number (0=s, 1=p, 2=d, ...).
+/// When `pure` is true, spherical harmonics are used (2l+1 functions);
+/// otherwise Cartesian Gaussians are used ((l+1)(l+2)/2 functions).
 #[derive(Debug, Clone)]
 pub struct Shell {
     pub l: i32,
@@ -12,18 +22,24 @@ pub struct Shell {
     pub coefficients: Vec<f64>,
 }
 
+/// A named basis set mapping atomic numbers to their shells.
 #[derive(Debug, Clone)]
 pub struct BasisSet {
     pub name: String,
+    /// Map from atomic number Z to the list of shells for that element.
     pub shells: HashMap<i32, Vec<Shell>>,
 }
 
 impl BasisSet {
+    /// Return the shells for element with atomic number `z`, or `None` if absent.
     pub fn for_element(&self, z: i32) -> Option<&[Shell]> {
         self.shells.get(&z).map(|v| v.as_slice())
     }
 }
 
+/// Number of basis functions for a shell with angular momentum `l`.
+///
+/// Spherical: 2l+1. Cartesian: (l+1)(l+2)/2.
 pub fn num_functions(l: i32, pure: bool) -> usize {
     if pure { (2 * l + 1) as usize } else { ((l + 1) * (l + 2) / 2) as usize }
 }
@@ -50,6 +66,7 @@ struct BseShell {
     function_type: Option<String>,
 }
 
+/// Load a basis set from a Basis Set Exchange JSON file.
 pub fn load_bse_json(path: &str) -> Result<BasisSet, FerricError> {
     let text = fs::read_to_string(path).map_err(FerricError::Io)?;
     parse_bse_json(&text, path)
@@ -104,6 +121,7 @@ fn parse_float_list(ss: &[String]) -> Result<Vec<f64>, FerricError> {
 
 // --- Gaussian-94 parser ---
 
+/// Load a basis set from a Gaussian-94 format file.
 pub fn load_g94(path: &str) -> Result<BasisSet, FerricError> {
     let text = fs::read_to_string(path).map_err(FerricError::Io)?;
     parse_g94(&text, path)
@@ -164,6 +182,20 @@ fn parse_g94(text: &str, name: &str) -> Result<BasisSet, FerricError> {
 
 fn canonical_name(name: &str) -> String { name.to_ascii_lowercase() }
 
+/// Load a bundled basis set by name (case-insensitive).
+///
+/// Available orbital bases: `sto-3g`, `6-31g`, `cc-pvdz`, `def2-svp`.
+/// Available RI auxiliary bases: `cc-pvdz-ri`, `def2-svp-rifit`, `def2-tzvp-rifit`,
+/// `def2-tzvpp-rifit`, `def2-qzvpp-rifit`.
+///
+/// # Examples
+///
+/// ```
+/// use ferric_core::basis::bundled;
+///
+/// let bs = bundled("STO-3G").unwrap();
+/// assert!(bs.for_element(1).is_some());
+/// ```
 pub fn bundled(name: &str) -> Result<BasisSet, FerricError> {
     let cn = canonical_name(name);
     let json = match cn.as_str() {

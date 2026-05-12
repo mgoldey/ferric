@@ -1,5 +1,11 @@
+//! Raw FFI declarations for the libint2 C++ shim (`shim/shim.cc`).
+//!
+//! These are unsafe C-linkage functions. Prefer the safe wrappers in
+//! [`crate::engine`] and [`crate::basis_bridge`].
+
 use std::os::raw::{c_double, c_int, c_void};
 
+/// C-compatible shell descriptor passed to the libint2 shim.
 #[repr(C)]
 pub struct CShell {
     pub l: c_int,
@@ -10,6 +16,7 @@ pub struct CShell {
     pub coefficients: *const c_double,
 }
 
+/// C-compatible atom descriptor (atomic number + Cartesian position in Bohr).
 #[repr(C)]
 pub struct CAtom {
     pub atomic_number: c_int,

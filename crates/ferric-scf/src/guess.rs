@@ -1,7 +1,13 @@
+//! Initial density matrix guess for the SCF procedure.
+
 use ferric_core::FerricError;
 use ndarray::Array2;
 use ndarray_linalg::Eigh;
 
+/// Generate an initial density matrix from the core Hamiltonian eigenvectors.
+///
+/// Diagonalizes H in the orthogonalized basis (via S^{-1/2}) and occupies the
+/// lowest `nocc` orbitals to form D = 2 * C_occ * C_occ^T.
 pub fn hcore_guess(
     s: &Array2<f64>,
     h: &Array2<f64>,

@@ -1,9 +1,12 @@
+//! Molecular geometry: atoms, XYZ parser, and nuclear repulsion energy.
+
 use crate::elements::symbol_to_z;
 use crate::FerricError;
 use std::fs;
 
 const ANGSTROM_TO_BOHR: f64 = 1.0 / 0.529_177_210_92;
 
+/// A single atom with element symbol, atomic number, and Cartesian coordinates in Bohr.
 #[derive(Debug, Clone)]
 pub struct Atom {
     pub symbol: String,
@@ -13,17 +16,34 @@ pub struct Atom {
     pub zpos: f64,
 }
 
+/// A collection of atoms forming a molecule.
+///
+/// Coordinates are stored internally in Bohr. The XYZ parser converts from Angstroms.
 #[derive(Debug, Clone)]
 pub struct Molecule {
     pub atoms: Vec<Atom>,
 }
 
 impl Molecule {
+    /// Load a molecule from an XYZ file on disk.
+    ///
+    /// Coordinates in the file are expected in Angstroms and are converted to Bohr.
     pub fn load_xyz(path: &str) -> Result<Self, FerricError> {
         let text = fs::read_to_string(path).map_err(FerricError::Io)?;
         Self::parse_xyz(&text)
     }
 
+    /// Parse a molecule from an XYZ-format string.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ferric_core::mol::Molecule;
+    ///
+    /// let xyz = "2\nH2\nH 0 0 0\nH 0 0 0.74\n";
+    /// let mol = Molecule::parse_xyz(xyz).unwrap();
+    /// assert_eq!(mol.atoms.len(), 2);
+    /// ```
     pub fn parse_xyz(text: &str) -> Result<Self, FerricError> {
         let mut lines = text.lines();
         let n: usize = lines
@@ -63,6 +83,7 @@ impl Molecule {
         Ok(Molecule { atoms })
     }
 
+    /// Compute the classical nuclear repulsion energy in Hartree.
     pub fn nuclear_repulsion(&self) -> f64 {
         let mut v = 0.0;
         for i in 0..self.atoms.len() {
@@ -79,6 +100,7 @@ impl Molecule {
         v
     }
 
+    /// Total number of electrons (sum of atomic numbers).
     pub fn nelec(&self) -> i32 {
         self.atoms.iter().map(|a| a.z).sum()
     }

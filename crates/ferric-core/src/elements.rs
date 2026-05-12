@@ -1,3 +1,5 @@
+//! Element symbol and atomic number lookup tables (H through Ca).
+
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
@@ -24,6 +26,7 @@ const ELEMENTS: &[(&str, i32)] = &[
     ("S", 16), ("Cl", 17), ("Ar", 18), ("K", 19), ("Ca", 20),
 ];
 
+/// Convert an element symbol to its atomic number (case-insensitive).
 pub fn symbol_to_z(sym: &str) -> Option<i32> {
     let normalized: String = sym.chars().enumerate().map(|(i, c)| {
         if i == 0 { c.to_ascii_uppercase() } else { c.to_ascii_lowercase() }
@@ -31,6 +34,7 @@ pub fn symbol_to_z(sym: &str) -> Option<i32> {
     SYMBOL_TO_Z.get(normalized.as_str()).copied()
 }
 
+/// Convert an atomic number to its canonical element symbol.
 pub fn z_to_symbol(z: i32) -> Option<&'static str> {
     Z_TO_SYMBOL.get(&z).copied()
 }

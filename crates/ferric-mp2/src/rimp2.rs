@@ -1,3 +1,12 @@
+//! Resolution-of-identity MP2 (RI-MP2 / density-fitted MP2).
+//!
+//! Approximates the 4-center ERIs using density fitting:
+//! (ia|jb) ~ sum_P B^P_ia * B^P_jb, where B^P_ia = sum_Q V^{-1/2}_PQ (Q|ia).
+//!
+//! This reduces the MO integral transformation from O(N^5) to O(N^4) with
+//! a controllable RI approximation error that is negligible for matched
+//! auxiliary basis sets.
+
 use crate::mo_transform::transform_3center_ov;
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
@@ -8,6 +17,7 @@ use ferric_scf::rhf::RhfResult;
 use ndarray::Array2;
 use ndarray_linalg::{Cholesky, UPLO};
 
+/// Configuration for RI-MP2.
 #[derive(Debug, Clone)]
 pub struct RiMp2Config {
     pub frozen_core: usize,
@@ -19,12 +29,20 @@ impl Default for RiMp2Config {
     }
 }
 
+/// Results from an RI-MP2 calculation.
 #[derive(Debug)]
 pub struct RiMp2Result {
+    /// MP2 correlation energy (always negative).
     pub mp2_corr: f64,
+    /// Total energy: E_RHF + E_MP2.
     pub total_energy: f64,
 }
 
+/// Compute the RI-MP2 correlation energy.
+///
+/// Requires converged RHF orbitals, an orbital basis (`obs`), and a density-fitting
+/// auxiliary basis (`dfbs`). The auxiliary basis should be matched to the orbital
+/// basis (e.g., cc-pVDZ with cc-pVDZ-RI).
 pub fn ri_mp2(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -91,7 +109,10 @@ pub fn ri_mp2(
     })
 }
 
-/// V^{-1/2} via Cholesky: V = L L^T, then V^{-1/2} = L^{-1}
+/// Compute V^{-1/2} via Cholesky decomposition.
+///
+/// Given a positive-definite matrix V = L L^T, returns L^{-1} so that
+/// L^{-1} V L^{-T} = I, i.e., L^{-1} acts as V^{-1/2}.
 pub fn cholesky_inverse_sqrt(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
     let l = v
         .cholesky(UPLO::Lower)

@@ -1,8 +1,11 @@
+//! One-electron integral matrices: overlap (S), kinetic (T), nuclear (V), and core Hamiltonian (H).
+
 use crate::basis_bridge::PreparedBasis;
 use crate::engine::Engine;
 use crate::ffi;
 use ndarray::Array2;
 
+/// Build a symmetric matrix from a one-electron engine by iterating over upper-triangle shell pairs.
 fn build_symmetric(prep: &PreparedBasis, mut eng: Engine) -> Array2<f64> {
     let n = prep.nbasis();
     let nsh = prep.nshells();
@@ -26,22 +29,26 @@ fn build_symmetric(prep: &PreparedBasis, mut eng: Engine) -> Array2<f64> {
     out
 }
 
+/// Compute the overlap matrix S, shape (nbasis, nbasis).
 pub fn overlap(prep: &PreparedBasis) -> Array2<f64> {
     let eng = Engine::new_1e(ffi::OP_OVERLAP, prep, 1e-14).unwrap();
     build_symmetric(prep, eng)
 }
 
+/// Compute the kinetic energy matrix T, shape (nbasis, nbasis).
 pub fn kinetic(prep: &PreparedBasis) -> Array2<f64> {
     let eng = Engine::new_1e(ffi::OP_KINETIC, prep, 1e-14).unwrap();
     build_symmetric(prep, eng)
 }
 
+/// Compute the nuclear attraction matrix V, shape (nbasis, nbasis).
 pub fn nuclear(prep: &PreparedBasis) -> Array2<f64> {
     let mut eng = Engine::new_1e(ffi::OP_NUCLEAR, prep, 1e-14).unwrap();
     eng.set_point_charges(prep);
     build_symmetric(prep, eng)
 }
 
+/// Compute the core Hamiltonian H = T + V, shape (nbasis, nbasis).
 pub fn hcore(prep: &PreparedBasis) -> Array2<f64> {
     let t = kinetic(prep);
     let v = nuclear(prep);

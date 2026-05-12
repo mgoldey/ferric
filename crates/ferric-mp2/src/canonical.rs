@@ -8,6 +8,10 @@ use ferric_integrals::engine::Engine;
 use ferric_integrals::operator::Operator;
 use ferric_scf::rhf::RhfResult;
 
+/// Compute the canonical MP2 correlation energy using full 4-center ERIs.
+///
+/// This is an O(N^5) reference implementation for cross-validating RI-MP2.
+/// Not intended for production use on large molecules.
 pub fn canonical_mp2(
     mol: &Molecule,
     prep: &PreparedBasis,

@@ -1,15 +1,25 @@
+//! Integral evaluation engines wrapping libint2 compute calls.
+//!
+//! Each [`Engine`] owns a libint2 engine handle and a scratch buffer.
+//! Engines are created for specific integral types (1e, 2e, 3-center, derivatives)
+//! and reused across shell loops.
+
 use crate::basis_bridge::PreparedBasis;
 use crate::ffi;
 use crate::operator::{Operator, OperatorKind};
 use ferric_core::FerricError;
 use std::os::raw::{c_int, c_void};
 
+/// An integral evaluation engine backed by a libint2 engine handle.
+///
+/// Not `Send` or `Sync` -- create one engine per thread for parallel evaluation.
 pub struct Engine {
     handle: *mut c_void,
     buf: Vec<f64>,
 }
 
 impl Engine {
+    /// Create a 4-center two-electron integral engine.
     pub fn new_2e(op: Operator, prep: &PreparedBasis, precision: f64) -> Result<Self, FerricError> {
         let op_kind = match op.kind {
             OperatorKind::Coulomb => ffi::OP_COULOMB,
@@ -28,6 +38,7 @@ impl Engine {
         Ok(Engine { handle, buf: vec![0.0; max_fn * max_fn * max_fn * max_fn] })
     }
 
+    /// Create a one-electron integral engine (overlap, kinetic, or nuclear).
     pub fn new_1e(op_kind: c_int, prep: &PreparedBasis, precision: f64) -> Result<Self, FerricError> {
         let handle = unsafe {
             ffi::goscf_engine_create(op_kind, 0.0, prep.max_nprim(), prep.max_l(), precision)
@@ -39,8 +50,10 @@ impl Engine {
         Ok(Engine { handle, buf: vec![0.0; max_fn * max_fn] })
     }
 
+    /// Mutable pointer to the underlying libint2 engine handle.
     pub fn handle_mut(&mut self) -> *mut c_void { self.handle }
 
+    /// Set nuclear point charges for the nuclear attraction operator.
     pub fn set_point_charges(&mut self, prep: &PreparedBasis) {
         unsafe {
             ffi::goscf_engine_set_point_charges(
@@ -51,6 +64,7 @@ impl Engine {
         }
     }
 
+    /// Compute a shell quartet of 4-center ERIs. Returns `None` if screened to zero.
     pub fn compute_quartet(
         &mut self,
         prep: &PreparedBasis,
@@ -84,6 +98,7 @@ impl Engine {
         }
     }
 
+    /// Compute a shell pair block of one-electron integrals.
     pub fn compute_1e_block(
         &mut self,
         prep: &PreparedBasis,
@@ -106,6 +121,7 @@ impl Engine {
         &self.buf[..written as usize]
     }
 
+    /// Create a first-derivative one-electron integral engine.
     pub fn new_1e_deriv(op_kind: c_int, prep: &PreparedBasis, precision: f64) -> Result<Self, FerricError> {
         let handle = unsafe {
             ffi::goscf_engine_create_deriv(op_kind, 0.0, prep.max_nprim(), prep.max_l(), precision)
@@ -117,6 +133,7 @@ impl Engine {
         Ok(Engine { handle, buf: vec![0.0; 6 * max_fn * max_fn] })
     }
 
+    /// Create a first-derivative 4-center two-electron integral engine.
     pub fn new_2e_deriv(op: Operator, prep: &PreparedBasis, precision: f64) -> Result<Self, FerricError> {
         let op_kind = match op.kind {
             OperatorKind::Coulomb => ffi::OP_COULOMB,
@@ -149,6 +166,7 @@ impl Engine {
         if written == 0 { None } else { Some(&self.buf[..written as usize]) }
     }
 
+    /// Create a 3-center integral engine for density fitting: (P|mu nu).
     pub fn new_3center(op: Operator, obs: &PreparedBasis, dfbs: &PreparedBasis, precision: f64) -> Result<Self, FerricError> {
         let op_kind = match op.kind {
             OperatorKind::Coulomb => ffi::OP_COULOMB,
@@ -164,6 +182,7 @@ impl Engine {
         Ok(Engine { handle, buf: vec![0.0; max_fn_df * max_fn_obs * max_fn_obs] })
     }
 
+    /// Create a 2-center integral engine for the Coulomb metric: (P|Q).
     pub fn new_2center(op: Operator, dfbs: &PreparedBasis, precision: f64) -> Result<Self, FerricError> {
         let op_kind = match op.kind {
             OperatorKind::Coulomb => ffi::OP_COULOMB,
@@ -176,6 +195,7 @@ impl Engine {
         Ok(Engine { handle, buf: vec![0.0; max_fn * max_fn] })
     }
 
+    /// Compute a 3-center ERI shell triplet (P|mu nu). Returns `None` if screened.
     pub fn compute_eri3(&mut self, obs: &PreparedBasis, dfbs: &PreparedBasis,
                         sh_p: usize, sh1: usize, sh2: usize) -> Option<&[f64]> {
         let n = dfbs.shell_dims()[sh_p] * obs.shell_dims()[sh1] * obs.shell_dims()[sh2];
@@ -187,6 +207,7 @@ impl Engine {
         if written == 0 { None } else { Some(&self.buf[..written as usize]) }
     }
 
+    /// Compute a 2-center ERI shell pair (P|Q).
     pub fn compute_eri2(&mut self, dfbs: &PreparedBasis, sh_p: usize, sh_q: usize) -> &[f64] {
         let n = dfbs.shell_dims()[sh_p] * dfbs.shell_dims()[sh_q];
         if self.buf.len() < n { self.buf.resize(n, 0.0); }

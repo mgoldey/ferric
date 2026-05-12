@@ -62,13 +62,21 @@ impl Default for OoRiMp2Config {
 /// Result from OO-RI-MP2.
 #[derive(Debug)]
 pub struct OoRiMp2Result {
+    /// Total energy: E_HF(optimized) + E_MP2(optimized).
     pub total_energy: f64,
+    /// Re-optimized HF energy component.
     pub hf_energy: f64,
+    /// MP2 correlation energy with optimized orbitals.
     pub mp2_corr: f64,
+    /// Whether gradient and energy convergence thresholds were met.
     pub converged: bool,
+    /// Number of orbital optimization iterations.
     pub iterations: usize,
+    /// Final orbital gradient norm.
     pub grad_norm: f64,
+    /// Optimized MO coefficients.
     pub mos: Array2<f64>,
+    /// Orbital energies from the optimized Fock matrix.
     pub orbital_energies: Vec<f64>,
 }
 
@@ -539,8 +547,15 @@ pub fn oo_ri_mp2(
     let max_kappa = 0.3; // cap individual rotation angles (radians)
 
     // DIIS for orbital rotation extrapolation.
-    // We use the existing Diis struct with kappa_ov (nvir, nocc) as the "Fock"
-    // and gradient g (nvir, nocc) as the error vector.
+    //
+    // We apply DIIS to the MO coefficient matrix C itself (the state variable),
+    // using the orbital gradient mapped into the AO basis as the error vector.
+    // This mirrors how SCF DIIS works: the Fock matrix is replaced by C, and
+    // the commutator error is replaced by the orbital gradient.  The gradient
+    // is mapped to a (nbas, nbas) matrix G_AO = C * g_full * C^T where g_full
+    // is the antisymmetric gradient in the MO basis (g_full[a,i] = g[a,i],
+    // g_full[i,a] = -g[a,i]).  This ensures the DIIS error has the same shape
+    // as the trial vector (C).
     let mut diis = if config.use_diis {
         Some(Diis::new(config.diis_size))
     } else {
@@ -598,14 +613,11 @@ pub fn oo_ri_mp2(
             }
         }
 
-        // DIIS extrapolation: treat kappa_ov as "Fock" and g as error
-        if let Some(ref mut diis_obj) = diis {
-            kappa_ov = diis_obj.step(&kappa_ov, &g);
-        }
-
-        // Cap max |kappa| at max_kappa radians to prevent large rotations
-        for val in kappa_ov.iter_mut() {
-            *val = val.clamp(-max_kappa, max_kappa);
+        // Cap the step by scaling uniformly if any element exceeds max_kappa.
+        let kappa_max_abs = kappa_ov.iter().map(|x| x.abs()).fold(0.0f64, f64::max);
+        if kappa_max_abs > max_kappa {
+            let scale = max_kappa / kappa_max_abs;
+            kappa_ov *= scale;
         }
 
         // Build full antisymmetric kappa matrix (nmo x nmo) from ov block
@@ -621,9 +633,27 @@ pub fn oo_ri_mp2(
 
         // Cayley rotation
         let u = cayley_rotation(&kappa)?;
-        let c_new = c.dot(&u);
+        let mut c_new = c.dot(&u);
 
-        // Evaluate energy at the new orbitals
+        // DIIS extrapolation on the MO coefficients.
+        // Error vector: map the orbital gradient to the AO basis as an
+        // antisymmetric matrix in MO space, then project to AO:
+        //   err_AO = C * g_antisym * C^T
+        if let Some(ref mut diis_obj) = diis {
+            let mut g_antisym = Array2::zeros((nmo, nmo));
+            for a in 0..nvir {
+                let a_mo = nocc_total + a;
+                for i in 0..nocc {
+                    let i_mo = first_occ + i;
+                    g_antisym[(a_mo, i_mo)] = g[(a, i)];
+                    g_antisym[(i_mo, a_mo)] = -g[(a, i)];
+                }
+            }
+            let err_ao = c_new.dot(&g_antisym).dot(&c_new.t());
+            c_new = diis_obj.step(&c_new, &err_ao);
+        }
+
+        // Evaluate energy at the new (possibly DIIS-extrapolated) orbitals
         let (ehf, fao, _d) =
             compute_hf_energy(mol, obs, bounds, &c_new, nocc_total, &h)?;
         let epsnew = orbital_energies(&c_new, &fao);
@@ -633,12 +663,13 @@ pub fn oo_ri_mp2(
         let total_new = ehf + emp2;
         let de = (total_new - total_energy).abs();
 
-        // Backtracking if energy increased: halve the raw kappa_ov (no DIIS)
-        // and retry up to a few times.
-        if total_new > total_energy + 1e-12 {
+        // Backtracking if energy increased by more than a small tolerance.
+        // DIIS can produce small uphill steps; we tolerate those.
+        if total_new > total_energy + 1e-4 {
+            // Fall back to a damped Newton step without DIIS extrapolation.
             let mut bt_kappa_ov = kappa_ov.clone();
             let mut bt_accepted = false;
-            let mut bt_c = c_new.clone();
+            let mut bt_c = c.dot(&u);
             let mut bt_ehf = ehf;
             let mut bt_fao = fao.clone();
             let mut bt_eps = epsnew.clone();
@@ -682,8 +713,7 @@ pub fn oo_ri_mp2(
                 bt_bov = bo;
             }
 
-            // Accept the backtracked step (or the last attempt)
-            c = if bt_accepted { bt_c } else { bt_c };
+            c = if bt_accepted { bt_c.clone() } else { bt_c.clone() };
             e_hf = bt_ehf;
             e_mp2 = bt_emp2;
             total_energy = bt_total;
@@ -691,12 +721,13 @@ pub fn oo_ri_mp2(
             eps = bt_eps;
             b_ov = bt_bov;
 
-            // Reset DIIS on backtrack since the extrapolation led uphill
+            // Reset DIIS after backtracking since the extrapolated
+            // subspace produced an uphill step.
             if let Some(ref mut diis_obj) = diis {
                 diis_obj.reset();
             }
         } else {
-            // Accept the Newton/DIIS step directly
+            // Accept the (possibly DIIS-extrapolated) step
             c = c_new;
             e_hf = ehf;
             e_mp2 = emp2;
@@ -707,9 +738,7 @@ pub fn oo_ri_mp2(
         }
 
         if de < config.energy_conv && iter > 1 {
-            // Energy converged; check gradient but allow 10x looser tolerance
-            // since flat directions (e.g. degenerate orbital rotations) may
-            // keep the gradient from reaching the tight threshold.
+            // Energy converged; recompute gradient to check convergence.
             let b_full2 = compute_b_full_mo(obs, dfbs, op, &c)?;
             let naux2 = dfbs.nbasis();
             let (t2_2, _) = compute_t2_and_integrals(

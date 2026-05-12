@@ -1,3 +1,5 @@
+//! AO-to-MO integral transformation for 3-center integrals.
+
 use ndarray::{Array2, Array3};
 
 /// Transform (P|mu nu) -> (P|ia) where i=occupied, a=virtual.

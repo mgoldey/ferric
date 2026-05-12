@@ -1,5 +1,12 @@
+//! DIIS (Direct Inversion in the Iterative Subspace) convergence accelerator.
+//!
+//! Implements Pulay's DIIS extrapolation for accelerating SCF convergence.
+//! The error vectors (FDS - SDF) are used to construct a least-squares
+//! extrapolation of the Fock matrix.
+
 use ndarray::Array2;
 
+/// DIIS extrapolator with a fixed-size rolling subspace.
 pub struct Diis {
     max_subspace: usize,
     fock_hist: Vec<Array2<f64>>,
@@ -7,6 +14,7 @@ pub struct Diis {
 }
 
 impl Diis {
+    /// Create a DIIS accelerator with the given maximum subspace size.
     pub fn new(max_subspace: usize) -> Self {
         Diis {
             max_subspace,
@@ -15,11 +23,13 @@ impl Diis {
         }
     }
 
+    /// Clear the DIIS history.
     pub fn reset(&mut self) {
         self.fock_hist.clear();
         self.err_hist.clear();
     }
 
+    /// Add a Fock matrix and error vector to the history, return the extrapolated Fock matrix.
     pub fn step(&mut self, f: &Array2<f64>, err: &Array2<f64>) -> Array2<f64> {
         self.fock_hist.push(f.clone());
         self.err_hist.push(err.clone());

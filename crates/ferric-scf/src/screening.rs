@@ -1,9 +1,15 @@
+//! Schwarz integral screening for efficient Fock matrix construction.
+
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_integrals::schwarz;
 use ndarray::Array2;
 
+/// Precomputed Schwarz screening bounds for shell-pair integrals.
+///
+/// Used to skip negligible shell quartets during Fock matrix construction:
+/// if Q(s1,s2) * Q(s3,s4) * max|D| < threshold, the quartet is skipped.
 pub struct SchwarzBounds {
     pub q: Array2<f64>,
     pub q_shell: Vec<f64>,
@@ -12,6 +18,7 @@ pub struct SchwarzBounds {
 }
 
 impl SchwarzBounds {
+    /// Compute Schwarz screening bounds for all shell pairs.
     pub fn compute(op: Operator, prep: &PreparedBasis) -> Result<Self, FerricError> {
         let q = schwarz::schwarz(op, prep)?;
         let nsh = prep.nshells();
@@ -31,6 +38,7 @@ impl SchwarzBounds {
         })
     }
 
+    /// Upper bound estimate for the shell quartet (sh1 sh2 | sh3 sh4).
     pub fn estimate(&self, sh1: usize, sh2: usize, sh3: usize, sh4: usize) -> f64 {
         self.q[(sh1, sh2)] * self.q[(sh3, sh4)]
     }

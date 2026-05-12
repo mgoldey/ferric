@@ -1,9 +1,14 @@
+//! Schwarz upper-bound screening matrix for shell-pair integrals.
+
 use crate::basis_bridge::PreparedBasis;
 use crate::ffi;
 use crate::operator::{Operator, OperatorKind};
 use ferric_core::FerricError;
 use ndarray::Array2;
 
+/// Compute the Schwarz screening matrix Q(i,j) = sqrt(|(ij|ij)|) for all shell pairs.
+///
+/// Q(i,j) * Q(k,l) provides an upper bound on |(ij|kl)|, enabling integral screening.
 pub fn schwarz(op: Operator, prep: &PreparedBasis) -> Result<Array2<f64>, FerricError> {
     let op_kind = match op.kind {
         OperatorKind::Coulomb => ffi::OP_COULOMB,

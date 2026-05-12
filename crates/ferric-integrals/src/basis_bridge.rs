@@ -1,3 +1,8 @@
+//! Bridge between Rust basis/molecule types and the libint2 C++ engine.
+//!
+//! [`PreparedBasis`] translates a [`Molecule`] + [`BasisSet`] pair into the
+//! internal libint2 representation, managing the C++ handle lifetime.
+
 use crate::ffi::{self, CAtom, CShell};
 use ferric_core::basis::BasisSet;
 use ferric_core::mol::Molecule;
@@ -11,6 +16,10 @@ fn ensure_init() {
     LIBINT_INIT.call_once(|| unsafe { ffi::goscf_libint_init() });
 }
 
+/// A molecule + basis set prepared for integral evaluation.
+///
+/// Owns the opaque libint2 `BasisSet` handle and precomputed shell metadata
+/// (dimensions, offsets, atom mapping). Thread-safe (`Send + Sync`).
 pub struct PreparedBasis {
     handle: *mut c_void,
     atoms: Vec<CAtom>,
@@ -27,6 +36,9 @@ unsafe impl Send for PreparedBasis {}
 unsafe impl Sync for PreparedBasis {}
 
 impl PreparedBasis {
+    /// Create a prepared basis from a molecule and basis set.
+    ///
+    /// Initializes libint2 on first call and constructs the internal C++ basis handle.
     pub fn new(mol: &Molecule, bs: &BasisSet) -> Result<Self, FerricError> {
         ensure_init();
         let c_atoms: Vec<CAtom> = mol.atoms.iter().map(|a| CAtom {
@@ -102,15 +114,25 @@ impl PreparedBasis {
         })
     }
 
+    /// Raw pointer to the C++ basis handle (for FFI calls).
     pub fn handle(&self) -> *const c_void { self.handle }
+    /// Atom array passed to libint2.
     pub fn atoms(&self) -> &[CAtom] { &self.atoms }
+    /// Total number of basis functions.
     pub fn nbasis(&self) -> usize { self.nbasis }
+    /// Number of shells.
     pub fn nshells(&self) -> usize { self.nshells }
+    /// Number of basis functions per shell.
     pub fn shell_dims(&self) -> &[usize] { &self.shell_dims }
+    /// Cumulative offset of each shell into the full basis (length nshells+1).
     pub fn shell_offsets(&self) -> &[usize] { &self.shell_offsets }
+    /// Atom index that each shell belongs to.
     pub fn shell_to_atom(&self) -> &[usize] { &self.shell_to_atom }
+    /// Number of atoms.
     pub fn natoms(&self) -> usize { self.atoms.len() }
+    /// Maximum number of primitives across all shells.
     pub fn max_nprim(&self) -> i32 { self.max_nprim }
+    /// Maximum angular momentum across all shells.
     pub fn max_l(&self) -> i32 { self.max_l }
 }
 

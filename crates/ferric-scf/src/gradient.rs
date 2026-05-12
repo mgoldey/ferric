@@ -1,3 +1,9 @@
+//! Analytical RHF nuclear gradient.
+//!
+//! Computes dE/dR for each atom using derivatives of one-electron integrals
+//! (overlap, kinetic, nuclear attraction), two-electron integrals, and the
+//! nuclear repulsion term. Validated against central finite differences.
+
 use crate::rhf::RhfResult;
 use crate::screening::SchwarzBounds;
 use ferric_core::mol::Molecule;

@@ -1,3 +1,8 @@
+//! Closed-shell restricted Hartree-Fock (RHF) solver.
+//!
+//! Implements the Roothaan-Hall SCF procedure with DIIS convergence acceleration
+//! and Schwarz-screened two-electron integral evaluation.
+
 use crate::diis::Diis;
 use crate::guess::hcore_guess;
 use crate::screening::SchwarzBounds;
@@ -10,6 +15,7 @@ use ferric_integrals::operator::Operator;
 use ndarray::Array2;
 use ndarray_linalg::Eigh;
 
+/// Configuration parameters for the RHF solver.
 #[derive(Debug, Clone)]
 pub struct RhfConfig {
     pub max_iter: usize,
@@ -31,17 +37,31 @@ impl Default for RhfConfig {
     }
 }
 
+/// Results from a converged (or unconverged) RHF calculation.
 #[derive(Debug)]
 pub struct RhfResult {
+    /// Total RHF energy (electronic + nuclear repulsion) in Hartree.
     pub energy: f64,
+    /// AO density matrix D, shape (nbasis, nbasis).
     pub density: Array2<f64>,
+    /// MO coefficient matrix C, shape (nbasis, nmo). Column i is MO i.
     pub mos: Array2<f64>,
+    /// Orbital energies (eigenvalues of the Fock matrix), sorted ascending.
     pub orbital_energies: Vec<f64>,
+    /// Converged Fock matrix in AO basis.
     pub fock: Array2<f64>,
+    /// Whether energy and density convergence thresholds were met.
     pub converged: bool,
+    /// Number of SCF iterations performed.
     pub iterations: usize,
 }
 
+/// Solve the closed-shell RHF equations for a molecule.
+///
+/// Uses the Roothaan-Hall procedure: build Fock matrix from density, diagonalize,
+/// rebuild density, iterate until convergence. DIIS extrapolation accelerates
+/// convergence. Returns [`RhfResult`] on success or [`FerricError::ScfConvergence`]
+/// if `max_iter` is exceeded.
 pub fn solve_rhf(
     mol: &Molecule,
     prep: &PreparedBasis,
@@ -140,6 +160,9 @@ pub fn solve_rhf(
     })
 }
 
+/// Build the Coulomb (J) and exchange (K) matrices from the density matrix.
+///
+/// Uses Schwarz screening and 8-fold permutational symmetry of the ERIs.
 pub fn build_jk(
     prep: &PreparedBasis,
     bounds: &SchwarzBounds,

@@ -1,3 +1,5 @@
+//! Three-center and two-center integral builders for density fitting (RI).
+
 use crate::basis_bridge::PreparedBasis;
 use crate::engine::Engine;
 use crate::operator::Operator;

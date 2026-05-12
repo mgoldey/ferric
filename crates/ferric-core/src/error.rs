@@ -1,3 +1,4 @@
+/// Unified error type for the ferric workspace.
 #[derive(Debug, thiserror::Error)]
 pub enum FerricError {
     #[error("IO error: {0}")]
