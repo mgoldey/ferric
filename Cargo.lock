@@ -162,6 +162,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferric-mp2"
+version = "0.1.0"
+dependencies = [
+ "ferric-core",
+ "ferric-integrals",
+ "ferric-scf",
+ "ndarray",
+ "ndarray-linalg",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "ferric-python"
 version = "0.1.0"
 dependencies = [
