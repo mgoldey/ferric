@@ -15,7 +15,7 @@ using libint2::BasisSet;
 
 struct goscf_basis {
     BasisSet           bs;
-    std::vector<int>   nfunc;       // (L+1)(L+2)/2 per shell, Cartesian
+    std::vector<int>   nfunc;       // nfunc per shell: (2L+1) if pure, (L+1)(L+2)/2 if Cartesian
     int                max_nprim;
     int                max_L;
 };
@@ -56,10 +56,8 @@ goscf_basis *goscf_basis_create(const goscf_shell *shells, int nshells,
             const goscf_shell &g = shells[s];
             libint2::svector<double> exps(g.exponents, g.exponents + g.nprim);
             libint2::svector<double> coefs(g.coefficients, g.coefficients + g.nprim);
-            // libint expects {{exps}, {{L, pure, coefs}}, center}.
-            // Cartesian (false) by default; downstream tests assume Cartesian.
             libint2::svector<libint2::Shell::Contraction> contr;
-            contr.push_back({g.L, false, coefs});
+            contr.push_back({g.L, g.pure != 0, coefs});
             std::array<double, 3> c{
                 atoms[g.atom_index].x,
                 atoms[g.atom_index].y,
@@ -68,13 +66,13 @@ goscf_basis *goscf_basis_create(const goscf_shell *shells, int nshells,
             li_shells.emplace_back(exps, contr, c);
         }
         BasisSet bs(std::move(li_shells));
-        bs.set_pure(false);
         auto *out = new (std::nothrow) goscf_basis{std::move(bs), {}, 0, 0};
         if (!out) return nullptr;
         out->nfunc.reserve(out->bs.size());
         for (const auto &sh : out->bs) {
             int L = sh.contr[0].l;
-            out->nfunc.push_back(((L + 1) * (L + 2)) / 2);
+            bool pure = sh.contr[0].pure;
+            out->nfunc.push_back(pure ? (2 * L + 1) : ((L + 1) * (L + 2)) / 2);
             int nprim = static_cast<int>(sh.alpha.size());
             if (nprim > out->max_nprim) out->max_nprim = nprim;
             if (L > out->max_L) out->max_L = L;

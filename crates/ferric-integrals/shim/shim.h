@@ -21,6 +21,7 @@ typedef struct {
     int     L;            /* angular momentum */
     int     nprim;        /* number of primitives */
     int     atom_index;   /* index into the goscf_atom array (which atomic center) */
+    int     pure;         /* 0 = Cartesian, 1 = spherical harmonics */
     double *exponents;    /* length nprim, owned by caller for the duration of the create call */
     double *coefficients; /* length nprim, owned by caller for the duration of the create call */
 } goscf_shell;
@@ -40,7 +41,8 @@ goscf_basis *goscf_basis_create(const goscf_shell *shells, int nshells,
 void         goscf_basis_destroy(goscf_basis *bs);
 int          goscf_basis_nbasis(const goscf_basis *bs);
 int          goscf_basis_nshells(const goscf_basis *bs);
-/* Writes (L+1)(L+2)/2 per shell into out_nfunc_per_shell, length goscf_basis_nshells. */
+/* Writes nfunc per shell into out_nfunc_per_shell, length goscf_basis_nshells.
+ * nfunc = (2L+1) for pure/spherical shells, (L+1)(L+2)/2 for Cartesian. */
 void         goscf_basis_shell_dims(const goscf_basis *bs, int *out_nfunc_per_shell);
 /* Writes the maximum primitive count and maximum L across all shells. */
 void         goscf_basis_max_dims(const goscf_basis *bs, int *out_max_nprim, int *out_max_L);

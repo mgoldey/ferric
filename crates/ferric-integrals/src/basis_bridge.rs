@@ -49,6 +49,7 @@ impl PreparedBasis {
                     l: sh.l as c_int,
                     nprim: exps.len() as c_int,
                     atom_index: ai as c_int,
+                    pure: if sh.pure { 1 } else { 0 },
                     exponents: exps.as_ptr(),
                     coefficients: coefs.as_ptr(),
                 });

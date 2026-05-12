@@ -5,6 +5,7 @@ pub struct CShell {
     pub l: c_int,
     pub nprim: c_int,
     pub atom_index: c_int,
+    pub pure: c_int,
     pub exponents: *const c_double,
     pub coefficients: *const c_double,
 }

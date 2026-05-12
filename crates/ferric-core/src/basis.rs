@@ -7,6 +7,7 @@ use std::fs;
 #[derive(Debug, Clone)]
 pub struct Shell {
     pub l: i32,
+    pub pure: bool,
     pub exponents: Vec<f64>,
     pub coefficients: Vec<f64>,
 }
@@ -23,8 +24,8 @@ impl BasisSet {
     }
 }
 
-pub fn num_functions(l: i32) -> usize {
-    ((l + 1) * (l + 2) / 2) as usize
+pub fn num_functions(l: i32, pure: bool) -> usize {
+    if pure { (2 * l + 1) as usize } else { ((l + 1) * (l + 2) / 2) as usize }
 }
 
 // --- BSE-JSON parser ---
@@ -45,6 +46,8 @@ struct BseShell {
     angular_momentum: Vec<i32>,
     exponents: Vec<String>,
     coefficients: Vec<Vec<String>>,
+    #[serde(default)]
+    function_type: Option<String>,
 }
 
 pub fn load_bse_json(path: &str) -> Result<BasisSet, FerricError> {
@@ -60,15 +63,35 @@ fn parse_bse_json(text: &str, name: &str) -> Result<BasisSet, FerricError> {
         let z: i32 = z_str.parse().map_err(|e| FerricError::Basis(format!("bad element key {z_str:?}: {e}")))?;
         for sh in &elem.electron_shells {
             let exps = parse_float_list(&sh.exponents)?;
-            for (k, &l) in sh.angular_momentum.iter().enumerate() {
-                if k >= sh.coefficients.len() {
-                    return Err(FerricError::Basis(format!("shell missing coefficient column {k}")));
+            let pure = match sh.function_type.as_deref() {
+                Some("gto_spherical") => true,
+                Some("gto_cartesian") => false,
+                _ => false, // "gto" or absent defaults to Cartesian
+            };
+            if sh.angular_momentum.len() == 1 {
+                // Single angular momentum — each coefficient column is a separate contraction
+                let l = sh.angular_momentum[0];
+                let shell_pure = pure && l >= 2;
+                for col in &sh.coefficients {
+                    let coefs = parse_float_list(col)?;
+                    if coefs.len() != exps.len() {
+                        return Err(FerricError::Basis(format!("{} coeffs vs {} exps", coefs.len(), exps.len())));
+                    }
+                    shells.entry(z).or_default().push(Shell { l, pure: shell_pure, exponents: exps.clone(), coefficients: coefs });
                 }
-                let coefs = parse_float_list(&sh.coefficients[k])?;
-                if coefs.len() != exps.len() {
-                    return Err(FerricError::Basis(format!("{} coeffs vs {} exps", coefs.len(), exps.len())));
+            } else {
+                // Multiple angular momenta (e.g. SP) — column k corresponds to angular_momentum[k]
+                for (k, &l) in sh.angular_momentum.iter().enumerate() {
+                    if k >= sh.coefficients.len() {
+                        return Err(FerricError::Basis(format!("shell missing coefficient column {k}")));
+                    }
+                    let coefs = parse_float_list(&sh.coefficients[k])?;
+                    if coefs.len() != exps.len() {
+                        return Err(FerricError::Basis(format!("{} coeffs vs {} exps", coefs.len(), exps.len())));
+                    }
+                    let shell_pure = pure && l >= 2;
+                    shells.entry(z).or_default().push(Shell { l, pure: shell_pure, exponents: exps.clone(), coefficients: coefs });
                 }
-                shells.entry(z).or_default().push(Shell { l, exponents: exps.clone(), coefficients: coefs });
             }
         }
     }
@@ -125,11 +148,13 @@ fn parse_g94(text: &str, name: &str) -> Result<BasisSet, FerricError> {
             "S" | "SP" => 0, "P" => 1, "D" => 2, "F" => 3, "G" => 4,
             other => return Err(FerricError::Basis(format!("unknown shell type {other:?}"))),
         };
+        // G94 convention: spherical for L>=2
+        let pure = l >= 2;
         if is_sp {
-            shells.entry(z).or_default().push(Shell { l: 0, exponents: exps.clone(), coefficients: coefs[0].clone() });
-            shells.entry(z).or_default().push(Shell { l: 1, exponents: exps, coefficients: coefs[1].clone() });
+            shells.entry(z).or_default().push(Shell { l: 0, pure: false, exponents: exps.clone(), coefficients: coefs[0].clone() });
+            shells.entry(z).or_default().push(Shell { l: 1, pure: false, exponents: exps, coefficients: coefs[1].clone() });
         } else {
-            shells.entry(z).or_default().push(Shell { l, exponents: exps, coefficients: coefs[0].clone() });
+            shells.entry(z).or_default().push(Shell { l, pure, exponents: exps, coefficients: coefs[0].clone() });
         }
     }
     Ok(BasisSet { name: name.to_string(), shells })
@@ -163,6 +188,7 @@ mod tests {
         let h_shells = bs.for_element(1).unwrap();
         assert_eq!(h_shells.len(), 1);
         assert_eq!(h_shells[0].l, 0);
+        assert!(!h_shells[0].pure);
         let c_shells = bs.for_element(6).unwrap();
         assert!(c_shells.len() >= 2);
     }
@@ -171,7 +197,32 @@ mod tests {
     fn test_bundled_def2svp_has_d_shells() {
         let bs = bundled("def2-svp").unwrap();
         let c_shells = bs.for_element(6).unwrap();
-        assert!(c_shells.iter().any(|s| s.l == 2), "def2-SVP carbon should have d shells");
+        let d_shell = c_shells.iter().find(|s| s.l == 2);
+        assert!(d_shell.is_some(), "def2-SVP carbon should have d shells");
+        assert!(d_shell.unwrap().pure, "def2-SVP d shells should be spherical");
+    }
+
+    #[test]
+    fn test_bundled_ccpvdz_spherical() {
+        let bs = bundled("cc-pvdz").unwrap();
+        let c_shells = bs.for_element(6).unwrap();
+        for sh in c_shells {
+            if sh.l >= 2 {
+                assert!(sh.pure, "cc-pVDZ L={} shell should be spherical", sh.l);
+            } else {
+                assert!(!sh.pure, "cc-pVDZ L={} shell should be Cartesian", sh.l);
+            }
+        }
+    }
+
+    #[test]
+    fn test_bundled_sto3g_all_cartesian() {
+        let bs = bundled("sto-3g").unwrap();
+        for (_, shells) in &bs.shells {
+            for sh in shells {
+                assert!(!sh.pure, "STO-3G should be all Cartesian");
+            }
+        }
     }
 
     #[test]
@@ -189,9 +240,18 @@ mod tests {
     }
 
     #[test]
-    fn test_num_functions() {
-        assert_eq!(num_functions(0), 1);
-        assert_eq!(num_functions(1), 3);
-        assert_eq!(num_functions(2), 6);
+    fn test_num_functions_cartesian() {
+        assert_eq!(num_functions(0, false), 1);  // s
+        assert_eq!(num_functions(1, false), 3);  // p
+        assert_eq!(num_functions(2, false), 6);  // 6d
+        assert_eq!(num_functions(3, false), 10); // 10f
+    }
+
+    #[test]
+    fn test_num_functions_spherical() {
+        assert_eq!(num_functions(0, true), 1);  // s
+        assert_eq!(num_functions(1, true), 3);  // p
+        assert_eq!(num_functions(2, true), 5);  // 5d
+        assert_eq!(num_functions(3, true), 7);  // 7f
     }
 }
