@@ -237,8 +237,9 @@ int goscf_compute_1e_deriv_block(goscf_engine *eng, const goscf_basis *bs,
     eng->engine.compute(shells[sh1], shells[sh2]);
     const auto &result = eng->engine.results();
     int n = bs->nfunc[sh1] * bs->nfunc[sh2];
-    // 2 centers × 3 coords = 6 derivative blocks
-    int nderiv = 6;
+    // For overlap/kinetic: 2 centers × 3 coords = 6 derivative blocks
+    // For nuclear: 2 shell centers + natoms nuclear centers = 3*(2+natoms) blocks
+    int nderiv = static_cast<int>(result.size());
     if (result[0] == nullptr) {
         for (int i = 0; i < nderiv * n; ++i) out[i] = 0.0;
         return 0;

@@ -1,7 +1,12 @@
 fn main() {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/home/matt".to_string());
+    let local_prefix = format!("{home}/.local");
+
     cc::Build::new()
         .cpp(true)
         .file("shim/shim.cc")
+        .include(format!("{local_prefix}/include"))
+        .include(format!("{local_prefix}/include/libint2"))
         .include("/usr/local/include")
         .include("/usr/local/include/libint2")
         .include("/usr/include/eigen3")
@@ -9,6 +14,7 @@ fn main() {
         .flag("-O2")
         .compile("ferric_shim");
 
+    println!("cargo:rustc-link-search=native={local_prefix}/lib");
     println!("cargo:rustc-link-search=native=/usr/local/lib");
     println!("cargo:rustc-link-lib=static=int2");
     println!("cargo:rustc-link-lib=dylib=openblas");
