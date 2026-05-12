@@ -287,3 +287,84 @@ int goscf_compute_eri_deriv_quartet(goscf_engine *eng, const goscf_basis *bs,
     return 0;
 #endif
 }
+
+/* --- 3-center and 2-center ERI engines for density fitting / RI --- */
+
+goscf_engine *goscf_engine_create_3center(int op_kind, double omega,
+                                          int max_nprim, int max_L, double precision) {
+#if LIBINT2_SUPPORT_ERI3
+    bool ok = false;
+    Operator op = op_for_kind(op_kind, &ok);
+    if (!ok) return nullptr;
+    try {
+        Engine eng(op, max_nprim, max_L, 0, precision);
+        eng.set(libint2::BraKet::xs_xx);
+        if (op_kind == 1) eng.set_params(omega);
+        return new (std::nothrow) goscf_engine{std::move(eng)};
+    } catch (...) {
+        return nullptr;
+    }
+#else
+    (void)op_kind; (void)omega; (void)max_nprim; (void)max_L; (void)precision;
+    return nullptr;
+#endif
+}
+
+goscf_engine *goscf_engine_create_2center(int op_kind, double omega,
+                                          int max_nprim, int max_L, double precision) {
+#if LIBINT2_SUPPORT_ERI2
+    bool ok = false;
+    Operator op = op_for_kind(op_kind, &ok);
+    if (!ok) return nullptr;
+    try {
+        Engine eng(op, max_nprim, max_L, 0, precision);
+        eng.set(libint2::BraKet::xs_xs);
+        if (op_kind == 1) eng.set_params(omega);
+        return new (std::nothrow) goscf_engine{std::move(eng)};
+    } catch (...) {
+        return nullptr;
+    }
+#else
+    (void)op_kind; (void)omega; (void)max_nprim; (void)max_L; (void)precision;
+    return nullptr;
+#endif
+}
+
+int goscf_compute_eri3(goscf_engine *eng, const goscf_basis *obs,
+                       const goscf_basis *dfbs,
+                       int shP, int sh1, int sh2, double *out) {
+#if LIBINT2_SUPPORT_ERI3
+    // BraKet::xs_xx rank=3: compute(aux_shell, obs_shell1, obs_shell2)
+    eng->engine.compute(dfbs->bs[shP], obs->bs[sh1], obs->bs[sh2]);
+    const auto &result = eng->engine.results();
+    if (result[0] == nullptr) return 0;
+    int nP = dfbs->nfunc[shP];
+    int n1 = obs->nfunc[sh1];
+    int n2 = obs->nfunc[sh2];
+    int n = nP * n1 * n2;
+    for (int i = 0; i < n; ++i) out[i] = result[0][i];
+    return n;
+#else
+    (void)eng; (void)obs; (void)dfbs; (void)shP; (void)sh1; (void)sh2; (void)out;
+    return 0;
+#endif
+}
+
+int goscf_compute_eri2(goscf_engine *eng, const goscf_basis *dfbs,
+                       int shP, int shQ, double *out) {
+#if LIBINT2_SUPPORT_ERI2
+    // BraKet::xs_xs rank=2: compute(aux_shell_P, aux_shell_Q)
+    eng->engine.compute(dfbs->bs[shP], dfbs->bs[shQ]);
+    const auto &result = eng->engine.results();
+    int n = dfbs->nfunc[shP] * dfbs->nfunc[shQ];
+    if (result[0] == nullptr) {
+        for (int i = 0; i < n; ++i) out[i] = 0.0;
+    } else {
+        for (int i = 0; i < n; ++i) out[i] = result[0][i];
+    }
+    return n;
+#else
+    (void)eng; (void)dfbs; (void)shP; (void)shQ; (void)out;
+    return 0;
+#endif
+}
