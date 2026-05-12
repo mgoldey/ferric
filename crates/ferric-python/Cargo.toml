@@ -11,6 +11,7 @@ crate-type = ["cdylib"]
 ferric-core = { path = "../ferric-core" }
 ferric-integrals = { path = "../ferric-integrals" }
 ferric-scf = { path = "../ferric-scf" }
+ferric-mp2 = { path = "../ferric-mp2" }
 pyo3 = { workspace = true }
 numpy = { workspace = true }
 ndarray = { workspace = true }

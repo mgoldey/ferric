@@ -39,3 +39,22 @@ def test_rhf_result_arrays():
     assert D.shape == (7, 7)
     eps = result.orbital_energies()
     assert len(eps) == 7
+
+
+def test_rimp2_water_ccpvdz():
+    mol = ferric.Molecule.from_xyz(os.path.join(TESTDATA, "molecules", "water.xyz"))
+    bs = ferric.BasisSet.bundled("cc-pvdz")
+    aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+    result = ferric.run_rimp2(mol, bs, aux)
+    ref_path = os.path.join(TESTDATA, "reference", "h2o_cc-pvdz_rimp2.json")
+    with open(ref_path) as f:
+        ref = json.load(f)
+    assert abs(result.mp2_corr - ref["mp2_corr"]) < 1e-5, (
+        f"MP2 corr: got {result.mp2_corr:.10f}, ref {ref['mp2_corr']:.10f}"
+    )
+    assert abs(result.total_energy - ref["total_energy"]) < 1e-4, (
+        f"Total: got {result.total_energy:.10f}, ref {ref['total_energy']:.10f}"
+    )
+    assert abs(result.rhf_energy - ref["rhf_energy"]) < 1e-6, (
+        f"RHF: got {result.rhf_energy:.10f}, ref {ref['rhf_energy']:.10f}"
+    )

@@ -2,6 +2,7 @@ use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
+use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ndarray::Array2;
@@ -105,11 +106,54 @@ fn run_rhf(
     })
 }
 
+#[pyclass]
+#[pyo3(name = "RiMp2Result")]
+struct PyRiMp2Result {
+    #[pyo3(get)]
+    total_energy: f64,
+    #[pyo3(get)]
+    rhf_energy: f64,
+    #[pyo3(get)]
+    mp2_corr: f64,
+}
+
+#[pyfunction]
+#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None))]
+fn run_rimp2(
+    mol: &PyMolecule,
+    basis_set: &PyBasisSet,
+    auxbasis: &PyBasisSet,
+    frozen_core: Option<usize>,
+) -> PyResult<PyRiMp2Result> {
+    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e}")))?;
+    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e}")))?;
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e}")))?;
+    let rhf_config = RhfConfig::default();
+    let rhf_result = solve_rhf(&mol.inner, &prep, op, &bounds, &rhf_config)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e}")))?;
+    let mp2_config = RiMp2Config {
+        frozen_core: frozen_core.unwrap_or(0),
+    };
+    let mp2_result = ri_mp2(&mol.inner, &prep, &dfbs, op, &rhf_result, &mp2_config)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e}")))?;
+    Ok(PyRiMp2Result {
+        total_energy: mp2_result.total_energy,
+        rhf_energy: rhf_result.energy,
+        mp2_corr: mp2_result.mp2_corr,
+    })
+}
+
 #[pymodule]
 fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMolecule>()?;
     m.add_class::<PyBasisSet>()?;
     m.add_class::<PyRhfResult>()?;
+    m.add_class::<PyRiMp2Result>()?;
     m.add_function(wrap_pyfunction!(run_rhf, m)?)?;
+    m.add_function(wrap_pyfunction!(run_rimp2, m)?)?;
     Ok(())
 }
