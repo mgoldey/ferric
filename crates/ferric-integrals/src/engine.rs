@@ -39,6 +39,8 @@ impl Engine {
         Ok(Engine { handle, buf: vec![0.0; max_fn * max_fn] })
     }
 
+    pub fn handle_mut(&mut self) -> *mut c_void { self.handle }
+
     pub fn set_point_charges(&mut self, prep: &PreparedBasis) {
         unsafe {
             ffi::goscf_engine_set_point_charges(
@@ -102,6 +104,69 @@ impl Engine {
             )
         };
         &self.buf[..written as usize]
+    }
+
+    pub fn new_1e_deriv(op_kind: c_int, prep: &PreparedBasis, precision: f64) -> Result<Self, FerricError> {
+        let handle = unsafe {
+            ffi::goscf_engine_create_deriv(op_kind, 0.0, prep.max_nprim(), prep.max_l(), precision)
+        };
+        if handle.is_null() {
+            return Err(FerricError::Libint("derivative engine not available (libint2 built without derivative support?)".into()));
+        }
+        let max_fn = prep.shell_dims().iter().copied().max().unwrap_or(1);
+        Ok(Engine { handle, buf: vec![0.0; 6 * max_fn * max_fn] })
+    }
+
+    pub fn new_2e_deriv(op: Operator, prep: &PreparedBasis, precision: f64) -> Result<Self, FerricError> {
+        let op_kind = match op.kind {
+            OperatorKind::Coulomb => ffi::OP_COULOMB,
+            OperatorKind::ErfCoulomb => ffi::OP_ERF_COULOMB,
+            _ => return Err(FerricError::Libint(format!("operator {:?} not implemented", op.kind))),
+        };
+        let handle = unsafe {
+            ffi::goscf_engine_create_deriv(op_kind, op.omega, prep.max_nprim(), prep.max_l(), precision)
+        };
+        if handle.is_null() {
+            return Err(FerricError::Libint("derivative engine not available".into()));
+        }
+        let max_fn = prep.shell_dims().iter().copied().max().unwrap_or(1);
+        Ok(Engine { handle, buf: vec![0.0; 12 * max_fn * max_fn * max_fn * max_fn] })
+    }
+
+    /// Returns 6 blocks of n1*n2 doubles: [dx1, dy1, dz1, dx2, dy2, dz2].
+    /// Returns None if all derivatives were screened to zero.
+    pub fn compute_1e_deriv_block(
+        &mut self, prep: &PreparedBasis, sh1: usize, sh2: usize,
+    ) -> Option<&[f64]> {
+        let n = prep.shell_dims()[sh1] * prep.shell_dims()[sh2];
+        let total = 6 * n;
+        if self.buf.len() < total { self.buf.resize(total, 0.0); }
+        let written = unsafe {
+            ffi::goscf_compute_1e_deriv_block(
+                self.handle, prep.handle(), sh1 as c_int, sh2 as c_int, self.buf.as_mut_ptr(),
+            )
+        };
+        if written == 0 { None } else { Some(&self.buf[..written as usize]) }
+    }
+
+    /// Returns 12 blocks of n1*n2*n3*n4 doubles: [dx1..dz1, dx2..dz2, dx3..dz3, dx4..dz4].
+    /// Returns None if all derivatives were screened to zero.
+    pub fn compute_eri_deriv_quartet(
+        &mut self, prep: &PreparedBasis,
+        sh1: usize, sh2: usize, sh3: usize, sh4: usize,
+    ) -> Option<&[f64]> {
+        let n = prep.shell_dims()[sh1] * prep.shell_dims()[sh2]
+            * prep.shell_dims()[sh3] * prep.shell_dims()[sh4];
+        let total = 12 * n;
+        if self.buf.len() < total { self.buf.resize(total, 0.0); }
+        let written = unsafe {
+            ffi::goscf_compute_eri_deriv_quartet(
+                self.handle, prep.handle(),
+                sh1 as c_int, sh2 as c_int, sh3 as c_int, sh4 as c_int,
+                self.buf.as_mut_ptr(),
+            )
+        };
+        if written == 0 { None } else { Some(&self.buf[..written as usize]) }
     }
 }
 

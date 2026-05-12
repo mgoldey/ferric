@@ -134,6 +134,27 @@ goscf_engine *goscf_engine_create(int op_kind, double omega,
     }
 }
 
+goscf_engine *goscf_engine_create_deriv(int op_kind, double omega,
+                                        int max_nprim, int max_L, double precision) {
+#if LIBINT2_MAX_DERIV_ORDER >= 1
+    bool ok = false;
+    Operator op = op_for_kind(op_kind, &ok);
+    if (!ok) return nullptr;
+    try {
+        Engine eng(op, max_nprim, max_L, 1, precision);
+        if (op_kind == 1) {
+            eng.set_params(omega);
+        }
+        auto *out = new (std::nothrow) goscf_engine{std::move(eng)};
+        return out;
+    } catch (...) {
+        return nullptr;
+    }
+#else
+    return nullptr;
+#endif
+}
+
 void goscf_engine_destroy(goscf_engine *eng) {
     delete eng;
 }
@@ -207,4 +228,61 @@ void goscf_compute_schwarz(goscf_engine *eng, const goscf_basis *bs, double *qma
             qmat[j * nsh + i] = q;
         }
     }
+}
+
+int goscf_compute_1e_deriv_block(goscf_engine *eng, const goscf_basis *bs,
+                                 int sh1, int sh2, double *out) {
+#if LIBINT2_MAX_DERIV_ORDER >= 1
+    const auto &shells = bs->bs;
+    eng->engine.compute(shells[sh1], shells[sh2]);
+    const auto &result = eng->engine.results();
+    int n = bs->nfunc[sh1] * bs->nfunc[sh2];
+    // 2 centers × 3 coords = 6 derivative blocks
+    int nderiv = 6;
+    if (result[0] == nullptr) {
+        for (int i = 0; i < nderiv * n; ++i) out[i] = 0.0;
+        return 0;
+    }
+    for (int d = 0; d < nderiv; ++d) {
+        const double *src = result[d];
+        double *dst = out + d * n;
+        if (src) {
+            for (int i = 0; i < n; ++i) dst[i] = src[i];
+        } else {
+            for (int i = 0; i < n; ++i) dst[i] = 0.0;
+        }
+    }
+    return nderiv * n;
+#else
+    (void)eng; (void)bs; (void)sh1; (void)sh2; (void)out;
+    return 0;
+#endif
+}
+
+int goscf_compute_eri_deriv_quartet(goscf_engine *eng, const goscf_basis *bs,
+                                    int sh1, int sh2, int sh3, int sh4, double *out) {
+#if LIBINT2_MAX_DERIV_ORDER >= 1
+    const auto &shells = bs->bs;
+    eng->engine.compute(shells[sh1], shells[sh2], shells[sh3], shells[sh4]);
+    const auto &result = eng->engine.results();
+    int n = bs->nfunc[sh1] * bs->nfunc[sh2] * bs->nfunc[sh3] * bs->nfunc[sh4];
+    // 4 centers × 3 coords = 12 derivative blocks
+    int nderiv = 12;
+    if (result[0] == nullptr) {
+        return 0;
+    }
+    for (int d = 0; d < nderiv; ++d) {
+        const double *src = result[d];
+        double *dst = out + d * n;
+        if (src) {
+            for (int i = 0; i < n; ++i) dst[i] = src[i];
+        } else {
+            for (int i = 0; i < n; ++i) dst[i] = 0.0;
+        }
+    }
+    return nderiv * n;
+#else
+    (void)eng; (void)bs; (void)sh1; (void)sh2; (void)sh3; (void)sh4; (void)out;
+    return 0;
+#endif
 }

@@ -16,6 +16,7 @@ pub struct PreparedBasis {
     atoms: Vec<CAtom>,
     shell_dims: Vec<usize>,
     shell_offsets: Vec<usize>,
+    shell_to_atom: Vec<usize>,
     nbasis: usize,
     nshells: usize,
     max_nprim: i32,
@@ -33,6 +34,7 @@ impl PreparedBasis {
         }).collect();
 
         let mut c_shells = Vec::new();
+        let mut shell_to_atom = Vec::new();
         let mut keep_exps = Vec::new();
         let mut keep_coefs = Vec::new();
         for (ai, atom) in mol.atoms.iter().enumerate() {
@@ -53,6 +55,7 @@ impl PreparedBasis {
                     exponents: exps.as_ptr(),
                     coefficients: coefs.as_ptr(),
                 });
+                shell_to_atom.push(ai);
                 keep_exps.push(exps);
                 keep_coefs.push(coefs);
             }
@@ -91,6 +94,7 @@ impl PreparedBasis {
             atoms: c_atoms,
             shell_dims,
             shell_offsets,
+            shell_to_atom,
             nbasis,
             nshells,
             max_nprim: mp,
@@ -104,6 +108,8 @@ impl PreparedBasis {
     pub fn nshells(&self) -> usize { self.nshells }
     pub fn shell_dims(&self) -> &[usize] { &self.shell_dims }
     pub fn shell_offsets(&self) -> &[usize] { &self.shell_offsets }
+    pub fn shell_to_atom(&self) -> &[usize] { &self.shell_to_atom }
+    pub fn natoms(&self) -> usize { self.atoms.len() }
     pub fn max_nprim(&self) -> i32 { self.max_nprim }
     pub fn max_l(&self) -> i32 { self.max_l }
 }

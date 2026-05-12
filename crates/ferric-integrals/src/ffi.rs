@@ -33,6 +33,9 @@ extern "C" {
     pub fn goscf_compute_1e_block(eng: *mut c_void, bs: *const c_void, sh1: c_int, sh2: c_int, out: *mut c_double) -> c_int;
     pub fn goscf_compute_eri_quartet(eng: *mut c_void, bs: *const c_void, sh1: c_int, sh2: c_int, sh3: c_int, sh4: c_int, out: *mut c_double) -> c_int;
     pub fn goscf_compute_schwarz(eng: *mut c_void, bs: *const c_void, qmat: *mut c_double);
+    pub fn goscf_engine_create_deriv(op_kind: c_int, omega: c_double, max_nprim: c_int, max_l: c_int, precision: c_double) -> *mut c_void;
+    pub fn goscf_compute_1e_deriv_block(eng: *mut c_void, bs: *const c_void, sh1: c_int, sh2: c_int, out: *mut c_double) -> c_int;
+    pub fn goscf_compute_eri_deriv_quartet(eng: *mut c_void, bs: *const c_void, sh1: c_int, sh2: c_int, sh3: c_int, sh4: c_int, out: *mut c_double) -> c_int;
 }
 
 pub const OP_COULOMB: c_int = 0;

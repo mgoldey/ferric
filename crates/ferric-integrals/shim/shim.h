@@ -58,6 +58,9 @@ void         goscf_basis_max_dims(const goscf_basis *bs, int *out_max_nprim, int
  */
 goscf_engine *goscf_engine_create(int op_kind, double omega,
                                   int max_nprim, int max_L, double precision);
+/* deriv_order=1 derivative engine. Returns NULL if libint2 was built without derivative support. */
+goscf_engine *goscf_engine_create_deriv(int op_kind, double omega,
+                                        int max_nprim, int max_L, double precision);
 void          goscf_engine_destroy(goscf_engine *eng);
 
 /* For Nuclear-attraction engines, set the array of point charges.
@@ -80,6 +83,20 @@ int goscf_compute_eri_quartet(goscf_engine *eng, const goscf_basis *bs,
 /* Compute the shell-pair Schwarz Q matrix, Q[i,j] = sqrt(max |(ij|ij)|).
  * out is caller-allocated row-major (nshells, nshells). */
 void goscf_compute_schwarz(goscf_engine *eng, const goscf_basis *bs, double *qmat);
+
+/* --- First derivative integrals (requires libint2 with LIBINT2_MAX_DERIV_ORDER >= 1) --- */
+
+/* Compute first derivative of a 1e shell-pair block. The engine must have been
+ * created with goscf_engine_create_deriv(). Writes 6 blocks (dx1,dy1,dz1,dx2,dy2,dz2)
+ * of n1*n2 doubles each into out (total 6*n1*n2). Returns 6*n1*n2 on success, 0 if screened. */
+int goscf_compute_1e_deriv_block(goscf_engine *eng, const goscf_basis *bs,
+                                 int sh1, int sh2, double *out);
+
+/* Compute first derivative of a 2e shell quartet. Writes 12 blocks
+ * (dx1,dy1,dz1,dx2,dy2,dz2,dx3,dy3,dz3,dx4,dy4,dz4) of n1*n2*n3*n4 doubles each.
+ * Returns 12*n1*n2*n3*n4 on success, 0 if screened. */
+int goscf_compute_eri_deriv_quartet(goscf_engine *eng, const goscf_basis *bs,
+                                    int sh1, int sh2, int sh3, int sh4, double *out);
 
 #ifdef __cplusplus
 }

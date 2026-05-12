@@ -5,3 +5,4 @@ pub mod direct_k;
 pub mod diis;
 pub mod guess;
 pub mod rhf;
+pub mod gradient;
