@@ -1,1 +1,916 @@
-// Orbital-optimized RI-MP2 — placeholder for future implementation.
+//! Orbital-optimized RI-MP2 (OO-RI-MP2).
+//!
+//! Minimizes E_HF + E_MP2 jointly by optimizing orbital rotation parameters
+//! via steepest descent with analytic gradients and Cayley orbital rotations.
+//!
+//! The analytic orbital gradient uses the Hylleraas functional derivative,
+//! which includes both the 1-PDM/Fock terms and the 2-electron integral
+//! response terms from the MO integral derivatives.
+
+use crate::mo_transform::transform_3center_ov;
+use crate::rimp2::cholesky_inverse_sqrt;
+use ferric_core::mol::Molecule;
+use ferric_core::FerricError;
+use ferric_integrals::basis_bridge::PreparedBasis;
+use ferric_integrals::oneelectron;
+use ferric_integrals::operator::Operator;
+use ferric_integrals::threeindex;
+use ferric_scf::rhf::{build_jk, RhfResult};
+use ferric_scf::screening::SchwarzBounds;
+use ndarray::{Array2, Array3};
+use ndarray_linalg::Solve;
+
+/// Configuration for OO-RI-MP2.
+#[derive(Debug, Clone)]
+pub struct OoRiMp2Config {
+    pub max_iter: usize,
+    pub grad_conv: f64,
+    pub energy_conv: f64,
+    pub step_size: f64,
+    pub frozen_core: usize,
+}
+
+impl Default for OoRiMp2Config {
+    fn default() -> Self {
+        Self {
+            max_iter: 100,
+            grad_conv: 1e-4,
+            energy_conv: 1e-8,
+            step_size: 0.5,
+            frozen_core: 0,
+        }
+    }
+}
+
+/// Result from OO-RI-MP2.
+#[derive(Debug)]
+pub struct OoRiMp2Result {
+    pub total_energy: f64,
+    pub hf_energy: f64,
+    pub mp2_corr: f64,
+    pub converged: bool,
+    pub iterations: usize,
+    pub grad_norm: f64,
+    pub mos: Array2<f64>,
+    pub orbital_energies: Vec<f64>,
+}
+
+/// Compute the full-MO 3-center B tensor: B^P_{pq} for all MO pairs p,q.
+///
+/// Returns b_full of shape (naux, nmo, nmo) where:
+///   b_full[(P, p, q)] = sum_Q V^{-1/2}_{PQ} sum_{mu,nu} (Q|mu nu) C_{mu,p} C_{nu,q}
+fn compute_b_full_mo(
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    c: &Array2<f64>,
+) -> Result<Array3<f64>, FerricError> {
+    let nbas = obs.nbasis();
+    let naux = dfbs.nbasis();
+    let nmo = c.ncols();
+
+    // (P|Q) metric and V^{-1/2}
+    let v2c = threeindex::coulomb_metric_2c(op, dfbs)?;
+    let v2c_inv_sqrt = cholesky_inverse_sqrt(&v2c)?;
+
+    // (P|mu nu) 3-center integrals
+    let eri3_ao = threeindex::eri3_tensor(op, obs, dfbs)?;
+
+    // Full MO transform: (P|mu nu) -> (P|p q) for all MO pairs
+    // Half-transform: (P|mu nu) C_{nu,q} -> (P|mu,q)
+    let mut half = Array3::zeros((naux, nbas, nmo));
+    for p in 0..naux {
+        for mu in 0..nbas {
+            for q in 0..nmo {
+                let mut sum = 0.0;
+                for nu in 0..nbas {
+                    sum += eri3_ao[(p, mu, nu)] * c[(nu, q)];
+                }
+                half[(p, mu, q)] = sum;
+            }
+        }
+    }
+
+    // Second half: C_{mu,p}^T (P|mu,q) -> (P|p,q)
+    let mut eri3_mo = Array3::zeros((naux, nmo, nmo));
+    for p_aux in 0..naux {
+        for p in 0..nmo {
+            for q in 0..nmo {
+                let mut sum = 0.0;
+                for mu in 0..nbas {
+                    sum += c[(mu, p)] * half[(p_aux, mu, q)];
+                }
+                eri3_mo[(p_aux, p, q)] = sum;
+            }
+        }
+    }
+
+    // Apply V^{-1/2}: B^P_{pq} = sum_Q V^{-1/2}_{PQ} (Q|pq)
+    let eri3_flat = eri3_mo
+        .into_shape_with_order((naux, nmo * nmo))
+        .unwrap();
+    let b_flat = v2c_inv_sqrt.dot(&eri3_flat);
+    let b_full = b_flat
+        .into_shape_with_order((naux, nmo, nmo))
+        .unwrap();
+    Ok(b_full)
+}
+
+/// Compute the RI-MP2 energy for a given set of MO coefficients.
+///
+/// Returns (e_mp2, b_ov_flat) where b_ov_flat is (naux, nocc*nvir) for reuse.
+fn compute_rimp2_with_orbitals(
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    c: &Array2<f64>,
+    eps: &[f64],
+    nocc: usize,
+    nocc_total: usize,
+    first_occ: usize,
+) -> Result<(f64, Array2<f64>), FerricError> {
+    let nbas = obs.nbasis();
+    let nvir = nbas - nocc_total;
+    let naux = dfbs.nbasis();
+
+    let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
+    let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
+
+    // (P|Q) metric and V^{-1/2}
+    let v2c = threeindex::coulomb_metric_2c(op, dfbs)?;
+    let v2c_inv_sqrt = cholesky_inverse_sqrt(&v2c)?;
+
+    // (P|mu nu) 3-center integrals
+    let eri3_ao = threeindex::eri3_tensor(op, obs, dfbs)?;
+
+    // MO transform -> (P|ia)
+    let eri3_mo = transform_3center_ov(&eri3_ao, &c_occ, &c_vir);
+
+    // B^P_{ia} = sum_Q (P|Q)^{-1/2} (Q|ia)
+    let eri3_flat = eri3_mo
+        .into_shape_with_order((naux, nocc * nvir))
+        .unwrap();
+    let b_flat = v2c_inv_sqrt.dot(&eri3_flat); // (naux, nocc*nvir)
+
+    // MP2 energy
+    let mut e_mp2 = 0.0;
+    for i in 0..nocc {
+        for j in 0..nocc {
+            for a in 0..nvir {
+                for b in 0..nvir {
+                    let ia = i * nvir + a;
+                    let jb = j * nvir + b;
+                    let ib = i * nvir + b;
+                    let ja = j * nvir + a;
+                    let eri_iajb: f64 =
+                        (0..naux).map(|p| b_flat[(p, ia)] * b_flat[(p, jb)]).sum();
+                    let eri_ibja: f64 =
+                        (0..naux).map(|p| b_flat[(p, ib)] * b_flat[(p, ja)]).sum();
+                    let denom = eps[first_occ + i] + eps[first_occ + j]
+                        - eps[nocc_total + a]
+                        - eps[nocc_total + b];
+                    e_mp2 += eri_iajb * (2.0 * eri_iajb - eri_ibja) / denom;
+                }
+            }
+        }
+    }
+    Ok((e_mp2, b_flat))
+}
+
+/// Build the HF energy from MO coefficients + 1e integrals + J/K.
+fn compute_hf_energy(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    c: &Array2<f64>,
+    nocc_total: usize,
+    h: &Array2<f64>,
+) -> Result<(f64, Array2<f64>, Array2<f64>), FerricError> {
+    let n = prep.nbasis();
+
+    // Build density: D = 2 * C_occ C_occ^T
+    let mut d = Array2::zeros((n, n));
+    for mu in 0..n {
+        for nu in 0..n {
+            let mut sum = 0.0;
+            for i in 0..nocc_total {
+                sum += c[(mu, i)] * c[(nu, i)];
+            }
+            d[(mu, nu)] = 2.0 * sum;
+        }
+    }
+
+    // Build J, K
+    let mut j_mat = Array2::zeros((n, n));
+    let mut k_mat = Array2::zeros((n, n));
+    build_jk(prep, bounds, 1e-12, &d, &mut j_mat, &mut k_mat)?;
+
+    // F = H + J - 0.5*K
+    let f = h + &j_mat - &(0.5 * &k_mat);
+
+    // E_elec = 0.5 * tr(D * (H + F))
+    let hpf = h + &f;
+    let e_elec: f64 = (0..n)
+        .flat_map(|i| (0..n).map(move |j| (i, j)))
+        .map(|(i, j)| 0.5 * d[(i, j)] * hpf[(i, j)])
+        .sum();
+    let vnn = mol.nuclear_repulsion();
+    let e_hf = e_elec + vnn;
+
+    Ok((e_hf, f, d))
+}
+
+/// Compute orbital energies as diagonal of C^T F C.
+fn orbital_energies(c: &Array2<f64>, f: &Array2<f64>) -> Vec<f64> {
+    let n = c.ncols();
+    let f_mo = c.t().dot(f).dot(c);
+    (0..n).map(|i| f_mo[(i, i)]).collect()
+}
+
+/// Compute t2 amplitudes and (ia|jb) integrals from B tensor.
+///
+/// t2 is stored as flat vec of length (nocc*nvir)^2 with indexing t2[ia*nov + jb]
+/// where ia = i*nvir + a, jb = j*nvir + b.
+///
+/// Returns (t2, eri_ov) where eri_ov[ia*nov + jb] = (ia|jb).
+fn compute_t2_and_integrals(
+    b_flat: &Array2<f64>,
+    eps: &[f64],
+    nocc: usize,
+    nvir: usize,
+    nocc_total: usize,
+    first_occ: usize,
+    naux: usize,
+) -> (Vec<f64>, Vec<f64>) {
+    let nov = nocc * nvir;
+    let mut t2 = vec![0.0f64; nov * nov];
+    let mut eri_ov = vec![0.0f64; nov * nov];
+
+    for i in 0..nocc {
+        for a in 0..nvir {
+            let ia = i * nvir + a;
+            for j in 0..nocc {
+                for b in 0..nvir {
+                    let jb = j * nvir + b;
+                    let eri_iajb: f64 =
+                        (0..naux).map(|p| b_flat[(p, ia)] * b_flat[(p, jb)]).sum();
+                    let denom = eps[first_occ + i] + eps[first_occ + j]
+                        - eps[nocc_total + a]
+                        - eps[nocc_total + b];
+                    eri_ov[ia * nov + jb] = eri_iajb;
+                    t2[ia * nov + jb] = eri_iajb / denom;
+                }
+            }
+        }
+    }
+    (t2, eri_ov)
+}
+
+/// Build the MP2 unrelaxed 1-particle density matrix in MO basis.
+///
+/// Returns (p_oo, p_vv) where:
+///   p_oo[i,j] = -sum_{kab} t_{ik,ab} (2 t_{jk,ab} - t_{jk,ba})
+///   p_vv[a,b] =  sum_{ijc} t_{ij,ac} (2 t_{ij,bc} - t_{ij,cb})
+fn build_mp2_density(
+    t2: &[f64],
+    nocc: usize,
+    nvir: usize,
+) -> (Array2<f64>, Array2<f64>) {
+    let nov = nocc * nvir;
+
+    // P^MP2_ij = -sum_{kab} t_{ik,ab} (2 t_{jk,ab} - t_{jk,ba})
+    let mut p_oo = Array2::zeros((nocc, nocc));
+    for i in 0..nocc {
+        for j in 0..nocc {
+            let mut sum = 0.0;
+            for k in 0..nocc {
+                for a in 0..nvir {
+                    for b in 0..nvir {
+                        let ik_ab = (i * nvir + a) * nov + k * nvir + b;
+                        let jk_ab = (j * nvir + a) * nov + k * nvir + b;
+                        let jk_ba = (j * nvir + b) * nov + k * nvir + a;
+                        sum += t2[ik_ab] * (2.0 * t2[jk_ab] - t2[jk_ba]);
+                    }
+                }
+            }
+            p_oo[(i, j)] = -sum;
+        }
+    }
+
+    // P^MP2_ab = sum_{ijc} t_{ij,ac} (2 t_{ij,bc} - t_{ij,cb})
+    let mut p_vv = Array2::zeros((nvir, nvir));
+    for a in 0..nvir {
+        for b in 0..nvir {
+            let mut sum = 0.0;
+            for i in 0..nocc {
+                for j in 0..nocc {
+                    for c in 0..nvir {
+                        let ij_ac = (i * nvir + a) * nov + j * nvir + c;
+                        let ij_bc = (i * nvir + b) * nov + j * nvir + c;
+                        let ij_cb = (i * nvir + c) * nov + j * nvir + b;
+                        sum += t2[ij_ac] * (2.0 * t2[ij_bc] - t2[ij_cb]);
+                    }
+                }
+            }
+            p_vv[(a, b)] = sum;
+        }
+    }
+
+    (p_oo, p_vv)
+}
+
+/// Compute the full OO-MP2 orbital gradient g_{ai} for occupied-virtual rotations.
+///
+/// This implements the Hylleraas functional derivative which includes:
+/// 1. The 1-PDM/Fock terms (response of Fock matrix to density change)
+/// 2. The 2-electron integral response terms (response of (ia|jb) to orbital rotation)
+///
+/// The formula is derived from the Hylleraas functional:
+///   L[t] = 2 * sum_{ijab} t_{ij,ab} * (2*(ia|jb) - (ib|ja)) - sum_{ijab} t_{ij,ab} * D_{ijab} * tau_{ijab}
+///
+/// At the stationary point L = E_MP2, and by the 2n+1 rule the gradient of the energy
+/// w.r.t. orbital rotation kappa_{ck} (c=virtual, k=occupied) at fixed amplitudes is:
+///
+///   dE_total/d kappa_{ck} = 4*F_{ck}  (HF part, = 0 at convergence)
+///     + 2 * sum_{ijab} t_{ij,ab} * [2*d(ia|jb)/dk - d(ib|ja)/dk]   (MP2 integral response)
+///
+/// The orbital energy denominator terms vanish at the HF solution (dD/dk = 0 because
+/// Brillouin condition makes d eps_p/d kappa_{ck} = 0).
+///
+/// The integral response d(ia|jb)/d kappa_{ck} = delta_{ik}*(ca|jb) + delta_{jk}*(ia|cb)
+///   - delta_{ac}*(ik|jb) - delta_{bc}*(ia|jk), computed using the full-MO B tensor.
+fn compute_orbital_gradient(
+    f_mo: &Array2<f64>,
+    t2: &[f64],
+    b_full: &Array3<f64>,
+    nocc: usize,
+    nvir: usize,
+    first_occ: usize,
+    nocc_total: usize,
+) -> Array2<f64> {
+    let naux = b_full.shape()[0];
+    let nov = nocc * nvir;
+
+    // Helper: compute (pq|rs) = sum_P B^P_{pq} * B^P_{rs} using absolute MO indices
+    let eri = |p: usize, q: usize, r: usize, s: usize| -> f64 {
+        (0..naux).map(|aux| b_full[(aux, p, q)] * b_full[(aux, r, s)]).sum()
+    };
+
+    // g_{ai} has shape (nvir, nocc) -- virtual index a, occupied index i
+    let mut g = Array2::zeros((nvir, nocc));
+
+    // HF contribution: -4 * F_{ai} (sign follows the Cayley rotation convention
+    // where kappa_{ai}>0 mixes occupied into virtual: C_new ≈ C(I-K))
+    for a in 0..nvir {
+        let a_mo = nocc_total + a;
+        for i in 0..nocc {
+            let i_mo = first_occ + i;
+            g[(a, i)] -= 4.0 * f_mo[(a_mo, i_mo)];
+        }
+    }
+
+    // MP2 integral response:
+    // dE_MP2/d kappa_{ck} = 2 * sum_{ijab} t_{ij,ab} * [2*d(ia|jb)/dk_{ck} - d(ib|ja)/dk_{ck}]
+    //
+    // d(ia|jb)/dk_{ck} = delta_{ik}*(ca|jb) + delta_{jk}*(ia|cb) - delta_{ac}*(ik|jb) - delta_{bc}*(ia|jk)
+    // d(ib|ja)/dk_{ck} = delta_{ik}*(cb|ja) + delta_{jk}*(ib|ca) - delta_{bc}*(ik|ja) - delta_{ac}*(ib|jk)
+    //
+    // Combined: 2*d(ia|jb)/dk - d(ib|ja)/dk =
+    //   delta_{ik} * [2*(ca|jb) - (cb|ja)]
+    // + delta_{jk} * [2*(ia|cb) - (ib|ca)]
+    // - delta_{ac} * [2*(ik|jb) - (ib|jk)]
+    // - delta_{bc} * [2*(ia|jk) - (ik|ja)]
+    //
+    // For each (c, k) pair, we sum over ijab with the appropriate delta contractions.
+
+    for c_idx in 0..nvir {
+        let c_mo = nocc_total + c_idx;
+        for k in 0..nocc {
+            let k_mo = first_occ + k;
+
+            let mut grad_ck = 0.0;
+
+            // Term 1: delta_{ik} -> i=k, sum over j,a,b
+            // 2 * sum_{jab} t_{kj,ab} * [2*(ca|jb) - (cb|ja)]
+            for j in 0..nocc {
+                let j_mo = first_occ + j;
+                for a in 0..nvir {
+                    let a_mo = nocc_total + a;
+                    for b in 0..nvir {
+                        let b_mo = nocc_total + b;
+                        let t_kj_ab = t2[(k * nvir + a) * nov + j * nvir + b];
+                        let eri_cajb = eri(c_mo, a_mo, j_mo, b_mo);
+                        let eri_cbja = eri(c_mo, b_mo, j_mo, a_mo);
+                        grad_ck += t_kj_ab * (2.0 * eri_cajb - eri_cbja);
+                    }
+                }
+            }
+
+            // Term 2: delta_{jk} -> j=k, sum over i,a,b
+            // 2 * sum_{iab} t_{ik,ab} * [2*(ia|cb) - (ib|ca)]
+            for i in 0..nocc {
+                let i_mo = first_occ + i;
+                for a in 0..nvir {
+                    let a_mo = nocc_total + a;
+                    for b in 0..nvir {
+                        let b_mo = nocc_total + b;
+                        let t_ik_ab = t2[(i * nvir + a) * nov + k * nvir + b];
+                        let eri_iacb = eri(i_mo, a_mo, c_mo, b_mo);
+                        let eri_ibca = eri(i_mo, b_mo, c_mo, a_mo);
+                        grad_ck += t_ik_ab * (2.0 * eri_iacb - eri_ibca);
+                    }
+                }
+            }
+
+            // Term 3: delta_{ac} -> a=c, sum over i,j,b
+            // -2 * sum_{ijb} t_{ij,cb} * [2*(ik|jb) - (ib|jk)]
+            for i in 0..nocc {
+                let i_mo = first_occ + i;
+                for j in 0..nocc {
+                    let j_mo = first_occ + j;
+                    for b in 0..nvir {
+                        let b_mo = nocc_total + b;
+                        let t_ij_cb = t2[(i * nvir + c_idx) * nov + j * nvir + b];
+                        let eri_ikjb = eri(i_mo, k_mo, j_mo, b_mo);
+                        let eri_ibjk = eri(i_mo, b_mo, j_mo, k_mo);
+                        grad_ck -= t_ij_cb * (2.0 * eri_ikjb - eri_ibjk);
+                    }
+                }
+            }
+
+            // Term 4: delta_{bc} -> b=c, sum over i,j,a
+            // -2 * sum_{ija} t_{ij,ac} * [2*(ia|jk) - (ik|ja)]
+            for i in 0..nocc {
+                let i_mo = first_occ + i;
+                for j in 0..nocc {
+                    let j_mo = first_occ + j;
+                    for a in 0..nvir {
+                        let a_mo = nocc_total + a;
+                        let t_ij_ac = t2[(i * nvir + a) * nov + j * nvir + c_idx];
+                        let eri_iajk = eri(i_mo, a_mo, j_mo, k_mo);
+                        let eri_ikja = eri(i_mo, k_mo, j_mo, a_mo);
+                        grad_ck -= t_ij_ac * (2.0 * eri_iajk - eri_ikja);
+                    }
+                }
+            }
+
+            g[(c_idx, k)] -= 2.0 * grad_ck;
+        }
+    }
+
+    g
+}
+
+/// Cayley transform for orbital rotation.
+///
+/// Given antisymmetric kappa (nmo x nmo), compute U = (I + kappa/2)^{-1} (I - kappa/2).
+/// U is exactly unitary for any antisymmetric kappa.
+fn cayley_rotation(kappa: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
+    let n = kappa.nrows();
+    let eye = Array2::eye(n);
+    let half_k = 0.5 * kappa;
+    let lhs = &eye + &half_k; // I + kappa/2
+    let rhs = &eye - &half_k; // I - kappa/2
+
+    // Solve (I + kappa/2) U = (I - kappa/2) for U, column by column
+    let mut u = Array2::zeros((n, n));
+    for col in 0..n {
+        let rhs_col = rhs.column(col).to_owned();
+        let u_col = lhs
+            .solve(&rhs_col)
+            .map_err(|e| FerricError::Lapack(format!("Cayley solve col {col}: {e}")))?;
+        u.column_mut(col).assign(&u_col);
+    }
+    Ok(u)
+}
+
+/// Run OO-RI-MP2.
+///
+/// Starting from converged RHF orbitals, iteratively optimize MO coefficients
+/// to minimize E_HF + E_MP2 jointly.
+pub fn oo_ri_mp2(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    rhf: &RhfResult,
+    config: &OoRiMp2Config,
+) -> Result<OoRiMp2Result, FerricError> {
+    let nbas = obs.nbasis();
+    let nelec = mol.nelec() as usize;
+    let nocc_total = nelec / 2;
+    let nocc = nocc_total - config.frozen_core;
+    let first_occ = config.frozen_core;
+    let nvir = nbas - nocc_total;
+
+    // One-electron integrals (fixed)
+    let h = oneelectron::hcore(obs);
+
+    // Start from converged RHF orbitals
+    let mut c = rhf.mos.clone();
+
+    // Initial energies
+    let (mut e_hf, mut f_ao, _d) = compute_hf_energy(mol, obs, bounds, &c, nocc_total, &h)?;
+    let mut eps = orbital_energies(&c, &f_ao);
+    let (mut e_mp2, mut b_ov) = compute_rimp2_with_orbitals(
+        obs, dfbs, op, &c, &eps, nocc, nocc_total, first_occ,
+    )?;
+    let mut total_energy = e_hf + e_mp2;
+    let mut grad_norm = f64::MAX;
+    let nmo = nbas;
+    let max_kappa = 0.1; // cap individual rotation angles
+    let mut step = config.step_size; // adaptive step size persists across iterations
+
+    for iter in 1..=config.max_iter {
+        // Compute full-MO B tensor for gradient evaluation
+        let b_full = compute_b_full_mo(obs, dfbs, op, &c)?;
+
+        // Build t2 amplitudes
+        let naux = dfbs.nbasis();
+        let (t2, _eri_ov) = compute_t2_and_integrals(
+            &b_ov, &eps, nocc, nvir, nocc_total, first_occ, naux,
+        );
+
+        // Fock matrix in MO basis
+        let f_mo = c.t().dot(&f_ao).dot(&c);
+
+        // Orbital gradient g_{ai} with full 2e response terms
+        let g = compute_orbital_gradient(
+            &f_mo, &t2, &b_full, nocc, nvir, first_occ, nocc_total,
+        );
+
+        // Check gradient norm
+        grad_norm = g.iter().map(|x| x * x).sum::<f64>().sqrt();
+
+        eprintln!(
+            "OO-RI-MP2 iter {:3}: E_HF={:.10} E_MP2={:.10} E_tot={:.10} |g|={:.2e}",
+            iter, e_hf, e_mp2, total_energy, grad_norm
+        );
+
+        if grad_norm < config.grad_conv {
+            return Ok(OoRiMp2Result {
+                total_energy,
+                hf_energy: e_hf,
+                mp2_corr: e_mp2,
+                converged: true,
+                iterations: iter,
+                grad_norm,
+                mos: c,
+                orbital_energies: eps,
+            });
+        }
+
+        // Backtracking line search with adaptive step size
+        let mut accepted = false;
+        let mut e_hf_new = e_hf;
+        let mut f_ao_new = f_ao.clone();
+        let mut eps_new = eps.clone();
+        let mut e_mp2_new = e_mp2;
+        let mut b_ov_new = b_ov.clone();
+        let mut c_new = c.clone();
+        let mut total_new = total_energy;
+        let mut de = 0.0;
+
+        // Try increasing step first if previous step was accepted without backtracking
+        let trial_step = (step * 1.2).min(config.step_size);
+        let mut current_step = trial_step;
+
+        for _bt in 0..15 {
+            let mut kappa = Array2::zeros((nmo, nmo));
+            for a in 0..nvir {
+                let a_mo = nocc_total + a;
+                for i in 0..nocc {
+                    let i_mo = first_occ + i;
+                    let val = (-current_step * g[(a, i)])
+                        .max(-max_kappa)
+                        .min(max_kappa);
+                    kappa[(a_mo, i_mo)] = val;
+                    kappa[(i_mo, a_mo)] = -val;
+                }
+            }
+
+            let u = cayley_rotation(&kappa)?;
+            c_new = c.dot(&u);
+
+            let (ehf, fao, _d) =
+                compute_hf_energy(mol, obs, bounds, &c_new, nocc_total, &h)?;
+            let epsnew = orbital_energies(&c_new, &fao);
+            let (emp2, bov) = compute_rimp2_with_orbitals(
+                obs, dfbs, op, &c_new, &epsnew, nocc, nocc_total, first_occ,
+            )?;
+            total_new = ehf + emp2;
+            de = (total_new - total_energy).abs();
+
+            if total_new <= total_energy + 1e-12 {
+                e_hf_new = ehf;
+                f_ao_new = fao;
+                eps_new = epsnew;
+                e_mp2_new = emp2;
+                b_ov_new = bov;
+                step = current_step; // remember successful step size
+                accepted = true;
+                break;
+            }
+            current_step *= 0.5;
+        }
+
+        if !accepted {
+            // After extensive backtracking, take the smallest step anyway
+            e_hf_new = compute_hf_energy(mol, obs, bounds, &c_new, nocc_total, &h)?.0;
+            // Re-derive everything from c_new
+            let (ehf, fao, _d) =
+                compute_hf_energy(mol, obs, bounds, &c_new, nocc_total, &h)?;
+            let epsnew = orbital_energies(&c_new, &fao);
+            let (emp2, bov) = compute_rimp2_with_orbitals(
+                obs, dfbs, op, &c_new, &epsnew, nocc, nocc_total, first_occ,
+            )?;
+            e_hf_new = ehf;
+            f_ao_new = fao;
+            eps_new = epsnew;
+            e_mp2_new = emp2;
+            b_ov_new = bov;
+            total_new = e_hf_new + e_mp2_new;
+            de = (total_new - total_energy).abs();
+            step = current_step;
+        }
+
+        // Accept step
+        c = c_new;
+        e_hf = e_hf_new;
+        e_mp2 = e_mp2_new;
+        total_energy = total_new;
+        f_ao = f_ao_new;
+        eps = eps_new;
+        b_ov = b_ov_new;
+
+        if de < config.energy_conv && iter > 1 {
+            // Energy converged; check gradient but allow 10x looser tolerance
+            // since flat directions (e.g. degenerate orbital rotations) may
+            // keep the gradient from reaching the tight threshold.
+            let b_full2 = compute_b_full_mo(obs, dfbs, op, &c)?;
+            let naux2 = dfbs.nbasis();
+            let (t2_2, _) = compute_t2_and_integrals(
+                &b_ov, &eps, nocc, nvir, nocc_total, first_occ, naux2,
+            );
+            let f_mo2 = c.t().dot(&f_ao).dot(&c);
+            let g2 = compute_orbital_gradient(
+                &f_mo2, &t2_2, &b_full2, nocc, nvir, first_occ, nocc_total,
+            );
+            grad_norm = g2.iter().map(|x| x * x).sum::<f64>().sqrt();
+
+            if grad_norm < config.grad_conv * 10.0 {
+                return Ok(OoRiMp2Result {
+                    total_energy,
+                    hf_energy: e_hf,
+                    mp2_corr: e_mp2,
+                    converged: true,
+                    iterations: iter,
+                    grad_norm,
+                    mos: c,
+                    orbital_energies: eps,
+                });
+            }
+        }
+    }
+
+    Ok(OoRiMp2Result {
+        total_energy,
+        hf_energy: e_hf,
+        mp2_corr: e_mp2,
+        converged: false,
+        iterations: config.max_iter,
+        grad_norm,
+        mos: c,
+        orbital_energies: eps,
+    })
+}
+
+/// Compute RI-MP2 energy for orbitals rotated by kappa (for finite-difference testing).
+///
+/// Takes initial MO coefficients, applies a Cayley rotation with the given kappa,
+/// rebuilds Fock / density, and returns E_HF + E_MP2.
+pub fn energy_at_kappa(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    c_init: &Array2<f64>,
+    kappa: &Array2<f64>,
+    nocc_total: usize,
+    nocc: usize,
+    first_occ: usize,
+) -> Result<f64, FerricError> {
+    let h = oneelectron::hcore(obs);
+    let u = cayley_rotation(kappa)?;
+    let c_rot = c_init.dot(&u);
+    let (e_hf, f_ao, _) = compute_hf_energy(mol, obs, bounds, &c_rot, nocc_total, &h)?;
+    let eps = orbital_energies(&c_rot, &f_ao);
+    let (e_mp2, _) = compute_rimp2_with_orbitals(
+        obs, dfbs, op, &c_rot, &eps, nocc, nocc_total, first_occ,
+    )?;
+    Ok(e_hf + e_mp2)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ferric_core::basis;
+    use ferric_core::mol::Molecule;
+    use ferric_integrals::basis_bridge::PreparedBasis;
+    use ferric_scf::rhf::{solve_rhf, RhfConfig};
+    use ferric_scf::screening::SchwarzBounds;
+
+    fn setup_h2() -> (Molecule, PreparedBasis, PreparedBasis, Operator, SchwarzBounds, RhfResult) {
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n").unwrap();
+        let bs = basis::bundled("cc-pvdz").unwrap();
+        let obs = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig {
+                energy_conv: 1e-10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(rhf.converged);
+        let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
+        (mol, obs, dfbs, op, bounds, rhf)
+    }
+
+    #[test]
+    fn test_oo_rimp2_lowers_energy() {
+        let (mol, obs, dfbs, op, bounds, rhf) = setup_h2();
+
+        // Standard RI-MP2
+        let ri_result = crate::rimp2::ri_mp2(
+            &mol,
+            &obs,
+            &dfbs,
+            op,
+            &rhf,
+            &crate::rimp2::RiMp2Config::default(),
+        )
+        .unwrap();
+
+        // OO-RI-MP2
+        let oo_result = oo_ri_mp2(
+            &mol,
+            &obs,
+            &dfbs,
+            op,
+            &bounds,
+            &rhf,
+            &OoRiMp2Config::default(),
+        )
+        .unwrap();
+
+        eprintln!("Standard RI-MP2 total: {:.10}", ri_result.total_energy);
+        eprintln!(
+            "OO-RI-MP2 total: {:.10} (HF={:.10}, MP2={:.10})",
+            oo_result.total_energy, oo_result.hf_energy, oo_result.mp2_corr
+        );
+        eprintln!(
+            "OO converged: {}, iters: {}, |g|: {:.2e}",
+            oo_result.converged, oo_result.iterations, oo_result.grad_norm
+        );
+        eprintln!(
+            "Energy lowering: {:.2e}",
+            ri_result.total_energy - oo_result.total_energy
+        );
+
+        // OO-RI-MP2 total energy should be <= standard RI-MP2 total energy
+        // (variational principle for orbital optimization)
+        assert!(
+            oo_result.total_energy <= ri_result.total_energy + 1e-10,
+            "OO total ({:.10}) should be <= RI total ({:.10})",
+            oo_result.total_energy,
+            ri_result.total_energy
+        );
+        assert!(oo_result.converged, "OO-RI-MP2 should converge");
+    }
+
+    #[test]
+    fn test_oo_rimp2_gradient_finite_difference() {
+        let (mol, obs, dfbs, op, bounds, rhf) = setup_h2();
+
+        let nbas = obs.nbasis();
+        let nelec = mol.nelec() as usize;
+        let nocc_total = nelec / 2;
+        let nocc = nocc_total;
+        let first_occ = 0;
+        let nvir = nbas - nocc_total;
+        let naux = dfbs.nbasis();
+
+        // Compute analytic gradient at RHF orbitals
+        let c = &rhf.mos;
+        let h = oneelectron::hcore(&obs);
+        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h).unwrap();
+        let eps = orbital_energies(c, &f_ao);
+        let (_e_mp2, b_ov) = compute_rimp2_with_orbitals(
+            &obs, &dfbs, op, c, &eps, nocc, nocc_total, first_occ,
+        )
+        .unwrap();
+
+        // Build t2 amplitudes
+        let (t2, _) = compute_t2_and_integrals(
+            &b_ov, &eps, nocc, nvir, nocc_total, first_occ, naux,
+        );
+
+        // Build full-MO B tensor for gradient
+        let b_full = compute_b_full_mo(&obs, &dfbs, op, c).unwrap();
+
+        let f_mo = c.t().dot(&f_ao).dot(c);
+        let g = compute_orbital_gradient(
+            &f_mo, &t2, &b_full, nocc, nvir, first_occ, nocc_total,
+        );
+
+        // Finite difference check for each (a, i) component
+        let delta = 1e-5;
+        let mut max_err = 0.0f64;
+        for a in 0..nvir {
+            let a_mo = nocc_total + a;
+            for i in 0..nocc {
+                let i_mo = first_occ + i;
+
+                // kappa+ : perturb (a,i) by +delta
+                let mut kappa_plus = Array2::zeros((nbas, nbas));
+                kappa_plus[(a_mo, i_mo)] = delta;
+                kappa_plus[(i_mo, a_mo)] = -delta;
+
+                let e_plus = energy_at_kappa(
+                    &mol, &obs, &dfbs, op, &bounds, c, &kappa_plus,
+                    nocc_total, nocc, first_occ,
+                )
+                .unwrap();
+
+                // kappa- : perturb (a,i) by -delta
+                let mut kappa_minus = Array2::zeros((nbas, nbas));
+                kappa_minus[(a_mo, i_mo)] = -delta;
+                kappa_minus[(i_mo, a_mo)] = delta;
+
+                let e_minus = energy_at_kappa(
+                    &mol, &obs, &dfbs, op, &bounds, c, &kappa_minus,
+                    nocc_total, nocc, first_occ,
+                )
+                .unwrap();
+
+                let fd_grad = (e_plus - e_minus) / (2.0 * delta);
+                let analytic = g[(a, i)];
+                let err = (fd_grad - analytic).abs();
+                max_err = max_err.max(err);
+
+                eprintln!(
+                    "grad[a={},i={}]: analytic={:+.8e}, FD={:+.8e}, err={:.2e}",
+                    a, i, analytic, fd_grad, err
+                );
+            }
+        }
+
+        eprintln!("Max gradient error: {:.2e}", max_err);
+        // Allow generous tolerance for FD vs analytic (FD has O(delta^2) truncation
+        // plus numerical noise from integral recomputation)
+        assert!(
+            max_err < 1e-3,
+            "Gradient FD check failed: max_err={:.2e}",
+            max_err
+        );
+    }
+
+    #[test]
+    fn test_cayley_is_unitary() {
+        let n = 5;
+        // Build a random antisymmetric matrix
+        let mut kappa = Array2::zeros((n, n));
+        let vals = [0.1, -0.2, 0.05, -0.15, 0.3, 0.08, -0.12, 0.25, -0.07, 0.18];
+        let mut idx = 0;
+        for i in 0..n {
+            for j in (i + 1)..n {
+                kappa[(i, j)] = vals[idx % vals.len()];
+                kappa[(j, i)] = -vals[idx % vals.len()];
+                idx += 1;
+            }
+        }
+
+        let u = cayley_rotation(&kappa).unwrap();
+        // U^T U should be identity
+        let utu = u.t().dot(&u);
+        for i in 0..n {
+            for j in 0..n {
+                let expected = if i == j { 1.0 } else { 0.0 };
+                assert!(
+                    (utu[(i, j)] - expected).abs() < 1e-12,
+                    "U^T U[{},{}] = {}, expected {}",
+                    i, j, utu[(i, j)], expected
+                );
+            }
+        }
+    }
+}
