@@ -149,6 +149,53 @@ impl Engine {
         if written == 0 { None } else { Some(&self.buf[..written as usize]) }
     }
 
+    pub fn new_3center(op: Operator, obs: &PreparedBasis, dfbs: &PreparedBasis, precision: f64) -> Result<Self, FerricError> {
+        let op_kind = match op.kind {
+            OperatorKind::Coulomb => ffi::OP_COULOMB,
+            OperatorKind::ErfCoulomb => ffi::OP_ERF_COULOMB,
+            _ => return Err(FerricError::Libint(format!("operator {:?} not implemented", op.kind))),
+        };
+        let max_nprim = obs.max_nprim().max(dfbs.max_nprim());
+        let max_l = obs.max_l().max(dfbs.max_l());
+        let handle = unsafe { ffi::goscf_engine_create_3center(op_kind, op.omega, max_nprim, max_l, precision) };
+        if handle.is_null() { return Err(FerricError::Libint("3-center engine not available".into())); }
+        let max_fn_obs = obs.shell_dims().iter().copied().max().unwrap_or(1);
+        let max_fn_df = dfbs.shell_dims().iter().copied().max().unwrap_or(1);
+        Ok(Engine { handle, buf: vec![0.0; max_fn_df * max_fn_obs * max_fn_obs] })
+    }
+
+    pub fn new_2center(op: Operator, dfbs: &PreparedBasis, precision: f64) -> Result<Self, FerricError> {
+        let op_kind = match op.kind {
+            OperatorKind::Coulomb => ffi::OP_COULOMB,
+            OperatorKind::ErfCoulomb => ffi::OP_ERF_COULOMB,
+            _ => return Err(FerricError::Libint(format!("operator {:?} not implemented", op.kind))),
+        };
+        let handle = unsafe { ffi::goscf_engine_create_2center(op_kind, op.omega, dfbs.max_nprim(), dfbs.max_l(), precision) };
+        if handle.is_null() { return Err(FerricError::Libint("2-center engine not available".into())); }
+        let max_fn = dfbs.shell_dims().iter().copied().max().unwrap_or(1);
+        Ok(Engine { handle, buf: vec![0.0; max_fn * max_fn] })
+    }
+
+    pub fn compute_eri3(&mut self, obs: &PreparedBasis, dfbs: &PreparedBasis,
+                        sh_p: usize, sh1: usize, sh2: usize) -> Option<&[f64]> {
+        let n = dfbs.shell_dims()[sh_p] * obs.shell_dims()[sh1] * obs.shell_dims()[sh2];
+        if self.buf.len() < n { self.buf.resize(n, 0.0); }
+        let written = unsafe {
+            ffi::goscf_compute_eri3(self.handle, obs.handle(), dfbs.handle(),
+                                    sh_p as c_int, sh1 as c_int, sh2 as c_int, self.buf.as_mut_ptr())
+        };
+        if written == 0 { None } else { Some(&self.buf[..written as usize]) }
+    }
+
+    pub fn compute_eri2(&mut self, dfbs: &PreparedBasis, sh_p: usize, sh_q: usize) -> &[f64] {
+        let n = dfbs.shell_dims()[sh_p] * dfbs.shell_dims()[sh_q];
+        if self.buf.len() < n { self.buf.resize(n, 0.0); }
+        let written = unsafe {
+            ffi::goscf_compute_eri2(self.handle, dfbs.handle(), sh_p as c_int, sh_q as c_int, self.buf.as_mut_ptr())
+        };
+        &self.buf[..written as usize]
+    }
+
     /// Returns 12 blocks of n1*n2*n3*n4 doubles: [dx1..dz1, dx2..dz2, dx3..dz3, dx4..dz4].
     /// Returns None if all derivatives were screened to zero.
     pub fn compute_eri_deriv_quartet(
