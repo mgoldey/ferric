@@ -1,0 +1,15 @@
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "sto-3g"
+
+[method]
+kind = "rhf"
+
+[scf]
+max_iter = 100
+energy_conv = 1e-8
+density_conv = 1e-7
+diis_size = 8
+integral_thresh = 1e-12
