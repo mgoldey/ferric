@@ -1,7 +1,13 @@
 //! Orbital-optimized RI-MP2 (OO-RI-MP2).
 //!
 //! Minimizes E_HF + E_MP2 jointly by optimizing orbital rotation parameters
-//! via steepest descent with analytic gradients and Cayley orbital rotations.
+//! using a level-shifted approximate Newton step with DIIS extrapolation
+//! and Cayley orbital rotations.
+//!
+//! The level-shifted diagonal Hessian uses orbital energy differences as the
+//! approximate Hessian: kappa_{ai} = -g_{ai} / (eps_a - eps_i + mu), following
+//! Bozkaya & Sherrill, JCP 135, 104103 (2011). DIIS (Pulay extrapolation)
+//! accelerates convergence of the orbital rotation parameters.
 //!
 //! The analytic orbital gradient uses the Hylleraas functional derivative,
 //! which includes both the 1-PDM/Fock terms and the 2-electron integral
@@ -15,6 +21,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::oneelectron;
 use ferric_integrals::operator::Operator;
 use ferric_integrals::threeindex;
+use ferric_scf::diis::Diis;
 use ferric_scf::rhf::{build_jk, RhfResult};
 use ferric_scf::screening::SchwarzBounds;
 use ndarray::{Array2, Array3};
@@ -28,6 +35,13 @@ pub struct OoRiMp2Config {
     pub energy_conv: f64,
     pub step_size: f64,
     pub frozen_core: usize,
+    /// Level shift for the approximate diagonal Hessian (Ha).
+    /// Regularizes the Newton step when orbital energy gaps are small.
+    pub level_shift: f64,
+    /// Maximum DIIS subspace size for orbital rotation extrapolation.
+    pub diis_size: usize,
+    /// Whether to use DIIS for orbital rotations.
+    pub use_diis: bool,
 }
 
 impl Default for OoRiMp2Config {
@@ -38,6 +52,9 @@ impl Default for OoRiMp2Config {
             energy_conv: 1e-8,
             step_size: 0.5,
             frozen_core: 0,
+            level_shift: 0.1,
+            diis_size: 6,
+            use_diis: true,
         }
     }
 }
@@ -519,8 +536,16 @@ pub fn oo_ri_mp2(
     let mut total_energy = e_hf + e_mp2;
     let mut grad_norm = f64::MAX;
     let nmo = nbas;
-    let max_kappa = 0.1; // cap individual rotation angles
-    let mut step = config.step_size; // adaptive step size persists across iterations
+    let max_kappa = 0.3; // cap individual rotation angles (radians)
+
+    // DIIS for orbital rotation extrapolation.
+    // We use the existing Diis struct with kappa_ov (nvir, nocc) as the "Fock"
+    // and gradient g (nvir, nocc) as the error vector.
+    let mut diis = if config.use_diis {
+        Some(Diis::new(config.diis_size))
+    } else {
+        None
+    };
 
     for iter in 1..=config.max_iter {
         // Compute full-MO B tensor for gradient evaluation
@@ -561,88 +586,125 @@ pub fn oo_ri_mp2(
             });
         }
 
-        // Backtracking line search with adaptive step size
-        let mut accepted = false;
-        let mut e_hf_new = e_hf;
-        let mut f_ao_new = f_ao.clone();
-        let mut eps_new = eps.clone();
-        let mut e_mp2_new = e_mp2;
-        let mut b_ov_new = b_ov.clone();
-        let mut c_new = c.clone();
-        let mut total_new = total_energy;
-        let mut de = 0.0;
+        // Level-shifted approximate Newton step:
+        //   kappa_{ai} = -g_{ai} / (eps_a - eps_i + mu)
+        // The diagonal Hessian is the orbital energy gap; the level shift mu
+        // regularizes small gaps (Bozkaya & Sherrill, JCP 135, 104103, 2011).
+        let mut kappa_ov = Array2::zeros((nvir, nocc));
+        for a in 0..nvir {
+            for i in 0..nocc {
+                let gap = eps[nocc_total + a] - eps[first_occ + i];
+                kappa_ov[(a, i)] = -g[(a, i)] / (gap + config.level_shift);
+            }
+        }
 
-        // Try increasing step first if previous step was accepted without backtracking
-        let trial_step = (step * 1.2).min(config.step_size);
-        let mut current_step = trial_step;
+        // DIIS extrapolation: treat kappa_ov as "Fock" and g as error
+        if let Some(ref mut diis_obj) = diis {
+            kappa_ov = diis_obj.step(&kappa_ov, &g);
+        }
 
-        for _bt in 0..15 {
-            let mut kappa = Array2::zeros((nmo, nmo));
-            for a in 0..nvir {
-                let a_mo = nocc_total + a;
-                for i in 0..nocc {
-                    let i_mo = first_occ + i;
-                    let val = (-current_step * g[(a, i)])
-                        .max(-max_kappa)
-                        .min(max_kappa);
-                    kappa[(a_mo, i_mo)] = val;
-                    kappa[(i_mo, a_mo)] = -val;
+        // Cap max |kappa| at max_kappa radians to prevent large rotations
+        for val in kappa_ov.iter_mut() {
+            *val = val.clamp(-max_kappa, max_kappa);
+        }
+
+        // Build full antisymmetric kappa matrix (nmo x nmo) from ov block
+        let mut kappa = Array2::zeros((nmo, nmo));
+        for a in 0..nvir {
+            let a_mo = nocc_total + a;
+            for i in 0..nocc {
+                let i_mo = first_occ + i;
+                kappa[(a_mo, i_mo)] = kappa_ov[(a, i)];
+                kappa[(i_mo, a_mo)] = -kappa_ov[(a, i)];
+            }
+        }
+
+        // Cayley rotation
+        let u = cayley_rotation(&kappa)?;
+        let c_new = c.dot(&u);
+
+        // Evaluate energy at the new orbitals
+        let (ehf, fao, _d) =
+            compute_hf_energy(mol, obs, bounds, &c_new, nocc_total, &h)?;
+        let epsnew = orbital_energies(&c_new, &fao);
+        let (emp2, bov) = compute_rimp2_with_orbitals(
+            obs, dfbs, op, &c_new, &epsnew, nocc, nocc_total, first_occ,
+        )?;
+        let total_new = ehf + emp2;
+        let de = (total_new - total_energy).abs();
+
+        // Backtracking if energy increased: halve the raw kappa_ov (no DIIS)
+        // and retry up to a few times.
+        if total_new > total_energy + 1e-12 {
+            let mut bt_kappa_ov = kappa_ov.clone();
+            let mut bt_accepted = false;
+            let mut bt_c = c_new.clone();
+            let mut bt_ehf = ehf;
+            let mut bt_fao = fao.clone();
+            let mut bt_eps = epsnew.clone();
+            let mut bt_emp2 = emp2;
+            let mut bt_bov = bov.clone();
+            let mut bt_total = total_new;
+
+            for _bt in 0..10 {
+                bt_kappa_ov *= 0.5;
+                let mut k = Array2::zeros((nmo, nmo));
+                for a in 0..nvir {
+                    let a_mo = nocc_total + a;
+                    for i in 0..nocc {
+                        let i_mo = first_occ + i;
+                        k[(a_mo, i_mo)] = bt_kappa_ov[(a, i)];
+                        k[(i_mo, a_mo)] = -bt_kappa_ov[(a, i)];
+                    }
                 }
+                let u2 = cayley_rotation(&k)?;
+                bt_c = c.dot(&u2);
+                let (eh, fa, _) =
+                    compute_hf_energy(mol, obs, bounds, &bt_c, nocc_total, &h)?;
+                let en = orbital_energies(&bt_c, &fa);
+                let (em, bo) = compute_rimp2_with_orbitals(
+                    obs, dfbs, op, &bt_c, &en, nocc, nocc_total, first_occ,
+                )?;
+                bt_total = eh + em;
+                if bt_total <= total_energy + 1e-12 {
+                    bt_ehf = eh;
+                    bt_fao = fa;
+                    bt_eps = en;
+                    bt_emp2 = em;
+                    bt_bov = bo;
+                    bt_accepted = true;
+                    break;
+                }
+                bt_ehf = eh;
+                bt_fao = fa;
+                bt_eps = en;
+                bt_emp2 = em;
+                bt_bov = bo;
             }
 
-            let u = cayley_rotation(&kappa)?;
-            c_new = c.dot(&u);
+            // Accept the backtracked step (or the last attempt)
+            c = if bt_accepted { bt_c } else { bt_c };
+            e_hf = bt_ehf;
+            e_mp2 = bt_emp2;
+            total_energy = bt_total;
+            f_ao = bt_fao;
+            eps = bt_eps;
+            b_ov = bt_bov;
 
-            let (ehf, fao, _d) =
-                compute_hf_energy(mol, obs, bounds, &c_new, nocc_total, &h)?;
-            let epsnew = orbital_energies(&c_new, &fao);
-            let (emp2, bov) = compute_rimp2_with_orbitals(
-                obs, dfbs, op, &c_new, &epsnew, nocc, nocc_total, first_occ,
-            )?;
-            total_new = ehf + emp2;
-            de = (total_new - total_energy).abs();
-
-            if total_new <= total_energy + 1e-12 {
-                e_hf_new = ehf;
-                f_ao_new = fao;
-                eps_new = epsnew;
-                e_mp2_new = emp2;
-                b_ov_new = bov;
-                step = current_step; // remember successful step size
-                accepted = true;
-                break;
+            // Reset DIIS on backtrack since the extrapolation led uphill
+            if let Some(ref mut diis_obj) = diis {
+                diis_obj.reset();
             }
-            current_step *= 0.5;
+        } else {
+            // Accept the Newton/DIIS step directly
+            c = c_new;
+            e_hf = ehf;
+            e_mp2 = emp2;
+            total_energy = total_new;
+            f_ao = fao;
+            eps = epsnew;
+            b_ov = bov;
         }
-
-        if !accepted {
-            // After extensive backtracking, take the smallest step anyway
-            e_hf_new = compute_hf_energy(mol, obs, bounds, &c_new, nocc_total, &h)?.0;
-            // Re-derive everything from c_new
-            let (ehf, fao, _d) =
-                compute_hf_energy(mol, obs, bounds, &c_new, nocc_total, &h)?;
-            let epsnew = orbital_energies(&c_new, &fao);
-            let (emp2, bov) = compute_rimp2_with_orbitals(
-                obs, dfbs, op, &c_new, &epsnew, nocc, nocc_total, first_occ,
-            )?;
-            e_hf_new = ehf;
-            f_ao_new = fao;
-            eps_new = epsnew;
-            e_mp2_new = emp2;
-            b_ov_new = bov;
-            total_new = e_hf_new + e_mp2_new;
-            de = (total_new - total_energy).abs();
-            step = current_step;
-        }
-
-        // Accept step
-        c = c_new;
-        e_hf = e_hf_new;
-        e_mp2 = e_mp2_new;
-        total_energy = total_new;
-        f_ao = f_ao_new;
-        eps = eps_new;
-        b_ov = b_ov_new;
 
         if de < config.energy_conv && iter > 1 {
             // Energy converged; check gradient but allow 10x looser tolerance
@@ -881,6 +943,64 @@ mod tests {
             max_err < 1e-3,
             "Gradient FD check failed: max_err={:.2e}",
             max_err
+        );
+    }
+
+    #[test]
+    fn test_oo_rimp2_h2o_ccpvdz() {
+        let xyz = "3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n";
+        let mol = Molecule::parse_xyz(xyz).unwrap();
+        let bs = basis::bundled("cc-pvdz").unwrap();
+        let obs = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig {
+                energy_conv: 1e-10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(rhf.converged);
+        let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
+
+        let ri = crate::rimp2::ri_mp2(
+            &mol,
+            &obs,
+            &dfbs,
+            op,
+            &rhf,
+            &crate::rimp2::RiMp2Config::default(),
+        )
+        .unwrap();
+
+        let config = OoRiMp2Config::default();
+        let oo = oo_ri_mp2(&mol, &obs, &dfbs, op, &bounds, &rhf, &config).unwrap();
+
+        eprintln!("H2O RI-MP2 total:    {:.10}", ri.total_energy);
+        eprintln!(
+            "H2O OO-RI-MP2 total: {:.10} (HF={:.10}, MP2={:.10})",
+            oo.total_energy, oo.hf_energy, oo.mp2_corr
+        );
+        eprintln!(
+            "OO converged: {}, iters: {}, |g|: {:.2e}",
+            oo.converged, oo.iterations, oo.grad_norm
+        );
+
+        assert!(
+            oo.converged,
+            "OO-RI-MP2 H2O did not converge: {} iters, |g|={:.2e}",
+            oo.iterations, oo.grad_norm
+        );
+        assert!(
+            oo.total_energy <= ri.total_energy + 1e-10,
+            "OO={:.10} should be <= RI={:.10}",
+            oo.total_energy, ri.total_energy
         );
     }
 

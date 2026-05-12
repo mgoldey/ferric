@@ -1,0 +1,11 @@
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "cc-pvdz"
+
+[method]
+kind = "oo-rimp2"
+
+[mp2]
+auxbasis = "cc-pvdz-ri"

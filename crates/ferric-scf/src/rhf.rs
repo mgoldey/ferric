@@ -140,7 +140,7 @@ pub fn solve_rhf(
     })
 }
 
-fn build_jk(
+pub fn build_jk(
     prep: &PreparedBasis,
     bounds: &SchwarzBounds,
     thresh: f64,

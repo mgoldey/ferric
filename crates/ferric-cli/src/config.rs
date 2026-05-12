@@ -7,6 +7,17 @@ pub struct Config {
     pub method: MethodCfg,
     #[serde(default)]
     pub scf: ScfCfg,
+    #[serde(default)]
+    pub mp2: Mp2Cfg,
+}
+
+#[derive(Deserialize, Default)]
+pub struct Mp2Cfg {
+    pub auxbasis: Option<String>,
+    #[serde(default)]
+    pub frozen_core: usize,
+    #[serde(default)]
+    pub orbital_optimize: bool,
 }
 
 #[derive(Deserialize)]

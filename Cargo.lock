@@ -136,6 +136,7 @@ version = "0.1.0"
 dependencies = [
  "ferric-core",
  "ferric-integrals",
+ "ferric-mp2",
  "ferric-scf",
  "serde",
  "toml",
@@ -180,6 +181,7 @@ version = "0.1.0"
 dependencies = [
  "ferric-core",
  "ferric-integrals",
+ "ferric-mp2",
  "ferric-scf",
  "ndarray",
  "numpy",

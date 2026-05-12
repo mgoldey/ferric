@@ -1,0 +1,11 @@
+{
+  "molecule": "h2o",
+  "basis": "cc-pvdz",
+  "auxbasis": "cc-pvdz-ri",
+  "method": "rimp2",
+  "rhf_energy": -76.02676799737424,
+  "mp2_corr": -0.20403347287294102,
+  "total_energy": -76.23080147024717,
+  "nbasis": 24,
+  "nocc": 5
+}
