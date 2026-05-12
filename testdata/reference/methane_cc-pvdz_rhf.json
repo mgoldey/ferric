@@ -1,0 +1,13 @@
+{
+  "basis": "cc-pvdz",
+  "converged": true,
+  "energy": -40.19870854248163,
+  "method": "rhf",
+  "molecule": "methane",
+  "natoms": 5,
+  "nbasis": 34,
+  "nelec": 10,
+  "nocc": 5,
+  "nuclear_repulsion": 13.439527889904605,
+  "pyscf_version": "2.13.0"
+}

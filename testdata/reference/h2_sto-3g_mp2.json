@@ -1,0 +1,12 @@
+{
+  "basis": "sto-3g",
+  "correlation_energy": -0.013138073589533023,
+  "energy": -1.1298973809859585,
+  "method": "mp2",
+  "molecule": "h2",
+  "natoms": 2,
+  "nbasis": 2,
+  "nuclear_repulsion": 0.7151043390810812,
+  "pyscf_version": "2.13.0",
+  "scf_energy": -1.1167593073964255
+}

@@ -1,0 +1,13 @@
+{
+  "basis": "6-31g",
+  "converged": true,
+  "energy": -1.1267553171969653,
+  "method": "rhf",
+  "molecule": "h2",
+  "natoms": 2,
+  "nbasis": 4,
+  "nelec": 2,
+  "nocc": 1,
+  "nuclear_repulsion": 0.7151043390810812,
+  "pyscf_version": "2.13.0"
+}

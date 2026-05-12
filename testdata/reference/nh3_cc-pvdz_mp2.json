@@ -1,0 +1,12 @@
+{
+  "basis": "cc-pvdz",
+  "correlation_energy": -0.18880629142654867,
+  "energy": -56.38439958463409,
+  "method": "mp2",
+  "molecule": "nh3",
+  "natoms": 4,
+  "nbasis": 29,
+  "nuclear_repulsion": 11.970148924480366,
+  "pyscf_version": "2.13.0",
+  "scf_energy": -56.19559329320754
+}

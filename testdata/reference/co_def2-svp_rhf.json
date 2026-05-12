@@ -1,0 +1,13 @@
+{
+  "basis": "def2-svp",
+  "converged": true,
+  "energy": -112.64594614758265,
+  "method": "rhf",
+  "molecule": "co",
+  "natoms": 2,
+  "nbasis": 28,
+  "nelec": 14,
+  "nocc": 7,
+  "nuclear_repulsion": 22.51817918808511,
+  "pyscf_version": "2.13.0"
+}

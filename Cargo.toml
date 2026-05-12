@@ -1,0 +1,16 @@
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
+[workspace.dependencies]
+ndarray = "0.16"
+ndarray-linalg = { version = "0.17", features = ["openblas-system"] }
+openblas-src = { version = "0.10", features = ["system", "rustls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+toml = "0.8"
+rayon = "1"
+pyo3 = { version = "0.23", features = ["extension-module"] }
+numpy = "0.23"
+cc = "1"

@@ -1,0 +1,12 @@
+{
+  "basis": "def2-svp",
+  "correlation_energy": -0.1647664373204555,
+  "energy": -40.33394400498235,
+  "method": "mp2",
+  "molecule": "methane",
+  "natoms": 5,
+  "nbasis": 34,
+  "nuclear_repulsion": 13.439527889904605,
+  "pyscf_version": "2.13.0",
+  "scf_energy": -40.1691775676619
+}

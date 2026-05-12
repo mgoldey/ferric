@@ -1,0 +1,16 @@
+[package]
+name = "ferric-python"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "ferric"
+crate-type = ["cdylib"]
+
+[dependencies]
+ferric-core = { path = "../ferric-core" }
+ferric-integrals = { path = "../ferric-integrals" }
+ferric-scf = { path = "../ferric-scf" }
+pyo3 = { workspace = true }
+numpy = { workspace = true }
+ndarray = { workspace = true }

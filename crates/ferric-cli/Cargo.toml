@@ -1,0 +1,11 @@
+[package]
+name = "ferric-cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ferric-core = { path = "../ferric-core" }
+ferric-integrals = { path = "../ferric-integrals" }
+ferric-scf = { path = "../ferric-scf" }
+toml = { workspace = true }
+serde = { workspace = true }

@@ -1,0 +1,12 @@
+{
+  "basis": "6-31g",
+  "correlation_energy": -0.01738125729025601,
+  "energy": -1.1441365744872223,
+  "method": "mp2",
+  "molecule": "h2",
+  "natoms": 2,
+  "nbasis": 4,
+  "nuclear_repulsion": 0.7151043390810812,
+  "pyscf_version": "2.13.0",
+  "scf_energy": -1.1267553171969662
+}

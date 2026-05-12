@@ -1,0 +1,15 @@
+[package]
+name = "ferric-scf"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ferric-core = { path = "../ferric-core" }
+ferric-integrals = { path = "../ferric-integrals" }
+ndarray = { workspace = true }
+ndarray-linalg = { workspace = true }
+openblas-src = { workspace = true }
+
+[dev-dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

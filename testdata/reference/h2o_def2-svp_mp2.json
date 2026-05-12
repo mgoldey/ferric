@@ -1,0 +1,12 @@
+{
+  "basis": "def2-svp",
+  "correlation_energy": -0.20364364772749116,
+  "energy": -76.16461348132981,
+  "method": "mp2",
+  "molecule": "h2o",
+  "natoms": 3,
+  "nbasis": 24,
+  "nuclear_repulsion": 9.189193229309746,
+  "pyscf_version": "2.13.0",
+  "scf_energy": -75.96096983360232
+}
