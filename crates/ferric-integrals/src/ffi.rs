@@ -1,1 +1,41 @@
-// Populated in Task N
+use std::os::raw::{c_double, c_int, c_void};
+
+#[repr(C)]
+pub struct CShell {
+    pub l: c_int,
+    pub nprim: c_int,
+    pub atom_index: c_int,
+    pub exponents: *const c_double,
+    pub coefficients: *const c_double,
+}
+
+#[repr(C)]
+pub struct CAtom {
+    pub atomic_number: c_int,
+    pub x: c_double,
+    pub y: c_double,
+    pub z: c_double,
+}
+
+extern "C" {
+    pub fn goscf_libint_init();
+    pub fn goscf_libint_finalize();
+    pub fn goscf_basis_create(shells: *const CShell, nshells: c_int, atoms: *const CAtom, natoms: c_int) -> *mut c_void;
+    pub fn goscf_basis_destroy(bs: *mut c_void);
+    pub fn goscf_basis_nbasis(bs: *const c_void) -> c_int;
+    pub fn goscf_basis_nshells(bs: *const c_void) -> c_int;
+    pub fn goscf_basis_shell_dims(bs: *const c_void, out: *mut c_int);
+    pub fn goscf_basis_max_dims(bs: *const c_void, max_nprim: *mut c_int, max_l: *mut c_int);
+    pub fn goscf_engine_create(op_kind: c_int, omega: c_double, max_nprim: c_int, max_l: c_int, precision: c_double) -> *mut c_void;
+    pub fn goscf_engine_destroy(eng: *mut c_void);
+    pub fn goscf_engine_set_point_charges(eng: *mut c_void, atoms: *const CAtom, natoms: c_int) -> c_int;
+    pub fn goscf_compute_1e_block(eng: *mut c_void, bs: *const c_void, sh1: c_int, sh2: c_int, out: *mut c_double) -> c_int;
+    pub fn goscf_compute_eri_quartet(eng: *mut c_void, bs: *const c_void, sh1: c_int, sh2: c_int, sh3: c_int, sh4: c_int, out: *mut c_double) -> c_int;
+    pub fn goscf_compute_schwarz(eng: *mut c_void, bs: *const c_void, qmat: *mut c_double);
+}
+
+pub const OP_COULOMB: c_int = 0;
+pub const OP_ERF_COULOMB: c_int = 1;
+pub const OP_OVERLAP: c_int = 100;
+pub const OP_KINETIC: c_int = 101;
+pub const OP_NUCLEAR: c_int = 102;
