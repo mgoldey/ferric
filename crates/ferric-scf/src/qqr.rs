@@ -7,6 +7,7 @@ use crate::screening::{Bound, SchwarzBounds};
 use ferric_core::basis::BasisSet;
 use ferric_core::mol::Molecule;
 use ferric_integrals::basis_bridge::PreparedBasis;
+use ferric_integrals::operator::{Operator, OperatorKind};
 
 /// QQR (distance-dependent) integral screening bounds.
 ///
@@ -14,14 +15,17 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 /// - **pair center**: weighted average of shell origins, using the most diffuse exponent
 /// - **pair extent**: spatial width `1/sqrt(alpha_i_min + alpha_j_min)`
 ///
-/// The bound is: `schwarz(i,j,k,l) * min(1, extent_ij * extent_kl / R_ij_kl)`
-/// where `R_ij_kl` is the distance between pair centers.
+/// The bound is: `schwarz(i,j,k,l) * min(1, extent_ij * extent_kl / R_ij_kl) * op_decay(R)`
+/// where `R_ij_kl` is the distance between pair centers and `op_decay` provides
+/// operator-specific exponential decay (e.g., `exp(-omega^2 * R^2)` for ErfcCoulomb).
 pub struct QqrBounds {
     schwarz: SchwarzBounds,
     /// Pair centers, indexed as `pair_centers[i * nshells + j]`.
     pair_centers: Vec<[f64; 3]>,
     /// Pair extents, indexed as `pair_extents[i * nshells + j]`.
     pair_extents: Vec<f64>,
+    /// The two-electron operator, used for operator-aware decay.
+    op: Operator,
     nshells: usize,
 }
 
@@ -36,6 +40,7 @@ impl QqrBounds {
         mol: &Molecule,
         bs: &BasisSet,
         prep: &PreparedBasis,
+        op: Operator,
     ) -> Self {
         let nsh = prep.nshells();
 
@@ -82,6 +87,7 @@ impl QqrBounds {
             schwarz,
             pair_centers,
             pair_extents,
+            op,
             nshells: nsh,
         }
     }
@@ -89,6 +95,11 @@ impl QqrBounds {
     /// Access the underlying Schwarz bounds.
     pub fn schwarz(&self) -> &SchwarzBounds {
         &self.schwarz
+    }
+
+    /// The operator associated with these bounds.
+    pub fn op(&self) -> Operator {
+        self.op
     }
 
     /// Number of shells.
@@ -127,7 +138,17 @@ impl Bound for QqrBounds {
         }
 
         let extent_product = self.pair_extents[idx_bra] * self.pair_extents[idx_ket];
-        let decay = (extent_product / r).min(1.0);
+        let mut decay = (extent_product / r).min(1.0);
+
+        // Operator-specific decay: ErfcCoulomb provides exponential decay at long range.
+        match self.op.kind {
+            OperatorKind::ErfcCoulomb => {
+                let omega = self.op.omega;
+                decay *= (-omega * omega * r * r).exp();
+            }
+            _ => {} // Coulomb, ErfCoulomb: no additional decay
+        }
+
         schwarz_est * decay
     }
 }
@@ -145,9 +166,10 @@ mod tests {
         let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
         let bs = basis::bundled("sto-3g").unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
-        let schwarz = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
+        let op = Operator::coulomb();
+        let schwarz = SchwarzBounds::compute(op, &prep).unwrap();
         let nsh = prep.nshells();
-        let qqr = QqrBounds::new(schwarz, &mol, &bs, &prep);
+        let qqr = QqrBounds::new(schwarz, &mol, &bs, &prep, op);
         (qqr, nsh)
     }
 
@@ -212,8 +234,9 @@ mod tests {
         let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
         let bs = basis::bundled("sto-3g").unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
-        let schwarz = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
-        let qqr = QqrBounds::new(schwarz, &mol, &bs, &prep);
+        let op = Operator::coulomb();
+        let schwarz = SchwarzBounds::compute(op, &prep).unwrap();
+        let qqr = QqrBounds::new(schwarz, &mol, &bs, &prep, op);
         // Shell 0 is on atom 0 (oxygen)
         let c = qqr.pair_center(0, 0);
         let ox = mol.atoms[0].x;
@@ -222,5 +245,50 @@ mod tests {
         assert!((c[0] - ox).abs() < 1e-12);
         assert!((c[1] - oy).abs() < 1e-12);
         assert!((c[2] - oz).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_erfccoulomb_qqr_tighter_than_coulomb_qqr() {
+        // ErfcCoulomb QQR bounds should be strictly tighter than Coulomb QQR bounds
+        // for distant shell pairs, because of the additional exp(-omega^2 * R^2) decay.
+        let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+        let bs = basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+
+        let op_coulomb = Operator::coulomb();
+        let schwarz_c = SchwarzBounds::compute(op_coulomb, &prep).unwrap();
+        let qqr_coulomb = QqrBounds::new(schwarz_c, &mol, &bs, &prep, op_coulomb);
+
+        // ErfcCoulomb with omega=0.5 (moderate attenuation)
+        let op_erfc = Operator::erfc(0.5);
+        // Reuse the same Schwarz data for a fair comparison of just the decay factor.
+        let schwarz_e = SchwarzBounds::compute(op_coulomb, &prep).unwrap();
+        let qqr_erfc = QqrBounds::new(schwarz_e, &mol, &bs, &prep, op_erfc);
+
+        let nsh = prep.nshells();
+        let mut found_tighter = false;
+        for i in 0..nsh {
+            for j in 0..nsh {
+                for k in 0..nsh {
+                    for l in 0..nsh {
+                        let c_est = qqr_coulomb.estimate(i, j, k, l);
+                        let e_est = qqr_erfc.estimate(i, j, k, l);
+                        // ErfcCoulomb should always be <= Coulomb (same Schwarz,
+                        // extra multiplicative factor <= 1).
+                        assert!(
+                            e_est <= c_est + 1e-15,
+                            "ErfcCoulomb QQR({i},{j},{k},{l}) = {e_est} > Coulomb QQR = {c_est}"
+                        );
+                        if c_est > 1e-10 && (e_est / c_est) < 0.99 {
+                            found_tighter = true;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            found_tighter,
+            "ErfcCoulomb QQR should be strictly tighter than Coulomb QQR for some distant pairs"
+        );
     }
 }
