@@ -148,6 +148,53 @@ pub fn ri_mp2(
     })
 }
 
+/// All intermediates needed by the analytical RI-MP2 gradient.
+#[derive(Debug)]
+pub struct Mp2Intermediates {
+    pub t2: Vec<f64>,
+    pub b_flat: Array2<f64>,
+    pub p_oo: Array2<f64>,
+    pub p_vv: Array2<f64>,
+    pub nocc: usize,
+    pub nvir: usize,
+    pub nocc_total: usize,
+    pub first_occ: usize,
+    pub naux: usize,
+    pub e_mp2: f64,
+}
+
+/// Compute all MP2 intermediates needed for the analytical gradient.
+pub fn compute_mp2_intermediates(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &RhfResult,
+    config: &RiMp2Config,
+) -> Result<Mp2Intermediates, FerricError> {
+    let nbas = obs.nbasis();
+    let nelec = mol.nelec() as usize;
+    let nocc_total = nelec / 2;
+    let nocc = nocc_total - config.frozen_core;
+    let first_occ = config.frozen_core;
+    let nvir = nbas - nocc_total;
+    let naux = dfbs.nbasis();
+
+    let (sc, b_flat) = ri_mp2_spin_components(mol, obs, dfbs, op, rhf, config)?;
+
+    let (t2, _) = crate::oo_rimp2::compute_t2_and_integrals(
+        &b_flat, &rhf.orbital_energies, nocc, nvir, nocc_total, first_occ, naux,
+    );
+
+    let (p_oo, p_vv) = crate::oo_rimp2::build_mp2_density(&t2, nocc, nvir);
+
+    Ok(Mp2Intermediates {
+        t2, b_flat, p_oo, p_vv,
+        nocc, nvir, nocc_total, first_occ, naux,
+        e_mp2: sc.e_total,
+    })
+}
+
 /// Compute V^{-1/2} via Cholesky decomposition.
 ///
 /// Given a positive-definite matrix V = L L^T, returns L^{-1} so that
@@ -256,5 +303,42 @@ mod tests {
             "H2 RI-MP2 corr: {:.10}",
             mp2.mp2_corr
         );
+    }
+
+    #[test]
+    fn test_mp2_intermediates() {
+        let xyz = "2\nH2\nH 0 0 0\nH 0 0 0.74\n";
+        let mol = Molecule::parse_xyz(xyz).unwrap();
+        let bs = basis::bundled("cc-pvdz").unwrap();
+        let obs = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(&mol, &obs, op, &bounds, &RhfConfig { energy_conv: 1e-10, ..Default::default() }).unwrap();
+        let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
+
+        let inter = compute_mp2_intermediates(&mol, &obs, &dfbs, op, &rhf, &RiMp2Config::default()).unwrap();
+        let mp2 = ri_mp2(&mol, &obs, &dfbs, op, &rhf, &RiMp2Config::default()).unwrap();
+
+        assert!((inter.e_mp2 - mp2.mp2_corr).abs() < 1e-12,
+            "intermediates energy {} != ri_mp2 {}", inter.e_mp2, mp2.mp2_corr);
+
+        for i in 0..inter.nocc {
+            for j in 0..inter.nocc {
+                assert!((inter.p_oo[(i,j)] - inter.p_oo[(j,i)]).abs() < 1e-12, "P_oo not symmetric");
+            }
+        }
+        for a in 0..inter.nvir {
+            for b in 0..inter.nvir {
+                assert!((inter.p_vv[(a,b)] - inter.p_vv[(b,a)]).abs() < 1e-12, "P_vv not symmetric");
+            }
+        }
+
+        let tr_oo: f64 = (0..inter.nocc).map(|i| inter.p_oo[(i,i)]).sum();
+        let tr_vv: f64 = (0..inter.nvir).map(|a| inter.p_vv[(a,a)]).sum();
+        assert!(tr_oo < 0.0, "tr(P_oo) should be negative: {}", tr_oo);
+        assert!(tr_vv > 0.0, "tr(P_vv) should be positive: {}", tr_vv);
+        assert!((tr_oo + tr_vv).abs() < 1e-10,
+            "density not conserved: tr(P_oo)={} + tr(P_vv)={} = {}", tr_oo, tr_vv, tr_oo + tr_vv);
     }
 }

@@ -258,7 +258,7 @@ fn orbital_energies(c: &Array2<f64>, f: &Array2<f64>) -> Vec<f64> {
 /// where ia = i*nvir + a, jb = j*nvir + b.
 ///
 /// Returns (t2, eri_ov) where eri_ov[ia*nov + jb] = (ia|jb).
-fn compute_t2_and_integrals(
+pub fn compute_t2_and_integrals(
     b_flat: &Array2<f64>,
     eps: &[f64],
     nocc: usize,
@@ -296,8 +296,7 @@ fn compute_t2_and_integrals(
 /// Returns (p_oo, p_vv) where:
 ///   p_oo[i,j] = -sum_{kab} t_{ik,ab} (2 t_{jk,ab} - t_{jk,ba})
 ///   p_vv[a,b] =  sum_{ijc} t_{ij,ac} (2 t_{ij,bc} - t_{ij,cb})
-#[allow(dead_code)]
-fn build_mp2_density(
+pub fn build_mp2_density(
     t2: &[f64],
     nocc: usize,
     nvir: usize,
