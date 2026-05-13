@@ -5,8 +5,10 @@ use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
+use ferric_mp2::attenuated::{attenuated_ri_mp2, AttenuatedMp2Config};
 use ferric_mp2::oo_rimp2::{oo_ri_mp2, OoRiMp2Config};
 use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
+use ferric_mp2::scs::{scs_mp2, scs_mp2_2terfc, ScsMp2Config, ScsMp2TerfcConfig};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 
@@ -24,8 +26,8 @@ fn main() {
         }
     };
     let method = cfg.method.kind.as_str();
-    if !matches!(method, "rhf" | "rimp2" | "oo-rimp2") {
-        eprintln!("error: unsupported method.kind = \"{method}\"; expected rhf, rimp2, or oo-rimp2");
+    if !matches!(method, "rhf" | "rimp2" | "oo-rimp2" | "att-rimp2" | "scs-mp2" | "scs-mp2-2terfc") {
+        eprintln!("error: unsupported method.kind = \"{method}\"; expected rhf, rimp2, oo-rimp2, att-rimp2, scs-mp2, or scs-mp2-2terfc");
         std::process::exit(1);
     }
     let mol = Molecule::load_xyz(&cfg.molecule.xyz).unwrap_or_else(|e| {
@@ -136,6 +138,106 @@ fn main() {
             println!("  HF energy  = {:.10} Hartree", oo_result.hf_energy);
             println!("  MP2 corr   = {:.10} Hartree", oo_result.mp2_corr);
             println!("  Total      = {:.10} Hartree", oo_result.total_energy);
+        }
+        "att-rimp2" => {
+            let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+            let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
+            let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
+            let angstrom_to_bohr = 1.8897259886;
+            let att_config = AttenuatedMp2Config {
+                r0: cfg.mp2.r0.unwrap_or(1.05) * angstrom_to_bohr,
+                scaling: 1.0,
+                frozen_core: cfg.mp2.frozen_core,
+            };
+            let att_result = attenuated_ri_mp2(&mol, &prep, &dfbs, &result, &att_config)
+                .unwrap_or_else(|e| {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                });
+            let r0_ang = cfg.mp2.r0.unwrap_or(1.05);
+            println!(
+                "Attenuated RI-MP2/{} (aux: {}, r0={:.2} A) on {}",
+                bs.name, aux_name, r0_ang, cfg.molecule.xyz
+            );
+            println!("  nbasis     = {}", prep.nbasis());
+            println!("  RHF energy = {:.10} Hartree", result.energy);
+            println!("  MP2 corr   = {:.10} Hartree", att_result.mp2_corr);
+            println!("  E_OS       = {:.10} Hartree", att_result.spin_components.e_os);
+            println!("  E_SS       = {:.10} Hartree", att_result.spin_components.e_ss);
+            println!("  Total      = {:.10} Hartree", att_result.total_energy);
+        }
+        "scs-mp2" => {
+            let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+            let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
+            let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
+            let scs_config = ScsMp2Config {
+                c_os: cfg.mp2.c_os.unwrap_or(6.0 / 5.0),
+                c_ss: cfg.mp2.c_ss.unwrap_or(1.0 / 3.0),
+                frozen_core: cfg.mp2.frozen_core,
+            };
+            let scs_result = scs_mp2(&mol, &prep, &dfbs, &result, &scs_config)
+                .unwrap_or_else(|e| {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                });
+            println!(
+                "SCS-MP2/{} (aux: {}, c_OS={:.3}, c_SS={:.3}) on {}",
+                bs.name, aux_name, scs_config.c_os, scs_config.c_ss, cfg.molecule.xyz
+            );
+            println!("  nbasis     = {}", prep.nbasis());
+            println!("  RHF energy = {:.10} Hartree", result.energy);
+            println!("  SCS corr   = {:.10} Hartree", scs_result.scs_corr);
+            println!("  E_OS       = {:.10} Hartree", scs_result.e_os);
+            println!("  E_SS       = {:.10} Hartree", scs_result.e_ss);
+            println!("  Total      = {:.10} Hartree", scs_result.total_energy);
+        }
+        "scs-mp2-2terfc" => {
+            let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+            let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
+            let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
+            let angstrom_to_bohr = 1.8897259886;
+            let terfc_config = ScsMp2TerfcConfig {
+                r0_bonded: cfg.mp2.r0_bonded.unwrap_or(0.75) * angstrom_to_bohr,
+                r0_nonbonded: cfg.mp2.r0_nonbonded.unwrap_or(1.05) * angstrom_to_bohr,
+                c_os: cfg.mp2.c_os.unwrap_or(1.27),
+                c_ss: cfg.mp2.c_ss.unwrap_or(4.05),
+                frozen_core: cfg.mp2.frozen_core,
+            };
+            let terfc_result = scs_mp2_2terfc(&mol, &prep, &dfbs, &result, &terfc_config)
+                .unwrap_or_else(|e| {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                });
+            let r0b = cfg.mp2.r0_bonded.unwrap_or(0.75);
+            let r0n = cfg.mp2.r0_nonbonded.unwrap_or(1.05);
+            println!(
+                "SCS-MP2(2terfc)/{} (aux: {}, r0_1={:.2} A, r0_2={:.2} A) on {}",
+                bs.name, aux_name, r0b, r0n, cfg.molecule.xyz
+            );
+            println!("  nbasis     = {}", prep.nbasis());
+            println!("  RHF energy = {:.10} Hartree", result.energy);
+            println!("  SCS corr   = {:.10} Hartree", terfc_result.scs_corr);
+            println!("  E_OS       = {:.10} Hartree", terfc_result.e_os);
+            println!("  E_SS       = {:.10} Hartree", terfc_result.e_ss);
+            println!("  Total      = {:.10} Hartree", terfc_result.total_energy);
         }
         _ => unreachable!(),
     }

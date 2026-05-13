@@ -1,0 +1,12 @@
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "cc-pvdz"
+
+[method]
+kind = "att-rimp2"
+
+[mp2]
+auxbasis = "cc-pvdz-ri"
+r0 = 1.05  # Angstrom (aDZ optimal)

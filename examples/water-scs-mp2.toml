@@ -1,0 +1,12 @@
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "cc-pvdz"
+
+[method]
+kind = "scs-mp2"
+
+[mp2]
+auxbasis = "cc-pvdz-ri"
+# Grimme defaults: c_os = 1.2, c_ss = 0.333

@@ -10,12 +10,17 @@ Rust-native quantum chemistry engine wrapping libint2 for electron integrals, wi
 - **Analytical RHF nuclear gradients** validated against finite differences
 - **RI-MP2** (density-fitted MP2) via 3-center/2-center Coulomb integrals
 - **OO-RI-MP2** (orbital-optimized RI-MP2) with level-shifted Newton, DIIS, Cayley rotations, and backtracking
+- **Attenuated RI-MP2** with erfc(ωr)/r operator (Goldey & Head-Gordon, JPCL 2012)
+- **SCS-MP2** spin-component scaled MP2 (Grimme, JCP 2003)
+- **SCS-MP2(2terfc)** dual-attenuated SCS-MP2 (Goldey, Dutoi, Head-Gordon, PCCP 2013)
 - **Canonical MP2** for cross-validation against RI-MP2
+- **QQR screening** distance-dependent integral bounds with operator-aware decay (Maurer/Lambrecht/Ochsenfeld 2012)
+- **LinK exchange** linear-scaling K matrix builder via pair-list-driven loops (Ochsenfeld/White/Head-Gordon 1998)
 - **Spherical and Cartesian** basis set support (BSE-JSON and Gaussian-94 parsers)
 - **Bundled basis sets**: STO-3G, 6-31G, cc-pVDZ, def2-SVP
 - **Bundled RI auxiliary bases**: cc-pVDZ-RI, def2-SVP-RIFIT through def2-QZVPP-RIFIT
-- **Python bindings** via pyo3 (Molecule, BasisSet, run_rhf, run_rimp2)
-- **TOML-driven CLI** for RHF, RI-MP2, and OO-RI-MP2 calculations
+- **Python bindings** via pyo3 (RHF, RI-MP2, attenuated MP2, SCS-MP2, SCS-MP2(2terfc))
+- **TOML-driven CLI** for all methods
 
 ## Quick Example
 
@@ -27,6 +32,15 @@ cargo run --release -- examples/water-rhf.toml
 
 # RI-MP2 on water with cc-pVDZ / cc-pVDZ-RI
 cargo run --release -- examples/water-rimp2.toml
+
+# Attenuated RI-MP2 (short-range correlation only, r0=1.05 A)
+cargo run --release -- examples/water-attmp2.toml
+
+# SCS-MP2 (Grimme spin-component scaling)
+cargo run --release -- examples/water-scs-mp2.toml
+
+# SCS-MP2(2terfc) (dual-attenuated, Goldey/Dutoi/Head-Gordon 2013)
+cargo run --release -- examples/water-scs-mp2-2terfc.toml
 ```
 
 ### Python
@@ -35,22 +49,31 @@ cargo run --release -- examples/water-rimp2.toml
 import ferric
 
 mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
-bs  = ferric.BasisSet.bundled("sto-3g")
-
-rhf = ferric.run_rhf(mol, bs)
-print(f"RHF energy: {rhf.energy:.10f} Ha")  # -74.9631468000 Ha
-
+bs  = ferric.BasisSet.bundled("cc-pvdz")
 aux = ferric.BasisSet.bundled("cc-pvdz-ri")
-bs2 = ferric.BasisSet.bundled("cc-pvdz")
-mp2 = ferric.run_rimp2(mol, bs2, aux)
-print(f"RI-MP2 total: {mp2.total_energy:.10f} Ha")  # -76.2308014548 Ha
+
+# Standard RI-MP2
+mp2 = ferric.run_rimp2(mol, bs, aux)
+print(f"RI-MP2 total: {mp2.total_energy:.10f} Ha")
+
+# Attenuated RI-MP2 (r0 in Angstrom)
+att = ferric.run_attenuated_rimp2(mol, bs, aux, r0=1.05)
+print(f"Att-MP2 total: {att.total_energy:.10f} Ha (E_OS={att.e_os:.6f}, E_SS={att.e_ss:.6f})")
+
+# SCS-MP2 (Grimme defaults)
+scs = ferric.run_scs_mp2(mol, bs, aux)
+print(f"SCS-MP2 total: {scs.total_energy:.10f} Ha")
+
+# SCS-MP2(2terfc) (thesis defaults: r0_1=0.75A, r0_2=1.05A, c_OS=1.27, c_SS=4.05)
+terfc = ferric.run_scs_mp2_2terfc(mol, bs, aux)
+print(f"SCS-MP2(2terfc) total: {terfc.total_energy:.10f} Ha")
 ```
 
 ## Architecture
 
 ```
                   +------------------+
-                  |   ferric-cli     |   TOML config -> RHF / RI-MP2 / OO-RI-MP2
+                  |   ferric-cli     |   TOML config -> all methods
                   +--------+---------+
                            |
          +-----------------+------------------+
@@ -59,14 +82,15 @@ print(f"RI-MP2 total: {mp2.total_energy:.10f} Ha")  # -76.2308014548 Ha
 |  ferric-scf   |  |  ferric-mp2   |  | ferric-python  |
 |  RHF, DIIS,   |  |  RI-MP2,      |  | pyo3 bindings  |
 |  gradients,   |  |  OO-RI-MP2,   |  +-------+--------+
-|  Schwarz      |  |  canonical    |          |
+|  QQR, LinK,   |  |  attenuated,  |          |
+|  Schwarz      |  |  SCS, 2terfc  |          |
 +-------+-------+  +------+--------+          |
         |                  |                   |
         +--------+---------+-------------------+
                  |
         +--------v--------+
-        | ferric-integrals |   libint2 FFI: overlap, kinetic, nuclear,
-        | shim/shim.cc     |   2e ERIs, 3-center, 2-center, derivatives
+        | ferric-integrals |   libint2 FFI: Coulomb, erf, erfc operators,
+        | shim/shim.cc     |   1e/2e/3-center/2-center, derivatives
         +--------+--------+
                  |
         +--------v--------+
@@ -140,6 +164,9 @@ Reference energies validated against PySCF to at least 1e-8 Hartree:
 |--------|-------|--------|-------------|
 | H2O | STO-3G | RHF | -74.9631468000 |
 | H2O | cc-pVDZ | RI-MP2 | -76.2308014548 |
+| H2O | cc-pVDZ | Att-RI-MP2 (r₀=1.05Å) | -76.2102635714 |
+| H2O | cc-pVDZ | SCS-MP2 | -76.2268940016 |
+| H2O | cc-pVDZ | SCS-MP2(2terfc) | -76.2151715715 |
 | CH4 | cc-pVDZ | RHF | -40.1987085425 |
 
 ## Project Structure
@@ -152,8 +179,8 @@ ferric/
       src/basis/bundled/        # Embedded BSE-JSON basis set files
     ferric-integrals/           # libint2 FFI: 1e, 2e, 3-center, derivatives
       shim/shim.{h,cc}         # C++ shim calling libint2 API
-    ferric-scf/                 # RHF solver, DIIS, Fock build, gradients
-    ferric-mp2/                 # RI-MP2, OO-RI-MP2, canonical MP2
+    ferric-scf/                 # RHF solver, DIIS, Fock build, gradients, QQR, LinK
+    ferric-mp2/                 # RI-MP2, OO-RI-MP2, attenuated, SCS, canonical
     ferric-cli/                 # TOML-driven command-line driver
     ferric-python/              # pyo3 Python bindings
   testdata/
@@ -164,7 +191,7 @@ ferric/
 
 ## Roadmap
 
-- [ ] Rayon-parallel J/K build (LinK for exchange)
+- [ ] Rayon-parallel LinK exchange (single-threaded LinK implemented, parallelism pending)
 - [ ] CFMM (continuous fast multipole) for Coulomb
 - [ ] AO-Laplace-Transform MP2
 - [ ] MPI distributed RI-MP2 via 2D block-cyclic tensor distribution
@@ -185,3 +212,8 @@ Apache-2.0
 - Pulay, Chem. Phys. Lett. 73, 393 (1980) -- DIIS convergence acceleration
 - Weigend, Phys. Chem. Chem. Phys. 4, 4285 (2002) -- RI-MP2 auxiliary basis sets
 - Bozkaya & Sherrill, J. Chem. Phys. 135, 104103 (2011) -- Orbital-optimized MP2
+- Goldey & Head-Gordon, J. Phys. Chem. Lett. 3, 3592 (2012) -- Attenuated MP2
+- Goldey, Dutoi, Head-Gordon, Phys. Chem. Chem. Phys. 15, 15869 (2013) -- SCS-MP2(2terfc)
+- Grimme, J. Chem. Phys. 118, 9095 (2003) -- SCS-MP2
+- Maurer, Lambrecht, Ochsenfeld, J. Chem. Phys. 136, 144107 (2012) -- QQR screening
+- Ochsenfeld, White, Head-Gordon, J. Chem. Phys. 109, 1663 (1998) -- LinK exchange

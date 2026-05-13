@@ -2,7 +2,9 @@ use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
+use ferric_mp2::attenuated::{attenuated_ri_mp2, AttenuatedMp2Config};
 use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
+use ferric_mp2::scs::{scs_mp2, scs_mp2_2terfc, ScsMp2Config, ScsMp2TerfcConfig};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ndarray::Array2;
@@ -147,13 +149,158 @@ fn run_rimp2(
     })
 }
 
+#[pyclass]
+#[pyo3(name = "AttenuatedMp2Result")]
+struct PyAttenuatedMp2Result {
+    #[pyo3(get)]
+    total_energy: f64,
+    #[pyo3(get)]
+    rhf_energy: f64,
+    #[pyo3(get)]
+    mp2_corr: f64,
+    #[pyo3(get)]
+    e_os: f64,
+    #[pyo3(get)]
+    e_ss: f64,
+}
+
+#[pyfunction]
+#[pyo3(signature = (mol, basis_set, auxbasis, r0=None, frozen_core=None))]
+fn run_attenuated_rimp2(
+    mol: &PyMolecule,
+    basis_set: &PyBasisSet,
+    auxbasis: &PyBasisSet,
+    r0: Option<f64>,
+    frozen_core: Option<usize>,
+) -> PyResult<PyAttenuatedMp2Result> {
+    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e}")))?;
+    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e}")))?;
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e}")))?;
+    let rhf_result = solve_rhf(&mol.inner, &prep, op, &bounds, &RhfConfig::default())
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e}")))?;
+    let angstrom_to_bohr = 1.8897259886;
+    let config = AttenuatedMp2Config {
+        r0: r0.unwrap_or(1.05) * angstrom_to_bohr,
+        scaling: 1.0,
+        frozen_core: frozen_core.unwrap_or(0),
+    };
+    let result = attenuated_ri_mp2(&mol.inner, &prep, &dfbs, &rhf_result, &config)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e}")))?;
+    Ok(PyAttenuatedMp2Result {
+        total_energy: result.total_energy,
+        rhf_energy: rhf_result.energy,
+        mp2_corr: result.mp2_corr,
+        e_os: result.spin_components.e_os,
+        e_ss: result.spin_components.e_ss,
+    })
+}
+
+#[pyclass]
+#[pyo3(name = "ScsMp2Result")]
+struct PyScsMp2Result {
+    #[pyo3(get)]
+    total_energy: f64,
+    #[pyo3(get)]
+    rhf_energy: f64,
+    #[pyo3(get)]
+    scs_corr: f64,
+    #[pyo3(get)]
+    e_os: f64,
+    #[pyo3(get)]
+    e_ss: f64,
+}
+
+#[pyfunction]
+#[pyo3(signature = (mol, basis_set, auxbasis, c_os=None, c_ss=None, frozen_core=None))]
+fn run_scs_mp2(
+    mol: &PyMolecule,
+    basis_set: &PyBasisSet,
+    auxbasis: &PyBasisSet,
+    c_os: Option<f64>,
+    c_ss: Option<f64>,
+    frozen_core: Option<usize>,
+) -> PyResult<PyScsMp2Result> {
+    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e}")))?;
+    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e}")))?;
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e}")))?;
+    let rhf_result = solve_rhf(&mol.inner, &prep, op, &bounds, &RhfConfig::default())
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e}")))?;
+    let config = ScsMp2Config {
+        c_os: c_os.unwrap_or(6.0 / 5.0),
+        c_ss: c_ss.unwrap_or(1.0 / 3.0),
+        frozen_core: frozen_core.unwrap_or(0),
+    };
+    let result = scs_mp2(&mol.inner, &prep, &dfbs, &rhf_result, &config)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e}")))?;
+    Ok(PyScsMp2Result {
+        total_energy: result.total_energy,
+        rhf_energy: rhf_result.energy,
+        scs_corr: result.scs_corr,
+        e_os: result.e_os,
+        e_ss: result.e_ss,
+    })
+}
+
+#[pyfunction]
+#[pyo3(signature = (mol, basis_set, auxbasis, r0_bonded=None, r0_nonbonded=None, c_os=None, c_ss=None, frozen_core=None))]
+fn run_scs_mp2_2terfc(
+    mol: &PyMolecule,
+    basis_set: &PyBasisSet,
+    auxbasis: &PyBasisSet,
+    r0_bonded: Option<f64>,
+    r0_nonbonded: Option<f64>,
+    c_os: Option<f64>,
+    c_ss: Option<f64>,
+    frozen_core: Option<usize>,
+) -> PyResult<PyScsMp2Result> {
+    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e}")))?;
+    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e}")))?;
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e}")))?;
+    let rhf_result = solve_rhf(&mol.inner, &prep, op, &bounds, &RhfConfig::default())
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e}")))?;
+    let angstrom_to_bohr = 1.8897259886;
+    let config = ScsMp2TerfcConfig {
+        r0_bonded: r0_bonded.unwrap_or(0.75) * angstrom_to_bohr,
+        r0_nonbonded: r0_nonbonded.unwrap_or(1.05) * angstrom_to_bohr,
+        c_os: c_os.unwrap_or(1.27),
+        c_ss: c_ss.unwrap_or(4.05),
+        frozen_core: frozen_core.unwrap_or(0),
+    };
+    let result = scs_mp2_2terfc(&mol.inner, &prep, &dfbs, &rhf_result, &config)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e}")))?;
+    Ok(PyScsMp2Result {
+        total_energy: result.total_energy,
+        rhf_energy: rhf_result.energy,
+        scs_corr: result.scs_corr,
+        e_os: result.e_os,
+        e_ss: result.e_ss,
+    })
+}
+
 #[pymodule]
 fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMolecule>()?;
     m.add_class::<PyBasisSet>()?;
     m.add_class::<PyRhfResult>()?;
     m.add_class::<PyRiMp2Result>()?;
+    m.add_class::<PyAttenuatedMp2Result>()?;
+    m.add_class::<PyScsMp2Result>()?;
     m.add_function(wrap_pyfunction!(run_rhf, m)?)?;
     m.add_function(wrap_pyfunction!(run_rimp2, m)?)?;
+    m.add_function(wrap_pyfunction!(run_attenuated_rimp2, m)?)?;
+    m.add_function(wrap_pyfunction!(run_scs_mp2, m)?)?;
+    m.add_function(wrap_pyfunction!(run_scs_mp2_2terfc, m)?)?;
     Ok(())
 }

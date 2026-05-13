@@ -18,6 +18,16 @@ pub struct Mp2Cfg {
     pub frozen_core: usize,
     #[serde(default)]
     pub orbital_optimize: bool,
+    /// Attenuation distance r₀ in Angstrom (for att-rimp2).
+    pub r0: Option<f64>,
+    /// SCS opposite-spin scaling coefficient.
+    pub c_os: Option<f64>,
+    /// SCS same-spin scaling coefficient.
+    pub c_ss: Option<f64>,
+    /// Bonded attenuation distance r₀⁽¹⁾ in Angstrom (for scs-mp2-2terfc).
+    pub r0_bonded: Option<f64>,
+    /// Non-bonded attenuation distance r₀⁽²⁾ in Angstrom (for scs-mp2-2terfc).
+    pub r0_nonbonded: Option<f64>,
 }
 
 #[derive(Deserialize)]
@@ -95,5 +105,45 @@ energy_conv = 1e-9
         assert_eq!(cfg.basis.name.as_deref(), Some("sto-3g"));
         assert_eq!(cfg.method.kind, "rhf");
         assert_eq!(cfg.scf.max_iter, 50);
+    }
+
+    #[test]
+    fn test_parse_attenuated_config() {
+        let toml_str = r#"
+[molecule]
+xyz = "water.xyz"
+[basis]
+name = "cc-pvdz"
+[method]
+kind = "att-rimp2"
+[mp2]
+auxbasis = "cc-pvdz-ri"
+r0 = 1.05
+"#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.method.kind, "att-rimp2");
+        assert!((cfg.mp2.r0.unwrap() - 1.05).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_parse_scs_2terfc_config() {
+        let toml_str = r#"
+[molecule]
+xyz = "water.xyz"
+[basis]
+name = "cc-pvdz"
+[method]
+kind = "scs-mp2-2terfc"
+[mp2]
+auxbasis = "cc-pvdz-ri"
+r0_bonded = 0.75
+r0_nonbonded = 1.05
+c_os = 1.27
+c_ss = 4.05
+"#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.method.kind, "scs-mp2-2terfc");
+        assert!((cfg.mp2.r0_bonded.unwrap() - 0.75).abs() < 1e-10);
+        assert!((cfg.mp2.c_os.unwrap() - 1.27).abs() < 1e-10);
     }
 }
