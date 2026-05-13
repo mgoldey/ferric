@@ -109,6 +109,7 @@ static Operator op_for_kind(int kind, bool *ok) {
     switch (kind) {
         case 0:   return Operator::coulomb;
         case 1:   return Operator::erf_coulomb;
+        case 2:   return Operator::erfc_coulomb;
         case 100: return Operator::overlap;
         case 101: return Operator::kinetic;
         case 102: return Operator::nuclear;
@@ -123,8 +124,8 @@ goscf_engine *goscf_engine_create(int op_kind, double omega,
     if (!ok) return nullptr;
     try {
         Engine eng(op, max_nprim, max_L, 0, precision);
-        if (op_kind == 1) {
-            // ErfCoulomb attenuation parameter.
+        if (op_kind == 1 || op_kind == 2) {
+            // ErfCoulomb / ErfcCoulomb attenuation parameter.
             eng.set_params(omega);
         }
         auto *out = new (std::nothrow) goscf_engine{std::move(eng)};
@@ -142,7 +143,7 @@ goscf_engine *goscf_engine_create_deriv(int op_kind, double omega,
     if (!ok) return nullptr;
     try {
         Engine eng(op, max_nprim, max_L, 1, precision);
-        if (op_kind == 1) {
+        if (op_kind == 1 || op_kind == 2) {
             eng.set_params(omega);
         }
         auto *out = new (std::nothrow) goscf_engine{std::move(eng)};
@@ -299,7 +300,7 @@ goscf_engine *goscf_engine_create_3center(int op_kind, double omega,
     try {
         Engine eng(op, max_nprim, max_L, 0, precision);
         eng.set(libint2::BraKet::xs_xx);
-        if (op_kind == 1) eng.set_params(omega);
+        if (op_kind == 1 || op_kind == 2) eng.set_params(omega);
         return new (std::nothrow) goscf_engine{std::move(eng)};
     } catch (...) {
         return nullptr;
@@ -319,7 +320,7 @@ goscf_engine *goscf_engine_create_2center(int op_kind, double omega,
     try {
         Engine eng(op, max_nprim, max_L, 0, precision);
         eng.set(libint2::BraKet::xs_xs);
-        if (op_kind == 1) eng.set_params(omega);
+        if (op_kind == 1 || op_kind == 2) eng.set_params(omega);
         return new (std::nothrow) goscf_engine{std::move(eng)};
     } catch (...) {
         return nullptr;

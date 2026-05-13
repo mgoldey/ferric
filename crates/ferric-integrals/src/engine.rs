@@ -24,6 +24,7 @@ impl Engine {
         let op_kind = match op.kind {
             OperatorKind::Coulomb => ffi::OP_COULOMB,
             OperatorKind::ErfCoulomb => ffi::OP_ERF_COULOMB,
+            OperatorKind::ErfcCoulomb => ffi::OP_ERFC_COULOMB,
             _ => return Err(FerricError::Libint(format!(
                 "operator {:?} not implemented in v1", op.kind
             ))),
@@ -138,6 +139,7 @@ impl Engine {
         let op_kind = match op.kind {
             OperatorKind::Coulomb => ffi::OP_COULOMB,
             OperatorKind::ErfCoulomb => ffi::OP_ERF_COULOMB,
+            OperatorKind::ErfcCoulomb => ffi::OP_ERFC_COULOMB,
             _ => return Err(FerricError::Libint(format!("operator {:?} not implemented", op.kind))),
         };
         let handle = unsafe {
@@ -171,6 +173,7 @@ impl Engine {
         let op_kind = match op.kind {
             OperatorKind::Coulomb => ffi::OP_COULOMB,
             OperatorKind::ErfCoulomb => ffi::OP_ERF_COULOMB,
+            OperatorKind::ErfcCoulomb => ffi::OP_ERFC_COULOMB,
             _ => return Err(FerricError::Libint(format!("operator {:?} not implemented", op.kind))),
         };
         let max_nprim = obs.max_nprim().max(dfbs.max_nprim());
@@ -187,6 +190,7 @@ impl Engine {
         let op_kind = match op.kind {
             OperatorKind::Coulomb => ffi::OP_COULOMB,
             OperatorKind::ErfCoulomb => ffi::OP_ERF_COULOMB,
+            OperatorKind::ErfcCoulomb => ffi::OP_ERFC_COULOMB,
             _ => return Err(FerricError::Libint(format!("operator {:?} not implemented", op.kind))),
         };
         let handle = unsafe { ffi::goscf_engine_create_2center(op_kind, op.omega, dfbs.max_nprim(), dfbs.max_l(), precision) };
@@ -291,5 +295,33 @@ mod tests {
         assert!(q.is_some());
         let v = q.unwrap()[0];
         assert!((v - 0.7746).abs() < 1e-3, "(00|00) = {v}, expected ~0.7746");
+    }
+
+    #[test]
+    fn test_erfc_coulomb_quartet() {
+        let (_, prep) = h2_sto3g();
+        let op = Operator { kind: OperatorKind::ErfcCoulomb, omega: 0.5, distance: 0.0 };
+        let mut eng = Engine::new_2e(op, &prep, 1e-14).unwrap();
+        let q = eng.compute_quartet(&prep, 0, 0, 0, 0);
+        assert!(q.is_some(), "ErfcCoulomb should produce non-zero integrals");
+        let v = q.unwrap()[0];
+        assert!(v > 0.0 && v < 0.7746, "erfc (00|00) = {v}, should be between 0 and full Coulomb 0.7746");
+    }
+
+    #[test]
+    fn test_erf_plus_erfc_equals_coulomb() {
+        let (_, prep) = h2_sto3g();
+        let omega = 0.5;
+        let mut eng_full = Engine::new_2e(Operator::coulomb(), &prep, 1e-14).unwrap();
+        let mut eng_erf = Engine::new_2e(Operator::erf(omega), &prep, 1e-14).unwrap();
+        let op_erfc = Operator { kind: OperatorKind::ErfcCoulomb, omega, distance: 0.0 };
+        let mut eng_erfc = Engine::new_2e(op_erfc, &prep, 1e-14).unwrap();
+
+        let v_full = eng_full.compute_quartet(&prep, 0, 0, 0, 0).unwrap()[0];
+        let v_erf = eng_erf.compute_quartet(&prep, 0, 0, 0, 0).unwrap()[0];
+        let v_erfc = eng_erfc.compute_quartet(&prep, 0, 0, 0, 0).unwrap()[0];
+
+        assert!((v_full - v_erf - v_erfc).abs() < 1e-10,
+            "erf + erfc should equal Coulomb: {} + {} = {} vs {}", v_erf, v_erfc, v_erf + v_erfc, v_full);
     }
 }

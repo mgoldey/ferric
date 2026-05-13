@@ -31,4 +31,9 @@ impl Operator {
     pub fn erf(omega: f64) -> Self {
         Self { kind: OperatorKind::ErfCoulomb, omega, distance: 0.0 }
     }
+
+    /// Short-range attenuated Coulomb: erfc(omega * r12) / r12.
+    pub fn erfc(omega: f64) -> Self {
+        Self { kind: OperatorKind::ErfcCoulomb, omega, distance: 0.0 }
+    }
 }

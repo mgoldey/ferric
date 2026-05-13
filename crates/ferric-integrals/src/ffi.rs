@@ -51,6 +51,7 @@ extern "C" {
 
 pub const OP_COULOMB: c_int = 0;
 pub const OP_ERF_COULOMB: c_int = 1;
+pub const OP_ERFC_COULOMB: c_int = 2;
 pub const OP_OVERLAP: c_int = 100;
 pub const OP_KINETIC: c_int = 101;
 pub const OP_NUCLEAR: c_int = 102;
