@@ -38,19 +38,36 @@ pub struct RiMp2Result {
     pub total_energy: f64,
 }
 
-/// Compute the RI-MP2 correlation energy.
+/// Spin-component resolved MP2 correlation energy.
+#[derive(Debug, Clone)]
+pub struct SpinComponents {
+    /// Opposite-spin correlation energy.
+    pub e_os: f64,
+    /// Same-spin correlation energy.
+    pub e_ss: f64,
+    /// Total: e_os + e_ss (equals standard MP2 correlation).
+    pub e_total: f64,
+}
+
+/// Compute RI-MP2 with spin-component resolution.
 ///
-/// Requires converged RHF orbitals, an orbital basis (`obs`), and a density-fitting
-/// auxiliary basis (`dfbs`). The auxiliary basis should be matched to the orbital
-/// basis (e.g., cc-pVDZ with cc-pVDZ-RI).
-pub fn ri_mp2(
+/// Returns `(SpinComponents, B_flat)` where `B_flat` is the dressed 3-index tensor
+/// `B^P_ia = sum_Q V^{-1/2}_PQ (Q|ia)` of shape `(naux, nocc*nvir)`.
+///
+/// The spin decomposition uses:
+/// - Opposite-spin: `E_OS = sum_{ijab} (ia|jb)^2 / D_{ijab}`
+/// - Same-spin: `E_SS = sum_{ijab} (ia|jb)[(ia|jb)-(ib|ja)] / D_{ijab}`
+///
+/// Note: `E_OS + E_SS = sum_{ijab} (ia|jb)[2(ia|jb)-(ib|ja)] / D_{ijab}` which is
+/// the standard MP2 expression.
+pub fn ri_mp2_spin_components(
     mol: &Molecule,
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
     op: Operator,
     rhf: &RhfResult,
     config: &RiMp2Config,
-) -> Result<RiMp2Result, FerricError> {
+) -> Result<(SpinComponents, Array2<f64>), FerricError> {
     let nbas = obs.nbasis();
     let nelec = mol.nelec() as usize;
     let nocc_total = nelec / 2;
@@ -80,8 +97,9 @@ pub fn ri_mp2(
         .unwrap();
     let b_flat = v2c_inv_sqrt.dot(&eri3_flat); // (naux, nocc*nvir)
 
-    // MP2 energy
-    let mut e_mp2 = 0.0;
+    // Spin-component resolved MP2 energy
+    let mut e_os = 0.0;
+    let mut e_ss = 0.0;
     for i in 0..nocc {
         for j in 0..nocc {
             for a in 0..nvir {
@@ -97,15 +115,36 @@ pub fn ri_mp2(
                     let denom = eps[first_occ + i] + eps[first_occ + j]
                         - eps[nocc_total + a]
                         - eps[nocc_total + b];
-                    e_mp2 += eri_iajb * (2.0 * eri_iajb - eri_ibja) / denom;
+                    // Opposite-spin: (ia|jb)^2 / denom
+                    e_os += eri_iajb * eri_iajb / denom;
+                    // Same-spin: (ia|jb)[(ia|jb)-(ib|ja)] / denom
+                    e_ss += eri_iajb * (eri_iajb - eri_ibja) / denom;
                 }
             }
         }
     }
 
+    let sc = SpinComponents { e_os, e_ss, e_total: e_os + e_ss };
+    Ok((sc, b_flat))
+}
+
+/// Compute the RI-MP2 correlation energy.
+///
+/// Requires converged RHF orbitals, an orbital basis (`obs`), and a density-fitting
+/// auxiliary basis (`dfbs`). The auxiliary basis should be matched to the orbital
+/// basis (e.g., cc-pVDZ with cc-pVDZ-RI).
+pub fn ri_mp2(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &RhfResult,
+    config: &RiMp2Config,
+) -> Result<RiMp2Result, FerricError> {
+    let (sc, _) = ri_mp2_spin_components(mol, obs, dfbs, op, rhf, config)?;
     Ok(RiMp2Result {
-        mp2_corr: e_mp2,
-        total_energy: rhf.energy + e_mp2,
+        mp2_corr: sc.e_total,
+        total_energy: rhf.energy + sc.e_total,
     })
 }
 
@@ -180,6 +219,27 @@ mod tests {
             "RI-MP2 corr: got {:.10}, ref -0.2040334729",
             mp2.mp2_corr
         );
+    }
+
+    #[test]
+    fn test_spin_components_sum_to_total() {
+        let xyz = "2\nH2\nH 0 0 0\nH 0 0 0.74\n";
+        let mol = Molecule::parse_xyz(xyz).unwrap();
+        let bs = basis::bundled("cc-pvdz").unwrap();
+        let obs = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(&mol, &obs, op, &bounds, &RhfConfig { energy_conv: 1e-10, ..Default::default() }).unwrap();
+        let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
+
+        let (sc, _) = ri_mp2_spin_components(&mol, &obs, &dfbs, op, &rhf, &RiMp2Config::default()).unwrap();
+        eprintln!("SpinComponents: E_OS={:.10}, E_SS={:.10}, E_total={:.10}", sc.e_os, sc.e_ss, sc.e_total);
+        assert!((sc.e_os + sc.e_ss - sc.e_total).abs() < 1e-15,
+            "E_OS + E_SS = {} + {} = {} vs total {}", sc.e_os, sc.e_ss, sc.e_os + sc.e_ss, sc.e_total);
+        // OS should be larger magnitude than SS for H2
+        assert!(sc.e_os.abs() > sc.e_ss.abs(),
+            "OS ({}) should dominate SS ({})", sc.e_os, sc.e_ss);
     }
 
     #[test]
