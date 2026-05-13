@@ -6,6 +6,14 @@ use ferric_integrals::operator::Operator;
 use ferric_integrals::schwarz;
 use ndarray::Array2;
 
+/// Generic trait for shell-quartet integral upper bounds.
+///
+/// Both Schwarz and QQR implement this, so LinK can be agnostic to the bound type.
+pub trait Bound {
+    /// Upper bound estimate for |(sh1 sh2 | sh3 sh4)|.
+    fn estimate(&self, sh1: usize, sh2: usize, sh3: usize, sh4: usize) -> f64;
+}
+
 /// Precomputed Schwarz screening bounds for shell-pair integrals.
 ///
 /// Used to skip negligible shell quartets during Fock matrix construction:
@@ -44,6 +52,12 @@ impl SchwarzBounds {
     }
 }
 
+impl Bound for SchwarzBounds {
+    fn estimate(&self, sh1: usize, sh2: usize, sh3: usize, sh4: usize) -> f64 {
+        self.q[(sh1, sh2)] * self.q[(sh3, sh4)]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -60,5 +74,19 @@ mod tests {
         let est = bounds.estimate(0, 1, 2, 3);
         let want = bounds.q[(0, 1)] * bounds.q[(2, 3)];
         assert!((est - want).abs() < 1e-15);
+    }
+
+    #[test]
+    fn test_bound_trait_dispatch() {
+        let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+        let bs = basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
+
+        // Call via trait object to prove dispatch works
+        let bound: &dyn Bound = &bounds;
+        let est = bound.estimate(0, 1, 2, 3);
+        let direct = bounds.q[(0, 1)] * bounds.q[(2, 3)];
+        assert!((est - direct).abs() < 1e-15, "trait dispatch mismatch: {est} vs {direct}");
     }
 }
