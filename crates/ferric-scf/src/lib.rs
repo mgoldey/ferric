@@ -12,9 +12,11 @@
 
 pub mod screening;
 pub mod qqr;
+pub mod pairs;
 pub mod fock;
 pub mod direct_j;
 pub mod direct_k;
+pub mod link_k;
 pub mod diis;
 pub mod guess;
 pub mod rhf;
