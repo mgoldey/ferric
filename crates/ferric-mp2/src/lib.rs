@@ -11,3 +11,4 @@ pub mod rimp2;
 pub mod canonical;
 pub mod gradient;
 pub mod oo_rimp2;
+pub mod attenuated;
