@@ -4,7 +4,7 @@
 //! minimizing the molecular energy with respect to nuclear coordinates.
 
 use crate::gradient::rhf_gradient;
-use crate::rhf::{solve_rhf, RhfConfig, RhfResult};
+use crate::rhf::{solve_rhf, RhfConfig};
 use crate::screening::SchwarzBounds;
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
@@ -104,7 +104,6 @@ pub fn optimize_geometry(
         };
 
         // Update geometry
-        let prev_mol = current_mol.clone();
         update_molecule_coords(&mut current_mol, &step);
         
         let prev_grad = grad.clone();

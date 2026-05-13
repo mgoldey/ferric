@@ -5,6 +5,5 @@ edition = "2021"
 
 [dependencies]
 ndarray = { workspace = true }
-ndarray-linalg = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }

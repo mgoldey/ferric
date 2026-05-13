@@ -3,7 +3,7 @@
 //! Provides abstractions for rank-2 and rank-4 tensors with support for
 //! Einstein-style contractions and permutational symmetry.
 
-use ndarray::{Array2, Array4, Axis, ArrayView4};
+use ndarray::Array4;
 
 /// A rank-4 tensor typically used for T2 amplitudes or 2-electron integrals.
 ///
@@ -27,11 +27,11 @@ impl Tensor4 {
         assert_eq!(nk, nk2);
         assert_eq!(nc, nc2);
 
-        let a_flat = self.data.view().into_shape((ni * na, nk * nc)).unwrap();
-        let b_flat = other.data.view().into_shape((nk * nc, nj * nb)).unwrap();
+        let a_flat = self.data.view().into_shape_with_order((ni * na, nk * nc)).unwrap();
+        let b_flat = other.data.view().into_shape_with_order((nk * nc, nj * nb)).unwrap();
         
         let c_flat = a_flat.dot(&b_flat);
-        let c_data = c_flat.into_shape((ni, na, nj, nb)).unwrap();
+        let c_data = c_flat.into_shape_with_order((ni, na, nj, nb)).unwrap();
         
         Tensor4 { data: c_data }
     }

@@ -1,14 +1,14 @@
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
+use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_mp2::attenuated::{attenuated_ri_mp2, AttenuatedMp2Config};
 use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
 use ferric_mp2::scs::{scs_mp2, scs_mp2_2terfc, ScsMp2Config, ScsMp2TerfcConfig};
+use ferric_scf::optimize::{optimize_geometry, OptimizeConfig};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
-use ferric_core::parallel::ParallelContext;
-use ferric_scf::optimize::{optimize_geometry, OptimizeConfig};
 use ndarray::Array2;
 use numpy::{PyArray1, PyArray2};
 use pyo3::prelude::*;
@@ -173,8 +173,8 @@ fn run_rimp2(
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep)
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e}")))?;
-    let rhf_config = RhfConfig::default();
     let ctx = ParallelContext::default();
+    let rhf_config = RhfConfig::default();
     let rhf_result = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &rhf_config)
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e}")))?;
     let mp2_config = RiMp2Config {
@@ -337,10 +337,12 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMolecule>()?;
     m.add_class::<PyBasisSet>()?;
     m.add_class::<PyRhfResult>()?;
+    m.add_class::<PyOptimizeResult>()?;
     m.add_class::<PyRiMp2Result>()?;
     m.add_class::<PyAttenuatedMp2Result>()?;
     m.add_class::<PyScsMp2Result>()?;
     m.add_function(wrap_pyfunction!(run_rhf, m)?)?;
+    m.add_function(wrap_pyfunction!(run_optimize, m)?)?;
     m.add_function(wrap_pyfunction!(run_rimp2, m)?)?;
     m.add_function(wrap_pyfunction!(run_attenuated_rimp2, m)?)?;
     m.add_function(wrap_pyfunction!(run_scs_mp2, m)?)?;

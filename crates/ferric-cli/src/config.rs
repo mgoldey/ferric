@@ -27,6 +27,7 @@ pub struct Mp2Cfg {
     pub auxbasis: Option<String>,
     #[serde(default)]
     pub frozen_core: usize,
+    #[allow(dead_code)]
     #[serde(default)]
     pub orbital_optimize: bool,
     /// Attenuation distance r₀ in Angstrom (for att-rimp2).

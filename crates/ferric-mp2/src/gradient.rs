@@ -7,7 +7,7 @@ use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_scf::gradient::{hf_gradient_with_density, oneelectron_gradient, twoelectron_gradient};
+use ferric_scf::gradient::hf_gradient_with_density;
 use ferric_scf::rhf::{solve_rhf, RhfConfig, RhfResult};
 use ferric_scf::screening::SchwarzBounds;
 use ndarray::Array2;
@@ -312,6 +312,7 @@ pub fn rimp2_gradient_analytical(
 mod tests {
     use super::*;
     use ferric_core::basis;
+    use ferric_scf::gradient::{oneelectron_gradient, twoelectron_gradient};
 
     #[test]
     fn test_rimp2_gradient_fd_h2_symmetry() {
