@@ -12,6 +12,8 @@ fn main() {
         .include("/usr/include/eigen3")
         .flag("-std=c++17")
         .flag("-O2")
+        .flag("-Wno-deprecated-declarations")
+        .flag("-Wno-unused-parameter")
         .compile("ferric_shim");
 
     println!("cargo:rustc-link-search=native={local_prefix}/lib");
