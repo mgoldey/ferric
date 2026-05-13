@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/*", "crates/ferric-tensors"]
+members = ["crates/*"]
 resolver = "2"
 
 [workspace.dependencies]

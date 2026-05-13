@@ -1,0 +1,10 @@
+[package]
+name = "ferric-cc"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ferric-core = { path = "../ferric-core" }
+ferric-integrals = { path = "../ferric-integrals" }
+ferric-scf = { path = "../ferric-scf" }
+ndarray = { workspace = true }
