@@ -240,6 +240,62 @@ impl Engine {
         };
         if written == 0 { None } else { Some(&self.buf[..written as usize]) }
     }
+
+    /// Create a 3-center derivative engine: d(P|mu nu)/dR.
+    pub fn new_3center_deriv(op: Operator, obs: &PreparedBasis, dfbs: &PreparedBasis, precision: f64) -> Result<Self, FerricError> {
+        let op_kind = match op.kind {
+            OperatorKind::Coulomb => ffi::OP_COULOMB,
+            OperatorKind::ErfCoulomb => ffi::OP_ERF_COULOMB,
+            OperatorKind::ErfcCoulomb => ffi::OP_ERFC_COULOMB,
+            _ => return Err(FerricError::Libint(format!("operator {:?} not implemented", op.kind))),
+        };
+        let max_nprim = obs.max_nprim().max(dfbs.max_nprim());
+        let max_l = obs.max_l().max(dfbs.max_l());
+        let handle = unsafe { ffi::goscf_engine_create_3center_deriv(op_kind, op.omega, max_nprim, max_l, precision) };
+        if handle.is_null() { return Err(FerricError::Libint("3-center derivative engine not available".into())); }
+        let max_fn_obs = obs.shell_dims().iter().copied().max().unwrap_or(1);
+        let max_fn_df = dfbs.shell_dims().iter().copied().max().unwrap_or(1);
+        Ok(Engine { handle, buf: vec![0.0; 9 * max_fn_df * max_fn_obs * max_fn_obs] })
+    }
+
+    /// Create a 2-center derivative engine: d(P|Q)/dR.
+    pub fn new_2center_deriv(op: Operator, dfbs: &PreparedBasis, precision: f64) -> Result<Self, FerricError> {
+        let op_kind = match op.kind {
+            OperatorKind::Coulomb => ffi::OP_COULOMB,
+            OperatorKind::ErfCoulomb => ffi::OP_ERF_COULOMB,
+            OperatorKind::ErfcCoulomb => ffi::OP_ERFC_COULOMB,
+            _ => return Err(FerricError::Libint(format!("operator {:?} not implemented", op.kind))),
+        };
+        let handle = unsafe { ffi::goscf_engine_create_2center_deriv(op_kind, op.omega, dfbs.max_nprim(), dfbs.max_l(), precision) };
+        if handle.is_null() { return Err(FerricError::Libint("2-center derivative engine not available".into())); }
+        let max_fn = dfbs.shell_dims().iter().copied().max().unwrap_or(1);
+        Ok(Engine { handle, buf: vec![0.0; 6 * max_fn * max_fn] })
+    }
+
+    /// Compute 3-center ERI derivatives: 9 blocks (3 centers × 3 coords) of nP*n1*n2.
+    pub fn compute_eri3_deriv(&mut self, obs: &PreparedBasis, dfbs: &PreparedBasis,
+                              sh_p: usize, sh1: usize, sh2: usize) -> Option<&[f64]> {
+        let n = dfbs.shell_dims()[sh_p] * obs.shell_dims()[sh1] * obs.shell_dims()[sh2];
+        let total = 9 * n;
+        if self.buf.len() < total { self.buf.resize(total, 0.0); }
+        let written = unsafe {
+            ffi::goscf_compute_eri3_deriv(self.handle, obs.handle(), dfbs.handle(),
+                                          sh_p as c_int, sh1 as c_int, sh2 as c_int, self.buf.as_mut_ptr())
+        };
+        if written == 0 { None } else { Some(&self.buf[..written as usize]) }
+    }
+
+    /// Compute 2-center ERI derivatives: 6 blocks (2 centers × 3 coords) of nP*nQ.
+    pub fn compute_eri2_deriv(&mut self, dfbs: &PreparedBasis, sh_p: usize, sh_q: usize) -> Option<&[f64]> {
+        let n = dfbs.shell_dims()[sh_p] * dfbs.shell_dims()[sh_q];
+        let total = 6 * n;
+        if self.buf.len() < total { self.buf.resize(total, 0.0); }
+        let written = unsafe {
+            ffi::goscf_compute_eri2_deriv(self.handle, dfbs.handle(),
+                                          sh_p as c_int, sh_q as c_int, self.buf.as_mut_ptr())
+        };
+        if written == 0 { None } else { Some(&self.buf[..written as usize]) }
+    }
 }
 
 impl Drop for Engine {
@@ -323,5 +379,72 @@ mod tests {
 
         assert!((v_full - v_erf - v_erfc).abs() < 1e-10,
             "erf + erfc should equal Coulomb: {} + {} = {} vs {}", v_erf, v_erfc, v_erf + v_erfc, v_full);
+    }
+
+    #[test]
+    fn test_eri3_deriv_translational_invariance() {
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n").unwrap();
+        let bs = basis::bundled("sto-3g").unwrap();
+        let obs = PreparedBasis::new(&mol, &bs).unwrap();
+        let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
+        let op = Operator::coulomb();
+        let mut eng = Engine::new_3center_deriv(op, &obs, &dfbs, 1e-14).unwrap();
+
+        let nsh_obs = obs.nshells();
+        let nsh_aux = dfbs.nshells();
+        for sh_p in 0..nsh_aux.min(3) {
+            for sh1 in 0..nsh_obs {
+                for sh2 in 0..nsh_obs {
+                    if let Some(deriv) = eng.compute_eri3_deriv(&obs, &dfbs, sh_p, sh1, sh2) {
+                        let np = dfbs.shell_dims()[sh_p];
+                        let n1 = obs.shell_dims()[sh1];
+                        let n2 = obs.shell_dims()[sh2];
+                        let block_sz = np * n1 * n2;
+                        for idx in 0..block_sz {
+                            for coord in 0..3 {
+                                let d0 = deriv[coord * block_sz + idx];
+                                let d1 = deriv[(3 + coord) * block_sz + idx];
+                                let d2 = deriv[(6 + coord) * block_sz + idx];
+                                let sum = d0 + d1 + d2;
+                                assert!(sum.abs() < 1e-10,
+                                    "3c translational invariance: sh({},{},{}) coord={} idx={} sum={:.2e}",
+                                    sh_p, sh1, sh2, coord, idx, sum);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_eri2_deriv_translational_invariance() {
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n").unwrap();
+        let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
+        let op = Operator::coulomb();
+        let mut eng = Engine::new_2center_deriv(op, &dfbs, 1e-14).unwrap();
+
+        let nsh = dfbs.nshells();
+        for sh_p in 0..nsh.min(4) {
+            for sh_q in 0..nsh.min(4) {
+                if let Some(deriv) = eng.compute_eri2_deriv(&dfbs, sh_p, sh_q) {
+                    let np = dfbs.shell_dims()[sh_p];
+                    let nq = dfbs.shell_dims()[sh_q];
+                    let block_sz = np * nq;
+                    for idx in 0..block_sz {
+                        for coord in 0..3 {
+                            let d0 = deriv[coord * block_sz + idx];
+                            let d1 = deriv[(3 + coord) * block_sz + idx];
+                            let sum = d0 + d1;
+                            assert!(sum.abs() < 1e-10,
+                                "2c translational invariance: sh({},{}) coord={} idx={} sum={:.2e}",
+                                sh_p, sh_q, coord, idx, sum);
+                        }
+                    }
+                }
+            }
+        }
     }
 }

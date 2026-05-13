@@ -101,6 +101,24 @@ int goscf_compute_eri3(goscf_engine *eng, const goscf_basis *obs,
 int goscf_compute_eri2(goscf_engine *eng, const goscf_basis *dfbs,
                        int shP, int shQ, double *out);
 
+/* --- 3-center and 2-center ERI derivative engines (deriv_order=1) --- */
+
+goscf_engine *goscf_engine_create_3center_deriv(int op_kind, double omega,
+                                                int max_nprim, int max_L, double precision);
+goscf_engine *goscf_engine_create_2center_deriv(int op_kind, double omega,
+                                                int max_nprim, int max_L, double precision);
+
+/* Compute first derivative of (shP | sh1 sh2) 3-center ERI. Writes 9 blocks
+ * (3 centers × 3 coords) of nP*n1*n2 doubles each. Returns 9*nP*n1*n2 on success, 0 if screened. */
+int goscf_compute_eri3_deriv(goscf_engine *eng, const goscf_basis *obs,
+                             const goscf_basis *dfbs,
+                             int shP, int sh1, int sh2, double *out);
+
+/* Compute first derivative of (shP | shQ) 2-center ERI. Writes 6 blocks
+ * (2 centers × 3 coords) of nP*nQ doubles each. Returns 6*nP*nQ on success, 0 if screened. */
+int goscf_compute_eri2_deriv(goscf_engine *eng, const goscf_basis *dfbs,
+                             int shP, int shQ, double *out);
+
 /* --- First derivative integrals (requires libint2 with LIBINT2_MAX_DERIV_ORDER >= 1) --- */
 
 /* Compute first derivative of a 1e shell-pair block. The engine must have been

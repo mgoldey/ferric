@@ -369,3 +369,99 @@ int goscf_compute_eri2(goscf_engine *eng, const goscf_basis *dfbs,
     return 0;
 #endif
 }
+
+/* --- 3-center and 2-center ERI derivative engines --- */
+
+goscf_engine *goscf_engine_create_3center_deriv(int op_kind, double omega,
+                                                int max_nprim, int max_L, double precision) {
+#if LIBINT2_SUPPORT_ERI3 && LIBINT2_MAX_DERIV_ORDER >= 1
+    bool ok = false;
+    Operator op = op_for_kind(op_kind, &ok);
+    if (!ok) return nullptr;
+    try {
+        Engine eng(op, max_nprim, max_L, 1, precision);
+        eng.set(libint2::BraKet::xs_xx);
+        if (op_kind == 1 || op_kind == 2) eng.set_params(omega);
+        return new (std::nothrow) goscf_engine{std::move(eng)};
+    } catch (...) {
+        return nullptr;
+    }
+#else
+    (void)op_kind; (void)omega; (void)max_nprim; (void)max_L; (void)precision;
+    return nullptr;
+#endif
+}
+
+goscf_engine *goscf_engine_create_2center_deriv(int op_kind, double omega,
+                                                int max_nprim, int max_L, double precision) {
+#if LIBINT2_SUPPORT_ERI2 && LIBINT2_MAX_DERIV_ORDER >= 1
+    bool ok = false;
+    Operator op = op_for_kind(op_kind, &ok);
+    if (!ok) return nullptr;
+    try {
+        Engine eng(op, max_nprim, max_L, 1, precision);
+        eng.set(libint2::BraKet::xs_xs);
+        if (op_kind == 1 || op_kind == 2) eng.set_params(omega);
+        return new (std::nothrow) goscf_engine{std::move(eng)};
+    } catch (...) {
+        return nullptr;
+    }
+#else
+    (void)op_kind; (void)omega; (void)max_nprim; (void)max_L; (void)precision;
+    return nullptr;
+#endif
+}
+
+int goscf_compute_eri3_deriv(goscf_engine *eng, const goscf_basis *obs,
+                             const goscf_basis *dfbs,
+                             int shP, int sh1, int sh2, double *out) {
+#if LIBINT2_SUPPORT_ERI3 && LIBINT2_MAX_DERIV_ORDER >= 1
+    eng->engine.compute(dfbs->bs[shP], obs->bs[sh1], obs->bs[sh2]);
+    const auto &result = eng->engine.results();
+    if (result[0] == nullptr) return 0;
+    int nP = dfbs->nfunc[shP];
+    int n1 = obs->nfunc[sh1];
+    int n2 = obs->nfunc[sh2];
+    int n = nP * n1 * n2;
+    int nderiv = (int)result.size();
+    for (int d = 0; d < nderiv; ++d) {
+        const double *src = result[d];
+        double *dst = out + d * n;
+        if (src) {
+            for (int i = 0; i < n; ++i) dst[i] = src[i];
+        } else {
+            for (int i = 0; i < n; ++i) dst[i] = 0.0;
+        }
+    }
+    return nderiv * n;
+#else
+    (void)eng; (void)obs; (void)dfbs; (void)shP; (void)sh1; (void)sh2; (void)out;
+    return 0;
+#endif
+}
+
+int goscf_compute_eri2_deriv(goscf_engine *eng, const goscf_basis *dfbs,
+                             int shP, int shQ, double *out) {
+#if LIBINT2_SUPPORT_ERI2 && LIBINT2_MAX_DERIV_ORDER >= 1
+    eng->engine.compute(dfbs->bs[shP], dfbs->bs[shQ]);
+    const auto &result = eng->engine.results();
+    if (result[0] == nullptr) return 0;
+    int nP = dfbs->nfunc[shP];
+    int nQ = dfbs->nfunc[shQ];
+    int n = nP * nQ;
+    int nderiv = (int)result.size();
+    for (int d = 0; d < nderiv; ++d) {
+        const double *src = result[d];
+        double *dst = out + d * n;
+        if (src) {
+            for (int i = 0; i < n; ++i) dst[i] = src[i];
+        } else {
+            for (int i = 0; i < n; ++i) dst[i] = 0.0;
+        }
+    }
+    return nderiv * n;
+#else
+    (void)eng; (void)dfbs; (void)shP; (void)shQ; (void)out;
+    return 0;
+#endif
+}
