@@ -268,25 +268,55 @@ pub fn rimp2_gradient_analytical(
         }
     }
 
-    // 2-center metric derivative: Σ_{PQ} Gamma_PQ * d(P|Q)/dR
-    // Gamma_PQ = -0.5 * Σ_{RS} V^{-1}_{PR} * M_{RS} * V^{-1}_{SQ}
-    // where M_{PQ} = Σ_{ia} X^P_{ia} * X^Q_{ia} (the contraction of effective densities)
-    // Actually Gamma is simpler: Gamma_PQ = -0.5 * (V^{-1/2} X_ov)^T (V^{-1/2} X_ov)
-    // Wait — we already have x_ov which IS the dressed amplitudes, not yet hit by V^{-1/2}.
-    // The 2c gradient term involves the "Coulomb fitting coefficient" Z_P = Σ_Q V^{-1}_{PQ} d_Q
-    // where d_Q = Σ_{μν} g3c_{Q,μν} * (Q|μν).
-    //
-    // For RI-MP2, the standard 2-center metric gradient term is:
-    // Σ_{PQ} Gamma^RI_{PQ} * d(P|Q)/dR
-    // where Gamma^RI_{PQ} = -0.5 * Σ_{μνλσ} Γ^sep_{μνλσ} * V^{-1}_{PR} * (R|μν) * V^{-1}_{QS} * (S|λσ)
-    //
-    // This simplifies to: Gamma^RI_{PQ} = -0.5 * Σ_{ia,jb} c^P_{ia} * c^Q_{jb}
-    // where c^P_{ia} = Σ_R V^{-1/2}_{PR} X^R_{ia}... this is getting circular.
-    //
-    // The cleanest formulation: the 2c gradient needs the "fitting coefficients"
-    // c_P = Σ_Q V^{-1}_{PQ} Σ_{μν} d^eff_{μν} (Q|μν)
-    //
-    // For now, skip the 2c metric gradient (it's a smaller correction than the 3c term).
+    // 2-center metric derivative: Σ_{PQ} Γ^2c_{PQ} * d(P|Q)/dR
+    // Γ^2c_{PQ} = -0.5 * Σ_{ia} x_ov(P, ia) * x_ov(Q, ia)
+    // where x_ov already has V^{-1/2} folded in through B^P_{jb}.
+    let gamma_2c = -0.5 * x_ov.dot(&x_ov.t());
+
+    {
+        use ferric_integrals::engine::Engine;
+        let mut eng2d = Engine::new_2center_deriv(op, dfbs, 1e-14)?;
+        let nsh_df = dfbs.nshells();
+        let dims_df = dfbs.shell_dims();
+        let offs_df = dfbs.shell_offsets();
+        let sh2at_df = dfbs.shell_to_atom();
+
+        for sp in 0..nsh_df {
+            for sq in 0..=sp {
+                if let Some(deriv) = eng2d.compute_eri2_deriv(dfbs, sp, sq) {
+                    let np = dims_df[sp];
+                    let nq = dims_df[sq];
+                    let block_sz = np * nq;
+                    let sym_pq = sp != sq;
+
+                    for p in 0..np {
+                        for q in 0..nq {
+                            let pf = offs_df[sp] + p;
+                            let qf = offs_df[sq] + q;
+                            let idx = p * nq + q;
+
+                            let gval = if sym_pq {
+                                gamma_2c[(pf, qf)] + gamma_2c[(qf, pf)]
+                            } else {
+                                gamma_2c[(pf, qf)]
+                            };
+
+                            let atom_p = sh2at_df[sp];
+                            let atom_q = sh2at_df[sq];
+
+                            for coord in 0..3 {
+                                let dp = deriv[coord * block_sz + idx];
+                                let dq = deriv[(3 + coord) * block_sz + idx];
+
+                                grad[(atom_p, coord)] += gval * dp;
+                                grad[(atom_q, coord)] += gval * dq;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     Ok(grad)
 }
@@ -435,11 +465,10 @@ mod tests {
             }
         }
         eprintln!("  max diff = {:.2e}", max_diff);
-        // With 3-center derivative terms and P*F Lagrangian, accuracy is ~5e-4.
-        // Remaining error from: missing 2-center metric derivative, Lagrangian integral
-        // response, and 4-center overcounting with relaxed density.
-        assert!(max_diff < 1e-3,
-            "analytical vs FD max diff = {:.2e} (expected < 1e-3)", max_diff);
+        // With 3c + 2c derivative terms. Remaining error from 4-center overcounting
+        // (using P_relax in Gamma instead of D_HF).
+        assert!(max_diff < 1e-4,
+            "analytical vs FD max diff = {:.2e} (expected < 1e-4)", max_diff);
     }
 
     #[test]
