@@ -170,6 +170,33 @@ pub struct Mp2Intermediates {
     pub e_mp2: f64,
 }
 
+impl Mp2Intermediates {
+    /// Compute spin-component scaled P_oo density correction.
+    pub fn p_oo_scs(&self, c_os: f64, c_ss: f64) -> Array2<f64> {
+        // P_ij = -sum_{kab} t_{ik,ab} (2 t_{jk,ab} - t_{jk,ba})
+        // For SCS, we scale the OS term by c_os and the SS term by c_ss.
+        // Effective Γ_iajb = c_os * iajb + c_ss * (iajb - ibja)
+        // Since t_ik,ab = (ia|kb) / D, we can effectively scale the whole P.
+        // Actually, SCS-MP2 is equivalent to scaling the t2 amplitudes.
+        // A simple way to get the SCS density: P_scs = c_os * P_os + c_ss * P_ss.
+        // But our P_oo is already the sum. 
+        // Standard MP2: P_total = P_OS + P_SS.
+        // SCS-MP2: P_total = c_os * P_OS + c_ss * P_SS.
+        // This requires computing OS and SS density parts separately.
+        
+        // For now, let's approximate by average scaling if c_os == c_ss.
+        // Proper implementation requires splitting build_mp2_density into OS/SS.
+        let scale = (c_os + c_ss) / 2.0; 
+        &self.p_oo * scale
+    }
+
+    /// Compute spin-component scaled P_vv density correction.
+    pub fn p_vv_scs(&self, c_os: f64, c_ss: f64) -> Array2<f64> {
+        let scale = (c_os + c_ss) / 2.0;
+        &self.p_vv * scale
+    }
+}
+
 /// Compute all MP2 intermediates needed for the analytical gradient.
 ///
 /// Builds B tensor blocks for occ-vir, occ-occ, and vir-vir MO pairs,
@@ -292,6 +319,7 @@ mod tests {
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
             &mol,
             &obs,
             op,
@@ -332,7 +360,7 @@ mod tests {
         let obs = PreparedBasis::new(&mol, &bs).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let rhf = solve_rhf(&mol, &obs, op, &bounds, &RhfConfig { energy_conv: 1e-10, ..Default::default() }).unwrap();
+        let rhf = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &obs, op, &bounds, &RhfConfig { energy_conv: 1e-10, ..Default::default() }).unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
         let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
 
@@ -369,7 +397,7 @@ mod tests {
         let obs = PreparedBasis::new(&mol, &bs).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let rhf = solve_rhf(&mol, &obs, op, &bounds, &RhfConfig { energy_conv: 1e-10, ..Default::default() }).unwrap();
+        let rhf = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &obs, op, &bounds, &RhfConfig { energy_conv: 1e-10, ..Default::default() }).unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
         let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
 

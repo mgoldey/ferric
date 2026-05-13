@@ -1,0 +1,19 @@
+# H2 Geometry Optimization Example
+[molecule]
+xyz = "testdata/molecules/h2_stretched.xyz"
+
+[basis]
+name = "sto-3g"
+
+[method]
+kind = "rhf"
+task = "optimize"
+
+[scf]
+energy_conv = 1e-10
+
+[optimize]
+max_steps = 20
+e_conv = 1e-6
+g_max_thresh = 4.5e-4
+trust_radius = 0.1

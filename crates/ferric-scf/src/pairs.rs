@@ -238,7 +238,7 @@ mod tests {
             density_conv: 1e-8,
             ..Default::default()
         };
-        let result = solve_rhf(&mol, &prep, op, &bounds, &config).unwrap();
+        let result = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &prep, op, &bounds, &config).unwrap();
         assert!(result.converged);
 
         let dp = DensityPairs::build(&result.density, &bounds, &prep, 1e-12);

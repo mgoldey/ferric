@@ -159,6 +159,7 @@ mod tests {
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
             &mol, &obs, op, &bounds,
             &RhfConfig { energy_conv: 1e-10, ..Default::default() },
         ).unwrap();

@@ -9,7 +9,6 @@ use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_integrals::threeindex;
 use ferric_scf::diis::Diis;
 use ferric_scf::rhf::{build_jk, RhfResult};
 use ferric_scf::screening::SchwarzBounds;
@@ -247,7 +246,8 @@ fn compute_az_product(
     // Build J(D^z) and K(D^z)
     let mut jz = Array2::zeros((n, n));
     let mut kz = Array2::zeros((n, n));
-    build_jk(prep, bounds, 1e-12, &dz, &mut jz, &mut kz)?;
+    let ctx = ferric_core::parallel::ParallelContext::default();
+    build_jk(&ctx, prep, bounds, 1e-12, &dz, &mut jz, &mut kz)?;
 
     // The A*z product in AO: A_AO = 4*J(D^z) - K(D^z) - K(D^z)^T
     let az_ao = 4.0 * &jz - &kz - &kz.t();
@@ -389,7 +389,7 @@ mod tests {
         let obs = PreparedBasis::new(&mol, &bs).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let rhf = solve_rhf(&mol, &obs, op, &bounds, &RhfConfig { energy_conv: 1e-10, ..Default::default() }).unwrap();
+        let rhf = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &obs, op, &bounds, &RhfConfig { energy_conv: 1e-10, ..Default::default() }).unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
         let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
         let inter = compute_mp2_intermediates(&mol, &obs, &dfbs, op, &rhf, &RiMp2Config::default()).unwrap();
@@ -411,7 +411,7 @@ mod tests {
         let obs = PreparedBasis::new(&mol, &bs).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let rhf = solve_rhf(&mol, &obs, op, &bounds, &RhfConfig { energy_conv: 1e-10, ..Default::default() }).unwrap();
+        let rhf = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &obs, op, &bounds, &RhfConfig { energy_conv: 1e-10, ..Default::default() }).unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
         let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
         let inter = compute_mp2_intermediates(&mol, &obs, &dfbs, op, &rhf, &RiMp2Config::default()).unwrap();

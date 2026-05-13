@@ -10,7 +10,7 @@ Rust-native quantum chemistry engine wrapping libint2 for electron integrals, wi
 - **Analytical RHF nuclear gradients** validated against finite differences
 - **RI-MP2** (density-fitted MP2) via 3-center/2-center Coulomb integrals
 - **OO-RI-MP2** (orbital-optimized RI-MP2) with level-shifted Newton, DIIS, Cayley rotations, and backtracking
-- **Attenuated RI-MP2** with erfc(ωr)/r operator (Goldey & Head-Gordon, JPCL 2012)
+- **Attenuated RI-MP2** with erfc(ωr)/r and terfc operators (Goldey & Head-Gordon, JPCL 2012)
 - **SCS-MP2** spin-component scaled MP2 (Grimme, JCP 2003)
 - **SCS-MP2(2terfc)** dual-attenuated SCS-MP2 (Goldey, Dutoi, Head-Gordon, PCCP 2013)
 - **Canonical MP2** for cross-validation against RI-MP2
@@ -39,7 +39,7 @@ cargo run --release -- examples/water-attmp2.toml
 # SCS-MP2 (Grimme spin-component scaling)
 cargo run --release -- examples/water-scs-mp2.toml
 
-# SCS-MP2(2terfc) (dual-attenuated, Goldey/Dutoi/Head-Gordon 2013)
+# SCS-MP2(2terfc) (dual-attenuated, Goldey/Head-Gordon 2013)
 cargo run --release -- examples/water-scs-mp2-2terfc.toml
 ```
 
@@ -191,11 +191,12 @@ ferric/
 
 ## Roadmap
 
-- [ ] Rayon-parallel LinK exchange (single-threaded LinK implemented, parallelism pending)
+- [x] Rayon-parallel LinK exchange (Implemented)
 - [ ] CFMM (continuous fast multipole) for Coulomb
 - [ ] AO-Laplace-Transform MP2
-- [ ] MPI distributed RI-MP2 via 2D block-cyclic tensor distribution
-- [ ] Geometry optimization using analytical gradients
+- [x] MPI distributed parallelization (Integrated across SCF/Gradients/MP2)
+- [x] Geometry optimization using analytical gradients (RHF, RI-MP2, SCS-MP2)
+- [ ] ferric-tensors: High-performance tensor contraction for Coupled Cluster
 - [ ] DFT (LDA/GGA) via numerical quadrature
 
 ## License

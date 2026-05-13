@@ -2,7 +2,7 @@
 xyz = "testdata/molecules/water.xyz"
 
 [basis]
-name = "cc-pvdz"
+name = "aug-cc-pvdz"
 
 [method]
 kind = "att-rimp2"

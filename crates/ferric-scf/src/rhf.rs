@@ -12,6 +12,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::engine::Engine;
 use ferric_integrals::oneelectron;
 use ferric_integrals::operator::Operator;
+use ferric_core::parallel::ParallelContext;
 use ndarray::Array2;
 use ndarray_linalg::Eigh;
 
@@ -63,6 +64,7 @@ pub struct RhfResult {
 /// convergence. Returns [`RhfResult`] on success or [`FerricError::ScfConvergence`]
 /// if `max_iter` is exceeded.
 pub fn solve_rhf(
+    ctx: &ParallelContext,
     mol: &Molecule,
     prep: &PreparedBasis,
     _op: Operator,
@@ -105,7 +107,7 @@ pub fn solve_rhf(
         // Build J and K
         let mut j = Array2::zeros((n, n));
         let mut k = Array2::zeros((n, n));
-        build_jk(prep, bounds, config.integral_thresh, &d, &mut j, &mut k)?;
+        build_jk(ctx, prep, bounds, config.integral_thresh, &d, &mut j, &mut k)?;
 
         // F = H + J - 0.5*K
         f.assign(&(&h + &j - &(0.5 * &k)));
@@ -164,6 +166,7 @@ pub fn solve_rhf(
 ///
 /// Uses Schwarz screening and 8-fold permutational symmetry of the ERIs.
 pub fn build_jk(
+    ctx: &ParallelContext,
     prep: &PreparedBasis,
     bounds: &SchwarzBounds,
     thresh: f64,
@@ -186,12 +189,18 @@ pub fn build_jk(
     //
     // We accumulate into J and K by enumerating all equivalent permutations explicitly.
 
+    let mut q_idx = 0;
     for s1 in 0..nsh {
         for s2 in 0..=s1 {
             let b12 = bounds.q[(s1, s2)];
             for s3 in 0..=s1 {
                 let s4max = if s3 == s1 { s2 } else { s3 };
                 for s4 in 0..=s4max {
+                    if q_idx % ctx.size != ctx.rank {
+                        q_idx += 1;
+                        continue;
+                    }
+                    q_idx += 1;
                     let b34 = bounds.q[(s3, s4)];
                     if b12 * b34 * max_d < thresh {
                         continue;
@@ -283,6 +292,17 @@ pub fn build_jk(
             }
         }
     }
+
+    #[cfg(feature = "mpi")]
+    if let Some(world) = &ctx.world {
+        let mut j_global = Array2::zeros(j.dim());
+        let mut k_global = Array2::zeros(k.dim());
+        world.all_reduce_into(j.as_slice().unwrap(), j_global.as_slice_mut().unwrap(), mpi::collective::SystemOperation::sum());
+        world.all_reduce_into(k.as_slice().unwrap(), k_global.as_slice_mut().unwrap(), mpi::collective::SystemOperation::sum());
+        *j = j_global;
+        *k = k_global;
+    }
+
     Ok(())
 }
 
@@ -318,7 +338,8 @@ mod tests {
             integral_thresh: 1e-14,
             ..Default::default()
         };
-        let result = solve_rhf(&mol, &prep, op, &bounds, &config).unwrap();
+        let ctx = ParallelContext::default();
+        let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
         assert!(result.converged, "RHF did not converge");
         eprintln!(
             "{ref_slug}: energy={:.12}, iters={}, vnn={:.12}",

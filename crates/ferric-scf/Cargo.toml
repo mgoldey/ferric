@@ -9,6 +9,12 @@ ferric-integrals = { path = "../ferric-integrals" }
 ndarray = { workspace = true }
 ndarray-linalg = { workspace = true }
 openblas-src = { workspace = true }
+rayon = { workspace = true }
+mpi = { version = "0.7", optional = true }
+
+[features]
+default = []
+mpi = ["dep:mpi", "ferric-core/mpi"]
 
 [dev-dependencies]
 serde = { workspace = true }

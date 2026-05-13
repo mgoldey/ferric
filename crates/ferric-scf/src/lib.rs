@@ -21,3 +21,4 @@ pub mod diis;
 pub mod guess;
 pub mod rhf;
 pub mod gradient;
+pub mod optimize;

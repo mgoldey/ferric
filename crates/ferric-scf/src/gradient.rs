@@ -58,6 +58,22 @@ pub fn hf_gradient_with_density(
     d: &Array2<f64>,
     w: &Array2<f64>,
 ) -> Result<Array2<f64>, FerricError> {
+    let mut grad = oneelectron_gradient(mol, prep, d, w)?;
+    grad += &twoelectron_gradient(prep, op, bounds, d)?;
+    Ok(grad)
+}
+
+/// Compute one-electron gradient contributions: nuclear repulsion + dS, dT, dV.
+///
+/// Takes the density `d` (for kinetic + nuclear attraction derivatives) and the
+/// energy-weighted density `w` (for overlap / Pulay force). Returns a `(natoms, 3)`
+/// gradient array.
+pub fn oneelectron_gradient(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    d: &Array2<f64>,
+    w: &Array2<f64>,
+) -> Result<Array2<f64>, FerricError> {
     let natoms = mol.atoms.len();
     let nsh = prep.nshells();
     let dims = prep.shell_dims();
@@ -229,7 +245,30 @@ pub fn hf_gradient_with_density(
         }
     }
 
-    // 3. Two-electron gradient
+    Ok(grad)
+}
+
+/// Compute the 4-center two-electron gradient contribution: Σ Γ_μνλσ d(μν|λσ)/dR.
+///
+/// Uses the two-particle density Γ built from the provided one-particle density `d`:
+///   Γ_μνλσ = 0.5 D_μν D_λσ - 0.25 D_μλ D_νσ
+///
+/// Returns a `(natoms, 3)` gradient array.
+pub fn twoelectron_gradient(
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    d: &Array2<f64>,
+) -> Result<Array2<f64>, FerricError> {
+    let natoms = prep.shell_to_atom().iter().copied().max().unwrap_or(0) + 1;
+    let nsh = prep.nshells();
+    let dims = prep.shell_dims();
+    let offs = prep.shell_offsets();
+    let sh2at = prep.shell_to_atom();
+
+    let mut grad = Array2::zeros((natoms, 3));
+
+    // Two-electron gradient
     // We use a canonical shell loop with explicit permutation handling.
     // For each canonical quartet (s1>=s2, s3>=s4, (s1,s2)>=(s3,s4)), we enumerate
     // all equivalent permutations and accumulate with the correct two-particle
@@ -578,7 +617,7 @@ mod tests {
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &prep).unwrap();
         let config = RhfConfig { energy_conv: 1e-10, ..Default::default() };
-        let result = solve_rhf(&mol, &prep, op, &bounds, &config).unwrap();
+        let result = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &prep, op, &bounds, &config).unwrap();
 
         let (vnn, overlap, kinetic, nuclear, twoelec, total) =
             gradient_components(&mol, &prep, op, &bounds, &result);
@@ -603,11 +642,11 @@ mod tests {
                 let bs2 = basis::bundled("sto-3g").unwrap();
                 let prep_p = PreparedBasis::new(&mol_p, &bs2).unwrap();
                 let bounds_p = SchwarzBounds::compute(Operator::coulomb(), &prep_p).unwrap();
-                let res_p = solve_rhf(&mol_p, &prep_p, Operator::coulomb(), &bounds_p, &config2).unwrap();
+                let res_p = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol_p, &prep_p, Operator::coulomb(), &bounds_p, &config2).unwrap();
 
                 let prep_m = PreparedBasis::new(&mol_m, &bs2).unwrap();
                 let bounds_m = SchwarzBounds::compute(Operator::coulomb(), &prep_m).unwrap();
-                let res_m = solve_rhf(&mol_m, &prep_m, Operator::coulomb(), &bounds_m, &config2).unwrap();
+                let res_m = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol_m, &prep_m, Operator::coulomb(), &bounds_m, &config2).unwrap();
 
                 fd_total[(atom, coord)] = (res_p.energy - res_m.energy) / (2.0 * delta);
             }
@@ -653,11 +692,11 @@ mod tests {
                 let bs = basis::bundled(basis_name).unwrap();
                 let prep_p = PreparedBasis::new(&mol_plus, &bs).unwrap();
                 let bounds_p = SchwarzBounds::compute(Operator::coulomb(), &prep_p).unwrap();
-                let res_p = solve_rhf(&mol_plus, &prep_p, Operator::coulomb(), &bounds_p, &config).unwrap();
+                let res_p = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol_plus, &prep_p, Operator::coulomb(), &bounds_p, &config).unwrap();
 
                 let prep_m = PreparedBasis::new(&mol_minus, &bs).unwrap();
                 let bounds_m = SchwarzBounds::compute(Operator::coulomb(), &prep_m).unwrap();
-                let res_m = solve_rhf(&mol_minus, &prep_m, Operator::coulomb(), &bounds_m, &config).unwrap();
+                let res_m = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol_minus, &prep_m, Operator::coulomb(), &bounds_m, &config).unwrap();
 
                 grad[(atom, coord)] = (res_p.energy - res_m.energy) / (2.0 * delta);
             }
@@ -674,7 +713,7 @@ mod tests {
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &prep).unwrap();
         let config = RhfConfig { energy_conv: 1e-10, ..Default::default() };
-        let result = solve_rhf(&mol, &prep, op, &bounds, &config).unwrap();
+        let result = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &prep, op, &bounds, &config).unwrap();
 
         let analytic = match rhf_gradient(&mol, &prep, op, &bounds, &result) {
             Ok(g) => g,
@@ -710,7 +749,7 @@ mod tests {
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &prep).unwrap();
         let config = RhfConfig { energy_conv: 1e-10, ..Default::default() };
-        let result = solve_rhf(&mol, &prep, op, &bounds, &config).unwrap();
+        let result = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &prep, op, &bounds, &config).unwrap();
 
         let analytic = match rhf_gradient(&mol, &prep, op, &bounds, &result) {
             Ok(g) => g,

@@ -11,5 +11,6 @@ pub mod error;
 pub mod elements;
 pub mod mol;
 pub mod basis;
+pub mod parallel;
 
 pub use error::FerricError;

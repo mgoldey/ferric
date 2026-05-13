@@ -9,10 +9,13 @@ use ferric_mp2::attenuated::{attenuated_ri_mp2, AttenuatedMp2Config};
 use ferric_mp2::oo_rimp2::{oo_ri_mp2, OoRiMp2Config};
 use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
 use ferric_mp2::scs::{scs_mp2, scs_mp2_2terfc, ScsMp2Config, ScsMp2TerfcConfig};
+use ferric_core::parallel::ParallelContext;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
+use ferric_scf::optimize::{optimize_geometry, OptimizeConfig};
 
 fn main() {
+    let ctx = ParallelContext::new();
     let args: Vec<String> = std::env::args().collect();
     if args.len() != 2 {
         eprintln!("usage: ferric <input.toml>");
@@ -26,8 +29,13 @@ fn main() {
         }
     };
     let method = cfg.method.kind.as_str();
+    let task = cfg.method.task.as_str();
     if !matches!(method, "rhf" | "rimp2" | "oo-rimp2" | "att-rimp2" | "scs-mp2" | "scs-mp2-2terfc") {
         eprintln!("error: unsupported method.kind = \"{method}\"; expected rhf, rimp2, oo-rimp2, att-rimp2, scs-mp2, or scs-mp2-2terfc");
+        std::process::exit(1);
+    }
+    if !matches!(task, "energy" | "optimize") {
+        eprintln!("error: unsupported method.task = \"{task}\"; expected energy or optimize");
         std::process::exit(1);
     }
     let mol = Molecule::load_xyz(&cfg.molecule.xyz).unwrap_or_else(|e| {
@@ -62,7 +70,36 @@ fn main() {
         diis_size: cfg.scf.diis_size,
         integral_thresh: cfg.scf.integral_thresh,
     };
-    let result = solve_rhf(&mol, &prep, op, &bounds, &rhf_config).unwrap_or_else(|e| {
+
+    if task == "optimize" {
+        if method != "rhf" {
+            eprintln!("error: geometry optimization is currently only supported for method.kind = \"rhf\"");
+            std::process::exit(1);
+        }
+        let opt_config = OptimizeConfig {
+            max_steps: cfg.optimize.max_steps.unwrap_or(100),
+            g_max_thresh: cfg.optimize.g_max_thresh.unwrap_or(4.5e-4),
+            g_rms_thresh: cfg.optimize.g_rms_thresh.unwrap_or(3.0e-4),
+            e_conv: cfg.optimize.e_conv.unwrap_or(1e-6),
+            trust_radius: cfg.optimize.trust_radius.unwrap_or(0.1),
+        };
+        let opt_result = optimize_geometry(&ctx, &mol, &bs.name, op, &rhf_config, &opt_config)
+            .unwrap_or_else(|e| {
+                eprintln!("error during optimization: {e}");
+                std::process::exit(1);
+            });
+        println!("\nFinal Optimized Geometry (Bohr):");
+        for (i, atom) in opt_result.mol.atoms.iter().enumerate() {
+            println!("  {:2} {:2} {:12.8} {:12.8} {:12.8}", i, atom.symbol, atom.x, atom.y, atom.zpos);
+        }
+        println!("\nOptimization Result:");
+        println!("  converged  = {}", opt_result.converged);
+        println!("  steps      = {}", opt_result.steps);
+        println!("  final E    = {:.10} Hartree", opt_result.energy);
+        return;
+    }
+
+    let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &rhf_config).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
     });

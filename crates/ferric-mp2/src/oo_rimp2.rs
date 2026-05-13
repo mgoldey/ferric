@@ -228,7 +228,8 @@ fn compute_hf_energy(
     // Build J, K
     let mut j_mat = Array2::zeros((n, n));
     let mut k_mat = Array2::zeros((n, n));
-    build_jk(prep, bounds, 1e-12, &d, &mut j_mat, &mut k_mat)?;
+    let ctx = ferric_core::parallel::ParallelContext::default();
+    build_jk(&ctx, prep, bounds, 1e-12, &d, &mut j_mat, &mut k_mat)?;
 
     // F = H + J - 0.5*K
     let f = h + &j_mat - &(0.5 * &k_mat);
@@ -291,11 +292,43 @@ pub fn compute_t2_and_integrals(
     (t2, eri_ov)
 }
 
-/// Build the MP2 unrelaxed 1-particle density matrix in MO basis.
+/// Build the full relaxed 1-PDM for OO-MP2 in MO basis.
 ///
-/// Returns (p_oo, p_vv) where:
-///   p_oo[i,j] = -sum_{kab} t_{ik,ab} (2 t_{jk,ab} - t_{jk,ba})
-///   p_vv[a,b] =  sum_{ijc} t_{ij,ac} (2 t_{ij,bc} - t_{ij,cb})
+/// For OO-MP2, the density is already "relaxed" because it is a stationary
+/// point w.r.t. orbital rotations. The MO-basis density is:
+///   P_pq = delta_pq (for occ) + P^MP2_pq
+pub fn build_oo_mp2_relaxed_density(
+    t2: &[f64],
+    nocc: usize,
+    nvir: usize,
+    nmo: usize,
+    first_occ: usize,
+) -> Array2<f64> {
+    let (p_oo, p_vv) = build_mp2_density(t2, nocc, nvir);
+    let mut p = Array2::zeros((nmo, nmo));
+    
+    // HF occupied part
+    for i in 0..nocc {
+        let idx = first_occ + i;
+        p[(idx, idx)] = 2.0;
+    }
+    
+    // MP2 correction
+    for i in 0..nocc {
+        for j in 0..nocc {
+            p[(first_occ + i, first_occ + j)] += p_oo[(i, j)];
+        }
+    }
+    for a in 0..nvir {
+        for b in 0..nvir {
+            let nocc_total = nmo - nvir;
+            p[(nocc_total + a, nocc_total + b)] += p_vv[(a, b)];
+        }
+    }
+    p
+}
+
+/// Build the MP2 unrelaxed 1-particle density matrix in MO basis.
 pub fn build_mp2_density(
     t2: &[f64],
     nocc: usize,
@@ -820,6 +853,7 @@ mod tests {
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
             &mol,
             &obs,
             op,
@@ -984,6 +1018,7 @@ mod tests {
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
             &mol,
             &obs,
             op,

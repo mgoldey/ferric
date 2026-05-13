@@ -131,6 +131,7 @@ mod tests {
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &prep).unwrap();
         let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
             &mol,
             &prep,
             op,
@@ -161,6 +162,7 @@ mod tests {
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &prep).unwrap();
         let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
             &mol,
             &prep,
             op,

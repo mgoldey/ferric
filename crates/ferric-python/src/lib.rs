@@ -7,6 +7,8 @@ use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
 use ferric_mp2::scs::{scs_mp2, scs_mp2_2terfc, ScsMp2Config, ScsMp2TerfcConfig};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
+use ferric_core::parallel::ParallelContext;
+use ferric_scf::optimize::{optimize_geometry, OptimizeConfig};
 use ndarray::Array2;
 use numpy::{PyArray1, PyArray2};
 use pyo3::prelude::*;
@@ -97,7 +99,8 @@ fn run_rhf(
         energy_conv: energy_conv.unwrap_or(1e-8),
         ..Default::default()
     };
-    let result = solve_rhf(&mol.inner, &prep, op, &bounds, &config)
+    let ctx = ParallelContext::default();
+    let result = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &config)
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e}")))?;
     Ok(PyRhfResult {
         energy: result.energy,
@@ -105,6 +108,42 @@ fn run_rhf(
         iterations: result.iterations,
         density_data: result.density,
         orbital_energies_data: result.orbital_energies,
+    })
+}
+
+#[pyclass]
+#[pyo3(name = "OptimizeResult")]
+struct PyOptimizeResult {
+    #[pyo3(get)]
+    energy: f64,
+    #[pyo3(get)]
+    converged: bool,
+    #[pyo3(get)]
+    steps: usize,
+}
+
+#[pyfunction]
+#[pyo3(signature = (mol, basis_name, max_steps=None, e_conv=None))]
+fn run_optimize(
+    mol: &PyMolecule,
+    basis_name: &str,
+    max_steps: Option<usize>,
+    e_conv: Option<f64>,
+) -> PyResult<PyOptimizeResult> {
+    let op = Operator::coulomb();
+    let rhf_config = RhfConfig::default();
+    let opt_config = OptimizeConfig {
+        max_steps: max_steps.unwrap_or(100),
+        e_conv: e_conv.unwrap_or(1e-6),
+        ..Default::default()
+    };
+    let ctx = ParallelContext::default();
+    let result = optimize_geometry(&ctx, &mol.inner, basis_name, op, &rhf_config, &opt_config)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e}")))?;
+    Ok(PyOptimizeResult {
+        energy: result.energy,
+        converged: result.converged,
+        steps: result.steps,
     })
 }
 
@@ -135,7 +174,8 @@ fn run_rimp2(
     let bounds = SchwarzBounds::compute(op, &prep)
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e}")))?;
     let rhf_config = RhfConfig::default();
-    let rhf_result = solve_rhf(&mol.inner, &prep, op, &bounds, &rhf_config)
+    let ctx = ParallelContext::default();
+    let rhf_result = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &rhf_config)
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e}")))?;
     let mp2_config = RiMp2Config {
         frozen_core: frozen_core.unwrap_or(0),
@@ -180,7 +220,8 @@ fn run_attenuated_rimp2(
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep)
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e}")))?;
-    let rhf_result = solve_rhf(&mol.inner, &prep, op, &bounds, &RhfConfig::default())
+    let ctx = ParallelContext::default();
+    let rhf_result = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &RhfConfig::default())
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e}")))?;
     let angstrom_to_bohr = 1.8897259886;
     let config = AttenuatedMp2Config {
@@ -231,7 +272,8 @@ fn run_scs_mp2(
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep)
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e}")))?;
-    let rhf_result = solve_rhf(&mol.inner, &prep, op, &bounds, &RhfConfig::default())
+    let ctx = ParallelContext::default();
+    let rhf_result = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &RhfConfig::default())
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e}")))?;
     let config = ScsMp2Config {
         c_os: c_os.unwrap_or(6.0 / 5.0),
@@ -268,7 +310,8 @@ fn run_scs_mp2_2terfc(
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep)
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e}")))?;
-    let rhf_result = solve_rhf(&mol.inner, &prep, op, &bounds, &RhfConfig::default())
+    let ctx = ParallelContext::default();
+    let rhf_result = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &RhfConfig::default())
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e}")))?;
     let angstrom_to_bohr = 1.8897259886;
     let config = ScsMp2TerfcConfig {

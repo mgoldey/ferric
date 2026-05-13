@@ -8,9 +8,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
-RUN wget -q https://github.com/evaleev/libint/releases/download/v2.7.2/libint-2.7.2-mpqc4.tgz \
+RUN wget https://github.com/evaleev/libint/releases/download/v2.7.2/libint-2.7.2-mpqc4.tgz \
     && tar xzf libint-2.7.2-mpqc4.tgz \
-    && cd libint-2.7.2-mpqc4 \
+    && rm libint-2.7.2-mpqc4.tgz \
+    && cd libint-2.7.2 \
     && mkdir build && cd build \
     && cmake .. \
         -DCMAKE_INSTALL_PREFIX=/usr/local \
@@ -26,6 +27,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential cmake g++ gfortran wget ca-certificates curl \
     libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
+    libopenmpi-dev openmpi-bin \
     python3-dev python3-pip python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
@@ -49,11 +51,11 @@ RUN pip3 install --no-cache-dir maturin numpy
 WORKDIR /ferric
 COPY . .
 
-# Build workspace
-RUN cargo build --release --workspace
+# Build workspace with MPI
+RUN cargo build --release --workspace --features mpi
 
 # Run tests
-RUN cargo test --workspace -- --test-threads=1
+RUN cargo test --workspace --features mpi -- --test-threads=1
 
 # Build Python bindings
 RUN cd crates/ferric-python \
@@ -69,6 +71,7 @@ FROM ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libopenblas0 liblapack3 libgomp1 python3 python3-pip \
+    libopenmpi-dev openmpi-bin \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=ferric-builder /usr/local/lib/libint2* /usr/local/lib/

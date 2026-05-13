@@ -9,6 +9,17 @@ pub struct Config {
     pub scf: ScfCfg,
     #[serde(default)]
     pub mp2: Mp2Cfg,
+    #[serde(default)]
+    pub optimize: OptimizeCfg,
+}
+
+#[derive(Deserialize, Default)]
+pub struct OptimizeCfg {
+    pub max_steps: Option<usize>,
+    pub g_max_thresh: Option<f64>,
+    pub g_rms_thresh: Option<f64>,
+    pub e_conv: Option<f64>,
+    pub trust_radius: Option<f64>,
 }
 
 #[derive(Deserialize, Default)]
@@ -44,7 +55,11 @@ pub struct BasisCfg {
 #[derive(Deserialize)]
 pub struct MethodCfg {
     pub kind: String,
+    #[serde(default = "default_task")]
+    pub task: String,
 }
+
+fn default_task() -> String { "energy".into() }
 
 #[derive(Deserialize)]
 pub struct ScfCfg {

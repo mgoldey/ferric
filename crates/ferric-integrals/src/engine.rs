@@ -18,6 +18,8 @@ pub struct Engine {
     buf: Vec<f64>,
 }
 
+unsafe impl Send for Engine {}
+
 impl Engine {
     /// Create a 4-center two-electron integral engine.
     pub fn new_2e(op: Operator, prep: &PreparedBasis, precision: f64) -> Result<Self, FerricError> {

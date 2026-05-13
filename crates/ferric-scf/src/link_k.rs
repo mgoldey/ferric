@@ -59,6 +59,8 @@ impl LinkK {
     }
 }
 
+use rayon::prelude::*;
+
 impl KBuilder for LinkK {
     fn build(&mut self, d: &Array2<f64>, k: &mut Array2<f64>) -> Result<(), FerricError> {
         // Ensure density pairs are built.
@@ -70,93 +72,86 @@ impl KBuilder for LinkK {
         let nsh = self.prep.nshells();
         let dims = self.prep.shell_dims();
         let offs = self.prep.shell_offsets();
-
-        let mut engine = Engine::new_2e(self.op, &self.prep, 1e-14)?;
-
-        // Track computed canonical quartets to avoid double-counting.
-        let mut computed: HashSet<(usize, usize, usize, usize)> = HashSet::new();
+        let thresh = self.thresh;
+        let op = self.op;
 
         // Find max |D| for screening.
         let max_d = d.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
 
-        // LinK loop: iterate via pair lists.
-        for ish in 0..nsh {
-            for &jsh in self.sp.partners(ish) {
-                let ksh_candidates = intersect_sorted(self.sp.partners(ish), dp.partners(jsh));
-                for ksh in ksh_candidates {
-                    for &lsh in self.sp.partners(ksh) {
-                        // Canonicalize: s1>=s2, s3>=s4, (s1,s2)>=(s3,s4)
-                        let (cs1, cs2) = if ish >= jsh { (ish, jsh) } else { (jsh, ish) };
-                        let (cs3, cs4) = if ksh >= lsh { (ksh, lsh) } else { (lsh, ksh) };
-                        let (cs1, cs2, cs3, cs4) = if (cs1, cs2) >= (cs3, cs4) {
-                            (cs1, cs2, cs3, cs4)
-                        } else {
-                            (cs3, cs4, cs1, cs2)
-                        };
+        // Parallel loop over ish using Rayon.
+        // Each thread accumulates into a local K matrix, then they are summed.
+        // Canonical work assignment: a quartet (s1,s2,s3,s4) is computed only
+        // by the thread handling ish == max(s1,s2,s3,s4).
+        let k_final = (0..nsh)
+            .into_par_iter()
+            .fold(
+                || {
+                    let k_local = Array2::zeros(k.raw_dim());
+                    let engine = Engine::new_2e(op, &self.prep, 1e-14).unwrap();
+                    let computed = HashSet::new();
+                    Ok((k_local, engine, computed))
+                },
+                |acc: Result<_, FerricError>, ish| {
+                    let (mut k_local, mut engine, mut computed) = acc?;
+                    // Reuse computed set for this ish.
+                    computed.clear();
 
-                        // Skip if already computed or if screened.
-                        if !computed.insert((cs1, cs2, cs3, cs4)) {
-                            continue;
-                        }
-                        if self.bound.estimate(cs1, cs2, cs3, cs4) * max_d < self.thresh {
-                            continue;
-                        }
+                    for &jsh in self.sp.partners(ish) {
+                        let ksh_candidates =
+                            intersect_sorted(self.sp.partners(ish), dp.partners(jsh));
+                        for ksh in ksh_candidates {
+                            for &lsh in self.sp.partners(ksh) {
+                                // Canonicalize: s1>=s2, s3>=s4, (s1,s2)>=(s3,s4)
+                                let (cs1, cs2) = if ish >= jsh { (ish, jsh) } else { (jsh, ish) };
+                                let (cs3, cs4) = if ksh >= lsh { (ksh, lsh) } else { (lsh, ksh) };
+                                let (cs1, cs2, cs3, cs4) = if (cs1, cs2) >= (cs3, cs4) {
+                                    (cs1, cs2, cs3, cs4)
+                                } else {
+                                    (cs3, cs4, cs1, cs2)
+                                };
 
-                        // Compute the shell quartet.
-                        let quartet = engine.compute_quartet(&self.prep, cs1, cs2, cs3, cs4);
-                        if let Some(q) = quartet {
-                            let (n1, n2, n3, n4) = (dims[cs1], dims[cs2], dims[cs3], dims[cs4]);
-                            let (o1, o2, o3, o4) = (offs[cs1], offs[cs2], offs[cs3], offs[cs4]);
-                            let sym12 = cs1 != cs2;
-                            let sym34 = cs3 != cs4;
-                            let sym1234 = (cs1, cs2) != (cs3, cs4);
+                                // ONLY process if ish is the maximum index.
+                                if cs1 != ish {
+                                    continue;
+                                }
 
-                            // 8-fold symmetry accumulation, same as build_jk in rhf.rs.
-                            for a in 0..n1 {
-                                for b in 0..n2 {
-                                    for c in 0..n3 {
-                                        for dd in 0..n4 {
-                                            let v = q[((a * n2 + b) * n3 + c) * n4 + dd];
-                                            let mu = o1 + a;
-                                            let nu = o2 + b;
-                                            let la = o3 + c;
-                                            let sg = o4 + dd;
+                                // Avoid redundant computation of same canonical quartet for this ish.
+                                if !computed.insert((cs1, cs2, cs3, cs4)) {
+                                    continue;
+                                }
 
-                                            // (mu nu | la sg)
-                                            k[(mu, la)] += d[(nu, sg)] * v;
+                                if self.bound.estimate(cs1, cs2, cs3, cs4) * max_d < thresh {
+                                    continue;
+                                }
 
-                                            if sym12 {
-                                                // (nu mu | la sg)
-                                                k[(nu, la)] += d[(mu, sg)] * v;
-                                            }
+                                if let Some(q) = engine.compute_quartet(&self.prep, cs1, cs2, cs3, cs4) {
+                                    let (n1, n2, n3, n4) = (dims[cs1], dims[cs2], dims[cs3], dims[cs4]);
+                                    let (o1, o2, o3, o4) = (offs[cs1], offs[cs2], offs[cs3], offs[cs4]);
+                                    let sym12 = cs1 != cs2;
+                                    let sym34 = cs3 != cs4;
+                                    let sym1234 = (cs1, cs2) != (cs3, cs4);
 
-                                            if sym34 {
-                                                // (mu nu | sg la)
-                                                k[(mu, sg)] += d[(nu, la)] * v;
-                                            }
+                                    for a in 0..n1 {
+                                        for b in 0..n2 {
+                                            for c in 0..n3 {
+                                                for dd in 0..n4 {
+                                                    let v = q[((a * n2 + b) * n3 + c) * n4 + dd];
+                                                    let mu = o1 + a;
+                                                    let nu = o2 + b;
+                                                    let la = o3 + c;
+                                                    let sg = o4 + dd;
 
-                                            if sym12 && sym34 {
-                                                // (nu mu | sg la)
-                                                k[(nu, sg)] += d[(mu, la)] * v;
-                                            }
+                                                    k_local[(mu, la)] += d[(nu, sg)] * v;
+                                                    if sym12 { k_local[(nu, la)] += d[(mu, sg)] * v; }
+                                                    if sym34 { k_local[(mu, sg)] += d[(nu, la)] * v; }
+                                                    if sym12 && sym34 { k_local[(nu, sg)] += d[(mu, la)] * v; }
 
-                                            if sym1234 {
-                                                // (la sg | mu nu)
-                                                k[(la, mu)] += d[(sg, nu)] * v;
-
-                                                if sym34 {
-                                                    // (sg la | mu nu)
-                                                    k[(sg, mu)] += d[(la, nu)] * v;
-                                                }
-
-                                                if sym12 {
-                                                    // (la sg | nu mu)
-                                                    k[(la, nu)] += d[(sg, mu)] * v;
-                                                }
-
-                                                if sym12 && sym34 {
-                                                    // (sg la | nu mu)
-                                                    k[(sg, nu)] += d[(la, mu)] * v;
+                                                    if sym1234 {
+                                                        k_local[(la, mu)] += d[(sg, nu)] * v;
+                                                        if sym34 { k_local[(sg, mu)] += d[(la, nu)] * v; }
+                                                        if sym12 { k_local[(la, nu)] += d[(sg, mu)] * v; }
+                                                        if sym12 && sym34 { k_local[(sg, nu)] += d[(la, mu)] * v; }
+                                                    }
                                                 }
                                             }
                                         }
@@ -165,10 +160,21 @@ impl KBuilder for LinkK {
                             }
                         }
                     }
-                }
-            }
-        }
+                    Ok((k_local, engine, computed))
+                },
+            )
+            .map(|res| res.map(|(k_local, _, _)| k_local))
+            .reduce(
+                || Ok(Array2::zeros(k.raw_dim())),
+                |a, b| {
+                    let mut k_a = a?;
+                    let k_b = b?;
+                    k_a += &k_b;
+                    Ok(k_a)
+                },
+            )?;
 
+        k.assign(&k_final);
         Ok(())
     }
 
@@ -203,7 +209,7 @@ mod tests {
             integral_thresh: 1e-14,
             ..Default::default()
         };
-        let result = solve_rhf(&mol, &prep, op, &bounds, &config).unwrap();
+        let result = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &prep, op, &bounds, &config).unwrap();
         assert!(result.converged, "RHF did not converge");
         (result.density, mol)
     }
@@ -217,7 +223,7 @@ mod tests {
         let n = prep.nbasis();
         let mut j = Array2::zeros((n, n));
         let mut k = Array2::zeros((n, n));
-        build_jk(&prep, &bounds, 1e-14, d, &mut j, &mut k).unwrap();
+        build_jk(&ferric_core::parallel::ParallelContext::default(), &prep, &bounds, 1e-14, d, &mut j, &mut k).unwrap();
         k
     }
 
@@ -279,5 +285,21 @@ mod tests {
             max_diff < 1e-10,
             "LinK K vs direct K max diff = {max_diff:.2e} (water/cc-pVDZ)"
         );
+    }
+
+    #[test]
+    fn test_link_k_parallel_consistency() {
+        let water_xyz = "3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n";
+        let (d, mol) = converged_density(water_xyz, "sto-3g");
+
+        let k1 = link_k(&mol, "sto-3g", &d);
+        let k2 = link_k(&mol, "sto-3g", &d);
+
+        let n = k1.nrows();
+        for i in 0..n {
+            for j in 0..n {
+                assert!((k1[(i, j)] - k2[(i, j)]).abs() < 1e-15);
+            }
+        }
     }
 }

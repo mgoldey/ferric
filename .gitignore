@@ -1,6 +1,4 @@
-/target
-*.pyc
-__pycache__/
+libint*
+build
+target
 .venv/
-*.egg-info/
-dist/
