@@ -1,0 +1,226 @@
+//! QQR distance-dependent integral screening bounds.
+//!
+//! Refines Schwarz estimates with inverse-distance decay for well-separated
+//! shell pairs. Reference: Maurer, Lambrecht, Ochsenfeld, JCP 136, 144107 (2012).
+
+use crate::screening::{Bound, SchwarzBounds};
+use ferric_core::basis::BasisSet;
+use ferric_core::mol::Molecule;
+use ferric_integrals::basis_bridge::PreparedBasis;
+
+/// QQR (distance-dependent) integral screening bounds.
+///
+/// For each shell pair (i,j), stores:
+/// - **pair center**: weighted average of shell origins, using the most diffuse exponent
+/// - **pair extent**: spatial width `1/sqrt(alpha_i_min + alpha_j_min)`
+///
+/// The bound is: `schwarz(i,j,k,l) * min(1, extent_ij * extent_kl / R_ij_kl)`
+/// where `R_ij_kl` is the distance between pair centers.
+pub struct QqrBounds {
+    schwarz: SchwarzBounds,
+    /// Pair centers, indexed as `pair_centers[i * nshells + j]`.
+    pair_centers: Vec<[f64; 3]>,
+    /// Pair extents, indexed as `pair_extents[i * nshells + j]`.
+    pair_extents: Vec<f64>,
+    nshells: usize,
+}
+
+impl QqrBounds {
+    /// Compute QQR bounds from an existing Schwarz bound, molecule, basis, and prepared basis.
+    ///
+    /// Needs the raw `BasisSet` to access per-shell exponents (the minimum exponent of
+    /// each shell determines the pair center and extent). The `Molecule` and `PreparedBasis`
+    /// provide atom coordinates and the shell-to-atom mapping.
+    pub fn new(
+        schwarz: SchwarzBounds,
+        mol: &Molecule,
+        bs: &BasisSet,
+        prep: &PreparedBasis,
+    ) -> Self {
+        let nsh = prep.nshells();
+
+        // Collect the minimum exponent per shell and the atom coordinates per shell.
+        // We iterate atoms in order, collecting shells per atom, mirroring PreparedBasis::new.
+        let mut min_exponents: Vec<f64> = Vec::with_capacity(nsh);
+        let mut shell_origins: Vec<[f64; 3]> = Vec::with_capacity(nsh);
+
+        for atom in &mol.atoms {
+            let shells = bs.for_element(atom.z).unwrap();
+            for sh in shells {
+                let alpha_min = sh.exponents.iter().cloned().fold(f64::INFINITY, f64::min);
+                min_exponents.push(alpha_min);
+                shell_origins.push([atom.x, atom.y, atom.zpos]);
+            }
+        }
+        assert_eq!(min_exponents.len(), nsh, "shell count mismatch");
+
+        // Build pair centers and extents.
+        let mut pair_centers = vec![[0.0; 3]; nsh * nsh];
+        let mut pair_extents = vec![0.0; nsh * nsh];
+
+        for i in 0..nsh {
+            let ai = min_exponents[i];
+            let ri = shell_origins[i];
+            for j in 0..nsh {
+                let aj = min_exponents[j];
+                let rj = shell_origins[j];
+                let sum_alpha = ai + aj;
+                let idx = i * nsh + j;
+
+                // Weighted pair center: R_ij = (alpha_i * R_i + alpha_j * R_j) / (alpha_i + alpha_j)
+                pair_centers[idx] = [
+                    (ai * ri[0] + aj * rj[0]) / sum_alpha,
+                    (ai * ri[1] + aj * rj[1]) / sum_alpha,
+                    (ai * ri[2] + aj * rj[2]) / sum_alpha,
+                ];
+                // Pair extent: epsilon_ij = 1 / sqrt(alpha_i + alpha_j)
+                pair_extents[idx] = 1.0 / sum_alpha.sqrt();
+            }
+        }
+
+        QqrBounds {
+            schwarz,
+            pair_centers,
+            pair_extents,
+            nshells: nsh,
+        }
+    }
+
+    /// Access the underlying Schwarz bounds.
+    pub fn schwarz(&self) -> &SchwarzBounds {
+        &self.schwarz
+    }
+
+    /// Number of shells.
+    pub fn nshells(&self) -> usize {
+        self.nshells
+    }
+
+    /// Pair center for shell pair (i,j).
+    pub fn pair_center(&self, i: usize, j: usize) -> [f64; 3] {
+        self.pair_centers[i * self.nshells + j]
+    }
+
+    /// Pair extent for shell pair (i,j).
+    pub fn pair_extent(&self, i: usize, j: usize) -> f64 {
+        self.pair_extents[i * self.nshells + j]
+    }
+}
+
+impl Bound for QqrBounds {
+    fn estimate(&self, sh1: usize, sh2: usize, sh3: usize, sh4: usize) -> f64 {
+        let schwarz_est = self.schwarz.estimate(sh1, sh2, sh3, sh4);
+        let nsh = self.nshells;
+        let idx_bra = sh1 * nsh + sh2;
+        let idx_ket = sh3 * nsh + sh4;
+        let c_bra = &self.pair_centers[idx_bra];
+        let c_ket = &self.pair_centers[idx_ket];
+
+        let dx = c_bra[0] - c_ket[0];
+        let dy = c_bra[1] - c_ket[1];
+        let dz = c_bra[2] - c_ket[2];
+        let r = (dx * dx + dy * dy + dz * dz).sqrt();
+
+        if r < 1e-14 {
+            // Overlapping pair centers: QQR reduces to Schwarz.
+            return schwarz_est;
+        }
+
+        let extent_product = self.pair_extents[idx_bra] * self.pair_extents[idx_ket];
+        let decay = (extent_product / r).min(1.0);
+        schwarz_est * decay
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::screening::{Bound, SchwarzBounds};
+    use ferric_core::basis;
+    use ferric_core::mol::Molecule;
+    use ferric_integrals::basis_bridge::PreparedBasis;
+    use ferric_integrals::operator::Operator;
+
+    fn water_qqr() -> (QqrBounds, usize) {
+        let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+        let bs = basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let schwarz = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
+        let nsh = prep.nshells();
+        let qqr = QqrBounds::new(schwarz, &mol, &bs, &prep);
+        (qqr, nsh)
+    }
+
+    #[test]
+    fn test_qqr_le_schwarz() {
+        // QQR estimate must be <= Schwarz estimate for all quartets.
+        let (qqr, nsh) = water_qqr();
+        for i in 0..nsh {
+            for j in 0..nsh {
+                for k in 0..nsh {
+                    for l in 0..nsh {
+                        let s = qqr.schwarz().estimate(i, j, k, l);
+                        let q = qqr.estimate(i, j, k, l);
+                        assert!(
+                            q <= s + 1e-15,
+                            "QQR({i},{j},{k},{l}) = {q} > Schwarz = {s}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_qqr_tighter_for_distant_pairs() {
+        // For water STO-3G, oxygen shells (0,1,2) are on atom 0 and
+        // hydrogen shells (3,4) are on atoms 1,2. Pairs crossing atoms
+        // should have QQR strictly less than Schwarz.
+        let (qqr, nsh) = water_qqr();
+        let mut found_tighter = false;
+        for i in 0..nsh {
+            for j in 0..nsh {
+                for k in 0..nsh {
+                    for l in 0..nsh {
+                        let s = qqr.schwarz().estimate(i, j, k, l);
+                        let q = qqr.estimate(i, j, k, l);
+                        if s > 1e-10 && (q / s) < 0.99 {
+                            found_tighter = true;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(found_tighter, "QQR should be strictly tighter than Schwarz for some distant pairs");
+    }
+
+    #[test]
+    fn test_qqr_overlapping_equals_schwarz() {
+        // Same shell on same atom: pair centers overlap, so QQR == Schwarz.
+        let (qqr, _nsh) = water_qqr();
+        let s = qqr.schwarz().estimate(0, 0, 0, 0);
+        let q = qqr.estimate(0, 0, 0, 0);
+        assert!(
+            (q - s).abs() < 1e-15,
+            "overlapping pairs: QQR={q} != Schwarz={s}"
+        );
+    }
+
+    #[test]
+    fn test_pair_center_self_pair() {
+        // Self-pair center should be the atom center.
+        let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+        let bs = basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let schwarz = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
+        let qqr = QqrBounds::new(schwarz, &mol, &bs, &prep);
+        // Shell 0 is on atom 0 (oxygen)
+        let c = qqr.pair_center(0, 0);
+        let ox = mol.atoms[0].x;
+        let oy = mol.atoms[0].y;
+        let oz = mol.atoms[0].zpos;
+        assert!((c[0] - ox).abs() < 1e-12);
+        assert!((c[1] - oy).abs() < 1e-12);
+        assert!((c[2] - oz).abs() < 1e-12);
+    }
+}

@@ -11,6 +11,7 @@
 //! - **Core Hamiltonian initial guess** ([`guess::hcore_guess`])
 
 pub mod screening;
+pub mod qqr;
 pub mod fock;
 pub mod direct_j;
 pub mod direct_k;
