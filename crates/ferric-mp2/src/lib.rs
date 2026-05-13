@@ -14,3 +14,6 @@ pub mod oo_rimp2;
 pub mod attenuated;
 pub mod scs;
 pub mod zvector;
+pub mod laplace;
+pub mod oo_rimp2_gradient;
+pub mod mpi_rimp2;

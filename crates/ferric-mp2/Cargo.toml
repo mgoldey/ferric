@@ -9,6 +9,12 @@ ferric-integrals = { path = "../ferric-integrals" }
 ferric-scf = { path = "../ferric-scf" }
 ndarray = { workspace = true }
 ndarray-linalg = { workspace = true }
+rayon = { workspace = true }
+mpi = { version = "0.7", optional = true }
+
+[features]
+default = []
+mpi = ["dep:mpi"]
 
 [dev-dependencies]
 serde = { workspace = true }

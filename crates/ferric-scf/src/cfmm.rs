@@ -12,6 +12,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ndarray::Array2;
 
 /// A box in the CFMM octree.
+#[derive(Debug)]
 pub struct CfmmBox {
     pub center: [f64; 3],
     pub width: f64,
@@ -113,7 +114,6 @@ impl CfmmJ {
     pub fn upward_pass(&mut self, d: &Array2<f64>) {
         self.root.compute_multipoles(d, &self.prep, self.l_max);
     }
-}
 
     /// Step 2: Downward Pass. Translate multipoles to local expansions (M2L)
     /// and propagate local expansions (L2L).
@@ -145,16 +145,27 @@ impl CfmmBox {
         if let Some(children) = &mut self.children {
             for child in children.iter_mut() {
                 child.compute_multipoles(d, prep, l_max);
-                self.translate_multipoles_up(child, l_max);
+            }
+            for i in 0..8 {
+                let child_multipoles = children[i].multipoles.clone();
+                let child_center = children[i].center;
+                let d_vec = [
+                    child_center[0] - self.center[0],
+                    child_center[1] - self.center[1],
+                    child_center[2] - self.center[2],
+                ];
+                shift_cartesian(&child_multipoles, &mut self.multipoles, d_vec, l_max);
             }
         } else {
-            for &sh_idx in &self.shell_indices {
+            let indices = self.shell_indices.clone();
+            for sh_idx in indices {
                 self.add_shell_multipoles(sh_idx, d, prep, l_max);
             }
         }
     }
 
     /// Downward Pass: M2L and L2L.
+    #[allow(unused_variables)]
     pub fn compute_local_expansions(&mut self, parent: Option<&CfmmBox>, l_max: usize) {
         let n_moments = (l_max + 1) * (l_max + 2) * (l_max + 3) / 6;
         self.local_exp = vec![0.0; n_moments];
@@ -171,7 +182,7 @@ impl CfmmBox {
         }
 
         // 3. Recurse to children
-        if let Some(children) = &mut self.children {
+        if let Some(_children) = &mut self.children {
             // Need a trick to pass 'self' as parent while mutating children
             // For now, assume we have a way to access parent neighbors
         }
@@ -224,6 +235,11 @@ impl CfmmBox {
         // TODO: Gaussian product moments integral
     }
 
+    fn add_far_field_to_j(&self, _sh_idx: usize, _j: &mut Array2<f64>, _prep: &PreparedBasis, _l_max: usize) {
+        // TODO: evaluate local expansion at shell center
+    }
+
+    #[allow(dead_code)]
     fn translate_multipoles_up(&mut self, child: &CfmmBox, l_max: usize) {
         let d = [
             child.center[0] - self.center[0],
@@ -233,6 +249,7 @@ impl CfmmBox {
         shift_cartesian(&child.multipoles, &mut self.multipoles, d, l_max);
     }
 
+    #[allow(unused_variables)]
     fn translate_local_down(&mut self, parent_exp: &[f64], l_max: usize) {
         // For local expansions, the shift is from parent to child
         // but the formula is slightly different or used in reverse.
@@ -271,10 +288,19 @@ fn shift_cartesian(src: &[f64], dst: &mut [f64], d: [f64; 3], l_max: usize) {
 
 fn ijk_to_idx(i: usize, j: usize, k: usize) -> usize {
     let l = i + j + k;
-    let prev_l_sum = l * (l + 1) * (l + 2) / 6;
-    let curr_l_idx = i * (l - i + 1) + j - (i * (i - 1) / 2); // This depends on ordering
-    // Simplified for now:
-    prev_l_sum + (i * (2 * l - i + 3) / 2) + j // Triangular number logic
+    let base = l * (l + 1) * (l + 2) / 6;
+    // Must match shift_cartesian loop order: i from 0..=l, j from 0..=l-i
+    let mut idx = base;
+    for ip in 0..=l {
+        for jp in 0..=(l - ip) {
+            let kp = l - ip - jp;
+            if ip == i && jp == j && kp == k {
+                return idx;
+            }
+            idx += 1;
+        }
+    }
+    idx
 }
 
 fn n_choose_k(n: usize, k: usize) -> usize {
@@ -337,9 +363,10 @@ mod tests {
         let d = [1.0, 2.0, 3.0];
         shift_cartesian(&src, &mut dst, d, l_max);
         
-        assert_eq!(dst[0], 1.0);
-        assert_eq!(dst[1], 1.0);
-        assert_eq!(dst[2], 2.0);
-        assert_eq!(dst[3], 3.0);
+        // Ordering for l=1: (0,0,1), (0,1,0), (1,0,0)
+        assert_eq!(dst[0], 1.0);       // monopole shifted
+        assert_eq!(dst[1], 3.0);       // (0,0,1) -> dz component
+        assert_eq!(dst[2], 2.0);       // (0,1,0) -> dy component
+        assert_eq!(dst[3], 1.0);       // (1,0,0) -> dx component
     }
 }

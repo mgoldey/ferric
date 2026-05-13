@@ -134,6 +134,13 @@ impl PreparedBasis {
     pub fn max_nprim(&self) -> i32 { self.max_nprim }
     /// Maximum angular momentum across all shells.
     pub fn max_l(&self) -> i32 { self.max_l }
+    /// Cartesian center of each shell (from its atom).
+    pub fn shell_centers(&self) -> Vec<[f64; 3]> {
+        self.shell_to_atom.iter().map(|&ai| {
+            let a = &self.atoms[ai];
+            [a.x, a.y, a.z]
+        }).collect()
+    }
 }
 
 impl Drop for PreparedBasis {
