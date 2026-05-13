@@ -1,19 +1,14 @@
-//! RI-MP2 nuclear gradient via central finite differences.
-//!
-//! Computes dE_total/dR for E_total = E_HF + E_MP2(RI) by displacing each
-//! nuclear coordinate by +/- delta and taking the central difference.
-//!
-//! This is O(6*N_atoms * cost_of_RI-MP2) but is exact (up to FD truncation)
-//! and serves as the reference implementation for validating future analytical
-//! gradient code.
+//! RI-MP2 nuclear gradients: analytical and finite-difference reference.
 
-use crate::rimp2::{ri_mp2, RiMp2Config};
+use crate::rimp2::{ri_mp2, compute_mp2_intermediates, RiMp2Config};
+use crate::zvector::{solve_zvector, build_relaxed_density_ao, build_relaxed_w_ao};
 use ferric_core::basis::BasisSet;
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_scf::rhf::{solve_rhf, RhfConfig};
+use ferric_scf::gradient::hf_gradient_with_density;
+use ferric_scf::rhf::{solve_rhf, RhfConfig, RhfResult};
 use ferric_scf::screening::SchwarzBounds;
 use ndarray::Array2;
 
@@ -74,6 +69,77 @@ pub fn rimp2_gradient_fd(
             grad[(atom, coord)] = (e_p - e_m) / (2.0 * delta);
         }
     }
+    Ok(grad)
+}
+
+/// Compute the analytical RI-MP2 nuclear gradient.
+///
+/// Uses the Z-vector / relaxed density approach:
+/// 1. Compute MP2 intermediates (t2, B, P_oo, P_vv)
+/// 2. Solve the Z-vector equation for orbital response
+/// 3. Build relaxed density and energy-weighted density in AO basis
+/// 4. Evaluate gradient via `hf_gradient_with_density` (DRY reuse of RHF gradient infrastructure)
+///
+/// Note: the Lagrangian currently only includes P*F terms (no integral response).
+/// The 3-center and 2-center derivative contributions are also TODO.
+/// The gradient will be approximate until these are added.
+pub fn rimp2_gradient_analytical(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    rhf: &RhfResult,
+    config: &RiMp2Config,
+) -> Result<Array2<f64>, FerricError> {
+    let inter = compute_mp2_intermediates(mol, obs, dfbs, op, rhf, config)?;
+
+    let (z, l) = solve_zvector(mol, obs, bounds, rhf, &inter)?;
+
+    let p_relax_ao = build_relaxed_density_ao(
+        &rhf.mos, &inter.p_oo, &inter.p_vv, &z,
+        inter.nocc, inter.nvir, inter.nocc_total, inter.first_occ,
+    );
+
+    let nocc_total = inter.nocc_total;
+    let f_mo = rhf.mos.t().dot(&rhf.fock).dot(&rhf.mos);
+    let nmo = rhf.mos.ncols();
+    let mut p_relax_mo = Array2::zeros((nmo, nmo));
+    for i in 0..inter.nocc {
+        let i_mo = inter.first_occ + i;
+        p_relax_mo[(i_mo, i_mo)] += 2.0;
+        for j in 0..inter.nocc {
+            let j_mo = inter.first_occ + j;
+            p_relax_mo[(i_mo, j_mo)] += inter.p_oo[(i, j)];
+        }
+    }
+    for a in 0..inter.nvir {
+        let a_mo = nocc_total + a;
+        for b in 0..inter.nvir {
+            let b_mo = nocc_total + b;
+            p_relax_mo[(a_mo, b_mo)] += inter.p_vv[(a, b)];
+        }
+    }
+    for a in 0..inter.nvir {
+        let a_mo = nocc_total + a;
+        for i in 0..inter.nocc {
+            let i_mo = inter.first_occ + i;
+            p_relax_mo[(a_mo, i_mo)] += z[(a, i)];
+            p_relax_mo[(i_mo, a_mo)] += z[(a, i)];
+        }
+    }
+
+    let w_relax_ao = build_relaxed_w_ao(
+        &rhf.mos, &f_mo, &p_relax_mo, &l,
+        inter.nocc, inter.nvir, nocc_total, inter.first_occ,
+    );
+
+    // Use the parameterized HF gradient with relaxed densities
+    let grad = hf_gradient_with_density(mol, obs, op, bounds, &p_relax_ao, &w_relax_ao)?;
+
+    // TODO: add 3-center and 2-center derivative contributions
+    // TODO: add integral response terms to the Lagrangian
+
     Ok(grad)
 }
 
@@ -190,6 +256,62 @@ mod tests {
                 "translational invariance violated: coord={c}, sum={:.2e}",
                 sum
             );
+        }
+    }
+
+    #[test]
+    fn test_analytical_vs_fd_h2() {
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n").unwrap();
+        let obs_bs = basis::bundled("cc-pvdz").unwrap();
+        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+        let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(&mol, &obs, op, &bounds, &RhfConfig { energy_conv: 1e-10, ..Default::default() }).unwrap();
+        let config = RiMp2Config::default();
+
+        let analytical = rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config).unwrap();
+        let fd = rimp2_gradient_fd(&mol, &obs_bs, &aux_bs, op, &config, 1e-4).unwrap();
+
+        eprintln!("=== H2/cc-pVDZ Analytical vs FD RI-MP2 gradient ===");
+        let mut max_diff = 0.0f64;
+        for atom in 0..2 {
+            for c in 0..3 {
+                let diff = (analytical[(atom, c)] - fd[(atom, c)]).abs();
+                max_diff = max_diff.max(diff);
+                eprintln!(
+                    "  atom={} coord={}: analytical={:+.8} fd={:+.8} diff={:.2e}",
+                    atom, c, analytical[(atom, c)], fd[(atom, c)], diff
+                );
+            }
+        }
+        eprintln!("  max diff = {:.2e}", max_diff);
+        // NOTE: with incomplete Lagrangian (P*F terms only, no integral response),
+        // the gradient won't match FD perfectly. This test documents the current accuracy.
+        // Target: 1e-5 once integral response terms are added.
+        assert!(max_diff < 1e-2,
+            "analytical vs FD max diff = {:.2e} (expected < 1e-2 for partial Lagrangian)", max_diff);
+    }
+
+    #[test]
+    fn test_analytical_gradient_translational_invariance() {
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n").unwrap();
+        let obs_bs = basis::bundled("cc-pvdz").unwrap();
+        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+        let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(&mol, &obs, op, &bounds, &RhfConfig { energy_conv: 1e-10, ..Default::default() }).unwrap();
+        let config = RiMp2Config::default();
+
+        let grad = rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config).unwrap();
+
+        for c in 0..3 {
+            let sum: f64 = (0..2).map(|a| grad[(a, c)]).sum();
+            assert!(sum.abs() < 1e-8,
+                "translational invariance: coord={} sum={:.2e}", c, sum);
         }
     }
 }
