@@ -13,3 +13,4 @@ pub mod gradient;
 pub mod oo_rimp2;
 pub mod attenuated;
 pub mod scs;
+pub mod zvector;
