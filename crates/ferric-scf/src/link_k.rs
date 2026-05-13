@@ -180,3 +180,104 @@ impl KBuilder for LinkK {
         self.dp = None;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fock::KBuilder;
+    use crate::rhf::{build_jk, solve_rhf, RhfConfig};
+    use crate::screening::SchwarzBounds;
+    use ferric_core::basis;
+    use ferric_core::mol::Molecule;
+
+    /// Run RHF to convergence and return the density and molecule.
+    fn converged_density(xyz: &str, basis_name: &str) -> (Array2<f64>, Molecule) {
+        let mol = Molecule::parse_xyz(xyz).unwrap();
+        let bs = basis::bundled(basis_name).unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let config = RhfConfig {
+            energy_conv: 1e-12,
+            density_conv: 1e-10,
+            integral_thresh: 1e-14,
+            ..Default::default()
+        };
+        let result = solve_rhf(&mol, &prep, op, &bounds, &config).unwrap();
+        assert!(result.converged, "RHF did not converge");
+        (result.density, mol)
+    }
+
+    /// Build K using the direct (canonical) method from rhf.rs.
+    fn direct_k(mol: &Molecule, basis_name: &str, d: &Array2<f64>) -> Array2<f64> {
+        let bs = basis::bundled(basis_name).unwrap();
+        let prep = PreparedBasis::new(mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let n = prep.nbasis();
+        let mut j = Array2::zeros((n, n));
+        let mut k = Array2::zeros((n, n));
+        build_jk(&prep, &bounds, 1e-14, d, &mut j, &mut k).unwrap();
+        k
+    }
+
+    /// Build K using LinK.
+    fn link_k(mol: &Molecule, basis_name: &str, d: &Array2<f64>) -> Array2<f64> {
+        let bs = basis::bundled(basis_name).unwrap();
+        let prep = PreparedBasis::new(mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let schwarz = SchwarzBounds::compute(op, &prep).unwrap();
+        let qqr = QqrBounds::new(schwarz, mol, &bs, &prep, op);
+        let n = prep.nbasis();
+        let thresh = 1e-14;
+        let mut link = LinkK::new(prep, qqr, op, thresh);
+        link.update_density(d);
+        let mut k = Array2::zeros((n, n));
+        link.build(d, &mut k).unwrap();
+        k
+    }
+
+    #[test]
+    fn test_link_k_matches_direct_k() {
+        let water_xyz = "3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n";
+        let (d, mol) = converged_density(water_xyz, "sto-3g");
+
+        let k_direct = direct_k(&mol, "sto-3g", &d);
+        let k_link = link_k(&mol, "sto-3g", &d);
+
+        let n = k_direct.nrows();
+        let mut max_diff = 0.0f64;
+        for i in 0..n {
+            for j in 0..n {
+                let diff = (k_direct[(i, j)] - k_link[(i, j)]).abs();
+                max_diff = max_diff.max(diff);
+            }
+        }
+        assert!(
+            max_diff < 1e-10,
+            "LinK K vs direct K max diff = {max_diff:.2e} (water/STO-3G)"
+        );
+    }
+
+    #[test]
+    fn test_link_k_matches_direct_k_ccpvdz() {
+        let water_xyz = "3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n";
+        let (d, mol) = converged_density(water_xyz, "cc-pvdz");
+
+        let k_direct = direct_k(&mol, "cc-pvdz", &d);
+        let k_link = link_k(&mol, "cc-pvdz", &d);
+
+        let n = k_direct.nrows();
+        let mut max_diff = 0.0f64;
+        for i in 0..n {
+            for j in 0..n {
+                let diff = (k_direct[(i, j)] - k_link[(i, j)]).abs();
+                max_diff = max_diff.max(diff);
+            }
+        }
+        assert!(
+            max_diff < 1e-10,
+            "LinK K vs direct K max diff = {max_diff:.2e} (water/cc-pVDZ)"
+        );
+    }
+}
