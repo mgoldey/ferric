@@ -152,7 +152,14 @@ pub fn ri_mp2(
 #[derive(Debug)]
 pub struct Mp2Intermediates {
     pub t2: Vec<f64>,
-    pub b_flat: Array2<f64>,
+    /// B^P_{ia}, shape (naux, nocc*nvir), occ-vir block
+    pub b_ov: Array2<f64>,
+    /// B^P_{ij}, shape (naux, nocc*nocc), occ-occ block
+    pub b_oo: Array2<f64>,
+    /// B^P_{ab}, shape (naux, nvir*nvir), vir-vir block
+    pub b_vv: Array2<f64>,
+    /// V^{-1/2} matrix, shape (naux, naux)
+    pub v_inv_sqrt: Array2<f64>,
     pub p_oo: Array2<f64>,
     pub p_vv: Array2<f64>,
     pub nocc: usize,
@@ -164,6 +171,9 @@ pub struct Mp2Intermediates {
 }
 
 /// Compute all MP2 intermediates needed for the analytical gradient.
+///
+/// Builds B tensor blocks for occ-vir, occ-occ, and vir-vir MO pairs,
+/// plus V^{-1/2}, t2 amplitudes, and unrelaxed density corrections.
 pub fn compute_mp2_intermediates(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -179,19 +189,65 @@ pub fn compute_mp2_intermediates(
     let first_occ = config.frozen_core;
     let nvir = nbas - nocc_total;
     let naux = dfbs.nbasis();
+    let c = &rhf.mos;
 
-    let (sc, b_flat) = ri_mp2_spin_components(mol, obs, dfbs, op, rhf, config)?;
+    let v2c = threeindex::coulomb_metric_2c(op, dfbs)?;
+    let v_inv_sqrt = cholesky_inverse_sqrt(&v2c)?;
+    let eri3_ao = threeindex::eri3_tensor(op, obs, dfbs)?;
 
-    let (t2, _) = crate::oo_rimp2::compute_t2_and_integrals(
-        &b_flat, &rhf.orbital_energies, nocc, nvir, nocc_total, first_occ, naux,
+    let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
+    let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
+
+    // B^P_{ia} = V^{-1/2} (P|ia)
+    let eri3_ov = crate::mo_transform::transform_3center_ov(&eri3_ao, &c_occ, &c_vir);
+    let b_ov = v_inv_sqrt.dot(
+        &eri3_ov.into_shape_with_order((naux, nocc * nvir)).unwrap()
     );
 
+    // B^P_{ij} = V^{-1/2} (P|ij)
+    let eri3_oo = crate::mo_transform::transform_3center_ov(&eri3_ao, &c_occ, &c_occ);
+    let b_oo = v_inv_sqrt.dot(
+        &eri3_oo.into_shape_with_order((naux, nocc * nocc)).unwrap()
+    );
+
+    // B^P_{ab} = V^{-1/2} (P|ab)
+    let eri3_vv = crate::mo_transform::transform_3center_ov(&eri3_ao, &c_vir, &c_vir);
+    let b_vv = v_inv_sqrt.dot(
+        &eri3_vv.into_shape_with_order((naux, nvir * nvir)).unwrap()
+    );
+
+    // Energy from occ-vir B tensor
+    let eps = &rhf.orbital_energies;
+    let mut e_os = 0.0;
+    let mut e_ss = 0.0;
+    for i in 0..nocc {
+        for j in 0..nocc {
+            for a in 0..nvir {
+                for b in 0..nvir {
+                    let ia = i * nvir + a;
+                    let jb = j * nvir + b;
+                    let ib = i * nvir + b;
+                    let ja = j * nvir + a;
+                    let eri_iajb: f64 = (0..naux).map(|p| b_ov[(p, ia)] * b_ov[(p, jb)]).sum();
+                    let eri_ibja: f64 = (0..naux).map(|p| b_ov[(p, ib)] * b_ov[(p, ja)]).sum();
+                    let denom = eps[first_occ + i] + eps[first_occ + j]
+                        - eps[nocc_total + a] - eps[nocc_total + b];
+                    e_os += eri_iajb * eri_iajb / denom;
+                    e_ss += eri_iajb * (eri_iajb - eri_ibja) / denom;
+                }
+            }
+        }
+    }
+
+    let (t2, _) = crate::oo_rimp2::compute_t2_and_integrals(
+        &b_ov, &rhf.orbital_energies, nocc, nvir, nocc_total, first_occ, naux,
+    );
     let (p_oo, p_vv) = crate::oo_rimp2::build_mp2_density(&t2, nocc, nvir);
 
     Ok(Mp2Intermediates {
-        t2, b_flat, p_oo, p_vv,
+        t2, b_ov, b_oo, b_vv, v_inv_sqrt, p_oo, p_vv,
         nocc, nvir, nocc_total, first_occ, naux,
-        e_mp2: sc.e_total,
+        e_mp2: e_os + e_ss,
     })
 }
 

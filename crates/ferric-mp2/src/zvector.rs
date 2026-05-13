@@ -8,10 +8,12 @@ use crate::rimp2::Mp2Intermediates;
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
+use ferric_integrals::operator::Operator;
+use ferric_integrals::threeindex;
 use ferric_scf::diis::Diis;
 use ferric_scf::rhf::{build_jk, RhfResult};
 use ferric_scf::screening::SchwarzBounds;
-use ndarray::Array2;
+use ndarray::{Array2, Array3};
 
 /// Solve the Z-vector equation for the RI-MP2 orbital response.
 ///
@@ -20,6 +22,8 @@ use ndarray::Array2;
 pub fn solve_zvector(
     _mol: &Molecule,
     prep: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
     bounds: &SchwarzBounds,
     rhf: &RhfResult,
     inter: &Mp2Intermediates,
@@ -33,9 +37,13 @@ pub fn solve_zvector(
     let c = &rhf.mos;
     let f_mo = c.t().dot(&rhf.fock).dot(c);
 
+    let b_full = crate::oo_rimp2::compute_b_full_mo(prep, dfbs, op, c)?;
+
     let l = build_lagrangian(
-        &f_mo, &inter.t2, &inter.b_flat, &inter.p_oo, &inter.p_vv,
+        &f_mo, &inter.t2, &inter.b_ov, &inter.b_oo, &inter.b_vv,
+        &inter.p_oo, &inter.p_vv,
         eps, nocc, nvir, nocc_total, first_occ, naux,
+        &b_full,
     );
 
     let mut z = Array2::zeros((nvir, nocc));
@@ -85,10 +93,16 @@ pub fn solve_zvector(
 }
 
 /// Build the MP2 Lagrangian L_ai (RHS of the Z-vector equation).
+///
+/// Uses the full-MO B tensor (computed internally) for exact integral response.
+/// The Lagrangian has P*F terms plus 4-term integral response matching the
+/// structure of compute_orbital_gradient in oo_rimp2.
 fn build_lagrangian(
     f_mo: &Array2<f64>,
-    _t2: &[f64],
-    _b_flat: &Array2<f64>,
+    t2: &[f64],
+    _b_ov: &Array2<f64>,
+    _b_oo: &Array2<f64>,
+    _b_vv: &Array2<f64>,
     p_oo: &Array2<f64>,
     p_vv: &Array2<f64>,
     _eps: &[f64],
@@ -97,10 +111,13 @@ fn build_lagrangian(
     nocc_total: usize,
     first_occ: usize,
     _naux: usize,
+    b_full: &Array3<f64>,
 ) -> Array2<f64> {
+    let nov = nocc * nvir;
+    let naux = b_full.shape()[0];
     let mut l = Array2::zeros((nvir, nocc));
 
-    // Term 1: Σ_j P^oo_ij F_aj  (Fock-density contraction, occ block)
+    // P*F terms
     for a in 0..nvir {
         let a_mo = nocc_total + a;
         for i in 0..nocc {
@@ -112,8 +129,6 @@ fn build_lagrangian(
             l[(a, i)] += sum;
         }
     }
-
-    // Term 2: Σ_b P^vv_ab F_bi  (Fock-density contraction, vir block)
     for a in 0..nvir {
         for i in 0..nocc {
             let i_mo = first_occ + i;
@@ -126,9 +141,74 @@ fn build_lagrangian(
         }
     }
 
-    // TODO: integral response terms (needs occ-occ and vir-vir B tensor blocks).
-    // Currently only has P*F terms. The gradient will be approximate until the
-    // integral response terms are added.
+    // Integral response using the same 4-term structure as compute_orbital_gradient.
+    // The orbital gradient g_{ck} = -4*F_{ck} - 2*grad_ck.
+    // The Lagrangian integral part = grad_ck (same raw sum, no extra factor).
+    let eri = |p: usize, q: usize, r: usize, s: usize| -> f64 {
+        (0..naux).map(|aux| b_full[(aux, p, q)] * b_full[(aux, r, s)]).sum()
+    };
+
+    for c_idx in 0..nvir {
+        let c_mo = nocc_total + c_idx;
+        for k in 0..nocc {
+            let k_mo = first_occ + k;
+            let mut grad_ck = 0.0;
+
+            // Term 1 (delta_{ik}→i=k)
+            for j in 0..nocc {
+                let j_mo = first_occ + j;
+                for a in 0..nvir {
+                    let a_mo = nocc_total + a;
+                    for b in 0..nvir {
+                        let b_mo = nocc_total + b;
+                        let t_kj_ab = t2[(k * nvir + a) * nov + j * nvir + b];
+                        grad_ck += t_kj_ab * (2.0 * eri(c_mo, a_mo, j_mo, b_mo) - eri(c_mo, b_mo, j_mo, a_mo));
+                    }
+                }
+            }
+
+            // Term 2 (delta_{jk}→j=k)
+            for i in 0..nocc {
+                let i_mo = first_occ + i;
+                for a in 0..nvir {
+                    let a_mo = nocc_total + a;
+                    for b in 0..nvir {
+                        let b_mo = nocc_total + b;
+                        let t_ik_ab = t2[(i * nvir + a) * nov + k * nvir + b];
+                        grad_ck += t_ik_ab * (2.0 * eri(i_mo, a_mo, c_mo, b_mo) - eri(i_mo, b_mo, c_mo, a_mo));
+                    }
+                }
+            }
+
+            // Term 3 (-delta_{ac}→a=c)
+            for i in 0..nocc {
+                let i_mo = first_occ + i;
+                for j in 0..nocc {
+                    let j_mo = first_occ + j;
+                    for b in 0..nvir {
+                        let b_mo = nocc_total + b;
+                        let t_ij_cb = t2[(i * nvir + c_idx) * nov + j * nvir + b];
+                        grad_ck -= t_ij_cb * (2.0 * eri(i_mo, k_mo, j_mo, b_mo) - eri(i_mo, b_mo, j_mo, k_mo));
+                    }
+                }
+            }
+
+            // Term 4 (-delta_{bc}→b=c)
+            for i in 0..nocc {
+                let i_mo = first_occ + i;
+                for j in 0..nocc {
+                    let j_mo = first_occ + j;
+                    for a in 0..nvir {
+                        let a_mo = nocc_total + a;
+                        let t_ij_ac = t2[(i * nvir + a) * nov + j * nvir + c_idx];
+                        grad_ck -= t_ij_ac * (2.0 * eri(i_mo, a_mo, j_mo, k_mo) - eri(i_mo, k_mo, j_mo, a_mo));
+                    }
+                }
+            }
+
+            l[(c_idx, k)] += grad_ck;
+        }
+    }
 
     l
 }
@@ -314,7 +394,7 @@ mod tests {
         let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
         let inter = compute_mp2_intermediates(&mol, &obs, &dfbs, op, &rhf, &RiMp2Config::default()).unwrap();
 
-        let (z, _l) = solve_zvector(&mol, &obs, &bounds, &rhf, &inter).unwrap();
+        let (z, _l) = solve_zvector(&mol, &obs, &dfbs, Operator::coulomb(), &bounds, &rhf, &inter).unwrap();
 
         // Z should be finite and small
         for a in 0..inter.nvir {
@@ -336,7 +416,7 @@ mod tests {
         let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
         let inter = compute_mp2_intermediates(&mol, &obs, &dfbs, op, &rhf, &RiMp2Config::default()).unwrap();
 
-        let (z, _l) = solve_zvector(&mol, &obs, &bounds, &rhf, &inter).unwrap();
+        let (z, _l) = solve_zvector(&mol, &obs, &dfbs, Operator::coulomb(), &bounds, &rhf, &inter).unwrap();
         let p_ao = build_relaxed_density_ao(
             &rhf.mos, &inter.p_oo, &inter.p_vv, &z,
             inter.nocc, inter.nvir, inter.nocc_total, inter.first_occ,

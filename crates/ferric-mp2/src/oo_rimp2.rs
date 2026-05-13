@@ -84,7 +84,7 @@ pub struct OoRiMp2Result {
 ///
 /// Returns b_full of shape (naux, nmo, nmo) where:
 ///   b_full[(P, p, q)] = sum_Q V^{-1/2}_{PQ} sum_{mu,nu} (Q|mu nu) C_{mu,p} C_{nu,q}
-fn compute_b_full_mo(
+pub fn compute_b_full_mo(
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
     op: Operator,
