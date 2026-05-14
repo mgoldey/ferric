@@ -25,29 +25,33 @@ pub struct LaplaceMp2 {
 use rayon::prelude::*;
 
 impl LaplaceMp2 {
-    /// Create a new Laplace-MP2 builder with n quadrature points.
+    /// Create a Laplace-MP2 builder from orbital energies.
+    ///
+    /// Selects minimax quadrature points for the range [ymin, ymax] where
+    /// ymin = 2*(LUMO - HOMO) and ymax = 2*(eps_max - eps_min).
+    /// Points are from Takatsuka, Ten-no, Hackbusch (JCP 129, 044112, 2008)
+    /// via the Helmich-Paris laplace-minimax library.
     pub fn new(n_quad: usize) -> Self {
-        // Precomputed minimax quadrature for typical gap range.
-        let (points, weights) = match n_quad {
-            3 => (
-                vec![0.113248, 0.825351, 4.36313],
-                vec![0.311158, 0.900375, 4.08979],
-            ),
-            5 => (
-                vec![0.038166, 0.228511, 0.825351, 2.76632, 10.36313],
-                vec![0.106858, 0.355158, 0.900375, 2.48979, 8.12345],
-            ),
-            _ => (
-                vec![0.013, 0.057, 0.16, 0.38, 0.85, 1.9, 4.5, 12.0],
-                vec![0.035, 0.12, 0.28, 0.62, 1.3, 3.1, 7.8, 25.0],
-            ),
-        };
-        LaplaceMp2 { n_quad, points, weights }
+        // Default: will be reinitialized by compute() using actual orbital energies.
+        LaplaceMp2 { n_quad, points: vec![], weights: vec![] }
+    }
+
+    /// Initialize quadrature for orbital energy range [ymin, ymax].
+    ///
+    /// ymin = 2*(LUMO - HOMO), ymax = 2*(eps_max_vir - eps_min_occ).
+    /// The exponents (t) and weights (w) approximate 1/x on [ymin, ymax] as
+    /// 1/x ≈ Σ_k w_k exp(-t_k x). Points are scaled: t_actual = t_table / ymin,
+    /// w_actual = w_table / ymin.
+    fn init_quadrature(&mut self, ymin: f64, ymax: f64) {
+        let r = ymax / ymin;
+        let (raw_t, raw_w) = select_minimax_points(self.n_quad, r);
+        self.points = raw_t.iter().map(|&t| t / ymin).collect();
+        self.weights = raw_w.iter().map(|&w| w / ymin).collect();
     }
 
     /// Compute the MP2 energy using AO-basis Laplace transform.
     pub fn compute(
-        &self,
+        &mut self,
         prep: &PreparedBasis,
         rhf: &RhfResult,
         bounds: &SchwarzBounds,
@@ -55,9 +59,16 @@ impl LaplaceMp2 {
         frozen_core: usize,
     ) -> Result<f64, FerricError> {
         let nbas = prep.nbasis();
-        let nocc_total = (rhf.density.diag().sum().round() as usize) / 2;
+        let nocc_total = rhf.orbital_energies.iter().filter(|&&e| e < 0.0).count();
         let nocc = nocc_total - frozen_core;
         let nvir = nbas - nocc_total;
+
+        let eps = &rhf.orbital_energies;
+        let nmo = eps.len();
+        assert!(nocc_total > 0 && nocc_total < nmo, "nocc_total={nocc_total} nmo={nmo}");
+        let ymin = 2.0 * (eps[nocc_total] - eps[nocc_total - 1]);
+        let ymax = 2.0 * (eps[nmo - 1] - eps[0]);
+        self.init_quadrature(ymin, ymax);
 
         let c = &rhf.mos;
         let eps = &rhf.orbital_energies;
@@ -153,7 +164,7 @@ impl LaplaceMp2 {
     /// Compute the analytical nuclear gradient for AO-Laplace MP2.
     /// Returns a (natoms, 3) array.
     pub fn compute_gradient(
-        &self,
+        &mut self,
         mol: &Molecule,
         prep: &PreparedBasis,
         rhf: &RhfResult,
@@ -163,7 +174,7 @@ impl LaplaceMp2 {
     ) -> Result<Array2<f64>, FerricError> {
         let nbas = prep.nbasis();
         let natoms = prep.shell_to_atom().iter().copied().max().unwrap_or(0) + 1;
-        let nocc_total = (rhf.density.diag().sum().round() as usize) / 2;
+        let nocc_total = rhf.orbital_energies.iter().filter(|&&e| e < 0.0).count();
         let nocc = nocc_total - frozen_core;
         let nvir = nbas - nocc_total;
 
@@ -319,6 +330,80 @@ pub fn build_pseudo_density_vir(
     q
 }
 
+/// Select minimax quadrature exponents and weights for 1/x on [1, R].
+///
+/// Data from Takatsuka, Ten-no, Hackbusch (JCP 129, 044112, 2008)
+/// via Helmich-Paris laplace-minimax library.
+/// Returns (exponents, weights) for the unnormalized interval [1, R].
+fn select_minimax_points(k: usize, r: f64) -> (Vec<f64>, Vec<f64>) {
+    // Table: (R_threshold, exponents, weights) for each k
+    // We pick the entry with the closest R >= r.
+    let table: &[MinimaxEntry] = match k {
+        3 => MINIMAX_K3,
+        5 => MINIMAX_K5,
+        7 => MINIMAX_K7,
+        _ => MINIMAX_K7,
+    };
+
+    for &(r_tab, ref t, ref w) in table.iter().rev() {
+        if r_tab <= r * 1.01 {
+            return (t.to_vec(), w.to_vec());
+        }
+    }
+    // Smallest R entry
+    let (_, ref t, ref w) = table[0];
+    (t.to_vec(), w.to_vec())
+}
+
+type MinimaxEntry = (f64, &'static [f64], &'static [f64]);
+
+static MINIMAX_K3: &[MinimaxEntry] = &[
+    (5.0,   &[1.6607313750141492e-01, 9.7843720854537763e-01, 3.0530159808682455e+00],
+            &[4.3657921050336840e-01, 1.2723305210744182e+00, 3.2151540832501007e+00]),
+    (10.0,  &[1.0644554843011034e-01, 6.7919336467354152e-01, 2.4024163101166760e+00],
+            &[2.8473486758368682e-01, 9.5831151180023555e-01, 2.8443772254878890e+00]),
+    (20.0,  &[6.7901368940589263e-02, 4.8979488750896610e-01, 1.9962015809195739e+00],
+            &[1.8718659453518208e-01, 7.6338571884375950e-01, 2.6169711142660255e+00]),
+    (50.0,  &[3.9082098432306915e-02, 3.5092306837783149e-01, 1.6921947262166477e+00],
+            &[1.1533107566965783e-01, 6.1942325781831142e-01, 2.4405036326787770e+00]),
+    (100.0, &[2.8403804819953280e-02, 2.9983005709471117e-01, 1.5761907592561200e+00],
+            &[8.9215707908966990e-02, 5.6479425010878515e-01, 2.3699428171677330e+00]),
+];
+
+static MINIMAX_K5: &[MinimaxEntry] = &[
+    (5.0,   &[1.0333512117595546e-01, 5.6589985547987387e-01, 1.5002594864446179e+00, 3.1563889823905420e+00, 6.1935841722085909e+00],
+            &[2.6751449382571008e-01, 6.7316481854106480e-01, 1.2341495375414908e+00, 2.1730749987606481e+00, 4.2400491045957720e+00]),
+    (10.0,  &[6.4797316294974178e-02, 3.6329423979113412e-01, 1.0098084995269310e+00, 2.2813077174805523e+00, 4.8771539519428151e+00],
+            &[1.6861003324210627e-01, 4.4474622263913965e-01, 8.9143002224546830e-01, 1.7540776690871602e+00, 3.7773593670209080e+00]),
+    (20.0,  &[3.9791035518631973e-02, 2.3131332253827694e-01, 6.8992455340431735e-01, 1.7098435082055961e+00, 4.0149225768154402e+00],
+            &[1.0434198456045442e-01, 2.9555856650050433e-01, 6.6783133886464374e-01, 1.4788816616452081e+00, 3.4728708916802091e+00]),
+    (50.0,  &[2.0598516936418058e-02, 1.2946507144298772e-01, 4.3979723967050899e-01, 1.2499372840249323e+00, 3.2997722744581939e+00],
+            &[5.4928968471960854e-02, 1.7972260846046623e-01, 4.8760926843571956e-01, 1.2421875649935035e+00, 3.2030368198904093e+00]),
+    (100.0, &[1.2552727540467989e-02, 8.6549394877289257e-02, 3.3100124293713873e-01, 1.0393832416814095e+00, 2.9584699518773347e+00],
+            &[3.4210303487463151e-02, 1.3026229608206730e-01, 4.0415841564587901e-01, 1.1232181675451096e+00, 3.0638169728620763e+00]),
+    (500.0, &[4.4700910206532437e-03, 4.3042233518954816e-02, 2.1332569755781333e-01, 7.9513224013521722e-01, 2.5436793036816292e+00],
+            &[1.3537186918918044e-02, 7.8245171363032009e-02, 3.0503984426641567e-01, 9.7044129821768366e-01, 2.8813614470814399e+00]),
+    (1000.0,&[3.4004600489073895e-03, 3.7149816796614998e-02, 1.9603210903786736e-01, 7.5684838765183138e-01, 2.4761708329681671e+00],
+            &[1.0838272657023281e-02, 7.0764497808673207e-02, 2.8913820910474880e-01, 9.4454172629160815e-01, 2.8500005633404064e+00]),
+];
+
+static MINIMAX_K7: &[MinimaxEntry] = &[
+    (5.0,   &[7.5178012053935581e-02, 4.0394057377108084e-01, 1.0300953839123785e+00, 2.0257208844822334e+00, 3.5300416178849785e+00, 5.8202600945046035e+00, 9.5718793022987914e+00],
+            &[1.9380100796794852e-01, 4.6924355863005290e-01, 7.9463765966869560e-01, 1.2188241997775222e+00, 1.8330663504453952e+00, 2.8441417219183061e+00, 5.0081428000286365e+00]),
+    (10.0,  &[4.6784971919695058e-02, 2.5413109177030713e-01, 6.6202063661281685e-01, 1.3468236945914096e+00, 2.4608175652259985e+00, 4.3018718689144126e+00, 7.5591271744403050e+00],
+            &[1.2090244093952099e-01, 2.9921214711072491e-01, 5.2876236081329564e-01, 8.6523254061261390e-01, 1.4096599453909606e+00, 2.3721982300004751e+00, 4.4850705608595405e+00]),
+    (20.0,  &[2.8397875019357810e-02, 1.5669465451979245e-01, 4.2128353664098478e-01, 9.0071033948500667e-01, 1.7551920884002583e+00, 3.2943879648814645e+00, 6.2167521169331161e+00],
+            &[7.3640943793741087e-02, 1.8809607758877431e-01, 3.5358561229255181e-01, 6.3102636982655691e-01, 1.1268723268357688e+00, 2.0532076958089367e+00, 4.1312146140908652e+00]),
+    (50.0,  &[1.4346616954119040e-02, 8.1686636965124057e-02, 2.3392918256659598e-01, 5.4781736961611505e-01, 1.1828967187208399e+00, 2.4526048384096861e+00, 5.0658409539581051e+00],
+            &[3.7455686176677001e-02, 1.0185840534484672e-01, 2.1485110258922235e-01, 4.3851262496240967e-01, 8.8110126016728485e-01, 1.7621025260651733e+00, 3.8032676122312763e+00]),
+    (100.0, &[8.4890821340208086e-03, 5.0116642014961708e-02, 1.5366998285929265e-01, 3.9160355318450513e-01, 9.1783364668505174e-01, 2.0447798621093103e+00, 4.4889127432163773e+00],
+            &[2.2333642551176373e-02, 6.5162010730403855e-02, 1.5346948447776387e-01, 3.4692296202841277e-01, 7.5471793703896095e-01, 1.6044221299260411e+00, 3.6234684847661183e+00]),
+    (500.0, &[2.5357978643651921e-03, 1.7578759091398184e-02, 6.7613168610773614e-02, 2.1262834171859676e-01, 5.9156023005630420e-01, 1.5113889410817196e+00, 3.7022956650360443e+00],
+            &[6.9203048135253430e-03, 2.6567898179860355e-02, 8.2863747425280715e-02, 2.2897941405638794e-01, 5.7693244244983499e-01, 1.3704988341020230e+00, 3.3539045747733187e+00]),
+    (1000.0,&[1.5465907100920744e-03, 1.2056643172650844e-02, 5.1852489933254427e-02, 1.7661795467136937e-01, 5.2036352547560127e-01, 1.3877091798262136e+00, 3.5126938632453744e+00],
+            &[4.3590321081121135e-03, 1.9739937643250896e-02, 6.8465314092830382e-02, 2.0200683741399486e-01, 5.3305670896838087e-01, 1.3100924544159886e+00, 3.2836589740207804e+00]),
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -347,7 +432,7 @@ mod tests {
             },
         ).unwrap();
 
-        let laplace = LaplaceMp2::new(5);
+        let mut laplace = LaplaceMp2::new(5);
         let e_corr = laplace.compute(&prep, &rhf, &bounds, op, 0).unwrap();
         
         // Laplace MP2 with rough quadrature; check it's finite and non-positive
@@ -369,7 +454,7 @@ mod tests {
             &RhfConfig { energy_conv: 1e-10, ..Default::default() },
         ).unwrap();
 
-        let laplace = LaplaceMp2::new(3);
+        let mut laplace = LaplaceMp2::new(3);
         let grad = laplace.compute_gradient(&mol, &prep, &rhf, &bounds, op, 0).unwrap();
         
         eprintln!("Laplace MP2 gradient (direct term):");
