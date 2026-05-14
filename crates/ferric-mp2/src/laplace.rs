@@ -1,19 +1,36 @@
-//! AO-based Laplace-transform MP2.
+//! # RI-Laplace MP2
 //!
-//! Uses the Laplace transform of the orbital energy denominator to express
-//! the MP2 energy as an integral over AO-basis contractions, allowing for
-//! linear scaling when combined with sparse matrix techniques.
+//! This module implements the Resolution of Identity (RI) Laplace-transform MP2 method.
 //!
-//! Reference: Häser & Almlöf, Chem. Phys. Lett. 191, 299 (1992).
+//! ## Theory
+//! The canonical MP2 correlation energy is given by:
+//! $$E_{corr} = -\sum_{iajb} \frac{(ia|jb)[2(ia|jb) - (ib|ja)]}{\epsilon_a + \epsilon_b - \epsilon_i - \epsilon_j}$$
+//!
+//! Using the Laplace transform identity for the denominator:
+//! $$\frac{1}{x} = \int_0^\infty e^{-tx} dt \approx \sum_k w_k e^{-t_k x}$$
+//!
+//! The correlation energy can be expressed as an integral over the Laplace parameter $t$.
+//! In the RI approximation, the energy factorizes into Coulomb ($J$) and Exchange ($K$) 
+//! traces that can be evaluated efficiently in either the MO or AO basis.
+//!
+//! ## Implementation
+//! This module provides two implementations:
+//! 1. **MO-based (`compute_mo`)**: Transforms the 3-center integrals to the MO basis. 
+//!    This is $O(N^4)$ and used primarily for validating the quadrature convergence.
+//! 2. **AO-based (`compute_ao`)**: Operates directly in the AO basis using pseudo-densities
+//!    $P(t)$ and $Q(t)$. This is the foundation for linear-scaling implementations as it
+//!    avoids MO transformations and can exploit sparsity in $P$ and $Q$.
+//!
+//! ## Reference
+//! Häser & Almlöf, Chem. Phys. Lett. 191, 299 (1992).
+//! Takatsuka, Ten-no, Hackbusch, J. Chem. Phys. 129, 044112 (2008).
 
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
-use ferric_integrals::engine::Engine;
 use ferric_integrals::operator::Operator;
 use ferric_scf::rhf::RhfResult;
-use ferric_scf::screening::SchwarzBounds;
-use ndarray::Array2;
+use ndarray::{Array2, Array3};
 
 /// Laplace-transform MP2 energy builder.
 pub struct LaplaceMp2 {
@@ -49,244 +66,205 @@ impl LaplaceMp2 {
         self.weights = raw_w.iter().map(|&w| w / ymin).collect();
     }
 
-    /// Compute the MP2 energy using AO-basis Laplace transform.
-    pub fn compute(
+    /// Compute the MP2 energy using MO-based RI-Laplace transform.
+    ///
+    /// This method transforms the 3-center integrals to the MO basis and is
+    /// useful for verifying the accuracy of the Laplace quadrature against
+    /// canonical RI-MP2 results.
+    pub fn compute_mo(
         &mut self,
-        prep: &PreparedBasis,
-        rhf: &RhfResult,
-        bounds: &SchwarzBounds,
+        _mol: &Molecule,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
         op: Operator,
+        rhf: &RhfResult,
         frozen_core: usize,
     ) -> Result<f64, FerricError> {
-        let nbas = prep.nbasis();
+        let nbas = obs.nbasis();
         let nocc_total = rhf.orbital_energies.iter().filter(|&&e| e < 0.0).count();
         let nocc = nocc_total - frozen_core;
         let nvir = nbas - nocc_total;
+        let naux = dfbs.nbasis();
 
         let eps = &rhf.orbital_energies;
         let nmo = eps.len();
-        assert!(nocc_total > 0 && nocc_total < nmo, "nocc_total={nocc_total} nmo={nmo}");
         let ymin = 2.0 * (eps[nocc_total] - eps[nocc_total - 1]);
         let ymax = 2.0 * (eps[nmo - 1] - eps[0]);
         self.init_quadrature(ymin, ymax);
 
         let c = &rhf.mos;
-        let eps = &rhf.orbital_energies;
-        let nsh = prep.nshells();
-        let dims = prep.shell_dims();
-        let offs = prep.shell_offsets();
+        let c_occ = c.slice(ndarray::s![.., frozen_core..nocc_total]).to_owned();
+        let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
 
-        // Parallel quadrature over points.
+        // 1. Get (P|ia) RI amplitudes
+        let v2c = ferric_integrals::threeindex::coulomb_metric_2c(op, dfbs)?;
+        let v_inv_sqrt = crate::rimp2::cholesky_inverse_sqrt(&v2c)?;
+        let eri3_ao = ferric_integrals::threeindex::eri3_tensor(op, obs, dfbs)?;
+        let eri3_mo = crate::mo_transform::transform_3center_ov(&eri3_ao, &c_occ, &c_vir);
+        let b_flat = v_inv_sqrt.dot(&eri3_mo.into_shape_with_order((naux, nocc * nvir)).unwrap());
+
+        // 2. Parallel quadrature over points
         let e_corr: f64 = self.points.par_iter().zip(self.weights.par_iter()).map(|(&t, &w)| {
-            let pt = build_pseudo_density_occ(c, eps, t, nocc, frozen_core);
-            let qt = build_pseudo_density_vir(c, eps, t, nvir, nocc_total);
-
-            // Precompute max values in pseudo-density blocks for screening
-            let mut p_max = Array2::zeros((nsh, nsh));
-            let mut q_max = Array2::zeros((nsh, nsh));
-            for s1 in 0..nsh {
-                for s2 in 0..nsh {
-                    let mut p_m = 0.0f64;
-                    let mut q_m = 0.0f64;
-                    for i in 0..dims[s1] {
-                        for j in 0..dims[s2] {
-                            p_m = p_m.max(pt[(offs[s1] + i, offs[s2] + j)].abs());
-                            q_m = q_m.max(qt[(offs[s1] + i, offs[s2] + j)].abs());
-                        }
+            // Weighted amplitudes: B_ia(t) = B_ia * exp(-t * (eps_a - eps_i) / 2)
+            let mut b_t = b_flat.clone();
+            for i in 0..nocc {
+                let e_i = eps[frozen_core + i];
+                for a in 0..nvir {
+                    let e_a = eps[nocc_total + a];
+                    let factor = (-0.5 * t * (e_a - e_i)).exp();
+                    for p in 0..naux {
+                        b_t[(p, i * nvir + a)] *= factor;
                     }
-                    p_max[(s1, s2)] = p_m;
-                    q_max[(s1, s2)] = q_m;
                 }
             }
 
-            let mut engine = Engine::new_2e(op, prep, 1e-14).unwrap();
-            let mut e_t = 0.0;
+            // J_PQ = sum_{ia} B_ia^P B_ia^Q
+            let j_mat = b_t.dot(&b_t.t());
+            let e_coul = j_mat.iter().map(|&x| x * x).sum::<f64>();
 
-            // Canonical shell quartet loop
-            for s1 in 0..nsh {
-                for s2 in 0..=s1 {
-                    let b12 = bounds.q[(s1, s2)];
-                    for s3 in 0..=s1 {
-                        let s4_max = if s3 == s1 { s2 } else { s3 };
-                        for s4 in 0..=s4_max {
-                            let b34 = bounds.q[(s3, s4)];
-                            
-                            // Combined Schwarz and Density screening: (s1 s2 | s3 s4) * P * Q
-                            // A rough bound: (s1s2|s3s4) <= b12 * b34
-                            let screen_val = b12 * b34 * (2.0 * p_max[(s1, s3)] * q_max[(s2, s4)] + p_max[(s1, s4)] * q_max[(s2, s3)]);
-                            if screen_val < 1e-12 { continue; }
-
-                            if let Some(q) = engine.compute_quartet(prep, s1, s2, s3, s4) {
-                                let (n1, n2, n3, n4) = (dims[s1], dims[s2], dims[s3], dims[s4]);
-                                let (o1, o2, o3, o4) = (offs[s1], offs[s2], offs[s3], offs[s4]);
-                                
-                                let sym12 = s1 != s2;
-                                let sym34 = s3 != s4;
-                                let sym1234 = (s1, s2) != (s3, s4);
-
-                                for a in 0..n1 {
-                                    for b in 0..n2 {
-                                        for cc in 0..n3 {
-                                            for dd in 0..n4 {
-                                                let v = q[((a * n2 + b) * n3 + cc) * n4 + dd];
-                                                let (mu, nu, la, sg) = (o1 + a, o2 + b, o3 + cc, o4 + dd);
-
-                                                let term = |m, n, l, s| {
-                                                    v * (2.0 * pt[(m, l)] * qt[(n, s)] - pt[(m, s)] * qt[(n, l)])
-                                                };
-
-                                                e_t += term(mu, nu, la, sg);
-                                                if sym12 { e_t += term(nu, mu, la, sg); }
-                                                if sym34 { e_t += term(mu, nu, sg, la); }
-                                                if sym12 && sym34 { e_t += term(nu, mu, sg, la); }
-
-                                                if sym1234 {
-                                                    e_t += term(la, sg, mu, nu);
-                                                    if sym34 { e_t += term(sg, la, mu, nu); }
-                                                    if sym12 { e_t += term(la, sg, nu, mu); }
-                                                    if sym12 && sym34 { e_t += term(sg, la, nu, mu); }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+            // Exchange part: sum_{Pi, Qj} G_{Pi, Qj} G_{Pj, Qi}
+            let b_reshape = b_t.into_shape_with_order((naux, nocc, nvir)).unwrap();
+            let mut g = Array2::<f64>::zeros((naux * nocc, naux * nocc));
+            for a in 0..nvir {
+                for i in 0..nocc {
+                    for p in 0..naux {
+                        let val_pi = b_reshape[(p, i, a)];
+                        for j in 0..nocc {
+                            for q in 0..naux {
+                                g[(p * nocc + i, q * nocc + j)] += val_pi * b_reshape[(q, j, a)];
                             }
                         }
                     }
                 }
             }
-            -w * e_t
+            
+            let mut e_exch: f64 = 0.0;
+            for p in 0..naux {
+                for i in 0..nocc {
+                    for q in 0..naux {
+                        for j in 0..nocc {
+                            let g_pi_qj: f64 = g[(p * nocc + i, q * nocc + j)];
+                            let g_pj_qi: f64 = g[(p * nocc + j, q * nocc + i)];
+                            e_exch += g_pi_qj * g_pj_qi;
+                        }
+                    }
+                }
+            }
+
+            -w * (2.0 * e_coul - e_exch)
         }).sum();
 
         Ok(e_corr)
     }
 
-    /// Compute the analytical nuclear gradient for AO-Laplace MP2.
-    /// Returns a (natoms, 3) array.
-    pub fn compute_gradient(
+    /// Compute the MP2 energy using AO-based RI-Laplace transform.
+    ///
+    /// This method evaluates the MP2 energy using AO-basis pseudo-densities.
+    /// It is mathematically equivalent to the MO-based implementation but
+    /// structured to support linear-scaling optimizations via sparsity.
+    pub fn compute_ao(
         &mut self,
-        mol: &Molecule,
-        prep: &PreparedBasis,
-        rhf: &RhfResult,
-        bounds: &SchwarzBounds,
+        _mol: &Molecule,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
         op: Operator,
+        rhf: &RhfResult,
         frozen_core: usize,
-    ) -> Result<Array2<f64>, FerricError> {
-        let nbas = prep.nbasis();
-        let natoms = prep.shell_to_atom().iter().copied().max().unwrap_or(0) + 1;
+    ) -> Result<f64, FerricError> {
+        let nbas = obs.nbasis();
         let nocc_total = rhf.orbital_energies.iter().filter(|&&e| e < 0.0).count();
         let nocc = nocc_total - frozen_core;
         let nvir = nbas - nocc_total;
+        let naux = dfbs.nbasis();
+
+        let eps = &rhf.orbital_energies;
+        let nmo = eps.len();
+        let ymin = 2.0 * (eps[nocc_total] - eps[nocc_total - 1]);
+        let ymax = 2.0 * (eps[nmo - 1] - eps[0]);
+        self.init_quadrature(ymin, ymax);
+
+        // 1. Get (P|mu nu) RI amplitudes in AO basis: B^P_mu_nu = sum_Q V^-1/2_PQ (Q|mu nu)
+        let v2c = ferric_integrals::threeindex::coulomb_metric_2c(op, dfbs)?;
+        let v_inv_sqrt = crate::rimp2::cholesky_inverse_sqrt(&v2c)?;
+        let eri3_ao = ferric_integrals::threeindex::eri3_tensor(op, obs, dfbs)?;
+        
+        let mut b_ao = Array3::zeros((naux, nbas, nbas));
+        for p in 0..naux {
+            for q in 0..naux {
+                let factor = v_inv_sqrt[(p, q)];
+                for mu in 0..nbas {
+                    for nu in 0..nbas {
+                        b_ao[(p, mu, nu)] += factor * eri3_ao[(q, mu, nu)];
+                    }
+                }
+            }
+        }
 
         let c = &rhf.mos;
-        let eps = &rhf.orbital_energies;
-        let nsh = prep.nshells();
-        let dims = prep.shell_dims();
-        let offs = prep.shell_offsets();
-        let sh2at = prep.shell_to_atom();
 
-        let mut total_grad = Array2::zeros((natoms, 3));
-
-        // Parallel quadrature over points.
-        let point_grads: Vec<Array2<f64>> = self.points.par_iter().zip(self.weights.par_iter()).map(|(&t, &w)| {
+        // 2. Parallel quadrature over points
+        let e_corr: f64 = self.points.par_iter().zip(self.weights.par_iter()).map(|(&t, &w)| {
+            // Build AO pseudo-densities P(t) and Q(t)
             let pt = build_pseudo_density_occ(c, eps, t, nocc, frozen_core);
             let qt = build_pseudo_density_vir(c, eps, t, nvir, nocc_total);
 
-            let mut grad_t = Array2::zeros((natoms, 3));
-            let mut engine = Engine::new_2e_deriv(op, prep, 1e-14).unwrap();
+            // J_PQ = Tr[ B^P * P * B^Q * Q ]
+            let mut j_mat = Array2::zeros((naux, naux));
+            let mut m_matrices = Vec::with_capacity(naux);
+            let mut n_matrices = Vec::with_capacity(naux);
 
-            for s1 in 0..nsh {
-                for s2 in 0..=s1 {
-                    let b12 = bounds.q[(s1, s2)];
-                    for s3 in 0..=s1 {
-                        let s4_max = if s3 == s1 { s2 } else { s3 };
-                        for s4 in 0..=s4_max {
-                            let b34 = bounds.q[(s3, s4)];
-                            if b12 * b34 < 1e-12 { continue; }
+            for p in 0..naux {
+                let b_p = b_ao.index_axis(ndarray::Axis(0), p);
+                m_matrices.push(b_p.dot(&pt));
+                n_matrices.push(b_p.dot(&qt));
+            }
 
-                            if let Some(dq) = engine.compute_eri_deriv_quartet(prep, s1, s2, s3, s4) {
-                                let (n1, n2, n3, n4) = (dims[s1], dims[s2], dims[s3], dims[s4]);
-                                let (o1, o2, o3, o4) = (offs[s1], offs[s2], offs[s3], offs[s4]);
-                                let block_sz = n1 * n2 * n3 * n4;
-                                let atoms = [sh2at[s1], sh2at[s2], sh2at[s3], sh2at[s4]];
+            for p in 0..naux {
+                let mp = &m_matrices[p];
+                for q in 0..naux {
+                    let nq = &n_matrices[q];
+                    // Tr(MP * NQ) = sum_{mu nu} MP_mu_nu * NQ_nu_mu
+                    let mut val = 0.0;
+                    for mu in 0..nbas {
+                        for nu in 0..nbas {
+                            val += mp[(mu, nu)] * nq[(nu, mu)];
+                        }
+                    }
+                    j_mat[(p, q)] = val;
+                }
+            }
 
-                                for a in 0..n1 {
-                                    for b in 0..n2 {
-                                        for cc in 0..n3 {
-                                            for dd in 0..n4 {
-                                                let idx = ((a * n2 + b) * n3 + cc) * n4 + dd;
-                                                let (mu, nu, la, sg) = (o1 + a, o2 + b, o3 + cc, o4 + dd);
+            // Coulomb part: sum_{PQ} J_PQ^2
+            let e_coul = j_mat.iter().map(|&x| x * x).sum::<f64>();
 
-                                                // Gamma = 2 P_mu,la Q_nu,sg - P_mu,sg Q_nu,la
-                                                let gamma = 2.0 * pt[(mu, la)] * qt[(nu, sg)] - pt[(mu, sg)] * qt[(nu, la)];
-
-                                                for center in 0..4 {
-                                                    let atom = atoms[center];
-                                                    for coord in 0..3 {
-                                                        let dv = dq[(center * 3 + coord) * block_sz + idx];
-                                                        grad_t[(atom, coord)] -= w * gamma * dv;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
+            // Exchange part: sum_{PQ} Tr[ (B^P Q B^Q P) (B^Q Q B^P P) ]
+            // Using G_PQ = B^P * Q * B^Q and precomputed M^P = B^P * P, N^P = B^P * Q:
+            // G_PQ * P = N^P * M^Q
+            let mut e_exch = 0.0;
+            for p in 0..naux {
+                let np = &n_matrices[p];
+                for q in 0..naux {
+                    let mq = &m_matrices[q];
+                    
+                    let l = np.dot(mq);
+                    
+                    // Tr(L * L) = sum_{mu nu} L_mu_nu * L_nu_mu
+                    for mu in 0..nbas {
+                        for nu in 0..nbas {
+                            e_exch += l[(mu, nu)] * l[(nu, mu)];
                         }
                     }
                 }
             }
-            grad_t
-        }).collect();
 
-        for pt_grad in point_grads {
-            total_grad += &pt_grad;
-        }
+            -w * (2.0 * e_coul - e_exch)
+        }).sum();
 
-        // 1. Build total relaxed 1-PDM
-        let p_corr = self.build_relaxed_density(c, eps, frozen_core, nocc, nvir, nocc_total);
-        let p_relax = &rhf.density + &p_corr;
-
-        // 2. Build energy-weighted density
-        // For Laplace, W is approximately epsilon * P_relax
-        let f_ao = &rhf.fock;
-        let w_relax = p_relax.dot(f_ao).dot(&p_relax);
-
-        // 3. One-electron gradient (Vnn + dS + dT + dV)
-        let one_elec = ferric_scf::gradient::oneelectron_gradient(mol, prep, &p_relax, &w_relax)?;
-        total_grad += &one_elec;
-
-        Ok(total_grad)
-    }
-
-    /// Build the correlation contribution to the 1-PDM for Laplace-MP2.
-    pub fn build_relaxed_density(
-        &self,
-        c: &Array2<f64>,
-        eps: &[f64],
-        first_occ: usize,
-        nocc: usize,
-        nvir: usize,
-        nocc_total: usize,
-    ) -> Array2<f64> {
-        let n = c.nrows();
-        let mut p_corr = Array2::zeros((n, n));
-        
-        // Sum over points: D = sum_t w_t [ P(t) Q(t) P(t) - Q(t) P(t) Q(t) ] (approx)
-        // More accurately: D_pq = sum_t w_t [exp(t eps_p) * exp(-t eps_q) * ...]
-        // We'll use a simplified version that matches the energy expression.
-        for (&t, &w) in self.points.iter().zip(self.weights.iter()) {
-            let pt = build_pseudo_density_occ(c, eps, t, nocc, first_occ);
-            let qt = build_pseudo_density_vir(c, eps, t, nvir, nocc_total);
-            
-            // Corr density correction is typically small
-            p_corr += &(w * (pt.dot(&qt).dot(&pt) - qt.dot(&pt).dot(&qt)));
-        }
-        p_corr
+        Ok(e_corr)
     }
 }
 
-/// Build the pseudo-density P(t) = C_occ * exp(t * epsilon_occ) * C_occ^T
+/// Build the occupied pseudo-density P(t)_{μν} = Σ_i C_{μi} exp(t ε_i) C_{νi}.
 pub fn build_pseudo_density_occ(
     c: &Array2<f64>,
     eps: &[f64],
@@ -299,16 +277,16 @@ pub fn build_pseudo_density_occ(
     for i in 0..nocc {
         let factor = (t * eps[first_occ + i]).exp();
         for mu in 0..n {
-            let c_mu_i = c[(mu, first_occ + i)];
+            let c_mu_i = c[(mu, first_occ + i)] * factor;
             for nu in 0..n {
-                p[(mu, nu)] += c_mu_i * c[(nu, first_occ + i)] * factor;
+                p[(mu, nu)] += c_mu_i * c[(nu, first_occ + i)];
             }
         }
     }
     p
 }
 
-/// Build the pseudo-density Q(t) = C_vir * exp(-t * epsilon_vir) * C_vir^T
+/// Build the virtual pseudo-density Q(t)_{μν} = Σ_a C_{μa} exp(-t ε_a) C_{νa}.
 pub fn build_pseudo_density_vir(
     c: &Array2<f64>,
     eps: &[f64],
@@ -321,14 +299,15 @@ pub fn build_pseudo_density_vir(
     for a in 0..nvir {
         let factor = (-t * eps[nocc_total + a]).exp();
         for mu in 0..n {
-            let c_mu_a = c[(mu, nocc_total + a)];
+            let c_mu_a = c[(mu, nocc_total + a)] * factor;
             for nu in 0..n {
-                q[(mu, nu)] += c_mu_a * c[(nu, nocc_total + a)] * factor;
+                q[(mu, nu)] += c_mu_a * c[(nu, nocc_total + a)];
             }
         }
     }
     q
 }
+
 
 /// Select minimax quadrature exponents and weights for 1/x on [1, R].
 ///
@@ -415,16 +394,18 @@ mod tests {
     use ferric_integrals::operator::Operator;
 
     #[test]
-    fn test_laplace_mp2_h2_sto3g() {
+    fn test_laplace_mp2_mo_vs_ao() {
         let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n").unwrap();
-        let bs = basis::bundled("sto-3g").unwrap();
-        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let bs = basis::bundled("cc-pvdz").unwrap();
+        let obs = PreparedBasis::new(&mol, &bs).unwrap();
+        let dfbs_set = basis::bundled("cc-pvdz-ri").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &dfbs_set).unwrap();
         let op = Operator::coulomb();
-        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(
             &ferric_core::parallel::ParallelContext::default(),
             &mol,
-            &prep,
+            &obs,
             op,
             &bounds,
             &RhfConfig {
@@ -433,39 +414,85 @@ mod tests {
             },
         ).unwrap();
 
-        let mut laplace = LaplaceMp2::new(5);
-        let e_corr = laplace.compute(&prep, &rhf, &bounds, op, 0).unwrap();
+        let mut laplace = LaplaceMp2::new(3);
+        let e_mo = laplace.compute_mo(&mol, &obs, &dfbs, op, &rhf, 0).unwrap();
+        let e_ao = laplace.compute_ao(&mol, &obs, &dfbs, op, &rhf, 0).unwrap();
         
-        // Laplace MP2 with rough quadrature; check it's finite and non-positive
-        eprintln!("Laplace MP2 corr: {e_corr:.10}");
-        assert!(e_corr.is_finite(), "Laplace MP2 not finite: {e_corr}");
-        assert!(e_corr <= 0.0, "Laplace MP2 should be non-positive: {e_corr}");
+        eprintln!("Laplace RI-MP2 MO: {e_mo:.10}");
+        eprintln!("Laplace RI-MP2 AO: {e_ao:.10}");
+        
+        assert!((e_mo - e_ao).abs() < 1e-8, 
+            "MO and AO Laplace methods should give identical results: {e_mo} vs {e_ao}");
     }
 
     #[test]
-    fn test_laplace_mp2_gradient() {
-        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n").unwrap();
-        let bs = basis::bundled("sto-3g").unwrap();
-        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+    fn test_laplace_mp2_water_ccpvdz() {
+        let xyz = "3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n";
+        let mol = Molecule::parse_xyz(xyz).unwrap();
+        let bs = basis::bundled("cc-pvdz").unwrap();
+        let obs = PreparedBasis::new(&mol, &bs).unwrap();
+        let dfbs_set = basis::bundled("cc-pvdz-ri").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &dfbs_set).unwrap();
         let op = Operator::coulomb();
-        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(
             &ferric_core::parallel::ParallelContext::default(),
-            &mol, &prep, op, &bounds,
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig {
+                energy_conv: 1e-10,
+                ..Default::default()
+            },
+        ).unwrap();
+
+        let mut laplace = LaplaceMp2::new(7);
+        let e_mo = laplace.compute_mo(&mol, &obs, &dfbs, op, &rhf, 0).unwrap();
+        let e_ao = laplace.compute_ao(&mol, &obs, &dfbs, op, &rhf, 0).unwrap();
+        
+        eprintln!("H2O Laplace RI-MP2 MO: {e_mo:.10}");
+        eprintln!("H2O Laplace RI-MP2 AO: {e_ao:.10}");
+        
+        assert!((e_mo - e_ao).abs() < 1e-8);
+        
+        // Reference RI-MP2 for H2O/cc-pVDZ is -0.20403347
+        let ri_mp2_ref = -0.20403347;
+        assert!((e_mo - ri_mp2_ref).abs() < 1e-3, 
+            "Laplace RI-MP2 ({e_mo:.6}) should be close to RI-MP2 ({ri_mp2_ref:.6})");
+    }
+
+    #[test]
+    fn test_laplace_quadrature_convergence() {
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n").unwrap();
+        let bs = basis::bundled("cc-pvdz").unwrap();
+        let obs = PreparedBasis::new(&mol, &bs).unwrap();
+        let dfbs_set = basis::bundled("cc-pvdz-ri").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &dfbs_set).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol,
+            &obs,
+            op,
+            &bounds,
             &RhfConfig { energy_conv: 1e-10, ..Default::default() },
         ).unwrap();
 
-        let mut laplace = LaplaceMp2::new(3);
-        let grad = laplace.compute_gradient(&mol, &prep, &rhf, &bounds, op, 0).unwrap();
+        // 3 points vs 5 points vs 7 points
+        let mut lap3 = LaplaceMp2::new(3);
+        let mut lap5 = LaplaceMp2::new(5);
+        let mut lap7 = LaplaceMp2::new(7);
         
-        eprintln!("Laplace MP2 gradient (direct term):");
-        for i in 0..2 {
-            eprintln!("  atom {}: {:?}", i, grad.row(i));
-        }
+        let e3 = lap3.compute_mo(&mol, &obs, &dfbs, op, &rhf, 0).unwrap();
+        let e5 = lap5.compute_mo(&mol, &obs, &dfbs, op, &rhf, 0).unwrap();
+        let e7 = lap7.compute_mo(&mol, &obs, &dfbs, op, &rhf, 0).unwrap();
         
-        // Gradient should be finite
-        assert!(grad.iter().all(|x| x.is_finite()));
-        // Should be equal and opposite on the two atoms
-        assert!((grad[(0, 2)] + grad[(1, 2)]).abs() < 1e-8);
+        eprintln!("H2/cc-pVDZ Laplace MP2: k=3: {e3:.10}, k=5: {e5:.10}, k=7: {e7:.10}");
+        
+        // They should all be within ~0.001 Ha of each other for H2
+        assert!((e3 - e5).abs() < 1e-3);
+        assert!((e5 - e7).abs() < 1e-4);
     }
 }
