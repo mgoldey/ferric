@@ -345,13 +345,14 @@ fn select_minimax_points(k: usize, r: f64) -> (Vec<f64>, Vec<f64>) {
         _ => MINIMAX_K7,
     };
 
-    for &(r_tab, ref t, ref w) in table.iter().rev() {
-        if r_tab <= r * 1.01 {
+    // Pick smallest tabulated R that covers our range (R_tab >= R)
+    for &(r_tab, ref t, ref w) in table.iter() {
+        if r_tab >= r * 0.99 {
             return (t.to_vec(), w.to_vec());
         }
     }
-    // Smallest R entry
-    let (_, ref t, ref w) = table[0];
+    // Largest R entry as fallback
+    let (_, ref t, ref w) = table[table.len() - 1];
     (t.to_vec(), w.to_vec())
 }
 
