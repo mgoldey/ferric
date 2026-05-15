@@ -17,5 +17,6 @@ default = []
 mpi = ["dep:mpi", "ferric-core/mpi"]
 
 [dev-dependencies]
+ferric-dft = { path = "../ferric-dft" }
 serde = { workspace = true }
 serde_json = { workspace = true }

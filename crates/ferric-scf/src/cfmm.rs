@@ -1,18 +1,13 @@
-//! Continuous Fast Multipole Method (CFMM) for the Coulomb (J) matrix.
-//!
-//! CFMM achieves O(N) scaling for the Coulomb matrix by using multipole
-//! expansions for far-field interactions and direct integration for near-field
-//! interactions.
-//!
 //! Reference: White & Head-Gordon, J. Chem. Phys. 101, 6593 (1994).
-
-use crate::fock::JBuilder;
-use ferric_core::FerricError;
-use ferric_integrals::basis_bridge::PreparedBasis;
-use ndarray::Array2;
+ 
+ use crate::fock::JBuilder;
+ use ferric_core::FerricError;
+ use ferric_core::basis::BasisSet;
+ use ferric_integrals::basis_bridge::PreparedBasis;
+ use ndarray::Array2;
 
 /// A box in the CFMM octree.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CfmmBox {
     pub center: [f64; 3],
     pub width: f64,
@@ -84,7 +79,7 @@ pub struct CfmmJ {
 }
 
 impl CfmmJ {
-    pub fn new(prep: PreparedBasis, l_max: usize, max_level: usize) -> Self {
+    pub fn new(prep: PreparedBasis, _bs: BasisSet, l_max: usize, max_level: usize) -> Self {
         // Find bounding box for all shells
         let mut min = [f64::INFINITY; 3];
         let mut max = [f64::NEG_INFINITY; 3];
@@ -118,7 +113,8 @@ impl CfmmJ {
     /// Step 2: Downward Pass. Translate multipoles to local expansions (M2L)
     /// and propagate local expansions (L2L).
     pub fn downward_pass(&mut self) {
-        self.root.compute_local_expansions(None, self.l_max);
+        let root_clone = self.root.clone();
+        self.root.compute_local_expansions(None, None, &root_clone, self.l_max);
     }
 
     /// Step 3: Evaluate J. Sum far-field (local exp) and near-field contributions.
@@ -130,9 +126,10 @@ impl CfmmJ {
         self.evaluate_near_field(d, j);
     }
 
-    fn evaluate_near_field(&self, _d: &Array2<f64>, _j: &mut Array2<f64>) {
+    fn evaluate_near_field(&self, d: &Array2<f64>, j: &mut Array2<f64>) {
         // Direct integration for pairs of shells in adjacent leaf boxes.
-        // Uses Schwarz screening for performance.
+        // We use a simple O(N_near) loop over leaf boxes and their neighbors.
+        self.root.evaluate_near_field_recursive(&self.root, d, j, &self.prep);
     }
 }
 
@@ -165,40 +162,70 @@ impl CfmmBox {
     }
 
     /// Downward Pass: M2L and L2L.
-    #[allow(unused_variables)]
-    pub fn compute_local_expansions(&mut self, parent: Option<&CfmmBox>, l_max: usize) {
+    pub fn compute_local_expansions(&mut self, parent_exp: Option<&[f64]>, parent_center: Option<[f64; 3]>, root: &CfmmBox, l_max: usize) {
         let n_moments = (l_max + 1) * (l_max + 2) * (l_max + 3) / 6;
-        self.local_exp = vec![0.0; n_moments];
+        if self.local_exp.is_empty() {
+            self.local_exp = vec![0.0; n_moments];
+        }
 
         // 1. L2L: Inherit and translate from parent
-        if let Some(p) = parent {
-            self.translate_local_down(&p.local_exp, l_max);
+        if let (Some(p_exp), Some(p_center)) = (parent_exp, parent_center) {
+            let d = [
+                self.center[0] - p_center[0],
+                self.center[1] - p_center[1],
+                self.center[2] - p_center[2],
+            ];
+            shift_cartesian(p_exp, &mut self.local_exp, d, l_max);
         }
 
         // 2. M2L: Add far-field contributions from interaction list
-        // Interaction list is computed based on neighbors of parent.
-        if let Some(p) = parent {
-            self.collect_m2l(p, l_max);
-        }
+        // Need parent to find its neighbors. We'll pass the parent center/level instead if needed,
+        // but for now let's just use the root search.
+        self.collect_m2l(parent_center, root, l_max);
 
         // 3. Recurse to children
-        if let Some(_children) = &mut self.children {
-            // Need a trick to pass 'self' as parent while mutating children
-            // For now, assume we have a way to access parent neighbors
+        if let Some(children) = &mut self.children {
+            let my_exp = self.local_exp.clone();
+            let my_center = self.center;
+            for child in children.iter_mut() {
+                child.compute_local_expansions(Some(&my_exp), Some(my_center), root, l_max);
+            }
         }
     }
 
-    fn collect_m2l(&mut self, parent: &CfmmBox, l_max: usize) {
-        // Simple logic: iterate over parent's neighbors' children
-        // and check if they are "well-separated" from this box.
-        if let Some(p_neighbors) = &parent.children { // Simplified: should use actual neighbors
-            for neighbor in p_neighbors.iter() {
+    fn collect_m2l(&mut self, parent_center: Option<[f64; 3]>, root: &CfmmBox, l_max: usize) {
+        if let Some(p_center) = parent_center {
+            let mut neighbors = Vec::new();
+            // Find parent as a box at its level/center
+            // This is a bit inefficient, but avoids borrow issues.
+            // In a production version, we'd store parent/neighbor pointers or indices.
+            root.find_neighbors_by_coords(p_center, self.level - 1, &mut neighbors);
+
+            for neighbor in neighbors {
                 if let Some(n_children) = &neighbor.children {
                     for n_child in n_children.iter() {
                         if self.is_well_separated(n_child) {
                             self.add_m2l_contribution(n_child, l_max);
                         }
                     }
+                }
+            }
+        }
+    }
+
+    fn find_neighbors_by_coords<'a>(&'a self, center: [f64; 3], level: usize, neighbors: &mut Vec<&'a CfmmBox>) {
+        if self.level == level {
+            let dx = (self.center[0] - center[0]).abs();
+            let dy = (self.center[1] - center[1]).abs();
+            let dz = (self.center[2] - center[2]).abs();
+            let threshold = self.width * 1.01; 
+            if dx <= threshold && dy <= threshold && dz <= threshold && self.center != center {
+                neighbors.push(self);
+            }
+        } else if self.level < level {
+            if let Some(children) = &self.children {
+                for child in children.iter() {
+                    child.find_neighbors_by_coords(center, level, neighbors);
                 }
             }
         }
@@ -213,9 +240,44 @@ impl CfmmBox {
         dist > 2.0 * self.width
     }
 
-    fn add_m2l_contribution(&mut self, _other: &CfmmBox, _l_max: usize) {
-        // L_this += Potential_Kernel(M_other)
-        // Uses derivatives of 1/r
+    fn add_m2l_contribution(&mut self, other: &CfmmBox, l_max: usize) {
+        let d = [
+            self.center[0] - other.center[0],
+            self.center[1] - other.center[1],
+            self.center[2] - other.center[2],
+        ];
+        let r2 = d[0]*d[0] + d[1]*d[1] + d[2]*d[2];
+        let _r = r2.sqrt();
+
+        // Compute derivatives of 1/r up to order 2*l_max
+        let h = compute_cartesian_derivatives(d, 2 * l_max);
+
+        let _n_moments = (l_max + 1) * (l_max + 2) * (l_max + 3) / 6;
+        for l in 0..=l_max {
+            for i in 0..=l {
+                for j in 0..=(l - i) {
+                    let k = l - i - j;
+                    let target_idx = ijk_to_idx(i, j, k);
+                    
+                    let mut val = 0.0;
+                    for lp in 0..=l_max {
+                        for ip in 0..=lp {
+                            for jp in 0..=(lp - ip) {
+                                let kp = lp - ip - jp;
+                                let src_idx = ijk_to_idx(ip, jp, kp);
+                                
+                                // Local expansion L_ijk = sum_i'j'k' M_i'j'k' * H_{i+i', j+j', k+k'} * (-1)^lp / (i'! j'! k'!)
+                                let h_idx = ijk_to_idx(i + ip, j + jp, k + kp);
+                                let sign = if lp % 2 == 0 { 1.0 } else { -1.0 };
+                                let fact = factorial(ip) * factorial(jp) * factorial(kp);
+                                val += sign * other.multipoles[src_idx] * h[h_idx] / fact as f64;
+                            }
+                        }
+                    }
+                    self.local_exp[target_idx] += val;
+                }
+            }
+        }
     }
 
     pub fn evaluate_far_field(&self, j: &mut Array2<f64>, prep: &PreparedBasis, l_max: usize) {
@@ -229,6 +291,32 @@ impl CfmmBox {
                 self.add_far_field_to_j(sh_idx, j, prep, l_max);
             }
         }
+    }
+
+    fn evaluate_near_field_recursive(&self, root: &CfmmBox, d: &Array2<f64>, j: &mut Array2<f64>, prep: &PreparedBasis) {
+        if let Some(children) = &self.children {
+            for child in children.iter() {
+                child.evaluate_near_field_recursive(root, d, j, prep);
+            }
+        } else {
+            // This is a leaf. Find neighbors.
+            let mut neighbors = Vec::new();
+            root.find_neighbors_by_coords(self.center, self.level, &mut neighbors);
+            
+            // Add self-interaction
+            self.direct_interaction(self, d, j, prep);
+            
+            // Add neighbor interactions
+            for neighbor in neighbors {
+                if neighbor.children.is_none() { // Neighbor is also a leaf
+                    self.direct_interaction(neighbor, d, j, prep);
+                }
+            }
+        }
+    }
+
+    fn direct_interaction(&self, _other: &CfmmBox, _d: &Array2<f64>, _j: &mut Array2<f64>, _prep: &PreparedBasis) {
+        // TODO: Direct integration for shell pairs
     }
 
     fn add_shell_multipoles(&mut self, _sh_idx: usize, _d: &Array2<f64>, _prep: &PreparedBasis, _l_max: usize) {
@@ -249,12 +337,66 @@ impl CfmmBox {
         shift_cartesian(&child.multipoles, &mut self.multipoles, d, l_max);
     }
 
-    #[allow(unused_variables)]
-    fn translate_local_down(&mut self, parent_exp: &[f64], l_max: usize) {
-        // For local expansions, the shift is from parent to child
-        // but the formula is slightly different or used in reverse.
-        // Actually L2L is similar to M2M for Cartesian.
+}
+
+fn factorial(n: usize) -> usize {
+    (1..=n).product()
+}
+
+fn compute_cartesian_derivatives(d: [f64; 3], l_max: usize) -> Vec<f64> {
+    let n_moments = (l_max + 1) * (l_max + 2) * (l_max + 3) / 6;
+    let mut h = vec![0.0; n_moments];
+    let r2 = d[0]*d[0] + d[1]*d[1] + d[2]*d[2];
+    let r = r2.sqrt();
+    let r_inv = 1.0 / r;
+
+    // We store the polynomial coefficients for P_ijk such that H_ijk = P_ijk / r^(2L+1)
+    // For Cartesian derivatives of 1/r, P_ijk is a polynomial in x, y, z.
+    // Recurrence: P_{i+1, j, k} = r^2 * d/dx P_ijk - (2L+1) * x * P_ijk
+    // where L = i+j+k.
+    
+    // Instead of full polynomial tracking, we can evaluate P_ijk(d) directly.
+    // We need a way to store the results of P_ijk for all i,j,k up to l_max.
+    let mut p_vals = vec![0.0; n_moments];
+    p_vals[0] = 1.0; // P_000 = 1
+
+    for l in 0..l_max {
+        for i in 0..=l {
+            for j in 0..=(l - i) {
+                let k = l - i - j;
+                let cur_idx = ijk_to_idx(i, j, k);
+                let _p = p_vals[cur_idx];
+                
+                // Derivatives of P_ijk: 
+                // Since P_ijk is a polynomial, we'd need its coefficients.
+                // However, there's a simpler recurrence for H directly:
+                // H_{i+1, j, k} = - (2L+1) x/r^2 H_ijk - (term from d/dx P_ijk)
+                // Let's use the known Cartesian solid harmonic recurrence.
+            }
+        }
     }
+
+    // Fallback: order 1 and 2 are easy
+    h[0] = r_inv;
+    if l_max >= 1 {
+        let r3_inv = r_inv * r_inv * r_inv;
+        h[ijk_to_idx(1, 0, 0)] = -d[0] * r3_inv;
+        h[ijk_to_idx(0, 1, 0)] = -d[1] * r3_inv;
+        h[ijk_to_idx(0, 0, 1)] = -d[2] * r3_inv;
+    }
+    if l_max >= 2 {
+        let r5_inv = r_inv.powi(5);
+        // H_200 = d/dx (-x/r^3) = -1/r^3 + 3x^2/r^5
+        h[ijk_to_idx(2, 0, 0)] = -r_inv.powi(3) + 3.0 * d[0]*d[0] * r5_inv;
+        h[ijk_to_idx(0, 2, 0)] = -r_inv.powi(3) + 3.0 * d[1]*d[1] * r5_inv;
+        h[ijk_to_idx(0, 0, 2)] = -r_inv.powi(3) + 3.0 * d[2]*d[2] * r5_inv;
+        // H_110 = d/dy (-x/r^3) = 3xy/r^5
+        h[ijk_to_idx(1, 1, 0)] = 3.0 * d[0]*d[1] * r5_inv;
+        h[ijk_to_idx(1, 0, 1)] = 3.0 * d[0]*d[2] * r5_inv;
+        h[ijk_to_idx(0, 1, 1)] = 3.0 * d[1]*d[2] * r5_inv;
+    }
+
+    h
 }
 
 /// Shift Cartesian expansion from center C to C' (D = C - C')
@@ -313,11 +455,12 @@ fn n_choose_k(n: usize, k: usize) -> usize {
 }
 
 impl JBuilder for CfmmJ {
-    fn build(&mut self, d: &Array2<f64>, j: &mut Array2<f64>) -> Result<(), FerricError> {
+    fn build(&mut self, d: &Array2<f64>, j: &mut Array2<f64>) -> Result<usize, FerricError> {
         self.upward_pass(d);
-        self.downward_pass();
+        let root_clone = self.root.clone(); 
+        self.root.compute_local_expansions(None, None, &root_clone, self.l_max);
         self.evaluate_j(d, j);
-        Ok(())
+        Ok(0)
     }
 
     fn reset(&mut self) {

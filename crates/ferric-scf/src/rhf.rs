@@ -4,7 +4,12 @@
 //! and Schwarz-screened two-electron integral evaluation.
 
 use crate::diis::Diis;
+use crate::direct_j::DirectJ;
+use crate::direct_k::DirectK;
+use crate::fock::{JBuilder, KBuilder};
 use crate::guess::hcore_guess;
+
+use crate::link_k::LinkK;
 use crate::screening::SchwarzBounds;
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
@@ -24,6 +29,8 @@ pub struct RhfConfig {
     pub density_conv: f64,
     pub diis_size: usize,
     pub integral_thresh: f64,
+    /// Choose K matrix builder: "direct" (default) or "link".
+    pub k_builder: Option<String>,
 }
 
 impl Default for RhfConfig {
@@ -34,6 +41,7 @@ impl Default for RhfConfig {
             density_conv: 1e-7,
             diis_size: 8,
             integral_thresh: 1e-12,
+            k_builder: None,
         }
     }
 }
@@ -55,6 +63,8 @@ pub struct RhfResult {
     pub converged: bool,
     /// Number of SCF iterations performed.
     pub iterations: usize,
+    /// Total number of shell quartets computed across all iterations.
+    pub computed_quartets: usize,
 }
 
 /// Solve the closed-shell RHF equations for a molecule.
@@ -67,7 +77,7 @@ pub fn solve_rhf(
     ctx: &ParallelContext,
     mol: &Molecule,
     prep: &PreparedBasis,
-    _op: Operator,
+    op: Operator,
     bounds: &SchwarzBounds,
     config: &RhfConfig,
 ) -> Result<RhfResult, FerricError> {
@@ -88,6 +98,26 @@ pub fn solve_rhf(
     let mut f = Array2::zeros((n, n));
     let mut diis = Diis::new(config.diis_size);
     let mut prev_e = 0.0;
+    let mut total_quartets = 0;
+
+    if let Some(kb) = config.k_builder.as_deref() {
+        if kb != "direct" && kb != "link" {
+            return Err(FerricError::General(format!("unknown k_builder '{kb}': valid options are 'direct', 'link'")));
+        }
+    }
+
+    // Build LinkK once — SignificantPairs is geometry-dependent and expensive per iteration.
+    // When using the "link" builder, compute a fresh SchwarzBounds to own the lifetime.
+    let link_schwarz_opt = if config.k_builder.as_deref() == Some("link") {
+        Some(SchwarzBounds::compute(op, prep)?)
+    } else {
+        None
+    };
+    let mut k_builder: Option<Box<dyn KBuilder>> = link_schwarz_opt.as_ref().map(|sb| {
+        let mut lk = LinkK::new(ctx, prep, sb, op, config.integral_thresh);
+        lk.update_density(&d);
+        Box::new(lk) as Box<dyn KBuilder>
+    });
 
     // Precompute S^{-1/2} for diagonalization
     let (s_evals, s_evecs) = s
@@ -104,10 +134,21 @@ pub fn solve_rhf(
     }
 
     for iter in 1..=config.max_iter {
-        // Build J and K
+        ctx.check_interrupted()?;
+        // Build J and K using selected builder
         let mut j = Array2::zeros((n, n));
         let mut k = Array2::zeros((n, n));
-        build_jk(ctx, prep, bounds, config.integral_thresh, &d, &mut j, &mut k)?;
+        // J always uses DirectJ
+        let mut direct_j = DirectJ::new(ctx, prep, bounds, config.integral_thresh);
+        total_quartets += direct_j.build(&d, &mut j)?;
+        // Choose K builder: use pre-built LinkK if configured, else DirectK
+        if let Some(lk) = k_builder.as_mut() {
+            lk.update_density(&d);
+            total_quartets += lk.build(&d, &mut k)?;
+        } else {
+            let mut direct_k = DirectK::new(ctx, prep, bounds, config.integral_thresh);
+            total_quartets += direct_k.build(&d, &mut k)?;
+        }
 
         // F = H + J - 0.5*K
         f.assign(&(&h + &j - &(0.5 * &k)));
@@ -137,6 +178,7 @@ pub fn solve_rhf(
                 fock: f,
                 converged: true,
                 iterations: iter,
+                computed_quartets: total_quartets,
             });
         }
         prev_e = energy;
@@ -173,114 +215,137 @@ pub fn build_jk(
     d: &Array2<f64>,
     j: &mut Array2<f64>,
     k: &mut Array2<f64>,
-) -> Result<(), FerricError> {
+) -> Result<usize, FerricError> {
+    use rayon::prelude::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    ctx.check_interrupted()?;
+
     let nsh = prep.nshells();
+    let nbf = prep.nbasis();
     let dims = prep.shell_dims();
     let offs = prep.shell_offsets();
     let max_d = d.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
-    let mut engine = Engine::new_2e(bounds.op, prep, 1e-14)?;
+    let computed_quartets = AtomicUsize::new(0);
 
-    // Loop over canonical shell quartets: s1>=s2, s3>=s4, (s1,s2)>=(s3,s4)
-    // For each integral (mu nu | la sg), we have up to 8 equivalent integrals.
-    // Degeneracy factors based on which shell symmetries are broken:
-    //   f12 = if s1==s2 { 1 } else { 2 }  — bra permutation symmetry
-    //   f34 = if s3==s4 { 1 } else { 2 }  — ket permutation symmetry
-    //   f1234 = if (s1,s2)==(s3,s4) { 1 } else { 2 }  — bra-ket symmetry
-    //
-    // We accumulate into J and K by enumerating all equivalent permutations explicitly.
+    let shell_pairs: Vec<_> = (0..nsh)
+        .flat_map(|s1| (0..=s1).map(move |s2| (s1, s2)))
+        .collect();
 
-    let mut q_idx = 0;
-    for s1 in 0..nsh {
-        for s2 in 0..=s1 {
+    let total_jk = shell_pairs.into_par_iter().fold(
+        || (
+            Engine::new_2e(bounds.op, prep, 1e-14).unwrap(),
+            Array2::zeros((nbf, nbf)),
+            Array2::zeros((nbf, nbf)),
+            0usize
+        ),
+        |(mut engine, mut local_j, mut local_k, mut local_count), (s1, s2)| {
+            if ferric_core::INTERRUPT.load(std::sync::atomic::Ordering::Relaxed) {
+                return (engine, local_j, local_k, local_count);
+            }
             let b12 = bounds.q[(s1, s2)];
+            let (n1, n2) = (dims[s1], dims[s2]);
+            let (o1, o2) = (offs[s1], offs[s2]);
+            let sym12 = s1 != s2;
+
             for s3 in 0..=s1 {
+                if s3 % 100 == 0 && ferric_core::INTERRUPT.load(Ordering::Relaxed) {
+                    return (engine, local_j, local_k, local_count);
+                }
                 let s4max = if s3 == s1 { s2 } else { s3 };
                 for s4 in 0..=s4max {
-                    if q_idx % ctx.size != ctx.rank {
-                        q_idx += 1;
-                        continue;
-                    }
-                    q_idx += 1;
                     let b34 = bounds.q[(s3, s4)];
                     if b12 * b34 * max_d < thresh {
                         continue;
                     }
-                    let quartet = engine.compute_quartet(prep, s1, s2, s3, s4);
-                    if let Some(q) = quartet {
-                        let (n1, n2, n3, n4) = (dims[s1], dims[s2], dims[s3], dims[s4]);
-                        let (o1, o2, o3, o4) = (offs[s1], offs[s2], offs[s3], offs[s4]);
-                        let sym12 = s1 != s2;
+
+                    if let Some(q) = engine.compute_quartet(prep, s1, s2, s3, s4) {
+                        local_count += 1;
+                        let (n3, n4) = (dims[s3], dims[s4]);
+                        let (o3, o4) = (offs[s3], offs[s4]);
                         let sym34 = s3 != s4;
                         let sym1234 = (s1, s2) != (s3, s4);
+
+                        // Fast-path for STO-3G / small shells (n=1)
+                        if n1 == 1 && n2 == 1 && n3 == 1 && n4 == 1 {
+                            let v = unsafe { *q.get_unchecked(0) };
+                            unsafe {
+                                *local_j.uget_mut((o1, o2)) += d.uget((o3, o4)) * v;
+                                *local_k.uget_mut((o1, o3)) += d.uget((o2, o4)) * v;
+                                if sym12 {
+                                    *local_j.uget_mut((o2, o1)) += d.uget((o3, o4)) * v;
+                                    *local_k.uget_mut((o2, o3)) += d.uget((o1, o4)) * v;
+                                }
+                                if sym34 {
+                                    *local_j.uget_mut((o1, o2)) += d.uget((o4, o3)) * v;
+                                    *local_k.uget_mut((o1, o4)) += d.uget((o2, o3)) * v;
+                                }
+                                if sym12 && sym34 {
+                                    *local_j.uget_mut((o2, o1)) += d.uget((o4, o3)) * v;
+                                    *local_k.uget_mut((o2, o4)) += d.uget((o1, o3)) * v;
+                                }
+                                if sym1234 {
+                                    *local_j.uget_mut((o3, o4)) += d.uget((o1, o2)) * v;
+                                    *local_k.uget_mut((o3, o1)) += d.uget((o4, o2)) * v;
+                                    if sym12 {
+                                        *local_j.uget_mut((o3, o4)) += d.uget((o2, o1)) * v;
+                                        *local_k.uget_mut((o3, o2)) += d.uget((o4, o1)) * v;
+                                    }
+                                    if sym34 {
+                                        *local_j.uget_mut((o4, o3)) += d.uget((o1, o2)) * v;
+                                        *local_k.uget_mut((o4, o1)) += d.uget((o3, o2)) * v;
+                                    }
+                                    if sym12 && sym34 {
+                                        *local_j.uget_mut((o4, o3)) += d.uget((o2, o1)) * v;
+                                        *local_k.uget_mut((o4, o2)) += d.uget((o3, o1)) * v;
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+
+                        // General path for larger shells
                         for a in 0..n1 {
                             for b in 0..n2 {
                                 for c in 0..n3 {
                                     for dd in 0..n4 {
-                                        let v = q[((a * n2 + b) * n3 + c) * n4 + dd];
+                                        let v = unsafe { *q.get_unchecked(((a * n2 + b) * n3 + c) * n4 + dd) };
                                         let mu = o1 + a;
                                         let nu = o2 + b;
                                         let la = o3 + c;
                                         let sg = o4 + dd;
 
-                                        // (mu nu | la sg) — always present
-                                        // J: J[mu,nu] += D[la,sg] * v
-                                        // K: K[mu,la] += D[nu,sg] * v
-                                        j[(mu, nu)] += d[(la, sg)] * v;
-                                        k[(mu, la)] += d[(nu, sg)] * v;
-
-                                        if sym12 {
-                                            // (nu mu | la sg)
-                                            // J: J[nu,mu] += D[la,sg] * v
-                                            // K: K[nu,la] += D[mu,sg] * v
-                                            j[(nu, mu)] += d[(la, sg)] * v;
-                                            k[(nu, la)] += d[(mu, sg)] * v;
-                                        }
-
-                                        if sym34 {
-                                            // (mu nu | sg la)
-                                            // J: J[mu,nu] += D[sg,la] * v  (same as D[la,sg] for symmetric D)
-                                            // K: K[mu,sg] += D[nu,la] * v
-                                            j[(mu, nu)] += d[(sg, la)] * v;
-                                            k[(mu, sg)] += d[(nu, la)] * v;
-                                        }
-
-                                        if sym12 && sym34 {
-                                            // (nu mu | sg la)
-                                            // J: J[nu,mu] += D[sg,la] * v
-                                            // K: K[nu,sg] += D[mu,la] * v
-                                            j[(nu, mu)] += d[(sg, la)] * v;
-                                            k[(nu, sg)] += d[(mu, la)] * v;
-                                        }
-
-                                        if sym1234 {
-                                            // (la sg | mu nu)
-                                            // J: J[la,sg] += D[mu,nu] * v
-                                            // K: K[la,mu] += D[sg,nu] * v
-                                            j[(la, sg)] += d[(mu, nu)] * v;
-                                            k[(la, mu)] += d[(sg, nu)] * v;
-
-                                            if sym34 {
-                                                // (sg la | mu nu)
-                                                // J: J[sg,la] += D[mu,nu] * v
-                                                // K: K[sg,mu] += D[la,nu] * v
-                                                j[(sg, la)] += d[(mu, nu)] * v;
-                                                k[(sg, mu)] += d[(la, nu)] * v;
-                                            }
+                                        unsafe {
+                                            *local_j.uget_mut((mu, nu)) += d.uget((la, sg)) * v;
+                                            *local_k.uget_mut((mu, la)) += d.uget((nu, sg)) * v;
 
                                             if sym12 {
-                                                // (la sg | nu mu)
-                                                // J: J[la,sg] += D[nu,mu] * v
-                                                // K: K[la,nu] += D[sg,mu] * v
-                                                j[(la, sg)] += d[(nu, mu)] * v;
-                                                k[(la, nu)] += d[(sg, mu)] * v;
+                                                *local_j.uget_mut((nu, mu)) += d.uget((la, sg)) * v;
+                                                *local_k.uget_mut((nu, la)) += d.uget((mu, sg)) * v;
                                             }
-
+                                            if sym34 {
+                                                *local_j.uget_mut((mu, nu)) += d.uget((sg, la)) * v;
+                                                *local_k.uget_mut((mu, sg)) += d.uget((nu, la)) * v;
+                                            }
                                             if sym12 && sym34 {
-                                                // (sg la | nu mu)
-                                                // J: J[sg,la] += D[nu,mu] * v
-                                                // K: K[sg,nu] += D[la,mu] * v
-                                                j[(sg, la)] += d[(nu, mu)] * v;
-                                                k[(sg, nu)] += d[(la, mu)] * v;
+                                                *local_j.uget_mut((nu, mu)) += d.uget((sg, la)) * v;
+                                                *local_k.uget_mut((nu, sg)) += d.uget((mu, la)) * v;
+                                            }
+                                            if sym1234 {
+                                                *local_j.uget_mut((la, sg)) += d.uget((mu, nu)) * v;
+                                                *local_k.uget_mut((la, mu)) += d.uget((sg, nu)) * v;
+                                                if sym12 {
+                                                    *local_j.uget_mut((la, sg)) += d.uget((nu, mu)) * v;
+                                                    *local_k.uget_mut((la, nu)) += d.uget((sg, mu)) * v;
+                                                }
+                                                if sym34 {
+                                                    *local_j.uget_mut((sg, la)) += d.uget((mu, nu)) * v;
+                                                    *local_k.uget_mut((sg, mu)) += d.uget((la, nu)) * v;
+                                                }
+                                                if sym12 && sym34 {
+                                                    *local_j.uget_mut((sg, la)) += d.uget((nu, mu)) * v;
+                                                    *local_k.uget_mut((sg, nu)) += d.uget((la, mu)) * v;
+                                                }
                                             }
                                         }
                                     }
@@ -290,8 +355,22 @@ pub fn build_jk(
                     }
                 }
             }
+            (engine, local_j, local_k, local_count)
         }
-    }
+    ).map(|(_, j, k, count)| {
+        computed_quartets.fetch_add(count, Ordering::Relaxed);
+        (j, k)
+    }).reduce(
+        || (Array2::zeros((nbf, nbf)), Array2::zeros((nbf, nbf))),
+        |mut acc, next| {
+            acc.0 += &next.0;
+            acc.1 += &next.1;
+            acc
+        }
+    );
+
+    *j += &total_jk.0;
+    *k += &total_jk.1;
 
     #[cfg(feature = "mpi")]
     if let Some(world) = &ctx.world {
@@ -303,7 +382,7 @@ pub fn build_jk(
         *k = k_global;
     }
 
-    Ok(())
+    Ok(computed_quartets.load(Ordering::SeqCst))
 }
 
 fn diagonalize(
