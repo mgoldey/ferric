@@ -3,45 +3,62 @@
 use ndarray::{Array2, Array3};
 
 /// Transform (P|mu nu) -> (P|ia) where i=occupied, a=virtual.
-///
-/// c_occ: (nbasis, nocc), c_vir: (nbasis, nvir), eri3_ao: (naux, nbasis, nbasis)
-/// Returns: (naux, nocc, nvir)
 pub fn transform_3center_ov(
     eri3_ao: &Array3<f64>,
     c_occ: &Array2<f64>,
     c_vir: &Array2<f64>,
 ) -> Array3<f64> {
     let naux = eri3_ao.shape()[0];
-    let nbas = eri3_ao.shape()[1];
     let nocc = c_occ.ncols();
     let nvir = c_vir.ncols();
 
-    // Half-transform: (P|mu nu) C_occ[nu,i] -> (P|mu,i)
-    let mut half = Array3::zeros((naux, nbas, nocc));
-    for p in 0..naux {
-        for mu in 0..nbas {
-            for i in 0..nocc {
-                let mut sum = 0.0;
-                for nu in 0..nbas {
-                    sum += eri3_ao[(p, mu, nu)] * c_occ[(nu, i)];
-                }
-                half[(p, mu, i)] = sum;
-            }
-        }
-    }
-
-    // Second half: C_vir[mu,a]^T (P|mu,i) -> (P|i,a)
     let mut mo = Array3::zeros((naux, nocc, nvir));
     for p in 0..naux {
-        for i in 0..nocc {
-            for a in 0..nvir {
-                let mut sum = 0.0;
-                for mu in 0..nbas {
-                    sum += c_vir[(mu, a)] * half[(p, mu, i)];
-                }
-                mo[(p, i, a)] = sum;
-            }
-        }
+        let bp_ao = eri3_ao.slice(ndarray::s![p, .., ..]);
+        // B^P_ia = C_occ^T * B^P_AO * C_vir
+        let tmp = bp_ao.dot(c_vir);
+        let bp_mo = c_occ.t().dot(&tmp);
+        mo.slice_mut(ndarray::s![p, .., ..]).assign(&bp_mo);
+    }
+    mo
+}
+
+/// Transform (P|mu nu) -> (P|ij) where i,j=occupied.
+pub fn transform_3center_oo(
+    eri3_ao: &Array3<f64>,
+    c_occ: &Array2<f64>,
+) -> Array3<f64> {
+    let naux = eri3_ao.shape()[0];
+    let _nbas = eri3_ao.shape()[1];
+    let nocc = c_occ.ncols();
+
+    let mut mo = Array3::zeros((naux, nocc, nocc));
+    for p in 0..naux {
+        let bp_ao = eri3_ao.slice(ndarray::s![p, .., ..]);
+        // B^P_ij = C_occ^T * B^P_AO * C_occ
+        let tmp = bp_ao.dot(c_occ);
+        let bp_mo = c_occ.t().dot(&tmp);
+        mo.slice_mut(ndarray::s![p, .., ..]).assign(&bp_mo);
+    }
+    mo
+}
+
+/// Transform (P|mu nu) -> (P|ab) where a,b=virtual.
+pub fn transform_3center_vv(
+    eri3_ao: &Array3<f64>,
+    c_vir: &Array2<f64>,
+) -> Array3<f64> {
+    let naux = eri3_ao.shape()[0];
+    let _nbas = eri3_ao.shape()[1];
+    let nvir = c_vir.ncols();
+
+    let mut mo = Array3::zeros((naux, nvir, nvir));
+    for p in 0..naux {
+        let bp_ao = eri3_ao.slice(ndarray::s![p, .., ..]);
+        // B^P_ab = C_vir^T * B^P_AO * C_vir
+        let tmp = bp_ao.dot(c_vir);
+        let bp_mo = c_vir.t().dot(&tmp);
+        mo.slice_mut(ndarray::s![p, .., ..]).assign(&bp_mo);
     }
     mo
 }
