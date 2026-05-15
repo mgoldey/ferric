@@ -31,6 +31,9 @@ use ferric_integrals::operator::Operator;
 use ferric_scf::rhf::RhfResult;
 use ndarray::{Array1, Array2};
 
+use crate::boys::{boys_localize, build_domains, build_pseudo_density_occ_sparse,
+                  build_pseudo_density_vir_sparse};
+
 /// Row-sparse representation of a B^P slice (nbas × nbas matrix).
 ///
 /// For each row μ, stores only the column indices and values with |B^P_{μν}| > threshold.
@@ -94,7 +97,34 @@ pub fn laplace_ri_mp2(
     frozen_core: usize,
 ) -> Result<LaplaceMp2Result, FerricError> {
     let mut laplace = LaplaceMp2::new(n_quad);
-    let (mp2_corr, e_os, e_ss) = laplace.compute_ao(mol, obs, dfbs, op, rhf, frozen_core)?;
+    let (mp2_corr, e_os, e_ss) = laplace.compute_ao(mol, obs, dfbs, op, rhf, frozen_core, None)?;
+    Ok(LaplaceMp2Result {
+        total_energy: rhf.energy + mp2_corr,
+        mp2_corr,
+        e_os,
+        e_ss,
+    })
+}
+
+/// Local MP2 with Boys-localized occupied orbitals and spatial domains.
+///
+/// `domain_cutoff_bohr`: radius around each Boys center that defines its AO domain.
+/// Orbitals whose centers are far apart contribute zero to P(t) between their domains,
+/// giving linear-scaling pseudo-densities for large molecules.
+pub fn laplace_lmp2(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &RhfResult,
+    n_quad: usize,
+    frozen_core: usize,
+    domain_cutoff_bohr: f64,
+) -> Result<LaplaceMp2Result, FerricError> {
+    let mut laplace = LaplaceMp2::new(n_quad);
+    let (mp2_corr, e_os, e_ss) = laplace.compute_ao(
+        mol, obs, dfbs, op, rhf, frozen_core, Some(domain_cutoff_bohr),
+    )?;
     Ok(LaplaceMp2Result {
         total_energy: rhf.energy + mp2_corr,
         mp2_corr,
@@ -230,10 +260,10 @@ impl LaplaceMp2 {
 
     /// Compute the MP2 energy using a hybrid AO/MO Laplace-transform approach.
     ///
-    /// - J term: AO pseudo-density formulation — O(naux × nbas²) per quad point.
-    ///   Foundation for future sparse path when P(t), Q(t) become localized.
-    /// - K term: MO Gram matrix — O(naux² × nocc² × nvir), much cheaper than
-    ///   the AO exchange Gram O(naux × nbas⁴).
+    /// - J term: AO pseudo-density formulation. With `domain_cutoff_bohr = Some(r)`,
+    ///   Boys-localizes the occupied MOs and restricts P(t) to spatial domains,
+    ///   enabling linear-scaling pseudo-densities for large molecules.
+    /// - K term: MO Gram matrix — O(naux² × nocc² × nvir).
     pub fn compute_ao(
         &mut self,
         mol: &Molecule,
@@ -242,6 +272,7 @@ impl LaplaceMp2 {
         op: Operator,
         rhf: &RhfResult,
         frozen_core: usize,
+        domain_cutoff_bohr: Option<f64>,
     ) -> Result<(f64, f64, f64), FerricError> {
         let nbas = obs.nbasis();
         let nocc_total = mol.nelec() as usize / 2;
@@ -267,6 +298,27 @@ impl LaplaceMp2 {
         let c_occ = c.slice(ndarray::s![.., frozen_core..nocc_total]).to_owned();
         let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
 
+        // Boys localization + domain construction (when requested).
+        // Boys centers define orbital domains for spatial screening of P(t) and Q(t).
+        // The pseudo-densities still use canonical MO coefficients and orbital energies —
+        // the Boys rotation is unitary so the AO P(t) is invariant to it, but here we
+        // use the domains to decide which (μ,ν) pairs to include (AO sparsity).
+        let eps_occ: Vec<f64> = (frozen_core..nocc_total).map(|k| eps[k]).collect();
+        let boys_domains = if let Some(cutoff) = domain_cutoff_bohr {
+            let dip = ferric_integrals::oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+            let boys = boys_localize(&c_occ, &dip, 200);
+            let shell_centers = obs.shell_centers();
+            let nshells = obs.nshells();
+            let mut offs = vec![0usize; nshells + 1];
+            for s in 0..nshells {
+                offs[s + 1] = offs[s] + obs.shell_dims()[s];
+            }
+            let domains = build_domains(&boys.centers, &shell_centers, &offs, cutoff);
+            Some(domains)
+        } else {
+            None
+        };
+
         // Build sparse B^P slices for AO J computation.
         // Threshold 1e-12 retains all numerically significant RI integrals.
         // With localized orbitals and diffuse bases this will be much sparser.
@@ -284,12 +336,20 @@ impl LaplaceMp2 {
         // Parallel over quadrature points — each point is independent.
         // Inner BLAS calls use multithreaded DGEMM; no nested rayon.
         let (e_os, e_ss): (f64, f64) = self.points.par_iter().zip(self.weights.par_iter()).map(|(&t, &w)| {
-            // --- J term in AO basis (sparse B^P path) ---
-            let pt = build_pseudo_density_occ(c, eps, t, nocc, frozen_core);
-            let qt = build_pseudo_density_vir(c, eps, t, nvir, nocc_total);
+            // --- J term in AO basis ---
+            // Build pseudo-densities: sparse (domain-restricted) when Boys-localized,
+            // dense (canonical) otherwise.
+            let (pt, qt) = if let Some(ref domains) = boys_domains {
+                let pt = build_pseudo_density_occ_sparse(&c_occ, &eps_occ, t, domains);
+                let qt = build_pseudo_density_vir_sparse(&c_vir, eps, t, nocc_total, domains);
+                (pt, qt)
+            } else {
+                let pt = build_pseudo_density_occ(c, eps, t, nocc, frozen_core);
+                let qt = build_pseudo_density_vir(c, eps, t, nvir, nocc_total);
+                (pt, qt)
+            };
 
             // M^P = B^P_sparse @ P,  N^P = B^P_sparse @ Q
-            // Sparse mat-mul avoids multiplying the zero/tiny elements of B^P.
             // Pack into (naux, nbas²) buffers for the final J = M @ N^T DGEMM.
             let mut m_buf = Array2::<f64>::zeros((naux, nbas * nbas));
             let mut n_t_buf = Array2::<f64>::zeros((naux, nbas * nbas));
@@ -496,7 +556,7 @@ mod tests {
 
         let mut laplace = LaplaceMp2::new(3);
         let e_mo = laplace.compute_mo(&mol, &obs, &dfbs, op, &rhf, 0).unwrap();
-        let (e_ao, _, _) = laplace.compute_ao(&mol, &obs, &dfbs, op, &rhf, 0).unwrap();
+        let (e_ao, _, _) = laplace.compute_ao(&mol, &obs, &dfbs, op, &rhf, 0, None).unwrap();
 
         eprintln!("Laplace RI-MP2 MO: {e_mo:.10}");
         eprintln!("Laplace RI-MP2 AO: {e_ao:.10}");
@@ -529,7 +589,7 @@ mod tests {
 
         let mut laplace = LaplaceMp2::new(7);
         let e_mo = laplace.compute_mo(&mol, &obs, &dfbs, op, &rhf, 0).unwrap();
-        let (e_ao, _, _) = laplace.compute_ao(&mol, &obs, &dfbs, op, &rhf, 0).unwrap();
+        let (e_ao, _, _) = laplace.compute_ao(&mol, &obs, &dfbs, op, &rhf, 0, None).unwrap();
 
         eprintln!("H2O Laplace RI-MP2 MO: {e_mo:.10}");
         eprintln!("H2O Laplace RI-MP2 AO: {e_ao:.10}");
@@ -540,6 +600,41 @@ mod tests {
         let ri_mp2_ref = -0.20403347;
         assert!((e_mo - ri_mp2_ref).abs() < 1e-3,
             "Laplace RI-MP2 ({e_mo:.6}) should be close to RI-MP2 ({ri_mp2_ref:.6})");
+    }
+
+    /// With a large domain cutoff (whole molecule), Boys LMP2 must reproduce
+    /// the canonical Laplace result.  The Boys rotation is unitary so the
+    /// energy is invariant; failure here means the pseudo-density build or
+    /// domain masking is broken.
+    #[test]
+    fn test_lmp2_large_cutoff_matches_canonical() {
+        let xyz = "3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n";
+        let mol = Molecule::parse_xyz(xyz).unwrap();
+        let bs = basis::bundled("cc-pvdz").unwrap();
+        let obs = PreparedBasis::new(&mol, &bs).unwrap();
+        let dfbs_set = basis::bundled("cc-pvdz-ri").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &dfbs_set).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig { energy_conv: 1e-10, ..Default::default() },
+        ).unwrap();
+
+        let mut laplace = LaplaceMp2::new(7);
+        let (e_canonical, _, _) = laplace.compute_ao(&mol, &obs, &dfbs, op, &rhf, 0, None).unwrap();
+        // 20 Bohr (~10 Å) encompasses water entirely — Boys domains include all AOs
+        let (e_lmp2, _, _) = laplace.compute_ao(&mol, &obs, &dfbs, op, &rhf, 0, Some(20.0)).unwrap();
+
+        eprintln!("H2O Laplace canonical: {e_canonical:.10}");
+        eprintln!("H2O Laplace LMP2 (20 Bohr cutoff): {e_lmp2:.10}");
+
+        assert!((e_canonical - e_lmp2).abs() < 1e-6,
+            "LMP2 with full-molecule domain ({e_lmp2:.8}) should match canonical ({e_canonical:.8})");
     }
 
     #[test]

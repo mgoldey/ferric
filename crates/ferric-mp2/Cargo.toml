@@ -7,6 +7,7 @@ edition = "2021"
 ferric-core = { path = "../ferric-core" }
 ferric-integrals = { path = "../ferric-integrals" }
 ferric-scf = { path = "../ferric-scf" }
+ferric-tensors = { path = "../ferric-tensors" }
 ndarray = { workspace = true }
 ndarray-linalg = { workspace = true }
 rayon = { workspace = true }
