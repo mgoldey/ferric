@@ -3,7 +3,8 @@
 //! Provides abstractions for rank-2 and rank-4 tensors with support for
 //! Einstein-style contractions and permutational symmetry.
 
-use ndarray::Array4;
+use ndarray::{Array2, Array3, Array4};
+use sprs::{CsMat, TriMat};
 
 /// A rank-4 tensor typically used for T2 amplitudes or 2-electron integrals.
 ///
@@ -29,11 +30,160 @@ impl Tensor4 {
 
         let a_flat = self.data.view().into_shape_with_order((ni * na, nk * nc)).unwrap();
         let b_flat = other.data.view().into_shape_with_order((nk * nc, nj * nb)).unwrap();
-        
+
         let c_flat = a_flat.dot(&b_flat);
         let c_data = c_flat.into_shape_with_order((ni, na, nj, nb)).unwrap();
-        
+
         Tensor4 { data: c_data }
+    }
+}
+
+/// A rank-2 sparse tensor (matrix) in CSR format.
+/// Used by CC routines that need sprs interop.
+pub struct SparseTensor2 {
+    pub data: CsMat<f64>,
+}
+
+impl SparseTensor2 {
+    /// Create a sparse tensor from a dense matrix using a threshold.
+    pub fn from_dense(dense: &Array2<f64>, threshold: f64) -> Self {
+        let (rows, cols) = dense.dim();
+        let mut tri = TriMat::new((rows, cols));
+        for i in 0..rows {
+            for j in 0..cols {
+                let val = dense[(i, j)];
+                if val.abs() > threshold {
+                    tri.add_triplet(i, j, val);
+                }
+            }
+        }
+        Self { data: tri.to_csr() }
+    }
+
+    /// Compute the trace of the product of two sparse matrices: Tr(A * B).
+    /// This is equivalent to sum(A_ij * B_ji).
+    pub fn trace_product(&self, other: &SparseTensor2) -> f64 {
+        let mut tr = 0.0;
+        for (val, (i, j)) in self.data.iter() {
+            if let Some(&val_b) = other.data.get(j, i) {
+                tr += val * val_b;
+            }
+        }
+        tr
+    }
+}
+
+/// A rank-3 tensor stored as a collection of sparse slices.
+/// Typically used for B^P_mu_nu 3-center integrals.
+pub struct SparseTensor3 {
+    pub slices: Vec<SparseTensor2>,
+    pub shape: (usize, usize, usize),
+}
+
+impl SparseTensor3 {
+    /// Create a sparse rank-3 tensor from a dense tensor.
+    pub fn from_dense(dense: &Array3<f64>, threshold: f64) -> Self {
+        let (n1, n2, n3) = dense.dim();
+        let mut slices = Vec::with_capacity(n1);
+        for i in 0..n1 {
+            let slice = dense.slice(ndarray::s![i, .., ..]).to_owned();
+            slices.push(SparseTensor2::from_dense(&slice, threshold));
+        }
+        Self { slices, shape: (n1, n2, n3) }
+    }
+
+    pub fn contract_pqp(&self, p_idx: usize, p_mat: &SparseTensor2, q_mat: &SparseTensor2) -> SparseTensor2 {
+        let bp = &self.slices[p_idx];
+        let tmp = &p_mat.data * &bp.data;
+        let l = &tmp * &q_mat.data;
+        SparseTensor2 { data: l }
+    }
+}
+
+/// Flat sorted COO sparse vector over a (μ,ν) index space.
+///
+/// Entries are stored as `(flat_index: u32, value: f64)` sorted by flat_index.
+/// Flat index = μ * ncols + ν.  All operations (hadamard, trace_dot) use
+/// two-pointer merge: O(nnz_A + nnz_B) with no allocations beyond the output.
+#[derive(Clone)]
+pub struct FlatSparse {
+    pub indices: Vec<u32>,
+    pub values: Vec<f64>,
+}
+
+impl FlatSparse {
+    pub fn from_dense_flat(data: &[f64], threshold: f64) -> Self {
+        let mut indices = Vec::new();
+        let mut values = Vec::new();
+        for (i, &v) in data.iter().enumerate() {
+            if v.abs() > threshold {
+                indices.push(i as u32);
+                values.push(v);
+            }
+        }
+        Self { indices, values }
+    }
+
+    pub fn nnz(&self) -> usize { self.indices.len() }
+
+    /// Element-wise product of two flat-sparse vectors; output sorted by index.
+    pub fn hadamard(&self, other: &FlatSparse) -> FlatSparse {
+        let mut out_idx = Vec::new();
+        let mut out_val = Vec::new();
+        let (mut ai, mut bi) = (0, 0);
+        while ai < self.nnz() && bi < other.nnz() {
+            match self.indices[ai].cmp(&other.indices[bi]) {
+                std::cmp::Ordering::Equal => {
+                    let v = self.values[ai] * other.values[bi];
+                    if v != 0.0 {
+                        out_idx.push(self.indices[ai]);
+                        out_val.push(v);
+                    }
+                    ai += 1; bi += 1;
+                }
+                std::cmp::Ordering::Less => { ai += 1; }
+                std::cmp::Ordering::Greater => { bi += 1; }
+            }
+        }
+        FlatSparse { indices: out_idx, values: out_val }
+    }
+
+    /// Dot product (sum of element-wise products) via two-pointer merge.
+    pub fn dot(&self, other: &FlatSparse) -> f64 {
+        let mut acc = 0.0;
+        let (mut ai, mut bi) = (0, 0);
+        while ai < self.nnz() && bi < other.nnz() {
+            match self.indices[ai].cmp(&other.indices[bi]) {
+                std::cmp::Ordering::Equal => {
+                    acc += self.values[ai] * other.values[bi];
+                    ai += 1; bi += 1;
+                }
+                std::cmp::Ordering::Less => { ai += 1; }
+                std::cmp::Ordering::Greater => { bi += 1; }
+            }
+        }
+        acc
+    }
+
+    /// Squared Frobenius norm: sum of squares of values.
+    pub fn norm_sq(&self) -> f64 {
+        self.values.iter().map(|&v| v * v).sum()
+    }
+}
+
+/// Collection of FlatSparse slices for the B^P_μν 3-center integrals.
+pub struct FlatSparse3 {
+    pub slices: Vec<FlatSparse>,
+}
+
+impl FlatSparse3 {
+    pub fn from_dense(dense: &Array3<f64>, threshold: f64) -> Self {
+        let (naux, _, _) = dense.dim();
+        let slices = (0..naux).map(|p| {
+            let slice = dense.slice(ndarray::s![p, .., ..]).to_owned();
+            FlatSparse::from_dense_flat(slice.as_slice().unwrap(), threshold)
+        }).collect();
+        Self { slices }
     }
 }
 
@@ -78,5 +228,53 @@ mod tests {
         // (2*2) contraction: 1.0 * 2.0 * (nk*nc) = 1.0 * 2.0 * 4 = 8.0
         assert_eq!(c.data[(0, 0, 0, 0)], 8.0);
         assert_eq!(c.data.dim(), (2, 2, 2, 2));
+    }
+
+    #[test]
+    fn test_sparse_tensor2_trace() {
+        let mut a_dense = Array2::zeros((2, 2));
+        a_dense[(0, 0)] = 1.0;
+        a_dense[(1, 1)] = 2.0;
+
+        let mut b_dense = Array2::zeros((2, 2));
+        b_dense[(0, 0)] = 3.0;
+        b_dense[(1, 1)] = 4.0;
+
+        let a = SparseTensor2::from_dense(&a_dense, 1e-10);
+        let b = SparseTensor2::from_dense(&b_dense, 1e-10);
+
+        // Tr(A*B) = 1*3 + 2*4 = 11
+        assert_eq!(a.trace_product(&b), 11.0);
+    }
+
+    #[test]
+    fn test_flat_sparse_hadamard_dot() {
+        // 2x2 matrices flattened: [a,b,c,d] = [M00,M01,M10,M11]
+        let m = vec![1.0, 2.0, 3.0, 4.0];
+        let n = vec![5.0, 6.0, 7.0, 8.0];
+        let p = vec![1.0, 0.0, 0.0, 2.0]; // diagonal
+        let q = vec![3.0, 0.0, 0.0, 4.0];
+
+        let bm = FlatSparse::from_dense_flat(&m, 1e-10);
+        let bn = FlatSparse::from_dense_flat(&n, 1e-10);
+        let bp = FlatSparse::from_dense_flat(&p, 1e-10);
+        let bq = FlatSparse::from_dense_flat(&q, 1e-10);
+
+        // M[p] = bm ⊙ bp = [1,0,0,8], N[p] = bn ⊙ bp = [5,0,0,16]
+        let mvec = bm.hadamard(&bp);
+        let nvec = bn.hadamard(&bq);
+
+        // J = sum M[p]*N[q] = 1*3*5 + 4*4*8 = 15 + 128 = 143... let me just check dot
+        let dot_mn = mvec.dot(&nvec);
+        // mvec = [1*1,0,0,4*2]=[1,0,0,8], nvec=[5*3,0,0,8*4]=[15,0,0,32]
+        // dot = 1*15 + 8*32 = 15 + 256 = 271
+        assert_eq!(dot_mn, 271.0);
+
+        // hadamard of mvec and nvec
+        let l = mvec.hadamard(&nvec);
+        // l = [1*15, 0, 0, 8*32] = [15, 0, 0, 256]
+        let norm_sq = l.norm_sq();
+        // 15² + 256² = 225 + 65536 = 65761
+        assert_eq!(norm_sq, 65761.0);
     }
 }

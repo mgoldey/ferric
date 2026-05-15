@@ -9,3 +9,4 @@ ndarray-linalg = { workspace = true }
 openblas-src = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
+sprs = "0.11"
