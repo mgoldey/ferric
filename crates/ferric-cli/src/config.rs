@@ -40,6 +40,8 @@ pub struct Mp2Cfg {
     pub r0_bonded: Option<f64>,
     /// Non-bonded attenuation distance r₀⁽²⁾ in Angstrom (for scs-mp2-2terfc).
     pub r0_nonbonded: Option<f64>,
+    /// Number of Laplace quadrature points (for laplace-mp2).
+    pub n_quad: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -74,6 +76,7 @@ pub struct ScfCfg {
     pub diis_size: usize,
     #[serde(default = "default_integral_thresh")]
     pub integral_thresh: f64,
+    pub k_builder: Option<String>,
 }
 
 impl Default for ScfCfg {
@@ -84,6 +87,7 @@ impl Default for ScfCfg {
             density_conv: 1e-7,
             diis_size: 8,
             integral_thresh: 1e-12,
+            k_builder: None,
         }
     }
 }
