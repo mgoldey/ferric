@@ -1,0 +1,25 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "ferric"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "ipython>=9.13.0",
+    "maturin[patchelf]>=1.13.3",
+    "requests>=2.34.0",
+    "numpy>=2.0.0",
+]
+
+[tool.maturin]
+manifest-path = "crates/ferric-python/Cargo.toml"
+features = ["pyo3/extension-module"]
+
+[tool.uv]
+# Prevent uv from rebuilding the Rust extension on every `uv run`.
+# The maturin editable install in .venv is the source of truth; cargo is invoked explicitly.
+no-build-isolation-package = ["ferric"]
