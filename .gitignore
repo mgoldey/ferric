@@ -2,3 +2,12 @@ lib*
 build
 target
 .venv/
+*.key
+*.pdf
+diss*.txt
+dissertation.txt
+test_minimax*.py
+main.py
+cc.sh
+alkane_C10.xyz
+examples/dft_pbe.py
