@@ -40,8 +40,8 @@ pub fn chi_from_trial_potential(
 /// Compute the dielectric matrix ε̃_αβ(iω) = δ_αβ − χ₀_αβ(iω) in a subspace.
 ///
 /// Given trial potentials V of shape (naux, m) (columns = trial vecs),
-/// returns the m×m symmetric matrix with ε̃_αβ = δ_αβ + 2 Σ_{ia} rhs_α_ia rhs_β_ia / gap_ia.
-/// Eigenvalues are ≥ 1 for a physical system.
+/// stores positive 2 Σ_{ia} and adds 1 to diagonal to form I − χ₀.
+/// Returns the m×m symmetric matrix with eigenvalues ≥ 1 for a physical system.
 pub fn dielectric_matrix(
     v_mat: &Array2<f64>,
     b_ov: &Array2<f64>,
@@ -58,13 +58,14 @@ pub fn dielectric_matrix(
     // rhs_mat: (m, nov) — rhs for each trial vector
     let rhs_mat = v_mat.t().dot(b_ov); // (m, nov)
 
-    // Build m×m chi matrix: χ_αβ = -2 Σ_{ia} rhs_α_ia rhs_β_ia / gap_ia
+    // Build m×m chi matrix: store +2 Σ_{ia} rhs_α_ia rhs_β_ia / gap_ia
+    // so that I + chi = I − χ₀ ≥ I (eigenvalues ≥ 1)
     let mut chi = Array2::zeros((m, m));
     for i in 0..nocc {
         for a in 0..nvir {
             let ia = i * nvir + a;
             let gap = eps_vir[a] - eps_occ[i] + omega;
-            let scale = -2.0 / gap;
+            let scale = 2.0 / gap;
             for alpha in 0..m {
                 for beta in 0..m {
                     chi[(alpha, beta)] += scale * rhs_mat[(alpha, ia)] * rhs_mat[(beta, ia)];
@@ -130,5 +131,32 @@ mod tests {
         assert!((eps[(0, 0)] - 1.0).abs() < 1e-12);
         assert!((eps[(1, 1)] - 1.0).abs() < 1e-12);
         assert!(eps[(0, 1)].abs() < 1e-12);
+    }
+
+    #[test]
+    fn dielectric_matrix_eigenvalues_ge_one() {
+        use ndarray_linalg::{Eigh, UPLO};
+        // 1 occ, 1 vir, 1 aux. B=1, gap=1 → ε̃ = 1 + 2*1/1 = 3
+        let b_ov = ndarray::array![[1.0f64]];
+        let v_mat = ndarray::array![[1.0f64]];
+        let eps_occ = vec![-0.5f64];
+        let eps_vir = vec![0.5f64];
+        let eps = dielectric_matrix(&v_mat, &b_ov, &eps_occ, &eps_vir, 0.0);
+
+        // Compute eigenvalues to verify they are >= 1
+        let (evals, _) = eps.eigh(UPLO::Upper).expect("Failed to diagonalize");
+        for eval in evals.iter() {
+            assert!(
+                *eval >= 1.0 - 1e-12,
+                "eigenvalue {} < 1.0 (physically invalid)",
+                eval
+            );
+        }
+        // For this simple case, we expect a single eigenvalue ≈ 3.0
+        assert!(
+            (evals[0] - 3.0).abs() < 1e-12,
+            "expected ε̃=3, got {}",
+            evals[0]
+        );
     }
 }

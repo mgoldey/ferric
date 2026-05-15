@@ -32,13 +32,13 @@ pub fn ri_drpa_eigenvalues(
     let nov = nocc * nvir;
     assert_eq!(b_ov.shape()[1], nov);
 
-    // χ₀_PQ = −2 Σ_{ia} B^P_ia B^Q_ia / (ε_a − ε_i + ω)
+    // Store +2 Σ_{ia} B^P_ia B^Q_ia / gap so that I + chi0 = I − χ₀ ≥ I
     let mut chi0: Array2<f64> = Array2::zeros((naux, naux));
     for (i, &eps_i) in eps_occ.iter().enumerate() {
         for (a, &eps_a) in eps_vir.iter().enumerate() {
             let ia = i * nvir + a;
             let gap = eps_a - eps_i + omega;
-            let scale = -2.0 / gap;
+            let scale = 2.0 / gap;
             let col = b_ov.column(ia);
             for p in 0..naux {
                 for q in 0..naux {
