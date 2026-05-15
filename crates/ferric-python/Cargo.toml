@@ -17,3 +17,4 @@ ferric-cc = { path = "../ferric-cc" }
 pyo3 = { workspace = true }
 numpy = { workspace = true }
 ndarray = { workspace = true }
+ctrlc = { workspace = true }
