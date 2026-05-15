@@ -1,4 +1,6 @@
-lib*
+libint*
+libferric*
+libxc*
 build
 target
 .venv/
