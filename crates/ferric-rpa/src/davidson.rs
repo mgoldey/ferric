@@ -40,7 +40,7 @@ where
 
         // Diagonalize (symmetric)
         let (evals, evecs) = eps_proj.eigh(UPLO::Upper)
-            .map_err(|e| FerricError::Other(format!("Davidson diagonalization failed: {e}")))?;
+            .map_err(|e| FerricError::General(format!("Davidson diagonalization failed: {e}")))?;
 
         // Ritz vectors in original space: V @ evecs (naux, m)
         let ritz = v_mat.dot(&evecs);
@@ -99,13 +99,13 @@ where
         v_mat = qr_orthonormalize(v_mat)?;
     }
 
-    Err(FerricError::Other("Davidson did not converge".into()))
+    Err(FerricError::General("Davidson did not converge".into()))
 }
 
 /// Orthonormalize columns of mat via QR decomposition.
 fn qr_orthonormalize(mat: Array2<f64>) -> Result<Array2<f64>, FerricError> {
     let (q, _r) = mat.qr()
-        .map_err(|e| FerricError::Other(format!("QR failed: {e}")))?;
+        .map_err(|e| FerricError::General(format!("QR failed: {e}")))?;
     Ok(q)
 }
 

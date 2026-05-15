@@ -17,6 +17,4 @@ pub enum FerricError {
     Convergence(String),
     #[error("General error: {0}")]
     General(String),
-    #[error("{0}")]
-    Other(String),
 }
