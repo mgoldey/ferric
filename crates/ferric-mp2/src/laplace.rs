@@ -29,7 +29,53 @@ use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::rhf::RhfResult;
-use ndarray::Array2;
+use ndarray::{Array1, Array2};
+
+/// Row-sparse representation of a B^P slice (nbas × nbas matrix).
+///
+/// For each row μ, stores only the column indices and values with |B^P_{μν}| > threshold.
+/// Enables O(nnz) sparse-dense matrix products M^P = B^P @ P(t) when B^P is sparse.
+struct SparseBSlice {
+    /// For each row μ: (col_indices, values)
+    rows: Vec<(Vec<u16>, Vec<f64>)>,
+    nbas: usize,
+}
+
+impl SparseBSlice {
+    fn from_dense(b: &Array2<f64>, thresh: f64) -> Self {
+        let nbas = b.nrows();
+        let rows = (0..nbas).map(|mu| {
+            let row = b.row(mu);
+            let mut cols = Vec::new();
+            let mut vals = Vec::new();
+            for (nu, &v) in row.iter().enumerate() {
+                if v.abs() > thresh {
+                    cols.push(nu as u16);
+                    vals.push(v);
+                }
+            }
+            (cols, vals)
+        }).collect();
+        Self { rows, nbas }
+    }
+
+    /// Compute M = self @ rhs (dense nbas×nbas), return as flattened row-major Vec.
+    /// Output M[μ,ν] = Σ_{σ∈nnz(row μ)} B^P_{μσ} rhs_{σν}.
+    fn mat_mul_flat(&self, rhs: &Array2<f64>) -> Vec<f64> {
+        let nbas = self.nbas;
+        let mut out = vec![0.0f64; nbas * nbas];
+        for (mu, (cols, vals)) in self.rows.iter().enumerate() {
+            let out_row = &mut out[mu * nbas..(mu + 1) * nbas];
+            for (&nu, &b_val) in cols.iter().zip(vals.iter()) {
+                let rhs_row = rhs.row(nu as usize);
+                for (&r, o) in rhs_row.iter().zip(out_row.iter_mut()) {
+                    *o += b_val * r;
+                }
+            }
+        }
+        out
+    }
+}
 
 pub struct LaplaceMp2Result {
     pub total_energy: f64,
@@ -221,9 +267,14 @@ impl LaplaceMp2 {
         let c_occ = c.slice(ndarray::s![.., frozen_core..nocc_total]).to_owned();
         let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
 
-        // B^P slices for AO J computation
-        let b_slices: Vec<Array2<f64>> = (0..naux)
-            .map(|p| b_ao.slice(ndarray::s![p, .., ..]).to_owned())
+        // Build sparse B^P slices for AO J computation.
+        // Threshold 1e-12 retains all numerically significant RI integrals.
+        // With localized orbitals and diffuse bases this will be much sparser.
+        // Sparse B^P representation: threshold small elements of each B^P slice.
+        // sto-3g decane: ~32% fill at 1e-12 (14% at 1e-6 with <1e-6 Ha error).
+        // True linear scaling requires sparse P(t)/Q(t), which needs localized MOs.
+        let b_sparse: Vec<SparseBSlice> = (0..naux)
+            .map(|p| SparseBSlice::from_dense(&b_ao.slice(ndarray::s![p, .., ..]).to_owned(), 1e-12))
             .collect();
 
         // MO-basis integrals for K: b_mo[P, i*nvir+a] = (P|ia)
@@ -233,26 +284,23 @@ impl LaplaceMp2 {
         // Parallel over quadrature points — each point is independent.
         // Inner BLAS calls use multithreaded DGEMM; no nested rayon.
         let (e_os, e_ss): (f64, f64) = self.points.par_iter().zip(self.weights.par_iter()).map(|(&t, &w)| {
-            // --- J term in AO basis ---
+            // --- J term in AO basis (sparse B^P path) ---
             let pt = build_pseudo_density_occ(c, eps, t, nocc, frozen_core);
             let qt = build_pseudo_density_vir(c, eps, t, nvir, nocc_total);
 
-            // M^P = B^P @ P,  N^P = B^P @ Q  (serial; BLAS parallelizes the DGEMMs)
-            let m_mats: Vec<Array2<f64>> = (0..naux)
-                .map(|p| b_slices[p].dot(&pt)).collect();
-            let n_mats: Vec<Array2<f64>> = (0..naux)
-                .map(|p| b_slices[p].dot(&qt)).collect();
-
-            // J[P,Q] = Tr(M^P N^Q) = M^P_flat · N^Q_T_flat → single DGEMM
+            // M^P = B^P_sparse @ P,  N^P = B^P_sparse @ Q
+            // Sparse mat-mul avoids multiplying the zero/tiny elements of B^P.
+            // Pack into (naux, nbas²) buffers for the final J = M @ N^T DGEMM.
             let mut m_buf = Array2::<f64>::zeros((naux, nbas * nbas));
             let mut n_t_buf = Array2::<f64>::zeros((naux, nbas * nbas));
             for p in 0..naux {
-                let ms = m_mats[p].as_slice().unwrap();
-                let ns = n_mats[p].as_slice().unwrap();
-                m_buf.row_mut(p).assign(&ndarray::ArrayView1::from(ms));
-                for i in 0..nbas {
-                    for j in 0..nbas {
-                        n_t_buf[(p, j * nbas + i)] = ns[i * nbas + j];
+                let ms = b_sparse[p].mat_mul_flat(&pt);
+                let ns = b_sparse[p].mat_mul_flat(&qt);
+                m_buf.row_mut(p).assign(&Array1::from(ms));
+                // Transpose N^P when packing: n_t_buf[p, ν*nbas+μ] = N^P[μ,ν]
+                for mu in 0..nbas {
+                    for nu in 0..nbas {
+                        n_t_buf[(p, nu * nbas + mu)] = ns[mu * nbas + nu];
                     }
                 }
             }
