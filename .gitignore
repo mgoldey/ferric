@@ -1,4 +1,4 @@
-libint*
+lib*
 build
 target
 .venv/
