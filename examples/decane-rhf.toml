@@ -1,5 +1,5 @@
 [molecule]
-xyz = "testdata/molecules/water.xyz"
+xyz = "testdata/molecules/alkane_10.xyz"
 
 [basis]
 name = "sto-3g"
@@ -13,5 +13,5 @@ energy_conv = 1e-8
 density_conv = 1e-7
 diis_size = 8
 integral_thresh = 1e-12
-#k_builder = "link"
+k_builder = "link"
 

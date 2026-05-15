@@ -8,5 +8,5 @@ name = "aug-cc-pvdz"
 kind = "att-rimp2"
 
 [mp2]
-auxbasis = "cc-pvdz-ri"
+auxbasis = "aug-cc-pvdz-rifit"
 r0 = 1.05  # Angstrom (aDZ optimal)

@@ -19,8 +19,25 @@ Rust-native quantum chemistry engine wrapping libint2 for electron integrals, wi
 - **Spherical and Cartesian** basis set support (BSE-JSON and Gaussian-94 parsers)
 - **Bundled basis sets**: STO-3G, 6-31G, cc-pVDZ, def2-SVP
 - **Bundled RI auxiliary bases**: cc-pVDZ-RI, def2-SVP-RIFIT through def2-QZVPP-RIFIT
-- **Python bindings** via pyo3 (RHF, RI-MP2, attenuated MP2, SCS-MP2, SCS-MP2(2terfc))
+- **Python bindings** via pyo3 (RHF, RI-MP2, attenuated MP2, SCS-MP2, SCS-MP2(2terfc), RI-Laplace MP2, CCSD(T))
+- **Coupled Cluster suite**: RI-CCD, RI-CCSD, and perturbative triples (T) correction
 - **TOML-driven CLI** for all methods
+
+## Mathematical Principles
+
+### RI-Laplace MP2
+The canonical MP2 correlation energy is given by:
+$$E_{corr} = -\sum_{iajb} \frac{(ia|jb)[2(ia|jb) - (ib|ja)]}{\epsilon_a + \epsilon_b - \epsilon_i - \epsilon_j}$$
+
+Using the **Laplace transform** identity:
+$$\frac{1}{x} = \int_0^\infty e^{-tx} dt \approx \sum_k w_k e^{-t_k x}$$
+
+We can express the energy as a sum over quadrature points $t_k$. In the AO basis, we define **pseudo-density matrices** $P(t)$ and $Q(t)$:
+$$P(t)_{\mu\nu} = \sum_{i \in occ} C_{\mu i} e^{t \epsilon_i} C_{\nu i}, \quad Q(t)_{\mu\nu} = \sum_{a \in vir} C_{\mu a} e^{-t \epsilon_a} C_{\nu a}$$
+
+The energy is then computed via trace contractions of the 3-center RI integrals $B^P_{\mu\nu}$:
+$$E_{corr} \approx -\sum_k w_k \sum_{PQ} \left[ 2 \text{Tr}(M^P N^Q) \text{Tr}(M^Q N^P) - \text{Tr}(M^P N^Q M^Q N^P) \right]$$
+where $M^P = B^P P(t)$ and $N^P = B^P Q(t)$. This formulation enables **linear scaling** $O(N)$ when combined with sparse matrix algebra.
 
 ## Quick Example
 
@@ -67,6 +84,10 @@ print(f"SCS-MP2 total: {scs.total_energy:.10f} Ha")
 # SCS-MP2(2terfc) (thesis defaults: r0_1=0.75A, r0_2=1.05A, c_OS=1.27, c_SS=4.05)
 terfc = ferric.run_scs_mp2_2terfc(mol, bs, aux)
 print(f"SCS-MP2(2terfc) total: {terfc.total_energy:.10f} Ha")
+
+# Coupled Cluster (CCSD(T))
+cc = ferric.run_ccsd_t(mol, bs, aux)
+print(f"CCSD correlation: {cc.correlation_energy:.10f} Ha, (T) corr: {cc.t_correction:.10f} Ha")
 ```
 
 ## Architecture
@@ -137,13 +158,34 @@ cargo test --workspace
 ### Python Bindings
 
 ```bash
-cd crates/ferric-python
-python3 -m venv .venv
-source .venv/bin/activate
-pip install maturin numpy
-maturin develop --release
-python -c "import ferric; print('OK')"
+# Set up the venv and install the extension in editable/develop mode
+uv sync
+uv run maturin develop --release
+
+# Verify
+uv run python -c "import ferric; print('OK')"
 ```
+
+After `maturin develop`, the compiled `.so` is installed into `.venv/`. The `pyproject.toml` sets `[tool.uv] no-build-isolation-package = ["ferric"]` so that `uv run` skips re-invoking cargo and uses the existing `.so`.
+
+**Important:** always use `uv run maturin develop --release`, not bare `maturin develop`. Without `uv run`, maturin targets whatever Python is on `$PATH` (e.g. pyenv's) and installs the `.so` into that Python's site-packages instead of the project `.venv`. The two copies are unrelated, so `uv run python` will keep loading the stale build.
+
+**Normal dev loop:**
+```bash
+uv run maturin develop --release   # recompile and install .so into .venv
+uv run python scripts/foo.py       # fast on subsequent runs — no recompile
+```
+
+**Optional: symlink for zero-copy updates**
+
+If you want `cargo build --release` alone to update what Python sees (without running `maturin develop`), replace the installed `.so` with a symlink to `target/maturin/`:
+
+```bash
+ln -sf "$(pwd)/target/maturin/libferric.so" \
+  .venv/lib/python3.11/site-packages/ferric/ferric.cpython-311-x86_64-linux-gnu.so
+```
+
+With this symlink, `cargo build --release` is sufficient — the `.so` in `.venv` always reflects the latest build. Note: `uv run maturin develop --release` overwrites the symlink with a copy; re-run `ln -sf` to restore it.
 
 ## Testing
 
@@ -192,12 +234,26 @@ ferric/
 ## Roadmap
 
 - [x] Rayon-parallel LinK exchange (Implemented)
-- [ ] CFMM (continuous fast multipole) for Coulomb
-- [ ] AO-Laplace-Transform MP2
+- [x] CFMM (continuous fast multipole) for linear-scaling Coulomb
+- [x] AO-Laplace-Transform MP2 (Linear Scaling via Sparse Tensors)
 - [x] MPI distributed parallelization (Integrated across SCF/Gradients/MP2)
 - [x] Geometry optimization using analytical gradients (RHF, RI-MP2, SCS-MP2)
-- [ ] ferric-tensors: High-performance tensor contraction for Coupled Cluster
-- [ ] DFT (LDA/GGA) via numerical quadrature
+- [x] ferric-tensors: Sparse tensor support implemented for linear correlation
+- [x] DFT (LDA/GGA) via numerical quadrature
+- [x] Coupled Cluster (CCD, CCSD, CCSD(T)) with RI-integral dressing
+
+### Performance & Scaling Verification
+
+`ferric` is designed for linear scaling ($O(N)$) for large systems using the LinK exchange builder and the CFMM Coulomb builder. You can verify these scaling properties using the provided benchmarking script:
+
+```bash
+# Run the alkane scaling benchmark (C10 to C50)
+.venv/bin/python scripts/scaling_bench.py
+```
+
+The script benchmarks the scaling of **computed quartets vs system size** for the standard Coulomb operator, demonstrating how physical screening (Schwarz/QQR) reduces the computational effort from $O(N^4)$ toward $O(N)$ for large systems.
+
+For correlation methods (like AO-Laplace-MP2), `ferric` leverages **attenuated Coulomb operators** to reduce systematic model errors (e.g., dispersion overestimation and BSSE) and to enable aggressive AO-based sparsity, which is the key to achieving $O(N)$ correlation scaling.
 
 ## License
 
@@ -218,3 +274,6 @@ Apache-2.0
 - Grimme, J. Chem. Phys. 118, 9095 (2003) -- SCS-MP2
 - Maurer, Lambrecht, Ochsenfeld, J. Chem. Phys. 136, 144107 (2012) -- QQR screening
 - Ochsenfeld, White, Head-Gordon, J. Chem. Phys. 109, 1663 (1998) -- LinK exchange
+- Bartlett & Musiał, Rev. Mod. Phys. 79, 291 (2007) -- Coupled-cluster theory
+- Scuseria, Janssen, Schaefer, J. Chem. Phys. 89, 7382 (1988) -- CCSD methods
+- Raghavachari et al., Chem. Phys. Lett. 157, 479 (1989) -- CCSD(T) triples correction
