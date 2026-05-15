@@ -14,3 +14,6 @@ pub mod basis;
 pub mod parallel;
 
 pub use error::FerricError;
+
+use std::sync::atomic::AtomicBool;
+pub static INTERRUPT: AtomicBool = AtomicBool::new(false);

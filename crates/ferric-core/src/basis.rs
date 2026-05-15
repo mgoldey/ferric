@@ -210,6 +210,8 @@ pub fn bundled(name: &str) -> Result<BasisSet, FerricError> {
         "def2-qzvpp-rifit" => include_str!("basis/bundled/def2-qzvpp-rifit.json"),
         "aug-cc-pvdz" => include_str!("basis/bundled/aug-cc-pvdz.json"),
         "aug-cc-pvtz" => include_str!("basis/bundled/aug-cc-pvtz.json"),
+        "aug-cc-pvdz-rifit" => include_str!("basis/bundled/aug-cc-pvdz-rifit.json"),
+        "aug-cc-pvtz-rifit" => include_str!("basis/bundled/aug-cc-pvtz-rifit.json"),
         _ => return Err(FerricError::Basis(format!("unknown bundled basis: {name}"))),
     };
     let mut bs = parse_bse_json(json, &cn)?;

@@ -13,4 +13,8 @@ pub enum FerricError {
     ScfConvergence { iterations: usize, last_energy: f64 },
     #[error("LAPACK error: {0}")]
     Lapack(String),
+    #[error("Convergence error: {0}")]
+    Convergence(String),
+    #[error("General error: {0}")]
+    General(String),
 }

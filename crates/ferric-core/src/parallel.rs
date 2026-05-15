@@ -54,6 +54,15 @@ impl ParallelContext {
             None
         }
     }
+
+    /// Check if a global interrupt (SIGINT) has been requested.
+    pub fn check_interrupted(&self) -> Result<(), crate::FerricError> {
+        if crate::INTERRUPT.load(std::sync::atomic::Ordering::Relaxed) {
+            Err(crate::FerricError::Libint("Interrupted by user".into()))
+        } else {
+            Ok(())
+        }
+    }
 }
 
 impl Default for ParallelContext {
