@@ -6,6 +6,7 @@
 //! - [`gradient`] -- RI-MP2 nuclear gradient via finite differences
 //! - [`mo_transform`] -- AO-to-MO integral transformation utilities
 
+pub mod boys;
 pub mod mo_transform;
 pub mod rimp2;
 pub mod canonical;

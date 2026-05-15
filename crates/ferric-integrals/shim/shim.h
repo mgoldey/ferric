@@ -119,6 +119,15 @@ int goscf_compute_eri3_deriv(goscf_engine *eng, const goscf_basis *obs,
 int goscf_compute_eri2_deriv(goscf_engine *eng, const goscf_basis *dfbs,
                              int shP, int shQ, double *out);
 
+/* --- Electric dipole integrals via emultipole1 --- */
+
+/* Compute electric dipole integrals ⟨μ|(r - origin)|ν⟩ for all shell pairs.
+ * Returns the 3 dipole matrices (x, y, z) each of size nbas×nbas,
+ * packed as out[0..nbas*nbas] = x-component, out[nbas*nbas..2*nbas*nbas] = y, etc.
+ * origin[3] = {ox, oy, oz} in Bohr. Returns nbas*nbas*3 on success, -1 on error. */
+int goscf_compute_dipole(const goscf_basis *bs, const double *origin,
+                         int nbas, double *out);
+
 /* --- First derivative integrals (requires libint2 with LIBINT2_MAX_DERIV_ORDER >= 1) --- */
 
 /* Compute first derivative of a 1e shell-pair block. The engine must have been

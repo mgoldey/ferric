@@ -51,6 +51,12 @@ extern "C" {
     pub fn goscf_engine_create_2center_deriv(op_kind: c_int, omega: c_double, max_nprim: c_int, max_l: c_int, precision: c_double) -> *mut c_void;
     pub fn goscf_compute_eri3_deriv(eng: *mut c_void, obs: *const c_void, dfbs: *const c_void, shP: c_int, sh1: c_int, sh2: c_int, out: *mut c_double) -> c_int;
     pub fn goscf_compute_eri2_deriv(eng: *mut c_void, dfbs: *const c_void, shP: c_int, shQ: c_int, out: *mut c_double) -> c_int;
+    pub fn goscf_compute_dipole(
+        bs: *const c_void,
+        origin: *const c_double,
+        nbas: c_int,
+        out: *mut c_double,
+    ) -> c_int;
 }
 
 pub const OP_COULOMB: c_int = 0;
@@ -59,3 +65,4 @@ pub const OP_ERFC_COULOMB: c_int = 2;
 pub const OP_OVERLAP: c_int = 100;
 pub const OP_KINETIC: c_int = 101;
 pub const OP_NUCLEAR: c_int = 102;
+pub const OP_EMULTIPOLE1: c_int = 103;

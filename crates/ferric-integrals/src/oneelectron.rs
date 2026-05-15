@@ -55,6 +55,27 @@ pub fn hcore(prep: &PreparedBasis) -> Array2<f64> {
     t + v
 }
 
+/// Compute the 3 electric dipole matrices ⟨μ|(r - origin)|ν⟩, shape (nbasis, nbasis) each.
+/// `origin` is in Bohr. Returns [x_mat, y_mat, z_mat].
+pub fn dipole(prep: &PreparedBasis, origin: [f64; 3]) -> [Array2<f64>; 3] {
+    let nbas = prep.nbasis();
+    let mut flat = vec![0.0f64; 3 * nbas * nbas];
+    let ret = unsafe {
+        ffi::goscf_compute_dipole(
+            prep.handle(),
+            origin.as_ptr(),
+            nbas as std::os::raw::c_int,
+            flat.as_mut_ptr(),
+        )
+    };
+    assert!(ret >= 0, "goscf_compute_dipole failed: {}", ret);
+    let make_mat = |offset: usize| {
+        let slice = &flat[offset..offset + nbas * nbas];
+        Array2::from_shape_vec((nbas, nbas), slice.to_vec()).unwrap()
+    };
+    [make_mat(0), make_mat(nbas * nbas), make_mat(2 * nbas * nbas)]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

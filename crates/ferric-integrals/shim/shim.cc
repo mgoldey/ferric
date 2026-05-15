@@ -289,6 +289,58 @@ int goscf_compute_eri_deriv_quartet(goscf_engine *eng, const goscf_basis *bs,
 #endif
 }
 
+/* --- Electric dipole integrals via emultipole1 --- */
+
+int goscf_compute_dipole(const goscf_basis *bs, const double *origin,
+                         int nbas, double *out) {
+    try {
+        // Zero output: 3 matrices of size nbas*nbas
+        int total = 3 * nbas * nbas;
+        for (int i = 0; i < total; ++i) out[i] = 0.0;
+
+        // Create emultipole1 engine: results are [overlap, x, y, z]
+        Engine eng(Operator::emultipole1, bs->max_nprim, bs->max_L, 0, 1e-14);
+        std::array<double, 3> orig{origin[0], origin[1], origin[2]};
+        eng.set_params(orig);
+
+        const int nsh = static_cast<int>(bs->bs.size());
+        // Compute shell offsets
+        std::vector<int> sh_off(nsh + 1, 0);
+        for (int s = 0; s < nsh; ++s) sh_off[s + 1] = sh_off[s] + bs->nfunc[s];
+
+        double *ox = out;
+        double *oy = out + nbas * nbas;
+        double *oz = out + 2 * nbas * nbas;
+
+        for (int s1 = 0; s1 < nsh; ++s1) {
+            for (int s2 = 0; s2 <= s1; ++s2) {
+                eng.compute(bs->bs[s1], bs->bs[s2]);
+                const auto &result = eng.results();
+                int n1 = bs->nfunc[s1];
+                int n2 = bs->nfunc[s2];
+                int o1 = sh_off[s1];
+                int o2 = sh_off[s2];
+                // result[0] = overlap, result[1] = x, result[2] = y, result[3] = z
+                for (int c = 0; c < 3; ++c) {
+                    double *mat = (c == 0) ? ox : (c == 1) ? oy : oz;
+                    const double *src = result[c + 1];
+                    if (src == nullptr) continue;
+                    for (int i = 0; i < n1; ++i) {
+                        for (int j = 0; j < n2; ++j) {
+                            double v = src[i * n2 + j];
+                            mat[(o1 + i) * nbas + (o2 + j)] = v;
+                            mat[(o2 + j) * nbas + (o1 + i)] = v;
+                        }
+                    }
+                }
+            }
+        }
+        return total;
+    } catch (...) {
+        return -1;
+    }
+}
+
 /* --- 3-center and 2-center ERI engines for density fitting / RI --- */
 
 goscf_engine *goscf_engine_create_3center(int op_kind, double omega,
