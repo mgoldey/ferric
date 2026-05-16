@@ -212,7 +212,6 @@ pub mod brainstorming {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ndarray::Array4;
 
     #[test]
     fn test_tensor4_contraction() {

@@ -8,7 +8,7 @@ use crate::rimp2::{ri_mp2_spin_components, RiMp2Config};
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
-use ferric_integrals::operator::{Operator, OperatorKind};
+use ferric_integrals::operator::Operator;
 use ferric_scf::rhf::RhfResult;
 
 /// Angstrom to Bohr conversion factor.
@@ -115,20 +115,14 @@ pub fn scs_mp2_2terfc(
 
     // Spin components at r0(1) (bonded, shorter range)
     let omega1 = 1.0 / (config.r0_bonded * std::f64::consts::SQRT_2);
-    let op1 = Operator {
-        kind: OperatorKind::ErfcCoulomb,
-        omega: omega1,
-        distance: config.r0_bonded,
-    };
+    let mut op1 = Operator::erfc(omega1);
+    op1.distance = config.r0_bonded;
     let (sc1, _) = ri_mp2_spin_components(mol, obs, dfbs, op1, rhf, &ri_config)?;
 
     // Spin components at r0(2) (non-bonded, longer range)
     let omega2 = 1.0 / (config.r0_nonbonded * std::f64::consts::SQRT_2);
-    let op2 = Operator {
-        kind: OperatorKind::ErfcCoulomb,
-        omega: omega2,
-        distance: config.r0_nonbonded,
-    };
+    let mut op2 = Operator::erfc(omega2);
+    op2.distance = config.r0_nonbonded;
     let (sc2, _) = ri_mp2_spin_components(mol, obs, dfbs, op2, rhf, &ri_config)?;
 
     // Thesis Eq 5.6: E = c_OS * E_OS(r0_1) + c_SS * [E_SS(r0_2) - E_SS(r0_1)]

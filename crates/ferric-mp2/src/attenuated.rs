@@ -9,7 +9,7 @@ use crate::rimp2::{ri_mp2_spin_components, RiMp2Config, SpinComponents};
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
-use ferric_integrals::operator::{Operator, OperatorKind};
+use ferric_integrals::operator::Operator;
 use ferric_scf::rhf::RhfResult;
 
 /// Configuration for attenuated MP2.
@@ -54,11 +54,8 @@ pub fn attenuated_ri_mp2(
     config: &AttenuatedMp2Config,
 ) -> Result<AttenuatedMp2Result, FerricError> {
     let omega = 1.0 / (config.r0 * std::f64::consts::SQRT_2);
-    let op = Operator {
-        kind: OperatorKind::ErfcCoulomb,
-        omega,
-        distance: config.r0,
-    };
+    let mut op = Operator::erfc(omega);
+    op.distance = config.r0;
     let ri_config = RiMp2Config { frozen_core: config.frozen_core };
     let (sc, _) = ri_mp2_spin_components(mol, obs, dfbs, op, rhf, &ri_config)?;
     let scaled_corr = config.scaling * sc.e_total;

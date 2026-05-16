@@ -602,7 +602,6 @@ mod tests {
         // Test: compute the 3-center gradient contribution by finite differences
         // of the raw 3-center integrals, and compare with the analytical formula.
         // This isolates the 3c term from everything else.
-        use ferric_integrals::engine::Engine;
         use crate::rimp2::{compute_mp2_intermediates, RiMp2Config};
         use ferric_integrals::threeindex;
         use crate::rimp2::cholesky_inverse_sqrt;
