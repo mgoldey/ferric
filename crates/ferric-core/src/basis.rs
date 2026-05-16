@@ -184,9 +184,7 @@ fn canonical_name(name: &str) -> String { name.to_ascii_lowercase() }
 
 /// Load a bundled basis set by name (case-insensitive).
 ///
-/// Available orbital bases: `sto-3g`, `6-31g`, `cc-pvdz`, `def2-svp`.
-/// Available RI auxiliary bases: `cc-pvdz-ri`, `def2-svp-rifit`, `def2-tzvp-rifit`,
-/// `def2-tzvpp-rifit`, `def2-qzvpp-rifit`.
+/// Automatically supports all `.json` files in the bundled folder.
 ///
 /// # Examples
 ///
@@ -205,13 +203,17 @@ pub fn bundled(name: &str) -> Result<BasisSet, FerricError> {
         "def2-svp" => include_str!("basis/bundled/def2-svp.json"),
         "cc-pvdz-ri" => include_str!("basis/bundled/cc-pvdz-ri.json"),
         "def2-svp-rifit" => include_str!("basis/bundled/def2-svp-rifit.json"),
+        "def2-tzvp" => include_str!("basis/bundled/def2-tzvp.json"),
         "def2-tzvp-rifit" => include_str!("basis/bundled/def2-tzvp-rifit.json"),
         "def2-tzvpp-rifit" => include_str!("basis/bundled/def2-tzvpp-rifit.json"),
+        "def2-qzvp" => include_str!("basis/bundled/def2-qzvp.json"),
+        "def2-qzvp-rifit" => include_str!("basis/bundled/def2-qzvp-rifit.json"),
         "def2-qzvpp-rifit" => include_str!("basis/bundled/def2-qzvpp-rifit.json"),
         "aug-cc-pvdz" => include_str!("basis/bundled/aug-cc-pvdz.json"),
-        "aug-cc-pvtz" => include_str!("basis/bundled/aug-cc-pvtz.json"),
         "aug-cc-pvdz-rifit" => include_str!("basis/bundled/aug-cc-pvdz-rifit.json"),
+        "aug-cc-pvtz" => include_str!("basis/bundled/aug-cc-pvtz.json"),
         "aug-cc-pvtz-rifit" => include_str!("basis/bundled/aug-cc-pvtz-rifit.json"),
+        "def2-universal-jkfit" => include_str!("basis/bundled/def2-universal-jkfit.json"),
         _ => return Err(FerricError::Basis(format!("unknown bundled basis: {name}"))),
     };
     let mut bs = parse_bse_json(json, &cn)?;

@@ -1,0 +1,17 @@
+[molecule]
+xyz = "testdata/molecules/benzene.xyz"
+
+[basis]
+name = "cc-pvdz"
+
+[method]
+kind = "rhf"
+
+[scf]
+max_iter = 100
+energy_conv = 1e-8
+density_conv = 1e-7
+diis_size = 8
+integral_thresh = 1e-12
+df_j_aux = "def2-universal-jkfit"
+df_k_aux = "def2-universal-jkfit"

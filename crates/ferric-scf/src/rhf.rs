@@ -4,6 +4,7 @@
 //! and Schwarz-screened two-electron integral evaluation.
 
 use crate::df_j::DfJ;
+use crate::df_k::DfK;
 use crate::diis::Diis;
 use crate::direct_j::DirectJ;
 use crate::direct_jk::DirectJK;
@@ -35,8 +36,13 @@ pub struct RhfConfig {
     pub k_builder: Option<String>,
     /// Optional auxiliary basis for density-fitted Coulomb (RI-J). When set, J is
     /// built from precomputed 3-center ERIs in O(N^2 · naux) per iteration instead
-    /// of contracting full 4-index ERIs. K is still built directly (no DF-K).
+    /// of contracting full 4-index ERIs.
     pub df_j_aux: Option<String>,
+    /// Optional auxiliary basis for density-fitted exchange (RI-K). When set, K is
+    /// built from the V^{-1/2}-dressed 3-center tensor in O(N^3 · naux) GEMMs.
+    /// Should be a JK-fit basis (e.g. `def2-universal-jkfit`), not an RI/MP2-fit
+    /// basis, which would introduce mHa-scale error in K.
+    pub df_k_aux: Option<String>,
 }
 
 impl Default for RhfConfig {
@@ -49,6 +55,7 @@ impl Default for RhfConfig {
             integral_thresh: 1e-12,
             k_builder: None,
             df_j_aux: None,
+            df_k_aux: None,
         }
     }
 }
@@ -116,11 +123,19 @@ pub fn solve_rhf(
     }
 
     // Density-fitted Coulomb (RI-J). Builds 3-center tensor + inverse metric once.
-    // When active, the SCF loop uses DfJ for J and DirectK for K (no combined JK pass).
     let mut df_j: Option<DfJ> = if let Some(aux_name) = config.df_j_aux.as_deref() {
         let dfbs_set = ferric_core::basis::bundled(aux_name)?;
         let dfbs = PreparedBasis::new(mol, &dfbs_set)?;
         Some(DfJ::new(op, prep, &dfbs)?)
+    } else {
+        None
+    };
+
+    // Density-fitted exchange (RI-K). Builds V^{-1/2}-dressed 3-center tensor once.
+    let mut df_k: Option<DfK> = if let Some(aux_name) = config.df_k_aux.as_deref() {
+        let dfbs_set = ferric_core::basis::bundled(aux_name)?;
+        let dfbs = PreparedBasis::new(mol, &dfbs_set)?;
+        Some(DfK::new(op, prep, &dfbs)?)
     } else {
         None
     };
@@ -157,14 +172,21 @@ pub fn solve_rhf(
         // Build J and K using selected builder (reuse pre-allocated buffers)
         j_buf.fill(0.0);
         k_buf.fill(0.0);
-        // Three K paths, mutually exclusive:
-        //   1. DF-J + DirectK : J from RI, K direct
-        //   2. LinkK         : J direct, K via Schwarz-screened pair lists
-        //   3. DirectJK      : combined direct J+K in one ERI pass (default)
-        if let Some(dfj) = df_j.as_mut() {
-            dfj.build(&d, &mut j_buf)?;
-            let mut direct_k = DirectK::new(ctx, prep, bounds, config.integral_thresh);
-            total_quartets += <DirectK as KBuilder>::build(&mut direct_k, &d, &mut k_buf)?;
+        // Build J: DF-J if configured, else fall through to combined direct path below.
+        // Build K: DF-K > LinkK > combined DirectJK, in priority order.
+        if df_j.is_some() || df_k.is_some() {
+            if let Some(dfj) = df_j.as_mut() {
+                dfj.build(&d, &mut j_buf)?;
+            } else {
+                let mut direct_j = DirectJ::new(ctx, prep, bounds, config.integral_thresh);
+                total_quartets += direct_j.build(&d, &mut j_buf)?;
+            }
+            if let Some(dfk) = df_k.as_mut() {
+                dfk.build(&d, &mut k_buf)?;
+            } else {
+                let mut direct_k = DirectK::new(ctx, prep, bounds, config.integral_thresh);
+                total_quartets += <DirectK as KBuilder>::build(&mut direct_k, &d, &mut k_buf)?;
+            }
         } else if let Some(lk) = k_builder.as_mut() {
             let mut direct_j = DirectJ::new(ctx, prep, bounds, config.integral_thresh);
             total_quartets += direct_j.build(&d, &mut j_buf)?;
@@ -193,7 +215,16 @@ pub fn solve_rhf(
         let de = (energy - prev_e).abs();
         let err_max = err.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
 
-        if iter > 1 && de < config.energy_conv && err_max < config.density_conv {
+        // DF builds introduce O(1e-6) Ha noise in the K matrix per iteration that
+        // breaks strict energy variational convergence even when orbitals have
+        // fully converged. When DF is active, accept on |FDS-SDF| (orbital gradient)
+        // alone — the same criterion PySCF uses for DF-SCF.
+        let df_active = df_j.is_some() || df_k.is_some();
+        let energy_ok = de < config.energy_conv;
+        let grad_ok = err_max < config.density_conv;
+        let converged = if df_active { grad_ok } else { energy_ok && grad_ok };
+
+        if iter > 1 && converged {
             let (orb_e, c) = diagonalize(&f, &s_inv_sqrt)?;
             return Ok(RhfResult {
                 energy,

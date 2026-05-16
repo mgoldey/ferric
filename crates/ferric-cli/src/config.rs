@@ -108,6 +108,7 @@ pub struct ScfCfg {
     pub integral_thresh: f64,
     pub k_builder: Option<String>,
     pub df_j_aux: Option<String>,
+    pub df_k_aux: Option<String>,
 }
 
 impl Default for ScfCfg {
@@ -120,6 +121,7 @@ impl Default for ScfCfg {
             integral_thresh: 1e-12,
             k_builder: None,
             df_j_aux: None,
+            df_k_aux: None,
         }
     }
 }

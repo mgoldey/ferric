@@ -74,6 +74,7 @@ fn main() {
         integral_thresh: cfg.scf.integral_thresh,
         k_builder: cfg.scf.k_builder.clone(),
         df_j_aux: cfg.scf.df_j_aux.clone(),
+        df_k_aux: cfg.scf.df_k_aux.clone(),
     };
 
     if task == "optimize" {
