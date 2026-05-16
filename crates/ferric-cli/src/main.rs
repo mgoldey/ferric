@@ -41,7 +41,7 @@ fn main() {
         eprintln!("error: unsupported method.task = \"{task}\"; expected energy or optimize");
         std::process::exit(1);
     }
-    let mol = Molecule::load_xyz(&cfg.molecule.xyz).unwrap_or_else(|e| {
+    let mol = Molecule::load_xyz_with_charge(&cfg.molecule.xyz, cfg.molecule.charge, cfg.molecule.multiplicity).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
     });
@@ -358,6 +358,34 @@ fn main() {
             println!("Eigenpotentials kept:  {} / {}", rpa_result.n_eigenpotentials, rpa_result.eigenvalues_static.len());
             if let Some(e_diag) = rpa_result.e_rpa_dft_diag {
                 println!("RI-dRPA check:         {:>20.10} Hartree", e_diag);
+            }
+            if let Some(prefix) = cfg.rpa.export_eigpot_prefix.as_deref() {
+                use ferric_export::cube::GridSpec;
+                use ferric_export::export_basis_function_cube;
+                let spacing = cfg.rpa.cube_spacing.unwrap_or(0.2);
+                let margin = cfg.rpa.cube_margin.unwrap_or(4.0);
+                let n_export = cfg.rpa.export_eigpot_count
+                    .unwrap_or(10)
+                    .min(rpa_result.n_eigenpotentials);
+                let grid = GridSpec::bounding_box(&mol, margin, spacing);
+                println!(
+                    "Exporting {} eigenpotential cubes (grid {}×{}×{}, spacing {} Bohr)…",
+                    n_export, grid.n_x, grid.n_y, grid.n_z, spacing
+                );
+                for alpha in 0..n_export {
+                    let coeffs: Vec<f64> = rpa_result.eigenpotentials
+                        .column(alpha).iter().copied().collect();
+                    let lam = rpa_result.eigenvalues_static[alpha];
+                    let path = format!("{prefix}_eigpot_{:03}.cube", alpha);
+                    let comment = format!(
+                        "PDEP eigenpotential α={alpha} λ(0)={lam:.6} (basis {aux_name})"
+                    );
+                    if let Err(e) = export_basis_function_cube(&path, &mol, &aux_bs, &grid, &coeffs, &comment) {
+                        eprintln!("  warning: failed to write {}: {}", path, e);
+                    } else {
+                        println!("  wrote {} (λ(0)={:.6})", path, lam);
+                    }
+                }
             }
         }
         _ => unreachable!(),

@@ -58,12 +58,26 @@ pub struct RpaCfg {
     pub u0: Option<f64>,
     #[serde(default)]
     pub run_diagnostics: bool,
+    /// If set, write PDEP eigenpotentials to `<prefix>_eigpot_NNN.cube`.
+    pub export_eigpot_prefix: Option<String>,
+    /// Number of leading eigenpotentials to export (default: 10).
+    pub export_eigpot_count: Option<usize>,
+    /// Cube grid spacing in Bohr (default: 0.2).
+    pub cube_spacing: Option<f64>,
+    /// Cube grid margin in Bohr beyond bounding box (default: 4.0).
+    pub cube_margin: Option<f64>,
 }
 
 #[derive(Deserialize)]
 pub struct MoleculeCfg {
     pub xyz: String,
+    #[serde(default)]
+    pub charge: i32,
+    #[serde(default = "default_multiplicity")]
+    pub multiplicity: usize,
 }
+
+fn default_multiplicity() -> usize { 1 }
 
 #[derive(Deserialize)]
 pub struct BasisCfg {

@@ -13,3 +13,8 @@ frozen_core = 1
 n_quad = 40
 quadrature = "gauss-legendre"
 trunc_thresh = 1e-4
+# Write the leading PDEP eigenpotentials to cube files (visualize in VMD/Avogadro):
+export_eigpot_prefix = "water_pdep"
+export_eigpot_count = 10
+cube_spacing = 0.25
+cube_margin = 4.0

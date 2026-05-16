@@ -24,6 +24,10 @@ pub struct PdepRpaResult {
     pub n_eigenpotentials: usize,
     /// Static dielectric eigenvalues λ_α(0), length M.
     pub eigenvalues_static: Vec<f64>,
+    /// PDEP eigenpotentials V_α expanded in the RI auxiliary basis (physical coefficients,
+    /// after back-transforming from the V^{-1/2}-dressed Davidson basis).
+    /// Shape (naux, M). Column α gives the c_α^P such that V_α(r) = Σ_P c_α^P χ_P(r).
+    pub eigenpotentials: Array2<f64>,
     /// Imaginary-frequency quadrature points ω_k.
     pub quad_freqs: Vec<f64>,
     /// Quadrature weights w_k.
@@ -92,6 +96,10 @@ pub fn run_pdep_rpa(
     let eigenvalues_static: Vec<f64> = davidson_result.eigenvalues[..n_keep].to_vec();
     let eigenvectors = davidson_result.eigenvectors.slice(ndarray::s![.., ..n_keep]).to_owned();
 
+    // Back-transform from V^{-1/2}-dressed basis to physical aux-basis coefficients:
+    // c_α (physical) = V^{-1/2} · V_α (dressed). Used for real-space cube export.
+    let eigenpotentials_aux = inter.v_inv_sqrt.dot(&eigenvectors);
+
     // Step 5: Build quadrature grid.
     let (quad_freqs, quad_weights) = quadrature::build_quadrature(&config.quadrature);
 
@@ -120,6 +128,7 @@ pub fn run_pdep_rpa(
         e_rpa,
         n_eigenpotentials: n_keep,
         eigenvalues_static,
+        eigenpotentials: eigenpotentials_aux,
         quad_freqs,
         quad_weights,
         eigenvalues_freq,

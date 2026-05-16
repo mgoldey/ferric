@@ -1,0 +1,12 @@
+[package]
+name = "ferric-export"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ferric-core = { path = "../ferric-core" }
+ferric-scf = { path = "../ferric-scf" }
+ferric-integrals = { path = "../ferric-integrals" }
+ndarray = { workspace = true }
+ndarray-npy = "0.9"
+thiserror = { workspace = true }
