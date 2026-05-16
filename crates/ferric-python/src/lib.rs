@@ -34,8 +34,9 @@ impl PyMolecule {
         Ok(PyMolecule { inner: mol })
     }
     #[staticmethod]
-    fn from_xyz_string(s: &str) -> PyResult<Self> {
-        let mol = Molecule::parse_xyz(s)
+    #[pyo3(signature = (s, charge=0, multiplicity=1))]
+    fn from_xyz_string(s: &str, charge: i32, multiplicity: usize) -> PyResult<Self> {
+        let mol = Molecule::parse_xyz(s, charge, multiplicity)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{e}")))?;
         Ok(PyMolecule { inner: mol })
     }
@@ -383,6 +384,155 @@ fn run_ccsd_t(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
     Ok(PyCcResult { correlation_energy: r.correlation_energy, t_correction: Some(e_t) })
 }
 
+// ── PDEP-RPA ──
+
+#[pyclass]
+#[pyo3(name = "PdepRpaResult")]
+struct PyPdepRpaResult {
+    #[pyo3(get)] rhf_energy: f64,
+    #[pyo3(get)] e_rpa: f64,
+    #[pyo3(get)] total_energy: f64,
+    #[pyo3(get)] n_eigenpotentials: usize,
+    #[pyo3(get)] e_rpa_dft_diag: Option<f64>,
+    eigenvalues_static: Vec<f64>,
+    eigenpotentials: Array2<f64>,
+    quad_freqs: Vec<f64>,
+    quad_weights: Vec<f64>,
+    eigenvalues_freq: Array2<f64>,
+}
+
+#[pymethods]
+impl PyPdepRpaResult {
+    /// Static dielectric eigenvalues λ_α(0), length M (sorted descending).
+    /// Plot `λ - 1` vs α on a log scale for a scree plot of the PDEP basis.
+    #[getter]
+    fn eigenvalues_static<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        PyArray1::from_slice(py, &self.eigenvalues_static)
+    }
+    /// PDEP eigenpotential coefficients in the RI auxiliary basis, shape (naux, M).
+    /// Column α gives c_α^P such that V_α(r) = Σ_P c_α^P χ_P(r).
+    #[getter]
+    fn eigenpotentials<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        PyArray2::from_owned_array(py, self.eigenpotentials.clone())
+    }
+    /// Imaginary-frequency quadrature points ω_k.
+    #[getter]
+    fn quad_freqs<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        PyArray1::from_slice(py, &self.quad_freqs)
+    }
+    /// Imaginary-frequency quadrature weights w_k.
+    #[getter]
+    fn quad_weights<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        PyArray1::from_slice(py, &self.quad_weights)
+    }
+    /// λ_α(iω_k) tensor, shape (N_quad, M).
+    #[getter]
+    fn eigenvalues_freq<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        PyArray2::from_owned_array(py, self.eigenvalues_freq.clone())
+    }
+
+    /// Write a scree plot of the static dielectric eigenvalues to `path` (PNG).
+    ///
+    /// Plots `|λ_α(0) - 1|` on a log y-axis against eigenpotential index α.
+    /// The shape of this curve diagnoses how aggressively PDEP can be truncated.
+    /// Pure-Python implementation: dispatches to matplotlib via the GIL.
+    #[pyo3(signature = (path, title=None))]
+    fn save_scree_plot(&self, py: Python<'_>, path: &str, title: Option<&str>) -> PyResult<()> {
+        let mpl = py.import("matplotlib")?;
+        mpl.call_method1("use", ("Agg",))?;
+        let plt = py.import("matplotlib.pyplot")?;
+
+        let fig = plt.call_method0("figure")?;
+        let _ax = fig.call_method0("gca")?;
+        let alphas: Vec<usize> = (0..self.eigenvalues_static.len()).collect();
+        let deviations: Vec<f64> = self.eigenvalues_static.iter()
+            .map(|&l| (l - 1.0).abs())
+            .collect();
+        let kwargs = pyo3::types::PyDict::new(py);
+        kwargs.set_item("marker", "o")?;
+        kwargs.set_item("markersize", 3)?;
+        kwargs.set_item("linewidth", 1)?;
+        plt.call_method("semilogy", (alphas, deviations), Some(&kwargs))?;
+        plt.call_method1("xlabel", ("Eigenpotential index α",))?;
+        plt.call_method1("ylabel", ("|λ_α(0) − 1|",))?;
+        let default_title = format!(
+            "PDEP scree: {} eigenpotentials, E_c(RPA) = {:.6} Ha",
+            self.n_eigenpotentials, self.e_rpa,
+        );
+        plt.call_method1("title", (title.unwrap_or(&default_title),))?;
+        plt.call_method0("grid")?;
+        let save_kwargs = pyo3::types::PyDict::new(py);
+        save_kwargs.set_item("dpi", 120)?;
+        save_kwargs.set_item("bbox_inches", "tight")?;
+        plt.call_method("savefig", (path,), Some(&save_kwargs))?;
+        plt.call_method0("close")?;
+        Ok(())
+    }
+}
+
+#[pyfunction]
+#[pyo3(signature = (
+    mol, basis_set, auxbasis,
+    frozen_core=None, n_quad=None, quadrature=None, u0=None,
+    trunc_thresh=None, davidson_conv_thresh=None,
+    run_diagnostics=false, k_builder=None,
+))]
+#[allow(clippy::too_many_arguments)]
+fn run_pdep_rpa(
+    mol: &PyMolecule,
+    basis_set: &PyBasisSet,
+    auxbasis: &PyBasisSet,
+    frozen_core: Option<usize>,
+    n_quad: Option<usize>,
+    quadrature: Option<&str>,
+    u0: Option<f64>,
+    trunc_thresh: Option<f64>,
+    davidson_conv_thresh: Option<f64>,
+    run_diagnostics: bool,
+    k_builder: Option<&str>,
+) -> PyResult<PyPdepRpaResult> {
+    use ferric_rpa::config::{QuadratureConfig, QuadratureScheme, SternheimerConfig};
+    use ferric_rpa::{run_pdep_rpa as run_pdep_rpa_inner, PdepRpaConfig};
+
+    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
+    let ctx = ParallelContext::default();
+    let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &rhf_config(k_builder)).map_err(make_err)?;
+
+    let scheme = match quadrature.unwrap_or("gauss-legendre") {
+        "minimax" | "mm" => QuadratureScheme::MiniMax,
+        _ => QuadratureScheme::GaussLegendre,
+    };
+    let cfg = PdepRpaConfig {
+        frozen_core: frozen_core.unwrap_or(0),
+        trunc_thresh: trunc_thresh.unwrap_or(1e-4),
+        davidson_max_vecs: 0,
+        davidson_conv_thresh: davidson_conv_thresh.unwrap_or(1e-6),
+        quadrature: QuadratureConfig {
+            scheme,
+            n_points: n_quad.unwrap_or(40),
+            u0: u0.unwrap_or(0.5),
+        },
+        sternheimer: SternheimerConfig::default(),
+        run_diagnostics,
+    };
+    let r = run_pdep_rpa_inner(&mol.inner, &prep, &dfbs, op, &rhf, &cfg).map_err(make_err)?;
+    Ok(PyPdepRpaResult {
+        rhf_energy: rhf.energy,
+        e_rpa: r.e_rpa,
+        total_energy: rhf.energy + r.e_rpa,
+        n_eigenpotentials: r.n_eigenpotentials,
+        e_rpa_dft_diag: r.e_rpa_dft_diag,
+        eigenvalues_static: r.eigenvalues_static,
+        eigenpotentials: r.eigenpotentials,
+        quad_freqs: r.quad_freqs,
+        quad_weights: r.quad_weights,
+        eigenvalues_freq: r.eigenvalues_freq,
+    })
+}
+
 // ── Module ──
 
 #[pymodule]
@@ -403,6 +553,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyLaplaceMp2Result>()?;
     m.add_class::<PyDftResult>()?;
     m.add_class::<PyCcResult>()?;
+    m.add_class::<PyPdepRpaResult>()?;
     m.add_function(wrap_pyfunction!(run_rhf, m)?)?;
     m.add_function(wrap_pyfunction!(run_optimize, m)?)?;
     m.add_function(wrap_pyfunction!(run_rimp2, m)?)?;
@@ -414,5 +565,6 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_ccd, m)?)?;
     m.add_function(wrap_pyfunction!(run_ccsd, m)?)?;
     m.add_function(wrap_pyfunction!(run_ccsd_t, m)?)?;
+    m.add_function(wrap_pyfunction!(run_pdep_rpa, m)?)?;
     Ok(())
 }
