@@ -3,10 +3,12 @@
 //! The RI-dRPA approximation evaluates RPA on the full RI-auxiliary basis without
 //! eigenpotential truncation. Used as a sanity check against PDEP-RPA.
 
-use ndarray::Array2;
+use ndarray::{Array2, Axis, Zip};
 use ndarray_linalg::{Eigh, UPLO};
 use rayon::prelude::*;
 use ferric_core::FerricError;
+
+use crate::sternheimer::build_scale_factors;
 
 /// Compute RI-dRPA eigenvalues of ε̃(iω) = I − χ₀(iω) in the full RI basis.
 ///
@@ -35,23 +37,16 @@ pub fn ri_drpa_eigenvalues(
 
     // Build Π = 4 Σ_{ia} e_ia/(ω²+e_ia²) B^P B^Q (= −χ₀, RHF: factor 4 = 2 spin × 2 orb)
     //
-    // GEMM path: b_scaled[p,ia] = b_ov[p,ia] * sqrt(4·e_ia/(ω²+e_ia²))
-    //   chi0 = b_scaled @ b_scaled^T  (one DGEMM replaces O(naux²·nov) scalar ops)
-    let omega2 = omega * omega;
-    // Allocate a fresh C-order (naux, nov) buffer and fill it with scaled values.
-    let mut b_scaled = Array2::<f64>::zeros((naux, nov));
-    for (i, &eps_i) in eps_occ.iter().enumerate() {
-        for (a, &eps_a) in eps_vir.iter().enumerate() {
-            let ia = i * nvir + a;
-            let e_ia = eps_a - eps_i;
-            let s = (4.0 * e_ia / (omega2 + e_ia * e_ia)).sqrt();
-            for p in 0..naux {
-                b_scaled[(p, ia)] = b_ov[(p, ia)] * s;
-            }
-        }
-    }
-    // chi0 = b_scaled @ b_scaled^T : (naux, naux) DGEMM via ndarray→OpenBLAS
-    let mut chi0: Array2<f64> = b_scaled.dot(&b_scaled.t());
+    // SYRK path: b_scaled[p,ia] = b_ov[p,ia] * sqrt(4·e_ia/(ω²+e_ia²))
+    //   chi0 = b_scaled @ b_scaled^T via DSYRK (symmetric rank-k update, ~2× DGEMM).
+    let scale = build_scale_factors(eps_occ, eps_vir, omega);
+    let mut b_scaled: Array2<f64> = b_ov.to_owned();
+    let scale_row = scale.view().insert_axis(Axis(0)); // (1, nov)
+    Zip::from(&mut b_scaled)
+        .and_broadcast(scale_row)
+        .for_each(|x, &s| *x *= s);
+    let mut chi0 = crate::sternheimer::syrk_aat(&b_scaled);
+    let _ = nvir; // nvir factored into scale via build_scale_factors
 
     // ε̃ = I − χ₀ = I + Π (Π = −χ₀, positive); eigenvalues 1 + μ ≥ 1
     for p in 0..naux {

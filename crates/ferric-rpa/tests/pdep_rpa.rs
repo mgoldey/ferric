@@ -200,3 +200,25 @@ fn h2o_aug_cc_pvtz_timing_comparison() {
             dt.as_secs_f64(), 100.0 * dt.as_secs_f64() / dt_full.as_secs_f64());
     }
 }
+
+#[test]
+#[ignore]
+fn benzene_cc_pvdz_timing() {
+    use std::time::Instant;
+    let (mol, obs, dfbs, op, rhf) = setup(
+        "../../testdata/molecules/benzene.xyz",
+        "cc-pvdz",
+        "cc-pvdz-ri",
+    );
+    println!("\nBenzene/cc-pVDZ PDEP-RPA timing (40 GL points):");
+
+    let mut cfg = pyscf_compat_config(40);
+    cfg.trunc_thresh = 1e-4;
+    cfg.frozen_core = 6;
+
+    let t0 = Instant::now();
+    let r = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
+    let dt = t0.elapsed();
+    println!("  trunc=1e-4 frozen_core=6: M={} E_c={:.10} t={:.2}s",
+        r.n_eigenpotentials, r.e_rpa, dt.as_secs_f64());
+}

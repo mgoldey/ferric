@@ -6,7 +6,96 @@
 //! In the PDEP formalism all response is expressed via MO-basis B^P_ia
 //! tensors — no AO-space Fock rebuild is needed at this level.
 
-use ndarray::{Array1, Array2};
+use ndarray::{Array1, Array2, Axis, Zip};
+
+// Direct BLAS DSYRK binding — OpenBLAS is already linked via openblas-src.
+// Avoids adding a cblas/blas-sys dependency just for a symmetric rank-k update.
+// Fortran interface: dsyrk(uplo, trans, n, k, alpha, A, lda, beta, C, ldc).
+extern "C" {
+    fn dsyrk_(
+        uplo: *const u8,
+        trans: *const u8,
+        n: *const i32,
+        k: *const i32,
+        alpha: *const f64,
+        a: *const f64,
+        lda: *const i32,
+        beta: *const f64,
+        c: *mut f64,
+        ldc: *const i32,
+    );
+}
+
+/// Compute C = A · A^T using DSYRK (symmetric rank-k update).
+///
+/// `a` is a row-major (m, k) matrix; the result is a row-major (m, m) symmetric
+/// matrix. Only the lower triangle is computed by BLAS, then mirrored to the
+/// upper triangle so callers see a fully-populated symmetric matrix.
+///
+/// Reading row-major (m, k) as Fortran-order gives a (k, m) matrix with lda=k.
+/// Computing A_F^T · A_F (n=m, k=k, trans='T', lda=k) yields the symmetric
+/// (m, m) result we want.
+pub(crate) fn syrk_aat(a: &Array2<f64>) -> Array2<f64> {
+    let m = a.nrows();
+    let kdim = a.ncols();
+    let mut c = Array2::<f64>::zeros((m, m));
+    if m == 0 || kdim == 0 {
+        return c;
+    }
+    // Require contiguous row-major storage so the Fortran view is valid.
+    let a_slice = a
+        .as_slice()
+        .expect("syrk_aat: input must be contiguous (row-major)");
+    let alpha = 1.0f64;
+    let beta = 0.0f64;
+    let n_i32 = m as i32;
+    let k_i32 = kdim as i32;
+    let lda = kdim as i32; // Fortran leading dim of the transposed view
+    let ldc = m as i32;
+    // Compute LOWER triangle (Fortran 'L') of A^T·A in Fortran view.
+    // In row-major terms this populates the UPPER triangle of C — symmetric in
+    // either reading, so we mirror to fill both halves.
+    unsafe {
+        dsyrk_(
+            b"L\0".as_ptr(),
+            b"T\0".as_ptr(),
+            &n_i32,
+            &k_i32,
+            &alpha,
+            a_slice.as_ptr(),
+            &lda,
+            &beta,
+            c.as_mut_ptr(),
+            &ldc,
+        );
+    }
+    // Mirror upper → lower (row-major). BLAS wrote one triangle; copy across.
+    for i in 0..m {
+        for j in 0..i {
+            c[(i, j)] = c[(j, i)];
+        }
+    }
+    c
+}
+
+/// Build the (nov,) array of per-(ia) scale factors s_ia = sqrt(4·e_ia / (ω²+e_ia²)).
+///
+/// Hoisted out of `dielectric_matrix` so callers iterating over many frequencies
+/// can keep the dominant GEMM/SYRK costs in BLAS and avoid scalar work entirely.
+#[inline]
+pub fn build_scale_factors(eps_occ: &[f64], eps_vir: &[f64], omega: f64) -> Array1<f64> {
+    let nocc = eps_occ.len();
+    let nvir = eps_vir.len();
+    let omega2 = omega * omega;
+    let mut s = Array1::<f64>::zeros(nocc * nvir);
+    for (i, &eps_i) in eps_occ.iter().enumerate() {
+        for (a, &eps_a) in eps_vir.iter().enumerate() {
+            let e_ia = eps_a - eps_i;
+            s[i * nvir + a] = (4.0 * e_ia / (omega2 + e_ia * e_ia)).sqrt();
+        }
+    }
+    s
+}
 
 /// Compute ⟨V|χ₀(iω)|V⟩ for a single trial potential V.
 ///
@@ -49,42 +138,44 @@ pub fn dielectric_matrix(
     eps_vir: &[f64],
     omega: f64,
 ) -> Array2<f64> {
+    let scale = build_scale_factors(eps_occ, eps_vir, omega);
+    dielectric_matrix_with_scale(v_mat, b_ov, &scale)
+}
+
+/// Same as `dielectric_matrix` but takes a precomputed scale-factor array.
+///
+/// Hot-path entry point for callers that evaluate the dielectric matrix at many
+/// frequencies: scale factors depend only on (ω, ε_occ, ε_vir), not on `v_mat`
+/// or `b_ov`, so they can be built once per (ω, orbital set).
+pub fn dielectric_matrix_with_scale(
+    v_mat: &Array2<f64>,
+    b_ov: &Array2<f64>,
+    scale: &Array1<f64>,
+) -> Array2<f64> {
     let m = v_mat.ncols();
-    let nocc = eps_occ.len();
-    let nvir = eps_vir.len();
-    let nov = nocc * nvir;
+    let nov = scale.len();
     assert_eq!(b_ov.shape()[1], nov);
 
     // rhs_mat: (m, nov) — rhs for each trial vector
-    let rhs_mat = v_mat.t().dot(b_ov); // (m, nov)
-
-    // Build m×m matrix Π_αβ = 4 Σ_{ia} e_ia/(ω²+e_ia²) rhs_α_ia rhs_β_ia (RHF).
-    // The factor of 4 = 2 (closed-shell spin) × 2 (orbital factor).
+    //
     // PySCF: chi0 = 2·e_ov·f_ov/(ω²+e_ov²) with e_ov = e_occ−e_vir < 0, f_ov = 2
     //        = 4 · (-e_ia) / (ω²+e_ia²) — negative
     // Ferric stores +|χ₀| = 4·e_ia/(ω²+e_ia²) so that ε̃ = I − Π matches PySCF I − χ₀.
     //
-    // GEMM path: rhs_scaled[α,ia] = rhs_mat[α,ia] * sqrt(4·e_ia/(ω²+e_ia²))
-    //   chi = rhs_scaled @ rhs_scaled^T  (one DGEMM replaces O(m²·nov) scalar ops)
-    let omega2 = omega * omega;
-    // Allocate a fresh C-order (m, nov) buffer and fill it with scaled values.
-    let mut rhs_scaled = Array2::<f64>::zeros((m, nov));
-    for i in 0..nocc {
-        for a in 0..nvir {
-            let ia = i * nvir + a;
-            let e_ia = eps_vir[a] - eps_occ[i];
-            let s = (4.0 * e_ia / (omega2 + e_ia * e_ia)).sqrt();
-            for alpha in 0..m {
-                rhs_scaled[(alpha, ia)] = rhs_mat[(alpha, ia)] * s;
-            }
-        }
-    }
-    // chi = rhs_scaled @ rhs_scaled^T : (m, m) DGEMM via ndarray→OpenBLAS
-    let chi = rhs_scaled.dot(&rhs_scaled.t());
+    // SYRK path: rhs_scaled[α,ia] = rhs_mat[α,ia] * sqrt(4·e_ia/(ω²+e_ia²))
+    //   chi = rhs_scaled @ rhs_scaled^T  (one DSYRK replaces DGEMM, ~2× faster).
+    let mut rhs_scaled = v_mat.t().dot(b_ov); // (m, nov), owned & contiguous row-major
+    // Broadcast row-scale: multiply column `ia` by scale[ia] in place.
+    let scale_row = scale.view().insert_axis(Axis(0)); // shape (1, nov)
+    Zip::from(&mut rhs_scaled)
+        .and_broadcast(scale_row)
+        .for_each(|x, &s| *x *= s);
+
+    // chi = rhs_scaled @ rhs_scaled^T via DSYRK; result is fully symmetrized.
+    let mut eps_mat = syrk_aat(&rhs_scaled);
 
     // Return ε̃ = I − χ₀ = I + Π (since Π = −χ₀, χ₀ < 0 at iω).
     // Eigenvalues are 1 + μ_α ≥ 1 for physical systems.
-    let mut eps_mat = chi;
     for alpha in 0..m {
         eps_mat[(alpha, alpha)] += 1.0;
     }
