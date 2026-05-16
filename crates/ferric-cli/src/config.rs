@@ -11,6 +11,8 @@ pub struct Config {
     pub mp2: Mp2Cfg,
     #[serde(default)]
     pub optimize: OptimizeCfg,
+    #[serde(default)]
+    pub rpa: RpaCfg,
 }
 
 #[derive(Deserialize, Default)]
@@ -42,6 +44,20 @@ pub struct Mp2Cfg {
     pub r0_nonbonded: Option<f64>,
     /// Number of Laplace quadrature points (for laplace-mp2).
     pub n_quad: Option<usize>,
+}
+
+#[derive(Deserialize, Default)]
+pub struct RpaCfg {
+    pub auxbasis: Option<String>,
+    #[serde(default)]
+    pub frozen_core: usize,
+    pub n_quad: Option<usize>,
+    pub quadrature: Option<String>,
+    pub trunc_thresh: Option<f64>,
+    pub davidson_conv_thresh: Option<f64>,
+    pub u0: Option<f64>,
+    #[serde(default)]
+    pub run_diagnostics: bool,
 }
 
 #[derive(Deserialize)]

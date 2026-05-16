@@ -10,6 +10,8 @@ use ferric_mp2::laplace::laplace_ri_mp2;
 use ferric_mp2::oo_rimp2::{oo_ri_mp2, OoRiMp2Config};
 use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
 use ferric_mp2::scs::{scs_mp2, scs_mp2_2terfc, ScsMp2Config, ScsMp2TerfcConfig};
+use ferric_rpa::config::{QuadratureConfig, QuadratureScheme, SternheimerConfig};
+use ferric_rpa::{run_pdep_rpa, PdepRpaConfig};
 use ferric_core::parallel::ParallelContext;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
@@ -31,8 +33,8 @@ fn main() {
     };
     let method = cfg.method.kind.as_str();
     let task = cfg.method.task.as_str();
-    if !matches!(method, "rhf" | "rimp2" | "oo-rimp2" | "att-rimp2" | "scs-mp2" | "scs-mp2-2terfc" | "laplace-mp2") {
-        eprintln!("error: unsupported method.kind = \"{method}\"; expected rhf, rimp2, oo-rimp2, att-rimp2, scs-mp2, scs-mp2-2terfc, or laplace-mp2");
+    if !matches!(method, "rhf" | "rimp2" | "oo-rimp2" | "att-rimp2" | "scs-mp2" | "scs-mp2-2terfc" | "laplace-mp2" | "pdep-rpa") {
+        eprintln!("error: unsupported method.kind = \"{method}\"; expected rhf, rimp2, oo-rimp2, att-rimp2, scs-mp2, scs-mp2-2terfc, laplace-mp2, or pdep-rpa");
         std::process::exit(1);
     }
     if !matches!(task, "energy" | "optimize") {
@@ -312,6 +314,51 @@ fn main() {
             println!("  E_OS       = {:.10} Hartree", lap_result.e_os);
             println!("  E_SS       = {:.10} Hartree", lap_result.e_ss);
             println!("  Total      = {:.10} Hartree", lap_result.total_energy);
+        }
+        "pdep-rpa" => {
+            let aux_name = cfg.rpa.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+            let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
+            let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
+            let scheme = match cfg.rpa.quadrature.as_deref().unwrap_or("gauss-legendre") {
+                "minimax" | "mm" => QuadratureScheme::MiniMax,
+                _ => QuadratureScheme::GaussLegendre,
+            };
+            let rpa_cfg = PdepRpaConfig {
+                frozen_core: cfg.rpa.frozen_core,
+                trunc_thresh: cfg.rpa.trunc_thresh.unwrap_or(1e-4),
+                davidson_max_vecs: 0,
+                davidson_conv_thresh: cfg.rpa.davidson_conv_thresh.unwrap_or(1e-6),
+                quadrature: QuadratureConfig {
+                    scheme,
+                    n_points: cfg.rpa.n_quad.unwrap_or(20),
+                    u0: cfg.rpa.u0.unwrap_or(0.5),
+                },
+                sternheimer: SternheimerConfig::default(),
+                run_diagnostics: cfg.rpa.run_diagnostics,
+            };
+            let rpa_result = run_pdep_rpa(&mol, &prep, &dfbs, op, &result, &rpa_cfg)
+                .unwrap_or_else(|e| {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                });
+            println!(
+                "PDEP-RPA/{} (aux: {}) on {}",
+                bs.name, aux_name, cfg.molecule.xyz
+            );
+            println!("  nbasis     = {}", prep.nbasis());
+            println!("RHF energy:            {:>20.10} Hartree", result.energy);
+            println!("RPA correlation:       {:>20.10} Hartree", rpa_result.e_rpa);
+            println!("Total (RHF+RPA):       {:>20.10} Hartree", result.energy + rpa_result.e_rpa);
+            println!("Eigenpotentials kept:  {} / {}", rpa_result.n_eigenpotentials, rpa_result.eigenvalues_static.len());
+            if let Some(e_diag) = rpa_result.e_rpa_dft_diag {
+                println!("RI-dRPA check:         {:>20.10} Hartree", e_diag);
+            }
         }
         _ => unreachable!(),
     }

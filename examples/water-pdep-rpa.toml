@@ -1,0 +1,15 @@
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "cc-pvdz"
+
+[method]
+kind = "pdep-rpa"
+
+[rpa]
+auxbasis = "cc-pvdz-ri"
+frozen_core = 1
+n_quad = 40
+quadrature = "gauss-legendre"
+trunc_thresh = 1e-4
