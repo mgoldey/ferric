@@ -380,6 +380,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferric-rpa"
+version = "0.1.0"
+dependencies = [
+ "ferric-core",
+ "ferric-integrals",
+ "ferric-mp2",
+ "ferric-scf",
+ "ndarray",
+ "ndarray-linalg",
+ "openblas-src",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "ferric-scf"
 version = "0.1.0"
 dependencies = [
