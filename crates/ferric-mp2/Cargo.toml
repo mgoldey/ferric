@@ -8,6 +8,7 @@ ferric-core = { path = "../ferric-core" }
 ferric-integrals = { path = "../ferric-integrals" }
 ferric-scf = { path = "../ferric-scf" }
 ferric-tensors = { path = "../ferric-tensors" }
+ferric-quadrature = { path = "../ferric-quadrature" }
 ndarray = { workspace = true }
 ndarray-linalg = { workspace = true }
 rayon = { workspace = true }

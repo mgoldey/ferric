@@ -47,6 +47,45 @@ pub fn rpa_correlation_energy(
 ///
 /// # Returns
 /// Array2 of shape (N_quad, M) containing eigenvalues λ_α(iω_k).
+/// Laplace-separable variant of [`eval_eigenvalues_at_frequencies`].
+///
+/// Uses the χ₀ kernel from [`crate::laplace_chi0`] in place of the dense
+/// `dielectric_matrix`. The output shape and convention are identical.
+pub fn eval_eigenvalues_at_frequencies_laplace(
+    eigenvectors: &Array2<f64>,
+    b_ov: &Array2<f64>,
+    eps_occ: &[f64],
+    eps_vir: &[f64],
+    quad_freqs: &[f64],
+    laplace: &ferric_quadrature::LaplaceQuadrature,
+) -> Array2<f64> {
+    use crate::laplace_chi0::dielectric_matrix_laplace;
+    use ndarray_linalg::{Eigh, UPLO};
+    use rayon::prelude::*;
+
+    let n_quad = quad_freqs.len();
+    let m = eigenvectors.ncols();
+
+    let rows: Vec<Vec<f64>> = quad_freqs
+        .par_iter()
+        .map(|&omega| {
+            let eps_proj = dielectric_matrix_laplace(
+                eigenvectors, b_ov, eps_occ, eps_vir, omega, laplace,
+            );
+            let (evals, _) = eps_proj.eigh(UPLO::Upper).expect("dielectric eigh failed");
+            evals.to_vec()
+        })
+        .collect();
+
+    let mut eigenvalues_freq = Array2::zeros((n_quad, m));
+    for (k, row) in rows.into_iter().enumerate() {
+        for (alpha, val) in row.into_iter().enumerate() {
+            eigenvalues_freq[(k, alpha)] = val;
+        }
+    }
+    eigenvalues_freq
+}
+
 pub fn eval_eigenvalues_at_frequencies(
     eigenvectors: &Array2<f64>,
     b_ov: &Array2<f64>,

@@ -1,5 +1,38 @@
 //! Configuration types for PDEP-RPA.
 
+/// Backend for the χ₀ kernel that powers the dielectric matrix.
+///
+/// `Dense` is the original O(naux² × nocc × nvir) MO-basis path used in
+/// `dielectric_matrix_into`. `Laplace { n_quad }` factorizes the energy-gap
+/// denominator into a sum of exponentials via minimax-Laplace quadrature; in
+/// the MO-basis form it is correctness-equivalent to `Dense` (and the same
+/// arithmetic complexity), but it admits an AO-basis cubic-scaling
+/// reformulation as a follow-up.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum Chi0Backend {
+    Dense,
+    Laplace { n_quad: usize },
+}
+
+impl Default for Chi0Backend {
+    fn default() -> Self {
+        Chi0Backend::Dense
+    }
+}
+
+/// Choice of subspace eigensolver for the PDEP dielectric matrix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Eigensolver {
+    Davidson,
+    Lanczos,
+}
+
+impl Default for Eigensolver {
+    fn default() -> Self {
+        Eigensolver::Davidson
+    }
+}
+
 /// Top-level PDEP-RPA configuration.
 #[derive(Debug, Clone)]
 pub struct PdepRpaConfig {
@@ -15,6 +48,10 @@ pub struct PdepRpaConfig {
     pub sternheimer: SternheimerConfig,
     /// If true, also compute the full-basis RI-dRPA diagnostic energy (expensive).
     pub run_diagnostics: bool,
+    /// Eigensolver backend for the static dielectric eigenproblem.
+    pub eigensolver: Eigensolver,
+    /// χ₀ kernel backend. Default `Dense` preserves legacy behavior.
+    pub chi0_backend: Chi0Backend,
 }
 
 impl Default for PdepRpaConfig {
@@ -27,6 +64,8 @@ impl Default for PdepRpaConfig {
             quadrature: QuadratureConfig::default(),
             sternheimer: SternheimerConfig::default(),
             run_diagnostics: false,
+            eigensolver: Eigensolver::Davidson,
+            chi0_backend: Chi0Backend::Dense,
         }
     }
 }

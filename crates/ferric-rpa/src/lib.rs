@@ -13,8 +13,12 @@ pub mod config;
 pub mod davidson;
 pub mod diagnostics;
 pub mod energy;
+pub mod lanczos;
+pub mod laplace_chi0;
 pub mod quadrature;
 pub mod sternheimer;
+
+pub use lanczos::{run_lanczos_seeded, LanczosResult};
 
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
@@ -24,7 +28,30 @@ use ferric_mp2::rimp2::{compute_rpa_intermediates, RiMp2Config};
 use ferric_scf::rhf::RhfResult;
 use ndarray::{Array1, Array2};
 
-pub use config::PdepRpaConfig;
+pub use config::{Chi0Backend, Eigensolver, PdepRpaConfig};
+
+/// Allocating wrapper that dispatches the χ₀ kernel (Dense vs Laplace) based on
+/// whether a `LaplaceQuadrature` is supplied.
+///
+/// This is the single seam through which the Davidson/Lanczos callbacks select
+/// the backend. `eval_eigenvalues_at_frequencies` has its own (faster) in-place
+/// path because it lives in the hot post-Davidson loop where rhs_scaled/out
+/// scratch buffers are reused across frequencies.
+fn dielectric_apply(
+    v_mat: &Array2<f64>,
+    b_ov: &Array2<f64>,
+    eps_occ: &[f64],
+    eps_vir: &[f64],
+    omega: f64,
+    laplace: Option<&ferric_quadrature::LaplaceQuadrature>,
+) -> Array2<f64> {
+    match laplace {
+        None => sternheimer::dielectric_matrix(v_mat, b_ov, eps_occ, eps_vir, omega),
+        Some(q) => laplace_chi0::dielectric_matrix_laplace(
+            v_mat, b_ov, eps_occ, eps_vir, omega, q,
+        ),
+    }
+}
 
 /// Build an atom-localized seed for Davidson in the dressed aux basis.
 ///
@@ -153,6 +180,18 @@ pub fn run_pdep_rpa(
     let eps_occ_clone = eps_occ.clone();
     let eps_vir_clone = eps_vir.clone();
 
+    // Build the Laplace quadrature once if the Laplace χ₀ backend was selected.
+    // The same `(t_l, w_l)` are reused at every (ω, V) inside the Davidson loop
+    // and in the post-Davidson `eval_eigenvalues_at_frequencies` path.
+    let laplace_chi0_quad: Option<ferric_quadrature::LaplaceQuadrature> =
+        match config.chi0_backend {
+            Chi0Backend::Dense => None,
+            Chi0Backend::Laplace { n_quad } => Some(
+                laplace_chi0::build_laplace_for_gaps(&eps_occ_clone, &eps_vir_clone, n_quad),
+            ),
+        };
+    let laplace_for_davidson = laplace_chi0_quad.clone();
+
     // Atom-localized seed gives 3·N_atoms scaling when n_desired ≪ naux (PDEP truncation
     // regime). When the caller asks for all naux modes (e.g. trunc_thresh = 0 for
     // apples-to-apples comparison with full RI-RPA), Davidson would have to grow the
@@ -163,27 +202,65 @@ pub fn run_pdep_rpa(
     // full-basis verification path.
     let use_atom_seed =
         config.trunc_thresh > 0.0 && naux > 4 * dfbs.natoms();
-    let davidson_result = if use_atom_seed {
-        let seed = build_atom_seed(dfbs)?;
-        davidson::run_davidson_seeded(
-            seed,
-            move |v_mat: &Array2<f64>, omega: f64| {
-                sternheimer::dielectric_matrix(v_mat, &b_ov_clone, &eps_occ_clone, &eps_vir_clone, omega)
-            },
-            config.davidson_conv_thresh,
-            max_vecs,
-            naux,
-        )?
-    } else {
-        davidson::run_davidson_static(
-            naux,
-            move |v_mat: &Array2<f64>, omega: f64| {
-                sternheimer::dielectric_matrix(v_mat, &b_ov_clone, &eps_occ_clone, &eps_vir_clone, omega)
-            },
-            config.davidson_conv_thresh,
-            max_vecs,
-            naux,
-        )?
+
+    let davidson_result = match config.eigensolver {
+        Eigensolver::Davidson => {
+            if use_atom_seed {
+                let seed = build_atom_seed(dfbs)?;
+                let laplace_q = laplace_for_davidson.clone();
+                davidson::run_davidson_seeded(
+                    seed,
+                    move |v_mat: &Array2<f64>, omega: f64| {
+                        dielectric_apply(
+                            v_mat, &b_ov_clone, &eps_occ_clone, &eps_vir_clone, omega,
+                            laplace_q.as_ref(),
+                        )
+                    },
+                    config.davidson_conv_thresh,
+                    max_vecs,
+                    naux,
+                )?
+            } else {
+                let laplace_q = laplace_for_davidson.clone();
+                davidson::run_davidson_static(
+                    naux,
+                    move |v_mat: &Array2<f64>, omega: f64| {
+                        dielectric_apply(
+                            v_mat, &b_ov_clone, &eps_occ_clone, &eps_vir_clone, omega,
+                            laplace_q.as_ref(),
+                        )
+                    },
+                    config.davidson_conv_thresh,
+                    max_vecs,
+                    naux,
+                )?
+            }
+        }
+        Eigensolver::Lanczos => {
+            let seed = if use_atom_seed {
+                build_atom_seed(dfbs)?
+            } else {
+                Array2::eye(naux)
+            };
+            let block_size = seed.ncols().max(1);
+            let max_iter = (max_vecs / block_size).max(8);
+            let matvec = move |v: &Array2<f64>| -> Array2<f64> {
+                sternheimer::dielectric_apply(
+                    v, &b_ov_clone, &eps_occ_clone, &eps_vir_clone, 0.0,
+                )
+            };
+            let lz = lanczos::run_lanczos_seeded(
+                seed,
+                matvec,
+                naux,
+                max_iter,
+                config.davidson_conv_thresh,
+            )?;
+            davidson::DavidsonResult {
+                eigenvalues: lz.eigenvalues,
+                eigenvectors: lz.eigenvectors,
+            }
+        }
     };
 
     // Step 4: Truncate by departure from identity: keep eigenpotentials where
@@ -206,14 +283,16 @@ pub fn run_pdep_rpa(
     // Step 5: Build quadrature grid.
     let (quad_freqs, quad_weights) = quadrature::build_quadrature(&config.quadrature);
 
-    // Step 6: Evaluate λ_α(iω_k).
-    let eigenvalues_freq = energy::eval_eigenvalues_at_frequencies(
-        &eigenvectors,
-        b_ov,
-        &eps_occ,
-        &eps_vir,
-        &quad_freqs,
-    );
+    // Step 6: Evaluate λ_α(iω_k). Dispatch to the Laplace-separable kernel
+    // when the user opted in via `chi0_backend`.
+    let eigenvalues_freq = match laplace_chi0_quad.as_ref() {
+        None => energy::eval_eigenvalues_at_frequencies(
+            &eigenvectors, b_ov, &eps_occ, &eps_vir, &quad_freqs,
+        ),
+        Some(q) => energy::eval_eigenvalues_at_frequencies_laplace(
+            &eigenvectors, b_ov, &eps_occ, &eps_vir, &quad_freqs, q,
+        ),
+    };
 
     // Step 7: Integrate RPA correlation energy.
     let e_rpa = energy::rpa_correlation_energy(&quad_weights, &eigenvalues_freq);

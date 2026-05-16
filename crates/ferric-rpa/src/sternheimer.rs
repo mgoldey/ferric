@@ -182,6 +182,36 @@ pub fn dielectric_matrix_with_scale(
     eps_mat
 }
 
+/// Apply the dielectric matrix to a block of trial vectors: returns ε̃ · V.
+///
+/// Used by the block-Lanczos eigensolver, which needs A·V rather than V^T·A·V.
+pub fn dielectric_apply(
+    v_mat: &Array2<f64>,
+    b_ov: &Array2<f64>,
+    eps_occ: &[f64],
+    eps_vir: &[f64],
+    omega: f64,
+) -> Array2<f64> {
+    use ndarray::linalg::general_mat_mul;
+    let scale = build_scale_factors(eps_occ, eps_vir, omega);
+    let nov = scale.len();
+    assert_eq!(b_ov.shape()[1], nov);
+
+    // y = V^T · B_ov   (m × nov)
+    let mut y: Array2<f64> = v_mat.t().dot(b_ov);
+
+    // Scale columns by s_ia²: ε̃ = I + B^T diag(s²) B.
+    let scale_row = scale.view().insert_axis(Axis(0));
+    Zip::from(&mut y)
+        .and_broadcast(scale_row)
+        .for_each(|x, &s| *x *= s * s);
+
+    // out = V + B_ov · y^T   (naux × m)
+    let mut out: Array2<f64> = v_mat.to_owned();
+    general_mat_mul(1.0, b_ov, &y.t(), 1.0, &mut out);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
