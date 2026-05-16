@@ -3,9 +3,11 @@
 //! Implements the Roothaan-Hall SCF procedure with DIIS convergence acceleration
 //! and Schwarz-screened two-electron integral evaluation.
 
+use crate::df_j::DfJ;
 use crate::diis::Diis;
 use crate::direct_j::DirectJ;
 use crate::direct_jk::DirectJK;
+use crate::direct_k::DirectK;
 use crate::fock::{JBuilder, KBuilder};
 use crate::guess::hcore_guess;
 
@@ -31,6 +33,10 @@ pub struct RhfConfig {
     pub integral_thresh: f64,
     /// Choose K matrix builder: "direct" (default) or "link".
     pub k_builder: Option<String>,
+    /// Optional auxiliary basis for density-fitted Coulomb (RI-J). When set, J is
+    /// built from precomputed 3-center ERIs in O(N^2 · naux) per iteration instead
+    /// of contracting full 4-index ERIs. K is still built directly (no DF-K).
+    pub df_j_aux: Option<String>,
 }
 
 impl Default for RhfConfig {
@@ -42,6 +48,7 @@ impl Default for RhfConfig {
             diis_size: 8,
             integral_thresh: 1e-12,
             k_builder: None,
+            df_j_aux: None,
         }
     }
 }
@@ -108,6 +115,16 @@ pub fn solve_rhf(
         }
     }
 
+    // Density-fitted Coulomb (RI-J). Builds 3-center tensor + inverse metric once.
+    // When active, the SCF loop uses DfJ for J and DirectK for K (no combined JK pass).
+    let mut df_j: Option<DfJ> = if let Some(aux_name) = config.df_j_aux.as_deref() {
+        let dfbs_set = ferric_core::basis::bundled(aux_name)?;
+        let dfbs = PreparedBasis::new(mol, &dfbs_set)?;
+        Some(DfJ::new(op, prep, &dfbs)?)
+    } else {
+        None
+    };
+
     // Build LinkK once — SignificantPairs is geometry-dependent and expensive per iteration.
     // When using the "link" builder, compute a fresh SchwarzBounds to own the lifetime.
     let link_schwarz_opt = if config.k_builder.as_deref() == Some("link") {
@@ -140,15 +157,20 @@ pub fn solve_rhf(
         // Build J and K using selected builder (reuse pre-allocated buffers)
         j_buf.fill(0.0);
         k_buf.fill(0.0);
-        // Choose K builder: use pre-built LinkK if configured, else combined DirectJK
-        if let Some(lk) = k_builder.as_mut() {
-            // LinkK only builds K; J still needs a separate pass.
+        // Three K paths, mutually exclusive:
+        //   1. DF-J + DirectK : J from RI, K direct
+        //   2. LinkK         : J direct, K via Schwarz-screened pair lists
+        //   3. DirectJK      : combined direct J+K in one ERI pass (default)
+        if let Some(dfj) = df_j.as_mut() {
+            dfj.build(&d, &mut j_buf)?;
+            let mut direct_k = DirectK::new(ctx, prep, bounds, config.integral_thresh);
+            total_quartets += <DirectK as KBuilder>::build(&mut direct_k, &d, &mut k_buf)?;
+        } else if let Some(lk) = k_builder.as_mut() {
             let mut direct_j = DirectJ::new(ctx, prep, bounds, config.integral_thresh);
             total_quartets += direct_j.build(&d, &mut j_buf)?;
             lk.update_density(&d);
             total_quartets += lk.build(&d, &mut k_buf)?;
         } else {
-            // Single combined pass: build J and K simultaneously from each ERI.
             let mut direct_jk = DirectJK::new(ctx, prep, bounds, config.integral_thresh);
             total_quartets += direct_jk.build(&d, &mut j_buf, &mut k_buf)?;
         }

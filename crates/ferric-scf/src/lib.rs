@@ -17,6 +17,7 @@ pub mod fock;
 pub mod direct_j;
 pub mod direct_k;
 pub mod direct_jk;
+pub mod df_j;
 pub mod link_k;
 pub mod diis;
 pub mod guess;

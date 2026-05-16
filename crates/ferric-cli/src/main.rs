@@ -73,6 +73,7 @@ fn main() {
         diis_size: cfg.scf.diis_size,
         integral_thresh: cfg.scf.integral_thresh,
         k_builder: cfg.scf.k_builder.clone(),
+        df_j_aux: cfg.scf.df_j_aux.clone(),
     };
 
     if task == "optimize" {

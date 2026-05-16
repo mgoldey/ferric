@@ -107,6 +107,7 @@ pub struct ScfCfg {
     #[serde(default = "default_integral_thresh")]
     pub integral_thresh: f64,
     pub k_builder: Option<String>,
+    pub df_j_aux: Option<String>,
 }
 
 impl Default for ScfCfg {
@@ -118,6 +119,7 @@ impl Default for ScfCfg {
             diis_size: 8,
             integral_thresh: 1e-12,
             k_builder: None,
+            df_j_aux: None,
         }
     }
 }
