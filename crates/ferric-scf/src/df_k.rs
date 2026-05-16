@@ -21,13 +21,18 @@ use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_integrals::threeindex::{coulomb_metric_2c, eri3_tensor};
+use ndarray::linalg::general_mat_mul;
 use ndarray::{Array2, Array3};
 use ndarray_linalg::{Eigh, UPLO};
 
-/// DF-K exchange builder. Caches the V^{-1/2}-dressed 3-center tensor.
+/// DF-K exchange builder. Caches the V^{-1/2}-dressed 3-center tensor and a
+/// per-call scratch buffer for the Z intermediate so the hot SCF path does
+/// zero heap allocation outside of the two GEMMs.
 pub struct DfK {
     /// (naux, n, n) dressed 3-center tensor B[P, μ, ν] = Σ_Q V^{-1/2}_{PQ} (Q|μν).
     b: Array3<f64>,
+    /// Scratch buffer for Z[P,μ,σ] = Σ_λ B[P,μ,λ] D[λ,σ], shape (naux, n, n).
+    z_scratch: Array3<f64>,
 }
 
 impl DfK {
@@ -64,7 +69,8 @@ impl DfK {
             .into_shape_with_order((naux, n, n))
             .map_err(|e| FerricError::General(format!("B reshape: {e}")))?;
 
-        Ok(DfK { b })
+        let z_scratch = Array3::<f64>::zeros((naux, n, n));
+        Ok(DfK { b, z_scratch })
     }
 }
 
@@ -72,46 +78,34 @@ impl KBuilder for DfK {
     fn build(&mut self, d: &Array2<f64>, k: &mut Array2<f64>) -> Result<usize, FerricError> {
         let (naux, n, _) = self.b.dim();
 
-        // Z[P,μ,σ] = Σ_λ B[P,μ,λ] · D[λ,σ]
-        // Reshape B to (naux*n, n), GEMM with D (n, n), reshape back.
-        let b_flat = self
-            .b
-            .view()
-            .into_shape_with_order((naux * n, n))
-            .map_err(|e| FerricError::General(format!("B reshape Z: {e}")))?;
-        let z_flat = b_flat.dot(d); // (naux*n, n)
-        let z = z_flat
-            .into_shape_with_order((naux, n, n))
-            .map_err(|e| FerricError::General(format!("Z reshape: {e}")))?;
+        // First GEMM: Z[P,μ,σ] = Σ_λ B[P,μ,λ] · D[λ,σ]
+        // View self.b as (naux*n, n), self.z_scratch as (naux*n, n), call DGEMM
+        // in-place to avoid the 58 MB owned allocation that .dot() would do.
+        {
+            let b_flat = self
+                .b
+                .view()
+                .into_shape_with_order((naux * n, n))
+                .map_err(|e| FerricError::General(format!("B reshape: {e}")))?;
+            let mut z_flat = self
+                .z_scratch
+                .view_mut()
+                .into_shape_with_order((naux * n, n))
+                .map_err(|e| FerricError::General(format!("Z reshape: {e}")))?;
+            general_mat_mul(1.0, &b_flat, d, 0.0, &mut z_flat);
+        }
 
-        // K[μ,ν] = Σ_{P,σ} Z[P,μ,σ] · B[P,ν,σ]
-        //
-        // Reshape both to (n, naux·n) by treating μ (resp. ν) as the row axis and
-        // flattening (P, σ) into a single contracted index. Then one big DGEMM
-        //   K = Z_flat · B_flat^T
-        // replaces naux small (n,n)·(n,n) products that each allocated a new
-        // result array.
-        //
-        // Strides: Z and B are (naux, n, n) row-major with strides (n*n, n, 1).
-        // The (μ, P, σ) layout we need has μ first; getting that requires a
-        // permute that is not stride-compatible with view-only reshape. So we
-        // materialize permuted views as owned arrays of shape (n, naux, n) →
-        // reshape to (n, naux*n).
-        let z_perm = z.permuted_axes([1, 0, 2]).as_standard_layout().to_owned();
-        let b_perm = self
-            .b
-            .view()
-            .permuted_axes([1, 0, 2])
-            .as_standard_layout()
-            .to_owned();
-        let z_flat = z_perm
-            .into_shape_with_order((n, naux * n))
-            .map_err(|e| FerricError::General(format!("Z_perm reshape: {e}")))?;
-        let b_flat = b_perm
-            .into_shape_with_order((n, naux * n))
-            .map_err(|e| FerricError::General(format!("B_perm reshape: {e}")))?;
-        let k_full = z_flat.dot(&b_flat.t());
-        k.assign(&k_full);
+        // Second pass: K[μ,ν] = Σ_{P,σ} Z[P,μ,σ] · B[P,ν,σ]
+        // Per-P slab: K += Z[P] · B[P]^T accumulated with general_mat_mul
+        // (in-place, beta=1.0). Each Z[P] and B[P] is an (n,n) C-contiguous view
+        // with no allocation; the result goes straight into k. For naux=558 and
+        // n=114 the slab is 1.5 MFlops, ~750 µs/iter total for the loop.
+        k.fill(0.0);
+        for p in 0..naux {
+            let zp = self.z_scratch.slice(ndarray::s![p, .., ..]);
+            let bp = self.b.slice(ndarray::s![p, .., ..]);
+            general_mat_mul(1.0, &zp, &bp.t(), 1.0, k);
+        }
 
         Ok(0)
     }
