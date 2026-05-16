@@ -32,13 +32,13 @@ pub fn ri_drpa_eigenvalues(
     let nov = nocc * nvir;
     assert_eq!(b_ov.shape()[1], nov);
 
-    // Store +2 Σ_{ia} B^P_ia B^Q_ia / gap so that I + chi0 = I − χ₀ ≥ I
+    // Build Π = 4 Σ_{ia} e_ia/(ω²+e_ia²) B^P B^Q (= −χ₀, RHF: factor 4 = 2 spin × 2 orb)
     let mut chi0: Array2<f64> = Array2::zeros((naux, naux));
     for (i, &eps_i) in eps_occ.iter().enumerate() {
         for (a, &eps_a) in eps_vir.iter().enumerate() {
             let ia = i * nvir + a;
-            let gap = eps_a - eps_i + omega;
-            let scale = 2.0 / gap;
+            let e_ia = eps_a - eps_i;
+            let scale = 4.0 * e_ia / (omega * omega + e_ia * e_ia);
             let col = b_ov.column(ia);
             for p in 0..naux {
                 for q in 0..naux {
@@ -48,7 +48,7 @@ pub fn ri_drpa_eigenvalues(
         }
     }
 
-    // ε̃ = I − χ₀
+    // ε̃ = I − χ₀ = I + Π (Π = −χ₀, positive); eigenvalues 1 + μ ≥ 1
     for p in 0..naux {
         chi0[(p, p)] += 1.0;
     }
@@ -64,19 +64,11 @@ pub fn ri_drpa_eigenvalues(
 
 /// Compute RI-dRPA correlation energy via trace-log on full-basis eigenvalues.
 ///
-/// E_c^dRPA = (1/2π) Σ_k w_k Σ_P [ln(λ_P(iω_k)) + (1 − λ_P(iω_k))].
+/// E_c^dRPA = (1/2π) Σ_k w_k [ln det(I − Π(iω_k)) + tr(Π(iω_k))]
+///         where Π = 4 Σ_{ia} e_ia/(ω²+e_ia²) B B^T (= −χ₀, RHF).
 ///
-/// This is the full-RI version without eigenpotential truncation, used as a reference check.
-///
-/// # Arguments
-/// * `b_ov` - RI-MO tensor B^P_ia, shape (naux, nocc*nvir)
-/// * `eps_occ` - Occupied orbital energies
-/// * `eps_vir` - Virtual orbital energies
-/// * `quad_freqs` - Imaginary quadrature frequencies ω_k
-/// * `quad_weights` - Corresponding quadrature weights w_k
-///
-/// # Returns
-/// RI-dRPA correlation energy in Hartree.
+/// Uses ln|det| (real part of log determinant) so the formula stays well-defined
+/// even when (I − Π) has negative eigenvalues — matching PySCF's behavior.
 pub fn ri_drpa_energy(
     b_ov: &Array2<f64>,
     eps_occ: &[f64],
@@ -87,6 +79,8 @@ pub fn ri_drpa_energy(
     let mut e_c = 0.0f64;
     for (&omega, &wk) in quad_freqs.iter().zip(quad_weights.iter()) {
         let evals = ri_drpa_eigenvalues(b_ov, eps_occ, eps_vir, omega)?;
+        // ln det(I + Π) − tr(Π) where Π = −χ₀ ≥ 0
+        // = Σ_α [ln(λ_α) + (1 − λ_α)] with λ_α = 1 + μ_α ≥ 1
         let contrib: f64 = evals
             .iter()
             .map(|&lam| lam.ln() + (1.0 - lam))

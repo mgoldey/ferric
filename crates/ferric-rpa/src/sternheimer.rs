@@ -30,8 +30,8 @@ pub fn chi_from_trial_potential(
     for i in 0..nocc {
         for a in 0..nvir {
             let ia = i * nvir + a;
-            let gap = eps_vir[a] - eps_occ[i] + omega;
-            chi -= 2.0 * rhs[ia] * rhs[ia] / gap;
+            let e_ia = eps_vir[a] - eps_occ[i];
+            chi -= 2.0 * e_ia / (omega * omega + e_ia * e_ia) * rhs[ia] * rhs[ia];
         }
     }
     chi
@@ -58,14 +58,17 @@ pub fn dielectric_matrix(
     // rhs_mat: (m, nov) — rhs for each trial vector
     let rhs_mat = v_mat.t().dot(b_ov); // (m, nov)
 
-    // Build m×m chi matrix: store +2 Σ_{ia} rhs_α_ia rhs_β_ia / gap_ia
-    // so that I + chi = I − χ₀ ≥ I (eigenvalues ≥ 1)
+    // Build m×m matrix Π_αβ = 4 Σ_{ia} e_ia/(ω²+e_ia²) rhs_α_ia rhs_β_ia (RHF).
+    // The factor of 4 = 2 (closed-shell spin) × 2 (orbital factor).
+    // PySCF: chi0 = 2·e_ov·f_ov/(ω²+e_ov²) with e_ov = e_occ−e_vir < 0, f_ov = 2
+    //        = 4 · (-e_ia) / (ω²+e_ia²) — negative
+    // Ferric stores +|χ₀| = 4·e_ia/(ω²+e_ia²) so that ε̃ = I − Π matches PySCF I − χ₀.
     let mut chi = Array2::zeros((m, m));
     for i in 0..nocc {
         for a in 0..nvir {
             let ia = i * nvir + a;
-            let gap = eps_vir[a] - eps_occ[i] + omega;
-            let scale = 2.0 / gap;
+            let e_ia = eps_vir[a] - eps_occ[i];
+            let scale = 4.0 * e_ia / (omega * omega + e_ia * e_ia);
             for alpha in 0..m {
                 for beta in 0..m {
                     chi[(alpha, beta)] += scale * rhs_mat[(alpha, ia)] * rhs_mat[(beta, ia)];
@@ -74,7 +77,8 @@ pub fn dielectric_matrix(
         }
     }
 
-    // ε̃_αβ = δ_αβ − χ_αβ
+    // Return ε̃ = I − χ₀ = I + Π (since Π = −χ₀, χ₀ < 0 at iω).
+    // Eigenvalues are 1 + μ_α ≥ 1 for physical systems.
     let mut eps_mat = chi;
     for alpha in 0..m {
         eps_mat[(alpha, alpha)] += 1.0;
@@ -134,28 +138,21 @@ mod tests {
     }
 
     #[test]
-    fn dielectric_matrix_eigenvalues_ge_one() {
+    fn dielectric_matrix_two_level_system() {
         use ndarray_linalg::{Eigh, UPLO};
-        // 1 occ, 1 vir, 1 aux. B=1, gap=1 → ε̃ = 1 + 2*1/1 = 3
+        // 1 occ, 1 vir, 1 aux. B=1, e_ia=1, ω=0:
+        // Π = 4*e_ia/(0+e_ia²)·B² = 4  (RHF factor 4)
+        // ε̃ = I + Π = 1 + 4 = 5 (= I − χ₀ since χ₀ = −Π < 0)
         let b_ov = ndarray::array![[1.0f64]];
         let v_mat = ndarray::array![[1.0f64]];
         let eps_occ = vec![-0.5f64];
         let eps_vir = vec![0.5f64];
         let eps = dielectric_matrix(&v_mat, &b_ov, &eps_occ, &eps_vir, 0.0);
 
-        // Compute eigenvalues to verify they are >= 1
         let (evals, _) = eps.eigh(UPLO::Upper).expect("Failed to diagonalize");
-        for eval in evals.iter() {
-            assert!(
-                *eval >= 1.0 - 1e-12,
-                "eigenvalue {} < 1.0 (physically invalid)",
-                eval
-            );
-        }
-        // For this simple case, we expect a single eigenvalue ≈ 3.0
         assert!(
-            (evals[0] - 3.0).abs() < 1e-12,
-            "expected ε̃=3, got {}",
+            (evals[0] - 5.0).abs() < 1e-12,
+            "expected ε̃=5 (I + Π with RHF factor 4), got {}",
             evals[0]
         );
     }

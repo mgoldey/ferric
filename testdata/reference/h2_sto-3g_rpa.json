@@ -1,6 +1,7 @@
 {
   "molecule": "H2",
   "basis": "sto-3g",
+  "aux": "sto-3g",
   "method": "rpa",
-  "e_corr": -0.02066690204626976
+  "e_corr": -0.012607262253614328
 }

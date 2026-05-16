@@ -55,6 +55,7 @@ pub fn eval_eigenvalues_at_frequencies(
     quad_freqs: &[f64],
 ) -> Array2<f64> {
     use crate::sternheimer::dielectric_matrix;
+    use ndarray_linalg::{Eigh, UPLO};
 
     let n_quad = quad_freqs.len();
     let m = eigenvectors.ncols();
@@ -62,8 +63,10 @@ pub fn eval_eigenvalues_at_frequencies(
 
     for (k, &omega) in quad_freqs.iter().enumerate() {
         let eps_proj = dielectric_matrix(eigenvectors, b_ov, eps_occ, eps_vir, omega);
+        // Diagonalize at each frequency — eigenvectors at ω=0 don't diagonalize ε̃(iω)
+        let (evals, _) = eps_proj.eigh(UPLO::Upper).expect("dielectric eigh failed");
         for alpha in 0..m {
-            eigenvalues_freq[(k, alpha)] = eps_proj[(alpha, alpha)];
+            eigenvalues_freq[(k, alpha)] = evals[alpha];
         }
     }
     eigenvalues_freq

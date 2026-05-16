@@ -1,6 +1,7 @@
 {
   "molecule": "H2O",
   "basis": "cc-pvdz",
+  "aux": "cc-pvdz-ri",
   "method": "rpa",
-  "e_corr": -0.23121956068383065
+  "e_corr": -0.23121956068383054
 }

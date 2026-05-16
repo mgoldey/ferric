@@ -1,0 +1,7 @@
+{
+  "molecule": "H2O",
+  "basis": "aug-cc-pvdz",
+  "aux": "aug-cc-pvdz-rifit",
+  "method": "rpa",
+  "e_corr": -0.2486137846131114
+}
