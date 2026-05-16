@@ -46,12 +46,32 @@ impl<'a> DirectJK<'a> {
         let nsh = self.prep.nshells();
         let dims = self.prep.shell_dims();
         let offs = self.prep.shell_offsets();
-        let max_d = d.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
         let thresh = self.thresh;
         let computed_quartets = AtomicUsize::new(0);
 
+        // Shell-blocked density-max table d_max_shell[(si, sj)] = max |D_μν| over
+        // (μ ∈ shell si, ν ∈ shell sj). The Häser-Ahlrichs density-weighted screen
+        // uses the max of all six pair maxima (12,34,13,14,23,24) because J contracts
+        // D against (λ,σ),(μ,ν) and K against (μ,λ),(μ,σ),(ν,λ),(ν,σ).
+        let mut d_max_shell = Array2::<f64>::zeros((nsh, nsh));
+        for si in 0..nsh {
+            for sj in 0..nsh {
+                let (oi, ni) = (offs[si], dims[si]);
+                let (oj, nj) = (offs[sj], dims[sj]);
+                let mut m = 0.0f64;
+                for a in 0..ni {
+                    for b in 0..nj {
+                        let v = unsafe { d.uget((oi + a, oj + b)).abs() };
+                        if v > m { m = v; }
+                    }
+                }
+                d_max_shell[(si, sj)] = m;
+            }
+        }
+        let max_d = d_max_shell.iter().cloned().fold(0.0f64, f64::max);
+
         let max_q: f64 = self.bounds.q.iter().cloned().fold(0.0f64, f64::max);
-        let bra_thresh = if max_q > 0.0 { thresh / max_q } else { thresh };
+        let bra_thresh = if max_q > 0.0 { thresh / (max_q * max_d.max(1e-30)) } else { thresh };
         let q_table = &self.bounds.q;
         let op = self.bounds.op;
         let prep = self.prep;
@@ -60,21 +80,35 @@ impl<'a> DirectJK<'a> {
         let nbf = prep.nbasis();
 
         // Enumerate all screened canonical quartets upfront for balanced parallel tasks.
-        let quads: Vec<(usize, usize, usize, usize)> = (0..nsh)
-            .flat_map(|s1| (0..=s1).map(move |s2| (s1, s2)))
-            .filter(|&(s1, s2)| q_table[(s1, s2)] > bra_thresh)
-            .flat_map(|(s1, s2)| {
+        // Pair-wise density screen: contribution upper bound is
+        //   sqrt(Q_{12}) * sqrt(Q_{34}) * D_max_pair, where
+        //   D_max_pair = max(d12, d34, d13, d14, d23, d24).
+        let dms = &d_max_shell;
+        let mut quads: Vec<(usize, usize, usize, usize)> = Vec::new();
+        for s1 in 0..nsh {
+            for s2 in 0..=s1 {
+                if q_table[(s1, s2)] <= bra_thresh { continue; }
                 let b12 = q_table[(s1, s2)];
-                (0..=s1)
-                    .flat_map(move |s3| {
-                        let s4max = if s3 == s1 { s2 } else { s3 };
-                        (0..=s4max)
-                            .filter(move |&s4| b12 * q_table[(s3, s4)] * max_d >= thresh)
-                            .map(move |s4| (s1, s2, s3, s4))
-                            .collect::<Vec<_>>()
-                    })
-                    .collect::<Vec<_>>()
-            })
+                let d12 = dms[(s1, s2)];
+                for s3 in 0..=s1 {
+                    let s4max = if s3 == s1 { s2 } else { s3 };
+                    let d13 = dms[(s1, s3)];
+                    let d23 = dms[(s2, s3)];
+                    for s4 in 0..=s4max {
+                        let d34 = dms[(s3, s4)];
+                        let d14 = dms[(s1, s4)];
+                        let d24 = dms[(s2, s4)];
+                        let dmax = d12.max(d34).max(d13).max(d14).max(d23).max(d24);
+                        if b12 * q_table[(s3, s4)] * dmax >= thresh {
+                            quads.push((s1, s2, s3, s4));
+                        }
+                    }
+                }
+            }
+        }
+        // MPI rank striping
+        let quads: Vec<(usize, usize, usize, usize)> = quads
+            .into_iter()
             .enumerate()
             .filter(|(idx, _)| idx % size == rank)
             .map(|(_, q)| q)

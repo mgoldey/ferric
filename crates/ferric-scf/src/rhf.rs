@@ -220,8 +220,24 @@ pub fn build_jk(
     let nbf = prep.nbasis();
     let dims = prep.shell_dims();
     let offs = prep.shell_offsets();
-    let max_d = d.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
     let computed_quartets = AtomicUsize::new(0);
+
+    // Shell-blocked density-max table for Häser-Ahlrichs pair-wise screening.
+    let mut d_max_shell = Array2::<f64>::zeros((nsh, nsh));
+    for si in 0..nsh {
+        for sj in 0..nsh {
+            let (oi, ni) = (offs[si], dims[si]);
+            let (oj, nj) = (offs[sj], dims[sj]);
+            let mut m = 0.0f64;
+            for a in 0..ni {
+                for b in 0..nj {
+                    let v = unsafe { d.uget((oi + a, oj + b)).abs() };
+                    if v > m { m = v; }
+                }
+            }
+            d_max_shell[(si, sj)] = m;
+        }
+    }
 
     let shell_pairs: Vec<_> = (0..nsh)
         .flat_map(|s1| (0..=s1).map(move |s2| (s1, s2)))
@@ -239,6 +255,7 @@ pub fn build_jk(
                 return (engine, local_j, local_k, local_count);
             }
             let b12 = bounds.q[(s1, s2)];
+            let d12 = d_max_shell[(s1, s2)];
             let (n1, n2) = (dims[s1], dims[s2]);
             let (o1, o2) = (offs[s1], offs[s2]);
             let sym12 = s1 != s2;
@@ -248,9 +265,15 @@ pub fn build_jk(
                     return (engine, local_j, local_k, local_count);
                 }
                 let s4max = if s3 == s1 { s2 } else { s3 };
+                let d13 = d_max_shell[(s1, s3)];
+                let d23 = d_max_shell[(s2, s3)];
                 for s4 in 0..=s4max {
                     let b34 = bounds.q[(s3, s4)];
-                    if b12 * b34 * max_d < thresh {
+                    let d34 = d_max_shell[(s3, s4)];
+                    let d14 = d_max_shell[(s1, s4)];
+                    let d24 = d_max_shell[(s2, s4)];
+                    let dmax = d12.max(d34).max(d13).max(d14).max(d23).max(d24);
+                    if b12 * b34 * dmax < thresh {
                         continue;
                     }
 
