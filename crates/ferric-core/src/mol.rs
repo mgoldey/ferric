@@ -22,18 +22,26 @@ pub struct Atom {
 #[derive(Debug, Clone)]
 pub struct Molecule {
     pub atoms: Vec<Atom>,
+    pub charge: i32,
+    pub multiplicity: usize,
 }
 
 impl Molecule {
-    /// Load a molecule from an XYZ file on disk.
+    /// Load a molecule from an XYZ file on disk, assuming neutral singlet.
     ///
     /// Coordinates in the file are expected in Angstroms and are converted to Bohr.
     pub fn load_xyz(path: &str) -> Result<Self, FerricError> {
         let text = fs::read_to_string(path).map_err(FerricError::Io)?;
-        Self::parse_xyz(&text)
+        Self::parse_xyz(&text, 0, 1)
     }
 
-    /// Parse a molecule from an XYZ-format string.
+    /// Load a molecule from an XYZ file with explicit charge and multiplicity.
+    pub fn load_xyz_with_charge(path: &str, charge: i32, mult: usize) -> Result<Self, FerricError> {
+        let text = fs::read_to_string(path).map_err(FerricError::Io)?;
+        Self::parse_xyz(&text, charge, mult)
+    }
+
+    /// Parse a molecule from an XYZ-format string, with explicit charge and multiplicity.
     ///
     /// # Examples
     ///
@@ -41,10 +49,10 @@ impl Molecule {
     /// use ferric_core::mol::Molecule;
     ///
     /// let xyz = "2\nH2\nH 0 0 0\nH 0 0 0.74\n";
-    /// let mol = Molecule::parse_xyz(xyz).unwrap();
+    /// let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
     /// assert_eq!(mol.atoms.len(), 2);
     /// ```
-    pub fn parse_xyz(text: &str) -> Result<Self, FerricError> {
+    pub fn parse_xyz(text: &str, charge: i32, multiplicity: usize) -> Result<Self, FerricError> {
         let mut lines = text.lines();
         let n: usize = lines
             .next()
@@ -80,7 +88,7 @@ impl Molecule {
                 zpos: zpos * ANGSTROM_TO_BOHR,
             });
         }
-        Ok(Molecule { atoms })
+        Ok(Molecule { atoms, charge, multiplicity })
     }
 
     /// Compute the classical nuclear repulsion energy in Hartree.
@@ -100,9 +108,10 @@ impl Molecule {
         v
     }
 
-    /// Total number of electrons (sum of atomic numbers).
+    /// Total number of electrons (sum of atomic numbers minus charge).
     pub fn nelec(&self) -> i32 {
-        self.atoms.iter().map(|a| a.z).sum()
+        let z_sum: i32 = self.atoms.iter().map(|a| a.z).sum();
+        z_sum - self.charge
     }
 }
 
@@ -113,7 +122,7 @@ mod tests {
     #[test]
     fn test_parse_water() {
         let xyz = "3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n";
-        let mol = Molecule::parse_xyz(xyz).unwrap();
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
         assert_eq!(mol.atoms.len(), 3);
         assert_eq!(mol.atoms[0].z, 8);
         assert_eq!(mol.atoms[1].z, 1);
@@ -123,7 +132,7 @@ mod tests {
     #[test]
     fn test_nuclear_repulsion_water() {
         let xyz = "3\nwater optimized HF/cc-pVDZ\nO   0.000000   0.000000   0.117790\nH   0.000000   0.755453  -0.471161\nH   0.000000  -0.755453  -0.471161\n";
-        let mol = Molecule::parse_xyz(xyz).unwrap();
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
         let vnn = mol.nuclear_repulsion();
         assert!((vnn - 9.189193229309746).abs() < 1e-6, "Vnn = {vnn}, expected 9.189193...");
     }

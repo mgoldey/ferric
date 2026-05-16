@@ -14,8 +14,9 @@ use std::os::raw::{c_int, c_void};
 ///
 /// Not `Send` or `Sync` -- create one engine per thread for parallel evaluation.
 pub struct Engine {
-    handle: *mut c_void,
+    handles: Vec<(f64, *mut c_void)>,
     buf: Vec<f64>,
+    scratch: Vec<f64>,
 }
 
 unsafe impl Send for Engine {}
@@ -23,268 +24,290 @@ unsafe impl Send for Engine {}
 impl Engine {
     /// Create a 4-center two-electron integral engine.
     pub fn new_2e(op: Operator, prep: &PreparedBasis, precision: f64) -> Result<Self, FerricError> {
-        let op_kind = match op.kind {
-            OperatorKind::Coulomb => ffi::OP_COULOMB,
-            OperatorKind::ErfCoulomb => ffi::OP_ERF_COULOMB,
-            OperatorKind::ErfcCoulomb => ffi::OP_ERFC_COULOMB,
-            _ => return Err(FerricError::Libint(format!(
-                "operator {:?} not implemented in v1", op.kind
-            ))),
-        };
-        let handle = unsafe {
-            ffi::goscf_engine_create(op_kind, op.omega, prep.max_nprim(), prep.max_l(), precision)
-        };
-        if handle.is_null() {
-            return Err(FerricError::Libint("engine_create returned null".into()));
-        }
         let max_fn = prep.shell_dims().iter().copied().max().unwrap_or(1);
-        Ok(Engine { handle, buf: vec![0.0; max_fn * max_fn * max_fn * max_fn] })
+        let mut handles = Vec::new();
+        
+        let n_comp = if op.is_composite { op.num_components } else { 1 };
+        for i in 0..n_comp {
+            let (coeff, kind, omega) = if op.is_composite {
+                (op.c_coeffs[i], op.c_kinds[i], op.c_omegas[i])
+            } else {
+                (1.0, op.kind, op.omega)
+            };
+            let op_kind = match kind {
+                OperatorKind::Coulomb => ffi::OP_COULOMB,
+                OperatorKind::ErfCoulomb => ffi::OP_ERF_COULOMB,
+                OperatorKind::ErfcCoulomb => ffi::OP_ERFC_COULOMB,
+                _ => return Err(FerricError::Libint(format!("operator {:?} not implemented in v1", kind))),
+            };
+            let h = unsafe { ffi::goscf_engine_create(op_kind, omega, prep.max_nprim(), prep.max_l(), precision) };
+            if h.is_null() { return Err(FerricError::Libint("engine_create returned null".into())); }
+            handles.push((coeff, h));
+        }
+        
+        Ok(Engine { handles, buf: vec![0.0; max_fn * max_fn * max_fn * max_fn], scratch: vec![0.0; max_fn * max_fn * max_fn * max_fn] })
     }
 
     /// Create a one-electron integral engine (overlap, kinetic, or nuclear).
     pub fn new_1e(op_kind: c_int, prep: &PreparedBasis, precision: f64) -> Result<Self, FerricError> {
-        let handle = unsafe {
-            ffi::goscf_engine_create(op_kind, 0.0, prep.max_nprim(), prep.max_l(), precision)
-        };
-        if handle.is_null() {
-            return Err(FerricError::Libint("engine_create returned null".into()));
-        }
+        let handle = unsafe { ffi::goscf_engine_create(op_kind, 0.0, prep.max_nprim(), prep.max_l(), precision) };
+        if handle.is_null() { return Err(FerricError::Libint("engine_create returned null".into())); }
         let max_fn = prep.shell_dims().iter().copied().max().unwrap_or(1);
-        Ok(Engine { handle, buf: vec![0.0; max_fn * max_fn] })
+        Ok(Engine { handles: vec![(1.0, handle)], buf: vec![0.0; max_fn * max_fn], scratch: Vec::new() })
     }
 
-    /// Mutable pointer to the underlying libint2 engine handle.
-    pub fn handle_mut(&mut self) -> *mut c_void { self.handle }
+    /// Mutable pointer to the underlying libint2 engine handle. (Returns the first component).
+    pub fn handle_mut(&mut self) -> *mut c_void { self.handles[0].1 }
 
     /// Set nuclear point charges for the nuclear attraction operator.
     pub fn set_point_charges(&mut self, prep: &PreparedBasis) {
-        unsafe {
-            ffi::goscf_engine_set_point_charges(
-                self.handle,
-                prep.atoms().as_ptr(),
-                prep.atoms().len() as c_int,
-            );
+        for &(_, h) in &self.handles {
+            unsafe { ffi::goscf_engine_set_point_charges(h, prep.atoms().as_ptr(), prep.atoms().len() as c_int); }
         }
     }
 
     /// Compute a shell quartet of 4-center ERIs. Returns `None` if screened to zero.
     pub fn compute_quartet(
-        &mut self,
-        prep: &PreparedBasis,
-        sh1: usize,
-        sh2: usize,
-        sh3: usize,
-        sh4: usize,
+        &mut self, prep: &PreparedBasis, sh1: usize, sh2: usize, sh3: usize, sh4: usize,
     ) -> Option<&[f64]> {
-        let n = prep.shell_dims()[sh1]
-            * prep.shell_dims()[sh2]
-            * prep.shell_dims()[sh3]
-            * prep.shell_dims()[sh4];
-        if self.buf.len() < n {
-            self.buf.resize(n, 0.0);
+        let n = prep.shell_dims()[sh1] * prep.shell_dims()[sh2] * prep.shell_dims()[sh3] * prep.shell_dims()[sh4];
+        if self.buf.len() < n { self.buf.resize(n, 0.0); }
+        if self.scratch.len() < n { self.scratch.resize(n, 0.0); }
+        
+        let mut max_written = 0;
+        self.buf[..n].fill(0.0);
+        
+        for &(coeff, h) in &self.handles {
+            let written = unsafe { ffi::goscf_compute_eri_quartet(h, prep.handle(), sh1 as c_int, sh2 as c_int, sh3 as c_int, sh4 as c_int, self.scratch.as_mut_ptr()) };
+            if written > 0 {
+                let w = written as usize;
+                max_written = max_written.max(w);
+                for i in 0..w { self.buf[i] += coeff * self.scratch[i]; }
+            }
         }
-        let written = unsafe {
-            ffi::goscf_compute_eri_quartet(
-                self.handle,
-                prep.handle(),
-                sh1 as c_int,
-                sh2 as c_int,
-                sh3 as c_int,
-                sh4 as c_int,
-                self.buf.as_mut_ptr(),
-            )
-        };
-        if written == 0 {
-            None
-        } else {
-            Some(&self.buf[..written as usize])
-        }
+        
+        if max_written == 0 { None } else { Some(&self.buf[..max_written]) }
     }
 
     /// Compute a shell pair block of one-electron integrals.
-    pub fn compute_1e_block(
-        &mut self,
-        prep: &PreparedBasis,
-        sh1: usize,
-        sh2: usize,
-    ) -> &[f64] {
+    pub fn compute_1e_block(&mut self, prep: &PreparedBasis, sh1: usize, sh2: usize) -> &[f64] {
         let n = prep.shell_dims()[sh1] * prep.shell_dims()[sh2];
-        if self.buf.len() < n {
-            self.buf.resize(n, 0.0);
-        }
-        let written = unsafe {
-            ffi::goscf_compute_1e_block(
-                self.handle,
-                prep.handle(),
-                sh1 as c_int,
-                sh2 as c_int,
-                self.buf.as_mut_ptr(),
-            )
-        };
+        if self.buf.len() < n { self.buf.resize(n, 0.0); }
+        let written = unsafe { ffi::goscf_compute_1e_block(self.handles[0].1, prep.handle(), sh1 as c_int, sh2 as c_int, self.buf.as_mut_ptr()) };
         &self.buf[..written as usize]
     }
 
     /// Create a first-derivative one-electron integral engine.
     pub fn new_1e_deriv(op_kind: c_int, prep: &PreparedBasis, precision: f64) -> Result<Self, FerricError> {
-        let handle = unsafe {
-            ffi::goscf_engine_create_deriv(op_kind, 0.0, prep.max_nprim(), prep.max_l(), precision)
-        };
-        if handle.is_null() {
-            return Err(FerricError::Libint("derivative engine not available (libint2 built without derivative support?)".into()));
-        }
+        let handle = unsafe { ffi::goscf_engine_create_deriv(op_kind, 0.0, prep.max_nprim(), prep.max_l(), precision) };
+        if handle.is_null() { return Err(FerricError::Libint("derivative engine not available".into())); }
         let max_fn = prep.shell_dims().iter().copied().max().unwrap_or(1);
-        Ok(Engine { handle, buf: vec![0.0; 6 * max_fn * max_fn] })
+        Ok(Engine { handles: vec![(1.0, handle)], buf: vec![0.0; 6 * max_fn * max_fn], scratch: Vec::new() })
     }
 
     /// Create a first-derivative 4-center two-electron integral engine.
     pub fn new_2e_deriv(op: Operator, prep: &PreparedBasis, precision: f64) -> Result<Self, FerricError> {
-        let op_kind = match op.kind {
-            OperatorKind::Coulomb => ffi::OP_COULOMB,
-            OperatorKind::ErfCoulomb => ffi::OP_ERF_COULOMB,
-            OperatorKind::ErfcCoulomb => ffi::OP_ERFC_COULOMB,
-            _ => return Err(FerricError::Libint(format!("operator {:?} not implemented", op.kind))),
-        };
-        let handle = unsafe {
-            ffi::goscf_engine_create_deriv(op_kind, op.omega, prep.max_nprim(), prep.max_l(), precision)
-        };
-        if handle.is_null() {
-            return Err(FerricError::Libint("derivative engine not available".into()));
-        }
         let max_fn = prep.shell_dims().iter().copied().max().unwrap_or(1);
-        Ok(Engine { handle, buf: vec![0.0; 12 * max_fn * max_fn * max_fn * max_fn] })
+        let mut handles = Vec::new();
+        let n_comp = if op.is_composite { op.num_components } else { 1 };
+        for i in 0..n_comp {
+            let (coeff, kind, omega) = if op.is_composite { (op.c_coeffs[i], op.c_kinds[i], op.c_omegas[i]) } else { (1.0, op.kind, op.omega) };
+            let op_kind = match kind {
+                OperatorKind::Coulomb => ffi::OP_COULOMB,
+                OperatorKind::ErfCoulomb => ffi::OP_ERF_COULOMB,
+                OperatorKind::ErfcCoulomb => ffi::OP_ERFC_COULOMB,
+                _ => return Err(FerricError::Libint(format!("operator {:?} not implemented", kind))),
+            };
+            let h = unsafe { ffi::goscf_engine_create_deriv(op_kind, omega, prep.max_nprim(), prep.max_l(), precision) };
+            if h.is_null() { return Err(FerricError::Libint("derivative engine not available".into())); }
+            handles.push((coeff, h));
+        }
+        Ok(Engine { handles, buf: vec![0.0; 12 * max_fn * max_fn * max_fn * max_fn], scratch: vec![0.0; 12 * max_fn * max_fn * max_fn * max_fn] })
     }
 
     /// Returns 6 blocks of n1*n2 doubles: [dx1, dy1, dz1, dx2, dy2, dz2].
     /// Returns None if all derivatives were screened to zero.
-    pub fn compute_1e_deriv_block(
-        &mut self, prep: &PreparedBasis, sh1: usize, sh2: usize,
-    ) -> Option<&[f64]> {
+    pub fn compute_1e_deriv_block(&mut self, prep: &PreparedBasis, sh1: usize, sh2: usize) -> Option<&[f64]> {
         let n = prep.shell_dims()[sh1] * prep.shell_dims()[sh2];
         let total = 6 * n;
         if self.buf.len() < total { self.buf.resize(total, 0.0); }
-        let written = unsafe {
-            ffi::goscf_compute_1e_deriv_block(
-                self.handle, prep.handle(), sh1 as c_int, sh2 as c_int, self.buf.as_mut_ptr(),
-            )
-        };
+        let written = unsafe { ffi::goscf_compute_1e_deriv_block(self.handles[0].1, prep.handle(), sh1 as c_int, sh2 as c_int, self.buf.as_mut_ptr()) };
         if written == 0 { None } else { Some(&self.buf[..written as usize]) }
     }
 
     /// Create a 3-center integral engine for density fitting: (P|mu nu).
     pub fn new_3center(op: Operator, obs: &PreparedBasis, dfbs: &PreparedBasis, precision: f64) -> Result<Self, FerricError> {
-        let op_kind = match op.kind {
-            OperatorKind::Coulomb => ffi::OP_COULOMB,
-            OperatorKind::ErfCoulomb => ffi::OP_ERF_COULOMB,
-            OperatorKind::ErfcCoulomb => ffi::OP_ERFC_COULOMB,
-            _ => return Err(FerricError::Libint(format!("operator {:?} not implemented", op.kind))),
-        };
         let max_nprim = obs.max_nprim().max(dfbs.max_nprim());
         let max_l = obs.max_l().max(dfbs.max_l());
-        let handle = unsafe { ffi::goscf_engine_create_3center(op_kind, op.omega, max_nprim, max_l, precision) };
-        if handle.is_null() { return Err(FerricError::Libint("3-center engine not available".into())); }
         let max_fn_obs = obs.shell_dims().iter().copied().max().unwrap_or(1);
         let max_fn_df = dfbs.shell_dims().iter().copied().max().unwrap_or(1);
-        Ok(Engine { handle, buf: vec![0.0; max_fn_df * max_fn_obs * max_fn_obs] })
+        let mut handles = Vec::new();
+        
+        let n_comp = if op.is_composite { op.num_components } else { 1 };
+        for i in 0..n_comp {
+            let (coeff, kind, omega) = if op.is_composite { (op.c_coeffs[i], op.c_kinds[i], op.c_omegas[i]) } else { (1.0, op.kind, op.omega) };
+            let op_kind = match kind {
+                OperatorKind::Coulomb => ffi::OP_COULOMB,
+                OperatorKind::ErfCoulomb => ffi::OP_ERF_COULOMB,
+                OperatorKind::ErfcCoulomb => ffi::OP_ERFC_COULOMB,
+                _ => return Err(FerricError::Libint(format!("operator {:?} not implemented", kind))),
+            };
+            let h = unsafe { ffi::goscf_engine_create_3center(op_kind, omega, max_nprim, max_l, precision) };
+            if h.is_null() { return Err(FerricError::Libint("3-center engine not available".into())); }
+            handles.push((coeff, h));
+        }
+        Ok(Engine { handles, buf: vec![0.0; max_fn_df * max_fn_obs * max_fn_obs], scratch: vec![0.0; max_fn_df * max_fn_obs * max_fn_obs] })
     }
 
     /// Create a 2-center integral engine for the Coulomb metric: (P|Q).
     pub fn new_2center(op: Operator, dfbs: &PreparedBasis, precision: f64) -> Result<Self, FerricError> {
-        let op_kind = match op.kind {
-            OperatorKind::Coulomb => ffi::OP_COULOMB,
-            OperatorKind::ErfCoulomb => ffi::OP_ERF_COULOMB,
-            OperatorKind::ErfcCoulomb => ffi::OP_ERFC_COULOMB,
-            _ => return Err(FerricError::Libint(format!("operator {:?} not implemented", op.kind))),
-        };
-        let handle = unsafe { ffi::goscf_engine_create_2center(op_kind, op.omega, dfbs.max_nprim(), dfbs.max_l(), precision) };
-        if handle.is_null() { return Err(FerricError::Libint("2-center engine not available".into())); }
         let max_fn = dfbs.shell_dims().iter().copied().max().unwrap_or(1);
-        Ok(Engine { handle, buf: vec![0.0; max_fn * max_fn] })
+        let mut handles = Vec::new();
+        
+        let n_comp = if op.is_composite { op.num_components } else { 1 };
+        for i in 0..n_comp {
+            let (coeff, kind, omega) = if op.is_composite { (op.c_coeffs[i], op.c_kinds[i], op.c_omegas[i]) } else { (1.0, op.kind, op.omega) };
+            let op_kind = match kind {
+                OperatorKind::Coulomb => ffi::OP_COULOMB,
+                OperatorKind::ErfCoulomb => ffi::OP_ERF_COULOMB,
+                OperatorKind::ErfcCoulomb => ffi::OP_ERFC_COULOMB,
+                _ => return Err(FerricError::Libint(format!("operator {:?} not implemented", kind))),
+            };
+            let h = unsafe { ffi::goscf_engine_create_2center(op_kind, omega, dfbs.max_nprim(), dfbs.max_l(), precision) };
+            if h.is_null() { return Err(FerricError::Libint("2-center engine not available".into())); }
+            handles.push((coeff, h));
+        }
+        Ok(Engine { handles, buf: vec![0.0; max_fn * max_fn], scratch: vec![0.0; max_fn * max_fn] })
     }
 
     /// Compute a 3-center ERI shell triplet (P|mu nu). Returns `None` if screened.
-    pub fn compute_eri3(&mut self, obs: &PreparedBasis, dfbs: &PreparedBasis,
-                        sh_p: usize, sh1: usize, sh2: usize) -> Option<&[f64]> {
+    pub fn compute_eri3(&mut self, obs: &PreparedBasis, dfbs: &PreparedBasis, sh_p: usize, sh1: usize, sh2: usize) -> Option<&[f64]> {
         let n = dfbs.shell_dims()[sh_p] * obs.shell_dims()[sh1] * obs.shell_dims()[sh2];
         if self.buf.len() < n { self.buf.resize(n, 0.0); }
-        let written = unsafe {
-            ffi::goscf_compute_eri3(self.handle, obs.handle(), dfbs.handle(),
-                                    sh_p as c_int, sh1 as c_int, sh2 as c_int, self.buf.as_mut_ptr())
-        };
-        if written == 0 { None } else { Some(&self.buf[..written as usize]) }
+        if self.scratch.len() < n { self.scratch.resize(n, 0.0); }
+        
+        let mut max_written = 0;
+        self.buf[..n].fill(0.0);
+        
+        for &(coeff, h) in &self.handles {
+            let written = unsafe { ffi::goscf_compute_eri3(h, obs.handle(), dfbs.handle(), sh_p as c_int, sh1 as c_int, sh2 as c_int, self.scratch.as_mut_ptr()) };
+            if written > 0 {
+                let w = written as usize;
+                max_written = max_written.max(w);
+                for i in 0..w { self.buf[i] += coeff * self.scratch[i]; }
+            }
+        }
+        if max_written == 0 { None } else { Some(&self.buf[..max_written]) }
     }
 
     /// Compute a 2-center ERI shell pair (P|Q).
     pub fn compute_eri2(&mut self, dfbs: &PreparedBasis, sh_p: usize, sh_q: usize) -> &[f64] {
         let n = dfbs.shell_dims()[sh_p] * dfbs.shell_dims()[sh_q];
         if self.buf.len() < n { self.buf.resize(n, 0.0); }
-        let written = unsafe {
-            ffi::goscf_compute_eri2(self.handle, dfbs.handle(), sh_p as c_int, sh_q as c_int, self.buf.as_mut_ptr())
-        };
-        &self.buf[..written as usize]
+        if self.scratch.len() < n { self.scratch.resize(n, 0.0); }
+        
+        let mut max_written = 0;
+        self.buf[..n].fill(0.0);
+        
+        for &(coeff, h) in &self.handles {
+            let written = unsafe { ffi::goscf_compute_eri2(h, dfbs.handle(), sh_p as c_int, sh_q as c_int, self.scratch.as_mut_ptr()) };
+            if written > 0 {
+                let w = written as usize;
+                max_written = max_written.max(w);
+                for i in 0..w { self.buf[i] += coeff * self.scratch[i]; }
+            }
+        }
+        &self.buf[..max_written]
     }
 
     /// Returns 12 blocks of n1*n2*n3*n4 doubles: [dx1..dz1, dx2..dz2, dx3..dz3, dx4..dz4].
     /// Returns None if all derivatives were screened to zero.
     pub fn compute_eri_deriv_quartet(
-        &mut self, prep: &PreparedBasis,
-        sh1: usize, sh2: usize, sh3: usize, sh4: usize,
+        &mut self, prep: &PreparedBasis, sh1: usize, sh2: usize, sh3: usize, sh4: usize,
     ) -> Option<&[f64]> {
-        let n = prep.shell_dims()[sh1] * prep.shell_dims()[sh2]
-            * prep.shell_dims()[sh3] * prep.shell_dims()[sh4];
+        let n = prep.shell_dims()[sh1] * prep.shell_dims()[sh2] * prep.shell_dims()[sh3] * prep.shell_dims()[sh4];
         let total = 12 * n;
         if self.buf.len() < total { self.buf.resize(total, 0.0); }
-        let written = unsafe {
-            ffi::goscf_compute_eri_deriv_quartet(
-                self.handle, prep.handle(),
-                sh1 as c_int, sh2 as c_int, sh3 as c_int, sh4 as c_int,
-                self.buf.as_mut_ptr(),
-            )
-        };
-        if written == 0 { None } else { Some(&self.buf[..written as usize]) }
+        if self.scratch.len() < total { self.scratch.resize(total, 0.0); }
+        
+        let mut max_written = 0;
+        self.buf[..total].fill(0.0);
+        
+        for &(coeff, h) in &self.handles {
+            let written = unsafe { ffi::goscf_compute_eri_deriv_quartet(h, prep.handle(), sh1 as c_int, sh2 as c_int, sh3 as c_int, sh4 as c_int, self.scratch.as_mut_ptr()) };
+            if written > 0 {
+                let w = written as usize;
+                max_written = max_written.max(w);
+                for i in 0..w { self.buf[i] += coeff * self.scratch[i]; }
+            }
+        }
+        if max_written == 0 { None } else { Some(&self.buf[..max_written]) }
     }
 
     /// Create a 3-center derivative engine: d(P|mu nu)/dR.
     pub fn new_3center_deriv(op: Operator, obs: &PreparedBasis, dfbs: &PreparedBasis, precision: f64) -> Result<Self, FerricError> {
-        let op_kind = match op.kind {
-            OperatorKind::Coulomb => ffi::OP_COULOMB,
-            OperatorKind::ErfCoulomb => ffi::OP_ERF_COULOMB,
-            OperatorKind::ErfcCoulomb => ffi::OP_ERFC_COULOMB,
-            _ => return Err(FerricError::Libint(format!("operator {:?} not implemented", op.kind))),
-        };
         let max_nprim = obs.max_nprim().max(dfbs.max_nprim());
         let max_l = obs.max_l().max(dfbs.max_l());
-        let handle = unsafe { ffi::goscf_engine_create_3center_deriv(op_kind, op.omega, max_nprim, max_l, precision) };
-        if handle.is_null() { return Err(FerricError::Libint("3-center derivative engine not available".into())); }
         let max_fn_obs = obs.shell_dims().iter().copied().max().unwrap_or(1);
         let max_fn_df = dfbs.shell_dims().iter().copied().max().unwrap_or(1);
-        Ok(Engine { handle, buf: vec![0.0; 9 * max_fn_df * max_fn_obs * max_fn_obs] })
+        let mut handles = Vec::new();
+        
+        let n_comp = if op.is_composite { op.num_components } else { 1 };
+        for i in 0..n_comp {
+            let (coeff, kind, omega) = if op.is_composite { (op.c_coeffs[i], op.c_kinds[i], op.c_omegas[i]) } else { (1.0, op.kind, op.omega) };
+            let op_kind = match kind {
+                OperatorKind::Coulomb => ffi::OP_COULOMB,
+                OperatorKind::ErfCoulomb => ffi::OP_ERF_COULOMB,
+                OperatorKind::ErfcCoulomb => ffi::OP_ERFC_COULOMB,
+                _ => return Err(FerricError::Libint(format!("operator {:?} not implemented", kind))),
+            };
+            let h = unsafe { ffi::goscf_engine_create_3center_deriv(op_kind, omega, max_nprim, max_l, precision) };
+            if h.is_null() { return Err(FerricError::Libint("3-center derivative engine not available".into())); }
+            handles.push((coeff, h));
+        }
+        Ok(Engine { handles, buf: vec![0.0; 9 * max_fn_df * max_fn_obs * max_fn_obs], scratch: vec![0.0; 9 * max_fn_df * max_fn_obs * max_fn_obs] })
     }
 
     /// Create a 2-center derivative engine: d(P|Q)/dR.
     pub fn new_2center_deriv(op: Operator, dfbs: &PreparedBasis, precision: f64) -> Result<Self, FerricError> {
-        let op_kind = match op.kind {
-            OperatorKind::Coulomb => ffi::OP_COULOMB,
-            OperatorKind::ErfCoulomb => ffi::OP_ERF_COULOMB,
-            OperatorKind::ErfcCoulomb => ffi::OP_ERFC_COULOMB,
-            _ => return Err(FerricError::Libint(format!("operator {:?} not implemented", op.kind))),
-        };
-        let handle = unsafe { ffi::goscf_engine_create_2center_deriv(op_kind, op.omega, dfbs.max_nprim(), dfbs.max_l(), precision) };
-        if handle.is_null() { return Err(FerricError::Libint("2-center derivative engine not available".into())); }
         let max_fn = dfbs.shell_dims().iter().copied().max().unwrap_or(1);
-        Ok(Engine { handle, buf: vec![0.0; 6 * max_fn * max_fn] })
+        let mut handles = Vec::new();
+        
+        let n_comp = if op.is_composite { op.num_components } else { 1 };
+        for i in 0..n_comp {
+            let (coeff, kind, omega) = if op.is_composite { (op.c_coeffs[i], op.c_kinds[i], op.c_omegas[i]) } else { (1.0, op.kind, op.omega) };
+            let op_kind = match kind {
+                OperatorKind::Coulomb => ffi::OP_COULOMB,
+                OperatorKind::ErfCoulomb => ffi::OP_ERF_COULOMB,
+                OperatorKind::ErfcCoulomb => ffi::OP_ERFC_COULOMB,
+                _ => return Err(FerricError::Libint(format!("operator {:?} not implemented", kind))),
+            };
+            let h = unsafe { ffi::goscf_engine_create_2center_deriv(op_kind, omega, dfbs.max_nprim(), dfbs.max_l(), precision) };
+            if h.is_null() { return Err(FerricError::Libint("2-center derivative engine not available".into())); }
+            handles.push((coeff, h));
+        }
+        Ok(Engine { handles, buf: vec![0.0; 6 * max_fn * max_fn], scratch: vec![0.0; 6 * max_fn * max_fn] })
     }
 
     /// Compute 3-center ERI derivatives: 9 blocks (3 centers × 3 coords) of nP*n1*n2.
-    pub fn compute_eri3_deriv(&mut self, obs: &PreparedBasis, dfbs: &PreparedBasis,
-                              sh_p: usize, sh1: usize, sh2: usize) -> Option<&[f64]> {
+    pub fn compute_eri3_deriv(&mut self, obs: &PreparedBasis, dfbs: &PreparedBasis, sh_p: usize, sh1: usize, sh2: usize) -> Option<&[f64]> {
         let n = dfbs.shell_dims()[sh_p] * obs.shell_dims()[sh1] * obs.shell_dims()[sh2];
         let total = 9 * n;
         if self.buf.len() < total { self.buf.resize(total, 0.0); }
-        let written = unsafe {
-            ffi::goscf_compute_eri3_deriv(self.handle, obs.handle(), dfbs.handle(),
-                                          sh_p as c_int, sh1 as c_int, sh2 as c_int, self.buf.as_mut_ptr())
-        };
-        if written == 0 { None } else { Some(&self.buf[..written as usize]) }
+        if self.scratch.len() < total { self.scratch.resize(total, 0.0); }
+        
+        let mut max_written = 0;
+        self.buf[..total].fill(0.0);
+        
+        for &(coeff, h) in &self.handles {
+            let written = unsafe { ffi::goscf_compute_eri3_deriv(h, obs.handle(), dfbs.handle(), sh_p as c_int, sh1 as c_int, sh2 as c_int, self.scratch.as_mut_ptr()) };
+            if written > 0 {
+                let w = written as usize;
+                max_written = max_written.max(w);
+                for i in 0..w { self.buf[i] += coeff * self.scratch[i]; }
+            }
+        }
+        if max_written == 0 { None } else { Some(&self.buf[..max_written]) }
     }
 
     /// Compute 2-center ERI derivatives: 6 blocks (2 centers × 3 coords) of nP*nQ.
@@ -292,18 +315,29 @@ impl Engine {
         let n = dfbs.shell_dims()[sh_p] * dfbs.shell_dims()[sh_q];
         let total = 6 * n;
         if self.buf.len() < total { self.buf.resize(total, 0.0); }
-        let written = unsafe {
-            ffi::goscf_compute_eri2_deriv(self.handle, dfbs.handle(),
-                                          sh_p as c_int, sh_q as c_int, self.buf.as_mut_ptr())
-        };
-        if written == 0 { None } else { Some(&self.buf[..written as usize]) }
+        if self.scratch.len() < total { self.scratch.resize(total, 0.0); }
+        
+        let mut max_written = 0;
+        self.buf[..total].fill(0.0);
+        
+        for &(coeff, h) in &self.handles {
+            let written = unsafe { ffi::goscf_compute_eri2_deriv(h, dfbs.handle(), sh_p as c_int, sh_q as c_int, self.scratch.as_mut_ptr()) };
+            if written > 0 {
+                let w = written as usize;
+                max_written = max_written.max(w);
+                for i in 0..w { self.buf[i] += coeff * self.scratch[i]; }
+            }
+        }
+        if max_written == 0 { None } else { Some(&self.buf[..max_written]) }
     }
 }
 
 impl Drop for Engine {
     fn drop(&mut self) {
-        if !self.handle.is_null() {
-            unsafe { ffi::goscf_engine_destroy(self.handle) };
+        for &(_, h) in &self.handles {
+            if !h.is_null() {
+                unsafe { ffi::goscf_engine_destroy(h) };
+            }
         }
     }
 }
@@ -317,7 +351,7 @@ mod tests {
     use ferric_core::mol::Molecule;
 
     fn h2_sto3g() -> (Molecule, PreparedBasis) {
-        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n").unwrap();
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
         let bs = basis::bundled("sto-3g").unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
         (mol, prep)
@@ -358,7 +392,7 @@ mod tests {
     #[test]
     fn test_erfc_coulomb_quartet() {
         let (_, prep) = h2_sto3g();
-        let op = Operator { kind: OperatorKind::ErfcCoulomb, omega: 0.5, distance: 0.0 };
+        let op = Operator::erfc(0.5);
         let mut eng = Engine::new_2e(op, &prep, 1e-14).unwrap();
         let q = eng.compute_quartet(&prep, 0, 0, 0, 0);
         assert!(q.is_some(), "ErfcCoulomb should produce non-zero integrals");
@@ -372,7 +406,7 @@ mod tests {
         let omega = 0.5;
         let mut eng_full = Engine::new_2e(Operator::coulomb(), &prep, 1e-14).unwrap();
         let mut eng_erf = Engine::new_2e(Operator::erf(omega), &prep, 1e-14).unwrap();
-        let op_erfc = Operator { kind: OperatorKind::ErfcCoulomb, omega, distance: 0.0 };
+        let op_erfc = Operator::erfc(omega);
         let mut eng_erfc = Engine::new_2e(op_erfc, &prep, 1e-14).unwrap();
 
         let v_full = eng_full.compute_quartet(&prep, 0, 0, 0, 0).unwrap()[0];
@@ -384,8 +418,47 @@ mod tests {
     }
 
     #[test]
+    fn test_composite_operator() {
+        let (_, prep) = h2_sto3g();
+        let omega = 0.5;
+        // Construct composite: 1.0 * erf(omega) + 1.0 * erfc(omega)
+        let op_composite = Operator::composite(&[
+            (1.0, OperatorKind::ErfCoulomb, omega),
+            (1.0, OperatorKind::ErfcCoulomb, omega),
+        ]);
+        let mut eng_comp = Engine::new_2e(op_composite, &prep, 1e-14).unwrap();
+        let mut eng_full = Engine::new_2e(Operator::coulomb(), &prep, 1e-14).unwrap();
+
+        let v_comp = eng_comp.compute_quartet(&prep, 0, 0, 0, 0).unwrap()[0];
+        let v_full = eng_full.compute_quartet(&prep, 0, 0, 0, 0).unwrap()[0];
+
+        assert!(
+            (v_comp - v_full).abs() < 1e-10,
+            "composite (erf + erfc) = {v_comp}, should equal full coulomb = {v_full}"
+        );
+    }
+
+    #[test]
+    fn test_terfc_spike() {
+        let (_, prep) = h2_sto3g();
+        let r0 = 1.05; // Standard variant I
+        let op_terfc = Operator::terfc_fit(r0);
+        let mut eng_terfc = Engine::new_2e(op_terfc, &prep, 1e-14).unwrap();
+        let q = eng_terfc.compute_quartet(&prep, 0, 0, 0, 0);
+        assert!(q.is_some(), "terfc_fit should produce non-zero integrals");
+        
+        let v = q.unwrap()[0];
+        // The value should be bounded by the standard coulomb operator
+        let op_coulomb = Operator::coulomb();
+        let mut eng_coulomb = Engine::new_2e(op_coulomb, &prep, 1e-14).unwrap();
+        let v_coulomb = eng_coulomb.compute_quartet(&prep, 0, 0, 0, 0).unwrap()[0];
+        
+        assert!(v > 0.0 && v < v_coulomb, "terfc integral {v} should be attenuated (0 < v < {v_coulomb})");
+    }
+
+    #[test]
     fn test_eri3_deriv_translational_invariance() {
-        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n").unwrap();
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
         let bs = basis::bundled("sto-3g").unwrap();
         let obs = PreparedBasis::new(&mol, &bs).unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
@@ -422,7 +495,7 @@ mod tests {
 
     #[test]
     fn test_eri2_deriv_translational_invariance() {
-        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n").unwrap();
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
         let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
         let op = Operator::coulomb();
