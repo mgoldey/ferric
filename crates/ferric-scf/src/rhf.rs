@@ -5,7 +5,7 @@
 
 use crate::diis::Diis;
 use crate::direct_j::DirectJ;
-use crate::direct_k::DirectK;
+use crate::direct_jk::DirectJK;
 use crate::fock::{JBuilder, KBuilder};
 use crate::guess::hcore_guess;
 
@@ -96,6 +96,8 @@ pub fn solve_rhf(
 
     let mut d = hcore_guess(&s, &h, nocc)?;
     let mut f = Array2::zeros((n, n));
+    let mut j_buf = Array2::<f64>::zeros((n, n));
+    let mut k_buf = Array2::<f64>::zeros((n, n));
     let mut diis = Diis::new(config.diis_size);
     let mut prev_e = 0.0;
     let mut total_quartets = 0;
@@ -119,39 +121,40 @@ pub fn solve_rhf(
         Box::new(lk) as Box<dyn KBuilder>
     });
 
-    // Precompute S^{-1/2} for diagonalization
+    // Precompute S^{-1/2} = U * diag(1/sqrt(λ)) * U^T  (BLAS dgemm)
     let (s_evals, s_evecs) = s
         .eigh(ndarray_linalg::UPLO::Upper)
         .map_err(|e| FerricError::Lapack(format!("S diag: {e}")))?;
-    let mut s_inv_sqrt = Array2::zeros((n, n));
+    // Scale each column i of U by 1/sqrt(λ_i)
+    let mut u_scaled = s_evecs.clone();
     for i in 0..n {
-        let val = 1.0 / s_evals[i].sqrt();
+        let scale = 1.0 / s_evals[i].sqrt();
         for mu in 0..n {
-            for nu in 0..n {
-                s_inv_sqrt[(mu, nu)] += s_evecs[(mu, i)] * val * s_evecs[(nu, i)];
-            }
+            u_scaled[(mu, i)] *= scale;
         }
     }
+    let s_inv_sqrt = u_scaled.dot(&s_evecs.t());
 
     for iter in 1..=config.max_iter {
         ctx.check_interrupted()?;
-        // Build J and K using selected builder
-        let mut j = Array2::zeros((n, n));
-        let mut k = Array2::zeros((n, n));
-        // J always uses DirectJ
-        let mut direct_j = DirectJ::new(ctx, prep, bounds, config.integral_thresh);
-        total_quartets += direct_j.build(&d, &mut j)?;
-        // Choose K builder: use pre-built LinkK if configured, else DirectK
+        // Build J and K using selected builder (reuse pre-allocated buffers)
+        j_buf.fill(0.0);
+        k_buf.fill(0.0);
+        // Choose K builder: use pre-built LinkK if configured, else combined DirectJK
         if let Some(lk) = k_builder.as_mut() {
+            // LinkK only builds K; J still needs a separate pass.
+            let mut direct_j = DirectJ::new(ctx, prep, bounds, config.integral_thresh);
+            total_quartets += direct_j.build(&d, &mut j_buf)?;
             lk.update_density(&d);
-            total_quartets += lk.build(&d, &mut k)?;
+            total_quartets += lk.build(&d, &mut k_buf)?;
         } else {
-            let mut direct_k = DirectK::new(ctx, prep, bounds, config.integral_thresh);
-            total_quartets += direct_k.build(&d, &mut k)?;
+            // Single combined pass: build J and K simultaneously from each ERI.
+            let mut direct_jk = DirectJK::new(ctx, prep, bounds, config.integral_thresh);
+            total_quartets += direct_jk.build(&d, &mut j_buf, &mut k_buf)?;
         }
 
         // F = H + J - 0.5*K
-        f.assign(&(&h + &j - &(0.5 * &k)));
+        f.assign(&(&h + &j_buf - &(0.5 * &k_buf)));
 
         // Electronic energy: E_elec = 0.5 * tr(D * (H + F))
         let e_elec: f64 = (0..n)
@@ -186,17 +189,9 @@ pub fn solve_rhf(
         let f_new = diis.step(&f, &err);
         let (_, c) = diagonalize(&f_new, &s_inv_sqrt)?;
 
-        // Rebuild density
-        d.fill(0.0);
-        for mu in 0..n {
-            for nu in 0..n {
-                let mut sum = 0.0;
-                for i in 0..nocc {
-                    sum += c[(mu, i)] * c[(nu, i)];
-                }
-                d[(mu, nu)] = 2.0 * sum;
-            }
-        }
+        // Rebuild density: D = 2 * C_occ @ C_occ^T  (BLAS dgemm)
+        let c_occ = c.slice(ndarray::s![.., ..nocc]);
+        d.assign(&(2.0 * c_occ.dot(&c_occ.t())));
     }
     Err(FerricError::ScfConvergence {
         iterations: config.max_iter,

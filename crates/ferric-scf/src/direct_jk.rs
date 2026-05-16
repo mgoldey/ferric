@@ -1,0 +1,191 @@
+use crate::screening::SchwarzBounds;
+use ferric_core::FerricError;
+use ferric_integrals::basis_bridge::PreparedBasis;
+use ferric_integrals::engine::Engine;
+use ferric_core::parallel::ParallelContext;
+use ndarray::Array2;
+
+/// Combined Coulomb (J) and exchange (K) matrix builder.
+///
+/// Enumerates all screened canonical (s1,s2,s3,s4) quartets **once** and accumulates
+/// both J and K from the same computed integral, avoiding the 2× ERI evaluation cost
+/// of calling DirectJ and DirectK separately.
+///
+/// The flat quartet pre-enumeration (same as DirectJ) gives balanced Rayon tasks
+/// versus the bra-pair-then-serial-ket structure used by the old DirectK.
+pub struct DirectJK<'a> {
+    ctx: &'a ParallelContext,
+    prep: &'a PreparedBasis,
+    bounds: &'a SchwarzBounds,
+    thresh: f64,
+}
+
+impl<'a> DirectJK<'a> {
+    pub fn new(
+        ctx: &'a ParallelContext,
+        prep: &'a PreparedBasis,
+        bounds: &'a SchwarzBounds,
+        thresh: f64,
+    ) -> Self {
+        DirectJK { ctx, prep, bounds, thresh }
+    }
+
+    /// Build J and K matrices simultaneously from a single pass over shell quartets.
+    /// Returns the number of unique quartets computed.
+    pub fn build(
+        &mut self,
+        d: &Array2<f64>,
+        j: &mut Array2<f64>,
+        k: &mut Array2<f64>,
+    ) -> Result<usize, FerricError> {
+        use rayon::prelude::*;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        self.ctx.check_interrupted()?;
+
+        let nsh = self.prep.nshells();
+        let dims = self.prep.shell_dims();
+        let offs = self.prep.shell_offsets();
+        let max_d = d.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
+        let thresh = self.thresh;
+        let computed_quartets = AtomicUsize::new(0);
+
+        let max_q: f64 = self.bounds.q.iter().cloned().fold(0.0f64, f64::max);
+        let bra_thresh = if max_q > 0.0 { thresh / max_q } else { thresh };
+        let q_table = &self.bounds.q;
+        let op = self.bounds.op;
+        let prep = self.prep;
+        let rank = self.ctx.rank;
+        let size = self.ctx.size;
+        let nbf = prep.nbasis();
+
+        // Enumerate all screened canonical quartets upfront for balanced parallel tasks.
+        let quads: Vec<(usize, usize, usize, usize)> = (0..nsh)
+            .flat_map(|s1| (0..=s1).map(move |s2| (s1, s2)))
+            .filter(|&(s1, s2)| q_table[(s1, s2)] > bra_thresh)
+            .flat_map(|(s1, s2)| {
+                let b12 = q_table[(s1, s2)];
+                (0..=s1)
+                    .flat_map(move |s3| {
+                        let s4max = if s3 == s1 { s2 } else { s3 };
+                        (0..=s4max)
+                            .filter(move |&s4| b12 * q_table[(s3, s4)] * max_d >= thresh)
+                            .map(move |s4| (s1, s2, s3, s4))
+                            .collect::<Vec<_>>()
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .enumerate()
+            .filter(|(idx, _)| idx % size == rank)
+            .map(|(_, q)| q)
+            .collect();
+
+        let total_jk = quads
+            .into_par_iter()
+            .fold(
+                || {
+                    let engine = Engine::new_2e(op, prep, 1e-14).unwrap();
+                    (engine, Array2::<f64>::zeros((nbf, nbf)), Array2::<f64>::zeros((nbf, nbf)), 0usize)
+                },
+                |(mut engine, mut local_j, mut local_k, mut local_count), (s1, s2, s3, s4)| {
+                    let (n1, n2) = (dims[s1], dims[s2]);
+                    let (o1, o2) = (offs[s1], offs[s2]);
+                    let sym12 = s1 != s2;
+
+                    if let Some(q) = engine.compute_quartet(prep, s1, s2, s3, s4) {
+                        local_count += 1;
+                        let (n3, n4) = (dims[s3], dims[s4]);
+                        let (o3, o4) = (offs[s3], offs[s4]);
+                        let sym34 = s3 != s4;
+                        let sym1234 = (s1, s2) != (s3, s4);
+
+                        for a in 0..n1 {
+                            for b in 0..n2 {
+                                for c in 0..n3 {
+                                    for dd in 0..n4 {
+                                        let v = unsafe {
+                                            *q.get_unchecked(((a * n2 + b) * n3 + c) * n4 + dd)
+                                        };
+                                        let mu = o1 + a;
+                                        let nu = o2 + b;
+                                        let la = o3 + c;
+                                        let sg = o4 + dd;
+
+                                        // J contributions
+                                        unsafe {
+                                            *local_j.uget_mut((mu, nu)) += d.uget((la, sg)) * v;
+                                            *local_k.uget_mut((mu, la)) += d.uget((nu, sg)) * v;
+                                            if sym12 {
+                                                *local_j.uget_mut((nu, mu)) += d.uget((la, sg)) * v;
+                                                *local_k.uget_mut((nu, la)) += d.uget((mu, sg)) * v;
+                                            }
+                                            if sym34 {
+                                                *local_j.uget_mut((mu, nu)) += d.uget((sg, la)) * v;
+                                                *local_k.uget_mut((mu, sg)) += d.uget((nu, la)) * v;
+                                            }
+                                            if sym12 && sym34 {
+                                                *local_j.uget_mut((nu, mu)) += d.uget((sg, la)) * v;
+                                                *local_k.uget_mut((nu, sg)) += d.uget((mu, la)) * v;
+                                            }
+                                            if sym1234 {
+                                                *local_j.uget_mut((la, sg)) += d.uget((mu, nu)) * v;
+                                                *local_k.uget_mut((la, mu)) += d.uget((sg, nu)) * v;
+                                                if sym12 {
+                                                    *local_j.uget_mut((la, sg)) += d.uget((nu, mu)) * v;
+                                                    *local_k.uget_mut((la, nu)) += d.uget((sg, mu)) * v;
+                                                }
+                                                if sym34 {
+                                                    *local_j.uget_mut((sg, la)) += d.uget((mu, nu)) * v;
+                                                    *local_k.uget_mut((sg, mu)) += d.uget((la, nu)) * v;
+                                                }
+                                                if sym12 && sym34 {
+                                                    *local_j.uget_mut((sg, la)) += d.uget((nu, mu)) * v;
+                                                    *local_k.uget_mut((sg, nu)) += d.uget((la, mu)) * v;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    (engine, local_j, local_k, local_count)
+                },
+            )
+            .map(|(_, local_j, local_k, count)| {
+                computed_quartets.fetch_add(count, Ordering::Relaxed);
+                (local_j, local_k)
+            })
+            .reduce(
+                || (Array2::zeros((nbf, nbf)), Array2::zeros((nbf, nbf))),
+                |mut acc, next| {
+                    acc.0 += &next.0;
+                    acc.1 += &next.1;
+                    acc
+                },
+            );
+
+        *j += &total_jk.0;
+        *k += &total_jk.1;
+
+        #[cfg(feature = "mpi")]
+        if let Some(world) = &self.ctx.world {
+            let mut j_global = Array2::zeros(j.dim());
+            let mut k_global = Array2::zeros(k.dim());
+            world.all_reduce_into(
+                j.as_slice().unwrap(),
+                j_global.as_slice_mut().unwrap(),
+                mpi::collective::SystemOperation::sum(),
+            );
+            world.all_reduce_into(
+                k.as_slice().unwrap(),
+                k_global.as_slice_mut().unwrap(),
+                mpi::collective::SystemOperation::sum(),
+            );
+            *j = j_global;
+            *k = k_global;
+        }
+
+        Ok(computed_quartets.load(Ordering::SeqCst))
+    }
+}

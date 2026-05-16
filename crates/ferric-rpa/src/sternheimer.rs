@@ -63,19 +63,24 @@ pub fn dielectric_matrix(
     // PySCF: chi0 = 2·e_ov·f_ov/(ω²+e_ov²) with e_ov = e_occ−e_vir < 0, f_ov = 2
     //        = 4 · (-e_ia) / (ω²+e_ia²) — negative
     // Ferric stores +|χ₀| = 4·e_ia/(ω²+e_ia²) so that ε̃ = I − Π matches PySCF I − χ₀.
-    let mut chi = Array2::zeros((m, m));
+    //
+    // GEMM path: rhs_scaled[α,ia] = rhs_mat[α,ia] * sqrt(4·e_ia/(ω²+e_ia²))
+    //   chi = rhs_scaled @ rhs_scaled^T  (one DGEMM replaces O(m²·nov) scalar ops)
+    let omega2 = omega * omega;
+    // Allocate a fresh C-order (m, nov) buffer and fill it with scaled values.
+    let mut rhs_scaled = Array2::<f64>::zeros((m, nov));
     for i in 0..nocc {
         for a in 0..nvir {
             let ia = i * nvir + a;
             let e_ia = eps_vir[a] - eps_occ[i];
-            let scale = 4.0 * e_ia / (omega * omega + e_ia * e_ia);
+            let s = (4.0 * e_ia / (omega2 + e_ia * e_ia)).sqrt();
             for alpha in 0..m {
-                for beta in 0..m {
-                    chi[(alpha, beta)] += scale * rhs_mat[(alpha, ia)] * rhs_mat[(beta, ia)];
-                }
+                rhs_scaled[(alpha, ia)] = rhs_mat[(alpha, ia)] * s;
             }
         }
     }
+    // chi = rhs_scaled @ rhs_scaled^T : (m, m) DGEMM via ndarray→OpenBLAS
+    let chi = rhs_scaled.dot(&rhs_scaled.t());
 
     // Return ε̃ = I − χ₀ = I + Π (since Π = −χ₀, χ₀ < 0 at iω).
     // Eigenvalues are 1 + μ_α ≥ 1 for physical systems.

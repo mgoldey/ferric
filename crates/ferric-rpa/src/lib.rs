@@ -11,9 +11,76 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_mp2::rimp2::{compute_mp2_intermediates, RiMp2Config};
 use ferric_scf::rhf::RhfResult;
-use ndarray::Array2;
+use ndarray::{Array1, Array2};
 
 pub use config::PdepRpaConfig;
+
+/// Build an atom-localized seed for Davidson in the dressed aux basis.
+///
+/// For each atom A, constructs:
+///   - 1 isotropic vector: uniform over all aux functions on atom A
+///   - 3 directional vectors: linearly weighted by aux-function index modulo 3
+///     (x/y/z surrogates) over aux functions on atom A
+///
+/// Total seed size: 4 * N_atoms vectors (before QR rank-reduction).
+/// After QR, dependent columns are discarded; the result has at most
+/// min(4*natoms, naux) orthonormal columns.
+fn build_atom_seed(dfbs: &PreparedBasis) -> Result<Array2<f64>, FerricError> {
+    use ndarray_linalg::QR;
+
+    let naux = dfbs.nbasis();
+    let natoms = dfbs.natoms();
+    let shell_to_atom = dfbs.shell_to_atom();
+    let shell_offsets = dfbs.shell_offsets();
+
+    let n_seed_cols = 4 * natoms;
+    let mut seed = Array2::<f64>::zeros((naux, n_seed_cols));
+
+    for atom in 0..natoms {
+        // Collect aux-function indices for this atom
+        let mut aux_indices: Vec<usize> = Vec::new();
+        for (sh, &a) in shell_to_atom.iter().enumerate() {
+            if a == atom {
+                for p in shell_offsets[sh]..shell_offsets[sh + 1] {
+                    aux_indices.push(p);
+                }
+            }
+        }
+        if aux_indices.is_empty() {
+            continue;
+        }
+
+        let n_on_atom = aux_indices.len() as f64;
+
+        // Isotropic: 1/sqrt(n) for each aux function on this atom
+        let inv_norm = n_on_atom.sqrt().recip();
+        for &p in &aux_indices {
+            seed[(p, 4 * atom)] = inv_norm;
+        }
+
+        // Three directional vectors: weight aux functions by index modulo 3
+        // These provide differentiated projections across the aux space of each atom,
+        // seeding the x/y/z directional response components.
+        for dim in 0..3usize {
+            let mut col: Array1<f64> = Array1::zeros(naux);
+            for (k, &p) in aux_indices.iter().enumerate() {
+                if k % 3 == dim {
+                    col[p] = 1.0;
+                }
+            }
+            let norm = col.dot(&col).sqrt();
+            if norm > 1e-14 {
+                col.mapv_inplace(|x| x / norm);
+            }
+            seed.column_mut(4 * atom + 1 + dim).assign(&col);
+        }
+    }
+
+    // QR-orthonormalize: drops linearly dependent columns, keeps only rank(seed) vectors.
+    let (q, _r) = seed.qr()
+        .map_err(|e| FerricError::General(format!("atom seed QR failed: {e}")))?;
+    Ok(q)
+}
 
 /// Results from a PDEP-RPA calculation.
 #[derive(Debug)]
@@ -73,15 +140,38 @@ pub fn run_pdep_rpa(
     let eps_occ_clone = eps_occ.clone();
     let eps_vir_clone = eps_vir.clone();
 
-    let davidson_result = davidson::run_davidson_static(
-        naux,
-        move |v_mat: &Array2<f64>, omega: f64| {
-            sternheimer::dielectric_matrix(v_mat, &b_ov_clone, &eps_occ_clone, &eps_vir_clone, omega)
-        },
-        config.davidson_conv_thresh,
-        max_vecs,
-        naux, // request all, truncate later
-    )?;
+    // Atom-localized seed gives 3·N_atoms scaling when n_desired ≪ naux (PDEP truncation
+    // regime). When the caller asks for all naux modes (e.g. trunc_thresh = 0 for
+    // apples-to-apples comparison with full RI-RPA), Davidson would have to grow the
+    // subspace all the way back up — the identity seed converges faster in that case.
+    //
+    // Heuristic: when trunc_thresh > 0 AND naux > 4·N_atoms, use atom seed; otherwise
+    // identity seed. This keeps the PDEP win for production runs without breaking the
+    // full-basis verification path.
+    let use_atom_seed =
+        config.trunc_thresh > 0.0 && naux > 4 * dfbs.natoms();
+    let davidson_result = if use_atom_seed {
+        let seed = build_atom_seed(dfbs)?;
+        davidson::run_davidson_seeded(
+            seed,
+            move |v_mat: &Array2<f64>, omega: f64| {
+                sternheimer::dielectric_matrix(v_mat, &b_ov_clone, &eps_occ_clone, &eps_vir_clone, omega)
+            },
+            config.davidson_conv_thresh,
+            max_vecs,
+            naux,
+        )?
+    } else {
+        davidson::run_davidson_static(
+            naux,
+            move |v_mat: &Array2<f64>, omega: f64| {
+                sternheimer::dielectric_matrix(v_mat, &b_ov_clone, &eps_occ_clone, &eps_vir_clone, omega)
+            },
+            config.davidson_conv_thresh,
+            max_vecs,
+            naux,
+        )?
+    };
 
     // Step 4: Truncate by departure from identity: keep eigenpotentials where
     // (λ_α(0) − 1) > trunc_thresh. The dielectric ε̃ = I + Π has eigenvalues ≥ 1,

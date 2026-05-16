@@ -34,20 +34,24 @@ pub fn ri_drpa_eigenvalues(
     assert_eq!(b_ov.shape()[1], nov);
 
     // Build Π = 4 Σ_{ia} e_ia/(ω²+e_ia²) B^P B^Q (= −χ₀, RHF: factor 4 = 2 spin × 2 orb)
-    let mut chi0: Array2<f64> = Array2::zeros((naux, naux));
+    //
+    // GEMM path: b_scaled[p,ia] = b_ov[p,ia] * sqrt(4·e_ia/(ω²+e_ia²))
+    //   chi0 = b_scaled @ b_scaled^T  (one DGEMM replaces O(naux²·nov) scalar ops)
+    let omega2 = omega * omega;
+    // Allocate a fresh C-order (naux, nov) buffer and fill it with scaled values.
+    let mut b_scaled = Array2::<f64>::zeros((naux, nov));
     for (i, &eps_i) in eps_occ.iter().enumerate() {
         for (a, &eps_a) in eps_vir.iter().enumerate() {
             let ia = i * nvir + a;
             let e_ia = eps_a - eps_i;
-            let scale = 4.0 * e_ia / (omega * omega + e_ia * e_ia);
-            let col = b_ov.column(ia);
+            let s = (4.0 * e_ia / (omega2 + e_ia * e_ia)).sqrt();
             for p in 0..naux {
-                for q in 0..naux {
-                    chi0[(p, q)] += scale * col[p] * col[q];
-                }
+                b_scaled[(p, ia)] = b_ov[(p, ia)] * s;
             }
         }
     }
+    // chi0 = b_scaled @ b_scaled^T : (naux, naux) DGEMM via ndarray→OpenBLAS
+    let mut chi0: Array2<f64> = b_scaled.dot(&b_scaled.t());
 
     // ε̃ = I − χ₀ = I + Π (Π = −χ₀, positive); eigenvalues 1 + μ ≥ 1
     for p in 0..naux {

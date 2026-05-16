@@ -29,9 +29,38 @@ where
     F: Fn(&Array2<f64>, f64) -> Array2<f64>,
 {
     // Seed: identity subspace (unit vectors in aux space)
-    let mut v_mat = Array2::eye(m0);
+    let seed = Array2::eye(m0);
+    run_davidson_seeded(seed, dielectric_fn, conv_thresh, max_vecs, n_desired)
+}
 
-    let max_iter = 50;
+/// Run Davidson with an explicit seed matrix.
+///
+/// `seed`: initial trial subspace, shape (naux, n_seed). Columns are orthonormal
+///   trial vectors in the dressed aux basis. Davidson will grow this subspace
+///   as needed until `n_desired` eigenpairs converge.
+///
+/// `dielectric_fn(v_mat, omega)` returns the projected dielectric matrix
+/// ε̃_αβ(iω) for trial vectors V (columns of v_mat).
+///
+/// `n_desired`: number of eigenpairs to extract
+pub fn run_davidson_seeded<F>(
+    seed: Array2<f64>,
+    dielectric_fn: F,
+    conv_thresh: f64,
+    max_vecs: usize,
+    n_desired: usize,
+) -> Result<DavidsonResult, FerricError>
+where
+    F: Fn(&Array2<f64>, f64) -> Array2<f64>,
+{
+    // Orthonormalize the seed to get the initial subspace
+    let mut v_mat = if seed.ncols() <= seed.nrows() {
+        qr_orthonormalize(seed)?
+    } else {
+        seed
+    };
+
+    let max_iter = 200;
     for _iter in 0..max_iter {
         let m = v_mat.ncols();
 
@@ -67,15 +96,58 @@ where
             }
         }
 
+        // All checked eigenpairs have converged.
         if max_resid < conv_thresh || new_vecs.is_empty() {
-            // Converged
-            let n_keep = n_desired.min(m);
-            let start = m - n_keep;
-            let eigenvalues: Vec<f64> = evals.slice(ndarray::s![start..]).iter().copied().rev().collect();
-            let eigenvectors = ritz.slice(ndarray::s![.., start..]).to_owned();
-            // Reverse columns so largest eigenvalue is first
-            let eigenvectors = eigenvectors.slice(ndarray::s![.., ..;-1]).to_owned();
-            return Ok(DavidsonResult { eigenvalues, eigenvectors });
+            if m >= n_desired {
+                // Full convergence: we have enough eigenpairs.
+                let n_keep = n_desired.min(m);
+                let start = m - n_keep;
+                let eigenvalues: Vec<f64> = evals.slice(ndarray::s![start..]).iter().copied().rev().collect();
+                let eigenvectors = ritz.slice(ndarray::s![.., start..]).to_owned();
+                // Reverse columns so largest eigenvalue is first
+                let eigenvectors = eigenvectors.slice(ndarray::s![.., ..;-1]).to_owned();
+                return Ok(DavidsonResult { eigenvalues, eigenvectors });
+            }
+
+            // m < n_desired: current Ritz vectors all converged, but subspace is too small.
+            // This happens when the seed spans only a subset of the eigenpairs.
+            // Expand with unit vectors orthogonal to the current subspace.
+            let naux = v_mat.nrows();
+            let budget = max_vecs.saturating_sub(m);
+            if budget == 0 || m >= naux {
+                // No room to grow: return what we have (truncation step will handle it).
+                let eigenvalues: Vec<f64> = evals.iter().copied().rev().collect();
+                let eigenvectors = ritz.slice(ndarray::s![.., ..;-1]).to_owned();
+                return Ok(DavidsonResult { eigenvalues, eigenvectors });
+            }
+            // Add a batch of orthogonal unit vectors to bootstrap coverage of the missing space.
+            let n_to_add = (n_desired - m).min(budget).min(naux - m);
+            let mut expanded = Array2::zeros((naux, m + n_to_add));
+            expanded.slice_mut(ndarray::s![.., ..m]).assign(&v_mat);
+            let mut added = 0;
+            for ei in 0..naux {
+                if added >= n_to_add { break; }
+                // Gram-Schmidt: project unit vector against all current columns
+                let mut e = Array1::zeros(naux);
+                e[ei] = 1.0;
+                for col_idx in 0..(m + added) {
+                    let col = expanded.column(col_idx);
+                    let proj = col.dot(&e);
+                    let col_owned = col.to_owned();
+                    e = e - proj * &col_owned;
+                }
+                let norm = e.dot(&e).sqrt();
+                if norm > 1e-10 {
+                    e.mapv_inplace(|x| x / norm);
+                    expanded.column_mut(m + added).assign(&e);
+                    added += 1;
+                }
+            }
+            if added > 0 {
+                v_mat = expanded.slice(ndarray::s![.., ..(m + added)]).to_owned();
+            }
+            // No need to re-QR here since we built ortho columns incrementally.
+            continue;
         }
 
         if v_mat.ncols() + new_vecs.len() > max_vecs {
