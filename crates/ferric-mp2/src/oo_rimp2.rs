@@ -847,7 +847,7 @@ mod tests {
     use ferric_scf::screening::SchwarzBounds;
 
     fn setup_h2() -> (Molecule, PreparedBasis, PreparedBasis, Operator, SchwarzBounds, RhfResult) {
-        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n").unwrap();
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
         let bs = basis::bundled("cc-pvdz").unwrap();
         let obs = PreparedBasis::new(&mol, &bs).unwrap();
         let op = Operator::coulomb();
@@ -1012,7 +1012,7 @@ mod tests {
     #[test]
     fn test_oo_rimp2_h2o_ccpvdz() {
         let xyz = "3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n";
-        let mol = Molecule::parse_xyz(xyz).unwrap();
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
         let bs = basis::bundled("cc-pvdz").unwrap();
         let obs = PreparedBasis::new(&mol, &bs).unwrap();
         let op = Operator::coulomb();

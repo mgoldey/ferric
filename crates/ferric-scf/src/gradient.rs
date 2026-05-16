@@ -611,7 +611,7 @@ mod tests {
     #[test]
     fn test_gradient_components_h2() {
         let xyz = "2\nH2\nH 0 0 0\nH 0 0 0.74\n";
-        let mol = Molecule::parse_xyz(xyz).unwrap();
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
         let bs = basis::bundled("sto-3g").unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
         let op = Operator::coulomb();
@@ -675,7 +675,7 @@ mod tests {
     }
 
     fn finite_difference_gradient(xyz: &str, basis_name: &str, delta: f64) -> Array2<f64> {
-        let mol = Molecule::parse_xyz(xyz).unwrap();
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
         let natoms = mol.atoms.len();
         let mut grad = Array2::zeros((natoms, 3));
         let config = RhfConfig { energy_conv: 1e-10, ..Default::default() };
@@ -707,7 +707,7 @@ mod tests {
     #[test]
     fn test_gradient_h2_sto3g_vs_finite_diff() {
         let xyz = "2\nH2\nH 0 0 0\nH 0 0 0.74\n";
-        let mol = Molecule::parse_xyz(xyz).unwrap();
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
         let bs = basis::bundled("sto-3g").unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
         let op = Operator::coulomb();
@@ -743,7 +743,7 @@ mod tests {
     #[test]
     fn test_gradient_h2o_sto3g_vs_finite_diff() {
         let xyz = "3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n";
-        let mol = Molecule::parse_xyz(xyz).unwrap();
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
         let bs = basis::bundled("sto-3g").unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
         let op = Operator::coulomb();

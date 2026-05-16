@@ -125,7 +125,7 @@ mod tests {
 
     #[test]
     fn test_canonical_mp2_h2_sto3g() {
-        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n").unwrap();
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
         let bs = basis::bundled("sto-3g").unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
         let op = Operator::coulomb();
@@ -156,7 +156,7 @@ mod tests {
 
     #[test]
     fn test_canonical_vs_ri_mp2_h2_ccpvdz() {
-        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n").unwrap();
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
         let bs = basis::bundled("cc-pvdz").unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
         let op = Operator::coulomb();

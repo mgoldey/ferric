@@ -234,7 +234,7 @@ mod tests {
 
     /// Run RHF to convergence and return the density and molecule.
     fn converged_density(xyz: &str, basis_name: &str) -> (Array2<f64>, Molecule) {
-        let mol = Molecule::parse_xyz(xyz).unwrap();
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
         let bs = basis::bundled(basis_name).unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
         let op = Operator::coulomb();

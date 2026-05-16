@@ -318,7 +318,7 @@ mod tests {
     fn test_rimp2_gradient_fd_h2_symmetry() {
         // H2 along z-axis: gradient should be equal and opposite on the two atoms
         // and zero in x,y directions.
-        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n").unwrap();
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
         let obs_bs = basis::bundled("cc-pvdz").unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
         let op = Operator::coulomb();
@@ -366,7 +366,7 @@ mod tests {
     #[test]
     fn test_rimp2_gradient_fd_consistency() {
         // Check that two different deltas give consistent results (FD convergence).
-        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n").unwrap();
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
         let obs_bs = basis::bundled("cc-pvdz").unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
         let op = Operator::coulomb();
@@ -395,7 +395,7 @@ mod tests {
         // For any geometry the sum of forces over all atoms should be zero
         // (translational invariance / Newton's third law).
         let xyz = "3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n";
-        let mol = Molecule::parse_xyz(xyz).unwrap();
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
         let obs_bs = basis::bundled("sto-3g").unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
         let op = Operator::coulomb();
@@ -427,7 +427,7 @@ mod tests {
 
     #[test]
     fn test_analytical_vs_fd_h2() {
-        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n").unwrap();
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
         let obs_bs = basis::bundled("cc-pvdz").unwrap();
         let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
@@ -461,7 +461,7 @@ mod tests {
 
     #[test]
     fn test_analytical_gradient_translational_invariance() {
-        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n").unwrap();
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
         let obs_bs = basis::bundled("cc-pvdz").unwrap();
         let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
@@ -487,7 +487,7 @@ mod tests {
         use crate::rimp2::{compute_mp2_intermediates, RiMp2Config, cholesky_inverse_sqrt};
         use ferric_integrals::threeindex;
 
-        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n").unwrap();
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
         let obs_bs = basis::bundled("cc-pvdz").unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
         let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
@@ -606,7 +606,7 @@ mod tests {
         use ferric_integrals::threeindex;
         use crate::rimp2::cholesky_inverse_sqrt;
 
-        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n").unwrap();
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
         let obs_bs = basis::bundled("cc-pvdz").unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
         let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
@@ -753,7 +753,7 @@ mod tests {
 
     #[test]
     fn test_fd_convergence_study() {
-        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n").unwrap();
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
         let obs_bs = basis::bundled("cc-pvdz").unwrap();
         let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
@@ -883,7 +883,7 @@ mod tests {
     #[test]
     fn test_analytical_vs_fd_h2o() {
         let xyz = "3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n";
-        let mol = Molecule::parse_xyz(xyz).unwrap();
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
         let obs_bs = basis::bundled("sto-3g").unwrap();
         let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
@@ -916,7 +916,7 @@ mod tests {
 
     #[test]
     fn test_analytical_h2_symmetry() {
-        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n").unwrap();
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
         let obs_bs = basis::bundled("cc-pvdz").unwrap();
         let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
@@ -945,7 +945,7 @@ mod tests {
     #[test]
     fn test_analytical_h2o_translational_invariance() {
         let xyz = "3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n";
-        let mol = Molecule::parse_xyz(xyz).unwrap();
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
         let obs_bs = basis::bundled("sto-3g").unwrap();
         let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
@@ -967,7 +967,7 @@ mod tests {
     #[test]
     fn test_gradient_split_consistency() {
         // oneelectron_gradient + twoelectron_gradient should equal hf_gradient_with_density
-        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n").unwrap();
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
         let bs = basis::bundled("sto-3g").unwrap();
         let obs = PreparedBasis::new(&mol, &bs).unwrap();
         let op = Operator::coulomb();

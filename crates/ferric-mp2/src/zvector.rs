@@ -384,7 +384,7 @@ mod tests {
 
     #[test]
     fn test_zvector_converges() {
-        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n").unwrap();
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
         let bs = basis::bundled("cc-pvdz").unwrap();
         let obs = PreparedBasis::new(&mol, &bs).unwrap();
         let op = Operator::coulomb();
@@ -406,7 +406,7 @@ mod tests {
 
     #[test]
     fn test_relaxed_density_symmetric() {
-        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n").unwrap();
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
         let bs = basis::bundled("cc-pvdz").unwrap();
         let obs = PreparedBasis::new(&mol, &bs).unwrap();
         let op = Operator::coulomb();
@@ -433,7 +433,7 @@ mod tests {
 
     #[test]
     fn test_relaxed_w_symmetric() {
-        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n").unwrap();
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
         let bs = basis::bundled("cc-pvdz").unwrap();
         let obs = PreparedBasis::new(&mol, &bs).unwrap();
         let op = Operator::coulomb();

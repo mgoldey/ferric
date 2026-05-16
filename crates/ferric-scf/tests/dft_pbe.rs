@@ -10,7 +10,7 @@ use ferric_dft::{dft, DftConfig};
 #[test]
 fn test_rhf_plus_pbe_dft() {
     let xyz = "2\nH2\nH 0 0 0\nH 0 0 0.74\n";
-    let mol = Molecule::parse_xyz(xyz).unwrap();
+    let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
     let bs = basis::bundled("cc-pvdz").unwrap();
     let obs = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();

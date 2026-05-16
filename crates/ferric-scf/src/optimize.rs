@@ -193,7 +193,7 @@ mod tests {
     #[test]
     fn test_optimize_h2_sto3g() {
         // Start from a stretched bond: 1.0 Angstrom = 1.89 Bohr
-        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 1.0\n").unwrap();
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 1.0\n", 0, 1).unwrap();
         let op = Operator::coulomb();
         let rhf_config = RhfConfig { energy_conv: 1e-10, ..Default::default() };
         let opt_config = OptimizeConfig { 

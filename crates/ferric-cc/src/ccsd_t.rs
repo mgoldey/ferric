@@ -74,7 +74,7 @@ mod tests {
 
     #[test]
     fn test_ccsd_t_h2_sto3g() {
-        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n").unwrap();
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
         let obs_set = basis::bundled("sto-3g").unwrap();
         let dfbs_set = basis::bundled("cc-pvdz-ri").unwrap();
         let obs = PreparedBasis::new(&mol, &obs_set).unwrap();

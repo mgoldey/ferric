@@ -401,7 +401,7 @@ mod tests {
     use ferric_integrals::basis_bridge::PreparedBasis;
 
     fn run_rhf_test(xyz: &str, basis_name: &str, ref_slug: &str, tol: f64) {
-        let mol = Molecule::parse_xyz(xyz).unwrap();
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
         let bs = basis::bundled(basis_name).unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
         let op = Operator::coulomb();

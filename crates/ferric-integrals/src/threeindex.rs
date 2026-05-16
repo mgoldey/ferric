@@ -74,7 +74,7 @@ mod tests {
 
     #[test]
     fn test_coulomb_metric_2c_symmetric() {
-        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n").unwrap();
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
         let dfbs_set = basis::bundled("cc-pvdz-ri").unwrap();
         let dfbs = PreparedBasis::new(&mol, &dfbs_set).unwrap();
         let v = coulomb_metric_2c(Operator::coulomb(), &dfbs).unwrap();
@@ -91,7 +91,7 @@ mod tests {
 
     #[test]
     fn test_eri3_symmetric_in_mu_nu() {
-        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n").unwrap();
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
         let obs_set = basis::bundled("sto-3g").unwrap();
         let dfbs_set = basis::bundled("cc-pvdz-ri").unwrap();
         let obs = PreparedBasis::new(&mol, &obs_set).unwrap();

@@ -313,7 +313,7 @@ mod tests {
     use ferric_scf::screening::SchwarzBounds;
 
     fn run_ri_mp2(xyz: &str, basis_name: &str, aux_name: &str) -> (RhfResult, RiMp2Result) {
-        let mol = Molecule::parse_xyz(xyz).unwrap();
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
         let bs = basis::bundled(basis_name).unwrap();
         let obs = PreparedBasis::new(&mol, &bs).unwrap();
         let op = Operator::coulomb();
@@ -355,7 +355,7 @@ mod tests {
     #[test]
     fn test_spin_components_sum_to_total() {
         let xyz = "2\nH2\nH 0 0 0\nH 0 0 0.74\n";
-        let mol = Molecule::parse_xyz(xyz).unwrap();
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
         let bs = basis::bundled("cc-pvdz").unwrap();
         let obs = PreparedBasis::new(&mol, &bs).unwrap();
         let op = Operator::coulomb();
@@ -392,7 +392,7 @@ mod tests {
     #[test]
     fn test_mp2_intermediates() {
         let xyz = "2\nH2\nH 0 0 0\nH 0 0 0.74\n";
-        let mol = Molecule::parse_xyz(xyz).unwrap();
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
         let bs = basis::bundled("cc-pvdz").unwrap();
         let obs = PreparedBasis::new(&mol, &bs).unwrap();
         let op = Operator::coulomb();
