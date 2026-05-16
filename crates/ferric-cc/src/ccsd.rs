@@ -17,13 +17,13 @@ pub fn ccsd(
     cfg: &CcConfig,
 ) -> Result<CcResult, FerricError> {
     let nbas = obs.nbasis();
-    let nocc_total = rhf.orbital_energies.iter().filter(|&&e| e < 0.0).count();
+    let nocc_total = rhf.eps_r().iter().filter(|&&e| e < 0.0).count();
     let nocc = nocc_total - cfg.frozen_core;
     let nvir = nbas - nocc_total;
     let naux = dfbs.nbasis();
 
-    let eps = &rhf.orbital_energies;
-    let c = &rhf.mos;
+    let eps = rhf.eps_r();
+    let c = rhf.mos_r();
     let c_occ = c.slice(ndarray::s![.., cfg.frozen_core..nocc_total]).to_owned();
     let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
 

@@ -11,6 +11,9 @@ use crate::direct_jk::DirectJK;
 use crate::direct_k::DirectK;
 use crate::fock::{JBuilder, KBuilder};
 use crate::guess::hcore_guess;
+use crate::result::{ScfResult, Spin};
+
+pub type RhfResult = ScfResult;
 
 use crate::link_k::LinkK;
 use crate::screening::SchwarzBounds;
@@ -58,27 +61,6 @@ impl Default for RhfConfig {
             df_k_aux: None,
         }
     }
-}
-
-/// Results from a converged (or unconverged) RHF calculation.
-#[derive(Debug)]
-pub struct RhfResult {
-    /// Total RHF energy (electronic + nuclear repulsion) in Hartree.
-    pub energy: f64,
-    /// AO density matrix D, shape (nbasis, nbasis).
-    pub density: Array2<f64>,
-    /// MO coefficient matrix C, shape (nbasis, nmo). Column i is MO i.
-    pub mos: Array2<f64>,
-    /// Orbital energies (eigenvalues of the Fock matrix), sorted ascending.
-    pub orbital_energies: Vec<f64>,
-    /// Converged Fock matrix in AO basis.
-    pub fock: Array2<f64>,
-    /// Whether energy and density convergence thresholds were met.
-    pub converged: bool,
-    /// Number of SCF iterations performed.
-    pub iterations: usize,
-    /// Total number of shell quartets computed across all iterations.
-    pub computed_quartets: usize,
 }
 
 /// Solve the closed-shell RHF equations for a molecule.
@@ -226,12 +208,19 @@ pub fn solve_rhf(
 
         if iter > 1 && converged {
             let (orb_e, c) = diagonalize(&f, &s_inv_sqrt)?;
-            return Ok(RhfResult {
+            let density_alpha = 0.5 * &d;
+            return Ok(ScfResult {
+                spin: Spin::Restricted,
                 energy,
-                density: d,
-                mos: c,
-                orbital_energies: orb_e,
-                fock: f,
+                density_total: d,
+                density_alpha,
+                density_beta: None,
+                mos_alpha: c,
+                mos_beta: None,
+                eps_alpha: orb_e,
+                eps_beta: None,
+                fock_alpha: f,
+                fock_beta: None,
                 converged: true,
                 iterations: iter,
                 computed_quartets: total_quartets,

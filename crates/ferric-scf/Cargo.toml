@@ -10,6 +10,7 @@ ndarray = { workspace = true }
 ndarray-linalg = { workspace = true }
 openblas-src = { workspace = true }
 rayon = { workspace = true }
+serde = { workspace = true }
 mpi = { version = "0.7", optional = true }
 
 [features]

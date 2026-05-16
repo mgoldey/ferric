@@ -10,6 +10,9 @@
 //! - **Schwarz screening** ([`screening::SchwarzBounds`]) for integral prescreening
 //! - **Core Hamiltonian initial guess** ([`guess::hcore_guess`])
 
+pub mod result;
+pub use result::{ScfResult, Spin};
+
 pub mod screening;
 pub mod qqr;
 pub mod pairs;

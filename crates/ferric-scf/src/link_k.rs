@@ -247,7 +247,7 @@ mod tests {
         };
         let result = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &prep, op, &bounds, &config).unwrap();
         assert!(result.converged, "RHF did not converge");
-        (result.density, mol)
+        (result.density_total, mol)
     }
 
     /// Build K using the direct (canonical) method from rhf.rs.

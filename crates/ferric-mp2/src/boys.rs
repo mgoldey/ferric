@@ -298,7 +298,7 @@ mod tests {
 
         let nocc = mol.nelec() as usize / 2;
         // c_occ: (nbas, nocc)
-        let c_occ = rhf.mos.slice(s![.., ..nocc]).to_owned();
+        let c_occ = rhf.mos_r().slice(s![.., ..nocc]).to_owned();
 
         // Compute dipole integrals at origin (0,0,0)
         let dip = dipole(&prep, [0.0, 0.0, 0.0]);

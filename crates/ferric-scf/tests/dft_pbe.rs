@@ -26,7 +26,7 @@ fn test_rhf_plus_pbe_dft() {
         grid_spacing: 0.2,
     };
     
-    let dft_res = dft(&rhf.density, &dft_cfg).unwrap();
+    let dft_res = dft(&rhf.density_r(), &dft_cfg).unwrap();
     
     println!("RHF Energy: {:.6}", rhf.energy);
     println!("PBE Correction: {:.6}", dft_res.total_energy);

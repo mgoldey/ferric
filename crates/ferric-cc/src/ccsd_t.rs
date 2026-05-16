@@ -23,7 +23,7 @@ pub fn ccsd_t(
     let nocc = cc.t2.shape()[0];
     let nvir = cc.t2.shape()[1];
     let nocc_total = nocc + cfg.frozen_core;
-    let eps = &rhf.orbital_energies;
+    let eps = rhf.eps_r();
 
     let _t2 = &cc.t2;
     let _t1 = cc.t1.as_ref().ok_or(FerricError::General("CCSD(T) requires T1 amplitudes".into()))?;

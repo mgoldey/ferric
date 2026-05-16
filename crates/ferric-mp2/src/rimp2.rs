@@ -75,8 +75,8 @@ pub fn ri_mp2_spin_components(
     let first_occ = config.frozen_core;
     let nvir = nbas - nocc_total;
     let naux = dfbs.nbasis();
-    let eps = &rhf.orbital_energies;
-    let c = &rhf.mos;
+    let eps = rhf.eps_r();
+    let c = rhf.mos_r();
 
     let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
     let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
@@ -197,6 +197,60 @@ impl Mp2Intermediates {
     }
 }
 
+/// Compact RI-MO intermediates needed for RPA-family methods.
+///
+/// Holds only the occ-vir B tensor and V^{-1/2}, skipping the full MP2
+/// amplitudes, occ-occ / vir-vir B blocks, and quadruple-loop MP2 energy
+/// that `compute_mp2_intermediates` produces. For benzene/cc-pVDZ this
+/// drops the setup cost from ~5 s to ~0.5 s.
+#[derive(Debug)]
+pub struct RpaIntermediates {
+    pub b_ov: Array2<f64>,
+    pub v_inv_sqrt: Array2<f64>,
+    pub nocc: usize,
+    pub nvir: usize,
+    pub nocc_total: usize,
+    pub first_occ: usize,
+    pub naux: usize,
+}
+
+/// Build B^P_{ia} = V^{-1/2} (P|ia) plus V^{-1/2} for RPA. Skips the MP2
+/// amplitude/energy/density work in `compute_mp2_intermediates`.
+pub fn compute_rpa_intermediates(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &RhfResult,
+    config: &RiMp2Config,
+) -> Result<RpaIntermediates, FerricError> {
+    let nbas = obs.nbasis();
+    let nelec = mol.nelec() as usize;
+    let nocc_total = nelec / 2;
+    let nocc = nocc_total - config.frozen_core;
+    let first_occ = config.frozen_core;
+    let nvir = nbas - nocc_total;
+    let naux = dfbs.nbasis();
+    let c = rhf.mos_r();
+
+    let v2c = threeindex::coulomb_metric_2c(op, dfbs)?;
+    let v_inv_sqrt = cholesky_inverse_sqrt(&v2c)?;
+    let eri3_ao = threeindex::eri3_tensor(op, obs, dfbs)?;
+
+    let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
+    let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
+
+    let eri3_ov = crate::mo_transform::transform_3center_ov(&eri3_ao, &c_occ, &c_vir);
+    let b_ov = v_inv_sqrt.dot(
+        &eri3_ov.into_shape_with_order((naux, nocc * nvir)).unwrap(),
+    );
+
+    Ok(RpaIntermediates {
+        b_ov, v_inv_sqrt,
+        nocc, nvir, nocc_total, first_occ, naux,
+    })
+}
+
 /// Compute all MP2 intermediates needed for the analytical gradient.
 ///
 /// Builds B tensor blocks for occ-vir, occ-occ, and vir-vir MO pairs,
@@ -216,7 +270,7 @@ pub fn compute_mp2_intermediates(
     let first_occ = config.frozen_core;
     let nvir = nbas - nocc_total;
     let naux = dfbs.nbasis();
-    let c = &rhf.mos;
+    let c = rhf.mos_r();
 
     let v2c = threeindex::coulomb_metric_2c(op, dfbs)?;
     let v_inv_sqrt = cholesky_inverse_sqrt(&v2c)?;
@@ -244,7 +298,7 @@ pub fn compute_mp2_intermediates(
     );
 
     // Energy from occ-vir B tensor
-    let eps = &rhf.orbital_energies;
+    let eps = rhf.eps_r();
     let mut e_os = 0.0;
     let mut e_ss = 0.0;
     for i in 0..nocc {
@@ -267,7 +321,7 @@ pub fn compute_mp2_intermediates(
     }
 
     let (t2, _) = crate::oo_rimp2::compute_t2_and_integrals(
-        &b_ov, &rhf.orbital_energies, nocc, nvir, nocc_total, first_occ, naux,
+        &b_ov, &rhf.eps_r(), nocc, nvir, nocc_total, first_occ, naux,
     );
     let (p_oo, p_vv) = crate::oo_rimp2::build_mp2_density(&t2, nocc, nvir);
 

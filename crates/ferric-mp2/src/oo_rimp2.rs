@@ -566,7 +566,7 @@ pub fn oo_ri_mp2(
     let h = oneelectron::hcore(obs);
 
     // Start from converged RHF orbitals
-    let mut c = rhf.mos.clone();
+    let mut c = rhf.mos_r().clone();
 
     // Initial energies
     let (mut e_hf, mut f_ao, _d) = compute_hf_energy(mol, obs, bounds, &c, nocc_total, &h)?;
@@ -935,7 +935,7 @@ mod tests {
         let naux = dfbs.nbasis();
 
         // Compute analytic gradient at RHF orbitals
-        let c = &rhf.mos;
+        let c = rhf.mos_r();
         let h = oneelectron::hcore(&obs);
         let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h).unwrap();
         let eps = orbital_energies(c, &f_ao);

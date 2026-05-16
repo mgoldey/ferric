@@ -3,6 +3,7 @@
 //! Provides both the RHF gradient and a density-parameterized core
 //! ([`hf_gradient_with_density`]) that correlated methods reuse with relaxed densities.
 
+use crate::result::{ScfResult, Spin};
 use crate::rhf::RhfResult;
 use crate::screening::SchwarzBounds;
 use ferric_core::mol::Molecule;
@@ -15,9 +16,9 @@ use ndarray::Array2;
 
 /// Build the HF energy-weighted density: W_μν = 2 Σ_i^occ ε_i C_μi C_νi.
 pub fn build_energy_weighted_density(result: &RhfResult, nocc: usize) -> Array2<f64> {
-    let n = result.mos.nrows();
-    let c = &result.mos;
-    let eps = &result.orbital_energies;
+    let n = result.mos_r().nrows();
+    let c = result.mos_r();
+    let eps = result.eps_r();
     let mut w = Array2::zeros((n, n));
     for mu in 0..n {
         for nu in 0..n {
@@ -42,7 +43,7 @@ pub fn rhf_gradient(
 ) -> Result<Array2<f64>, FerricError> {
     let nocc = (mol.nelec() / 2) as usize;
     let w = build_energy_weighted_density(result, nocc);
-    hf_gradient_with_density(mol, prep, op, bounds, &result.density, &w)
+    hf_gradient_with_density(mol, prep, op, bounds, &result.density_r(), &w)
 }
 
 /// Compute nuclear gradient using provided density and energy-weighted density.
@@ -414,10 +415,10 @@ mod tests {
         let dims = prep.shell_dims();
         let offs = prep.shell_offsets();
         let sh2at = prep.shell_to_atom();
-        let d = &result.density;
+        let d = result.density_r();
         let nocc = (mol.nelec() / 2) as usize;
-        let c = &result.mos;
-        let eps = &result.orbital_energies;
+        let c = result.mos_r();
+        let eps = result.eps_r();
         let mut w = Array2::zeros((n, n));
         for mu in 0..n {
             for nu in 0..n {

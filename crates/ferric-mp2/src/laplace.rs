@@ -187,13 +187,13 @@ impl LaplaceMp2 {
         let nvir = nbas - nocc_total;
         let naux = dfbs.nbasis();
 
-        let eps = &rhf.orbital_energies;
+        let eps = rhf.eps_r();
         let nmo = eps.len();
         let ymin = 2.0 * (eps[nocc_total] - eps[nocc_total - 1]);
         let ymax = 2.0 * (eps[nmo - 1] - eps[0]);
         self.init_quadrature(ymin, ymax);
 
-        let c = &rhf.mos;
+        let c = rhf.mos_r();
         let c_occ = c.slice(ndarray::s![.., frozen_core..nocc_total]).to_owned();
         let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
 
@@ -280,7 +280,7 @@ impl LaplaceMp2 {
         let nvir = nbas - nocc_total;
         let naux = dfbs.nbasis();
 
-        let eps = &rhf.orbital_energies;
+        let eps = rhf.eps_r();
         let nmo = eps.len();
         let ymin = 2.0 * (eps[nocc_total] - eps[nocc_total - 1]);
         let ymax = 2.0 * (eps[nmo - 1] - eps[0]);
@@ -294,7 +294,7 @@ impl LaplaceMp2 {
         let b_flat_ao = v_inv_sqrt.dot(&eri3_flat);
         let b_ao = b_flat_ao.into_shape_with_order((naux, nbas, nbas)).unwrap();
 
-        let c = &rhf.mos;
+        let c = rhf.mos_r();
         let c_occ = c.slice(ndarray::s![.., frozen_core..nocc_total]).to_owned();
         let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
 

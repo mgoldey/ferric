@@ -1,3 +1,14 @@
+//! PDEP-RPA: projector-density-eigenpotential RPA correlation energy.
+//!
+//! # Threading note
+//!
+//! The hot path parallelizes over imaginary-frequency quadrature points with
+//! rayon. Inside each task, OpenBLAS is invoked for GEMM/SYRK/eigh. On a
+//! multi-core machine that gives a *product* of threads (rayon × OpenBLAS),
+//! which oversubscribes and hurts wall-clock by 3-5×. For best performance
+//! set `OPENBLAS_NUM_THREADS=1` (or `BLIS_NUM_THREADS=1`) so each rayon
+//! worker gets a dedicated single-threaded BLAS call.
+
 pub mod config;
 pub mod davidson;
 pub mod diagnostics;
@@ -9,7 +20,7 @@ use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_mp2::rimp2::{compute_mp2_intermediates, RiMp2Config};
+use ferric_mp2::rimp2::{compute_rpa_intermediates, RiMp2Config};
 use ferric_scf::rhf::RhfResult;
 use ndarray::{Array1, Array2};
 
@@ -114,9 +125,11 @@ pub fn run_pdep_rpa(
     rhf: &RhfResult,
     config: &PdepRpaConfig,
 ) -> Result<PdepRpaResult, FerricError> {
-    // Step 1: Build MP2 intermediates to get B_ov and orbital energies.
+    // Step 1: Build RI-MO B^P_ia tensor and V^{-1/2}. RPA only needs the
+    // occ-vir block; skip the full-MP2 amplitudes/density that the gradient
+    // path requires.
     let mp2_cfg = RiMp2Config { frozen_core: config.frozen_core };
-    let inter = compute_mp2_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
+    let inter = compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
 
     let b_ov = &inter.b_ov;
     let nocc = inter.nocc;
@@ -126,8 +139,8 @@ pub fn run_pdep_rpa(
     let nocc_total = inter.nocc_total;
 
     // Step 2: Extract orbital energy slices.
-    let eps_occ: Vec<f64> = rhf.orbital_energies[first_occ..first_occ + nocc].to_vec();
-    let eps_vir: Vec<f64> = rhf.orbital_energies[nocc_total..nocc_total + nvir].to_vec();
+    let eps_occ: Vec<f64> = rhf.eps_r()[first_occ..first_occ + nocc].to_vec();
+    let eps_vir: Vec<f64> = rhf.eps_r()[nocc_total..nocc_total + nvir].to_vec();
 
     // Step 3: Run Davidson at ω=0.
     let max_vecs = if config.davidson_max_vecs == 0 {

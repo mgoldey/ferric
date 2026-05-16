@@ -25,8 +25,8 @@ pub fn canonical_mp2(
     let nocc = nocc_total - frozen_core;
     let first_occ = frozen_core;
     let nvir = nbas - nocc_total;
-    let eps = &rhf.orbital_energies;
-    let c = &rhf.mos;
+    let eps = rhf.eps_r();
+    let c = rhf.mos_r();
     let nsh = prep.nshells();
     let dims = prep.shell_dims();
     let offs = prep.shell_offsets();

@@ -32,9 +32,9 @@ pub fn solve_zvector(
     let nocc_total = inter.nocc_total;
     let first_occ = inter.first_occ;
     let naux = inter.naux;
-    let eps = &rhf.orbital_energies;
-    let c = &rhf.mos;
-    let f_mo = c.t().dot(&rhf.fock).dot(c);
+    let eps = rhf.eps_r();
+    let c = rhf.mos_r();
+    let f_mo = c.t().dot(rhf.fock_r()).dot(c);
 
     let b_full = crate::oo_rimp2::compute_b_full_mo(prep, dfbs, op, c)?;
 
@@ -418,7 +418,7 @@ mod tests {
 
         let (z, _l) = solve_zvector(&mol, &obs, &dfbs, Operator::coulomb(), &bounds, &rhf, &inter).unwrap();
         let p_ao = build_relaxed_density_ao(
-            &rhf.mos, &inter.p_oo, &inter.p_vv, &z,
+            &rhf.mos_r(), &inter.p_oo, &inter.p_vv, &z,
             inter.nocc, inter.nvir, inter.nocc_total, inter.first_occ,
         );
 
@@ -445,8 +445,8 @@ mod tests {
 
         let (z, l) = solve_zvector(&mol, &obs, &dfbs, Operator::coulomb(), &bounds, &rhf, &inter).unwrap();
 
-        let nmo = rhf.mos.ncols();
-        let f_mo = rhf.mos.t().dot(&rhf.fock).dot(&rhf.mos);
+        let nmo = rhf.mos_r().ncols();
+        let f_mo = rhf.mos_r().t().dot(rhf.fock_r()).dot(rhf.mos_r());
         let mut p_relax_mo = ndarray::Array2::zeros((nmo, nmo));
         for i in 0..inter.nocc {
             let i_mo = inter.first_occ + i;
@@ -473,7 +473,7 @@ mod tests {
         }
 
         let w_ao = build_relaxed_w_ao(
-            &rhf.mos, &f_mo, &p_relax_mo, &l,
+            &rhf.mos_r(), &f_mo, &p_relax_mo, &l,
             inter.nocc, inter.nvir, inter.nocc_total, inter.first_occ,
         );
 

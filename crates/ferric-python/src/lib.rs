@@ -119,7 +119,7 @@ fn run_rhf(
     Ok(PyRhfResult {
         energy: r.energy, converged: r.converged, iterations: r.iterations,
         computed_quartets: r.computed_quartets,
-        density_data: r.density, orbital_energies_data: r.orbital_energies,
+        density_data: r.density_total, orbital_energies_data: r.eps_alpha,
     })
 }
 
@@ -325,7 +325,7 @@ fn run_dft(mol: &PyMolecule, basis_set: &PyBasisSet,
     let ctx = ParallelContext::default();
     let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &rhf_config(k_builder)).map_err(make_err)?;
     let cfg = DftConfig { functional: functional.unwrap_or("LDA_X").to_string(), grid_spacing: 0.2 };
-    let r = dft(&rhf.density, &cfg).map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e}")))?;
+    let r = dft(rhf.density_r(), &cfg).map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e}")))?;
     Ok(PyDftResult { total_energy: rhf.energy + r.total_energy, vxc_data: r.vxc })
 }
 
