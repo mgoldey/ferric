@@ -58,7 +58,7 @@ pub fn ri_drpa_eigenvalues(
         .map_err(|e| FerricError::General(format!("RI-dRPA diagonalization failed: {e}")))?;
 
     let mut result: Vec<f64> = evals.to_vec();
-    result.sort_by(|a, b| b.partial_cmp(a).unwrap());
+    result.sort_by(|a, b| b.total_cmp(a));
     Ok(result)
 }
 

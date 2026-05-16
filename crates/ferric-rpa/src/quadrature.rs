@@ -65,7 +65,7 @@ fn gl_nodes_weights(n: usize) -> (Vec<f64>, Vec<f64>) {
     }
     // Sort ascending
     let mut pairs: Vec<(f64, f64)> = x.into_iter().zip(w.into_iter()).collect();
-    pairs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    pairs.sort_by(|a, b| a.0.total_cmp(&b.0));
     let x: Vec<f64> = pairs.iter().map(|p| p.0).collect();
     let w: Vec<f64> = pairs.iter().map(|p| p.1).collect();
     (x, w)

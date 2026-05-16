@@ -47,11 +47,10 @@ fn h2_sto3g_rpa_vs_drpa_diagnostic() {
     let mut cfg = PdepRpaConfig::default();
     cfg.davidson_conv_thresh = 1e-8;
     let result = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
-    if let Some(e_diag) = result.e_rpa_dft_diag {
-        let diff = (result.e_rpa - e_diag).abs();
-        println!("PDEP-RPA = {:.8}, RI-dRPA = {:.8}, diff = {:.2e}", result.e_rpa, e_diag, diff);
-        assert!(diff < 1e-5,
-            "PDEP-RPA ({:.8}) vs RI-dRPA ({:.8}) differ by {:.2e}",
-            result.e_rpa, e_diag, diff);
-    }
+    let e_diag = result.e_rpa_dft_diag.expect("e_rpa_dft_diag should be computed");
+    let diff = (result.e_rpa - e_diag).abs();
+    println!("PDEP-RPA = {:.8}, RI-dRPA = {:.8}, diff = {:.2e}", result.e_rpa, e_diag, diff);
+    assert!(diff < 1e-5,
+        "PDEP-RPA ({:.8}) vs RI-dRPA ({:.8}) differ by {:.2e}",
+        result.e_rpa, e_diag, diff);
 }
