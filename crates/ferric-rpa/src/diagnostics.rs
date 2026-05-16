@@ -5,6 +5,7 @@
 
 use ndarray::Array2;
 use ndarray_linalg::{Eigh, UPLO};
+use rayon::prelude::*;
 use ferric_core::FerricError;
 
 /// Compute RI-dRPA eigenvalues of ε̃(iω) = I − χ₀(iω) in the full RI basis.
@@ -76,16 +77,21 @@ pub fn ri_drpa_energy(
     quad_freqs: &[f64],
     quad_weights: &[f64],
 ) -> Result<f64, FerricError> {
-    let mut e_c = 0.0f64;
-    for (&omega, &wk) in quad_freqs.iter().zip(quad_weights.iter()) {
-        let evals = ri_drpa_eigenvalues(b_ov, eps_occ, eps_vir, omega)?;
-        // ln det(I + Π) − tr(Π) where Π = −χ₀ ≥ 0
-        // = Σ_α [ln(λ_α) + (1 − λ_α)] with λ_α = 1 + μ_α ≥ 1
-        let contrib: f64 = evals
-            .iter()
-            .map(|&lam| lam.ln() + (1.0 - lam))
-            .sum();
-        e_c += wk * contrib;
-    }
+    // Each quadrature point is fully independent — parallelize over frequencies.
+    let contribs: Result<Vec<f64>, FerricError> = quad_freqs
+        .par_iter()
+        .zip(quad_weights.par_iter())
+        .map(|(&omega, &wk)| {
+            let evals = ri_drpa_eigenvalues(b_ov, eps_occ, eps_vir, omega)?;
+            // ln det(I + Π) − tr(Π) where Π = −χ₀ ≥ 0
+            // = Σ_α [ln(λ_α) + (1 − λ_α)] with λ_α = 1 + μ_α ≥ 1
+            let contrib: f64 = evals
+                .iter()
+                .map(|&lam| lam.ln() + (1.0 - lam))
+                .sum();
+            Ok(wk * contrib)
+        })
+        .collect();
+    let e_c: f64 = contribs?.iter().sum();
     Ok(e_c / (2.0 * std::f64::consts::PI))
 }

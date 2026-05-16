@@ -56,17 +56,26 @@ pub fn eval_eigenvalues_at_frequencies(
 ) -> Array2<f64> {
     use crate::sternheimer::dielectric_matrix;
     use ndarray_linalg::{Eigh, UPLO};
+    use rayon::prelude::*;
 
     let n_quad = quad_freqs.len();
     let m = eigenvectors.ncols();
-    let mut eigenvalues_freq = Array2::zeros((n_quad, m));
 
-    for (k, &omega) in quad_freqs.iter().enumerate() {
-        let eps_proj = dielectric_matrix(eigenvectors, b_ov, eps_occ, eps_vir, omega);
-        // Diagonalize at each frequency — eigenvectors at ω=0 don't diagonalize ε̃(iω)
-        let (evals, _) = eps_proj.eigh(UPLO::Upper).expect("dielectric eigh failed");
-        for alpha in 0..m {
-            eigenvalues_freq[(k, alpha)] = evals[alpha];
+    // Each quadrature point is fully independent — parallelize over frequencies.
+    let rows: Vec<Vec<f64>> = quad_freqs
+        .par_iter()
+        .map(|&omega| {
+            let eps_proj = dielectric_matrix(eigenvectors, b_ov, eps_occ, eps_vir, omega);
+            // Diagonalize at each frequency — eigenvectors at ω=0 don't diagonalize ε̃(iω)
+            let (evals, _) = eps_proj.eigh(UPLO::Upper).expect("dielectric eigh failed");
+            evals.to_vec()
+        })
+        .collect();
+
+    let mut eigenvalues_freq = Array2::zeros((n_quad, m));
+    for (k, row) in rows.into_iter().enumerate() {
+        for (alpha, val) in row.into_iter().enumerate() {
+            eigenvalues_freq[(k, alpha)] = val;
         }
     }
     eigenvalues_freq

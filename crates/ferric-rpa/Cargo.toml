@@ -11,6 +11,7 @@ ferric-mp2 = { path = "../ferric-mp2" }
 ndarray = { workspace = true }
 ndarray-linalg = { workspace = true }
 openblas-src = { workspace = true }
+rayon = { workspace = true }
 
 [dev-dependencies]
 serde = { workspace = true }
