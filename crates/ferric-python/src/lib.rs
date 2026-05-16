@@ -517,6 +517,8 @@ fn run_pdep_rpa(
         },
         sternheimer: SternheimerConfig::default(),
         run_diagnostics,
+        eigensolver: ferric_rpa::Eigensolver::default(),
+        chi0_backend: ferric_rpa::config::Chi0Backend::default(),
     };
     let r = run_pdep_rpa_inner(&mol.inner, &prep, &dfbs, op, &rhf, &cfg).map_err(make_err)?;
     Ok(PyPdepRpaResult {

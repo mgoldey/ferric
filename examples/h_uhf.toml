@@ -1,0 +1,15 @@
+[molecule]
+xyz = "testdata/molecules/h_atom.xyz"
+charge = 0
+multiplicity = 2
+
+[basis]
+name = "sto-3g"
+
+[method]
+kind = "uhf"
+task = "energy"
+
+[scf]
+energy_conv = 1e-10
+density_conv = 1e-9

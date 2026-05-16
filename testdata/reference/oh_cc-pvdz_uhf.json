@@ -1,0 +1,12 @@
+{
+  "energy": -75.39383892655523,
+  "converged": true,
+  "nelec_a": 5,
+  "nelec_b": 4,
+  "s_squared": 0.7546033721603989,
+  "multiplicity": 2.0045980865603945,
+  "nuclear_repulsion": 4.36434813129897,
+  "basis": "cc-pvdz",
+  "method": "uhf",
+  "molecule": "OH"
+}

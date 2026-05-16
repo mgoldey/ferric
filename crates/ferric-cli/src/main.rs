@@ -14,6 +14,8 @@ use ferric_rpa::config::{QuadratureConfig, QuadratureScheme, SternheimerConfig};
 use ferric_rpa::{run_pdep_rpa, PdepRpaConfig};
 use ferric_core::parallel::ParallelContext;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
+use ferric_scf::uhf::solve_uhf;
+use ferric_scf::gradient::uhf_gradient;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::optimize::{optimize_geometry, OptimizeConfig};
 
@@ -33,8 +35,8 @@ fn main() {
     };
     let method = cfg.method.kind.as_str();
     let task = cfg.method.task.as_str();
-    if !matches!(method, "rhf" | "rimp2" | "oo-rimp2" | "att-rimp2" | "scs-mp2" | "scs-mp2-2terfc" | "laplace-mp2" | "pdep-rpa") {
-        eprintln!("error: unsupported method.kind = \"{method}\"; expected rhf, rimp2, oo-rimp2, att-rimp2, scs-mp2, scs-mp2-2terfc, laplace-mp2, or pdep-rpa");
+    if !matches!(method, "rhf" | "uhf" | "rimp2" | "oo-rimp2" | "att-rimp2" | "scs-mp2" | "scs-mp2-2terfc" | "laplace-mp2" | "pdep-rpa") {
+        eprintln!("error: unsupported method.kind = \"{method}\"; expected rhf, uhf, rimp2, oo-rimp2, att-rimp2, scs-mp2, scs-mp2-2terfc, laplace-mp2, or pdep-rpa");
         std::process::exit(1);
     }
     if !matches!(task, "energy" | "optimize") {
@@ -102,6 +104,50 @@ fn main() {
         println!("  converged  = {}", opt_result.converged);
         println!("  steps      = {}", opt_result.steps);
         println!("  final E    = {:.10} Hartree", opt_result.energy);
+        return;
+    }
+
+    if method == "uhf" {
+        let result = solve_uhf(&ctx, &mol, &prep, op, &bounds, &rhf_config).unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
+        let s_ov = ferric_integrals::oneelectron::overlap(&prep);
+        let nelec = mol.nelec() as i64;
+        let two_s = mol.multiplicity as i64 - 1;
+        let nocc_a = ((nelec + two_s) / 2) as usize;
+        let nocc_b = ((nelec - two_s) / 2) as usize;
+        let s_true = 0.5 * (nocc_a as f64 - nocc_b as f64);
+        let s_ideal = s_true * (s_true + 1.0);
+        let c_a = result.mos_a();
+        let c_b = result.mos_b();
+        let overlap_ab = c_a
+            .slice(ndarray::s![.., ..nocc_a])
+            .t()
+            .dot(&s_ov)
+            .dot(&c_b.slice(ndarray::s![.., ..nocc_b]));
+        let sum_sq: f64 = overlap_ab.iter().map(|v| v * v).sum();
+        let s2 = s_ideal + (nocc_b as f64) - sum_sq;
+        println!("UHF/{} on {}", bs.name, cfg.molecule.xyz);
+        println!("  nbasis     = {}", prep.nbasis());
+        println!("  mult       = {} (nocc_a={}, nocc_b={})", mol.multiplicity, nocc_a, nocc_b);
+        println!("  iterations = {}", result.iterations);
+        println!("  converged  = {}", result.converged);
+        println!("  energy     = {:.10} Hartree", result.energy);
+        println!("  <S^2>      = {:.6} (ideal {:.6})", s2, s_ideal);
+        if task == "optimize" {
+            // TODO: UHF geometry optimization not yet wired; print the gradient.
+            match uhf_gradient(&mol, &prep, op, &bounds, &result) {
+                Ok(g) => {
+                    println!("UHF gradient (Hartree/Bohr):");
+                    for (i, atom) in mol.atoms.iter().enumerate() {
+                        println!("  {:2} {:2} {:14.8} {:14.8} {:14.8}",
+                                 i, atom.symbol, g[(i,0)], g[(i,1)], g[(i,2)]);
+                    }
+                }
+                Err(e) => eprintln!("UHF gradient error: {e}"),
+            }
+        }
         return;
     }
 
@@ -343,6 +389,8 @@ fn main() {
                 },
                 sternheimer: SternheimerConfig::default(),
                 run_diagnostics: cfg.rpa.run_diagnostics,
+                eigensolver: ferric_rpa::Eigensolver::default(),
+                chi0_backend: ferric_rpa::config::Chi0Backend::default(),
             };
             let rpa_result = run_pdep_rpa(&mol, &prep, &dfbs, op, &result, &rpa_cfg)
                 .unwrap_or_else(|e| {

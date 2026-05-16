@@ -1,0 +1,12 @@
+{
+  "energy": -0.46658184955727533,
+  "converged": true,
+  "nelec_a": 1,
+  "nelec_b": 0,
+  "s_squared": 0.75,
+  "multiplicity": 2.0,
+  "nuclear_repulsion": 0.0,
+  "basis": "sto-3g",
+  "method": "uhf",
+  "molecule": "H"
+}

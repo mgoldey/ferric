@@ -391,6 +391,222 @@ fn gamma(d: &Array2<f64>, mu: usize, nu: usize, la: usize, sg: usize) -> f64 {
     0.5 * d[(mu, nu)] * d[(la, sg)] - 0.25 * d[(mu, la)] * d[(nu, sg)]
 }
 
+/// UHF two-particle density: Γ_μνλσ = 0.5*D_μν D_λσ − 0.5*(D_α,μλ D_α,νσ + D_β,μλ D_β,νσ)
+/// where D = D_α + D_β.
+#[inline]
+fn gamma_uhf(
+    d: &Array2<f64>,
+    da: &Array2<f64>,
+    db: &Array2<f64>,
+    mu: usize,
+    nu: usize,
+    la: usize,
+    sg: usize,
+) -> f64 {
+    0.5 * d[(mu, nu)] * d[(la, sg)]
+        - 0.5 * (da[(mu, la)] * da[(nu, sg)] + db[(mu, la)] * db[(nu, sg)])
+}
+
+/// Build the UHF energy-weighted density: W = W_α + W_β with
+/// W_σ = Σ_i^occ_σ ε_σi C_σi C_σi^T.
+pub fn build_energy_weighted_density_uhf(
+    result: &ScfResult,
+    nocc_a: usize,
+    nocc_b: usize,
+) -> Array2<f64> {
+    let n = result.mos_alpha.nrows();
+    let mut w = Array2::<f64>::zeros((n, n));
+    {
+        let c = &result.mos_alpha;
+        let eps = &result.eps_alpha;
+        for mu in 0..n {
+            for nu in 0..n {
+                let mut sum = 0.0;
+                for i in 0..nocc_a {
+                    sum += eps[i] * c[(mu, i)] * c[(nu, i)];
+                }
+                w[(mu, nu)] += sum;
+            }
+        }
+    }
+    if let (Some(cb), Some(epsb)) = (result.mos_beta.as_ref(), result.eps_beta.as_ref()) {
+        for mu in 0..n {
+            for nu in 0..n {
+                let mut sum = 0.0;
+                for i in 0..nocc_b {
+                    sum += epsb[i] * cb[(mu, i)] * cb[(nu, i)];
+                }
+                w[(mu, nu)] += sum;
+            }
+        }
+    }
+    w
+}
+
+/// Compute the UHF analytical nuclear gradient.
+pub fn uhf_gradient(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    result: &ScfResult,
+) -> Result<Array2<f64>, FerricError> {
+    assert!(matches!(result.spin, Spin::Unrestricted), "uhf_gradient: ScfResult.spin must be Unrestricted");
+    let nelec = mol.nelec() as i64;
+    let two_s = mol.multiplicity as i64 - 1;
+    let nocc_a = ((nelec + two_s) / 2) as usize;
+    let nocc_b = ((nelec - two_s) / 2) as usize;
+
+    let d_total = &result.density_alpha
+        + result
+            .density_beta
+            .as_ref()
+            .expect("uhf_gradient: missing density_beta");
+    let w = build_energy_weighted_density_uhf(result, nocc_a, nocc_b);
+    let mut grad = oneelectron_gradient(mol, prep, &d_total, &w)?;
+    grad += &twoelectron_gradient_uhf(
+        prep,
+        op,
+        bounds,
+        &d_total,
+        &result.density_alpha,
+        result.density_beta.as_ref().unwrap(),
+    )?;
+    Ok(grad)
+}
+
+/// UHF four-center two-electron gradient: Σ Γ_uhf_μνλσ d(μν|λσ)/dR.
+pub fn twoelectron_gradient_uhf(
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    d_total: &Array2<f64>,
+    d_alpha: &Array2<f64>,
+    d_beta: &Array2<f64>,
+) -> Result<Array2<f64>, FerricError> {
+    let natoms = prep.shell_to_atom().iter().copied().max().unwrap_or(0) + 1;
+    let nsh = prep.nshells();
+    let dims = prep.shell_dims();
+    let offs = prep.shell_offsets();
+    let sh2at = prep.shell_to_atom();
+
+    let mut grad = Array2::zeros((natoms, 3));
+    let mut eng = Engine::new_2e_deriv(op, prep, 1e-14)?;
+    let max_d = d_total.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
+
+    for s1 in 0..nsh {
+        for s2 in 0..=s1 {
+            let b12 = bounds.q[(s1, s2)];
+            for s3 in 0..=s1 {
+                let s4max = if s3 == s1 { s2 } else { s3 };
+                for s4 in 0..=s4max {
+                    let b34 = bounds.q[(s3, s4)];
+                    if b12 * b34 * max_d < 1e-12 {
+                        continue;
+                    }
+                    let deriv = eng.compute_eri_deriv_quartet(prep, s1, s2, s3, s4);
+                    if let Some(dq) = deriv {
+                        let (n1, n2, n3, n4) = (dims[s1], dims[s2], dims[s3], dims[s4]);
+                        let block_sz = n1 * n2 * n3 * n4;
+                        let atoms = [sh2at[s1], sh2at[s2], sh2at[s3], sh2at[s4]];
+                        let sym12 = s1 != s2;
+                        let sym34 = s3 != s4;
+                        let sym1234 = (s1, s2) != (s3, s4);
+                        accum_2e_grad_uhf(
+                            &mut grad,
+                            d_total,
+                            d_alpha,
+                            d_beta,
+                            dq,
+                            block_sz,
+                            n1,
+                            n2,
+                            n3,
+                            n4,
+                            offs[s1],
+                            offs[s2],
+                            offs[s3],
+                            offs[s4],
+                            &atoms,
+                            sym12,
+                            sym34,
+                            sym1234,
+                        );
+                    }
+                }
+            }
+        }
+    }
+    Ok(grad)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn accum_2e_grad_uhf(
+    grad: &mut Array2<f64>,
+    d: &Array2<f64>,
+    da: &Array2<f64>,
+    db: &Array2<f64>,
+    dq: &[f64],
+    block_sz: usize,
+    n1: usize,
+    n2: usize,
+    n3: usize,
+    n4: usize,
+    o1: usize,
+    o2: usize,
+    o3: usize,
+    o4: usize,
+    atoms: &[usize; 4],
+    sym12: bool,
+    sym34: bool,
+    sym1234: bool,
+) {
+    for a in 0..n1 {
+        for b in 0..n2 {
+            for c in 0..n3 {
+                for dd in 0..n4 {
+                    let idx = ((a * n2 + b) * n3 + c) * n4 + dd;
+                    let mu = o1 + a;
+                    let nu = o2 + b;
+                    let la = o3 + c;
+                    let sg = o4 + dd;
+
+                    let mut g = gamma_uhf(d, da, db, mu, nu, la, sg);
+                    if sym12 {
+                        g += gamma_uhf(d, da, db, nu, mu, la, sg);
+                    }
+                    if sym34 {
+                        g += gamma_uhf(d, da, db, mu, nu, sg, la);
+                    }
+                    if sym12 && sym34 {
+                        g += gamma_uhf(d, da, db, nu, mu, sg, la);
+                    }
+                    if sym1234 {
+                        g += gamma_uhf(d, da, db, la, sg, mu, nu);
+                        if sym12 {
+                            g += gamma_uhf(d, da, db, la, sg, nu, mu);
+                        }
+                        if sym34 {
+                            g += gamma_uhf(d, da, db, sg, la, mu, nu);
+                        }
+                        if sym12 && sym34 {
+                            g += gamma_uhf(d, da, db, sg, la, nu, mu);
+                        }
+                    }
+
+                    for center in 0..4 {
+                        let atom = atoms[center];
+                        for coord in 0..3 {
+                            let dv = dq[(center * 3 + coord) * block_sz + idx];
+                            grad[(atom, coord)] += g * dv;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
