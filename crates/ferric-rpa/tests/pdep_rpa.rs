@@ -45,6 +45,9 @@ fn pyscf_compat_config(n_quad: usize) -> PdepRpaConfig {
         u0: 0.5,
     };
     cfg.frozen_core = 0;
+    // Disable PDEP truncation: compare full-basis dielectric to PySCF's full RI-RPA.
+    cfg.trunc_thresh = 0.0;
+    cfg.davidson_conv_thresh = 1e-10;
     cfg
 }
 
@@ -115,7 +118,9 @@ fn h2_sto3g_pdep_rpa_vs_ri_drpa() {
     // Sanity: PDEP-RPA == RI-dRPA when no truncation is applied (PDEP keeps all naux modes).
     let (mol, obs, dfbs, op, rhf) = setup("../../testdata/molecules/h2.xyz", "sto-3g", "sto-3g");
     let mut cfg = PdepRpaConfig::default();
+    cfg.trunc_thresh = 0.0;
     cfg.davidson_conv_thresh = 1e-10;
+    cfg.run_diagnostics = true;
     let result = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
     let e_diag = result.e_rpa_dft_diag.expect("diagnostic should be present");
     let diff = (result.e_rpa - e_diag).abs();
@@ -134,5 +139,64 @@ fn h2o_cc_pvdz_quadrature_convergence() {
         let diff = (result.e_rpa - e_ref).abs();
         println!("H2O/cc-pVDZ n_quad={} diff={:.2e}", n, diff);
         assert!(diff < 1e-5, "n_quad={}: |ΔE| = {:.2e} > 1e-5", n, diff);
+    }
+}
+
+#[test]
+fn h2o_cc_pvdz_pdep_truncation_convergence() {
+    // PDEP test: can we recover full RPA energy with M ≈ 3 × N_atoms eigenpotentials?
+    // H2O has 3 atoms → target M ≈ 9. Full naux=84.
+    let e_ref = load_ref("../../testdata/reference/h2o_cc-pvdz_rpa.json");
+    let (mol, obs, dfbs, op, rhf) =
+        setup("../../testdata/molecules/water.xyz", "cc-pvdz", "cc-pvdz-ri");
+
+    println!("\nPDEP truncation study (H2O/cc-pVDZ, naux=84):");
+    println!("PySCF (full):      {:.10}", e_ref);
+
+    for thresh in &[1e-1, 1e-2, 1e-3, 1e-4, 1e-6, 1e-10] {
+        let mut cfg = pyscf_compat_config(40);
+        cfg.trunc_thresh = *thresh;
+        cfg.davidson_conv_thresh = 1e-10;
+        let result = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
+        let diff = result.e_rpa - e_ref;
+        println!(
+            "  trunc={:.0e}: M={:3} E_c={:.10}  diff={:+.2e}  λ_max={:.3} λ_min={:.3e}",
+            thresh, result.n_eigenpotentials, result.e_rpa, diff,
+            result.eigenvalues_static.first().copied().unwrap_or(0.0),
+            result.eigenvalues_static.last().copied().unwrap_or(0.0),
+        );
+    }
+}
+
+#[test]
+fn h2o_aug_cc_pvtz_timing_comparison() {
+    use std::time::Instant;
+    let (mol, obs, dfbs, op, rhf) = setup(
+        "../../testdata/molecules/water.xyz",
+        "aug-cc-pvtz",
+        "aug-cc-pvtz-rifit",
+    );
+    println!("\nH2O/aug-cc-pVTZ timing (naux=198, 40 GL points):");
+
+    // Full RI-RPA (no truncation)
+    let mut cfg_full = pyscf_compat_config(40);
+    cfg_full.trunc_thresh = 0.0;
+    let t0 = Instant::now();
+    let r_full = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg_full).unwrap();
+    let dt_full = t0.elapsed();
+    println!("  full (M=naux={}):  E_c={:.10}  t={:.2}s",
+        r_full.n_eigenpotentials, r_full.e_rpa, dt_full.as_secs_f64());
+
+    // PDEP truncated
+    for &th in &[1e-1, 1e-2, 1e-3, 1e-4] {
+        let mut cfg = pyscf_compat_config(40);
+        cfg.trunc_thresh = th;
+        let t0 = Instant::now();
+        let r = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
+        let dt = t0.elapsed();
+        let diff = (r.e_rpa - r_full.e_rpa).abs();
+        println!("  trunc={:.0e}: M={:3} E_c={:.10}  diff_vs_full={:.2e}  t={:.2}s ({:.0}% of full)",
+            th, r.n_eigenpotentials, r.e_rpa, diff,
+            dt.as_secs_f64(), 100.0 * dt.as_secs_f64() / dt_full.as_secs_f64());
     }
 }

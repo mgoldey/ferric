@@ -5,7 +5,7 @@
 pub struct PdepRpaConfig {
     /// Number of frozen core orbitals.
     pub frozen_core: usize,
-    /// Eigenvalue truncation threshold: discard λ_α(0) < trunc_thresh.
+    /// Truncate eigenpotentials whose |λ_α(0) − 1| ≤ trunc_thresh.
     pub trunc_thresh: f64,
     /// Maximum Davidson subspace size before restart.
     pub davidson_max_vecs: usize,
@@ -13,6 +13,8 @@ pub struct PdepRpaConfig {
     pub davidson_conv_thresh: f64,
     pub quadrature: QuadratureConfig,
     pub sternheimer: SternheimerConfig,
+    /// If true, also compute the full-basis RI-dRPA diagnostic energy (expensive).
+    pub run_diagnostics: bool,
 }
 
 impl Default for PdepRpaConfig {
@@ -20,10 +22,11 @@ impl Default for PdepRpaConfig {
         Self {
             frozen_core: 0,
             trunc_thresh: 1e-4,
-            davidson_max_vecs: 0, // 0 = 3*N_aux (set at runtime)
+            davidson_max_vecs: 0,
             davidson_conv_thresh: 1e-6,
             quadrature: QuadratureConfig::default(),
             sternheimer: SternheimerConfig::default(),
+            run_diagnostics: false,
         }
     }
 }

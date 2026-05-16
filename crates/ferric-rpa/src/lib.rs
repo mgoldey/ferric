@@ -79,13 +79,15 @@ pub fn run_pdep_rpa(
         naux, // request all, truncate later
     )?;
 
-    // Step 4: Truncate by trunc_thresh: keep eigenpotentials where λ_α(0) > trunc_thresh.
+    // Step 4: Truncate by departure from identity: keep eigenpotentials where
+    // (λ_α(0) − 1) > trunc_thresh. The dielectric ε̃ = I + Π has eigenvalues ≥ 1,
+    // so identity-modes (λ = 1) carry no RPA weight; only |λ−1| ≠ 0 modes matter.
     let n_keep = davidson_result
         .eigenvalues
         .iter()
-        .filter(|&&lam| lam > config.trunc_thresh)
+        .filter(|&&lam| (lam - 1.0).abs() > config.trunc_thresh)
         .count();
-    let n_keep = n_keep.max(1); // always keep at least one
+    let n_keep = n_keep.max(1);
 
     let eigenvalues_static: Vec<f64> = davidson_result.eigenvalues[..n_keep].to_vec();
     let eigenvectors = davidson_result.eigenvectors.slice(ndarray::s![.., ..n_keep]).to_owned();
@@ -105,14 +107,14 @@ pub fn run_pdep_rpa(
     // Step 7: Integrate RPA correlation energy.
     let e_rpa = energy::rpa_correlation_energy(&quad_weights, &eigenvalues_freq);
 
-    // Step 8: Diagnostic RI-dRPA energy.
-    let e_rpa_dft_diag = Some(diagnostics::ri_drpa_energy(
-        b_ov,
-        &eps_occ,
-        &eps_vir,
-        &quad_freqs,
-        &quad_weights,
-    )?);
+    // Step 8: Diagnostic RI-dRPA energy (optional — full naux²×N_quad cost).
+    let e_rpa_dft_diag = if config.run_diagnostics {
+        Some(diagnostics::ri_drpa_energy(
+            b_ov, &eps_occ, &eps_vir, &quad_freqs, &quad_weights,
+        )?)
+    } else {
+        None
+    };
 
     Ok(PdepRpaResult {
         e_rpa,
