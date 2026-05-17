@@ -32,7 +32,7 @@ use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_mp2::rimp2::{compute_rpa_intermediates, RiMp2Config};
-use ferric_scf::rhf::RhfResult;
+use ferric_scf::ScfResult;
 use ndarray::{Array1, Array2};
 
 pub use config::{Chi0Backend, Chi0Sparsity, Eigensolver, PdepRpaConfig};
@@ -194,7 +194,7 @@ pub fn run_pdep_rpa(
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
     op: Operator,
-    rhf: &RhfResult,
+    rhf: &ScfResult,
     config: &PdepRpaConfig,
 ) -> Result<PdepRpaResult, FerricError> {
     // Step 1: Build RI-MO B^P_ia tensor and V^{-1/2}. RPA only needs the

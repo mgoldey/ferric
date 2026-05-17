@@ -13,7 +13,7 @@ use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_integrals::threeindex;
-use ferric_scf::rhf::RhfResult;
+use ferric_scf::ScfResult;
 use ndarray::Array2;
 use ndarray_linalg::{Cholesky, UPLO};
 
@@ -65,7 +65,7 @@ pub fn ri_mp2_spin_components(
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
     op: Operator,
-    rhf: &RhfResult,
+    rhf: &ScfResult,
     config: &RiMp2Config,
 ) -> Result<(SpinComponents, Array2<f64>), FerricError> {
     let nbas = obs.nbasis();
@@ -138,7 +138,7 @@ pub fn ri_mp2(
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
     op: Operator,
-    rhf: &RhfResult,
+    rhf: &ScfResult,
     config: &RiMp2Config,
 ) -> Result<RiMp2Result, FerricError> {
     let (sc, _) = ri_mp2_spin_components(mol, obs, dfbs, op, rhf, config)?;
@@ -221,7 +221,7 @@ pub fn compute_rpa_intermediates(
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
     op: Operator,
-    rhf: &RhfResult,
+    rhf: &ScfResult,
     config: &RiMp2Config,
 ) -> Result<RpaIntermediates, FerricError> {
     let nbas = obs.nbasis();
@@ -260,7 +260,7 @@ pub fn compute_mp2_intermediates(
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
     op: Operator,
-    rhf: &RhfResult,
+    rhf: &ScfResult,
     config: &RiMp2Config,
 ) -> Result<Mp2Intermediates, FerricError> {
     let nbas = obs.nbasis();
@@ -366,7 +366,7 @@ mod tests {
     use ferric_scf::rhf::{solve_rhf, RhfConfig};
     use ferric_scf::screening::SchwarzBounds;
 
-    fn run_ri_mp2(xyz: &str, basis_name: &str, aux_name: &str) -> (RhfResult, RiMp2Result) {
+    fn run_ri_mp2(xyz: &str, basis_name: &str, aux_name: &str) -> (ScfResult, RiMp2Result) {
         let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
         let bs = basis::bundled(basis_name).unwrap();
         let obs = PreparedBasis::new(&mol, &bs).unwrap();

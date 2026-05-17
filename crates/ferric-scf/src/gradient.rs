@@ -4,7 +4,6 @@
 //! ([`hf_gradient_with_density`]) that correlated methods reuse with relaxed densities.
 
 use crate::result::{ScfResult, Spin};
-use crate::rhf::RhfResult;
 use crate::screening::SchwarzBounds;
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
@@ -15,7 +14,7 @@ use ferric_integrals::operator::Operator;
 use ndarray::Array2;
 
 /// Build the HF energy-weighted density: W_μν = 2 Σ_i^occ ε_i C_μi C_νi.
-pub fn build_energy_weighted_density(result: &RhfResult, nocc: usize) -> Array2<f64> {
+pub fn build_energy_weighted_density(result: &ScfResult, nocc: usize) -> Array2<f64> {
     let n = result.mos_r().nrows();
     let c = result.mos_r();
     let eps = result.eps_r();
@@ -39,7 +38,7 @@ pub fn rhf_gradient(
     prep: &PreparedBasis,
     op: Operator,
     bounds: &SchwarzBounds,
-    result: &RhfResult,
+    result: &ScfResult,
 ) -> Result<Array2<f64>, FerricError> {
     let nocc = (mol.nelec() / 2) as usize;
     let w = build_energy_weighted_density(result, nocc);
@@ -681,7 +680,7 @@ mod tests {
         prep: &PreparedBasis,
         op: Operator,
         bounds: &SchwarzBounds,
-        result: &RhfResult,
+        result: &ScfResult,
     ) -> (Array2<f64>, Array2<f64>, Array2<f64>, Array2<f64>, Array2<f64>, Array2<f64>) {
         let natoms = mol.atoms.len();
         let n = prep.nbasis();

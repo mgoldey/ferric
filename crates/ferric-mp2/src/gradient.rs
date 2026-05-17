@@ -8,7 +8,8 @@ use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::gradient::hf_gradient_with_density;
-use ferric_scf::rhf::{solve_rhf, RhfConfig, RhfResult};
+use ferric_scf::rhf::{solve_rhf, RhfConfig};
+use ferric_scf::ScfResult;
 use ferric_scf::screening::SchwarzBounds;
 use ndarray::Array2;
 
@@ -90,7 +91,7 @@ pub fn rimp2_gradient_analytical(
     dfbs: &PreparedBasis,
     op: Operator,
     bounds: &SchwarzBounds,
-    rhf: &RhfResult,
+    rhf: &ScfResult,
     config: &RiMp2Config,
 ) -> Result<Array2<f64>, FerricError> {
     let inter = compute_mp2_intermediates(mol, obs, dfbs, op, rhf, config)?;
@@ -999,7 +1000,7 @@ pub fn scs_mp2_gradient_analytical(
     dfbs: &PreparedBasis,
     op: Operator,
     bounds: &SchwarzBounds,
-    rhf: &RhfResult,
+    rhf: &ScfResult,
     config: &crate::scs::ScsMp2Config,
 ) -> Result<Array2<f64>, FerricError> {
     let mp2_config = RiMp2Config { frozen_core: config.frozen_core };

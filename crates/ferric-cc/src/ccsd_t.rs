@@ -5,7 +5,7 @@ use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_scf::rhf::RhfResult;
+use ferric_scf::ScfResult;
 
 /// Compute the (T) triples correction to CCSD.
 ///
@@ -16,7 +16,7 @@ pub fn ccsd_t(
     _obs: &PreparedBasis,
     _dfbs: &PreparedBasis,
     _op: Operator,
-    rhf: &RhfResult,
+    rhf: &ScfResult,
     cc: &CcResult,
     cfg: &CcConfig,
 ) -> Result<f64, FerricError> {

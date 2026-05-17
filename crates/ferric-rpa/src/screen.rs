@@ -58,7 +58,7 @@ use ferric_integrals::engine::Engine;
 use ferric_integrals::operator::Operator;
 use ferric_integrals::schwarz;
 use ferric_integrals::threeindex;
-use ferric_scf::rhf::RhfResult;
+use ferric_scf::ScfResult;
 use ndarray::{s, Array2};
 use ndarray_linalg::{Cholesky, UPLO};
 
@@ -112,7 +112,7 @@ pub fn build_screened_bov(
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
     op: Operator,
-    rhf: &RhfResult,
+    rhf: &ScfResult,
     first_occ: usize,
     nocc_active: usize,
     nocc_total: usize,
@@ -322,7 +322,7 @@ pub fn build_screened_bov_boys(
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
     op: Operator,
-    rhf: &RhfResult,
+    rhf: &ScfResult,
     frozen_core: usize,
     thresh: f64,
 ) -> Result<(ScreenedBov, crate::boys_localize::BoysOccupied), FerricError> {

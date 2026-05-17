@@ -13,8 +13,6 @@ use crate::fock::{JBuilder, KBuilder};
 use crate::guess::hcore_guess;
 use crate::result::{ScfResult, Spin};
 
-pub type RhfResult = ScfResult;
-
 use crate::link_k::LinkK;
 use crate::screening::SchwarzBounds;
 use ferric_core::mol::Molecule;
@@ -67,7 +65,7 @@ impl Default for RhfConfig {
 ///
 /// Uses the Roothaan-Hall procedure: build Fock matrix from density, diagonalize,
 /// rebuild density, iterate until convergence. DIIS extrapolation accelerates
-/// convergence. Returns [`RhfResult`] on success or [`FerricError::ScfConvergence`]
+/// convergence. Returns [`ScfResult`] on success or [`FerricError::ScfConvergence`]
 /// if `max_iter` is exceeded.
 pub fn solve_rhf(
     ctx: &ParallelContext,
@@ -76,7 +74,7 @@ pub fn solve_rhf(
     op: Operator,
     bounds: &SchwarzBounds,
     config: &RhfConfig,
-) -> Result<RhfResult, FerricError> {
+) -> Result<ScfResult, FerricError> {
     let s = oneelectron::overlap(prep);
     let h = oneelectron::hcore(prep);
     let n = prep.nbasis();

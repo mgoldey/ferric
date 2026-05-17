@@ -3,7 +3,7 @@ use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_scf::rhf::RhfResult;
+use ferric_scf::ScfResult;
 use ferric_mp2::mo_transform::{transform_3center_oo, transform_3center_ov, transform_3center_vv};
 use ferric_mp2::rimp2::cholesky_inverse_sqrt;
 use ndarray::Array4;
@@ -14,7 +14,7 @@ pub fn ccd(
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
     op: Operator,
-    rhf: &RhfResult,
+    rhf: &ScfResult,
     cfg: &CcConfig,
 ) -> Result<CcResult, FerricError> {
     let nbas = obs.nbasis();

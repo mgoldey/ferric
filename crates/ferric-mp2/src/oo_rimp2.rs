@@ -22,7 +22,8 @@ use ferric_integrals::oneelectron;
 use ferric_integrals::operator::Operator;
 use ferric_integrals::threeindex;
 use ferric_scf::diis::Diis;
-use ferric_scf::rhf::{build_jk, RhfResult};
+use ferric_scf::rhf::build_jk;
+use ferric_scf::ScfResult;
 use ferric_scf::screening::SchwarzBounds;
 use ndarray::{Array2, Array3};
 use ndarray_linalg::Solve;
@@ -552,7 +553,7 @@ pub fn oo_ri_mp2(
     dfbs: &PreparedBasis,
     op: Operator,
     bounds: &SchwarzBounds,
-    rhf: &RhfResult,
+    rhf: &ScfResult,
     config: &OoRiMp2Config,
 ) -> Result<OoRiMp2Result, FerricError> {
     let nbas = obs.nbasis();
@@ -846,7 +847,7 @@ mod tests {
     use ferric_scf::rhf::{solve_rhf, RhfConfig};
     use ferric_scf::screening::SchwarzBounds;
 
-    fn setup_h2() -> (Molecule, PreparedBasis, PreparedBasis, Operator, SchwarzBounds, RhfResult) {
+    fn setup_h2() -> (Molecule, PreparedBasis, PreparedBasis, Operator, SchwarzBounds, ScfResult) {
         let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
         let bs = basis::bundled("cc-pvdz").unwrap();
         let obs = PreparedBasis::new(&mol, &bs).unwrap();

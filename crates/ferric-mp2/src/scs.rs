@@ -9,7 +9,7 @@ use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_scf::rhf::RhfResult;
+use ferric_scf::ScfResult;
 
 /// Angstrom to Bohr conversion factor.
 const ANGSTROM_TO_BOHR: f64 = 1.8897259886;
@@ -80,7 +80,7 @@ pub fn scs_mp2(
     mol: &Molecule,
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
-    rhf: &RhfResult,
+    rhf: &ScfResult,
     config: &ScsMp2Config,
 ) -> Result<ScsMp2Result, FerricError> {
     let ri_config = RiMp2Config { frozen_core: config.frozen_core };
@@ -103,7 +103,7 @@ pub fn scs_mp2_2terfc(
     mol: &Molecule,
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
-    rhf: &RhfResult,
+    rhf: &ScfResult,
     config: &ScsMp2TerfcConfig,
 ) -> Result<ScsMp2Result, FerricError> {
     assert!(
@@ -146,7 +146,7 @@ mod tests {
     use ferric_scf::rhf::{solve_rhf, RhfConfig};
     use ferric_scf::screening::SchwarzBounds;
 
-    fn setup_h2() -> (Molecule, PreparedBasis, PreparedBasis, RhfResult) {
+    fn setup_h2() -> (Molecule, PreparedBasis, PreparedBasis, ScfResult) {
         let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
         let bs = basis::bundled("cc-pvdz").unwrap();
         let obs = PreparedBasis::new(&mol, &bs).unwrap();

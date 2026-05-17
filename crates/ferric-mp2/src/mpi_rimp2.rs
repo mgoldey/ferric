@@ -7,7 +7,7 @@ mod inner {
     use ferric_core::FerricError;
     use ferric_integrals::basis_bridge::PreparedBasis;
     use ferric_integrals::operator::Operator;
-    use ferric_scf::rhf::RhfResult;
+    use ferric_scf::ScfResult;
     use mpi::traits::*;
 
     pub struct MpiMp2Result {
@@ -20,7 +20,7 @@ mod inner {
         _obs: &PreparedBasis,
         _dfbs: &PreparedBasis,
         _op: Operator,
-        _rhf: &RhfResult,
+        _rhf: &ScfResult,
         _frozen_core: usize,
     ) -> Result<MpiMp2Result, FerricError> {
         Err(FerricError::Libint("MPI RI-MP2 not yet implemented".into()))

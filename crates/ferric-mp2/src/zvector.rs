@@ -10,7 +10,8 @@ use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::diis::Diis;
-use ferric_scf::rhf::{build_jk, RhfResult};
+use ferric_scf::rhf::build_jk;
+use ferric_scf::ScfResult;
 use ferric_scf::screening::SchwarzBounds;
 use ndarray::{Array2, Array3};
 
@@ -24,7 +25,7 @@ pub fn solve_zvector(
     dfbs: &PreparedBasis,
     op: Operator,
     bounds: &SchwarzBounds,
-    rhf: &RhfResult,
+    rhf: &ScfResult,
     inter: &Mp2Intermediates,
 ) -> Result<(Array2<f64>, Array2<f64>), FerricError> {
     let nocc = inter.nocc;

@@ -10,7 +10,7 @@ use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::oneelectron::dipole;
 use ferric_mp2::boys::boys_localize;
-use ferric_scf::rhf::RhfResult;
+use ferric_scf::ScfResult;
 use ndarray::{s, Array2};
 
 /// Result of localizing the active occupied block.
@@ -34,7 +34,7 @@ pub struct BoysOccupied {
 /// `first_occ` is the number of frozen-core orbitals to skip. Active occupied
 /// block runs `[first_occ, first_occ + nocc_active)` along the MO axis.
 pub fn boys_localize_occupied(
-    rhf: &RhfResult,
+    rhf: &ScfResult,
     obs: &PreparedBasis,
     first_occ: usize,
     nocc_active: usize,

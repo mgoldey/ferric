@@ -6,7 +6,7 @@ use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::engine::Engine;
 use ferric_integrals::operator::Operator;
-use ferric_scf::rhf::RhfResult;
+use ferric_scf::ScfResult;
 
 /// Compute the canonical MP2 correlation energy using full 4-center ERIs.
 ///
@@ -16,7 +16,7 @@ pub fn canonical_mp2(
     mol: &Molecule,
     prep: &PreparedBasis,
     op: Operator,
-    rhf: &RhfResult,
+    rhf: &ScfResult,
     frozen_core: usize,
 ) -> Result<f64, FerricError> {
     let nbas = prep.nbasis();

@@ -10,7 +10,7 @@ use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_scf::rhf::RhfResult;
+use ferric_scf::ScfResult;
 
 /// Configuration for attenuated MP2.
 #[derive(Debug, Clone)]
@@ -50,7 +50,7 @@ pub fn attenuated_ri_mp2(
     mol: &Molecule,
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
-    rhf: &RhfResult,
+    rhf: &ScfResult,
     config: &AttenuatedMp2Config,
 ) -> Result<AttenuatedMp2Result, FerricError> {
     let omega = 1.0 / (config.r0 * std::f64::consts::SQRT_2);
@@ -76,7 +76,7 @@ mod tests {
     use ferric_scf::rhf::{solve_rhf, RhfConfig};
     use ferric_scf::screening::SchwarzBounds;
 
-    fn setup_h2() -> (Molecule, PreparedBasis, PreparedBasis, RhfResult) {
+    fn setup_h2() -> (Molecule, PreparedBasis, PreparedBasis, ScfResult) {
         let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
         let bs = basis::bundled("cc-pvdz").unwrap();
         let obs = PreparedBasis::new(&mol, &bs).unwrap();

@@ -12,14 +12,15 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_rpa::config::{Chi0Sparsity, QuadratureConfig, QuadratureScheme};
 use ferric_rpa::{run_pdep_rpa, screen, PdepRpaConfig};
-use ferric_scf::rhf::{solve_rhf, RhfConfig, RhfResult};
+use ferric_scf::rhf::{solve_rhf, RhfConfig};
+use ferric_scf::ScfResult;
 use ferric_scf::screening::SchwarzBounds;
 
 fn setup(
     xyz: &str,
     obs_name: &str,
     dfbs_name: &str,
-) -> (Molecule, PreparedBasis, PreparedBasis, Operator, RhfResult) {
+) -> (Molecule, PreparedBasis, PreparedBasis, Operator, ScfResult) {
     let ctx = ParallelContext::default();
     let mol = Molecule::load_xyz(xyz).unwrap();
     let obs_bs = basis::bundled(obs_name).unwrap();

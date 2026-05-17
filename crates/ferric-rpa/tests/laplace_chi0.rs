@@ -16,7 +16,8 @@ use ferric_integrals::operator::Operator;
 use ferric_mp2::rimp2::{compute_rpa_intermediates, RiMp2Config};
 use ferric_rpa::laplace_chi0::{build_laplace_for_gaps, dielectric_matrix_laplace};
 use ferric_rpa::sternheimer::dielectric_matrix;
-use ferric_scf::rhf::{solve_rhf, RhfConfig, RhfResult};
+use ferric_scf::rhf::{solve_rhf, RhfConfig};
+use ferric_scf::ScfResult;
 use ferric_scf::screening::SchwarzBounds;
 use ndarray::Array2;
 
@@ -24,7 +25,7 @@ fn setup(
     xyz: &str,
     obs_name: &str,
     dfbs_name: &str,
-) -> (Molecule, PreparedBasis, PreparedBasis, Operator, RhfResult) {
+) -> (Molecule, PreparedBasis, PreparedBasis, Operator, ScfResult) {
     let ctx = ParallelContext::default();
     let mol = Molecule::load_xyz(xyz).unwrap();
     let obs_bs = basis::bundled(obs_name).unwrap();

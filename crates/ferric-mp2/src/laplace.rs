@@ -29,7 +29,7 @@ use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_quadrature::LaplaceQuadrature;
-use ferric_scf::rhf::RhfResult;
+use ferric_scf::ScfResult;
 use ndarray::{Array1, Array2};
 
 use crate::boys::{boys_localize, build_domains, build_pseudo_density_occ_sparse,
@@ -93,7 +93,7 @@ pub fn laplace_ri_mp2(
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
     op: Operator,
-    rhf: &RhfResult,
+    rhf: &ScfResult,
     n_quad: usize,
     frozen_core: usize,
 ) -> Result<LaplaceMp2Result, FerricError> {
@@ -117,7 +117,7 @@ pub fn laplace_lmp2(
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
     op: Operator,
-    rhf: &RhfResult,
+    rhf: &ScfResult,
     n_quad: usize,
     frozen_core: usize,
     domain_cutoff_bohr: f64,
@@ -178,7 +178,7 @@ impl LaplaceMp2 {
         obs: &PreparedBasis,
         dfbs: &PreparedBasis,
         op: Operator,
-        rhf: &RhfResult,
+        rhf: &ScfResult,
         frozen_core: usize,
     ) -> Result<f64, FerricError> {
         let nbas = obs.nbasis();
@@ -270,7 +270,7 @@ impl LaplaceMp2 {
         obs: &PreparedBasis,
         dfbs: &PreparedBasis,
         op: Operator,
-        rhf: &RhfResult,
+        rhf: &ScfResult,
         frozen_core: usize,
         domain_cutoff_bohr: Option<f64>,
     ) -> Result<(f64, f64, f64), FerricError> {

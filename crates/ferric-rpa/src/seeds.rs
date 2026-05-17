@@ -25,7 +25,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::oneelectron::dipole;
 use ferric_mp2::boys::boys_localize;
 use ferric_mp2::rimp2::RpaIntermediates;
-use ferric_scf::rhf::RhfResult;
+use ferric_scf::ScfResult;
 use ndarray::{s, Array1, Array2};
 use ndarray_linalg::QR;
 
@@ -45,7 +45,7 @@ pub enum BoysSeedMode {
 /// occupied-side localization (Foster-Boys via 2×2 Jacobi sweeps).
 pub fn build_boys_seed(
     obs: &PreparedBasis,
-    rhf: &RhfResult,
+    rhf: &ScfResult,
     inter: &RpaIntermediates,
     n_seed_target: usize,
     mode: BoysSeedMode,
