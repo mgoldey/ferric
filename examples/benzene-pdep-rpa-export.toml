@@ -1,0 +1,28 @@
+[molecule]
+xyz = "testdata/molecules/benzene.xyz"
+
+[basis]
+name = "cc-pvdz"
+
+[method]
+kind = "pdep-rpa"
+
+[scf]
+max_iter = 100
+energy_conv = 1e-8
+density_conv = 1e-7
+diis_size = 8
+integral_thresh = 1e-12
+
+[rpa]
+auxbasis = "cc-pvdz-ri"
+frozen_core = 6
+n_quad = 40
+quadrature = "gauss-legendre"
+trunc_thresh = 1e-4
+# Export all eigenpotentials as cube files
+export_eigpot_prefix = "benzene_pdep_eigpot"
+export_eigpot_count = 10  # 0 = export all
+cube_spacing = 0.2
+cube_margin = 8.0
+run_diagnostics = false

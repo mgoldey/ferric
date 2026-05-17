@@ -13,3 +13,12 @@ main.py
 cc.sh
 alkane_C10.xyz
 examples/dft_pbe.py
+
+# Claude session state and worktrees
+.claude/
+
+# Compute outputs in repo root — should not be tracked
+/*.cube
+/*.npz
+/benzene_*.cube
+/benzene_*.npz

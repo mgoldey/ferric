@@ -1,0 +1,22 @@
+# Workspace-wide cargo configuration.
+#
+# OPENBLAS_NUM_THREADS / OMP_NUM_THREADS:
+#   ferric parallelizes hot loops (RHF/UHF Fock build, RPA frequency
+#   quadrature, ...) with rayon. Inside each rayon task we call into
+#   OpenBLAS for GEMM/SYRK/EIGH. By default OpenBLAS spins up its own
+#   thread pool (= nproc threads). That gives a *product* of threads
+#   (rayon × OpenBLAS) which (a) oversubscribes the CPU, hurting wall
+#   clock by 3-5×, and (b) under the cargo test workspace harness has
+#   been observed to trip a heap-corruption flake in the UHF tests when
+#   multiple test binaries run concurrently and each spins up its own
+#   OpenBLAS pool (see docs/spikes/uhf-heap-corruption.md).
+#
+#   Pinning OpenBLAS to a single thread per process is the standard
+#   discipline for scientific-Rust crates that own their own rayon
+#   parallelism. The [env] table applies to every cargo-invoked process
+#   (build scripts, examples, tests, benches, `cargo run`). Users who
+#   want multi-threaded BLAS for a particular run can override on the
+#   command line: `OPENBLAS_NUM_THREADS=8 cargo run --release ...`.
+[env]
+OPENBLAS_NUM_THREADS = "1"
+OMP_NUM_THREADS = "1"

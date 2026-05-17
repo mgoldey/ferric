@@ -1,0 +1,24 @@
+[molecule]
+xyz = "testdata/molecules/benzene.xyz"
+
+[basis]
+name = "cc-pvdz"
+
+[method]
+kind = "pdep-rpa"
+
+[scf]
+max_iter = 100
+energy_conv = 1e-8
+density_conv = 1e-7
+diis_size = 8
+integral_thresh = 1e-12
+df_j_aux = "def2-universal-jkfit"
+df_k_aux = "def2-universal-jkfit"
+
+[rpa]
+auxbasis = "cc-pvdz-ri"
+frozen_core = 6
+n_quad = 40
+quadrature = "gauss-legendre"
+trunc_thresh = 0.0
