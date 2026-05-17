@@ -167,6 +167,209 @@ pub fn esp_at_atoms(
     Ok(out)
 }
 
+/// Evaluate the electric field **E**(R_A) = −∇V(R_A) at each nuclear
+/// position.  Returns one `[f64; 3]` per atom, in atomic units (Hartree / Bohr).
+///
+/// ```text
+///     E_d(R_A) = E^elec_d(R_A) + E^nuc_d(R_A)
+///     E^elec_d(R_A) = + Σ_{μν} D_{μν} ⟨μ| (r − R_A)_d / |r − R_A|³ |ν⟩
+///     E^nuc_d (R_A) = Σ_{B ≠ A} Z_B (R_A − R_B)_d / |R_A − R_B|³
+/// ```
+///
+/// Sign convention matches [`esp_at_atoms`]: V is the electrostatic potential
+/// felt by a unit positive test charge, and **E** = −∇V.
+///
+/// # Derivation of the electronic sign
+///
+/// ```text
+///     V_elec(R) = − ∫ ρ(r) / |r − R| dr             (electrons are negative)
+///     E_elec(R) = −∇V_elec(R) = + ∫ ρ(r) (r − R)/|r − R|³ dr
+/// ```
+///
+/// so for a closed-shell AO density `D_{μν}`:
+///
+/// ```text
+///     E^elec_d(R_A) = + Σ_{μν} D_{μν} ⟨μ|(r − R_A)_d/|r − R_A|³|ν⟩.
+/// ```
+///
+/// # Implementation (Path A)
+///
+/// Re-uses libint2's first-derivative nuclear-attraction engine.  For each
+/// atom A we set a single point charge of Z=+1 at R_A, then the derivative
+/// engine returns 6 + 3·N_charges = 9 derivative blocks per shell pair:
+///
+///  - blocks 0..6: derivatives w.r.t. the two shell centers (Pulay terms,
+///    irrelevant here — we only want the charge-center derivative);
+///  - blocks 6,7,8: d/dR_A_{x,y,z} of `M^A_{μν} = ⟨μ| −1/|r − R_A| |ν⟩`
+///    (libint's nuclear operator is −Z/|r − R|, with Z=+1 here).
+///
+/// With ∇_{R}(1/|r − R|) = (r − R)/|r − R|³,
+///
+/// ```text
+///     dM^A/dR_A_d  =  − ⟨μ|(r − R_A)_d/|r − R_A|³|ν⟩
+///     ⇒ ⟨μ|(r−R_A)_d/|r−R_A|³|ν⟩  =  − dM^A/dR_A_d.
+/// ```
+///
+/// Therefore the electronic contribution is **minus** the contraction of D
+/// with the libint charge-center derivative:
+///
+/// ```text
+///     E^elec_d  =  + Σ D_{μν} ⟨μ|(r−R_A)_d/|r−R_A|³|ν⟩
+///               =  − Σ D_{μν} · (dM^A/dR_A_d).
+/// ```
+pub fn electric_field_at_atoms(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    density: &Array2<f64>,
+) -> Result<Vec<[f64; 3]>, FerricError> {
+    let natoms = mol.atoms.len();
+    let nbas = prep.nbasis();
+    if density.shape() != [nbas, nbas] {
+        return Err(FerricError::General(format!(
+            "electric_field_at_atoms: density shape {:?} != ({nbas},{nbas})",
+            density.shape()
+        )));
+    }
+
+    // First-derivative nuclear-attraction engine, reused across atoms.
+    let mut eng = Engine::new_1e_deriv(ffi::OP_NUCLEAR, prep, 1e-14)?;
+
+    let dims = prep.shell_dims();
+    let offs = prep.shell_offsets();
+    let nsh = prep.nshells();
+    let max_fn = dims.iter().copied().max().unwrap_or(1);
+
+    // With a single point charge, libint returns 6 (shell) + 3 (charge) = 9
+    // derivative blocks of size n1*n2 each.
+    let nderiv = 6 + 3 * 1;
+    let max_block = max_fn * max_fn;
+    let mut buf = vec![0.0_f64; nderiv * max_block];
+
+    let mut out: Vec<[f64; 3]> = Vec::with_capacity(natoms);
+    for a in 0..natoms {
+        let atom_a = &mol.atoms[a];
+
+        // Override point charges: single Z=+1 probe at R_A.
+        let probe = [CAtom {
+            atomic_number: 1,
+            x: atom_a.x,
+            y: atom_a.y,
+            z: atom_a.zpos,
+        }];
+        let rc = unsafe {
+            ffi::goscf_engine_set_point_charges(
+                eng.handle_mut(),
+                probe.as_ptr(),
+                probe.len() as c_int,
+            )
+        };
+        if rc < 0 {
+            return Err(FerricError::General(format!(
+                "electric_field_at_atoms: set_point_charges failed (rc={rc}) for atom {a}"
+            )));
+        }
+
+        // Contract D with charge-center derivative blocks (indices 6,7,8).
+        let mut e_elec = [0.0_f64; 3];
+        for s1 in 0..nsh {
+            for s2 in 0..=s1 {
+                let n1 = dims[s1];
+                let n2 = dims[s2];
+                let block_sz = n1 * n2;
+                let total = nderiv * block_sz;
+                if buf.len() < total {
+                    buf.resize(total, 0.0);
+                }
+                let written = unsafe {
+                    ffi::goscf_compute_1e_deriv_block(
+                        eng.handle_mut(),
+                        prep.handle(),
+                        s1 as c_int,
+                        s2 as c_int,
+                        buf.as_mut_ptr(),
+                    )
+                };
+                if written == 0 {
+                    continue;
+                }
+                let o1 = offs[s1];
+                let o2 = offs[s2];
+                // Charge-center derivative blocks start at index 6.
+                // dM^A/dR_A_d = -<μ|(r-R_A)_d/|r-R_A|³|ν>
+                // E^elec_d = +Σ D * <μ|(r-R_A)_d/|r-R_A|³|ν> = -Σ D * dM^A/dR_A_d
+                for d in 0..3 {
+                    let blk_off = (6 + d) * block_sz;
+                    let mut acc = 0.0_f64;
+                    if s1 == s2 {
+                        for i in 0..n1 {
+                            for j in 0..n2 {
+                                acc += density[(o1 + i, o2 + j)] * buf[blk_off + i * n2 + j];
+                            }
+                        }
+                    } else {
+                        // Off-diagonal shell pair: density and operator are
+                        // both symmetric in (μ,ν), so the (s2,s1) partner
+                        // contributes equally → factor 2.
+                        for i in 0..n1 {
+                            for j in 0..n2 {
+                                acc +=
+                                    2.0 * density[(o1 + i, o2 + j)] * buf[blk_off + i * n2 + j];
+                            }
+                        }
+                    }
+                    e_elec[d] -= acc;
+                }
+            }
+        }
+
+        // Nuclear contribution: Σ_{B≠A} Z_B (R_A − R_B)_d / |R_A − R_B|³
+        let mut e_nuc = [0.0_f64; 3];
+        for b in 0..natoms {
+            if b == a {
+                continue;
+            }
+            let atom_b = &mol.atoms[b];
+            let dx = atom_a.x - atom_b.x;
+            let dy = atom_a.y - atom_b.y;
+            let dz = atom_a.zpos - atom_b.zpos;
+            let r2 = dx * dx + dy * dy + dz * dz;
+            let r = r2.sqrt();
+            if r < 1e-12 {
+                return Err(FerricError::General(format!(
+                    "electric_field_at_atoms: atoms {a} and {b} coincide"
+                )));
+            }
+            let inv_r3 = 1.0 / (r2 * r);
+            let zb = atom_b.z as f64;
+            e_nuc[0] += zb * dx * inv_r3;
+            e_nuc[1] += zb * dy * inv_r3;
+            e_nuc[2] += zb * dz * inv_r3;
+        }
+
+        out.push([
+            e_elec[0] + e_nuc[0],
+            e_elec[1] + e_nuc[1],
+            e_elec[2] + e_nuc[2],
+        ]);
+    }
+
+    Ok(out)
+}
+
+/// Wrapper around [`electric_field_at_atoms`] that enforces closed-shell.
+pub fn electric_field_at_atoms_rpa(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    rhf: &ScfResult,
+) -> Result<Vec<[f64; 3]>, FerricError> {
+    if !matches!(rhf.spin, Spin::Restricted) {
+        return Err(FerricError::General(
+            "electric_field_at_atoms_rpa: only closed-shell (Restricted) supported".into(),
+        ));
+    }
+    electric_field_at_atoms(mol, prep, rhf.density_r())
+}
+
 /// Closed-shell static (ω=0) electronic polarizability from PDEP eigenpairs.
 ///
 /// # Derivation

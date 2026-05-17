@@ -525,11 +525,14 @@ fn main() {
             // NPZ feature bundle for diffusion-model export.
             if let Some(npz_path) = cfg.rpa.export_npz.as_deref() {
                 use ferric_export::export_npz;
-                use ferric_rpa::properties::{esp_at_atoms, pdep_polarizability_static};
+                use ferric_rpa::properties::{
+                    electric_field_at_atoms, esp_at_atoms, pdep_polarizability_static,
+                };
                 use ndarray::Array2;
 
                 let compute_esp = cfg.rpa.compute_esp.unwrap_or(true);
                 let compute_pol = cfg.rpa.compute_polarizability.unwrap_or(true);
+                let compute_ef = cfg.rpa.compute_electric_field.unwrap_or(true);
 
                 let coords_arr = {
                     let mut a = Array2::<f64>::zeros((mol.atoms.len(), 3));
@@ -548,6 +551,18 @@ fn main() {
                         Ok(v) => Some(v),
                         Err(e) => {
                             eprintln!("warning: esp_at_atoms failed: {e}");
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+
+                let ef_vec = if compute_ef {
+                    match electric_field_at_atoms(&mol, &prep, result.density_r()) {
+                        Ok(v) => Some(v),
+                        Err(e) => {
+                            eprintln!("warning: electric_field_at_atoms failed: {e}");
                             None
                         }
                     }
@@ -585,6 +600,7 @@ fn main() {
                     Some(&znums),
                     esp_vec.as_deref(),
                     alpha_arr.as_ref(),
+                    ef_vec.as_deref(),
                 ) {
                     eprintln!("warning: failed to write {}: {}", npz_path, e);
                 } else {

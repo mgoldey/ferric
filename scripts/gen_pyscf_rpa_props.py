@@ -74,6 +74,60 @@ def esp_at_atoms(mol, dm):
     return out
 
 
+def efield_at_atoms(mol, dm):
+    """Electric field E(R_A) at each nuclear position.
+
+    E_d(R_A) = E^elec_d(R_A) + E^nuc_d(R_A)
+      E^elec_d(R_A) = - sum_{mu,nu} D_{mu,nu} <mu | (r - R_A)_d / |r - R_A|^3 | nu>
+      E^nuc_d(R_A)  = sum_{B != A} Z_B (R_A - R_B)_d / |R_A - R_B|^3
+
+    With E = -grad V (V = potential felt by positive test charge), this matches
+    ferric's sign convention.
+
+    The integral <mu | (r - R)_d / |r - R|^3 | nu> = -d/dR_d <mu | 1/|r-R| | nu>.
+    PySCF: int1e_iprinv with rinv_origin = R_A returns the negative gradient
+    w.r.t. R, i.e. <mu | (r-R)_d/|r-R|^3 | nu> = + int1e_iprinv ... actually
+    int1e_iprinv computes nabla_r <mu | 1/|r-R| | nu> on the bra side; we use
+    the symmetric combo (iprinv + iprinv.T) per PySCF convention.
+
+    Concretely: int1e_iprinv has shape (3, nao, nao). The matrix element
+       <mu | d/dR_d (-1/|r-R|) | nu> = - d/dR_d <mu|1/|r-R||nu>
+    Numerically simpler: use FD against int1e_rinv to confirm sign.
+    """
+    natoms = mol.natm
+    coords = mol.atom_coords()
+    charges = mol.atom_charges()
+    out = np.zeros((natoms, 3))
+    for a in range(natoms):
+        Ra = coords[a]
+        # Electronic via FD of int1e_rinv to avoid sign confusion with iprinv.
+        # E^elec_d = -sum D <mu | (r-Ra)_d/|r-Ra|^3 | nu>
+        # T(R) = <mu|1/|r-R||nu>; grad_R T = <mu| (R-r)/|r-R|^3 |nu> = -<mu| (r-R)/|r-R|^3 |nu>
+        # So <mu| (r-Ra)_d/|r-Ra|^3 |nu> = -dT/dR_d.
+        # E^elec_d = -sum D * (-dT/dR_d) = sum D * dT/dR_d
+        h = 1e-4
+        e_elec = np.zeros(3)
+        for d in range(3):
+            Rp = Ra.copy(); Rp[d] += h
+            Rn = Ra.copy(); Rn[d] -= h
+            mol.set_rinv_origin(Rp)
+            Tp = mol.intor("int1e_rinv")
+            mol.set_rinv_origin(Rn)
+            Tn = mol.intor("int1e_rinv")
+            dTdR = (Tp - Tn) / (2.0 * h)
+            e_elec[d] = np.einsum("ij,ij->", dm, dTdR)
+        # Nuclear sum: E^nuc_d = sum_{B!=A} Z_B (R_A - R_B)_d / |R_A-R_B|^3
+        e_nuc = np.zeros(3)
+        for b in range(natoms):
+            if b == a:
+                continue
+            dr = Ra - coords[b]
+            r = np.linalg.norm(dr)
+            e_nuc += charges[b] * dr / r**3
+        out[a] = e_elec + e_nuc
+    return out
+
+
 def alpha_direct_rpa(mf):
     """Closed-shell direct-RPA static (ω=0) polarizability via the explicit
     (A+B) = D + 4(ia|jb) inversion in the MO basis.  Closed-form, no FD.
@@ -225,6 +279,7 @@ def main():
     dm = mf.make_rdm1()
 
     v_atoms = esp_at_atoms(mol, dm)
+    e_field = efield_at_atoms(mol, dm)
     alpha = alpha_direct_rpa(mf)
     alpha_iso = np.trace(alpha) / 3.0
     eigs = np.sort(np.linalg.eigvalsh(0.5 * (alpha + alpha.T))).tolist()
@@ -235,6 +290,7 @@ def main():
         "aux_basis": aux,
         "scf_energy": float(mf.e_tot),
         "esp_at_atoms": [float(v) for v in v_atoms],
+        "electric_field_at_atoms": [[float(e_field[a, d]) for d in range(3)] for a in range(e_field.shape[0])],
         "alpha_tensor": [[float(alpha[i, j]) for j in range(3)] for i in range(3)],
         "alpha_iso": float(alpha_iso),
         "alpha_principal": [float(x) for x in eigs],
