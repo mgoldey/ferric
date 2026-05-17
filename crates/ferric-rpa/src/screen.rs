@@ -162,6 +162,13 @@ pub fn build_screened_bov(
     // Reuse a single 3-center engine across orbitals.
     let mut eng3 = Engine::new_3center(op, obs, dfbs, 1e-14)?;
 
+    // C7-fuse: single-pass screen + tile build. Previously each orbital ran
+    // two integral passes (metric (P|i i), then tile (P|i a)) — every libint2
+    // shell triple was evaluated twice. Now we evaluate each triple once and
+    // accumulate both quantities from the same integral block. The transient
+    // full-naux raw tile costs ~naux·nvir·8 B (~14 MB at danuglipron scale),
+    // well within budget. At thresh=0 the result is bit-identical to the
+    // two-pass form.
     for i_loc in 0..nocc_loc {
         let ci = c_occ_loc.slice(s![.., i_loc]).to_owned(); // (nbas,)
 
@@ -189,10 +196,16 @@ pub fn build_screened_bov(
             }
         }
 
-        // 2. Compute the *exact* density-pair metric (P|i_loc i_loc) for every
-        //    aux shell P, by contracting (P|μν) with c_i[μ] c_i[ν] over the
-        //    density-significant OBS shell pairs only.
+        // 2. Single integral pass: for each (p_sh, s_mu, s_nu) compute the
+        //    (P|μν) block ONCE and accumulate both:
+        //      - p_ii[P] += c_i[μ] (P|μν) c_i[ν]   (density-pair metric)
+        //      - raw_full[P, a] += c_i[μ] (P|μν) c_vir[ν, a]   (raw tile)
+        //    Loops are structured (p_sh, sig_pair) — same iteration count as
+        //    each individual pass in the original two-pass code, but only
+        //    one integral evaluation per triple.
         let mut p_ii = vec![0.0f64; naux];
+        let mut raw_full = Array2::<f64>::zeros((naux, nvir));
+
         for p_sh in 0..nsh_df {
             let np = dims_df[p_sh];
             let p0 = offs_df[p_sh];
@@ -206,29 +219,45 @@ pub fn build_screened_bov(
                 let o_mu = offs_obs[s_mu];
                 let o_nu = offs_obs[s_nu];
                 let off_diag = s_mu != s_nu;
+
                 for p_off in 0..np {
                     let p_idx = p0 + p_off;
-                    let mut acc = 0.0f64;
+                    let mut metric_acc = 0.0f64;
                     for mi in 0..n_mu {
                         let mu = o_mu + mi;
                         let cim = ci[mu];
                         for ni in 0..n_nu {
                             let nu = o_nu + ni;
                             let v = block[(p_off * n_mu + mi) * n_nu + ni];
-                            // (μν) contribution: cim * v * ci[nu]
-                            acc += cim * v * ci[nu];
+                            // (μν) contribution.
+                            //   metric: cim * v * ci[nu]
+                            //   tile:   raw_full[p_idx, a] += cim * v * c_vir[nu, a]
+                            metric_acc += cim * v * ci[nu];
+                            if cim != 0.0 {
+                                let w = cim * v;
+                                for a in 0..nvir {
+                                    raw_full[(p_idx, a)] += w * c_vir[(nu, a)];
+                                }
+                            }
+                            // (νμ) contribution by symmetry (P|μν) = (P|νμ).
                             if off_diag {
-                                // (νμ) contribution: ci[nu] * v * ci[mu] (same value)
-                                acc += ci[nu] * v * cim;
+                                let cin = ci[nu];
+                                metric_acc += cin * v * cim;
+                                if cin != 0.0 {
+                                    let w = cin * v;
+                                    for a in 0..nvir {
+                                        raw_full[(p_idx, a)] += w * c_vir[(mu, a)];
+                                    }
+                                }
                             }
                         }
                     }
-                    p_ii[p_idx] += acc;
+                    p_ii[p_idx] += metric_acc;
                 }
             }
         }
 
-        // Retain aux shells where any function p in P has |(p|i i)| > thresh.
+        // 3. Retain aux shells where any function p in P has |(p|i i)| > thresh.
         let mut keep_p_shells: Vec<usize> = Vec::new();
         for p_sh in 0..nsh_df {
             let mut m = 0.0f64;
@@ -247,69 +276,17 @@ pub fn build_screened_bov(
                 p_list.push(p);
             }
         }
-
         let m_i = p_list.len();
-        // Map from full P index -> slot in p_list (for compact tile).
-        let mut p_to_slot = vec![usize::MAX; naux];
-        for (slot, &p) in p_list.iter().enumerate() {
-            p_to_slot[p] = slot;
-        }
 
-        // 3. Build raw tile R[P_slot, a] = Σ_{μν} (P|μν) ci[μ] c_vir[ν,a],
-        //    iterating only retained P shells × significant OBS shell pairs.
+        // 4. Compact: extract retained rows from raw_full into raw (m_i × nvir).
         let mut raw = Array2::<f64>::zeros((m_i, nvir));
-
-        // Pre-extract ci values per OBS shell as small slices, and c_vir blocks.
-        // c_vir rows by μ → matrix (nbas, nvir).
-        for &p_sh in &keep_p_shells {
-            let np = dims_df[p_sh];
-            let p0 = offs_df[p_sh];
-
-            for &(s_mu, s_nu, _b) in &sig_pairs {
-                // Canonical (s_mu >= s_nu). compute_eri3 returns (P|s_mu, s_nu).
-                let block = match eng3.compute_eri3(obs, dfbs, p_sh, s_mu, s_nu) {
-                    Some(b) => b,
-                    None => continue,
-                };
-                let n_mu = dims_obs[s_mu];
-                let n_nu = dims_obs[s_nu];
-                let o_mu = offs_obs[s_mu];
-                let o_nu = offs_obs[s_nu];
-                let off_diag = s_mu != s_nu;
-
-                for p_off in 0..np {
-                    let slot = p_to_slot[p0 + p_off];
-                    debug_assert!(slot != usize::MAX);
-                    for mi in 0..n_mu {
-                        let mu = o_mu + mi;
-                        let cim = ci[mu];
-                        for ni in 0..n_nu {
-                            let nu = o_nu + ni;
-                            let val = block[(p_off * n_mu + mi) * n_nu + ni];
-                            // (μν) contribution: w * c_vir[nu, :]
-                            if cim != 0.0 {
-                                let w = cim * val;
-                                for a in 0..nvir {
-                                    raw[(slot, a)] += w * c_vir[(nu, a)];
-                                }
-                            }
-                            // (νμ) contribution by symmetry of (P|μν)=(P|νμ).
-                            if off_diag {
-                                let cin = ci[nu];
-                                if cin != 0.0 {
-                                    let w = cin * val;
-                                    for a in 0..nvir {
-                                        raw[(slot, a)] += w * c_vir[(mu, a)];
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+        for (slot, &p_idx) in p_list.iter().enumerate() {
+            for a in 0..nvir {
+                raw[(slot, a)] = raw_full[(p_idx, a)];
             }
         }
 
-        // 4. Dress: tile = V^{-1/2}[p_list, p_list] · raw.
+        // 5. Dress: tile = V^{-1/2}[p_list, p_list] · raw.
         //    Slicing both axes keeps the tile compact and preserves bit-exact
         //    equivalence at thresh=0 (where p_list spans the full naux).
         let mut v_block = Array2::<f64>::zeros((m_i, m_i));
