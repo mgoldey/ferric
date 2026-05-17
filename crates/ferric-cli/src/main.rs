@@ -80,10 +80,6 @@ fn main() {
     };
 
     if task == "optimize" {
-        if method != "rhf" {
-            eprintln!("error: geometry optimization is currently only supported for method.kind = \"rhf\"");
-            std::process::exit(1);
-        }
         let opt_config = OptimizeConfig {
             max_steps: cfg.optimize.max_steps.unwrap_or(100),
             g_max_thresh: cfg.optimize.g_max_thresh.unwrap_or(4.5e-4),
@@ -91,19 +87,69 @@ fn main() {
             e_conv: cfg.optimize.e_conv.unwrap_or(1e-6),
             trust_radius: cfg.optimize.trust_radius.unwrap_or(0.1),
         };
-        let opt_result = optimize_geometry(&ctx, &mol, &bs.name, op, &rhf_config, &opt_config)
-            .unwrap_or_else(|e| {
-                eprintln!("error during optimization: {e}");
+        match method {
+            "rhf" => {
+                let opt_result = optimize_geometry(&ctx, &mol, &bs.name, op, &rhf_config, &opt_config)
+                    .unwrap_or_else(|e| {
+                        eprintln!("error during optimization: {e}");
+                        std::process::exit(1);
+                    });
+                println!("\nFinal Optimized Geometry (Bohr):");
+                for (i, atom) in opt_result.mol.atoms.iter().enumerate() {
+                    println!("  {:2} {:2} {:12.8} {:12.8} {:12.8}", i, atom.symbol, atom.x, atom.y, atom.zpos);
+                }
+                println!("\nOptimization Result:");
+                println!("  converged  = {}", opt_result.converged);
+                println!("  steps      = {}", opt_result.steps);
+                println!("  final E    = {:.10} Hartree", opt_result.energy);
+            }
+            "pdep-rpa" => {
+                let aux_name = cfg.rpa.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+                let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                });
+                let scheme = match cfg.rpa.quadrature.as_deref().unwrap_or("gauss-legendre") {
+                    "minimax" | "mm" => QuadratureScheme::MiniMax,
+                    _ => QuadratureScheme::GaussLegendre,
+                };
+                let rpa_cfg = PdepRpaConfig {
+                    frozen_core: cfg.rpa.frozen_core,
+                    trunc_thresh: cfg.rpa.trunc_thresh.unwrap_or(1e-4),
+                    davidson_max_vecs: 0,
+                    davidson_conv_thresh: cfg.rpa.davidson_conv_thresh.unwrap_or(1e-8),
+                    quadrature: QuadratureConfig {
+                        scheme,
+                        n_points: cfg.rpa.n_quad.unwrap_or(16),
+                        u0: cfg.rpa.u0.unwrap_or(0.5),
+                    },
+                    sternheimer: SternheimerConfig::default(),
+                    run_diagnostics: false,
+                    eigensolver: ferric_rpa::Eigensolver::default(),
+                    chi0_backend: ferric_rpa::config::Chi0Backend::default(),
+                    chi0_sparsity: ferric_rpa::config::Chi0Sparsity::default(),
+                };
+                let h_fd = 5e-4;
+                let opt_result =
+                    ferric_rpa::optimize::optimize_geometry_rpa(&mol, &bs, &aux_bs, op, &rpa_cfg, &opt_config, h_fd)
+                        .unwrap_or_else(|e| {
+                            eprintln!("error during RPA optimization: {e}");
+                            std::process::exit(1);
+                        });
+                println!("\nFinal Optimized Geometry (Bohr):");
+                for (i, atom) in opt_result.mol.atoms.iter().enumerate() {
+                    println!("  {:2} {:2} {:12.8} {:12.8} {:12.8}", i, atom.symbol, atom.x, atom.y, atom.zpos);
+                }
+                println!("\nRPA Optimization Result:");
+                println!("  converged  = {}", opt_result.converged);
+                println!("  steps      = {}", opt_result.steps);
+                println!("  final E    = {:.10} Hartree (RHF + RPA)", opt_result.energy);
+            }
+            _ => {
+                eprintln!("error: geometry optimization is currently only supported for method.kind = \"rhf\" or \"pdep-rpa\"");
                 std::process::exit(1);
-            });
-        println!("\nFinal Optimized Geometry (Bohr):");
-        for (i, atom) in opt_result.mol.atoms.iter().enumerate() {
-            println!("  {:2} {:2} {:12.8} {:12.8} {:12.8}", i, atom.symbol, atom.x, atom.y, atom.zpos);
+            }
         }
-        println!("\nOptimization Result:");
-        println!("  converged  = {}", opt_result.converged);
-        println!("  steps      = {}", opt_result.steps);
-        println!("  final E    = {:.10} Hartree", opt_result.energy);
         return;
     }
 
