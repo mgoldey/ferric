@@ -129,13 +129,17 @@ fn run_rhf_rpa(
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs)?;
 
-    // Same SCF strategy as `sparse_scaling.rs`: DF-J + LinkK.
+    // Production SCF: DF-J + DF-K with def2-universal-jkfit (proper JK-fit aux).
+    // Reusing cc-pvdz-ri (MP2-fit aux) for K introduces mHa-scale error and
+    // was the source of the ~6e-4 Ha ferric-vs-PySCF E_total gap observed in
+    // the C9 prep smoke test. See [[ferric-jk-aux-convention]] for context.
+    // RPA correlation still uses cc-pvdz-ri (the aux argument below).
     let mut rhf_cfg = RhfConfig::default();
     rhf_cfg.max_iter = 200;
     rhf_cfg.energy_conv = 1e-7;
     rhf_cfg.density_conv = 1e-6;
-    rhf_cfg.df_j_aux = Some("cc-pvdz-ri".to_string());
-    rhf_cfg.k_builder = Some("link".to_string());
+    rhf_cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
+    rhf_cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
 
     let t0 = Instant::now();
     let rhf = solve_rhf(ctx, mol, &obs, op, &bounds, &rhf_cfg)?;
