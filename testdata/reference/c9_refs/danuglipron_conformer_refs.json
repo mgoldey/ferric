@@ -1,0 +1,3 @@
+{
+  "_comment": "Danuglipron conformer ferric RI-RPA energies (Ha). Populate via `cargo run --release -p ferric-rpa --example c9_driver -- danuglipron`. Each key is 'conf_NN_<source>' matching the XYZ filename. The anchor 'conf_00_cryo_em' is the bound bioactive conformer from PDB 7LCJ (2.82 A cryo-EM, ligand UK4)."
+}
