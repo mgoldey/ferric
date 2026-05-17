@@ -948,6 +948,21 @@ pub fn pdep_polarizability_hirshfeld(
 /// charge magnitudes and signs are directly comparable to the per-atom
 /// polarizability tensors exported alongside.
 ///
+/// # Known limitation: single-exponential proatom
+///
+/// The proatom density is a Slater monoexponential with ξ derived from
+/// Slater's rules for the *outermost* shell. This is fine for the additive
+/// partitioning needed by `pdep_polarizability_hirshfeld` (where the sum
+/// rule is enforced numerically and individual α^A magnitudes are within
+/// ~50% of literature). For *charges*, however, the proatom shape directly
+/// sets sign and magnitude — and a single-exponential model has no core
+/// peak, so it badly mis-allocates valence density for systems where
+/// proatoms of similar ξ compete (e.g. C–O bonds). Until proper
+/// Roothaan-Hartree-Fock spherical proatom densities (Bunge 1993) are
+/// wired in, the absolute charge values exported here should be treated
+/// as a *baseline for downstream CM5 correction* on small molecules only,
+/// not as production-quality population analysis.
+///
 /// The total electronic charge is renormalized so Σ_A (Z_A − q_A) = N_e
 /// exactly (compensates for grid quadrature error in the density integral).
 ///
@@ -1055,6 +1070,82 @@ pub fn hirshfeld_charges(
         .collect())
 }
 
+/// Löwdin atomic charges from symmetrically orthogonalized AOs.
+///
+/// In the Löwdin basis χ̃ = S^{-1/2} χ, the AOs are orthonormal and
+/// remain atom-centered (no shape redistribution to other centers).
+/// Per-atom populations are
+///
+/// ```text
+///     n_A = Σ_{μ ∈ A} (S^{1/2} D S^{1/2})_{μμ}
+///     q_A = Z_A − n_A
+/// ```
+///
+/// Compared to Mulliken: less basis-set sensitive (no off-diagonal D·S
+/// terms that can go negative). Compared to grid Hirshfeld with a
+/// single-exponential proatom: no proatom shape required, so the C–O
+/// inversion that plagues simple proatom models is gone.
+///
+/// Total electron count is conserved exactly by construction
+/// (Tr[S^{1/2} D S^{1/2}] = Tr[D S] = N_e).
+///
+/// Closed-shell only.
+pub fn lowdin_charges(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    density: &Array2<f64>,
+) -> Result<Vec<f64>, FerricError> {
+    use ndarray_linalg::Eigh;
+
+    let nbf = prep.nbasis();
+    if density.nrows() != nbf || density.ncols() != nbf {
+        return Err(FerricError::General(format!(
+            "lowdin_charges: density {:?} != nbf {}",
+            density.dim(),
+            nbf
+        )));
+    }
+
+    let s = oneelectron::overlap(prep);
+
+    // S = U diag(λ) U^T → S^{1/2} = U diag(√λ) U^T.
+    let (eigvals, eigvecs) = s
+        .eigh(ndarray_linalg::UPLO::Upper)
+        .map_err(|e| FerricError::General(format!("lowdin_charges: S eigh failed: {e}")))?;
+    let mut sqrt_lambda = Array2::<f64>::zeros((nbf, nbf));
+    for i in 0..nbf {
+        if eigvals[i] <= 0.0 {
+            return Err(FerricError::General(format!(
+                "lowdin_charges: overlap eigenvalue {} <= 0 (linear dependence)",
+                eigvals[i]
+            )));
+        }
+        sqrt_lambda[(i, i)] = eigvals[i].sqrt();
+    }
+    let s_half = eigvecs.dot(&sqrt_lambda).dot(&eigvecs.t());
+
+    // M = S^{1/2} · D · S^{1/2}
+    let m = s_half.dot(density).dot(&s_half);
+
+    // shell → atom; shell_offsets gives [start_μ for each shell].
+    let shell_to_atom = prep.shell_to_atom();
+    let shell_offsets = prep.shell_offsets();
+    let natoms = mol.atoms.len();
+
+    let mut atom_pop = vec![0.0_f64; natoms];
+    for (sh_idx, &atom_idx) in shell_to_atom.iter().enumerate() {
+        let mu0 = shell_offsets[sh_idx];
+        let mu1 = shell_offsets[sh_idx + 1];
+        for mu in mu0..mu1 {
+            atom_pop[atom_idx] += m[(mu, mu)];
+        }
+    }
+
+    Ok((0..natoms)
+        .map(|a| mol.atoms[a].z as f64 - atom_pop[a])
+        .collect())
+}
+
 /// Slater single-exponential proatom exponent ξ (Bohr⁻¹) for element Z.
 ///
 /// Derived from Bragg-Slater empirical atomic radii R_BS:
@@ -1064,27 +1155,22 @@ pub fn hirshfeld_charges(
 /// the sum rule inside `pdep_polarizability_hirshfeld` is the gate.
 fn slater_xi_for_z(z: i32) -> f64 {
     // Bragg-Slater radii in Bohr (1 Å = 1.8897259886 Bohr).
-    // Values from Slater J. Chem. Phys. 41, 3199 (1964) for Z=1..17;
-    // anything beyond is approximated. Falls back to 1.0 (H-like).
+    // Values from Slater J. Chem. Phys. 41, 3199 (1964) for Z=1..18.
+    //
+    // We use ξ = 1/R_BS rather than Slater's-rules valence ξ because the
+    // Bragg-Slater profile, while too diffuse, at least produces bounded
+    // charges and (numerically renormalized) the additive partition used
+    // by per-atom polarizability. Slater's valence ξ would be more
+    // physically motivated for the tail but inverts the C/O ordering in
+    // C-O bonds (proatom of O too tight, all density attributed to O).
+    // Both single-exponential approximations are inadequate for production
+    // population analysis — see the function-level doc on the caller.
     let r_bs_ang: f64 = match z {
-        1 => 0.25,
-        2 => 0.30,
-        3 => 1.45,
-        4 => 1.05,
-        5 => 0.85,
-        6 => 0.70,
-        7 => 0.65,
-        8 => 0.60,
-        9 => 0.50,
-        10 => 0.45,
-        11 => 1.80,
-        12 => 1.50,
-        13 => 1.25,
-        14 => 1.10,
-        15 => 1.00,
-        16 => 1.00,
-        17 => 1.00,
-        18 => 0.71,
+        1 => 0.25,  2 => 0.30,
+        3 => 1.45,  4 => 1.05,  5 => 0.85,  6 => 0.70,  7 => 0.65,  8 => 0.60,
+        9 => 0.50, 10 => 0.45,
+        11 => 1.80, 12 => 1.50, 13 => 1.25, 14 => 1.10, 15 => 1.00, 16 => 1.00,
+        17 => 1.00, 18 => 0.71,
         _ => 1.00,
     };
     let r_bs_bohr = r_bs_ang * 1.8897259886;

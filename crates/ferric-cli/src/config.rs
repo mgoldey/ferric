@@ -94,6 +94,12 @@ pub struct RpaCfg {
     /// is applied in the consumer.
     /// Default: true when `export_npz` is set.
     pub compute_hirshfeld_charges: Option<bool>,
+    /// Compute and include Löwdin atomic charges (from symmetrically-
+    /// orthogonalized AOs) in the NPZ bundle as `lowdin_charges`,
+    /// shape (natoms,), float64, e. Recommended baseline charges for CM5
+    /// (no proatom approximation, basis-set-stable).
+    /// Default: true when `export_npz` is set.
+    pub compute_lowdin_charges: Option<bool>,
 }
 
 #[derive(Deserialize)]

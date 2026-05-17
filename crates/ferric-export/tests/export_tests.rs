@@ -50,6 +50,7 @@ fn test_export_npz() {
         None,
         None,
         None,
+        None,
     ).unwrap();
 
     assert!(std::path::Path::new(path).exists());

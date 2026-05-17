@@ -20,6 +20,7 @@ pub fn export_npz(
     density_matrix: Option<&Array2<f64>>,
     alpha_atomic: Option<&[[[f64; 3]; 3]]>,
     hirshfeld_charges: Option<&[f64]>,
+    lowdin_charges: Option<&[f64]>,
 ) -> Result<(), ExportError> {
     let file = File::create(path)?;
     let mut writer = NpzWriter::new(file);
@@ -94,6 +95,13 @@ pub fn export_npz(
         let q_arr = Array1::from_vec(q.to_vec());
         writer
             .add_array("hirshfeld_charges", &q_arr)
+            .map_err(|e| ExportError::Other(e.to_string()))?;
+    }
+
+    if let Some(q) = lowdin_charges {
+        let q_arr = Array1::from_vec(q.to_vec());
+        writer
+            .add_array("lowdin_charges", &q_arr)
             .map_err(|e| ExportError::Other(e.to_string()))?;
     }
 

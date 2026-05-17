@@ -526,7 +526,7 @@ fn main() {
             if let Some(npz_path) = cfg.rpa.export_npz.as_deref() {
                 use ferric_export::export_npz;
                 use ferric_rpa::properties::{
-                    electric_field_at_atoms, esp_at_atoms, hirshfeld_charges,
+                    electric_field_at_atoms, esp_at_atoms, hirshfeld_charges, lowdin_charges,
                     pdep_polarizability_hirshfeld,
                     pdep_polarizability_static,
                 };
@@ -618,6 +618,25 @@ fn main() {
                 let compute_dm = cfg.rpa.compute_density_matrix.unwrap_or(true);
                 let dm_ref = if compute_dm { Some(result.density_r()) } else { None };
 
+                let compute_lq = cfg.rpa.compute_lowdin_charges.unwrap_or(true);
+                let lq_vec = if compute_lq {
+                    match lowdin_charges(&mol, &prep, result.density_r()) {
+                        Ok(q) => {
+                            println!(
+                                "Löwdin charges (e): {:?}",
+                                q.iter().map(|v| (v * 1e4).round() / 1e4).collect::<Vec<_>>()
+                            );
+                            Some(q)
+                        }
+                        Err(e) => {
+                            eprintln!("warning: Löwdin charges failed: {e}");
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+
                 let compute_hq = cfg.rpa.compute_hirshfeld_charges.unwrap_or(true);
                 let hq_vec = if compute_hq {
                     match hirshfeld_charges(&mol, &bs, result.density_r()) {
@@ -651,6 +670,7 @@ fn main() {
                     dm_ref,
                     alpha_atomic_vec.as_deref(),
                     hq_vec.as_deref(),
+                    lq_vec.as_deref(),
                 ) {
                     eprintln!("warning: failed to write {}: {}", npz_path, e);
                 } else {
