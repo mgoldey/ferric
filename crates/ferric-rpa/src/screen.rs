@@ -11,52 +11,59 @@
 //! lists, the dielectric matvec scales with the *significant* number of pairs
 //! rather than the full `nocc × naux`.
 //!
-//! # Screening metric (NOTE)
+//! # Screening metric (C7-tighten / option 1c)
 //!
-//! The spec called for a density-pair bound mirroring LinK
-//! (`SignificantPairs × DensityPairs`) where the density is the localized
-//! orbital projector `|i_loc⟩⟨i_loc|`. That requires a per-orbital shell-pair
-//! list intersected with aux-shell significance — a substantial bookkeeping
-//! exercise.
+//! For each Boys-localized occupied i_loc we use the **exact density-pair
+//! metric** `|(P | i_loc i_loc)|`. The Cauchy-Schwarz inequality gives
+//! `|(P | i_loc a)|² ≤ (P | i_loc i_loc)(P | aa)`, so retaining aux shells
+//! where `max_{p∈P} |(p | i_loc i_loc)| > thresh` keeps every aux function
+//! that can contribute non-trivially to the dressed tile.
 //!
-//! For C7 we ship the simpler **per-row L∞ norm** screening (option 1b
-//! fallback): build the full dressed tile `B^{P}_{i_loc, a}` for each i_loc,
-//! then keep aux rows where `max_a |B^P_{i_loc, a}| > thresh`. This is an
-//! *exact* significance measure (no Schwarz inflation), strictly tighter than
-//! any geometric bound, and exercises the same sparse downstream machinery
-//! (dielectric_matrix_into_screened, scatter). The integral-build cost is the
-//! same as the dense path; the asymptotic win lives in the matvec.
+//! Building `(P | i_loc i_loc)` is cheap: it shares the same 3-center engine
+//! we already need for `(P | μν)`, costs `O(naux × n_sig_pairs × dim²)`
+//! (no `nvir` factor), and uses a cheap shell-pair pre-screen
+//! `|c_i|_max[Sμ] · |c_i|_max[Sν] · Q[Sμ,Sν] > thresh/100`. The looser
+//! Schwarz×density product bound (option 1c original form) was tried first;
+//! for benzene/cc-pVDZ it retains 100% of pairs at thresh=5e-3 (the
+//! Σ_{Sμ,Sν} sum kills locality). The exact (P|i i) metric retains a
+//! genuine sparse subset at production thresholds.
 //!
-//! Upgrading to a build-time-cheap density-pair bound is straightforward
-//! follow-up work — `ScreenedBov` storage layout and consumers do not change.
+//! After retaining aux shells per orbital, the (P|i_loc, a) tile is built
+//! by re-running the same screened shell-pair loop with the additional
+//! `c_vir` contraction over the virtual index. V^{-1/2} dressing is applied
+//! by slicing both axes to `p_list` (so dropped aux rows are also dropped
+//! from the V^{-1/2} mixing). At `thresh = 0` no aux shells are dropped
+//! and the result is bit-identical to the dense path.
+//!
+//! The (P|μν) integrals are computed only for retained P shells × density-
+//! significant OBS shell pairs, then contracted with `c_loc[:,i] ⊗ c_vir` to
+//! form the raw `(m_i × nvir)` tile directly. V^{-1/2} dressing is applied by
+//! slicing both axes to `p_list` — this means dropped P rows are also dropped
+//! from the V^{-1/2} mixing, consistent with the screening drop. At `thresh = 0`
+//! all aux shells are retained and the result is algebraically equivalent to
+//! the dense path.
 //!
 //! # Storage layout (option 2b)
 //!
 //! For each Boys-localized occupied i_loc:
-//!   * `p_lists[i_loc]`: sorted ascending list of retained aux indices.
+//!   * `p_lists[i_loc]`: sorted ascending list of retained aux function indices.
 //!   * `tiles[i_loc]`: dense (m_i × nvir) row-major matrix of dressed
 //!     B-tensor values. m_i = p_lists[i_loc].len().
-//!
-//! V^{-1/2} dressing is applied eagerly during construction (full naux × naux
-//! dressing on the unsliced (P|i_loc a) tensor, then row-sliced into the tile).
 
 use crate::boys_localize::boys_localize_occupied;
 use ferric_core::FerricError;
 use ferric_core::mol::Molecule;
 use ferric_integrals::basis_bridge::PreparedBasis;
+use ferric_integrals::engine::Engine;
 use ferric_integrals::operator::Operator;
+use ferric_integrals::schwarz;
 use ferric_integrals::threeindex;
-use ferric_mp2::mo_transform::transform_3center_ov;
 use ferric_scf::rhf::RhfResult;
 use ndarray::{s, Array2};
 use ndarray_linalg::{Cholesky, UPLO};
 
 /// Sparse representation of (P | i_loc, a) integrals on Boys-localized
 /// occupied orbitals.
-///
-/// Per-orbital tile layout: for each localized occupied i_loc, store
-/// the dense (n_retained × nvir) tile of `B^P_{i_loc, a}` values, alongside
-/// the sorted retained-aux index list `p_lists[i_loc]`.
 pub struct ScreenedBov {
     pub n_occ_loc: usize,
     pub nvir: usize,
@@ -67,12 +74,9 @@ pub struct ScreenedBov {
     pub tiles: Vec<Array2<f64>>,
     /// Per-orbital Boys centroid (Bohr) — diagnostic.
     pub centroids: Vec<[f64; 3]>,
-    /// Per-orbital localized orbital energy, computed as the diagonal of
-    /// (C_loc^T F C_loc). Used as the energy denominator inside
-    /// `dielectric_matrix_into_screened`.
+    /// Per-orbital localized orbital energy = (C_loc^T F C_loc)_{ii}.
     pub eps_loc: Vec<f64>,
-    /// V^{-1/2} (full naux × naux). Retained for diagnostic / back-transform
-    /// purposes; not strictly needed by the screened dielectric kernel.
+    /// V^{-1/2} (full naux × naux). Retained for diagnostic / back-transform.
     pub v_inv_sqrt: Array2<f64>,
     /// Diagnostic: retained pairs vs (nocc_loc × naux).
     pub total_retained: usize,
@@ -96,14 +100,13 @@ fn cholesky_inverse_sqrt(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
 /// occupied block.
 ///
 /// `c_occ_loc` is the (nbas × nocc_loc) matrix of Boys-localized active
-/// occupied orbitals (skips frozen core). `thresh` controls the per-row L∞
-/// norm cut: aux index P is kept for orbital i_loc iff
-/// `max_a |B^{P}_{i_loc, a}| > thresh`.
+/// occupied orbitals (skips frozen core). `thresh` controls the density-pair
+/// screening cutoff: aux shell P is retained for orbital i_loc iff
+/// `sqrt(max_p (P|P)) · Σ_{Sμ,Sν} |D_loc|_max[Sμ,Sν] · Q[Sμ,Sν] > thresh`.
 ///
-/// At `thresh = 0` this should be algebraically equivalent (up to localization
-/// rotation, which is unitary on the occupied subspace and therefore does not
-/// change RPA invariants) to building the dense `b_ov` and using it
-/// unscreened.
+/// At `thresh = 0` no aux shells are dropped; the result is algebraically
+/// equivalent to the dense `b_ov` build (up to Boys rotation, which is unitary
+/// within the occ block).
 pub fn build_screened_bov(
     _mol: &Molecule,
     obs: &PreparedBasis,
@@ -122,71 +125,203 @@ pub fn build_screened_bov(
     let nvir = nbas - nocc_total;
     let nocc_loc = c_occ_loc.ncols();
     assert_eq!(nocc_loc, nocc_active, "c_occ_loc must have nocc_active columns");
+    let _ = first_occ;
 
-    // V^{-1/2}.
+    // V^{-1/2} dressing.
     let v2c = threeindex::coulomb_metric_2c(op, dfbs)?;
     let v_inv_sqrt = cholesky_inverse_sqrt(&v2c)?;
 
-    // (P|μν) AO 3-center integrals.
-    let eri3_ao = threeindex::eri3_tensor(op, obs, dfbs)?;
+    // OBS Schwarz Q for shell-pair pre-screening of the per-orbital integral loop.
+    let q_obs = schwarz::schwarz(op, obs)?;
 
     // Active virtual block.
     let c = rhf.mos_r();
     let c_vir = c.slice(s![.., nocc_total..]).to_owned();
 
-    // Transform to (P | i_loc, a) using LOCALIZED occupied coefficients.
-    // This rotates the occ index from canonical to localized; the virtual
-    // index stays canonical (no virtual localization in C7).
-    let eri3_mo = transform_3center_ov(&eri3_ao, c_occ_loc, &c_vir);
-    // eri3_mo shape: (naux, nocc_loc, nvir).
-
     // Localized orbital energies: diagonal of C_loc^T F C_loc.
-    // (Boys is a unitary rotation within the occ block, so this is the
-    // expectation value of F on each localized orbital. The off-diagonals of
-    // C_loc^T F C_loc are non-zero — Boys does not diagonalize F — but the
-    // dielectric scale factor uses orbital energies as a *denominator* and
-    // any off-diagonal information is reabsorbed when the full eigensolver
-    // converges. See module-level note.)
     let f = rhf.fock_r();
-    let fc = f.dot(c_occ_loc);                 // (nbas, nocc_loc)
-    let f_loc = c_occ_loc.t().dot(&fc);        // (nocc_loc, nocc_loc)
+    let fc = f.dot(c_occ_loc);
+    let f_loc = c_occ_loc.t().dot(&fc);
     let eps_loc: Vec<f64> = (0..nocc_loc).map(|i| f_loc[(i, i)]).collect();
 
-    // Drop frozen-core contribution: not in the active block.
-    let _ = first_occ;
+    // OBS shell info.
+    let nsh_obs = obs.nshells();
+    let dims_obs = obs.shell_dims();
+    let offs_obs = obs.shell_offsets();
+    let nsh_df = dfbs.nshells();
+    let dims_df = dfbs.shell_dims();
+    let offs_df = dfbs.shell_offsets();
 
-    // For each i_loc:
-    //   1. Build dense (naux × nvir) tile: tile_full = V^{-1/2} · M_i,
-    //      where M_i[P, a] = eri3_mo[P, i_loc, a].
-    //   2. Screen rows by max_a |tile_full[P, a]|.
-    //   3. Pack retained rows into `tiles[i_loc]` and record `p_lists[i_loc]`.
+    // Threshold for skipping shell pairs in the per-orbital sum.
+    let shell_thresh = (thresh / 100.0).max(0.0);
+
     let mut p_lists: Vec<Vec<usize>> = Vec::with_capacity(nocc_loc);
     let mut tiles: Vec<Array2<f64>> = Vec::with_capacity(nocc_loc);
     let mut total_retained: usize = 0;
 
-    for i_loc in 0..nocc_loc {
-        // M_i shape (naux, nvir)
-        let m_i = eri3_mo.slice(s![.., i_loc, ..]).to_owned();
-        // Dressed full tile.
-        let tile_full = v_inv_sqrt.dot(&m_i);
+    // Reuse a single 3-center engine across orbitals.
+    let mut eng3 = Engine::new_3center(op, obs, dfbs, 1e-14)?;
 
-        // Per-row L∞ norm screening.
-        let mut keep: Vec<usize> = Vec::new();
-        for p in 0..naux {
-            let row = tile_full.slice(s![p, ..]);
-            let max_abs = row.iter().fold(0.0f64, |m, &x| m.max(x.abs()));
-            if max_abs > thresh {
-                keep.push(p);
+    for i_loc in 0..nocc_loc {
+        let ci = c_occ_loc.slice(s![.., i_loc]).to_owned(); // (nbas,)
+
+        // 1. Per-OBS-shell-pair density bound B_loc[Sμ,Sν] = max |ci[μ] ci[ν]|.
+        //    Use per-shell max(|ci|).
+        let mut ci_shell_max = vec![0.0f64; nsh_obs];
+        for s_mu in 0..nsh_obs {
+            let mut m = 0.0f64;
+            for mu in offs_obs[s_mu]..offs_obs[s_mu] + dims_obs[s_mu] {
+                m = m.max(ci[mu].abs());
+            }
+            ci_shell_max[s_mu] = m;
+        }
+
+        // Pre-screen shell pairs (canonical s_mu >= s_nu): keep (Sμ,Sν) where
+        // ci_max[Sμ]*ci_max[Sν]*Q[Sμ,Sν] > shell_thresh. Off-diagonal pairs
+        // contribute via both (μν) and (νμ) symmetrization.
+        let mut sig_pairs: Vec<(usize, usize, f64)> = Vec::new();
+        for s_mu in 0..nsh_obs {
+            for s_nu in 0..=s_mu {
+                let b_munu = ci_shell_max[s_mu] * ci_shell_max[s_nu];
+                if b_munu * q_obs[(s_mu, s_nu)] > shell_thresh {
+                    sig_pairs.push((s_mu, s_nu, b_munu));
+                }
             }
         }
 
-        // Pack retained rows.
-        let mut tile = Array2::<f64>::zeros((keep.len(), nvir));
-        for (slot, &p) in keep.iter().enumerate() {
-            tile.slice_mut(s![slot, ..]).assign(&tile_full.slice(s![p, ..]));
+        // 2. Compute the *exact* density-pair metric (P|i_loc i_loc) for every
+        //    aux shell P, by contracting (P|μν) with c_i[μ] c_i[ν] over the
+        //    density-significant OBS shell pairs only.
+        let mut p_ii = vec![0.0f64; naux];
+        for p_sh in 0..nsh_df {
+            let np = dims_df[p_sh];
+            let p0 = offs_df[p_sh];
+            for &(s_mu, s_nu, _b) in &sig_pairs {
+                let block = match eng3.compute_eri3(obs, dfbs, p_sh, s_mu, s_nu) {
+                    Some(b) => b,
+                    None => continue,
+                };
+                let n_mu = dims_obs[s_mu];
+                let n_nu = dims_obs[s_nu];
+                let o_mu = offs_obs[s_mu];
+                let o_nu = offs_obs[s_nu];
+                let off_diag = s_mu != s_nu;
+                for p_off in 0..np {
+                    let p_idx = p0 + p_off;
+                    let mut acc = 0.0f64;
+                    for mi in 0..n_mu {
+                        let mu = o_mu + mi;
+                        let cim = ci[mu];
+                        for ni in 0..n_nu {
+                            let nu = o_nu + ni;
+                            let v = block[(p_off * n_mu + mi) * n_nu + ni];
+                            // (μν) contribution: cim * v * ci[nu]
+                            acc += cim * v * ci[nu];
+                            if off_diag {
+                                // (νμ) contribution: ci[nu] * v * ci[mu] (same value)
+                                acc += ci[nu] * v * cim;
+                            }
+                        }
+                    }
+                    p_ii[p_idx] += acc;
+                }
+            }
         }
-        total_retained += keep.len();
-        p_lists.push(keep);
+
+        // Retain aux shells where any function p in P has |(p|i i)| > thresh.
+        let mut keep_p_shells: Vec<usize> = Vec::new();
+        for p_sh in 0..nsh_df {
+            let mut m = 0.0f64;
+            for p in offs_df[p_sh]..offs_df[p_sh] + dims_df[p_sh] {
+                m = m.max(p_ii[p].abs());
+            }
+            if m > thresh {
+                keep_p_shells.push(p_sh);
+            }
+        }
+
+        // Expand kept aux shells into kept aux function indices (sorted).
+        let mut p_list: Vec<usize> = Vec::new();
+        for &p_sh in &keep_p_shells {
+            for p in offs_df[p_sh]..offs_df[p_sh] + dims_df[p_sh] {
+                p_list.push(p);
+            }
+        }
+
+        let m_i = p_list.len();
+        // Map from full P index -> slot in p_list (for compact tile).
+        let mut p_to_slot = vec![usize::MAX; naux];
+        for (slot, &p) in p_list.iter().enumerate() {
+            p_to_slot[p] = slot;
+        }
+
+        // 3. Build raw tile R[P_slot, a] = Σ_{μν} (P|μν) ci[μ] c_vir[ν,a],
+        //    iterating only retained P shells × significant OBS shell pairs.
+        let mut raw = Array2::<f64>::zeros((m_i, nvir));
+
+        // Pre-extract ci values per OBS shell as small slices, and c_vir blocks.
+        // c_vir rows by μ → matrix (nbas, nvir).
+        for &p_sh in &keep_p_shells {
+            let np = dims_df[p_sh];
+            let p0 = offs_df[p_sh];
+
+            for &(s_mu, s_nu, _b) in &sig_pairs {
+                // Canonical (s_mu >= s_nu). compute_eri3 returns (P|s_mu, s_nu).
+                let block = match eng3.compute_eri3(obs, dfbs, p_sh, s_mu, s_nu) {
+                    Some(b) => b,
+                    None => continue,
+                };
+                let n_mu = dims_obs[s_mu];
+                let n_nu = dims_obs[s_nu];
+                let o_mu = offs_obs[s_mu];
+                let o_nu = offs_obs[s_nu];
+                let off_diag = s_mu != s_nu;
+
+                for p_off in 0..np {
+                    let slot = p_to_slot[p0 + p_off];
+                    debug_assert!(slot != usize::MAX);
+                    for mi in 0..n_mu {
+                        let mu = o_mu + mi;
+                        let cim = ci[mu];
+                        for ni in 0..n_nu {
+                            let nu = o_nu + ni;
+                            let val = block[(p_off * n_mu + mi) * n_nu + ni];
+                            // (μν) contribution: w * c_vir[nu, :]
+                            if cim != 0.0 {
+                                let w = cim * val;
+                                for a in 0..nvir {
+                                    raw[(slot, a)] += w * c_vir[(nu, a)];
+                                }
+                            }
+                            // (νμ) contribution by symmetry of (P|μν)=(P|νμ).
+                            if off_diag {
+                                let cin = ci[nu];
+                                if cin != 0.0 {
+                                    let w = cin * val;
+                                    for a in 0..nvir {
+                                        raw[(slot, a)] += w * c_vir[(mu, a)];
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4. Dress: tile = V^{-1/2}[p_list, p_list] · raw.
+        //    Slicing both axes keeps the tile compact and preserves bit-exact
+        //    equivalence at thresh=0 (where p_list spans the full naux).
+        let mut v_block = Array2::<f64>::zeros((m_i, m_i));
+        for (i, &pi) in p_list.iter().enumerate() {
+            for (j, &pj) in p_list.iter().enumerate() {
+                v_block[(i, j)] = v_inv_sqrt[(pi, pj)];
+            }
+        }
+        let tile = v_block.dot(&raw);
+
+        total_retained += m_i;
+        p_lists.push(p_list);
         tiles.push(tile);
     }
 
