@@ -20,6 +20,29 @@ impl Default for Chi0Backend {
     }
 }
 
+/// Sparsity strategy for the χ₀ build / dielectric matvec.
+///
+/// `Dense` (default) uses the canonical `(naux × nocc·nvir)` `b_ov` tensor.
+///
+/// `BoysScreened { thresh }` runs Foster-Boys on the active occupied block,
+/// builds per-orbital `B^P_{i_loc, a}` tiles, and drops aux rows P whose
+/// per-row L∞ norm `max_a |B^P_{i_loc, a}|` is below `thresh`. The
+/// dielectric matvec then iterates over orbitals, gathering and scattering
+/// through the per-orbital aux index lists.
+///
+/// Closed-shell only for now. Open-shell support is C8.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum Chi0Sparsity {
+    Dense,
+    BoysScreened { thresh: f64 },
+}
+
+impl Default for Chi0Sparsity {
+    fn default() -> Self {
+        Chi0Sparsity::Dense
+    }
+}
+
 /// Choice of subspace eigensolver for the PDEP dielectric matrix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Eigensolver {
@@ -52,6 +75,8 @@ pub struct PdepRpaConfig {
     pub eigensolver: Eigensolver,
     /// χ₀ kernel backend. Default `Dense` preserves legacy behavior.
     pub chi0_backend: Chi0Backend,
+    /// χ₀ sparsity strategy. Default `Dense` preserves legacy behavior.
+    pub chi0_sparsity: Chi0Sparsity,
 }
 
 impl Default for PdepRpaConfig {
@@ -66,6 +91,7 @@ impl Default for PdepRpaConfig {
             run_diagnostics: false,
             eigensolver: Eigensolver::Davidson,
             chi0_backend: Chi0Backend::Dense,
+            chi0_sparsity: Chi0Sparsity::Dense,
         }
     }
 }

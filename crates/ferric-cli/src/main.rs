@@ -391,6 +391,7 @@ fn main() {
                 run_diagnostics: cfg.rpa.run_diagnostics,
                 eigensolver: ferric_rpa::Eigensolver::default(),
                 chi0_backend: ferric_rpa::config::Chi0Backend::default(),
+                chi0_sparsity: ferric_rpa::config::Chi0Sparsity::default(),
             };
             let rpa_result = run_pdep_rpa(&mol, &prep, &dfbs, op, &result, &rpa_cfg)
                 .unwrap_or_else(|e| {

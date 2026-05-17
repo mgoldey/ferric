@@ -9,6 +9,7 @@
 //! set `OPENBLAS_NUM_THREADS=1` (or `BLIS_NUM_THREADS=1`) so each rayon
 //! worker gets a dedicated single-threaded BLAS call.
 
+pub mod boys_localize;
 pub mod config;
 pub mod davidson;
 pub mod diagnostics;
@@ -16,7 +17,10 @@ pub mod energy;
 pub mod lanczos;
 pub mod laplace_chi0;
 pub mod quadrature;
+pub mod screen;
+pub mod seeds;
 pub mod sternheimer;
+pub mod sternheimer_sparse;
 
 pub use lanczos::{run_lanczos_seeded, LanczosResult};
 
@@ -28,7 +32,8 @@ use ferric_mp2::rimp2::{compute_rpa_intermediates, RiMp2Config};
 use ferric_scf::rhf::RhfResult;
 use ndarray::{Array1, Array2};
 
-pub use config::{Chi0Backend, Eigensolver, PdepRpaConfig};
+pub use config::{Chi0Backend, Chi0Sparsity, Eigensolver, PdepRpaConfig};
+pub use screen::{build_screened_bov, build_screened_bov_boys, ScreenedBov};
 
 /// Allocating wrapper that dispatches the χ₀ kernel (Dense vs Laplace) based on
 /// whether a `LaplaceQuadrature` is supplied.
@@ -120,6 +125,43 @@ fn build_atom_seed(dfbs: &PreparedBasis) -> Result<Array2<f64>, FerricError> {
     Ok(q)
 }
 
+/// Build a Davidson/Lanczos seed from a Boys-screened B-tile representation.
+///
+/// For each Boys-localized occupied i_loc, build a seed column equal to the
+/// sum of its tile columns (i.e., Σ_a B^P_{i_loc, a}) scattered back to the
+/// full naux index via `p_lists[i_loc]`. Result has up to `nocc_loc` columns;
+/// QR drops linearly dependent / zero columns.
+///
+/// This is the "Boys-as-seed" effect: starts the Krylov subspace from
+/// localized-occupied → aux projections, which is where the dominant
+/// dielectric eigenmodes live.
+fn build_boys_screened_seed(sb: &ScreenedBov) -> Result<Array2<f64>, FerricError> {
+    use ndarray_linalg::QR;
+
+    let naux = sb.naux;
+    let nocc_loc = sb.n_occ_loc;
+    let mut seed = Array2::<f64>::zeros((naux, nocc_loc));
+
+    for i_loc in 0..nocc_loc {
+        let p_list = &sb.p_lists[i_loc];
+        let tile = &sb.tiles[i_loc];
+        if p_list.is_empty() {
+            continue;
+        }
+        // Sum over virtuals → length-m_i vector.
+        let col_sum: Array1<f64> = tile.sum_axis(ndarray::Axis(1));
+        for (slot, &p) in p_list.iter().enumerate() {
+            seed[(p, i_loc)] = col_sum[slot];
+        }
+    }
+
+    // QR-orthonormalize; drops null/dependent columns.
+    let (q, _r) = seed
+        .qr()
+        .map_err(|e| FerricError::General(format!("Boys-screened seed QR failed: {e}")))?;
+    Ok(q)
+}
+
 /// Results from a PDEP-RPA calculation.
 #[derive(Debug)]
 pub struct PdepRpaResult {
@@ -203,8 +245,71 @@ pub fn run_pdep_rpa(
     let use_atom_seed =
         config.trunc_thresh > 0.0 && naux > 4 * dfbs.natoms();
 
-    let davidson_result = match config.eigensolver {
-        Eigensolver::Davidson => {
+    // Optional screened-tile representation (Boys-localized occupied,
+    // per-orbital aux-row screening). Only used inside the Davidson/Lanczos
+    // matvec closure when `chi0_sparsity = BoysScreened`. The post-Davidson
+    // energy integration still uses the dense b_ov path for correctness.
+    let screened_bov_opt: Option<ScreenedBov> = match config.chi0_sparsity {
+        Chi0Sparsity::Dense => None,
+        Chi0Sparsity::BoysScreened { thresh } => {
+            let (sb, _boys) = screen::build_screened_bov_boys(
+                mol,
+                obs,
+                dfbs,
+                op,
+                rhf,
+                config.frozen_core,
+                thresh,
+            )?;
+            Some(sb)
+        }
+    };
+
+    let davidson_result = match (config.eigensolver, screened_bov_opt.as_ref()) {
+        // --- Sparse Boys-screened path ---
+        (Eigensolver::Davidson, Some(sb)) => {
+            // Seed: localized-occupied → aux projection. Columns of the per-
+            // orbital tile summed over virtuals and scattered back to full
+            // naux via p_lists, then QR-orthonormalized. This is the "Boys
+            // as seed" effect — falls out of the screened representation.
+            let seed = build_boys_screened_seed(sb)?;
+            let eps_vir_seed = eps_vir.clone();
+            let sb_ref = sb;
+            davidson::run_davidson_seeded(
+                seed,
+                |v_mat: &Array2<f64>, omega: f64| {
+                    sternheimer_sparse::dielectric_matrix_screened(
+                        v_mat, sb_ref, &eps_vir_seed, omega,
+                    )
+                },
+                config.davidson_conv_thresh,
+                max_vecs,
+                naux,
+            )?
+        }
+        (Eigensolver::Lanczos, Some(sb)) => {
+            let seed = build_boys_screened_seed(sb)?;
+            let block_size = seed.ncols().max(1);
+            let max_iter = (max_vecs / block_size).max(8);
+            let eps_vir_lz = eps_vir.clone();
+            let sb_ref = sb;
+            let matvec = |v: &Array2<f64>| -> Array2<f64> {
+                sternheimer_sparse::dielectric_apply_screened(v, sb_ref, &eps_vir_lz, 0.0)
+            };
+            let lz = lanczos::run_lanczos_seeded(
+                seed,
+                matvec,
+                naux,
+                max_iter,
+                config.davidson_conv_thresh,
+            )?;
+            davidson::DavidsonResult {
+                eigenvalues: lz.eigenvalues,
+                eigenvectors: lz.eigenvectors,
+            }
+        }
+        // --- Dense legacy path ---
+        (Eigensolver::Davidson, None) => {
             if use_atom_seed {
                 let seed = build_atom_seed(dfbs)?;
                 let laplace_q = laplace_for_davidson.clone();
@@ -236,7 +341,7 @@ pub fn run_pdep_rpa(
                 )?
             }
         }
-        Eigensolver::Lanczos => {
+        (Eigensolver::Lanczos, None) => {
             let seed = if use_atom_seed {
                 build_atom_seed(dfbs)?
             } else {
