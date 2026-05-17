@@ -493,6 +493,7 @@ name = "ferric-rpa"
 version = "0.1.0"
 dependencies = [
  "ferric-core",
+ "ferric-export",
  "ferric-integrals",
  "ferric-mp2",
  "ferric-quadrature",

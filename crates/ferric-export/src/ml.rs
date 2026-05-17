@@ -1,4 +1,4 @@
-use ndarray::{Array1, Array2};
+use ndarray::{Array1, Array2, Array3};
 use ndarray_npy::NpzWriter;
 use std::fs::File;
 use crate::cube::ExportError;
@@ -18,6 +18,7 @@ pub fn export_npz(
     alpha_tensor: Option<&[[f64; 3]; 3]>,
     electric_field: Option<&[[f64; 3]]>,
     density_matrix: Option<&Array2<f64>>,
+    alpha_atomic: Option<&[[[f64; 3]; 3]]>,
 ) -> Result<(), ExportError> {
     let file = File::create(path)?;
     let mut writer = NpzWriter::new(file);
@@ -69,6 +70,22 @@ pub fn export_npz(
 
     if let Some(dm) = density_matrix {
         writer.add_array("density_matrix", dm)
+            .map_err(|e| ExportError::Other(e.to_string()))?;
+    }
+
+    if let Some(aa) = alpha_atomic {
+        let n = aa.len();
+        let mut flat: Vec<f64> = Vec::with_capacity(n * 9);
+        for a in aa {
+            for row in a {
+                for v in row {
+                    flat.push(*v);
+                }
+            }
+        }
+        let arr = Array3::from_shape_vec((n, 3, 3), flat).unwrap();
+        writer
+            .add_array("alpha_atomic", &arr)
             .map_err(|e| ExportError::Other(e.to_string()))?;
     }
 

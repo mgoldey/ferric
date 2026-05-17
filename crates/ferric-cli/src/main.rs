@@ -526,13 +526,15 @@ fn main() {
             if let Some(npz_path) = cfg.rpa.export_npz.as_deref() {
                 use ferric_export::export_npz;
                 use ferric_rpa::properties::{
-                    electric_field_at_atoms, esp_at_atoms, pdep_polarizability_static,
+                    electric_field_at_atoms, esp_at_atoms, pdep_polarizability_hirshfeld,
+                    pdep_polarizability_static,
                 };
                 use ndarray::Array2;
 
                 let compute_esp = cfg.rpa.compute_esp.unwrap_or(true);
                 let compute_pol = cfg.rpa.compute_polarizability.unwrap_or(true);
                 let compute_ef = cfg.rpa.compute_electric_field.unwrap_or(true);
+                let compute_alpha_atomic = cfg.rpa.compute_alpha_atomic.unwrap_or(true);
 
                 let coords_arr = {
                     let mut a = Array2::<f64>::zeros((mol.atoms.len(), 3));
@@ -590,6 +592,28 @@ fn main() {
                     None
                 };
 
+                let alpha_atomic_vec = if compute_alpha_atomic {
+                    match pdep_polarizability_hirshfeld(
+                        &mol, &prep, &bs, &dfbs, &result, op, &rpa_cfg,
+                    ) {
+                        Ok(v) => {
+                            println!(
+                                "Per-atom Hirshfeld α (iso, a.u.): {:?}",
+                                v.iter()
+                                    .map(|t| (t[0][0] + t[1][1] + t[2][2]) / 3.0)
+                                    .collect::<Vec<_>>()
+                            );
+                            Some(v)
+                        }
+                        Err(e) => {
+                            eprintln!("warning: per-atom α (Hirshfeld) failed: {e}");
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+
                 let compute_dm = cfg.rpa.compute_density_matrix.unwrap_or(true);
                 let dm_ref = if compute_dm { Some(result.density_r()) } else { None };
 
@@ -605,6 +629,7 @@ fn main() {
                     alpha_arr.as_ref(),
                     ef_vec.as_deref(),
                     dm_ref,
+                    alpha_atomic_vec.as_deref(),
                 ) {
                     eprintln!("warning: failed to write {}: {}", npz_path, e);
                 } else {

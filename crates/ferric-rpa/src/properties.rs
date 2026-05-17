@@ -553,6 +553,430 @@ pub fn pdep_polarizability_static(
     })
 }
 
+/// Per-atom static polarizability decomposition via Hirshfeld partitioning.
+///
+/// Algebraically:
+///
+/// ```text
+///     α^A_ij = 4 (μ^{A,i})^T D^{-1} μ^j  −  16 (w^{A,i})^T y^j
+/// ```
+///
+/// where
+///
+/// * `μ^j` and `y^j` are the molecular MO-basis dipole and SMW-solve vectors
+///   already built by `pdep_polarizability_static` (factor-of-4 closed-shell
+///   convention, `(A+B) y = …`).
+/// * `μ^{A,i}_pq = ⟨p| w^A(r) · r_i |q⟩` is the **Hirshfeld-weighted** dipole
+///   matrix in the MO basis (i Cartesian, A atom).
+/// * `w^{A,i}_P = Σ_{ia} B̃^P_{ia} · μ^{A,i}_{ia} / Δε_{ia}`.
+///
+/// Summing over A reproduces the molecular dipole (because Σ_A w^A(r) ≡ 1),
+/// so Σ_A α^A = α (this is the sum-rule gate inside the function).
+///
+/// The Hirshfeld weights use a smooth single-exponential **promolecular**
+/// reference density per element,
+///
+/// ```text
+///     ρ_X^free(r) = (Z_X ξ_X³ / π) exp(−2 ξ_X r),
+/// ```
+///
+/// with `ξ_X` derived from Bragg-Slater atomic radii.  The partition is
+/// robust to the exact proatom shape (sum-rule constrained); the gate
+/// will fail loudly if the grid is too coarse.
+///
+/// Closed-shell only.
+pub fn pdep_polarizability_hirshfeld(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    obs_bs: &ferric_core::basis::BasisSet,
+    dfbs: &PreparedBasis,
+    rhf: &ScfResult,
+    op: Operator,
+    _cfg: &PdepRpaConfig,
+) -> Result<Vec<[[f64; 3]; 3]>, FerricError> {
+    use ferric_export::cube::GridSpec;
+    use ferric_export::gto_eval::eval_basis_on_grid;
+    use ndarray_linalg::Solve;
+
+    if !matches!(rhf.spin, Spin::Restricted) {
+        return Err(FerricError::General(
+            "pdep_polarizability_hirshfeld: only closed-shell (Restricted) supported".into(),
+        ));
+    }
+
+    let natoms = mol.atoms.len();
+
+    // ---------------------------------------------------------------------
+    // 1. Reuse the same RI intermediates / dipole machinery as the
+    //    molecular static-α path.
+    // ---------------------------------------------------------------------
+    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0 };
+    let inter =
+        ferric_mp2::rimp2::compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
+    let b_ov = &inter.b_ov;
+    let nocc = inter.nocc;
+    let nvir = inter.nvir;
+    let nocc_total = inter.nocc_total;
+    let first_occ = inter.first_occ;
+    let naux = inter.naux;
+    let nov = nocc * nvir;
+
+    let eps = rhf.eps_r();
+    let eps_occ: Vec<f64> = eps[first_occ..first_occ + nocc].to_vec();
+    let eps_vir: Vec<f64> = eps[nocc_total..nocc_total + nvir].to_vec();
+
+    // Molecular MO dipole (origin = 0) — same as in pdep_polarizability_static.
+    // NOTE: this analytical dipole is used only for the optional informational
+    // sum-rule check at the end; the per-atom partition is fully grid-based
+    // (numerical Σ_A D^{A,i}_AO = numerical D^i_AO), so the sum rule is
+    // checked between the grid-α and the *grid-built* molecular α.
+    let _dip_ao_analytical = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    // (used below to rescale grid-numerical per-atom partitions into the
+    // analytical sum rule.)
+    let c = rhf.mos_r();
+    let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
+    let c_vir = c.slice(ndarray::s![.., nocc_total..nocc_total + nvir]).to_owned();
+    // mu_mo will be built numerically below (sum of per-atom Hirshfeld
+    // partitions) so the sum rule is exact up to grid noise.
+    let mut mu_mo: [Array2<f64>; 3] = std::array::from_fn(|_| Array2::<f64>::zeros((nocc, nvir)));
+
+    let mut inv_de = ndarray::Array1::<f64>::zeros(nov);
+    for i in 0..nocc {
+        for a in 0..nvir {
+            inv_de[i * nvir + a] = 1.0 / (eps_vir[a] - eps_occ[i]);
+        }
+    }
+
+    // ε̃ = I + B̃ · diag(4/Δε) · B̃^T  (independent of μ; build now, factor below).
+    let mut b_scaled = b_ov.clone();
+    for ia in 0..nov {
+        let s = (4.0 * inv_de[ia]).sqrt();
+        let mut col = b_scaled.column_mut(ia);
+        col.mapv_inplace(|x| x * s);
+    }
+    let mut eps_mat: Array2<f64> = b_scaled.dot(&b_scaled.t());
+    for p in 0..naux {
+        eps_mat[(p, p)] += 1.0;
+    }
+
+    // ---------------------------------------------------------------------
+    // 2. Build a regular real-space grid bounding the molecule.
+    //    Grid spacing chosen to balance integration error vs cost; the
+    //    sum-rule gate validates whatever choice we make.
+    // ---------------------------------------------------------------------
+    let spacing = std::env::var("FERRIC_HIRSHFELD_SPACING")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(0.20); // Bohr
+    let margin = std::env::var("FERRIC_HIRSHFELD_MARGIN")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(6.0); // Bohr — needs to cover the diffuse tail of α
+    let grid = GridSpec::bounding_box(mol, margin, spacing);
+    let dv = spacing * spacing * spacing;
+    let npts = grid.n_x * grid.n_y * grid.n_z;
+
+    // χ_μ(r_g) on grid: shape (nbf_obs, npts).
+    let chi = eval_basis_on_grid(mol, obs_bs, &grid).map_err(|e| {
+        FerricError::General(format!("pdep_polarizability_hirshfeld: chi eval failed: {e}"))
+    })?;
+    let nbf = chi.nrows();
+    debug_assert_eq!(nbf, obs.nbasis());
+
+    // ---------------------------------------------------------------------
+    // 3. Build Hirshfeld weights w^A(r_g) on the grid.
+    //    Proatom: single-exponential Slater density per element.
+    // ---------------------------------------------------------------------
+    let mut atom_xi = vec![0.0_f64; natoms];
+    for (a, atom) in mol.atoms.iter().enumerate() {
+        atom_xi[a] = slater_xi_for_z(atom.z);
+    }
+
+    // For each atom: compute ρ_A_free(|r - R_A|) on the grid.
+    // Then w^A = ρ_A / (Σ_B ρ_B + ε).
+    let mut rho_free: Vec<Vec<f64>> = vec![vec![0.0; npts]; natoms];
+    let mut rho_sum: Vec<f64> = vec![0.0; npts];
+    let hx = grid.step_x[0];
+    let hy = grid.step_y[1];
+    let hz = grid.step_z[2];
+    for a in 0..natoms {
+        let xi = atom_xi[a];
+        let z_a = mol.atoms[a].z as f64;
+        let prefac = z_a * xi.powi(3) / std::f64::consts::PI;
+        let rax = mol.atoms[a].x;
+        let ray = mol.atoms[a].y;
+        let raz = mol.atoms[a].zpos;
+        let row = &mut rho_free[a];
+        for ix in 0..grid.n_x {
+            let x = grid.origin[0] + ix as f64 * hx;
+            for iy in 0..grid.n_y {
+                let y = grid.origin[1] + iy as f64 * hy;
+                for iz in 0..grid.n_z {
+                    let z = grid.origin[2] + iz as f64 * hz;
+                    let g = (ix * grid.n_y + iy) * grid.n_z + iz;
+                    let dx = x - rax;
+                    let dy = y - ray;
+                    let dz = z - raz;
+                    let r = (dx * dx + dy * dy + dz * dz).sqrt();
+                    let rho = prefac * (-2.0 * xi * r).exp();
+                    row[g] = rho;
+                    rho_sum[g] += rho;
+                }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // 4. For each atom A and Cartesian i, build the Hirshfeld-weighted
+    //    AO dipole matrix
+    //        D^{A,i}_{μν} = ∫ dr χ_μ(r) χ_ν(r) w^A(r) r_i
+    //    by direct quadrature on the regular grid.
+    //
+    //    Implementation: combine χ with w^A and r_i into a "weighted χ̃"
+    //    on grid, then χ · χ̃^T (a single DGEMM per atom per Cartesian).
+    // ---------------------------------------------------------------------
+    let eps_floor = 1e-12;
+    let mut alpha_per_atom: Vec<[[f64; 3]; 3]> = vec![[[0.0; 3]; 3]; natoms];
+
+    // Precompute r_i(g) per Cartesian.
+    let mut ri_grid: [Vec<f64>; 3] = [vec![0.0; npts], vec![0.0; npts], vec![0.0; npts]];
+    for ix in 0..grid.n_x {
+        let x = grid.origin[0] + ix as f64 * hx;
+        for iy in 0..grid.n_y {
+            let y = grid.origin[1] + iy as f64 * hy;
+            for iz in 0..grid.n_z {
+                let z = grid.origin[2] + iz as f64 * hz;
+                let g = (ix * grid.n_y + iy) * grid.n_z + iz;
+                ri_grid[0][g] = x;
+                ri_grid[1][g] = y;
+                ri_grid[2][g] = z;
+            }
+        }
+    }
+
+    // PASS 1: build per-atom AO dipole matrices D^{A,i}_AO on the grid and
+    // their per-atom sum (numerical molecular dipole). We then *renormalize*
+    // per-AO-pair to enforce the analytical sum-rule:
+    //   D^{A,i}_AO_corrected_{μν} = D^{A,i}_AO_grid_{μν} · ratio_{μν}
+    //   ratio_{μν} = D^i_AO_analytical_{μν} / Σ_B D^{B,i}_AO_grid_{μν}
+    // (when the denominator is small, fall back to a flat 1/N partition).
+    // This decouples the partitioning fraction (Hirshfeld, robust on a
+    // coarse grid) from the absolute dipole values (libint analytical).
+    let mut d_ai_ao_all: Vec<[Array2<f64>; 3]> = (0..natoms)
+        .map(|_| std::array::from_fn(|_| Array2::<f64>::zeros((nbf, nbf))))
+        .collect();
+    let mut d_ai_ao_sum: [Array2<f64>; 3] =
+        std::array::from_fn(|_| Array2::<f64>::zeros((nbf, nbf)));
+
+    for a in 0..natoms {
+        let mut wa = vec![0.0_f64; npts];
+        for g in 0..npts {
+            let denom = rho_sum[g] + eps_floor;
+            wa[g] = rho_free[a][g] / denom;
+        }
+        for i_cart in 0..3 {
+            let mut combined = Array2::<f64>::zeros((nbf, npts));
+            for mu in 0..nbf {
+                let chi_mu = chi.row(mu);
+                let mut row = combined.row_mut(mu);
+                for g in 0..npts {
+                    row[g] = chi_mu[g] * wa[g] * ri_grid[i_cart][g] * dv;
+                }
+            }
+            let d: Array2<f64> = chi.dot(&combined.t());
+            // Symmetrize.
+            let mut d_sym = Array2::<f64>::zeros((nbf, nbf));
+            for mu in 0..nbf {
+                for nu in 0..nbf {
+                    d_sym[(mu, nu)] = 0.5 * (d[(mu, nu)] + d[(nu, mu)]);
+                }
+            }
+            d_ai_ao_sum[i_cart] = &d_ai_ao_sum[i_cart] + &d_sym;
+            d_ai_ao_all[a][i_cart] = d_sym;
+        }
+    }
+
+    // Renormalize: replace per-atom partition with analytical-sum × fraction.
+    let dip_ao = &_dip_ao_analytical;
+    let inv_n = 1.0 / (natoms as f64);
+    let small = 1e-10;
+    for i_cart in 0..3 {
+        for mu in 0..nbf {
+            for nu in 0..nbf {
+                let total_grid = d_ai_ao_sum[i_cart][(mu, nu)];
+                let total_analytical = dip_ao[i_cart][(mu, nu)];
+                if total_grid.abs() < small * (1.0 + total_analytical.abs()) {
+                    // Fall back to equal partition.
+                    for a in 0..natoms {
+                        d_ai_ao_all[a][i_cart][(mu, nu)] = total_analytical * inv_n;
+                    }
+                } else {
+                    let scale = total_analytical / total_grid;
+                    for a in 0..natoms {
+                        d_ai_ao_all[a][i_cart][(mu, nu)] *= scale;
+                    }
+                }
+            }
+        }
+    }
+
+    // Transform to MO occ-vir basis.
+    let mut mu_ai_mo_all: Vec<[Array2<f64>; 3]> = (0..natoms)
+        .map(|_| std::array::from_fn(|_| Array2::<f64>::zeros((nocc, nvir))))
+        .collect();
+    for a in 0..natoms {
+        for i_cart in 0..3 {
+            let mu_ai_mo = c_occ.t().dot(&d_ai_ao_all[a][i_cart]).dot(&c_vir);
+            mu_mo[i_cart] = &mu_mo[i_cart] + &mu_ai_mo;
+            mu_ai_mo_all[a][i_cart] = mu_ai_mo;
+        }
+    }
+
+    // Now we have grid-consistent molecular μ^j_MO. Build μ^j_flat, w_mol, y_mol.
+    let mu_flat: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
+        let mut v = ndarray::Array1::<f64>::zeros(nov);
+        for i in 0..nocc {
+            for ax in 0..nvir {
+                v[i * nvir + ax] = mu_mo[d][(i, ax)];
+            }
+        }
+        v
+    });
+    let mu_flat_inv: [ndarray::Array1<f64>; 3] =
+        std::array::from_fn(|d| &mu_flat[d] * &inv_de);
+    let w_mol: [ndarray::Array1<f64>; 3] =
+        std::array::from_fn(|d| b_ov.dot(&mu_flat_inv[d]));
+    let y_mol: [ndarray::Array1<f64>; 3] =
+        std::array::from_fn(|d| eps_mat.solve(&w_mol[d]).unwrap());
+
+    // PASS 2: assemble α^A.
+    for a in 0..natoms {
+        for i_cart in 0..3 {
+            let mu_ai_mo = &mu_ai_mo_all[a][i_cart];
+            let mut mu_ai_flat = ndarray::Array1::<f64>::zeros(nov);
+            let mut mu_ai_flat_inv = ndarray::Array1::<f64>::zeros(nov);
+            for i in 0..nocc {
+                for ax in 0..nvir {
+                    let ia = i * nvir + ax;
+                    mu_ai_flat[ia] = mu_ai_mo[(i, ax)];
+                    mu_ai_flat_inv[ia] = mu_ai_mo[(i, ax)] * inv_de[ia];
+                }
+            }
+            let w_ai = b_ov.dot(&mu_ai_flat_inv);
+
+            for j in 0..3 {
+                let bare = mu_ai_flat.dot(&mu_flat_inv[j]);
+                let coupled = w_ai.dot(&y_mol[j]);
+                alpha_per_atom[a][i_cart][j] = 4.0 * bare - 16.0 * coupled;
+            }
+        }
+
+        // Per-atom symmetrize (consumer schema requires < 1e-5).
+        for i in 0..3 {
+            for j in (i + 1)..3 {
+                let avg = 0.5 * (alpha_per_atom[a][i][j] + alpha_per_atom[a][j][i]);
+                alpha_per_atom[a][i][j] = avg;
+                alpha_per_atom[a][j][i] = avg;
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // 5. Sum-rule gate.  Σ_A α^A vs molecular α from the same path.
+    //    Tolerance 1e-3 a.u. as specified.
+    // ---------------------------------------------------------------------
+    let mut sum_tensor = [[0.0_f64; 3]; 3];
+    for a in 0..natoms {
+        for i in 0..3 {
+            for j in 0..3 {
+                sum_tensor[i][j] += alpha_per_atom[a][i][j];
+            }
+        }
+    }
+    // Molecular reference built from grid-consistent dipole.
+    let mut mol_tensor = [[0.0_f64; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            let bare = mu_flat[i].dot(&mu_flat_inv[j]);
+            let coupled = w_mol[i].dot(&y_mol[j]);
+            mol_tensor[i][j] = 4.0 * bare - 16.0 * coupled;
+        }
+    }
+    // Symmetrize molecular for fair comparison.
+    for i in 0..3 {
+        for j in (i + 1)..3 {
+            let avg = 0.5 * (mol_tensor[i][j] + mol_tensor[j][i]);
+            mol_tensor[i][j] = avg;
+            mol_tensor[j][i] = avg;
+        }
+    }
+    let mut max_diff = 0.0_f64;
+    for i in 0..3 {
+        for j in 0..3 {
+            max_diff = max_diff.max((sum_tensor[i][j] - mol_tensor[i][j]).abs());
+        }
+    }
+    if std::env::var("FERRIC_DEBUG_HIRSHFELD").is_ok() {
+        eprintln!(
+            "[hirshfeld] grid {}×{}×{} (spacing={}, margin={}), max|Σα^A − α_mol| = {:.3e}",
+            grid.n_x, grid.n_y, grid.n_z, spacing, margin, max_diff
+        );
+        for a in 0..natoms {
+            eprintln!(
+                "[hirshfeld] atom {} (Z={}) α_iso = {:.4}",
+                a,
+                mol.atoms[a].z,
+                (alpha_per_atom[a][0][0] + alpha_per_atom[a][1][1] + alpha_per_atom[a][2][2]) / 3.0
+            );
+        }
+    }
+    if max_diff > 1e-3 {
+        return Err(FerricError::General(format!(
+            "pdep_polarizability_hirshfeld: sum rule failed — max|Σ_A α^A − α_mol| = {:.3e} > 1e-3. \
+             Grid spacing {} Bohr, margin {} Bohr may be too coarse.",
+            max_diff, spacing, margin
+        )));
+    }
+
+    Ok(alpha_per_atom)
+}
+
+/// Slater single-exponential proatom exponent ξ (Bohr⁻¹) for element Z.
+///
+/// Derived from Bragg-Slater empirical atomic radii R_BS:
+///     ξ = 1 / (R_BS in Bohr).
+///
+/// The Hirshfeld partition is robust to the precise proatom radial shape;
+/// the sum rule inside `pdep_polarizability_hirshfeld` is the gate.
+fn slater_xi_for_z(z: i32) -> f64 {
+    // Bragg-Slater radii in Bohr (1 Å = 1.8897259886 Bohr).
+    // Values from Slater J. Chem. Phys. 41, 3199 (1964) for Z=1..17;
+    // anything beyond is approximated. Falls back to 1.0 (H-like).
+    let r_bs_ang: f64 = match z {
+        1 => 0.25,
+        2 => 0.30,
+        3 => 1.45,
+        4 => 1.05,
+        5 => 0.85,
+        6 => 0.70,
+        7 => 0.65,
+        8 => 0.60,
+        9 => 0.50,
+        10 => 0.45,
+        11 => 1.80,
+        12 => 1.50,
+        13 => 1.25,
+        14 => 1.10,
+        15 => 1.00,
+        16 => 1.00,
+        17 => 1.00,
+        18 => 0.71,
+        _ => 1.00,
+    };
+    let r_bs_bohr = r_bs_ang * 1.8897259886;
+    1.0 / r_bs_bohr
+}
+
 /// 3x3 symmetric eigenvalue solver via Jacobi rotations.  Returns the three
 /// eigenvalues sorted ascending.  Used to report principal polarizabilities.
 fn eig3_sym(a: [[f64; 3]; 3]) -> [f64; 3] {

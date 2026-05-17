@@ -75,6 +75,10 @@ pub struct RpaCfg {
     /// Compute and include the static polarizability tensor in the NPZ bundle.
     /// Default: true when `export_npz` is set.
     pub compute_polarizability: Option<bool>,
+    /// Compute and include the per-atom Hirshfeld polarizability decomposition
+    /// (`alpha_atomic`, shape (N, 3, 3), additive to `alpha_tensor`).
+    /// Default: true when `export_npz` is set.
+    pub compute_alpha_atomic: Option<bool>,
     /// Compute and include the electric field at each nuclear position in the
     /// NPZ bundle (stored as `electric_field`, shape (natoms, 3), a.u.).
     /// Default: true when `export_npz` is set.
