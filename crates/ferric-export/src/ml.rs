@@ -17,6 +17,7 @@ pub fn export_npz(
     esp_atoms: Option<&[f64]>,
     alpha_tensor: Option<&[[f64; 3]; 3]>,
     electric_field: Option<&[[f64; 3]]>,
+    density_matrix: Option<&Array2<f64>>,
 ) -> Result<(), ExportError> {
     let file = File::create(path)?;
     let mut writer = NpzWriter::new(file);
@@ -63,6 +64,11 @@ pub fn export_npz(
         let flat: Vec<f64> = ef.iter().flat_map(|row| row.iter().copied()).collect();
         let ef_arr = Array2::from_shape_vec((n, 3), flat).unwrap();
         writer.add_array("electric_field", &ef_arr)
+            .map_err(|e| ExportError::Other(e.to_string()))?;
+    }
+
+    if let Some(dm) = density_matrix {
+        writer.add_array("density_matrix", dm)
             .map_err(|e| ExportError::Other(e.to_string()))?;
     }
 

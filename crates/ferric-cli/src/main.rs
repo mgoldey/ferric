@@ -590,6 +590,9 @@ fn main() {
                     None
                 };
 
+                let compute_dm = cfg.rpa.compute_density_matrix.unwrap_or(true);
+                let dm_ref = if compute_dm { Some(result.density_r()) } else { None };
+
                 if let Err(e) = export_npz(
                     npz_path,
                     None,
@@ -601,6 +604,7 @@ fn main() {
                     esp_vec.as_deref(),
                     alpha_arr.as_ref(),
                     ef_vec.as_deref(),
+                    dm_ref,
                 ) {
                     eprintln!("warning: failed to write {}: {}", npz_path, e);
                 } else {

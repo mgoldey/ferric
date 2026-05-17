@@ -79,6 +79,11 @@ pub struct RpaCfg {
     /// NPZ bundle (stored as `electric_field`, shape (natoms, 3), a.u.).
     /// Default: true when `export_npz` is set.
     pub compute_electric_field: Option<bool>,
+    /// Include the AO-basis density matrix in the NPZ bundle (stored as
+    /// `density_matrix`, shape (n_bf, n_bf), float64). Needed downstream for
+    /// CM5 charge derivation and density-derived properties.
+    /// Default: true when `export_npz` is set.
+    pub compute_density_matrix: Option<bool>,
 }
 
 #[derive(Deserialize)]
