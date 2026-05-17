@@ -526,7 +526,8 @@ fn main() {
             if let Some(npz_path) = cfg.rpa.export_npz.as_deref() {
                 use ferric_export::export_npz;
                 use ferric_rpa::properties::{
-                    electric_field_at_atoms, esp_at_atoms, pdep_polarizability_hirshfeld,
+                    electric_field_at_atoms, esp_at_atoms, hirshfeld_charges,
+                    pdep_polarizability_hirshfeld,
                     pdep_polarizability_static,
                 };
                 use ndarray::Array2;
@@ -617,6 +618,25 @@ fn main() {
                 let compute_dm = cfg.rpa.compute_density_matrix.unwrap_or(true);
                 let dm_ref = if compute_dm { Some(result.density_r()) } else { None };
 
+                let compute_hq = cfg.rpa.compute_hirshfeld_charges.unwrap_or(true);
+                let hq_vec = if compute_hq {
+                    match hirshfeld_charges(&mol, &bs, result.density_r()) {
+                        Ok(q) => {
+                            println!(
+                                "Hirshfeld charges (e): {:?}",
+                                q.iter().map(|v| (v * 1e4).round() / 1e4).collect::<Vec<_>>()
+                            );
+                            Some(q)
+                        }
+                        Err(e) => {
+                            eprintln!("warning: Hirshfeld charges failed: {e}");
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+
                 if let Err(e) = export_npz(
                     npz_path,
                     None,
@@ -630,6 +650,7 @@ fn main() {
                     ef_vec.as_deref(),
                     dm_ref,
                     alpha_atomic_vec.as_deref(),
+                    hq_vec.as_deref(),
                 ) {
                     eprintln!("warning: failed to write {}: {}", npz_path, e);
                 } else {

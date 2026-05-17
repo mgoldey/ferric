@@ -941,6 +941,120 @@ pub fn pdep_polarizability_hirshfeld(
     Ok(alpha_per_atom)
 }
 
+/// Hirshfeld atomic charges q_A = Z_A − ∫ ρ(r) w^A(r) dr.
+///
+/// Uses the same Slater-proatom Hirshfeld weights as
+/// [`pdep_polarizability_hirshfeld`] and a regular real-space grid, so
+/// charge magnitudes and signs are directly comparable to the per-atom
+/// polarizability tensors exported alongside.
+///
+/// The total electronic charge is renormalized so Σ_A (Z_A − q_A) = N_e
+/// exactly (compensates for grid quadrature error in the density integral).
+///
+/// Returns `Vec<f64>` of length `mol.atoms.len()`, in units of e.
+pub fn hirshfeld_charges(
+    mol: &Molecule,
+    obs_bs: &ferric_core::basis::BasisSet,
+    density: &Array2<f64>,
+) -> Result<Vec<f64>, FerricError> {
+    use ferric_export::cube::GridSpec;
+    use ferric_export::gto_eval::eval_basis_on_grid;
+
+    let natoms = mol.atoms.len();
+    let spacing = std::env::var("FERRIC_HIRSHFELD_SPACING")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(0.20);
+    let margin = std::env::var("FERRIC_HIRSHFELD_MARGIN")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(6.0);
+    let grid = GridSpec::bounding_box(mol, margin, spacing);
+    let dv = spacing * spacing * spacing;
+    let npts = grid.n_x * grid.n_y * grid.n_z;
+    let hx = grid.step_x[0];
+    let hy = grid.step_y[1];
+    let hz = grid.step_z[2];
+
+    let chi = eval_basis_on_grid(mol, obs_bs, &grid).map_err(|e| {
+        FerricError::General(format!("hirshfeld_charges: chi eval failed: {e}"))
+    })?;
+    let nbf = chi.nrows();
+    if density.nrows() != nbf || density.ncols() != nbf {
+        return Err(FerricError::General(format!(
+            "hirshfeld_charges: density {:?} != nbf {}",
+            density.dim(),
+            nbf
+        )));
+    }
+
+    // ρ(r_g) = Σ_{μν} D_{μν} χ_μ(r_g) χ_ν(r_g) = sum_μ χ_μ(g) · (D · χ)(μ,g)
+    let d_chi = density.dot(&chi); // (nbf, npts)
+    let mut rho: Vec<f64> = vec![0.0; npts];
+    for mu in 0..nbf {
+        for g in 0..npts {
+            rho[g] += chi[(mu, g)] * d_chi[(mu, g)];
+        }
+    }
+
+    // Slater proatom densities and Hirshfeld weights, exactly as in
+    // pdep_polarizability_hirshfeld.
+    let mut rho_free: Vec<Vec<f64>> = vec![vec![0.0; npts]; natoms];
+    let mut rho_sum: Vec<f64> = vec![0.0; npts];
+    for a in 0..natoms {
+        let xi = slater_xi_for_z(mol.atoms[a].z);
+        let z_a = mol.atoms[a].z as f64;
+        let prefac = z_a * xi.powi(3) / std::f64::consts::PI;
+        let rax = mol.atoms[a].x;
+        let ray = mol.atoms[a].y;
+        let raz = mol.atoms[a].zpos;
+        let row = &mut rho_free[a];
+        for ix in 0..grid.n_x {
+            let x = grid.origin[0] + ix as f64 * hx;
+            for iy in 0..grid.n_y {
+                let y = grid.origin[1] + iy as f64 * hy;
+                for iz in 0..grid.n_z {
+                    let z = grid.origin[2] + iz as f64 * hz;
+                    let g = (ix * grid.n_y + iy) * grid.n_z + iz;
+                    let dx = x - rax;
+                    let dy = y - ray;
+                    let dz = z - raz;
+                    let r = (dx * dx + dy * dy + dz * dz).sqrt();
+                    let r0 = prefac * (-2.0 * xi * r).exp();
+                    row[g] = r0;
+                    rho_sum[g] += r0;
+                }
+            }
+        }
+    }
+
+    let eps_floor = 1e-12;
+    // n_elec_A_grid = ∫ ρ · w^A
+    let mut n_e_grid = vec![0.0_f64; natoms];
+    for a in 0..natoms {
+        let mut acc = 0.0;
+        for g in 0..npts {
+            let w = rho_free[a][g] / (rho_sum[g] + eps_floor);
+            acc += rho[g] * w * dv;
+        }
+        n_e_grid[a] = acc;
+    }
+
+    // Renormalize: Σ_A n_e_grid_A should equal N_e (= trace(D·S)). Use the
+    // electron count from the molecule (nelec) so the partition is exact.
+    let n_elec_target = mol.nelec() as f64;
+    let n_elec_sum: f64 = n_e_grid.iter().sum();
+    let scale = if n_elec_sum.abs() > 1e-12 {
+        n_elec_target / n_elec_sum
+    } else {
+        1.0
+    };
+
+    Ok((0..natoms)
+        .map(|a| mol.atoms[a].z as f64 - scale * n_e_grid[a])
+        .collect())
+}
+
 /// Slater single-exponential proatom exponent ξ (Bohr⁻¹) for element Z.
 ///
 /// Derived from Bragg-Slater empirical atomic radii R_BS:

@@ -19,6 +19,7 @@ pub fn export_npz(
     electric_field: Option<&[[f64; 3]]>,
     density_matrix: Option<&Array2<f64>>,
     alpha_atomic: Option<&[[[f64; 3]; 3]]>,
+    hirshfeld_charges: Option<&[f64]>,
 ) -> Result<(), ExportError> {
     let file = File::create(path)?;
     let mut writer = NpzWriter::new(file);
@@ -86,6 +87,13 @@ pub fn export_npz(
         let arr = Array3::from_shape_vec((n, 3, 3), flat).unwrap();
         writer
             .add_array("alpha_atomic", &arr)
+            .map_err(|e| ExportError::Other(e.to_string()))?;
+    }
+
+    if let Some(q) = hirshfeld_charges {
+        let q_arr = Array1::from_vec(q.to_vec());
+        writer
+            .add_array("hirshfeld_charges", &q_arr)
             .map_err(|e| ExportError::Other(e.to_string()))?;
     }
 

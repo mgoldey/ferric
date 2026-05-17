@@ -88,6 +88,12 @@ pub struct RpaCfg {
     /// CM5 charge derivation and density-derived properties.
     /// Default: true when `export_npz` is set.
     pub compute_density_matrix: Option<bool>,
+    /// Compute and include Hirshfeld atomic charges in the NPZ bundle
+    /// (stored as `hirshfeld_charges`, shape (natoms,), float64, units of e).
+    /// These are the Hirshfeld baseline charges; downstream CM5 pair-correction
+    /// is applied in the consumer.
+    /// Default: true when `export_npz` is set.
+    pub compute_hirshfeld_charges: Option<bool>,
 }
 
 #[derive(Deserialize)]
