@@ -425,3 +425,141 @@ pub fn run_pdep_rpa(
         e_rpa_dft_diag,
     })
 }
+
+/// Open-shell PDEP-RPA energy (UHF or ROHF reference).
+///
+/// Dispatches on `rhf.spin`:
+/// * `Restricted`  — error (use [`run_pdep_rpa`] instead).
+/// * `Unrestricted` / `RestrictedOpen` — builds per-spin B_ov_α and
+///   B_ov_β, runs Davidson on the *summed* dielectric ε̃ = I + Π_α + Π_β,
+///   integrates RPA correlation via the same trace-log quadrature.
+///
+/// First-land scope: Dense χ₀ backend, Davidson eigensolver, identity
+/// seed. Boys-localized seeding, Lanczos, Laplace-separable χ₀, and
+/// sparse screening are deferred to C8 — the open-shell merge with
+/// the scaling stack.
+pub fn run_u_pdep_rpa(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &ScfResult,
+    config: &PdepRpaConfig,
+) -> Result<PdepRpaResult, FerricError> {
+    use ferric_mp2::rimp2::compute_rpa_intermediates_spin;
+    use ferric_scf::Spin;
+
+    if matches!(rhf.spin, Spin::Restricted) {
+        return Err(FerricError::General(
+            "run_u_pdep_rpa: use run_pdep_rpa for closed-shell results".into(),
+        ));
+    }
+
+    let mp2_cfg = RiMp2Config { frozen_core: config.frozen_core };
+    let inter_a = compute_rpa_intermediates_spin(mol, obs, dfbs, op, rhf, &mp2_cfg, true)?;
+    let inter_b = compute_rpa_intermediates_spin(mol, obs, dfbs, op, rhf, &mp2_cfg, false)?;
+    let naux = inter_a.naux;
+    debug_assert_eq!(inter_a.naux, inter_b.naux);
+
+    let eps_occ_a: Vec<f64> =
+        rhf.eps_a()[inter_a.first_occ..inter_a.first_occ + inter_a.nocc].to_vec();
+    let eps_vir_a: Vec<f64> =
+        rhf.eps_a()[inter_a.nocc_total..inter_a.nocc_total + inter_a.nvir].to_vec();
+    // ROHF stores one set of orbital energies for both spins (Guest-Saunders
+    // canonicalized α energies serve as β denominators too).
+    let eps_b_full: &[f64] = if matches!(rhf.spin, Spin::RestrictedOpen) {
+        rhf.eps_a()
+    } else {
+        rhf.eps_b()
+    };
+    let eps_occ_b: Vec<f64> =
+        eps_b_full[inter_b.first_occ..inter_b.first_occ + inter_b.nocc].to_vec();
+    let eps_vir_b: Vec<f64> =
+        eps_b_full[inter_b.nocc_total..inter_b.nocc_total + inter_b.nvir].to_vec();
+
+    let max_vecs = if config.davidson_max_vecs == 0 {
+        3 * naux
+    } else {
+        config.davidson_max_vecs
+    };
+
+    // Eigensolve. Lanczos is preferred per [[ferric-rpa-status]]; Davidson
+    // is kept as fallback to mirror the closed-shell dispatch.
+    let b_a = inter_a.b_ov.clone();
+    let b_b = inter_b.b_ov.clone();
+    let ea_o = eps_occ_a.clone();
+    let ea_v = eps_vir_a.clone();
+    let eb_o = eps_occ_b.clone();
+    let eb_v = eps_vir_b.clone();
+
+    let davidson_result = match config.eigensolver {
+        Eigensolver::Lanczos => {
+            // Block Lanczos with identity seed. C8 will swap in Boys-localized
+            // per-spin seeds; for first-land Dense+identity matches the
+            // closed-shell trunc_thresh=0 verification path.
+            let seed = Array2::eye(naux);
+            let block_size = seed.ncols().max(1);
+            let max_iter = (max_vecs / block_size).max(8);
+            let matvec = move |v: &Array2<f64>| -> Array2<f64> {
+                sternheimer::dielectric_apply_unrestricted(
+                    v, &b_a, &ea_o, &ea_v, &b_b, &eb_o, &eb_v, 0.0,
+                )
+            };
+            let lz = lanczos::run_lanczos_seeded(
+                seed, matvec, naux, max_iter, config.davidson_conv_thresh,
+            )?;
+            davidson::DavidsonResult {
+                eigenvalues: lz.eigenvalues,
+                eigenvectors: lz.eigenvectors,
+            }
+        }
+        Eigensolver::Davidson => davidson::run_davidson_static(
+            naux,
+            move |v_mat: &Array2<f64>, omega: f64| {
+                sternheimer::dielectric_apply_unrestricted(
+                    v_mat,
+                    &b_a, &ea_o, &ea_v,
+                    &b_b, &eb_o, &eb_v,
+                    omega,
+                )
+            },
+            config.davidson_conv_thresh,
+            max_vecs,
+            naux,
+        )?,
+    };
+
+    let n_keep = davidson_result
+        .eigenvalues
+        .iter()
+        .filter(|&&lam| (lam - 1.0).abs() > config.trunc_thresh)
+        .count();
+    let n_keep = n_keep.max(1);
+
+    let eigenvalues_static: Vec<f64> = davidson_result.eigenvalues[..n_keep].to_vec();
+    let eigenvectors = davidson_result.eigenvectors.slice(ndarray::s![.., ..n_keep]).to_owned();
+
+    let eigenpotentials_aux = inter_a.v_inv_sqrt.dot(&eigenvectors);
+
+    let (quad_freqs, quad_weights) = quadrature::build_quadrature(&config.quadrature);
+
+    let eigenvalues_freq = energy::eval_eigenvalues_at_frequencies_unrestricted(
+        &eigenvectors,
+        &inter_a.b_ov, &eps_occ_a, &eps_vir_a,
+        &inter_b.b_ov, &eps_occ_b, &eps_vir_b,
+        &quad_freqs,
+    );
+
+    let e_rpa = energy::rpa_correlation_energy(&quad_weights, &eigenvalues_freq);
+
+    Ok(PdepRpaResult {
+        e_rpa,
+        n_eigenpotentials: n_keep,
+        eigenvalues_static,
+        eigenpotentials: eigenpotentials_aux,
+        quad_freqs,
+        quad_weights,
+        eigenvalues_freq,
+        e_rpa_dft_diag: None,
+    })
+}

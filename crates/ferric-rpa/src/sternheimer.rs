@@ -82,8 +82,23 @@ pub(crate) fn syrk_aat(a: &Array2<f64>) -> Array2<f64> {
 ///
 /// Hoisted out of `dielectric_matrix` so callers iterating over many frequencies
 /// can keep the dominant GEMM/SYRK costs in BLAS and avoid scalar work entirely.
+///
+/// The factor 4 = 2 (spin pairs) · 2 (occupation, closed-shell). For
+/// open-shell U-RPA, build per-spin factors with prefactor 2 each via
+/// [`build_scale_factors_with_prefactor`] and sum the two contributions.
 #[inline]
 pub fn build_scale_factors(eps_occ: &[f64], eps_vir: &[f64], omega: f64) -> Array1<f64> {
+    build_scale_factors_with_prefactor(eps_occ, eps_vir, omega, 4.0)
+}
+
+/// Build scale factors s_ia = sqrt(prefactor·e_ia / (ω²+e_ia²)).
+///
+/// Use `prefactor=4` for closed-shell (single B_ov), `prefactor=2` per spin
+/// channel for open-shell (two B_ov tensors summed).
+#[inline]
+pub fn build_scale_factors_with_prefactor(
+    eps_occ: &[f64], eps_vir: &[f64], omega: f64, prefactor: f64,
+) -> Array1<f64> {
     let nocc = eps_occ.len();
     let nvir = eps_vir.len();
     let omega2 = omega * omega;
@@ -91,7 +106,7 @@ pub fn build_scale_factors(eps_occ: &[f64], eps_vir: &[f64], omega: f64) -> Arra
     for (i, &eps_i) in eps_occ.iter().enumerate() {
         for (a, &eps_a) in eps_vir.iter().enumerate() {
             let e_ia = eps_a - eps_i;
-            s[i * nvir + a] = (4.0 * e_ia / (omega2 + e_ia * e_ia)).sqrt();
+            s[i * nvir + a] = (prefactor * e_ia / (omega2 + e_ia * e_ia)).sqrt();
         }
     }
     s
@@ -210,6 +225,68 @@ pub fn dielectric_apply(
     let mut out: Array2<f64> = v_mat.to_owned();
     general_mat_mul(1.0, b_ov, &y.t(), 1.0, &mut out);
     out
+}
+
+/// Unrestricted dielectric apply: ε̃_U = I + Π_α + Π_β.
+///
+/// Each spin channel contributes Π_σ = B_ov_σ diag(2·e_iaσ/(ω²+e_iaσ²)) B_ov_σ^T.
+/// Closed-shell `dielectric_apply` is the special case with B_α = B_β,
+/// e_α = e_β, prefactor 4 instead of 2+2 — both produce the same Π for a
+/// closed-shell density when run on the spin-symmetric SCF result.
+pub fn dielectric_apply_unrestricted(
+    v_mat: &Array2<f64>,
+    b_ov_a: &Array2<f64>, eps_occ_a: &[f64], eps_vir_a: &[f64],
+    b_ov_b: &Array2<f64>, eps_occ_b: &[f64], eps_vir_b: &[f64],
+    omega: f64,
+) -> Array2<f64> {
+    use ndarray::linalg::general_mat_mul;
+
+    let mut out: Array2<f64> = v_mat.to_owned();
+
+    for (b_ov, eps_occ, eps_vir) in [
+        (b_ov_a, eps_occ_a, eps_vir_a),
+        (b_ov_b, eps_occ_b, eps_vir_b),
+    ] {
+        let scale = build_scale_factors_with_prefactor(eps_occ, eps_vir, omega, 2.0);
+        let nov = scale.len();
+        assert_eq!(b_ov.shape()[1], nov);
+
+        let mut y: Array2<f64> = v_mat.t().dot(b_ov);
+        let scale_row = scale.view().insert_axis(Axis(0));
+        Zip::from(&mut y)
+            .and_broadcast(scale_row)
+            .for_each(|x, &s| *x *= s * s);
+
+        // out += B_ov · y^T
+        general_mat_mul(1.0, b_ov, &y.t(), 1.0, &mut out);
+    }
+    out
+}
+
+/// Unrestricted ε̃ in subspace V: V^T (I + Π_α + Π_β) V.
+pub fn dielectric_matrix_unrestricted(
+    v_mat: &Array2<f64>,
+    b_ov_a: &Array2<f64>, eps_occ_a: &[f64], eps_vir_a: &[f64],
+    b_ov_b: &Array2<f64>, eps_occ_b: &[f64], eps_vir_b: &[f64],
+    omega: f64,
+) -> Array2<f64> {
+    let m = v_mat.ncols();
+    let mut eps_mat = Array2::<f64>::zeros((m, m));
+    for alpha in 0..m { eps_mat[(alpha, alpha)] = 1.0; }
+    for (b_ov, eps_occ, eps_vir) in [
+        (b_ov_a, eps_occ_a, eps_vir_a),
+        (b_ov_b, eps_occ_b, eps_vir_b),
+    ] {
+        let scale = build_scale_factors_with_prefactor(eps_occ, eps_vir, omega, 2.0);
+        let mut rhs_scaled = v_mat.t().dot(b_ov);
+        let scale_row = scale.view().insert_axis(Axis(0));
+        Zip::from(&mut rhs_scaled)
+            .and_broadcast(scale_row)
+            .for_each(|x, &s| *x *= s);
+        let chi_sigma = syrk_aat(&rhs_scaled);
+        eps_mat = eps_mat + &chi_sigma;
+    }
+    eps_mat
 }
 
 #[cfg(test)]

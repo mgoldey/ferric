@@ -214,6 +214,76 @@ pub struct RpaIntermediates {
     pub naux: usize,
 }
 
+/// Per-spin RI-MO intermediates for U-RPA / U-MP2.
+///
+/// Closed-shell `compute_rpa_intermediates` builds one B_ov tensor and
+/// uses spin counting (factor 4) in the dielectric. Open-shell wants
+/// `Π = Π_α + Π_β` with `Π_σ = B_ov_σ · diag(2/Δε_σ) · B_ov_σ^T`. Caller
+/// builds both α and β intermediates separately and the RPA driver sums
+/// the channels at every Davidson matvec.
+///
+/// `is_alpha = true` selects the α MO set; `false` selects β. Both spins
+/// share the same aux-basis metric `V^{-1/2}` (returned in the result),
+/// but each has its own `b_ov` shape `(naux, nocc_σ · nvir_σ)`.
+pub fn compute_rpa_intermediates_spin(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &ScfResult,
+    config: &RiMp2Config,
+    is_alpha: bool,
+) -> Result<RpaIntermediates, FerricError> {
+    use ferric_scf::Spin;
+    if matches!(rhf.spin, Spin::Restricted) {
+        return Err(FerricError::General(
+            "compute_rpa_intermediates_spin: use compute_rpa_intermediates for Restricted results".into(),
+        ));
+    }
+    let nbas = obs.nbasis();
+    let nelec_total = mol.nelec() as usize;
+    // For Unrestricted with multiplicity M = 2S+1:
+    //   nocc_α = (N + 2S)/2, nocc_β = (N - 2S)/2
+    let two_s = mol.multiplicity as i32 - 1;
+    let nocc_total = if is_alpha {
+        ((nelec_total as i32 + two_s) / 2) as usize
+    } else {
+        ((nelec_total as i32 - two_s) / 2) as usize
+    };
+    // ROHF stores α MOs and uses them for both spin channels (the SOMO is
+    // just unoccupied in β); only mos_alpha is present. Fall back to it
+    // when caller requests β on a ROHF result.
+    let c_full = if is_alpha {
+        rhf.mos_a()
+    } else if matches!(rhf.spin, Spin::RestrictedOpen) {
+        rhf.mos_a()
+    } else {
+        rhf.mos_b()
+    };
+
+    let nocc = nocc_total - config.frozen_core;
+    let first_occ = config.frozen_core;
+    let nvir = nbas - nocc_total;
+    let naux = dfbs.nbasis();
+
+    let v2c = threeindex::coulomb_metric_2c(op, dfbs)?;
+    let v_inv_sqrt = cholesky_inverse_sqrt(&v2c)?;
+    let eri3_ao = threeindex::eri3_tensor(op, obs, dfbs)?;
+
+    let c_occ = c_full.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
+    let c_vir = c_full.slice(ndarray::s![.., nocc_total..]).to_owned();
+
+    let eri3_ov = crate::mo_transform::transform_3center_ov(&eri3_ao, &c_occ, &c_vir);
+    let b_ov = v_inv_sqrt.dot(
+        &eri3_ov.into_shape_with_order((naux, nocc * nvir)).unwrap(),
+    );
+
+    Ok(RpaIntermediates {
+        b_ov, v_inv_sqrt,
+        nocc, nvir, nocc_total, first_occ, naux,
+    })
+}
+
 /// Build B^P_{ia} = V^{-1/2} (P|ia) plus V^{-1/2} for RPA. Skips the MP2
 /// amplitude/energy/density work in `compute_mp2_intermediates`.
 pub fn compute_rpa_intermediates(
