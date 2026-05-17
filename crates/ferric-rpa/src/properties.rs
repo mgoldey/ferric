@@ -1089,6 +1089,21 @@ pub fn hirshfeld_charges(
 /// Total electron count is conserved exactly by construction
 /// (Tr[S^{1/2} D S^{1/2}] = Tr[D S] = N_e).
 ///
+/// # Convention note
+///
+/// Löwdin charges depend on the *AO ordering convention* of the basis set.
+/// Within a given convention the answer is well-defined and self-consistent
+/// (and conserves N_e exactly). Across conventions the per-atom split can
+/// differ — e.g. ferric (libint conventions) returns q_O = −0.48 on H2O /
+/// cc-pVDZ while PySCF returns q_O = −0.10 on the same density. Both are
+/// "Löwdin charges"; the difference reflects how each library orders d-
+/// functions (libint: l-major Cartesian or pure-spherical depending on
+/// shell setup; PySCF: spherical with its own canonical order).
+///
+/// This matters downstream only if you intend to mix Löwdin charges across
+/// engines. As a baseline for CM5 within ferric the result is fully
+/// self-consistent.
+///
 /// Closed-shell only.
 pub fn lowdin_charges(
     mol: &Molecule,
