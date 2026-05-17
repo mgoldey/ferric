@@ -212,6 +212,59 @@ fn u_pdep_rpa_uhf_vs_rohf_close_on_doublet() {
 }
 
 #[test]
+fn u_ri_drpa_diagnostic_h_atom_matches_pyscf() {
+    // Bypass Davidson/Lanczos: build α and β B_ov directly, run U-RI-dRPA
+    // diagnostic (full-basis dielectric, no PDEP truncation). If this
+    // matches PySCF, the bug in u_pdep_rpa_h_atom_matches_pyscf is in
+    // the eigensolver path, not the spin-summed dielectric.
+    use ferric_mp2::rimp2::{compute_rpa_intermediates_spin, RiMp2Config};
+    use ferric_rpa::diagnostics::u_ri_drpa_energy;
+    use ferric_rpa::quadrature::build_quadrature;
+    use ferric_rpa::config::{QuadratureConfig, QuadratureScheme};
+
+    let ctx = ParallelContext::default();
+    let xyz = "1\nh\nH 0 0 0\n";
+    let mol = Molecule::parse_xyz(xyz, 0, 2).unwrap();
+    let obs_bs = basis::bundled("cc-pvdz").unwrap();
+    let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
+    let op = Operator::coulomb();
+    let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+    let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
+    let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+    let uhf = solve_uhf(&ctx, &mol, &obs, op, &bounds,
+        &UhfConfig { max_iter: 200, ..Default::default() }).unwrap();
+
+    let mp2_cfg = RiMp2Config { frozen_core: 0 };
+    let ia = compute_rpa_intermediates_spin(&mol, &obs, &dfbs, op, &uhf, &mp2_cfg, true).unwrap();
+    let ib = compute_rpa_intermediates_spin(&mol, &obs, &dfbs, op, &uhf, &mp2_cfg, false).unwrap();
+
+    let eps_occ_a: Vec<f64> = uhf.eps_a()[..ia.nocc].to_vec();
+    let eps_vir_a: Vec<f64> = uhf.eps_a()[ia.nocc_total..ia.nocc_total + ia.nvir].to_vec();
+    let eps_occ_b: Vec<f64> = uhf.eps_b()[..ib.nocc].to_vec();
+    let eps_vir_b: Vec<f64> = uhf.eps_b()[ib.nocc_total..ib.nocc_total + ib.nvir].to_vec();
+
+    let (freqs, weights) = build_quadrature(&QuadratureConfig {
+        scheme: QuadratureScheme::GaussLegendre, n_points: 20, u0: 0.5,
+    });
+
+    eprintln!("ferric H atom: nocc_a={}, nvir_a={}, naux={}", ia.nocc, ia.nvir, ia.naux);
+    eprintln!("ferric H atom: eps_occ_a={:?}, eps_vir_a={:?}", eps_occ_a, eps_vir_a);
+    eprintln!("ferric H atom: B_a shape={:?}, L2={:.6}", ia.b_ov.shape(),
+              ia.b_ov.iter().map(|x| x*x).sum::<f64>().sqrt());
+    eprintln!("ferric H atom: B_b shape={:?}, eps_b_full={:?}", ib.b_ov.shape(), uhf.eps_b());
+
+    let e_c = u_ri_drpa_energy(
+        &ia.b_ov, &eps_occ_a, &eps_vir_a,
+        &ib.b_ov, &eps_occ_b, &eps_vir_b,
+        &freqs, &weights,
+    ).unwrap();
+
+    eprintln!("U-RI-dRPA diagnostic E_c = {:.10} (pyscf reference = -0.01341)", e_c);
+    assert!((e_c - (-0.0134148241)).abs() < 1e-5,
+        "U-RI-dRPA diag E_c = {}, pyscf -0.01341", e_c);
+}
+
+#[test]
 fn u_pdep_rpa_lanczos_matches_davidson() {
     // Internal consistency: Lanczos and Davidson eigensolvers on the same
     // U-PDEP-RPA dielectric must produce the same correlation energy.
