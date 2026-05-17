@@ -50,6 +50,13 @@ impl ScfResult {
         assert!(matches!(self.spin, Spin::Restricted), "density_r() called on non-restricted result");
         &self.density_total
     }
+    /// Spin-summed AO density D_α + D_β. Available for all spin types
+    /// (equals 2·D_α for Restricted; D_α + D_β for U/RO). Use for properties
+    /// like ESP, electric field, Löwdin/Hirshfeld charges that take a
+    /// total-electron density.
+    pub fn density_total(&self) -> &Array2<f64> {
+        &self.density_total
+    }
     /// Unrestricted/ROHF accessors. Panic if called on a Restricted result.
     pub fn mos_a(&self) -> &Array2<f64> { &self.mos_alpha }
     pub fn mos_b(&self) -> &Array2<f64> {

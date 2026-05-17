@@ -356,18 +356,18 @@ pub fn electric_field_at_atoms(
     Ok(out)
 }
 
-/// Wrapper around [`electric_field_at_atoms`] that enforces closed-shell.
+/// Wrapper around [`electric_field_at_atoms`] taking an [`ScfResult`].
+///
+/// Uses the spin-summed density `density_total()` so the same call works
+/// for Restricted, Unrestricted, and RestrictedOpen references — the
+/// electric field is a one-electron property of the total electron
+/// density, independent of spin polarization at the field point.
 pub fn electric_field_at_atoms_rpa(
     mol: &Molecule,
     prep: &PreparedBasis,
     rhf: &ScfResult,
 ) -> Result<Vec<[f64; 3]>, FerricError> {
-    if !matches!(rhf.spin, Spin::Restricted) {
-        return Err(FerricError::General(
-            "electric_field_at_atoms_rpa: only closed-shell (Restricted) supported".into(),
-        ));
-    }
-    electric_field_at_atoms(mol, prep, rhf.density_r())
+    electric_field_at_atoms(mol, prep, rhf.density_total())
 }
 
 /// Closed-shell static (ω=0) electronic polarizability from PDEP eigenpairs.

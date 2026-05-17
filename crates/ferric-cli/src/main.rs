@@ -550,7 +550,7 @@ fn main() {
                     mol.atoms.iter().map(|a| a.z as usize).collect();
 
                 let esp_vec = if compute_esp {
-                    match esp_at_atoms(&mol, &prep, result.density_r()) {
+                    match esp_at_atoms(&mol, &prep, result.density_total()) {
                         Ok(v) => Some(v),
                         Err(e) => {
                             eprintln!("warning: esp_at_atoms failed: {e}");
@@ -562,7 +562,7 @@ fn main() {
                 };
 
                 let ef_vec = if compute_ef {
-                    match electric_field_at_atoms(&mol, &prep, result.density_r()) {
+                    match electric_field_at_atoms(&mol, &prep, result.density_total()) {
                         Ok(v) => Some(v),
                         Err(e) => {
                             eprintln!("warning: electric_field_at_atoms failed: {e}");
@@ -616,11 +616,11 @@ fn main() {
                 };
 
                 let compute_dm = cfg.rpa.compute_density_matrix.unwrap_or(true);
-                let dm_ref = if compute_dm { Some(result.density_r()) } else { None };
+                let dm_ref = if compute_dm { Some(result.density_total()) } else { None };
 
                 let compute_lq = cfg.rpa.compute_lowdin_charges.unwrap_or(true);
                 let lq_vec = if compute_lq {
-                    match lowdin_charges(&mol, &prep, result.density_r()) {
+                    match lowdin_charges(&mol, &prep, result.density_total()) {
                         Ok(q) => {
                             println!(
                                 "Löwdin charges (e): {:?}",
@@ -639,7 +639,7 @@ fn main() {
 
                 let compute_hq = cfg.rpa.compute_hirshfeld_charges.unwrap_or(true);
                 let hq_vec = if compute_hq {
-                    match hirshfeld_charges(&mol, &bs, result.density_r()) {
+                    match hirshfeld_charges(&mol, &bs, result.density_total()) {
                         Ok(q) => {
                             println!(
                                 "Hirshfeld charges (e): {:?}",
