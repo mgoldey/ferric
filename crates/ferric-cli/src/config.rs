@@ -66,6 +66,15 @@ pub struct RpaCfg {
     pub cube_spacing: Option<f64>,
     /// Cube grid margin in Bohr beyond bounding box (default: 4.0).
     pub cube_margin: Option<f64>,
+    /// If set, write per-molecule features to this NPZ path (eigenpotentials,
+    /// coords, atomic numbers, optional ESP-at-atoms and α tensor).
+    pub export_npz: Option<String>,
+    /// Compute and include ESP at each nuclear position in the NPZ bundle.
+    /// Default: true when `export_npz` is set.
+    pub compute_esp: Option<bool>,
+    /// Compute and include the static polarizability tensor in the NPZ bundle.
+    /// Default: true when `export_npz` is set.
+    pub compute_polarizability: Option<bool>,
 }
 
 #[derive(Deserialize)]

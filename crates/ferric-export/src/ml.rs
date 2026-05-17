@@ -5,6 +5,7 @@ use crate::cube::ExportError;
 
 /// Exports key tensors and metadata for Machine Learning (e.g. Diffusion models)
 /// into a compressed NPZ archive.
+#[allow(clippy::too_many_arguments)]
 pub fn export_npz(
     path: &str,
     mo_coeffs: Option<&Array2<f64>>,
@@ -13,6 +14,8 @@ pub fn export_npz(
     boys_coeffs: Option<&Array2<f64>>,
     coords: Option<&Array2<f64>>,
     atomic_numbers: Option<&[usize]>,
+    esp_atoms: Option<&[f64]>,
+    alpha_tensor: Option<&[[f64; 3]; 3]>,
 ) -> Result<(), ExportError> {
     let file = File::create(path)?;
     let mut writer = NpzWriter::new(file);
@@ -41,6 +44,17 @@ pub fn export_npz(
     if let Some(z) = atomic_numbers {
         let z_arr = Array1::from_vec(z.iter().map(|&x| x as i64).collect());
         writer.add_array("atomic_numbers", &z_arr).map_err(|e| ExportError::Other(e.to_string()))?;
+    }
+
+    if let Some(v) = esp_atoms {
+        let v_arr = Array1::from_vec(v.to_vec());
+        writer.add_array("esp_atoms", &v_arr).map_err(|e| ExportError::Other(e.to_string()))?;
+    }
+
+    if let Some(a) = alpha_tensor {
+        let flat: Vec<f64> = a.iter().flat_map(|row| row.iter().copied()).collect();
+        let a_arr = Array2::from_shape_vec((3, 3), flat).unwrap();
+        writer.add_array("alpha_tensor", &a_arr).map_err(|e| ExportError::Other(e.to_string()))?;
     }
 
     writer.finish().map_err(|e| ExportError::Other(e.to_string()))?;

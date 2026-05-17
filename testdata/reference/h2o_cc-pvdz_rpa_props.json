@@ -1,0 +1,35 @@
+{
+  "molecule": "h2o",
+  "basis": "cc-pvdz",
+  "aux_basis": "cc-pvdz-ri",
+  "scf_energy": -76.02676799737662,
+  "esp_at_atoms": [
+    -22.342647305312823,
+    -1.0034462895904683,
+    -1.0034462895904719
+  ],
+  "alpha_tensor": [
+    [
+      2.0380366936025816,
+      -7.673112941882125e-16,
+      1.7955989260993972e-16
+    ],
+    [
+      -7.673112941882277e-16,
+      4.096356864646016,
+      8.149682718332224e-15
+    ],
+    [
+      1.7955989260994354e-16,
+      7.403964319792045e-15,
+      3.1965352579552158
+    ]
+  ],
+  "alpha_iso": 3.1103096054012713,
+  "alpha_principal": [
+    2.0380366936025816,
+    3.196535257955215,
+    4.096356864646017
+  ],
+  "note": "alpha_*: closed-shell direct-RPA static (omega=0) polarizability from (A+B)^{-1} with (A+B) = D + 4(ia|jb).  Apples-to-apples reference for ferric's RI-direct-RPA implementation."
+}

@@ -1,0 +1,20 @@
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "cc-pvdz"
+
+[method]
+kind = "pdep-rpa"
+task = "energy"
+
+[rpa]
+auxbasis = "cc-pvdz-ri"
+n_quad = 20
+quadrature = "gauss-legendre"
+trunc_thresh = 1e-4
+# Export per-molecule features for the diffusion-model track:
+# pdep eigenpotentials, ESP at each nucleus, static polarizability tensor.
+export_npz = "h2o_pdep_rpa.npz"
+compute_esp = true
+compute_polarizability = true

@@ -522,6 +522,75 @@ fn main() {
                     }
                 }
             }
+            // NPZ feature bundle for diffusion-model export.
+            if let Some(npz_path) = cfg.rpa.export_npz.as_deref() {
+                use ferric_export::export_npz;
+                use ferric_rpa::properties::{esp_at_atoms, pdep_polarizability_static};
+                use ndarray::Array2;
+
+                let compute_esp = cfg.rpa.compute_esp.unwrap_or(true);
+                let compute_pol = cfg.rpa.compute_polarizability.unwrap_or(true);
+
+                let coords_arr = {
+                    let mut a = Array2::<f64>::zeros((mol.atoms.len(), 3));
+                    for (i, atom) in mol.atoms.iter().enumerate() {
+                        a[(i, 0)] = atom.x;
+                        a[(i, 1)] = atom.y;
+                        a[(i, 2)] = atom.zpos;
+                    }
+                    a
+                };
+                let znums: Vec<usize> =
+                    mol.atoms.iter().map(|a| a.z as usize).collect();
+
+                let esp_vec = if compute_esp {
+                    match esp_at_atoms(&mol, &prep, result.density_r()) {
+                        Ok(v) => Some(v),
+                        Err(e) => {
+                            eprintln!("warning: esp_at_atoms failed: {e}");
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+
+                let alpha_arr = if compute_pol {
+                    match pdep_polarizability_static(
+                        &mol, &prep, &dfbs, &result, op, &rpa_cfg,
+                    ) {
+                        Ok(p) => {
+                            println!(
+                                "Polarizability α (a.u.):  iso={:.4}, principal=[{:.4}, {:.4}, {:.4}]",
+                                p.iso, p.principal[0], p.principal[1], p.principal[2]
+                            );
+                            Some(p.tensor)
+                        }
+                        Err(e) => {
+                            eprintln!("warning: polarizability failed: {e}");
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+
+                if let Err(e) = export_npz(
+                    npz_path,
+                    None,
+                    Some(result.eps_r()),
+                    Some(&rpa_result.eigenpotentials),
+                    None,
+                    Some(&coords_arr),
+                    Some(&znums),
+                    esp_vec.as_deref(),
+                    alpha_arr.as_ref(),
+                ) {
+                    eprintln!("warning: failed to write {}: {}", npz_path, e);
+                } else {
+                    println!("Wrote NPZ feature bundle: {}", npz_path);
+                }
+            }
         }
         _ => unreachable!(),
     }
