@@ -1,0 +1,12 @@
+{
+  "energy": -147.63219100131258,
+  "converged": true,
+  "nelec_a": 9,
+  "nelec_b": 7,
+  "s_squared": 2.0,
+  "multiplicity": 3.0,
+  "nuclear_repulsion": 28.035878724238415,
+  "basis": "sto-3g",
+  "method": "rohf",
+  "molecule": "O2"
+}

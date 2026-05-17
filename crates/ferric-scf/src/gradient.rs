@@ -475,6 +475,64 @@ pub fn uhf_gradient(
     Ok(grad)
 }
 
+/// Compute the ROHF analytical nuclear gradient.
+///
+/// ROHF has a single set of MOs partitioned into doubly-occupied (closed),
+/// singly-α-occupied (open), and virtual blocks. The total/α/β densities are:
+///   D_β = Σ_i^closed C_i C_i^T,   D_α = D_β + Σ_j^open C_j C_j^T,
+///   D_total = D_α + D_β = 2 D_β + D_open.
+///
+/// Energy-weighted density:
+///   W = 2 Σ_i^closed ε_i C_i C_i^T + Σ_j^open ε_j C_j C_j^T
+/// where ε are the eigenvalues of the Roothaan effective Fock.
+///
+/// The two-electron piece uses the UHF Γ form with D_α/D_β as above.
+pub fn rohf_gradient(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    result: &ScfResult,
+) -> Result<Array2<f64>, FerricError> {
+    assert!(
+        matches!(result.spin, Spin::RestrictedOpen),
+        "rohf_gradient: ScfResult.spin must be RestrictedOpen"
+    );
+    let nelec = mol.nelec() as i64;
+    let two_s = mol.multiplicity as i64 - 1;
+    let nocc_open = two_s as usize;
+    let nocc_double = ((nelec - two_s) / 2) as usize;
+
+    let d_alpha = &result.density_alpha;
+    let d_beta = result
+        .density_beta
+        .as_ref()
+        .expect("rohf_gradient: missing density_beta");
+    let d_total = d_alpha + d_beta;
+
+    // Energy-weighted density: closed orbitals weighted 2 ε_i, open weighted ε_j.
+    let n = result.mos_alpha.nrows();
+    let c = &result.mos_alpha;
+    let eps = &result.eps_alpha;
+    let mut w = Array2::<f64>::zeros((n, n));
+    for mu in 0..n {
+        for nu in 0..n {
+            let mut sum = 0.0;
+            for i in 0..nocc_double {
+                sum += 2.0 * eps[i] * c[(mu, i)] * c[(nu, i)];
+            }
+            for j in nocc_double..nocc_double + nocc_open {
+                sum += eps[j] * c[(mu, j)] * c[(nu, j)];
+            }
+            w[(mu, nu)] = sum;
+        }
+    }
+
+    let mut grad = oneelectron_gradient(mol, prep, &d_total, &w)?;
+    grad += &twoelectron_gradient_uhf(prep, op, bounds, &d_total, d_alpha, d_beta)?;
+    Ok(grad)
+}
+
 /// UHF four-center two-electron gradient: Σ Γ_uhf_μνλσ d(μν|λσ)/dR.
 pub fn twoelectron_gradient_uhf(
     prep: &PreparedBasis,

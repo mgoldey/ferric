@@ -1,0 +1,12 @@
+{
+  "energy": -39.559637670688765,
+  "converged": true,
+  "nelec_a": 5,
+  "nelec_b": 4,
+  "s_squared": 0.75,
+  "multiplicity": 2.0,
+  "nuclear_repulsion": 9.67725107195229,
+  "basis": "cc-pvdz",
+  "method": "rohf",
+  "molecule": "CH3"
+}

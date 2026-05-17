@@ -15,7 +15,8 @@ use ferric_rpa::{run_pdep_rpa, PdepRpaConfig};
 use ferric_core::parallel::ParallelContext;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::uhf::solve_uhf;
-use ferric_scf::gradient::uhf_gradient;
+use ferric_scf::rohf::solve_rohf;
+use ferric_scf::gradient::{rohf_gradient, uhf_gradient};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::optimize::{optimize_geometry, OptimizeConfig};
 
@@ -35,8 +36,8 @@ fn main() {
     };
     let method = cfg.method.kind.as_str();
     let task = cfg.method.task.as_str();
-    if !matches!(method, "rhf" | "uhf" | "rimp2" | "oo-rimp2" | "att-rimp2" | "scs-mp2" | "scs-mp2-2terfc" | "laplace-mp2" | "pdep-rpa") {
-        eprintln!("error: unsupported method.kind = \"{method}\"; expected rhf, uhf, rimp2, oo-rimp2, att-rimp2, scs-mp2, scs-mp2-2terfc, laplace-mp2, or pdep-rpa");
+    if !matches!(method, "rhf" | "uhf" | "rohf" | "rimp2" | "oo-rimp2" | "att-rimp2" | "scs-mp2" | "scs-mp2-2terfc" | "laplace-mp2" | "pdep-rpa") {
+        eprintln!("error: unsupported method.kind = \"{method}\"; expected rhf, uhf, rohf, rimp2, oo-rimp2, att-rimp2, scs-mp2, scs-mp2-2terfc, laplace-mp2, or pdep-rpa");
         std::process::exit(1);
     }
     if !matches!(task, "energy" | "optimize") {
@@ -192,6 +193,43 @@ fn main() {
                     }
                 }
                 Err(e) => eprintln!("UHF gradient error: {e}"),
+            }
+        }
+        return;
+    }
+
+    if method == "rohf" {
+        let result = solve_rohf(&ctx, &mol, &prep, op, &bounds, &rhf_config).unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
+        let nelec = mol.nelec() as i64;
+        let two_s = mol.multiplicity as i64 - 1;
+        let nocc_open = two_s as usize;
+        let nocc_double = ((nelec - two_s) / 2) as usize;
+        let s_true = 0.5 * two_s as f64;
+        let s_ideal = s_true * (s_true + 1.0);
+        println!("ROHF/{} on {}", bs.name, cfg.molecule.xyz);
+        println!("  nbasis     = {}", prep.nbasis());
+        println!(
+            "  mult       = {} (nocc_double={}, nocc_open={})",
+            mol.multiplicity, nocc_double, nocc_open
+        );
+        println!("  iterations = {}", result.iterations);
+        println!("  converged  = {}", result.converged);
+        println!("  energy     = {:.10} Hartree", result.energy);
+        println!("  <S^2>      = {:.6} (exact by construction)", s_ideal);
+        if task == "optimize" {
+            // TODO: ROHF geometry optimization not yet wired; print the gradient.
+            match rohf_gradient(&mol, &prep, op, &bounds, &result) {
+                Ok(g) => {
+                    println!("ROHF gradient (Hartree/Bohr):");
+                    for (i, atom) in mol.atoms.iter().enumerate() {
+                        println!("  {:2} {:2} {:14.8} {:14.8} {:14.8}",
+                                 i, atom.symbol, g[(i,0)], g[(i,1)], g[(i,2)]);
+                    }
+                }
+                Err(e) => eprintln!("ROHF gradient error: {e}"),
             }
         }
         return;
