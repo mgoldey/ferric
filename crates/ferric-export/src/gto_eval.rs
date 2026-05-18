@@ -206,6 +206,41 @@ pub fn eval_basis_on_grid(
     Ok(chi)
 }
 
+/// Evaluate all basis functions on an arbitrary list of points (not necessarily
+/// a regular grid).
+///
+/// Returns `Array2` of shape `(nbasis, npts)`. Used by Becke-Lebedev atomic
+/// integration where the points are atom-centered radial × angular nodes.
+pub fn eval_basis_on_points(
+    mol: &Molecule,
+    bs: &BasisSet,
+    points: &[[f64; 3]],
+) -> Result<Array2<f64>, GtoEvalError> {
+    let shells = collect_shells(mol, bs)?;
+    let nbf = shells.iter().map(|s| num_functions(s.l, s.pure)).sum();
+    let npts = points.len();
+    let mut chi = Array2::<f64>::zeros((nbf, npts));
+
+    let mut shell_buf = [0.0f64; 10];
+
+    for (g, p) in points.iter().enumerate() {
+        let mut row_offset = 0usize;
+        for sh in &shells {
+            let n = num_functions(sh.l, sh.pure);
+            let buf = &mut shell_buf[..n];
+            let dx = p[0] - sh.center[0];
+            let dy = p[1] - sh.center[1];
+            let dz = p[2] - sh.center[2];
+            eval_shell(sh, dx, dy, dz, buf)?;
+            for (i, &v) in buf.iter().enumerate() {
+                chi[(row_offset + i, g)] = v;
+            }
+            row_offset += n;
+        }
+    }
+    Ok(chi)
+}
+
 /// Index from (ix, iy, iz) to flat grid offset (matches cube row-major order).
 pub fn grid_index(grid: &GridSpec, ix: usize, iy: usize, iz: usize) -> usize {
     (ix * grid.n_y + iy) * grid.n_z + iz

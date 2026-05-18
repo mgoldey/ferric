@@ -733,6 +733,253 @@ pub fn pdep_polarizability_static_unrestricted(
 /// will fail loudly if the grid is too coarse.
 ///
 /// Closed-shell only.
+/// Per-atom static polarizability decomposition via **Becke-Lebedev**
+/// atomic partition.
+///
+/// Replaces the Slater-proatom Hirshfeld scheme in
+/// [`pdep_polarizability_hirshfeld`] with the production-standard Becke
+/// fuzzy weights (no electron-density proatom; geometry-only) on a
+/// Becke-Lebedev atom-centered quadrature grid.
+///
+/// Same SMW algebra:
+/// ```text
+///     α^A_ij = 4 (μ^{A,i})^T D^{-1} μ^j  −  16 (w^{A,i})^T ε̃^{-1} w^j
+/// ```
+/// with
+/// ```text
+///     μ^{A,i}_pq = ⟨p| w^A_Becke(r) · r_i |q⟩  (Becke-weighted AO dipole)
+///     μ^i = Σ_A μ^{A,i}                       (sum-rule exact for Becke)
+/// ```
+///
+/// Closed-shell only. Returns Vec<[[f64; 3]; 3]>, one (3×3) tensor per atom.
+pub fn pdep_polarizability_becke(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    obs_bs: &ferric_core::basis::BasisSet,
+    dfbs: &PreparedBasis,
+    rhf: &ScfResult,
+    op: Operator,
+    _cfg: &PdepRpaConfig,
+) -> Result<Vec<[[f64; 3]; 3]>, FerricError> {
+    use ferric_dft::grid::{build_atomic_grid, AtomicGridConfig};
+    use ferric_export::gto_eval::eval_basis_on_points;
+    use ndarray_linalg::Solve;
+
+    if !matches!(rhf.spin, Spin::Restricted) {
+        return Err(FerricError::General(
+            "pdep_polarizability_becke: only closed-shell (Restricted) supported".into(),
+        ));
+    }
+
+    let natoms = mol.atoms.len();
+
+    // RI intermediates (same as molecular static-α path).
+    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0 };
+    let inter =
+        ferric_mp2::rimp2::compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
+    let b_ov = &inter.b_ov;
+    let nocc = inter.nocc;
+    let nvir = inter.nvir;
+    let nocc_total = inter.nocc_total;
+    let first_occ = inter.first_occ;
+    let naux = inter.naux;
+    let nov = nocc * nvir;
+
+    let eps = rhf.eps_r();
+    let eps_occ: Vec<f64> = eps[first_occ..first_occ + nocc].to_vec();
+    let eps_vir: Vec<f64> = eps[nocc_total..nocc_total + nvir].to_vec();
+
+    let c = rhf.mos_r();
+    let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
+    let c_vir = c.slice(ndarray::s![.., nocc_total..nocc_total + nvir]).to_owned();
+
+    let mut inv_de = ndarray::Array1::<f64>::zeros(nov);
+    for i in 0..nocc {
+        for a in 0..nvir {
+            inv_de[i * nvir + a] = 1.0 / (eps_vir[a] - eps_occ[i]);
+        }
+    }
+
+    // ε̃ = I + B̃ · diag(4/Δε) · B̃^T (closed-shell prefactor 4).
+    let mut b_scaled = b_ov.clone();
+    for ia in 0..nov {
+        let s = (4.0 * inv_de[ia]).sqrt();
+        let mut col = b_scaled.column_mut(ia);
+        col.mapv_inplace(|x| x * s);
+    }
+    let mut eps_mat: Array2<f64> = b_scaled.dot(&b_scaled.t());
+    for p in 0..naux {
+        eps_mat[(p, p)] += 1.0;
+    }
+
+    // Build Becke-Lebedev grid (atom-centered, Becke partition baked into
+    // grid-point weights; per-atom restriction via home_atom field).
+    let grid_cfg = AtomicGridConfig::default();
+    let grid = build_atomic_grid(mol, &grid_cfg);
+    let points: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
+    let weights: Vec<f64> = grid.iter().map(|g| g.weight).collect();
+    let home_atom: Vec<usize> = grid.iter().map(|g| g.home_atom).collect();
+    let npts = points.len();
+
+    // Evaluate AO basis on the grid: χ has shape (nbf, npts).
+    let chi = eval_basis_on_points(mol, obs_bs, &points).map_err(|e| {
+        FerricError::General(format!("pdep_polarizability_becke: chi eval failed: {e}"))
+    })?;
+    let nbf = chi.nrows();
+    debug_assert_eq!(nbf, obs.nbasis());
+
+    // Build per-atom Becke-weighted AO dipole using lab-frame r_i. We then
+    // renormalize per-AO-pair so the sum across atoms reproduces the
+    // **analytical** AO dipole exactly (decouples the partition fraction
+    // — Becke, robust — from the absolute dipole magnitude — libint
+    // analytical). Same trick as `pdep_polarizability_hirshfeld` uses with
+    // Slater proatoms; the renormalization makes the result robust to
+    // grid quadrature error.
+    let mut d_ai_ao: Vec<[Array2<f64>; 3]> = (0..natoms)
+        .map(|_| std::array::from_fn(|_| Array2::<f64>::zeros((nbf, nbf))))
+        .collect();
+    let mut d_sum: [Array2<f64>; 3] = std::array::from_fn(|_| Array2::<f64>::zeros((nbf, nbf)));
+    for g in 0..npts {
+        let a = home_atom[g];
+        let w = weights[g];
+        let r = points[g];
+        for d in 0..3 {
+            let factor = w * r[d];
+            for mu in 0..nbf {
+                let chi_mu = chi[(mu, g)];
+                let weighted_chi_mu = factor * chi_mu;
+                if weighted_chi_mu.abs() < 1e-30 { continue; }
+                for nu in 0..nbf {
+                    let contrib = weighted_chi_mu * chi[(nu, g)];
+                    d_ai_ao[a][d][(mu, nu)] += contrib;
+                    d_sum[d][(mu, nu)] += contrib;
+                }
+            }
+        }
+    }
+    // Symmetrize per-atom AO dipoles and the sum.
+    for d in 0..3 {
+        for a in 0..natoms {
+            let m = &mut d_ai_ao[a][d];
+            for i in 0..nbf {
+                for j in (i + 1)..nbf {
+                    let avg = 0.5 * (m[(i, j)] + m[(j, i)]);
+                    m[(i, j)] = avg;
+                    m[(j, i)] = avg;
+                }
+            }
+        }
+        for i in 0..nbf {
+            for j in (i + 1)..nbf {
+                let avg = 0.5 * (d_sum[d][(i, j)] + d_sum[d][(j, i)]);
+                d_sum[d][(i, j)] = avg;
+                d_sum[d][(j, i)] = avg;
+            }
+        }
+    }
+
+    // Renormalize: per AO-pair (μ, ν), rescale each atom's contribution
+    // by analytical/grid_total. This is exact decoupling of the partition
+    // (Becke fraction) from the magnitude (analytical AO dipole), giving
+    // grid-noise-free results.
+    let dip_ao_analytical = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let inv_n = 1.0 / (natoms as f64);
+    let small = 1e-10;
+    for d in 0..3 {
+        for mu in 0..nbf {
+            for nu in 0..nbf {
+                let total_grid = d_sum[d][(mu, nu)];
+                let total_analytical = dip_ao_analytical[d][(mu, nu)];
+                if total_grid.abs() < small * (1.0 + total_analytical.abs()) {
+                    for a in 0..natoms {
+                        d_ai_ao[a][d][(mu, nu)] = total_analytical * inv_n;
+                    }
+                } else {
+                    let scale = total_analytical / total_grid;
+                    for a in 0..natoms {
+                        d_ai_ao[a][d][(mu, nu)] *= scale;
+                    }
+                }
+            }
+        }
+    }
+    // Symmetrize each AO dipole matrix.
+    for a in 0..natoms {
+        for d in 0..3 {
+            let m = &mut d_ai_ao[a][d];
+            for i in 0..nbf {
+                for j in (i + 1)..nbf {
+                    let avg = 0.5 * (m[(i, j)] + m[(j, i)]);
+                    m[(i, j)] = avg;
+                    m[(j, i)] = avg;
+                }
+            }
+        }
+    }
+
+    // Transform to MO occ-vir basis.
+    let mut mu_ai_mo: Vec<[Array2<f64>; 3]> = (0..natoms)
+        .map(|_| std::array::from_fn(|_| Array2::<f64>::zeros((nocc, nvir))))
+        .collect();
+    let mut mu_mo: [Array2<f64>; 3] = std::array::from_fn(|_| Array2::<f64>::zeros((nocc, nvir)));
+    for a in 0..natoms {
+        for d in 0..3 {
+            let m = c_occ.t().dot(&d_ai_ao[a][d]).dot(&c_vir);
+            mu_mo[d] = &mu_mo[d] + &m;
+            mu_ai_mo[a][d] = m;
+        }
+    }
+
+    // Flatten molecular dipole; build w^d and y^d (the SMW solve).
+    let mu_flat: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
+        let mut v = ndarray::Array1::<f64>::zeros(nov);
+        for i in 0..nocc {
+            for ax in 0..nvir {
+                v[i * nvir + ax] = mu_mo[d][(i, ax)];
+            }
+        }
+        v
+    });
+    let mu_flat_inv: [ndarray::Array1<f64>; 3] =
+        std::array::from_fn(|d| &mu_flat[d] * &inv_de);
+    let w_mol: [ndarray::Array1<f64>; 3] =
+        std::array::from_fn(|d| b_ov.dot(&mu_flat_inv[d]));
+    let y_mol: [ndarray::Array1<f64>; 3] =
+        std::array::from_fn(|d| eps_mat.solve(&w_mol[d]).unwrap());
+
+    // Assemble per-atom α^A.
+    let mut alpha_per_atom: Vec<[[f64; 3]; 3]> = vec![[[0.0; 3]; 3]; natoms];
+    for a in 0..natoms {
+        for d in 0..3 {
+            let mut mu_ai_flat = ndarray::Array1::<f64>::zeros(nov);
+            let mut mu_ai_flat_inv = ndarray::Array1::<f64>::zeros(nov);
+            for i in 0..nocc {
+                for ax in 0..nvir {
+                    let ia = i * nvir + ax;
+                    mu_ai_flat[ia] = mu_ai_mo[a][d][(i, ax)];
+                    mu_ai_flat_inv[ia] = mu_ai_mo[a][d][(i, ax)] * inv_de[ia];
+                }
+            }
+            let w_ai = b_ov.dot(&mu_ai_flat_inv);
+            for j in 0..3 {
+                let bare = mu_ai_flat.dot(&mu_flat_inv[j]);
+                let coupled = w_ai.dot(&y_mol[j]);
+                alpha_per_atom[a][d][j] = 4.0 * bare - 16.0 * coupled;
+            }
+        }
+        // Symmetrize per-atom tensor.
+        for i in 0..3 {
+            for j in (i + 1)..3 {
+                let avg = 0.5 * (alpha_per_atom[a][i][j] + alpha_per_atom[a][j][i]);
+                alpha_per_atom[a][i][j] = avg;
+                alpha_per_atom[a][j][i] = avg;
+            }
+        }
+    }
+
+    Ok(alpha_per_atom)
+}
+
 pub fn pdep_polarizability_hirshfeld(
     mol: &Molecule,
     obs: &PreparedBasis,
