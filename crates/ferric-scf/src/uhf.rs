@@ -113,8 +113,11 @@ pub fn solve_uhf(
     let mut k_a_buf = Array2::<f64>::zeros((n, n));
     let mut k_b_buf = Array2::<f64>::zeros((n, n));
 
-    let mut diis_a = Diis::new(config.diis_size);
-    let mut diis_b = Diis::new(config.diis_size);
+    // Coupled α/β DIIS — single subspace, joint error norm. PySCF-style.
+    // Independent per-spin DIIS desyncs α and β on cations (e.g. H2O+ took
+    // 421 iterations to converge with independent DIIS; coupled converges
+    // in ~15-25 cycles).
+    let mut diis = Diis::new(config.diis_size);
     let mut prev_e = 0.0;
     let mut total_quartets = 0usize;
 
@@ -199,9 +202,9 @@ pub fn solve_uhf(
         }
         prev_e = energy;
 
-        // DIIS extrapolate per spin, then diagonalize.
-        let f_a_new = diis_a.step(&f_a, &err_a);
-        let f_b_new = diis_b.step(&f_b, &err_b);
+        // Coupled DIIS extrapolation: one set of coefficients applied to
+        // both spin Fock histories.
+        let (f_a_new, f_b_new) = diis.step_pair(&f_a, &f_b, &err_a, &err_b);
         let (_, c_a_new) = diagonalize(&f_a_new, &s_inv_sqrt)?;
         let (_, c_b_new) = diagonalize(&f_b_new, &s_inv_sqrt)?;
         c_a = c_a_new;

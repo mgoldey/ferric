@@ -49,9 +49,12 @@ pub struct RhfConfig {
 impl Default for RhfConfig {
     fn default() -> Self {
         Self {
-            max_iter: 100,
-            energy_conv: 1e-8,
-            density_conv: 1e-7,
+            // Tightened from (1e-8, 1e-7, 100) after H2O+ false-convergence
+            // diagnosis: with the looser tolerances, UHF would report
+            // converged=true at a state 85 mHa above the true minimum.
+            max_iter: 200,
+            energy_conv: 1e-10,
+            density_conv: 1e-8,
             diis_size: 8,
             integral_thresh: 1e-12,
             k_builder: None,
