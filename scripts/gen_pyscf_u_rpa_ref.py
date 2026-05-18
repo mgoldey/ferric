@@ -41,7 +41,16 @@ def gauss_legendre_freq(n: int, u0: float):
 
 
 def build_b_ov_spin(mol, mf, dfbs, spin: int):
-    """Build B^P_{ia} = V^{-1/2}(P|ia) for one spin channel of a UHF result."""
+    """Build B^P_{ia} = V^{-1/2}(P|ia) for one spin channel of a UHF result.
+
+    NOTE on eps source: we use `eigh(F_σ, S)` directly rather than
+    `mf.mo_energy[σ]`. PySCF post-processes mo_energy for some UHF/UKS
+    convergence paths (notably the H-atom-doublet edge case) in ways that
+    do not match the raw Fock spectrum. For RI-RPA we need the *true*
+    Koopmans energies that go with the converged Fock operator, which is
+    `eigh(F_σ, S)`.  Ferric uses the raw spectrum, so apples-to-apples
+    requires we do the same here.
+    """
     aux = df.addons.make_auxbasis(mol, mf=False) if dfbs is None else dfbs
     auxmol = df.addons.make_auxmol(mol, auxbasis=aux)
     nao = mol.nao
@@ -53,18 +62,23 @@ def build_b_ov_spin(mol, mf, dfbs, spin: int):
 
     # V_2c = (P|Q)
     v2c = auxmol.intor("int2c2e")
-    # V^{-1/2}
     w, u = eigh(v2c)
     vinv = u @ np.diag(1.0 / np.sqrt(w)) @ u.T
 
-    C = mf.mo_coeff[spin]
+    # Use eigh(F, S) — see note above.
+    S = mol.intor("int1e_ovlp")
+    F = mf.get_fock()
+    eps_real, C_real = eigh(F[spin], S)
+
     occ = mf.mo_occ[spin]
-    occ_idx = np.where(occ > 0.5)[0]
-    vir_idx = np.where(occ < 0.5)[0]
-    Co = C[:, occ_idx]
-    Cv = C[:, vir_idx]
-    eps_o = mf.mo_energy[spin][occ_idx]
-    eps_v = mf.mo_energy[spin][vir_idx]
+    # Map mo_occ onto the eigh ordering: lowest |nocc_σ| eigenvalues = occupied.
+    nocc = int(round(occ.sum()))
+    occ_idx = np.arange(nocc)
+    vir_idx = np.arange(nocc, len(eps_real))
+    Co = C_real[:, occ_idx]
+    Cv = C_real[:, vir_idx]
+    eps_o = eps_real[occ_idx]
+    eps_v = eps_real[vir_idx]
 
     # (P|ia) = Σ_{μν} C_μi (P|μν) C_νa
     pmuv_mo = np.einsum("Pmn,mi,na->Pia", pmunu, Co, Cv, optimize=True)
