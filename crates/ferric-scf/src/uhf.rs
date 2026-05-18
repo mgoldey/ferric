@@ -34,9 +34,31 @@ pub fn solve_uhf(
     ctx: &ParallelContext,
     mol: &Molecule,
     prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    config: &UhfConfig,
+) -> Result<ScfResult, FerricError> {
+    solve_uhf_with_guess(ctx, mol, prep, op, bounds, config, None)
+}
+
+/// UHF with optional caller-supplied initial MOs.
+///
+/// `initial_mos` lets the caller provide a directed starting point (e.g.
+/// neutral RHF MOs for a cation calculation, to avoid landing in a
+/// doublet-excited basin from the symmetric hcore guess). Pass `None`
+/// for the default hcore guess.
+///
+/// The provided `c_a`/`c_b` must have shape (nbasis, nbasis) and span
+/// the AO basis; only the first `nocc_α`/`nocc_β` columns are used as
+/// the occupied set.
+pub fn solve_uhf_with_guess(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
     _op: Operator,
     bounds: &SchwarzBounds,
     config: &UhfConfig,
+    initial_mos: Option<(&Array2<f64>, &Array2<f64>)>,
 ) -> Result<ScfResult, FerricError> {
     let s = oneelectron::overlap(prep);
     let h = oneelectron::hcore(prep);
@@ -79,16 +101,25 @@ pub fn solve_uhf(
     }
     let s_inv_sqrt = u_scaled.dot(&s_evecs.t());
 
-    // hcore guess: get MO coefficients from H' = S^{-1/2} H S^{-1/2}.
-    // hcore_guess returns D = 2 C_occ C_occ^T; we re-derive C ourselves to
-    // build α/β densities with symmetry-breaking occupations.
-    let _ = hcore_guess(&s, &h, nocc_a.max(1))?; // sanity check it succeeds
-    let h_prime = s_inv_sqrt.dot(&h).dot(&s_inv_sqrt);
-    let (_, c_prime) = h_prime
-        .eigh(ndarray_linalg::UPLO::Upper)
-        .map_err(|e| FerricError::Lapack(format!("H' diag: {e}")))?;
-    let mut c_a = s_inv_sqrt.dot(&c_prime);
-    let mut c_b = c_a.clone();
+    // Initial guess: caller-supplied MOs if provided, else hcore.
+    let (mut c_a, mut c_b) = if let Some((ca0, cb0)) = initial_mos {
+        if ca0.dim() != (n, n) || cb0.dim() != (n, n) {
+            return Err(FerricError::General(format!(
+                "solve_uhf_with_guess: initial MO shape mismatch (got {:?}/{:?}, want ({n},{n}))",
+                ca0.dim(), cb0.dim()
+            )));
+        }
+        (ca0.clone(), cb0.clone())
+    } else {
+        // hcore guess: get MO coefficients from H' = S^{-1/2} H S^{-1/2}.
+        let _ = hcore_guess(&s, &h, nocc_a.max(1))?; // sanity check it succeeds
+        let h_prime = s_inv_sqrt.dot(&h).dot(&s_inv_sqrt);
+        let (_, c_prime) = h_prime
+            .eigh(ndarray_linalg::UPLO::Upper)
+            .map_err(|e| FerricError::Lapack(format!("H' diag: {e}")))?;
+        let c = s_inv_sqrt.dot(&c_prime);
+        (c.clone(), c)
+    };
 
     // For genuine open shell (nocc_a > nocc_b), occupying the lowest nocc_σ
     // orbitals per spin is already symmetry-broken. For "forced" UHF on a

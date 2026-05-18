@@ -31,10 +31,12 @@ use ferric_integrals::operator::Operator;
 use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
 use ferric_rpa::config::{QuadratureConfig, QuadratureScheme};
 use ferric_rpa::{run_pdep_rpa, run_u_pdep_rpa, PdepRpaConfig};
+use ferric_integrals::oneelectron;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::rohf::{solve_rohf, RohfConfig};
-use ferric_scf::uhf::{solve_uhf, UhfConfig};
+use ferric_scf::uhf::{solve_uhf, solve_uhf_with_guess, UhfConfig};
+use ndarray::Array2;
 
 const HARTREE_TO_EV: f64 = 27.211386245988_f64;
 
@@ -110,6 +112,7 @@ struct MethodResult {
     corr_cation: f64,
 }
 
+#[allow(dead_code)]
 impl MethodResult {
     fn ip_scf_ev(&self) -> f64 {
         (self.scf_cation - self.scf_neutral) * HARTREE_TO_EV
@@ -120,10 +123,37 @@ impl MethodResult {
     }
 }
 
-fn run_case(case: &Case) -> Option<(f64, f64, f64)> {
+/// Compute ⟨S²⟩ for a UHF/ROHF result; returns 0 for restricted.
+fn s_squared(rhf: &ferric_scf::result::ScfResult, s_ao: &Array2<f64>, nocc_a: usize, nocc_b: usize) -> f64 {
+    let s_true = 0.5 * (nocc_a as f64 - nocc_b as f64);
+    let s_ideal = s_true * (s_true + 1.0);
+    if nocc_a == 0 || nocc_b == 0 { return s_ideal; }
+    let c_a = &rhf.mos_alpha;
+    let c_b = rhf.mos_beta.as_ref().unwrap_or(&rhf.mos_alpha);
+    let c_a_occ = c_a.slice(ndarray::s![.., ..nocc_a]);
+    let c_b_occ = c_b.slice(ndarray::s![.., ..nocc_b]);
+    let overlap_ab = c_a_occ.t().dot(s_ao).dot(&c_b_occ);
+    let sum_sq: f64 = overlap_ab.iter().map(|v| v * v).sum();
+    s_ideal + (nocc_b as f64) - sum_sq
+}
+
+/// Diagnostic record from one cation SCF attempt.
+struct CationDiag {
+    method: &'static str,   // "UHF" or "ROHF"
+    iters: usize,
+    converged: bool,
+    s2: f64,
+    s2_ideal: f64,
+    energy: f64,
+}
+
+fn run_case_diag(case: &Case) -> Option<(f64, f64, f64, CationDiag)> {
     let ctx = ParallelContext::default();
-    let obs_bs = basis::bundled("cc-pvdz").ok()?;
-    let dfbs_bs = basis::bundled("cc-pvdz-ri").ok()?;
+    // Upgraded from cc-pVDZ/cc-pVDZ-RI to aug-cc-pVTZ/aug-cc-pVTZ-RIFIT.
+    // Diffuse functions matter for ionization potentials; TZ closes the
+    // basis-set-incompleteness gap that dominated the cc-pVDZ error.
+    let obs_bs = basis::bundled("aug-cc-pvtz").ok()?;
+    let dfbs_bs = basis::bundled("aug-cc-pvtz-rifit").ok()?;
     let op = Operator::coulomb();
 
     // Parse neutral and cation as separate Molecule instances.
@@ -166,12 +196,40 @@ fn run_case(case: &Case) -> Option<(f64, f64, f64)> {
     // we need a separate path. Skip Δ-MP2 for cations and report N/A.
     // UHF first; fall back to ROHF if it fails (common on symmetric cations
     // where UHF saddle-points without symmetry breaking — e.g. NH3⁺, CH4⁺).
-    let uhf_c = match solve_uhf(&ctx, &cation, &obs_c, op, &bounds_c, &uhf_cfg) {
-        Ok(r) => r,
-        Err(_) => {
-            let rohf_cfg = RohfConfig { max_iter: 200, ..Default::default() };
-            solve_rohf(&ctx, &cation, &obs_c, op, &bounds_c, &rohf_cfg).ok()?
-        }
+    // Seed cation UHF from neutral RHF MOs. Removes the doublet-excited-
+    // state trap that hcore guess + symmetric cations falls into (e.g.
+    // H2O+ landed in ²A₁ excited doublet at -75.5465 instead of ²B₁
+    // ground at -75.6318 when starting from hcore).
+    let c_seed = rhf_n.mos_alpha.clone();
+    let (uhf_c, diag_method): (ferric_scf::result::ScfResult, &'static str) =
+        match solve_uhf_with_guess(&ctx, &cation, &obs_c, op, &bounds_c, &uhf_cfg, Some((&c_seed, &c_seed))) {
+            Ok(r) => (r, "UHF(neutral-seed)"),
+            Err(_) => {
+                // Fall back to hcore-guess UHF, then ROHF if that also fails.
+                match solve_uhf(&ctx, &cation, &obs_c, op, &bounds_c, &uhf_cfg) {
+                    Ok(r) => (r, "UHF(hcore)"),
+                    Err(_) => {
+                        let rohf_cfg = RohfConfig { max_iter: 200, ..Default::default() };
+                        let r = solve_rohf(&ctx, &cation, &obs_c, op, &bounds_c, &rohf_cfg).ok()?;
+                        (r, "ROHF")
+                    }
+                }
+            }
+        };
+    let s_ao = oneelectron::overlap(&obs_c);
+    let nelec_c = cation.nelec() as i64;
+    let mult_c = cation.multiplicity as i64;
+    let two_s = mult_c - 1;
+    let nocc_a = ((nelec_c + two_s) / 2) as usize;
+    let nocc_b = ((nelec_c - two_s) / 2) as usize;
+    let s_true = 0.5 * (nocc_a as f64 - nocc_b as f64);
+    let diag = CationDiag {
+        method: diag_method,
+        iters: uhf_c.iterations,
+        converged: uhf_c.converged,
+        s2: s_squared(&uhf_c, &s_ao, nocc_a, nocc_b),
+        s2_ideal: s_true * (s_true + 1.0),
+        energy: uhf_c.energy,
     };
     let rpa_c = run_u_pdep_rpa(&cation, &obs_c, &dfbs_c, op, &uhf_c, &rpa_cfg).ok()?;
 
@@ -188,8 +246,9 @@ fn run_case(case: &Case) -> Option<(f64, f64, f64)> {
         (e_c - e_n) * HARTREE_TO_EV
     };
 
-    Some((ip_dscf_ev, ip_dmp2_ev, ip_drpa_ev))
+    Some((ip_dscf_ev, ip_dmp2_ev, ip_drpa_ev, diag))
 }
+
 
 fn main() {
     let cases = gw100_subset();
@@ -204,9 +263,10 @@ fn main() {
     let mut mae_drpa = 0.0_f64;
     let mut n_ok = 0_usize;
 
+    let mut diags: Vec<(&str, CationDiag)> = Vec::new();
     for case in &cases {
-        match run_case(case) {
-            Some((dscf, dmp2, drpa)) => {
+        match run_case_diag(case) {
+            Some((dscf, dmp2, drpa, diag)) => {
                 println!(
                     "{:<6} {:>10.2} {:>10.3} {:>10.3} {:>10.3}",
                     case.name, case.ip_ref, dscf, dmp2, drpa
@@ -215,11 +275,19 @@ fn main() {
                 mae_dmp2 += (dmp2 - case.ip_ref).abs();
                 mae_drpa += (drpa - case.ip_ref).abs();
                 n_ok += 1;
+                diags.push((case.name, diag));
             }
             None => {
                 println!("{:<6} FAILED", case.name);
             }
         }
+    }
+    println!("\nCation SCF diagnostics:");
+    println!("{:<6} {:>6} {:>5} {:>6} {:>9} {:>9} {:>14}",
+        "mol", "method", "iter", "conv", "<S^2>", "ideal", "E_cation(Ha)");
+    for (name, d) in &diags {
+        println!("{:<6} {:>6} {:>5} {:>6} {:>9.4} {:>9.4} {:>14.6}",
+            name, d.method, d.iters, d.converged, d.s2, d.s2_ideal, d.energy);
     }
     println!("{:-<54}", "");
     if n_ok > 0 {
