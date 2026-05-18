@@ -18,6 +18,7 @@ pub mod gradient;
 pub mod lanczos;
 pub mod optimize;
 pub mod laplace_chi0;
+pub mod pno;
 pub mod properties;
 pub mod quadrature;
 pub mod screen;
