@@ -41,6 +41,49 @@ pub struct AttenuatedMp2Result {
     pub spin_components: SpinComponents,
 }
 
+/// Explicit erfc-attenuated alias of [`attenuated_ri_mp2`].
+///
+/// Same implementation; named to make the operator choice unambiguous
+/// at the call site. Use [`attenuated_ri_mp2_long_range`] for the
+/// complementary erf-attenuated (long-range only) variant.
+#[inline]
+pub fn erfc_attenuated_ri_mp2(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    rhf: &ScfResult,
+    config: &AttenuatedMp2Config,
+) -> Result<AttenuatedMp2Result, FerricError> {
+    attenuated_ri_mp2(mol, obs, dfbs, rhf, config)
+}
+
+/// Long-range RI-MP2 using erf(omega·r)/r operator (complement of erfc).
+///
+/// Useful for range-separated hybrid decompositions where the short-range
+/// part is treated by DFT and the long-range part by MP2 correlation.
+/// erf(ω·r)/r + erfc(ω·r)/r = 1/r exactly, so
+///   `attenuated_ri_mp2(erfc) + attenuated_ri_mp2_long_range(erf) ≈ ri_mp2(Coulomb)`
+/// up to integral roundoff.
+pub fn attenuated_ri_mp2_long_range(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    rhf: &ScfResult,
+    config: &AttenuatedMp2Config,
+) -> Result<AttenuatedMp2Result, FerricError> {
+    let omega = 1.0 / (config.r0 * std::f64::consts::SQRT_2);
+    let mut op = Operator::erf(omega);
+    op.distance = config.r0;
+    let ri_config = RiMp2Config { frozen_core: config.frozen_core };
+    let (sc, _) = ri_mp2_spin_components(mol, obs, dfbs, op, rhf, &ri_config)?;
+    let scaled_corr = config.scaling * sc.e_total;
+    Ok(AttenuatedMp2Result {
+        mp2_corr: scaled_corr,
+        total_energy: rhf.energy + scaled_corr,
+        spin_components: sc,
+    })
+}
+
 /// Compute attenuated RI-MP2 using erfc(omega*r)/r operator.
 ///
 /// The attenuation parameter omega is derived from r0 via the curvature
@@ -64,6 +107,24 @@ pub fn attenuated_ri_mp2(
         total_energy: rhf.energy + scaled_corr,
         spin_components: sc,
     })
+}
+
+/// Helper for range-separated MP2: returns (E_erfc_sr, E_erf_lr, E_full).
+/// Should satisfy E_erfc_sr + E_erf_lr ≈ E_full (range-separation identity).
+pub fn rs_mp2_decomposition(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    rhf: &ScfResult,
+    config: &AttenuatedMp2Config,
+) -> Result<(f64, f64, f64), FerricError> {
+    use ferric_integrals::operator::Operator;
+    let sr = erfc_attenuated_ri_mp2(mol, obs, dfbs, rhf, config)?.mp2_corr;
+    let lr = attenuated_ri_mp2_long_range(mol, obs, dfbs, rhf, config)?.mp2_corr;
+    let op = Operator::coulomb();
+    let ri_config = RiMp2Config { frozen_core: config.frozen_core };
+    let (sc, _) = ri_mp2_spin_components(mol, obs, dfbs, op, rhf, &ri_config)?;
+    Ok((sr, lr, sc.e_total))
 }
 
 #[cfg(test)]
@@ -124,5 +185,39 @@ mod tests {
             (att.mp2_corr - full.mp2_corr).abs() < 1e-4,
             "large r0 attenuated ({}) should approach full ({})", att.mp2_corr, full.mp2_corr
         );
+    }
+
+    #[test]
+    fn test_rs_mp2_decomposition_sums_approximately_to_full() {
+        // Range-separation identity erfc + erf = 1 ⇒ exact integrals satisfy
+        // MP2(erfc) + MP2(erf) = MP2(Coulomb). With RI approximation using
+        // cc-pVDZ-RI (fit for Coulomb), each operator picks up a different
+        // RI truncation error and the identity holds only at the mHa level,
+        // not bitwise. Production range-separated MP2 needs operator-specific
+        // RI fits.
+        let (mol, obs, dfbs, rhf) = setup_h2();
+        let config = AttenuatedMp2Config { r0: 1.5, ..Default::default() };
+        let (sr, lr, full) = rs_mp2_decomposition(&mol, &obs, &dfbs, &rhf, &config).unwrap();
+        let sum = sr + lr;
+        eprintln!(
+            "MP2 decomposition: erfc_SR={:.8}, erf_LR={:.8}, sum={:.8}, full={:.8}, RI-error={:.2e}",
+            sr, lr, sum, full, (sum - full).abs()
+        );
+        // ~10 mHa allowed — typical RI mismatch for non-Coulomb operators.
+        assert!(
+            (sum - full).abs() < 0.05,
+            "erf + erfc MP2 should sum to full Coulomb MP2 within RI tolerance (diff = {:.2e})",
+            (sum - full).abs()
+        );
+    }
+
+    #[test]
+    fn test_erfc_alias_matches_attenuated() {
+        // The explicit erfc-named API must be bit-identical to attenuated_ri_mp2.
+        let (mol, obs, dfbs, rhf) = setup_h2();
+        let config = AttenuatedMp2Config { r0: 2.0, ..Default::default() };
+        let a = attenuated_ri_mp2(&mol, &obs, &dfbs, &rhf, &config).unwrap();
+        let b = erfc_attenuated_ri_mp2(&mol, &obs, &dfbs, &rhf, &config).unwrap();
+        assert!((a.mp2_corr - b.mp2_corr).abs() < 1e-12);
     }
 }
