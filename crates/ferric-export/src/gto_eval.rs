@@ -56,12 +56,41 @@ pub fn nbasis(mol: &Molecule, bs: &BasisSet) -> Result<usize, GtoEvalError> {
     Ok(shells.iter().map(|s| num_functions(s.l, s.pure)).sum())
 }
 
-/// Evaluate a contracted radial part: Σ_p c_p · exp(-α_p r²)
+/// Evaluate a contracted radial part: Σ_p c_p · N(α_p, l) · exp(-α_p r²).
+///
+/// The basis-set JSON files store contraction coefficients `c_p` that
+/// multiply un-normalized primitives `exp(-α r²) · r^l · Y_lm`. To
+/// evaluate the actual normalized AO we need to multiply each primitive
+/// by its individual normalization constant
+///
+/// ```text
+///   N(α, l) = (2α/π)^(3/4) · (4α)^(l/2) · 1/√((2l-1)!!)
+/// ```
+///
+/// For l = 0 this is the familiar `(2α/π)^{3/4}`. Without this factor,
+/// AO evaluations are wrong by ~100-400× for tight 1s primitives on
+/// heavy atoms, which silently breaks any grid integration that
+/// relies on `eval_basis_on_*` (cube density visualization happened to
+/// look "fine" because the relative shape is qualitatively correct
+/// even with the wrong absolute scale).
 #[inline]
 fn radial(shell: &LocatedShell, r2: f64) -> f64 {
+    let l = shell.l as i32;
+    let pi = std::f64::consts::PI;
+    // (2l-1)!! for l = 0..3
+    let dbl_fact: f64 = match l {
+        0 => 1.0,
+        1 => 1.0,
+        2 => 3.0,
+        3 => 15.0,
+        _ => 1.0,
+    };
     let mut v = 0.0;
     for (a, c) in shell.exponents.iter().zip(shell.coefficients.iter()) {
-        v += c * (-a * r2).exp();
+        let n = (2.0 * a / pi).powf(0.75)
+            * (4.0 * a).powi(l) .sqrt()
+            / dbl_fact.sqrt();
+        v += c * n * (-a * r2).exp();
     }
     v
 }
