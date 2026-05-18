@@ -106,6 +106,30 @@ pub fn dielectric_matrix_laplace_into(
     assert_eq!(rhs_scaled.shape(), &[m, nov], "rhs_scaled scratch shape");
     assert_eq!(out.shape(), &[m, m], "out shape");
 
+    // The Laplace identity e/(ω²+e²) = ∫ cos(ωt) exp(-et) dt becomes
+    // ill-conditioned for the standard 1/x-tuned minimax quadrature when
+    // ω · t_max ≳ π/2 — the cosine modulation oscillates across the
+    // quadrature points and the Laplace expansion catastrophically loses
+    // accuracy. For RPA trace-log integration the Gauss-Legendre ω-grid
+    // routinely hits ω · t_max > 100 at high points, so the Laplace path
+    // CANNOT be used naively at large ω.
+    //
+    // Resolution: fall back to the Dense kernel whenever ω · t_max exceeds
+    // a safe threshold (here π/2). This preserves the Laplace win at low
+    // ω (where the cubic-scaling benefit of separability matters) without
+    // poisoning the high-ω tail. The high-ω contributions are
+    // |e/(ω²+e²)| ~ 1/ω² → small, so the dense fallback is cheap because
+    // those quadrature weights are already tiny.
+    let t_max = laplace.points.iter().cloned().fold(0.0_f64, f64::max);
+    if omega * t_max > std::f64::consts::FRAC_PI_2 {
+        // Dense fallback — exact e/(ω²+e²) instead of the broken Laplace
+        // approximation. Same closed-shell prefactor 4.
+        let dense = crate::sternheimer::dielectric_matrix(v_mat, b_ov, eps_occ, eps_vir, omega);
+        out.assign(&dense);
+        let _ = rhs_scaled; // scratch unused in fallback
+        return;
+    }
+
     // Y = v_mat^T @ b_ov, shape (m, nov). We *don't* scale this in place;
     // we'll need it for every quadrature point. Stash into rhs_scaled as a
     // base, then for each l copy → reuse-buffer for scaling and matmul.
@@ -166,6 +190,25 @@ pub fn dielectric_matrix_laplace_unrestricted_into(
     out: &mut Array2<f64>,
 ) {
     let m = v_mat.ncols();
+
+    // Same ω · t_max safety check as the closed-shell path. If either spin's
+    // Laplace quadrature is in the bad regime, fall back to dense for both
+    // (mixing Dense for one spin and Laplace for the other would still
+    // poison the trace-log).
+    let t_max = laplace_a.points.iter().chain(laplace_b.points.iter())
+        .cloned().fold(0.0_f64, f64::max);
+    if omega * t_max > std::f64::consts::FRAC_PI_2 {
+        use crate::sternheimer::dielectric_matrix_unrestricted;
+        let dense = dielectric_matrix_unrestricted(
+            v_mat,
+            b_ov_a, eps_occ_a, eps_vir_a,
+            b_ov_b, eps_occ_b, eps_vir_b,
+            omega,
+        );
+        out.assign(&dense);
+        return;
+    }
+
     out.fill(0.0);
 
     accumulate_one_spin(

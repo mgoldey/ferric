@@ -255,11 +255,6 @@ fn u_ri_drpa_diagnostic_h_atom_matches_pyscf() {
 }
 
 #[test]
-#[ignore = "Closed-shell Laplace χ₀ path through run_pdep_rpa is broken for ω>0 — \
-            the minimax quadrature (t_l, w_l) is for 1/x on [ymin, ymax], but the \
-            full-ω trace-log needs `cos(ω t_l) · exp(-e t_l)` integrated over a \
-            cosine-Fourier dual grid. C6 plan acknowledged this (ω=0 correct, \
-            full-ω deferred). Re-enable when closed-shell Laplace ω-grid lands."]
 fn closed_shell_rpa_laplace_matches_dense_h2o() {
     // Sanity check the *closed-shell* Laplace χ₀ path through run_pdep_rpa,
     // which had no prior end-to-end test (only synthetic in laplace_chi0).
@@ -286,8 +281,6 @@ fn closed_shell_rpa_laplace_matches_dense_h2o() {
 }
 
 #[test]
-#[ignore = "Same root cause as closed_shell_rpa_laplace_matches_dense_h2o — \
-            full-ω Laplace χ₀ requires cosine-Fourier dual quadrature."]
 fn u_pdep_rpa_laplace_matches_dense_closed_shell_h2o() {
     // Closed-shell-via-UHF + U-Laplace ≡ closed-shell RHF + RPA (Dense)
     use ferric_rpa::config::Chi0Backend;
@@ -370,8 +363,6 @@ fn u_laplace_dielectric_matches_u_dense_at_omega_zero_oh() {
 }
 
 #[test]
-#[ignore = "Full-ω Laplace χ₀ requires cosine-Fourier dual quadrature; \
-            re-enable once closed-shell Laplace path is fixed for ω>0."]
 fn u_pdep_rpa_laplace_matches_dense_oh() {
     // C8: U-Laplace χ₀ on OH/cc-pVDZ must match the Dense U-RPA E_c to
     // within Laplace quadrature tolerance (~1e-6 Ha for n_quad=20).
