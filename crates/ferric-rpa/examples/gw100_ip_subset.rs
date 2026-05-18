@@ -33,6 +33,7 @@ use ferric_rpa::config::{QuadratureConfig, QuadratureScheme};
 use ferric_rpa::{run_pdep_rpa, run_u_pdep_rpa, PdepRpaConfig};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
+use ferric_scf::rohf::{solve_rohf, RohfConfig};
 use ferric_scf::uhf::{solve_uhf, UhfConfig};
 
 const HARTREE_TO_EV: f64 = 27.211386245988_f64;
@@ -163,7 +164,15 @@ fn run_case(case: &Case) -> Option<(f64, f64, f64)> {
     // Cation UHF + MP2 (uses ri_mp2 which currently requires Restricted) ;
     // Actually ri_mp2 also uses rhf.mos_r() — closed-shell only. For U-MP2
     // we need a separate path. Skip Δ-MP2 for cations and report N/A.
-    let uhf_c = solve_uhf(&ctx, &cation, &obs_c, op, &bounds_c, &uhf_cfg).ok()?;
+    // UHF first; fall back to ROHF if it fails (common on symmetric cations
+    // where UHF saddle-points without symmetry breaking — e.g. NH3⁺, CH4⁺).
+    let uhf_c = match solve_uhf(&ctx, &cation, &obs_c, op, &bounds_c, &uhf_cfg) {
+        Ok(r) => r,
+        Err(_) => {
+            let rohf_cfg = RohfConfig { max_iter: 200, ..Default::default() };
+            solve_rohf(&ctx, &cation, &obs_c, op, &bounds_c, &rohf_cfg).ok()?
+        }
+    };
     let rpa_c = run_u_pdep_rpa(&cation, &obs_c, &dfbs_c, op, &uhf_c, &rpa_cfg).ok()?;
 
     let ip_dscf_ev = (uhf_c.energy - rhf_n.energy) * HARTREE_TO_EV;
