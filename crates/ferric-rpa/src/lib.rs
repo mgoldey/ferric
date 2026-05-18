@@ -9,6 +9,7 @@
 //! set `OPENBLAS_NUM_THREADS=1` (or `BLIS_NUM_THREADS=1`) so each rayon
 //! worker gets a dedicated single-threaded BLAS call.
 
+pub mod ao_rpa;
 pub mod boys_localize;
 pub mod config;
 pub mod davidson;
