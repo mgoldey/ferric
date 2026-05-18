@@ -127,6 +127,48 @@ pub fn eval_eigenvalues_at_frequencies_unrestricted(
     out
 }
 
+/// Laplace + unrestricted variant of [`eval_eigenvalues_at_frequencies`].
+///
+/// Builds `ε̃ = I + Π_α + Π_β` at each ω_k using the Laplace-separable
+/// kernel per spin, diagonalizes, returns eigenvalue tensor.
+pub fn eval_eigenvalues_at_frequencies_laplace_unrestricted(
+    eigenvectors: &Array2<f64>,
+    b_ov_a: &Array2<f64>, eps_occ_a: &[f64], eps_vir_a: &[f64],
+    laplace_a: &ferric_quadrature::LaplaceQuadrature,
+    b_ov_b: &Array2<f64>, eps_occ_b: &[f64], eps_vir_b: &[f64],
+    laplace_b: &ferric_quadrature::LaplaceQuadrature,
+    quad_freqs: &[f64],
+) -> Array2<f64> {
+    use crate::laplace_chi0::dielectric_matrix_laplace_unrestricted;
+    use ndarray_linalg::{Eigh, UPLO};
+    use rayon::prelude::*;
+
+    let n_quad = quad_freqs.len();
+    let m = eigenvectors.ncols();
+
+    let rows: Vec<Vec<f64>> = quad_freqs
+        .par_iter()
+        .map(|&omega| {
+            let eps_proj = dielectric_matrix_laplace_unrestricted(
+                eigenvectors,
+                b_ov_a, eps_occ_a, eps_vir_a, laplace_a,
+                b_ov_b, eps_occ_b, eps_vir_b, laplace_b,
+                omega,
+            );
+            let (evals, _) = eps_proj.eigh(UPLO::Upper).expect("U-Laplace dielectric eigh failed");
+            evals.to_vec()
+        })
+        .collect();
+
+    let mut out = Array2::zeros((n_quad, m));
+    for (k, row) in rows.into_iter().enumerate() {
+        for (alpha, val) in row.into_iter().enumerate() {
+            out[(k, alpha)] = val;
+        }
+    }
+    out
+}
+
 pub fn eval_eigenvalues_at_frequencies(
     eigenvectors: &Array2<f64>,
     b_ov: &Array2<f64>,

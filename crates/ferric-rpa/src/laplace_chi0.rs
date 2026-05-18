@@ -148,6 +148,98 @@ pub fn dielectric_matrix_laplace_into(
     }
 }
 
+/// Unrestricted Laplace-separable dielectric: ε̃ = I + Π_α + Π_β.
+///
+/// Mirrors [`dielectric_matrix_laplace_into`] but with prefactor 2 per spin
+/// (vs 4 closed-shell) and two channels summed. The two channels share
+/// the same Laplace quadrature only when their orbital-energy-gap ranges
+/// align — for genuine open-shell cases (different α/β gap ranges) the
+/// caller passes one quadrature per spin built via
+/// [`build_laplace_for_gaps`] on the appropriate eps_occ_σ/eps_vir_σ.
+pub fn dielectric_matrix_laplace_unrestricted_into(
+    v_mat: &Array2<f64>,
+    b_ov_a: &Array2<f64>, eps_occ_a: &[f64], eps_vir_a: &[f64], laplace_a: &LaplaceQuadrature,
+    b_ov_b: &Array2<f64>, eps_occ_b: &[f64], eps_vir_b: &[f64], laplace_b: &LaplaceQuadrature,
+    omega: f64,
+    rhs_scaled_a: &mut Array2<f64>,
+    rhs_scaled_b: &mut Array2<f64>,
+    out: &mut Array2<f64>,
+) {
+    let m = v_mat.ncols();
+    out.fill(0.0);
+
+    accumulate_one_spin(
+        v_mat, b_ov_a, eps_occ_a, eps_vir_a, laplace_a, omega, rhs_scaled_a, out,
+    );
+    accumulate_one_spin(
+        v_mat, b_ov_b, eps_occ_b, eps_vir_b, laplace_b, omega, rhs_scaled_b, out,
+    );
+
+    for alpha in 0..m {
+        out[(alpha, alpha)] += 1.0;
+    }
+}
+
+/// Per-spin Π_σ contribution, accumulated into `out`. Prefactor 2 (open-shell).
+fn accumulate_one_spin(
+    v_mat: &Array2<f64>,
+    b_ov: &Array2<f64>,
+    eps_occ: &[f64],
+    eps_vir: &[f64],
+    laplace: &LaplaceQuadrature,
+    omega: f64,
+    rhs_scaled: &mut Array2<f64>,
+    out: &mut Array2<f64>,
+) {
+    let m = v_mat.ncols();
+    let nov = eps_occ.len() * eps_vir.len();
+    if nov == 0 {
+        return;
+    }
+    assert_eq!(b_ov.shape()[1], nov);
+    assert_eq!(rhs_scaled.shape(), &[m, nov], "rhs_scaled scratch shape");
+
+    general_mat_mul(1.0, &v_mat.t(), b_ov, 0.0, rhs_scaled);
+    let y_base = rhs_scaled.clone();
+    let e_ia = build_e_ia(eps_occ, eps_vir);
+
+    for (&t_l, &w_l) in laplace.points.iter().zip(laplace.weights.iter()) {
+        rhs_scaled.assign(&y_base);
+        let factor: Array1<f64> = e_ia.iter().map(|&e| (-0.5 * t_l * e).exp()).collect();
+        let factor_row = factor.view().insert_axis(Axis(0));
+        Zip::from(&mut *rhs_scaled)
+            .and_broadcast(factor_row)
+            .for_each(|x, &f| *x *= f);
+
+        let coeff = 2.0 * w_l * (omega * t_l).cos();
+        let x_view = rhs_scaled.view();
+        let xt = rhs_scaled.t();
+        general_mat_mul(coeff, &x_view, &xt, 1.0, out);
+    }
+}
+
+/// Allocating convenience wrapper around [`dielectric_matrix_laplace_unrestricted_into`].
+pub fn dielectric_matrix_laplace_unrestricted(
+    v_mat: &Array2<f64>,
+    b_ov_a: &Array2<f64>, eps_occ_a: &[f64], eps_vir_a: &[f64], laplace_a: &LaplaceQuadrature,
+    b_ov_b: &Array2<f64>, eps_occ_b: &[f64], eps_vir_b: &[f64], laplace_b: &LaplaceQuadrature,
+    omega: f64,
+) -> Array2<f64> {
+    let m = v_mat.ncols();
+    let nov_a = eps_occ_a.len() * eps_vir_a.len();
+    let nov_b = eps_occ_b.len() * eps_vir_b.len();
+    let mut rhs_a = Array2::<f64>::zeros((m, nov_a.max(1)));
+    let mut rhs_b = Array2::<f64>::zeros((m, nov_b.max(1)));
+    let mut out = Array2::<f64>::zeros((m, m));
+    dielectric_matrix_laplace_unrestricted_into(
+        v_mat,
+        b_ov_a, eps_occ_a, eps_vir_a, laplace_a,
+        b_ov_b, eps_occ_b, eps_vir_b, laplace_b,
+        omega, &mut rhs_a, &mut rhs_b, &mut out,
+    );
+    out
+}
+
 /// Allocating convenience wrapper around [`dielectric_matrix_laplace_into`].
 pub fn dielectric_matrix_laplace(
     v_mat: &Array2<f64>,

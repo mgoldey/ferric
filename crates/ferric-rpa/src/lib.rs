@@ -483,6 +483,24 @@ pub fn run_u_pdep_rpa(
         config.davidson_max_vecs
     };
 
+    // Build per-spin Laplace quadratures if the Laplace χ₀ backend is
+    // selected. Each spin has its own gap range so we keep two quadratures.
+    let laplace_pair: Option<(ferric_quadrature::LaplaceQuadrature, ferric_quadrature::LaplaceQuadrature)> =
+        match config.chi0_backend {
+            Chi0Backend::Dense => None,
+            Chi0Backend::Laplace { n_quad } => {
+                let qa = laplace_chi0::build_laplace_for_gaps(&eps_occ_a, &eps_vir_a, n_quad);
+                let qb = if eps_occ_b.is_empty() {
+                    // Empty spin channel: build a degenerate quadrature; it
+                    // never gets used in the per-spin accumulator (early-out).
+                    qa.clone()
+                } else {
+                    laplace_chi0::build_laplace_for_gaps(&eps_occ_b, &eps_vir_b, n_quad)
+                };
+                Some((qa, qb))
+            }
+        };
+
     // Eigensolve. Lanczos is preferred per [[ferric-rpa-status]]; Davidson
     // is kept as fallback to mirror the closed-shell dispatch.
     let b_a = inter_a.b_ov.clone();
@@ -491,19 +509,26 @@ pub fn run_u_pdep_rpa(
     let ea_v = eps_vir_a.clone();
     let eb_o = eps_occ_b.clone();
     let eb_v = eps_vir_b.clone();
+    let lap_for_solver = laplace_pair.clone();
 
-    let davidson_result = match config.eigensolver {
-        Eigensolver::Lanczos => {
-            // Block Lanczos with identity seed. C8 will swap in Boys-localized
-            // per-spin seeds; for first-land Dense+identity matches the
-            // closed-shell trunc_thresh=0 verification path.
+    let davidson_result = match (config.eigensolver, lap_for_solver) {
+        (Eigensolver::Lanczos, lap_opt) => {
             let seed = Array2::eye(naux);
             let block_size = seed.ncols().max(1);
             let max_iter = (max_vecs / block_size).max(8);
+            let lap = lap_opt;
             let matvec = move |v: &Array2<f64>| -> Array2<f64> {
-                sternheimer::dielectric_apply_unrestricted(
-                    v, &b_a, &ea_o, &ea_v, &b_b, &eb_o, &eb_v, 0.0,
-                )
+                match &lap {
+                    None => sternheimer::dielectric_apply_unrestricted(
+                        v, &b_a, &ea_o, &ea_v, &b_b, &eb_o, &eb_v, 0.0,
+                    ),
+                    Some((qa, qb)) => laplace_chi0::dielectric_matrix_laplace_unrestricted(
+                        v,
+                        &b_a, &ea_o, &ea_v, qa,
+                        &b_b, &eb_o, &eb_v, qb,
+                        0.0,
+                    ),
+                }
             };
             let lz = lanczos::run_lanczos_seeded(
                 seed, matvec, naux, max_iter, config.davidson_conv_thresh,
@@ -513,20 +538,28 @@ pub fn run_u_pdep_rpa(
                 eigenvectors: lz.eigenvectors,
             }
         }
-        Eigensolver::Davidson => davidson::run_davidson_static(
-            naux,
-            move |v_mat: &Array2<f64>, omega: f64| {
-                sternheimer::dielectric_apply_unrestricted(
-                    v_mat,
-                    &b_a, &ea_o, &ea_v,
-                    &b_b, &eb_o, &eb_v,
-                    omega,
-                )
-            },
-            config.davidson_conv_thresh,
-            max_vecs,
-            naux,
-        )?,
+        (Eigensolver::Davidson, lap_opt) => {
+            let lap = lap_opt;
+            davidson::run_davidson_static(
+                naux,
+                move |v_mat: &Array2<f64>, omega: f64| {
+                    match &lap {
+                        None => sternheimer::dielectric_apply_unrestricted(
+                            v_mat, &b_a, &ea_o, &ea_v, &b_b, &eb_o, &eb_v, omega,
+                        ),
+                        Some((qa, qb)) => laplace_chi0::dielectric_matrix_laplace_unrestricted(
+                            v_mat,
+                            &b_a, &ea_o, &ea_v, qa,
+                            &b_b, &eb_o, &eb_v, qb,
+                            omega,
+                        ),
+                    }
+                },
+                config.davidson_conv_thresh,
+                max_vecs,
+                naux,
+            )?
+        }
     };
 
     let n_keep = davidson_result
@@ -543,12 +576,20 @@ pub fn run_u_pdep_rpa(
 
     let (quad_freqs, quad_weights) = quadrature::build_quadrature(&config.quadrature);
 
-    let eigenvalues_freq = energy::eval_eigenvalues_at_frequencies_unrestricted(
-        &eigenvectors,
-        &inter_a.b_ov, &eps_occ_a, &eps_vir_a,
-        &inter_b.b_ov, &eps_occ_b, &eps_vir_b,
-        &quad_freqs,
-    );
+    let eigenvalues_freq = match laplace_pair.as_ref() {
+        None => energy::eval_eigenvalues_at_frequencies_unrestricted(
+            &eigenvectors,
+            &inter_a.b_ov, &eps_occ_a, &eps_vir_a,
+            &inter_b.b_ov, &eps_occ_b, &eps_vir_b,
+            &quad_freqs,
+        ),
+        Some((qa, qb)) => energy::eval_eigenvalues_at_frequencies_laplace_unrestricted(
+            &eigenvectors,
+            &inter_a.b_ov, &eps_occ_a, &eps_vir_a, qa,
+            &inter_b.b_ov, &eps_occ_b, &eps_vir_b, qb,
+            &quad_freqs,
+        ),
+    };
 
     let e_rpa = energy::rpa_correlation_energy(&quad_weights, &eigenvalues_freq);
 
