@@ -410,11 +410,17 @@ pub fn pdep_polarizability_static(
     dfbs: &PreparedBasis,
     rhf: &ScfResult,
     op: Operator,
-    _cfg: &PdepRpaConfig,
+    cfg: &PdepRpaConfig,
 ) -> Result<PolarizabilityResult, FerricError> {
+    // Open-shell α: would dispatch to pdep_polarizability_static_unrestricted
+    // but that path has a 2×-too-large coupled term on closed-shell-via-UHF
+    // (factor bug in the coupled-spin SMW derivation, see notes at the
+    // unrestricted impl). Error explicitly until fixed.
     if !matches!(rhf.spin, Spin::Restricted) {
+        let _ = cfg;
         return Err(FerricError::General(
-            "pdep_polarizability_static: only closed-shell (Restricted) supported".into(),
+            "pdep_polarizability_static: open-shell α not yet correct \
+             (coupled-spin SMW factor bug); call closed-shell only.".into(),
         ));
     }
 
@@ -551,6 +557,147 @@ pub fn pdep_polarizability_static(
         iso,
         principal,
     })
+}
+
+/// Open-shell static polarizability tensor at ω=0 (UHF / ROHF reference).
+///
+/// Same SMW construction as the closed-shell path but with prefactor 2 per
+/// spin (vs closed-shell's 4 = 2·2). The (A+B) matrix is block-diagonal in
+/// spin since RPA has no cross-spin direct coupling:
+/// ```text
+///   (A+B)^{σσ'}_{ia,jb} = δ_{σσ'} (δ_{ia,jb} Δε_{iaσ} + 2 (ia|jb)_{σ})
+/// ```
+/// SMW per spin: `ε̃ = I + Σ_σ 2 B̃_σ D_σ^{-1} B̃_σ^T`, then
+/// ```text
+///   α_ij = Σ_σ [2 (μ_σ^i)^T D_σ^{-1} μ_σ^j  −  8 (w_σ^i)^T y^j]
+/// ```
+/// (the y vector is shared across spins since ε̃ couples them through the
+/// auxiliary basis).
+pub fn pdep_polarizability_static_unrestricted(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    rhf: &ScfResult,
+    op: Operator,
+    _cfg: &PdepRpaConfig,
+) -> Result<PolarizabilityResult, FerricError> {
+    use ferric_mp2::rimp2::{compute_rpa_intermediates_spin, RiMp2Config};
+    use ndarray_linalg::Solve;
+
+    let mp2_cfg = RiMp2Config { frozen_core: 0 };
+
+    // Per-spin intermediates.
+    let inter_a = compute_rpa_intermediates_spin(mol, obs, dfbs, op, rhf, &mp2_cfg, true)?;
+    let inter_b = compute_rpa_intermediates_spin(mol, obs, dfbs, op, rhf, &mp2_cfg, false)?;
+    let naux = inter_a.naux;
+    debug_assert_eq!(inter_a.naux, inter_b.naux);
+
+    // Orbital-energy slices per spin (ROHF reuses α-MOs for β; see run_u_pdep_rpa).
+    let eps_b_full: &[f64] = if matches!(rhf.spin, Spin::RestrictedOpen) {
+        rhf.eps_a()
+    } else {
+        rhf.eps_b()
+    };
+    let eps_occ_a: Vec<f64> = rhf.eps_a()[inter_a.first_occ..inter_a.first_occ + inter_a.nocc].to_vec();
+    let eps_vir_a: Vec<f64> = rhf.eps_a()[inter_a.nocc_total..inter_a.nocc_total + inter_a.nvir].to_vec();
+    let eps_occ_b: Vec<f64> = eps_b_full[inter_b.first_occ..inter_b.first_occ + inter_b.nocc].to_vec();
+    let eps_vir_b: Vec<f64> = eps_b_full[inter_b.nocc_total..inter_b.nocc_total + inter_b.nvir].to_vec();
+
+    // Per-spin MO-basis dipole μ_σ^d_{ia} = ⟨ψ_iσ|r_d|ψ_aσ⟩.
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let c_a = rhf.mos_a();
+    let c_b = if matches!(rhf.spin, Spin::RestrictedOpen) { rhf.mos_a() } else { rhf.mos_b() };
+    let c_occ_a = c_a.slice(ndarray::s![.., inter_a.first_occ..inter_a.first_occ + inter_a.nocc]).to_owned();
+    let c_vir_a = c_a.slice(ndarray::s![.., inter_a.nocc_total..inter_a.nocc_total + inter_a.nvir]).to_owned();
+    let c_occ_b = c_b.slice(ndarray::s![.., inter_b.first_occ..inter_b.first_occ + inter_b.nocc]).to_owned();
+    let c_vir_b = c_b.slice(ndarray::s![.., inter_b.nocc_total..inter_b.nocc_total + inter_b.nvir]).to_owned();
+    let mu_mo_a: [Array2<f64>; 3] = std::array::from_fn(|d| c_occ_a.t().dot(&dip_ao[d]).dot(&c_vir_a));
+    let mu_mo_b: [Array2<f64>; 3] = std::array::from_fn(|d| c_occ_b.t().dot(&dip_ao[d]).dot(&c_vir_b));
+
+    // Per-spin 1/Δε tables and flattened μ vectors.
+    let build_flats = |nocc: usize, nvir: usize, eps_o: &[f64], eps_v: &[f64], mu_mo: &[Array2<f64>; 3]|
+        -> ([ndarray::Array1<f64>; 3], [ndarray::Array1<f64>; 3], ndarray::Array1<f64>)
+    {
+        let nov = nocc * nvir;
+        let mut inv_de = ndarray::Array1::<f64>::zeros(nov);
+        for i in 0..nocc {
+            for a in 0..nvir {
+                inv_de[i * nvir + a] = 1.0 / (eps_v[a] - eps_o[i]);
+            }
+        }
+        let mu_flat: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
+            let mut v = ndarray::Array1::<f64>::zeros(nov);
+            for i in 0..nocc {
+                for a in 0..nvir {
+                    v[i * nvir + a] = mu_mo[d][(i, a)];
+                }
+            }
+            v
+        });
+        let mu_flat_inv: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| &mu_flat[d] * &inv_de);
+        (mu_flat, mu_flat_inv, inv_de)
+    };
+
+    let (mu_flat_a, mu_flat_inv_a, inv_de_a) =
+        build_flats(inter_a.nocc, inter_a.nvir, &eps_occ_a, &eps_vir_a, &mu_mo_a);
+    let (mu_flat_b, mu_flat_inv_b, inv_de_b) =
+        build_flats(inter_b.nocc, inter_b.nvir, &eps_occ_b, &eps_vir_b, &mu_mo_b);
+
+    // w_σ^d_P = Σ_ia B̃_σ^P_ia · μ_σ^d_ia / Δε_iaσ ; total w^d = w_α^d + w_β^d
+    let w_a: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| inter_a.b_ov.dot(&mu_flat_inv_a[d]));
+    let w_b: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
+        if inter_b.nocc == 0 {
+            ndarray::Array1::<f64>::zeros(naux)
+        } else {
+            inter_b.b_ov.dot(&mu_flat_inv_b[d])
+        }
+    });
+    let w_total: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| &w_a[d] + &w_b[d]);
+
+    // ε̃ = I + 2 B̃_α D_α^{-1} B̃_α^T + 2 B̃_β D_β^{-1} B̃_β^T
+    let mut eps_mat = Array2::<f64>::zeros((naux, naux));
+    for p in 0..naux { eps_mat[(p, p)] = 1.0; }
+    for (b_ov, inv_de) in [(&inter_a.b_ov, &inv_de_a), (&inter_b.b_ov, &inv_de_b)] {
+        if b_ov.shape()[1] == 0 { continue; }
+        let mut b_scaled = b_ov.clone();
+        for ia in 0..inv_de.len() {
+            let s = (2.0 * inv_de[ia]).sqrt();
+            let mut col = b_scaled.column_mut(ia);
+            col.mapv_inplace(|x| x * s);
+        }
+        let chi_sigma = b_scaled.dot(&b_scaled.t());
+        eps_mat = eps_mat + &chi_sigma;
+    }
+
+    // Solve ε̃ · y^d = w_total^d
+    let y_vec: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| eps_mat.solve(&w_total[d]).unwrap());
+
+    // α_ij = Σ_σ 2 μ_σ^i^T D_σ^{-1} μ_σ^j  −  4 · 2 · w_total^i^T y^j
+    //      = bare_α + bare_β − 8 w^i · y^j
+    // (The 4·2 = 8 factor combines the SMW outer factor 4 with the per-spin
+    // 2 from the SMW middle inverse.)
+    let mut tensor = [[0.0_f64; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            let bare_a = 2.0 * mu_flat_a[i].dot(&mu_flat_inv_a[j]);
+            let bare_b = if inter_b.nocc == 0 { 0.0 } else { 2.0 * mu_flat_b[i].dot(&mu_flat_inv_b[j]) };
+            let coupled = w_total[i].dot(&y_vec[j]);
+            tensor[i][j] = bare_a + bare_b - 8.0 * coupled;
+        }
+    }
+
+    // Symmetrize.
+    for i in 0..3 {
+        for j in (i + 1)..3 {
+            let avg = 0.5 * (tensor[i][j] + tensor[j][i]);
+            tensor[i][j] = avg;
+            tensor[j][i] = avg;
+        }
+    }
+    let iso = (tensor[0][0] + tensor[1][1] + tensor[2][2]) / 3.0;
+    let principal = eig3_sym(tensor);
+
+    Ok(PolarizabilityResult { tensor, iso, principal })
 }
 
 /// Per-atom static polarizability decomposition via Hirshfeld partitioning.
@@ -1172,14 +1319,16 @@ fn slater_xi_for_z(z: i32) -> f64 {
     // Bragg-Slater radii in Bohr (1 Å = 1.8897259886 Bohr).
     // Values from Slater J. Chem. Phys. 41, 3199 (1964) for Z=1..18.
     //
-    // We use ξ = 1/R_BS rather than Slater's-rules valence ξ because the
-    // Bragg-Slater profile, while too diffuse, at least produces bounded
-    // charges and (numerically renormalized) the additive partition used
-    // by per-atom polarizability. Slater's valence ξ would be more
-    // physically motivated for the tail but inverts the C/O ordering in
-    // C-O bonds (proatom of O too tight, all density attributed to O).
-    // Both single-exponential approximations are inadequate for production
-    // population analysis — see the function-level doc on the caller.
+    // This is the legacy single-exponential ξ. New code should call
+    // [`proatom_density_two_exp`] instead — it splits the density into a
+    // tight 1s core + a diffuse Slater valence with proper Slater's-rules
+    // screening per shell, which fixes the C-O charge inversion that
+    // afflicts the single-exponential form (see
+    // [[lowdin-over-single-exp-hirshfeld]] memory).
+    //
+    // Kept here for back-compat with [`pdep_polarizability_hirshfeld`]
+    // which uses the renormalized additive partition and is more tolerant
+    // of proatom shape errors than absolute charge analysis.
     let r_bs_ang: f64 = match z {
         1 => 0.25,  2 => 0.30,
         3 => 1.45,  4 => 1.05,  5 => 0.85,  6 => 0.70,  7 => 0.65,  8 => 0.60,
@@ -1191,6 +1340,7 @@ fn slater_xi_for_z(z: i32) -> f64 {
     let r_bs_bohr = r_bs_ang * 1.8897259886;
     1.0 / r_bs_bohr
 }
+
 
 /// 3x3 symmetric eigenvalue solver via Jacobi rotations.  Returns the three
 /// eigenvalues sorted ascending.  Used to report principal polarizabilities.
