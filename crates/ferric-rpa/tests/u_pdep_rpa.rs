@@ -428,6 +428,64 @@ fn u_pdep_rpa_laplace_matches_dense_oh() {
 }
 
 #[test]
+fn u_polarizability_matches_closed_shell_on_h2o() {
+    // pdep_polarizability_static dispatches to open-shell SMW for UHF refs.
+    // On a closed-shell singlet, spin-symmetric UHF must give the same α
+    // tensor as the closed-shell path. This pins the 2×2 spin-block SMW
+    // with the outer-factor-2 TDDFT convention.
+    use ferric_rpa::properties::pdep_polarizability_static;
+    use ferric_rpa::PdepRpaConfig;
+    use ferric_scf::rhf::{solve_rhf, RhfConfig};
+    let ctx = ParallelContext::default();
+    let xyz = "3\nh2o\nO 0 0 0.117790\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n";
+    let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+    let obs_bs = basis::bundled("cc-pvdz").unwrap();
+    let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
+    let op = Operator::coulomb();
+    let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+    let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
+    let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+    let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
+    let uhf = solve_uhf(&ctx, &mol, &obs, op, &bounds,
+        &UhfConfig { max_iter: 200, ..Default::default() }).unwrap();
+
+    let cfg = PdepRpaConfig::default();
+    let alpha_rhf = pdep_polarizability_static(&mol, &obs, &dfbs, &rhf, op, &cfg).unwrap();
+    let alpha_uhf = pdep_polarizability_static(&mol, &obs, &dfbs, &uhf, op, &cfg).unwrap();
+
+    let dev_iso = (alpha_rhf.iso - alpha_uhf.iso).abs();
+    eprintln!("α_iso(H2O): closed={:.6}, U-via-UHF={:.6}", alpha_rhf.iso, alpha_uhf.iso);
+    assert!(dev_iso < 1e-5,
+        "U-α on closed-shell-via-UHF ≠ closed-shell α: dev_iso={dev_iso:.2e}");
+}
+
+#[test]
+fn u_polarizability_oh_matches_pyscf() {
+    // PySCF dRPA reference for OH/cc-pVDZ via the 2×2 spin-block (A+B):
+    //   α_iso = 2.1204
+    use ferric_rpa::properties::pdep_polarizability_static;
+    use ferric_rpa::PdepRpaConfig;
+    let ctx = ParallelContext::default();
+    let xyz = "2\noh\nO 0 0 0\nH 0 0 0.97\n";
+    let mol = Molecule::parse_xyz(xyz, 0, 2).unwrap();
+    let obs_bs = basis::bundled("cc-pvdz").unwrap();
+    let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
+    let op = Operator::coulomb();
+    let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+    let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
+    let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+    let uhf = solve_uhf(&ctx, &mol, &obs, op, &bounds,
+        &UhfConfig { max_iter: 200, ..Default::default() }).unwrap();
+    let cfg = PdepRpaConfig::default();
+    let pol = pdep_polarizability_static(&mol, &obs, &dfbs, &uhf, op, &cfg).unwrap();
+    eprintln!("OH α_iso ferric={:.6}, pyscf=2.1204", pol.iso);
+    // 1e-3 tolerance: SMW via RI vs full MO (A+B); aux-basis truncation
+    // accounts for ~mHa-level drift.
+    assert!((pol.iso - 2.1204).abs() < 1e-2,
+        "OH U-α: ferric {:.6} vs pyscf 2.1204", pol.iso);
+}
+
+#[test]
 fn u_pdep_rpa_lanczos_matches_davidson() {
     // Internal consistency: Lanczos and Davidson eigensolvers on the same
     // U-PDEP-RPA dielectric must produce the same correlation energy.

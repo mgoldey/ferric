@@ -412,16 +412,11 @@ pub fn pdep_polarizability_static(
     op: Operator,
     cfg: &PdepRpaConfig,
 ) -> Result<PolarizabilityResult, FerricError> {
-    // Open-shell α: would dispatch to pdep_polarizability_static_unrestricted
-    // but that path has a 2×-too-large coupled term on closed-shell-via-UHF
-    // (factor bug in the coupled-spin SMW derivation, see notes at the
-    // unrestricted impl). Error explicitly until fixed.
+    // Open-shell: dispatch to the per-spin SMW path. The 2×2 spin-block
+    // SMW with outer-factor-2 TDDFT convention reproduces the closed-shell
+    // formula on spin-symmetric UHF (verified numerically).
     if !matches!(rhf.spin, Spin::Restricted) {
-        let _ = cfg;
-        return Err(FerricError::General(
-            "pdep_polarizability_static: open-shell α not yet correct \
-             (coupled-spin SMW factor bug); call closed-shell only.".into(),
-        ));
+        return pdep_polarizability_static_unrestricted(mol, obs, dfbs, rhf, op, cfg);
     }
 
     // Build B̃^P_ia = V^{-1/2} (P|ia) and orbital-energy slices via the same
@@ -672,17 +667,23 @@ pub fn pdep_polarizability_static_unrestricted(
     // Solve ε̃ · y^d = w_total^d
     let y_vec: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| eps_mat.solve(&w_total[d]).unwrap());
 
-    // α_ij = Σ_σ 2 μ_σ^i^T D_σ^{-1} μ_σ^j  −  4 · 2 · w_total^i^T y^j
-    //      = bare_α + bare_β − 8 w^i · y^j
-    // (The 4·2 = 8 factor combines the SMW outer factor 4 with the per-spin
-    // 2 from the SMW middle inverse.)
+    // Correct UHF formula derived from the full 2×2 spin-block SMW:
+    //   α = 2 · μ̃^T (A+B)^{-1} μ̃
+    //     = 2 · [μ̃^T M^{-1} μ̃ − 2 w_total^T ε̃^{-1} w_total]
+    //     = 2 Σ_σ μ_σ^T D_σ^{-1} μ_σ  −  4 w_total^T ε̃^{-1} w_total
+    //
+    // The outer factor 2 is the TDDFT/RPA Casida-equation convention that
+    // accounts for the density-vs-orbital-response distinction (verified
+    // numerically: on closed-shell-via-UHF, factor 2 reproduces the
+    // closed-shell α exactly via the 2x2 spin-block symmetric mode
+    // `(D + 4 B̃^T B̃)`).
     let mut tensor = [[0.0_f64; 3]; 3];
     for i in 0..3 {
         for j in 0..3 {
             let bare_a = 2.0 * mu_flat_a[i].dot(&mu_flat_inv_a[j]);
             let bare_b = if inter_b.nocc == 0 { 0.0 } else { 2.0 * mu_flat_b[i].dot(&mu_flat_inv_b[j]) };
             let coupled = w_total[i].dot(&y_vec[j]);
-            tensor[i][j] = bare_a + bare_b - 8.0 * coupled;
+            tensor[i][j] = bare_a + bare_b - 4.0 * coupled;
         }
     }
 
