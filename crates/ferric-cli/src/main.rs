@@ -527,7 +527,7 @@ fn main() {
                 use ferric_export::export_npz;
                 use ferric_rpa::properties::{
                     electric_field_at_atoms, esp_at_atoms, hirshfeld_charges, lowdin_charges,
-                    pdep_polarizability_hirshfeld,
+                    pdep_polarizability_becke,
                     pdep_polarizability_static,
                 };
                 use ndarray::Array2;
@@ -594,12 +594,12 @@ fn main() {
                 };
 
                 let alpha_atomic_vec = if compute_alpha_atomic {
-                    match pdep_polarizability_hirshfeld(
+                    match pdep_polarizability_becke(
                         &mol, &prep, &bs, &dfbs, &result, op, &rpa_cfg,
                     ) {
                         Ok(v) => {
                             println!(
-                                "Per-atom Hirshfeld α (iso, a.u.): {:?}",
+                                "Per-atom Becke α (iso, a.u.): {:?}",
                                 v.iter()
                                     .map(|t| (t[0][0] + t[1][1] + t[2][2]) / 3.0)
                                     .collect::<Vec<_>>()

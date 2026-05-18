@@ -1336,6 +1336,108 @@ pub fn pdep_polarizability_hirshfeld(
     Ok(alpha_per_atom)
 }
 
+/// Becke atomic charges via fuzzy partitioning of the molecular density.
+///
+/// **Status:** EXPERIMENTAL. The current Becke-Lebedev grid (75 radial ×
+/// 110 angular with Treutler-Ahlrichs M4 ξ = R_BS/ln 2) does not resolve
+/// tight 1s cores on heavy atoms (Tr(D·S) on O 1s diagonal integrates to
+/// 0.05 instead of 1.0). As a result, the per-AO-pair partition fractions
+/// `S^A_μν / S_grid_total_μν` are unreliable in the core region, and
+/// the resulting q^A values can have wrong signs vs literature (e.g.
+/// H2O: ferric gives q_O = +0.71 vs literature −0.5 to −0.7).
+///
+/// For production population analysis use [`lowdin_charges`] instead.
+/// This function is kept as scaffolding for when the radial grid is
+/// upgraded to resolve core regions (e.g., 200+ radial points or
+/// Stratmann-Scuseria-Frisch shell-adaptive partitioning).
+///
+/// Closed-shell: pass `density = D_total` (= 2·D_α in restricted).
+/// Open-shell: pass `D_α + D_β`.
+pub fn becke_charges(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    obs_bs: &ferric_core::basis::BasisSet,
+    density: &Array2<f64>,
+) -> Result<Vec<f64>, FerricError> {
+    use ferric_dft::grid::{build_atomic_grid, AtomicGridConfig};
+    use ferric_export::gto_eval::eval_basis_on_points;
+
+    let natoms = mol.atoms.len();
+    let grid = build_atomic_grid(mol, &AtomicGridConfig::default());
+    let points: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
+    let weights: Vec<f64> = grid.iter().map(|g| g.weight).collect();
+    let home_atom: Vec<usize> = grid.iter().map(|g| g.home_atom).collect();
+    let npts = points.len();
+
+    let chi = eval_basis_on_points(mol, obs_bs, &points).map_err(|e| {
+        FerricError::General(format!("becke_charges: chi eval failed: {e}"))
+    })?;
+    let nbf = chi.nrows();
+    if density.nrows() != nbf || density.ncols() != nbf {
+        return Err(FerricError::General(format!(
+            "becke_charges: density shape {:?} != nbf {nbf}", density.dim()
+        )));
+    }
+
+    // Build per-atom Becke-weighted overlap fraction:
+    //   S^A_μν = Σ_{g: home=A} w_g · χ_μ(g) · χ_ν(g)
+    // and total grid overlap sum (for renormalization).
+    let mut s_per_atom: Vec<Array2<f64>> = (0..natoms)
+        .map(|_| Array2::<f64>::zeros((nbf, nbf))).collect();
+    let mut s_grid_total = Array2::<f64>::zeros((nbf, nbf));
+    for g in 0..npts {
+        let a = home_atom[g];
+        let w = weights[g];
+        for mu in 0..nbf {
+            let cmu = chi[(mu, g)] * w;
+            if cmu.abs() < 1e-30 { continue; }
+            for nu in 0..nbf {
+                let contrib = cmu * chi[(nu, g)];
+                s_per_atom[a][(mu, nu)] += contrib;
+                s_grid_total[(mu, nu)] += contrib;
+            }
+        }
+    }
+    // Renormalize per-AO-pair to the analytical overlap S so the partition
+    // sum reproduces the analytical S exactly (decouples Becke fraction
+    // from grid quadrature accuracy on the 1s core).
+    let s_ana = ferric_integrals::oneelectron::overlap(prep);
+    let small = 1e-10;
+    for mu in 0..nbf {
+        for nu in 0..nbf {
+            let total_grid = s_grid_total[(mu, nu)];
+            let total_ana = s_ana[(mu, nu)];
+            if total_grid.abs() < small * (1.0 + total_ana.abs()) {
+                let inv_n = 1.0 / natoms as f64;
+                for a in 0..natoms {
+                    s_per_atom[a][(mu, nu)] = total_ana * inv_n;
+                }
+            } else {
+                let scale = total_ana / total_grid;
+                for a in 0..natoms {
+                    s_per_atom[a][(mu, nu)] *= scale;
+                }
+            }
+        }
+    }
+
+    // Per-atom electron count: n^A = Σ_μν D_μν S^A_μν = Tr(D · S^A).
+    let mut n_e = vec![0.0_f64; natoms];
+    for a in 0..natoms {
+        let mut acc = 0.0_f64;
+        for mu in 0..nbf {
+            for nu in 0..nbf {
+                acc += density[(mu, nu)] * s_per_atom[a][(mu, nu)];
+            }
+        }
+        n_e[a] = acc;
+    }
+    // Sum-rule check is automatic: Σ_A n^A = Tr(D · S) = N_e exactly.
+    Ok((0..natoms)
+        .map(|a| mol.atoms[a].z as f64 - n_e[a])
+        .collect())
+}
+
 /// Hirshfeld atomic charges q_A = Z_A − ∫ ρ(r) w^A(r) dr.
 ///
 /// Uses the same Slater-proatom Hirshfeld weights as
