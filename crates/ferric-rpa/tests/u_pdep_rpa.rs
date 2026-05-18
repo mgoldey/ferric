@@ -255,6 +255,41 @@ fn u_ri_drpa_diagnostic_h_atom_matches_pyscf() {
 }
 
 #[test]
+fn closed_shell_rpa_laplace_chebyshev_matches_dense_h2o() {
+    // ChebyshevTan ω-grid keeps Laplace in its safe regime (bounded ω),
+    // so the fallback runs only at the highest-ω points (if at all).
+    // This validates the actual Laplace path under the Eshuis quadrature.
+    use ferric_rpa::config::{Chi0Backend, QuadratureScheme, QuadratureConfig};
+    use ferric_rpa::run_pdep_rpa;
+    use ferric_scf::rhf::{solve_rhf, RhfConfig};
+    let ctx = ParallelContext::default();
+    let xyz = "3\nh2o\nO 0 0 0.117790\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n";
+    let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+    let obs_bs = basis::bundled("cc-pvdz").unwrap();
+    let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
+    let op = Operator::coulomb();
+    let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+    let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
+    let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+    let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
+
+    // Dense w/ default GL quadrature — reference number.
+    let e_dense = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg_full_basis()).unwrap().e_rpa;
+
+    // ChebyshevTan + Laplace.
+    let mut cfg = cfg_full_basis();
+    cfg.quadrature = QuadratureConfig {
+        scheme: QuadratureScheme::ChebyshevTan, n_points: 20, u0: 0.5,
+    };
+    cfg.chi0_backend = Chi0Backend::Laplace { n_quad: 20 };
+    let e_cheb_lap = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap().e_rpa;
+
+    let dev = (e_dense - e_cheb_lap).abs();
+    assert!(dev < 5e-4,
+        "ChebTan+Laplace ≠ GL+Dense H2O: dense={e_dense}, cheb_lap={e_cheb_lap}, dev={dev}");
+}
+
+#[test]
 fn closed_shell_rpa_laplace_matches_dense_h2o() {
     // Sanity check the *closed-shell* Laplace χ₀ path through run_pdep_rpa,
     // which had no prior end-to-end test (only synthetic in laplace_chi0).
