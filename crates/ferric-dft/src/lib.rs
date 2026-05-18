@@ -1,6 +1,10 @@
+pub mod becke;
+pub mod grid;
+pub mod lebedev;
+pub mod radial;
+
 use ndarray::Array2;
 use thiserror::Error;
-// use libxc_sys as xc;
 
 #[derive(Error, Debug)]
 pub enum DftError {
