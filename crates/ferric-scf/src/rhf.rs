@@ -163,6 +163,25 @@ pub fn solve_rhf(
         None
     };
 
+    // RSH path: pre-build the SR/LR DfK fitters once. Their 3-center B[P,μ,ν]
+    // tensors are geometry-only — only the D-dependent contraction happens per
+    // SCF iteration. Building inside the loop was a major hot-spot for wB97X-V.
+    let (mut dfk_sr, mut dfk_lr) = if k_mix.omega > 0.0 {
+        let aux_name = df_k_aux_eff.as_deref().ok_or_else(|| {
+            FerricError::General(
+                "Range-separated hybrid requires RhfConfig.df_k_aux (e.g. \"def2-universal-jkfit\")".into()
+            )
+        })?;
+        let dfbs_set = ferric_core::basis::bundled(aux_name)?;
+        let dfbs_prep = PreparedBasis::new(mol, &dfbs_set)?;
+        (
+            Some(DfK::new(Operator::erfc(k_mix.omega), prep, &dfbs_prep)?),
+            Some(DfK::new(Operator::erf(k_mix.omega), prep, &dfbs_prep)?),
+        )
+    } else {
+        (None, None)
+    };
+
     // Build LinkK once — SignificantPairs is geometry-dependent and expensive per iteration.
     // When using the "link" builder, compute a fresh SchwarzBounds to own the lifetime.
     let link_schwarz_opt = if config.k_builder.as_deref() == Some("link") {
@@ -227,22 +246,15 @@ pub fn solve_rhf(
         //   plain hybrid (B3LYP): k_mix = {α, α, 0}      → k_total = α · k_buf
         //   RSH (wB97X-V):        k_mix = {sr, lr, ω>0}  → k_total = sr·K_SR + lr·K_LR
         let k_total: Array2<f64> = if k_mix.omega > 0.0 {
-            // Range-separated: requires RI-K. Falls back to the auto-default
-            // when df_k_aux wasn't explicitly set (needs_k branch above).
-            let aux_name = df_k_aux_eff.as_deref().ok_or_else(|| {
-                FerricError::General(
-                    "Range-separated hybrid requires RhfConfig.df_k_aux (e.g. \"def2-universal-jkfit\")".into()
-                )
-            })?;
-            let dfbs_set = ferric_core::basis::bundled(aux_name)?;
-            let dfbs_prep = PreparedBasis::new(mol, &dfbs_set)?;
+            // Range-separated: SR/LR DfK fitters were built once before the
+            // loop (geometry-only). Only the D-dependent contraction runs here.
+            let dfk_sr = dfk_sr.as_mut().expect("dfk_sr built when omega>0");
+            let dfk_lr = dfk_lr.as_mut().expect("dfk_lr built when omega>0");
 
             let mut k_sr = Array2::<f64>::zeros((n, n));
-            let mut dfk_sr = DfK::new(Operator::erfc(k_mix.omega), prep, &dfbs_prep)?;
             dfk_sr.build(&d, &mut k_sr)?;
 
             let mut k_lr = Array2::<f64>::zeros((n, n));
-            let mut dfk_lr = DfK::new(Operator::erf(k_mix.omega), prep, &dfbs_prep)?;
             dfk_lr.build(&d, &mut k_lr)?;
 
             k_mix.sr * &k_sr + k_mix.lr * &k_lr
