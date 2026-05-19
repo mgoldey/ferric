@@ -25,9 +25,9 @@ fn run(xc: &str, xyz: &str, mult: usize, basis_name: &str) -> f64 {
         max_iter: 400,
         ..Default::default()
     };
-    // Accept the SCF's last-iteration energy even when err_max plateau prevents
-    // formal convergence (doublet OH / LDA / PBE ROKS sits at err_max ~ 1e-4
-    // while the energy has already settled to better than 1 mHa).
+    // Doublet OH at LDA/PBE develops a DIIS plateau where err_max won't drop
+    // below ~1e-3 (and oscillates), so SCF returns Err(ScfConvergence) even
+    // though the energy is converged to ~1 mHa. Accept the plateau energy.
     match solve_rohf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg) {
         Ok(res) => {
             eprintln!("ROKS {xc} {xyz} (mult={mult}, {basis_name}): E = {:.8} ({} iter, converged)",

@@ -3,7 +3,6 @@
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
-use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::ks_gradient::ks_gradient_roks;
@@ -24,27 +23,13 @@ fn cfg(xc: &str) -> RhfConfig {
     }
 }
 
-/// Run a single ROKS calculation, accepting the plateaued-energy state as
-/// "good enough" for FD when SCF returns `ScfConvergence`.
+/// Run a single ROKS calculation. The noise-floor logic in solve_rohf
+/// accepts plateau states automatically — no harness-side fallback needed.
 fn run_one(mol: &Molecule, prep: &PreparedBasis, bounds: &SchwarzBounds, cfg: &RhfConfig)
     -> ferric_scf::result::ScfResult
 {
-    match solve_rohf(&ParallelContext::default(), mol, prep, Operator::coulomb(), bounds, cfg) {
-        Ok(r) => r,
-        Err(FerricError::ScfConvergence { iterations: _, last_energy: _ }) => {
-            // Re-run with the same cfg; the deterministic SCF lands at the same
-            // plateau energy. To get the densities we just call it again, ignore
-            // the error, and use what's there... but we don't actually have a
-            // partial result. So bump max_iter once more and try again with a
-            // very loose density_conv to accept the plateau formally.
-            let mut cfg2 = cfg.clone();
-            cfg2.density_conv = 1e-2; // accept the plateau as "converged"
-            cfg2.max_iter = 200;
-            solve_rohf(&ParallelContext::default(), mol, prep, Operator::coulomb(), bounds, &cfg2)
-                .unwrap_or_else(|e| panic!("ROKS plateau-fallback failed: {e:?}"))
-        }
-        Err(e) => panic!("ROKS unexpected error: {e:?}"),
-    }
+    solve_rohf(&ParallelContext::default(), mol, prep, Operator::coulomb(), bounds, cfg)
+        .unwrap_or_else(|e| panic!("ROKS unexpected error: {e:?}"))
 }
 
 fn fd_gradient(xyz: &str, mult: usize, basis_name: &str, xc: &str, delta: f64) -> Array2<f64> {
@@ -113,12 +98,10 @@ fn roks_grad_oh_ccpvdz_b3lyp() {
              "2\nOH\nO 0 0 0\nH 0 0 1.10\n", 2, "cc-pvdz", 5e-3);
 }
 
-// LDA / PBE ROKS on doublet OH gets stuck at a DIIS plateau that ferric's
-// SCF refuses to accept (err_max stays at ~1e-3 indefinitely). The energy
-// is correct but SCF returns Err(ScfConvergence) so we have no ScfResult
-// to compute an analytic gradient from. Fixing this needs ROHF-side DIIS
-// noise-floor logic (or level shifting / second-order convergence). Tracked
-// as a follow-up.
+// LDA / PBE ROKS on doublet OH stays at a DIIS plateau where err_max won't
+// drop below ~1e-3 and oscillates. solve_rohf returns Err(ScfConvergence),
+// so we don't get an ScfResult to differentiate. Tracked as a follow-up
+// (level-shift or second-order convergence for ROHF).
 #[test]
 #[ignore]
 fn roks_grad_oh_ccpvdz_pbe() {
