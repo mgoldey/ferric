@@ -3,8 +3,10 @@ pub mod libxc;
 pub mod becke;
 pub mod density_on_grid;
 pub mod grid;
+pub mod ks;
 pub mod lebedev;
 pub mod radial;
+pub mod vv10;
 pub mod vxc;
 pub mod xc_trait;
 
