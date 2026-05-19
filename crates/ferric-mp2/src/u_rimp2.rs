@@ -10,13 +10,14 @@
 //! where `(ia|jb)_σ = Σ_P B^P_{ia,σ} B^P_{jb,σ}` and
 //! `(ia|JB) = Σ_P B^P_{ia,α} B^P_{JB,β}` (shared aux metric).
 
+use crate::oo_rimp2::compute_b_full_mo;
 use crate::rimp2::{compute_rpa_intermediates_spin, RiMp2Config, RpaIntermediates};
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::{ScfResult, Spin};
-use ndarray::{Array2, Array4};
+use ndarray::{Array2, Array3, Array4};
 
 /// Components of the U-RI-MP2 correlation energy.
 #[derive(Debug, Clone)]
@@ -361,6 +362,278 @@ pub fn build_u_mp2_density(amps: &UMp2Amplitudes) -> UMp2Density {
     UMp2Density { p_oo_a, p_vv_a, p_oo_b, p_vv_b }
 }
 
+/// **WORK IN PROGRESS** — known wrong by a per-spin scalar factor + sign
+/// against the FD reference (c≈−0.5 for α, c≈−0.4 for β on OH/cc-pVDZ).
+/// The derivation below is incomplete: multiple terms with different
+/// missing factors. Do not consume in optimizer code yet.
+///
+/// Compute the U-MP2 part of the orbital gradient `g^σ_{ai} = ∂E_MP2/∂κ^σ_{ai}`
+/// at fixed amplitudes (2n+1 rule applies at HF reference).
+///
+/// Sign convention follows `oo_rimp2::compute_orbital_gradient`: positive
+/// `κ_{ai}` mixes occupied into virtual via the Cayley map. The MP2 piece
+/// is *not* negated (caller can add `-2·F^σ_{ai}` HF piece, which is zero
+/// at a converged HF reference).
+///
+/// Returns `(g_a, g_b)` with shapes `(nvir_α, nocc_α)` and `(nvir_β, nocc_β)`.
+///
+/// The energy expression is:
+/// ```text
+/// E_MP2 = ¼ Σ t^αα_{ij,ab} K^αα_{iajb}
+///       + ¼ Σ t^ββ_{ij,ab} K^ββ_{iajb}
+///       +   Σ t^αβ_{iJ,aB} (ia|JB)
+/// ```
+/// where `K^σσ_{iajb} = (ia|jb)_σ − (ib|ja)_σ` is the antisymmetrized integral.
+///
+/// `∂E/∂κ^α_{ck}` only sees the αα and αβ terms (the α MO indices appearing in
+/// each integral). Integral derivatives:
+/// ```text
+/// ∂(pq|rs)/∂κ^α_{ck} = δ_pk (cq|rs) + δ_rk (pq|cs)         (α derivative on α-row)
+///                    − δ_qc (pk|rs) − δ_sc (pq|rk)          (α derivative on α-col)
+/// ```
+/// for indices `p,q,r,s` that are α MOs; for αβ integrals only the α-side
+/// indices contribute (i,a are α; J,B are β spectators).
+pub fn compute_u_mp2_orbital_gradient(
+    amps: &UMp2Amplitudes,
+    b_full_a: &Array3<f64>,
+    b_full_b: &Array3<f64>,
+) -> (Array2<f64>, Array2<f64>) {
+    let (nocc_a, _, nvir_a, _) = amps.t_aa.dim();
+    let (nocc_b, _, nvir_b, _) = amps.t_bb.dim();
+    let first_occ_a = amps.inter_a.first_occ;
+    let nocc_total_a = amps.inter_a.nocc_total;
+    let first_occ_b = amps.inter_b.first_occ;
+    let nocc_total_b = amps.inter_b.nocc_total;
+    let naux = b_full_a.shape()[0];
+    debug_assert_eq!(naux, b_full_b.shape()[0]);
+
+    // ERI helpers — (pq|rs) for same-spin (α or β) blocks via the full-MO B tensor.
+    let eri_aa = |p: usize, q: usize, r: usize, s: usize| -> f64 {
+        (0..naux).map(|aux| b_full_a[(aux, p, q)] * b_full_a[(aux, r, s)]).sum()
+    };
+    let eri_bb = |p: usize, q: usize, r: usize, s: usize| -> f64 {
+        (0..naux).map(|aux| b_full_b[(aux, p, q)] * b_full_b[(aux, r, s)]).sum()
+    };
+    // αβ integrals: α-MO indices (p,q) on the α tensor, β-MO (r,s) on the β tensor.
+    let eri_ab = |p: usize, q: usize, r: usize, s: usize| -> f64 {
+        (0..naux).map(|aux| b_full_a[(aux, p, q)] * b_full_b[(aux, r, s)]).sum()
+    };
+
+    let t_aa = &amps.t_aa;
+    let t_bb = &amps.t_bb;
+    let t_ab = &amps.t_ab;
+
+    // Each accumulated chain-rule term inside the loops below contributes
+    // only `∂E/∂K_{ai}` (the +h slot of the antisymmetric κ).
+    // The FD reference varies *both* `K_{ai}=+h` and `K_{ia}=-h` together,
+    // so its `∂E/∂κ_{ai}` picks up two equal contributions → factor of 2.
+    // Combined with the sign flip from C → C·U(κ) (positive κ_{ai} rotates
+    // an occupied into a virtual, lowering energy in the direction
+    // opposite to the integral derivative), the post-loop scaling is −2.
+    let mut g_a = Array2::<f64>::zeros((nvir_a, nocc_a));
+    let mut g_b = Array2::<f64>::zeros((nvir_b, nocc_b));
+
+    // --- α gradient: g^α_{ck} = ∂E_MP2/∂κ^α_{ck} -------------------------
+    // αα contribution (Hylleraas; t_aa is antisymmetric in (ij) and (ab)):
+    //   d/dκ^α_{ck} [¼ Σ_{ij,ab} t^αα_{ij,ab} ((ia|jb)−(ib|ja))]
+    // Apply δ_{i,k} and δ_{a,c} expansions of d(ia|jb)/dκ^α_{ck}; the antisymmetry
+    // of t in i↔j and a↔b lets us combine terms pairwise into four sums.
+    for c in 0..nvir_a {
+        let c_mo = nocc_total_a + c;
+        for k in 0..nocc_a {
+            let k_mo = first_occ_a + k;
+            let mut sum = 0.0;
+
+            // Term 1: i=k branch of K^αα. After using K's antisymmetry t↔(ij), this is
+            //   ½ Σ_{j,a,b} t^αα_{kj,ab} [(ca|jb)_α − (cb|ja)_α]
+            for j in 0..nocc_a {
+                let j_mo = first_occ_a + j;
+                for a in 0..nvir_a {
+                    let a_mo = nocc_total_a + a;
+                    for b in 0..nvir_a {
+                        let b_mo = nocc_total_a + b;
+                        let t = t_aa[(k, j, a, b)];
+                        let e1 = eri_aa(c_mo, a_mo, j_mo, b_mo);
+                        let e2 = eri_aa(c_mo, b_mo, j_mo, a_mo);
+                        sum += 0.5 * t * (e1 - e2);
+                    }
+                }
+            }
+            // Term 2: j=k branch. By relabeling i↔j and using t antisym, identical to Term 1.
+            for i in 0..nocc_a {
+                let i_mo = first_occ_a + i;
+                for a in 0..nvir_a {
+                    let a_mo = nocc_total_a + a;
+                    for b in 0..nvir_a {
+                        let b_mo = nocc_total_a + b;
+                        let t = t_aa[(i, k, a, b)];
+                        let e1 = eri_aa(i_mo, a_mo, c_mo, b_mo);
+                        let e2 = eri_aa(i_mo, b_mo, c_mo, a_mo);
+                        sum += 0.5 * t * (e1 - e2);
+                    }
+                }
+            }
+            // Term 3: a=c branch.
+            //   −½ Σ_{i,j,b} t^αα_{ij,cb} [(ik|jb)_α − (ib|jk)_α]
+            for i in 0..nocc_a {
+                let i_mo = first_occ_a + i;
+                for j in 0..nocc_a {
+                    let j_mo = first_occ_a + j;
+                    for b in 0..nvir_a {
+                        let b_mo = nocc_total_a + b;
+                        let t = t_aa[(i, j, c, b)];
+                        let e1 = eri_aa(i_mo, k_mo, j_mo, b_mo);
+                        let e2 = eri_aa(i_mo, b_mo, j_mo, k_mo);
+                        sum -= 0.5 * t * (e1 - e2);
+                    }
+                }
+            }
+            // Term 4: b=c branch. Mirror of Term 3 with a↔b on t.
+            for i in 0..nocc_a {
+                let i_mo = first_occ_a + i;
+                for j in 0..nocc_a {
+                    let j_mo = first_occ_a + j;
+                    for a in 0..nvir_a {
+                        let a_mo = nocc_total_a + a;
+                        let t = t_aa[(i, j, a, c)];
+                        let e1 = eri_aa(i_mo, a_mo, j_mo, k_mo);
+                        let e2 = eri_aa(i_mo, k_mo, j_mo, a_mo);
+                        sum -= 0.5 * t * (e1 - e2);
+                    }
+                }
+            }
+
+            // αβ contribution to g^α_{ck}: α-derivative on α-row (δ_{i,k}) and α-col (δ_{a,c})
+            // of (ia|JB). β indices (J,B) are untouched.
+            //   ∂/∂κ^α_{ck} [Σ_{iJaB} t^αβ_{iJ,aB} (ia|JB)]
+            //   = Σ_{J,a,B} t^αβ_{kJ,aB} (ca|JB)         (from δ_{i,k}·(ca|JB))
+            //   − Σ_{i,J,B} t^αβ_{iJ,cB} (ik|JB)         (from −δ_{a,c}·(ik|JB))
+            for jj in 0..nocc_b {
+                let j_mo = first_occ_b + jj;
+                for a in 0..nvir_a {
+                    let a_mo = nocc_total_a + a;
+                    for bb in 0..nvir_b {
+                        let b_mo = nocc_total_b + bb;
+                        let t = t_ab[(k, jj, a, bb)];
+                        let e = eri_ab(c_mo, a_mo, j_mo, b_mo);
+                        sum += t * e;
+                    }
+                }
+            }
+            for i in 0..nocc_a {
+                let i_mo = first_occ_a + i;
+                for jj in 0..nocc_b {
+                    let j_mo = first_occ_b + jj;
+                    for bb in 0..nvir_b {
+                        let b_mo = nocc_total_b + bb;
+                        let t = t_ab[(i, jj, c, bb)];
+                        let e = eri_ab(i_mo, k_mo, j_mo, b_mo);
+                        sum -= t * e;
+                    }
+                }
+            }
+
+            g_a[(c, k)] = sum;
+        }
+    }
+
+    // --- β gradient: same structure with α↔β swapped ---------------------
+    for c in 0..nvir_b {
+        let c_mo = nocc_total_b + c;
+        for k in 0..nocc_b {
+            let k_mo = first_occ_b + k;
+            let mut sum = 0.0;
+
+            // ββ Hylleraas: four terms with t_bb
+            for j in 0..nocc_b {
+                let j_mo = first_occ_b + j;
+                for a in 0..nvir_b {
+                    let a_mo = nocc_total_b + a;
+                    for b in 0..nvir_b {
+                        let b_mo = nocc_total_b + b;
+                        let t = t_bb[(k, j, a, b)];
+                        sum += 0.5 * t * (eri_bb(c_mo, a_mo, j_mo, b_mo)
+                                        - eri_bb(c_mo, b_mo, j_mo, a_mo));
+                    }
+                }
+            }
+            for i in 0..nocc_b {
+                let i_mo = first_occ_b + i;
+                for a in 0..nvir_b {
+                    let a_mo = nocc_total_b + a;
+                    for b in 0..nvir_b {
+                        let b_mo = nocc_total_b + b;
+                        let t = t_bb[(i, k, a, b)];
+                        sum += 0.5 * t * (eri_bb(i_mo, a_mo, c_mo, b_mo)
+                                        - eri_bb(i_mo, b_mo, c_mo, a_mo));
+                    }
+                }
+            }
+            for i in 0..nocc_b {
+                let i_mo = first_occ_b + i;
+                for j in 0..nocc_b {
+                    let j_mo = first_occ_b + j;
+                    for b in 0..nvir_b {
+                        let b_mo = nocc_total_b + b;
+                        let t = t_bb[(i, j, c, b)];
+                        sum -= 0.5 * t * (eri_bb(i_mo, k_mo, j_mo, b_mo)
+                                        - eri_bb(i_mo, b_mo, j_mo, k_mo));
+                    }
+                }
+            }
+            for i in 0..nocc_b {
+                let i_mo = first_occ_b + i;
+                for j in 0..nocc_b {
+                    let j_mo = first_occ_b + j;
+                    for a in 0..nvir_b {
+                        let a_mo = nocc_total_b + a;
+                        let t = t_bb[(i, j, a, c)];
+                        sum -= 0.5 * t * (eri_bb(i_mo, a_mo, j_mo, k_mo)
+                                        - eri_bb(i_mo, k_mo, j_mo, a_mo));
+                    }
+                }
+            }
+
+            // αβ contribution to g^β_{ck}: β-derivative on β-row (δ_{J,k}) and β-col (δ_{B,c})
+            //   ∂/∂κ^β_{ck} [Σ_{iJaB} t^αβ_{iJ,aB} (ia|JB)]
+            //   = Σ_{i,a,B} t^αβ_{ik,a,B} (ia|cB)         (from δ_{J,k}·(ia|cB)) -- wait, β-row
+            //
+            // The αβ integral is (ia|JB) — β indices are J (occ) and B (vir).
+            // ∂(ia|JB)/∂κ^β_{ck} = δ_{J,k} (ia|cB) − δ_{B,c} (ia|Jk)
+            //   = +Σ_{i,a,B} t^αβ_{ik,a,B} (ia|cB)        (δ_{J,k})
+            //   −Σ_{i,J,a}   t^αβ_{i,J,a,c} (ia|Jk)        (δ_{B,c})
+            for i in 0..nocc_a {
+                let i_mo = first_occ_a + i;
+                for a in 0..nvir_a {
+                    let a_mo = nocc_total_a + a;
+                    for bb in 0..nvir_b {
+                        let b_mo = nocc_total_b + bb;
+                        let t = t_ab[(i, k, a, bb)];
+                        let e = eri_ab(i_mo, a_mo, c_mo, b_mo);
+                        sum += t * e;
+                    }
+                }
+            }
+            for i in 0..nocc_a {
+                let i_mo = first_occ_a + i;
+                for jj in 0..nocc_b {
+                    let j_mo = first_occ_b + jj;
+                    for a in 0..nvir_a {
+                        let a_mo = nocc_total_a + a;
+                        let t = t_ab[(i, jj, a, c)];
+                        let e = eri_ab(i_mo, a_mo, j_mo, k_mo);
+                        sum -= t * e;
+                    }
+                }
+            }
+
+            g_b[(c, k)] = sum;
+        }
+    }
+
+    (g_a, g_b)
+}
+
 /// Same-spin contribution:
 ///   ¼ Σ_{ij,ab} [(ia|jb) - (ib|ja)]² / (ε_i+ε_j-ε_a-ε_b)
 fn same_spin_pair_energy(inter: &RpaIntermediates, eps: &[f64]) -> f64 {
@@ -678,5 +951,80 @@ mod tests {
         // E_aa = E_bb = 0 (each spin has a single occupied orbital, no same-spin pair)
         assert!(amps.components.e_aa.abs() < 1e-14);
         assert!(amps.components.e_bb.abs() < 1e-14);
+    }
+
+    /// FD-validate the analytic U-MP2 orbital gradient against the PySCF
+    /// FD reference in testdata/reference/oh_cc-pvdz_u-oomp2-fd.json.
+    ///
+    /// The FD reference is computed with κ defined as
+    ///   κ[a+nocc, i] = +h, κ[i, a+nocc] = −h, C → C·U(κ)
+    /// at the same HF orbitals ferric converges to. ferric uses cc-pvdz-ri
+    /// so RI noise relative to PySCF UMP2 is ~1e-3 element-wise but
+    /// the RMS / max-element comparison still has to be sensible (no
+    /// sign flips, no order-of-magnitude scalar errors).
+    ///
+    /// NOTE: this test is a DIAGNOSTIC. It runs the analytic gradient and
+    /// reports rms/max against the FD reference. The first goal is to
+    /// uncover sign / factor errors before tightening tolerances.
+    #[test]
+    fn u_mp2_orbital_gradient_vs_fd_on_oh() {
+        let ctx = ParallelContext::default();
+        let xyz = "2\nOH\nO 0.0 0.0 0.0\nH 0.0 0.0 0.97\n";
+        let mol = Molecule::parse_xyz(xyz, 0, 2).unwrap();
+        let obs_bs = basis::bundled("cc-pvdz").unwrap();
+        let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let uhf_cfg = UhfConfig {
+            max_iter: 200, energy_conv: 1e-10, density_conv: 1e-8, ..Default::default()
+        };
+        let uhf = solve_uhf(&ctx, &mol, &obs, op, &bounds, &uhf_cfg).unwrap();
+        let amps = compute_u_mp2_amplitudes(&mol, &obs, &dfbs, op, &uhf, &RiMp2Config::default()).unwrap();
+
+        let b_full_a = crate::oo_rimp2::compute_b_full_mo(&obs, &dfbs, op, uhf.mos_a()).unwrap();
+        let b_full_b = crate::oo_rimp2::compute_b_full_mo(&obs, &dfbs, op, uhf.mos_b()).unwrap();
+        let (g_a, g_b) = super::compute_u_mp2_orbital_gradient(&amps, &b_full_a, &b_full_b);
+
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../testdata/reference/oh_cc-pvdz_u-oomp2-fd.json");
+        let txt = std::fs::read_to_string(&path).expect("FD reference missing");
+        let v: serde_json::Value = serde_json::from_str(&txt).unwrap();
+        let parse_2d = |arr: &serde_json::Value| -> Array2<f64> {
+            let rows: Vec<Vec<f64>> = arr.as_array().unwrap().iter().map(|r|
+                r.as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect()
+            ).collect();
+            let nrow = rows.len();
+            let ncol = rows[0].len();
+            let flat: Vec<f64> = rows.into_iter().flatten().collect();
+            Array2::from_shape_vec((nrow, ncol), flat).unwrap()
+        };
+        let g_fd_a = parse_2d(&v["grad_fd_a"]);
+        let g_fd_b = parse_2d(&v["grad_fd_b"]);
+        assert_eq!(g_fd_a.dim(), g_a.dim(), "α shape mismatch");
+        assert_eq!(g_fd_b.dim(), g_b.dim(), "β shape mismatch");
+
+        let report = |label: &str, g: &Array2<f64>, g_fd: &Array2<f64>| {
+            let nfd = g_fd.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+            let n = g.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+            let diff = g - g_fd;
+            let max_diff = diff.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+            let rms: f64 = (diff.iter().map(|v| v*v).sum::<f64>() / (diff.len() as f64)).sqrt();
+            // Best scalar fit: c = <g · g_fd> / <g_fd · g_fd>
+            let dot: f64 = g.iter().zip(g_fd.iter()).map(|(a,b)| a*b).sum();
+            let nrm2_fd: f64 = g_fd.iter().map(|v| v*v).sum();
+            let c = if nrm2_fd > 0.0 { dot / nrm2_fd } else { 0.0 };
+            // Sign-only diff
+            let sign_diff = -g - g_fd;
+            let max_neg = sign_diff.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+            println!("[{}] |g_an|max={:.4e} |g_fd|max={:.4e}  max|Δ|={:.4e}  rms={:.4e}  c≈{:.4}  max|-g-fd|={:.4e}",
+                     label, n, nfd, max_diff, rms, c, max_neg);
+        };
+        report("α", &g_a, &g_fd_a);
+        report("β", &g_b, &g_fd_b);
+
+        // Don't assert yet — this is diagnostic. The pattern of c≈1 vs c≈-1 or
+        // c≈0.5 etc tells us what scalar factor is missing.
     }
 }
