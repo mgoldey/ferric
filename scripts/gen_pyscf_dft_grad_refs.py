@@ -30,6 +30,7 @@ PYSCF_XC = {
 }
 
 MAIN_GRID = (75, 110)
+NLC_GRID  = (50, 50)   # matches ferric default
 
 
 def run_one(label, atom_spec, charge, spin, basis, xc):
@@ -40,6 +41,11 @@ def run_one(label, atom_spec, charge, spin, basis, xc):
     mf.grids.atom_grid = MAIN_GRID
     mf.grids.prune = None
     mf.grids.radii_adjust = dft.radi.becke_atomic_radii_adjust
+    if xc == "wb97x-v":
+        mf.nlc = "VV10"
+        mf.nlcgrids.atom_grid = NLC_GRID
+        mf.nlcgrids.prune = None
+        mf.nlcgrids.radii_adjust = dft.radi.becke_atomic_radii_adjust
     mf.conv_tol = 1e-10
     mf.conv_tol_grad = 1e-7
     mf.kernel()

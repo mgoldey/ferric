@@ -112,3 +112,16 @@ fn b3lyp_h2o_ccpvdz_vs_pyscf_grad() {
              "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
              "B3LYP", true, "h2o_cc-pvdz_b3lyp_grad.json", 1e-4);
 }
+
+#[test]
+fn wb97xv_h2_ccpvdz_vs_pyscf_grad() {
+    run_case("H2", "2\nH2\nH 0 0 0\nH 0 0 0.74\n",
+             "wB97X-V", true, "h2_cc-pvdz_wb97x_v_grad.json", 2e-4);
+}
+
+#[test]
+fn wb97xv_h2o_ccpvdz_vs_pyscf_grad() {
+    run_case("H2O",
+             "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
+             "wB97X-V", true, "h2o_cc-pvdz_wb97x_v_grad.json", 2e-4);
+}
