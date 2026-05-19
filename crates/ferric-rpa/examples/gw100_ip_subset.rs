@@ -3,18 +3,14 @@
 //! For each molecule in a 10-molecule subset of the GW100 set (van Setten,
 //! Caruso, et al. JCTC 11, 5665, 2015), compute the vertical first IP by:
 //!
-//!   1. **Δ-SCF**: IP_SCF = E_UHF(cation) − E_RHF(neutral)
-//!   2. **Δ-RPA**: IP_RPA = [E_UHF(cation) + E_U-RPA(cation)]
+//!   1. **Koopmans**: IP_K = −ε_HOMO from neutral RHF
+//!   2. **Δ-SCF**: IP_SCF = E_UHF(cation) − E_RHF(neutral)
+//!   3. **Δ-OOMP2**: IP_OOMP2 = E_U-OO-MP2(cation) − E_OO-MP2(neutral)
+//!   4. **Δ-RPA**: IP_RPA = [E_UHF(cation) + E_U-RPA(cation)]
 //!                       − [E_RHF(neutral) + E_RPA(neutral)]
-//!   3. **Δ-MP2**: IP_MP2 = [E_UHF(cation) + E_U-MP2(cation)]
-//!                       − [E_RHF(neutral) + E_MP2(neutral)]
-//!
-//! (Δ-OOMP2 would require open-shell OO-MP2 which ferric doesn't yet have;
-//! Δ-MP2 substituted as the comparable correlated baseline. See task #42
-//! for the open-shell OO-MP2 follow-up.)
 //!
 //! Output: prints a table to stdout with columns
-//!   molecule | IP_exp(eV) | IP_ΔSCF | IP_ΔMP2 | IP_ΔRPA | MAE
+//!   molecule | IP_exp(eV) | Koopmans | ΔSCF | ΔOOMP2 | ΔRPA
 //!
 //! Reference IPs in eV from GW100 supplementary tables (or NIST
 //! experimental where given).
@@ -29,7 +25,6 @@ use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_mp2::oo_rimp2::{oo_ri_mp2, OoRiMp2Config};
-use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
 use ferric_mp2::u_oo_rimp2::{u_oo_ri_mp2, UOoRiMp2Config};
 use ferric_rpa::config::{QuadratureConfig, QuadratureScheme};
 use ferric_rpa::{run_pdep_rpa, run_u_pdep_rpa, PdepRpaConfig};
@@ -149,7 +144,7 @@ struct CationDiag {
     energy: f64,
 }
 
-fn run_case_diag(case: &Case) -> Option<(f64, f64, f64, f64, f64, CationDiag)> {
+fn run_case_diag(case: &Case) -> Option<(f64, f64, f64, f64, CationDiag)> {
     let ctx = ParallelContext::default();
     // Upgraded from cc-pVDZ/cc-pVDZ-RI to aug-cc-pVTZ/aug-cc-pVTZ-RIFIT.
     // Diffuse functions matter for ionization potentials; TZ closes the
@@ -180,15 +175,13 @@ fn run_case_diag(case: &Case) -> Option<(f64, f64, f64, f64, f64, CationDiag)> {
 
     let rhf_cfg = RhfConfig::default();
     let uhf_cfg = UhfConfig { max_iter: 200, ..Default::default() };
-    let mp2_cfg = RiMp2Config { frozen_core: 0 };
 
-    // Neutral RHF + MP2 + RPA
+    // Neutral RHF + RPA
     let rhf_n = solve_rhf(&ctx, &neutral, &obs_n, op, &bounds_n, &rhf_cfg).ok()?;
     // Koopmans' theorem: IP ≈ -ε_HOMO from neutral RHF.
     let nocc_neutral = (neutral.nelec() as usize) / 2;
     let eps_n = rhf_n.eps_r();
     let ip_koopmans_ev = -eps_n[nocc_neutral - 1] * HARTREE_TO_EV;
-    let mp2_n = ri_mp2(&neutral, &obs_n, &dfbs_n, op, &rhf_n, &mp2_cfg).ok()?;
     let mut rpa_cfg = PdepRpaConfig::default();
     rpa_cfg.quadrature = QuadratureConfig {
         scheme: QuadratureScheme::GaussLegendre, n_points: 20, u0: 0.5,
@@ -240,12 +233,6 @@ fn run_case_diag(case: &Case) -> Option<(f64, f64, f64, f64, f64, CationDiag)> {
     let rpa_c = run_u_pdep_rpa(&cation, &obs_c, &dfbs_c, op, &uhf_c, &rpa_cfg).ok()?;
 
     let ip_dscf_ev = (uhf_c.energy - rhf_n.energy) * HARTREE_TO_EV;
-    let ip_dmp2_ev = {
-        // No U-MP2 yet; report Δ-SCF + neutral correlation contribution
-        // (a useful diagnostic but not Δ-MP2 proper).
-        let e_n_mp2 = rhf_n.energy + mp2_n.mp2_corr;
-        (uhf_c.energy - e_n_mp2) * HARTREE_TO_EV
-    };
     let ip_drpa_ev = {
         let e_n = rhf_n.energy + rpa_n.e_rpa;
         let e_c = uhf_c.energy + rpa_c.e_rpa;
@@ -264,21 +251,20 @@ fn run_case_diag(case: &Case) -> Option<(f64, f64, f64, f64, f64, CationDiag)> {
         _ => f64::NAN,
     };
 
-    Some((ip_koopmans_ev, ip_dscf_ev, ip_dmp2_ev, ip_doomp2_ev, ip_drpa_ev, diag))
+    Some((ip_koopmans_ev, ip_dscf_ev, ip_doomp2_ev, ip_drpa_ev, diag))
 }
 
 
 fn main() {
     let cases = gw100_subset();
     println!(
-        "{:<6} {:>10} {:>10} {:>10} {:>10} {:>10} {:>10}",
-        "mol", "exp(eV)", "Koopmans", "ΔSCF", "ΔMP2*", "ΔOOMP2", "ΔRPA"
+        "{:<6} {:>10} {:>10} {:>10} {:>10} {:>10}",
+        "mol", "exp(eV)", "Koopmans", "ΔSCF", "ΔOOMP2", "ΔRPA"
     );
-    println!("{:-<74}", "");
+    println!("{:-<64}", "");
 
     let mut mae_koop = 0.0_f64;
     let mut mae_dscf = 0.0_f64;
-    let mut mae_dmp2 = 0.0_f64;
     let mut mae_doomp2 = 0.0_f64;
     let mut mae_drpa = 0.0_f64;
     let mut n_ok = 0_usize;
@@ -287,14 +273,13 @@ fn main() {
     let mut diags: Vec<(&str, CationDiag)> = Vec::new();
     for case in &cases {
         match run_case_diag(case) {
-            Some((koop, dscf, dmp2, doomp2, drpa, diag)) => {
+            Some((koop, dscf, doomp2, drpa, diag)) => {
                 println!(
-                    "{:<6} {:>10.2} {:>10.3} {:>10.3} {:>10.3} {:>10.3} {:>10.3}",
-                    case.name, case.ip_ref, koop, dscf, dmp2, doomp2, drpa
+                    "{:<6} {:>10.2} {:>10.3} {:>10.3} {:>10.3} {:>10.3}",
+                    case.name, case.ip_ref, koop, dscf, doomp2, drpa
                 );
                 mae_koop += (koop - case.ip_ref).abs();
                 mae_dscf += (dscf - case.ip_ref).abs();
-                mae_dmp2 += (dmp2 - case.ip_ref).abs();
                 if doomp2.is_finite() {
                     mae_doomp2 += (doomp2 - case.ip_ref).abs();
                     n_oomp2 += 1;
@@ -315,16 +300,15 @@ fn main() {
         println!("{:<6} {:>6} {:>5} {:>6} {:>9.4} {:>9.4} {:>14.6}",
             name, d.method, d.iters, d.converged, d.s2, d.s2_ideal, d.energy);
     }
-    println!("{:-<74}", "");
+    println!("{:-<64}", "");
     if n_ok > 0 {
         let n = n_ok as f64;
         let mae_oo = if n_oomp2 > 0 { mae_doomp2 / n_oomp2 as f64 } else { f64::NAN };
         println!(
-            "{:<6} {:>10} {:>10.3} {:>10.3} {:>10.3} {:>10.3} {:>10.3}",
-            "MAE", "", mae_koop / n, mae_dscf / n, mae_dmp2 / n, mae_oo, mae_drpa / n
+            "{:<6} {:>10} {:>10.3} {:>10.3} {:>10.3} {:>10.3}",
+            "MAE", "", mae_koop / n, mae_dscf / n, mae_oo, mae_drpa / n
         );
     }
     println!("\nKoopmans = -ε_HOMO from neutral RHF (no cation calc).");
-    println!("ΔMP2* = Δ-SCF + neutral-MP2-correlation only (no U-MP2 for cation).");
     println!("ΔOOMP2 = E_U-OO-MP2(cation) − E_OO-MP2(neutral) [orbital-relaxed, both spins].");
 }
