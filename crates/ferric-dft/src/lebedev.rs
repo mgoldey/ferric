@@ -152,16 +152,18 @@ pub fn lebedev(order: usize) -> (Vec<[f64; 3]>, Vec<f64>) {
             v
         }
         110 => {
-            // 6 + 8 + 24*b + 24*c + 48*d  (totals 6+8+24+24+48 = 110)
-            // Source: Lebedev 110-point coefficients (standard quadrature tables).
-            let mut v = class_a1(0.003828270494937162_f64);
-            v.extend(class_a2(0.009793737512487512_f64));
-            // 3 (b) orbits at p1, p2, p3
-            v.extend(class_b(0.008211737283191422_f64, 0.185115635345_f64));
-            v.extend(class_b(0.009942814891178103_f64, 0.690421048382_f64));
-            v.extend(class_b(0.009595471336070965_f64, 0.394572531020_f64));
-            // 1 (c) orbit
-            v.extend(class_c(0.009694996361660406_f64, 0.852839105041_f64));
+            // 6 (a1) + 8 (a2) + 3·24 (b) + 1·24 (c) = 110 points.
+            // Parameters from Lebedev-Laikov canonical tables (Dokl. Math. 59,
+            // 477 (1999)), as transcribed in PySCF's CxLebedevGrid.c. Ferric's
+            // class_b corresponds to PySCF's case 3 (24 pts at (±a,±a,±b),
+            // b=√(1-2a²)); class_c corresponds to PySCF's case 4 (24 pts at
+            // (±a,±b,0), b=√(1-a²)).
+            let mut v = class_a1(0.3828270494937162e-2_f64);
+            v.extend(class_a2(0.9793737512487512e-2_f64));
+            v.extend(class_b(0.8211737283191111e-2_f64, 0.1851156353447362_f64));
+            v.extend(class_b(0.9942814891178103e-2_f64, 0.6904210483822922_f64));
+            v.extend(class_b(0.9595471336070963e-2_f64, 0.3956894730559419_f64));
+            v.extend(class_c(0.9694996361663028e-2_f64, 0.4783690288121502_f64));
             v
         }
         302 => {

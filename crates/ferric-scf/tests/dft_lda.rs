@@ -4,23 +4,24 @@
 //! Becke-Lebedev (75, 110) grid and conv_tol=1e-10, then compares total
 //! energy to the PySCF reference loaded from testdata/reference/.
 //!
-//! # Known deviation
+//! # Reference alignment
 //!
-//! References were regenerated with two ferric-matching settings:
+//! References are generated with three ferric-matching settings:
 //!   * `mf.density_fit(auxbasis="def2-universal-jkfit")` — matches ferric's RI-J.
 //!   * `mf.grids.radii_adjust = dft.radi.becke_atomic_radii_adjust` — matches
 //!     ferric's Becke (1988) size correction (PySCF's default is Treutler).
+//!   * Lebedev-110 angular quadrature uses the canonical Lebedev-Laikov
+//!     parameters (b3 at p=0.3956894730559419, c-orbit at p=0.4783690288121502).
 //!
-//! Residual errors after that alignment:
+//! With all three aligned, observed errors are:
 //!
-//! * H2    ≈ 2.7e-4 Ha
-//! * H2O   ≈ 1.6e-3 Ha
-//! * CH4   ≈ 6.7e-4 Ha
+//! * H2    ≈ 1.0e-6 Ha
+//! * H2O   ≈ 2.0e-6 Ha
+//! * CH4   ≈ 3.0e-6 Ha
 //!
-//! These are too large to be roundoff; the most likely remaining culprits are
-//! the radial-grid transformation (TA-M4 ξ table, knot count) and the Becke
-//! partition iteration count. Tightening to ≤ 1e-6 Ha requires a deeper audit
-//! of those grid conventions against PySCF's `dft.gen_grid` internals.
+//! These are single-digit µHa — essentially the noise floor of a (75,110)
+//! Becke-Lebedev grid. PySCF's own electron-count integration on this grid
+//! is only 7.5e-6 accurate, so this is the irreducible grid error.
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
@@ -44,12 +45,12 @@ struct Ref {
     converged: bool,
 }
 
-/// Tolerance is set to the measured worst-case (H2O ≈ 1.6e-3 Ha) plus a small
-/// margin. References already match ferric's RI-J and Becke (1988) partition;
-/// the remaining gap is attributed to unaligned radial-grid conventions and
-/// is documented in the module comment above. Do NOT silently widen this —
-/// any drift above 2e-3 indicates a real regression.
-const TOL: f64 = 2e-3;
+/// Tolerance is set just above the measured worst-case (CH4 ≈ 3.0e-6 Ha) to
+/// guard against drift in either the SCF implementation or grid construction.
+/// PySCF itself only integrates electrons on this (75,110) grid to ~7e-6,
+/// so 1e-5 is roughly the noise floor — tightening further would just guard
+/// roundoff. Do NOT silently widen this; any drift indicates a real regression.
+const TOL: f64 = 1e-5;
 
 fn ref_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
