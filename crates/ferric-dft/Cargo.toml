@@ -7,3 +7,8 @@ edition = "2021"
 ferric-core = { path = "../ferric-core" }
 ndarray = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+ferric-core = { path = "../ferric-core" }
+ferric-integrals = { path = "../ferric-integrals" }
+ferric-scf = { path = "../ferric-scf" }

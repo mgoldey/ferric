@@ -1,5 +1,6 @@
 pub mod ao_grid;
 pub mod becke;
+pub mod density_on_grid;
 pub mod grid;
 pub mod lebedev;
 pub mod radial;
