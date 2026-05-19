@@ -379,11 +379,6 @@ pub fn ks_gradient_uks(
     } else {
         KMix { sr: 0.0, lr: 0.0, omega: 0.0 }
     };
-    if k_mix.omega > 0.0 {
-        return Err(FerricError::General(
-            "ks_gradient_uks: range-separated UKS gradients not yet implemented".into(),
-        ));
-    }
     let c_k: f64 = k_mix.sr;
 
     let nelec = mol.nelec() as i64;
@@ -402,11 +397,20 @@ pub fn ks_gradient_uks(
     let w = build_energy_weighted_density_uhf(result, nocc_a, nocc_b);
     let mut grad = oneelectron_gradient(mol, prep, &d_total, &w)?;
 
-    // 2e gradient: J piece from D_total, K piece from per-spin densities,
-    // scaled by c_K.
-    grad += &twoelectron_gradient_uhf_scaled_k(
-        prep, op, bounds, &d_total, d_a, d_b, c_k,
-    )?;
+    // 2e gradient:
+    //   * ω = 0: single Γ = 0.5·D·D − 0.5·c_K·(D_α·D_α + D_β·D_β) at Coulomb
+    //   * ω > 0 (RSH): J (Coulomb, c_K=0) + c_SR·K_UHF[erfc(ω)] + c_LR·K_UHF[erf(ω)]
+    if k_mix.omega > 0.0 {
+        grad += &twoelectron_gradient_uhf_scaled_k(prep, op, bounds, &d_total, d_a, d_b, 0.0)?;
+        grad += &twoelectron_k_gradient_uhf(
+            prep, Operator::erfc(k_mix.omega), bounds, d_a, d_b, k_mix.sr,
+        )?;
+        grad += &twoelectron_k_gradient_uhf(
+            prep, Operator::erf(k_mix.omega), bounds, d_a, d_b, k_mix.lr,
+        )?;
+    } else {
+        grad += &twoelectron_gradient_uhf_scaled_k(prep, op, bounds, &d_total, d_a, d_b, c_k)?;
+    }
 
     // XC gradient (polarized).
     let grid_cfg = AtomicGridConfig::default();
@@ -543,11 +547,6 @@ pub fn ks_gradient_roks(
     } else {
         KMix { sr: 0.0, lr: 0.0, omega: 0.0 }
     };
-    if k_mix.omega > 0.0 {
-        return Err(FerricError::General(
-            "ks_gradient_roks: range-separated ROKS gradients not yet implemented".into(),
-        ));
-    }
     let c_k: f64 = k_mix.sr;
 
     let nelec = mol.nelec() as i64;
@@ -582,10 +581,20 @@ pub fn ks_gradient_roks(
 
     let mut grad = oneelectron_gradient(mol, prep, &d_total, &w)?;
 
-    // 2e: J from D_total, K_α/K_β scaled by c_K.
-    grad += &twoelectron_gradient_uhf_scaled_k(
-        prep, op, bounds, &d_total, d_a, d_b, c_k,
-    )?;
+    // 2e gradient:
+    //   * ω = 0: single Γ = 0.5·D·D − 0.5·c_K·(D_α·D_α + D_β·D_β) at Coulomb
+    //   * ω > 0 (RSH): J (Coulomb, c_K=0) + c_SR·K_UHF[erfc(ω)] + c_LR·K_UHF[erf(ω)]
+    if k_mix.omega > 0.0 {
+        grad += &twoelectron_gradient_uhf_scaled_k(prep, op, bounds, &d_total, d_a, d_b, 0.0)?;
+        grad += &twoelectron_k_gradient_uhf(
+            prep, Operator::erfc(k_mix.omega), bounds, d_a, d_b, k_mix.sr,
+        )?;
+        grad += &twoelectron_k_gradient_uhf(
+            prep, Operator::erf(k_mix.omega), bounds, d_a, d_b, k_mix.lr,
+        )?;
+    } else {
+        grad += &twoelectron_gradient_uhf_scaled_k(prep, op, bounds, &d_total, d_a, d_b, c_k)?;
+    }
 
     // XC piece via the polarized driver (ROKS densities already satisfy the
     // structure; UKS XC machinery applies as-is).
@@ -608,5 +617,85 @@ pub fn ks_gradient_roks(
         grad += &vv10_grad;
     }
 
+    Ok(grad)
+}
+
+/// UHF K-only gradient with a chosen operator: Σ Γ_K · d(μν|λσ)/dR with
+/// `Γ_K = -0.5 · c_K · (D_α·D_α + D_β·D_β)`. Used by RSH UKS gradients to
+/// build the c_SR·K[erfc(ω)] and c_LR·K[erf(ω)] pieces separately.
+pub fn twoelectron_k_gradient_uhf(
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    d_alpha: &Array2<f64>,
+    d_beta: &Array2<f64>,
+    c_k: f64,
+) -> Result<Array2<f64>, FerricError> {
+    let natoms = prep.shell_to_atom().iter().copied().max().unwrap_or(0) + 1;
+    let nsh = prep.nshells();
+    let dims = prep.shell_dims();
+    let offs = prep.shell_offsets();
+    let sh2at = prep.shell_to_atom();
+
+    let mut grad = Array2::zeros((natoms, 3));
+    let mut eng = Engine::new_2e_deriv(op, prep, 1e-14)?;
+    let d_total: Array2<f64> = d_alpha + d_beta;
+    let max_d = d_total.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
+
+    let gamma = |mu, nu, la, sg| -> f64 {
+        -0.5 * c_k * (d_alpha[(mu, la)] * d_alpha[(nu, sg)]
+                    + d_beta[(mu, la)]  * d_beta[(nu, sg)])
+    };
+
+    for s1 in 0..nsh {
+        for s2 in 0..=s1 {
+            let b12 = bounds.q[(s1, s2)];
+            for s3 in 0..=s1 {
+                let s4max = if s3 == s1 { s2 } else { s3 };
+                for s4 in 0..=s4max {
+                    let b34 = bounds.q[(s3, s4)];
+                    if b12 * b34 * max_d < 1e-12 { continue; }
+                    if let Some(dq) = eng.compute_eri_deriv_quartet(prep, s1, s2, s3, s4) {
+                        let (n1, n2, n3, n4) = (dims[s1], dims[s2], dims[s3], dims[s4]);
+                        let block_sz = n1 * n2 * n3 * n4;
+                        let atoms = [sh2at[s1], sh2at[s2], sh2at[s3], sh2at[s4]];
+                        let sym12 = s1 != s2;
+                        let sym34 = s3 != s4;
+                        let sym1234 = (s1, s2) != (s3, s4);
+                        for a in 0..n1 {
+                            for b in 0..n2 {
+                                for c in 0..n3 {
+                                    for dd in 0..n4 {
+                                        let idx = ((a * n2 + b) * n3 + c) * n4 + dd;
+                                        let mu = offs[s1] + a;
+                                        let nu = offs[s2] + b;
+                                        let la = offs[s3] + c;
+                                        let sg = offs[s4] + dd;
+                                        let mut g = gamma(mu, nu, la, sg);
+                                        if sym12 { g += gamma(nu, mu, la, sg); }
+                                        if sym34 { g += gamma(mu, nu, sg, la); }
+                                        if sym12 && sym34 { g += gamma(nu, mu, sg, la); }
+                                        if sym1234 {
+                                            g += gamma(la, sg, mu, nu);
+                                            if sym12 { g += gamma(la, sg, nu, mu); }
+                                            if sym34 { g += gamma(sg, la, mu, nu); }
+                                            if sym12 && sym34 { g += gamma(sg, la, nu, mu); }
+                                        }
+                                        for center in 0..4 {
+                                            let atom = atoms[center];
+                                            for coord in 0..3 {
+                                                let dv = dq[(center * 3 + coord) * block_sz + idx];
+                                                grad[(atom, coord)] += g * dv;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     Ok(grad)
 }

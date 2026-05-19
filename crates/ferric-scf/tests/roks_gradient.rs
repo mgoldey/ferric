@@ -115,3 +115,9 @@ fn roks_grad_oh_ccpvdz_lda() {
     run_case("OH/cc-pVDZ", "LDA",
              "2\nOH\nO 0 0 0\nH 0 0 1.10\n", 2, "cc-pvdz", 5e-3);
 }
+
+#[test]
+fn roks_rsh_grad_oh_ccpvdz_wb97x_v() {
+    run_case("OH/cc-pVDZ", "wB97X-V",
+             "2\nOH\nO 0 0 0\nH 0 0 1.10\n", 2, "cc-pvdz", 5e-3);
+}
