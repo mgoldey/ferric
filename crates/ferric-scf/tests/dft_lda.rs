@@ -6,17 +6,21 @@
 //!
 //! # Known deviation
 //!
-//! The reference JSON files were generated with PySCF's standard RKS
-//! (exact-J Coulomb, Treutler-Ahlrichs radii-adjusted Becke partition).
-//! Ferric uses RI-J (def2-universal-jkfit) and the original Becke (1988)
-//! size correction. The combined effect of these two differences is:
+//! References were regenerated with two ferric-matching settings:
+//!   * `mf.density_fit(auxbasis="def2-universal-jkfit")` — matches ferric's RI-J.
+//!   * `mf.grids.radii_adjust = dft.radi.becke_atomic_radii_adjust` — matches
+//!     ferric's Becke (1988) size correction (PySCF's default is Treutler).
 //!
-//! * H2    ≈ 3e-4 Ha
-//! * H2O   ≈ 1.2e-3 Ha
-//! * CH4   ≈ 5e-4 Ha
+//! Residual errors after that alignment:
 //!
-//! All three are below the 2e-3 Ha test guard. Once ferric has a native
-//! RI-J-aware reference generator, these can be tightened to 1e-6 Ha.
+//! * H2    ≈ 2.7e-4 Ha
+//! * H2O   ≈ 1.6e-3 Ha
+//! * CH4   ≈ 6.7e-4 Ha
+//!
+//! These are too large to be roundoff; the most likely remaining culprits are
+//! the radial-grid transformation (TA-M4 ξ table, knot count) and the Becke
+//! partition iteration count. Tightening to ≤ 1e-6 Ha requires a deeper audit
+//! of those grid conventions against PySCF's `dft.gen_grid` internals.
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
@@ -40,10 +44,11 @@ struct Ref {
     converged: bool,
 }
 
-/// Tolerance accounts for two sources of systematic deviation vs PySCF:
-///   1. RI-J approximation (def2-universal-jkfit) vs PySCF's exact Coulomb: ~4e-5 Ha
-///   2. Becke (1988) size correction vs PySCF's Treutler radii adjustment: ~1e-3 Ha
-/// The combined worst-case is ~1.5e-3 Ha; 2e-3 gives a comfortable margin.
+/// Tolerance is set to the measured worst-case (H2O ≈ 1.6e-3 Ha) plus a small
+/// margin. References already match ferric's RI-J and Becke (1988) partition;
+/// the remaining gap is attributed to unaligned radial-grid conventions and
+/// is documented in the module comment above. Do NOT silently widen this —
+/// any drift above 2e-3 indicates a real regression.
 const TOL: f64 = 2e-3;
 
 fn ref_path(name: &str) -> PathBuf {

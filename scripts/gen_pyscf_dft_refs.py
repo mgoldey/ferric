@@ -45,8 +45,12 @@ def run_one(label, atom_spec, charge, spin, basis, xc):
     mol = gto.M(atom=atom_spec, basis=basis, charge=charge,
                 spin=spin - 1, unit="Angstrom")
     mf = dft.RKS(mol, xc=PYSCF_XC[xc])
+    # Match ferric's RI-J for the Coulomb piece. wB97X-V also needs RI-K.
+    mf = mf.density_fit(auxbasis="def2-universal-jkfit")
     mf.grids.atom_grid = MAIN_GRID
     mf.grids.prune = None
+    # Match ferric's Becke (1988) size correction (not PySCF's default Treutler).
+    mf.grids.radii_adjust = dft.radi.becke_atomic_radii_adjust
     if xc == "wb97x-v":
         mf.nlc = "VV10"
         mf.nlcgrids.atom_grid = NLC_GRID
