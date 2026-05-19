@@ -36,7 +36,7 @@
 
 use ferric_core::FerricError;
 use ferric_quadrature::LaplaceQuadrature;
-use ndarray::Array2;
+use ndarray::{Array2, Array3};
 
 /// Build the imaginary-time τ-quadrature for the energy-gap range.
 ///
@@ -154,10 +154,465 @@ pub fn dielectric_matrix_imag_time(
     Ok(eps_proj)
 }
 
+// ---------------------------------------------------------------------------
+// AO-basis imaginary-time pseudo-densities and χ⁰_PQ(τ)
+// ---------------------------------------------------------------------------
+//
+// Task #43 (AO-sparse extension). The functions below mirror the
+// Kaltak-Kresse construction directly in the AO basis:
+//
+//   P_{μλ}(τ) = Σ_i  C_{μi}  exp(+ε_i τ) C_{λi}              (nbasis × nbasis)
+//   Q_{νσ}(τ) = Σ_a  C_{νa}  exp(-ε_a τ) C_{σa}              (nbasis × nbasis)
+//
+//   χ⁰_{PQ}(τ) = -2 Σ_{μνλσ} (P|μν) P_{μλ}(τ) Q_{νσ}(τ) (λσ|Q)
+//
+// The contraction over (μ,ν,λ,σ) is reordered as four matmuls so no
+// O(nbasis^4) intermediate is built. With nbasis = N, naux = M this gives
+// O(N³ · M) per τ point — same cost as MO χ⁰ assembly but the inputs are
+// AO tensors, ready for AO sparsity (task #43 follow-up).
+//
+// Closed-shell prefactor 2 comes from spin sum on the doubly-occupied
+// reference; the sign convention matches the χ⁰ used in pi_via_imag_time.
+
+/// Build the occupied AO-basis pseudo-density at imaginary time τ.
+///
+///   P_{μλ}(τ) = Σ_i  C_{μi}  exp(+ε_i τ) C_{λi}
+///
+/// Note: ε_occ are negative for bound occupied orbitals, so `exp(+ε_i τ)`
+/// decays for τ > 0 — this is the "occupied propagator" weight.
+///
+/// Shapes:
+/// * `c_occ`  — (nbasis, nocc)
+/// * `eps_occ` — (nocc,)
+/// * returns — (nbasis, nbasis)
+pub fn pseudo_density_occ(c_occ: &Array2<f64>, eps_occ: &[f64], tau: f64) -> Array2<f64> {
+    let (nbasis, nocc) = c_occ.dim();
+    assert_eq!(nocc, eps_occ.len(), "c_occ ncols must match eps_occ length");
+    // Scaled coefficients C̃_{μi} = C_{μi} · exp(+½ ε_i τ); P = C̃ · C̃^T splits
+    // the exp factor across both columns, avoiding overflow at large τ when
+    // ε_i is large-negative (occupied energies are negative).
+    let mut c_scaled = c_occ.clone();
+    for i in 0..nocc {
+        let w = (0.5 * eps_occ[i] * tau).exp();
+        for mu in 0..nbasis {
+            c_scaled[(mu, i)] *= w;
+        }
+    }
+    c_scaled.dot(&c_scaled.t())
+}
+
+/// Build the virtual AO-basis pseudo-density at imaginary time τ.
+///
+///   Q_{νσ}(τ) = Σ_a  C_{νa}  exp(-ε_a τ) C_{σa}
+///
+/// Shapes:
+/// * `c_vir`  — (nbasis, nvir)
+/// * `eps_vir` — (nvir,)
+/// * returns — (nbasis, nbasis)
+pub fn pseudo_density_vir(c_vir: &Array2<f64>, eps_vir: &[f64], tau: f64) -> Array2<f64> {
+    let (nbasis, nvir) = c_vir.dim();
+    assert_eq!(nvir, eps_vir.len(), "c_vir ncols must match eps_vir length");
+    let mut c_scaled = c_vir.clone();
+    for a in 0..nvir {
+        let w = (-0.5 * eps_vir[a] * tau).exp();
+        for nu in 0..nbasis {
+            c_scaled[(nu, a)] *= w;
+        }
+    }
+    c_scaled.dot(&c_scaled.t())
+}
+
+/// Independent-particle χ⁰_{PQ}(τ) in the auxiliary basis at one τ.
+///
+///   χ⁰_{PQ}(τ) = -2 Σ_{μνλσ} (P|μν) P_{μλ}(τ) Q_{νσ}(τ) (λσ|Q)
+///
+/// Implemented as a four-step contraction (each step is a single GEMM
+/// over rolled-up indices); no nbasis⁴ intermediate is materialized:
+///
+///   step 1: X^P_{λν} = Σ_μ  (P|μν) P_{μλ}                 — (naux·nbasis, nbasis)
+///   step 2: Y^P_{λσ} = Σ_ν  X^P_{λν} Q_{νσ}               — (naux·nbasis, nbasis)
+///   step 3: χ⁰_{PQ}  = Σ_{λσ} Y^P_{λσ} (λσ|Q)             — (naux, naux)
+///
+/// Cost: O(naux · nbasis³) per τ-point. With nbasis = N and naux ≈ 3N,
+/// that's ~3N⁴ flops — the same as MO χ⁰. The win comes when AO sparsity
+/// (task #43 follow-up) reduces the effective nbasis in the inner steps.
+///
+/// Shapes:
+/// * `eri3` — (naux, nbasis, nbasis), the 3-index tensor (P|μν) from
+///   [`ferric_integrals::threeindex::eri3_tensor`]
+/// * `p_occ` — (nbasis, nbasis), occupied pseudo-density P_{μλ}(τ)
+/// * `q_vir` — (nbasis, nbasis), virtual  pseudo-density Q_{νσ}(τ)
+/// * returns — (naux, naux), χ⁰_{PQ}(τ)
+pub fn chi0_ao_at_tau(
+    eri3: &Array3<f64>,
+    p_occ: &Array2<f64>,
+    q_vir: &Array2<f64>,
+) -> Result<Array2<f64>, FerricError> {
+    let (naux, nbasis_1, nbasis_2) = eri3.dim();
+    if nbasis_1 != nbasis_2 {
+        return Err(FerricError::General(
+            "chi0_ao_at_tau: eri3 must have square (μ,ν) dims".into(),
+        ));
+    }
+    let nbasis = nbasis_1;
+    if p_occ.dim() != (nbasis, nbasis) || q_vir.dim() != (nbasis, nbasis) {
+        return Err(FerricError::General(
+            "chi0_ao_at_tau: pseudo-density shapes must match eri3 AO dims".into(),
+        ));
+    }
+
+    // Flatten eri3 into 2D for matmul. eri3 stored row-major (naux, μ, ν);
+    // view as (naux · μ, ν) for the ν contraction in step 1.
+    // Step 1: contract μ via   X[P,λ,ν] = Σ_μ eri3[P,μ,ν] · p_occ[μ,λ]
+    //                       = Σ_μ eri3_view[P·μ, ν] indexed against p_occ[μ,λ]
+    // For maximum BLAS leverage we use a different reshape:
+    //   reshape eri3 → (naux, nbasis * nbasis) — view as (naux, μν)
+    // is wrong here because the μ index isn't contiguous across (P, μ, ν).
+    // Instead contract via two matmul passes per aux row, or use einsum-style
+    // tensordot. The cleanest form is to reshape eri3 → (naux · nbasis, nbasis)
+    // with leading index (P, μ); then p_occ is (μ, λ); but the contraction
+    // is over μ which is the outer of (P, μ), not the inner of eri3_2d.
+    //
+    // Easiest correct path: build a 3D intermediate Y[P, λ, σ] by looping
+    // over P (small loop, naux ~ 3·nbasis) and doing two GEMMs per P:
+    //   E_P[μ, ν] = eri3[P, ·, ·]              (nbasis, nbasis)
+    //   M_P[λ, ν] = p_occ^T[λ, μ] · E_P[μ, ν]  (nbasis, nbasis)
+    //   N_P[λ, σ] = M_P[λ, ν]   · q_vir[ν, σ]  (nbasis, nbasis)
+    // Then
+    //   χ⁰[P, Q] = -2 Σ_{λ,σ} N_P[λ, σ] · eri3[Q, λ, σ]
+    //            = -2 · (N_flat) · (eri3_flat)^T,   N_flat[P, λσ], eri3_flat[Q, λσ]
+    //
+    // Memory: one (nbasis, nbasis) intermediate per P, plus a final
+    // (naux, nbasis²) buffer for N_flat. The final dot is one big GEMM
+    // (naux, nbasis²) × (nbasis², naux) — well-vectorized.
+
+    let nbasis_sq = nbasis * nbasis;
+    let mut n_flat = Array2::<f64>::zeros((naux, nbasis_sq));
+
+    // p_occ_t[λ, μ] view, so the first GEMM is p_occ_t · E_P
+    let p_occ_t = p_occ.t();  // (nbasis, nbasis)
+
+    for p in 0..naux {
+        // E_P[μ, ν] = eri3[p, :, :]
+        let e_p = eri3.slice(ndarray::s![p, .., ..]);
+        // M_P[λ, ν] = p_occ^T[λ, μ] · E_P[μ, ν]
+        let m_p = p_occ_t.dot(&e_p);
+        // N_P[λ, σ] = M_P[λ, ν] · Q[ν, σ]
+        let n_p = m_p.dot(q_vir);
+        // Flatten N_P (nbasis, nbasis) → row p of n_flat (nbasis², )
+        let mut row = n_flat.row_mut(p);
+        for la in 0..nbasis {
+            for sg in 0..nbasis {
+                row[la * nbasis + sg] = n_p[(la, sg)];
+            }
+        }
+    }
+
+    // eri3_flat[Q, λσ] view: same memory, reshape (naux, nbasis, nbasis) → (naux, nbasis²).
+    // eri3 is owned and row-major; this reshape is a zero-copy view.
+    let eri3_flat = eri3.view().into_shape_with_order((naux, nbasis_sq)).map_err(|e| {
+        FerricError::General(format!("chi0_ao_at_tau: eri3 reshape failed: {e}"))
+    })?;
+
+    // χ⁰[P, Q] = -2 · n_flat[P, λσ] · eri3_flat[Q, λσ]^T
+    //         = -2 · n_flat · eri3_flat^T
+    let mut chi0 = n_flat.dot(&eri3_flat.t());
+    chi0 *= -2.0;
+    Ok(chi0)
+}
+
+/// AO-basis χ⁰(τ) on the full τ-quadrature grid.
+///
+/// Returns a stack of `(naux, naux)` matrices for each τ-point.
+///
+/// Shape: `(n_tau, naux, naux)`.
+pub fn chi0_ao_full_time(
+    eri3: &Array3<f64>,
+    c_occ: &Array2<f64>,
+    c_vir: &Array2<f64>,
+    eps_occ: &[f64],
+    eps_vir: &[f64],
+    laplace: &LaplaceQuadrature,
+) -> Result<Array3<f64>, FerricError> {
+    let (naux, _, _) = eri3.dim();
+    let n_tau = laplace.points.len();
+    let mut out = Array3::<f64>::zeros((n_tau, naux, naux));
+    for (k, &tau_k) in laplace.points.iter().enumerate() {
+        let p_occ = pseudo_density_occ(c_occ, eps_occ, tau_k);
+        let q_vir = pseudo_density_vir(c_vir, eps_vir, tau_k);
+        let chi0 = chi0_ao_at_tau(eri3, &p_occ, &q_vir)?;
+        out.slice_mut(ndarray::s![k, .., ..]).assign(&chi0);
+    }
+    Ok(out)
+}
+
+/// Dress the 3-index ERI with V^{-1/2}: B̃[P,μ,ν] = Σ_Q V^{-1/2}[P,Q] · eri3[Q,μ,ν].
+///
+/// This is the AO analogue of the standard MO `b_ov = V^{-1/2} · (P|ia)`
+/// dressing: by absorbing the metric inverse into one factor of the
+/// 3-index tensor, the resulting χ⁰_PQ(τ) is already in the V^{-1/2}-dressed
+/// basis where ε̃ = I + Π reads directly without further metric work, and Π
+/// is positive semidefinite for closed shell.
+///
+/// Shapes: `eri3` (naux, nbasis, nbasis), `v_inv_sqrt` (naux, naux),
+/// returns (naux, nbasis, nbasis).
+pub fn dress_eri3_with_metric(
+    eri3: &Array3<f64>,
+    v_inv_sqrt: &Array2<f64>,
+) -> Array3<f64> {
+    let (naux, nbasis, _) = eri3.dim();
+    // Reshape eri3 (naux, nbasis²) so the dressing is a single naux²·nbasis² GEMM.
+    let eri3_flat = eri3.view().into_shape_with_order((naux, nbasis * nbasis)).unwrap();
+    let dressed_flat = v_inv_sqrt.dot(&eri3_flat);
+    dressed_flat.into_shape_with_order((naux, nbasis, nbasis)).unwrap()
+}
+
+/// Cosine-Fourier transform Π_PQ(iω) = Σ_l (-2·w_l·cos(ω·τ_l)) · χ⁰_PQ(τ_l).
+///
+/// Derivation (closed shell, V^{-1/2}-dressed basis):
+///
+///   Π(iω) = 2 · ∫₀^∞ dτ cos(ω τ) · [-χ⁰(τ)]
+///         ≈ Σ_l (2 · w_l · cos(ω τ_l)) · [-χ⁰(τ_l)]
+///
+/// The factor 2 comes from extending the τ integral to the full real axis
+/// (cosine-Fourier conjugate of the Laplace transform), and `χ⁰_PQ(τ)` as
+/// implemented in [`chi0_ao_at_tau`] carries its own factor -2 (closed-shell
+/// spin sum). Net coefficient: -2·w_l·cos(ω·τ_l). The result Π(iω) is
+/// positive semidefinite for closed shell.
+///
+/// Shapes: `chi0_tau_stack` (n_tau, naux, naux), returns (naux, naux).
+pub fn pi_ao_at_omega(
+    chi0_tau_stack: &Array3<f64>,
+    laplace: &LaplaceQuadrature,
+    omega: f64,
+) -> Array2<f64> {
+    let (n_tau, naux, _) = chi0_tau_stack.dim();
+    assert_eq!(n_tau, laplace.points.len());
+    let mut pi = Array2::<f64>::zeros((naux, naux));
+    for l in 0..n_tau {
+        let coeff = -2.0 * laplace.weights[l] * (omega * laplace.points[l]).cos();
+        let slab = chi0_tau_stack.slice(ndarray::s![l, .., ..]);
+        // pi += coeff · slab
+        pi.scaled_add(coeff, &slab);
+    }
+    pi
+}
+
+/// Build Π(iω) in the V^{-1/2}-dressed aux basis directly from the MO B-tensor.
+///
+/// Used as a high-ω fallback when the cosine-Fourier τ-quadrature becomes
+/// inaccurate. Same Π that `crate::diagnostics::ri_drpa_eigenvalues` uses
+/// internally, but exposed for the AO-RPA driver. Cost: O(naux² · nov).
+fn pi_mo_dressed(
+    b_ov: &Array2<f64>,
+    eps_occ: &[f64],
+    eps_vir: &[f64],
+    omega: f64,
+) -> Array2<f64> {
+    use crate::sternheimer::build_scale_factors;
+    use ndarray::{Axis, Zip};
+    let scale = build_scale_factors(eps_occ, eps_vir, omega);
+    let mut bs = b_ov.to_owned();
+    let scale_row = scale.view().insert_axis(Axis(0));
+    Zip::from(&mut bs).and_broadcast(scale_row).for_each(|x, &s| *x *= s);
+    bs.dot(&bs.t())
+}
+
+/// AO-basis RI-dRPA correlation energy via the Kaltak-Kresse imaginary-time path.
+///
+/// Pipeline:
+/// 1. dress the 3-index ERI with `V^{-1/2}` once: `B̃[P,μ,ν]`
+/// 2. build χ⁰(τ_k) AO-basis stack on the minimax-Laplace τ-grid (O(naux·N³) per τ)
+/// 3. cosine-Fourier to each ω_k: `Π(iω_k) = -2·Σ_l w_l cos(ω_k τ_l) χ⁰(τ_l)`
+/// 4. trace-log: `E_c = (1/2π) Σ_k w_k Σ_α [ln λ_α + (1 − λ_α)]`, λ = eigvals(I + Π)
+///
+/// Cost summary (no AO sparsity yet):
+///   step 1: one O(naux²·N²) GEMM
+///   step 2: n_tau passes, each O(naux·N³) — dominant for small/medium N
+///   step 3: n_tau · n_ω naux² adds
+///   step 4: n_ω diagonalizations of naux × naux + trace-log
+///
+/// AO sparsity will reduce step 2 to O(naux · N²) by truncating the
+/// pseudo-densities — that's the task #43 follow-up.
+///
+/// Returns `(e_c, n_tau, n_omega)` for benchmarking.
+/// `b_ov_fallback`: if `Some`, used to build Π(iω) directly from the MO B-tensor at
+/// any ω where the cosine-Fourier τ-quadrature is inaccurate (ω·t_max > π/2,
+/// matching the bounded-ω guard in `crate::laplace_chi0`). At those high ω the
+/// integrand `e_ia/(ω²+e²) ~ 1/ω²` is small but non-negligible for the trace-log,
+/// and the τ-quadrature aliases. If `None`, we use the AO τ path at all ω
+/// (will be inaccurate for high-ω quadrature points — useful for diagnostics).
+#[allow(clippy::too_many_arguments)]
+pub fn ao_rpa_correlation_energy(
+    eri3: &Array3<f64>,
+    v_inv_sqrt: &Array2<f64>,
+    c_occ: &Array2<f64>,
+    c_vir: &Array2<f64>,
+    eps_occ: &[f64],
+    eps_vir: &[f64],
+    quad_freqs: &[f64],
+    quad_weights: &[f64],
+    n_tau: usize,
+    b_ov_fallback: Option<&Array2<f64>>,
+) -> Result<(f64, usize, usize, usize), FerricError> {
+    use ndarray_linalg::{Eigh, UPLO};
+    use rayon::prelude::*;
+
+    // Step 1: dress ERI.
+    let eri3_dressed = dress_eri3_with_metric(eri3, v_inv_sqrt);
+
+    // Step 2: AO-basis χ⁰(τ) stack on minimax grid.
+    let laplace = build_tau_quadrature(eps_occ, eps_vir, n_tau);
+    let chi0_stack = chi0_ao_full_time(
+        &eri3_dressed, c_occ, c_vir, eps_occ, eps_vir, &laplace,
+    )?;
+    let t_max = laplace.points.iter().cloned().fold(0.0_f64, f64::max);
+    let omega_cutoff = std::f64::consts::FRAC_PI_2 / t_max;
+
+    // Steps 3+4: per ω_k, build Π(iω_k), add I, diagonalize, accumulate trace-log.
+    // High ω (ω·t_max > π/2) → use MO Π fallback if provided.
+    let naux = eri3.dim().0;
+    let n_fallback = std::sync::atomic::AtomicUsize::new(0);
+    let contribs: Result<Vec<f64>, FerricError> = quad_freqs
+        .par_iter()
+        .zip(quad_weights.par_iter())
+        .map(|(&omega, &wk)| {
+            let pi = if omega > omega_cutoff {
+                match b_ov_fallback {
+                    Some(b) => {
+                        n_fallback.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        pi_mo_dressed(b, eps_occ, eps_vir, omega)
+                    }
+                    None => pi_ao_at_omega(&chi0_stack, &laplace, omega),
+                }
+            } else {
+                pi_ao_at_omega(&chi0_stack, &laplace, omega)
+            };
+            let mut eps_mat = pi;
+            for p in 0..naux { eps_mat[(p, p)] += 1.0; }
+            let (evals, _) = eps_mat.eigh(UPLO::Upper)
+                .map_err(|e| FerricError::General(format!("AO-RPA eigh: {e}")))?;
+            let contrib: f64 = evals.iter().map(|&lam| lam.ln() + (1.0 - lam)).sum();
+            Ok(wk * contrib)
+        })
+        .collect();
+
+    let e_c: f64 = contribs?.iter().sum::<f64>() / (2.0 * std::f64::consts::PI);
+    let n_fb = n_fallback.load(std::sync::atomic::Ordering::Relaxed);
+    Ok((e_c, n_tau, quad_freqs.len(), n_fb))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::sternheimer::dielectric_matrix;
+
+    /// Build B^P_ia = Σ_{μν} C_{μi} (P|μν) C_{νa} for synthetic test below.
+    fn build_b_ov(eri3: &Array3<f64>, c_occ: &Array2<f64>, c_vir: &Array2<f64>) -> Array2<f64> {
+        let (naux, nbasis, _) = eri3.dim();
+        let nocc = c_occ.shape()[1];
+        let nvir = c_vir.shape()[1];
+        let mut b = Array2::<f64>::zeros((naux, nocc * nvir));
+        for p in 0..naux {
+            let e_p = eri3.slice(ndarray::s![p, .., ..]);
+            // T[i, ν] = C^T[i, μ] · E_P[μ, ν]
+            let t = c_occ.t().dot(&e_p);
+            // B[P, ia] = T[i, ν] · C_vir[ν, a]
+            let b_pia = t.dot(c_vir);  // (nocc, nvir)
+            for i in 0..nocc {
+                for a in 0..nvir {
+                    b[(p, i * nvir + a)] = b_pia[(i, a)];
+                }
+            }
+        }
+        b
+    }
+
+    #[test]
+    fn ao_chi0_matches_mo_chi0_synthetic() {
+        // Tiny closed-shell system: nbasis=6, nocc=2, nvir=4.
+        let nbasis = 6;
+        let nocc = 2;
+        let nvir = 4;
+        let naux = 7;
+
+        // Random-ish AO MO coefficients; orthonormality not required for the
+        // identity (the AO-basis χ⁰ formula doesn't assume orthonormal MOs —
+        // it's just a sum over occ/vir spaces).
+        let c_occ = Array2::from_shape_fn((nbasis, nocc), |(mu, i)| {
+            0.2 + 0.05 * mu as f64 + 0.07 * i as f64
+                - 0.01 * (mu as f64 * i as f64)
+        });
+        let c_vir = Array2::from_shape_fn((nbasis, nvir), |(mu, a)| {
+            0.1 - 0.04 * mu as f64 + 0.06 * a as f64
+                + 0.02 * (mu as f64 - a as f64)
+        });
+        let eps_occ = vec![-0.5_f64, -0.3];
+        let eps_vir = vec![0.2_f64, 0.6, 1.1, 1.8];
+
+        // Random symmetric 3-index ERI tensor (μ↔ν symmetric).
+        let mut eri3 = Array3::<f64>::zeros((naux, nbasis, nbasis));
+        for p in 0..naux {
+            for mu in 0..nbasis {
+                for nu in 0..=mu {
+                    let v = 0.05 + 0.02 * p as f64 - 0.01 * (mu + nu) as f64
+                        + 0.003 * (mu as f64 * nu as f64);
+                    eri3[(p, mu, nu)] = v;
+                    eri3[(p, nu, mu)] = v;
+                }
+            }
+        }
+
+        let b_ov = build_b_ov(&eri3, &c_occ, &c_vir);
+
+        // Pick a few τ-points to compare.
+        let laplace = build_tau_quadrature(&eps_occ, &eps_vir, 8);
+        for &tau in &[0.05_f64, 0.2, 0.5, 1.0] {
+            // AO-basis route
+            let p_occ = pseudo_density_occ(&c_occ, &eps_occ, tau);
+            let q_vir = pseudo_density_vir(&c_vir, &eps_vir, tau);
+            let chi0_ao = chi0_ao_at_tau(&eri3, &p_occ, &q_vir).unwrap();
+
+            // MO-basis route:
+            // χ⁰_{PQ}(τ) = -2 Σ_{ia} B^P_ia exp(-e_ia τ) B^Q_ia
+            // (closed-shell prefactor 2 matches the AO formula's factor).
+            let nov = nocc * nvir;
+            let mut e_ia = Vec::with_capacity(nov);
+            for i in 0..nocc {
+                for a in 0..nvir {
+                    e_ia.push(eps_vir[a] - eps_occ[i]);
+                }
+            }
+            let mut b_scaled = b_ov.clone();
+            for (col, &e) in e_ia.iter().enumerate() {
+                let w = (-0.5 * e * tau).exp();
+                for p in 0..naux {
+                    b_scaled[(p, col)] *= w;
+                }
+            }
+            let mut chi0_mo = b_scaled.dot(&b_scaled.t());
+            chi0_mo *= -2.0;
+
+            let max_err = chi0_ao.iter().zip(chi0_mo.iter())
+                .map(|(a, b)| (a - b).abs()).fold(0.0_f64, f64::max);
+            let max_ref = chi0_mo.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
+            eprintln!("τ={tau:.2}: AO-vs-MO χ⁰ max_err={max_err:.3e} (|χ⁰|max={max_ref:.3e})");
+            assert!(max_err < 1e-10,
+                "AO χ⁰(τ={tau}) should match MO route: max_err={max_err:.3e}");
+        }
+
+        // Full-time stack sanity: shape and first slice match a direct call.
+        let stack = chi0_ao_full_time(&eri3, &c_occ, &c_vir, &eps_occ, &eps_vir, &laplace).unwrap();
+        assert_eq!(stack.dim(), (laplace.points.len(), naux, naux));
+        let tau0 = laplace.points[0];
+        let p0 = pseudo_density_occ(&c_occ, &eps_occ, tau0);
+        let q0 = pseudo_density_vir(&c_vir, &eps_vir, tau0);
+        let chi0_direct = chi0_ao_at_tau(&eri3, &p0, &q0).unwrap();
+        let max_err = stack.slice(ndarray::s![0, .., ..]).iter()
+            .zip(chi0_direct.iter())
+            .map(|(a, b)| (a - b).abs()).fold(0.0_f64, f64::max);
+        assert!(max_err < 1e-14, "full-time stack slice should match direct call");
+    }
 
     #[test]
     fn imag_time_matches_dense_synthetic() {
