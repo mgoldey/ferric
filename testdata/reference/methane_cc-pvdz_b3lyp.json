@@ -1,0 +1,14 @@
+{
+  "label": "methane",
+  "basis": "cc-pvdz",
+  "xc": "b3lyp",
+  "main_grid": [
+    75,
+    110
+  ],
+  "nlc_grid": null,
+  "e_total": -40.516049673224025,
+  "e_nuc": 13.47203458738209,
+  "n_e": 10,
+  "converged": true
+}

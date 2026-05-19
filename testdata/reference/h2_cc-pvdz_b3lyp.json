@@ -1,0 +1,14 @@
+{
+  "label": "h2",
+  "basis": "cc-pvdz",
+  "xc": "b3lyp",
+  "main_grid": [
+    75,
+    110
+  ],
+  "nlc_grid": null,
+  "e_total": -1.1733171002332687,
+  "e_nuc": 0.7151043390810812,
+  "n_e": 2,
+  "converged": true
+}
