@@ -173,3 +173,124 @@ pub fn xc_gradient_closed_lda_from_density(
     let map = bf_to_atom(shell_to_atom, shell_offsets, shell_dims, nbf);
     xc_gradient_closed_lda(mol, d_total, xc_name, &map, &chi, &dchi, &weights)
 }
+
+/// GGA gradient (closed shell). Requires AO Hessians; currently only supports
+/// s and p shells. Caller is expected to validate the functional family.
+///
+/// Formula:
+/// ```text
+///   ∂E_xc/∂R_A,axis = -2 Σ_g · Σ_{μ∈A, ν} D_μν · [
+///       w·v_ρ · ∂_axis χ_μ · χ_ν
+///     + Σ_b w·2·v_σ·∇ρ_b · (∂_axis χ_μ · ∂_b χ_ν + ∂²_{axis,b} χ_μ · χ_ν)
+///   ]
+/// ```
+#[allow(clippy::too_many_arguments)]
+pub fn xc_gradient_closed_gga_from_density(
+    mol: &Molecule,
+    bs: &ferric_core::basis::BasisSet,
+    d_total: &Array2<f64>,
+    xc_name: &str,
+    grid_cfg: &AtomicGridConfig,
+    shell_to_atom: &[usize],
+    shell_offsets: &[usize],
+    shell_dims: &[usize],
+) -> Result<Array2<f64>, KsGradError> {
+    let xc: XcDef = xc_def_from_name(xc_name)?;
+    // Accept GGA / hybrid-GGA families (caller may be hybridizing via separate K).
+    for f in &xc.funcs {
+        match f.family() {
+            FunctionalFamily::Gga | FunctionalFamily::HybridGga | FunctionalFamily::Lda => {}
+            FunctionalFamily::RangeSepGga => {
+                return Err(KsGradError::UnsupportedFamily(f.family()));
+            }
+        }
+    }
+
+    let nbf = d_total.nrows();
+    let grid = build_atomic_grid(mol, grid_cfg);
+    let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
+    let (chi, dchi, ddchi) = crate::ao_grid::eval_basis_grad_hess_on_points(mol, bs, &pts)?;
+    let weights: Vec<f64> = grid.iter().map(|g| g.weight).collect();
+    let map = bf_to_atom(shell_to_atom, shell_offsets, shell_dims, nbf);
+
+    let npts = chi.ncols();
+    debug_assert_eq!(dchi.dim(), (3, nbf, npts));
+    debug_assert_eq!(ddchi.dim(), (3, 3, nbf, npts));
+
+    // Evaluate ρ, ∇ρ, σ, then v_ρ and v_σ per grid point.
+    let dens = crate::density_on_grid::eval_density_closed(d_total, &chi, &dchi);
+    let rho_slice = dens.rho.as_slice().expect("rho is contiguous");
+    let sigma_slice = dens.sigma.as_slice().expect("sigma is contiguous");
+
+    let mut vrho_total = vec![0.0_f64; npts];
+    let mut vsigma_total = vec![0.0_f64; npts];
+    for func in &xc.funcs {
+        let mut exc = vec![0.0_f64; npts];
+        let mut vrho = vec![0.0_f64; npts];
+        match func.family() {
+            FunctionalFamily::Lda => {
+                func.eval_lda_unpolarized(rho_slice, &mut exc, &mut vrho);
+            }
+            _ => {
+                let mut vsigma = vec![0.0_f64; npts];
+                func.eval_gga_unpolarized(rho_slice, sigma_slice, &mut exc, &mut vrho, &mut vsigma);
+                for g in 0..npts {
+                    vsigma_total[g] += vsigma[g];
+                }
+            }
+        }
+        for g in 0..npts {
+            vrho_total[g] += vrho[g];
+        }
+    }
+
+    // Pre-scale per-point quantities for tight inner loops.
+    //   t_rho[g]  = w_g · v_ρ
+    //   t_sig[g]  = w_g · 2 · v_σ          (multiplied by ∇ρ at inner-loop time)
+    let mut t_rho = vec![0.0_f64; npts];
+    let mut t_sig = vec![0.0_f64; npts];
+    const RHO_FLOOR: f64 = 1e-10;
+    for g in 0..npts {
+        if dens.rho[g] > RHO_FLOOR {
+            t_rho[g] = weights[g] * vrho_total[g];
+            t_sig[g] = weights[g] * 2.0 * vsigma_total[g];
+        }
+    }
+
+    // Precompute Σ_ν D_μν · χ_ν (= M_μ) and Σ_ν D_μν · ∂_b χ_ν (= Mdχ[b, μ, g])
+    // via matrix products.
+    let m: Array2<f64> = d_total.dot(&chi);   // (nbf, npts)
+    let mut mdchi = ndarray::Array3::<f64>::zeros((3, nbf, npts));
+    for b in 0..3 {
+        let slice = dchi.index_axis(ndarray::Axis(0), b);   // (nbf, npts)
+        let prod: Array2<f64> = d_total.dot(&slice);
+        mdchi.index_axis_mut(ndarray::Axis(0), b).assign(&prod);
+    }
+
+    let natoms = mol.atoms.len();
+    let mut grad = Array2::<f64>::zeros((natoms, 3));
+
+    for axis in 0..3 {
+        for mu in 0..nbf {
+            let atom = map[mu];
+            let mut sum = 0.0_f64;
+            for g in 0..npts {
+                // LDA-like piece: t_rho · M_μ · ∂_axis χ_μ
+                let lda_term = t_rho[g] * m[(mu, g)] * dchi[(axis, mu, g)];
+                // GGA pieces:
+                //   Σ_b t_sig · ∇ρ_b · ∂_axis χ_μ · (D · ∂_b χ)_μ
+                //   Σ_b t_sig · ∇ρ_b · ∂²_{axis,b} χ_μ · M_μ
+                let mut gga_term = 0.0_f64;
+                for b in 0..3 {
+                    let gb = dens.grad[(b, g)];
+                    gga_term += dchi[(axis, mu, g)] * mdchi[(b, mu, g)] * gb;
+                    gga_term += ddchi[(axis, b, mu, g)] * m[(mu, g)] * gb;
+                }
+                sum += lda_term + t_sig[g] * gga_term;
+            }
+            grad[(atom, axis)] -= 2.0 * sum;
+        }
+    }
+
+    Ok(grad)
+}

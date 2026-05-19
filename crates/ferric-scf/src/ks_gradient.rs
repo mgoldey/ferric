@@ -29,7 +29,9 @@ use crate::result::{ScfResult, Spin};
 use crate::screening::SchwarzBounds;
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
-use ferric_dft::gradient::xc_gradient_closed_lda_from_density;
+use ferric_dft::gradient::{
+    xc_gradient_closed_gga_from_density, xc_gradient_closed_lda_from_density,
+};
 use ferric_dft::grid::AtomicGridConfig;
 use ferric_dft::libxc::{xc_def_from_name, FunctionalFamily};
 use ferric_dft::xc_trait::KMix;
@@ -63,14 +65,21 @@ pub fn ks_gradient_closed(
         "ks_gradient_closed: ScfResult.spin must be Restricted"
     );
 
-    // Validate functional family.
+    // Validate functional family. LDA + GGA + plain HybridGga are supported.
+    // RangeSepGga (e.g. wB97X-V) requires erfc/erf 2e derivative integrals — TODO.
     let xc = xc_def_from_name(xc_name).map_err(|e| FerricError::General(format!("libxc: {e:?}")))?;
+    let mut needs_gga = false;
     for f in &xc.funcs {
-        if !matches!(f.family(), FunctionalFamily::Lda) {
-            return Err(FerricError::General(format!(
-                "ks_gradient_closed: only LDA functionals supported; got {:?}",
-                f.family()
-            )));
+        match f.family() {
+            FunctionalFamily::Lda => {}
+            FunctionalFamily::Gga | FunctionalFamily::HybridGga => needs_gga = true,
+            FunctionalFamily::RangeSepGga => {
+                return Err(FerricError::General(format!(
+                    "ks_gradient_closed: range-separated functional {:?} requires erfc/erf 2e \
+                     derivative integrals (not yet wired); use LDA, PBE, or B3LYP",
+                    f.family()
+                )));
+            }
         }
     }
     // Pure DFT (LDA, PBE): no exact exchange, so sr=lr=0. KMix::default()
@@ -99,18 +108,19 @@ pub fn ks_gradient_closed(
     // 2e gradient with hybrid K scaling: Γ = 0.5·D·D − (c_K/4)·D·D.
     grad += &twoelectron_gradient_scaled_k(prep, op, bounds, &d, c_k)?;
 
-    // XC gradient (LDA path).
+    // XC gradient: dispatch on functional family (LDA fast path, GGA needs Hessians).
     let grid_cfg = AtomicGridConfig::default();
-    let xc_grad = xc_gradient_closed_lda_from_density(
-        mol,
-        bs,
-        &d,
-        xc_name,
-        &grid_cfg,
-        prep.shell_to_atom(),
-        prep.shell_offsets(),
-        prep.shell_dims(),
-    )
+    let xc_grad = if needs_gga {
+        xc_gradient_closed_gga_from_density(
+            mol, bs, &d, xc_name, &grid_cfg,
+            prep.shell_to_atom(), prep.shell_offsets(), prep.shell_dims(),
+        )
+    } else {
+        xc_gradient_closed_lda_from_density(
+            mol, bs, &d, xc_name, &grid_cfg,
+            prep.shell_to_atom(), prep.shell_offsets(), prep.shell_dims(),
+        )
+    }
     .map_err(|e| FerricError::General(format!("xc gradient: {e:?}")))?;
     grad += &xc_grad;
 

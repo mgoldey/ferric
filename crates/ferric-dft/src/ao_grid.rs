@@ -240,6 +240,30 @@ fn radial_and_d(shell: &LocatedShell, r2: f64) -> (f64, f64) {
     (rad, drad)
 }
 
+/// Like `radial_and_d` but also returns d²rad/d(r²)² = Σ c·N·α²·exp(-α r²).
+#[inline]
+fn radial_and_d_d2(shell: &LocatedShell, r2: f64) -> (f64, f64, f64) {
+    let l = shell.l as i32;
+    let pi = std::f64::consts::PI;
+    let dbl_fact: f64 = match l {
+        0 | 1 => 1.0,
+        2 => 3.0,
+        3 => 15.0,
+        _ => 1.0,
+    };
+    let mut rad = 0.0_f64;
+    let mut drad = 0.0_f64;
+    let mut d2rad = 0.0_f64;
+    for (a, c) in shell.exponents.iter().zip(shell.coefficients.iter()) {
+        let n = (2.0 * a / pi).powf(0.75) * (4.0 * a).powi(l).sqrt() / dbl_fact.sqrt();
+        let e = (-a * r2).exp();
+        rad += c * n * e;
+        drad += -c * n * a * e;
+        d2rad += c * n * a * a * e;
+    }
+    (rad, drad, d2rad)
+}
+
 /// Per-shell evaluation of χ and ∇χ at a relative offset (dx, dy, dz) from the
 /// shell center.
 ///
@@ -380,4 +404,121 @@ pub fn eval_basis_and_grad_on_points(
         }
     }
     Ok((chi, dchi))
+}
+
+/// Per-shell evaluation of χ, ∇χ, and ∇∇χ (the Hessian) for s and p shells only.
+///
+/// `hess_buf[a*3+b][i]` = ∂²χ_i/∂x_a ∂x_b for the i-th basis function.
+fn eval_shell_grad_hess(
+    sh: &LocatedShell,
+    dx: f64, dy: f64, dz: f64,
+    out: &mut [f64],
+    out_grad: &mut [[f64; 10]; 3],
+    out_hess: &mut [[f64; 10]; 9],   // axis-pair index 3*a+b, function index i
+) -> Result<(), GtoEvalError> {
+    let r2 = dx * dx + dy * dy + dz * dz;
+    let (rad, drad, d2rad) = radial_and_d_d2(sh, r2);
+    let two_dr = 2.0 * drad;
+    let four_d2r = 4.0 * d2rad;
+    let d = [dx, dy, dz];
+
+    match (sh.l, sh.pure) {
+        (0, _) => {
+            // χ = rad
+            // ∂χ/∂xa = 2·drad·xa
+            // ∂²χ/∂xa∂xb = 2·drad·δ_ab + 4·d²rad·xa·xb
+            out[0] = rad;
+            for a in 0..3 {
+                out_grad[a][0] = two_dr * d[a];
+                for b in 0..3 {
+                    let delta_ab = if a == b { 1.0 } else { 0.0 };
+                    out_hess[a * 3 + b][0] =
+                        two_dr * delta_ab + four_d2r * d[a] * d[b];
+                }
+            }
+        }
+        (1, _) => {
+            // χ_i = rad · d_i  (i = 0,1,2 for px,py,pz)
+            // ∂χ_i/∂xa = 2·drad·xa·d_i + rad·δ_{ai}
+            // ∂²χ_i/∂xa∂xb = 2·drad·δ_ab·d_i + 4·d²rad·xa·xb·d_i
+            //              + 2·drad·xa·δ_{bi} + 2·drad·xb·δ_{ai}
+            for i in 0..3 {
+                out[i] = rad * d[i];
+            }
+            for a in 0..3 {
+                for i in 0..3 {
+                    let d_ai = if a == i { 1.0 } else { 0.0 };
+                    out_grad[a][i] = two_dr * d[a] * d[i] + rad * d_ai;
+                }
+                for b in 0..3 {
+                    let delta_ab = if a == b { 1.0 } else { 0.0 };
+                    for i in 0..3 {
+                        let d_ai = if a == i { 1.0 } else { 0.0 };
+                        let d_bi = if b == i { 1.0 } else { 0.0 };
+                        out_hess[a * 3 + b][i] =
+                            two_dr * delta_ab * d[i]
+                          + four_d2r * d[a] * d[b] * d[i]
+                          + two_dr * d[a] * d_bi
+                          + two_dr * d[b] * d_ai;
+                    }
+                }
+            }
+        }
+        (l, _) => return Err(GtoEvalError::UnsupportedL { l }),
+    }
+    Ok(())
+}
+
+/// Evaluate χ_μ(r_g), ∇χ_μ(r_g), and ∇∇χ_μ(r_g) at a set of points.
+///
+/// Returns `(chi, dchi, ddchi)` where:
+///   `chi`   has shape `(nbasis, npts)`
+///   `dchi`  has shape `(3, nbasis, npts)` with axis order [x, y, z]
+///   `ddchi` has shape `(3, 3, nbasis, npts)` — full 3×3 Hessian
+///
+/// **Currently only s and p shells are supported.** Calling with a basis
+/// containing d (or higher) functions returns `UnsupportedL`. This is enough
+/// for STO-3G and 6-31G first-row chemistry; d-shell Hessians are TODO.
+pub fn eval_basis_grad_hess_on_points(
+    mol: &ferric_core::mol::Molecule,
+    bs: &ferric_core::basis::BasisSet,
+    points: &[[f64; 3]],
+) -> Result<(Array2<f64>, Array3<f64>, ndarray::Array4<f64>), GtoEvalError> {
+    let shells = collect_shells(mol, bs)?;
+    let nbf: usize = shells.iter().map(|s| num_functions(s.l, s.pure)).sum();
+    let npts = points.len();
+    let mut chi = Array2::<f64>::zeros((nbf, npts));
+    let mut dchi = Array3::<f64>::zeros((3, nbf, npts));
+    let mut ddchi = ndarray::Array4::<f64>::zeros((3, 3, nbf, npts));
+
+    let mut buf = [0.0f64; 10];
+    let mut gradbuf: [[f64; 10]; 3] = [[0.0; 10]; 3];
+    let mut hessbuf: [[f64; 10]; 9] = [[0.0; 10]; 9];
+
+    for (g, p) in points.iter().enumerate() {
+        let mut row_offset = 0usize;
+        for sh in &shells {
+            buf.fill(0.0);
+            for row in gradbuf.iter_mut() { row.fill(0.0); }
+            for row in hessbuf.iter_mut() { row.fill(0.0); }
+
+            let n = num_functions(sh.l, sh.pure);
+            let dx = p[0] - sh.center[0];
+            let dy = p[1] - sh.center[1];
+            let dz = p[2] - sh.center[2];
+
+            eval_shell_grad_hess(sh, dx, dy, dz, &mut buf[..n], &mut gradbuf, &mut hessbuf)?;
+            for i in 0..n {
+                chi[(row_offset + i, g)] = buf[i];
+                for a in 0..3 {
+                    dchi[(a, row_offset + i, g)] = gradbuf[a][i];
+                    for b in 0..3 {
+                        ddchi[(a, b, row_offset + i, g)] = hessbuf[a * 3 + b][i];
+                    }
+                }
+            }
+            row_offset += n;
+        }
+    }
+    Ok((chi, dchi, ddchi))
 }
