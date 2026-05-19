@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 ferric-core = { path = "../ferric-core" }
+ferric-dft = { path = "../ferric-dft" }
 ferric-scf = { path = "../ferric-scf" }
 ferric-integrals = { path = "../ferric-integrals" }
 ndarray = { workspace = true }

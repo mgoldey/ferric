@@ -762,7 +762,7 @@ pub fn pdep_polarizability_becke(
     _cfg: &PdepRpaConfig,
 ) -> Result<Vec<[[f64; 3]; 3]>, FerricError> {
     use ferric_dft::grid::{build_atomic_grid, AtomicGridConfig};
-    use ferric_export::gto_eval::eval_basis_on_points;
+    use ferric_dft::ao_grid::eval_basis_on_points;
     use ndarray_linalg::Solve;
 
     if !matches!(rhf.spin, Spin::Restricted) {
@@ -1355,7 +1355,7 @@ pub fn becke_charges(
     density: &Array2<f64>,
 ) -> Result<Vec<f64>, FerricError> {
     use ferric_dft::grid::{build_atomic_grid, AtomicGridConfig};
-    use ferric_export::gto_eval::eval_basis_on_points;
+    use ferric_dft::ao_grid::eval_basis_on_points;
 
     let natoms = mol.atoms.len();
     let grid = build_atomic_grid(mol, &AtomicGridConfig::default());

@@ -426,6 +426,7 @@ name = "ferric-export"
 version = "0.1.0"
 dependencies = [
  "ferric-core",
+ "ferric-dft",
  "ferric-integrals",
  "ferric-scf",
  "ndarray",

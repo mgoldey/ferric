@@ -1,3 +1,4 @@
+pub mod ao_grid;
 pub mod becke;
 pub mod grid;
 pub mod lebedev;
