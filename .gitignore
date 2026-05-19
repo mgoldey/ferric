@@ -22,3 +22,7 @@ examples/dft_pbe.py
 /*.npz
 /benzene_*.cube
 /benzene_*.npz
+
+# Deprecated code bucket
+/deprecated/
+
