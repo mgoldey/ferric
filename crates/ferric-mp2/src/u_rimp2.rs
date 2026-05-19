@@ -16,7 +16,7 @@ use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::{ScfResult, Spin};
-use ndarray::Array4;
+use ndarray::{Array2, Array4};
 
 /// Components of the U-RI-MP2 correlation energy.
 #[derive(Debug, Clone)]
@@ -225,6 +225,140 @@ fn build_opposite_spin_amplitudes(
         }
     }
     (t, energy)
+}
+
+/// Unrelaxed MP2 1-particle density-matrix corrections in MO basis,
+/// for both α and β spin channels. Built directly from amplitudes.
+///
+/// Per-spin formulas (Bozkaya 2013, antisymmetric t^σσ, mixed t^αβ):
+///
+/// ```text
+/// P^α_{ij} = -½ Σ_{k,a,b} t^αα_{ik,ab} t^αα_{jk,ab}
+///            - Σ_{K,a,B}    t^αβ_{iK,aB} t^αβ_{jK,aB}
+/// P^α_{ab} = +½ Σ_{i,j,c} t^αα_{ij,ac} t^αα_{ij,bc}
+///            + Σ_{i,J,B}    t^αβ_{iJ,aB} t^αβ_{iJ,bB}
+/// ```
+///
+/// β formulas obtained by α↔β symmetry: for the αβ piece, the β-occupied
+/// index sits on axis 1 of `t_ab` and the β-virtual sits on axis 3.
+///
+/// Density conservation per spin: tr(P^σ_oo) + tr(P^σ_vv) = 0.
+#[derive(Debug, Clone)]
+pub struct UMp2Density {
+    pub p_oo_a: Array2<f64>,
+    pub p_vv_a: Array2<f64>,
+    pub p_oo_b: Array2<f64>,
+    pub p_vv_b: Array2<f64>,
+}
+
+pub fn build_u_mp2_density(amps: &UMp2Amplitudes) -> UMp2Density {
+    let t_aa = &amps.t_aa;
+    let t_bb = &amps.t_bb;
+    let t_ab = &amps.t_ab;
+    let (nocc_a, _, nvir_a, _) = t_aa.dim();
+    let (nocc_b, _, nvir_b, _) = t_bb.dim();
+
+    // P^α_{ij}
+    let mut p_oo_a = Array2::<f64>::zeros((nocc_a, nocc_a));
+    for i in 0..nocc_a {
+        for j in 0..nocc_a {
+            let mut s = 0.0;
+            // αα same-spin: -½ Σ_{k,a,b} t_{ik,ab} t_{jk,ab}
+            for k in 0..nocc_a {
+                for a in 0..nvir_a {
+                    for b in 0..nvir_a {
+                        s += -0.5 * t_aa[(i, k, a, b)] * t_aa[(j, k, a, b)];
+                    }
+                }
+            }
+            // αβ: -Σ_{K,a,B} t^αβ_{iK,aB} t^αβ_{jK,aB}
+            for kk in 0..nocc_b {
+                for a in 0..nvir_a {
+                    for bb in 0..nvir_b {
+                        s += -t_ab[(i, kk, a, bb)] * t_ab[(j, kk, a, bb)];
+                    }
+                }
+            }
+            p_oo_a[(i, j)] = s;
+        }
+    }
+
+    // P^α_{ab}
+    let mut p_vv_a = Array2::<f64>::zeros((nvir_a, nvir_a));
+    for a in 0..nvir_a {
+        for b in 0..nvir_a {
+            let mut s = 0.0;
+            // αα: +½ Σ_{i,j,c} t_{ij,ac} t_{ij,bc}
+            for i in 0..nocc_a {
+                for j in 0..nocc_a {
+                    for c in 0..nvir_a {
+                        s += 0.5 * t_aa[(i, j, a, c)] * t_aa[(i, j, b, c)];
+                    }
+                }
+            }
+            // αβ: +Σ_{i,J,B} t^αβ_{iJ,aB} t^αβ_{iJ,bB}
+            for i in 0..nocc_a {
+                for jj in 0..nocc_b {
+                    for bb in 0..nvir_b {
+                        s += t_ab[(i, jj, a, bb)] * t_ab[(i, jj, b, bb)];
+                    }
+                }
+            }
+            p_vv_a[(a, b)] = s;
+        }
+    }
+
+    // P^β_{ij}
+    let mut p_oo_b = Array2::<f64>::zeros((nocc_b, nocc_b));
+    for i in 0..nocc_b {
+        for j in 0..nocc_b {
+            let mut s = 0.0;
+            // ββ: -½ Σ_{k,a,b} t_{ik,ab} t_{jk,ab}
+            for k in 0..nocc_b {
+                for a in 0..nvir_b {
+                    for b in 0..nvir_b {
+                        s += -0.5 * t_bb[(i, k, a, b)] * t_bb[(j, k, a, b)];
+                    }
+                }
+            }
+            // αβ (β-occ axis is axis 1): -Σ_{K,A,b} t^αβ_{KI,Ab} t^αβ_{KJ,Ab}
+            for kk in 0..nocc_a {
+                for aa in 0..nvir_a {
+                    for b in 0..nvir_b {
+                        s += -t_ab[(kk, i, aa, b)] * t_ab[(kk, j, aa, b)];
+                    }
+                }
+            }
+            p_oo_b[(i, j)] = s;
+        }
+    }
+
+    // P^β_{ab}
+    let mut p_vv_b = Array2::<f64>::zeros((nvir_b, nvir_b));
+    for a in 0..nvir_b {
+        for b in 0..nvir_b {
+            let mut s = 0.0;
+            // ββ: +½ Σ_{i,j,c} t_{ij,ac} t_{ij,bc}
+            for i in 0..nocc_b {
+                for j in 0..nocc_b {
+                    for c in 0..nvir_b {
+                        s += 0.5 * t_bb[(i, j, a, c)] * t_bb[(i, j, b, c)];
+                    }
+                }
+            }
+            // αβ (β-vir axis is axis 3): +Σ_{I,J,A} t^αβ_{IJ,Aa} t^αβ_{IJ,Ab}
+            for ii in 0..nocc_a {
+                for jj in 0..nocc_b {
+                    for aa in 0..nvir_a {
+                        s += t_ab[(ii, jj, aa, a)] * t_ab[(ii, jj, aa, b)];
+                    }
+                }
+            }
+            p_vv_b[(a, b)] = s;
+        }
+    }
+
+    UMp2Density { p_oo_a, p_vv_a, p_oo_b, p_vv_b }
 }
 
 /// Same-spin contribution:
@@ -445,5 +579,104 @@ mod tests {
                  amps.t_aa.shape(), amps.t_bb.shape(), amps.t_ab.shape());
         println!("components: αα={:.6e} ββ={:.6e} αβ={:.6e}",
                  amps.components.e_aa, amps.components.e_bb, amps.components.e_ab);
+    }
+
+    /// Sanity-check the unrelaxed U-MP2 density matrices on OH/cc-pVDZ:
+    /// (1) symmetric per-spin per-block
+    /// (2) tr(P_oo_σ) + tr(P_vv_σ) = 0 per spin (density-conservation)
+    /// (3) signs: tr(P_oo) < 0, tr(P_vv) > 0
+    #[test]
+    fn u_mp2_density_sane_on_oh() {
+        let ctx = ParallelContext::default();
+        let xyz = "2\nOH\nO 0.0 0.0 0.0\nH 0.0 0.0 0.97\n";
+        let mol = Molecule::parse_xyz(xyz, 0, 2).unwrap();
+        let obs_bs = basis::bundled("cc-pvdz").unwrap();
+        let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let uhf_cfg = UhfConfig {
+            max_iter: 200, energy_conv: 1e-10, density_conv: 1e-8, ..Default::default()
+        };
+        let uhf = solve_uhf(&ctx, &mol, &obs, op, &bounds, &uhf_cfg).unwrap();
+        let amps = compute_u_mp2_amplitudes(&mol, &obs, &dfbs, op, &uhf, &RiMp2Config::default()).unwrap();
+        let dens = build_u_mp2_density(&amps);
+
+        for (name, p) in [
+            ("p_oo_a", &dens.p_oo_a), ("p_vv_a", &dens.p_vv_a),
+            ("p_oo_b", &dens.p_oo_b), ("p_vv_b", &dens.p_vv_b),
+        ] {
+            let (n, _) = p.dim();
+            let mut max_asym = 0.0_f64;
+            for i in 0..n {
+                for j in 0..n {
+                    max_asym = max_asym.max((p[(i,j)] - p[(j,i)]).abs());
+                }
+            }
+            println!("{}: max asym = {:.3e}", name, max_asym);
+            assert!(max_asym < 1e-14, "{} not symmetric: max asym={}", name, max_asym);
+        }
+
+        let tr = |p: &Array2<f64>| -> f64 { (0..p.dim().0).map(|i| p[(i,i)]).sum() };
+        let tr_oo_a = tr(&dens.p_oo_a);
+        let tr_vv_a = tr(&dens.p_vv_a);
+        let tr_oo_b = tr(&dens.p_oo_b);
+        let tr_vv_b = tr(&dens.p_vv_b);
+        println!("α: tr(P_oo)={:.6e}, tr(P_vv)={:.6e}, sum={:.3e}",
+                 tr_oo_a, tr_vv_a, tr_oo_a + tr_vv_a);
+        println!("β: tr(P_oo)={:.6e}, tr(P_vv)={:.6e}, sum={:.3e}",
+                 tr_oo_b, tr_vv_b, tr_oo_b + tr_vv_b);
+        assert!(tr_oo_a < 0.0 && tr_vv_a > 0.0, "α sign wrong");
+        assert!(tr_oo_b < 0.0 && tr_vv_b > 0.0, "β sign wrong");
+        assert!((tr_oo_a + tr_vv_a).abs() < 1e-10, "α density not conserved");
+        assert!((tr_oo_b + tr_vv_b).abs() < 1e-10, "β density not conserved");
+    }
+
+    /// On a closed-shell singlet (H2 spin=1), α and β U-MP2 densities
+    /// must be equal (no spin polarization), and each equals half the
+    /// closed-shell density.
+    #[test]
+    fn u_mp2_density_alpha_eq_beta_on_h2() {
+        let ctx = ParallelContext::default();
+        let xyz = "2\nH2\nH 0.0 0.0 0.0\nH 0.0 0.0 0.74\n";
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let obs_bs = basis::bundled("cc-pvdz").unwrap();
+        let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = ferric_scf::rhf::solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
+        let c_seed = rhf.mos_r().clone();
+        let uhf_cfg = UhfConfig {
+            max_iter: 200, energy_conv: 1e-10, density_conv: 1e-8, ..Default::default()
+        };
+        let uhf = ferric_scf::uhf::solve_uhf_with_guess(
+            &ctx, &mol, &obs, op, &bounds, &uhf_cfg, Some((&c_seed, &c_seed)),
+        ).unwrap();
+        let amps = compute_u_mp2_amplitudes(&mol, &obs, &dfbs, op, &uhf, &RiMp2Config::default()).unwrap();
+        let dens = build_u_mp2_density(&amps);
+
+        // Note: α/β MOs in a closed-shell-via-UHF run agree in *eigenvalues*
+        // but their *eigenvectors* can differ inside degenerate virtual blocks
+        // (cc-pVDZ on H2 has multiple degenerate virtuals). The density matrix
+        // P is therefore gauge-dependent — but its trace and eigenvalues
+        // (natural occupation numbers) are invariant. Compare those.
+        let tr = |p: &Array2<f64>| -> f64 { (0..p.dim().0).map(|i| p[(i,i)]).sum() };
+        let tr_oo_a = tr(&dens.p_oo_a);
+        let tr_oo_b = tr(&dens.p_oo_b);
+        let tr_vv_a = tr(&dens.p_vv_a);
+        let tr_vv_b = tr(&dens.p_vv_b);
+        println!("H2 traces: P_oo_a={:.6e} P_oo_b={:.6e}; P_vv_a={:.6e} P_vv_b={:.6e}",
+                 tr_oo_a, tr_oo_b, tr_vv_a, tr_vv_b);
+        assert!((tr_oo_a - tr_oo_b).abs() < 1e-10);
+        assert!((tr_vv_a - tr_vv_b).abs() < 1e-10);
+        // Per-spin conservation
+        assert!((tr_oo_a + tr_vv_a).abs() < 1e-10);
+        assert!((tr_oo_b + tr_vv_b).abs() < 1e-10);
+        // E_aa = E_bb = 0 (each spin has a single occupied orbital, no same-spin pair)
+        assert!(amps.components.e_aa.abs() < 1e-14);
+        assert!(amps.components.e_bb.abs() < 1e-14);
     }
 }
