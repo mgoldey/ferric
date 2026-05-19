@@ -114,25 +114,9 @@ pub fn solve_rhf(
         }
     }
 
-    // Density-fitted Coulomb (RI-J). Builds 3-center tensor + inverse metric once.
-    let mut df_j: Option<DfJ> = if let Some(aux_name) = config.df_j_aux.as_deref() {
-        let dfbs_set = ferric_core::basis::bundled(aux_name)?;
-        let dfbs = PreparedBasis::new(mol, &dfbs_set)?;
-        Some(DfJ::new(op, prep, &dfbs)?)
-    } else {
-        None
-    };
-
-    // Density-fitted exchange (RI-K). Builds V^{-1/2}-dressed 3-center tensor once.
-    let mut df_k: Option<DfK> = if let Some(aux_name) = config.df_k_aux.as_deref() {
-        let dfbs_set = ferric_core::basis::bundled(aux_name)?;
-        let dfbs = PreparedBasis::new(mol, &dfbs_set)?;
-        Some(DfK::new(op, prep, &dfbs)?)
-    } else {
-        None
-    };
-
-    // Build the XC contribution once. None for pure HF.
+    // Build the XC contribution once. None for pure HF. Done before df_j/df_k
+    // setup so we can read k_mix and apply auto JK-aux defaults for hybrid /
+    // RSH functionals without forcing the user to set them explicitly.
     use ferric_dft::ks::KsXc;
     use ferric_dft::xc_trait::{XcContribution, KMix};
 
@@ -148,6 +132,36 @@ pub fn solve_rhf(
     };
 
     let k_mix: KMix = xc_contrib.as_ref().map(|x| x.k_mix()).unwrap_or_default();
+
+    // Auto-default JK aux bases when the functional needs exact exchange but
+    // the caller hasn't explicitly set df_j_aux / df_k_aux. This makes
+    // `cfg.xc = Some("B3LYP")` (or any hybrid/RSH) work out of the box.
+    // Pure HF (no xc) keeps the historical behavior of no auto-default.
+    let needs_k = xc_contrib.is_some() && (k_mix.sr > 0.0 || k_mix.omega > 0.0);
+    let needs_j = xc_contrib.is_some();
+    const DEFAULT_JK_AUX: &str = "def2-universal-jkfit";
+    let df_j_aux_eff: Option<String> = config.df_j_aux.clone()
+        .or_else(|| needs_j.then(|| DEFAULT_JK_AUX.into()));
+    let df_k_aux_eff: Option<String> = config.df_k_aux.clone()
+        .or_else(|| needs_k.then(|| DEFAULT_JK_AUX.into()));
+
+    // Density-fitted Coulomb (RI-J). Builds 3-center tensor + inverse metric once.
+    let mut df_j: Option<DfJ> = if let Some(aux_name) = df_j_aux_eff.as_deref() {
+        let dfbs_set = ferric_core::basis::bundled(aux_name)?;
+        let dfbs = PreparedBasis::new(mol, &dfbs_set)?;
+        Some(DfJ::new(op, prep, &dfbs)?)
+    } else {
+        None
+    };
+
+    // Density-fitted exchange (RI-K). Builds V^{-1/2}-dressed 3-center tensor once.
+    let mut df_k: Option<DfK> = if let Some(aux_name) = df_k_aux_eff.as_deref() {
+        let dfbs_set = ferric_core::basis::bundled(aux_name)?;
+        let dfbs = PreparedBasis::new(mol, &dfbs_set)?;
+        Some(DfK::new(op, prep, &dfbs)?)
+    } else {
+        None
+    };
 
     // Build LinkK once — SignificantPairs is geometry-dependent and expensive per iteration.
     // When using the "link" builder, compute a fresh SchwarzBounds to own the lifetime.
@@ -213,8 +227,9 @@ pub fn solve_rhf(
         //   plain hybrid (B3LYP): k_mix = {α, α, 0}      → k_total = α · k_buf
         //   RSH (wB97X-V):        k_mix = {sr, lr, ω>0}  → k_total = sr·K_SR + lr·K_LR
         let k_total: Array2<f64> = if k_mix.omega > 0.0 {
-            // Range-separated: requires RI-K (use config.df_k_aux). Error if unset.
-            let aux_name = config.df_k_aux.as_deref().ok_or_else(|| {
+            // Range-separated: requires RI-K. Falls back to the auto-default
+            // when df_k_aux wasn't explicitly set (needs_k branch above).
+            let aux_name = df_k_aux_eff.as_deref().ok_or_else(|| {
                 FerricError::General(
                     "Range-separated hybrid requires RhfConfig.df_k_aux (e.g. \"def2-universal-jkfit\")".into()
                 )
