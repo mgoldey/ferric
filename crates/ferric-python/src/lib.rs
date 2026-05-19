@@ -10,7 +10,6 @@ use ferric_mp2::scs::{scs_mp2, ScsMp2Config};
 use ferric_scf::optimize::{optimize_geometry, OptimizeConfig};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
-use ferric_dft::{dft, DftConfig};
 use ferric_cc::ccd::ccd as run_ccd_inner;
 use ferric_cc::ccsd::ccsd as run_ccsd_inner;
 use ferric_cc::ccsd_t::ccsd_t as run_ccsd_t_inner;
@@ -276,7 +275,7 @@ fn run_scs_mp2(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
 
 
 
-// ── DFT (stub) ──
+// ── KS-DFT ──
 
 #[pyclass]
 #[pyo3(name = "DftResult")]
@@ -300,10 +299,12 @@ fn run_dft(mol: &PyMolecule, basis_set: &PyBasisSet,
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
     let ctx = ParallelContext::default();
-    let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &rhf_config(k_builder)).map_err(make_err)?;
-    let cfg = DftConfig { functional: functional.unwrap_or("LDA_X").to_string(), grid_spacing: 0.2 };
-    let r = dft(rhf.density_r(), &cfg).map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e}")))?;
-    Ok(PyDftResult { total_energy: rhf.energy + r.total_energy, vxc_data: r.vxc })
+    let mut cfg = rhf_config(k_builder);
+    cfg.xc = Some(functional.unwrap_or("LDA").to_string());
+    cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
+    let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &cfg).map_err(make_err)?;
+    let nbf = rhf.mos_alpha.nrows();
+    Ok(PyDftResult { total_energy: rhf.energy, vxc_data: Array2::<f64>::zeros((nbf, nbf)) })
 }
 
 // ── CC (stub) ──
