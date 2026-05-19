@@ -21,9 +21,10 @@ fn xc_def_wb97xv_has_cam_and_vv10() {
     let def = xc_def_from_name("wB97X-V").unwrap();
     let cam = def.cam.expect("wB97X-V should have CAM coefficients");
     assert!((cam.omega - 0.3).abs() < 1e-6, "ω = {}", cam.omega);
-    // libxc convention: alpha=1.0, beta=-0.833 → c_SR = alpha = 1.0, c_LR = alpha+beta = 0.167
-    assert!((cam.c_sr - 1.0).abs() < 1e-6,   "c_SR = {}", cam.c_sr);
-    assert!((cam.c_lr - 0.167).abs() < 5e-3, "c_LR = {}", cam.c_lr);
+    // libxc convention (from xc.h): at short range c_SR = α+β, at long range c_LR = α.
+    // wB97X-V: alpha=1.0, beta=-0.833 → c_SR ≈ 0.167, c_LR = 1.0 (long-range-corrected).
+    assert!((cam.c_sr - 0.167).abs() < 5e-3, "c_SR = {}", cam.c_sr);
+    assert!((cam.c_lr - 1.0).abs() < 1e-6,   "c_LR = {}", cam.c_lr);
     let vv10 = def.vv10.expect("wB97X-V should have VV10");
     assert!((vv10.c - 0.01).abs() < 1e-6, "VV10 C = {}", vv10.c);
     assert!((vv10.b - 6.0).abs() < 1e-6,  "VV10 b = {}", vv10.b);

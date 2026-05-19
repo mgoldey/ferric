@@ -103,18 +103,22 @@ pub enum FunctionalFamily {
 
 /// Range-separation (CAM) parameters.
 ///
-/// Ferric convention follows the task specification:
-/// - `c_sr = cam_alpha`            (libxc `alpha` — full HF mixing, equals SR coefficient)
-/// - `c_lr = cam_alpha + cam_beta` (libxc `alpha + beta` — LR HF fraction)
+/// libxc convention (from `xc.h`):
+/// > "at short range the fraction of exact exchange is `cam_alpha + cam_beta`,
+/// >  while at long range it is `cam_alpha`."
+///
+/// Ferric mapping:
+/// - `c_sr = cam_alpha + cam_beta` (libxc `α + β` — short-range HF fraction)
+/// - `c_lr = cam_alpha`            (libxc `α` — long-range HF fraction)
 ///
 /// For wB97X-V: libxc returns `alpha=1.0, beta=-0.833`
-/// → `c_sr = 1.0`, `c_lr = 0.167`.
+/// → `c_sr = 0.167`, `c_lr = 1.0` (long-range-corrected: 100% HF at long range).
 #[derive(Debug, Clone, Copy)]
 pub struct CamCoeffs {
     pub omega: f64,
-    /// Short-range exact-exchange coefficient (`cam_alpha` in libxc).
+    /// Short-range exact-exchange coefficient (`cam_alpha + cam_beta` in libxc).
     pub c_sr: f64,
-    /// Long-range exact-exchange coefficient (`cam_alpha + cam_beta` in libxc).
+    /// Long-range exact-exchange coefficient (`cam_alpha` in libxc).
     pub c_lr: f64,
 }
 
@@ -246,12 +250,15 @@ impl XcFunctional {
         if omega == 0.0 {
             None
         } else {
-            // Ferric convention: c_sr = alpha, c_lr = alpha + beta
-            // For wB97X-V: alpha=1.0, beta=-0.833 → c_sr=1.0, c_lr=0.167
+            // libxc convention (from xc.h):
+            //   "at short range the fraction of exact exchange is alpha+beta,
+            //    while at long range it is alpha."
+            // For wB97X-V: alpha=1.0, beta=-0.833 → c_sr=0.167, c_lr=1.0
+            // (i.e., long-range-corrected: 100% HF at long range, 16.7% at short.)
             Some(CamCoeffs {
                 omega,
-                c_sr: alpha,
-                c_lr: alpha + beta,
+                c_sr: alpha + beta,
+                c_lr: alpha,
             })
         }
     }

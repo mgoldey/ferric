@@ -50,9 +50,11 @@ fn ks_xc_wb97xv_kmix_is_range_separated() {
     let nlc = AtomicGridConfig { n_radial: 50, n_angular: 50 };
     let ks = KsXc::new(&mol, &bs, "wB97X-V", &main, &nlc).unwrap();
     let mix = ks.k_mix();
+    // libxc convention: at short range c_SR = α+β, at long range c_LR = α.
+    // wB97X-V is long-range-corrected: 100% HF at long range, 16.7% at short.
     assert!((mix.omega - 0.3).abs() < 1e-6,    "wB97X-V ω = 0.3");
-    assert!((mix.sr - 1.0).abs() < 1e-6,       "wB97X-V c_SR = 1.0");
-    assert!((mix.lr - 0.167).abs() < 5e-3,     "wB97X-V c_LR ≈ 0.167");
+    assert!((mix.sr - 0.167).abs() < 5e-3,     "wB97X-V c_SR ≈ 0.167");
+    assert!((mix.lr - 1.0).abs() < 1e-6,       "wB97X-V c_LR = 1.0");
 }
 
 #[test]
