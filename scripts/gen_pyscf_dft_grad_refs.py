@@ -23,9 +23,10 @@ MOLECULES = {
 }
 
 PYSCF_XC = {
-    "lda":   "LDA,VWN",
-    "pbe":   "PBE,PBE",
-    "b3lyp": "B3LYP",
+    "lda":     "LDA,VWN",
+    "pbe":     "PBE,PBE",
+    "b3lyp":   "B3LYP",
+    "wb97x-v": "wB97X_V",
 }
 
 MAIN_GRID = (75, 110)

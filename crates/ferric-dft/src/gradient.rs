@@ -196,15 +196,11 @@ pub fn xc_gradient_closed_gga_from_density(
     shell_dims: &[usize],
 ) -> Result<Array2<f64>, KsGradError> {
     let xc: XcDef = xc_def_from_name(xc_name)?;
-    // Accept GGA / hybrid-GGA families (caller may be hybridizing via separate K).
-    for f in &xc.funcs {
-        match f.family() {
-            FunctionalFamily::Gga | FunctionalFamily::HybridGga | FunctionalFamily::Lda => {}
-            FunctionalFamily::RangeSepGga => {
-                return Err(KsGradError::UnsupportedFamily(f.family()));
-            }
-        }
-    }
+    // Accept all families: caller handles the exact-exchange piece (via
+    // ks_gradient_closed's K-gradient calls); the semilocal piece is what
+    // we compute here, which works the same way for plain GGA, hybrid GGA,
+    // and range-separated GGA. (VV10 nonlocal piece is NOT computed here.)
+    // LDA family also accepted — falls back to vsigma=0.
 
     let nbf = d_total.nrows();
     let grid = build_atomic_grid(mol, grid_cfg);
