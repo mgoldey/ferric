@@ -83,6 +83,20 @@
       0.9999999999999998
     ]
   ],
+  "eps_a": [
+    -0.49927840341958307,
+    0.5724448795718778,
+    1.4430265988576734,
+    1.4430265988576734,
+    1.4430265988576738
+  ],
+  "eps_b": [
+    0.07334747831636675,
+    0.7532915952337575,
+    1.5736363295165794,
+    1.5736363295165794,
+    1.5736363295165798
+  ],
   "grad_fd_a": [
     [
       -2.7755575615628914e-13
@@ -98,6 +112,51 @@
     ]
   ],
   "grad_fd_b": null,
+  "grad_int_fd_a": [
+    [
+      0.0
+    ],
+    [
+      0.0
+    ],
+    [
+      0.0
+    ],
+    [
+      0.0
+    ]
+  ],
+  "grad_int_fd_b": null,
+  "grad_int_same_fd_a": [
+    [
+      0.0
+    ],
+    [
+      0.0
+    ],
+    [
+      0.0
+    ],
+    [
+      0.0
+    ]
+  ],
+  "grad_int_same_fd_b": null,
+  "grad_int_ab_fd_a": [
+    [
+      0.0
+    ],
+    [
+      0.0
+    ],
+    [
+      0.0
+    ],
+    [
+      0.0
+    ]
+  ],
+  "grad_int_ab_fd_b": null,
   "method": "u-oo-mp2-reference",
-  "note": "E_total and grad at canonical UHF MOs. Use as ground truth for the analytic U-OO-MP2 gradient. At HF reference, \u2016grad_HF\u2016=0; grad here is dominated by the MP2 response."
+  "note": "E_total and grad at canonical UHF MOs. Use as ground truth for the analytic U-OO-MP2 gradient. grad_fd_* is full \u2202E/\u2202\u03ba (integral + eps response). grad_int_fd_* holds orbital energies fixed (integral response only) and is what the ferric scaffold currently captures. grad_int_aa_fd_* and grad_int_ab_fd_* are per-block FD gradients for term-by-term validation."
 }

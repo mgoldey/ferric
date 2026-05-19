@@ -328,6 +328,76 @@ def _stashed_analytic_gradient_DO_NOT_USE(cache, C_a, C_b, mp2_data, F_mo_a, F_m
 # Validation
 # ----------------------------------------------------------------------------
 
+def mp2_energy_fixed_eps(cache, C_a, C_b, eps_a_fixed, eps_b_fixed, which="all"):
+    """U-MP2 correlation energy with **fixed** denominators (orbital energies)
+    but rebuilt integrals from current C_a, C_b.
+
+    `which` ∈ {"aa", "bb", "ab", "all"} selects which block to return.
+
+    This isolates the "integral-response" piece of the orbital-rotation
+    derivative from the "orbital-energy response" piece. The ferric Rust
+    analytic gradient (initial scaffold) only captures the integral piece,
+    so FD here should match it.
+    """
+    b_a = build_b_full(cache, C_a)
+    b_b = build_b_full(cache, C_b)
+    no_a, no_b = cache.nocc_a, cache.nocc_b
+    eo_a, ev_a = eps_a_fixed[:no_a], eps_a_fixed[no_a:]
+    eo_b, ev_b = eps_b_fixed[:no_b], eps_b_fixed[no_b:]
+    b_a_ov = b_a[:, :no_a, no_a:]
+    b_b_ov = b_b[:, :no_b, no_b:]
+    if which in ("aa", "all"):
+        iajb_aa = np.einsum("Pia,Pjb->iajb", b_a_ov, b_a_ov, optimize=True)
+        K_aa = iajb_aa - iajb_aa.transpose(0, 3, 2, 1)
+        d_aa = (eo_a[:, None, None, None] + eo_a[None, None, :, None]
+                - ev_a[None, :, None, None] - ev_a[None, None, None, :])
+        t_aa = K_aa / d_aa
+        e_aa = 0.25 * np.einsum("iajb,iajb->", t_aa, K_aa)
+    else:
+        e_aa = 0.0
+    if which in ("bb", "all"):
+        iajb_bb = np.einsum("PIA,PJB->IAJB", b_b_ov, b_b_ov, optimize=True)
+        K_bb = iajb_bb - iajb_bb.transpose(0, 3, 2, 1)
+        d_bb = (eo_b[:, None, None, None] + eo_b[None, None, :, None]
+                - ev_b[None, :, None, None] - ev_b[None, None, None, :])
+        t_bb = K_bb / d_bb
+        e_bb = 0.25 * np.einsum("iajb,iajb->", t_bb, K_bb)
+    else:
+        e_bb = 0.0
+    if which in ("ab", "all"):
+        iajb_ab = np.einsum("Pia,PJB->iaJB", b_a_ov, b_b_ov, optimize=True)
+        d_ab = (eo_a[:, None, None, None] + eo_b[None, None, :, None]
+                - ev_a[None, :, None, None] - ev_b[None, None, None, :])
+        t_ab = iajb_ab / d_ab
+        e_ab = np.einsum("iajb,iajb->", t_ab, iajb_ab)
+    else:
+        e_ab = 0.0
+    return e_aa + e_bb + e_ab
+
+
+def fd_gradient_fixed_eps(cache, C_a, C_b, eps_a_fixed, eps_b_fixed, spin, which, h=1e-4):
+    """FD gradient of `mp2_energy_fixed_eps[which]` with respect to κ^σ."""
+    nmo = C_a.shape[1]
+    nocc = cache.nocc_a if spin == 'a' else cache.nocc_b
+    nvir = nmo - nocc
+    g = np.zeros((nvir, nocc))
+    for a in range(nvir):
+        for i in range(nocc):
+            K = make_kappa(nmo, nocc, (a, i), h)
+            if spin == 'a':
+                Cp = rotate_mos(C_a, K)
+                Cm = rotate_mos(C_a, -K)
+                Ep = mp2_energy_fixed_eps(cache, Cp, C_b, eps_a_fixed, eps_b_fixed, which)
+                Em = mp2_energy_fixed_eps(cache, Cm, C_b, eps_a_fixed, eps_b_fixed, which)
+            else:
+                Cp = rotate_mos(C_b, K)
+                Cm = rotate_mos(C_b, -K)
+                Ep = mp2_energy_fixed_eps(cache, C_a, Cp, eps_a_fixed, eps_b_fixed, which)
+                Em = mp2_energy_fixed_eps(cache, C_a, Cm, eps_a_fixed, eps_b_fixed, which)
+            g[a, i] = (Ep - Em) / (2 * h)
+    return g
+
+
 def emit_fd_reference(atom, basis, aux, charge, spin, stub):
     """Write E_total + FD gradient at HF orbitals to JSON. Used by ferric tests."""
     mol = gto.M(atom=atom, basis=basis, charge=charge, spin=spin,
@@ -351,6 +421,31 @@ def emit_fd_reference(atom, basis, aux, charge, spin, stub):
         g_fd = fd_gradient(cache, C_a, C_b, which, h=1e-4)
         grad[which] = g_fd.tolist()
         print(f"[{which}] ‖g_fd‖ = {np.linalg.norm(g_fd):.6e}  (max|elem| {np.max(np.abs(g_fd)):.3e})")
+
+    # Integral-only FD pieces (orbital energies fixed at HF eps).
+    eps_a_fixed = np.diag(F_mo_a).copy()
+    eps_b_fixed = np.diag(F_mo_b).copy()
+    grad_int = {}
+    # Per-spin per-block FD: for α rotation, the active blocks are αα and αβ;
+    # for β rotation, the active blocks are ββ and αβ. Other blocks are 0.
+    grad_int_same_spin = {}  # αα for α-rot, ββ for β-rot
+    grad_int_ab = {}         # αβ for both
+    for which in ['a', 'b']:
+        nocc = cache.nocc_a if which == 'a' else cache.nocc_b
+        if nocc == 0:
+            continue
+        same_block = "aa" if which == 'a' else "bb"
+        for block, dst, lbl in [
+            ("all",        grad_int,           "all"),
+            (same_block,   grad_int_same_spin, same_block),
+            ("ab",         grad_int_ab,        "ab"),
+        ]:
+            g = fd_gradient_fixed_eps(cache, C_a, C_b, eps_a_fixed, eps_b_fixed,
+                                      which, block, h=1e-4)
+            dst[which] = g.tolist()
+            print(f"[{which} int-only/{lbl}] ‖g‖ = {np.linalg.norm(g):.4e}  "
+                  f"max|elem| {np.max(np.abs(g)):.3e}")
+
     out = {
         "atom": atom, "basis": basis, "aux_basis": aux,
         "charge": charge, "spin_2s": spin,
@@ -358,11 +453,21 @@ def emit_fd_reference(atom, basis, aux, charge, spin, stub):
         "e_hf": float(E_hf), "e_corr": float(mp2_data["e_corr"]),
         "e_total": float(E_tot),
         "C_a": C_a.tolist(), "C_b": C_b.tolist(),
+        "eps_a": np.diag(F_mo_a).tolist(), "eps_b": np.diag(F_mo_b).tolist(),
         "grad_fd_a": grad.get('a'), "grad_fd_b": grad.get('b'),
+        "grad_int_fd_a": grad_int.get('a'),     "grad_int_fd_b": grad_int.get('b'),
+        # `same_spin` is αα for α-rotation, ββ for β-rotation.
+        "grad_int_same_fd_a": grad_int_same_spin.get('a'),
+        "grad_int_same_fd_b": grad_int_same_spin.get('b'),
+        "grad_int_ab_fd_a": grad_int_ab.get('a'), "grad_int_ab_fd_b": grad_int_ab.get('b'),
         "method": "u-oo-mp2-reference",
         "note": ("E_total and grad at canonical UHF MOs. Use as ground truth "
-                 "for the analytic U-OO-MP2 gradient. At HF reference, "
-                 "‖grad_HF‖=0; grad here is dominated by the MP2 response.")
+                 "for the analytic U-OO-MP2 gradient. grad_fd_* is full ∂E/∂κ "
+                 "(integral + eps response). grad_int_fd_* holds orbital "
+                 "energies fixed (integral response only) and is what the "
+                 "ferric scaffold currently captures. grad_int_aa_fd_* and "
+                 "grad_int_ab_fd_* are per-block FD gradients for term-by-term "
+                 "validation.")
     }
     path = os.path.join(ROOT, f"testdata/reference/{stub}.json")
     with open(path, "w") as f:
