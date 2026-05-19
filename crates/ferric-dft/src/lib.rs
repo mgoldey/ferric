@@ -5,6 +5,7 @@ pub mod density_on_grid;
 pub mod grid;
 pub mod lebedev;
 pub mod radial;
+pub mod vxc;
 pub mod xc_trait;
 
 use ndarray::Array2;
