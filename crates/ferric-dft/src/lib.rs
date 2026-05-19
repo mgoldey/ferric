@@ -2,6 +2,7 @@ pub mod ao_grid;
 pub mod libxc;
 pub mod becke;
 pub mod density_on_grid;
+pub mod gradient;
 pub mod grid;
 pub mod ks;
 pub mod lebedev;

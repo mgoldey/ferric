@@ -32,5 +32,7 @@ pub mod rohf;
 pub use rohf::{solve_rohf, RohfConfig};
 pub mod gradient;
 pub use gradient::{rhf_gradient, rohf_gradient, uhf_gradient};
+pub mod ks_gradient;
+pub use ks_gradient::ks_gradient_closed;
 pub mod optimize;
 pub mod cfmm;
