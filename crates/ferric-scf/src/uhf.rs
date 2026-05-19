@@ -60,6 +60,32 @@ pub fn solve_uhf_with_guess(
     config: &UhfConfig,
     initial_mos: Option<(&Array2<f64>, &Array2<f64>)>,
 ) -> Result<ScfResult, FerricError> {
+    use ferric_dft::ks::KsXcUks;
+    use ferric_dft::xc_trait::{KMix, UksXcContribution};
+
+    // Build UKS XC contribution once. None for pure UHF.
+    let xc_contrib: Option<Box<dyn UksXcContribution>> = if let Some(name) = config.xc.as_deref() {
+        let main = config.dft_grid.clone().unwrap_or_default();
+        let nlc = config.nlc_grid.clone()
+            .unwrap_or(ferric_dft::grid::AtomicGridConfig { n_radial: 50, n_angular: 50 });
+        let ks = KsXcUks::new(mol, prep.basis_set(), name, &main, &nlc)
+            .map_err(|e| FerricError::General(format!("KsXcUks init for {name}: {e:?}")))?;
+        Some(Box::new(ks) as Box<dyn UksXcContribution>)
+    } else {
+        None
+    };
+
+    let k_mix: KMix = xc_contrib.as_ref().map(|x| x.k_mix()).unwrap_or_default();
+    if k_mix.omega > 0.0 {
+        return Err(FerricError::General(
+            "UKS with range-separated hybrid (ω > 0) is not yet wired in solve_uhf; \
+             use solve_rhf for closed-shell RSH, or open an issue for UKS RSH."
+                .into(),
+        ));
+    }
+    // K coefficient on the full Coulomb K, per-spin. For pure HF (no xc),
+    // KMix::default() gives sr = 1.0, lr = 1.0 → c_k = 1.0 (original UHF behavior).
+    let c_k: f64 = if xc_contrib.is_some() { k_mix.sr } else { 1.0 };
     let s = oneelectron::overlap(prep);
     let h = oneelectron::hcore(prep);
     let n = prep.nbasis();
@@ -164,22 +190,30 @@ pub fn solve_uhf_with_guess(
             let mut dj = DirectJ::new(ctx, prep, bounds, config.integral_thresh);
             total_quartets += dj.build(&d_total, &mut j_buf)?;
         }
-        // K built per spin.
-        {
-            let mut dk = DirectK::new(ctx, prep, bounds, config.integral_thresh);
-            total_quartets += <DirectK as KBuilder>::build(&mut dk, &d_a, &mut k_a_buf)?;
-        }
-        {
-            let mut dk = DirectK::new(ctx, prep, bounds, config.integral_thresh);
-            total_quartets += <DirectK as KBuilder>::build(&mut dk, &d_b, &mut k_b_buf)?;
+        // K built per spin (only if needed — pure DFT can skip).
+        let need_k = c_k != 0.0;
+        if need_k {
+            {
+                let mut dk = DirectK::new(ctx, prep, bounds, config.integral_thresh);
+                total_quartets += <DirectK as KBuilder>::build(&mut dk, &d_a, &mut k_a_buf)?;
+            }
+            {
+                let mut dk = DirectK::new(ctx, prep, bounds, config.integral_thresh);
+                total_quartets += <DirectK as KBuilder>::build(&mut dk, &d_b, &mut k_b_buf)?;
+            }
         }
 
-        // F_σ = H + J - K_σ
-        let f_a: Array2<f64> = &h + &j_buf - &k_a_buf;
-        let f_b: Array2<f64> = &h + &j_buf - &k_b_buf;
+        // F_σ = H + J − c_k · K_σ  (then + V_xc^σ below for UKS path)
+        let mut f_a: Array2<f64> = &h + &j_buf;
+        let mut f_b: Array2<f64> = &h + &j_buf;
+        if need_k {
+            f_a = f_a - c_k * &k_a_buf;
+            f_b = f_b - c_k * &k_b_buf;
+        }
 
-        // Electronic energy: 0.5 tr((H+F_α) D_α + (H+F_β) D_β)
-        let e_elec: f64 = 0.5
+        // Electronic energy BEFORE adding V_xc (V_xc is one-body in F_σ but
+        // E_xc is its own integral).
+        let e_elec_no_xc: f64 = 0.5
             * ((0..n)
                 .flat_map(|i| (0..n).map(move |j| (i, j)))
                 .map(|(i, j)| {
@@ -187,7 +221,12 @@ pub fn solve_uhf_with_guess(
                         + (h[(i, j)] + f_b[(i, j)]) * d_b[(i, j)]
                 })
                 .sum::<f64>());
-        let energy = e_elec + vnn;
+        let e_xc = if let Some(x) = xc_contrib.as_ref() {
+            x.add_xc_uks(&d_a, &d_b, &mut f_a, &mut f_b)
+        } else {
+            0.0
+        };
+        let energy = e_elec_no_xc + e_xc + vnn;
 
         // DIIS errors per spin: F_σ D_σ S − S D_σ F_σ
         let err_a = f_a.dot(&d_a).dot(&s) - s.dot(&d_a).dot(&f_a);

@@ -46,3 +46,21 @@ pub trait XcContribution: Send + Sync {
     /// How to build the exact-exchange contribution for this functional.
     fn k_mix(&self) -> KMix;
 }
+
+/// Spin-polarized analog of `XcContribution`. Takes separate α/β densities
+/// (each tr(D_σ) = N_σ) and adds V^σ_xc + V^σ_nl to the corresponding spin Fock.
+pub trait UksXcContribution: Send + Sync {
+    /// Adds V^α_xc + V^α_nl to `f_a` and V^β_xc + V^β_nl to `f_b` in place.
+    /// Returns the (spin-summed) energy E_xc + E_nl.
+    fn add_xc_uks(
+        &self,
+        d_a: &Array2<f64>,
+        d_b: &Array2<f64>,
+        f_a: &mut Array2<f64>,
+        f_b: &mut Array2<f64>,
+    ) -> f64;
+
+    /// How to build the exact-exchange contribution for this functional. Same
+    /// semantics as `XcContribution::k_mix` — applies per-spin in the UKS Fock.
+    fn k_mix(&self) -> KMix;
+}

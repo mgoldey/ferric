@@ -20,7 +20,7 @@ use ndarray::{Array1, Array2, Array3, Axis};
 /// to keep V_xc well-conditioned. Matches libxc's internal `dens_threshold` default.
 const DENSITY_FLOOR: f64 = 1e-10;
 
-use crate::density_on_grid::DensityGrid;
+use crate::density_on_grid::{DensityGrid, UksDensityGrid};
 use crate::grid::GridPoint;
 use crate::libxc::{FunctionalFamily, XcDef};
 
@@ -126,4 +126,141 @@ pub fn semilocal_vxc_closed(
     let vxc_sym = 0.5 * (&vxc + &vxc.t());
 
     (e_xc, vxc_sym)
+}
+
+/// Spin-polarized (UKS) semilocal exchange-correlation energy and potentials.
+///
+/// Returns `(E_xc, V_α, V_β)`. Each `V_σ` is symmetrized before return.
+///
+/// libxc polarized interleaved layouts:
+///   `rho_in[2g+0]   = ρ_α`,  `rho_in[2g+1]   = ρ_β`
+///   `sigma_in[3g+0] = σ_αα`, `sigma_in[3g+1] = σ_αβ`, `sigma_in[3g+2] = σ_ββ`
+///   `vrho[2g+0]     = v_α`,  `vrho[2g+1]     = v_β`
+///   `vsigma[3g+0]   = v_σαα`,`vsigma[3g+1]   = v_σαβ`, `vsigma[3g+2]   = v_σββ`
+///
+/// V^α_μν includes a σ_αβ cross-term proportional to ∇ρ_β (and vice versa).
+pub fn semilocal_vxc_polarized(
+    grid: &[GridPoint],
+    chi: &Array2<f64>,
+    dchi: &Array3<f64>,
+    dens: &UksDensityGrid,
+    xc: &XcDef,
+) -> (f64, Array2<f64>, Array2<f64>) {
+    let (nbf, npts) = chi.dim();
+    debug_assert_eq!(dchi.dim(), (3, nbf, npts));
+
+    let w: Array1<f64> = grid.iter().map(|g| g.weight).collect();
+
+    // Build interleaved rho / sigma input for libxc.
+    let mut rho_in = vec![0.0_f64; 2 * npts];
+    let mut sigma_in = vec![0.0_f64; 3 * npts];
+    for g in 0..npts {
+        rho_in[2 * g + 0]     = dens.rho_a[g];
+        rho_in[2 * g + 1]     = dens.rho_b[g];
+        sigma_in[3 * g + 0]   = dens.sigma[(0, g)];
+        sigma_in[3 * g + 1]   = dens.sigma[(1, g)];
+        sigma_in[3 * g + 2]   = dens.sigma[(2, g)];
+    }
+
+    let mut exc_total    = Array1::<f64>::zeros(npts);
+    let mut vrho_a_total = Array1::<f64>::zeros(npts);
+    let mut vrho_b_total = Array1::<f64>::zeros(npts);
+    let mut vsigma_aa_total = Array1::<f64>::zeros(npts);
+    let mut vsigma_ab_total = Array1::<f64>::zeros(npts);
+    let mut vsigma_bb_total = Array1::<f64>::zeros(npts);
+
+    for func in &xc.funcs {
+        let mut exc = vec![0.0_f64; npts];
+        let mut vrho = vec![0.0_f64; 2 * npts];
+        match func.family() {
+            FunctionalFamily::Lda => {
+                func.eval_lda_polarized(&rho_in, &mut exc, &mut vrho);
+            }
+            FunctionalFamily::Gga
+            | FunctionalFamily::HybridGga
+            | FunctionalFamily::RangeSepGga => {
+                let mut vsigma = vec![0.0_f64; 3 * npts];
+                func.eval_gga_polarized(
+                    &rho_in, &sigma_in,
+                    &mut exc, &mut vrho, &mut vsigma,
+                );
+                for g in 0..npts {
+                    vsigma_aa_total[g] += vsigma[3 * g + 0];
+                    vsigma_ab_total[g] += vsigma[3 * g + 1];
+                    vsigma_bb_total[g] += vsigma[3 * g + 2];
+                }
+            }
+        }
+        for g in 0..npts {
+            exc_total[g]    += exc[g];
+            vrho_a_total[g] += vrho[2 * g + 0];
+            vrho_b_total[g] += vrho[2 * g + 1];
+        }
+    }
+
+    // E_xc = Σ_g w_g · (ρ_α + ρ_β) · ε_xc
+    let e_xc: f64 = (0..npts)
+        .map(|g| w[g] * (dens.rho_a[g] + dens.rho_b[g]) * exc_total[g])
+        .sum();
+
+    let has_gga = xc.funcs.iter().any(|f| !matches!(f.family(), FunctionalFamily::Lda));
+
+    // Build V^σ for σ ∈ {α, β}.
+    let build = |vrho_sigma: &Array1<f64>,
+                     vsigma_self: &Array1<f64>,
+                     vsigma_cross: &Array1<f64>,
+                     grad_self: &Array2<f64>,
+                     grad_cross: &Array2<f64>,
+                     rho_floor_ref: &Array1<f64>| -> Array2<f64> {
+        // LDA piece: V^σ_μν = Σ_g (w v_ρσ) · χ_μg · χ_νg
+        let mut chi_scaled = chi.clone();
+        for g in 0..npts {
+            let s = if rho_floor_ref[g] > DENSITY_FLOOR { w[g] * vrho_sigma[g] } else { 0.0 };
+            for mu in 0..nbf {
+                chi_scaled[(mu, g)] *= s;
+            }
+        }
+        let mut v: Array2<f64> = chi_scaled.dot(&chi.t());
+
+        if has_gga {
+            // GGA piece for spin σ:
+            //   V^σ_μν += Σ_g (2 w_g v_σσσ) · ∇ρ_σ · (χ_μ ∇χ_ν + χ_ν ∇χ_μ)
+            //           + Σ_g (  w_g v_σαβ) · ∇ρ_other · (χ_μ ∇χ_ν + χ_ν ∇χ_μ)
+            // (the αβ cross-coupling enters with coefficient 1, not 2, because
+            // ∂σ_αβ/∂(∇ρ_α) = ∇ρ_β rather than 2∇ρ_β.)
+            let mut chi_scaled_axis = chi.clone();
+            for axis in 0..3 {
+                chi_scaled_axis.assign(chi);
+                let dchi_axis = dchi.index_axis(Axis(0), axis);
+                for g in 0..npts {
+                    let f_ag = if rho_floor_ref[g] > DENSITY_FLOOR {
+                        2.0 * w[g] * vsigma_self[g] * grad_self[(axis, g)]
+                            + w[g] * vsigma_cross[g] * grad_cross[(axis, g)]
+                    } else {
+                        0.0
+                    };
+                    for mu in 0..nbf {
+                        chi_scaled_axis[(mu, g)] *= f_ag;
+                    }
+                }
+                let m_axis: Array2<f64> = chi_scaled_axis.dot(&dchi_axis.t());
+                v = v + &m_axis + &m_axis.t();
+            }
+        }
+
+        0.5 * (&v + &v.t())
+    };
+
+    // Floor each spin block on its own ρ_σ (libxc treats v_ρσ as ill-defined
+    // where ρ_σ → 0). For the αβ cross-term, gate on the smaller of the two.
+    let v_a = build(
+        &vrho_a_total, &vsigma_aa_total, &vsigma_ab_total,
+        &dens.grad_a, &dens.grad_b, &dens.rho_a,
+    );
+    let v_b = build(
+        &vrho_b_total, &vsigma_bb_total, &vsigma_ab_total,
+        &dens.grad_b, &dens.grad_a, &dens.rho_b,
+    );
+
+    (e_xc, v_a, v_b)
 }

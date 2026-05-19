@@ -209,6 +209,58 @@ impl XcFunctional {
         }
     }
 
+    /// LDA, polarized (nspin=2). Interleaved layout:
+    ///   `rho[2g+0] = ρ_α(r_g)`, `rho[2g+1] = ρ_β(r_g)`
+    ///   `vrho[2g+0] = ∂E_xc/∂ρ_α(r_g)`, `vrho[2g+1] = ∂E_xc/∂ρ_β(r_g)`
+    /// `exc[g]` is the per-particle energy density (not interleaved).
+    pub fn eval_lda_polarized(&self, rho: &[f64], exc: &mut [f64], vrho: &mut [f64]) {
+        debug_assert!(self.nspin == 2, "eval_lda_polarized requires nspin=2");
+        let n = exc.len();
+        assert_eq!(rho.len(), 2 * n, "polarized rho buffer must be 2 * npts");
+        assert_eq!(vrho.len(), 2 * n, "polarized vrho buffer must be 2 * npts");
+        unsafe {
+            ffi::xc_lda_exc_vxc(
+                self.ptr as *const _,
+                n,
+                rho.as_ptr(),
+                exc.as_mut_ptr(),
+                vrho.as_mut_ptr(),
+            );
+        }
+    }
+
+    /// GGA, polarized (nspin=2). Interleaved layouts:
+    ///   `rho[2g+0]   = ρ_α`,  `rho[2g+1]   = ρ_β`
+    ///   `sigma[3g+0] = σ_αα`, `sigma[3g+1] = σ_αβ`, `sigma[3g+2] = σ_ββ`
+    ///   `vrho[2g+0]  = v_α`,  `vrho[2g+1]  = v_β`
+    ///   `vsigma[3g+0]= v_σαα`,`vsigma[3g+1]= v_σαβ`, `vsigma[3g+2]= v_σββ`
+    pub fn eval_gga_polarized(
+        &self,
+        rho: &[f64],
+        sigma: &[f64],
+        exc: &mut [f64],
+        vrho: &mut [f64],
+        vsigma: &mut [f64],
+    ) {
+        debug_assert!(self.nspin == 2, "eval_gga_polarized requires nspin=2");
+        let n = exc.len();
+        assert_eq!(rho.len(), 2 * n, "polarized rho buffer must be 2 * npts");
+        assert_eq!(sigma.len(), 3 * n, "polarized sigma buffer must be 3 * npts");
+        assert_eq!(vrho.len(), 2 * n, "polarized vrho buffer must be 2 * npts");
+        assert_eq!(vsigma.len(), 3 * n, "polarized vsigma buffer must be 3 * npts");
+        unsafe {
+            ffi::xc_gga_exc_vxc(
+                self.ptr as *const _,
+                n,
+                rho.as_ptr(),
+                sigma.as_ptr(),
+                exc.as_mut_ptr(),
+                vrho.as_mut_ptr(),
+                vsigma.as_mut_ptr(),
+            );
+        }
+    }
+
     /// GGA (including hybrid-GGA and RSH-GGA): feed ρ and σ = |∇ρ|².
     pub fn eval_gga_unpolarized(
         &self,
@@ -353,28 +405,34 @@ pub struct XcDef {
     pub b3lyp_mix: Option<f64>,
 }
 
-/// Resolve a human-friendly functional name to an `XcDef`.
+/// Resolve a human-friendly functional name to an `XcDef`. nspin=1 for
+/// closed-shell, nspin=2 for spin-polarized (UKS / ROKS).
 ///
 /// Supported short names: `"LDA"`, `"PBE"`, `"B3LYP"`, `"wB97X-V"`.
 /// Anything else is passed directly to libxc as a raw functional name.
 pub fn xc_def_from_name(name: &str) -> Result<XcDef, LibxcError> {
+    xc_def_from_name_nspin(name, 1)
+}
+
+/// nspin-aware variant. Use 1 for closed-shell and 2 for UKS / ROKS.
+pub fn xc_def_from_name_nspin(name: &str, nspin: u32) -> Result<XcDef, LibxcError> {
     match name {
         "LDA" => {
-            let mut x = XcFunctional::new("LDA_X", 1)?;
+            let mut x = XcFunctional::new("LDA_X", nspin)?;
             x.set_family(FunctionalFamily::Lda);
-            let mut c = XcFunctional::new("LDA_C_VWN", 1)?;
+            let mut c = XcFunctional::new("LDA_C_VWN", nspin)?;
             c.set_family(FunctionalFamily::Lda);
             Ok(XcDef { funcs: vec![x, c], cam: None, vv10: None, b3lyp_mix: None })
         }
         "PBE" => {
-            let mut x = XcFunctional::new("GGA_X_PBE", 1)?;
+            let mut x = XcFunctional::new("GGA_X_PBE", nspin)?;
             x.set_family(FunctionalFamily::Gga);
-            let mut c = XcFunctional::new("GGA_C_PBE", 1)?;
+            let mut c = XcFunctional::new("GGA_C_PBE", nspin)?;
             c.set_family(FunctionalFamily::Gga);
             Ok(XcDef { funcs: vec![x, c], cam: None, vv10: None, b3lyp_mix: None })
         }
         "B3LYP" => {
-            let mut f = XcFunctional::new("HYB_GGA_XC_B3LYP", 1)?;
+            let mut f = XcFunctional::new("HYB_GGA_XC_B3LYP", nspin)?;
             f.set_family(FunctionalFamily::HybridGga);
             let mix = f.exact_exchange_mix();
             Ok(XcDef {
@@ -385,21 +443,14 @@ pub fn xc_def_from_name(name: &str) -> Result<XcDef, LibxcError> {
             })
         }
         "wB97X-V" | "WB97X-V" | "wb97x-v" => {
-            let mut f = XcFunctional::new("HYB_GGA_XC_WB97X_V", 1)?;
+            let mut f = XcFunctional::new("HYB_GGA_XC_WB97X_V", nspin)?;
             f.set_family(FunctionalFamily::RangeSepGga);
             let cam = f.cam_coefficients();
-            // VV10 params (b=6.0, C=0.01) come from libxc's functional info
-            // via xc_nlc_coef rather than being hand-typed.
             let vv10 = f.vv10_coeffs();
             Ok(XcDef { funcs: vec![f], cam, vv10, b3lyp_mix: None })
         }
         other => {
-            // Fall back: pass raw libxc functional name directly. Auto-detect
-            // CAM (range-sep), hybrid mix, and VV10 nonlocal correlation from
-            // the libxc functional info — so any libxc-known VV10-bearing
-            // functional (B97M-V, wB97M-V, etc.) gets its VV10 piece without
-            // needing a hand-coded shortcut.
-            let mut f = XcFunctional::new(other, 1)?;
+            let mut f = XcFunctional::new(other, nspin)?;
             let cam = f.cam_coefficients();
             let vv10 = f.vv10_coeffs();
             if cam.is_some() {
