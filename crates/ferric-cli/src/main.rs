@@ -36,8 +36,8 @@ fn main() {
     };
     let method = cfg.method.kind.as_str();
     let task = cfg.method.task.as_str();
-    if !matches!(method, "rhf" | "uhf" | "rohf" | "rimp2" | "oo-rimp2" | "att-rimp2" | "scs-mp2" | "laplace-mp2" | "pdep-rpa") {
-        eprintln!("error: unsupported method.kind = \"{method}\"; expected rhf, uhf, rohf, rimp2, oo-rimp2, att-rimp2, scs-mp2, laplace-mp2, or pdep-rpa");
+    if !matches!(method, "rhf" | "uhf" | "rohf" | "ksdft" | "rimp2" | "oo-rimp2" | "att-rimp2" | "scs-mp2" | "laplace-mp2" | "pdep-rpa") {
+        eprintln!("error: unsupported method.kind = \"{method}\"; expected rhf, uhf, rohf, ksdft, rimp2, oo-rimp2, att-rimp2, scs-mp2, laplace-mp2, or pdep-rpa");
         std::process::exit(1);
     }
     if !matches!(task, "energy" | "optimize") {
@@ -69,6 +69,18 @@ fn main() {
         eprintln!("error: {e}");
         std::process::exit(1);
     });
+    // For ksdft, default RI-J/RI-K to def2-universal-jkfit (required for hybrids
+    // and RSH; harmless for pure DFT). User can still override via [scf].
+    let (xc, df_j_default, df_k_default) = if method == "ksdft" {
+        let functional = cfg.dft.functional.clone().unwrap_or_else(|| "LDA".into());
+        (
+            Some(functional),
+            Some("def2-universal-jkfit".to_string()),
+            Some("def2-universal-jkfit".to_string()),
+        )
+    } else {
+        (None, None, None)
+    };
     let rhf_config = RhfConfig {
         max_iter: cfg.scf.max_iter,
         energy_conv: cfg.scf.energy_conv,
@@ -76,9 +88,9 @@ fn main() {
         diis_size: cfg.scf.diis_size,
         integral_thresh: cfg.scf.integral_thresh,
         k_builder: cfg.scf.k_builder.clone(),
-        df_j_aux: cfg.scf.df_j_aux.clone(),
-        df_k_aux: cfg.scf.df_k_aux.clone(),
-        xc: None,
+        df_j_aux: cfg.scf.df_j_aux.clone().or(df_j_default),
+        df_k_aux: cfg.scf.df_k_aux.clone().or(df_k_default),
+        xc,
         dft_grid: None,
         nlc_grid: None,
     };
@@ -246,6 +258,14 @@ fn main() {
     match method {
         "rhf" => {
             println!("RHF/{} on {}", bs.name, cfg.molecule.xyz);
+            println!("  nbasis     = {}", prep.nbasis());
+            println!("  iterations = {}", result.iterations);
+            println!("  converged  = {}", result.converged);
+            println!("  energy     = {:.10} Hartree", result.energy);
+        }
+        "ksdft" => {
+            let functional = cfg.dft.functional.as_deref().unwrap_or("LDA");
+            println!("KS-DFT[{functional}]/{} on {}", bs.name, cfg.molecule.xyz);
             println!("  nbasis     = {}", prep.nbasis());
             println!("  iterations = {}", result.iterations);
             println!("  converged  = {}", result.converged);

@@ -301,10 +301,22 @@ fn run_dft(mol: &PyMolecule, basis_set: &PyBasisSet,
     let ctx = ParallelContext::default();
     let mut cfg = rhf_config(k_builder);
     cfg.xc = Some(functional.unwrap_or("LDA").to_string());
+    // RI-J always on (matches PySCF density_fit reference convention).
     cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
+    // RI-K only matters for hybrid/RSH; harmless for pure DFT (path is bypassed
+    // when k_mix.sr == 0 and k_mix.omega == 0).
+    cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
     let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &cfg).map_err(make_err)?;
     let nbf = rhf.mos_alpha.nrows();
     Ok(PyDftResult { total_energy: rhf.energy, vxc_data: Array2::<f64>::zeros((nbf, nbf)) })
+}
+
+/// Alias under the spec's canonical name. Same surface as `run_dft`.
+#[pyfunction]
+#[pyo3(signature = (mol, basis_set, functional=None, k_builder=None))]
+fn run_ksdft(mol: &PyMolecule, basis_set: &PyBasisSet,
+             functional: Option<&str>, k_builder: Option<&str>) -> PyResult<PyDftResult> {
+    run_dft(mol, basis_set, functional, k_builder)
 }
 
 // ── CC (stub) ──
@@ -543,6 +555,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     m.add_function(wrap_pyfunction!(run_laplace_mp2, m)?)?;
     m.add_function(wrap_pyfunction!(run_dft, m)?)?;
+    m.add_function(wrap_pyfunction!(run_ksdft, m)?)?;
     m.add_function(wrap_pyfunction!(run_ccd, m)?)?;
     m.add_function(wrap_pyfunction!(run_ccsd, m)?)?;
     m.add_function(wrap_pyfunction!(run_ccsd_t, m)?)?;

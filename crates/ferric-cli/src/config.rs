@@ -13,6 +13,14 @@ pub struct Config {
     pub optimize: OptimizeCfg,
     #[serde(default)]
     pub rpa: RpaCfg,
+    #[serde(default)]
+    pub dft: DftCfg,
+}
+
+#[derive(Deserialize, Default)]
+pub struct DftCfg {
+    /// XC functional name: "LDA", "PBE", "B3LYP", "wB97X-V", or any libxc name.
+    pub functional: Option<String>,
 }
 
 #[derive(Deserialize, Default)]

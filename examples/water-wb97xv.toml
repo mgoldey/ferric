@@ -1,0 +1,15 @@
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "cc-pvdz"
+
+[method]
+kind = "ksdft"
+
+[dft]
+functional = "wB97X-V"
+
+[scf]
+energy_conv = 1e-9
+density_conv = 1e-8
