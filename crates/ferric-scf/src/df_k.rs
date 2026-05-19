@@ -45,17 +45,36 @@ impl DfK {
         let eri3 = eri3_tensor(op, obs, dfbs)?;
         let (naux, n, _) = eri3.dim();
 
-        // V^{-1/2} via symmetric eigendecomposition
+        // V^{-1/2} via symmetric eigendecomposition with canonical orthogonalization.
+        // The 2-center metric `(P|w(r12)|Q)` is positive-definite analytically, but
+        // for range-separated operators (erf, erfc) with JK-fit aux on heavy atoms,
+        // some eigenvalues can be near-zero and turn slightly negative under
+        // floating-point roundoff. Drop those modes — equivalent to PySCF's
+        // `lindep` threshold in `df.aux_e2`.
         let (evals, evecs) = v
             .eigh(UPLO::Upper)
             .map_err(|e| FerricError::Lapack(format!("V eigh in DfK: {e}")))?;
+        const LINDEP_THRESH: f64 = 1e-10;
         let mut u_scaled = evecs.clone();
+        let mut n_dropped: usize = 0;
         for k in 0..naux {
-            let s = 1.0 / evals[k].sqrt();
-            for r in 0..naux {
-                u_scaled[(r, k)] *= s;
+            if evals[k] < LINDEP_THRESH {
+                // Zero out this column so its (column-vector outer product) contributes
+                // nothing to V^{-1/2}.
+                for r in 0..naux {
+                    u_scaled[(r, k)] = 0.0;
+                }
+                n_dropped += 1;
+            } else {
+                let s = 1.0 / evals[k].sqrt();
+                for r in 0..naux {
+                    u_scaled[(r, k)] *= s;
+                }
             }
         }
+        // Silent on n_dropped: this is expected for range-separated operators
+        // (erf, erfc) with JK-fit aux on heavy atoms and is benign.
+        let _ = n_dropped;
         let v_inv_sqrt = u_scaled.dot(&evecs.t()); // (naux, naux)
 
         // Dress: B[P,μ,ν] = Σ_Q V^{-1/2}_{PQ} (Q|μν)
