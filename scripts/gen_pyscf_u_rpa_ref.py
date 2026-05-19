@@ -122,14 +122,33 @@ def make_uhf(atom: str, basis: str, spin_2s: int):
     return mol, mf
 
 
+def make_uhf_charged(atom: str, basis: str, charge: int, spin_2s: int):
+    mol = gto.M(atom=atom, basis=basis, unit="angstrom",
+                charge=charge, spin=spin_2s, verbose=0)
+    mf = scf.UHF(mol)
+    mf.kernel()
+    if not mf.converged:
+        raise RuntimeError(f"UHF did not converge for {atom} charge={charge}")
+    return mol, mf
+
+
 cases = [
-    # (output stub, atom, basis, aux_basis, 2S, mult)
-    ("h_cc-pvdz_u-rpa",  "H 0 0 0",          "cc-pvdz", "cc-pvdz-ri", 1, 2),
-    ("oh_cc-pvdz_u-rpa", "O 0 0 0; H 0 0 0.97", "cc-pvdz", "cc-pvdz-ri", 1, 2),
+    # (output stub, atom, basis, aux_basis, 2S, mult, charge)
+    ("h_cc-pvdz_u-rpa",  "H 0 0 0",          "cc-pvdz", "cc-pvdz-ri", 1, 2, 0),
+    ("oh_cc-pvdz_u-rpa", "O 0 0 0; H 0 0 0.97", "cc-pvdz", "cc-pvdz-ri", 1, 2, 0),
+    # Cation comparison vs ferric GW100 driver — same geometry (Bohr→Angstrom-equivalent
+    # taken from the driver's literal angstrom values, since ferric parse_xyz treats the
+    # XYZ block as angstroms by default).
+    ("h2o_cation_cc-pvdz_u-rpa",
+     "O 0.0 0.0 0.117790; H 0.0 0.755453 -0.471161; H 0.0 -0.755453 -0.471161",
+     "cc-pvdz", "cc-pvdz-ri", 1, 2, 1),
+    ("h2o_cation_aug-cc-pvtz_u-rpa",
+     "O 0.0 0.0 0.117790; H 0.0 0.755453 -0.471161; H 0.0 -0.755453 -0.471161",
+     "aug-cc-pvtz", "aug-cc-pvtz-ri", 1, 2, 1),
 ]
 
-for stub, atom, basis, aux, spin_2s, mult in cases:
-    mol, mf = make_uhf(atom, basis, spin_2s)
+for stub, atom, basis, aux, spin_2s, mult, charge in cases:
+    mol, mf = make_uhf_charged(atom, basis, charge, spin_2s)
     e_c = u_rpa_energy(mol, mf, aux, n_quad=20, u0=0.5)
     out = {
         "atom": atom,

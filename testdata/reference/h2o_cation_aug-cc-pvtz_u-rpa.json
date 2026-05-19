@@ -1,0 +1,13 @@
+{
+  "atom": "O 0.0 0.0 0.117790; H 0.0 0.755453 -0.471161; H 0.0 -0.755453 -0.471161",
+  "basis": "aug-cc-pvtz",
+  "aux_basis": "aug-cc-pvtz-ri",
+  "mult": 2,
+  "scf_method": "uhf",
+  "scf_energy": -75.65668571056098,
+  "e_rpa": -0.281088679408225,
+  "total_energy": -75.9377743899692,
+  "n_quad": 20,
+  "u0": 0.5,
+  "method": "u-pdep-rpa"
+}
