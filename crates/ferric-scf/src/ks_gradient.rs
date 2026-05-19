@@ -512,3 +512,101 @@ pub fn twoelectron_gradient_uhf_scaled_k(
     }
     Ok(grad)
 }
+
+/// Restricted-open-shell KS (ROKS) nuclear gradient.
+///
+/// Structure mirrors `ks_gradient_uks` but uses the ROHF energy-weighted
+/// density convention (doubly-occ orbital weighted 2ε, singly-occ orbital
+/// weighted 1ε) and the same UKS XC gradient via `xc_gradient_uks_from_density`.
+/// The per-spin densities from a ROKS `ScfResult` already satisfy the
+/// projector structure so the UKS XC path applies verbatim.
+pub fn ks_gradient_roks(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bs: &ferric_core::basis::BasisSet,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    xc_name: &str,
+    result: &ScfResult,
+) -> Result<Array2<f64>, FerricError> {
+    assert!(
+        matches!(result.spin, Spin::RestrictedOpen),
+        "ks_gradient_roks: ScfResult.spin must be RestrictedOpen"
+    );
+
+    let xc = ferric_dft::libxc::xc_def_from_name(xc_name)
+        .map_err(|e| FerricError::General(format!("libxc: {e:?}")))?;
+    let k_mix: KMix = if let Some(cam) = xc.cam {
+        KMix { sr: cam.c_sr, lr: cam.c_lr, omega: cam.omega }
+    } else if let Some(mix) = xc.b3lyp_mix {
+        KMix { sr: mix, lr: mix, omega: 0.0 }
+    } else {
+        KMix { sr: 0.0, lr: 0.0, omega: 0.0 }
+    };
+    if k_mix.omega > 0.0 {
+        return Err(FerricError::General(
+            "ks_gradient_roks: range-separated ROKS gradients not yet implemented".into(),
+        ));
+    }
+    let c_k: f64 = k_mix.sr;
+
+    let nelec = mol.nelec() as i64;
+    let two_s = mol.multiplicity as i64 - 1;
+    let nocc_open = two_s as usize;
+    let nocc_double = ((nelec - two_s) / 2) as usize;
+
+    let d_a = &result.density_alpha;
+    let d_b = result
+        .density_beta
+        .as_ref()
+        .expect("ks_gradient_roks: missing density_beta");
+    let d_total = d_a + d_b;
+
+    // ROHF energy-weighted density: closed × 2ε, open × ε.
+    let n = result.mos_alpha.nrows();
+    let c_mo = &result.mos_alpha;
+    let eps = &result.eps_alpha;
+    let mut w = Array2::<f64>::zeros((n, n));
+    for mu in 0..n {
+        for nu in 0..n {
+            let mut sum = 0.0;
+            for i in 0..nocc_double {
+                sum += 2.0 * eps[i] * c_mo[(mu, i)] * c_mo[(nu, i)];
+            }
+            for j in nocc_double..nocc_double + nocc_open {
+                sum += eps[j] * c_mo[(mu, j)] * c_mo[(nu, j)];
+            }
+            w[(mu, nu)] = sum;
+        }
+    }
+
+    let mut grad = oneelectron_gradient(mol, prep, &d_total, &w)?;
+
+    // 2e: J from D_total, K_α/K_β scaled by c_K.
+    grad += &twoelectron_gradient_uhf_scaled_k(
+        prep, op, bounds, &d_total, d_a, d_b, c_k,
+    )?;
+
+    // XC piece via the polarized driver (ROKS densities already satisfy the
+    // structure; UKS XC machinery applies as-is).
+    let grid_cfg = AtomicGridConfig::default();
+    let xc_grad = xc_gradient_uks_from_density(
+        mol, bs, d_a, d_b, xc_name, &grid_cfg,
+        prep.shell_to_atom(), prep.shell_offsets(), prep.shell_dims(),
+    )
+    .map_err(|e| FerricError::General(format!("roks xc gradient: {e:?}")))?;
+    grad += &xc_grad;
+
+    // VV10 (closed-shell-friendly, on total ρ).
+    if let Some(vv10_params) = xc.vv10 {
+        let nlc_cfg = ferric_dft::grid::AtomicGridConfig { n_radial: 50, n_angular: 50 };
+        let vv10_grad = ferric_dft::gradient::vv10_gradient_from_density(
+            mol, bs, &d_total, &vv10_params, &nlc_cfg,
+            prep.shell_to_atom(), prep.shell_offsets(), prep.shell_dims(),
+        )
+        .map_err(|e| FerricError::General(format!("vv10 gradient: {e:?}")))?;
+        grad += &vv10_grad;
+    }
+
+    Ok(grad)
+}
