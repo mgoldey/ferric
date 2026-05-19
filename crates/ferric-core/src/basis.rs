@@ -90,10 +90,11 @@ fn parse_bse_json(text: &str, name: &str) -> Result<BasisSet, FerricError> {
                 let l = sh.angular_momentum[0];
                 let shell_pure = pure && l >= 2;
                 for col in &sh.coefficients {
-                    let coefs = parse_float_list(col)?;
+                    let mut coefs = parse_float_list(col)?;
                     if coefs.len() != exps.len() {
                         return Err(FerricError::Basis(format!("{} coeffs vs {} exps", coefs.len(), exps.len())));
                     }
+                    renormalize_contraction(&exps, &mut coefs, l);
                     shells.entry(z).or_default().push(Shell { l, pure: shell_pure, exponents: exps.clone(), coefficients: coefs });
                 }
             } else {
@@ -102,10 +103,11 @@ fn parse_bse_json(text: &str, name: &str) -> Result<BasisSet, FerricError> {
                     if k >= sh.coefficients.len() {
                         return Err(FerricError::Basis(format!("shell missing coefficient column {k}")));
                     }
-                    let coefs = parse_float_list(&sh.coefficients[k])?;
+                    let mut coefs = parse_float_list(&sh.coefficients[k])?;
                     if coefs.len() != exps.len() {
                         return Err(FerricError::Basis(format!("{} coeffs vs {} exps", coefs.len(), exps.len())));
                     }
+                    renormalize_contraction(&exps, &mut coefs, l);
                     let shell_pure = pure && l >= 2;
                     shells.entry(z).or_default().push(Shell { l, pure: shell_pure, exponents: exps.clone(), coefficients: coefs });
                 }
@@ -113,6 +115,42 @@ fn parse_bse_json(text: &str, name: &str) -> Result<BasisSet, FerricError> {
         }
     }
     Ok(BasisSet { name: bs_name, shells })
+}
+
+/// Rescale a contraction so its contracted AO has unit self-overlap.
+///
+/// JSON basis files use one of two conventions for the per-primitive
+/// normalization absorbed into the coefficients. Gaussian-style BSE
+/// downloads (cc-pVDZ, aug-cc-pVTZ) already ship coefs with the
+/// contraction normalized to unit overlap. Turbomole-style BSE downloads
+/// (def2-SVP, def2-TZVP, def2-QZVP, …) ship raw coefs and expect the
+/// reader to renormalize.
+///
+/// libint2 internally normalizes contracted shells to unit overlap regardless,
+/// so its analytic-integral path is unaffected. ferric's DFT-grid path
+/// (`radial`) only applies the per-primitive `N(α, l)` factor, not the
+/// contraction-level renormalization — so this function brings both paths
+/// into agreement at load time. After this rescaling libint's internal
+/// renorm becomes idempotent (S is already 1).
+///
+/// Self-overlap formula for a contracted shell of angular momentum `l`:
+/// ```text
+///   S = Σ_p Σ_q c_p c_q · ( 2 √(α_p α_q) / (α_p + α_q) )^(l + 3/2)
+/// ```
+/// then divide every c_p by √S.
+fn renormalize_contraction(exps: &[f64], coefs: &mut [f64], l: i32) {
+    let lf = l as f64;
+    let mut s = 0.0_f64;
+    for (a, ca) in exps.iter().zip(coefs.iter()) {
+        for (b, cb) in exps.iter().zip(coefs.iter()) {
+            let prim_ov = (2.0 * (a * b).sqrt() / (a + b)).powf(lf + 1.5);
+            s += ca * cb * prim_ov;
+        }
+    }
+    if s > 0.0 {
+        let scale = 1.0 / s.sqrt();
+        for c in coefs.iter_mut() { *c *= scale; }
+    }
 }
 
 fn parse_float_list(ss: &[String]) -> Result<Vec<f64>, FerricError> {
@@ -169,10 +207,16 @@ fn parse_g94(text: &str, name: &str) -> Result<BasisSet, FerricError> {
         // G94 convention: spherical for L>=2
         let pure = l >= 2;
         if is_sp {
-            shells.entry(z).or_default().push(Shell { l: 0, pure: false, exponents: exps.clone(), coefficients: coefs[0].clone() });
-            shells.entry(z).or_default().push(Shell { l: 1, pure: false, exponents: exps, coefficients: coefs[1].clone() });
+            let mut c_s = coefs[0].clone();
+            let mut c_p = coefs[1].clone();
+            renormalize_contraction(&exps, &mut c_s, 0);
+            renormalize_contraction(&exps, &mut c_p, 1);
+            shells.entry(z).or_default().push(Shell { l: 0, pure: false, exponents: exps.clone(), coefficients: c_s });
+            shells.entry(z).or_default().push(Shell { l: 1, pure: false, exponents: exps, coefficients: c_p });
         } else {
-            shells.entry(z).or_default().push(Shell { l, pure, exponents: exps, coefficients: coefs[0].clone() });
+            let mut c0 = coefs[0].clone();
+            renormalize_contraction(&exps, &mut c0, l);
+            shells.entry(z).or_default().push(Shell { l, pure, exponents: exps, coefficients: c0 });
         }
     }
     Ok(BasisSet { name: name.to_string(), shells })

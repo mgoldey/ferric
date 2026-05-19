@@ -100,3 +100,15 @@ fn pbe_gradient_h2_augccpvtz_vs_fd() {
         2e-3,
     );
 }
+
+/// H2O/def2-TZVP also exercises f-shells (one f-set on O), and exercises the
+/// Turbomole-convention contraction renormalization fix (P1.2.b).
+#[test]
+fn pbe_gradient_h2o_def2_tzvp_vs_fd() {
+    run_case(
+        "H2O/def2-TZVP",
+        "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
+        "def2-tzvp",
+        2e-3,
+    );
+}
