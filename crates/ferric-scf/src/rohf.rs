@@ -74,12 +74,29 @@ pub fn solve_rohf(
     };
 
     let k_mix: KMix = xc_contrib.as_ref().map(|x| x.k_mix()).unwrap_or_default();
-    if k_mix.omega > 0.0 {
-        return Err(FerricError::General(
-            "ROKS with range-separated hybrid (ω > 0) is not yet wired in solve_rohf".into(),
-        ));
-    }
     let c_k: f64 = if xc_contrib.is_some() { k_mix.sr } else { 1.0 };
+
+    // RSH path (ω > 0): per-spin K from c_SR · K[erfc(ω)] + c_LR · K[erf(ω)]
+    // via two DfK fitters (geometry-only — built once, contracted per spin
+    // per iter). Mirrors solve_uhf's RSH path.
+    let (mut dfk_sr, mut dfk_lr) = if k_mix.omega > 0.0 {
+        use ferric_integrals::basis_bridge::PreparedBasis as _PB;
+        let aux_name = config.df_k_aux.as_deref().unwrap_or("def2-universal-jkfit");
+        let dfbs_set = ferric_core::basis::bundled(aux_name)?;
+        let dfbs_prep = _PB::new(mol, &dfbs_set)?;
+        (
+            Some(crate::df_k::DfK::new(
+                ferric_integrals::operator::Operator::erfc(k_mix.omega),
+                prep, &dfbs_prep,
+            )?),
+            Some(crate::df_k::DfK::new(
+                ferric_integrals::operator::Operator::erf(k_mix.omega),
+                prep, &dfbs_prep,
+            )?),
+        )
+    } else {
+        (None, None)
+    };
     let s = oneelectron::overlap(prep);
     let h = oneelectron::hcore(prep);
     let n = prep.nbasis();
@@ -155,9 +172,24 @@ pub fn solve_rohf(
             let mut dj = DirectJ::new(ctx, prep, bounds, config.integral_thresh);
             total_quartets += dj.build(&d_total, &mut j_buf)?;
         }
-        // K_α from D_α, K_β from D_β (skip when pure DFT has c_k = 0)
-        let need_k = c_k != 0.0;
-        if need_k {
+        // K built per spin (same convention as solve_uhf's RSH path).
+        let need_k = c_k != 0.0 || k_mix.omega > 0.0;
+        let mut k_a_total = Array2::<f64>::zeros((n, n));
+        let mut k_b_total = Array2::<f64>::zeros((n, n));
+        if k_mix.omega > 0.0 {
+            let dfk_sr = dfk_sr.as_mut().expect("dfk_sr built when omega>0");
+            let dfk_lr = dfk_lr.as_mut().expect("dfk_lr built when omega>0");
+            let mut k_sr_a = Array2::<f64>::zeros((n, n));
+            let mut k_lr_a = Array2::<f64>::zeros((n, n));
+            let mut k_sr_b = Array2::<f64>::zeros((n, n));
+            let mut k_lr_b = Array2::<f64>::zeros((n, n));
+            dfk_sr.build(&d_a, &mut k_sr_a)?;
+            dfk_lr.build(&d_a, &mut k_lr_a)?;
+            dfk_sr.build(&d_b, &mut k_sr_b)?;
+            dfk_lr.build(&d_b, &mut k_lr_b)?;
+            k_a_total = k_mix.sr * &k_sr_a + k_mix.lr * &k_lr_a;
+            k_b_total = k_mix.sr * &k_sr_b + k_mix.lr * &k_lr_b;
+        } else if need_k {
             {
                 let mut dk = DirectK::new(ctx, prep, bounds, config.integral_thresh);
                 total_quartets += <DirectK as KBuilder>::build(&mut dk, &d_a, &mut k_a_buf)?;
@@ -166,14 +198,16 @@ pub fn solve_rohf(
                 let mut dk = DirectK::new(ctx, prep, bounds, config.integral_thresh);
                 total_quartets += <DirectK as KBuilder>::build(&mut dk, &d_b, &mut k_b_buf)?;
             }
+            k_a_total = c_k * &k_a_buf;
+            k_b_total = c_k * &k_b_buf;
         }
 
-        // F_σ = H + J − c_k · K_σ  (then + V^σ_xc below for ROKS)
+        // F_σ = H + J − K_σ_total  (then + V^σ_xc below for ROKS)
         let mut f_a: Array2<f64> = &h + &j_buf;
         let mut f_b: Array2<f64> = &h + &j_buf;
         if need_k {
-            f_a = f_a - c_k * &k_a_buf;
-            f_b = f_b - c_k * &k_b_buf;
+            f_a = f_a - &k_a_total;
+            f_b = f_b - &k_b_total;
         }
 
         // Pre-XC electronic energy.
