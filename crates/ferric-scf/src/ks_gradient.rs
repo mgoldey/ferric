@@ -20,9 +20,9 @@
 //!   optimization but not high-accuracy gradient calculations.
 //!
 //! Supports LDA, GGA, plain hybrid-GGA (B3LYP), and range-separated hybrid-GGA
-//! (wB97X-family) — semilocal piece + scaled exact-exchange piece. VV10
-//! nonlocal correlation is currently NOT included in the gradient, so
-//! wB97X-V's analytical gradient is missing the ∂E_nl/∂R contribution.
+//! (wB97X-family) — semilocal piece + scaled exact-exchange piece + (when
+//! the functional carries VV10, e.g. wB97X-V) the VV10 nonlocal-correlation
+//! gradient via `ferric_dft::gradient::vv10_gradient_from_density`.
 //!
 //! GGA / hybrid-GGA require AO
 //! Hessians for the v_σ-coupled term in ∇E_xc.
@@ -134,6 +134,17 @@ pub fn ks_gradient_closed(
     }
     .map_err(|e| FerricError::General(format!("xc gradient: {e:?}")))?;
     grad += &xc_grad;
+
+    // VV10 nonlocal-correlation gradient (only if the functional advertises it).
+    if let Some(vv10_params) = xc.vv10 {
+        let nlc_cfg = ferric_dft::grid::AtomicGridConfig { n_radial: 50, n_angular: 50 };
+        let vv10_grad = ferric_dft::gradient::vv10_gradient_from_density(
+            mol, bs, &d, &vv10_params, &nlc_cfg,
+            prep.shell_to_atom(), prep.shell_offsets(), prep.shell_dims(),
+        )
+        .map_err(|e| FerricError::General(format!("vv10 gradient: {e:?}")))?;
+        grad += &vv10_grad;
+    }
 
     Ok(grad)
 }

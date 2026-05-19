@@ -174,6 +174,132 @@ pub fn xc_gradient_closed_lda_from_density(
     xc_gradient_closed_lda(mol, d_total, xc_name, &map, &chi, &dchi, &weights)
 }
 
+/// Low-level GGA-style gradient assembly from precomputed per-grid-point
+/// potentials. Reused by:
+///   * the semilocal-XC gradient (v_ρ, v_σ from libxc)
+///   * the VV10 nonlocal gradient (v_ρ, v_σ from the VV10 pair sum)
+///
+/// Formula (closed shell, AO basis derivative only — no grid response):
+/// ```text
+///   ∂E/∂R_A,axis = -2 Σ_g · Σ_{μ∈A, ν} D_μν · [
+///       w·v_ρ · ∂_axis χ_μ · χ_ν
+///     + Σ_b w·2·v_σ·∇ρ_b · (∂_axis χ_μ · ∂_b χ_ν + ∂²_{axis,b} χ_μ · χ_ν)
+///   ]
+/// ```
+/// where v_ρ and v_σ are the input potentials supplied per grid point.
+#[allow(clippy::too_many_arguments)]
+pub fn gga_gradient_from_potentials(
+    natoms: usize,
+    d_total: &Array2<f64>,
+    chi: &Array2<f64>,
+    dchi: &Array3<f64>,
+    ddchi: &ndarray::Array4<f64>,
+    grad_rho: &Array2<f64>,        // shape (3, npts) — ∇ρ on the grid
+    weights: &[f64],
+    vrho: &[f64],
+    vsig: &[f64],
+    bf_to_atom_map: &[usize],
+    rho_floor: f64,
+    rho: &[f64],
+) -> Array2<f64> {
+    let (nbf, npts) = chi.dim();
+    debug_assert_eq!(dchi.dim(), (3, nbf, npts));
+    debug_assert_eq!(ddchi.dim(), (3, 3, nbf, npts));
+    debug_assert_eq!(weights.len(), npts);
+    debug_assert_eq!(vrho.len(), npts);
+    debug_assert_eq!(vsig.len(), npts);
+    debug_assert_eq!(rho.len(), npts);
+    debug_assert_eq!(bf_to_atom_map.len(), nbf);
+
+    // Precompute per-point pre-scaled coefficients (zero out low-ρ points).
+    let mut t_rho = vec![0.0_f64; npts];
+    let mut t_sig = vec![0.0_f64; npts];
+    for g in 0..npts {
+        if rho[g] > rho_floor {
+            t_rho[g] = weights[g] * vrho[g];
+            t_sig[g] = weights[g] * 2.0 * vsig[g];
+        }
+    }
+
+    // M_μ(g) = Σ_ν D_μν · χ_ν(r_g)
+    let m: Array2<f64> = d_total.dot(chi);
+    // Mdχ[b, μ, g] = Σ_ν D_μν · ∂_b χ_ν(r_g)
+    let mut mdchi = ndarray::Array3::<f64>::zeros((3, nbf, npts));
+    for b in 0..3 {
+        let slice = dchi.index_axis(ndarray::Axis(0), b);
+        let prod: Array2<f64> = d_total.dot(&slice);
+        mdchi.index_axis_mut(ndarray::Axis(0), b).assign(&prod);
+    }
+
+    let mut grad = Array2::<f64>::zeros((natoms, 3));
+    for axis in 0..3 {
+        for mu in 0..nbf {
+            let atom = bf_to_atom_map[mu];
+            let mut sum = 0.0_f64;
+            for g in 0..npts {
+                let lda_term = t_rho[g] * m[(mu, g)] * dchi[(axis, mu, g)];
+                let mut gga_term = 0.0_f64;
+                for b in 0..3 {
+                    let gb = grad_rho[(b, g)];
+                    gga_term += dchi[(axis, mu, g)] * mdchi[(b, mu, g)] * gb;
+                    gga_term += ddchi[(axis, b, mu, g)] * m[(mu, g)] * gb;
+                }
+                sum += lda_term + t_sig[g] * gga_term;
+            }
+            grad[(atom, axis)] -= 2.0 * sum;
+        }
+    }
+    grad
+}
+
+/// VV10 nuclear gradient (closed shell, no grid response).
+///
+/// Reuses the VV10 pair-sum from `vv10::add_vv10` to compute per-grid-point
+/// v_ρ and v_σ, then assembles via `gga_gradient_from_potentials`. The NLC
+/// grid is built fresh (the SCF's NLC grid is not persisted on the result).
+///
+/// Like all semilocal gradients in this round, the grid-weight response
+/// (Becke partition derivative) is dropped — see module doc.
+#[allow(clippy::too_many_arguments)]
+pub fn vv10_gradient_from_density(
+    mol: &Molecule,
+    bs: &ferric_core::basis::BasisSet,
+    d_total: &Array2<f64>,
+    params: &crate::libxc::Vv10Params,
+    nlc_grid_cfg: &AtomicGridConfig,
+    shell_to_atom: &[usize],
+    shell_offsets: &[usize],
+    shell_dims: &[usize],
+) -> Result<Array2<f64>, KsGradError> {
+    let nbf = d_total.nrows();
+    let grid = build_atomic_grid(mol, nlc_grid_cfg);
+    let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
+    let (chi, dchi, ddchi) = crate::ao_grid::eval_basis_grad_hess_on_points(mol, bs, &pts)?;
+
+    // Density on the NLC grid.
+    let dens = crate::density_on_grid::eval_density_closed(d_total, &chi, &dchi);
+
+    // VV10 potentials from the pair-sum.
+    let (vrho, vsig) = crate::vv10::compute_vv10_potentials(&grid, &dens, params);
+
+    let weights: Vec<f64> = grid.iter().map(|g| g.weight).collect();
+    let map = bf_to_atom(shell_to_atom, shell_offsets, shell_dims, nbf);
+
+    let rho_slice: Vec<f64> = dens.rho.iter().copied().collect();
+    let grad = gga_gradient_from_potentials(
+        mol.atoms.len(),
+        d_total,
+        &chi, &dchi, &ddchi,
+        &dens.grad,
+        &weights,
+        &vrho, &vsig,
+        &map,
+        1e-10,
+        &rho_slice,
+    );
+    Ok(grad)
+}
+
 /// GGA gradient (closed shell). Requires AO Hessians; currently only supports
 /// s and p shells. Caller is expected to validate the functional family.
 ///
