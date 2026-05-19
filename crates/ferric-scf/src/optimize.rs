@@ -4,6 +4,7 @@
 //! minimizing the molecular energy with respect to nuclear coordinates.
 
 use crate::gradient::rhf_gradient;
+use crate::ks_gradient::ks_gradient_closed;
 use crate::rhf::{solve_rhf, RhfConfig};
 use crate::screening::SchwarzBounds;
 use ferric_core::mol::Molecule;
@@ -159,7 +160,11 @@ fn compute_energy_and_gradient(
     let prep = PreparedBasis::new(mol, &bs)?;
     let bounds = SchwarzBounds::compute(op, &prep)?;
     let res = solve_rhf(ctx, mol, &prep, op, &bounds, rhf_config)?;
-    let grad = rhf_gradient(mol, &prep, op, &bounds, &res)?;
+    let grad = if let Some(xc_name) = rhf_config.xc.as_deref() {
+        ks_gradient_closed(mol, &prep, &bs, op, &bounds, xc_name, &res)?
+    } else {
+        rhf_gradient(mol, &prep, op, &bounds, &res)?
+    };
     Ok((res.energy, grad))
 }
 

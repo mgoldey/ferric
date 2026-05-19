@@ -104,7 +104,7 @@ fn main() {
             trust_radius: cfg.optimize.trust_radius.unwrap_or(0.1),
         };
         match method {
-            "rhf" => {
+            "rhf" | "ksdft" => {
                 let opt_result = optimize_geometry(&ctx, &mol, &bs.name, op, &rhf_config, &opt_config)
                     .unwrap_or_else(|e| {
                         eprintln!("error during optimization: {e}");

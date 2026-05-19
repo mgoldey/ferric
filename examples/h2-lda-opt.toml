@@ -1,0 +1,19 @@
+[molecule]
+xyz = "testdata/molecules/h2.xyz"
+
+[basis]
+name = "sto-3g"
+
+[method]
+kind = "ksdft"
+task = "optimize"
+
+[dft]
+functional = "LDA"
+
+[scf]
+energy_conv = 1e-9
+density_conv = 1e-8
+
+[optimize]
+max_steps = 30
