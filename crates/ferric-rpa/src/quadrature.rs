@@ -10,6 +10,17 @@
 
 use crate::config::{QuadratureConfig, QuadratureScheme};
 
+/// Joint Minimax Quadrature arrays (Kaltak, Klimes, Kresse JCTC 2014)
+/// that pre-bake the Fourier transform into the weights.
+pub struct MinimaxJointQuadrature {
+    pub tau_points: Vec<f64>,
+    pub omega_points: Vec<f64>,
+    pub omega_weights: Vec<f64>,
+    /// W_lk matrix flattened: shape (n_omega, n_tau)
+    /// Maps tau-domain values to the omega-domain directly.
+    pub w_transform: Vec<f64>,
+}
+
 /// Return (frequencies ω_k, weights w_k) for integrating over [0,∞).
 ///
 /// The w_k already absorb the Jacobian of the domain mapping, so the

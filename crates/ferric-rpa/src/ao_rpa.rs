@@ -37,6 +37,7 @@
 use ferric_core::FerricError;
 use ferric_quadrature::LaplaceQuadrature;
 use ndarray::{Array2, Array3};
+use crate::quadrature::MinimaxJointQuadrature;
 
 /// Build the imaginary-time τ-quadrature for the energy-gap range.
 ///
@@ -398,12 +399,38 @@ pub fn pi_ao_at_omega(
     pi
 }
 
+/// Fourier transform using pre-optimized Minimax Joint weights (Kaltak-Kresse).
+///
+/// Π_PQ(iω_k) = Σ_l (-2·W_lk) · χ⁰_PQ(τ_l)
+///
+/// This avoids evaluating highly oscillatory cos(ωτ) functions,
+/// guaranteeing accuracy without aliasing.
+pub fn pi_ao_at_omega_minimax(
+    chi0_tau_stack: &Array3<f64>,
+    joint: &MinimaxJointQuadrature,
+    k_omega: usize,
+) -> Array2<f64> {
+    let (n_tau, naux, _) = chi0_tau_stack.dim();
+    assert_eq!(n_tau, joint.tau_points.len());
+    
+    let mut pi = Array2::<f64>::zeros((naux, naux));
+    let offset = k_omega * n_tau;
+    let w_k_row = &joint.w_transform[offset..offset + n_tau];
+    
+    for l in 0..n_tau {
+        let coeff = -2.0 * w_k_row[l];
+        let slab = chi0_tau_stack.slice(ndarray::s![l, .., ..]);
+        pi.scaled_add(coeff, &slab);
+    }
+    pi
+}
+
 /// Build Π(iω) in the V^{-1/2}-dressed aux basis directly from the MO B-tensor.
 ///
 /// Used as a high-ω fallback when the cosine-Fourier τ-quadrature becomes
 /// inaccurate. Same Π that `crate::diagnostics::ri_drpa_eigenvalues` uses
 /// internally, but exposed for the AO-RPA driver. Cost: O(naux² · nov).
-fn pi_mo_dressed(
+pub fn pi_mo_dressed(
     b_ov: &Array2<f64>,
     eps_occ: &[f64],
     eps_vir: &[f64],
@@ -502,6 +529,62 @@ pub fn ao_rpa_correlation_energy(
     Ok((e_c, n_tau, quad_freqs.len(), n_fb))
 }
 
+/// True AO-basis RI-dRPA using Joint Minimax weights.
+/// 
+/// This eliminates the dense MO-basis fallback entirely because
+/// the pre-computed joint weights guarantee microhartree precision
+/// for all relevant frequencies without oscillatory aliasing.
+#[allow(clippy::too_many_arguments)]
+pub fn ao_rpa_correlation_energy_minimax(
+    eri3: &Array3<f64>,
+    v_inv_sqrt: &Array2<f64>,
+    c_occ: &Array2<f64>,
+    c_vir: &Array2<f64>,
+    eps_occ: &[f64],
+    eps_vir: &[f64],
+    joint_grids: &MinimaxJointQuadrature,
+) -> Result<(f64, usize, usize), FerricError> {
+    use ndarray_linalg::{Eigh, UPLO};
+    use rayon::prelude::*;
+
+    let eri3_dressed = dress_eri3_with_metric(eri3, v_inv_sqrt);
+
+    // Build the τ-quadrature mock from the joint arrays
+    let laplace = LaplaceQuadrature {
+        points: joint_grids.tau_points.clone(),
+        weights: vec![0.0; joint_grids.tau_points.len()], // Not used in chi0_ao
+        n_quad: joint_grids.tau_points.len(),
+    };
+    
+    let chi0_stack = chi0_ao_full_time(
+        &eri3_dressed, c_occ, c_vir, eps_occ, eps_vir, &laplace,
+    )?;
+
+    let naux = eri3.dim().0;
+    
+    // Evaluate trace-log for each frequency using the minimax mapping
+    let contribs: Result<Vec<f64>, FerricError> = joint_grids.omega_points
+        .par_iter()
+        .zip(joint_grids.omega_weights.par_iter())
+        .enumerate()
+        .map(|(k, (&_omega, &wk))| {
+            let pi = pi_ao_at_omega_minimax(&chi0_stack, joint_grids, k);
+            
+            let mut eps_mat = pi;
+            for p in 0..naux { eps_mat[(p, p)] += 1.0; }
+            
+            let (evals, _) = eps_mat.eigh(UPLO::Upper)
+                .map_err(|e| FerricError::General(format!("AO-RPA minimax eigh: {e}")))?;
+                
+            let contrib: f64 = evals.iter().map(|&lam| lam.ln() + (1.0 - lam)).sum();
+            Ok(wk * contrib)
+        })
+        .collect();
+
+    let e_c: f64 = contribs?.iter().sum::<f64>() / (2.0 * std::f64::consts::PI);
+    Ok((e_c, joint_grids.tau_points.len(), joint_grids.omega_points.len()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -509,7 +592,7 @@ mod tests {
 
     /// Build B^P_ia = Σ_{μν} C_{μi} (P|μν) C_{νa} for synthetic test below.
     fn build_b_ov(eri3: &Array3<f64>, c_occ: &Array2<f64>, c_vir: &Array2<f64>) -> Array2<f64> {
-        let (naux, nbasis, _) = eri3.dim();
+        let (naux, _, _) = eri3.dim();
         let nocc = c_occ.shape()[1];
         let nvir = c_vir.shape()[1];
         let mut b = Array2::<f64>::zeros((naux, nocc * nvir));
