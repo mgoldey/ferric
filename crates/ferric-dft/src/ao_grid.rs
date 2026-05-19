@@ -464,6 +464,122 @@ fn eval_shell_grad_hess(
                 }
             }
         }
+        (2, true) => {
+            // Pure d, libint2 m = −2..+2 (matches eval_shell_and_grad).
+            //   m=−2: A = √3 dx dy
+            //   m=−1: A = √3 dy dz
+            //   m= 0: A = (2dz² − dx² − dy²) / 2
+            //   m=+1: A = √3 dx dz
+            //   m=+2: A = √3 (dx² − dy²) / 2
+            let s3 = 3.0_f64.sqrt();
+            let a_m = [
+                s3 * dx * dy,
+                s3 * dy * dz,
+                (2.0 * dz * dz - dx * dx - dy * dy) * 0.5,
+                s3 * dx * dz,
+                s3 * (dx * dx - dy * dy) * 0.5,
+            ];
+            // Angular gradient ∂A_m/∂x_a: rows = axis (x, y, z), cols = m.
+            let amx = [s3 * dy,  0.0,        -dx,        s3 * dz,    s3 * dx];
+            let amy = [s3 * dx,  s3 * dz,    -dy,        0.0,       -s3 * dy];
+            let amz = [0.0,      s3 * dy,    2.0 * dz,   s3 * dx,    0.0];
+            // Angular Hessian ∂²A_m/∂x_a∂x_b: rows = (a*3+b), cols = m.
+            // m_xy:  d²/dxdy = √3,  others 0
+            // m_yz:  d²/dydz = √3,  others 0
+            // m_z²:  d²/dxx = -1, d²/dyy = -1, d²/dzz = 2,  off-diag 0
+            // m_xz:  d²/dxdz = √3,  others 0
+            // m_x²−y²: d²/dxx = √3, d²/dyy = -√3, others 0
+            let ah: [[f64; 5]; 9] = [
+                // xx
+                [0.0,  0.0,  -1.0,  0.0,   s3],
+                // xy
+                [s3,   0.0,   0.0,  0.0,   0.0],
+                // xz
+                [0.0,  0.0,   0.0,  s3,    0.0],
+                // yx (= xy by symmetry)
+                [s3,   0.0,   0.0,  0.0,   0.0],
+                // yy
+                [0.0,  0.0,  -1.0,  0.0,  -s3],
+                // yz
+                [0.0,  s3,    0.0,  0.0,   0.0],
+                // zx (= xz)
+                [0.0,  0.0,   0.0,  s3,    0.0],
+                // zy (= yz)
+                [0.0,  s3,    0.0,  0.0,   0.0],
+                // zz
+                [0.0,  0.0,   2.0,  0.0,   0.0],
+            ];
+            let ag = [amx, amy, amz];
+            for m in 0..5 {
+                out[m] = rad * a_m[m];
+                for a in 0..3 {
+                    out_grad[a][m] = two_dr * d[a] * a_m[m] + rad * ag[a][m];
+                }
+                for a in 0..3 {
+                    for b in 0..3 {
+                        let delta_ab = if a == b { 1.0 } else { 0.0 };
+                        out_hess[a * 3 + b][m] =
+                              two_dr * delta_ab * a_m[m]
+                            + four_d2r * d[a] * d[b] * a_m[m]
+                            + two_dr * d[a] * ag[b][m]
+                            + two_dr * d[b] * ag[a][m]
+                            + rad * ah[a * 3 + b][m];
+                    }
+                }
+            }
+        }
+        (2, false) => {
+            // Cartesian d, libint2 order: xx, xy, xz, yy, yz, zz.
+            let a_m = [dx * dx, dx * dy, dx * dz, dy * dy, dy * dz, dz * dz];
+            let amx = [2.0 * dx, dy,       dz,       0.0,      0.0,      0.0];
+            let amy = [0.0,      dx,       0.0,      2.0 * dy, dz,       0.0];
+            let amz = [0.0,      0.0,      dx,       0.0,      dy,       2.0 * dz];
+            // Angular Hessians ∂²A_m/∂x_a∂x_b for each m:
+            //   xx: only Hxx = 2
+            //   xy: Hxy = Hyx = 1
+            //   xz: Hxz = Hzx = 1
+            //   yy: only Hyy = 2
+            //   yz: Hyz = Hzy = 1
+            //   zz: only Hzz = 2
+            let ah: [[f64; 6]; 9] = [
+                // xx
+                [2.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                // xy
+                [0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+                // xz
+                [0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+                // yx
+                [0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+                // yy
+                [0.0, 0.0, 0.0, 2.0, 0.0, 0.0],
+                // yz
+                [0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+                // zx
+                [0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+                // zy
+                [0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+                // zz
+                [0.0, 0.0, 0.0, 0.0, 0.0, 2.0],
+            ];
+            let ag = [amx, amy, amz];
+            for m in 0..6 {
+                out[m] = rad * a_m[m];
+                for a in 0..3 {
+                    out_grad[a][m] = two_dr * d[a] * a_m[m] + rad * ag[a][m];
+                }
+                for a in 0..3 {
+                    for b in 0..3 {
+                        let delta_ab = if a == b { 1.0 } else { 0.0 };
+                        out_hess[a * 3 + b][m] =
+                              two_dr * delta_ab * a_m[m]
+                            + four_d2r * d[a] * d[b] * a_m[m]
+                            + two_dr * d[a] * ag[b][m]
+                            + two_dr * d[b] * ag[a][m]
+                            + rad * ah[a * 3 + b][m];
+                    }
+                }
+            }
+        }
         (l, _) => return Err(GtoEvalError::UnsupportedL { l }),
     }
     Ok(())
@@ -476,9 +592,8 @@ fn eval_shell_grad_hess(
 ///   `dchi`  has shape `(3, nbasis, npts)` with axis order [x, y, z]
 ///   `ddchi` has shape `(3, 3, nbasis, npts)` — full 3×3 Hessian
 ///
-/// **Currently only s and p shells are supported.** Calling with a basis
-/// containing d (or higher) functions returns `UnsupportedL`. This is enough
-/// for STO-3G and 6-31G first-row chemistry; d-shell Hessians are TODO.
+/// Supports s, p, and d (pure + Cartesian) shells. f and higher still return
+/// `UnsupportedL`.
 pub fn eval_basis_grad_hess_on_points(
     mol: &ferric_core::mol::Molecule,
     bs: &ferric_core::basis::BasisSet,

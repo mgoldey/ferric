@@ -103,3 +103,22 @@ fn pbe_gradient_h2o_sto3g_vs_fd() {
 fn b3lyp_gradient_h2_sto3g_vs_fd() {
     run_fd_test("H2/sto-3g", "2\nH2\nH 0 0 0\nH 0 0 0.74\n", "sto-3g", "B3LYP", true, 1e-3);
 }
+
+#[test]
+fn pbe_gradient_h2_ccpvdz_vs_fd() {
+    run_fd_test("H2/cc-pVDZ", "2\nH2\nH 0 0 0\nH 0 0 0.74\n", "cc-pvdz", "PBE", false, 1e-3);
+}
+
+#[test]
+fn pbe_gradient_h2o_ccpvdz_vs_fd() {
+    run_fd_test("H2O/cc-pVDZ",
+                "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
+                "cc-pvdz", "PBE", false, 2e-3);
+}
+
+#[test]
+fn b3lyp_gradient_h2o_ccpvdz_vs_fd() {
+    run_fd_test("H2O/cc-pVDZ",
+                "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
+                "cc-pvdz", "B3LYP", true, 2e-3);
+}
