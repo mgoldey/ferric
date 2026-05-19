@@ -198,14 +198,28 @@ pub fn solve_rhf(
         let de = (energy - prev_e).abs();
         let err_max = err.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
 
+        if std::env::var("FERRIC_SCF_TRACE").ok().as_deref() == Some("1") {
+            eprintln!("SCF iter={:4}  E={:.12}  dE={:.3e}  err_max={:.3e}", iter, energy, de, err_max);
+        }
+
         // DF builds introduce O(1e-6) Ha noise in the K matrix per iteration that
         // breaks strict energy variational convergence even when orbitals have
         // fully converged. When DF is active, accept on |FDS-SDF| (orbital gradient)
         // alone — the same criterion PySCF uses for DF-SCF.
+        //
+        // For large polyaromatic molecules with near-degenerate π orbitals the DF
+        // noise floor can park err_max at ~1-5×density_conv indefinitely (H1
+        // diagnosis: plateau, not oscillation). The fallback below accepts when
+        // the gradient is within a 10× factor of the threshold AND the energy
+        // change is below 1e-5 Ha (safely in the noise floor plateau, not still
+        // descending toward the minimum).
         let df_active = df_j.is_some() || df_k.is_some();
         let energy_ok = de < config.energy_conv;
         let grad_ok = err_max < config.density_conv;
-        let converged = if df_active { grad_ok } else { energy_ok && grad_ok };
+        let df_noise_floor_ok = df_active
+            && err_max < 10.0 * config.density_conv
+            && de < 1e-5;
+        let converged = if df_active { grad_ok || df_noise_floor_ok } else { energy_ok && grad_ok };
 
         if iter > 1 && converged {
             let (orb_e, c) = diagonalize(&f, &s_inv_sqrt)?;
