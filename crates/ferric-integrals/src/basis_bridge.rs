@@ -22,6 +22,7 @@ fn ensure_init() {
 /// (dimensions, offsets, atom mapping). Thread-safe (`Send + Sync`).
 pub struct PreparedBasis {
     handle: *mut c_void,
+    basis_set: BasisSet,
     atoms: Vec<CAtom>,
     shell_dims: Vec<usize>,
     shell_offsets: Vec<usize>,
@@ -103,6 +104,7 @@ impl PreparedBasis {
         unsafe { ffi::goscf_basis_max_dims(handle, &mut mp, &mut ml) };
         Ok(PreparedBasis {
             handle,
+            basis_set: bs.clone(),
             atoms: c_atoms,
             shell_dims,
             shell_offsets,
@@ -114,6 +116,8 @@ impl PreparedBasis {
         })
     }
 
+    /// Get the underlying basis set used to build this prepared basis.
+    pub fn basis_set(&self) -> &BasisSet { &self.basis_set }
     /// Raw pointer to the C++ basis handle (for FFI calls).
     pub fn handle(&self) -> *const c_void { self.handle }
     /// Atom array passed to libint2.

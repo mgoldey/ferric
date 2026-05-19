@@ -44,6 +44,12 @@ pub struct RhfConfig {
     /// Should be a JK-fit basis (e.g. `def2-universal-jkfit`), not an RI/MP2-fit
     /// basis, which would introduce mHa-scale error in K.
     pub df_k_aux: Option<String>,
+    /// XC functional name (None = pure HF; e.g. "LDA", "PBE", "B3LYP", "wB97X-V").
+    pub xc: Option<String>,
+    /// Main DFT grid spec. Default (75, 110) when xc.is_some().
+    pub dft_grid: Option<ferric_dft::grid::AtomicGridConfig>,
+    /// NLC (VV10) grid spec. Default (50, 50) when XC requires VV10.
+    pub nlc_grid: Option<ferric_dft::grid::AtomicGridConfig>,
 }
 
 impl Default for RhfConfig {
@@ -60,6 +66,9 @@ impl Default for RhfConfig {
             k_builder: None,
             df_j_aux: None,
             df_k_aux: None,
+            xc: None,
+            dft_grid: None,
+            nlc_grid: None,
         }
     }
 }
@@ -123,6 +132,23 @@ pub fn solve_rhf(
         None
     };
 
+    // Build the XC contribution once. None for pure HF.
+    use ferric_dft::ks::KsXc;
+    use ferric_dft::xc_trait::{XcContribution, KMix};
+
+    let xc_contrib: Option<Box<dyn XcContribution>> = if let Some(name) = config.xc.as_deref() {
+        let main = config.dft_grid.clone().unwrap_or_default();
+        let nlc = config.nlc_grid.clone()
+            .unwrap_or(ferric_dft::grid::AtomicGridConfig { n_radial: 50, n_angular: 50 });
+        let ks = KsXc::new(mol, prep.basis_set(), name, &main, &nlc)
+            .map_err(|e| FerricError::General(format!("KsXc init for {name}: {e:?}")))?;
+        Some(Box::new(ks) as Box<dyn XcContribution>)
+    } else {
+        None
+    };
+
+    let k_mix: KMix = xc_contrib.as_ref().map(|x| x.k_mix()).unwrap_or_default();
+
     // Build LinkK once — SignificantPairs is geometry-dependent and expensive per iteration.
     // When using the "link" builder, compute a fresh SchwarzBounds to own the lifetime.
     let link_schwarz_opt = if config.k_builder.as_deref() == Some("link") {
@@ -180,15 +206,54 @@ pub fn solve_rhf(
             total_quartets += direct_jk.build(&d, &mut j_buf, &mut k_buf)?;
         }
 
-        // F = H + J - 0.5*K
-        f.assign(&(&h + &j_buf - &(0.5 * &k_buf)));
+        // k_total accumulates the exact-exchange contribution to be subtracted from F
+        // as ½ · k_total. Convention:
+        //   pure HF (xc=None):    k_mix = {1, 1, 0}      → k_total = k_buf (existing)
+        //   pure DFT (LDA/PBE):   k_mix = {0, 0, 0}      → k_total = 0 (skip K)
+        //   plain hybrid (B3LYP): k_mix = {α, α, 0}      → k_total = α · k_buf
+        //   RSH (wB97X-V):        k_mix = {sr, lr, ω>0}  → k_total = sr·K_SR + lr·K_LR
+        let k_total: Array2<f64> = if k_mix.omega > 0.0 {
+            // Range-separated: requires RI-K (use config.df_k_aux). Error if unset.
+            let aux_name = config.df_k_aux.as_deref().ok_or_else(|| {
+                FerricError::General(
+                    "Range-separated hybrid requires RhfConfig.df_k_aux (e.g. \"def2-universal-jkfit\")".into()
+                )
+            })?;
+            let dfbs_set = ferric_core::basis::bundled(aux_name)?;
+            let dfbs_prep = PreparedBasis::new(mol, &dfbs_set)?;
 
-        // Electronic energy: E_elec = 0.5 * tr(D * (H + F))
-        let e_elec: f64 = (0..n)
+            let mut k_sr = Array2::<f64>::zeros((n, n));
+            let mut dfk_sr = DfK::new(Operator::erfc(k_mix.omega), prep, &dfbs_prep)?;
+            dfk_sr.build(&d, &mut k_sr)?;
+
+            let mut k_lr = Array2::<f64>::zeros((n, n));
+            let mut dfk_lr = DfK::new(Operator::erf(k_mix.omega), prep, &dfbs_prep)?;
+            dfk_lr.build(&d, &mut k_lr)?;
+
+            k_mix.sr * &k_sr + k_mix.lr * &k_lr
+        } else if k_mix.sr > 0.0 {
+            // Plain hybrid or pure HF: use the K already built by the existing builder path.
+            k_mix.sr * &k_buf
+        } else {
+            // Pure DFT: no exact exchange.
+            Array2::<f64>::zeros((n, n))
+        };
+
+        // F = H + J − ½ K_total  (V_xc added below)
+        f.assign(&(&h + &j_buf - &(0.5 * &k_total)));
+
+        // Electronic energy BEFORE adding V_xc (V_xc is one-body in F but
+        // E_xc is its own integral).
+        let e_elec_no_xc: f64 = (0..n)
             .flat_map(|i| (0..n).map(move |j| (i, j)))
             .map(|(i, j)| 0.5 * d[(i, j)] * (h[(i, j)] + f[(i, j)]))
             .sum();
-        let energy = e_elec + vnn;
+        let e_xc = if let Some(x) = xc_contrib.as_ref() {
+            x.add_xc(&d, &mut f)
+        } else {
+            0.0
+        };
+        let energy = e_elec_no_xc + e_xc + vnn;
 
         // DIIS error: e = FDS - SDF
         let fds = f.dot(&d).dot(&s);

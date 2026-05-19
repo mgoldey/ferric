@@ -78,6 +78,9 @@ fn main() {
         k_builder: cfg.scf.k_builder.clone(),
         df_j_aux: cfg.scf.df_j_aux.clone(),
         df_k_aux: cfg.scf.df_k_aux.clone(),
+        xc: None,
+        dft_grid: None,
+        nlc_grid: None,
     };
 
     if task == "optimize" {
