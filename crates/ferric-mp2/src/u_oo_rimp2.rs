@@ -277,6 +277,11 @@ pub fn u_oo_ri_mp2(
     let mut diis_a = if config.use_diis { Some(Diis::new(config.diis_size)) } else { None };
     let mut diis_b = if config.use_diis { Some(Diis::new(config.diis_size)) } else { None };
 
+    let mut mu = config.level_shift;
+    let mut stuck_count: usize = 0;
+    const STUCK_LIMIT: usize = 3;
+    const MU_MAX: f64 = 5.0;
+
     for iter in 1..=config.max_iter {
         // Full-MO B tensors for gradient
         let b_full_a = compute_b_full_mo(obs, dfbs, op, &c_a)?;
@@ -325,14 +330,14 @@ pub fn u_oo_ri_mp2(
         for a in 0..nvir_a {
             for i in 0..nocc_a {
                 let gap = eps_a[nocc_total_a + a] - eps_a[first_occ + i];
-                kappa_a[(a, i)] = -g_a_act[(a, i)] / (gap + config.level_shift);
+                kappa_a[(a, i)] = -g_a_act[(a, i)] / (gap + mu);
             }
         }
         let mut kappa_b = Array2::<f64>::zeros((nvir_b, nocc_b));
         for a in 0..nvir_b {
             for i in 0..nocc_b {
                 let gap = eps_b[nocc_total_b + a] - eps_b[first_occ + i];
-                kappa_b[(a, i)] = -g_b_act[(a, i)] / (gap + config.level_shift);
+                kappa_b[(a, i)] = -g_b_act[(a, i)] / (gap + mu);
             }
         }
         // Cap rotations
@@ -450,20 +455,42 @@ pub fn u_oo_ri_mp2(
                 bt_eps_a = ea; bt_eps_b = eb; bt_amps = am;
                 if bt_total <= total_energy + 1e-12 { accepted = true; break; }
             }
-            c_a = bt_c_a;
-            c_b = bt_c_b;
-            e_hf = bt_ehf;
-            f_a = bt_fa;
-            f_b = bt_fb;
-            eps_a = bt_eps_a;
-            eps_b = bt_eps_b;
-            amps = bt_amps;
-            e_mp2 = amps.components.e_total;
-            total_energy = bt_total;
-            if let Some(ref mut d) = diis_a { d.reset(); }
-            if let Some(ref mut d) = diis_b { d.reset(); }
-            if !accepted {
-                eprintln!("  backtracking failed to find downhill step at iter {iter}");
+            if accepted {
+                c_a = bt_c_a;
+                c_b = bt_c_b;
+                e_hf = bt_ehf;
+                f_a = bt_fa;
+                f_b = bt_fb;
+                eps_a = bt_eps_a;
+                eps_b = bt_eps_b;
+                amps = bt_amps;
+                e_mp2 = amps.components.e_total;
+                total_energy = bt_total;
+                if let Some(ref mut d) = diis_a { d.reset(); }
+                if let Some(ref mut d) = diis_b { d.reset(); }
+                stuck_count = 0;
+            } else {
+                stuck_count += 1;
+                let mu_new = (mu * 2.0).min(MU_MAX);
+                eprintln!(
+                    "  backtracking failed at iter {iter} (stuck {stuck_count}/{STUCK_LIMIT}); μ {mu:.3}→{mu_new:.3}"
+                );
+                mu = mu_new;
+                if let Some(ref mut d) = diis_a { d.reset(); }
+                if let Some(ref mut d) = diis_b { d.reset(); }
+                if stuck_count >= STUCK_LIMIT {
+                    eprintln!(
+                        "  U-OO-RI-MP2: bailing after {STUCK_LIMIT} stuck iters; returning current (non-converged) state"
+                    );
+                    return Ok(UOoRiMp2Result {
+                        total_energy, hf_energy: e_hf, mp2_corr: e_mp2,
+                        components: amps.components.clone(),
+                        converged: false, iterations: iter, grad_norm,
+                        mos_alpha: c_a, mos_beta: c_b,
+                        eps_alpha: eps_a, eps_beta: eps_b,
+                    });
+                }
+                // Don't accept the tiny step; keep old c_a/c_b/etc, retry next iter with larger μ.
             }
         } else {
             c_a = c_a_new;
@@ -476,6 +503,7 @@ pub fn u_oo_ri_mp2(
             amps = amps_new;
             e_mp2 = amps.components.e_total;
             total_energy = total_new;
+            stuck_count = 0;
         }
 
         if de < config.energy_conv && iter > 1 && grad_norm < config.grad_conv * 10.0 {
