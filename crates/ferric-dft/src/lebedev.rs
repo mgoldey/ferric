@@ -167,15 +167,27 @@ pub fn lebedev(order: usize) -> (Vec<[f64; 3]>, Vec<f64>) {
             v
         }
         302 => {
-            // Production-grade 302-point Lebedev. Use a curated subset of
-            // generator orbits sufficient for L=29 accuracy on the sphere.
-            // For brevity we use the 110-point set scaled up by a higher-order
-            // radial pairing — but if Lebedev-302 is requested explicitly the
-            // caller wants full angular fidelity, which we approximate by
-            // chaining 50 + 110 + extra b-orbits.
-            // For now, fall back to 110 with a clear note (sufficient for
-            // per-atom α at chemical accuracy; sub-mHa charges need real 302).
-            return lebedev(110);
+            // 6 (a1) + 8 (a2) + 6·24 (b) + 2·24 (c) + 2·48 (d) = 302 points.
+            // Parameters from Lebedev-Laikov canonical tables (Dokl. Math. 59,
+            // 477 (1999)), as transcribed in PySCF's CxLebedevGrid::MakeAngularGrid_302.
+            // Ferric's class_d corresponds to PySCF's case 5 (48 points at
+            // (±a, ±b, ±c) with c = √(1-a²-b²)).
+            let mut v = class_a1(0.8545911725128148e-3_f64);
+            v.extend(class_a2(0.3599119285025571e-2_f64));
+            // 6 b-orbits (case 3: 24 pts each)
+            v.extend(class_b(0.3449788424305883e-2_f64, 0.3515640345570105_f64));
+            v.extend(class_b(0.3604822601419882e-2_f64, 0.6566329410219612_f64));
+            v.extend(class_b(0.3576729661743367e-2_f64, 0.4729054132581005_f64));
+            v.extend(class_b(0.2352101413689164e-2_f64, 0.09618308522614784_f64));
+            v.extend(class_b(0.3108953122413675e-2_f64, 0.2219645236294178_f64));
+            v.extend(class_b(0.3650045807677255e-2_f64, 0.7011766416089545_f64));
+            // 2 c-orbits (case 4: 24 pts each)
+            v.extend(class_c(0.2982344963171804e-2_f64, 0.2644152887060663_f64));
+            v.extend(class_c(0.3600820932216460e-2_f64, 0.5718955891878961_f64));
+            // 2 d-orbits (case 5: 48 pts each), two-parameter (a, b)
+            v.extend(class_d(0.3571540554273387e-2_f64, 0.2510034751770465_f64, 0.8000727494073952_f64));
+            v.extend(class_d(0.3392312205006170e-2_f64, 0.1233548532583327_f64, 0.4127724083168531_f64));
+            v
         }
         _ => panic!("lebedev: unsupported order {order} (try 6, 14, 26, 50, 110, 302)"),
     };
