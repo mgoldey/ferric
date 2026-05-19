@@ -19,9 +19,9 @@
 use ferric_core::mol::Molecule;
 use ndarray::{Array2, Array3};
 
-use crate::density_on_grid::eval_density_closed;
+use crate::density_on_grid::{eval_density_closed, eval_density_uks};
 use crate::grid::{build_atomic_grid, AtomicGridConfig};
-use crate::libxc::{xc_def_from_name, FunctionalFamily, LibxcError, XcDef};
+use crate::libxc::{xc_def_from_name, xc_def_from_name_nspin, FunctionalFamily, LibxcError, XcDef};
 
 #[derive(Debug, thiserror::Error)]
 pub enum KsGradError {
@@ -413,6 +413,156 @@ pub fn xc_gradient_closed_gga_from_density(
             grad[(atom, axis)] -= 2.0 * sum;
         }
     }
+
+    Ok(grad)
+}
+
+/// Spin-polarized (UKS) analytic XC gradient.
+///
+/// Per-spin gradient (AO-derivative term only — no grid response):
+/// ```text
+///   ∂E_xc/∂R_A,axis = -2 Σ_σ Σ_g Σ_{μ∈A, ν} D_σ_μν · [
+///       w · v_ρσ · ∂_axis χ_μ · χ_ν
+///     + Σ_b w · G^σ_b · (∂_axis χ_μ · ∂_b χ_ν + ∂²_{axis,b} χ_μ · χ_ν)
+///   ]
+/// ```
+/// where
+///   `G^α_b = 2 v_σαα · ∇ρ_α_b + v_σαβ · ∇ρ_β_b`
+///   `G^β_b = 2 v_σββ · ∇ρ_β_b + v_σαβ · ∇ρ_α_b`
+#[allow(clippy::too_many_arguments)]
+pub fn xc_gradient_uks_from_density(
+    mol: &Molecule,
+    bs: &ferric_core::basis::BasisSet,
+    d_a: &Array2<f64>,
+    d_b: &Array2<f64>,
+    xc_name: &str,
+    grid_cfg: &AtomicGridConfig,
+    shell_to_atom: &[usize],
+    shell_offsets: &[usize],
+    shell_dims: &[usize],
+) -> Result<Array2<f64>, KsGradError> {
+    let xc: XcDef = xc_def_from_name_nspin(xc_name, 2)?;
+
+    let nbf = d_a.nrows();
+    let grid = build_atomic_grid(mol, grid_cfg);
+    let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
+    let (chi, dchi, ddchi) = crate::ao_grid::eval_basis_grad_hess_on_points(mol, bs, &pts)?;
+    let weights: Vec<f64> = grid.iter().map(|g| g.weight).collect();
+    let map = bf_to_atom(shell_to_atom, shell_offsets, shell_dims, nbf);
+    let npts = chi.ncols();
+
+    // Polarized densities.
+    let dens = eval_density_uks(d_a, d_b, &chi, &dchi);
+
+    // Build interleaved libxc input.
+    let mut rho_in = vec![0.0_f64; 2 * npts];
+    let mut sigma_in = vec![0.0_f64; 3 * npts];
+    for g in 0..npts {
+        rho_in[2 * g + 0] = dens.rho_a[g];
+        rho_in[2 * g + 1] = dens.rho_b[g];
+        sigma_in[3 * g + 0] = dens.sigma[(0, g)];
+        sigma_in[3 * g + 1] = dens.sigma[(1, g)];
+        sigma_in[3 * g + 2] = dens.sigma[(2, g)];
+    }
+
+    let mut vrho_a = vec![0.0_f64; npts];
+    let mut vrho_b = vec![0.0_f64; npts];
+    let mut vsig_aa = vec![0.0_f64; npts];
+    let mut vsig_ab = vec![0.0_f64; npts];
+    let mut vsig_bb = vec![0.0_f64; npts];
+
+    for func in &xc.funcs {
+        let mut exc = vec![0.0_f64; npts];
+        let mut vrho = vec![0.0_f64; 2 * npts];
+        match func.family() {
+            FunctionalFamily::Lda => {
+                func.eval_lda_polarized(&rho_in, &mut exc, &mut vrho);
+            }
+            _ => {
+                let mut vsig = vec![0.0_f64; 3 * npts];
+                func.eval_gga_polarized(
+                    &rho_in, &sigma_in,
+                    &mut exc, &mut vrho, &mut vsig,
+                );
+                for g in 0..npts {
+                    vsig_aa[g] += vsig[3 * g + 0];
+                    vsig_ab[g] += vsig[3 * g + 1];
+                    vsig_bb[g] += vsig[3 * g + 2];
+                }
+            }
+        }
+        for g in 0..npts {
+            vrho_a[g] += vrho[2 * g + 0];
+            vrho_b[g] += vrho[2 * g + 1];
+        }
+    }
+
+    const RHO_FLOOR: f64 = 1e-10;
+    let natoms = mol.atoms.len();
+    let mut grad = Array2::<f64>::zeros((natoms, 3));
+
+    // Inner kernel per spin σ.
+    let add_spin_contribution = |d_sigma: &Array2<f64>,
+                                     vrho_sigma: &[f64],
+                                     vsig_same: &[f64],
+                                     vsig_cross: &[f64],
+                                     grad_same: &Array2<f64>,
+                                     grad_cross: &Array2<f64>,
+                                     rho_sigma: &ndarray::Array1<f64>,
+                                     grad_out: &mut Array2<f64>| {
+        let mut t_rho = vec![0.0_f64; npts];
+        // G^σ_b(g) = w_g · (2 v_σ(σσ) · ∇ρ_σ_b + v_σ(αβ) · ∇ρ_other_b)
+        let mut g_dir = vec![[0.0_f64; 3]; npts];
+        for g in 0..npts {
+            if rho_sigma[g] > RHO_FLOOR {
+                t_rho[g] = weights[g] * vrho_sigma[g];
+                let w = weights[g];
+                for b in 0..3 {
+                    g_dir[g][b] = w * (
+                          2.0 * vsig_same[g] * grad_same[(b, g)]
+                        +       vsig_cross[g] * grad_cross[(b, g)]
+                    );
+                }
+            }
+        }
+        let m: Array2<f64> = d_sigma.dot(&chi);
+        let mut mdchi = ndarray::Array3::<f64>::zeros((3, nbf, npts));
+        for b in 0..3 {
+            let slice = dchi.index_axis(ndarray::Axis(0), b);
+            let prod: Array2<f64> = d_sigma.dot(&slice);
+            mdchi.index_axis_mut(ndarray::Axis(0), b).assign(&prod);
+        }
+        for axis in 0..3 {
+            for mu in 0..nbf {
+                let atom = map[mu];
+                let mut sum = 0.0_f64;
+                for g in 0..npts {
+                    let lda_term = t_rho[g] * m[(mu, g)] * dchi[(axis, mu, g)];
+                    let mut gga_term = 0.0_f64;
+                    for b in 0..3 {
+                        let gb = g_dir[g][b];
+                        gga_term += gb * (
+                              dchi[(axis, mu, g)] * mdchi[(b, mu, g)]
+                            + ddchi[(axis, b, mu, g)] * m[(mu, g)]
+                        );
+                    }
+                    sum += lda_term + gga_term;
+                }
+                grad_out[(atom, axis)] -= 2.0 * sum;
+            }
+        }
+    };
+
+    add_spin_contribution(
+        d_a, &vrho_a, &vsig_aa, &vsig_ab,
+        &dens.grad_a, &dens.grad_b, &dens.rho_a,
+        &mut grad,
+    );
+    add_spin_contribution(
+        d_b, &vrho_b, &vsig_bb, &vsig_ab,
+        &dens.grad_b, &dens.grad_a, &dens.rho_b,
+        &mut grad,
+    );
 
     Ok(grad)
 }
