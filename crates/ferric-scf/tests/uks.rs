@@ -68,6 +68,43 @@ fn uks_oh_doublet_ccpvdz_pbe() {
 }
 
 #[test]
+fn uks_h_atom_ccpvdz_wb97x_v() {
+    // wB97X-V on a hydrogen atom: includes VV10 nonlocal correlation.
+    let mol = Molecule::parse_xyz("1\nH\nH 0 0 0\n", 0, 2).unwrap();
+    let bs = basis::bundled("cc-pvdz").unwrap();
+    let prep = PreparedBasis::new(&mol, &bs).unwrap();
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+    let cfg = RhfConfig {
+        xc: Some("wB97X-V".into()),
+        energy_conv: 1e-9, density_conv: 1e-7,
+        max_iter: 200, ..Default::default()
+    };
+    let res = solve_uhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap();
+    eprintln!("UKS wB97X-V H/cc-pVDZ: E = {:.8} ({} iter)", res.energy, res.iterations);
+    // PySCF UKS wB97X-V H/cc-pvdz: -0.49962
+    assert!((res.energy - (-0.49962)).abs() < 5e-4, "got E = {}", res.energy);
+}
+
+#[test]
+fn uks_oh_doublet_ccpvdz_wb97x_v() {
+    let mol = Molecule::parse_xyz("2\nOH\nO 0 0 0\nH 0 0 0.97\n", 0, 2).unwrap();
+    let bs = basis::bundled("cc-pvdz").unwrap();
+    let prep = PreparedBasis::new(&mol, &bs).unwrap();
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+    let cfg = RhfConfig {
+        xc: Some("wB97X-V".into()),
+        energy_conv: 1e-7, density_conv: 1e-5,
+        max_iter: 400, ..Default::default()
+    };
+    let res = solve_uhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap();
+    eprintln!("UKS wB97X-V OH/cc-pVDZ: E = {:.8} ({} iter)", res.energy, res.iterations);
+    // PySCF UKS wB97X-V OH/cc-pvdz: -75.70361
+    assert!((res.energy - (-75.70361)).abs() < 2e-3, "got E = {}", res.energy);
+}
+
+#[test]
 fn uks_oh_doublet_ccpvdz_b3lyp() {
     // OH (²Π) hybrid B3LYP. Tighten DIIS / iterations: hybrid Hartree-exchange
     // plus the spin-polarized GGA potential introduces a slower-converging
