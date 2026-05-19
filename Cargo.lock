@@ -417,6 +417,8 @@ name = "ferric-dft"
 version = "0.1.0"
 dependencies = [
  "ferric-core",
+ "ferric-integrals",
+ "ferric-scf",
  "ndarray",
  "thiserror 2.0.18",
 ]

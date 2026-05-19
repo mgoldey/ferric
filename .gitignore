@@ -1,6 +1,8 @@
 libint*
 libferric*
 libxc*
+!**/src/libxc.rs
+!**/tests/libxc_smoke.rs
 build
 target
 .venv/
