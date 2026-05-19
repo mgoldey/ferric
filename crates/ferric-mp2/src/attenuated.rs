@@ -1,9 +1,9 @@
 //! Attenuated MP2 methods (Goldey & Head-Gordon, JPCL 2012).
 //!
 //! Replace 1/r12 in the MP2 correlation integrals with an attenuated operator
-//! (erfc or terfc), keeping only short-range correlation. The erfc operator is
-//! supported natively by libint2; the terfc/erfc equivalence holds when
-//! omega = 1/(r0 * sqrt(2)).
+//! (erfc), keeping only short-range correlation. The erfc operator is supported
+//! natively by libint2 and parameterized directly by the range-separation
+//! parameter omega (in Bohr⁻¹ internally; Å⁻¹ at the user-facing boundary).
 
 use crate::rimp2::{ri_mp2_spin_components, RiMp2Config, SpinComponents};
 use ferric_core::mol::Molecule;
@@ -15,18 +15,22 @@ use ferric_scf::ScfResult;
 /// Configuration for attenuated MP2.
 #[derive(Debug, Clone)]
 pub struct AttenuatedMp2Config {
-    /// Attenuation distance r0 in Bohr. Typical: 1.984 Bohr (1.05 Angstrom) for aDZ.
-    pub r0: f64,
+    /// Range-separation parameter omega in Bohr⁻¹.
+    /// Default: 0.222234 Bohr⁻¹ (= 0.420 Å⁻¹, dissertation erfc optimal).
+    pub omega: f64,
     /// Optional scaling factor for the correlation energy.
     pub scaling: f64,
     /// Frozen core orbitals.
     pub frozen_core: usize,
 }
 
+/// Bohr⁻¹ per Å⁻¹ (inverse of the Å-to-Bohr conversion).
+pub const BOHR_INV_PER_ANG_INV: f64 = 1.0 / 1.8897259886;
+
 impl Default for AttenuatedMp2Config {
     fn default() -> Self {
         Self {
-            r0: 1.984,    // 1.05 Angstrom in Bohr (aDZ optimal)
+            omega: 0.420 * BOHR_INV_PER_ANG_INV, // 0.420 Å⁻¹ in Bohr⁻¹
             scaling: 1.0,
             frozen_core: 0,
         }
@@ -71,9 +75,7 @@ pub fn attenuated_ri_mp2_long_range(
     rhf: &ScfResult,
     config: &AttenuatedMp2Config,
 ) -> Result<AttenuatedMp2Result, FerricError> {
-    let omega = 1.0 / (config.r0 * std::f64::consts::SQRT_2);
-    let mut op = Operator::erf(omega);
-    op.distance = config.r0;
+    let op = Operator::erf(config.omega);
     let ri_config = RiMp2Config { frozen_core: config.frozen_core };
     let (sc, _) = ri_mp2_spin_components(mol, obs, dfbs, op, rhf, &ri_config)?;
     let scaled_corr = config.scaling * sc.e_total;
@@ -86,9 +88,10 @@ pub fn attenuated_ri_mp2_long_range(
 
 /// Compute attenuated RI-MP2 using erfc(omega*r)/r operator.
 ///
-/// The attenuation parameter omega is derived from r0 via the curvature
-/// constraint: omega = 1/(r0 * sqrt(2)). For large r0, erfc approaches
-/// the unit step function and the result converges to standard MP2.
+/// The range-separation parameter omega is supplied directly (Bohr⁻¹). As
+/// omega → 0, erfc → 1 and the result converges to standard MP2; as omega
+/// grows the long-range Coulomb tail is suppressed and only short-range
+/// correlation is retained.
 pub fn attenuated_ri_mp2(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -96,9 +99,7 @@ pub fn attenuated_ri_mp2(
     rhf: &ScfResult,
     config: &AttenuatedMp2Config,
 ) -> Result<AttenuatedMp2Result, FerricError> {
-    let omega = 1.0 / (config.r0 * std::f64::consts::SQRT_2);
-    let mut op = Operator::erfc(omega);
-    op.distance = config.r0;
+    let op = Operator::erfc(config.omega);
     let ri_config = RiMp2Config { frozen_core: config.frozen_core };
     let (sc, _) = ri_mp2_spin_components(mol, obs, dfbs, op, rhf, &ri_config)?;
     let scaled_corr = config.scaling * sc.e_total;
@@ -169,21 +170,21 @@ mod tests {
     }
 
     #[test]
-    fn test_attenuated_mp2_large_r0_approaches_full() {
+    fn test_attenuated_mp2_small_omega_approaches_full() {
         let (mol, obs, dfbs, rhf) = setup_h2();
         let full = crate::rimp2::ri_mp2(
             &mol, &obs, &dfbs, Operator::coulomb(), &rhf,
             &crate::rimp2::RiMp2Config::default(),
         ).unwrap();
-        let config = AttenuatedMp2Config { r0: 50.0, ..Default::default() };
+        let config = AttenuatedMp2Config { omega: 0.01, ..Default::default() };
         let att = attenuated_ri_mp2(&mol, &obs, &dfbs, &rhf, &config).unwrap();
         eprintln!(
-            "Full RI-MP2 corr: {:.10}, Large-r0 attenuated corr: {:.10}, diff: {:.2e}",
+            "Full RI-MP2 corr: {:.10}, Small-omega attenuated corr: {:.10}, diff: {:.2e}",
             full.mp2_corr, att.mp2_corr, (att.mp2_corr - full.mp2_corr).abs()
         );
         assert!(
             (att.mp2_corr - full.mp2_corr).abs() < 1e-4,
-            "large r0 attenuated ({}) should approach full ({})", att.mp2_corr, full.mp2_corr
+            "small omega attenuated ({}) should approach full ({})", att.mp2_corr, full.mp2_corr
         );
     }
 
@@ -196,7 +197,7 @@ mod tests {
         // not bitwise. Production range-separated MP2 needs operator-specific
         // RI fits.
         let (mol, obs, dfbs, rhf) = setup_h2();
-        let config = AttenuatedMp2Config { r0: 1.5, ..Default::default() };
+        let config = AttenuatedMp2Config { omega: 0.5, ..Default::default() };
         let (sr, lr, full) = rs_mp2_decomposition(&mol, &obs, &dfbs, &rhf, &config).unwrap();
         let sum = sr + lr;
         eprintln!(
@@ -215,7 +216,7 @@ mod tests {
     fn test_erfc_alias_matches_attenuated() {
         // The explicit erfc-named API must be bit-identical to attenuated_ri_mp2.
         let (mol, obs, dfbs, rhf) = setup_h2();
-        let config = AttenuatedMp2Config { r0: 2.0, ..Default::default() };
+        let config = AttenuatedMp2Config { omega: 0.3, ..Default::default() };
         let a = attenuated_ri_mp2(&mol, &obs, &dfbs, &rhf, &config).unwrap();
         let b = erfc_attenuated_ri_mp2(&mol, &obs, &dfbs, &rhf, &config).unwrap();
         assert!((a.mp2_corr - b.mp2_corr).abs() < 1e-12);

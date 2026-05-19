@@ -9,4 +9,4 @@ kind = "att-rimp2"
 
 [mp2]
 auxbasis = "aug-cc-pvdz-rifit"
-r0 = 1.05  # Angstrom (aDZ optimal)
+omega = 0.420  # Å⁻¹ (dissertation erfc optimal)

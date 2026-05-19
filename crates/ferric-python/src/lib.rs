@@ -6,7 +6,7 @@ use ferric_integrals::operator::Operator;
 use ferric_mp2::attenuated::{attenuated_ri_mp2, AttenuatedMp2Config};
 use ferric_mp2::laplace::laplace_ri_mp2;
 use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
-use ferric_mp2::scs::{scs_mp2, scs_mp2_2terfc, ScsMp2Config, ScsMp2TerfcConfig};
+use ferric_mp2::scs::{scs_mp2, ScsMp2Config};
 use ferric_scf::optimize::{optimize_geometry, OptimizeConfig};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
@@ -218,9 +218,9 @@ struct PyAttenuatedMp2Result {
 }
 
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, r0=None, frozen_core=None, k_builder=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, omega=None, frozen_core=None, k_builder=None))]
 fn run_attenuated_rimp2(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
-                        r0: Option<f64>, frozen_core: Option<usize>,
+                        omega: Option<f64>, frozen_core: Option<usize>,
                         k_builder: Option<&str>) -> PyResult<PyAttenuatedMp2Result> {
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
@@ -228,8 +228,9 @@ fn run_attenuated_rimp2(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyB
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
     let ctx = ParallelContext::default();
     let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &rhf_config(k_builder)).map_err(make_err)?;
+    // omega is supplied in Å⁻¹; convert to Bohr⁻¹ for the operator.
     let cfg = AttenuatedMp2Config {
-        r0: r0.unwrap_or(1.05) * 1.8897259886,
+        omega: omega.unwrap_or(0.420) * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV,
         scaling: 1.0, frozen_core: frozen_core.unwrap_or(0),
     };
     let r = attenuated_ri_mp2(&mol.inner, &prep, &dfbs, &rhf, &cfg).map_err(make_err)?;
@@ -273,31 +274,7 @@ fn run_scs_mp2(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
     })
 }
 
-#[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, r0_bonded=None, r0_nonbonded=None, c_os=None, c_ss=None, frozen_core=None, k_builder=None))]
-fn run_scs_mp2_2terfc(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
-                      r0_bonded: Option<f64>, r0_nonbonded: Option<f64>,
-                      c_os: Option<f64>, c_ss: Option<f64>,
-                      frozen_core: Option<usize>, k_builder: Option<&str>) -> PyResult<PyScsMp2Result> {
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
-    let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &rhf_config(k_builder)).map_err(make_err)?;
-    let a2b = 1.8897259886;
-    let cfg = ScsMp2TerfcConfig {
-        r0_bonded: r0_bonded.unwrap_or(0.75) * a2b,
-        r0_nonbonded: r0_nonbonded.unwrap_or(1.05) * a2b,
-        c_os: c_os.unwrap_or(1.27), c_ss: c_ss.unwrap_or(4.05),
-        frozen_core: frozen_core.unwrap_or(0),
-    };
-    let r = scs_mp2_2terfc(&mol.inner, &prep, &dfbs, &rhf, &cfg).map_err(make_err)?;
-    Ok(PyScsMp2Result {
-        total_energy: r.total_energy, rhf_energy: rhf.energy, scs_corr: r.scs_corr,
-        e_os: r.e_os, e_ss: r.e_ss,
-    })
-}
+
 
 // ── DFT (stub) ──
 
@@ -562,7 +539,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_rimp2, m)?)?;
     m.add_function(wrap_pyfunction!(run_attenuated_rimp2, m)?)?;
     m.add_function(wrap_pyfunction!(run_scs_mp2, m)?)?;
-    m.add_function(wrap_pyfunction!(run_scs_mp2_2terfc, m)?)?;
+
     m.add_function(wrap_pyfunction!(run_laplace_mp2, m)?)?;
     m.add_function(wrap_pyfunction!(run_dft, m)?)?;
     m.add_function(wrap_pyfunction!(run_ccd, m)?)?;

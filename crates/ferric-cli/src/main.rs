@@ -9,7 +9,7 @@ use ferric_mp2::attenuated::{attenuated_ri_mp2, AttenuatedMp2Config};
 use ferric_mp2::laplace::laplace_ri_mp2;
 use ferric_mp2::oo_rimp2::{oo_ri_mp2, OoRiMp2Config};
 use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
-use ferric_mp2::scs::{scs_mp2, scs_mp2_2terfc, ScsMp2Config, ScsMp2TerfcConfig};
+use ferric_mp2::scs::{scs_mp2, ScsMp2Config};
 use ferric_rpa::config::{QuadratureConfig, QuadratureScheme, SternheimerConfig};
 use ferric_rpa::{run_pdep_rpa, PdepRpaConfig};
 use ferric_core::parallel::ParallelContext;
@@ -36,8 +36,8 @@ fn main() {
     };
     let method = cfg.method.kind.as_str();
     let task = cfg.method.task.as_str();
-    if !matches!(method, "rhf" | "uhf" | "rohf" | "rimp2" | "oo-rimp2" | "att-rimp2" | "scs-mp2" | "scs-mp2-2terfc" | "laplace-mp2" | "pdep-rpa") {
-        eprintln!("error: unsupported method.kind = \"{method}\"; expected rhf, uhf, rohf, rimp2, oo-rimp2, att-rimp2, scs-mp2, scs-mp2-2terfc, laplace-mp2, or pdep-rpa");
+    if !matches!(method, "rhf" | "uhf" | "rohf" | "rimp2" | "oo-rimp2" | "att-rimp2" | "scs-mp2" | "laplace-mp2" | "pdep-rpa") {
+        eprintln!("error: unsupported method.kind = \"{method}\"; expected rhf, uhf, rohf, rimp2, oo-rimp2, att-rimp2, scs-mp2, laplace-mp2, or pdep-rpa");
         std::process::exit(1);
     }
     if !matches!(task, "energy" | "optimize") {
@@ -322,9 +322,9 @@ fn main() {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             });
-            let angstrom_to_bohr = 1.8897259886;
+            let omega_ang_inv = cfg.mp2.omega.unwrap_or(0.420);
             let att_config = AttenuatedMp2Config {
-                r0: cfg.mp2.r0.unwrap_or(1.05) * angstrom_to_bohr,
+                omega: omega_ang_inv * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV,
                 scaling: 1.0,
                 frozen_core: cfg.mp2.frozen_core,
             };
@@ -333,10 +333,9 @@ fn main() {
                     eprintln!("error: {e}");
                     std::process::exit(1);
                 });
-            let r0_ang = cfg.mp2.r0.unwrap_or(1.05);
             println!(
-                "Attenuated RI-MP2/{} (aux: {}, r0={:.2} A) on {}",
-                bs.name, aux_name, r0_ang, cfg.molecule.xyz
+                "Attenuated RI-MP2/{} (aux: {}, ω={:.3} Å⁻¹) on {}",
+                bs.name, aux_name, omega_ang_inv, cfg.molecule.xyz
             );
             println!("  nbasis     = {}", prep.nbasis());
             println!("  RHF energy = {:.10} Hartree", result.energy);
@@ -376,42 +375,7 @@ fn main() {
             println!("  E_SS       = {:.10} Hartree", scs_result.e_ss);
             println!("  Total      = {:.10} Hartree", scs_result.total_energy);
         }
-        "scs-mp2-2terfc" => {
-            let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
-            let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            });
-            let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            });
-            let angstrom_to_bohr = 1.8897259886;
-            let terfc_config = ScsMp2TerfcConfig {
-                r0_bonded: cfg.mp2.r0_bonded.unwrap_or(0.75) * angstrom_to_bohr,
-                r0_nonbonded: cfg.mp2.r0_nonbonded.unwrap_or(1.05) * angstrom_to_bohr,
-                c_os: cfg.mp2.c_os.unwrap_or(1.27),
-                c_ss: cfg.mp2.c_ss.unwrap_or(4.05),
-                frozen_core: cfg.mp2.frozen_core,
-            };
-            let terfc_result = scs_mp2_2terfc(&mol, &prep, &dfbs, &result, &terfc_config)
-                .unwrap_or_else(|e| {
-                    eprintln!("error: {e}");
-                    std::process::exit(1);
-                });
-            let r0b = cfg.mp2.r0_bonded.unwrap_or(0.75);
-            let r0n = cfg.mp2.r0_nonbonded.unwrap_or(1.05);
-            println!(
-                "SCS-MP2(2terfc)/{} (aux: {}, r0_1={:.2} A, r0_2={:.2} A) on {}",
-                bs.name, aux_name, r0b, r0n, cfg.molecule.xyz
-            );
-            println!("  nbasis     = {}", prep.nbasis());
-            println!("  RHF energy = {:.10} Hartree", result.energy);
-            println!("  SCS corr   = {:.10} Hartree", terfc_result.scs_corr);
-            println!("  E_OS       = {:.10} Hartree", terfc_result.e_os);
-            println!("  E_SS       = {:.10} Hartree", terfc_result.e_ss);
-            println!("  Total      = {:.10} Hartree", terfc_result.total_energy);
-        }
+
         "laplace-mp2" => {
             let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
             let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {

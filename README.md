@@ -73,8 +73,8 @@ aux = ferric.BasisSet.bundled("cc-pvdz-ri")
 mp2 = ferric.run_rimp2(mol, bs, aux)
 print(f"RI-MP2 total: {mp2.total_energy:.10f} Ha")
 
-# Attenuated RI-MP2 (r0 in Angstrom)
-att = ferric.run_attenuated_rimp2(mol, bs, aux, r0=1.05)
+# Attenuated RI-MP2 (omega in Å⁻¹)
+att = ferric.run_attenuated_rimp2(mol, bs, aux, omega=0.420)
 print(f"Att-MP2 total: {att.total_energy:.10f} Ha (E_OS={att.e_os:.6f}, E_SS={att.e_ss:.6f})")
 
 # SCS-MP2 (Grimme defaults)
