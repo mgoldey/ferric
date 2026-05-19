@@ -5,7 +5,7 @@
 
 use ferric_core::basis::{num_functions, BasisSet};
 use ferric_core::mol::Molecule;
-use ndarray::Array2;
+use ndarray::{Array2, Array3};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -210,4 +210,174 @@ pub fn eval_basis_on_points(
         }
     }
     Ok(chi)
+}
+
+/// Helper returning both the contracted radial value and its derivative w.r.t. r².
+///
+/// rad(r²)        = Σ_p c_p · N(α_p, l) · exp(-α_p r²)
+/// d_rad/d(r²)    = -Σ_p c_p · N(α_p, l) · α_p · exp(-α_p r²)
+///
+/// Then ∂(rad)/∂x = 2x · d_rad/d(r²).
+#[inline]
+fn radial_and_d(shell: &LocatedShell, r2: f64) -> (f64, f64) {
+    let l = shell.l as i32;
+    let pi = std::f64::consts::PI;
+    // (2l-1)!! for l = 0..3
+    let dbl_fact: f64 = match l {
+        0 | 1 => 1.0,
+        2 => 3.0,
+        3 => 15.0,
+        _ => 1.0,
+    };
+    let mut rad = 0.0_f64;
+    let mut drad = 0.0_f64;
+    for (a, c) in shell.exponents.iter().zip(shell.coefficients.iter()) {
+        let n = (2.0 * a / pi).powf(0.75) * (4.0 * a).powi(l).sqrt() / dbl_fact.sqrt();
+        let e = (-a * r2).exp();
+        rad += c * n * e;
+        drad += -c * n * a * e;
+    }
+    (rad, drad)
+}
+
+/// Per-shell evaluation of χ and ∇χ at a relative offset (dx, dy, dz) from the
+/// shell center.
+///
+/// Convention (must match `eval_shell` exactly):
+///   * s shell: out[0] = rad
+///   * p shell: [px, py, pz] · rad (Cartesian order)
+///   * pure-d:  5 solid harmonics, m = -2..+2 order
+///   * cart-d:  6 functions in libint2 xx, xy, xz, yy, yz, zz order
+///   * l ≥ 3:   not supported (UnsupportedL)
+fn eval_shell_and_grad(
+    sh: &LocatedShell,
+    dx: f64,
+    dy: f64,
+    dz: f64,
+    out: &mut [f64],
+    out_grad: &mut [[f64; 10]; 3],
+) -> Result<(), GtoEvalError> {
+    let r2 = dx * dx + dy * dy + dz * dz;
+    let (rad, drad_dr2) = radial_and_d(sh, r2);
+    let two_dr = 2.0 * drad_dr2;
+
+    match (sh.l, sh.pure) {
+        (0, _) => {
+            // A = 1 → ∂A = 0; χ = rad, ∇χ = 2·drad·(dx, dy, dz)
+            out[0] = rad;
+            out_grad[0][0] = two_dr * dx;
+            out_grad[1][0] = two_dr * dy;
+            out_grad[2][0] = two_dr * dz;
+        }
+        (1, _) => {
+            // A_i = (dx, dy, dz); χ_i = rad · A_i.
+            // ∂(rad · A_i)/∂a = 2·drad·a·A_i + rad·∂A_i/∂a = 2·drad·a·A_i + rad·δ_{ai}
+            out[0] = rad * dx;
+            out[1] = rad * dy;
+            out[2] = rad * dz;
+            // i = 0 (px):
+            out_grad[0][0] = two_dr * dx * dx + rad;
+            out_grad[1][0] = two_dr * dy * dx;
+            out_grad[2][0] = two_dr * dz * dx;
+            // i = 1 (py):
+            out_grad[0][1] = two_dr * dx * dy;
+            out_grad[1][1] = two_dr * dy * dy + rad;
+            out_grad[2][1] = two_dr * dz * dy;
+            // i = 2 (pz):
+            out_grad[0][2] = two_dr * dx * dz;
+            out_grad[1][2] = two_dr * dy * dz;
+            out_grad[2][2] = two_dr * dz * dz + rad;
+        }
+        (2, true) => {
+            // Pure d (libint2 m = -2 .. +2):
+            //   m=-2: A = √3 xy        ∂x=√3 y,  ∂y=√3 x,  ∂z=0
+            //   m=-1: A = √3 yz        ∂x=0,     ∂y=√3 z,  ∂z=√3 y
+            //   m= 0: A = (2z²−x²−y²)/2 ∂x=−x,   ∂y=−y,    ∂z=2z
+            //   m=+1: A = √3 xz        ∂x=√3 z,  ∂y=0,     ∂z=√3 x
+            //   m=+2: A = √3 (x²−y²)/2 ∂x=√3 x,  ∂y=−√3 y, ∂z=0
+            let s3 = 3.0_f64.sqrt();
+            let a_m = [
+                s3 * dx * dy,
+                s3 * dy * dz,
+                (2.0 * dz * dz - dx * dx - dy * dy) * 0.5,
+                s3 * dx * dz,
+                s3 * (dx * dx - dy * dy) * 0.5,
+            ];
+            let amx = [s3 * dy, 0.0, -dx, s3 * dz, s3 * dx];
+            let amy = [s3 * dx, s3 * dz, -dy, 0.0, -s3 * dy];
+            let amz = [0.0, s3 * dy, 2.0 * dz, s3 * dx, 0.0];
+            for m in 0..5 {
+                out[m] = rad * a_m[m];
+                out_grad[0][m] = two_dr * dx * a_m[m] + rad * amx[m];
+                out_grad[1][m] = two_dr * dy * a_m[m] + rad * amy[m];
+                out_grad[2][m] = two_dr * dz * a_m[m] + rad * amz[m];
+            }
+        }
+        (2, false) => {
+            // Cartesian d (libint2 order: xx, xy, xz, yy, yz, zz):
+            let a_m = [dx * dx, dx * dy, dx * dz, dy * dy, dy * dz, dz * dz];
+            let amx = [2.0 * dx, dy, dz, 0.0, 0.0, 0.0];
+            let amy = [0.0, dx, 0.0, 2.0 * dy, dz, 0.0];
+            let amz = [0.0, 0.0, dx, 0.0, dy, 2.0 * dz];
+            for m in 0..6 {
+                out[m] = rad * a_m[m];
+                out_grad[0][m] = two_dr * dx * a_m[m] + rad * amx[m];
+                out_grad[1][m] = two_dr * dy * a_m[m] + rad * amy[m];
+                out_grad[2][m] = two_dr * dz * a_m[m] + rad * amz[m];
+            }
+        }
+        (3, _) => return Err(GtoEvalError::UnsupportedL { l: 3 }),
+        (l, _) => return Err(GtoEvalError::UnsupportedL { l }),
+    }
+    Ok(())
+}
+
+/// Evaluate χ_μ(r_g) AND ∇χ_μ(r_g) at a set of points.
+///
+/// Returns `(chi, dchi)` where:
+///   `chi`  has shape `(nbasis, npts)`
+///   `dchi` has shape `(3, nbasis, npts)` with axis order [x, y, z]
+///
+/// Each AO has the form χ = rad(r²) · A(x, y, z) where A is the angular
+/// polynomial. Its gradient is:
+///   ∂χ/∂a = 2 · (a − A_a) · drad_dr2 · A + rad · ∂A/∂a
+/// where `a` ranges over {x, y, z} and A_a is the shell center coordinate.
+pub fn eval_basis_and_grad_on_points(
+    mol: &Molecule,
+    bs: &BasisSet,
+    points: &[[f64; 3]],
+) -> Result<(Array2<f64>, Array3<f64>), GtoEvalError> {
+    let shells = collect_shells(mol, bs)?;
+    let nbf: usize = shells.iter().map(|s| num_functions(s.l, s.pure)).sum();
+    let npts = points.len();
+    let mut chi = Array2::<f64>::zeros((nbf, npts));
+    let mut dchi = Array3::<f64>::zeros((3, nbf, npts));
+
+    let mut buf = [0.0f64; 10];
+    let mut gradbuf: [[f64; 10]; 3] = [[0.0; 10]; 3];
+
+    for (g, p) in points.iter().enumerate() {
+        let mut row_offset = 0usize;
+        for sh in &shells {
+            // Clear shell scratch buffers so stale values from a previous larger shell
+            // can never leak into the current shell's results.
+            buf.fill(0.0);
+            for row in gradbuf.iter_mut() { row.fill(0.0); }
+
+            let n = num_functions(sh.l, sh.pure);
+            let dx = p[0] - sh.center[0];
+            let dy = p[1] - sh.center[1];
+            let dz = p[2] - sh.center[2];
+
+            eval_shell_and_grad(sh, dx, dy, dz, &mut buf[..n], &mut gradbuf)?;
+            for i in 0..n {
+                chi[(row_offset + i, g)] = buf[i];
+                dchi[(0, row_offset + i, g)] = gradbuf[0][i];
+                dchi[(1, row_offset + i, g)] = gradbuf[1][i];
+                dchi[(2, row_offset + i, g)] = gradbuf[2][i];
+            }
+            row_offset += n;
+        }
+    }
+    Ok((chi, dchi))
 }
