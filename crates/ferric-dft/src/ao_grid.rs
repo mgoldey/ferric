@@ -272,7 +272,9 @@ fn radial_and_d_d2(shell: &LocatedShell, r2: f64) -> (f64, f64, f64) {
 ///   * p shell: [px, py, pz] · rad (Cartesian order)
 ///   * pure-d:  5 solid harmonics, m = -2..+2 order
 ///   * cart-d:  6 functions in libint2 xx, xy, xz, yy, yz, zz order
-///   * l ≥ 3:   not supported (UnsupportedL)
+///   * pure-f:  7 solid harmonics, m = -3..+3 order
+///   * cart-f:  10 functions in libint2 xxx, xxy, xxz, xyy, xyz, xzz, yyy, yyz, yzz, zzz order
+///   * l ≥ 4:   not supported (UnsupportedL)
 fn eval_shell_and_grad(
     sh: &LocatedShell,
     dx: f64,
@@ -350,7 +352,85 @@ fn eval_shell_and_grad(
                 out_grad[2][m] = two_dr * dz * a_m[m] + rad * amz[m];
             }
         }
-        (3, _) => return Err(GtoEvalError::UnsupportedL { l: 3 }),
+        (3, true) => {
+            // Pure f (libint2 m = -3 .. +3), normalizations matching `eval_shell`.
+            let s15 = 15.0_f64.sqrt();
+            let c10 = 10.0_f64.sqrt() * 0.25; // √10 / 4
+            let c6  = 6.0_f64.sqrt() * 0.25;  // √6  / 4
+            let x2 = dx * dx; let y2 = dy * dy; let z2 = dz * dz;
+            // A_m
+            let a_m = [
+                c10 * dy * (3.0 * x2 - y2),                  // m = -3
+                s15 * dx * dy * dz,                          // m = -2
+                c6  * dy * (4.0 * z2 - x2 - y2),             // m = -1
+                0.5 * dz * (2.0 * z2 - 3.0 * x2 - 3.0 * y2), // m =  0
+                c6  * dx * (4.0 * z2 - x2 - y2),             // m = +1
+                0.5 * s15 * dz * (x2 - y2),                  // m = +2
+                c10 * dx * (x2 - 3.0 * y2),                  // m = +3
+            ];
+            // ∂A_m/∂x
+            let amx = [
+                c10 * 6.0 * dx * dy,
+                s15 * dy * dz,
+                c6  * (-2.0) * dx * dy,
+                -3.0 * dx * dz,
+                c6  * (4.0 * z2 - 3.0 * x2 - y2),
+                s15 * dx * dz,
+                c10 * (3.0 * x2 - 3.0 * y2),
+            ];
+            // ∂A_m/∂y
+            let amy = [
+                c10 * (3.0 * x2 - 3.0 * y2),
+                s15 * dx * dz,
+                c6  * (4.0 * z2 - x2 - 3.0 * y2),
+                -3.0 * dy * dz,
+                c6  * (-2.0) * dx * dy,
+                -s15 * dy * dz,
+                c10 * (-6.0) * dx * dy,
+            ];
+            // ∂A_m/∂z
+            let amz = [
+                0.0,
+                s15 * dx * dy,
+                c6  * 8.0 * dy * dz,
+                0.5 * (6.0 * z2 - 3.0 * x2 - 3.0 * y2),
+                c6  * 8.0 * dx * dz,
+                0.5 * s15 * (x2 - y2),
+                0.0,
+            ];
+            for m in 0..7 {
+                out[m] = rad * a_m[m];
+                out_grad[0][m] = two_dr * dx * a_m[m] + rad * amx[m];
+                out_grad[1][m] = two_dr * dy * a_m[m] + rad * amy[m];
+                out_grad[2][m] = two_dr * dz * a_m[m] + rad * amz[m];
+            }
+        }
+        (3, false) => {
+            // Cartesian f (libint2 order: xxx, xxy, xxz, xyy, xyz, xzz, yyy, yyz, yzz, zzz).
+            let x2 = dx * dx; let y2 = dy * dy; let z2 = dz * dz;
+            let a_m = [
+                x2 * dx, x2 * dy, x2 * dz, dx * y2, dx * dy * dz,
+                dx * z2, y2 * dy, y2 * dz, dy * z2, z2 * dz,
+            ];
+            let amx = [
+                3.0 * x2, 2.0 * dx * dy, 2.0 * dx * dz, y2, dy * dz,
+                z2, 0.0, 0.0, 0.0, 0.0,
+            ];
+            let amy = [
+                0.0, x2, 0.0, 2.0 * dx * dy, dx * dz,
+                0.0, 3.0 * y2, 2.0 * dy * dz, z2, 0.0,
+            ];
+            let amz = [
+                0.0, 0.0, x2, 0.0, dx * dy,
+                2.0 * dx * dz, 0.0, y2, 2.0 * dy * dz, 3.0 * z2,
+            ];
+            for m in 0..10 {
+                out[m] = rad * a_m[m];
+                out_grad[0][m] = two_dr * dx * a_m[m] + rad * amx[m];
+                out_grad[1][m] = two_dr * dy * a_m[m] + rad * amy[m];
+                out_grad[2][m] = two_dr * dz * a_m[m] + rad * amz[m];
+            }
+        }
         (l, _) => return Err(GtoEvalError::UnsupportedL { l }),
     }
     Ok(())
@@ -580,6 +660,164 @@ fn eval_shell_grad_hess(
                 }
             }
         }
+        (3, true) => {
+            // Pure f (libint2 m = -3 .. +3), matches `eval_shell` normalizations.
+            let s15 = 15.0_f64.sqrt();
+            let c10 = 10.0_f64.sqrt() * 0.25;
+            let c6  = 6.0_f64.sqrt() * 0.25;
+            let x2 = dx * dx; let y2 = dy * dy; let z2 = dz * dz;
+            let a_m = [
+                c10 * dy * (3.0 * x2 - y2),
+                s15 * dx * dy * dz,
+                c6  * dy * (4.0 * z2 - x2 - y2),
+                0.5 * dz * (2.0 * z2 - 3.0 * x2 - 3.0 * y2),
+                c6  * dx * (4.0 * z2 - x2 - y2),
+                0.5 * s15 * dz * (x2 - y2),
+                c10 * dx * (x2 - 3.0 * y2),
+            ];
+            let amx = [
+                c10 * 6.0 * dx * dy,
+                s15 * dy * dz,
+                c6  * (-2.0) * dx * dy,
+                -3.0 * dx * dz,
+                c6  * (4.0 * z2 - 3.0 * x2 - y2),
+                s15 * dx * dz,
+                c10 * (3.0 * x2 - 3.0 * y2),
+            ];
+            let amy = [
+                c10 * (3.0 * x2 - 3.0 * y2),
+                s15 * dx * dz,
+                c6  * (4.0 * z2 - x2 - 3.0 * y2),
+                -3.0 * dy * dz,
+                c6  * (-2.0) * dx * dy,
+                -s15 * dy * dz,
+                c10 * (-6.0) * dx * dy,
+            ];
+            let amz = [
+                0.0,
+                s15 * dx * dy,
+                c6  * 8.0 * dy * dz,
+                0.5 * (6.0 * z2 - 3.0 * x2 - 3.0 * y2),
+                c6  * 8.0 * dx * dz,
+                0.5 * s15 * (x2 - y2),
+                0.0,
+            ];
+            // Angular Hessians ∂²A_m/∂a∂b (a*3+b indexing), m = 0..7
+            // m=-3: y(3x²-y²)·c10 → Hxx=6c10·y, Hyy=-6c10·y, Hzz=0, Hxy=6c10·x, Hxz=Hyz=0
+            // m=-2: xyz·s15       → Hxy=s15·z, Hxz=s15·y, Hyz=s15·x; diag = 0
+            // m=-1: y(4z²-x²-y²)·c6 → Hxx=-2c6·y, Hyy=-6c6·y, Hzz=8c6·y, Hxy=-2c6·x, Hxz=0, Hyz=8c6·z
+            // m= 0: z(2z²-3x²-3y²)·½ → Hxx=-3z, Hyy=-3z, Hzz=6z, Hxy=0, Hxz=-3x, Hyz=-3y
+            // m=+1: x(4z²-x²-y²)·c6  → Hxx=-6c6·x, Hyy=-2c6·x, Hzz=8c6·x, Hxy=-2c6·y, Hxz=8c6·z, Hyz=0
+            // m=+2: z(x²-y²)·s15/2  → Hxx=s15·z, Hyy=-s15·z, Hzz=0, Hxy=0, Hxz=s15·x, Hyz=-s15·y
+            // m=+3: x(x²-3y²)·c10   → Hxx=6c10·x, Hyy=-6c10·x, Hzz=0, Hxy=-6c10·y, Hxz=Hyz=0
+            let ah: [[f64; 7]; 9] = [
+                // xx: m=-3..+3
+                [ 6.0*c10*dy,         0.0,          -2.0*c6*dy,        -3.0*dz,        -6.0*c6*dx,        s15*dz,         6.0*c10*dx ],
+                // xy
+                [ 6.0*c10*dx,         s15*dz,       -2.0*c6*dx,         0.0,           -2.0*c6*dy,        0.0,           -6.0*c10*dy ],
+                // xz
+                [ 0.0,                 s15*dy,       0.0,              -3.0*dx,         8.0*c6*dz,        s15*dx,         0.0 ],
+                // yx (= xy)
+                [ 6.0*c10*dx,         s15*dz,       -2.0*c6*dx,         0.0,           -2.0*c6*dy,        0.0,           -6.0*c10*dy ],
+                // yy
+                [-6.0*c10*dy,         0.0,          -6.0*c6*dy,        -3.0*dz,        -2.0*c6*dx,       -s15*dz,        -6.0*c10*dx ],
+                // yz
+                [ 0.0,                 s15*dx,       8.0*c6*dz,        -3.0*dy,         0.0,             -s15*dy,         0.0 ],
+                // zx (= xz)
+                [ 0.0,                 s15*dy,       0.0,              -3.0*dx,         8.0*c6*dz,        s15*dx,         0.0 ],
+                // zy (= yz)
+                [ 0.0,                 s15*dx,       8.0*c6*dz,        -3.0*dy,         0.0,             -s15*dy,         0.0 ],
+                // zz
+                [ 0.0,                 0.0,          8.0*c6*dy,         6.0*dz,         8.0*c6*dx,        0.0,            0.0 ],
+            ];
+            let ag = [amx, amy, amz];
+            for m in 0..7 {
+                out[m] = rad * a_m[m];
+                for a in 0..3 {
+                    out_grad[a][m] = two_dr * d[a] * a_m[m] + rad * ag[a][m];
+                }
+                for a in 0..3 {
+                    for b in 0..3 {
+                        let delta_ab = if a == b { 1.0 } else { 0.0 };
+                        out_hess[a * 3 + b][m] =
+                              two_dr * delta_ab * a_m[m]
+                            + four_d2r * d[a] * d[b] * a_m[m]
+                            + two_dr * d[a] * ag[b][m]
+                            + two_dr * d[b] * ag[a][m]
+                            + rad * ah[a * 3 + b][m];
+                    }
+                }
+            }
+        }
+        (3, false) => {
+            // Cartesian f (libint2 order): xxx, xxy, xxz, xyy, xyz, xzz, yyy, yyz, yzz, zzz.
+            let x2 = dx * dx; let y2 = dy * dy; let z2 = dz * dz;
+            let a_m = [
+                x2 * dx, x2 * dy, x2 * dz, dx * y2, dx * dy * dz,
+                dx * z2, y2 * dy, y2 * dz, dy * z2, z2 * dz,
+            ];
+            let amx = [
+                3.0 * x2, 2.0 * dx * dy, 2.0 * dx * dz, y2, dy * dz,
+                z2, 0.0, 0.0, 0.0, 0.0,
+            ];
+            let amy = [
+                0.0, x2, 0.0, 2.0 * dx * dy, dx * dz,
+                0.0, 3.0 * y2, 2.0 * dy * dz, z2, 0.0,
+            ];
+            let amz = [
+                0.0, 0.0, x2, 0.0, dx * dy,
+                2.0 * dx * dz, 0.0, y2, 2.0 * dy * dz, 3.0 * z2,
+            ];
+            // Angular Hessians by monomial (xxx ... zzz)
+            //   xxx (x³): Hxx=6x
+            //   xxy (x²y): Hxx=2y, Hxy=2x
+            //   xxz (x²z): Hxx=2z, Hxz=2x
+            //   xyy (xy²): Hyy=2x, Hxy=2y
+            //   xyz (xyz): Hxy=z, Hxz=y, Hyz=x
+            //   xzz (xz²): Hzz=2x, Hxz=2z
+            //   yyy (y³): Hyy=6y
+            //   yyz (y²z): Hyy=2z, Hyz=2y
+            //   yzz (yz²): Hzz=2y, Hyz=2z
+            //   zzz (z³): Hzz=6z
+            let ah: [[f64; 10]; 9] = [
+                // xx
+                [6.0*dx, 2.0*dy, 2.0*dz, 0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0 ],
+                // xy
+                [0.0,    2.0*dx, 0.0,    2.0*dy, dz,     0.0,    0.0,    0.0,    0.0,    0.0 ],
+                // xz
+                [0.0,    0.0,    2.0*dx, 0.0,    dy,     2.0*dz, 0.0,    0.0,    0.0,    0.0 ],
+                // yx (= xy)
+                [0.0,    2.0*dx, 0.0,    2.0*dy, dz,     0.0,    0.0,    0.0,    0.0,    0.0 ],
+                // yy
+                [0.0,    0.0,    0.0,    2.0*dx, 0.0,    0.0,    6.0*dy, 2.0*dz, 0.0,    0.0 ],
+                // yz
+                [0.0,    0.0,    0.0,    0.0,    dx,     0.0,    0.0,    2.0*dy, 2.0*dz, 0.0 ],
+                // zx (= xz)
+                [0.0,    0.0,    2.0*dx, 0.0,    dy,     2.0*dz, 0.0,    0.0,    0.0,    0.0 ],
+                // zy (= yz)
+                [0.0,    0.0,    0.0,    0.0,    dx,     0.0,    0.0,    2.0*dy, 2.0*dz, 0.0 ],
+                // zz
+                [0.0,    0.0,    0.0,    0.0,    0.0,    2.0*dx, 0.0,    0.0,    2.0*dy, 6.0*dz ],
+            ];
+            let ag = [amx, amy, amz];
+            for m in 0..10 {
+                out[m] = rad * a_m[m];
+                for a in 0..3 {
+                    out_grad[a][m] = two_dr * d[a] * a_m[m] + rad * ag[a][m];
+                }
+                for a in 0..3 {
+                    for b in 0..3 {
+                        let delta_ab = if a == b { 1.0 } else { 0.0 };
+                        out_hess[a * 3 + b][m] =
+                              two_dr * delta_ab * a_m[m]
+                            + four_d2r * d[a] * d[b] * a_m[m]
+                            + two_dr * d[a] * ag[b][m]
+                            + two_dr * d[b] * ag[a][m]
+                            + rad * ah[a * 3 + b][m];
+                    }
+                }
+            }
+        }
         (l, _) => return Err(GtoEvalError::UnsupportedL { l }),
     }
     Ok(())
@@ -592,8 +830,8 @@ fn eval_shell_grad_hess(
 ///   `dchi`  has shape `(3, nbasis, npts)` with axis order [x, y, z]
 ///   `ddchi` has shape `(3, 3, nbasis, npts)` — full 3×3 Hessian
 ///
-/// Supports s, p, and d (pure + Cartesian) shells. f and higher still return
-/// `UnsupportedL`.
+/// Supports s, p, d, and f (pure + Cartesian) shells. g and higher still
+/// return `UnsupportedL`.
 pub fn eval_basis_grad_hess_on_points(
     mol: &ferric_core::mol::Molecule,
     bs: &ferric_core::basis::BasisSet,

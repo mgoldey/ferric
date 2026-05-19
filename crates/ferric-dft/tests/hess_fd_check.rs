@@ -43,3 +43,7 @@ fn check_basis(label: &str, basis_name: &str) {
 #[test] fn hess_sto3g() { check_basis("sto-3g", "sto-3g"); }
 #[test] fn hess_631g() { check_basis("6-31g",  "6-31g"); }
 #[test] fn hess_ccpvdz() { check_basis("cc-pvdz", "cc-pvdz"); }
+// f-shells (l=3): def2-TZVP places one f-set on O at this geometry.
+#[test] fn hess_def2_tzvp() { check_basis("def2-tzvp", "def2-tzvp"); }
+// f-shells with both pure and Cartesian conventions exercised via aug-cc-pVTZ.
+#[test] fn hess_augccpvtz() { check_basis("aug-cc-pvtz", "aug-cc-pvtz"); }
