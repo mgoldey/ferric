@@ -66,6 +66,16 @@ mod ffi {
         );
 
         pub fn xc_hyb_exx_coef(p: *const XcFuncOpaque) -> f64;
+
+        /// Returns the (b, C) VV10 nonlocal correlation parameters for a
+        /// functional that carries them. For functionals without VV10, the
+        /// values written are zero (per libxc convention) and the caller
+        /// should treat (0, 0) as "no VV10".
+        pub fn xc_nlc_coef(
+            p: *const XcFuncOpaque,
+            nlc_b: *mut f64,
+            nlc_c: *mut f64,
+        );
     }
 }
 
@@ -269,6 +279,24 @@ impl XcFunctional {
         // a scalar from the struct and returns it by value.
         unsafe { ffi::xc_hyb_exx_coef(self.ptr as *const _) }
     }
+
+    /// VV10 nonlocal-correlation parameters, if this functional carries them.
+    /// Returns `None` for functionals where libxc reports b=0 (the convention
+    /// for "no VV10").
+    pub fn vv10_coeffs(&self) -> Option<Vv10Params> {
+        let mut b = 0.0_f64;
+        let mut c = 0.0_f64;
+        // SAFETY: handle is non-null and fully initialised; xc_nlc_coef writes
+        // two scalars and does not retain the pointers.
+        unsafe {
+            ffi::xc_nlc_coef(self.ptr as *const _, &mut b, &mut c);
+        }
+        if b > 0.0 && c > 0.0 {
+            Some(Vv10Params { c, b })
+        } else {
+            None
+        }
+    }
 }
 
 impl Drop for XcFunctional {
@@ -360,20 +388,23 @@ pub fn xc_def_from_name(name: &str) -> Result<XcDef, LibxcError> {
             let mut f = XcFunctional::new("HYB_GGA_XC_WB97X_V", 1)?;
             f.set_family(FunctionalFamily::RangeSepGga);
             let cam = f.cam_coefficients();
-            Ok(XcDef {
-                funcs: vec![f],
-                cam,
-                vv10: Some(Vv10Params { c: 0.01, b: 6.0 }),
-                b3lyp_mix: None,
-            })
+            // VV10 params (b=6.0, C=0.01) come from libxc's functional info
+            // via xc_nlc_coef rather than being hand-typed.
+            let vv10 = f.vv10_coeffs();
+            Ok(XcDef { funcs: vec![f], cam, vv10, b3lyp_mix: None })
         }
         other => {
-            // Fall back: pass raw libxc functional name directly.
+            // Fall back: pass raw libxc functional name directly. Auto-detect
+            // CAM (range-sep), hybrid mix, and VV10 nonlocal correlation from
+            // the libxc functional info — so any libxc-known VV10-bearing
+            // functional (B97M-V, wB97M-V, etc.) gets its VV10 piece without
+            // needing a hand-coded shortcut.
             let mut f = XcFunctional::new(other, 1)?;
             let cam = f.cam_coefficients();
+            let vv10 = f.vv10_coeffs();
             if cam.is_some() {
                 f.set_family(FunctionalFamily::RangeSepGga);
-                Ok(XcDef { funcs: vec![f], cam, vv10: None, b3lyp_mix: None })
+                Ok(XcDef { funcs: vec![f], cam, vv10, b3lyp_mix: None })
             } else {
                 let mix = f.exact_exchange_mix();
                 if mix != 0.0 {
@@ -381,15 +412,15 @@ pub fn xc_def_from_name(name: &str) -> Result<XcDef, LibxcError> {
                     Ok(XcDef {
                         funcs: vec![f],
                         cam: None,
-                        vv10: None,
+                        vv10,
                         b3lyp_mix: Some(mix),
                     })
                 } else if other.to_uppercase().contains("LDA") {
                     f.set_family(FunctionalFamily::Lda);
-                    Ok(XcDef { funcs: vec![f], cam: None, vv10: None, b3lyp_mix: None })
+                    Ok(XcDef { funcs: vec![f], cam: None, vv10, b3lyp_mix: None })
                 } else {
                     f.set_family(FunctionalFamily::Gga);
-                    Ok(XcDef { funcs: vec![f], cam: None, vv10: None, b3lyp_mix: None })
+                    Ok(XcDef { funcs: vec![f], cam: None, vv10, b3lyp_mix: None })
                 }
             }
         }
