@@ -309,7 +309,30 @@ pub fn solve_uhf_with_guess(
 
         // Coupled DIIS extrapolation: one set of coefficients applied to
         // both spin Fock histories.
-        let (f_a_new, f_b_new) = diis.step_pair(&f_a, &f_b, &err_a, &err_b);
+        let (mut f_a_new, mut f_b_new) = diis.step_pair(&f_a, &f_b, &err_a, &err_b);
+        // Optional level shift on each spin's virtual–virtual block, applied
+        // after DIIS so the DIIS error / convergence criterion remains
+        // anchored to the unshifted Fock. Rational-damped by err_max so the
+        // converged Fock is the unshifted stationary point (see solve_rohf
+        // for the same formula and rationale).
+        if config.level_shift > 0.0 && iter > 1 {
+            const SHIFT_DAMP_ERR: f64 = 1e-3;
+            let err_max = err_a
+                .iter()
+                .chain(err_b.iter())
+                .map(|v| v.abs())
+                .fold(0.0_f64, f64::max);
+            let damp = err_max / (err_max + SHIFT_DAMP_ERR);
+            let shift_eff = config.level_shift * damp;
+            if shift_eff > 1e-10 {
+                let c_av = c_a.slice(ndarray::s![.., nocc_a..]);
+                let c_bv = c_b.slice(ndarray::s![.., nocc_b..]);
+                let p_av: Array2<f64> = c_av.dot(&c_av.t());
+                let p_bv: Array2<f64> = c_bv.dot(&c_bv.t());
+                f_a_new = f_a_new + &(shift_eff * s.dot(&p_av).dot(&s));
+                f_b_new = f_b_new + &(shift_eff * s.dot(&p_bv).dot(&s));
+            }
+        }
         let (_, c_a_new) = diagonalize(&f_a_new, &s_inv_sqrt)?;
         let (_, c_b_new) = diagonalize(&f_b_new, &s_inv_sqrt)?;
         c_a = c_a_new;

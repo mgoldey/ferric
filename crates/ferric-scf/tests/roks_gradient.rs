@@ -12,19 +12,23 @@ use ferric_scf::screening::SchwarzBounds;
 use ndarray::Array2;
 
 fn cfg(xc: &str) -> RhfConfig {
-    // Match the energy-test tolerances: doublet OH ROKS at LDA/PBE has a DIIS
-    // plateau at err_max ~ 1e-4 where the energy is converged to ~1 mHa.
+    // Doublet OH at LDA/PBE benefits from a level shift to damp DIIS
+    // oscillations. The shift is rational-damped by err_max in solve_rohf
+    // so the converged state is the unshifted stationary point.
     RhfConfig {
         xc: Some(xc.into()),
         energy_conv: 1e-6,
         density_conv: 1e-3,
         max_iter: 400,
+        level_shift: 0.2,
         ..Default::default()
     }
 }
 
-/// Run a single ROKS calculation. The noise-floor logic in solve_rohf
-/// accepts plateau states automatically — no harness-side fallback needed.
+/// Run a single ROKS calculation. The level shift in cfg() damps DIIS
+/// oscillations enough for B3LYP / wB97X-V to converge; LDA/PBE still
+/// hit the iteration cap on doublet OH at FD-displaced geometries and
+/// are gated behind `#[ignore]` below.
 fn run_one(mol: &Molecule, prep: &PreparedBasis, bounds: &SchwarzBounds, cfg: &RhfConfig)
     -> ferric_scf::result::ScfResult
 {
@@ -98,10 +102,15 @@ fn roks_grad_oh_ccpvdz_b3lyp() {
              "2\nOH\nO 0 0 0\nH 0 0 1.10\n", 2, "cc-pvdz", 5e-3);
 }
 
-// LDA / PBE ROKS on doublet OH stays at a DIIS plateau where err_max won't
-// drop below ~1e-3 and oscillates. solve_rohf returns Err(ScfConvergence),
-// so we don't get an ScfResult to differentiate. Tracked as a follow-up
-// (level-shift or second-order convergence for ROHF).
+// LDA / PBE ROKS on doublet OH plateaus at err_max ~ 1e-3 and oscillates
+// ~1 mHa. The level shift in cfg() (λ=0.2, rational-damped by err_max
+// in solve_rohf) lets the un-displaced SCF land within ~1 mHa of the
+// PySCF reference, but the FD outer loop hits geometries where even
+// the relaxed-convergence fallback can't settle. Real fix needs
+// second-order ROHF convergence (Newton or augmented-Hessian); tracked
+// as a separate follow-up. The B3LYP/wB97X-V variants below converge
+// fine because they're hybrid functionals — exact exchange lifts the
+// near-degeneracy that confounds pure-DFT ROHF.
 #[test]
 #[ignore]
 fn roks_grad_oh_ccpvdz_pbe() {

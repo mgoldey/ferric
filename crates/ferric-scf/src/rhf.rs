@@ -50,6 +50,11 @@ pub struct RhfConfig {
     pub dft_grid: Option<ferric_dft::grid::AtomicGridConfig>,
     /// NLC (VV10) grid spec. Default (50, 50) when XC requires VV10.
     pub nlc_grid: Option<ferric_dft::grid::AtomicGridConfig>,
+    /// Level shift (Ha) applied to the virtual–virtual block of the Fock
+    /// matrix in MO basis. Defaults to 0 (no shift). Used to damp oscillations
+    /// in open-shell SCF (ROHF/UHF/ROKS) where DIIS plateaus near a near-
+    /// degenerate transition. A shift of 0.1–0.5 Ha is typical.
+    pub level_shift: f64,
 }
 
 impl Default for RhfConfig {
@@ -69,6 +74,7 @@ impl Default for RhfConfig {
             xc: None,
             dft_grid: None,
             nlc_grid: None,
+            level_shift: 0.0,
         }
     }
 }

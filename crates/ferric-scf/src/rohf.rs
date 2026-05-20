@@ -260,8 +260,27 @@ pub fn solve_rohf(
         }
         prev_e = energy;
 
-        // DIIS extrapolate effective Fock, diagonalize, rebuild densities.
-        let f_new = diis.step(&f_eff, &err);
+        // DIIS extrapolate effective Fock, then optionally level-shift the
+        // virtual–virtual block in MO basis to damp open-shell oscillations.
+        // The shift is rational-damped:
+        //
+        //   λ_eff = λ_user · err_max / (err_max + ε),   ε = 1e-3
+        //
+        // — full strength while err_max ≫ 1e-3 (the oscillation regime),
+        // halved at err_max=1e-3, vanishing as err_max → 0. This way the
+        // shifted Fock converges to the unshifted stationary point.
+        let mut f_new = diis.step(&f_eff, &err);
+        if config.level_shift > 0.0 && iter > 1 {
+            const SHIFT_DAMP_ERR: f64 = 1e-3;
+            let damp = err_max / (err_max + SHIFT_DAMP_ERR);
+            let shift_eff = config.level_shift * damp;
+            if shift_eff > 1e-10 {
+                let c_virt = c.slice(ndarray::s![.., nocc_a..]);
+                let p_virt: Array2<f64> = c_virt.dot(&c_virt.t());
+                let shift_term: Array2<f64> = shift_eff * s.dot(&p_virt).dot(&s);
+                f_new = f_new + &shift_term;
+            }
+        }
         let (_, c_new) = diagonalize(&f_new, &s_inv_sqrt)?;
         c = c_new;
         let (da_n, db_n) = build_rohf_densities(&c, nocc_double, nocc_open);
