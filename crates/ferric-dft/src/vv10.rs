@@ -48,6 +48,188 @@ pub fn compute_vv10_energy_and_potentials(
     (e, vr, vs)
 }
 
+/// Compute the per-grid-point VV10 energy density ε_nl(g) = β + ½ · f(g)
+/// alongside the potentials. Needed by the gradient path that wants weight
+/// response Σ_g w1[g, B, α] · ε_nl(g) · ρ(g).
+pub fn compute_vv10_full(
+    grid: &[GridPoint],
+    dens: &DensityGrid,
+    params: &Vv10Params,
+) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+    let (_e, vr, vs, active) = vv10_internal(grid, dens, params);
+    // Re-derive ε(g) from the same pair sum used internally. `vv10_internal`
+    // already integrated this; re-doing it here keeps the function shape simple
+    // at the cost of a single extra pair-sum traversal. For typical grids the
+    // pair-sum dominates the cost regardless.
+    let (exc_per_point, _) = vv10_exc_per_point(grid, dens, params, &active);
+    (vr, vs, exc_per_point)
+}
+
+/// Per-grid-point ε_nl(g) = β + ½ · f(g) on the union NLC grid. Returns
+/// `(exc, active_mask)`. Skips grid points whose density is below threshold.
+fn vv10_exc_per_point(
+    grid: &[GridPoint],
+    dens: &DensityGrid,
+    params: &Vv10Params,
+    active: &[bool],
+) -> (Vec<f64>, ()) {
+    let npts = dens.rho.len();
+    let b_vv = params.b;
+    let c_vv = params.c;
+    let pi = std::f64::consts::PI;
+    let pi43 = 4.0 * pi / 3.0;
+    let k_vv = b_vv * 1.5 * pi * (9.0 * pi).powf(-1.0 / 6.0);
+    let beta = (3.0 / (b_vv * b_vv)).powf(0.75) / 32.0;
+
+    let mut w0 = vec![0.0f64; npts];
+    let mut kp = vec![0.0f64; npts];
+    let mut rho_w = vec![0.0f64; npts];
+    let mut xyz = vec![[0.0f64; 3]; npts];
+    for g in 0..npts {
+        if !active[g] {
+            continue;
+        }
+        let r = dens.rho[g];
+        let s = dens.sigma[g];
+        let w0sq = c_vv * (s / (r * r)).powi(2) + pi43 * r;
+        w0[g] = w0sq.sqrt();
+        kp[g] = k_vv * r.powf(1.0 / 6.0);
+        rho_w[g] = r * grid[g].weight;
+        xyz[g] = grid[g].xyz;
+    }
+
+    let mut exc = vec![0.0f64; npts];
+    for i in 0..npts {
+        if !active[i] {
+            continue;
+        }
+        let xi = xyz[i];
+        let w0i = w0[i];
+        let ki = kp[i];
+        let mut fi = 0.0f64;
+        for p in 0..npts {
+            if !active[p] {
+                continue;
+            }
+            let dx = xyz[p][0] - xi[0];
+            let dy = xyz[p][1] - xi[1];
+            let dz = xyz[p][2] - xi[2];
+            let r2 = dx * dx + dy * dy + dz * dz;
+            let gp_val = r2 * w0[p] + kp[p];
+            let gi_val = r2 * w0i + ki;
+            let gt_val = gi_val + gp_val;
+            if gi_val < 1e-30 || gp_val < 1e-30 || gt_val < 1e-30 {
+                continue;
+            }
+            fi += rho_w[p] / (gi_val * gp_val * gt_val);
+        }
+        exc[i] = beta + 0.5 * (-1.5 * fi);
+    }
+    (exc, ())
+}
+
+/// Per-grid-point VV10 egrad F[g, axis] = -3 · Σ_p RpW_p · Q[g,p] · DR[g,p]
+/// where Q[g,p] = (1/(g_i·g_p·g_t)) · (ω₀_i/g_i + ω₀_p/g_p + (ω₀_i+ω₀_p)/g_t)
+/// and DR = r_p − r_g.
+///
+/// This is the gradient of the VV10 pair integrand with respect to the
+/// **outer** grid coordinate r_g. The outer grid (`outer`) and the inner
+/// partner grid (`inner`) may be the same (canonical full-grid) or distinct
+/// (e.g. PySCF's `vvrho_sub` / `vvcoords_sub` which excludes the atom whose
+/// gradient is being computed, avoiding self-coupling). The energy double-
+/// integral factor of ½ is absorbed at the use site via the `ρ·w·F` outer
+/// sum — matches PySCF's `excsum[atm_id] += einsum('r,rx->x', rho*weight, F)`.
+pub fn vv10_egrad(
+    outer_grid: &[GridPoint],
+    outer_dens: &DensityGrid,
+    inner_grid: &[GridPoint],
+    inner_dens: &DensityGrid,
+    params: &Vv10Params,
+) -> ndarray::Array2<f64> {
+    let n_out = outer_grid.len();
+    let n_in = inner_grid.len();
+    let b_vv = params.b;
+    let c_vv = params.c;
+    let pi = std::f64::consts::PI;
+    let pi43 = 4.0 * pi / 3.0;
+    let k_vv = b_vv * 1.5 * pi * (9.0 * pi).powf(-1.0 / 6.0);
+
+    // Cache outer ω₀, κ, coords (active outer points only).
+    let mut w0_out = vec![0.0f64; n_out];
+    let mut k_out = vec![0.0f64; n_out];
+    let mut active_out = vec![false; n_out];
+    let mut xyz_out = vec![[0.0f64; 3]; n_out];
+    for i in 0..n_out {
+        let r = outer_dens.rho[i];
+        if r < RHO_THRESH {
+            continue;
+        }
+        let s = outer_dens.sigma[i];
+        let w0sq = c_vv * (s / (r * r)).powi(2) + pi43 * r;
+        w0_out[i] = w0sq.sqrt();
+        k_out[i] = k_vv * r.powf(1.0 / 6.0);
+        xyz_out[i] = outer_grid[i].xyz;
+        active_out[i] = true;
+    }
+
+    // Cache inner ω₀, κ, RpW, coords.
+    let mut w0_in = vec![0.0f64; n_in];
+    let mut k_in = vec![0.0f64; n_in];
+    let mut rpw = vec![0.0f64; n_in];
+    let mut xyz_in = vec![[0.0f64; 3]; n_in];
+    let mut active_in = vec![false; n_in];
+    for j in 0..n_in {
+        let r = inner_dens.rho[j];
+        if r < RHO_THRESH {
+            continue;
+        }
+        let s = inner_dens.sigma[j];
+        let w0sq = c_vv * (s / (r * r)).powi(2) + pi43 * r;
+        w0_in[j] = w0sq.sqrt();
+        k_in[j] = k_vv * r.powf(1.0 / 6.0);
+        rpw[j] = r * inner_grid[j].weight;
+        xyz_in[j] = inner_grid[j].xyz;
+        active_in[j] = true;
+    }
+
+    let mut f = ndarray::Array2::<f64>::zeros((n_out, 3));
+    for i in 0..n_out {
+        if !active_out[i] {
+            continue;
+        }
+        let xi = xyz_out[i];
+        let w0i = w0_out[i];
+        let ki = k_out[i];
+        let mut fx = 0.0f64;
+        let mut fy = 0.0f64;
+        let mut fz = 0.0f64;
+        for j in 0..n_in {
+            if !active_in[j] {
+                continue;
+            }
+            let dx = xyz_in[j][0] - xi[0];
+            let dy = xyz_in[j][1] - xi[1];
+            let dz = xyz_in[j][2] - xi[2];
+            let r2 = dx * dx + dy * dy + dz * dz;
+            let g_i = r2 * w0i + ki;
+            let g_p = r2 * w0_in[j] + k_in[j];
+            let g_t = g_i + g_p;
+            if g_i < 1e-30 || g_p < 1e-30 || g_t < 1e-30 {
+                continue;
+            }
+            let t = rpw[j] / (g_i * g_p * g_t);
+            let q = t * (w0i / g_i + w0_in[j] / g_p + (w0i + w0_in[j]) / g_t);
+            fx += q * dx;
+            fy += q * dy;
+            fz += q * dz;
+        }
+        f[(i, 0)] = -3.0 * fx;
+        f[(i, 1)] = -3.0 * fy;
+        f[(i, 2)] = -3.0 * fz;
+    }
+    f
+}
+
 /// Internal: compute (E_nl, vrho, vsig, active) on a single grid.
 fn vv10_internal(
     grid: &[GridPoint],
