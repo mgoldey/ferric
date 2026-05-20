@@ -150,10 +150,24 @@ pub struct XcFunctional {
     pub nspin: u32,
 }
 
+/// Global mutex serializing libxc's non-thread-safe init/destroy operations.
+/// libxc 5.x is documented as thread-safe for *evaluation* (xc_*_exc_vxc) but
+/// NOT for initialization — xc_func_alloc and xc_func_init mutate shared
+/// internal tables. Without serialization, concurrent `XcFunctional::new`
+/// calls SIGSEGV.
+static LIBXC_INIT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 impl XcFunctional {
     /// Initialise a functional by name (e.g. `"LDA_X"`, `"GGA_X_PBE"`).
     pub fn new(name: &str, nspin: u32) -> Result<Self, LibxcError> {
         let c_name = CString::new(name).map_err(|_| LibxcError::BadName(name.to_string()))?;
+
+        // Serialize all libxc state-mutating calls (lookup + alloc + init) so
+        // concurrent test threads cannot trample each other. Evaluation calls
+        // (xc_lda_exc_vxc / xc_gga_exc_vxc) are not under this lock — libxc 5.x
+        // documents those as thread-safe on initialized handles.
+        let _guard = LIBXC_INIT_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
         // SAFETY: c_name lives until the end of this statement; xc_functional_get_number
         // reads the C string and returns a (possibly negative) integer ID without retaining
         // the pointer.
@@ -173,7 +187,6 @@ impl XcFunctional {
         // On failure we call xc_func_free to release the allocation before returning.
         let rc = unsafe { ffi::xc_func_init(ptr, id, nspin as c_int) };
         if rc != 0 {
-            // SAFETY: ptr is non-null; xc_func_end was never called so we only free.
             unsafe { ffi::xc_func_free(ptr) };
             return Err(LibxcError::InitFailed { name: name.to_string(), rc });
         }
@@ -353,6 +366,8 @@ impl XcFunctional {
 
 impl Drop for XcFunctional {
     fn drop(&mut self) {
+        // Serialize with init to avoid races on shared libxc internals.
+        let _guard = LIBXC_INIT_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         // SAFETY: handle is non-null (allocated in new and never reassigned);
         // xc_func_end releases internal libxc resources (auxiliary functionals,
         // parameter arrays); xc_func_free deallocates the xc_func_type struct
