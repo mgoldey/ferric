@@ -74,3 +74,37 @@ fn b3lyp_h2o_ccpvdz_translational_invariance() {
         "B3LYP translational drift {max_drift:.3e} — grid response may be broken"
     );
 }
+
+#[test]
+fn uks_b3lyp_h2o_ccpvdz_translational_invariance() {
+    // UKS on closed-shell H2O reduces to RKS but exercises the UKS code path.
+    use ferric_scf::ks_gradient::ks_gradient_uks;
+    use ferric_scf::uhf::solve_uhf;
+
+    let xc = "B3LYP";
+    let mol = h2o();
+    let bs = basis::bundled("cc-pvdz").unwrap();
+    let prep = PreparedBasis::new(&mol, &bs).unwrap();
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+    let mut cfg = RhfConfig::default();
+    cfg.xc = Some(xc.into());
+    cfg.df_j_aux = Some("def2-universal-jkfit".into());
+    cfg.df_k_aux = Some("def2-universal-jkfit".into());
+    cfg.energy_conv = 1e-10;
+    cfg.density_conv = 1e-8;
+    let uhf = solve_uhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap();
+
+    let g = ks_gradient_uks(&mol, &prep, &bs, op, &bounds, xc, &uhf).unwrap();
+    let sum = g.sum_axis(ndarray::Axis(0));
+    let max_drift = sum.iter().cloned().fold(0.0_f64, |a, b| a.max(b.abs()));
+    eprintln!("UKS B3LYP/cc-pvdz H2O Σ_A ∂E/∂R = {sum:?}, max drift = {max_drift:.3e}");
+    // UHF on closed-shell H2O preserves spin symmetry only up to SCF
+    // convergence — D_α ≈ D_β at ~1e-8 in matrix norm, propagating to
+    // ~1e-9 in the gradient sum. Still ~10⁵× better than the no-response
+    // baseline (~3e-4) and proves the UKS response paths add correctly.
+    assert!(
+        max_drift < 1e-7,
+        "UKS B3LYP translational drift {max_drift:.3e}"
+    );
+}

@@ -545,7 +545,7 @@ pub fn xc_gradient_uks_from_density(
     let xc: XcDef = xc_def_from_name_nspin(xc_name, 2)?;
 
     let nbf = d_a.nrows();
-    let grid = build_atomic_grid(mol, grid_cfg);
+    let (grid, weight1) = build_atomic_grid_with_response(mol, grid_cfg);
     let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
     let (chi, dchi, ddchi) = crate::ao_grid::eval_basis_grad_hess_on_points(mol, bs, &pts)?;
     let weights: Vec<f64> = grid.iter().map(|g| g.weight).collect();
@@ -566,6 +566,7 @@ pub fn xc_gradient_uks_from_density(
         sigma_in[3 * g + 2] = dens.sigma[(2, g)];
     }
 
+    let mut eps_total = vec![0.0_f64; npts];
     let mut vrho_a = vec![0.0_f64; npts];
     let mut vrho_b = vec![0.0_f64; npts];
     let mut vsig_aa = vec![0.0_f64; npts];
@@ -593,6 +594,7 @@ pub fn xc_gradient_uks_from_density(
             }
         }
         for g in 0..npts {
+            eps_total[g] += exc[g];
             vrho_a[g] += vrho[2 * g + 0];
             vrho_b[g] += vrho[2 * g + 1];
         }
@@ -664,6 +666,98 @@ pub fn xc_gradient_uks_from_density(
         &dens.grad_b, &dens.grad_a, &dens.rho_b,
         &mut grad,
     );
+
+    // ── Grid-response correction (P2.1, PySCF convention) ──
+    //
+    // (1) Weight response: Σ_g weight1[g, B, α] · ε_xc · ρ_tot for every atom B.
+    //     ε_xc is the polarized exchange-correlation energy density (libxc-returned).
+    //     ρ_tot = ρ_α + ρ_β.
+    //
+    // (2) Grid-coord response for B = home(g): the total derivative of the
+    //     polarized integrand under r_g translation.
+    //       ∂(ε_xc ρ)/∂r^α
+    //         = v_{ρα} · ∂_α ρ_α + v_{ρβ} · ∂_α ρ_β
+    //         + 2 v_{σαα} · Σ_b ∇ρ_α_b · ∂²_{αb} ρ_α
+    //         + 2 v_{σββ} · Σ_b ∇ρ_β_b · ∂²_{αb} ρ_β
+    //         + v_{σαβ} · Σ_b (∇ρ_α_b · ∂²_{αb} ρ_β + ∇ρ_β_b · ∂²_{αb} ρ_α)
+    //
+    // The mixed second derivative ∂²_{αb} ρ_σ is reconstructed from D_σ, χ,
+    // ∇χ, and the AO Hessian (which the AO-derivative path already uses).
+    //
+    // Translational invariance is exact: Σ_b weight1[g,b,α] = 0 by
+    // construction (lab-fixed ∂w/∂R sums to zero across atoms plus
+    // the ∇_r piece reattributed to home), and the AO-derivative term
+    // implements the lab-fixed-r path so the home-translation correction
+    // exactly closes the chain rule.
+
+    // Precompute per-spin (D · χ) and (D · ∂χ).
+    let m_a: Array2<f64> = d_a.dot(&chi);
+    let m_b: Array2<f64> = d_b.dot(&chi);
+    let mut mdchi_a = Array3::<f64>::zeros((3, nbf, npts));
+    let mut mdchi_b = Array3::<f64>::zeros((3, nbf, npts));
+    for b in 0..3 {
+        let slice = dchi.index_axis(ndarray::Axis(0), b);
+        let pa: Array2<f64> = d_a.dot(&slice);
+        let pb: Array2<f64> = d_b.dot(&slice);
+        mdchi_a.index_axis_mut(ndarray::Axis(0), b).assign(&pa);
+        mdchi_b.index_axis_mut(ndarray::Axis(0), b).assign(&pb);
+    }
+
+    // ∂²_{αb} ρ_σ(r_g) = Σ_μ [ ∂_α χ_μ · (D_σ ∂_b χ)_μ + (D_σ χ)_μ · ∂²_{αb} χ_μ ]
+    // (factor 2 absorbed below since ρ_σ = Σ_{μν} D_σ χ_μ χ_ν * 2 with μ↔ν).
+    let hess_rho_spin =
+        |m_s: &Array2<f64>, mdchi_s: &Array3<f64>, axis: usize, b: usize, g: usize| -> f64 {
+            let mut s = 0.0_f64;
+            for mu in 0..nbf {
+                s += dchi[(axis, mu, g)] * mdchi_s[(b, mu, g)]
+                    + m_s[(mu, g)] * ddchi[(axis, b, mu, g)];
+            }
+            // Per-spin ∂²ρ_σ = 2 · (this sum) (μ↔ν symmetry of D_σ).
+            // No: D_σ here is per-spin (tr = N_σ), and ρ_σ = Σ_μν D_σ χ_μ χ_ν
+            // (without a factor 2). So ∂²ρ_σ = Σ_μν D_σ (∂χ_μ ∂χ_ν + χ_μ ∂²χ_ν
+            // + χ_ν ∂²χ_μ + ∂²χ_μ χ_ν)/_/etc — by symmetry that's
+            // 2·Σ_μν D_σ (∂_α χ_μ · ∂_b χ_ν + χ_ν · ∂²_{αb} χ_μ).
+            2.0 * s
+        };
+
+    // (1) weight response.
+    for g in 0..npts {
+        let f = eps_total[g] * (dens.rho_a[g] + dens.rho_b[g]);
+        for b in 0..natoms {
+            grad[(b, 0)] += weight1[g][b][0] * f;
+            grad[(b, 1)] += weight1[g][b][1] * f;
+            grad[(b, 2)] += weight1[g][b][2] * f;
+        }
+    }
+    // (2) home-translation of the integrand.
+    for (gi, gp) in grid.iter().enumerate() {
+        if dens.rho_a[gi] + dens.rho_b[gi] <= RHO_FLOOR {
+            continue;
+        }
+        let a = gp.home_atom;
+        let w = gp.weight;
+        let vra = vrho_a[gi];
+        let vrb = vrho_b[gi];
+        let vsaa = vsig_aa[gi];
+        let vsbb = vsig_bb[gi];
+        let vsab = vsig_ab[gi];
+        for axis in 0..3 {
+            // ρ-derivative piece.
+            let rho_piece = vra * dens.grad_a[(axis, gi)] + vrb * dens.grad_b[(axis, gi)];
+            // σ-derivative piece.
+            let mut sig_piece = 0.0_f64;
+            for b in 0..3 {
+                let gba = dens.grad_a[(b, gi)];
+                let gbb = dens.grad_b[(b, gi)];
+                let h_aa = hess_rho_spin(&m_a, &mdchi_a, axis, b, gi);
+                let h_bb = hess_rho_spin(&m_b, &mdchi_b, axis, b, gi);
+                sig_piece += 2.0 * vsaa * gba * h_aa
+                    + 2.0 * vsbb * gbb * h_bb
+                    + vsab * (gba * h_bb + gbb * h_aa);
+            }
+            grad[(a, axis)] += w * (rho_piece + sig_piece);
+        }
+    }
 
     Ok(grad)
 }
