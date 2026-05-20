@@ -93,6 +93,7 @@ fn main() {
         xc,
         dft_grid: None,
         nlc_grid: None,
+        level_shift: cfg.scf.level_shift.unwrap_or(0.0),
     };
 
     if task == "optimize" {

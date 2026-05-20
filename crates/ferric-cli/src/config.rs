@@ -147,6 +147,12 @@ pub struct ScfCfg {
     pub k_builder: Option<String>,
     pub df_j_aux: Option<String>,
     pub df_k_aux: Option<String>,
+    /// Optional virtual-virtual block level shift (Ha) for open-shell SCF
+    /// (UHF / ROHF / UKS / ROKS). The shift is rational-damped by the DIIS
+    /// error so the converged Fock is the unshifted stationary point. A
+    /// value of 0.2 is a useful default for OH-like doublets at LDA/PBE
+    /// where DIIS otherwise plateaus.
+    pub level_shift: Option<f64>,
 }
 
 impl Default for ScfCfg {
@@ -160,6 +166,7 @@ impl Default for ScfCfg {
             k_builder: None,
             df_j_aux: None,
             df_k_aux: None,
+            level_shift: None,
         }
     }
 }
