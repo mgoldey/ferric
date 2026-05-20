@@ -13,6 +13,9 @@ pub mod pade;
 pub mod sigma;
 pub mod cohsex;
 pub mod qp;
+pub mod u_sigma;
+pub mod u_cohsex;
+pub mod vxc_mo;
 
 pub use method::GwMethod;
 
@@ -78,6 +81,106 @@ pub struct GwResult {
     pub n_ev_iter: usize,
     /// Underlying PDEP result (so callers can inspect W).
     pub pdep: PdepRpaResult,
+}
+
+/// Spin-unrestricted GW result. Per-spin QP energies on a shared MO-index list.
+///
+/// The MO indices are *absolute* and shared between channels (so MO `i` here
+/// refers to the i-th α MO and i-th β MO, which for UHF/UKS are different
+/// orbitals — caller should be aware when interpreting). For HOMO-α vs
+/// HOMO-β identification, use `eps_qp_a[idx]` vs `eps_qp_b[idx]` separately.
+#[derive(Debug)]
+pub struct UGwResult {
+    pub mo_indices: Vec<usize>,
+    pub eps_mf_a: Array1<f64>,
+    pub eps_qp_a: Array1<f64>,
+    pub sigma_x_a: Array1<f64>,
+    pub sigma_c_a: Array1<f64>,
+    pub z_factor_a: Array1<f64>,
+    pub eps_mf_b: Array1<f64>,
+    pub eps_qp_b: Array1<f64>,
+    pub sigma_x_b: Array1<f64>,
+    pub sigma_c_b: Array1<f64>,
+    pub z_factor_b: Array1<f64>,
+    pub n_ev_iter: usize,
+    pub pdep: PdepRpaResult,
+}
+
+impl UGwResult {
+    /// Apply Σ_x − v_xc correction in place. Required when the reference is
+    /// KS (UKS) rather than HF (UHF/ROHF). For each MO p, shift:
+    ///   ε_qp_σ_p ← ε_qp_σ_p + (Σ_x_σ_p − v_xc_σ_p)
+    /// where v_xc_σ_p are the diagonal v_xc matrix elements in MO basis.
+    /// `vxc_diag_a/b` are absolute-MO-indexed (length nmo); only entries for
+    /// `mo_indices` are read.
+    pub fn apply_kohn_sham_correction(
+        &mut self,
+        vxc_diag_a: &Array1<f64>,
+        vxc_diag_b: &Array1<f64>,
+    ) {
+        for (idx, &mo_abs) in self.mo_indices.iter().enumerate() {
+            let d_a = self.sigma_x_a[idx] - vxc_diag_a[mo_abs];
+            let d_b = self.sigma_x_b[idx] - vxc_diag_b[mo_abs];
+            self.eps_qp_a[idx] += d_a;
+            self.eps_qp_b[idx] += d_b;
+        }
+    }
+}
+
+/// Top-level dispatch — spin-unrestricted. Accepts UHF, ROHF, or UKS reference.
+///
+/// For UKS, the caller must apply the Σ_x − v_xc correction via
+/// `UGwResult::apply_kohn_sham_correction` using `vxc_mo::vxc_diagonal_mo`
+/// (we don't auto-apply since we don't carry the xc_name through).
+pub fn run_u_gw(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    scf: &ScfResult,
+    pdep_cfg: &PdepRpaConfig,
+    gw_cfg: &GwConfig,
+) -> Result<UGwResult, FerricError> {
+    use ferric_rpa::run_u_pdep_rpa;
+    if matches!(scf.spin, ferric_scf::Spin::Restricted) {
+        return Err(FerricError::General(
+            "run_u_gw: closed-shell ScfResult — use run_gw instead".into(),
+        ));
+    }
+
+    let pdep = run_u_pdep_rpa(mol, obs, dfbs, op, scf, pdep_cfg)?;
+    let (mo_b_a, mo_b_b) = mo_b::build_full_b_both_spins(mol, obs, dfbs, op, scf, gw_cfg.frozen_core)?;
+    let (v_dressed, dress_dev) =
+        w_pdep::redress_with_check(&mo_b_a.v_inv_sqrt, &pdep.eigenpotentials)?;
+    eprintln!(
+        "ferric-gw [U]: redressed eigenpotentials, max |‖V_α‖² − 1| = {dress_dev:.3e}"
+    );
+
+    let qp_range = gw_cfg.qp_mos.clone().unwrap_or_else(|| default_u_qp_range(mol, scf));
+
+    match gw_cfg.method {
+        GwMethod::G0W0 => u_sigma::run_u_g0w0(&mo_b_a, &mo_b_b, pdep, qp_range, gw_cfg, &v_dressed),
+        GwMethod::Cohsex => u_cohsex::run_u_cohsex(&mo_b_a, &mo_b_b, pdep, qp_range, gw_cfg, &v_dressed),
+        GwMethod::EvGw0 => u_sigma::run_u_evgw0(&mo_b_a, &mo_b_b, pdep, qp_range, gw_cfg, &v_dressed),
+        GwMethod::EvGw => u_sigma::run_u_evgw(
+            mol, obs, dfbs, op, scf, pdep_cfg, &mo_b_a, &mo_b_b, pdep, qp_range, gw_cfg,
+        ),
+        GwMethod::ScCohsex => Err(FerricError::General(
+            "U-sc-COHSEX not implemented; see plan P2.".into(),
+        )),
+    }
+}
+
+fn default_u_qp_range(mol: &Molecule, scf: &ScfResult) -> std::ops::Range<usize> {
+    let nelec = mol.nelec();
+    let two_s = (mol.multiplicity as i32) - 1;
+    let nocc_a = ((nelec + two_s) / 2) as usize;
+    let nocc_b = ((nelec - two_s) / 2) as usize;
+    let nocc_max = nocc_a.max(nocc_b);
+    let nmo = scf.eps_alpha.len();
+    let lo = nocc_max.saturating_sub(3);
+    let hi = (nocc_max + 3).min(nmo);
+    lo..hi
 }
 
 /// Top-level dispatch.

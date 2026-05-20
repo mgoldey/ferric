@@ -10,6 +10,7 @@ ferric-scf = { path = "../ferric-scf" }
 ferric-mp2 = { path = "../ferric-mp2" }
 ferric-rpa = { path = "../ferric-rpa" }
 ferric-quadrature = { path = "../ferric-quadrature" }
+ferric-dft = { path = "../ferric-dft" }
 ndarray = { workspace = true }
 ndarray-linalg = { workspace = true }
 num-complex = "0.4"

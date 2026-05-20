@@ -41,7 +41,7 @@ use num_complex::Complex64;
 /// matrix elements M[(α,m,n)], inverse-dielectric weights w_α(iω_k), and
 /// quadrature data. `n_occ_act` is used only for completeness (sum runs
 /// over all n).
-fn sigma_c_at_z(
+pub(crate) fn sigma_c_at_z(
     m_idx: usize,
     z: Complex64,
     m_proj: &ndarray::Array3<f64>,
@@ -78,7 +78,7 @@ fn sigma_c_at_z(
 
 /// Per-MO QP solve given a fixed (m_proj, w_α(iω), quadrature, propagator-ε)
 /// snapshot. Returns (ε_qp, Σ_c at ε_qp, Z, was Newton-converged).
-fn solve_qp_for_mo(
+pub(crate) fn solve_qp_for_mo(
     m_loc: usize,
     eps_m_mf: f64,
     m_proj: &ndarray::Array3<f64>,
