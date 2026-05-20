@@ -437,6 +437,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferric-gw"
+version = "0.1.0"
+dependencies = [
+ "ferric-core",
+ "ferric-dft",
+ "ferric-integrals",
+ "ferric-mp2",
+ "ferric-quadrature",
+ "ferric-rpa",
+ "ferric-scf",
+ "ndarray",
+ "ndarray-linalg",
+ "num-complex 0.4.6",
+ "openblas-src",
+ "rayon",
+ "serde_json",
+]
+
+[[package]]
 name = "ferric-integrals"
 version = "0.1.0"
 dependencies = [
