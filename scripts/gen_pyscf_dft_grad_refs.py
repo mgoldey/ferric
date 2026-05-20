@@ -4,7 +4,12 @@ For each {molecule, functional}, runs PySCF RKS with:
   * density_fit(auxbasis="def2-universal-jkfit")   — matches ferric RI-J/RI-K
   * grids.atom_grid = (75, 110), prune = None
   * grids.radii_adjust = becke_atomic_radii_adjust  — matches ferric Becke 1988
-  * grad: default ("no grid response" — `Gradients.grid_response = False`)
+  * grad: `Gradients.grid_response = True` so the reference includes the Becke
+    partition-weight derivative + grid-coordinate response. Matches ferric's
+    P2.1 grid-response implementation in `xc_gradient_closed_lda_from_density`.
+    (Other functionals (PBE/B3LYP/wB97X-V) still use the LDA-only response in
+    ferric for now, but PySCF's grid-response output is independent of the
+    functional family and is the right reference once GGA response lands.)
 
 Output: JSON {label, basis, xc, grad: [[gx, gy, gz], ...]} per atom.
 """
@@ -51,7 +56,11 @@ def run_one(label, atom_spec, charge, spin, basis, xc):
     mf.kernel()
 
     g = mf.Gradients()
-    g.grid_response = False
+    # ferric currently applies the Becke grid-response correction only to the
+    # LDA gradient path (P2.1). GGA/RSH still use the no-response formula, so
+    # references for those XC families stay at grid_response=False until the
+    # ferric GGA gradient is upgraded.
+    g.grid_response = (xc == "lda")
     g_arr = g.kernel()  # shape (natoms, 3)
 
     return {

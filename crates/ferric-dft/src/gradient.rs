@@ -20,7 +20,7 @@ use ferric_core::mol::Molecule;
 use ndarray::{Array2, Array3};
 
 use crate::density_on_grid::{eval_density_closed, eval_density_uks};
-use crate::grid::{build_atomic_grid, AtomicGridConfig};
+use crate::grid::{build_atomic_grid, build_atomic_grid_with_response, AtomicGridConfig};
 use crate::libxc::{xc_def_from_name, xc_def_from_name_nspin, FunctionalFamily, LibxcError, XcDef};
 
 #[derive(Debug, thiserror::Error)]
@@ -154,7 +154,9 @@ pub fn xc_gradient_closed_lda(
 }
 
 /// Convenience wrapper: build the molecular grid, evaluate AOs, then call
-/// `xc_gradient_closed_lda`. Used by ferric-scf's KS gradient driver.
+/// `xc_gradient_closed_lda`. Used by ferric-scf's KS gradient driver. Adds
+/// the Becke partition-weight grid-response correction (P2.1, PySCF
+/// convention) automatically.
 pub fn xc_gradient_closed_lda_from_density(
     mol: &Molecule,
     bs: &ferric_core::basis::BasisSet,
@@ -166,12 +168,61 @@ pub fn xc_gradient_closed_lda_from_density(
     shell_dims: &[usize],
 ) -> Result<Array2<f64>, KsGradError> {
     let nbf = d_total.nrows();
-    let grid = build_atomic_grid(mol, grid_cfg);
+    let (grid, weight1) = build_atomic_grid_with_response(mol, grid_cfg);
     let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
     let (chi, dchi) = crate::ao_grid::eval_basis_and_grad_on_points(mol, bs, &pts)?;
     let weights: Vec<f64> = grid.iter().map(|g| g.weight).collect();
     let map = bf_to_atom(shell_to_atom, shell_offsets, shell_dims, nbf);
-    xc_gradient_closed_lda(mol, d_total, xc_name, &map, &chi, &dchi, &weights)
+    let mut grad =
+        xc_gradient_closed_lda(mol, d_total, xc_name, &map, &chi, &dchi, &weights)?;
+
+    // Grid-response correction (PySCF grids_response_cc convention). Two
+    // pieces sum to translational invariance against the existing AO-derivative
+    // term in `xc_gradient_closed_lda`:
+    //
+    //   (1) Weight response (all atoms B):
+    //         Δgrad[B,α] += Σ_g weight1[g,B,α] · ε_xc(r_g) · ρ(r_g)
+    //   (2) Grid-coord response (B = home(g) only):
+    //         Δgrad[A,α] += Σ_{g: home=A} w_g · v_ρ(r_g) · ∂ρ/∂r^α(r_g)
+    //
+    // weight1 here already includes the home-translation ∇_r piece needed for
+    // exact Σ_B weight1[g,B,α] = 0 (see build_atomic_grid_with_response).
+    let xc: XcDef = xc_def_from_name(xc_name)?;
+    let dens = eval_density_closed(d_total, &chi, &dchi);
+    let rho_slice = dens.rho.as_slice().expect("rho is contiguous");
+    let npts = rho_slice.len();
+    let mut eps_total = vec![0.0_f64; npts];
+    let mut vrho_total = vec![0.0_f64; npts];
+    for func in &xc.funcs {
+        let mut exc = vec![0.0_f64; npts];
+        let mut vrho = vec![0.0_f64; npts];
+        func.eval_lda_unpolarized(rho_slice, &mut exc, &mut vrho);
+        for g in 0..npts {
+            eps_total[g] += exc[g];
+            vrho_total[g] += vrho[g];
+        }
+    }
+    let natoms = mol.atoms.len();
+    // (1) weight response.
+    for g in 0..npts {
+        let f = eps_total[g] * rho_slice[g];
+        for b in 0..natoms {
+            grad[(b, 0)] += weight1[g][b][0] * f;
+            grad[(b, 1)] += weight1[g][b][1] * f;
+            grad[(b, 2)] += weight1[g][b][2] * f;
+        }
+    }
+    // (2) grid-coordinate response (home atom of each grid point).
+    for (gi, gp) in grid.iter().enumerate() {
+        let a = gp.home_atom;
+        let w = gp.weight;
+        let vr = vrho_total[gi];
+        grad[(a, 0)] += w * vr * dens.grad[(0, gi)];
+        grad[(a, 1)] += w * vr * dens.grad[(1, gi)];
+        grad[(a, 2)] += w * vr * dens.grad[(2, gi)];
+    }
+
+    Ok(grad)
 }
 
 /// Low-level GGA-style gradient assembly from precomputed per-grid-point

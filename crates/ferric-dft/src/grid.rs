@@ -21,7 +21,7 @@
 
 use ferric_core::mol::Molecule;
 
-use crate::becke::becke_weights_all;
+use crate::becke::{becke_weights_all, becke_weights_and_grad};
 use crate::lebedev::lebedev;
 use crate::radial::treutler_ahlrichs_m4;
 
@@ -79,6 +79,86 @@ pub fn build_atomic_grid(mol: &Molecule, cfg: &AtomicGridConfig) -> Vec<GridPoin
         }
     }
     grid
+}
+
+/// Build the molecular grid AND the per-grid-point full quadrature-weight
+/// nuclear-coordinate gradient (PySCF "weight1" convention).
+///
+/// Returns `(grid, weight1)` where `weight1[g][b][α]` is the total derivative
+/// of `w_g = w_r · w_l · w_becke^{home(g)}(r_g(R); R)` with respect to `R_b^α`,
+/// treating `r_g` as **moving rigidly with its home atom** (the convention
+/// PySCF uses in `grids_response_cc`). Equivalent to:
+///
+/// ```text
+///   weight1[g][b][α] = (w_r · w_l) · [ ∂w_becke^{home}/∂R_b^α|_{r lab-fixed}
+///                                      + δ_{b, home} · ∇_r w_becke^{home}(r_g) ]
+/// ```
+///
+/// The `∇_r w_becke` piece is reconstructed via translational invariance
+/// `Σ_c ∂w_becke/∂R_c|_{r fixed} + ∇_r w_becke = 0` ⇒
+/// `∇_r w_becke = -Σ_c ∂w_becke/∂R_c|_{r fixed}`, applied only to the home
+/// row. After this fix, `Σ_b weight1[g][b][α] = 0` at every grid point
+/// (rigid-translation invariance, exact).
+///
+/// Used by the XC gradient grid-response correction (P2.1).
+pub fn build_atomic_grid_with_response(
+    mol: &Molecule,
+    cfg: &AtomicGridConfig,
+) -> (Vec<GridPoint>, Vec<Vec<[f64; 3]>>) {
+    let (lebedev_pts, lebedev_w) = lebedev(cfg.n_angular);
+    let total_pts = mol.atoms.len() * cfg.n_radial * lebedev_pts.len();
+    let mut grid = Vec::with_capacity(total_pts);
+    let mut weight1: Vec<Vec<[f64; 3]>> = Vec::with_capacity(total_pts);
+    let natoms = mol.atoms.len();
+
+    for (a_idx, atom) in mol.atoms.iter().enumerate() {
+        let (rs, ws) = treutler_ahlrichs_m4(atom.z, cfg.n_radial);
+        for (r, w_r) in rs.iter().zip(ws.iter()) {
+            for (pt, w_l) in lebedev_pts.iter().zip(lebedev_w.iter()) {
+                let xyz = [
+                    atom.x + r * pt[0],
+                    atom.y + r * pt[1],
+                    atom.zpos + r * pt[2],
+                ];
+                let (becke, dw_lab) = becke_weights_and_grad(mol, xyz);
+                let w_becke = becke[a_idx];
+                let weight = w_r * w_l * w_becke;
+                grid.push(GridPoint {
+                    xyz,
+                    weight,
+                    home_atom: a_idx,
+                });
+
+                // Lab-fixed partition derivative for the HOME atom's weight:
+                // dw_lab[a_idx][c][k] is ∂w_becke^{a_idx}/∂R_c^k at fixed r.
+                // PySCF's weight1 adds ∇_r w_becke to the home-atom row, then
+                // multiplies through by the radial-angular Jacobian.
+                let scale = w_r * w_l;
+                let mut grad_r = [0.0_f64; 3]; // = -Σ_c dw_lab[a_idx][c]
+                for c in 0..natoms {
+                    grad_r[0] -= dw_lab[a_idx][c][0];
+                    grad_r[1] -= dw_lab[a_idx][c][1];
+                    grad_r[2] -= dw_lab[a_idx][c][2];
+                }
+                let mut row = Vec::with_capacity(natoms);
+                for b in 0..natoms {
+                    let mut entry = [
+                        scale * dw_lab[a_idx][b][0],
+                        scale * dw_lab[a_idx][b][1],
+                        scale * dw_lab[a_idx][b][2],
+                    ];
+                    if b == a_idx {
+                        entry[0] += scale * grad_r[0];
+                        entry[1] += scale * grad_r[1];
+                        entry[2] += scale * grad_r[2];
+                    }
+                    row.push(entry);
+                }
+                weight1.push(row);
+            }
+        }
+    }
+    (grid, weight1)
 }
 
 #[cfg(test)]
