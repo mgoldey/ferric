@@ -5,11 +5,14 @@
 //! natively by libint2 and parameterized directly by the range-separation
 //! parameter omega (in Bohr⁻¹ internally; Å⁻¹ at the user-facing boundary).
 
-use crate::rimp2::{ri_mp2_spin_components, RiMp2Config, SpinComponents};
+use crate::mo_transform::transform_3center_ov;
+use crate::rimp2::{cholesky_inverse_sqrt, ri_mp2_spin_components, RiMp2Config, SpinComponents};
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
+use ferric_integrals::qqr3::QqrBounds3;
+use ferric_integrals::threeindex;
 use ferric_scf::ScfResult;
 
 /// Configuration for attenuated MP2.
@@ -22,6 +25,13 @@ pub struct AttenuatedMp2Config {
     pub scaling: f64,
     /// Frozen core orbitals.
     pub frozen_core: usize,
+    /// Threshold for the distance-aware QQR-3 screening of the 3-index ERI
+    /// build. `None` disables screening (unscreened dense tensor — current
+    /// default behavior). When set, shell triples (P, μν) whose QQR bound
+    /// is below this value are skipped. Recommended: 1e-10 (energies tight
+    /// to <1 µHa on test molecules); 1e-8 acceptable for production; 1e-6
+    /// is aggressive. See `eri3_tensor_screened_qqr`.
+    pub screen_thresh: Option<f64>,
 }
 
 /// Bohr⁻¹ per Å⁻¹ (inverse of the Å-to-Bohr conversion).
@@ -33,6 +43,7 @@ impl Default for AttenuatedMp2Config {
             omega: 0.420 * BOHR_INV_PER_ANG_INV, // 0.420 Å⁻¹ in Bohr⁻¹
             scaling: 1.0,
             frozen_core: 0,
+            screen_thresh: None,
         }
     }
 }
@@ -100,14 +111,92 @@ pub fn attenuated_ri_mp2(
     config: &AttenuatedMp2Config,
 ) -> Result<AttenuatedMp2Result, FerricError> {
     let op = Operator::erfc(config.omega);
-    let ri_config = RiMp2Config { frozen_core: config.frozen_core };
-    let (sc, _) = ri_mp2_spin_components(mol, obs, dfbs, op, rhf, &ri_config)?;
+    let sc = if let Some(thresh) = config.screen_thresh {
+        attenuated_spin_components_screened(mol, obs, dfbs, op, rhf, config.frozen_core, thresh)?
+    } else {
+        let ri_config = RiMp2Config { frozen_core: config.frozen_core };
+        ri_mp2_spin_components(mol, obs, dfbs, op, rhf, &ri_config)?.0
+    };
     let scaled_corr = config.scaling * sc.e_total;
     Ok(AttenuatedMp2Result {
         mp2_corr: scaled_corr,
         total_energy: rhf.energy + scaled_corr,
         spin_components: sc,
     })
+}
+
+/// QQR-3 screened spin-component RI-MP2 energy under operator `op`.
+///
+/// Mirrors [`ri_mp2_spin_components`] but builds the 3-index AO tensor via
+/// the distance-aware QQR-3 screen (zero-filled dense Array3). Reports the
+/// kept/total shell-triple counts on stderr so callers can see whether the
+/// screening is firing.
+fn attenuated_spin_components_screened(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &ScfResult,
+    frozen_core: usize,
+    thresh: f64,
+) -> Result<SpinComponents, FerricError> {
+    let nbas = obs.nbasis();
+    let nelec = mol.nelec() as usize;
+    let nocc_total = nelec / 2;
+    let nocc = nocc_total - frozen_core;
+    let first_occ = frozen_core;
+    let nvir = nbas - nocc_total;
+    let naux = dfbs.nbasis();
+    let eps = rhf.eps_r();
+    let c = rhf.mos_r();
+
+    let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
+    let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
+
+    // 2-center metric (P|Q) and its inverse-square-root. The metric itself is
+    // still built dense; only the 3-index tensor is screened in this pass.
+    let v2c = threeindex::coulomb_metric_2c(op, dfbs)?;
+    let v2c_inv_sqrt = cholesky_inverse_sqrt(&v2c)?;
+
+    // QQR-3 screened 3-index tensor (P|μν).
+    let bounds = QqrBounds3::new(op, mol, obs, dfbs)?;
+    let (eri3_ao, n_kept, n_total) =
+        threeindex::eri3_tensor_screened_qqr(op, obs, dfbs, &bounds, thresh)?;
+    eprintln!(
+        "attenuated_ri_mp2 screening: {n_kept}/{n_total} triples kept ({:.1}%) at thresh={thresh:.0e}",
+        100.0 * n_kept as f64 / n_total as f64
+    );
+
+    let eri3_mo = transform_3center_ov(&eri3_ao, &c_occ, &c_vir);
+    let eri3_flat = eri3_mo
+        .into_shape_with_order((naux, nocc * nvir))
+        .unwrap();
+    let b_flat = v2c_inv_sqrt.dot(&eri3_flat);
+
+    let mut e_os = 0.0;
+    let mut e_ss = 0.0;
+    for i in 0..nocc {
+        for j in 0..nocc {
+            for a in 0..nvir {
+                for b in 0..nvir {
+                    let ia = i * nvir + a;
+                    let jb = j * nvir + b;
+                    let ib = i * nvir + b;
+                    let ja = j * nvir + a;
+                    let eri_iajb: f64 =
+                        (0..naux).map(|p| b_flat[(p, ia)] * b_flat[(p, jb)]).sum();
+                    let eri_ibja: f64 =
+                        (0..naux).map(|p| b_flat[(p, ib)] * b_flat[(p, ja)]).sum();
+                    let denom = eps[first_occ + i] + eps[first_occ + j]
+                        - eps[nocc_total + a]
+                        - eps[nocc_total + b];
+                    e_os += eri_iajb * eri_iajb / denom;
+                    e_ss += eri_iajb * (eri_iajb - eri_ibja) / denom;
+                }
+            }
+        }
+    }
+    Ok(SpinComponents { e_os, e_ss, e_total: e_os + e_ss })
 }
 
 /// Helper for range-separated MP2: returns (E_erfc_sr, E_erf_lr, E_full).
@@ -210,6 +299,49 @@ mod tests {
             "erf + erfc MP2 should sum to full Coulomb MP2 within RI tolerance (diff = {:.2e})",
             (sum - full).abs()
         );
+    }
+
+    #[test]
+    fn test_screened_matches_unscreened_water() {
+        // Correctness gate for the QQR-3 screening path: at thresh=1e-10 on
+        // water/cc-pVDZ the screened result must agree with the unscreened
+        // attenuated MP2 to sub-microhartree. Water is too small for any
+        // triple to drop, but this verifies the new code path produces the
+        // same tensor and the same energy assembly.
+        let (mol, obs, dfbs, rhf) = setup_h2o();
+        let cfg_dense = AttenuatedMp2Config { omega: 0.222, ..Default::default() };
+        let cfg_screened = AttenuatedMp2Config {
+            omega: 0.222,
+            screen_thresh: Some(1e-10),
+            ..Default::default()
+        };
+        let dense = attenuated_ri_mp2(&mol, &obs, &dfbs, &rhf, &cfg_dense).unwrap();
+        let screened = attenuated_ri_mp2(&mol, &obs, &dfbs, &rhf, &cfg_screened).unwrap();
+        let diff = (dense.mp2_corr - screened.mp2_corr).abs();
+        eprintln!(
+            "water erfc(0.222) attenuated MP2: dense={:.10}, screened(1e-10)={:.10}, diff={:.2e}",
+            dense.mp2_corr, screened.mp2_corr, diff
+        );
+        assert!(diff < 1e-9,
+            "screened attenuated MP2 ({}) diverges from dense ({}): diff={:.2e}",
+            screened.mp2_corr, dense.mp2_corr, diff);
+    }
+
+    fn setup_h2o() -> (Molecule, PreparedBasis, PreparedBasis, ScfResult) {
+        let xyz = "3\nwater\nO 0.000 0.000 0.118\nH 0.000 0.755 -0.471\nH 0.000 -0.755 -0.471\n";
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let bs = basis::bundled("cc-pvdz").unwrap();
+        let obs = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol, &obs, op, &bounds,
+            &RhfConfig { energy_conv: 1e-10, ..Default::default() },
+        ).unwrap();
+        let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
+        (mol, obs, dfbs, rhf)
     }
 
     #[test]

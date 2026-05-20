@@ -18,4 +18,5 @@ pub mod basis_bridge;
 pub mod engine;
 pub mod oneelectron;
 pub mod schwarz;
+pub mod qqr3;
 pub mod threeindex;
