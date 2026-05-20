@@ -58,3 +58,25 @@ def test_rimp2_water_ccpvdz():
     assert abs(result.rhf_energy - ref["rhf_energy"]) < 1e-6, (
         f"RHF: got {result.rhf_energy:.10f}, ref {ref['rhf_energy']:.10f}"
     )
+
+
+def test_ksdft_h2o_lda_with_gradient():
+    """run_ksdft returns analytic nuclear gradient when with_gradient=True.
+
+    Sanity check: gradient shape (natoms, 3), translational invariance
+    (rows sum ≈ 0 to within Becke-grid quadrature noise), and gradient
+    is None when with_gradient is not requested.
+    """
+    mol = ferric.Molecule.from_xyz(os.path.join(TESTDATA, "molecules", "water.xyz"))
+    bs = ferric.BasisSet.bundled("sto-3g")
+
+    res_no_grad = ferric.run_ksdft(mol, bs, functional="LDA")
+    assert res_no_grad.gradient() is None
+
+    res = ferric.run_ksdft(mol, bs, functional="LDA", with_gradient=True)
+    grad = res.gradient()
+    assert grad is not None
+    assert grad.shape == (mol.natoms(), 3)
+    # Translational invariance: Σ_A ∂E/∂R_A ≈ 0 (limited by grid quadrature).
+    tot = grad.sum(axis=0)
+    assert abs(tot).max() < 5e-3, f"translational drift {tot}"

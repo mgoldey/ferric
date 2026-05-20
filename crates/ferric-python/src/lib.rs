@@ -7,6 +7,7 @@ use ferric_mp2::attenuated::{attenuated_ri_mp2, AttenuatedMp2Config};
 use ferric_mp2::laplace::laplace_ri_mp2;
 use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
 use ferric_mp2::scs::{scs_mp2, ScsMp2Config};
+use ferric_scf::ks_gradient::ks_gradient_closed;
 use ferric_scf::optimize::{optimize_geometry, OptimizeConfig};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
@@ -282,6 +283,10 @@ fn run_scs_mp2(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
 struct PyDftResult {
     #[pyo3(get)] total_energy: f64,
     vxc_data: Array2<f64>,
+    /// Analytic nuclear gradient (natoms × 3) in Ha/Bohr, when computed
+    /// (i.e. `with_gradient=True` was passed to `run_ksdft`). Closed-shell
+    /// LDA / GGA / hybrid / RSH only; VV10 nonlocal piece is excluded.
+    gradient_data: Option<Array2<f64>>,
 }
 
 #[pymethods]
@@ -289,18 +294,26 @@ impl PyDftResult {
     fn vxc<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
         PyArray2::from_array(py, &self.vxc_data)
     }
+
+    /// Return the cached analytic nuclear gradient as an (natoms, 3) array.
+    /// Returns `None` if the result was produced without `with_gradient=True`.
+    fn gradient<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
+        self.gradient_data.as_ref().map(|g| PyArray2::from_array(py, g))
+    }
 }
 
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, functional=None, k_builder=None))]
+#[pyo3(signature = (mol, basis_set, functional=None, k_builder=None, with_gradient=false))]
 fn run_dft(mol: &PyMolecule, basis_set: &PyBasisSet,
-           functional: Option<&str>, k_builder: Option<&str>) -> PyResult<PyDftResult> {
+           functional: Option<&str>, k_builder: Option<&str>,
+           with_gradient: bool) -> PyResult<PyDftResult> {
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
     let ctx = ParallelContext::default();
     let mut cfg = rhf_config(k_builder);
-    cfg.xc = Some(functional.unwrap_or("LDA").to_string());
+    let xc_name = functional.unwrap_or("LDA").to_string();
+    cfg.xc = Some(xc_name.clone());
     // RI-J always on (matches PySCF density_fit reference convention).
     cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
     // RI-K only matters for hybrid/RSH; harmless for pure DFT (path is bypassed
@@ -308,15 +321,28 @@ fn run_dft(mol: &PyMolecule, basis_set: &PyBasisSet,
     cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
     let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &cfg).map_err(make_err)?;
     let nbf = rhf.mos_alpha.nrows();
-    Ok(PyDftResult { total_energy: rhf.energy, vxc_data: Array2::<f64>::zeros((nbf, nbf)) })
+    let gradient_data = if with_gradient {
+        Some(
+            ks_gradient_closed(&mol.inner, &prep, &basis_set.inner, op, &bounds, &xc_name, &rhf)
+                .map_err(make_err)?
+        )
+    } else {
+        None
+    };
+    Ok(PyDftResult {
+        total_energy: rhf.energy,
+        vxc_data: Array2::<f64>::zeros((nbf, nbf)),
+        gradient_data,
+    })
 }
 
 /// Alias under the spec's canonical name. Same surface as `run_dft`.
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, functional=None, k_builder=None))]
+#[pyo3(signature = (mol, basis_set, functional=None, k_builder=None, with_gradient=false))]
 fn run_ksdft(mol: &PyMolecule, basis_set: &PyBasisSet,
-             functional: Option<&str>, k_builder: Option<&str>) -> PyResult<PyDftResult> {
-    run_dft(mol, basis_set, functional, k_builder)
+             functional: Option<&str>, k_builder: Option<&str>,
+             with_gradient: bool) -> PyResult<PyDftResult> {
+    run_dft(mol, basis_set, functional, k_builder, with_gradient)
 }
 
 // ── CC (stub) ──
