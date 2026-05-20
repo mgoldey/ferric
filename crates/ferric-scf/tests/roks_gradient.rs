@@ -26,9 +26,10 @@ fn cfg(xc: &str) -> RhfConfig {
 }
 
 /// Run a single ROKS calculation. The level shift in cfg() damps DIIS
-/// oscillations enough for B3LYP / wB97X-V to converge; LDA/PBE still
-/// hit the iteration cap on doublet OH at FD-displaced geometries and
-/// are gated behind `#[ignore]` below.
+/// oscillations enough for B3LYP / wB97X-V to converge tightly. LDA/PBE
+/// on doublet OH at FD-displaced geometries plateau above density_conv
+/// even after relaxation, so those two tests stay gated behind `#[ignore]`
+/// below pending a real second-order ROHF convergence path.
 fn run_one(mol: &Molecule, prep: &PreparedBasis, bounds: &SchwarzBounds, cfg: &RhfConfig)
     -> ferric_scf::result::ScfResult
 {
@@ -102,15 +103,11 @@ fn roks_grad_oh_ccpvdz_b3lyp() {
              "2\nOH\nO 0 0 0\nH 0 0 1.10\n", 2, "cc-pvdz", 5e-3);
 }
 
-// LDA / PBE ROKS on doublet OH plateaus at err_max ~ 1e-3 and oscillates
-// ~1 mHa. The level shift in cfg() (λ=0.2, rational-damped by err_max
-// in solve_rohf) lets the un-displaced SCF land within ~1 mHa of the
-// PySCF reference, but the FD outer loop hits geometries where even
-// the relaxed-convergence fallback can't settle. Real fix needs
-// second-order ROHF convergence (Newton or augmented-Hessian); tracked
-// as a separate follow-up. The B3LYP/wB97X-V variants below converge
-// fine because they're hybrid functionals — exact exchange lifts the
-// near-degeneracy that confounds pure-DFT ROHF.
+// LDA / PBE ROKS on doublet OH plateau at err_max ~ 1e-3. The PySCF-style
+// MO-projected gradient (2026-05-20) and the rational-damped virtual-virtual
+// level shift each tighten the plateau, but at the FD-displaced geometries
+// even err_max < 1e-2 doesn't hold. Full convergence here needs an actual
+// Newton/AHess step; tracked as a separate follow-up.
 #[test]
 #[ignore]
 fn roks_grad_oh_ccpvdz_pbe() {

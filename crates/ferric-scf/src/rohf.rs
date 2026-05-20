@@ -229,9 +229,40 @@ pub fn solve_rohf(
         // Build Roothaan effective Fock (Guest-Saunders, via PySCF projector form).
         let f_eff = roothaan_fock(&f_a, &f_b, &d_a, &d_b, &s);
 
-        // DIIS error from the effective Fock (single stream).
-        let d_tot_diis = &d_a + &d_b;
-        let err = f_eff.dot(&d_tot_diis).dot(&s) - s.dot(&d_tot_diis).dot(&f_eff);
+        // DIIS error: the proper ROHF orbital-rotation gradient (PySCF
+        // `get_grad`). In MO basis the gradient has only three nonzero
+        // off-diagonal blocks — the *unique* orbital rotations:
+        //   g[v,c] = f_α[v,c] + f_β[v,c]    (closed → virtual)
+        //   g[v,o] = f_α[v,o]               (open → virtual; only α occupies open)
+        //   g[o,c] = f_β[o,c]               (closed → open; only β leaves open)
+        // We then antisymmetrize (g - g^T) and project back to AO basis so
+        // DIIS still operates on (n × n) error matrices. This eliminates the
+        // within-class-rotation ambiguity that causes the LDA/PBE doublet-OH
+        // plateau in the FDS-SDF formulation.
+        let f_a_mo: Array2<f64> = c.t().dot(&f_a).dot(&c);
+        let f_b_mo: Array2<f64> = c.t().dot(&f_b).dot(&c);
+        let mut g_mo: Array2<f64> = Array2::zeros((n, n));
+        // closed → virtual block: rows = virtual, cols = closed
+        for p in nocc_a..n {
+            for q in 0..nocc_double {
+                g_mo[(p, q)] = f_a_mo[(p, q)] + f_b_mo[(p, q)];
+            }
+        }
+        // open → virtual block: rows = virtual, cols = open
+        for p in nocc_a..n {
+            for q in nocc_double..nocc_a {
+                g_mo[(p, q)] = f_a_mo[(p, q)];
+            }
+        }
+        // closed → open block: rows = open, cols = closed
+        for p in nocc_double..nocc_a {
+            for q in 0..nocc_double {
+                g_mo[(p, q)] = f_b_mo[(p, q)];
+            }
+        }
+        // Antisymmetrize in MO basis, then transform back to AO.
+        let g_mo_anti: Array2<f64> = &g_mo - &g_mo.t();
+        let err: Array2<f64> = s.dot(&c).dot(&g_mo_anti).dot(&c.t()).dot(&s);
 
         let de = (energy - prev_e).abs();
         let err_max = err.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
