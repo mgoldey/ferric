@@ -380,7 +380,7 @@ pub fn xc_gradient_closed_gga_from_density(
     // LDA family also accepted — falls back to vsigma=0.
 
     let nbf = d_total.nrows();
-    let grid = build_atomic_grid(mol, grid_cfg);
+    let (grid, weight1) = build_atomic_grid_with_response(mol, grid_cfg);
     let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
     let (chi, dchi, ddchi) = crate::ao_grid::eval_basis_grad_hess_on_points(mol, bs, &pts)?;
     let weights: Vec<f64> = grid.iter().map(|g| g.weight).collect();
@@ -395,6 +395,8 @@ pub fn xc_gradient_closed_gga_from_density(
     let rho_slice = dens.rho.as_slice().expect("rho is contiguous");
     let sigma_slice = dens.sigma.as_slice().expect("sigma is contiguous");
 
+    // Accumulate ε_xc(r_g) along with v_ρ and v_σ for the grid-response piece.
+    let mut eps_total = vec![0.0_f64; npts];
     let mut vrho_total = vec![0.0_f64; npts];
     let mut vsigma_total = vec![0.0_f64; npts];
     for func in &xc.funcs {
@@ -413,6 +415,7 @@ pub fn xc_gradient_closed_gga_from_density(
             }
         }
         for g in 0..npts {
+            eps_total[g] += exc[g];
             vrho_total[g] += vrho[g];
         }
     }
@@ -462,6 +465,53 @@ pub fn xc_gradient_closed_gga_from_density(
                 sum += lda_term + t_sig[g] * gga_term;
             }
             grad[(atom, axis)] -= 2.0 * sum;
+        }
+    }
+
+    // ── Grid-response correction (P2.1, PySCF convention) ──
+    //
+    // (1) Weight response: Σ_g weight1[g, B, α] · ε_xc · ρ for every atom B.
+    // (2) Grid-coord response for B = home(g):
+    //       w_g · [v_ρ · ∂_α ρ + 2 v_σ · Σ_b ∇ρ_b · ∂²_{αb} ρ]
+    //
+    // For the GGA piece we need ∂²_{αb} ρ on the grid, derived from D, χ,
+    // ∇χ, and the AO Hessian we already evaluated for the AO-gradient sum:
+    //   ∂²_{αb} ρ = 2 Σ_μν D · [∂_α χ_μ · ∂_b χ_ν + χ_ν · ∂²_{αb} χ_μ]
+    //             = 2 Σ_μ ∂_α χ_μ · (D · ∂_b χ)_μ
+    //             + 2 Σ_μ m_μ · ∂²_{αb} χ_μ
+    for g in 0..npts {
+        let f = eps_total[g] * rho_slice[g];
+        for b in 0..natoms {
+            grad[(b, 0)] += weight1[g][b][0] * f;
+            grad[(b, 1)] += weight1[g][b][1] * f;
+            grad[(b, 2)] += weight1[g][b][2] * f;
+        }
+    }
+    for (gi, gp) in grid.iter().enumerate() {
+        if dens.rho[gi] <= RHO_FLOOR {
+            continue;
+        }
+        let a = gp.home_atom;
+        let w = gp.weight;
+        let vr = vrho_total[gi];
+        let vs = vsigma_total[gi];
+        // ∂_α ρ already in dens.grad.
+        for k in 0..3 {
+            grad[(a, k)] += w * vr * dens.grad[(k, gi)];
+        }
+        // 2 v_σ Σ_b ∇ρ_b · ∂²_{αb} ρ — compute ∂²_{αb} ρ on the fly.
+        for axis in 0..3 {
+            let mut sum_b = 0.0_f64;
+            for b in 0..3 {
+                let gb = dens.grad[(b, gi)];
+                let mut hess_ab = 0.0_f64;
+                for mu in 0..nbf {
+                    hess_ab += dchi[(axis, mu, gi)] * mdchi[(b, mu, gi)]
+                        + m[(mu, gi)] * ddchi[(axis, b, mu, gi)];
+                }
+                sum_b += gb * 2.0 * hess_ab;
+            }
+            grad[(a, axis)] += w * 2.0 * vs * sum_b;
         }
     }
 

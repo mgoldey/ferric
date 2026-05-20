@@ -43,9 +43,34 @@ fn lda_h2o_ccpvdz_translational_invariance() {
     let sum = g.sum_axis(ndarray::Axis(0));
     let max_drift = sum.iter().cloned().fold(0.0_f64, |a, b| a.max(b.abs()));
     eprintln!("LDA/cc-pvdz Σ_A ∂E/∂R = {sum:?}, max drift = {max_drift:.3e}");
-    // With P2.1 response: ~1e-5 on (75,110). Without it was ~3e-4.
+    // With P2.1 response: machine precision (~1e-13). Without it was ~3e-4.
     assert!(
-        max_drift < 5e-5,
+        max_drift < 1e-10,
         "translational drift {max_drift:.3e} — grid response may be broken"
+    );
+}
+
+#[test]
+fn pbe_h2o_ccpvdz_translational_invariance() {
+    let g = run("PBE", "cc-pvdz");
+    let sum = g.sum_axis(ndarray::Axis(0));
+    let max_drift = sum.iter().cloned().fold(0.0_f64, |a, b| a.max(b.abs()));
+    eprintln!("PBE/cc-pvdz Σ_A ∂E/∂R = {sum:?}, max drift = {max_drift:.3e}");
+    // With GGA grid response: ~1e-13. Without it was ~2e-4.
+    assert!(
+        max_drift < 1e-10,
+        "PBE translational drift {max_drift:.3e} — grid response may be broken"
+    );
+}
+
+#[test]
+fn b3lyp_h2o_ccpvdz_translational_invariance() {
+    let g = run("B3LYP", "cc-pvdz");
+    let sum = g.sum_axis(ndarray::Axis(0));
+    let max_drift = sum.iter().cloned().fold(0.0_f64, |a, b| a.max(b.abs()));
+    eprintln!("B3LYP/cc-pvdz Σ_A ∂E/∂R = {sum:?}, max drift = {max_drift:.3e}");
+    assert!(
+        max_drift < 1e-10,
+        "B3LYP translational drift {max_drift:.3e} — grid response may be broken"
     );
 }

@@ -56,11 +56,10 @@ def run_one(label, atom_spec, charge, spin, basis, xc):
     mf.kernel()
 
     g = mf.Gradients()
-    # ferric currently applies the Becke grid-response correction only to the
-    # LDA gradient path (P2.1). GGA/RSH still use the no-response formula, so
-    # references for those XC families stay at grid_response=False until the
-    # ferric GGA gradient is upgraded.
-    g.grid_response = (xc == "lda")
+    # ferric's Becke grid-response (P2.1) covers the semilocal LDA/GGA piece.
+    # VV10 nonlocal correlation is NOT yet grid-response-aware in ferric, so
+    # wB97X-V references stay at grid_response=False until that lands.
+    g.grid_response = (xc != "wb97x-v")
     g_arr = g.kernel()  # shape (natoms, 3)
 
     return {
