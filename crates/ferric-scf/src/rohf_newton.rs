@@ -25,7 +25,11 @@ use ndarray_linalg::Solve;
 /// Optional XC kernel callable for ROKS Newton: given (δD_α, δD_β) it returns
 /// the response of the per-spin XC potential (δV_xc^α, δV_xc^β) in AO basis.
 /// Pure ROHF passes `None`.
-pub type FxcResponse = dyn Fn(&Array2<f64>, &Array2<f64>) -> (Array2<f64>, Array2<f64>) + Sync;
+///
+/// The lifetime parameter lets callers pass closures that borrow stack-local
+/// data (e.g., a `LdaFxcKernel` + reference ρ); otherwise the trait-object
+/// default would force `+ 'static`.
+pub type FxcResponse<'a> = dyn Fn(&Array2<f64>, &Array2<f64>) -> (Array2<f64>, Array2<f64>) + Sync + 'a;
 
 /// Inputs to one Newton step.
 pub struct RohfNewtonInputs<'a> {
@@ -38,7 +42,7 @@ pub struct RohfNewtonInputs<'a> {
     pub nocc_double: usize,
     pub nocc_open: usize,
     pub k_mix_sr: f64,               // K mixing coefficient (1.0 for HF, c_HF for hybrid; ignored for RSH)
-    pub fxc: Option<&'a FxcResponse>,
+    pub fxc: Option<&'a FxcResponse<'a>>,
     pub thresh: f64,
 }
 

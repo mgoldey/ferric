@@ -293,18 +293,53 @@ pub fn solve_rohf(
 
         // Pick update strategy. Newton step (if enabled and below trigger)
         // uses per-spin diagonal Fock entries to precondition a PCG solve of
-        // H·κ = −g, then rotates C via the Cayley unitary. Pure HF only for
-        // now; ROKS goes through DIIS until the XC kernel response is wired
-        // up (Day 2).
+        // H·κ = −g, then rotates C via the Cayley unitary.
+        //   - HF (xc=None): full Newton with HF orbital Hessian only.
+        //   - LDA ROKS: Newton + LDA f_xc kernel response.
+        //   - GGA / hybrid / RSH ROKS: not supported yet, falls through to DIIS.
+        let xc_is_lda = matches!(
+            config.xc.as_deref(),
+            Some("LDA") | Some("lda")
+        );
         let use_newton = config.newton_trigger > 0.0
             && iter > 3
             && err_max < config.newton_trigger
-            && xc_contrib.is_none();
+            && (xc_contrib.is_none() || xc_is_lda);
         if use_newton {
             let (_, c_now) = diagonalize(&f_eff, &s_inv_sqrt)?;
             let f_a_mo = c_now.t().dot(&f_a).dot(&c_now);
             let f_b_mo = c_now.t().dot(&f_b).dot(&c_now);
             let eps_dummy: Vec<f64> = (0..n).map(|i| f_a_mo[(i, i)] + f_b_mo[(i, i)]).collect();
+
+            // Build LDA f_xc kernel + reference densities (closure target).
+            // We keep the kernel + reference ρ here so the closure borrows them.
+            let lda_kernel_and_ref = if xc_is_lda {
+                let main = config.dft_grid.clone().unwrap_or_default();
+                let xc_def = ferric_dft::libxc::xc_def_from_name_nspin("LDA", 2)
+                    .map_err(|e| FerricError::General(format!("LDA fxc def: {e:?}")))?;
+                let kernel = ferric_dft::fxc::LdaFxcKernel::new(
+                    mol, prep.basis_set(), xc_def, &main,
+                )
+                .map_err(|e| FerricError::General(format!("LdaFxcKernel: {e}")))?;
+                let (rho_a0, rho_b0) = kernel.reference_density(&d_a, &d_b);
+                Some((kernel, rho_a0, rho_b0))
+            } else {
+                None
+            };
+            // Stack-local closure storage so its lifetime matches
+            // `lda_kernel_and_ref`. Two branches (Some / None) to avoid the
+            // Option::map inference that forces 'static on the trait object.
+            #[allow(clippy::type_complexity)]
+            let fxc_storage: Option<Box<dyn Fn(&Array2<f64>, &Array2<f64>) -> (Array2<f64>, Array2<f64>) + Sync + '_>> =
+                match lda_kernel_and_ref.as_ref() {
+                    Some((k, ra, rb)) => Some(Box::new(
+                        move |dd_a: &Array2<f64>, dd_b: &Array2<f64>| k.apply_with_ref(ra, rb, dd_a, dd_b)
+                    )),
+                    None => None,
+                };
+            let fxc_ref: Option<&crate::rohf_newton::FxcResponse<'_>> = fxc_storage
+                .as_deref();
+
             let inputs = crate::rohf_newton::RohfNewtonInputs {
                 prep,
                 bounds,
@@ -315,13 +350,13 @@ pub fn solve_rohf(
                 nocc_double,
                 nocc_open,
                 k_mix_sr: if k_mix.omega > 0.0 { 0.0 } else { c_k },
-                fxc: None,
+                fxc: fxc_ref,
                 thresh: config.integral_thresh,
             };
             let (c_new, _kmax) = crate::rohf_newton::rohf_newton_step(
                 ctx, &inputs,
                 config.level_shift.max(1e-6),
-                0.3,  // trust radius
+                0.1,  // trust radius (conservative — ROKS hessians are stiff)
                 20,
                 1e-7,
             )?;

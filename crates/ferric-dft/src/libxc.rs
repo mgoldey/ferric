@@ -58,6 +58,16 @@ mod ffi {
             vsigma: *mut f64,
         );
 
+        /// Second functional derivative of LDA. For unpolarized (nspin=1)
+        /// the layout is [v2rho2 per point]. For polarized (nspin=2) the
+        /// layout is [v2rho2_αα, v2rho2_αβ, v2rho2_ββ] per point.
+        pub fn xc_lda_fxc(
+            p: *const XcFuncOpaque,
+            np: usize,
+            rho: *const f64,
+            v2rho2: *mut f64,
+        );
+
         pub fn xc_hyb_cam_coef(
             p: *const XcFuncOpaque,
             omega: *mut f64,
@@ -238,6 +248,27 @@ impl XcFunctional {
                 rho.as_ptr(),
                 exc.as_mut_ptr(),
                 vrho.as_mut_ptr(),
+            );
+        }
+    }
+
+    /// LDA second derivative, polarized (nspin=2). Layout:
+    ///   `rho[2g+0] = ρ_α`, `rho[2g+1] = ρ_β`
+    ///   `v2rho2[3g+0] = ∂²E_xc/∂ρ_α²`,
+    ///   `v2rho2[3g+1] = ∂²E_xc/∂ρ_α∂ρ_β`,
+    ///   `v2rho2[3g+2] = ∂²E_xc/∂ρ_β²`
+    pub fn eval_lda_fxc_polarized(&self, rho: &[f64], v2rho2: &mut [f64]) {
+        debug_assert!(self.nspin == 2, "eval_lda_fxc_polarized requires nspin=2");
+        let n = v2rho2.len() / 3;
+        assert_eq!(rho.len(), 2 * n, "polarized rho buffer must be 2 * npts");
+        assert_eq!(v2rho2.len(), 3 * n, "polarized v2rho2 buffer must be 3 * npts");
+        // SAFETY: handle is non-null + fully initialised; lengths verified.
+        unsafe {
+            ffi::xc_lda_fxc(
+                self.ptr as *const _,
+                n,
+                rho.as_ptr(),
+                v2rho2.as_mut_ptr(),
             );
         }
     }

@@ -9,4 +9,5 @@ pub mod lebedev;
 pub mod radial;
 pub mod vv10;
 pub mod vxc;
+pub mod fxc;
 pub mod xc_trait;
