@@ -55,6 +55,11 @@ pub struct RhfConfig {
     /// in open-shell SCF (ROHF/UHF/ROKS) where DIIS plateaus near a near-
     /// degenerate transition. A shift of 0.1–0.5 Ha is typical.
     pub level_shift: f64,
+    /// If > 0 in ROHF/ROKS: switch from DIIS to a damped-Newton step once the
+    /// DIIS error (err_max) drops below this trigger. Setting `1e-2` is a
+    /// reasonable default for OH-doublet LDA/PBE plateaus. A value of 0
+    /// disables Newton entirely (DIIS-only).
+    pub newton_trigger: f64,
 }
 
 impl Default for RhfConfig {
@@ -75,6 +80,7 @@ impl Default for RhfConfig {
             dft_grid: None,
             nlc_grid: None,
             level_shift: 0.0,
+            newton_trigger: 0.0,
         }
     }
 }

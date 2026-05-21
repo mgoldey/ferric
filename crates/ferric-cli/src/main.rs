@@ -94,6 +94,7 @@ fn main() {
         dft_grid: None,
         nlc_grid: None,
         level_shift: cfg.scf.level_shift.unwrap_or(0.0),
+        newton_trigger: 0.0,
     };
 
     if task == "optimize" {
@@ -351,6 +352,7 @@ fn main() {
                 omega: omega_ang_inv * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV,
                 scaling: 1.0,
                 frozen_core: cfg.mp2.frozen_core,
+                screen_thresh: None,
             };
             let att_result = attenuated_ri_mp2(&mol, &prep, &dfbs, &result, &att_config)
                 .unwrap_or_else(|e| {

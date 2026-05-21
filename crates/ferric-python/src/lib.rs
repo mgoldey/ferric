@@ -232,6 +232,7 @@ fn run_attenuated_rimp2(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyB
     let cfg = AttenuatedMp2Config {
         omega: omega.unwrap_or(0.420) * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV,
         scaling: 1.0, frozen_core: frozen_core.unwrap_or(0),
+        screen_thresh: None,
     };
     let r = attenuated_ri_mp2(&mol.inner, &prep, &dfbs, &rhf, &cfg).map_err(make_err)?;
     Ok(PyAttenuatedMp2Result {

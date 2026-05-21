@@ -291,32 +291,65 @@ pub fn solve_rohf(
         }
         prev_e = energy;
 
-        // DIIS extrapolate effective Fock, then optionally level-shift the
-        // virtual–virtual block in MO basis to damp open-shell oscillations.
-        // The shift is rational-damped:
-        //
-        //   λ_eff = λ_user · err_max / (err_max + ε),   ε = 1e-3
-        //
-        // — full strength while err_max ≫ 1e-3 (the oscillation regime),
-        // halved at err_max=1e-3, vanishing as err_max → 0. This way the
-        // shifted Fock converges to the unshifted stationary point.
-        let mut f_new = diis.step(&f_eff, &err);
-        if config.level_shift > 0.0 && iter > 1 {
-            const SHIFT_DAMP_ERR: f64 = 1e-3;
-            let damp = err_max / (err_max + SHIFT_DAMP_ERR);
-            let shift_eff = config.level_shift * damp;
-            if shift_eff > 1e-10 {
-                let c_virt = c.slice(ndarray::s![.., nocc_a..]);
-                let p_virt: Array2<f64> = c_virt.dot(&c_virt.t());
-                let shift_term: Array2<f64> = shift_eff * s.dot(&p_virt).dot(&s);
-                f_new = f_new + &shift_term;
+        // Pick update strategy. Newton step (if enabled and below trigger)
+        // uses per-spin diagonal Fock entries to precondition a PCG solve of
+        // H·κ = −g, then rotates C via the Cayley unitary. Pure HF only for
+        // now; ROKS goes through DIIS until the XC kernel response is wired
+        // up (Day 2).
+        let use_newton = config.newton_trigger > 0.0
+            && iter > 3
+            && err_max < config.newton_trigger
+            && xc_contrib.is_none();
+        if use_newton {
+            let (_, c_now) = diagonalize(&f_eff, &s_inv_sqrt)?;
+            let f_a_mo = c_now.t().dot(&f_a).dot(&c_now);
+            let f_b_mo = c_now.t().dot(&f_b).dot(&c_now);
+            let eps_dummy: Vec<f64> = (0..n).map(|i| f_a_mo[(i, i)] + f_b_mo[(i, i)]).collect();
+            let inputs = crate::rohf_newton::RohfNewtonInputs {
+                prep,
+                bounds,
+                c: &c_now,
+                eps: &eps_dummy,
+                f_a_mo: &f_a_mo,
+                f_b_mo: &f_b_mo,
+                nocc_double,
+                nocc_open,
+                k_mix_sr: if k_mix.omega > 0.0 { 0.0 } else { c_k },
+                fxc: None,
+                thresh: config.integral_thresh,
+            };
+            let (c_new, _kmax) = crate::rohf_newton::rohf_newton_step(
+                ctx, &inputs,
+                config.level_shift.max(1e-6),
+                0.3,  // trust radius
+                20,
+                1e-7,
+            )?;
+            c = c_new;
+            let (da_n, db_n) = build_rohf_densities(&c, nocc_double, nocc_open);
+            d_a = da_n;
+            d_b = db_n;
+        } else {
+            // DIIS extrapolate effective Fock, then optionally level-shift the
+            // virtual–virtual block in MO basis to damp open-shell oscillations.
+            let mut f_new = diis.step(&f_eff, &err);
+            if config.level_shift > 0.0 && iter > 1 {
+                const SHIFT_DAMP_ERR: f64 = 1e-3;
+                let damp = err_max / (err_max + SHIFT_DAMP_ERR);
+                let shift_eff = config.level_shift * damp;
+                if shift_eff > 1e-10 {
+                    let c_virt = c.slice(ndarray::s![.., nocc_a..]);
+                    let p_virt: Array2<f64> = c_virt.dot(&c_virt.t());
+                    let shift_term: Array2<f64> = shift_eff * s.dot(&p_virt).dot(&s);
+                    f_new = f_new + &shift_term;
+                }
             }
+            let (_, c_new) = diagonalize(&f_new, &s_inv_sqrt)?;
+            c = c_new;
+            let (da_n, db_n) = build_rohf_densities(&c, nocc_double, nocc_open);
+            d_a = da_n;
+            d_b = db_n;
         }
-        let (_, c_new) = diagonalize(&f_new, &s_inv_sqrt)?;
-        c = c_new;
-        let (da_n, db_n) = build_rohf_densities(&c, nocc_double, nocc_open);
-        d_a = da_n;
-        d_b = db_n;
     }
     Err(FerricError::ScfConvergence {
         iterations: config.max_iter,

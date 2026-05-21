@@ -30,6 +30,7 @@ pub mod uhf;
 pub use uhf::{solve_uhf, UhfConfig};
 pub mod rohf;
 pub use rohf::{solve_rohf, RohfConfig};
+pub mod rohf_newton;
 pub mod gradient;
 pub use gradient::{rhf_gradient, rohf_gradient, uhf_gradient};
 pub mod ks_gradient;
