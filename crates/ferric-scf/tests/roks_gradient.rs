@@ -15,12 +15,18 @@ fn cfg(xc: &str) -> RhfConfig {
     // Doublet OH at LDA/PBE benefits from a level shift to damp DIIS
     // oscillations. The shift is rational-damped by err_max in solve_rohf
     // so the converged state is the unshifted stationary point.
+    // For LDA we additionally enable the Newton kick (with f_xc kernel
+    // response) once DIIS has descended into the plateau region. The
+    // Newton step tightens the plateau by a few mHa but does not yet clear
+    // the SOMO/HOMO near-degeneracy at FD-displaced geometries.
+    let is_lda = xc.eq_ignore_ascii_case("LDA");
     RhfConfig {
         xc: Some(xc.into()),
         energy_conv: 1e-6,
         density_conv: 1e-3,
         max_iter: 400,
         level_shift: 0.2,
+        newton_trigger: if is_lda { 1e-2 } else { 0.0 },
         ..Default::default()
     }
 }
