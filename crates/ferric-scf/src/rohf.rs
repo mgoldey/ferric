@@ -301,6 +301,68 @@ pub fn solve_rohf(
             config.xc.as_deref(),
             Some("LDA") | Some("lda")
         );
+        // Augmented-Hessian Newton — used when err_max is below ah_trigger.
+        // Handles vanishing Hessian eigenvalues (e.g., doublet OH at LDA with
+        // near-degenerate SOMO/HOMO) that PCG can't resolve.
+        let use_ah = config.ah_trigger > 0.0
+            && iter > 3
+            && err_max < config.ah_trigger
+            && (xc_contrib.is_none() || xc_is_lda)
+            && k_mix.omega == 0.0;
+        if use_ah {
+            let (_, c_now) = diagonalize(&f_eff, &s_inv_sqrt)?;
+            let f_a_mo = c_now.t().dot(&f_a).dot(&c_now);
+            let f_b_mo = c_now.t().dot(&f_b).dot(&c_now);
+            let eps_dummy: Vec<f64> = (0..n).map(|i| f_a_mo[(i, i)] + f_b_mo[(i, i)]).collect();
+
+            let lda_kernel_and_ref = if xc_is_lda {
+                let main = config.dft_grid.clone().unwrap_or_default();
+                let xc_def = ferric_dft::libxc::xc_def_from_name_nspin("LDA", 2)
+                    .map_err(|e| FerricError::General(format!("LDA fxc def: {e:?}")))?;
+                let kernel = ferric_dft::fxc::LdaFxcKernel::new(
+                    mol, prep.basis_set(), xc_def, &main,
+                ).map_err(|e| FerricError::General(format!("LdaFxcKernel: {e}")))?;
+                let (rho_a0, rho_b0) = kernel.reference_density(&d_a, &d_b);
+                Some((kernel, rho_a0, rho_b0))
+            } else {
+                None
+            };
+            #[allow(clippy::type_complexity)]
+            let fxc_storage: Option<Box<dyn Fn(&Array2<f64>, &Array2<f64>) -> (Array2<f64>, Array2<f64>) + Sync + '_>> =
+                match lda_kernel_and_ref.as_ref() {
+                    Some((k, ra, rb)) => Some(Box::new(
+                        move |dd_a: &Array2<f64>, dd_b: &Array2<f64>| k.apply_with_ref(ra, rb, dd_a, dd_b)
+                    )),
+                    None => None,
+                };
+            let fxc_ref: Option<&crate::rohf_newton::FxcResponse<'_>> = fxc_storage.as_deref();
+
+            let inputs = crate::rohf_newton::RohfNewtonInputs {
+                prep,
+                bounds,
+                c: &c_now,
+                eps: &eps_dummy,
+                f_a_mo: &f_a_mo,
+                f_b_mo: &f_b_mo,
+                nocc_double,
+                nocc_open,
+                k_mix_sr: if k_mix.omega > 0.0 { 0.0 } else { c_k },
+                fxc: fxc_ref,
+                thresh: config.integral_thresh,
+            };
+            let ah_inputs = crate::rohf_ah::RohfAhInputs { base: &inputs };
+            let (c_new, _kmax) = crate::rohf_ah::rohf_ah_step(
+                ctx, &ah_inputs,
+                /*max_step=*/0.2,
+                /*davidson_conv=*/1e-7,
+                /*davidson_max_vecs=*/50,
+            )?;
+            c = c_new;
+            let (da_n, db_n) = build_rohf_densities(&c, nocc_double, nocc_open);
+            d_a = da_n;
+            d_b = db_n;
+            continue;
+        }
         let use_newton = config.newton_trigger > 0.0
             && iter > 3
             && err_max < config.newton_trigger
