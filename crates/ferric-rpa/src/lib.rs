@@ -290,6 +290,7 @@ pub fn run_pdep_rpa(
                 config.davidson_conv_thresh,
                 max_vecs,
                 naux,
+                false,
             )?
         }
         (Eigensolver::Lanczos, Some(sb)) => {
@@ -329,6 +330,7 @@ pub fn run_pdep_rpa(
                     config.davidson_conv_thresh,
                     max_vecs,
                     naux,
+                    false,
                 )?
             } else {
                 let laplace_q = laplace_for_davidson.clone();
@@ -343,6 +345,7 @@ pub fn run_pdep_rpa(
                     config.davidson_conv_thresh,
                     max_vecs,
                     naux,
+                    false,
                 )?
             }
         }
@@ -560,6 +563,7 @@ pub fn run_u_pdep_rpa(
                 config.davidson_conv_thresh,
                 max_vecs,
                 naux,
+                false,
             )?
         }
     };

@@ -24,13 +24,14 @@ pub fn run_davidson_static<F>(
     conv_thresh: f64,
     max_vecs: usize,
     n_desired: usize,
+    find_lowest: bool,
 ) -> Result<DavidsonResult, FerricError>
 where
     F: Fn(&Array2<f64>, f64) -> Array2<f64>,
 {
     // Seed: identity subspace (unit vectors in aux space)
     let seed = Array2::eye(m0);
-    run_davidson_seeded(seed, dielectric_fn, conv_thresh, max_vecs, n_desired)
+    run_davidson_seeded(seed, dielectric_fn, conv_thresh, max_vecs, n_desired, find_lowest)
 }
 
 /// Run Davidson with an explicit seed matrix.
@@ -49,6 +50,7 @@ pub fn run_davidson_seeded<F>(
     conv_thresh: f64,
     max_vecs: usize,
     n_desired: usize,
+    find_lowest: bool,
 ) -> Result<DavidsonResult, FerricError>
 where
     F: Fn(&Array2<f64>, f64) -> Array2<f64>,
@@ -74,11 +76,17 @@ where
         // Ritz vectors in original space: V @ evecs (naux, m)
         let ritz = v_mat.dot(&evecs);
 
-        // Compute residuals for the n_desired largest eigenvalues
+        // Compute residuals for the n_desired most-relevant eigenvalues
+        // (largest by default; smallest when find_lowest=true).
         let mut max_resid = 0.0f64;
         let mut new_vecs: Vec<Array1<f64>> = Vec::new();
         let m_check = m.min(n_desired + 2);
-        for k in (m.saturating_sub(m_check))..m {
+        let k_iter: Box<dyn Iterator<Item = usize>> = if find_lowest {
+            Box::new(0..m_check)
+        } else {
+            Box::new((m.saturating_sub(m_check))..m)
+        };
+        for k in k_iter {
             let lk = evals[k];
             let vk = ritz.column(k);
 
@@ -101,11 +109,18 @@ where
             if m >= n_desired {
                 // Full convergence: we have enough eigenpairs.
                 let n_keep = n_desired.min(m);
-                let start = m - n_keep;
-                let eigenvalues: Vec<f64> = evals.slice(ndarray::s![start..]).iter().copied().rev().collect();
-                let eigenvectors = ritz.slice(ndarray::s![.., start..]).to_owned();
-                // Reverse columns so largest eigenvalue is first
-                let eigenvectors = eigenvectors.slice(ndarray::s![.., ..;-1]).to_owned();
+                let (eigenvalues, eigenvectors) = if find_lowest {
+                    // eigh returns ascending order, so first n_keep are smallest.
+                    let eigenvalues: Vec<f64> = evals.slice(ndarray::s![..n_keep]).iter().copied().collect();
+                    let eigenvectors = ritz.slice(ndarray::s![.., ..n_keep]).to_owned();
+                    (eigenvalues, eigenvectors)
+                } else {
+                    let start = m - n_keep;
+                    let eigenvalues: Vec<f64> = evals.slice(ndarray::s![start..]).iter().copied().rev().collect();
+                    let eigenvectors = ritz.slice(ndarray::s![.., start..]).to_owned();
+                    let eigenvectors = eigenvectors.slice(ndarray::s![.., ..;-1]).to_owned();
+                    (eigenvalues, eigenvectors)
+                };
                 return Ok(DavidsonResult { eigenvalues, eigenvectors });
             }
 
@@ -116,8 +131,15 @@ where
             let budget = max_vecs.saturating_sub(m);
             if budget == 0 || m >= naux {
                 // No room to grow: return what we have (truncation step will handle it).
-                let eigenvalues: Vec<f64> = evals.iter().copied().rev().collect();
-                let eigenvectors = ritz.slice(ndarray::s![.., ..;-1]).to_owned();
+                let (eigenvalues, eigenvectors) = if find_lowest {
+                    let eigenvalues: Vec<f64> = evals.iter().copied().collect();
+                    let eigenvectors = ritz.clone();
+                    (eigenvalues, eigenvectors)
+                } else {
+                    let eigenvalues: Vec<f64> = evals.iter().copied().rev().collect();
+                    let eigenvectors = ritz.slice(ndarray::s![.., ..;-1]).to_owned();
+                    (eigenvalues, eigenvectors)
+                };
                 return Ok(DavidsonResult { eigenvalues, eigenvectors });
             }
             // Add a batch of orthogonal unit vectors to bootstrap coverage of the missing space.
@@ -201,6 +223,7 @@ mod tests {
             1e-6,  // conv_thresh
             20,    // max_vecs
             2,     // n_desired
+            false, // find_lowest
         ).unwrap();
 
         let mut evals = result.eigenvalues.clone();
@@ -213,5 +236,28 @@ mod tests {
             "λ_0={} expected {}", evals[0], expected_lo);
         assert!((evals[1] - expected_hi).abs() < 1e-4,
             "λ_1={} expected {}", evals[1], expected_hi);
+    }
+
+    #[test]
+    fn davidson_find_lowest_returns_smallest_eigenpair() {
+        use ndarray::array;
+        let result = run_davidson_seeded(
+            Array2::eye(2),
+            |v_mat: &Array2<f64>, _omega: f64| -> Array2<f64> {
+                let fixed = array![[2.0f64, 0.5], [0.5, 3.0]];
+                v_mat.t().dot(&fixed.dot(v_mat))
+            },
+            1e-8,
+            20,
+            1,
+            true,
+        ).unwrap();
+        let expected_lo = (5.0 - 2.0f64.sqrt()) / 2.0;
+        assert_eq!(result.eigenvalues.len(), 1);
+        assert!(
+            (result.eigenvalues[0] - expected_lo).abs() < 1e-6,
+            "find_lowest returned {} expected {}",
+            result.eigenvalues[0], expected_lo,
+        );
     }
 }
