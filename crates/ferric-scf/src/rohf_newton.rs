@@ -68,9 +68,7 @@ pub fn rohf_newton_step(
     //   g[v,c] = f_α[v,c] + f_β[v,c]
     //   g[v,o] = f_α[v,o]
     //   g[o,c] = f_β[o,c]
-    let g_vc = pack_block(inp.f_a_mo, inp.f_b_mo, nocc_a..n, 0..nc, true);
-    let g_vo = pack_block(inp.f_a_mo, inp.f_b_mo, nocc_a..n, nc..nocc_a, false);  // α only
-    let g_oc = pack_block(inp.f_b_mo, inp.f_b_mo, nc..nocc_a, 0..nc, false);       // β only (passed as f_a slot but only first arg used when add=false&which=alpha — see helper)
+    let (g_vc, g_vo, g_oc) = gradient_blocks(inp);
 
     // Per-spin semicanonical diagonal entries — PySCF convention.
     // For each block, the diagonal Fock contribution is built from the spin
@@ -220,7 +218,24 @@ pub fn rohf_newton_step(
 /// (and add the optional XC kernel response), project the resulting δF_α,
 /// δF_β to MO basis, and read off the three block components using the
 /// PySCF Roothaan gradient pairing.
-fn hessian_matvec(
+/// Build the three Roothaan-projected gradient blocks (vc, vo, oc) in MO basis
+/// from per-spin Focks. Same convention as the DIIS error-vector in
+/// `solve_rohf`:
+///   g[v,c] = f_α[v,c] + f_β[v,c]
+///   g[v,o] = f_α[v,o]
+///   g[o,c] = f_β[o,c]
+pub(crate) fn gradient_blocks(inp: &RohfNewtonInputs) -> (Array2<f64>, Array2<f64>, Array2<f64>) {
+    let n = inp.c.nrows();
+    let nc = inp.nocc_double;
+    let no = inp.nocc_open;
+    let nocc_a = nc + no;
+    let g_vc = pack_block(inp.f_a_mo, inp.f_b_mo, nocc_a..n, 0..nc, true);
+    let g_vo = pack_block(inp.f_a_mo, inp.f_b_mo, nocc_a..n, nc..nocc_a, false);
+    let g_oc = pack_block(inp.f_b_mo, inp.f_b_mo, nc..nocc_a, 0..nc, false);
+    (g_vc, g_vo, g_oc)
+}
+
+pub(crate) fn hessian_matvec(
     ctx: &ParallelContext,
     inp: &RohfNewtonInputs,
     k_vc: &Array2<f64>,
@@ -356,7 +371,7 @@ fn hessian_matvec(
 
 /// Extract a block from MO matrices using the Roothaan pairing.
 /// If `add` is true, returns A[rows,cols] + B[rows,cols]; otherwise returns A[rows,cols].
-fn pack_block(
+pub(crate) fn pack_block(
     a: &Array2<f64>,
     _b: &Array2<f64>,
     rows: std::ops::Range<usize>,
