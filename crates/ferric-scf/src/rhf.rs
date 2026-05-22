@@ -60,6 +60,13 @@ pub struct RhfConfig {
     /// reasonable default for OH-doublet LDA/PBE plateaus. A value of 0
     /// disables Newton entirely (DIIS-only).
     pub newton_trigger: f64,
+    /// If > 0 in ROHF/ROKS: switch from DIIS / damped-Newton to an
+    /// augmented-Hessian Newton step once err_max drops below this trigger.
+    /// AH handles vanishing Hessian eigenvalues that trip up PCG. A value
+    /// of 0 disables AH. Both triggers can be set: PCG fires first (when
+    /// err_max < newton_trigger) and AH takes over when err_max < ah_trigger
+    /// (typically a tighter threshold).
+    pub ah_trigger: f64,
 }
 
 impl Default for RhfConfig {
@@ -81,6 +88,7 @@ impl Default for RhfConfig {
             nlc_grid: None,
             level_shift: 0.0,
             newton_trigger: 0.0,
+            ah_trigger: 0.0,
         }
     }
 }
