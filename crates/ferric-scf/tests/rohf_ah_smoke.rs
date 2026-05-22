@@ -118,6 +118,52 @@ fn rohf_ah_h2_triplet_lda_matches_diis() {
     );
 }
 
+/// Diagnostic — not a hard assertion. Reports how AH performs on the
+/// known-hard doublet OH/LDA case where PCG plateaus. If this lands an
+/// energy ≥1 mHa below the DIIS run *and* hits density_conv=1e-3, we can
+/// un-ignore roks_grad_oh_ccpvdz_lda in a follow-up.
+#[test]
+fn rohf_ah_oh_lda_diagnostic() {
+    let mol = Molecule::parse_xyz("2\nOH\nO 0 0 0\nH 0 0 0.97\n", 0, 2).unwrap();
+    let bs = basis::bundled("cc-pvdz").unwrap();
+    let prep = PreparedBasis::new(&mol, &bs).unwrap();
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+    let ctx = ParallelContext::default();
+
+    let cfg_diis = RhfConfig {
+        xc: Some("LDA".into()),
+        energy_conv: 1e-7,
+        density_conv: 1e-3,
+        max_iter: 200,
+        level_shift: 0.2,
+        ..Default::default()
+    };
+    let cfg_ah = RhfConfig {
+        ah_trigger: 1e-2,
+        ..cfg_diis.clone()
+    };
+    let r_diis = solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg_diis);
+    let r_ah   = solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg_ah);
+
+    let (e_diis, conv_diis, iters_diis) = match r_diis {
+        Ok(r) => (r.energy, r.converged, r.iterations),
+        Err(ferric_core::FerricError::ScfConvergence { last_energy, iterations }) =>
+            (last_energy, false, iterations),
+        Err(e) => panic!("Unexpected DIIS error: {e:?}"),
+    };
+    let (e_ah, conv_ah, iters_ah) = match r_ah {
+        Ok(r) => (r.energy, r.converged, r.iterations),
+        Err(ferric_core::FerricError::ScfConvergence { last_energy, iterations }) =>
+            (last_energy, false, iterations),
+        Err(e) => panic!("Unexpected AH error: {e:?}"),
+    };
+    eprintln!("OH/LDA  DIIS: E={:.10} conv={} iters={}", e_diis, conv_diis, iters_diis);
+    eprintln!("OH/LDA  AH:   E={:.10} conv={} iters={}", e_ah, conv_ah, iters_ah);
+    eprintln!("OH/LDA  ΔE (AH − DIIS) = {:.3e} Ha", e_ah - e_diis);
+    // No assertion — informative only.
+}
+
 #[test]
 fn rohf_ah_disabled_still_works() {
     // Pure DIIS path with ah_trigger=0 must still converge unchanged.
