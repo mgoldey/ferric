@@ -67,6 +67,12 @@ pub struct RhfConfig {
     /// err_max < newton_trigger) and AH takes over when err_max < ah_trigger
     /// (typically a tighter threshold).
     pub ah_trigger: f64,
+    /// If > 0 in ROHF/ROKS: activate Maximum-Overlap Method reordering
+    /// after this many DIIS iters. From iter `mom_after_iter + 1` onward,
+    /// the occupied MO set is picked by AO-overlap with the previous-iter
+    /// accepted set (rather than by ε). Default 0 = MOM disabled.
+    /// Suggested value: 5 (let DIIS descend into a basin first).
+    pub mom_after_iter: usize,
 }
 
 impl Default for RhfConfig {
@@ -89,6 +95,7 @@ impl Default for RhfConfig {
             level_shift: 0.0,
             newton_trigger: 0.0,
             ah_trigger: 0.0,
+            mom_after_iter: 0,
         }
     }
 }
