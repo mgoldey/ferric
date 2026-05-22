@@ -5,8 +5,7 @@
 //!
 //!   1. **Koopmans**: IP_K = −ε_HOMO from neutral RHF
 //!   2. **ΔSCF (UHF)**: E_UHF(cation) − E_RHF(neutral)
-//!   3. **ΔOOMP2**: E_U-OO-MP2(cation) − E_OO-MP2(neutral)
-//!   4. **ΔRPA**: [E_UHF(cation) + E_U-RPA(cation)] − [E_RHF(neutral) + E_RPA(neutral)]
+//!   3. **ΔRPA**: [E_UHF(cation) + E_U-RPA(cation)] − [E_RHF(neutral) + E_RPA(neutral)]
 //!   5. **G0W0@HF**: −ε_HOMO^QP from G0W0 on neutral
 //!   6. **COHSEX@HF**: −ε_HOMO^QP from static-W COHSEX on neutral
 //!   7. **evGW₀@HF**: eigenvalue-self-consistent (Σ updated, W frozen)
@@ -25,8 +24,6 @@ use ferric_gw::{run_gw, GwConfig, GwMethod};
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::oneelectron;
 use ferric_integrals::operator::Operator;
-use ferric_mp2::oo_rimp2::{oo_ri_mp2, OoRiMp2Config};
-use ferric_mp2::u_oo_rimp2::{u_oo_ri_mp2, UOoRiMp2Config};
 use ferric_rpa::config::{
     Chi0Backend, Chi0Sparsity, Eigensolver, PdepRpaConfig, QuadratureConfig, QuadratureScheme,
     SternheimerConfig,
@@ -65,7 +62,6 @@ fn cases() -> Vec<Case> {
 struct Ips {
     koop: f64,
     dscf: f64,
-    doomp2: f64,
     drpa: f64,
     g0w0: f64,
     cohsex: f64,
@@ -159,13 +155,6 @@ fn run_case(case: &Case) -> Option<(Ips, CationDiag)> {
         (e_c - e_n) * HA_TO_EV
     };
 
-    let oo_n = oo_ri_mp2(&neutral, &obs_n, &dfbs_n, op, &bounds_n, &rhf_n, &OoRiMp2Config::default()).ok();
-    let oo_c = u_oo_ri_mp2(&cation, &obs_c, &dfbs_c, op, &bounds_c, &uhf_c, &UOoRiMp2Config::default()).ok();
-    let ip_doomp2 = match (oo_n.as_ref(), oo_c.as_ref()) {
-        (Some(n), Some(c)) => (c.total_energy - n.total_energy) * HA_TO_EV,
-        _ => f64::NAN,
-    };
-
     let pdep_cfg_gw = PdepRpaConfig {
         quadrature: QuadratureConfig {
             scheme: QuadratureScheme::GaussLegendre, n_points: 16, u0: 0.5,
@@ -199,7 +188,7 @@ fn run_case(case: &Case) -> Option<(Ips, CationDiag)> {
     }
 
     Some((
-        Ips { koop: ip_koop, dscf: ip_dscf, doomp2: ip_doomp2, drpa: ip_drpa,
+        Ips { koop: ip_koop, dscf: ip_dscf, drpa: ip_drpa,
               g0w0: ip_g0w0, cohsex: ip_cohsex, evgw0: ip_evgw0, evgw: ip_evgw },
         diag,
     ))
@@ -208,25 +197,25 @@ fn run_case(case: &Case) -> Option<(Ips, CationDiag)> {
 fn main() {
     let cases = cases();
     println!(
-        "{:<6} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}",
-        "mol", "exp(eV)", "Koop", "ΔSCF", "ΔOOMP2", "ΔRPA", "G0W0", "COHSEX", "evGW0", "evGW"
+        "{:<6} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}",
+        "mol", "exp(eV)", "Koop", "ΔSCF", "ΔRPA", "G0W0", "COHSEX", "evGW0", "evGW"
     );
-    println!("{:-<92}", "");
+    println!("{:-<82}", "");
 
-    let mut sum_abs = [0.0f64; 8];
-    let mut n_ok = [0usize; 8];
+    let mut sum_abs = [0.0f64; 7];
+    let mut n_ok = [0usize; 7];
     let mut diags: Vec<(&str, CationDiag)> = Vec::new();
 
     for case in &cases {
         match run_case(case) {
             Some((ips, diag)) => {
                 println!(
-                    "{:<6} {:>8.2} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3}",
+                    "{:<6} {:>8.2} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3}",
                     case.name, case.ip_ref,
-                    ips.koop, ips.dscf, ips.doomp2, ips.drpa,
+                    ips.koop, ips.dscf, ips.drpa,
                     ips.g0w0, ips.cohsex, ips.evgw0, ips.evgw
                 );
-                for (k, v) in [ips.koop, ips.dscf, ips.doomp2, ips.drpa,
+                for (k, v) in [ips.koop, ips.dscf, ips.drpa,
                                ips.g0w0, ips.cohsex, ips.evgw0, ips.evgw].iter().enumerate() {
                     if v.is_finite() {
                         sum_abs[k] += (v - case.ip_ref).abs();
@@ -239,14 +228,14 @@ fn main() {
         }
     }
 
-    println!("{:-<92}", "");
+    println!("{:-<82}", "");
     let mae: Vec<String> = sum_abs.iter().zip(n_ok.iter()).map(|(s, n)| {
         if *n > 0 { format!("{:>8.3}", s / *n as f64) } else { "     n/a".to_string() }
     }).collect();
     println!(
-        "{:<6} {:>8} {} {} {} {} {} {} {} {}",
+        "{:<6} {:>8} {} {} {} {} {} {} {}",
         "MAE", "",
-        mae[0], mae[1], mae[2], mae[3], mae[4], mae[5], mae[6], mae[7],
+        mae[0], mae[1], mae[2], mae[3], mae[4], mae[5], mae[6],
     );
 
     println!("\nCation SCF diagnostics:");
@@ -258,5 +247,5 @@ fn main() {
     }
 
     println!("\nKoopmans, G0W0/COHSEX/evGW(0): direct QP energies on neutral RHF/HF.");
-    println!("ΔSCF/ΔOOMP2/ΔRPA: cation − neutral total-energy differences.");
+    println!("ΔSCF/ΔRPA: cation − neutral total-energy differences.");
 }
