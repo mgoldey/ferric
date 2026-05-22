@@ -30,6 +30,7 @@ pub mod uhf;
 pub use uhf::{solve_uhf, UhfConfig};
 pub mod rohf;
 pub use rohf::{solve_rohf, RohfConfig};
+pub mod mom;
 pub mod rohf_newton;
 pub mod davidson_local;
 pub mod rohf_ah;
