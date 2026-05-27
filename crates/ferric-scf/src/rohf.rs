@@ -158,6 +158,9 @@ pub fn solve_rohf(
 
     let mut diis = Diis::new(config.diis_size);
     let mut prev_e = 0.0;
+    // MOM reference: (closed-MO AO block, open-MO AO block) from the most
+    // recently accepted iter. None until iter `config.mom_after_iter`.
+    let mut mom_ref: Option<(Array2<f64>, Array2<f64>)> = None;
     let mut total_quartets = 0usize;
 
     for iter in 1..=config.max_iter {
@@ -267,6 +270,40 @@ pub fn solve_rohf(
         let de = (energy - prev_e).abs();
         let err_max = err.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
         let converged = de < config.energy_conv && err_max < config.density_conv;
+
+        // FERRIC_ROHF_TRACE=1: per-iter diagnostic of plateau dynamics.
+        // Logs (iter, energy, ΔE, err_max, per-block gradient max,
+        // eigenvalues straddling SOMO, and the occupied-α↔virt overlap).
+        if std::env::var("FERRIC_ROHF_TRACE").is_ok() {
+            let (eps_now, _c_now) = diagonalize(&f_eff, &s_inv_sqrt)?;
+            // Eigenvalues around the SOMO. With nocc_double β-pairs and
+            // nocc_open singly-α-occupied orbitals, the SOMO index range is
+            // [nocc_double .. nocc_double+nocc_open) and the LUMO starts at
+            // nocc_a = nocc_double + nocc_open.
+            let nlow = nocc_double.saturating_sub(2);
+            let nhi = (nocc_a + 2).min(n);
+            let eps_window: Vec<String> = (nlow..nhi).map(|i| {
+                let tag = if i < nocc_double { " D " }
+                    else if i < nocc_a { " S " }
+                    else { " V " };
+                format!("[{i}{tag}{:.4}]", eps_now[i])
+            }).collect();
+            // Per-block gradient maxima from g_mo (pre-antisymmetrize).
+            let mut g_vc_max = 0.0f64;
+            let mut g_vo_max = 0.0f64;
+            let mut g_oc_max = 0.0f64;
+            for p in nocc_a..n {
+                for q in 0..nocc_double { g_vc_max = g_vc_max.max(g_mo[(p, q)].abs()); }
+                for q in nocc_double..nocc_a { g_vo_max = g_vo_max.max(g_mo[(p, q)].abs()); }
+            }
+            for p in nocc_double..nocc_a {
+                for q in 0..nocc_double { g_oc_max = g_oc_max.max(g_mo[(p, q)].abs()); }
+            }
+            eprintln!(
+                "ROHFTRACE it={iter:>3} E={energy:.10} dE={de:.3e} err={err_max:.3e} |g|vc={g_vc_max:.3e} |g|vo={g_vo_max:.3e} |g|oc={g_oc_max:.3e}  eps:{}",
+                eps_window.join(" ")
+            );
+        }
 
         if iter > 1 && converged {
             let (eps, c_f) = diagonalize(&f_eff, &s_inv_sqrt)?;
@@ -442,7 +479,29 @@ pub fn solve_rohf(
                 }
             }
             let (_, c_new) = diagonalize(&f_new, &s_inv_sqrt)?;
-            c = c_new;
+            let c_after_mom = if config.mom_after_iter > 0 && iter > config.mom_after_iter {
+                match mom_ref.as_ref() {
+                    Some((ref_closed, ref_open)) => crate::mom::mom_reorder(
+                        &c_new,
+                        &s,
+                        ref_closed,
+                        ref_open,
+                        nocc_double,
+                        nocc_open,
+                    ),
+                    None => c_new,
+                }
+            } else {
+                c_new
+            };
+            c = c_after_mom;
+            if config.mom_after_iter > 0 && iter >= config.mom_after_iter {
+                let ref_closed = c.slice(ndarray::s![.., ..nocc_double]).to_owned();
+                let ref_open = c
+                    .slice(ndarray::s![.., nocc_double..nocc_double + nocc_open])
+                    .to_owned();
+                mom_ref = Some((ref_closed, ref_open));
+            }
             let (da_n, db_n) = build_rohf_densities(&c, nocc_double, nocc_open);
             d_a = da_n;
             d_b = db_n;
