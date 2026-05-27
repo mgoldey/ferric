@@ -6,6 +6,7 @@
 #include <cmath>
 #include <stdexcept>
 #include <atomic>
+#include <mutex>
 #include <new>
 
 using libint2::Engine;
@@ -26,6 +27,15 @@ struct goscf_engine {
 
 static std::atomic<int> libint_init_count{0};
 
+// libint2's Engine and Shell/BasisSet constructors touch process-global
+// state (libint2::initialize() tables, normalization scratch) and are NOT
+// reentrant. Compute on a fully-constructed Engine is thread-safe (each
+// thread owns its own Engine), but *construction* must be serialized.
+// Without this, many threads building engines at once (e.g. the parallel
+// test binary, or several SCFs in flight) corrupt the heap. Production runs
+// one SCF at a time so it rarely trips, but it is the same latent bug.
+static std::mutex libint_ctor_mutex;
+
 void goscf_libint_init(void) {
     if (libint_init_count.fetch_add(1) == 0) {
         libint2::initialize();
@@ -40,6 +50,7 @@ void goscf_libint_finalize(void) {
 
 goscf_basis *goscf_basis_create(const goscf_shell *shells, int nshells,
                                 const goscf_atom *atoms, int natoms) {
+    std::lock_guard<std::mutex> lock(libint_ctor_mutex);
     try {
         // Build per-atom Atom records (libint type) for nuclear positions.
         std::vector<libint2::Atom> li_atoms(natoms);
@@ -122,6 +133,7 @@ goscf_engine *goscf_engine_create(int op_kind, double omega,
     bool ok = false;
     Operator op = op_for_kind(op_kind, &ok);
     if (!ok) return nullptr;
+    std::lock_guard<std::mutex> lock(libint_ctor_mutex);
     try {
         Engine eng(op, max_nprim, max_L, 0, precision);
         if (op_kind == 1 || op_kind == 2) {
@@ -141,6 +153,7 @@ goscf_engine *goscf_engine_create_deriv(int op_kind, double omega,
     bool ok = false;
     Operator op = op_for_kind(op_kind, &ok);
     if (!ok) return nullptr;
+    std::lock_guard<std::mutex> lock(libint_ctor_mutex);
     try {
         Engine eng(op, max_nprim, max_L, 1, precision);
         if (op_kind == 1 || op_kind == 2) {
@@ -349,6 +362,7 @@ goscf_engine *goscf_engine_create_3center(int op_kind, double omega,
     bool ok = false;
     Operator op = op_for_kind(op_kind, &ok);
     if (!ok) return nullptr;
+    std::lock_guard<std::mutex> lock(libint_ctor_mutex);
     try {
         Engine eng(op, max_nprim, max_L, 0, precision);
         eng.set(libint2::BraKet::xs_xx);
@@ -369,6 +383,7 @@ goscf_engine *goscf_engine_create_2center(int op_kind, double omega,
     bool ok = false;
     Operator op = op_for_kind(op_kind, &ok);
     if (!ok) return nullptr;
+    std::lock_guard<std::mutex> lock(libint_ctor_mutex);
     try {
         Engine eng(op, max_nprim, max_L, 0, precision);
         eng.set(libint2::BraKet::xs_xs);
@@ -430,6 +445,7 @@ goscf_engine *goscf_engine_create_3center_deriv(int op_kind, double omega,
     bool ok = false;
     Operator op = op_for_kind(op_kind, &ok);
     if (!ok) return nullptr;
+    std::lock_guard<std::mutex> lock(libint_ctor_mutex);
     try {
         Engine eng(op, max_nprim, max_L, 1, precision);
         eng.set(libint2::BraKet::xs_xx);
@@ -450,6 +466,7 @@ goscf_engine *goscf_engine_create_2center_deriv(int op_kind, double omega,
     bool ok = false;
     Operator op = op_for_kind(op_kind, &ok);
     if (!ok) return nullptr;
+    std::lock_guard<std::mutex> lock(libint_ctor_mutex);
     try {
         Engine eng(op, max_nprim, max_L, 1, precision);
         eng.set(libint2::BraKet::xs_xs);
