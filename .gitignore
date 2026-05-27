@@ -28,3 +28,8 @@ examples/dft_pbe.py
 # Deprecated code bucket
 /deprecated/
 
+# Local handoff notes and presentation drafts (not engine code)
+/handoff.txt
+/.handoff-task50.txt
+/demo-talk/
+
