@@ -55,10 +55,30 @@ pub fn solve_uhf_with_guess(
     ctx: &ParallelContext,
     mol: &Molecule,
     prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    config: &UhfConfig,
+    initial_mos: Option<(&Array2<f64>, &Array2<f64>)>,
+) -> Result<ScfResult, FerricError> {
+    solve_uhf_fockmod(ctx, mol, prep, op, bounds, config, initial_mos, None)
+}
+
+/// UHF with an optional per-iteration Fock modifier.
+///
+/// `fock_mod`, if given, is called as `fock_mod(&mut f_a, &mut f_b)` each
+/// iteration immediately after the XC potential is added and before the DIIS
+/// error is formed, so the added potential is part of the converged Fock and
+/// of the DIIS condition. `None` reproduces ordinary UHF/UKS exactly. cDFT uses
+/// this to add Σ_C λ_C W^C.
+pub fn solve_uhf_fockmod(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
     _op: Operator,
     bounds: &SchwarzBounds,
     config: &UhfConfig,
     initial_mos: Option<(&Array2<f64>, &Array2<f64>)>,
+    fock_mod: Option<&dyn Fn(&mut Array2<f64>, &mut Array2<f64>)>,
 ) -> Result<ScfResult, FerricError> {
     use ferric_dft::ks::KsXcUks;
     use ferric_dft::xc_trait::{KMix, UksXcContribution};
@@ -261,6 +281,13 @@ pub fn solve_uhf_with_guess(
         } else {
             0.0
         };
+        // cDFT (or any external) Fock modifier: add a fixed AO potential to
+        // both spin Focks before DIIS sees them. The constraint energy term is
+        // accounted for by the outer driver, not here, so `energy` below is the
+        // ordinary KS energy at the current (constrained) density.
+        if let Some(fm) = fock_mod {
+            fm(&mut f_a, &mut f_b);
+        }
         let energy = e_elec_no_xc + e_xc + vnn;
 
         // DIIS errors per spin: F_σ D_σ S − S D_σ F_σ

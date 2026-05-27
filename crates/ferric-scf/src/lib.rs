@@ -27,7 +27,7 @@ pub mod diis;
 pub mod guess;
 pub mod rhf;
 pub mod uhf;
-pub use uhf::{solve_uhf, UhfConfig};
+pub use uhf::{solve_uhf, solve_uhf_fockmod, UhfConfig};
 pub mod rohf;
 pub use rohf::{solve_rohf, RohfConfig};
 pub mod mom;
