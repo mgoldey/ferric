@@ -25,24 +25,42 @@ fn trace_oh_lda_plateau() {
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
 
-    eprintln!("=== DIIS-only OH/LDA ===");
-    let _ = solve_rohf(&ctx, &mol, &prep, op, &bounds, &RhfConfig {
+    // Shared base config; each variant tweaks one knob.
+    let base = || RhfConfig {
         xc: Some("LDA".into()),
         energy_conv: 1e-9,
         density_conv: 1e-5,
         max_iter: 60,
         level_shift: 0.2,
         ..Default::default()
-    });
+    };
 
-    eprintln!("=== AH-enabled OH/LDA ===");
-    let _ = solve_rohf(&ctx, &mol, &prep, op, &bounds, &RhfConfig {
-        xc: Some("LDA".into()),
-        energy_conv: 1e-9,
-        density_conv: 1e-5,
-        max_iter: 60,
-        level_shift: 0.2,
-        ah_trigger: 1e-2,
-        ..Default::default()
-    });
+    let run = |label: &str, cfg: &RhfConfig| {
+        eprintln!("=== {label} ===");
+        match solve_rohf(&ctx, &mol, &prep, op, &bounds, cfg) {
+            Ok(r) => {
+                eprintln!(
+                    "SUMMARY {label}: converged={} iters={} E={:.10}",
+                    r.converged, r.iterations, r.energy
+                );
+                Some(r)
+            }
+            Err(e) => {
+                eprintln!("SUMMARY {label}: ERROR {e}");
+                None
+            }
+        }
+    };
+
+    run("DIIS-only", &base());
+    run("AH (trigger 1e-2)", &RhfConfig { ah_trigger: 1e-2, ..base() });
+    // MOM: pin the SOMO identity by AO-overlap once DIIS has descended into a
+    // basin. Sweep the activation iter — too early and MOM locks onto a bad
+    // guess; too late and the oscillation has already set in.
+    for after in [3usize, 5, 8, 12] {
+        run(
+            &format!("MOM (after iter {after})"),
+            &RhfConfig { mom_after_iter: after, ..base() },
+        );
+    }
 }
