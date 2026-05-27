@@ -11,6 +11,7 @@ use crate::direct_jk::DirectJK;
 use crate::direct_k::DirectK;
 use crate::fock::{JBuilder, KBuilder};
 use crate::guess::hcore_guess;
+use ferric_dft::cdft::Constraint;
 use crate::result::{ScfResult, Spin};
 
 use crate::link_k::LinkK;
@@ -73,6 +74,13 @@ pub struct RhfConfig {
     /// accepted set (rather than by ε). Default 0 = MOM disabled.
     /// Suggested value: 5 (let DIIS descend into a basin first).
     pub mom_after_iter: usize,
+    /// cDFT constraints. Empty (default) = ordinary SCF. Each constraint pins a
+    /// fragment population (charge or spin) to a target via a Lagrange
+    /// multiplier added to the Fock matrix. Consumed by `solve_cdft_uhf`.
+    pub constraints: Vec<Constraint>,
+    /// cDFT outer-loop convergence: stop when max_C |N_C − target_C| is below
+    /// this (electrons). Default 1e-5.
+    pub cdft_lambda_tol: f64,
 }
 
 impl Default for RhfConfig {
@@ -96,6 +104,8 @@ impl Default for RhfConfig {
             newton_trigger: 0.0,
             ah_trigger: 0.0,
             mom_after_iter: 0,
+            constraints: Vec::new(),
+            cdft_lambda_tol: 1e-5,
         }
     }
 }
