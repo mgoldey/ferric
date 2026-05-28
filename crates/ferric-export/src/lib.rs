@@ -1,3 +1,14 @@
+//! Export of ferric results to downstream formats.
+//!
+//! - **Gaussian cube files** ([`cube`]) — volumetric data (densities, MOs) on a
+//!   regular grid, for visualization.
+//! - **GTO evaluation** ([`gto_eval`]) — basis-function values on an arbitrary grid,
+//!   the shared kernel behind cube and ML export.
+//! - **NPZ ML-feature export** ([`ml`]) — a bundle of machine-learning-ready arrays
+//!   (MO coefficients, orbital energies, PDEP eigenvectors, ESP, polarizability
+//!   tensors, Hirshfeld/Löwdin charges, density matrix) for conditioning generative
+//!   models on quantum-chemical features.
+
 pub mod cube;
 pub mod gto_eval;
 pub mod ml;

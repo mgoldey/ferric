@@ -128,9 +128,9 @@ fn vv10_exc_per_point(
     (exc, ())
 }
 
-/// Per-grid-point VV10 egrad F[g, axis] = -3 · Σ_p RpW_p · Q[g,p] · DR[g,p]
-/// where Q[g,p] = (1/(g_i·g_p·g_t)) · (ω₀_i/g_i + ω₀_p/g_p + (ω₀_i+ω₀_p)/g_t)
-/// and DR = r_p − r_g.
+/// Per-grid-point VV10 egrad `F[g, axis] = -3 · Σ_p RpW_p · Q[g,p] · DR[g,p]`
+/// where `Q[g,p] = (1/(g_i·g_p·g_t)) · (ω₀_i/g_i + ω₀_p/g_p + (ω₀_i+ω₀_p)/g_t)`
+/// and `DR = r_p − r_g`.
 ///
 /// This is the gradient of the VV10 pair integrand with respect to the
 /// **outer** grid coordinate r_g. The outer grid (`outer`) and the inner

@@ -1,3 +1,12 @@
+//! Python bindings for ferric (pyo3).
+//!
+//! Exposes the engine to Python: `Molecule` / `BasisSet` constructors plus
+//! `run_rhf`, `run_rimp2`, `run_attenuated_rimp2`, `run_scs_mp2`, the Laplace and
+//! coupled-cluster drivers, and geometry optimization. Each binding wraps the
+//! corresponding Rust driver and returns a result object with energies/components.
+//! Build with `uv run maturin develop --release` (see the README for the venv
+//! caveat).
+
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;

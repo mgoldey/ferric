@@ -4,24 +4,63 @@ Rust-native quantum chemistry engine wrapping libint2 for electron integrals, wi
 
 <!-- ![build](https://img.shields.io/badge/build-passing-brightgreen) ![tests](https://img.shields.io/badge/tests-passing-brightgreen) -->
 
+## The idea behind it
+
+`ferric` is organized around **electronic response** — how the density reacts to a
+perturbation, the object that appears as the polarizability α, the dielectric function ε,
+and the susceptibility χ. The methods here are, at heart, three faces of getting that one
+object right where standard methods get it wrong:
+
+- **Attenuated MP2** — MP2 builds dispersion from an *uncoupled* polarizability that
+  over-polarizes (too-large C₆, overestimated π-stacking); attenuating the correlation
+  operator tames that response error with a single tunable parameter.
+- **PDEP-RPA / GW** — the dielectric matrix *is* the density–density response; PDEP keeps
+  only its dominant low-rank eigenmodes, so RPA correlation and the GW screened
+  interaction need no explicit sum over empty states.
+- **Constrained DFT** — a constraint couples to the density and reads its response
+  (∂N/∂λ is a susceptibility), building charge-localized diabatic states and their
+  electron-transfer couplings.
+
+The computational payoff falls out of the physics: **response is local in real space and
+low-rank in its eigenspectrum, so organizing around it makes the computation sparse** —
+attenuate the operator, keep the dominant dielectric modes, exploit sparse Laplace
+pseudo-densities. Get the physics right, and the cheap method follows from its structure.
+
 ## Features
 
-- **Closed-shell RHF** with DIIS convergence acceleration and Schwarz screening
-- **Analytical RHF nuclear gradients** validated against finite differences
-- **RI-MP2** (density-fitted MP2) via 3-center/2-center Coulomb integrals
-- **OO-RI-MP2** (orbital-optimized RI-MP2) with level-shifted Newton, DIIS, Cayley rotations, and backtracking
+**Self-consistent field**
+- **RHF** (closed-shell) with DIIS, Schwarz/QQR screening, and a choice of direct or density-fitted (RI-J / RI-K) Fock builds
+- **UHF / ROHF** (open-shell) with per-spin DIIS, virtual-space level shifting, augmented-Hessian Newton, and Maximum-Overlap-Method (MOM) orbital tracking for near-degenerate cases
+- **Kohn–Sham DFT** — closed- and open-shell (RKS / UKS / ROKS) via libxc: LDA/GGA/hybrid/range-separated-hybrid functionals (LDA, PBE, B3LYP, ωB97X-V) on Becke–Lebedev grids, with VV10 nonlocal correlation
+- **Analytical nuclear gradients** for RHF, UHF, ROHF and KS-DFT (incl. grid response), validated against finite differences
+
+**Correlation (MP2 family)**
+- **RI-MP2** (density-fitted) via 3-center/2-center integrals; **canonical MP2** for cross-validation
+- **OO-RI-MP2** (orbital-optimized) with level-shifted Newton, orbital DIIS, Cayley rotations, backtracking
 - **Attenuated RI-MP2** with erfc(ωr)/r and terfc operators (Goldey & Head-Gordon, JPCL 2012)
-- **SCS-MP2** spin-component scaled MP2 (Grimme, JCP 2003)
-- **SCS-MP2(2terfc)** dual-attenuated SCS-MP2 (Goldey, Dutoi, Head-Gordon, PCCP 2013)
-- **Canonical MP2** for cross-validation against RI-MP2
-- **QQR screening** distance-dependent integral bounds with operator-aware decay (Maurer/Lambrecht/Ochsenfeld 2012)
-- **LinK exchange** linear-scaling K matrix builder via pair-list-driven loops (Ochsenfeld/White/Head-Gordon 1998)
-- **Spherical and Cartesian** basis set support (BSE-JSON and Gaussian-94 parsers)
-- **Bundled basis sets**: STO-3G, 6-31G, cc-pVDZ, def2-SVP
-- **Bundled RI auxiliary bases**: cc-pVDZ-RI, def2-SVP-RIFIT through def2-QZVPP-RIFIT
-- **Python bindings** via pyo3 (RHF, RI-MP2, attenuated MP2, SCS-MP2, SCS-MP2(2terfc), RI-Laplace MP2, CCSD(T))
-- **Coupled Cluster suite**: RI-CCD, RI-CCSD, and perturbative triples (T) correction
-- **TOML-driven CLI** for all methods
+- **SCS-MP2** (Grimme, JCP 2003) and **SCS-MP2(2terfc)** dual-attenuated (Goldey, Dutoi, Head-Gordon, PCCP 2013)
+- **RI-Laplace MP2** — O(N) AO-Laplace formulation via sparse pseudo-density tensors
+
+**Coupled cluster**
+- **RI-CCD, RI-CCSD**, and the perturbative triples **(T)** correction
+
+**Many-body response (RPA & GW)**
+- **PDEP-RPA** — RPA correlation via projective dielectric-eigenpotentials (a low-rank W basis in Gaussians), closed- and open-shell (U-PDEP-RPA over a spin-summed dielectric)
+- **GW quasiparticle energies** — G0W0, COHSEX, evGW0, evGW (and unrestricted U-GW); G0W0@HF matches MOLGW to ~5 meV
+- **Attenuated RPA** (short-range correlation via erfc)
+
+**Constrained DFT (electron transfer)**
+- **cDFT** — fragment charge/spin constraints via a grid-Becke weight operator and a nested Lagrange-multiplier solve (Wu–Van Voorhis)
+- **Electron-transfer coupling H_ab** — diabatic-state coupling via non-orthogonal-determinant overlap (Löwdin biorthogonalization)
+
+**Properties & ML export**
+- ESP-at-nuclei, electric field, static and atom-partitioned polarizabilities, Hirshfeld and Löwdin charges, density matrices
+- **NPZ export** of ML-ready features (MO coefficients, orbital energies, PDEP eigenvectors, ESP, polarizability tensors, charges) for downstream generative-model conditioning
+
+**Infrastructure**
+- **QQR screening** (Maurer/Lambrecht/Ochsenfeld 2012) and **LinK exchange** (Ochsenfeld/White/Head-Gordon 1998) for linear-scaling Fock builds; CFMM Coulomb
+- **Spherical and Cartesian** basis support (BSE-JSON and Gaussian-94 parsers); bundled orbital bases (STO-3G, 6-31G, cc-pVDZ, def2-SVP) + RI/JK auxiliary bases (cc-pVDZ-RI, def2-\*-RIFIT, def2-universal-jkfit)
+- **Python bindings** (pyo3) and a **TOML-driven CLI** for all methods
 
 ## Mathematical Principles
 
@@ -93,31 +132,36 @@ print(f"CCSD correlation: {cc.correlation_energy:.10f} Ha, (T) corr: {cc.t_corre
 ## Architecture
 
 ```
-                  +------------------+
-                  |   ferric-cli     |   TOML config -> all methods
-                  +--------+---------+
-                           |
-         +-----------------+------------------+
-         |                 |                  |
-+--------v------+  +-------v-------+  +-------v--------+
-|  ferric-scf   |  |  ferric-mp2   |  | ferric-python  |
-|  RHF, DIIS,   |  |  RI-MP2,      |  | pyo3 bindings  |
-|  gradients,   |  |  OO-RI-MP2,   |  +-------+--------+
-|  QQR, LinK,   |  |  attenuated,  |          |
-|  Schwarz      |  |  SCS, 2terfc  |          |
-+-------+-------+  +------+--------+          |
-        |                  |                   |
-        +--------+---------+-------------------+
-                 |
-        +--------v--------+
-        | ferric-integrals |   libint2 FFI: Coulomb, erf, erfc operators,
-        | shim/shim.cc     |   1e/2e/3-center/2-center, derivatives
-        +--------+--------+
-                 |
-        +--------v--------+
-        |   ferric-core    |   Molecule, BasisSet, Shell, elements,
-        |                  |   BSE-JSON / G94 parsers, bundled bases
-        +------------------+
+                          +------------------+
+                          |   ferric-cli     |   TOML config -> all methods
+                          +--------+---------+   (+ ferric-python: pyo3 bindings)
+                                   |
+   +-----------+-----------+-------+------+-----------+------------+
+   |           |           |              |           |            |
++--v----+ +----v----+ +----v----+   +-----v----+ +----v-----+ +---v------+
+|ferric | |ferric   | |ferric   |   |ferric    | |ferric    | |ferric    |
+|-scf   | |-mp2     | |-dft     |   |-rpa      | |-gw       | |-cc       |
+|RHF/UHF| |RI-MP2,  | |RKS/UKS/ |   |PDEP-RPA, | |G0W0,     | |CCD/CCSD/ |
+|/ROHF, | |OO,att,  | |ROKS,    |   |U-PDEP,   | |COHSEX,   | |(T)       |
+|KS-DFT,| |SCS,     | |libxc,   |   |response  | |evGW,     | +----------+
+|DIIS,  | |2terfc,  | |Becke    |   |props,    | |U-GW      |
+|MOM,AH,| |Laplace  | |grids,   |   |ESP/Hirsh/| +-----+----+
+|cDFT,  | +----+----+ |VV10     |   |NPZ export|       |
+|grads  |      |      +----+----+   +-----+----+       |
++---+---+      |           |              |            |
+    |          +-----+-----+------+-------+------------+
+    |                |     |      |
+    |   +------------v--+ +v------v-----+   ferric-tensors (sparse), 
+    |   |ferric-export | |ferric-      |   ferric-quadrature (Laplace/grid roots)
+    |   |cube,NPZ,GTO  | |integrals    |   support crates
+    |   +--------------+ |libint2 FFI  |
+    |                    |shim/shim.cc |   Coulomb/erf/erfc, 1e/2e/3c/2c, derivs
+    +--------+-----------+------+------+
+             |                  |
+        +----v------------------v----+
+        |        ferric-core         |   Molecule, BasisSet, Shell, elements,
+        |                            |   BSE-JSON / G94 parsers, bundled bases
+        +----------------------------+
 ```
 
 ## Installation
@@ -218,29 +262,45 @@ ferric/
   Cargo.toml                    # Workspace root
   crates/
     ferric-core/                # Molecule, BasisSet, elements, parsers
-      src/basis/bundled/        # Embedded BSE-JSON basis set files
-    ferric-integrals/           # libint2 FFI: 1e, 2e, 3-center, derivatives
+      src/basis/bundled/        # Embedded BSE-JSON basis set files (orbital + RI/JK aux)
+    ferric-integrals/           # libint2 FFI: 1e, 2e, 3-center, 2-center, derivatives
       shim/shim.{h,cc}         # C++ shim calling libint2 API
-    ferric-scf/                 # RHF solver, DIIS, Fock build, gradients, QQR, LinK
-    ferric-mp2/                 # RI-MP2, OO-RI-MP2, attenuated, SCS, canonical
+    ferric-scf/                 # RHF/UHF/ROHF + KS-DFT solvers, DIIS, MOM, AH-Newton,
+                                #   Fock builds (direct/DF), gradients, QQR, LinK, cDFT
+    ferric-dft/                 # libxc bridge, Becke-Lebedev grids, Vxc, VV10, cDFT weights
+    ferric-mp2/                 # RI-MP2, OO-RI-MP2, attenuated, SCS, canonical, Laplace
+    ferric-cc/                  # RI-CCD, RI-CCSD, perturbative (T)
+    ferric-rpa/                 # PDEP-RPA (closed/open-shell), response properties,
+                                #   ESP / Hirshfeld / Löwdin / polarizability
+    ferric-gw/                  # G0W0, COHSEX, evGW0, evGW, U-GW (PDEP-as-W)
+    ferric-tensors/             # Sparse tensor support (linear-scaling correlation)
+    ferric-quadrature/          # Laplace / grid quadrature roots and weights
+    ferric-export/              # Cube files, NPZ ML-feature export, GTO grid eval
     ferric-cli/                 # TOML-driven command-line driver
     ferric-python/              # pyo3 Python bindings
   testdata/
-    molecules/                  # XYZ files (water, methane)
-    reference/                  # PySCF reference energies (JSON)
+    molecules/                  # XYZ files (water, methane, ...)
+    reference/                  # PySCF/MOLGW reference values (JSON)
   examples/                     # TOML input files
+  docs/superpowers/             # design specs + implementation plans
 ```
 
 ## Roadmap
 
-- [x] Rayon-parallel LinK exchange (Implemented)
+- [x] Rayon-parallel LinK exchange
 - [x] CFMM (continuous fast multipole) for linear-scaling Coulomb
-- [x] AO-Laplace-Transform MP2 (Linear Scaling via Sparse Tensors)
-- [x] MPI distributed parallelization (Integrated across SCF/Gradients/MP2)
-- [x] Geometry optimization using analytical gradients (RHF, RI-MP2, SCS-MP2)
-- [x] ferric-tensors: Sparse tensor support implemented for linear correlation
-- [x] DFT (LDA/GGA) via numerical quadrature
+- [x] AO-Laplace-Transform MP2 (linear scaling via sparse tensors)
+- [x] MPI distributed parallelization (SCF / gradients / MP2)
+- [x] Geometry optimization via analytical gradients (RHF, RI-MP2, SCS-MP2)
+- [x] Sparse tensor support (ferric-tensors) for linear correlation
+- [x] KS-DFT (LDA/GGA/hybrid/RSH) via libxc + Becke-Lebedev quadrature; VV10 nonlocal
 - [x] Coupled Cluster (CCD, CCSD, CCSD(T)) with RI-integral dressing
+- [x] Open-shell SCF: UHF, ROHF, UKS, ROKS (with MOM + augmented-Hessian Newton)
+- [x] Open-shell analytical gradients (UHF/ROHF/KS-DFT, incl. grid response)
+- [x] PDEP-RPA correlation (closed- and open-shell) + attenuated RPA
+- [x] GW quasiparticle energies (G0W0, COHSEX, evGW0, evGW, U-GW)
+- [x] Constrained DFT + electron-transfer couplings (Wu-Van Voorhis H_ab)
+- [x] Response properties + NPZ ML-feature export (ESP, polarizability, charges, PDEP)
 
 ### Performance & Scaling Verification
 
