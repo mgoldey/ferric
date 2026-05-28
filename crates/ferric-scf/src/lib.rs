@@ -30,6 +30,7 @@ pub mod uhf;
 pub use uhf::{solve_uhf, solve_uhf_fockmod, UhfConfig};
 pub mod cdft_driver;
 pub use cdft_driver::{solve_cdft_uhf, CdftResult};
+pub mod cdft_coupling;
 pub mod rohf;
 pub use rohf::{solve_rohf, RohfConfig};
 pub mod mom;
