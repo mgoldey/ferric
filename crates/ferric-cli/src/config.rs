@@ -104,6 +104,15 @@ pub struct RpaCfg {
     /// (no proatom approximation, basis-set-stable).
     /// Default: true when `export_npz` is set.
     pub compute_lowdin_charges: Option<bool>,
+    /// Compute per-atom anisotropic C6 dispersion coefficients and include them
+    /// in the NPZ bundle (`c6_iso`, `c6_aniso`, `alpha_atomic_dynamic`,
+    /// `c6_freqs`, `c6_weights`). Default: true when `export_npz` is set.
+    pub compute_c6: Option<bool>,
+    /// C6 polarizability source: "ts" (Tkatchenko-Scheffler single-pole,
+    /// default) or "pdep" (PDEP-RPA dynamic α(iω), Phase 2).
+    pub c6_source: Option<String>,
+    /// Per-atom partition for C6: "becke" (default) or "hirshfeld".
+    pub c6_partition: Option<String>,
 }
 
 #[derive(Deserialize)]

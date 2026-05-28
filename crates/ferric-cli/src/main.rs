@@ -97,6 +97,8 @@ fn main() {
         newton_trigger: 0.0,
         ah_trigger: 0.0,
         mom_after_iter: 0,
+        constraints: Vec::new(),
+        cdft_lambda_tol: 1e-5,
     };
 
     if task == "optimize" {
@@ -648,6 +650,71 @@ fn main() {
                     None
                 };
 
+                // --- C6 dispersion (Phase 1: Tkatchenko-Scheffler model) ---
+                let compute_c6 = cfg.rpa.compute_c6.unwrap_or(true);
+                let mut c6_freqs_v: Vec<f64> = Vec::new();
+                let mut c6_weights_v: Vec<f64> = Vec::new();
+                let mut alpha_dyn_v: Vec<Vec<[[f64; 3]; 3]>> = Vec::new();
+                let mut c6_iso_opt: Option<ndarray::Array2<f64>> = None;
+                let mut c6_aniso_v: Vec<Vec<[[f64; 3]; 3]>> = Vec::new();
+                if compute_c6 {
+                    use ferric_rpa::dispersion::free_atom_ref::ts_free_atom;
+                    use ferric_rpa::dispersion::{casimir_polder_c6, ts_dynamic_polarizability};
+                    use ferric_rpa::properties::{
+                        atomic_effective_volumes_becke, pdep_polarizability_hirshfeld,
+                    };
+                    use ferric_rpa::quadrature::build_quadrature;
+
+                    // c6_source: only "ts" implemented (Phase 1). "pdep" is Phase 2.
+                    if cfg.rpa.c6_source.as_deref() == Some("pdep") {
+                        eprintln!(
+                            "warning: c6_source=\"pdep\" (PDEP-RPA dynamic α) is not yet \
+                             implemented; falling back to the TS model"
+                        );
+                    }
+                    let use_hirshfeld = cfg.rpa.c6_partition.as_deref() == Some("hirshfeld");
+
+                    // Static per-atom α: reuse the Becke alpha_atomic_vec if present and
+                    // Becke was requested; otherwise compute with the chosen partition.
+                    let alpha_static: Vec<[[f64; 3]; 3]> = if use_hirshfeld {
+                        pdep_polarizability_hirshfeld(
+                            &mol, &prep, &bs, &dfbs, &result, op, &rpa_cfg,
+                        )
+                        .unwrap_or_else(|_| vec![[[0.0; 3]; 3]; mol.atoms.len()])
+                    } else {
+                        match alpha_atomic_vec.as_ref() {
+                            Some(v) => v.clone(),
+                            None => pdep_polarizability_becke(
+                                &mol, &prep, &bs, &dfbs, &result, op, &rpa_cfg,
+                            )
+                            .unwrap_or_else(|_| vec![[[0.0; 3]; 3]; mol.atoms.len()]),
+                        }
+                    };
+                    let vols = atomic_effective_volumes_becke(
+                        &mol, &prep, &bs, result.density_total(),
+                    )
+                    .unwrap_or_else(|_| vec![1.0; mol.atoms.len()]);
+                    let z: Vec<usize> = mol.atoms.iter().map(|a| a.z as usize).collect();
+                    let ratio: Vec<f64> = z
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &zi)| match ts_free_atom(zi) {
+                            Some((_, _, vfree)) if vfree > 0.0 => vols[i] / vfree,
+                            _ => 1.0,
+                        })
+                        .collect();
+                    let (freqs, weights) = build_quadrature(&rpa_cfg.quadrature);
+                    let dp =
+                        ts_dynamic_polarizability(&z, &ratio, &alpha_static, &freqs, &weights);
+                    let res = casimir_polder_c6(&dp);
+                    c6_freqs_v = res.per_atom_dynamic.freqs.clone();
+                    c6_weights_v = res.per_atom_dynamic.weights.clone();
+                    alpha_dyn_v = res.per_atom_dynamic.per_atom.clone();
+                    c6_iso_opt = Some(res.c6_iso_pair.clone());
+                    c6_aniso_v = res.c6_aniso_pair.clone();
+                    println!("Computed TS C6: {} atoms", z.len());
+                }
+
                 if let Err(e) = export_npz(
                     npz_path,
                     None,
@@ -663,6 +730,11 @@ fn main() {
                     alpha_atomic_vec.as_deref(),
                     hq_vec.as_deref(),
                     lq_vec.as_deref(),
+                    if c6_freqs_v.is_empty() { None } else { Some(c6_freqs_v.as_slice()) },
+                    if c6_weights_v.is_empty() { None } else { Some(c6_weights_v.as_slice()) },
+                    if alpha_dyn_v.is_empty() { None } else { Some(alpha_dyn_v.as_slice()) },
+                    c6_iso_opt.as_ref(),
+                    if c6_aniso_v.is_empty() { None } else { Some(c6_aniso_v.as_slice()) },
                 ) {
                     eprintln!("warning: failed to write {}: {}", npz_path, e);
                 } else {
