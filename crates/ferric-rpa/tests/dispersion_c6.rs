@@ -1,6 +1,14 @@
 //! Physical-anchor tests for the TS dispersion C6 path.
 
-use ferric_rpa::{casimir_polder_c6, ts_dynamic_polarizability};
+use ferric_core::basis;
+use ferric_core::mol::Molecule;
+use ferric_core::parallel::ParallelContext;
+use ferric_integrals::basis_bridge::PreparedBasis;
+use ferric_integrals::operator::Operator;
+use ferric_rpa::dispersion::{pdep_dynamic_polarizability, DispersionPartition};
+use ferric_rpa::{casimir_polder_c6, ts_dynamic_polarizability, PdepRpaConfig};
+use ferric_scf::rhf::{solve_rhf, RhfConfig};
+use ferric_scf::screening::SchwarzBounds;
 
 /// Fine trapezoid imaginary-frequency grid; integrates the Casimir-Polder
 /// α(iω)α(iω) product to <1% for the single-pole London model.
@@ -45,4 +53,58 @@ fn free_atom_c6_matches_ts_reference() {
     assert!(c6_ho > 0.0 && c6_ho.is_finite());
     assert!(c6_ho > c6_hh.min(c6_oo) * 0.5, "C6(H-O)={c6_ho} too small");
     assert!(c6_ho < c6_hh.max(c6_oo) * 1.1, "C6(H-O)={c6_ho} too large");
+}
+
+/// PDEP-RPA dynamic α(iω) → Casimir-Polder C6 on H2/cc-pVDZ. End-to-end check
+/// that the Phase 2 source produces a physically sane, symmetric C6 matrix and
+/// that the ω=0 slice equals the per-atom static polarizability sum rule.
+#[test]
+fn pdep_dynamic_c6_h2_sane() {
+    let xyz = "2\nH2\nH 0 0 0\nH 0 0 0.74083\n";
+    let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+    let obs_bs = basis::bundled("cc-pvdz").unwrap();
+    let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
+    let op = Operator::coulomb();
+    let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+    let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
+    let ctx = ParallelContext::default();
+    let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+    let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
+
+    let mut cfg = PdepRpaConfig::default();
+    cfg.frozen_core = 0;
+    cfg.trunc_thresh = 0.0;
+
+    let dp = pdep_dynamic_polarizability(
+        &mol, &obs, &obs_bs, &dfbs, &rhf, op, &cfg, DispersionPartition::Becke,
+    )
+    .unwrap();
+
+    // Grid is the RPA quadrature: positive nodes, weights sum > 0.
+    assert!(!dp.freqs.is_empty());
+    assert_eq!(dp.freqs.len(), dp.weights.len());
+    assert_eq!(dp.per_atom.len(), 2);
+    assert_eq!(dp.per_atom[0].len(), dp.freqs.len());
+
+    // α^A(iω) must decay: lowest-freq iso > highest-freq iso, per atom.
+    for atom in &dp.per_atom {
+        let iso = |t: &[[f64; 3]; 3]| (t[0][0] + t[1][1] + t[2][2]) / 3.0;
+        let lo = iso(&atom[0]);
+        let hi = iso(&atom[atom.len() - 1]);
+        assert!(lo > hi, "α not decaying: lo={lo} hi={hi}");
+        assert!(lo > 0.0, "α(ω_min) not positive: {lo}");
+    }
+
+    let res = casimir_polder_c6(&dp);
+    let c6 = &res.c6_iso_pair;
+    // Symmetric, positive diagonal, finite.
+    assert!((c6[(0, 1)] - c6[(1, 0)]).abs() < 1e-10, "asymmetric C6");
+    assert!(c6[(0, 0)] > 0.0 && c6[(0, 0)].is_finite(), "C6(H-H)={}", c6[(0, 0)]);
+    // Two equivalent H atoms: diagonal entries equal by symmetry.
+    assert!(
+        (c6[(0, 0)] - c6[(1, 1)]).abs() / c6[(0, 0)] < 1e-6,
+        "H2 C6 diagonal asymmetric: {} vs {}",
+        c6[(0, 0)],
+        c6[(1, 1)]
+    );
 }

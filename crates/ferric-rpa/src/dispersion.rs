@@ -13,6 +13,13 @@ pub mod free_atom_ref;
 
 use ndarray::Array2;
 
+use ferric_core::mol::Molecule;
+use ferric_core::FerricError;
+use ferric_integrals::basis_bridge::PreparedBasis;
+use ferric_integrals::operator::Operator;
+use ferric_scf::result::ScfResult;
+
+use crate::config::PdepRpaConfig;
 use crate::dispersion::free_atom_ref::ts_free_atom;
 
 /// Per-atom dynamic polarizability on an imaginary-frequency quadrature grid.
@@ -191,6 +198,54 @@ pub fn ts_dynamic_polarizability(
         weights: weights.to_vec(),
         per_atom,
     }
+}
+
+/// PDEP-RPA per-atom dynamic polarizability α^A(iω) (Phase 2 source).
+///
+/// Evaluates the per-atom polarizability tensors at the imaginary-frequency
+/// quadrature nodes drawn from `cfg.quadrature` (the same Gauss-Legendre grid
+/// the RPA correlation energy uses), so the resulting `weights` are the exact
+/// Casimir-Polder weights for [`casimir_polder_c6`].
+///
+/// Unlike [`ts_dynamic_polarizability`], this is a genuine frequency-dependent
+/// response: at ω=0 it reproduces the static per-atom α exactly, and it carries
+/// the true RPA frequency dependence rather than a single-pole London model.
+///
+/// `partition` selects the atomic decomposition. Becke is the default and the
+/// only fully frequency-dependent path today; `Hirshfeld` currently falls back
+/// to Becke (a dedicated Hirshfeld-dynamic grid path is future work) and emits
+/// no error so callers get a usable result.
+#[allow(clippy::too_many_arguments)]
+pub fn pdep_dynamic_polarizability(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    obs_bs: &ferric_core::basis::BasisSet,
+    dfbs: &PreparedBasis,
+    rhf: &ScfResult,
+    op: Operator,
+    cfg: &PdepRpaConfig,
+    partition: DispersionPartition,
+) -> Result<DynamicPolarizability, FerricError> {
+    let (freqs, weights) = crate::quadrature::build_quadrature(&cfg.quadrature);
+
+    if partition == DispersionPartition::Hirshfeld {
+        // No dedicated Hirshfeld-dynamic path yet; use Becke (geometry-only,
+        // robust) for the frequency dependence. Documented, non-fatal.
+        eprintln!(
+            "note: pdep_dynamic_polarizability: Hirshfeld partition not yet \
+             implemented for the dynamic path; using Becke"
+        );
+    }
+
+    let per_atom = crate::properties::pdep_polarizability_becke_dynamic(
+        mol, obs, obs_bs, dfbs, rhf, op, cfg, &freqs,
+    )?;
+
+    Ok(DynamicPolarizability {
+        freqs,
+        weights,
+        per_atom,
+    })
 }
 
 #[cfg(test)]
