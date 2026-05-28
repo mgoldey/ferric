@@ -1006,17 +1006,211 @@ pub fn pdep_polarizability_becke_dynamic(
     use ferric_dft::grid::{build_atomic_grid, AtomicGridConfig};
     use ndarray_linalg::Solve;
 
-    if !matches!(rhf.spin, Spin::Restricted) {
-        return Err(FerricError::General(
-            "pdep_polarizability_becke_dynamic: only closed-shell (Restricted) supported".into(),
-        ));
-    }
-
     let natoms = mol.atoms.len();
     let nfreq = freqs.len();
-
-    // RI intermediates (same as static path).
     let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0 };
+
+    // Open-shell dispatch: build per-spin intermediates and MO slices.
+    // Closed-shell falls through to the single-B̃ path below.
+    if !matches!(rhf.spin, Spin::Restricted) {
+        use ferric_mp2::rimp2::compute_rpa_intermediates_spin;
+        use ndarray_linalg::Solve;
+
+        let inter_a = compute_rpa_intermediates_spin(mol, obs, dfbs, op, rhf, &mp2_cfg, true)?;
+        let inter_b = compute_rpa_intermediates_spin(mol, obs, dfbs, op, rhf, &mp2_cfg, false)?;
+        let naux = inter_a.naux;
+
+        // Orbital-energy slices (ROHF reuses α-MOs for β).
+        let eps_b_full: &[f64] = if matches!(rhf.spin, Spin::RestrictedOpen) {
+            rhf.eps_a()
+        } else {
+            rhf.eps_b()
+        };
+        let eps_occ_a: Vec<f64> = rhf.eps_a()[inter_a.first_occ..inter_a.first_occ + inter_a.nocc].to_vec();
+        let eps_vir_a: Vec<f64> = rhf.eps_a()[inter_a.nocc_total..inter_a.nocc_total + inter_a.nvir].to_vec();
+        let eps_occ_b: Vec<f64> = eps_b_full[inter_b.first_occ..inter_b.first_occ + inter_b.nocc].to_vec();
+        let eps_vir_b: Vec<f64> = eps_b_full[inter_b.nocc_total..inter_b.nocc_total + inter_b.nvir].to_vec();
+
+        // Per-spin e_ia tables.
+        let e_ia_a = {
+            let (nocc, nvir) = (inter_a.nocc, inter_a.nvir);
+            let mut v = ndarray::Array1::<f64>::zeros(nocc * nvir);
+            for i in 0..nocc { for a in 0..nvir { v[i*nvir+a] = eps_vir_a[a] - eps_occ_a[i]; } }
+            v
+        };
+        let e_ia_b = {
+            let (nocc, nvir) = (inter_b.nocc, inter_b.nvir);
+            let mut v = ndarray::Array1::<f64>::zeros(nocc * nvir);
+            for i in 0..nocc { for a in 0..nvir { v[i*nvir+a] = eps_vir_b[a] - eps_occ_b[i]; } }
+            v
+        };
+
+        // MO coefficient slices per spin.
+        let c_a = rhf.mos_a();
+        let c_b = if matches!(rhf.spin, Spin::RestrictedOpen) { rhf.mos_a() } else { rhf.mos_b() };
+        let c_occ_a = c_a.slice(ndarray::s![.., inter_a.first_occ..inter_a.first_occ+inter_a.nocc]).to_owned();
+        let c_vir_a = c_a.slice(ndarray::s![.., inter_a.nocc_total..inter_a.nocc_total+inter_a.nvir]).to_owned();
+        let c_occ_b = c_b.slice(ndarray::s![.., inter_b.first_occ..inter_b.first_occ+inter_b.nocc]).to_owned();
+        let c_vir_b = c_b.slice(ndarray::s![.., inter_b.nocc_total..inter_b.nocc_total+inter_b.nvir]).to_owned();
+
+        // Becke grid (spin-agnostic).
+        let grid_cfg = ferric_dft::grid::AtomicGridConfig::default();
+        let grid = ferric_dft::grid::build_atomic_grid(mol, &grid_cfg);
+        let points: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
+        let weights_g: Vec<f64> = grid.iter().map(|g| g.weight).collect();
+        let home_atom: Vec<usize> = grid.iter().map(|g| g.home_atom).collect();
+        let npts = points.len();
+
+        let chi = ferric_dft::ao_grid::eval_basis_on_points(mol, obs_bs, &points).map_err(|e| {
+            FerricError::General(format!("pdep_polarizability_becke_dynamic (U): chi failed: {e}"))
+        })?;
+        let nbf = chi.nrows();
+        let atom_pos: Vec<[f64; 3]> = mol.atoms.iter().map(|at| [at.x, at.y, at.zpos]).collect();
+
+        // Per-atom atom-centred AO dipole matrices (ω-independent).
+        let mut d_ai_ao: Vec<[Array2<f64>; 3]> = (0..natoms)
+            .map(|_| std::array::from_fn(|_| Array2::<f64>::zeros((nbf, nbf))))
+            .collect();
+        for g in 0..npts {
+            let a = home_atom[g];
+            let w = weights_g[g];
+            let r = points[g];
+            let ra = atom_pos[a];
+            for d in 0..3 {
+                let factor = w * (r[d] - ra[d]);
+                for mu in 0..nbf {
+                    let chi_mu = chi[(mu, g)];
+                    let wchi = factor * chi_mu;
+                    if wchi.abs() < 1e-30 { continue; }
+                    for nu in 0..nbf {
+                        d_ai_ao[a][d][(mu, nu)] += wchi * chi[(nu, g)];
+                    }
+                }
+            }
+        }
+        for a in 0..natoms {
+            for d in 0..3 {
+                let m = &mut d_ai_ao[a][d];
+                for i in 0..nbf {
+                    for j in (i+1)..nbf {
+                        let avg = 0.5*(m[(i,j)]+m[(j,i)]);
+                        m[(i,j)] = avg; m[(j,i)] = avg;
+                    }
+                }
+            }
+        }
+
+        // Transform per-atom AO dipoles to per-spin MO basis.
+        let nov_a = inter_a.nocc * inter_a.nvir;
+        let nov_b = inter_b.nocc * inter_b.nvir;
+        let mu_ai_flat_a: Vec<[ndarray::Array1<f64>; 3]> = (0..natoms).map(|a| {
+            std::array::from_fn(|d| {
+                let mo = c_occ_a.t().dot(&d_ai_ao[a][d]).dot(&c_vir_a);
+                let mut v = ndarray::Array1::<f64>::zeros(nov_a);
+                for i in 0..inter_a.nocc { for ax in 0..inter_a.nvir { v[i*inter_a.nvir+ax] = mo[(i,ax)]; } }
+                v
+            })
+        }).collect();
+        let mu_ai_flat_b: Vec<[ndarray::Array1<f64>; 3]> = (0..natoms).map(|a| {
+            std::array::from_fn(|d| {
+                if inter_b.nocc == 0 { return ndarray::Array1::<f64>::zeros(1.max(nov_b)); }
+                let mo = c_occ_b.t().dot(&d_ai_ao[a][d]).dot(&c_vir_b);
+                let mut v = ndarray::Array1::<f64>::zeros(nov_b);
+                for i in 0..inter_b.nocc { for ax in 0..inter_b.nvir { v[i*inter_b.nvir+ax] = mo[(i,ax)]; } }
+                v
+            })
+        }).collect();
+
+        // Molecular MO dipoles per spin (sum over atoms).
+        let mu_flat_a: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
+            mu_ai_flat_a.iter().fold(ndarray::Array1::zeros(nov_a), |acc, ai| acc + &ai[d])
+        });
+        let mu_flat_b: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
+            if inter_b.nocc == 0 { return ndarray::Array1::zeros(1); }
+            mu_ai_flat_b.iter().fold(ndarray::Array1::zeros(nov_b), |acc, ai| acc + &ai[d])
+        });
+
+        // Frequency loop.
+        let mut out: Vec<Vec<[[f64; 3]; 3]>> = vec![vec![[[0.0; 3]; 3]; nfreq]; natoms];
+
+        for (k, &omega) in freqs.iter().enumerate() {
+            let omega2 = omega * omega;
+
+            // Per-spin g_σ(ω) = e_iaσ / (ω² + e_iaσ²), prefactor 2.
+            let g_a = {
+                let n = e_ia_a.len();
+                let mut v = ndarray::Array1::<f64>::zeros(n);
+                for ia in 0..n { let e = e_ia_a[ia]; v[ia] = e/(omega2+e*e); }
+                v
+            };
+            let g_b = if inter_b.nocc > 0 {
+                let n = e_ia_b.len();
+                let mut v = ndarray::Array1::<f64>::zeros(n);
+                for ia in 0..n { let e = e_ia_b[ia]; v[ia] = e/(omega2+e*e); }
+                v
+            } else {
+                ndarray::Array1::<f64>::zeros(1)
+            };
+
+            // ε̃(ω) = I + 2 B̃_α diag(g_α) B̃_αᵀ + 2 B̃_β diag(g_β) B̃_βᵀ.
+            let mut eps_mat = Array2::<f64>::zeros((naux, naux));
+            for p in 0..naux { eps_mat[(p,p)] = 1.0; }
+            for (b_ov, g) in [(&inter_a.b_ov, &g_a), (&inter_b.b_ov, &g_b)] {
+                let nov = b_ov.shape()[1];
+                if nov == 0 { continue; }
+                let mut b_scaled = b_ov.clone();
+                for ia in 0..nov {
+                    let s = (2.0 * g[ia]).sqrt();
+                    b_scaled.column_mut(ia).mapv_inplace(|x| x * s);
+                }
+                let chi_s = b_scaled.dot(&b_scaled.t());
+                eps_mat = eps_mat + &chi_s;
+            }
+
+            // w_total^d(ω) = B̃_α (μ_α^d ⊙ g_α) + B̃_β (μ_β^d ⊙ g_β).
+            let w_total: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
+                let wa = inter_a.b_ov.dot(&(&mu_flat_a[d] * &g_a));
+                if inter_b.nocc == 0 { return wa; }
+                let wb = inter_b.b_ov.dot(&(&mu_flat_b[d] * &g_b));
+                wa + wb
+            });
+            let y_total: [ndarray::Array1<f64>; 3] =
+                std::array::from_fn(|d| eps_mat.solve(&w_total[d]).unwrap());
+
+            for a in 0..natoms {
+                // w_ai_total^d = B̃_α (μ_α^{A,d} ⊙ g_α) + B̃_β (μ_β^{A,d} ⊙ g_β).
+                let w_ai: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
+                    let wa = inter_a.b_ov.dot(&(&mu_ai_flat_a[a][d] * &g_a));
+                    if inter_b.nocc == 0 { return wa; }
+                    let wb = inter_b.b_ov.dot(&(&mu_ai_flat_b[a][d] * &g_b));
+                    wa + wb
+                });
+                for d in 0..3 {
+                    let mu_ag_a = &mu_ai_flat_a[a][d] * &g_a;
+                    let mu_ag_b = if inter_b.nocc > 0 { &mu_ai_flat_b[a][d] * &g_b } else { ndarray::Array1::zeros(1) };
+                    for j in 0..3 {
+                        let bare_a = 2.0 * mu_ai_flat_a[a][d].dot(&(&mu_flat_a[j] * &g_a));
+                        let bare_b = if inter_b.nocc > 0 {
+                            2.0 * mu_ai_flat_b[a][d].dot(&(&mu_flat_b[j] * &g_b))
+                        } else { 0.0 };
+                        let _ = &mu_ag_a; let _ = &mu_ag_b; // used for w_ai above
+                        let coupled = w_ai[d].dot(&y_total[j]);
+                        out[a][k][d][j] = bare_a + bare_b - 4.0 * coupled;
+                    }
+                }
+                // Symmetrize.
+                for i in 0..3 {
+                    for j in (i+1)..3 {
+                        let avg = 0.5*(out[a][k][i][j]+out[a][k][j][i]);
+                        out[a][k][i][j] = avg; out[a][k][j][i] = avg;
+                    }
+                }
+            }
+        }
+        return Ok(out);
+    }
+
+    // --- Closed-shell path below (unchanged) ---
     let inter =
         ferric_mp2::rimp2::compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
     let b_ov = &inter.b_ov;
@@ -2146,6 +2340,50 @@ mod tests {
         assert!(a0 > a1 && a1 > a2 && a2 > a3, "not monotone: {a0} {a1} {a2} {a3}");
         assert!(a0 > 0.0, "α(0) must be positive: {a0}");
         // High-ω tail ~ 1/ω²: α(10) ≪ α(0).
+        assert!(a3 < 0.05 * a0, "tail too large: α(10)={a3} α(0)={a0}");
+    }
+
+    fn build_h_atom() -> (Molecule, PreparedBasis, PreparedBasis, Operator, ScfResult) {
+        use ferric_scf::uhf::solve_uhf;
+        let xyz = "1\nH\nH 0 0 0\n";
+        let mol = Molecule::parse_xyz(xyz, 0, 2).unwrap(); // doublet
+        let obs_bs = basis::bundled("cc-pvdz").unwrap();
+        let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let op = Operator::coulomb();
+        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
+        let ctx = ParallelContext::default();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let mut cfg = RhfConfig::default();
+        cfg.mom_after_iter = 5;
+        let uhf = solve_uhf(&ctx, &mol, &obs, op, &bounds, &cfg).unwrap();
+        (mol, obs, dfbs, op, uhf)
+    }
+
+    #[test]
+    fn h_atom_dynamic_alpha_unrestricted_decays() {
+        // UHF H atom: dynamic α(iω) via the unrestricted path must decay monotonically
+        // and be positive at ω=0. Single atom → no symmetry check needed.
+        let (mol, obs, dfbs, op, uhf) = build_h_atom();
+        let bs = basis::bundled("cc-pvdz").unwrap();
+        let mut cfg = PdepRpaConfig::default();
+        cfg.frozen_core = 0;
+        cfg.trunc_thresh = 0.0;
+
+        let freqs = [0.0, 0.5, 2.0, 10.0];
+        let dyn_a = pdep_polarizability_becke_dynamic(
+            &mol, &obs, &bs, &dfbs, &uhf, op, &cfg, &freqs,
+        )
+        .unwrap();
+        assert_eq!(dyn_a.len(), 1);
+
+        let iso = |t: &[[f64; 3]; 3]| (t[0][0] + t[1][1] + t[2][2]) / 3.0;
+        let a0 = iso(&dyn_a[0][0]);
+        let a1 = iso(&dyn_a[0][1]);
+        let a2 = iso(&dyn_a[0][2]);
+        let a3 = iso(&dyn_a[0][3]);
+        assert!(a0 > 0.0, "α(0) not positive: {a0}");
+        assert!(a0 > a1 && a1 > a2 && a2 > a3, "not monotone: {a0} {a1} {a2} {a3}");
         assert!(a3 < 0.05 * a0, "tail too large: α(10)={a3} α(0)={a0}");
     }
 
