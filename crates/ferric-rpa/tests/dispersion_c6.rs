@@ -55,12 +55,21 @@ fn free_atom_c6_matches_ts_reference() {
     assert!(c6_ho < c6_hh.max(c6_oo) * 1.1, "C6(H-O)={c6_ho} too large");
 }
 
-/// PDEP-RPA dynamic α(iω) → Casimir-Polder C6 on H2/cc-pVDZ. End-to-end check
-/// that the Phase 2 source produces a physically sane, symmetric C6 matrix and
-/// that the ω=0 slice equals the per-atom static polarizability sum rule.
+/// PDEP-RPA dynamic α(iω) → Casimir-Polder C6 for a FREE He atom.
+///
+/// This is the partition-free, origin-independent validation: a single atom
+/// sits at the origin, so the per-atom = molecular polarizability and there is
+/// no lab-frame dipole ambiguity. The resulting C6(He-He) is compared to the
+/// well-known reference (~1.46 a.u., Tkatchenko-Scheffler / Chu-Dalgarno).
+///
+/// NOTE on the per-atom path in molecules: α^A(iω) for ω≠0 is origin-dependent
+/// (the lab-frame partitioned dipole ⟨i|w^A r|a⟩ depends on the common origin);
+/// only the atom SUM and the ω=0 static limit are origin-clean. So molecular and
+/// free-atom C6 are trustworthy; per-atom-in-molecule C6 from the dynamic path
+/// is not, and atom-resolved C6 should use the TS model instead.
 #[test]
-fn pdep_dynamic_c6_h2_sane() {
-    let xyz = "2\nH2\nH 0 0 0\nH 0 0 0.74083\n";
+fn pdep_dynamic_c6_free_he_vs_reference() {
+    let xyz = "1\nHe\nHe 0 0 0\n";
     let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
     let obs_bs = basis::bundled("cc-pvdz").unwrap();
     let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
@@ -80,31 +89,24 @@ fn pdep_dynamic_c6_h2_sane() {
     )
     .unwrap();
 
-    // Grid is the RPA quadrature: positive nodes, weights sum > 0.
-    assert!(!dp.freqs.is_empty());
-    assert_eq!(dp.freqs.len(), dp.weights.len());
-    assert_eq!(dp.per_atom.len(), 2);
+    assert_eq!(dp.per_atom.len(), 1);
     assert_eq!(dp.per_atom[0].len(), dp.freqs.len());
 
-    // α^A(iω) must decay: lowest-freq iso > highest-freq iso, per atom.
-    for atom in &dp.per_atom {
-        let iso = |t: &[[f64; 3]; 3]| (t[0][0] + t[1][1] + t[2][2]) / 3.0;
-        let lo = iso(&atom[0]);
-        let hi = iso(&atom[atom.len() - 1]);
-        assert!(lo > hi, "α not decaying: lo={lo} hi={hi}");
-        assert!(lo > 0.0, "α(ω_min) not positive: {lo}");
-    }
+    // α(iω) decays and is positive at ω_min.
+    let iso = |t: &[[f64; 3]; 3]| (t[0][0] + t[1][1] + t[2][2]) / 3.0;
+    let lo = iso(&dp.per_atom[0][0]);
+    let hi = iso(&dp.per_atom[0][dp.freqs.len() - 1]);
+    assert!(lo > hi, "α not decaying: lo={lo} hi={hi}");
+    assert!(lo > 0.0, "α(ω_min) not positive: {lo}");
 
     let res = casimir_polder_c6(&dp);
-    let c6 = &res.c6_iso_pair;
-    // Symmetric, positive diagonal, finite.
-    assert!((c6[(0, 1)] - c6[(1, 0)]).abs() < 1e-10, "asymmetric C6");
-    assert!(c6[(0, 0)] > 0.0 && c6[(0, 0)].is_finite(), "C6(H-H)={}", c6[(0, 0)]);
-    // Two equivalent H atoms: diagonal entries equal by symmetry.
+    let c6 = res.c6_iso_pair[(0, 0)];
+    // Reference free-He C6 ≈ 1.46 a.u. cc-pVDZ is a small basis with no diffuse
+    // functions, so RPA underestimates α and C6; accept a wide band but require
+    // the right order of magnitude and sign. (A tight benchmark needs aug-cc-pVTZ.)
+    assert!(c6 > 0.0 && c6.is_finite(), "C6(He)={c6}");
     assert!(
-        (c6[(0, 0)] - c6[(1, 1)]).abs() / c6[(0, 0)] < 1e-6,
-        "H2 C6 diagonal asymmetric: {} vs {}",
-        c6[(0, 0)],
-        c6[(1, 1)]
+        c6 > 0.3 && c6 < 1.6,
+        "C6(He)={c6} a.u. outside plausible band around ref 1.46 (cc-pVDZ underbinds)"
     );
 }

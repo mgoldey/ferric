@@ -2037,6 +2037,38 @@ mod tests {
     }
 
     #[test]
+    fn becke_dynamic_alpha_molecular_sum_decays() {
+        // The MOLECULAR dynamic polarizability — Σ_A α^A(iω) — is the robust,
+        // origin-independent quantity. (Per-atom α^A(iω) is origin-dependent at
+        // ω≠0 because the lab-frame partitioned dipole ⟨i|w^A r|a⟩ depends on the
+        // common origin; only the atom SUM and the static ω=0 limit are clean.)
+        // Check the molecular sum decays monotonically with the right tail.
+        let (mol, obs, dfbs, op, rhf) = build_h2();
+        let bs = basis::bundled("cc-pvdz").unwrap();
+        let mut cfg = PdepRpaConfig::default();
+        cfg.frozen_core = 0;
+        cfg.trunc_thresh = 0.0;
+        let freqs = [0.0, 0.5, 2.0, 10.0];
+        let dyn_a = pdep_polarizability_becke_dynamic(
+            &mol, &obs, &bs, &dfbs, &rhf, op, &cfg, &freqs,
+        )
+        .unwrap();
+        let mol_iso = |k: usize| -> f64 {
+            dyn_a
+                .iter()
+                .map(|atom| (atom[k][0][0] + atom[k][1][1] + atom[k][2][2]) / 3.0)
+                .sum()
+        };
+        let a0 = mol_iso(0);
+        let a1 = mol_iso(1);
+        let a2 = mol_iso(2);
+        let a3 = mol_iso(3);
+        assert!(a0 > a1 && a1 > a2 && a2 > a3, "not monotone: {a0} {a1} {a2} {a3}");
+        assert!(a0 > 0.0, "α(0) must be positive: {a0}");
+        assert!(a3 < 0.05 * a0, "tail too large: α(10)={a3} α(0)={a0}");
+    }
+
+    #[test]
     fn becke_dynamic_alpha_omega0_matches_static() {
         // The dynamic per-atom Becke α at ω=0 must reproduce the static
         // per-atom Becke α bit-for-bit (same SMW assembly, g(0)=1/Δε).
