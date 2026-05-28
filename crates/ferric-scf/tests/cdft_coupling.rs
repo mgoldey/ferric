@@ -28,3 +28,22 @@ fn pairing_swapped_columns_det_minus_one() {
     // SVD singular values are non-negative, so |det_m| = product = 1.
     assert!((p.det_m.abs() - 1.0).abs() < 1e-12, "|det_m| {}", p.det_m.abs());
 }
+
+/// For identical α and β sets (S = I, C_a = C_b), the one-body element equals
+/// the ordinary expectation Σ_σ Σ_i ⟨i|Ô|i⟩ (since S_ab = 1 and all s_i = 1).
+#[test]
+fn cross_one_body_identical_is_expectation() {
+    use ferric_scf::cdft_coupling::{biorth_pairing, cross_one_body};
+    let s = Array2::<f64>::eye(3);
+    let c = array![[1.0, 0.0], [0.0, 1.0], [0.0, 0.0]]; // 2 occ
+    // Operator: diagonal AO operator diag(2,3,5).
+    let mut op = Array2::<f64>::zeros((3, 3));
+    op[(0, 0)] = 2.0; op[(1, 1)] = 3.0; op[(2, 2)] = 5.0;
+    let pa = biorth_pairing(&c, &c, &s);
+    let pb = biorth_pairing(&c, &c, &s);
+    let s_ab = pa.det_m * pb.det_m; // = 1
+    let val = cross_one_body(&op, &pa, &pb, s_ab);
+    // Two spins, each occupying AO0 and AO1: ⟨0|op|0⟩+⟨1|op|1⟩ = 2+3 = 5 per
+    // spin, ×2 spins = 10.
+    assert!((val - 10.0).abs() < 1e-10, "got {val}");
+}
