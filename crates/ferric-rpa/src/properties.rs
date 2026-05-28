@@ -980,6 +980,260 @@ pub fn pdep_polarizability_becke(
     Ok(alpha_per_atom)
 }
 
+/// Per-atom Becke polarizability tensors α^A_{ij}(iω) at a list of imaginary
+/// frequencies. Returns `out[a][k]` = 3×3 tensor for atom `a`, frequency `k`.
+///
+/// This is the frequency generalization of [`pdep_polarizability_becke`]:
+/// the grid, Becke partition, and partition-weighted MO dipoles are built once
+/// (ω-independent); only the χ₀ "denominator" g_ia(ω) = e_ia/(ω²+e_ia²) and the
+/// SMW dielectric ε̃(ω) = I + 4 B̃ diag(g(ω)) B̃^T change per frequency. At ω=0,
+/// g_ia = 1/Δε_ia, so this reproduces `pdep_polarizability_becke` exactly.
+///
+/// The Casimir-Polder C6 follow-up consumes these via
+/// `dispersion::pdep_dynamic_polarizability`.
+#[allow(clippy::too_many_arguments)]
+pub fn pdep_polarizability_becke_dynamic(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    obs_bs: &ferric_core::basis::BasisSet,
+    dfbs: &PreparedBasis,
+    rhf: &ScfResult,
+    op: Operator,
+    _cfg: &PdepRpaConfig,
+    freqs: &[f64],
+) -> Result<Vec<Vec<[[f64; 3]; 3]>>, FerricError> {
+    use ferric_dft::ao_grid::eval_basis_on_points;
+    use ferric_dft::grid::{build_atomic_grid, AtomicGridConfig};
+    use ndarray_linalg::Solve;
+
+    if !matches!(rhf.spin, Spin::Restricted) {
+        return Err(FerricError::General(
+            "pdep_polarizability_becke_dynamic: only closed-shell (Restricted) supported".into(),
+        ));
+    }
+
+    let natoms = mol.atoms.len();
+    let nfreq = freqs.len();
+
+    // RI intermediates (same as static path).
+    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0 };
+    let inter =
+        ferric_mp2::rimp2::compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
+    let b_ov = &inter.b_ov;
+    let nocc = inter.nocc;
+    let nvir = inter.nvir;
+    let nocc_total = inter.nocc_total;
+    let first_occ = inter.first_occ;
+    let naux = inter.naux;
+    let nov = nocc * nvir;
+
+    let eps = rhf.eps_r();
+    let eps_occ: Vec<f64> = eps[first_occ..first_occ + nocc].to_vec();
+    let eps_vir: Vec<f64> = eps[nocc_total..nocc_total + nvir].to_vec();
+
+    let c = rhf.mos_r();
+    let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
+    let c_vir = c.slice(ndarray::s![.., nocc_total..nocc_total + nvir]).to_owned();
+
+    // ε_ia table (the bare excitation energies).
+    let mut e_ia = ndarray::Array1::<f64>::zeros(nov);
+    for i in 0..nocc {
+        for a in 0..nvir {
+            e_ia[i * nvir + a] = eps_vir[a] - eps_occ[i];
+        }
+    }
+
+    // --- Build the Becke grid + partition-weighted per-atom MO dipoles ONCE.
+    // (Identical to pdep_polarizability_becke; ω-independent.)
+    let grid_cfg = AtomicGridConfig::default();
+    let grid = build_atomic_grid(mol, &grid_cfg);
+    let points: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
+    let weights: Vec<f64> = grid.iter().map(|g| g.weight).collect();
+    let home_atom: Vec<usize> = grid.iter().map(|g| g.home_atom).collect();
+    let npts = points.len();
+
+    let chi = eval_basis_on_points(mol, obs_bs, &points).map_err(|e| {
+        FerricError::General(format!(
+            "pdep_polarizability_becke_dynamic: chi eval failed: {e}"
+        ))
+    })?;
+    let nbf = chi.nrows();
+    debug_assert_eq!(nbf, obs.nbasis());
+
+    let mut d_ai_ao: Vec<[Array2<f64>; 3]> = (0..natoms)
+        .map(|_| std::array::from_fn(|_| Array2::<f64>::zeros((nbf, nbf))))
+        .collect();
+    let mut d_sum: [Array2<f64>; 3] = std::array::from_fn(|_| Array2::<f64>::zeros((nbf, nbf)));
+    for g in 0..npts {
+        let a = home_atom[g];
+        let w = weights[g];
+        let r = points[g];
+        for d in 0..3 {
+            let factor = w * r[d];
+            for mu in 0..nbf {
+                let chi_mu = chi[(mu, g)];
+                let weighted_chi_mu = factor * chi_mu;
+                if weighted_chi_mu.abs() < 1e-30 {
+                    continue;
+                }
+                for nu in 0..nbf {
+                    let contrib = weighted_chi_mu * chi[(nu, g)];
+                    d_ai_ao[a][d][(mu, nu)] += contrib;
+                    d_sum[d][(mu, nu)] += contrib;
+                }
+            }
+        }
+    }
+    for d in 0..3 {
+        for a in 0..natoms {
+            let m = &mut d_ai_ao[a][d];
+            for i in 0..nbf {
+                for j in (i + 1)..nbf {
+                    let avg = 0.5 * (m[(i, j)] + m[(j, i)]);
+                    m[(i, j)] = avg;
+                    m[(j, i)] = avg;
+                }
+            }
+        }
+        for i in 0..nbf {
+            for j in (i + 1)..nbf {
+                let avg = 0.5 * (d_sum[d][(i, j)] + d_sum[d][(j, i)]);
+                d_sum[d][(i, j)] = avg;
+                d_sum[d][(j, i)] = avg;
+            }
+        }
+    }
+    // Renormalize per AO-pair to the analytical AO dipole (decouple Becke
+    // fraction from magnitude) — identical to the static path.
+    let dip_ao_analytical = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let inv_n = 1.0 / (natoms as f64);
+    let small = 1e-10;
+    for d in 0..3 {
+        for mu in 0..nbf {
+            for nu in 0..nbf {
+                let total_grid = d_sum[d][(mu, nu)];
+                let total_analytical = dip_ao_analytical[d][(mu, nu)];
+                if total_grid.abs() < small * (1.0 + total_analytical.abs()) {
+                    for a in 0..natoms {
+                        d_ai_ao[a][d][(mu, nu)] = total_analytical * inv_n;
+                    }
+                } else {
+                    let scale = total_analytical / total_grid;
+                    for a in 0..natoms {
+                        d_ai_ao[a][d][(mu, nu)] *= scale;
+                    }
+                }
+            }
+        }
+    }
+    for a in 0..natoms {
+        for d in 0..3 {
+            let m = &mut d_ai_ao[a][d];
+            for i in 0..nbf {
+                for j in (i + 1)..nbf {
+                    let avg = 0.5 * (m[(i, j)] + m[(j, i)]);
+                    m[(i, j)] = avg;
+                    m[(j, i)] = avg;
+                }
+            }
+        }
+    }
+
+    // Transform to MO occ-vir basis (per-atom + molecular sum).
+    let mut mu_ai_mo: Vec<[Array2<f64>; 3]> = (0..natoms)
+        .map(|_| std::array::from_fn(|_| Array2::<f64>::zeros((nocc, nvir))))
+        .collect();
+    let mut mu_mo: [Array2<f64>; 3] = std::array::from_fn(|_| Array2::<f64>::zeros((nocc, nvir)));
+    for a in 0..natoms {
+        for d in 0..3 {
+            let m = c_occ.t().dot(&d_ai_ao[a][d]).dot(&c_vir);
+            mu_mo[d] = &mu_mo[d] + &m;
+            mu_ai_mo[a][d] = m;
+        }
+    }
+
+    // Flatten molecular dipole and per-atom dipoles into (nov,) vectors ONCE.
+    let mu_flat: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
+        let mut v = ndarray::Array1::<f64>::zeros(nov);
+        for i in 0..nocc {
+            for ax in 0..nvir {
+                v[i * nvir + ax] = mu_mo[d][(i, ax)];
+            }
+        }
+        v
+    });
+    let mu_ai_flat: Vec<[ndarray::Array1<f64>; 3]> = (0..natoms)
+        .map(|a| {
+            std::array::from_fn(|d| {
+                let mut v = ndarray::Array1::<f64>::zeros(nov);
+                for i in 0..nocc {
+                    for ax in 0..nvir {
+                        v[i * nvir + ax] = mu_ai_mo[a][d][(i, ax)];
+                    }
+                }
+                v
+            })
+        })
+        .collect();
+
+    // --- Frequency loop. Only g(ω) and ε̃(ω) change. ---
+    let mut out: Vec<Vec<[[f64; 3]; 3]>> =
+        vec![vec![[[0.0; 3]; 3]; nfreq]; natoms];
+
+    for (k, &omega) in freqs.iter().enumerate() {
+        // g_ia(ω) = e_ia / (ω² + e_ia²); at ω=0 this is 1/Δε.
+        let omega2 = omega * omega;
+        let mut g = ndarray::Array1::<f64>::zeros(nov);
+        for ia in 0..nov {
+            let e = e_ia[ia];
+            g[ia] = e / (omega2 + e * e);
+        }
+
+        // ε̃(ω) = I + 4 B̃ diag(g) B̃^T.
+        let mut b_scaled = b_ov.clone();
+        for ia in 0..nov {
+            let s = (4.0 * g[ia]).sqrt();
+            let mut col = b_scaled.column_mut(ia);
+            col.mapv_inplace(|x| x * s);
+        }
+        let mut eps_mat: Array2<f64> = b_scaled.dot(&b_scaled.t());
+        for p in 0..naux {
+            eps_mat[(p, p)] += 1.0;
+        }
+
+        // Molecular SMW vectors at this ω.
+        let mu_flat_g: [ndarray::Array1<f64>; 3] =
+            std::array::from_fn(|d| &mu_flat[d] * &g);
+        let w_mol: [ndarray::Array1<f64>; 3] =
+            std::array::from_fn(|d| b_ov.dot(&mu_flat_g[d]));
+        let y_mol: [ndarray::Array1<f64>; 3] =
+            std::array::from_fn(|d| eps_mat.solve(&w_mol[d]).unwrap());
+
+        // Per-atom α^A(iω) = 4 μ^{A,i}·g·μ^j − 16 (B̃ (μ^{A,i} g))·y^j.
+        for a in 0..natoms {
+            for d in 0..3 {
+                let mu_ai_g = &mu_ai_flat[a][d] * &g;
+                let w_ai = b_ov.dot(&mu_ai_g);
+                for j in 0..3 {
+                    let bare = mu_ai_flat[a][d].dot(&mu_flat_g[j]);
+                    let coupled = w_ai.dot(&y_mol[j]);
+                    out[a][k][d][j] = 4.0 * bare - 16.0 * coupled;
+                }
+            }
+            // Symmetrize.
+            for i in 0..3 {
+                for j in (i + 1)..3 {
+                    let avg = 0.5 * (out[a][k][i][j] + out[a][k][j][i]);
+                    out[a][k][i][j] = avg;
+                    out[a][k][j][i] = avg;
+                }
+            }
+        }
+    }
+
+    Ok(out)
+}
+
 pub fn pdep_polarizability_hirshfeld(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -1780,6 +2034,67 @@ mod tests {
         assert!(v[0] > 0.0 && v[0].is_finite(), "vol[0]={}", v[0]);
         // H2 symmetric: equal volumes.
         assert!((v[0] - v[1]).abs() / v[0] < 1e-6, "asymmetric: {v:?}");
+    }
+
+    #[test]
+    fn becke_dynamic_alpha_omega0_matches_static() {
+        // The dynamic per-atom Becke α at ω=0 must reproduce the static
+        // per-atom Becke α bit-for-bit (same SMW assembly, g(0)=1/Δε).
+        let (mol, obs, dfbs, op, rhf) = build_h2();
+        let bs = basis::bundled("cc-pvdz").unwrap();
+        let mut cfg = PdepRpaConfig::default();
+        cfg.frozen_core = 0;
+        cfg.trunc_thresh = 0.0;
+
+        let static_a = pdep_polarizability_becke(&mol, &obs, &bs, &dfbs, &rhf, op, &cfg).unwrap();
+        let dynamic = pdep_polarizability_becke_dynamic(
+            &mol, &obs, &bs, &dfbs, &rhf, op, &cfg, &[0.0],
+        )
+        .unwrap();
+        assert_eq!(dynamic.len(), static_a.len());
+        for a in 0..static_a.len() {
+            for i in 0..3 {
+                for j in 0..3 {
+                    let s = static_a[a][i][j];
+                    let d = dynamic[a][0][i][j];
+                    assert!(
+                        (s - d).abs() < 1e-9,
+                        "atom {a} ({i},{j}): static {s} != dynamic(ω=0) {d}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn becke_dynamic_alpha_decays_with_frequency() {
+        // α_iso(iω) must fall monotonically toward 0 as ω grows (~1/ω²).
+        let (mol, obs, dfbs, op, rhf) = build_h2();
+        let bs = basis::bundled("cc-pvdz").unwrap();
+        let mut cfg = PdepRpaConfig::default();
+        cfg.frozen_core = 0;
+        cfg.trunc_thresh = 0.0;
+
+        let freqs = [0.0, 0.5, 2.0, 10.0];
+        let dyn_a = pdep_polarizability_becke_dynamic(
+            &mol, &obs, &bs, &dfbs, &rhf, op, &cfg, &freqs,
+        )
+        .unwrap();
+        // Sum atomic isotropic α at each frequency = molecular iso (sum rule).
+        let iso_at = |k: usize| -> f64 {
+            dyn_a
+                .iter()
+                .map(|atom| (atom[k][0][0] + atom[k][1][1] + atom[k][2][2]) / 3.0)
+                .sum()
+        };
+        let a0 = iso_at(0);
+        let a1 = iso_at(1);
+        let a2 = iso_at(2);
+        let a3 = iso_at(3);
+        assert!(a0 > a1 && a1 > a2 && a2 > a3, "not monotone: {a0} {a1} {a2} {a3}");
+        assert!(a0 > 0.0, "α(0) must be positive: {a0}");
+        // High-ω tail ~ 1/ω²: α(10) ≪ α(0).
+        assert!(a3 < 0.05 * a0, "tail too large: α(10)={a3} α(0)={a0}");
     }
 
     #[test]
