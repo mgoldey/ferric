@@ -471,19 +471,41 @@ fn main() {
                 chi0_backend: ferric_rpa::config::Chi0Backend::default(),
                 chi0_sparsity: ferric_rpa::config::Chi0Sparsity::default(),
             };
-            let rpa_result = run_pdep_rpa(&mol, &prep, &dfbs, op, &result, &rpa_cfg)
-                .unwrap_or_else(|e| {
-                    eprintln!("error: {e}");
-                    std::process::exit(1);
-                });
+            // For open-shell molecules (multiplicity > 1) re-run with UHF + MOM so
+            // the reference is converged, then dispatch to the unrestricted RPA.
+            // Shadow `result` so the rest of the arm (NPZ export, properties) uses
+            // the correct SCF density.
+            let (rpa_result, ref_label, result) = if mol.multiplicity > 1 {
+                let mut uhf_cfg = rhf_config.clone();
+                // MOM after 5 DIIS iters prevents orbital reordering on open-shell atoms.
+                uhf_cfg.mom_after_iter = 5;
+                let uhf_result = solve_uhf(&ctx, &mol, &prep, op, &bounds, &uhf_cfg)
+                    .unwrap_or_else(|e| {
+                        eprintln!("error (UHF): {e}");
+                        std::process::exit(1);
+                    });
+                let rr = ferric_rpa::run_u_pdep_rpa(&mol, &prep, &dfbs, op, &uhf_result, &rpa_cfg)
+                    .unwrap_or_else(|e| {
+                        eprintln!("error (U-PDEP-RPA): {e}");
+                        std::process::exit(1);
+                    });
+                (rr, "UHF", uhf_result)
+            } else {
+                let rr = run_pdep_rpa(&mol, &prep, &dfbs, op, &result, &rpa_cfg)
+                    .unwrap_or_else(|e| {
+                        eprintln!("error: {e}");
+                        std::process::exit(1);
+                    });
+                (rr, "RHF", result)
+            };
             println!(
                 "PDEP-RPA/{} (aux: {}) on {}",
                 bs.name, aux_name, cfg.molecule.xyz
             );
             println!("  nbasis     = {}", prep.nbasis());
-            println!("RHF energy:            {:>20.10} Hartree", result.energy);
+            println!("{ref_label} energy:            {:>20.10} Hartree", result.energy);
             println!("RPA correlation:       {:>20.10} Hartree", rpa_result.e_rpa);
-            println!("Total (RHF+RPA):       {:>20.10} Hartree", result.energy + rpa_result.e_rpa);
+            println!("Total ({ref_label}+RPA):       {:>20.10} Hartree", result.energy + rpa_result.e_rpa);
             println!("Eigenpotentials kept:  {} / {}", rpa_result.n_eigenpotentials, rpa_result.eigenvalues_static.len());
             if let Some(e_diag) = rpa_result.e_rpa_dft_diag {
                 println!("RI-dRPA check:         {:>20.10} Hartree", e_diag);

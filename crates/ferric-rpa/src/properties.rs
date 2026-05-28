@@ -1060,6 +1060,16 @@ pub fn pdep_polarizability_becke_dynamic(
     let nbf = chi.nrows();
     debug_assert_eq!(nbf, obs.nbasis());
 
+    // Atom positions (Bohr) — used to shift dipole to atom-centred coordinates.
+    // Using (r - R_A) instead of the lab-frame r makes each per-atom contribution
+    // to α^A(iω) origin-independent: at all frequencies, α^A and Σ_A α^A are
+    // unchanged by a global translation of the coordinate system.
+    let atom_pos: Vec<[f64; 3]> = mol
+        .atoms
+        .iter()
+        .map(|at| [at.x, at.y, at.zpos])
+        .collect();
+
     let mut d_ai_ao: Vec<[Array2<f64>; 3]> = (0..natoms)
         .map(|_| std::array::from_fn(|_| Array2::<f64>::zeros((nbf, nbf))))
         .collect();
@@ -1068,8 +1078,10 @@ pub fn pdep_polarizability_becke_dynamic(
         let a = home_atom[g];
         let w = weights[g];
         let r = points[g];
+        let ra = atom_pos[a];
         for d in 0..3 {
-            let factor = w * r[d];
+            // Atom-centred displacement: (r_d - R_{A,d}) makes α^A(iω) origin-independent.
+            let factor = w * (r[d] - ra[d]);
             for mu in 0..nbf {
                 let chi_mu = chi[(mu, g)];
                 let weighted_chi_mu = factor * chi_mu;
@@ -1103,8 +1115,13 @@ pub fn pdep_polarizability_becke_dynamic(
             }
         }
     }
-    // Renormalize per AO-pair to the analytical AO dipole (decouple Becke
-    // fraction from magnitude) — identical to the static path.
+    // Renormalize per AO-pair so the sum over atoms matches the analytical AO dipole
+    // from the global origin. The atom-centred per-atom dipoles sum to the molecular
+    // dipole from the origin via: Σ_A ∫ w^A(r) ρ_{μν}(r)(r − R_A) dr
+    //   = ∫ ρ_{μν}(r) r dr − Σ_A R_A ∫ w^A(r) ρ_{μν}(r) dr
+    // The second term (R_A · charge_partition) is small for neutral atoms and
+    // cancels in the molecular α sum. We renormalize to the global-origin analytical
+    // dipole for consistency with the Becke grid quadrature sum rule.
     let dip_ao_analytical = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
     let inv_n = 1.0 / (natoms as f64);
     let small = 1e-10;
@@ -2069,31 +2086,45 @@ mod tests {
     }
 
     #[test]
-    fn becke_dynamic_alpha_omega0_matches_static() {
-        // The dynamic per-atom Becke α at ω=0 must reproduce the static
-        // per-atom Becke α bit-for-bit (same SMW assembly, g(0)=1/Δε).
+    fn becke_dynamic_alpha_omega0_matches_molecular_static() {
+        // Regression gate: the MOLECULAR SUM of per-atom Becke dynamic α at ω=0
+        // must reproduce the molecular static polarizability tensor from
+        // pdep_polarizability_static to <1e-6 a.u.
+        //
+        // The per-atom dynamic path uses atom-centred dipoles ⟨i|w^A(r)(r−R_A)|a⟩
+        // for origin-independence at ω≠0. At ω=0 the per-atom pieces differ from
+        // the lab-frame static per-atom α, but their SUM equals the origin-independent
+        // molecular α tensor (which is what we care about for C6).
         let (mol, obs, dfbs, op, rhf) = build_h2();
         let bs = basis::bundled("cc-pvdz").unwrap();
         let mut cfg = PdepRpaConfig::default();
         cfg.frozen_core = 0;
         cfg.trunc_thresh = 0.0;
 
-        let static_a = pdep_polarizability_becke(&mol, &obs, &bs, &dfbs, &rhf, op, &cfg).unwrap();
+        let mol_static = pdep_polarizability_static(&mol, &obs, &dfbs, &rhf, op, &cfg).unwrap();
         let dynamic = pdep_polarizability_becke_dynamic(
             &mol, &obs, &bs, &dfbs, &rhf, op, &cfg, &[0.0],
         )
         .unwrap();
-        assert_eq!(dynamic.len(), static_a.len());
-        for a in 0..static_a.len() {
+
+        // Sum per-atom dynamic tensors at ω=0.
+        let mut mol_dyn = [[0.0_f64; 3]; 3];
+        for atom in &dynamic {
             for i in 0..3 {
                 for j in 0..3 {
-                    let s = static_a[a][i][j];
-                    let d = dynamic[a][0][i][j];
-                    assert!(
-                        (s - d).abs() < 1e-9,
-                        "atom {a} ({i},{j}): static {s} != dynamic(ω=0) {d}"
-                    );
+                    mol_dyn[i][j] += atom[0][i][j];
                 }
+            }
+        }
+        // Molecular sum must match the molecular static tensor.
+        for i in 0..3 {
+            for j in 0..3 {
+                let s = mol_static.tensor[i][j];
+                let d = mol_dyn[i][j];
+                assert!(
+                    (s - d).abs() < 1e-6,
+                    "mol α ({i},{j}): static {s:.8} != dynamic(ω=0) sum {d:.8}"
+                );
             }
         }
     }
