@@ -185,6 +185,11 @@ pub struct PdepRpaResult {
     /// after back-transforming from the V^{-1/2}-dressed Davidson basis).
     /// Shape (naux, M). Column α gives the c_α^P such that V_α(r) = Σ_P c_α^P χ_P(r).
     pub eigenpotentials: Array2<f64>,
+    /// Davidson eigenvectors in the V^{-1/2}-dressed RI basis, shape (naux, M).
+    /// These are the raw Davidson/Lanczos output before back-transformation and
+    /// are needed for the PDEP-truncated polarizability: dressed_Uᵀ · B̃ gives
+    /// the correct projection onto the PDEP subspace.
+    pub dressed_eigenvectors: Array2<f64>,
     /// Imaginary-frequency quadrature points ω_k.
     pub quad_freqs: Vec<f64>,
     /// Quadrature weights w_k.
@@ -429,6 +434,7 @@ pub fn run_pdep_rpa(
         n_eigenpotentials: n_keep,
         eigenvalues_static,
         eigenpotentials: eigenpotentials_aux,
+        dressed_eigenvectors: eigenvectors,
         quad_freqs,
         quad_weights,
         eigenvalues_freq,
@@ -609,6 +615,7 @@ pub fn run_u_pdep_rpa(
         n_eigenpotentials: n_keep,
         eigenvalues_static,
         eigenpotentials: eigenpotentials_aux,
+        dressed_eigenvectors: eigenvectors,
         quad_freqs,
         quad_weights,
         eigenvalues_freq,
