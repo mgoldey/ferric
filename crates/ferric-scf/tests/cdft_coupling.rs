@@ -47,3 +47,35 @@ fn cross_one_body_identical_is_expectation() {
     // spin, ×2 spins = 10.
     assert!((val - 10.0).abs() < 1e-10, "got {val}");
 }
+
+/// Build α sets that share one orbital but whose second orbitals are mutually
+/// orthogonal (one zero singular value). S_ab = 0, but the one-body element is
+/// finite and equals (Π nonzero) · ⟨ã_k|Ô|b̃_k⟩ for the paired zero orbital.
+/// β sets identical (det_β = 1) so the α-zero is the only zero.
+#[test]
+fn cross_one_body_single_zero_overlap_is_finite() {
+    use ferric_scf::cdft_coupling::{biorth_pairing, cross_one_body};
+    let s = Array2::<f64>::eye(4);
+    // α_a occupies AO0, AO1 ; α_b occupies AO0, AO2 → second orbitals orthogonal.
+    let c_a = array![[1.0, 0.0], [0.0, 1.0], [0.0, 0.0], [0.0, 0.0]];
+    let c_b = array![[1.0, 0.0], [0.0, 0.0], [0.0, 1.0], [0.0, 0.0]];
+    let pa = biorth_pairing(&c_a, &c_b, &s);
+    // One singular value should be ~1 (shared AO0) and one ~0 (orthogonal pair).
+    let n_zero = pa.s_vals.iter().filter(|&&s| s < 1e-8).count();
+    assert_eq!(n_zero, 1, "expected exactly one zero overlap, s={:?}", pa.s_vals);
+
+    // β identical (occupies AO0, AO1).
+    let cb = array![[1.0, 0.0], [0.0, 1.0], [0.0, 0.0], [0.0, 0.0]];
+    let pb = biorth_pairing(&cb, &cb, &s);
+
+    let s_ab = pa.det_m * pb.det_m;
+    assert!(s_ab.abs() < 1e-10, "S_ab should be 0, got {s_ab}");
+
+    // Operator that connects AO1 and AO2 (the orthogonal pair): off-diagonal.
+    let mut op = Array2::<f64>::zeros((4, 4));
+    op[(1, 2)] = 1.0; op[(2, 1)] = 1.0;
+    let val = cross_one_body(&op, &pa, &pb, s_ab);
+    // Finite and nonzero: the single zero-overlap pair carries the element.
+    assert!(val.is_finite(), "element not finite: {val}");
+    assert!(val.abs() > 1e-6, "expected nonzero element, got {val}");
+}
