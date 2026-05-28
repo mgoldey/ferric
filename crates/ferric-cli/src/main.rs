@@ -257,8 +257,25 @@ fn main() {
     }
 
     let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &rhf_config).unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(1);
+        // For pdep-rpa with open-shell molecules the UHF dispatch inside the arm
+        // handles convergence; the global RHF result is not used.
+        if method == "pdep-rpa" && mol.multiplicity > 1 {
+            // Return a dummy result — it will be shadowed immediately in the arm.
+            // The SCF failure is expected here; suppress the exit.
+            let _ = e;
+            // We cannot construct a valid ScfResult without running SCF.
+            // Fall back: run UHF here so `result` is valid even if the arm
+            // never uses it (e.g. if the match falls through to _ => unreachable!).
+            solve_uhf(&ctx, &mol, &prep, op, &bounds, &{
+                let mut c = rhf_config.clone(); c.mom_after_iter = 5; c
+            }).unwrap_or_else(|e2| {
+                eprintln!("error (pre-UHF): {e2}");
+                std::process::exit(1);
+            })
+        } else {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
     });
 
     match method {
@@ -765,7 +782,7 @@ fn main() {
                 if let Err(e) = export_npz(
                     npz_path,
                     None,
-                    Some(result.eps_r()),
+                    if result.spin == ferric_scf::result::Spin::Restricted { Some(result.eps_r()) } else { None },
                     Some(&rpa_result.eigenpotentials),
                     None,
                     Some(&coords_arr),
