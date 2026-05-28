@@ -14,6 +14,7 @@ pub mod boys_localize;
 pub mod config;
 pub mod davidson;
 pub mod diagnostics;
+pub mod dispersion;
 pub mod energy;
 pub mod gradient;
 pub mod lanczos;
@@ -38,6 +39,10 @@ use ferric_scf::ScfResult;
 use ndarray::{Array1, Array2};
 
 pub use config::{Chi0Backend, Chi0Sparsity, Eigensolver, PdepRpaConfig};
+pub use dispersion::{
+    casimir_polder_c6, ts_dynamic_polarizability, C6Result, DispersionPartition,
+    DynamicPolarizability,
+};
 pub use screen::{build_screened_bov, build_screened_bov_boys, ScreenedBov};
 
 /// Allocating wrapper that dispatches the χ₀ kernel (Dense vs Laplace) based on
