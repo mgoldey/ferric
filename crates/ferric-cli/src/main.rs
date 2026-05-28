@@ -659,60 +659,85 @@ fn main() {
                 let mut c6_aniso_v: Vec<Vec<[[f64; 3]; 3]>> = Vec::new();
                 if compute_c6 {
                     use ferric_rpa::dispersion::free_atom_ref::ts_free_atom;
-                    use ferric_rpa::dispersion::{casimir_polder_c6, ts_dynamic_polarizability};
+                    use ferric_rpa::dispersion::{
+                        casimir_polder_c6, pdep_dynamic_polarizability,
+                        ts_dynamic_polarizability, DispersionPartition,
+                    };
                     use ferric_rpa::properties::{
                         atomic_effective_volumes_becke, pdep_polarizability_hirshfeld,
                     };
                     use ferric_rpa::quadrature::build_quadrature;
 
-                    // c6_source: only "ts" implemented (Phase 1). "pdep" is Phase 2.
-                    if cfg.rpa.c6_source.as_deref() == Some("pdep") {
-                        eprintln!(
-                            "warning: c6_source=\"pdep\" (PDEP-RPA dynamic α) is not yet \
-                             implemented; falling back to the TS model"
-                        );
-                    }
-                    let use_hirshfeld = cfg.rpa.c6_partition.as_deref() == Some("hirshfeld");
-
-                    // Static per-atom α: reuse the Becke alpha_atomic_vec if present and
-                    // Becke was requested; otherwise compute with the chosen partition.
-                    let alpha_static: Vec<[[f64; 3]; 3]> = if use_hirshfeld {
-                        pdep_polarizability_hirshfeld(
-                            &mol, &prep, &bs, &dfbs, &result, op, &rpa_cfg,
-                        )
-                        .unwrap_or_else(|_| vec![[[0.0; 3]; 3]; mol.atoms.len()])
+                    let partition = if cfg.rpa.c6_partition.as_deref() == Some("hirshfeld") {
+                        DispersionPartition::Hirshfeld
                     } else {
-                        match alpha_atomic_vec.as_ref() {
-                            Some(v) => v.clone(),
-                            None => pdep_polarizability_becke(
-                                &mol, &prep, &bs, &dfbs, &result, op, &rpa_cfg,
-                            )
-                            .unwrap_or_else(|_| vec![[[0.0; 3]; 3]; mol.atoms.len()]),
-                        }
+                        DispersionPartition::Becke
                     };
-                    let vols = atomic_effective_volumes_becke(
-                        &mol, &prep, &bs, result.density_total(),
-                    )
-                    .unwrap_or_else(|_| vec![1.0; mol.atoms.len()]);
-                    let z: Vec<usize> = mol.atoms.iter().map(|a| a.z as usize).collect();
-                    let ratio: Vec<f64> = z
-                        .iter()
-                        .enumerate()
-                        .map(|(i, &zi)| match ts_free_atom(zi) {
-                            Some((_, _, vfree)) if vfree > 0.0 => vols[i] / vfree,
-                            _ => 1.0,
-                        })
-                        .collect();
-                    let (freqs, weights) = build_quadrature(&rpa_cfg.quadrature);
-                    let dp =
-                        ts_dynamic_polarizability(&z, &ratio, &alpha_static, &freqs, &weights);
-                    let res = casimir_polder_c6(&dp);
-                    c6_freqs_v = res.per_atom_dynamic.freqs.clone();
-                    c6_weights_v = res.per_atom_dynamic.weights.clone();
-                    alpha_dyn_v = res.per_atom_dynamic.per_atom.clone();
-                    c6_iso_opt = Some(res.c6_iso_pair.clone());
-                    c6_aniso_v = res.c6_aniso_pair.clone();
-                    println!("Computed TS C6: {} atoms", z.len());
+                    let use_pdep = cfg.rpa.c6_source.as_deref() == Some("pdep");
+
+                    let res_opt = if use_pdep {
+                        // Phase 2: PDEP-RPA dynamic α(iω). Origin-clean for free atoms and
+                        // molecular totals; per-atom in a molecule is origin-dependent at ω≠0.
+                        match pdep_dynamic_polarizability(
+                            &mol, &prep, &bs, &dfbs, &result, op, &rpa_cfg, partition,
+                        ) {
+                            Ok(dp) => {
+                                println!(
+                                    "Computed PDEP-RPA C6: {} atoms, {} freqs",
+                                    mol.atoms.len(), dp.freqs.len()
+                                );
+                                Some(casimir_polder_c6(&dp))
+                            }
+                            Err(e) => {
+                                eprintln!("warning: PDEP-RPA C6 failed: {e}");
+                                None
+                            }
+                        }
+                    } else {
+                        // Phase 1: Tkatchenko-Scheffler single-pole model.
+                        let alpha_static: Vec<[[f64; 3]; 3]> =
+                            if partition == DispersionPartition::Hirshfeld {
+                                pdep_polarizability_hirshfeld(
+                                    &mol, &prep, &bs, &dfbs, &result, op, &rpa_cfg,
+                                )
+                                .unwrap_or_else(|_| vec![[[0.0; 3]; 3]; mol.atoms.len()])
+                            } else {
+                                match alpha_atomic_vec.as_ref() {
+                                    Some(v) => v.clone(),
+                                    None => pdep_polarizability_becke(
+                                        &mol, &prep, &bs, &dfbs, &result, op, &rpa_cfg,
+                                    )
+                                    .unwrap_or_else(|_| vec![[[0.0; 3]; 3]; mol.atoms.len()]),
+                                }
+                            };
+                        let vols = atomic_effective_volumes_becke(
+                            &mol, &prep, &bs, result.density_total(),
+                        )
+                        .unwrap_or_else(|_| vec![1.0; mol.atoms.len()]);
+                        let z: Vec<usize> = mol.atoms.iter().map(|a| a.z as usize).collect();
+                        let ratio: Vec<f64> = z
+                            .iter()
+                            .enumerate()
+                            .map(|(i, &zi)| match ts_free_atom(zi) {
+                                Some((_, _, vfree)) if vfree > 0.0 => vols[i] / vfree,
+                                _ => 1.0,
+                            })
+                            .collect();
+                        let (freqs, weights) = build_quadrature(&rpa_cfg.quadrature);
+                        let dp = ts_dynamic_polarizability(
+                            &z, &ratio, &alpha_static, &freqs, &weights,
+                        );
+                        println!("Computed TS C6: {} atoms", z.len());
+                        Some(casimir_polder_c6(&dp))
+                    };
+
+                    if let Some(res) = res_opt {
+                        c6_freqs_v = res.per_atom_dynamic.freqs.clone();
+                        c6_weights_v = res.per_atom_dynamic.weights.clone();
+                        alpha_dyn_v = res.per_atom_dynamic.per_atom.clone();
+                        c6_iso_opt = Some(res.c6_iso_pair.clone());
+                        c6_aniso_v = res.c6_aniso_pair.clone();
+                    }
                 }
 
                 if let Err(e) = export_npz(
