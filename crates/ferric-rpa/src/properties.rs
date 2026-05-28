@@ -1348,6 +1348,64 @@ pub fn pdep_polarizability_hirshfeld(
 ///
 /// Closed-shell: pass `density = D_total` (= 2·D_α in restricted).
 /// Open-shell: pass `D_α + D_β`.
+/// Per-atom effective volume via Becke partitioning:
+/// ```text
+///   v_A = ∫ w^A_Becke(r) ρ(r) |r − R_A|³ dr
+/// ```
+/// Returned in a.u. (Bohr³·e). The TS volume *ratio* is v_A / v_free[Z_A],
+/// with `v_free` taken from [`crate::dispersion::free_atom_ref::ts_free_atom`].
+pub fn atomic_effective_volumes_becke(
+    mol: &Molecule,
+    _prep: &PreparedBasis,
+    obs_bs: &ferric_core::basis::BasisSet,
+    density: &Array2<f64>,
+) -> Result<Vec<f64>, FerricError> {
+    use ferric_dft::ao_grid::eval_basis_on_points;
+    use ferric_dft::grid::{build_atomic_grid, AtomicGridConfig};
+
+    let natoms = mol.atoms.len();
+    let grid_cfg = AtomicGridConfig::default();
+    let grid = build_atomic_grid(mol, &grid_cfg);
+    let points: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
+    let weights: Vec<f64> = grid.iter().map(|g| g.weight).collect();
+    let home_atom: Vec<usize> = grid.iter().map(|g| g.home_atom).collect();
+    let npts = points.len();
+
+    let chi = eval_basis_on_points(mol, obs_bs, &points).map_err(|e| {
+        FerricError::General(format!(
+            "atomic_effective_volumes_becke: chi eval failed: {e}"
+        ))
+    })?;
+    let nbf = chi.nrows();
+
+    let pos: Vec<[f64; 3]> = mol
+        .atoms
+        .iter()
+        .map(|at| [at.x, at.y, at.zpos])
+        .collect();
+
+    let mut vol = vec![0.0_f64; natoms];
+    for g in 0..npts {
+        let a = home_atom[g];
+        let mut rho = 0.0;
+        for mu in 0..nbf {
+            let cm = chi[(mu, g)];
+            if cm.abs() < 1e-30 {
+                continue;
+            }
+            for nu in 0..nbf {
+                rho += density[(mu, nu)] * cm * chi[(nu, g)];
+            }
+        }
+        let dx = points[g][0] - pos[a][0];
+        let dy = points[g][1] - pos[a][1];
+        let dz = points[g][2] - pos[a][2];
+        let r3 = (dx * dx + dy * dy + dz * dz).powf(1.5);
+        vol[a] += weights[g] * rho * r3;
+    }
+    Ok(vol)
+}
+
 pub fn becke_charges(
     mol: &Molecule,
     _prep: &PreparedBasis,
@@ -1711,6 +1769,17 @@ mod tests {
             "ESP at H in H2 = {} Ha; outside physical band",
             v[0]
         );
+    }
+
+    #[test]
+    fn becke_effective_volume_h2_finite_positive() {
+        let (mol, obs, _dfbs, _op, rhf) = build_h2();
+        let bs = basis::bundled("cc-pvdz").unwrap();
+        let v = atomic_effective_volumes_becke(&mol, &obs, &bs, rhf.density_r()).unwrap();
+        assert_eq!(v.len(), 2);
+        assert!(v[0] > 0.0 && v[0].is_finite(), "vol[0]={}", v[0]);
+        // H2 symmetric: equal volumes.
+        assert!((v[0] - v[1]).abs() / v[0] < 1e-6, "asymmetric: {v:?}");
     }
 
     #[test]
