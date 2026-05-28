@@ -703,7 +703,8 @@ fn main() {
                         ts_dynamic_polarizability, DispersionPartition,
                     };
                     use ferric_rpa::properties::{
-                        atomic_effective_volumes_becke, pdep_polarizability_hirshfeld,
+                        atomic_effective_volumes_becke, atomic_effective_volumes_hirshfeld,
+                        pdep_polarizability_hirshfeld,
                     };
                     use ferric_rpa::quadrature::build_quadrature;
 
@@ -749,10 +750,17 @@ fn main() {
                                     .unwrap_or_else(|_| vec![[[0.0; 3]; 3]; mol.atoms.len()]),
                                 }
                             };
-                        let vols = atomic_effective_volumes_becke(
-                            &mol, &prep, &bs, result.density_total(),
-                        )
-                        .unwrap_or_else(|_| vec![1.0; mol.atoms.len()]);
+                        let vols = if partition == DispersionPartition::Hirshfeld {
+                            atomic_effective_volumes_hirshfeld(
+                                &mol, &bs, result.density_total(),
+                            )
+                            .unwrap_or_else(|_| vec![1.0; mol.atoms.len()])
+                        } else {
+                            atomic_effective_volumes_becke(
+                                &mol, &prep, &bs, result.density_total(),
+                            )
+                            .unwrap_or_else(|_| vec![1.0; mol.atoms.len()])
+                        };
                         let z: Vec<usize> = mol.atoms.iter().map(|a| a.z as usize).collect();
                         let ratio: Vec<f64> = z
                             .iter()

@@ -1867,6 +1867,95 @@ pub fn atomic_effective_volumes_becke(
     Ok(vol)
 }
 
+/// Per-atom effective volume via Hirshfeld (Slater proatom) partitioning:
+/// ```text
+///   v_A = ∫ w^A_Hirsh(r) ρ(r) |r − R_A|³ dV
+/// ```
+/// This is the partition the TS dispersion model was calibrated for.
+/// Uses the same Slater single-exponential proatom as `hirshfeld_charges`.
+pub fn atomic_effective_volumes_hirshfeld(
+    mol: &Molecule,
+    obs_bs: &ferric_core::basis::BasisSet,
+    density: &Array2<f64>,
+) -> Result<Vec<f64>, FerricError> {
+    use ferric_export::cube::GridSpec;
+    use ferric_export::gto_eval::eval_basis_on_grid;
+
+    let natoms = mol.atoms.len();
+    let spacing = std::env::var("FERRIC_HIRSHFELD_SPACING")
+        .ok().and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.20);
+    let margin = std::env::var("FERRIC_HIRSHFELD_MARGIN")
+        .ok().and_then(|s| s.parse::<f64>().ok()).unwrap_or(6.0);
+    let grid = GridSpec::bounding_box(mol, margin, spacing);
+    let dv = spacing * spacing * spacing;
+    let npts = grid.n_x * grid.n_y * grid.n_z;
+    let hx = grid.step_x[0];
+    let hy = grid.step_y[1];
+    let hz = grid.step_z[2];
+
+    let chi = eval_basis_on_grid(mol, obs_bs, &grid).map_err(|e| {
+        FerricError::General(format!("atomic_effective_volumes_hirshfeld: chi failed: {e}"))
+    })?;
+    let nbf = chi.nrows();
+
+    // ρ(r_g) = Σ_{μν} D_{μν} χ_μ χ_ν via matrix product.
+    let d_chi = density.dot(&chi);
+    let mut rho = vec![0.0_f64; npts];
+    for mu in 0..nbf {
+        for g in 0..npts {
+            rho[g] += chi[(mu, g)] * d_chi[(mu, g)];
+        }
+    }
+
+    // Slater proatom weights (identical to hirshfeld_charges).
+    let mut rho_free: Vec<Vec<f64>> = vec![vec![0.0; npts]; natoms];
+    let mut rho_sum = vec![0.0_f64; npts];
+    for a in 0..natoms {
+        let xi = slater_xi_for_z(mol.atoms[a].z);
+        let z_a = mol.atoms[a].z as f64;
+        let prefac = z_a * xi.powi(3) / std::f64::consts::PI;
+        let (rax, ray, raz) = (mol.atoms[a].x, mol.atoms[a].y, mol.atoms[a].zpos);
+        let row = &mut rho_free[a];
+        for ix in 0..grid.n_x {
+            let x = grid.origin[0] + ix as f64 * hx;
+            for iy in 0..grid.n_y {
+                let y = grid.origin[1] + iy as f64 * hy;
+                for iz in 0..grid.n_z {
+                    let z = grid.origin[2] + iz as f64 * hz;
+                    let g = (ix * grid.n_y + iy) * grid.n_z + iz;
+                    let r = ((x-rax)*(x-rax)+(y-ray)*(y-ray)+(z-raz)*(z-raz)).sqrt();
+                    let r0 = prefac * (-2.0 * xi * r).exp();
+                    row[g] = r0;
+                    rho_sum[g] += r0;
+                }
+            }
+        }
+    }
+
+    let eps_floor = 1e-12;
+    let mut vol = vec![0.0_f64; natoms];
+    for a in 0..natoms {
+        let (rax, ray, raz) = (mol.atoms[a].x, mol.atoms[a].y, mol.atoms[a].zpos);
+        let mut acc = 0.0;
+        for ix in 0..grid.n_x {
+            let x = grid.origin[0] + ix as f64 * hx;
+            for iy in 0..grid.n_y {
+                let y = grid.origin[1] + iy as f64 * hy;
+                for iz in 0..grid.n_z {
+                    let z = grid.origin[2] + iz as f64 * hz;
+                    let g = (ix * grid.n_y + iy) * grid.n_z + iz;
+                    let w = rho_free[a][g] / (rho_sum[g] + eps_floor);
+                    let dx = x - rax; let dy = y - ray; let dz = z - raz;
+                    let r3 = (dx*dx + dy*dy + dz*dz).powf(1.5);
+                    acc += w * rho[g] * r3 * dv;
+                }
+            }
+        }
+        vol[a] = acc;
+    }
+    Ok(vol)
+}
+
 pub fn becke_charges(
     mol: &Molecule,
     _prep: &PreparedBasis,
