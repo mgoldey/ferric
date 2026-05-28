@@ -1,4 +1,4 @@
-use ndarray::{Array1, Array2, Array3};
+use ndarray::{Array1, Array2, Array3, Array4};
 use ndarray_npy::NpzWriter;
 use std::fs::File;
 use crate::cube::ExportError;
@@ -21,6 +21,11 @@ pub fn export_npz(
     alpha_atomic: Option<&[[[f64; 3]; 3]]>,
     hirshfeld_charges: Option<&[f64]>,
     lowdin_charges: Option<&[f64]>,
+    c6_freqs: Option<&[f64]>,
+    c6_weights: Option<&[f64]>,
+    alpha_atomic_dynamic: Option<&[Vec<[[f64; 3]; 3]>]>,
+    c6_iso: Option<&Array2<f64>>,
+    c6_aniso: Option<&[Vec<[[f64; 3]; 3]>]>,
 ) -> Result<(), ExportError> {
     let file = File::create(path)?;
     let mut writer = NpzWriter::new(file);
@@ -103,6 +108,55 @@ pub fn export_npz(
         writer
             .add_array("lowdin_charges", &q_arr)
             .map_err(|e| ExportError::Other(e.to_string()))?;
+    }
+
+    if let Some(f) = c6_freqs {
+        let a = Array1::from_vec(f.to_vec());
+        writer.add_array("c6_freqs", &a).map_err(|e| ExportError::Other(e.to_string()))?;
+    }
+
+    if let Some(w) = c6_weights {
+        let a = Array1::from_vec(w.to_vec());
+        writer.add_array("c6_weights", &a).map_err(|e| ExportError::Other(e.to_string()))?;
+    }
+
+    if let Some(ad) = alpha_atomic_dynamic {
+        let natoms = ad.len();
+        let nfreq = if natoms > 0 { ad[0].len() } else { 0 };
+        let mut flat: Vec<f64> = Vec::with_capacity(natoms * nfreq * 9);
+        for atom in ad {
+            for t in atom {
+                for row in t {
+                    for v in row {
+                        flat.push(*v);
+                    }
+                }
+            }
+        }
+        let arr = Array4::from_shape_vec((natoms, nfreq, 3, 3), flat).unwrap();
+        writer
+            .add_array("alpha_atomic_dynamic", &arr)
+            .map_err(|e| ExportError::Other(e.to_string()))?;
+    }
+
+    if let Some(c) = c6_iso {
+        writer.add_array("c6_iso", c).map_err(|e| ExportError::Other(e.to_string()))?;
+    }
+
+    if let Some(ca) = c6_aniso {
+        let n = ca.len();
+        let mut flat: Vec<f64> = Vec::with_capacity(n * n * 9);
+        for row in ca {
+            for t in row {
+                for r in t {
+                    for v in r {
+                        flat.push(*v);
+                    }
+                }
+            }
+        }
+        let arr = Array4::from_shape_vec((n, n, 3, 3), flat).unwrap();
+        writer.add_array("c6_aniso", &arr).map_err(|e| ExportError::Other(e.to_string()))?;
     }
 
     writer.finish().map_err(|e| ExportError::Other(e.to_string()))?;
