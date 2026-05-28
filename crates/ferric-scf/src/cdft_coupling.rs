@@ -114,3 +114,67 @@ pub fn cross_one_body(
         0.0
     }
 }
+
+/// A converged constrained UHF diabatic state, viewed for coupling.
+pub struct DiabaticState<'a> {
+    /// α MO coefficients (nbf, nbf); occupied = first `nocc_a` columns.
+    pub c_a: &'a Array2<f64>,
+    /// β MO coefficients (nbf, nbf); occupied = first `nocc_b` columns.
+    pub c_b: &'a Array2<f64>,
+    pub nocc_a: usize,
+    pub nocc_b: usize,
+    /// State energy (CdftResult.scf.energy).
+    pub energy: f64,
+    /// Constraint multiplier (single constraint, k=1).
+    pub lambda: f64,
+    /// Constraint weight operator W^C in AO basis.
+    pub w: &'a Array2<f64>,
+}
+
+/// Result of a coupling evaluation.
+pub struct HabResult {
+    pub h_ab: f64,
+    pub s_ab: f64,
+    pub e_a: f64,
+    pub e_b: f64,
+}
+
+/// Wu–VV electronic coupling between two constrained UHF states.
+pub fn coupling_hab(
+    state_a: &DiabaticState,
+    state_b: &DiabaticState,
+    s: &Array2<f64>,
+) -> HabResult {
+    let ca_occ_a = state_a.c_a.slice(ndarray::s![.., ..state_a.nocc_a]).to_owned();
+    let ca_occ_b = state_a.c_b.slice(ndarray::s![.., ..state_a.nocc_b]).to_owned();
+    let cb_occ_a = state_b.c_a.slice(ndarray::s![.., ..state_b.nocc_a]).to_owned();
+    let cb_occ_b = state_b.c_b.slice(ndarray::s![.., ..state_b.nocc_b]).to_owned();
+
+    let pair_alpha = biorth_pairing(&ca_occ_a, &cb_occ_a, s);
+    let pair_beta = biorth_pairing(&ca_occ_b, &cb_occ_b, s);
+    let s_ab = pair_alpha.det_m * pair_beta.det_m;
+
+    // ⟨Ψ_a|Ŵ_a|Ψ_b⟩ and ⟨Ψ_a|Ŵ_b|Ψ_b⟩.
+    let w_a_elem = cross_one_body(state_a.w, &pair_alpha, &pair_beta, s_ab);
+    let w_b_elem = cross_one_body(state_b.w, &pair_alpha, &pair_beta, s_ab);
+
+    // Symmetric Wu–VV raw element:
+    //   H_raw = ½[(E_b S_ab − λ_b⟨a|W_b|b⟩) + (E_a S_ab − λ_a⟨a|W_a|b⟩)].
+    let e_a = state_a.energy;
+    let e_b = state_b.energy;
+    let h_raw = 0.5
+        * ((e_b * s_ab - state_b.lambda * w_b_elem)
+            + (e_a * s_ab - state_a.lambda * w_a_elem));
+
+    // Symmetric orthogonalization. Guard the degenerate denominator.
+    let denom = 1.0 - s_ab * s_ab;
+    let h_ab = if denom.abs() < 1e-10 {
+        // |S_ab| → 1: the two states are (nearly) identical; the coupling is
+        // undefined / the off-diagonal collapses to the diagonal. Report E_a.
+        e_a
+    } else {
+        (h_raw - 0.5 * (e_a + e_b) * s_ab) / denom
+    };
+
+    HabResult { h_ab, s_ab, e_a, e_b }
+}
