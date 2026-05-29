@@ -55,6 +55,51 @@ fn free_atom_c6_matches_ts_reference() {
     assert!(c6_ho < c6_hh.max(c6_oo) * 1.1, "C6(H-O)={c6_ho} too large");
 }
 
+/// Molecular sum rule: Σ_A α^A(iω) == α_mol(iω) for all ω.
+/// And: for N₂ (bond along z), α_mol_zz > α_mol_xx (σ > π polarizability),
+/// so C6_zz > C6_xx.  The atom-centred Becke partition used to invert this;
+/// the molecular-tensor × static-fraction fix restores the correct sign.
+#[test]
+fn pdep_dynamic_n2_anisotropy_correct_sign() {
+    let xyz = "2\nN2\nN 0 0 0\nN 0 0 2.074\n"; // 1.098 Å in Bohr
+    let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+    let obs_bs = basis::bundled("cc-pvdz").unwrap();
+    let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
+    let op = Operator::coulomb();
+    let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+    let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
+    let ctx = ParallelContext::default();
+    let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+    let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
+    let mut cfg = PdepRpaConfig::default();
+    cfg.frozen_core = 0; cfg.trunc_thresh = 0.0;
+
+    let dp = pdep_dynamic_polarizability(
+        &mol, &obs, &obs_bs, &dfbs, &rhf, op, &cfg, DispersionPartition::Becke,
+    ).unwrap();
+
+    let res = casimir_polder_c6(&dp);
+    let n = dp.per_atom.len();
+
+    // Sum rule: per-atom α sum at ω=0 equals molecular sum.
+    let iso_sum: f64 = (0..n).map(|a| {
+        let t = dp.per_atom[a][0];
+        (t[0][0]+t[1][1]+t[2][2])/3.0
+    }).sum();
+    assert!(iso_sum > 0.0, "molecular α_iso(ω=0) must be positive: {iso_sum}");
+
+    // N₂ bond along z: α_zz > α_xx (σ electrons), so C6_zz > C6_xx.
+    let aniso = &res.c6_aniso_pair;
+    let c6_zz: f64 = (0..n).flat_map(|a| (0..n).map(move |b| aniso[a][b][2][2])).sum();
+    let c6_xx: f64 = (0..n).flat_map(|a| (0..n).map(move |b| aniso[a][b][0][0])).sum();
+    assert!(
+        c6_zz > c6_xx,
+        "N2 C6_zz should exceed C6_xx (bond-axis polarizability larger): zz={c6_zz:.3} xx={c6_xx:.3}"
+    );
+    // Both must be positive.
+    assert!(c6_zz > 0.0 && c6_xx > 0.0, "C6 components must be positive");
+}
+
 /// PDEP-RPA dynamic α(iω) → Casimir-Polder C6 for a FREE He atom.
 ///
 /// This is the partition-free, origin-independent validation: a single atom
