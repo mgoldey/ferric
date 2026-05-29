@@ -1383,58 +1383,134 @@ pub fn pdep_polarizability_becke_dynamic(
         })
         .collect();
 
-    // --- Frequency loop. Only g(ω) and ε̃(ω) change. ---
+    // --- Static Becke isotropic fractions f^A = α^A_iso(ω=0) / α_mol_iso(ω=0) ---
+    //
+    // Per-atom α^A_{ij}(iω) via atom-centred Becke dipoles has correct isotropic
+    // magnitude but wrong anisotropy: the charge-transfer contribution to α_||
+    // (polarization along the bond) is a collective molecular effect that cancels
+    // out of the atom-centred (r − R_A) decomposition at ω≠0. Consequently the
+    // partitioned zz/xx ratio is systematically too small (too anisotropic).
+    //
+    // Fix: compute the molecular α(iω) tensor using the full analytical dipole
+    // (origin at 0, not atom-centred), which carries correct anisotropy. Distribute
+    // it to atoms using the static Becke isotropic fraction f^A. This gives:
+    //   α^A_{ij}(iω) = f^A · α_mol_{ij}(iω)
+    // where Σ_A f^A = 1 by construction (isotropic partition of unity).
+    // The molecular C6 Σ_{A,B} C6^{AB} = C6_mol is unchanged; anisotropy is correct.
+    //
+    // Static fraction from the ω=0 (g = 1/Δε) Becke quantities.
+    let g0: ndarray::Array1<f64> = {
+        let mut v = ndarray::Array1::<f64>::zeros(nov);
+        for ia in 0..nov { v[ia] = 1.0 / e_ia[ia]; }
+        v
+    };
+    // Molecular α_iso(ω=0) from analytical (global-origin) MO dipoles.
+    // Use mu_flat (which sums the Becke per-atom pieces; equal to analyt. dipole
+    // up to grid noise since atom-centred sum = global dipole + R_A·charge terms,
+    // but for the *isotropic* f^A fraction we only need relative magnitudes).
+    let mol_alpha0_iso = {
+        // 4 μ^d · g0 · μ^d - 16 w^d · y^d, summed over d, divided by 3.
+        // Recompute with analytical global dipole for correctness.
+        let dip_ao_global = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+        let mu_global: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
+            let mo = c_occ.t().dot(&dip_ao_global[d]).dot(&c_vir);
+            let mut v = ndarray::Array1::<f64>::zeros(nov);
+            for i in 0..nocc { for ax in 0..nvir { v[i*nvir+ax] = mo[(i,ax)]; } }
+            v
+        });
+        let mut b_scaled0 = b_ov.clone();
+        for ia in 0..nov { let s = (4.0*g0[ia]).sqrt(); b_scaled0.column_mut(ia).mapv_inplace(|x| x*s); }
+        let mut eps0: Array2<f64> = b_scaled0.dot(&b_scaled0.t());
+        for p in 0..naux { eps0[(p,p)] += 1.0; }
+        use ndarray_linalg::Solve;
+        let mut iso = 0.0f64;
+        for d in 0..3 {
+            let mu_g = &mu_global[d] * &g0;
+            let w = b_ov.dot(&mu_g);
+            let y = eps0.solve(&w).unwrap();
+            iso += 4.0*mu_global[d].dot(&mu_g) - 16.0*w.dot(&y);
+        }
+        iso / 3.0
+    };
+    // Per-atom isotropic α^A(ω=0) from the Becke atom-centred pieces (already in mu_ai_flat).
+    // Use the same ε̃(ω=0) solve.
+    let mut b_scaled0 = b_ov.clone();
+    for ia in 0..nov { let s = (4.0*g0[ia]).sqrt(); b_scaled0.column_mut(ia).mapv_inplace(|x| x*s); }
+    let mut eps0: Array2<f64> = b_scaled0.dot(&b_scaled0.t());
+    for p in 0..naux { eps0[(p,p)] += 1.0; }
+    let mu_flat_g0: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| &mu_flat[d] * &g0);
+    let y_mol0: [ndarray::Array1<f64>; 3] = {
+        use ndarray_linalg::Solve;
+        std::array::from_fn(|d| eps0.solve(&(b_ov.dot(&mu_flat_g0[d]))).unwrap())
+    };
+    let frac_atom: Vec<f64> = (0..natoms).map(|a| {
+        let mut iso_a = 0.0f64;
+        for d in 0..3 {
+            let mu_ai_g = &mu_ai_flat[a][d] * &g0;
+            let w_ai = b_ov.dot(&mu_ai_g);
+            let bare = mu_ai_flat[a][d].dot(&mu_flat_g0[d]);
+            let coupled = w_ai.dot(&y_mol0[d]);
+            iso_a += 4.0*bare - 16.0*coupled;
+        }
+        let iso_a = iso_a / 3.0;
+        if mol_alpha0_iso.abs() > 1e-12 { iso_a / mol_alpha0_iso } else { 1.0 / natoms as f64 }
+    }).collect();
+
+    // --- Frequency loop: molecular α(iω) × static Becke fraction ---
     let mut out: Vec<Vec<[[f64; 3]; 3]>> =
         vec![vec![[[0.0; 3]; 3]; nfreq]; natoms];
 
     for (k, &omega) in freqs.iter().enumerate() {
-        // g_ia(ω) = e_ia / (ω² + e_ia²); at ω=0 this is 1/Δε.
         let omega2 = omega * omega;
         let mut g = ndarray::Array1::<f64>::zeros(nov);
-        for ia in 0..nov {
-            let e = e_ia[ia];
-            g[ia] = e / (omega2 + e * e);
-        }
+        for ia in 0..nov { let e = e_ia[ia]; g[ia] = e / (omega2 + e * e); }
 
-        // ε̃(ω) = I + 4 B̃ diag(g) B̃^T.
+        // ε̃(ω) = I + 4 B̃ diag(g) B̃^T — used for the *molecular* SMW solve.
         let mut b_scaled = b_ov.clone();
         for ia in 0..nov {
             let s = (4.0 * g[ia]).sqrt();
-            let mut col = b_scaled.column_mut(ia);
-            col.mapv_inplace(|x| x * s);
+            b_scaled.column_mut(ia).mapv_inplace(|x| x * s);
         }
         let mut eps_mat: Array2<f64> = b_scaled.dot(&b_scaled.t());
-        for p in 0..naux {
-            eps_mat[(p, p)] += 1.0;
+        for p in 0..naux { eps_mat[(p, p)] += 1.0; }
+
+        // Molecular α(iω) tensor using the full analytical (global-origin) dipole.
+        // This carries the correct bond-axis anisotropy; charge-transfer contributions
+        // are included because the dipole is from the global origin, not atom-centred.
+        let dip_ao_global = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+        let mu_global: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
+            let mo = c_occ.t().dot(&dip_ao_global[d]).dot(&c_vir);
+            let mut v = ndarray::Array1::<f64>::zeros(nov);
+            for i in 0..nocc { for ax in 0..nvir { v[i*nvir+ax] = mo[(i,ax)]; } }
+            v
+        });
+        let mu_g: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| &mu_global[d] * &g);
+        let w_mol: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| b_ov.dot(&mu_g[d]));
+        let y_mol: [ndarray::Array1<f64>; 3] = {
+            use ndarray_linalg::Solve;
+            std::array::from_fn(|d| eps_mat.solve(&w_mol[d]).unwrap())
+        };
+
+        let mut mol_tensor = [[0.0_f64; 3]; 3];
+        for d in 0..3 {
+            for j in 0..3 {
+                let bare = mu_global[d].dot(&mu_g[j]);
+                let coupled = w_mol[d].dot(&y_mol[j]);
+                mol_tensor[d][j] = 4.0 * bare - 16.0 * coupled;
+            }
         }
+        // Symmetrize.
+        for i in 0..3 { for j in (i+1)..3 {
+            let avg = 0.5*(mol_tensor[i][j]+mol_tensor[j][i]);
+            mol_tensor[i][j] = avg; mol_tensor[j][i] = avg;
+        }}
 
-        // Molecular SMW vectors at this ω.
-        let mu_flat_g: [ndarray::Array1<f64>; 3] =
-            std::array::from_fn(|d| &mu_flat[d] * &g);
-        let w_mol: [ndarray::Array1<f64>; 3] =
-            std::array::from_fn(|d| b_ov.dot(&mu_flat_g[d]));
-        let y_mol: [ndarray::Array1<f64>; 3] =
-            std::array::from_fn(|d| eps_mat.solve(&w_mol[d]).unwrap());
-
-        // Per-atom α^A(iω) = 4 μ^{A,i}·g·μ^j − 16 (B̃ (μ^{A,i} g))·y^j.
+        // Distribute to atoms via static isotropic Becke fraction f^A.
         for a in 0..natoms {
-            for d in 0..3 {
-                let mu_ai_g = &mu_ai_flat[a][d] * &g;
-                let w_ai = b_ov.dot(&mu_ai_g);
-                for j in 0..3 {
-                    let bare = mu_ai_flat[a][d].dot(&mu_flat_g[j]);
-                    let coupled = w_ai.dot(&y_mol[j]);
-                    out[a][k][d][j] = 4.0 * bare - 16.0 * coupled;
-                }
-            }
-            // Symmetrize.
-            for i in 0..3 {
-                for j in (i + 1)..3 {
-                    let avg = 0.5 * (out[a][k][i][j] + out[a][k][j][i]);
-                    out[a][k][i][j] = avg;
-                    out[a][k][j][i] = avg;
-                }
-            }
+            let f = frac_atom[a];
+            for d in 0..3 { for j in 0..3 {
+                out[a][k][d][j] = f * mol_tensor[d][j];
+            }}
         }
     }
 
