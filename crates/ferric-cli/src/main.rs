@@ -762,12 +762,62 @@ fn main() {
                             .unwrap_or_else(|_| vec![1.0; mol.atoms.len()])
                         };
                         let z: Vec<usize> = mol.atoms.iter().map(|a| a.z as usize).collect();
+
+                        // Compute free-atom vol_free at the same basis/theory level
+                        // as the molecule: run RHF/UHF on each isolated atom and call
+                        // atomic_effective_volumes_becke on the free-atom density.
+                        // For a single atom the Becke weight w=1 everywhere, so this
+                        // gives ∫ ρ_free(r) |r|³ dr — the self-consistent denominator
+                        // the TS model requires. Using a hard-coded table would mix
+                        // basis sets and give wrong ratios.
+                        let mut vol_free_computed: std::collections::HashMap<usize, f64> =
+                            std::collections::HashMap::new();
+                        for &zi in z.iter().collect::<std::collections::HashSet<_>>() {
+                            let sym = ferric_core::elements::z_to_symbol(zi as i32)
+                                .unwrap_or("X");
+                            let free_xyz = format!("1\n{sym}\n{sym} 0 0 0\n");
+                            let mult = match zi {
+                                1 | 9 | 17 => 2,   // H, F, Cl: doublet
+                                7 | 15 => 4,        // N, P: quartet
+                                _ => 1,
+                            };
+                            if let Ok(free_mol) = Molecule::parse_xyz(&free_xyz, 0, mult) {
+                                if let Ok(free_obs) = PreparedBasis::new(&free_mol, &bs) {
+                                    let free_bounds = SchwarzBounds::compute(op, &free_obs)
+                                        .unwrap_or_else(|_| SchwarzBounds::compute(op, &prep).unwrap());
+                                    let mut free_cfg = rhf_config.clone();
+                                    free_cfg.mom_after_iter = if mult > 1 { 5 } else { 0 };
+                                    let free_density = if mult > 1 {
+                                        solve_uhf(&ctx, &free_mol, &free_obs, op,
+                                                  &free_bounds, &free_cfg)
+                                            .ok()
+                                            .map(|r| r.density_total().to_owned())
+                                    } else {
+                                        solve_rhf(&ctx, &free_mol, &free_obs, op,
+                                                  &free_bounds, &free_cfg)
+                                            .ok()
+                                            .map(|r| r.density_r().to_owned())
+                                    };
+                                    if let Some(d) = free_density {
+                                        if let Ok(fv) = atomic_effective_volumes_becke(
+                                            &free_mol, &free_obs, &bs, &d,
+                                        ) {
+                                            vol_free_computed.insert(zi, fv[0]);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         let ratio: Vec<f64> = z
                             .iter()
                             .enumerate()
-                            .map(|(i, &zi)| match ts_free_atom(zi) {
-                                Some((_, _, vfree)) if vfree > 0.0 => vols[i] / vfree,
-                                _ => 1.0,
+                            .map(|(i, &zi)| {
+                                let vf = vol_free_computed.get(&zi).copied()
+                                    // fallback: table value if free-atom SCF failed
+                                    .or_else(|| ts_free_atom(zi).map(|(_, _, v)| v))
+                                    .unwrap_or(1.0);
+                                if vf > 1e-10 { vols[i] / vf } else { 1.0 }
                             })
                             .collect();
                         let (freqs, weights) = build_quadrature(&rpa_cfg.quadrature);
