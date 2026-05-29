@@ -55,13 +55,52 @@
 //! triple (P, μ, ν) where aux shell P is more than ~10–12 Bohr from the (μν)
 //! pair center, because the Schwarz pre-factor is typically 10⁻³–10⁻¹ a.u. and
 //! the exponential brings the product below threshold.  On decane with cc-pVDZ /
-//! cc-pVDZ-RI, about 60–70% of shell triples are screened away, recovering
-//! near-linear scaling in chain length at no loss of accuracy (<1 µHa vs dense).
+//! cc-pVDZ-RI, about 48% of shell triples are screened away (48/100 kept = 52%).
 //!
 //! For the Coulomb operator ω = 0, the exponential is identically 1 and QQR-3
 //! collapses to the standard 1/R Schwarz+distance estimate — still useful but
 //! much less aggressive than erfc.  The operator-specific decay is what makes
 //! attenuated MP2 intrinsically more screenable than full Coulomb MP2.
+//!
+//! ## All five steps: measured on decane/cc-pVDZ (OPENBLAS_NUM_THREADS=1, release)
+//!
+//! nbf=250, naux=868, nocc=41, nvir=209.  Times in ms.
+//!
+//! | Step                        | Coulomb | erfc dense | erfc screened |
+//! |-----------------------------|---------|------------|---------------|
+//! | 1. 2-center metric+Cholesky |   129   |    137     |     135       |
+//! | 2. 3-center AO build        |  1628   |   2237     |    1769       |
+//! | 3. MO transform →(P\|ia)   |   695   |    702     |     708       |
+//! | 4. Metric contraction B̃    |   283   |    300     |     291       |
+//! | 5. Energy assembly          |    66   |     70     |      71       |
+//! | **TOTAL (post-RHF)**        | **2800**| **3445**   |   **2973**    |
+//! | Speedup vs Coulomb          |  1.00×  |   0.81×    |    0.94×      |
+//!
+//! ### What the numbers say
+//!
+//! **The 3-center build (step 2) dominates** at 58% of post-RHF cost, and the
+//! erfc operator is intrinsically slower to evaluate in libint2 than Coulomb
+//! (special function, ~1.4× per integral).  Screening recovers some of that —
+//! the screened erfc build (1769 ms) is 21% faster than dense erfc (2237 ms)
+//! but still 8% slower than Coulomb (1628 ms).
+//!
+//! **Steps 3–5 are essentially operator-agnostic:** the MO transform, metric
+//! contraction, and energy assembly all operate on the materialized B̃ tensor
+//! and don't see the operator after step 2.  Energy assembly (step 5) is only
+//! 66 ms — not the bottleneck at cc-pVDZ because nocc=41 is small.
+//!
+//! **The 48% triple reduction from screening saves ~470 ms on step 2 alone**
+//! (screened 1769 ms vs dense erfc 2237 ms), making the screened path
+//! competitive with unscreened Coulomb.  The overall post-RHF speedup of 0.94×
+//! vs Coulomb means attenuated MP2 with QQR-3 screening is within 6% of plain
+//! Coulomb MP2 speed while computing a physically different (short-range only)
+//! correlation — you pay essentially nothing for the physics change.
+//!
+//! **Where the real gain lives:** the erfc MP2 energy itself is shorter-ranged,
+//! so pair-amplitude cancellation lets you use smaller basis sets and fewer
+//! k-points in periodic systems without losing the essential physics.  The
+//! screening speedup on the integral build is a secondary benefit; the primary
+//! advantage is reduced basis-set requirements.
 
 use crate::mo_transform::transform_3center_ov;
 use crate::rimp2::{cholesky_inverse_sqrt, ri_mp2_spin_components, RiMp2Config, SpinComponents};

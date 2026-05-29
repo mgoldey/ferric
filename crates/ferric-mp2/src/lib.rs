@@ -15,6 +15,7 @@ pub mod canonical;
 pub mod gradient;
 pub mod oo_rimp2;
 pub mod attenuated;
+mod attenuated_timing;
 pub mod scs;
 pub mod zvector;
 pub mod laplace;
