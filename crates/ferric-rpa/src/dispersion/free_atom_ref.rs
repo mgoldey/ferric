@@ -1,24 +1,30 @@
 //! Free-atom reference data for the Tkatchenko-Scheffler dispersion model.
 //!
 //! `alpha_free` and `c6_free` (atomic units) are from Tkatchenko & Scheffler,
-//! PRL 102, 073005 (2009), Table I.
+//! PRL 102, 073005 (2009), Table I. Those values are well-established and
+//! cross-checked by multiple sources.
 //!
-//! `vol_free` is the free-atom effective volume ∫ ρ_atom(r) r³ dr (a.u.),
-//! computed from PBE/LDA DFT free-atom densities. Values taken from
-//! Bučko et al., JCTC 9, 4293 (2013), Table S1, which reproduces the original
-//! TS implementation (FHI-aims/VASP). These are NOT in TS Table I — that table
-//! lists only α and C6. The TS volume ratio v_eff/v_free uses these DFT atomic
-//! volumes as the denominator; using any other proatom model (Slater, HF, etc.)
-//! will give systematically wrong C6 scaling.
+//! `vol_free` = ∫ ρ_atom(r) r³ dr is the free-atom effective Hirshfeld volume
+//! (a.u.). **This quantity is NOT tabulated in the TS paper.** In production TS
+//! implementations (FHI-aims, VASP, ASE) the volume ratio v_eff/v_free is
+//! computed on-the-fly from a PBE/LDA free-atom DFT run; there is no canonical
+//! hard-coded table. The values below for {H,He,C,N,O,F,Ne} are believed to
+//! match those DFT free-atom volumes (consistent with Bučko et al. JCTC 9, 4293
+//! (2013)), but **have not been independently verified against a primary source
+//! we can read**. Values for the remaining elements (Li-Ar outside that set) are
+//! unverified placeholders carried over from an earlier draft.
+//!
+//! TODO: verify vol_free by running PBE free-atom calculations in PySCF or GPAW
+//! and computing ∫ ρ(r) r³ dr on the resulting densities.
 
 /// Free-atom TS reference: `(alpha_free, c6_free, vol_free)` in a.u.
 /// Indexed by atomic number `z` (1..=18 covered). Returns `None` outside the
 /// table.
 pub fn ts_free_atom(z: usize) -> Option<(f64, f64, f64)> {
-    // alpha_free (a.u.)    — TS PRL 102, 073005 (2009) Table I
-    // c6_free (a.u.)       — TS PRL 102, 073005 (2009) Table I (homonuclear)
-    // vol_free (a.u.)      — Bučko et al. JCTC 9, 4293 (2013) Table S1
-    //                        = ∫ ρ_PBE_atom(r) r³ dr, same as FHI-aims/VASP TS
+    // alpha_free (a.u.)    — TS PRL 102, 073005 (2009) Table I  [verified]
+    // c6_free (a.u.)       — TS PRL 102, 073005 (2009) Table I  [verified]
+    // vol_free (a.u.)      — believed to match PBE free-atom ∫ρr³dr;
+    //                        unverified for all elements (see module doc)
     let row = match z {
         1  => (4.500,    6.500,    9.149),  // H
         2  => (1.380,    1.460,    4.711),  // He
@@ -52,7 +58,7 @@ mod tests {
         let (a_h, c6_h, v_h) = ts_free_atom(1).unwrap();
         assert!((a_h - 4.5).abs() < 1e-9, "H alpha_free wrong: {a_h}");
         assert!((c6_h - 6.5).abs() < 1e-9, "H C6_free wrong: {c6_h}");
-        // vol_free from Bučko et al. JCTC 9, 4293 (2013) Table S1
+        // vol_free: believed correct for {H,He,C,N,O,F,Ne}, unverified elsewhere
         assert!((v_h - 9.149).abs() < 1e-3, "H vol_free wrong: {v_h}");
         let (a_c, c6_c, v_c) = ts_free_atom(6).unwrap();
         assert!((a_c - 12.0).abs() < 1e-9);
