@@ -117,6 +117,12 @@ pub struct RpaCfg {
     /// For TS, partition only affects alpha_static shape; Hirshfeld volumes are
     /// always used for the volume ratio regardless of this setting.
     pub c6_partition: Option<String>,
+    /// XC functional for the RPA *reference* orbitals (e.g. "PBE0", "PBE").
+    /// `None` (default) uses a Hartree-Fock reference (RPA@HF). Setting this
+    /// runs the closed-shell KS-DFT solver first, so the RPA/PDEP response and
+    /// C6 are built on KS orbitals (RPA@PBE0 etc.) — KS orbitals have smaller
+    /// HOMO-LUMO gaps, raising the polarizability toward experiment.
+    pub xc: Option<String>,
 }
 
 #[derive(Deserialize)]

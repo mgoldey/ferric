@@ -78,6 +78,14 @@ fn main() {
             Some("def2-universal-jkfit".to_string()),
             Some("def2-universal-jkfit".to_string()),
         )
+    } else if matches!(method, "pdep-rpa" | "rpa") && cfg.rpa.xc.is_some() {
+        // RPA on a KS-DFT reference (RPA@PBE0 etc.): run the closed-shell KS
+        // solver for the reference orbitals. Hybrids need RI-J/RI-K.
+        (
+            cfg.rpa.xc.clone(),
+            Some("def2-universal-jkfit".to_string()),
+            Some("def2-universal-jkfit".to_string()),
+        )
     } else {
         (None, None, None)
     };
