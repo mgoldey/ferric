@@ -1,0 +1,43 @@
+{
+  "_comment": "Experimental DOSD (Dipole Oscillator Strength Distribution) C6 dispersion coefficients, the gold-standard reference for isotropic van der Waals C6. All values in atomic units (Hartree*Bohr^6). Molecular C6^AA values are the molecule-with-itself isotropic coefficients as compiled in the Tkatchenko-Scheffler database from Meath-school DOSD data; reproduced verbatim from the 'Reference' column of Toulouse et al. (arXiv:1305.0107) Table III, whose footnote states the values are from experimental dipole oscillator strength distribution data (TS PRL 102, 073005 (2009)). Rounded to ~4 sig figs. Conversion: 1 Hartree*Bohr^6 = 0.0957363 J*nm^6 (per molecule) = 5.7649e4 J*nm^6/mol.",
+  "units": "Hartree*Bohr^6 (atomic units)",
+  "molecular_c6_aa": {
+    "H2":   { "c6": 12.1,   "source": "Toulouse Table III / Meath DOSD" },
+    "N2":   { "c6": 73.3,   "source": "Toulouse Table III / Meath DOSD" },
+    "CO":   { "c6": 81.4,   "source": "Toulouse Table III / Meath DOSD" },
+    "H2O":  { "c6": 45.3,   "source": "Toulouse Table III / Meath DOSD" },
+    "NH3":  { "c6": 89.0,   "source": "Toulouse Table III / Meath DOSD" },
+    "CH4":  { "c6": 129.7,  "source": "Toulouse Table III / Meath DOSD" },
+    "CO2":  { "c6": 158.7,  "source": "Toulouse Table III / Meath DOSD" },
+    "C2H2": { "c6": 204.1,  "source": "Toulouse Table III / Meath DOSD (acetylene)" },
+    "C2H4": { "c6": 300.2,  "source": "Toulouse Table III / Meath DOSD (ethylene)" },
+    "C2H6": { "c6": 381.9,  "source": "Toulouse Table III / Meath DOSD (ethane)" },
+    "HF":   { "c6": 19.0,   "source": "Toulouse Table III / Meath DOSD" },
+    "HCl":  { "c6": 130.4,  "source": "Toulouse Table III / Meath DOSD" },
+    "H2S":  { "c6": 216.8,  "source": "Toulouse Table III / Meath DOSD" },
+    "C6H6": { "c6": 1765.0, "source": "Thakkar et al. arXiv:2010.01162 (2020), supersedes Kumar-Meath 1992 value 1723" },
+    "O2":   { "c6": null,   "source": "UNVERIFIED ~70 a.u. (Margoliash & Meath JCP 68 1426 1978); O2 is open-shell, treated specially in DOSD compilations. Do not use without checking primary." }
+  },
+  "atomic_c6_aa": {
+    "_comment": "Free-atom C6 (a.u.). TS column = Tkatchenko-Scheffler PRL 2009 values used in TS/MBD dispersion codes (DOSD/Chu-Dalgarno-consistent). Gould column = Gould-Bucko JCTC 2016 (arXiv:1604.02751) higher-level-theory reference where it differs.",
+    "H":  { "c6": 6.5,    "alpha0": 4.5,  "source": "TS PRL 2009 (exact H = 6.499)" },
+    "He": { "c6": 1.46,   "alpha0": 1.38, "source": "TS PRL 2009 / Gould-Bucko ref 1.46" },
+    "C":  { "c6": 46.6,   "alpha0": 12.0, "source": "TS PRL 2009" },
+    "N":  { "c6": 24.2,   "alpha0": 7.4,  "source": "TS PRL 2009 (Gould-Bucko: 25.7)" },
+    "O":  { "c6": 15.6,   "alpha0": 5.4,  "source": "TS PRL 2009 (Gould-Bucko: 16.7)" },
+    "F":  { "c6": 9.52,   "alpha0": 3.8,  "source": "TS PRL 2009" },
+    "Ne": { "c6": 6.38,   "alpha0": 2.67, "source": "TS PRL 2009 / Gould-Bucko ref 6.38" },
+    "Ar": { "c6": 64.3,   "alpha0": 11.1, "source": "TS PRL 2009 / Gould-Bucko ref 64.3" },
+    "Kr": { "c6": 129.6,  "alpha0": 16.8, "source": "TS PRL 2009 (Gould-Bucko: 130)" },
+    "Xe": { "c6": 285.9,  "alpha0": 27.3, "source": "TS PRL 2009 (Gould-Bucko: 286)" }
+  },
+  "citations": [
+    "Toulouse, Rebolini, Gould, Dobson, Seal, Angyan, arXiv:1305.0107 (range-separated TDDFT C6, Table III DOSD reference column)",
+    "Tkatchenko & Scheffler, Phys. Rev. Lett. 102, 073005 (2009)",
+    "Margoliash & Meath, J. Chem. Phys. 68, 1426 (1978)",
+    "Zeiss & Meath, Mol. Phys. 33, 1155 (1977)",
+    "Kumar & Meath, Mol. Phys. 75, 311 (1992)",
+    "Thakkar et al., arXiv:2010.01162 (2020) (benzene/aromatics DOSD C6)",
+    "Gould & Bucko, J. Chem. Theory Comput., arXiv:1604.02751 (2016) (atomic C6/alpha)"
+  ]
+}
