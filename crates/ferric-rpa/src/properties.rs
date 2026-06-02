@@ -1433,6 +1433,9 @@ pub fn pdep_polarizability_becke_dynamic(
     Ok(out)
 }
 
+// Distinct inputs (system, two bases, reference, operator, config, proatom
+// provider); no natural sub-bundle.
+#[allow(clippy::too_many_arguments)]
 pub fn pdep_polarizability_hirshfeld(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -1441,6 +1444,7 @@ pub fn pdep_polarizability_hirshfeld(
     rhf: &ScfResult,
     op: Operator,
     _cfg: &PdepRpaConfig,
+    proatom: Option<&ProatomProvider>,
 ) -> Result<Vec<[[f64; 3]; 3]>, FerricError> {
     use ferric_export::cube::GridSpec;
     use ferric_export::gto_eval::eval_basis_on_grid;
@@ -1533,13 +1537,9 @@ pub fn pdep_polarizability_hirshfeld(
 
     // ---------------------------------------------------------------------
     // 3. Build Hirshfeld weights w^A(r_g) on the grid.
-    //    Proatom: single-exponential Slater density per element.
+    //    Proatom: validated same-basis free-atom density when a provider is
+    //    given (fixes H-starvation); else legacy single-exponential Slater.
     // ---------------------------------------------------------------------
-    let mut atom_xi = vec![0.0_f64; natoms];
-    for (a, atom) in mol.atoms.iter().enumerate() {
-        atom_xi[a] = slater_xi_for_z(atom.z);
-    }
-
     // For each atom: compute ρ_A_free(|r - R_A|) on the grid.
     // Then w^A = ρ_A / (Σ_B ρ_B + ε).
     let mut rho_free: Vec<Vec<f64>> = vec![vec![0.0; npts]; natoms];
@@ -1548,9 +1548,10 @@ pub fn pdep_polarizability_hirshfeld(
     let hy = grid.step_y[1];
     let hz = grid.step_z[2];
     for a in 0..natoms {
-        let xi = atom_xi[a];
-        let z_a = mol.atoms[a].z as f64;
-        let prefac = z_a * xi.powi(3) / std::f64::consts::PI;
+        let z_a = mol.atoms[a].z;
+        let xi = slater_xi_for_z(z_a);
+        let prefac = z_a as f64 * xi.powi(3) / std::f64::consts::PI;
+        let pa = proatom.and_then(|p| p(z_a, 0));
         let rax = mol.atoms[a].x;
         let ray = mol.atoms[a].y;
         let raz = mol.atoms[a].zpos;
@@ -1566,7 +1567,10 @@ pub fn pdep_polarizability_hirshfeld(
                     let dy = y - ray;
                     let dz = z - raz;
                     let r = (dx * dx + dy * dy + dz * dz).sqrt();
-                    let rho = prefac * (-2.0 * xi * r).exp();
+                    let rho = match &pa {
+                        Some(p) => p.at(r),
+                        None => prefac * (-2.0 * xi * r).exp(),
+                    };
                     row[g] = rho;
                     rho_sum[g] += rho;
                 }
@@ -2192,6 +2196,7 @@ pub fn atomic_effective_volumes_hirshfeld(
     mol: &Molecule,
     obs_bs: &ferric_core::basis::BasisSet,
     density: &Array2<f64>,
+    proatom: Option<&ProatomProvider>,
 ) -> Result<Vec<f64>, FerricError> {
     use ferric_export::cube::GridSpec;
     use ferric_export::gto_eval::eval_basis_on_grid;
@@ -2222,13 +2227,15 @@ pub fn atomic_effective_volumes_hirshfeld(
         }
     }
 
-    // Slater proatom weights (identical to hirshfeld_charges).
+    // Proatom weights: validated same-basis density when a provider is given,
+    // else legacy single-Slater.
     let mut rho_free: Vec<Vec<f64>> = vec![vec![0.0; npts]; natoms];
     let mut rho_sum = vec![0.0_f64; npts];
     for a in 0..natoms {
-        let xi = slater_xi_for_z(mol.atoms[a].z);
-        let z_a = mol.atoms[a].z as f64;
-        let prefac = z_a * xi.powi(3) / std::f64::consts::PI;
+        let z_a = mol.atoms[a].z;
+        let xi = slater_xi_for_z(z_a);
+        let prefac = z_a as f64 * xi.powi(3) / std::f64::consts::PI;
+        let pa = proatom.and_then(|p| p(z_a, 0));
         let (rax, ray, raz) = (mol.atoms[a].x, mol.atoms[a].y, mol.atoms[a].zpos);
         let row = &mut rho_free[a];
         for ix in 0..grid.n_x {
@@ -2239,7 +2246,10 @@ pub fn atomic_effective_volumes_hirshfeld(
                     let z = grid.origin[2] + iz as f64 * hz;
                     let g = (ix * grid.n_y + iy) * grid.n_z + iz;
                     let r = ((x-rax)*(x-rax)+(y-ray)*(y-ray)+(z-raz)*(z-raz)).sqrt();
-                    let r0 = prefac * (-2.0 * xi * r).exp();
+                    let r0 = match &pa {
+                        Some(p) => p.at(r),
+                        None => prefac * (-2.0 * xi * r).exp(),
+                    };
                     row[g] = r0;
                     rho_sum[g] += r0;
                 }
@@ -2572,6 +2582,7 @@ pub fn hirshfeld_charges(
     mol: &Molecule,
     obs_bs: &ferric_core::basis::BasisSet,
     density: &Array2<f64>,
+    proatom: Option<&ProatomProvider>,
 ) -> Result<Vec<f64>, FerricError> {
     use ferric_export::cube::GridSpec;
     use ferric_export::gto_eval::eval_basis_on_grid;
@@ -2613,14 +2624,16 @@ pub fn hirshfeld_charges(
         }
     }
 
-    // Slater proatom densities and Hirshfeld weights, exactly as in
-    // pdep_polarizability_hirshfeld.
+    // Proatom densities and Hirshfeld weights. With a `proatom` provider, use
+    // the validated same-basis free-atom density (fixes H-starvation); else the
+    // legacy single-Slater proatom.
     let mut rho_free: Vec<Vec<f64>> = vec![vec![0.0; npts]; natoms];
     let mut rho_sum: Vec<f64> = vec![0.0; npts];
     for a in 0..natoms {
-        let xi = slater_xi_for_z(mol.atoms[a].z);
-        let z_a = mol.atoms[a].z as f64;
-        let prefac = z_a * xi.powi(3) / std::f64::consts::PI;
+        let z_a = mol.atoms[a].z;
+        let xi = slater_xi_for_z(z_a);
+        let prefac = z_a as f64 * xi.powi(3) / std::f64::consts::PI;
+        let pa = proatom.and_then(|p| p(z_a, 0));
         let rax = mol.atoms[a].x;
         let ray = mol.atoms[a].y;
         let raz = mol.atoms[a].zpos;
@@ -2636,7 +2649,10 @@ pub fn hirshfeld_charges(
                     let dy = y - ray;
                     let dz = z - raz;
                     let r = (dx * dx + dy * dy + dz * dz).sqrt();
-                    let r0 = prefac * (-2.0 * xi * r).exp();
+                    let r0 = match &pa {
+                        Some(p) => p.at(r),
+                        None => prefac * (-2.0 * xi * r).exp(),
+                    };
                     row[g] = r0;
                     rho_sum[g] += r0;
                 }

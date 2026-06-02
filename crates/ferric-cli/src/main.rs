@@ -286,6 +286,38 @@ fn main() {
         }
     });
 
+    // Ad-hoc same-basis Hirshfeld proatom: neutral free-atom densities computed
+    // in the molecule's OWN basis (basis-consistent partition; fixes the legacy
+    // single-Slater H-starvation). Built lazily via atomic SCF; shared by all
+    // Hirshfeld consumers (charges, effective volumes, per-atom polarizability).
+    let proatom_radii: Vec<f64> = (1..=600).map(|k| k as f64 * 0.05).collect(); // 0.05..30 Bohr
+    let proatom_gs_mult = |z: i32| -> usize {
+        match z {
+            1 | 3 | 5 | 9 | 11 | 13 | 17 => 2,
+            6 | 8 | 14 | 16 => 3,
+            7 | 15 => 4,
+            _ => 1,
+        }
+    };
+    let proatom = |z: i32, qi: i32| -> Option<ferric_rpa::properties::RadialProatom> {
+        if qi != 0 || z - qi <= 0 {
+            return None; // neutral only; ions via fallback
+        }
+        let sym = ferric_core::elements::z_to_symbol(z).unwrap_or("X");
+        let axyz = format!("1\n{sym}\n{sym} 0 0 0\n");
+        let amol = Molecule::parse_xyz(&axyz, 0, proatom_gs_mult(z)).ok()?;
+        let aobs = PreparedBasis::new(&amol, &bs).ok()?;
+        let abounds = SchwarzBounds::compute(op, &aobs).ok()?;
+        let mut acfg = rhf_config.clone();
+        let adens = if proatom_gs_mult(z) == 1 {
+            solve_rhf(&ctx, &amol, &aobs, op, &abounds, &acfg).ok()?.density_r().to_owned()
+        } else {
+            acfg.mom_after_iter = 5;
+            solve_uhf(&ctx, &amol, &aobs, &abounds, &acfg).ok()?.density_total().to_owned()
+        };
+        ferric_rpa::properties::spherically_averaged_proatom(z, &bs, &adens, &proatom_radii).ok()
+    };
+
     match method {
         "rhf" => {
             println!("RHF/{} on {}", bs.name, cfg.molecule.xyz);
@@ -680,7 +712,7 @@ fn main() {
 
                 let compute_hq = cfg.rpa.compute_hirshfeld_charges.unwrap_or(true);
                 let hq_vec = if compute_hq {
-                    match hirshfeld_charges(&mol, &bs, result.density_total()) {
+                    match hirshfeld_charges(&mol, &bs, result.density_total(), Some(&proatom)) {
                         Ok(q) => {
                             println!(
                                 "Hirshfeld charges (e): {:?}",
@@ -730,51 +762,9 @@ fn main() {
                         // Phase 2: PDEP-RPA dynamic α(iω). Origin-independent for
                         // the molecular total AND the per-atom intrinsic α^A
                         // (atom-centred (r−R_A); bond-axis anisotropy is a
-                        // coupled/molecular property, not per-atom).
-                        //
-                        // Ad-hoc Hirshfeld proatom: neutral free-atom densities
-                        // computed in the molecule's OWN basis (basis-consistent
-                        // partition; fixes the legacy single-Slater H-starvation
-                        // that gave H per-atom C6 ≈ 0.02). Built via atomic SCF.
-                        let proatom_radii: Vec<f64> =
-                            (1..=600).map(|k| k as f64 * 0.05).collect(); // 0.05..30 Bohr
-                        let gs_mult = |z: i32| -> usize {
-                            match z {
-                                1 | 3 | 5 | 9 | 11 | 13 | 17 => 2,
-                                6 | 8 | 14 | 16 => 3,
-                                7 | 15 => 4,
-                                _ => 1,
-                            }
-                        };
-                        let proatom = |z: i32, qi: i32| -> Option<
-                            ferric_rpa::properties::RadialProatom,
-                        > {
-                            if qi != 0 || z - qi <= 0 {
-                                return None; // neutral only; ions via fallback
-                            }
-                            let sym = ferric_core::elements::z_to_symbol(z).unwrap_or("X");
-                            let axyz = format!("1\n{sym}\n{sym} 0 0 0\n");
-                            let amol = Molecule::parse_xyz(&axyz, 0, gs_mult(z)).ok()?;
-                            let aobs = PreparedBasis::new(&amol, &bs).ok()?;
-                            let abounds = SchwarzBounds::compute(op, &aobs).ok()?;
-                            let mut acfg = rhf_config.clone();
-                            let adens = if gs_mult(z) == 1 {
-                                solve_rhf(&ctx, &amol, &aobs, op, &abounds, &acfg)
-                                    .ok()?
-                                    .density_r()
-                                    .to_owned()
-                            } else {
-                                acfg.mom_after_iter = 5;
-                                solve_uhf(&ctx, &amol, &aobs, &abounds, &acfg)
-                                    .ok()?
-                                    .density_total()
-                                    .to_owned()
-                            };
-                            ferric_rpa::properties::spherically_averaged_proatom(
-                                z, &bs, &adens, &proatom_radii,
-                            )
-                            .ok()
-                        };
+                        // coupled/molecular property, not per-atom). Uses the
+                        // shared ad-hoc same-basis Hirshfeld proatom (built once
+                        // above) so the per-atom partition is basis-consistent.
                         match pdep_dynamic_polarizability(
                             &mol, &prep, &bs, &dfbs, &result, op, &rpa_cfg, partition,
                             Some(&proatom),
@@ -797,7 +787,7 @@ fn main() {
                         let alpha_static: Vec<[[f64; 3]; 3]> =
                             if partition == DispersionPartition::Hirshfeld {
                                 pdep_polarizability_hirshfeld(
-                                    &mol, &prep, &bs, &dfbs, &result, op, &rpa_cfg,
+                                    &mol, &prep, &bs, &dfbs, &result, op, &rpa_cfg, Some(&proatom),
                                 )
                                 .unwrap_or_else(|_| vec![[[0.0; 3]; 3]; mol.atoms.len()])
                             } else {
@@ -816,7 +806,7 @@ fn main() {
                         // correctly compress H relative to C. The c6_partition setting
                         // only governs the alpha_static shape tensor, not these volumes.
                         let vols = atomic_effective_volumes_hirshfeld(
-                            &mol, &bs, result.density_total(),
+                            &mol, &bs, result.density_total(), Some(&proatom),
                         )
                         .unwrap_or_else(|_| vec![1.0; mol.atoms.len()]);
                         let z: Vec<usize> = mol.atoms.iter().map(|a| a.z as usize).collect();
@@ -854,8 +844,12 @@ fn main() {
                                             .map(|r| r.density_r().to_owned())
                                     };
                                     if let Some(d) = free_density {
+                                        // Single free atom: Hirshfeld weight = 1
+                                        // everywhere (one proatom), so the
+                                        // reference volume is partition-independent
+                                        // — None (legacy path) is exact here.
                                         if let Ok(fv) = atomic_effective_volumes_hirshfeld(
-                                            &free_mol, &bs, &d,
+                                            &free_mol, &bs, &d, None,
                                         ) {
                                             vol_free_computed.insert(zi, fv[0]);
                                         }

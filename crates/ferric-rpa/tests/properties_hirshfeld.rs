@@ -45,7 +45,7 @@ fn h2o_hirshfeld_sum_rule_and_symmetry() {
     cfg.davidson_conv_thresh = 1e-10;
 
     let alpha_atomic =
-        pdep_polarizability_hirshfeld(&mol, &obs, &obs_bs, &dfbs, &rhf, op, &cfg).unwrap();
+        pdep_polarizability_hirshfeld(&mol, &obs, &obs_bs, &dfbs, &rhf, op, &cfg, None).unwrap();
     let alpha_mol = pdep_polarizability_static(&mol, &obs, &dfbs, &rhf, op, &cfg)
         .unwrap()
         .tensor;
