@@ -2540,6 +2540,10 @@ pub fn hirshfeld_i_charges(
             max_dq = max_dq.max((q_new - q[a]).abs());
             q[a] = 0.5 * q[a] + 0.5 * q_new; // damped
         }
+        if std::env::var("FERRIC_HI_DEBUG").is_ok() {
+            let r: Vec<f64> = q.iter().map(|x| (x * 1000.0).round() / 1000.0).collect();
+            eprintln!("HI iter {_it}: q = {r:?} (max_dq={max_dq:.2e})");
+        }
         if max_dq < tol { break; }
     }
     Ok(q)
