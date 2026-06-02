@@ -40,7 +40,7 @@ impl Engine {
                 OperatorKind::ErfcCoulomb => ffi::OP_ERFC_COULOMB,
                 _ => return Err(FerricError::Libint(format!("operator {:?} not implemented in v1", kind))),
             };
-            let h = unsafe { ffi::goscf_engine_create(op_kind, omega, prep.max_nprim(), prep.max_l(), precision) };
+            let h = unsafe { ffi::scf_engine_create(op_kind, omega, prep.max_nprim(), prep.max_l(), precision) };
             if h.is_null() { return Err(FerricError::Libint("engine_create returned null".into())); }
             handles.push((coeff, h));
         }
@@ -50,7 +50,7 @@ impl Engine {
 
     /// Create a one-electron integral engine (overlap, kinetic, or nuclear).
     pub fn new_1e(op_kind: c_int, prep: &PreparedBasis, precision: f64) -> Result<Self, FerricError> {
-        let handle = unsafe { ffi::goscf_engine_create(op_kind, 0.0, prep.max_nprim(), prep.max_l(), precision) };
+        let handle = unsafe { ffi::scf_engine_create(op_kind, 0.0, prep.max_nprim(), prep.max_l(), precision) };
         if handle.is_null() { return Err(FerricError::Libint("engine_create returned null".into())); }
         let max_fn = prep.shell_dims().iter().copied().max().unwrap_or(1);
         Ok(Engine { handles: vec![(1.0, handle)], buf: vec![0.0; max_fn * max_fn], scratch: Vec::new() })
@@ -62,7 +62,7 @@ impl Engine {
     /// Set nuclear point charges for the nuclear attraction operator.
     pub fn set_point_charges(&mut self, prep: &PreparedBasis) {
         for &(_, h) in &self.handles {
-            unsafe { ffi::goscf_engine_set_point_charges(h, prep.atoms().as_ptr(), prep.atoms().len() as c_int); }
+            unsafe { ffi::scf_engine_set_point_charges(h, prep.atoms().as_ptr(), prep.atoms().len() as c_int); }
         }
     }
 
@@ -78,7 +78,7 @@ impl Engine {
         self.buf[..n].fill(0.0);
         
         for &(coeff, h) in &self.handles {
-            let written = unsafe { ffi::goscf_compute_eri_quartet(h, prep.handle(), sh1 as c_int, sh2 as c_int, sh3 as c_int, sh4 as c_int, self.scratch.as_mut_ptr()) };
+            let written = unsafe { ffi::scf_compute_eri_quartet(h, prep.handle(), sh1 as c_int, sh2 as c_int, sh3 as c_int, sh4 as c_int, self.scratch.as_mut_ptr()) };
             if written > 0 {
                 let w = written as usize;
                 max_written = max_written.max(w);
@@ -93,13 +93,13 @@ impl Engine {
     pub fn compute_1e_block(&mut self, prep: &PreparedBasis, sh1: usize, sh2: usize) -> &[f64] {
         let n = prep.shell_dims()[sh1] * prep.shell_dims()[sh2];
         if self.buf.len() < n { self.buf.resize(n, 0.0); }
-        let written = unsafe { ffi::goscf_compute_1e_block(self.handles[0].1, prep.handle(), sh1 as c_int, sh2 as c_int, self.buf.as_mut_ptr()) };
+        let written = unsafe { ffi::scf_compute_1e_block(self.handles[0].1, prep.handle(), sh1 as c_int, sh2 as c_int, self.buf.as_mut_ptr()) };
         &self.buf[..written as usize]
     }
 
     /// Create a first-derivative one-electron integral engine.
     pub fn new_1e_deriv(op_kind: c_int, prep: &PreparedBasis, precision: f64) -> Result<Self, FerricError> {
-        let handle = unsafe { ffi::goscf_engine_create_deriv(op_kind, 0.0, prep.max_nprim(), prep.max_l(), precision) };
+        let handle = unsafe { ffi::scf_engine_create_deriv(op_kind, 0.0, prep.max_nprim(), prep.max_l(), precision) };
         if handle.is_null() { return Err(FerricError::Libint("derivative engine not available".into())); }
         let max_fn = prep.shell_dims().iter().copied().max().unwrap_or(1);
         Ok(Engine { handles: vec![(1.0, handle)], buf: vec![0.0; 6 * max_fn * max_fn], scratch: Vec::new() })
@@ -118,7 +118,7 @@ impl Engine {
                 OperatorKind::ErfcCoulomb => ffi::OP_ERFC_COULOMB,
                 _ => return Err(FerricError::Libint(format!("operator {:?} not implemented", kind))),
             };
-            let h = unsafe { ffi::goscf_engine_create_deriv(op_kind, omega, prep.max_nprim(), prep.max_l(), precision) };
+            let h = unsafe { ffi::scf_engine_create_deriv(op_kind, omega, prep.max_nprim(), prep.max_l(), precision) };
             if h.is_null() { return Err(FerricError::Libint("derivative engine not available".into())); }
             handles.push((coeff, h));
         }
@@ -131,7 +131,7 @@ impl Engine {
         let n = prep.shell_dims()[sh1] * prep.shell_dims()[sh2];
         let total = 6 * n;
         if self.buf.len() < total { self.buf.resize(total, 0.0); }
-        let written = unsafe { ffi::goscf_compute_1e_deriv_block(self.handles[0].1, prep.handle(), sh1 as c_int, sh2 as c_int, self.buf.as_mut_ptr()) };
+        let written = unsafe { ffi::scf_compute_1e_deriv_block(self.handles[0].1, prep.handle(), sh1 as c_int, sh2 as c_int, self.buf.as_mut_ptr()) };
         if written == 0 { None } else { Some(&self.buf[..written as usize]) }
     }
 
@@ -152,7 +152,7 @@ impl Engine {
                 OperatorKind::ErfcCoulomb => ffi::OP_ERFC_COULOMB,
                 _ => return Err(FerricError::Libint(format!("operator {:?} not implemented", kind))),
             };
-            let h = unsafe { ffi::goscf_engine_create_3center(op_kind, omega, max_nprim, max_l, precision) };
+            let h = unsafe { ffi::scf_engine_create_3center(op_kind, omega, max_nprim, max_l, precision) };
             if h.is_null() { return Err(FerricError::Libint("3-center engine not available".into())); }
             handles.push((coeff, h));
         }
@@ -173,7 +173,7 @@ impl Engine {
                 OperatorKind::ErfcCoulomb => ffi::OP_ERFC_COULOMB,
                 _ => return Err(FerricError::Libint(format!("operator {:?} not implemented", kind))),
             };
-            let h = unsafe { ffi::goscf_engine_create_2center(op_kind, omega, dfbs.max_nprim(), dfbs.max_l(), precision) };
+            let h = unsafe { ffi::scf_engine_create_2center(op_kind, omega, dfbs.max_nprim(), dfbs.max_l(), precision) };
             if h.is_null() { return Err(FerricError::Libint("2-center engine not available".into())); }
             handles.push((coeff, h));
         }
@@ -190,7 +190,7 @@ impl Engine {
         self.buf[..n].fill(0.0);
         
         for &(coeff, h) in &self.handles {
-            let written = unsafe { ffi::goscf_compute_eri3(h, obs.handle(), dfbs.handle(), sh_p as c_int, sh1 as c_int, sh2 as c_int, self.scratch.as_mut_ptr()) };
+            let written = unsafe { ffi::scf_compute_eri3(h, obs.handle(), dfbs.handle(), sh_p as c_int, sh1 as c_int, sh2 as c_int, self.scratch.as_mut_ptr()) };
             if written > 0 {
                 let w = written as usize;
                 max_written = max_written.max(w);
@@ -210,7 +210,7 @@ impl Engine {
         self.buf[..n].fill(0.0);
         
         for &(coeff, h) in &self.handles {
-            let written = unsafe { ffi::goscf_compute_eri2(h, dfbs.handle(), sh_p as c_int, sh_q as c_int, self.scratch.as_mut_ptr()) };
+            let written = unsafe { ffi::scf_compute_eri2(h, dfbs.handle(), sh_p as c_int, sh_q as c_int, self.scratch.as_mut_ptr()) };
             if written > 0 {
                 let w = written as usize;
                 max_written = max_written.max(w);
@@ -234,7 +234,7 @@ impl Engine {
         self.buf[..total].fill(0.0);
         
         for &(coeff, h) in &self.handles {
-            let written = unsafe { ffi::goscf_compute_eri_deriv_quartet(h, prep.handle(), sh1 as c_int, sh2 as c_int, sh3 as c_int, sh4 as c_int, self.scratch.as_mut_ptr()) };
+            let written = unsafe { ffi::scf_compute_eri_deriv_quartet(h, prep.handle(), sh1 as c_int, sh2 as c_int, sh3 as c_int, sh4 as c_int, self.scratch.as_mut_ptr()) };
             if written > 0 {
                 let w = written as usize;
                 max_written = max_written.max(w);
@@ -261,7 +261,7 @@ impl Engine {
                 OperatorKind::ErfcCoulomb => ffi::OP_ERFC_COULOMB,
                 _ => return Err(FerricError::Libint(format!("operator {:?} not implemented", kind))),
             };
-            let h = unsafe { ffi::goscf_engine_create_3center_deriv(op_kind, omega, max_nprim, max_l, precision) };
+            let h = unsafe { ffi::scf_engine_create_3center_deriv(op_kind, omega, max_nprim, max_l, precision) };
             if h.is_null() { return Err(FerricError::Libint("3-center derivative engine not available".into())); }
             handles.push((coeff, h));
         }
@@ -282,7 +282,7 @@ impl Engine {
                 OperatorKind::ErfcCoulomb => ffi::OP_ERFC_COULOMB,
                 _ => return Err(FerricError::Libint(format!("operator {:?} not implemented", kind))),
             };
-            let h = unsafe { ffi::goscf_engine_create_2center_deriv(op_kind, omega, dfbs.max_nprim(), dfbs.max_l(), precision) };
+            let h = unsafe { ffi::scf_engine_create_2center_deriv(op_kind, omega, dfbs.max_nprim(), dfbs.max_l(), precision) };
             if h.is_null() { return Err(FerricError::Libint("2-center derivative engine not available".into())); }
             handles.push((coeff, h));
         }
@@ -300,7 +300,7 @@ impl Engine {
         self.buf[..total].fill(0.0);
         
         for &(coeff, h) in &self.handles {
-            let written = unsafe { ffi::goscf_compute_eri3_deriv(h, obs.handle(), dfbs.handle(), sh_p as c_int, sh1 as c_int, sh2 as c_int, self.scratch.as_mut_ptr()) };
+            let written = unsafe { ffi::scf_compute_eri3_deriv(h, obs.handle(), dfbs.handle(), sh_p as c_int, sh1 as c_int, sh2 as c_int, self.scratch.as_mut_ptr()) };
             if written > 0 {
                 let w = written as usize;
                 max_written = max_written.max(w);
@@ -321,7 +321,7 @@ impl Engine {
         self.buf[..total].fill(0.0);
         
         for &(coeff, h) in &self.handles {
-            let written = unsafe { ffi::goscf_compute_eri2_deriv(h, dfbs.handle(), sh_p as c_int, sh_q as c_int, self.scratch.as_mut_ptr()) };
+            let written = unsafe { ffi::scf_compute_eri2_deriv(h, dfbs.handle(), sh_p as c_int, sh_q as c_int, self.scratch.as_mut_ptr()) };
             if written > 0 {
                 let w = written as usize;
                 max_written = max_written.max(w);
@@ -336,7 +336,7 @@ impl Drop for Engine {
     fn drop(&mut self) {
         for &(_, h) in &self.handles {
             if !h.is_null() {
-                unsafe { ffi::goscf_engine_destroy(h) };
+                unsafe { ffi::scf_engine_destroy(h) };
             }
         }
     }

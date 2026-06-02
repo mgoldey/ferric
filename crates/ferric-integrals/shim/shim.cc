@@ -1,4 +1,4 @@
-// Implementation of the goscf libint2 shim. See shim.h for the contract.
+// Implementation of the scf libint2 shim. See shim.h for the contract.
 #include "shim.h"
 
 #include <libint2.hpp>
@@ -14,14 +14,14 @@ using libint2::Operator;
 using libint2::Shell;
 using libint2::BasisSet;
 
-struct goscf_basis {
+struct scf_basis {
     BasisSet           bs;
     std::vector<int>   nfunc;       // nfunc per shell: (2L+1) if pure, (L+1)(L+2)/2 if Cartesian
     int                max_nprim;
     int                max_L;
 };
 
-struct goscf_engine {
+struct scf_engine {
     Engine engine;
 };
 
@@ -36,20 +36,20 @@ static std::atomic<int> libint_init_count{0};
 // one SCF at a time so it rarely trips, but it is the same latent bug.
 static std::mutex libint_ctor_mutex;
 
-void goscf_libint_init(void) {
+void scf_libint_init(void) {
     if (libint_init_count.fetch_add(1) == 0) {
         libint2::initialize();
     }
 }
 
-void goscf_libint_finalize(void) {
+void scf_libint_finalize(void) {
     if (libint_init_count.fetch_sub(1) == 1) {
         libint2::finalize();
     }
 }
 
-goscf_basis *goscf_basis_create(const goscf_shell *shells, int nshells,
-                                const goscf_atom *atoms, int natoms) {
+scf_basis *scf_basis_create(const scf_shell *shells, int nshells,
+                                const scf_atom *atoms, int natoms) {
     std::lock_guard<std::mutex> lock(libint_ctor_mutex);
     try {
         // Build per-atom Atom records (libint type) for nuclear positions.
@@ -60,11 +60,11 @@ goscf_basis *goscf_basis_create(const goscf_shell *shells, int nshells,
             li_atoms[a].y = atoms[a].y;
             li_atoms[a].z = atoms[a].z;
         }
-        // Build the libint shell list, one libint::Shell per goscf_shell.
+        // Build the libint shell list, one libint::Shell per scf_shell.
         std::vector<Shell> li_shells;
         li_shells.reserve(nshells);
         for (int s = 0; s < nshells; ++s) {
-            const goscf_shell &g = shells[s];
+            const scf_shell &g = shells[s];
             libint2::svector<double> exps(g.exponents, g.exponents + g.nprim);
             libint2::svector<double> coefs(g.coefficients, g.coefficients + g.nprim);
             libint2::svector<libint2::Shell::Contraction> contr;
@@ -77,7 +77,7 @@ goscf_basis *goscf_basis_create(const goscf_shell *shells, int nshells,
             li_shells.emplace_back(exps, contr, c);
         }
         BasisSet bs(std::move(li_shells));
-        auto *out = new (std::nothrow) goscf_basis{std::move(bs), {}, 0, 0};
+        auto *out = new (std::nothrow) scf_basis{std::move(bs), {}, 0, 0};
         if (!out) return nullptr;
         out->nfunc.reserve(out->bs.size());
         for (const auto &sh : out->bs) {
@@ -94,23 +94,23 @@ goscf_basis *goscf_basis_create(const goscf_shell *shells, int nshells,
     }
 }
 
-void goscf_basis_destroy(goscf_basis *bs) {
+void scf_basis_destroy(scf_basis *bs) {
     delete bs;
 }
 
-int goscf_basis_nbasis(const goscf_basis *bs) {
+int scf_basis_nbasis(const scf_basis *bs) {
     return static_cast<int>(bs->bs.nbf());
 }
 
-int goscf_basis_nshells(const goscf_basis *bs) {
+int scf_basis_nshells(const scf_basis *bs) {
     return static_cast<int>(bs->bs.size());
 }
 
-void goscf_basis_shell_dims(const goscf_basis *bs, int *out) {
+void scf_basis_shell_dims(const scf_basis *bs, int *out) {
     for (size_t i = 0; i < bs->nfunc.size(); ++i) out[i] = bs->nfunc[i];
 }
 
-void goscf_basis_max_dims(const goscf_basis *bs, int *max_nprim, int *max_L) {
+void scf_basis_max_dims(const scf_basis *bs, int *max_nprim, int *max_L) {
     *max_nprim = bs->max_nprim;
     *max_L = bs->max_L;
 }
@@ -128,7 +128,7 @@ static Operator op_for_kind(int kind, bool *ok) {
     }
 }
 
-goscf_engine *goscf_engine_create(int op_kind, double omega,
+scf_engine *scf_engine_create(int op_kind, double omega,
                                   int max_nprim, int max_L, double precision) {
     bool ok = false;
     Operator op = op_for_kind(op_kind, &ok);
@@ -140,14 +140,14 @@ goscf_engine *goscf_engine_create(int op_kind, double omega,
             // ErfCoulomb / ErfcCoulomb attenuation parameter.
             eng.set_params(omega);
         }
-        auto *out = new (std::nothrow) goscf_engine{std::move(eng)};
+        auto *out = new (std::nothrow) scf_engine{std::move(eng)};
         return out;
     } catch (...) {
         return nullptr;
     }
 }
 
-goscf_engine *goscf_engine_create_deriv(int op_kind, double omega,
+scf_engine *scf_engine_create_deriv(int op_kind, double omega,
                                         int max_nprim, int max_L, double precision) {
 #if LIBINT2_MAX_DERIV_ORDER >= 1
     bool ok = false;
@@ -159,7 +159,7 @@ goscf_engine *goscf_engine_create_deriv(int op_kind, double omega,
         if (op_kind == 1 || op_kind == 2) {
             eng.set_params(omega);
         }
-        auto *out = new (std::nothrow) goscf_engine{std::move(eng)};
+        auto *out = new (std::nothrow) scf_engine{std::move(eng)};
         return out;
     } catch (...) {
         return nullptr;
@@ -169,12 +169,12 @@ goscf_engine *goscf_engine_create_deriv(int op_kind, double omega,
 #endif
 }
 
-void goscf_engine_destroy(goscf_engine *eng) {
+void scf_engine_destroy(scf_engine *eng) {
     delete eng;
 }
 
-int goscf_engine_set_point_charges(goscf_engine *eng,
-                                   const goscf_atom *atoms, int natoms) {
+int scf_engine_set_point_charges(scf_engine *eng,
+                                   const scf_atom *atoms, int natoms) {
     try {
         std::vector<std::pair<double, std::array<double, 3>>> q(natoms);
         for (int a = 0; a < natoms; ++a) {
@@ -182,13 +182,13 @@ int goscf_engine_set_point_charges(goscf_engine *eng,
             q[a].second = {atoms[a].x, atoms[a].y, atoms[a].z};
         }
         eng->engine.set_params(q);
-        return GOSCF_OK;
+        return SCF_OK;
     } catch (...) {
-        return GOSCF_EINTERNAL;
+        return SCF_EINTERNAL;
     }
 }
 
-int goscf_compute_1e_block(goscf_engine *eng, const goscf_basis *bs,
+int scf_compute_1e_block(scf_engine *eng, const scf_basis *bs,
                            int sh1, int sh2, double *out) {
     const auto &shells = bs->bs;
     eng->engine.compute(shells[sh1], shells[sh2]);
@@ -203,7 +203,7 @@ int goscf_compute_1e_block(goscf_engine *eng, const goscf_basis *bs,
     return n;
 }
 
-int goscf_compute_eri_quartet(goscf_engine *eng, const goscf_basis *bs,
+int scf_compute_eri_quartet(scf_engine *eng, const scf_basis *bs,
                               int sh1, int sh2, int sh3, int sh4, double *out) {
     const auto &shells = bs->bs;
     eng->engine.compute(shells[sh1], shells[sh2], shells[sh3], shells[sh4]);
@@ -216,7 +216,7 @@ int goscf_compute_eri_quartet(goscf_engine *eng, const goscf_basis *bs,
     return n;
 }
 
-void goscf_compute_schwarz(goscf_engine *eng, const goscf_basis *bs, double *qmat) {
+void scf_compute_schwarz(scf_engine *eng, const scf_basis *bs, double *qmat) {
     const int nsh = static_cast<int>(bs->bs.size());
     for (int i = 0; i < nsh; ++i) {
         for (int j = 0; j <= i; ++j) {
@@ -244,7 +244,7 @@ void goscf_compute_schwarz(goscf_engine *eng, const goscf_basis *bs, double *qma
     }
 }
 
-int goscf_compute_1e_deriv_block(goscf_engine *eng, const goscf_basis *bs,
+int scf_compute_1e_deriv_block(scf_engine *eng, const scf_basis *bs,
                                  int sh1, int sh2, double *out) {
 #if LIBINT2_MAX_DERIV_ORDER >= 1
     const auto &shells = bs->bs;
@@ -274,7 +274,7 @@ int goscf_compute_1e_deriv_block(goscf_engine *eng, const goscf_basis *bs,
 #endif
 }
 
-int goscf_compute_eri_deriv_quartet(goscf_engine *eng, const goscf_basis *bs,
+int scf_compute_eri_deriv_quartet(scf_engine *eng, const scf_basis *bs,
                                     int sh1, int sh2, int sh3, int sh4, double *out) {
 #if LIBINT2_MAX_DERIV_ORDER >= 1
     const auto &shells = bs->bs;
@@ -304,7 +304,7 @@ int goscf_compute_eri_deriv_quartet(goscf_engine *eng, const goscf_basis *bs,
 
 /* --- Electric dipole integrals via emultipole1 --- */
 
-int goscf_compute_dipole(const goscf_basis *bs, const double *origin,
+int scf_compute_dipole(const scf_basis *bs, const double *origin,
                          int nbas, double *out) {
     try {
         // Zero output: 3 matrices of size nbas*nbas
@@ -356,7 +356,7 @@ int goscf_compute_dipole(const goscf_basis *bs, const double *origin,
 
 /* --- 3-center and 2-center ERI engines for density fitting / RI --- */
 
-goscf_engine *goscf_engine_create_3center(int op_kind, double omega,
+scf_engine *scf_engine_create_3center(int op_kind, double omega,
                                           int max_nprim, int max_L, double precision) {
 #if LIBINT2_SUPPORT_ERI3
     bool ok = false;
@@ -367,7 +367,7 @@ goscf_engine *goscf_engine_create_3center(int op_kind, double omega,
         Engine eng(op, max_nprim, max_L, 0, precision);
         eng.set(libint2::BraKet::xs_xx);
         if (op_kind == 1 || op_kind == 2) eng.set_params(omega);
-        return new (std::nothrow) goscf_engine{std::move(eng)};
+        return new (std::nothrow) scf_engine{std::move(eng)};
     } catch (...) {
         return nullptr;
     }
@@ -377,7 +377,7 @@ goscf_engine *goscf_engine_create_3center(int op_kind, double omega,
 #endif
 }
 
-goscf_engine *goscf_engine_create_2center(int op_kind, double omega,
+scf_engine *scf_engine_create_2center(int op_kind, double omega,
                                           int max_nprim, int max_L, double precision) {
 #if LIBINT2_SUPPORT_ERI2
     bool ok = false;
@@ -388,7 +388,7 @@ goscf_engine *goscf_engine_create_2center(int op_kind, double omega,
         Engine eng(op, max_nprim, max_L, 0, precision);
         eng.set(libint2::BraKet::xs_xs);
         if (op_kind == 1 || op_kind == 2) eng.set_params(omega);
-        return new (std::nothrow) goscf_engine{std::move(eng)};
+        return new (std::nothrow) scf_engine{std::move(eng)};
     } catch (...) {
         return nullptr;
     }
@@ -398,8 +398,8 @@ goscf_engine *goscf_engine_create_2center(int op_kind, double omega,
 #endif
 }
 
-int goscf_compute_eri3(goscf_engine *eng, const goscf_basis *obs,
-                       const goscf_basis *dfbs,
+int scf_compute_eri3(scf_engine *eng, const scf_basis *obs,
+                       const scf_basis *dfbs,
                        int shP, int sh1, int sh2, double *out) {
 #if LIBINT2_SUPPORT_ERI3
     // BraKet::xs_xx rank=3: compute(aux_shell, obs_shell1, obs_shell2)
@@ -418,7 +418,7 @@ int goscf_compute_eri3(goscf_engine *eng, const goscf_basis *obs,
 #endif
 }
 
-int goscf_compute_eri2(goscf_engine *eng, const goscf_basis *dfbs,
+int scf_compute_eri2(scf_engine *eng, const scf_basis *dfbs,
                        int shP, int shQ, double *out) {
 #if LIBINT2_SUPPORT_ERI2
     // BraKet::xs_xs rank=2: compute(aux_shell_P, aux_shell_Q)
@@ -439,7 +439,7 @@ int goscf_compute_eri2(goscf_engine *eng, const goscf_basis *dfbs,
 
 /* --- 3-center and 2-center ERI derivative engines --- */
 
-goscf_engine *goscf_engine_create_3center_deriv(int op_kind, double omega,
+scf_engine *scf_engine_create_3center_deriv(int op_kind, double omega,
                                                 int max_nprim, int max_L, double precision) {
 #if LIBINT2_SUPPORT_ERI3 && LIBINT2_MAX_DERIV_ORDER >= 1
     bool ok = false;
@@ -450,7 +450,7 @@ goscf_engine *goscf_engine_create_3center_deriv(int op_kind, double omega,
         Engine eng(op, max_nprim, max_L, 1, precision);
         eng.set(libint2::BraKet::xs_xx);
         if (op_kind == 1 || op_kind == 2) eng.set_params(omega);
-        return new (std::nothrow) goscf_engine{std::move(eng)};
+        return new (std::nothrow) scf_engine{std::move(eng)};
     } catch (...) {
         return nullptr;
     }
@@ -460,7 +460,7 @@ goscf_engine *goscf_engine_create_3center_deriv(int op_kind, double omega,
 #endif
 }
 
-goscf_engine *goscf_engine_create_2center_deriv(int op_kind, double omega,
+scf_engine *scf_engine_create_2center_deriv(int op_kind, double omega,
                                                 int max_nprim, int max_L, double precision) {
 #if LIBINT2_SUPPORT_ERI2 && LIBINT2_MAX_DERIV_ORDER >= 1
     bool ok = false;
@@ -471,7 +471,7 @@ goscf_engine *goscf_engine_create_2center_deriv(int op_kind, double omega,
         Engine eng(op, max_nprim, max_L, 1, precision);
         eng.set(libint2::BraKet::xs_xs);
         if (op_kind == 1 || op_kind == 2) eng.set_params(omega);
-        return new (std::nothrow) goscf_engine{std::move(eng)};
+        return new (std::nothrow) scf_engine{std::move(eng)};
     } catch (...) {
         return nullptr;
     }
@@ -481,8 +481,8 @@ goscf_engine *goscf_engine_create_2center_deriv(int op_kind, double omega,
 #endif
 }
 
-int goscf_compute_eri3_deriv(goscf_engine *eng, const goscf_basis *obs,
-                             const goscf_basis *dfbs,
+int scf_compute_eri3_deriv(scf_engine *eng, const scf_basis *obs,
+                             const scf_basis *dfbs,
                              int shP, int sh1, int sh2, double *out) {
 #if LIBINT2_SUPPORT_ERI3 && LIBINT2_MAX_DERIV_ORDER >= 1
     eng->engine.compute(dfbs->bs[shP], obs->bs[sh1], obs->bs[sh2]);
@@ -509,7 +509,7 @@ int goscf_compute_eri3_deriv(goscf_engine *eng, const goscf_basis *obs,
 #endif
 }
 
-int goscf_compute_eri2_deriv(goscf_engine *eng, const goscf_basis *dfbs,
+int scf_compute_eri2_deriv(scf_engine *eng, const scf_basis *dfbs,
                              int shP, int shQ, double *out) {
 #if LIBINT2_SUPPORT_ERI2 && LIBINT2_MAX_DERIV_ORDER >= 1
     eng->engine.compute(dfbs->bs[shP], dfbs->bs[shQ]);

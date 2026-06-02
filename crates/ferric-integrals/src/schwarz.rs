@@ -20,7 +20,7 @@ pub fn schwarz(op: Operator, prep: &PreparedBasis) -> Result<Array2<f64>, Ferric
         ))),
     };
     let handle = unsafe {
-        ffi::goscf_engine_create(op_kind, op.omega, prep.max_nprim(), prep.max_l(), 1e-14)
+        ffi::scf_engine_create(op_kind, op.omega, prep.max_nprim(), prep.max_l(), 1e-14)
     };
     if handle.is_null() {
         return Err(FerricError::Libint("schwarz engine_create null".into()));
@@ -28,8 +28,8 @@ pub fn schwarz(op: Operator, prep: &PreparedBasis) -> Result<Array2<f64>, Ferric
     let nsh = prep.nshells();
     let mut qmat = Array2::zeros((nsh, nsh));
     unsafe {
-        ffi::goscf_compute_schwarz(handle, prep.handle(), qmat.as_mut_ptr());
-        ffi::goscf_engine_destroy(handle);
+        ffi::scf_compute_schwarz(handle, prep.handle(), qmat.as_mut_ptr());
+        ffi::scf_engine_destroy(handle);
     }
     Ok(qmat)
 }

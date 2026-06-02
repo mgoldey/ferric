@@ -212,7 +212,7 @@ pub fn oneelectron_gradient(
                 let total = nderiv_nuclear * block_sz;
                 if nbuf.len() < total { nbuf.resize(total, 0.0); }
                 let written = unsafe {
-                    ffi::goscf_compute_1e_deriv_block(
+                    ffi::scf_compute_1e_deriv_block(
                         eng.handle_mut(), prep.handle(),
                         s1 as std::os::raw::c_int, s2 as std::os::raw::c_int,
                         nbuf.as_mut_ptr(),
@@ -807,7 +807,7 @@ mod tests {
                     let total = nderiv_nuclear * block_sz;
                     if nbuf.len() < total { nbuf.resize(total, 0.0); }
                     let written = unsafe {
-                        ffi::goscf_compute_1e_deriv_block(
+                        ffi::scf_compute_1e_deriv_block(
                             eng.handle_mut(), prep.handle(),
                             s1 as std::os::raw::c_int, s2 as std::os::raw::c_int,
                             nbuf.as_mut_ptr(),

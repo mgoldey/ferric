@@ -13,7 +13,7 @@ use std::sync::Once;
 static LIBINT_INIT: Once = Once::new();
 
 fn ensure_init() {
-    LIBINT_INIT.call_once(|| unsafe { ffi::goscf_libint_init() });
+    LIBINT_INIT.call_once(|| unsafe { ffi::scf_libint_init() });
 }
 
 /// A molecule + basis set prepared for integral evaluation.
@@ -75,25 +75,25 @@ impl PreparedBasis {
         }
 
         let handle = unsafe {
-            ffi::goscf_basis_create(
+            ffi::scf_basis_create(
                 c_shells.as_ptr(),
                 c_shells.len() as c_int,
                 c_atoms.as_ptr(),
                 c_atoms.len() as c_int,
             )
         };
-        // keep_exps and keep_coefs must stay alive until after goscf_basis_create returns
+        // keep_exps and keep_coefs must stay alive until after scf_basis_create returns
         // (the C++ side copies the data)
         drop(keep_exps);
         drop(keep_coefs);
 
         if handle.is_null() {
-            return Err(FerricError::Libint("goscf_basis_create returned null".into()));
+            return Err(FerricError::Libint("scf_basis_create returned null".into()));
         }
-        let nbasis = unsafe { ffi::goscf_basis_nbasis(handle) } as usize;
-        let nshells = unsafe { ffi::goscf_basis_nshells(handle) } as usize;
+        let nbasis = unsafe { ffi::scf_basis_nbasis(handle) } as usize;
+        let nshells = unsafe { ffi::scf_basis_nshells(handle) } as usize;
         let mut dims_raw = vec![0i32; nshells];
-        unsafe { ffi::goscf_basis_shell_dims(handle, dims_raw.as_mut_ptr()) };
+        unsafe { ffi::scf_basis_shell_dims(handle, dims_raw.as_mut_ptr()) };
         let shell_dims: Vec<usize> = dims_raw.iter().map(|&d| d as usize).collect();
         let mut shell_offsets = vec![0usize; nshells + 1];
         for i in 0..nshells {
@@ -101,7 +101,7 @@ impl PreparedBasis {
         }
         let mut mp: c_int = 0;
         let mut ml: c_int = 0;
-        unsafe { ffi::goscf_basis_max_dims(handle, &mut mp, &mut ml) };
+        unsafe { ffi::scf_basis_max_dims(handle, &mut mp, &mut ml) };
         Ok(PreparedBasis {
             handle,
             basis_set: bs.clone(),
@@ -150,7 +150,7 @@ impl PreparedBasis {
 impl Drop for PreparedBasis {
     fn drop(&mut self) {
         if !self.handle.is_null() {
-            unsafe { ffi::goscf_basis_destroy(self.handle) };
+            unsafe { ffi::scf_basis_destroy(self.handle) };
         }
     }
 }

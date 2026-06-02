@@ -92,7 +92,7 @@ pub fn esp_at_atoms(
             z: atom_a.zpos,
         }];
         let rc = unsafe {
-            ffi::goscf_engine_set_point_charges(
+            ffi::scf_engine_set_point_charges(
                 eng.handle_mut(),
                 probe.as_ptr(),
                 probe.len() as c_int,
@@ -257,7 +257,7 @@ pub fn electric_field_at_atoms(
             z: atom_a.zpos,
         }];
         let rc = unsafe {
-            ffi::goscf_engine_set_point_charges(
+            ffi::scf_engine_set_point_charges(
                 eng.handle_mut(),
                 probe.as_ptr(),
                 probe.len() as c_int,
@@ -281,7 +281,7 @@ pub fn electric_field_at_atoms(
                     buf.resize(total, 0.0);
                 }
                 let written = unsafe {
-                    ffi::goscf_compute_1e_deriv_block(
+                    ffi::scf_compute_1e_deriv_block(
                         eng.handle_mut(),
                         prep.handle(),
                         s1 as c_int,
