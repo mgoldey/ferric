@@ -661,7 +661,7 @@ pub fn pdep_polarizability_static_unrestricted(
             col.mapv_inplace(|x| x * s);
         }
         let chi_sigma = b_scaled.dot(&b_scaled.t());
-        eps_mat = eps_mat + &chi_sigma;
+        eps_mat += &chi_sigma;
     }
 
     // Solve ε̃ · y^d = w_total^d
@@ -1165,7 +1165,7 @@ pub fn pdep_polarizability_becke_dynamic(
                     b_scaled.column_mut(ia).mapv_inplace(|x| x * s);
                 }
                 let chi_s = b_scaled.dot(&b_scaled.t());
-                eps_mat = eps_mat + &chi_s;
+                eps_mat += &chi_s;
             }
 
             // w_total^d(ω) = B̃_α (μ_α^d ⊙ g_α) + B̃_β (μ_β^d ⊙ g_β).

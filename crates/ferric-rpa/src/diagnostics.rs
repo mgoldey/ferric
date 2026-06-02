@@ -106,7 +106,7 @@ pub fn u_ri_drpa_energy(
                     .and_broadcast(scale_row)
                     .for_each(|x, &s| *x *= s);
                 let chi_sigma = syrk_aat(&bs);
-                eps_mat = eps_mat + &chi_sigma;
+                eps_mat += &chi_sigma;
             }
             let (evals, _) = eps_mat.eigh(UPLO::Upper)
                 .map_err(|e| FerricError::General(format!("U-RI-dRPA eigh: {e}")))?;

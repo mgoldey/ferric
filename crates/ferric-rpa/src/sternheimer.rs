@@ -284,7 +284,7 @@ pub fn dielectric_matrix_unrestricted(
             .and_broadcast(scale_row)
             .for_each(|x, &s| *x *= s);
         let chi_sigma = syrk_aat(&rhs_scaled);
-        eps_mat = eps_mat + &chi_sigma;
+        eps_mat += &chi_sigma;
     }
     eps_mat
 }

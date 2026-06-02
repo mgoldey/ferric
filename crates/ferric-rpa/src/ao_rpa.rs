@@ -149,7 +149,7 @@ pub fn dielectric_matrix_imag_time(
     let m = v_mat.ncols();
     let i_naux = Array2::<f64>::eye(pi_naux.nrows());
     let mut eps_naux = i_naux;
-    eps_naux = eps_naux + &pi_naux;
+    eps_naux += &pi_naux;
     let eps_proj = v_mat.t().dot(&eps_naux).dot(v_mat);
     let _ = m;
     Ok(eps_proj)
