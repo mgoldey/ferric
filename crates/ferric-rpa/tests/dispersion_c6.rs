@@ -78,7 +78,7 @@ fn pdep_dynamic_n2_anisotropy_correct_sign() {
     // so anisotropy is preserved. Becke atom-centred dipoles lose the charge-transfer
     // contribution along the bond axis and invert the zz/xx ordering.
     let dp = pdep_dynamic_polarizability(
-        &mol, &obs, &obs_bs, &dfbs, &rhf, op, &cfg, DispersionPartition::Hirshfeld,
+        &mol, &obs, &obs_bs, &dfbs, &rhf, op, &cfg, DispersionPartition::Hirshfeld, None,
     ).unwrap();
 
     let res = casimir_polder_c6(&dp);
@@ -128,7 +128,7 @@ fn pdep_dynamic_per_atom_alpha_is_isotropic_n2() {
     cfg.trunc_thresh = 0.0;
 
     let dp = pdep_dynamic_polarizability(
-        &mol, &obs, &obs_bs, &dfbs, &rhf, op, &cfg, DispersionPartition::Hirshfeld,
+        &mol, &obs, &obs_bs, &dfbs, &rhf, op, &cfg, DispersionPartition::Hirshfeld, None,
     )
     .unwrap();
 
@@ -168,7 +168,7 @@ fn pdep_dynamic_per_atom_c6_is_origin_independent() {
     cfg.trunc_thresh = 0.0;
 
     let dp = pdep_dynamic_polarizability(
-        &mol, &obs, &obs_bs, &dfbs, &rhf, op, &cfg, DispersionPartition::Hirshfeld,
+        &mol, &obs, &obs_bs, &dfbs, &rhf, op, &cfg, DispersionPartition::Hirshfeld, None,
     )
     .unwrap();
     let res = casimir_polder_c6(&dp);
@@ -216,7 +216,7 @@ fn pdep_dynamic_c6_free_he_vs_reference() {
     cfg.trunc_thresh = 0.0;
 
     let dp = pdep_dynamic_polarizability(
-        &mol, &obs, &obs_bs, &dfbs, &rhf, op, &cfg, DispersionPartition::Becke,
+        &mol, &obs, &obs_bs, &dfbs, &rhf, op, &cfg, DispersionPartition::Becke, None,
     )
     .unwrap();
 

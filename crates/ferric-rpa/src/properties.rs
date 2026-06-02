@@ -1801,6 +1801,9 @@ pub fn pdep_polarizability_hirshfeld(
 // System inputs (molecule, orbital + auxiliary bases, the basis-set object for
 // partitioning, the SCF reference, the operator, config, and the frequency
 // grid) are all distinct; there is no sub-bundle to extract.
+/// `proatom`: optional provider of validated same-basis free-atom densities for
+/// the Hirshfeld partition (fixes the H-starvation of the legacy single-Slater
+/// proatom). `None` uses the legacy single-exponential Slater proatom.
 #[allow(clippy::too_many_arguments)]
 pub fn pdep_polarizability_hirshfeld_dynamic(
     mol: &Molecule,
@@ -1811,6 +1814,7 @@ pub fn pdep_polarizability_hirshfeld_dynamic(
     op: Operator,
     _cfg: &PdepRpaConfig,
     freqs: &[f64],
+    proatom: Option<&ProatomProvider>,
 ) -> Result<Vec<Vec<[[f64; 3]; 3]>>, FerricError> {
     use ferric_export::cube::GridSpec;
     use ferric_export::gto_eval::eval_basis_on_grid;
@@ -1861,16 +1865,18 @@ pub fn pdep_polarizability_hirshfeld_dynamic(
     })?;
     let nbf = chi.nrows();
 
-    // Proatom Slater densities and Hirshfeld weights.
-    let mut atom_xi = vec![0.0_f64; natoms];
-    for (a, atom) in mol.atoms.iter().enumerate() { atom_xi[a] = slater_xi_for_z(atom.z); }
+    // Proatom densities and Hirshfeld weights. With a `proatom` provider, use
+    // the validated same-basis free-atom density (fixes H-starvation); else the
+    // legacy single-exponential Slater proatom. Both produce raw densities here;
+    // the weight w^A = ρ_free^A/(Σρ_free) is formed at use below.
     let mut rho_free: Vec<Vec<f64>> = vec![vec![0.0; npts]; natoms];
     let mut rho_sum: Vec<f64> = vec![0.0; npts];
     let hx = grid.step_x[0]; let hy = grid.step_y[1]; let hz = grid.step_z[2];
     for a in 0..natoms {
-        let xi = atom_xi[a];
-        let z_a = mol.atoms[a].z as f64;
-        let prefac = z_a * xi.powi(3) / std::f64::consts::PI;
+        let z_a = mol.atoms[a].z;
+        let xi = slater_xi_for_z(z_a);
+        let prefac = z_a as f64 * xi.powi(3) / std::f64::consts::PI;
+        let pa = proatom.and_then(|p| p(z_a, 0)); // neutral same-basis proatom
         let rax = mol.atoms[a].x; let ray = mol.atoms[a].y; let raz = mol.atoms[a].zpos;
         for ix in 0..grid.n_x {
             let x = grid.origin[0] + ix as f64 * hx;
@@ -1880,7 +1886,10 @@ pub fn pdep_polarizability_hirshfeld_dynamic(
                     let z = grid.origin[2] + iz as f64 * hz;
                     let g = (ix * grid.n_y + iy) * grid.n_z + iz;
                     let r = ((x-rax).powi(2)+(y-ray).powi(2)+(z-raz).powi(2)).sqrt();
-                    let rho = prefac * (-2.0 * xi * r).exp();
+                    let rho = match &pa {
+                        Some(p) => p.at(r),
+                        None => prefac * (-2.0 * xi * r).exp(),
+                    };
                     rho_free[a][g] = rho; rho_sum[g] += rho;
                 }
             }
@@ -2412,6 +2421,11 @@ pub fn spherically_averaged_proatom(
     }
     Ok(RadialProatom { radii: radii.to_vec(), rho })
 }
+
+/// Provider of spherically-averaged free-atom proatom densities: given element
+/// `z` and integer charge state `q`, returns the radial proatom (or `None` if
+/// unavailable). Built by the caller from atomic SCF in the molecule's basis.
+pub type ProatomProvider<'a> = dyn Fn(i32, i32) -> Option<RadialProatom> + 'a;
 
 /// Iterative Hirshfeld (Hirshfeld-I) charges using ad-hoc same-basis free-atom
 /// proatom densities.

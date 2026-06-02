@@ -268,12 +268,13 @@ pub fn pdep_dynamic_polarizability(
     op: Operator,
     cfg: &PdepRpaConfig,
     partition: DispersionPartition,
+    proatom: Option<&crate::properties::ProatomProvider>,
 ) -> Result<DynamicPolarizability, FerricError> {
     let (freqs, weights) = crate::quadrature::build_quadrature(&cfg.quadrature);
 
     let per_atom = if partition == DispersionPartition::Hirshfeld {
         crate::properties::pdep_polarizability_hirshfeld_dynamic(
-            mol, obs, obs_bs, dfbs, rhf, op, cfg, &freqs,
+            mol, obs, obs_bs, dfbs, rhf, op, cfg, &freqs, proatom,
         )?
     } else {
         crate::properties::pdep_polarizability_becke_dynamic(

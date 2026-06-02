@@ -68,7 +68,7 @@ fn run_system(sys: &System) {
     let t0 = Instant::now();
     let dp_full = pdep_dynamic_polarizability(
         &sys.mol, &sys.obs, &sys.obs_bs, &sys.dfbs, &sys.rhf, sys.op,
-        &cfg_full, DispersionPartition::Becke,
+        &cfg_full, DispersionPartition::Becke, None,
     ).unwrap();
     let t_full = t0.elapsed();
     let res_full = casimir_polder_c6(&dp_full);

@@ -731,8 +731,53 @@ fn main() {
                         // the molecular total AND the per-atom intrinsic α^A
                         // (atom-centred (r−R_A); bond-axis anisotropy is a
                         // coupled/molecular property, not per-atom).
+                        //
+                        // Ad-hoc Hirshfeld proatom: neutral free-atom densities
+                        // computed in the molecule's OWN basis (basis-consistent
+                        // partition; fixes the legacy single-Slater H-starvation
+                        // that gave H per-atom C6 ≈ 0.02). Built via atomic SCF.
+                        let proatom_radii: Vec<f64> =
+                            (1..=600).map(|k| k as f64 * 0.05).collect(); // 0.05..30 Bohr
+                        let gs_mult = |z: i32| -> usize {
+                            match z {
+                                1 | 3 | 5 | 9 | 11 | 13 | 17 => 2,
+                                6 | 8 | 14 | 16 => 3,
+                                7 | 15 => 4,
+                                _ => 1,
+                            }
+                        };
+                        let proatom = |z: i32, qi: i32| -> Option<
+                            ferric_rpa::properties::RadialProatom,
+                        > {
+                            if qi != 0 || z - qi <= 0 {
+                                return None; // neutral only; ions via fallback
+                            }
+                            let sym = ferric_core::elements::z_to_symbol(z).unwrap_or("X");
+                            let axyz = format!("1\n{sym}\n{sym} 0 0 0\n");
+                            let amol = Molecule::parse_xyz(&axyz, 0, gs_mult(z)).ok()?;
+                            let aobs = PreparedBasis::new(&amol, &bs).ok()?;
+                            let abounds = SchwarzBounds::compute(op, &aobs).ok()?;
+                            let mut acfg = rhf_config.clone();
+                            let adens = if gs_mult(z) == 1 {
+                                solve_rhf(&ctx, &amol, &aobs, op, &abounds, &acfg)
+                                    .ok()?
+                                    .density_r()
+                                    .to_owned()
+                            } else {
+                                acfg.mom_after_iter = 5;
+                                solve_uhf(&ctx, &amol, &aobs, &abounds, &acfg)
+                                    .ok()?
+                                    .density_total()
+                                    .to_owned()
+                            };
+                            ferric_rpa::properties::spherically_averaged_proatom(
+                                z, &bs, &adens, &proatom_radii,
+                            )
+                            .ok()
+                        };
                         match pdep_dynamic_polarizability(
                             &mol, &prep, &bs, &dfbs, &result, op, &rpa_cfg, partition,
+                            Some(&proatom),
                         ) {
                             Ok(dp) => {
                                 let res = casimir_polder_c6(&dp);
