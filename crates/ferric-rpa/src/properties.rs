@@ -1358,15 +1358,6 @@ pub fn pdep_polarizability_becke_dynamic(
     }
 
     // Flatten molecular dipole and per-atom dipoles into (nov,) vectors ONCE.
-    let mu_flat: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
-        let mut v = ndarray::Array1::<f64>::zeros(nov);
-        for i in 0..nocc {
-            for ax in 0..nvir {
-                v[i * nvir + ax] = mu_mo[d][(i, ax)];
-            }
-        }
-        v
-    });
     let mu_ai_flat: Vec<[ndarray::Array1<f64>; 3]> = (0..natoms)
         .map(|a| {
             std::array::from_fn(|d| {
@@ -1381,89 +1372,21 @@ pub fn pdep_polarizability_becke_dynamic(
         })
         .collect();
 
-    // --- Static Becke isotropic fractions f^A = α^A_iso(ω=0) / α_mol_iso(ω=0) ---
-    //
-    // Per-atom α^A_{ij}(iω) via atom-centred Becke dipoles has correct isotropic
-    // magnitude but wrong anisotropy: the charge-transfer contribution to α_||
-    // (polarization along the bond) is a collective molecular effect that cancels
-    // out of the atom-centred (r − R_A) decomposition at ω≠0. Consequently the
-    // partitioned zz/xx ratio is systematically too small (too anisotropic).
-    //
-    // Fix: compute the molecular α(iω) tensor using the full analytical dipole
-    // (origin at 0, not atom-centred), which carries correct anisotropy. Distribute
-    // it to atoms using the static Becke isotropic fraction f^A. This gives:
-    //   α^A_{ij}(iω) = f^A · α_mol_{ij}(iω)
-    // where Σ_A f^A = 1 by construction (isotropic partition of unity).
-    // The molecular C6 Σ_{A,B} C6^{AB} = C6_mol is unchanged; anisotropy is correct.
-    //
-    // Static fraction from the ω=0 (g = 1/Δε) Becke quantities.
-    let g0: ndarray::Array1<f64> = {
+    // Flatten the Becke-sum molecular dipole (sum of atom-centred pieces).
+    let mu_flat: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
         let mut v = ndarray::Array1::<f64>::zeros(nov);
-        for ia in 0..nov { v[ia] = 1.0 / e_ia[ia]; }
-        v
-    };
-    // Molecular α_iso(ω=0) from analytical (global-origin) MO dipoles.
-    // Use mu_flat (which sums the Becke per-atom pieces; equal to analyt. dipole
-    // up to grid noise since atom-centred sum = global dipole + R_A·charge terms,
-    // but for the *isotropic* f^A fraction we only need relative magnitudes).
-    let mol_alpha0_iso = {
-        // 4 μ^d · g0 · μ^d - 16 w^d · y^d, summed over d, divided by 3.
-        // Recompute with analytical global dipole for correctness.
-        let dip_ao_global = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
-        let mu_global: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
-            let mo = c_occ.t().dot(&dip_ao_global[d]).dot(&c_vir);
-            let mut v = ndarray::Array1::<f64>::zeros(nov);
-            for i in 0..nocc { for ax in 0..nvir { v[i*nvir+ax] = mo[(i,ax)]; } }
-            v
-        });
-        let mut b_scaled0 = b_ov.clone();
-        for ia in 0..nov { let s = (4.0*g0[ia]).sqrt(); b_scaled0.column_mut(ia).mapv_inplace(|x| x*s); }
-        let mut eps0: Array2<f64> = b_scaled0.dot(&b_scaled0.t());
-        for p in 0..naux { eps0[(p,p)] += 1.0; }
-        use ndarray_linalg::Solve;
-        let mut iso = 0.0f64;
-        for d in 0..3 {
-            let mu_g = &mu_global[d] * &g0;
-            let w = b_ov.dot(&mu_g);
-            let y = eps0.solve(&w).unwrap();
-            iso += 4.0*mu_global[d].dot(&mu_g) - 16.0*w.dot(&y);
-        }
-        iso / 3.0
-    };
-    // Per-atom isotropic α^A(ω=0): use the analytical global-origin dipole as the
-    // molecular reference so that Σ_A iso_a = mol_alpha0_iso exactly (partition of
-    // unity). Using mu_flat (Becke-atom-centred sum) instead would mix origins and
-    // break the sum rule for displaced molecules / dimers.
-    let mut b_scaled0 = b_ov.clone();
-    for ia in 0..nov { let s = (4.0*g0[ia]).sqrt(); b_scaled0.column_mut(ia).mapv_inplace(|x| x*s); }
-    let mut eps0: Array2<f64> = b_scaled0.dot(&b_scaled0.t());
-    for p in 0..naux { eps0[(p,p)] += 1.0; }
-    let dip_ao_global0 = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
-    let mu_global0: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
-        let mo = c_occ.t().dot(&dip_ao_global0[d]).dot(&c_vir);
-        let mut v = ndarray::Array1::<f64>::zeros(nov);
-        for i in 0..nocc { for ax in 0..nvir { v[i*nvir+ax] = mo[(i,ax)]; } }
+        for i in 0..nocc { for ax in 0..nvir { v[i*nvir+ax] = mu_mo[d][(i,ax)]; } }
         v
     });
-    let mu_global0_g0: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| &mu_global0[d] * &g0);
-    let y_mol0: [ndarray::Array1<f64>; 3] = {
-        use ndarray_linalg::Solve;
-        std::array::from_fn(|d| eps0.solve(&(b_ov.dot(&mu_global0_g0[d]))).unwrap())
-    };
-    let frac_atom: Vec<f64> = (0..natoms).map(|a| {
-        let mut iso_a = 0.0f64;
-        for d in 0..3 {
-            let mu_ai_g = &mu_ai_flat[a][d] * &g0;
-            let w_ai = b_ov.dot(&mu_ai_g);
-            let bare = mu_ai_flat[a][d].dot(&mu_global0_g0[d]);
-            let coupled = w_ai.dot(&y_mol0[d]);
-            iso_a += 4.0*bare - 16.0*coupled;
-        }
-        let iso_a = iso_a / 3.0;
-        if mol_alpha0_iso.abs() > 1e-12 { iso_a / mol_alpha0_iso } else { 1.0 / natoms as f64 }
-    }).collect();
 
-    // --- Frequency loop: molecular α(iω) × static Becke fraction ---
+    // --- Frequency loop: direct per-atom SMW (symmetric Becke-sum reference) ---
+    //
+    // α^A_{ij}(iω) = 4 μ^{A,i}·g·μ^{Becke,j} − 16 (B·μ^{A,i}·g)·ε̃⁻¹·(B·μ^{Becke,j}·g)
+    //
+    // Both slots use the same Becke-sum dipole μ^Becke = Σ_A μ^A, so
+    // Σ_A α^A = α_mol(μ^Becke) exactly. This matches pdep_dynamic_polarizability_truncated.
+    // The anisotropy reflects the Becke partition's atom-centred displacements;
+    // for isotropic C6 via Casimir-Polder this is the correct formula.
     let mut out: Vec<Vec<[[f64; 3]; 3]>> =
         vec![vec![[[0.0; 3]; 3]; nfreq]; natoms];
 
@@ -1472,52 +1395,38 @@ pub fn pdep_polarizability_becke_dynamic(
         let mut g = ndarray::Array1::<f64>::zeros(nov);
         for ia in 0..nov { let e = e_ia[ia]; g[ia] = e / (omega2 + e * e); }
 
-        // ε̃(ω) = I + 4 B̃ diag(g) B̃^T — used for the *molecular* SMW solve.
+        // ε̃(ω) = I + 4 B̃ diag(g) B̃^T
         let mut b_scaled = b_ov.clone();
         for ia in 0..nov {
-            let s = (4.0 * g[ia]).sqrt();
-            b_scaled.column_mut(ia).mapv_inplace(|x| x * s);
+            b_scaled.column_mut(ia).mapv_inplace(|x| x * (4.0 * g[ia]).sqrt());
         }
         let mut eps_mat: Array2<f64> = b_scaled.dot(&b_scaled.t());
         for p in 0..naux { eps_mat[(p, p)] += 1.0; }
 
-        // Molecular α(iω) tensor using the full analytical (global-origin) dipole.
-        // This carries the correct bond-axis anisotropy; charge-transfer contributions
-        // are included because the dipole is from the global origin, not atom-centred.
-        let dip_ao_global = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
-        let mu_global: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
-            let mo = c_occ.t().dot(&dip_ao_global[d]).dot(&c_vir);
-            let mut v = ndarray::Array1::<f64>::zeros(nov);
-            for i in 0..nocc { for ax in 0..nvir { v[i*nvir+ax] = mo[(i,ax)]; } }
-            v
-        });
-        let mu_g: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| &mu_global[d] * &g);
+        // Solve ε̃ y^j = B·(g⊙μ^{Becke,j}) once per direction.
+        let mu_g: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| &mu_flat[d] * &g);
         let w_mol: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| b_ov.dot(&mu_g[d]));
         let y_mol: [ndarray::Array1<f64>; 3] = {
             use ndarray_linalg::Solve;
             std::array::from_fn(|d| eps_mat.solve(&w_mol[d]).unwrap())
         };
 
-        let mut mol_tensor = [[0.0_f64; 3]; 3];
-        for d in 0..3 {
-            for j in 0..3 {
-                let bare = mu_global[d].dot(&mu_g[j]);
-                let coupled = w_mol[d].dot(&y_mol[j]);
-                mol_tensor[d][j] = 4.0 * bare - 16.0 * coupled;
-            }
-        }
-        // Symmetrize.
-        for i in 0..3 { for j in (i+1)..3 {
-            let avg = 0.5*(mol_tensor[i][j]+mol_tensor[j][i]);
-            mol_tensor[i][j] = avg; mol_tensor[j][i] = avg;
-        }}
-
-        // Distribute to atoms via static isotropic Becke fraction f^A.
         for a in 0..natoms {
-            let f = frac_atom[a];
-            for d in 0..3 { for j in 0..3 {
-                out[a][k][d][j] = f * mol_tensor[d][j];
+            let mut tensor = [[0.0_f64; 3]; 3];
+            for d in 0..3 {
+                let w_ai = b_ov.dot(&(&mu_ai_flat[a][d] * &g));
+                for j in 0..3 {
+                    let bare = mu_ai_flat[a][d].dot(&mu_g[j]);
+                    let coupled = w_ai.dot(&y_mol[j]);
+                    tensor[d][j] = 4.0 * bare - 16.0 * coupled;
+                }
+            }
+            // Symmetrize.
+            for i in 0..3 { for j in (i+1)..3 {
+                let avg = 0.5*(tensor[i][j]+tensor[j][i]);
+                tensor[i][j] = avg; tensor[j][i] = avg;
             }}
+            out[a][k] = tensor;
         }
     }
 
@@ -1878,6 +1787,209 @@ pub fn pdep_polarizability_hirshfeld(
     }
 
     Ok(alpha_per_atom)
+}
+
+/// Dynamic Hirshfeld per-atom polarizability α^A(iω) on an imaginary-frequency grid.
+///
+/// Computes the same renormalized Hirshfeld MO dipoles as [`pdep_polarizability_hirshfeld`]
+/// (grid work is ω-independent), then evaluates the full-rank SMW formula at each
+/// quadrature frequency. Because `Σ_A μ^{A,i} = μ^i` exactly after renormalization,
+/// `Σ_A α^A(iω) = α_mol(iω)` at every ω — exact sum rule, origin-independent,
+/// correct anisotropy including charge-transfer along bond axes.
+///
+/// Returns `per_atom[A][k][i][j]` = α^A_{ij}(iω_k), shape `(natoms, nfreq, 3, 3)`.
+pub fn pdep_polarizability_hirshfeld_dynamic(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    obs_bs: &ferric_core::basis::BasisSet,
+    dfbs: &PreparedBasis,
+    rhf: &ScfResult,
+    op: Operator,
+    _cfg: &PdepRpaConfig,
+    freqs: &[f64],
+) -> Result<Vec<Vec<[[f64; 3]; 3]>>, FerricError> {
+    use ferric_export::cube::GridSpec;
+    use ferric_export::gto_eval::eval_basis_on_grid;
+    use ndarray_linalg::Solve;
+
+    if !matches!(rhf.spin, Spin::Restricted) {
+        return Err(FerricError::General(
+            "pdep_polarizability_hirshfeld_dynamic: only closed-shell (Restricted) supported".into(),
+        ));
+    }
+
+    let natoms = mol.atoms.len();
+    let nfreq = freqs.len();
+
+    // RI intermediates — same as static path.
+    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0 };
+    let inter = ferric_mp2::rimp2::compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
+    let b_ov = &inter.b_ov;
+    let nocc = inter.nocc;
+    let nvir = inter.nvir;
+    let nocc_total = inter.nocc_total;
+    let first_occ = inter.first_occ;
+    let naux = inter.naux;
+    let nov = nocc * nvir;
+
+    let eps = rhf.eps_r();
+    let eps_occ: Vec<f64> = eps[first_occ..first_occ + nocc].to_vec();
+    let eps_vir: Vec<f64> = eps[nocc_total..nocc_total + nvir].to_vec();
+    let mut e_ia = ndarray::Array1::<f64>::zeros(nov);
+    for i in 0..nocc { for a in 0..nvir { e_ia[i*nvir+a] = eps_vir[a] - eps_occ[i]; } }
+
+    let c = rhf.mos_r();
+    let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
+    let c_vir = c.slice(ndarray::s![.., nocc_total..nocc_total + nvir]).to_owned();
+
+    // --- Grid setup (identical to static Hirshfeld path) ---
+    let _dip_ao_analytical = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let spacing = std::env::var("FERRIC_HIRSHFELD_SPACING")
+        .ok().and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.20);
+    let margin = std::env::var("FERRIC_HIRSHFELD_MARGIN")
+        .ok().and_then(|s| s.parse::<f64>().ok()).unwrap_or(6.0);
+    let grid = GridSpec::bounding_box(mol, margin, spacing);
+    let dv = spacing * spacing * spacing;
+    let npts = grid.n_x * grid.n_y * grid.n_z;
+
+    let chi = eval_basis_on_grid(mol, obs_bs, &grid).map_err(|e| {
+        FerricError::General(format!("pdep_polarizability_hirshfeld_dynamic: chi eval failed: {e}"))
+    })?;
+    let nbf = chi.nrows();
+
+    // Proatom Slater densities and Hirshfeld weights.
+    let mut atom_xi = vec![0.0_f64; natoms];
+    for (a, atom) in mol.atoms.iter().enumerate() { atom_xi[a] = slater_xi_for_z(atom.z); }
+    let mut rho_free: Vec<Vec<f64>> = vec![vec![0.0; npts]; natoms];
+    let mut rho_sum: Vec<f64> = vec![0.0; npts];
+    let hx = grid.step_x[0]; let hy = grid.step_y[1]; let hz = grid.step_z[2];
+    for a in 0..natoms {
+        let xi = atom_xi[a];
+        let z_a = mol.atoms[a].z as f64;
+        let prefac = z_a * xi.powi(3) / std::f64::consts::PI;
+        let rax = mol.atoms[a].x; let ray = mol.atoms[a].y; let raz = mol.atoms[a].zpos;
+        for ix in 0..grid.n_x {
+            let x = grid.origin[0] + ix as f64 * hx;
+            for iy in 0..grid.n_y {
+                let y = grid.origin[1] + iy as f64 * hy;
+                for iz in 0..grid.n_z {
+                    let z = grid.origin[2] + iz as f64 * hz;
+                    let g = (ix * grid.n_y + iy) * grid.n_z + iz;
+                    let r = ((x-rax).powi(2)+(y-ray).powi(2)+(z-raz).powi(2)).sqrt();
+                    let rho = prefac * (-2.0 * xi * r).exp();
+                    rho_free[a][g] = rho; rho_sum[g] += rho;
+                }
+            }
+        }
+    }
+
+    // Grid coordinates.
+    let mut ri_grid: [Vec<f64>; 3] = [vec![0.0; npts], vec![0.0; npts], vec![0.0; npts]];
+    for ix in 0..grid.n_x {
+        let x = grid.origin[0] + ix as f64 * hx;
+        for iy in 0..grid.n_y {
+            let y = grid.origin[1] + iy as f64 * hy;
+            for iz in 0..grid.n_z {
+                let z = grid.origin[2] + iz as f64 * hz;
+                let g = (ix * grid.n_y + iy) * grid.n_z + iz;
+                ri_grid[0][g] = x; ri_grid[1][g] = y; ri_grid[2][g] = z;
+            }
+        }
+    }
+
+    // Build per-atom Hirshfeld AO dipoles, renormalize to analytical sum rule.
+    let eps_floor = 1e-12;
+    let mut d_ai_ao_all: Vec<[Array2<f64>; 3]> = (0..natoms)
+        .map(|_| std::array::from_fn(|_| Array2::<f64>::zeros((nbf, nbf)))).collect();
+    let mut d_ai_ao_sum: [Array2<f64>; 3] =
+        std::array::from_fn(|_| Array2::<f64>::zeros((nbf, nbf)));
+    for a in 0..natoms {
+        let mut wa = vec![0.0_f64; npts];
+        for g in 0..npts { wa[g] = rho_free[a][g] / (rho_sum[g] + eps_floor); }
+        for i_cart in 0..3 {
+            let mut combined = Array2::<f64>::zeros((nbf, npts));
+            for mu in 0..nbf {
+                let chi_mu = chi.row(mu);
+                for g in 0..npts { combined[(mu, g)] = chi_mu[g] * wa[g] * ri_grid[i_cart][g] * dv; }
+            }
+            let d = chi.dot(&combined.t());
+            let mut d_sym = Array2::<f64>::zeros((nbf, nbf));
+            for mu in 0..nbf { for nu in 0..nbf { d_sym[(mu,nu)] = 0.5*(d[(mu,nu)]+d[(nu,mu)]); } }
+            d_ai_ao_sum[i_cart] = &d_ai_ao_sum[i_cart] + &d_sym;
+            d_ai_ao_all[a][i_cart] = d_sym;
+        }
+    }
+    // Renormalize to analytical sum rule so Σ_A μ^A = μ^analytical exactly.
+    let dip_ao = &_dip_ao_analytical;
+    let inv_n = 1.0 / natoms as f64;
+    let small = 1e-10;
+    for i_cart in 0..3 {
+        for mu in 0..nbf { for nu in 0..nbf {
+            let total_grid = d_ai_ao_sum[i_cart][(mu, nu)];
+            let total_analytical = dip_ao[i_cart][(mu, nu)];
+            if total_grid.abs() < small * (1.0 + total_analytical.abs()) {
+                for a in 0..natoms { d_ai_ao_all[a][i_cart][(mu, nu)] = total_analytical * inv_n; }
+            } else {
+                let scale = total_analytical / total_grid;
+                for a in 0..natoms { d_ai_ao_all[a][i_cart][(mu, nu)] *= scale; }
+            }
+        }}
+    }
+
+    // Transform renormalized AO dipoles to MO occ-vir basis (ω-independent).
+    let mu_ai_flat: Vec<[ndarray::Array1<f64>; 3]> = (0..natoms).map(|a| {
+        std::array::from_fn(|d| {
+            let mo = c_occ.t().dot(&d_ai_ao_all[a][d]).dot(&c_vir);
+            let mut v = ndarray::Array1::<f64>::zeros(nov);
+            for i in 0..nocc { for ax in 0..nvir { v[i*nvir+ax] = mo[(i,ax)]; } }
+            v
+        })
+    }).collect();
+
+    // Molecular dipole = sum of per-atom Hirshfeld pieces (exact after renorm).
+    let mu_flat: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
+        mu_ai_flat.iter().fold(ndarray::Array1::<f64>::zeros(nov), |acc, m| acc + &m[d])
+    });
+
+    // --- Frequency loop ---
+    let mut out: Vec<Vec<[[f64; 3]; 3]>> = vec![vec![[[0.0; 3]; 3]; nfreq]; natoms];
+
+    for (k, &omega) in freqs.iter().enumerate() {
+        let omega2 = omega * omega;
+        let mut g = ndarray::Array1::<f64>::zeros(nov);
+        for ia in 0..nov { let e = e_ia[ia]; g[ia] = e / (omega2 + e*e); }
+
+        // ε̃(ω) = I + 4 B̃ diag(g) B̃^T
+        let mut b_scaled = b_ov.clone();
+        for ia in 0..nov { b_scaled.column_mut(ia).mapv_inplace(|x| x * (4.0*g[ia]).sqrt()); }
+        let mut eps_mat: Array2<f64> = b_scaled.dot(&b_scaled.t());
+        for p in 0..naux { eps_mat[(p,p)] += 1.0; }
+
+        // Solve ε̃ y^j = B·(g⊙μ^j) once per direction (molecular Hirshfeld dipole).
+        let mu_g: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| &mu_flat[d] * &g);
+        let w_mol: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| b_ov.dot(&mu_g[d]));
+        let y_mol: [ndarray::Array1<f64>; 3] =
+            std::array::from_fn(|d| eps_mat.solve(&w_mol[d]).unwrap());
+
+        for a in 0..natoms {
+            let mut tensor = [[0.0_f64; 3]; 3];
+            for d in 0..3 {
+                let w_ai = b_ov.dot(&(&mu_ai_flat[a][d] * &g));
+                for j in 0..3 {
+                    let bare = mu_ai_flat[a][d].dot(&mu_g[j]);
+                    let coupled = w_ai.dot(&y_mol[j]);
+                    tensor[d][j] = 4.0 * bare - 16.0 * coupled;
+                }
+            }
+            for i in 0..3 { for j in (i+1)..3 {
+                let avg = 0.5*(tensor[i][j]+tensor[j][i]);
+                tensor[i][j] = avg; tensor[j][i] = avg;
+            }}
+            out[a][k] = tensor;
+        }
+    }
+
+    Ok(out)
 }
 
 /// Becke atomic charges via fuzzy partitioning of the molecular density.

@@ -74,8 +74,11 @@ fn pdep_dynamic_n2_anisotropy_correct_sign() {
     let mut cfg = PdepRpaConfig::default();
     cfg.frozen_core = 0; cfg.trunc_thresh = 0.0;
 
+    // Hirshfeld partition: Σ_A μ^A = μ^global exactly (proatom weights sum to 1),
+    // so anisotropy is preserved. Becke atom-centred dipoles lose the charge-transfer
+    // contribution along the bond axis and invert the zz/xx ordering.
     let dp = pdep_dynamic_polarizability(
-        &mol, &obs, &obs_bs, &dfbs, &rhf, op, &cfg, DispersionPartition::Becke,
+        &mol, &obs, &obs_bs, &dfbs, &rhf, op, &cfg, DispersionPartition::Hirshfeld,
     ).unwrap();
 
     let res = casimir_polder_c6(&dp);

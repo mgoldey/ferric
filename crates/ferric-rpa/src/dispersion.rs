@@ -224,18 +224,15 @@ pub fn pdep_dynamic_polarizability(
 ) -> Result<DynamicPolarizability, FerricError> {
     let (freqs, weights) = crate::quadrature::build_quadrature(&cfg.quadrature);
 
-    if partition == DispersionPartition::Hirshfeld {
-        // No dedicated Hirshfeld-dynamic path yet; use Becke (geometry-only,
-        // robust) for the frequency dependence. Documented, non-fatal.
-        eprintln!(
-            "note: pdep_dynamic_polarizability: Hirshfeld partition not yet \
-             implemented for the dynamic path; using Becke"
-        );
-    }
-
-    let per_atom = crate::properties::pdep_polarizability_becke_dynamic(
-        mol, obs, obs_bs, dfbs, rhf, op, cfg, &freqs,
-    )?;
+    let per_atom = if partition == DispersionPartition::Hirshfeld {
+        crate::properties::pdep_polarizability_hirshfeld_dynamic(
+            mol, obs, obs_bs, dfbs, rhf, op, cfg, &freqs,
+        )?
+    } else {
+        crate::properties::pdep_polarizability_becke_dynamic(
+            mol, obs, obs_bs, dfbs, rhf, op, cfg, &freqs,
+        )?
+    };
 
     Ok(DynamicPolarizability {
         freqs,

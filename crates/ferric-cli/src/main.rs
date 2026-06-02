@@ -703,17 +703,20 @@ fn main() {
                         ts_dynamic_polarizability, DispersionPartition,
                     };
                     use ferric_rpa::properties::{
-                        atomic_effective_volumes_becke, atomic_effective_volumes_hirshfeld,
+                        atomic_effective_volumes_hirshfeld,
                         pdep_polarizability_hirshfeld,
                     };
                     use ferric_rpa::quadrature::build_quadrature;
 
-                    let partition = if cfg.rpa.c6_partition.as_deref() == Some("hirshfeld") {
-                        DispersionPartition::Hirshfeld
-                    } else {
-                        DispersionPartition::Becke
-                    };
                     let use_pdep = cfg.rpa.c6_source.as_deref() == Some("pdep");
+                    // Default partition: Hirshfeld for PDEP (correct anisotropy via
+                    // proatom sum rule), Becke for TS (only affects alpha_static shape;
+                    // volume ratio always uses Hirshfeld regardless).
+                    let partition = match cfg.rpa.c6_partition.as_deref() {
+                        Some("becke") => DispersionPartition::Becke,
+                        Some("hirshfeld") => DispersionPartition::Hirshfeld,
+                        _ => if use_pdep { DispersionPartition::Hirshfeld } else { DispersionPartition::Becke },
+                    };
 
                     let res_opt = if use_pdep {
                         // Phase 2: PDEP-RPA dynamic α(iω). Origin-clean for free atoms and
@@ -750,26 +753,22 @@ fn main() {
                                     .unwrap_or_else(|_| vec![[[0.0; 3]; 3]; mol.atoms.len()]),
                                 }
                             };
-                        let vols = if partition == DispersionPartition::Hirshfeld {
-                            atomic_effective_volumes_hirshfeld(
-                                &mol, &bs, result.density_total(),
-                            )
-                            .unwrap_or_else(|_| vec![1.0; mol.atoms.len()])
-                        } else {
-                            atomic_effective_volumes_becke(
-                                &mol, &prep, &bs, result.density_total(),
-                            )
-                            .unwrap_or_else(|_| vec![1.0; mol.atoms.len()])
-                        };
+                        // TS volumes must always use Hirshfeld partition — TS was
+                        // parameterized with Hirshfeld volumes (TS PRL 2009). Becke
+                        // volumes blow up for π-system H atoms (vol_ratio >> 1)
+                        // because Becke is atom-size-blind; Hirshfeld proatom weights
+                        // correctly compress H relative to C. The c6_partition setting
+                        // only governs the alpha_static shape tensor, not these volumes.
+                        let vols = atomic_effective_volumes_hirshfeld(
+                            &mol, &bs, result.density_total(),
+                        )
+                        .unwrap_or_else(|_| vec![1.0; mol.atoms.len()]);
                         let z: Vec<usize> = mol.atoms.iter().map(|a| a.z as usize).collect();
 
-                        // Compute free-atom vol_free at the same basis/theory level
-                        // as the molecule: run RHF/UHF on each isolated atom and call
-                        // atomic_effective_volumes_becke on the free-atom density.
-                        // For a single atom the Becke weight w=1 everywhere, so this
-                        // gives ∫ ρ_free(r) |r|³ dr — the self-consistent denominator
-                        // the TS model requires. Using a hard-coded table would mix
-                        // basis sets and give wrong ratios.
+                        // Compute free-atom vol_free using Hirshfeld on isolated atoms.
+                        // For a single atom Hirshfeld weight = 1 everywhere (only one
+                        // proatom), so this gives ∫ ρ_free(r) |r|³ dr — same physics
+                        // as the molecular Hirshfeld integral, consistent denominator.
                         let mut vol_free_computed: std::collections::HashMap<usize, f64> =
                             std::collections::HashMap::new();
                         for &zi in z.iter().collect::<std::collections::HashSet<_>>() {
@@ -799,8 +798,8 @@ fn main() {
                                             .map(|r| r.density_r().to_owned())
                                     };
                                     if let Some(d) = free_density {
-                                        if let Ok(fv) = atomic_effective_volumes_becke(
-                                            &free_mol, &free_obs, &bs, &d,
+                                        if let Ok(fv) = atomic_effective_volumes_hirshfeld(
+                                            &free_mol, &bs, &d,
                                         ) {
                                             vol_free_computed.insert(zi, fv[0]);
                                         }

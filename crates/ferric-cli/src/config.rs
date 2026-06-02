@@ -111,7 +111,11 @@ pub struct RpaCfg {
     /// C6 polarizability source: "ts" (Tkatchenko-Scheffler single-pole,
     /// default) or "pdep" (PDEP-RPA dynamic α(iω), Phase 2).
     pub c6_source: Option<String>,
-    /// Per-atom partition for C6: "becke" (default) or "hirshfeld".
+    /// Per-atom partition for C6: "hirshfeld" (default for pdep) or "becke".
+    /// Hirshfeld is required for correct anisotropy in pdep C6 — Becke atom-centred
+    /// dipoles lose charge-transfer contributions and invert bond-axis ordering.
+    /// For TS, partition only affects alpha_static shape; Hirshfeld volumes are
+    /// always used for the volume ratio regardless of this setting.
     pub c6_partition: Option<String>,
 }
 
