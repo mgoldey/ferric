@@ -16,6 +16,7 @@
 use crate::mo_transform::transform_3center_ov;
 use crate::rimp2::cholesky_inverse_sqrt;
 use ferric_core::mol::Molecule;
+use ferric_core::orbitals::OrbitalSpace;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::oneelectron;
@@ -151,10 +152,9 @@ fn compute_rimp2_with_orbitals(
     op: Operator,
     c: &Array2<f64>,
     eps: &[f64],
-    nocc: usize,
-    nocc_total: usize,
-    first_occ: usize,
+    orb: &OrbitalSpace,
 ) -> Result<(f64, Array2<f64>), FerricError> {
+    let OrbitalSpace { nocc, nocc_total, first_occ, .. } = *orb;
     let nbas = obs.nbasis();
     let nvir = nbas - nocc_total;
     let naux = dfbs.nbasis();
@@ -562,6 +562,7 @@ pub fn oo_ri_mp2(
     let nocc = nocc_total - config.frozen_core;
     let first_occ = config.frozen_core;
     let nvir = nbas - nocc_total;
+    let orb = OrbitalSpace::new(nocc, nvir, nocc_total, first_occ);
 
     // One-electron integrals (fixed)
     let h = oneelectron::hcore(obs);
@@ -572,9 +573,7 @@ pub fn oo_ri_mp2(
     // Initial energies
     let (mut e_hf, mut f_ao, _d) = compute_hf_energy(mol, obs, bounds, &c, nocc_total, &h)?;
     let mut eps = orbital_energies(&c, &f_ao);
-    let (mut e_mp2, mut b_ov) = compute_rimp2_with_orbitals(
-        obs, dfbs, op, &c, &eps, nocc, nocc_total, first_occ,
-    )?;
+    let (mut e_mp2, mut b_ov) = compute_rimp2_with_orbitals(obs, dfbs, op, &c, &eps, &orb)?;
     let mut total_energy = e_hf + e_mp2;
     let mut grad_norm = f64::MAX;
     let nmo = nbas;
@@ -691,9 +690,7 @@ pub fn oo_ri_mp2(
         let (ehf, fao, _d) =
             compute_hf_energy(mol, obs, bounds, &c_new, nocc_total, &h)?;
         let epsnew = orbital_energies(&c_new, &fao);
-        let (emp2, bov) = compute_rimp2_with_orbitals(
-            obs, dfbs, op, &c_new, &epsnew, nocc, nocc_total, first_occ,
-        )?;
+        let (emp2, bov) = compute_rimp2_with_orbitals(obs, dfbs, op, &c_new, &epsnew, &orb)?;
         let total_new = ehf + emp2;
         let de = (total_new - total_energy).abs();
 
@@ -726,9 +723,7 @@ pub fn oo_ri_mp2(
                 let (eh, fa, _) =
                     compute_hf_energy(mol, obs, bounds, &bt_c, nocc_total, &h)?;
                 let en = orbital_energies(&bt_c, &fa);
-                let (em, bo) = compute_rimp2_with_orbitals(
-                    obs, dfbs, op, &bt_c, &en, nocc, nocc_total, first_occ,
-                )?;
+                let (em, bo) = compute_rimp2_with_orbitals(obs, dfbs, op, &bt_c, &en, &orb)?;
                 bt_total = eh + em;
                 if bt_total <= total_energy + 1e-12 {
                     bt_ehf = eh;
@@ -823,18 +818,15 @@ pub fn energy_at_kappa(
     bounds: &SchwarzBounds,
     c_init: &Array2<f64>,
     kappa: &Array2<f64>,
-    nocc_total: usize,
-    nocc: usize,
-    first_occ: usize,
+    orb: &OrbitalSpace,
 ) -> Result<f64, FerricError> {
+    let nocc_total = orb.nocc_total;
     let h = oneelectron::hcore(obs);
     let u = cayley_rotation(kappa)?;
     let c_rot = c_init.dot(&u);
     let (e_hf, f_ao, _) = compute_hf_energy(mol, obs, bounds, &c_rot, nocc_total, &h)?;
     let eps = orbital_energies(&c_rot, &f_ao);
-    let (e_mp2, _) = compute_rimp2_with_orbitals(
-        obs, dfbs, op, &c_rot, &eps, nocc, nocc_total, first_occ,
-    )?;
+    let (e_mp2, _) = compute_rimp2_with_orbitals(obs, dfbs, op, &c_rot, &eps, orb)?;
     Ok(e_hf + e_mp2)
 }
 
@@ -934,16 +926,14 @@ mod tests {
         let first_occ = 0;
         let nvir = nbas - nocc_total;
         let naux = dfbs.nbasis();
+        let orb = OrbitalSpace::new(nocc, nvir, nocc_total, first_occ);
 
         // Compute analytic gradient at RHF orbitals
         let c = rhf.mos_r();
         let h = oneelectron::hcore(&obs);
         let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h).unwrap();
         let eps = orbital_energies(c, &f_ao);
-        let (_e_mp2, b_ov) = compute_rimp2_with_orbitals(
-            &obs, &dfbs, op, c, &eps, nocc, nocc_total, first_occ,
-        )
-        .unwrap();
+        let (_e_mp2, b_ov) = compute_rimp2_with_orbitals(&obs, &dfbs, op, c, &eps, &orb).unwrap();
 
         // Build t2 amplitudes
         let (t2, _) = compute_t2_and_integrals(
@@ -972,8 +962,7 @@ mod tests {
                 kappa_plus[(i_mo, a_mo)] = -delta;
 
                 let e_plus = energy_at_kappa(
-                    &mol, &obs, &dfbs, op, &bounds, c, &kappa_plus,
-                    nocc_total, nocc, first_occ,
+                    &mol, &obs, &dfbs, op, &bounds, c, &kappa_plus, &orb,
                 )
                 .unwrap();
 
@@ -983,8 +972,7 @@ mod tests {
                 kappa_minus[(i_mo, a_mo)] = delta;
 
                 let e_minus = energy_at_kappa(
-                    &mol, &obs, &dfbs, op, &bounds, c, &kappa_minus,
-                    nocc_total, nocc, first_occ,
+                    &mol, &obs, &dfbs, op, &bounds, c, &kappa_minus, &orb,
                 )
                 .unwrap();
 
