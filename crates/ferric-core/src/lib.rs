@@ -5,15 +5,18 @@
 //! - [`mol::Molecule`] and [`mol::Atom`] -- molecular geometry (XYZ parser, nuclear repulsion)
 //! - [`basis::BasisSet`] and [`basis::Shell`] -- Gaussian basis sets (BSE-JSON, G94, bundled)
 //! - [`elements`] -- element symbol/atomic-number lookup tables
+//! - [`orbitals::OrbitalSpace`] -- active occupied/virtual partition for post-HF methods
 //! - [`FerricError`] -- unified error type for the workspace
 
 pub mod error;
 pub mod elements;
 pub mod mol;
 pub mod basis;
+pub mod orbitals;
 pub mod parallel;
 
 pub use error::FerricError;
+pub use orbitals::OrbitalSpace;
 
 use std::sync::atomic::AtomicBool;
 pub static INTERRUPT: AtomicBool = AtomicBool::new(false);

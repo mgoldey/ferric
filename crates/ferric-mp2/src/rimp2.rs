@@ -9,6 +9,7 @@
 
 use crate::mo_transform::transform_3center_ov;
 use ferric_core::mol::Molecule;
+use ferric_core::orbitals::OrbitalSpace;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
@@ -165,6 +166,11 @@ pub struct Mp2Intermediates {
 }
 
 impl Mp2Intermediates {
+    /// The active occupied/virtual orbital partition for these intermediates.
+    pub fn orbital_space(&self) -> OrbitalSpace {
+        OrbitalSpace::new(self.nocc, self.nvir, self.nocc_total, self.first_occ)
+    }
+
     /// Compute spin-component scaled P_oo density correction.
     pub fn p_oo_scs(&self, c_os: f64, c_ss: f64) -> Array2<f64> {
         // P_ij = -sum_{kab} t_{ik,ab} (2 t_{jk,ab} - t_{jk,ba})
@@ -206,6 +212,13 @@ pub struct RpaIntermediates {
     pub nocc_total: usize,
     pub first_occ: usize,
     pub naux: usize,
+}
+
+impl RpaIntermediates {
+    /// The active occupied/virtual orbital partition for these intermediates.
+    pub fn orbital_space(&self) -> OrbitalSpace {
+        OrbitalSpace::new(self.nocc, self.nvir, self.nocc_total, self.first_occ)
+    }
 }
 
 /// Per-spin RI-MO intermediates for U-RPA / U-MP2.

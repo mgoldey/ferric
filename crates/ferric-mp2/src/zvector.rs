@@ -6,6 +6,7 @@
 
 use crate::rimp2::Mp2Intermediates;
 use ferric_core::mol::Molecule;
+use ferric_core::orbitals::OrbitalSpace;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
@@ -28,21 +29,15 @@ pub fn solve_zvector(
     rhf: &ScfResult,
     inter: &Mp2Intermediates,
 ) -> Result<(Array2<f64>, Array2<f64>), FerricError> {
-    let nocc = inter.nocc;
-    let nvir = inter.nvir;
-    let nocc_total = inter.nocc_total;
-    let first_occ = inter.first_occ;
+    let orb = inter.orbital_space();
+    let OrbitalSpace { nocc, nvir, nocc_total, first_occ } = orb;
     let eps = rhf.eps_r();
     let c = rhf.mos_r();
     let f_mo = c.t().dot(rhf.fock_r()).dot(c);
 
     let b_full = crate::oo_rimp2::compute_b_full_mo(prep, dfbs, op, c)?;
 
-    let l = build_lagrangian(
-        &f_mo, &inter.t2, &inter.p_oo, &inter.p_vv,
-        nocc, nvir, nocc_total, first_occ,
-        &b_full,
-    );
+    let l = build_lagrangian(&f_mo, &inter.t2, &inter.p_oo, &inter.p_vv, &orb, &b_full);
 
     let mut z = Array2::zeros((nvir, nocc));
     for a in 0..nvir {
@@ -58,7 +53,7 @@ pub fn solve_zvector(
     let max_iter = 50;
 
     for _iter in 0..max_iter {
-        let az = compute_az_product(c, &z, prep, bounds, eps, nocc, nvir, nocc_total, first_occ)?;
+        let az = compute_az_product(c, &z, prep, bounds, &orb)?;
 
         let mut residual = Array2::zeros((nvir, nocc));
         let mut max_resid = 0.0f64;
@@ -100,12 +95,10 @@ fn build_lagrangian(
     t2: &[f64],
     p_oo: &Array2<f64>,
     p_vv: &Array2<f64>,
-    nocc: usize,
-    nvir: usize,
-    nocc_total: usize,
-    first_occ: usize,
+    orb: &OrbitalSpace,
     b_full: &Array3<f64>,
 ) -> Array2<f64> {
+    let OrbitalSpace { nocc, nvir, nocc_total, first_occ } = *orb;
     let nov = nocc * nvir;
     let naux = b_full.shape()[0];
     let mut l = Array2::zeros((nvir, nocc));
@@ -215,12 +208,9 @@ fn compute_az_product(
     z: &Array2<f64>,
     prep: &PreparedBasis,
     bounds: &SchwarzBounds,
-    _eps: &[f64],
-    nocc: usize,
-    nvir: usize,
-    nocc_total: usize,
-    first_occ: usize,
+    orb: &OrbitalSpace,
 ) -> Result<Array2<f64>, FerricError> {
+    let OrbitalSpace { nocc, nvir, nocc_total, first_occ } = *orb;
     let n = c.nrows();
 
     let mut dz = Array2::zeros((n, n));
@@ -266,11 +256,9 @@ pub fn build_relaxed_density_ao(
     p_oo: &Array2<f64>,
     p_vv: &Array2<f64>,
     z: &Array2<f64>,
-    nocc: usize,
-    nvir: usize,
-    nocc_total: usize,
-    first_occ: usize,
+    orb: &OrbitalSpace,
 ) -> Array2<f64> {
+    let OrbitalSpace { nocc, nvir, nocc_total, first_occ } = *orb;
     let nmo = c.ncols();
 
     let mut p_mo = Array2::zeros((nmo, nmo));
@@ -315,11 +303,9 @@ pub fn build_relaxed_w_ao(
     f_mo: &Array2<f64>,
     p_relax_mo: &Array2<f64>,
     l: &Array2<f64>,
-    nocc: usize,
-    nvir: usize,
-    nocc_total: usize,
-    first_occ: usize,
+    orb: &OrbitalSpace,
 ) -> Array2<f64> {
+    let OrbitalSpace { nocc, nvir, nocc_total, first_occ } = *orb;
     let nmo = c.ncols();
 
     let mut w_mo = Array2::zeros((nmo, nmo));
@@ -412,8 +398,7 @@ mod tests {
 
         let (z, _l) = solve_zvector(&mol, &obs, &dfbs, Operator::coulomb(), &bounds, &rhf, &inter).unwrap();
         let p_ao = build_relaxed_density_ao(
-            &rhf.mos_r(), &inter.p_oo, &inter.p_vv, &z,
-            inter.nocc, inter.nvir, inter.nocc_total, inter.first_occ,
+            &rhf.mos_r(), &inter.p_oo, &inter.p_vv, &z, &inter.orbital_space(),
         );
 
         let n = p_ao.nrows();
@@ -467,8 +452,7 @@ mod tests {
         }
 
         let w_ao = build_relaxed_w_ao(
-            &rhf.mos_r(), &f_mo, &p_relax_mo, &l,
-            inter.nocc, inter.nvir, inter.nocc_total, inter.first_occ,
+            &rhf.mos_r(), &f_mo, &p_relax_mo, &l, &inter.orbital_space(),
         );
 
         let n = w_ao.nrows();
