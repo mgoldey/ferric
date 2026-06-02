@@ -8,6 +8,7 @@ use ndarray_linalg::{Eigh, UPLO};
 use rayon::prelude::*;
 use ferric_core::FerricError;
 
+use crate::channel::RpaChannel;
 use crate::sternheimer::build_scale_factors;
 
 /// Compute RI-dRPA eigenvalues of ε̃(iω) = I − χ₀(iω) in the full RI basis.
@@ -76,15 +77,15 @@ pub fn ri_drpa_eigenvalues(
 /// — if the eigensolver path disagrees with this diagnostic, the bug is
 /// in eigensolving, not the spin-summed dielectric formula.
 pub fn u_ri_drpa_energy(
-    b_ov_a: &Array2<f64>, eps_occ_a: &[f64], eps_vir_a: &[f64],
-    b_ov_b: &Array2<f64>, eps_occ_b: &[f64], eps_vir_b: &[f64],
+    chan_a: &RpaChannel,
+    chan_b: &RpaChannel,
     quad_freqs: &[f64],
     quad_weights: &[f64],
 ) -> Result<f64, FerricError> {
     use crate::sternheimer::build_scale_factors_with_prefactor;
     use crate::sternheimer::syrk_aat;
 
-    let naux = b_ov_a.nrows();
+    let naux = chan_a.b_ov.nrows();
 
     let contribs: Result<Vec<f64>, FerricError> = quad_freqs
         .par_iter()
@@ -92,10 +93,7 @@ pub fn u_ri_drpa_energy(
         .map(|(&omega, &wk)| {
             let mut eps_mat = Array2::<f64>::zeros((naux, naux));
             for p in 0..naux { eps_mat[(p, p)] = 1.0; }
-            for (b, eo, ev) in [
-                (b_ov_a, eps_occ_a, eps_vir_a),
-                (b_ov_b, eps_occ_b, eps_vir_b),
-            ] {
+            for RpaChannel { b_ov: b, eps_occ: eo, eps_vir: ev } in [*chan_a, *chan_b] {
                 if eo.is_empty() {
                     continue; // empty spin channel adds nothing
                 }

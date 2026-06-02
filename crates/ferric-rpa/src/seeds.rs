@@ -144,6 +144,11 @@ fn boys_seed_one_spin(
 }
 
 /// Inner seed builder (shared between restricted and per-spin paths).
+// Seed construction inputs: dimensions (naux/nocc/nvir), the RI block + Boys
+// mixing matrix, both orbital-energy vectors, the seed-count target, and the
+// seed mode — distinct knobs shared verbatim by the restricted and per-spin
+// callers, so kept positional rather than bundled.
+#[allow(clippy::too_many_arguments)]
 fn build_seed_inner(
     naux: usize,
     nocc: usize,

@@ -11,6 +11,7 @@
 
 pub mod ao_rpa;
 pub mod boys_localize;
+pub mod channel;
 pub mod config;
 pub mod davidson;
 pub mod diagnostics;
@@ -534,15 +535,12 @@ pub fn run_u_pdep_rpa(
             let max_iter = (max_vecs / block_size).max(8);
             let lap = lap_opt;
             let matvec = move |v: &Array2<f64>| -> Array2<f64> {
+                let chan_a = channel::RpaChannel::new(&b_a, &ea_o, &ea_v);
+                let chan_b = channel::RpaChannel::new(&b_b, &eb_o, &eb_v);
                 match &lap {
-                    None => sternheimer::dielectric_apply_unrestricted(
-                        v, &b_a, &ea_o, &ea_v, &b_b, &eb_o, &eb_v, 0.0,
-                    ),
+                    None => sternheimer::dielectric_apply_unrestricted(v, &chan_a, &chan_b, 0.0),
                     Some((qa, qb)) => laplace_chi0::dielectric_matrix_laplace_unrestricted(
-                        v,
-                        &b_a, &ea_o, &ea_v, qa,
-                        &b_b, &eb_o, &eb_v, qb,
-                        0.0,
+                        v, &chan_a, qa, &chan_b, qb, 0.0,
                     ),
                 }
             };
@@ -559,15 +557,12 @@ pub fn run_u_pdep_rpa(
             davidson::run_davidson_static(
                 naux,
                 move |v_mat: &Array2<f64>, omega: f64| {
+                    let chan_a = channel::RpaChannel::new(&b_a, &ea_o, &ea_v);
+                    let chan_b = channel::RpaChannel::new(&b_b, &eb_o, &eb_v);
                     match &lap {
-                        None => sternheimer::dielectric_apply_unrestricted(
-                            v_mat, &b_a, &ea_o, &ea_v, &b_b, &eb_o, &eb_v, omega,
-                        ),
+                        None => sternheimer::dielectric_apply_unrestricted(v_mat, &chan_a, &chan_b, omega),
                         Some((qa, qb)) => laplace_chi0::dielectric_matrix_laplace_unrestricted(
-                            v_mat,
-                            &b_a, &ea_o, &ea_v, qa,
-                            &b_b, &eb_o, &eb_v, qb,
-                            omega,
+                            v_mat, &chan_a, qa, &chan_b, qb, omega,
                         ),
                     }
                 },
@@ -593,17 +588,16 @@ pub fn run_u_pdep_rpa(
 
     let (quad_freqs, quad_weights) = quadrature::build_quadrature(&config.quadrature);
 
+    let freq_chan_a = channel::RpaChannel::new(&inter_a.b_ov, &eps_occ_a, &eps_vir_a);
+    let freq_chan_b = channel::RpaChannel::new(&inter_b.b_ov, &eps_occ_b, &eps_vir_b);
     let eigenvalues_freq = match laplace_pair.as_ref() {
         None => energy::eval_eigenvalues_at_frequencies_unrestricted(
-            &eigenvectors,
-            &inter_a.b_ov, &eps_occ_a, &eps_vir_a,
-            &inter_b.b_ov, &eps_occ_b, &eps_vir_b,
-            &quad_freqs,
+            &eigenvectors, &freq_chan_a, &freq_chan_b, &quad_freqs,
         ),
         Some((qa, qb)) => energy::eval_eigenvalues_at_frequencies_laplace_unrestricted(
             &eigenvectors,
-            &inter_a.b_ov, &eps_occ_a, &eps_vir_a, qa,
-            &inter_b.b_ov, &eps_occ_b, &eps_vir_b, qb,
+            &freq_chan_a, qa,
+            &freq_chan_b, qb,
             &quad_freqs,
         ),
     };

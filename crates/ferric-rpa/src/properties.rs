@@ -1798,6 +1798,10 @@ pub fn pdep_polarizability_hirshfeld(
 /// correct anisotropy including charge-transfer along bond axes.
 ///
 /// Returns `per_atom[A][k][i][j]` = α^A_{ij}(iω_k), shape `(natoms, nfreq, 3, 3)`.
+// System inputs (molecule, orbital + auxiliary bases, the basis-set object for
+// partitioning, the SCF reference, the operator, config, and the frequency
+// grid) are all distinct; there is no sub-bundle to extract.
+#[allow(clippy::too_many_arguments)]
 pub fn pdep_polarizability_hirshfeld_dynamic(
     mol: &Molecule,
     obs: &PreparedBasis,

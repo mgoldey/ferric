@@ -6,6 +6,7 @@
 //! In the PDEP formalism all response is expressed via MO-basis B^P_ia
 //! tensors — no AO-space Fock rebuild is needed at this level.
 
+use crate::channel::RpaChannel;
 use ndarray::{Array1, Array2, Axis, Zip};
 
 // Direct BLAS DSYRK binding — OpenBLAS is already linked via openblas-src.
@@ -235,18 +236,16 @@ pub fn dielectric_apply(
 /// closed-shell density when run on the spin-symmetric SCF result.
 pub fn dielectric_apply_unrestricted(
     v_mat: &Array2<f64>,
-    b_ov_a: &Array2<f64>, eps_occ_a: &[f64], eps_vir_a: &[f64],
-    b_ov_b: &Array2<f64>, eps_occ_b: &[f64], eps_vir_b: &[f64],
+    chan_a: &RpaChannel,
+    chan_b: &RpaChannel,
     omega: f64,
 ) -> Array2<f64> {
     use ndarray::linalg::general_mat_mul;
 
     let mut out: Array2<f64> = v_mat.to_owned();
 
-    for (b_ov, eps_occ, eps_vir) in [
-        (b_ov_a, eps_occ_a, eps_vir_a),
-        (b_ov_b, eps_occ_b, eps_vir_b),
-    ] {
+    for chan in [chan_a, chan_b] {
+        let RpaChannel { b_ov, eps_occ, eps_vir } = *chan;
         let scale = build_scale_factors_with_prefactor(eps_occ, eps_vir, omega, 2.0);
         let nov = scale.len();
         assert_eq!(b_ov.shape()[1], nov);
@@ -266,17 +265,15 @@ pub fn dielectric_apply_unrestricted(
 /// Unrestricted ε̃ in subspace V: V^T (I + Π_α + Π_β) V.
 pub fn dielectric_matrix_unrestricted(
     v_mat: &Array2<f64>,
-    b_ov_a: &Array2<f64>, eps_occ_a: &[f64], eps_vir_a: &[f64],
-    b_ov_b: &Array2<f64>, eps_occ_b: &[f64], eps_vir_b: &[f64],
+    chan_a: &RpaChannel,
+    chan_b: &RpaChannel,
     omega: f64,
 ) -> Array2<f64> {
     let m = v_mat.ncols();
     let mut eps_mat = Array2::<f64>::zeros((m, m));
     for alpha in 0..m { eps_mat[(alpha, alpha)] = 1.0; }
-    for (b_ov, eps_occ, eps_vir) in [
-        (b_ov_a, eps_occ_a, eps_vir_a),
-        (b_ov_b, eps_occ_b, eps_vir_b),
-    ] {
+    for chan in [chan_a, chan_b] {
+        let RpaChannel { b_ov, eps_occ, eps_vir } = *chan;
         let scale = build_scale_factors_with_prefactor(eps_occ, eps_vir, omega, 2.0);
         let mut rhs_scaled = v_mat.t().dot(b_ov);
         let scale_row = scale.view().insert_axis(Axis(0));

@@ -2,6 +2,7 @@
 //!
 //! E_c^RPA = (1/2π) Σ_k w_k Σ_α [ln(λ_α(iω_k)) + (1 − λ_α(iω_k))].
 
+use crate::channel::RpaChannel;
 use ndarray::Array2;
 
 /// E_c^RPA = (1/2π) Σ_k w_k Σ_α [ln(λ_α(iω_k)) + (1 − λ_α(iω_k))].
@@ -93,8 +94,8 @@ pub fn eval_eigenvalues_at_frequencies_laplace(
 /// `rpa_correlation_energy` consumes it unchanged.
 pub fn eval_eigenvalues_at_frequencies_unrestricted(
     eigenvectors: &Array2<f64>,
-    b_ov_a: &Array2<f64>, eps_occ_a: &[f64], eps_vir_a: &[f64],
-    b_ov_b: &Array2<f64>, eps_occ_b: &[f64], eps_vir_b: &[f64],
+    chan_a: &RpaChannel,
+    chan_b: &RpaChannel,
     quad_freqs: &[f64],
 ) -> Array2<f64> {
     use crate::sternheimer::dielectric_matrix_unrestricted;
@@ -108,10 +109,7 @@ pub fn eval_eigenvalues_at_frequencies_unrestricted(
         .par_iter()
         .map(|&omega| {
             let eps_proj = dielectric_matrix_unrestricted(
-                eigenvectors,
-                b_ov_a, eps_occ_a, eps_vir_a,
-                b_ov_b, eps_occ_b, eps_vir_b,
-                omega,
+                eigenvectors, chan_a, chan_b, omega,
             );
             let (evals, _) = eps_proj.eigh(UPLO::Upper).expect("unrestricted dielectric eigh failed");
             evals.to_vec()
@@ -133,9 +131,9 @@ pub fn eval_eigenvalues_at_frequencies_unrestricted(
 /// kernel per spin, diagonalizes, returns eigenvalue tensor.
 pub fn eval_eigenvalues_at_frequencies_laplace_unrestricted(
     eigenvectors: &Array2<f64>,
-    b_ov_a: &Array2<f64>, eps_occ_a: &[f64], eps_vir_a: &[f64],
+    chan_a: &RpaChannel,
     laplace_a: &ferric_quadrature::LaplaceQuadrature,
-    b_ov_b: &Array2<f64>, eps_occ_b: &[f64], eps_vir_b: &[f64],
+    chan_b: &RpaChannel,
     laplace_b: &ferric_quadrature::LaplaceQuadrature,
     quad_freqs: &[f64],
 ) -> Array2<f64> {
@@ -151,8 +149,8 @@ pub fn eval_eigenvalues_at_frequencies_laplace_unrestricted(
         .map(|&omega| {
             let eps_proj = dielectric_matrix_laplace_unrestricted(
                 eigenvectors,
-                b_ov_a, eps_occ_a, eps_vir_a, laplace_a,
-                b_ov_b, eps_occ_b, eps_vir_b, laplace_b,
+                chan_a, laplace_a,
+                chan_b, laplace_b,
                 omega,
             );
             let (evals, _) = eps_proj.eigh(UPLO::Upper).expect("U-Laplace dielectric eigh failed");

@@ -244,11 +244,9 @@ fn u_ri_drpa_diagnostic_h_atom_matches_pyscf() {
         scheme: QuadratureScheme::GaussLegendre, n_points: 20, u0: 0.5,
     });
 
-    let e_c = u_ri_drpa_energy(
-        &ia.b_ov, &eps_occ_a, &eps_vir_a,
-        &ib.b_ov, &eps_occ_b, &eps_vir_b,
-        &freqs, &weights,
-    ).unwrap();
+    let chan_a = ferric_rpa::channel::RpaChannel::new(&ia.b_ov, &eps_occ_a, &eps_vir_a);
+    let chan_b = ferric_rpa::channel::RpaChannel::new(&ib.b_ov, &eps_occ_b, &eps_vir_b);
+    let e_c = u_ri_drpa_energy(&chan_a, &chan_b, &freqs, &weights).unwrap();
 
     assert!((e_c - (-0.0096018190)).abs() < 1e-5,
         "U-RI-dRPA diag E_c = {}, pyscf -0.00960", e_c);
@@ -379,17 +377,14 @@ fn u_laplace_dielectric_matches_u_dense_at_omega_zero_oh() {
     let naux = ia.naux;
     let v = Array2::<f64>::eye(naux);
 
-    let dense = dielectric_matrix_unrestricted(
-        &v, &ia.b_ov, &eo_a, &ev_a, &ib.b_ov, &eo_b, &ev_b, 0.0,
-    );
+    let chan_a = ferric_rpa::channel::RpaChannel::new(&ia.b_ov, &eo_a, &ev_a);
+    let chan_b = ferric_rpa::channel::RpaChannel::new(&ib.b_ov, &eo_b, &ev_b);
+    let dense = dielectric_matrix_unrestricted(&v, &chan_a, &chan_b, 0.0);
 
     let qa = build_laplace_for_gaps(&eo_a, &ev_a, 20);
     let qb = build_laplace_for_gaps(&eo_b, &ev_b, 20);
     let lap = dielectric_matrix_laplace_unrestricted(
-        &v,
-        &ia.b_ov, &eo_a, &ev_a, &qa,
-        &ib.b_ov, &eo_b, &ev_b, &qb,
-        0.0,
+        &v, &chan_a, &qa, &chan_b, &qb, 0.0,
     );
 
     let max_err = dense.iter().zip(lap.iter()).map(|(a,b)| (a-b).abs()).fold(0.0f64, f64::max);

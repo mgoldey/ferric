@@ -27,6 +27,7 @@
 //! `Q̃_μν(t) = Σ_a e^{-t ε_a} C_μa C_νa`. The AO route is left as a TODO; this
 //! file delivers the MO-basis correctness gate for C6.
 
+use crate::channel::RpaChannel;
 use ferric_quadrature::LaplaceQuadrature;
 use ndarray::linalg::general_mat_mul;
 use ndarray::{Array1, Array2, Axis, Zip};
@@ -90,6 +91,10 @@ pub fn build_laplace_for_gaps(
 ///    - Accumulate `coeff_l · X^l · X^l^T` into `out` with
 ///      `coeff_l = 4 · w_l · cos(ω · t_l)`.
 /// 3. Add `δ_αβ` on the diagonal.
+// Closed-shell into-buffer kernel: the channel triple plus a frequency, the
+// Laplace grid, and two caller-owned scratch/output buffers for allocation
+// reuse — all distinct, nothing further to bundle.
+#[allow(clippy::too_many_arguments)]
 pub fn dielectric_matrix_laplace_into(
     v_mat: &Array2<f64>,
     b_ov: &Array2<f64>,
@@ -180,10 +185,15 @@ pub fn dielectric_matrix_laplace_into(
 /// align — for genuine open-shell cases (different α/β gap ranges) the
 /// caller passes one quadrature per spin built via
 /// [`build_laplace_for_gaps`] on the appropriate eps_occ_σ/eps_vir_σ.
+// Unrestricted into-buffer kernel: two spin channels each with their own
+// Laplace grid, a frequency, and three caller-owned buffers (per-spin scratch
+// + shared output) for allocation reuse. Already bundled to RpaChannel; the
+// remainder are independent.
+#[allow(clippy::too_many_arguments)]
 pub fn dielectric_matrix_laplace_unrestricted_into(
     v_mat: &Array2<f64>,
-    b_ov_a: &Array2<f64>, eps_occ_a: &[f64], eps_vir_a: &[f64], laplace_a: &LaplaceQuadrature,
-    b_ov_b: &Array2<f64>, eps_occ_b: &[f64], eps_vir_b: &[f64], laplace_b: &LaplaceQuadrature,
+    chan_a: &RpaChannel, laplace_a: &LaplaceQuadrature,
+    chan_b: &RpaChannel, laplace_b: &LaplaceQuadrature,
     omega: f64,
     rhs_scaled_a: &mut Array2<f64>,
     rhs_scaled_b: &mut Array2<f64>,
@@ -199,24 +209,15 @@ pub fn dielectric_matrix_laplace_unrestricted_into(
         .cloned().fold(0.0_f64, f64::max);
     if omega * t_max > std::f64::consts::FRAC_PI_2 {
         use crate::sternheimer::dielectric_matrix_unrestricted;
-        let dense = dielectric_matrix_unrestricted(
-            v_mat,
-            b_ov_a, eps_occ_a, eps_vir_a,
-            b_ov_b, eps_occ_b, eps_vir_b,
-            omega,
-        );
+        let dense = dielectric_matrix_unrestricted(v_mat, chan_a, chan_b, omega);
         out.assign(&dense);
         return;
     }
 
     out.fill(0.0);
 
-    accumulate_one_spin(
-        v_mat, b_ov_a, eps_occ_a, eps_vir_a, laplace_a, omega, rhs_scaled_a, out,
-    );
-    accumulate_one_spin(
-        v_mat, b_ov_b, eps_occ_b, eps_vir_b, laplace_b, omega, rhs_scaled_b, out,
-    );
+    accumulate_one_spin(v_mat, chan_a, laplace_a, omega, rhs_scaled_a, out);
+    accumulate_one_spin(v_mat, chan_b, laplace_b, omega, rhs_scaled_b, out);
 
     for alpha in 0..m {
         out[(alpha, alpha)] += 1.0;
@@ -226,14 +227,13 @@ pub fn dielectric_matrix_laplace_unrestricted_into(
 /// Per-spin Π_σ contribution, accumulated into `out`. Prefactor 2 (open-shell).
 fn accumulate_one_spin(
     v_mat: &Array2<f64>,
-    b_ov: &Array2<f64>,
-    eps_occ: &[f64],
-    eps_vir: &[f64],
+    chan: &RpaChannel,
     laplace: &LaplaceQuadrature,
     omega: f64,
     rhs_scaled: &mut Array2<f64>,
     out: &mut Array2<f64>,
 ) {
+    let RpaChannel { b_ov, eps_occ, eps_vir } = *chan;
     let m = v_mat.ncols();
     let nov = eps_occ.len() * eps_vir.len();
     if nov == 0 {
@@ -264,20 +264,20 @@ fn accumulate_one_spin(
 /// Allocating convenience wrapper around [`dielectric_matrix_laplace_unrestricted_into`].
 pub fn dielectric_matrix_laplace_unrestricted(
     v_mat: &Array2<f64>,
-    b_ov_a: &Array2<f64>, eps_occ_a: &[f64], eps_vir_a: &[f64], laplace_a: &LaplaceQuadrature,
-    b_ov_b: &Array2<f64>, eps_occ_b: &[f64], eps_vir_b: &[f64], laplace_b: &LaplaceQuadrature,
+    chan_a: &RpaChannel, laplace_a: &LaplaceQuadrature,
+    chan_b: &RpaChannel, laplace_b: &LaplaceQuadrature,
     omega: f64,
 ) -> Array2<f64> {
     let m = v_mat.ncols();
-    let nov_a = eps_occ_a.len() * eps_vir_a.len();
-    let nov_b = eps_occ_b.len() * eps_vir_b.len();
+    let nov_a = chan_a.eps_occ.len() * chan_a.eps_vir.len();
+    let nov_b = chan_b.eps_occ.len() * chan_b.eps_vir.len();
     let mut rhs_a = Array2::<f64>::zeros((m, nov_a.max(1)));
     let mut rhs_b = Array2::<f64>::zeros((m, nov_b.max(1)));
     let mut out = Array2::<f64>::zeros((m, m));
     dielectric_matrix_laplace_unrestricted_into(
         v_mat,
-        b_ov_a, eps_occ_a, eps_vir_a, laplace_a,
-        b_ov_b, eps_occ_b, eps_vir_b, laplace_b,
+        chan_a, laplace_a,
+        chan_b, laplace_b,
         omega, &mut rhs_a, &mut rhs_b, &mut out,
     );
     out

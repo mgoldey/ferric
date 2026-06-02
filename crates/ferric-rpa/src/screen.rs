@@ -107,6 +107,10 @@ fn cholesky_inverse_sqrt(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
 /// At `thresh = 0` no aux shells are dropped; the result is algebraically
 /// equivalent to the dense `b_ov` build (up to Boys rotation, which is unitary
 /// within the occ block).
+// System/basis inputs plus the localized occupied set, its Boys centroids, the
+// occ-window indices, and the screening threshold — independent quantities with
+// no natural grouping.
+#[allow(clippy::too_many_arguments)]
 pub fn build_screened_bov(
     _mol: &Molecule,
     obs: &PreparedBasis,
