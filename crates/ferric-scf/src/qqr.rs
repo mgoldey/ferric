@@ -141,12 +141,10 @@ impl Bound for QqrBounds {
         let mut decay = (extent_product / r).min(1.0);
 
         // Operator-specific decay: ErfcCoulomb provides exponential decay at long range.
-        match self.op.kind {
-            OperatorKind::ErfcCoulomb => {
-                let omega = self.op.omega;
-                decay *= (-omega * omega * r * r).exp();
-            }
-            _ => {} // Coulomb, ErfCoulomb: no additional decay
+        // Coulomb / ErfCoulomb add no extra decay.
+        if self.op.kind == OperatorKind::ErfcCoulomb {
+            let omega = self.op.omega;
+            decay *= (-omega * omega * r * r).exp();
         }
 
         schwarz_est * decay

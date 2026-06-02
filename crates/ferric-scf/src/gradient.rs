@@ -42,7 +42,7 @@ pub fn rhf_gradient(
 ) -> Result<Array2<f64>, FerricError> {
     let nocc = (mol.nelec() / 2) as usize;
     let w = build_energy_weighted_density(result, nocc);
-    hf_gradient_with_density(mol, prep, op, bounds, &result.density_r(), &w)
+    hf_gradient_with_density(mol, prep, op, bounds, result.density_r(), &w)
 }
 
 /// Compute nuclear gradient using provided density and energy-weighted density.

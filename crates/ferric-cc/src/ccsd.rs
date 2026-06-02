@@ -129,7 +129,7 @@ pub fn ccsd(
             for a in 0..nvir {
                 let d_ia = eps[cfg.frozen_core + i] - eps[nocc_total + a];
                 let delta: f64 = r1[(i, a)] / d_ia;
-                t1[(i, a)] = t1[(i, a)] + delta;
+                t1[(i, a)] += delta;
                 max_d_t = max_d_t.max(delta.abs());
             }
         }
@@ -140,7 +140,7 @@ pub fn ccsd(
                         let d_ijab = eps[cfg.frozen_core + i] + eps[cfg.frozen_core + j] 
                                    - eps[nocc_total + a] - eps[nocc_total + b];
                         let delta = r2[(i, a, j, b)] / d_ijab;
-                        t2[(i, a, j, b)] = t2[(i, a, j, b)] + delta;
+                        t2[(i, a, j, b)] += delta;
                         max_d_t = max_d_t.max(delta.abs());
                     }
                 }

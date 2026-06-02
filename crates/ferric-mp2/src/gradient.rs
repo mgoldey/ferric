@@ -99,7 +99,7 @@ pub fn rimp2_gradient_analytical(
     let (z, l) = solve_zvector(mol, obs, dfbs, op, bounds, rhf, &inter)?;
 
     let p_relax_ao = build_relaxed_density_ao(
-        &rhf.mos_r(), &inter.p_oo, &inter.p_vv, &z,
+        rhf.mos_r(), &inter.p_oo, &inter.p_vv, &z,
         inter.nocc, inter.nvir, inter.nocc_total, inter.first_occ,
     );
 
@@ -132,7 +132,7 @@ pub fn rimp2_gradient_analytical(
     }
 
     let w_relax_ao = build_relaxed_w_ao(
-        &rhf.mos_r(), &f_mo, &p_relax_mo, &l,
+        rhf.mos_r(), &f_mo, &p_relax_mo, &l,
         inter.nocc, inter.nvir, nocc_total, inter.first_occ,
     );
 
@@ -740,7 +740,7 @@ mod tests {
                     }
                 }
                 crate::zvector::build_relaxed_w_ao(
-                    &rhf.mos_r(), &f_mo, &p_relax_mo, &l,
+                    rhf.mos_r(), &f_mo, &p_relax_mo, &l,
                     inter.nocc, inter.nvir, nocc_total, inter.first_occ,
                 )
             },
@@ -771,7 +771,7 @@ mod tests {
         let inter = crate::rimp2::compute_mp2_intermediates(&mol, &obs, &dfbs, op, &rhf, &config).unwrap();
         let (z, l) = crate::zvector::solve_zvector(&mol, &obs, &dfbs, op, &bounds, &rhf, &inter).unwrap();
         let p_relax_ao = crate::zvector::build_relaxed_density_ao(
-            &rhf.mos_r(), &inter.p_oo, &inter.p_vv, &z,
+            rhf.mos_r(), &inter.p_oo, &inter.p_vv, &z,
             inter.nocc, inter.nvir, inter.nocc_total, inter.first_occ,
         );
         let nocc_total = inter.nocc_total;
@@ -802,7 +802,7 @@ mod tests {
             }
         }
         let w_relax_ao = crate::zvector::build_relaxed_w_ao(
-            &rhf.mos_r(), &f_mo, &p_relax_mo, &l,
+            rhf.mos_r(), &f_mo, &p_relax_mo, &l,
             inter.nocc, inter.nvir, nocc_total, inter.first_occ,
         );
         let hf_with_relax = hf_gradient_with_density(&mol, &obs, op, &bounds, &p_relax_ao, &w_relax_ao).unwrap();
@@ -1005,7 +1005,7 @@ pub fn scs_mp2_gradient_analytical(
     let inter = compute_mp2_intermediates(mol, obs, dfbs, op, rhf, &mp2_config)?;
     let (z, l) = solve_zvector(mol, obs, dfbs, op, bounds, rhf, &inter)?;
     let p_relax_ao = build_relaxed_density_ao(
-        &rhf.mos_r(), &inter.p_oo, &inter.p_vv, &z,
+        rhf.mos_r(), &inter.p_oo, &inter.p_vv, &z,
         inter.nocc, inter.nvir, inter.nocc_total, inter.first_occ,
     );
     let nmo = rhf.mos_r().ncols();
@@ -1036,7 +1036,7 @@ pub fn scs_mp2_gradient_analytical(
         }
     }
     let w_relax_ao = build_relaxed_w_ao(
-        &rhf.mos_r(), &f_mo, &p_relax_mo, &l,
+        rhf.mos_r(), &f_mo, &p_relax_mo, &l,
         inter.nocc, inter.nvir, nocc_total, inter.first_occ,
     );
     let mut grad = hf_gradient_with_density(mol, obs, op, bounds, &p_relax_ao, &w_relax_ao)?;

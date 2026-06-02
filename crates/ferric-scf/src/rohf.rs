@@ -209,8 +209,8 @@ pub fn solve_rohf(
         let mut f_a: Array2<f64> = &h + &j_buf;
         let mut f_b: Array2<f64> = &h + &j_buf;
         if need_k {
-            f_a = f_a - &k_a_total;
-            f_b = f_b - &k_b_total;
+            f_a -= &k_a_total;
+            f_b -= &k_b_total;
         }
 
         // Pre-XC electronic energy.
@@ -475,7 +475,7 @@ pub fn solve_rohf(
                     let c_virt = c.slice(ndarray::s![.., nocc_a..]);
                     let p_virt: Array2<f64> = c_virt.dot(&c_virt.t());
                     let shift_term: Array2<f64> = shift_eff * s.dot(&p_virt).dot(&s);
-                    f_new = f_new + &shift_term;
+                    f_new += &shift_term;
                 }
             }
             let (_, c_new) = diagonalize(&f_new, &s_inv_sqrt)?;

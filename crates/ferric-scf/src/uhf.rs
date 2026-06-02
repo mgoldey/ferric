@@ -262,8 +262,8 @@ pub fn solve_uhf_fockmod(
         let mut f_a: Array2<f64> = &h + &j_buf;
         let mut f_b: Array2<f64> = &h + &j_buf;
         if need_k {
-            f_a = f_a - &k_a_total;
-            f_b = f_b - &k_b_total;
+            f_a -= &k_a_total;
+            f_b -= &k_b_total;
         }
 
         // Electronic energy BEFORE adding V_xc (V_xc is one-body in F_σ but
@@ -356,8 +356,8 @@ pub fn solve_uhf_fockmod(
                 let c_bv = c_b.slice(ndarray::s![.., nocc_b..]);
                 let p_av: Array2<f64> = c_av.dot(&c_av.t());
                 let p_bv: Array2<f64> = c_bv.dot(&c_bv.t());
-                f_a_new = f_a_new + &(shift_eff * s.dot(&p_av).dot(&s));
-                f_b_new = f_b_new + &(shift_eff * s.dot(&p_bv).dot(&s));
+                f_a_new += &(shift_eff * s.dot(&p_av).dot(&s));
+                f_b_new += &(shift_eff * s.dot(&p_bv).dot(&s));
             }
         }
         let (_, c_a_new) = diagonalize(&f_a_new, &s_inv_sqrt)?;

@@ -70,7 +70,7 @@ pub fn nbasis(mol: &Molecule, bs: &BasisSet) -> Result<usize, GtoEvalError> {
 /// even with the wrong absolute scale).
 #[inline]
 fn radial(shell: &LocatedShell, r2: f64) -> f64 {
-    let l = shell.l as i32;
+    let l = shell.l;
     let pi = std::f64::consts::PI;
     // (2l-1)!! for l = 0..3
     let dbl_fact: f64 = match l {
@@ -220,7 +220,7 @@ pub fn eval_basis_on_points(
 /// Then ∂(rad)/∂x = 2x · d_rad/d(r²).
 #[inline]
 fn radial_and_d(shell: &LocatedShell, r2: f64) -> (f64, f64) {
-    let l = shell.l as i32;
+    let l = shell.l;
     let pi = std::f64::consts::PI;
     // (2l-1)!! for l = 0..3
     let dbl_fact: f64 = match l {
@@ -243,7 +243,7 @@ fn radial_and_d(shell: &LocatedShell, r2: f64) -> (f64, f64) {
 /// Like `radial_and_d` but also returns d²rad/d(r²)² = Σ c·N·α²·exp(-α r²).
 #[inline]
 fn radial_and_d_d2(shell: &LocatedShell, r2: f64) -> (f64, f64, f64) {
-    let l = shell.l as i32;
+    let l = shell.l;
     let pi = std::f64::consts::PI;
     let dbl_fact: f64 = match l {
         0 | 1 => 1.0,

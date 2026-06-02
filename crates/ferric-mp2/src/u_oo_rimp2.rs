@@ -234,7 +234,7 @@ pub fn u_oo_ri_mp2(
     }
     let ctx = ParallelContext::default();
     let nbas = obs.nbasis();
-    let nelec_total = mol.nelec() as i32;
+    let nelec_total = mol.nelec();
     let two_s = mol.multiplicity as i32 - 1;
     let nocc_total_a = ((nelec_total + two_s) / 2) as usize;
     let nocc_total_b = ((nelec_total - two_s) / 2) as usize;

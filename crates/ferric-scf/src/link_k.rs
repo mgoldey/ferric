@@ -69,7 +69,7 @@ impl<'a, B: Bound + Sync> KBuilder for LinkK<'a, B> {
 
         // Ensure density pairs are built.
         if self.dp.is_none() {
-            self.dp = Some(DensityPairs::build(d, self.bound, &self.prep, self.thresh));
+            self.dp = Some(DensityPairs::build(d, self.bound, self.prep, self.thresh));
         }
         let dp = self.dp.as_ref().unwrap();
 
@@ -100,9 +100,9 @@ impl<'a, B: Bound + Sync> KBuilder for LinkK<'a, B> {
             .fold(
                 || {
                     let k_local = Array2::zeros(k.raw_dim());
-                    let engine = Engine::new_2e(op, &self.prep, 1e-14).unwrap();
+                    let engine = Engine::new_2e(op, self.prep, 1e-14).unwrap();
                     // Bitvec dedup for (cs3, cs4) — size nsh² bits; ish and jsh are fixed per task.
-                    let seen: Vec<u64> = vec![0u64; (nsh * nsh + 63) / 64];
+                    let seen: Vec<u64> = vec![0u64; (nsh * nsh).div_ceil(64)];
                     Ok((k_local, engine, seen, Vec::<usize>::new(), 0usize))
                 },
                 |acc: Result<_, FerricError>, (ish, jsh)| {
@@ -147,7 +147,7 @@ impl<'a, B: Bound + Sync> KBuilder for LinkK<'a, B> {
                                 continue;
                             }
 
-                            if let Some(q) = engine.compute_quartet(&self.prep, cs1, cs2, cs3, cs4) {
+                            if let Some(q) = engine.compute_quartet(self.prep, cs1, cs2, cs3, cs4) {
                                 count += 1;
                                 let (n1, n2, n3, n4) = (dims[cs1], dims[cs2], dims[cs3], dims[cs4]);
                                 let (o1, o2, o3, o4) = (offs[cs1], offs[cs2], offs[cs3], offs[cs4]);

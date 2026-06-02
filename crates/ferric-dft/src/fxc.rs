@@ -35,10 +35,9 @@ impl LdaFxcKernel {
         cfg: &AtomicGridConfig,
     ) -> Result<Self, String> {
         if xc.funcs.iter().any(|f| f.family() != FunctionalFamily::Lda) {
-            return Err(format!(
-                "LdaFxcKernel: all sub-functionals must be LDA-family for the f_xc \
+            return Err("LdaFxcKernel: all sub-functionals must be LDA-family for the f_xc \
                  response. GGA response not implemented yet."
-            ));
+                .to_string());
         }
         let grid = build_atomic_grid(mol, cfg);
         let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();

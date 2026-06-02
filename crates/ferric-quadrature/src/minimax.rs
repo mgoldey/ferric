@@ -67,12 +67,12 @@ pub fn select_minimax_points(k: usize, r: f64) -> (Vec<f64>, Vec<f64>) {
         _ => MINIMAX_K7,
     };
 
-    for &(r_tab, ref t, ref w) in table.iter() {
-        if r_tab >= r * 0.99 {
+    for (r_tab, t, w) in table.iter() {
+        if *r_tab >= r * 0.99 {
             return (t.to_vec(), w.to_vec());
         }
     }
-    let (_, ref t, ref w) = table[table.len() - 1];
+    let (_, t, w) = &table[table.len() - 1];
     (t.to_vec(), w.to_vec())
 }
 

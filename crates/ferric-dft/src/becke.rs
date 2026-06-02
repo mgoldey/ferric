@@ -94,9 +94,7 @@ pub fn becke_weight(mol: &Molecule, a_idx: usize, r: [f64; 3]) -> f64 {
             //   ν = μ + a (1 - μ²)
             let chi = r_a_bs / r_b_bs;
             let u = (chi - 1.0) / (chi + 1.0);
-            let mut a_corr = u / (u * u - 1.0);
-            if a_corr > 0.5 { a_corr = 0.5; }
-            if a_corr < -0.5 { a_corr = -0.5; }
+            let a_corr = (u / (u * u - 1.0)).clamp(-0.5, 0.5);
             let nu = mu + a_corr * (1.0 - mu * mu);
             // Apply Becke smoothing 3 times.
             let smoothed = becke_smoothing(nu, 3);
@@ -143,9 +141,7 @@ pub fn becke_weights_all(mol: &Molecule, r: [f64; 3]) -> Vec<f64> {
             let mu = (r_dists[a] - r_dists[b]) / r_ab;
             let chi = r_a_bs / r_b_bs;
             let u = (chi - 1.0) / (chi + 1.0);
-            let mut a_corr = u / (u * u - 1.0);
-            if a_corr > 0.5 { a_corr = 0.5; }
-            if a_corr < -0.5 { a_corr = -0.5; }
+            let a_corr = (u / (u * u - 1.0)).clamp(-0.5, 0.5);
             let nu = mu + a_corr * (1.0 - mu * mu);
             let smoothed = becke_smoothing(nu, 3);
             let s_ab = 0.5 * (1.0 - smoothed);
@@ -239,13 +235,7 @@ pub fn becke_weights_and_grad(
 
             let chi = r_a_bs / r_b_bs;
             let u = (chi - 1.0) / (chi + 1.0);
-            let mut a_corr = u / (u * u - 1.0);
-            if a_corr > 0.5 {
-                a_corr = 0.5;
-            }
-            if a_corr < -0.5 {
-                a_corr = -0.5;
-            }
+            let a_corr = (u / (u * u - 1.0)).clamp(-0.5, 0.5);
             let nu = mu + a_corr * (1.0 - mu * mu);
             let dnu_dmu = 1.0 - 2.0 * a_corr * mu;
 

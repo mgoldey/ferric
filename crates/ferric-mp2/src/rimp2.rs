@@ -18,15 +18,9 @@ use ndarray::Array2;
 use ndarray_linalg::{Cholesky, UPLO};
 
 /// Configuration for RI-MP2.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RiMp2Config {
     pub frozen_core: usize,
-}
-
-impl Default for RiMp2Config {
-    fn default() -> Self {
-        Self { frozen_core: 0 }
-    }
 }
 
 /// Results from an RI-MP2 calculation.
@@ -391,7 +385,7 @@ pub fn compute_mp2_intermediates(
     }
 
     let (t2, _) = crate::oo_rimp2::compute_t2_and_integrals(
-        &b_ov, &rhf.eps_r(), nocc, nvir, nocc_total, first_occ, naux,
+        &b_ov, rhf.eps_r(), nocc, nvir, nocc_total, first_occ, naux,
     );
     let (p_oo, p_vv) = crate::oo_rimp2::build_mp2_density(&t2, nocc, nvir);
 

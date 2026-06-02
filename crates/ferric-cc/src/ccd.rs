@@ -132,7 +132,7 @@ pub fn ccd(
                         let d_ijab = eps[cfg.frozen_core + i] + eps[cfg.frozen_core + j] 
                                    - eps[nocc_total + a] - eps[nocc_total + b];
                         let delta = r2[(i, a, j, b)] / d_ijab;
-                        t2[(i, a, j, b)] = t2[(i, a, j, b)] + delta;
+                        t2[(i, a, j, b)] += delta;
                     }
                 }
             }
