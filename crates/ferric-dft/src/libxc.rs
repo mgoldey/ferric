@@ -103,6 +103,8 @@ pub enum LibxcError {
     BadName(String),
     #[error("xc_func_alloc returned null")]
     AllocFailed,
+    #[error("unsupported functional: {0}")]
+    Unsupported(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -451,75 +453,165 @@ pub struct XcDef {
     pub b3lyp_mix: Option<f64>,
 }
 
+/// Map a friendly functional name to its libxc component identifier(s).
+///
+/// Returns the canonical libxc names ferric should instantiate. Composite
+/// functionals (pure LDA/GGA) map to an exchange + correlation pair; combined
+/// `*_XC_*` functionals (hybrids, RSH) map to a single identifier. Returns
+/// `None` if the name isn't a recognized friendly alias, in which case the
+/// caller passes the name to libxc verbatim (for power users who already know
+/// the canonical identifier).
+///
+/// Matching is case-insensitive and ignores common separators (`-`, `_`).
+fn friendly_to_libxc(name: &str) -> Option<&'static [&'static str]> {
+    // Normalize: uppercase, strip '-' and '_' so "PBE0", "pbe0", "wB97X-V",
+    // "WB97X_V" all collapse to a canonical key.
+    let key: String = name
+        .to_uppercase()
+        .chars()
+        .filter(|c| *c != '-' && *c != '_')
+        .collect();
+    let pair: &'static [&'static str] = match key.as_str() {
+        // --- LDA ---
+        "LDA" | "SVWN" => &["LDA_X", "LDA_C_VWN"],
+        // --- pure GGA (exchange + correlation pair) ---
+        "PBE" => &["GGA_X_PBE", "GGA_C_PBE"],
+        "PBESOL" => &["GGA_X_PBE_SOL", "GGA_C_PBE_SOL"],
+        "BLYP" => &["GGA_X_B88", "GGA_C_LYP"],
+        "BP86" => &["GGA_X_B88", "GGA_C_P86"],
+        // --- hybrid / RSH (single combined identifier) ---
+        // PBE0 is libxc's HYB_GGA_XC_PBEH ("PBE hybrid") — HYB_GGA_XC_PBE0
+        // does not exist in libxc.
+        "PBE0" | "PBEH" => &["HYB_GGA_XC_PBEH"],
+        "B3LYP" => &["HYB_GGA_XC_B3LYP"],
+        "WB97XV" => &["HYB_GGA_XC_WB97X_V"],
+        _ => return None,
+    };
+    Some(pair)
+}
+
 /// Resolve a human-friendly functional name to an `XcDef`. nspin=1 for
 /// closed-shell, nspin=2 for spin-polarized (UKS / ROKS).
 ///
-/// Supported short names: `"LDA"`, `"PBE"`, `"B3LYP"`, `"wB97X-V"`.
-/// Anything else is passed directly to libxc as a raw functional name.
+/// Recognized friendly names: `LDA`/`SVWN`, `PBE`, `PBEsol`, `BLYP`, `BP86`,
+/// `PBE0`, `B3LYP`, `wB97X-V` (case/separator-insensitive). Any other name is
+/// passed to libxc verbatim, so canonical identifiers (e.g. `HYB_GGA_XC_PBEH`)
+/// also work. Meta-GGA functionals are rejected — ferric has no mGGA kernel.
 pub fn xc_def_from_name(name: &str) -> Result<XcDef, LibxcError> {
     xc_def_from_name_nspin(name, 1)
 }
 
 /// nspin-aware variant. Use 1 for closed-shell and 2 for UKS / ROKS.
 pub fn xc_def_from_name_nspin(name: &str, nspin: u32) -> Result<XcDef, LibxcError> {
-    match name {
-        "LDA" => {
-            let mut x = XcFunctional::new("LDA_X", nspin)?;
-            x.set_family(FunctionalFamily::Lda);
-            let mut c = XcFunctional::new("LDA_C_VWN", nspin)?;
-            c.set_family(FunctionalFamily::Lda);
-            Ok(XcDef { funcs: vec![x, c], cam: None, vv10: None, b3lyp_mix: None })
-        }
-        "PBE" => {
-            let mut x = XcFunctional::new("GGA_X_PBE", nspin)?;
-            x.set_family(FunctionalFamily::Gga);
-            let mut c = XcFunctional::new("GGA_C_PBE", nspin)?;
-            c.set_family(FunctionalFamily::Gga);
-            Ok(XcDef { funcs: vec![x, c], cam: None, vv10: None, b3lyp_mix: None })
-        }
-        "B3LYP" => {
-            let mut f = XcFunctional::new("HYB_GGA_XC_B3LYP", nspin)?;
-            f.set_family(FunctionalFamily::HybridGga);
-            let mix = f.exact_exchange_mix();
-            Ok(XcDef {
-                funcs: vec![f],
-                cam: None,
-                vv10: None,
-                b3lyp_mix: if mix != 0.0 { Some(mix) } else { None },
-            })
-        }
-        "wB97X-V" | "WB97X-V" | "wb97x-v" => {
-            let mut f = XcFunctional::new("HYB_GGA_XC_WB97X_V", nspin)?;
-            f.set_family(FunctionalFamily::RangeSepGga);
-            let cam = f.cam_coefficients();
-            let vv10 = f.vv10_coeffs();
-            Ok(XcDef { funcs: vec![f], cam, vv10, b3lyp_mix: None })
-        }
-        other => {
-            let mut f = XcFunctional::new(other, nspin)?;
+    // ferric can only evaluate LDA / GGA / hybrid-GGA / RSH-GGA kernels.
+    // Reject meta-GGA functionals up front with a clear message rather than
+    // mis-evaluating them as GGAs (they need the kinetic-energy density τ).
+    if name.to_uppercase().contains("MGGA") {
+        return Err(LibxcError::Unsupported(format!(
+            "{name}: meta-GGA functionals are not supported (no mGGA kernel)"
+        )));
+    }
+
+    // Friendly-name alias layer: map common chemistry names to canonical libxc
+    // component identifiers. Composite (LDA/GGA) → X+C pair; hybrid/RSH → one.
+    if let Some(components) = friendly_to_libxc(name) {
+        // Single combined identifier ⇒ hybrid or range-separated functional.
+        if components.len() == 1 {
+            let mut f = XcFunctional::new(components[0], nspin)?;
             let cam = f.cam_coefficients();
             let vv10 = f.vv10_coeffs();
             if cam.is_some() {
                 f.set_family(FunctionalFamily::RangeSepGga);
-                Ok(XcDef { funcs: vec![f], cam, vv10, b3lyp_mix: None })
+                return Ok(XcDef { funcs: vec![f], cam, vv10, b3lyp_mix: None });
+            }
+            let mix = f.exact_exchange_mix();
+            f.set_family(FunctionalFamily::HybridGga);
+            return Ok(XcDef {
+                funcs: vec![f],
+                cam: None,
+                vv10,
+                b3lyp_mix: if mix != 0.0 { Some(mix) } else { None },
+            });
+        }
+        // Exchange + correlation pair ⇒ pure LDA or GGA.
+        let is_lda = components[0].starts_with("LDA");
+        let fam = if is_lda { FunctionalFamily::Lda } else { FunctionalFamily::Gga };
+        let mut funcs = Vec::with_capacity(components.len());
+        for id in components {
+            let mut f = XcFunctional::new(id, nspin)?;
+            f.set_family(fam);
+            funcs.push(f);
+        }
+        return Ok(XcDef { funcs, cam: None, vv10: None, b3lyp_mix: None });
+    }
+
+    // Unrecognized friendly name: treat as a raw libxc identifier.
+    {
+        let mut f = XcFunctional::new(name, nspin)?;
+        let cam = f.cam_coefficients();
+        let vv10 = f.vv10_coeffs();
+        if cam.is_some() {
+            f.set_family(FunctionalFamily::RangeSepGga);
+            Ok(XcDef { funcs: vec![f], cam, vv10, b3lyp_mix: None })
+        } else {
+            let mix = f.exact_exchange_mix();
+            if mix != 0.0 {
+                f.set_family(FunctionalFamily::HybridGga);
+                Ok(XcDef {
+                    funcs: vec![f],
+                    cam: None,
+                    vv10,
+                    b3lyp_mix: Some(mix),
+                })
+            } else if name.to_uppercase().contains("LDA") {
+                f.set_family(FunctionalFamily::Lda);
+                Ok(XcDef { funcs: vec![f], cam: None, vv10, b3lyp_mix: None })
             } else {
-                let mix = f.exact_exchange_mix();
-                if mix != 0.0 {
-                    f.set_family(FunctionalFamily::HybridGga);
-                    Ok(XcDef {
-                        funcs: vec![f],
-                        cam: None,
-                        vv10,
-                        b3lyp_mix: Some(mix),
-                    })
-                } else if other.to_uppercase().contains("LDA") {
-                    f.set_family(FunctionalFamily::Lda);
-                    Ok(XcDef { funcs: vec![f], cam: None, vv10, b3lyp_mix: None })
-                } else {
-                    f.set_family(FunctionalFamily::Gga);
-                    Ok(XcDef { funcs: vec![f], cam: None, vv10, b3lyp_mix: None })
-                }
+                f.set_family(FunctionalFamily::Gga);
+                Ok(XcDef { funcs: vec![f], cam: None, vv10, b3lyp_mix: None })
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// PBE0 is libxc HYB_GGA_XC_PBEH, not HYB_GGA_XC_PBE0 (which does not
+    /// exist). The friendly name "PBE0" must resolve and be a plain hybrid
+    /// with ~25% exact exchange.
+    #[test]
+    fn pbe0_resolves_as_hybrid() {
+        let def = xc_def_from_name("PBE0").expect("PBE0 should resolve");
+        let mix = def.b3lyp_mix.expect("PBE0 is a hybrid; mix should be set");
+        assert!(
+            (mix - 0.25).abs() < 1e-6,
+            "PBE0 exact-exchange fraction should be 0.25, got {mix}"
+        );
+        assert!(def.cam.is_none(), "PBE0 is not range-separated");
+    }
+
+    /// Common friendly names should all resolve to evaluable (LDA/GGA/hybrid)
+    /// functionals.
+    #[test]
+    fn common_friendly_names_resolve() {
+        for name in ["LDA", "PBE", "PBE0", "B3LYP", "BLYP", "PBEsol"] {
+            assert!(
+                xc_def_from_name(name).is_ok(),
+                "friendly name {name} should resolve"
+            );
+        }
+    }
+
+    /// A canonical meta-GGA libxc name must fail with the clear `Unsupported`
+    /// error rather than be silently mis-evaluated as a GGA (no mGGA kernel).
+    #[test]
+    fn meta_gga_is_rejected_clearly() {
+        let ok = matches!(
+            xc_def_from_name("MGGA_X_TPSS"),
+            Err(LibxcError::Unsupported(_))
+        );
+        assert!(ok, "canonical mGGA name should give LibxcError::Unsupported");
     }
 }
