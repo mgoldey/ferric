@@ -75,6 +75,9 @@ pub struct UOoRiMp2Result {
 }
 
 /// Compute UHF energy and α/β Fock matrices from MO coefficients.
+// Spin-resolved UHF energy: alpha/beta coefficients and occupations are
+// irreducibly distinct quantities with no natural sub-bundle to group.
+#[allow(clippy::too_many_arguments)]
 fn compute_uhf_energy(
     ctx: &ParallelContext,
     mol: &Molecule,
@@ -137,6 +140,9 @@ fn compute_uhf_energy(
 /// Build a temporary ScfResult from C_a, C_b, eps_a, eps_b for passing into
 /// the U-MP2 amplitude/gradient routines. The Fock and density fields aren't
 /// used downstream but must be populated.
+// Assembles a ScfResult from its spin-resolved pieces; each arg maps to a
+// distinct alpha/beta field of the result, so there is no bundle to extract.
+#[allow(clippy::too_many_arguments)]
 fn make_scf_view(
     c_a: &Array2<f64>,
     c_b: &Array2<f64>,

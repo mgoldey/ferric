@@ -112,6 +112,9 @@ pub fn laplace_ri_mp2(
 /// `domain_cutoff_bohr`: radius around each Boys center that defines its AO domain.
 /// Orbitals whose centers are far apart contribute zero to P(t) between their domains,
 /// giving linear-scaling pseudo-densities for large molecules.
+// Each arg is a distinct input (system, two bases, operator, reference, and
+// three independent Laplace/locality knobs) — no natural grouping.
+#[allow(clippy::too_many_arguments)]
 pub fn laplace_lmp2(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -264,6 +267,9 @@ impl LaplaceMp2 {
     ///   Boys-localizes the occupied MOs and restricts P(t) to spatial domains,
     ///   enabling linear-scaling pseudo-densities for large molecules.
     /// - K term: MO Gram matrix — O(naux² × nocc² × nvir).
+    // Distinct inputs (system, two bases, operator, reference, and two locality
+    // knobs); nothing to bundle beyond what `self` already holds.
+    #[allow(clippy::too_many_arguments)]
     pub fn compute_ao(
         &mut self,
         mol: &Molecule,

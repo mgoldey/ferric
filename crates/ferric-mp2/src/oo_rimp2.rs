@@ -810,6 +810,9 @@ pub fn oo_ri_mp2(
 ///
 /// Takes initial MO coefficients, applies a Cayley rotation with the given kappa,
 /// rebuilds Fock / density, and returns E_HF + E_MP2.
+// System context (mol, two bases, operator, bounds) plus the rotation inputs
+// (c_init, kappa) and orbital partition — all distinct, nothing left to bundle.
+#[allow(clippy::too_many_arguments)]
 pub fn energy_at_kappa(
     mol: &Molecule,
     obs: &PreparedBasis,
