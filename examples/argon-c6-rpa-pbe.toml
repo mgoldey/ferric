@@ -1,0 +1,30 @@
+# Atomic C6 via dRPA on a PBE reference — the literature-standard setup for
+# RPA dispersion coefficients. A single atom means the Hirshfeld partition is
+# trivial (weight 1 everywhere), so the molecular C6 (c6_iso.sum()) is the bare
+# Casimir-Polder integral of the atomic dynamic polarizability.
+#
+# Benchmark (aug-cc-pVTZ): C6(Ar-Ar) = 56.4 a.u. vs DOSD 64.3 (-12%); the full
+# He/Ne/Ar sweep gives mean |err| 8.9% at RPA@PBE — vs 39% at RPA@HF. The
+# controlling variable is the reference's exact-exchange fraction (lower =
+# larger response = C6 closer to DOSD): PBE(0%) < B3LYP(20%) < PBE0(25%) < HF.
+[molecule]
+xyz = "testdata/molecules/ar_atom.xyz"
+
+[basis]
+name = "aug-cc-pvtz"
+
+[method]
+kind = "pdep-rpa"
+task = "energy"
+
+[rpa]
+auxbasis = "aug-cc-pvtz-rifit"
+xc = "PBE"           # PBE reference orbitals (RPA@PBE); omit for RPA@HF
+n_quad = 40
+quadrature = "gauss-legendre"
+frozen_core = 0
+trunc_thresh = 0.0
+export_npz = "/tmp/argon_c6_pbe.npz"
+compute_c6 = true
+c6_source = "pdep"
+c6_partition = "hirshfeld"
