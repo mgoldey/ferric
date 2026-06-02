@@ -32,7 +32,6 @@ pub fn solve_zvector(
     let nvir = inter.nvir;
     let nocc_total = inter.nocc_total;
     let first_occ = inter.first_occ;
-    let naux = inter.naux;
     let eps = rhf.eps_r();
     let c = rhf.mos_r();
     let f_mo = c.t().dot(rhf.fock_r()).dot(c);
@@ -40,9 +39,8 @@ pub fn solve_zvector(
     let b_full = crate::oo_rimp2::compute_b_full_mo(prep, dfbs, op, c)?;
 
     let l = build_lagrangian(
-        &f_mo, &inter.t2, &inter.b_ov, &inter.b_oo, &inter.b_vv,
-        &inter.p_oo, &inter.p_vv,
-        eps, nocc, nvir, nocc_total, first_occ, naux,
+        &f_mo, &inter.t2, &inter.p_oo, &inter.p_vv,
+        nocc, nvir, nocc_total, first_occ,
         &b_full,
     );
 
@@ -100,17 +98,12 @@ pub fn solve_zvector(
 fn build_lagrangian(
     f_mo: &Array2<f64>,
     t2: &[f64],
-    _b_ov: &Array2<f64>,
-    _b_oo: &Array2<f64>,
-    _b_vv: &Array2<f64>,
     p_oo: &Array2<f64>,
     p_vv: &Array2<f64>,
-    _eps: &[f64],
     nocc: usize,
     nvir: usize,
     nocc_total: usize,
     first_occ: usize,
-    _naux: usize,
     b_full: &Array3<f64>,
 ) -> Array2<f64> {
     let nov = nocc * nvir;
