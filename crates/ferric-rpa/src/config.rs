@@ -8,16 +8,11 @@
 /// the MO-basis form it is correctness-equivalent to `Dense` (and the same
 /// arithmetic complexity), but it admits an AO-basis cubic-scaling
 /// reformulation as a follow-up.
-#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub enum Chi0Backend {
+    #[default]
     Dense,
     Laplace { n_quad: usize },
-}
-
-impl Default for Chi0Backend {
-    fn default() -> Self {
-        Chi0Backend::Dense
-    }
 }
 
 /// Sparsity strategy for the χ₀ build / dielectric matvec.
@@ -31,29 +26,19 @@ impl Default for Chi0Backend {
 /// through the per-orbital aux index lists.
 ///
 /// Closed-shell only for now. Open-shell support is C8.
-#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub enum Chi0Sparsity {
+    #[default]
     Dense,
     BoysScreened { thresh: f64 },
 }
 
-impl Default for Chi0Sparsity {
-    fn default() -> Self {
-        Chi0Sparsity::Dense
-    }
-}
-
 /// Choice of subspace eigensolver for the PDEP dielectric matrix.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Eigensolver {
+    #[default]
     Davidson,
     Lanczos,
-}
-
-impl Default for Eigensolver {
-    fn default() -> Self {
-        Eigensolver::Davidson
-    }
 }
 
 /// Top-level PDEP-RPA configuration.

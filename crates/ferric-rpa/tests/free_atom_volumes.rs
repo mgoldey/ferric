@@ -22,8 +22,10 @@ use ferric_scf::screening::SchwarzBounds;
 
 struct AtomSpec {
     symbol: &'static str,
+    /// Atomic number — documents the table row; not read by the test itself.
+    #[allow(dead_code)]
     z: usize,
-    mult: usize,  // 1=singlet(RHF), >1=open-shell(UHF)
+    mult: usize, // 1=singlet(RHF), >1=open-shell(UHF)
     xyz: &'static str,
 }
 

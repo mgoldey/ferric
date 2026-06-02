@@ -718,6 +718,7 @@ fn opposite_spin_pair_energy(
 /// `mp2_energy_fixed_eps` ground-truth FD.
 ///
 /// `which` selects the block: "aa", "bb", "ab", or "all".
+#[cfg(test)]
 pub(crate) fn u_mp2_energy_fixed_eps(
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,

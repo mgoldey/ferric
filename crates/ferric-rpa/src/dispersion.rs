@@ -45,16 +45,11 @@ pub struct C6Result {
 }
 
 /// Partition scheme for the per-atom decomposition.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DispersionPartition {
+    #[default]
     Becke,
     Hirshfeld,
-}
-
-impl Default for DispersionPartition {
-    fn default() -> Self {
-        DispersionPartition::Becke
-    }
 }
 
 /// Casimir-Polder contraction. SHARED SEAM between TS and PDEP-RPA sources.
@@ -369,7 +364,9 @@ pub fn pdep_dynamic_polarizability_truncated(
     // up to V^{1/2}). This gives a computable rank-M approximation we can
     // time and compare to the full solve.
 
-    let mp2_cfg = RiMp2Config { frozen_core: 0 };
+    let mp2_cfg = RiMp2Config {
+        frozen_core: cfg.frozen_core,
+    };
     let inter = ferric_mp2::rimp2::compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
     let b_ov = &inter.b_ov;   // shape (naux, nov) — un-dressed raw RI
     let nocc = inter.nocc;

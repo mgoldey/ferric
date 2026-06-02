@@ -37,9 +37,12 @@ use std::path::PathBuf;
 #[derive(Deserialize)]
 struct Ref {
     e_total: f64,
+    // Present in the reference JSON for provenance; not asserted on.
     #[serde(default)]
+    #[allow(dead_code)]
     xc: String,
     #[serde(default)]
+    #[allow(dead_code)]
     label: String,
     #[serde(default)]
     converged: bool,

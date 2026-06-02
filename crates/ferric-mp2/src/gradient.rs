@@ -503,7 +503,6 @@ mod tests {
         let nvir = inter.nvir;
         let nov = nocc * nvir;
         let naux = inter.naux;
-        let nbas = obs.nbasis();
         let c = rhf.mos_r();
         let t2 = &inter.t2;
 
@@ -622,7 +621,6 @@ mod tests {
         let nvir = inter.nvir;
         let nov = nocc * nvir;
         let naux = inter.naux;
-        let nbas = obs.nbasis();
         let c = rhf.mos_r();
         let t2 = &inter.t2;
 
