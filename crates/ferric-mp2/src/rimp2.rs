@@ -247,9 +247,7 @@ pub fn compute_rpa_intermediates_spin(
     // ROHF stores α MOs and uses them for both spin channels (the SOMO is
     // just unoccupied in β); only mos_alpha is present. Fall back to it
     // when caller requests β on a ROHF result.
-    let c_full = if is_alpha {
-        rhf.mos_a()
-    } else if matches!(rhf.spin, Spin::RestrictedOpen) {
+    let c_full = if is_alpha || matches!(rhf.spin, Spin::RestrictedOpen) {
         rhf.mos_a()
     } else {
         rhf.mos_b()

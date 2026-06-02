@@ -702,7 +702,6 @@ pub fn oo_ri_mp2(
         if total_new > total_energy + 1e-4 {
             // Fall back to a damped Newton step without DIIS extrapolation.
             let mut bt_kappa_ov = kappa_ov.clone();
-            let mut bt_accepted = false;
             let mut bt_c = c.dot(&u);
             let mut bt_ehf = ehf;
             let mut bt_fao = fao.clone();
@@ -737,7 +736,6 @@ pub fn oo_ri_mp2(
                     bt_eps = en;
                     bt_emp2 = em;
                     bt_bov = bo;
-                    bt_accepted = true;
                     break;
                 }
                 bt_ehf = eh;
@@ -747,7 +745,9 @@ pub fn oo_ri_mp2(
                 bt_bov = bo;
             }
 
-            c = if bt_accepted { bt_c.clone() } else { bt_c.clone() };
+            // The backtracking loop commits bt_* to its last trial step on every
+            // path (break or exhaustion), so bt_c is always the step to take.
+            c = bt_c.clone();
             e_hf = bt_ehf;
             e_mp2 = bt_emp2;
             total_energy = bt_total;
