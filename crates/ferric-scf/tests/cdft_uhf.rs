@@ -31,7 +31,7 @@ fn residual_is_monotonic_in_lambda() {
     use ferric_dft::grid::{build_atomic_grid, AtomicGridConfig};
     use ndarray::Array2;
 
-    let (mol, bs, prep, op, bounds) = setup();
+    let (mol, bs, prep, _op, bounds) = setup();
     let ctx = ParallelContext::default();
 
     // W^Li once on the 302-pt angular grid (matches the driver).
@@ -59,7 +59,6 @@ fn residual_is_monotonic_in_lambda() {
             &ctx,
             &mol,
             &prep,
-            op,
             &bounds,
             &RhfConfig::default(),
             None,
@@ -79,7 +78,7 @@ fn residual_is_monotonic_in_lambda() {
 /// The constraint is actually satisfied at convergence.
 #[test]
 fn charge_constraint_is_satisfied() {
-    let (mol, bs, prep, op, bounds) = setup();
+    let (mol, bs, prep, _op, bounds) = setup();
     let ctx = ParallelContext::default();
     let target = 2.2; // pull a bit of charge onto Li (Z=3)
     let cfg = RhfConfig {
@@ -91,7 +90,7 @@ fn charge_constraint_is_satisfied() {
         cdft_lambda_tol: 1e-5,
         ..Default::default()
     };
-    let res = solve_cdft_uhf(&ctx, &mol, &prep, &bs, op, &bounds, &cfg).unwrap();
+    let res = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &cfg).unwrap();
     assert!(
         (res.populations[0] - target).abs() < 1e-5,
         "Li pop {} vs target {target}",
@@ -112,15 +111,14 @@ fn charge_constraint_is_satisfied() {
 /// preserves (it is a literal no-op).
 #[test]
 fn lambda_zero_equals_plain_uhf() {
-    let (mol, _bs, prep, op, bounds) = setup();
+    let (mol, _bs, prep, _op, bounds) = setup();
     let ctx = ParallelContext::default();
-    let plain = solve_uhf(&ctx, &mol, &prep, op, &bounds, &RhfConfig::default()).unwrap();
+    let plain = solve_uhf(&ctx, &mol, &prep, &bounds, &RhfConfig::default()).unwrap();
     let fm = |_fa: &mut ndarray::Array2<f64>, _fb: &mut ndarray::Array2<f64>| {};
     let modded = ferric_scf::uhf::solve_uhf_fockmod(
         &ctx,
         &mol,
         &prep,
-        op,
         &bounds,
         &RhfConfig::default(),
         None,

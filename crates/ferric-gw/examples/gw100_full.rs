@@ -122,9 +122,9 @@ fn run_case(case: &Case) -> Option<(Ips, CationDiag)> {
 
     let uhf_cfg = UhfConfig { max_iter: 200, ..Default::default() };
     let c_seed = rhf_n.mos_alpha.clone();
-    let (uhf_c, diag_method) = match solve_uhf_with_guess(&ctx, &cation, &obs_c, op, &bounds_c, &uhf_cfg, Some((&c_seed, &c_seed))) {
+    let (uhf_c, diag_method) = match solve_uhf_with_guess(&ctx, &cation, &obs_c, &bounds_c, &uhf_cfg, Some((&c_seed, &c_seed))) {
         Ok(r) => (r, "UHF(neutral-seed)"),
-        Err(_) => match solve_uhf(&ctx, &cation, &obs_c, op, &bounds_c, &uhf_cfg) {
+        Err(_) => match solve_uhf(&ctx, &cation, &obs_c, &bounds_c, &uhf_cfg) {
             Ok(r) => (r, "UHF(hcore)"),
             Err(_) => {
                 let r = solve_rohf(&ctx, &cation, &obs_c, op, &bounds_c, &RohfConfig::default()).ok()?;

@@ -17,7 +17,6 @@ use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::oneelectron;
-use ferric_integrals::operator::Operator;
 use ndarray::Array2;
 use ndarray_linalg::Eigh;
 
@@ -34,11 +33,10 @@ pub fn solve_uhf(
     ctx: &ParallelContext,
     mol: &Molecule,
     prep: &PreparedBasis,
-    op: Operator,
     bounds: &SchwarzBounds,
     config: &UhfConfig,
 ) -> Result<ScfResult, FerricError> {
-    solve_uhf_with_guess(ctx, mol, prep, op, bounds, config, None)
+    solve_uhf_with_guess(ctx, mol, prep, bounds, config, None)
 }
 
 /// UHF with optional caller-supplied initial MOs.
@@ -55,12 +53,11 @@ pub fn solve_uhf_with_guess(
     ctx: &ParallelContext,
     mol: &Molecule,
     prep: &PreparedBasis,
-    op: Operator,
     bounds: &SchwarzBounds,
     config: &UhfConfig,
     initial_mos: Option<(&Array2<f64>, &Array2<f64>)>,
 ) -> Result<ScfResult, FerricError> {
-    solve_uhf_fockmod(ctx, mol, prep, op, bounds, config, initial_mos, None)
+    solve_uhf_fockmod(ctx, mol, prep, bounds, config, initial_mos, None)
 }
 
 /// UHF with an optional per-iteration Fock modifier.
@@ -70,18 +67,17 @@ pub fn solve_uhf_with_guess(
 /// error is formed, so the added potential is part of the converged Fock and
 /// of the DIIS condition. `None` reproduces ordinary UHF/UKS exactly. cDFT uses
 /// this to add Σ_C λ_C W^C.
-// `op` is the attenuation/range-separation hook (e.g. erfc(ω) for short-range
-// correlation). UHF consumes it through the J/K builders, which read the
-// operator from `bounds.op` (SchwarzBounds carries the op it was built with).
-// We therefore require the caller to have built `bounds` with the same `op`;
-// otherwise an attenuated `op` would be silently ignored while RHF — which
-// threads op into its DF/Link builders — would honor it.
-#[allow(clippy::too_many_arguments)]
+///
+/// The two-electron operator (Coulomb or an attenuated erf/erfc kernel for
+/// short-range correlation) is taken from `bounds.op`: the J/K builders need
+/// both the operator and its matching Schwarz screening table, and the bounds
+/// carry both. There is therefore no separate `op` argument — `bounds` is the
+/// single source of truth, which makes an operator/screening mismatch
+/// unrepresentable.
 pub fn solve_uhf_fockmod(
     ctx: &ParallelContext,
     mol: &Molecule,
     prep: &PreparedBasis,
-    op: Operator,
     bounds: &SchwarzBounds,
     config: &UhfConfig,
     initial_mos: Option<(&Array2<f64>, &Array2<f64>)>,
@@ -89,13 +85,6 @@ pub fn solve_uhf_fockmod(
 ) -> Result<ScfResult, FerricError> {
     use ferric_dft::ks::KsXcUks;
     use ferric_dft::xc_trait::{KMix, UksXcContribution};
-
-    debug_assert!(
-        op.kind == bounds.op.kind && op.omega == bounds.op.omega,
-        "UHF: `op` ({:?}, ω={}) must match the operator `bounds` was built with \
-         ({:?}, ω={}), else attenuation is silently dropped (op flows through bounds.op)",
-        op.kind, op.omega, bounds.op.kind, bounds.op.omega
-    );
 
     // Build UKS XC contribution once. None for pure UHF.
     let xc_contrib: Option<Box<dyn UksXcContribution>> = if let Some(name) = config.xc.as_deref() {
@@ -442,7 +431,7 @@ mod tests {
         let mol = Molecule::parse_xyz("1\nH\nH 0 0 0\n", 0, 2).unwrap();
         let bs = basis::bundled("sto-3g").unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
-        let op = Operator::coulomb();
+        let op = ferric_integrals::operator::Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &prep).unwrap();
         let cfg = UhfConfig {
             energy_conv: 1e-10,
@@ -450,7 +439,7 @@ mod tests {
             ..Default::default()
         };
         let ctx = ParallelContext::default();
-        let res = solve_uhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
+        let res = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap();
         assert!(res.converged);
         // STO-3G H atom: H = -0.46658185 (one electron, -ζ_1s).
         assert!(

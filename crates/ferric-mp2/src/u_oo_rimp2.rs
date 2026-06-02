@@ -575,7 +575,7 @@ mod tests {
             max_iter: 200, energy_conv: 1e-10, density_conv: 1e-8, ..Default::default()
         };
         let uhf = solve_uhf_with_guess(
-            &ctx, &mol, &obs, op, &bounds, &uhf_cfg, Some((&c_seed, &c_seed)),
+            &ctx, &mol, &obs, &bounds, &uhf_cfg, Some((&c_seed, &c_seed)),
         ).unwrap();
         let uoo_cfg = UOoRiMp2Config {
             grad_conv: 1e-7, energy_conv: 1e-10, max_iter: 50, ..Default::default()
@@ -610,7 +610,7 @@ mod tests {
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let uhf_cfg = UhfConfig { max_iter: 200, ..Default::default() };
-        let uhf = solve_uhf(&ctx, &mol, &obs, op, &bounds, &uhf_cfg).unwrap();
+        let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &uhf_cfg).unwrap();
         let umpc = crate::u_rimp2::u_ri_mp2(
             &mol, &obs, &dfbs, op, &uhf, &crate::rimp2::RiMp2Config::default(),
         ).unwrap();

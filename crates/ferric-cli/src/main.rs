@@ -176,7 +176,7 @@ fn main() {
     }
 
     if method == "uhf" {
-        let result = solve_uhf(&ctx, &mol, &prep, op, &bounds, &rhf_config).unwrap_or_else(|e| {
+        let result = solve_uhf(&ctx, &mol, &prep, &bounds, &rhf_config).unwrap_or_else(|e| {
             eprintln!("error: {e}");
             std::process::exit(1);
         });
@@ -266,7 +266,7 @@ fn main() {
             // We cannot construct a valid ScfResult without running SCF.
             // Fall back: run UHF here so `result` is valid even if the arm
             // never uses it (e.g. if the match falls through to _ => unreachable!).
-            solve_uhf(&ctx, &mol, &prep, op, &bounds, &{
+            solve_uhf(&ctx, &mol, &prep, &bounds, &{
                 let mut c = rhf_config.clone(); c.mom_after_iter = 5; c
             }).unwrap_or_else(|e2| {
                 eprintln!("error (pre-UHF): {e2}");
@@ -496,7 +496,7 @@ fn main() {
                 let mut uhf_cfg = rhf_config.clone();
                 // MOM after 5 DIIS iters prevents orbital reordering on open-shell atoms.
                 uhf_cfg.mom_after_iter = 5;
-                let uhf_result = solve_uhf(&ctx, &mol, &prep, op, &bounds, &uhf_cfg)
+                let uhf_result = solve_uhf(&ctx, &mol, &prep, &bounds, &uhf_cfg)
                     .unwrap_or_else(|e| {
                         eprintln!("error (UHF): {e}");
                         std::process::exit(1);
@@ -787,7 +787,7 @@ fn main() {
                                     let mut free_cfg = rhf_config.clone();
                                     free_cfg.mom_after_iter = if mult > 1 { 5 } else { 0 };
                                     let free_density = if mult > 1 {
-                                        solve_uhf(&ctx, &free_mol, &free_obs, op,
+                                        solve_uhf(&ctx, &free_mol, &free_obs,
                                                   &free_bounds, &free_cfg)
                                             .ok()
                                             .map(|r| r.density_total().to_owned())

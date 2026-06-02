@@ -201,11 +201,11 @@ fn run_case_diag(case: &Case) -> Option<(f64, f64, f64, f64, CationDiag)> {
     // ground at -75.6318 when starting from hcore).
     let c_seed = rhf_n.mos_alpha.clone();
     let (uhf_c, diag_method): (ferric_scf::result::ScfResult, &'static str) =
-        match solve_uhf_with_guess(&ctx, &cation, &obs_c, op, &bounds_c, &uhf_cfg, Some((&c_seed, &c_seed))) {
+        match solve_uhf_with_guess(&ctx, &cation, &obs_c, &bounds_c, &uhf_cfg, Some((&c_seed, &c_seed))) {
             Ok(r) => (r, "UHF(neutral-seed)"),
             Err(_) => {
                 // Fall back to hcore-guess UHF, then ROHF if that also fails.
-                match solve_uhf(&ctx, &cation, &obs_c, op, &bounds_c, &uhf_cfg) {
+                match solve_uhf(&ctx, &cation, &obs_c, &bounds_c, &uhf_cfg) {
                     Ok(r) => (r, "UHF(hcore)"),
                     Err(_) => {
                         let rohf_cfg = RohfConfig { max_iter: 200, ..Default::default() };

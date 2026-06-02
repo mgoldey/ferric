@@ -68,7 +68,7 @@ fn u_pdep_rpa_matches_closed_shell_on_h2o() {
         max_iter: 200,
         ..Default::default()
     };
-    let uhf = solve_uhf(&ctx, &mol, &obs, op, &bounds, &uhf_cfg).unwrap();
+    let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &uhf_cfg).unwrap();
     assert!((uhf.energy - rhf.energy).abs() < 1e-7, "UHF/RHF energy disagreement on closed-shell H2O");
 
     let e_unrestricted = run_u_pdep_rpa(&mol, &obs, &dfbs, op, &uhf, &cfg).unwrap().e_rpa;
@@ -101,7 +101,7 @@ fn u_pdep_rpa_h_atom_matches_pyscf() {
         max_iter: 200,
         ..Default::default()
     };
-    let uhf = solve_uhf(&ctx, &mol, &obs, op, &bounds, &uhf_cfg).unwrap();
+    let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &uhf_cfg).unwrap();
     let cfg = cfg_full_basis();
     let r = run_u_pdep_rpa(&mol, &obs, &dfbs, op, &uhf, &cfg).unwrap();
     // SCF reference: -0.4992784034. Allow 1e-6 for SCF convergence noise.
@@ -131,7 +131,7 @@ fn u_pdep_rpa_oh_matches_pyscf() {
         max_iter: 200,
         ..Default::default()
     };
-    let uhf = solve_uhf(&ctx, &mol, &obs, op, &bounds, &uhf_cfg).unwrap();
+    let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &uhf_cfg).unwrap();
     let cfg = cfg_full_basis();
     let r = run_u_pdep_rpa(&mol, &obs, &dfbs, op, &uhf, &cfg).unwrap();
     assert!((uhf.energy - (-75.3938389266)).abs() < 1e-4,
@@ -192,7 +192,7 @@ fn u_pdep_rpa_uhf_vs_rohf_close_on_doublet() {
         max_iter: 200,
         ..Default::default()
     };
-    let uhf = solve_uhf(&ctx, &mol, &obs, op, &bounds, &uhf_cfg).unwrap();
+    let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &uhf_cfg).unwrap();
     let rohf_cfg = RohfConfig {
         energy_conv: 1e-10,
         density_conv: 1e-8,
@@ -228,7 +228,7 @@ fn u_ri_drpa_diagnostic_h_atom_matches_pyscf() {
     let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
     let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let uhf = solve_uhf(&ctx, &mol, &obs, op, &bounds,
+    let uhf = solve_uhf(&ctx, &mol, &obs, &bounds,
         &UhfConfig { max_iter: 200, ..Default::default() }).unwrap();
 
     let mp2_cfg = RiMp2Config { frozen_core: 0 };
@@ -334,7 +334,7 @@ fn u_pdep_rpa_laplace_matches_dense_closed_shell_h2o() {
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
     let e_closed = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg_full_basis()).unwrap().e_rpa;
 
-    let uhf = solve_uhf(&ctx, &mol, &obs, op, &bounds,
+    let uhf = solve_uhf(&ctx, &mol, &obs, &bounds,
         &UhfConfig { max_iter: 200, ..Default::default() }).unwrap();
     let mut cfg = cfg_full_basis();
     cfg.chi0_backend = Chi0Backend::Laplace { n_quad: 20 };
@@ -365,7 +365,7 @@ fn u_laplace_dielectric_matches_u_dense_at_omega_zero_oh() {
     let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
     let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let uhf = solve_uhf(&ctx, &mol, &obs, op, &bounds,
+    let uhf = solve_uhf(&ctx, &mol, &obs, &bounds,
         &UhfConfig { max_iter: 200, ..Default::default() }).unwrap();
 
     let mp2_cfg = RiMp2Config { frozen_core: 0 };
@@ -411,7 +411,7 @@ fn u_pdep_rpa_laplace_matches_dense_oh() {
     let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
     let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let uhf = solve_uhf(&ctx, &mol, &obs, op, &bounds,
+    let uhf = solve_uhf(&ctx, &mol, &obs, &bounds,
         &UhfConfig { max_iter: 200, ..Default::default() }).unwrap();
 
     let mut cfg_dense = cfg_full_basis();
@@ -446,7 +446,7 @@ fn u_polarizability_matches_closed_shell_on_h2o() {
     let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
-    let uhf = solve_uhf(&ctx, &mol, &obs, op, &bounds,
+    let uhf = solve_uhf(&ctx, &mol, &obs, &bounds,
         &UhfConfig { max_iter: 200, ..Default::default() }).unwrap();
 
     let cfg = PdepRpaConfig::default();
@@ -474,7 +474,7 @@ fn u_polarizability_oh_matches_pyscf() {
     let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
     let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let uhf = solve_uhf(&ctx, &mol, &obs, op, &bounds,
+    let uhf = solve_uhf(&ctx, &mol, &obs, &bounds,
         &UhfConfig { max_iter: 200, ..Default::default() }).unwrap();
     let cfg = PdepRpaConfig::default();
     let pol = pdep_polarizability_static(&mol, &obs, &dfbs, &uhf, op, &cfg).unwrap();
@@ -504,7 +504,7 @@ fn u_pdep_rpa_lanczos_matches_davidson() {
         max_iter: 200,
         ..Default::default()
     };
-    let uhf = solve_uhf(&ctx, &mol, &obs, op, &bounds, &uhf_cfg).unwrap();
+    let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &uhf_cfg).unwrap();
 
     let mut cfg_d = cfg_full_basis();
     cfg_d.eigensolver = Eigensolver::Davidson;

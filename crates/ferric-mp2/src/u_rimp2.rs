@@ -882,7 +882,7 @@ mod tests {
         // from neutral RHF MOs (no spin contamination).
         let c_seed = rhf.mos_r().clone();
         let uhf = ferric_scf::uhf::solve_uhf_with_guess(
-            &ctx, &mol_us, &obs, op, &bounds, &uhf_cfg, Some((&c_seed, &c_seed)),
+            &ctx, &mol_us, &obs, &bounds, &uhf_cfg, Some((&c_seed, &c_seed)),
         ).unwrap();
 
         let us = u_ri_mp2(&mol_us, &obs, &dfbs, op, &uhf, &RiMp2Config::default()).unwrap();
@@ -912,7 +912,7 @@ mod tests {
         let uhf_cfg = UhfConfig {
             max_iter: 200, energy_conv: 1e-10, density_conv: 1e-8, ..Default::default()
         };
-        let uhf = solve_uhf(&ctx, &mol, &obs, op, &bounds, &uhf_cfg).unwrap();
+        let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &uhf_cfg).unwrap();
         println!("OH UHF: E={:.8}, iters={}", uhf.energy, uhf.iterations);
 
         let res = u_ri_mp2(&mol, &obs, &dfbs, op, &uhf, &RiMp2Config::default()).unwrap();
@@ -944,7 +944,7 @@ mod tests {
         let uhf_cfg = UhfConfig {
             max_iter: 200, energy_conv: 1e-10, density_conv: 1e-8, ..Default::default()
         };
-        let uhf = solve_uhf(&ctx, &mol, &obs, op, &bounds, &uhf_cfg).unwrap();
+        let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &uhf_cfg).unwrap();
 
         let energy_res = u_ri_mp2(&mol, &obs, &dfbs, op, &uhf, &RiMp2Config::default()).unwrap();
         let amps = compute_u_mp2_amplitudes(&mol, &obs, &dfbs, op, &uhf, &RiMp2Config::default()).unwrap();
@@ -1000,7 +1000,7 @@ mod tests {
         let uhf_cfg = UhfConfig {
             max_iter: 200, energy_conv: 1e-10, density_conv: 1e-8, ..Default::default()
         };
-        let uhf = solve_uhf(&ctx, &mol, &obs, op, &bounds, &uhf_cfg).unwrap();
+        let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &uhf_cfg).unwrap();
         let amps = compute_u_mp2_amplitudes(&mol, &obs, &dfbs, op, &uhf, &RiMp2Config::default()).unwrap();
         let dens = build_u_mp2_density(&amps);
 
@@ -1054,7 +1054,7 @@ mod tests {
             max_iter: 200, energy_conv: 1e-10, density_conv: 1e-8, ..Default::default()
         };
         let uhf = ferric_scf::uhf::solve_uhf_with_guess(
-            &ctx, &mol, &obs, op, &bounds, &uhf_cfg, Some((&c_seed, &c_seed)),
+            &ctx, &mol, &obs, &bounds, &uhf_cfg, Some((&c_seed, &c_seed)),
         ).unwrap();
         let amps = compute_u_mp2_amplitudes(&mol, &obs, &dfbs, op, &uhf, &RiMp2Config::default()).unwrap();
         let dens = build_u_mp2_density(&amps);
@@ -1104,7 +1104,7 @@ mod tests {
         let uhf_cfg = UhfConfig {
             max_iter: 200, energy_conv: 1e-10, density_conv: 1e-8, ..Default::default()
         };
-        let uhf = solve_uhf(&ctx, &mol, &obs, op, &bounds, &uhf_cfg).unwrap();
+        let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &uhf_cfg).unwrap();
         let amps = compute_u_mp2_amplitudes(&mol, &obs, &dfbs, op, &uhf, &RiMp2Config::default()).unwrap();
 
         let nocc_a = amps.inter_a.nocc;

@@ -16,7 +16,6 @@ use ferric_dft::ao_grid::eval_basis_on_points;
 use ferric_dft::cdft::{build_weight_matrix, population, SpinChannel};
 use ferric_dft::grid::{build_atomic_grid, AtomicGridConfig};
 use ferric_integrals::basis_bridge::PreparedBasis;
-use ferric_integrals::operator::Operator;
 use ndarray::Array2;
 
 /// Result of a constrained SCF.
@@ -39,7 +38,6 @@ pub fn solve_cdft_uhf(
     mol: &Molecule,
     prep: &PreparedBasis,
     bs: &BasisSet,
-    op: Operator,
     bounds: &SchwarzBounds,
     config: &RhfConfig,
 ) -> Result<CdftResult, FerricError> {
@@ -90,7 +88,7 @@ pub fn solve_cdft_uhf(
                 }
             }
         };
-        let scf = solve_uhf_fockmod(ctx, mol, prep, op, bounds, config, None, Some(&fm))?;
+        let scf = solve_uhf_fockmod(ctx, mol, prep, bounds, config, None, Some(&fm))?;
         let d_a = &scf.density_alpha;
         let d_b = scf.density_beta.as_ref().unwrap_or(d_a);
         let mut pops = vec![0.0; k];

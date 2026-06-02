@@ -37,7 +37,7 @@ fn main() {
         // Reuse neutral RHF MOs as both α and β starting points for cation UHF.
         let c_rhf = rhf.mos_alpha.clone();
         let cfg = UhfConfig::default();
-        let res = solve_uhf_with_guess(&ctx, &cation, &prep, op, &bounds, &cfg, Some((&c_rhf, &c_rhf))).unwrap();
+        let res = solve_uhf_with_guess(&ctx, &cation, &prep, &bounds, &cfg, Some((&c_rhf, &c_rhf))).unwrap();
         println!("[neutral-RHF-guess UHF] E={:.8}, conv={}, iters={}", res.energy, res.converged, res.iterations);
     }
     println!();
@@ -45,7 +45,7 @@ fn main() {
     // Run with very loose convergence to see iter-1 / iter-2 / etc. trajectory.
     for max_iter in [1usize, 2, 3, 5, 10, 20, 50] {
         let cfg = UhfConfig { max_iter, energy_conv: 1e-20, density_conv: 1e-20, ..Default::default() };
-        match solve_uhf(&ctx, &cation, &prep, op, &bounds, &cfg) {
+        match solve_uhf(&ctx, &cation, &prep, &bounds, &cfg) {
             Ok(r) => println!("[max_iter={:>3}] E={:.6}, conv={}, iters={}", max_iter, r.energy, r.converged, r.iterations),
             Err(e) => match e {
                 ferric_core::FerricError::ScfConvergence { iterations, last_energy } => {
@@ -64,7 +64,7 @@ fn main() {
     println!();
     println!();
     let cfg = UhfConfig { max_iter: 500, energy_conv: 1e-11, density_conv: 1e-9, ..Default::default() };
-    let res = solve_uhf(&ctx, &cation, &prep, op, &bounds, &cfg)
+    let res = solve_uhf(&ctx, &cation, &prep, &bounds, &cfg)
         .unwrap_or_else(|e| panic!("final unwrap: {e:?}"));
     let s_ao = oneelectron::overlap(&prep);
     let s2 = s_squared(&res.mos_alpha, res.mos_beta.as_ref().unwrap(), &s_ao, 5, 4);

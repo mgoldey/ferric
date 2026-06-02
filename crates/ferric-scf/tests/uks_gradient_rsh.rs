@@ -39,12 +39,12 @@ fn fd_gradient(xyz: &str, mult: usize, basis_name: &str, delta: f64) -> Array2<f
             let prep_p = PreparedBasis::new(&mol_p, &bs).unwrap();
             let bounds_p = SchwarzBounds::compute(Operator::coulomb(), &prep_p).unwrap();
             let res_p = solve_uhf(
-                &ParallelContext::default(), &mol_p, &prep_p, Operator::coulomb(), &bounds_p, &cfg,
+                &ParallelContext::default(), &mol_p, &prep_p, &bounds_p, &cfg,
             ).unwrap();
             let prep_m = PreparedBasis::new(&mol_m, &bs).unwrap();
             let bounds_m = SchwarzBounds::compute(Operator::coulomb(), &prep_m).unwrap();
             let res_m = solve_uhf(
-                &ParallelContext::default(), &mol_m, &prep_m, Operator::coulomb(), &bounds_m, &cfg,
+                &ParallelContext::default(), &mol_m, &prep_m, &bounds_m, &cfg,
             ).unwrap();
             grad[(atom, coord)] = (res_p.energy - res_m.energy) / (2.0 * delta);
         }
@@ -59,7 +59,7 @@ fn run_case(label: &str, xyz: &str, mult: usize, basis_name: &str, tol: f64) {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let cfg = cfg();
-    let res = solve_uhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap();
+    let res = solve_uhf(&ParallelContext::default(), &mol, &prep, &bounds, &cfg).unwrap();
     let g_ana = ks_gradient_uks(&mol, &prep, &bs, op, &bounds, "wB97X-V", &res).unwrap();
     let g_fd = fd_gradient(xyz, mult, basis_name, 5e-4);
 

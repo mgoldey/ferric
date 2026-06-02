@@ -175,8 +175,8 @@ fn he2_plus_hab(r_ang: f64) -> (f64, f64, f64, f64) {
         cdft_lambda_tol: 1e-2, dft_grid: Some(gcfg.clone()), level_shift: 0.2,
         ..Default::default()
     };
-    let ra = solve_cdft_uhf(&ctx, &mol, &prep, &bs, op, &bounds, &cfg0).unwrap();
-    let rb = solve_cdft_uhf(&ctx, &mol, &prep, &bs, op, &bounds, &cfg1).unwrap();
+    let ra = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &cfg0).unwrap();
+    let rb = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &cfg1).unwrap();
 
     // nocc from charge+mult: nelec = 3, 2S=1 → nocc_a=2, nocc_b=1.
     let (nocc_a, nocc_b) = (2usize, 1usize);

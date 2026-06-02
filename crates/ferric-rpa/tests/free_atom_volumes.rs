@@ -40,7 +40,7 @@ fn vol_for_atom(spec: &AtomSpec, obs_name: &str) -> f64 {
     cfg.mom_after_iter = if spec.mult > 1 { 5 } else { 0 };
 
     let density = if spec.mult > 1 {
-        let rhf = solve_uhf(&ctx, &mol, &obs, op, &bounds, &cfg).unwrap();
+        let rhf = solve_uhf(&ctx, &mol, &obs, &bounds, &cfg).unwrap();
         rhf.density_total().to_owned()
     } else {
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg).unwrap();

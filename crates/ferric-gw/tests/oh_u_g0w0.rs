@@ -44,7 +44,7 @@ fn prepare_oh() -> (Molecule, PreparedBasis, PreparedBasis, ferric_scf::ScfResul
     let ctx = ParallelContext::default();
     let mut cfg = RhfConfig::default();
     cfg.max_iter = 200;
-    let uhf = solve_uhf(&ctx, &mol, &obs, op, &bounds, &cfg).expect("UHF");
+    let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &cfg).expect("UHF");
     assert!(uhf.converged, "UHF did not converge");
     (mol, obs, dfbs, uhf)
 }

@@ -57,7 +57,7 @@ fn run_uhf(
         ..Default::default()
     };
     let ctx = ParallelContext::default();
-    let res = solve_uhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
+    let res = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap();
     (res, mol, prep)
 }
 
@@ -146,7 +146,7 @@ fn fd_energy(mol: &Molecule, basis_name: &str) -> f64 {
         ..Default::default()
     };
     let ctx = ParallelContext::default();
-    solve_uhf(&ctx, mol, &prep, op, &bounds, &cfg).unwrap().energy
+    solve_uhf(&ctx, mol, &prep, &bounds, &cfg).unwrap().energy
 }
 
 #[test]
@@ -159,7 +159,7 @@ fn uhf_gradient_h_atom_fd() {
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let cfg = UhfConfig { energy_conv: 1e-12, ..Default::default() };
     let ctx = ParallelContext::default();
-    let res = solve_uhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
+    let res = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap();
     let g = uhf_gradient(&mol, &prep, op, &bounds, &res).unwrap();
     for v in g.iter() {
         assert!(v.abs() < 1e-8, "H atom UHF gradient not zero: {}", v);
@@ -181,7 +181,7 @@ fn uhf_gradient_oh_sto3g_fd() {
         ..Default::default()
     };
     let ctx = ParallelContext::default();
-    let res = solve_uhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
+    let res = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap();
     let analytic = uhf_gradient(&mol, &prep, op, &bounds, &res).unwrap();
 
     let h = 5e-4_f64;

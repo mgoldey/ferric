@@ -25,7 +25,7 @@ fn run(xc: &str, xyz: &str, mult: usize, basis_name: &str) -> f64 {
         max_iter: 200,
         ..Default::default()
     };
-    let res = solve_uhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap();
+    let res = solve_uhf(&ParallelContext::default(), &mol, &prep, &bounds, &cfg).unwrap();
     eprintln!("UKS {xc} {xyz} (mult={mult}, {basis_name}): E = {:.8} ({} iter)",
               res.energy, res.iterations);
     res.energy
@@ -80,7 +80,7 @@ fn uks_h_atom_ccpvdz_wb97x_v() {
         energy_conv: 1e-9, density_conv: 1e-7,
         max_iter: 200, ..Default::default()
     };
-    let res = solve_uhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap();
+    let res = solve_uhf(&ParallelContext::default(), &mol, &prep, &bounds, &cfg).unwrap();
     eprintln!("UKS wB97X-V H/cc-pVDZ: E = {:.8} ({} iter)", res.energy, res.iterations);
     // PySCF UKS wB97X-V H/cc-pvdz: -0.49962
     assert!((res.energy - (-0.49962)).abs() < 5e-4, "got E = {}", res.energy);
@@ -98,7 +98,7 @@ fn uks_oh_doublet_ccpvdz_wb97x_v() {
         energy_conv: 1e-7, density_conv: 1e-5,
         max_iter: 400, ..Default::default()
     };
-    let res = solve_uhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap();
+    let res = solve_uhf(&ParallelContext::default(), &mol, &prep, &bounds, &cfg).unwrap();
     eprintln!("UKS wB97X-V OH/cc-pVDZ: E = {:.8} ({} iter)", res.energy, res.iterations);
     // PySCF UKS wB97X-V OH/cc-pvdz: -75.70361
     assert!((res.energy - (-75.70361)).abs() < 2e-3, "got E = {}", res.energy);
@@ -122,7 +122,7 @@ fn uks_oh_doublet_ccpvdz_b3lyp() {
         max_iter: 400,
         ..Default::default()
     };
-    let res = solve_uhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap();
+    let res = solve_uhf(&ParallelContext::default(), &mol, &prep, &bounds, &cfg).unwrap();
     eprintln!("UKS B3LYP OH/cc-pvdz: E = {:.8} ({} iter)", res.energy, res.iterations);
     assert!((res.energy - (-75.7319)).abs() < 1e-3, "got E = {}", res.energy);
 }

@@ -93,7 +93,7 @@ fn uks_b3lyp_h2o_ccpvdz_translational_invariance() {
     cfg.df_k_aux = Some("def2-universal-jkfit".into());
     cfg.energy_conv = 1e-10;
     cfg.density_conv = 1e-8;
-    let uhf = solve_uhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap();
+    let uhf = solve_uhf(&ParallelContext::default(), &mol, &prep, &bounds, &cfg).unwrap();
 
     let g = ks_gradient_uks(&mol, &prep, &bs, op, &bounds, xc, &uhf).unwrap();
     let sum = g.sum_axis(ndarray::Axis(0));
