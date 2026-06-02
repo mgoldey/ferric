@@ -2337,6 +2337,214 @@ pub fn becke_charges(
 /// wired in, the absolute charge values exported here should be treated
 /// as a *baseline for downstream CM5 correction* on small molecules only,
 /// not as production-quality population analysis.
+/// A spherically-averaged free-atom radial density ρ_free(r), tabulated on a
+/// shared radial grid, for use as a Hirshfeld proatom. Built from an atomic SCF
+/// density in the *molecule's own basis* (basis-consistent Hirshfeld weights).
+#[derive(Clone)]
+pub struct RadialProatom {
+    /// Radii (Bohr), ascending. Shared across all atoms.
+    pub radii: Vec<f64>,
+    /// ρ_free at each radius (a.u.).
+    pub rho: Vec<f64>,
+}
+
+impl RadialProatom {
+    /// Linear-interpolate ρ_free at distance `r` (clamped/zero outside range).
+    pub fn at(&self, r: f64) -> f64 {
+        let n = self.radii.len();
+        if n == 0 || r <= self.radii[0] {
+            return self.rho.first().copied().unwrap_or(0.0);
+        }
+        if r >= self.radii[n - 1] {
+            return 0.0; // tail beyond the grid is negligible
+        }
+        // Binary search for the bracketing interval.
+        let mut lo = 0usize;
+        let mut hi = n - 1;
+        while hi - lo > 1 {
+            let mid = (lo + hi) / 2;
+            if self.radii[mid] <= r { lo = mid; } else { hi = mid; }
+        }
+        let t = (r - self.radii[lo]) / (self.radii[hi] - self.radii[lo]);
+        (1.0 - t) * self.rho[lo] + t * self.rho[hi]
+    }
+}
+
+/// Spherically average a single-atom density (atom at the origin) onto a radial
+/// grid via Lebedev angular quadrature. `atom_density` is the atomic SCF AO
+/// density matrix in `atom_bs`; the returned [`RadialProatom`] is the proatom
+/// reference for Hirshfeld partitioning.
+pub fn spherically_averaged_proatom(
+    z: i32,
+    atom_bs: &ferric_core::basis::BasisSet,
+    atom_density: &Array2<f64>,
+    radii: &[f64],
+) -> Result<RadialProatom, FerricError> {
+    use ferric_core::mol::{Atom, Molecule};
+    use ferric_dft::ao_grid::eval_basis_on_points;
+    use ferric_dft::lebedev::lebedev;
+
+    let sym = ferric_core::elements::z_to_symbol(z).unwrap_or("X");
+    let atom_mol = Molecule {
+        atoms: vec![Atom { symbol: sym.to_string(), z, x: 0.0, y: 0.0, zpos: 0.0 }],
+        charge: 0,
+        multiplicity: 1,
+    };
+    let (dirs, wts) = lebedev(110);
+    let mut rho = vec![0.0_f64; radii.len()];
+    for (ri, &r) in radii.iter().enumerate() {
+        // Build the sphere of radius r and evaluate the density on it.
+        let pts: Vec<[f64; 3]> = dirs.iter().map(|d| [d[0] * r, d[1] * r, d[2] * r]).collect();
+        let chi = eval_basis_on_points(&atom_mol, atom_bs, &pts)
+            .map_err(|e| FerricError::General(format!("proatom chi eval: {e}")))?;
+        let nbf = chi.nrows();
+        let d_chi = atom_density.dot(&chi);
+        // Angular average: Σ_k w_k ρ(r,Ω_k), weights sum to 1.
+        let mut acc = 0.0;
+        for (k, &w) in wts.iter().enumerate() {
+            let mut rho_k = 0.0;
+            for mu in 0..nbf {
+                rho_k += chi[(mu, k)] * d_chi[(mu, k)];
+            }
+            acc += w * rho_k;
+        }
+        rho[ri] = acc.max(0.0);
+    }
+    Ok(RadialProatom { radii: radii.to_vec(), rho })
+}
+
+/// Iterative Hirshfeld (Hirshfeld-I) charges using ad-hoc same-basis free-atom
+/// proatom densities.
+///
+/// `proatom` supplies the spherically-averaged free-atom density for element
+/// `z` at integer charge state `q_int` (0, +1, −1, …), built by the caller from
+/// an atomic SCF in the molecule's basis (so the Hirshfeld weight ratio is
+/// basis-consistent with the molecular density). The loop iterates each atom's
+/// fractional charge to self-consistency, interpolating the proatom between
+/// bracketing integer charge states; charges outside the available bracket fall
+/// back to the nearest state.
+///
+/// Returns per-atom charges q_A = Z_A − N_A, charge-conserving and equal for
+/// symmetry-equivalent atoms.
+pub fn hirshfeld_i_charges(
+    mol: &Molecule,
+    obs_bs: &ferric_core::basis::BasisSet,
+    density: &Array2<f64>,
+    proatom: &dyn Fn(i32, i32) -> Option<RadialProatom>,
+) -> Result<Vec<f64>, FerricError> {
+    use ferric_export::cube::GridSpec;
+    use ferric_export::gto_eval::eval_basis_on_grid;
+
+    let natoms = mol.atoms.len();
+    let spacing = std::env::var("FERRIC_HIRSHFELD_SPACING")
+        .ok().and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.20);
+    let margin = std::env::var("FERRIC_HIRSHFELD_MARGIN")
+        .ok().and_then(|s| s.parse::<f64>().ok()).unwrap_or(6.0);
+    let grid = GridSpec::bounding_box(mol, margin, spacing);
+    let dv = spacing * spacing * spacing;
+    let npts = grid.n_x * grid.n_y * grid.n_z;
+    let hx = grid.step_x[0];
+    let hy = grid.step_y[1];
+    let hz = grid.step_z[2];
+
+    let chi = eval_basis_on_grid(mol, obs_bs, &grid)
+        .map_err(|e| FerricError::General(format!("hirshfeld_i: chi eval failed: {e}")))?;
+    let nbf = chi.nrows();
+    if density.nrows() != nbf {
+        return Err(FerricError::General("hirshfeld_i: density/nbf mismatch".into()));
+    }
+    let d_chi = density.dot(&chi);
+    let mut rho = vec![0.0_f64; npts];
+    for mu in 0..nbf {
+        for g in 0..npts { rho[g] += chi[(mu, g)] * d_chi[(mu, g)]; }
+    }
+
+    // Precompute grid coordinates.
+    let mut gx = vec![0.0; npts];
+    let mut gy = vec![0.0; npts];
+    let mut gz = vec![0.0; npts];
+    for ix in 0..grid.n_x {
+        let x = grid.origin[0] + ix as f64 * hx;
+        for iy in 0..grid.n_y {
+            let y = grid.origin[1] + iy as f64 * hy;
+            for iz in 0..grid.n_z {
+                let z = grid.origin[2] + iz as f64 * hz;
+                let g = (ix * grid.n_y + iy) * grid.n_z + iz;
+                gx[g] = x; gy[g] = y; gz[g] = z;
+            }
+        }
+    }
+
+    // Cache integer-charge proatoms per element (z, q_int).
+    let mut cache: std::collections::HashMap<(i32, i32), Option<RadialProatom>> =
+        std::collections::HashMap::new();
+    let mut get = |z: i32, qi: i32, cache: &mut std::collections::HashMap<(i32, i32), Option<RadialProatom>>| -> Option<RadialProatom> {
+        cache.entry((z, qi)).or_insert_with(|| proatom(z, qi)).clone()
+    };
+
+    // Interpolated proatom density at distance r for fractional charge q.
+    let proatom_rho = |z: i32, q: f64, r: f64, cache: &mut std::collections::HashMap<(i32, i32), Option<RadialProatom>>| -> f64 {
+        let q_lo = q.floor() as i32;
+        let q_hi = q_lo + 1;
+        let f = q - q_lo as f64;
+        let p_lo = get(z, q_lo, cache);
+        let p_hi = get(z, q_hi, cache);
+        match (p_lo, p_hi) {
+            (Some(a), Some(b)) => ((1.0 - f) * a.at(r) + f * b.at(r)).max(0.0),
+            (Some(a), None) => a.at(r),
+            (None, Some(b)) => b.at(r),
+            (None, None) => {
+                // Fall back to the neutral if available.
+                get(z, 0, cache).map(|p| p.at(r)).unwrap_or(0.0)
+            }
+        }
+    };
+
+    let eps_floor = 1e-12;
+    let n_elec_target = mol.nelec() as f64;
+    let mut q = vec![0.0_f64; natoms];
+    let max_iter = 50;
+    let tol = 1e-4;
+
+    for _it in 0..max_iter {
+        let mut rho_free: Vec<Vec<f64>> = vec![vec![0.0; npts]; natoms];
+        let mut rho_sum = vec![0.0_f64; npts];
+        for a in 0..natoms {
+            let z_a = mol.atoms[a].z;
+            let (rax, ray, raz) = (mol.atoms[a].x, mol.atoms[a].y, mol.atoms[a].zpos);
+            let row = &mut rho_free[a];
+            for g in 0..npts {
+                let dx = gx[g] - rax;
+                let dy = gy[g] - ray;
+                let dz = gz[g] - raz;
+                let r = (dx * dx + dy * dy + dz * dz).sqrt();
+                let pr = proatom_rho(z_a, q[a], r, &mut cache);
+                row[g] = pr;
+                rho_sum[g] += pr;
+            }
+        }
+        let mut n_e = vec![0.0_f64; natoms];
+        for a in 0..natoms {
+            let mut acc = 0.0;
+            for g in 0..npts {
+                let w = rho_free[a][g] / (rho_sum[g] + eps_floor);
+                acc += rho[g] * w * dv;
+            }
+            n_e[a] = acc;
+        }
+        let n_sum: f64 = n_e.iter().sum();
+        let scale = if n_sum.abs() > 1e-12 { n_elec_target / n_sum } else { 1.0 };
+        let mut max_dq = 0.0_f64;
+        for a in 0..natoms {
+            let q_new = mol.atoms[a].z as f64 - scale * n_e[a];
+            max_dq = max_dq.max((q_new - q[a]).abs());
+            q[a] = 0.5 * q[a] + 0.5 * q_new; // damped
+        }
+        if max_dq < tol { break; }
+    }
+    Ok(q)
+}
+
 ///
 /// The total electronic charge is renormalized so Σ_A (Z_A − q_A) = N_e
 /// exactly (compensates for grid quadrature error in the density integral).
