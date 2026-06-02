@@ -294,18 +294,8 @@ pub fn twoelectron_gradient(
                         if b12 * b34 * max_d < 1e-12 { continue; }
                         let deriv = eng.compute_eri_deriv_quartet(prep, s1, s2, s3, s4);
                         if let Some(dq) = deriv {
-                            let (n1, n2, n3, n4) = (dims[s1], dims[s2], dims[s3], dims[s4]);
-                            let block_sz = n1 * n2 * n3 * n4;
-                            let atoms = [sh2at[s1], sh2at[s2], sh2at[s3], sh2at[s4]];
-                            let sym12 = s1 != s2;
-                            let sym34 = s3 != s4;
-                            let sym1234 = (s1, s2) != (s3, s4);
-                            accum_2e_grad(
-                                &mut grad, d, dq, block_sz,
-                                n1, n2, n3, n4,
-                                offs[s1], offs[s2], offs[s3], offs[s4],
-                                &atoms, sym12, sym34, sym1234,
-                            );
+                            let blk = QuartetBlock::new(dims, offs, sh2at, s1, s2, s3, s4);
+                            accum_2e_grad(&mut grad, d, dq, &blk);
                         }
                     }
                 }
@@ -314,6 +304,49 @@ pub fn twoelectron_gradient(
     }
 
     Ok(grad)
+}
+
+/// Geometry and permutational-symmetry bundle for one shell quartet.
+///
+/// Groups the per-quartet scalars that the 2e-gradient kernels need: the AO
+/// dimensions `n` and offsets `o` of the four shells, the atom each shell sits
+/// on, the derivative block size, and which index permutations are distinct.
+#[derive(Clone, Copy)]
+struct QuartetBlock {
+    /// AO dimensions (n1,n2,n3,n4).
+    n: [usize; 4],
+    /// AO offsets (o1,o2,o3,o4).
+    o: [usize; 4],
+    /// Atom index for each of the four shells.
+    atoms: [usize; 4],
+    /// Number of AO quartets in one derivative block (n1*n2*n3*n4).
+    block_sz: usize,
+    /// s1 != s2 — the (1,2) pair has a distinct transpose.
+    sym12: bool,
+    /// s3 != s4 — the (3,4) pair has a distinct transpose.
+    sym34: bool,
+    /// (s1,s2) != (s3,s4) — bra and ket are distinct.
+    sym1234: bool,
+}
+
+impl QuartetBlock {
+    /// Build the bundle for shell quartet (s1,s2,s3,s4) from the prepared-basis
+    /// per-shell tables.
+    fn new(
+        dims: &[usize], offs: &[usize], sh2at: &[usize],
+        s1: usize, s2: usize, s3: usize, s4: usize,
+    ) -> Self {
+        let n = [dims[s1], dims[s2], dims[s3], dims[s4]];
+        Self {
+            n,
+            o: [offs[s1], offs[s2], offs[s3], offs[s4]],
+            atoms: [sh2at[s1], sh2at[s2], sh2at[s3], sh2at[s4]],
+            block_sz: n[0] * n[1] * n[2] * n[3],
+            sym12: s1 != s2,
+            sym34: s3 != s4,
+            sym1234: (s1, s2) != (s3, s4),
+        }
+    }
 }
 
 /// Accumulate the 2e gradient for one shell quartet, handling all permutational symmetry.
@@ -328,12 +361,10 @@ pub fn twoelectron_gradient(
 ///
 /// The total Γ prefactor for each derivative block is the sum of Γ over all
 /// equivalent permutations.
-fn accum_2e_grad(
-    grad: &mut Array2<f64>, d: &Array2<f64>, dq: &[f64], block_sz: usize,
-    n1: usize, n2: usize, n3: usize, n4: usize,
-    o1: usize, o2: usize, o3: usize, o4: usize,
-    atoms: &[usize; 4], sym12: bool, sym34: bool, sym1234: bool,
-) {
+fn accum_2e_grad(grad: &mut Array2<f64>, d: &Array2<f64>, dq: &[f64], blk: &QuartetBlock) {
+    let [n1, n2, n3, n4] = blk.n;
+    let [o1, o2, o3, o4] = blk.o;
+    let QuartetBlock { block_sz, atoms, sym12, sym34, sym1234, .. } = *blk;
     for a in 0..n1 {
         for b in 0..n2 {
             for c in 0..n3 {
@@ -563,32 +594,8 @@ pub fn twoelectron_gradient_uhf(
                     }
                     let deriv = eng.compute_eri_deriv_quartet(prep, s1, s2, s3, s4);
                     if let Some(dq) = deriv {
-                        let (n1, n2, n3, n4) = (dims[s1], dims[s2], dims[s3], dims[s4]);
-                        let block_sz = n1 * n2 * n3 * n4;
-                        let atoms = [sh2at[s1], sh2at[s2], sh2at[s3], sh2at[s4]];
-                        let sym12 = s1 != s2;
-                        let sym34 = s3 != s4;
-                        let sym1234 = (s1, s2) != (s3, s4);
-                        accum_2e_grad_uhf(
-                            &mut grad,
-                            d_total,
-                            d_alpha,
-                            d_beta,
-                            dq,
-                            block_sz,
-                            n1,
-                            n2,
-                            n3,
-                            n4,
-                            offs[s1],
-                            offs[s2],
-                            offs[s3],
-                            offs[s4],
-                            &atoms,
-                            sym12,
-                            sym34,
-                            sym1234,
-                        );
+                        let blk = QuartetBlock::new(dims, offs, sh2at, s1, s2, s3, s4);
+                        accum_2e_grad_uhf(&mut grad, d_total, d_alpha, d_beta, dq, &blk);
                     }
                 }
             }
@@ -597,27 +604,17 @@ pub fn twoelectron_gradient_uhf(
     Ok(grad)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn accum_2e_grad_uhf(
     grad: &mut Array2<f64>,
     d: &Array2<f64>,
     da: &Array2<f64>,
     db: &Array2<f64>,
     dq: &[f64],
-    block_sz: usize,
-    n1: usize,
-    n2: usize,
-    n3: usize,
-    n4: usize,
-    o1: usize,
-    o2: usize,
-    o3: usize,
-    o4: usize,
-    atoms: &[usize; 4],
-    sym12: bool,
-    sym34: bool,
-    sym1234: bool,
+    blk: &QuartetBlock,
 ) {
+    let [n1, n2, n3, n4] = blk.n;
+    let [o1, o2, o3, o4] = blk.o;
+    let QuartetBlock { block_sz, atoms, sym12, sym34, sym1234, .. } = *blk;
     for a in 0..n1 {
         for b in 0..n2 {
             for c in 0..n3 {
@@ -852,18 +849,8 @@ mod tests {
                             if b12 * b34 * max_d < 1e-12 { continue; }
                             let deriv = eng.compute_eri_deriv_quartet(prep, s1, s2, s3, s4);
                             if let Some(dq) = deriv {
-                                let (n1, n2, n3, n4) = (dims[s1], dims[s2], dims[s3], dims[s4]);
-                                let block_sz = n1 * n2 * n3 * n4;
-                                let atoms = [sh2at[s1], sh2at[s2], sh2at[s3], sh2at[s4]];
-                                let sym12 = s1 != s2;
-                                let sym34 = s3 != s4;
-                                let sym1234 = (s1, s2) != (s3, s4);
-                                accum_2e_grad(
-                                    &mut twoelec_grad, d, dq, block_sz,
-                                    n1, n2, n3, n4,
-                                    offs[s1], offs[s2], offs[s3], offs[s4],
-                                    &atoms, sym12, sym34, sym1234,
-                                );
+                                let blk = QuartetBlock::new(dims, offs, sh2at, s1, s2, s3, s4);
+                                accum_2e_grad(&mut twoelec_grad, d, dq, &blk);
                             }
                         }
                     }
