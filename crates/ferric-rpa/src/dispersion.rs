@@ -30,8 +30,18 @@ pub struct DynamicPolarizability {
     pub freqs: Vec<f64>,
     /// Casimir-Polder quadrature weights w_k (a.u.).
     pub weights: Vec<f64>,
-    /// `per_atom[a][k]` = 3×3 tensor α^A_{ij}(iω_k), a.u.
+    /// `per_atom[a][k]` = 3×3 tensor α^A_{ij}(iω_k), a.u. — the ATOM-CENTRED
+    /// *intrinsic* atomic polarizability (operator r − R_A, charge-transfer
+    /// excluded). Origin-independent and ~isotropic per atom; this is the
+    /// correct object for atom-resolved C6 (TS/MBD convention). The molecular
+    /// bond-axis anisotropy is NOT here — it is a coupled property.
     pub per_atom: Vec<Vec<[[f64; 3]; 3]>>,
+    /// `molecular[k]` = 3×3 molecular α_{ij}(iω_k), a.u. — the global-origin
+    /// total molecular polarizability (origin-independent for the response).
+    /// This drives the molecular C6 total (DOSD-comparable); it is NOT the sum
+    /// of the intrinsic per-atom tensors (the difference is inter-atomic
+    /// coupling / charge transfer).
+    pub molecular: Vec<[[f64; 3]; 3]>,
 }
 
 /// C6 result: the fundamental per-atom α(iω) plus derived pair coefficients.
@@ -42,6 +52,9 @@ pub struct C6Result {
     pub c6_iso_pair: Array2<f64>,
     /// Anisotropic C6^{AB}_{ij}: `c6_aniso_pair[a][b]` = 3×3 tensor.
     pub c6_aniso_pair: Vec<Vec<[[f64; 3]; 3]>>,
+    /// Molecular isotropic C6 from the molecular α(iω) (the DOSD-comparable
+    /// total), computed independently of the per-atom pair matrix.
+    pub c6_molecular_iso: f64,
 }
 
 /// Partition scheme for the per-atom decomposition.
@@ -102,10 +115,27 @@ pub fn casimir_polder_c6(dyn_pol: &DynamicPolarizability) -> C6Result {
         }
     }
 
+    // Molecular isotropic C6 from the molecular α(iω) — the DOSD-comparable
+    // total, computed from the global-origin molecular response, NOT the
+    // intrinsic per-atom pair sum (which omits inter-atomic coupling).
+    let c6_molecular_iso = if dyn_pol.molecular.len() == nfreq {
+        let mut s = 0.0;
+        for k in 0..nfreq {
+            let t = dyn_pol.molecular[k];
+            let iso_mol = (t[0][0] + t[1][1] + t[2][2]) / 3.0;
+            s += dyn_pol.weights[k] * iso_mol * iso_mol;
+        }
+        pref * s
+    } else {
+        // Fallback (e.g. molecular not populated): use the intrinsic pair sum.
+        c6_iso_pair.sum()
+    };
+
     C6Result {
         per_atom_dynamic: dyn_pol.clone(),
         c6_iso_pair,
         c6_aniso_pair,
+        c6_molecular_iso,
     }
 }
 
@@ -189,10 +219,27 @@ pub fn ts_dynamic_polarizability(
         }
     }
 
+    // TS has no inter-atomic charge transfer (atomic London oscillators), so the
+    // molecular α is exactly the sum of the per-atom tensors.
+    let molecular: Vec<[[f64; 3]; 3]> = (0..nfreq)
+        .map(|k| {
+            let mut m = [[0.0; 3]; 3];
+            for at in &per_atom {
+                for i in 0..3 {
+                    for j in 0..3 {
+                        m[i][j] += at[k][i][j];
+                    }
+                }
+            }
+            m
+        })
+        .collect();
+
     DynamicPolarizability {
         freqs: freqs.to_vec(),
         weights: weights.to_vec(),
         per_atom,
+        molecular,
     }
 }
 
@@ -234,10 +281,21 @@ pub fn pdep_dynamic_polarizability(
         )?
     };
 
+    // Molecular (whole-system) α(iω) for the DOSD-comparable molecular C6 total.
+    // Partition-independent; computed from the lab-frame molecular dipole.
+    // Closed-shell only; for open-shell references we leave it empty and
+    // casimir_polder_c6 falls back to the per-atom pair sum.
+    let molecular = if matches!(rhf.spin, ferric_scf::result::Spin::Restricted) {
+        crate::properties::molecular_dynamic_polarizability(mol, obs, dfbs, rhf, op, cfg, &freqs)?
+    } else {
+        Vec::new()
+    };
+
     Ok(DynamicPolarizability {
         freqs,
         weights,
         per_atom,
+        molecular,
     })
 }
 
@@ -506,7 +564,9 @@ pub fn pdep_dynamic_polarizability_truncated(
         }
     }
 
-    Ok(DynamicPolarizability { freqs, weights, per_atom: out })
+    // Truncated/benchmark path: molecular total not its concern; leave empty so
+    // casimir_polder_c6 falls back to the per-atom pair sum.
+    Ok(DynamicPolarizability { freqs, weights, per_atom: out, molecular: Vec::new() })
 }
 
 #[cfg(test)]
@@ -539,7 +599,7 @@ mod tests {
                 [[a, 0.0, 0.0], [0.0, a, 0.0], [0.0, 0.0, a]]
             })
             .collect()];
-        let dp = DynamicPolarizability { freqs, weights, per_atom };
+        let dp = DynamicPolarizability { freqs, weights, per_atom, molecular: Vec::new() };
         let res = casimir_polder_c6(&dp);
         let c6 = res.c6_iso_pair[(0, 0)];
         let analytic = 0.75 * alpha0 * alpha0 * omega0;

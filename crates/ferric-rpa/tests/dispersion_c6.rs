@@ -91,16 +91,99 @@ fn pdep_dynamic_n2_anisotropy_correct_sign() {
     }).sum();
     assert!(iso_sum > 0.0, "molecular α_iso(ω=0) must be positive: {iso_sum}");
 
-    // N₂ bond along z: α_zz > α_xx (σ electrons), so C6_zz > C6_xx.
-    let aniso = &res.c6_aniso_pair;
-    let c6_zz: f64 = (0..n).flat_map(|a| (0..n).map(move |b| aniso[a][b][2][2])).sum();
-    let c6_xx: f64 = (0..n).flat_map(|a| (0..n).map(move |b| aniso[a][b][0][0])).sum();
+    // N₂ bond along z: the MOLECULAR α has α_zz > α_xx (σ electrons). The
+    // anisotropy is a coupled/molecular property — it lives in `molecular`, NOT
+    // in the per-atom intrinsic tensors (those are ~isotropic; see the separate
+    // isotropy test). Check the molecular α(0) tensor.
+    let m0 = dp.molecular[0];
     assert!(
-        c6_zz > c6_xx,
-        "N2 C6_zz should exceed C6_xx (bond-axis polarizability larger): zz={c6_zz:.3} xx={c6_xx:.3}"
+        m0[2][2] > m0[0][0],
+        "N2 molecular α_zz should exceed α_xx (bond-axis larger): zz={:.3} xx={:.3}",
+        m0[2][2], m0[0][0]
     );
-    // Both must be positive.
-    assert!(c6_zz > 0.0 && c6_xx > 0.0, "C6 components must be positive");
+    assert!(m0[2][2] > 0.0 && m0[0][0] > 0.0, "molecular α components must be positive");
+
+    // Sanity: the molecular C6 total comes from `molecular`, not the per-atom sum.
+    assert!(res.c6_molecular_iso > 0.0, "molecular C6 must be positive");
+}
+
+/// The per-atom INTRINSIC polarizability is ~isotropic: bond-axis anisotropy is
+/// a coupled/molecular effect (MBD-SCS), not an atomic property. For N₂ each
+/// N atom's α_zz should be close to its α_xx (no large bond-axis enhancement at
+/// the atomic level — that would signal charge-transfer contamination).
+#[test]
+fn pdep_dynamic_per_atom_alpha_is_isotropic_n2() {
+    let xyz = "2\nN2\nN 0 0 0\nN 0 0 2.074\n";
+    let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+    let obs_bs = basis::bundled("cc-pvdz").unwrap();
+    let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
+    let op = Operator::coulomb();
+    let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+    let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
+    let ctx = ParallelContext::default();
+    let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+    let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
+    let mut cfg = PdepRpaConfig::default();
+    cfg.frozen_core = 0;
+    cfg.trunc_thresh = 0.0;
+
+    let dp = pdep_dynamic_polarizability(
+        &mol, &obs, &obs_bs, &dfbs, &rhf, op, &cfg, DispersionPartition::Hirshfeld,
+    )
+    .unwrap();
+
+    // Atom 0 static intrinsic tensor: zz within ~50% of xx (roughly isotropic,
+    // NOT the strong bond-axis enhancement of the molecular tensor).
+    let t = dp.per_atom[0][0];
+    let azz = t[2][2];
+    let axx = t[0][0];
+    assert!(axx > 0.0 && azz > 0.0, "atomic α must be positive");
+    let ratio = azz / axx;
+    assert!(
+        (0.5..=2.0).contains(&ratio),
+        "per-atom intrinsic α should be ~isotropic (CT-free), got α_zz/α_xx={ratio:.2}"
+    );
+}
+
+/// Per-atom intrinsic C6 must be origin-independent: two symmetry-equivalent
+/// atoms in a homonuclear molecule placed OFF the coordinate origin must get
+/// equal per-atom C6. The Hirshfeld-dynamic per-atom dipole uses the atom-
+/// centred operator (r − R_A), excluding the charge-transfer term — the correct
+/// intrinsic atomic polarizability for atom-resolved C6 (TS/MBD convention).
+#[test]
+fn pdep_dynamic_per_atom_c6_is_origin_independent() {
+    // N2 placed at z = 0 and z = 2.074 Bohr (NOT centred on the origin).
+    let xyz = "2\nN2 offset\nN 0 0 0\nN 0 0 2.074\n";
+    let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+    let obs_bs = basis::bundled("cc-pvdz").unwrap();
+    let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
+    let op = Operator::coulomb();
+    let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+    let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
+    let ctx = ParallelContext::default();
+    let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+    let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
+    let mut cfg = PdepRpaConfig::default();
+    cfg.frozen_core = 0;
+    cfg.trunc_thresh = 0.0;
+
+    let dp = pdep_dynamic_polarizability(
+        &mol, &obs, &obs_bs, &dfbs, &rhf, op, &cfg, DispersionPartition::Hirshfeld,
+    )
+    .unwrap();
+    let res = casimir_polder_c6(&dp);
+
+    // Per-atom self-C6 = diagonal of the isotropic pair matrix.
+    let c6_a = res.c6_iso_pair[(0, 0)];
+    let c6_b = res.c6_iso_pair[(1, 1)];
+    let rel = (c6_a - c6_b).abs() / c6_a.abs().max(1e-12);
+    // 1e-4: grid-quadrature noise floor (the Becke grid is not perfectly
+    // symmetric under the partition); the gauge error was rel ≈ 5.
+    assert!(
+        rel < 1e-4,
+        "homonuclear N2 off-origin: per-atom C6 must be equal (origin-independent), \
+         got N_a={c6_a:.4} N_b={c6_b:.4} (rel diff {rel:.2e})"
+    );
 }
 
 /// PDEP-RPA dynamic α(iω) → Casimir-Polder C6 for a FREE He atom.

@@ -1901,43 +1901,40 @@ pub fn pdep_polarizability_hirshfeld_dynamic(
         }
     }
 
-    // Build per-atom Hirshfeld AO dipoles, renormalize to analytical sum rule.
+    // Build per-atom Hirshfeld AO dipoles with the ATOM-CENTRED position
+    // operator (r − R_A). This yields the *intrinsic* atomic polarizability:
+    // origin-independent and charge-transfer-free, the correct object for
+    // atom-resolved C6 (TS/MBD convention). Using the global-frame r instead
+    // leaks R_A·(field-induced charge transfer onto A) into α^A, which breaks
+    // the symmetry of equivalent atoms off-origin (e.g. the two N in N₂) and
+    // contaminates the per-atom bond-axis response. We deliberately do NOT
+    // renormalize to the global lab-frame dipole — that renormalization is the
+    // gauge-breaking step (it scales each atom by a shared factor and cannot
+    // restore per-atom symmetry). The molecular total is computed separately
+    // from the lab-frame molecular α (see `molecular_dynamic_polarizability`).
     let eps_floor = 1e-12;
+    let atom_pos: Vec<[f64; 3]> =
+        mol.atoms.iter().map(|at| [at.x, at.y, at.zpos]).collect();
     let mut d_ai_ao_all: Vec<[Array2<f64>; 3]> = (0..natoms)
         .map(|_| std::array::from_fn(|_| Array2::<f64>::zeros((nbf, nbf)))).collect();
-    let mut d_ai_ao_sum: [Array2<f64>; 3] =
-        std::array::from_fn(|_| Array2::<f64>::zeros((nbf, nbf)));
     for a in 0..natoms {
+        let ra = atom_pos[a];
         let mut wa = vec![0.0_f64; npts];
         for g in 0..npts { wa[g] = rho_free[a][g] / (rho_sum[g] + eps_floor); }
         for i_cart in 0..3 {
+            let ra_d = ra[i_cart];
             let mut combined = Array2::<f64>::zeros((nbf, npts));
             for mu in 0..nbf {
                 let chi_mu = chi.row(mu);
-                for g in 0..npts { combined[(mu, g)] = chi_mu[g] * wa[g] * ri_grid[i_cart][g] * dv; }
+                for g in 0..npts {
+                    combined[(mu, g)] = chi_mu[g] * wa[g] * (ri_grid[i_cart][g] - ra_d) * dv;
+                }
             }
             let d = chi.dot(&combined.t());
             let mut d_sym = Array2::<f64>::zeros((nbf, nbf));
             for mu in 0..nbf { for nu in 0..nbf { d_sym[(mu,nu)] = 0.5*(d[(mu,nu)]+d[(nu,mu)]); } }
-            d_ai_ao_sum[i_cart] = &d_ai_ao_sum[i_cart] + &d_sym;
             d_ai_ao_all[a][i_cart] = d_sym;
         }
-    }
-    // Renormalize to analytical sum rule so Σ_A μ^A = μ^analytical exactly.
-    let dip_ao = &_dip_ao_analytical;
-    let inv_n = 1.0 / natoms as f64;
-    let small = 1e-10;
-    for i_cart in 0..3 {
-        for mu in 0..nbf { for nu in 0..nbf {
-            let total_grid = d_ai_ao_sum[i_cart][(mu, nu)];
-            let total_analytical = dip_ao[i_cart][(mu, nu)];
-            if total_grid.abs() < small * (1.0 + total_analytical.abs()) {
-                for a in 0..natoms { d_ai_ao_all[a][i_cart][(mu, nu)] = total_analytical * inv_n; }
-            } else {
-                let scale = total_analytical / total_grid;
-                for a in 0..natoms { d_ai_ao_all[a][i_cart][(mu, nu)] *= scale; }
-            }
-        }}
     }
 
     // Transform renormalized AO dipoles to MO occ-vir basis (ω-independent).
@@ -1950,9 +1947,16 @@ pub fn pdep_polarizability_hirshfeld_dynamic(
         })
     }).collect();
 
-    // Molecular dipole = sum of per-atom Hirshfeld pieces (exact after renorm).
+    // Molecular (field-side) dipole: the TRUE lab-frame molecular dipole Σ_i r_i
+    // from the analytical AO integrals — the perturbation a uniform field
+    // couples to. NOT the sum of atom-centred per-atom pieces (those answer the
+    // atom-resolved question). Pairing the atom-centred bra (mu_ai_flat) with
+    // this lab-frame molecular ket gives α^A_{dj} = ∂μ^A_d/∂E_j.
     let mu_flat: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
-        mu_ai_flat.iter().fold(ndarray::Array1::<f64>::zeros(nov), |acc, m| acc + &m[d])
+        let mo = c_occ.t().dot(&_dip_ao_analytical[d]).dot(&c_vir);
+        let mut v = ndarray::Array1::<f64>::zeros(nov);
+        for i in 0..nocc { for ax in 0..nvir { v[i * nvir + ax] = mo[(i, ax)]; } }
+        v
     });
 
     // --- Frequency loop ---
@@ -1993,6 +1997,109 @@ pub fn pdep_polarizability_hirshfeld_dynamic(
         }
     }
 
+    Ok(out)
+}
+
+/// Molecular (whole-system) dynamic polarizability α_{ij}(iω_k) for the
+/// closed-shell PDEP-RPA response, partition-independent.
+///
+/// Uses the lab-frame molecular dipole Σ_i r_i on both sides of the response,
+/// so it is origin-independent and gives the DOSD-comparable molecular C6 when
+/// fed to Casimir-Polder. This is the correct molecular total — distinct from
+/// the sum of the intrinsic per-atom tensors (which omit inter-atomic
+/// coupling). Returns `molecular[k]` = 3×3 tensor (a.u.).
+pub fn molecular_dynamic_polarizability(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    rhf: &ScfResult,
+    op: Operator,
+    _cfg: &PdepRpaConfig,
+    freqs: &[f64],
+) -> Result<Vec<[[f64; 3]; 3]>, FerricError> {
+    use ndarray_linalg::Solve;
+
+    if !matches!(rhf.spin, Spin::Restricted) {
+        return Err(FerricError::General(
+            "molecular_dynamic_polarizability: only closed-shell (Restricted) supported".into(),
+        ));
+    }
+
+    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0 };
+    let inter = ferric_mp2::rimp2::compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
+    let b_ov = &inter.b_ov;
+    let nocc = inter.nocc;
+    let nvir = inter.nvir;
+    let nocc_total = inter.nocc_total;
+    let first_occ = inter.first_occ;
+    let naux = inter.naux;
+    let nov = nocc * nvir;
+
+    let eps = rhf.eps_r();
+    let eps_occ: Vec<f64> = eps[first_occ..first_occ + nocc].to_vec();
+    let eps_vir: Vec<f64> = eps[nocc_total..nocc_total + nvir].to_vec();
+    let mut e_ia = ndarray::Array1::<f64>::zeros(nov);
+    for i in 0..nocc {
+        for a in 0..nvir {
+            e_ia[i * nvir + a] = eps_vir[a] - eps_occ[i];
+        }
+    }
+
+    // Lab-frame molecular dipole in the MO occ-vir basis.
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let c = rhf.mos_r();
+    let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
+    let c_vir = c.slice(ndarray::s![.., nocc_total..nocc_total + nvir]).to_owned();
+    let mu_flat: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
+        let mo = c_occ.t().dot(&dip_ao[d]).dot(&c_vir);
+        let mut v = ndarray::Array1::<f64>::zeros(nov);
+        for i in 0..nocc {
+            for a in 0..nvir {
+                v[i * nvir + a] = mo[(i, a)];
+            }
+        }
+        v
+    });
+
+    let mut out = vec![[[0.0_f64; 3]; 3]; freqs.len()];
+    for (k, &omega) in freqs.iter().enumerate() {
+        let omega2 = omega * omega;
+        let mut g = ndarray::Array1::<f64>::zeros(nov);
+        for ia in 0..nov {
+            let e = e_ia[ia];
+            g[ia] = e / (omega2 + e * e);
+        }
+        // ε̃(ω) = I + 4 B̃ diag(g) B̃^T
+        let mut b_scaled = b_ov.clone();
+        for ia in 0..nov {
+            b_scaled.column_mut(ia).mapv_inplace(|x| x * (4.0 * g[ia]).sqrt());
+        }
+        let mut eps_mat: Array2<f64> = b_scaled.dot(&b_scaled.t());
+        for p in 0..naux {
+            eps_mat[(p, p)] += 1.0;
+        }
+        let mu_g: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| &mu_flat[d] * &g);
+        let y: [ndarray::Array1<f64>; 3] =
+            std::array::from_fn(|d| eps_mat.solve(&b_ov.dot(&mu_g[d])).unwrap());
+
+        let mut t = [[0.0_f64; 3]; 3];
+        for d in 0..3 {
+            let w_d = b_ov.dot(&mu_g[d]);
+            for j in 0..3 {
+                let bare = mu_flat[d].dot(&mu_g[j]);
+                let coupled = w_d.dot(&y[j]);
+                t[d][j] = 4.0 * bare - 16.0 * coupled;
+            }
+        }
+        for i in 0..3 {
+            for j in (i + 1)..3 {
+                let avg = 0.5 * (t[i][j] + t[j][i]);
+                t[i][j] = avg;
+                t[j][i] = avg;
+            }
+        }
+        out[k] = t;
+    }
     Ok(out)
 }
 

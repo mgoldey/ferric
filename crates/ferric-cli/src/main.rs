@@ -727,17 +727,20 @@ fn main() {
                     };
 
                     let res_opt = if use_pdep {
-                        // Phase 2: PDEP-RPA dynamic α(iω). Origin-clean for free atoms and
-                        // molecular totals; per-atom in a molecule is origin-dependent at ω≠0.
+                        // Phase 2: PDEP-RPA dynamic α(iω). Origin-independent for
+                        // the molecular total AND the per-atom intrinsic α^A
+                        // (atom-centred (r−R_A); bond-axis anisotropy is a
+                        // coupled/molecular property, not per-atom).
                         match pdep_dynamic_polarizability(
                             &mol, &prep, &bs, &dfbs, &result, op, &rpa_cfg, partition,
                         ) {
                             Ok(dp) => {
+                                let res = casimir_polder_c6(&dp);
                                 println!(
-                                    "Computed PDEP-RPA C6: {} atoms, {} freqs",
-                                    mol.atoms.len(), dp.freqs.len()
+                                    "Computed PDEP-RPA C6: {} atoms, {} freqs; molecular C6 = {:.3} a.u.",
+                                    mol.atoms.len(), dp.freqs.len(), res.c6_molecular_iso
                                 );
-                                Some(casimir_polder_c6(&dp))
+                                Some(res)
                             }
                             Err(e) => {
                                 eprintln!("warning: PDEP-RPA C6 failed: {e}");
