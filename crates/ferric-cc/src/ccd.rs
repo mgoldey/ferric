@@ -6,7 +6,8 @@ use ferric_integrals::operator::Operator;
 use ferric_scf::ScfResult;
 use ferric_mp2::mo_transform::{transform_3center_oo, transform_3center_ov, transform_3center_vv};
 use ferric_mp2::rimp2::cholesky_inverse_sqrt;
-use ndarray::Array4;
+use ferric_tensors::{einsum, Axis, Tensor};
+use ndarray::{Array4, ArrayD, IxDyn};
 
 /// Compute CCD correlation energy.
 pub fn ccd(
@@ -21,7 +22,6 @@ pub fn ccd(
     let nocc_total = rhf.eps_r().iter().filter(|&&e| e < 0.0).count();
     let nocc = nocc_total - cfg.frozen_core;
     let nvir = nbas - nocc_total;
-    let naux = dfbs.nbasis();
 
     let eps = rhf.eps_r();
     let c = rhf.mos_r();
@@ -38,60 +38,59 @@ pub fn ccd(
     let b_oo = transform_3center_oo(&b_ao, &c_occ);
     let b_vv = transform_3center_vv(&b_ao, &c_vir);
 
-    // Contract with V^-1/2
-    let mut b_ia = ndarray::Array3::zeros((naux, nocc, nvir));
-    let mut b_ij = ndarray::Array3::zeros((naux, nocc, nocc));
-    let mut b_ab = ndarray::Array3::zeros((naux, nvir, nvir));
+    // Contract with V^-1/2: B^P_{xy} = sum_Q V^{-1/2}_{PQ} (Q|xy).
+    // Reshape each (naux, d1, d2) block to (naux, d1*d2), apply the naux×naux
+    // matmul via BLAS2 .dot(), reshape back.
+    let dress = |b: &ndarray::Array3<f64>| -> ndarray::Array3<f64> {
+        let (na, d1, d2) = b.dim();
+        let flat = b.view().into_shape_with_order((na, d1 * d2)).unwrap();
+        v_inv_sqrt
+            .dot(&flat)
+            .into_shape_with_order((na, d1, d2))
+            .unwrap()
+    };
+    let b_ia = dress(&b_ov); // (naux, nocc, nvir)
+    let b_ij = dress(&b_oo); // (naux, nocc, nocc)
+    let b_ab = dress(&b_vv); // (naux, nvir, nvir)
 
-    for p in 0..naux {
-        for q in 0..naux {
-            let f = v_inv_sqrt[(p, q)];
-            b_ia.slice_mut(ndarray::s![p, .., ..]).scaled_add(f, &b_ov.slice(ndarray::s![q, .., ..]));
-            b_ij.slice_mut(ndarray::s![p, .., ..]).scaled_add(f, &b_oo.slice(ndarray::s![q, .., ..]));
-            b_ab.slice_mut(ndarray::s![p, .., ..]).scaled_add(f, &b_vv.slice(ndarray::s![q, .., ..]));
-        }
-    }
+    // Dressed RI block as a Tensor for einsum!.
+    let b_ia_t = Tensor::new(b_ia.clone().into_dyn(), [Axis::Aux, Axis::O, Axis::V]);
 
-    // 2. Form initial T2 guess (MP2)
+    // The chemist (ia|jb) integral g[i,a,j,b] = sum_P B^P_ia B^P_jb, built ONCE
+    // via einsum! and reused for the MP2 guess, the energy, and the (ab|ij)
+    // residual term (previously computed three times with scalar sum_P loops).
+    let g_iajb: ArrayD<f64> = einsum!("Pia,Pjb->iajb", &b_ia_t, &b_ia_t);
+
+    // 2. Form initial T2 guess (MP2): t2[i,a,j,b] = g[i,a,j,b] / D_ijab.
     let mut t2 = Array4::zeros((nocc, nvir, nocc, nvir));
     for i in 0..nocc {
         for j in 0..nocc {
             for a in 0..nvir {
                 for b in 0..nvir {
-                    let mut eri_iajb = 0.0;
-                    for p in 0..naux {
-                        eri_iajb += b_ia[(p, i, a)] * b_ia[(p, j, b)];
-                    }
-                    let d_ijab = eps[cfg.frozen_core + i] + eps[cfg.frozen_core + j] 
+                    let d_ijab = eps[cfg.frozen_core + i] + eps[cfg.frozen_core + j]
                                - eps[nocc_total + a] - eps[nocc_total + b];
-                    t2[(i, a, j, b)] = eri_iajb / d_ijab;
+                    t2[(i, a, j, b)] = g_iajb[[i, a, j, b]] / d_ijab;
                 }
             }
         }
     }
 
+    // gx[i,a,j,b] = 2 g[i,a,j,b] - g[i,b,j,a]; the exchange reindex (ib|ja) is
+    // g permuted on a<->b = axes [0,3,2,1]. Used in the energy contraction.
+    let g_ibja = g_iajb
+        .clone()
+        .permuted_axes(IxDyn(&[0, 3, 2, 1]))
+        .as_standard_layout()
+        .into_owned();
+    let gx = 2.0 * &g_iajb - &g_ibja;
+    let gx_t = Tensor::new(gx, [Axis::O, Axis::V, Axis::O, Axis::V]);
+
     // 3. Iteration loop
     let mut e_old = 0.0;
     for iter in 0..cfg.max_iter {
-        // A. Compute correlation energy
-        let mut e_corr = 0.0;
-        for i in 0..nocc {
-            for j in 0..nocc {
-                for a in 0..nvir {
-                    for b in 0..nvir {
-                        let mut eri_iajb = 0.0;
-                        for p in 0..naux {
-                            eri_iajb += b_ia[(p, i, a)] * b_ia[(p, j, b)];
-                        }
-                        let mut eri_ibja = 0.0;
-                        for p in 0..naux {
-                            eri_ibja += b_ia[(p, i, b)] * b_ia[(p, j, a)];
-                        }
-                        e_corr += t2[(i, a, j, b)] * (2.0 * eri_iajb - eri_ibja);
-                    }
-                }
-            }
-        }
+        // A. Compute correlation energy: e_corr = sum_iajb t2 * (2 g_iajb - g_ibja).
+        let t2_t = Tensor::new(t2.clone().into_dyn(), [Axis::O, Axis::V, Axis::O, Axis::V]);
+        let e_corr: f64 = einsum!("iajb,iajb->", &t2_t, &gx_t);
 
         let d_e = (e_corr - e_old).abs();
         if iter > 0 && d_e < 1e-10 {
@@ -101,28 +100,17 @@ pub fn ccd(
         e_old = e_corr;
 
         // B. Compute residuals
-        // R_abij = (ab|ij) + L_abij + H_abij + ...
-        let mut r2 = Array4::zeros((nocc, nvir, nocc, nvir));
-        
-        // 1. (ab|ij) term
-        for i in 0..nocc {
-            for j in 0..nocc {
-                for a in 0..nvir {
-                    for b in 0..nvir {
-                        let mut eri_iajb = 0.0;
-                        for p in 0..naux {
-                            eri_iajb += b_ia[(p, i, a)] * b_ia[(p, j, b)];
-                        }
-                        r2[(i, a, j, b)] = eri_iajb;
-                    }
-                }
-            }
-        }
+        // R_iajb = (ab|ij) + L_iajb + H_iajb + ...
+        // 1. (ab|ij) term is exactly g[i,a,j,b].
+        let r2_iajb = g_iajb
+            .clone()
+            .into_dimensionality::<ndarray::Ix4>()
+            .unwrap();
 
         // 2. Ladder terms (DRY helpers)
         let pp_ladder = crate::helpers::contract_pp_ladder(&b_ab, &t2);
         let hh_ladder = crate::helpers::contract_hh_ladder(&b_ij, &t2);
-        r2 = r2 + pp_ladder + hh_ladder;
+        let r2 = r2_iajb + pp_ladder + hh_ladder;
 
         // Update T2: T = T + R / D
         for i in 0..nocc {
@@ -179,5 +167,19 @@ mod tests {
         println!("CCD correlation energy: {:.10}", result.correlation_energy);
         // H2/STO-3G CCD correlation energy is ~ -0.018 Hartree
         assert!((result.correlation_energy - (-0.018)).abs() < 1e-2);
+    }
+
+    #[test]
+    fn ccd_h2_sto3g_energy_pinned() {
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let ctx = ParallelContext::default();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
+        let cfg = CcConfig { frozen_core: 0, max_iter: 50, energy_conv: 1e-8, ..Default::default() };
+        let r = ccd(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
+        assert!((r.correlation_energy - (-0.0239287831)).abs() < 1e-9, "got {:.10}", r.correlation_energy);
     }
 }
