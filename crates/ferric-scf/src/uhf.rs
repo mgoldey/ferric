@@ -23,6 +23,10 @@ use ndarray_linalg::Eigh;
 /// UHF configuration mirrors RHF (separate type for forward extensibility).
 pub type UhfConfig = RhfConfig;
 
+/// In-place modifier applied to the (α, β) Fock matrices each SCF iteration —
+/// the hook cDFT uses to add its constraint potential. `None` for plain UHF.
+pub type UhfFockMod<'a> = &'a dyn Fn(&mut Array2<f64>, &mut Array2<f64>);
+
 /// Solve unrestricted Hartree-Fock equations for a molecule.
 ///
 /// Uses `mol.charge` and `mol.multiplicity` to determine α/β electron counts.
@@ -81,7 +85,7 @@ pub fn solve_uhf_fockmod(
     bounds: &SchwarzBounds,
     config: &UhfConfig,
     initial_mos: Option<(&Array2<f64>, &Array2<f64>)>,
-    fock_mod: Option<&dyn Fn(&mut Array2<f64>, &mut Array2<f64>)>,
+    fock_mod: Option<UhfFockMod>,
 ) -> Result<ScfResult, FerricError> {
     use ferric_dft::ks::KsXcUks;
     use ferric_dft::xc_trait::{KMix, UksXcContribution};

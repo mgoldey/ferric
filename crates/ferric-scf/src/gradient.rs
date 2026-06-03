@@ -672,6 +672,7 @@ mod tests {
 
     /// Compute individual gradient components for debugging.
     /// Returns (vnn_grad, overlap_grad, kinetic_grad, nuclear_grad, twoelec_grad, total_grad)
+    #[allow(clippy::type_complexity)] // 6 named gradient-component arrays for FD validation
     fn gradient_components(
         mol: &Molecule,
         prep: &PreparedBasis,

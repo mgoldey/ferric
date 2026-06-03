@@ -15,6 +15,20 @@
 //! - **Constrained DFT weights** ([`cdft`]) — the grid-Becke weight operator W and
 //!   fragment populations used by the cDFT solver in `ferric-scf`.
 
+// Lint policy for numerical grid/XC code:
+// - excessive_precision: Lebedev node/weight tables transcribed at full source
+//   precision on purpose.
+// - needless_range_loop: grid-point and spin/Cartesian-component loops read
+//   clearer with explicit indices.
+// - identity_op: `stride * g + 0` keeps the component index aligned with the
+//   `+ 1` / `+ 2` rows below it; the `+ 0` is intentional visual structure.
+// - op_ref: `a + &b + &b.t()` references `b` because it is reused on the same
+//   line; dropping the `&` would move `b` and break the second use.
+#![allow(clippy::excessive_precision)]
+#![allow(clippy::needless_range_loop)]
+#![allow(clippy::identity_op)]
+#![allow(clippy::op_ref)]
+
 pub mod ao_grid;
 pub mod cdft;
 pub mod libxc;

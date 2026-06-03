@@ -398,7 +398,7 @@ mod tests {
 
         let (z, _l) = solve_zvector(&mol, &obs, &dfbs, Operator::coulomb(), &bounds, &rhf, &inter).unwrap();
         let p_ao = build_relaxed_density_ao(
-            &rhf.mos_r(), &inter.p_oo, &inter.p_vv, &z, &inter.orbital_space(),
+            rhf.mos_r(), &inter.p_oo, &inter.p_vv, &z, &inter.orbital_space(),
         );
 
         let n = p_ao.nrows();
@@ -452,7 +452,7 @@ mod tests {
         }
 
         let w_ao = build_relaxed_w_ao(
-            &rhf.mos_r(), &f_mo, &p_relax_mo, &l, &inter.orbital_space(),
+            rhf.mos_r(), &f_mo, &p_relax_mo, &l, &inter.orbital_space(),
         );
 
         let n = w_ao.nrows();

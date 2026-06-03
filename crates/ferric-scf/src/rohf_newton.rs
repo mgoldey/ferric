@@ -235,6 +235,9 @@ pub(crate) fn gradient_blocks(inp: &RohfNewtonInputs) -> (Array2<f64>, Array2<f6
     (g_vc, g_vo, g_oc)
 }
 
+// Returns the three coupling blocks (vc, vo, oc) of the Hessian-vector product;
+// the tuple mirrors the three input blocks and reads clearer than an alias.
+#[allow(clippy::type_complexity)]
 pub(crate) fn hessian_matvec(
     ctx: &ParallelContext,
     inp: &RohfNewtonInputs,

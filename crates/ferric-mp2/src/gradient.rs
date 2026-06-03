@@ -307,6 +307,65 @@ pub fn rimp2_gradient_analytical(
     Ok(grad)
 }
 
+/// Compute the analytical SCS-MP2 nuclear gradient.
+pub fn scs_mp2_gradient_analytical(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    rhf: &ScfResult,
+    config: &crate::scs::ScsMp2Config,
+) -> Result<Array2<f64>, FerricError> {
+    let mp2_config = RiMp2Config { frozen_core: config.frozen_core };
+    let inter = compute_mp2_intermediates(mol, obs, dfbs, op, rhf, &mp2_config)?;
+    let (z, l) = solve_zvector(mol, obs, dfbs, op, bounds, rhf, &inter)?;
+    let p_relax_ao = build_relaxed_density_ao(
+        rhf.mos_r(), &inter.p_oo, &inter.p_vv, &z, &inter.orbital_space(),
+    );
+    let nmo = rhf.mos_r().ncols();
+    let nocc_total = inter.nocc_total;
+    let f_mo = rhf.mos_r().t().dot(rhf.fock_r()).dot(rhf.mos_r());
+    let mut p_relax_mo = Array2::zeros((nmo, nmo));
+    for i in 0..inter.nocc {
+        let i_mo = inter.first_occ + i;
+        p_relax_mo[(i_mo, i_mo)] += 2.0;
+        for j in 0..inter.nocc {
+            let j_mo = inter.first_occ + j;
+            p_relax_mo[(i_mo, j_mo)] += inter.p_oo[(i, j)];
+        }
+    }
+    for a in 0..inter.nvir {
+        let a_mo = nocc_total + a;
+        for b in 0..inter.nvir {
+            let b_mo = nocc_total + b;
+            p_relax_mo[(a_mo, b_mo)] += inter.p_vv[(a, b)];
+        }
+    }
+    for a in 0..inter.nvir {
+        let a_mo = nocc_total + a;
+        for i in 0..inter.nocc {
+            let i_mo = inter.first_occ + i;
+            p_relax_mo[(a_mo, i_mo)] += z[(a, i)];
+            p_relax_mo[(i_mo, a_mo)] += z[(a, i)];
+        }
+    }
+    let w_relax_ao = build_relaxed_w_ao(
+        rhf.mos_r(), &f_mo, &p_relax_mo, &l, &inter.orbital_space(),
+    );
+    let mut grad = hf_gradient_with_density(mol, obs, op, bounds, &p_relax_ao, &w_relax_ao)?;
+    // Approximate scaling: multiply MP2 part by average SCS scaling
+    let scale = (config.c_os + config.c_ss) / 2.0;
+    let rhf_grad = ferric_scf::gradient::rhf_gradient(mol, obs, op, bounds, rhf)?;
+    for i in 0..mol.atoms.len() {
+        for c in 0..3 {
+            let mp2_part = grad[(i, c)] - rhf_grad[(i, c)];
+            grad[(i, c)] = rhf_grad[(i, c)] + scale * mp2_part;
+        }
+    }
+    Ok(grad)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -701,7 +760,7 @@ mod tests {
         let full_grad = rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config).unwrap();
         let hf_relax = hf_gradient_with_density(&mol, &obs, op, &bounds,
             &crate::zvector::build_relaxed_density_ao(
-                &rhf.mos_r(), &inter.p_oo, &inter.p_vv,
+                rhf.mos_r(), &inter.p_oo, &inter.p_vv,
                 &{
                     let (z, _) = crate::zvector::solve_zvector(&mol, &obs, &dfbs, op, &bounds, &rhf, &inter).unwrap();
                     z
@@ -835,23 +894,23 @@ mod tests {
         eprintln!("RHF gradient (analytical):        {:.12}", rhf_grad[(0, 2)]);
         eprintln!("RHF gradient (FD):                {:.12}", fd_hf[(0, 2)]);
         eprintln!("RHF diff:                         {:.6e}", rhf_grad[(0, 2)] - fd_hf[(0, 2)]);
-        eprintln!("");
+        eprintln!();
         eprintln!("hf_grad_with_density(P_relax,W):  {:.12}", hf_with_relax[(0, 2)]);
         eprintln!("delta from HF to relaxed-density: {:.12}", hf_corr_diff);
-        eprintln!("");
+        eprintln!();
         eprintln!("3c+2c contribution (analytical):  {:.12}", corr_3c2c);
         eprintln!("MP2 corr gradient (FD):           {:.12}", fd_corr);
         eprintln!("3c+2c vs FD corr diff:            {:.6e}", corr_3c2c - fd_corr);
-        eprintln!("");
+        eprintln!();
         // Decompose 1e vs 2e for both D_HF and P_relax
         let nocc_hf = (mol.nelec() / 2) as usize;
         let w_hf = ferric_scf::gradient::build_energy_weighted_density(&rhf, nocc_hf);
-        let oe_dhf = oneelectron_gradient(&mol, &obs, &rhf.density_r(), &w_hf).unwrap();
-        let te_dhf = twoelectron_gradient(&obs, op, &bounds, &rhf.density_r()).unwrap();
+        let oe_dhf = oneelectron_gradient(&mol, &obs, rhf.density_r(), &w_hf).unwrap();
+        let te_dhf = twoelectron_gradient(&obs, op, &bounds, rhf.density_r()).unwrap();
         let oe_relax = oneelectron_gradient(&mol, &obs, &p_relax_ao, &w_relax_ao).unwrap();
         let te_relax = twoelectron_gradient(&obs, op, &bounds, &p_relax_ao).unwrap();
 
-        eprintln!("");
+        eprintln!();
         eprintln!("=== 1e/2e decomposition (z-component, atom 0) ===");
         eprintln!("1e(D_HF):     {:.12}", oe_dhf[(0, 2)]);
         eprintln!("2e(D_HF):     {:.12}", te_dhf[(0, 2)]);
@@ -859,16 +918,16 @@ mod tests {
         eprintln!("1e(P_relax):  {:.12}", oe_relax[(0, 2)]);
         eprintln!("2e(P_relax):  {:.12}", te_relax[(0, 2)]);
         eprintln!("sum(P_relax): {:.12}", oe_relax[(0, 2)] + te_relax[(0, 2)]);
-        eprintln!("");
+        eprintln!();
         eprintln!("delta_1e = 1e(P_relax) - 1e(D_HF): {:.12}", oe_relax[(0, 2)] - oe_dhf[(0, 2)]);
         eprintln!("delta_2e = 2e(P_relax) - 2e(D_HF): {:.12}", te_relax[(0, 2)] - te_dhf[(0, 2)]);
-        eprintln!("");
+        eprintln!();
         eprintln!("If 4c uses D_HF: total = 1e(P_relax) + 2e(D_HF) + 3c2c");
         let total_dhf_4c = oe_relax[(0, 2)] + te_dhf[(0, 2)] + corr_3c2c;
         eprintln!("  = {:.12} + {:.12} + {:.12} = {:.12}", oe_relax[(0, 2)], te_dhf[(0, 2)], corr_3c2c, total_dhf_4c);
         eprintln!("  diff from FD: {:.6e}", total_dhf_4c - fd_total[(0, 2)]);
 
-        eprintln!("");
+        eprintln!();
         eprintln!("Total analytical:                 {:.12}", analytical[(0, 2)]);
         eprintln!("Total FD:                         {:.12}", fd_total[(0, 2)]);
         eprintln!("Total diff:                       {:.6e}", analytical[(0, 2)] - fd_total[(0, 2)]);
@@ -970,9 +1029,9 @@ mod tests {
         let nocc = (mol.nelec() / 2) as usize;
         let w = ferric_scf::gradient::build_energy_weighted_density(&rhf, nocc);
 
-        let combined = hf_gradient_with_density(&mol, &obs, op, &bounds, &rhf.density_r(), &w).unwrap();
-        let oe = oneelectron_gradient(&mol, &obs, &rhf.density_r(), &w).unwrap();
-        let te = twoelectron_gradient(&obs, op, &bounds, &rhf.density_r()).unwrap();
+        let combined = hf_gradient_with_density(&mol, &obs, op, &bounds, rhf.density_r(), &w).unwrap();
+        let oe = oneelectron_gradient(&mol, &obs, rhf.density_r(), &w).unwrap();
+        let te = twoelectron_gradient(&obs, op, &bounds, rhf.density_r()).unwrap();
         let split = &oe + &te;
 
         for atom in 0..2 {
@@ -984,63 +1043,4 @@ mod tests {
             }
         }
     }
-}
-
-/// Compute the analytical SCS-MP2 nuclear gradient.
-pub fn scs_mp2_gradient_analytical(
-    mol: &Molecule,
-    obs: &PreparedBasis,
-    dfbs: &PreparedBasis,
-    op: Operator,
-    bounds: &SchwarzBounds,
-    rhf: &ScfResult,
-    config: &crate::scs::ScsMp2Config,
-) -> Result<Array2<f64>, FerricError> {
-    let mp2_config = RiMp2Config { frozen_core: config.frozen_core };
-    let inter = compute_mp2_intermediates(mol, obs, dfbs, op, rhf, &mp2_config)?;
-    let (z, l) = solve_zvector(mol, obs, dfbs, op, bounds, rhf, &inter)?;
-    let p_relax_ao = build_relaxed_density_ao(
-        rhf.mos_r(), &inter.p_oo, &inter.p_vv, &z, &inter.orbital_space(),
-    );
-    let nmo = rhf.mos_r().ncols();
-    let nocc_total = inter.nocc_total;
-    let f_mo = rhf.mos_r().t().dot(rhf.fock_r()).dot(rhf.mos_r());
-    let mut p_relax_mo = Array2::zeros((nmo, nmo));
-    for i in 0..inter.nocc {
-        let i_mo = inter.first_occ + i;
-        p_relax_mo[(i_mo, i_mo)] += 2.0;
-        for j in 0..inter.nocc {
-            let j_mo = inter.first_occ + j;
-            p_relax_mo[(i_mo, j_mo)] += inter.p_oo[(i, j)];
-        }
-    }
-    for a in 0..inter.nvir {
-        let a_mo = nocc_total + a;
-        for b in 0..inter.nvir {
-            let b_mo = nocc_total + b;
-            p_relax_mo[(a_mo, b_mo)] += inter.p_vv[(a, b)];
-        }
-    }
-    for a in 0..inter.nvir {
-        let a_mo = nocc_total + a;
-        for i in 0..inter.nocc {
-            let i_mo = inter.first_occ + i;
-            p_relax_mo[(a_mo, i_mo)] += z[(a, i)];
-            p_relax_mo[(i_mo, a_mo)] += z[(a, i)];
-        }
-    }
-    let w_relax_ao = build_relaxed_w_ao(
-        rhf.mos_r(), &f_mo, &p_relax_mo, &l, &inter.orbital_space(),
-    );
-    let mut grad = hf_gradient_with_density(mol, obs, op, bounds, &p_relax_ao, &w_relax_ao)?;
-    // Approximate scaling: multiply MP2 part by average SCS scaling
-    let scale = (config.c_os + config.c_ss) / 2.0;
-    let rhf_grad = ferric_scf::gradient::rhf_gradient(mol, obs, op, bounds, rhf)?;
-    for i in 0..mol.atoms.len() {
-        for c in 0..3 {
-            let mp2_part = grad[(i, c)] - rhf_grad[(i, c)];
-            grad[(i, c)] = rhf_grad[(i, c)] + scale * mp2_part;
-        }
-    }
-    Ok(grad)
 }

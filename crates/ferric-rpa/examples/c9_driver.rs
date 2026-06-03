@@ -212,7 +212,7 @@ fn run_s66x8(ctx: &ParallelContext, only: &Option<HashSet<String>>) -> Vec<Csv> 
             Err(e) => { eprintln!("  load failed: {e}"); continue; }
         };
         let idx = match parse_s66_dimer_index(&stem) {
-            Some(i) if i >= 1 && i <= 66 => i,
+            Some(i) if (1..=66).contains(&i) => i,
             _ => { eprintln!("  cannot parse S66 dimer index from {stem}"); continue; }
         };
         let a_size = S66_FRAGA[idx];

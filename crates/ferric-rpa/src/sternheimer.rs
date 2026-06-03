@@ -57,6 +57,9 @@ pub(crate) fn syrk_aat(a: &Array2<f64>) -> Array2<f64> {
     // In row-major terms this populates the UPPER triangle of C — symmetric in
     // either reading, so we mirror to fill both halves.
     unsafe {
+        // dsyrk_ takes *const u8 (Fortran char args); b"..\0" matches directly,
+        // whereas a c"" literal is *const c_char and would need a cast.
+        #[allow(clippy::manual_c_str_literals)]
         dsyrk_(
             b"L\0".as_ptr(),
             b"T\0".as_ptr(),

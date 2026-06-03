@@ -156,7 +156,7 @@ fn run_case_diag(case: &Case) -> Option<(f64, f64, f64, f64, CationDiag)> {
     // Parse neutral and cation as separate Molecule instances.
     let neutral = Molecule::parse_xyz(case.xyz, 0, 1).ok()?;
     let cation_mult: usize = {
-        let n = neutral.nelec() as i32 - 1;
+        let n = neutral.nelec() - 1;
         if n % 2 == 1 { 2 } else { 3 }  // doublet if odd; triplet for even-1
     };
     // Actually cation has nelec - 1; if neutral was singlet (even), cation

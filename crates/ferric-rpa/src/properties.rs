@@ -241,7 +241,7 @@ pub fn electric_field_at_atoms(
 
     // With a single point charge, libint returns 6 (shell) + 3 (charge) = 9
     // derivative blocks of size n1*n2 each.
-    let nderiv = 6 + 3 * 1;
+    let nderiv = 6 + 3; // 6 shell-center + 3 (xyz) charge-center derivatives
     let max_block = max_fn * max_fn;
     let mut buf = vec![0.0_f64; nderiv * max_block];
 
@@ -2502,7 +2502,7 @@ pub fn hirshfeld_i_charges(
     // Cache integer-charge proatoms per element (z, q_int).
     let mut cache: std::collections::HashMap<(i32, i32), Option<RadialProatom>> =
         std::collections::HashMap::new();
-    let mut get = |z: i32, qi: i32, cache: &mut std::collections::HashMap<(i32, i32), Option<RadialProatom>>| -> Option<RadialProatom> {
+    let get = |z: i32, qi: i32, cache: &mut std::collections::HashMap<(i32, i32), Option<RadialProatom>>| -> Option<RadialProatom> {
         cache.entry((z, qi)).or_insert_with(|| proatom(z, qi)).clone()
     };
 

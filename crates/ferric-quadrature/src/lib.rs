@@ -9,6 +9,12 @@
 //! Takatsuka, Ten-no, Hackbusch (JCP 129, 044112, 2008) via the Helmich-Paris
 //! `laplace-minimax` library.
 
+// Reference quadrature tables are transcribed at full source precision on
+// purpose; trimming to f64's last digit is lossy churn. Index loops over
+// node/weight arrays read clearer with explicit indices.
+#![allow(clippy::excessive_precision)]
+#![allow(clippy::needless_range_loop)]
+
 pub mod minimax;
 
 pub use minimax::{select_minimax_points, LaplaceQuadrature};

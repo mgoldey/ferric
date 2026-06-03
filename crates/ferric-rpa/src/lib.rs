@@ -1,5 +1,18 @@
 //! PDEP-RPA: projector-density-eigenpotential RPA correlation energy.
 //!
+//! # Lint policy
+//!
+//! Two clippy lints are allowed crate-wide because the patterns they flag are
+//! deliberate in numerical/quantum-chemistry code:
+//!
+//! - `needless_range_loop`: tensor contractions and MO-index loops
+//!   (`for i in 0..3 { for j in 0..3 { t[i][j] ... } }`) read more clearly with
+//!   explicit indices than with `iter().enumerate().zip(...)`; the index *is*
+//!   the physics (Cartesian component, orbital, atom).
+//! - `excessive_precision`: reference tables (minimax quadrature nodes/weights,
+//!   Lebedev grids) are transcribed at full source precision on purpose;
+//!   trimming digits to f64's last representable place is lossy churn.
+//!
 //! # Threading note
 //!
 //! The hot path parallelizes over imaginary-frequency quadrature points with
@@ -8,6 +21,8 @@
 //! which oversubscribes and hurts wall-clock by 3-5×. For best performance
 //! set `OPENBLAS_NUM_THREADS=1` (or `BLIS_NUM_THREADS=1`) so each rayon
 //! worker gets a dedicated single-threaded BLAS call.
+#![allow(clippy::needless_range_loop)] // tensor/MO-index loops read clearer with explicit indices
+#![allow(clippy::excessive_precision)] // reference tables transcribed at full source precision
 
 pub mod ao_rpa;
 pub mod boys_localize;

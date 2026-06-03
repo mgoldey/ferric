@@ -10,6 +10,10 @@
 //! - **Schwarz screening** ([`screening::SchwarzBounds`]) for integral prescreening
 //! - **Core Hamiltonian initial guess** ([`guess::hcore_guess`])
 
+// needless_range_loop: DIIS coefficient and MO-index loops read clearer with
+// explicit indices than with iterator/enumerate chains.
+#![allow(clippy::needless_range_loop)]
+
 pub mod result;
 pub use result::{ScfResult, Spin};
 

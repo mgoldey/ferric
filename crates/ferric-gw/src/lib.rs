@@ -6,6 +6,13 @@
 //!
 //! Spike scope: closed-shell, HF reference, cc-pVDZ-scale, validation on H₂O.
 
+// Self-energy kernels intrinsically thread many quantities (G, W, orbital
+// energies, frequency grid, QP indices); bundling them into structs would only
+// move the boilerplate to the call sites. type_complexity likewise flags the
+// multi-array return tuples, which are self-documenting and used once.
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::type_complexity)]
+
 pub mod method;
 pub mod mo_b;
 pub mod w_pdep;

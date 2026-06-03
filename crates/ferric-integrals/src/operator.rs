@@ -49,6 +49,8 @@ impl Operator {
         let mut op = Self::primitive(OperatorKind::Coulomb, 0.0, 0.0);
         op.is_composite = true;
         op.num_components = components.len().min(MAX_COMPONENTS);
+        // i indexes three parallel fixed-size arrays; clearer than a zip chain.
+        #[allow(clippy::needless_range_loop)]
         for i in 0..op.num_components {
             let (coeff, kind, omega) = components[i];
             op.c_coeffs[i] = coeff;

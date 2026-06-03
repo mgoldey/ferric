@@ -6,6 +6,12 @@
 //! - [`gradient`] -- RI-MP2 nuclear gradient via finite differences
 //! - [`mo_transform`] -- AO-to-MO integral transformation utilities
 
+// op_ref: ndarray expressions like `4.0 * &jz - &kz - &kz.t()` reference `kz`
+// because it is reused (`.t()`) on the same line; dropping `&` would move it.
+// needless_range_loop: primitive/MO-index loops read clearer with explicit indices.
+#![allow(clippy::op_ref)]
+#![allow(clippy::needless_range_loop)]
+
 pub mod boys;
 pub mod mo_transform;
 pub mod rimp2;

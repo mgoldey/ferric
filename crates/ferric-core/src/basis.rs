@@ -305,7 +305,7 @@ mod tests {
     #[test]
     fn test_bundled_sto3g_all_cartesian() {
         let bs = bundled("sto-3g").unwrap();
-        for (_, shells) in &bs.shells {
+        for shells in bs.shells.values() {
             for sh in shells {
                 assert!(!sh.pure, "STO-3G should be all Cartesian");
             }

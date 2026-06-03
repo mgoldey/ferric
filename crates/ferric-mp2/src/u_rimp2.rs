@@ -719,6 +719,7 @@ fn opposite_spin_pair_energy(
 ///
 /// `which` selects the block: "aa", "bb", "ab", or "all".
 #[cfg(test)]
+#[allow(clippy::too_many_arguments)] // FD ground-truth helper: passes both spin MO sets + eps explicitly
 pub(crate) fn u_mp2_energy_fixed_eps(
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,

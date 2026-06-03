@@ -832,6 +832,9 @@ fn eval_shell_grad_hess(
 ///
 /// Supports s, p, d, and f (pure + Cartesian) shells. g and higher still
 /// return `UnsupportedL`.
+// Returns (values, gradients, hessians) as rank-2/3/4 arrays; the tuple is
+// self-documenting and used once, so a type alias would only add indirection.
+#[allow(clippy::type_complexity)]
 pub fn eval_basis_grad_hess_on_points(
     mol: &ferric_core::mol::Molecule,
     bs: &ferric_core::basis::BasisSet,

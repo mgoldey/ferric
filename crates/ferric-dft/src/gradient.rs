@@ -157,6 +157,10 @@ pub fn xc_gradient_closed_lda(
 /// `xc_gradient_closed_lda`. Used by ferric-scf's KS gradient driver. Adds
 /// the Becke partition-weight grid-response correction (P2.1, PySCF
 /// convention) automatically.
+// Eight args carry the molecule, density, XC choice, grid config, and the
+// shell-decomposition arrays the caller already has; bundling them into a struct
+// would only move the boilerplate to the call site.
+#[allow(clippy::too_many_arguments)]
 pub fn xc_gradient_closed_lda_from_density(
     mol: &Molecule,
     bs: &ferric_core::basis::BasisSet,

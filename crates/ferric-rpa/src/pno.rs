@@ -237,8 +237,7 @@ pub fn run_pdep_rpa_osv(
     let naux = inter.naux;
     let n_vir_red = dnv.n_vir_reduced;
 
-    let eps_occ: Vec<f64> = rhf.eps_r()[inter.first_occ..inter.first_occ + nocc]
-        .iter().copied().collect();
+    let eps_occ: Vec<f64> = rhf.eps_r()[inter.first_occ..inter.first_occ + nocc].to_vec();
     let eps_vir = dnv.eps_vir_reduced.clone();
     let b_ov = dnv.b_ov_pno.clone();
 

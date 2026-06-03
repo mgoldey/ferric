@@ -241,7 +241,7 @@ mod tests {
         let result = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &prep, op, &bounds, &config).unwrap();
         assert!(result.converged);
 
-        let dp = DensityPairs::build(&result.density_r(), &bounds, &prep, 1e-12);
+        let dp = DensityPairs::build(result.density_r(), &bounds, &prep, 1e-12);
         let nsh = prep.nshells();
 
         // Every shell should have at least itself as a partner (diagonal density

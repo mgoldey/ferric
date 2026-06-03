@@ -104,7 +104,7 @@ fn optimized_u0(n: usize) -> f64 {
 fn gl_nodes_weights(n: usize) -> (Vec<f64>, Vec<f64>) {
     let mut x = vec![0.0f64; n];
     let mut w = vec![0.0f64; n];
-    let m = (n + 1) / 2;
+    let m = n.div_ceil(2);
     for i in 0..m {
         let mut xi = (std::f64::consts::PI * (4 * i + 3) as f64 / (4 * n + 2) as f64).cos();
         for _ in 0..100 {
@@ -121,7 +121,7 @@ fn gl_nodes_weights(n: usize) -> (Vec<f64>, Vec<f64>) {
         w[n - 1 - i] = wi;
     }
     // Sort ascending
-    let mut pairs: Vec<(f64, f64)> = x.into_iter().zip(w.into_iter()).collect();
+    let mut pairs: Vec<(f64, f64)> = x.into_iter().zip(w).collect();
     pairs.sort_by(|a, b| a.0.total_cmp(&b.0));
     let x: Vec<f64> = pairs.iter().map(|p| p.0).collect();
     let w: Vec<f64> = pairs.iter().map(|p| p.1).collect();
