@@ -12,6 +12,7 @@ pub mod tensor;
 pub use tensor::Tensor;
 pub mod einsum;
 pub use einsum::{einsum_binary, TensorError};
+pub use ferric_tensor_macro::einsum;
 
 /// A rank-4 tensor typically used for T2 amplitudes or 2-electron integrals.
 ///
