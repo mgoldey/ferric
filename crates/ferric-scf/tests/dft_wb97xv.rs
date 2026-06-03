@@ -32,7 +32,7 @@ struct Ref {
 ///   2. Two RI-K builds (erf + erfc) with the JK-fit aux basis
 ///   3. NLC grid (50, 50) integration of the VV10 nonlocal piece
 ///   4. O(N²) VV10 pair sum at single precision in the kernel
-/// 5e-5 Ha gives a comfortable single-µHa-scale margin over all of these.
+///      5e-5 Ha gives a comfortable single-µHa-scale margin over all of these.
 const TOL: f64 = 5e-5;
 
 fn ref_path(name: &str) -> PathBuf {

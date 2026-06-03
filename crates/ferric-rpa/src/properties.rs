@@ -2889,9 +2889,11 @@ mod tests {
         // Check the molecular sum decays monotonically with the right tail.
         let (mol, obs, dfbs, op, rhf) = build_h2();
         let bs = basis::bundled("cc-pvdz").unwrap();
-        let mut cfg = PdepRpaConfig::default();
-        cfg.frozen_core = 0;
-        cfg.trunc_thresh = 0.0;
+        let cfg = PdepRpaConfig {
+            frozen_core: 0,
+            trunc_thresh: 0.0,
+            ..Default::default()
+        };
         let freqs = [0.0, 0.5, 2.0, 10.0];
         let dyn_a = pdep_polarizability_becke_dynamic(
             &mol, &obs, &bs, &dfbs, &rhf, op, &cfg, &freqs,
@@ -2918,9 +2920,11 @@ mod tests {
         // must be equal. Also α_iso^A(ω=0) must be positive.
         let (mol, obs, dfbs, op, rhf) = build_h2();
         let bs = basis::bundled("cc-pvdz").unwrap();
-        let mut cfg = PdepRpaConfig::default();
-        cfg.frozen_core = 0;
-        cfg.trunc_thresh = 0.0;
+        let cfg = PdepRpaConfig {
+            frozen_core: 0,
+            trunc_thresh: 0.0,
+            ..Default::default()
+        };
 
         let dynamic = pdep_polarizability_becke_dynamic(
             &mol, &obs, &bs, &dfbs, &rhf, op, &cfg, &[0.0, 0.5],
@@ -2954,9 +2958,11 @@ mod tests {
         // α_iso(iω) must fall monotonically toward 0 as ω grows (~1/ω²).
         let (mol, obs, dfbs, op, rhf) = build_h2();
         let bs = basis::bundled("cc-pvdz").unwrap();
-        let mut cfg = PdepRpaConfig::default();
-        cfg.frozen_core = 0;
-        cfg.trunc_thresh = 0.0;
+        let cfg = PdepRpaConfig {
+            frozen_core: 0,
+            trunc_thresh: 0.0,
+            ..Default::default()
+        };
 
         let freqs = [0.0, 0.5, 2.0, 10.0];
         let dyn_a = pdep_polarizability_becke_dynamic(
@@ -2991,8 +2997,10 @@ mod tests {
         let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
         let ctx = ParallelContext::default();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let mut cfg = RhfConfig::default();
-        cfg.mom_after_iter = 5;
+        let cfg = RhfConfig {
+            mom_after_iter: 5,
+            ..Default::default()
+        };
         let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &cfg).unwrap();
         (mol, obs, dfbs, op, uhf)
     }
@@ -3003,9 +3011,11 @@ mod tests {
         // and be positive at ω=0. Single atom → no symmetry check needed.
         let (mol, obs, dfbs, op, uhf) = build_h_atom();
         let bs = basis::bundled("cc-pvdz").unwrap();
-        let mut cfg = PdepRpaConfig::default();
-        cfg.frozen_core = 0;
-        cfg.trunc_thresh = 0.0;
+        let cfg = PdepRpaConfig {
+            frozen_core: 0,
+            trunc_thresh: 0.0,
+            ..Default::default()
+        };
 
         let freqs = [0.0, 0.5, 2.0, 10.0];
         let dyn_a = pdep_polarizability_becke_dynamic(
@@ -3029,10 +3039,12 @@ mod tests {
         // Smoke test: α_iso for H2 / cc-pVDZ is positive O(few a.u.).
         // Quantitative comparison vs PySCF lives in tests/polarizability.rs.
         let (mol, obs, dfbs, op, rhf) = build_h2();
-        let mut cfg = PdepRpaConfig::default();
-        cfg.frozen_core = 0;
-        cfg.trunc_thresh = 0.0;
-        cfg.davidson_conv_thresh = 1e-9;
+        let cfg = PdepRpaConfig {
+            frozen_core: 0,
+            trunc_thresh: 0.0,
+            davidson_conv_thresh: 1e-9,
+            ..Default::default()
+        };
         let r = pdep_polarizability_static(&mol, &obs, &dfbs, &rhf, op, &cfg).unwrap();
         assert!(r.iso > 0.0, "α_iso ≤ 0: {}", r.iso);
         assert!(r.iso < 30.0, "α_iso too large: {}", r.iso);

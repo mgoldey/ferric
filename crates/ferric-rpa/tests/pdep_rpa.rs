@@ -39,17 +39,18 @@ fn setup(
 }
 
 fn pyscf_compat_config(n_quad: usize) -> PdepRpaConfig {
-    let mut cfg = PdepRpaConfig::default();
-    cfg.quadrature = QuadratureConfig {
-        scheme: QuadratureScheme::GaussLegendre,
-        n_points: n_quad,
-        u0: 0.5,
-    };
-    cfg.frozen_core = 0;
-    // Disable PDEP truncation: compare full-basis dielectric to PySCF's full RI-RPA.
-    cfg.trunc_thresh = 0.0;
-    cfg.davidson_conv_thresh = 1e-10;
-    cfg
+    PdepRpaConfig {
+        quadrature: QuadratureConfig {
+            scheme: QuadratureScheme::GaussLegendre,
+            n_points: n_quad,
+            u0: 0.5,
+        },
+        frozen_core: 0,
+        // Disable PDEP truncation: compare full-basis dielectric to PySCF's full RI-RPA.
+        trunc_thresh: 0.0,
+        davidson_conv_thresh: 1e-10,
+        ..Default::default()
+    }
 }
 
 #[test]
@@ -118,10 +119,12 @@ fn h2o_aug_cc_pvtz_pdep_rpa_matches_pyscf() {
 fn h2_sto3g_pdep_rpa_vs_ri_drpa() {
     // Sanity: PDEP-RPA == RI-dRPA when no truncation is applied (PDEP keeps all naux modes).
     let (mol, obs, dfbs, op, rhf) = setup("../../testdata/molecules/h2.xyz", "sto-3g", "sto-3g");
-    let mut cfg = PdepRpaConfig::default();
-    cfg.trunc_thresh = 0.0;
-    cfg.davidson_conv_thresh = 1e-10;
-    cfg.run_diagnostics = true;
+    let cfg = PdepRpaConfig {
+        trunc_thresh: 0.0,
+        davidson_conv_thresh: 1e-10,
+        run_diagnostics: true,
+        ..Default::default()
+    };
     let result = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
     let e_diag = result.e_rpa_dft_diag.expect("diagnostic should be present");
     let diff = (result.e_rpa - e_diag).abs();

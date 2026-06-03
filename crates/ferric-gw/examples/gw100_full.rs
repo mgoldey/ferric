@@ -112,12 +112,14 @@ fn run_case(case: &Case) -> Option<(Ips, CationDiag)> {
     let homo_abs = nocc_n - 1;
     let ip_koop = -rhf_n.eps_r()[homo_abs] * HA_TO_EV;
 
-    let mut rpa_cfg = PdepRpaConfig::default();
-    rpa_cfg.quadrature = QuadratureConfig {
-        scheme: QuadratureScheme::GaussLegendre, n_points: 20, u0: 0.5,
+    let rpa_cfg = PdepRpaConfig {
+        quadrature: QuadratureConfig {
+            scheme: QuadratureScheme::GaussLegendre, n_points: 20, u0: 0.5,
+        },
+        trunc_thresh: 0.0,
+        davidson_conv_thresh: 1e-9,
+        ..Default::default()
     };
-    rpa_cfg.trunc_thresh = 0.0;
-    rpa_cfg.davidson_conv_thresh = 1e-9;
     let rpa_n = run_pdep_rpa(&neutral, &obs_n, &dfbs_n, op, &rhf_n, &rpa_cfg).ok()?;
 
     let uhf_cfg = UhfConfig { max_iter: 200, ..Default::default() };

@@ -4,9 +4,9 @@
 //!   1. Run plain ROHF DIIS to convergence on doublet OH/cc-pVDZ.
 //!   2. From the converged state, build (F_α, F_β) and ε, and call
 //!      `rohf_newton_step` to verify that:
-//!        (a) the step is a no-op (||κ|| ≈ 0) because the gradient is zero
-//!            at the stationary point;
-//!        (b) the matvec is symmetric: ⟨κ₁, H·κ₂⟩ = ⟨κ₂, H·κ₁⟩.
+//!      (a) the step is a no-op (||κ|| ≈ 0) because the gradient is zero
+//!      at the stationary point;
+//!      (b) the matvec is symmetric: ⟨κ₁, H·κ₂⟩ = ⟨κ₂, H·κ₁⟩.
 //!
 //! These are necessary correctness checks before we plug Newton into the
 //! SCF loop and trust it to converge harder cases (LDA/PBE ROKS on OH).

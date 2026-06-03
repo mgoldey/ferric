@@ -71,8 +71,11 @@ fn pdep_dynamic_n2_anisotropy_correct_sign() {
     let ctx = ParallelContext::default();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
-    let mut cfg = PdepRpaConfig::default();
-    cfg.frozen_core = 0; cfg.trunc_thresh = 0.0;
+    let cfg = PdepRpaConfig {
+        frozen_core: 0,
+        trunc_thresh: 0.0,
+        ..Default::default()
+    };
 
     // Hirshfeld partition: Σ_A μ^A = μ^global exactly (proatom weights sum to 1),
     // so anisotropy is preserved. Becke atom-centred dipoles lose the charge-transfer
@@ -123,9 +126,11 @@ fn pdep_dynamic_per_atom_alpha_is_isotropic_n2() {
     let ctx = ParallelContext::default();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
-    let mut cfg = PdepRpaConfig::default();
-    cfg.frozen_core = 0;
-    cfg.trunc_thresh = 0.0;
+    let cfg = PdepRpaConfig {
+        frozen_core: 0,
+        trunc_thresh: 0.0,
+        ..Default::default()
+    };
 
     let dp = pdep_dynamic_polarizability(
         &mol, &obs, &obs_bs, &dfbs, &rhf, op, &cfg, DispersionPartition::Hirshfeld, None,
@@ -163,9 +168,11 @@ fn pdep_dynamic_per_atom_c6_is_origin_independent() {
     let ctx = ParallelContext::default();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
-    let mut cfg = PdepRpaConfig::default();
-    cfg.frozen_core = 0;
-    cfg.trunc_thresh = 0.0;
+    let cfg = PdepRpaConfig {
+        frozen_core: 0,
+        trunc_thresh: 0.0,
+        ..Default::default()
+    };
 
     let dp = pdep_dynamic_polarizability(
         &mol, &obs, &obs_bs, &dfbs, &rhf, op, &cfg, DispersionPartition::Hirshfeld, None,
@@ -211,9 +218,11 @@ fn pdep_dynamic_c6_free_he_vs_reference() {
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
 
-    let mut cfg = PdepRpaConfig::default();
-    cfg.frozen_core = 0;
-    cfg.trunc_thresh = 0.0;
+    let cfg = PdepRpaConfig {
+        frozen_core: 0,
+        trunc_thresh: 0.0,
+        ..Default::default()
+    };
 
     let dp = pdep_dynamic_polarizability(
         &mol, &obs, &obs_bs, &dfbs, &rhf, op, &cfg, DispersionPartition::Becke, None,

@@ -61,9 +61,11 @@ fn make_system(
 
 fn run_system(sys: &System) {
     // Full-rank reference (trunc_thresh = 0.0).
-    let mut cfg_full = PdepRpaConfig::default();
-    cfg_full.frozen_core = 0;
-    cfg_full.trunc_thresh = 0.0;
+    let cfg_full = PdepRpaConfig {
+        frozen_core: 0,
+        trunc_thresh: 0.0,
+        ..Default::default()
+    };
 
     let t0 = Instant::now();
     let dp_full = pdep_dynamic_polarizability(
@@ -95,9 +97,11 @@ fn run_system(sys: &System) {
     println!("{}", "-".repeat(12 + 6 + sys.pairs.len()*10 + 13 + sys.pairs.len()*11 + 4));
 
     for &thresh in &sys.thresholds {
-        let mut cfg = PdepRpaConfig::default();
-        cfg.frozen_core = 0;
-        cfg.trunc_thresh = thresh;
+        let cfg = PdepRpaConfig {
+            frozen_core: 0,
+            trunc_thresh: thresh,
+            ..Default::default()
+        };
 
         let t1 = Instant::now();
         let rpa = run_pdep_rpa(&sys.mol, &sys.obs, &sys.dfbs, sys.op, &sys.rhf, &cfg).unwrap();

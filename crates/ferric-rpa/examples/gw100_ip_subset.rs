@@ -7,7 +7,7 @@
 //!   2. **Δ-SCF**: IP_SCF = E_UHF(cation) − E_RHF(neutral)
 //!   3. **Δ-OOMP2**: IP_OOMP2 = E_U-OO-MP2(cation) − E_OO-MP2(neutral)
 //!   4. **Δ-RPA**: IP_RPA = [E_UHF(cation) + E_U-RPA(cation)]
-//!                       − [E_RHF(neutral) + E_RPA(neutral)]
+//!      − [E_RHF(neutral) + E_RPA(neutral)]
 //!
 //! Output: prints a table to stdout with columns
 //!   molecule | IP_exp(eV) | Koopmans | ΔSCF | ΔOOMP2 | ΔRPA
@@ -182,12 +182,14 @@ fn run_case_diag(case: &Case) -> Option<(f64, f64, f64, f64, CationDiag)> {
     let nocc_neutral = (neutral.nelec() as usize) / 2;
     let eps_n = rhf_n.eps_r();
     let ip_koopmans_ev = -eps_n[nocc_neutral - 1] * HARTREE_TO_EV;
-    let mut rpa_cfg = PdepRpaConfig::default();
-    rpa_cfg.quadrature = QuadratureConfig {
-        scheme: QuadratureScheme::GaussLegendre, n_points: 20, u0: 0.5,
+    let rpa_cfg = PdepRpaConfig {
+        quadrature: QuadratureConfig {
+            scheme: QuadratureScheme::GaussLegendre, n_points: 20, u0: 0.5,
+        },
+        trunc_thresh: 0.0,
+        davidson_conv_thresh: 1e-9,
+        ..Default::default()
     };
-    rpa_cfg.trunc_thresh = 0.0;
-    rpa_cfg.davidson_conv_thresh = 1e-9;
     let rpa_n = run_pdep_rpa(&neutral, &obs_n, &dfbs_n, op, &rhf_n, &rpa_cfg).ok()?;
 
     // Cation UHF + MP2 (uses ri_mp2 which currently requires Restricted) ;

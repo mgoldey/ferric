@@ -28,15 +28,17 @@ fn rpa_energy(mol: &Molecule, trunc_thresh: f64) -> (f64, usize) {
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let rhf = solve_rhf(&ctx, mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
 
-    let mut cfg = PdepRpaConfig::default();
-    cfg.quadrature = QuadratureConfig {
-        scheme: QuadratureScheme::GaussLegendre,
-        n_points: 40,
-        u0: 0.5,
+    let cfg = PdepRpaConfig {
+        quadrature: QuadratureConfig {
+            scheme: QuadratureScheme::GaussLegendre,
+            n_points: 40,
+            u0: 0.5,
+        },
+        frozen_core: 0,
+        trunc_thresh,
+        davidson_conv_thresh: 1e-10,
+        ..Default::default()
     };
-    cfg.frozen_core = 0;
-    cfg.trunc_thresh = trunc_thresh;
-    cfg.davidson_conv_thresh = 1e-10;
 
     let r = run_pdep_rpa(mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
     // Total energy = E_HF + E_RPA. For finite differences only the geometry-dependent

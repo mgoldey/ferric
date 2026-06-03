@@ -5,6 +5,8 @@
 //!   * Per-atom symmetry: max|α^A − (α^A)^T| < 1e-5 (consumer schema bound).
 //!   * Chemical sanity: oxygen dominates over hydrogen in H2O.
 
+#![allow(clippy::needless_range_loop)] // index loops over tensor/array axes read clearer with explicit indices
+
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
@@ -39,10 +41,12 @@ fn setup_h2o_ccpvdz() -> (
 fn h2o_hirshfeld_sum_rule_and_symmetry() {
     let (mol, obs, obs_bs, dfbs, op, rhf) = setup_h2o_ccpvdz();
 
-    let mut cfg = PdepRpaConfig::default();
-    cfg.frozen_core = 0;
-    cfg.trunc_thresh = 0.0;
-    cfg.davidson_conv_thresh = 1e-10;
+    let cfg = PdepRpaConfig {
+        frozen_core: 0,
+        trunc_thresh: 0.0,
+        davidson_conv_thresh: 1e-10,
+        ..Default::default()
+    };
 
     let alpha_atomic =
         pdep_polarizability_hirshfeld(&mol, &obs, &obs_bs, &dfbs, &rhf, op, &cfg, None).unwrap();

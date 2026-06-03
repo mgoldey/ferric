@@ -34,16 +34,17 @@ fn setup(
 }
 
 fn pyscf_compat_config(n_quad: usize) -> PdepRpaConfig {
-    let mut cfg = PdepRpaConfig::default();
-    cfg.quadrature = QuadratureConfig {
-        scheme: QuadratureScheme::GaussLegendre,
-        n_points: n_quad,
-        u0: 0.5,
-    };
-    cfg.frozen_core = 0;
-    cfg.trunc_thresh = 0.0;
-    cfg.davidson_conv_thresh = 1e-10;
-    cfg
+    PdepRpaConfig {
+        quadrature: QuadratureConfig {
+            scheme: QuadratureScheme::GaussLegendre,
+            n_points: n_quad,
+            u0: 0.5,
+        },
+        frozen_core: 0,
+        trunc_thresh: 0.0,
+        davidson_conv_thresh: 1e-10,
+        ..Default::default()
+    }
 }
 
 #[test]

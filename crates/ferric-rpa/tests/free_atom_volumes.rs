@@ -36,8 +36,10 @@ fn vol_for_atom(spec: &AtomSpec, obs_name: &str) -> f64 {
     let op = Operator::coulomb();
     let ctx = ParallelContext::default();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let mut cfg = RhfConfig::default();
-    cfg.mom_after_iter = if spec.mult > 1 { 5 } else { 0 };
+    let cfg = RhfConfig {
+        mom_after_iter: if spec.mult > 1 { 5 } else { 0 },
+        ..Default::default()
+    };
 
     let density = if spec.mult > 1 {
         let rhf = solve_uhf(&ctx, &mol, &obs, &bounds, &cfg).unwrap();
@@ -53,7 +55,7 @@ fn vol_for_atom(spec: &AtomSpec, obs_name: &str) -> f64 {
 
 #[test]
 fn free_atom_becke_volumes() {
-    let atoms = vec![
+    let atoms = [
         AtomSpec { symbol: "H",  z: 1,  mult: 2, xyz: "1\nH\nH 0 0 0\n" },
         AtomSpec { symbol: "He", z: 2,  mult: 1, xyz: "1\nHe\nHe 0 0 0\n" },
         AtomSpec { symbol: "C",  z: 6,  mult: 1, xyz: "1\nC\nC 0 0 0\n" },   // RHF singlet

@@ -329,13 +329,15 @@ mod tests {
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
 
-        let mut cfg = PdepRpaConfig::default();
-        cfg.quadrature = QuadratureConfig {
-            scheme: QuadratureScheme::GaussLegendre, n_points: 20, u0: 0.5,
+        let cfg = PdepRpaConfig {
+            quadrature: QuadratureConfig {
+                scheme: QuadratureScheme::GaussLegendre, n_points: 20, u0: 0.5,
+            },
+            frozen_core: 0,
+            trunc_thresh: 0.0,
+            davidson_conv_thresh: 1e-9,
+            ..Default::default()
         };
-        cfg.frozen_core = 0;
-        cfg.trunc_thresh = 0.0;
-        cfg.davidson_conv_thresh = 1e-9;
 
         let e_canonical = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap().e_rpa;
         let (e_osv, n_kept, _naux) = run_pdep_rpa_osv(
@@ -367,13 +369,15 @@ mod tests {
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
 
-        let mut cfg = PdepRpaConfig::default();
-        cfg.quadrature = QuadratureConfig {
-            scheme: QuadratureScheme::GaussLegendre, n_points: 20, u0: 0.5,
+        let cfg = PdepRpaConfig {
+            quadrature: QuadratureConfig {
+                scheme: QuadratureScheme::GaussLegendre, n_points: 20, u0: 0.5,
+            },
+            frozen_core: 0,
+            trunc_thresh: 0.0,
+            davidson_conv_thresh: 1e-9,
+            ..Default::default()
         };
-        cfg.frozen_core = 0;
-        cfg.trunc_thresh = 0.0;
-        cfg.davidson_conv_thresh = 1e-9;
 
         let e_canonical = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap().e_rpa;
         eprintln!("Canonical RPA(H2O/cc-pVDZ) = {e_canonical:.10}");

@@ -29,10 +29,12 @@ fn run(xc: &str, basis_name: &str) -> ndarray::Array2<f64> {
     let obs = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let mut cfg = RhfConfig::default();
-    cfg.xc = Some(xc.into());
-    cfg.df_j_aux = Some("def2-universal-jkfit".into());
-    cfg.df_k_aux = Some("def2-universal-jkfit".into());
+    let cfg = RhfConfig {
+        xc: Some(xc.into()),
+        df_j_aux: Some("def2-universal-jkfit".into()),
+        df_k_aux: Some("def2-universal-jkfit".into()),
+        ..Default::default()
+    };
     let rhf = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &cfg).unwrap();
     ks_gradient_closed(&mol, &obs, &bs, op, &bounds, xc, &rhf).unwrap()
 }
@@ -87,12 +89,14 @@ fn uks_b3lyp_h2o_ccpvdz_translational_invariance() {
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let mut cfg = RhfConfig::default();
-    cfg.xc = Some(xc.into());
-    cfg.df_j_aux = Some("def2-universal-jkfit".into());
-    cfg.df_k_aux = Some("def2-universal-jkfit".into());
-    cfg.energy_conv = 1e-10;
-    cfg.density_conv = 1e-8;
+    let cfg = RhfConfig {
+        xc: Some(xc.into()),
+        df_j_aux: Some("def2-universal-jkfit".into()),
+        df_k_aux: Some("def2-universal-jkfit".into()),
+        energy_conv: 1e-10,
+        density_conv: 1e-8,
+        ..Default::default()
+    };
     let uhf = solve_uhf(&ParallelContext::default(), &mol, &prep, &bounds, &cfg).unwrap();
 
     let g = ks_gradient_uks(&mol, &prep, &bs, op, &bounds, xc, &uhf).unwrap();

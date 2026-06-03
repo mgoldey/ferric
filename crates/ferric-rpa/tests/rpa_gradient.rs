@@ -17,16 +17,17 @@ fn h2o() -> Molecule {
 }
 
 fn small_rpa_cfg(n_quad: usize) -> PdepRpaConfig {
-    let mut cfg = PdepRpaConfig::default();
-    cfg.frozen_core = 0;
-    cfg.trunc_thresh = 1e-4;
-    cfg.davidson_conv_thresh = 1e-10;
-    cfg.quadrature = QuadratureConfig {
-        scheme: QuadratureScheme::GaussLegendre,
-        n_points: n_quad,
-        u0: 0.5,
-    };
-    cfg
+    PdepRpaConfig {
+        frozen_core: 0,
+        trunc_thresh: 1e-4,
+        davidson_conv_thresh: 1e-10,
+        quadrature: QuadratureConfig {
+            scheme: QuadratureScheme::GaussLegendre,
+            n_points: n_quad,
+            u0: 0.5,
+        },
+        ..Default::default()
+    }
 }
 
 #[test]

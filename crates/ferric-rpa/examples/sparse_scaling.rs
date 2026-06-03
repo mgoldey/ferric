@@ -132,12 +132,14 @@ fn main() {
         // skipped because cc-pvdz-ri is an MP2-fit basis, not a JK-fit basis
         // (would introduce mHa-scale error in K). With DF-J + LinkK, RHF cost
         // on drug-sized systems drops from hours to minutes.
-        let mut rhf_cfg = RhfConfig::default();
-        rhf_cfg.max_iter = 200;
-        rhf_cfg.energy_conv = 1e-7;
-        rhf_cfg.density_conv = 1e-6;
-        rhf_cfg.df_j_aux = Some("cc-pvdz-ri".to_string());
-        rhf_cfg.k_builder = Some("link".to_string());
+        let rhf_cfg = RhfConfig {
+            max_iter: 200,
+            energy_conv: 1e-7,
+            density_conv: 1e-6,
+            df_j_aux: Some("cc-pvdz-ri".to_string()),
+            k_builder: Some("link".to_string()),
+            ..Default::default()
+        };
 
         let t0 = Instant::now();
         let rhf = match solve_rhf(&ctx, &mol, &obs, op, &bounds, &rhf_cfg) {
@@ -159,11 +161,13 @@ fn main() {
             if let Some(set) = cfg_filter.as_ref() {
                 if !set.contains(cfg.label) { continue; }
             }
-            let mut pdep_cfg = PdepRpaConfig::default();
-            pdep_cfg.frozen_core = sys.frozen_core;
-            pdep_cfg.trunc_thresh = 1e-4;
-            pdep_cfg.davidson_conv_thresh = 1e-6;
-            pdep_cfg.chi0_sparsity = cfg.sparsity;
+            let pdep_cfg = PdepRpaConfig {
+                frozen_core: sys.frozen_core,
+                trunc_thresh: 1e-4,
+                davidson_conv_thresh: 1e-6,
+                chi0_sparsity: cfg.sparsity,
+                ..Default::default()
+            };
 
             // Quickly probe retained pairs (cheap relative to RPA itself).
             let (retained, total, thresh_val) = match cfg.sparsity {

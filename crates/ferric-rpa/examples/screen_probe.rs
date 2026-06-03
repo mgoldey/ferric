@@ -18,13 +18,15 @@ fn main() {
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
 
-    let mut cfg = PdepRpaConfig::default();
-    cfg.quadrature = QuadratureConfig {
-        scheme: QuadratureScheme::GaussLegendre, n_points: 40, u0: 0.5,
+    let cfg = PdepRpaConfig {
+        quadrature: QuadratureConfig {
+            scheme: QuadratureScheme::GaussLegendre, n_points: 40, u0: 0.5,
+        },
+        frozen_core: 6,
+        trunc_thresh: 0.0,
+        davidson_conv_thresh: 1e-10,
+        ..Default::default()
     };
-    cfg.frozen_core = 6;
-    cfg.trunc_thresh = 0.0;
-    cfg.davidson_conv_thresh = 1e-10;
 
     let t0 = Instant::now();
     let r_dense = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();

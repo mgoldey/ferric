@@ -134,12 +134,14 @@ fn run_rhf_rpa(
     // was the source of the ~6e-4 Ha ferric-vs-PySCF E_total gap observed in
     // the C9 prep smoke test. See [[ferric-jk-aux-convention]] for context.
     // RPA correlation still uses cc-pvdz-ri (the aux argument below).
-    let mut rhf_cfg = RhfConfig::default();
-    rhf_cfg.max_iter = 200;
-    rhf_cfg.energy_conv = 1e-7;
-    rhf_cfg.density_conv = 1e-6;
-    rhf_cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
-    rhf_cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
+    let rhf_cfg = RhfConfig {
+        max_iter: 200,
+        energy_conv: 1e-7,
+        density_conv: 1e-6,
+        df_j_aux: Some("def2-universal-jkfit".to_string()),
+        df_k_aux: Some("def2-universal-jkfit".to_string()),
+        ..Default::default()
+    };
 
     let t0 = Instant::now();
     let rhf = solve_rhf(ctx, mol, &obs, op, &bounds, &rhf_cfg)?;
@@ -147,11 +149,13 @@ fn run_rhf_rpa(
     eprintln!("  [{label}] RHF: n_AO={n_ao} n_aux={n_aux} E={:.8} t={:.2}s",
               rhf.energy, t_rhf);
 
-    let mut pdep_cfg = PdepRpaConfig::default();
-    pdep_cfg.frozen_core = frozen_core_for(mol);
-    pdep_cfg.trunc_thresh = 1e-4;
-    pdep_cfg.davidson_conv_thresh = 1e-6;
-    pdep_cfg.chi0_sparsity = Chi0Sparsity::Dense;
+    let pdep_cfg = PdepRpaConfig {
+        frozen_core: frozen_core_for(mol),
+        trunc_thresh: 1e-4,
+        davidson_conv_thresh: 1e-6,
+        chi0_sparsity: Chi0Sparsity::Dense,
+        ..Default::default()
+    };
 
     let t1 = Instant::now();
     let rpa = run_pdep_rpa(mol, &obs, &dfbs, op, &rhf, &pdep_cfg)?;

@@ -1,6 +1,8 @@
 //! Regression tests for `electric_field_at_atoms`: sign check on H2 and
 //! component-wise PySCF reference on H2O / cc-pVDZ.
 
+#![allow(clippy::needless_range_loop)] // index loops over tensor/array axes read clearer with explicit indices
+
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;

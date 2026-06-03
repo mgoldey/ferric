@@ -71,10 +71,12 @@ fn h2_polarizability_matches_pyscf_direct_rpa() {
     let r = load_ref("../../testdata/reference/h2_cc-pvdz_rpa_props.json");
     let (mol, obs, dfbs, op, rhf) = setup_h2_ccpvdz();
 
-    let mut cfg = PdepRpaConfig::default();
-    cfg.frozen_core = 0;
-    cfg.trunc_thresh = 0.0;
-    cfg.davidson_conv_thresh = 1e-10;
+    let cfg = PdepRpaConfig {
+        frozen_core: 0,
+        trunc_thresh: 0.0,
+        davidson_conv_thresh: 1e-10,
+        ..Default::default()
+    };
 
     let pol = pdep_polarizability_static(&mol, &obs, &dfbs, &rhf, op, &cfg).unwrap();
 
@@ -131,10 +133,12 @@ fn h2o_polarizability_and_esp_match_pyscf() {
     }
 
     // Polarizability
-    let mut cfg = PdepRpaConfig::default();
-    cfg.frozen_core = 0;
-    cfg.trunc_thresh = 0.0;
-    cfg.davidson_conv_thresh = 1e-10;
+    let cfg = PdepRpaConfig {
+        frozen_core: 0,
+        trunc_thresh: 0.0,
+        davidson_conv_thresh: 1e-10,
+        ..Default::default()
+    };
     let pol = pdep_polarizability_static(&mol, &obs, &dfbs, &rhf, op, &cfg).unwrap();
     for i in 0..3 {
         for j in 0..3 {
