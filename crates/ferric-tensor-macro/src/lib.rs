@@ -138,15 +138,48 @@ fn parse_spec(spec: &str) -> Result<Parsed, String> {
         return Err("mismatched contracted indices between operands".to_string());
     }
 
+    // Every free (non-contracted) input index must appear in the output;
+    // an input index that is neither contracted nor output would be an
+    // implicit single-operand sum, which einsum_binary does not support.
+    for (c, _) in left_free.iter().chain(right_free.iter()) {
+        if !ochars.contains(c) {
+            return Err(format!(
+                "index '{c}' appears in an input but is neither contracted nor in the output \
+                 (implicit single-operand sums are not supported)"
+            ));
+        }
+    }
+
+    #[derive(PartialEq)]
+    enum Side { Left, Right }
     let mut out_from_left = Vec::new();
     let mut out_from_right = Vec::new();
+    let mut provenance = Vec::new();
     for &oc in &ochars {
         if let Some((_, p)) = left_free.iter().find(|(c, _)| *c == oc) {
             out_from_left.push(*p);
+            provenance.push(Side::Left);
         } else if let Some((_, p)) = right_free.iter().find(|(c, _)| *c == oc) {
             out_from_right.push(*p);
+            provenance.push(Side::Right);
         } else {
             return Err(format!("output index '{oc}' is not a free index of either input"));
+        }
+    }
+    // einsum_binary emits (left-free block, right-free block). The output index
+    // order must match: no left-derived axis may follow a right-derived axis.
+    let mut seen_right = false;
+    for side in &provenance {
+        match side {
+            Side::Right => seen_right = true,
+            Side::Left if seen_right => {
+                return Err(
+                    "output indices must list all left-operand free indices before any \
+                     right-operand free indices (einsum_binary emits them in that order)"
+                        .to_string(),
+                );
+            }
+            Side::Left => {}
         }
     }
 
