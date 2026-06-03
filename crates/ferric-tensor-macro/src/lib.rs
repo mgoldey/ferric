@@ -44,9 +44,28 @@ pub fn einsum(input: TokenStream) -> TokenStream {
     let out_from_right_v: Vec<usize> = parsed.out_from_right.iter().map(|&x| x as usize).collect();
     let scalar = parsed.out.is_empty();
 
+    let contr_l: Vec<usize> = parsed.left_contr.iter().map(|&x| x as usize).collect();
+    let contr_r: Vec<usize> = parsed.right_contr.iter().map(|&x| x as usize).collect();
+
     let core = quote! {{
-        let __l = (#lhs).view();
-        let __r = (#rhs).view();
+        let __lhs = &(#lhs);
+        let __rhs = &(#rhs);
+        #[cfg(debug_assertions)]
+        {
+            use ::ferric_tensors::MaybeLabeled;
+            #(
+                if let (Some(__la), Some(__ra)) =
+                    (__lhs.axis_label(#contr_l), __rhs.axis_label(#contr_r)) {
+                    debug_assert_eq!(
+                        __la, __ra,
+                        "einsum axis mismatch on contracted index: left {:?} vs right {:?}",
+                        __la, __ra
+                    );
+                }
+            )*
+        }
+        let __l = __lhs.view();
+        let __r = __rhs.view();
         let mut __out_shape: ::std::vec::Vec<usize> = ::std::vec::Vec::new();
         #( __out_shape.push(__l.shape()[#out_from_left_v]); )*
         #( __out_shape.push(__r.shape()[#out_from_right_v]); )*

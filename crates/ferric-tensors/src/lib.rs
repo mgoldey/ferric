@@ -9,7 +9,7 @@ use sprs::{CsMat, TriMat};
 pub mod axis;
 pub use axis::Axis;
 pub mod tensor;
-pub use tensor::Tensor;
+pub use tensor::{MaybeLabeled, Tensor};
 pub mod einsum;
 pub use einsum::{einsum_binary, TensorError};
 pub use ferric_tensor_macro::einsum;

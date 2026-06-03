@@ -36,6 +36,11 @@ impl<const N: usize> Tensor<N> {
         &self.labels
     }
 
+    /// The axis label at position `pos` (panics if out of range).
+    pub fn axis_at(&self, pos: usize) -> Axis {
+        self.labels[pos]
+    }
+
     /// Borrow the inner ndarray view.
     pub fn view(&self) -> ndarray::ArrayViewD<'_, f64> {
         self.data.view()
@@ -52,6 +57,27 @@ impl<const N: usize> Deref for Tensor<N> {
     fn deref(&self) -> &Self::Target {
         &self.data
     }
+}
+
+/// Lets `einsum!` query an operand's axis label in debug builds. `Tensor`
+/// returns `Some(label)`; anything else (bare ndarray) returns `None` and the
+/// check is skipped.
+pub trait MaybeLabeled {
+    /// Axis label at `pos`, if this operand carries labels.
+    fn axis_label(&self, pos: usize) -> Option<Axis>;
+}
+
+impl<const N: usize> MaybeLabeled for Tensor<N> {
+    fn axis_label(&self, pos: usize) -> Option<Axis> { self.labels.get(pos).copied() }
+}
+impl<const N: usize> MaybeLabeled for &Tensor<N> {
+    fn axis_label(&self, pos: usize) -> Option<Axis> { (**self).axis_label(pos) }
+}
+impl MaybeLabeled for ndarray::ArrayD<f64> {
+    fn axis_label(&self, _pos: usize) -> Option<Axis> { None }
+}
+impl MaybeLabeled for &ndarray::ArrayD<f64> {
+    fn axis_label(&self, _pos: usize) -> Option<Axis> { None }
 }
 
 #[cfg(test)]

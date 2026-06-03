@@ -43,3 +43,17 @@ fn macro_four_index_from_three() {
     }}}}
     assert!((&out - &want).iter().all(|x| x.abs() < 1e-12));
 }
+
+#[test]
+#[should_panic(expected = "axis mismatch")]
+fn macro_axis_mismatch_panics_in_debug() {
+    use ndarray::Array;
+    // 'k' contracted: Aux in `a` but V in `b` -> mismatch.
+    let a = Tensor::new(
+        Array::from_shape_vec(IxDyn(&[2, 3]), (0..6).map(|x| x as f64).collect()).unwrap(),
+        [Axis::O, Axis::Aux]); // "ik", k=Aux
+    let b = Tensor::new(
+        Array::from_shape_vec(IxDyn(&[3, 2]), (0..6).map(|x| x as f64).collect()).unwrap(),
+        [Axis::V, Axis::O]);   // "kj", k=V -> mismatch
+    let _c: ndarray::ArrayD<f64> = einsum!("ik,kj->ij", &a, &b);
+}
