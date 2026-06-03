@@ -1,7 +1,24 @@
 //! High-performance tensor library for Coupled Cluster methods.
 //!
-//! Provides abstractions for rank-2 and rank-4 tensors with support for
-//! Einstein-style contractions and permutational symmetry.
+//! Provides labeled-axis tensors and a compile-time [`einsum!`] macro for
+//! quantum-chemistry contractions. Each `einsum!` is one binary contraction that
+//! lowers to one BLAS3 GEMM (permute → reshape → `general_mat_mul` → reshape):
+//!
+//! ```
+//! use ferric_tensors::{einsum, Axis, Tensor};
+//! use ndarray::{Array, IxDyn};
+//! let a = Tensor::new(
+//!     Array::from_shape_vec(IxDyn(&[2, 3]), (0..6).map(|x| x as f64).collect()).unwrap(),
+//!     [Axis::O, Axis::Aux]);
+//! let b = Tensor::new(
+//!     Array::from_shape_vec(IxDyn(&[3, 2]), (0..6).map(|x| x as f64).collect()).unwrap(),
+//!     [Axis::Aux, Axis::V]);
+//! let c: ndarray::ArrayD<f64> = einsum!("ik,kj->ij", &a, &b);
+//! assert_eq!(c.shape(), &[2, 2]);
+//! ```
+//!
+//! Also retains the sparse tensor types ([`SparseTensor2`], [`FlatSparse`], …)
+//! used by screening / link-K paths.
 
 use ndarray::{Array2, Array3, Array4};
 use sprs::{CsMat, TriMat};
