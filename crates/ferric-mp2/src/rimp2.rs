@@ -432,6 +432,109 @@ pub fn cholesky_inverse_sqrt(v: &Array2<f64>) -> Result<Array2<f64>, FerricError
     Ok(l_inv)
 }
 
+/// RI-MP2 correlation energy computed via the `einsum!` tensor framework.
+///
+/// Implements the same closed-shell RI-MP2 as [`ri_mp2_spin_components`] but
+/// routes all 4-index contractions through `ferric_tensors::einsum!` for
+/// demonstration and A/B testing.  Both functions use the same RI integrals
+/// (same `b_flat` construction), so their energies should agree to near
+/// machine precision (not just RI-approximation tolerance).
+///
+/// # Formula
+/// Build `B_ov[P,i,a] = V^{-1/2}_{PQ}(Q|ia)`, then:
+/// ```text
+/// V[i,j,a,b]   = (ia|jb) = einsum("Pia,Pjb->iajb") permuted (i,a,j,b)->(i,j,a,b)
+/// t[i,j,a,b]   = V[i,j,a,b] / (eps_i + eps_j - eps_a - eps_b)
+/// e_os = sum_{ijab} t[i,j,a,b] * V[i,j,a,b]
+/// e_ss = sum_{ijab} t[i,j,a,b] * (V[i,j,a,b] - V[i,j,b,a])
+/// ```
+pub fn ri_mp2_einsum(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &ScfResult,
+    config: &RiMp2Config,
+) -> Result<SpinComponents, FerricError> {
+    use ferric_tensors::{einsum, Axis, Tensor};
+    use ndarray::IxDyn;
+
+    let nbas = obs.nbasis();
+    let nelec = mol.nelec() as usize;
+    let nocc_total = nelec / 2;
+    let nocc = nocc_total - config.frozen_core;
+    let first_occ = config.frozen_core;
+    let nvir = nbas - nocc_total;
+    let naux = dfbs.nbasis();
+    let eps = rhf.eps_r();
+    let c = rhf.mos_r();
+
+    let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
+    let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
+
+    // V^{-1/2} and AO 3-center integrals — identical to ri_mp2_spin_components
+    let v2c = threeindex::coulomb_metric_2c(op, dfbs)?;
+    let v_inv_sqrt = cholesky_inverse_sqrt(&v2c)?;
+    let eri3_ao = threeindex::eri3_tensor(op, obs, dfbs)?;
+    let eri3_mo = transform_3center_ov(&eri3_ao, &c_occ, &c_vir); // (naux, nocc, nvir)
+
+    // B^P_{ia} = V^{-1/2} (Q|ia); same b_flat as the scalar path
+    let flat = eri3_mo
+        .into_shape_with_order((naux, nocc * nvir))
+        .unwrap();
+    let b_flat = v_inv_sqrt.dot(&flat); // (naux, nocc*nvir)
+    let b_3d = b_flat
+        .into_shape_with_order((naux, nocc, nvir))
+        .unwrap()
+        .into_dyn();
+
+    // Wrap as Tensor<3> [Aux, O, V]
+    let b_ov = Tensor::new(b_3d, [Axis::Aux, Axis::O, Axis::V]);
+
+    // (ia|jb) in chemist notation: g[i,a,j,b]
+    let g_iajb: ndarray::ArrayD<f64> = einsum!("Pia,Pjb->iajb", &b_ov, &b_ov);
+
+    // Permute (i,a,j,b) -> (i,j,a,b): axes [0,2,1,3]
+    let v_arr = g_iajb
+        .permuted_axes(IxDyn(&[0, 2, 1, 3]))
+        .as_standard_layout()
+        .into_owned(); // shape (nocc, nocc, nvir, nvir)
+
+    // Build amplitude t[i,j,a,b] = V[i,j,a,b] / D_{ijab}
+    // and accumulate e_os, e_ss with a denominator loop
+    let mut t_arr = ndarray::ArrayD::zeros(IxDyn(&[nocc, nocc, nvir, nvir]));
+    for i in 0..nocc {
+        for j in 0..nocc {
+            for a in 0..nvir {
+                for b in 0..nvir {
+                    let d = eps[first_occ + i] + eps[first_occ + j]
+                        - eps[nocc_total + a]
+                        - eps[nocc_total + b];
+                    t_arr[[i, j, a, b]] = v_arr[[i, j, a, b]] / d;
+                }
+            }
+        }
+    }
+
+    // Wrap for einsum!
+    let t_t = Tensor::new(t_arr, [Axis::O, Axis::O, Axis::V, Axis::V]);
+    let v_t = Tensor::new(v_arr.clone(), [Axis::O, Axis::O, Axis::V, Axis::V]);
+
+    // V - V.permuted([0,1,3,2]): (i,j,a,b) -> swap last two -> (ib|ja) term
+    let v_swap = v_arr.clone()
+        .permuted_axes(IxDyn(&[0, 1, 3, 2]))
+        .as_standard_layout()
+        .into_owned();
+    let vmx_arr = &v_arr - &v_swap; // (ia|jb) - (ib|ja) = SS kernel
+    let vmx_t = Tensor::new(vmx_arr, [Axis::O, Axis::O, Axis::V, Axis::V]);
+
+    // e_os = sum t * V,  e_ss = sum t * (V - V_swap)
+    let e_os: f64 = einsum!("ijab,ijab->", &t_t, &v_t);
+    let e_ss: f64 = einsum!("ijab,ijab->", &t_t, &vmx_t);
+
+    Ok(SpinComponents { e_os, e_ss, e_total: e_os + e_ss })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -516,6 +619,31 @@ mod tests {
             "H2 RI-MP2 corr: {:.10}",
             mp2.mp2_corr
         );
+    }
+
+    #[test]
+    fn ri_mp2_einsum_matches_scalar() {
+        use ferric_core::parallel::ParallelContext;
+        use ferric_scf::rhf::{solve_rhf, RhfConfig};
+        use ferric_scf::screening::SchwarzBounds;
+
+        let xyz = "3\n\nO 0.0 0.0 0.1173\nH 0.0 0.7572 -0.4692\nH 0.0 -0.7572 -0.4692\n";
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let obs_bs = basis::bundled("cc-pvdz").unwrap();
+        let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let op = Operator::coulomb();
+        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
+        let ctx = ParallelContext::default();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
+        let cfg = RiMp2Config { frozen_core: 0 };
+
+        let (sc_ref, _) = ri_mp2_spin_components(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
+        let sc_ein = ri_mp2_einsum(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
+        assert!((sc_ein.e_os - sc_ref.e_os).abs() < 1e-9, "os {} vs {}", sc_ein.e_os, sc_ref.e_os);
+        assert!((sc_ein.e_ss - sc_ref.e_ss).abs() < 1e-9, "ss {} vs {}", sc_ein.e_ss, sc_ref.e_ss);
+        assert!((sc_ein.e_total - sc_ref.e_total).abs() < 1e-9, "tot {} vs {}", sc_ein.e_total, sc_ref.e_total);
     }
 
     #[test]
