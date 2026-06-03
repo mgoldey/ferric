@@ -96,7 +96,15 @@ pub fn ccd(
     let gx = 2.0 * &g_iajb - &g_ibja;
     let gx_t = Tensor::new(gx, [Axis::O, Axis::V, Axis::O, Axis::V]);
 
-    // 3. Iteration loop
+    // 3. Iteration loop, accelerated with DIIS on the amplitudes.
+    //
+    // The amplitude increment delta[i,a,j,b] = R[i,a,j,b] / D_ijab goes to zero
+    // at convergence, so it is the natural DIIS error vector. T2 and delta are
+    // flattened to (nocc*nvir, nocc*nvir) matrices for the (matrix-shaped)
+    // ferric-scf Diis extrapolator; DIIS changes the path, not the fixed point,
+    // so the converged energy is unchanged.
+    let nov = nocc * nvir;
+    let mut diis = ferric_scf::diis::Diis::new(8);
     let mut e_old = 0.0;
     for iter in 0..cfg.max_iter {
         // A. Compute correlation energy: e_corr = sum_iajb t2 * (2 g_iajb - g_ibja).
@@ -117,19 +125,38 @@ pub fn ccd(
         let hh_ladder = crate::helpers::contract_hh_ladder(&b_ij_t, &t2_t);
         let r2 = &g_iajb_4 + &pp_ladder + &hh_ladder;
 
-        // Update T2: T = T + R / D
+        // C. Jacobi update t2 += R/D, then DIIS-extrapolate the new amplitudes
+        //    using the increment as the error vector.
+        let mut t2_new = Array4::zeros((nocc, nvir, nocc, nvir));
+        let mut err = Array4::zeros((nocc, nvir, nocc, nvir));
         for i in 0..nocc {
             for j in 0..nocc {
                 for a in 0..nvir {
                     for b in 0..nvir {
-                        let d_ijab = eps[cfg.frozen_core + i] + eps[cfg.frozen_core + j] 
+                        let d_ijab = eps[cfg.frozen_core + i] + eps[cfg.frozen_core + j]
                                    - eps[nocc_total + a] - eps[nocc_total + b];
                         let delta = r2[(i, a, j, b)] / d_ijab;
-                        t2[(i, a, j, b)] += delta;
+                        err[(i, a, j, b)] = delta;
+                        t2_new[(i, a, j, b)] = t2[(i, a, j, b)] + delta;
                     }
                 }
             }
         }
+        // Flatten to (nov, nov) for the matrix-shaped DIIS, extrapolate, reshape.
+        let t2_flat = t2_new
+            .view()
+            .into_shape_with_order((nov, nov))
+            .unwrap()
+            .to_owned();
+        let err_flat = err
+            .view()
+            .into_shape_with_order((nov, nov))
+            .unwrap()
+            .to_owned();
+        let t2_ext = diis.step(&t2_flat, &err_flat);
+        t2 = t2_ext
+            .into_shape_with_order((nocc, nvir, nocc, nvir))
+            .unwrap();
     }
 
     Err(FerricError::Convergence("CCD did not converge".into()))
@@ -187,4 +214,6 @@ mod tests {
         let r = ccd(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
         assert!((r.correlation_energy - (-0.0239287831)).abs() < 1e-9, "got {:.10}", r.correlation_energy);
     }
+
+
 }
