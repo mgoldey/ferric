@@ -209,23 +209,32 @@ pub fn mp3_energy(
     // The vir-occ ordered RI block B^P_{bj}, needed for the ovvo (kc|bj) integral.
     let b_vo = transpose_b(&b_ov);
 
-    // --- Spatial chemist 4-index blocks via einsum! ---
-    // (ia|jb): g[i,a,j,b]
-    let g_iajb: ArrayD<f64> = einsum!("Pia,Pjb->iajb", &b_ov, &b_ov);
-    // (ab|cd): g[a,b,c,d]
-    let g_abcd: ArrayD<f64> = einsum!("Pab,Pcd->abcd", &b_vv, &b_vv);
-    // (ij|kl): g[i,j,k,l]
-    let g_ijkl: ArrayD<f64> = einsum!("Pij,Pkl->ijkl", &b_oo, &b_oo);
-    // (kc|bj): g[k,c,b,j] — electron1=(k occ, c vir), electron2=(b vir, j occ)
-    let g_kcbj: ArrayD<f64> = einsum!("Pkc,Pbj->kcbj", &b_ov, &b_vo);
-    // (kj|bc): g[k,j,b,c]
-    let g_kjbc: ArrayD<f64> = einsum!("Pkj,Pbc->kjbc", &b_oo, &b_vv);
-
     // --- Spin-orbital antisymmetrized integrals ---
-    let asym_oovv_t = asym_oovv(&g_iajb, no, nv);
-    let v_vvvv = asym_same(&g_abcd, nv);
-    let v_oooo = asym_same(&g_ijkl, no);
-    let v_ovvo = asym_ovvo(&g_kcbj, &g_kjbc, no, nv);
+    // Each spatial chemist 4-index block is built via einsum!, immediately
+    // consumed by its antisymmetrizer, and dropped at the end of its scope so
+    // at most ONE spatial g block (e.g. the nvir^4 g_abcd) is alive at a time.
+    let asym_oovv_t = {
+        // (ia|jb): g[i,a,j,b]
+        let g_iajb: ArrayD<f64> = einsum!("Pia,Pjb->iajb", &b_ov, &b_ov);
+        asym_oovv(&g_iajb, no, nv)
+    };
+    let v_vvvv = {
+        // (ab|cd): g[a,b,c,d]
+        let g_abcd: ArrayD<f64> = einsum!("Pab,Pcd->abcd", &b_vv, &b_vv);
+        asym_same(&g_abcd, nv)
+    };
+    let v_oooo = {
+        // (ij|kl): g[i,j,k,l]
+        let g_ijkl: ArrayD<f64> = einsum!("Pij,Pkl->ijkl", &b_oo, &b_oo);
+        asym_same(&g_ijkl, no)
+    };
+    let v_ovvo = {
+        // (kc|bj): g[k,c,b,j] — electron1=(k occ, c vir), electron2=(b vir, j occ)
+        let g_kcbj: ArrayD<f64> = einsum!("Pkc,Pbj->kcbj", &b_ov, &b_vo);
+        // (kj|bc): g[k,j,b,c]
+        let g_kjbc: ArrayD<f64> = einsum!("Pkj,Pbc->kjbc", &b_oo, &b_vv);
+        asym_ovvo(&g_kcbj, &g_kjbc, no, nv)
+    };
 
     // --- Spin-orbital energies and amplitudes ---
     let (no2, nv2) = (2 * no, 2 * nv);
@@ -253,33 +262,50 @@ pub fn mp3_energy(
         }
     }
 
+    // `t_t` needs an owned amplitude copy (used by every energy term); the
+    // original `t` is kept owned so its LAST use (the t_iakc permute in e_ph)
+    // can consume it without a clone.
     let t_t = Tensor::new(t.clone(), [Axis::O, Axis::O, Axis::V, Axis::V]);
-    let oovv_t = Tensor::new(asym_oovv_t.clone(), [Axis::O, Axis::O, Axis::V, Axis::V]);
-    let vvvv_t = Tensor::new(v_vvvv, [Axis::V, Axis::V, Axis::V, Axis::V]);
-    let oooo_t = Tensor::new(v_oooo, [Axis::O, Axis::O, Axis::O, Axis::O]);
-    let ovvo_t = Tensor::new(v_ovvo, [Axis::O, Axis::V, Axis::V, Axis::O]);
+    // The amplitude fill above already consumed asym_oovv_t by value reads, but
+    // it is still needed for e_mp2 — move it into oovv_t (no clone).
+    let oovv_t = Tensor::new(asym_oovv_t, [Axis::O, Axis::O, Axis::V, Axis::V]);
 
-    // e_mp2 = 0.25 * sum t * <ij||ab>
-    let e_mp2: f64 = 0.25 * einsum!("ijab,ijab->", &t_t, &oovv_t);
+    // e_mp2 = 0.25 * sum t * <ij||ab>; oovv_t freed at end of scope.
+    let e_mp2: f64 = {
+        let v = 0.25 * einsum!("ijab,ijab->", &t_t, &oovv_t);
+        drop(oovv_t);
+        v
+    };
 
-    // e_pp = 0.125 * t_ijab <ab||cd> t_ijcd
-    let x: ArrayD<f64> = einsum!("ijab,abcd->ijcd", &t_t, &vvvv_t);
-    let x_t = Tensor::new(x, [Axis::O, Axis::O, Axis::V, Axis::V]);
-    let e_pp: f64 = 0.125 * einsum!("ijcd,ijcd->", &x_t, &t_t);
+    // e_pp = 0.125 * t_ijab <ab||cd> t_ijcd. Compute first so the (2nv)^4 hog
+    // v_vvvv is moved into vvvv_t and freed (with x) as early as possible.
+    let e_pp: f64 = {
+        let vvvv_t = Tensor::new(v_vvvv, [Axis::V, Axis::V, Axis::V, Axis::V]);
+        let x: ArrayD<f64> = einsum!("ijab,abcd->ijcd", &t_t, &vvvv_t);
+        let x_t = Tensor::new(x, [Axis::O, Axis::O, Axis::V, Axis::V]);
+        0.125 * einsum!("ijcd,ijcd->", &x_t, &t_t)
+    };
 
-    // e_hh = 0.125 * <kl||ij> t_ijab t_klab
-    let y: ArrayD<f64> = einsum!("klij,ijab->klab", &oooo_t, &t_t);
-    let y_t = Tensor::new(y, [Axis::O, Axis::O, Axis::V, Axis::V]);
-    let e_hh: f64 = 0.125 * einsum!("klab,klab->", &y_t, &t_t);
+    // e_hh = 0.125 * <kl||ij> t_ijab t_klab; v_oooo moved into oooo_t and freed.
+    let e_hh: f64 = {
+        let oooo_t = Tensor::new(v_oooo, [Axis::O, Axis::O, Axis::O, Axis::O]);
+        let y: ArrayD<f64> = einsum!("klij,ijab->klab", &oooo_t, &t_t);
+        let y_t = Tensor::new(y, [Axis::O, Axis::O, Axis::V, Axis::V]);
+        0.125 * einsum!("klab,klab->", &y_t, &t_t)
+    };
 
-    // e_ph = sum_{ijabkc} t[i,j,a,b] ovvo[k,b,c,j] t[i,k,a,c]
-    // z[i,a,k,c] = sum_{j,b} t[i,j,a,b] ovvo[k,b,c,j]
-    let z: ArrayD<f64> = einsum!("ijab,kbcj->iakc", &t_t, &ovvo_t);
-    let z_t = Tensor::new(z, [Axis::O, Axis::V, Axis::O, Axis::V]);
-    // t[i,k,a,c] in (i,a,k,c) order: permute storage (i,k,a,c)->(i,a,k,c) = axes [0,2,1,3]
-    let t_iakc = t.clone().permuted_axes(IxDyn(&[0, 2, 1, 3])).to_owned();
-    let t_iakc_t = Tensor::new(t_iakc, [Axis::O, Axis::V, Axis::O, Axis::V]);
-    let e_ph: f64 = einsum!("iakc,iakc->", &z_t, &t_iakc_t);
+    // e_ph = sum_{ijabkc} t[i,j,a,b] ovvo[k,b,c,j] t[i,k,a,c]; v_ovvo moved in.
+    let e_ph: f64 = {
+        let ovvo_t = Tensor::new(v_ovvo, [Axis::O, Axis::V, Axis::V, Axis::O]);
+        // z[i,a,k,c] = sum_{j,b} t[i,j,a,b] ovvo[k,b,c,j]
+        let z: ArrayD<f64> = einsum!("ijab,kbcj->iakc", &t_t, &ovvo_t);
+        let z_t = Tensor::new(z, [Axis::O, Axis::V, Axis::O, Axis::V]);
+        // t[i,k,a,c] in (i,a,k,c) order: permute storage (i,k,a,c)->(i,a,k,c) =
+        // axes [0,2,1,3]. This is the LAST use of `t`, so consume it (no clone).
+        let t_iakc = t.permuted_axes(IxDyn(&[0, 2, 1, 3])).to_owned();
+        let t_iakc_t = Tensor::new(t_iakc, [Axis::O, Axis::V, Axis::O, Axis::V]);
+        einsum!("iakc,iakc->", &z_t, &t_iakc_t)
+    };
 
     let e_mp3 = e_pp + e_hh + e_ph;
     let e_corr = e_mp2 + e_mp3;
