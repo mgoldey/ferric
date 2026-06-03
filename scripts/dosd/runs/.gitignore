@@ -1,0 +1,3 @@
+# Bulky per-job artifacts — regenerable from TOMLs via run_sweep.py
+*.npz
+*.log

@@ -1,0 +1,22 @@
+[molecule]
+xyz = "testdata/molecules/co2.xyz"
+charge = 0
+multiplicity = 1
+
+[basis]
+name = "aug-cc-pvtz"
+
+[method]
+kind = "pdep-rpa"
+task = "energy"
+
+[rpa]
+auxbasis = "aug-cc-pvtz-rifit"
+n_quad = 40
+quadrature = "gauss-legendre"
+frozen_core = 0
+trunc_thresh = 0.0
+export_npz = "/home/matt/qc/ferric/scripts/dosd/runs/augccpvtz/co2_rpa_hf.npz"
+compute_c6 = true
+c6_source = "pdep"
+c6_partition = "hirshfeld"
