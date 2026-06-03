@@ -547,9 +547,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferric-tensor-macro"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "ferric-tensors"
 version = "0.1.0"
 dependencies = [
+ "ferric-tensor-macro",
+ "log",
  "ndarray",
  "ndarray-linalg",
  "openblas-src",
