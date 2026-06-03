@@ -8,6 +8,8 @@ use sprs::{CsMat, TriMat};
 
 pub mod axis;
 pub use axis::Axis;
+pub mod tensor;
+pub use tensor::Tensor;
 
 /// A rank-4 tensor typically used for T2 amplitudes or 2-electron integrals.
 ///
