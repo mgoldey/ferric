@@ -91,26 +91,62 @@ pub fn canonical_mp2(
         }
     }
 
-    // MP2 energy
-    let mut e_mp2 = 0.0;
+    // MP2 energy via einsum! (one GEMM over the (ijab) space)
+    use ferric_tensors::{einsum, Axis, Tensor};
+    use ndarray::{Array, IxDyn};
+
+    // mo_eri is flat (nov, nov) = ((i,a),(j,b)) chemist (ia|jb). Reshape to (i,a,j,b).
+    let g = Array::from_shape_vec(
+        IxDyn(&[nocc, nvir, nocc, nvir]),
+        {
+            let mut v = Vec::with_capacity(nov * nov);
+            for i in 0..nocc {
+                for a in 0..nvir {
+                    for j in 0..nocc {
+                        for b in 0..nvir {
+                            let ia = i * nvir + a;
+                            let jb = j * nvir + b;
+                            v.push(mo_eri[ia * nov + jb]);
+                        }
+                    }
+                }
+            }
+            v
+        },
+    )
+    .unwrap(); // (i,a,j,b)
+
+    // V[i,j,a,b] = (ia|jb): permute (i,a,j,b)->(i,j,a,b) = axes [0,2,1,3]
+    let v_arr = g
+        .permuted_axes(IxDyn(&[0, 2, 1, 3]))
+        .as_standard_layout()
+        .into_owned();
+    // L[i,j,a,b] = 2 V[i,j,a,b] - V[i,j,b,a]
+    let v_swap = v_arr
+        .clone()
+        .permuted_axes(IxDyn(&[0, 1, 3, 2]))
+        .as_standard_layout()
+        .into_owned();
+    let two_v = &v_arr * 2.0;
+    let l_arr = two_v - &v_swap;
+    // amplitudes t[i,j,a,b] = V / D
+    let mut t_arr = v_arr.clone();
     for i in 0..nocc {
         for j in 0..nocc {
             for a in 0..nvir {
                 for b in 0..nvir {
-                    let ia = i * nvir + a;
-                    let jb = j * nvir + b;
-                    let ib = i * nvir + b;
-                    let ja = j * nvir + a;
-                    let denom = eps[first_occ + i] + eps[first_occ + j]
+                    let d = eps[first_occ + i] + eps[first_occ + j]
                         - eps[nocc_total + a]
                         - eps[nocc_total + b];
-                    e_mp2 += mo_eri[ia * nov + jb]
-                        * (2.0 * mo_eri[ia * nov + jb] - mo_eri[ib * nov + ja])
-                        / denom;
+                    t_arr[[i, j, a, b]] = v_arr[[i, j, a, b]] / d;
                 }
             }
         }
     }
+
+    let t_t = Tensor::new(t_arr, [Axis::O, Axis::O, Axis::V, Axis::V]);
+    let l_t = Tensor::new(l_arr, [Axis::O, Axis::O, Axis::V, Axis::V]);
+    let e_mp2: f64 = einsum!("ijab,ijab->", &t_t, &l_t);
     Ok(e_mp2)
 }
 
@@ -122,6 +158,26 @@ mod tests {
     use ferric_integrals::basis_bridge::PreparedBasis;
     use ferric_scf::rhf::{solve_rhf, RhfConfig};
     use ferric_scf::screening::SchwarzBounds;
+
+    // Baseline canonical MP2 energy for H2/cc-pVDZ from the pre-port scalar loop.
+    const CANONICAL_MP2_H2_CCPVDZ: f64 = -0.026371557616130;
+
+    #[test]
+    fn canonical_mp2_energy_via_einsum_matches_scalar() {
+        use ferric_core::parallel::ParallelContext;
+        use ferric_integrals::operator::Operator;
+
+        let xyz = "2\n\nH 0.0 0.0 0.0\nH 0.0 0.0 0.74\n";
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let bs = basis::bundled("cc-pvdz").unwrap();
+        let op = Operator::coulomb();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let ctx = ParallelContext::default();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let rhf = solve_rhf(&ctx, &mol, &prep, op, &bounds, &RhfConfig::default()).unwrap();
+        let e = canonical_mp2(&mol, &prep, op, &rhf, 0).unwrap();
+        assert!((e - CANONICAL_MP2_H2_CCPVDZ).abs() < 1e-10, "got {e:.15}");
+    }
 
     #[test]
     fn test_canonical_mp2_h2_sto3g() {
