@@ -15,6 +15,7 @@
 pub mod boys;
 pub mod mo_transform;
 pub mod rimp2;
+pub mod mp3;
 pub mod u_rimp2;
 pub mod u_oo_rimp2;
 pub mod canonical;
