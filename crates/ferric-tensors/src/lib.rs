@@ -6,6 +6,9 @@
 use ndarray::{Array2, Array3, Array4};
 use sprs::{CsMat, TriMat};
 
+pub mod axis;
+pub use axis::Axis;
+
 /// A rank-4 tensor typically used for T2 amplitudes or 2-electron integrals.
 ///
 /// Storage layout is [dim1, dim2, dim3, dim4].
