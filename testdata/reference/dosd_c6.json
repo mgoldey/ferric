@@ -16,7 +16,7 @@
     "HCl":  { "c6": 130.4,  "source": "Toulouse Table III / Meath DOSD" },
     "H2S":  { "c6": 216.8,  "source": "Toulouse Table III / Meath DOSD" },
     "C6H6": { "c6": 1765.0, "source": "Thakkar et al. arXiv:2010.01162 (2020), supersedes Kumar-Meath 1992 value 1723" },
-    "O2":   { "c6": null,   "source": "UNVERIFIED ~70 a.u. (Margoliash & Meath JCP 68 1426 1978); O2 is open-shell, treated specially in DOSD compilations. Do not use without checking primary." }
+    "O2":   { "c6": 70.0,   "source": "APPROX ~70.0 a.u. — Kumar, Meath, Bundgen & Thakkar, J. Chem. Phys. 105, 4927 (1996), constrained-DOSD O2; supersedes Margoliash & Meath JCP 68 1426 (1978). O2 is open-shell (3-Sigma-g-) and absent from Toulouse Table III; value is the compilation figure pending primary-source verification of the exact digits." }
   },
   "atomic_c6_aa": {
     "_comment": "Free-atom C6 (a.u.). TS column = Tkatchenko-Scheffler PRL 2009 values used in TS/MBD dispersion codes (DOSD/Chu-Dalgarno-consistent). Gould column = Gould-Bucko JCTC 2016 (arXiv:1604.02751) higher-level-theory reference where it differs.",
