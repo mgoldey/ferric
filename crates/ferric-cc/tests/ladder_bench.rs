@@ -12,6 +12,7 @@
 use std::time::Instant;
 use ndarray::{Array3, Array4};
 use ferric_cc::helpers::{contract_pp_ladder, contract_hh_ladder};
+use ferric_tensors::{Axis, Tensor};
 
 // ---- scalar reference implementations (vendored from pre-einsum commit) ----
 
@@ -124,11 +125,17 @@ fn bench(naux: usize, nocc: usize, nvir: usize) {
     let b_ij = Array3::from_shape_vec((naux, nocc, nocc), fill(&mut seed, naux*nocc*nocc)).unwrap();
     let t2 = Array4::from_shape_vec((nocc, nvir, nocc, nvir), fill(&mut seed, nocc*nvir*nocc*nvir)).unwrap();
 
+    // Wrap the loop-invariant B blocks ONCE (as the hoisted CCD loop does); t2
+    // wrapped once here too (in CCD it is re-wrapped per iter as it mutates).
+    let b_ab_t = Tensor::new(b_ab.clone().into_dyn(), [Axis::Aux, Axis::V, Axis::V]);
+    let b_ij_t = Tensor::new(b_ij.clone().into_dyn(), [Axis::Aux, Axis::O, Axis::O]);
+    let t2_t = Tensor::new(t2.clone().into_dyn(), [Axis::O, Axis::V, Axis::O, Axis::V]);
+
     // correctness: einsum result == scalar result
-    let pp_e = contract_pp_ladder(&b_ab, &t2);
+    let pp_e = contract_pp_ladder(&b_ab_t, &t2_t);
     let pp_s = contract_pp_ladder_scalar(&b_ab, &t2);
     let max_pp = pp_e.iter().zip(pp_s.iter()).map(|(a,b)| (a-b).abs()).fold(0.0f64, f64::max);
-    let hh_e = contract_hh_ladder(&b_ij, &t2);
+    let hh_e = contract_hh_ladder(&b_ij_t, &t2_t);
     let hh_s = contract_hh_ladder_scalar(&b_ij, &t2);
     let max_hh = hh_e.iter().zip(hh_s.iter()).map(|(a,b)| (a-b).abs()).fold(0.0f64, f64::max);
     assert!(max_pp < 1e-9 && max_hh < 1e-9, "einsum != scalar: pp {max_pp:.2e} hh {max_hh:.2e}");
@@ -139,7 +146,7 @@ fn bench(naux: usize, nocc: usize, nvir: usize) {
     let t_scalar = t.elapsed().as_secs_f64()/reps as f64;
 
     let t = Instant::now();
-    for _ in 0..reps { let _ = contract_pp_ladder(&b_ab, &t2); let _ = contract_hh_ladder(&b_ij, &t2); }
+    for _ in 0..reps { let _ = contract_pp_ladder(&b_ab_t, &t2_t); let _ = contract_hh_ladder(&b_ij_t, &t2_t); }
     let t_einsum = t.elapsed().as_secs_f64()/reps as f64;
 
     println!("naux={naux:4} nocc={nocc:3} nvir={nvir:3}  scalar={:9.2}ms  einsum={:9.2}ms  speedup={:.1}x  (max|Δ|={:.1e})",

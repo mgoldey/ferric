@@ -6,6 +6,7 @@ use ferric_integrals::operator::Operator;
 use ferric_scf::ScfResult;
 use ferric_mp2::mo_transform::{transform_3center_oo, transform_3center_ov, transform_3center_vv};
 use ferric_mp2::rimp2::cholesky_inverse_sqrt;
+use ferric_tensors::{Axis, Tensor};
 use ndarray::{Array2, Array4};
 
 pub fn ccsd(
@@ -71,6 +72,11 @@ pub fn ccsd(
         }
     }
 
+    // Dressed RI blocks wrapped once (loop-invariant) for the ladder helpers,
+    // so they are not re-cloned every CCSD iteration.
+    let b_ab_t = Tensor::new(b_ab.clone().into_dyn(), [Axis::Aux, Axis::V, Axis::V]);
+    let b_ij_t = Tensor::new(b_ij.clone().into_dyn(), [Axis::Aux, Axis::O, Axis::O]);
+
     // 3. CCSD Iteration
     let mut e_old: f64 = 0.0;
     for iter in 0..cfg.max_iter {
@@ -119,9 +125,11 @@ pub fn ccsd(
             }
         }
 
-        // Add non-linear ladder terms (DRY helpers)
-        let pp_ladder = crate::helpers::contract_pp_ladder(&b_ab, &t2);
-        let hh_ladder = crate::helpers::contract_hh_ladder(&b_ij, &t2);
+        // Add non-linear ladder terms (DRY helpers). t2 wrapped once per iter
+        // (it mutates); the B blocks are borrowed loop-invariant.
+        let t2_t = Tensor::new(t2.clone().into_dyn(), [Axis::O, Axis::V, Axis::O, Axis::V]);
+        let pp_ladder = crate::helpers::contract_pp_ladder(&b_ab_t, &t2_t);
+        let hh_ladder = crate::helpers::contract_hh_ladder(&b_ij_t, &t2_t);
         r2 = r2 + pp_ladder + hh_ladder;
 
         let mut max_d_t: f64 = 0.0;

@@ -53,13 +53,24 @@ pub fn ccd(
     let b_ij = dress(&b_oo); // (naux, nocc, nocc)
     let b_ab = dress(&b_vv); // (naux, nvir, nvir)
 
-    // Dressed RI block as a Tensor for einsum!.
-    let b_ia_t = Tensor::new(b_ia.clone().into_dyn(), [Axis::Aux, Axis::O, Axis::V]);
+    // Dressed RI blocks as Tensors for einsum!, wrapped ONCE here. These are
+    // loop-invariant (geometry/orbital-only); the ladder helpers borrow them
+    // each iteration instead of re-cloning the (potentially hundreds-of-MB)
+    // B^P_ab / B^P_ij arrays per call.
+    let b_ia_t = Tensor::new(b_ia.into_dyn(), [Axis::Aux, Axis::O, Axis::V]);
+    let b_ab_t = Tensor::new(b_ab.into_dyn(), [Axis::Aux, Axis::V, Axis::V]);
+    let b_ij_t = Tensor::new(b_ij.into_dyn(), [Axis::Aux, Axis::O, Axis::O]);
 
     // The chemist (ia|jb) integral g[i,a,j,b] = sum_P B^P_ia B^P_jb, built ONCE
     // via einsum! and reused for the MP2 guess, the energy, and the (ab|ij)
     // residual term (previously computed three times with scalar sum_P loops).
     let g_iajb: ArrayD<f64> = einsum!("Pia,Pjb->iajb", &b_ia_t, &b_ia_t);
+    // (ab|ij) residual term is exactly g[i,a,j,b]; keep an Ix4 view-free copy
+    // once (loop-invariant) instead of cloning g every iteration.
+    let g_iajb_4: ndarray::Array4<f64> = g_iajb
+        .clone()
+        .into_dimensionality::<ndarray::Ix4>()
+        .unwrap();
 
     // 2. Form initial T2 guess (MP2): t2[i,a,j,b] = g[i,a,j,b] / D_ijab.
     let mut t2 = Array4::zeros((nocc, nvir, nocc, nvir));
@@ -99,18 +110,12 @@ pub fn ccd(
         }
         e_old = e_corr;
 
-        // B. Compute residuals
-        // R_iajb = (ab|ij) + L_iajb + H_iajb + ...
-        // 1. (ab|ij) term is exactly g[i,a,j,b].
-        let r2_iajb = g_iajb
-            .clone()
-            .into_dimensionality::<ndarray::Ix4>()
-            .unwrap();
-
-        // 2. Ladder terms (DRY helpers)
-        let pp_ladder = crate::helpers::contract_pp_ladder(&b_ab, &t2);
-        let hh_ladder = crate::helpers::contract_hh_ladder(&b_ij, &t2);
-        let r2 = r2_iajb + pp_ladder + hh_ladder;
+        // B. Compute residuals R_iajb = (ab|ij) + L_iajb + H_iajb.
+        // The (ab|ij) term is the loop-invariant g_iajb_4; the ladder helpers
+        // borrow the pre-wrapped, loop-invariant B tensors (no per-iter clone).
+        let pp_ladder = crate::helpers::contract_pp_ladder(&b_ab_t, &t2_t);
+        let hh_ladder = crate::helpers::contract_hh_ladder(&b_ij_t, &t2_t);
+        let r2 = &g_iajb_4 + &pp_ladder + &hh_ladder;
 
         // Update T2: T = T + R / D
         for i in 0..nocc {
