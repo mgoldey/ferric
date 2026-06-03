@@ -14,8 +14,9 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_integrals::threeindex;
 use ferric_scf::ScfResult;
+use crate::spinorbital::{asym_oovv, asym_ovvo, asym_same, build_b, transpose_b};
 use ferric_tensors::{einsum, Axis, Tensor};
-use ndarray::{Array2, ArrayD, IxDyn};
+use ndarray::{ArrayD, IxDyn};
 
 /// Results from a spin-orbital MP3 calculation.
 #[derive(Debug, Clone)]
@@ -30,132 +31,6 @@ pub struct Mp3Result {
     pub e_corr: f64,
     /// Total energy: e_hf + e_corr.
     pub e_total: f64,
-}
-
-/// Build a dressed RI 3-index MO tensor `B^P_{pq}` for a spatial block.
-///
-/// `eri3_mo` is `(naux, d1, d2)` already MO-transformed; `v_inv_sqrt` is
-/// `V^{-1/2}` `(naux, naux)`. Returns `Tensor<3>` labeled `[Aux, l1, l2]` with
-/// `B^P_{pq} = sum_Q V^{-1/2}_{PQ} (Q|pq)`.
-fn build_b(eri3_mo: &ndarray::Array3<f64>, v_inv_sqrt: &Array2<f64>, l1: Axis, l2: Axis) -> Tensor<3> {
-    let naux = eri3_mo.shape()[0];
-    let d1 = eri3_mo.shape()[1];
-    let d2 = eri3_mo.shape()[2];
-    let flat = eri3_mo
-        .view()
-        .into_shape_with_order((naux, d1 * d2))
-        .unwrap();
-    let b_flat = v_inv_sqrt.dot(&flat); // (naux, d1*d2)
-    let b = b_flat.into_shape_with_order((naux, d1, d2)).unwrap();
-    Tensor::new(b.into_dyn(), [Axis::Aux, l1, l2])
-}
-
-/// Spin of spin-orbital index `p`: 0=alpha (even), 1=beta (odd).
-#[inline]
-fn spin(p: usize) -> usize {
-    p & 1
-}
-/// Spatial index of spin-orbital `p`.
-#[inline]
-fn spat(p: usize) -> usize {
-    p >> 1
-}
-
-/// Antisymmetrized spin-orbital `<ij||ab>` (oovv) from spatial chemist `(ia|jb)`.
-///
-/// `g_iajb[i,a,j,b] = (ia|jb)`. Output shape `(2no, 2no, 2nv, 2nv)`.
-#[allow(clippy::needless_range_loop)]
-fn asym_oovv(g_iajb: &ArrayD<f64>, no: usize, nv: usize) -> ArrayD<f64> {
-    let (no2, nv2) = (2 * no, 2 * nv);
-    let mut out = ArrayD::zeros(IxDyn(&[no2, no2, nv2, nv2]));
-    for i in 0..no2 {
-        for j in 0..no2 {
-            for a in 0..nv2 {
-                for b in 0..nv2 {
-                    // <ij|ab> = (ia|jb) with spin(i)=spin(a), spin(j)=spin(b)
-                    let dir = if spin(i) == spin(a) && spin(j) == spin(b) {
-                        g_iajb[[spat(i), spat(a), spat(j), spat(b)]]
-                    } else {
-                        0.0
-                    };
-                    // <ij|ba> = (ib|ja) with spin(i)=spin(b), spin(j)=spin(a)
-                    let exc = if spin(i) == spin(b) && spin(j) == spin(a) {
-                        g_iajb[[spat(i), spat(b), spat(j), spat(a)]]
-                    } else {
-                        0.0
-                    };
-                    out[[i, j, a, b]] = dir - exc;
-                }
-            }
-        }
-    }
-    out
-}
-
-/// Antisymmetrized same-space `<pq||rs>` from spatial chemist `(pq|rs)`.
-///
-/// `g[p,q,r,s] = (pq|rs)`, all four indices in the SAME spatial space of size
-/// `n` spatial / `2n` spin. `<pq||rs> = (pr|qs) - (ps|qr)`, i.e. index into `g`
-/// as `g[p,r,q,s]` (direct) and `g[p,s,q,r]` (exchange). Used for vvvv and oooo.
-#[allow(clippy::needless_range_loop)]
-fn asym_same(g: &ArrayD<f64>, n: usize) -> ArrayD<f64> {
-    let n2 = 2 * n;
-    let mut out = ArrayD::zeros(IxDyn(&[n2, n2, n2, n2]));
-    for p in 0..n2 {
-        for q in 0..n2 {
-            for r in 0..n2 {
-                for s in 0..n2 {
-                    // <pq|rs> = (pr|qs), spin(p)=spin(r) & spin(q)=spin(s)
-                    let dir = if spin(p) == spin(r) && spin(q) == spin(s) {
-                        g[[spat(p), spat(r), spat(q), spat(s)]]
-                    } else {
-                        0.0
-                    };
-                    // <pq|sr> = (ps|qr), spin(p)=spin(s) & spin(q)=spin(r)
-                    let exc = if spin(p) == spin(s) && spin(q) == spin(r) {
-                        g[[spat(p), spat(s), spat(q), spat(r)]]
-                    } else {
-                        0.0
-                    };
-                    out[[p, q, r, s]] = dir - exc;
-                }
-            }
-        }
-    }
-    out
-}
-
-/// Antisymmetrized `<kb||cj>` (ovvo) for the particle-hole MP3 term.
-///
-/// k,j occupied; b,c virtual. Direct `<kb|cj> = (kc|bj)` from `g_kcbj[k,c,b,j]`;
-/// exchange `<kb|jc> = (kj|bc)` from `g_kjbc[k,j,b,c]`.
-/// Output shape `(2no, 2nv, 2nv, 2no)` indexed `[k,b,c,j]`.
-#[allow(clippy::needless_range_loop)]
-fn asym_ovvo(g_kcbj: &ArrayD<f64>, g_kjbc: &ArrayD<f64>, no: usize, nv: usize) -> ArrayD<f64> {
-    let (no2, nv2) = (2 * no, 2 * nv);
-    let mut out = ArrayD::zeros(IxDyn(&[no2, nv2, nv2, no2]));
-    for k in 0..no2 {
-        for b in 0..nv2 {
-            for c in 0..nv2 {
-                for j in 0..no2 {
-                    // <kb|cj> = (kc|bj), spin(k)=spin(c) & spin(b)=spin(j)
-                    let dir = if spin(k) == spin(c) && spin(b) == spin(j) {
-                        g_kcbj[[spat(k), spat(c), spat(b), spat(j)]]
-                    } else {
-                        0.0
-                    };
-                    // <kb|jc> = (kj|bc), spin(k)=spin(j) & spin(b)=spin(c)
-                    let exc = if spin(k) == spin(j) && spin(b) == spin(c) {
-                        g_kjbc[[spat(k), spat(j), spat(b), spat(c)]]
-                    } else {
-                        0.0
-                    };
-                    out[[k, b, c, j]] = dir - exc;
-                }
-            }
-        }
-    }
-    out
 }
 
 /// Compute the spin-orbital MP3 correlation energy via RI integrals.
@@ -317,12 +192,6 @@ pub fn mp3_energy(
         e_corr,
         e_total: rhf.energy + e_corr,
     })
-}
-
-/// Transpose a `[Aux, O, V]` RI block into `[Aux, V, O]` (i.e. B^P_{ai} = B^P_{ia}).
-fn transpose_b(b_ov: &Tensor<3>) -> Tensor<3> {
-    let out = b_ov.view().permuted_axes(IxDyn(&[0, 2, 1])).to_owned();
-    Tensor::new(out, [Axis::Aux, Axis::V, Axis::O])
 }
 
 #[cfg(test)]
