@@ -438,3 +438,94 @@ fn attenuation_structure_vs_scalar() {
     println!("\n  span% = spread of r(iω) over frequency. Near 0 ⟹ uniform lift (scalar).");
     println!("  Large/systematic ⟹ frequency-structured (short-range physics).");
 }
+
+/// erf(ωr)/r RPA — the LONG-RANGE operator (complement of erfc), the one tied
+/// to real range-separated RPA (Toulouse/Ángyán/Janesko-Scuseria: SR=DFT,
+/// LR=RPA on erf). erfc inflated the long-range/static α (wrong lever, scalar-
+/// like). erf acts on the SHORT-range part, where RPA actually fails — so IF
+/// attenuation has real dispersion physics, the erf correction should be
+/// frequency-STRUCTURED (high-iω) and a scalar should NOT reproduce it.
+///
+/// Limits (opposite to erfc!): erf(ωr)/r → 0 as ω→0 (no interaction),
+///   → 1/r as ω→∞ (full Coulomb). So large ω ≈ baseline; small ω = far tail
+///   only. The long-range-RPA regime is small-to-moderate ω.
+///
+/// Run: cargo test --release -p ferric-rpa --test attenuated_alpha_c6_probe \
+///        erf_rpa_c6_and_structure -- --ignored --nocapture
+#[test]
+#[ignore]
+fn erf_rpa_c6_and_structure() {
+    let mols: &[(&str, &str, f64)] = &[
+        ("hf",   "2\nhf\nF 0 0 0\nH 0 0 0.917\n", 19.0),
+        ("h2o",  "3\nh2o\nO 0 0 0.117790\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n", 45.3),
+        ("ch4",  "5\nch4\nC 0 0 0\nH 0.6276 0.6276 0.6276\nH -0.6276 -0.6276 0.6276\nH -0.6276 0.6276 -0.6276\nH 0.6276 -0.6276 -0.6276\n", 129.7),
+        ("n2",   "2\nn2\nN 0 0 0.0\nN 0 0 1.0977\n", 73.3),
+        ("co2",  "3\nco2\nC 0 0 0.0\nO 0 0 1.1621\nO 0 0 -1.1621\n", 158.7),
+        ("c2h4", "6\nc2h4\nC 0 0 0.6695\nC 0 0 -0.6695\nH 0 0.9289 1.2321\nH 0 -0.9289 1.2321\nH 0 0.9289 -1.2321\nH 0 -0.9289 -1.2321\n", 300.2),
+    ];
+    let ctx = ParallelContext::default();
+    let cfg = PdepRpaConfig::default();
+    let iso = |t: &[[f64; 3]; 3]| (t[0][0] + t[1][1] + t[2][2]) / 3.0;
+
+    // erf ω grid: small=far-tail-only ... large≈full Coulomb. Sweep to see if
+    // any erf regime gives a STRUCTURED correction (not just monotone-to-baseline).
+    let omegas = [0.3_f64, 0.5, 0.7, 1.0, 1.5, 2.0, 3.0];
+
+    println!("\n=== erf(ωr)/r RPA@PBE : C6 sweep (long-range operator) ===");
+    println!("  erf: ω→0 = no interaction, ω→∞ = full Coulomb. DOSD targets.\n");
+
+    // For one molecule (water), also dump the correction SHAPE vs full-Coulomb
+    // baseline at a representative ω, to compare against erfc's low-iω lift.
+    for (label, xyz, dosd) in mols {
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let obs_bs = basis::bundled("aug-cc-pvdz").unwrap();
+        let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
+        let scf_op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(scf_op, &obs).unwrap();
+        let scf_cfg = RhfConfig {
+            energy_conv: 1e-9,
+            xc: Some("PBE".to_string()),
+            df_j_aux: Some("def2-universal-jkfit".to_string()),
+            df_k_aux: Some("def2-universal-jkfit".to_string()),
+            ..Default::default()
+        };
+        let rhf = solve_rhf(&ctx, &mol, &obs, scf_op, &bounds, &scf_cfg).unwrap();
+
+        // Full-Coulomb baseline C6 for reference.
+        let dp_cb = pdep_dynamic_polarizability(
+            &mol, &obs, &obs_bs, &dfbs, &rhf, Operator::coulomb(), &cfg, DispersionPartition::Becke, None,
+        ).unwrap();
+        let c6_cb = casimir_polder_c6(&dp_cb).c6_molecular_iso;
+
+        print!("  {:>5}  DOSD={:>7.1}  C6(full)={:>7.2}({:+5.1}%) | erf ω:",
+            label, dosd, c6_cb, 100.0*(c6_cb-dosd)/dosd);
+        for &w in &omegas {
+            let dp = pdep_dynamic_polarizability(
+                &mol, &obs, &obs_bs, &dfbs, &rhf, Operator::erf(w), &cfg, DispersionPartition::Becke, None,
+            ).unwrap();
+            let c6 = casimir_polder_c6(&dp).c6_molecular_iso;
+            print!("  {:.1}→{:+.0}%", w, 100.0*(c6-dosd)/dosd);
+        }
+        println!();
+
+        // Structure diagnostic on water only: r(iω)=α_erf(iω)/α_full(iω) at ω=1.0.
+        if *label == "h2o" {
+            let dpw = pdep_dynamic_polarizability(
+                &mol, &obs, &obs_bs, &dfbs, &rhf, Operator::erf(1.0), &cfg, DispersionPartition::Becke, None,
+            ).unwrap();
+            println!("\n  --- erf correction shape r(iω)=α_erf(ω=1.0)/α_full, water ---");
+            let n = dp_cb.freqs.len();
+            let idxs = [0usize, n/4, n/2, 3*n/4, n-1];
+            print!("    {:>5}", "ω→");
+            for &k in &idxs { print!("{:>10.3}", dp_cb.freqs[k]); }
+            println!();
+            print!("    {:>5}", "r");
+            for &k in &idxs { print!("{:>10.4}", iso(&dpw.molecular[k]) / iso(&dp_cb.molecular[k])); }
+            println!("\n    (erfc was HIGH at low-iω→1.0 at high-iω. erf rising at high-iω ⟹ short-range, real.)\n");
+        }
+    }
+    println!("\n  Read: does any erf ω land C6 near DOSD with a HIGH-iω-structured correction");
+    println!("  (real short-range physics) vs erfc's scalar-like low-iω lift?");
+}

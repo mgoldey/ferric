@@ -16,7 +16,7 @@ use ferric_integrals::operator::Operator;
 use ferric_integrals::threeindex;
 use ferric_scf::ScfResult;
 use ndarray::Array2;
-use ndarray_linalg::{Cholesky, UPLO};
+use ndarray_linalg::{Cholesky, Eigh, UPLO};
 
 /// Configuration for RI-MP2.
 #[derive(Debug, Clone, Default)]
@@ -272,7 +272,9 @@ pub fn compute_rpa_intermediates_spin(
     let naux = dfbs.nbasis();
 
     let v2c = threeindex::coulomb_metric_2c(op, dfbs)?;
-    let v_inv_sqrt = cholesky_inverse_sqrt(&v2c)?;
+    // erf (long-range) metric is indefinite in a Coulomb aux basis → regularized
+    // eigh V^{-1/2}; Cholesky for Coulomb/erfc. (RSH-RPA path.)
+    let v_inv_sqrt = metric_inverse_sqrt(&v2c, op)?;
     let eri3_ao = threeindex::eri3_tensor(op, obs, dfbs)?;
 
     let c_occ = c_full.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
@@ -309,7 +311,9 @@ pub fn compute_rpa_intermediates(
     let c = rhf.mos_r();
 
     let v2c = threeindex::coulomb_metric_2c(op, dfbs)?;
-    let v_inv_sqrt = cholesky_inverse_sqrt(&v2c)?;
+    // erf (long-range) metric is indefinite in a Coulomb aux basis → regularized
+    // eigh V^{-1/2}; Cholesky for Coulomb/erfc. (RSH-RPA path.)
+    let v_inv_sqrt = metric_inverse_sqrt(&v2c, op)?;
     let eri3_ao = threeindex::eri3_tensor(op, obs, dfbs)?;
 
     let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
@@ -430,6 +434,61 @@ pub fn cholesky_inverse_sqrt(v: &Array2<f64>) -> Result<Array2<f64>, FerricError
     }
     // V^{-1/2} = L^{-1} (so that B = L^{-1} (Q|ia) and B^T B = (ia|P) V^{-1} (Q|jb))
     Ok(l_inv)
+}
+
+/// Compute a SYMMETRIC V^{-1/2} via regularized eigendecomposition with canonical
+/// orthogonalization (drop modes with λ < `LINDEP_THRESH`).
+///
+/// Cholesky [`cholesky_inverse_sqrt`] fails (return_code≠0) when the 2-center
+/// metric `(P|w(r₁₂)|Q)` is not positive-definite. That happens for the
+/// LONG-RANGE `erf(ωr)/r` operator fitted in a Coulomb-optimized RI aux basis:
+/// the smooth long-range kernel has almost no high-spatial-frequency content, so
+/// the tight (high-exponent) aux functions produce many near-zero / slightly
+/// negative eigenvalues under roundoff. This routine drops those null modes —
+/// the same fix already used in `ferric_scf::df_k::DfK` and equivalent to
+/// PySCF's `lindep` threshold in `df.aux_e2`.
+///
+/// Returns a SYMMETRIC `V^{-1/2} = U diag(λ^{-1/2}) Uᵀ`. Unlike the Cholesky
+/// `L^{-1}` (lower-triangular), this is symmetric, but `Bᵀ B = (ia|P) V^{-1}
+/// (Q|jb)` is identical because both satisfy `MᵀM = V^{-1}` — the RPA/MP2
+/// intermediates contract `B = M (Q|ia)` and only `BᵀB` enters, so either factor
+/// is valid. Use this for range-separated (erf) operators; Cholesky stays the
+/// fast path for Coulomb/erfc (positive-definite).
+pub fn eigh_inverse_sqrt(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
+    let n = v.nrows();
+    let (evals, evecs) = v
+        .eigh(UPLO::Upper)
+        .map_err(|e| FerricError::Lapack(format!("eigh on (P|Q): {e}")))?;
+    const LINDEP_THRESH: f64 = 1e-10;
+    let mut u_scaled = evecs.clone();
+    for k in 0..n {
+        if evals[k] < LINDEP_THRESH {
+            for r in 0..n {
+                u_scaled[(r, k)] = 0.0;
+            }
+        } else {
+            let s = 1.0 / evals[k].sqrt();
+            for r in 0..n {
+                u_scaled[(r, k)] *= s;
+            }
+        }
+    }
+    Ok(u_scaled.dot(&evecs.t()))
+}
+
+/// V^{-1/2} that auto-selects: regularized eigendecomposition for the long-range
+/// `erf` operator (indefinite metric), fast Cholesky otherwise (Coulomb/erfc,
+/// positive-definite). Centralizes the erf-metric handling for all RI paths.
+pub fn metric_inverse_sqrt(
+    v: &Array2<f64>,
+    op: ferric_integrals::operator::Operator,
+) -> Result<Array2<f64>, FerricError> {
+    use ferric_integrals::operator::OperatorKind;
+    if matches!(op.kind, OperatorKind::ErfCoulomb) {
+        eigh_inverse_sqrt(v)
+    } else {
+        cholesky_inverse_sqrt(v)
+    }
 }
 
 /// RI-MP2 correlation energy computed via the `einsum!` tensor framework.

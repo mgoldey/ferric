@@ -41,7 +41,7 @@
   },
   "augccpvdz/ch3och3/ts": {
     "basis": "augccpvdz",
-    "c6": 802.16,
+    "c6": 717.099,
     "method": "ts",
     "mol": "ch3och3",
     "ok": true,
@@ -65,7 +65,7 @@
   },
   "augccpvdz/ch3oh/ts": {
     "basis": "augccpvdz",
-    "c6": 322.399,
+    "c6": 278.043,
     "method": "ts",
     "mol": "ch3oh",
     "ok": true,
@@ -113,7 +113,7 @@
   },
   "augccpvdz/cos/ts": {
     "basis": "augccpvdz",
-    "c6": 1637.383,
+    "c6": 654.128,
     "method": "ts",
     "mol": "cos",
     "ok": true,
@@ -137,7 +137,7 @@
   },
   "augccpvdz/cs2/ts": {
     "basis": "augccpvdz",
-    "c6": 4837.543,
+    "c6": 1599.099,
     "method": "ts",
     "mol": "cs2",
     "ok": true,
@@ -185,7 +185,7 @@
   },
   "augccpvdz/n2o/ts": {
     "basis": "augccpvdz",
-    "c6": 211.779,
+    "c6": 180.863,
     "method": "ts",
     "mol": "n2o",
     "ok": true,
@@ -233,7 +233,7 @@
   },
   "augccpvdz/so2/ts": {
     "basis": "augccpvdz",
-    "c6": 1742.137,
+    "c6": 691.258,
     "method": "ts",
     "mol": "so2",
     "ok": true,
