@@ -873,8 +873,13 @@ fn main() {
                         let dp = ts_dynamic_polarizability(
                             &z, &ratio, &alpha_static, &freqs, &weights,
                         );
-                        println!("Computed TS C6: {} atoms", z.len());
-                        Some(casimir_polder_c6(&dp))
+                        let ts_res = casimir_polder_c6(&dp);
+                        println!(
+                            "Computed TS C6: {} atoms; molecular C6 = {:.3} a.u.",
+                            z.len(),
+                            ts_res.c6_molecular_iso
+                        );
+                        Some(ts_res)
                     };
 
                     if let Some(res) = res_opt {
