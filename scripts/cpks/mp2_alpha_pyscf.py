@@ -491,3 +491,173 @@ mu_with_psz = (dipole_from_dm_ao(C@Dc@C.T)-nucl)[2]
 print("\n=== validate assembly with PySCF's true z ===")
 print("  P+z_ps corr dipole_z =", mu_with_psz, " oracle =", mu_corr_ps[2],
       " match:", abs(mu_with_psz-mu_corr_ps[2])<1e-5)
+
+# ===========================================================================
+# Build Xvo to match PySCF's captured Xvo, element by element.
+# PySCF: Imat (full nmo,nmo, = -1 * mo^T Imat_ao S mo), then
+#        Xvo = Imat[:nocc,nocc:].T - Imat[nocc:,:nocc] + 2*Cv^T vhf(dm1_full) Co
+# dm1_full = HF(2δ) + P-blocks (the relaxed dm1 BEFORE response).
+# We need the full Imat. My L ≈ Imat[v,o]? Compare, then get the ov block.
+# ===========================================================================
+# veff term: vhf(dm1_full) in MO, vo block. dm1_full = 2δ + (Poo+Poo.T)+(Pvv+Pvv.T)
+dm1_full = np.zeros((nmo,nmo))
+for i in range(nocc): dm1_full[i,i]=2.0
+dm1_full[O,O]+=Poo+Poo.T; dm1_full[Vv,Vv]+=Pvv+Pvv.T
+veff_vo = G_mo(dm1_full)[Vv,O]   # 2J-K of full dm1
+veff_vo_P = G_mo(dmP)[Vv,O]      # 2J-K of P-only (HF part gives the SCF Fock = diagonal, no vo)
+
+print("\n=== reconstruct Xvo ===")
+print("  PySCF Xvo[v,o]:\n", np.round(Xvo_ps,6))
+print("  my L (=Imat[v,o]?):\n", np.round(L,6))
+print("  2*veff_vo(P-only):\n", np.round(2*veff_vo_P,6))
+# Try Xvo = -L + 2*veff(dmP)  and  Xvo = L_antisym + 2*veff
+# (need Imat[o,v]; if Imat≈L in vo, the ov block is a separate Lagrangian L_ov)
+# Quick test combos:
+for desc, cand in [
+    ("L", L),
+    ("-L", -L),
+    ("L + 2veffP", L + 2*veff_vo_P),
+    ("-L + 2veffP", -L + 2*veff_vo_P),
+    ("L - 2veffP", L - 2*veff_vo_P),
+]:
+    print(f"  ‖{desc} - Xvo_ps‖ = {np.max(np.abs(cand - Xvo_ps)):.6f}")
+
+# ===========================================================================
+# Build Imat the PySCF way, in MO. part_dm2 = MP2 2-PDM Γ with PySCF factors:
+#   Γ_ipqj from t2 (ij,ab): Γ = 4 t[i,j,a,b] - 2 t[i,j,b,a]  (vir pair a,b).
+# Imat (MO, before -1·S transform) = contract Γ with MO ERIs over 3 indices,
+# leaving (occ i, MO p): Imat[p,i-related]. PySCF then does Imat=-mo^T Imat_ao S mo.
+# In a pure-MO formulation Imat_pq = sum_{jab} Γ_{ijab}(pj|ab)-style. Build it to
+# match the captured Xvo.
+# Γ in MO: G2[i,j,a,b] = 4 t_ijab - 2 t_ijba
+G2 = 4*t_ijab - 2*t_ijab.transpose(0,1,3,2)
+# Imat blocks (occ-occ, vir-occ, etc.) via contracting Γ with full MO ERIs.
+# Imat_vo (c,k): the orbital gradient = sum over the 2-PDM contracted with d(ERI).
+# Standard MP2 Lagrangian Lvo_ck = sum_jab Γ_kjab (ca|jb) - ... Let's build the
+# general Imat_pq = sum over Γ * (pq'|..) for the three contraction patterns that
+# match PySCF dm2buf symmetrization. Easiest faithful MO version:
+#   Imat_pq = 2 * sum_{jab} Γ[?] (p a | j b) ...   -- derive by matching.
+# Pragmatic: contract Γ with ERIs in the 3 distinct ways and fit to Xvo_ps.
+ovov_f = Imo[:, nocc:, :, nocc:]          # (p a | r b) general p,r occ-or-all
+# Imat from 2-PDM: Imat[p,i] = sum_{jab} G2[i,j,a,b] (p a | j b)   (chemist)
+# but need (pa|jb): Imo[p, nocc+a, j, nocc+b]
+Imat_pi = np.einsum('ijab,pajb->pi', G2, Imo[:, nocc:, :nocc, nocc:])  # (nmo, nocc)
+# vo block:
+Imat_vo = Imat_pi[Vv, :]   # (nvir,nocc)
+# ov block: Imat[i,p] analog
+Imat_iq = np.einsum('ijab,iajb->ij', G2, Imo[:nocc, nocc:, :nocc, nocc:])  # placeholder
+print("\n=== Imat_vo (Γ-contracted) vs L vs Xvo_ps ===")
+print("  Imat_vo:\n", np.round(Imat_vo,6))
+print("  Xvo_ps:\n", np.round(Xvo_ps,6))
+print("  ‖Imat_vo - Xvo_ps‖ =", np.max(np.abs(Imat_vo - Xvo_ps)))
+print("  ‖-Imat_vo - Xvo_ps‖ =", np.max(np.abs(-Imat_vo - Xvo_ps)))
+
+# ===========================================================================
+# Extract PySCF's Imat-vo contribution: antisym_Imat_vo = Xvo_ps - 2 G[dmP]_vo,
+# using PySCF's OWN get_veff (not my hand G) to be exact. dmP = doo+doo.T,dvv+dvv.T.
+# ===========================================================================
+dmP_ao = C @ dmP @ C.T
+vhf_ps = mf.get_veff(mol, dmP_ao) * 2.0            # PySCF veff, ×2 as in grad
+veff_vo_ps = (C[:,nocc:].T @ vhf_ps @ C[:,:nocc])  # (nvir,nocc)
+imat_vo_contrib = Xvo_ps - veff_vo_ps              # = Imat[:no,no:].T - Imat[no:,:no]  (vo block)
+print("\n=== PySCF Imat-vo contribution (Xvo - 2G[dmP]) ===")
+print("  imat_vo_contrib:\n", np.round(imat_vo_contrib,6))
+print("  my L:\n", np.round(L,6))
+print("  ‖L - imat_contrib‖   =", np.max(np.abs(L - imat_vo_contrib)))
+print("  ‖-L - imat_contrib‖  =", np.max(np.abs(-L - imat_vo_contrib)))
+# my Imat_vo (Γ-contract) too
+print("  ‖Imat_vo(Γ) - contrib‖ =", np.max(np.abs(Imat_vo - imat_vo_contrib)))
+print("  ‖-Imat_vo(Γ) - contrib‖=", np.max(np.abs(-Imat_vo - imat_vo_contrib)))
+
+# ===========================================================================
+# COMPLETE Xvo = L + 2 G[dmP]_vo. Verify z matches PySCF, and relaxed dipole.
+# Use a hand G (2J-K) so it's portable to Rust (not pyscf get_veff).
+# First confirm my hand-G matches pyscf veff on dmP:
+my_veff_vo = 2.0 * G_mo(dmP)[Vv,O]   # 2*(2J-K) ? check factor vs pyscf veff*2
+print("\n=== veff factor check ===")
+print("  pyscf veff_vo (get_veff*2 → vo):\n", np.round(veff_vo_ps,6))
+print("  my 2*(2J-K)[dmP]_vo:\n", np.round(my_veff_vo,6))
+print("  my (2J-K)[dmP]_vo:\n", np.round(G_mo(dmP)[Vv,O],6))
+
+# ===========================================================================
+# FINAL: Xvo = L + (2J-K)[dmP]_vo (portable). Solve M z = Xvo. Verify.
+# ===========================================================================
+Xvo_mine = L + G_mo(dmP)[Vv,O]
+print("\n=== FINAL Xvo + z verification ===")
+print("  ‖Xvo_mine - Xvo_ps‖ =", np.max(np.abs(Xvo_mine - Xvo_ps)))
+z_final = np.linalg.solve(M, Xvo_mine.reshape(-1)).reshape(nvir,nocc)
+print("  ‖z_final - z_ps‖    =", np.max(np.abs(z_final - z_ps)))
+# relaxed dipole with z_final
+Dc = np.zeros((nmo,nmo))
+for i in range(nocc): Dc[i,i]=2.0
+Dc[O,O]+=Poo+Poo.T; Dc[Vv,Vv]+=Pvv+Pvv.T
+Dc[Vv,O]+=z_final; Dc[O,Vv]+=z_final.T
+mu_final = dipole_from_dm_ao(C@Dc@C.T)
+print("  relaxed μ mine =", mu_final)
+mu_pyscf_relaxed = np.array([pyscf_relaxed_dipole(ax) for ax in range(3)])
+print("  relaxed μ pyscf(FF E_tot) =", mu_pyscf_relaxed)
+print("  |μ_z| match:", abs(abs(mu_final[2])-abs(mu_pyscf_relaxed[2]))<1e-5)
+
+# ===========================================================================
+# z differs though Xvo matches → the SOLVE operator differs. PySCF _response_dm1
+# uses cphf.solve(fvind) with fvind(x)=2 Cv^T get_veff(Cv x Co^T + h.c.) Co, plus
+# the (ea-ei) from cphf. Compare: does M z_ps == Xvo_ps? (if not, M is wrong op)
+# ===========================================================================
+print("\n=== z-vector operator check ===")
+resid_M = (M @ z_ps.reshape(-1)).reshape(nvir,nocc) - Xvo_ps
+print("  ‖M·z_ps - Xvo_ps‖ =", np.max(np.abs(resid_M)), " (0 ⇒ M is PySCF's operator)")
+# PySCF fvind operator applied to z_ps:
+def fvind(x):
+    xm = x.reshape(nvir,nocc)
+    dm = C[:,nocc:] @ xm @ C[:,:nocc].T
+    v = mf.get_veff(mol, dm + dm.T)
+    return 2.0*(C[:,nocc:].T @ v @ C[:,:nocc])
+# PySCF cphf solves: (ea-ei) x + fvind(x) = Xvo  → operator P z:
+def Pop(x):
+    xm=x.reshape(nvir,nocc)
+    out = np.zeros((nvir,nocc))
+    for a in range(nvir):
+        for i in range(nocc):
+            out[a,i]=(e[nocc+a]-e[i])*xm[a,i]
+    return out + fvind(x)
+resid_P = Pop(z_ps.reshape(-1)) - Xvo_ps
+print("  ‖Pop·z_ps - Xvo_ps‖ =", np.max(np.abs(resid_P)), " (0 ⇒ PySCF op reproduced)")
+# solve with PySCF operator
+from scipy.sparse.linalg import LinearOperator, gmres
+Pmat = np.zeros((nvir*nocc, nvir*nocc))
+basis=np.eye(nvir*nocc)
+for k in range(nvir*nocc):
+    Pmat[:,k]=Pop(basis[k]).reshape(-1)
+z_pop = np.linalg.solve(Pmat, Xvo_ps.reshape(-1)).reshape(nvir,nocc)
+print("  ‖z_pop - z_ps‖ =", np.max(np.abs(z_pop - z_ps)))
+
+print("\n=== z-vector SIGN convention ===")
+print("  ‖Pop·z_ps + Xvo_ps‖ =", np.max(np.abs(Pop(z_ps.reshape(-1)) + Xvo_ps)), " (0 ⇒ solves (Δε+f)z=-Xvo)")
+# solve both signs and compare to z_ps
+z_minus = np.linalg.solve(Pmat, (-Xvo_ps).reshape(-1)).reshape(nvir,nocc)
+print("  ‖solve(P,-Xvo) - z_ps‖ =", np.max(np.abs(z_minus - z_ps)))
+# Also check cphf.solve's actual convention from pyscf source
+import pyscf.scf.cphf as cphf
+import inspect
+src = inspect.getsource(cphf.solve_nos1) if hasattr(cphf,'solve_nos1') else inspect.getsource(cphf.solve)
+print("  cphf.solve sign hint:", [l.strip() for l in src.split(chr(10)) if 'return' in l or '-' in l and 'mo_energy' in l][:3])
+
+# ===========================================================================
+# COMPLETE VALIDATED RECIPE: Xvo = L + G[dmP]_vo ; (Δε+A) z = -Xvo.
+# End-to-end: relaxed dipole must match PySCF to machine precision.
+# ===========================================================================
+z_correct = np.linalg.solve(M, (-Xvo_mine).reshape(-1)).reshape(nvir,nocc)
+print("\n=== END-TO-END (correct sign) ===")
+print("  ‖z_correct - z_ps‖ =", np.max(np.abs(z_correct - z_ps)))
+Dc = np.zeros((nmo,nmo))
+for i in range(nocc): Dc[i,i]=2.0
+Dc[O,O]+=Poo+Poo.T; Dc[Vv,Vv]+=Pvv+Pvv.T
+Dc[Vv,O]+=z_correct; Dc[O,Vv]+=z_correct.T
+mu_me = dipole_from_dm_ao(C@Dc@C.T)
+# PySCF relaxed dm1 = unrelaxed dm1_mo + response (z). Build it the same way:
+dm1_relaxed_ps = dm1_mo.copy()
+dm1_relaxed_ps[Vv,O]+=z_ps; dm1_relaxed_ps[O,Vv]+=z_ps.T
+mu_ps = dipole_from_dm_ao(C@dm1_relaxed_ps@C.T)
+print("  relaxed μ mine  =", mu_me)
+print("  relaxed μ pyscf =", mu_ps, "  ‖Δ‖=", np.max(np.abs(mu_me-mu_ps)))
+print("  *** STATIC RELAXED DENSITY MATCHES PYSCF:", np.max(np.abs(mu_me-mu_ps))<1e-6, "***")
