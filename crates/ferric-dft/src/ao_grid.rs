@@ -451,36 +451,56 @@ pub fn eval_basis_and_grad_on_points(
     bs: &BasisSet,
     points: &[[f64; 3]],
 ) -> Result<(Array2<f64>, Array3<f64>), GtoEvalError> {
+    use rayon::prelude::*;
+
     let shells = collect_shells(mol, bs)?;
     let nbf: usize = shells.iter().map(|s| num_functions(s.l, s.pure)).sum();
     let npts = points.len();
+
+    // Grid points are independent: evaluate each point's AO column (χ) and the
+    // three gradient columns (∂χ) in parallel, then assemble into the
+    // (nbf, npts) / (3, nbf, npts) arrays. Pure scalar work per point (no BLAS),
+    // so this rayon parallelism does not oversubscribe against BLAS threads.
+    // Per-point scratch lives in the closure, so each worker has its own.
+    let per_point: Vec<(Vec<f64>, [Vec<f64>; 3])> = points
+        .par_iter()
+        .map(|p| -> Result<(Vec<f64>, [Vec<f64>; 3]), GtoEvalError> {
+            let mut chi_col = vec![0.0f64; nbf];
+            let mut dchi_col = [vec![0.0f64; nbf], vec![0.0f64; nbf], vec![0.0f64; nbf]];
+            let mut buf = [0.0f64; 10];
+            let mut gradbuf: [[f64; 10]; 3] = [[0.0; 10]; 3];
+
+            let mut row_offset = 0usize;
+            for sh in &shells {
+                buf.fill(0.0);
+                for row in gradbuf.iter_mut() { row.fill(0.0); }
+
+                let n = num_functions(sh.l, sh.pure);
+                let dx = p[0] - sh.center[0];
+                let dy = p[1] - sh.center[1];
+                let dz = p[2] - sh.center[2];
+
+                eval_shell_and_grad(sh, dx, dy, dz, &mut buf[..n], &mut gradbuf)?;
+                for i in 0..n {
+                    chi_col[row_offset + i] = buf[i];
+                    dchi_col[0][row_offset + i] = gradbuf[0][i];
+                    dchi_col[1][row_offset + i] = gradbuf[1][i];
+                    dchi_col[2][row_offset + i] = gradbuf[2][i];
+                }
+                row_offset += n;
+            }
+            Ok((chi_col, dchi_col))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
     let mut chi = Array2::<f64>::zeros((nbf, npts));
     let mut dchi = Array3::<f64>::zeros((3, nbf, npts));
-
-    let mut buf = [0.0f64; 10];
-    let mut gradbuf: [[f64; 10]; 3] = [[0.0; 10]; 3];
-
-    for (g, p) in points.iter().enumerate() {
-        let mut row_offset = 0usize;
-        for sh in &shells {
-            // Clear shell scratch buffers so stale values from a previous larger shell
-            // can never leak into the current shell's results.
-            buf.fill(0.0);
-            for row in gradbuf.iter_mut() { row.fill(0.0); }
-
-            let n = num_functions(sh.l, sh.pure);
-            let dx = p[0] - sh.center[0];
-            let dy = p[1] - sh.center[1];
-            let dz = p[2] - sh.center[2];
-
-            eval_shell_and_grad(sh, dx, dy, dz, &mut buf[..n], &mut gradbuf)?;
-            for i in 0..n {
-                chi[(row_offset + i, g)] = buf[i];
-                dchi[(0, row_offset + i, g)] = gradbuf[0][i];
-                dchi[(1, row_offset + i, g)] = gradbuf[1][i];
-                dchi[(2, row_offset + i, g)] = gradbuf[2][i];
-            }
-            row_offset += n;
+    for (g, (chi_col, dchi_col)) in per_point.iter().enumerate() {
+        for i in 0..nbf {
+            chi[(i, g)] = chi_col[i];
+            dchi[(0, i, g)] = dchi_col[0][i];
+            dchi[(1, i, g)] = dchi_col[1][i];
+            dchi[(2, i, g)] = dchi_col[2][i];
         }
     }
     Ok((chi, dchi))

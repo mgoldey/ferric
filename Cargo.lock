@@ -420,6 +420,7 @@ dependencies = [
  "ferric-integrals",
  "ferric-scf",
  "ndarray",
+ "rayon",
  "thiserror 2.0.18",
 ]
 
