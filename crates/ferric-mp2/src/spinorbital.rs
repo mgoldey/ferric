@@ -131,6 +131,57 @@ pub fn asym_ovvo(g_kcbj: &ArrayD<f64>, g_kjbc: &ArrayD<f64>, no: usize, nv: usiz
     out
 }
 
+/// General antisymmetrized spin-orbital `<pq||rs>` from two spatial chemist
+/// blocks. This is the reusable generalization of [`asym_oovv`] / [`asym_same`]
+/// / [`asym_ovvo`] for arbitrary occupied/virtual index patterns.
+///
+/// In Dirac (physicist) notation `<pq||rs> = <pq|rs> - <pq|sr>` where
+/// `<pq|rs> = (pr|qs)` and `<pq|sr> = (ps|qr)` (Mulliken/chemist).
+///
+/// - `g_dir[p,r,q,s] = (pr|qs)` — chemist integral feeding the direct term,
+///   spatial shape `[np, nr, nq, ns]`. Nonzero only when `spin(p)==spin(r)` and
+///   `spin(q)==spin(s)`.
+/// - `g_exc[p,s,q,r] = (ps|qr)` — chemist integral feeding the exchange term,
+///   spatial shape `[np, ns, nq, nr]`. Nonzero only when `spin(p)==spin(s)` and
+///   `spin(q)==spin(r)`.
+/// - `np,nq,nr,ns` are the *spatial* sizes of indices p,q,r,s respectively.
+///
+/// Output `<pq||rs>` has spin shape `[2np, 2nq, 2nr, 2ns]` indexed `[p,q,r,s]`.
+#[allow(clippy::needless_range_loop, clippy::too_many_arguments)]
+pub fn asym_phys(
+    g_dir: &ArrayD<f64>,
+    g_exc: &ArrayD<f64>,
+    np: usize,
+    nq: usize,
+    nr: usize,
+    ns: usize,
+) -> ArrayD<f64> {
+    let (np2, nq2, nr2, ns2) = (2 * np, 2 * nq, 2 * nr, 2 * ns);
+    let mut out = ArrayD::zeros(IxDyn(&[np2, nq2, nr2, ns2]));
+    for p in 0..np2 {
+        for q in 0..nq2 {
+            for r in 0..nr2 {
+                for s in 0..ns2 {
+                    // <pq|rs> = (pr|qs)
+                    let dir = if spin(p) == spin(r) && spin(q) == spin(s) {
+                        g_dir[[spat(p), spat(r), spat(q), spat(s)]]
+                    } else {
+                        0.0
+                    };
+                    // <pq|sr> = (ps|qr)
+                    let exc = if spin(p) == spin(s) && spin(q) == spin(r) {
+                        g_exc[[spat(p), spat(s), spat(q), spat(r)]]
+                    } else {
+                        0.0
+                    };
+                    out[[p, q, r, s]] = dir - exc;
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Transpose a `[Aux, O, V]` RI block into `[Aux, V, O]` (i.e. B^P_{ai} = B^P_{ia}).
 pub fn transpose_b(b_ov: &Tensor<3>) -> Tensor<3> {
     let out = b_ov.view().permuted_axes(IxDyn(&[0, 2, 1])).to_owned();

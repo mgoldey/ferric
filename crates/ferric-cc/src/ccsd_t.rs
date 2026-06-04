@@ -9,55 +9,31 @@ use ferric_scf::ScfResult;
 
 /// Compute the (T) triples correction to CCSD.
 ///
-/// This is a non-iterative O(N^7) correction that accounts for triple excitations
-/// via perturbation theory.
+/// NOT YET IMPLEMENTED — returns 0.0. The perturbative-triples energy is the
+/// non-iterative O(N^7) correction
+/// `E_T = Σ_{ijkabc} (4 W + W_perm) (V − V_perm) / D_ijkabc`
+/// built from the converged T1/T2 amplitudes and the integrals. The CCSD driver
+/// now produces correct spin-orbital T1/T2 (see [`crate::ccsd::ccsd`]), so the
+/// inputs are in place; the triples contraction itself remains to be written.
+/// Returning 0.0 means `ccsd_t` currently reports E_CCSD, not E_CCSD(T).
 pub fn ccsd_t(
     _mol: &Molecule,
     _obs: &PreparedBasis,
     _dfbs: &PreparedBasis,
     _op: Operator,
-    rhf: &ScfResult,
+    _rhf: &ScfResult,
     cc: &CcResult,
-    cfg: &CcConfig,
+    _cfg: &CcConfig,
 ) -> Result<f64, FerricError> {
-    let nocc = cc.t2.shape()[0];
-    let nvir = cc.t2.shape()[1];
-    let nocc_total = nocc + cfg.frozen_core;
-    let eps = rhf.eps_r();
-
-    let _t2 = &cc.t2;
-    let _t1 = cc.t1.as_ref().ok_or(FerricError::General("CCSD(T) requires T1 amplitudes".into()))?;
-
-    let e_t = 0.0;
-
-    // O(N^7) loop over i,j,k,a,b,c
-    // For now, providing the structure and the core calculation loop.
-    // In a production engine, this would be heavily optimized via blocked DGEMM.
-    for i in 0..nocc {
-        for j in 0..i+1 {
-            for k in 0..j+1 {
-                for a in 0..nvir {
-                    for b in 0..nvir {
-                        for c in 0..nvir {
-                            let _d_ijkabc = eps[cfg.frozen_core + i] + eps[cfg.frozen_core + j] + eps[cfg.frozen_core + k]
-                                         - eps[nocc_total + a] - eps[nocc_total + b] - eps[nocc_total + c];
-                            
-                            // Form t_ijk_abc intermediates...
-                            // (ia|jb) t_k^c + ...
-                            // sum_d (ia|jd) t_kd^bc + ...
-                            
-                            // This is a placeholder for the full triples term.
-                            // Real implementation follows:
-                            // E_T = sum_{ijkabc} (4 W_ijk_abc + W_ikj_bca + W_ikj_abc) * (V_ijk_abc - V_ijk_bac) / D_ijk_abc
-                            // where W and V are intermediates built from T1, T2 and integrals.
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(e_t)
+    // Require T1 to be present (CCSD must have run), then return the unimplemented
+    // (zero) triples correction. The previous dead O(N^7) loop computed nothing
+    // and indexed orbital energies with amplitude dimensions, which panics now
+    // that T2 is stored in the spin-orbital basis.
+    let _t1 = cc
+        .t1
+        .as_ref()
+        .ok_or_else(|| FerricError::General("CCSD(T) requires T1 amplitudes".into()))?;
+    Ok(0.0)
 }
 
 #[cfg(test)]
