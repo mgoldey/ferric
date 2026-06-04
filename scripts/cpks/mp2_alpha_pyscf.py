@@ -250,3 +250,244 @@ print("‖Pvv_einsum - Pvv_loop‖ =", np.max(np.abs(Pvv_es - Pvv_m)))
 print("Pvv_einsum diag:", np.round(np.diag(Pvv_es),5), " (PySCF dm1 vv diag was", np.round(np.diag(dm1_mo)[Vv],5),")")
 print("  → einsum Pvv vs pyscf-stored (doo+doo.T means stored = Pvv+Pvv.T):",
       np.round(np.diag(Pvv_es+Pvv_es.T),5))
+
+# ===========================================================================
+# EINSUM Lagrangian + relaxed density. Validate un-perturbed relaxed dipole
+# against the FF-E_MP2 oracle (tests P×2 + z-vector together).
+# ===========================================================================
+# Slices of the MO ERI for readable einsum (chemist (pq|rs)=Imo[p,q,r,s]).
+oo,ov,vo,vv = slice(0,nocc), slice(nocc,nmo), slice(nocc,nmo), slice(nocc,nmo)
+def blk(p,q,rr,s): return Imo[p,q,rr,s]
+ovov = Imo[oo,ov,oo,ov]   # (ia|jb)
+oovv = Imo[oo,oo,ov,ov]   # (ij|ab)
+ovvv = Imo[oo,ov,ov,ov]   # (ia|bc)
+ooov = Imo[oo,oo,oo,ov]   # (ij|ka)
+
+def lagrangian_es(t_iajb):
+    # ferric build_lagrangian, in einsum. t indexed [i,a,j,b]; L is (vir c, occ k).
+    # Term1 (i=k): t_kjab (2(ca|jb)-(cb|ja))  → sum over j,a,b
+    #   (ca|jb)=Imo[v,v,o,v]=vvov ; (cb|ja) same tensor diff index
+    vvov = Imo[vv,vv,oo,ov]   # (ca|jb): [c,a,j,b]
+    L1 = np.einsum('kajb,cajb->ck', t_iajb, 2*vvov) - np.einsum('kajb,cbja->ck', t_iajb, vvov)
+    # Term2 (j=k): t_ikab? our t[i,a,k,b]; (ia|cb)-(ib|ca) → ovvv blocks [i,a,c,b]
+    ovvv2 = Imo[oo,ov,vv,vv]  # (ia|cb): [i,a,c,b]
+    L2 = np.einsum('iakb,iacb->ck', t_iajb, 2*ovvv2) - np.einsum('iakb,ibca->ck', t_iajb, ovvv2)
+    # Term3 (a=c): -t_icjb (2(ik|jb)-(ib|jk)) → oo ov blocks
+    ooov3 = Imo[oo,oo,oo,ov]  # (ik|jb): [i,k,j,b]
+    oovo3 = Imo[oo,ov,oo,oo]  # (ib|jk): [i,b,j,k]
+    L3 = -(np.einsum('icjb,ikjb->ck', t_iajb, 2*ooov3) - np.einsum('icjb,ibjk->ck', t_iajb, oovo3))
+    # Term4 (b=c): -t_iajc (2(ia|jk)-(ik|ja))
+    ooov4 = Imo[oo,ov,oo,oo]  # (ia|jk): [i,a,j,k]
+    ooov4b= Imo[oo,oo,oo,ov]  # (ik|ja): [i,k,j,a]
+    L4 = -(np.einsum('iajc,iajk->ck', t_iajb, 2*ooov4) - np.einsum('iajc,ikja->ck', t_iajb, ooov4b))
+    return L1+L2+L3+L4
+
+# Validate einsum Lagrangian vs the loop version.
+L_loop = lagrangian(Imo, t)
+L_es = lagrangian_es(t)
+print("\n=== einsum Lagrangian vs loop ===")
+print("‖L_es - L_loop‖ =", np.max(np.abs(L_es - L_loop)))
+
+# ===========================================================================
+# Relaxed dipole: 2δ core + (Poo+Poo.T) + (Pvv+Pvv.T) + z (vo+ov). Validate the
+# CORRELATION part of the dipole (relaxed - HF) against PySCF (relaxed - HF),
+# removing the HF reference + sign-convention ambiguity.
+# ===========================================================================
+# HF dipole (from HF dm in MO = 2δ on occ).
+Dhf = np.zeros((nmo,nmo))
+for i in range(nocc): Dhf[i,i]=2.0
+mu_hf = dipole_from_dm_ao(C@Dhf@C.T)
+
+# PySCF: correlation dipole = relaxed_total - HF.  relaxed via FF of E_MP2corr only.
+def pyscf_corr_dipole(axis, h=1e-4):
+    def ecorr(F):
+        m=scf.RHF(mol); m.get_hcore=lambda *a: hcore_ao - F*dip_ao[axis]; m.conv_tol=1e-12; m.kernel()
+        return mp.MP2(m).run().e_corr
+    return -(ecorr(h)-ecorr(-h))/(2*h)
+mu_corr_ps = np.array([pyscf_corr_dipole(ax) for ax in range(3)])
+
+# Mine: relaxed dm with ×2 P-blocks + z.  z solves M z = L (full-A operator).
+t_iajb = t
+Poo = -(2*np.einsum('ikab,jkab->ij', t_ijab, t_ijab) - np.einsum('ikab,jkba->ij', t_ijab, t_ijab))
+Pvv =  (2*np.einsum('ijca,ijcb->ab', t_ijab, t_ijab) - np.einsum('ijca,ijbc->ab', t_ijab, t_ijab))
+L = lagrangian_es(t_iajb)
+z = np.linalg.solve(M, L.reshape(-1)).reshape(nvir,nocc)
+Dcorr = np.zeros((nmo,nmo))
+Dcorr[O,O]  += Poo + Poo.T
+Dcorr[Vv,Vv]+= Pvv + Pvv.T
+for a in range(nvir):
+    for i in range(nocc):
+        Dcorr[nocc+a,i]+=z[a,i]; Dcorr[i,nocc+a]+=z[a,i]
+mu_corr_mine = dipole_from_dm_ao(C@Dcorr@C.T) - nucl   # pure electronic correlation part
+print("\n=== correlation dipole (relaxed-HF) mine vs pyscf ===")
+print("  mine  =", mu_corr_mine)
+print("  pyscf =", mu_corr_ps)
+print("  ratio z (mine/pyscf) on z-axis:", mu_corr_mine[2]/mu_corr_ps[2] if abs(mu_corr_ps[2])>1e-9 else 'na')
+
+# Decompose: P-blocks-only dipole vs +z. And build PySCF's actual relaxed z via
+# its grad _response_dm1 path to compare z directly.
+Dp = np.zeros((nmo,nmo)); Dp[O,O]+=Poo+Poo.T; Dp[Vv,Vv]+=Pvv+Pvv.T
+mu_P = dipole_from_dm_ao(C@Dp@C.T) - nucl
+print("\n=== z-vector decomposition ===")
+print("  P-blocks only dipole_z =", mu_P[2])
+print("  +z (mine) dipole_z     =", mu_corr_mine[2], " (z adds", mu_corr_mine[2]-mu_P[2],")")
+print("  pyscf total corr       =", mu_corr_ps[2])
+
+# Build PySCF's relaxed dm1 via the grad machinery to get its z (ov block).
+from pyscf.grad import mp2 as mp2grad
+# replicate pyscf Xvo + _response_dm1 with OUR intermediates to compare z.
+# PySCF Imat (Lagrangian-like) then Xvo then cphf. Easiest: call its _response_dm1.
+# But that needs Xvo. Instead: get pyscf relaxed dm1 numerically = unrelaxed + FF-derived ov?
+# Simplest valid check: pyscf relaxed dm1 via grad.make_rdm1 if available.
+try:
+    g = pt.Gradients() if hasattr(pt,'Gradients') else mp2grad.Gradients(pt)
+    # trigger the rdm build
+    d1 = mp2grad._response_dm1
+    print("  (pyscf grad _response_dm1 available)")
+except Exception as ex:
+    print("  grad path:", ex)
+# Direct: the z that reproduces pyscf corr dipole. PySCF corr = P-part + z-part.
+# If P-part matches, the gap is z. Check P-part vs a pyscf P-only (unrelaxed corr dipole).
+def pyscf_unrelaxed_corr_dipole():
+    # unrelaxed = make_rdm1 (ov=0) correlation part
+    return dipole_from_dm_ao(dm1_ao) - mu_hf
+print("  pyscf UNRELAXED corr dipole_z =", (dipole_from_dm_ao(dm1_ao)-mu_hf)[2],
+      " (= P-blocks only; mine P-only=", mu_P[2],")")
+
+# ===========================================================================
+# z RHS is missing PySCF's Xvo veff term: Xvo = (Imat.T - Imat)_vo + 2 Cv^T G[dm1_P] Co.
+# My L ≈ the Imat part. Add the Fock-response of the MP2 P-density (doo+dvv).
+# ===========================================================================
+def G_mo(dm_mo):
+    # G[D] = 2J - K in MO basis using Imo.
+    J = np.einsum('pqrs,rs->pq', Imo, dm_mo)
+    K = np.einsum('prqs,rs->pq', Imo, dm_mo)
+    return 2*J - K
+
+# MP2 P-density in MO (the doo+dvv part, the "separable" 1-PDM that sources veff).
+dmP = np.zeros((nmo,nmo))
+dmP[O,O]  += Poo + Poo.T
+dmP[Vv,Vv]+= Pvv + Pvv.T
+Gvo = G_mo(dmP)[Vv,O]   # (vir,occ) block of the Fock response
+# RHS' = L + 2*Gvo  (PySCF Xvo adds 2 Cv^T vhf Co; here MO basis so 2*Gvo).
+for scale in [1.0, 2.0]:
+    rhs = L + scale*Gvo
+    z2 = np.linalg.solve(M, rhs.reshape(-1)).reshape(nvir,nocc)
+    Dc = np.zeros((nmo,nmo)); Dc[O,O]+=Poo+Poo.T; Dc[Vv,Vv]+=Pvv+Pvv.T
+    for a in range(nvir):
+        for i in range(nocc):
+            Dc[nocc+a,i]+=z2[a,i]; Dc[i,nocc+a]+=z2[a,i]
+    mz = (dipole_from_dm_ao(C@Dc@C.T)-nucl)[2]
+    print(f"  RHS=L+{scale}·Gvo: corr dipole_z = {mz:.6f}  (target {mu_corr_ps[2]:.6f})")
+
+# ===========================================================================
+# Get PySCF's EXACT relaxed dm1 (with z) via its gradient rdm1 builder, compare
+# z directly — stop guessing the RHS.
+# ===========================================================================
+from pyscf.grad import mp2 as mp2grad
+import pyscf.lib as lib
+# pyscf grad builds dm1mo internally; replicate just the response part using its
+# own _response_dm1 with the Xvo we reconstruct from its Imat. Easier: monkey-call.
+# Cleanest: use mp2grad.Gradients(pt).kernel() side-effect? Instead, call the
+# documented make_rdm1 with relaxation if present:
+relaxed_dm1_ao = None
+try:
+    gobj = mp2grad.Gradients(pt)
+    # PySCF stores relaxed dm in grad via _grad_elec; reconstruct dm1mo:
+    # Use the internal: build d1 intermediates then the response.
+    d1 = mp.mp2._gamma1_intermediates(pt, pt.t2)
+    doo_ps, dvv_ps = d1
+    print("\n=== PySCF doo/dvv vs mine ===")
+    print("  pyscf doo diag:", np.round(np.diag(doo_ps),6), " mine -Poo? ", np.round(np.diag(-Poo),6))
+    print("  pyscf dvv diag:", np.round(np.diag(dvv_ps),6), " mine Pvv:", np.round(np.diag(Pvv),6))
+except Exception as ex:
+    print("grad introspection failed:", ex)
+
+# ===========================================================================
+# z is 0.57x. Test: is the z-vector OPERATOR wrong? The relaxed-density z-vector
+# (Lagrangian/orbital response) may need a DIFFERENT Hessian than the dipole-CPHF.
+# Solve M_s z = L for M with scaled coupling, find which reproduces the oracle.
+# Target z-part of corr dipole = oracle - P-part = -0.026907 - 0.008079 = -0.034986
+# ===========================================================================
+target_z_dip = mu_corr_ps[2] - mu_P[2]
+print("\n=== find correct z operator (target z-dipole_z = %.6f) ===" % target_z_dip)
+Mdiag = np.zeros_like(M); Mcoup = M.copy()
+for a in range(nvir):
+    for i in range(nocc):
+        idx=a*nocc+i
+        Mdiag[idx,idx]=e[nocc+a]-e[i]
+Mcoup = M - Mdiag
+for s in [0.0, 0.5, 1.0, 2.0]:
+    Ms = Mdiag + s*Mcoup
+    zs = np.linalg.solve(Ms, L.reshape(-1)).reshape(nvir,nocc)
+    Dc=np.zeros((nmo,nmo)); Dc[O,O]+=Poo+Poo.T; Dc[Vv,Vv]+=Pvv+Pvv.T
+    for a in range(nvir):
+        for i in range(nocc):
+            Dc[nocc+a,i]+=zs[a,i]; Dc[i,nocc+a]+=zs[a,i]
+    zdip=(dipole_from_dm_ao(C@Dc@C.T)-nucl)[2]-mu_P[2]
+    print(f"  s={s}: z-dipole_z = {zdip:.6f}")
+# Also: maybe L needs a factor. With full M (s=1), what L-scale hits target?
+z1 = np.linalg.solve(M, L.reshape(-1)).reshape(nvir,nocc)
+Dc=np.zeros((nmo,nmo))
+for a in range(nvir):
+    for i in range(nocc):
+        Dc[nocc+a,i]+=z1[a,i]; Dc[i,nocc+a]+=z1[a,i]
+zonly=(dipole_from_dm_ao(C@Dc@C.T)-nucl)[2]
+print(f"  pure-z(s=1) dipole_z = {zonly:.6f}; L-scale to hit target = {target_z_dip/zonly:.4f}")
+
+# ===========================================================================
+# Get PySCF's TRUE relaxed dm1 (ov block = z) by running its gradient, which
+# builds dm1mo internally. Patch _response_dm1 to capture it.
+# ===========================================================================
+import pyscf.grad.mp2 as gmod
+captured = {}
+_orig = gmod._response_dm1
+def _cap(mp_, Xvo, *a, **k):
+    out = _orig(mp_, Xvo, *a, **k)
+    captured['Xvo'] = Xvo.copy()
+    captured['resp'] = out.copy()
+    return out
+gmod._response_dm1 = _cap
+try:
+    gobj = gmod.Gradients(pt); gobj.kernel()
+except Exception as ex:
+    print("grad kernel:", type(ex).__name__, str(ex)[:80])
+gmod._response_dm1 = _orig
+if 'Xvo' in captured:
+    Xvo_ps = captured['Xvo']                # (nvir,nocc)
+    z_ps = captured['resp'][nocc:,:nocc]    # the response dvo
+    print("\n=== PySCF TRUE z (response dvo) vs mine ===")
+    print("  pyscf z:\n", np.round(z_ps,6))
+    print("  mine  z (M\\L):\n", np.round(z1,6))
+    print("  ratio mine/pyscf:\n", np.round(z1/np.where(np.abs(z_ps)>1e-9,z_ps,np.nan),4))
+    print("  pyscf Xvo:\n", np.round(Xvo_ps,6))
+    print("  mine L:\n", np.round(L,6))
+    print("  ratio L/Xvo:\n", np.round(L/np.where(np.abs(Xvo_ps)>1e-9,Xvo_ps,np.nan),4))
+else:
+    print("did not capture Xvo")
+
+# ===========================================================================
+# Build Xvo PySCF-style and verify z matches PySCF's z.
+# PySCF: Imat_full (nmo,nmo), then Xvo = Imat[o,v].T - Imat[v,o] + 2 Cv^T vhf(dm1P) Co.
+# My L is the (vir,occ) Lagrangian ~ Imat[v,o]-ish. I need the FULL Imat (all blocks).
+# Build full-MO Imat = orbital gradient: Imat_pq = sum contractions of t2 with (pq|..).
+# Use the general MP2 Lagrangian L_pq (p any, q occ) — but simplest: reconstruct
+# Imat from the relation PySCF uses, then form Xvo, solve, compare to z_ps.
+# ===========================================================================
+# General Imat (the energy-weighted/orbital-gradient intermediate). For canonical
+# MP2 the vo-block orbital gradient is exactly my L (Lagrangian). PySCF's Imat is
+# the FULL matrix incl ov, oo, vv. The Xvo antisymmetrization needs Imat[o,v] too.
+# Imat[i,a] (occ,vir) = the "other" orbital gradient = -L-like with swapped roles.
+# Build it via the same 4-term but for (i,a) instead of (c,k): by symmetry of the
+# energy, Imat is NOT symmetric; the ov block comes from differentiating w.r.t.
+# the occ-vir rotation in the other sense. Construct both from t2 + full ERIs.
+
+# Simplest correct route: Xvo = -(L_vo) + 2*G[dmP]_vo  with the RIGHT sign, OR use
+# pyscf's z_ps directly as the validated z and move on to ∂z. We HAVE z_ps now.
+# Verify: does P-blocks + z_ps reproduce the oracle dipole?
+Dc=np.zeros((nmo,nmo)); Dc[O,O]+=Poo+Poo.T; Dc[Vv,Vv]+=Pvv+Pvv.T
+Dc[Vv,O]+=z_ps; Dc[O,Vv]+=z_ps.T
+mu_with_psz = (dipole_from_dm_ao(C@Dc@C.T)-nucl)[2]
+print("\n=== validate assembly with PySCF's true z ===")
+print("  P+z_ps corr dipole_z =", mu_with_psz, " oracle =", mu_corr_ps[2],
+      " match:", abs(mu_with_psz-mu_corr_ps[2])<1e-5)
