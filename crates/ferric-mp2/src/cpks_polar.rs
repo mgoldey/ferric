@@ -29,26 +29,22 @@ use ndarray::Array2;
 use crate::ff_polar::{eig3_sym_pub as eig3_sym, Mp2Polarizability};
 use crate::rimp2::RiMp2Config;
 
-/// Analytic relaxed MP2 static polarizability (closed-shell). Stub until Stage 2.
+/// Analytic relaxed MP2 static polarizability (closed-shell). Delegates to the
+/// clean-room-validated full-MO driver (`analytic_alpha_full`): matches the
+/// energy-Hessian / PySCF oracle to ~0.5% on water/STO-3G. Replaces the
+/// finite-field path, which is 1/F-unstable on symmetric molecules.
 #[allow(clippy::too_many_arguments)]
 pub fn mp2_polarizability_analytic(
-    _ctx: &ParallelContext,
-    _mol: &Molecule,
-    _obs: &PreparedBasis,
-    _dfbs: &PreparedBasis,
-    _op: Operator,
-    _bounds: &SchwarzBounds,
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
     rhf: &ScfResult,
-    _mp2_config: &RiMp2Config,
+    mp2_config: &RiMp2Config,
 ) -> Result<Mp2Polarizability, FerricError> {
-    if !matches!(rhf.spin, Spin::Restricted) {
-        return Err(FerricError::General(
-            "mp2_polarizability_analytic: closed-shell (Restricted) only".into(),
-        ));
-    }
-    Err(FerricError::General(
-        "mp2_polarizability_analytic: not yet implemented (Stage 2)".into(),
-    ))
+    analytic_alpha_full(ctx, mol, obs, dfbs, op, bounds, rhf, mp2_config)
 }
 
 /// Solve (Δε + A) X = rhs by Jacobi-preconditioned CG. Reuses the production
@@ -1124,4 +1120,233 @@ pub fn analytic_alpha_relaxed(
     let iso = (tensor[0][0] + tensor[1][1] + tensor[2][2]) / 3.0;
     let principal = eig3_sym(tensor);
     Ok(Mp2Polarizability { tensor, iso, principal })
+}
+
+// ===========================================================================
+// PORTED analytic relaxed-MP2 α (clean-room-validated, scripts/cpks/mp2_alpha_clean.py).
+// Operates on the FULL-MO ERI tensor (pq|rs)=Σ_P B[P,p,q]B[P,r,s] so the field
+// perturbation (Θ-rotation of integrals) is direct. Non-RI in the response
+// (small systems). Recipe per axis q:
+//   U^q : (Δε+A) U = −r^q_vo                          (CPHF)
+//   Θ_{vir,occ}=U, Θ_{occ,vir}=−U
+//   ∂Imo = Σ_idx Θ-rotate each of the 4 MO indices
+//   ∂D   = central-diff (ε=1e-5) of relaxed_dm_full(Imo±ε∂Imo, eps)   [deps=0]
+//   ∂D  += 2U in vo/ov (SCF core response)
+//   α_pq = −Σ ∂D · r_mo[p]
+// ===========================================================================
+use ndarray::Array4;
+
+/// Full-MO ERI (pq|rs) from the dressed B tensor. (nmo^4 — small systems only.)
+fn full_mo_eri(b_full: &ndarray::Array3<f64>) -> Array4<f64> {
+    let naux = b_full.shape()[0];
+    let nmo = b_full.shape()[1];
+    let mut imo = Array4::<f64>::zeros((nmo, nmo, nmo, nmo));
+    // (pq|rs) = Σ_P B[P,p,q] B[P,r,s]
+    let bmat = b_full.view().into_shape_with_order((naux, nmo * nmo)).unwrap();
+    let g = bmat.t().dot(&bmat); // (nmo*nmo, nmo*nmo)
+    for p in 0..nmo { for q in 0..nmo { for rr in 0..nmo { for s in 0..nmo {
+        imo[(p, q, rr, s)] = g[(p * nmo + q, rr * nmo + s)];
+    }}}}
+    imo
+}
+
+#[inline]
+fn eri4(imo: &Array4<f64>, p: usize, q: usize, r: usize, s: usize) -> f64 { imo[(p, q, r, s)] }
+
+/// t2[i,a,j,b] = (ia|jb)/Δε  from a full-MO ERI tensor.
+fn t2_full(imo: &Array4<f64>, eps: &[f64], nocc: usize, nvir: usize) -> Vec<f64> {
+    let nov = nocc * nvir;
+    let mut t = vec![0.0; nov * nov];
+    for i in 0..nocc { for a in 0..nvir { for j in 0..nocc { for b in 0..nvir {
+        let d = eps[i] + eps[j] - eps[nocc + a] - eps[nocc + b];
+        t[(i * nvir + a) * nov + j * nvir + b] = eri4(imo, i, nocc + a, j, nocc + b) / d;
+    }}}}
+    t
+}
+
+/// Static relaxed MP2 1-PDM (MO) from a full-MO ERI tensor — mirrors the
+/// clean-room `relaxed_dm` exactly (P+Pᵀ, Xvo=L+(2J−K)[dmP]_vo, (Δε+A)z=−Xvo).
+/// `eps` indexed by MO (0..nmo); occ=0..nocc, vir=nocc..nmo.
+fn relaxed_dm_full(imo: &Array4<f64>, eps: &[f64], nocc: usize, nvir: usize) -> Array2<f64> {
+    let nmo = nocc + nvir;
+    let nov = nocc * nvir;
+    let t = t2_full(imo, eps, nocc, nvir);
+    let tt = |i: usize, a: usize, j: usize, b: usize| t[(i * nvir + a) * nov + j * nvir + b];
+
+    // P_oo, P_vv (one-sided).
+    let mut p_oo = Array2::<f64>::zeros((nocc, nocc));
+    for i in 0..nocc { for j in 0..nocc {
+        let mut s = 0.0;
+        for k in 0..nocc { for a in 0..nvir { for b in 0..nvir {
+            s += tt(i, a, k, b) * (2.0 * tt(j, a, k, b) - tt(j, b, k, a));
+        }}}
+        p_oo[(i, j)] = -s;
+    }}
+    let mut p_vv = Array2::<f64>::zeros((nvir, nvir));
+    for a in 0..nvir { for b in 0..nvir {
+        let mut s = 0.0;
+        for i in 0..nocc { for j in 0..nocc { for cc in 0..nvir {
+            s += tt(i, a, j, cc) * (2.0 * tt(i, b, j, cc) - tt(i, cc, j, b));
+        }}}
+        p_vv[(a, b)] = s;
+    }}
+
+    // dm_P = P+Pᵀ in oo/vv (MO).
+    let mut dm_p = Array2::<f64>::zeros((nmo, nmo));
+    for i in 0..nocc { for j in 0..nocc { dm_p[(i, j)] = p_oo[(i, j)] + p_oo[(j, i)]; } }
+    for a in 0..nvir { for b in 0..nvir { dm_p[(nocc + a, nocc + b)] = p_vv[(a, b)] + p_vv[(b, a)]; } }
+
+    // L (4-term integral Lagrangian, full-MO indices). Mirrors build_lagrangian integral part.
+    let mut l = Array2::<f64>::zeros((nvir, nocc));
+    for c in 0..nvir { for k in 0..nocc {
+        let mut g = 0.0;
+        for j in 0..nocc { for a in 0..nvir { for b in 0..nvir {
+            g += tt(k, a, j, b) * (2.0 * eri4(imo, nocc + c, nocc + a, j, nocc + b) - eri4(imo, nocc + c, nocc + b, j, nocc + a));
+        }}}
+        for i in 0..nocc { for a in 0..nvir { for b in 0..nvir {
+            g += tt(i, a, k, b) * (2.0 * eri4(imo, i, nocc + a, nocc + c, nocc + b) - eri4(imo, i, nocc + b, nocc + c, nocc + a));
+        }}}
+        for i in 0..nocc { for j in 0..nocc { for b in 0..nvir {
+            g -= tt(i, c, j, b) * (2.0 * eri4(imo, i, k, j, nocc + b) - eri4(imo, i, nocc + b, j, k));
+        }}}
+        for i in 0..nocc { for j in 0..nocc { for a in 0..nvir {
+            g -= tt(i, a, j, c) * (2.0 * eri4(imo, i, nocc + a, j, k) - eri4(imo, i, k, j, nocc + a));
+        }}}
+        l[(c, k)] = g;
+    }}
+
+    // (2J−K)[dm_P]_vo in MO: G_pq = Σ_rs [2(pq|rs) − (pr|qs)] dm_P[r,s].
+    let mut xvo = l.clone();
+    for c in 0..nvir { for k in 0..nocc {
+        let mut g = 0.0;
+        for r in 0..nmo { for s in 0..nmo {
+            g += (2.0 * eri4(imo, nocc + c, k, r, s) - eri4(imo, nocc + c, r, k, s)) * dm_p[(r, s)];
+        }}
+        xvo[(c, k)] += g;
+    }}
+
+    // (Δε + A) z = −Xvo, with full A (dense solve mirroring clean-room).
+    let z = solve_zvec_dense(imo, eps, &(-&xvo), nocc, nvir);
+
+    // D = 2δ_core + dm_P + z.
+    let mut d = dm_p;
+    for i in 0..nocc { d[(i, i)] += 2.0; }
+    for a in 0..nvir { for i in 0..nocc { d[(nocc + a, i)] += z[(a, i)]; d[(i, nocc + a)] += z[(a, i)]; } }
+    d
+}
+
+/// Dense solve of (Δε + A) x = rhs with the full orbital Hessian
+/// A_{ai,bj} = 4(ai|bj) − (ab|ij) − (aj|bi), from a full-MO ERI tensor.
+fn solve_zvec_dense(imo: &Array4<f64>, eps: &[f64], rhs: &Array2<f64>, nocc: usize, nvir: usize) -> Array2<f64> {
+    use ndarray_linalg::Solve;
+    let n = nvir * nocc;
+    let mut m = Array2::<f64>::zeros((n, n));
+    for a in 0..nvir { for i in 0..nocc {
+        let ai = a * nocc + i;
+        for b in 0..nvir { for j in 0..nocc {
+            let bj = b * nocc + j;
+            m[(ai, bj)] = 4.0 * eri4(imo, nocc + a, i, nocc + b, j)
+                - eri4(imo, nocc + a, nocc + b, i, j)
+                - eri4(imo, nocc + a, j, nocc + b, i);
+        }}
+        m[(ai, ai)] += eps[nocc + a] - eps[i];
+    }}
+    let x = m.solve(&rhs.view().into_shape_with_order(n).unwrap().to_owned()).unwrap();
+    x.into_shape_with_order((nvir, nocc)).unwrap()
+}
+
+/// Analytic relaxed MP2 static polarizability via the full-MO recipe (clean-room
+/// validated to ~0.5% vs energy-Hessian). Closed-shell. The proper public entry
+/// `mp2_polarizability_analytic` delegates here.
+pub fn analytic_alpha_full(
+    _ctx: &ParallelContext,
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    rhf: &ScfResult,
+    _mp2_config: &RiMp2Config,
+) -> Result<Mp2Polarizability, FerricError> {
+    if !matches!(rhf.spin, Spin::Restricted) {
+        return Err(FerricError::General("analytic_alpha_full: Restricted only".into()));
+    }
+    let c = rhf.mos_r();
+    let nmo = c.ncols();
+    let nocc = (mol.nelec() / 2) as usize;
+    let nvir = nmo - nocc;
+    let eps_full: Vec<f64> = rhf.eps_r().to_vec();
+    let orb = OrbitalSpace::new(nocc, nvir, nocc, 0);
+
+    // Full-MO ERI tensor (unperturbed).
+    let b_full = crate::oo_rimp2::compute_b_full_mo(obs, dfbs, op, c)?;
+    let imo0 = full_mo_eri(&b_full);
+
+    // MO dipole r_pq per axis (full MO).
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let r_mo: [Array2<f64>; 3] = std::array::from_fn(|d| c.t().dot(&dip_ao[d]).dot(c));
+
+    let ed = 1e-5;
+    let mut tensor = [[0.0f64; 3]; 3];
+    for q in 0..3 {
+        // U^q: (Δε+A) U = −r^q_vo (CPHF, dense, same operator as the z-solve).
+        let mut rvo = Array2::<f64>::zeros((nvir, nocc));
+        for a in 0..nvir { for i in 0..nocc { rvo[(a, i)] = r_mo[q][(nocc + a, i)]; } }
+        let u = solve_zvec_dense(&imo0, &eps_full, &(-&rvo), nocc, nvir);
+
+        // Θ generator: Θ_{vir,occ}=U, Θ_{occ,vir}=−U.
+        let mut theta = Array2::<f64>::zeros((nmo, nmo));
+        for a in 0..nvir { for i in 0..nocc {
+            theta[(nocc + a, i)] = u[(a, i)];
+            theta[(i, nocc + a)] = -u[(a, i)];
+        }}
+
+        // ∂Imo = Σ_idx Θ-rotate each of the 4 MO indices.
+        // For ±ε we build imo(±) = imo0 ± ε·∂Imo directly via rotated contraction.
+        let dimo = rotate_eri(&imo0, &theta);
+        let imo_p = &imo0 + &(ed * &dimo);
+        let imo_m = &imo0 - &(ed * &dimo);
+
+        // ∂D = central diff of relaxed_dm_full (deps=0: eps unchanged).
+        let dp = relaxed_dm_full(&imo_p, &eps_full, nocc, nvir);
+        let dm = relaxed_dm_full(&imo_m, &eps_full, nocc, nvir);
+        let mut ddm = (&dp - &dm).mapv(|x| x / (2.0 * ed));
+
+        // + 2U SCF core response in vo/ov.
+        for a in 0..nvir { for i in 0..nocc {
+            ddm[(nocc + a, i)] += 2.0 * u[(a, i)];
+            ddm[(i, nocc + a)] += 2.0 * u[(a, i)];
+        }}
+
+        // α_pq = −Σ ∂D · r_mo[p]  (MO basis).
+        for p in 0..3 {
+            tensor[p][q] = -(&ddm * &r_mo[p]).sum();
+        }
+    }
+    // Symmetrize.
+    for i in 0..3 { for j in (i + 1)..3 {
+        let avg = 0.5 * (tensor[i][j] + tensor[j][i]); tensor[i][j] = avg; tensor[j][i] = avg;
+    }}
+    let _ = orb;
+    let iso = (tensor[0][0] + tensor[1][1] + tensor[2][2]) / 3.0;
+    let principal = eig3_sym(tensor);
+    Ok(Mp2Polarizability { tensor, iso, principal })
+}
+
+/// ∂Imo via Θ-rotation of all 4 MO indices: ∂(pq|rs) = Σ_x [Θ_xp(xq|rs)+Θ_xq(px|rs)
+/// +Θ_xr(pq|xs)+Θ_xs(pq|rx)]. (Matches clean-room dImo.)
+fn rotate_eri(imo: &Array4<f64>, theta: &Array2<f64>) -> Array4<f64> {
+    let nmo = imo.shape()[0];
+    let mut d = Array4::<f64>::zeros((nmo, nmo, nmo, nmo));
+    for p in 0..nmo { for q in 0..nmo { for r in 0..nmo { for s in 0..nmo {
+        let mut acc = 0.0;
+        for x in 0..nmo {
+            acc += theta[(x, p)] * imo[(x, q, r, s)]
+                 + theta[(x, q)] * imo[(p, x, r, s)]
+                 + theta[(x, r)] * imo[(p, q, x, s)]
+                 + theta[(x, s)] * imo[(p, q, r, x)];
+        }
+        d[(p, q, r, s)] = acc;
+    }}}}
+    d
 }

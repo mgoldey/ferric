@@ -313,3 +313,31 @@ fn cpks_static_relaxed_dipole_vs_pyscf() {
     eprintln!("ferric VALIDATED static relaxed μ = {:?}  (pyscf μ_z=-0.652736)", mu);
     assert!((mu[2].abs()-0.652736).abs() < 2e-2, "μ_z={} vs pyscf -0.652736", mu[2]);
 }
+
+#[test]
+#[ignore]
+fn cpks_analytic_alpha_full_vs_oracle() {
+    // Rust analytic relaxed α vs the clean-room/energy-Hessian oracle
+    // (water/STO-3G [0.044, 4.981, 2.135]). ferric uses RI for the MO ERIs so
+    // allow RI slack (cc-pVDZ-RI on STO-3G is loose).
+    use ferric_core::basis;
+    use ferric_mp2::cpks_polar::analytic_alpha_full;
+    let xyz = "3\nh2o\nO 0 0 0.117790\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n";
+    let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+    let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
+    let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+    let ctx = ParallelContext::default();
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+    let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
+    let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
+    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0 };
+    let a = analytic_alpha_full(&ctx,&mol,&obs,&dfbs,op,&bounds,&rhf,&mp2_cfg).unwrap();
+    eprintln!("Rust analytic α diag = [{:.5} {:.5} {:.5}]  iso {:.5}",
+        a.tensor[0][0],a.tensor[1][1],a.tensor[2][2],a.iso);
+    eprintln!("oracle (clean-room) = [0.04433, 4.98104, 2.13546]  iso 2.38694");
+    // allow 5% RI slack
+    for (got,want) in [(a.tensor[0][0],0.04433),(a.tensor[1][1],4.98104),(a.tensor[2][2],2.13546)] {
+        assert!((got-want).abs() < 0.05*want.abs()+0.02, "α component {got} vs {want}");
+    }
+}
