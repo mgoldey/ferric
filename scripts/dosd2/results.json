@@ -209,7 +209,7 @@
   },
   "augccpvdz/sih4/ts": {
     "basis": "augccpvdz",
-    "c6": 1974.941,
+    "c6": 826.658,
     "method": "ts",
     "mol": "sih4",
     "ok": true,
@@ -449,7 +449,7 @@
   },
   "augccpvtz/sih4/ts": {
     "basis": "augccpvtz",
-    "c6": 1966.496,
+    "c6": 823.927,
     "method": "ts",
     "mol": "sih4",
     "ok": true,
