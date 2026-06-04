@@ -1,0 +1,722 @@
+{
+  "augccpvdz/benzene/rpa_hf": {
+    "basis": "augccpvdz",
+    "c6": 1199.686,
+    "method": "rpa_hf",
+    "mol": "benzene",
+    "ok": true,
+    "seconds": 203.3
+  },
+  "augccpvdz/benzene/rpa_pbe": {
+    "basis": "augccpvdz",
+    "c6": 1538.216,
+    "method": "rpa_pbe",
+    "mol": "benzene",
+    "ok": true,
+    "seconds": 162.3
+  },
+  "augccpvdz/benzene/ts": {
+    "basis": "augccpvdz",
+    "c6": 2088.529,
+    "method": "ts",
+    "mol": "benzene",
+    "ok": true,
+    "seconds": 171.1
+  },
+  "augccpvdz/c2h2/rpa_hf": {
+    "basis": "augccpvdz",
+    "c6": 134.454,
+    "method": "rpa_hf",
+    "mol": "c2h2",
+    "ok": true,
+    "seconds": 49.7
+  },
+  "augccpvdz/c2h2/rpa_pbe": {
+    "basis": "augccpvdz",
+    "c6": 170.594,
+    "method": "rpa_pbe",
+    "mol": "c2h2",
+    "ok": true,
+    "seconds": 12.2
+  },
+  "augccpvdz/c2h2/ts": {
+    "basis": "augccpvdz",
+    "c6": 254.659,
+    "method": "ts",
+    "mol": "c2h2",
+    "ok": true,
+    "seconds": 82.9
+  },
+  "augccpvdz/c2h4/rpa_hf": {
+    "basis": "augccpvdz",
+    "c6": 185.356,
+    "method": "rpa_hf",
+    "mol": "c2h4",
+    "ok": true,
+    "seconds": 60.6
+  },
+  "augccpvdz/c2h4/rpa_pbe": {
+    "basis": "augccpvdz",
+    "c6": 249.907,
+    "method": "rpa_pbe",
+    "mol": "c2h4",
+    "ok": true,
+    "seconds": 65.0
+  },
+  "augccpvdz/c2h4/ts": {
+    "basis": "augccpvdz",
+    "c6": 362.825,
+    "method": "ts",
+    "mol": "c2h4",
+    "ok": true,
+    "seconds": 90.5
+  },
+  "augccpvdz/c2h6/rpa_hf": {
+    "basis": "augccpvdz",
+    "c6": 215.256,
+    "method": "rpa_hf",
+    "mol": "c2h6",
+    "ok": true,
+    "seconds": 76.6
+  },
+  "augccpvdz/c2h6/rpa_pbe": {
+    "basis": "augccpvdz",
+    "c6": 312.517,
+    "method": "rpa_pbe",
+    "mol": "c2h6",
+    "ok": true,
+    "seconds": 78.9
+  },
+  "augccpvdz/c2h6/ts": {
+    "basis": "augccpvdz",
+    "c6": 474.902,
+    "method": "ts",
+    "mol": "c2h6",
+    "ok": true,
+    "seconds": 111.0
+  },
+  "augccpvdz/ch4/rpa_hf": {
+    "basis": "augccpvdz",
+    "c6": 72.964,
+    "method": "rpa_hf",
+    "mol": "ch4",
+    "ok": true,
+    "seconds": 37.3
+  },
+  "augccpvdz/ch4/rpa_pbe": {
+    "basis": "augccpvdz",
+    "c6": 105.326,
+    "method": "rpa_pbe",
+    "mol": "ch4",
+    "ok": true,
+    "seconds": 33.4
+  },
+  "augccpvdz/ch4/ts": {
+    "basis": "augccpvdz",
+    "c6": 153.27,
+    "method": "ts",
+    "mol": "ch4",
+    "ok": true,
+    "seconds": 48.1
+  },
+  "augccpvdz/co/rpa_hf": {
+    "basis": "augccpvdz",
+    "c6": 49.904,
+    "method": "rpa_hf",
+    "mol": "co",
+    "ok": true,
+    "seconds": 48.7
+  },
+  "augccpvdz/co/rpa_pbe": {
+    "basis": "augccpvdz",
+    "c6": 68.547,
+    "method": "rpa_pbe",
+    "mol": "co",
+    "ok": true,
+    "seconds": 148.3
+  },
+  "augccpvdz/co/ts": {
+    "basis": "augccpvdz",
+    "c6": 135.794,
+    "method": "ts",
+    "mol": "co",
+    "ok": true,
+    "seconds": 227.7
+  },
+  "augccpvdz/co2/rpa_hf": {
+    "basis": "augccpvdz",
+    "c6": 94.963,
+    "method": "rpa_hf",
+    "mol": "co2",
+    "ok": true,
+    "seconds": 69.8
+  },
+  "augccpvdz/co2/rpa_pbe": {
+    "basis": "augccpvdz",
+    "c6": 133.243,
+    "method": "rpa_pbe",
+    "mol": "co2",
+    "ok": true,
+    "seconds": 277.2
+  },
+  "augccpvdz/co2/ts": {
+    "basis": "augccpvdz",
+    "c6": 240.488,
+    "method": "ts",
+    "mol": "co2",
+    "ok": true,
+    "seconds": 408.6
+  },
+  "augccpvdz/h2/rpa_hf": {
+    "basis": "augccpvdz",
+    "c6": 6.305,
+    "method": "rpa_hf",
+    "mol": "h2",
+    "ok": true,
+    "seconds": 1.1
+  },
+  "augccpvdz/h2/rpa_pbe": {
+    "basis": "augccpvdz",
+    "c6": 9.22,
+    "method": "rpa_pbe",
+    "mol": "h2",
+    "ok": true,
+    "seconds": 1.3
+  },
+  "augccpvdz/h2/ts": {
+    "basis": "augccpvdz",
+    "c6": 9.831,
+    "method": "ts",
+    "mol": "h2",
+    "ok": true,
+    "seconds": 2.1
+  },
+  "augccpvdz/h2s/rpa_hf": {
+    "basis": "augccpvdz",
+    "c6": 130.928,
+    "method": "rpa_hf",
+    "mol": "h2s",
+    "ok": true,
+    "seconds": 586.0
+  },
+  "augccpvdz/h2s/rpa_pbe": {
+    "basis": "augccpvdz",
+    "c6": 173.044,
+    "method": "rpa_pbe",
+    "mol": "h2s",
+    "ok": true,
+    "seconds": 2437.6
+  },
+  "augccpvdz/h2s/ts": {
+    "basis": "augccpvdz",
+    "c6": 849.93,
+    "method": "ts",
+    "mol": "h2s",
+    "ok": true,
+    "seconds": 89.1
+  },
+  "augccpvdz/hcl/rpa_hf": {
+    "basis": "augccpvdz",
+    "c6": 76.583,
+    "method": "rpa_hf",
+    "mol": "hcl",
+    "ok": true,
+    "seconds": 208.5
+  },
+  "augccpvdz/hcl/rpa_pbe": {
+    "basis": "augccpvdz",
+    "c6": 99.96,
+    "method": "rpa_pbe",
+    "mol": "hcl",
+    "ok": true,
+    "seconds": 8.2
+  },
+  "augccpvdz/hcl/ts": {
+    "basis": "augccpvdz",
+    "c6": 132.606,
+    "method": "ts",
+    "mol": "hcl",
+    "ok": true,
+    "seconds": 14.5
+  },
+  "augccpvdz/hf/rpa_hf": {
+    "basis": "augccpvdz",
+    "c6": 9.813,
+    "method": "rpa_hf",
+    "mol": "hf",
+    "ok": true,
+    "seconds": 13.4
+  },
+  "augccpvdz/hf/rpa_pbe": {
+    "basis": "augccpvdz",
+    "c6": 15.141,
+    "method": "rpa_pbe",
+    "mol": "hf",
+    "ok": true,
+    "seconds": 5.0
+  },
+  "augccpvdz/hf/ts": {
+    "basis": "augccpvdz",
+    "c6": 21.248,
+    "method": "ts",
+    "mol": "hf",
+    "ok": true,
+    "seconds": 9.0
+  },
+  "augccpvdz/n2/rpa_hf": {
+    "basis": "augccpvdz",
+    "c6": 49.836,
+    "method": "rpa_hf",
+    "mol": "n2",
+    "ok": true,
+    "seconds": 16.2
+  },
+  "augccpvdz/n2/rpa_pbe": {
+    "basis": "augccpvdz",
+    "c6": 63.985,
+    "method": "rpa_pbe",
+    "mol": "n2",
+    "ok": true,
+    "seconds": 4.7
+  },
+  "augccpvdz/n2/ts": {
+    "basis": "augccpvdz",
+    "c6": 81.547,
+    "method": "ts",
+    "mol": "n2",
+    "ok": true,
+    "seconds": 6.8
+  },
+  "augccpvdz/nh3/rpa_hf": {
+    "basis": "augccpvdz",
+    "c6": 48.702,
+    "method": "rpa_hf",
+    "mol": "nh3",
+    "ok": true,
+    "seconds": 23.0
+  },
+  "augccpvdz/nh3/rpa_pbe": {
+    "basis": "augccpvdz",
+    "c6": 73.148,
+    "method": "rpa_pbe",
+    "mol": "nh3",
+    "ok": true,
+    "seconds": 8.3
+  },
+  "augccpvdz/nh3/ts": {
+    "basis": "augccpvdz",
+    "c6": 99.231,
+    "method": "ts",
+    "mol": "nh3",
+    "ok": true,
+    "seconds": 10.9
+  },
+  "augccpvdz/o2/rpa_hf": {
+    "basis": "augccpvdz",
+    "c6": 37.822,
+    "method": "rpa_hf",
+    "mol": "o2",
+    "ok": true,
+    "seconds": null
+  },
+  "augccpvdz/o2/rpa_pbe": {
+    "basis": "augccpvdz",
+    "c6": 48.877,
+    "method": "rpa_pbe",
+    "mol": "o2",
+    "ok": true,
+    "seconds": null
+  },
+  "augccpvdz/o2/ts": {
+    "basis": "augccpvdz",
+    "c6": 111.677,
+    "method": "ts",
+    "mol": "o2",
+    "ok": true,
+    "seconds": 42.4
+  },
+  "augccpvdz/water/rpa_hf": {
+    "basis": "augccpvdz",
+    "c6": 24.553,
+    "method": "rpa_hf",
+    "mol": "water",
+    "ok": true,
+    "seconds": 17.1
+  },
+  "augccpvdz/water/rpa_pbe": {
+    "basis": "augccpvdz",
+    "c6": 38.046,
+    "method": "rpa_pbe",
+    "mol": "water",
+    "ok": true,
+    "seconds": 10.0
+  },
+  "augccpvdz/water/ts": {
+    "basis": "augccpvdz",
+    "c6": 65.226,
+    "method": "ts",
+    "mol": "water",
+    "ok": true,
+    "seconds": 18.0
+  },
+  "augccpvtz/benzene/rpa_hf": {
+    "basis": "augccpvtz",
+    "c6": 1201.994,
+    "method": "rpa_hf",
+    "mol": "benzene",
+    "ok": true,
+    "seconds": 539.2
+  },
+  "augccpvtz/benzene/rpa_pbe": {
+    "basis": "augccpvtz",
+    "c6": 1548.488,
+    "method": "rpa_pbe",
+    "mol": "benzene",
+    "ok": true,
+    "seconds": 643.7
+  },
+  "augccpvtz/benzene/ts": {
+    "basis": "augccpvtz",
+    "c6": 2072.407,
+    "method": "ts",
+    "mol": "benzene",
+    "ok": true,
+    "seconds": 658.6
+  },
+  "augccpvtz/c2h2/rpa_hf": {
+    "basis": "augccpvtz",
+    "c6": 137.175,
+    "method": "rpa_hf",
+    "mol": "c2h2",
+    "ok": true,
+    "seconds": 64.4
+  },
+  "augccpvtz/c2h2/rpa_pbe": {
+    "basis": "augccpvtz",
+    "c6": 176.167,
+    "method": "rpa_pbe",
+    "mol": "c2h2",
+    "ok": true,
+    "seconds": 36.5
+  },
+  "augccpvtz/c2h2/ts": {
+    "basis": "augccpvtz",
+    "c6": 233.981,
+    "method": "ts",
+    "mol": "c2h2",
+    "ok": true,
+    "seconds": 48.8
+  },
+  "augccpvtz/c2h4/rpa_hf": {
+    "basis": "augccpvtz",
+    "c6": 186.637,
+    "method": "rpa_hf",
+    "mol": "c2h4",
+    "ok": true,
+    "seconds": 111.5
+  },
+  "augccpvtz/c2h4/rpa_pbe": {
+    "basis": "augccpvtz",
+    "c6": 252.966,
+    "method": "rpa_pbe",
+    "mol": "c2h4",
+    "ok": true,
+    "seconds": 74.1
+  },
+  "augccpvtz/c2h4/ts": {
+    "basis": "augccpvtz",
+    "c6": 337.098,
+    "method": "ts",
+    "mol": "c2h4",
+    "ok": true,
+    "seconds": 82.5
+  },
+  "augccpvtz/c2h6/rpa_hf": {
+    "basis": "augccpvtz",
+    "c6": 215.593,
+    "method": "rpa_hf",
+    "mol": "c2h6",
+    "ok": true,
+    "seconds": 192.0
+  },
+  "augccpvtz/c2h6/rpa_pbe": {
+    "basis": "augccpvtz",
+    "c6": 314.144,
+    "method": "rpa_pbe",
+    "mol": "c2h6",
+    "ok": true,
+    "seconds": 135.4
+  },
+  "augccpvtz/c2h6/ts": {
+    "basis": "augccpvtz",
+    "c6": 445.304,
+    "method": "ts",
+    "mol": "c2h6",
+    "ok": true,
+    "seconds": 142.8
+  },
+  "augccpvtz/ch4/rpa_hf": {
+    "basis": "augccpvtz",
+    "c6": 73.18,
+    "method": "rpa_hf",
+    "mol": "ch4",
+    "ok": true,
+    "seconds": 58.6
+  },
+  "augccpvtz/ch4/rpa_pbe": {
+    "basis": "augccpvtz",
+    "c6": 106.102,
+    "method": "rpa_pbe",
+    "mol": "ch4",
+    "ok": true,
+    "seconds": 35.1
+  },
+  "augccpvtz/ch4/ts": {
+    "basis": "augccpvtz",
+    "c6": 144.923,
+    "method": "ts",
+    "mol": "ch4",
+    "ok": true,
+    "seconds": 44.9
+  },
+  "augccpvtz/co/rpa_hf": {
+    "basis": "augccpvtz",
+    "c6": 50.8,
+    "method": "rpa_hf",
+    "mol": "co",
+    "ok": true,
+    "seconds": 43.5
+  },
+  "augccpvtz/co/rpa_pbe": {
+    "basis": "augccpvtz",
+    "c6": 70.565,
+    "method": "rpa_pbe",
+    "mol": "co",
+    "ok": true,
+    "seconds": 18.3
+  },
+  "augccpvtz/co/ts": {
+    "basis": "augccpvtz",
+    "c6": 89.844,
+    "method": "ts",
+    "mol": "co",
+    "ok": true,
+    "seconds": 31.5
+  },
+  "augccpvtz/co2/rpa_hf": {
+    "basis": "augccpvtz",
+    "c6": 97.468,
+    "method": "rpa_hf",
+    "mol": "co2",
+    "ok": true,
+    "seconds": 63.1
+  },
+  "augccpvtz/co2/rpa_pbe": {
+    "basis": "augccpvtz",
+    "c6": 138.771,
+    "method": "rpa_pbe",
+    "mol": "co2",
+    "ok": true,
+    "seconds": 35.4
+  },
+  "augccpvtz/co2/ts": {
+    "basis": "augccpvtz",
+    "c6": 155.578,
+    "method": "ts",
+    "mol": "co2",
+    "ok": true,
+    "seconds": 51.9
+  },
+  "augccpvtz/h2/rpa_hf": {
+    "basis": "augccpvtz",
+    "c6": 6.526,
+    "method": "rpa_hf",
+    "mol": "h2",
+    "ok": true,
+    "seconds": 3.1
+  },
+  "augccpvtz/h2/rpa_pbe": {
+    "basis": "augccpvtz",
+    "c6": 9.742,
+    "method": "rpa_pbe",
+    "mol": "h2",
+    "ok": true,
+    "seconds": 3.1
+  },
+  "augccpvtz/h2/ts": {
+    "basis": "augccpvtz",
+    "c6": 10.118,
+    "method": "ts",
+    "mol": "h2",
+    "ok": true,
+    "seconds": 4.4
+  },
+  "augccpvtz/h2s/rpa_hf": {
+    "basis": "augccpvtz",
+    "c6": 135.057,
+    "method": "rpa_hf",
+    "mol": "h2s",
+    "ok": true,
+    "seconds": 599.3
+  },
+  "augccpvtz/h2s/rpa_pbe": {
+    "basis": "augccpvtz",
+    "c6": 182.669,
+    "method": "rpa_pbe",
+    "mol": "h2s",
+    "ok": true,
+    "seconds": 29.7
+  },
+  "augccpvtz/h2s/ts": {
+    "basis": "augccpvtz",
+    "c6": 225.355,
+    "method": "ts",
+    "mol": "h2s",
+    "ok": true,
+    "seconds": 48.3
+  },
+  "augccpvtz/hcl/rpa_hf": {
+    "basis": "augccpvtz",
+    "c6": 80.734,
+    "method": "rpa_hf",
+    "mol": "hcl",
+    "ok": true,
+    "seconds": 504.7
+  },
+  "augccpvtz/hcl/rpa_pbe": {
+    "basis": "augccpvtz",
+    "c6": 108.444,
+    "method": "rpa_pbe",
+    "mol": "hcl",
+    "ok": true,
+    "seconds": 25.4
+  },
+  "augccpvtz/hcl/ts": {
+    "basis": "augccpvtz",
+    "c6": 132.767,
+    "method": "ts",
+    "mol": "hcl",
+    "ok": true,
+    "seconds": 49.0
+  },
+  "augccpvtz/hf/rpa_hf": {
+    "basis": "augccpvtz",
+    "c6": 10.882,
+    "method": "rpa_hf",
+    "mol": "hf",
+    "ok": true,
+    "seconds": 29.5
+  },
+  "augccpvtz/hf/rpa_pbe": {
+    "basis": "augccpvtz",
+    "c6": 17.325,
+    "method": "rpa_pbe",
+    "mol": "hf",
+    "ok": true,
+    "seconds": 14.6
+  },
+  "augccpvtz/hf/ts": {
+    "basis": "augccpvtz",
+    "c6": 21.058,
+    "method": "ts",
+    "mol": "hf",
+    "ok": true,
+    "seconds": 25.4
+  },
+  "augccpvtz/n2/rpa_hf": {
+    "basis": "augccpvtz",
+    "c6": 50.671,
+    "method": "rpa_hf",
+    "mol": "n2",
+    "ok": true,
+    "seconds": 38.3
+  },
+  "augccpvtz/n2/rpa_pbe": {
+    "basis": "augccpvtz",
+    "c6": 65.542,
+    "method": "rpa_pbe",
+    "mol": "n2",
+    "ok": true,
+    "seconds": 11.8
+  },
+  "augccpvtz/n2/ts": {
+    "basis": "augccpvtz",
+    "c6": 81.517,
+    "method": "ts",
+    "mol": "n2",
+    "ok": true,
+    "seconds": 17.3
+  },
+  "augccpvtz/nh3/rpa_hf": {
+    "basis": "augccpvtz",
+    "c6": 49.635,
+    "method": "rpa_hf",
+    "mol": "nh3",
+    "ok": true,
+    "seconds": 49.3
+  },
+  "augccpvtz/nh3/rpa_pbe": {
+    "basis": "augccpvtz",
+    "c6": 75.66,
+    "method": "rpa_pbe",
+    "mol": "nh3",
+    "ok": true,
+    "seconds": 22.9
+  },
+  "augccpvtz/nh3/ts": {
+    "basis": "augccpvtz",
+    "c6": 98.648,
+    "method": "ts",
+    "mol": "nh3",
+    "ok": true,
+    "seconds": 28.4
+  },
+  "augccpvtz/o2/rpa_hf": {
+    "basis": "augccpvtz",
+    "c6": 39.506,
+    "method": "rpa_hf",
+    "mol": "o2",
+    "ok": true,
+    "seconds": 49.4
+  },
+  "augccpvtz/o2/rpa_pbe": {
+    "basis": "augccpvtz",
+    "c6": 52.78,
+    "method": "rpa_pbe",
+    "mol": "o2",
+    "ok": true,
+    "seconds": 73.9
+  },
+  "augccpvtz/o2/ts": {
+    "basis": "augccpvtz",
+    "c6": 54.547,
+    "method": "ts",
+    "mol": "o2",
+    "ok": true,
+    "seconds": 80.1
+  },
+  "augccpvtz/water/rpa_hf": {
+    "basis": "augccpvtz",
+    "c6": 25.567,
+    "method": "rpa_hf",
+    "mol": "water",
+    "ok": true,
+    "seconds": 43.3
+  },
+  "augccpvtz/water/rpa_pbe": {
+    "basis": "augccpvtz",
+    "c6": 40.35,
+    "method": "rpa_pbe",
+    "mol": "water",
+    "ok": true,
+    "seconds": 17.3
+  },
+  "augccpvtz/water/ts": {
+    "basis": "augccpvtz",
+    "c6": 51.192,
+    "method": "ts",
+    "mol": "water",
+    "ok": true,
+    "seconds": 26.2
+  }
+}
