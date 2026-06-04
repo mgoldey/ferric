@@ -1,7 +1,6 @@
 use crate::screening::SchwarzBounds;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
-use ferric_integrals::engine::Engine;
 use ferric_core::parallel::ParallelContext;
 use ndarray::Array2;
 
