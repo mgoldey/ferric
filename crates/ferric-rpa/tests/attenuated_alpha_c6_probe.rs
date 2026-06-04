@@ -315,3 +315,126 @@ fn screening_omega_vs_gap() {
 // longer a meaningful valence gap and RHF/PBE+RPA is qualitatively wrong. The
 // gap must be varied by electronic structure at equilibrium instead — that is
 // what the expanded `screening_omega_vs_gap` valence set above now does.
+
+/// PHYSICS vs CANCELLATION: is the attenuation C6 correction STRUCTURED (real)
+/// or UNIFORM (a scale factor in disguise)?
+///
+/// A transferable ω≈0.3 Bohr⁻¹ corrects RPA@PBE C6 to ~few-% across molecules.
+/// Two stories:
+///   (A) cancellation/scale: RPA@PBE is ~−16% uniformly; attenuation lifts α(iω)
+///       by a uniform fraction, so a plain scalar C6×1.18 does just as well and
+///       the correction ratio α_att(iω)/α_0(iω) is FLAT across frequency.
+///   (B) real physics: attenuation restores short-range correlation (the known
+///       dRPA short-range over-screening that RSH-RPA fixes), so the lift is
+///       CONCENTRATED at high iω (short-time/short-range response) — a scalar
+///       canNOT reproduce it.
+///
+/// Two diagnostics per molecule at the transferable ω=0.30:
+///   1. shape of r(iω) = α_iso_att(iω) / α_iso_0(iω) across the CP grid
+///      (flat ⟹ scale; rising/falling ⟹ structured).
+///   2. does a global scalar (C6×s, s = mean baseline ratio) match DOSD as well
+///      as the ω=0.30 attenuation? (compare per-molecule |err|).
+///
+/// Anchor: the dissertation erfc optimum is ω=0.222 Bohr⁻¹; our C6 ω≈0.31 is the
+/// same ballpark — a hint this touches real range-separation physics.
+///
+/// Run: cargo test --release -p ferric-rpa --test attenuated_alpha_c6_probe \
+///        attenuation_structure_vs_scalar -- --ignored --nocapture
+#[test]
+#[ignore]
+fn attenuation_structure_vs_scalar() {
+    let mols: &[(&str, &str, f64)] = &[
+        ("hf",   "2\nhf\nF 0 0 0\nH 0 0 0.917\n", 19.0),
+        ("h2o",  "3\nh2o\nO 0 0 0.117790\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n", 45.3),
+        ("ch4",  "5\nch4\nC 0 0 0\nH 0.6276 0.6276 0.6276\nH -0.6276 -0.6276 0.6276\nH -0.6276 0.6276 -0.6276\nH 0.6276 -0.6276 -0.6276\n", 129.7),
+        ("n2",   "2\nn2\nN 0 0 0.0\nN 0 0 1.0977\n", 73.3),
+        ("co2",  "3\nco2\nC 0 0 0.0\nO 0 0 1.1621\nO 0 0 -1.1621\n", 158.7),
+        ("c2h4", "6\nc2h4\nC 0 0 0.6695\nC 0 0 -0.6695\nH 0 0.9289 1.2321\nH 0 -0.9289 1.2321\nH 0 0.9289 -1.2321\nH 0 -0.9289 -1.2321\n", 300.2),
+    ];
+    let ctx = ParallelContext::default();
+    let cfg = PdepRpaConfig::default();
+    let omega_fixed = 0.30_f64; // the transferable optimum (Bohr⁻¹)
+
+    let iso = |t: &[[f64; 3]; 3]| (t[0][0] + t[1][1] + t[2][2]) / 3.0;
+
+    // First pass: collect baseline & attenuated C6 + the α(iω) profiles.
+    struct Row { label: String, c6_0: f64, c6_w: f64, dosd: f64, ratios: Vec<(f64, f64)> }
+    let mut rows: Vec<Row> = Vec::new();
+
+    for (label, xyz, dosd) in mols {
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let obs_bs = basis::bundled("aug-cc-pvdz").unwrap();
+        let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
+        let scf_op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(scf_op, &obs).unwrap();
+        let scf_cfg = RhfConfig {
+            energy_conv: 1e-9,
+            xc: Some("PBE".to_string()),
+            df_j_aux: Some("def2-universal-jkfit".to_string()),
+            df_k_aux: Some("def2-universal-jkfit".to_string()),
+            ..Default::default()
+        };
+        let rhf = solve_rhf(&ctx, &mol, &obs, scf_op, &bounds, &scf_cfg).unwrap();
+
+        let dp0 = pdep_dynamic_polarizability(
+            &mol, &obs, &obs_bs, &dfbs, &rhf, Operator::coulomb(), &cfg, DispersionPartition::Becke, None,
+        ).unwrap();
+        let dpw = pdep_dynamic_polarizability(
+            &mol, &obs, &obs_bs, &dfbs, &rhf, Operator::erfc(omega_fixed), &cfg, DispersionPartition::Becke, None,
+        ).unwrap();
+
+        let c6_0 = casimir_polder_c6(&dp0).c6_molecular_iso;
+        let c6_w = casimir_polder_c6(&dpw).c6_molecular_iso;
+
+        // r(iω) = α_att(iω) / α_0(iω) across the grid.
+        let ratios: Vec<(f64, f64)> = dp0.freqs.iter().enumerate().map(|(k, &w)| {
+            (w, iso(&dpw.molecular[k]) / iso(&dp0.molecular[k]))
+        }).collect();
+
+        rows.push(Row { label: label.to_string(), c6_0, c6_w, dosd: *dosd, ratios });
+    }
+
+    // Global scalar s = mean(DOSD/C6_0) — the best single multiplicative correction.
+    let s: f64 = rows.iter().map(|r| r.dosd / r.c6_0).sum::<f64>() / rows.len() as f64;
+
+    println!("\n=== Attenuation structure vs scalar (RPA@PBE C6, ω={omega_fixed} Bohr⁻¹) ===");
+    println!("  global scalar s = mean(DOSD/C6₀) = {s:.4}\n");
+    println!("  {:>5}  {:>9}  {:>9}  {:>9}  {:>10}  {:>10}",
+        "mol", "C6₀ err%", "C6(ω) err%", "scalar err%", "att |err|", "scalar |err|");
+    let (mut att_mae, mut sca_mae) = (0.0, 0.0);
+    for r in &rows {
+        let e0 = 100.0 * (r.c6_0 - r.dosd) / r.dosd;
+        let ew = 100.0 * (r.c6_w - r.dosd) / r.dosd;
+        let es = 100.0 * (s * r.c6_0 - r.dosd) / r.dosd;
+        att_mae += ew.abs(); sca_mae += es.abs();
+        println!("  {:>5}  {:>+8.2}  {:>+9.2}  {:>+10.2}  {:>10.2}  {:>10.2}",
+            r.label, e0, ew, es, ew.abs(), es.abs());
+    }
+    att_mae /= rows.len() as f64; sca_mae /= rows.len() as f64;
+    println!("\n  MAE: attenuation(ω=0.30) = {att_mae:.2}%   global scalar = {sca_mae:.2}%");
+    println!("  (attenuation MAE < scalar MAE ⟹ structured/real; ≈ ⟹ scale in disguise)\n");
+
+    // Frequency STRUCTURE of the correction (the decisive diagnostic).
+    println!("  --- correction shape r(iω)=α_att/α₀ across the CP grid (flat ⟹ scalar) ---");
+    // Use a representative subset of grid points (first molecule's grid).
+    let grid = &rows[0].ratios;
+    let idxs: Vec<usize> = {
+        let n = grid.len();
+        vec![0, n/4, n/2, 3*n/4, n-1]
+    };
+    print!("  {:>5} ", "ω→");
+    for &k in &idxs { print!("{:>9.3}", grid[k].0); }
+    println!("   span%");
+    for r in &rows {
+        print!("  {:>5} ", r.label);
+        let vals: Vec<f64> = idxs.iter().map(|&k| r.ratios[k].1).collect();
+        for v in &vals { print!("{:>9.4}", v); }
+        let (lo, hi) = (vals.iter().cloned().fold(f64::MAX, f64::min),
+                        vals.iter().cloned().fold(f64::MIN, f64::max));
+        println!("   {:>5.1}", 100.0 * (hi - lo) / lo);
+    }
+    println!("\n  span% = spread of r(iω) over frequency. Near 0 ⟹ uniform lift (scalar).");
+    println!("  Large/systematic ⟹ frequency-structured (short-range physics).");
+}
