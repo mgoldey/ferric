@@ -893,10 +893,15 @@ fn main() {
                                         // everywhere (one proatom), so the
                                         // reference volume is partition-independent
                                         // — None (legacy path) is exact here.
-                                        if let Ok(fv) = atomic_effective_volumes_hirshfeld(
+                                        match atomic_effective_volumes_hirshfeld(
                                             &free_mol, &bs, &d, None,
                                         ) {
-                                            vol_free_computed.insert(zi, fv[0]);
+                                            Ok(fv) => { vol_free_computed.insert(zi, fv[0]); }
+                                            Err(e) => {
+                                                if std::env::var("FERRIC_TS_DEBUG").is_ok() {
+                                                    eprintln!("[TS] free-atom vol FAILED for Z={zi}: {e}");
+                                                }
+                                            }
                                         }
                                     }
                                 }

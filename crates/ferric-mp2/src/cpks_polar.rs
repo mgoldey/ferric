@@ -905,7 +905,6 @@ pub fn analytic_alpha_relaxed(
         // where Az₀_full = Cᵀ G(D^{z₀}) C in FULL MO. (Az₀ in vo only = A·z₀.)
         let waz: f64 = std::env::var("CPKS_WAZ").ok().and_then(|x| x.parse().ok()).unwrap_or(1.0);
         if waz != 0.0 {
-            use crate::zvector::compute_az_product;
             // Full-MO Θ generator.
             let mut theta = Array2::<f64>::zeros((nmo, nmo)); // Θ_{q,p}
             for a in 0..nvir {
