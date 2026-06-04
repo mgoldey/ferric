@@ -535,6 +535,10 @@
     "ok": true,
     "seconds": 2257.9
   },
+  "augccpvtz/n2o/mbd": {
+    "c6": 148.856,
+    "ok": true
+  },
   "augccpvtz/n2o/rpa_hf": {
     "basis": "augccpvtz",
     "c6": 122.119,
@@ -559,6 +563,13 @@
     "ok": true,
     "seconds": 29.4
   },
+  "augccpvtz/sih4/mbd": {
+    "basis": "augccpvtz",
+    "c6": 1007.706,
+    "method": "mbd",
+    "mol": "sih4",
+    "ok": true
+  },
   "augccpvtz/sih4/rpa_hf": {
     "basis": "augccpvtz",
     "c6": 183.865,
@@ -582,6 +593,10 @@
     "mol": "sih4",
     "ok": true,
     "seconds": 223.4
+  },
+  "augccpvtz/so2/mbd": {
+    "c6": 431.678,
+    "ok": true
   },
   "augccpvtz/so2/rpa_hf": {
     "basis": "augccpvtz",
