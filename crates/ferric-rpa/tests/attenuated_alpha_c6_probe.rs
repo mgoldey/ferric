@@ -207,3 +207,92 @@ fn pdep_rank_vs_attenuation_water() {
     }
     println!();
 }
+
+/// SCREENING-PHYSICS TEST: is the C6-optimal attenuation ω tied to the gap?
+///
+/// Matt's hypothesis: attenuation should behave like physical screening, whose
+/// length is set by the system (HOMO–LUMO gap), NOT a free knob. If so, the ω
+/// that makes RPA@PBE C6 hit DOSD should satisfy ω_needed ≈ c·Δ_gap with ONE
+/// universal constant c across molecules. If c varies per molecule, ω is still
+/// just a per-system fit (the cancellation we already found).
+///
+/// For each molecule: PBE reference, report Δ_gap (HOMO–LUMO, a.u.), bisect for
+/// ω_needed where C6(ω)=DOSD, print ω_needed and the ratio ω_needed/Δ_gap.
+/// A constant ratio column ⟹ screening physics; a scattered one ⟹ fit.
+///
+/// Run: cargo test --release -p ferric-rpa --test attenuated_alpha_c6_probe \
+///        screening_omega_vs_gap -- --ignored --nocapture
+#[test]
+#[ignore]
+fn screening_omega_vs_gap() {
+    let mols: &[(&str, &str, f64)] = &[
+        ("h2o", "3\nh2o\nO 0 0 0.117790\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n", 45.4),
+        ("n2",  "2\nn2\nN 0 0 0.0\nN 0 0 1.0977\n", 73.3),
+        ("co2", "3\nco2\nC 0 0 0.0\nO 0 0 1.1621\nO 0 0 -1.1621\n", 158.7),
+        ("ch4", "5\nch4\nC 0 0 0\nH 0.6276 0.6276 0.6276\nH -0.6276 -0.6276 0.6276\nH -0.6276 0.6276 -0.6276\nH 0.6276 -0.6276 -0.6276\n", 129.7),
+    ];
+    let ctx = ParallelContext::default();
+    let cfg = PdepRpaConfig::default();
+
+    println!("\n=== Screening test: ω needed for RPA@PBE C6 = DOSD, vs HOMO–LUMO gap ===");
+    println!("  (constant ω/Δ ratio ⟹ screening physics; scattered ⟹ per-system fit)\n");
+    println!(
+        "  {:>5}  {:>8}  {:>8}  {:>10}  {:>10}  {:>10}",
+        "mol", "Δ_gap", "C6(ω=0)", "DOSD", "ω_needed", "ω/Δ"
+    );
+
+    for (label, xyz, dosd) in mols {
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let obs_bs = basis::bundled("aug-cc-pvdz").unwrap();
+        let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
+        let scf_op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(scf_op, &obs).unwrap();
+        let scf_cfg = RhfConfig {
+            energy_conv: 1e-9,
+            xc: Some("PBE".to_string()),
+            df_j_aux: Some("def2-universal-jkfit".to_string()),
+            df_k_aux: Some("def2-universal-jkfit".to_string()),
+            ..Default::default()
+        };
+        let rhf = solve_rhf(&ctx, &mol, &obs, scf_op, &bounds, &scf_cfg).unwrap();
+        assert!(rhf.converged, "{label}: PBE SCF not converged");
+
+        let eps = rhf.eps_r();
+        let nocc = (mol.nelec() / 2) as usize;
+        let gap = eps[nocc] - eps[nocc - 1]; // LUMO − HOMO (a.u.)
+
+        let c6_at = |w: f64| -> f64 {
+            let op = if w == 0.0 { Operator::coulomb() } else { Operator::erfc(w) };
+            let dp = pdep_dynamic_polarizability(
+                &mol, &obs, &obs_bs, &dfbs, &rhf, op, &cfg, DispersionPartition::Becke, None,
+            )
+            .unwrap();
+            casimir_polder_c6(&dp).c6_molecular_iso
+        };
+
+        let c6_0 = c6_at(0.0);
+        // Bisect ω in [0, 3] for C6(ω) = DOSD (C6 increases monotonically with ω
+        // for RPA@PBE — confirmed in the clincher probe).
+        let (mut lo, mut hi) = (0.0_f64, 3.0_f64);
+        let target = *dosd;
+        let omega_needed = if c6_0 >= target {
+            0.0 // already at/over DOSD at Coulomb — no attenuation needed
+        } else if c6_at(hi) < target {
+            f64::NAN // can't reach even at ω=3
+        } else {
+            for _ in 0..24 {
+                let mid = 0.5 * (lo + hi);
+                if c6_at(mid) < target { lo = mid; } else { hi = mid; }
+            }
+            0.5 * (lo + hi)
+        };
+        let ratio = omega_needed / gap;
+        println!(
+            "  {:>5}  {:>8.4}  {:>8.3}  {:>10.3}  {:>10.4}  {:>10.4}",
+            label, gap, c6_0, target, omega_needed, ratio
+        );
+    }
+    println!("\n  Verdict: compare the ω/Δ column. Constant ⟹ screening; scattered ⟹ fit.");
+}
