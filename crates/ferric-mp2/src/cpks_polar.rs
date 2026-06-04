@@ -535,7 +535,7 @@ pub fn fd_de_mp2_along(
 /// DIAGNOSTIC: analytic U-driven SCF density response ∂D vs FD of the converged
 /// SCF density. Returns (‖analytic‖, ‖fd‖, max|Δ|). Validates U normalization.
 #[allow(clippy::too_many_arguments)]
-pub fn debug_dD_norms(
+pub fn debug_dd_norms(
     ctx: &ParallelContext,
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -590,7 +590,7 @@ pub fn debug_dD_norms(
 /// Tr[∂D·r_y]. For field along `axis`, −Tr[∂D·r_y] = α^HF_{y,axis}. Tells which
 /// ∂D (analytic vs FD) is the trustworthy one (matches the validated HF α).
 #[allow(clippy::too_many_arguments)]
-pub fn debug_dD_traces(
+pub fn debug_dd_traces(
     ctx: &ParallelContext,
     mol: &Molecule,
     obs: &PreparedBasis,
