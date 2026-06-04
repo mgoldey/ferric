@@ -661,3 +661,87 @@ mu_ps = dipole_from_dm_ao(C@dm1_relaxed_ps@C.T)
 print("  relaxed μ mine  =", mu_me)
 print("  relaxed μ pyscf =", mu_ps, "  ‖Δ‖=", np.max(np.abs(mu_me-mu_ps)))
 print("  *** STATIC RELAXED DENSITY MATCHES PYSCF:", np.max(np.abs(mu_me-mu_ps))<1e-6, "***")
+
+# ===========================================================================
+# ∂z FOR POLARIZABILITY: differentiate the validated static recipe.
+#   (Δε+A) z = -Xvo,  Xvo = L + G[dmP]_vo
+#   (Δε+A) ∂z = -∂Xvo - ∂(Δε+A)·z
+# ∂Xvo = ∂L + ∂G[dmP]_vo  (∂L from ∂t/∂Imo; ∂G from ∂dmP + ∂(MO rotation of G))
+# α_pq = -Tr[∂D_relax/∂F_q · r_p],  ∂D_relax = ∂(2δ via U) + ∂(P+Pᵀ) + ∂z.
+# Validate vs FF of the relaxed dipole (exact integrals → machine precision).
+# ===========================================================================
+def cphf_U_axis(axis):
+    rvo = np.array([[r_mo[axis,nocc+a,i] for i in range(nocc)] for a in range(nvir)])
+    return np.linalg.solve(M, (-rvo).reshape(-1)).reshape(nvir,nocc)
+
+def static_relaxed_dm_validated(Imatrix, evec):
+    """The validated static recipe, parameterized by integrals+energies (for FF)."""
+    t = t2_amp(Imatrix, evec)
+    tij = t.transpose(0,2,1,3)
+    Poo = -(2*np.einsum('ikab,jkab->ij',tij,tij)-np.einsum('ikab,jkba->ij',tij,tij))
+    Pvv =  (2*np.einsum('ijca,ijcb->ab',tij,tij)-np.einsum('ijca,ijbc->ab',tij,tij))
+    dmP = np.zeros((nmo,nmo)); dmP[O,O]=Poo+Poo.T; dmP[Vv,Vv]=Pvv+Pvv.T
+    L = lagrangian_es(t)
+    # G[dmP]_vo with these (field-rotated) integrals: G uses Imatrix
+    J = np.einsum('pqrs,rs->pq', Imatrix, dmP); K = np.einsum('prqs,rs->pq', Imatrix, dmP)
+    Gvo = (2*J-K)[Vv,O]
+    Xvo = L + Gvo
+    # operator M is built from Imatrix+evec
+    def Mloc():
+        Mm=np.zeros((nvir,nocc,nvir,nocc))
+        for a in range(nvir):
+            for i in range(nocc):
+                for b in range(nvir):
+                    for j in range(nocc):
+                        Mm[a,i,b,j]=(4*Imatrix[nocc+a,i,nocc+b,j]-Imatrix[nocc+a,nocc+b,i,j]-Imatrix[nocc+a,j,nocc+b,i])
+                Mm[a,i,a,i]+=evec[nocc+a]-evec[i]
+        return Mm.reshape(nvir*nocc,nvir*nocc)
+    z = np.linalg.solve(Mloc(), (-Xvo).reshape(-1)).reshape(nvir,nocc)
+    D=np.zeros((nmo,nmo))
+    for i in range(nocc): D[i,i]=2.0
+    D[O,O]+=Poo+Poo.T; D[Vv,Vv]+=Pvv+Pvv.T
+    D[Vv,O]+=z; D[O,Vv]+=z.T
+    return D
+
+
+def scf_in_field(Ffield, axis=2):
+    m = scf.RHF(mol); m.get_hcore = lambda *a: hcore_ao - Ffield*dip_ao[axis]
+    m.conv_tol=1e-12; m.kernel()
+    return m.mo_energy, m.mo_coeff
+
+# FF ORACLE for relaxed α: re-solve SCF in field, transform integrals, apply the
+# validated static recipe in the field-MO basis, read dipole. (phase-matched)
+def relaxed_dip_validated(Ffield, axis, field_axis):
+    e_orb,Cf = scf_in_field(Ffield, field_axis)
+    for p in range(nmo):
+        if Cf[:,p]@np.eye(nmo)[:,p]<0: Cf[:,p]*=-1
+    Imf = np.einsum('pa,qb,rc,sd,pqrs->abcd', Cf,Cf,Cf,Cf, eri_ao, optimize=True)
+    D = static_relaxed_dm_validated(Imf, e_orb)
+    D_ao = Cf@D@Cf.T
+    return (-np.einsum('pq,pq->', dip_ao[axis], D_ao) + nucl[axis])
+h=1e-4
+alpha_ff = np.zeros((3,3))
+for q in range(3):
+    dp = np.array([relaxed_dip_validated(h,p,q) for p in range(3)])
+    dm = np.array([relaxed_dip_validated(-h,p,q) for p in range(3)])
+    alpha_ff[:,q] = -(dp-dm)/(2*h)
+print("\n=== relaxed-α FF oracle (validated static recipe, exact integrals) ===")
+print(np.round(alpha_ff,5))
+print("iso =", np.trace(alpha_ff)/3)
+
+# ===========================================================================
+# FF-of-relaxed-DIPOLE is unstable (1/F) even phase-matched. Use the ENERGY
+# Hessian oracle: α_qq = -d²E/dF² (smooth). Diagonal only (sufficient to validate).
+# ===========================================================================
+def etot_field(F, axis):
+    m=scf.RHF(mol); m.get_hcore=lambda *a: hcore_ao - F*dip_ao[axis]; m.conv_tol=1e-12; m.kernel()
+    return m.e_tot + mp.MP2(m).run().e_corr
+h=2e-3
+print("\n=== relaxed-α from ENERGY Hessian (smooth oracle) ===")
+alpha_diag=[]
+for q in range(3):
+    e0=etot_field(0,q); ep=etot_field(h,q); em=etot_field(-h,q)
+    a = -(ep - 2*e0 + em)/h**2     # α = -d²E/dF²
+    alpha_diag.append(a)
+    print(f"  α_{q}{q} = {a:.5f}")
+print("  iso =", sum(alpha_diag)/3)
