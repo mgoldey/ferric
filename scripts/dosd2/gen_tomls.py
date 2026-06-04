@@ -24,6 +24,7 @@ METHODS = {
     "rpa_pbe": ("PBE", "pdep"),
     "rpa_hf": (None, "pdep"),
     "ts": ("PBE", "ts"),
+    "mbd": ("PBE", "mbd"),
 }
 
 

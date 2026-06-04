@@ -27,26 +27,26 @@ def err(m, meth, b):
 
 
 def main():
-    rows = ["molecule,class,basis,ref,rpa_pbe,rpa_hf,ts,"
-            "err_pbe_%,err_hf_%,err_ts_%"]
+    rows = ["molecule,class,basis,ref,rpa_pbe,rpa_hf,ts,mbd,"
+            "err_pbe_%,err_hf_%,err_ts_%,err_mbd_%"]
     for b in BASES:
         for m in MOLS:
             r = REF[KM[m]]["c6"]
             cls = REF[KM[m]]["class"]
-            cp, ch, ct = (c6(m, "rpa_pbe", b), c6(m, "rpa_hf", b),
-                          c6(m, "ts", b))
-            ep, eh, et = (err(m, "rpa_pbe", b), err(m, "rpa_hf", b),
-                          err(m, "ts", b))
+            cp, ch, ct, cm = (c6(m, "rpa_pbe", b), c6(m, "rpa_hf", b),
+                              c6(m, "ts", b), c6(m, "mbd", b))
+            ep, eh, et, em = (err(m, "rpa_pbe", b), err(m, "rpa_hf", b),
+                              err(m, "ts", b), err(m, "mbd", b))
 
             def f(x):
                 return "" if x is None else f"{x:.1f}"
-            rows.append(",".join([m, cls, b, f(r), f(cp), f(ch), f(ct),
-                                  f(ep), f(eh), f(et)]))
+            rows.append(",".join([m, cls, b, f(r), f(cp), f(ch), f(ct), f(cm),
+                                  f(ep), f(eh), f(et), f(em)]))
     (HERE / "results.csv").write_text("\n".join(rows) + "\n")
 
     print(f"{'mol':9}{'class':8}{'ref':>8}  | "
-          f"{'PBE_DZ':>8}{'TS_DZ':>9} | {'PBE_TZ':>8}{'TS_TZ':>9}")
-    print("-" * 72)
+          f"{'PBE_TZ':>8}{'TS_TZ':>8}{'MBD_TZ':>8}")
+    print("-" * 56)
     for m in MOLS:
         r = REF[KM[m]]["c6"]
         cls = REF[KM[m]]["class"]
@@ -55,14 +55,14 @@ def main():
             e = err(m, meth, b)
             return f"{e:+.0f}%" if e is not None else "  -"
         print(f"{KM[m]:9}{cls:8}{r:8.1f}  | "
-              f"{pe('rpa_pbe','augccpvdz'):>8}{pe('ts','augccpvdz'):>9} | "
-              f"{pe('rpa_pbe','augccpvtz'):>8}{pe('ts','augccpvtz'):>9}")
+              f"{pe('rpa_pbe','augccpvtz'):>8}{pe('ts','augccpvtz'):>8}"
+              f"{pe('mbd','augccpvtz'):>8}")
     print()
 
     # MARE by class x method x basis
     print(f"{'class':9}{'method':9}{'basis':12}{'MARE %':>8}{'MSE %':>8}{'n':>4}")
     for cls in ["probe", "control"]:
-        for meth in ["rpa_pbe", "rpa_hf", "ts"]:
+        for meth in ["rpa_pbe", "rpa_hf", "ts", "mbd"]:
             for b in BASES:
                 es = [err(m, meth, b) for m in MOLS if REF[KM[m]]["class"] == cls]
                 es = [e for e in es if e is not None]

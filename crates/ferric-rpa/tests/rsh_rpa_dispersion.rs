@@ -838,3 +838,59 @@ fn full_dosd_calibration_dump() {
         eprintln!("CSV {label},{:.4},{:.4},{:.4},{:.4},{:.4},{}", lmax, top3, spec.trace_log, aov, wopt, dosd);
     }
 }
+
+/// DIRECTIONALITY TEST (Matt's hypothesis): λ_max is scalar and loses WHICH
+/// direction screens — but C6 integrates the anisotropic α tensor. Dump the α
+/// PRINCIPAL VALUES (directional screening strengths) + ω_opt, to test whether a
+/// direction-resolved descriptor beats scalar λ_max (0.72) and fixes the
+/// multi-directional failures (benzene, H2S, HCl).
+///
+/// Run: cargo test --release -p ferric-rpa --test rsh_rpa_dispersion \
+///        directional_descriptor_dump -- --ignored --nocapture
+#[test]
+#[ignore]
+fn directional_descriptor_dump() {
+    use ferric_rpa::properties::{atomic_effective_volumes_becke, dielectric_spectrum_static, pdep_polarizability_static};
+    let mols: &[(&str, &str, f64)] = &[
+        ("h2o",  "3\nh2o\nO 0 0 0.117790\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n", 45.3),
+        ("ch4",  "5\nch4\nC 0 0 0\nH 0.6276 0.6276 0.6276\nH -0.6276 -0.6276 0.6276\nH -0.6276 0.6276 -0.6276\nH 0.6276 -0.6276 -0.6276\n", 129.7),
+        ("nh3",  "4\nnh3\nN 0 0 0.0\nH 0 0.9377 -0.3816\nH 0.8120 -0.4689 -0.3816\nH -0.8120 -0.4689 -0.3816\n", 89.0),
+        ("co",   "2\nco\nC 0 0 0\nO 0 0 1.128\n", 81.4),
+        ("n2",   "2\nn2\nN 0 0 0.0\nN 0 0 1.0977\n", 73.3),
+        ("co2",  "3\nco2\nC 0 0 0.0\nO 0 0 1.1621\nO 0 0 -1.1621\n", 158.7),
+        ("c2h4", "6\nc2h4\nC 0 0 0.6695\nC 0 0 -0.6695\nH 0 0.9289 1.2321\nH 0 -0.9289 1.2321\nH 0 0.9289 -1.2321\nH 0 -0.9289 -1.2321\n", 300.2),
+        ("h2",   "2\nh2\nH 0 0 0\nH 0 0 0.741\n", 12.1),
+        ("hf",   "2\nhf\nF 0 0 0\nH 0 0 0.917\n", 19.0),
+        ("hcl",  "2\nhcl\nCl 0 0 0\nH 0 0 1.275\n", 130.4),
+        ("h2s",  "3\nh2s\nS 0 0 0.1030\nH 0 0.9659 -0.8253\nH 0 -0.9659 -0.8253\n", 216.8),
+        ("c2h2", "4\nc2h2\nC 0 0 0.6015\nC 0 0 -0.6015\nH 0 0 1.6615\nH 0 0 -1.6615\n", 204.1),
+        ("c2h6", "8\nc2h6\nC 0 0 0.7680\nC 0 0 -0.7680\nH 1.0192 0 1.1573\nH -0.5096 0.8826 1.1573\nH -0.5096 -0.8826 1.1573\nH -1.0192 0 -1.1573\nH 0.5096 0.8826 -1.1573\nH 0.5096 -0.8826 -1.1573\n", 381.9),
+        ("c6h6", "12\nc6h6\nC 0 1.3970 0\nC 1.2098 0.6985 0\nC 1.2098 -0.6985 0\nC 0 -1.3970 0\nC -1.2098 -0.6985 0\nC -1.2098 0.6985 0\nH 0 2.4810 0\nH 2.1486 1.2405 0\nH 2.1486 -1.2405 0\nH 0 -2.4810 0\nH -2.1486 -1.2405 0\nH -2.1486 1.2405 0\n", 1765.0),
+    ];
+    let ctx = ParallelContext::default();
+    let cfg = PdepRpaConfig::default();
+    let lc = "HYB_GGA_XC_LC_WPBE";
+    eprintln!("\nCSV label,a1,a2,a3,V,lmax,omega_opt");  // a1>=a2>=a3 principal alphas
+    for (label, xyz, dosd) in mols {
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let obs_bs = basis::bundled("aug-cc-pvdz").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let scf_cfg = RhfConfig { energy_conv: 1e-9, xc: Some(lc.to_string()),
+            df_j_aux: Some("def2-universal-jkfit".to_string()),
+            df_k_aux: Some("def2-universal-jkfit".to_string()), ..Default::default() };
+        let rhf = match solve_rhf(&ctx,&mol,&obs,op,&bounds,&scf_cfg){Ok(r) if r.converged=>r,_=>{eprintln!("{label},SCF_FAIL");continue;}};
+        let at = pdep_polarizability_static(&mol,&obs,&dfbs,&rhf,Operator::coulomb(),&cfg).unwrap();
+        let mut pr = at.principal; pr.sort_by(|a,b| b.partial_cmp(a).unwrap()); // desc
+        let spec = dielectric_spectrum_static(&mol,&obs,&dfbs,&rhf,Operator::coulomb(),1e-6).unwrap();
+        let lmax = spec.eigenvalues.iter().cloned().fold(f64::MIN,f64::max);
+        let vol: f64 = atomic_effective_volumes_becke(&mol,&obs,&obs_bs,rhf.density_r()).unwrap().iter().sum();
+        let c6 = |w: f64| { let dp=pdep_dynamic_polarizability(&mol,&obs,&obs_bs,&dfbs,&rhf,Operator::erf(w),&cfg,DispersionPartition::Becke,None).unwrap(); casimir_polder_c6(&dp).c6_molecular_iso };
+        let (mut lo,mut hi)=(0.02_f64,2.5_f64);
+        let wopt = if c6(lo)<*dosd {0.02} else if c6(hi)>*dosd {f64::NAN}
+            else { for _ in 0..22 { let m=0.5*(lo+hi); if c6(m)>*dosd {lo=m} else {hi=m} } 0.5*(lo+hi) };
+        eprintln!("CSV {label},{:.4},{:.4},{:.4},{:.3},{:.4},{:.4}", pr[0],pr[1],pr[2],vol,lmax,wopt);
+    }
+}
