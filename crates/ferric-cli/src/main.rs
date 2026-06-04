@@ -875,33 +875,45 @@ fn main() {
                                     let mut free_cfg = rhf_config.clone();
                                     free_cfg.mom_after_iter = if mult > 1 { 5 } else { 0 };
                                     // 1-thread pool for the tiny atom solve — see run_serial.
-                                    let free_density = run_serial(|| {
+                                    //
+                                    // The free-atom volume must be on the SAME scale as the
+                                    // molecular volume (vols[i]) or the ratio is meaningless. The
+                                    // molecular volume uses the molecular xc density, so ideally the
+                                    // free atom does too. But open-shell xc atoms (e.g. Si ³P / UKS-PBE)
+                                    // often fail to converge — and on failure the code below would
+                                    // fall back to the TS-PRL *table* v_free, which is on a DIFFERENT
+                                    // scale than ferric's computed molecular volume, inflating the ratio
+                                    // (Si: table 60 vs ferric-scale ~300 → ratio 2.3× → C6 5× too big).
+                                    // So if the xc solve fails, retry with pure HF/UHF (no xc): a
+                                    // ferric-computed density on the consistent integration grid is far
+                                    // better than a scale-mismatched table value.
+                                    let solve_free = |cfg: &RhfConfig| -> Option<ndarray::Array2<f64>> {
                                         if mult > 1 {
-                                            solve_uhf(&ctx, &free_mol, &free_obs,
-                                                      &free_bounds, &free_cfg)
-                                                .ok()
-                                                .map(|r| r.density_total().to_owned())
+                                            solve_uhf(&ctx, &free_mol, &free_obs, &free_bounds, cfg)
+                                                .ok().map(|r| r.density_total().to_owned())
                                         } else {
-                                            solve_rhf(&ctx, &free_mol, &free_obs, op,
-                                                      &free_bounds, &free_cfg)
-                                                .ok()
-                                                .map(|r| r.density_r().to_owned())
+                                            solve_rhf(&ctx, &free_mol, &free_obs, op, &free_bounds, cfg)
+                                                .ok().map(|r| r.density_r().to_owned())
                                         }
+                                    };
+                                    let free_density = run_serial(|| {
+                                        solve_free(&free_cfg).or_else(|| {
+                                            // xc solve failed — retry pure HF/UHF for a converged,
+                                            // scale-consistent density.
+                                            let mut hf_cfg = free_cfg.clone();
+                                            hf_cfg.xc = None;
+                                            solve_free(&hf_cfg)
+                                        })
                                     });
                                     if let Some(d) = free_density {
                                         // Single free atom: Hirshfeld weight = 1
                                         // everywhere (one proatom), so the
                                         // reference volume is partition-independent
                                         // — None (legacy path) is exact here.
-                                        match atomic_effective_volumes_hirshfeld(
+                                        if let Ok(fv) = atomic_effective_volumes_hirshfeld(
                                             &free_mol, &bs, &d, None,
                                         ) {
-                                            Ok(fv) => { vol_free_computed.insert(zi, fv[0]); }
-                                            Err(e) => {
-                                                if std::env::var("FERRIC_TS_DEBUG").is_ok() {
-                                                    eprintln!("[TS] free-atom vol FAILED for Z={zi}: {e}");
-                                                }
-                                            }
+                                            vol_free_computed.insert(zi, fv[0]);
                                         }
                                     }
                                 }
@@ -912,20 +924,15 @@ fn main() {
                             .iter()
                             .enumerate()
                             .map(|(i, &zi)| {
+                                // Use the ferric-computed free-atom volume (consistent scale
+                                // with the molecular vols[i]). The TS-PRL table v_free is a
+                                // LAST resort only — it is on a different integration scale,
+                                // so a ratio built from it is unreliable (see the free-atom
+                                // solve above, which now retries pure HF to avoid this path).
                                 let vf = vol_free_computed.get(&zi).copied()
-                                    // fallback: table value if free-atom SCF failed
                                     .or_else(|| ts_free_atom(zi).map(|(_, _, v)| v))
                                     .unwrap_or(1.0);
-                                let r = if vf > 1e-10 { vols[i] / vf } else { 1.0 };
-                                if std::env::var("FERRIC_TS_DEBUG").is_ok() {
-                                    let tab = ts_free_atom(zi).map(|(a,_,v)| (a,v)).unwrap_or((0.0,0.0));
-                                    eprintln!(
-                                        "[TS] atom {} Z={}: v_mol={:.3} v_free_computed={:?} v_free_table={:.3} alpha_free_table={:.3} ratio={:.3}",
-                                        i, zi, vols[i],
-                                        vol_free_computed.get(&zi).copied(),
-                                        tab.1, tab.0, r);
-                                }
-                                r
+                                if vf > 1e-10 { vols[i] / vf } else { 1.0 }
                             })
                             .collect();
                         let (freqs, weights) = build_quadrature(&rpa_cfg.quadrature);
