@@ -745,3 +745,59 @@ for q in range(3):
     alpha_diag.append(a)
     print(f"  α_{q}{q} = {a:.5f}")
 print("  iso =", sum(alpha_diag)/3)
+
+# ===========================================================================
+# ANALYTIC relaxed α: ∂D_relax/∂F^q = directional deriv of the validated static
+# recipe along (∂Imo, ∂eps) from CPHF U^q. Gauge-clean (smooth inputs). Then
+# α_pq = -Tr[∂D_relax^q · r^p].  Validate vs energy-Hessian oracle.
+# ===========================================================================
+def analytic_relaxed_alpha():
+    alpha = np.zeros((3,3))
+    for q in range(3):
+        U = cphf_U_axis(q)                       # CPHF response (vir,occ)
+        # Θ generator + ∂Imo, ∂eps from U
+        Th=np.zeros((nmo,nmo))
+        for a in range(nvir):
+            for i in range(nocc):
+                Th[nocc+a,i]=U[a,i]; Th[i,nocc+a]=-U[a,i]
+        dImo=(np.einsum('xp,xqrs->pqrs',Th,Imo)+np.einsum('xq,pxrs->pqrs',Th,Imo)
+             +np.einsum('xr,pqxs->pqrs',Th,Imo)+np.einsum('xs,pqrx->pqrs',Th,Imo))
+        # ∂eps_p = ∂F_pp = (-r + G[∂D_scf])_pp ; ∂D_scf from U (2δ core response)
+        dDscf=np.zeros((nmo,nmo))
+        for a in range(nvir):
+            for i in range(nocc):
+                dDscf[nocc+a,i]+=2*U[a,i]; dDscf[i,nocc+a]+=2*U[a,i]
+        G=2*np.einsum('pqrs,rs->pq',Imo,dDscf)-np.einsum('prqs,rs->pq',Imo,dDscf)
+        deps=np.diag(-r_mo[q]+G).copy()
+        # directional derivative of the static recipe along (dImo, deps)
+        ed=1e-5
+        Dp = static_relaxed_dm_validated(Imo+ed*dImo, e+ed*deps)
+        Dm = static_relaxed_dm_validated(Imo-ed*dImo, e-ed*deps)
+        dDrel_corr = (Dp-Dm)/(2*ed)              # ∂ of the CORRELATION part (P+z), MO basis
+        # plus the SCF core response ∂(2δ) = 2U in vo block (static recipe's 2δ is const in its inputs)
+        dDrel = dDrel_corr.copy()
+        for a in range(nvir):
+            for i in range(nocc):
+                dDrel[nocc+a,i]+=2*U[a,i]; dDrel[i,nocc+a]+=2*U[a,i]
+        # α_pq = -Tr[∂D_relax^q · r^p]  (MO basis: r_mo[p])
+        for p in range(3):
+            alpha[p,q] = -np.sum(dDrel * r_mo[p])
+    return alpha
+
+aa = analytic_relaxed_alpha()
+print("\n=== ANALYTIC relaxed α vs energy-Hessian oracle ===")
+print("  analytic:\n", np.round(aa,5))
+print("  oracle diag: [0.04433, 4.98115, 2.13505]")
+print("  analytic diag:", np.round(np.diag(aa),5), " iso", np.round(np.trace(aa)/3,5))
+
+# Decompose the yy discrepancy: HF part (2U) vs MP2 correction part.
+print("\n=== decompose α_yy (oracle 4.981, analytic 5.280) ===")
+q=1
+U=cphf_U_axis(q)
+rvo=np.array([[r_mo[q,nocc+a,i] for i in range(nocc)] for a in range(nvir)])
+hf_yy = -4*np.sum(U*rvo)
+print("  HF part (2U→ -4ΣUr) α_yy =", hf_yy, " (HF oracle was 5.195)")
+# So analytic HF α_yy should be 5.195; my analytic total 5.280 → MP2 correction +0.085
+# oracle total 4.981 → MP2 correction = 4.981-5.195 = -0.214. Mine: 5.280-5.195=+0.085.
+print("  MP2 correction: analytic +%.3f, oracle %.3f" % (5.280-hf_yy, 4.981-hf_yy))
+print("  => MP2 correction has WRONG SIGN on yy (analytic +0.085 vs oracle -0.214)")
