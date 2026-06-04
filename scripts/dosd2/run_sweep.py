@@ -28,7 +28,7 @@ BIN = ROOT / "target" / "release" / "ferric-cli"
 
 MOLS = ["so2", "cs2", "cos", "n2o", "cl2", "hbr",
         "sih4", "ccl4", "ch3oh", "ch3och3"]
-METHODS = ['rpa_pbe', 'ts']
+METHODS = ['rpa_pbe', 'rpa_hf', 'ts']
 BASES = ["augccpvdz", "augccpvtz"]
 
 C6_RE = re.compile(r"molecular C6\s*=\s*([-+0-9.eE]+)\s*a\.u\.")

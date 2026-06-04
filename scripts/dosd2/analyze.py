@@ -27,17 +27,21 @@ def err(m, meth, b):
 
 
 def main():
-    rows = ["molecule,class,basis,ref,rpa_pbe,ts,err_pbe_%,err_ts_%"]
+    rows = ["molecule,class,basis,ref,rpa_pbe,rpa_hf,ts,"
+            "err_pbe_%,err_hf_%,err_ts_%"]
     for b in BASES:
         for m in MOLS:
             r = REF[KM[m]]["c6"]
             cls = REF[KM[m]]["class"]
-            cp, ct = c6(m, "rpa_pbe", b), c6(m, "ts", b)
-            ep, et = err(m, "rpa_pbe", b), err(m, "ts", b)
+            cp, ch, ct = (c6(m, "rpa_pbe", b), c6(m, "rpa_hf", b),
+                          c6(m, "ts", b))
+            ep, eh, et = (err(m, "rpa_pbe", b), err(m, "rpa_hf", b),
+                          err(m, "ts", b))
 
             def f(x):
                 return "" if x is None else f"{x:.1f}"
-            rows.append(",".join([m, cls, b, f(r), f(cp), f(ct), f(ep), f(et)]))
+            rows.append(",".join([m, cls, b, f(r), f(cp), f(ch), f(ct),
+                                  f(ep), f(eh), f(et)]))
     (HERE / "results.csv").write_text("\n".join(rows) + "\n")
 
     print(f"{'mol':9}{'class':8}{'ref':>8}  | "
@@ -58,7 +62,7 @@ def main():
     # MARE by class x method x basis
     print(f"{'class':9}{'method':9}{'basis':12}{'MARE %':>8}{'MSE %':>8}{'n':>4}")
     for cls in ["probe", "control"]:
-        for meth in ["rpa_pbe", "ts"]:
+        for meth in ["rpa_pbe", "rpa_hf", "ts"]:
             for b in BASES:
                 es = [err(m, meth, b) for m in MOLS if REF[KM[m]]["class"] == cls]
                 es = [e for e in es if e is not None]

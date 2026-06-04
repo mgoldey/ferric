@@ -22,6 +22,7 @@ BASES = {
 }
 METHODS = {
     "rpa_pbe": ("PBE", "pdep"),
+    "rpa_hf": (None, "pdep"),
     "ts": ("PBE", "ts"),
 }
 
@@ -35,7 +36,11 @@ def toml_for(mol, bkey, mkey, npz):
         f"charge = {charge}", f"multiplicity = {mult}", "",
         "[basis]", f'name = "{obs}"', "",
         "[method]", 'kind = "pdep-rpa"', 'task = "energy"', "",
-        "[rpa]", f'auxbasis = "{aux}"', f'xc = "{xc}"',
+        "[rpa]", f'auxbasis = "{aux}"',
+    ]
+    if xc is not None:  # None = RPA@HF (no xc line)
+        lines.append(f'xc = "{xc}"')
+    lines += [
         "n_quad = 40", 'quadrature = "gauss-legendre"',
         "frozen_core = 0", "trunc_thresh = 0.0",
         f'export_npz = "{npz}"', "compute_c6 = true",
