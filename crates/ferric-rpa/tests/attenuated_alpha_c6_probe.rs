@@ -220,16 +220,28 @@ fn pdep_rank_vs_attenuation_water() {
 /// ω_needed where C6(ω)=DOSD, print ω_needed and the ratio ω_needed/Δ_gap.
 /// A constant ratio column ⟹ screening physics; a scattered one ⟹ fit.
 ///
+/// CLEAN VERSION (replaces the N2-stretch test, which was confounded by
+/// multireference breakdown — the stretched gap is meaningless past Coulson–
+/// Fischer ~1.2 Å). Here the gap is varied across an EQUILIBRIUM, all-single-
+/// reference, closed-shell set spanning a wide VALENCE-gap range. DOSD targets
+/// from testdata/reference/dosd_c6.json.
+///
 /// Run: cargo test --release -p ferric-rpa --test attenuated_alpha_c6_probe \
 ///        screening_omega_vs_gap -- --ignored --nocapture
 #[test]
 #[ignore]
 fn screening_omega_vs_gap() {
+    // (label, xyz [Å], DOSD molecular C6_AA). Equilibrium, closed-shell, SR.
+    // Ordered roughly large-gap → small-gap.
     let mols: &[(&str, &str, f64)] = &[
-        ("h2o", "3\nh2o\nO 0 0 0.117790\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n", 45.4),
-        ("n2",  "2\nn2\nN 0 0 0.0\nN 0 0 1.0977\n", 73.3),
-        ("co2", "3\nco2\nC 0 0 0.0\nO 0 0 1.1621\nO 0 0 -1.1621\n", 158.7),
-        ("ch4", "5\nch4\nC 0 0 0\nH 0.6276 0.6276 0.6276\nH -0.6276 -0.6276 0.6276\nH -0.6276 0.6276 -0.6276\nH 0.6276 -0.6276 -0.6276\n", 129.7),
+        ("hf",   "2\nhf\nF 0 0 0\nH 0 0 0.917\n", 19.0),
+        ("h2o",  "3\nh2o\nO 0 0 0.117790\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n", 45.3),
+        ("ch4",  "5\nch4\nC 0 0 0\nH 0.6276 0.6276 0.6276\nH -0.6276 -0.6276 0.6276\nH -0.6276 0.6276 -0.6276\nH 0.6276 -0.6276 -0.6276\n", 129.7),
+        ("nh3",  "4\nnh3\nN 0 0 0.0\nH 0 0.9377 -0.3816\nH 0.8120 -0.4689 -0.3816\nH -0.8120 -0.4689 -0.3816\n", 89.0),
+        ("co",   "2\nco\nC 0 0 0\nO 0 0 1.128\n", 81.4),
+        ("n2",   "2\nn2\nN 0 0 0.0\nN 0 0 1.0977\n", 73.3),
+        ("co2",  "3\nco2\nC 0 0 0.0\nO 0 0 1.1621\nO 0 0 -1.1621\n", 158.7),
+        ("c2h4", "6\nc2h4\nC 0 0 0.6695\nC 0 0 -0.6695\nH 0 0.9289 1.2321\nH 0 -0.9289 1.2321\nH 0 0.9289 -1.2321\nH 0 -0.9289 -1.2321\n", 300.2),
     ];
     let ctx = ParallelContext::default();
     let cfg = PdepRpaConfig::default();
@@ -297,89 +309,9 @@ fn screening_omega_vs_gap() {
     println!("\n  Verdict: compare the ω/Δ column. Constant ⟹ screening; scattered ⟹ fit.");
 }
 
-/// DECISIVE: N2 bond-stretch gap-response — does ω track the gap WITHIN one
-/// molecule/baseline, killing the baseline-offset confound?
-///
-/// Stretching N2 changes the HOMO–LUMO gap (shrinks as the bond lengthens). If
-/// attenuation is screening, the ω delivering a FIXED relative C6 boost should
-/// scale with the gap as the geometry changes. We can't bisect to DOSD per
-/// geometry (no stretched-geom DOSD refs), so we hold the *target ratio* fixed:
-/// find ω s.t. C6(ω)/C6(0) = R (R=1.176 ≈ undo the −15% RPA@PBE deficit), at
-/// each bond length, and check ω_R/Δ_gap is constant.
-///
-/// Same molecule, same baseline, same correction target ⟹ a constant ω_R/Δ can
-/// ONLY come from the gap-screening relation, not a per-system baseline accident.
-///
-/// Run: cargo test --release -p ferric-rpa --test attenuated_alpha_c6_probe \
-///        screening_n2_stretch_gap_response -- --ignored --nocapture
-#[test]
-#[ignore]
-fn screening_n2_stretch_gap_response() {
-    let ctx = ParallelContext::default();
-    let cfg = PdepRpaConfig::default();
-    let bonds = [1.00_f64, 1.0977, 1.20, 1.35, 1.50]; // Å (1.0977 = equilibrium)
-    let target_ratio = 1.176_f64; // C6(ω)/C6(0): undo the ~−15% RPA@PBE deficit
-
-    println!("\n=== N2 bond-stretch: ω for fixed C6 boost vs HOMO–LUMO gap ===");
-    println!("  target C6(ω)/C6(0) = {target_ratio:.3} (undo −15% deficit); same baseline\n");
-    println!(
-        "  {:>7}  {:>8}  {:>10}  {:>10}  {:>10}",
-        "R(Å)", "Δ_gap", "C6(ω=0)", "ω_R", "ω_R/Δ"
-    );
-
-    for &r in &bonds {
-        let xyz = format!("2\nn2\nN 0 0 0.0\nN 0 0 {r}\n");
-        let mol = Molecule::parse_xyz(&xyz, 0, 1).unwrap();
-        let obs_bs = basis::bundled("aug-cc-pvdz").unwrap();
-        let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
-        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
-        let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
-        let scf_op = Operator::coulomb();
-        let bounds = SchwarzBounds::compute(scf_op, &obs).unwrap();
-        let scf_cfg = RhfConfig {
-            energy_conv: 1e-9,
-            xc: Some("PBE".to_string()),
-            df_j_aux: Some("def2-universal-jkfit".to_string()),
-            df_k_aux: Some("def2-universal-jkfit".to_string()),
-            ..Default::default()
-        };
-        let rhf = match solve_rhf(&ctx, &mol, &obs, scf_op, &bounds, &scf_cfg) {
-            Ok(r) if r.converged => r,
-            _ => {
-                println!("  {r:>7.3}  (SCF not converged — skipped)");
-                continue;
-            }
-        };
-        let eps = rhf.eps_r();
-        let nocc = (mol.nelec() / 2) as usize;
-        let gap = eps[nocc] - eps[nocc - 1];
-
-        let c6_at = |w: f64| -> f64 {
-            let op = if w == 0.0 { Operator::coulomb() } else { Operator::erfc(w) };
-            let dp = pdep_dynamic_polarizability(
-                &mol, &obs, &obs_bs, &dfbs, &rhf, op, &cfg, DispersionPartition::Becke, None,
-            )
-            .unwrap();
-            casimir_polder_c6(&dp).c6_molecular_iso
-        };
-        let c6_0 = c6_at(0.0);
-        let target = target_ratio * c6_0;
-        // Bisect ω∈[0,3] for C6(ω)=target (monotone-increasing).
-        let (mut lo, mut hi) = (0.0_f64, 3.0_f64);
-        let omega_r = if c6_at(hi) < target {
-            f64::NAN
-        } else {
-            for _ in 0..24 {
-                let mid = 0.5 * (lo + hi);
-                if c6_at(mid) < target { lo = mid; } else { hi = mid; }
-            }
-            0.5 * (lo + hi)
-        };
-        println!(
-            "  {:>7.3}  {:>8.4}  {:>10.3}  {:>10.4}  {:>10.4}",
-            r, gap, c6_0, omega_r, omega_r / gap
-        );
-    }
-    println!("\n  Verdict: ω_R/Δ constant as the bond stretches ⟹ ω IS gap-screening");
-    println!("  (baseline-offset confound excluded: same molecule, same target).");
-}
+// NOTE: a prior `screening_n2_stretch_gap_response` test was removed — using a
+// bond stretch to vary the gap is confounded by multireference breakdown past
+// the Coulson–Fischer point (~1.2 Å for N2), where the HOMO–LUMO gap is no
+// longer a meaningful valence gap and RHF/PBE+RPA is qualitatively wrong. The
+// gap must be varied by electronic structure at equilibrium instead — that is
+// what the expanded `screening_omega_vs_gap` valence set above now does.
