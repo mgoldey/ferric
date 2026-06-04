@@ -426,3 +426,69 @@ fn dielectric_omega_loo_c6() {
     eprintln!("\n  LOO dielectric-ω C6 MAE = {:.2}%   (fixed-ω was 12.4%; scalar-fix 2.4%)", mae/cnt as f64);
     eprintln!("  Beats 12.4% ⟹ dielectric-ω transfers (novelty real). Else ⟹ correlation ≠ accuracy.");
 }
+
+/// COST/CONSISTENCY TEST (Matt's objection): does the C6 actually depend on the
+/// REFERENCE's ω, or only on the CORRELATION ω? If C6 is ~flat vs reference-ω at
+/// fixed correlation-ω, then the cheap construction (one fixed reference SCF, vary
+/// only the post-SCF RPA correlation ω) is justified — NO self-consistent SCF loop.
+/// If C6 moves a lot with reference-ω, we'd be forced into the expensive iterated
+/// SCF (recompute the density every ω).
+///
+/// For water + n2: fix correlation ω at a few values, sweep the REFERENCE LC ω
+/// (by using different LC functionals as ω-proxies isn't clean, so we instead hold
+/// ONE reference and report C6 sensitivity to reference choice at matched vs
+/// mismatched correlation ω).
+///
+/// Run: cargo test --release -p ferric-rpa --test rsh_rpa_dispersion \
+///        reference_omega_sensitivity -- --ignored --nocapture
+#[test]
+#[ignore]
+fn reference_omega_sensitivity() {
+    // Reference functionals with DIFFERENT native ω (0.40, 0.30, 0.20) but all
+    // valid RSH (c_lr=1.0). Hold the CORRELATION ω fixed; see how much C6 moves
+    // with the reference. Small spread ⟹ cheap fixed-reference construction is OK.
+    let refs = [
+        ("LC-ωPBE  ω=0.40", "HYB_GGA_XC_LC_WPBE"),
+        ("LRC-ωPBE ω=0.30", "HYB_GGA_XC_LRC_WPBE"),
+        ("LRC-ωPBEh ω=0.20", "HYB_GGA_XC_LRC_WPBEH"),
+    ];
+    let mols: &[(&str, &str)] = &[
+        ("h2o", "3\nh2o\nO 0 0 0.117790\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n"),
+        ("n2",  "2\nn2\nN 0 0 0.0\nN 0 0 1.0977\n"),
+    ];
+    let corr_omegas = [0.20_f64, 0.35, 0.50]; // fixed correlation ω values
+    let ctx = ParallelContext::default();
+    let cfg = PdepRpaConfig::default();
+
+    eprintln!("\n=== C6 sensitivity to REFERENCE ω at FIXED correlation ω ===");
+    eprintln!("  (flat across references ⟹ cheap fixed-reference OK, no SCF-in-loop)\n");
+    for (mlabel, xyz) in mols {
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let obs_bs = basis::bundled("aug-cc-pvdz").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+
+        eprintln!("  --- {mlabel} ---");
+        eprint!("  {:>18}", "reference \\ corr ω");
+        for w in &corr_omegas { eprint!("   ω={:.2}", w); }
+        eprintln!();
+        for (rlabel, rname) in &refs {
+            let scf_cfg = RhfConfig { energy_conv: 1e-9, xc: Some(rname.to_string()),
+                df_j_aux: Some("def2-universal-jkfit".to_string()),
+                df_k_aux: Some("def2-universal-jkfit".to_string()), ..Default::default() };
+            let rhf = match solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg) {
+                Ok(r) if r.converged => r, _ => { eprintln!("  {rlabel:>18}  (no SCF)"); continue; } };
+            eprint!("  {:>18}", rlabel);
+            for &cw in &corr_omegas {
+                let dp = pdep_dynamic_polarizability(&mol,&obs,&obs_bs,&dfbs,&rhf,Operator::erf(cw),&cfg,DispersionPartition::Becke,None).unwrap();
+                eprint!("  {:>6.1}", casimir_polder_c6(&dp).c6_molecular_iso);
+            }
+            eprintln!();
+        }
+        eprintln!();
+    }
+    eprintln!("  Read each COLUMN: spread down a column = C6 sensitivity to the reference");
+    eprintln!("  at that fixed correlation ω. Small ⟹ reference-ω decouples from C6.");
+}
