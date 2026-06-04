@@ -176,3 +176,42 @@ fn diag_de_components() {
     let (dt2,_u) = analytic_dt2_along(&ctx,&mol,&obs,&dfbs,op,&bounds,&rhf,&mp2_cfg,2).unwrap();
     eprintln!("‖dt2‖={:.5}", dt2.iter().map(|x|x*x).sum::<f64>().sqrt());
 }
+
+#[test]
+#[ignore]
+fn diag_dD_vs_fd() {
+    // Validate the U-driven SCF density response ∂D against FD of the SCF density.
+    // Gauge-stable (total density is rotation-invariant). If ∂D matches, U is
+    // correctly normalized and the Layer-2 residual is downstream of it.
+    use ferric_mp2::cpks_polar::debug_dD_norms;
+    let (mol, obs, _dfbs, op, bounds, ctx, rhf) = water_ccpvdz();
+    let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
+    let (an, fd, maxd) = debug_dD_norms(&ctx,&mol,&obs,&op,&bounds,&rhf,&scf_cfg,2,1e-3).unwrap();
+    eprintln!("∂D/∂Fz: ‖analytic‖={an:.6} ‖fd‖={fd:.6} maxΔ={maxd:.3e}");
+}
+
+#[test]
+#[ignore]
+fn diag_dD_traces() {
+    use ferric_mp2::cpks_polar::debug_dD_traces;
+    let (mol, obs, _dfbs, _op, bounds, ctx, rhf) = water_ccpvdz();
+    let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
+    let (an, fd) = debug_dD_traces(&ctx,&mol,&obs,&bounds,&rhf,&scf_cfg,2,1e-3).unwrap();
+    eprintln!("−Tr[∂D·r_y] (=α^HF_y,z):  analytic={:?}  fd={:?}", an, fd);
+    eprintln!("(validated HF α_zz=5.109; α_xz=α_yz≈0)");
+}
+
+#[test]
+#[ignore]
+fn diag_emp2_parabola() {
+    use ferric_mp2::cpks_polar::{debug_emp2_at_field, analytic_de_mp2_along};
+    let (mol, obs, dfbs, op, bounds, ctx, rhf) = water_ccpvdz();
+    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0 };
+    let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
+    for &f in &[-1e-2_f64,-1e-3,0.0,1e-3,1e-2] {
+        let e = debug_emp2_at_field(&ctx,&mol,&obs,&dfbs,op,&bounds,&scf_cfg,&mp2_cfg,2,f).unwrap();
+        eprintln!("F={f:+.0e} E_MP2={e:.10}");
+    }
+    let an = analytic_de_mp2_along(&ctx,&mol,&obs,&dfbs,op,&bounds,&rhf,&mp2_cfg,2).unwrap();
+    eprintln!("analytic ∂E_MP2/∂Fz = {an:.10}");
+}

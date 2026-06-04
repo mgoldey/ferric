@@ -1,0 +1,18 @@
+[molecule]
+xyz = "testdata/molecules/geh4.xyz"
+[basis]
+name = "aug-cc-pvtz"
+[method]
+kind = "pdep-rpa"
+task = "energy"
+[rpa]
+auxbasis = "aug-cc-pvtz-rifit"
+xc = "PBE"
+n_quad = 40
+quadrature = "gauss-legendre"
+frozen_core = 0
+trunc_thresh = 0.0
+export_npz = "scripts/dosd3/runs/augccpvtz/geh4_rpa_pbe.npz"
+compute_c6 = true
+c6_source = "pdep"
+c6_partition = "becke"

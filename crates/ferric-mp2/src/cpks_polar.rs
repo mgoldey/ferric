@@ -526,3 +526,117 @@ pub fn fd_de_mp2_along(
     };
     Ok((e_at(h)? - e_at(-h)?) / (2.0 * h))
 }
+
+/// DIAGNOSTIC: analytic U-driven SCF density response ∂D vs FD of the converged
+/// SCF density. Returns (‖analytic‖, ‖fd‖, max|Δ|). Validates U normalization.
+#[allow(clippy::too_many_arguments)]
+pub fn debug_dD_norms(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    _op: &Operator,
+    bounds: &SchwarzBounds,
+    rhf: &ScfResult,
+    scf_config: &ferric_scf::rhf::RhfConfig,
+    axis: usize,
+    h: f64,
+) -> Result<(f64, f64, f64), FerricError> {
+    let nbas = obs.nbasis();
+    let nocc = (mol.nelec() / 2) as usize;
+    let nvir = nbas - nocc;
+    let c = rhf.mos_r();
+    let eps = rhf.eps_r();
+    let orb = OrbitalSpace::new(nocc, nvir, nocc, 0);
+    // analytic ∂D from U
+    let mu_oc = dipole_ov_mo(obs, c, &orb);
+    let mu_vo = mu_oc[axis].t().to_owned();
+    let (u, _r, _it, _cv) = solve_cphf_cg(c, &(-&mu_vo), obs, bounds, &orb, eps)?;
+    let c_occ = c.slice(ndarray::s![.., 0..nocc]).to_owned();
+    let c_vir = c.slice(ndarray::s![.., nocc..]).to_owned();
+    let mut dd = Array2::<f64>::zeros((nbas, nbas));
+    for a in 0..nvir {
+        for i in 0..nocc {
+            let uai = u[(a, i)];
+            for mu in 0..nbas {
+                for nu in 0..nbas {
+                    dd[(mu, nu)] += 2.0 * uai * (c_vir[(mu, a)] * c_occ[(nu, i)] + c_occ[(mu, i)] * c_vir[(nu, a)]);
+                }
+            }
+        }
+    }
+    // FD of SCF total density
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let dens = |field: f64| -> Result<Array2<f64>, FerricError> {
+        let mut v = Array2::<f64>::zeros((nbas, nbas));
+        for m in 0..nbas { for n in 0..nbas { v[(m, n)] = -field * dip_ao[axis][(m, n)]; } }
+        let r = crate::ff_polar::solve_rhf_with_external(ctx, mol, obs, bounds, scf_config, &v)?;
+        Ok(r.density_total().to_owned())
+    };
+    let dp = dens(h)?;
+    let dm = dens(-h)?;
+    let fd = (&dp - &dm).mapv(|x| x / (2.0 * h));
+    let an_n = dd.iter().map(|x| x * x).sum::<f64>().sqrt();
+    let fd_n = fd.iter().map(|x| x * x).sum::<f64>().sqrt();
+    let maxd = dd.iter().zip(fd.iter()).map(|(a, b)| (a - b).abs()).fold(0.0f64, f64::max);
+    Ok((an_n, fd_n, maxd))
+}
+
+/// DIAGNOSTIC: contract analytic ∂D and FD ∂D with each dipole component →
+/// Tr[∂D·r_y]. For field along `axis`, −Tr[∂D·r_y] = α^HF_{y,axis}. Tells which
+/// ∂D (analytic vs FD) is the trustworthy one (matches the validated HF α).
+#[allow(clippy::too_many_arguments)]
+pub fn debug_dD_traces(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    rhf: &ScfResult,
+    scf_config: &ferric_scf::rhf::RhfConfig,
+    axis: usize,
+    h: f64,
+) -> Result<([f64; 3], [f64; 3]), FerricError> {
+    let nbas = obs.nbasis();
+    let nocc = (mol.nelec() / 2) as usize;
+    let nvir = nbas - nocc;
+    let c = rhf.mos_r();
+    let eps = rhf.eps_r();
+    let orb = OrbitalSpace::new(nocc, nvir, nocc, 0);
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let mu_oc = dipole_ov_mo(obs, c, &orb);
+    let mu_vo = mu_oc[axis].t().to_owned();
+    let (u, _r, _it, _cv) = solve_cphf_cg(c, &(-&mu_vo), obs, bounds, &orb, eps)?;
+    let c_occ = c.slice(ndarray::s![.., 0..nocc]).to_owned();
+    let c_vir = c.slice(ndarray::s![.., nocc..]).to_owned();
+    let mut dd = Array2::<f64>::zeros((nbas, nbas));
+    for a in 0..nvir { for i in 0..nocc {
+        let uai = u[(a, i)];
+        for mu in 0..nbas { for nu in 0..nbas {
+            dd[(mu, nu)] += 2.0 * uai * (c_vir[(mu, a)] * c_occ[(nu, i)] + c_occ[(mu, i)] * c_vir[(nu, a)]);
+        }}
+    }}
+    let dens = |field: f64| -> Result<Array2<f64>, FerricError> {
+        let mut v = Array2::<f64>::zeros((nbas, nbas));
+        for m in 0..nbas { for n in 0..nbas { v[(m, n)] = -field * dip_ao[axis][(m, n)]; } }
+        let r = crate::ff_polar::solve_rhf_with_external(ctx, mol, obs, bounds, scf_config, &v)?;
+        Ok(r.density_total().to_owned())
+    };
+    let fd = (&dens(h)? - &dens(-h)?).mapv(|x| x / (2.0 * h));
+    let tr = |d: &Array2<f64>| -> [f64; 3] {
+        std::array::from_fn(|y| -(d * &dip_ao[y]).sum())
+    };
+    Ok((tr(&dd), tr(&fd)))
+}
+
+/// DIAGNOSTIC: E_MP2 at a single field along `axis` (for parabola/sign checks).
+pub fn debug_emp2_at_field(
+    ctx: &ParallelContext, mol: &Molecule, obs: &PreparedBasis, dfbs: &PreparedBasis,
+    op: Operator, bounds: &SchwarzBounds, scf_config: &ferric_scf::rhf::RhfConfig,
+    mp2_config: &RiMp2Config, axis: usize, field: f64,
+) -> Result<f64, FerricError> {
+    let n = obs.nbasis();
+    let dip = oneelectron::dipole(obs, [0.0,0.0,0.0]);
+    let mut v = Array2::<f64>::zeros((n,n));
+    for m in 0..n { for k in 0..n { v[(m,k)] = -field*dip[axis][(m,k)]; } }
+    let r = crate::ff_polar::solve_rhf_with_external(ctx, mol, obs, bounds, scf_config, &v)?;
+    Ok(compute_mp2_intermediates(mol, obs, dfbs, op, &r, mp2_config)?.e_mp2)
+}

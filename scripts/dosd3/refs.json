@@ -1,0 +1,9 @@
+{
+  "_comment": "Heavy-main-group alpha-vs-experiment test. Static isotropic dipole polarizabilities alpha0 in atomic units (Bohr^3), converted from CCCBDB (NIST) experimental polarizability volumes in Ang^3 via alpha[a.u.] = alpha'[Ang^3] * 6.74833 (= 1/Bohr_in_Ang^3). No molecular C6 reference is used here (those are paywalled for these heavy molecules); the test is whether RPA@PBE alpha stays uniform and whether TS's per-element volume-ratio failure reproduces across MULTIPLE Si compounds (SiH4 vs SiF4). SiH4 included for the Si-atom-vs-Si-molecule contrast (its alpha came from the dosd2 run).",
+  "molecular_alpha0": {
+    "SiH4": {"alpha0": 32.24, "heavy": "Si", "note": "CCCBDB 4.777 Ang^3; matches CRC ~31.9"},
+    "SiF4": {"alpha0": 22.40, "heavy": "Si", "note": "CCCBDB 3.319 Ang^3 — 2nd Si compound, the atom-vs-molecule test"},
+    "PH3":  {"alpha0": 28.59, "heavy": "P",  "note": "CCCBDB 4.237 Ang^3"},
+    "GeH4": {"alpha0": 32.19, "heavy": "Ge", "note": "CCCBDB 4.770 Ang^3 — period-4 Ge"}
+  }
+}
