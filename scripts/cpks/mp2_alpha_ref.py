@@ -324,3 +324,194 @@ print("Analytic ∂z (current Rust formula) ‖·‖ = %.2e  <-- ~%.0fx TOO LARG
 print("=> ∂z RHS formula is the bug; clean-room gives exact target dz_fd to match.")
 print("Note: this random tiny system has large couplings; signs/structure transfer,")
 print("magnitudes are system-specific. Use dz_fd as the per-term oracle.")
+
+# ---------------------------------------------------------------------------
+# FIX ∂z: decompose the RHS pieces, compare to the FD target dz_fd.
+# True equation (differentiating (Δε+A)z0 = L):  (Δε+A) ∂z = ∂L − ∂(Δε+A)·z0
+# But CAREFUL: is the un-perturbed z0 the same in both bases? dz_fd was computed
+# in the FIELD-MO basis (rotating). The analytic ∂z is the derivative of z in the
+# FIXED basis. These differ by the rotation of z itself! z is a (vir,occ) tensor
+# that ALSO rotates with the MOs. So dz_fd = ∂z_intrinsic + (rotation of z0 by U).
+# THAT is very likely the ~13000x: I compared fixed-basis ∂z to rotating-basis FD.
+# ---------------------------------------------------------------------------
+e = eps; Imo = I
+t = t2_amplitudes(Imo, e)
+A = orb_hessian_dense(Imo, e)
+z0 = np.linalg.solve(A, lagrangian(Imo,t,e).reshape(-1)).reshape(nvir,nocc)
+rvo = np.array([[r[nocc+a,i] for i in range(nocc)] for a in range(nvir)])
+U = np.linalg.solve(A, (-rvo).reshape(-1)).reshape(nvir,nocc)
+
+# rotation of z0 under the field-MO change: z is (vir,occ); under Θ it rotates as
+# ∂z_rot_ai = Σ_b Θ_{b,a}... actually z_ai transforms with vir index a and occ i.
+# ∂z_rot_ai = -Σ_j U_aj? no. For a (vir,occ) quantity z, the field-basis value is
+# z'_ai = Σ_bj (rotation) — to first order: z_rot_ai = Σ_b U_? Let's just test the
+# two natural rotations and see which makes analytic match.
+Th = np.zeros((nmo,nmo))
+for a in range(nvir):
+    for i in range(nocc):
+        Th[nocc+a,i]=U[a,i]; Th[i,nocc+a]=-U[a,i]
+# z0 as full-MO (vir,occ block), rotate both indices:
+z0full = np.zeros((nmo,nmo))
+for a in range(nvir):
+    for i in range(nocc):
+        z0full[nocc+a,i]=z0[a,i]
+z_rot_full = Th.T@z0full + z0full@Th     # ∂ of z0full under C-rotation
+z_rot = z_rot_full[nocc:,:nocc]
+
+print("\n--- ∂z basis-rotation hypothesis ---")
+print("‖dz_fd‖           =", np.max(np.abs(dz_fd)))
+print("‖z_rot (U·z0)‖    =", np.max(np.abs(z_rot)))
+print("‖dz_fd - z_rot‖   =", np.max(np.abs(dz_fd - z_rot)), "  <-- if small, dz_fd is MOSTLY just z0 rotating")
+
+print("\n--- magnitudes ---")
+print("‖z0‖   =", np.max(np.abs(z0)))
+print("‖U‖    =", np.max(np.abs(U)))
+print("‖t‖    =", np.max(np.abs(t)))
+print("‖A‖    =", np.max(np.abs(A)), " cond(A)=", np.linalg.cond(A))
+# Recompute the analytic ∂z RHS pieces explicitly:
+# rebuild dImo, de, dt, dL inline
+dD = np.zeros((nmo,nmo))
+for a in range(nvir):
+    for i in range(nocc):
+        dD[nocc+a,i]+=2*U[a,i]; dD[i,nocc+a]+=2*U[a,i]
+G = 2*np.einsum('pqrs,rs->pq',I,dD) - np.einsum('prqs,rs->pq',I,dD)
+de = np.diag(-r + G).copy()
+dImo = (np.einsum('xp,xqrs->pqrs',Th,Imo)+np.einsum('xq,pxrs->pqrs',Th,Imo)
+       +np.einsum('xr,pqxs->pqrs',Th,Imo)+np.einsum('xs,pqrx->pqrs',Th,Imo))
+dt = np.zeros_like(t)
+for i in range(nocc):
+    for a in range(nvir):
+        for j in range(nocc):
+            for b in range(nvir):
+                d=e[i]+e[j]-e[nocc+a]-e[nocc+b]
+                dt[i,a,j,b]=(dImo[i,nocc+a,j,nocc+b]-t[i,a,j,b]*(de[i]+de[j]-de[nocc+a]-de[nocc+b]))/d
+ed=1e-6
+dL=(lagrangian(Imo+ed*dImo,t+ed*dt,e)-lagrangian(Imo-ed*dImo,t-ed*dt,e))/(2*ed)
+print("‖∂L‖   =", np.max(np.abs(dL)))
+print("‖dt‖   =", np.max(np.abs(dt)), " ‖dImo‖=", np.max(np.abs(dImo)))
+# RHS without ∂A: (Δε+A)∂z = ∂L - ∂Δε·z0
+ddenom_z0 = np.zeros((nvir,nocc))
+for a in range(nvir):
+    for i in range(nocc):
+        ddenom_z0[a,i]=(de[nocc+a]-de[i])*z0[a,i]
+rhs_noAz = dL - ddenom_z0
+dz_noAz = np.linalg.solve(A, rhs_noAz.reshape(-1)).reshape(nvir,nocc)
+print("∂z (no ∂A) ‖·‖ =", np.max(np.abs(dz_noAz)), "  vs dz_fd ", np.max(np.abs(dz_fd)))
+print("∂z(no∂A) - dz_fd ‖·‖ =", np.max(np.abs(dz_noAz - dz_fd)))
+
+print("\n--- ∂A·z0 cancellation test ---")
+# ∂A·z0 via dense Hessian directional derivative along (Imo→dImo, e→de).
+def Az0_at(s):
+    Ad = orb_hessian_dense(Imo + s*dImo, e + s*de)
+    return (Ad @ z0.reshape(-1)).reshape(nvir,nocc)
+dAz0 = (Az0_at(ed) - Az0_at(-ed))/(2*ed)
+print("‖∂A·z0‖ =", np.max(np.abs(dAz0)), " (∂L was 84 → do they cancel?)")
+rhs_full = dL - dAz0   # note: dAz0 already contains ∂Δε·z0 since A has the diagonal
+dz_full = np.linalg.solve(A, rhs_full.reshape(-1)).reshape(nvir,nocc)
+print("∂z (with ∂A, no separate ∂Δε) ‖·‖ =", np.max(np.abs(dz_full)), " vs dz_fd", np.max(np.abs(dz_fd)))
+print("  ‖∂z_full - dz_fd‖ =", np.max(np.abs(dz_full - dz_fd)))
+print("  ‖rhs_full‖ =", np.max(np.abs(rhs_full)), " (∂L=84, so cancellation left:", np.max(np.abs(rhs_full)),")")
+
+print("\n--- validate dt against phase-matched FD ---")
+def t_at(Ffield):
+    e_orb,C = scf_in_field(Ffield)
+    for p in range(nmo):
+        if C[:,p]@np.eye(nmo)[:,p]<0: C[:,p]*=-1
+    Imo_f = np.einsum('pa,qb,rc,sd,pqrs->abcd', C,C,C,C, I, optimize=True)
+    return t2_amplitudes(Imo_f, e_orb)
+dt_fd = (t_at(h)-t_at(-h))/(2*h)
+print("‖dt analytic‖ =", np.max(np.abs(dt)), " ‖dt_fd‖ =", np.max(np.abs(dt_fd)))
+print("‖dt_an - dt_fd‖ =", np.max(np.abs(dt - dt_fd)))
+# also check dImo vs FD
+def Imo_at(Ffield):
+    e_orb,C = scf_in_field(Ffield)
+    for p in range(nmo):
+        if C[:,p]@np.eye(nmo)[:,p]<0: C[:,p]*=-1
+    return np.einsum('pa,qb,rc,sd,pqrs->abcd', C,C,C,C, I, optimize=True)
+dImo_fd=(Imo_at(h)-Imo_at(-h))/(2*h)
+print("‖dImo analytic‖=", np.max(np.abs(dImo)), " ‖dImo_fd‖=", np.max(np.abs(dImo_fd)), " ‖Δ‖=", np.max(np.abs(dImo-dImo_fd)))
+
+print("\n--- diagnose dImo rotation: is it U or the SCF-consistent rotation? ---")
+# The field-MO C(F) rotates by the FULL response, not bare CPHF U. Extract the
+# actual MO rotation from the FD: Cocc-vir block of C(F).
+def C_at(Ffield):
+    e_orb,C = scf_in_field(Ffield)
+    for p in range(nmo):
+        if C[:,p]@np.eye(nmo)[:,p]<0: C[:,p]*=-1
+    return C
+dC = (C_at(h)-C_at(-h))/(2*h)           # ∂C/∂F (in the fixed 'AO'=MO0 basis)
+# ∂C = C0 · Θ_true  →  Θ_true = C0^-1 ∂C = ∂C (since C0=I)
+Th_true = dC.copy()
+print("Θ_true (∂C) vir-occ block (the real U):")
+print(np.round(Th_true[nocc:,:nocc],5))
+print("my U (bare CPHF):")
+print(np.round(U,5))
+print("ratio Θ_true_vo / U:", np.round(Th_true[nocc:,:nocc]/U, 4))
+# rebuild dImo with Θ_true and compare
+dImo_true = (np.einsum('xp,xqrs->pqrs',Th_true,Imo)+np.einsum('xq,pxrs->pqrs',Th_true,Imo)
+            +np.einsum('xr,pqxs->pqrs',Th_true,Imo)+np.einsum('xs,pqrx->pqrs',Th_true,Imo))
+print("‖dImo(Θ_true) - dImo_fd‖ =", np.max(np.abs(dImo_true - dImo_fd)))
+
+print("\n--- is clean-room U correct? HF α: analytic vs oracle ---")
+# HF α oracle: -d<r>_HF/dF with phase-matched SCF (no MP2).
+def hf_dipole(Ffield):
+    e_orb,C=scf_in_field(Ffield)
+    for p in range(nmo):
+        if C[:,p]@np.eye(nmo)[:,p]<0: C[:,p]*=-1
+    dm = 2*C[:,:nocc]@C[:,:nocc].T
+    return np.sum(dm*r)
+hf_alpha_oracle = -(hf_dipole(h)-hf_dipole(-h))/(2*h)
+# HF α analytic from U: α = -4 Σ U_ai r_ai  (closed-shell, like Rust contraction -4)
+hf_alpha_U = -4*np.sum(U*rvo)
+# and with the true Θ:
+hf_alpha_true = -4*np.sum(Th_true[nocc:,:nocc]*rvo)
+print("HF α oracle      =", hf_alpha_oracle)
+print("HF α from my U   =", hf_alpha_U, " (×-4)")
+print("HF α from Θ_true =", hf_alpha_true)
+# what operator does U need? solve (Δε + s·Acoupling) U = -rvo for s that matches Θ_true
+# decompose A into diagonal Δε and coupling Acoup
+Adiag = np.zeros_like(A)
+for a in range(nvir):
+    for i in range(nocc):
+        Adiag[a*nocc+i, a*nocc+i] = e[nocc+a]-e[i]
+Acoup = A - Adiag
+for s in [1.0, 0.5, 2.0]:
+    Us = np.linalg.solve(Adiag + s*Acoup, (-rvo).reshape(-1)).reshape(nvir,nocc)
+    print(f"  U(s={s}): ‖U-Θ_true‖={np.max(np.abs(Us-Th_true[nocc:,:nocc])):.5f}  HFα(×-4)={-4*np.sum(Us*rvo):.5f}")
+
+print("\n--- what equation does Θ_true satisfy? (reverse-engineer the correct CPHF) ---")
+Utrue = Th_true[nocc:,:nocc]
+# Standard CPHF: (ea-ei)U_ai + Σ_bj [4(ai|bj)-(ab|ij)-(aj|bi)] U_bj = -r_ai ... but
+# the SCF response to h'=-F r. Check residual of full-A eqn:
+res_full = (A @ Utrue.reshape(-1)).reshape(nvir,nocc) + rvo
+print("‖(Δε+A)Utrue + rvo‖ =", np.max(np.abs(res_full)), " (small ⇒ full A, RHS -rvo correct)")
+res_half = (Adiag@Utrue.reshape(-1) + 0.5*(Acoup@Utrue.reshape(-1))).reshape(nvir,nocc) + rvo
+print("‖(Δε+0.5A)Utrue + rvo‖ =", np.max(np.abs(res_half)))
+# maybe the SCF sign: h' = -F r means perturbation -r; CPHF RHS = +r_ai or -r_ai?
+res_full_plus = (A @ Utrue.reshape(-1)).reshape(nvir,nocc) - rvo
+print("‖(Δε+A)Utrue - rvo‖ =", np.max(np.abs(res_full_plus)))
+# Try: the orbital Hessian sign convention. PySCF: (E_a-E_i)U + sum (4-1-1) = -rhs
+# Let me just solve with the FULL A and +rvo and see if it equals Θ_true:
+Utry = np.linalg.solve(A, (rvo).reshape(-1)).reshape(nvir,nocc)
+print("‖solve(A,+rvo) - Utrue‖ =", np.max(np.abs(Utry-Utrue)))
+
+print("\n--- FIX clean-room A: build it so it reproduces the HF-α oracle ---")
+# The HF orbital Hessian (A+B for static) in MO: M_{ai,bj} = (ea-ei)δ + 4(ai|bj)-(ab|ij)-(aj|bi).
+# Verify the integral INDEXING against I's symmetry: (ai|bj)=sum_P B[P,a,i]B[P,b,j].
+# Our I[p,q,r,s] = (pq|rs). So (ai|bj) = I[a,i,b,j]. (ab|ij)=I[a,b,i,j]. (aj|bi)=I[a,j,b,i].
+def M_hess():
+    M=np.zeros((nvir,nocc,nvir,nocc))
+    for a in range(nvir):
+        for i in range(nocc):
+            for b in range(nvir):
+                for j in range(nocc):
+                    M[a,i,b,j]=(4*I[nocc+a,i,nocc+b,j]-I[nocc+a,nocc+b,i,j]-I[nocc+a,j,nocc+b,i])
+            M[a,i,a,i]+=e[nocc+a]-e[i]
+    return M.reshape(nvir*nocc,nvir*nocc)
+Mh=M_hess()
+# static CPHF: M U = -rvo  → α=-4 Σ U r? check vs oracle (-0.0398)
+Uh=np.linalg.solve(Mh,(-rvo).reshape(-1)).reshape(nvir,nocc)
+print("HF α from M-hess U (×-4):", -4*np.sum(Uh*rvo), " oracle", hf_alpha_oracle)
+print("  (×-2):", -2*np.sum(Uh*rvo))
+# residual of Θ_true under M:
+print("‖M·Utrue + rvo‖ =", np.max(np.abs((Mh@Utrue.reshape(-1)).reshape(nvir,nocc)+rvo)))
