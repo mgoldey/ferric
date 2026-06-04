@@ -10,6 +10,7 @@
 //! imaginary-frequency quadrature to give isotropic and anisotropic C6^{AB}.
 
 pub mod free_atom_ref;
+pub mod mbd;
 
 use ndarray::Array2;
 
@@ -20,7 +21,6 @@ use ferric_integrals::operator::Operator;
 use ferric_scf::result::ScfResult;
 
 use crate::config::PdepRpaConfig;
-use crate::dispersion::free_atom_ref::ts_free_atom;
 use crate::PdepRpaResult;
 
 /// Per-atom dynamic polarizability on an imaginary-frequency quadrature grid.
@@ -172,26 +172,14 @@ pub fn ts_dynamic_polarizability(
     let mut per_atom: Vec<Vec<[[f64; 3]; 3]>> =
         vec![vec![[[0.0; 3]; 3]; nfreq]; natoms];
 
+    // Per-atom (α_eff, ω_A) — shared with the MBD path (mbd::ts_atom_params).
+    let params = crate::dispersion::mbd::ts_atom_params(z, vol_ratio, alpha_static);
+
     for a in 0..natoms {
         let st = alpha_static[a];
         let st_iso = (st[0][0] + st[1][1] + st[2][2]) / 3.0;
 
-        let (alpha_iso_eff, c6_eff) = match ts_free_atom(z[a]) {
-            Some((alpha_free, c6_free, _vol_free)) => {
-                let r = vol_ratio[a];
-                (r * alpha_free, r * r * c6_free)
-            }
-            None => {
-                // Fallback: computed static isotropic α with the H London ω.
-                let (af_h, c6_h, _) = ts_free_atom(1).unwrap();
-                let omega_h = (4.0 / 3.0) * c6_h / (af_h * af_h);
-                let a_iso = st_iso.max(1e-6);
-                (a_iso, 0.75 * a_iso * a_iso * omega_h)
-            }
-        };
-
-        let alpha_iso_eff = alpha_iso_eff.max(1e-8);
-        let omega_a = (4.0 / 3.0) * c6_eff / (alpha_iso_eff * alpha_iso_eff);
+        let (alpha_iso_eff, omega_a) = params[a];
 
         // Shape factor: static tensor normalized so its iso average is 1.
         let inv_st_iso = if st_iso.abs() > 1e-12 { 1.0 / st_iso } else { 0.0 };
