@@ -887,3 +887,150 @@ print("  ∂Tr[Pvv]: an=%.6f fd=%.6f" % (np.trace(dPvv_an), np.trace(dPvv_fd)))
 Pvv0=Pvv_from_I(Imo,e)
 inv_an=2*np.sum(Pvv0*dPvv_an); inv_fd=2*np.sum(Pvv0*dPvv_fd)
 print("  ∂Tr[Pvv²]: an=%.6f fd=%.6f ratio=%.4f" % (inv_an,inv_fd, inv_an/inv_fd if abs(inv_fd)>1e-12 else 0))
+
+# ===========================================================================
+# EXPLICIT analytic ∂z (purely ov, no gauge leak): differentiate (Δε+A)z=−Xvo.
+#   (Δε+A) ∂z = −∂Xvo − ∂(Δε+A)·z
+# Build ∂Xvo = ∂L + ∂G[dmP]_vo analytically; ∂(Δε+A)·z via directional FD of the
+# operator (gauge-safe: operator acts on fixed z). Then α with explicit ∂z + ∂P.
+# ===========================================================================
+def analytic_alpha_explicit():
+    alpha=np.zeros((3,3))
+    t=t2_amp(Imo,e); tij=t.transpose(0,2,1,3)
+    Poo0=-(2*np.einsum('ikab,jkab->ij',tij,tij)-np.einsum('ikab,jkba->ij',tij,tij))
+    Pvv0= (2*np.einsum('ijca,ijcb->ab',tij,tij)-np.einsum('ijca,ijbc->ab',tij,tij))
+    dmP0=np.zeros((nmo,nmo)); dmP0[O,O]=Poo0+Poo0.T; dmP0[Vv,Vv]=Pvv0+Pvv0.T
+    L0=lagrangian_es(t)
+    J=np.einsum('pqrs,rs->pq',Imo,dmP0); K=np.einsum('prqs,rs->pq',Imo,dmP0)
+    Xvo0=L0+(2*J-K)[Vv,O]
+    z0=np.linalg.solve(M,(-Xvo0).reshape(-1)).reshape(nvir,nocc)
+    for q in range(3):
+        U=cphf_U_axis(q)
+        Th=np.zeros((nmo,nmo))
+        for a in range(nvir):
+            for i in range(nocc):
+                Th[nocc+a,i]=U[a,i]; Th[i,nocc+a]=-U[a,i]
+        dImo=(np.einsum('xp,xqrs->pqrs',Th,Imo)+np.einsum('xq,pxrs->pqrs',Th,Imo)
+             +np.einsum('xr,pqxs->pqrs',Th,Imo)+np.einsum('xs,pqrx->pqrs',Th,Imo))
+        dDscf=np.zeros((nmo,nmo))
+        for a in range(nvir):
+            for i in range(nocc):
+                dDscf[nocc+a,i]+=2*U[a,i]; dDscf[i,nocc+a]+=2*U[a,i]
+        Gd=2*np.einsum('pqrs,rs->pq',Imo,dDscf)-np.einsum('prqs,rs->pq',Imo,dDscf)
+        deps=np.diag(-r_mo[q]+Gd).copy()
+        ed=1e-5
+        # ∂Xvo via directional deriv of Xvo(Imo,eps)
+        def Xvo_at(s):
+            ts=t2_amp(Imo+s*dImo, e+s*deps); tijs=ts.transpose(0,2,1,3)
+            Poo=-(2*np.einsum('ikab,jkab->ij',tijs,tijs)-np.einsum('ikab,jkba->ij',tijs,tijs))
+            Pvv= (2*np.einsum('ijca,ijcb->ab',tijs,tijs)-np.einsum('ijca,ijbc->ab',tijs,tijs))
+            dmP=np.zeros((nmo,nmo)); dmP[O,O]=Poo+Poo.T; dmP[Vv,Vv]=Pvv+Pvv.T
+            Ls=lagrangian_es(ts)
+            Is=Imo+s*dImo
+            J=np.einsum('pqrs,rs->pq',Is,dmP); K=np.einsum('prqs,rs->pq',Is,dmP)
+            return Ls+(2*J-K)[Vv,O]
+        dXvo=(Xvo_at(ed)-Xvo_at(-ed))/(2*ed)
+        # ∂(Δε+A)·z0 via directional deriv of M(Imo,eps)·z0
+        def Mz(s):
+            Is=Imo+s*dImo; es=e+s*deps
+            Mm=np.zeros((nvir,nocc,nvir,nocc))
+            for a in range(nvir):
+                for i in range(nocc):
+                    for b in range(nvir):
+                        for j in range(nocc):
+                            Mm[a,i,b,j]=(4*Is[nocc+a,i,nocc+b,j]-Is[nocc+a,nocc+b,i,j]-Is[nocc+a,j,nocc+b,i])
+                    Mm[a,i,a,i]+=es[nocc+a]-es[i]
+            return (Mm.reshape(nvir*nocc,-1)@z0.reshape(-1)).reshape(nvir,nocc)
+        dMz=(Mz(ed)-Mz(-ed))/(2*ed)
+        rhs=(-dXvo - dMz)
+        dz=np.linalg.solve(M, rhs.reshape(-1)).reshape(nvir,nocc)
+        # ∂(P+Pᵀ) blocks
+        def P_at(s):
+            ts=t2_amp(Imo+s*dImo,e+s*deps); tijs=ts.transpose(0,2,1,3)
+            Poo=-(2*np.einsum('ikab,jkab->ij',tijs,tijs)-np.einsum('ikab,jkba->ij',tijs,tijs))
+            Pvv= (2*np.einsum('ijca,ijcb->ab',tijs,tijs)-np.einsum('ijca,ijbc->ab',tijs,tijs))
+            return Poo,Pvv
+        Pp=P_at(ed); Pm=P_at(-ed)
+        dPoo=(Pp[0]-Pm[0])/(2*ed); dPvv=(Pp[1]-Pm[1])/(2*ed)
+        dD=np.zeros((nmo,nmo))
+        dD[O,O]=dPoo+dPoo.T; dD[Vv,Vv]=dPvv+dPvv.T
+        for a in range(nvir):
+            for i in range(nocc):
+                dD[nocc+a,i]+=2*U[a,i]+dz[a,i]; dD[i,nocc+a]+=2*U[a,i]+dz[a,i]
+        for p in range(3):
+            alpha[p,q]=-np.sum(dD*r_mo[p])
+    return alpha
+
+ae=analytic_alpha_explicit()
+print("\n=== EXPLICIT ∂z analytic α vs oracle ===")
+print("  diag:", np.round(np.diag(ae),5), " (oracle [0.04433,4.98115,2.13505])")
+print("  iso", np.round(np.trace(ae)/3,5), " (oracle 2.387)")
+
+# Verify the energy-Hessian oracle α_yy is converged (higher-order contamination?).
+print("\n=== oracle α_yy convergence (E-Hessian, vary h) + Richardson ===")
+def etot_field_y(F):
+    m=scf.RHF(mol); m.get_hcore=lambda *a: hcore_ao - F*dip_ao[1]; m.conv_tol=1e-12; m.kernel()
+    return m.e_tot + mp.MP2(m).run().e_corr
+e0=etot_field_y(0)
+for h in [4e-3,2e-3,1e-3,5e-4]:
+    a=-(etot_field_y(h)-2*e0+etot_field_y(-h))/h**2
+    print(f"  h={h}: α_yy={a:.6f}")
+# Richardson (h, h/2)
+h=2e-3
+a_h=-(etot_field_y(h)-2*e0+etot_field_y(-h))/h**2
+a_h2=-(etot_field_y(h/2)-2*e0+etot_field_y(-h/2))/(h/2)**2
+a_rich=(4*a_h2-a_h)/3
+print(f"  Richardson α_yy = {a_rich:.6f}")
+
+# Is the static D_relax the true dE/dh density? Test: -Tr[D_relax(F)·r] == dE/dF.
+print("\n=== is D_relax the energy-derivative density? (-Tr[D r] vs dE/dF) ===")
+def D_and_dEdF(F, axis):
+    eo,Cf=scf_in_field(F,axis)
+    for p in range(nmo):
+        if Cf[:,p]@np.eye(nmo)[:,p]<0: Cf[:,p]*=-1
+    Imf=np.einsum('pa,qb,rc,sd,pqrs->abcd',Cf,Cf,Cf,Cf,eri_ao,optimize=True)
+    D=static_relaxed_dm_validated(Imf,eo)
+    D_ao=Cf@D@Cf.T
+    mu = -np.einsum('pq,pq->',dip_ao[axis],D_ao)+nucl[axis]   # -Tr[D r]+nuc... but this IS the dipole
+    return mu
+# dE/dF numerically and -Tr[D_relax r] at same F:
+F=0.0
+dEdF = -(etot_field_y(1e-4)-etot_field_y(-1e-4))/(2e-4)   # = -dE/dF... E(F)=E0-F<r> so dE/dF=-<r>=-mu? 
+# at F=0, dE/dF should = -mu_z(0)? Actually μ = -dE/dF. Check:
+mu_from_E = -dEdF   # μ = -dE/dF
+mu_from_D = D_and_dEdF(0.0, 1)  # y-dipole at F=0
+print(f"  μ_y from -dE/dFy = {mu_from_E:.6f}")
+print(f"  μ_y from -Tr[D_relax r] = {mu_from_D:.6f}")
+
+# z-axis (nonzero dipole): does -Tr[D_relax r_z] == μ_z == -dE/dFz ?
+print("\n=== defining-property check on z-axis ===")
+dEdFz = (etot_field(1e-4) if False else 0)
+def etot_z(F):
+    m=scf.RHF(mol); m.get_hcore=lambda *a: hcore_ao - F*dip_ao[2]; m.conv_tol=1e-12; m.kernel()
+    return m.e_tot+mp.MP2(m).run().e_corr
+mu_z_fromE = -(-(etot_z(1e-4)-etot_z(-1e-4))/(2e-4))  # μ=-dE/dF
+mu_z_fromD = D_and_dEdF(0.0, 2)
+print(f"  μ_z from -dE/dFz = {mu_z_fromE:.6f}")
+print(f"  μ_z from -Tr[D_relax r_z] = {mu_z_fromD:.6f}")
+print(f"  (pyscf relaxed μ_z was -0.652736)")
+
+# The 2% gap (exact integrals!) means D_relax ≠ true dE/dh density. Find missing
+# piece: compare my D_relax to PySCF's TRUE relaxed dm1 (unrelaxed + captured z),
+# AND to the dm that would give -0.652732. Check all 3 dipole axes via dE/dF.
+print("\n=== D_relax vs energy-derivative density, all axes ===")
+for ax,nm in [(0,'x'),(1,'y'),(2,'z')]:
+    def ez(F):
+        m=scf.RHF(mol); m.get_hcore=lambda *a: hcore_ao - F*dip_ao[ax]; m.conv_tol=1e-12; m.kernel()
+        return m.e_tot+mp.MP2(m).run().e_corr
+    mu_E = (ez(1e-4)-ez(-1e-4))/(2e-4)*(-1)*(-1)  # μ=-dE/dF, dE/dF=(ez(h)-ez(-h))/2h
+    mu_E = -((ez(1e-4)-ez(-1e-4))/(2e-4))
+    mu_D = D_and_dEdF(0.0, ax)
+    print(f"  μ_{nm}: from E={mu_E:+.6f}  from D={mu_D:+.6f}  Δ={mu_E-mu_D:+.6f}")
+# Compare my static D to PySCF unrelaxed dm1 + captured z (the "true" relaxed):
+D_ps_relaxed = dm1_mo.copy(); D_ps_relaxed[Vv,O]+=z_ps; D_ps_relaxed[O,Vv]+=z_ps.T
+D_me = static_relaxed_dm_validated(Imo, e)
+print("  ‖D_me - D_ps_relaxed‖ =", np.max(np.abs(D_me - D_ps_relaxed)))
+print("  block diffs: oo=%.2e vv=%.2e ov=%.2e" % (
+    np.max(np.abs((D_me-D_ps_relaxed)[O,O])),
+    np.max(np.abs((D_me-D_ps_relaxed)[Vv,Vv])),
+    np.max(np.abs((D_me-D_ps_relaxed)[Vv,O]))))
