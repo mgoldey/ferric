@@ -894,3 +894,77 @@ fn directional_descriptor_dump() {
         eprintln!("CSV {label},{:.4},{:.4},{:.4},{:.3},{:.4},{:.4}", pr[0],pr[1],pr[2],vol,lmax,wopt);
     }
 }
+
+/// LOO-C6 with ω = a·(a3/V) + b (a3 = WEAKEST-direction α principal value). Tests
+/// whether the directional descriptor (Matt: λ_max loses directionality; a3/V
+/// captures perpendicular screening, r_fit=−0.83) gives low out-of-sample C6 MAE on
+/// the FULL fittable set (drop hf,h2 = floored/unfittable). The honest test of the
+/// directionality hypothesis — beating the fixed-ω 12.4% on the full set would be the
+/// first non-overfit win.
+///
+/// Run: cargo test --release -p ferric-rpa --test rsh_rpa_dispersion \
+///        a3_directional_loo_c6 -- --ignored --nocapture
+#[test]
+#[ignore]
+fn a3_directional_loo_c6() {
+    use ferric_rpa::properties::{atomic_effective_volumes_becke, pdep_polarizability_static};
+    // fittable set only (hf,h2 floored — C6 overshoots at ω→0)
+    let mols: &[(&str, &str, f64)] = &[
+        ("h2o",  "3\nh2o\nO 0 0 0.117790\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n", 45.3),
+        ("ch4",  "5\nch4\nC 0 0 0\nH 0.6276 0.6276 0.6276\nH -0.6276 -0.6276 0.6276\nH -0.6276 0.6276 -0.6276\nH 0.6276 -0.6276 -0.6276\n", 129.7),
+        ("nh3",  "4\nnh3\nN 0 0 0.0\nH 0 0.9377 -0.3816\nH 0.8120 -0.4689 -0.3816\nH -0.8120 -0.4689 -0.3816\n", 89.0),
+        ("co",   "2\nco\nC 0 0 0\nO 0 0 1.128\n", 81.4),
+        ("n2",   "2\nn2\nN 0 0 0.0\nN 0 0 1.0977\n", 73.3),
+        ("co2",  "3\nco2\nC 0 0 0.0\nO 0 0 1.1621\nO 0 0 -1.1621\n", 158.7),
+        ("c2h4", "6\nc2h4\nC 0 0 0.6695\nC 0 0 -0.6695\nH 0 0.9289 1.2321\nH 0 -0.9289 1.2321\nH 0 0.9289 -1.2321\nH 0 -0.9289 -1.2321\n", 300.2),
+        ("hcl",  "2\nhcl\nCl 0 0 0\nH 0 0 1.275\n", 130.4),
+        ("h2s",  "3\nh2s\nS 0 0 0.1030\nH 0 0.9659 -0.8253\nH 0 -0.9659 -0.8253\n", 216.8),
+        ("c2h2", "4\nc2h2\nC 0 0 0.6015\nC 0 0 -0.6015\nH 0 0 1.6615\nH 0 0 -1.6615\n", 204.1),
+        ("c2h6", "8\nc2h6\nC 0 0 0.7680\nC 0 0 -0.7680\nH 1.0192 0 1.1573\nH -0.5096 0.8826 1.1573\nH -0.5096 -0.8826 1.1573\nH -1.0192 0 -1.1573\nH 0.5096 0.8826 -1.1573\nH 0.5096 -0.8826 -1.1573\n", 381.9),
+        ("c6h6", "12\nc6h6\nC 0 1.3970 0\nC 1.2098 0.6985 0\nC 1.2098 -0.6985 0\nC 0 -1.3970 0\nC -1.2098 -0.6985 0\nC -1.2098 0.6985 0\nH 0 2.4810 0\nH 2.1486 1.2405 0\nH 2.1486 -1.2405 0\nH 0 -2.4810 0\nH -2.1486 -1.2405 0\nH -2.1486 1.2405 0\n", 1765.0),
+    ];
+    let ctx = ParallelContext::default();
+    let cfg = PdepRpaConfig::default();
+    let lc = "HYB_GGA_XC_LC_WPBE";
+
+    struct M { label:String, dosd:f64, x:f64, wopt:f64,
+               mol:Molecule, obs:PreparedBasis, dfbs:PreparedBasis, obs_bs:ferric_core::basis::BasisSet, rhf:ferric_scf::ScfResult }
+    let mut data:Vec<M>=Vec::new();
+    for (label,xyz,dosd) in mols {
+        let mol=Molecule::parse_xyz(xyz,0,1).unwrap();
+        let obs_bs=basis::bundled("aug-cc-pvdz").unwrap();
+        let dfbs=PreparedBasis::new(&mol,&basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let obs=PreparedBasis::new(&mol,&obs_bs).unwrap();
+        let op=Operator::coulomb(); let bounds=SchwarzBounds::compute(op,&obs).unwrap();
+        let scf_cfg=RhfConfig{energy_conv:1e-9,xc:Some(lc.to_string()),
+            df_j_aux:Some("def2-universal-jkfit".to_string()),
+            df_k_aux:Some("def2-universal-jkfit".to_string()),..Default::default()};
+        let rhf=solve_rhf(&ctx,&mol,&obs,op,&bounds,&scf_cfg).unwrap();
+        let at=pdep_polarizability_static(&mol,&obs,&dfbs,&rhf,Operator::coulomb(),&cfg).unwrap();
+        let a3=at.principal.iter().cloned().fold(f64::MAX,f64::min); // smallest principal
+        let vol:f64=atomic_effective_volumes_becke(&mol,&obs,&obs_bs,rhf.density_r()).unwrap().iter().sum();
+        let x=a3/vol;
+        let c6=|w:f64,m:&Molecule,o:&PreparedBasis,ob:&ferric_core::basis::BasisSet,d:&PreparedBasis,r:&ferric_scf::ScfResult|{
+            let dp=pdep_dynamic_polarizability(m,o,ob,d,r,Operator::erf(w),&cfg,DispersionPartition::Becke,None).unwrap();
+            casimir_polder_c6(&dp).c6_molecular_iso };
+        let (mut lo,mut hi)=(0.02_f64,2.5_f64);
+        let wopt=if c6(lo,&mol,&obs,&obs_bs,&dfbs,&rhf)<*dosd {0.02} else { for _ in 0..22 {let m=0.5*(lo+hi); if c6(m,&mol,&obs,&obs_bs,&dfbs,&rhf)>*dosd {lo=m} else {hi=m}} 0.5*(lo+hi)};
+        data.push(M{label:label.to_string(),dosd:*dosd,x,wopt,mol,obs,dfbs,obs_bs,rhf});
+    }
+    eprintln!("\n=== LOO-C6, ω = a·(a3/V) + b  (weakest-direction descriptor, fittable set) ===");
+    eprintln!("  {:>5}  {:>8}  {:>8}  {:>9}  {:>8}", "mol", "a3/V", "ω_pred", "C6", "err%");
+    let fit=|idx:usize|->(f64,f64){
+        let(mut sx,mut sy,mut sxx,mut sxy,mut n)=(0.,0.,0.,0.,0.);
+        for(j,m)in data.iter().enumerate(){ if j==idx{continue;} sx+=m.x;sy+=m.wopt;sxx+=m.x*m.x;sxy+=m.x*m.wopt;n+=1.;}
+        let s=(n*sxy-sx*sy)/(n*sxx-sx*sx); (s,(sy-s*sx)/n)};
+    let(mut mae,mut cnt)=(0.,0);
+    for i in 0..data.len(){
+        let(s,b)=fit(i); let w=(s*data[i].x+b).clamp(0.02,2.5);
+        let dp=pdep_dynamic_polarizability(&data[i].mol,&data[i].obs,&data[i].obs_bs,&data[i].dfbs,&data[i].rhf,Operator::erf(w),&cfg,DispersionPartition::Becke,None).unwrap();
+        let c6=casimir_polder_c6(&dp).c6_molecular_iso; let err=100.*(c6-data[i].dosd)/data[i].dosd;
+        eprintln!("  {:>5}  {:>8.4}  {:>8.4}  {:>9.2}  {:>+7.2}", data[i].label, data[i].x, w, c6, err);
+        mae+=err.abs(); cnt+=1;
+    }
+    eprintln!("\n  a3/V LOO-C6 MAE = {:.2}%  (fittable set, n={})", mae/cnt as f64, cnt);
+    eprintln!("  vs: fixed-ω 12.4%, λ_max-full ~weak, parameter-free(1/3)(λ-2) NEW-only 12%.");
+}
