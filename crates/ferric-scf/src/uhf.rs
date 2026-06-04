@@ -447,30 +447,32 @@ fn density_fractional(c: &Array2<f64>, eps: &[f64], nocc: usize) -> Array2<f64> 
     if nocc >= n {
         return density(c, nocc);
     }
-    const EPS_TOL: f64 = 1e-3; // Hartree: orbitals this close are "degenerate"
+    // Tolerance must be loose enough to capture a frontier shell that the
+    // *oscillating* SCF has artificially split. For a free ³P atom the three p
+    // orbitals can be ~0.01–0.02 Ha apart mid-oscillation, so a tight 1e-3 tol
+    // catches only 2 of 3 and the fix fails. 0.05 Ha reliably groups them; this
+    // path is opt-in (free atoms only), so a loose tol cannot affect molecules.
+    const EPS_TOL: f64 = 0.05;
     let e_homo = eps[nocc - 1];
-    // Extent of the degenerate group straddling the occupation boundary.
+    // Grow the group around BOTH the HOMO (nocc-1) and the LUMO (nocc): the
+    // degenerate frontier shell straddles the occupation boundary.
     let mut lo = nocc - 1;
     while lo > 0 && (eps[lo - 1] - e_homo).abs() < EPS_TOL {
         lo -= 1;
     }
-    let mut hi = nocc - 1; // inclusive
-    while hi + 1 < n && (eps[hi + 1] - e_homo).abs() < EPS_TOL {
+    // Extend upward from the LUMO using the LUMO energy as the anchor (it may
+    // differ from the HOMO by the artificial split, but be within EPS_TOL).
+    let e_lumo = eps[nocc];
+    let mut hi = nocc; // start at LUMO
+    while hi + 1 < n && (eps[hi + 1] - e_lumo).abs() < EPS_TOL {
         hi += 1;
     }
-    let group_size = hi - lo + 1;
-    if std::env::var("FERRIC_FRAC_DEBUG").is_ok() {
-        eprintln!("[FRAC] nocc={nocc} e_homo={e_homo:.5} group=[{lo}..={hi}] size={group_size} straddles={}",
-            hi >= nocc);
-        let lo_show = lo.saturating_sub(1);
-        for k in lo_show..(hi+2).min(c.ncols()) {
-            eprintln!("  eps[{k}]={:.5}", eps[k]);
-        }
+    // Only act if HOMO and LUMO are within tol (genuine straddling degeneracy).
+    if (e_lumo - e_homo).abs() >= EPS_TOL {
+        return density(c, nocc);
     }
-    // Only act if the group truly straddles the boundary (some occupied, some
-    // virtual) — otherwise it's a fully-occupied or fully-virtual degenerate
-    // shell and integer occupation is already correct.
-    if group_size <= 1 || hi < nocc {
+    let group_size = hi - lo + 1;
+    if group_size <= 1 {
         return density(c, nocc);
     }
     // Electrons to distribute over the group = (occupied orbitals in group).
@@ -635,25 +637,4 @@ mod tests {
         assert!(res.converged, "UKS-PBE O atom did not converge with fractional occ");
     }
 
-    #[test]
-    fn debug_uks_pbe_silicon_augccpvdz_fractional() {
-        // The real target: Si ³P at aug-cc-pVDZ (the TS free-atom case).
-        let mol = Molecule::parse_xyz("1\nSi\nSi 0 0 0\n", 0, 3).unwrap();
-        let bs = basis::bundled("aug-cc-pvdz").unwrap();
-        let prep = PreparedBasis::new(&mol, &bs).unwrap();
-        let op = ferric_integrals::operator::Operator::coulomb();
-        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-        let cfg = UhfConfig {
-            xc: Some("PBE".to_string()),
-            fractional_occ: true,
-            mom_after_iter: 5,
-            max_iter: 200,
-            ..Default::default()
-        };
-        let ctx = ParallelContext::default();
-        match solve_uhf(&ctx, &mol, &prep, &bounds, &cfg) {
-            Ok(r) => eprintln!("DEBUG Si: converged={} E={:.6} iters={}", r.converged, r.energy, r.iterations),
-            Err(e) => eprintln!("DEBUG Si: Err {e}"),
-        }
-    }
 }
