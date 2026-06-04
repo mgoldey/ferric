@@ -344,3 +344,85 @@ fn debug_erf_c6_curve_lc_ref() {
         eprintln!();
     }
 }
+
+/// DECISIVE: leave-one-out dielectric-ω RSH-RPA C6. For each molecule, predict ω
+/// from ω=a(α/V)+b fit on the OTHER molecules (honest transferability, no in-sample
+/// circularity), compute C6 at that predicted ω, report MAE vs DOSD. Beats the
+/// fixed-ω 12.4%? → dielectric-ω is a real, transferable improvement (the novelty).
+/// Doesn't beat it? → α/V correlation doesn't transfer to C6 accuracy (null).
+///
+/// Run: cargo test --release -p ferric-rpa --test rsh_rpa_dispersion \
+///        dielectric_omega_loo_c6 -- --ignored --nocapture
+#[test]
+#[ignore]
+fn dielectric_omega_loo_c6() {
+    use ferric_rpa::properties::{atomic_effective_volumes_becke, pdep_polarizability_static};
+
+    let lc_name = "HYB_GGA_XC_LC_WPBE";
+    let mols: &[(&str, &str, f64)] = &[
+        ("h2o",  "3\nh2o\nO 0 0 0.117790\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n", 45.3),
+        ("ch4",  "5\nch4\nC 0 0 0\nH 0.6276 0.6276 0.6276\nH -0.6276 -0.6276 0.6276\nH -0.6276 0.6276 -0.6276\nH 0.6276 -0.6276 -0.6276\n", 129.7),
+        ("nh3",  "4\nnh3\nN 0 0 0.0\nH 0 0.9377 -0.3816\nH 0.8120 -0.4689 -0.3816\nH -0.8120 -0.4689 -0.3816\n", 89.0),
+        ("co",   "2\nco\nC 0 0 0\nO 0 0 1.128\n", 81.4),
+        ("n2",   "2\nn2\nN 0 0 0.0\nN 0 0 1.0977\n", 73.3),
+        ("co2",  "3\nco2\nC 0 0 0.0\nO 0 0 1.1621\nO 0 0 -1.1621\n", 158.7),
+        ("c2h4", "6\nc2h4\nC 0 0 0.6695\nC 0 0 -0.6695\nH 0 0.9289 1.2321\nH 0 -0.9289 1.2321\nH 0 0.9289 -1.2321\nH 0 -0.9289 -1.2321\n", 300.2),
+    ];
+    let ctx = ParallelContext::default();
+    let cfg = PdepRpaConfig::default();
+
+    // Pass 1: gather (α/V, ω_opt, C6 sampler) per molecule. Reuse the calibration.
+    struct M { label: String, dosd: f64, aov: f64, omega_opt: f64,
+               mol: Molecule, obs: PreparedBasis, dfbs: PreparedBasis, obs_bs: ferric_core::basis::BasisSet, rhf: ferric_scf::ScfResult }
+    let mut data: Vec<M> = Vec::new();
+    for (label, xyz, dosd) in mols {
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let obs_bs = basis::bundled("aug-cc-pvdz").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let scf_cfg = RhfConfig { energy_conv: 1e-9, xc: Some(lc_name.to_string()),
+            df_j_aux: Some("def2-universal-jkfit".to_string()),
+            df_k_aux: Some("def2-universal-jkfit".to_string()), ..Default::default() };
+        let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
+        let alpha = pdep_polarizability_static(&mol, &obs, &dfbs, &rhf, Operator::coulomb(), &cfg).unwrap().iso;
+        let vol: f64 = atomic_effective_volumes_becke(&mol, &obs, &obs_bs, rhf.density_r()).unwrap().iter().sum();
+        let aov = alpha / vol;
+        // ω_opt by bisection (C6 decreasing in ω).
+        let c6_at = |w: f64, m:&Molecule, o:&PreparedBasis, ob:&ferric_core::basis::BasisSet, d:&PreparedBasis, r:&ferric_scf::ScfResult| {
+            let dp = pdep_dynamic_polarizability(m,o,ob,d,r,Operator::erf(w),&cfg,DispersionPartition::Becke,None).unwrap();
+            casimir_polder_c6(&dp).c6_molecular_iso
+        };
+        let (mut lo, mut hi) = (0.05_f64, 2.5_f64);
+        let omega_opt = if c6_at(lo,&mol,&obs,&obs_bs,&dfbs,&rhf) < *dosd { f64::NAN }
+            else { for _ in 0..22 { let m=0.5*(lo+hi); if c6_at(m,&mol,&obs,&obs_bs,&dfbs,&rhf) > *dosd {lo=m} else {hi=m} } 0.5*(lo+hi) };
+        data.push(M{label:label.to_string(),dosd:*dosd,aov,omega_opt,mol,obs,dfbs,obs_bs,rhf});
+    }
+
+    // Pass 2: LOO — predict ω for each from the linear fit on the others, get C6.
+    eprintln!("\n=== LOO dielectric-ω RSH-RPA C6 (ω=a·(α/V)+b fit on others, no in-sample) ===");
+    eprintln!("  {:>5}  {:>7}  {:>9}  {:>9}  {:>9}  {:>8}", "mol", "α/V", "ω_opt", "ω_pred", "C6_pred", "err%");
+    let fit = |idx: usize| -> (f64, f64) {
+        let (mut sx, mut sy, mut sxx, mut sxy, mut n) = (0.0,0.0,0.0,0.0,0.0);
+        for (j,m) in data.iter().enumerate() {
+            if j==idx || !m.omega_opt.is_finite() { continue; }
+            sx+=m.aov; sy+=m.omega_opt; sxx+=m.aov*m.aov; sxy+=m.aov*m.omega_opt; n+=1.0;
+        }
+        let slope = (n*sxy - sx*sy)/(n*sxx - sx*sx);
+        (slope, (sy - slope*sx)/n)
+    };
+    let (mut mae, mut cnt) = (0.0, 0);
+    for i in 0..data.len() {
+        let (s,b) = fit(i);
+        let w_pred = (s*data[i].aov + b).clamp(0.05, 2.5);
+        let dp = pdep_dynamic_polarizability(&data[i].mol,&data[i].obs,&data[i].obs_bs,&data[i].dfbs,&data[i].rhf,
+            Operator::erf(w_pred),&cfg,DispersionPartition::Becke,None).unwrap();
+        let c6 = casimir_polder_c6(&dp).c6_molecular_iso;
+        let err = 100.0*(c6-data[i].dosd)/data[i].dosd;
+        eprintln!("  {:>5}  {:>7.4}  {:>9.4}  {:>9.4}  {:>9.2}  {:>+7.2}", data[i].label, data[i].aov, data[i].omega_opt, w_pred, c6, err);
+        mae += err.abs(); cnt += 1;
+    }
+    eprintln!("\n  LOO dielectric-ω C6 MAE = {:.2}%   (fixed-ω was 12.4%; scalar-fix 2.4%)", mae/cnt as f64);
+    eprintln!("  Beats 12.4% ⟹ dielectric-ω transfers (novelty real). Else ⟹ correlation ≠ accuracy.");
+}
