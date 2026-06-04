@@ -118,3 +118,61 @@ fn diag_cpks_hf_full_tensor_vs_ff() {
     eprintln!("ratio analytic/ff (diag): {:.4} {:.4} {:.4}",
         analytic.tensor[0][0]/ff[0][0], analytic.tensor[1][1]/ff[1][1], analytic.tensor[2][2]/ff[2][2]);
 }
+
+// WIP (Layer 2): analytic ∂E_MP2/∂F is 0.37× the FD oracle — stable across h, so a
+// deterministic missing-term bug in ∂ε_p (the perturbed-Fock-diagonal / orbital-
+// energy response), NOT the oracle (gauge-invariant energy FD is clean & linear).
+// Debugging the ∂F_pp = ∂h + ∂(2J−K)[∂D] structure. Marked ignore until green.
+#[test]
+#[ignore]
+fn cpks_dmp2_energy_matches_fd() {
+    // Layer 2 gate (gauge-invariant): analytic ∂E_MP2/∂F^z vs FD of E_MP2.
+    // Element-wise ∂t2 FD is contaminated by occ/vir orbital-rotation phase
+    // ambiguity in the perturbed RHF; the correlation ENERGY is rotation-immune.
+    use ferric_mp2::cpks_polar::{analytic_de_mp2_along, fd_de_mp2_along};
+    let (mol, obs, dfbs, op, bounds, ctx, rhf) = water_ccpvdz();
+    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0 };
+    let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
+    let an = analytic_de_mp2_along(&ctx,&mol,&obs,&dfbs,op,&bounds,&rhf,&mp2_cfg,2).unwrap();
+    let fd = fd_de_mp2_along(&ctx,&mol,&obs,&dfbs,op,&bounds,&scf_cfg,&mp2_cfg,2,1e-3).unwrap();
+    eprintln!("∂E_MP2/∂Fz: analytic={an:.8} fd={fd:.8} |Δ|={:.2e}", (an-fd).abs());
+    assert!((an-fd).abs() < 1e-5, "∂E_MP2/∂Fz analytic vs FD disagree by {:.2e}", (an-fd).abs());
+}
+#[test]
+#[ignore]
+fn diag_dt2_distribution() {
+    use ferric_mp2::cpks_polar::{analytic_dt2_along, fd_dt2_along};
+    let (mol, obs, dfbs, op, bounds, ctx, rhf) = water_ccpvdz();
+    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0 };
+    let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
+    let (an, _u) = analytic_dt2_along(&ctx,&mol,&obs,&dfbs,op,&bounds,&rhf,&mp2_cfg,2).unwrap();
+    // FD at two field strengths to check linearity (phase/degeneracy contamination
+    // would NOT scale linearly with h).
+    for &h in &[1e-3_f64, 1e-2] {
+        let fd = fd_dt2_along(&ctx,&mol,&obs,&dfbs,op,&bounds,&scf_cfg,&mp2_cfg,2,h).unwrap();
+        let fdn = fd.iter().map(|x|x*x).sum::<f64>().sqrt();
+        // largest 5 |fd| elements and their analytic counterparts
+        let mut idx: Vec<usize> = (0..fd.len()).collect();
+        idx.sort_by(|&a,&b| fd[b].abs().partial_cmp(&fd[a].abs()).unwrap());
+        eprintln!("h={h:.0e} ‖fd‖={fdn:.4} top elems (fd vs an):");
+        for &k in idx.iter().take(6) { eprintln!("   [{k}] fd={:+.5} an={:+.5}", fd[k], an[k]); }
+    }
+    let ann = an.iter().map(|x|x*x).sum::<f64>().sqrt();
+    eprintln!("‖analytic‖={ann:.5}");
+}
+
+#[test]
+#[ignore]
+fn diag_de_components() {
+    use ferric_mp2::cpks_polar::{analytic_de_mp2_along, fd_de_mp2_along, analytic_dt2_along};
+    let (mol, obs, dfbs, op, bounds, ctx, rhf) = water_ccpvdz();
+    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0 };
+    let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
+    let an = analytic_de_mp2_along(&ctx,&mol,&obs,&dfbs,op,&bounds,&rhf,&mp2_cfg,2).unwrap();
+    for &h in &[1e-3_f64, 1e-2, 2e-2] {
+        let fd = fd_de_mp2_along(&ctx,&mol,&obs,&dfbs,op,&bounds,&scf_cfg,&mp2_cfg,2,h).unwrap();
+        eprintln!("h={h:.0e}: analytic={an:.8} fd={fd:.8} ratio an/fd={:.4}", an/fd);
+    }
+    let (dt2,_u) = analytic_dt2_along(&ctx,&mol,&obs,&dfbs,op,&bounds,&rhf,&mp2_cfg,2).unwrap();
+    eprintln!("‖dt2‖={:.5}", dt2.iter().map(|x|x*x).sum::<f64>().sqrt());
+}

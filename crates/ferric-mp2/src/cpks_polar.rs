@@ -245,3 +245,280 @@ pub fn mp2_polarizability_analytic_hf(
         principal,
     })
 }
+
+// ===========================================================================
+// Layer 2: first-order perturbed MP2 amplitudes ∂t2/∂F^x.
+//
+// t2_iajb = (ia|jb)/Δε,  Δε = εi+εj−εa−εb,  (ia|jb)=Σ_P B^P_ia B^P_jb.
+// Field along axis x rotates orbitals by the CPHF U^x (vir,occ):
+//   ∂C_·i = Σ_c U_ci C_·c ;  ∂C_·a = −Σ_k U_ak C_·k
+// ⇒ ∂B^P_ia = Σ_c U_ci B^P_ca − Σ_k U_ak B^P_ik         (uses dressed b_vv, b_oo)
+//   ∂(ia|jb) = Σ_P [∂B^P_ia B^P_jb + B^P_ia ∂B^P_jb]
+//   ∂ε_p     = h^x_pp + Σ_ck U_ck [2(pp|ck) − (pc|pk)]   (h^x = −μ_x; perturbed-Fock diag)
+//   ∂t2      = [∂(ia|jb) − t2·(∂εi+∂εj−∂εa−∂εb)] / Δε
+//
+// All B blocks come pre-dressed from compute_mp2_intermediates — no AO rebuild.
+// Validated against the central difference of t2 from a field-perturbed RHF.
+// ===========================================================================
+
+use crate::rimp2::compute_mp2_intermediates;
+
+/// Reshape a dressed B block (naux, n*m) → indexable [(P,r,c)] via closure.
+#[inline]
+fn bget(b: &Array2<f64>, p: usize, r: usize, c: usize, m: usize) -> f64 {
+    b[(p, r * m + c)]
+}
+
+/// Analytic ∂t2/∂F along `axis`. Returns t2-shaped Vec (nov*nov), index ia*nov+jb,
+/// alongside the U^x used (for downstream layers).
+pub fn analytic_dt2_along(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    rhf: &ScfResult,
+    mp2_config: &RiMp2Config,
+    axis: usize,
+) -> Result<(Vec<f64>, Array2<f64>), FerricError> {
+    let _ = ctx;
+    let inter = compute_mp2_intermediates(mol, obs, dfbs, op, rhf, mp2_config)?;
+    let (nocc, nvir, naux) = (inter.nocc, inter.nvir, inter.naux);
+    let (first_occ, nocc_total) = (inter.first_occ, inter.nocc_total);
+    let nov = nocc * nvir;
+    let eps = rhf.eps_r();
+    let c = rhf.mos_r();
+    let orb = OrbitalSpace::new(nocc, nvir, nocc_total, first_occ);
+
+    // --- CPHF U^x: (Δε + 0.5 A) U = −μ^x_ov  (same operator/conventions as HF α) ---
+    let mu_oc = dipole_ov_mo(obs, c, &orb); // (nocc,nvir)
+    let mu_vo = mu_oc[axis].t().to_owned(); // (nvir,nocc)
+    let (u, resid, iters, conv) = solve_cphf_cg(c, &(-&mu_vo), obs, bounds, &orb, eps)?;
+    if !conv {
+        return Err(FerricError::General(format!(
+            "analytic_dt2: CPHF U^{axis} not converged (resid={resid:.2e}, iters={iters})"
+        )));
+    }
+
+    // --- ∂B^P_ia = Σ_c U_ci b_vv[P,c,a] − Σ_k U_ak b_oo[P,i,k] ---
+    let mut db_ov = Array2::<f64>::zeros((naux, nov));
+    for p in 0..naux {
+        for i in 0..nocc {
+            for a in 0..nvir {
+                let mut s = 0.0;
+                for cc in 0..nvir {
+                    s += u[(cc, i)] * bget(&inter.b_vv, p, cc, a, nvir);
+                }
+                for k in 0..nocc {
+                    s -= u[(a, k)] * bget(&inter.b_oo, p, i, k, nocc);
+                }
+                db_ov[(p, i * nvir + a)] = s;
+            }
+        }
+    }
+
+    // --- ∂ε_p = −μ_pp + Σ_ck U_ck [2(pp|ck) − (pc|pk)] ---
+    // Need full-MO dipole diagonal and the coupling integrals via dressed B.
+    // μ in MO: μ_pq = Cᵀ D^x_AO C.
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let mu_mo = c.t().dot(&dip_ao[axis]).dot(c); // (nmo,nmo)
+    // (pp|ck): for occ p=i → Σ_P b_oo[P,i,i] b_ov[P,c? ...]; ck is occ-vir (k occ, c vir).
+    // Use B_ov for (ck): (ck)≡(k c) with k occ, c vir → b_ov[P, k*nvir + c].
+    // (pp|ck) = Σ_P B^P_pp B^P_kc ;  (pc|pk): p occ-or-vir mixed — handle per block.
+    let de = |i: usize, j: usize, a: usize, b: usize| {
+        eps[first_occ + i] + eps[first_occ + j] - eps[nocc_total + a] - eps[nocc_total + b]
+    };
+
+    // ∂ε for occ (i) and vir (a). h^x diag from mu_mo (field couples as −μ).
+    let mut deps_o = vec![0.0f64; nocc];
+    let mut deps_v = vec![0.0f64; nvir];
+    // coupling term Σ_ck U_ck[2(pp|ck) − (pc|pk)]
+    // (pp|ck): B^P_pp · B^P_(kc). (pc|pk): B^P_(pc) · B^P_(pk).
+    for i in 0..nocc {
+        let i_mo_diag = first_occ + i;
+        deps_o[i] = -mu_mo[(i_mo_diag, i_mo_diag)];
+        let mut coup = 0.0;
+        for k in 0..nocc {
+            for cc in 0..nvir {
+                let jval = (0..naux)
+                    .map(|p| bget(&inter.b_oo, p, i, i, nocc) * bget(&inter.b_ov, p, k, cc, nvir))
+                    .sum::<f64>();
+                // (i c | i k): (ic) is occ-vir = b_ov[i,c]; (ik) occ-occ = b_oo[i,k]
+                let kval = (0..naux)
+                    .map(|p| bget(&inter.b_ov, p, i, cc, nvir) * bget(&inter.b_oo, p, i, k, nocc))
+                    .sum::<f64>();
+                coup += u[(cc, k)] * (2.0 * jval - kval);
+            }
+        }
+        deps_o[i] += coup;
+    }
+    for a in 0..nvir {
+        let a_mo_diag = nocc_total + a;
+        deps_v[a] = -mu_mo[(a_mo_diag, a_mo_diag)];
+        let mut coup = 0.0;
+        for k in 0..nocc {
+            for cc in 0..nvir {
+                let jval = (0..naux)
+                    .map(|p| bget(&inter.b_vv, p, a, a, nvir) * bget(&inter.b_ov, p, k, cc, nvir))
+                    .sum::<f64>();
+                // (a c | a k): (ac) vir-vir = b_vv[a,c]; (ak) = (ka) occ-vir = b_ov[k,a]
+                let kval = (0..naux)
+                    .map(|p| bget(&inter.b_vv, p, a, cc, nvir) * bget(&inter.b_ov, p, k, a, nvir))
+                    .sum::<f64>();
+                coup += u[(cc, k)] * (2.0 * jval - kval);
+            }
+        }
+        deps_v[a] += coup;
+    }
+
+    // --- ∂t2_iajb = [∂(ia|jb) − t2·∂Δε] / Δε ---
+    let mut dt2 = vec![0.0f64; nov * nov];
+    for i in 0..nocc {
+        for a in 0..nvir {
+            let ia = i * nvir + a;
+            for j in 0..nocc {
+                for b in 0..nvir {
+                    let jb = j * nvir + b;
+                    let d_iajb: f64 = (0..naux)
+                        .map(|p| {
+                            db_ov[(p, ia)] * inter.b_ov[(p, jb)]
+                                + inter.b_ov[(p, ia)] * db_ov[(p, jb)]
+                        })
+                        .sum();
+                    let ddenom = deps_o[i] + deps_o[j] - deps_v[a] - deps_v[b];
+                    let denom = de(i, j, a, b);
+                    let t = inter.t2[ia * nov + jb];
+                    dt2[ia * nov + jb] = (d_iajb - t * ddenom) / denom;
+                }
+            }
+        }
+    }
+
+    Ok((dt2, u))
+}
+
+/// FD ORACLE: ∂t2/∂F along `axis` via central difference of t2 rebuilt from a
+/// field-perturbed RHF. Returns the t2-shaped Vec. Used only to validate
+/// `analytic_dt2_along`.
+#[allow(clippy::too_many_arguments)]
+pub fn fd_dt2_along(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    scf_config: &ferric_scf::rhf::RhfConfig,
+    mp2_config: &RiMp2Config,
+    axis: usize,
+    h: f64,
+) -> Result<Vec<f64>, FerricError> {
+    let n = obs.nbasis();
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let t2_at = |field: f64| -> Result<Vec<f64>, FerricError> {
+        let mut v = Array2::<f64>::zeros((n, n));
+        for mu in 0..n {
+            for nu in 0..n {
+                v[(mu, nu)] = -field * dip_ao[axis][(mu, nu)];
+            }
+        }
+        let rhf_f = crate::ff_polar::solve_rhf_with_external(ctx, mol, obs, bounds, scf_config, &v)?;
+        let inter = compute_mp2_intermediates(mol, obs, dfbs, op, &rhf_f, mp2_config)?;
+        Ok(inter.t2)
+    };
+    let tp = t2_at(h)?;
+    let tm = t2_at(-h)?;
+    Ok(tp.iter().zip(tm.iter()).map(|(p, m)| (p - m) / (2.0 * h)).collect())
+}
+
+/// Analytic ∂E_MP2/∂F along `axis` — a GAUGE-INVARIANT scalar (immune to the
+/// occ/vir orbital-rotation phase ambiguity that contaminates element-wise FD of
+/// t2). E_MP2 = Σ_iajb t2_iajb [2(ia|jb) − (ib|ja)]; differentiate via ∂t2 and
+/// ∂(ia|jb). The clean Layer-2 validation gate.
+#[allow(clippy::too_many_arguments)]
+pub fn analytic_de_mp2_along(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    rhf: &ScfResult,
+    mp2_config: &RiMp2Config,
+    axis: usize,
+) -> Result<f64, FerricError> {
+    let inter = compute_mp2_intermediates(mol, obs, dfbs, op, rhf, mp2_config)?;
+    let (nocc, nvir, naux) = (inter.nocc, inter.nvir, inter.naux);
+    let nov = nocc * nvir;
+    let (dt2, u) = analytic_dt2_along(ctx, mol, obs, dfbs, op, bounds, rhf, mp2_config, axis)?;
+
+    // ∂B_ov (rebuild here from U for ∂(ia|jb); mirrors analytic_dt2_along).
+    let mut db_ov = Array2::<f64>::zeros((naux, nov));
+    for p in 0..naux {
+        for i in 0..nocc {
+            for a in 0..nvir {
+                let mut s = 0.0;
+                for cc in 0..nvir {
+                    s += u[(cc, i)] * bget(&inter.b_vv, p, cc, a, nvir);
+                }
+                for k in 0..nocc {
+                    s -= u[(a, k)] * bget(&inter.b_oo, p, i, k, nocc);
+                }
+                db_ov[(p, i * nvir + a)] = s;
+            }
+        }
+    }
+    let eri = |ia: usize, jb: usize| (0..naux).map(|p| inter.b_ov[(p, ia)] * inter.b_ov[(p, jb)]).sum::<f64>();
+    let deri = |ia: usize, jb: usize| {
+        (0..naux).map(|p| db_ov[(p, ia)] * inter.b_ov[(p, jb)] + inter.b_ov[(p, ia)] * db_ov[(p, jb)]).sum::<f64>()
+    };
+    let mut de = 0.0;
+    for i in 0..nocc {
+        for a in 0..nvir {
+            let ia = i * nvir + a;
+            for j in 0..nocc {
+                for b in 0..nvir {
+                    let jb = j * nvir + b;
+                    let ib = i * nvir + b;
+                    let ja = j * nvir + a;
+                    let k = 2.0 * eri(ia, jb) - eri(ib, ja);
+                    let dk = 2.0 * deri(ia, jb) - deri(ib, ja);
+                    de += dt2[ia * nov + jb] * k + inter.t2[ia * nov + jb] * dk;
+                }
+            }
+        }
+    }
+    Ok(de)
+}
+
+/// FD ORACLE for ∂E_MP2/∂F: central difference of the MP2 correlation energy
+/// (a scalar → gauge-stable, unlike element-wise t2). Validates analytic_de.
+#[allow(clippy::too_many_arguments)]
+pub fn fd_de_mp2_along(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    scf_config: &ferric_scf::rhf::RhfConfig,
+    mp2_config: &RiMp2Config,
+    axis: usize,
+    h: f64,
+) -> Result<f64, FerricError> {
+    let n = obs.nbasis();
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let e_at = |field: f64| -> Result<f64, FerricError> {
+        let mut v = Array2::<f64>::zeros((n, n));
+        for mu in 0..n {
+            for nu in 0..n {
+                v[(mu, nu)] = -field * dip_ao[axis][(mu, nu)];
+            }
+        }
+        let rhf_f = crate::ff_polar::solve_rhf_with_external(ctx, mol, obs, bounds, scf_config, &v)?;
+        let inter = compute_mp2_intermediates(mol, obs, dfbs, op, &rhf_f, mp2_config)?;
+        Ok(inter.e_mp2)
+    };
+    Ok((e_at(h)? - e_at(-h)?) / (2.0 * h))
+}

@@ -71,7 +71,11 @@ pub struct Mp2Polarizability {
 /// coupling `−Σ_d F_d r_d` built by the caller). Pure-HF only: no DFT, RSH, or
 /// cDFT branches — finite-field α perturbs the HF reference and reads the MP2
 /// relaxed density on top, so the SCF here is the plain Roothaan-Hall loop.
-fn solve_rhf_with_external(
+///
+/// `pub(crate)` so `cpks_polar`'s ∂t2/∂F finite-difference ORACLE can build a
+/// field-perturbed reference (the analytic ∂t2 is validated against the central
+/// difference of t2 rebuilt from this).
+pub(crate) fn solve_rhf_with_external(
     ctx: &ParallelContext,
     mol: &Molecule,
     prep: &PreparedBasis,

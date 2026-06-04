@@ -104,7 +104,7 @@ pub fn solve_zvector(
 /// Uses the full-MO B tensor (computed internally) for exact integral response.
 /// The Lagrangian has P*F terms plus 4-term integral response matching the
 /// structure of compute_orbital_gradient in oo_rimp2.
-fn build_lagrangian(
+pub(crate) fn build_lagrangian(
     f_mo: &Array2<f64>,
     t2: &[f64],
     p_oo: &Array2<f64>,
