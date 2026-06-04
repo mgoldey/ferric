@@ -492,3 +492,83 @@ fn reference_omega_sensitivity() {
     eprintln!("  Read each COLUMN: spread down a column = C6 sensitivity to the reference");
     eprintln!("  at that fixed correlation ω. Small ⟹ reference-ω decouples from C6.");
 }
+
+/// REPLACE Clausius-Mossotti: does the COMPUTED dielectric spectrum carry the
+/// dynamic range that scalar α/V loses? CM catastrophes at molecular density;
+/// scalar non-local-field ε (1+4π α/V) fixes the pole but COMPRESSES the range
+/// (ε 3.2–4.8 can't reproduce ω_opt's 4.6× span). Hypothesis: the dielectric
+/// EIGENVALUE structure (anisotropy / soft modes) distinguishes N₂ from CH₄ where
+/// the scalar can't. Pull λ_max, top-3 sum, trace-log, and correlate vs ω_opt.
+///
+/// Run: cargo test --release -p ferric-rpa --test rsh_rpa_dispersion \
+///        dielectric_eigenvalue_descriptors -- --ignored --nocapture
+#[test]
+#[ignore]
+fn dielectric_eigenvalue_descriptors() {
+    use ferric_rpa::properties::{atomic_effective_volumes_becke, dielectric_spectrum_static, pdep_polarizability_static};
+
+    let lc_name = "HYB_GGA_XC_LC_WPBE";
+    // ω_opt from the calibration (RSH-RPA C6=DOSD on LC-ωPBE ref).
+    let mols: &[(&str, &str, f64)] = &[
+        ("h2o",  "3\nh2o\nO 0 0 0.117790\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n", 0.1759),
+        ("ch4",  "5\nch4\nC 0 0 0\nH 0.6276 0.6276 0.6276\nH -0.6276 -0.6276 0.6276\nH -0.6276 0.6276 -0.6276\nH 0.6276 -0.6276 -0.6276\n", 0.1255),
+        ("nh3",  "4\nnh3\nN 0 0 0.0\nH 0 0.9377 -0.3816\nH 0.8120 -0.4689 -0.3816\nH -0.8120 -0.4689 -0.3816\n", 0.1035),
+        ("co",   "2\nco\nC 0 0 0\nO 0 0 1.128\n", 0.3651),
+        ("n2",   "2\nn2\nN 0 0 0.0\nN 0 0 1.0977\n", 0.4640),
+        ("co2",  "3\nco2\nC 0 0 0.0\nO 0 0 1.1621\nO 0 0 -1.1621\n", 0.3712),
+        ("c2h4", "6\nc2h4\nC 0 0 0.6695\nC 0 0 -0.6695\nH 0 0.9289 1.2321\nH 0 -0.9289 1.2321\nH 0 0.9289 -1.2321\nH 0 -0.9289 -1.2321\n", 0.2267),
+    ];
+    let ctx = ParallelContext::default();
+    let cfg = PdepRpaConfig::default();
+
+    eprintln!("\n=== Dielectric eigenvalue descriptors vs ω_opt (replace CM) ===");
+    eprintln!("  {:>5}  {:>8}  {:>8}  {:>8}  {:>9}  {:>9}  {:>8}", "mol", "λ_max", "top3", "trace_ln", "aniso", "α/V", "ω_opt");
+
+    let mut lmax=vec![]; let mut top3=vec![]; let mut tln=vec![]; let mut aniso=vec![]; let mut aov=vec![]; let mut wopt=vec![];
+    for (label, xyz, wo) in mols {
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let obs_bs = basis::bundled("aug-cc-pvdz").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let scf_cfg = RhfConfig { energy_conv: 1e-9, xc: Some(lc_name.to_string()),
+            df_j_aux: Some("def2-universal-jkfit".to_string()),
+            df_k_aux: Some("def2-universal-jkfit".to_string()), ..Default::default() };
+        let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
+
+        // Static dielectric spectrum (full Coulomb). λ are screening eigenvalues (>1).
+        let spec = dielectric_spectrum_static(&mol, &obs, &dfbs, &rhf, Operator::coulomb(), 1e-6).unwrap();
+        let mut ev = spec.eigenvalues.clone();
+        ev.sort_by(|a,b| b.partial_cmp(a).unwrap()); // descending
+        let l1 = ev[0];
+        let t3: f64 = ev.iter().take(3).sum();
+        let trace_ln = spec.trace_log;
+
+        // α tensor anisotropy (the shape descriptor scalar α/V loses).
+        let at = pdep_polarizability_static(&mol, &obs, &dfbs, &rhf, Operator::coulomb(), &cfg).unwrap();
+        let d = [at.tensor[0][0], at.tensor[1][1], at.tensor[2][2]];
+        let amean = (d[0]+d[1]+d[2])/3.0;
+        let an = ((d[0]-amean).powi(2)+(d[1]-amean).powi(2)+(d[2]-amean).powi(2)).sqrt()/amean; // rel anisotropy
+        let vol: f64 = atomic_effective_volumes_becke(&mol,&obs,&obs_bs,rhf.density_r()).unwrap().iter().sum();
+        let av = at.iso/vol;
+
+        eprintln!("  {:>5}  {:>8.3}  {:>8.2}  {:>8.3}  {:>9.4}  {:>9.4}  {:>8.4}", label, l1, t3, trace_ln, an, av, wo);
+        lmax.push(l1); top3.push(t3); tln.push(trace_ln); aniso.push(an); aov.push(av); wopt.push(*wo);
+    }
+
+    let pear = |x:&[f64], y:&[f64]| -> f64 {
+        let n=x.len() as f64; let mx=x.iter().sum::<f64>()/n; let my=y.iter().sum::<f64>()/n;
+        let sxy:f64=x.iter().zip(y).map(|(a,b)|(a-mx)*(b-my)).sum();
+        let sxx:f64=x.iter().map(|a|(a-mx).powi(2)).sum();
+        let syy:f64=y.iter().map(|b|(b-my).powi(2)).sum();
+        sxy/(sxx.sqrt()*syy.sqrt())
+    };
+    eprintln!("\n  Pearson r vs ω_opt:");
+    eprintln!("    λ_max     = {:+.3}", pear(&lmax,&wopt));
+    eprintln!("    top3      = {:+.3}", pear(&top3,&wopt));
+    eprintln!("    trace_ln  = {:+.3}", pear(&tln,&wopt));
+    eprintln!("    aniso(α)  = {:+.3}", pear(&aniso,&wopt));
+    eprintln!("    α/V       = {:+.3}  (scalar baseline)", pear(&aov,&wopt));
+    eprintln!("  Any |r| clearly beating α/V's = the descriptor that carries the lost range.");
+}
