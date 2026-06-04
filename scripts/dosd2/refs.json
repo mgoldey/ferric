@@ -1,0 +1,15 @@
+{
+  "_comment": "TS-failure-mode probe set. Reference C6^AA from Toulouse et al. arXiv:1305.0107 Table III (Meath-school DOSD). Partitioned into PROBES (anisotropic/multiply-bonded/heavy-diffuse, where TS is expected to fail) and CONTROLS (saturated/isotropic, where TS should do fine). Geometries B3LYP/aug-cc-pVDZ-relaxed standard values.",
+  "molecular_c6_aa": {
+    "SO2":    {"c6": 294.0, "class": "probe",   "why": "bent, multiply-bonded S=O, anisotropic, 2nd-row"},
+    "CS2":    {"c6": 871.1, "class": "probe",   "why": "linear, 2x 2nd-row S, extreme axial anisotropy"},
+    "COS":    {"c6": 402.2, "class": "probe",   "why": "linear anisotropic, mixed 2nd-row"},
+    "N2O":    {"c6": 184.9, "class": "probe",   "why": "linear, multiply-bonded, anisotropic"},
+    "Cl2":    {"c6": 389.2, "class": "probe",   "why": "diffuse 2nd-row diatomic, anisotropic"},
+    "HBr":    {"c6": 216.6, "class": "probe",   "why": "4th-row halide, most diffuse / heavy"},
+    "SiH4":   {"c6": 343.9, "class": "control", "why": "tetrahedral isotropic, 2nd-row (isolates anisotropy)"},
+    "CCl4":   {"c6": 2024.1,"class": "control", "why": "tetrahedral isotropic, 4x 2nd-row Cl"},
+    "CH3OH":  {"c6": 222.0, "class": "control", "why": "saturated, mild anisotropy"},
+    "CH3OCH3":{"c6": 534.1, "class": "control", "why": "saturated ether"}
+  }
+}

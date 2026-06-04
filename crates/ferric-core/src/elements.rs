@@ -24,6 +24,13 @@ const ELEMENTS: &[(&str, i32)] = &[
     ("C", 6), ("N", 7), ("O", 8), ("F", 9), ("Ne", 10),
     ("Na", 11), ("Mg", 12), ("Al", 13), ("Si", 14), ("P", 15),
     ("S", 16), ("Cl", 17), ("Ar", 18), ("K", 19), ("Ca", 20),
+    // Period 4 transition metals + p-block through Kr. Bundled basis sets
+    // (aug-cc-pVDZ/TZ, def2) cover these; the parser must too (Br/Se needed
+    // for heavy-halide dispersion benchmarks).
+    ("Sc", 21), ("Ti", 22), ("V", 23), ("Cr", 24), ("Mn", 25),
+    ("Fe", 26), ("Co", 27), ("Ni", 28), ("Cu", 29), ("Zn", 30),
+    ("Ga", 31), ("Ge", 32), ("As", 33), ("Se", 34), ("Br", 35),
+    ("Kr", 36),
 ];
 
 /// Convert an element symbol to its atomic number (case-insensitive).

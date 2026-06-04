@@ -325,9 +325,12 @@ fn main() {
     let proatom_radii: Vec<f64> = (1..=600).map(|k| k as f64 * 0.05).collect(); // 0.05..30 Bohr
     let proatom_gs_mult = |z: i32| -> usize {
         match z {
-            1 | 3 | 5 | 9 | 11 | 13 | 17 => 2,
-            6 | 8 | 14 | 16 => 3,
-            7 | 15 => 4,
+            // Doublets: H, Li, B, F, Na, Al, Cl, Ga, Br (one unpaired p/s e⁻)
+            1 | 3 | 5 | 9 | 11 | 13 | 17 | 31 | 35 => 2,
+            // Triplets (³P): C, O, Si, S, Ge, Se
+            6 | 8 | 14 | 16 | 32 | 34 => 3,
+            // Quartets (⁴S): N, P, As
+            7 | 15 | 33 => 4,
             _ => 1,
         }
     };
