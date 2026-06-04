@@ -81,6 +81,16 @@ pub struct RhfConfig {
     /// cDFT outer-loop convergence: stop when max_C |N_C − target_C| is below
     /// this (electrons). Default 1e-5.
     pub cdft_lambda_tol: f64,
+    /// Fractional (ensemble) occupation of a degenerate frontier shell. When
+    /// `true` (UHF/UKS only), if the per-spin HOMO sits inside a group of
+    /// near-degenerate orbitals that straddle the occupation boundary, the
+    /// integer occupation is spread *equally* over that group (e.g. a ³P atom's
+    /// 2 p-electrons → 2/3 in each of px/py/pz). This restores the spherical
+    /// symmetry that otherwise makes the GGA XC potential orientation-dependent
+    /// and the SCF oscillate forever (free O/S/Si atoms never converge with
+    /// integer occupation + PBE). Default `false` — opt-in; integer-occupation
+    /// paths are unchanged.
+    pub fractional_occ: bool,
 }
 
 impl Default for RhfConfig {
@@ -106,6 +116,7 @@ impl Default for RhfConfig {
             mom_after_iter: 0,
             constraints: Vec::new(),
             cdft_lambda_tol: 1e-5,
+            fractional_occ: false,
         }
     }
 }

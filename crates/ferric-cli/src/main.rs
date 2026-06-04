@@ -139,6 +139,7 @@ fn main() {
         mom_after_iter: 0,
         constraints: Vec::new(),
         cdft_lambda_tol: 1e-5,
+        fractional_occ: false,
     };
 
     if task == "optimize" {
@@ -876,17 +877,20 @@ fn main() {
                                     free_cfg.mom_after_iter = if mult > 1 { 5 } else { 0 };
                                     // 1-thread pool for the tiny atom solve — see run_serial.
                                     //
-                                    // The free-atom volume must be on the SAME scale as the
-                                    // molecular volume (vols[i]) or the ratio is meaningless. The
-                                    // molecular volume uses the molecular xc density, so ideally the
-                                    // free atom does too. But open-shell xc atoms (e.g. Si ³P / UKS-PBE)
-                                    // often fail to converge — and on failure the code below would
-                                    // fall back to the TS-PRL *table* v_free, which is on a DIFFERENT
-                                    // scale than ferric's computed molecular volume, inflating the ratio
-                                    // (Si: table 60 vs ferric-scale ~300 → ratio 2.3× → C6 5× too big).
-                                    // So if the xc solve fails, retry with pure HF/UHF (no xc): a
-                                    // ferric-computed density on the consistent integration grid is far
-                                    // better than a scale-mismatched table value.
+                                    // The free-atom volume must be on the SAME scale (same xc) as
+                                    // the molecular volume (vols[i]) or the ratio is meaningless.
+                                    // Open-shell xc atoms (³P: O/S/Si) used to NOT converge — their
+                                    // degenerate p-shell makes the GGA potential orientation-
+                                    // dependent and the SCF oscillates forever. Fractional/ensemble
+                                    // occupation (fractional_occ) spreads the open-shell electrons
+                                    // equally over the degenerate p orbitals, restoring spherical
+                                    // symmetry and converging the UKS-PBE atom on the *consistent*
+                                    // scale. The HF fallback below remains as a last-resort safety
+                                    // net (a scale-mismatched table value is the worst case and
+                                    // should now never be hit for O/S/Si).
+                                    if mult > 1 {
+                                        free_cfg.fractional_occ = true;
+                                    }
                                     let solve_free = |cfg: &RhfConfig| -> Option<ndarray::Array2<f64>> {
                                         if mult > 1 {
                                             solve_uhf(&ctx, &free_mol, &free_obs, &free_bounds, cfg)

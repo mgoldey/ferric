@@ -679,6 +679,108 @@ pub fn debug_emp2_at_field(
     Ok(compute_mp2_intermediates(mol, obs, dfbs, op, &r, mp2_config)?.e_mp2)
 }
 
+/// Build (2J−K)[D]_vo in MO from an MO-basis density `dm_mo`, via build_jk on the
+/// AO density. Returns the (nvir,nocc) block. (= PySCF get_veff(dm)*2 → vo.)
+fn veff_vo_mo(
+    ctx: &ParallelContext,
+    obs: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    c: &Array2<f64>,
+    dm_mo: &Array2<f64>,
+    orb: &OrbitalSpace,
+) -> Result<Array2<f64>, FerricError> {
+    let OrbitalSpace { nocc, nvir, nocc_total, first_occ } = *orb;
+    let nbas = obs.nbasis();
+    let dm_ao = c.dot(dm_mo).dot(&c.t());
+    let mut j = Array2::<f64>::zeros((nbas, nbas));
+    let mut k = Array2::<f64>::zeros((nbas, nbas));
+    ferric_scf::rhf::build_jk(ctx, obs, bounds, 1e-12, &dm_ao, &mut j, &mut k)?;
+    let g_ao = 2.0 * &j - &k;
+    let g_mo = c.t().dot(&g_ao).dot(c);
+    let mut out = Array2::<f64>::zeros((nvir, nocc));
+    for a in 0..nvir {
+        for i in 0..nocc {
+            out[(a, i)] = g_mo[(nocc_total + a, first_occ + i)];
+        }
+    }
+    Ok(out)
+}
+
+/// VALIDATED static relaxed MP2 1-PDM in AO (matches PySCF to machine precision —
+/// see scripts/cpks/mp2_alpha_pyscf.py). The recipe, pinned vs PySCF on water/STO-3G:
+///   • P_oo, P_vv from `build_mp2_density`, assembled as P + Pᵀ  (the ×2).
+///   • Xvo = L + (2J−K)[dm_P]_vo   (L = build_lagrangian; dm_P = the P+Pᵀ density).
+///   • (Δε + A) z = −Xvo           (the sign! A = full orbital Hessian).
+///   • D = 2δ_core + (P_oo+P_ooᵀ) + (P_vv+P_vvᵀ) + z_vo/ov.
+/// NOTE: ferric's shared `build_relaxed_density_ao`/`solve_zvector` are BUGGY for this
+/// (single P, no veff, +l sign → water μ_z=−0.708 vs PySCF −0.653); this is the
+/// corrected path, kept local to cpks_polar (gradient code untouched).
+pub fn static_relaxed_density_ao(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    rhf: &ScfResult,
+    mp2_config: &RiMp2Config,
+) -> Result<Array2<f64>, FerricError> {
+    let inter = compute_mp2_intermediates(mol, obs, dfbs, op, rhf, mp2_config)?;
+    let (nocc, nvir, first_occ, nocc_total) =
+        (inter.nocc, inter.nvir, inter.first_occ, inter.nocc_total);
+    let c = rhf.mos_r();
+    let eps = rhf.eps_r();
+    let nmo = c.ncols();
+    let orb = OrbitalSpace::new(nocc, nvir, nocc_total, first_occ);
+
+    // P-blocks (one-sided, = PySCF doo/dvv up to sign): inter.p_oo/p_vv.
+    let p_oo = &inter.p_oo;
+    let p_vv = &inter.p_vv;
+
+    // dm_P (MO): (P_oo+P_ooᵀ) ⊕ (P_vv+P_vvᵀ) — the ×2 symmetrized MP2 density.
+    let mut dm_p = Array2::<f64>::zeros((nmo, nmo));
+    for i in 0..nocc {
+        for j in 0..nocc {
+            dm_p[(first_occ + i, first_occ + j)] = p_oo[(i, j)] + p_oo[(j, i)];
+        }
+    }
+    for a in 0..nvir {
+        for b in 0..nvir {
+            dm_p[(nocc_total + a, nocc_total + b)] = p_vv[(a, b)] + p_vv[(b, a)];
+        }
+    }
+
+    // L = ferric Lagrangian (integral part; == PySCF Imat_vo to 4e-17 for canonical).
+    let f_mo = c.t().dot(rhf.fock_r()).dot(c);
+    let b_full = crate::oo_rimp2::compute_b_full_mo(obs, dfbs, op, c)?;
+    let l = crate::zvector::build_lagrangian(&f_mo, &inter.t2, p_oo, p_vv, &orb, &b_full);
+
+    // Xvo = L + (2J−K)[dm_P]_vo.
+    let veff = veff_vo_mo(ctx, obs, bounds, c, &dm_p, &orb)?;
+    let xvo = &l + &veff;
+
+    // (Δε + A) z = −Xvo  (full-A operator, ascale=1.0).
+    let (z, resid, iters, conv) = solve_cphf_cg_scaled(c, &(-&xvo), obs, bounds, &orb, eps, 1.0)?;
+    if !conv {
+        return Err(FerricError::General(format!(
+            "static_relaxed_density: z not converged (resid={resid:.2e}, iters={iters})"
+        )));
+    }
+
+    // D (MO): 2δ core + P+Pᵀ + z.
+    let mut d_mo = dm_p; // already has P+Pᵀ blocks
+    for i in 0..nocc {
+        d_mo[(first_occ + i, first_occ + i)] += 2.0;
+    }
+    for a in 0..nvir {
+        for i in 0..nocc {
+            d_mo[(nocc_total + a, first_occ + i)] += z[(a, i)];
+            d_mo[(first_occ + i, nocc_total + a)] += z[(a, i)];
+        }
+    }
+    Ok(c.dot(&d_mo).dot(&c.t()))
+}
+
 // ===========================================================================
 // Layer 3 (PySCF-mirrored): analytic ∂(relaxed dm1)/∂F^x, then
 //   α_xy = −Tr[(∂dm1_relaxed/∂F^x)_AO · r_y_AO].

@@ -378,8 +378,8 @@ pub fn solve_uhf_fockmod(
                 f_b_new += &(shift_eff * s.dot(&p_bv).dot(&s));
             }
         }
-        let (_, mut c_a_new) = diagonalize(&f_a_new, &s_inv_sqrt)?;
-        let (_, mut c_b_new) = diagonalize(&f_b_new, &s_inv_sqrt)?;
+        let (eps_a_new, mut c_a_new) = diagonalize(&f_a_new, &s_inv_sqrt)?;
+        let (eps_b_new, mut c_b_new) = diagonalize(&f_b_new, &s_inv_sqrt)?;
 
         // MOM occupied-orbital selection (per spin) from iter mom_after_iter+1.
         if config.mom_after_iter > 0 && iter > config.mom_after_iter {
@@ -404,8 +404,13 @@ pub fn solve_uhf_fockmod(
             mom_ref_a = Some(c_a.slice(ndarray::s![.., ..nocc_a]).to_owned());
             mom_ref_b = Some(c_b.slice(ndarray::s![.., ..nocc_b]).to_owned());
         }
-        d_a = density(&c_a, nocc_a);
-        d_b = density(&c_b, nocc_b);
+        if config.fractional_occ {
+            d_a = density_fractional(&c_a, &eps_a_new, nocc_a);
+            d_b = density_fractional(&c_b, &eps_b_new, nocc_b);
+        } else {
+            d_a = density(&c_a, nocc_a);
+            d_b = density(&c_b, nocc_b);
+        }
     }
     Err(FerricError::ScfConvergence {
         iterations: config.max_iter,
@@ -420,6 +425,80 @@ fn density(c: &Array2<f64>, nocc: usize) -> Array2<f64> {
     }
     let c_occ = c.slice(ndarray::s![.., ..nocc]);
     c_occ.dot(&c_occ.t())
+}
+
+/// Density with fixed fractional (ensemble) occupation of a degenerate frontier
+/// shell, for one spin channel: `D = Σ_p f_p c_p c_pᵀ`.
+///
+/// Builds integer occupation `f = 1` for orbitals fully below the frontier, then
+/// detects the group of orbitals near-degenerate with the HOMO (energies within
+/// `EPS_TOL` of `eps[nocc-1]`) that straddle the occupation boundary, and spreads
+/// the remaining electrons of that shell *equally* across the whole group. For a
+/// ³P atom this puts 2/3 of an electron in each of the three degenerate p
+/// orbitals, restoring spherical symmetry so the GGA potential stops oscillating.
+///
+/// Falls back to plain integer `density()` when the HOMO is non-degenerate (the
+/// common case), so it is a no-op for ordinary molecules.
+fn density_fractional(c: &Array2<f64>, eps: &[f64], nocc: usize) -> Array2<f64> {
+    let n = c.nrows();
+    if nocc == 0 {
+        return Array2::zeros((n, n));
+    }
+    if nocc >= n {
+        return density(c, nocc);
+    }
+    const EPS_TOL: f64 = 1e-3; // Hartree: orbitals this close are "degenerate"
+    let e_homo = eps[nocc - 1];
+    // Extent of the degenerate group straddling the occupation boundary.
+    let mut lo = nocc - 1;
+    while lo > 0 && (eps[lo - 1] - e_homo).abs() < EPS_TOL {
+        lo -= 1;
+    }
+    let mut hi = nocc - 1; // inclusive
+    while hi + 1 < n && (eps[hi + 1] - e_homo).abs() < EPS_TOL {
+        hi += 1;
+    }
+    let group_size = hi - lo + 1;
+    if std::env::var("FERRIC_FRAC_DEBUG").is_ok() {
+        eprintln!("[FRAC] nocc={nocc} e_homo={e_homo:.5} group=[{lo}..={hi}] size={group_size} straddles={}",
+            hi >= nocc);
+        let lo_show = lo.saturating_sub(1);
+        for k in lo_show..(hi+2).min(c.ncols()) {
+            eprintln!("  eps[{k}]={:.5}", eps[k]);
+        }
+    }
+    // Only act if the group truly straddles the boundary (some occupied, some
+    // virtual) — otherwise it's a fully-occupied or fully-virtual degenerate
+    // shell and integer occupation is already correct.
+    if group_size <= 1 || hi < nocc {
+        return density(c, nocc);
+    }
+    // Electrons to distribute over the group = (occupied orbitals in group).
+    let n_in_group_occupied = nocc - lo; // how many of the group are below the boundary
+    let frac = n_in_group_occupied as f64 / group_size as f64;
+
+    let mut d = Array2::<f64>::zeros((n, n));
+    // Fully-occupied orbitals below the degenerate group: f = 1.
+    if lo > 0 {
+        let c_core = c.slice(ndarray::s![.., ..lo]);
+        d = c_core.dot(&c_core.t());
+    }
+    // Degenerate group: f = frac each.
+    for p in lo..=hi {
+        let cp = c.slice(ndarray::s![.., p]);
+        let outer = {
+            let col = cp.to_owned();
+            let mut m = Array2::<f64>::zeros((n, n));
+            for i in 0..n {
+                for j in 0..n {
+                    m[(i, j)] = frac * col[i] * col[j];
+                }
+            }
+            m
+        };
+        d += &outer;
+    }
+    d
 }
 
 fn diagonalize(
@@ -526,5 +605,55 @@ mod tests {
             3,
         );
         assert!((s2 - 2.0).abs() < 0.05, "O atom ⟨S²⟩ = {} (expected ≈2.0)", s2);
+    }
+
+    #[test]
+    fn test_uks_pbe_oxygen_atom_fractional_occ_converges() {
+        // Free O atom (³P) via UKS-PBE. With INTEGER occupation the degenerate
+        // 2p shell makes the GGA potential orientation-dependent and the SCF
+        // oscillates forever (no convergence at 200 iters). Fractional/ensemble
+        // occupation spreads the open-shell electrons equally over the
+        // degenerate p orbitals, restoring spherical symmetry and converging it.
+        // Regression for the TS free-atom-volume residual (commit chain on
+        // feat/tensor-einsum-framework). sto-3g keeps it fast and still has the
+        // 3-fold-degenerate 2p shell that triggers the pathology.
+        let mol = Molecule::parse_xyz("1\nO\nO 0 0 0\n", 0, 3).unwrap();
+        let bs = basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = ferric_integrals::operator::Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let cfg = UhfConfig {
+            xc: Some("PBE".to_string()),
+            fractional_occ: true,
+            mom_after_iter: 0,
+            max_iter: 200,
+            ..Default::default()
+        };
+        let ctx = ParallelContext::default();
+        let res = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg)
+            .expect("UKS-PBE O atom with fractional occ should solve");
+        assert!(res.converged, "UKS-PBE O atom did not converge with fractional occ");
+    }
+
+    #[test]
+    fn debug_uks_pbe_silicon_augccpvdz_fractional() {
+        // The real target: Si ³P at aug-cc-pVDZ (the TS free-atom case).
+        let mol = Molecule::parse_xyz("1\nSi\nSi 0 0 0\n", 0, 3).unwrap();
+        let bs = basis::bundled("aug-cc-pvdz").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = ferric_integrals::operator::Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let cfg = UhfConfig {
+            xc: Some("PBE".to_string()),
+            fractional_occ: true,
+            mom_after_iter: 5,
+            max_iter: 200,
+            ..Default::default()
+        };
+        let ctx = ParallelContext::default();
+        match solve_uhf(&ctx, &mol, &prep, &bounds, &cfg) {
+            Ok(r) => eprintln!("DEBUG Si: converged={} E={:.6} iters={}", r.converged, r.energy, r.iterations),
+            Err(e) => eprintln!("DEBUG Si: Err {e}"),
+        }
     }
 }

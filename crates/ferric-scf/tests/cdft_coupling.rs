@@ -167,12 +167,12 @@ fn he2_plus_hab(r_ang: f64) -> (f64, f64, f64, f64) {
     // localized plateau rather than walking λ over the cliff.
     let cfg0 = RhfConfig {
         constraints: vec![Constraint { fragment: vec![0], spin: SpinChannel::Total, target: 1.0 }],
-        cdft_lambda_tol: 1e-2, dft_grid: Some(gcfg.clone()), level_shift: 0.2,
+        cdft_lambda_tol: 1e-2, fractional_occ: false, dft_grid: Some(gcfg.clone()), level_shift: 0.2,
         ..Default::default()
     };
     let cfg1 = RhfConfig {
         constraints: vec![Constraint { fragment: vec![1], spin: SpinChannel::Total, target: 1.0 }],
-        cdft_lambda_tol: 1e-2, dft_grid: Some(gcfg.clone()), level_shift: 0.2,
+        cdft_lambda_tol: 1e-2, fractional_occ: false, dft_grid: Some(gcfg.clone()), level_shift: 0.2,
         ..Default::default()
     };
     let ra = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &cfg0).unwrap();

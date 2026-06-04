@@ -88,6 +88,7 @@ fn charge_constraint_is_satisfied() {
             target,
         }],
         cdft_lambda_tol: 1e-5,
+        fractional_occ: false,
         ..Default::default()
     };
     let res = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &cfg).unwrap();

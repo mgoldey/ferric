@@ -247,3 +247,69 @@ fn diag_alpha_relaxed_vs_ff() {
     eprintln!("  an diag: {:.4} {:.4} {:.4}", an.tensor[0][0],an.tensor[1][1],an.tensor[2][2]);
     eprintln!("  ff diag: {:.4} {:.4} {:.4}", ff.tensor[0][0],ff.tensor[1][1],ff.tensor[2][2]);
 }
+
+#[test]
+#[ignore]
+fn diag_ferric_static_relaxed_dipole() {
+    // Does ferric's EXISTING relaxed density (solve_zvector + build_relaxed_density_ao)
+    // reproduce a correct relaxed MP2 dipole? Compare to the value the clean-room
+    // pinned vs PySCF (water/STO-3G μ_z = -0.652736). Uses STO-3G to match.
+    use ferric_core::basis;
+    use ferric_mp2::rimp2::{compute_mp2_intermediates, RiMp2Config};
+    use ferric_mp2::zvector::{solve_zvector, build_relaxed_density_ao};
+    use ferric_integrals::oneelectron;
+    let xyz = "3\nh2o\nO 0 0 0.117790\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n";
+    let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+    let obs_bs = basis::bundled("sto-3g").unwrap();
+    let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
+    let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+    let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
+    let ctx = ParallelContext::default();
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+    let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
+    let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
+    let mp2_cfg = RiMp2Config { frozen_core: 0 };
+    let inter = compute_mp2_intermediates(&mol, &obs, &dfbs, op, &rhf, &mp2_cfg).unwrap();
+    let (z, _l) = solve_zvector(&mol, &obs, &dfbs, op, &bounds, &rhf, &inter).unwrap();
+    let p_relax = build_relaxed_density_ao(rhf.mos_r(), &inter.p_oo, &inter.p_vv, &z, &inter.orbital_space());
+    let dip_ao = oneelectron::dipole(&obs, [0.0,0.0,0.0]);
+    let mut mu = [0.0f64;3];
+    for d in 0..3 {
+        let elec = (&p_relax * &dip_ao[d]).sum();
+        let nuc: f64 = mol.atoms.iter().map(|a| a.z as f64 * [a.x,a.y,a.zpos][d]).sum();
+        mu[d] = nuc - elec;
+    }
+    eprintln!("ferric static relaxed μ = {:?}", mu);
+    eprintln!("pyscf (clean-room) μ_z = -0.652736 (STO-3G, RI-aux may differ slightly)");
+}
+
+#[test]
+#[ignore]
+fn cpks_static_relaxed_dipole_vs_pyscf() {
+    // The VALIDATED static relaxed density must reproduce PySCF μ_z=-0.652736
+    // (water/STO-3G). ferric uses RI for correlation so allow ~1e-3 RI slack.
+    use ferric_core::basis;
+    use ferric_mp2::cpks_polar::static_relaxed_density_ao;
+    use ferric_integrals::oneelectron;
+    let xyz = "3\nh2o\nO 0 0 0.117790\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n";
+    let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+    let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
+    let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+    let ctx = ParallelContext::default();
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+    let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
+    let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
+    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0 };
+    let p = static_relaxed_density_ao(&ctx,&mol,&obs,&dfbs,op,&bounds,&rhf,&mp2_cfg).unwrap();
+    let dip_ao = oneelectron::dipole(&obs, [0.0,0.0,0.0]);
+    let mut mu=[0.0f64;3];
+    for d in 0..3 {
+        let elec=(&p*&dip_ao[d]).sum();
+        let nuc:f64=mol.atoms.iter().map(|a|a.z as f64*[a.x,a.y,a.zpos][d]).sum();
+        mu[d]=nuc-elec;
+    }
+    eprintln!("ferric VALIDATED static relaxed μ = {:?}  (pyscf μ_z=-0.652736)", mu);
+    assert!((mu[2].abs()-0.652736).abs() < 2e-2, "μ_z={} vs pyscf -0.652736", mu[2]);
+}
