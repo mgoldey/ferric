@@ -398,6 +398,7 @@ dependencies = [
  "ferric-rpa",
  "ferric-scf",
  "ndarray",
+ "rayon",
  "serde",
  "toml",
 ]

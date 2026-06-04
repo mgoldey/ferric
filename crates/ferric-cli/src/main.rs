@@ -20,6 +20,26 @@ use ferric_scf::gradient::{rohf_gradient, uhf_gradient};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::optimize::{optimize_geometry, OptimizeConfig};
 
+/// Run `f` on a private single-thread rayon pool.
+///
+/// Free-atom / proatom SCFs are tiny (one atom, ~10-30 basis functions). On the
+/// global multi-thread pool, rayon's per-task coordination overhead dwarfs the
+/// actual Fock-build work — a single S atom at aug-cc-pVDZ took 179 s with
+/// RAYON_NUM_THREADS=8 vs 9.6 s with 1 (18× slower). Since every TS volume and
+/// Hirshfeld proatom triggers such a solve, the penalty made 2nd-row molecules
+/// (h2s, hcl) take 40-60 min. Confining these inner solves to one thread keeps
+/// the big molecular SCF/RPA fully parallel while making the atoms fast.
+fn run_serial<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R + Send,
+    R: Send,
+{
+    match rayon::ThreadPoolBuilder::new().num_threads(1).build() {
+        Ok(pool) => pool.install(f),
+        Err(_) => f(), // if pool creation fails, just run inline
+    }
+}
+
 fn main() {
     let ctx = ParallelContext::new();
     let args: Vec<String> = std::env::args().collect();
@@ -309,12 +329,19 @@ fn main() {
         let aobs = PreparedBasis::new(&amol, &bs).ok()?;
         let abounds = SchwarzBounds::compute(op, &aobs).ok()?;
         let mut acfg = rhf_config.clone();
-        let adens = if proatom_gs_mult(z) == 1 {
-            solve_rhf(&ctx, &amol, &aobs, op, &abounds, &acfg).ok()?.density_r().to_owned()
-        } else {
-            acfg.mom_after_iter = 5;
-            solve_uhf(&ctx, &amol, &aobs, &abounds, &acfg).ok()?.density_total().to_owned()
-        };
+        // Run the single-atom SCF on a 1-thread pool — see run_serial.
+        let adens = run_serial(|| {
+            if proatom_gs_mult(z) == 1 {
+                solve_rhf(&ctx, &amol, &aobs, op, &abounds, &acfg)
+                    .ok()
+                    .map(|r| r.density_r().to_owned())
+            } else {
+                acfg.mom_after_iter = 5;
+                solve_uhf(&ctx, &amol, &aobs, &abounds, &acfg)
+                    .ok()
+                    .map(|r| r.density_total().to_owned())
+            }
+        })?;
         ferric_rpa::properties::spherically_averaged_proatom(z, &bs, &adens, &proatom_radii).ok()
     };
 
@@ -821,28 +848,31 @@ fn main() {
                             let sym = ferric_core::elements::z_to_symbol(zi as i32)
                                 .unwrap_or("X");
                             let free_xyz = format!("1\n{sym}\n{sym} 0 0 0\n");
-                            let mult = match zi {
-                                1 | 9 | 17 => 2,   // H, F, Cl: doublet
-                                7 | 15 => 4,        // N, P: quartet
-                                _ => 1,
-                            };
+                            // Correct atomic ground-state multiplicities (3P for
+                            // C/O/Si/S, etc.). Reuse the proatom map — the prior
+                            // ad-hoc match here gave C/O/S a singlet, which is
+                            // wrong physics and HANGS the restricted SCF for S.
+                            let mult = proatom_gs_mult(zi as i32);
                             if let Ok(free_mol) = Molecule::parse_xyz(&free_xyz, 0, mult) {
                                 if let Ok(free_obs) = PreparedBasis::new(&free_mol, &bs) {
                                     let free_bounds = SchwarzBounds::compute(op, &free_obs)
                                         .unwrap_or_else(|_| SchwarzBounds::compute(op, &prep).unwrap());
                                     let mut free_cfg = rhf_config.clone();
                                     free_cfg.mom_after_iter = if mult > 1 { 5 } else { 0 };
-                                    let free_density = if mult > 1 {
-                                        solve_uhf(&ctx, &free_mol, &free_obs,
-                                                  &free_bounds, &free_cfg)
-                                            .ok()
-                                            .map(|r| r.density_total().to_owned())
-                                    } else {
-                                        solve_rhf(&ctx, &free_mol, &free_obs, op,
-                                                  &free_bounds, &free_cfg)
-                                            .ok()
-                                            .map(|r| r.density_r().to_owned())
-                                    };
+                                    // 1-thread pool for the tiny atom solve — see run_serial.
+                                    let free_density = run_serial(|| {
+                                        if mult > 1 {
+                                            solve_uhf(&ctx, &free_mol, &free_obs,
+                                                      &free_bounds, &free_cfg)
+                                                .ok()
+                                                .map(|r| r.density_total().to_owned())
+                                        } else {
+                                            solve_rhf(&ctx, &free_mol, &free_obs, op,
+                                                      &free_bounds, &free_cfg)
+                                                .ok()
+                                                .map(|r| r.density_r().to_owned())
+                                        }
+                                    });
                                     if let Some(d) = free_density {
                                         // Single free atom: Hirshfeld weight = 1
                                         // everywhere (one proatom), so the

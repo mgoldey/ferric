@@ -13,3 +13,4 @@ ferric-export = { path = "../ferric-export" }
 toml = { workspace = true }
 serde = { workspace = true }
 ndarray = { workspace = true }
+rayon = { workspace = true }

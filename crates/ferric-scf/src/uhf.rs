@@ -220,6 +220,17 @@ pub fn solve_uhf_fockmod(
     let mut prev_e = 0.0;
     let mut total_quartets = 0usize;
 
+    // Maximum-Overlap Method (MOM) references: the previously-accepted occupied
+    // α/β MO blocks. From iter `mom_after_iter + 1` onward we pick each spin's
+    // occupied set by AO-overlap with these (Gilbert-Besley-Gill), instead of
+    // pure aufbau. This pins the open-shell occupation through SCF and converges
+    // open-shell atoms (e.g. S/O ³P) whose near-degenerate p-shell otherwise
+    // makes plain DIIS oscillate forever. Empty open block for UHF (each spin is
+    // a pure closed set). Mirrors the rohf.rs MOM wiring.
+    let mut mom_ref_a: Option<Array2<f64>> = None;
+    let mut mom_ref_b: Option<Array2<f64>> = None;
+    let empty_open: Array2<f64> = Array2::<f64>::zeros((n, 0));
+
     for iter in 1..=config.max_iter {
         ctx.check_interrupted()?;
         j_buf.fill(0.0);
@@ -367,10 +378,32 @@ pub fn solve_uhf_fockmod(
                 f_b_new += &(shift_eff * s.dot(&p_bv).dot(&s));
             }
         }
-        let (_, c_a_new) = diagonalize(&f_a_new, &s_inv_sqrt)?;
-        let (_, c_b_new) = diagonalize(&f_b_new, &s_inv_sqrt)?;
+        let (_, mut c_a_new) = diagonalize(&f_a_new, &s_inv_sqrt)?;
+        let (_, mut c_b_new) = diagonalize(&f_b_new, &s_inv_sqrt)?;
+
+        // MOM occupied-orbital selection (per spin) from iter mom_after_iter+1.
+        if config.mom_after_iter > 0 && iter > config.mom_after_iter {
+            if let Some(ref_a) = mom_ref_a.as_ref() {
+                if nocc_a > 0 {
+                    c_a_new =
+                        crate::mom::mom_reorder(&c_a_new, &s, ref_a, &empty_open, nocc_a, 0);
+                }
+            }
+            if let Some(ref_b) = mom_ref_b.as_ref() {
+                if nocc_b > 0 {
+                    c_b_new =
+                        crate::mom::mom_reorder(&c_b_new, &s, ref_b, &empty_open, nocc_b, 0);
+                }
+            }
+        }
         c_a = c_a_new;
         c_b = c_b_new;
+        // Update MOM references to the (possibly reordered) occupied blocks, so
+        // the next iter pins against the most recent accepted occupation.
+        if config.mom_after_iter > 0 && iter >= config.mom_after_iter {
+            mom_ref_a = Some(c_a.slice(ndarray::s![.., ..nocc_a]).to_owned());
+            mom_ref_b = Some(c_b.slice(ndarray::s![.., ..nocc_b]).to_owned());
+        }
         d_a = density(&c_a, nocc_a);
         d_b = density(&c_b, nocc_b);
     }
@@ -460,5 +493,38 @@ mod tests {
             0,
         );
         assert!((s2 - 0.75).abs() < 1e-10, "⟨S²⟩ = {}", s2);
+    }
+
+    #[test]
+    fn test_uhf_oxygen_atom_mom_converges() {
+        // Oxygen atom ground state is ³P (triplet): nα=5, nβ=3. The three
+        // near-degenerate 2p orbitals make the open-shell occupation ambiguous,
+        // and plain aufbau DIIS can oscillate on which p is the SOMO. MOM
+        // (mom_after_iter) pins the occupation by AO-overlap and converges it.
+        // This is the regression for "UHF had no MOM" — the S/O free-atom solves
+        // in the C6 TS path failed without it.
+        let mol = Molecule::parse_xyz("1\nO\nO 0 0 0\n", 0, 3).unwrap();
+        let bs = basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = ferric_integrals::operator::Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let cfg = UhfConfig {
+            energy_conv: 1e-9,
+            density_conv: 1e-8,
+            mom_after_iter: 5,
+            ..Default::default()
+        };
+        let ctx = ParallelContext::default();
+        let res = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap();
+        assert!(res.converged, "O atom UHF did not converge");
+        // ⟨S²⟩ for a clean triplet = S(S+1) = 1·2 = 2.0 (allow mild contamination).
+        let s2 = expectation_s_squared(
+            &res.mos_alpha,
+            res.mos_beta.as_ref().unwrap(),
+            &oneelectron::overlap(&prep),
+            5,
+            3,
+        );
+        assert!((s2 - 2.0).abs() < 0.05, "O atom ⟨S²⟩ = {} (expected ≈2.0)", s2);
     }
 }
