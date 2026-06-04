@@ -12,6 +12,8 @@
 pub mod free_atom_ref;
 pub mod mbd;
 
+pub use mbd::{mbd_dynamic_polarizability, mbd_energy};
+
 use ndarray::Array2;
 
 use ferric_core::mol::Molecule;

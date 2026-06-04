@@ -2,6 +2,7 @@
 //! polarizabilities. See docs/superpowers/specs/2026-06-04-mbd-screened-c6-design.md.
 
 use crate::dispersion::free_atom_ref::ts_free_atom;
+use crate::dispersion::DynamicPolarizability;
 use ndarray::Array2;
 use ndarray_linalg::Inverse;
 
@@ -24,7 +25,9 @@ fn erf(x: f64) -> f64 {
 
 /// 3N×3N damped dipole–dipole coupling tensor T (MBD@TS).
 ///
-/// Block (A,B), A≠B: T_AB^{ij} = damping · (3 n_i n_j − δ_ij)/r³, n = r̂_AB, with
+/// Block (A,B), A≠B: T_AB^{ij} = damping · (δ_ij − 3 n_i n_j)/r³, n = r̂_AB, with
+/// the sign convention that pairs with the screening equation A_scs⁻¹ = α⁻¹ + T
+/// (parallel dipoles along the bond couple attractively → enhanced bond-axis α).
 /// the standard Gaussian-overlap (error-function) damping of two QHO dipoles of
 /// combined width σ_AB = √(σ_A²+σ_B²) (Tkatchenko et al., PRL 108, 236402, 2012):
 ///   ζ = erf(u) − (2u/√π) e^{−u²},   η = (4u³/(3√π)) e^{−u²},   u = r/σ_AB
@@ -56,9 +59,9 @@ pub fn dipole_coupling_tensor(positions: &[[f64; 3]], sigma: &[f64]) -> Array2<f
             for i in 0..3 {
                 for j in 0..3 {
                     let kron = if i == j { 1.0 } else { 0.0 };
-                    let bare = (3.0 * nvec[i] * nvec[j] - kron) / r3;
+                    let bare = (kron - 3.0 * nvec[i] * nvec[j]) / r3;
                     let extra = 3.0 * nvec[i] * nvec[j] / r3;
-                    let val = zeta * bare - eta * extra;
+                    let val = zeta * bare + eta * extra;
                     t[(3 * a + i, 3 * b + j)] = val;
                     t[(3 * b + j, 3 * a + i)] = val; // symmetric
                 }
@@ -148,6 +151,85 @@ pub fn mbd_screen(
     out
 }
 
+/// Build a `DynamicPolarizability` from MBD-screened per-atom α(iω). Drop-in
+/// alternative to `ts_dynamic_polarizability` for `casimir_polder_c6`.
+pub fn mbd_dynamic_polarizability(
+    positions: &[[f64; 3]],
+    z: &[usize],
+    vol_ratio: &[f64],
+    alpha_static: &[[[f64; 3]; 3]],
+    freqs: &[f64],
+    weights: &[f64],
+) -> DynamicPolarizability {
+    let ts = crate::dispersion::ts_dynamic_polarizability(
+        z,
+        vol_ratio,
+        alpha_static,
+        freqs,
+        weights,
+    );
+    let params = ts_atom_params(z, vol_ratio, alpha_static);
+    let alpha_eff: Vec<f64> = params.iter().map(|p| p.0).collect();
+    let screened = mbd_screen(&ts.per_atom, positions, &alpha_eff, freqs);
+    let nfreq = freqs.len();
+    let molecular: Vec<[[f64; 3]; 3]> = (0..nfreq)
+        .map(|k| {
+            let mut m = [[0.0; 3]; 3];
+            for at in &screened {
+                for i in 0..3 {
+                    for j in 0..3 {
+                        m[i][j] += at[k][i][j];
+                    }
+                }
+            }
+            m
+        })
+        .collect();
+    DynamicPolarizability {
+        freqs: freqs.to_vec(),
+        weights: weights.to_vec(),
+        per_atom: screened,
+        molecular,
+    }
+}
+
+/// MBD@TS coupled-plasmon dispersion energy (validation path).
+///
+/// E_MBD = ½ Σ_p √λ_p − (3/2) Σ_A ω_A, where λ_p are eigenvalues of the
+/// 3N×3N coupled QHO matrix
+///   H_{Ai,Bj} = ω_A² δ_{AB} δ_{ij} + ω_A ω_B √(α_A α_B) · T^{damp}_{Ai,Bj},
+/// with static α used for both the widths and the prefactor (standard MBD@TS).
+pub fn mbd_energy(positions: &[[f64; 3]], alpha_eff: &[f64], omega_a: &[f64]) -> f64 {
+    use ndarray_linalg::Eigh;
+    const TWO_OVER_PI: f64 = 0.636_619_772_367_581;
+    let n = positions.len();
+    let sigma: Vec<f64> = alpha_eff
+        .iter()
+        .map(|&a| (TWO_OVER_PI.sqrt() * a / 3.0).powf(1.0 / 3.0))
+        .collect();
+    let t = dipole_coupling_tensor(positions, &sigma);
+    let mut h = Array2::<f64>::zeros((3 * n, 3 * n));
+    for a in 0..n {
+        for i in 0..3 {
+            h[(3 * a + i, 3 * a + i)] += omega_a[a] * omega_a[a];
+        }
+    }
+    for a in 0..n {
+        for b in 0..n {
+            let pref = omega_a[a] * omega_a[b] * (alpha_eff[a] * alpha_eff[b]).sqrt();
+            for i in 0..3 {
+                for j in 0..3 {
+                    h[(3 * a + i, 3 * b + j)] += pref * t[(3 * a + i, 3 * b + j)];
+                }
+            }
+        }
+    }
+    let (evals, _) = h.eigh(ndarray_linalg::UPLO::Upper).unwrap();
+    let coupled: f64 = evals.iter().map(|&l| l.max(0.0).sqrt()).sum::<f64>() * 0.5;
+    let uncoupled: f64 = omega_a.iter().sum::<f64>() * 1.5;
+    coupled - uncoupled
+}
+
 /// Invert a near-isotropic 3×3 α tensor. Falls back to (1/iso)·I if singular.
 fn invert3(t: &[[f64; 3]; 3], iso: f64) -> [[f64; 3]; 3] {
     let det = t[0][0] * (t[1][1] * t[2][2] - t[1][2] * t[2][1])
@@ -230,5 +312,61 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn mbd_screening_changes_c6_and_is_finite() {
+        use crate::dispersion::{casimir_polder_c6, ts_dynamic_polarizability};
+        // Two carbons at 4 Bohr: screening must change the molecular C6 (coupling
+        // is active) and the result must be finite & positive. The SIGN of the
+        // change is direction-dependent (parallel-bond dipoles enhance,
+        // perpendicular screen); the per-direction behaviour is checked separately.
+        let z = [6usize, 6];
+        let pos = [[0.0, 0.0, 0.0], [0.0, 0.0, 4.0]];
+        let vr = [1.0, 1.0];
+        let st = [[12.0, 0.0, 0.0], [0.0, 12.0, 0.0], [0.0, 0.0, 12.0]];
+        let alpha_static = [st, st];
+        let freqs: Vec<f64> = (0..12).map(|i| 0.1 * i as f64).collect();
+        let weights = vec![1.0; freqs.len()];
+        let ts = ts_dynamic_polarizability(&z, &vr, &alpha_static, &freqs, &weights);
+        let mbd = mbd_dynamic_polarizability(&pos, &z, &vr, &alpha_static, &freqs, &weights);
+        let c6_ts = casimir_polder_c6(&ts).c6_molecular_iso;
+        let c6_mbd = casimir_polder_c6(&mbd).c6_molecular_iso;
+        assert!(c6_mbd.is_finite() && c6_mbd > 0.0, "MBD C6 not finite/positive: {c6_mbd}");
+        assert!((c6_mbd - c6_ts).abs() > 0.01 * c6_ts, "screening had no effect: {c6_ts} vs {c6_mbd}");
+    }
+
+    #[test]
+    fn mbd_screening_direction_resolved_signs() {
+        // Two atoms on the z-axis. The screened per-atom α should be ENHANCED
+        // along the bond (zz, attractive parallel dipoles) and SCREENED
+        // perpendicular (xx, repulsive antiparallel) relative to the bare α.
+        // This is the textbook directional signature of dipole screening and
+        // pins the sign convention of T.
+        let pos = [[0.0, 0.0, 0.0], [0.0, 0.0, 6.0]];
+        let alpha_eff = [8.0_f64, 8.0];
+        let freqs = [0.0_f64];
+        let a0 = 8.0_f64;
+        let iso = [[a0, 0.0, 0.0], [0.0, a0, 0.0], [0.0, 0.0, a0]];
+        let input: Vec<Vec<[[f64; 3]; 3]>> = vec![vec![iso], vec![iso]];
+        let scr = mbd_screen(&input, &pos, &alpha_eff, &freqs);
+        let xx = scr[0][0][0][0];
+        let zz = scr[0][0][2][2];
+        assert!(zz > a0, "bond-parallel αzz should be enhanced: {zz} vs {a0}");
+        assert!(xx < a0, "perpendicular αxx should be screened: {xx} vs {a0}");
+    }
+
+    #[test]
+    fn mbd_energy_two_atoms_negative_and_decays() {
+        // Two Ar-like oscillators: E_disp < 0, and |E| shrinks with R.
+        let ae = [11.1_f64, 11.1];
+        let wa = [(4.0_f64 / 3.0) * 64.3 / (11.1 * 11.1); 2];
+        let e_near = mbd_energy(&[[0.0, 0.0, 0.0], [0.0, 0.0, 7.0]], &ae, &wa);
+        let e_far = mbd_energy(&[[0.0, 0.0, 0.0], [0.0, 0.0, 14.0]], &ae, &wa);
+        assert!(e_near < 0.0, "E_disp should be negative: {e_near}");
+        assert!(
+            e_far.abs() < e_near.abs(),
+            "E should decay with R: {e_near} {e_far}"
+        );
     }
 }
