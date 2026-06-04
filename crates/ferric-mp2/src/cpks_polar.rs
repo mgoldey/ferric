@@ -875,7 +875,7 @@ pub fn analytic_alpha_relaxed(
 
         // ∂L via directional central difference of build_lagrangian in ε along the
         // analytic input derivatives (smooth → exact at small ε, no gauge issue).
-        let eps_step = 1e-4;
+        let eps_step: f64 = std::env::var("CPKS_EPS").ok().and_then(|x|x.parse().ok()).unwrap_or(1e-4);
         let lag_at = |s: f64| -> Array2<f64> {
             let f = &f_mo0 + &(s * &df_mo);
             let t: Vec<f64> = inter.t2.iter().zip(dt2.iter()).map(|(a, b)| a + s * b).collect();
@@ -886,8 +886,11 @@ pub fn analytic_alpha_relaxed(
         };
         let dl = (&lag_at(eps_step) - &lag_at(-eps_step)).mapv(|v| v / (2.0 * eps_step));
 
-        // ∂Δε⊙z : ddenom_ai = (deps_v[a] − deps_o[i]); but df_mo gives ∂ε directly.
+        // Differentiating the Z-vector equation (Δε+A) z₀ = L:
+        //   (Δε+A) ∂z = ∂L − ∂Δε·z₀ − ∂A·z₀
+        // RHS = ∂L (above) − ∂Δε·z₀ − ∂A·z₀.
         let mut rhs = dl.clone();
+        // − ∂Δε·z₀  (∂ε from df_mo diagonal).
         for a in 0..nvir {
             for i in 0..nocc {
                 let ddenom = df_mo[(nocc_total + a, nocc_total + a)]
@@ -895,7 +898,84 @@ pub fn analytic_alpha_relaxed(
                 rhs[(a, i)] -= ddenom * z0[(a, i)];
             }
         }
-        // Perturbed Z-vector: (Δε+0.5A) ∂z = rhs.
+        // − ∂A·z₀ : first-order response of A·z₀ = Cᵀ G(D^{z₀}) C to the MO
+        // rotation Θ (Θ_{vir,occ}=U, Θ_{occ,vir}=−Uᵀ). Two contributions:
+        //   (i)  rotation of the z₀-density:  Cᵀ G(∂D^{z₀}) C
+        //   (ii) rotation of the outer projection: Σ_p Θ_pa (Az₀)_pi + Θ_pi (Az₀)_ap
+        // where Az₀_full = Cᵀ G(D^{z₀}) C in FULL MO. (Az₀ in vo only = A·z₀.)
+        let waz: f64 = std::env::var("CPKS_WAZ").ok().and_then(|x| x.parse().ok()).unwrap_or(1.0);
+        if waz != 0.0 {
+            use crate::zvector::compute_az_product;
+            // Full-MO Θ generator.
+            let mut theta = Array2::<f64>::zeros((nmo, nmo)); // Θ_{q,p}
+            for a in 0..nvir {
+                for i in 0..nocc {
+                    theta[(nocc_total + a, first_occ + i)] = u[(a, i)];
+                    theta[(first_occ + i, nocc_total + a)] = -u[(a, i)];
+                }
+            }
+            // D^{z₀}_AO = Σ_ai z0_ai (C_a C_iᵀ + C_i C_aᵀ).
+            let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
+            let c_vir = c.slice(ndarray::s![.., nocc_total..nocc_total + nvir]).to_owned();
+            let nbas = obs.nbasis();
+            // (i) ∂D^{z₀}_AO from rotating C: ∂C_·p = Σ_q Θ_qp C_·q.
+            // ∂C_occ_i = Σ_a U_ai C_vir_a ; ∂C_vir_a = −Σ_i U_ai C_occ_i.
+            let dc_occ = c_vir.dot(&u); // (nbas,nocc): Σ_a C_vir_a U_ai
+            let dc_vir = c_occ.dot(&u.t()).mapv(|v| -v); // (nbas,nvir): −Σ_i C_occ_i U_ai
+            let mut dd_z = Array2::<f64>::zeros((nbas, nbas));
+            for a in 0..nvir {
+                for i in 0..nocc {
+                    let zai = z0[(a, i)];
+                    if zai == 0.0 { continue; }
+                    for mu in 0..nbas {
+                        for nu in 0..nbas {
+                            // ∂ of (C_a C_iᵀ + C_i C_aᵀ)
+                            dd_z[(mu, nu)] += zai
+                                * (dc_vir[(mu, a)] * c_occ[(nu, i)]
+                                    + c_vir[(mu, a)] * dc_occ[(nu, i)]
+                                    + dc_occ[(mu, i)] * c_vir[(nu, a)]
+                                    + c_occ[(mu, i)] * dc_vir[(nu, a)]);
+                        }
+                    }
+                }
+            }
+            let mut jz = Array2::<f64>::zeros((nbas, nbas));
+            let mut kz = Array2::<f64>::zeros((nbas, nbas));
+            ferric_scf::rhf::build_jk(ctx, obs, bounds, 1e-12, &dd_z, &mut jz, &mut kz)?;
+            let g_ddz = 4.0 * &jz - &kz - &kz.t();
+            let part_i = c.t().dot(&g_ddz).dot(c); // full MO; take vo block below
+            // (ii) Az₀ in full MO = Cᵀ G(D^{z₀}) C.
+            let mut dz0_ao = Array2::<f64>::zeros((nbas, nbas));
+            for a in 0..nvir {
+                for i in 0..nocc {
+                    let zai = z0[(a, i)];
+                    if zai == 0.0 { continue; }
+                    for mu in 0..nbas {
+                        for nu in 0..nbas {
+                            dz0_ao[(mu, nu)] += zai
+                                * (c_vir[(mu, a)] * c_occ[(nu, i)] + c_occ[(mu, i)] * c_vir[(nu, a)]);
+                        }
+                    }
+                }
+            }
+            let mut jz0 = Array2::<f64>::zeros((nbas, nbas));
+            let mut kz0 = Array2::<f64>::zeros((nbas, nbas));
+            ferric_scf::rhf::build_jk(ctx, obs, bounds, 1e-12, &dz0_ao, &mut jz0, &mut kz0)?;
+            let g_z0 = 4.0 * &jz0 - &kz0 - &kz0.t();
+            let az0_full = c.t().dot(&g_z0).dot(c); // (nmo,nmo)
+            // ∂(Az₀)_ai = part_i[a,i] + Σ_p Θ_pa az0_full[p,i] + Σ_p Θ_pi az0_full[a,p]
+            let theta_az = theta.t().dot(&az0_full); // Σ_p Θ_pa az0[p,i] → [a-row? careful]
+            let az_theta = az0_full.dot(&theta); // Σ_p az0[a,p] Θ_pi
+            for a in 0..nvir {
+                let a_mo = nocc_total + a;
+                for i in 0..nocc {
+                    let i_mo = first_occ + i;
+                    let daz0 = part_i[(a_mo, i_mo)] + theta_az[(a_mo, i_mo)] + az_theta[(a_mo, i_mo)];
+                    rhs[(a, i)] -= waz * daz0;
+                }
+            }
+        }
+        // Perturbed Z-vector: (Δε+A) ∂z = rhs  (full A to match z₀'s operator).
         let (dz, dresid, _it, dconv) = solve_cphf_cg_scaled(c, &rhs, obs, bounds, &orb, eps, 1.0)?;
         if !dconv {
             return Err(FerricError::General(format!(

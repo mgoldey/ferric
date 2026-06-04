@@ -911,7 +911,16 @@ fn main() {
                                     // fallback: table value if free-atom SCF failed
                                     .or_else(|| ts_free_atom(zi).map(|(_, _, v)| v))
                                     .unwrap_or(1.0);
-                                if vf > 1e-10 { vols[i] / vf } else { 1.0 }
+                                let r = if vf > 1e-10 { vols[i] / vf } else { 1.0 };
+                                if std::env::var("FERRIC_TS_DEBUG").is_ok() {
+                                    let tab = ts_free_atom(zi).map(|(a,_,v)| (a,v)).unwrap_or((0.0,0.0));
+                                    eprintln!(
+                                        "[TS] atom {} Z={}: v_mol={:.3} v_free_computed={:?} v_free_table={:.3} alpha_free_table={:.3} ratio={:.3}",
+                                        i, zi, vols[i],
+                                        vol_free_computed.get(&zi).copied(),
+                                        tab.1, tab.0, r);
+                                }
+                                r
                             })
                             .collect();
                         let (freqs, weights) = build_quadrature(&rpa_cfg.quadrature);
