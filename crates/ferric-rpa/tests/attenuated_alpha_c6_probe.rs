@@ -85,6 +85,66 @@ fn attenuated_water_alpha_c6_probe() {
     println!();
 }
 
+/// CLINCHER: attenuation sweep on RPA@PBE — a GOOD-baseline correlated method.
+///
+/// RPA@HF C6 is ~−46% (broken baseline); attenuation moving it "up toward DOSD"
+/// is consistent with error cancellation. RPA@PBE is ~3× better (memory:
+/// rpa-vs-ts-c6-molecular, ~−15% on C6). If attenuation is real physics it
+/// should NOT systematically overshoot a good baseline; if it's pure
+/// over-correction it will push the already-decent C6 PAST DOSD as ω rises.
+///
+/// Run: cargo test --release -p ferric-rpa --test attenuated_alpha_c6_probe \
+///        attenuated_water_rpa_pbe_c6_probe -- --ignored --nocapture
+#[test]
+#[ignore]
+fn attenuated_water_rpa_pbe_c6_probe() {
+    let xyz = "3\nh2o\nO 0 0 0.117790\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n";
+    let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+    let obs_bs = basis::bundled("aug-cc-pvdz").unwrap();
+    let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
+    let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+    let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
+    let ctx = ParallelContext::default();
+
+    // PBE reference SCF (RI-J/RI-K with def2-universal-jkfit, per CLI convention).
+    let scf_op = Operator::coulomb();
+    let scf_bounds = SchwarzBounds::compute(scf_op, &obs).unwrap();
+    let scf_cfg = RhfConfig {
+        energy_conv: 1e-9,
+        xc: Some("PBE".to_string()),
+        df_j_aux: Some("def2-universal-jkfit".to_string()),
+        df_k_aux: Some("def2-universal-jkfit".to_string()),
+        ..Default::default()
+    };
+    let rhf = solve_rhf(&ctx, &mol, &obs, scf_op, &scf_bounds, &scf_cfg).unwrap();
+    assert!(rhf.converged, "RPA@PBE reference SCF did not converge");
+
+    let cfg = PdepRpaConfig::default();
+    // Wider ω range to catch a possible OVERSHOOT past DOSD (the clincher).
+    let omegas_bohr: &[f64] = &[0.0, 0.1, 0.2, 0.3, 0.5, 0.7, 1.0, 1.5, 2.0];
+
+    println!("\n=== water aug-cc-pVDZ : attenuated RPA@PBE α and C6 ===");
+    println!("  ref: CRC α_iso ≈ 9.8 a.u. ;  DOSD molecular C6 ≈ 45.4 a.u.");
+    println!("  (RPA@PBE is a GOOD baseline ~−15%; watch for overshoot past 45.4)\n");
+    println!("  {:>8}  {:>12}  {:>14}  {:>10}", "ω(Bohr⁻¹)", "α_iso(a.u.)", "C6_mol(a.u.)", "C6 err%");
+
+    for &w in omegas_bohr {
+        let op = if w == 0.0 { Operator::coulomb() } else { Operator::erfc(w) };
+        let alpha = pdep_polarizability_static(&mol, &obs, &dfbs, &rhf, op, &cfg).unwrap();
+        let dp = pdep_dynamic_polarizability(
+            &mol, &obs, &obs_bs, &dfbs, &rhf, op, &cfg, DispersionPartition::Becke, None,
+        )
+        .unwrap();
+        let c6 = casimir_polder_c6(&dp);
+        let err = 100.0 * (c6.c6_molecular_iso - 45.4) / 45.4;
+        println!(
+            "  {:>8.3}  {:>12.4}  {:>14.4}  {:>+9.2}",
+            w, alpha.iso, c6.c6_molecular_iso, err
+        );
+    }
+    println!();
+}
+
 #[test]
 #[ignore]
 fn rpa_static_alpha_ccpvdz_water_for_mp2_compare() {

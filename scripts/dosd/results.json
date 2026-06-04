@@ -375,6 +375,14 @@
     "ok": true,
     "seconds": 643.7
   },
+  "augccpvtz/benzene/ts": {
+    "basis": "augccpvtz",
+    "c6": 2072.849,
+    "method": "ts",
+    "mol": "benzene",
+    "ok": true,
+    "seconds": 619.1
+  },
   "augccpvtz/c2h2/rpa_hf": {
     "basis": "augccpvtz",
     "c6": 137.175,
