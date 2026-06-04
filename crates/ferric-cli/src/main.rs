@@ -940,12 +940,20 @@ fn main() {
                             })
                             .collect();
                         let (freqs, weights) = build_quadrature(&rpa_cfg.quadrature);
-                        let dp = ts_dynamic_polarizability(
-                            &z, &ratio, &alpha_static, &freqs, &weights,
-                        );
+                        let is_mbd = cfg.rpa.c6_source.as_deref() == Some("mbd");
+                        let dp = if is_mbd {
+                            let positions: Vec<[f64; 3]> =
+                                mol.atoms.iter().map(|a| [a.x, a.y, a.zpos]).collect();
+                            ferric_rpa::dispersion::mbd_dynamic_polarizability(
+                                &positions, &z, &ratio, &alpha_static, &freqs, &weights,
+                            )
+                        } else {
+                            ts_dynamic_polarizability(&z, &ratio, &alpha_static, &freqs, &weights)
+                        };
                         let ts_res = casimir_polder_c6(&dp);
                         println!(
-                            "Computed TS C6: {} atoms; molecular C6 = {:.3} a.u.",
+                            "Computed {} C6: {} atoms; molecular C6 = {:.3} a.u.",
+                            if is_mbd { "MBD" } else { "TS" },
                             z.len(),
                             ts_res.c6_molecular_iso
                         );
