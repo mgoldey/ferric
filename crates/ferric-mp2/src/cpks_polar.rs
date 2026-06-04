@@ -330,46 +330,48 @@ pub fn analytic_dt2_along(
         eps[first_occ + i] + eps[first_occ + j] - eps[nocc_total + a] - eps[nocc_total + b]
     };
 
-    // ∂ε for occ (i) and vir (a). h^x diag from mu_mo (field couples as −μ).
+    // ∂ε_p = ∂F_pp = (Cᵀ ∂F_AO C)_pp, with the FIRST-ORDER Fock
+    //   ∂F_AO = ∂h_AO + G[∂D_AO],   ∂h_AO = −r_axis (uniform field),
+    //   ∂D_AO = 2 Σ_ai U_ai (C_·a C_·iᵀ + C_·i C_·aᵀ)   (U-driven density response),
+    //   G[∂D] = 2 J[∂D] − K[∂D]   (closed-shell two-electron response).
+    // Textbook perturbed-Fock-diagonal form — replaces the ad-hoc (pp|ck)
+    // contractions. (Note: −r_axis sign convention is pinned by the FD oracle.)
+    let nbas = obs.nbasis();
+    let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
+    let c_vir = c.slice(ndarray::s![.., nocc_total..nocc_total + nvir]).to_owned();
+    // ∂D_AO from U (factor 2 = closed-shell occupancy).
+    let mut dd_ao = Array2::<f64>::zeros((nbas, nbas));
+    for a in 0..nvir {
+        for i in 0..nocc {
+            let uai = u[(a, i)];
+            if uai == 0.0 {
+                continue;
+            }
+            for mu in 0..nbas {
+                let cma = c_vir[(mu, a)];
+                let cmi = c_occ[(mu, i)];
+                for nu in 0..nbas {
+                    dd_ao[(mu, nu)] += 2.0 * uai * (cma * c_occ[(nu, i)] + cmi * c_vir[(nu, a)]);
+                }
+            }
+        }
+    }
+    let mut jdd = Array2::<f64>::zeros((nbas, nbas));
+    let mut kdd = Array2::<f64>::zeros((nbas, nbas));
+    ferric_scf::rhf::build_jk(ctx, obs, bounds, 1e-12, &dd_ao, &mut jdd, &mut kdd)?;
+    let gscale: f64 = std::env::var("CPKS_GSCALE").ok().and_then(|s| s.parse().ok()).unwrap_or(1.0);
+    let g_ao = gscale * (2.0 * &jdd - &kdd);
+    // ∂F_AO = −r_axis + G[∂D];  ∂F_MO = Cᵀ ∂F_AO C
+    let df_ao = &(-&dip_ao[axis]) + &g_ao;
+    let df_mo = c.t().dot(&df_ao).dot(c);
+    let _ = &mu_mo; // (kept for reference; diagonal now from df_mo directly)
     let mut deps_o = vec![0.0f64; nocc];
     let mut deps_v = vec![0.0f64; nvir];
-    // coupling term Σ_ck U_ck[2(pp|ck) − (pc|pk)]
-    // (pp|ck): B^P_pp · B^P_(kc). (pc|pk): B^P_(pc) · B^P_(pk).
     for i in 0..nocc {
-        let i_mo_diag = first_occ + i;
-        deps_o[i] = -mu_mo[(i_mo_diag, i_mo_diag)];
-        let mut coup = 0.0;
-        for k in 0..nocc {
-            for cc in 0..nvir {
-                let jval = (0..naux)
-                    .map(|p| bget(&inter.b_oo, p, i, i, nocc) * bget(&inter.b_ov, p, k, cc, nvir))
-                    .sum::<f64>();
-                // (i c | i k): (ic) is occ-vir = b_ov[i,c]; (ik) occ-occ = b_oo[i,k]
-                let kval = (0..naux)
-                    .map(|p| bget(&inter.b_ov, p, i, cc, nvir) * bget(&inter.b_oo, p, i, k, nocc))
-                    .sum::<f64>();
-                coup += u[(cc, k)] * (2.0 * jval - kval);
-            }
-        }
-        deps_o[i] += coup;
+        deps_o[i] = df_mo[(first_occ + i, first_occ + i)];
     }
     for a in 0..nvir {
-        let a_mo_diag = nocc_total + a;
-        deps_v[a] = -mu_mo[(a_mo_diag, a_mo_diag)];
-        let mut coup = 0.0;
-        for k in 0..nocc {
-            for cc in 0..nvir {
-                let jval = (0..naux)
-                    .map(|p| bget(&inter.b_vv, p, a, a, nvir) * bget(&inter.b_ov, p, k, cc, nvir))
-                    .sum::<f64>();
-                // (a c | a k): (ac) vir-vir = b_vv[a,c]; (ak) = (ka) occ-vir = b_ov[k,a]
-                let kval = (0..naux)
-                    .map(|p| bget(&inter.b_vv, p, a, cc, nvir) * bget(&inter.b_ov, p, k, a, nvir))
-                    .sum::<f64>();
-                coup += u[(cc, k)] * (2.0 * jval - kval);
-            }
-        }
-        deps_v[a] += coup;
+        deps_v[a] = df_mo[(nocc_total + a, nocc_total + a)];
     }
 
     // --- ∂t2_iajb = [∂(ia|jb) − t2·∂Δε] / Δε ---
@@ -484,7 +486,9 @@ pub fn analytic_de_mp2_along(
                     let ja = j * nvir + a;
                     let k = 2.0 * eri(ia, jb) - eri(ib, ja);
                     let dk = 2.0 * deri(ia, jb) - deri(ib, ja);
-                    de += dt2[ia * nov + jb] * k + inter.t2[ia * nov + jb] * dk;
+                    let w_t = std::env::var("CPKS_W_DT2").ok().and_then(|s| s.parse().ok()).unwrap_or(1.0_f64);
+                    let w_k = std::env::var("CPKS_W_DK").ok().and_then(|s| s.parse().ok()).unwrap_or(1.0_f64);
+                    de += w_t * dt2[ia * nov + jb] * k + w_k * inter.t2[ia * nov + jb] * dk;
                 }
             }
         }
