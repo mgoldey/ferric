@@ -341,3 +341,100 @@ fn cpks_analytic_alpha_full_vs_oracle() {
         assert!((got-want).abs() < 0.05*want.abs()+0.02, "α component {got} vs {want}");
     }
 }
+
+/// Attenuation sweep on the validated analytic relaxed-MP2 α.
+///
+/// The original goal of the whole CPKS arc: does the ω "sweet spot" from the
+/// finite-field experiment survive a *properly relaxed* analytic polarizability?
+/// FF α blew up (807, negative) on n2/co2/nh3 from 1/F round-off near the
+/// Z-vector singularity; the analytic path has no field-step, so it should be
+/// stable everywhere. Ansatz = att-MP2: full-Coulomb HF reference, erfc(ωr)
+/// attenuates only the correlation operator (the external dipole field is bare).
+///
+/// Run: cargo test --release -p ferric-mp2 --test cpks_polar \
+///        cpks_attenuation_sweep -- --ignored --nocapture
+#[test]
+#[ignore]
+fn cpks_attenuation_sweep() {
+    use ferric_mp2::cpks_polar::analytic_alpha_full;
+    use ferric_mp2::rimp2::RiMp2Config;
+
+    // (label, xyz). Water = clean baseline; n2/co2/nh3 = the FF blow-up cases.
+    let mols: &[(&str, &str)] = &[
+        ("h2o", "3\nh2o\nO 0 0 0.117790\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n"),
+        ("n2",  "2\nn2\nN 0 0 0.0\nN 0 0 1.0977\n"),
+        ("nh3", "4\nnh3\nN 0 0 0.0\nH 0 0.9377 -0.3816\nH 0.8120 -0.4689 -0.3816\nH -0.8120 -0.4689 -0.3816\n"),
+        ("co2", "3\nco2\nC 0 0 0.0\nO 0 0 1.1621\nO 0 0 -1.1621\n"),
+    ];
+    // ω in Bohr⁻¹. 0.0 = full Coulomb (sentinel). Bracket the ~0.5 FF optimum.
+    let omegas = [0.0f64, 0.1, 0.2, 0.3, 0.42, 0.5, 0.6, 0.7];
+
+    let ctx = ParallelContext::default();
+    let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
+    let mp2_cfg = RiMp2Config { frozen_core: 0 };
+
+    eprintln!("\n=== Analytic relaxed-MP2 α attenuation sweep (att-MP2 ansatz) ===");
+    eprintln!("basis cc-pVDZ / cc-pVDZ-RI; α isotropic (Bohr³); ω in Bohr⁻¹\n");
+
+    for (label, xyz) in mols {
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        // SCF reference is full Coulomb for every ω (att-MP2 ansatz).
+        let cb = Operator::coulomb();
+        let cb_bounds = SchwarzBounds::compute(cb, &obs).unwrap();
+        let rhf = solve_rhf(&ctx, &mol, &obs, cb, &cb_bounds, &scf_cfg).unwrap();
+
+        eprintln!("--- {label} ---");
+        eprintln!("  {:>6}  {:>10}  {:>10}  {:>10}  {:>10}", "omega", "a_iso", "a_xx", "a_yy", "a_zz");
+        for &w in &omegas {
+            let op = if w == 0.0 { Operator::coulomb() } else { Operator::erfc(w) };
+            let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+            let a = analytic_alpha_full(&ctx, &mol, &obs, &dfbs, op, &bounds, &rhf, &mp2_cfg).unwrap();
+            eprintln!(
+                "  {:>6.2}  {:>10.4}  {:>10.4}  {:>10.4}  {:>10.4}",
+                w, a.iso, a.tensor[0][0], a.tensor[1][1], a.tensor[2][2]
+            );
+            // The whole point: stable everywhere (FF gave 807 / negative here).
+            assert!(a.iso.is_finite() && a.iso > 0.0 && a.iso < 200.0,
+                "{label} ω={w}: α_iso={} not physical (FF-style blow-up)", a.iso);
+        }
+        eprintln!();
+    }
+}
+
+/// Basis-confound check: water α on aug-cc-pVDZ (diffuse) vs cc-pVDZ.
+/// cc-pVDZ has no diffuse functions → α badly underestimated (~5 vs ref 9.64),
+/// so attenuation only shrinks an already-too-small α. With diffuse functions
+/// α should rise toward the reference and the attenuation trend may flip.
+///
+/// Run: cargo test --release -p ferric-mp2 --test cpks_polar \
+///        cpks_attenuation_aug_water -- --ignored --nocapture
+#[test]
+#[ignore]
+fn cpks_attenuation_aug_water() {
+    use ferric_mp2::cpks_polar::analytic_alpha_full;
+    use ferric_mp2::rimp2::RiMp2Config;
+
+    let xyz = "3\nh2o\nO 0 0 0.117790\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n";
+    let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+    let obs = PreparedBasis::new(&mol, &basis::bundled("aug-cc-pvdz").unwrap()).unwrap();
+    let dfbs = PreparedBasis::new(&mol, &basis::bundled("aug-cc-pvdz-rifit").unwrap()).unwrap();
+    let ctx = ParallelContext::default();
+    let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
+    let mp2_cfg = RiMp2Config { frozen_core: 0 };
+    let cb = Operator::coulomb();
+    let cb_bounds = SchwarzBounds::compute(cb, &obs).unwrap();
+    let rhf = solve_rhf(&ctx, &mol, &obs, cb, &cb_bounds, &scf_cfg).unwrap();
+
+    eprintln!("\n=== Water analytic relaxed-MP2 α: aug-cc-pVDZ (ref α_iso=9.64) ===");
+    eprintln!("  {:>6}  {:>10}  {:>10}  {:>10}  {:>10}", "omega", "a_iso", "a_xx", "a_yy", "a_zz");
+    for &w in &[0.0f64, 0.2, 0.3, 0.42, 0.5, 0.6, 0.8] {
+        let op = if w == 0.0 { Operator::coulomb() } else { Operator::erfc(w) };
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let a = analytic_alpha_full(&ctx, &mol, &obs, &dfbs, op, &bounds, &rhf, &mp2_cfg).unwrap();
+        eprintln!("  {:>6.2}  {:>10.4}  {:>10.4}  {:>10.4}  {:>10.4}",
+            w, a.iso, a.tensor[0][0], a.tensor[1][1], a.tensor[2][2]);
+        assert!(a.iso.is_finite() && a.iso > 0.0 && a.iso < 200.0);
+    }
+}
