@@ -391,6 +391,14 @@
     "ok": true,
     "seconds": 36.5
   },
+  "augccpvtz/c2h2/ts": {
+    "basis": "augccpvtz",
+    "c6": 234.032,
+    "method": "ts",
+    "mol": "c2h2",
+    "ok": true,
+    "seconds": 46.1
+  },
   "augccpvtz/c2h4/rpa_hf": {
     "basis": "augccpvtz",
     "c6": 186.637,
@@ -406,6 +414,14 @@
     "mol": "c2h4",
     "ok": true,
     "seconds": 74.1
+  },
+  "augccpvtz/c2h4/ts": {
+    "basis": "augccpvtz",
+    "c6": 337.156,
+    "method": "ts",
+    "mol": "c2h4",
+    "ok": true,
+    "seconds": 78.1
   },
   "augccpvtz/c2h6/rpa_hf": {
     "basis": "augccpvtz",
@@ -423,6 +439,14 @@
     "ok": true,
     "seconds": 135.4
   },
+  "augccpvtz/c2h6/ts": {
+    "basis": "augccpvtz",
+    "c6": 445.367,
+    "method": "ts",
+    "mol": "c2h6",
+    "ok": true,
+    "seconds": 137.1
+  },
   "augccpvtz/ch4/rpa_hf": {
     "basis": "augccpvtz",
     "c6": 73.18,
@@ -438,6 +462,14 @@
     "mol": "ch4",
     "ok": true,
     "seconds": 35.1
+  },
+  "augccpvtz/ch4/ts": {
+    "basis": "augccpvtz",
+    "c6": 144.941,
+    "method": "ts",
+    "mol": "ch4",
+    "ok": true,
+    "seconds": 42.4
   },
   "augccpvtz/co/rpa_hf": {
     "basis": "augccpvtz",
@@ -455,6 +487,14 @@
     "ok": true,
     "seconds": 18.3
   },
+  "augccpvtz/co/ts": {
+    "basis": "augccpvtz",
+    "c6": 89.599,
+    "method": "ts",
+    "mol": "co",
+    "ok": true,
+    "seconds": 30.8
+  },
   "augccpvtz/co2/rpa_hf": {
     "basis": "augccpvtz",
     "c6": 97.468,
@@ -470,6 +510,14 @@
     "mol": "co2",
     "ok": true,
     "seconds": 35.4
+  },
+  "augccpvtz/co2/ts": {
+    "basis": "augccpvtz",
+    "c6": 154.899,
+    "method": "ts",
+    "mol": "co2",
+    "ok": true,
+    "seconds": 48.6
   },
   "augccpvtz/h2/rpa_hf": {
     "basis": "augccpvtz",
@@ -487,6 +535,14 @@
     "ok": true,
     "seconds": 3.1
   },
+  "augccpvtz/h2/ts": {
+    "basis": "augccpvtz",
+    "c6": 10.118,
+    "method": "ts",
+    "mol": "h2",
+    "ok": true,
+    "seconds": 5.0
+  },
   "augccpvtz/h2s/rpa_hf": {
     "basis": "augccpvtz",
     "c6": 135.057,
@@ -502,6 +558,14 @@
     "mol": "h2s",
     "ok": true,
     "seconds": 29.7
+  },
+  "augccpvtz/h2s/ts": {
+    "basis": "augccpvtz",
+    "c6": 225.127,
+    "method": "ts",
+    "mol": "h2s",
+    "ok": true,
+    "seconds": 53.6
   },
   "augccpvtz/hcl/rpa_hf": {
     "basis": "augccpvtz",
@@ -519,6 +583,14 @@
     "ok": true,
     "seconds": 25.4
   },
+  "augccpvtz/hcl/ts": {
+    "basis": "augccpvtz",
+    "c6": 132.97,
+    "method": "ts",
+    "mol": "hcl",
+    "ok": true,
+    "seconds": 50.7
+  },
   "augccpvtz/hf/rpa_hf": {
     "basis": "augccpvtz",
     "c6": 10.882,
@@ -534,6 +606,14 @@
     "mol": "hf",
     "ok": true,
     "seconds": 14.6
+  },
+  "augccpvtz/hf/ts": {
+    "basis": "augccpvtz",
+    "c6": 21.093,
+    "method": "ts",
+    "mol": "hf",
+    "ok": true,
+    "seconds": 22.3
   },
   "augccpvtz/n2/rpa_hf": {
     "basis": "augccpvtz",
@@ -551,6 +631,14 @@
     "ok": true,
     "seconds": 11.8
   },
+  "augccpvtz/n2/ts": {
+    "basis": "augccpvtz",
+    "c6": 81.517,
+    "method": "ts",
+    "mol": "n2",
+    "ok": true,
+    "seconds": 17.4
+  },
   "augccpvtz/nh3/rpa_hf": {
     "basis": "augccpvtz",
     "c6": 49.635,
@@ -566,6 +654,14 @@
     "mol": "nh3",
     "ok": true,
     "seconds": 22.9
+  },
+  "augccpvtz/nh3/ts": {
+    "basis": "augccpvtz",
+    "c6": 98.648,
+    "method": "ts",
+    "mol": "nh3",
+    "ok": true,
+    "seconds": 28.8
   },
   "augccpvtz/o2/rpa_hf": {
     "basis": "augccpvtz",
@@ -583,6 +679,14 @@
     "ok": true,
     "seconds": 73.9
   },
+  "augccpvtz/o2/ts": {
+    "basis": "augccpvtz",
+    "c6": 54.121,
+    "method": "ts",
+    "mol": "o2",
+    "ok": true,
+    "seconds": 38.5
+  },
   "augccpvtz/water/rpa_hf": {
     "basis": "augccpvtz",
     "c6": 25.567,
@@ -598,5 +702,13 @@
     "mol": "water",
     "ok": true,
     "seconds": 17.3
+  },
+  "augccpvtz/water/ts": {
+    "basis": "augccpvtz",
+    "c6": 50.985,
+    "method": "ts",
+    "mol": "water",
+    "ok": true,
+    "seconds": 23.5
   }
 }

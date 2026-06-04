@@ -1502,3 +1502,61 @@ pub fn cphf_c6_molecular(
     }
     Ok((3.0 / PI * s, iso_prof))
 }
+
+// ===========================================================================
+// Frozen-amplitude MP2 dynamic α(iω) — the CHEAP MP2 spike.
+//
+// Full MP2 dynamic response is a research-grade derivation (~10 terms,
+// frequency-dependent ∂t2). The frozen-amplitude approximation: take the
+// dynamic CPHF frequency *shape* α_HF(iω) and rescale it to the validated
+// static *MP2* magnitude — i.e. the MP2 correlation enters α's size (which
+// the static sweep showed attenuation shrinks) but the frequency dependence
+// is inherited from HF. Standard "scaled-α" dispersion trick.
+//
+//   shape:  s_HF(iω) = α_HF_iso(iω) / α_HF_iso(0)        (1 at ω=0)
+//   α_MP2_iso(iω) = α_MP2_iso(static) · s_HF(iω)
+//
+// Reduces to the validated static MP2 α at ω=0 BY CONSTRUCTION. Tests whether
+// MP2's magnitude correction flips the attenuation→C6 verdict vs HF-level.
+// It does NOT capture an MP2-specific change to the frequency *shape* — that
+// is exactly what the full (expensive) response would add, and the gap
+// between this and dRPA tells us whether that's worth deriving.
+// ===========================================================================
+
+/// Frozen-amplitude MP2 dynamic molecular C6: HF-shape α(iω) rescaled to the
+/// static MP2 isotropic magnitude. Returns (c6, α_MP2_iso profile, static MP2
+/// iso, static HF iso). Closed-shell.
+#[allow(clippy::too_many_arguments)]
+pub fn frozen_mp2_c6_molecular(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    rhf: &ScfResult,
+    mp2_config: &RiMp2Config,
+    freqs: &[f64],
+    weights: &[f64],
+) -> Result<(f64, Vec<f64>, f64, f64), FerricError> {
+    use std::f64::consts::PI;
+    // Static MP2 α (validated full-MO recipe) and static HF α (ω=0 dynamic).
+    let mp2_stat = analytic_alpha_full(ctx, mol, obs, dfbs, op, bounds, rhf, mp2_config)?;
+    let hf0 = dynamic_cphf_alpha_iw(ctx, mol, obs, dfbs, op, rhf, 0.0)?;
+    let hf0_iso = (hf0[0][0] + hf0[1][1] + hf0[2][2]) / 3.0;
+    let mp2_iso = mp2_stat.iso;
+    let scale = if hf0_iso.abs() > 1e-12 { mp2_iso / hf0_iso } else { 1.0 };
+
+    // HF frequency shape, rescaled to MP2 magnitude.
+    let mut iso_prof = Vec::with_capacity(freqs.len());
+    for &w in freqs {
+        let t = dynamic_cphf_alpha_iw(ctx, mol, obs, dfbs, op, rhf, w)?;
+        let hf_iso = (t[0][0] + t[1][1] + t[2][2]) / 3.0;
+        iso_prof.push(scale * hf_iso);
+    }
+    let mut s = 0.0;
+    for k in 0..freqs.len() {
+        s += weights[k] * iso_prof[k] * iso_prof[k];
+    }
+    Ok((3.0 / PI * s, iso_prof, mp2_iso, hf0_iso))
+}

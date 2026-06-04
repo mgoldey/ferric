@@ -535,3 +535,53 @@ fn cpks_c6_attenuation_sweep() {
         eprintln!();
     }
 }
+
+/// Frozen-amplitude MP2 C6 attenuation sweep — the cheap MP2 spike.
+/// HF-shape α(iω) rescaled to static MP2 magnitude. Tells us whether MP2's
+/// magnitude correction changes the attenuation verdict vs HF-level C6.
+///
+/// Run: cargo test --release -p ferric-mp2 --test cpks_polar \
+///        cpks_frozen_mp2_c6_sweep -- --ignored --nocapture
+#[test]
+#[ignore]
+fn cpks_frozen_mp2_c6_sweep() {
+    use ferric_mp2::cpks_polar::frozen_mp2_c6_molecular;
+    use ferric_mp2::rimp2::RiMp2Config;
+
+    let mols: &[(&str, &str, f64)] = &[
+        ("h2o", "3\nh2o\nO 0 0 0.117790\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n", 45.4),
+        ("n2",  "2\nn2\nN 0 0 0.0\nN 0 0 1.0977\n", 73.3),
+        ("co2", "3\nco2\nC 0 0 0.0\nO 0 0 1.1621\nO 0 0 -1.1621\n", 158.7),
+    ];
+    let omegas = [0.0f64, 0.1, 0.2, 0.3, 0.42, 0.5, 0.6, 0.8];
+    let (freqs, weights) = cp_grid(0.6);
+
+    let ctx = ParallelContext::default();
+    let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
+    let mp2_cfg = RiMp2Config { frozen_core: 0 };
+
+    eprintln!("\n=== Frozen-amplitude MP2 C6 attenuation sweep (HF shape × MP2 magnitude) ===");
+    eprintln!("basis aug-cc-pVDZ; molecular C6_AA (a.u.); ω in Bohr⁻¹\n");
+
+    for (label, xyz, dosd) in mols {
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("aug-cc-pvdz").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("aug-cc-pvdz-rifit").unwrap()).unwrap();
+        let cb = Operator::coulomb();
+        let cb_bounds = SchwarzBounds::compute(cb, &obs).unwrap();
+        let rhf = solve_rhf(&ctx, &mol, &obs, cb, &cb_bounds, &scf_cfg).unwrap();
+
+        eprintln!("--- {label} (DOSD C6_AA = {dosd}) ---");
+        eprintln!("  {:>6}  {:>12}  {:>10}  {:>10}  {:>10}", "omega", "C6_AA", "err_%", "a_mp2(0)", "a_hf(0)");
+        for &w in &omegas {
+            let op = if w == 0.0 { Operator::coulomb() } else { Operator::erfc(w) };
+            let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+            let (c6, _prof, a_mp2, a_hf) =
+                frozen_mp2_c6_molecular(&ctx, &mol, &obs, &dfbs, op, &bounds, &rhf, &mp2_cfg, &freqs, &weights).unwrap();
+            let err = 100.0 * (c6 - dosd) / dosd;
+            eprintln!("  {:>6.2}  {:>12.3}  {:>+9.2}  {:>10.4}  {:>10.4}", w, c6, err, a_mp2, a_hf);
+            assert!(c6.is_finite() && c6 > 0.0 && c6 < 5000.0, "{label} ω={w}: C6={c6}");
+        }
+        eprintln!();
+    }
+}
