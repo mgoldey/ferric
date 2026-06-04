@@ -1264,10 +1264,12 @@ pub fn analytic_alpha_full(
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
     op: Operator,
-    bounds: &SchwarzBounds,
+    _bounds: &SchwarzBounds,
     rhf: &ScfResult,
     _mp2_config: &RiMp2Config,
 ) -> Result<Mp2Polarizability, FerricError> {
+    // `_bounds` unused: the full-MO recipe uses the dense ERI tensor (no screened
+    // JK). Kept in the signature for API parity with the finite-field path.
     if !matches!(rhf.spin, Spin::Restricted) {
         return Err(FerricError::General("analytic_alpha_full: Restricted only".into()));
     }
