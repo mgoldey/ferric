@@ -179,7 +179,7 @@ fn diag_de_components() {
 
 #[test]
 #[ignore]
-fn diag_dD_vs_fd() {
+fn diag_dd_vs_fd() {
     // Validate the U-driven SCF density response ∂D against FD of the SCF density.
     // Gauge-stable (total density is rotation-invariant). If ∂D matches, U is
     // correctly normalized and the Layer-2 residual is downstream of it.
@@ -192,7 +192,7 @@ fn diag_dD_vs_fd() {
 
 #[test]
 #[ignore]
-fn diag_dD_traces() {
+fn diag_dd_traces() {
     use ferric_mp2::cpks_polar::debug_dD_traces;
     let (mol, obs, _dfbs, _op, bounds, ctx, rhf) = water_ccpvdz();
     let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
@@ -214,4 +214,21 @@ fn diag_emp2_parabola() {
     }
     let an = analytic_de_mp2_along(&ctx,&mol,&obs,&dfbs,op,&bounds,&rhf,&mp2_cfg,2).unwrap();
     eprintln!("analytic ∂E_MP2/∂Fz = {an:.10}");
+}
+
+#[test]
+#[ignore]
+fn diag_alpha_amplitude_only_vs_ff() {
+    // How much of the relaxed α does the amplitude part of ∂dm1 capture (before ∂z)?
+    use ferric_mp2::cpks_polar::analytic_alpha_amplitude_only;
+    use ferric_mp2::ff_polar::{mp2_polarizability_static, DensityMode};
+    let (mol, obs, dfbs, op, bounds, ctx, rhf) = water_ccpvdz();
+    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0 };
+    let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
+    let amp = analytic_alpha_amplitude_only(&ctx,&mol,&obs,&dfbs,op,&bounds,&rhf,&mp2_cfg).unwrap();
+    let ff = mp2_polarizability_static(&ctx,&mol,&obs,&dfbs,op,&bounds,&scf_cfg,&mp2_cfg,1e-3,DensityMode::Relaxed).unwrap();
+    // Also HF α (the orbital-only part) for reference.
+    eprintln!("amplitude-only α_iso = {:.5}  (FF relaxed = {:.5})", amp.iso, ff.iso);
+    eprintln!("  amp diag: {:.4} {:.4} {:.4}", amp.tensor[0][0],amp.tensor[1][1],amp.tensor[2][2]);
+    eprintln!("  ff  diag: {:.4} {:.4} {:.4}", ff.tensor[0][0],ff.tensor[1][1],ff.tensor[2][2]);
 }

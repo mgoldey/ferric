@@ -645,3 +645,123 @@ pub fn debug_emp2_at_field(
     let r = crate::ff_polar::solve_rhf_with_external(ctx, mol, obs, bounds, scf_config, &v)?;
     Ok(compute_mp2_intermediates(mol, obs, dfbs, op, &r, mp2_config)?.e_mp2)
 }
+
+// ===========================================================================
+// Layer 3 (PySCF-mirrored): analytic ∂(relaxed dm1)/∂F^x, then
+//   α_xy = −Tr[(∂dm1_relaxed/∂F^x)_AO · r_y_AO].
+//
+// Mirrors pyscf/grad/mp2.py relaxed-dm1 assembly (~/qc/pyscf):
+//   dm1mo = [2δ+P_oo]_oo + [P_vv]_vv + z_vo  (z = _response_dm1 Z-vector)
+//   = exactly ferric build_relaxed_density_ao.
+// Its field derivative:
+//   ∂P_oo, ∂P_vv  : product rule on ∂t2 (build_mp2_density is bilinear in t2)
+//   ∂z            : perturbed Z-vector  (Δε+0.5A) ∂z = ∂L − ∂(Δε+0.5A)·z
+// The 2δ core is field-independent. Contract with the dipole for α.
+// Inner oracle: ff_polar finite-field RELAXED α on water/ch4 (FF-stable there);
+// outer gate: PySCF relaxed MP2 α.
+// ===========================================================================
+
+/// ∂P_oo, ∂P_vv from ∂t2 via the product rule (build_mp2_density is bilinear:
+/// P = f(t2,t2), so ∂P = f(∂t2,t2) + f(t2,∂t2)).
+fn dmp2_density_response(
+    t2: &[f64],
+    dt2: &[f64],
+    nocc: usize,
+    nvir: usize,
+) -> (Array2<f64>, Array2<f64>) {
+    let nov = nocc * nvir;
+    let mut dp_oo = Array2::<f64>::zeros((nocc, nocc));
+    for i in 0..nocc {
+        for j in 0..nocc {
+            let mut s = 0.0;
+            for k in 0..nocc {
+                for a in 0..nvir {
+                    for b in 0..nvir {
+                        let ik = (i * nvir + a) * nov + k * nvir + b;
+                        let jk = (j * nvir + a) * nov + k * nvir + b;
+                        let jkb = (j * nvir + b) * nov + k * nvir + a;
+                        // ∂[ t_ik(2t_jk − t_jk') ]
+                        s += dt2[ik] * (2.0 * t2[jk] - t2[jkb])
+                            + t2[ik] * (2.0 * dt2[jk] - dt2[jkb]);
+                    }
+                }
+            }
+            dp_oo[(i, j)] = -s;
+        }
+    }
+    let mut dp_vv = Array2::<f64>::zeros((nvir, nvir));
+    for a in 0..nvir {
+        for b in 0..nvir {
+            let mut s = 0.0;
+            for i in 0..nocc {
+                for j in 0..nocc {
+                    for cc in 0..nvir {
+                        let ac = (i * nvir + a) * nov + j * nvir + cc;
+                        let bc = (i * nvir + b) * nov + j * nvir + cc;
+                        let cb = (i * nvir + cc) * nov + j * nvir + b;
+                        s += dt2[ac] * (2.0 * t2[bc] - t2[cb])
+                            + t2[ac] * (2.0 * dt2[bc] - dt2[cb]);
+                    }
+                }
+            }
+            dp_vv[(a, b)] = s;
+        }
+    }
+    (dp_oo, dp_vv)
+}
+
+/// Layer 3 (INCREMENTAL): α from the amplitude part of ∂dm1_relaxed only
+/// (∂P_oo + ∂P_vv from ∂t2), WITHOUT the perturbed Z-vector ∂z yet. Returns the
+/// partial α tensor. Used to measure how much of the relaxed α the amplitude
+/// response captures vs the FF-relaxed oracle, before adding ∂z. The 2δ core is
+/// field-independent (drops); the ov/vo ∂z block is the remaining piece.
+#[allow(clippy::too_many_arguments)]
+pub fn analytic_alpha_amplitude_only(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    rhf: &ScfResult,
+    mp2_config: &RiMp2Config,
+) -> Result<Mp2Polarizability, FerricError> {
+    let inter = compute_mp2_intermediates(mol, obs, dfbs, op, rhf, mp2_config)?;
+    let (nocc, nvir) = (inter.nocc, inter.nvir);
+    let (first_occ, nocc_total) = (inter.first_occ, inter.nocc_total);
+    let c = rhf.mos_r();
+    let nmo = c.ncols();
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+
+    let mut tensor = [[0.0f64; 3]; 3];
+    for x in 0..3 {
+        let (dt2, _u) = analytic_dt2_along(ctx, mol, obs, dfbs, op, bounds, rhf, mp2_config, x)?;
+        let (dp_oo, dp_vv) = dmp2_density_response(&inter.t2, &dt2, nocc, nvir);
+        // ∂dm1_mo (amplitude part only): occ-occ ∂P_oo (sym), vir-vir ∂P_vv (sym).
+        let mut ddm = Array2::<f64>::zeros((nmo, nmo));
+        for i in 0..nocc {
+            for j in 0..nocc {
+                ddm[(first_occ + i, first_occ + j)] = dp_oo[(i, j)] + dp_oo[(j, i)];
+            }
+        }
+        for a in 0..nvir {
+            for b in 0..nvir {
+                ddm[(nocc_total + a, nocc_total + b)] = dp_vv[(a, b)] + dp_vv[(b, a)];
+            }
+        }
+        let ddm_ao = c.dot(&ddm).dot(&c.t());
+        for y in 0..3 {
+            tensor[x][y] = -(&ddm_ao * &dip_ao[y]).sum();
+        }
+    }
+    for i in 0..3 {
+        for j in (i + 1)..3 {
+            let avg = 0.5 * (tensor[i][j] + tensor[j][i]);
+            tensor[i][j] = avg;
+            tensor[j][i] = avg;
+        }
+    }
+    let iso = (tensor[0][0] + tensor[1][1] + tensor[2][2]) / 3.0;
+    let principal = eig3_sym(tensor);
+    Ok(Mp2Polarizability { tensor, iso, principal })
+}
