@@ -171,30 +171,37 @@ pub fn dielectric_matrix_with_scale(
     b_ov: &Array2<f64>,
     scale: &Array1<f64>,
 ) -> Array2<f64> {
-    let m = v_mat.ncols();
-    let nov = scale.len();
-    assert_eq!(b_ov.shape()[1], nov);
+    assert_eq!(b_ov.shape()[1], scale.len());
 
-    // rhs_mat: (m, nov) — rhs for each trial vector
-    //
     // PySCF: chi0 = 2·e_ov·f_ov/(ω²+e_ov²) with e_ov = e_occ−e_vir < 0, f_ov = 2
     //        = 4 · (-e_ia) / (ω²+e_ia²) — negative
     // Ferric stores +|χ₀| = 4·e_ia/(ω²+e_ia²) so that ε̃ = I − Π matches PySCF I − χ₀.
     //
-    // SYRK path: rhs_scaled[α,ia] = rhs_mat[α,ia] * sqrt(4·e_ia/(ω²+e_ia²))
-    //   chi = rhs_scaled @ rhs_scaled^T  (one DSYRK replaces DGEMM, ~2× faster).
-    let mut rhs_scaled = v_mat.t().dot(b_ov); // (m, nov), owned & contiguous row-major
-    // Broadcast row-scale: multiply column `ia` by scale[ia] in place.
-    let scale_row = scale.view().insert_axis(Axis(0)); // shape (1, nov)
+    // The projection y = Vᵀ·B_ov (m × nov) is frequency-independent; the per-ω
+    // work (scale + DSYRK) lives in dielectric_matrix_from_projection.
+    let y = v_mat.t().dot(b_ov); // (m, nov), owned & contiguous row-major
+    dielectric_matrix_from_projection(&y, scale)
+}
+
+/// Build ε̃(iω) from a *precomputed* projection `y = Vᵀ·B_ov` (m × nov).
+///
+/// The projection is frequency-independent, so callers that sweep many
+/// frequencies (the RPA quadrature loop) compute `y` once and call this per ω
+/// with only the ω-dependent `scale`. Bit-identical to
+/// [`dielectric_matrix_with_scale`], which recomputes `y` each call.
+pub fn dielectric_matrix_from_projection(y: &Array2<f64>, scale: &Array1<f64>) -> Array2<f64> {
+    let m = y.shape()[0];
+    let nov = scale.len();
+    assert_eq!(y.shape()[1], nov);
+
+    // rhs_scaled[α,ia] = y[α,ia] · sqrt(4·e_ia/(ω²+e_ia²)); χ = rhs·rhsᵀ via DSYRK.
+    let mut rhs_scaled = y.clone();
+    let scale_row = scale.view().insert_axis(Axis(0));
     Zip::from(&mut rhs_scaled)
         .and_broadcast(scale_row)
         .for_each(|x, &s| *x *= s);
 
-    // chi = rhs_scaled @ rhs_scaled^T via DSYRK; result is fully symmetrized.
     let mut eps_mat = syrk_aat(&rhs_scaled);
-
-    // Return ε̃ = I − χ₀ = I + Π (since Π = −χ₀, χ₀ < 0 at iω).
-    // Eigenvalues are 1 + μ_α ≥ 1 for physical systems.
     for alpha in 0..m {
         eps_mat[(alpha, alpha)] += 1.0;
     }

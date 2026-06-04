@@ -174,18 +174,24 @@ pub fn eval_eigenvalues_at_frequencies(
     eps_vir: &[f64],
     quad_freqs: &[f64],
 ) -> Array2<f64> {
-    use crate::sternheimer::dielectric_matrix;
+    use crate::sternheimer::{build_scale_factors, dielectric_matrix_from_projection};
     use ndarray_linalg::{Eigh, UPLO};
     use rayon::prelude::*;
 
     let n_quad = quad_freqs.len();
     let m = eigenvectors.ncols();
 
+    // The projection y = Vᵀ·B_ov is frequency-independent — compute it ONCE
+    // instead of recomputing the (m × nov) GEMM at every quadrature point. Each
+    // ω then only does the cheap column scaling + DSYRK.
+    let y = eigenvectors.t().dot(b_ov);
+
     // Each quadrature point is fully independent — parallelize over frequencies.
     let rows: Vec<Vec<f64>> = quad_freqs
         .par_iter()
         .map(|&omega| {
-            let eps_proj = dielectric_matrix(eigenvectors, b_ov, eps_occ, eps_vir, omega);
+            let scale = build_scale_factors(eps_occ, eps_vir, omega);
+            let eps_proj = dielectric_matrix_from_projection(&y, &scale);
             // Diagonalize at each frequency — eigenvectors at ω=0 don't diagonalize ε̃(iω)
             let (evals, _) = eps_proj.eigh(UPLO::Upper).expect("dielectric eigh failed");
             evals.to_vec()
