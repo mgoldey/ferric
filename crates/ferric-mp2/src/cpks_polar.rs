@@ -1352,3 +1352,153 @@ fn rotate_eri(imo: &Array4<f64>, theta: &Array2<f64>) -> Array4<f64> {
     }}}}
     d
 }
+
+// ===========================================================================
+// Dynamic CPHF (TDHF) polarizability α(iω) and Casimir-Polder C6.
+//
+// The static-α sweep showed attenuation shrinks α uniformly (hurts vs CRC).
+// C6 = (3/π)∫₀^∞ α(iω)² dω weights the imaginary-frequency response, which
+// could behave differently — this is the one lane where attenuation might
+// still help dispersion. This is HF-level (CPHF/TDHF) dynamic α: it captures
+// the orbital response and operator dependence; the MP2 correlation
+// correction to α(iω) is a separate (larger) build deferred until the C6
+// trend justifies it.
+//
+// Singlet closed-shell linear-response matrices from the full-MO ERIs:
+//   A_{ai,bj} = (ε_a−ε_i)δ_{ai,bj} + 2(ai|bj) − (ab|ij)
+//   B_{ai,bj} =                       2(ai|bj) − (aj|bi)
+// (A+B) = Δε + 4(ai|bj) − (ab|ij) − (aj|bi)  ≡ the validated static Hessian
+//         `solve_zvec_dense` builds. So the static driver's M is (A+B), and
+//         the static α solves (A+B)X=−μ.  ⟹ α_static = 4 μᵀ(A+B)⁻¹μ.
+// Imaginary-frequency response (Casida, real symmetric reduced form):
+//   α(iω) = 4 μᵀ (A−B) [ (A−B)(A+B) + ω² ]⁻¹ μ
+//   ω=0:  α = 4 μᵀ (A−B)[(A−B)(A+B)]⁻¹ μ = 4 μᵀ(A+B)⁻¹μ  ✓ static limit.
+// Validated: cpks_dynamic_alpha_w0_matches_static (ω=0 == static HF α).
+// ===========================================================================
+
+/// Build singlet (A+B) and (A−B) in (ai)-space (n=nvir·nocc) from full-MO ERIs.
+fn build_apb_amb(
+    imo: &Array4<f64>,
+    eps: &[f64],
+    nocc: usize,
+    nvir: usize,
+) -> (Array2<f64>, Array2<f64>) {
+    let n = nvir * nocc;
+    let mut apb = Array2::<f64>::zeros((n, n));
+    let mut amb = Array2::<f64>::zeros((n, n));
+    for a in 0..nvir {
+        for i in 0..nocc {
+            let ai = a * nocc + i;
+            for b in 0..nvir {
+                for j in 0..nocc {
+                    let bj = b * nocc + j;
+                    let coul = eri4(imo, nocc + a, i, nocc + b, j); // (ai|bj)
+                    let exch_abij = eri4(imo, nocc + a, nocc + b, i, j); // (ab|ij)
+                    let exch_ajbi = eri4(imo, nocc + a, j, nocc + b, i); // (aj|bi)
+                    // A = Δε δ + 2(ai|bj) − (ab|ij);  B = 2(ai|bj) − (aj|bi)
+                    let a_el = 2.0 * coul - exch_abij;
+                    let b_el = 2.0 * coul - exch_ajbi;
+                    apb[(ai, bj)] = a_el + b_el; // 4(ai|bj) − (ab|ij) − (aj|bi)
+                    amb[(ai, bj)] = a_el - b_el; // (aj|bi) − (ab|ij)
+                }
+            }
+            apb[(ai, ai)] += eps[nocc + a] - eps[i];
+            amb[(ai, ai)] += eps[nocc + a] - eps[i];
+        }
+    }
+    (apb, amb)
+}
+
+/// Dynamic CPHF/TDHF polarizability tensor at imaginary frequency iω (a.u.).
+/// ω=0 reproduces the static CPHF α. HF-level (no MP2 correlation in α(iω)).
+pub fn dynamic_cphf_alpha_iw(
+    _ctx: &ParallelContext,
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &ScfResult,
+    omega: f64,
+) -> Result<[[f64; 3]; 3], FerricError> {
+    use ndarray_linalg::Solve;
+    if !matches!(rhf.spin, Spin::Restricted) {
+        return Err(FerricError::General("dynamic_cphf_alpha_iw: Restricted only".into()));
+    }
+    let c = rhf.mos_r();
+    let nmo = c.ncols();
+    let nocc = (mol.nelec() / 2) as usize;
+    let nvir = nmo - nocc;
+    let n = nvir * nocc;
+    let eps: Vec<f64> = rhf.eps_r().to_vec();
+
+    let b_full = crate::oo_rimp2::compute_b_full_mo(obs, dfbs, op, c)?;
+    let imo = full_mo_eri(&b_full);
+    let (apb, amb) = build_apb_amb(&imo, &eps, nocc, nvir);
+
+    // System matrix S = (A−B)(A+B) + ω²I  (n×n, same for all axes).
+    let mut sysm = amb.dot(&apb);
+    for k in 0..n {
+        sysm[(k, k)] += omega * omega;
+    }
+
+    // dipole μ in (ai)-space per axis (MO), bare Coulomb operator.
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let r_mo: [Array2<f64>; 3] = std::array::from_fn(|d| c.t().dot(&dip_ao[d]).dot(c));
+    let mut mu: [ndarray::Array1<f64>; 3] = std::array::from_fn(|_| ndarray::Array1::zeros(n));
+    for (d, m) in mu.iter_mut().enumerate() {
+        for a in 0..nvir {
+            for i in 0..nocc {
+                m[a * nocc + i] = r_mo[d][(nocc + a, i)];
+            }
+        }
+    }
+
+    // For each axis y: solve S·t_y = (A−B) μ_y, then α_xy = 4 μ_xᵀ t_y.
+    let mut tensor = [[0.0f64; 3]; 3];
+    let mut t: [ndarray::Array1<f64>; 3] = std::array::from_fn(|_| ndarray::Array1::zeros(n));
+    for (y, ty) in t.iter_mut().enumerate() {
+        let rhs = amb.dot(&mu[y]);
+        *ty = sysm.solve(&rhs).map_err(|e| {
+            FerricError::General(format!("dynamic_cphf_alpha_iw: solve failed: {e}"))
+        })?;
+    }
+    for x in 0..3 {
+        for y in 0..3 {
+            tensor[x][y] = 4.0 * mu[x].dot(&t[y]);
+        }
+    }
+    for i in 0..3 {
+        for j in (i + 1)..3 {
+            let avg = 0.5 * (tensor[i][j] + tensor[j][i]);
+            tensor[i][j] = avg;
+            tensor[j][i] = avg;
+        }
+    }
+    Ok(tensor)
+}
+
+/// Molecular isotropic C6 from dynamic CPHF α(iω) via Casimir-Polder:
+///   C6 = (3/π) Σ_k w_k α_iso(iω_k)²   on a Gauss-Legendre [0,∞) grid.
+/// Returns (c6, α_iso at each freq) for the given operator.
+pub fn cphf_c6_molecular(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &ScfResult,
+    freqs: &[f64],
+    weights: &[f64],
+) -> Result<(f64, Vec<f64>), FerricError> {
+    use std::f64::consts::PI;
+    let mut iso_prof = Vec::with_capacity(freqs.len());
+    for &w in freqs {
+        let t = dynamic_cphf_alpha_iw(ctx, mol, obs, dfbs, op, rhf, w)?;
+        iso_prof.push((t[0][0] + t[1][1] + t[2][2]) / 3.0);
+    }
+    let mut s = 0.0;
+    for k in 0..freqs.len() {
+        s += weights[k] * iso_prof[k] * iso_prof[k];
+    }
+    Ok((3.0 / PI * s, iso_prof))
+}
