@@ -369,4 +369,21 @@ mod tests {
             "E should decay with R: {e_near} {e_far}"
         );
     }
+
+    #[test]
+    fn mbd_energy_recovers_london_c6_at_large_r() {
+        // The coupled-plasmon energy must reduce to the pairwise London −C6/R⁶ at
+        // large separation (the code-correctness anchor for the energy path).
+        let alpha = 11.1_f64;
+        let omega = (4.0_f64 / 3.0) * 64.3 / (alpha * alpha);
+        let r = 20.0_f64;
+        let e_mbd = mbd_energy(&[[0.0, 0.0, 0.0], [0.0, 0.0, r]], &[alpha, alpha], &[omega, omega]);
+        let c6 = 0.75 * alpha * alpha * omega; // single-pole London C6
+        let e_pair = -c6 / r.powi(6);
+        let rel = (e_mbd - e_pair).abs() / e_pair.abs();
+        assert!(
+            rel < 0.10,
+            "MBD vs London C6/R⁶ at R=20: mbd={e_mbd} pair={e_pair} rel={rel}"
+        );
+    }
 }
