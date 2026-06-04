@@ -62,6 +62,24 @@ pub(crate) fn solve_cphf_cg(
     orb: &OrbitalSpace,
     eps: &[f64],
 ) -> Result<(Array2<f64>, f64, usize, bool), FerricError> {
+    // Default operator (Δε + 0.5 A) — the dipole-CPHF (HF α) convention.
+    solve_cphf_cg_scaled(c, rhs, prep, bounds, orb, eps, 0.5)
+}
+
+/// As `solve_cphf_cg` but with an explicit A-coupling scale. Use 0.5 for the
+/// dipole-CPHF (HF α) path; use 1.0 to MATCH `solve_zvector`'s full-A operator
+/// when solving the PERTURBED Z-vector ∂z (so ∂z and the un-perturbed z0 from
+/// solve_zvector share the same operator — required for the relaxed-α response).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn solve_cphf_cg_scaled(
+    c: &Array2<f64>,
+    rhs: &Array2<f64>,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    orb: &OrbitalSpace,
+    eps: &[f64],
+    ascale: f64,
+) -> Result<(Array2<f64>, f64, usize, bool), FerricError> {
     use crate::zvector::compute_az_product;
     let OrbitalSpace {
         nocc,
@@ -71,18 +89,14 @@ pub(crate) fn solve_cphf_cg(
     } = *orb;
     let de = |a: usize, i: usize| eps[nocc_total + a] - eps[first_occ + i];
 
-    // A-coupling scale 0.5: `compute_az_product` builds the 2e product with a
-    // SYMMETRIC trial density dz = z(C_μa C_νi + C_μi C_νa) — both orderings —
-    // which double-counts relative to the CPHF-α orbital Hessian (the Z-vector
-    // path it was written for absorbs this elsewhere). Empirically pinned against
-    // the finite-field HF α oracle: ASCALE=0.5 + contraction −4 reproduces the
-    // FF-HF tensor exactly (water/cc-pVDZ [3.04, 6.91, 5.11]).
-    const ASCALE: f64 = 0.5;
+    // A-coupling scale: 0.5 for dipole-CPHF (compute_az_product's symmetric dz
+    // double-counts vs the CPHF-α Hessian — pinned vs FF-HF), 1.0 to match
+    // solve_zvector's full-A Z-vector operator.
     let apply = |z: &Array2<f64>| -> Result<Array2<f64>, FerricError> {
         let mut mz = compute_az_product(c, z, prep, bounds, orb)?;
         for a in 0..nvir {
             for i in 0..nocc {
-                mz[(a, i)] = ASCALE * mz[(a, i)] + de(a, i) * z[(a, i)];
+                mz[(a, i)] = ascale * mz[(a, i)] + de(a, i) * z[(a, i)];
             }
         }
         Ok(mz)
@@ -269,9 +283,10 @@ fn bget(b: &Array2<f64>, p: usize, r: usize, c: usize, m: usize) -> f64 {
     b[(p, r * m + c)]
 }
 
-/// Analytic ∂t2/∂F along `axis`. Returns t2-shaped Vec (nov*nov), index ia*nov+jb,
-/// alongside the U^x used (for downstream layers).
-pub fn analytic_dt2_along(
+/// Analytic ∂t2/∂F along `axis`. Returns (dt2 [nov*nov, ia*nov+jb], U^x, ∂f_mo)
+/// — the full set of first-order responses downstream layers reuse.
+#[allow(clippy::too_many_arguments)]
+pub fn analytic_dt2_full(
     ctx: &ParallelContext,
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -281,7 +296,7 @@ pub fn analytic_dt2_along(
     rhf: &ScfResult,
     mp2_config: &RiMp2Config,
     axis: usize,
-) -> Result<(Vec<f64>, Array2<f64>), FerricError> {
+) -> Result<(Vec<f64>, Array2<f64>, Array2<f64>), FerricError> {
     let _ = ctx;
     let inter = compute_mp2_intermediates(mol, obs, dfbs, op, rhf, mp2_config)?;
     let (nocc, nvir, naux) = (inter.nocc, inter.nvir, inter.naux);
@@ -397,6 +412,24 @@ pub fn analytic_dt2_along(
         }
     }
 
+    Ok((dt2, u, df_mo))
+}
+
+/// 2-tuple wrapper (dt2, u) for callers that don't need ∂f_mo.
+#[allow(clippy::too_many_arguments)]
+pub fn analytic_dt2_along(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    rhf: &ScfResult,
+    mp2_config: &RiMp2Config,
+    axis: usize,
+) -> Result<(Vec<f64>, Array2<f64>), FerricError> {
+    let (dt2, u, _df) =
+        analytic_dt2_full(ctx, mol, obs, dfbs, op, bounds, rhf, mp2_config, axis)?;
     Ok((dt2, u))
 }
 
@@ -747,6 +780,151 @@ pub fn analytic_alpha_amplitude_only(
         for a in 0..nvir {
             for b in 0..nvir {
                 ddm[(nocc_total + a, nocc_total + b)] = dp_vv[(a, b)] + dp_vv[(b, a)];
+            }
+        }
+        let ddm_ao = c.dot(&ddm).dot(&c.t());
+        for y in 0..3 {
+            tensor[x][y] = -(&ddm_ao * &dip_ao[y]).sum();
+        }
+    }
+    for i in 0..3 {
+        for j in (i + 1)..3 {
+            let avg = 0.5 * (tensor[i][j] + tensor[j][i]);
+            tensor[i][j] = avg;
+            tensor[j][i] = avg;
+        }
+    }
+    let iso = (tensor[0][0] + tensor[1][1] + tensor[2][2]) / 3.0;
+    let principal = eig3_sym(tensor);
+    Ok(Mp2Polarizability { tensor, iso, principal })
+}
+
+/// Full-MO B response ∂B^P_pq from the CPHF U^x (occ↔vir rotation):
+///   ∂C_·i = Σ_c U_ci C_·c ;  ∂C_·a = −Σ_k U_ak C_·k.
+/// For a full-MO index p, ∂(MO p) mixes the complementary space via U. Returns
+/// (naux, nmo, nmo). Mirrors the half-index rotation of compute_b_full_mo's B.
+fn db_full_from_u(
+    b_full: &ndarray::Array3<f64>,
+    u: &Array2<f64>,
+    orb: &OrbitalSpace,
+) -> ndarray::Array3<f64> {
+    let OrbitalSpace { nocc, nvir, nocc_total, first_occ } = *orb;
+    let naux = b_full.shape()[0];
+    let nmo = b_full.shape()[1];
+    // U as a full-MO antisymmetric-ish generator Θ_pq: occ i ← vir c with +U_ci,
+    // vir a ← occ k with −U_ak. Θ_{c,i}=U_ci (vir,occ), Θ_{i,c}=? The orbital
+    // response C^(1)_p = Σ_q Θ_qp C_q with Θ_{vir,occ}=U, Θ_{occ,vir}=−Uᵀ.
+    let mut theta = Array2::<f64>::zeros((nmo, nmo)); // Θ_{q,p}: q mixes into p
+    for a in 0..nvir {
+        for i in 0..nocc {
+            theta[(nocc_total + a, first_occ + i)] = u[(a, i)];   // occ i gains vir a
+            theta[(first_occ + i, nocc_total + a)] = -u[(a, i)];  // vir a gains −occ i
+        }
+    }
+    // ∂B^P_pq = Σ_r Θ_rp B^P_rq + Σ_r Θ_rq B^P_pr
+    let mut db = ndarray::Array3::<f64>::zeros((naux, nmo, nmo));
+    for p_aux in 0..naux {
+        let bslice = b_full.index_axis(ndarray::Axis(0), p_aux);
+        // term1[p,q] = Σ_r Θ_rp B_rq = (Θᵀ B)[p,q]; term2 = (B Θ)[p,q]
+        let t1 = theta.t().dot(&bslice);
+        let t2 = bslice.dot(&theta);
+        let mut dbp = db.index_axis_mut(ndarray::Axis(0), p_aux);
+        dbp.assign(&(&t1 + &t2));
+    }
+    db
+}
+
+/// Full analytic relaxed MP2 α (Layer 3, PySCF-mirrored). For each field axis x:
+///   ∂dm1_relaxed = ∂P_oo + ∂P_vv (amplitude, from ∂t2) + ∂z (perturbed Z-vector),
+///   ∂z solves (Δε+0.5A) ∂z = ∂L − ∂Δε⊙z, with ∂L = directional derivative of
+///   build_lagrangian along (∂f_mo, ∂t2, ∂P_oo, ∂P_vv, ∂b_full) [ε central-diff,
+///   gauge-stable: inputs are smooth analytic responses, no orbital re-diag].
+///   α_xy = −Tr[∂dm1_relaxed_AO · r_y].
+#[allow(clippy::too_many_arguments)]
+pub fn analytic_alpha_relaxed(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    rhf: &ScfResult,
+    mp2_config: &RiMp2Config,
+) -> Result<Mp2Polarizability, FerricError> {
+    let inter = compute_mp2_intermediates(mol, obs, dfbs, op, rhf, mp2_config)?;
+    let (nocc, nvir) = (inter.nocc, inter.nvir);
+    let (first_occ, nocc_total) = (inter.first_occ, inter.nocc_total);
+    let c = rhf.mos_r();
+    let eps = rhf.eps_r();
+    let nmo = c.ncols();
+    let orb = OrbitalSpace::new(nocc, nvir, nocc_total, first_occ);
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+
+    // Un-perturbed pieces (field-independent): base Lagrangian inputs + z.
+    let f_mo0 = c.t().dot(rhf.fock_r()).dot(c);
+    let b_full = crate::oo_rimp2::compute_b_full_mo(obs, dfbs, op, c)?;
+    let (z0, _l0) = crate::zvector::solve_zvector(mol, obs, dfbs, op, bounds, rhf, &inter)?;
+    let de = |a: usize, i: usize| eps[nocc_total + a] - eps[first_occ + i];
+
+    let mut tensor = [[0.0f64; 3]; 3];
+    for x in 0..3 {
+        let (dt2, u, df_mo) =
+            analytic_dt2_full(ctx, mol, obs, dfbs, op, bounds, rhf, mp2_config, x)?;
+        let (dp_oo, dp_vv) = dmp2_density_response(&inter.t2, &dt2, nocc, nvir);
+        let db_full = db_full_from_u(&b_full, &u, &orb);
+
+        // ∂L via directional central difference of build_lagrangian in ε along the
+        // analytic input derivatives (smooth → exact at small ε, no gauge issue).
+        let eps_step = 1e-4;
+        let lag_at = |s: f64| -> Array2<f64> {
+            let f = &f_mo0 + &(s * &df_mo);
+            let t: Vec<f64> = inter.t2.iter().zip(dt2.iter()).map(|(a, b)| a + s * b).collect();
+            let poo = &inter.p_oo + &(s * &dp_oo);
+            let pvv = &inter.p_vv + &(s * &dp_vv);
+            let bf = &b_full + &(s * &db_full);
+            crate::zvector::build_lagrangian(&f, &t, &poo, &pvv, &orb, &bf)
+        };
+        let dl = (&lag_at(eps_step) - &lag_at(-eps_step)).mapv(|v| v / (2.0 * eps_step));
+
+        // ∂Δε⊙z : ddenom_ai = (deps_v[a] − deps_o[i]); but df_mo gives ∂ε directly.
+        let mut rhs = dl.clone();
+        for a in 0..nvir {
+            for i in 0..nocc {
+                let ddenom = df_mo[(nocc_total + a, nocc_total + a)]
+                    - df_mo[(first_occ + i, first_occ + i)];
+                rhs[(a, i)] -= ddenom * z0[(a, i)];
+            }
+        }
+        // Perturbed Z-vector: (Δε+0.5A) ∂z = rhs.
+        let (dz, dresid, _it, dconv) = solve_cphf_cg_scaled(c, &rhs, obs, bounds, &orb, eps, 1.0)?;
+        if !dconv {
+            return Err(FerricError::General(format!(
+                "analytic_alpha_relaxed: ∂z axis {x} not converged (resid={dresid:.2e})"
+            )));
+        }
+        let _ = de;
+
+        // ∂dm1_mo: oo (∂P_oo sym) + vv (∂P_vv sym) + vo/ov (∂z).
+        let mut ddm = Array2::<f64>::zeros((nmo, nmo));
+        for i in 0..nocc {
+            for j in 0..nocc {
+                ddm[(first_occ + i, first_occ + j)] = dp_oo[(i, j)] + dp_oo[(j, i)];
+            }
+        }
+        for a in 0..nvir {
+            for b in 0..nvir {
+                ddm[(nocc_total + a, nocc_total + b)] = dp_vv[(a, b)] + dp_vv[(b, a)];
+            }
+        }
+        // vo/ov block: SCF reference orbital response (2·U, the ∂ of the 2δ core
+        // — the occupied orbitals rotate by U under the field; factor 2 =
+        // closed-shell occupancy; this is the dominant HF-α contribution) PLUS the
+        // MP2 orbital-relaxation ∂z.
+        for a in 0..nvir {
+            for i in 0..nocc {
+                let vo = 2.0 * u[(a, i)] + dz[(a, i)];
+                ddm[(nocc_total + a, first_occ + i)] += vo;
+                ddm[(first_occ + i, nocc_total + a)] += vo;
             }
         }
         let ddm_ao = c.dot(&ddm).dot(&c.t());

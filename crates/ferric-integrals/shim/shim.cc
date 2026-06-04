@@ -8,6 +8,8 @@
 #include <atomic>
 #include <mutex>
 #include <new>
+#include <cstdio>
+#include <cstdlib>
 
 using libint2::Engine;
 using libint2::Operator;
@@ -128,11 +130,17 @@ static Operator op_for_kind(int kind, bool *ok) {
     }
 }
 
+static std::atomic<long> g_engine_ctor_count{0};
+
 scf_engine *scf_engine_create(int op_kind, double omega,
                                   int max_nprim, int max_L, double precision) {
     bool ok = false;
     Operator op = op_for_kind(op_kind, &ok);
     if (!ok) return nullptr;
+    long n = g_engine_ctor_count.fetch_add(1) + 1;
+    if (getenv("FERRIC_ENGINE_CTOR_TRACE"))
+        fprintf(stderr, "[engine_create #%ld] op=%d max_nprim=%d max_L=%d\n",
+                n, op_kind, max_nprim, max_L);
     std::lock_guard<std::mutex> lock(libint_ctor_mutex);
     try {
         Engine eng(op, max_nprim, max_L, 0, precision);

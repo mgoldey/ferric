@@ -232,3 +232,18 @@ fn diag_alpha_amplitude_only_vs_ff() {
     eprintln!("  amp diag: {:.4} {:.4} {:.4}", amp.tensor[0][0],amp.tensor[1][1],amp.tensor[2][2]);
     eprintln!("  ff  diag: {:.4} {:.4} {:.4}", ff.tensor[0][0],ff.tensor[1][1],ff.tensor[2][2]);
 }
+
+#[test]
+#[ignore]
+fn diag_alpha_relaxed_vs_ff() {
+    use ferric_mp2::cpks_polar::analytic_alpha_relaxed;
+    use ferric_mp2::ff_polar::{mp2_polarizability_static, DensityMode};
+    let (mol, obs, dfbs, op, bounds, ctx, rhf) = water_ccpvdz();
+    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0 };
+    let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
+    let an = analytic_alpha_relaxed(&ctx,&mol,&obs,&dfbs,op,&bounds,&rhf,&mp2_cfg).unwrap();
+    let ff = mp2_polarizability_static(&ctx,&mol,&obs,&dfbs,op,&bounds,&scf_cfg,&mp2_cfg,1e-3,DensityMode::Relaxed).unwrap();
+    eprintln!("analytic relaxed α_iso = {:.5}  FF relaxed = {:.5}  |Δ|={:.2e}", an.iso, ff.iso, (an.iso-ff.iso).abs());
+    eprintln!("  an diag: {:.4} {:.4} {:.4}", an.tensor[0][0],an.tensor[1][1],an.tensor[2][2]);
+    eprintln!("  ff diag: {:.4} {:.4} {:.4}", ff.tensor[0][0],ff.tensor[1][1],ff.tensor[2][2]);
+}
