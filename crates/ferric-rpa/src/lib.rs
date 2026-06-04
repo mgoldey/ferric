@@ -376,11 +376,17 @@ pub fn run_pdep_rpa(
             }
         }
         (Eigensolver::Lanczos, None) => {
-            let seed = if use_atom_seed {
-                build_atom_seed(dfbs)?
-            } else {
-                Array2::eye(naux)
-            };
+            // Lanczos uses the full identity seed, NOT the atom-localized seed.
+            // The atom seed is a Davidson optimization: Davidson grows its
+            // subspace adaptively and recovers from a seed that doesn't span the
+            // dominant dielectric eigenspace, but block-Lanczos is confined to
+            // the Krylov span of its seed — a non-spanning atom seed yields
+            // unphysical ghost Ritz values (ε̃ = I+Π has eigenvalues ≥ 1, yet
+            // the atom-seeded Lanczos produced negatives on small systems),
+            // which broke FD gradients. The identity seed matches Davidson to
+            // machine precision. A properly-spanning reduced Lanczos seed for
+            // large-system scaling is future work.
+            let seed = Array2::<f64>::eye(naux);
             let block_size = seed.ncols().max(1);
             let max_iter = (max_vecs / block_size).max(8);
             let matvec = move |v: &Array2<f64>| -> Array2<f64> {

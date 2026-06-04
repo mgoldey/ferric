@@ -107,26 +107,14 @@ pub fn rpa_correlation_gradient(
     let natoms = mol.atoms.len();
     let mut grad = Array2::<f64>::zeros((natoms, 3));
 
-    // Finite-difference gradients require the eigenvalues to be reproduced
-    // consistently across displaced geometries. Davidson (full convergence on a
-    // dynamically grown subspace) is geometry-stable here; the truncated Lanczos
-    // default can return a geometry-dependent number of "best Ritz pairs" on
-    // small systems, which poisons the FD differences (breaks translational
-    // invariance). Pin Davidson for the per-geometry energy evaluations.
-    // TODO(rpa): make Lanczos FD-stable on small truncated systems, then drop this.
-    let fd_config = PdepRpaConfig {
-        eigensolver: crate::config::Eigensolver::Davidson,
-        ..rpa_config.clone()
-    };
-
     for atom in 0..natoms {
         for coord in 0..3 {
             let mut mol_p = mol.clone();
             let mut mol_m = mol.clone();
             apply_displacement(&mut mol_p, atom, coord, h);
             apply_displacement(&mut mol_m, atom, coord, -h);
-            let e_p = rpa_correlation_energy(&mol_p, obs_basis, aux_basis, op, &fd_config)?;
-            let e_m = rpa_correlation_energy(&mol_m, obs_basis, aux_basis, op, &fd_config)?;
+            let e_p = rpa_correlation_energy(&mol_p, obs_basis, aux_basis, op, rpa_config)?;
+            let e_m = rpa_correlation_energy(&mol_m, obs_basis, aux_basis, op, rpa_config)?;
             grad[(atom, coord)] = (e_p - e_m) / (2.0 * h);
         }
     }
