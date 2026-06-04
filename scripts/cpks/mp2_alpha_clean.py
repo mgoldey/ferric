@@ -281,9 +281,11 @@ def analytic_alpha():
         for aa in range(nvir):
             for ii in range(nocc):
                 dDscf[nocc+aa,ii]+=2*U[aa,ii]; dDscf[ii,nocc+aa]+=2*U[aa,ii]
-        deps=np.diag(-r_mo0[q]+Gmat(Imo0,dDscf)).copy()
+        # ∂eps DROPPED: feeding it into the t2 denominators double-counts the
+        # orbital response already in relaxed_dm's z-solve (validated: deps=0 is
+        # closest to oracle; deps×1 worsens iso 2.375→2.356 vs 2.387).
         ed=1e-5
-        dD=(relaxed_dm(Imo0+ed*dImo,e0+ed*deps)-relaxed_dm(Imo0-ed*dImo,e0-ed*deps))/(2*ed)
+        dD=(relaxed_dm(Imo0+ed*dImo,e0)-relaxed_dm(Imo0-ed*dImo,e0))/(2*ed)
         for aa in range(nvir):
             for ii in range(nocc):
                 dD[nocc+aa,ii]+=2*U[aa,ii]; dD[ii,nocc+aa]+=2*U[aa,ii]
@@ -324,3 +326,79 @@ for ed in [1e-4,1e-5,1e-6]:
     aa=analytic_alpha_ed(ed)
     print(f"  ed={ed}: diag {np.round(np.diag(aa),5)}  iso {np.trace(aa)/3:.5f}")
 print("  oracle diag:", np.round(np.diag(A),5))
+
+# ===========================================================================
+# CLOSE ~1.3%: validate ∂eps. My deps = diag(-r + G[dDscf]); test vs FD of the
+# field-MO orbital energies (phase-matched). Orbital energies ARE gauge-invariant
+# (eigenvalues), so this FD is trustworthy.
+# ===========================================================================
+print("\n=== ∂eps validation (q=z, gauge-invariant eigenvalues) ===")
+q=2
+U=cphf_U(q)
+dDscf=np.zeros((nmo,nmo))
+for a in range(nvir):
+    for i in range(nocc):
+        dDscf[nocc+a,i]+=2*U[a,i]; dDscf[i,nocc+a]+=2*U[a,i]
+deps_an=np.diag(-r_mo0[q]+Gmat(Imo0,dDscf)).copy()
+# FD of orbital energies in field (eigenvalues are gauge-invariant, phase-free)
+hh=1e-4
+ep,_=scf_in_field(hh,q); em,_=scf_in_field(-hh,q)
+deps_fd=(ep-em)/(2*hh)
+print("  deps_an:", np.round(deps_an,6))
+print("  deps_fd:", np.round(deps_fd,6))
+print("  ‖Δ‖=", np.max(np.abs(deps_an-deps_fd)))
+
+# ===========================================================================
+# Rebuild ∂eps rigorously. ∂ε_p = (Cᵀ ∂F_AO C)_pp, ∂F_AO = ∂h + G_ao[∂D_ao].
+# Validate the SCF density response ∂D first (gauge: total D is invariant).
+# ===========================================================================
+def G_ao(dm_ao):
+    J=np.einsum('pqrs,rs->pq',eri_ao,dm_ao); K=np.einsum('prqs,rs->pq',eri_ao,dm_ao)
+    return 2*J-K
+# FD ∂D_scf (AO, gauge-stable total density)
+def Dscf_ao(F):
+    ef,Cf=scf_in_field(F,q); return 2*Cf[:,:nocc]@Cf[:,:nocc].T
+dDscf_fd=(Dscf_ao(hh)-Dscf_ao(-hh))/(2*hh)
+# my analytic ∂D_scf from U (AO): ∂D = 2 Σ U_ai (C_a C_iᵀ + C_i C_aᵀ)
+Cocc=C0[:,:nocc]; Cvir=C0[:,nocc:]
+dDscf_an_ao=np.zeros((nmo,nmo))
+for a in range(nvir):
+    for i in range(nocc):
+        dDscf_an_ao += 2*U[a,i]*(np.outer(Cvir[:,a],Cocc[:,i])+np.outer(Cocc[:,i],Cvir[:,a]))
+print("\n=== ∂D_scf (AO) analytic vs FD ===")
+print("  ‖dDscf_an - dDscf_fd‖ =", np.max(np.abs(dDscf_an_ao - dDscf_fd)))
+# ∂eps via FD ∂D (the trustworthy one):
+dF_ao = -dip_ao[q] + G_ao(dDscf_fd)
+deps_via_fdD = np.diag(C0.T @ dF_ao @ C0)
+print("  deps via FD-∂D:", np.round(deps_via_fdD,6))
+print("  deps_fd direct:", np.round(deps_fd,6))
+print("  ‖Δ‖=", np.max(np.abs(deps_via_fdD - deps_fd)))
+
+# Does ∂eps even matter for the 1.3%? Compute analytic α with deps=0 vs full.
+print("\n=== sensitivity: does ∂eps account for the residual? ===")
+def analytic_alpha_depsscale(scale):
+    a=np.zeros((3,3))
+    for q in range(3):
+        U=cphf_U(q)
+        Th=np.zeros((nmo,nmo))
+        for aa in range(nvir):
+            for ii in range(nocc):
+                Th[nocc+aa,ii]=U[aa,ii]; Th[ii,nocc+aa]=-U[aa,ii]
+        dImo=(np.einsum('xp,xqrs->pqrs',Th,Imo0)+np.einsum('xq,pxrs->pqrs',Th,Imo0)
+             +np.einsum('xr,pqxs->pqrs',Th,Imo0)+np.einsum('xs,pqrx->pqrs',Th,Imo0))
+        dDscf=np.zeros((nmo,nmo))
+        for aa in range(nvir):
+            for ii in range(nocc):
+                dDscf[nocc+aa,ii]+=2*U[aa,ii]; dDscf[ii,nocc+aa]+=2*U[aa,ii]
+        deps=scale*np.diag(-r_mo0[q]+Gmat(Imo0,dDscf)).copy()
+        ed=1e-5
+        dD=(relaxed_dm(Imo0+ed*dImo,e0+ed*deps)-relaxed_dm(Imo0-ed*dImo,e0-ed*deps))/(2*ed)
+        for aa in range(nvir):
+            for ii in range(nocc):
+                dD[nocc+aa,ii]+=2*U[aa,ii]; dD[ii,nocc+aa]+=2*U[aa,ii]
+        for p in range(3): a[p,q]=-np.sum(dD*r_mo0[p])
+    return a
+for sc in [0.0, 1.0, 2.0]:
+    aa=analytic_alpha_depsscale(sc)
+    print(f"  deps×{sc}: diag {np.round(np.diag(aa),5)} iso {np.trace(aa)/3:.5f}")
+print("  oracle: diag [0.04433,4.98104,2.13546] iso 2.38694")
