@@ -26,6 +26,8 @@ pub mod attenuated;
 mod attenuated_timing;
 pub mod scs;
 pub mod zvector;
+pub mod ff_polar;
+pub mod cpks_polar;
 pub mod laplace;
 pub mod oo_rimp2_gradient;
 pub mod mpi_rimp2;

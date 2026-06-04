@@ -65,6 +65,10 @@ pub fn solve_zvector(
             }
         }
 
+        if std::env::var("FERRIC_ZVEC_TRACE").ok().as_deref() == Some("1") {
+            eprintln!("  [zvec] iter={_iter:3}  max_resid={max_resid:.3e}");
+        }
+
         if max_resid < 1e-8 {
             return Ok((z, l));
         }
@@ -80,6 +84,16 @@ pub fn solve_zvector(
         }
 
         z = diis.step(&z_new, &residual);
+    }
+
+    // BUG (latent): reaching here means the Z-vector did NOT converge to 1e-8
+    // within max_iter — yet we silently return the unconverged z. The
+    // finite-field α driver then differences garbage dipoles. Trace it under
+    // FERRIC_ZVEC_TRACE so the finite-field noise-floor diagnosis can see it.
+    // (Not promoted to a hard error yet: the analytic-gradient callers tolerate
+    // a loosely-converged z; the FF-α path is what needs the tighter floor.)
+    if std::env::var("FERRIC_ZVEC_TRACE").ok().as_deref() == Some("1") {
+        eprintln!("  [zvec] DID NOT CONVERGE in {max_iter} iters");
     }
 
     Ok((z, l))
@@ -203,7 +217,11 @@ fn build_lagrangian(
 ///
 /// A_{ai,bj} z_{bj} = [4(ai|bj) - (ab|ij) - (aj|bi)] z_{bj}
 /// In AO basis: form D^z, build J(D^z) and K(D^z), project back to MO.
-fn compute_az_product(
+///
+/// `pub(crate)` so the finite-field α driver (`ff_polar`) can reuse this exact
+/// matvec inside a CG solver — the production gradient's `solve_zvector` is
+/// unchanged (this is a visibility-only change, no behavioral effect).
+pub(crate) fn compute_az_product(
     c: &Array2<f64>,
     z: &Array2<f64>,
     prep: &PreparedBasis,

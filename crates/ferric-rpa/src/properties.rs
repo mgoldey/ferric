@@ -554,6 +554,113 @@ pub fn pdep_polarizability_static(
     })
 }
 
+/// Spectrum of the static (ω=0) closed-shell RPA dielectric ε̃ = I + 4 B̃ Δε⁻¹ B̃ᵀ,
+/// plus PDEP-rank diagnostics.
+///
+/// The PDEP eigenmodes of ε̃ are the basis in which the dRPA response is
+/// diagonal: the static-α correction weights each mode by `(λ_α − 1)/λ_α`, which
+/// vanishes as λ_α → 1. So **the number of eigenvalues exceeding 1 + thresh is
+/// the effective rank of the response operator** — the size of the "ideal basis"
+/// for the response.
+///
+/// This is the diagnostic for the question *does attenuation shrink the ideal
+/// response basis?* — build it with `op = Operator::coulomb()` vs
+/// `Operator::erfc(ω)` and compare `rank`. The dielectric construction here is
+/// the same one `pdep_polarizability_static` solves against (same B̃, same
+/// factor-4 closed-shell convention), so the rank reported is exactly the rank
+/// that path's response lives in.
+#[derive(Debug, Clone)]
+pub struct DielectricSpectrum {
+    /// All `naux` eigenvalues of ε̃, ascending. λ ≥ 1 for a physical RPA
+    /// dielectric (ε̃ = I + PSD); λ = 1 modes are inert (don't screen).
+    pub eigenvalues: Vec<f64>,
+    /// Auxiliary-basis dimension (= number of eigenvalues).
+    pub naux: usize,
+    /// Number of eigenvalues with λ > 1 + `thresh`: the effective response rank.
+    pub rank: usize,
+    /// Threshold used for `rank`.
+    pub thresh: f64,
+    /// Σ_α log(λ_α): the RPA correlation trace-log (a scalar fingerprint of the
+    /// whole spectrum; cheaper to compare than the full vector).
+    pub trace_log: f64,
+}
+
+/// Build the static closed-shell RPA dielectric for `op` and return its
+/// spectrum + PDEP rank at `thresh`. Closed-shell only.
+///
+/// `thresh` is the same significance cutoff used for PDEP truncation elsewhere
+/// (e.g. 1e-4): a mode counts toward `rank` iff `λ_α − 1 > thresh`.
+pub fn dielectric_spectrum_static(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    rhf: &ScfResult,
+    op: Operator,
+    thresh: f64,
+) -> Result<DielectricSpectrum, FerricError> {
+    use ndarray_linalg::{Eigh, UPLO};
+
+    if !matches!(rhf.spin, Spin::Restricted) {
+        return Err(FerricError::General(
+            "dielectric_spectrum_static: closed-shell (Restricted) only".into(),
+        ));
+    }
+
+    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0 };
+    let inter = ferric_mp2::rimp2::compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
+    let b_ov = &inter.b_ov;
+    let nocc = inter.nocc;
+    let nvir = inter.nvir;
+    let nocc_total = inter.nocc_total;
+    let first_occ = inter.first_occ;
+    let naux = inter.naux;
+    let nov = nocc * nvir;
+
+    let eps = rhf.eps_r();
+    let eps_occ: Vec<f64> = eps[first_occ..first_occ + nocc].to_vec();
+    let eps_vir: Vec<f64> = eps[nocc_total..nocc_total + nvir].to_vec();
+
+    let mut inv_de = ndarray::Array1::<f64>::zeros(nov);
+    for i in 0..nocc {
+        for a in 0..nvir {
+            inv_de[i * nvir + a] = 1.0 / (eps_vir[a] - eps_occ[i]);
+        }
+    }
+
+    // ε̃ = I + B̃ · diag(4/Δε) · B̃ᵀ  (closed-shell factor 4) — identical to the
+    // construction in `pdep_polarizability_static`.
+    let mut b_scaled = b_ov.clone();
+    for ia in 0..nov {
+        let s = (4.0 * inv_de[ia]).sqrt();
+        let mut col = b_scaled.column_mut(ia);
+        col.mapv_inplace(|x| x * s);
+    }
+    let mut eps_mat: Array2<f64> = b_scaled.dot(&b_scaled.t());
+    for p in 0..naux {
+        eps_mat[(p, p)] += 1.0;
+    }
+
+    let (evals, _) = eps_mat
+        .eigh(UPLO::Upper)
+        .map_err(|e| FerricError::Lapack(format!("dielectric eigh: {e}")))?;
+    let mut eigenvalues: Vec<f64> = evals.to_vec();
+    eigenvalues.sort_by(|x, y| x.partial_cmp(y).unwrap());
+
+    let rank = eigenvalues.iter().filter(|&&l| l - 1.0 > thresh).count();
+    let trace_log: f64 = eigenvalues
+        .iter()
+        .map(|&l| if l > 0.0 { l.ln() } else { 0.0 })
+        .sum();
+
+    Ok(DielectricSpectrum {
+        eigenvalues,
+        naux,
+        rank,
+        thresh,
+        trace_log,
+    })
+}
+
 /// Open-shell static polarizability tensor at ω=0 (UHF / ROHF reference).
 ///
 /// Same SMW construction as the closed-shell path but with prefactor 2 per
