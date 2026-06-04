@@ -3,6 +3,7 @@
 
 use crate::dispersion::free_atom_ref::ts_free_atom;
 use ndarray::Array2;
+use ndarray_linalg::Inverse;
 
 /// erf via a rational approximation (Abramowitz & Stegun 7.1.26, |err| < 1.5e-7).
 fn erf(x: f64) -> f64 {
@@ -101,6 +102,75 @@ pub fn ts_atom_params(
         .collect()
 }
 
+/// MBD@TS screened per-atom α(iω). For each frequency, builds the coupled matrix
+/// C = A⁻¹ + T (A = block-diagonal per-atom α(iω), T = damped dipole tensor with
+/// per-atom Gaussian widths σ_A = (√(2/π)·α_A(iω)/3)^{1/3}), inverts it, and
+/// contracts each atom's row of blocks back to a per-atom 3×3 tensor:
+///   α_A^scs = Σ_B (C⁻¹)_{AB}.
+/// Returns the same shape as the input (`[atom][freq][3][3]`).
+pub fn mbd_screen(
+    per_atom_alpha: &[Vec<[[f64; 3]; 3]>],
+    positions: &[[f64; 3]],
+    _alpha_eff: &[f64],
+    freqs: &[f64],
+) -> Vec<Vec<[[f64; 3]; 3]>> {
+    let n = positions.len();
+    let nfreq = freqs.len();
+    let mut out: Vec<Vec<[[f64; 3]; 3]>> = vec![vec![[[0.0; 3]; 3]; nfreq]; n];
+    const TWO_OVER_PI: f64 = 0.636_619_772_367_581;
+    for k in 0..nfreq {
+        let mut a_inv = Array2::<f64>::zeros((3 * n, 3 * n));
+        let mut sigma = vec![0.0_f64; n];
+        for a in 0..n {
+            let t = per_atom_alpha[a][k];
+            let iso = ((t[0][0] + t[1][1] + t[2][2]) / 3.0).max(1e-10);
+            sigma[a] = (TWO_OVER_PI.sqrt() * iso / 3.0).powf(1.0 / 3.0);
+            let inv = invert3(&t, iso);
+            for i in 0..3 {
+                for j in 0..3 {
+                    a_inv[(3 * a + i, 3 * a + j)] = inv[i][j];
+                }
+            }
+        }
+        let tmat = dipole_coupling_tensor(positions, &sigma);
+        let c = &a_inv + &tmat;
+        let cinv = c.inv().unwrap_or_else(|_| Array2::eye(3 * n));
+        for a in 0..n {
+            for b in 0..n {
+                for i in 0..3 {
+                    for j in 0..3 {
+                        out[a][k][i][j] += cinv[(3 * a + i, 3 * b + j)];
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Invert a near-isotropic 3×3 α tensor. Falls back to (1/iso)·I if singular.
+fn invert3(t: &[[f64; 3]; 3], iso: f64) -> [[f64; 3]; 3] {
+    let det = t[0][0] * (t[1][1] * t[2][2] - t[1][2] * t[2][1])
+        - t[0][1] * (t[1][0] * t[2][2] - t[1][2] * t[2][0])
+        + t[0][2] * (t[1][0] * t[2][1] - t[1][1] * t[2][0]);
+    if det.abs() < 1e-14 {
+        let d = 1.0 / iso;
+        return [[d, 0.0, 0.0], [0.0, d, 0.0], [0.0, 0.0, d]];
+    }
+    let inv_det = 1.0 / det;
+    let mut m = [[0.0; 3]; 3];
+    m[0][0] = (t[1][1] * t[2][2] - t[1][2] * t[2][1]) * inv_det;
+    m[0][1] = (t[0][2] * t[2][1] - t[0][1] * t[2][2]) * inv_det;
+    m[0][2] = (t[0][1] * t[1][2] - t[0][2] * t[1][1]) * inv_det;
+    m[1][0] = (t[1][2] * t[2][0] - t[1][0] * t[2][2]) * inv_det;
+    m[1][1] = (t[0][0] * t[2][2] - t[0][2] * t[2][0]) * inv_det;
+    m[1][2] = (t[0][2] * t[1][0] - t[0][0] * t[1][2]) * inv_det;
+    m[2][0] = (t[1][0] * t[2][1] - t[1][1] * t[2][0]) * inv_det;
+    m[2][1] = (t[0][1] * t[2][0] - t[0][0] * t[2][1]) * inv_det;
+    m[2][2] = (t[0][0] * t[1][1] - t[0][1] * t[1][0]) * inv_det;
+    m
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,5 +202,33 @@ mod tests {
         // zz component of the off-site block is O(1/R³) and nonzero (bond axis).
         let tzz = t[(2, 5)].abs();
         assert!(tzz > 1e-4 && tzz < 1e-2, "off-site T_zz out of range: {tzz}");
+    }
+
+    #[test]
+    fn mbd_screen_large_separation_recovers_unscreened() {
+        // Two He-like atoms at R=50 Bohr (T→0): screened α ≈ input α.
+        let pos = [[0.0, 0.0, 0.0], [0.0, 0.0, 50.0]];
+        let alpha_eff = [1.38_f64, 1.38];
+        let freqs = [0.0_f64, 0.5, 2.0];
+        let omega = (4.0_f64 / 3.0) * 1.46 / (1.38 * 1.38);
+        let mk = |k: usize| {
+            let w = freqs[k];
+            let a = 1.38 / (1.0 + (w / omega).powi(2));
+            [[a, 0.0, 0.0], [0.0, a, 0.0], [0.0, 0.0, a]]
+        };
+        let input: Vec<Vec<[[f64; 3]; 3]>> =
+            (0..2).map(|_| (0..3).map(mk).collect()).collect();
+        let scr = mbd_screen(&input, &pos, &alpha_eff, &freqs);
+        for a in 0..2 {
+            for k in 0..3 {
+                let in_iso =
+                    (input[a][k][0][0] + input[a][k][1][1] + input[a][k][2][2]) / 3.0;
+                let sc_iso = (scr[a][k][0][0] + scr[a][k][1][1] + scr[a][k][2][2]) / 3.0;
+                assert!(
+                    (in_iso - sc_iso).abs() < 1e-3 * in_iso.max(1e-3),
+                    "screened≠unscreened at large R: in={in_iso} sc={sc_iso}"
+                );
+            }
+        }
     }
 }
