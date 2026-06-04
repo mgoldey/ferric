@@ -18,6 +18,24 @@
     "C6H6": { "c6": 1765.0, "source": "Thakkar et al. arXiv:2010.01162 (2020), supersedes Kumar-Meath 1992 value 1723" },
     "O2":   { "c6": 70.0,   "source": "APPROX ~70.0 a.u. — Kumar, Meath, Bundgen & Thakkar, J. Chem. Phys. 105, 4927 (1996), constrained-DOSD O2; supersedes Margoliash & Meath JCP 68 1426 (1978). O2 is open-shell (3-Sigma-g-) and absent from Toulouse Table III; value is the compilation figure pending primary-source verification of the exact digits." }
   },
+  "molecular_alpha0": {
+    "_comment": "Experimental static isotropic dipole polarizabilities alpha(0) in atomic units (Bohr^3). Standard CRC Handbook / Olney, Cann, Knorr & Meath (Chem. Phys. 223, 59 (1998)) DOSD-derived values — the same Meath-school dipole-oscillator-strength data that underlies the molecular_c6_aa references, so alpha and C6 are mutually consistent. These let us test the thesis directly: a better static alpha (and its frequency dependence) is what drives a better Casimir-Polder C6. Rounded to ~3-4 sig figs.",
+    "H2":   { "alpha0": 5.43,  "source": "CRC / Olney-Meath DOSD" },
+    "N2":   { "alpha0": 11.74, "source": "CRC / Olney-Meath DOSD" },
+    "CO":   { "alpha0": 13.08, "source": "CRC / Olney-Meath DOSD" },
+    "H2O":  { "alpha0": 9.64,  "source": "CRC / Olney-Meath DOSD" },
+    "NH3":  { "alpha0": 14.56, "source": "CRC / Olney-Meath DOSD" },
+    "CH4":  { "alpha0": 17.27, "source": "CRC / Olney-Meath DOSD" },
+    "CO2":  { "alpha0": 17.51, "source": "CRC / Olney-Meath DOSD" },
+    "C2H2": { "alpha0": 22.45, "source": "CRC / Olney-Meath DOSD" },
+    "C2H4": { "alpha0": 27.70, "source": "CRC / Olney-Meath DOSD" },
+    "C2H6": { "alpha0": 29.61, "source": "CRC / Olney-Meath DOSD" },
+    "HF":   { "alpha0": 5.60,  "source": "CRC / Olney-Meath DOSD" },
+    "HCl":  { "alpha0": 17.39, "source": "CRC / Olney-Meath DOSD" },
+    "H2S":  { "alpha0": 24.71, "source": "CRC / Olney-Meath DOSD" },
+    "C6H6": { "alpha0": 67.48, "source": "CRC (benzene, isotropic mean)" },
+    "O2":   { "alpha0": 10.59, "source": "CRC / Kumar-Meath 1996 (O2 isotropic mean)" }
+  },
   "atomic_c6_aa": {
     "_comment": "Free-atom C6 (a.u.). TS column = Tkatchenko-Scheffler PRL 2009 values used in TS/MBD dispersion codes (DOSD/Chu-Dalgarno-consistent). Gould column = Gould-Bucko JCTC 2016 (arXiv:1604.02751) higher-level-theory reference where it differs.",
     "H":  { "c6": 6.5,    "alpha0": 4.5,  "source": "TS PRL 2009 (exact H = 6.499)" },
