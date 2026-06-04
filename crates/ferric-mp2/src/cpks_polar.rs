@@ -493,6 +493,11 @@ pub fn analytic_de_mp2_along(
             }
         }
     }
+    // NOTE: tested the orbital-relaxation term Σ_ai L_ai U^x_ai (MP2 Lagrangian
+    // contracted with the CPHF response) as the candidate missing ~9% — it has the
+    // WRONG sign/magnitude (W_LAG=+1 → 0.51× FD, worse), so it is NOT the residual.
+    // Ruled out empirically; left out. The remaining 9% (analytic 0.906× FD) is an
+    // unidentified term in the ∂E_MP2 assembly — flagged for review.
     Ok(de)
 }
 
