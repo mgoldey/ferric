@@ -106,6 +106,18 @@ fn main() {
             Some("def2-universal-jkfit".to_string()),
             Some("def2-universal-jkfit".to_string()),
         )
+    } else if matches!(method, "pdep-rpa" | "rpa") {
+        // RPA@HF (no xc): the HF reference SCF defaults to RI-J/RI-K with
+        // def2-universal-jkfit too. Exact 4-index J/K per iteration makes the
+        // HF reference 10-20× slower than the RI-JK PBE reference (hcl/aug-cc-
+        // pVTZ: 505 s vs 25 s) for no benefit — the RI-JK fitting error (~µHa)
+        // is far below the C6 differences we study. Keep SCF aux separate from
+        // the RPA correlation aux (see ferric-jk-aux-convention).
+        (
+            None,
+            Some("def2-universal-jkfit".to_string()),
+            Some("def2-universal-jkfit".to_string()),
+        )
     } else {
         (None, None, None)
     };
