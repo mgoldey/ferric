@@ -774,12 +774,12 @@ pub fn analytic_alpha_amplitude_only(
         let mut ddm = Array2::<f64>::zeros((nmo, nmo));
         for i in 0..nocc {
             for j in 0..nocc {
-                ddm[(first_occ + i, first_occ + j)] = dp_oo[(i, j)] + dp_oo[(j, i)];
+                ddm[(first_occ + i, first_occ + j)] = (dp_oo[(i, j)] + dp_oo[(j, i)]) * std::env::var("CPKS_WP").ok().and_then(|x|x.parse().ok()).unwrap_or(1.0_f64);
             }
         }
         for a in 0..nvir {
             for b in 0..nvir {
-                ddm[(nocc_total + a, nocc_total + b)] = dp_vv[(a, b)] + dp_vv[(b, a)];
+                ddm[(nocc_total + a, nocc_total + b)] = (dp_vv[(a, b)] + dp_vv[(b, a)]) * std::env::var("CPKS_WP").ok().and_then(|x|x.parse().ok()).unwrap_or(1.0_f64);
             }
         }
         let ddm_ao = c.dot(&ddm).dot(&c.t());
@@ -908,12 +908,12 @@ pub fn analytic_alpha_relaxed(
         let mut ddm = Array2::<f64>::zeros((nmo, nmo));
         for i in 0..nocc {
             for j in 0..nocc {
-                ddm[(first_occ + i, first_occ + j)] = dp_oo[(i, j)] + dp_oo[(j, i)];
+                ddm[(first_occ + i, first_occ + j)] = (dp_oo[(i, j)] + dp_oo[(j, i)]) * std::env::var("CPKS_WP").ok().and_then(|x|x.parse().ok()).unwrap_or(1.0_f64);
             }
         }
         for a in 0..nvir {
             for b in 0..nvir {
-                ddm[(nocc_total + a, nocc_total + b)] = dp_vv[(a, b)] + dp_vv[(b, a)];
+                ddm[(nocc_total + a, nocc_total + b)] = (dp_vv[(a, b)] + dp_vv[(b, a)]) * std::env::var("CPKS_WP").ok().and_then(|x|x.parse().ok()).unwrap_or(1.0_f64);
             }
         }
         // vo/ov block: SCF reference orbital response (2·U, the ∂ of the 2δ core
@@ -922,7 +922,8 @@ pub fn analytic_alpha_relaxed(
         // MP2 orbital-relaxation ∂z.
         for a in 0..nvir {
             for i in 0..nocc {
-                let vo = 2.0 * u[(a, i)] + dz[(a, i)];
+                let w2u: f64 = std::env::var("CPKS_W2U").ok().and_then(|x| x.parse().ok()).unwrap_or(1.0);
+                let wz: f64 = std::env::var("CPKS_WZ").ok().and_then(|x|x.parse().ok()).unwrap_or(1.0); let vo = w2u * 2.0 * u[(a, i)] + wz * dz[(a, i)];
                 ddm[(nocc_total + a, first_occ + i)] += vo;
                 ddm[(first_occ + i, nocc_total + a)] += vo;
             }

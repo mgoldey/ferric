@@ -114,67 +114,70 @@ impl<'a> DirectJK<'a> {
             .map(|(_, q)| q)
             .collect();
 
+        // One engine per rayon thread (see engine_pool): constructing it in the
+        // fold init below would fire once per work-chunk and storm the global
+        // libint2 ctor mutex (catastrophic for heavy-element bases).
+        let pool = crate::engine_pool::EnginePool::new(op, prep, 1e-14)?;
         let total_jk = quads
             .into_par_iter()
             .fold(
-                || {
-                    let engine = Engine::new_2e(op, prep, 1e-14).unwrap();
-                    (engine, Array2::<f64>::zeros((nbf, nbf)), Array2::<f64>::zeros((nbf, nbf)), 0usize)
-                },
-                |(mut engine, mut local_j, mut local_k, mut local_count), (s1, s2, s3, s4)| {
+                || (Array2::<f64>::zeros((nbf, nbf)), Array2::<f64>::zeros((nbf, nbf)), 0usize),
+                |(mut local_j, mut local_k, mut local_count), (s1, s2, s3, s4)| {
                     let (n1, n2) = (dims[s1], dims[s2]);
                     let (o1, o2) = (offs[s1], offs[s2]);
                     let sym12 = s1 != s2;
 
-                    if let Some(q) = engine.compute_quartet(prep, s1, s2, s3, s4) {
-                        local_count += 1;
-                        let (n3, n4) = (dims[s3], dims[s4]);
-                        let (o3, o4) = (offs[s3], offs[s4]);
-                        let sym34 = s3 != s4;
-                        let sym1234 = (s1, s2) != (s3, s4);
+                    pool.with(|engine| {
+                        if let Some(q) = engine.compute_quartet(prep, s1, s2, s3, s4) {
+                            local_count += 1;
+                            let (n3, n4) = (dims[s3], dims[s4]);
+                            let (o3, o4) = (offs[s3], offs[s4]);
+                            let sym34 = s3 != s4;
+                            let sym1234 = (s1, s2) != (s3, s4);
 
-                        for a in 0..n1 {
-                            for b in 0..n2 {
-                                for c in 0..n3 {
-                                    for dd in 0..n4 {
-                                        let v = unsafe {
-                                            *q.get_unchecked(((a * n2 + b) * n3 + c) * n4 + dd)
-                                        };
-                                        let mu = o1 + a;
-                                        let nu = o2 + b;
-                                        let la = o3 + c;
-                                        let sg = o4 + dd;
+                            for a in 0..n1 {
+                                for b in 0..n2 {
+                                    for c in 0..n3 {
+                                        for dd in 0..n4 {
+                                            let v = unsafe {
+                                                *q.get_unchecked(((a * n2 + b) * n3 + c) * n4 + dd)
+                                            };
+                                            let mu = o1 + a;
+                                            let nu = o2 + b;
+                                            let la = o3 + c;
+                                            let sg = o4 + dd;
 
-                                        // J contributions
-                                        unsafe {
-                                            *local_j.uget_mut((mu, nu)) += d.uget((la, sg)) * v;
-                                            *local_k.uget_mut((mu, la)) += d.uget((nu, sg)) * v;
-                                            if sym12 {
-                                                *local_j.uget_mut((nu, mu)) += d.uget((la, sg)) * v;
-                                                *local_k.uget_mut((nu, la)) += d.uget((mu, sg)) * v;
-                                            }
-                                            if sym34 {
-                                                *local_j.uget_mut((mu, nu)) += d.uget((sg, la)) * v;
-                                                *local_k.uget_mut((mu, sg)) += d.uget((nu, la)) * v;
-                                            }
-                                            if sym12 && sym34 {
-                                                *local_j.uget_mut((nu, mu)) += d.uget((sg, la)) * v;
-                                                *local_k.uget_mut((nu, sg)) += d.uget((mu, la)) * v;
-                                            }
-                                            if sym1234 {
-                                                *local_j.uget_mut((la, sg)) += d.uget((mu, nu)) * v;
-                                                *local_k.uget_mut((la, mu)) += d.uget((sg, nu)) * v;
+                                            // J contributions
+                                            unsafe {
+                                                *local_j.uget_mut((mu, nu)) += d.uget((la, sg)) * v;
+                                                *local_k.uget_mut((mu, la)) += d.uget((nu, sg)) * v;
                                                 if sym12 {
-                                                    *local_j.uget_mut((la, sg)) += d.uget((nu, mu)) * v;
-                                                    *local_k.uget_mut((la, nu)) += d.uget((sg, mu)) * v;
+                                                    *local_j.uget_mut((nu, mu)) += d.uget((la, sg)) * v;
+                                                    *local_k.uget_mut((nu, la)) += d.uget((mu, sg)) * v;
                                                 }
                                                 if sym34 {
-                                                    *local_j.uget_mut((sg, la)) += d.uget((mu, nu)) * v;
-                                                    *local_k.uget_mut((sg, mu)) += d.uget((la, nu)) * v;
+                                                    *local_j.uget_mut((mu, nu)) += d.uget((sg, la)) * v;
+                                                    *local_k.uget_mut((mu, sg)) += d.uget((nu, la)) * v;
                                                 }
                                                 if sym12 && sym34 {
-                                                    *local_j.uget_mut((sg, la)) += d.uget((nu, mu)) * v;
-                                                    *local_k.uget_mut((sg, nu)) += d.uget((la, mu)) * v;
+                                                    *local_j.uget_mut((nu, mu)) += d.uget((sg, la)) * v;
+                                                    *local_k.uget_mut((nu, sg)) += d.uget((mu, la)) * v;
+                                                }
+                                                if sym1234 {
+                                                    *local_j.uget_mut((la, sg)) += d.uget((mu, nu)) * v;
+                                                    *local_k.uget_mut((la, mu)) += d.uget((sg, nu)) * v;
+                                                    if sym12 {
+                                                        *local_j.uget_mut((la, sg)) += d.uget((nu, mu)) * v;
+                                                        *local_k.uget_mut((la, nu)) += d.uget((sg, mu)) * v;
+                                                    }
+                                                    if sym34 {
+                                                        *local_j.uget_mut((sg, la)) += d.uget((mu, nu)) * v;
+                                                        *local_k.uget_mut((sg, mu)) += d.uget((la, nu)) * v;
+                                                    }
+                                                    if sym12 && sym34 {
+                                                        *local_j.uget_mut((sg, la)) += d.uget((nu, mu)) * v;
+                                                        *local_k.uget_mut((sg, nu)) += d.uget((la, mu)) * v;
+                                                    }
                                                 }
                                             }
                                         }
@@ -182,11 +185,11 @@ impl<'a> DirectJK<'a> {
                                 }
                             }
                         }
-                    }
-                    (engine, local_j, local_k, local_count)
+                    });
+                    (local_j, local_k, local_count)
                 },
             )
-            .map(|(_, local_j, local_k, count)| {
+            .map(|(local_j, local_k, count)| {
                 computed_quartets.fetch_add(count, Ordering::Relaxed);
                 (local_j, local_k)
             })
