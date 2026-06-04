@@ -203,3 +203,144 @@ fn rsh_rpa_c6_native_omega() {
     eprintln!("\n  SUMMARY  LC-ωPBE MAE={m_lcwpbe:.2}%   LRC-ωPBEh MAE={m_lrcwpbeh:.2}%");
     eprintln!("  Option B win ⟺ LRC-ωPBEh (better compact-α reference) lowers MAE.");
 }
+
+/// NOVELTY SPIKE: dielectric-dependent (Brawand-style) ω for RSH-RPA C6.
+///
+/// Prior art (verified): RSH-RPA C6 with FIXED ω (Toulouse 2013); Brawand/Galli
+/// system-dielectric ω for GAPS not dispersion; MBD@rsSCS self-consistent screening
+/// but atomic-TS one universal param. The combination — SYSTEM-DIELECTRIC ω driving
+/// the range-separation of RPA C6 — appears open. My option-B finding (optimal ω is
+/// bonding-type-dependent) is the MOTIVATION: a dielectric ω should supply exactly
+/// that dependence.
+///
+/// CALIBRATION FIRST (this test): for each molecule print α (static RPA), molecular
+/// volume V (Σ Becke atomic eff. volumes), the dielectric proxy α/V, and the
+/// per-molecule OPTIMAL ω (bisect C6=DOSD on the LC reference). If ω_opt correlates
+/// monotonically with α/V, a dielectric ω = f(α/V) CAN fix the split — and the data
+/// fixes the functional form + sign. If ω_opt is uncorrelated with α/V, the
+/// dielectric hypothesis fails (clean null).
+///
+/// Run: cargo test --release -p ferric-rpa --test rsh_rpa_dispersion \
+///        dielectric_omega_calibration -- --ignored --nocapture
+#[test]
+#[ignore]
+fn dielectric_omega_calibration() {
+    use ferric_rpa::properties::{atomic_effective_volumes_becke, pdep_polarizability_static};
+
+    let lc_name = "HYB_GGA_XC_LC_WPBE";
+    let mols: &[(&str, &str, f64)] = &[
+        ("hf",   "2\nhf\nF 0 0 0\nH 0 0 0.917\n", 19.0),
+        ("h2o",  "3\nh2o\nO 0 0 0.117790\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n", 45.3),
+        ("ch4",  "5\nch4\nC 0 0 0\nH 0.6276 0.6276 0.6276\nH -0.6276 -0.6276 0.6276\nH -0.6276 0.6276 -0.6276\nH 0.6276 -0.6276 -0.6276\n", 129.7),
+        ("nh3",  "4\nnh3\nN 0 0 0.0\nH 0 0.9377 -0.3816\nH 0.8120 -0.4689 -0.3816\nH -0.8120 -0.4689 -0.3816\n", 89.0),
+        ("co",   "2\nco\nC 0 0 0\nO 0 0 1.128\n", 81.4),
+        ("n2",   "2\nn2\nN 0 0 0.0\nN 0 0 1.0977\n", 73.3),
+        ("co2",  "3\nco2\nC 0 0 0.0\nO 0 0 1.1621\nO 0 0 -1.1621\n", 158.7),
+        ("c2h4", "6\nc2h4\nC 0 0 0.6695\nC 0 0 -0.6695\nH 0 0.9289 1.2321\nH 0 -0.9289 1.2321\nH 0 0.9289 -1.2321\nH 0 -0.9289 -1.2321\n", 300.2),
+    ];
+    let ctx = ParallelContext::default();
+    let cfg = PdepRpaConfig::default();
+
+    eprintln!("\n=== Dielectric-ω calibration: does optimal ω track α/V (the dielectric proxy)? ===");
+    eprintln!("  ω_opt = ω s.t. RSH-RPA C6 = DOSD (LC-ωPBE ref). α from static RPA@ω_native.\n");
+    eprintln!("  {:>5}  {:>8}  {:>9}  {:>9}  {:>9}  {:>8}", "mol", "α", "V", "α/V", "ω_opt", "bond");
+
+    let mut rows: Vec<(String, f64, f64, f64)> = Vec::new(); // label, a_over_v, omega_opt, alpha
+    for (label, xyz, dosd) in mols {
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let obs_bs = basis::bundled("aug-cc-pvdz").unwrap();
+        let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
+        let scf_op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(scf_op, &obs).unwrap();
+        let scf_cfg = RhfConfig {
+            energy_conv: 1e-9, xc: Some(lc_name.to_string()),
+            df_j_aux: Some("def2-universal-jkfit".to_string()),
+            df_k_aux: Some("def2-universal-jkfit".to_string()),
+            ..Default::default()
+        };
+        let rhf = match solve_rhf(&ctx, &mol, &obs, scf_op, &bounds, &scf_cfg) {
+            Ok(r) if r.converged => r,
+            _ => { eprintln!("  {label:>5}  (SCF not converged)"); continue; }
+        };
+
+        // α: static Coulomb RPA (the dielectric-relevant magnitude).
+        let alpha = pdep_polarizability_static(&mol, &obs, &dfbs, &rhf, Operator::coulomb(), &cfg)
+            .map(|x| x.iso).unwrap_or(f64::NAN);
+        // V: sum of Becke atomic effective volumes (a.u.³).
+        let vol: f64 = atomic_effective_volumes_becke(&mol, &obs, &obs_bs, rhf.density_r())
+            .map(|v| v.iter().sum()).unwrap_or(f64::NAN);
+        let a_over_v = alpha / vol;
+
+        // ω_opt: bisect erf-RPA C6(ω)=DOSD (C6 increases with ω for erf).
+        let c6_at = |w: f64| -> f64 {
+            let dp = pdep_dynamic_polarizability(
+                &mol, &obs, &obs_bs, &dfbs, &rhf, Operator::erf(w), &cfg,
+                DispersionPartition::Becke, None,
+            ).unwrap();
+            casimir_polder_c6(&dp).c6_molecular_iso
+        };
+        // erf-RPA C6 DECREASES with ω (small ω → near-bare KS response, large C6;
+        // large ω → full Coulomb screening, small C6). Bracket [lo=large C6, hi=small].
+        let (mut lo, mut hi) = (0.05_f64, 2.5_f64);
+        let omega_opt = if c6_at(lo) < *dosd { f64::NAN }      // even tiny ω undershoots
+            else if c6_at(hi) > *dosd { f64::NAN }             // even ω=2.5 overshoots
+            else {
+                for _ in 0..22 { let m = 0.5*(lo+hi); if c6_at(m) > *dosd { lo = m } else { hi = m } }
+                0.5*(lo+hi)
+            };
+        let bond = if ["co","n2","co2","c2h4"].contains(label) { "π/multi" } else { "saturated" };
+        eprintln!("  {:>5}  {:>8.3}  {:>9.2}  {:>9.4}  {:>9.4}  {:>8}", label, alpha, vol, a_over_v, omega_opt, bond);
+        rows.push((label.to_string(), a_over_v, omega_opt, alpha));
+    }
+
+    // Correlation of ω_opt with α/V (the falsifiable test).
+    let valid: Vec<_> = rows.iter().filter(|r| r.2.is_finite()).collect();
+    if valid.len() >= 3 {
+        let n = valid.len() as f64;
+        let mx: f64 = valid.iter().map(|r| r.1).sum::<f64>()/n;
+        let my: f64 = valid.iter().map(|r| r.2).sum::<f64>()/n;
+        let sxy: f64 = valid.iter().map(|r| (r.1-mx)*(r.2-my)).sum();
+        let sxx: f64 = valid.iter().map(|r| (r.1-mx).powi(2)).sum();
+        let syy: f64 = valid.iter().map(|r| (r.2-my).powi(2)).sum();
+        let pearson = sxy/(sxx.sqrt()*syy.sqrt());
+        eprintln!("\n  Pearson r(α/V, ω_opt) = {pearson:+.3}  (slope {:+.4})", sxy/sxx);
+        eprintln!("  |r|→1 ⟹ ω_opt IS dielectric-determined → build ω=f(α/V). |r|→0 ⟹ null.");
+    }
+}
+
+/// DEBUG: actual erf-RPA C6(ω) curve on the LC reference, to fix monotonicity
+/// and bracket before trusting the dielectric-ω calibration. The calibration
+/// bisection collapsed to the floor → C6(small ω) already ≥ DOSD; verify the
+/// real shape.
+#[test]
+#[ignore]
+fn debug_erf_c6_curve_lc_ref() {
+    let lc_name = "HYB_GGA_XC_LC_WPBE";
+    let mols: &[(&str, &str, f64)] = &[
+        ("ch4", "5\nch4\nC 0 0 0\nH 0.6276 0.6276 0.6276\nH -0.6276 -0.6276 0.6276\nH -0.6276 0.6276 -0.6276\nH 0.6276 -0.6276 -0.6276\n", 129.7),
+        ("n2",  "2\nn2\nN 0 0 0.0\nN 0 0 1.0977\n", 73.3),
+    ];
+    let ctx = ParallelContext::default();
+    let cfg = PdepRpaConfig::default();
+    let ws = [0.05_f64, 0.1, 0.2, 0.4, 0.7, 1.0, 1.5, 2.0, 3.0];
+    for (label, xyz, dosd) in mols {
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let obs_bs = basis::bundled("aug-cc-pvdz").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let scf_cfg = RhfConfig { energy_conv: 1e-9, xc: Some(lc_name.to_string()),
+            df_j_aux: Some("def2-universal-jkfit".to_string()),
+            df_k_aux: Some("def2-universal-jkfit".to_string()), ..Default::default() };
+        let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
+        eprint!("  {label:>4} (DOSD {dosd}): ");
+        for &w in &ws {
+            let dp = pdep_dynamic_polarizability(&mol,&obs,&obs_bs,&dfbs,&rhf,Operator::erf(w),&cfg,DispersionPartition::Becke,None).unwrap();
+            eprint!("{:.1}→{:.0} ", w, casimir_polder_c6(&dp).c6_molecular_iso);
+        }
+        eprintln!();
+    }
+}
