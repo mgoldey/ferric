@@ -801,3 +801,89 @@ print("  HF part (2U→ -4ΣUr) α_yy =", hf_yy, " (HF oracle was 5.195)")
 # oracle total 4.981 → MP2 correction = 4.981-5.195 = -0.214. Mine: 5.280-5.195=+0.085.
 print("  MP2 correction: analytic +%.3f, oracle %.3f" % (5.280-hf_yy, 4.981-hf_yy))
 print("  => MP2 correction has WRONG SIGN on yy (analytic +0.085 vs oracle -0.214)")
+
+# ===========================================================================
+# FIX yy ∂z: first validate the INPUTS (∂Imo, ∂eps) for q=1 vs phase-matched FD.
+# If inputs are right, the bug is in the static-builder directional derivative.
+# ===========================================================================
+q=1
+U=cphf_U_axis(q)
+Th=np.zeros((nmo,nmo))
+for a in range(nvir):
+    for i in range(nocc):
+        Th[nocc+a,i]=U[a,i]; Th[i,nocc+a]=-U[a,i]
+dImo_an=(np.einsum('xp,xqrs->pqrs',Th,Imo)+np.einsum('xq,pxrs->pqrs',Th,Imo)
+        +np.einsum('xr,pqxs->pqrs',Th,Imo)+np.einsum('xs,pqrx->pqrs',Th,Imo))
+dDscf=np.zeros((nmo,nmo))
+for a in range(nvir):
+    for i in range(nocc):
+        dDscf[nocc+a,i]+=2*U[a,i]; dDscf[i,nocc+a]+=2*U[a,i]
+G=2*np.einsum('pqrs,rs->pq',Imo,dDscf)-np.einsum('prqs,rs->pq',Imo,dDscf)
+deps_an=np.diag(-r_mo[q]+G).copy()
+
+# phase-matched FD of Imo(F) and eps(F) along q
+hh=1e-4
+def Cmo_field(F):
+    eo,Cf=scf_in_field(F,q)
+    for p in range(nmo):
+        if Cf[:,p]@np.eye(nmo)[:,p]<0: Cf[:,p]*=-1
+    return eo,Cf
+eo_p,Cp=Cmo_field(hh); eo_m,Cm=Cmo_field(-hh)
+Imo_p=np.einsum('pa,qb,rc,sd,pqrs->abcd',Cp,Cp,Cp,Cp,eri_ao,optimize=True)
+Imo_m=np.einsum('pa,qb,rc,sd,pqrs->abcd',Cm,Cm,Cm,Cm,eri_ao,optimize=True)
+dImo_fd=(Imo_p-Imo_m)/(2*hh); deps_fd=(eo_p-eo_m)/(2*hh)
+print("\n=== q=1 input validation (analytic vs phase-matched FD) ===")
+print("  ‖dImo_an - dImo_fd‖ =", np.max(np.abs(dImo_an-dImo_fd)))
+print("  ‖deps_an - deps_fd‖ =", np.max(np.abs(deps_an-deps_fd)))
+print("  deps_an:", np.round(deps_an,5))
+print("  deps_fd:", np.round(deps_fd,5))
+
+# Is the α_yy directional-FD ε-stable? (huge dImo components could poison it)
+print("\n=== α_yy directional-FD ε-stability ===")
+for ed in [1e-4,1e-5,1e-6,1e-7]:
+    Dp = static_relaxed_dm_validated(Imo+ed*dImo_an, e+ed*deps_an)
+    Dm = static_relaxed_dm_validated(Imo-ed*dImo_an, e-ed*deps_an)
+    dDrel=(Dp-Dm)/(2*ed)
+    for a in range(nvir):
+        for i in range(nocc):
+            dDrel[nocc+a,i]+=2*U[a,i]; dDrel[i,nocc+a]+=2*U[a,i]
+    ayy=-np.sum(dDrel*r_mo[1])
+    print(f"  ε={ed}: α_yy = {ayy:.6f}  (oracle 4.98115)")
+
+# Gauge-invariant test of ∂Imo sign: ∂E_MP2/∂F via my ∂Imo vs FD of E_MP2.
+print("\n=== ∂Imo sign check via ∂E_MP2 (gauge-invariant) ===")
+def emp2_from_I(Imatrix, evec): return e_mp2(Imatrix, evec)
+ed=1e-5
+dE_an = (emp2_from_I(Imo+ed*dImo_an, e+ed*deps_an)-emp2_from_I(Imo-ed*dImo_an, e-ed*deps_an))/(2*ed)
+# FD of E_MP2 along field q=1 (smooth, gauge-invariant)
+def emp2_field(F):
+    m=scf.RHF(mol); m.get_hcore=lambda *a: hcore_ao - F*dip_ao[1]; m.conv_tol=1e-12; m.kernel()
+    return mp.MP2(m).run().e_corr
+dE_fd=(emp2_field(1e-4)-emp2_field(-1e-4))/(2e-4)
+print(f"  ∂E_MP2/∂Fy: analytic(my ∂Imo) = {dE_an:.8f}  FD = {dE_fd:.8f}")
+print(f"  ratio = {dE_an/dE_fd:.4f}")
+
+# ∂P_vv is gauge-stable (physical density block). Compare analytic (via my ∂Imo)
+# vs phase-matched FD. This directly tests ∂Imo→∂t2→∂P propagation for yy.
+print("\n=== ∂P_vv: analytic (my ∂Imo) vs phase-matched FD (q=1) ===")
+def Pvv_from_I(Imatrix, evec):
+    t=t2_amp(Imatrix,evec); tij=t.transpose(0,2,1,3)
+    return 2*np.einsum('ijca,ijcb->ab',tij,tij)-np.einsum('ijca,ijbc->ab',tij,tij)
+ed=1e-5
+dPvv_an=(Pvv_from_I(Imo+ed*dImo_an,e+ed*deps_an)-Pvv_from_I(Imo-ed*dImo_an,e-ed*deps_an))/(2*ed)
+# FD: P_vv in field-MO basis (phase-matched)
+hh=1e-4
+Pvv_p=Pvv_from_I(Imo_p,eo_p); Pvv_m=Pvv_from_I(Imo_m,eo_m)
+dPvv_fd=(Pvv_p-Pvv_m)/(2*hh)
+print("  dPvv_an:\n", np.round(dPvv_an,5))
+print("  dPvv_fd:\n", np.round(dPvv_fd,5))
+print("  ‖Δ‖=", np.max(np.abs(dPvv_an-dPvv_fd)))
+
+# The off-diag ∂Pvv may be gauge-contaminated (2 near-degen virtuals rotate).
+# Test the gauge-invariant ∂Tr[Pvv] and ∂(eigenvalues of Pvv) instead.
+print("\n=== gauge-invariant ∂Pvv checks ===")
+print("  ∂Tr[Pvv]: an=%.6f fd=%.6f" % (np.trace(dPvv_an), np.trace(dPvv_fd)))
+# eigenvalue-sum is trace (done). Check Frobenius-invariant ∂‖Pvv‖² = 2Tr[Pvv ∂Pvv]
+Pvv0=Pvv_from_I(Imo,e)
+inv_an=2*np.sum(Pvv0*dPvv_an); inv_fd=2*np.sum(Pvv0*dPvv_fd)
+print("  ∂Tr[Pvv²]: an=%.6f fd=%.6f ratio=%.4f" % (inv_an,inv_fd, inv_an/inv_fd if abs(inv_fd)>1e-12 else 0))
