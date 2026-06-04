@@ -712,3 +712,74 @@ fn parameter_free_lambda_omega_c6() {
     eprintln!("\n  PARAMETER-FREE (1/3)(λ_max−2) C6 MAE = {:.2}%", mae/cnt as f64);
     eprintln!("  ≈2.4% with ZERO fitted constants ⟹ the 1/3 and λ₀=2 are physical, not fit.");
 }
+
+/// FULL DOSD SET, parameter-free ω = (1/3)(λ_max − 2), ZERO fitted constants.
+/// The decisive test: does the law found on 7 molecules hold on the full set,
+/// including molecules never used to find it (H2, C2H2, C2H6, HF, HCl, H2S, C6H6)?
+/// O2 skipped (open-shell, closed-shell path only).
+///
+/// Run: cargo test --release -p ferric-rpa --test rsh_rpa_dispersion \
+///        parameter_free_full_dosd -- --ignored --nocapture
+#[test]
+#[ignore]
+fn parameter_free_full_dosd() {
+    use ferric_rpa::properties::dielectric_spectrum_static;
+
+    // label, xyz (Å, equilibrium), DOSD molecular C6, in-original-7?
+    let mols: &[(&str, &str, f64, bool)] = &[
+        // --- the original calibration 7 ---
+        ("h2o",  "3\nh2o\nO 0 0 0.117790\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n", 45.3, true),
+        ("ch4",  "5\nch4\nC 0 0 0\nH 0.6276 0.6276 0.6276\nH -0.6276 -0.6276 0.6276\nH -0.6276 0.6276 -0.6276\nH 0.6276 -0.6276 -0.6276\n", 129.7, true),
+        ("nh3",  "4\nnh3\nN 0 0 0.0\nH 0 0.9377 -0.3816\nH 0.8120 -0.4689 -0.3816\nH -0.8120 -0.4689 -0.3816\n", 89.0, true),
+        ("co",   "2\nco\nC 0 0 0\nO 0 0 1.128\n", 81.4, true),
+        ("n2",   "2\nn2\nN 0 0 0.0\nN 0 0 1.0977\n", 73.3, true),
+        ("co2",  "3\nco2\nC 0 0 0.0\nO 0 0 1.1621\nO 0 0 -1.1621\n", 158.7, true),
+        ("c2h4", "6\nc2h4\nC 0 0 0.6695\nC 0 0 -0.6695\nH 0 0.9289 1.2321\nH 0 -0.9289 1.2321\nH 0 0.9289 -1.2321\nH 0 -0.9289 -1.2321\n", 300.2, true),
+        // --- NEW (never used to find the law) ---
+        ("h2",   "2\nh2\nH 0 0 0\nH 0 0 0.741\n", 12.1, false),
+        ("hf",   "2\nhf\nF 0 0 0\nH 0 0 0.917\n", 19.0, false),
+        ("hcl",  "2\nhcl\nCl 0 0 0\nH 0 0 1.275\n", 130.4, false),
+        ("h2s",  "3\nh2s\nS 0 0 0.1030\nH 0 0.9659 -0.8253\nH 0 -0.9659 -0.8253\n", 216.8, false),
+        ("c2h2", "4\nc2h2\nC 0 0 0.6015\nC 0 0 -0.6015\nH 0 0 1.6615\nH 0 0 -1.6615\n", 204.1, false),
+        ("c2h6", "8\nc2h6\nC 0 0 0.7680\nC 0 0 -0.7680\nH 1.0192 0 1.1573\nH -0.5096 0.8826 1.1573\nH -0.5096 -0.8826 1.1573\nH -1.0192 0 -1.1573\nH 0.5096 0.8826 -1.1573\nH 0.5096 -0.8826 -1.1573\n", 381.9, false),
+        ("c6h6", "12\nc6h6\nC 0 1.3970 0\nC 1.2098 0.6985 0\nC 1.2098 -0.6985 0\nC 0 -1.3970 0\nC -1.2098 -0.6985 0\nC -1.2098 0.6985 0\nH 0 2.4810 0\nH 2.1486 1.2405 0\nH 2.1486 -1.2405 0\nH 0 -2.4810 0\nH -2.1486 -1.2405 0\nH -2.1486 1.2405 0\n", 1765.0, false),
+    ];
+    let ctx = ParallelContext::default();
+    let cfg = PdepRpaConfig::default();
+    let lc_name = "HYB_GGA_XC_LC_WPBE";
+
+    eprintln!("\n=== FULL DOSD: parameter-free ω = (1/3)(λ_max − 2), ZERO fitted constants ===");
+    eprintln!("  (law found on the 7 marked *; rest are pure prediction. O2 skipped: open-shell)\n");
+    eprintln!("  {:>5} {:>3}  {:>7}  {:>8}  {:>9}  {:>9}  {:>8}", "mol", "new", "λ_max", "ω_pf", "C6_pf", "DOSD", "err%");
+    let (mut mae_all, mut mae_new, mut n_all, mut n_new) = (0.0, 0.0, 0, 0);
+    for (label, xyz, dosd, in7) in mols {
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let obs_bs = basis::bundled("aug-cc-pvdz").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let scf_cfg = RhfConfig { energy_conv: 1e-9, xc: Some(lc_name.to_string()),
+            df_j_aux: Some("def2-universal-jkfit".to_string()),
+            df_k_aux: Some("def2-universal-jkfit".to_string()), ..Default::default() };
+        let rhf = match solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg) {
+            Ok(r) if r.converged => r,
+            _ => { eprintln!("  {label:>5}  (LC SCF not converged — skipped)"); continue; }
+        };
+        let spec = match dielectric_spectrum_static(&mol, &obs, &dfbs, &rhf, Operator::coulomb(), 1e-6) {
+            Ok(s) => s, Err(e) => { eprintln!("  {label:>5}  (spectrum err: {e})"); continue; }
+        };
+        let lmax = spec.eigenvalues.iter().cloned().fold(f64::MIN, f64::max);
+        let w_pf = ((1.0/3.0)*(lmax - 2.0)).clamp(0.02, 2.5);
+        let dp = pdep_dynamic_polarizability(&mol,&obs,&obs_bs,&dfbs,&rhf,Operator::erf(w_pf),&cfg,DispersionPartition::Becke,None).unwrap();
+        let c6 = casimir_polder_c6(&dp).c6_molecular_iso;
+        let err = 100.0*(c6-dosd)/dosd;
+        let tag = if *in7 { "" } else { "NEW" };
+        eprintln!("  {:>5} {:>3}  {:>7.3}  {:>8.4}  {:>9.2}  {:>9.1}  {:>+7.2}", label, tag, lmax, w_pf, c6, dosd, err);
+        mae_all += err.abs(); n_all += 1;
+        if !in7 { mae_new += err.abs(); n_new += 1; }
+    }
+    eprintln!("\n  Parameter-free C6 MAE — ALL {} mols = {:.2}%   |   NEW-only ({}) = {:.2}%",
+        n_all, mae_all/n_all as f64, n_new, mae_new/n_new.max(1) as f64);
+    eprintln!("  (7-mol value was 1.74%. NEW-only is the true out-of-sample test of the law.)");
+}
