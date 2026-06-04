@@ -765,10 +765,15 @@ pub fn pdep_polarizability_becke(
     use ferric_dft::ao_grid::eval_basis_on_points;
     use ndarray_linalg::Solve;
 
+    // Open-shell: the dynamic Becke path has a complete per-spin (U) branch, and
+    // ω=0 reproduces the static per-atom α exactly. Delegate to it rather than
+    // duplicate the per-spin static math (DRY).
     if !matches!(rhf.spin, Spin::Restricted) {
-        return Err(FerricError::General(
-            "pdep_polarizability_becke: only closed-shell (Restricted) supported".into(),
-        ));
+        let dyn0 = pdep_polarizability_becke_dynamic(
+            mol, obs, obs_bs, dfbs, rhf, op, _cfg, &[0.0],
+        )?;
+        // dyn0[atom][freq=0] → per-atom static tensor.
+        return Ok(dyn0.into_iter().map(|per_freq| per_freq[0]).collect());
     }
 
     let natoms = mol.atoms.len();
@@ -2032,10 +2037,142 @@ pub fn molecular_dynamic_polarizability(
 ) -> Result<Vec<[[f64; 3]; 3]>, FerricError> {
     use ndarray_linalg::Solve;
 
+    // Open-shell: spin-summed dielectric ε̃ = I + 2 B̃_α diag(g_α) B̃_αᵀ
+    // + 2 B̃_β diag(g_β) B̃_βᵀ, lab-frame molecular dipole per spin. Mirrors the
+    // (U) branch of pdep_polarizability_becke_dynamic exactly; the only
+    // difference is the dipole is the whole-molecule lab-frame dipole (origin
+    // [0,0,0]) rather than atom-centred, giving the DOSD-comparable molecular
+    // total. ω=0 reproduces the static open-shell molecular α.
     if !matches!(rhf.spin, Spin::Restricted) {
-        return Err(FerricError::General(
-            "molecular_dynamic_polarizability: only closed-shell (Restricted) supported".into(),
-        ));
+        use ferric_mp2::rimp2::compute_rpa_intermediates_spin;
+        let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0 };
+        let inter_a = compute_rpa_intermediates_spin(mol, obs, dfbs, op, rhf, &mp2_cfg, true)?;
+        let inter_b = compute_rpa_intermediates_spin(mol, obs, dfbs, op, rhf, &mp2_cfg, false)?;
+        let naux = inter_a.naux;
+
+        // Orbital-energy slices (ROHF reuses α-MOs/eps for β).
+        let eps_b_full: &[f64] = if matches!(rhf.spin, Spin::RestrictedOpen) {
+            rhf.eps_a()
+        } else {
+            rhf.eps_b()
+        };
+        let mk_eia = |inter: &ferric_mp2::rimp2::RpaIntermediates, eps_full: &[f64]| {
+            let eps_occ = &eps_full[inter.first_occ..inter.first_occ + inter.nocc];
+            let eps_vir = &eps_full[inter.nocc_total..inter.nocc_total + inter.nvir];
+            let mut v = ndarray::Array1::<f64>::zeros(inter.nocc * inter.nvir);
+            for i in 0..inter.nocc {
+                for a in 0..inter.nvir {
+                    v[i * inter.nvir + a] = eps_vir[a] - eps_occ[i];
+                }
+            }
+            v
+        };
+        let e_ia_a = mk_eia(&inter_a, rhf.eps_a());
+        let e_ia_b = mk_eia(&inter_b, eps_b_full);
+
+        // Lab-frame molecular dipole in each spin's occ-vir MO basis.
+        let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+        let c_a = rhf.mos_a();
+        let c_b = if matches!(rhf.spin, Spin::RestrictedOpen) {
+            rhf.mos_a()
+        } else {
+            rhf.mos_b()
+        };
+        let mk_mu = |inter: &ferric_mp2::rimp2::RpaIntermediates, c: &Array2<f64>| {
+            let c_occ = c
+                .slice(ndarray::s![.., inter.first_occ..inter.first_occ + inter.nocc])
+                .to_owned();
+            let c_vir = c
+                .slice(ndarray::s![.., inter.nocc_total..inter.nocc_total + inter.nvir])
+                .to_owned();
+            let nov = inter.nocc * inter.nvir;
+            let arr: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
+                if nov == 0 {
+                    return ndarray::Array1::<f64>::zeros(1);
+                }
+                let mo = c_occ.t().dot(&dip_ao[d]).dot(&c_vir);
+                let mut v = ndarray::Array1::<f64>::zeros(nov);
+                for i in 0..inter.nocc {
+                    for a in 0..inter.nvir {
+                        v[i * inter.nvir + a] = mo[(i, a)];
+                    }
+                }
+                v
+            });
+            arr
+        };
+        let mu_a = mk_mu(&inter_a, c_a);
+        let mu_b = mk_mu(&inter_b, c_b);
+
+        let mut out = vec![[[0.0_f64; 3]; 3]; freqs.len()];
+        for (k, &omega) in freqs.iter().enumerate() {
+            let omega2 = omega * omega;
+            let g_of = |e_ia: &ndarray::Array1<f64>| {
+                let mut v = ndarray::Array1::<f64>::zeros(e_ia.len().max(1));
+                for ia in 0..e_ia.len() {
+                    let e = e_ia[ia];
+                    v[ia] = e / (omega2 + e * e);
+                }
+                v
+            };
+            let g_a = g_of(&e_ia_a);
+            let g_b = g_of(&e_ia_b);
+
+            // ε̃(ω) = I + 2 B̃_α diag(g_α) B̃_αᵀ + 2 B̃_β diag(g_β) B̃_βᵀ.
+            let mut eps_mat = Array2::<f64>::zeros((naux, naux));
+            for p in 0..naux {
+                eps_mat[(p, p)] = 1.0;
+            }
+            for (b_ov, g, nocc) in [
+                (&inter_a.b_ov, &g_a, inter_a.nocc),
+                (&inter_b.b_ov, &g_b, inter_b.nocc),
+            ] {
+                if nocc == 0 {
+                    continue;
+                }
+                let nov = b_ov.shape()[1];
+                let mut b_scaled = b_ov.clone();
+                for ia in 0..nov {
+                    let s = (2.0 * g[ia]).sqrt();
+                    b_scaled.column_mut(ia).mapv_inplace(|x| x * s);
+                }
+                eps_mat += &b_scaled.dot(&b_scaled.t());
+            }
+
+            // w_total^d = B̃_α (μ_α^d ⊙ g_α) + B̃_β (μ_β^d ⊙ g_β).
+            let w_total: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
+                let wa = inter_a.b_ov.dot(&(&mu_a[d] * &g_a));
+                if inter_b.nocc == 0 {
+                    return wa;
+                }
+                wa + inter_b.b_ov.dot(&(&mu_b[d] * &g_b))
+            });
+            let y_total: [ndarray::Array1<f64>; 3] =
+                std::array::from_fn(|d| eps_mat.solve(&w_total[d]).unwrap());
+
+            let mut t = [[0.0_f64; 3]; 3];
+            for d in 0..3 {
+                for j in 0..3 {
+                    let bare_a = 2.0 * mu_a[d].dot(&(&mu_a[j] * &g_a));
+                    let bare_b = if inter_b.nocc > 0 {
+                        2.0 * mu_b[d].dot(&(&mu_b[j] * &g_b))
+                    } else {
+                        0.0
+                    };
+                    let coupled = w_total[d].dot(&y_total[j]);
+                    t[d][j] = bare_a + bare_b - 4.0 * coupled;
+                }
+            }
+            for i in 0..3 {
+                for j in (i + 1)..3 {
+                    let avg = 0.5 * (t[i][j] + t[j][i]);
+                    t[i][j] = avg;
+                    t[j][i] = avg;
+                }
+            }
+            out[k] = t;
+        }
+        return Ok(out);
     }
 
     let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0 };
@@ -3032,6 +3169,51 @@ mod tests {
         assert!(a0 > 0.0, "α(0) not positive: {a0}");
         assert!(a0 > a1 && a1 > a2 && a2 > a3, "not monotone: {a0} {a1} {a2} {a3}");
         assert!(a3 < 0.05 * a0, "tail too large: α(10)={a3} α(0)={a0}");
+    }
+
+    #[test]
+    fn molecular_dynamic_alpha_uhf_matches_rhf_on_closed_shell() {
+        // Rigor check for the open-shell molecular_dynamic_polarizability branch:
+        // a closed-shell molecule (H2 singlet) solved via UHF must give the SAME
+        // molecular α(iω) as the closed-shell (Restricted) path. nα=nβ, so the
+        // spin-summed dielectric (2·Π_α + 2·Π_β) must reproduce the closed-shell
+        // 4·Π. If the per-spin factors were wrong this would diverge.
+        use ferric_scf::uhf::solve_uhf;
+        use ferric_scf::rhf::RhfConfig;
+
+        let xyz = "2\nH2\nH 0 0 0\nH 0 0 0.74083\n";
+        let op = Operator::coulomb();
+        let obs_bs = basis::bundled("cc-pvdz").unwrap();
+        let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let ctx = ParallelContext::default();
+        let cfg = PdepRpaConfig { frozen_core: 0, trunc_thresh: 0.0, ..Default::default() };
+        let freqs = [0.0, 0.3, 1.0, 4.0];
+
+        // Closed-shell (Restricted) reference.
+        let mol_r = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let obs = PreparedBasis::new(&mol_r, &obs_bs).unwrap();
+        let dfbs = PreparedBasis::new(&mol_r, &dfbs_bs).unwrap();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(&ctx, &mol_r, &obs, op, &bounds, &RhfConfig::default()).unwrap();
+        let mol_dyn_r = molecular_dynamic_polarizability(&mol_r, &obs, &dfbs, &rhf, op, &cfg, &freqs).unwrap();
+
+        // Same molecule forced through UHF as a singlet (nα = nβ).
+        let mol_u = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let uhf = solve_uhf(&ctx, &mol_u, &obs, &bounds, &RhfConfig::default()).unwrap();
+        assert!(!matches!(uhf.spin, Spin::Restricted), "UHF solve should be unrestricted");
+        let mol_dyn_u = molecular_dynamic_polarizability(&mol_u, &obs, &dfbs, &uhf, op, &cfg, &freqs).unwrap();
+
+        let iso = |t: &[[f64; 3]; 3]| (t[0][0] + t[1][1] + t[2][2]) / 3.0;
+        for k in 0..freqs.len() {
+            let ar = iso(&mol_dyn_r[k]);
+            let au = iso(&mol_dyn_u[k]);
+            assert!(
+                (ar - au).abs() < 1e-6 * (1.0 + ar.abs()),
+                "RHF vs UHF molecular α mismatch at ω={}: RHF={ar} UHF={au}",
+                freqs[k]
+            );
+        }
+        assert!(iso(&mol_dyn_r[0]) > 0.0, "static α must be positive");
     }
 
     #[test]

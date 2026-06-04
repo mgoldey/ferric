@@ -272,7 +272,14 @@ pub fn pdep_dynamic_polarizability(
 ) -> Result<DynamicPolarizability, FerricError> {
     let (freqs, weights) = crate::quadrature::build_quadrature(&cfg.quadrature);
 
-    let per_atom = if partition == DispersionPartition::Hirshfeld {
+    // The Hirshfeld dynamic per-atom path is closed-shell only. For open-shell
+    // references fall back to the Becke partition, which has a complete per-spin
+    // (U) branch. The molecular total below is partition-independent, so only the
+    // per-atom decomposition differs — and per-atom magnitudes are already
+    // partition-sensitive (see per-atom-c6-status). CLAUDE.md documents this
+    // "Hirshfeld (dynamic falls back to Becke)" behavior; this wires it.
+    let is_closed = matches!(rhf.spin, ferric_scf::result::Spin::Restricted);
+    let per_atom = if partition == DispersionPartition::Hirshfeld && is_closed {
         crate::properties::pdep_polarizability_hirshfeld_dynamic(
             mol, obs, obs_bs, dfbs, rhf, op, cfg, &freqs, proatom,
         )?
@@ -283,14 +290,12 @@ pub fn pdep_dynamic_polarizability(
     };
 
     // Molecular (whole-system) α(iω) for the DOSD-comparable molecular C6 total.
-    // Partition-independent; computed from the lab-frame molecular dipole.
-    // Closed-shell only; for open-shell references we leave it empty and
-    // casimir_polder_c6 falls back to the per-atom pair sum.
-    let molecular = if matches!(rhf.spin, ferric_scf::result::Spin::Restricted) {
-        crate::properties::molecular_dynamic_polarizability(mol, obs, dfbs, rhf, op, cfg, &freqs)?
-    } else {
-        Vec::new()
-    };
+    // Partition-independent; computed from the lab-frame molecular dipole. Now
+    // supports open-shell via the spin-summed dielectric (per-spin g_σ), so
+    // casimir_polder_c6 gets the correct molecular total rather than falling back
+    // to the per-atom pair sum.
+    let molecular =
+        crate::properties::molecular_dynamic_polarizability(mol, obs, dfbs, rhf, op, cfg, &freqs)?;
 
     Ok(DynamicPolarizability {
         freqs,
