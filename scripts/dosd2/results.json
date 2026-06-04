@@ -305,7 +305,7 @@
   },
   "augccpvtz/ch3oh/ts": {
     "basis": "augccpvtz",
-    "c6": 252.18,
+    "c6": 251.752,
     "method": "ts",
     "mol": "ch3oh",
     "ok": true,
@@ -353,7 +353,7 @@
   },
   "augccpvtz/cos/ts": {
     "basis": "augccpvtz",
-    "c6": 410.803,
+    "c6": 409.974,
     "method": "ts",
     "mol": "cos",
     "ok": true,
@@ -377,7 +377,7 @@
   },
   "augccpvtz/cs2/ts": {
     "basis": "augccpvtz",
-    "c6": 784.236,
+    "c6": 783.452,
     "method": "ts",
     "mol": "cs2",
     "ok": true,
@@ -425,7 +425,7 @@
   },
   "augccpvtz/n2o/ts": {
     "basis": "augccpvtz",
-    "c6": 157.135,
+    "c6": 156.774,
     "method": "ts",
     "mol": "n2o",
     "ok": true,
@@ -473,7 +473,7 @@
   },
   "augccpvtz/so2/ts": {
     "basis": "augccpvtz",
-    "c6": 313.04,
+    "c6": 311.74,
     "method": "ts",
     "mol": "so2",
     "ok": true,
