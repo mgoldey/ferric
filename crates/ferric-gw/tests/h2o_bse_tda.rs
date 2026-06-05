@@ -106,3 +106,57 @@ fn cis_tda_h2o_assembly_xcheck() {
         "CIS-TDA lowest {lowest:.4} eV must match PySCF 9.198 ±0.05 (assembly check)"
     );
 }
+
+/// 12-point Gauss–Legendre nodes/weights on [-1,1] (for the Casimir–Polder map).
+fn gl12() -> ([f64; 12], [f64; 12]) {
+    (
+        [
+            -0.981560634246719, -0.904117256370475, -0.769902674194305,
+            -0.587317954286617, -0.367831498998180, -0.125233408511469,
+            0.125233408511469, 0.367831498998180, 0.587317954286617,
+            0.769902674194305, 0.904117256370475, 0.981560634246719,
+        ],
+        [
+            0.047175336386512, 0.106939325995318, 0.160078328543346,
+            0.203167426723066, 0.233492536538355, 0.249147045813403,
+            0.249147045813403, 0.233492536538355, 0.203167426723066,
+            0.160078328543346, 0.106939325995318, 0.047175336386512,
+        ],
+    )
+}
+
+/// Casimir–Polder imaginary-frequency grid on [0,∞): ω = u0·(1+x)/(1−x).
+fn cp_grid(u0: f64) -> (Vec<f64>, Vec<f64>) {
+    let (x, w) = gl12();
+    let mut freqs = Vec::with_capacity(12);
+    let mut wts = Vec::with_capacity(12);
+    for k in 0..12 {
+        let xk = x[k];
+        let om = u0 * (1.0 + xk) / (1.0 - xk);
+        let jac = u0 * 2.0 / ((1.0 - xk) * (1.0 - xk));
+        freqs.push(om);
+        wts.push(w[k] * jac);
+    }
+    (freqs, wts)
+}
+
+#[test]
+#[ignore = "slow: RHF + PDEP-RPA + G0W0 + BSE α(iω) on a 12-pt CP grid; --release --ignored"]
+fn bse_c6_h2o_vs_dosd() {
+    use ferric_gw::bse::run_bse_c6;
+    let (mol, obs, dfbs, rhf) = prepare_h2o();
+    let (freqs, weights) = cp_grid(0.6);
+    let res = run_bse_c6(&mol, &obs, &dfbs, Operator::coulomb(), &rhf, &pdep_cfg(), 0, &freqs, &weights)
+        .expect("BSE C6 runs");
+    let dosd = 45.3;
+    let err = 100.0 * (res.c6 - dosd) / dosd;
+    eprintln!("\nBSE-C6@G0W0@HF / cc-pVDZ H2O");
+    eprintln!("  α_static (iso) = {:.4} a.u.  (DOSD α0 = 9.64)", res.alpha_static);
+    eprintln!("  α(iω) profile  = {:?}", res.alpha_iso.iter().map(|a| (a*100.0).round()/100.0).collect::<Vec<_>>());
+    eprintln!("  C6 = {:.3} a.u.   (DOSD 45.3)   err = {err:+.2}%", res.c6);
+    // Gate: finite, positive, physically sane. The absolute C6 is bounded by the
+    // GW gap (being tightened) AND the cc-pVDZ basis α deficit (~−15% known).
+    assert!(res.c6.is_finite() && res.c6 > 0.0, "C6 must be finite positive");
+    assert!(res.alpha_static > 0.0, "static α must be positive");
+    assert!((10.0..120.0).contains(&res.c6), "C6 {:.2} outside sane window for water", res.c6);
+}

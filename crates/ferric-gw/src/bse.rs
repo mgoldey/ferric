@@ -23,10 +23,11 @@ use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
+use ferric_integrals::oneelectron;
 use ferric_rpa::PdepRpaConfig;
 use ferric_scf::ScfResult;
-use ndarray::Array2;
-use ndarray_linalg::{Eigh, UPLO};
+use ndarray::{Array1, Array2};
+use ndarray_linalg::{Eigh, Solve, UPLO};
 
 use crate::cohsex::project_b_into_pdep;
 use crate::method::GwMethod;
@@ -262,4 +263,159 @@ pub fn run_cis_tda(
     omega.sort_by(|x, y| x.partial_cmp(y).unwrap());
     let eps_act: Vec<f64> = (first_act..nmo).map(|p| eps[p]).collect();
     Ok(BseResult { omega, nocc, nvir, eps_qp: eps_act })
+}
+
+/// Result of a BSE dynamic-polarizability / C6 calculation (gate 2).
+#[derive(Debug, Clone)]
+pub struct BseC6Result {
+    /// Molecular isotropic C6 (a.u.).
+    pub c6: f64,
+    /// Isotropic α(iω_k) at each Casimir–Polder grid point.
+    pub alpha_iso: Vec<f64>,
+    /// Static isotropic α (= α(iω=0)).
+    pub alpha_static: f64,
+    pub nocc: usize,
+    pub nvir: usize,
+}
+
+/// BSE dynamic polarizability α(iω) and molecular C6 (gate 2 of the design ladder).
+///
+/// Uses the W-screened FULL (A±B) (not TDA) on the G0W0@HF reference and the
+/// imaginary-frequency response identical in form to `dynamic_cphf_alpha_iw`:
+///
+/// ```text
+///   (A+B)_W = Δε^GW δ + 4(ia|jb)_v − (ab|W|ij) − (ib|W|aj)
+///   (A−B)_W = Δε^GW δ            + (ib|W|aj) − (ab|W|ij)
+///   α(iω)   = 4 μᵀ (A−B)_W [ (A−B)_W (A+B)_W + ω² ]⁻¹ μ
+///   C6      = (3/π) Σ_k w_k α_iso(iω_k)²        (Casimir–Polder)
+/// ```
+///
+/// C6 is far less sensitive to the absolute GW gap than excitation energies (it
+/// weights the whole α(iω) tail), so this is the meaningful dispersion target
+/// even while the GW EA side is being tightened. `freqs`/`weights` are the
+/// Casimir–Polder imaginary-frequency grid.
+#[allow(clippy::too_many_arguments)]
+pub fn run_bse_c6(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &ScfResult,
+    pdep_cfg: &PdepRpaConfig,
+    frozen_core: usize,
+    freqs: &[f64],
+    weights: &[f64],
+) -> Result<BseC6Result, FerricError> {
+    use std::f64::consts::PI;
+    if !matches!(rhf.spin, ferric_scf::Spin::Restricted) {
+        return Err(FerricError::General("run_bse_c6: closed-shell (RHF) only".into()));
+    }
+    let nmo = rhf.eps_r().len();
+    let nocc_total = (mol.nelec() as usize) / 2;
+    let c = rhf.mos_r();
+
+    // GW@HF for all MOs.
+    let gw_cfg = GwConfig {
+        method: GwMethod::G0W0,
+        qp_mos: Some(0..nmo),
+        max_ev_iter: 0,
+        ev_conv_thresh: 1e-4,
+        pade_npts: 0,
+        qp_newton_damp: 1.0,
+        frozen_core,
+    };
+    let gw = run_gw(mol, obs, dfbs, op, rhf, pdep_cfg, &gw_cfg)?;
+    let mut eps_qp = rhf.eps_r().to_vec();
+    for (k, &mo) in gw.mo_indices.iter().enumerate() {
+        eps_qp[mo] = gw.eps_qp[k];
+    }
+
+    let first_act = frozen_core;
+    let nocc = nocc_total - frozen_core;
+    let nvir = nmo - nocc_total;
+    let n = nocc * nvir;
+
+    // Projected screened modes + bare integrals (same path as run_bse_tda).
+    let mob = mo_b::build_full_b(mol, obs, dfbs, op, rhf, frozen_core)?;
+    let (v_dressed, _dev) = w_pdep::redress_with_check(&mob.v_inv_sqrt, &gw.pdep.eigenpotentials)?;
+    let m_proj = project_b_into_pdep(&mob, &v_dressed);
+    let m_modes = m_proj.shape()[0];
+    let inv_lam: Vec<f64> = gw.pdep.eigenvalues_static.iter().map(|&l| 1.0 / l).collect();
+    let b = &mob.b_full;
+    let naux = mob.naux;
+    let bare = |p: usize, q: usize, r: usize, s: usize| -> f64 {
+        let mut acc = 0.0;
+        for pp in 0..naux {
+            acc += b[(pp, p, q)] * b[(pp, r, s)];
+        }
+        acc
+    };
+    let screened = |p: usize, q: usize, r: usize, s: usize| -> f64 {
+        let mut acc = 0.0;
+        for alpha in 0..m_modes {
+            acc += inv_lam[alpha] * m_proj[(alpha, p, q)] * m_proj[(alpha, r, s)];
+        }
+        acc
+    };
+
+    // Full screened (A±B) in (ia)-space. local occ i:0..nocc ; vir a: nocc+a.
+    // (A+B) = Δε δ + 4(ia|jb)_v − (ab|W|ij) − (ib|W|aj)
+    // (A−B) = Δε δ            + (ib|W|aj) − (ab|W|ij)
+    let mut apb = Array2::<f64>::zeros((n, n));
+    let mut amb = Array2::<f64>::zeros((n, n));
+    for i in 0..nocc {
+        let eps_i = eps_qp[first_act + i];
+        for a in 0..nvir {
+            let a_loc = nocc + a;
+            let eps_a = eps_qp[nocc_total + a];
+            let ia = i * nvir + a;
+            for j in 0..nocc {
+                for bb in 0..nvir {
+                    let b_loc = nocc + bb;
+                    let jb = j * nvir + bb;
+                    let coul = bare(i, a_loc, j, b_loc); // (ia|jb)
+                    let w_abij = screened(a_loc, b_loc, i, j); // (ab|W|ij)
+                    let w_ibaj = screened(i, b_loc, a_loc, j); // (ib|W|aj)
+                    apb[(ia, jb)] = 4.0 * coul - w_abij - w_ibaj;
+                    amb[(ia, jb)] = w_ibaj - w_abij;
+                }
+            }
+            apb[(ia, ia)] += eps_a - eps_i;
+            amb[(ia, ia)] += eps_a - eps_i;
+        }
+    }
+
+    // Dipole μ in (ia)-space (bare operator), per Cartesian axis.
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let r_mo: [Array2<f64>; 3] = std::array::from_fn(|d| c.t().dot(&dip_ao[d]).dot(c));
+    let mut mu: [Array1<f64>; 3] = std::array::from_fn(|_| Array1::zeros(n));
+    for (d, m) in mu.iter_mut().enumerate() {
+        for i in 0..nocc {
+            for a in 0..nvir {
+                m[i * nvir + a] = r_mo[d][(first_act + i, nocc_total + a)];
+            }
+        }
+    }
+
+    // α(iω) = 4 μᵀ (A−B)[(A−B)(A+B)+ω²]⁻¹ μ, isotropic average over axes.
+    let mut alpha_iso = Vec::with_capacity(freqs.len());
+    for &w in freqs {
+        let mut sysm = amb.dot(&apb);
+        for k in 0..n {
+            sysm[(k, k)] += w * w;
+        }
+        let mut iso = 0.0;
+        for axis in mu.iter() {
+            let rhs = amb.dot(axis);
+            let t = sysm
+                .solve(&rhs)
+                .map_err(|e| FerricError::Lapack(format!("BSE α(iω) solve: {e}")))?;
+            iso += 4.0 * axis.dot(&t);
+        }
+        alpha_iso.push(iso / 3.0);
+    }
+
+    let c6 = 3.0 / PI * (0..freqs.len()).map(|k| weights[k] * alpha_iso[k] * alpha_iso[k]).sum::<f64>();
+    let alpha_static = *alpha_iso.first().unwrap_or(&0.0);
+    Ok(BseC6Result { c6, alpha_iso, alpha_static, nocc, nvir })
 }
