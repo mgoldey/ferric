@@ -120,14 +120,14 @@ pub fn mbd_screen(
     let n = positions.len();
     let nfreq = freqs.len();
     let mut out: Vec<Vec<[[f64; 3]; 3]>> = vec![vec![[[0.0; 3]; 3]; nfreq]; n];
-    const TWO_OVER_PI: f64 = 0.636_619_772_367_581;
+    use std::f64::consts::FRAC_2_PI;
     for k in 0..nfreq {
         let mut a_inv = Array2::<f64>::zeros((3 * n, 3 * n));
         let mut sigma = vec![0.0_f64; n];
         for a in 0..n {
             let t = per_atom_alpha[a][k];
             let iso = ((t[0][0] + t[1][1] + t[2][2]) / 3.0).max(1e-10);
-            sigma[a] = (TWO_OVER_PI.sqrt() * iso / 3.0).powf(1.0 / 3.0);
+            sigma[a] = (FRAC_2_PI.sqrt() * iso / 3.0).powf(1.0 / 3.0);
             // MBD@rsSCS uses a single ISOTROPIC QHO per atom (Ambrosetti 2014
             // Eq. 6: α0_lm = δ_lm α^TS). Inverting the full anisotropic Becke
             // per-atom tensor (some near-singular) distorts the screening; use
@@ -203,11 +203,11 @@ pub fn mbd_dynamic_polarizability(
 /// with static α used for both the widths and the prefactor (standard MBD@TS).
 pub fn mbd_energy(positions: &[[f64; 3]], alpha_eff: &[f64], omega_a: &[f64]) -> f64 {
     use ndarray_linalg::Eigh;
-    const TWO_OVER_PI: f64 = 0.636_619_772_367_581;
+    use std::f64::consts::FRAC_2_PI;
     let n = positions.len();
     let sigma: Vec<f64> = alpha_eff
         .iter()
-        .map(|&a| (TWO_OVER_PI.sqrt() * a / 3.0).powf(1.0 / 3.0))
+        .map(|&a| (FRAC_2_PI.sqrt() * a / 3.0).powf(1.0 / 3.0))
         .collect();
     let t = dipole_coupling_tensor(positions, &sigma);
     let mut h = Array2::<f64>::zeros((3 * n, 3 * n));
