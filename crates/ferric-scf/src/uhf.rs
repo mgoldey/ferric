@@ -610,6 +610,43 @@ mod tests {
     }
 
     #[test]
+    fn test_uks_pbe_bromine_atom_converges() {
+        // Free Br atom ground state is ²P (doublet): 4s²4p⁵, one hole in the p shell.
+        // nα=18, nβ=17. Without fractional occupation the degenerate 4p shell
+        // makes the GGA XC potential orientation-dependent and the UKS-PBE SCF
+        // oscillates forever (same failure as O/S/Si ³P). Fractional/ensemble
+        // occupation spreads the hole equally over the three 4p orbitals, restoring
+        // spherical symmetry and converging the SCF.
+        // Regression for the HBr TS/MBD aug-cc-pVTZ hang in the free-atom proatom
+        // solve (proatom closure in ferric-cli/src/main.rs).
+        let mol = Molecule::parse_xyz("1\nBr\nBr 0 0 0\n", 0, 2).unwrap();
+        let bs = basis::bundled("aug-cc-pvdz").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = ferric_integrals::operator::Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let cfg = UhfConfig {
+            xc: Some("PBE".to_string()),
+            fractional_occ: true,
+            mom_after_iter: 5,
+            max_iter: 200,
+            ..Default::default()
+        };
+        let ctx = ParallelContext::default();
+        let res = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg)
+            .expect("UKS-PBE Br atom with fractional occ should converge");
+        assert!(res.converged, "UKS-PBE Br atom did not converge with fractional occ");
+        // Sanity: ⟨S²⟩ for a clean doublet (S=1/2) = 0.75; allow mild contamination.
+        let s2 = expectation_s_squared(
+            &res.mos_alpha,
+            res.mos_beta.as_ref().unwrap(),
+            &oneelectron::overlap(&prep),
+            18,
+            17,
+        );
+        assert!((s2 - 0.75).abs() < 0.1, "Br atom ⟨S²⟩ = {} (expected ≈0.75)", s2);
+    }
+
+    #[test]
     fn test_uks_pbe_oxygen_atom_fractional_occ_converges() {
         // Free O atom (³P) via UKS-PBE. With INTEGER occupation the degenerate
         // 2p shell makes the GGA potential orientation-dependent and the SCF
