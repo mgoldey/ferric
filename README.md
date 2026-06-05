@@ -42,9 +42,9 @@ pseudo-densities. Get the physics right, and the cheap method follows from its s
 - **RI-Laplace MP2** — O(N) AO-Laplace formulation via sparse pseudo-density tensors
 
 **Coupled cluster**
-- **RI-CCD, RI-CCSD** (validated against exact-integral references). The
-  perturbative triples **(T)** correction is scaffolded but **not yet
-  implemented** — it currently returns 0.0. See [docs/VALIDATION.md](docs/VALIDATION.md).
+- **RI-CCD, RI-CCSD, and the perturbative triples (T)** correction — all
+  validated against exact-integral / PySCF references (H2O/cc-pVDZ (T) matches
+  PySCF to ~1e-6). See [docs/VALIDATION.md](docs/VALIDATION.md).
 
 **Many-body response (RPA & GW)**
 - **PDEP-RPA** — RPA correlation via projective dielectric-eigenpotentials (a low-rank W basis in Gaussians), closed- and open-shell (U-PDEP-RPA over a spin-summed dielectric)
@@ -126,12 +126,11 @@ print(f"SCS-MP2 total: {scs.total_energy:.10f} Ha")
 terfc = ferric.run_scs_mp2_2terfc(mol, bs, aux)
 print(f"SCS-MP2(2terfc) total: {terfc.total_energy:.10f} Ha")
 
-# Coupled Cluster — RI-CCSD correlation energy (validated vs exact-integral refs).
-# NOTE: the (T) perturbative-triples correction is not yet implemented; the
-# `run_ccsd_t` entry point returns t_correction = 0.0 (CCSD energy is real).
+# Coupled Cluster — RI-CCSD(T) (validated vs exact-integral / PySCF refs).
 cc = ferric.run_ccsd_t(mol, bs, aux)
 print(f"CCSD correlation: {cc.correlation_energy:.10f} Ha")
-print(f"(T) correction:   {cc.t_correction:.10f} Ha   # currently 0.0 — stub")
+print(f"(T) correction:   {cc.t_correction:.10f} Ha")
+print(f"CCSD(T) total:    {cc.correlation_energy + cc.t_correction:.10f} Ha")
 ```
 
 ## Architecture
@@ -274,7 +273,7 @@ ferric/
                                 #   Fock builds (direct/DF), gradients, QQR, LinK, cDFT
     ferric-dft/                 # libxc bridge, Becke-Lebedev grids, Vxc, VV10, cDFT weights
     ferric-mp2/                 # RI-MP2, OO-RI-MP2, attenuated, SCS, canonical, Laplace
-    ferric-cc/                  # RI-CCD, RI-CCSD ((T) scaffolded, stubbed at 0.0)
+    ferric-cc/                  # RI-CCD, RI-CCSD, CCSD(T) perturbative triples
     ferric-rpa/                 # PDEP-RPA (closed/open-shell), response properties,
                                 #   ESP / Hirshfeld / Löwdin / polarizability
     ferric-gw/                  # G0W0, COHSEX, evGW0, evGW, U-GW (PDEP-as-W)
@@ -303,8 +302,7 @@ ferric/
 - [x] Geometry optimization via analytical gradients (RHF, RI-MP2, SCS-MP2)
 - [x] Sparse tensor support (ferric-tensors) for linear correlation
 - [x] KS-DFT (LDA/GGA/hybrid/RSH) via libxc + Becke-Lebedev quadrature; VV10 nonlocal
-- [x] Coupled Cluster: RI-CCD, RI-CCSD (validated vs exact-integral refs)
-- [ ] CCSD(T) perturbative triples — **(T) correction is a stub returning 0.0**
+- [x] Coupled Cluster: RI-CCD, RI-CCSD, CCSD(T) (validated vs exact-integral / PySCF refs)
 - [x] Open-shell SCF: UHF, ROHF, UKS, ROKS (with MOM + augmented-Hessian Newton)
 - [x] Open-shell analytical gradients (UHF/ROHF/KS-DFT, incl. grid response)
 - [x] PDEP-RPA correlation (closed- and open-shell) + attenuated RPA

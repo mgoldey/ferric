@@ -1,6 +1,7 @@
 //! Coupled-Cluster methods for ferric.
 //!
-//! Currently provides stub implementations of CCD and CCSD.
+//! Spin-orbital RI-CCD, RI-CCSD, and the CCSD(T) perturbative-triples
+//! correction, all validated against exact-integral / PySCF references.
 //! The infrastructure reuses RI integrals from ferric-mp2.
 
 use ndarray::{Array2, Array4};
