@@ -246,6 +246,8 @@ pub fn bundled(name: &str) -> Result<BasisSet, FerricError> {
         "cc-pvdz" => include_str!("basis/bundled/cc-pvdz.json"),
         "def2-svp" => include_str!("basis/bundled/def2-svp.json"),
         "cc-pvdz-ri" => include_str!("basis/bundled/cc-pvdz-ri.json"),
+        "cc-pvdz-f12" => include_str!("basis/bundled/cc-pvdz-f12.json"),
+        "cc-pvdz-f12-optri" => include_str!("basis/bundled/cc-pvdz-f12-optri.json"),
         "def2-svp-rifit" => include_str!("basis/bundled/def2-svp-rifit.json"),
         "def2-tzvp" => include_str!("basis/bundled/def2-tzvp.json"),
         "def2-tzvp-rifit" => include_str!("basis/bundled/def2-tzvp-rifit.json"),
@@ -278,6 +280,21 @@ mod tests {
         assert!(!h_shells[0].pure);
         let c_shells = bs.for_element(6).unwrap();
         assert!(c_shells.len() >= 2);
+    }
+
+    #[test]
+    fn test_bundled_ccpvdz_f12_loads() {
+        let obs = bundled("cc-pVDZ-F12").unwrap();
+        // F12 orbital set: H has s,p (>= cc-pVDZ); O reaches d.
+        assert!(obs.for_element(1).is_some(), "H missing from cc-pVDZ-F12");
+        let o = obs.for_element(8).unwrap();
+        assert!(o.iter().any(|s| s.l == 2), "O should have d shells");
+
+        // OptRI (CABS aux): larger, reaches g (L=4).
+        let ri = bundled("cc-pVDZ-F12-OptRI").unwrap();
+        let o_ri = ri.for_element(8).unwrap();
+        let max_l = o_ri.iter().map(|s| s.l).max().unwrap();
+        assert!(max_l >= 3, "OptRI O should reach >= f, got max L={max_l}");
     }
 
     #[test]
