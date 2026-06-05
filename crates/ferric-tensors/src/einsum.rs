@@ -1,11 +1,13 @@
-//! Runtime engine for a single binary tensor contraction.
+//! Runtime engine for a binary tensor contraction.
 //!
-//! `einsum_binary` is what the `einsum!` macro lowers to. Given two operands and
-//! the positions of their free vs contracted axes, it permutes each operand so
-//! the contracted axes are grouped, reshapes to 2D, calls one GEMM
-//! (`general_mat_mul`), and reshapes the result to the requested output shape.
-//! Any required permutation copy is logged at debug level so hot transposes are
-//! discoverable.
+//! [`einsum_binary_batched`] is what the `einsum!` macro lowers to;
+//! [`einsum_binary`] is the no-batch, unit-scale special case. Given two
+//! operands and the positions of their batch / free / contracted axes, the
+//! engine permutes each operand so those axis groups are contiguous, reshapes,
+//! calls GEMM (`general_mat_mul` — one call, or one per batch slice when there
+//! are batch axes), applies the scale factor, and reshapes the result to the
+//! requested output shape. Any required permutation copy is logged at debug
+//! level so hot transposes are discoverable.
 
 use ndarray::linalg::general_mat_mul;
 use ndarray::{ArrayD, ArrayViewD, IxDyn};
@@ -29,6 +31,9 @@ pub enum TensorError {
 ///   axes in both operands (the macro guarantees ordering matches).
 /// - `out_shape`: the shape of the result (free_left dims then free_right dims).
 ///   Empty slice means a scalar (returned as a length-1 `ArrayD` of shape `[]`).
+///
+/// This is the plain (no batch axes, unit scale) entry point. See
+/// [`einsum_binary_batched`] for diagonal/batch axes and a scale factor.
 pub fn einsum_binary(
     left: ArrayViewD<f64>,
     left_free: &[usize],
@@ -64,6 +69,110 @@ pub fn einsum_binary(
         .into_shape_with_order(IxDyn(out_shape))
         .map_err(|_| TensorError::OutputReshape { got, want })?;
     Ok(out)
+}
+
+/// Contract two operands with optional *batch* (diagonal) axes and a scale.
+///
+/// Batch axes are indices that appear in BOTH inputs and the OUTPUT — they are
+/// iterated element-wise rather than contracted or outer-product'd. For each
+/// fixed batch index the remaining free/contracted axes form an independent
+/// contraction (`ij,ij->ij` Hadamard, `kij,kij->ij` per-element dot over `k`).
+/// The whole result is multiplied by `scale`.
+///
+/// - `*_batch`: batch axis positions in each operand, in the SAME logical order
+///   (the macro guarantees the orders match). `out_batch` gives their positions
+///   in the output; batch dims always lead the output (`batch..., left_free...,
+///   right_free...`), which the macro enforces.
+/// - When `*_batch` is empty this is exactly [`einsum_binary`] times `scale`.
+#[allow(clippy::too_many_arguments)]
+pub fn einsum_binary_batched(
+    left: ArrayViewD<f64>,
+    left_batch: &[usize],
+    left_free: &[usize],
+    left_contr: &[usize],
+    right: ArrayViewD<f64>,
+    right_batch: &[usize],
+    right_free: &[usize],
+    right_contr: &[usize],
+    out_shape: &[usize],
+    scale: f64,
+) -> Result<ArrayD<f64>, TensorError> {
+    // Fast path: no batch axes -> one GEMM, then scale.
+    if left_batch.is_empty() {
+        let mut out =
+            einsum_binary(left, left_free, left_contr, right, right_free, right_contr, out_shape)?;
+        if scale != 1.0 {
+            out.mapv_inplace(|x| x * scale);
+        }
+        return Ok(out);
+    }
+
+    // Batched path. Reshape each operand to (batch, free, contr): a 3D view
+    // where index 0 walks the (flattened) batch space. Then for each batch
+    // slice do one GEMM of (free x contr)·(contr x rfree) -> (free x rfree).
+    let l3 = to_3d(left, left_batch, left_free, left_contr, "left");
+    let r3 = to_3d(right, right_batch, right_contr, right_free, "right");
+
+    let nb = l3.shape()[0];
+    let (lf, lc) = (l3.shape()[1], l3.shape()[2]);
+    let (rc, rf) = (r3.shape()[1], r3.shape()[2]);
+    if nb != r3.shape()[0] {
+        // Batch extents disagree: treat as a contracted-dim style mismatch.
+        return Err(TensorError::ContractedDimMismatch { left: nb, right: r3.shape()[0] });
+    }
+    if lc != rc {
+        return Err(TensorError::ContractedDimMismatch { left: lc, right: rc });
+    }
+
+    let mut out3 = ArrayD::<f64>::zeros(IxDyn(&[nb, lf, rf]));
+    {
+        let l3m = l3.view().into_dimensionality::<ndarray::Ix3>().unwrap();
+        let r3m = r3.view().into_dimensionality::<ndarray::Ix3>().unwrap();
+        let mut o3m = out3.view_mut().into_dimensionality::<ndarray::Ix3>().unwrap();
+        for b in 0..nb {
+            let lb = l3m.index_axis(ndarray::Axis(0), b);
+            let rb = r3m.index_axis(ndarray::Axis(0), b);
+            let mut ob = o3m.index_axis_mut(ndarray::Axis(0), b);
+            general_mat_mul(scale, &lb, &rb, 0.0, &mut ob);
+        }
+    }
+
+    let want: usize = out_shape.iter().product::<usize>().max(1);
+    let got = nb * lf * rf;
+    if got != want {
+        return Err(TensorError::OutputReshape { got, want });
+    }
+    let out = out3
+        .into_shape_with_order(IxDyn(out_shape))
+        .map_err(|_| TensorError::OutputReshape { got, want })?;
+    Ok(out)
+}
+
+/// Permute `op` to (batch, second, third) axis order and reshape to the 3D
+/// shape (prod(batch), prod(second), prod(third)), copying to contiguous when
+/// the permutation is non-trivial.
+fn to_3d(
+    op: ArrayViewD<f64>,
+    batch: &[usize],
+    second: &[usize],
+    third: &[usize],
+    which: &str,
+) -> ArrayD<f64> {
+    let order: Vec<usize> =
+        batch.iter().chain(second.iter()).chain(third.iter()).copied().collect();
+    let is_identity = order.iter().enumerate().all(|(i, &p)| i == p);
+    if !is_identity {
+        log::debug!("einsum: {which} operand permuted to {:?} (transpose copy)", order);
+    }
+    let nb: usize = batch.iter().map(|&ax| op.shape()[ax]).product::<usize>().max(1);
+    let d1: usize = second.iter().map(|&ax| op.shape()[ax]).product::<usize>().max(1);
+    let d2: usize = third.iter().map(|&ax| op.shape()[ax]).product::<usize>().max(1);
+    let permuted = op.permuted_axes(order);
+    permuted
+        .as_standard_layout()
+        .into_owned()
+        .into_shape_with_order(IxDyn(&[nb, d1, d2]))
+        .expect("einsum: 3D reshape after permutation")
 }
 
 /// Permute `op` so the axes in `first` come before the axes in `second`, then

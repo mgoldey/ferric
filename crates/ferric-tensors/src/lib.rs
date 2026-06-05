@@ -2,7 +2,7 @@
 //!
 //! Provides labeled-axis tensors and a compile-time [`einsum!`] macro for
 //! quantum-chemistry contractions. Each `einsum!` is one binary contraction that
-//! lowers to one BLAS3 GEMM (permute → reshape → `general_mat_mul` → reshape):
+//! lowers to BLAS3 GEMM (permute → reshape → `general_mat_mul` → reshape):
 //!
 //! ```
 //! use ferric_tensors::{einsum, Axis, Tensor};
@@ -17,6 +17,15 @@
 //! assert_eq!(c.shape(), &[2, 2]);
 //! ```
 //!
+//! Index classification follows numpy-einsum rules: an index in both inputs but
+//! not the output is **contracted** (the GEMM axis); an index in both inputs and
+//! the output is a **batch/diagonal** axis (iterated element-wise, one GEMM per
+//! batch slice — e.g. Hadamard `"ij,ij->ij"` or per-element dot `"kij,kij->ij"`);
+//! an index in one input and the output is **free**. An optional trailing scalar
+//! scales the whole result: `einsum!("ai,ai->", &mu, &u, -4.0)`. Implicit
+//! single-operand sums (an input index that is neither contracted, batched, nor
+//! in the output) are rejected at compile time.
+//!
 //! Also retains the sparse tensor types ([`SparseTensor2`], [`FlatSparse`], …)
 //! used by screening / link-K paths.
 
@@ -28,7 +37,7 @@ pub use axis::Axis;
 pub mod tensor;
 pub use tensor::{MaybeLabeled, Tensor};
 pub mod einsum;
-pub use einsum::{einsum_binary, TensorError};
+pub use einsum::{einsum_binary, einsum_binary_batched, TensorError};
 pub use ferric_tensor_macro::einsum;
 
 /// A rank-4 tensor typically used for T2 amplitudes or 2-electron integrals.
