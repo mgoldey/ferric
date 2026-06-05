@@ -511,6 +511,13 @@
     "ok": true,
     "seconds": 79.9
   },
+  "augccpvtz/hbr/mbd": {
+    "basis": "augccpvtz",
+    "c6": 126.621,
+    "method": "mbd",
+    "mol": "hbr",
+    "ok": true
+  },
   "augccpvtz/hbr/rpa_hf": {
     "basis": "augccpvtz",
     "c6": 139.728,
