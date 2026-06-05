@@ -212,6 +212,14 @@ pub struct PdepRpaResult {
     pub quad_weights: Vec<f64>,
     /// λ_α(iω_k) tensor, shape (N_quad, M).
     pub eigenvalues_freq: Array2<f64>,
+    /// Per-frequency dynamic inverse-dielectric matrices W̃_d(iω_k) = ε̃_proj⁻¹ − I
+    /// in the *fixed* PDEP eigenvector basis, length N_quad, each shape (M, M).
+    ///
+    /// `None` for the Laplace χ₀ path (not yet wired). Required by ferric-gw's
+    /// Σ_c: the diagonal `eigenvalues_freq` weights are computed in a per-ω
+    /// rotated eigenbasis and are NOT consistent with the static B̃ projection,
+    /// so the GW self-energy must use these full matrices instead.
+    pub inv_dielectric_freq: Option<Vec<Array2<f64>>>,
     /// RI-dRPA sanity-check energy (None unless run_diagnostics=true).
     pub e_rpa_dft_diag: Option<f64>,
 }
@@ -439,6 +447,16 @@ pub fn run_pdep_rpa(
         ),
     };
 
+    // Step 6b: Per-frequency full inverse-dielectric matrices in the PDEP basis
+    // (for the GW self-energy; not needed by the RPA energy). Only the dense
+    // (non-Laplace) χ₀ path is wired here.
+    let inv_dielectric_freq = match laplace_chi0_quad.as_ref() {
+        None => Some(energy::eval_inv_dielectric_matrices(
+            &eigenvectors, b_ov, &eps_occ, &eps_vir, &quad_freqs,
+        )),
+        Some(_) => None,
+    };
+
     // Step 7: Integrate RPA correlation energy.
     let e_rpa = energy::rpa_correlation_energy(&quad_weights, &eigenvalues_freq);
 
@@ -460,6 +478,7 @@ pub fn run_pdep_rpa(
         quad_freqs,
         quad_weights,
         eigenvalues_freq,
+        inv_dielectric_freq,
         e_rpa_dft_diag,
     })
 }
@@ -625,6 +644,13 @@ pub fn run_u_pdep_rpa(
 
     let e_rpa = energy::rpa_correlation_energy(&quad_weights, &eigenvalues_freq);
 
+    let inv_dielectric_freq = match laplace_pair.as_ref() {
+        None => Some(energy::eval_inv_dielectric_matrices_unrestricted(
+            &eigenvectors, &freq_chan_a, &freq_chan_b, &quad_freqs,
+        )),
+        Some(_) => None,
+    };
+
     Ok(PdepRpaResult {
         e_rpa,
         n_eigenpotentials: n_keep,
@@ -634,6 +660,7 @@ pub fn run_u_pdep_rpa(
         quad_freqs,
         quad_weights,
         eigenvalues_freq,
+        inv_dielectric_freq,
         e_rpa_dft_diag: None,
     })
 }
