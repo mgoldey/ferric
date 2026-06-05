@@ -108,14 +108,16 @@ pub fn run_bse_tda(
     let m_proj = project_b_into_pdep(&mob, &v_dressed); // (M, n_act, n_act), local MO indices
     let m_modes = m_proj.shape()[0];
 
-    // Full static screened weight 1/λ_α(0) for the screened-exchange term.
-    let inv_lam: Vec<f64> = gw
+    // Reduced screening weight w_α = 1/λ_α(0) − 1; screened W = bare v + Σ w_α MM
+    // (robust to an incomplete PDEP mode set — see run_bse_c6_ks for the rationale
+    // and the basis-check diagnostic).
+    let w_red: Vec<f64> = gw
         .pdep
         .eigenvalues_static
         .iter()
-        .map(|&l| 1.0 / l)
+        .map(|&l| 1.0 / l - 1.0)
         .collect();
-    assert_eq!(inv_lam.len(), m_modes);
+    assert_eq!(w_red.len(), m_modes);
     {
         let lmax = gw
             .pdep
@@ -146,9 +148,9 @@ pub fn run_bse_tda(
         acc
     };
     let screened = |p: usize, q: usize, r: usize, s: usize| -> f64 {
-        let mut acc = 0.0;
+        let mut acc = bare(p, q, r, s); // bare v (complete RI basis)
         for alpha in 0..m_modes {
-            acc += inv_lam[alpha] * m_proj[(alpha, p, q)] * m_proj[(alpha, r, s)];
+            acc += w_red[alpha] * m_proj[(alpha, p, q)] * m_proj[(alpha, r, s)];
         }
         acc
     };
@@ -340,7 +342,9 @@ pub fn run_bse_c6(
     let (v_dressed, _dev) = w_pdep::redress_with_check(&mob.v_inv_sqrt, &gw.pdep.eigenpotentials)?;
     let m_proj = project_b_into_pdep(&mob, &v_dressed);
     let m_modes = m_proj.shape()[0];
-    let inv_lam: Vec<f64> = gw.pdep.eigenvalues_static.iter().map(|&l| 1.0 / l).collect();
+    // Reduced screening weight; screened W = bare v + Σ w_α MM (mode-set-robust,
+    // see run_bse_c6_ks).
+    let w_red: Vec<f64> = gw.pdep.eigenvalues_static.iter().map(|&l| 1.0 / l - 1.0).collect();
     let b = &mob.b_full;
     let naux = mob.naux;
     let bare = |p: usize, q: usize, r: usize, s: usize| -> f64 {
@@ -351,9 +355,9 @@ pub fn run_bse_c6(
         acc
     };
     let screened = |p: usize, q: usize, r: usize, s: usize| -> f64 {
-        let mut acc = 0.0;
+        let mut acc = bare(p, q, r, s); // bare v (complete RI basis)
         for alpha in 0..m_modes {
-            acc += inv_lam[alpha] * m_proj[(alpha, p, q)] * m_proj[(alpha, r, s)];
+            acc += w_red[alpha] * m_proj[(alpha, p, q)] * m_proj[(alpha, r, s)];
         }
         acc
     };
@@ -415,6 +419,170 @@ pub fn run_bse_c6(
         alpha_iso.push(iso / 3.0);
     }
 
+    let c6 = 3.0 / PI * (0..freqs.len()).map(|k| weights[k] * alpha_iso[k] * alpha_iso[k]).sum::<f64>();
+    let alpha_static = *alpha_iso.first().unwrap_or(&0.0);
+    Ok(BseC6Result { c6, alpha_iso, alpha_static, nocc, nvir })
+}
+
+/// RPAx@KS spike: BSE-form screened-(A±B) α(iω)/C6 on a Kohn–Sham (e.g. PBE)
+/// reference, using KS orbital energies DIRECTLY on the diagonal (no GW) and the
+/// PDEP screening modes built from the SAME KS response. This isolates the
+/// REFERENCE variable from gate 2: gate 2 was HF energies + HF-W (water C6 −64%);
+/// if a PBE reference + PBE-W fixes the α deficit (α_static → ~DOSD), the
+/// W-as-kernel dispersion lane is alive; if not, the screened kernel itself
+/// under-polarizes and the lane is dead.
+///
+/// Same kernel as `run_bse_c6`:
+/// ```text
+///   (A+B) = Δε^KS δ + 4(ia|jb)_v − (ab|W|ij) − (ib|W|aj)
+///   (A−B) = Δε^KS δ            + (ib|W|aj) − (ab|W|ij)
+/// ```
+/// with W from `run_pdep_rpa` on the KS reference. NB: this is RPAx-flavoured
+/// TDDFT-with-screened-exchange, not a formally consistent GW@PBE BSE — the
+/// cheap reference-isolation spike, deliberately.
+#[allow(clippy::too_many_arguments)]
+pub fn run_bse_c6_ks(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    ks: &ScfResult,
+    pdep_cfg: &PdepRpaConfig,
+    frozen_core: usize,
+    freqs: &[f64],
+    weights: &[f64],
+) -> Result<BseC6Result, FerricError> {
+    use std::f64::consts::PI;
+    if !matches!(ks.spin, ferric_scf::Spin::Restricted) {
+        return Err(FerricError::General("run_bse_c6_ks: closed-shell only".into()));
+    }
+    let nmo = ks.eps_r().len();
+    let nocc_total = (mol.nelec() as usize) / 2;
+    let c = ks.mos_r();
+    let eps = ks.eps_r().to_vec(); // KS orbital energies, used directly on the diagonal
+
+    // PDEP screening modes from the KS response.
+    let pdep = ferric_rpa::run_pdep_rpa(mol, obs, dfbs, op, ks, pdep_cfg)?;
+    {
+        let lmax = pdep.eigenvalues_static.iter().cloned().fold(f64::MIN, f64::max);
+        let homo = eps[nocc_total - 1];
+        let lumo = eps[nocc_total];
+        eprintln!(
+            "RPAx@KS diag: λ_max(0)={lmax:.4}  n_modes={}  KS gap={:.3} eV",
+            pdep.eigenvalues_static.len(),
+            (lumo - homo) * 27.211_386_245_988
+        );
+    }
+
+    let first_act = frozen_core;
+    let nocc = nocc_total - frozen_core;
+    let nvir = nmo - nocc_total;
+    let n = nocc * nvir;
+
+    let mob = mo_b::build_full_b(mol, obs, dfbs, op, ks, frozen_core)?;
+    let (v_dressed, _dev) = w_pdep::redress_with_check(&mob.v_inv_sqrt, &pdep.eigenpotentials)?;
+    let m_proj = project_b_into_pdep(&mob, &v_dressed);
+    let m_modes = m_proj.shape()[0];
+    // Screened W = bare v + reduced-screening correction. Using the COMPLETE
+    // b_full for the bare part and the reduced weight w_α = 1/λ_α − 1 for the
+    // mode correction makes the screened integral robust to an INCOMPLETE PDEP
+    // mode set (run_pdep_rpa drops near-unit modes, so eigenpotentials span only
+    // M<naux dimensions; the naive Σ(1/λ)MM form then loses bare-exchange weight
+    // — see the basis-check diagnostic). The reduced weight only multiplies the
+    // genuine screening, which vanishes for the dropped λ≈1 modes.
+    let w_red: Vec<f64> = pdep.eigenvalues_static.iter().map(|&l| 1.0 / l - 1.0).collect();
+    let b = &mob.b_full;
+    let naux = mob.naux;
+    let bare = |p: usize, q: usize, r: usize, s: usize| -> f64 {
+        let mut acc = 0.0;
+        for pp in 0..naux {
+            acc += b[(pp, p, q)] * b[(pp, r, s)];
+        }
+        acc
+    };
+    let screened = |p: usize, q: usize, r: usize, s: usize| -> f64 {
+        let mut acc = bare(p, q, r, s); // bare v (complete RI basis)
+        for alpha in 0..m_modes {
+            acc += w_red[alpha] * m_proj[(alpha, p, q)] * m_proj[(alpha, r, s)];
+        }
+        acc
+    };
+    {
+        // DIAGNOSTIC: compare bare vs screened exchange on the LUMO-LUMO element,
+        // and the bare (HOMO a=0,a=0 | ...) — checks M-projection consistency vs PySCF.
+        let a0 = nocc; // first virtual local index
+        let i0 = nocc - 1; // HOMO local
+        // BARE-LIMIT check on the off-diagonal pair coupling: Σ_α M[α,aa] M[α,ii]
+        // (unit weights) MUST equal bare(aa|ii) if m_proj spans the full RI space.
+        let mproj_bare_aaii: f64 =
+            (0..m_modes).map(|al| m_proj[(al, a0, a0)] * m_proj[(al, i0, i0)]).sum();
+        eprintln!(
+            "RPAx@KS xch diag: bare(aa|ii)={:.5} W(aa|ii)={:.5}  bare(ai|ai)={:.5} W(ai|ai)={:.5}",
+            bare(a0, a0, i0, i0),
+            screened(a0, a0, i0, i0),
+            bare(a0, i0, a0, i0),
+            screened(a0, i0, a0, i0),
+        );
+        eprintln!(
+            "RPAx@KS basis check: Σ_α M[aa]M[ii] (unit wt) = {:.5}  vs bare(aa|ii) {:.5}  (m_modes={}, naux={})",
+            mproj_bare_aaii,
+            bare(a0, a0, i0, i0),
+            m_modes,
+            naux,
+        );
+    }
+
+    let mut apb = Array2::<f64>::zeros((n, n));
+    let mut amb = Array2::<f64>::zeros((n, n));
+    for i in 0..nocc {
+        let eps_i = eps[first_act + i];
+        for a in 0..nvir {
+            let a_loc = nocc + a;
+            let eps_a = eps[nocc_total + a];
+            let ia = i * nvir + a;
+            for j in 0..nocc {
+                for bb in 0..nvir {
+                    let b_loc = nocc + bb;
+                    let jb = j * nvir + bb;
+                    let coul = bare(i, a_loc, j, b_loc);
+                    let w_abij = screened(a_loc, b_loc, i, j);
+                    let w_ibaj = screened(i, b_loc, a_loc, j);
+                    apb[(ia, jb)] = 4.0 * coul - w_abij - w_ibaj;
+                    amb[(ia, jb)] = w_ibaj - w_abij;
+                }
+            }
+            apb[(ia, ia)] += eps_a - eps_i;
+            amb[(ia, ia)] += eps_a - eps_i;
+        }
+    }
+
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let r_mo: [Array2<f64>; 3] = std::array::from_fn(|d| c.t().dot(&dip_ao[d]).dot(c));
+    let mut mu: [Array1<f64>; 3] = std::array::from_fn(|_| Array1::zeros(n));
+    for (d, m) in mu.iter_mut().enumerate() {
+        for i in 0..nocc {
+            for a in 0..nvir {
+                m[i * nvir + a] = r_mo[d][(first_act + i, nocc_total + a)];
+            }
+        }
+    }
+
+    let mut alpha_iso = Vec::with_capacity(freqs.len());
+    for &w in freqs {
+        let mut sysm = amb.dot(&apb);
+        for k in 0..n {
+            sysm[(k, k)] += w * w;
+        }
+        let mut iso = 0.0;
+        for axis in mu.iter() {
+            let rhs = amb.dot(axis);
+            let t = sysm
+                .solve(&rhs)
+                .map_err(|e| FerricError::Lapack(format!("RPAx α(iω) solve: {e}")))?;
+            iso += 4.0 * axis.dot(&t);
+        }
+        alpha_iso.push(iso / 3.0);
+    }
     let c6 = 3.0 / PI * (0..freqs.len()).map(|k| weights[k] * alpha_iso[k] * alpha_iso[k]).sum::<f64>();
     let alpha_static = *alpha_iso.first().unwrap_or(&0.0);
     Ok(BseC6Result { c6, alpha_iso, alpha_static, nocc, nvir })

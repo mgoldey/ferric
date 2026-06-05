@@ -160,3 +160,37 @@ fn bse_c6_h2o_vs_dosd() {
     assert!(res.alpha_static > 0.0, "static α must be positive");
     assert!((10.0..120.0).contains(&res.c6), "C6 {:.2} outside sane window for water", res.c6);
 }
+
+/// RPAx@PBE spike: gate 2's screened (A±B) kernel but on a PBE-KS reference
+/// (KS energies + PBE-built W), isolating the REFERENCE variable. Gate 2 was
+/// HF+HF-W → water C6 −64%, α_static 5.24 (≈bare HF). Hypothesis: the HF
+/// reference's α deficit is the culprit; a PBE reference should raise α toward
+/// DOSD (9.64). If α_static climbs and C6 improves markedly, the W-as-kernel
+/// dispersion lane is alive; if it stays low, the screened kernel itself
+/// under-polarizes and the lane is dead.
+#[test]
+#[ignore = "slow: PBE-KS + PDEP-RPA + RPAx α(iω) on CP grid; --release --ignored"]
+fn rpax_pbe_c6_h2o_vs_dosd() {
+    use ferric_gw::bse::run_bse_c6_ks;
+    let xyz = "3\nH2O\nO 0.0 0.0 0.117790\nH 0.0 0.755453 -0.471161\nH 0.0 -0.755453 -0.471161\n";
+    let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+    let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+    let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+    let ctx = ParallelContext::default();
+    let scf_cfg = RhfConfig { xc: Some("PBE".to_string()), ..Default::default() };
+    let ks = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
+
+    let (freqs, weights) = cp_grid(0.6);
+    let res = run_bse_c6_ks(&mol, &obs, &dfbs, op, &ks, &pdep_cfg(), 0, &freqs, &weights)
+        .expect("RPAx@PBE C6 runs");
+    let dosd = 45.3;
+    let err = 100.0 * (res.c6 - dosd) / dosd;
+    eprintln!("\nRPAx@PBE / cc-pVDZ H2O");
+    eprintln!("  α_static (iso) = {:.4} a.u.  (DOSD α0 = 9.64; gate2 HF was 5.24)", res.alpha_static);
+    eprintln!("  α(iω) profile  = {:?}", res.alpha_iso.iter().map(|a| (a*100.0).round()/100.0).collect::<Vec<_>>());
+    eprintln!("  C6 = {:.3} a.u.   (DOSD 45.3; gate2 HF was 16.88)   err = {err:+.2}%", res.c6);
+    assert!(res.c6.is_finite() && res.c6 > 0.0, "C6 must be finite positive");
+    assert!(res.alpha_static > 0.0, "static α must be positive");
+}
