@@ -48,6 +48,45 @@ impl Engine {
         Ok(Engine { handles, buf: vec![0.0; max_fn * max_fn * max_fn * max_fn], scratch: vec![0.0; max_fn * max_fn * max_fn * max_fn] })
     }
 
+    /// Create a geminal (F12) two-electron engine from an STG `Operator`
+    /// (built via `Operator::stg`). The Gaussian fit carried in the operator's
+    /// composite arrays is passed as one `ContractedGaussianGeminal` to libint —
+    /// a SINGLE engine, unlike `new_2e`'s sum-of-engines for linear composites.
+    ///
+    /// Returns an error if libint2 lacks the G12 integral class (the FFI returns
+    /// null) or the operator is not a geminal kind.
+    pub fn new_2e_geminal(op: Operator, prep: &PreparedBasis, precision: f64) -> Result<Self, FerricError> {
+        let op_kind = match op.kind {
+            OperatorKind::Cgtg => ffi::OP_CGTG,
+            OperatorKind::CgtgCoulomb => ffi::OP_CGTG_X_COULOMB,
+            OperatorKind::Delcgtg2 => ffi::OP_DELCGTG2,
+            other => return Err(FerricError::Libint(format!("not a geminal operator: {other:?}"))),
+        };
+        if !op.is_composite || op.num_components == 0 {
+            return Err(FerricError::Libint("geminal operator has no Gaussian fit".into()));
+        }
+        let ng = op.num_components;
+        let exps: Vec<f64> = op.c_omegas[..ng].to_vec();
+        let coefs: Vec<f64> = op.c_coeffs[..ng].to_vec();
+        let handle = unsafe {
+            ffi::scf_engine_create_geminal(
+                op_kind, ng as c_int, exps.as_ptr(), coefs.as_ptr(),
+                prep.max_nprim(), prep.max_l(), precision,
+            )
+        };
+        if handle.is_null() {
+            return Err(FerricError::Libint(
+                "geminal engine_create returned null (libint2 built without G12?)".into(),
+            ));
+        }
+        let max_fn = prep.shell_dims().iter().copied().max().unwrap_or(1);
+        Ok(Engine {
+            handles: vec![(1.0, handle)],
+            buf: vec![0.0; max_fn * max_fn * max_fn * max_fn],
+            scratch: vec![0.0; max_fn * max_fn * max_fn * max_fn],
+        })
+    }
+
     /// Create a one-electron integral engine (overlap, kinetic, or nuclear).
     pub fn new_1e(op_kind: c_int, prep: &PreparedBasis, precision: f64) -> Result<Self, FerricError> {
         let handle = unsafe { ffi::scf_engine_create(op_kind, 0.0, prep.max_nprim(), prep.max_l(), precision) };
@@ -415,6 +454,55 @@ mod tests {
 
         assert!((v_full - v_erf - v_erfc).abs() < 1e-10,
             "erf + erfc should equal Coulomb: {} + {} = {} vs {}", v_erf, v_erfc, v_erf + v_erfc, v_full);
+    }
+
+    #[test]
+    fn test_geminal_cgtg_quartet_runs() {
+        // The honest proof that libint2 was built WITH the G12 integral class:
+        // construct each geminal engine and compute a quartet. The Operator::cgtg
+        // enum compiles even when G12 is stripped, so only a successful runtime
+        // call (non-null engine + integral computed) proves the kernel is in.
+        let (_, prep) = h2_sto3g();
+        let gamma = 1.0; // STG exponent (a.u.); cc-pVDZ-F12 uses ~0.9–1.0.
+
+        for kind in [
+            OperatorKind::Cgtg,
+            OperatorKind::CgtgCoulomb,
+            OperatorKind::Delcgtg2,
+        ] {
+            let op = Operator::stg(gamma, kind);
+            let eng = Engine::new_2e_geminal(op, &prep, 1e-14);
+            assert!(
+                eng.is_ok(),
+                "geminal engine {kind:?} failed — libint2 built without G12? ({:?})",
+                eng.err()
+            );
+            let mut eng = eng.unwrap();
+            let q = eng.compute_quartet(&prep, 0, 0, 0, 0);
+            assert!(q.is_some(), "geminal {kind:?} (00|00) screened/empty");
+            let v = q.unwrap()[0];
+            assert!(v.is_finite(), "geminal {kind:?} (00|00) = {v} not finite");
+        }
+    }
+
+    #[test]
+    fn test_geminal_cgtg_signs() {
+        // f12 = -(1/gamma) exp(-gamma r12) is negative everywhere, so ⟨f12⟩ < 0.
+        // f12/r12 is also negative. delcgtg2 = |∇f12|^2 ≥ 0.
+        let (_, prep) = h2_sto3g();
+        let gamma = 1.0;
+
+        let mut e_f12 = Engine::new_2e_geminal(Operator::stg(gamma, OperatorKind::Cgtg), &prep, 1e-14).unwrap();
+        let v_f12 = e_f12.compute_quartet(&prep, 0, 0, 0, 0).unwrap()[0];
+        assert!(v_f12 < 0.0, "⟨f12⟩ should be < 0 (geminal is -exp/gamma), got {v_f12}");
+
+        let mut e_fc = Engine::new_2e_geminal(Operator::stg(gamma, OperatorKind::CgtgCoulomb), &prep, 1e-14).unwrap();
+        let v_fc = e_fc.compute_quartet(&prep, 0, 0, 0, 0).unwrap()[0];
+        assert!(v_fc < 0.0, "⟨f12/r12⟩ should be < 0, got {v_fc}");
+
+        let mut e_dc = Engine::new_2e_geminal(Operator::stg(gamma, OperatorKind::Delcgtg2), &prep, 1e-14).unwrap();
+        let v_dc = e_dc.compute_quartet(&prep, 0, 0, 0, 0).unwrap()[0];
+        assert!(v_dc >= 0.0, "⟨|∇f12|^2⟩ should be ≥ 0, got {v_dc}");
     }
 
     #[test]

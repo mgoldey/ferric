@@ -8,6 +8,7 @@
 #include <atomic>
 #include <mutex>
 #include <new>
+#include <cstdio>
 
 using libint2::Engine;
 using libint2::Operator;
@@ -126,6 +127,47 @@ static Operator op_for_kind(int kind, bool *ok) {
         case 102: return Operator::nuclear;
         default:  *ok = false; return Operator::coulomb;
     }
+}
+
+/* Geminal engine: cgtg / cgtg_x_coulomb / delcgtg2. Requires libint2 built
+ * with the G12 integral class (G12_MAX_AM defined). */
+scf_engine *scf_engine_create_geminal(int op_kind, int ngauss,
+                                          const double *exps, const double *coefs,
+                                          int max_nprim, int max_L, double precision) {
+#ifdef G12_MAX_AM
+    Operator op;
+    switch (op_kind) {
+        case 200: op = Operator::cgtg;           break;
+        case 201: op = Operator::cgtg_x_coulomb; break;
+        case 202: op = Operator::delcgtg2;       break;
+        default:  return nullptr;
+    }
+    libint2::ContractedGaussianGeminal cgg;
+    cgg.reserve(ngauss);
+    for (int i = 0; i < ngauss; ++i) {
+        cgg.emplace_back(exps[i], coefs[i]);
+    }
+    std::lock_guard<std::mutex> lock(libint_ctor_mutex);
+    try {
+        // Pass the geminal via the constructor's params argument (6th arg), as
+        // libint's own HF++ test does. The set_params() path throws bad_any_cast
+        // for delcgtg2 (its K=2 core-eval params are derived differently when
+        // set post-construction); the ctor routes through enforce_params_type.
+        Engine eng(op, max_nprim, max_L, 0, precision, cgg);
+        auto *out = new (std::nothrow) scf_engine{std::move(eng)};
+        return out;
+    } catch (const std::exception &e) {
+        std::fprintf(stderr, "scf_engine_create_geminal(op_kind=%d): %s\n", op_kind, e.what());
+        return nullptr;
+    } catch (...) {
+        std::fprintf(stderr, "scf_engine_create_geminal(op_kind=%d): unknown exception\n", op_kind);
+        return nullptr;
+    }
+#else
+    (void)op_kind; (void)ngauss; (void)exps; (void)coefs;
+    (void)max_nprim; (void)max_L; (void)precision;
+    return nullptr;
+#endif
 }
 
 scf_engine *scf_engine_create(int op_kind, double omega,

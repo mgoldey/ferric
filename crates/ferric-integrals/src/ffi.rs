@@ -41,6 +41,7 @@ extern "C" {
     pub fn scf_compute_eri_quartet(eng: *mut c_void, bs: *const c_void, sh1: c_int, sh2: c_int, sh3: c_int, sh4: c_int, out: *mut c_double) -> c_int;
     pub fn scf_compute_schwarz(eng: *mut c_void, bs: *const c_void, qmat: *mut c_double);
     pub fn scf_engine_create_deriv(op_kind: c_int, omega: c_double, max_nprim: c_int, max_l: c_int, precision: c_double) -> *mut c_void;
+    pub fn scf_engine_create_geminal(op_kind: c_int, ngauss: c_int, exps: *const c_double, coefs: *const c_double, max_nprim: c_int, max_l: c_int, precision: c_double) -> *mut c_void;
     pub fn scf_compute_1e_deriv_block(eng: *mut c_void, bs: *const c_void, sh1: c_int, sh2: c_int, out: *mut c_double) -> c_int;
     pub fn scf_compute_eri_deriv_quartet(eng: *mut c_void, bs: *const c_void, sh1: c_int, sh2: c_int, sh3: c_int, sh4: c_int, out: *mut c_double) -> c_int;
     pub fn scf_engine_create_3center(op_kind: c_int, omega: c_double, max_nprim: c_int, max_l: c_int, precision: c_double) -> *mut c_void;
@@ -66,3 +67,7 @@ pub const OP_OVERLAP: c_int = 100;
 pub const OP_KINETIC: c_int = 101;
 pub const OP_NUCLEAR: c_int = 102;
 pub const OP_EMULTIPOLE1: c_int = 103;
+// Geminal (F12) two-electron operators — see scf_engine_create_geminal.
+pub const OP_CGTG: c_int = 200;
+pub const OP_CGTG_X_COULOMB: c_int = 201;
+pub const OP_DELCGTG2: c_int = 202;

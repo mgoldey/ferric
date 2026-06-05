@@ -61,6 +61,18 @@ scf_engine *scf_engine_create(int op_kind, double omega,
 /* deriv_order=1 derivative engine. Returns NULL if libint2 was built without derivative support. */
 scf_engine *scf_engine_create_deriv(int op_kind, double omega,
                                         int max_nprim, int max_L, double precision);
+
+/* Geminal (F12 / MP2-F12) two-electron engine. op_kind:
+ *   200 = cgtg            (contracted Gaussian geminal  f12)
+ *   201 = cgtg_x_coulomb  (f12 / r12)
+ *   202 = delcgtg2        ([Ti,f12] kinetic commutator: |∇f12|^2)
+ * The geminal is supplied as `ngauss` (exponent, coefficient) pairs
+ * approximating the Slater geminal exp(-gamma r12). Arrays are caller-owned.
+ * Returns NULL if libint2 was built without the G12 integral class
+ * (config.h: G12_MAX_AM undefined) or op_kind is unknown. */
+scf_engine *scf_engine_create_geminal(int op_kind, int ngauss,
+                                          const double *exps, const double *coefs,
+                                          int max_nprim, int max_L, double precision);
 void          scf_engine_destroy(scf_engine *eng);
 
 /* For Nuclear-attraction engines, set the array of point charges.
