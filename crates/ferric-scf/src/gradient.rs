@@ -15,20 +15,14 @@ use ndarray::Array2;
 
 /// Build the HF energy-weighted density: W_μν = 2 Σ_i^occ ε_i C_μi C_νi.
 pub fn build_energy_weighted_density(result: &ScfResult, nocc: usize) -> Array2<f64> {
-    let n = result.mos_r().nrows();
     let c = result.mos_r();
     let eps = result.eps_r();
-    let mut w = Array2::zeros((n, n));
-    for mu in 0..n {
-        for nu in 0..n {
-            let mut sum = 0.0;
-            for i in 0..nocc {
-                sum += eps[i] * c[(mu, i)] * c[(nu, i)];
-            }
-            w[(mu, nu)] = 2.0 * sum;
-        }
-    }
-    w
+    // W = 2 C_occ diag(ε) C_occ^T. Scale the columns of C_occ by ε first
+    // (cw[μ,i] = ε_i C_μi), then one GEMM C_occ · cw^T.
+    let c_occ = c.slice(ndarray::s![.., ..nocc]);
+    let eps_occ = ndarray::ArrayView1::from(&eps[..nocc]);
+    let cw = &c_occ * &eps_occ;
+    c_occ.dot(&cw.t()) * 2.0
 }
 
 /// Compute the RHF analytical nuclear gradient.
@@ -444,31 +438,16 @@ pub fn build_energy_weighted_density_uhf(
     nocc_a: usize,
     nocc_b: usize,
 ) -> Array2<f64> {
-    let n = result.mos_alpha.nrows();
-    let mut w = Array2::<f64>::zeros((n, n));
-    {
-        let c = &result.mos_alpha;
-        let eps = &result.eps_alpha;
-        for mu in 0..n {
-            for nu in 0..n {
-                let mut sum = 0.0;
-                for i in 0..nocc_a {
-                    sum += eps[i] * c[(mu, i)] * c[(nu, i)];
-                }
-                w[(mu, nu)] += sum;
-            }
-        }
-    }
+    // W = Σ_spin C_occ diag(ε) C_occ^T (per-spin, unit weight — UHF, not ×2).
+    let spin_block = |c: &Array2<f64>, eps: &[f64], nocc: usize| {
+        let c_occ = c.slice(ndarray::s![.., ..nocc]);
+        let eps_occ = ndarray::ArrayView1::from(&eps[..nocc]);
+        let cw = &c_occ * &eps_occ;
+        c_occ.dot(&cw.t())
+    };
+    let mut w = spin_block(&result.mos_alpha, &result.eps_alpha, nocc_a);
     if let (Some(cb), Some(epsb)) = (result.mos_beta.as_ref(), result.eps_beta.as_ref()) {
-        for mu in 0..n {
-            for nu in 0..n {
-                let mut sum = 0.0;
-                for i in 0..nocc_b {
-                    sum += epsb[i] * cb[(mu, i)] * cb[(nu, i)];
-                }
-                w[(mu, nu)] += sum;
-            }
-        }
+        w = w + spin_block(cb, epsb, nocc_b);
     }
     w
 }

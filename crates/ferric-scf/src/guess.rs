@@ -35,16 +35,8 @@ pub fn hcore_guess(
     // C = S^{-1/2} C'
     let c = s_inv_sqrt.dot(&c_prime);
     // D = 2 C_occ C_occ^T
-    let mut d = Array2::zeros((n, n));
-    for mu in 0..n {
-        for nu in 0..n {
-            let mut sum = 0.0;
-            for i in 0..nocc {
-                sum += c[(mu, i)] * c[(nu, i)];
-            }
-            d[(mu, nu)] = 2.0 * sum;
-        }
-    }
+    let c_occ = c.slice(ndarray::s![.., ..nocc]);
+    let d = c_occ.dot(&c_occ.t()) * 2.0;
     Ok(d)
 }
 
