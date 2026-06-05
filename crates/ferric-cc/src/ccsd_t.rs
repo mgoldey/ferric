@@ -15,6 +15,13 @@
 //! E_(T) = (1/36) Σ_ijkabc (t3c + t3d) · D_ijkabc · t3c
 //!       = (1/36) Σ_ijkabc (W + V) · W / D
 //! ```
+//!
+//! MEMORY WARNING: this is the *dense* formulation — it materializes full 6D
+//! `[2no, 2no, 2no, 2nv, 2nv, 2nv]` tensors. That is O((2no·2nv)³) storage:
+//! ~0.4 GB for H2O/cc-pVDZ but ~1.8 TB for butane/cc-pVDZ. It is correct and
+//! validated, but only runnable for very small systems. A production (T) must
+//! loop over occupied triples i<j<k, forming one `[2nv,2nv,2nv]` block at a
+//! time (~MB) — that rewrite is not done here.
 
 use super::{CcConfig, CcResult};
 use ferric_core::mol::Molecule;
