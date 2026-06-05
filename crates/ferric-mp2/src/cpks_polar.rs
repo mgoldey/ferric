@@ -1409,6 +1409,124 @@ fn build_apb_amb(
     (apb, amb)
 }
 
+/// W-screened singlet (A±B) for BSE-flavoured correlation/response.
+///
+/// Generalises [`build_apb_amb`]: the **Hartree/coupling** term `4(ai|bj)` keeps
+/// the BARE Coulomb interaction, while the two **exchange** integrals are replaced
+/// by their statically SCREENED counterparts `(··|W|··)` built from PDEP modes:
+///
+/// ```text
+///   (pq|W|rs) = Σ_α  w_α · g^α_{pq} · g^α_{rs}      g^α_{pq} = Σ_P (Ṽ_α)_P b^P_{pq}
+///
+///   (A+B)_W = Δε_qp δ + 4(ai|bj)_v − (ab|ij)_W − (aj|bi)_W
+///   (A−B)_W = Δε_qp δ            + (aj|bi)_W − (ab|ij)_W
+/// ```
+///
+/// matching the convention in [`build_apb_amb`] term-for-term (only the two
+/// exchange integrals carry the W; the 4(ai|bj) Hartree term stays bare).
+///
+/// # Arguments
+/// * `imo` — full-MO bare ERIs (pq|rs) for the Hartree term, as in `build_apb_amb`.
+/// * `g_modes` — mode-projected MO tensor g[α, p, q] = Σ_P (Ṽ_α)_P b^P_{pq},
+///   shape (M, nmo, nmo). For the BARE-v limit pass the raw RI tensor b^P_{pq}
+///   (M = naux) so that `(pq|W|rs)` collapses to `Σ_P b^P_{pq} b^P_{rs} = (pq|rs)`.
+/// * `weights` — per-mode screening weight w_α (length M). For the bare-v limit
+///   pass all-ones; for true BSE pass `w_α = 1/λ_α − 1` from the PDEP spectrum.
+/// * `eps_qp` — quasiparticle (or HF/KS) orbital energies for the Δε diagonal.
+///
+/// GATE-0 invariant (no physics): with `g_modes = b_full` and `weights = 1`,
+/// this reproduces [`build_apb_amb`] (with the same `eps`) bit-for-bit. That
+/// pins every sign/factor of the screened-exchange contraction before any W or
+/// GW energy is introduced. See `bse_gate0_bare_v_collapses_to_tdhf`.
+pub fn build_apb_amb_screened(
+    imo: &Array4<f64>,
+    g_modes: &ndarray::Array3<f64>,
+    weights: &[f64],
+    eps_qp: &[f64],
+    nocc: usize,
+    nvir: usize,
+) -> (Array2<f64>, Array2<f64>) {
+    let nmodes = g_modes.shape()[0];
+    assert_eq!(weights.len(), nmodes, "weights length must equal #modes");
+    let n = nvir * nocc;
+
+    // Screened integral (pq|W|rs) = Σ_α w_α g^α_{pq} g^α_{rs}, evaluated on the
+    // specific orbital-pair blocks the kernel needs: (ab|ij)_W and (aj|bi)_W.
+    // We build them as explicit 4-index sub-tensors over the (a,b,i,j) ranges.
+    let sw = |p: usize, q: usize, r: usize, s: usize| -> f64 {
+        let mut acc = 0.0;
+        for alpha in 0..nmodes {
+            acc += weights[alpha] * g_modes[(alpha, p, q)] * g_modes[(alpha, r, s)];
+        }
+        acc
+    };
+
+    let mut apb = Array2::<f64>::zeros((n, n));
+    let mut amb = Array2::<f64>::zeros((n, n));
+    for a in 0..nvir {
+        for i in 0..nocc {
+            let ai = a * nocc + i;
+            for b in 0..nvir {
+                for j in 0..nocc {
+                    let bj = b * nocc + j;
+                    let coul = eri4(imo, nocc + a, i, nocc + b, j); // bare (ai|bj)
+                    let exch_abij = sw(nocc + a, nocc + b, i, j); // (ab|W|ij)
+                    let exch_ajbi = sw(nocc + a, j, nocc + b, i); // (aj|W|bi)
+                    // A = Δε δ + 2(ai|bj)_v − (ab|ij)_W;  B = 2(ai|bj)_v − (aj|bi)_W
+                    let a_el = 2.0 * coul - exch_abij;
+                    let b_el = 2.0 * coul - exch_ajbi;
+                    apb[(ai, bj)] = a_el + b_el; // 4(ai|bj)_v − (ab|ij)_W − (aj|bi)_W
+                    amb[(ai, bj)] = a_el - b_el; // (aj|bi)_W − (ab|ij)_W
+                }
+            }
+            apb[(ai, ai)] += eps_qp[nocc + a] - eps_qp[i];
+            amb[(ai, ai)] += eps_qp[nocc + a] - eps_qp[i];
+        }
+    }
+    (apb, amb)
+}
+
+/// GATE-0 driver (test-only): build BOTH the bare TDHF (A±B) and the screened
+/// (A±B) fed with the bare-v limit (raw RI modes, unit weights), and return the
+/// max element-wise differences `(‖ΔAPB‖∞, ‖ΔAMB‖∞)`. The screened builder is
+/// correct iff both are ~0 (machine precision). No GW, no external reference —
+/// purely pins the contraction conventions of `build_apb_amb_screened`.
+pub fn bse_gate0_residuals(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &ScfResult,
+) -> Result<(f64, f64), FerricError> {
+    let _ = ctx;
+    let c = rhf.mos_r();
+    let nmo = c.ncols();
+    let nocc = (mol.nelec() / 2) as usize;
+    let nvir = nmo - nocc;
+    let eps: Vec<f64> = rhf.eps_r().to_vec();
+
+    let b_full = crate::oo_rimp2::compute_b_full_mo(obs, dfbs, op, c)?; // (naux, nmo, nmo)
+    let imo = full_mo_eri(&b_full);
+
+    // Reference: existing validated TDHF blocks.
+    let (apb_ref, amb_ref) = build_apb_amb(&imo, &eps, nocc, nvir);
+
+    // Bare-v limit of the screened builder: modes = raw RI tensor, weights = 1.
+    let naux = b_full.shape()[0];
+    let weights = vec![1.0_f64; naux];
+    let (apb_w, amb_w) =
+        build_apb_amb_screened(&imo, &b_full, &weights, &eps, nocc, nvir);
+
+    let dmax = |x: &Array2<f64>, y: &Array2<f64>| -> f64 {
+        x.iter()
+            .zip(y.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f64, f64::max)
+    };
+    Ok((dmax(&apb_ref, &apb_w), dmax(&amb_ref, &amb_w)))
+}
+
 /// Dynamic CPHF/TDHF polarizability tensor at imaginary frequency iω (a.u.).
 /// ω=0 reproduces the static CPHF α. HF-level (no MP2 correlation in α(iω)).
 pub fn dynamic_cphf_alpha_iw(

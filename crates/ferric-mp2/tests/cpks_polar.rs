@@ -585,3 +585,35 @@ fn cpks_frozen_mp2_c6_sweep() {
         eprintln!();
     }
 }
+
+/// GATE 0 (BSE screened-kernel build, step 1 of the design ladder).
+///
+/// The W-screened (A±B) operator `build_apb_amb_screened` MUST collapse to the
+/// existing, validated TDHF `build_apb_amb` in the bare-v limit (raw RI modes,
+/// unit screening weights), because (pq|W|rs) → Σ_P b^P_pq b^P_rs = (pq|rs) when
+/// the "modes" are the raw RI aux functions weighted by 1. This pins every
+/// sign/factor of the screened-exchange contraction with ZERO external data,
+/// ZERO GW, and ZERO physics — the cheap regression gate that must pass before
+/// any real W or quasiparticle energy enters the kernel.
+///
+/// Run: cargo test -p ferric-mp2 --test cpks_polar bse_gate0 -- --nocapture
+#[test]
+fn bse_gate0_bare_v_collapses_to_tdhf() {
+    let (mol, obs, dfbs, op, _bounds, ctx, rhf) = water_ccpvdz();
+    let (d_apb, d_amb) =
+        ferric_mp2::cpks_polar::bse_gate0_residuals(&ctx, &mol, &obs, &dfbs, op, &rhf).unwrap();
+    eprintln!(
+        "GATE 0  ‖ΔAPB‖∞ = {:.3e}   ‖ΔAMB‖∞ = {:.3e}   (bare-v screened kernel vs TDHF)",
+        d_apb, d_amb
+    );
+    // RI re-contraction through the (mode = aux) path is the SAME float ops as
+    // full_mo_eri, so the bare-v limit must match to round-off.
+    assert!(
+        d_apb < 1e-10,
+        "(A+B) screened bare-v limit must equal TDHF (A+B); ‖Δ‖∞ = {d_apb:.3e}"
+    );
+    assert!(
+        d_amb < 1e-10,
+        "(A−B) screened bare-v limit must equal TDHF (A−B); ‖Δ‖∞ = {d_amb:.3e}"
+    );
+}

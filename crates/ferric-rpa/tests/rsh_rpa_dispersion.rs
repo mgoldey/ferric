@@ -968,3 +968,147 @@ fn a3_directional_loo_c6() {
     eprintln!("\n  a3/V LOO-C6 MAE = {:.2}%  (fittable set, n={})", mae/cnt as f64, cnt);
     eprintln!("  vs: fixed-ω 12.4%, λ_max-full ~weak, parameter-free(1/3)(λ-2) NEW-only 12%.");
 }
+
+/// VALIDATION: dump the static dielectric spectrum (Coulomb) for water + HCl so it
+/// can be cross-checked against an independent PySCF build of the SAME ε̃ = I +
+/// 4·L·diag(1/Δε)·Lᵀ (L = (P|Q)^{-½}(Q|ia), cc-pVDZ-RI aux). The question this
+/// answers: is HCl's λ_max genuinely low (third-row screening physics) or an
+/// RI/basis artifact of dielectric_spectrum_static? Also dumps orbital energies +
+/// occupancy so PySCF can reproduce Δε exactly (same LC-ωPBE reference).
+///
+/// Run: cargo test --release -p ferric-rpa --test rsh_rpa_dispersion \
+///        dielectric_spectrum_validation_dump -- --ignored --nocapture
+#[test]
+#[ignore]
+fn dielectric_spectrum_validation_dump() {
+    use ferric_rpa::properties::dielectric_spectrum_static;
+
+    let lc_name = "HYB_GGA_XC_LC_WPBE";
+    let mols: &[(&str, &str)] = &[
+        ("h2o", "3\nh2o\nO 0 0 0.117790\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n"),
+        ("hcl", "2\nhcl\nH 0 0 0\nCl 0 0 1.2746\n"),
+    ];
+    let ctx = ParallelContext::default();
+
+    for (label, xyz) in mols {
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let obs_bs = basis::bundled("aug-cc-pvdz").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let scf_cfg = RhfConfig { energy_conv: 1e-9, xc: Some(lc_name.to_string()),
+            df_j_aux: Some("def2-universal-jkfit".to_string()),
+            df_k_aux: Some("def2-universal-jkfit".to_string()), ..Default::default() };
+        let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
+
+        let spec = dielectric_spectrum_static(&mol, &obs, &dfbs, &rhf, Operator::coulomb(), 1e-6).unwrap();
+        let mut ev = spec.eigenvalues.clone();
+        ev.sort_by(|a,b| b.partial_cmp(a).unwrap()); // descending
+
+        eprintln!("\n=== FERRIC dielectric spectrum: {} (aug-cc-pVDZ / cc-pVDZ-RI, LC-ωPBE) ===", label);
+        eprintln!("  naux={}  rank(λ-1>1e-6)={}  trace_log={:.6}", spec.naux, spec.rank, spec.trace_log);
+        eprintln!("  λ_max={:.6}  top5={:?}", ev[0],
+            ev.iter().take(5).map(|x| (x*1e4).round()/1e4).collect::<Vec<_>>());
+        // count modes by screening strength
+        let n_gt_2 = ev.iter().filter(|&&l| l > 2.0).count();
+        let n_gt_15 = ev.iter().filter(|&&l| l > 1.5).count();
+        let n_gt_11 = ev.iter().filter(|&&l| l > 1.1).count();
+        eprintln!("  modes>2.0={}  >1.5={}  >1.1={}", n_gt_2, n_gt_15, n_gt_11);
+
+        // SCF eigenvalues + nocc so PySCF can rebuild Δε exactly.
+        let eps = rhf.eps_r();
+        let nocc = (mol.nelec() / 2) as usize;
+        eprintln!("  nelec={} nocc={} nao={}", mol.nelec(), nocc, eps.len());
+        eprintln!("  HOMO={:.6} LUMO={:.6} gap={:.6}", eps[nocc-1], eps[nocc], eps[nocc]-eps[nocc-1]);
+        eprintln!("  E_scf={:.8}", rhf.energy);
+    }
+}
+
+/// SPIKE (a): LOO-C6 with the MODE-SUMMED screening descriptor Σ(λ−1)/λ, the fix the
+/// PySCF validation pointed at (λ_max is a peak detector and under-reads third-row
+/// broadband screening; Σ(λ−1)/λ ranks HCl>H2O correctly). Mirrors a3_directional_loo_c6
+/// EXACTLY (same set, same ω_opt bisection, same LOO linear fit, same C6) so the only
+/// variable is the descriptor. Tests three forms: raw Σ(λ−1)/λ (extensive),
+/// Σ(λ−1)/λ / nocc (size-normalized), and trace_log. Beats a3/V's 4.94%?
+///
+/// Run: cargo test --release -p ferric-rpa --test rsh_rpa_dispersion \
+///        screen_sum_loo_c6 -- --ignored --nocapture
+#[test]
+#[ignore]
+fn screen_sum_loo_c6() {
+    use ferric_rpa::properties::{atomic_effective_volumes_becke, dielectric_spectrum_static, pdep_polarizability_static};
+    let mols: &[(&str, &str, f64)] = &[
+        ("h2o",  "3\nh2o\nO 0 0 0.117790\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n", 45.3),
+        ("ch4",  "5\nch4\nC 0 0 0\nH 0.6276 0.6276 0.6276\nH -0.6276 -0.6276 0.6276\nH -0.6276 0.6276 -0.6276\nH 0.6276 -0.6276 -0.6276\n", 129.7),
+        ("nh3",  "4\nnh3\nN 0 0 0.0\nH 0 0.9377 -0.3816\nH 0.8120 -0.4689 -0.3816\nH -0.8120 -0.4689 -0.3816\n", 89.0),
+        ("co",   "2\nco\nC 0 0 0\nO 0 0 1.128\n", 81.4),
+        ("n2",   "2\nn2\nN 0 0 0.0\nN 0 0 1.0977\n", 73.3),
+        ("co2",  "3\nco2\nC 0 0 0.0\nO 0 0 1.1621\nO 0 0 -1.1621\n", 158.7),
+        ("c2h4", "6\nc2h4\nC 0 0 0.6695\nC 0 0 -0.6695\nH 0 0.9289 1.2321\nH 0 -0.9289 1.2321\nH 0 0.9289 -1.2321\nH 0 -0.9289 -1.2321\n", 300.2),
+        ("hcl",  "2\nhcl\nCl 0 0 0\nH 0 0 1.275\n", 130.4),
+        ("h2s",  "3\nh2s\nS 0 0 0.1030\nH 0 0.9659 -0.8253\nH 0 -0.9659 -0.8253\n", 216.8),
+        ("c2h2", "4\nc2h2\nC 0 0 0.6015\nC 0 0 -0.6015\nH 0 0 1.6615\nH 0 0 -1.6615\n", 204.1),
+        ("c2h6", "8\nc2h6\nC 0 0 0.7680\nC 0 0 -0.7680\nH 1.0192 0 1.1573\nH -0.5096 0.8826 1.1573\nH -0.5096 -0.8826 1.1573\nH -1.0192 0 -1.1573\nH 0.5096 0.8826 -1.1573\nH 0.5096 -0.8826 -1.1573\n", 381.9),
+        ("c6h6", "12\nc6h6\nC 0 1.3970 0\nC 1.2098 0.6985 0\nC 1.2098 -0.6985 0\nC 0 -1.3970 0\nC -1.2098 -0.6985 0\nC -1.2098 0.6985 0\nH 0 2.4810 0\nH 2.1486 1.2405 0\nH 2.1486 -1.2405 0\nH 0 -2.4810 0\nH -2.1486 -1.2405 0\nH -2.1486 1.2405 0\n", 1765.0),
+    ];
+    let ctx = ParallelContext::default();
+    let cfg = PdepRpaConfig::default();
+    let lc = "HYB_GGA_XC_LC_WPBE";
+
+    struct M { label:String, dosd:f64, ssum:f64, ssum_n:f64, tlog:f64, wopt:f64,
+               mol:Molecule, obs:PreparedBasis, dfbs:PreparedBasis, obs_bs:ferric_core::basis::BasisSet, rhf:ferric_scf::ScfResult }
+    let mut data:Vec<M>=Vec::new();
+    for (label,xyz,dosd) in mols {
+        let mol=Molecule::parse_xyz(xyz,0,1).unwrap();
+        let obs_bs=basis::bundled("aug-cc-pvdz").unwrap();
+        let dfbs=PreparedBasis::new(&mol,&basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let obs=PreparedBasis::new(&mol,&obs_bs).unwrap();
+        let op=Operator::coulomb(); let bounds=SchwarzBounds::compute(op,&obs).unwrap();
+        let scf_cfg=RhfConfig{energy_conv:1e-9,xc:Some(lc.to_string()),
+            df_j_aux:Some("def2-universal-jkfit".to_string()),
+            df_k_aux:Some("def2-universal-jkfit".to_string()),..Default::default()};
+        let rhf=solve_rhf(&ctx,&mol,&obs,op,&bounds,&scf_cfg).unwrap();
+        let _at=pdep_polarizability_static(&mol,&obs,&dfbs,&rhf,Operator::coulomb(),&cfg).unwrap();
+        let spec=dielectric_spectrum_static(&mol,&obs,&dfbs,&rhf,Operator::coulomb(),1e-6).unwrap();
+        // mode-summed physical screening Σ(λ-1)/λ  (only λ>1 contribute meaningfully)
+        let ssum:f64=spec.eigenvalues.iter().map(|&l| if l>1.0 {(l-1.0)/l} else {0.0}).sum();
+        let nocc=(mol.nelec()/2) as f64;
+        let ssum_n=ssum/nocc;
+        let tlog=spec.trace_log;
+        let _vol:f64=atomic_effective_volumes_becke(&mol,&obs,&obs_bs,rhf.density_r()).unwrap().iter().sum();
+        let c6=|w:f64,m:&Molecule,o:&PreparedBasis,ob:&ferric_core::basis::BasisSet,d:&PreparedBasis,r:&ferric_scf::ScfResult|{
+            let dp=pdep_dynamic_polarizability(m,o,ob,d,r,Operator::erf(w),&cfg,DispersionPartition::Becke,None).unwrap();
+            casimir_polder_c6(&dp).c6_molecular_iso };
+        let (mut lo,mut hi)=(0.02_f64,2.5_f64);
+        let wopt=if c6(lo,&mol,&obs,&obs_bs,&dfbs,&rhf)<*dosd {0.02} else { for _ in 0..22 {let m=0.5*(lo+hi); if c6(m,&mol,&obs,&obs_bs,&dfbs,&rhf)>*dosd {lo=m} else {hi=m}} 0.5*(lo+hi)};
+        eprintln!("CSV {label},ssum={:.4},ssum/n={:.4},tlog={:.4},wopt={:.4}", ssum, ssum_n, tlog, wopt);
+        data.push(M{label:label.to_string(),dosd:*dosd,ssum,ssum_n,tlog,wopt,mol,obs,dfbs,obs_bs,rhf});
+    }
+
+    // generic LOO-C6 over a chosen descriptor accessor
+    let run=|name:&str, xs:&[f64], data:&[M]|{
+        eprintln!("\n=== LOO-C6, ω = a·({}) + b ===", name);
+        eprintln!("  {:>5}  {:>9}  {:>8}  {:>9}  {:>8}", "mol", name, "ω_pred", "C6", "err%");
+        let fit=|idx:usize|->(f64,f64){
+            let(mut sx,mut sy,mut sxx,mut sxy,mut n)=(0.,0.,0.,0.,0.);
+            for j in 0..data.len(){ if j==idx{continue;} sx+=xs[j];sy+=data[j].wopt;sxx+=xs[j]*xs[j];sxy+=xs[j]*data[j].wopt;n+=1.;}
+            let s=(n*sxy-sx*sy)/(n*sxx-sx*sx); (s,(sy-s*sx)/n)};
+        let(mut mae,mut cnt)=(0.,0);
+        for i in 0..data.len(){
+            let(s,b)=fit(i); let w=(s*xs[i]+b).clamp(0.02,2.5);
+            let dp=pdep_dynamic_polarizability(&data[i].mol,&data[i].obs,&data[i].obs_bs,&data[i].dfbs,&data[i].rhf,Operator::erf(w),&cfg,DispersionPartition::Becke,None).unwrap();
+            let c6=casimir_polder_c6(&dp).c6_molecular_iso; let err=100.*(c6-data[i].dosd)/data[i].dosd;
+            eprintln!("  {:>5}  {:>9.4}  {:>8.4}  {:>9.2}  {:>+7.2}", data[i].label, xs[i], w, c6, err);
+            mae+=err.abs(); cnt+=1;
+        }
+        eprintln!("  --> {} LOO-C6 MAE = {:.2}%  (n={})", name, mae/cnt as f64, cnt);
+    };
+    let ssum:Vec<f64>=data.iter().map(|m|m.ssum).collect();
+    let ssum_n:Vec<f64>=data.iter().map(|m|m.ssum_n).collect();
+    let tlog:Vec<f64>=data.iter().map(|m|m.tlog).collect();
+    run("Sum(l-1)/l", &ssum, &data);
+    run("Sum(l-1)/l/nocc", &ssum_n, &data);
+    run("trace_log", &tlog, &data);
+    eprintln!("\n  BASELINE to beat: a3/V LOO-C6 MAE = 4.94%; fixed-ω 12.4%.");
+}
