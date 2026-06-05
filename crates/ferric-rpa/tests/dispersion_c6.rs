@@ -246,3 +246,81 @@ fn pdep_dynamic_c6_free_he_vs_reference() {
     // The quantitative benchmark uses aug-cc-pVTZ (see the aug-cc-pVTZ test suite).
     assert!(c6 > 0.0 && c6.is_finite(), "C6(He)={c6}");
 }
+
+/// ANISOTROPIC C6 vs ground truth (Kumar & Meath, Int. J. Quantum Chem. 38, 501
+/// (1990); Hohm anisotropy data). The differentiator probe: DOSD gives ONLY the
+/// isotropic C6 — but ferric carries the FULL molecular α(iω) TENSOR
+/// (`dp.molecular[k]`) through Casimir-Polder, so it natively yields the
+/// parallel/perpendicular split and the anisotropic dispersion coefficient.
+///
+/// For a linear molecule (axis = z): α∥ = α_zz, α⊥ = α_xx = α_yy.
+///   isotropic   ᾱ(iω) = (α∥ + 2α⊥)/3   → C6_iso = (3/π) ∫ ᾱ²
+///   anisotropy  Δα(iω) = α∥ − α⊥         → γ6 = (2/π) ∫ Δα²  (Kumar-Meath γ-coef)
+///
+/// Run: cargo test -p ferric-rpa --release --test dispersion_c6 \
+///        anisotropic_c6_vs_kumar_meath -- --ignored --nocapture
+#[test]
+#[ignore = "slow: RPA@PBE α(iω) tensor for N2 + CO2; --release --ignored"]
+fn anisotropic_c6_vs_kumar_meath() {
+    use std::f64::consts::PI;
+    // linear molecules, bond along z. (label, xyz, C6_iso_DOSD, note)
+    let mols: &[(&str, &str, f64)] = &[
+        ("N2",  "2\nn2\nN 0 0 0.0\nN 0 0 1.0977\n", 73.3),
+        ("CO2", "3\nco2\nC 0 0 0.0\nO 0 0 1.1621\nO 0 0 -1.1621\n", 158.7),
+    ];
+    let ctx = ParallelContext::default();
+    let cfg = PdepRpaConfig::default();
+
+    eprintln!("\n=== Anisotropic C6: ferric RPA@PBE molecular α(iω) tensor ===");
+    eprintln!("  (DOSD gives only C6_iso; ferric carries the full tensor → γ6 natively)");
+    for (label, xyz, c6_dosd) in mols {
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let obs_bs = basis::bundled("aug-cc-pvdz").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let scf_cfg = RhfConfig { energy_conv: 1e-9, xc: Some("PBE".to_string()),
+            df_j_aux: Some("def2-universal-jkfit".to_string()),
+            df_k_aux: Some("def2-universal-jkfit".to_string()), ..Default::default() };
+        let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
+
+        let dp = pdep_dynamic_polarizability(
+            &mol, &obs, &obs_bs, &dfbs, &rhf, op, &cfg, DispersionPartition::Becke, None,
+        ).unwrap();
+
+        // Per-frequency parallel/perp from the molecular tensor (z = bond axis).
+        let nf = dp.freqs.len();
+        let (mut c6_iso, mut c6_par, mut c6_perp, mut gamma6) = (0.0, 0.0, 0.0, 0.0);
+        let (mut a_par0, mut a_perp0) = (0.0, 0.0);
+        for k in 0..nf {
+            let t = dp.molecular[k];
+            let a_par = t[2][2];                    // α_zz
+            let a_perp = 0.5 * (t[0][0] + t[1][1]); // α_xx ≈ α_yy
+            let a_bar = (a_par + 2.0 * a_perp) / 3.0;
+            let d_a = a_par - a_perp;
+            let wk = dp.weights[k];
+            c6_iso  += wk * a_bar * a_bar;
+            c6_par  += wk * a_par * a_par;
+            c6_perp += wk * a_perp * a_perp;
+            gamma6  += wk * d_a * d_a;
+            if k == 0 { a_par0 = a_par; a_perp0 = a_perp; }
+        }
+        c6_iso *= 3.0 / PI;
+        c6_par *= 3.0 / PI;
+        c6_perp *= 3.0 / PI;
+        gamma6 *= 2.0 / PI;
+
+        eprintln!("\n  {label}:");
+        eprintln!("    static  α∥={:.3}  α⊥={:.3}  anisotropy Δα(0)={:.3}  (κ={:.3})",
+            a_par0, a_perp0, a_par0 - a_perp0, (a_par0 - a_perp0) / (a_par0 + 2.0 * a_perp0));
+        eprintln!("    C6_iso = {:.2}  (DOSD {:.1}, {:+.1}%)",
+            c6_iso, c6_dosd, 100.0 * (c6_iso - c6_dosd) / c6_dosd);
+        eprintln!("    C6∥ = {:.2}   C6⊥ = {:.2}   C6∥/C6⊥ = {:.3}", c6_par, c6_perp, c6_par / c6_perp);
+        eprintln!("    γ6 (aniso dispersion coef) = {:.2}", gamma6);
+        eprintln!("    γ6/C6_iso = {:.3}  (the dispersion-anisotropy ratio — DOSD CANNOT give this)", gamma6 / c6_iso);
+        assert!(c6_iso > 0.0 && gamma6 >= 0.0, "{label}: C6/γ6 must be physical");
+    }
+    eprintln!("\n  Kumar-Meath 1990 ground truth (N2): C6_iso≈73.4, γ6 nonzero (N2 is strongly anisotropic);");
+    eprintln!("  literature Δα(0) for N2 ≈ 4.6 a.u. (α∥≈14.8, α⊥≈10.2). Compare ferric Δα(0) above.");
+}

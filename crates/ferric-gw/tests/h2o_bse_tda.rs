@@ -183,7 +183,7 @@ fn rpax_pbe_c6_h2o_vs_dosd() {
     let ks = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
 
     let (freqs, weights) = cp_grid(0.6);
-    let res = run_bse_c6_ks(&mol, &obs, &dfbs, op, &ks, &pdep_cfg(), 0, &freqs, &weights)
+    let res = run_bse_c6_ks(&mol, &obs, &dfbs, op, &ks, &pdep_cfg(), 0, &freqs, &weights, 0.0)
         .expect("RPAx@PBE C6 runs");
     let dosd = 45.3;
     let err = 100.0 * (res.c6 - dosd) / dosd;
@@ -193,4 +193,32 @@ fn rpax_pbe_c6_h2o_vs_dosd() {
     eprintln!("  C6 = {:.3} a.u.   (DOSD 45.3; gate2 HF was 16.88)   err = {err:+.2}%", res.c6);
     assert!(res.c6.is_finite() && res.c6 > 0.0, "C6 must be finite positive");
     assert!(res.alpha_static > 0.0, "static α must be positive");
+}
+
+/// α(iω)-falloff test: scan a scissor shift on RPAx@PBE virtuals from KS gap
+/// (7.05 eV) toward the GW gap (16.86 eV, scissor≈0.36 Ha). RPAx@PBE gives the
+/// right static α (9.24) but C6 −63% because α(iω) falls too fast. If widening
+/// the gap to GW raises C6 markedly, the falloff is a gap problem (build full
+/// GW@PBE); if C6 barely moves (or α0 just drops), the kernel falloff is intrinsic.
+#[test]
+#[ignore = "slow: RPAx@PBE C6 scissor scan; --release --ignored"]
+fn rpax_pbe_scissor_scan_h2o() {
+    use ferric_gw::bse::run_bse_c6_ks;
+    let xyz = "3\nH2O\nO 0.0 0.0 0.117790\nH 0.0 0.755453 -0.471161\nH 0.0 -0.755453 -0.471161\n";
+    let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+    let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+    let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+    let ctx = ParallelContext::default();
+    let ks = solve_rhf(&ctx, &mol, &obs, op, &bounds,
+        &RhfConfig { xc: Some("PBE".to_string()), ..Default::default() }).unwrap();
+    let (freqs, weights) = cp_grid(0.6);
+    eprintln!("\nRPAx@PBE C6 scissor scan (water; KS gap 7.05 eV → GW gap 16.86 eV at scissor≈0.36):");
+    eprintln!("  {:>8}  {:>9}  {:>9}  {:>8}", "scissor", "α_static", "C6", "C6 err%");
+    for &sc in &[0.0, 0.10, 0.20, 0.36, 0.50] {
+        let r = run_bse_c6_ks(&mol, &obs, &dfbs, op, &ks, &pdep_cfg(), 0, &freqs, &weights, sc).unwrap();
+        eprintln!("  {:>8.2}  {:>9.4}  {:>9.3}  {:>+7.1}", sc, r.alpha_static, r.c6, 100.0*(r.c6-45.3)/45.3);
+    }
+    eprintln!("  DOSD: α0=9.64, C6=45.3. If C6 climbs toward 45 → gap problem (build GW@PBE).");
 }

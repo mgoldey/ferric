@@ -440,6 +440,12 @@ pub fn run_bse_c6(
 /// with W from `run_pdep_rpa` on the KS reference. NB: this is RPAx-flavoured
 /// TDDFT-with-screened-exchange, not a formally consistent GW@PBE BSE — the
 /// cheap reference-isolation spike, deliberately.
+/// `scissor` (Hartree) is added to every VIRTUAL orbital energy before assembling
+/// the diagonal — a cheap proxy for the GW gap correction (KS gaps are too small;
+/// the true GW gap is known exactly from run_gw). Pass 0.0 for plain KS. This
+/// tests the α(iω)-falloff hypothesis: if widening the gap to the GW value fixes
+/// the C6, the falloff is a gap problem (→ full GW@PBE worth building); if not,
+/// it is intrinsic to the static-screened kernel.
 #[allow(clippy::too_many_arguments)]
 pub fn run_bse_c6_ks(
     mol: &Molecule,
@@ -451,6 +457,7 @@ pub fn run_bse_c6_ks(
     frozen_core: usize,
     freqs: &[f64],
     weights: &[f64],
+    scissor: f64,
 ) -> Result<BseC6Result, FerricError> {
     use std::f64::consts::PI;
     if !matches!(ks.spin, ferric_scf::Spin::Restricted) {
@@ -459,7 +466,10 @@ pub fn run_bse_c6_ks(
     let nmo = ks.eps_r().len();
     let nocc_total = (mol.nelec() as usize) / 2;
     let c = ks.mos_r();
-    let eps = ks.eps_r().to_vec(); // KS orbital energies, used directly on the diagonal
+    let mut eps = ks.eps_r().to_vec(); // KS orbital energies, used on the diagonal
+    for p in nocc_total..nmo {
+        eps[p] += scissor; // scissor: shift virtuals up to the GW gap (cheap QP proxy)
+    }
 
     // PDEP screening modes from the KS response.
     let pdep = ferric_rpa::run_pdep_rpa(mol, obs, dfbs, op, ks, pdep_cfg)?;
