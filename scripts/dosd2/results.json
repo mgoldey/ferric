@@ -1,11 +1,11 @@
 {
   "augccpvdz/ccl4/mbd": {
     "basis": "augccpvdz",
-    "c6": 5279.941,
+    "c6": 2107.289,
     "method": "mbd",
     "mol": "ccl4",
     "ok": true,
-    "seconds": 57.9
+    "seconds": 55.5
   },
   "augccpvdz/ccl4/rpa_hf": {
     "basis": "augccpvdz",
@@ -33,11 +33,11 @@
   },
   "augccpvdz/ch3och3/mbd": {
     "basis": "augccpvdz",
-    "c6": 973.027,
+    "c6": 703.952,
     "method": "mbd",
     "mol": "ch3och3",
     "ok": true,
-    "seconds": 47.9
+    "seconds": 46.9
   },
   "augccpvdz/ch3och3/rpa_hf": {
     "basis": "augccpvdz",
@@ -65,11 +65,11 @@
   },
   "augccpvdz/ch3oh/mbd": {
     "basis": "augccpvdz",
-    "c6": 518.024,
+    "c6": 270.149,
     "method": "mbd",
     "mol": "ch3oh",
     "ok": true,
-    "seconds": 24.5
+    "seconds": 23.6
   },
   "augccpvdz/ch3oh/rpa_hf": {
     "basis": "augccpvdz",
@@ -97,11 +97,11 @@
   },
   "augccpvdz/cl2/mbd": {
     "basis": "augccpvdz",
-    "c6": 419.809,
+    "c6": 379.823,
     "method": "mbd",
     "mol": "cl2",
     "ok": true,
-    "seconds": 17.6
+    "seconds": 17.1
   },
   "augccpvdz/cl2/rpa_hf": {
     "basis": "augccpvdz",
@@ -129,11 +129,11 @@
   },
   "augccpvdz/cos/mbd": {
     "basis": "augccpvdz",
-    "c6": 606.751,
+    "c6": 755.654,
     "method": "mbd",
     "mol": "cos",
     "ok": true,
-    "seconds": 59.9
+    "seconds": 59.8
   },
   "augccpvdz/cos/rpa_hf": {
     "basis": "augccpvdz",
@@ -161,11 +161,11 @@
   },
   "augccpvdz/cs2/mbd": {
     "basis": "augccpvdz",
-    "c6": 1943.992,
+    "c6": 1922.682,
     "method": "mbd",
     "mol": "cs2",
     "ok": true,
-    "seconds": 94.0
+    "seconds": 90.0
   },
   "augccpvdz/cs2/rpa_hf": {
     "basis": "augccpvdz",
@@ -193,11 +193,11 @@
   },
   "augccpvdz/hbr/mbd": {
     "basis": "augccpvdz",
-    "c6": 127.302,
+    "c6": 105.121,
     "method": "mbd",
     "mol": "hbr",
     "ok": true,
-    "seconds": 481.9
+    "seconds": 397.8
   },
   "augccpvdz/hbr/rpa_hf": {
     "basis": "augccpvdz",
@@ -225,11 +225,11 @@
   },
   "augccpvdz/n2o/mbd": {
     "basis": "augccpvdz",
-    "c6": 211.12,
+    "c6": 213.617,
     "method": "mbd",
     "mol": "n2o",
     "ok": true,
-    "seconds": 16.1
+    "seconds": 14.0
   },
   "augccpvdz/n2o/rpa_hf": {
     "basis": "augccpvdz",
@@ -257,11 +257,11 @@
   },
   "augccpvdz/sih4/mbd": {
     "basis": "augccpvdz",
-    "c6": 1048.402,
+    "c6": 781.411,
     "method": "mbd",
     "mol": "sih4",
     "ok": true,
-    "seconds": 59.1
+    "seconds": 48.8
   },
   "augccpvdz/sih4/rpa_hf": {
     "basis": "augccpvdz",
@@ -289,11 +289,11 @@
   },
   "augccpvdz/so2/mbd": {
     "basis": "augccpvdz",
-    "c6": 881.334,
+    "c6": 617.618,
     "method": "mbd",
     "mol": "so2",
     "ok": true,
-    "seconds": 63.9
+    "seconds": 58.6
   },
   "augccpvdz/so2/rpa_hf": {
     "basis": "augccpvdz",
@@ -321,11 +321,11 @@
   },
   "augccpvtz/ccl4/mbd": {
     "basis": "augccpvtz",
-    "c6": 5293.385,
+    "c6": 2094.782,
     "method": "mbd",
     "mol": "ccl4",
     "ok": true,
-    "seconds": 173.9
+    "seconds": 159.9
   },
   "augccpvtz/ccl4/rpa_hf": {
     "basis": "augccpvtz",
@@ -353,11 +353,11 @@
   },
   "augccpvtz/ch3och3/mbd": {
     "basis": "augccpvtz",
-    "c6": 1164.743,
+    "c6": 596.203,
     "method": "mbd",
     "mol": "ch3och3",
     "ok": true,
-    "seconds": 144.3
+    "seconds": 137.2
   },
   "augccpvtz/ch3och3/rpa_hf": {
     "basis": "augccpvtz",
@@ -385,11 +385,11 @@
   },
   "augccpvtz/ch3oh/mbd": {
     "basis": "augccpvtz",
-    "c6": 546.189,
+    "c6": 238.548,
     "method": "mbd",
     "mol": "ch3oh",
     "ok": true,
-    "seconds": 56.0
+    "seconds": 52.9
   },
   "augccpvtz/ch3oh/rpa_hf": {
     "basis": "augccpvtz",
@@ -417,11 +417,11 @@
   },
   "augccpvtz/cl2/mbd": {
     "basis": "augccpvtz",
-    "c6": 420.488,
+    "c6": 378.402,
     "method": "mbd",
     "mol": "cl2",
     "ok": true,
-    "seconds": 56.9
+    "seconds": 54.8
   },
   "augccpvtz/cl2/rpa_hf": {
     "basis": "augccpvtz",
@@ -449,11 +449,11 @@
   },
   "augccpvtz/cos/mbd": {
     "basis": "augccpvtz",
-    "c6": 283.883,
+    "c6": 452.658,
     "method": "mbd",
     "mol": "cos",
     "ok": true,
-    "seconds": 57.7
+    "seconds": 59.5
   },
   "augccpvtz/cos/rpa_hf": {
     "basis": "augccpvtz",
@@ -481,11 +481,11 @@
   },
   "augccpvtz/cs2/mbd": {
     "basis": "augccpvtz",
-    "c6": 594.903,
+    "c6": 943.781,
     "method": "mbd",
     "mol": "cs2",
     "ok": true,
-    "seconds": 68.2
+    "seconds": 71.6
   },
   "augccpvtz/cs2/rpa_hf": {
     "basis": "augccpvtz",
@@ -536,7 +536,7 @@
     "seconds": 2257.9
   },
   "augccpvtz/n2o/mbd": {
-    "c6": 148.856,
+    "c6": 176.315,
     "ok": true
   },
   "augccpvtz/n2o/rpa_hf": {
@@ -565,7 +565,7 @@
   },
   "augccpvtz/sih4/mbd": {
     "basis": "augccpvtz",
-    "c6": 1007.706,
+    "c6": 778.609,
     "method": "mbd",
     "mol": "sih4",
     "ok": true
@@ -595,7 +595,7 @@
     "seconds": 223.4
   },
   "augccpvtz/so2/mbd": {
-    "c6": 431.678,
+    "c6": 310.909,
     "ok": true
   },
   "augccpvtz/so2/rpa_hf": {
