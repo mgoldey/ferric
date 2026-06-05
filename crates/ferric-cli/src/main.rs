@@ -353,6 +353,15 @@ fn main() {
                     .map(|r| r.density_r().to_owned())
             } else {
                 acfg.mom_after_iter = 5;
+                // KS-DFT free-atom solve: fractional/ensemble occupation spreads
+                // the open-shell electrons equally over degenerate frontier
+                // orbitals (e.g. Br 4p⁵ ²P, O/S 2p³ ³P), restoring spherical
+                // symmetry so the GGA XC potential doesn't oscillate. Pure HF
+                // free-atom solves don't suffer this (K is orbital-invariant in
+                // the degenerate subspace), so only enable when xc is set.
+                if acfg.xc.is_some() {
+                    acfg.fractional_occ = true;
+                }
                 solve_uhf(&ctx, &amol, &aobs, &abounds, &acfg)
                     .ok()
                     .map(|r| r.density_total().to_owned())
