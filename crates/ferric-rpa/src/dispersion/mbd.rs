@@ -128,11 +128,13 @@ pub fn mbd_screen(
             let t = per_atom_alpha[a][k];
             let iso = ((t[0][0] + t[1][1] + t[2][2]) / 3.0).max(1e-10);
             sigma[a] = (TWO_OVER_PI.sqrt() * iso / 3.0).powf(1.0 / 3.0);
-            let inv = invert3(&t, iso);
+            // MBD@rsSCS uses a single ISOTROPIC QHO per atom (Ambrosetti 2014
+            // Eq. 6: α0_lm = δ_lm α^TS). Inverting the full anisotropic Becke
+            // per-atom tensor (some near-singular) distorts the screening; use
+            // the isotropic TS magnitude as the reference prescribes.
+            let inv_iso = 1.0 / iso;
             for i in 0..3 {
-                for j in 0..3 {
-                    a_inv[(3 * a + i, 3 * a + j)] = inv[i][j];
-                }
+                a_inv[(3 * a + i, 3 * a + i)] = inv_iso;
             }
         }
         let tmat = dipole_coupling_tensor(positions, &sigma);
@@ -228,29 +230,6 @@ pub fn mbd_energy(positions: &[[f64; 3]], alpha_eff: &[f64], omega_a: &[f64]) ->
     let coupled: f64 = evals.iter().map(|&l| l.max(0.0).sqrt()).sum::<f64>() * 0.5;
     let uncoupled: f64 = omega_a.iter().sum::<f64>() * 1.5;
     coupled - uncoupled
-}
-
-/// Invert a near-isotropic 3×3 α tensor. Falls back to (1/iso)·I if singular.
-fn invert3(t: &[[f64; 3]; 3], iso: f64) -> [[f64; 3]; 3] {
-    let det = t[0][0] * (t[1][1] * t[2][2] - t[1][2] * t[2][1])
-        - t[0][1] * (t[1][0] * t[2][2] - t[1][2] * t[2][0])
-        + t[0][2] * (t[1][0] * t[2][1] - t[1][1] * t[2][0]);
-    if det.abs() < 1e-14 {
-        let d = 1.0 / iso;
-        return [[d, 0.0, 0.0], [0.0, d, 0.0], [0.0, 0.0, d]];
-    }
-    let inv_det = 1.0 / det;
-    let mut m = [[0.0; 3]; 3];
-    m[0][0] = (t[1][1] * t[2][2] - t[1][2] * t[2][1]) * inv_det;
-    m[0][1] = (t[0][2] * t[2][1] - t[0][1] * t[2][2]) * inv_det;
-    m[0][2] = (t[0][1] * t[1][2] - t[0][2] * t[1][1]) * inv_det;
-    m[1][0] = (t[1][2] * t[2][0] - t[1][0] * t[2][2]) * inv_det;
-    m[1][1] = (t[0][0] * t[2][2] - t[0][2] * t[2][0]) * inv_det;
-    m[1][2] = (t[0][2] * t[1][0] - t[0][0] * t[1][2]) * inv_det;
-    m[2][0] = (t[1][0] * t[2][1] - t[1][1] * t[2][0]) * inv_det;
-    m[2][1] = (t[0][1] * t[2][0] - t[0][0] * t[2][1]) * inv_det;
-    m[2][2] = (t[0][0] * t[1][1] - t[0][1] * t[1][0]) * inv_det;
-    m
 }
 
 #[cfg(test)]
