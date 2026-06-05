@@ -215,6 +215,77 @@ pub fn eval_eigenvalues_at_frequencies(
     eigenvalues_freq
 }
 
+/// Per-frequency *dynamic inverse-dielectric* matrices in the PDEP basis.
+///
+/// Returns `W̃_d(iω_k) = ε̃_proj(iω_k)⁻¹ − I` (shape M×M) for each quadrature
+/// frequency, where `ε̃_proj = Uᵀ ε̃(iω) U` is the projected dielectric in the
+/// static PDEP eigenvector basis `U` (same basis used to project B̃ in GW).
+///
+/// This is required by the GW self-energy: the scalar `eigenvalues_freq` tensor
+/// (eigenvalues of ε̃(iω) in its *own* ω-dependent eigenbasis) is only valid for
+/// basis-invariant traces like the RPA correlation energy. The GW Σ_c contracts
+/// the *matrix* W̃_d(iω) with specific B̃_{mn} vectors, so it needs eigenvalues
+/// and eigenvectors paired consistently — i.e. the full matrix in the fixed PDEP
+/// basis, not diagonal weights computed in a per-ω rotated basis.
+pub fn eval_inv_dielectric_matrices(
+    eigenvectors: &Array2<f64>,
+    b_ov: &Array2<f64>,
+    eps_occ: &[f64],
+    eps_vir: &[f64],
+    quad_freqs: &[f64],
+) -> Vec<Array2<f64>> {
+    use crate::sternheimer::{build_scale_factors, dielectric_matrix_from_projection};
+    use ndarray_linalg::Inverse;
+    use rayon::prelude::*;
+
+    let m = eigenvectors.ncols();
+    let y = eigenvectors.t().dot(b_ov);
+
+    quad_freqs
+        .par_iter()
+        .map(|&omega| {
+            let scale = build_scale_factors(eps_occ, eps_vir, omega);
+            let eps_proj = dielectric_matrix_from_projection(&y, &scale);
+            let mut winv = eps_proj
+                .inv()
+                .expect("PDEP-basis dielectric inversion failed");
+            // Subtract identity → dynamic part W̃_d = ε̃⁻¹ − I.
+            for d in 0..m {
+                winv[(d, d)] -= 1.0;
+            }
+            winv
+        })
+        .collect()
+}
+
+/// Unrestricted variant of [`eval_inv_dielectric_matrices`]: full per-frequency
+/// `ε̃_U(iω)⁻¹ − I` (M×M) in the fixed PDEP basis, where ε̃_U = I + Π_α + Π_β.
+pub fn eval_inv_dielectric_matrices_unrestricted(
+    eigenvectors: &Array2<f64>,
+    chan_a: &RpaChannel,
+    chan_b: &RpaChannel,
+    quad_freqs: &[f64],
+) -> Vec<Array2<f64>> {
+    use crate::sternheimer::dielectric_matrix_unrestricted;
+    use ndarray_linalg::Inverse;
+    use rayon::prelude::*;
+
+    let m = eigenvectors.ncols();
+    quad_freqs
+        .par_iter()
+        .map(|&omega| {
+            let eps_proj = dielectric_matrix_unrestricted(eigenvectors, chan_a, chan_b, omega);
+            let mut winv = eps_proj
+                .inv()
+                .expect("U PDEP-basis dielectric inversion failed");
+            for d in 0..m {
+                winv[(d, d)] -= 1.0;
+            }
+            winv
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

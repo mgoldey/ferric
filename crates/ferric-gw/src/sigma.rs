@@ -37,6 +37,25 @@ use ferric_scf::ScfResult;
 use ndarray::{Array1, Array2};
 use num_complex::Complex64;
 
+/// Fermi level (mid-gap) of the active-space spectrum: midpoint between the
+/// active HOMO and active LUMO. Used to center the analytic-continuation
+/// support line `z = ef + iω`, matching PySCF gw_ac. For an all-occupied or
+/// all-virtual active block (degenerate edge cases) we fall back to the band
+/// edge so `ef` stays finite.
+pub(crate) fn fermi_level(eps_act: &[f64], n_occ_act: usize) -> f64 {
+    let n = eps_act.len();
+    if n == 0 {
+        return 0.0;
+    }
+    if n_occ_act == 0 {
+        return eps_act[0];
+    }
+    if n_occ_act >= n {
+        return eps_act[n - 1];
+    }
+    0.5 * (eps_act[n_occ_act - 1] + eps_act[n_occ_act])
+}
+
 /// Evaluate Σ_c(m, z) at a single (possibly complex) z given the projected
 /// matrix elements M[(α,m,n)], inverse-dielectric weights w_α(iω_k), and
 /// quadrature data. `n_occ_act` is used only for completeness (sum runs
@@ -45,31 +64,44 @@ pub(crate) fn sigma_c_at_z(
     m_idx: usize,
     z: Complex64,
     m_proj: &ndarray::Array3<f64>,
-    w_alpha_freq: &Array2<f64>,     // shape (N_quad, M)
+    inv_diel_freq: &[Array2<f64>], // length N_quad, each (M, M): W̃_d(iω_k) = ε̃⁻¹ − I
     quad_weights: &[f64],
     quad_freqs: &[f64],
     eps_act: &[f64],
 ) -> Complex64 {
-    let m_modes = w_alpha_freq.ncols();
-    let n_quad = w_alpha_freq.nrows();
+    let m_modes = m_proj.shape()[0];
+    let n_quad = quad_freqs.len();
     let n_act = eps_act.len();
+
+    // Precompute the screened matrix element W_{mn}(iω_k) = Mᵀ_{mn} · W̃_d(iω_k) · M_{mn}
+    // using the FULL inverse-dielectric matrix in the PDEP basis. The earlier
+    // diagonal-only form  Σ_α M²_α (1/λ_α − 1)  was wrong: the scalar
+    // eigenvalues λ_α(iω) live in a per-ω rotated eigenbasis, inconsistent with
+    // the static B̃ projection M, which corrupts the per-(m,n) matrix elements
+    // (only the trace survives, which is why the RPA energy was unaffected).
     let mut sigma = Complex64::new(0.0, 0.0);
     for n_idx in 0..n_act {
         let eps_n = eps_act[n_idx];
         let diff = z - Complex64::new(eps_n, 0.0);
-        // Accumulate Σ_α M² · Σ_k w_k w_α(iω_k) · diff / (diff² + ω_k²)
-        // = diff · Σ_k w_k · [Σ_α M² · w_α(iω_k)] / (diff² + ω_k²)
-        // — compute the inner α-sum per quadrature point, then sum over k.
         let mut inner = Complex64::new(0.0, 0.0);
         for k in 0..n_quad {
             let omk = quad_freqs[k];
             let den = diff * diff + Complex64::new(omk * omk, 0.0);
-            let mut alpha_sum = 0.0_f64;
-            for alpha in 0..m_modes {
-                let m2 = m_proj[(alpha, m_idx, n_idx)];
-                alpha_sum += m2 * m2 * w_alpha_freq[(k, alpha)];
+            let wd = &inv_diel_freq[k];
+            // w_mn = Σ_αβ M_α D_αβ M_β  (real, symmetric D).
+            let mut w_mn = 0.0_f64;
+            for a in 0..m_modes {
+                let ma = m_proj[(a, m_idx, n_idx)];
+                if ma == 0.0 {
+                    continue;
+                }
+                let mut row = 0.0_f64;
+                for b in 0..m_modes {
+                    row += wd[(a, b)] * m_proj[(b, m_idx, n_idx)];
+                }
+                w_mn += ma * row;
             }
-            inner += Complex64::new(quad_weights[k] * alpha_sum, 0.0) / den;
+            inner += Complex64::new(quad_weights[k] * w_mn, 0.0) / den;
         }
         sigma += diff * inner;
     }
@@ -82,12 +114,13 @@ pub(crate) fn solve_qp_for_mo(
     m_loc: usize,
     eps_m_mf: f64,
     m_proj: &ndarray::Array3<f64>,
-    w_alpha_freq: &Array2<f64>,
+    inv_diel_freq: &[Array2<f64>],
     quad_weights: &[f64],
     quad_freqs: &[f64],
     eps_prop: &[f64],
     pade_npts: usize,
     newton_damp: f64,
+    ef: f64,
 ) -> (f64, f64, f64) {
     let n_pade = if pade_npts == 0 {
         quad_freqs.len().min(16)
@@ -102,15 +135,21 @@ pub(crate) fn solve_qp_for_mo(
             (lo + t * (hi - lo)).exp()
         })
         .collect();
+    // Sample Σ_c on the Fermi-shifted imaginary axis z = ef + iω', matching
+    // PySCF gw_ac (omega = ef + 1j*eval_freqs). Centering the AC support line
+    // at the Fermi level (mid-gap) keeps the Padé continuation well-conditioned
+    // for BOTH occupied and virtual targets. Sampling at Re=0 (the old code)
+    // biases the continuation toward the occupied pole cluster and systematically
+    // over-screens (pushes down) the virtual QP energies.
     let z_nodes: Vec<Complex64> = pade_omegas
         .iter()
-        .map(|&w| Complex64::new(0.0, w))
+        .map(|&w| Complex64::new(ef, w))
         .collect();
     let f_vals: Vec<Complex64> = z_nodes
         .iter()
         .map(|&z| {
             sigma_c_at_z(
-                m_loc, z, m_proj, w_alpha_freq, quad_weights, quad_freqs, eps_prop,
+                m_loc, z, m_proj, inv_diel_freq, quad_weights, quad_freqs, eps_prop,
             )
         })
         .collect();
@@ -166,11 +205,18 @@ pub fn run_g0w0(
     // Project B̃ → M[(α,m,n)] (shape M × n_act × n_act).
     let m_proj = project_b_into_pdep(mo_b, v_dressed);
 
-    // Inverse-dielectric weights w_α(iω_k) on the PDEP frequency grid.
-    let w_alpha_freq = w_pdep::inverse_dielectric_weights(&pdep.eigenvalues_freq);
+    // Full per-frequency inverse-dielectric matrices W̃_d(iω_k) in the PDEP basis.
+    let inv_diel_freq = pdep.inv_dielectric_freq.as_ref().ok_or_else(|| {
+        FerricError::General(
+            "PDEP result missing inv_dielectric_freq (GW requires the dense χ₀ path)".into(),
+        )
+    })?;
 
     let quad_freqs = pdep.quad_freqs.clone();
     let quad_weights = pdep.quad_weights.clone();
+
+    // Fermi level: mid-gap of the active-space mean-field spectrum.
+    let ef = fermi_level(&mo_b.eps_act, mo_b.n_occ_act);
 
     // For each MO in qp_range, sample Σ_c on the imaginary axis at the PDEP
     // quadrature nodes, fit Padé, solve QP via Newton.
@@ -196,12 +242,13 @@ pub fn run_g0w0(
             m_loc,
             eps_m,
             &m_proj,
-            &w_alpha_freq,
+            inv_diel_freq,
             &quad_weights,
             &quad_freqs,
             &mo_b.eps_act,
             gw_cfg.pade_npts,
             gw_cfg.qp_newton_damp,
+            ef,
         );
         sc_out[idx] = sc_final;
         z_out[idx] = z_renorm;
@@ -244,10 +291,16 @@ pub fn run_evgw0(
     }
     let sigma_x_all = sigma_x_diag(mo_b);
     let m_proj = project_b_into_pdep(mo_b, v_dressed);
-    let w_alpha_freq = w_pdep::inverse_dielectric_weights(&pdep.eigenvalues_freq);
+    let inv_diel_freq = pdep.inv_dielectric_freq.as_ref().ok_or_else(|| {
+        FerricError::General(
+            "PDEP result missing inv_dielectric_freq (GW requires the dense χ₀ path)".into(),
+        )
+    })?;
 
     let quad_freqs = pdep.quad_freqs.clone();
     let quad_weights = pdep.quad_weights.clone();
+
+    let ef = fermi_level(&mo_b.eps_act, mo_b.n_occ_act);
 
     let mo_indices: Vec<usize> = qp_range.clone().collect();
     let mut eps_qp = Array1::<f64>::zeros(mo_indices.len());
@@ -279,12 +332,13 @@ pub fn run_evgw0(
                 m_loc,
                 eps_m_mf,
                 &m_proj,
-                &w_alpha_freq,
+                inv_diel_freq,
                 &quad_weights,
                 &quad_freqs,
                 &eps_prop,
                 gw_cfg.pade_npts,
                 gw_cfg.qp_newton_damp,
+                ef,
             );
             max_dev = max_dev.max((eps_new - eps_qp[idx]).abs());
             eps_qp[idx] = eps_new;
@@ -349,6 +403,7 @@ pub fn run_evgw(
 
     let first_act = mo_b.first_act;
     let sigma_x_all = sigma_x_diag(mo_b);
+    let ef = fermi_level(&mo_b.eps_act, mo_b.n_occ_act);
     for (idx, &mo_abs) in mo_indices.iter().enumerate() {
         let m_loc = mo_abs - first_act;
         eps_mf[idx] = mo_b.eps_act[m_loc];
@@ -371,7 +426,11 @@ pub fn run_evgw(
             )?;
         }
         let m_proj = project_b_into_pdep(mo_b, &current_v_dressed);
-        let w_alpha_freq = w_pdep::inverse_dielectric_weights(&current_pdep.eigenvalues_freq);
+        let inv_diel_freq = current_pdep.inv_dielectric_freq.as_ref().ok_or_else(|| {
+            FerricError::General(
+                "PDEP result missing inv_dielectric_freq (GW requires the dense χ₀ path)".into(),
+            )
+        })?;
 
         // For the propagator denominator we also use QP-shifted ε's
         // (consistent with the rebuilt W).
@@ -387,12 +446,13 @@ pub fn run_evgw(
                 m_loc,
                 mo_b.eps_act[m_loc],
                 &m_proj,
-                &w_alpha_freq,
+                inv_diel_freq,
                 &current_pdep.quad_weights,
                 &current_pdep.quad_freqs,
                 &eps_prop,
                 gw_cfg.pade_npts,
                 gw_cfg.qp_newton_damp,
+                ef,
             );
             max_dev = max_dev.max((eps_new - eps_qp[idx]).abs());
             eps_qp[idx] = eps_new;

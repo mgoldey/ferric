@@ -15,7 +15,7 @@
 
 use crate::cohsex::{project_b_into_pdep, sigma_x_diag};
 use crate::mo_b::MoB;
-use crate::sigma::{solve_qp_for_mo};
+use crate::sigma::{fermi_level, solve_qp_for_mo};
 use crate::w_pdep;
 use crate::{GwConfig, UGwResult};
 use ferric_core::FerricError;
@@ -41,16 +41,20 @@ pub fn run_u_g0w0(
     let m_proj_b = project_b_into_pdep(mo_b_b, v_dressed);
     let sigma_x_a_all = sigma_x_diag(mo_b_a);
     let sigma_x_b_all = sigma_x_diag(mo_b_b);
-    let w_alpha_freq = w_pdep::inverse_dielectric_weights(&pdep.eigenvalues_freq);
+    let inv_diel_freq = pdep.inv_dielectric_freq.as_ref().ok_or_else(|| {
+        FerricError::General(
+            "PDEP result missing inv_dielectric_freq (GW requires the dense χ₀ path)".into(),
+        )
+    })?;
     let quad_freqs = pdep.quad_freqs.clone();
     let quad_weights = pdep.quad_weights.clone();
 
     let (eps_qp_a, eps_mf_a, sx_a, sc_a, z_a) = qp_per_spin_g0w0(
-        mo_b_a, &m_proj_a, &sigma_x_a_all, &w_alpha_freq, &quad_weights, &quad_freqs,
+        mo_b_a, &m_proj_a, &sigma_x_a_all, inv_diel_freq, &quad_weights, &quad_freqs,
         &qp_range, gw_cfg,
     )?;
     let (eps_qp_b, eps_mf_b, sx_b, sc_b, z_b) = qp_per_spin_g0w0(
-        mo_b_b, &m_proj_b, &sigma_x_b_all, &w_alpha_freq, &quad_weights, &quad_freqs,
+        mo_b_b, &m_proj_b, &sigma_x_b_all, inv_diel_freq, &quad_weights, &quad_freqs,
         &qp_range, gw_cfg,
     )?;
 
@@ -68,13 +72,14 @@ fn qp_per_spin_g0w0(
     mo_b: &MoB,
     m_proj: &ndarray::Array3<f64>,
     sigma_x_all: &Array1<f64>,
-    w_alpha_freq: &ndarray::Array2<f64>,
+    inv_diel_freq: &[ndarray::Array2<f64>],
     quad_weights: &[f64],
     quad_freqs: &[f64],
     qp_range: &std::ops::Range<usize>,
     gw_cfg: &GwConfig,
 ) -> Result<(Array1<f64>, Array1<f64>, Array1<f64>, Array1<f64>, Array1<f64>), FerricError> {
     let first_act = mo_b.first_act;
+    let ef = fermi_level(&mo_b.eps_act, mo_b.n_occ_act);
     let mo_indices: Vec<usize> = qp_range.clone().collect();
     let mut eps_qp = Array1::<f64>::zeros(mo_indices.len());
     let mut eps_mf = Array1::<f64>::zeros(mo_indices.len());
@@ -92,8 +97,8 @@ fn qp_per_spin_g0w0(
         eps_mf[idx] = eps_m;
         sx_out[idx] = sigma_x_all[m_loc];
         let (eps_qp_m, sc_final, z_renorm) = solve_qp_for_mo(
-            m_loc, eps_m, m_proj, w_alpha_freq, quad_weights, quad_freqs,
-            &mo_b.eps_act, gw_cfg.pade_npts, gw_cfg.qp_newton_damp,
+            m_loc, eps_m, m_proj, inv_diel_freq, quad_weights, quad_freqs,
+            &mo_b.eps_act, gw_cfg.pade_npts, gw_cfg.qp_newton_damp, ef,
         );
         sc_out[idx] = sc_final;
         z_out[idx] = z_renorm;
@@ -121,7 +126,11 @@ pub fn run_u_evgw0(
     let m_proj_b = project_b_into_pdep(mo_b_b, v_dressed);
     let sigma_x_a_all = sigma_x_diag(mo_b_a);
     let sigma_x_b_all = sigma_x_diag(mo_b_b);
-    let w_alpha_freq = w_pdep::inverse_dielectric_weights(&pdep.eigenvalues_freq);
+    let inv_diel_freq = pdep.inv_dielectric_freq.as_ref().ok_or_else(|| {
+        FerricError::General(
+            "PDEP result missing inv_dielectric_freq (GW requires the dense χ₀ path)".into(),
+        )
+    })?;
 
     let mo_indices: Vec<usize> = qp_range.clone().collect();
     let first_act_a = mo_b_a.first_act;
@@ -147,6 +156,8 @@ pub fn run_u_evgw0(
         eps_qp_b[idx] = eps_mf_b[idx];
     }
 
+    let ef_a = fermi_level(&mo_b_a.eps_act, mo_b_a.n_occ_act);
+    let ef_b = fermi_level(&mo_b_b.eps_act, mo_b_b.n_occ_act);
     let mut eps_prop_a = mo_b_a.eps_act.clone();
     let mut eps_prop_b = mo_b_b.eps_act.clone();
     let mut iter_done = 0usize;
@@ -161,14 +172,14 @@ pub fn run_u_evgw0(
             let mla = mo_abs - first_act_a;
             let mlb = mo_abs - first_act_b;
             let (ena, sca, za) = solve_qp_for_mo(
-                mla, mo_b_a.eps_act[mla], &m_proj_a, &w_alpha_freq,
+                mla, mo_b_a.eps_act[mla], &m_proj_a, inv_diel_freq,
                 &pdep.quad_weights, &pdep.quad_freqs, &eps_prop_a,
-                gw_cfg.pade_npts, gw_cfg.qp_newton_damp,
+                gw_cfg.pade_npts, gw_cfg.qp_newton_damp, ef_a,
             );
             let (enb, scb, zb) = solve_qp_for_mo(
-                mlb, mo_b_b.eps_act[mlb], &m_proj_b, &w_alpha_freq,
+                mlb, mo_b_b.eps_act[mlb], &m_proj_b, inv_diel_freq,
                 &pdep.quad_weights, &pdep.quad_freqs, &eps_prop_b,
-                gw_cfg.pade_npts, gw_cfg.qp_newton_damp,
+                gw_cfg.pade_npts, gw_cfg.qp_newton_damp, ef_b,
             );
             max_dev = max_dev.max((ena - eps_qp_a[idx]).abs()).max((enb - eps_qp_b[idx]).abs());
             eps_qp_a[idx] = ena; sc_a[idx] = sca; z_a[idx] = za;
@@ -234,6 +245,8 @@ pub fn run_u_evgw(
         eps_qp_b[idx] = eps_mf_b[idx];
     }
 
+    let ef_a = fermi_level(&mo_b_a.eps_act, mo_b_a.n_occ_act);
+    let ef_b = fermi_level(&mo_b_b.eps_act, mo_b_b.n_occ_act);
     let mut iter_done = 0usize;
     for it in 0..gw_cfg.max_ev_iter {
         // Overlay current QP energies on shifted_scf so PDEP χ₀ denominators
@@ -256,7 +269,11 @@ pub fn run_u_evgw(
         }
         let m_proj_a = project_b_into_pdep(mo_b_a, &current_v_dressed);
         let m_proj_b = project_b_into_pdep(mo_b_b, &current_v_dressed);
-        let w_alpha_freq = w_pdep::inverse_dielectric_weights(&current_pdep.eigenvalues_freq);
+        let inv_diel_freq = current_pdep.inv_dielectric_freq.as_ref().ok_or_else(|| {
+            FerricError::General(
+                "PDEP result missing inv_dielectric_freq (GW requires the dense χ₀ path)".into(),
+            )
+        })?;
 
         let mut eps_prop_a = mo_b_a.eps_act.clone();
         let mut eps_prop_b = mo_b_b.eps_act.clone();
@@ -269,14 +286,14 @@ pub fn run_u_evgw(
             let mla = mo_abs - first_act_a;
             let mlb = mo_abs - first_act_b;
             let (ena, sca, za) = solve_qp_for_mo(
-                mla, mo_b_a.eps_act[mla], &m_proj_a, &w_alpha_freq,
+                mla, mo_b_a.eps_act[mla], &m_proj_a, inv_diel_freq,
                 &current_pdep.quad_weights, &current_pdep.quad_freqs, &eps_prop_a,
-                gw_cfg.pade_npts, gw_cfg.qp_newton_damp,
+                gw_cfg.pade_npts, gw_cfg.qp_newton_damp, ef_a,
             );
             let (enb, scb, zb) = solve_qp_for_mo(
-                mlb, mo_b_b.eps_act[mlb], &m_proj_b, &w_alpha_freq,
+                mlb, mo_b_b.eps_act[mlb], &m_proj_b, inv_diel_freq,
                 &current_pdep.quad_weights, &current_pdep.quad_freqs, &eps_prop_b,
-                gw_cfg.pade_npts, gw_cfg.qp_newton_damp,
+                gw_cfg.pade_npts, gw_cfg.qp_newton_damp, ef_b,
             );
             max_dev = max_dev.max((ena - eps_qp_a[idx]).abs()).max((enb - eps_qp_b[idx]).abs());
             eps_qp_a[idx] = ena; sc_a[idx] = sca; z_a[idx] = za;

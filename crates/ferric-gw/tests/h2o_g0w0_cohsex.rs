@@ -161,6 +161,52 @@ fn evgw0_h2o_homo_ip() {
     );
 }
 
+/// G0W0 quasiparticle GAP / LUMO validation against PySCF gw_ac.
+///
+/// PySCF gw_ac (cc-pVDZ / cc-pvdz-ri) reference for H2O:
+///   HOMO_qp = −12.160 eV (IP),  LUMO_qp = +4.703 eV,  gap = 16.863 eV.
+///
+/// This guards the EA / virtual side: a prior bug used per-ω-rotated scalar
+/// dielectric eigenvalues (basis-inconsistent with the static B̃ projection),
+/// which over-screened the virtuals (LUMO 3.68 eV, gap 15.64 eV — 1.2 eV too
+/// small). The fix contracts the full inverse-dielectric MATRIX in the fixed
+/// PDEP basis. See sigma::sigma_c_at_z.
+#[test]
+#[ignore = "slow: builds RHF + PDEP-RPA + G0W0 over full MO range; run with --release --ignored"]
+fn g0w0_h2o_gap_and_lumo() {
+    let (mol, obs, dfbs, rhf) = prepare_h2o();
+    let pcfg = pdep_cfg();
+    let nmo = rhf.eps_r().len();
+    let gcfg = GwConfig {
+        method: GwMethod::G0W0,
+        qp_mos: Some(0..nmo),
+        ..Default::default()
+    };
+    let res = run_gw(&mol, &obs, &dfbs, Operator::coulomb(), &rhf, &pcfg, &gcfg)
+        .expect("G0W0 runs");
+    let nocc = (mol.nelec() as usize) / 2;
+    let homo = res.eps_qp[nocc - 1] * HA_TO_EV;
+    let lumo = res.eps_qp[nocc] * HA_TO_EV;
+    let gap = lumo - homo;
+    eprintln!("G0W0@HF/cc-pVDZ H2O: HOMO_qp={homo:.3} eV  LUMO_qp={lumo:.3} eV  gap={gap:.3} eV");
+    eprintln!("PySCF gw_ac ref    : HOMO_qp=-12.160     LUMO_qp=4.703      gap=16.863 eV");
+    // IP (HOMO) within 0.30 eV of PySCF 12.160.
+    assert!(
+        (-homo - 12.160).abs() < 0.30,
+        "HOMO IP off: {:.3} eV (ref 12.160)",
+        -homo
+    );
+    // LUMO and gap within 0.20 eV of PySCF.
+    assert!(
+        (lumo - 4.703).abs() < 0.20,
+        "LUMO QP off: {lumo:.3} eV (ref 4.703)"
+    );
+    assert!(
+        (gap - 16.863).abs() < 0.20,
+        "QP gap off: {gap:.3} eV (ref 16.863)"
+    );
+}
+
 #[test]
 #[ignore = "slow: builds RHF + PDEP-RPA + G0W0; run with --release --ignored"]
 fn g0w0_h2o_homo_ip() {
