@@ -7,7 +7,9 @@
 use crate::basis_bridge::PreparedBasis;
 use crate::operator::Operator;
 use ferric_core::FerricError;
-use ndarray::{Array3, ArrayView3};
+use ndarray::{Array2, Array3, ArrayView3};
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom, Write};
 
 /// Largest number of aux rows whose (block_naux × nao × nao × 8) bytes fit the
 /// budget; at least 1 (a single aux row must always be representable).
@@ -24,7 +26,7 @@ pub struct AuxBlock<'a> {
 
 enum Backend {
     InCore(Array3<f64>),
-    // DiskSpill added in Task A3.
+    DiskSpill { file: File, scratch: Array3<f64> },
 }
 
 pub struct ThreeIndexSource {
@@ -46,12 +48,71 @@ impl ThreeIndexSource {
             let eri = crate::threeindex::eri3_tensor(op, obs, dfbs)?;
             Ok(Self { naux, nao, block_naux: naux, backend: Backend::InCore(eri) })
         } else {
-            // Spill path in Task A3; for now error so the test for in-core passes
-            // and the spill test (A3) drives the implementation.
-            Err(FerricError::General(
-                "ThreeIndexSource spill backend not yet implemented (Task A3)".into(),
-            ))
+            let block_naux = block_naux_for(budget_bytes, nao);
+            let mut file = tempfile::tempfile()
+                .map_err(|e| FerricError::General(format!("tempfile: {e}")))?;
+            let mut p0 = 0;
+            while p0 < naux {
+                let p1 = (p0 + block_naux).min(naux);
+                let blk = crate::threeindex::eri3_block(op, obs, dfbs, p0, p1)?;
+                let bytes: &[u8] = bytemuck::cast_slice(blk.as_slice().unwrap());
+                file.write_all(bytes).map_err(|e| FerricError::General(format!("spill write: {e}")))?;
+                p0 = p1;
+            }
+            file.flush().ok();
+            let scratch = Array3::<f64>::zeros((block_naux, nao, nao));
+            Ok(Self { naux, nao, block_naux, backend: Backend::DiskSpill { file, scratch } })
         }
+    }
+
+    /// Build a DRESSED source: out[P,:,:] = Σ_Q m[P,Q] · raw[Q,:,:], honoring budget.
+    /// `raw` is consumed (streamed) and `m` is (naux, naux).
+    pub fn build_dressed(
+        raw: &mut ThreeIndexSource, m: &Array2<f64>, budget_bytes: usize,
+    ) -> Result<Self, FerricError> {
+        let naux = raw.naux();
+        let nao = raw.nao();
+        let needed = naux.saturating_mul(nao).saturating_mul(nao).saturating_mul(8);
+        let block_naux = block_naux_for(budget_bytes, nao);
+        let in_core = needed <= budget_bytes;
+        let mut out_incore: Option<Array3<f64>> =
+            if in_core { Some(Array3::zeros((naux, nao, nao))) } else { None };
+        let mut file: Option<File> =
+            if in_core { None } else {
+                Some(tempfile::tempfile().map_err(|e| FerricError::General(format!("tempfile: {e}")))?)
+            };
+        let mut p0 = 0;
+        while p0 < naux {
+            let p1 = (p0 + block_naux).min(naux);
+            let b = p1 - p0;
+            let mut accum = Array3::<f64>::zeros((b, nao, nao));
+            raw.for_each_block(|rb| {
+                let rb_b = rb.data.shape()[0];
+                let raw_flat = rb.data.into_shape_with_order((rb_b, nao * nao))
+                    .map_err(|e| FerricError::General(format!("raw reshape: {e}")))?;
+                let msub = m.slice(ndarray::s![p0..p1, rb.p0..rb.p0 + rb_b]); // (b, rb_b)
+                let contrib = msub.dot(&raw_flat); // (b, nao*nao)
+                let mut acc_flat = accum.view_mut().into_shape_with_order((b, nao * nao)).unwrap();
+                acc_flat += &contrib;
+                Ok(())
+            })?;
+            if let Some(arr) = out_incore.as_mut() {
+                arr.slice_mut(ndarray::s![p0..p1, .., ..]).assign(&accum);
+            } else if let Some(f) = file.as_mut() {
+                let bytes: &[u8] = bytemuck::cast_slice(accum.as_slice().unwrap());
+                f.write_all(bytes).map_err(|e| FerricError::General(format!("dress write: {e}")))?;
+            }
+            p0 = p1;
+        }
+        let backend = match (out_incore, file) {
+            (Some(arr), _) => Backend::InCore(arr),
+            (None, Some(f)) => {
+                f.sync_all().ok();
+                Backend::DiskSpill { file: f, scratch: Array3::zeros((block_naux, nao, nao)) }
+            }
+            _ => unreachable!(),
+        };
+        Ok(Self { naux, nao, block_naux: if in_core { naux } else { block_naux }, backend })
     }
 
     pub fn naux(&self) -> usize { self.naux }
@@ -59,19 +120,36 @@ impl ThreeIndexSource {
     pub fn n_blocks(&self) -> usize {
         self.naux.div_ceil(self.block_naux.max(1))
     }
+    pub fn block_naux(&self) -> usize { self.block_naux }
 
     /// Primary iteration API. Calls `f` once per raw aux-block, in order.
     pub fn for_each_block(
         &mut self,
         mut f: impl FnMut(AuxBlock<'_>) -> Result<(), FerricError>,
     ) -> Result<(), FerricError> {
-        match &self.backend {
+        match &mut self.backend {
             Backend::InCore(eri) => {
-                let nb = self.n_blocks();
+                let nb = self.naux.div_ceil(self.block_naux.max(1));
                 for i in 0..nb {
                     let p0 = i * self.block_naux;
                     let p1 = (p0 + self.block_naux).min(self.naux);
                     let view = eri.slice(ndarray::s![p0..p1, .., ..]);
+                    f(AuxBlock { p0, data: view })?;
+                }
+                Ok(())
+            }
+            Backend::DiskSpill { file, scratch } => {
+                file.seek(SeekFrom::Start(0)).map_err(|e| FerricError::General(format!("seek: {e}")))?;
+                let nb = self.naux.div_ceil(self.block_naux.max(1));
+                for i in 0..nb {
+                    let p0 = i * self.block_naux;
+                    let p1 = (p0 + self.block_naux).min(self.naux);
+                    let b = p1 - p0;
+                    let elems = b * self.nao * self.nao;
+                    let buf = scratch.as_slice_mut().unwrap();
+                    let bytes: &mut [u8] = bytemuck::cast_slice_mut(&mut buf[..elems]);
+                    file.read_exact(bytes).map_err(|e| FerricError::General(format!("spill read: {e}")))?;
+                    let view = scratch.slice(ndarray::s![0..b, .., ..]);
                     f(AuxBlock { p0, data: view })?;
                 }
                 Ok(())
@@ -97,6 +175,28 @@ mod tests {
         assert_eq!(block_naux_for(4000, 10), 5);
         // budget smaller than one row → at least 1.
         assert_eq!(block_naux_for(500, 10), 1);
+    }
+
+    #[test]
+    fn spill_blocks_equal_dense_eri3() {
+        let (mol,) = water();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let dense = crate::threeindex::eri3_tensor(op, &obs, &dfbs).unwrap();
+        let (naux, nao, _) = dense.dim();
+        // Tiny budget → force spill into several blocks.
+        let tiny = nao * nao * 8 * 3; // ~3 aux rows per block
+        let mut src = ThreeIndexSource::build(op, &obs, &dfbs, tiny).unwrap();
+        assert!(src.n_blocks() > 1, "expected spill into >1 block, got {}", src.n_blocks());
+        let mut reassembled = ndarray::Array3::<f64>::zeros((naux, nao, nao));
+        src.for_each_block(|blk| {
+            let b = blk.data.shape()[0];
+            reassembled.slice_mut(ndarray::s![blk.p0..blk.p0 + b, .., ..]).assign(&blk.data);
+            Ok(())
+        }).unwrap();
+        let maxdiff = (&reassembled - &dense).iter().map(|v| v.abs()).fold(0.0, f64::max);
+        assert!(maxdiff == 0.0, "spill blocks != dense eri3, maxdiff={maxdiff}");
     }
 
     #[test]

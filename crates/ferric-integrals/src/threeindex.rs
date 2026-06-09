@@ -68,6 +68,49 @@ pub fn eri3_tensor(op: Operator, obs: &PreparedBasis, dfbs: &PreparedBasis) -> R
     Ok(eri)
 }
 
+/// Build raw (P|μν) for aux rows [p0, p1) only, returned as (p1-p0, nbas, nbas).
+/// Same values as the corresponding slice of `eri3_tensor`.
+pub fn eri3_block(
+    op: Operator, obs: &PreparedBasis, dfbs: &PreparedBasis, p0: usize, p1: usize,
+) -> Result<Array3<f64>, FerricError> {
+    let nbas = obs.nbasis();
+    let nsh_obs = obs.nshells();
+    let nsh_df = dfbs.nshells();
+    let dims_obs = obs.shell_dims();
+    let offs_obs = obs.shell_offsets();
+    let dims_df = dfbs.shell_dims();
+    let offs_df = dfbs.shell_offsets();
+    let mut eng = Engine::new_3center(op, obs, dfbs, 1e-14)?;
+    let mut eri = Array3::zeros((p1 - p0, nbas, nbas));
+    for sp in 0..nsh_df {
+        let pbase = offs_df[sp];
+        let np = dims_df[sp];
+        // Skip aux shells entirely outside [p0, p1).
+        if pbase + np <= p0 || pbase >= p1 { continue; }
+        for s1 in 0..nsh_obs {
+            for s2 in 0..=s1 {
+                if let Some(block) = eng.compute_eri3(obs, dfbs, sp, s1, s2) {
+                    let n1 = dims_obs[s1];
+                    let n2 = dims_obs[s2];
+                    for p in 0..np {
+                        let pg = pbase + p;
+                        if pg < p0 || pg >= p1 { continue; }
+                        let pl = pg - p0;
+                        for i in 0..n1 {
+                            for j in 0..n2 {
+                                let val = block[(p * n1 + i) * n2 + j];
+                                eri[(pl, offs_obs[s1] + i, offs_obs[s2] + j)] = val;
+                                eri[(pl, offs_obs[s2] + j, offs_obs[s1] + i)] = val;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(eri)
+}
+
 /// Schwarz-screened 3-center ERI builder.
 ///
 /// Same dense `(naux, nbas, nbas)` output as [`eri3_tensor`], but skips shell
