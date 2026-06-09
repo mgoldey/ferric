@@ -11,7 +11,9 @@
 //!   K[μ,ν]   = Σ_{P,σ} Z[P,μ,σ] · B[P,ν,σ]
 //!
 //! The dressed 3-center tensor B[P,μ,ν] = Σ_Q V^{-1/2}_{PQ} (Q|μν) is built once
-//! at construction and reused every SCF iteration.
+//! at construction (via ThreeIndexSource::build_dressed) and reused every SCF
+//! iteration.  The dressed source is budget-bounded: in-core when
+//! naux·nao²·8 ≤ budget_bytes, else aux-blocked disk-spill.
 //!
 //! Accuracy of DF-K depends critically on the auxiliary basis: use a JK-fit
 //! basis (e.g. `def2-universal-jkfit`), not an RI/MP2-fit basis.
@@ -20,30 +22,38 @@ use crate::fock::KBuilder;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_integrals::threeindex::{coulomb_metric_2c, eri3_tensor};
+use ferric_integrals::three_index_source::ThreeIndexSource;
+use ferric_integrals::threeindex::coulomb_metric_2c;
 use ndarray::linalg::general_mat_mul;
 use ndarray::{Array2, Array3};
 use ndarray_linalg::{Eigh, UPLO};
 
-/// DF-K exchange builder. Caches the V^{-1/2}-dressed 3-center tensor and a
+/// DF-K exchange builder. Caches the V^{-1/2}-dressed 3-center source and a
 /// per-call scratch buffer for the Z intermediate so the hot SCF path does
 /// zero heap allocation outside of the two GEMMs.
 pub struct DfK {
-    /// (naux, n, n) dressed 3-center tensor B[P, μ, ν] = Σ_Q V^{-1/2}_{PQ} (Q|μν).
-    b: Array3<f64>,
-    /// Scratch buffer for Z[P,μ,σ] = Σ_λ B[P,μ,λ] D[λ,σ], shape (naux, n, n).
-    z_scratch: Array3<f64>,
+    /// Budget-bounded dressed 3-center source B[P,μ,ν] = Σ_Q V^{-1/2}_{PQ} (Q|μν).
+    dressed: ThreeIndexSource,
+    /// Per-block Z scratch (block_naux, n, n).
+    z_block: Array3<f64>,
 }
 
 impl DfK {
     /// Build the DF-K cache from orbital and auxiliary bases.
     ///
     /// Computes V^{-1/2} = U · diag(λ^{-1/2}) · U^T from the symmetric eigendecomp
-    /// of the (P|Q) Coulomb metric, then forms B[P,μ,ν] = Σ_Q V^{-1/2}_{PQ} (Q|μν).
-    pub fn new(op: Operator, obs: &PreparedBasis, dfbs: &PreparedBasis) -> Result<Self, FerricError> {
+    /// of the (P|Q) Coulomb metric, then forms B[P,μ,ν] = Σ_Q V^{-1/2}_{PQ} (Q|μν)
+    /// via ThreeIndexSource::build_dressed, honouring `budget_bytes`.
+    pub fn new(
+        op: Operator,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        budget_bytes: usize,
+    ) -> Result<Self, FerricError> {
+        let naux = dfbs.nbasis();
+        let n = obs.nbasis();
+
         let v = coulomb_metric_2c(op, dfbs)?;
-        let eri3 = eri3_tensor(op, obs, dfbs)?;
-        let (naux, n, _) = eri3.dim();
 
         // V^{-1/2} via symmetric eigendecomposition with canonical orthogonalization.
         // The 2-center metric `(P|w(r12)|Q)` is positive-definite analytically, but
@@ -77,55 +87,45 @@ impl DfK {
         let _ = n_dropped;
         let v_inv_sqrt = u_scaled.dot(&evecs.t()); // (naux, naux)
 
-        // Dress: B[P,μ,ν] = Σ_Q V^{-1/2}_{PQ} (Q|μν)
-        // Reshape eri3 to (naux, n*n), gemm, reshape back.
-        let eri_flat = eri3
-            .view()
-            .into_shape_with_order((naux, n * n))
-            .map_err(|e| FerricError::General(format!("eri3 reshape: {e}")))?;
-        let b_flat = v_inv_sqrt.dot(&eri_flat); // (naux, n*n)
-        let b = b_flat
-            .into_shape_with_order((naux, n, n))
-            .map_err(|e| FerricError::General(format!("B reshape: {e}")))?;
+        // Build raw source then dress it: B[P,μν] = Σ_Q V^{-1/2}_{PQ} (Q|μν).
+        let mut raw = ThreeIndexSource::build(op, obs, dfbs, budget_bytes)?;
+        let dressed = ThreeIndexSource::build_dressed(&mut raw, &v_inv_sqrt, budget_bytes)?;
 
-        let z_scratch = Array3::<f64>::zeros((naux, n, n));
-        Ok(DfK { b, z_scratch })
+        let block = dressed.block_naux();
+        let z_block = Array3::<f64>::zeros((block, n, n));
+        Ok(DfK { dressed, z_block })
     }
 }
 
 impl KBuilder for DfK {
     fn build(&mut self, d: &Array2<f64>, k: &mut Array2<f64>) -> Result<usize, FerricError> {
-        let (naux, n, _) = self.b.dim();
-
-        // First GEMM: Z[P,μ,σ] = Σ_λ B[P,μ,λ] · D[λ,σ]
-        // View self.b as (naux*n, n), self.z_scratch as (naux*n, n), call DGEMM
-        // in-place to avoid the 58 MB owned allocation that .dot() would do.
-        {
-            let b_flat = self
-                .b
-                .view()
-                .into_shape_with_order((naux * n, n))
-                .map_err(|e| FerricError::General(format!("B reshape: {e}")))?;
-            let mut z_flat = self
-                .z_scratch
-                .view_mut()
-                .into_shape_with_order((naux * n, n))
-                .map_err(|e| FerricError::General(format!("Z reshape: {e}")))?;
-            general_mat_mul(1.0, &b_flat, d, 0.0, &mut z_flat);
-        }
-
-        // Second pass: K[μ,ν] = Σ_{P,σ} Z[P,μ,σ] · B[P,ν,σ]
-        // Per-P slab: K += Z[P] · B[P]^T accumulated with general_mat_mul
-        // (in-place, beta=1.0). Each Z[P] and B[P] is an (n,n) C-contiguous view
-        // with no allocation; the result goes straight into k. For naux=558 and
-        // n=114 the slab is 1.5 MFlops, ~750 µs/iter total for the loop.
+        let n = self.dressed.nao();
         k.fill(0.0);
-        for p in 0..naux {
-            let zp = self.z_scratch.slice(ndarray::s![p, .., ..]);
-            let bp = self.b.slice(ndarray::s![p, .., ..]);
-            general_mat_mul(1.0, &zp, &bp.t(), 1.0, k);
-        }
+        let z_block = &mut self.z_block;
+        self.dressed.for_each_block(|blk| {
+            let b = blk.data.shape()[0];
 
+            // Z[P,μ,σ] = Σ_λ B[P,μ,λ] · D[λ,σ] for this block.
+            {
+                let b_flat = blk
+                    .data
+                    .into_shape_with_order((b * n, n))
+                    .map_err(|e| FerricError::General(format!("B reshape: {e}")))?;
+                let mut z_flat = z_block
+                    .slice_mut(ndarray::s![0..b, .., ..])
+                    .into_shape_with_order((b * n, n))
+                    .map_err(|e| FerricError::General(format!("Z reshape: {e}")))?;
+                general_mat_mul(1.0, &b_flat, d, 0.0, &mut z_flat);
+            }
+
+            // K += Σ_{P∈block} Z[P] · B[P]^T
+            for p in 0..b {
+                let zp = z_block.slice(ndarray::s![p, .., ..]);
+                let bp = blk.data.slice(ndarray::s![p, .., ..]);
+                general_mat_mul(1.0, &zp, &bp.t(), 1.0, k);
+            }
+            Ok(())
+        })?;
         Ok(0)
     }
 
@@ -172,11 +172,44 @@ mod tests {
         <DirectK as KBuilder>::build(&mut dk, &d, &mut k_direct).unwrap();
 
         let mut k_df = Array2::zeros((n, n));
-        let mut dfk = DfK::new(op, &obs, &dfbs).unwrap();
+        let mut dfk = DfK::new(op, &obs, &dfbs, usize::MAX).unwrap();
         dfk.build(&d, &mut k_df).unwrap();
 
         let max_diff: f64 = (&k_df - &k_direct).iter().map(|v| v.abs()).fold(0.0, f64::max);
         // JK-fit basis should give K accurate to ~1e-3 for this small system.
         assert!(max_diff < 5e-3, "DF-K vs direct-K max diff = {} too large", max_diff);
+    }
+
+    #[test]
+    fn df_k_source_backed_matches_incore() {
+        let mol = Molecule::parse_xyz(
+            "3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n",
+            0,
+            1,
+        )
+        .unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let n = obs.nbasis();
+
+        let mut d = Array2::<f64>::zeros((n, n));
+        for i in 0..n.min(5) {
+            d[(i, i)] = 2.0;
+        }
+
+        // Huge budget → in-core path
+        let mut k_big = Array2::zeros((n, n));
+        let mut dfk_big = DfK::new(op, &obs, &dfbs, usize::MAX).unwrap();
+        dfk_big.build(&d, &mut k_big).unwrap();
+
+        // Tiny budget → spill path; must match to ≤1e-10
+        let tiny = n * n * 8 * 3;
+        let mut k_small = Array2::zeros((n, n));
+        let mut dfk_small = DfK::new(op, &obs, &dfbs, tiny).unwrap();
+        dfk_small.build(&d, &mut k_small).unwrap();
+
+        let maxdiff = (&k_big - &k_small).iter().map(|v| v.abs()).fold(0.0, f64::max);
+        assert!(maxdiff < 1e-10, "spill K != in-core K, maxdiff={maxdiff}");
     }
 }
