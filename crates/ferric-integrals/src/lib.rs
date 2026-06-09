@@ -21,3 +21,4 @@ pub mod cabs;
 pub mod schwarz;
 pub mod qqr3;
 pub mod threeindex;
+pub mod three_index_source;
