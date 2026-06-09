@@ -9,6 +9,13 @@ use crate::operator::Operator;
 use ferric_core::FerricError;
 use ndarray::{Array3, ArrayView3};
 
+/// Largest number of aux rows whose (block_naux × nao × nao × 8) bytes fit the
+/// budget; at least 1 (a single aux row must always be representable).
+fn block_naux_for(budget_bytes: usize, nao: usize) -> usize {
+    let row_bytes = nao.saturating_mul(nao).saturating_mul(8).max(1);
+    (budget_bytes / row_bytes).max(1)
+}
+
 /// One aux-block of raw (P|μν), rows [p0, p0+data.shape()[0]).
 pub struct AuxBlock<'a> {
     pub p0: usize,
@@ -82,6 +89,15 @@ mod tests {
     use ferric_core::mol::Molecule;
 
     fn water() -> (Molecule,) { (Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n", 0, 1).unwrap(),) }
+
+    #[test]
+    fn block_naux_respects_budget() {
+        // nao=10 → one aux row is 10*10*8 = 800 bytes.
+        // budget 4000 bytes → block_naux = 4000/800 = 5.
+        assert_eq!(block_naux_for(4000, 10), 5);
+        // budget smaller than one row → at least 1.
+        assert_eq!(block_naux_for(500, 10), 1);
+    }
 
     #[test]
     fn in_core_block_equals_dense_eri3() {
