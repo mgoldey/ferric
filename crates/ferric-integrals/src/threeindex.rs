@@ -236,6 +236,22 @@ mod tests {
     use ferric_core::mol::Molecule;
 
     #[test]
+    fn eri3_block_equals_dense_slice() {
+        use crate::basis_bridge::PreparedBasis;
+        let mol = Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n", 0, 1).unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let dense = eri3_tensor(op, &obs, &dfbs).unwrap();
+        let naux = dense.dim().0;
+        let (p0, p1) = (2, naux.min(9));
+        let blk = eri3_block(op, &obs, &dfbs, p0, p1).unwrap();
+        let ref_slice = dense.slice(ndarray::s![p0..p1, .., ..]);
+        let maxdiff = (&blk - &ref_slice).iter().map(|v| v.abs()).fold(0.0, f64::max);
+        assert!(maxdiff == 0.0, "eri3_block != dense slice, maxdiff={maxdiff}");
+    }
+
+    #[test]
     fn test_coulomb_metric_2c_symmetric() {
         let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
         let dfbs_set = basis::bundled("cc-pvdz-ri").unwrap();
