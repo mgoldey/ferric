@@ -118,11 +118,11 @@ pub fn solve_uhf_fockmod(
         (
             Some(crate::df_k::DfK::new(
                 ferric_integrals::operator::Operator::erfc(k_mix.omega),
-                prep, &dfbs_prep,
+                prep, &dfbs_prep, usize::MAX,
             )?),
             Some(crate::df_k::DfK::new(
                 ferric_integrals::operator::Operator::erf(k_mix.omega),
-                prep, &dfbs_prep,
+                prep, &dfbs_prep, usize::MAX,
             )?),
         )
     } else {
