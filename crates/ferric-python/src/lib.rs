@@ -286,7 +286,7 @@ fn run_scs_mp2(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
 
 
 
-// ── RS-MP2-RPA (SR-MP2 + LR-dRPA, Δ-form) ──
+// ── RS-MP2-RPA (SR-MP2 + LR-dRPA, Δ-form B or coupled-rings T) ──
 
 #[pyclass]
 #[pyo3(name = "RsMp2RpaResult")]
@@ -294,19 +294,27 @@ struct PyRsMp2RpaResult {
     #[pyo3(get)] total_energy: f64,
     #[pyo3(get)] rhf_energy: f64,
     #[pyo3(get)] e_corr: f64,
-    #[pyo3(get)] e_corr_naive: f64,
+    /// Diagnostic naive sum E_MP2[erfc] + E_dRPA[erf] (formulation A).
+    /// Only available when `formulation="delta-lr"`; None for coupled-rings.
+    #[pyo3(get)] e_corr_naive: Option<f64>,
     #[pyo3(get)] e_mp2_full: f64,
     #[pyo3(get)] e_sr_mp2: f64,
     #[pyo3(get)] e_lr_mp2: f64,
     #[pyo3(get)] e_dmp2_lr: f64,
-    #[pyo3(get)] e_drpa_lr: f64,
+    /// E_dRPA[erf] (DeltaLr only; None for CoupledRings).
+    #[pyo3(get)] e_drpa_lr: Option<f64>,
+    /// ΔdRPA[Coulomb] = E_dRPA[Coulomb] − 2·E_OS[Coulomb] (CoupledRings only).
+    #[pyo3(get)] e_delta_drpa_full: Option<f64>,
+    /// ΔdRPA[erfc] = E_dRPA[erfc] − 2·E_OS[erfc] (CoupledRings only).
+    #[pyo3(get)] e_delta_drpa_sr: Option<f64>,
 }
 
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, omega=None, frozen_core=None, k_builder=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, omega=None, frozen_core=None, k_builder=None, formulation=None))]
 fn run_rs_mp2_rpa(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
                   omega: Option<f64>, frozen_core: Option<usize>,
-                  k_builder: Option<&str>) -> PyResult<PyRsMp2RpaResult> {
+                  k_builder: Option<&str>,
+                  formulation: Option<&str>) -> PyResult<PyRsMp2RpaResult> {
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
     let op = Operator::coulomb();
@@ -319,10 +327,19 @@ fn run_rs_mp2_rpa(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSe
     cfg_rhf.df_j_aux = Some("def2-universal-jkfit".to_string());
     cfg_rhf.df_k_aux = Some("def2-universal-jkfit".to_string());
     let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &cfg_rhf).map_err(make_err)?;
+    // Map formulation string to enum.
+    let form = match formulation.unwrap_or("delta-lr") {
+        "delta-lr" => ferric_rpa::RsMp2RpaFormulation::DeltaLr,
+        "coupled-rings" => ferric_rpa::RsMp2RpaFormulation::CoupledRings,
+        other => return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "unknown formulation \"{other}\"; expected \"delta-lr\" or \"coupled-rings\""
+        ))),
+    };
     // omega is supplied in Å⁻¹; convert to Bohr⁻¹ for the operator.
     let cfg = ferric_rpa::RsMp2RpaConfig {
         omega: omega.unwrap_or(0.420) * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV,
         frozen_core: frozen_core.unwrap_or(0),
+        formulation: form,
         ..Default::default()
     };
     let r = ferric_rpa::rs_mp2_lr_rpa(&mol.inner, &prep, &dfbs, &rhf, &cfg)
@@ -337,6 +354,8 @@ fn run_rs_mp2_rpa(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSe
         e_lr_mp2: r.e_lr_mp2,
         e_dmp2_lr: r.e_dmp2_lr,
         e_drpa_lr: r.e_drpa_lr,
+        e_delta_drpa_full: r.e_delta_drpa_full,
+        e_delta_drpa_sr: r.e_delta_drpa_sr,
     })
 }
 

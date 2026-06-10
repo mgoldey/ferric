@@ -48,6 +48,17 @@ pub struct Mp2Cfg {
     pub c_ss: Option<f64>,
     /// Number of Laplace quadrature points (for laplace-mp2).
     pub n_quad: Option<usize>,
+    /// SR-MP2 + LR-RPA formulation (for rs-mp2-rpa):
+    ///
+    ///   "delta-lr"      (default) — Δ-form B: E_MP2[Coulomb] + (E_dRPA[erf] − 2·E_OS[erf]).
+    ///                   Pure-LR rings; mixed SR×LR rings dropped. Cost: 1 dRPA[erf] call.
+    ///
+    ///   "coupled-rings" — formulation T: E_MP2[Coulomb] + ΔdRPA[Coulomb] − ΔdRPA[erfc].
+    ///                   Screens all rings (ΔdRPA[Coulomb]), un-screens pure-SR rings
+    ///                   (−ΔdRPA[erfc]). Adds all mixed SR×LR rings. Cost: 2 dRPA calls.
+    ///
+    /// Both formulations have the same exact limits: ω→0 ⇒ plain MP2; ω→∞ ⇒ MP2+ΔdRPA[Coulomb].
+    pub formulation: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -259,6 +270,45 @@ omega = 0.3
         let cfg: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.method.kind, "rs-mp2-rpa");
         assert_eq!(cfg.mp2.omega, Some(0.3));
+        // Default formulation is absent (None → "delta-lr" at runtime).
+        assert_eq!(cfg.mp2.formulation, None);
+    }
+
+    #[test]
+    fn test_parse_rs_mp2_rpa_formulation() {
+        let toml_str = r#"
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+[basis]
+name = "cc-pvdz"
+[method]
+kind = "rs-mp2-rpa"
+[mp2]
+auxbasis = "cc-pvdz-ri"
+omega = 0.420
+formulation = "coupled-rings"
+"#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.method.kind, "rs-mp2-rpa");
+        assert_eq!(cfg.mp2.formulation.as_deref(), Some("coupled-rings"));
+    }
+
+    #[test]
+    fn test_parse_rs_mp2_rpa_formulation_delta_lr() {
+        let toml_str = r#"
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+[basis]
+name = "cc-pvdz"
+[method]
+kind = "rs-mp2-rpa"
+[mp2]
+auxbasis = "cc-pvdz-ri"
+omega = 0.420
+formulation = "delta-lr"
+"#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.mp2.formulation.as_deref(), Some("delta-lr"));
     }
 
 }

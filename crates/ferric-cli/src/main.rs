@@ -495,9 +495,18 @@ fn main() {
                 std::process::exit(1);
             });
             let omega_ang_inv = cfg.mp2.omega.unwrap_or(0.420);
+            let formulation = match cfg.mp2.formulation.as_deref().unwrap_or("delta-lr") {
+                "delta-lr" => ferric_rpa::RsMp2RpaFormulation::DeltaLr,
+                "coupled-rings" => ferric_rpa::RsMp2RpaFormulation::CoupledRings,
+                other => {
+                    eprintln!("error: unknown [mp2] formulation = \"{other}\"; expected \"delta-lr\" or \"coupled-rings\"");
+                    std::process::exit(1);
+                }
+            };
             let rs_cfg = ferric_rpa::rs_mp2_rpa::RsMp2RpaConfig {
                 omega: omega_ang_inv * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV,
                 frozen_core: cfg.mp2.frozen_core,
+                formulation,
                 ..Default::default()
             };
             let r = ferric_rpa::rs_mp2_rpa::rs_mp2_lr_rpa(&mol, &prep, &dfbs, &result, &rs_cfg)
@@ -508,13 +517,24 @@ fn main() {
             );
             println!("  nbasis     = {}", prep.nbasis());
             println!("RS-MP2-RPA (ω = {omega_ang_inv:.3} Å⁻¹ = {:.4} Bohr⁻¹)", rs_cfg.omega);
+            // Common lines printed for all formulations.
             println!("  E(MP2, Coulomb)      = {:>16.10} Hartree", r.e_mp2_full);
             println!("  E(SR-MP2, erfc)      = {:>16.10} Hartree", r.e_sr_mp2);
             println!("  E(LR-MP2, erf)       = {:>16.10} Hartree", r.e_lr_mp2);
             println!("  E(dMP2, erf)         = {:>16.10} Hartree", r.e_dmp2_lr);
-            println!("  E(dRPA, erf)         = {:>16.10} Hartree", r.e_drpa_lr);
-            println!("  E_corr naive (A)     = {:>16.10} Hartree   [diagnostic: misses SR×LR cross terms]", r.e_corr_naive);
-            println!("  E_corr Δ-form (B)    = {:>16.10} Hartree", r.e_corr);
+            // Formulation-specific lines.
+            match rs_cfg.formulation {
+                ferric_rpa::RsMp2RpaFormulation::DeltaLr => {
+                    println!("  E(dRPA, erf)         = {:>16.10} Hartree", r.e_drpa_lr.unwrap());
+                    println!("  E_corr naive (A)     = {:>16.10} Hartree   [diagnostic: misses SR×LR cross terms]", r.e_corr_naive.unwrap());
+                    println!("  E_corr Δ-form (B)    = {:>16.10} Hartree", r.e_corr);
+                }
+                ferric_rpa::RsMp2RpaFormulation::CoupledRings => {
+                    println!("  E(ΔdRPA, Coulomb)    = {:>16.10} Hartree", r.e_delta_drpa_full.unwrap());
+                    println!("  E(ΔdRPA, erfc)       = {:>16.10} Hartree", r.e_delta_drpa_sr.unwrap());
+                    println!("  E_corr coupled (T)   = {:>16.10} Hartree", r.e_corr);
+                }
+            }
             println!("  Total energy         = {:>16.10} Hartree", r.total_energy);
         }
         "scs-mp2" => {

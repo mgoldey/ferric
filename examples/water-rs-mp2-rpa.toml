@@ -10,3 +10,7 @@ kind = "rs-mp2-rpa"
 [mp2]
 auxbasis = "aug-cc-pvdz-rifit"
 omega = 0.420  # Å⁻¹ (dissertation erfc optimal)
+# formulation = "coupled-rings"  # default: delta-lr
+# "delta-lr"      (B): E_MP2[Coulomb] + (E_dRPA[erf] − 2·E_OS[erf]); 1 dRPA call
+# "coupled-rings" (T): E_MP2[Coulomb] + ΔdRPA[Coulomb] − ΔdRPA[erfc]; 2 dRPA calls;
+#                 adds all mixed SR×LR ring diagrams; same ω→0/ω→∞ limits as B
