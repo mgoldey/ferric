@@ -40,7 +40,7 @@ pub struct Mp2Cfg {
     #[allow(dead_code)]
     #[serde(default)]
     pub orbital_optimize: bool,
-    /// Range-separation parameter ω in Å⁻¹ (for att-rimp2). Default 0.420.
+    /// Range-separation parameter ω in Å⁻¹ (for att-rimp2 and rs-mp2-rpa). Default 0.420.
     pub omega: Option<f64>,
     /// SCS opposite-spin scaling coefficient.
     pub c_os: Option<f64>,
@@ -241,6 +241,24 @@ omega = 0.420
         let cfg: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.method.kind, "att-rimp2");
         assert!((cfg.mp2.omega.unwrap() - 0.420).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_parse_rs_mp2_rpa_config() {
+        let toml_str = r#"
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+[basis]
+name = "cc-pvdz"
+[method]
+kind = "rs-mp2-rpa"
+[mp2]
+auxbasis = "cc-pvdz-ri"
+omega = 0.3
+"#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.method.kind, "rs-mp2-rpa");
+        assert_eq!(cfg.mp2.omega, Some(0.3));
     }
 
 }

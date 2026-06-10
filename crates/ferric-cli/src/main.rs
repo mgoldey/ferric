@@ -56,8 +56,8 @@ fn main() {
     };
     let method = cfg.method.kind.as_str();
     let task = cfg.method.task.as_str();
-    if !matches!(method, "rhf" | "uhf" | "rohf" | "ksdft" | "rimp2" | "oo-rimp2" | "att-rimp2" | "scs-mp2" | "laplace-mp2" | "pdep-rpa") {
-        eprintln!("error: unsupported method.kind = \"{method}\"; expected rhf, uhf, rohf, ksdft, rimp2, oo-rimp2, att-rimp2, scs-mp2, laplace-mp2, or pdep-rpa");
+    if !matches!(method, "rhf" | "uhf" | "rohf" | "ksdft" | "rimp2" | "oo-rimp2" | "att-rimp2" | "scs-mp2" | "laplace-mp2" | "pdep-rpa" | "rs-mp2-rpa") {
+        eprintln!("error: unsupported method.kind = \"{method}\"; expected rhf, uhf, rohf, ksdft, rimp2, oo-rimp2, att-rimp2, scs-mp2, laplace-mp2, pdep-rpa, or rs-mp2-rpa");
         std::process::exit(1);
     }
     if !matches!(task, "energy" | "optimize") {
@@ -482,6 +482,34 @@ fn main() {
             println!("  E_OS       = {:.10} Hartree", att_result.spin_components.e_os);
             println!("  E_SS       = {:.10} Hartree", att_result.spin_components.e_ss);
             println!("  Total      = {:.10} Hartree", att_result.total_energy);
+        }
+        "rs-mp2-rpa" => {
+            let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+            let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
+            let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
+            let omega_ang_inv = cfg.mp2.omega.unwrap_or(0.420);
+            let rs_cfg = ferric_rpa::rs_mp2_rpa::RsMp2RpaConfig {
+                omega: omega_ang_inv * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV,
+                frozen_core: cfg.mp2.frozen_core,
+                ..Default::default()
+            };
+            let r = ferric_rpa::rs_mp2_rpa::rs_mp2_lr_rpa(&mol, &prep, &dfbs, &result, &rs_cfg)
+                .unwrap_or_else(|e| { eprintln!("error: {e}"); std::process::exit(1); });
+            println!("RS-MP2-RPA (ω = {omega_ang_inv:.3} Å⁻¹ = {:.4} Bohr⁻¹)", rs_cfg.omega);
+            println!("  E(MP2, Coulomb)      = {:>16.10} Ha", r.e_mp2_full);
+            println!("  E(SR-MP2, erfc)      = {:>16.10} Ha", r.e_sr_mp2);
+            println!("  E(LR-MP2, erf)       = {:>16.10} Ha", r.e_lr_mp2);
+            println!("  E(dMP2, erf)         = {:>16.10} Ha", r.e_dmp2_lr);
+            println!("  E(dRPA, erf)         = {:>16.10} Ha", r.e_drpa_lr);
+            println!("  E_corr naive (A)     = {:>16.10} Ha   [diagnostic: misses SR×LR cross terms]", r.e_corr_naive);
+            println!("  E_corr Δ-form (B)    = {:>16.10} Ha", r.e_corr);
+            println!("  Total energy         = {:>16.10} Ha", r.total_energy);
         }
         "scs-mp2" => {
             let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");

@@ -1,0 +1,12 @@
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "aug-cc-pvdz"
+
+[method]
+kind = "rs-mp2-rpa"
+
+[mp2]
+auxbasis = "aug-cc-pvdz-rifit"
+omega = 0.420  # Å⁻¹ (dissertation erfc optimal)
