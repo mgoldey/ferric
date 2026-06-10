@@ -46,7 +46,7 @@ pub mod sternheimer;
 pub mod sternheimer_sparse;
 
 pub use lanczos::{run_lanczos_seeded, LanczosResult};
-pub use rs_mp2_rpa::{rs_mp2_lr_rpa, RsMp2RpaConfig, RsMp2RpaResult};
+pub use rs_mp2_rpa::{rs_mp2_lr_rpa, RsMp2RpaConfig, RsMp2RpaFormulation, RsMp2RpaResult};
 
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
