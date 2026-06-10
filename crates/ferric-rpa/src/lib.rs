@@ -26,6 +26,7 @@
 
 pub mod ao_rpa;
 pub mod boys_localize;
+pub mod rs_mp2_rpa;
 pub mod channel;
 pub mod config;
 pub mod davidson;
