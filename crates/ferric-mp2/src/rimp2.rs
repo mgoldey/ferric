@@ -78,7 +78,7 @@ pub fn ri_mp2_spin_components(
 
     // (P|Q) metric and V^{-1/2}
     let v2c = threeindex::coulomb_metric_2c(op, dfbs)?;
-    let v2c_inv_sqrt = cholesky_inverse_sqrt(&v2c)?;
+    let v2c_inv_sqrt = metric_inverse_sqrt(&v2c, op)?;
 
     // (P|mu nu) 3-center integrals
     let eri3_ao = threeindex::eri3_tensor(op, obs, dfbs)?;
