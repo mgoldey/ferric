@@ -389,10 +389,10 @@ mod tests {
         let (sr, lr, full) = rs_mp2_decomposition(&mol, &obs, &dfbs, &rhf, &config).unwrap();
         let sum = sr + lr;
         eprintln!(
-            "MP2 decomposition: erfc_SR={:.8}, erf_LR={:.8}, sum={:.8}, full={:.8}, RI-error={:.2e}",
+            "MP2 decomposition: erfc_SR={:.8}, erf_LR={:.8}, sum={:.8}, full={:.8}, sum-vs-full={:.2e}",
             sr, lr, sum, full, (sum - full).abs()
         );
-        // ~10 mHa allowed — typical RI mismatch for non-Coulomb operators.
+        // 0.05 Ha allows for cross-range correlation (dominant) + per-operator RI fit error.
         assert!(
             (sum - full).abs() < 0.05,
             "erf + erfc MP2 should sum to full Coulomb MP2 within RI tolerance (diff = {:.2e})",
