@@ -42,3 +42,25 @@ Combined with ACONF (`../gmtkn30/README.md`): no fixed-ω win anywhere tested.
 Per the spec's falsifier clause, the method is parked and documented; the code
 (driver, limit tests, component diagnostics, erf-safe metric, ghost atoms)
 stays — it is validated infrastructure.
+
+## Stacked systems + formulation T (2026-06-10, evening)
+
+Stacked/saddle subset (A24 #22 ethene·ethyne, #23 ethene·ethene D2h, #24
+ethyne·ethyne D2h — the MP2-overbinding regime), CP, aug-cc-pVDZ + RI-JK,
+comparing MP2 / Δ-form B / coupled-rings T (`stacked_adz_mp2_B_T.txt`):
+
+| ω (Å⁻¹) | MP2 MAE | B MAE | T MAE |
+|---|---|---|---|
+| 0.2 | 0.071 | 0.071 | 0.159 |
+| 0.3 | 0.071 | 0.074 | 0.355 |
+| 0.42 | 0.071 | 0.104 | 0.619 |
+| 0.6 | 0.071 | 0.245 | 0.888 |
+
+Findings: (i) on the one genuinely MP2-overbound system (#24, −0.031), B at
+ω=0.3 improves it (−0.021) but T overshoots past the reference already at
+ω=0.2 (+0.086) — T's mixed-ring correction is first-order in v_lr where B's
+pure-LR rings are third-order, so **B and T do not share an ω scale**; T's
+operating window, if any, is ω ≲ 0.1–0.15 Å⁻¹. (ii) At (a)DZ with CP the
+dominant residual is basis-incompleteness underbinding, which any screening
+correction worsens. The decisive test for T is stacked systems near the basis
+limit (aug-cc-pVTZ run queued).
