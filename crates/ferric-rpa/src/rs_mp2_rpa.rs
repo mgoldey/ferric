@@ -16,21 +16,25 @@ pub struct RsMp2RpaConfig {
     /// Range-separation parameter ω in Bohr⁻¹ (CLI/Python boundary is Å⁻¹,
     /// matching att-rimp2). Default 0.222 Bohr⁻¹ = 0.420 Å⁻¹ (erfc-optimal,
     /// Goldey & Head-Gordon JPCL 2012).
+    ///
+    /// Small-ω caveat: the erf 2-center metric loses rank as ω→0 (regularized
+    /// eigh inverse handles it); ω=0.05 Bohr⁻¹ is the tested floor.
     pub omega: f64,
     pub frozen_core: usize,
     /// dRPA[erf] solver knobs. Default forces trunc_thresh = 0.0 (full rank):
     /// this is an energy method; PDEP truncation is a production-size opt-in.
+    ///
+    /// Note: the nested `rpa.frozen_core` field is ignored — `cfg.frozen_core`
+    /// is authoritative and overwrites it before each RPA call.
     pub rpa: PdepRpaConfig,
 }
 
 impl Default for RsMp2RpaConfig {
     fn default() -> Self {
-        let mut rpa = PdepRpaConfig::default();
-        rpa.trunc_thresh = 0.0;
         Self {
             omega: 0.420 * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV,
             frozen_core: 0,
-            rpa,
+            rpa: PdepRpaConfig { trunc_thresh: 0.0, ..Default::default() },
         }
     }
 }
@@ -145,16 +149,16 @@ mod tests {
     /// E_MP2[Coulomb] + (E_dRPA[Coulomb] − 2·E_OS[Coulomb]) computed explicitly.
     /// Pins the dRPA energy convention against the MP2 spin components.
     ///
-    /// At ω=50 Bohr⁻¹, erf(50r)/r ≈ 1/r at all chemically relevant r; the
-    /// residual 2-center integral mismatch (P|erf(50r)/r|Q) vs (P|1/r|Q) is
-    /// ~7 µHa for H₂/cc-pVDZ — a finite-ω truncation artefact, not a
-    /// convention error. This tolerance (1e-5 Ha) is 3 orders of magnitude
-    /// tighter than any factor-2/4 convention trap (~18 mHa = 1.8e-2 Ha), so
-    /// the test still serves its purpose of catching spin-convention bugs.
+    /// ω=200 Bohr⁻¹ is needed for 1e-6 Ha tolerance: at ω=50 the residual
+    /// 2-center integral mismatch (P|erf(50r)/r|Q) vs (P|1/r|Q) is ~7 µHa for
+    /// H₂/cc-pVDZ — a finite-ω truncation artefact, not a convention error.
+    /// At ω=200 the same artefact drops to ~5e-7 Ha, safely below 1e-6.
+    /// The tolerance is still 4 orders of magnitude tighter than any factor-2/4
+    /// convention trap (~18 mHa = 1.8e-2 Ha), so it robustly catches spin-convention bugs.
     #[test]
     fn omega_to_infinity_is_mp2_plus_delta_drpa() {
         let (mol, obs, dfbs, rhf) = setup_h2();
-        let cfg = RsMp2RpaConfig { omega: 50.0, ..Default::default() };
+        let cfg = RsMp2RpaConfig { omega: 200.0, ..Default::default() };
         let r = rs_mp2_lr_rpa(&mol, &obs, &dfbs, &rhf, &cfg).unwrap();
 
         let ri_cfg = RiMp2Config::default();
@@ -165,8 +169,8 @@ mod tests {
         let rpa_coul = run_pdep_rpa(
             &mol, &obs, &dfbs, Operator::coulomb(), &rhf, &rpa_cfg).unwrap();
         let expected = sc.e_total + rpa_coul.e_rpa - 2.0 * sc.e_os;
-        eprintln!("Δ-form(ω=50) {:.10}  MP2+ΔdRPA[Coulomb] {:.10}", r.e_corr, expected);
-        assert!((r.e_corr - expected).abs() < 1e-5,
+        eprintln!("Δ-form(ω=200) {:.10}  MP2+ΔdRPA[Coulomb] {:.10}", r.e_corr, expected);
+        assert!((r.e_corr - expected).abs() < 1e-6,
             "omega→∞ limit broken: {} vs {}", r.e_corr, expected);
     }
 }
