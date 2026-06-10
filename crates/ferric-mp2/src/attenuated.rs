@@ -376,12 +376,14 @@ mod tests {
 
     #[test]
     fn test_rs_mp2_decomposition_sums_approximately_to_full() {
-        // Range-separation identity erfc + erf = 1 ⇒ exact integrals satisfy
-        // MP2(erfc) + MP2(erf) = MP2(Coulomb). With RI approximation using
-        // cc-pVDZ-RI (fit for Coulomb), each operator picks up a different
-        // RI truncation error and the identity holds only at the mHa level,
-        // not bitwise. Production range-separated MP2 needs operator-specific
-        // RI fits.
+        // erfc + erf = 1 splits the OPERATOR, not the energy: E_MP2 is
+        // quadratic in the interaction, so (v_sr+v_lr)² has a 2·v_sr·v_lr
+        // cross term that MP2(erfc)+MP2(erf) does not contain. The sum is
+        // therefore only an approximation to MP2(Coulomb); the residual is
+        // the cross-range correlation (plus per-operator RI fit error from
+        // the Coulomb-fit aux basis). The 0.05 Ha tolerance bounds both.
+        // This is exactly why rs_mp2_lr_rpa (ferric-rpa) uses the Δ-form
+        // E_MP2[full] + (dRPA[erf] − dMP2[erf]) instead of a naive sum.
         let (mol, obs, dfbs, rhf) = setup_h2();
         let config = AttenuatedMp2Config { omega: 0.5, ..Default::default() };
         let (sr, lr, full) = rs_mp2_decomposition(&mol, &obs, &dfbs, &rhf, &config).unwrap();
