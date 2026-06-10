@@ -68,10 +68,18 @@ def energies_for(name, obs, aux, method):
     if method == "ccsd_t":
         r = ferric.run_ccsd_t(mol, obs, aux)
         return r.correlation_energy + r.t_correction  # corr only; add RHF below
+    if method.startswith("rs-mp2-rpa"):
+        # method string: "rs-mp2-rpa" (default ω=0.420 Å⁻¹) or "rs-mp2-rpa@0.3"
+        omega = float(method.split("@")[1]) if "@" in method else 0.420
+        return ferric.run_rs_mp2_rpa(mol, obs, aux, omega=omega).total_energy
     raise ValueError(method)
 
 
 def main():
+    # Usage: run_aconf.py [method] [basis]
+    # method: rhf | rimp2 | ccsd_t | rs-mp2-rpa[@omega]
+    #   rs-mp2-rpa         -- SR-MP2 + LR-dRPA, default ω=0.420 Å⁻¹
+    #   rs-mp2-rpa@0.3     -- custom ω (Å⁻¹)
     method = sys.argv[1] if len(sys.argv) > 1 else "rimp2"
     basis = sys.argv[2] if len(sys.argv) > 2 else "cc-pvdz"
     aux_name = "cc-pvdz-ri"
