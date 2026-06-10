@@ -24,7 +24,7 @@ small reactions; error grows on the most gauche-strained conformers (rxn 15,
 H_ttt→H_x+g-x+, +0.51) — the expected DZ basis + MP2-dispersion limitation, not
 a code error. A larger basis (cc-pVTZ/aug-cc-pVTZ) would tighten it.
 
-## Result (RS-MP2-RPA / cc-pVDZ, ferric, 2026-06-09)
+## Result (RS-MP2-RPA / cc-pVDZ, ferric, 2026-06-10)
 
 ω-scan (Δ-form, `rs_mp2_rpa`): 15/15 reactions vs CCSD(T)/CBS, cc-pVDZ / cc-pVDZ-RI,
 full-rank dRPA (`trunc_thresh=0`), serial legs, OPENBLAS_NUM_THREADS=1 RAYON_NUM_THREADS=6.
