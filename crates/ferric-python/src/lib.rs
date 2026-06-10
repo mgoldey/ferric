@@ -286,6 +286,52 @@ fn run_scs_mp2(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
 
 
 
+// ── RS-MP2-RPA (SR-MP2 + LR-dRPA, Δ-form) ──
+
+#[pyclass]
+#[pyo3(name = "RsMp2RpaResult")]
+struct PyRsMp2RpaResult {
+    #[pyo3(get)] total_energy: f64,
+    #[pyo3(get)] rhf_energy: f64,
+    #[pyo3(get)] e_corr: f64,
+    #[pyo3(get)] e_corr_naive: f64,
+    #[pyo3(get)] e_mp2_full: f64,
+    #[pyo3(get)] e_sr_mp2: f64,
+    #[pyo3(get)] e_dmp2_lr: f64,
+    #[pyo3(get)] e_drpa_lr: f64,
+}
+
+#[pyfunction]
+#[pyo3(signature = (mol, basis_set, auxbasis, omega=None, frozen_core=None, k_builder=None))]
+fn run_rs_mp2_rpa(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
+                  omega: Option<f64>, frozen_core: Option<usize>,
+                  k_builder: Option<&str>) -> PyResult<PyRsMp2RpaResult> {
+    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
+    let ctx = ParallelContext::default();
+    let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &rhf_config(k_builder)).map_err(make_err)?;
+    // omega is supplied in Å⁻¹; convert to Bohr⁻¹ for the operator.
+    let cfg = ferric_rpa::RsMp2RpaConfig {
+        omega: omega.unwrap_or(0.420) * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV,
+        frozen_core: frozen_core.unwrap_or(0),
+        ..Default::default()
+    };
+    let r = ferric_rpa::rs_mp2_lr_rpa(&mol.inner, &prep, &dfbs, &rhf, &cfg)
+        .map_err(make_err)?;
+    Ok(PyRsMp2RpaResult {
+        total_energy: r.total_energy,
+        rhf_energy: rhf.energy,
+        e_corr: r.e_corr,
+        e_corr_naive: r.e_corr_naive,
+        e_mp2_full: r.e_mp2_full,
+        e_sr_mp2: r.e_sr_mp2,
+        e_dmp2_lr: r.e_dmp2_lr,
+        e_drpa_lr: r.e_drpa_lr,
+    })
+}
+
 // ── KS-DFT ──
 
 #[pyclass]
@@ -583,6 +629,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDftResult>()?;
     m.add_class::<PyCcResult>()?;
     m.add_class::<PyPdepRpaResult>()?;
+    m.add_class::<PyRsMp2RpaResult>()?;
     m.add_function(wrap_pyfunction!(run_rhf, m)?)?;
     m.add_function(wrap_pyfunction!(run_optimize, m)?)?;
     m.add_function(wrap_pyfunction!(run_rimp2, m)?)?;
@@ -596,5 +643,6 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_ccsd, m)?)?;
     m.add_function(wrap_pyfunction!(run_ccsd_t, m)?)?;
     m.add_function(wrap_pyfunction!(run_pdep_rpa, m)?)?;
+    m.add_function(wrap_pyfunction!(run_rs_mp2_rpa, m)?)?;
     Ok(())
 }
