@@ -140,4 +140,33 @@ mod tests {
             "omega→0 must reduce to MP2: {} vs {}", r.e_corr, full.mp2_corr);
         assert!((r.total_energy - (rhf.energy + r.e_corr)).abs() < 1e-12);
     }
+
+    /// ω→∞: erf → Coulomb, so the Δ-form must equal
+    /// E_MP2[Coulomb] + (E_dRPA[Coulomb] − 2·E_OS[Coulomb]) computed explicitly.
+    /// Pins the dRPA energy convention against the MP2 spin components.
+    ///
+    /// At ω=50 Bohr⁻¹, erf(50r)/r ≈ 1/r at all chemically relevant r; the
+    /// residual 2-center integral mismatch (P|erf(50r)/r|Q) vs (P|1/r|Q) is
+    /// ~7 µHa for H₂/cc-pVDZ — a finite-ω truncation artefact, not a
+    /// convention error. This tolerance (1e-5 Ha) is 3 orders of magnitude
+    /// tighter than any factor-2/4 convention trap (~18 mHa = 1.8e-2 Ha), so
+    /// the test still serves its purpose of catching spin-convention bugs.
+    #[test]
+    fn omega_to_infinity_is_mp2_plus_delta_drpa() {
+        let (mol, obs, dfbs, rhf) = setup_h2();
+        let cfg = RsMp2RpaConfig { omega: 50.0, ..Default::default() };
+        let r = rs_mp2_lr_rpa(&mol, &obs, &dfbs, &rhf, &cfg).unwrap();
+
+        let ri_cfg = RiMp2Config::default();
+        let (sc, _) = ri_mp2_spin_components(
+            &mol, &obs, &dfbs, Operator::coulomb(), &rhf, &ri_cfg).unwrap();
+        let mut rpa_cfg = PdepRpaConfig::default();
+        rpa_cfg.trunc_thresh = 0.0;
+        let rpa_coul = run_pdep_rpa(
+            &mol, &obs, &dfbs, Operator::coulomb(), &rhf, &rpa_cfg).unwrap();
+        let expected = sc.e_total + rpa_coul.e_rpa - 2.0 * sc.e_os;
+        eprintln!("Δ-form(ω=50) {:.10}  MP2+ΔdRPA[Coulomb] {:.10}", r.e_corr, expected);
+        assert!((r.e_corr - expected).abs() < 1e-5,
+            "omega→∞ limit broken: {} vs {}", r.e_corr, expected);
+    }
 }
