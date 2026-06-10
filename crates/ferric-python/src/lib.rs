@@ -312,7 +312,13 @@ fn run_rs_mp2_rpa(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSe
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
     let ctx = ParallelContext::default();
-    let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &rhf_config(k_builder)).map_err(make_err)?;
+    let mut cfg_rhf = rhf_config(k_builder);
+    // Default RI-J/RI-K to def2-universal-jkfit (same convention as pdep-rpa and
+    // run_dft); keeps SCF aux separate from the SR-MP2+LR-RPA correlation aux
+    // (see ferric-jk-aux-convention). k_builder from the caller is preserved.
+    cfg_rhf.df_j_aux = Some("def2-universal-jkfit".to_string());
+    cfg_rhf.df_k_aux = Some("def2-universal-jkfit".to_string());
+    let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &cfg_rhf).map_err(make_err)?;
     // omega is supplied in Å⁻¹; convert to Bohr⁻¹ for the operator.
     let cfg = ferric_rpa::RsMp2RpaConfig {
         omega: omega.unwrap_or(0.420) * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV,
