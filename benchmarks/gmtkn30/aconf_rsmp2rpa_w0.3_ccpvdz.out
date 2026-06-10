@@ -1,0 +1,39 @@
+# ACONF / ferric  method=rs-mp2-rpa@0.3  basis=cc-pvdz  (18 conformers)
+  B_G          E = -157.90730853 Ha
+  B_T          E = -157.90835707 Ha
+  H_g+t+g-     E = -236.27260846 Ha
+  H_g+x-g-     E = -236.26907081 Ha
+  H_g+x-t+     E = -236.27018477 Ha
+  H_ggg        E = -236.27276448 Ha
+  H_gtg        E = -236.27294027 Ha
+  H_gtt        E = -236.27377675 Ha
+  H_t+g+x-     E = -236.27012880 Ha
+  H_tgg        E = -236.27332446 Ha
+  H_tgt        E = -236.27382254 Ha
+  H_ttt        E = -236.27470481 Ha
+  H_x+g-g-     E = -236.26938539 Ha
+  H_x+g-x+     E = -236.26603304 Ha
+  P_GG         E = -197.08995793 Ha
+  P_GX         E = -197.08662680 Ha
+  P_TG         E = -197.09054827 Ha
+  P_TT         E = -197.09151103 Ha
+
+# reactions (kcal/mol):  ferric vs CCSD(T)/CBS W1h-val ref
+rxn   reactant    product    ferric       ref      err
+  1        B_T        B_G     0.658     0.598    0.060
+  2       P_TT       P_TG     0.604     0.614   -0.010
+  3       P_TT       P_GG     0.975     0.961    0.014
+  4       P_TT       P_GX     3.065     2.813    0.252
+  5      H_ttt      H_gtt     0.582     0.595   -0.013
+  6      H_ttt      H_tgt     0.554     0.604   -0.050
+  7      H_ttt      H_tgg     0.866     0.934   -0.068
+  8      H_ttt      H_gtg     1.107     1.178   -0.071
+  9      H_ttt   H_g+t+g-     1.315     1.302    0.013
+ 10      H_ttt      H_ggg     1.218     1.250   -0.032
+ 11      H_ttt   H_g+x-t+     2.836     2.632    0.204
+ 12      H_ttt   H_t+g+x-     2.871     2.740    0.131
+ 13      H_ttt   H_g+x-g-     3.535     3.283    0.252
+ 14      H_ttt   H_x+g-g-     3.338     3.083    0.255
+ 15      H_ttt   H_x+g-x+     5.442     4.925    0.517
+
+# 15/15 reactions | MAE=0.130  MD=+0.097  RMSD=0.189  MAX=0.517 kcal/mol | 1831.2s
