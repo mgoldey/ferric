@@ -67,6 +67,11 @@ pub fn ks_gradient_closed(
     xc_name: &str,
     result: &ScfResult,
 ) -> Result<Array2<f64>, FerricError> {
+    if mol.atoms.iter().any(|a| a.ghost) {
+        return Err(FerricError::General(
+            "ks_gradient_closed is not implemented for molecules containing ghost atoms".into(),
+        ));
+    }
     assert!(
         matches!(result.spin, Spin::Restricted),
         "ks_gradient_closed: ScfResult.spin must be Restricted"

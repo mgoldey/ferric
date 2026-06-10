@@ -333,8 +333,8 @@ mod tests {
     fn h2_at(d: f64) -> Molecule {
         Molecule {
             atoms: vec![
-                Atom { symbol: "H".into(), z: 1, x: -d/2.0, y: 0.0, zpos: 0.0 },
-                Atom { symbol: "H".into(), z: 1, x:  d/2.0, y: 0.0, zpos: 0.0 },
+                Atom { symbol: "H".into(), z: 1, x: -d/2.0, y: 0.0, zpos: 0.0, ghost: false },
+                Atom { symbol: "H".into(), z: 1, x:  d/2.0, y: 0.0, zpos: 0.0, ghost: false },
             ],
             charge: 0,
             multiplicity: 1,
@@ -422,8 +422,8 @@ mod tests {
         };
 
         let base = vec![
-            Atom { symbol: "C".into(), z: 6, x: 0.0, y: 0.0, zpos: 0.0 },
-            Atom { symbol: "H".into(), z: 1, x: 2.0, y: 0.0, zpos: 0.0 },
+            Atom { symbol: "C".into(), z: 6, x: 0.0, y: 0.0, zpos: 0.0, ghost: false },
+            Atom { symbol: "H".into(), z: 1, x: 2.0, y: 0.0, zpos: 0.0, ghost: false },
         ];
         let mol = build(base.clone());
         let (_, dw_ana) = becke_weights_and_grad(&mol, r);
@@ -458,8 +458,8 @@ mod tests {
         // toward the smaller H (R_BS: C=0.70 Å, H=0.35 Å).
         let mol = Molecule {
             atoms: vec![
-                Atom { symbol: "C".into(), z: 6, x: 0.0, y: 0.0, zpos: 0.0 },
-                Atom { symbol: "H".into(), z: 1, x: 2.0, y: 0.0, zpos: 0.0 },
+                Atom { symbol: "C".into(), z: 6, x: 0.0, y: 0.0, zpos: 0.0, ghost: false },
+                Atom { symbol: "H".into(), z: 1, x: 2.0, y: 0.0, zpos: 0.0, ghost: false },
             ],
             charge: 0,
             multiplicity: 1,

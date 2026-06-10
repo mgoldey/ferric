@@ -42,8 +42,12 @@ impl PreparedBasis {
     /// Initializes libint2 on first call and constructs the internal C++ basis handle.
     pub fn new(mol: &Molecule, bs: &BasisSet) -> Result<Self, FerricError> {
         ensure_init();
+        // Ghost atoms get atomic_number=0 so libint2 excludes them from the
+        // nuclear-attraction operator (point-charge list passed to set_point_charges).
+        // Their z is kept non-zero in the Rust Atom so basis lookup still works.
         let c_atoms: Vec<CAtom> = mol.atoms.iter().map(|a| CAtom {
-            atomic_number: a.z as c_int, x: a.x, y: a.y, z: a.zpos,
+            atomic_number: if a.ghost { 0 } else { a.z as c_int },
+            x: a.x, y: a.y, z: a.zpos,
         }).collect();
 
         let mut c_shells = Vec::new();

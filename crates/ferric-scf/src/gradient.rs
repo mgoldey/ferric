@@ -27,6 +27,11 @@ pub fn build_energy_weighted_density(result: &ScfResult, nocc: usize) -> Array2<
 
 /// Compute the RHF analytical nuclear gradient.
 /// Returns a (natoms, 3) array of dE/dR_Ax, dE/dR_Ay, dE/dR_Az per atom.
+///
+/// Returns `Err(FerricError::Libint(...))` if the molecule contains ghost atoms —
+/// gradients with respect to ghost centers are not implemented (they involve a
+/// different 1e nuclear derivative structure and are out of scope for CP use-cases
+/// where only the real-atom geometry matters).
 pub fn rhf_gradient(
     mol: &Molecule,
     prep: &PreparedBasis,
@@ -34,6 +39,13 @@ pub fn rhf_gradient(
     bounds: &SchwarzBounds,
     result: &ScfResult,
 ) -> Result<Array2<f64>, FerricError> {
+    if mol.atoms.iter().any(|a| a.ghost) {
+        return Err(FerricError::Libint(
+            "rhf_gradient is not implemented for molecules containing ghost atoms \
+             (CP gradient requires special treatment of ghost-center derivatives)"
+                .into(),
+        ));
+    }
     let nocc = (mol.nelec() / 2) as usize;
     let w = build_energy_weighted_density(result, nocc);
     hf_gradient_with_density(mol, prep, op, bounds, result.density_r(), &w)
@@ -76,9 +88,11 @@ pub fn oneelectron_gradient(
 
     let mut grad = Array2::zeros((natoms, 3));
 
-    // 1. Nuclear repulsion gradient
+    // 1. Nuclear repulsion gradient (ghost atoms: zero charge, skip)
     for i in 0..natoms {
+        if mol.atoms[i].ghost { continue; }
         for j in (i + 1)..natoms {
+            if mol.atoms[j].ghost { continue; }
             let a = &mol.atoms[i];
             let b = &mol.atoms[j];
             let dx = a.x - b.x;
@@ -460,6 +474,11 @@ pub fn uhf_gradient(
     bounds: &SchwarzBounds,
     result: &ScfResult,
 ) -> Result<Array2<f64>, FerricError> {
+    if mol.atoms.iter().any(|a| a.ghost) {
+        return Err(FerricError::Libint(
+            "uhf_gradient is not implemented for molecules containing ghost atoms".into(),
+        ));
+    }
     assert!(matches!(result.spin, Spin::Unrestricted), "uhf_gradient: ScfResult.spin must be Unrestricted");
     let nelec = mol.nelec() as i64;
     let two_s = mol.multiplicity as i64 - 1;
@@ -503,6 +522,11 @@ pub fn rohf_gradient(
     bounds: &SchwarzBounds,
     result: &ScfResult,
 ) -> Result<Array2<f64>, FerricError> {
+    if mol.atoms.iter().any(|a| a.ghost) {
+        return Err(FerricError::Libint(
+            "rohf_gradient is not implemented for molecules containing ghost atoms".into(),
+        ));
+    }
     assert!(
         matches!(result.spin, Spin::RestrictedOpen),
         "rohf_gradient: ScfResult.spin must be RestrictedOpen"
@@ -686,9 +710,11 @@ mod tests {
         let mut nuclear_grad = Array2::zeros((natoms, 3));
         let mut twoelec_grad = Array2::zeros((natoms, 3));
 
-        // Vnn gradient
+        // Vnn gradient (ghost atoms: zero charge, skip)
         for i in 0..natoms {
+            if mol.atoms[i].ghost { continue; }
             for j in (i + 1)..natoms {
+                if mol.atoms[j].ghost { continue; }
                 let a = &mol.atoms[i];
                 let b = &mol.atoms[j];
                 let dx = a.x - b.x;

@@ -7,6 +7,15 @@ use std::fs;
 const ANGSTROM_TO_BOHR: f64 = 1.0 / 0.529_177_210_92;
 
 /// A single atom with element symbol, atomic number, and Cartesian coordinates in Bohr.
+///
+/// Ghost atoms (XYZ symbol prefixed with `@`, e.g. `@O`) carry the full basis of
+/// their element but contribute **zero nuclear charge** and **zero electrons**.
+/// They are used for counterpoise (CP) corrections.
+///
+/// Invariant: `z` is always the physical atomic number of the element (even for
+/// ghosts), so basis lookup via `for_element(z)` works unchanged.  The `ghost`
+/// flag suppresses contributions to `nelec()`, `nuclear_repulsion()`, and the
+/// nuclear-attraction one-electron integrals.
 #[derive(Debug, Clone)]
 pub struct Atom {
     pub symbol: String,
@@ -14,6 +23,8 @@ pub struct Atom {
     pub x: f64,
     pub y: f64,
     pub zpos: f64,
+    /// `true` if this is a ghost (basis-only) center: zero nuclear charge, zero electrons.
+    pub ghost: bool,
 }
 
 /// A collection of atoms forming a molecule.
@@ -73,9 +84,15 @@ impl Molecule {
                     fields.len()
                 )));
             }
-            let sym = fields[0];
+            let raw_sym = fields[0];
+            // Ghost atoms are denoted by a leading '@' (Q-Chem convention).
+            let (ghost, sym) = if let Some(stripped) = raw_sym.strip_prefix('@') {
+                (true, stripped)
+            } else {
+                (false, raw_sym)
+            };
             let z = symbol_to_z(sym).ok_or_else(|| {
-                FerricError::XyzParse(format!("unknown element {sym:?} at atom {i}"))
+                FerricError::XyzParse(format!("unknown element {raw_sym:?} at atom {i}"))
             })?;
             let x: f64 = fields[1].parse().map_err(|e| FerricError::XyzParse(format!("atom {i} x: {e}")))?;
             let y: f64 = fields[2].parse().map_err(|e| FerricError::XyzParse(format!("atom {i} y: {e}")))?;
@@ -86,16 +103,21 @@ impl Molecule {
                 x: x * ANGSTROM_TO_BOHR,
                 y: y * ANGSTROM_TO_BOHR,
                 zpos: zpos * ANGSTROM_TO_BOHR,
+                ghost,
             });
         }
         Ok(Molecule { atoms, charge, multiplicity })
     }
 
     /// Compute the classical nuclear repulsion energy in Hartree.
+    ///
+    /// Ghost atoms (zero nuclear charge) contribute nothing to this sum.
     pub fn nuclear_repulsion(&self) -> f64 {
         let mut v = 0.0;
         for i in 0..self.atoms.len() {
+            if self.atoms[i].ghost { continue; }
             for j in (i + 1)..self.atoms.len() {
+                if self.atoms[j].ghost { continue; }
                 let a = &self.atoms[i];
                 let b = &self.atoms[j];
                 let dx = a.x - b.x;
@@ -108,9 +130,11 @@ impl Molecule {
         v
     }
 
-    /// Total number of electrons (sum of atomic numbers minus charge).
+    /// Total number of electrons (sum of atomic numbers of real atoms minus charge).
+    ///
+    /// Ghost atoms (zero nuclear charge) contribute 0 electrons.
     pub fn nelec(&self) -> i32 {
-        let z_sum: i32 = self.atoms.iter().map(|a| a.z).sum();
+        let z_sum: i32 = self.atoms.iter().filter(|a| !a.ghost).map(|a| a.z).sum();
         z_sum - self.charge
     }
 }
@@ -142,5 +166,50 @@ mod tests {
         let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
         assert_eq!(mol.atoms.len(), 3);
         assert_eq!(mol.nelec(), 10);
+    }
+
+    // ── Ghost atom tests ──────────────────────────────────────────────────────
+
+    /// Parse a 4-atom XYZ with an `@O` ghost: verify ghost flag, z, nelec, Vnn.
+    #[test]
+    fn test_ghost_parse_at_o() {
+        // Water (3 real atoms) + a ghost O far away at (0, 0, 100 Å)
+        let xyz = "4\nwater + ghost O\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n@O 0.000000 0.000000 100.000000\n";
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        assert_eq!(mol.atoms.len(), 4);
+
+        // Ghost atom properties
+        let ghost = &mol.atoms[3];
+        assert!(ghost.ghost, "last atom should be a ghost");
+        assert_eq!(ghost.z, 8, "ghost O should still have z=8 for basis assignment");
+        assert_eq!(ghost.symbol, "O");
+
+        // Real atoms are not ghosts
+        for i in 0..3 {
+            assert!(!mol.atoms[i].ghost, "atom {i} should not be a ghost");
+        }
+
+        // nelec: ghost O contributes no electrons
+        let water_xyz = "3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n";
+        let water = Molecule::parse_xyz(water_xyz, 0, 1).unwrap();
+        assert_eq!(mol.nelec(), water.nelec(), "nelec should equal water alone (ghost contributes 0 electrons)");
+
+        // nuclear_repulsion: ghost O at 100 Å contributes zero
+        let vnn_ghost = mol.nuclear_repulsion();
+        let vnn_water = water.nuclear_repulsion();
+        assert!(
+            (vnn_ghost - vnn_water).abs() < 1e-12,
+            "Vnn with far ghost ({vnn_ghost}) should equal water Vnn ({vnn_water})"
+        );
+    }
+
+    /// Case-insensitive ghost: `@o` (lowercase) should work the same as `@O`.
+    #[test]
+    fn test_ghost_lowercase() {
+        let xyz = "1\nghost He lowercase\n@he 0.0 0.0 0.0\n";
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        assert!(mol.atoms[0].ghost);
+        assert_eq!(mol.atoms[0].z, 2); // He
+        assert_eq!(mol.nelec(), -0); // 0 real electrons, charge 0
     }
 }

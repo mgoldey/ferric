@@ -169,8 +169,8 @@ mod tests {
     fn h2() -> Molecule {
         Molecule {
             atoms: vec![
-                Atom { symbol: "H".into(), z: 1, x: 0.0, y: 0.0, zpos: 0.0 },
-                Atom { symbol: "H".into(), z: 1, x: 0.0, y: 0.0, zpos: 1.4 },
+                Atom { symbol: "H".into(), z: 1, x: 0.0, y: 0.0, zpos: 0.0, ghost: false },
+                Atom { symbol: "H".into(), z: 1, x: 0.0, y: 0.0, zpos: 1.4, ghost: false },
             ],
             charge: 0,
             multiplicity: 1,
