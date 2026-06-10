@@ -290,6 +290,9 @@ mod tests {
 
     /// CoupledRings, ω→0: the two ΔdRPA terms (Coulomb and erfc) become equal
     /// (erfc → Coulomb as ω→0), so their difference cancels and e_corr → plain MP2.
+    /// NOTE: the margin is cancellation-limited, not slack — at ω=0.05 the two
+    /// ΔdRPA terms are each ~7.9e-3 Ha and the residual is ~7.9e-6 against the
+    /// 1e-5 tolerance (79% of budget). A wider test ω would fail this limit.
     #[test]
     fn coupled_rings_omega_to_zero_reduces_to_mp2() {
         let (mol, obs, dfbs, rhf) = setup_h2();
