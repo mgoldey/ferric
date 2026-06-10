@@ -64,3 +64,19 @@ operating window, if any, is ω ≲ 0.1–0.15 Å⁻¹. (ii) At (a)DZ with CP th
 dominant residual is basis-incompleteness underbinding, which any screening
 correction worsens. The decisive test for T is stacked systems near the basis
 limit (aug-cc-pVTZ run queued).
+
+## aug-cc-pVTZ: success criterion MET (marginally) (2026-06-10, night)
+
+Bound 4-dimer subset, CP, aug-cc-pVTZ + RI-JK (`a24_rsmp2rpa_atz.txt`):
+MP2 MAE 0.143; Δ-form B 0.142 (ω=0.3 Å⁻¹), **0.139 (ω=0.42)**, 0.176 (0.6).
+First fixed-ω win, at the 2012 erfc-optimal ω=0.42 Å⁻¹ = 0.222 Bohr⁻¹, inside
+the pre-registered window. Mechanism as designed: at the basis limit the ethene
+dimer overbinds at MP2 (−1.197 vs −1.110) and B halves that error (−1.150 at
+ω=0.42) while leaving H-bonded systems nearly untouched. The effect is small
+(3% MAE) because only 1 of 4 systems is in the overbinding regime — stacked
+π systems at aTZ are the growth case (run in progress).
+
+Data caveat: the ω=0.1/0.2 ethene-dimer rows carry an SCF reproducibility
+anomaly (~4e-5 Ha in the ω-independent RHF column; runs executed under heavy
+box contention) — excluded from conclusions pending rerun. ω≥0.3 rows are
+self-consistent.
