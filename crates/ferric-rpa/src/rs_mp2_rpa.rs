@@ -164,13 +164,13 @@ mod tests {
         let ri_cfg = RiMp2Config::default();
         let (sc, _) = ri_mp2_spin_components(
             &mol, &obs, &dfbs, Operator::coulomb(), &rhf, &ri_cfg).unwrap();
-        let mut rpa_cfg = PdepRpaConfig::default();
-        rpa_cfg.trunc_thresh = 0.0;
+        let rpa_cfg = PdepRpaConfig { trunc_thresh: 0.0, ..Default::default() };
         let rpa_coul = run_pdep_rpa(
             &mol, &obs, &dfbs, Operator::coulomb(), &rhf, &rpa_cfg).unwrap();
         let expected = sc.e_total + rpa_coul.e_rpa - 2.0 * sc.e_os;
         eprintln!("Δ-form(ω=200) {:.10}  MP2+ΔdRPA[Coulomb] {:.10}", r.e_corr, expected);
         assert!((r.e_corr - expected).abs() < 1e-6,
             "omega→∞ limit broken: {} vs {}", r.e_corr, expected);
+        assert!((r.total_energy - (rhf.energy + r.e_corr)).abs() < 1e-12);
     }
 }

@@ -501,15 +501,20 @@ fn main() {
             };
             let r = ferric_rpa::rs_mp2_rpa::rs_mp2_lr_rpa(&mol, &prep, &dfbs, &result, &rs_cfg)
                 .unwrap_or_else(|e| { eprintln!("error: {e}"); std::process::exit(1); });
+            println!(
+                "RS-MP2-RPA/{} (aux: {}, ω={:.3} Å⁻¹) on {}",
+                bs.name, aux_name, omega_ang_inv, cfg.molecule.xyz
+            );
+            println!("  nbasis     = {}", prep.nbasis());
             println!("RS-MP2-RPA (ω = {omega_ang_inv:.3} Å⁻¹ = {:.4} Bohr⁻¹)", rs_cfg.omega);
-            println!("  E(MP2, Coulomb)      = {:>16.10} Ha", r.e_mp2_full);
-            println!("  E(SR-MP2, erfc)      = {:>16.10} Ha", r.e_sr_mp2);
-            println!("  E(LR-MP2, erf)       = {:>16.10} Ha", r.e_lr_mp2);
-            println!("  E(dMP2, erf)         = {:>16.10} Ha", r.e_dmp2_lr);
-            println!("  E(dRPA, erf)         = {:>16.10} Ha", r.e_drpa_lr);
-            println!("  E_corr naive (A)     = {:>16.10} Ha   [diagnostic: misses SR×LR cross terms]", r.e_corr_naive);
-            println!("  E_corr Δ-form (B)    = {:>16.10} Ha", r.e_corr);
-            println!("  Total energy         = {:>16.10} Ha", r.total_energy);
+            println!("  E(MP2, Coulomb)      = {:>16.10} Hartree", r.e_mp2_full);
+            println!("  E(SR-MP2, erfc)      = {:>16.10} Hartree", r.e_sr_mp2);
+            println!("  E(LR-MP2, erf)       = {:>16.10} Hartree", r.e_lr_mp2);
+            println!("  E(dMP2, erf)         = {:>16.10} Hartree", r.e_dmp2_lr);
+            println!("  E(dRPA, erf)         = {:>16.10} Hartree", r.e_drpa_lr);
+            println!("  E_corr naive (A)     = {:>16.10} Hartree   [diagnostic: misses SR×LR cross terms]", r.e_corr_naive);
+            println!("  E_corr Δ-form (B)    = {:>16.10} Hartree", r.e_corr);
+            println!("  Total energy         = {:>16.10} Hartree", r.total_energy);
         }
         "scs-mp2" => {
             let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");

@@ -297,6 +297,7 @@ struct PyRsMp2RpaResult {
     #[pyo3(get)] e_corr_naive: f64,
     #[pyo3(get)] e_mp2_full: f64,
     #[pyo3(get)] e_sr_mp2: f64,
+    #[pyo3(get)] e_lr_mp2: f64,
     #[pyo3(get)] e_dmp2_lr: f64,
     #[pyo3(get)] e_drpa_lr: f64,
 }
@@ -327,6 +328,7 @@ fn run_rs_mp2_rpa(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSe
         e_corr_naive: r.e_corr_naive,
         e_mp2_full: r.e_mp2_full,
         e_sr_mp2: r.e_sr_mp2,
+        e_lr_mp2: r.e_lr_mp2,
         e_dmp2_lr: r.e_dmp2_lr,
         e_drpa_lr: r.e_drpa_lr,
     })
