@@ -137,6 +137,8 @@ def estimate(atoms, basis):
 def write_if_changed(path, content):
     if not path.exists() or path.read_text() != content:
         path.write_text(content)
+        return True
+    return False
 
 
 def xyz_text(atoms, comment):
@@ -179,7 +181,10 @@ def build_jobs():
             for tag, atoms in frags.items():
                 sysname = f"{dbse}-{idx:02d}"
                 xyz_path = ROOT / "geoms" / f"{sysname}_{tag}.xyz"
-                write_if_changed(xyz_path, xyz_text(atoms, f"{sysname} {tag}"))
+                geom_drift = write_if_changed(xyz_path, xyz_text(atoms, f"{sysname} {tag}"))
+                if geom_drift:
+                    for stale in (ROOT / "out").glob(f"{sysname}_{tag}_*"):
+                        stale.unlink()
                 for basis in BASES:
                     est, nbf, naux = estimate(atoms, basis)
                     for method in METHODS:
@@ -189,7 +194,10 @@ def build_jobs():
                             excluded.append((key, est / GB))
                             continue
                         tt = toml_text(xyz_path, basis, method, trunc)
-                        write_if_changed(ROOT / "toml" / f"{key}.toml", tt)
+                        if write_if_changed(ROOT / "toml" / f"{key}.toml", tt):
+                            # settings drift invalidates any prior result
+                            (ROOT / "out" / f"{key}.out").unlink(missing_ok=True)
+                            (ROOT / "out" / f"{key}.failed").unlink(missing_ok=True)
                         jobs.append(dict(key=key, est=est, nbf=nbf, naux=naux,
                                          method=method, basis=basis, attempts=0,
                                          exclusive=est > EXCLUSIVE_GB))
