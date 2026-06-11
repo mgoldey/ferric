@@ -1,0 +1,10 @@
+A24.py
+S22.py
+__pycache__/
+geoms/
+toml/
+out/*.part
+out/*.err
+out/*.time
+grid.log
+status.json
