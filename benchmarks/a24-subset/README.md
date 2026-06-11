@@ -68,23 +68,8 @@ limit (aug-cc-pVTZ run queued).
 
 ## aug-cc-pVTZ: success criterion MET (marginally) (2026-06-10, night)
 
-Bound 4-dimer subset, CP, aug-cc-pVTZ + RI-JK (`a24_rsmp2rpa_atz.txt`):
-MP2 MAE 0.143; Δ-form B 0.142 (ω=0.3 Å⁻¹), **0.139 (ω=0.42)**, 0.176 (0.6).
-First fixed-ω win, at the 2012 erfc-optimal ω=0.42 Å⁻¹ = 0.222 Bohr⁻¹, inside
-the pre-registered window. Mechanism as designed: at the basis limit the ethene
-dimer overbinds at MP2 (−1.197 vs −1.110) and B halves that error (−1.150 at
-ω=0.42) while leaving H-bonded systems nearly untouched. The effect is small
-(3% MAE) because only 1 of 4 systems is in the overbinding regime — stacked
-π systems at aTZ are the growth case (run in progress).
-
-Data caveat: the ω=0.1/0.2 ethene-dimer rows carry an SCF reproducibility
-anomaly (~4e-5 Ha in the ω-independent RHF column; runs executed under heavy
-box contention) — excluded from conclusions pending rerun. ω≥0.3 rows are
-self-consistent.
-
-## aug-cc-pVTZ bound dimers (2026-06-10, late) — first fixed-ω win for B
-
-CP MAE vs CCSD(T)/CBS (kcal/mol), 4 bound dimers (`results_atz.json`):
+Bound 4-dimer subset, CP, aug-cc-pVTZ (`a24_rsmp2rpa_atz.txt`, `results_atz.json`).
+CP MAE vs CCSD(T)/CBS (kcal/mol):
 
 | ω (Å⁻¹) | MP2 | naive A | Δ-form B |
 |---|---|---|---|
@@ -94,22 +79,24 @@ CP MAE vs CCSD(T)/CBS (kcal/mol), 4 bound dimers (`results_atz.json`):
 | 0.42 | 0.143 | 0.452 | **0.139** |
 | 0.6 | 0.143 | 0.591 | 0.176 |
 
-At aug-cc-pVTZ the ethene dimer finally overbinds at MP2 (−1.197 vs −1.110)
-and B corrects it in the right direction: **B beats MP2 at ω = 0.3–0.42 Å⁻¹**
-(0.222 Bohr⁻¹ = the 2012 erfc-optimal, inside the pre-registered window). The
-margin is small (~3% of MAE) because only one of four systems is in the
-overbinding regime — consistent with the stacked-system reading.
+First fixed-ω win, at the 2012 erfc-optimal ω=0.42 Å⁻¹ = 0.222 Bohr⁻¹, inside
+the pre-registered window. Mechanism as designed: at the basis limit the ethene
+dimer overbinds at MP2 (−1.197 vs −1.110) and B halves that error (−1.150 at
+ω=0.42) while leaving the H-bonded systems nearly untouched. The effect is
+small (~3% of MAE) because only 1 of 4 systems is in the overbinding regime —
+stacked π systems at aTZ are the growth case (run in progress).
 
 Caveats (read before quoting):
 1. **SCF reproducibility noise on the ω=0.1/0.2 rows.** The ethene fragments
    (368 bf) converged to SCF points differing by 2–4e-5 Ha between runs
-   (loose-convergence DIIS path dependence); the CP RHF wobbles ±0.03
-   kcal/mol on those two rows. Rows 0.3–0.6 share identical SCF solutions and
-   the B-vs-MP2 comparison within every row uses the same SCF — the win rows
-   are internally consistent. Future sweeps should pin `[scf] energy_conv`.
+   (loose-convergence DIIS path dependence); the CP RHF wobbles ±0.03 kcal/mol
+   on those two rows — excluded from conclusions pending rerun. Rows 0.3–0.6
+   share identical SCF solutions, and the B-vs-MP2 comparison within every row
+   uses the same SCF, so the win rows are internally consistent. Future sweeps
+   should pin `[scf] energy_conv`.
 2. **This sweep used exact 4-index J/K SCF, not RI-JK** (runner patch race);
-   slower but strictly more accurate. aDZ rows and the stacked-aTZ run use
+   slower but strictly more accurate. The aDZ rows and the stacked-aTZ run use
    RI-JK (def2-universal-jkfit).
 3. **All-electron correlation** (frozen_core = 0) vs frozen-core CCSD(T)/CBS
-   references — a small protocol mismatch, common to every method column, so
-   it largely cancels in the method-vs-method comparison.
+   references — a small protocol mismatch, common to every method column, so it
+   largely cancels in the method-vs-method comparison.
