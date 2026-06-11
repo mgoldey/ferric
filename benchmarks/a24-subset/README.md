@@ -111,3 +111,28 @@ correction too weak — the ω-scale law of §5 of the methodology doc). T's
 operating window confirmed at ω≈0.2 Å⁻¹; no damping needed (required c ≈ 1).
 Verdict: **B for mixed bound systems at ω≈0.42; T for π-stack overbinding at
 ω≈0.2** — two regimes, one derivation. Scale-up test (benzene dimer) next.
+
+## Stacked systems at aug-cc-pVTZ: T's regime found (2026-06-10, midnight)
+
+A24 #23 (ethene·ethene D2h) + #24 (ethyne·ethyne D2h), CP, aug-cc-pVTZ +
+RI-JK (def2-universal-jkfit), MP2/B/T (`stacked_atz_mp2_B_T.txt`,
+`stacked_atz.json`). NOTE: the .txt's printed MAE/RMSE divide by a hardcoded
+N=3 from the aDZ runner — corrected N=2 values:
+
+| ω (Å⁻¹) | MP2 | Δ-form B | coupled T |
+|---|---|---|---|
+| 0.1 | 0.184/0.198 | 0.184/0.198 | 0.170/0.185 |
+| 0.2 | 0.184/0.198 | 0.183/0.197 | **0.075/0.100** |
+| 0.3 | 0.184/0.198 | 0.174/0.189 | 0.124/0.141 |
+
+(MAE/RMSE, kcal/mol.) At the basis limit both stacks overbind at MP2
+(#23 −0.110, #24 −0.258) and **T at ω=0.2 Å⁻¹ cuts the error 2.4×**
+(#23: −0.010 — essentially exact; #24: −0.141). B barely moves at these ω
+(its pure-LR ring correction is 3rd-order in v_lr). T's optimum sits at
+ω≈0.2 Å⁻¹, below B's 0.42 — confirming the separate-ω-scales reading from
+aDZ, now with the sign working *for* T instead of against it.
+
+Caveats: N=2, both systems same error sign, both are saddle-point stacked
+geometries (not minima); all-electron correlation vs frozen-core refs.
+Next falsifiable step: a real π-stack minimum at aTZ (S22 benzene dimer PD)
+at ω=0.2, plus a check that ω=0.2 T does not damage the bound-dimer set.
