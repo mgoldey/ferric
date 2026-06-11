@@ -46,5 +46,6 @@ There is no fixed-ω win on ACONF; errors at ω ≤ 0.3 Å⁻¹ are negligible r
 the RI-MP2 baseline.
 
 The spec's pre-registered decisive success criterion — "RS-MP2-RPA beats plain MP2 MAE
-on dispersion-bound dimers (A24 subset)" — was subsequently run (see `../a24-subset/README.md`): the falsifier fired —
-Δ-form never beats MP2 at any ω. Method parked.
+on dispersion-bound dimers (A24 subset)" — was subsequently run (see `../a24-subset/README.md`): at (a)DZ the falsifier
+fired, but at aug-cc-pVTZ the criterion is MET marginally (B 0.139 vs MP2
+0.143 kcal/mol at ω=0.42) via the π-overbinding mechanism.

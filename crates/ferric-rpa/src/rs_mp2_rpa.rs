@@ -47,20 +47,15 @@ use crate::{run_pdep_rpa, PdepRpaConfig};
 /// TOML: `[mp2] formulation = "delta-lr"` (default) or `"coupled-rings"`
 /// Python: `run_rs_mp2_rpa(..., formulation="delta-lr")` (default) or
 ///         `formulation="coupled-rings"`
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RsMp2RpaFormulation {
     /// Δ-form (formulation B): E_MP2[Coulomb] + (E_dRPA[erf] − 2·E_OS[erf]).
     /// Pure-LR rings only; mixed SR×LR rings dropped. Default.
+    #[default]
     DeltaLr,
     /// Coupled-rings (formulation T): MP2 + ΔdRPA[Coulomb] − ΔdRPA[erfc].
     /// Adds all mixed SR×LR rings vs DeltaLr; no pure-SR rings ≥3rd order.
     CoupledRings,
-}
-
-impl Default for RsMp2RpaFormulation {
-    fn default() -> Self {
-        RsMp2RpaFormulation::DeltaLr
-    }
 }
 
 /// Configuration for SR-MP2 + LR-RPA.

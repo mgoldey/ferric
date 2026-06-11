@@ -6,9 +6,10 @@ The pre-registered success criterion from
 > B at one fixed ω (0.2–0.3 Bohr⁻¹) beats plain MP2 MAE on the
 > dispersion-bound dimers without per-system fitting.
 
-**Verdict: FALSIFIED — the method is parked.** The Δ-form (B) never beats MP2
-at any ω on the four dispersion-bound A24 dimers; it ties MP2 in the ω→0 limit
-and degrades monotonically. The naive sum (A) is worse and degrades faster.
+**Verdict (chronological — see sections below): falsified at cc-pVDZ and
+aug-cc-pVDZ** (B never beats MP2; basis-incompleteness underbinding dominates),
+**criterion MET marginally at aug-cc-pVTZ** (B 0.139 vs MP2 0.143 at ω=0.42,
+the predicted π-overbinding mechanism). The naive sum (A) is worse everywhere.
 
 ## Setup
 
