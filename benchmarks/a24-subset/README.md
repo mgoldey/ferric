@@ -81,3 +81,35 @@ Data caveat: the ω=0.1/0.2 ethene-dimer rows carry an SCF reproducibility
 anomaly (~4e-5 Ha in the ω-independent RHF column; runs executed under heavy
 box contention) — excluded from conclusions pending rerun. ω≥0.3 rows are
 self-consistent.
+
+## aug-cc-pVTZ bound dimers (2026-06-10, late) — first fixed-ω win for B
+
+CP MAE vs CCSD(T)/CBS (kcal/mol), 4 bound dimers (`results_atz.json`):
+
+| ω (Å⁻¹) | MP2 | naive A | Δ-form B |
+|---|---|---|---|
+| 0.1 | 0.145 | 0.142 | 0.145 |
+| 0.2 | 0.166 | 0.155 | 0.166 |
+| 0.3 | 0.143 | 0.275 | **0.142** |
+| 0.42 | 0.143 | 0.452 | **0.139** |
+| 0.6 | 0.143 | 0.591 | 0.176 |
+
+At aug-cc-pVTZ the ethene dimer finally overbinds at MP2 (−1.197 vs −1.110)
+and B corrects it in the right direction: **B beats MP2 at ω = 0.3–0.42 Å⁻¹**
+(0.222 Bohr⁻¹ = the 2012 erfc-optimal, inside the pre-registered window). The
+margin is small (~3% of MAE) because only one of four systems is in the
+overbinding regime — consistent with the stacked-system reading.
+
+Caveats (read before quoting):
+1. **SCF reproducibility noise on the ω=0.1/0.2 rows.** The ethene fragments
+   (368 bf) converged to SCF points differing by 2–4e-5 Ha between runs
+   (loose-convergence DIIS path dependence); the CP RHF wobbles ±0.03
+   kcal/mol on those two rows. Rows 0.3–0.6 share identical SCF solutions and
+   the B-vs-MP2 comparison within every row uses the same SCF — the win rows
+   are internally consistent. Future sweeps should pin `[scf] energy_conv`.
+2. **This sweep used exact 4-index J/K SCF, not RI-JK** (runner patch race);
+   slower but strictly more accurate. aDZ rows and the stacked-aTZ run use
+   RI-JK (def2-universal-jkfit).
+3. **All-electron correlation** (frozen_core = 0) vs frozen-core CCSD(T)/CBS
+   references — a small protocol mismatch, common to every method column, so
+   it largely cancels in the method-vs-method comparison.
