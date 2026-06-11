@@ -100,3 +100,14 @@ Caveats (read before quoting):
 3. **All-electron correlation** (frozen_core = 0) vs frozen-core CCSD(T)/CBS
    references — a small protocol mismatch, common to every method column, so it
    largely cancels in the method-vs-method comparison.
+
+## aug-cc-pVTZ stacked: formulation T validated (2026-06-10, late)
+
+#23/#24, CP, aug-cc-pVTZ + RI-JK (`stacked_atz_mp2_B_T.txt`; corrected MAEs —
+the runner's printed MAE divides by 3 with 2 systems): at the basis limit both
+stacks overbind at MP2 (−0.110/−0.258) and **T at ω=0.2 Å⁻¹ cuts the MAE 2.5×
+(0.075 vs MP2 0.184)**, ethene stack to −0.010. B moves ≤0.010 (third-order
+correction too weak — the ω-scale law of §5 of the methodology doc). T's
+operating window confirmed at ω≈0.2 Å⁻¹; no damping needed (required c ≈ 1).
+Verdict: **B for mixed bound systems at ω≈0.42; T for π-stack overbinding at
+ω≈0.2** — two regimes, one derivation. Scale-up test (benzene dimer) next.
