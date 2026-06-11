@@ -44,14 +44,21 @@ BIN = str((ROOT / "../../target/release/ferric-cli").resolve())
 BASIS_DIR = ROOT / "../../crates/ferric-core/src/basis/bundled"
 
 GB = 1e9
-MEM_BUDGET = 14 * GB      # sum of running estimates
+MEM_BUDGET = 14 * GB      # sum of running estimates (concurrent jobs)
 FLOOR = 2.5 * GB          # MemAvailable floor -> watchdog kills largest job
-JOB_CAP = 12 * GB         # estimates above this are infeasible on this box
+JOB_CAP = 17 * GB         # above this: infeasible even run alone (box: ~19G avail)
+RLIMIT_MAX = 18 * GB      # absolute per-child address-space ceiling
 EXCLUSIVE_GB = 6 * GB     # bigger than this -> run alone with all cores
 MAX_WORKERS = 4
-RAYON = 3                 # 4 workers x 3 threads = 12 cores
-RAYON_EXCLUSIVE = 12
-CAL, BASE = 2.0, 0.5 * GB  # est = BASE + CAL * naux*nbf^2*8 (empirical)
+# The DF-JK SCF + RI-MP2 + dRPA pipeline is OpenBLAS-bound, NOT rayon-bound
+# (rimp2.rs / rs_mp2_rpa.rs have no rayon; a 20-min NLWP=1 run proved the
+# DF path spawns none either). Thread via OPENBLAS_NUM_THREADS, rayon=1.
+BLAS = 3                  # 4 workers x 3 BLAS threads = 12 cores
+BLAS_EXCLUSIVE = 12
+# est = BASE + CAL * naux*nbf^2*8. CAL calibrated on the benzene-fragment
+# cr02 full-rank run: AO 3-index tensor naux*nbf^2*8 = 1.34 GB, observed
+# peak RSS >= 5.2 GB => ~4 live copies across the MP2/dRPA stages.
+CAL, BASE = 4.5, 0.5 * GB
 TIMEOUT = 6 * 3600
 POLL = 3.0
 TRUNC = 1e-4
@@ -224,17 +231,17 @@ def make_preexec(limit_bytes):
     return fn
 
 
-def launch(job, rayon):
+def launch(job, blas):
     key = job["key"]
-    limit = int(job["est"] * 2 + 2 * GB)
-    env = dict(os.environ, OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1",
-               RAYON_NUM_THREADS=str(rayon))
+    limit = int(min(job["est"] * 2 + 2 * GB, RLIMIT_MAX))
+    env = dict(os.environ, OPENBLAS_NUM_THREADS=str(blas), OMP_NUM_THREADS="1",
+               RAYON_NUM_THREADS="1")
     part = open(ROOT / "out" / f"{key}.out.part", "w")
     err = open(ROOT / "out" / f"{key}.err", "w")
     proc = subprocess.Popen([BIN, str(ROOT / "toml" / f"{key}.toml")],
                             stdout=part, stderr=err, env=env,
                             preexec_fn=make_preexec(limit), cwd=ROOT)
-    log(f"start {key} est={job['est']/GB:.1f}G nbf={job['nbf']} rayon={rayon} pid={proc.pid}")
+    log(f"start {key} est={job['est']/GB:.1f}G nbf={job['nbf']} blas={blas} pid={proc.pid}")
     return dict(job=job, proc=proc, t0=time.time(), part=part, err=err)
 
 
@@ -271,11 +278,12 @@ def finish(rec):
 
 # --------------------------------------------------------- trunc validation
 def run_sync(toml_path, out_path, est):
-    env = dict(os.environ, OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1",
-               RAYON_NUM_THREADS=str(RAYON_EXCLUSIVE))
+    env = dict(os.environ, OPENBLAS_NUM_THREADS=str(BLAS_EXCLUSIVE),
+               OMP_NUM_THREADS="1", RAYON_NUM_THREADS="1")
     with open(out_path, "w") as f:
         subprocess.run([BIN, str(toml_path)], stdout=f, stderr=subprocess.STDOUT,
-                       env=env, preexec_fn=make_preexec(int(est * 2 + 2 * GB)),
+                       env=env,
+                       preexec_fn=make_preexec(int(min(est * 2 + 2 * GB, RLIMIT_MAX))),
                        timeout=TIMEOUT, cwd=ROOT)
 
 
@@ -295,6 +303,11 @@ def validate_trunc():
     fr_toml = ROOT / "toml" / "val_benzene_fullrank.toml"
     write_if_changed(fr_toml, toml_text(xyz, "adz", "cr02", trunc=False))
     fr_out = ROOT / "out" / "val_benzene_fullrank.out"
+    # an externally launched full-rank run may already be in flight — wait
+    while subprocess.run(["pgrep", "-f", "val_benzene_fullrank.toml"],
+                         capture_output=True).returncode == 0:
+        log("trunc validation: waiting for in-flight full-rank benzene run")
+        time.sleep(30)
     if not (fr_out.exists() and "Total energy" in fr_out.read_text()):
         log("trunc validation: running full-rank benzene fragment (aDZ, coupled-rings)")
         run_sync(fr_toml, fr_out, est)
@@ -364,14 +377,14 @@ def main():
                 if running:
                     continue
                 pending.remove(job)
-                running.append(launch(job, RAYON_EXCLUSIVE))
+                running.append(launch(job, BLAS_EXCLUSIVE))
                 break
             if (len(running) < MAX_WORKERS
                     and not any(r["job"]["exclusive"] for r in running)
                     and used + job["est"] <= MEM_BUDGET
                     and mem_available() - job["est"] >= FLOOR + 1 * GB):
                 pending.remove(job)
-                running.append(launch(job, RAYON))
+                running.append(launch(job, BLAS))
                 used += job["est"]
         json.dump(dict(pending=len(pending), running=[r["job"]["key"] for r in running],
                        done=n_done, failed=n_fail, t=time.time()),
