@@ -137,7 +137,7 @@ fn main() {
         level_shift: cfg.scf.level_shift.unwrap_or(0.0),
         newton_trigger: 0.0,
         ah_trigger: 0.0,
-        mom_after_iter: 0,
+        mom_after_iter: cfg.scf.mom_after_iter,
         constraints: Vec::new(),
         cdft_lambda_tol: 1e-5,
         fractional_occ: false,

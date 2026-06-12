@@ -183,6 +183,11 @@ pub struct ScfCfg {
     /// value of 0.2 is a useful default for OH-like doublets at LDA/PBE
     /// where DIIS otherwise plateaus.
     pub level_shift: Option<f64>,
+    /// Maximum-Overlap Method: pin the occupied set by AO-overlap with the
+    /// previous iteration's occupation after this many DIIS iterations
+    /// (0 = aufbau throughout). Fixes occupied-set flip-flop non-convergence.
+    #[serde(default)]
+    pub mom_after_iter: usize,
 }
 
 impl Default for ScfCfg {
@@ -197,6 +202,7 @@ impl Default for ScfCfg {
             df_j_aux: None,
             df_k_aux: None,
             level_shift: None,
+            mom_after_iter: 0,
         }
     }
 }

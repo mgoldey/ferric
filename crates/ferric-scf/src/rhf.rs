@@ -68,11 +68,13 @@ pub struct RhfConfig {
     /// err_max < newton_trigger) and AH takes over when err_max < ah_trigger
     /// (typically a tighter threshold).
     pub ah_trigger: f64,
-    /// If > 0 in ROHF/ROKS: activate Maximum-Overlap Method reordering
-    /// after this many DIIS iters. From iter `mom_after_iter + 1` onward,
-    /// the occupied MO set is picked by AO-overlap with the previous-iter
-    /// accepted set (rather than by ε). Default 0 = MOM disabled.
-    /// Suggested value: 5 (let DIIS descend into a basin first).
+    /// If > 0 (RHF/UHF/ROHF/ROKS): activate Maximum-Overlap Method
+    /// reordering after this many DIIS iters. From iter `mom_after_iter + 1`
+    /// onward, the occupied MO set is picked by AO-overlap with the
+    /// previous-iter accepted set (rather than by ε). Default 0 = disabled.
+    /// MOM pins whatever basin DIIS holds at arming — it breaks occupied-set
+    /// flip-flop, it does not steer to the ground state. Arm only after DIIS
+    /// has settled (open-shell plateaus: ~5; closed-shell wanderers: 50+).
     pub mom_after_iter: usize,
     /// cDFT constraints. Empty (default) = ordinary SCF. Each constraint pins a
     /// fragment population (charge or spin) to a target via a Lagrange
@@ -153,6 +155,8 @@ pub fn solve_rhf(
     let mut j_buf = Array2::<f64>::zeros((n, n));
     let mut k_buf = Array2::<f64>::zeros((n, n));
     let mut diis = Diis::new(config.diis_size);
+    // MOM reference: last accepted occupied MO block (None until armed).
+    let mut mom_ref: Option<Array2<f64>> = None;
     let mut prev_e = 0.0;
     let mut total_quartets = 0;
 
@@ -384,7 +388,20 @@ pub fn solve_rhf(
         prev_e = energy;
 
         let f_new = diis.step(&f, &err);
-        let (_, c) = diagonalize(&f_new, &s_inv_sqrt)?;
+        let (_, mut c) = diagonalize(&f_new, &s_inv_sqrt)?;
+
+        // MOM occupied-orbital selection from iter mom_after_iter+1: pin the
+        // occupied set by AO-overlap with the previous accepted occupation
+        // instead of aufbau (breaks occupied-set flip-flop, e.g. C2H4·Ar).
+        if config.mom_after_iter > 0 && iter > config.mom_after_iter {
+            if let Some(r) = mom_ref.as_ref() {
+                let empty_open = Array2::<f64>::zeros((c.nrows(), 0));
+                c = crate::mom::mom_reorder(&c, &s, r, &empty_open, nocc, 0);
+            }
+        }
+        if config.mom_after_iter > 0 && iter >= config.mom_after_iter {
+            mom_ref = Some(c.slice(ndarray::s![.., ..nocc]).to_owned());
+        }
 
         // Rebuild density: D = 2 * C_occ @ C_occ^T  (BLAS dgemm)
         let c_occ = c.slice(ndarray::s![.., ..nocc]);
@@ -652,6 +669,67 @@ mod tests {
                 ref_energy
             );
         }
+    }
+
+    /// MOM must not change where a well-behaved SCF converges.
+    #[test]
+    fn rhf_mom_no_harm_water() {
+        let xyz = "3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n";
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let bs = basis::bundled("cc-pvdz").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ParallelContext::default();
+        let base = RhfConfig { energy_conv: 1e-12, ..Default::default() };
+        let mom = RhfConfig { mom_after_iter: 2, ..base.clone() };
+        let e0 = solve_rhf(&ctx, &mol, &prep, op, &bounds, &base).unwrap().energy;
+        let e1 = solve_rhf(&ctx, &mol, &prep, op, &bounds, &mom).unwrap().energy;
+        assert!((e0 - e1).abs() < 1e-9, "MOM changed water RHF: {e0} vs {e1}");
+    }
+
+    /// A24-21 (C2H4·Ar dimer, aug-cc-pVDZ, DF-JK): aufbau DIIS-8 plateaus
+    /// ~33 Ha above the minimum (err_max ~0.9, occupied-set flip-flop) and
+    /// never converges in 400 iterations. MOM's contract is to pin the
+    /// occupation and kill the flip-flop: with MOM armed at iter 80,
+    /// the SCF *converges* — to whichever stationary state DIIS's basin
+    /// held at arming (here ~-604, an excited solution 0.9 Ha above the
+    /// C2H4+Ar ground state; the ground-state fix for this system is
+    /// diis_size=16, with or without MOM). Arming while DIIS still wanders
+    /// (iter <~50) pins worse states.
+    /// Slow (~2 min release): run with --ignored.
+    #[test]
+    #[ignore]
+    fn rhf_mom_converges_c2h4_ar_dimer() {
+        let xyz = "7\na24-21 dimer\nC 0.00000000 0.66718073 -2.29024825\nC 0.00000000 -0.66718073 -2.29024825\nH -0.92400768 1.23202333 -2.28975239\nH 0.92400768 1.23202333 -2.28975239\nH -0.92400768 -1.23202333 -2.28975239\nH 0.92400768 -1.23202333 -2.28975239\nAr -0.00000000 0.00000000 1.60829261\n";
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let bs = basis::bundled("aug-cc-pvdz").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ParallelContext::default();
+        let config = RhfConfig {
+            max_iter: 400,
+            df_j_aux: Some("def2-universal-jkfit".into()),
+            df_k_aux: Some("def2-universal-jkfit".into()),
+            mom_after_iter: 80,
+            ..Default::default()
+        };
+        let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
+        assert!(result.converged, "MOM did not break the DIIS flip-flop");
+        assert!(
+            result.energy < -600.0,
+            "C2H4·Ar dimer: converged to {:.10}, not in the molecular basin",
+            result.energy
+        );
+        // Ground-state check: DIIS-16 + MOM lands on the C2H4+Ar limit.
+        let config16 = RhfConfig { diis_size: 16, ..config };
+        let r16 = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config16).unwrap();
+        assert!(
+            (r16.energy - (-604.8439254747)).abs() < 1e-5,
+            "DIIS-16+MOM: got {:.10}, expected -604.8439254747",
+            r16.energy
+        );
     }
 
     #[test]
