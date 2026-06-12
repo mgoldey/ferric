@@ -160,7 +160,10 @@ def xyz_text(atoms, comment):
 def toml_text(xyz, basis, method, trunc):
     obs, aux = BASES[basis]
     t = f'[molecule]\nxyz = "{xyz}"\n\n[basis]\nname = "{obs}"\n\n'
-    t += '[scf]\ndf_j_aux = "def2-universal-jkfit"\ndf_k_aux = "def2-universal-jkfit"\n\n'
+    # max_iter 400: the A24 argon dimers (20, 21) need 100-400 DIIS
+    # iterations; converged energies are iteration-count independent.
+    t += ('[scf]\ndf_j_aux = "def2-universal-jkfit"\n'
+          'df_k_aux = "def2-universal-jkfit"\nmax_iter = 400\n\n')
     if method == "scs":
         t += f'[method]\nkind = "scs-mp2"\n\n[mp2]\nauxbasis = "{aux}"\n'
     else:
