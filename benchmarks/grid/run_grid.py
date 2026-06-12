@@ -157,13 +157,21 @@ def xyz_text(atoms, comment):
     return "\n".join(lines) + "\n"
 
 
-def toml_text(xyz, basis, method, trunc):
+# Per-system SCF overrides (keyed by sysname, applied to all fragments of the
+# system for CP consistency). a24-21 (C2H4*Ar dimer): DIIS-8 never finds the
+# aufbau state (err_max ~0.9 plateau 33 Ha high); diis_size=16 converges it
+# to the correct C2H4+Ar limit. Converged energies are DIIS-size independent.
+SCF_EXTRA = {"a24-21": "diis_size = 16\n"}
+
+
+def toml_text(xyz, basis, method, trunc, scf_extra=""):
     obs, aux = BASES[basis]
     t = f'[molecule]\nxyz = "{xyz}"\n\n[basis]\nname = "{obs}"\n\n'
     # max_iter 400: the A24 argon dimers (20, 21) need 100-400 DIIS
     # iterations; converged energies are iteration-count independent.
     t += ('[scf]\ndf_j_aux = "def2-universal-jkfit"\n'
-          'df_k_aux = "def2-universal-jkfit"\nmax_iter = 400\n\n')
+          'df_k_aux = "def2-universal-jkfit"\nmax_iter = 400\n'
+          + scf_extra + '\n')
     if method == "scs":
         t += f'[method]\nkind = "scs-mp2"\n\n[mp2]\nauxbasis = "{aux}"\n'
     else:
@@ -206,7 +214,8 @@ def build_jobs():
                         if est > JOB_CAP:
                             excluded.append((key, est / GB))
                             continue
-                        tt = toml_text(xyz_path, basis, method, trunc)
+                        tt = toml_text(xyz_path, basis, method, trunc,
+                                       SCF_EXTRA.get(sysname, ""))
                         if write_if_changed(ROOT / "toml" / f"{key}.toml", tt):
                             # settings drift invalidates any prior result
                             (ROOT / "out" / f"{key}.out").unlink(missing_ok=True)
