@@ -118,9 +118,11 @@ def main():
     # MAE summary
     lines = ["# SR-MP2+LR-RPA production matrix", "",
              "CP interaction energies (kcal/mol); ref = CCSD(T)/CBS "
-             "(A24: BIND; S22: BIND_S22B).", "",
-             "| set | basis | N | " + " | ".join(METHODS) + " |",
-             "|---|---|---|" + "---|" * len(METHODS)]
+             "(A24: BIND; S22: BIND_S22B).",
+             "Errors = computed - ref; binding is negative, so MSE > 0 "
+             "means underbinding.", "",
+             "| set | basis | N | stat | " + " | ".join(METHODS) + " |",
+             "|---|---|---|---|" + "---|" * len(METHODS)]
     for subset, pred in (("A24", lambda r: r["system"].startswith("a24")),
                          ("S22", lambda r: r["system"].startswith("s22")),
                          ("all", lambda r: True)):
@@ -130,8 +132,12 @@ def main():
                 continue
             maes = [sum(abs(r[f"{m}_{b}"] - r["ref"]) for r in sel) / len(sel)
                     for m in METHODS]
-            lines.append(f"| {subset} | {b} | {len(sel)} | "
+            mses = [sum(r[f"{m}_{b}"] - r["ref"] for r in sel) / len(sel)
+                    for m in METHODS]
+            lines.append(f"| {subset} | {b} | {len(sel)} | MAE | "
                          + " | ".join(f"{x:.3f}" for x in maes) + " |")
+            lines.append(f"| {subset} | {b} | {len(sel)} | MSE | "
+                         + " | ".join(f"{x:+.3f}" for x in mses) + " |")
     lines += ["", "## Per-system", "",
               "| system | ref | " + " | ".join(
                   f"{m}({b})" for b in ("adz", "atz", "cbs") for m in METHODS) + " |",

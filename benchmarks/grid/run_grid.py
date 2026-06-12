@@ -20,8 +20,8 @@ Memory safety (the previous grid OOM'd the box into a reboot):
     MemAvailable must leave FLOOR+1 GB headroom after admitting
  3. watchdog: if MemAvailable < FLOOR, SIGKILL the process group of the
     largest running job and requeue it (max 2 attempts, then failed marker)
- 4. jobs whose estimate exceeds JOB_CAP are excluded up front (logged) —
-    this is what keeps e.g. AT-stacked/aTZ (est ~50 GB) off a 23 GB box
+ 4. jobs whose estimate exceeds JOB_CAP are excluded up front (logged);
+    with FERRIC_ERI3_BUDGET_GB streaming, even AT-stacked/aTZ fits
  5. jobs with est > EXCLUSIVE_GB run alone with all cores
 
 S22 rs-mp2-rpa jobs use [rpa] trunc_thresh=1e-4 (PDEP truncation), gated on a
@@ -58,10 +58,15 @@ MAX_WORKERS = 10           # jobs are ~1-core (BLAS serial; rayon only in dRPA q
 # energy loop is GEMM-based (i-blocked B_i^T·B) instead of strided scalar.
 THREADS = 2               # light rayon for the dRPA quadrature stage
 THREADS_EXCLUSIVE = 12
-# est = BASE + CAL * naux*nbf^2*8. CAL calibrated on the benzene-fragment
-# cr02 full-rank run: AO 3-index tensor naux*nbf^2*8 = 1.34 GB, observed
-# peak RSS >= 5.2 GB => ~4 live copies across the MP2/dRPA stages.
-CAL, BASE = 4.5, 0.5 * GB
+# FERRIC_ERI3_BUDGET_GB caps the resident raw 3-index tensor (aux-blocked
+# recompute in the MP2/RPA transforms; disk-spill in the DF-JK SCF), so the
+# in-core AO term saturates at the budget:
+#   est = BASE + 3.5*min(naux*nbf^2*8, budget) + 3*naux*nia*8 + nvir*nia*8
+# (nia = nocc*nvir from REAL atoms only; ghosts carry basis, not electrons).
+# Calibrated on the benzene-fragment cr02 full-rank run: model 5.4 GB vs
+# measured peak RSS 5.33 GB.
+BUDGET = 2.0 * GB
+BASE = 0.5 * GB
 TIMEOUT = 6 * 3600
 POLL = 3.0
 TRUNC = 1e-4
@@ -137,10 +142,16 @@ NAUX = {b: basis_counts(aux) for b, (_, aux) in BASES.items()}
 
 
 def estimate(atoms, basis):
-    """All atoms (incl. ghosts) carry basis functions."""
+    """All atoms (incl. ghosts) carry basis functions; only real atoms
+    carry electrons."""
     nbf = sum(NBF[basis][Z[s.lstrip('@')]] for s, *_ in atoms)
     naux = sum(NAUX[basis][Z[s.lstrip('@')]] for s, *_ in atoms)
-    return BASE + CAL * naux * nbf * nbf * 8, nbf, naux
+    nocc = sum(Z[s] for s, *_ in atoms if not s.startswith('@')) // 2
+    nvir = nbf - nocc
+    nia = nocc * nvir
+    est = (BASE + 3.5 * min(naux * nbf * nbf * 8, BUDGET)
+           + 3 * naux * nia * 8 + nvir * nia * 8)
+    return est, nbf, naux
 
 
 # ---------------------------------------------------------------- job setup
@@ -254,7 +265,7 @@ def launch(job, threads):
     key = job["key"]
     limit = int(min(job["est"] * 2 + 3 * GB, RLIMIT_MAX))
     env = dict(os.environ, OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1",
-               RAYON_NUM_THREADS=str(threads), FERRIC_ERI3_BUDGET_GB="2.0")
+               RAYON_NUM_THREADS=str(threads), FERRIC_ERI3_BUDGET_GB=str(BUDGET / GB))
     part = open(ROOT / "out" / f"{key}.out.part", "w")
     err = open(ROOT / "out" / f"{key}.err", "w")
     proc = subprocess.Popen([BIN, str(ROOT / "toml" / f"{key}.toml")],
@@ -299,7 +310,7 @@ def finish(rec):
 def run_sync(toml_path, out_path, est):
     env = dict(os.environ, OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1",
                RAYON_NUM_THREADS=str(THREADS_EXCLUSIVE),
-               FERRIC_ERI3_BUDGET_GB="2.0")
+               FERRIC_ERI3_BUDGET_GB=str(BUDGET / GB))
     with open(out_path, "w") as f:
         subprocess.run([BIN, str(toml_path)], stdout=f, stderr=subprocess.STDOUT,
                        env=env,
@@ -377,6 +388,8 @@ def main():
     # then S22 aDZ, S22 aTZ; smallest-first within each class
     def prio(j):
         a24 = j["key"].startswith("a24")
+        if j["key"].startswith("s22-11") and j["basis"] == "adz":
+            return 1  # benzene dimer: last open manuscript claim
         return (0 if a24 and j["basis"] == "adz" else
                 1 if a24 else
                 2 if j["basis"] == "adz" else 3)
