@@ -50,11 +50,14 @@ JOB_CAP = 17 * GB         # above this: infeasible even run alone (box: ~19G ava
 RLIMIT_MAX = 18 * GB      # absolute per-child address-space ceiling
 EXCLUSIVE_GB = 6 * GB     # bigger than this -> run alone with all cores
 MAX_WORKERS = 4
-# The DF-JK SCF + RI-MP2 + dRPA pipeline is OpenBLAS-bound, NOT rayon-bound
-# (rimp2.rs / rs_mp2_rpa.rs have no rayon; a 20-min NLWP=1 run proved the
-# DF path spawns none either). Thread via OPENBLAS_NUM_THREADS, rayon=1.
-BLAS = 3                  # 4 workers x 3 BLAS threads = 12 cores
-BLAS_EXCLUSIVE = 12
+# Threading: OPENBLAS_NUM_THREADS=1 ALWAYS — the dRPA stage runs LU
+# factorizations inside rayon par_iter (quad points), and multithreaded
+# OpenBLAS called from concurrent rayon threads overflows their 2 MB stacks
+# (dgetrf_parallel SIGSEGV, observed on a24-04). Parallelism comes from
+# RAYON_NUM_THREADS; the MP2 stage is fine on 1 BLAS thread now that the
+# energy loop is GEMM-based (i-blocked B_i^T·B) instead of strided scalar.
+THREADS = 3               # rayon threads per worker; 4 x 3 = 12 cores
+THREADS_EXCLUSIVE = 12
 # est = BASE + CAL * naux*nbf^2*8. CAL calibrated on the benzene-fragment
 # cr02 full-rank run: AO 3-index tensor naux*nbf^2*8 = 1.34 GB, observed
 # peak RSS >= 5.2 GB => ~4 live copies across the MP2/dRPA stages.
@@ -228,20 +231,24 @@ def make_preexec(limit_bytes):
     def fn():
         os.setsid()
         resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, limit_bytes))
+        # generous default pthread stacks (does not affect rayon's fixed
+        # 2 MB worker stacks; those are safe with OPENBLAS_NUM_THREADS=1).
+        stack = 64 * 1024 * 1024
+        resource.setrlimit(resource.RLIMIT_STACK, (stack, stack))
     return fn
 
 
-def launch(job, blas):
+def launch(job, threads):
     key = job["key"]
-    limit = int(min(job["est"] * 2 + 2 * GB, RLIMIT_MAX))
-    env = dict(os.environ, OPENBLAS_NUM_THREADS=str(blas), OMP_NUM_THREADS="1",
-               RAYON_NUM_THREADS="1")
+    limit = int(min(job["est"] * 2 + 3 * GB, RLIMIT_MAX))
+    env = dict(os.environ, OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1",
+               RAYON_NUM_THREADS=str(threads), FERRIC_ERI3_BUDGET_GB="2.0")
     part = open(ROOT / "out" / f"{key}.out.part", "w")
     err = open(ROOT / "out" / f"{key}.err", "w")
     proc = subprocess.Popen([BIN, str(ROOT / "toml" / f"{key}.toml")],
                             stdout=part, stderr=err, env=env,
                             preexec_fn=make_preexec(limit), cwd=ROOT)
-    log(f"start {key} est={job['est']/GB:.1f}G nbf={job['nbf']} blas={blas} pid={proc.pid}")
+    log(f"start {key} est={job['est']/GB:.1f}G nbf={job['nbf']} threads={threads} pid={proc.pid}")
     return dict(job=job, proc=proc, t0=time.time(), part=part, err=err)
 
 
@@ -278,8 +285,9 @@ def finish(rec):
 
 # --------------------------------------------------------- trunc validation
 def run_sync(toml_path, out_path, est):
-    env = dict(os.environ, OPENBLAS_NUM_THREADS=str(BLAS_EXCLUSIVE),
-               OMP_NUM_THREADS="1", RAYON_NUM_THREADS="1")
+    env = dict(os.environ, OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1",
+               RAYON_NUM_THREADS=str(THREADS_EXCLUSIVE),
+               FERRIC_ERI3_BUDGET_GB="2.0")
     with open(out_path, "w") as f:
         subprocess.run([BIN, str(toml_path)], stdout=f, stderr=subprocess.STDOUT,
                        env=env,
@@ -340,12 +348,18 @@ def main():
             print(f"{j['key']:42s} est={j['est']/GB:5.1f}G nbf={j['nbf']:4d}"
                   f"{'  EXCLUSIVE' if j['exclusive'] else ''}")
         return
-    if any(j["key"].startswith("s22") and j["method"] != "scs" for j in todo):
-        if not validate_trunc():
-            log("ABORT: trunc validation failed — not admitting S22 rs jobs")
-            todo = [j for j in todo if not (j["key"].startswith("s22")
-                                            and j["method"] != "scs")]
-    todo = [j for j in todo if not is_done(j)]  # validation may have done one
+    # S22 rs jobs are gated on the benzene trunc validation, but DON'T block
+    # the whole grid on it: defer those jobs and let A24 + scs flow. Rerun
+    # the script after validation passes (idempotent) to pick them up.
+    vfile = ROOT / "trunc_validated.json"
+    validated = vfile.exists() and json.loads(vfile.read_text()).get("pass")
+    if not validated:
+        n_defer = sum(1 for j in todo if j["key"].startswith("s22")
+                      and j["method"] != "scs")
+        log(f"trunc not yet validated: deferring {n_defer} S22 rs jobs "
+            f"(run validate_trunc + restart to admit them)")
+        todo = [j for j in todo if not (j["key"].startswith("s22")
+                                        and j["method"] != "scs")]
 
     # smallest first within basis; aDZ before aTZ so the matrix fills usefully
     pending = deque(sorted(todo, key=lambda j: (j["basis"] != "adz", j["est"])))
@@ -377,14 +391,14 @@ def main():
                 if running:
                     continue
                 pending.remove(job)
-                running.append(launch(job, BLAS_EXCLUSIVE))
+                running.append(launch(job, THREADS_EXCLUSIVE))
                 break
             if (len(running) < MAX_WORKERS
                     and not any(r["job"]["exclusive"] for r in running)
                     and used + job["est"] <= MEM_BUDGET
                     and mem_available() - job["est"] >= FLOOR + 1 * GB):
                 pending.remove(job)
-                running.append(launch(job, BLAS))
+                running.append(launch(job, THREADS))
                 used += job["est"]
         json.dump(dict(pending=len(pending), running=[r["job"]["key"] for r in running],
                        done=n_done, failed=n_fail, t=time.time()),

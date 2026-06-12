@@ -197,7 +197,7 @@ pub fn solve_rhf(
     let mut df_j: Option<DfJ> = if let Some(aux_name) = df_j_aux_eff.as_deref() {
         let dfbs_set = ferric_core::basis::bundled(aux_name)?;
         let dfbs = PreparedBasis::new(mol, &dfbs_set)?;
-        Some(DfJ::new(op, prep, &dfbs, usize::MAX)?)
+        Some(DfJ::new(op, prep, &dfbs, ferric_integrals::three_index_source::env_budget_bytes())?)
     } else {
         None
     };
@@ -206,7 +206,7 @@ pub fn solve_rhf(
     let mut df_k: Option<DfK> = if let Some(aux_name) = df_k_aux_eff.as_deref() {
         let dfbs_set = ferric_core::basis::bundled(aux_name)?;
         let dfbs = PreparedBasis::new(mol, &dfbs_set)?;
-        Some(DfK::new(op, prep, &dfbs, usize::MAX)?)
+        Some(DfK::new(op, prep, &dfbs, ferric_integrals::three_index_source::env_budget_bytes())?)
     } else {
         None
     };
@@ -223,8 +223,8 @@ pub fn solve_rhf(
         let dfbs_set = ferric_core::basis::bundled(aux_name)?;
         let dfbs_prep = PreparedBasis::new(mol, &dfbs_set)?;
         (
-            Some(DfK::new(Operator::erfc(k_mix.omega), prep, &dfbs_prep, usize::MAX)?),
-            Some(DfK::new(Operator::erf(k_mix.omega), prep, &dfbs_prep, usize::MAX)?),
+            Some(DfK::new(Operator::erfc(k_mix.omega), prep, &dfbs_prep, ferric_integrals::three_index_source::env_budget_bytes())?),
+            Some(DfK::new(Operator::erf(k_mix.omega), prep, &dfbs_prep, ferric_integrals::three_index_source::env_budget_bytes())?),
         )
     } else {
         (None, None)

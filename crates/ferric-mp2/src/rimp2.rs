@@ -15,7 +15,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_integrals::threeindex;
 use ferric_scf::ScfResult;
-use ndarray::Array2;
+use ndarray::{Array2, Array3};
 use ndarray_linalg::{Cholesky, Eigh, UPLO};
 
 /// Configuration for RI-MP2.
@@ -42,6 +42,52 @@ pub struct SpinComponents {
     pub e_ss: f64,
     /// Total: e_os + e_ss (equals standard MP2 correlation).
     pub e_total: f64,
+}
+
+/// Resident-bytes ceiling for the raw (P|μν) tensor during MO transforms,
+/// from `FERRIC_ERI3_BUDGET_GB` (unset = unlimited, fully in-core).
+pub fn eri3_budget_bytes() -> usize {
+    ferric_integrals::three_index_source::env_budget_bytes()
+}
+
+/// Build (P|ia) without materializing the full AO 3-index tensor: raw (P|μν)
+/// is generated in aux-row blocks sized to `budget_bytes` and transformed to
+/// MO immediately. Bit-identical to
+/// `transform_3center_ov(&eri3_tensor(..), ..)`; peak transient memory is one
+/// aux block instead of the naux·nao² tensor.
+pub fn eri3_mo_ov_blocked(
+    op: Operator,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    c_occ: &Array2<f64>,
+    c_vir: &Array2<f64>,
+    budget_bytes: usize,
+) -> Result<Array3<f64>, FerricError> {
+    let nao = obs.nbasis();
+    let naux = dfbs.nbasis();
+    let nocc = c_occ.ncols();
+    let nvir = c_vir.ncols();
+    let row_bytes = nao * nao * 8;
+    let block_naux = (budget_bytes / row_bytes.max(1)).clamp(1, naux.max(1));
+    if block_naux >= naux {
+        let eri3_ao = threeindex::eri3_tensor(op, obs, dfbs)?;
+        return Ok(transform_3center_ov(&eri3_ao, c_occ, c_vir));
+    }
+    let mut mo = Array3::<f64>::zeros((naux, nocc, nvir));
+    let mut p0 = 0;
+    while p0 < naux {
+        let p1 = (p0 + block_naux).min(naux);
+        let blk = threeindex::eri3_block(op, obs, dfbs, p0, p1)?;
+        for (off, p) in (p0..p1).enumerate() {
+            let bp_ao = blk.slice(ndarray::s![off, .., ..]);
+            // same per-P GEMM order as transform_3center_ov (bitwise identical)
+            let tmp = bp_ao.dot(c_vir);
+            let bp_mo = c_occ.t().dot(&tmp);
+            mo.slice_mut(ndarray::s![p, .., ..]).assign(&bp_mo);
+        }
+        p0 = p1;
+    }
+    Ok(mo)
 }
 
 /// Compute RI-MP2 with spin-component resolution.
@@ -80,11 +126,8 @@ pub fn ri_mp2_spin_components(
     let v2c = threeindex::coulomb_metric_2c(op, dfbs)?;
     let v2c_inv_sqrt = metric_inverse_sqrt(&v2c, op)?;
 
-    // (P|mu nu) 3-center integrals
-    let eri3_ao = threeindex::eri3_tensor(op, obs, dfbs)?;
-
-    // MO transform -> (P|ia)
-    let eri3_mo = transform_3center_ov(&eri3_ao, &c_occ, &c_vir);
+    // (P|mu nu) -> (P|ia), aux-blocked under FERRIC_ERI3_BUDGET_GB
+    let eri3_mo = eri3_mo_ov_blocked(op, obs, dfbs, &c_occ, &c_vir, eri3_budget_bytes())?;
 
     // B_ia^P = sum_Q (P|Q)^{-1/2} (Q|ia)
     let eri3_flat = eri3_mo
@@ -92,28 +135,26 @@ pub fn ri_mp2_spin_components(
         .unwrap();
     let b_flat = v2c_inv_sqrt.dot(&eri3_flat); // (naux, nocc*nvir)
 
-    // Spin-component resolved MP2 energy
+    // Spin-component resolved MP2 energy. (ia|jb) comes from i-blocked wide
+    // GEMMs G_i = B_i^T·B (nvir x nocc*nvir) instead of per-element strided
+    // dots over P: same FLOPs at BLAS3 throughput, and OPENBLAS_NUM_THREADS
+    // parallelizes it. G_i transient is nvir*nocc*nvir*8 bytes.
     let mut e_os = 0.0;
     let mut e_ss = 0.0;
     for i in 0..nocc {
+        let b_i = b_flat.slice(ndarray::s![.., i * nvir..(i + 1) * nvir]);
+        let g_i = b_i.t().dot(&b_flat); // (nvir, nocc*nvir); g_i[a, jb] = (ia|jb)
         for j in 0..nocc {
+            let e_ij = eps[first_occ + i] + eps[first_occ + j];
             for a in 0..nvir {
                 for b in 0..nvir {
-                    let ia = i * nvir + a;
-                    let jb = j * nvir + b;
-                    let ib = i * nvir + b;
-                    let ja = j * nvir + a;
-                    let eri_iajb: f64 =
-                        (0..naux).map(|p| b_flat[(p, ia)] * b_flat[(p, jb)]).sum();
-                    let eri_ibja: f64 =
-                        (0..naux).map(|p| b_flat[(p, ib)] * b_flat[(p, ja)]).sum();
-                    let denom = eps[first_occ + i] + eps[first_occ + j]
-                        - eps[nocc_total + a]
-                        - eps[nocc_total + b];
+                    let g_ab = g_i[(a, j * nvir + b)]; // (ia|jb)
+                    let g_ba = g_i[(b, j * nvir + a)]; // (ib|ja)
+                    let denom = e_ij - eps[nocc_total + a] - eps[nocc_total + b];
                     // Opposite-spin: (ia|jb)^2 / denom
-                    e_os += eri_iajb * eri_iajb / denom;
+                    e_os += g_ab * g_ab / denom;
                     // Same-spin: (ia|jb)[(ia|jb)-(ib|ja)] / denom
-                    e_ss += eri_iajb * (eri_iajb - eri_ibja) / denom;
+                    e_ss += g_ab * (g_ab - g_ba) / denom;
                 }
             }
         }
@@ -275,12 +316,11 @@ pub fn compute_rpa_intermediates_spin(
     // erf (long-range) metric is indefinite in a Coulomb aux basis → regularized
     // eigh V^{-1/2}; Cholesky for Coulomb/erfc. (RSH-RPA path.)
     let v_inv_sqrt = metric_inverse_sqrt(&v2c, op)?;
-    let eri3_ao = threeindex::eri3_tensor(op, obs, dfbs)?;
 
     let c_occ = c_full.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
     let c_vir = c_full.slice(ndarray::s![.., nocc_total..]).to_owned();
 
-    let eri3_ov = crate::mo_transform::transform_3center_ov(&eri3_ao, &c_occ, &c_vir);
+    let eri3_ov = eri3_mo_ov_blocked(op, obs, dfbs, &c_occ, &c_vir, eri3_budget_bytes())?;
     let b_ov = v_inv_sqrt.dot(
         &eri3_ov.into_shape_with_order((naux, nocc * nvir)).unwrap(),
     );
@@ -314,12 +354,11 @@ pub fn compute_rpa_intermediates(
     // erf (long-range) metric is indefinite in a Coulomb aux basis → regularized
     // eigh V^{-1/2}; Cholesky for Coulomb/erfc. (RSH-RPA path.)
     let v_inv_sqrt = metric_inverse_sqrt(&v2c, op)?;
-    let eri3_ao = threeindex::eri3_tensor(op, obs, dfbs)?;
 
     let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
     let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
 
-    let eri3_ov = crate::mo_transform::transform_3center_ov(&eri3_ao, &c_occ, &c_vir);
+    let eri3_ov = eri3_mo_ov_blocked(op, obs, dfbs, &c_occ, &c_vir, eri3_budget_bytes())?;
     let b_ov = v_inv_sqrt.dot(
         &eri3_ov.into_shape_with_order((naux, nocc * nvir)).unwrap(),
     );
@@ -534,8 +573,7 @@ pub fn ri_mp2_einsum(
     // V^{-1/2} and AO 3-center integrals — identical to ri_mp2_spin_components
     let v2c = threeindex::coulomb_metric_2c(op, dfbs)?;
     let v_inv_sqrt = cholesky_inverse_sqrt(&v2c)?;
-    let eri3_ao = threeindex::eri3_tensor(op, obs, dfbs)?;
-    let eri3_mo = transform_3center_ov(&eri3_ao, &c_occ, &c_vir); // (naux, nocc, nvir)
+    let eri3_mo = eri3_mo_ov_blocked(op, obs, dfbs, &c_occ, &c_vir, eri3_budget_bytes())?; // (naux, nocc, nvir)
 
     // B^P_{ia} = V^{-1/2} (Q|ia); same b_flat as the scalar path
     let flat = eri3_mo
@@ -626,6 +664,45 @@ mod tests {
         let mp2 = ri_mp2(&mol, &obs, &dfbs, op, &rhf, &RiMp2Config::default()).unwrap();
         (rhf, mp2)
     }
+
+    #[test]
+    fn eri3_mo_ov_blocked_is_bit_identical_to_incore() {
+        let xyz = "3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n";
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let bs = basis::bundled("cc-pvdz").unwrap();
+        let obs = PreparedBasis::new(&mol, &bs).unwrap();
+        let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
+        let op = Operator::coulomb();
+        let nao = obs.nbasis();
+        let c = ndarray::Array2::<f64>::eye(nao);
+        let c_occ = c.slice(ndarray::s![.., ..5]).to_owned();
+        let c_vir = c.slice(ndarray::s![.., 5..]).to_owned();
+
+        let eri3_ao = threeindex::eri3_tensor(op, &obs, &dfbs).unwrap();
+        let reference = transform_3center_ov(&eri3_ao, &c_occ, &c_vir);
+        // 1-byte budget forces single-aux-row blocking (max fragmentation)
+        let blocked = eri3_mo_ov_blocked(op, &obs, &dfbs, &c_occ, &c_vir, 1).unwrap();
+
+        assert_eq!(reference.shape(), blocked.shape());
+        let maxdiff = reference
+            .iter()
+            .zip(blocked.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f64, f64::max);
+        assert!(
+            maxdiff == 0.0,
+            "blocked (P|ia) differs from in-core, maxdiff={maxdiff:e}"
+        );
+    }
+
+    // NOTE: the FERRIC_ERI3_BUDGET_GB *wiring* is intentionally not tested
+    // here — std::env::set_var is process-global and poisons the parallel
+    // test harness (every concurrent test silently runs micro-blocked).
+    // The blocked path itself is covered by
+    // eri3_mo_ov_blocked_is_bit_identical_to_incore; the env wiring is
+    // verified at the CLI level (water rs-mp2-rpa with and without the env
+    // var must print identical energies).
 
     #[test]
     fn test_rimp2_h2o_ccpvdz() {

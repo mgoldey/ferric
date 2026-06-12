@@ -11,6 +11,17 @@ use ndarray::{Array2, Array3, ArrayView3};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 
+/// Process-wide resident-bytes ceiling for raw/dressed 3-index tensors, from
+/// `FERRIC_ERI3_BUDGET_GB` (unset/unparsable = unlimited, fully in-core).
+/// Consumed by the DF-JK SCF builders and the RI-MP2/RPA MO transforms.
+pub fn env_budget_bytes() -> usize {
+    std::env::var("FERRIC_ERI3_BUDGET_GB")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .map(|g| (g * 1e9) as usize)
+        .unwrap_or(usize::MAX)
+}
+
 /// Largest number of aux rows whose (block_naux × nao × nao × 8) bytes fit the
 /// budget; at least 1 (a single aux row must always be representable).
 fn block_naux_for(budget_bytes: usize, nao: usize) -> usize {
