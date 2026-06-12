@@ -49,14 +49,14 @@ FLOOR = 2.5 * GB          # MemAvailable floor -> watchdog kills largest job
 JOB_CAP = 17 * GB         # above this: infeasible even run alone (box: ~19G avail)
 RLIMIT_MAX = 18 * GB      # absolute per-child address-space ceiling
 EXCLUSIVE_GB = 6 * GB     # bigger than this -> run alone with all cores
-MAX_WORKERS = 4
+MAX_WORKERS = 10           # jobs are ~1-core (BLAS serial; rayon only in dRPA quad)
 # Threading: OPENBLAS_NUM_THREADS=1 ALWAYS — the dRPA stage runs LU
 # factorizations inside rayon par_iter (quad points), and multithreaded
 # OpenBLAS called from concurrent rayon threads overflows their 2 MB stacks
 # (dgetrf_parallel SIGSEGV, observed on a24-04). Parallelism comes from
 # RAYON_NUM_THREADS; the MP2 stage is fine on 1 BLAS thread now that the
 # energy loop is GEMM-based (i-blocked B_i^T·B) instead of strided scalar.
-THREADS = 3               # rayon threads per worker; 4 x 3 = 12 cores
+THREADS = 2               # light rayon for the dRPA quadrature stage
 THREADS_EXCLUSIVE = 12
 # est = BASE + CAL * naux*nbf^2*8. CAL calibrated on the benzene-fragment
 # cr02 full-rank run: AO 3-index tensor naux*nbf^2*8 = 1.34 GB, observed
@@ -364,8 +364,14 @@ def main():
         todo = [j for j in todo if not (j["key"].startswith("s22")
                                         and j["method"] != "scs")]
 
-    # smallest first within basis; aDZ before aTZ so the matrix fills usefully
-    pending = deque(sorted(todo, key=lambda j: (j["basis"] != "adz", j["est"])))
+    # priority: A24 aDZ, A24 aTZ (closes the directional story first),
+    # then S22 aDZ, S22 aTZ; smallest-first within each class
+    def prio(j):
+        a24 = j["key"].startswith("a24")
+        return (0 if a24 and j["basis"] == "adz" else
+                1 if a24 else
+                2 if j["basis"] == "adz" else 3)
+    pending = deque(sorted(todo, key=lambda j: (prio(j), j["est"])))
     running, n_done, n_fail = [], 0, 0
     while pending or running:
         # reap
