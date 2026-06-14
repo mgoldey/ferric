@@ -59,25 +59,28 @@ MAX_WORKERS = NCORES      # don't oversubscribe cores
 SOLO_GB = 10 * GB         # est >= this -> run alone with all BLAS cores (can't
                           # pack >1, so use BLAS threading instead of idling ~11
                           # cores). Captures the nbf=1127 S22 aTZ dimers (~11 GB).
+PACK_BLAS = 3             # BLAS threads per packed job: 3 jobs x 3 = 9 < NCORES,
+                          # leaving cores for the dRPA rayon burst + OS.
 # PARALLELISM MODEL (calibrated 2026-06-14 on s22-17_mB_cp_atz_dlr042, nbf=506).
-# Two regimes, because rayon-threading a single job is useless but BLAS-threading
-# a solo one is not:
-#  * SMALL jobs pack at OPENBLAS=1, RAYON=1. Threading one such job is a no-op
-#    (1 rayon thread 173.6s vs 6 threads 175.1s): SCF (DF-JK) and the MP2
-#    spin-component loop are serial BLAS GEMMs and the only rayon-parallel stage
-#    (dRPA quad, energy.rs par_iter over ~16 ω) is a small fraction of wall time.
-#    So CONCURRENCY fills cores — run ~3 jobs whose serial phases overlap.
+# The lever is BLAS threads, NOT rayon threads. Rayon-threading a single job is a
+# no-op (1 rayon thread 173.6s vs 6 threads 175.1s — the only rayon-parallel
+# stage, the dRPA quad par_iter over ~16 ω, is a small fraction of wall time).
+# But the SCF (DF-JK) and MP2 G_i = B_i^T·B stages are big BLAS3 GEMMs, and
+# OpenBLAS threads DO speed them: OPENBLAS=3 RAYON=1 ran the calibration job in
+# 110s vs 174s even while contending with 3 other jobs (~1.6x). So:
+#  * SMALL jobs pack ~3-up, each at OPENBLAS=PACK_BLAS, RAYON=1. Concurrency
+#    overlaps their disk-spill I/O stalls; BLAS threads fill cores during the
+#    GEMM-bound compute phases. (Memory caps packing at 3 on this 23 GB box —
+#    a 4th would breach FLOOR — so BLAS threading, not more packing, is the win.)
 #  * BIG jobs (est >= SOLO_GB) can't pack, so they run solo at OPENBLAS=NCORES,
-#    RAYON=1. The big MP2 G_i = B_i^T·B wide GEMMs (BLAS3) then use the cores
-#    that concurrency can't. Verified crash-safe (OPENBLAS=12 RAYON=1, exit 0,
-#    valid energy) 2026-06-14.
+#    RAYON=1. Same GEMMs, all 12 cores. Verified crash-safe (OPENBLAS=12 RAYON=1,
+#    exit 0, valid energy) 2026-06-14.
 # CRASH-SAFETY: OPENBLAS>1 is ONLY ever paired with RAYON=1 (enforced by assert
 # in launch()). Multiple concurrent rayon workers each calling parallel OpenBLAS
 # LU overflow rayon's fixed 2 MB worker stacks -> dgetrf_parallel SIGSEGV
 # (gdb-verified, a24-04). One rayon worker can't race itself, so it's safe.
 # This is a STACK overflow, not OOM — the memory machinery cannot catch it,
 # which is exactly why the invariant is enforced structurally.
-THREADS = 1               # per-job rayon for packed (small) jobs
 # FERRIC_ERI3_BUDGET_GB caps the resident raw 3-index tensor (aux-blocked
 # recompute in the MP2/RPA transforms; disk-spill in the DF-JK SCF), so the
 # in-core AO term saturates at the budget:
@@ -474,11 +477,13 @@ def main():
                     running.append(launch(job, blas_threads=NCORES, rayon_threads=1))
                     big_running = True
                     break
-            elif (len(running) < MAX_WORKERS
+            elif (len(running) < max(1, NCORES // PACK_BLAS)
                     and used + job["est"] <= MEM_BUDGET
                     and mem_available() - job["est"] >= FLOOR + 1 * GB):
+                # packed: BLAS-threaded (crash-safe at rayon=1), concurrency
+                # overlaps I/O. Worker cap keeps total BLAS threads <= NCORES.
                 pending.remove(job)
-                running.append(launch(job, blas_threads=1, rayon_threads=THREADS))
+                running.append(launch(job, blas_threads=PACK_BLAS, rayon_threads=1))
                 used += job["est"]
         json.dump(dict(pending=len(pending), running=[r["job"]["key"] for r in running],
                        done=n_done, failed=n_fail, t=time.time()),
