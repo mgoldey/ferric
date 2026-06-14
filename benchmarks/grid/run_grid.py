@@ -230,11 +230,16 @@ def build_jobs():
         ensure_db("A24.py"), r"BIND\['%s-%s'\s*%\s*\(dbse,\s*(\d+)\s*\)\]\s*=\s*(-?[\d.]+)")
     s22_geos, s22_refs = parse_db(
         ensure_db("S22.py"), r"BIND_S22B\['%s-%s'\s*%\s*\(dbse,\s*(\d+)\s*\)\]\s*=\s*(-?[\d.]+)")
-    json.dump({"a24": a24_refs, "s22": s22_refs}, open(ROOT / "refs.json", "w"), indent=1)
+    # S66 (Rezac 2011): same GEOS layout, but BIND uses a QUOTED index
+    # (dbse, '1') and the plain BIND[...] name (CCSD(T)/CBS refs).
+    s66_geos, s66_refs = parse_db(
+        ensure_db("S66.py"), r"BIND\['%s-%s'\s*%\s*\(dbse,\s*'(\d+)'\s*\)\]\s*=\s*(-?[\d.]+)")
+    json.dump({"a24": a24_refs, "s22": s22_refs, "s66": s66_refs},
+              open(ROOT / "refs.json", "w"), indent=1)
 
     ghost = lambda atoms: [("@" + s, x, y, z) for s, x, y, z in atoms]
     jobs, excluded = [], []
-    for dbse, geos in (("a24", a24_geos), ("s22", s22_geos)):
+    for dbse, geos in (("a24", a24_geos), ("s22", s22_geos), ("s66", s66_geos)):
         for idx, (fA, fB) in sorted(geos.items()):
             frags = {"dimer": fA + fB, "mA_cp": fA + ghost(fB), "mB_cp": ghost(fA) + fB}
             for tag, atoms in frags.items():
@@ -248,7 +253,7 @@ def build_jobs():
                     est, nbf, naux = estimate(atoms, basis)
                     for method in METHODS:
                         key = f"{sysname}_{tag}_{basis}_{method}"
-                        trunc = (dbse == "s22" and method != "scs")
+                        trunc = (dbse in ("s22", "s66") and method != "scs")
                         if est > JOB_CAP:
                             excluded.append((key, est / GB))
                             continue
@@ -414,22 +419,26 @@ def main():
     vfile = ROOT / "trunc_validated.json"
     validated = vfile.exists() and json.loads(vfile.read_text()).get("pass")
     if not validated:
-        n_defer = sum(1 for j in todo if j["key"].startswith("s22")
-                      and j["method"] != "scs")
-        log(f"trunc not yet validated: deferring {n_defer} S22 rs jobs "
+        trunc_gated = lambda j: (j["key"].startswith(("s22", "s66"))
+                                 and j["method"] != "scs")
+        n_defer = sum(1 for j in todo if trunc_gated(j))
+        log(f"trunc not yet validated: deferring {n_defer} S22/S66 rs jobs "
             f"(run validate_trunc + restart to admit them)")
-        todo = [j for j in todo if not (j["key"].startswith("s22")
-                                        and j["method"] != "scs")]
+        todo = [j for j in todo if not trunc_gated(j)]
 
-    # priority: A24 aDZ, A24 aTZ (closes the directional story first),
-    # then S22 aDZ, S22 aTZ; smallest-first within each class
+    # priority: A24 aDZ, A24 aTZ (closes the directional story first), then
+    # S22 aDZ/aTZ (the paper's headline π-stacked subset), then S66 last.
+    # smallest-first within each class.
     def prio(j):
         a24 = j["key"].startswith("a24")
+        s66 = j["key"].startswith("s66")
         if j["key"].startswith("s22-11") and j["basis"] == "adz":
-            return 1  # benzene dimer: last open manuscript claim
-        return (0 if a24 and j["basis"] == "adz" else
-                1 if a24 else
-                2 if j["basis"] == "adz" else 3)
+            return 0  # benzene dimer: headline π-stack, surface early
+        if a24:
+            return 1 if j["basis"] == "adz" else 2
+        if s66:
+            return 6 if j["basis"] == "adz" else 7  # corroboration, last
+        return 3 if j["basis"] == "adz" else 4      # S22
     pending = deque(sorted(todo, key=lambda j: (prio(j), j["est"])))
     running, n_done, n_fail = [], 0, 0
     while pending or running:
