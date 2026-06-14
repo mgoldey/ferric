@@ -56,17 +56,28 @@ FLOOR = 2.5 * GB          # MemAvailable floor -> watchdog kills largest job
 JOB_CAP = 17 * GB         # above this: infeasible even run alone (box: ~19G avail)
 RLIMIT_MAX = 18 * GB      # absolute per-child address-space ceiling
 MAX_WORKERS = NCORES      # don't oversubscribe cores
-# PARALLELISM MODEL (calibrated 2026-06-14 on s22-17_mB_cp_atz_dlr042, nbf=506):
-#   1 thread -> 173.6s,  6 threads -> 175.1s.  Threading a SINGLE job gives
-#   ZERO speedup: the SCF (DF-JK) and MP2 spin-component stages are BLAS GEMMs
-#   run with OPENBLAS_NUM_THREADS=1 (serial), and the only rayon-parallel stage
-#   (dRPA quadrature, energy.rs par_iter over ~16 ω points) is a small fraction
-#   of wall time. So per-job threads buy nothing — CONCURRENCY is the only lever.
-#   Run many jobs at 1 thread each; their serial SCF/MP2 phases overlap to fill
-#   all 12 cores. OPENBLAS_NUM_THREADS=1 stays mandatory anyway (multithreaded
-#   OpenBLAS LU inside rayon par_iter overflows the 2 MB worker stacks ->
-#   dgetrf_parallel SIGSEGV, observed on a24-04).
-THREADS = 1               # per-job rayon; concurrency, not threading, fills cores
+SOLO_GB = 10 * GB         # est >= this -> run alone with all BLAS cores (can't
+                          # pack >1, so use BLAS threading instead of idling ~11
+                          # cores). Captures the nbf=1127 S22 aTZ dimers (~11 GB).
+# PARALLELISM MODEL (calibrated 2026-06-14 on s22-17_mB_cp_atz_dlr042, nbf=506).
+# Two regimes, because rayon-threading a single job is useless but BLAS-threading
+# a solo one is not:
+#  * SMALL jobs pack at OPENBLAS=1, RAYON=1. Threading one such job is a no-op
+#    (1 rayon thread 173.6s vs 6 threads 175.1s): SCF (DF-JK) and the MP2
+#    spin-component loop are serial BLAS GEMMs and the only rayon-parallel stage
+#    (dRPA quad, energy.rs par_iter over ~16 ω) is a small fraction of wall time.
+#    So CONCURRENCY fills cores — run ~3 jobs whose serial phases overlap.
+#  * BIG jobs (est >= SOLO_GB) can't pack, so they run solo at OPENBLAS=NCORES,
+#    RAYON=1. The big MP2 G_i = B_i^T·B wide GEMMs (BLAS3) then use the cores
+#    that concurrency can't. Verified crash-safe (OPENBLAS=12 RAYON=1, exit 0,
+#    valid energy) 2026-06-14.
+# CRASH-SAFETY: OPENBLAS>1 is ONLY ever paired with RAYON=1 (enforced by assert
+# in launch()). Multiple concurrent rayon workers each calling parallel OpenBLAS
+# LU overflow rayon's fixed 2 MB worker stacks -> dgetrf_parallel SIGSEGV
+# (gdb-verified, a24-04). One rayon worker can't race itself, so it's safe.
+# This is a STACK overflow, not OOM — the memory machinery cannot catch it,
+# which is exactly why the invariant is enforced structurally.
+THREADS = 1               # per-job rayon for packed (small) jobs
 # FERRIC_ERI3_BUDGET_GB caps the resident raw 3-index tensor (aux-blocked
 # recompute in the MP2/RPA transforms; disk-spill in the DF-JK SCF), so the
 # in-core AO term saturates at the budget:
@@ -273,17 +284,30 @@ def make_preexec(limit_bytes):
     return fn
 
 
-def launch(job, threads):
+def launch(job, blas_threads=1, rayon_threads=1):
+    # CRASH-SAFETY INVARIANT: multithreaded OpenBLAS is ONLY safe when rayon has
+    # a single worker. Multiple concurrent rayon workers each calling parallel
+    # OpenBLAS LU (dgetrf_parallel) overflow rayon's fixed 2 MB worker stacks ->
+    # SIGSEGV (gdb-verified on a24-04; the dRPA quad stage LU-factorizes inside
+    # par_iter). RLIMIT_STACK does NOT cover rayon's hardcoded worker stacks, so
+    # the memory machinery cannot catch this — it's a stack overflow, not OOM.
+    # With rayon_threads=1 there is exactly one worker, so the par_iter runs
+    # sequentially and OpenBLAS can safely thread the GEMMs. Verified crash-free
+    # 2026-06-14 (OPENBLAS=12 RAYON=1 on s22-17_mB_cp_atz, exit 0, valid energy).
+    assert blas_threads == 1 or rayon_threads == 1, \
+        "OPENBLAS>1 requires RAYON=1 (stack-overflow crash otherwise)"
     key = job["key"]
     limit = int(min(job["est"] * 2 + 3 * GB, RLIMIT_MAX))
-    env = dict(os.environ, OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1",
-               RAYON_NUM_THREADS=str(threads), FERRIC_ERI3_BUDGET_GB=str(BUDGET / GB))
+    env = dict(os.environ,
+               OPENBLAS_NUM_THREADS=str(blas_threads), OMP_NUM_THREADS=str(blas_threads),
+               RAYON_NUM_THREADS=str(rayon_threads), FERRIC_ERI3_BUDGET_GB=str(BUDGET / GB))
     part = open(ROOT / "out" / f"{key}.out.part", "w")
     err = open(ROOT / "out" / f"{key}.err", "w")
     proc = subprocess.Popen([BIN, str(ROOT / "toml" / f"{key}.toml")],
                             stdout=part, stderr=err, env=env,
                             preexec_fn=make_preexec(limit), cwd=ROOT)
-    log(f"start {key} est={job['est']/GB:.1f}G nbf={job['nbf']} threads={threads} pid={proc.pid}")
+    log(f"start {key} est={job['est']/GB:.1f}G nbf={job['nbf']} "
+        f"blas={blas_threads} rayon={rayon_threads} pid={proc.pid}")
     return dict(job=job, proc=proc, t0=time.time(), part=part, err=err)
 
 
@@ -425,17 +449,36 @@ def main():
             victim = max(running, key=lambda r: r["job"]["est"])
             log(f"WATCHDOG: MemAvailable<{FLOOR/GB:.1f}G — killing {victim['job']['key']}")
             kill_group(victim)
-        # admit: pack as many jobs as fit, each at 1 thread (concurrency is the
-        # only lever — threading a single job buys nothing; see calibration note).
-        # Bound by: worker count (don't oversubscribe cores), sum-of-estimates
-        # (MEM_BUDGET), and live MemAvailable headroom (FLOOR+1G after admitting).
+        # admit. Two regimes (see PARALLELISM MODEL note):
+        #  - small jobs (est < SOLO_GB): pack many at 1 BLAS thread each, so
+        #    their serial SCF/MP2 phases overlap to fill cores via CONCURRENCY.
+        #  - big jobs (est >= SOLO_GB): too large to pack >1, so they'd otherwise
+        #    run alone leaving ~11 cores idle. Run them solo with all BLAS cores
+        #    (OPENBLAS=NCORES, RAYON=1 — crash-safe, the single rayon worker
+        #    can't trigger the dgetrf_parallel stack overflow). The big MP2
+        #    G_i = B_i^T·B wide GEMMs then use the idle cores.
+        # A solo-BLAS job and packed jobs never coexist: a big job waits for the
+        # box to drain, and once it's running nothing else is admitted (it owns
+        # all the cores). Both bounded by MEM_BUDGET + live MemAvailable headroom.
         used = sum(r["job"]["est"] for r in running)
+        big_running = any(r["job"]["est"] >= SOLO_GB for r in running)
         for job in list(pending):
-            if (len(running) < MAX_WORKERS
+            big = job["est"] >= SOLO_GB
+            if big_running:
+                break  # a solo-BLAS job owns the whole box; admit nothing else
+            if big:
+                if running:
+                    continue  # wait for the box to drain, then run solo-BLAS
+                if mem_available() - job["est"] >= FLOOR + 1 * GB:
+                    pending.remove(job)
+                    running.append(launch(job, blas_threads=NCORES, rayon_threads=1))
+                    big_running = True
+                    break
+            elif (len(running) < MAX_WORKERS
                     and used + job["est"] <= MEM_BUDGET
                     and mem_available() - job["est"] >= FLOOR + 1 * GB):
                 pending.remove(job)
-                running.append(launch(job, THREADS))
+                running.append(launch(job, blas_threads=1, rayon_threads=THREADS))
                 used += job["est"]
         json.dump(dict(pending=len(pending), running=[r["job"]["key"] for r in running],
                        done=n_done, failed=n_fail, t=time.time()),
