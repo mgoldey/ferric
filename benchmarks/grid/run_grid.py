@@ -47,7 +47,11 @@ BASIS_DIR = ROOT / "../../crates/ferric-core/src/basis/bundled"
 
 GB = 1e9
 NCORES = 12               # box has 12 cores
-MEM_BUDGET = 18 * GB      # sum of running estimates (concurrent jobs)
+MEM_BUDGET = 21 * GB      # sum of running estimates (concurrent jobs); with the
+                          # AO_MULT-calibrated estimate (~6.8 GB for an nbf~500
+                          # aTZ job) this admits 3 concurrent. The live
+                          # MemAvailable guard + watchdog + RLIMIT_AS are the
+                          # real safety net, not this sum.
 FLOOR = 2.5 * GB          # MemAvailable floor -> watchdog kills largest job
 JOB_CAP = 17 * GB         # above this: infeasible even run alone (box: ~19G avail)
 RLIMIT_MAX = 18 * GB      # absolute per-child address-space ceiling
@@ -66,10 +70,14 @@ THREADS = 1               # per-job rayon; concurrency, not threading, fills cor
 # FERRIC_ERI3_BUDGET_GB caps the resident raw 3-index tensor (aux-blocked
 # recompute in the MP2/RPA transforms; disk-spill in the DF-JK SCF), so the
 # in-core AO term saturates at the budget:
-#   est = BASE + 3.5*min(naux*nbf^2*8, budget) + 3*naux*nia*8 + nvir*nia*8
+#   est = BASE + AO_MULT*min(naux*nbf^2*8, budget) + 3*naux*nia*8 + nvir*nia*8
 # (nia = nocc*nvir from REAL atoms only; ghosts carry basis, not electrons).
-# Calibrated on the benzene-fragment cr02 full-rank run: model 5.4 GB vs
-# measured peak RSS 5.33 GB.
+# AO_MULT recalibrated 2026-06-14 against LIVE peak RSS: an nbf=462 aDZ job and
+# an nbf=506 aTZ job both peaked at 5.8 GB resident (not the 8.0/7.6 GB the old
+# 3.5 multiplier predicted). 2.9 tracks that with a ~1 GB margin, so three
+# nbf~500 jobs (est ~6.8 GB, real ~5.8 GB) pack into the 21 GB budget on the
+# 23 GB box. The big nbf=1127 dimers stay solo (est ~11 GB).
+AO_MULT = 2.9
 BUDGET = 2.0 * GB
 BASE = 0.5 * GB
 TIMEOUT = 6 * 3600
@@ -154,7 +162,7 @@ def estimate(atoms, basis):
     nocc = sum(Z[s] for s, *_ in atoms if not s.startswith('@')) // 2
     nvir = nbf - nocc
     nia = nocc * nvir
-    est = (BASE + 3.5 * min(naux * nbf * nbf * 8, BUDGET)
+    est = (BASE + AO_MULT * min(naux * nbf * nbf * 8, BUDGET)
            + 3 * naux * nia * 8 + nvir * nia * 8)
     return est, nbf, naux
 
