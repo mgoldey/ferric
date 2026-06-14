@@ -431,16 +431,25 @@ def main():
     # priority: A24 aDZ, A24 aTZ (closes the directional story first), then
     # S22 aDZ/aTZ (the paper's headline π-stacked subset), then S66 last.
     # smallest-first within each class.
+    # The paper's headline is the accuracy win on the large S22 π-stacks
+    # (systems 11-15: benzene-PD, pyrazine, uracil-stack, indole-benzene-stack,
+    # adenine-thymine-stack). They are the BIGGEST S22 aTZ jobs, so a plain
+    # smallest-est-first ordering computes them LAST — exactly backwards for
+    # closing the directional story. Float them ahead of the other S22 aTZ jobs.
+    pistack = tuple(f"s22-{i:02d}" for i in range(11, 16))
     def prio(j):
         a24 = j["key"].startswith("a24")
         s66 = j["key"].startswith("s66")
+        is_pistack = j["key"].startswith(pistack)
         if j["key"].startswith("s22-11") and j["basis"] == "adz":
             return 0  # benzene dimer: headline π-stack, surface early
         if a24:
             return 1 if j["basis"] == "adz" else 2
         if s66:
-            return 6 if j["basis"] == "adz" else 7  # corroboration, last
-        return 3 if j["basis"] == "adz" else 4      # S22
+            return 7 if j["basis"] == "adz" else 8  # corroboration, last
+        if is_pistack:
+            return 3 if j["basis"] == "adz" else 4  # headline π-stacks first
+        return 5 if j["basis"] == "adz" else 6      # other S22
     pending = deque(sorted(todo, key=lambda j: (prio(j), j["est"])))
     running, n_done, n_fail = [], 0, 0
     while pending or running:
