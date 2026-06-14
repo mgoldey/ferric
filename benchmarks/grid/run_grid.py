@@ -485,10 +485,18 @@ def main():
         # all the cores). Both bounded by MEM_BUDGET + live MemAvailable headroom.
         used = sum(r["job"]["est"] for r in running)
         big_running = any(r["job"]["est"] >= SOLO_GB for r in running)
+        # ANTI-STARVATION: walk pending in priority order. The first job that
+        # does NOT fit right now becomes a reservation barrier — we only let
+        # LOWER-priority jobs backfill if they still leave room for the barrier
+        # job to be admitted as memory frees. Without this, a stream of small
+        # low-priority jobs (e.g. S66) keeps backfilling the memory gap that a
+        # big high-priority job (π-stack aTZ) needs, starving it to ~1-at-a-time.
+        reserved = 0.0
         for job in list(pending):
             big = job["est"] >= SOLO_GB
             if big_running:
                 break  # a solo-BLAS job owns the whole box; admit nothing else
+            fits_mem = (mem_available() - reserved - job["est"] >= FLOOR + 1 * GB)
             if big:
                 if running:
                     continue  # wait for the box to drain, then run solo-BLAS
@@ -497,15 +505,25 @@ def main():
                     running.append(launch(job, blas_threads=NCORES, rayon_threads=1))
                     big_running = True
                     break
-            elif (len(running) < MAX_WORKERS
+                # can't run the solo job yet; reserve for it so nothing backfills
+                reserved += job["est"]
+                continue
+            if (len(running) < MAX_WORKERS
                     and used + job["est"] <= MEM_BUDGET
-                    and mem_available() - job["est"] >= FLOOR + 1 * GB):
+                    and fits_mem):
                 # packed: OPENBLAS=1 (PACK_BLAS), concurrency fills cores. Memory
                 # is the real cap (~3 on this box). BLAS threading here crashes
                 # concurrent cr02 jobs — see CRASH-SAFETY note above.
                 pending.remove(job)
                 running.append(launch(job, blas_threads=PACK_BLAS, rayon_threads=1))
                 used += job["est"]
+            else:
+                # This higher-priority job can't be admitted now; reserve its
+                # footprint so subsequent lower-priority jobs don't take the
+                # memory it's waiting for. (Only reserve when worker/mem-bound,
+                # not when MAX_WORKERS is just full of equal-priority work.)
+                if used + job["est"] > MEM_BUDGET or not fits_mem:
+                    reserved += job["est"]
         json.dump(dict(pending=len(pending), running=[r["job"]["key"] for r in running],
                        done=n_done, failed=n_fail, t=time.time()),
                   open(ROOT / "status.json", "w"), indent=1)
