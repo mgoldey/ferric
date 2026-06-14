@@ -22,7 +22,9 @@ Memory safety (the previous grid OOM'd the box into a reboot):
     largest running job and requeue it (max 2 attempts, then failed marker)
  4. jobs whose estimate exceeds JOB_CAP are excluded up front (logged);
     with FERRIC_ERI3_BUDGET_GB streaming, even AT-stacked/aTZ fits
- 5. jobs with est > EXCLUSIVE_GB run alone with all cores
+ 5. all jobs run at 1 thread; throughput comes from running many concurrently
+    (SCF + MP2 are BLAS-serial at OPENBLAS=1, so per-job threading is a no-op —
+    see the PARALLELISM MODEL note on the constants below)
 
 S22 rs-mp2-rpa jobs use [rpa] trunc_thresh=1e-4 (PDEP truncation), gated on a
 benzene-fragment validation: full-rank vs truncated total energy must agree
@@ -44,20 +46,23 @@ BIN = str((ROOT / "../../target/release/ferric-cli").resolve())
 BASIS_DIR = ROOT / "../../crates/ferric-core/src/basis/bundled"
 
 GB = 1e9
-MEM_BUDGET = 14 * GB      # sum of running estimates (concurrent jobs)
+NCORES = 12               # box has 12 cores
+MEM_BUDGET = 18 * GB      # sum of running estimates (concurrent jobs)
 FLOOR = 2.5 * GB          # MemAvailable floor -> watchdog kills largest job
 JOB_CAP = 17 * GB         # above this: infeasible even run alone (box: ~19G avail)
 RLIMIT_MAX = 18 * GB      # absolute per-child address-space ceiling
-EXCLUSIVE_GB = 6 * GB     # bigger than this -> run alone with all cores
-MAX_WORKERS = 10           # jobs are ~1-core (BLAS serial; rayon only in dRPA quad)
-# Threading: OPENBLAS_NUM_THREADS=1 ALWAYS — the dRPA stage runs LU
-# factorizations inside rayon par_iter (quad points), and multithreaded
-# OpenBLAS called from concurrent rayon threads overflows their 2 MB stacks
-# (dgetrf_parallel SIGSEGV, observed on a24-04). Parallelism comes from
-# RAYON_NUM_THREADS; the MP2 stage is fine on 1 BLAS thread now that the
-# energy loop is GEMM-based (i-blocked B_i^T·B) instead of strided scalar.
-THREADS = 2               # light rayon for the dRPA quadrature stage
-THREADS_EXCLUSIVE = 12
+MAX_WORKERS = NCORES      # don't oversubscribe cores
+# PARALLELISM MODEL (calibrated 2026-06-14 on s22-17_mB_cp_atz_dlr042, nbf=506):
+#   1 thread -> 173.6s,  6 threads -> 175.1s.  Threading a SINGLE job gives
+#   ZERO speedup: the SCF (DF-JK) and MP2 spin-component stages are BLAS GEMMs
+#   run with OPENBLAS_NUM_THREADS=1 (serial), and the only rayon-parallel stage
+#   (dRPA quadrature, energy.rs par_iter over ~16 ω points) is a small fraction
+#   of wall time. So per-job threads buy nothing — CONCURRENCY is the only lever.
+#   Run many jobs at 1 thread each; their serial SCF/MP2 phases overlap to fill
+#   all 12 cores. OPENBLAS_NUM_THREADS=1 stays mandatory anyway (multithreaded
+#   OpenBLAS LU inside rayon par_iter overflows the 2 MB worker stacks ->
+#   dgetrf_parallel SIGSEGV, observed on a24-04).
+THREADS = 1               # per-job rayon; concurrency, not threading, fills cores
 # FERRIC_ERI3_BUDGET_GB caps the resident raw 3-index tensor (aux-blocked
 # recompute in the MP2/RPA transforms; disk-spill in the DF-JK SCF), so the
 # in-core AO term saturates at the budget:
@@ -232,8 +237,7 @@ def build_jobs():
                             (ROOT / "out" / f"{key}.out").unlink(missing_ok=True)
                             (ROOT / "out" / f"{key}.failed").unlink(missing_ok=True)
                         jobs.append(dict(key=key, est=est, nbf=nbf, naux=naux,
-                                         method=method, basis=basis, attempts=0,
-                                         exclusive=est > EXCLUSIVE_GB))
+                                         method=method, basis=basis, attempts=0))
     return jobs, excluded
 
 
@@ -298,7 +302,6 @@ def finish(rec):
     part.unlink(missing_ok=True)
     if job["attempts"] <= 2:
         job["est"] = min(job["est"] * 1.5, JOB_CAP)  # killed-by-rlimit? give headroom
-        job["exclusive"] = job["est"] > EXCLUSIVE_GB
         log(f"requeue {key} rc={rc} attempt={job['attempts']} est->{job['est']/GB:.1f}G")
         return "requeue"
     (ROOT / "out" / f"{key}.failed").write_text(f"rc={rc}\n")
@@ -309,7 +312,7 @@ def finish(rec):
 # --------------------------------------------------------- trunc validation
 def run_sync(toml_path, out_path, est):
     env = dict(os.environ, OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1",
-               RAYON_NUM_THREADS=str(THREADS_EXCLUSIVE),
+               RAYON_NUM_THREADS=str(THREADS),
                FERRIC_ERI3_BUDGET_GB=str(BUDGET / GB))
     with open(out_path, "w") as f:
         subprocess.run([BIN, str(toml_path)], stdout=f, stderr=subprocess.STDOUT,
@@ -368,8 +371,7 @@ def main():
         f"{len(todo)} to run, {len(excluded)} excluded")
     if "--dry-run" in sys.argv:
         for j in sorted(todo, key=lambda j: j["est"]):
-            print(f"{j['key']:42s} est={j['est']/GB:5.1f}G nbf={j['nbf']:4d}"
-                  f"{'  EXCLUSIVE' if j['exclusive'] else ''}")
+            print(f"{j['key']:42s} est={j['est']/GB:5.1f}G nbf={j['nbf']:4d}")
         return
     # S22 rs jobs are gated on the benzene trunc validation, but DON'T block
     # the whole grid on it: defer those jobs and let A24 + scs flow. Rerun
@@ -415,17 +417,13 @@ def main():
             victim = max(running, key=lambda r: r["job"]["est"])
             log(f"WATCHDOG: MemAvailable<{FLOOR/GB:.1f}G — killing {victim['job']['key']}")
             kill_group(victim)
-        # admit
+        # admit: pack as many jobs as fit, each at 1 thread (concurrency is the
+        # only lever — threading a single job buys nothing; see calibration note).
+        # Bound by: worker count (don't oversubscribe cores), sum-of-estimates
+        # (MEM_BUDGET), and live MemAvailable headroom (FLOOR+1G after admitting).
         used = sum(r["job"]["est"] for r in running)
         for job in list(pending):
-            if job["exclusive"]:
-                if running:
-                    continue
-                pending.remove(job)
-                running.append(launch(job, THREADS_EXCLUSIVE))
-                break
             if (len(running) < MAX_WORKERS
-                    and not any(r["job"]["exclusive"] for r in running)
                     and used + job["est"] <= MEM_BUDGET
                     and mem_available() - job["est"] >= FLOOR + 1 * GB):
                 pending.remove(job)

@@ -33,3 +33,17 @@ examples/dft_pbe.py
 /.handoff-task50.txt
 /demo-talk/
 
+
+# grid run artifacts (regenerated; out/ is large + actively written)
+benchmarks/grid/out/
+benchmarks/grid/geoms/
+benchmarks/grid/toml/
+benchmarks/grid/*.log
+benchmarks/grid/status.json
+benchmarks/gmtkn30/__pycache__/
+benchmarks/grid/__pycache__/
+# latex build products
+docs/papers/*.aux
+docs/papers/*.fdb_latexmk
+docs/papers/*.fls
+docs/papers/*.log
