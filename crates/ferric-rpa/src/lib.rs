@@ -240,7 +240,31 @@ pub fn run_pdep_rpa(
     // path requires.
     let mp2_cfg = RiMp2Config { frozen_core: config.frozen_core };
     let inter = compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
+    run_pdep_rpa_from_intermediates(&inter, mol, obs, dfbs, op, rhf, config)
+}
 
+/// dRPA energy from PRE-BUILT RI intermediates, skipping the (P|op|ia) transform.
+///
+/// The expensive part of [`run_pdep_rpa`] is `compute_rpa_intermediates`, which
+/// runs the aux-blocked 3-index integral transform `(P|op|ia)` and forms the
+/// dressed `b_ov = V^{-1/2}(Q|op|ia)`. The range-separated MP2 spin-component
+/// step (`ri_mp2_spin_components`) already builds exactly this `b_ov` for the
+/// same operator and returns it. Threading those intermediates in here lets the
+/// coupled-rings formulation reuse them instead of recomputing the transform —
+/// see [`ferric_mp2::rimp2::compute_rpa_intermediates`] for the struct and
+/// `rs_mp2_lr_rpa` for the fused caller. The result is bit-identical to
+/// `run_pdep_rpa` (same `inter`, same code path below).
+#[allow(clippy::too_many_arguments)]
+pub fn run_pdep_rpa_from_intermediates(
+    inter: &ferric_mp2::rimp2::RpaIntermediates,
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &ScfResult,
+    config: &PdepRpaConfig,
+) -> Result<PdepRpaResult, FerricError> {
+    let _ = mol; // retained for signature symmetry with run_pdep_rpa
     let b_ov = &inter.b_ov;
     let nocc = inter.nocc;
     let nvir = inter.nvir;

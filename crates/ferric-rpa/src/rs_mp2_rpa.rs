@@ -5,10 +5,12 @@ use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_mp2::rimp2::{ri_mp2_spin_components, RiMp2Config};
+use ferric_mp2::rimp2::{
+    compute_rpa_intermediates, spin_components_from_b_ov, RiMp2Config,
+};
 use ferric_scf::ScfResult;
 
-use crate::{run_pdep_rpa, PdepRpaConfig};
+use crate::{run_pdep_rpa_from_intermediates, PdepRpaConfig};
 
 /// Which algebraic form of the range-separated MP2 + RPA functional to use.
 ///
@@ -149,45 +151,69 @@ pub fn rs_mp2_lr_rpa(
     cfg: &RsMp2RpaConfig,
 ) -> Result<RsMp2RpaResult, FerricError> {
     let ri_cfg = RiMp2Config { frozen_core: cfg.frozen_core };
-    let (sc_full, _) =
-        ri_mp2_spin_components(mol, obs, dfbs, Operator::coulomb(), rhf, &ri_cfg)?;
-    let (sc_sr, _) =
-        ri_mp2_spin_components(mol, obs, dfbs, Operator::erfc(cfg.omega), rhf, &ri_cfg)?;
-    let (sc_lr, _) =
-        ri_mp2_spin_components(mol, obs, dfbs, Operator::erf(cfg.omega), rhf, &ri_cfg)?;
 
-    // Closed shell: E_MP2 = Σ (ia|jb)[2(ia|jb)−(ib|ja)]/Δ; the direct (ring)
-    // part 2Σ(ia|jb)²/Δ — the 2nd-order truncation of dRPA — equals 2·E_OS.
-    let e_dmp2_lr = 2.0 * sc_lr.e_os;
+    // SHARED-INTERMEDIATE FUSION. The MP2 spin components and the dRPA solves
+    // both need the dressed b_ov = V^{-1/2}(P|op|ia) for the SAME operator, and
+    // building it (the aux-blocked (P|op|ia) transform) is the expensive step.
+    // Build the intermediates ONCE per operator and feed them to both the
+    // spin-component energy (spin_components_from_b_ov) and the dRPA solve
+    // (run_pdep_rpa_from_intermediates). This removes the duplicate transforms
+    // that the old code ran (CoupledRings previously did 5 transforms — 3 MP2 +
+    // 2 RPA — for only 3 distinct operators; now 3). Results are bit-identical.
+    let eps = rhf.eps_r();
+    let inter_of = |op| compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &ri_cfg);
+    let sc_of = |it: &ferric_mp2::rimp2::RpaIntermediates| {
+        spin_components_from_b_ov(
+            &it.b_ov, eps, it.nocc, it.nvir, it.first_occ, it.nocc_total,
+        )
+    };
 
     let mut rpa_cfg = cfg.rpa.clone();
     rpa_cfg.frozen_core = cfg.frozen_core;
 
-    let (e_corr, e_drpa_lr, e_corr_naive, e_delta_drpa_full, e_delta_drpa_sr) =
+    // erf intermediates: needed for sc_lr (always, for e_dmp2_lr) and for the
+    // DeltaLr dRPA. Coulomb/erfc built inside their arms to avoid unused work.
+    let (e_corr, e_drpa_lr, e_corr_naive, e_delta_drpa_full, e_delta_drpa_sr,
+         sc_full, sc_sr, sc_lr) =
         match cfg.formulation {
             RsMp2RpaFormulation::DeltaLr => {
-                let rpa = run_pdep_rpa(mol, obs, dfbs, Operator::erf(cfg.omega), rhf, &rpa_cfg)?;
+                let it_lr = inter_of(Operator::erf(cfg.omega))?;
+                let sc_lr = sc_of(&it_lr);
+                let sc_full = sc_of(&inter_of(Operator::coulomb())?);
+                let sc_sr = sc_of(&inter_of(Operator::erfc(cfg.omega))?);
+                let e_dmp2_lr = 2.0 * sc_lr.e_os;
+                let rpa = run_pdep_rpa_from_intermediates(
+                    &it_lr, mol, obs, dfbs, Operator::erf(cfg.omega), rhf, &rpa_cfg,
+                )?;
                 let e_corr = sc_full.e_total + rpa.e_rpa - e_dmp2_lr;
-                (
-                    e_corr,
-                    Some(rpa.e_rpa),
-                    Some(sc_sr.e_total + rpa.e_rpa),
-                    None,
-                    None,
-                )
+                (e_corr, Some(rpa.e_rpa), Some(sc_sr.e_total + rpa.e_rpa),
+                 None, None, sc_full, sc_sr, sc_lr)
             }
             RsMp2RpaFormulation::CoupledRings => {
-                let rpa_coul =
-                    run_pdep_rpa(mol, obs, dfbs, Operator::coulomb(), rhf, &rpa_cfg)?;
-                let rpa_erfc =
-                    run_pdep_rpa(mol, obs, dfbs, Operator::erfc(cfg.omega), rhf, &rpa_cfg)?;
+                // erf only enters via e_dmp2_lr = 2·E_OS[erf]; no erf dRPA needed.
+                let sc_lr = sc_of(&inter_of(Operator::erf(cfg.omega))?);
+                let it_full = inter_of(Operator::coulomb())?;
+                let it_sr = inter_of(Operator::erfc(cfg.omega))?;
+                let sc_full = sc_of(&it_full);
+                let sc_sr = sc_of(&it_sr);
+                let rpa_coul = run_pdep_rpa_from_intermediates(
+                    &it_full, mol, obs, dfbs, Operator::coulomb(), rhf, &rpa_cfg,
+                )?;
+                let rpa_erfc = run_pdep_rpa_from_intermediates(
+                    &it_sr, mol, obs, dfbs, Operator::erfc(cfg.omega), rhf, &rpa_cfg,
+                )?;
                 let delta_full = rpa_coul.e_rpa - 2.0 * sc_full.e_os;
                 let delta_sr = rpa_erfc.e_rpa - 2.0 * sc_sr.e_os;
                 // T: E_MP2[Coulomb] + ΔdRPA[Coulomb] − ΔdRPA[erfc]
                 let e_corr = sc_full.e_total + delta_full - delta_sr;
-                (e_corr, None, None, Some(delta_full), Some(delta_sr))
+                (e_corr, None, None, Some(delta_full), Some(delta_sr),
+                 sc_full, sc_sr, sc_lr)
             }
         };
+
+    // Closed shell: E_MP2 = Σ (ia|jb)[2(ia|jb)−(ib|ja)]/Δ; the direct (ring)
+    // part 2Σ(ia|jb)²/Δ — the 2nd-order truncation of dRPA — equals 2·E_OS.
+    let e_dmp2_lr = 2.0 * sc_lr.e_os;
 
     Ok(RsMp2RpaResult {
         e_mp2_full: sc_full.e_total,
@@ -206,6 +232,10 @@ pub fn rs_mp2_lr_rpa(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // These reference-cross-check tests call the standalone entry points
+    // directly (the production path uses the fused intermediates above).
+    use crate::run_pdep_rpa;
+    use ferric_mp2::rimp2::ri_mp2_spin_components;
     use ferric_core::basis;
     use ferric_core::mol::Molecule;
     use ferric_core::parallel::ParallelContext;
@@ -345,5 +375,45 @@ mod tests {
             r.e_corr, expected
         );
         assert!((r.total_energy - (rhf.energy + r.e_corr)).abs() < 1e-12);
+    }
+
+    /// The shared-intermediate fusion must change NOTHING. Reconstruct the
+    /// CoupledRings energy at a realistic ω from independent
+    /// ri_mp2_spin_components + run_pdep_rpa calls (the pre-fusion recipe) and
+    /// demand bit-level agreement with the fused production path.
+    #[test]
+    fn coupled_rings_fusion_is_bit_identical() {
+        let (mol, obs, dfbs, rhf) = setup_h2();
+        let omega = 0.42;
+        let cfg = RsMp2RpaConfig {
+            omega,
+            formulation: RsMp2RpaFormulation::CoupledRings,
+            ..Default::default()
+        };
+        let fused = rs_mp2_lr_rpa(&mol, &obs, &dfbs, &rhf, &cfg).unwrap();
+
+        // Pre-fusion reconstruction: separate transforms for each operator.
+        let ri_cfg = RiMp2Config::default();
+        let (sc_full, _) = ri_mp2_spin_components(
+            &mol, &obs, &dfbs, Operator::coulomb(), &rhf, &ri_cfg).unwrap();
+        let (sc_sr, _) = ri_mp2_spin_components(
+            &mol, &obs, &dfbs, Operator::erfc(omega), &rhf, &ri_cfg).unwrap();
+        let rpa_cfg = cfg.rpa.clone();
+        let rpa_coul = run_pdep_rpa(
+            &mol, &obs, &dfbs, Operator::coulomb(), &rhf, &rpa_cfg).unwrap();
+        let rpa_erfc = run_pdep_rpa(
+            &mol, &obs, &dfbs, Operator::erfc(omega), &rhf, &rpa_cfg).unwrap();
+        let delta_full = rpa_coul.e_rpa - 2.0 * sc_full.e_os;
+        let delta_sr = rpa_erfc.e_rpa - 2.0 * sc_sr.e_os;
+        let expected = sc_full.e_total + delta_full - delta_sr;
+
+        eprintln!(
+            "fusion check: fused={:.12} unfused={:.12} diff={:.2e}",
+            fused.e_corr, expected, fused.e_corr - expected
+        );
+        assert!(
+            (fused.e_corr - expected).abs() < 1e-10,
+            "fusion not bit-identical: {} vs {}", fused.e_corr, expected
+        );
     }
 }

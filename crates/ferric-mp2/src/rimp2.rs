@@ -135,15 +135,34 @@ pub fn ri_mp2_spin_components(
         .unwrap();
     let b_flat = v2c_inv_sqrt.dot(&eri3_flat); // (naux, nocc*nvir)
 
-    // Spin-component resolved MP2 energy. (ia|jb) comes from i-blocked wide
-    // GEMMs G_i = B_i^T·B (nvir x nocc*nvir) instead of per-element strided
-    // dots over P: same FLOPs at BLAS3 throughput, and OPENBLAS_NUM_THREADS
-    // parallelizes it. G_i transient is nvir*nocc*nvir*8 bytes.
+    let sc = spin_components_from_b_ov(
+        &b_flat, eps, nocc, nvir, first_occ, nocc_total,
+    );
+    Ok((sc, b_flat))
+}
+
+/// Spin-component MP2 energy from a pre-built dressed `b_ov` (no integral
+/// transform). Factored out of [`ri_mp2_spin_components`] so a caller that
+/// already holds the intermediates (e.g. the fused coupled-rings RPA path) can
+/// reuse them rather than rebuild the `(P|op|ia)` transform. `eps` is the full
+/// orbital-energy slice `rhf.eps_r()`.
+pub fn spin_components_from_b_ov(
+    b_ov: &Array2<f64>,
+    eps: &[f64],
+    nocc: usize,
+    nvir: usize,
+    first_occ: usize,
+    nocc_total: usize,
+) -> SpinComponents {
+    // (ia|jb) comes from i-blocked wide GEMMs G_i = B_i^T·B (nvir x nocc*nvir)
+    // instead of per-element strided dots over P: same FLOPs at BLAS3
+    // throughput, and OPENBLAS_NUM_THREADS parallelizes it. G_i transient is
+    // nvir*nocc*nvir*8 bytes.
     let mut e_os = 0.0;
     let mut e_ss = 0.0;
     for i in 0..nocc {
-        let b_i = b_flat.slice(ndarray::s![.., i * nvir..(i + 1) * nvir]);
-        let g_i = b_i.t().dot(&b_flat); // (nvir, nocc*nvir); g_i[a, jb] = (ia|jb)
+        let b_i = b_ov.slice(ndarray::s![.., i * nvir..(i + 1) * nvir]);
+        let g_i = b_i.t().dot(b_ov); // (nvir, nocc*nvir); g_i[a, jb] = (ia|jb)
         for j in 0..nocc {
             let e_ij = eps[first_occ + i] + eps[first_occ + j];
             for a in 0..nvir {
@@ -151,17 +170,13 @@ pub fn ri_mp2_spin_components(
                     let g_ab = g_i[(a, j * nvir + b)]; // (ia|jb)
                     let g_ba = g_i[(b, j * nvir + a)]; // (ib|ja)
                     let denom = e_ij - eps[nocc_total + a] - eps[nocc_total + b];
-                    // Opposite-spin: (ia|jb)^2 / denom
                     e_os += g_ab * g_ab / denom;
-                    // Same-spin: (ia|jb)[(ia|jb)-(ib|ja)] / denom
                     e_ss += g_ab * (g_ab - g_ba) / denom;
                 }
             }
         }
     }
-
-    let sc = SpinComponents { e_os, e_ss, e_total: e_os + e_ss };
-    Ok((sc, b_flat))
+    SpinComponents { e_os, e_ss, e_total: e_os + e_ss }
 }
 
 /// Compute the RI-MP2 correlation energy.
