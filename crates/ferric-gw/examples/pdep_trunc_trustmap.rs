@@ -24,6 +24,7 @@
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
+use ferric_gw::{run_gw, GwConfig, GwMethod};
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_rpa::config::{PdepRpaConfig, QuadratureConfig, QuadratureScheme};
@@ -53,6 +54,8 @@ struct Row {
     ea: f64,
     alpha: f64,
     c6: f64,
+    gw_ip: [f64; 4],  // [G0W0, evGW0, evGW, COHSEX] HOMO IP (eV)
+    gw_gap: [f64; 4], // QP gap = LUMO_qp − HOMO_qp (eV)
 }
 
 fn main() {
@@ -157,11 +160,42 @@ fn main() {
             (3.0 / std::f64::consts::PI) * s
         };
 
+        // GW family vs truncation — same neutral RHF + same trunc_thresh (cfg).
+        let nocc_n = (neutral.nelec() as usize) / 2;
+        let homo_abs = nocc_n - 1;
+        let lumo_abs = nocc_n;
+        let mut gw_ip = [f64::NAN; 4];
+        let mut gw_gap = [f64::NAN; 4];
+        for (mi, method) in [GwMethod::G0W0, GwMethod::EvGw0, GwMethod::EvGw, GwMethod::Cohsex]
+            .into_iter()
+            .enumerate()
+        {
+            let gcfg = GwConfig {
+                method,
+                qp_mos: Some(homo_abs..lumo_abs + 1),
+                max_ev_iter: 8,
+                ev_conv_thresh: 1e-4,
+                ..Default::default()
+            };
+            if let Ok(res) = run_gw(&neutral, &obs_n, &dfbs_n, op, &rhf_n, &cfg, &gcfg) {
+                let homo_qp = res.mo_indices.iter().position(|&i| i == homo_abs)
+                    .map(|loc| res.eps_qp[loc]);
+                let lumo_qp = res.mo_indices.iter().position(|&i| i == lumo_abs)
+                    .map(|loc| res.eps_qp[loc]);
+                if let Some(h) = homo_qp {
+                    gw_ip[mi] = -h * HA_TO_EV;
+                    if let Some(l) = lumo_qp {
+                        gw_gap[mi] = (l - h) * HA_TO_EV;
+                    }
+                }
+            }
+        }
+
         eprintln!(
-            "[spike] thresh={thresh:.0e}  E_rpa={:.6}  IP={ip:.4}  EA={ea:.4}  a={alpha:.4}  C6={c6:.3}",
-            rpa_n.e_rpa
+            "[spike] thresh={thresh:.0e}  E_rpa={:.6}  IP={ip:.4}  EA={ea:.4}  a={alpha:.4}  C6={c6:.3}  evGW_IP={:.3}",
+            rpa_n.e_rpa, gw_ip[2]
         );
-        rows.push(Row { thresh, e_rpa: rpa_n.e_rpa, ip, ea, alpha, c6 });
+        rows.push(Row { thresh, e_rpa: rpa_n.e_rpa, ip, ea, alpha, c6, gw_ip, gw_gap });
     }
 
     // Reference = untruncated (thresh = 0), the first row.
@@ -188,5 +222,26 @@ fn main() {
     println!(
         "\n# absolute reference (thresh=0): E_rpa={:.6} Ha  IP={:.4} eV  EA={:.4} eV  a={:.4} a.u.  C6={:.3} a.u.",
         r0.e_rpa, r0.ip, r0.ea, r0.alpha, r0.c6
+    );
+
+    // GW-family IP vs trunc_thresh (signed error vs thresh=0).
+    let labels = ["G0W0", "evGW0", "evGW", "COHSEX"];
+    println!("\n# GW-family HOMO IP (eV) vs trunc_thresh — signed error vs thresh=0");
+    println!("{:>8} | {:>10} {:>10} {:>10} {:>10}", "thresh", labels[0], labels[1], labels[2], labels[3]);
+    println!("{:-<58}", "");
+    for r in &rows {
+        print!("{:>8.0e} |", r.thresh);
+        for mi in 0..4 {
+            print!(" {:>10.4}", r.gw_ip[mi] - rows[0].gw_ip[mi]);
+        }
+        println!();
+    }
+    println!(
+        "# absolute GW IP at thresh=0 (eV): G0W0={:.3} evGW0={:.3} evGW={:.3} COHSEX={:.3}",
+        rows[0].gw_ip[0], rows[0].gw_ip[1], rows[0].gw_ip[2], rows[0].gw_ip[3]
+    );
+    println!(
+        "# absolute QP gap at thresh=0 (eV): G0W0={:.3} evGW0={:.3} evGW={:.3} COHSEX={:.3}",
+        rows[0].gw_gap[0], rows[0].gw_gap[1], rows[0].gw_gap[2], rows[0].gw_gap[3]
     );
 }
