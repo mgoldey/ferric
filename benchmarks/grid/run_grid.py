@@ -47,11 +47,14 @@ BASIS_DIR = ROOT / "../../crates/ferric-core/src/basis/bundled"
 
 GB = 1e9
 NCORES = 12               # box has 12 cores
-MEM_BUDGET = 21 * GB      # sum of running estimates (concurrent jobs); with the
-                          # AO_MULT-calibrated estimate (~6.8 GB for an nbf~500
-                          # aTZ job) this admits 3 concurrent. The live
-                          # MemAvailable guard + watchdog + RLIMIT_AS are the
-                          # real safety net, not this sum.
+MEM_BUDGET = 18 * GB      # sum of running estimates (concurrent jobs). Lowered
+                          # 21->18 on 2026-06-14: at 21 GB, three nbf=736 aTZ
+                          # π-stack jobs (est 7.0 each = 21.0, exactly at budget)
+                          # packed, and their TRANSIENT dRPA-stage memory peaks
+                          # coincided → MemAvailable <FLOOR → watchdog killed +
+                          # requeued one (no data lost, but churn). 18 GB packs
+                          # 2 such jobs and leaves ~5-6 GB headroom for the
+                          # peaks. The watchdog + RLIMIT_AS remain the hard net.
 FLOOR = 2.5 * GB          # MemAvailable floor -> watchdog kills largest job
 JOB_CAP = 17 * GB         # above this: infeasible even run alone (box: ~19G avail)
 RLIMIT_MAX = 18 * GB      # absolute per-child address-space ceiling
