@@ -55,6 +55,18 @@ fn cases() -> Vec<Case> {
         Case { name: "F2",   xyz: "2\nF2\nF 0 0 -0.7080\nF 0 0  0.7080\n", ip_ref: 15.70 },
         Case { name: "HF",   xyz: "2\nHF\nF 0 0 0.0\nH 0 0 0.9168\n", ip_ref: 16.12 },
         Case { name: "C2H2", xyz: "4\nC2H2\nC 0 0 -0.6014\nC 0 0  0.6014\nH 0 0 -1.6605\nH 0 0  1.6605\n", ip_ref: 11.40 },
+        // --- Batch 2: first/second-row closed-shell, experimental vertical IPs ---
+        // Geometries C2H4/C2H6/CO2/HCl/H2S reused from scripts/dosd (DOSD-experimental).
+        Case { name: "C2H4", xyz: "6\nC2H4\nC 0.000000 0.000000 0.669500\nC 0.000000 0.000000 -0.669500\nH 0.000000 0.922832 1.237695\nH 0.000000 -0.922832 1.237695\nH 0.000000 0.922832 -1.237695\nH 0.000000 -0.922832 -1.237695\n", ip_ref: 10.68 },
+        Case { name: "C2H6", xyz: "8\nC2H6\nC 0.000000 0.000000 0.768000\nC 0.000000 0.000000 -0.768000\nH 0.000000 1.013302 1.164532\nH 0.877488 -0.506651 1.164532\nH -0.877488 -0.506651 1.164532\nH 0.000000 -1.013302 -1.164532\nH -0.877488 0.506651 -1.164532\nH 0.877488 0.506651 -1.164532\n", ip_ref: 11.99 },
+        Case { name: "CO2",  xyz: "3\nCO2\nC 0.000000 0.000000 0.000000\nO 0.000000 0.000000 1.162000\nO 0.000000 0.000000 -1.162000\n", ip_ref: 13.78 },
+        Case { name: "HCl",  xyz: "2\nHCl\nCl 0.000000 0.000000 0.000000\nH 0.000000 0.000000 1.275000\n", ip_ref: 12.79 },
+        Case { name: "H2S",  xyz: "3\nH2S\nS 0.000000 0.000000 0.103729\nH 0.000000 0.961700 -0.829834\nH 0.000000 -0.961700 -0.829834\n", ip_ref: 10.50 },
+        // HCN linear (rCH=1.064, rCN=1.156); H2CO planar C2v (rCO=1.208, rCH=1.116, HCH=116.5);
+        // CH3OH staggered Cs (standard experimental parameters).
+        Case { name: "HCN",  xyz: "3\nHCN\nH 0.0 0.0 -1.064000\nC 0.0 0.0 0.000000\nN 0.0 0.0 1.156000\n", ip_ref: 13.61 },
+        Case { name: "H2CO", xyz: "4\nH2CO\nO 0.0 0.0 0.674000\nC 0.0 0.0 -0.534000\nH 0.0 0.945000 -1.130000\nH 0.0 -0.945000 -1.130000\n", ip_ref: 10.88 },
+        Case { name: "CH3OH", xyz: "6\nCH3OH\nC 0.0 0.0 0.0\nO 0.0 0.0 1.421000\nH 1.020000 0.0 -0.360000\nH -0.510000 0.883000 -0.360000\nH -0.510000 -0.883000 -0.360000\nH 0.890000 0.0 1.760000\n", ip_ref: 10.96 },
     ]
 }
 
