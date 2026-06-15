@@ -83,6 +83,10 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mol_name = args.get(1).map(String::as_str).unwrap_or("water");
     let basis_name = args.get(2).map(String::as_str).unwrap_or("aug-cc-pvdz");
+    // --no-gw skips the GW family (4 methods × all thresholds) — expensive on
+    // large systems and the least essential column for a truncation study, since
+    // energy/IP/EA/α/C6 already show the scaling. GW truncation is on water/ethylene.
+    let skip_gw = args.iter().any(|a| a == "--no-gw");
     let (xyz, anion_bound) = geometry(mol_name);
 
     let ctx = ParallelContext::default();
@@ -192,10 +196,12 @@ fn main() {
         let lumo_abs = nocc_n;
         let mut gw_ip = [f64::NAN; 4];
         let mut gw_gap = [f64::NAN; 4];
-        for (mi, method) in [GwMethod::G0W0, GwMethod::EvGw0, GwMethod::EvGw, GwMethod::Cohsex]
-            .into_iter()
-            .enumerate()
-        {
+        let gw_methods: &[GwMethod] = if skip_gw {
+            &[]
+        } else {
+            &[GwMethod::G0W0, GwMethod::EvGw0, GwMethod::EvGw, GwMethod::Cohsex]
+        };
+        for (mi, &method) in gw_methods.iter().enumerate() {
             let gcfg = GwConfig {
                 method,
                 qp_mos: Some(homo_abs..lumo_abs + 1),
