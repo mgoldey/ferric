@@ -453,7 +453,17 @@ def main():
         if is_pistack:
             return 3 if j["basis"] == "adz" else 4  # headline π-stacks first
         return 5 if j["basis"] == "adz" else 6      # other S22
-    pending = deque(sorted(todo, key=lambda j: (prio(j), j["est"])))
+
+    # Within the π-stack aTZ tier, finish ONE system before starting the next so
+    # a complete CBS number lands first, instead of all five crawling forward in
+    # lockstep by fragment size (which yields zero complete systems for hours).
+    # Order: pyrazine (12, smallest) → benzene-PD (11) → the rest, ascending.
+    pistack_order = {12: 0, 11: 1, 13: 2, 20: 3, 14: 4, 15: 5}
+    def sys_rank(j):
+        if j["key"].startswith(pistack):
+            return pistack_order.get(int(j["key"].split("-")[1][:2]), 9)
+        return 0
+    pending = deque(sorted(todo, key=lambda j: (prio(j), sys_rank(j), j["est"])))
     running, n_done, n_fail = [], 0, 0
     while pending or running:
         # reap
