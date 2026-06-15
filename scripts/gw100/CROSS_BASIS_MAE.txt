@@ -1,0 +1,5 @@
+# GW100 sweep — MAE vs experiment (eV) by basis
+basis             Koop    dSCF    dRPA    G0W0  COHSEX   evGW0    evGW   #mol
+--------------------------------------------------------------------------------
+aug-cc-pvdz      1.096   0.961   0.412   0.446   1.408   0.454   0.463     10
+aug-cc-pvtz      1.102   0.977   0.426   0.612   2.306   0.595   0.584     10
