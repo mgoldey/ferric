@@ -27,9 +27,7 @@ use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_rpa::config::{PdepRpaConfig, QuadratureConfig, QuadratureScheme};
-use ferric_rpa::dispersion::{
-    casimir_polder_c6, pdep_dynamic_polarizability_truncated, DispersionPartition,
-};
+use ferric_rpa::properties::molecular_dynamic_polarizability_pdep;
 use ferric_rpa::{run_pdep_rpa, run_u_pdep_rpa};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
@@ -140,17 +138,27 @@ fn main() {
         // molecular Casimir-Polder integral (DOSD-comparable). Static α is the
         // lowest-frequency node of the same truncated dynamic tensor (the static
         // path has no truncation knob), iso = Tr/3, labelled as a node proxy.
-        let dp = pdep_dynamic_polarizability_truncated(
-            &rpa_n, &neutral, &obs_n, &obs_bs, &dfbs_n, &rhf_n, op, &cfg,
-            DispersionPartition::Becke,
-        )
-        .expect("truncated dynamic alpha");
-        let c6 = casimir_polder_c6(&dp).c6_molecular_iso;
-        let a_lo = &dp.molecular[0];
-        let alpha = (a_lo[0][0] + a_lo[1][1] + a_lo[2][2]) / 3.0;
+        // Truncation-aware molecular α(iω) in the SAME retained PDEP basis as the
+        // energy/GW columns (molecular_dynamic_polarizability_pdep). Static α = the
+        // ω=0 (lowest node) iso = Tr/3. Molecular C6 = (3/π) Σ_k w_k ᾱ(iω_k)²
+        // (the DOSD-comparable c6_molecular_iso definition).
+        let mol_alpha = molecular_dynamic_polarizability_pdep(&rpa_n, &neutral, &obs_n, &dfbs_n, &rhf_n, op)
+            .expect("molecular pdep alpha");
+        let a0 = &mol_alpha[0];
+        let alpha = (a0[0][0] + a0[1][1] + a0[2][2]) / 3.0;
+        let c6 = {
+            let w = &rpa_n.quad_weights;
+            let mut s = 0.0;
+            for k in 0..mol_alpha.len() {
+                let a = &mol_alpha[k];
+                let iso = (a[0][0] + a[1][1] + a[2][2]) / 3.0;
+                s += w[k] * iso * iso;
+            }
+            (3.0 / std::f64::consts::PI) * s
+        };
 
         eprintln!(
-            "[spike] thresh={thresh:.0e}  E_rpa={:.6}  IP={ip:.4}  EA={ea:.4}  a(lo)={alpha:.4}  C6={c6:.3}",
+            "[spike] thresh={thresh:.0e}  E_rpa={:.6}  IP={ip:.4}  EA={ea:.4}  a={alpha:.4}  C6={c6:.3}",
             rpa_n.e_rpa
         );
         rows.push(Row { thresh, e_rpa: rpa_n.e_rpa, ip, ea, alpha, c6 });
@@ -163,7 +171,7 @@ fn main() {
     println!("# signed error vs trunc_thresh=0 reference");
     println!(
         "{:>8} {:>10} | {:>12} {:>10} {:>10} {:>12} {:>10}",
-        "thresh", "n_kept?", "dE_rpa(Ha)", "dIP(eV)", "dEA(eV)", "da_lo(%)", "dC6(%)"
+        "thresh", "n_kept?", "dE_rpa(Ha)", "dIP(eV)", "dEA(eV)", "da(%)", "dC6(%)"
     );
     println!("{:-<86}", "");
     for r in &rows {
