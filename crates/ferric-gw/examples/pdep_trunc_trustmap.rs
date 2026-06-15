@@ -68,6 +68,8 @@ fn geometry(name: &str) -> (&'static str, bool) {
 
 struct Row {
     thresh: f64,
+    m_kept: usize,    // retained PDEP eigenpotentials at this threshold
+    naux: usize,      // total aux functions (= M at thresh 0)
     e_rpa: f64,
     ip: f64,
     ea: f64,
@@ -137,7 +139,12 @@ fn main() {
         ..Default::default()
     };
 
-    let thresholds = [0.0, 1e-5, 1e-4, 1e-3, 1e-2, 3e-2, 1e-1];
+    // Truncation drops eigenpotentials with |λ(0)−1| ≤ thresh. Production uses
+    // the 1e-4 default, so resolve THAT regime finely (1e-6 → 1e-2) to confirm
+    // the default is safe with margin — reported alongside M_kept/naux so safety
+    // is expressed as a mode fraction, not just a % error. (Past ~1e-2 we never
+    // operate, so the lax 0.1+ end is dropped.)
+    let thresholds = [0.0, 1e-6, 3e-6, 1e-5, 3e-5, 1e-4, 3e-4, 1e-3, 3e-3, 1e-2];
     let mut rows: Vec<Row> = Vec::new();
 
     for &thresh in &thresholds {
@@ -214,7 +221,13 @@ fn main() {
             "[spike] thresh={thresh:.0e}  E_rpa={:.6}  IP={ip:.4}  EA={ea:.4}  a={alpha:.4}  C6={c6:.3}  evGW_IP={:.3}",
             rpa_n.e_rpa, gw_ip[2]
         );
-        rows.push(Row { thresh, e_rpa: rpa_n.e_rpa, ip, ea, alpha, c6, gw_ip, gw_gap });
+        rows.push(Row {
+            thresh,
+            m_kept: rpa_n.n_eigenpotentials,
+            naux: dfbs_n.nbasis(),
+            e_rpa: rpa_n.e_rpa,
+            ip, ea, alpha, c6, gw_ip, gw_gap,
+        });
     }
 
     // Reference = untruncated (thresh = 0), the first row.
@@ -223,19 +236,21 @@ fn main() {
     println!("# anion_bound = {anion_bound}  (EA meaningful only if true)");
     println!("# signed error vs trunc_thresh=0 reference");
     println!(
-        "{:>8} {:>10} | {:>12} {:>10} {:>10} {:>12} {:>10}",
-        "thresh", "n_kept?", "dE_rpa(Ha)", "dIP(eV)", "dEA(eV)", "da(%)", "dC6(%)"
+        "{:>8} {:>13} | {:>12} {:>10} {:>10} {:>12} {:>10}",
+        "thresh", "M_kept/naux", "dE_rpa(Ha)", "dIP(eV)", "dEA(eV)", "da(%)", "dC6(%)"
     );
-    println!("{:-<86}", "");
+    println!("{:-<90}", "");
     for r in &rows {
         let d_e = r.e_rpa - r0.e_rpa;
         let d_ip = r.ip - r0.ip;
         let d_ea = r.ea - r0.ea;
         let d_a = 100.0 * (r.alpha - r0.alpha) / r0.alpha;
         let d_c6 = 100.0 * (r.c6 - r0.c6) / r0.c6;
+        let frac = format!("{}/{} ({:.0}%)", r.m_kept, r.naux,
+                           100.0 * r.m_kept as f64 / r.naux as f64);
         println!(
-            "{:>8.0e} {:>10} | {:>12.2e} {:>10.4} {:>10.4} {:>10.3} {:>10.3}",
-            r.thresh, "-", d_e, d_ip, d_ea, d_a, d_c6
+            "{:>8.0e} {:>13} | {:>12.2e} {:>10.4} {:>10.4} {:>10.3} {:>10.3}",
+            r.thresh, frac, d_e, d_ip, d_ea, d_a, d_c6
         );
     }
     println!(
