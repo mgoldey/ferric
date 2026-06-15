@@ -24,12 +24,11 @@
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
+use ferric_gw::{run_gw, GwConfig, GwMethod};
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_rpa::config::{PdepRpaConfig, QuadratureConfig, QuadratureScheme};
-use ferric_rpa::dispersion::{
-    casimir_polder_c6, pdep_dynamic_polarizability_truncated, DispersionPartition,
-};
+use ferric_rpa::properties::molecular_dynamic_polarizability_pdep;
 use ferric_rpa::{run_pdep_rpa, run_u_pdep_rpa};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
@@ -44,7 +43,17 @@ fn geometry(name: &str) -> (&'static str, bool) {
             "3\nH2O\nO 0.0 0.0 0.117790\nH 0.0 0.755453 -0.471161\nH 0.0 -0.755453 -0.471161\n",
             false, // water anion unbound at these bases — EA flagged
         ),
-        other => panic!("unknown molecule '{other}' (water only in this spike)"),
+        "benzene" => (
+            // D6h, experimental r_CC=1.3915, r_CH=1.0800 Å. Anion is a shape
+            // resonance (unbound) at these bases → EA flagged, not trusted.
+            "12\nC6H6\n\
+             C  1.3915  0.0000 0.0\nC  0.6957  1.2050 0.0\nC -0.6957  1.2050 0.0\n\
+             C -1.3915  0.0000 0.0\nC -0.6957 -1.2050 0.0\nC  0.6957 -1.2050 0.0\n\
+             H  2.4715  0.0000 0.0\nH  1.2357  2.1403 0.0\nH -1.2357  2.1403 0.0\n\
+             H -2.4715  0.0000 0.0\nH -1.2357 -2.1403 0.0\nH  1.2357 -2.1403 0.0\n",
+            false,
+        ),
+        other => panic!("unknown molecule '{other}' (water, benzene)"),
     }
 }
 
@@ -55,6 +64,8 @@ struct Row {
     ea: f64,
     alpha: f64,
     c6: f64,
+    gw_ip: [f64; 4],  // [G0W0, evGW0, evGW, COHSEX] HOMO IP (eV)
+    gw_gap: [f64; 4], // QP gap = LUMO_qp − HOMO_qp (eV)
 }
 
 fn main() {
@@ -140,20 +151,61 @@ fn main() {
         // molecular Casimir-Polder integral (DOSD-comparable). Static α is the
         // lowest-frequency node of the same truncated dynamic tensor (the static
         // path has no truncation knob), iso = Tr/3, labelled as a node proxy.
-        let dp = pdep_dynamic_polarizability_truncated(
-            &rpa_n, &neutral, &obs_n, &obs_bs, &dfbs_n, &rhf_n, op, &cfg,
-            DispersionPartition::Becke,
-        )
-        .expect("truncated dynamic alpha");
-        let c6 = casimir_polder_c6(&dp).c6_molecular_iso;
-        let a_lo = &dp.molecular[0];
-        let alpha = (a_lo[0][0] + a_lo[1][1] + a_lo[2][2]) / 3.0;
+        // Truncation-aware molecular α(iω) in the SAME retained PDEP basis as the
+        // energy/GW columns (molecular_dynamic_polarizability_pdep). Static α = the
+        // ω=0 (lowest node) iso = Tr/3. Molecular C6 = (3/π) Σ_k w_k ᾱ(iω_k)²
+        // (the DOSD-comparable c6_molecular_iso definition).
+        let mol_alpha = molecular_dynamic_polarizability_pdep(&rpa_n, &neutral, &obs_n, &dfbs_n, &rhf_n, op)
+            .expect("molecular pdep alpha");
+        let a0 = &mol_alpha[0];
+        let alpha = (a0[0][0] + a0[1][1] + a0[2][2]) / 3.0;
+        let c6 = {
+            let w = &rpa_n.quad_weights;
+            let mut s = 0.0;
+            for k in 0..mol_alpha.len() {
+                let a = &mol_alpha[k];
+                let iso = (a[0][0] + a[1][1] + a[2][2]) / 3.0;
+                s += w[k] * iso * iso;
+            }
+            (3.0 / std::f64::consts::PI) * s
+        };
+
+        // GW family vs truncation — same neutral RHF + same trunc_thresh (cfg).
+        let nocc_n = (neutral.nelec() as usize) / 2;
+        let homo_abs = nocc_n - 1;
+        let lumo_abs = nocc_n;
+        let mut gw_ip = [f64::NAN; 4];
+        let mut gw_gap = [f64::NAN; 4];
+        for (mi, method) in [GwMethod::G0W0, GwMethod::EvGw0, GwMethod::EvGw, GwMethod::Cohsex]
+            .into_iter()
+            .enumerate()
+        {
+            let gcfg = GwConfig {
+                method,
+                qp_mos: Some(homo_abs..lumo_abs + 1),
+                max_ev_iter: 8,
+                ev_conv_thresh: 1e-4,
+                ..Default::default()
+            };
+            if let Ok(res) = run_gw(&neutral, &obs_n, &dfbs_n, op, &rhf_n, &cfg, &gcfg) {
+                let homo_qp = res.mo_indices.iter().position(|&i| i == homo_abs)
+                    .map(|loc| res.eps_qp[loc]);
+                let lumo_qp = res.mo_indices.iter().position(|&i| i == lumo_abs)
+                    .map(|loc| res.eps_qp[loc]);
+                if let Some(h) = homo_qp {
+                    gw_ip[mi] = -h * HA_TO_EV;
+                    if let Some(l) = lumo_qp {
+                        gw_gap[mi] = (l - h) * HA_TO_EV;
+                    }
+                }
+            }
+        }
 
         eprintln!(
-            "[spike] thresh={thresh:.0e}  E_rpa={:.6}  IP={ip:.4}  EA={ea:.4}  a(lo)={alpha:.4}  C6={c6:.3}",
-            rpa_n.e_rpa
+            "[spike] thresh={thresh:.0e}  E_rpa={:.6}  IP={ip:.4}  EA={ea:.4}  a={alpha:.4}  C6={c6:.3}  evGW_IP={:.3}",
+            rpa_n.e_rpa, gw_ip[2]
         );
-        rows.push(Row { thresh, e_rpa: rpa_n.e_rpa, ip, ea, alpha, c6 });
+        rows.push(Row { thresh, e_rpa: rpa_n.e_rpa, ip, ea, alpha, c6, gw_ip, gw_gap });
     }
 
     // Reference = untruncated (thresh = 0), the first row.
@@ -163,7 +215,7 @@ fn main() {
     println!("# signed error vs trunc_thresh=0 reference");
     println!(
         "{:>8} {:>10} | {:>12} {:>10} {:>10} {:>12} {:>10}",
-        "thresh", "n_kept?", "dE_rpa(Ha)", "dIP(eV)", "dEA(eV)", "da_lo(%)", "dC6(%)"
+        "thresh", "n_kept?", "dE_rpa(Ha)", "dIP(eV)", "dEA(eV)", "da(%)", "dC6(%)"
     );
     println!("{:-<86}", "");
     for r in &rows {
@@ -180,5 +232,26 @@ fn main() {
     println!(
         "\n# absolute reference (thresh=0): E_rpa={:.6} Ha  IP={:.4} eV  EA={:.4} eV  a={:.4} a.u.  C6={:.3} a.u.",
         r0.e_rpa, r0.ip, r0.ea, r0.alpha, r0.c6
+    );
+
+    // GW-family IP vs trunc_thresh (signed error vs thresh=0).
+    let labels = ["G0W0", "evGW0", "evGW", "COHSEX"];
+    println!("\n# GW-family HOMO IP (eV) vs trunc_thresh — signed error vs thresh=0");
+    println!("{:>8} | {:>10} {:>10} {:>10} {:>10}", "thresh", labels[0], labels[1], labels[2], labels[3]);
+    println!("{:-<58}", "");
+    for r in &rows {
+        print!("{:>8.0e} |", r.thresh);
+        for mi in 0..4 {
+            print!(" {:>10.4}", r.gw_ip[mi] - rows[0].gw_ip[mi]);
+        }
+        println!();
+    }
+    println!(
+        "# absolute GW IP at thresh=0 (eV): G0W0={:.3} evGW0={:.3} evGW={:.3} COHSEX={:.3}",
+        rows[0].gw_ip[0], rows[0].gw_ip[1], rows[0].gw_ip[2], rows[0].gw_ip[3]
+    );
+    println!(
+        "# absolute QP gap at thresh=0 (eV): G0W0={:.3} evGW0={:.3} evGW={:.3} COHSEX={:.3}",
+        rows[0].gw_gap[0], rows[0].gw_gap[1], rows[0].gw_gap[2], rows[0].gw_gap[3]
     );
 }
