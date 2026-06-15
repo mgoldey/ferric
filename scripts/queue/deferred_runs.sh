@@ -62,6 +62,11 @@ case "${1:-check}" in
   check) gate_open ;;
   gw100) gate_open && run_gw100 ;;
   trunc) shift; gate_open && run_trunc "$@" ;;
-  all)   gate_open || exit 1; run_gw100; run_trunc benzene aug-cc-pvdz ;;
-  *) echo "usage: $0 {check|gw100|trunc <mol> <basis>|all}"; exit 2 ;;
+  # Full method×threshold benchmark: the mid-size + large systems (water already
+  # done). Each gated independently is overkill; gate once, run both serially.
+  trustmap) gate_open || exit 1
+            run_trunc ethylene aug-cc-pvdz
+            run_trunc benzene  aug-cc-pvdz ;;
+  all)   gate_open || exit 1; run_gw100; run_trunc ethylene aug-cc-pvdz; run_trunc benzene aug-cc-pvdz ;;
+  *) echo "usage: $0 {check|gw100|trunc <mol> <basis>|trustmap|all}"; exit 2 ;;
 esac

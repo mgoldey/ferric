@@ -43,6 +43,15 @@ fn geometry(name: &str) -> (&'static str, bool) {
             "3\nH2O\nO 0.0 0.0 0.117790\nH 0.0 0.755453 -0.471161\nH 0.0 -0.755453 -0.471161\n",
             false, // water anion unbound at these bases — EA flagged
         ),
+        "ethylene" => (
+            // C2H4 D2h, experimental r_CC=1.339, r_CH=1.086 Å, HCH=117.4°.
+            // Mid-size π system (6 atoms) between water and benzene. Anion unbound.
+            "6\nC2H4\n\
+             C  0.000000 0.000000  0.669500\nC  0.000000 0.000000 -0.669500\n\
+             H  0.000000 0.922832  1.237695\nH  0.000000 -0.922832 1.237695\n\
+             H  0.000000 0.922832 -1.237695\nH  0.000000 -0.922832 -1.237695\n",
+            false,
+        ),
         "benzene" => (
             // D6h, experimental r_CC=1.3915, r_CH=1.0800 Å. Anion is a shape
             // resonance (unbound) at these bases → EA flagged, not trusted.
@@ -53,7 +62,7 @@ fn geometry(name: &str) -> (&'static str, bool) {
              H -2.4715  0.0000 0.0\nH -1.2357 -2.1403 0.0\nH  1.2357 -2.1403 0.0\n",
             false,
         ),
-        other => panic!("unknown molecule '{other}' (water, benzene)"),
+        other => panic!("unknown molecule '{other}' (water, ethylene, benzene)"),
     }
 }
 
