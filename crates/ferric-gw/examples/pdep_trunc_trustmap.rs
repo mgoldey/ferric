@@ -43,7 +43,17 @@ fn geometry(name: &str) -> (&'static str, bool) {
             "3\nH2O\nO 0.0 0.0 0.117790\nH 0.0 0.755453 -0.471161\nH 0.0 -0.755453 -0.471161\n",
             false, // water anion unbound at these bases — EA flagged
         ),
-        other => panic!("unknown molecule '{other}' (water only in this spike)"),
+        "benzene" => (
+            // D6h, experimental r_CC=1.3915, r_CH=1.0800 Å. Anion is a shape
+            // resonance (unbound) at these bases → EA flagged, not trusted.
+            "12\nC6H6\n\
+             C  1.3915  0.0000 0.0\nC  0.6957  1.2050 0.0\nC -0.6957  1.2050 0.0\n\
+             C -1.3915  0.0000 0.0\nC -0.6957 -1.2050 0.0\nC  0.6957 -1.2050 0.0\n\
+             H  2.4715  0.0000 0.0\nH  1.2357  2.1403 0.0\nH -1.2357  2.1403 0.0\n\
+             H -2.4715  0.0000 0.0\nH -1.2357 -2.1403 0.0\nH  1.2357 -2.1403 0.0\n",
+            false,
+        ),
+        other => panic!("unknown molecule '{other}' (water, benzene)"),
     }
 }
 
