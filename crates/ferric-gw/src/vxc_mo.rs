@@ -11,10 +11,10 @@
 use ferric_core::basis::BasisSet;
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
-use ferric_dft::density_on_grid::eval_density_uks;
+use ferric_dft::density_on_grid::{eval_density_closed, eval_density_uks};
 use ferric_dft::grid::AtomicGridConfig;
-use ferric_dft::ks::KsXcUks;
-use ferric_dft::vxc::semilocal_vxc_polarized;
+use ferric_dft::ks::{KsXc, KsXcUks};
+use ferric_dft::vxc::{semilocal_vxc_closed, semilocal_vxc_polarized};
 use ferric_scf::{ScfResult, Spin};
 use ndarray::Array1;
 
@@ -27,9 +27,30 @@ pub fn vxc_diagonal_mo(
     scf: &ScfResult,
 ) -> Result<(Array1<f64>, Array1<f64>), FerricError> {
     if matches!(scf.spin, Spin::Restricted) {
-        return Err(FerricError::General(
-            "vxc_diagonal_mo: closed-shell not handled here".into(),
-        ));
+        // Full closed-shell density: solve_rhf stores density_alpha = 0.5·D_full,
+        // so the physical density matrix is 2·density_alpha (rhf.rs).
+        let d_full = 2.0 * &scf.density_alpha;
+        let main_grid = AtomicGridConfig::default();
+        let nlc_grid = AtomicGridConfig { n_radial: 50, n_angular: 50 };
+        let ks_xc = KsXc::new(mol, bs, xc_name, &main_grid, &nlc_grid)
+            .map_err(|e| FerricError::General(format!("KsXc::new: {e:?}")))?;
+        let dens = eval_density_closed(&d_full, &ks_xc.chi, &ks_xc.dchi);
+        let (_e_xc, mut vxc_ao) =
+            semilocal_vxc_closed(&ks_xc.grid, &ks_xc.chi, &ks_xc.dchi, &dens, &ks_xc.xc);
+        // VV10 nonlocal piece is part of the KS Fock; subtract it too.
+        if let (Some(g), Some(c), Some(dc), Some(params)) = (
+            ks_xc.nlc_grid.as_ref(),
+            ks_xc.nlc_chi.as_ref(),
+            ks_xc.nlc_dchi.as_ref(),
+            ks_xc.xc.vv10.as_ref(),
+        ) {
+            let dens_t = eval_density_closed(&d_full, c, dc);
+            let mut v_nl = ndarray::Array2::<f64>::zeros(vxc_ao.dim());
+            let _e_nl = ferric_dft::vv10::add_vv10(g, c, dc, &dens_t, params, &mut v_nl);
+            vxc_ao += &v_nl;
+        }
+        let diag = mo_diagonal(&vxc_ao, scf.mos_r());
+        return Ok((diag.clone(), diag));
     }
     let d_a = &scf.density_alpha;
     let d_b = scf
