@@ -91,6 +91,19 @@ pub struct GwResult {
     pub pdep: PdepRpaResult,
 }
 
+impl GwResult {
+    /// Apply the Σ_x − v_xc correction to QP energies in place. Required when the
+    /// reference is KS (RKS) rather than HF (RHF): the KS Fock contains v_xc, so
+    /// the GW QP energy replaces it with the GW exchange Σ_x. For each computed
+    /// MO p:  ε_qp_p ← ε_qp_p + (Σ_x_p − v_xc_p).
+    /// `vxc_diag` is absolute-MO-indexed (length nmo); only `mo_indices` read.
+    pub fn apply_kohn_sham_correction(&mut self, vxc_diag: &Array1<f64>) {
+        for (idx, &mo_abs) in self.mo_indices.iter().enumerate() {
+            self.eps_qp[idx] += self.sigma_x[idx] - vxc_diag[mo_abs];
+        }
+    }
+}
+
 /// Spin-unrestricted GW result. Per-spin QP energies on a shared MO-index list.
 ///
 /// The MO indices are *absolute* and shared between channels (so MO `i` here
