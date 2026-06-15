@@ -49,6 +49,15 @@ run_gw100() {
   echo "[queue] GW100 done. MAE table:"; grep -E "^MAE|^mol|^----" "$log" | head
 }
 
+# GW100 (10-mol subset, all methods) at a given basis, via the idempotent runner
+# so results.json accumulates and re-runs are skippable.
+run_gw100_basis() {
+  local basis="$1"
+  echo "[queue] GW100 sweep basis=$basis (idempotent) ..."
+  scoped "gw100-$basis" "$OUT/gw100_${basis}_$(date +%Y%m%d_%H%M).txt" \
+    python3 "$ROOT/scripts/gw100/run_sweep.py" "$basis"
+}
+
 run_trunc() {
   local mol="${1:-benzene}" basis="${2:-aug-cc-pvdz}"
   local log="$OUT/trunc_${mol}_${basis}_$(date +%Y%m%d_%H%M).txt"
@@ -67,6 +76,11 @@ case "${1:-check}" in
   trustmap) gate_open || exit 1
             run_trunc ethylene aug-cc-pvdz
             run_trunc benzene  aug-cc-pvdz ;;
+  # GW100 (10-mol subset) at BOTH bases — gate once, run aDZ then aTZ serially.
+  gw100-bases) gate_open || exit 1
+               run_gw100_basis aug-cc-pvdz
+               run_gw100_basis aug-cc-pvtz
+               python3 "$ROOT/scripts/gw100/run_sweep.py" --show ;;
   all)   gate_open || exit 1; run_gw100; run_trunc ethylene aug-cc-pvdz; run_trunc benzene aug-cc-pvdz ;;
-  *) echo "usage: $0 {check|gw100|trunc <mol> <basis>|trustmap|all}"; exit 2 ;;
+  *) echo "usage: $0 {check|gw100|trunc <mol> <basis>|trustmap|gw100-bases|all}"; exit 2 ;;
 esac

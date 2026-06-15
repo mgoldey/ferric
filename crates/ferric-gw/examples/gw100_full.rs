@@ -91,10 +91,10 @@ struct CationDiag {
     energy: f64,
 }
 
-fn run_case(case: &Case) -> Option<(Ips, CationDiag)> {
+fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, CationDiag)> {
     let ctx = ParallelContext::default();
-    let obs_bs = basis::bundled("aug-cc-pvtz").ok()?;
-    let dfbs_bs = basis::bundled("aug-cc-pvtz-rifit").ok()?;
+    let obs_bs = basis::bundled(obs_name).ok()?;
+    let dfbs_bs = basis::bundled(dfbs_name).ok()?;
     let op = Operator::coulomb();
 
     let neutral = Molecule::parse_xyz(case.xyz, 0, 1).ok()?;
@@ -197,7 +197,11 @@ fn run_case(case: &Case) -> Option<(Ips, CationDiag)> {
 }
 
 fn main() {
+    // Basis from CLI: `gw100_full [aug-cc-pvdz|aug-cc-pvtz]` (default aTZ).
+    let obs_name = std::env::args().nth(1).unwrap_or_else(|| "aug-cc-pvtz".to_string());
+    let dfbs_name = format!("{obs_name}-rifit");
     let cases = cases();
+    println!("# GW100 subset — basis {obs_name} / {dfbs_name}");
     println!(
         "{:<6} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}",
         "mol", "exp(eV)", "Koop", "ΔSCF", "ΔRPA", "G0W0", "COHSEX", "evGW0", "evGW"
@@ -209,7 +213,7 @@ fn main() {
     let mut diags: Vec<(&str, CationDiag)> = Vec::new();
 
     for case in &cases {
-        match run_case(case) {
+        match run_case(case, &obs_name, &dfbs_name) {
             Some((ips, diag)) => {
                 println!(
                     "{:<6} {:>8.2} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3}",
