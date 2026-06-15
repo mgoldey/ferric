@@ -85,7 +85,7 @@ pub fn run_bse_tda(
         qp_newton_damp: 1.0,
         frozen_core,
     };
-    let gw = run_gw(mol, obs, dfbs, op, rhf, pdep_cfg, &gw_cfg)?;
+    let gw = run_gw(mol, obs, dfbs, op, rhf, pdep_cfg, &gw_cfg, None)?;
 
     // Map absolute MO index → QP energy.
     let mut eps_qp_full = rhf.eps_r().to_vec(); // fallback = HF (should be fully overwritten)
@@ -326,7 +326,7 @@ pub fn run_bse_c6(
         qp_newton_damp: 1.0,
         frozen_core,
     };
-    let gw = run_gw(mol, obs, dfbs, op, rhf, pdep_cfg, &gw_cfg)?;
+    let gw = run_gw(mol, obs, dfbs, op, rhf, pdep_cfg, &gw_cfg, None)?;
     let mut eps_qp = rhf.eps_r().to_vec();
     for (k, &mo) in gw.mo_indices.iter().enumerate() {
         eps_qp[mo] = gw.eps_qp[k];

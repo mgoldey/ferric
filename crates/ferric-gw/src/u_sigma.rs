@@ -98,7 +98,7 @@ fn qp_per_spin_g0w0(
         sx_out[idx] = sigma_x_all[m_loc];
         let (eps_qp_m, sc_final, z_renorm) = solve_qp_for_mo(
             m_loc, eps_m, m_proj, inv_diel_freq, quad_weights, quad_freqs,
-            &mo_b.eps_act, gw_cfg.pade_npts, gw_cfg.qp_newton_damp, ef,
+            &mo_b.eps_act, gw_cfg.pade_npts, gw_cfg.qp_newton_damp, ef, 0.0,
         );
         sc_out[idx] = sc_final;
         z_out[idx] = z_renorm;
@@ -174,12 +174,12 @@ pub fn run_u_evgw0(
             let (ena, sca, za) = solve_qp_for_mo(
                 mla, mo_b_a.eps_act[mla], &m_proj_a, inv_diel_freq,
                 &pdep.quad_weights, &pdep.quad_freqs, &eps_prop_a,
-                gw_cfg.pade_npts, gw_cfg.qp_newton_damp, ef_a,
+                gw_cfg.pade_npts, gw_cfg.qp_newton_damp, ef_a, 0.0,
             );
             let (enb, scb, zb) = solve_qp_for_mo(
                 mlb, mo_b_b.eps_act[mlb], &m_proj_b, inv_diel_freq,
                 &pdep.quad_weights, &pdep.quad_freqs, &eps_prop_b,
-                gw_cfg.pade_npts, gw_cfg.qp_newton_damp, ef_b,
+                gw_cfg.pade_npts, gw_cfg.qp_newton_damp, ef_b, 0.0,
             );
             max_dev = max_dev.max((ena - eps_qp_a[idx]).abs()).max((enb - eps_qp_b[idx]).abs());
             eps_qp_a[idx] = ena; sc_a[idx] = sca; z_a[idx] = za;
@@ -288,12 +288,12 @@ pub fn run_u_evgw(
             let (ena, sca, za) = solve_qp_for_mo(
                 mla, mo_b_a.eps_act[mla], &m_proj_a, inv_diel_freq,
                 &current_pdep.quad_weights, &current_pdep.quad_freqs, &eps_prop_a,
-                gw_cfg.pade_npts, gw_cfg.qp_newton_damp, ef_a,
+                gw_cfg.pade_npts, gw_cfg.qp_newton_damp, ef_a, 0.0,
             );
             let (enb, scb, zb) = solve_qp_for_mo(
                 mlb, mo_b_b.eps_act[mlb], &m_proj_b, inv_diel_freq,
                 &current_pdep.quad_weights, &current_pdep.quad_freqs, &eps_prop_b,
-                gw_cfg.pade_npts, gw_cfg.qp_newton_damp, ef_b,
+                gw_cfg.pade_npts, gw_cfg.qp_newton_damp, ef_b, 0.0,
             );
             max_dev = max_dev.max((ena - eps_qp_a[idx]).abs()).max((enb - eps_qp_b[idx]).abs());
             eps_qp_a[idx] = ena; sc_a[idx] = sca; z_a[idx] = za;

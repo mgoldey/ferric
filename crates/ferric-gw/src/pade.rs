@@ -99,6 +99,34 @@ mod tests {
         }
     }
 
+    /// GW-realistic regime: ef-shifted nodes (Re = ef ≠ 0), evaluate far away on
+    /// the real axis. f(z) = 1/(z−0.5) + 0.3/(z+1.2); 18 geometric nodes at
+    /// ef + iω; eval at −0.17. PySCF pade_thiele gives −1.2012751775 (= exact).
+    #[test]
+    fn shifted_nodes_far_eval_matches_exact() {
+        let f = |z: Complex64| {
+            Complex64::new(1.0, 0.0) / (z - Complex64::new(0.5, 0.0))
+                + Complex64::new(0.3, 0.0) / (z + Complex64::new(1.2, 0.0))
+        };
+        let ef = -0.0954_f64;
+        let n = 18;
+        let z: Vec<Complex64> = (0..n)
+            .map(|k| {
+                let t = k as f64 / (n as f64 - 1.0);
+                let w = (0.01_f64.ln() + t * (5.0_f64.ln() - 0.01_f64.ln())).exp();
+                Complex64::new(ef, w)
+            })
+            .collect();
+        let fv: Vec<Complex64> = z.iter().map(|&zi| f(zi)).collect();
+        let pade = PadeCF::fit(z, &fv);
+        let val = pade.eval(Complex64::new(-0.17, 0.0));
+        let exact = f(Complex64::new(-0.17, 0.0)).re; // −1.2012751775
+        assert!(
+            (val.re - exact).abs() < 1e-6,
+            "shifted-node far-eval Padé: got {:.10}, exact {:.10}", val.re, exact
+        );
+    }
+
     /// On the real axis, f(ω) = 1/(1−ω²) → diverges at ω = ±1. Padé from
     /// imag-axis data should reproduce the simple pole structure.
     #[test]
