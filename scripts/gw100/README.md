@@ -13,7 +13,7 @@ the textbook HF-starting-point overshoot, not an implementation defect.
 |-------|----------------|--------|
 | 1. vs experiment | end-to-end accuracy (conflated) | evGW MAE 0.48 eV (aTZ, one-signed +0.47) |
 | 2. vs published refs | error is physics, not bug | ferric≡pub GW@HF 0.09 eV; vs CCSD(T) 0.37 (lit 0.33) |
-| 3. vs PySCF same-setup | bit-level implementation | **G0W0@HF MAD 4.9 meV, 18/18** |
+| 3. vs PySCF same-setup | bit-level implementation | **G0W0@HF MAD 4.9 meV (dTZ) / 3.8 meV (aTZ)** |
 
 ## The three layers
 
@@ -47,11 +47,15 @@ Theory-vs-theory separates ferric's error from GW's physical error:
   and will stress ferric's SCF. Next: extend to Li2/Na2/P2/SiH4/PH3/SO2/Cl2.
 - **Single starting point**: every number is @HF. `feat/gw-pbe-driver`
   (validated GW@PBE, unmerged) would bracket the overshoot with @PBE undershoot.
-- **aTZ same-setup xcheck**: IN PROGRESS (2026-06-17). Partial: 10/18 mols
-  agree ferric≡PySCF G0W0@HF to MAD 4.0 meV (max 7.9), Koopmans 0.07 meV
-  (bit-matched). Confirms the def2-TZVP result holds at the production aTZ basis.
-  He excluded (PySCF-side basis-library gap at aug-cc-pvtz, not a ferric issue).
-  Full 18-mol table pending the running job.
+- ~~aTZ same-setup xcheck~~ **DONE (2026-06-17): ferric≡PySCF G0W0@HF MAD
+  3.84 meV, max 7.90 meV, 17/17** (Koopmans 0.08 meV bit-matched, none >0.3).
+  TIGHTER than def2-TZVP (4.93 meV) — the bit-level proof now holds at BOTH the
+  def2-TZVP and the production aTZ basis. He excluded (PySCF-side basis-library
+  gap at aug-cc-pvtz, not a ferric issue).
+
+Remaining open jobs: coverage extension (heavier/3rd-row atoms), @PBE starting
+point (feat/gw-pbe-driver merge), and the measured scaling crossover curve
+(SCALING.md, gated on a quiet box).
 
 See also `SCALING.md` — ferric vs PySCF scaling (both ~O(N⁴); ferric's PDEP
 truncation is the better-scaling knob, off in this benchmark by design).
