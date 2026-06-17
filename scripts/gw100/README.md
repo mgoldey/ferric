@@ -17,14 +17,23 @@ bracket on the true IP.
 | set | count | status |
 |-----|------:|--------|
 | GW100 total | 100 | — |
-| ECP-free (Z≤36) | 93 | in `cases()`; sweep running |
+| ECP-free (Z≤36) | 93 | in `cases()`; @HF/@PBE sweep running (~1/3 done, resumes past slow mols) |
 | runnable at aDZ (have RI-aux) | ~80 | bundled aug-cc-pvdz-rifit lacks Li/Na/K/d-block |
 | deeply validated (3 layers) | 18 | the core proof |
-| ECP-blocked (Z≥37) | 7 | Xe/Rb/I/CH3I/AlI3/Ag — ECP support IN PROGRESS (libecpint, spec 2026-06-17) |
+| ECP-blocked (Z≥37) | 7 | Xe/Rb/I/CH3I/AlI3/Ag — ECP support DONE (libecpint, RHF@def2-ECP ≡ PySCF Xe/I2; add to cases() for 93→100) |
 
-Limits: ferric has no ECP/relativistic support (`ECP_ASSESSMENT.md` — large
-effort, buys 7 mols, deferred). The aug-cc-pV*Z-RIFIT aux for alkalis was never
-fit (use def2-rifit aux; `basis_gaps/CONVERSION_NOTES.md`).
+Limits: the aug-cc-pV*Z-RIFIT aux for alkalis was never fit upstream (use
+def2-rifit aux; `basis_gaps/CONVERSION_NOTES.md`). ECP support is now built &
+verified (`ECP_ASSESSMENT.md` is the original cost analysis; RHF@def2-ECP now
+matches PySCF — see crates/ferric-scf/tests/ecp_rhf.rs).
+
+**Sweep status (live):** ~1/3 of 93 attempted per basis. The runner (`run_sweep.py`)
+has a per-molecule stall-watchdog that FAILs+skips molecules exceeding a budget
+(Na/K clusters, heavy 3rd-row like As2 — these honestly map ferric's
+slow-molecule boundary) and RESUMES past them. NOTE: an earlier commit message
+("aTZ sweep COMPLETE, 24 conv") was wrong — that run STOPPED at 28/93 due to a
+watchdog-resume bug (commit 6a674bb fixed it). Neither basis is complete yet;
+`run_sweep.py --show` gives live MAEs. Slow molecules: see `SODIUM_FIX.md`.
 
 | layer | what it proves | result |
 |-------|----------------|--------|
