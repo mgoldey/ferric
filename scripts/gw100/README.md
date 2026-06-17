@@ -20,7 +20,7 @@ bracket on the true IP.
 | ECP-free (Z≤36) | 93 | in `cases()`; sweep running |
 | runnable at aDZ (have RI-aux) | ~80 | bundled aug-cc-pvdz-rifit lacks Li/Na/K/d-block |
 | deeply validated (3 layers) | 18 | the core proof |
-| ECP-blocked (Z≥37) | 7 | Xe/Rb/I/CH3I/AlI3/Ag — needs libecpint, deferred |
+| ECP-blocked (Z≥37) | 7 | Xe/Rb/I/CH3I/AlI3/Ag — ECP support IN PROGRESS (libecpint, spec 2026-06-17) |
 
 Limits: ferric has no ECP/relativistic support (`ECP_ASSESSMENT.md` — large
 effort, buys 7 mols, deferred). The aug-cc-pV*Z-RIFIT aux for alkalis was never
