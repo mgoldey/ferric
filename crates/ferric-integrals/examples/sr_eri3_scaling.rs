@@ -98,6 +98,16 @@ fn main() {
 
     println!(
         "\n# Read the c/aux and e/aux columns: a CONSTANT e/aux past ~C10 (while\n\
-         # c/aux keeps rising) is the O(N) signature. Both rising ⇒ O(N²)."
+         # c/aux keeps rising) is the O(N) signature. Both rising ⇒ O(N²).\n\
+         #\n\
+         # MEASURED VERDICT (valid ext_sum/R_eff bound, 2026-06-17): e/aux RISES\n\
+         # monotonically (171→13490 over C1..C20, no plateau) and erfc keeps\n\
+         # 99.0%% of the Coulomb triples at C20. The erfc 1st difference grows\n\
+         # ~linearly (2nd diff ~+44k, NOT ~0), so the erfc 3-index count is\n\
+         # O(N²) — the same scaling as Coulomb with a ~1%% smaller prefactor.\n\
+         # Under a VALID bound, linear-SR-MP2 locality at ω=0.222 is DEAD: erfc\n\
+         # attenuation buys a constant factor, not a scaling win. (The earlier\n\
+         # O(N) / 201472-per-CH2 claim was an artifact of the invalid bound that\n\
+         # over-dropped long-range triples.)"
     );
 }
