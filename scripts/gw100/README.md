@@ -64,9 +64,12 @@ python3 xcheck_runner.py def2-tzvp        # idempotent, caches xcheck_results.js
 python3 xcheck_runner.py --show
 ```
 
-## Known speed inefficiency (diagnosed, fix pending)
+## Speed — MEASURED (not estimated)
 
-The benchmark driver `../../crates/ferric-gw/examples/gw100_full.rs` calls
-`run_gw` 4×/molecule (one per GW method), each rebuilding ERI3 + Coulomb metric +
-PDEP — though G0W0/COHSEX/evGW₀ all use the SAME W₀. ~3–4× redundant setup. It's
-a DRIVER issue, not a library bug. Fix spec: `SPEEDUP_SPEC.md`.
+The earlier "4× setup redundancy" hypothesis was **falsified by measurement**
+(FERRIC_TIMING, commit 45dca5f). Sharing PDEP/ERI3 setup across the 4 GW columns
+saves <1% — setup is ~20–95 ms vs an ~18 s/molecule GW total. The real cost is
+the **evGW0/evGW self-consistency loops (~85% of GW time)**, then the G0W0 Σc QP
+solve. Full breakdown + the real optimization targets: `SPEEDUP_SPEC.md`.
+Profile any molecule with: `FERRIC_TIMING=1 ./target/release/examples/gw_profile
+geom/CO.xyz def2-tzvp def2-tzvp-rifit`.

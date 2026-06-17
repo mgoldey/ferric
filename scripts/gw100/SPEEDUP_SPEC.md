@@ -1,74 +1,53 @@
-# Speed fix: share PDEP+B across the 4 GW columns in gw100_full.rs
+# GW100 speed — MEASURED breakdown (supersedes the redundancy hypothesis)
 
-## Problem (verified, commit 66aff44 diagnosis)
+## Verdict: the "4× setup redundancy" fix is NOT worth doing (<1% saving).
 
-`crates/ferric-gw/examples/gw100_full.rs:190-197` loops over the 4 GW methods
-and calls `run_gw(...)` once each. Every `run_gw` (lib.rs:195) internally:
-- `run_pdep_rpa` (lib.rs:210) — Coulomb metric V (2c), Cholesky inv-sqrt, ERI3
-  tensor (P|μν), full PDEP Davidson eigensolve.
-- `mo_b::build_full_b` (lib.rs:213) — rebuilds V, inv-sqrt, ERI3 again, full MO
-  transform.
+Measured with FERRIC_TIMING (commit 45dca5f) on CO and H2O at def2-TZVP.
+The prior diagnosis (share PDEP+ERI3 across the 4 GW columns, est. "~60%")
+was **falsified by measurement** — setup is a rounding error.
 
-So the expensive setup runs **4× per molecule**. But G0W0, COHSEX, evGW₀ all use
-the SAME W₀ (screened interaction from the same neutral RHF). Only evGW rebuilds
-W self-consistently (and it rebuilds internally per iteration regardless).
+## Per-molecule wall time (def2-TZVP)
 
-## Constraint discovered (lib.rs:228-240)
+| stage                | CO        | H2O       | note |
+|----------------------|-----------|-----------|------|
+| solve_rhf            | 2212 ms   |  581 ms   | already 1×; SCF itself |
+| run_gw[G0W0]         | 2646 ms   |  912 ms   | ~150/70 ms setup → REST is the Σc QP solve |
+| run_gw[COHSEX]       |  158 ms   |   60 ms   | trivial (static, no freq Σc) |
+| run_gw[evGW0]        | 7764 ms   | 2614 ms   | **dominant** — self-consistency iterations |
+| run_gw[evGW]         | 7758 ms   | 3646 ms   | **dominant** — self-consistency + W rebuild |
 
-The per-method solvers take `pdep: PdepRpaResult` **by value (move)**:
-- `run_g0w0(mol, rhf, &mo_b, &v_dressed, pdep, qp_range, gw_cfg)` (sigma.rs:183)
-- `run_cohsex(...)`, `run_evgw0(...)` likewise.
-- `run_evgw(mol, obs, dfbs, op, rhf, pdep_cfg, &mo_b, pdep, ...)` — takes pdep0
-  by value AND re-runs run_pdep_rpa internally per outer iteration.
+Internal PDEP setup sub-stages (per run_pdep_rpa call), CO:
+- rpa_intermediates (ERI3 + 2c metric + MO transform): **16–46 ms**
+- eigensolve (Davidson): **7–15 ms**
+- freq_quad (λ(iω) + inverse-dielectric matrices): **~95 ms** ← largest setup piece
 
-So sharing one `pdep`/`mo_b` across 4 dispatches needs `PdepRpaResult: Clone`
-(+ `MoB` clone) OR a borrow-based refactor of the solver signatures.
+## Why the hoist doesn't pay
 
-## Recommended approach (lowest risk)
+Sharing the setup across G0W0/COHSEX/evGW0 saves ~3 × (setup ≈ 30 ms) ≈ 90 ms
+out of a ~18,000 ms per-molecule GW total (CO). That is **0.5%**. The AO ERI3
+rebuild I flagged as "9× redundant" is real but each rebuild is ~20 ms — the
+redundancy is in the cheapest stage.
 
-Add a thin public entry point that takes pre-built intermediates, leaving
-`run_gw` untouched (back-comp):
+## Where the time ACTUALLY is (real optimization targets, by payoff)
 
-```rust
-// in ferric-gw/src/lib.rs
-pub fn run_gw_with_intermediates(
-    mol, obs, dfbs, op, rhf, pdep_cfg, gw_cfg,
-    pdep: PdepRpaResult, mo_b: &MoB, v_dressed: &Array2<f64>,
-) -> Result<GwResult, FerricError>
-```
+1. **evGW0 / evGW self-consistency (~85% of GW time).** Each is ~8 iterations,
+   each re-evaluating Σc over the QP range. Levers:
+   - Tighter/earlier convergence: ev_conv_thresh=1e-4 with max_ev_iter=8 — does
+     it converge in fewer? Profile iteration-count vs Δ. A molecule converging in
+     3 iters but running 8 wastes >half its evGW time.
+   - evGW0 and evGW share most of their machinery — is anything recomputed across
+     the two that could be shared? (They ARE two separate run_gw calls here.)
+2. **G0W0 Σc QP solve (~2500 ms CO).** The per-orbital frequency integration +
+   Padé. Default qp_range is HOMO±3 (6 orbitals). Is the freq grid (16 pts)
+   bigger than needed for the HOMO IP? freq_quad inverse-dielectric (~95 ms × ...)
+   recurs — is it rebuilt per orbital or per call? (Earlier static check said per
+   call — confirm it isn't per orbital in the Σc loop.)
+3. **freq_quad inverse-dielectric (~95 ms/call).** Largest single setup cost.
+   eval_inv_dielectric_matrices builds K full M×M inverses. If only the HOMO IP
+   is wanted, are all K needed at full M?
 
-Then in gw100_full.rs, build PDEP+B ONCE before the method loop and pass clones:
+## What changed in the driver: NOTHING yet
 
-```rust
-let pdep0 = run_pdep_rpa(&neutral, &obs_n, &dfbs_n, op, &rhf_n, &pdep_cfg_gw)?;
-let mo_b  = mo_b::build_full_b(&neutral, &obs_n, &dfbs_n, op, &rhf_n, 0)?;
-let (v_dressed, _) = w_pdep::redress_with_check(&mo_b.v_inv_sqrt, &pdep0.eigenpotentials)?;
-for (method, slot) in [...] {
-    let gcfg = GwConfig { method, ... };
-    let res = run_gw_with_intermediates(..., pdep0.clone(), &mo_b, &v_dressed)?;
-    ...
-}
-```
-
-evGW still rebuilds W internally — that is correct (W self-consistency), leave it.
-
-## Acceptance criteria (MUST verify, don't assume)
-
-1. `cargo build --release --example gw100_full -p ferric-gw` — exit 0.
-2. **Numerical identity**: G0W0/COHSEX/evGW0/evGW HOMO IPs for H2O at def2-TZVP
-   MUST match the pre-refactor values to <1e-4 eV (the refactor is a pure hoist;
-   any change in output = bug). Check against results.json aTZ H2O or a fresh
-   pre/post run on one molecule.
-3. **Timing**: profile ONE molecule (e.g. H2O or CO at aTZ) pre vs post. The
-   estimate is ~halved GW-column time; CONFIRM the actual saving and that setup
-   (not the Davidson solve / evGW iterations) was the dominant cost — the 60%
-   figure was unmeasured. Report real numbers.
-4. `PdepRpaResult` / `MoB` deriving `Clone` must not be prohibitively large; if
-   the clone itself is expensive, prefer the borrow refactor instead.
-
-## Scope guard
-
-This touches a benchmark driver + one new public fn. Do NOT change the GW
-physics, the per-method solver internals, or evGW's W self-consistency. If the
-clone is costly or the borrow refactor balloons, STOP and report — a 2× driver
-speedup is not worth destabilizing the validated GW path.
+No code change to gw100_full.rs is justified by this. The instrumentation
+(timing.rs, gw_profile.rs) is the deliverable; it redirects future speed work
+from a <1% target to the evGW self-consistency loop (the real ~85%).
