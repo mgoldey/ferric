@@ -46,7 +46,7 @@ fn geometry(name: &str) -> (&'static str, bool) {
             "4\nNa4\n\
              Na 0.0002445 -0.0998053  1.5471126\nNa -0.0002444 3.1776586 0.0486374\n\
              Na 0.0002444  0.0997722 -1.5472150\nNa -0.0002444 -3.1776254 -0.0485350\n",
-            false, // anion not the point here
+            false, // Na4 anion UNBOUND (electropositive metal) — EA skipped, not hung
         ),
         "water" => (
             "3\nH2O\nO 0.0 0.0 0.117790\nH 0.0 0.755453 -0.471161\nH 0.0 -0.755453 -0.471161\n",
@@ -129,11 +129,21 @@ fn main() {
     let uhf_c = solve_uhf_with_guess(&ctx, &cation, &obs_c, &bounds_c, &uhf_cfg, Some((&seed, &seed)))
         .expect("cation UHF");
 
-    let obs_a = PreparedBasis::new(&anion, &obs_bs).unwrap();
-    let dfbs_a = PreparedBasis::new(&anion, &dfbs_bs).unwrap();
-    let bounds_a = SchwarzBounds::compute(op, &obs_a).unwrap();
-    let uhf_a = solve_uhf_with_guess(&ctx, &anion, &obs_a, &bounds_a, &uhf_cfg, Some((&seed, &seed)))
-        .expect("anion UHF");
+    // Only solve the anion when it is (at least weakly) BOUND. For electropositive
+    // species (Na4, K2, …) the extra electron is unbound: in a finite Gaussian
+    // basis the UHF cannot converge (it spins all max_iter, ~hours on a 100+-bf
+    // cluster) and the EA is physically meaningless anyway. Skip it → EA = NaN.
+    let anion_ctx = if anion_bound {
+        let obs_a = PreparedBasis::new(&anion, &obs_bs).unwrap();
+        let dfbs_a = PreparedBasis::new(&anion, &dfbs_bs).unwrap();
+        let bounds_a = SchwarzBounds::compute(op, &obs_a).unwrap();
+        let uhf_a = solve_uhf_with_guess(&ctx, &anion, &obs_a, &bounds_a, &uhf_cfg, Some((&seed, &seed)))
+            .expect("anion UHF");
+        Some((obs_a, dfbs_a, uhf_a))
+    } else {
+        eprintln!("[spike] {mol_name}: anion unbound (electropositive) — EA skipped");
+        None
+    };
 
     eprintln!(
         "[spike] {mol_name}/{basis_name} aux={dfbs_name}  neutral E={:.6}  anion_bound={anion_bound}",
@@ -157,10 +167,18 @@ fn main() {
     // the default is safe with margin — reported alongside M_kept/naux so safety
     // is expressed as a mode fraction, not just a % error. (Past ~1e-2 we never
     // operate, so the lax 0.1+ end is dropped.)
-    let thresholds = [0.0, 1e-6, 3e-6, 1e-5, 3e-5, 1e-4, 3e-4, 1e-3, 3e-3, 1e-2];
+    // Default grid includes thresh=0 (full-rank reference). For systems where
+    // full-rank is intractable (large nov + oversized aux, e.g. Na4 — the whole
+    // point of truncation), set TRUSTMAP_THRESHOLDS to a comma list to skip 0 and
+    // confirm the TRUNCATED IPs agree with each other (convergence = the answer).
+    let thresholds: Vec<f64> = std::env::var("TRUSTMAP_THRESHOLDS")
+        .ok()
+        .map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect())
+        .unwrap_or_else(|| vec![0.0, 1e-6, 3e-6, 1e-5, 3e-5, 1e-4, 3e-4, 1e-3, 3e-3, 1e-2]);
     let mut rows: Vec<Row> = Vec::new();
 
     for &thresh in &thresholds {
+        let t_mol = std::time::Instant::now();
         let cfg = make_cfg(thresh);
 
         // RPA correlation energy (neutral).
@@ -168,10 +186,16 @@ fn main() {
 
         // IP, EA via ΔRPA total energies (same PDEP basis).
         let rpa_c = run_u_pdep_rpa(&cation, &obs_c, &dfbs_c, op, &uhf_c, &cfg).expect("rpa cation");
-        let rpa_a = run_u_pdep_rpa(&anion, &obs_a, &dfbs_a, op, &uhf_a, &cfg).expect("rpa anion");
         let e_n = rhf_n.energy + rpa_n.e_rpa;
         let ip = (uhf_c.energy + rpa_c.e_rpa - e_n) * HA_TO_EV;
-        let ea = (e_n - (uhf_a.energy + rpa_a.e_rpa)) * HA_TO_EV;
+        // EA only when the anion is bound (skipped for electropositive species).
+        let ea = match anion_ctx.as_ref() {
+            Some((obs_a, dfbs_a, uhf_a)) => {
+                let rpa_a = run_u_pdep_rpa(&anion, obs_a, dfbs_a, op, uhf_a, &cfg).expect("rpa anion");
+                (e_n - (uhf_a.energy + rpa_a.e_rpa)) * HA_TO_EV
+            }
+            None => f64::NAN,
+        };
 
         // Truncation-aware dynamic polarizability — feed the ALREADY-TRUNCATED
         // rpa_n result to the _truncated dispersion path (the full
@@ -233,8 +257,8 @@ fn main() {
         }
 
         eprintln!(
-            "[spike] thresh={thresh:.0e}  E_rpa={:.6}  IP={ip:.4}  EA={ea:.4}  a={alpha:.4}  C6={c6:.3}  evGW_IP={:.3}",
-            rpa_n.e_rpa, gw_ip[2]
+            "[spike] thresh={thresh:.0e}  M_kept={}  IP={ip:.4}  G0W0={:.4}  evGW_IP={:.3}  wall={:.1}s",
+            rpa_n.n_eigenpotentials, gw_ip[0], gw_ip[2], t_mol.elapsed().as_secs_f64()
         );
         rows.push(Row {
             thresh,

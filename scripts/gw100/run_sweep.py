@@ -225,10 +225,15 @@ def show():
     print(f"{'basis':14} " + " ".join(f"{m:>7}" for m in METHODS) + f"  {'#mol':>5}")
     print("-" * 80)
     for basis in sorted(res):
-        mae = res[basis].get("mae", {})
-        n = res[basis].get("n_converged", 0)
+        slot = res[basis]
+        # Compute MAE live from stored molecules so --show works MID-RUN (the
+        # stored "mae"/"n_converged" are only written at run completion).
+        _recompute_mae(slot)
+        mae = slot.get("mae", {})
+        n = slot.get("n_converged", len(slot.get("molecules", {})))
+        nf = len(slot.get("failed", []))
         print(f"{basis:14} " + " ".join(f"{mae.get(m, float('nan')):>7.3f}" for m in METHODS)
-              + f"  {n:>5}")
+              + f"  {n:>5}" + (f"  ({nf} fail)" if nf else ""))
 
 
 if __name__ == "__main__":
