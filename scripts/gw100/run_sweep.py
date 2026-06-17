@@ -40,14 +40,42 @@ ENV = dict(os.environ, OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1",
            MKL_NUM_THREADS="1", RAYON_NUM_THREADS="1")
 
 
+def _basis_path(basis):
+    """Per-basis result file. Concurrent sweeps in different bases must NOT share
+    one file — load()/mutate/save() over a shared file is a read-modify-write race
+    (last writer clobbers the other basis). One file per basis = no contention."""
+    return HERE / f"results_{basis}.json"
+
+
+def load_basis(basis):
+    """Load one basis's results. Falls back to the legacy combined results.json
+    so older committed results stay visible until recomputed."""
+    p = _basis_path(basis)
+    if p.exists():
+        return json.loads(p.read_text())
+    legacy = RESULTS
+    if legacy.exists():
+        return json.loads(legacy.read_text()).get(basis, {})
+    return {}
+
+
+def save_basis(basis, slot):
+    p = _basis_path(basis)
+    tmp = p.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(slot, indent=2, sort_keys=True))
+    tmp.replace(p)
+
+
 def load():
-    return json.loads(RESULTS.read_text()) if RESULTS.exists() else {}
-
-
-def save(d):
-    tmp = RESULTS.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(d, indent=2, sort_keys=True))
-    tmp.replace(RESULTS)
+    """Combined view across all per-basis files + legacy results.json (read-only,
+    for --show)."""
+    res = {}
+    if RESULTS.exists():
+        res.update(json.loads(RESULTS.read_text()))
+    for p in HERE.glob("results_*.json"):
+        basis = p.stem[len("results_"):]
+        res[basis] = json.loads(p.read_text())
+    return res
 
 
 def parse_output(txt):
@@ -74,13 +102,11 @@ FAILED_RE = re.compile(r"^(\w+)\s+FAILED\s*$")
 
 
 def run_basis(basis, force=False):
-    """Stream the driver, persisting each molecule row to results.json as it
-    lands. Resumable: a box restart loses at most the in-flight molecule; rerun
-    continues via GW100_DONE. `--force` clears the basis and recomputes all."""
-    res = load()
-    slot = res.setdefault(basis, {})
-    if force:
-        slot.clear()
+    """Stream the driver, persisting each molecule row to results_<basis>.json as
+    it lands. Per-basis file → concurrent sweeps in different bases don't clobber.
+    Resumable: a restart loses at most the in-flight molecule; rerun continues via
+    GW100_DONE. `--force` clears this basis and recomputes all."""
+    slot = {} if force else load_basis(basis)
     mols = slot.setdefault("molecules", {})
     failed = set(slot.get("failed", []))
     if not BIN.exists():
@@ -101,13 +127,13 @@ def run_basis(basis, force=False):
             d = m.groupdict(); name = d.pop("mol")
             mols[name] = {k: float(v) for k, v in d.items()}
             slot["molecules"] = mols
-            save(res)                       # persist EACH molecule immediately
+            save_basis(basis, slot)         # persist EACH molecule immediately
             print(f"  [+] {name} ({len(mols)} done)", flush=True)
             continue
         fm = FAILED_RE.match(line.strip())
         if fm:
             failed.add(fm.group(1)); slot["failed"] = sorted(failed)
-            save(res)
+            save_basis(basis, slot)
             print(f"  [x] {fm.group(1)} FAILED", flush=True)
             continue
         # MAE summary line (printed once at the very end) — recompute from stored mols
@@ -115,7 +141,7 @@ def run_basis(basis, force=False):
 
     # Recompute MAE from the persisted molecule set (independent of run completion).
     _recompute_mae(slot)
-    save(res)
+    save_basis(basis, slot)
     print(f"[done] {basis}: {len(mols)} converged, {len(failed)} FAILED {sorted(failed)}")
     print(f"       evGW MAE = {slot.get('mae', {}).get('evGW', '?')} eV")
 
