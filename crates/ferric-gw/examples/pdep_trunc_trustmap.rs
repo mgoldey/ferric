@@ -39,6 +39,15 @@ const HA_TO_EV: f64 = 27.211_386_245_988;
 /// (xyz string, neutral multiplicity 1, bound-anion? flag)
 fn geometry(name: &str) -> (&'static str, bool) {
     match name {
+        // Na4 — the molecule that hung the GW100 sweep (4+ CPU-hr). Large nov
+        // (1892) + oversized cross-family def2 aux → big PDEP. Used to test
+        // whether trunc @1e-4 rescues it (timing AND IP-unchanged).
+        "na4" => (
+            "4\nNa4\n\
+             Na 0.0002445 -0.0998053  1.5471126\nNa -0.0002444 3.1776586 0.0486374\n\
+             Na 0.0002444  0.0997722 -1.5472150\nNa -0.0002444 -3.1776254 -0.0485350\n",
+            false, // anion not the point here
+        ),
         "water" => (
             "3\nH2O\nO 0.0 0.0 0.117790\nH 0.0 0.755453 -0.471161\nH 0.0 -0.755453 -0.471161\n",
             false, // water anion unbound at these bases — EA flagged
