@@ -47,8 +47,14 @@ Theory-vs-theory separates ferric's error from GW's physical error:
   and will stress ferric's SCF. Next: extend to Li2/Na2/P2/SiH4/PH3/SO2/Cl2.
 - **Single starting point**: every number is @HF. `feat/gw-pbe-driver`
   (validated GW@PBE, unmerged) would bracket the overshoot with @PBE undershoot.
-- **aTZ same-setup xcheck**: layer 3 is at def2-TZVP; aTZ would confirm the
-  basis-trend conclusion bit-for-bit (heavier compute, gated).
+- **aTZ same-setup xcheck**: IN PROGRESS (2026-06-17). Partial: 10/18 mols
+  agree ferric≡PySCF G0W0@HF to MAD 4.0 meV (max 7.9), Koopmans 0.07 meV
+  (bit-matched). Confirms the def2-TZVP result holds at the production aTZ basis.
+  He excluded (PySCF-side basis-library gap at aug-cc-pvtz, not a ferric issue).
+  Full 18-mol table pending the running job.
+
+See also `SCALING.md` — ferric vs PySCF scaling (both ~O(N⁴); ferric's PDEP
+truncation is the better-scaling knob, off in this benchmark by design).
 
 ## Reproduce
 
