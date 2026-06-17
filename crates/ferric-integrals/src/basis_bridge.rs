@@ -42,8 +42,19 @@ impl PreparedBasis {
     /// Initializes libint2 on first call and constructs the internal C++ basis handle.
     pub fn new(mol: &Molecule, bs: &BasisSet) -> Result<Self, FerricError> {
         ensure_init();
-        let c_atoms: Vec<CAtom> = mol.atoms.iter().map(|a| CAtom {
-            atomic_number: a.z as c_int, x: a.x, y: a.y, z: a.zpos,
+        // Effective nuclear charge for the `nuclear` 1e operator and point-charge
+        // list: Z − n_core for ECP atoms, plain Z otherwise. Derived from the
+        // basis set's ECP table so it is correct even if the caller did not call
+        // `Molecule::apply_ecp`. The basis-set SHELL lookup below still uses the
+        // REAL `atom.z` — only the nuclear charge is reduced.
+        let c_atoms: Vec<CAtom> = mol.atoms.iter().map(|a| {
+            let z_eff = match bs.ecp_for_element(a.z) {
+                Some(def) => a.z - def.n_core,
+                None => a.z,
+            };
+            CAtom {
+                atomic_number: z_eff as c_int, x: a.x, y: a.y, z: a.zpos,
+            }
         }).collect();
 
         let mut c_shells = Vec::new();

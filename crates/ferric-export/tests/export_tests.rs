@@ -8,8 +8,8 @@ use std::fs;
 fn test_export_cube() {
     let mol = Molecule {
         atoms: vec![
-            Atom { symbol: "H".to_string(), z: 1, x: 0.0, y: 0.0, zpos: 0.0 },
-            Atom { symbol: "H".to_string(), z: 1, x: 1.4, y: 0.0, zpos: 0.0 },
+            Atom { symbol: "H".to_string(), z: 1, x: 0.0, y: 0.0, zpos: 0.0, n_core_ecp: 0 },
+            Atom { symbol: "H".to_string(), z: 1, x: 1.4, y: 0.0, zpos: 0.0, n_core_ecp: 0 },
         ],
         charge: 0,
         multiplicity: 1,

@@ -2759,7 +2759,7 @@ pub fn spherically_averaged_proatom(
 
     let sym = ferric_core::elements::z_to_symbol(z).unwrap_or("X");
     let atom_mol = Molecule {
-        atoms: vec![Atom { symbol: sym.to_string(), z, x: 0.0, y: 0.0, zpos: 0.0 }],
+        atoms: vec![Atom { symbol: sym.to_string(), z, x: 0.0, y: 0.0, zpos: 0.0, n_core_ecp: 0 }],
         charge: 0,
         multiplicity: 1,
     };
