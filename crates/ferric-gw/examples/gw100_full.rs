@@ -292,7 +292,15 @@ fn main() {
     // Basis from CLI: `gw100_full [aug-cc-pvdz|aug-cc-pvtz]` (default aTZ).
     let obs_name = std::env::args().nth(1).unwrap_or_else(|| "aug-cc-pvtz".to_string());
     let dfbs_name = format!("{obs_name}-rifit");
-    let cases = cases();
+    // Resumability: GW100_DONE=mol1,mol2,... skips already-computed molecules so a
+    // restarted run continues instead of recomputing from scratch.
+    let done: std::collections::HashSet<String> = std::env::var("GW100_DONE")
+        .unwrap_or_default()
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect();
+    let cases: Vec<Case> = cases().into_iter().filter(|c| !done.contains(c.name)).collect();
     println!("# GW100 subset — basis {obs_name} / {dfbs_name}");
     println!(
         "{:<6} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}",
@@ -324,6 +332,10 @@ fn main() {
             }
             None => println!("{:<6} FAILED", case.name),
         }
+        // Flush per molecule so a streaming runner can persist each row live —
+        // a box restart then loses at most the in-flight molecule, not the run.
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
     }
 
     println!("{:-<82}", "");

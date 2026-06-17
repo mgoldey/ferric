@@ -70,26 +70,69 @@ def parse_output(txt):
     return mols, mae
 
 
+FAILED_RE = re.compile(r"^(\w+)\s+FAILED\s*$")
+
+
 def run_basis(basis, force=False):
+    """Stream the driver, persisting each molecule row to results.json as it
+    lands. Resumable: a box restart loses at most the in-flight molecule; rerun
+    continues via GW100_DONE. `--force` clears the basis and recomputes all."""
     res = load()
-    if not force and basis in res and res[basis].get("molecules"):
-        print(f"[skip] {basis} already present ({len(res[basis]['molecules'])} mols)")
-        return
+    slot = res.setdefault(basis, {})
+    if force:
+        slot.clear()
+    mols = slot.setdefault("molecules", {})
+    failed = set(slot.get("failed", []))
     if not BIN.exists():
         sys.exit(f"binary missing: {BIN} (build gw100_full first)")
-    print(f"[run] gw100_full {basis} ...")
-    out = subprocess.run([str(BIN), basis], env=ENV, capture_output=True, text=True)
-    txt = out.stdout + "\n" + out.stderr
-    mols, mae = parse_output(txt)
-    if not mols:
-        print(f"[FAIL] {basis}: no molecule rows parsed. Tail:\n{txt[-800:]}")
-        return
-    res[basis] = {"molecules": mols, "mae": mae,
-                  "n_converged": len(mols), "n_attempted": txt.count("FAILED") + len(mols)}
+
+    done = sorted(set(mols) | failed)
+    if done:
+        print(f"[resume] {basis}: {len(mols)} done, {len(failed)} failed already; skipping {len(done)}")
+    env = dict(ENV, GW100_DONE=",".join(done))
+
+    print(f"[run] gw100_full {basis} (streaming, resumable) ...", flush=True)
+    proc = subprocess.Popen([str(BIN), basis], env=env, text=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1)
+    for line in proc.stdout:
+        line = line.rstrip("\n")
+        m = ROW.match(line.strip())
+        if m:
+            d = m.groupdict(); name = d.pop("mol")
+            mols[name] = {k: float(v) for k, v in d.items()}
+            slot["molecules"] = mols
+            save(res)                       # persist EACH molecule immediately
+            print(f"  [+] {name} ({len(mols)} done)", flush=True)
+            continue
+        fm = FAILED_RE.match(line.strip())
+        if fm:
+            failed.add(fm.group(1)); slot["failed"] = sorted(failed)
+            save(res)
+            print(f"  [x] {fm.group(1)} FAILED", flush=True)
+            continue
+        # MAE summary line (printed once at the very end) — recompute from stored mols
+    proc.wait()
+
+    # Recompute MAE from the persisted molecule set (independent of run completion).
+    _recompute_mae(slot)
     save(res)
-    failed = re.findall(r"^(\w+)\s+FAILED", txt, re.M)
-    print(f"[done] {basis}: {len(mols)} converged, {len(failed)} FAILED {failed}")
-    print(f"       evGW MAE = {mae.get('evGW', '?')} eV")
+    print(f"[done] {basis}: {len(mols)} converged, {len(failed)} FAILED {sorted(failed)}")
+    print(f"       evGW MAE = {slot.get('mae', {}).get('evGW', '?')} eV")
+
+
+def _recompute_mae(slot):
+    """MAE vs experiment from the stored molecules (resilient to interruption)."""
+    mols = slot.get("molecules", {})
+    mae = {}
+    for meth in METHODS:
+        errs = [abs(d[meth] - d["exp"]) for d in mols.values()
+                if d.get(meth) is not None and d.get("exp") is not None
+                and abs(d[meth]) < 1e6 and d[meth] == d[meth]]  # finite, not NaN
+        if errs:
+            mae[meth] = round(sum(errs) / len(errs), 4)
+    slot["mae"] = mae
+    slot["n_converged"] = len(mols)
+    slot["n_attempted"] = len(mols) + len(slot.get("failed", []))
 
 
 def show():
