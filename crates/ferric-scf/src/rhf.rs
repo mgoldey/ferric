@@ -154,7 +154,9 @@ pub fn solve_rhf(
     config: &RhfConfig,
 ) -> Result<ScfResult, FerricError> {
     let s = oneelectron::overlap(prep);
-    let h = oneelectron::hcore(prep);
+    // hcore_ecp adds the ECP projector V_ECP when the basis carries ECPs;
+    // identical to hcore() (zero extra cost) for all-electron basis sets.
+    let h = oneelectron::hcore_ecp(prep, mol, prep.basis_set());
     let n = prep.nbasis();
     let nelec = mol.nelec();
     if nelec % 2 != 0 {
