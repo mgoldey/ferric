@@ -159,6 +159,7 @@ struct Ips {
     cohsex: f64,
     evgw0: f64,
     evgw: f64,
+    g0w0_pbe: f64,
 }
 
 fn s_squared(uhf: &ferric_scf::result::ScfResult, s_ao: &Array2<f64>, nocc_a: usize, nocc_b: usize) -> f64 {
@@ -281,11 +282,43 @@ fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, Cation
         }
     }
 
+    // G0W0@PBE: a TRUE self-consistent PBE-KS reference (solve_rhf xc=pbe) + the
+    // Σx−vxc correction threaded into the QP self-consistency. Brackets the @HF
+    // overshoot from below (@PBE undershoots). G0W0 only — evGW@KS is deferred.
+    let ip_g0w0_pbe = run_g0w0_pbe(&ctx, &neutral, &obs_n, &dfbs_n, &obs_bs, op,
+                                   &bounds_n, &pdep_cfg_gw, homo_abs)
+        .unwrap_or(f64::NAN);
+
     Some((
         Ips { koop: ip_koop, dscf: ip_dscf, drpa: ip_drpa,
-              g0w0: ip_g0w0, cohsex: ip_cohsex, evgw0: ip_evgw0, evgw: ip_evgw },
+              g0w0: ip_g0w0, cohsex: ip_cohsex, evgw0: ip_evgw0, evgw: ip_evgw,
+              g0w0_pbe: ip_g0w0_pbe },
         diag,
     ))
+}
+
+/// G0W0 starting from a self-consistent PBE-KS reference (validated GW-grade,
+/// see crates/ferric-scf/tests/pbe_ks_orbital_energies.rs). Returns the HOMO IP
+/// in eV, or None on SCF/GW failure.
+#[allow(clippy::too_many_arguments)]
+fn run_g0w0_pbe(
+    ctx: &ParallelContext,
+    neutral: &Molecule,
+    obs_n: &PreparedBasis,
+    dfbs_n: &PreparedBasis,
+    obs_bs: &basis::BasisSet,
+    op: Operator,
+    bounds_n: &SchwarzBounds,
+    pdep_cfg_gw: &PdepRpaConfig,
+    homo_abs: usize,
+) -> Option<f64> {
+    let cfg = RhfConfig { xc: Some("pbe".into()), ..Default::default() };
+    let ks = solve_rhf(ctx, neutral, obs_n, op, bounds_n, &cfg).ok()?;
+    let (vxc, _) = ferric_gw::vxc_mo::vxc_diagonal_mo(neutral, obs_bs, "pbe", &ks).ok()?;
+    let gcfg = GwConfig { method: GwMethod::G0W0, ..Default::default() };
+    let res = run_gw(neutral, obs_n, dfbs_n, op, &ks, pdep_cfg_gw, &gcfg, Some(&vxc)).ok()?;
+    let local = res.mo_indices.iter().position(|&i| i == homo_abs)?;
+    Some(-res.eps_qp[local] * HA_TO_EV)
 }
 
 fn main() {
@@ -303,26 +336,26 @@ fn main() {
     let cases: Vec<Case> = cases().into_iter().filter(|c| !done.contains(c.name)).collect();
     println!("# GW100 subset — basis {obs_name} / {dfbs_name}");
     println!(
-        "{:<6} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}",
-        "mol", "exp(eV)", "Koop", "ΔSCF", "ΔRPA", "G0W0", "COHSEX", "evGW0", "evGW"
+        "{:<6} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}",
+        "mol", "exp(eV)", "Koop", "ΔSCF", "ΔRPA", "G0W0", "COHSEX", "evGW0", "evGW", "G0W0pbe"
     );
-    println!("{:-<82}", "");
+    println!("{:-<91}", "");
 
-    let mut sum_abs = [0.0f64; 7];
-    let mut n_ok = [0usize; 7];
+    let mut sum_abs = [0.0f64; 8];
+    let mut n_ok = [0usize; 8];
     let mut diags: Vec<(&str, CationDiag)> = Vec::new();
 
     for case in &cases {
         match run_case(case, &obs_name, &dfbs_name) {
             Some((ips, diag)) => {
                 println!(
-                    "{:<6} {:>8.2} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3}",
+                    "{:<6} {:>8.2} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3}",
                     case.name, case.ip_ref,
                     ips.koop, ips.dscf, ips.drpa,
-                    ips.g0w0, ips.cohsex, ips.evgw0, ips.evgw
+                    ips.g0w0, ips.cohsex, ips.evgw0, ips.evgw, ips.g0w0_pbe
                 );
                 for (k, v) in [ips.koop, ips.dscf, ips.drpa,
-                               ips.g0w0, ips.cohsex, ips.evgw0, ips.evgw].iter().enumerate() {
+                               ips.g0w0, ips.cohsex, ips.evgw0, ips.evgw, ips.g0w0_pbe].iter().enumerate() {
                     if v.is_finite() {
                         sum_abs[k] += (v - case.ip_ref).abs();
                         n_ok[k] += 1;
@@ -343,9 +376,9 @@ fn main() {
         if *n > 0 { format!("{:>8.3}", s / *n as f64) } else { "     n/a".to_string() }
     }).collect();
     println!(
-        "{:<6} {:>8} {} {} {} {} {} {} {}",
+        "{:<6} {:>8} {} {} {} {} {} {} {} {}",
         "MAE", "",
-        mae[0], mae[1], mae[2], mae[3], mae[4], mae[5], mae[6],
+        mae[0], mae[1], mae[2], mae[3], mae[4], mae[5], mae[6], mae[7],
     );
 
     println!("\nCation SCF diagnostics:");

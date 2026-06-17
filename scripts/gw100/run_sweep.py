@@ -27,7 +27,7 @@ ROOT = HERE.parents[1]
 BIN = ROOT / "target" / "release" / "examples" / "gw100_full"
 RESULTS = HERE / "results.json"
 
-METHODS = ["Koop", "dSCF", "dRPA", "G0W0", "COHSEX", "evGW0", "evGW"]
+METHODS = ["Koop", "dSCF", "dRPA", "G0W0", "COHSEX", "evGW0", "evGW", "G0W0pbe"]
 # per-molecule data row: "H2O  12.62  13.889  10.989  12.549  12.890  14.672  12.835  12.801"
 ROW = re.compile(
     r"^(?P<mol>[A-Za-z0-9]+)\s+(?P<exp>[-+0-9.]+)\s+" + r"\s+".join(
