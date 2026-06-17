@@ -10,12 +10,34 @@ use ferric_core::FerricError;
 use ndarray::{Array2, Array3, ArrayView3};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::os::unix::io::AsRawFd;
 
 /// Largest number of aux rows whose (block_naux × nao × nao × 8) bytes fit the
 /// budget; at least 1 (a single aux row must always be representable).
 fn block_naux_for(budget_bytes: usize, nao: usize) -> usize {
     let row_bytes = nao.saturating_mul(nao).saturating_mul(8).max(1);
     (budget_bytes / row_bytes).max(1)
+}
+
+/// Evict the file's pages from the OS page cache.
+///
+/// CRITICAL for memory safety under a cgroup budget: written/read file pages are
+/// charged to the cgroup's `memory.current` (the `file` component of
+/// `memory.stat`) until the kernel reclaims them. When spilling a tensor far
+/// larger than the budget (e.g. a 15 GB temp file under an 8 GB cap), that page
+/// cache accumulates unbounded and OOM-kills the process even though our heap
+/// (`anon`) stays within budget. We flush dirty pages to disk then advise the
+/// kernel to drop the whole file from cache, keeping the cgroup footprint bound
+/// to the heap working set. Best-effort: errors are ignored (cache eviction is
+/// an optimization, not a correctness requirement on systems where it's a no-op).
+fn drop_page_cache(file: &File) {
+    // DONTNEED only drops CLEAN pages; flush dirty pages to disk first.
+    let _ = file.sync_data();
+    let fd = file.as_raw_fd();
+    // offset 0, len 0 == "to end of file".
+    unsafe {
+        libc::posix_fadvise(fd, 0, 0, libc::POSIX_FADV_DONTNEED);
+    }
 }
 
 /// One aux-block of raw (P|μν), rows [p0, p0+data.shape()[0]).
@@ -44,6 +66,13 @@ impl ThreeIndexSource {
         let naux = dfbs.nbasis();
         let nao = obs.nbasis();
         let needed = naux.saturating_mul(nao).saturating_mul(nao).saturating_mul(8);
+        if std::env::var("FERRIC_OOC_TRACE").is_ok() {
+            eprintln!(
+                "[OOC build] naux={naux} nao={nao} needed={:.2}GB budget={:.2}GB -> {}",
+                needed as f64 / 1e9, budget_bytes as f64 / 1e9,
+                if needed <= budget_bytes { "InCore" } else { "Spill" },
+            );
+        }
         if needed <= budget_bytes {
             let eri = crate::threeindex::eri3_tensor(op, obs, dfbs)?;
             Ok(Self { naux, nao, block_naux: naux, backend: Backend::InCore(eri) })
@@ -57,9 +86,13 @@ impl ThreeIndexSource {
                 let blk = crate::threeindex::eri3_block(op, obs, dfbs, p0, p1)?;
                 let bytes: &[u8] = bytemuck::cast_slice(blk.as_slice().unwrap());
                 file.write_all(bytes).map_err(|e| FerricError::General(format!("spill write: {e}")))?;
+                // Evict just-written pages so the cgroup-charged page cache does
+                // not accumulate the whole (>budget) file. See drop_page_cache.
+                drop_page_cache(&file);
                 p0 = p1;
             }
             file.flush().ok();
+            drop_page_cache(&file);
             let scratch = Array3::<f64>::zeros((block_naux, nao, nao));
             Ok(Self { naux, nao, block_naux, backend: Backend::DiskSpill { file, scratch } })
         }
@@ -75,6 +108,13 @@ impl ThreeIndexSource {
         let needed = naux.saturating_mul(nao).saturating_mul(nao).saturating_mul(8);
         let block_naux = block_naux_for(budget_bytes, nao);
         let in_core = needed <= budget_bytes;
+        if std::env::var("FERRIC_OOC_TRACE").is_ok() {
+            eprintln!(
+                "[OOC dress] naux={naux} nao={nao} needed={:.2}GB budget={:.2}GB block_naux={block_naux} -> {}",
+                needed as f64 / 1e9, budget_bytes as f64 / 1e9,
+                if in_core { "InCore" } else { "Spill" },
+            );
+        }
         let mut out_incore: Option<Array3<f64>> =
             if in_core { Some(Array3::zeros((naux, nao, nao))) } else { None };
         let mut file: Option<File> =
@@ -101,6 +141,7 @@ impl ThreeIndexSource {
             } else if let Some(f) = file.as_mut() {
                 let bytes: &[u8] = bytemuck::cast_slice(accum.as_slice().unwrap());
                 f.write_all(bytes).map_err(|e| FerricError::General(format!("dress write: {e}")))?;
+                drop_page_cache(f);
             }
             p0 = p1;
         }
@@ -152,6 +193,9 @@ impl ThreeIndexSource {
                     let view = scratch.slice(ndarray::s![0..b, .., ..]);
                     f(AuxBlock { p0, data: view })?;
                 }
+                // Reads also populate the cgroup-charged page cache; drop them so
+                // a full streaming pass doesn't pull the entire file into cache.
+                drop_page_cache(file);
                 Ok(())
             }
         }

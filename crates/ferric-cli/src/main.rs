@@ -140,6 +140,11 @@ fn main() {
         constraints: Vec::new(),
         cdft_lambda_tol: 1e-5,
         fractional_occ: false,
+        three_index_budget_bytes: cfg
+            .memory
+            .three_index_budget_gb
+            .map(|g| (g * 1024.0 * 1024.0 * 1024.0) as usize)
+            .unwrap_or(2 * 1024 * 1024 * 1024),
     };
 
     if task == "optimize" {

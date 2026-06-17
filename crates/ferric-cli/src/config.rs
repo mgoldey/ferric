@@ -15,6 +15,17 @@ pub struct Config {
     pub rpa: RpaCfg,
     #[serde(default)]
     pub dft: DftCfg,
+    #[serde(default)]
+    pub memory: MemoryCfg,
+}
+
+#[derive(Deserialize, Default)]
+pub struct MemoryCfg {
+    /// Hard ceiling (in GiB) for the resident 3-index integral footprint in
+    /// DF-J/DF-K. When the dense tensor would exceed this, the integral source
+    /// spills aux-blocks to disk instead of allocating in core. Default 2 GiB.
+    /// Env var `FERRIC_OOC_BUDGET_GB` overrides this at runtime.
+    pub three_index_budget_gb: Option<f64>,
 }
 
 #[derive(Deserialize, Default)]
@@ -243,4 +254,33 @@ omega = 0.420
         assert!((cfg.mp2.omega.unwrap() - 0.420).abs() < 1e-10);
     }
 
+    #[test]
+    fn memory_budget_parses() {
+        let toml_str = r#"
+[molecule]
+xyz = "x.xyz"
+[basis]
+name = "cc-pvdz"
+[method]
+kind = "rhf"
+[memory]
+three_index_budget_gb = 6.0
+"#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.memory.three_index_budget_gb, Some(6.0));
+    }
+
+    #[test]
+    fn memory_budget_defaults_to_none() {
+        let toml_str = r#"
+[molecule]
+xyz = "x.xyz"
+[basis]
+name = "cc-pvdz"
+[method]
+kind = "rhf"
+"#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.memory.three_index_budget_gb, None);
+    }
 }
