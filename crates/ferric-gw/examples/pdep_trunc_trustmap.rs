@@ -209,7 +209,7 @@ fn main() {
                 ev_conv_thresh: 1e-4,
                 ..Default::default()
             };
-            if let Ok(res) = run_gw(&neutral, &obs_n, &dfbs_n, op, &rhf_n, &cfg, &gcfg) {
+            if let Ok(res) = run_gw(&neutral, &obs_n, &dfbs_n, op, &rhf_n, &cfg, &gcfg, None) {
                 let homo_qp = res.mo_indices.iter().position(|&i| i == homo_abs)
                     .map(|loc| res.eps_qp[loc]);
                 let lumo_qp = res.mo_indices.iter().position(|&i| i == lumo_abs)

@@ -89,7 +89,7 @@ fn main() {
             GwMethod::ScCohsex => "run_gw[scCOHSEX]",
         };
         let gcfg = GwConfig { method, max_ev_iter: 8, ev_conv_thresh: 1e-4, ..Default::default() };
-        let _ = timed!(tag, run_gw(&mol, &obs, &dfbs, op, &rhf, &cfg, &gcfg).expect("gw"));
+        let _ = timed!(tag, run_gw(&mol, &obs, &dfbs, op, &rhf, &cfg, &gcfg, None).expect("gw"));
     }
     println!("# Reading: if run_gw[G0W0]≈run_gw[COHSEX]≈run_gw[evGW0] and each is");
     println!("# dominated by 'run_pdep_rpa (1x)'-scale setup, sharing W0 across the");

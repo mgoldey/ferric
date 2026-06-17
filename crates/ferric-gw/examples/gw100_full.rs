@@ -194,7 +194,7 @@ fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, Cation
         (GwMethod::EvGw,   &mut ip_evgw),
     ] {
         let gcfg = GwConfig { method, max_ev_iter: 8, ev_conv_thresh: 1e-4, ..Default::default() };
-        if let Ok(res) = run_gw(&neutral, &obs_n, &dfbs_n, op, &rhf_n, &pdep_cfg_gw, &gcfg) {
+        if let Ok(res) = run_gw(&neutral, &obs_n, &dfbs_n, op, &rhf_n, &pdep_cfg_gw, &gcfg, None) {
             if let Some(local) = res.mo_indices.iter().position(|&i| i == homo_abs) {
                 *slot = -res.eps_qp[local] * HA_TO_EV;
             }

@@ -72,7 +72,7 @@ fn main() {
         ev_conv_thresh: 1e-4,
         ..Default::default()
     };
-    let res = run_gw(&mol, &obs, &dfbs, op, &rhf, &pdep_cfg, &gcfg).expect("gw run");
+    let res = run_gw(&mol, &obs, &dfbs, op, &rhf, &pdep_cfg, &gcfg, None).expect("gw run");
     let homo_local = res
         .mo_indices
         .iter()
