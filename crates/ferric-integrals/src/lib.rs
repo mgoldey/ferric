@@ -13,6 +13,8 @@
 //! manages the Rust-to-C++ lifetime boundary.
 
 pub mod ffi;
+pub mod ecp_ffi;
+pub mod ecp;
 pub mod operator;
 pub mod basis_bridge;
 pub mod engine;
