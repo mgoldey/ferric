@@ -133,66 +133,83 @@ def run_basis(basis, force=False):
     if not BIN.exists():
         sys.exit(f"binary missing: {BIN} (build gw100_full first)")
 
-    done = sorted(set(mols) | failed)
-    if done:
-        print(f"[resume] {basis}: {len(mols)} done, {len(failed)} failed already; skipping {len(done)}")
-    env = dict(ENV, GW100_DONE=",".join(done))
-
     # Per-molecule wall-clock budget: one pathologically slow molecule (e.g. a
-    # floppy alkali cluster on cross-family aux) was burning 4+ CPU-hours and
-    # starving the rest of the sweep. A stall-watchdog kills the driver if no new
-    # row lands within MOL_BUDGET seconds; the run then resumes, and the next
-    # launch records the stalled (in-flight) molecule as FAILED so it's skipped.
+    # floppy alkali cluster on cross-family aux) burned 4+ CPU-hours and starved
+    # the sweep. A stall-watchdog kills the driver if no new row lands within
+    # MOL_BUDGET seconds. CRUCIALLY we then RE-LAUNCH the driver (skipping
+    # done+failed via GW100_DONE) so the sweep CONTINUES past the bad molecule —
+    # without this loop a single stall ended the whole run (the aTZ-stopped-at-28
+    # bug). Loop until every case is accounted for (done or failed).
     mol_budget = float(os.environ.get("GW100_MOL_BUDGET", "1800"))  # 30 min default
-    print(f"[run] gw100_full {basis} (streaming, resumable, {mol_budget:.0f}s/mol budget) ...", flush=True)
-    proc = subprocess.Popen([str(BIN), basis], env=env, text=True,
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1)
-
     import threading
-    last_progress = [__import__("time").monotonic()]
-    stalled = [False]
+    all_names = set(_case_order())
 
-    def watchdog():
-        import time
-        while proc.poll() is None:
-            time.sleep(15)
-            if time.monotonic() - last_progress[0] > mol_budget:
-                stalled[0] = True
-                proc.kill()
-                return
-    wd = threading.Thread(target=watchdog, daemon=True)
-    wd.start()
+    while True:
+        remaining = all_names - set(mols) - failed
+        if not remaining:
+            break  # every case done or failed
+        done = sorted(set(mols) | failed)
+        print(f"[run] gw100_full {basis} ({len(done)} skipped, {len(remaining)} to go, "
+              f"{mol_budget:.0f}s/mol budget) ...", flush=True)
+        env = dict(ENV, GW100_DONE=",".join(done))
+        proc = subprocess.Popen([str(BIN), basis], env=env, text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1)
 
-    for line in proc.stdout:
-        line = line.rstrip("\n")
-        m = ROW.match(line.strip())
-        if m:
-            d = m.groupdict(); name = d.pop("mol")
-            mols[name] = {k: float(v) for k, v in d.items()}
-            slot["molecules"] = mols
-            save_basis(basis, slot)         # persist EACH molecule immediately
-            last_progress[0] = __import__("time").monotonic()
-            print(f"  [+] {name} ({len(mols)} done)", flush=True)
-            continue
-        fm = FAILED_RE.match(line.strip())
-        if fm:
-            failed.add(fm.group(1)); slot["failed"] = sorted(failed)
-            save_basis(basis, slot)
-            last_progress[0] = __import__("time").monotonic()
-            print(f"  [x] {fm.group(1)} FAILED", flush=True)
-            continue
-        # MAE summary line (printed once at the very end) — recompute from stored mols
-    proc.wait()
+        last_progress = [__import__("time").monotonic()]
+        stalled = [False]
 
-    if stalled[0]:
-        # The molecule that was in flight when we killed the driver is the next
-        # un-done case. Record it FAILED so the resume skips it (the GW100_DONE
-        # list on relaunch includes failed names).
-        nxt = _next_undone_case(mols, failed)
-        if nxt:
-            failed.add(nxt); slot["failed"] = sorted(failed)
-            save_basis(basis, slot)
-            print(f"  [!] {nxt} exceeded {mol_budget:.0f}s/mol budget — marked FAILED, will skip on resume", flush=True)
+        def watchdog(p=proc, lp=last_progress, st=stalled):
+            import time
+            while p.poll() is None:
+                time.sleep(15)
+                if time.monotonic() - lp[0] > mol_budget:
+                    st[0] = True
+                    p.kill()
+                    return
+        wd = threading.Thread(target=watchdog, daemon=True)
+        wd.start()
+
+        for line in proc.stdout:
+            line = line.rstrip("\n")
+            m = ROW.match(line.strip())
+            if m:
+                d = m.groupdict(); name = d.pop("mol")
+                mols[name] = {k: float(v) for k, v in d.items()}
+                slot["molecules"] = mols
+                save_basis(basis, slot)         # persist EACH molecule immediately
+                last_progress[0] = __import__("time").monotonic()
+                print(f"  [+] {name} ({len(mols)} done)", flush=True)
+                continue
+            fm = FAILED_RE.match(line.strip())
+            if fm:
+                failed.add(fm.group(1)); slot["failed"] = sorted(failed)
+                save_basis(basis, slot)
+                last_progress[0] = __import__("time").monotonic()
+                print(f"  [x] {fm.group(1)} FAILED", flush=True)
+                continue
+        proc.wait()
+
+        if stalled[0]:
+            # The molecule in flight when we killed the driver is the next un-done
+            # case. Mark it FAILED so the re-launch skips it and CONTINUES.
+            nxt = _next_undone_case(mols, failed)
+            if nxt:
+                failed.add(nxt); slot["failed"] = sorted(failed)
+                save_basis(basis, slot)
+                print(f"  [!] {nxt} exceeded {mol_budget:.0f}s/mol budget — FAILED, resuming past it", flush=True)
+            else:
+                break  # stalled but nothing left to attribute it to — stop
+        elif proc.returncode not in (0, None):
+            # Driver died for a non-stall reason (panic/OOM). Mark the in-flight
+            # molecule failed and resume, but guard against an infinite loop.
+            nxt = _next_undone_case(mols, failed)
+            if nxt:
+                failed.add(nxt); slot["failed"] = sorted(failed)
+                save_basis(basis, slot)
+                print(f"  [!] {nxt} — driver exited {proc.returncode}, FAILED, resuming past it", flush=True)
+            else:
+                break
+        # clean exit with nothing stalled → loop re-checks `remaining` (should be empty)
 
     # Recompute MAE from the persisted molecule set (independent of run completion).
     _recompute_mae(slot)
