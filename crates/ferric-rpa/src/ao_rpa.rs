@@ -278,6 +278,64 @@ pub fn pseudo_density_vir_fock(c_vir: &Array2<f64>, f_vir: &Array2<f64>, tau: f6
     pseudo_density_fock(c_vir, f_vir, tau, -1.0)
 }
 
+/// VIRTUAL-FREE (projector-form) virtual pseudo-density.
+///
+///   Q(τ) = C_vir exp(-ε_vir τ) C_virᵀ
+///        = exp(-τ S⁻¹F) · (S⁻¹ − C_occ C_occᵀ)
+///
+/// The virtual space is the S-orthogonal complement of the occupied space, so it
+/// is represented by the projector `Π_v = S⁻¹ − C_occ C_occᵀ` (= C_vir C_virᵀ)
+/// WITHOUT any explicit virtual orbitals. Propagating Π_v by the AO Fock yields the
+/// imaginary-time virtual propagator — the time-domain analog of the Sternheimer
+/// occupied-projector trick. This eliminates the virtual-localization problem: there
+/// are no virtual orbitals to localize.
+///
+/// Implemented in the symmetric (Löwdin) basis: with `S = X Xᵀ` (`X = S^{1/2}`),
+/// `F̄ = X⁻¹ F X⁻ᵀ` is symmetric and `C̄_occ = Xᵀ C_occ` is orthonormal, so the
+/// whole thing reduces to the orthonormal case `Q̄(τ) = exp(−F̄τ)(I − C̄_occ C̄_occᵀ)`,
+/// symmetrized, then transformed back: `Q = X⁻ᵀ Q̄ X⁻¹`.
+///
+/// Reduces (to machine precision) to [`pseudo_density_vir`] built from the explicit
+/// virtual orbitals. See memory `localization-first-rpa-blocker`.
+pub fn pseudo_density_vir_projector(
+    f_ao: &Array2<f64>,
+    s: &Array2<f64>,
+    c_occ: &Array2<f64>,
+    tau: f64,
+) -> Array2<f64> {
+    use ndarray_linalg::{Eigh, UPLO};
+    let n = s.dim().0;
+    // S = U d Uᵀ ⇒ X = S^{1/2} = U d^{1/2} Uᵀ, X⁻¹ = U d^{-1/2} Uᵀ.
+    let (sd, su) = s.eigh(UPLO::Upper).expect("overlap eigendecomposition failed");
+    let x = su.dot(&Array2::from_diag(&sd.mapv(|v| v.sqrt()))).dot(&su.t());
+    let x_inv = su.dot(&Array2::from_diag(&sd.mapv(|v| 1.0 / v.sqrt()))).dot(&su.t());
+
+    // Symmetric Fock in the orthonormal basis: F̄ = X⁻¹ F X⁻¹ (X symmetric).
+    let f_bar = x_inv.dot(f_ao).dot(&x_inv);
+    // Orthonormal occupied coeffs: C̄_occ = Xᵀ C_occ = X C_occ (X symmetric).
+    let c_occ_bar = x.dot(c_occ);
+    // Virtual projector in the orthonormal basis: Π̄_v = I − C̄_occ C̄_occᵀ.
+    let pi_v = Array2::<f64>::eye(n) - c_occ_bar.dot(&c_occ_bar.t());
+
+    // Q̄ = exp(−F̄_v τ) · Π̄_v, where F̄_v = Π̄_v F̄ Π̄_v is the Fock PROJECTED into
+    // the virtual space. Projecting the exponent first is essential: a bare
+    // exp(−F̄ τ) also exponentiates the OCCUPIED modes (ε < 0 ⇒ exp(+|ε|τ)), which
+    // overflows at large τ for real core orbitals (ε ≈ −11 ⇒ exp(66·τ)). With
+    // F̄_v, occupied modes have eigenvalue 0 ⇒ exp(0)=1 (harmless), and the virtual
+    // space is F̄-invariant so the result is exact. The right-multiply by Π̄_v then
+    // strips the residual occupied identity, leaving exactly C̄_vir exp(−ε_vir τ) C̄_virᵀ.
+    let f_bar_v = pi_v.dot(&f_bar).dot(&pi_v);
+    let (lambda, w) = f_bar_v.eigh(UPLO::Upper).expect("Fock-bar_v eigendecomposition failed");
+    let e_mat = {
+        let scaled = w.dot(&Array2::from_diag(&lambda.mapv(|l| (-l * tau).exp())));
+        scaled.dot(&w.t())
+    };
+    let q_bar = e_mat.dot(&pi_v);
+
+    // Back-transform to the AO basis: Q = X⁻ᵀ Q̄ X⁻¹ = X⁻¹ Q̄ X⁻¹ (X symmetric).
+    x_inv.dot(&q_bar).dot(&x_inv)
+}
+
 /// Independent-particle χ⁰_{PQ}(τ) in the auxiliary basis at one τ.
 ///
 ///   χ⁰_{PQ}(τ) = -2 Σ_{μνλσ} (P|μν) P_{μλ}(τ) Q_{νσ}(τ) (λσ|Q)
@@ -819,6 +877,84 @@ mod tests {
                 .map(|(a, b)| (a - b).abs()).fold(0.0_f64, f64::max);
             assert!(max_err < 1e-12,
                 "vir Fock path must match canonical scalar path at τ={tau}: max_err={max_err:.3e}");
+        }
+    }
+
+    /// PROJECTOR-FORM Q̃: built from the AO Fock + the occupied projector ALONE
+    /// (no c_vir), it must equal the explicit-virtual pseudo-density. This is the
+    /// virtual-free construction — the virtual space is the S-orthogonal complement
+    /// of the occupied space, propagated by exp(-Fτ). Test in an ORTHONORMAL AO
+    /// basis (S = I) so the projector is `I - C_occ C_occᵀ`.
+    #[test]
+    fn pseudo_density_vir_projector_matches_explicit_orthonormal() {
+        use ndarray_linalg::Eigh;
+        let n = 6;
+        let nocc = 2;
+        // Orthonormal full MO set: eigenvectors of a symmetric matrix ⇒ Cᵀ C = I.
+        let sym = Array2::from_shape_fn((n, n), |(i, j)| {
+            0.4 * ((i + 1) as f64).sin() * ((j + 2) as f64).cos()
+                + if i == j { 1.5 + i as f64 } else { 0.0 }
+        });
+        let (_w, c_all) = sym.eigh(ndarray_linalg::UPLO::Upper).unwrap(); // (n, n) orthonormal
+        let eps_all = vec![-0.9_f64, -0.5, 0.3, 0.7, 1.1, 1.9];
+        let c_occ = c_all.slice(ndarray::s![.., ..nocc]).to_owned();
+        let c_vir = c_all.slice(ndarray::s![.., nocc..]).to_owned();
+        let eps_vir: Vec<f64> = eps_all[nocc..].to_vec();
+
+        // AO Fock with S = I: F = C diag(ε) Cᵀ.
+        let f_ao = c_all.dot(&Array2::from_diag(&ndarray::arr1(&eps_all))).dot(&c_all.t());
+        // Identity overlap.
+        let s = Array2::<f64>::eye(n);
+
+        // Include LARGE τ: exp(−F̄τ) over occupied modes (negative ε) would
+        // overflow as exp(+|ε|τ) unless the virtual projection is applied to the
+        // exponent. The minimax τ-grid reaches large values, so this must hold.
+        for &tau in &[0.05_f64, 0.4, 1.3, 3.0, 8.0, 15.0] {
+            let q_explicit = pseudo_density_vir(&c_vir, &eps_vir, tau);
+            let q_proj = pseudo_density_vir_projector(&f_ao, &s, &c_occ, tau);
+            let max_err = q_explicit.iter().zip(q_proj.iter())
+                .map(|(a, b)| (a - b).abs()).fold(0.0_f64, f64::max);
+            assert!(max_err < 1e-10,
+                "projector Q̃ must match explicit-virtual Q̃ (S=I) at τ={tau}: max_err={max_err:.3e}");
+        }
+    }
+
+    /// Same identity in a NON-ORTHOGONAL AO basis (S ≠ I): the projector form must
+    /// still reproduce the explicit-virtual Q̃. This pins the metric handling.
+    #[test]
+    fn pseudo_density_vir_projector_matches_explicit_nonorthogonal() {
+        use ndarray_linalg::Eigh;
+        let n = 6;
+        let nocc = 2;
+        // A symmetric positive-definite overlap S.
+        let a = Array2::from_shape_fn((n, n), |(i, j)| {
+            0.2 * ((i + 1) as f64 / (j + 1) as f64).min((j + 1) as f64 / (i + 1) as f64)
+        });
+        let s = a.dot(&a.t()) + Array2::<f64>::eye(n); // SPD
+        // Build S-orthonormal MOs: C with Cᵀ S C = I. Take eigh of S = U d Uᵀ,
+        // S^{-1/2} = U d^{-1/2} Uᵀ, then any orthogonal R gives C = S^{-1/2} R.
+        let (sd, su) = s.eigh(ndarray_linalg::UPLO::Upper).unwrap();
+        let s_inv_sqrt = su.dot(&Array2::from_diag(&sd.mapv(|x| 1.0 / x.sqrt()))).dot(&su.t());
+        let sym = Array2::from_shape_fn((n, n), |(i, j)| {
+            0.3 * ((i + 2) as f64).cos() * ((j + 1) as f64).sin() + if i == j { 2.0 } else { 0.1 }
+        });
+        let (_w, r) = sym.eigh(ndarray_linalg::UPLO::Upper).unwrap();
+        let c_all = s_inv_sqrt.dot(&r); // Cᵀ S C = Rᵀ S^{-1/2} S S^{-1/2} R = I
+        let eps_all = vec![-0.8_f64, -0.4, 0.25, 0.6, 1.0, 1.7];
+        let c_occ = c_all.slice(ndarray::s![.., ..nocc]).to_owned();
+        let c_vir = c_all.slice(ndarray::s![.., nocc..]).to_owned();
+        let eps_vir: Vec<f64> = eps_all[nocc..].to_vec();
+        // AO Fock: F = S C diag(ε) Cᵀ S (so that Cᵀ F C = diag(ε)).
+        let f_ao = s.dot(&c_all).dot(&Array2::from_diag(&ndarray::arr1(&eps_all)))
+            .dot(&c_all.t()).dot(&s);
+
+        for &tau in &[0.05_f64, 0.4, 1.3, 3.0] {
+            let q_explicit = pseudo_density_vir(&c_vir, &eps_vir, tau);
+            let q_proj = pseudo_density_vir_projector(&f_ao, &s, &c_occ, tau);
+            let max_err = q_explicit.iter().zip(q_proj.iter())
+                .map(|(a, b)| (a - b).abs()).fold(0.0_f64, f64::max);
+            assert!(max_err < 1e-9,
+                "projector Q̃ must match explicit-virtual Q̃ (S≠I) at τ={tau}: max_err={max_err:.3e}");
         }
     }
 
