@@ -37,6 +37,19 @@ use ndarray::Array2;
 
 const HA_TO_EV: f64 = 27.211386245988_f64;
 
+/// PDEP truncation threshold for the sweep. Default 0.0 (full-rank, apples-to-
+/// apples vs the reference). Set GW100_TRUNC=1e-4 to enable truncation — PROVEN
+/// lossless for the GW IP (water: G0W0/evGW unchanged at 1e-4; commit 971e7de,
+/// TRUNCATION_VERIFIED.md). Truncation shrinks the freq_quad O(K·M³) inversions,
+/// the dominant cost on large molecules (benzene's bottleneck), so a truncated
+/// sweep gives the SAME IPs much faster — the production path for the big organics.
+fn trunc_thresh() -> f64 {
+    std::env::var("GW100_TRUNC")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0.0)
+}
+
 struct Case {
     name: &'static str,
     xyz: &'static str,
@@ -209,7 +222,7 @@ fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, Cation
         quadrature: QuadratureConfig {
             scheme: QuadratureScheme::GaussLegendre, n_points: 20, u0: 0.5,
         },
-        trunc_thresh: 0.0,
+        trunc_thresh: trunc_thresh(),
         davidson_conv_thresh: 1e-9,
         ..Default::default()
     };
@@ -256,7 +269,7 @@ fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, Cation
         },
         davidson_conv_thresh: 1e-7,
         davidson_max_vecs: 0,
-        trunc_thresh: 0.0,
+        trunc_thresh: trunc_thresh(),
         run_diagnostics: false,
         frozen_core: 0,
         chi0_backend: Chi0Backend::Dense,
