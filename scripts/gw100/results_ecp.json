@@ -9,7 +9,7 @@
     "Xe":    {"cas": "7440-63-3",  "nelec": 26,  "ferric_g0w0": 12.0856,"pyscf_g0w0": 12.0861,"delta_mev": 0.5,  "exp_ip": 12.12987, "koopmans": 12.4421},
     "Ag2":   {"cas": "12187-06-3", "nelec": 38,  "ferric_g0w0": 7.1332, "pyscf_g0w0": 7.1439, "delta_mev": 10.7, "exp_ip": 7.6557,   "koopmans": 6.3373},
     "C2H3I": {"cas": "593-66-8",   "nelec": 40,  "ferric_g0w0": 9.1579, "pyscf_g0w0": 9.1581, "delta_mev": 0.2,  "exp_ip": 9.35,     "koopmans": 9.3623},
-    "AlI3":  {"cas": "7784-23-8",  "nelec": 88,  "ferric_g0w0": null,   "pyscf_g0w0": 9.6299, "delta_mev": null, "exp_ip": 9.66,     "koopmans": null},
+    "AlI3":  {"cas": "7784-23-8",  "nelec": 88,  "ferric_g0w0": 9.6298, "pyscf_g0w0": 9.6299, "delta_mev": 0.1,  "exp_ip": 9.66,     "koopmans": 10.1615},
     "CI4":   {"cas": "507-25-5",   "nelec": 106, "ferric_g0w0": null,   "pyscf_g0w0": 9.1509, "delta_mev": null, "exp_ip": 9.1,      "koopmans": null},
     "Rb2":   {"cas": "25681-81-6", "nelec": 18,  "ferric_g0w0": null,   "pyscf_g0w0": null,   "delta_mev": null, "exp_ip": 3.9,      "koopmans": null, "blocked": "aug-cc-pVDZ-PP was never fit for Rb(37) upstream (BSE 500); the one unreachable molecule in the aug-cc-PP family -> 99/100"}
   }
