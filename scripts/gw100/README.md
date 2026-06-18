@@ -20,7 +20,13 @@ bracket on the true IP.
 | ECP-free (Z≤36) | 93 | in `cases()`; @HF/@PBE sweep running (~1/3 done, resumes past slow mols) |
 | runnable at aDZ (have RI-aux) | ~80 | bundled aug-cc-pvdz-rifit lacks Li/Na/K/d-block |
 | deeply validated (3 layers) | 18 | the core proof |
-| ECP-blocked (Z≥37) | 7 | Xe/Rb/I/CH3I/AlI3/Ag — ECP support DONE (libecpint, RHF@def2-ECP ≡ PySCF Xe/I2; add to cases() for 93→100) |
+| ECP molecules (Z≥37) | 7 | I2/Xe/Ag2/C2H3I/AlI3/CI4 RUNNABLE (aug-cc-pVDZ-PP + inline ECP, bundled); G0W0@HF ≡ PySCF gw_ac to 0.1–11 meV (`gw_xcheck_ecp.rs`, `results_ecp.json`). Rb2 BLOCKED (no aug-cc-pVDZ-PP for Rb upstream) → **99/100** |
+
+NOTE: the 7 ECP molecules are I2, **C2H3I** (vinyl iodide, 593-66-8), AlI3
+(7784-23-8), **CI4** (carbon tetraiodide, 507-25-5), Xe, Ag2, Rb2 — verified from
+setten/GW100 `structures/`. Earlier "CH3I/AgCl" labels in this README were
+wrong (those CAS map to C2H3I/Ag2). The GW-through-ECP path is now validated
+(spec `docs/superpowers/specs/2026-06-17-gw100-ecp-molecules.md`).
 
 Limits: the aug-cc-pV*Z-RIFIT aux for alkalis was never fit upstream (use
 def2-rifit aux; `basis_gaps/CONVERSION_NOTES.md`). ECP support is now built &

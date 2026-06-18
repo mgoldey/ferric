@@ -319,6 +319,7 @@ pub fn bundled(name: &str) -> Result<BasisSet, FerricError> {
         "def2-qzvp-rifit" => include_str!("basis/bundled/def2-qzvp-rifit.json"),
         "def2-qzvpp-rifit" => include_str!("basis/bundled/def2-qzvpp-rifit.json"),
         "aug-cc-pvdz" => include_str!("basis/bundled/aug-cc-pvdz.json"),
+        "aug-cc-pvdz-pp" => include_str!("basis/bundled/aug-cc-pvdz-pp.json"),
         "aug-cc-pvdz-rifit" => include_str!("basis/bundled/aug-cc-pvdz-rifit.json"),
         "aug-cc-pvtz" => include_str!("basis/bundled/aug-cc-pvtz.json"),
         "aug-cc-pvtz-rifit" => include_str!("basis/bundled/aug-cc-pvtz-rifit.json"),
@@ -358,6 +359,25 @@ mod tests {
         let o_ri = ri.for_element(8).unwrap();
         let max_l = o_ri.iter().map(|s| s.l).max().unwrap();
         assert!(max_l >= 3, "OptRI O should reach >= f, got max L={max_l}");
+    }
+
+    #[test]
+    fn test_bundled_augccpvdz_pp_carries_ecp() {
+        // aug-cc-pVDZ-PP bundles heavy atoms (I/Xe/Ag) WITH their inline ECP and
+        // light atoms (H/C/Al/Cl) from regular aug-cc-pVDZ (no ECP). The GW100
+        // ECP molecules (I2, CH3I, AlI3, Xe, Ag2, AgCl) need exactly this mix.
+        let bs = bundled("aug-cc-pVDZ-PP").unwrap();
+        // Heavy atoms present with ECP (28-electron core for all three).
+        for &z in &[47, 53, 54] {
+            assert!(bs.for_element(z).is_some(), "Z={z} orbital shells missing");
+            let ecp = bs.ecp_for_element(z).unwrap_or_else(|| panic!("Z={z} ECP missing"));
+            assert_eq!(ecp.n_core, 28, "Z={z} should replace a 28-electron core");
+        }
+        // Light atoms present WITHOUT ECP.
+        for &z in &[1, 6, 13, 17] {
+            assert!(bs.for_element(z).is_some(), "light Z={z} shells missing");
+            assert!(bs.ecp_for_element(z).is_none(), "light Z={z} must not carry an ECP");
+        }
     }
 
     #[test]
