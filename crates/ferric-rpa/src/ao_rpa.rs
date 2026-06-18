@@ -223,6 +223,61 @@ pub fn pseudo_density_vir(c_vir: &Array2<f64>, eps_vir: &[f64], tau: f64) -> Arr
     c_scaled.dot(&c_scaled.t())
 }
 
+/// Apply `exp(s · F τ / 2)` to a coefficient block via eigendecomposition.
+///
+/// `F = U diag(λ) Uᵀ` ⇒ `exp(s F τ/2) = U diag(exp(s λ τ/2)) Uᵀ`, so
+/// `C · exp(s F τ/2) = (C U) · diag(exp(s λ τ/2))` — the column-scaled
+/// rotated coefficients. The pseudo-density is then `(scaled)(scaled)ᵀ`,
+/// splitting the exp factor across both sides exactly as the scalar path does.
+///
+/// `f_mo` is the Fock matrix in the orbital basis spanning `c`'s columns
+/// (norb × norb). When the orbitals are canonical, `f_mo = diag(ε)`, `U = I`,
+/// `λ = ε`, and this reduces bit-for-bit to the scalar path. When the orbitals
+/// are localized (non-canonical), `f_mo` is non-diagonal and this is the only
+/// correct form — a per-orbital scalar `exp(ε_i τ)` would be wrong.
+fn pseudo_density_fock(c: &Array2<f64>, f_mo: &Array2<f64>, tau: f64, sign: f64) -> Array2<f64> {
+    use ndarray_linalg::{Eigh, UPLO};
+    let (nbasis, norb) = c.dim();
+    assert_eq!(f_mo.dim(), (norb, norb), "f_mo must be (norb, norb)");
+    // F = U diag(λ) Uᵀ
+    let (lambda, u) = f_mo
+        .eigh(UPLO::Upper)
+        .expect("Fock-block eigendecomposition failed");
+    // Rotated coefficients C·U, then column-scale by exp(sign·½·λ·τ).
+    let mut c_rot = c.dot(&u); // (nbasis, norb)
+    for k in 0..norb {
+        let w = (sign * 0.5 * lambda[k] * tau).exp();
+        for mu in 0..nbasis {
+            c_rot[(mu, k)] *= w;
+        }
+    }
+    c_rot.dot(&c_rot.t())
+}
+
+/// Occupied AO-basis pseudo-density for NON-CANONICAL (e.g. localized) orbitals.
+///
+///   P_{μλ}(τ) = Σ_ij C_{μi} [exp(F τ)]_ij C_{λj}
+///
+/// where `f_occ` is the Fock matrix in the occupied orbital basis (nocc × nocc).
+/// Reduces to [`pseudo_density_occ`] bit-for-bit when `f_occ = diag(ε_occ)`.
+/// This is the form required to feed Boys/PM-localized occupied orbitals into the
+/// AO-time χ⁰ — see `localization-first-rpa-blocker`.
+pub fn pseudo_density_occ_fock(c_occ: &Array2<f64>, f_occ: &Array2<f64>, tau: f64) -> Array2<f64> {
+    // Occupied propagator weight is exp(+ε τ) (ε_occ negative ⇒ decays).
+    pseudo_density_fock(c_occ, f_occ, tau, 1.0)
+}
+
+/// Virtual AO-basis pseudo-density for NON-CANONICAL (e.g. localized) orbitals.
+///
+///   Q_{νσ}(τ) = Σ_ab C_{νa} [exp(-F τ)]_ab C_{σb}
+///
+/// `f_vir` is the Fock matrix in the virtual orbital basis (nvir × nvir).
+/// Reduces to [`pseudo_density_vir`] bit-for-bit when `f_vir = diag(ε_vir)`.
+pub fn pseudo_density_vir_fock(c_vir: &Array2<f64>, f_vir: &Array2<f64>, tau: f64) -> Array2<f64> {
+    // Virtual propagator weight is exp(-ε τ) (ε_vir positive ⇒ decays).
+    pseudo_density_fock(c_vir, f_vir, tau, -1.0)
+}
+
 /// Independent-particle χ⁰_{PQ}(τ) in the auxiliary basis at one τ.
 ///
 ///   χ⁰_{PQ}(τ) = -2 Σ_{μνλσ} (P|μν) P_{μλ}(τ) Q_{νσ}(τ) (λσ|Q)
@@ -722,5 +777,83 @@ mod tests {
         eprintln!("imag-time vs dense max elementwise error: {max_err:.3e}");
         assert!(max_err < 5e-3,
             "imag-time τ-route should match dense at low ω: max_err={max_err:.3e}");
+    }
+
+    /// GATE: the Fock-matrix pseudo-density must reproduce the canonical scalar
+    /// path BIT-FOR-BIT when the Fock matrix is diagonal (i.e. the orbitals are
+    /// already canonical eigenstates). Diagonal F = diag(ε) ⇒ exp(Fτ) = diag(exp(ε τ)).
+    #[test]
+    fn pseudo_density_occ_fock_matches_canonical_when_diagonal() {
+        let nbasis = 6;
+        let nocc = 3;
+        let c_occ = Array2::from_shape_fn((nbasis, nocc), |(mu, i)| {
+            0.2 + 0.05 * mu as f64 - 0.03 * i as f64 + 0.01 * (mu * i) as f64
+        });
+        let eps_occ = vec![-0.9_f64, -0.55, -0.3];
+        let f_diag = Array2::from_diag(&ndarray::arr1(&eps_occ));
+
+        for &tau in &[0.05_f64, 0.4, 1.3, 5.0] {
+            let p_scalar = pseudo_density_occ(&c_occ, &eps_occ, tau);
+            let p_fock = pseudo_density_occ_fock(&c_occ, &f_diag, tau);
+            let max_err = p_scalar.iter().zip(p_fock.iter())
+                .map(|(a, b)| (a - b).abs()).fold(0.0_f64, f64::max);
+            assert!(max_err < 1e-12,
+                "occ Fock path must match canonical scalar path at τ={tau}: max_err={max_err:.3e}");
+        }
+    }
+
+    #[test]
+    fn pseudo_density_vir_fock_matches_canonical_when_diagonal() {
+        let nbasis = 6;
+        let nvir = 4;
+        let c_vir = Array2::from_shape_fn((nbasis, nvir), |(mu, a)| {
+            0.1 - 0.04 * mu as f64 + 0.06 * a as f64 + 0.02 * (mu as f64 - a as f64)
+        });
+        let eps_vir = vec![0.2_f64, 0.6, 1.1, 1.8];
+        let f_diag = Array2::from_diag(&ndarray::arr1(&eps_vir));
+
+        for &tau in &[0.05_f64, 0.4, 1.3, 5.0] {
+            let q_scalar = pseudo_density_vir(&c_vir, &eps_vir, tau);
+            let q_fock = pseudo_density_vir_fock(&c_vir, &f_diag, tau);
+            let max_err = q_scalar.iter().zip(q_fock.iter())
+                .map(|(a, b)| (a - b).abs()).fold(0.0_f64, f64::max);
+            assert!(max_err < 1e-12,
+                "vir Fock path must match canonical scalar path at τ={tau}: max_err={max_err:.3e}");
+        }
+    }
+
+    /// The pseudo-density is a property of the occupied SUBSPACE, not the orbital
+    /// basis: rotating the canonical orbitals by any orthogonal U (with F → UᵀFU)
+    /// must leave P(τ) unchanged. This is the property that makes localized
+    /// (non-canonical) orbitals valid inputs — it FAILS for the scalar path.
+    #[test]
+    fn pseudo_density_occ_fock_invariant_under_orbital_rotation() {
+        use ndarray_linalg::Eigh;
+        let nbasis = 6;
+        let nocc = 3;
+        let c_occ = Array2::from_shape_fn((nbasis, nocc), |(mu, i)| {
+            0.2 + 0.05 * mu as f64 - 0.03 * i as f64 + 0.01 * (mu * i) as f64
+        });
+        let eps_occ = vec![-0.9_f64, -0.55, -0.3];
+        let f_canon = Array2::from_diag(&ndarray::arr1(&eps_occ));
+
+        // A fixed orthogonal rotation U (nocc×nocc) from eigenvectors of a sym matrix.
+        let sym = Array2::from_shape_fn((nocc, nocc), |(i, j)| {
+            0.3 * (i as f64 + 1.0) * (j as f64 + 1.0) + if i == j { 1.0 } else { 0.2 }
+        });
+        let (_w, u) = sym.eigh(ndarray_linalg::UPLO::Upper).unwrap();
+
+        // Rotated orbitals C' = C U ; rotated Fock F' = Uᵀ F U (non-diagonal).
+        let c_rot = c_occ.dot(&u);
+        let f_rot = u.t().dot(&f_canon).dot(&u);
+
+        for &tau in &[0.05_f64, 0.4, 1.3, 5.0] {
+            let p_canon = pseudo_density_occ_fock(&c_occ, &f_canon, tau);
+            let p_rot = pseudo_density_occ_fock(&c_rot, &f_rot, tau);
+            let max_err = p_canon.iter().zip(p_rot.iter())
+                .map(|(a, b)| (a - b).abs()).fold(0.0_f64, f64::max);
+            assert!(max_err < 1e-11,
+                "occ Fock pseudo-density must be rotation-invariant at τ={tau}: max_err={max_err:.3e}");
+        }
     }
 }
