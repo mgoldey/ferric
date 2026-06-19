@@ -191,7 +191,10 @@ fn main() {
                     run_diagnostics: false,
                     eigensolver: ferric_rpa::Eigensolver::default(),
                     chi0_backend: ferric_rpa::config::Chi0Backend::default(),
-                    chi0_sparsity: ferric_rpa::config::Chi0Sparsity::default(),
+                    chi0_sparsity: cfg.rpa.parse_chi0_sparsity().unwrap_or_else(|e| {
+                        eprintln!("config error: {e}");
+                        std::process::exit(1);
+                    }),
                 };
                 let h_fd = 5e-4;
                 let opt_result =
@@ -638,7 +641,10 @@ fn main() {
                 run_diagnostics: cfg.rpa.run_diagnostics,
                 eigensolver: ferric_rpa::Eigensolver::default(),
                 chi0_backend: ferric_rpa::config::Chi0Backend::default(),
-                chi0_sparsity: ferric_rpa::config::Chi0Sparsity::default(),
+                chi0_sparsity: cfg.rpa.parse_chi0_sparsity().unwrap_or_else(|e| {
+                    eprintln!("config error: {e}");
+                    std::process::exit(1);
+                }),
             };
             // For open-shell molecules (multiplicity > 1) re-run with UHF + MOM so
             // the reference is converged, then dispatch to the unrestricted RPA.

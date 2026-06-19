@@ -26,11 +26,37 @@ pub enum Chi0Backend {
 /// through the per-orbital aux index lists.
 ///
 /// Closed-shell only for now. Open-shell support is C8.
+/// `Auto { boys_thresh, atom_cutoff }` picks Dense vs BoysScreened by molecule
+/// size at runtime: below `atom_cutoff` atoms it resolves to `Dense` (Boys
+/// localization + per-orbital tile overhead dominates the savings — see the
+/// `boys-screening-crossover` finding: Boys is ~4× SLOWER than Dense at benzene
+/// scale), and at/above the cutoff it resolves to `BoysScreened { thresh:
+/// boys_thresh }` where locality wins kick in. The default cutoff (30 atoms) is
+/// the conservative production line above the measured naphthalene-scale crossover.
 #[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub enum Chi0Sparsity {
     #[default]
     Dense,
     BoysScreened { thresh: f64 },
+    Auto { boys_thresh: f64, atom_cutoff: usize },
+}
+
+impl Chi0Sparsity {
+    /// Resolve a (possibly `Auto`) sparsity choice to a concrete `Dense` or
+    /// `BoysScreened` given the molecule's atom count. `Dense`/`BoysScreened`
+    /// are returned unchanged; only `Auto` consults `natoms`.
+    pub fn resolve(self, natoms: usize) -> Chi0Sparsity {
+        match self {
+            Chi0Sparsity::Auto { boys_thresh, atom_cutoff } => {
+                if natoms >= atom_cutoff {
+                    Chi0Sparsity::BoysScreened { thresh: boys_thresh }
+                } else {
+                    Chi0Sparsity::Dense
+                }
+            }
+            other => other,
+        }
+    }
 }
 
 /// Choice of subspace eigensolver for the PDEP dielectric matrix.
@@ -129,5 +155,31 @@ pub struct SternheimerConfig {
 impl Default for SternheimerConfig {
     fn default() -> Self {
         Self { max_iter: 50, conv_thresh: 1e-8 }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auto_resolves_dense_below_cutoff_boys_at_or_above() {
+        let auto = Chi0Sparsity::Auto { boys_thresh: 1e-3, atom_cutoff: 30 };
+        // Below the cutoff → Dense (Boys overhead dominates; boys-screening-crossover).
+        assert_eq!(auto.resolve(12), Chi0Sparsity::Dense);
+        assert_eq!(auto.resolve(29), Chi0Sparsity::Dense);
+        // At/above the cutoff → BoysScreened with the configured threshold.
+        assert_eq!(auto.resolve(30), Chi0Sparsity::BoysScreened { thresh: 1e-3 });
+        assert_eq!(auto.resolve(120), Chi0Sparsity::BoysScreened { thresh: 1e-3 });
+    }
+
+    #[test]
+    fn resolve_is_identity_for_concrete_variants() {
+        // Dense/BoysScreened ignore atom count — they resolve to themselves.
+        assert_eq!(Chi0Sparsity::Dense.resolve(5), Chi0Sparsity::Dense);
+        assert_eq!(Chi0Sparsity::Dense.resolve(500), Chi0Sparsity::Dense);
+        let b = Chi0Sparsity::BoysScreened { thresh: 1e-4 };
+        assert_eq!(b.resolve(5), b);
+        assert_eq!(b.resolve(500), b);
     }
 }

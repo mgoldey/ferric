@@ -314,7 +314,20 @@ pub fn run_pdep_rpa_from_intermediates(
     // per-orbital aux-row screening). Only used inside the Davidson/Lanczos
     // matvec closure when `chi0_sparsity = BoysScreened`. The post-Davidson
     // energy integration still uses the dense b_ov path for correctness.
-    let screened_bov_opt: Option<ScreenedBov> = match config.chi0_sparsity {
+    // Resolve Auto → Dense/BoysScreened by atom count (boys-screening-crossover).
+    let resolved_sparsity = config.chi0_sparsity.resolve(mol.atoms.len());
+    if let Chi0Sparsity::Auto { boys_thresh, atom_cutoff } = config.chi0_sparsity {
+        let picked = match resolved_sparsity {
+            Chi0Sparsity::BoysScreened { thresh } => format!("BoysScreened{{{thresh:e}}}"),
+            _ => "Dense".to_string(),
+        };
+        let cmp = if mol.atoms.len() >= atom_cutoff { "≥" } else { "<" };
+        eprintln!(
+            "chi0_sparsity auto: {} atoms {cmp} cutoff {atom_cutoff} → {picked} (boys_thresh {boys_thresh:e})",
+            mol.atoms.len()
+        );
+    }
+    let screened_bov_opt: Option<ScreenedBov> = match resolved_sparsity {
         Chi0Sparsity::Dense => None,
         Chi0Sparsity::BoysScreened { thresh } => {
             let (sb, _boys) = screen::build_screened_bov_boys(
@@ -328,6 +341,9 @@ pub fn run_pdep_rpa_from_intermediates(
             )?;
             Some(sb)
         }
+        // `resolve` never returns Auto; this arm is unreachable but keeps the
+        // match exhaustive without a catch-all that could hide a future variant.
+        Chi0Sparsity::Auto { .. } => unreachable!("resolve() collapses Auto"),
     };
 
     let davidson_result = match (config.eigensolver, screened_bov_opt.as_ref()) {
