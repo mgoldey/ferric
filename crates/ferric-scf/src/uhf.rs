@@ -115,14 +115,15 @@ pub fn solve_uhf_fockmod(
         let aux_name = config.df_k_aux.as_deref().unwrap_or("def2-universal-jkfit");
         let dfbs_set = ferric_core::basis::bundled(aux_name)?;
         let dfbs_prep = _PB::new(mol, &dfbs_set)?;
+        let ooc_budget = crate::rhf::resolve_three_index_budget(config.three_index_budget_bytes);
         (
             Some(crate::df_k::DfK::new(
                 ferric_integrals::operator::Operator::erfc(k_mix.omega),
-                prep, &dfbs_prep, usize::MAX,
+                prep, &dfbs_prep, ooc_budget,
             )?),
             Some(crate::df_k::DfK::new(
                 ferric_integrals::operator::Operator::erf(k_mix.omega),
-                prep, &dfbs_prep, usize::MAX,
+                prep, &dfbs_prep, ooc_budget,
             )?),
         )
     } else {

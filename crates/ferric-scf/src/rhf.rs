@@ -93,6 +93,11 @@ pub struct RhfConfig {
     /// integer occupation + PBE). Default `false` — opt-in; integer-occupation
     /// paths are unchanged.
     pub fractional_occ: bool,
+    /// Hard ceiling (bytes) for the resident 3-index footprint in DfJ/DfK. When
+    /// the dense `(naux,nao,nao)` tensor would exceed this, the source spills
+    /// aux-blocks to disk instead of allocating in core. Default 2 GB. The env
+    /// var `FERRIC_OOC_BUDGET_GB` overrides this at runtime.
+    pub three_index_budget_bytes: usize,
 }
 
 impl Default for RhfConfig {
@@ -119,8 +124,21 @@ impl Default for RhfConfig {
             constraints: Vec::new(),
             cdft_lambda_tol: 1e-5,
             fractional_occ: false,
+            three_index_budget_bytes: 2 * 1024 * 1024 * 1024,
         }
     }
+}
+
+/// Resolve the 3-index memory budget in bytes: `FERRIC_OOC_BUDGET_GB` env var
+/// (in GiB) takes precedence over the config field. Shared by RHF/UHF/ROHF so
+/// the budget is honored uniformly across all DF-J/DF-K construction sites.
+pub fn resolve_three_index_budget(config_bytes: usize) -> usize {
+    std::env::var("FERRIC_OOC_BUDGET_GB")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .filter(|g| *g > 0.0)
+        .map(|g| (g * 1024.0 * 1024.0 * 1024.0) as usize)
+        .unwrap_or(config_bytes)
 }
 
 /// Solve the closed-shell RHF equations for a molecule.
@@ -138,7 +156,9 @@ pub fn solve_rhf(
     config: &RhfConfig,
 ) -> Result<ScfResult, FerricError> {
     let s = oneelectron::overlap(prep);
-    let h = oneelectron::hcore(prep);
+    // hcore_ecp adds the ECP projector V_ECP when the basis carries ECPs;
+    // identical to hcore() (zero extra cost) for all-electron basis sets.
+    let h = oneelectron::hcore_ecp(prep, mol, prep.basis_set());
     let n = prep.nbasis();
     let nelec = mol.nelec();
     if nelec % 2 != 0 {
@@ -185,6 +205,9 @@ pub fn solve_rhf(
 
     let k_mix: KMix = xc_contrib.as_ref().map(|x| x.k_mix()).unwrap_or_default();
 
+    // Resolve the out-of-core 3-index memory budget once (env override wins).
+    let ooc_budget = resolve_three_index_budget(config.three_index_budget_bytes);
+
     // Auto-default JK aux bases when the functional needs exact exchange but
     // the caller hasn't explicitly set df_j_aux / df_k_aux. This makes
     // `cfg.xc = Some("B3LYP")` (or any hybrid/RSH) work out of the box.
@@ -201,7 +224,7 @@ pub fn solve_rhf(
     let mut df_j: Option<DfJ> = if let Some(aux_name) = df_j_aux_eff.as_deref() {
         let dfbs_set = ferric_core::basis::bundled(aux_name)?;
         let dfbs = PreparedBasis::new(mol, &dfbs_set)?;
-        Some(DfJ::new(op, prep, &dfbs, ferric_integrals::three_index_source::env_budget_bytes())?)
+        Some(DfJ::new(op, prep, &dfbs, ooc_budget)?)
     } else {
         None
     };
@@ -210,7 +233,7 @@ pub fn solve_rhf(
     let mut df_k: Option<DfK> = if let Some(aux_name) = df_k_aux_eff.as_deref() {
         let dfbs_set = ferric_core::basis::bundled(aux_name)?;
         let dfbs = PreparedBasis::new(mol, &dfbs_set)?;
-        Some(DfK::new(op, prep, &dfbs, ferric_integrals::three_index_source::env_budget_bytes())?)
+        Some(DfK::new(op, prep, &dfbs, ooc_budget)?)
     } else {
         None
     };
@@ -227,8 +250,8 @@ pub fn solve_rhf(
         let dfbs_set = ferric_core::basis::bundled(aux_name)?;
         let dfbs_prep = PreparedBasis::new(mol, &dfbs_set)?;
         (
-            Some(DfK::new(Operator::erfc(k_mix.omega), prep, &dfbs_prep, ferric_integrals::three_index_source::env_budget_bytes())?),
-            Some(DfK::new(Operator::erf(k_mix.omega), prep, &dfbs_prep, ferric_integrals::three_index_source::env_budget_bytes())?),
+            Some(DfK::new(Operator::erfc(k_mix.omega), prep, &dfbs_prep, ooc_budget)?),
+            Some(DfK::new(Operator::erf(k_mix.omega), prep, &dfbs_prep, ooc_budget)?),
         )
     } else {
         (None, None)

@@ -44,6 +44,7 @@ pub mod screen;
 pub mod seeds;
 pub mod sternheimer;
 pub mod sternheimer_sparse;
+pub mod timing;
 
 pub use lanczos::{run_lanczos_seeded, LanczosResult};
 pub use rs_mp2_rpa::{rs_mp2_lr_rpa, RsMp2RpaConfig, RsMp2RpaFormulation, RsMp2RpaResult};
@@ -239,7 +240,9 @@ pub fn run_pdep_rpa(
     // occ-vir block; skip the full-MP2 amplitudes/density that the gradient
     // path requires.
     let mp2_cfg = RiMp2Config { frozen_core: config.frozen_core };
+    let _t_setup = crate::timing::Stage::start("pdep:rpa_intermediates(ERI3+metric+MOtransform)");
     let inter = compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
+    _t_setup.end();
     run_pdep_rpa_from_intermediates(&inter, mol, obs, dfbs, op, rhf, config)
 }
 
@@ -346,6 +349,7 @@ pub fn run_pdep_rpa_from_intermediates(
         Chi0Sparsity::Auto { .. } => unreachable!("resolve() collapses Auto"),
     };
 
+    let _t_eig = crate::timing::Stage::start("pdep:eigensolve(Davidson/Lanczos)");
     let davidson_result = match (config.eigensolver, screened_bov_opt.as_ref()) {
         // --- Sparse Boys-screened path ---
         (Eigensolver::Davidson, Some(sb)) => {
@@ -457,6 +461,7 @@ pub fn run_pdep_rpa_from_intermediates(
             }
         }
     };
+    _t_eig.end();
 
     // Step 4: Truncate by departure from identity: keep eigenpotentials where
     // (λ_α(0) − 1) > trunc_thresh. The dielectric ε̃ = I + Π has eigenvalues ≥ 1,
@@ -480,6 +485,7 @@ pub fn run_pdep_rpa_from_intermediates(
 
     // Step 6: Evaluate λ_α(iω_k). Dispatch to the Laplace-separable kernel
     // when the user opted in via `chi0_backend`.
+    let _t_quad = crate::timing::Stage::start("pdep:freq_quad(lambda+invdielectric)");
     let eigenvalues_freq = match laplace_chi0_quad.as_ref() {
         None => energy::eval_eigenvalues_at_frequencies(
             &eigenvectors, b_ov, &eps_occ, &eps_vir, &quad_freqs,
@@ -498,6 +504,8 @@ pub fn run_pdep_rpa_from_intermediates(
         )),
         Some(_) => None,
     };
+
+    _t_quad.end();
 
     // Step 7: Integrate RPA correlation energy.
     let e_rpa = energy::rpa_correlation_energy(&quad_weights, &eigenvalues_freq);

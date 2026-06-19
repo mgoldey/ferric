@@ -91,6 +91,20 @@ pub struct GwResult {
     pub pdep: PdepRpaResult,
 }
 
+impl GwResult {
+    /// **Deprecated for G0W0 — pass `vxc_diag` to `run_gw` instead.** This applies
+    /// Σ_x − v_xc to the QP energies *after* the QP solve, which is WRONG for a KS
+    /// reference: Σ_c is energy-dependent and the shift (~−7 eV) moves the QP root
+    /// by several eV, so Σ_c must be evaluated at the shifted energy. `run_gw` with
+    /// `Some(vxc_diag)` now folds the shift into the QP self-consistency correctly.
+    /// Retained only for the linearized/diagnostic case where the shift is small.
+    pub fn apply_kohn_sham_correction(&mut self, vxc_diag: &Array1<f64>) {
+        for (idx, &mo_abs) in self.mo_indices.iter().enumerate() {
+            self.eps_qp[idx] += self.sigma_x[idx] - vxc_diag[mo_abs];
+        }
+    }
+}
+
 /// Spin-unrestricted GW result. Per-spin QP energies on a shared MO-index list.
 ///
 /// The MO indices are *absolute* and shared between channels (so MO `i` here
@@ -192,6 +206,12 @@ fn default_u_qp_range(mol: &Molecule, scf: &ScfResult) -> std::ops::Range<usize>
 }
 
 /// Top-level dispatch.
+/// `vxc_diag`: absolute-MO-indexed diagonal v_xc for a KS (RKS) reference. When
+/// given, the QP equation includes Σ_x − v_xc *inside* the self-consistency
+/// (correct for a KS reference; Σ_c is then evaluated at the shifted QP root).
+/// `None` ⇒ HF reference (no shift). Use `vxc_mo::vxc_diagonal_mo` to build it.
+/// Currently wired for `GwMethod::G0W0`; passing `Some(..)` with another method
+/// is an error (evGW@KS not yet implemented).
 pub fn run_gw(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -200,7 +220,14 @@ pub fn run_gw(
     rhf: &ScfResult,
     pdep_cfg: &PdepRpaConfig,
     gw_cfg: &GwConfig,
+    vxc_diag: Option<&ndarray::Array1<f64>>,
 ) -> Result<GwResult, FerricError> {
+    if vxc_diag.is_some() && !matches!(gw_cfg.method, GwMethod::G0W0) {
+        return Err(FerricError::General(
+            "run_gw: KS reference (vxc_diag) is only wired for G0W0; evGW@KS is not \
+             yet implemented".into(),
+        ));
+    }
     if !matches!(rhf.spin, ferric_scf::Spin::Restricted) {
         return Err(FerricError::General(
             "ferric-gw: spike supports closed-shell (RHF) only".into(),
@@ -227,7 +254,7 @@ pub fn run_gw(
     // 5. Dispatch by method.
     match gw_cfg.method {
         GwMethod::Cohsex => cohsex::run_cohsex(mol, rhf, &mo_b, &v_dressed, pdep, qp_range, gw_cfg),
-        GwMethod::G0W0 => sigma::run_g0w0(mol, rhf, &mo_b, &v_dressed, pdep, qp_range, gw_cfg),
+        GwMethod::G0W0 => sigma::run_g0w0(mol, rhf, &mo_b, &v_dressed, pdep, qp_range, gw_cfg, vxc_diag),
         GwMethod::EvGw0 => sigma::run_evgw0(
             mol, rhf, &mo_b, &v_dressed, pdep, qp_range, gw_cfg,
         ),

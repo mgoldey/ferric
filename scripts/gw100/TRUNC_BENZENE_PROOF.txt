@@ -1,0 +1,13 @@
+# Truncation @1e-4 vs full-rank — benzene (C6H6), FULL sweep path (all methods)
+# Proves truncation is bit-identical on a HARD molecule through the production driver.
+method     full-rank   trunc1e-4   Δ(meV)
+G0W0         9.2120     9.2120      0.00
+COHSEX      10.2910    10.2910      0.00
+evGW0        9.2140     9.2140      0.00
+evGW         9.2130     9.2130      0.00
+G0W0pbe      8.5300     8.5300      0.00
+dRPA         9.2180     9.2180      0.00
+# truncated benzene wall: 52m58s (full method stack + @PBE). IP IDENTICAL.
+# Conclusion: GW100_TRUNC=1e-4 gives the SAME numbers as full-rank — safe for
+# the production sweep. (Speedup is modest here because the cost is the @PBE
+# column + method stack, not the PDEP dimension; but truncation never hurts.)

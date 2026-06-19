@@ -77,7 +77,7 @@ fn cohsex_h2o_runs() {
         method: GwMethod::Cohsex,
         ..Default::default()
     };
-    let res = run_gw(&mol, &obs, &dfbs, Operator::coulomb(), &rhf, &pcfg, &gcfg)
+    let res = run_gw(&mol, &obs, &dfbs, Operator::coulomb(), &rhf, &pcfg, &gcfg, None)
         .expect("COHSEX runs");
     // HOMO is MO index 4 for water (5 doubly occupied: 1s_O, 2s, 2p × 3).
     let nocc = (mol.nelec() as usize) / 2;
@@ -110,7 +110,7 @@ fn evgw_h2o_homo_ip() {
         ev_conv_thresh: 5e-4,
         ..Default::default()
     };
-    let res = run_gw(&mol, &obs, &dfbs, Operator::coulomb(), &rhf, &pcfg, &gcfg)
+    let res = run_gw(&mol, &obs, &dfbs, Operator::coulomb(), &rhf, &pcfg, &gcfg, None)
         .expect("evGW runs");
     let nocc = (mol.nelec() as usize) / 2;
     let homo_idx = res
@@ -141,7 +141,7 @@ fn evgw0_h2o_homo_ip() {
         ev_conv_thresh: 1e-4,
         ..Default::default()
     };
-    let res = run_gw(&mol, &obs, &dfbs, Operator::coulomb(), &rhf, &pcfg, &gcfg)
+    let res = run_gw(&mol, &obs, &dfbs, Operator::coulomb(), &rhf, &pcfg, &gcfg, None)
         .expect("evGW0 runs");
     let nocc = (mol.nelec() as usize) / 2;
     let homo_idx = res
@@ -182,7 +182,7 @@ fn g0w0_h2o_gap_and_lumo() {
         qp_mos: Some(0..nmo),
         ..Default::default()
     };
-    let res = run_gw(&mol, &obs, &dfbs, Operator::coulomb(), &rhf, &pcfg, &gcfg)
+    let res = run_gw(&mol, &obs, &dfbs, Operator::coulomb(), &rhf, &pcfg, &gcfg, None)
         .expect("G0W0 runs");
     let nocc = (mol.nelec() as usize) / 2;
     let homo = res.eps_qp[nocc - 1] * HA_TO_EV;
@@ -216,7 +216,7 @@ fn g0w0_h2o_homo_ip() {
         method: GwMethod::G0W0,
         ..Default::default()
     };
-    let res = run_gw(&mol, &obs, &dfbs, Operator::coulomb(), &rhf, &pcfg, &gcfg)
+    let res = run_gw(&mol, &obs, &dfbs, Operator::coulomb(), &rhf, &pcfg, &gcfg, None)
         .expect("G0W0 runs");
     let nocc = (mol.nelec() as usize) / 2;
     let homo_idx = res

@@ -112,7 +112,12 @@ fn run_rhf(
     energy_conv: Option<f64>,
     k_builder: Option<&str>,
 ) -> PyResult<PyRhfResult> {
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    // Apply ECP core-electron counts (no-op without an ECP basis) so nelec()
+    // gives the valence count; the effective nuclear charge is set inside
+    // PreparedBasis::new from basis_set.ecps.
+    let mut emol = mol.inner.clone();
+    emol.apply_ecp(&basis_set.inner);
+    let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
     let mut config = RhfConfig {
@@ -124,7 +129,7 @@ fn run_rhf(
         config.k_builder = Some(kb.to_string());
     }
     let ctx = ParallelContext::default();
-    let r = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &config).map_err(make_err)?;
+    let r = solve_rhf(&ctx, &emol, &prep, op, &bounds, &config).map_err(make_err)?;
     Ok(PyRhfResult {
         energy: r.energy, converged: r.converged, iterations: r.iterations,
         computed_quartets: r.computed_quartets,

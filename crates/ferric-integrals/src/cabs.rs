@@ -49,6 +49,7 @@ fn merge_basis_sets(obs: &BasisSet, ri: &BasisSet) -> BasisSet {
     BasisSet {
         name: format!("{}+{}", obs.name, ri.name),
         shells,
+        ecps: HashMap::new(),
     }
 }
 

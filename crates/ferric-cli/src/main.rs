@@ -64,7 +64,7 @@ fn main() {
         eprintln!("error: unsupported method.task = \"{task}\"; expected energy or optimize");
         std::process::exit(1);
     }
-    let mol = Molecule::load_xyz_with_charge(&cfg.molecule.xyz, cfg.molecule.charge, cfg.molecule.multiplicity).unwrap_or_else(|e| {
+    let mut mol = Molecule::load_xyz_with_charge(&cfg.molecule.xyz, cfg.molecule.charge, cfg.molecule.multiplicity).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
     });
@@ -79,6 +79,12 @@ fn main() {
         eprintln!("error: {e}");
         std::process::exit(1);
     });
+
+    // Populate per-atom n_core_ecp when the basis carries ECPs (no-op otherwise),
+    // so nelec()/nuclear_repulsion() use the effective valence electron count and
+    // charge. PreparedBasis::new derives the effective nuclear charge directly
+    // from bs.ecps, so this must happen before any nelec()-derived occupation.
+    mol.apply_ecp(&bs);
 
     let prep = PreparedBasis::new(&mol, &bs).unwrap_or_else(|e| {
         eprintln!("error: {e}");
@@ -141,6 +147,11 @@ fn main() {
         constraints: Vec::new(),
         cdft_lambda_tol: 1e-5,
         fractional_occ: false,
+        three_index_budget_bytes: cfg
+            .memory
+            .three_index_budget_gb
+            .map(|g| (g * 1024.0 * 1024.0 * 1024.0) as usize)
+            .unwrap_or(2 * 1024 * 1024 * 1024),
     };
 
     if task == "optimize" {

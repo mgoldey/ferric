@@ -42,12 +42,25 @@ impl PreparedBasis {
     /// Initializes libint2 on first call and constructs the internal C++ basis handle.
     pub fn new(mol: &Molecule, bs: &BasisSet) -> Result<Self, FerricError> {
         ensure_init();
-        // Ghost atoms get atomic_number=0 so libint2 excludes them from the
-        // nuclear-attraction operator (point-charge list passed to set_point_charges).
-        // Their z is kept non-zero in the Rust Atom so basis lookup still works.
-        let c_atoms: Vec<CAtom> = mol.atoms.iter().map(|a| CAtom {
-            atomic_number: if a.ghost { 0 } else { a.z as c_int },
-            x: a.x, y: a.y, z: a.zpos,
+        // Effective nuclear charge for the `nuclear` 1e operator and point-charge
+        // list: 0 for a ghost (basis-only) center so libint2 excludes it from the
+        // nuclear-attraction operator; otherwise Z − n_core for ECP atoms, plain Z
+        // for all-electron atoms. The ECP n_core is derived from the basis set's
+        // ECP table so it is correct even if the caller did not call
+        // `Molecule::apply_ecp`. The basis-set SHELL lookup below still uses the
+        // REAL `atom.z`, so ghost/ECP atoms keep their full basis.
+        let c_atoms: Vec<CAtom> = mol.atoms.iter().map(|a| {
+            let z_eff = if a.ghost {
+                0
+            } else {
+                match bs.ecp_for_element(a.z) {
+                    Some(def) => a.z - def.n_core,
+                    None => a.z,
+                }
+            };
+            CAtom {
+                atomic_number: z_eff as c_int, x: a.x, y: a.y, z: a.zpos,
+            }
         }).collect();
 
         let mut c_shells = Vec::new();

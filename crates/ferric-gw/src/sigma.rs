@@ -121,6 +121,11 @@ pub(crate) fn solve_qp_for_mo(
     pade_npts: usize,
     newton_damp: f64,
     ef: f64,
+    // Static (energy-independent) self-energy shift Σ_x − v_xc, added INSIDE the
+    // QP self-consistency. Zero for HF references (Σ_x is already in ε_mf); for a
+    // KS reference it is Σ_x − v_xc and is large (~−7 eV), moving the QP root by
+    // several eV — so Σ_c must be evaluated at the shifted energy, not post-hoc.
+    static_shift: f64,
 ) -> (f64, f64, f64) {
     let n_pade = if pade_npts == 0 {
         quad_freqs.len().min(16)
@@ -135,12 +140,7 @@ pub(crate) fn solve_qp_for_mo(
             (lo + t * (hi - lo)).exp()
         })
         .collect();
-    // Sample Σ_c on the Fermi-shifted imaginary axis z = ef + iω', matching
-    // PySCF gw_ac (omega = ef + 1j*eval_freqs). Centering the AC support line
-    // at the Fermi level (mid-gap) keeps the Padé continuation well-conditioned
-    // for BOTH occupied and virtual targets. Sampling at Re=0 (the old code)
-    // biases the continuation toward the occupied pole cluster and systematically
-    // over-screens (pushes down) the virtual QP energies.
+    // Sample Σ_c on the Fermi-shifted imaginary axis z = ef + iω'.
     let z_nodes: Vec<Complex64> = pade_omegas
         .iter()
         .map(|&w| Complex64::new(ef, w))
@@ -158,12 +158,17 @@ pub(crate) fn solve_qp_for_mo(
     let sc_at_ref = pade.eval(Complex64::new(eps_m_mf, 0.0)).re;
     let dsig = pade.deriv_real(eps_m_mf, h).re;
     let z_renorm = (1.0 / (1.0 - dsig)).clamp(0.0, 1.5);
-    let eps_qp_lin = eps_m_mf + z_renorm * sc_at_ref;
+    // Linearized: ε_qp = ε_mf + Z·(Σc(ε_mf) + static_shift). The static shift
+    // (Σx−vxc, KS only) enters the QP equation alongside Σc (PySCF gw_ac form
+    // zn·(sigmaR + vk − v_mf)); it is large for KS and moves the root by eV, so
+    // the self-consistent Σc below is evaluated at the correctly-shifted energy.
+    let eps_qp_lin = eps_m_mf + z_renorm * (sc_at_ref + static_shift);
     let mut eps_curr = eps_qp_lin;
     let damp = newton_damp.clamp(0.1, 1.0);
     for _ in 0..30 {
         let sc = pade.eval(Complex64::new(eps_curr, 0.0)).re;
-        let f = eps_curr - eps_m_mf - sc;
+        // QP residual: ε − ε_mf − static_shift − Σc(ε) = 0.
+        let f = eps_curr - eps_m_mf - static_shift - sc;
         let dsc = pade.deriv_real(eps_curr, h).re;
         let fprime = 1.0 - dsc;
         if fprime.abs() < 1e-3 {
@@ -179,7 +184,9 @@ pub(crate) fn solve_qp_for_mo(
     (eps_curr, sc_final, z_renorm)
 }
 
-/// Run G0W0.
+/// Run G0W0. `vxc_diag`, if given (KS reference), is the absolute-MO-indexed
+/// diagonal v_xc; the QP equation then includes Σ_x − v_xc inside the
+/// self-consistency. `None` ⇒ HF reference (no shift, unchanged behavior).
 pub fn run_g0w0(
     mol: &Molecule,
     rhf: &ScfResult,
@@ -188,6 +195,7 @@ pub fn run_g0w0(
     pdep: PdepRpaResult,
     qp_range: std::ops::Range<usize>,
     gw_cfg: &GwConfig,
+    vxc_diag: Option<&Array1<f64>>,
 ) -> Result<GwResult, FerricError> {
     let _ = (mol, rhf);
     let _n_act = mo_b.n_act;
@@ -238,6 +246,8 @@ pub fn run_g0w0(
         eps_mf[idx] = eps_m;
         sx_out[idx] = sigma_x_all[m_loc];
 
+        // KS reference: shift = Σ_x − v_xc (inside the QP self-consistency).
+        let shift = vxc_diag.map(|v| sigma_x_all[m_loc] - v[mo_abs]).unwrap_or(0.0);
         let (eps_qp_m, sc_final, z_renorm) = solve_qp_for_mo(
             m_loc,
             eps_m,
@@ -249,6 +259,7 @@ pub fn run_g0w0(
             gw_cfg.pade_npts,
             gw_cfg.qp_newton_damp,
             ef,
+            shift,
         );
         sc_out[idx] = sc_final;
         z_out[idx] = z_renorm;
@@ -339,6 +350,7 @@ pub fn run_evgw0(
                 gw_cfg.pade_npts,
                 gw_cfg.qp_newton_damp,
                 ef,
+                0.0,
             );
             max_dev = max_dev.max((eps_new - eps_qp[idx]).abs());
             eps_qp[idx] = eps_new;
@@ -453,6 +465,7 @@ pub fn run_evgw(
                 gw_cfg.pade_npts,
                 gw_cfg.qp_newton_damp,
                 ef,
+                0.0,
             );
             max_dev = max_dev.max((eps_new - eps_qp[idx]).abs());
             eps_qp[idx] = eps_new;
