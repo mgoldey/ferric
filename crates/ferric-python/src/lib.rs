@@ -574,7 +574,7 @@ impl PyPdepRpaResult {
     mol, basis_set, auxbasis,
     frozen_core=None, n_quad=None, quadrature=None, u0=None,
     trunc_thresh=None, davidson_conv_thresh=None,
-    run_diagnostics=false, k_builder=None,
+    run_diagnostics=false, k_builder=None, chi0_sparsity=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_pdep_rpa(
@@ -589,6 +589,7 @@ fn run_pdep_rpa(
     davidson_conv_thresh: Option<f64>,
     run_diagnostics: bool,
     k_builder: Option<&str>,
+    chi0_sparsity: Option<&str>,
 ) -> PyResult<PyPdepRpaResult> {
     use ferric_rpa::config::{QuadratureConfig, QuadratureScheme, SternheimerConfig};
     use ferric_rpa::{run_pdep_rpa as run_pdep_rpa_inner, PdepRpaConfig};
@@ -618,7 +619,8 @@ fn run_pdep_rpa(
         run_diagnostics,
         eigensolver: ferric_rpa::Eigensolver::default(),
         chi0_backend: ferric_rpa::config::Chi0Backend::default(),
-        chi0_sparsity: ferric_rpa::config::Chi0Sparsity::default(),
+        chi0_sparsity: ferric_rpa::config::Chi0Sparsity::parse_config_str(chi0_sparsity)
+            .map_err(make_err)?,
     };
     let r = run_pdep_rpa_inner(&mol.inner, &prep, &dfbs, op, &rhf, &cfg).map_err(make_err)?;
     Ok(PyPdepRpaResult {

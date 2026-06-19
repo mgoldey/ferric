@@ -163,45 +163,8 @@ impl RpaCfg {
     ///   "auto:<cutoff>"           → Auto with that atom cutoff
     ///   "auto:<cutoff>:<thresh>"  → Auto with that cutoff and Boys threshold
     pub fn parse_chi0_sparsity(&self) -> Result<ferric_rpa::config::Chi0Sparsity, String> {
-        use ferric_rpa::config::Chi0Sparsity;
-        // Default Boys threshold 1e-4 (not 1e-3): tight enough that the
-        // auto-switch energy difference vs Dense is ~µHa, so flipping methods by
-        // size does not visibly perturb the number. Users who want more pair
-        // reduction (and accept ~1e-4 Ha error on aromatics) can pass an explicit
-        // looser threshold, e.g. "auto:30:1e-3".
-        const DEF_THRESH: f64 = 1e-4;
-        const DEF_CUTOFF: usize = 30;
-        let raw = match &self.chi0_sparsity {
-            None => return Ok(Chi0Sparsity::Dense),
-            Some(s) => s.trim().to_ascii_lowercase(),
-        };
-        let parts: Vec<&str> = raw.split(':').collect();
-        match parts.as_slice() {
-            ["dense"] => Ok(Chi0Sparsity::Dense),
-            ["boys"] => Ok(Chi0Sparsity::BoysScreened { thresh: DEF_THRESH }),
-            ["boys", t] => {
-                let thresh = t.parse::<f64>()
-                    .map_err(|_| format!("chi0_sparsity: invalid boys threshold '{t}'"))?;
-                Ok(Chi0Sparsity::BoysScreened { thresh })
-            }
-            ["auto"] => Ok(Chi0Sparsity::Auto { boys_thresh: DEF_THRESH, atom_cutoff: DEF_CUTOFF }),
-            ["auto", c] => {
-                let atom_cutoff = c.parse::<usize>()
-                    .map_err(|_| format!("chi0_sparsity: invalid auto cutoff '{c}'"))?;
-                Ok(Chi0Sparsity::Auto { boys_thresh: DEF_THRESH, atom_cutoff })
-            }
-            ["auto", c, t] => {
-                let atom_cutoff = c.parse::<usize>()
-                    .map_err(|_| format!("chi0_sparsity: invalid auto cutoff '{c}'"))?;
-                let boys_thresh = t.parse::<f64>()
-                    .map_err(|_| format!("chi0_sparsity: invalid auto threshold '{t}'"))?;
-                Ok(Chi0Sparsity::Auto { boys_thresh, atom_cutoff })
-            }
-            _ => Err(format!(
-                "chi0_sparsity: unrecognized value '{raw}' \
-                 (expected dense | boys[:thresh] | auto[:cutoff[:thresh]])"
-            )),
-        }
+        // Canonical parser lives on the type (shared with the Python bindings).
+        ferric_rpa::config::Chi0Sparsity::parse_config_str(self.chi0_sparsity.as_deref())
     }
 }
 
