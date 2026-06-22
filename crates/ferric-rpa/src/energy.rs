@@ -61,6 +61,7 @@ pub fn eval_eigenvalues_at_frequencies_laplace(
     laplace: &ferric_quadrature::LaplaceQuadrature,
 ) -> Array2<f64> {
     use crate::laplace_chi0::dielectric_matrix_laplace_into;
+    use ferric_integrals::blas_threads::with_blas_threads;
     use ndarray::Array2;
     use ndarray_linalg::{Eigh, UPLO};
     use rayon::prelude::*;
@@ -72,19 +73,23 @@ pub fn eval_eigenvalues_at_frequencies_laplace(
     // Each rayon worker keeps its own (rhs_scaled, out) scratch and reuses it
     // across the frequencies it processes, instead of allocating an (m×nov) and
     // (m×m) buffer per quadrature point.
-    let rows: Vec<Vec<f64>> = quad_freqs
-        .par_iter()
-        .map_init(
-            || (Array2::<f64>::zeros((m, nov)), Array2::<f64>::zeros((m, m))),
-            |(rhs_scaled, out), &omega| {
-                dielectric_matrix_laplace_into(
-                    eigenvectors, b_ov, eps_occ, eps_vir, omega, laplace, rhs_scaled, out,
-                );
-                let (evals, _) = out.eigh(UPLO::Upper).expect("dielectric eigh failed");
-                evals.to_vec()
-            },
-        )
-        .collect();
+    // Pin BLAS to 1 inside the rayon region: the per-frequency eigh/GEMM must not
+    // nest OpenBLAS threads under rayon workers (stack-overflow crash site).
+    let rows: Vec<Vec<f64>> = with_blas_threads(1, || {
+        quad_freqs
+            .par_iter()
+            .map_init(
+                || (Array2::<f64>::zeros((m, nov)), Array2::<f64>::zeros((m, m))),
+                |(rhs_scaled, out), &omega| {
+                    dielectric_matrix_laplace_into(
+                        eigenvectors, b_ov, eps_occ, eps_vir, omega, laplace, rhs_scaled, out,
+                    );
+                    let (evals, _) = out.eigh(UPLO::Upper).expect("dielectric eigh failed");
+                    evals.to_vec()
+                },
+            )
+            .collect()
+    });
 
     let mut eigenvalues_freq = Array2::zeros((n_quad, m));
     for (k, row) in rows.into_iter().enumerate() {
@@ -107,22 +112,26 @@ pub fn eval_eigenvalues_at_frequencies_unrestricted(
     quad_freqs: &[f64],
 ) -> Array2<f64> {
     use crate::sternheimer::dielectric_matrix_unrestricted;
+    use ferric_integrals::blas_threads::with_blas_threads;
     use ndarray_linalg::{Eigh, UPLO};
     use rayon::prelude::*;
 
     let n_quad = quad_freqs.len();
     let m = eigenvectors.ncols();
 
-    let rows: Vec<Vec<f64>> = quad_freqs
-        .par_iter()
-        .map(|&omega| {
-            let eps_proj = dielectric_matrix_unrestricted(
-                eigenvectors, chan_a, chan_b, omega,
-            );
-            let (evals, _) = eps_proj.eigh(UPLO::Upper).expect("unrestricted dielectric eigh failed");
-            evals.to_vec()
-        })
-        .collect();
+    // Pin BLAS to 1 inside the rayon region (per-frequency eigh must not nest).
+    let rows: Vec<Vec<f64>> = with_blas_threads(1, || {
+        quad_freqs
+            .par_iter()
+            .map(|&omega| {
+                let eps_proj = dielectric_matrix_unrestricted(
+                    eigenvectors, chan_a, chan_b, omega,
+                );
+                let (evals, _) = eps_proj.eigh(UPLO::Upper).expect("unrestricted dielectric eigh failed");
+                evals.to_vec()
+            })
+            .collect()
+    });
 
     let mut out = Array2::zeros((n_quad, m));
     for (k, row) in rows.into_iter().enumerate() {
@@ -146,25 +155,29 @@ pub fn eval_eigenvalues_at_frequencies_laplace_unrestricted(
     quad_freqs: &[f64],
 ) -> Array2<f64> {
     use crate::laplace_chi0::dielectric_matrix_laplace_unrestricted;
+    use ferric_integrals::blas_threads::with_blas_threads;
     use ndarray_linalg::{Eigh, UPLO};
     use rayon::prelude::*;
 
     let n_quad = quad_freqs.len();
     let m = eigenvectors.ncols();
 
-    let rows: Vec<Vec<f64>> = quad_freqs
-        .par_iter()
-        .map(|&omega| {
-            let eps_proj = dielectric_matrix_laplace_unrestricted(
-                eigenvectors,
-                chan_a, laplace_a,
-                chan_b, laplace_b,
-                omega,
-            );
-            let (evals, _) = eps_proj.eigh(UPLO::Upper).expect("U-Laplace dielectric eigh failed");
-            evals.to_vec()
-        })
-        .collect();
+    // Pin BLAS to 1 inside the rayon region (per-frequency eigh must not nest).
+    let rows: Vec<Vec<f64>> = with_blas_threads(1, || {
+        quad_freqs
+            .par_iter()
+            .map(|&omega| {
+                let eps_proj = dielectric_matrix_laplace_unrestricted(
+                    eigenvectors,
+                    chan_a, laplace_a,
+                    chan_b, laplace_b,
+                    omega,
+                );
+                let (evals, _) = eps_proj.eigh(UPLO::Upper).expect("U-Laplace dielectric eigh failed");
+                evals.to_vec()
+            })
+            .collect()
+    });
 
     let mut out = Array2::zeros((n_quad, m));
     for (k, row) in rows.into_iter().enumerate() {
@@ -183,6 +196,7 @@ pub fn eval_eigenvalues_at_frequencies(
     quad_freqs: &[f64],
 ) -> Array2<f64> {
     use crate::sternheimer::{build_scale_factors, dielectric_matrix_from_projection};
+    use ferric_integrals::blas_threads::with_blas_threads;
     use ndarray_linalg::{Eigh, UPLO};
     use rayon::prelude::*;
 
@@ -195,16 +209,19 @@ pub fn eval_eigenvalues_at_frequencies(
     let y = eigenvectors.t().dot(b_ov);
 
     // Each quadrature point is fully independent — parallelize over frequencies.
-    let rows: Vec<Vec<f64>> = quad_freqs
-        .par_iter()
-        .map(|&omega| {
-            let scale = build_scale_factors(eps_occ, eps_vir, omega);
-            let eps_proj = dielectric_matrix_from_projection(&y, &scale);
-            // Diagonalize at each frequency — eigenvectors at ω=0 don't diagonalize ε̃(iω)
-            let (evals, _) = eps_proj.eigh(UPLO::Upper).expect("dielectric eigh failed");
-            evals.to_vec()
-        })
-        .collect();
+    // Pin BLAS to 1 inside the rayon region (per-frequency eigh must not nest).
+    let rows: Vec<Vec<f64>> = with_blas_threads(1, || {
+        quad_freqs
+            .par_iter()
+            .map(|&omega| {
+                let scale = build_scale_factors(eps_occ, eps_vir, omega);
+                let eps_proj = dielectric_matrix_from_projection(&y, &scale);
+                // Diagonalize at each frequency — eigenvectors at ω=0 don't diagonalize ε̃(iω)
+                let (evals, _) = eps_proj.eigh(UPLO::Upper).expect("dielectric eigh failed");
+                evals.to_vec()
+            })
+            .collect()
+    });
 
     let mut eigenvalues_freq = Array2::zeros((n_quad, m));
     for (k, row) in rows.into_iter().enumerate() {
@@ -235,27 +252,32 @@ pub fn eval_inv_dielectric_matrices(
     quad_freqs: &[f64],
 ) -> Vec<Array2<f64>> {
     use crate::sternheimer::{build_scale_factors, dielectric_matrix_from_projection};
+    use ferric_integrals::blas_threads::with_blas_threads;
     use ndarray_linalg::Inverse;
     use rayon::prelude::*;
 
     let m = eigenvectors.ncols();
     let y = eigenvectors.t().dot(b_ov);
 
-    quad_freqs
-        .par_iter()
-        .map(|&omega| {
-            let scale = build_scale_factors(eps_occ, eps_vir, omega);
-            let eps_proj = dielectric_matrix_from_projection(&y, &scale);
-            let mut winv = eps_proj
-                .inv()
-                .expect("PDEP-basis dielectric inversion failed");
-            // Subtract identity → dynamic part W̃_d = ε̃⁻¹ − I.
-            for d in 0..m {
-                winv[(d, d)] -= 1.0;
-            }
-            winv
-        })
-        .collect()
+    // Pin BLAS to 1 inside the rayon region: the per-frequency .inv() must not
+    // nest OpenBLAS threads under rayon workers (stack-overflow crash site).
+    with_blas_threads(1, || {
+        quad_freqs
+            .par_iter()
+            .map(|&omega| {
+                let scale = build_scale_factors(eps_occ, eps_vir, omega);
+                let eps_proj = dielectric_matrix_from_projection(&y, &scale);
+                let mut winv = eps_proj
+                    .inv()
+                    .expect("PDEP-basis dielectric inversion failed");
+                // Subtract identity → dynamic part W̃_d = ε̃⁻¹ − I.
+                for d in 0..m {
+                    winv[(d, d)] -= 1.0;
+                }
+                winv
+            })
+            .collect()
+    })
 }
 
 /// Unrestricted variant of [`eval_inv_dielectric_matrices`]: full per-frequency
@@ -267,23 +289,27 @@ pub fn eval_inv_dielectric_matrices_unrestricted(
     quad_freqs: &[f64],
 ) -> Vec<Array2<f64>> {
     use crate::sternheimer::dielectric_matrix_unrestricted;
+    use ferric_integrals::blas_threads::with_blas_threads;
     use ndarray_linalg::Inverse;
     use rayon::prelude::*;
 
     let m = eigenvectors.ncols();
-    quad_freqs
-        .par_iter()
-        .map(|&omega| {
-            let eps_proj = dielectric_matrix_unrestricted(eigenvectors, chan_a, chan_b, omega);
-            let mut winv = eps_proj
-                .inv()
-                .expect("U PDEP-basis dielectric inversion failed");
-            for d in 0..m {
-                winv[(d, d)] -= 1.0;
-            }
-            winv
-        })
-        .collect()
+    // Pin BLAS to 1 inside the rayon region (per-frequency .inv() must not nest).
+    with_blas_threads(1, || {
+        quad_freqs
+            .par_iter()
+            .map(|&omega| {
+                let eps_proj = dielectric_matrix_unrestricted(eigenvectors, chan_a, chan_b, omega);
+                let mut winv = eps_proj
+                    .inv()
+                    .expect("U PDEP-basis dielectric inversion failed");
+                for d in 0..m {
+                    winv[(d, d)] -= 1.0;
+                }
+                winv
+            })
+            .collect()
+    })
 }
 
 #[cfg(test)]
