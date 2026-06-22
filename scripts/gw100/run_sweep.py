@@ -124,12 +124,12 @@ FAILURE_REASONS = {
            "Genuine basis gap.",
     "K2":  "K (Z=19) has no aug-cc-pVDZ/TZ orbital basis bundled in ferric. "
            "Genuine basis gap.",
-    "Na4": "Na present in orbital + aux bases; failure is slow/non-converging RHF "
-           "on a floppy alkali cluster hitting the per-molecule watchdog. "
-           "Cost/convergence, not basis.",
-    "Na6": "Na present in orbital + aux bases; failure is slow/non-converging RHF "
-           "on a floppy alkali cluster hitting the per-molecule watchdog. "
-           "Cost/convergence, not basis.",
+    "Na4": "Na present in orbital + aux bases; the open-shell SCF on these floppy "
+           "sodium clusters does not converge (near-degenerate frontier states, "
+           "weakly-bound electrons). Physics/convergence, not a basis gap.",
+    "Na6": "Na present in orbital + aux bases; the open-shell SCF on these floppy "
+           "sodium clusters does not converge (near-degenerate frontier states, "
+           "weakly-bound electrons). Physics/convergence, not a basis gap.",
 }
 
 # Case order as compiled into gw100_full.rs (the driver runs cases() in this
