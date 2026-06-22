@@ -36,8 +36,17 @@ ROW = re.compile(
 )
 MAE = re.compile(r"^MAE\s+(?P<vals>.+)$")
 
-ENV = dict(os.environ, OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1",
-           MKL_NUM_THREADS="1", RAYON_NUM_THREADS="1")
+# Threading: INHERIT the launcher's env so the caller controls parallelism.
+# Previously this hardcoded RAYON_NUM_THREADS=1 + OPENBLAS=1 (single-core, to
+# dodge the old OpenBLAS-under-rayon stack-overflow crash). That crash is now
+# FIXED (with_blas_threads guard pins BLAS=1 inside rayon regions), so the driver
+# can run multi-threaded. Set RAYON_NUM_THREADS / OPENBLAS_NUM_THREADS in the
+# launch env; if unset, fall back to single-thread (safe default).
+ENV = dict(os.environ)
+ENV.setdefault("RAYON_NUM_THREADS", "1")
+ENV.setdefault("OPENBLAS_NUM_THREADS", "1")
+ENV.setdefault("OMP_NUM_THREADS", "1")
+ENV.setdefault("MKL_NUM_THREADS", "1")
 
 
 def _basis_path(basis):
