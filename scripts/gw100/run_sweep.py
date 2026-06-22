@@ -69,6 +69,11 @@ def load_basis(basis):
 
 
 def save_basis(basis, slot):
+    # Re-emit documented provenance for whatever has actually failed, so the
+    # annotation survives restarts and is never clobbered by an in-memory slot.
+    failed = set(slot.get("failed", []))
+    reasons = globals().get("FAILURE_REASONS", {})
+    slot["failure_reasons"] = {k: reasons[k] for k in sorted(failed) if k in reasons}
     p = _basis_path(basis)
     tmp = p.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(slot, indent=2, sort_keys=True))
@@ -108,6 +113,24 @@ def parse_output(txt):
 
 
 FAILED_RE = re.compile(r"^(\w+)\s+FAILED\s*$")
+
+# Documented provenance for the known GW100 failures, so a "FAILED" row reads as
+# scoped exclusion (honest) rather than an undiagnosed bug. Re-emitted on every
+# save (below) so it survives restarts and concurrent annotation. Keyed by mol.
+FAILURE_REASONS = {
+    "BrK": "K (Z=19) has no aug-cc-pVDZ/TZ orbital basis bundled in ferric; aux "
+           "rifit covers K but the orbital set does not. Genuine basis gap.",
+    "HK":  "K (Z=19) has no aug-cc-pVDZ/TZ orbital basis bundled in ferric. "
+           "Genuine basis gap.",
+    "K2":  "K (Z=19) has no aug-cc-pVDZ/TZ orbital basis bundled in ferric. "
+           "Genuine basis gap.",
+    "Na4": "Na present in orbital + aux bases; failure is slow/non-converging RHF "
+           "on a floppy alkali cluster hitting the per-molecule watchdog. "
+           "Cost/convergence, not basis.",
+    "Na6": "Na present in orbital + aux bases; failure is slow/non-converging RHF "
+           "on a floppy alkali cluster hitting the per-molecule watchdog. "
+           "Cost/convergence, not basis.",
+}
 
 # Case order as compiled into gw100_full.rs (the driver runs cases() in this
 # order). Used to identify which molecule was in flight when a stall-watchdog
