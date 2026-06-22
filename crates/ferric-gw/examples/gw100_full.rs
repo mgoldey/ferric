@@ -277,16 +277,33 @@ fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, Cation
         eigensolver: Eigensolver::Davidson,
         sternheimer: SternheimerConfig::default(),
     };
+    // Method-depth by molecule size. The full @HF stack (G0W0+COHSEX+evGW0+
+    // evGW×8) plus a second full @PBE GW is ~13 PDEP solves/molecule — on big
+    // organics (>~10 atoms) that's many CPU-hours and blows any budget. For those
+    // we compute ONLY G0W0@HF (1 PDEP, the PySCF-validated core number) so the
+    // table reaches 93/93. Small molecules keep ALL columns. Threshold:
+    // GW100_FULL_MAX_ATOMS (default 10). The other columns stay NaN for big mols
+    // (honestly: "not computed at this depth", not a failure).
+    let full_max_atoms: usize = std::env::var("GW100_FULL_MAX_ATOMS")
+        .ok().and_then(|s| s.parse().ok()).unwrap_or(10);
+    let full_depth = neutral.atoms.len() <= full_max_atoms;
+
     let mut ip_g0w0 = f64::NAN;
     let mut ip_cohsex = f64::NAN;
     let mut ip_evgw0 = f64::NAN;
     let mut ip_evgw = f64::NAN;
-    for (method, slot) in [
-        (GwMethod::G0W0,   &mut ip_g0w0),
-        (GwMethod::Cohsex, &mut ip_cohsex),
-        (GwMethod::EvGw0,  &mut ip_evgw0),
-        (GwMethod::EvGw,   &mut ip_evgw),
-    ] {
+    let methods: Vec<(GwMethod, &mut f64)> = if full_depth {
+        vec![
+            (GwMethod::G0W0,   &mut ip_g0w0),
+            (GwMethod::Cohsex, &mut ip_cohsex),
+            (GwMethod::EvGw0,  &mut ip_evgw0),
+            (GwMethod::EvGw,   &mut ip_evgw),
+        ]
+    } else {
+        // big molecule: G0W0@HF only (the PySCF-validated core number)
+        vec![(GwMethod::G0W0, &mut ip_g0w0)]
+    };
+    for (method, slot) in methods {
         let gcfg = GwConfig { method, max_ev_iter: 8, ev_conv_thresh: 1e-4, ..Default::default() };
         if let Ok(res) = run_gw(&neutral, &obs_n, &dfbs_n, op, &rhf_n, &pdep_cfg_gw, &gcfg, None) {
             if let Some(local) = res.mo_indices.iter().position(|&i| i == homo_abs) {
@@ -295,12 +312,14 @@ fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, Cation
         }
     }
 
-    // G0W0@PBE: a TRUE self-consistent PBE-KS reference (solve_rhf xc=pbe) + the
-    // Σx−vxc correction threaded into the QP self-consistency. Brackets the @HF
-    // overshoot from below (@PBE undershoots). G0W0 only — evGW@KS is deferred.
-    let ip_g0w0_pbe = run_g0w0_pbe(&ctx, &neutral, &obs_n, &dfbs_n, &obs_bs, op,
-                                   &bounds_n, &pdep_cfg_gw, homo_abs)
-        .unwrap_or(f64::NAN);
+    // G0W0@PBE: full-depth molecules only (it's a second full GW). Big mols skip it.
+    let ip_g0w0_pbe = if full_depth {
+        run_g0w0_pbe(&ctx, &neutral, &obs_n, &dfbs_n, &obs_bs, op,
+                     &bounds_n, &pdep_cfg_gw, homo_abs)
+            .unwrap_or(f64::NAN)
+    } else {
+        f64::NAN
+    };
 
     Some((
         Ips { koop: ip_koop, dscf: ip_dscf, drpa: ip_drpa,
@@ -346,7 +365,10 @@ fn main() {
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
         .collect();
-    let cases: Vec<Case> = cases().into_iter().filter(|c| !done.contains(c.name)).collect();
+    let mut cases: Vec<Case> = cases().into_iter().filter(|c| !done.contains(c.name)).collect();
+    // Smaller molecules FIRST — they bank fast (full-depth) so the table fills
+    // quickly; the big organics (G0W0-only) come last. Atom count = xyz line 0.
+    cases.sort_by_key(|c| c.xyz.split('\n').next().and_then(|s| s.trim().parse::<usize>().ok()).unwrap_or(999));
     println!("# GW100 subset — basis {obs_name} / {dfbs_name}");
     println!(
         "{:<6} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}",
