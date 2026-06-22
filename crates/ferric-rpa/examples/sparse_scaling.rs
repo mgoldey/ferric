@@ -171,7 +171,9 @@ fn main() {
 
             // Quickly probe retained pairs (cheap relative to RPA itself).
             let (retained, total, thresh_val) = match cfg.sparsity {
-                Chi0Sparsity::Dense => (0usize, 0usize, 0.0_f64),
+                // Auto picks Dense/Boys by atom count at runtime; for this diagnostic
+                // we report it like Dense (no static screening stats to show).
+                Chi0Sparsity::Dense | Chi0Sparsity::Auto { .. } => (0usize, 0usize, 0.0_f64),
                 Chi0Sparsity::BoysScreened { thresh } => {
                     match screen::build_screened_bov_boys(&mol, &obs, &dfbs, op, &rhf, sys.frozen_core, thresh) {
                         Ok((sb, _)) => (sb.total_retained, sb.n_occ_loc * sb.naux, thresh),
