@@ -34,7 +34,15 @@ pub fn coulomb_metric_2c(op: Operator, dfbs: &PreparedBasis) -> Result<Array2<f6
 }
 
 /// Build 3-center integrals (P|mn), shape (naux, nbasis, nbasis).
+///
+/// Parallelized over aux shells `sp` (independent outer loop). Each rayon worker
+/// builds its own `Engine` (Engine: Send) once per region via `for_each_init`.
+/// Writes go to disjoint `(p, mu, nu)` regions — each `sp` owns a distinct
+/// aux-row band — so the raw-pointer scatter is data-race-free and bit-identical
+/// to the serial build.
 pub fn eri3_tensor(op: Operator, obs: &PreparedBasis, dfbs: &PreparedBasis) -> Result<Array3<f64>, FerricError> {
+    use rayon::prelude::*;
+
     let naux = dfbs.nbasis();
     let nbas = obs.nbasis();
     let nsh_obs = obs.nshells();
@@ -43,28 +51,57 @@ pub fn eri3_tensor(op: Operator, obs: &PreparedBasis, dfbs: &PreparedBasis) -> R
     let offs_obs = obs.shell_offsets();
     let dims_df = dfbs.shell_dims();
     let offs_df = dfbs.shell_offsets();
-    let mut eng = Engine::new_3center(op, obs, dfbs, 1e-14)?;
-    let mut eri = Array3::zeros((naux, nbas, nbas));
-    for sp in 0..nsh_df {
-        for s1 in 0..nsh_obs {
-            for s2 in 0..=s1 {
-                if let Some(block) = eng.compute_eri3(obs, dfbs, sp, s1, s2) {
-                    let np = dims_df[sp];
-                    let n1 = dims_obs[s1];
-                    let n2 = dims_obs[s2];
-                    for p in 0..np {
-                        for i in 0..n1 {
-                            for j in 0..n2 {
-                                let val = block[(p * n1 + i) * n2 + j];
-                                eri[(offs_df[sp] + p, offs_obs[s1] + i, offs_obs[s2] + j)] = val;
-                                eri[(offs_df[sp] + p, offs_obs[s2] + j, offs_obs[s1] + i)] = val;
+
+    // Surface any engine-construction error up front (serial, cheap). After this
+    // succeeds the per-worker rebuilds below cannot fail for the same args, so
+    // they `.expect()` — `FerricError` is not `Clone`, so we cannot thread the
+    // error out of the per-worker init closure.
+    Engine::new_3center(op, obs, dfbs, 1e-14)?;
+
+    let mut eri = Array3::<f64>::zeros((naux, nbas, nbas));
+
+    // Raw-pointer scatter: each aux shell `sp` writes a disjoint band of aux rows,
+    // so the `(p, mu, nu)` regions written by distinct workers never overlap.
+    let eri_ptr = eri.as_mut_ptr() as usize;
+    let stride0 = nbas * nbas; // p-stride
+    let stride1 = nbas; // mu-stride
+
+    // One `Engine` per rayon worker, built by the `init` closure scoped to THIS
+    // parallel region (so it is always built for the current op/obs/dfbs — a
+    // process-wide TLS cache would reuse a stale engine on a later call with a
+    // different operator). `Engine: Send`.
+    (0..nsh_df).into_par_iter().for_each_init(
+        || Engine::new_3center(op, obs, dfbs, 1e-14).expect("3-center engine (pre-validated)"),
+        |eng, sp| {
+            let np = dims_df[sp];
+            let p0 = offs_df[sp];
+            for s1 in 0..nsh_obs {
+                let n1 = dims_obs[s1];
+                let m0 = offs_obs[s1];
+                for s2 in 0..=s1 {
+                    if let Some(block) = eng.compute_eri3(obs, dfbs, sp, s1, s2) {
+                        let n2 = dims_obs[s2];
+                        let n0 = offs_obs[s2];
+                        for p in 0..np {
+                            for i in 0..n1 {
+                                for j in 0..n2 {
+                                    let val = block[(p * n1 + i) * n2 + j];
+                                    let pp = p0 + p;
+                                    let mm = m0 + i;
+                                    let nn = n0 + j;
+                                    unsafe {
+                                        let base = eri_ptr as *mut f64;
+                                        *base.add(pp * stride0 + mm * stride1 + nn) = val;
+                                        *base.add(pp * stride0 + nn * stride1 + mm) = val;
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
-        }
-    }
+        },
+    );
     Ok(eri)
 }
 

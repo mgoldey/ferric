@@ -478,6 +478,7 @@ dependencies = [
  "ferric-core",
  "libc",
  "ndarray",
+ "rayon",
  "serde",
  "serde_json",
  "tempfile",
