@@ -22,5 +22,6 @@ pub mod oneelectron;
 pub mod cabs;
 pub mod schwarz;
 pub mod qqr3;
+pub mod blas_threads;
 pub mod threeindex;
 pub mod three_index_source;
