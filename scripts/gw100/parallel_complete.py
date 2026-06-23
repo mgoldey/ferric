@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+"""Parallel GW100 table completion — disjoint-partition runner.
+
+The bottleneck: each molecule takes ~2-10 min through the GW pipeline, and the
+serial run_sweep.py does them one at a time per base. This runner pools ALL
+remaining (basis, molecule) work across N concurrent workers, each running
+gw100_full directly on a single molecule, writing results straight into the
+per-basis results JSON under a lock (so no read-modify-write race).
+
+Policy matches the driver: full-depth <=10 atoms, G0W0-only for big (the driver's
+GW100_FULL_MAX_ATOMS=10 handles that internally). We just feed it one molecule at
+a time via GW100_DONE=all-but-this.
+
+Sizing: each molecule's SCF phase is ~1 core (BLAS-serial), RPA phase is rayon.
+Run N workers at RAYON_NUM_THREADS=R; pick N*R ~= cores. Default 4 workers x 3.
+
+Usage: parallel_complete.py [nworkers] [rayon_per_worker]
+Idempotent: skips molecules already converged/failed. Run after stopping the
+serial sweeps. Writes each row under a file lock; safe for concurrent workers.
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parents[1]
+BIN = ROOT / "target" / "release" / "examples" / "gw100_full"
+SRC = ROOT / "crates" / "ferric-gw" / "examples" / "gw100_full.rs"
+BASES = ["aug-cc-pvdz", "aug-cc-pvtz"]
+METHODS = ["Koop", "dSCF", "dRPA", "G0W0", "COHSEX", "evGW0", "evGW", "G0W0pbe"]
+ROW = re.compile(
+    r"^(?P<mol>[A-Za-z0-9]+)\s+(?P<exp>[-+0-9.]+)\s+"
+    + r"\s+".join(rf"(?P<{m}>[-+0-9.]+)" for m in METHODS)
+)
+_lock = threading.Lock()
+MOL_BUDGET = float(os.environ.get("GW100_MOL_BUDGET", "5400"))
+
+
+def all_cases():
+    return re.findall(r'name:\s*"(\w+)"', SRC.read_text())
+
+
+def remaining():
+    """List of (basis, mol) still to do, ordered small-first within each basis."""
+    txt = SRC.read_text()
+    def natoms(n):
+        m = re.search(rf'name:\s*"{n}".*?xyz:\s*"(\d+)', txt, re.S)
+        return int(m.group(1)) if m else 999
+    work = []
+    for b in BASES:
+        d = json.loads((HERE / f"results_{b}.json").read_text())
+        done = set(d["molecules"]) | set(d.get("failed", []))
+        todo = [c for c in all_cases() if c not in done]
+        todo.sort(key=natoms)  # small first
+        for c in todo:
+            work.append((b, c))
+    return work
+
+
+def save_row(basis, mol, row):
+    with _lock:
+        p = HERE / f"results_{basis}.json"
+        d = json.loads(p.read_text())
+        d["molecules"][mol] = row
+        d["failed"] = [f for f in d.get("failed", []) if f != mol]
+        tmp = p.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(d, indent=2, sort_keys=True))
+        tmp.replace(p)
+
+
+def mark_failed(basis, mol):
+    with _lock:
+        p = HERE / f"results_{basis}.json"
+        d = json.loads(p.read_text())
+        if mol not in d["molecules"]:
+            fl = set(d.get("failed", [])); fl.add(mol)
+            d["failed"] = sorted(fl)
+            tmp = p.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(d, indent=2, sort_keys=True))
+            tmp.replace(p)
+
+
+def run_one(basis, mol, rayon):
+    """Run gw100_full for a single molecule; persist its row. Watchdog kills it
+    past MOL_BUDGET and marks failed."""
+    skip = ",".join(c for c in all_cases() if c != mol)
+    env = dict(os.environ,
+               OPENBLAS_NUM_THREADS="2", RAYON_NUM_THREADS=str(rayon),
+               OMP_NUM_THREADS="1", MKL_NUM_THREADS="1",
+               GW100_TRUNC="1e-4", GW100_FULL_MAX_ATOMS="10",
+               GW100_DONE=skip)
+    proc = subprocess.Popen([str(BIN), basis], env=env, text=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1)
+    start = time.monotonic()
+    got = False
+    def watchdog():
+        while proc.poll() is None:
+            time.sleep(15)
+            if time.monotonic() - start > MOL_BUDGET:
+                proc.kill(); return
+    wd = threading.Thread(target=watchdog, daemon=True); wd.start()
+    for line in proc.stdout:
+        m = ROW.match(line.strip())
+        if m and m.group("mol") == mol:
+            dd = m.groupdict(); dd.pop("mol")
+            row = {k: float(v) for k, v in dd.items()}
+            save_row(basis, mol, row)
+            got = True
+            print(f"  [+] {basis[:8]} {mol}  G0W0={row['G0W0']:.3f}", flush=True)
+    proc.wait()
+    if not got:
+        mark_failed(basis, mol)
+        print(f"  [x] {basis[:8]} {mol} FAILED/timeout", flush=True)
+
+
+def main():
+    nworkers = int(sys.argv[1]) if len(sys.argv) > 1 else 4
+    rayon = int(sys.argv[2]) if len(sys.argv) > 2 else 3
+    if not BIN.exists():
+        sys.exit(f"binary missing: {BIN}")
+    work = remaining()
+    print(f"[parallel] {len(work)} (basis,mol) to do; {nworkers} workers x RAYON={rayon}", flush=True)
+
+    work_lock = threading.Lock()
+    it = iter(work)
+    def worker():
+        while True:
+            with work_lock:
+                try:
+                    b, m = next(it)
+                except StopIteration:
+                    return
+            try:
+                run_one(b, m, rayon)
+            except Exception as e:
+                print(f"  [!] {b} {m}: {e}", flush=True)
+
+    threads = [threading.Thread(target=worker) for _ in range(nworkers)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    print("[parallel] DONE", flush=True)
+    for b in BASES:
+        d = json.loads((HERE / f"results_{b}.json").read_text())
+        print(f"  {b}: {len(d['molecules'])} conv, {len(d.get('failed', []))} fail")
+
+
+if __name__ == "__main__":
+    main()
