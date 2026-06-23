@@ -1,0 +1,87 @@
+Running as unit: trustmap-water-204244.scope; invocation ID: e11b28d0e68f4177a4eaf601c5be384d
+[spike] water: anion unbound (electropositive) — EA skipped
+[spike] water/aug-cc-pvdz aux=aug-cc-pvdz-rifit  neutral E=-76.041365  anion_bound=false
+ferric-gw: redressed eigenpotentials, max |‖V_α‖² − 1| = 1.399e-13
+ferric-gw: redressed eigenpotentials, max |‖V_α‖² − 1| = 1.399e-13
+ferric-gw: redressed eigenpotentials, max |‖V_α‖² − 1| = 1.399e-13
+ferric-gw: redressed eigenpotentials, max |‖V_α‖² − 1| = 1.399e-13
+[spike] thresh=0e0  M_kept=118  IP=12.3733  G0W0=12.4912  evGW_IP=12.390  wall=8.5s
+ferric-gw: redressed eigenpotentials, max |‖V_α‖² − 1| = 1.399e-13
+ferric-gw: redressed eigenpotentials, max |‖V_α‖² − 1| = 1.399e-13
+ferric-gw: redressed eigenpotentials, max |‖V_α‖² − 1| = 1.399e-13
+ferric-gw: redressed eigenpotentials, max |‖V_α‖² − 1| = 1.399e-13
+[spike] thresh=1e-6  M_kept=112  IP=12.3733  G0W0=12.4912  evGW_IP=12.390  wall=7.7s
+ferric-gw: redressed eigenpotentials, max |‖V_α‖² − 1| = 1.399e-13
+ferric-gw: redressed eigenpotentials, max |‖V_α‖² − 1| = 1.399e-13
+ferric-gw: redressed eigenpotentials, max |‖V_α‖² − 1| = 1.399e-13
+ferric-gw: redressed eigenpotentials, max |‖V_α‖² − 1| = 1.399e-13
+[spike] thresh=3e-6  M_kept=106  IP=12.3733  G0W0=12.4912  evGW_IP=12.390  wall=7.3s
+ferric-gw: redressed eigenpotentials, max |‖V_α‖² − 1| = 1.399e-13
+ferric-gw: redressed eigenpotentials, max |‖V_α‖² − 1| = 1.399e-13
+ferric-gw: redressed eigenpotentials, max |‖V_α‖² − 1| = 1.399e-13
+ferric-gw: redressed eigenpotentials, max |‖V_α‖² − 1| = 1.399e-13
+[spike] thresh=1e-5  M_kept=100  IP=12.3733  G0W0=12.4912  evGW_IP=12.390  wall=5.8s
+ferric-gw: redressed eigenpotentials, max |‖V_α‖² − 1| = 1.399e-13
+ferric-gw: redressed eigenpotentials, max |‖V_α‖² − 1| = 1.399e-13
+ferric-gw: redressed eigenpotentials, max |‖V_α‖² − 1| = 1.399e-13
+ferric-gw: redressed eigenpotentials, max |‖V_α‖² − 1| = 1.399e-13
+[spike] thresh=3e-5  M_kept=94  IP=12.3733  G0W0=12.4912  evGW_IP=12.390  wall=5.5s
+ferric-gw: redressed eigenpotentials, max |‖V_α‖² − 1| = 9.581e-14
+ferric-gw: redressed eigenpotentials, max |‖V_α‖² − 1| = 9.581e-14
+ferric-gw: redressed eigenpotentials, max |‖V_α‖² − 1| = 9.581e-14
+ferric-gw: redressed eigenpotentials, max |‖V_α‖² − 1| = 9.581e-14
+[spike] thresh=1e-4  M_kept=88  IP=12.3733  G0W0=12.4912  evGW_IP=12.390  wall=4.8s
+ferric-gw: redressed eigenpotentials, max |‖V_α‖² − 1| = 5.196e-14
+ferric-gw: redressed eigenpotentials, max |‖V_α‖² − 1| = 5.196e-14
+ferric-gw: redressed eigenpotentials, max |‖V_α‖² − 1| = 5.196e-14
+ferric-gw: redressed eigenpotentials, max |‖V_α‖² − 1| = 5.196e-14
+[spike] thresh=3e-4  M_kept=84  IP=12.3733  G0W0=12.4912  evGW_IP=12.390  wall=4.7s
+ferric-gw: redressed eigenpotentials, max |‖V_α‖² − 1| = 5.196e-14
+ferric-gw: redressed eigenpotentials, max |‖V_α‖² − 1| = 5.196e-14
+ferric-gw: redressed eigenpotentials, max |‖V_α‖² − 1| = 5.196e-14
+ferric-gw: redressed eigenpotentials, max |‖V_α‖² − 1| = 5.196e-14
+[spike] thresh=1e-3  M_kept=75  IP=12.3733  G0W0=12.4911  evGW_IP=12.390  wall=4.1s
+ferric-gw: redressed eigenpotentials, max |‖V_α‖² − 1| = 5.196e-14
+ferric-gw: redressed eigenpotentials, max |‖V_α‖² − 1| = 5.196e-14
+ferric-gw: redressed eigenpotentials, max |‖V_α‖² − 1| = 5.196e-14
+ferric-gw: redressed eigenpotentials, max |‖V_α‖² − 1| = 5.196e-14
+[spike] thresh=3e-3  M_kept=64  IP=12.3731  G0W0=12.4912  evGW_IP=12.390  wall=3.3s
+ferric-gw: redressed eigenpotentials, max |‖V_α‖² − 1| = 2.642e-14
+ferric-gw: redressed eigenpotentials, max |‖V_α‖² − 1| = 2.642e-14
+ferric-gw: redressed eigenpotentials, max |‖V_α‖² − 1| = 2.642e-14
+ferric-gw: redressed eigenpotentials, max |‖V_α‖² − 1| = 2.642e-14
+[spike] thresh=1e-2  M_kept=48  IP=12.3736  G0W0=12.4933  evGW_IP=12.393  wall=2.4s
+
+# PDEP-truncation trust map: water/aug-cc-pvdz
+# anion_bound = false  (EA meaningful only if true)
+# signed error vs trunc_thresh=0 reference
+  thresh   M_kept/naux |   dE_rpa(Ha)    dIP(eV)    dEA(eV)        da(%)     dC6(%)
+------------------------------------------------------------------------------------------
+     0e0 118/118 (100%) |       0.00e0     0.0000        NaN      0.000      0.000
+    1e-6 112/118 (95%) |      1.20e-9    -0.0000        NaN      0.000      0.000
+    3e-6 106/118 (90%) |      9.00e-9    -0.0000        NaN      0.000      0.000
+    1e-5 100/118 (85%) |      3.69e-8     0.0000        NaN      0.000      0.000
+    3e-5  94/118 (80%) |      1.40e-7    -0.0000        NaN      0.000      0.000
+    1e-4  88/118 (75%) |      4.04e-7     0.0000        NaN      0.000      0.000
+    3e-4  84/118 (71%) |      1.19e-6     0.0000        NaN      0.000      0.000
+    1e-3  75/118 (64%) |      1.12e-5    -0.0000        NaN      0.000      0.000
+    3e-3  64/118 (54%) |      7.20e-5    -0.0003        NaN      0.001      0.001
+    1e-2  48/118 (41%) |      5.95e-4     0.0003        NaN      0.011      0.010
+
+# absolute reference (thresh=0): E_rpa=-0.248611 Ha  IP=12.3733 eV  EA=NaN eV  a=5.1330 a.u.  C6=24.553 a.u.
+
+# GW-family HOMO IP (eV) vs trunc_thresh — signed error vs thresh=0
+  thresh |       G0W0      evGW0       evGW     COHSEX
+----------------------------------------------------------
+     0e0 |     0.0000     0.0000     0.0000     0.0000
+    1e-6 |     0.0000     0.0000     0.0000     0.0000
+    3e-6 |     0.0000     0.0000     0.0000     0.0000
+    1e-5 |     0.0000     0.0000     0.0000     0.0000
+    3e-5 |     0.0000     0.0000     0.0000     0.0000
+    1e-4 |     0.0000     0.0000     0.0000     0.0000
+    3e-4 |     0.0001     0.0000     0.0000     0.0001
+    1e-3 |    -0.0001    -0.0001    -0.0001     0.0001
+    3e-3 |     0.0000     0.0002     0.0002     0.0003
+    1e-2 |     0.0022     0.0032     0.0032     0.0036
+# absolute GW IP at thresh=0 (eV): G0W0=12.491 evGW0=12.418 evGW=12.390 COHSEX=13.572
+# absolute QP gap at thresh=0 (eV): G0W0=13.334 evGW0=13.262 evGW=13.232 COHSEX=14.388
