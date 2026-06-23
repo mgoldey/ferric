@@ -199,12 +199,36 @@ struct CationDiag {
 
 fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, CationDiag)> {
     let ctx = ParallelContext::default();
-    let obs_bs = basis::bundled(obs_name).ok()?;
-    let dfbs_bs = basis::bundled(dfbs_name).ok()?;
     let op = Operator::coulomb();
 
     let neutral = Molecule::parse_xyz(case.xyz, 0, 1).ok()?;
     let cation  = Molecule::parse_xyz(case.xyz, 1, 2).ok()?;
+
+    // Basis routing for cases that aug-cc-pV*Z cannot handle.
+    //
+    // (1) No-basis: the non-relativistic cc family stops at Ar (Z=18). K (19) and
+    //     Ca (20) have NO aug-cc-pVDZ/TZ orbital basis in existence (BSE confirms;
+    //     only the X2C relativistic variant). The published GW100 uses def2 for
+    //     these. Route any molecule containing K/Ca to def2-TZVP.
+    //
+    // (2) Convergence: the Na clusters Na4/Na6 do NOT converge in aug-cc-pV*Z —
+    //     the augmented diffuse Na functions make the AO overlap near-linearly-
+    //     dependent (Na4@aTZ and Na6@aDZ/aTZ spin to max_iter without converging).
+    //     This is a BASIS pathology, not the molecule: PySCF converges both
+    //     cleanly in def2-TZVP with a healthy 3.84 eV HOMO-LUMO gap (verified
+    //     ferric-side too). Route Na clusters of ≥4 atoms to def2-TZVP for a
+    //     consistent, convergent basis across both columns. (Na2/ClNa are fine in
+    //     aug and stay there.)
+    let z_counts = |z: i32| neutral.atoms.iter().filter(|a| a.z == z).count();
+    let needs_def2 = neutral.atoms.iter().any(|a| a.z == 19 || a.z == 20)
+        || z_counts(11) >= 4; // Na cluster ≥4 Na atoms
+    let (obs_name, dfbs_name): (&str, &str) = if needs_def2 {
+        ("def2-tzvp", "def2-tzvp-rifit")
+    } else {
+        (obs_name, dfbs_name)
+    };
+    let obs_bs = basis::bundled(obs_name).ok()?;
+    let dfbs_bs = basis::bundled(dfbs_name).ok()?;
 
     let obs_n = PreparedBasis::new(&neutral, &obs_bs).ok()?;
     let dfbs_n = PreparedBasis::new(&neutral, &dfbs_bs).ok()?;
