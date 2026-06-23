@@ -157,18 +157,10 @@ pub fn solve_uhf_fockmod(
     }
     let vnn = mol.nuclear_repulsion();
 
-    // S^{-1/2}
-    let (s_evals, s_evecs) = s
-        .eigh(ndarray_linalg::UPLO::Upper)
-        .map_err(|e| FerricError::Lapack(format!("S diag: {e}")))?;
-    let mut u_scaled = s_evecs.clone();
-    for i in 0..n {
-        let scale = 1.0 / s_evals[i].sqrt();
-        for mu in 0..n {
-            u_scaled[(mu, i)] *= scale;
-        }
-    }
-    let s_inv_sqrt = u_scaled.dot(&s_evecs.t());
+    // Canonical orthogonalizer X (n × m): drops eigenvectors of S below
+    // LINDEP_THRESH to handle near-linear-dependent basis sets (Na clusters in
+    // aug-cc-pVDZ). m == n for well-conditioned S. See crate::rhf for details.
+    let x = crate::rhf::canonical_orthogonalizer(&s)?;
 
     // Initial guess: caller-supplied MOs if provided, else hcore.
     let (mut c_a, mut c_b) = if let Some((ca0, cb0)) = initial_mos {
@@ -180,13 +172,10 @@ pub fn solve_uhf_fockmod(
         }
         (ca0.clone(), cb0.clone())
     } else {
-        // hcore guess: get MO coefficients from H' = S^{-1/2} H S^{-1/2}.
+        // hcore guess: get MO coefficients from H' = Xᵀ H X (canonical-orthog).
+        // diagonalize() pads to (n × n), keeping the guess shape historical.
         let _ = hcore_guess(&s, &h, nocc_a.max(1))?; // sanity check it succeeds
-        let h_prime = s_inv_sqrt.dot(&h).dot(&s_inv_sqrt);
-        let (_, c_prime) = h_prime
-            .eigh(ndarray_linalg::UPLO::Upper)
-            .map_err(|e| FerricError::Lapack(format!("H' diag: {e}")))?;
-        let c = s_inv_sqrt.dot(&c_prime);
+        let (_, c) = diagonalize(&h, &x)?;
         (c.clone(), c)
     };
 
@@ -321,8 +310,8 @@ pub fn solve_uhf_fockmod(
         let converged = de < config.energy_conv && err_max < config.density_conv;
 
         if iter > 1 && converged {
-            let (eps_a, c_a_f) = diagonalize(&f_a, &s_inv_sqrt)?;
-            let (eps_b, c_b_f) = diagonalize(&f_b, &s_inv_sqrt)?;
+            let (eps_a, c_a_f) = diagonalize(&f_a, &x)?;
+            let (eps_b, c_b_f) = diagonalize(&f_b, &x)?;
             // ⟨S²⟩ diagnostic
             let s2 = expectation_s_squared(&c_a_f, &c_b_f, &s, nocc_a, nocc_b);
             let s_true = 0.5 * (nocc_a as f64 - nocc_b as f64);
@@ -379,8 +368,8 @@ pub fn solve_uhf_fockmod(
                 f_b_new += &(shift_eff * s.dot(&p_bv).dot(&s));
             }
         }
-        let (eps_a_new, mut c_a_new) = diagonalize(&f_a_new, &s_inv_sqrt)?;
-        let (eps_b_new, mut c_b_new) = diagonalize(&f_b_new, &s_inv_sqrt)?;
+        let (eps_a_new, mut c_a_new) = diagonalize(&f_a_new, &x)?;
+        let (eps_b_new, mut c_b_new) = diagonalize(&f_b_new, &x)?;
 
         // MOM occupied-orbital selection (per spin) from iter mom_after_iter+1.
         if config.mom_after_iter > 0 && iter > config.mom_after_iter {
@@ -504,16 +493,29 @@ fn density_fractional(c: &Array2<f64>, eps: &[f64], nocc: usize) -> Array2<f64> 
     d
 }
 
+/// Diagonalize F in the canonical-orthogonal basis X (n × m), padding the
+/// result back to (n × n) with sentinel-energy zero columns for any dropped
+/// near-singular modes. Mirrors `crate::rhf::diagonalize`. See that function for
+/// the shape/padding rationale.
 fn diagonalize(
     f: &Array2<f64>,
-    s_inv_sqrt: &Array2<f64>,
+    x: &Array2<f64>,
 ) -> Result<(Vec<f64>, Array2<f64>), FerricError> {
-    let f_prime = s_inv_sqrt.dot(f).dot(s_inv_sqrt);
+    let n = x.nrows();
+    let m = x.ncols();
+    let f_prime = x.t().dot(f).dot(x);
     let (evals, evecs) = f_prime
         .eigh(ndarray_linalg::UPLO::Upper)
         .map_err(|e| FerricError::Lapack(format!("F diag: {e}")))?;
-    let c = s_inv_sqrt.dot(&evecs);
-    Ok((evals.to_vec(), c))
+    let c_kept = x.dot(&evecs);
+    if m == n {
+        return Ok((evals.to_vec(), c_kept));
+    }
+    let mut c = Array2::<f64>::zeros((n, n));
+    c.slice_mut(ndarray::s![.., ..m]).assign(&c_kept);
+    let mut eps = evals.to_vec();
+    eps.resize(n, 1e6);
+    Ok((eps, c))
 }
 
 /// ⟨S²⟩ for a UHF determinant:

@@ -270,19 +270,11 @@ pub fn solve_rhf(
         Box::new(lk) as Box<dyn KBuilder>
     });
 
-    // Precompute S^{-1/2} = U * diag(1/sqrt(λ)) * U^T  (BLAS dgemm)
-    let (s_evals, s_evecs) = s
-        .eigh(ndarray_linalg::UPLO::Upper)
-        .map_err(|e| FerricError::Lapack(format!("S diag: {e}")))?;
-    // Scale each column i of U by 1/sqrt(λ_i)
-    let mut u_scaled = s_evecs.clone();
-    for i in 0..n {
-        let scale = 1.0 / s_evals[i].sqrt();
-        for mu in 0..n {
-            u_scaled[(mu, i)] *= scale;
-        }
-    }
-    let s_inv_sqrt = u_scaled.dot(&s_evecs.t());
+    // Canonical orthogonalizer X = U_kept · diag(1/sqrt(λ_kept)), shape (n × m),
+    // dropping eigenvectors of S with λ < LINDEP_THRESH (near-linear-dependence).
+    // For well-conditioned S, m == n and X reproduces existing energies; see
+    // canonical_orthogonalizer / diagonalize for the padding-back-to-n convention.
+    let x = canonical_orthogonalizer(&s)?;
 
     for iter in 1..=config.max_iter {
         ctx.check_interrupted()?;
@@ -389,7 +381,7 @@ pub fn solve_rhf(
         let converged = if df_active { grad_ok || df_noise_floor_ok } else { energy_ok && grad_ok };
 
         if iter > 1 && converged {
-            let (orb_e, c) = diagonalize(&f, &s_inv_sqrt)?;
+            let (orb_e, c) = diagonalize(&f, &x)?;
             let density_alpha = 0.5 * &d;
             return Ok(ScfResult {
                 spin: Spin::Restricted,
@@ -411,7 +403,7 @@ pub fn solve_rhf(
         prev_e = energy;
 
         let f_new = diis.step(&f, &err);
-        let (_, mut c) = diagonalize(&f_new, &s_inv_sqrt)?;
+        let (_, mut c) = diagonalize(&f_new, &x)?;
 
         // MOM occupied-orbital selection from iter mom_after_iter+1: pin the
         // occupied set by AO-overlap with the previous accepted occupation
@@ -640,16 +632,65 @@ pub fn build_jk(
     Ok(computed_quartets.load(Ordering::SeqCst))
 }
 
+/// Linear-dependence threshold for canonical orthogonalization: eigenvectors of
+/// the overlap matrix with eigenvalue below this are dropped from the variational
+/// space. PySCF's default is ~1e-6 to 1e-7; 1e-6 is conservative.
+pub(crate) const LINDEP_THRESH: f64 = 1e-6;
+
+/// Build the canonical orthogonalizer X (n × m) from the overlap matrix S.
+///
+/// X = U_kept · diag(1/sqrt(λ_kept)), where U_kept are the eigenvectors of S
+/// whose eigenvalue λ ≥ [`LINDEP_THRESH`]. `eigh` returns eigenvalues in
+/// ASCENDING order, so the near-singular modes are first and are skipped.
+/// For a well-conditioned S, m == n and no mode is dropped (regression-safe).
+///
+/// X is NOT symmetric (even when m == n) — callers must use the rectangular
+/// transform Fʹ = Xᵀ F X, C = X Vʹ (see [`diagonalize`]).
+pub(crate) fn canonical_orthogonalizer(s: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
+    let n = s.nrows();
+    let (s_evals, s_evecs) = s
+        .eigh(ndarray_linalg::UPLO::Upper)
+        .map_err(|e| FerricError::Lapack(format!("S diag: {e}")))?;
+    // eigenvalues ascending: kept columns are those with λ ≥ LINDEP_THRESH.
+    let kept: Vec<usize> = (0..n).filter(|&i| s_evals[i] >= LINDEP_THRESH).collect();
+    let m = kept.len();
+    let mut x = Array2::<f64>::zeros((n, m));
+    for (col, &i) in kept.iter().enumerate() {
+        let scale = 1.0 / s_evals[i].sqrt();
+        for mu in 0..n {
+            x[(mu, col)] = s_evecs[(mu, i)] * scale;
+        }
+    }
+    Ok(x)
+}
+
+/// Diagonalize the Fock matrix in the canonical-orthogonal basis.
+///
+/// With X (n × m) rectangular: Fʹ = Xᵀ F X is (m × m), its eigenvectors Vʹ are
+/// (m × m), and C_kept = X Vʹ is (n × m). The result is PADDED back to (n × n)
+/// by appending (n − m) zero MO columns with sentinel energy 1e6, so every
+/// downstream consumer (GW, RPA, density build) sees the historical (n × n) /
+/// length-n shapes while the near-singular directions are inert virtuals.
 fn diagonalize(
     f: &Array2<f64>,
-    s_inv_sqrt: &Array2<f64>,
+    x: &Array2<f64>,
 ) -> Result<(Vec<f64>, Array2<f64>), FerricError> {
-    let f_prime = s_inv_sqrt.dot(f).dot(s_inv_sqrt);
+    let n = x.nrows();
+    let m = x.ncols();
+    let f_prime = x.t().dot(f).dot(x);
     let (evals, evecs) = f_prime
         .eigh(ndarray_linalg::UPLO::Upper)
         .map_err(|e| FerricError::Lapack(format!("F diag: {e}")))?;
-    let c = s_inv_sqrt.dot(&evecs);
-    Ok((evals.to_vec(), c))
+    let c_kept = x.dot(&evecs); // (n × m)
+    if m == n {
+        return Ok((evals.to_vec(), c_kept));
+    }
+    // Pad to (n × n): zero MO columns + sentinel high energy for dropped modes.
+    let mut c = Array2::<f64>::zeros((n, n));
+    c.slice_mut(ndarray::s![.., ..m]).assign(&c_kept);
+    let mut eps = evals.to_vec();
+    eps.resize(n, 1e6);
+    Ok((eps, c))
 }
 
 #[cfg(test)]
