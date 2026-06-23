@@ -153,18 +153,69 @@ def enumerate_jobs():
     return jobs
 
 
+def _mem_available_gb():
+    try:
+        with open("/proc/meminfo") as f:
+            for l in f:
+                if l.startswith("MemAvailable"):
+                    return int(l.split()[1]) / (1024 * 1024)
+    except Exception:
+        pass
+    return 0.0
+
+
+# A benzene aTZ job peaks ~17 GB. Other sessions' jobs on this shared box (GW100
+# sweeps) spike unpredictably (seen 2.5 GB → 20 GB). The startup-time mem clamp is
+# not enough: we must RE-CHECK right before each launch and WAIT for headroom,
+# else a co-tenant spike + our 17 GB = OOM that previously killed Claude Code.
+PREFLIGHT_GB = float(os.environ.get("ATZ_CP_PREFLIGHT_GB", "20"))
+PREFLIGHT_WAIT_S = int(os.environ.get("ATZ_CP_PREFLIGHT_WAIT_S", "60"))
+PREFLIGHT_MAX_WAIT_S = int(os.environ.get("ATZ_CP_PREFLIGHT_MAX_WAIT_S", "10800"))
+
+
+def _wait_for_memory(key):
+    """Block until MemAvailable ≥ PREFLIGHT_GB, so a heavy job never starts into a
+    box that can't hold it. Gives up (and lets the job try anyway) only after
+    PREFLIGHT_MAX_WAIT_S so the sweep can't hang forever."""
+    waited = 0
+    while _mem_available_gb() < PREFLIGHT_GB:
+        if waited >= PREFLIGHT_MAX_WAIT_S:
+            print(f"[preflight] {key}: waited {waited}s, still <{PREFLIGHT_GB}GB "
+                  f"free — launching anyway (cap reached)", flush=True)
+            return
+        print(f"[preflight] {key}: only {_mem_available_gb():.1f}GB free "
+              f"(<{PREFLIGHT_GB}); waiting {PREFLIGHT_WAIT_S}s", flush=True)
+        time.sleep(PREFLIGHT_WAIT_S)
+        waited += PREFLIGHT_WAIT_S
+
+
+def _is_heavy(key):
+    return "benzene" in key
+
+
 def run_one(job):
     key, toml, marker = job
     op = out(key)
     # double-check skip (another worker/script may have just finished it)
     if os.path.exists(op) and marker in open(op).read():
         return key, "skip", 0.0
+    # heavy jobs: gate on real free memory right before launch
+    if _is_heavy(key):
+        _wait_for_memory(key)
     open(f"{OUT}/toml/{key}.toml", 'w').write(toml)
     t0 = time.monotonic()
+    # Make the kernel OOM-killer prefer THIS ferric child over everything else
+    # (esp. Claude Code): bump its oom_score_adj to the max after spawn.
+    def _raise_oom_score():
+        try:
+            with open(f"/proc/{os.getpid()}/oom_score_adj", "w") as f:
+                f.write("1000")
+        except Exception:
+            pass
     try:
         with open(op, 'w') as f, open(op + ".err", 'w') as e:
             subprocess.run([BIN, f"{OUT}/toml/{key}.toml"], stdout=f, stderr=e,
-                           env=ENV, timeout=TIMEOUT)
+                           env=ENV, timeout=TIMEOUT, preexec_fn=_raise_oom_score)
     except subprocess.TimeoutExpired:
         return key, "TIMEOUT", time.monotonic() - t0
     dt = time.monotonic() - t0
