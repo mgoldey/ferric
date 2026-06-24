@@ -424,16 +424,31 @@ impl PyDftResult {
     }
 }
 
+/// Kohn-Sham DFT (closed-shell). `functional` is an XC name (LDA/PBE/B3LYP/
+/// wB97X-V/…). Convergence aids match the CLI `[scf]` section: `level_shift`
+/// (Ha) and `mom_after_iter` help difficult DFT SCFs converge.
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, functional=None, k_builder=None, with_gradient=false))]
+#[pyo3(signature = (
+    mol, basis_set, functional=None, k_builder=None, with_gradient=false,
+    max_iter=None, energy_conv=None, density_conv=None,
+    level_shift=None, mom_after_iter=None,
+))]
+#[allow(clippy::too_many_arguments)]
 fn run_dft(mol: &PyMolecule, basis_set: &PyBasisSet,
            functional: Option<&str>, k_builder: Option<&str>,
-           with_gradient: bool) -> PyResult<PyDftResult> {
+           with_gradient: bool,
+           max_iter: Option<usize>, energy_conv: Option<f64>, density_conv: Option<f64>,
+           level_shift: Option<f64>, mom_after_iter: Option<usize>) -> PyResult<PyDftResult> {
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
     let ctx = ParallelContext::default();
     let mut cfg = rhf_config(k_builder);
+    if let Some(v) = max_iter { cfg.max_iter = v; }
+    if let Some(v) = energy_conv { cfg.energy_conv = v; }
+    if let Some(v) = density_conv { cfg.density_conv = v; }
+    if let Some(v) = level_shift { cfg.level_shift = v; }
+    if let Some(v) = mom_after_iter { cfg.mom_after_iter = v; }
     let xc_name = functional.unwrap_or("LDA").to_string();
     cfg.xc = Some(xc_name.clone());
     // RI-J always on (matches PySCF density_fit reference convention).
@@ -460,11 +475,19 @@ fn run_dft(mol: &PyMolecule, basis_set: &PyBasisSet,
 
 /// Alias under the spec's canonical name. Same surface as `run_dft`.
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, functional=None, k_builder=None, with_gradient=false))]
+#[pyo3(signature = (
+    mol, basis_set, functional=None, k_builder=None, with_gradient=false,
+    max_iter=None, energy_conv=None, density_conv=None,
+    level_shift=None, mom_after_iter=None,
+))]
+#[allow(clippy::too_many_arguments)]
 fn run_ksdft(mol: &PyMolecule, basis_set: &PyBasisSet,
              functional: Option<&str>, k_builder: Option<&str>,
-             with_gradient: bool) -> PyResult<PyDftResult> {
-    run_dft(mol, basis_set, functional, k_builder, with_gradient)
+             with_gradient: bool,
+             max_iter: Option<usize>, energy_conv: Option<f64>, density_conv: Option<f64>,
+             level_shift: Option<f64>, mom_after_iter: Option<usize>) -> PyResult<PyDftResult> {
+    run_dft(mol, basis_set, functional, k_builder, with_gradient,
+            max_iter, energy_conv, density_conv, level_shift, mom_after_iter)
 }
 
 // ── CC (stub) ──
