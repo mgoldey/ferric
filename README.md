@@ -133,6 +133,20 @@ print(f"(T) correction:   {cc.t_correction:.10f} Ha")
 print(f"CCSD(T) total:    {cc.correlation_energy + cc.t_correction:.10f} Ha")
 ```
 
+## Tutorials
+
+Step-by-step, runnable walkthroughs (CLI + Python, with verified output and
+per-method maturity badges) live in [`docs/guide/tutorials/`](docs/guide/tutorials/00-index.md):
+
+1. [Your first calculation: RHF on water](docs/guide/tutorials/01-first-calculation.md)
+2. [Energies you can trust: the MP2 family](docs/guide/tutorials/02-mp2-family.md)
+3. [DFT calculations](docs/guide/tutorials/03-dft.md)
+4. [Open-shell systems](docs/guide/tutorials/04-open-shell.md)
+5. [Geometry optimization](docs/guide/tutorials/05-geometry-optimization.md)
+6. [Dispersion C6 and polarizabilities](docs/guide/tutorials/06-dispersion-c6.md)
+7. [Exporting ML features (NPZ)](docs/guide/tutorials/07-ml-feature-export.md)
+8. [Batches and scaling](docs/guide/tutorials/08-batches-and-scaling.md)
+
 ## Architecture
 
 ```
@@ -226,14 +240,22 @@ uv run python scripts/foo.py       # fast on subsequent runs — no recompile
 
 **Optional: symlink for zero-copy updates**
 
-If you want `cargo build --release` alone to update what Python sees (without running `maturin develop`), replace the installed `.so` with a symlink to `target/maturin/`:
+If you want `cargo build --release` alone to update what Python sees (without running `maturin develop`), replace the installed `.so` with a symlink to **`target/release/libferric.so`** — the artifact `cargo build` actually refreshes:
 
 ```bash
-ln -sf "$(pwd)/target/maturin/libferric.so" \
+ln -sf "$(pwd)/target/release/libferric.so" \
   .venv/lib/python3.11/site-packages/ferric/ferric.cpython-311-x86_64-linux-gnu.so
 ```
 
-With this symlink, `cargo build --release` is sufficient — the `.so` in `.venv` always reflects the latest build. Note: `uv run maturin develop --release` overwrites the symlink with a copy; re-run `ln -sf` to restore it.
+With this symlink, `cargo build --release` is sufficient — the `.so` in `.venv` always reflects the latest build.
+
+> **Do not symlink to `target/maturin/libferric.so`.** That directory is only
+> written by `maturin develop`, *not* by `cargo build`, so a symlink there goes
+> stale after a plain `cargo build` — and if a `maturin develop` run fails, the
+> file there can be truncated to 0 bytes, breaking the import. Symlink to
+> `target/release/` instead.
+
+Note: `uv run maturin develop --release` overwrites the symlink with a fresh copy of the build; re-run the `ln -sf` above to restore the symlink if you want zero-copy updates again.
 
 ## Testing
 
