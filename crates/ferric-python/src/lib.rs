@@ -19,6 +19,7 @@ use ferric_mp2::scs::{scs_mp2, ScsMp2Config};
 use ferric_scf::ks_gradient::ks_gradient_closed;
 use ferric_scf::optimize::{optimize_geometry, OptimizeConfig};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
+use ferric_scf::uhf::{solve_uhf, UhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_cc::ccd::ccd as run_ccd_inner;
 use ferric_cc::ccsd::ccsd as run_ccsd_inner;
@@ -168,6 +169,98 @@ fn run_rhf(
         energy: r.energy, converged: r.converged, iterations: r.iterations,
         computed_quartets: r.computed_quartets,
         density_data: r.density_total, orbital_energies_data: r.eps_alpha,
+    })
+}
+
+// ── UHF (open-shell) ──
+
+#[pyclass]
+#[pyo3(name = "UhfResult")]
+struct PyUhfResult {
+    #[pyo3(get)] energy: f64,
+    #[pyo3(get)] converged: bool,
+    #[pyo3(get)] iterations: usize,
+    #[pyo3(get)] computed_quartets: usize,
+    density_alpha_data: Array2<f64>,
+    density_beta_data: Array2<f64>,
+    eps_alpha_data: Vec<f64>,
+    eps_beta_data: Vec<f64>,
+}
+
+#[pymethods]
+impl PyUhfResult {
+    fn density_alpha<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        PyArray2::from_array(py, &self.density_alpha_data)
+    }
+    fn density_beta<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        PyArray2::from_array(py, &self.density_beta_data)
+    }
+    fn orbital_energies_alpha<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        PyArray1::from_vec(py, self.eps_alpha_data.clone())
+    }
+    fn orbital_energies_beta<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        PyArray1::from_vec(py, self.eps_beta_data.clone())
+    }
+}
+
+/// Unrestricted Hartree-Fock (open-shell). α/β electron counts come from the
+/// molecule's `charge` and `multiplicity` (set via `Molecule.from_xyz_string`).
+/// Exposes the same SCF knob set as `run_rhf`; the convergence aids `level_shift`
+/// and `mom_after_iter` are especially useful for open-shell doublets / radicals
+/// where DIIS plateaus or the occupied set flip-flops.
+#[pyfunction]
+#[pyo3(signature = (
+    mol, basis_set,
+    max_iter=None, energy_conv=None, density_conv=None, diis_size=None,
+    integral_thresh=None, k_builder=None, df_j_aux=None, df_k_aux=None,
+    level_shift=None, mom_after_iter=None,
+))]
+#[allow(clippy::too_many_arguments)]
+fn run_uhf(
+    mol: &PyMolecule,
+    basis_set: &PyBasisSet,
+    max_iter: Option<usize>,
+    energy_conv: Option<f64>,
+    density_conv: Option<f64>,
+    diis_size: Option<usize>,
+    integral_thresh: Option<f64>,
+    k_builder: Option<&str>,
+    df_j_aux: Option<&str>,
+    df_k_aux: Option<&str>,
+    level_shift: Option<f64>,
+    mom_after_iter: Option<usize>,
+) -> PyResult<PyUhfResult> {
+    let mut emol = mol.inner.clone();
+    emol.apply_ecp(&basis_set.inner);
+    let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
+    // Same defaults as run_rhf / the CLI [scf] section.
+    let config = UhfConfig {
+        max_iter: max_iter.unwrap_or(100),
+        energy_conv: energy_conv.unwrap_or(1e-8),
+        density_conv: density_conv.unwrap_or(1e-7),
+        diis_size: diis_size.unwrap_or(8),
+        integral_thresh: integral_thresh.unwrap_or(1e-12),
+        k_builder: k_builder.map(|s| s.to_string()),
+        df_j_aux: df_j_aux.map(|s| s.to_string()),
+        df_k_aux: df_k_aux.map(|s| s.to_string()),
+        level_shift: level_shift.unwrap_or(0.0),
+        mom_after_iter: mom_after_iter.unwrap_or(0),
+        ..Default::default()
+    };
+    let ctx = ParallelContext::default();
+    let r = solve_uhf(&ctx, &emol, &prep, &bounds, &config).map_err(make_err)?;
+    // density_beta / mos_beta / eps_beta are always populated for the UHF path.
+    Ok(PyUhfResult {
+        energy: r.energy,
+        converged: r.converged,
+        iterations: r.iterations,
+        computed_quartets: r.computed_quartets,
+        density_alpha_data: r.density_alpha,
+        density_beta_data: r.density_beta.unwrap_or_else(|| r.density_total.clone()),
+        eps_alpha_data: r.eps_alpha,
+        eps_beta_data: r.eps_beta.unwrap_or_default(),
     })
 }
 
@@ -717,6 +810,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMolecule>()?;
     m.add_class::<PyBasisSet>()?;
     m.add_class::<PyRhfResult>()?;
+    m.add_class::<PyUhfResult>()?;
     m.add_class::<PyOptimizeResult>()?;
     m.add_class::<PyRiMp2Result>()?;
     m.add_class::<PyAttenuatedMp2Result>()?;
@@ -727,6 +821,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPdepRpaResult>()?;
     m.add_class::<PyRsMp2RpaResult>()?;
     m.add_function(wrap_pyfunction!(run_rhf, m)?)?;
+    m.add_function(wrap_pyfunction!(run_uhf, m)?)?;
     m.add_function(wrap_pyfunction!(run_optimize, m)?)?;
     m.add_function(wrap_pyfunction!(run_rimp2, m)?)?;
     m.add_function(wrap_pyfunction!(run_attenuated_rimp2, m)?)?;
