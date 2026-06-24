@@ -46,16 +46,28 @@ def all_cases():
 
 
 def remaining():
-    """List of (basis, mol) still to do, ordered small-first within each basis."""
+    """List of (basis, mol) still to do, ordered small-first within each basis.
+
+    GW100_ONLY=mol1,mol2,...  -> run ONLY these molecules (still skipping ones
+    already converged), regardless of their `failed` status. Use for a dedicated
+    high-budget retry of recoverable cost-timeouts, disjoint from the main runner.
+    """
     txt = SRC.read_text()
     def natoms(n):
         m = re.search(rf'name:\s*"{n}".*?xyz:\s*"(\d+)', txt, re.S)
         return int(m.group(1)) if m else 999
+    only = os.environ.get("GW100_ONLY", "").strip()
+    only_set = set(only.split(",")) if only else None
     work = []
     for b in BASES:
         d = json.loads((HERE / f"results_{b}.json").read_text())
-        done = set(d["molecules"]) | set(d.get("failed", []))
-        todo = [c for c in all_cases() if c not in done]
+        converged = set(d["molecules"])
+        if only_set is not None:
+            # Targeted mode: only the named molecules, skip any already converged.
+            todo = [c for c in all_cases() if c in only_set and c not in converged]
+        else:
+            done = converged | set(d.get("failed", []))
+            todo = [c for c in all_cases() if c not in done]
         todo.sort(key=natoms)  # small first
         for c in todo:
             work.append((b, c))
