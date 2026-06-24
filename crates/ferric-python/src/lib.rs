@@ -646,6 +646,11 @@ fn run_pdep_rpa(
 
 #[pymodule]
 fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    // Safe-by-default threading: pin OpenBLAS to 1 thread (rayon owns ferric's
+    // parallelism) unless the host set OPENBLAS_NUM_THREADS. Without this, an
+    // `import ferric` in a host process inherits OpenBLAS's nproc default and
+    // oversubscribes rayon × BLAS (3–5× slowdown, possible stack overflow).
+    ferric_integrals::blas_threads::init_threading();
     // Register global signal handler for Ctrl+C
     let _ = ctrlc::set_handler(move || {
         eprintln!("\n[Ferric] Interrupt signal caught! Bailing out of kernels...");

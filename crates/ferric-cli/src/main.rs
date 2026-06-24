@@ -41,6 +41,10 @@ where
 }
 
 fn main() {
+    // Safe-by-default threading: pin OpenBLAS to 1 thread (rayon owns ferric's
+    // parallelism) unless the user explicitly set OPENBLAS_NUM_THREADS. Without
+    // this, running the release binary directly oversubscribes rayon × BLAS.
+    ferric_integrals::blas_threads::init_threading();
     let ctx = ParallelContext::new();
     let args: Vec<String> = std::env::args().collect();
     if args.len() != 2 {
