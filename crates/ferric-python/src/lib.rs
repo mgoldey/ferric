@@ -103,14 +103,42 @@ impl PyRhfResult {
     }
 }
 
+/// Closed-shell RHF (also UHF/ROHF convergence aids apply to the open-shell
+/// drivers). Exposes the full SCF knob set, matching the CLI `[scf]` TOML section
+/// for parity — same names, same defaults, same units.
+///
+/// Convergence aids:
+///   level_shift     virtual-virtual block shift in Hartree (open-shell; 0.2 is a
+///                   useful default for OH-like doublets at LDA/PBE). 0 = off.
+///   mom_after_iter  Maximum-Overlap Method: pin the occupied set by AO-overlap
+///                   after this many DIIS iters. 0 = aufbau throughout. Fixes
+///                   occupied-set flip-flop non-convergence.
+/// Fock builders:
+///   k_builder       "direct" (default) or "link" (linear-scaling exchange).
+///   df_j_aux        auxiliary basis name for density-fitted Coulomb (RI-J).
+///   df_k_aux        auxiliary basis name for density-fitted exchange (RI-K);
+///                   should be a JK-fit basis, not an MP2-fit basis.
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, max_iter=None, energy_conv=None, k_builder=None))]
+#[pyo3(signature = (
+    mol, basis_set,
+    max_iter=None, energy_conv=None, density_conv=None, diis_size=None,
+    integral_thresh=None, k_builder=None, df_j_aux=None, df_k_aux=None,
+    level_shift=None, mom_after_iter=None,
+))]
+#[allow(clippy::too_many_arguments)]
 fn run_rhf(
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
     max_iter: Option<usize>,
     energy_conv: Option<f64>,
+    density_conv: Option<f64>,
+    diis_size: Option<usize>,
+    integral_thresh: Option<f64>,
     k_builder: Option<&str>,
+    df_j_aux: Option<&str>,
+    df_k_aux: Option<&str>,
+    level_shift: Option<f64>,
+    mom_after_iter: Option<usize>,
 ) -> PyResult<PyRhfResult> {
     // Apply ECP core-electron counts (no-op without an ECP basis) so nelec()
     // gives the valence count; the effective nuclear charge is set inside
@@ -120,14 +148,20 @@ fn run_rhf(
     let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let mut config = RhfConfig {
+    // Defaults mirror the CLI `[scf]` section (config.rs) so CLI and Python agree.
+    let config = RhfConfig {
         max_iter: max_iter.unwrap_or(100),
         energy_conv: energy_conv.unwrap_or(1e-8),
+        density_conv: density_conv.unwrap_or(1e-7),
+        diis_size: diis_size.unwrap_or(8),
+        integral_thresh: integral_thresh.unwrap_or(1e-12),
+        k_builder: k_builder.map(|s| s.to_string()),
+        df_j_aux: df_j_aux.map(|s| s.to_string()),
+        df_k_aux: df_k_aux.map(|s| s.to_string()),
+        level_shift: level_shift.unwrap_or(0.0),
+        mom_after_iter: mom_after_iter.unwrap_or(0),
         ..Default::default()
     };
-    if let Some(kb) = k_builder {
-        config.k_builder = Some(kb.to_string());
-    }
     let ctx = ParallelContext::default();
     let r = solve_rhf(&ctx, &emol, &prep, op, &bounds, &config).map_err(make_err)?;
     Ok(PyRhfResult {
