@@ -147,6 +147,11 @@ per-method maturity badges) live in [`docs/guide/tutorials/`](docs/guide/tutoria
 7. [Exporting ML features (NPZ)](docs/guide/tutorials/07-ml-feature-export.md)
 8. [Batches and scaling](docs/guide/tutorials/08-batches-and-scaling.md)
 
+For the **theory behind the methods** — Hartree–Fock, MP2/RI, why MP2 fails for
+non-covalent interactions, attenuated MP2 and the terfc operator,
+SCS-MP2(2terfc), and the DFT/RPA/GW response methods (drawing on the developer's
+dissertation) — see the [methods guide](docs/guide/methods/00-index.md).
+
 ## Architecture
 
 ```
