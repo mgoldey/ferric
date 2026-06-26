@@ -1,0 +1,27 @@
+[package]
+name = "ferric-benchmarks"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Benchmark / research harnesses, decoupled from the shippable `ferric-*`
+# library crates. Each harness lives under `examples/` and is run via, e.g.
+#   cargo run --release -p ferric-benchmarks --example gw100_full
+# This crate depends on the ferric crates as a normal external consumer so the
+# harnesses never recompile with (or tangle into) the library crates.
+
+[dependencies]
+ferric-core = { path = "../../crates/ferric-core" }
+ferric-integrals = { path = "../../crates/ferric-integrals" }
+ferric-scf = { path = "../../crates/ferric-scf" }
+ferric-dft = { path = "../../crates/ferric-dft" }
+ferric-mp2 = { path = "../../crates/ferric-mp2" }
+ferric-rpa = { path = "../../crates/ferric-rpa" }
+ferric-gw = { path = "../../crates/ferric-gw" }
+ferric-tensors = { path = "../../crates/ferric-tensors" }
+ferric-quadrature = { path = "../../crates/ferric-quadrature" }
+ferric-export = { path = "../../crates/ferric-export" }
+ndarray = { workspace = true }
+ndarray-linalg = { workspace = true }
+openblas-src = { workspace = true }
+serde_json = { workspace = true }
