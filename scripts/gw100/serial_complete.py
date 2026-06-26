@@ -39,6 +39,9 @@ ROW = re.compile(
 NCORES = os.cpu_count() or 12
 MOL_BUDGET = float(os.environ.get("GW100_MOL_BUDGET", "3600"))
 # Genuine, non-recoverable failures (K basis gap + d-block non-convergence).
+# COSe/C2H3Br were here but are now RECOVERABLE: they were closed-shell RHF DIIS
+# divergences on heavy atoms (Se/Br), fixed by the virtual-block level shift
+# (commit d5869b7) — gw100_full now retries RHF with level_shift=0.5 on failure.
 GENUINE = {"BrK", "HK", "K2", "Cu2", "CCuN", "F4Ti"}
 
 

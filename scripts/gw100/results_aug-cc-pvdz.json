@@ -244,6 +244,17 @@
       "evGW0": 11.819,
       "exp": 11.09
     },
+    "C4H4N2O2": {
+      "COHSEX": null,
+      "G0W0": 9.728,
+      "G0W0pbe": 8.814,
+      "Koop": 10.013,
+      "dRPA": null,
+      "dSCF": null,
+      "evGW": null,
+      "evGW0": null,
+      "exp": 9.68
+    },
     "C5H5N": {
       "COHSEX": null,
       "G0W0": 9.597,
@@ -266,6 +277,17 @@
       "evGW0": 8.536,
       "exp": 8.53
     },
+    "C6F6": {
+      "COHSEX": null,
+      "G0W0": 10.306,
+      "G0W0pbe": null,
+      "Koop": 10.512,
+      "dRPA": null,
+      "dSCF": null,
+      "evGW": null,
+      "evGW0": null,
+      "exp": 10.2
+    },
     "C6H6": {
       "COHSEX": 10.291,
       "G0W0": 9.212,
@@ -276,6 +298,28 @@
       "evGW": 9.213,
       "evGW0": 9.214,
       "exp": 9.23
+    },
+    "CBr4": {
+      "COHSEX": null,
+      "G0W0": 10.489,
+      "G0W0pbe": 9.36,
+      "Koop": 11.264,
+      "dRPA": null,
+      "dSCF": null,
+      "evGW": null,
+      "evGW0": null,
+      "exp": 10.54
+    },
+    "CCl4": {
+      "COHSEX": null,
+      "G0W0": 11.652,
+      "G0W0pbe": 10.464,
+      "Koop": 12.544,
+      "dRPA": null,
+      "dSCF": null,
+      "evGW": null,
+      "evGW0": null,
+      "exp": 11.69
     },
     "CF4": {
       "COHSEX": 17.574,
@@ -727,6 +771,17 @@
       "evGW": 4.173,
       "evGW0": 4.168,
       "exp": 4.27
+    },
+    "Na6": {
+      "COHSEX": null,
+      "G0W0": 4.318,
+      "G0W0pbe": 4.689,
+      "Koop": 4.064,
+      "dRPA": null,
+      "dSCF": null,
+      "evGW": null,
+      "evGW0": null,
+      "exp": 4.12
     },
     "Ne": {
       "COHSEX": 22.265,

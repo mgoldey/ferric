@@ -1,17 +1,16 @@
 {
   "failed": [
     "BrK",
+    "CCuN",
+    "Cu2",
+    "F4Ti",
     "HK",
-    "K2",
-    "Na4",
-    "Na6"
+    "K2"
   ],
   "failure_reasons": {
     "BrK": "K (Z=19) has no aug-cc-pVDZ/TZ orbital basis bundled in ferric; aux rifit covers K but the orbital set does not. Genuine basis gap.",
     "HK": "K (Z=19) has no aug-cc-pVDZ/TZ orbital basis bundled in ferric. Genuine basis gap.",
-    "K2": "K (Z=19) has no aug-cc-pVDZ/TZ orbital basis bundled in ferric. Genuine basis gap.",
-    "Na4": "Na in both orbital and aux bases; failure is slow/non-converging RHF on a floppy alkali cluster, hit the per-molecule wall-clock watchdog. Cost/convergence, not basis.",
-    "Na6": "Na in both orbital and aux bases; failure is slow/non-converging RHF on a floppy alkali cluster, hit the per-molecule wall-clock watchdog. Cost/convergence, not basis."
+    "K2": "K (Z=19) has no aug-cc-pVDZ/TZ orbital basis bundled in ferric. Genuine basis gap."
   },
   "mae": {
     "COHSEX": 1.8964,
@@ -67,6 +66,17 @@
       "evGW": 11.75,
       "evGW0": 11.752,
       "exp": 11.5
+    },
+    "BeO": {
+      "COHSEX": 11.603,
+      "G0W0": 9.868,
+      "G0W0pbe": 13.527,
+      "Koop": 10.573,
+      "dRPA": 9.623,
+      "dSCF": 7.763,
+      "evGW": 9.765,
+      "evGW0": 9.815,
+      "exp": 10.1
     },
     "Br2": {
       "COHSEX": 11.716,
@@ -178,6 +188,28 @@
       "evGW0": 14.19,
       "exp": 13.78
     },
+    "COS": {
+      "COHSEX": 12.849,
+      "G0W0": 11.529,
+      "G0W0pbe": 10.73,
+      "Koop": 11.469,
+      "dRPA": 11.419,
+      "dSCF": 10.119,
+      "evGW": 11.527,
+      "evGW0": 11.529,
+      "exp": 11.19
+    },
+    "CS2": {
+      "COHSEX": 11.479,
+      "G0W0": 10.293,
+      "G0W0pbe": 9.602,
+      "Koop": 10.153,
+      "dRPA": 10.184,
+      "dSCF": 8.727,
+      "evGW": 10.29,
+      "evGW0": 10.294,
+      "exp": 10.09
+    },
     "Cl2": {
       "COHSEX": 12.916,
       "G0W0": 11.743,
@@ -221,6 +253,17 @@
       "evGW": 16.264,
       "evGW0": 16.294,
       "exp": 15.7
+    },
+    "F2Mg": {
+      "COHSEX": 15.731,
+      "G0W0": 13.86,
+      "G0W0pbe": 12.439,
+      "Koop": 15.413,
+      "dRPA": 13.395,
+      "dSCF": 13.322,
+      "evGW": 13.734,
+      "evGW0": 13.781,
+      "exp": 13.3
     },
     "FLi": {
       "COHSEX": 13.287,
@@ -354,6 +397,17 @@
       "evGW0": 5.309,
       "exp": 4.73
     },
+    "MgO": {
+      "COHSEX": 10.11,
+      "G0W0": 8.434,
+      "G0W0pbe": 13.774,
+      "Koop": 8.699,
+      "dRPA": 8.0,
+      "dSCF": 5.812,
+      "evGW": 8.354,
+      "evGW0": 8.413,
+      "exp": 8.76
+    },
     "N2": {
       "COHSEX": 19.017,
       "G0W0": 17.122,
@@ -376,6 +430,17 @@
       "evGW0": 11.195,
       "exp": 10.82
     },
+    "NP": {
+      "COHSEX": 13.961,
+      "G0W0": 12.371,
+      "G0W0pbe": 11.156,
+      "Koop": 12.076,
+      "dRPA": 12.296,
+      "dSCF": 10.104,
+      "evGW": 12.38,
+      "evGW0": 12.388,
+      "exp": 11.88
+    },
     "Na2": {
       "COHSEX": 5.625,
       "G0W0": 4.952,
@@ -397,6 +462,17 @@
       "evGW": 21.286,
       "evGW0": 21.351,
       "exp": 21.56
+    },
+    "O3": {
+      "COHSEX": 15.642,
+      "G0W0": 13.569,
+      "G0W0pbe": 12.692,
+      "Koop": 13.32,
+      "dRPA": 13.512,
+      "dSCF": 9.893,
+      "evGW": 13.572,
+      "evGW0": 13.589,
+      "exp": 12.73
     },
     "P2": {
       "COHSEX": 11.714,
