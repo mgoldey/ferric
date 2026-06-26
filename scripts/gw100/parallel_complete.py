@@ -30,7 +30,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 BIN = ROOT / "target" / "release" / "examples" / "gw100_full"
-SRC = ROOT / "crates" / "ferric-gw" / "examples" / "gw100_full.rs"
+SRC = ROOT / "benchmarks" / "harness" / "examples" / "gw100_full.rs"
 BASES = ["aug-cc-pvdz", "aug-cc-pvtz"]
 METHODS = ["Koop", "dSCF", "dRPA", "G0W0", "COHSEX", "evGW0", "evGW", "G0W0pbe"]
 ROW = re.compile(

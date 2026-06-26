@@ -24,7 +24,7 @@ TS=$(date +%H%M%S)
 mapfile -t PARTS < <(python3 - "$BASIS" "$NW" <<'PY'
 import json, re, sys
 basis, nw = sys.argv[1], int(sys.argv[2])
-txt=open('crates/ferric-gw/examples/gw100_full.rs').read()
+txt=open('benchmarks/harness/examples/gw100_full.rs').read()
 def info(n):
     m=re.search(rf'name:\s*"{n}".*?xyz:\s*"(.*?)"',txt,re.S)
     body=m.group(1).encode().decode('unicode_escape')
@@ -39,7 +39,7 @@ for g in groups: print(','.join(g))
 PY
 )
 
-ALL=$(python3 -c "import re; print(','.join(re.findall(r'name:\s*\"(\w+)\"', open('crates/ferric-gw/examples/gw100_full.rs').read())))")
+ALL=$(python3 -c "import re; print(','.join(re.findall(r'name:\s*\"(\w+)\"', open('benchmarks/harness/examples/gw100_full.rs').read())))")
 
 for i in "${!PARTS[@]}"; do
   MINE="${PARTS[$i]}"

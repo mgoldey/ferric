@@ -135,7 +135,7 @@ FAILURE_REASONS = {
 # Case order as compiled into gw100_full.rs (the driver runs cases() in this
 # order). Used to identify which molecule was in flight when a stall-watchdog
 # kills the driver: the first case not yet done or failed.
-_CASES_SRC = ROOT / "crates" / "ferric-gw" / "examples" / "gw100_full.rs"
+_CASES_SRC = ROOT / "benchmarks" / "harness" / "examples" / "gw100_full.rs"
 
 
 def _case_order():
