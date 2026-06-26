@@ -160,6 +160,12 @@ fn cases() -> Vec<Case> {
         Case { name: "CH4N2O", xyz: "8\nmol\nO 0.0000 1.3049 0.0000\nC 0.0000 0.0838 0.0000\nN 1.1603 -0.6595 0.0000\nN -1.1603 -0.6595 -0.0000\nH 1.1383 -1.5964 0.3424\nH 1.9922 -0.0940 0.1760\nH -1.1383 -1.5964 -0.3424\nH -1.9922 -0.0940 -0.1760\n", ip_ref: 9.80 }, // 57-13-6
         Case { name: "Cu2", xyz: "2\nmol\nCu 0.0 0.0 0.0\nCu 0.0 0.0 2.2197\n", ip_ref: 7.46 }, // 12190-70-4
         Case { name: "CCuN", xyz: "3\nmol\nC 0.0000 0.0000 0.0000\nN 0.0000 0.0000 1.158\nCu 0.0000 0.0000 -1.832\n", ip_ref: f64::NAN }, // 544-92-3
+        // Rb2: the lone GW100 heavy member that the aug-cc-pVDZ-PP ECP path could
+        // not run (no Rb fit upstream). Runs ALL-ELECTRON at def2-TZVP instead —
+        // def2-TZVP bundles an all-electron Rb(37) basis (nelec=74, no ECP), routed
+        // via needs_def2 below. PySCF cross-check (same bundled basis+aux): RHF
+        // -1371.630707, G0W0 IP 5.73 eV.
+        Case { name: "Rb2", xyz: "2\nmol\nRb 0.0000 0.0000 0.0000\nRb 0.0000 0.0000 4.12256\n", ip_ref: 3.9 }, // 25681-81-6
     ]
 }
 
@@ -212,7 +218,10 @@ fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, Cation
     // fail in aug-cc-pV*Z, but from near-linear-dependence of the augmented
     // diffuse functions — fixed properly by canonical orthogonalization in the
     // SCF, NOT by changing the basis, so they stay in aug.)
-    let needs_def2 = neutral.atoms.iter().any(|a| a.z == 19 || a.z == 20);
+    // K(19)/Ca(20): no aug-cc-pVNZ basis exists. Rb(37): the aug-cc-pVDZ-PP ECP
+    // path has no Rb fit, so run it all-electron on def2-TZVP (which bundles an
+    // all-electron Rb basis + matching rifit aux). All route to def2-TZVP.
+    let needs_def2 = neutral.atoms.iter().any(|a| a.z == 19 || a.z == 20 || a.z == 37);
     let (obs_name, dfbs_name): (&str, &str) = if needs_def2 {
         ("def2-tzvp", "def2-tzvp-rifit")
     } else {
