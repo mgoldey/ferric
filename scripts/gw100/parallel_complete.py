@@ -101,11 +101,17 @@ def run_one(basis, mol, rayon):
     """Run gw100_full for a single molecule; persist its row. Watchdog kills it
     past MOL_BUDGET and marks failed."""
     skip = ",".join(c for c in all_cases() if c != mol)
+    # Depth knobs are overridable from the parent env so a "G0W0-only for the
+    # slow tail" run can set GW100_FULL_MAX_ATOMS=0 (drop the full ladder for
+    # every molecule) + GW100_PBE_ALL=1 (keep the @PBE column) — the two
+    # PySCF-validated columns at ~5-10x the speed of the full ladder.
+    max_atoms = os.environ.get("GW100_FULL_MAX_ATOMS", "10")
+    pbe_all = os.environ.get("GW100_PBE_ALL", "0")
     env = dict(os.environ,
                OPENBLAS_NUM_THREADS="2", RAYON_NUM_THREADS=str(rayon),
                OMP_NUM_THREADS="1", MKL_NUM_THREADS="1",
-               GW100_TRUNC="1e-4", GW100_FULL_MAX_ATOMS="10",
-               GW100_DONE=skip)
+               GW100_TRUNC="1e-4", GW100_FULL_MAX_ATOMS=max_atoms,
+               GW100_PBE_ALL=pbe_all, GW100_DONE=skip)
     proc = subprocess.Popen([str(BIN), basis], env=env, text=True,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1)
     start = time.monotonic()

@@ -241,42 +241,57 @@ fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, Cation
         davidson_conv_thresh: 1e-9,
         ..Default::default()
     };
-    let rpa_n = run_pdep_rpa(&neutral, &obs_n, &dfbs_n, op, &rhf_n, &rpa_cfg).ok()?;
+    // GW100_G0W0_ONLY=1 drops the ΔSCF/ΔRPA lane entirely — the cation UHF solve
+    // and the neutral+cation U-PDEP-RPA — which together dominate the wall time
+    // for the slow tail. Only RHF(neutral) → Koopmans → G0W0@HF(+@PBE) remain
+    // (the PySCF-validated columns). ΔSCF/ΔRPA/cation-diag stay NaN, which the
+    // table already renders honestly as "not computed at this depth".
+    let g0w0_only = std::env::var("GW100_G0W0_ONLY").map(|s| s == "1").unwrap_or(false);
 
-    let uhf_cfg = UhfConfig { max_iter: 200, ..Default::default() };
-    let c_seed = rhf_n.mos_alpha.clone();
-    let (uhf_c, diag_method) = match solve_uhf_with_guess(&ctx, &cation, &obs_c, &bounds_c, &uhf_cfg, Some((&c_seed, &c_seed))) {
-        Ok(r) => (r, "UHF(neutral-seed)"),
-        Err(_) => match solve_uhf(&ctx, &cation, &obs_c, &bounds_c, &uhf_cfg) {
-            Ok(r) => (r, "UHF(hcore)"),
-            Err(_) => {
-                let r = solve_rohf(&ctx, &cation, &obs_c, op, &bounds_c, &RohfConfig::default()).ok()?;
-                (r, "ROHF")
-            }
-        },
+    let mut ip_dscf = f64::NAN;
+    let mut ip_drpa = f64::NAN;
+    let mut diag = CationDiag {
+        method: "skipped(G0W0-only)", iters: 0, converged: true,
+        s2: f64::NAN, s2_ideal: f64::NAN, energy: f64::NAN,
     };
-    let s_ao = oneelectron::overlap(&obs_c);
-    let nelec_c = cation.nelec() as i64;
-    let two_s = cation.multiplicity as i64 - 1;
-    let nocc_a = ((nelec_c + two_s) / 2) as usize;
-    let nocc_b = ((nelec_c - two_s) / 2) as usize;
-    let s_true = 0.5 * (nocc_a as f64 - nocc_b as f64);
-    let diag = CationDiag {
-        method: diag_method,
-        iters: uhf_c.iterations,
-        converged: uhf_c.converged,
-        s2: s_squared(&uhf_c, &s_ao, nocc_a, nocc_b),
-        s2_ideal: s_true * (s_true + 1.0),
-        energy: uhf_c.energy,
-    };
+    if !g0w0_only {
+        let rpa_n = run_pdep_rpa(&neutral, &obs_n, &dfbs_n, op, &rhf_n, &rpa_cfg).ok()?;
 
-    let ip_dscf = (uhf_c.energy - rhf_n.energy) * HA_TO_EV;
-    let rpa_c = run_u_pdep_rpa(&cation, &obs_c, &dfbs_c, op, &uhf_c, &rpa_cfg).ok()?;
-    let ip_drpa = {
-        let e_n = rhf_n.energy + rpa_n.e_rpa;
-        let e_c = uhf_c.energy + rpa_c.e_rpa;
-        (e_c - e_n) * HA_TO_EV
-    };
+        let uhf_cfg = UhfConfig { max_iter: 200, ..Default::default() };
+        let c_seed = rhf_n.mos_alpha.clone();
+        let (uhf_c, diag_method) = match solve_uhf_with_guess(&ctx, &cation, &obs_c, &bounds_c, &uhf_cfg, Some((&c_seed, &c_seed))) {
+            Ok(r) => (r, "UHF(neutral-seed)"),
+            Err(_) => match solve_uhf(&ctx, &cation, &obs_c, &bounds_c, &uhf_cfg) {
+                Ok(r) => (r, "UHF(hcore)"),
+                Err(_) => {
+                    let r = solve_rohf(&ctx, &cation, &obs_c, op, &bounds_c, &RohfConfig::default()).ok()?;
+                    (r, "ROHF")
+                }
+            },
+        };
+        let s_ao = oneelectron::overlap(&obs_c);
+        let nelec_c = cation.nelec() as i64;
+        let two_s = cation.multiplicity as i64 - 1;
+        let nocc_a = ((nelec_c + two_s) / 2) as usize;
+        let nocc_b = ((nelec_c - two_s) / 2) as usize;
+        let s_true = 0.5 * (nocc_a as f64 - nocc_b as f64);
+        diag = CationDiag {
+            method: diag_method,
+            iters: uhf_c.iterations,
+            converged: uhf_c.converged,
+            s2: s_squared(&uhf_c, &s_ao, nocc_a, nocc_b),
+            s2_ideal: s_true * (s_true + 1.0),
+            energy: uhf_c.energy,
+        };
+
+        ip_dscf = (uhf_c.energy - rhf_n.energy) * HA_TO_EV;
+        let rpa_c = run_u_pdep_rpa(&cation, &obs_c, &dfbs_c, op, &uhf_c, &rpa_cfg).ok()?;
+        ip_drpa = {
+            let e_n = rhf_n.energy + rpa_n.e_rpa;
+            let e_c = uhf_c.energy + rpa_c.e_rpa;
+            (e_c - e_n) * HA_TO_EV
+        };
+    }
 
     let pdep_cfg_gw = PdepRpaConfig {
         quadrature: QuadratureConfig {
@@ -327,8 +342,12 @@ fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, Cation
         }
     }
 
-    // G0W0@PBE: full-depth molecules only (it's a second full GW). Big mols skip it.
-    let ip_g0w0_pbe = if full_depth {
+    // G0W0@PBE: a second full GW. By default full-depth molecules only, but
+    // GW100_PBE_ALL=1 forces it for every molecule too (used when the rest of the
+    // ladder is dropped for the slow tail — G0W0@HF + G0W0@PBE are the two
+    // PySCF-validated columns the whitepaper judges).
+    let pbe_all = std::env::var("GW100_PBE_ALL").map(|s| s == "1").unwrap_or(false);
+    let ip_g0w0_pbe = if full_depth || pbe_all {
         run_g0w0_pbe(&ctx, &neutral, &obs_n, &dfbs_n, &obs_bs, op,
                      &bounds_n, &pdep_cfg_gw, homo_abs)
             .unwrap_or(f64::NAN)
