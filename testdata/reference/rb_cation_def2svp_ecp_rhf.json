@@ -1,0 +1,14 @@
+{
+  "atom": "Rb 0.0 0.0 0.0",
+  "unit": "Bohr",
+  "basis": "def2-svp",
+  "ecp": "def2-svp",
+  "charge": 1,
+  "spin": 0,
+  "nelectron": 8,
+  "nao": 24,
+  "e_tot": -23.662541458092953,
+  "homo_index": 3,
+  "e_homo": -1.010621876121368,
+  "converged": true
+}

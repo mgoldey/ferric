@@ -25,6 +25,8 @@ struct Ref {
     e_tot: f64,
     homo_index: usize,
     e_homo: f64,
+    #[serde(default)]
+    charge: i32,
 }
 
 fn load_ref(name: &str) -> Ref {
@@ -38,7 +40,7 @@ fn load_ref(name: &str) -> Ref {
 }
 
 /// Build a Molecule from a PySCF-style "Sym x y z; Sym x y z" string in Bohr.
-fn mol_from_bohr(atom_spec: &str) -> Molecule {
+fn mol_from_bohr(atom_spec: &str, charge: i32) -> Molecule {
     let entries: Vec<&str> = atom_spec.split(';').collect();
     let mut xyz = format!("{}\nfrom_bohr\n", entries.len());
     for e in &entries {
@@ -51,12 +53,12 @@ fn mol_from_bohr(atom_spec: &str) -> Molecule {
         let z: f64 = f[3].parse::<f64>().unwrap() / A2B;
         xyz.push_str(&format!("{} {} {} {}\n", f[0], x, y, z));
     }
-    Molecule::parse_xyz(&xyz, 0, 1).unwrap()
+    Molecule::parse_xyz(&xyz, charge, 1).unwrap()
 }
 
 fn run_ecp_rhf(name: &str) {
     let r = load_ref(name);
-    let mut mol = mol_from_bohr(&r.atom);
+    let mut mol = mol_from_bohr(&r.atom, r.charge);
     let bs = basis::bundled("def2-svp").unwrap();
     mol.apply_ecp(&bs);
     assert_eq!(mol.nelec(), r.nelectron, "{name}: electron count mismatch");
@@ -99,4 +101,12 @@ fn ecp_rhf_xe_matches_pyscf() {
 #[test]
 fn ecp_rhf_i2_matches_pyscf() {
     run_ecp_rhf("i2_def2svp_ecp_rhf");
+}
+
+/// Rb⁺ (def2-SVP + def2 28-core ECP): the GW100 Rb₂ member runs on the ECP path,
+/// not all-electron (def2 Rb is an ECP-valence basis). Closed-shell cation =
+/// clean RHF target. nelec 37→9 via the ECP; must match PySCF −23.6625.
+#[test]
+fn ecp_rhf_rb_cation_matches_pyscf() {
+    run_ecp_rhf("rb_cation_def2svp_ecp_rhf");
 }

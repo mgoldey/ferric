@@ -160,11 +160,11 @@ fn cases() -> Vec<Case> {
         Case { name: "CH4N2O", xyz: "8\nmol\nO 0.0000 1.3049 0.0000\nC 0.0000 0.0838 0.0000\nN 1.1603 -0.6595 0.0000\nN -1.1603 -0.6595 -0.0000\nH 1.1383 -1.5964 0.3424\nH 1.9922 -0.0940 0.1760\nH -1.1383 -1.5964 -0.3424\nH -1.9922 -0.0940 -0.1760\n", ip_ref: 9.80 }, // 57-13-6
         Case { name: "Cu2", xyz: "2\nmol\nCu 0.0 0.0 0.0\nCu 0.0 0.0 2.2197\n", ip_ref: 7.46 }, // 12190-70-4
         Case { name: "CCuN", xyz: "3\nmol\nC 0.0000 0.0000 0.0000\nN 0.0000 0.0000 1.158\nCu 0.0000 0.0000 -1.832\n", ip_ref: f64::NAN }, // 544-92-3
-        // Rb2: the lone GW100 heavy member that the aug-cc-pVDZ-PP ECP path could
-        // not run (no Rb fit upstream). Runs ALL-ELECTRON at def2-TZVP instead —
-        // def2-TZVP bundles an all-electron Rb(37) basis (nelec=74, no ECP), routed
-        // via needs_def2 below. PySCF cross-check (same bundled basis+aux): RHF
-        // -1371.630707, G0W0 IP 5.73 eV.
+        // Rb2: the lone GW100 heavy member the aug-cc-pVDZ-PP ECP path could not
+        // run (no Rb fit upstream). Runs on def2-TZVP + the def2 28-core ECP
+        // (Rb is an ECP-VALENCE basis, nelec 37→9 per atom via apply_ecp — NOT
+        // all-electron). Validated ferric G0W0 3.841 eV ≡ PySCF 3.836 (def2-tzvp
+        // +ECP, Δ5 meV); RHF Koopmans 3.424 ≡ PySCF 3.4236. Closes GW100 → 100.
         Case { name: "Rb2", xyz: "2\nmol\nRb 0.0000 0.0000 0.0000\nRb 0.0000 0.0000 4.12256\n", ip_ref: 3.9 }, // 25681-81-6
     ]
 }
@@ -208,19 +208,21 @@ fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, Cation
     let op = Operator::coulomb();
 
     let neutral = Molecule::parse_xyz(case.xyz, 0, 1).ok()?;
-    let cation  = Molecule::parse_xyz(case.xyz, 1, 2).ok()?;
+    let mut cation  = Molecule::parse_xyz(case.xyz, 1, 2).ok()?;
+    let mut neutral = neutral;
 
     // Basis routing for elements with no correlation-consistent aug-cc-pV*Z set.
     // The non-relativistic cc family stops at Ar (Z=18): K (19) and Ca (20) have
     // NO aug-cc-pVDZ/TZ orbital basis in existence (BSE confirms; only the X2C
     // relativistic variant). The published GW100 uses a def2 basis for these.
-    // Route any molecule containing K/Ca to def2-TZVP. (Na clusters Na4/Na6 ALSO
-    // fail in aug-cc-pV*Z, but from near-linear-dependence of the augmented
-    // diffuse functions — fixed properly by canonical orthogonalization in the
-    // SCF, NOT by changing the basis, so they stay in aug.)
-    // K(19)/Ca(20): no aug-cc-pVNZ basis exists. Rb(37): the aug-cc-pVDZ-PP ECP
-    // path has no Rb fit, so run it all-electron on def2-TZVP (which bundles an
-    // all-electron Rb basis + matching rifit aux). All route to def2-TZVP.
+    // Route any molecule containing K/Ca/Rb to def2-TZVP. (Na clusters Na4/Na6
+    // ALSO fail in aug-cc-pV*Z, but from near-linear-dependence of the augmented
+    // diffuse functions — fixed by canonical orthogonalization, NOT a basis swap.)
+    //
+    // Rb(37): def2-TZVP for Rb is an ECP-VALENCE basis (28-core def2 ECP, bundled
+    // inline in def2-tzvp.json), NOT all-electron — so apply_ecp below reduces Rb
+    // from 37 to 9 valence electrons. Running it all-electron is unphysical (the
+    // valence-only functions can't bind the core). K/Ca are all-electron (no ECP).
     let needs_def2 = neutral.atoms.iter().any(|a| a.z == 19 || a.z == 20 || a.z == 37);
     let (obs_name, dfbs_name): (&str, &str) = if needs_def2 {
         ("def2-tzvp", "def2-tzvp-rifit")
@@ -229,6 +231,11 @@ fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, Cation
     };
     let obs_bs = basis::bundled(obs_name).ok()?;
     let dfbs_bs = basis::bundled(dfbs_name).ok()?;
+
+    // Apply any ECP the orbital basis carries (def2-tzvp Rb → 28-core). No-op for
+    // all-electron bases. Must precede PreparedBasis / nelec / NRE.
+    neutral.apply_ecp(&obs_bs);
+    cation.apply_ecp(&obs_bs);
 
     let obs_n = PreparedBasis::new(&neutral, &obs_bs).ok()?;
     let dfbs_n = PreparedBasis::new(&neutral, &dfbs_bs).ok()?;

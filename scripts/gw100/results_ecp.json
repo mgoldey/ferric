@@ -1,16 +1,74 @@
 {
-  "description": "GW100 ECP molecules (Z>=37) — G0W0@HF at aug-cc-pVDZ-PP + inline ECP + def2-tzvp-rifit correlation aux. ferric (PDEP-as-W) vs PySCF gw_ac, IDENTICAL bundled basis JSON + ECP + aux. IPs in eV (HOMO). Validation gate (spec 2026-06-17): ECP-through-GW path proven where ferric == PySCF.",
-  "basis": "aug-cc-pVDZ-PP",
-  "ecp": "aug-cc-pVDZ-PP (inline, 28-e core for I/Xe/Ag)",
   "aux": "def2-tzvp-rifit",
+  "basis": "aug-cc-pVDZ-PP",
+  "description": "GW100 ECP molecules (Z>=37) \u2014 G0W0@HF at aug-cc-pVDZ-PP + inline ECP + def2-tzvp-rifit correlation aux. ferric (PDEP-as-W) vs PySCF gw_ac, IDENTICAL bundled basis JSON + ECP + aux. IPs in eV (HOMO). Validation gate (spec 2026-06-17): ECP-through-GW path proven where ferric == PySCF.",
+  "ecp": "aug-cc-pVDZ-PP (inline, 28-e core for I/Xe/Ag)",
   "method": "G0W0@HF",
   "molecules": {
-    "I2":    {"cas": "7553-56-2",  "nelec": 50,  "ferric_g0w0": 9.3754, "pyscf_g0w0": 9.3753, "delta_mev": 0.1,  "exp_ip": 9.356,    "koopmans": 9.8452},
-    "Xe":    {"cas": "7440-63-3",  "nelec": 26,  "ferric_g0w0": 12.0856,"pyscf_g0w0": 12.0861,"delta_mev": 0.5,  "exp_ip": 12.12987, "koopmans": 12.4421},
-    "Ag2":   {"cas": "12187-06-3", "nelec": 38,  "ferric_g0w0": 7.1332, "pyscf_g0w0": 7.1439, "delta_mev": 10.7, "exp_ip": 7.6557,   "koopmans": 6.3373},
-    "C2H3I": {"cas": "593-66-8",   "nelec": 40,  "ferric_g0w0": 9.1579, "pyscf_g0w0": 9.1581, "delta_mev": 0.2,  "exp_ip": 9.35,     "koopmans": 9.3623},
-    "AlI3":  {"cas": "7784-23-8",  "nelec": 88,  "ferric_g0w0": 9.6298, "pyscf_g0w0": 9.6299, "delta_mev": 0.1,  "exp_ip": 9.66,     "koopmans": 10.1615},
-    "CI4":   {"cas": "507-25-5",   "nelec": 106, "ferric_g0w0": 9.1506, "pyscf_g0w0": 9.1509, "delta_mev": 0.3,  "exp_ip": 9.1,      "koopmans": 9.7854},
-    "Rb2":   {"cas": "25681-81-6", "nelec": 18,  "ferric_g0w0": null,   "pyscf_g0w0": null,   "delta_mev": null, "exp_ip": 3.9,      "koopmans": null, "blocked": "aug-cc-pVDZ-PP was never fit for Rb(37) upstream (BSE 500); the one unreachable molecule in the aug-cc-PP family -> 99/100"}
+    "Ag2": {
+      "cas": "12187-06-3",
+      "delta_mev": 10.7,
+      "exp_ip": 7.6557,
+      "ferric_g0w0": 7.1332,
+      "koopmans": 6.3373,
+      "nelec": 38,
+      "pyscf_g0w0": 7.1439
+    },
+    "AlI3": {
+      "cas": "7784-23-8",
+      "delta_mev": 0.1,
+      "exp_ip": 9.66,
+      "ferric_g0w0": 9.6298,
+      "koopmans": 10.1615,
+      "nelec": 88,
+      "pyscf_g0w0": 9.6299
+    },
+    "C2H3I": {
+      "cas": "593-66-8",
+      "delta_mev": 0.2,
+      "exp_ip": 9.35,
+      "ferric_g0w0": 9.1579,
+      "koopmans": 9.3623,
+      "nelec": 40,
+      "pyscf_g0w0": 9.1581
+    },
+    "CI4": {
+      "cas": "507-25-5",
+      "delta_mev": 0.3,
+      "exp_ip": 9.1,
+      "ferric_g0w0": 9.1506,
+      "koopmans": 9.7854,
+      "nelec": 106,
+      "pyscf_g0w0": 9.1509
+    },
+    "I2": {
+      "cas": "7553-56-2",
+      "delta_mev": 0.1,
+      "exp_ip": 9.356,
+      "ferric_g0w0": 9.3754,
+      "koopmans": 9.8452,
+      "nelec": 50,
+      "pyscf_g0w0": 9.3753
+    },
+    "Rb2": {
+      "basis": "def2-tzvp + def2 28-core ECP (Rb is ECP-valence, not all-electron)",
+      "cas": "25681-81-6",
+      "delta_mev": 5.3,
+      "exp_ip": 3.9,
+      "ferric_g0w0": 3.841,
+      "koopmans": 3.424,
+      "nelec": 18,
+      "note": "Was blocked on aug-cc-pVDZ-PP (no Rb fit); runs on def2-TZVP+ECP instead. Closes GW100 to 100/100.",
+      "pyscf_g0w0": 3.8357
+    },
+    "Xe": {
+      "cas": "7440-63-3",
+      "delta_mev": 0.5,
+      "exp_ip": 12.12987,
+      "ferric_g0w0": 12.0856,
+      "koopmans": 12.4421,
+      "nelec": 26,
+      "pyscf_g0w0": 12.0861
+    }
   }
 }
