@@ -37,8 +37,13 @@ struct Case {
 
 fn cases() -> Vec<Case> {
     vec![
-        Case { name: "COSe", xyz: "3\nmol\nO 0.0000 0.0000 1.159\nC 0.0000 0.0000 0.0000\nSe 0.0000 0.0000 -1.709\n", ip_ref: 10.37 },
-        Case { name: "C2H3Br", xyz: "6\nmol\nC 0.000000 0.000000 0.000000\nC 0.000000 0.000000 1.325600\nH -0.895976 0.000000 -0.602298\nH -0.894897 0.000000 1.927173\nH 0.908386 0.000000 -0.581003\nBr 1.357668 0.000000 2.194533\n", ip_ref: 9.90 },
+        // The remaining GW100 failures — all closed-shell singlets that PySCF RHF
+        // converges (def2-TZVP). Test whether the level-shift fix recovers them.
+        Case { name: "K2",   xyz: "2\nmol\nK 0.0000 0.0000 0.0000\nK 0.0000 0.0000 3.9051\n", ip_ref: 4.06 },
+        Case { name: "HK",   xyz: "2\nmol\nK 0.0000 0.0000 0.0000\nH 0.0000 0.0000 2.244\n", ip_ref: 8.00 },
+        Case { name: "BrK",  xyz: "2\nmol\nBr 0.0000 0.0000 0.0000\nK 0.0000 0.0000 2.8208\n", ip_ref: 8.82 },
+        Case { name: "Cu2",  xyz: "2\nmol\nCu 0.0 0.0 0.0\nCu 0.0 0.0 2.2197\n", ip_ref: 7.46 },
+        Case { name: "F4Ti", xyz: "5\nmol\nTi 0.0000 0.0000 0.0000\nF 1.0127 -1.0127 1.0127\nF -1.0127 1.0127 1.0127\nF -1.0127 -1.0127 -1.0127\nF 1.0127 1.0127 -1.0127\n", ip_ref: 13.30 },
     ]
 }
 

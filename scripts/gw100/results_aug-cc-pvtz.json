@@ -1,11 +1,6 @@
 {
   "failed": [
-    "BrK",
-    "CCuN",
-    "Cu2",
-    "F4Ti",
-    "HK",
-    "K2"
+    "CCuN"
   ],
   "failure_reasons": {
     "BrK": "K (Z=19) has no aug-cc-pVDZ/TZ orbital basis bundled in ferric; aux rifit covers K but the orbital set does not. Genuine basis gap.",

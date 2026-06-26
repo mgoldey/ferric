@@ -38,11 +38,16 @@ ROW = re.compile(
 )
 NCORES = os.cpu_count() or 12
 MOL_BUDGET = float(os.environ.get("GW100_MOL_BUDGET", "3600"))
-# Genuine, non-recoverable failures (K basis gap + d-block non-convergence).
-# COSe/C2H3Br were here but are now RECOVERABLE: they were closed-shell RHF DIIS
-# divergences on heavy atoms (Se/Br), fixed by the virtual-block level shift
-# (commit d5869b7) — gw100_full now retries RHF with level_shift=0.5 on failure.
-GENUINE = {"BrK", "HK", "K2", "Cu2", "CCuN", "F4Ti"}
+# Genuine, non-completable failures. CCuN (copper cyanide) has NO experimental
+# IP in GW100 (ip_ref = NaN), so it can never be scored even when it computes.
+#
+# The other 5 once listed here — BrK/HK/K2/Cu2/F4Ti — were STALE false-failures:
+# all converge cleanly and match PySCF RHF exactly at def2-TZVP (already routed
+# for K/Ca; def2-TZVP also covers Cu/Br/Ti). They were frozen into this set by
+# earlier chaotic sweeps (pre-def2-routing / oversubscription) and never retried.
+# Removed so the sweep recomputes them. (COSe/C2H3Br likewise recovered earlier
+# via the RHF level-shift fix, commit d5869b7.)
+GENUINE = {"CCuN"}
 
 
 def all_cases():

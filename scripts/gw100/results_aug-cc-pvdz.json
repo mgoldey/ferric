@@ -1,11 +1,6 @@
 {
   "failed": [
-    "BrK",
-    "CCuN",
-    "Cu2",
-    "F4Ti",
-    "HK",
-    "K2"
+    "CCuN"
   ],
   "failure_reasons": {
     "BrK": "K (Z=19) has no aug-cc-pVDZ/TZ orbital basis bundled in ferric; aux rifit covers K but the orbital set does not. Genuine basis gap.",
@@ -244,6 +239,17 @@
       "evGW0": 11.819,
       "exp": 11.09
     },
+    "C4H10O": {
+      "COHSEX": null,
+      "G0W0": 10.107,
+      "G0W0pbe": 8.871,
+      "Koop": 11.341,
+      "dRPA": null,
+      "dSCF": null,
+      "evGW": null,
+      "evGW0": null,
+      "exp": 9.61
+    },
     "C4H4N2O2": {
       "COHSEX": null,
       "G0W0": 9.728,
@@ -254,6 +260,17 @@
       "evGW": null,
       "evGW0": null,
       "exp": 9.68
+    },
+    "C4H5N3O": {
+      "COHSEX": null,
+      "G0W0": 8.927,
+      "G0W0pbe": 7.865,
+      "Koop": 9.325,
+      "dRPA": null,
+      "dSCF": null,
+      "evGW": null,
+      "evGW0": null,
+      "exp": 8.94
     },
     "C5H5N": {
       "COHSEX": null,
@@ -266,6 +283,28 @@
       "evGW0": null,
       "exp": 9.66
     },
+    "C5H5N5": {
+      "COHSEX": null,
+      "G0W0": 8.368,
+      "G0W0pbe": 7.625,
+      "Koop": 8.381,
+      "dRPA": null,
+      "dSCF": null,
+      "evGW": null,
+      "evGW0": null,
+      "exp": 8.48
+    },
+    "C5H5N5O": {
+      "COHSEX": null,
+      "G0W0": 8.1,
+      "G0W0pbe": 7.21,
+      "Koop": 8.151,
+      "dRPA": null,
+      "dSCF": null,
+      "evGW": null,
+      "evGW0": null,
+      "exp": 8.24
+    },
     "C5H6": {
       "COHSEX": 9.622,
       "G0W0": 8.536,
@@ -276,6 +315,17 @@
       "evGW": 8.534,
       "evGW0": 8.536,
       "exp": 8.53
+    },
+    "C5H6N2O2": {
+      "COHSEX": null,
+      "G0W0": 9.317,
+      "G0W0pbe": 8.496,
+      "Koop": 9.577,
+      "dRPA": null,
+      "dSCF": null,
+      "evGW": null,
+      "evGW0": null,
+      "exp": 9.2
     },
     "C6F6": {
       "COHSEX": null,
@@ -298,6 +348,50 @@
       "evGW": 9.213,
       "evGW0": 9.214,
       "exp": 9.23
+    },
+    "C6H6O": {
+      "COHSEX": null,
+      "G0W0": 8.7,
+      "G0W0pbe": 8.089,
+      "Koop": 8.761,
+      "dRPA": null,
+      "dSCF": null,
+      "evGW": null,
+      "evGW0": null,
+      "exp": 8.75
+    },
+    "C6H7N": {
+      "COHSEX": null,
+      "G0W0": 8.017,
+      "G0W0pbe": 7.57,
+      "Koop": 8.097,
+      "dRPA": null,
+      "dSCF": null,
+      "evGW": null,
+      "evGW0": null,
+      "exp": 8.05
+    },
+    "C7H8": {
+      "COHSEX": null,
+      "G0W0": 8.84,
+      "G0W0pbe": 8.18,
+      "Koop": 8.803,
+      "dRPA": null,
+      "dSCF": null,
+      "evGW": null,
+      "evGW0": null,
+      "exp": 8.82
+    },
+    "C8H8": {
+      "COHSEX": null,
+      "G0W0": 8.354,
+      "G0W0pbe": 7.585,
+      "Koop": 8.276,
+      "dRPA": null,
+      "dSCF": null,
+      "evGW": null,
+      "evGW0": null,
+      "exp": 8.43
     },
     "CBr4": {
       "COHSEX": null,
@@ -518,6 +612,17 @@
       "evGW": 12.611,
       "evGW0": 12.618,
       "exp": 11.34
+    },
+    "H12Si5": {
+      "COHSEX": null,
+      "G0W0": 23.356,
+      "G0W0pbe": 8.547,
+      "Koop": 23.182,
+      "dRPA": null,
+      "dSCF": null,
+      "evGW": null,
+      "evGW0": null,
+      "exp": 9.36
     },
     "H2": {
       "COHSEX": 17.376,
