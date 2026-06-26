@@ -228,7 +228,17 @@ fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, Cation
     let dfbs_c = PreparedBasis::new(&cation, &dfbs_bs).ok()?;
     let bounds_c = SchwarzBounds::compute(op, &obs_c).ok()?;
 
-    let rhf_n = solve_rhf(&ctx, &neutral, &obs_n, op, &bounds_n, &RhfConfig::default()).ok()?;
+    // Neutral RHF. Bare Roothaan+DIIS diverges on some heavy-atom closed shells
+    // (COSe, C2H3Br: energy oscillates ±100 Ha, never settles). Retry with a
+    // virtual-block level shift, which ramps off as the gradient converges so the
+    // final energy is unperturbed — recovers those molecules at PySCF accuracy.
+    let rhf_n = match solve_rhf(&ctx, &neutral, &obs_n, op, &bounds_n, &RhfConfig::default()) {
+        Ok(r) => r,
+        Err(_) => {
+            let shifted = RhfConfig { level_shift: 0.5, ..Default::default() };
+            solve_rhf(&ctx, &neutral, &obs_n, op, &bounds_n, &shifted).ok()?
+        }
+    };
     let nocc_n = (neutral.nelec() as usize) / 2;
     let homo_abs = nocc_n - 1;
     let ip_koop = -rhf_n.eps_r()[homo_abs] * HA_TO_EV;

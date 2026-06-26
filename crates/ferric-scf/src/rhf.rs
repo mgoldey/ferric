@@ -276,6 +276,10 @@ pub fn solve_rhf(
     // canonical_orthogonalizer / diagonalize for the padding-back-to-n convention.
     let x = canonical_orthogonalizer(&s)?;
 
+    // Previous-iteration MO coefficients, needed to build the virtual-block level
+    // shift (a projector onto the prior virtuals). None before the first solve.
+    let mut c_prev: Option<Array2<f64>> = None;
+
     for iter in 1..=config.max_iter {
         ctx.check_interrupted()?;
         // Build J and K using selected builder (reuse pre-allocated buffers)
@@ -402,8 +406,35 @@ pub fn solve_rhf(
         }
         prev_e = energy;
 
-        let f_new = diis.step(&f, &err);
+        let mut f_new = diis.step(&f, &err);
+
+        // Virtual-block level shift (config.level_shift > 0): add `shift` to the
+        // diagonal of the virtual block in MO basis, i.e. F += shift · S·C_v·C_vᵀ·S
+        // where C_v are the previous iteration's virtual MOs. This widens the
+        // occupied–virtual gap and damps the orbital rotation that bare DIIS
+        // overshoots — the standard cure for SCF oscillation/divergence on
+        // heavy-atom closed shells (e.g. COSe, C2H3Br). The shift is ramped to
+        // zero as the gradient converges (err_max → 0), so the converged Fock is
+        // unshifted and the final energy is unperturbed. Applied from iter ≥ 2
+        // (needs a prior C); the convergence check above runs on the *unshifted*
+        // F, so an accepted solution never carries the shift.
+        if config.level_shift > 0.0 {
+            if let Some(c_p) = c_prev.as_ref() {
+                let shift_ramp = config.level_shift * (err_max / 0.1).min(1.0);
+                if shift_ramp > 0.0 {
+                    let c_vir = c_p.slice(ndarray::s![.., nocc..]);
+                    let scv = s.dot(&c_vir); // (n × nvir)
+                    f_new = &f_new + &(shift_ramp * scv.dot(&scv.t()));
+                }
+            }
+        }
+
         let (_, mut c) = diagonalize(&f_new, &x)?;
+        // Only retain C across iterations when the level shift needs it; the
+        // default (shift = 0) path skips the clone entirely.
+        if config.level_shift > 0.0 {
+            c_prev = Some(c.clone());
+        }
 
         // MOM occupied-orbital selection from iter mom_after_iter+1: pin the
         // occupied set by AO-overlap with the previous accepted occupation
@@ -824,6 +855,37 @@ mod tests {
             "6-31g",
             "h2o_6-31g_rhf.json",
             1e-8,
+        );
+    }
+
+    /// COSe (O=C=Se) at aug-cc-pVDZ is a closed-shell singlet that PySCF RHF
+    /// converges cleanly to E = -2512.5713600 Ha, but ferric's bare Roothaan+DIIS
+    /// *diverges* (energy oscillates ±100 Ha, never settles — heavy-atom Se dense
+    /// low-virtual manifold drives DIIS into a limit cycle). A virtual-block level
+    /// shift, ramped off as the gradient drops, tames the oscillation. This test
+    /// is the regression for that fix: it must converge to the PySCF energy.
+    /// Slow (~1-2 min release): run with --ignored.
+    #[test]
+    #[ignore]
+    fn rhf_level_shift_converges_cose() {
+        let xyz = "3\nCOSe\nO 0.0000 0.0000 1.159\nC 0.0000 0.0000 0.0000\nSe 0.0000 0.0000 -1.709\n";
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let bs = basis::bundled("aug-cc-pvdz").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ParallelContext::default();
+        let config = RhfConfig {
+            max_iter: 200,
+            level_shift: 0.5,
+            ..Default::default()
+        };
+        let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
+        assert!(result.converged, "COSe RHF did not converge with level shift");
+        assert!(
+            (result.energy - (-2512.5713600037)).abs() < 1e-5,
+            "COSe RHF: got {:.10}, expected PySCF -2512.5713600037",
+            result.energy
         );
     }
 }
