@@ -1,19 +1,29 @@
 {
   "failed": [
     "BrK",
+    "CCuN",
+    "Cu2",
+    "F4Ti",
     "HK",
-    "K2",
-    "Na4",
-    "Na6"
+    "K2"
   ],
   "failure_reasons": {
     "BrK": "K (Z=19) has no aug-cc-pVDZ/TZ orbital basis bundled in ferric; aux rifit covers K but the orbital set does not. Genuine basis gap.",
     "HK": "K (Z=19) has no aug-cc-pVDZ/TZ orbital basis bundled in ferric. Genuine basis gap.",
-    "K2": "K (Z=19) has no aug-cc-pVDZ/TZ orbital basis bundled in ferric. Genuine basis gap.",
-    "Na4": "Na in both orbital and aux bases; failure is slow/non-converging RHF on a floppy alkali cluster, hit the per-molecule wall-clock watchdog. Cost/convergence, not basis.",
-    "Na6": "Na in both orbital and aux bases; failure is slow/non-converging RHF on a floppy alkali cluster, hit the per-molecule wall-clock watchdog. Cost/convergence, not basis."
+    "K2": "K (Z=19) has no aug-cc-pVDZ/TZ orbital basis bundled in ferric. Genuine basis gap."
   },
   "molecules": {
+    "AlF3": {
+      "COHSEX": 16.464,
+      "G0W0": 15.325,
+      "G0W0pbe": 13.791,
+      "Koop": 17.291,
+      "dRPA": 15.176,
+      "dSCF": 15.74,
+      "evGW": 15.255,
+      "evGW0": 15.289,
+      "exp": 15.45
+    },
     "Ar": {
       "COHSEX": 16.182,
       "G0W0": 15.458,
@@ -36,6 +46,28 @@
       "evGW0": 9.552,
       "exp": 10.0
     },
+    "AsH3": {
+      "COHSEX": 11.013,
+      "G0W0": 10.274,
+      "G0W0pbe": 9.644,
+      "Koop": 10.36,
+      "dRPA": 10.197,
+      "dSCF": 9.418,
+      "evGW": 10.267,
+      "evGW0": 10.271,
+      "exp": 10.58
+    },
+    "B2H6": {
+      "COHSEX": 13.61,
+      "G0W0": 12.511,
+      "G0W0pbe": 11.524,
+      "Koop": 12.8,
+      "dRPA": 12.24,
+      "dSCF": 12.051,
+      "evGW": 12.491,
+      "evGW0": 12.498,
+      "exp": 11.9
+    },
     "BF": {
       "COHSEX": 12.091,
       "G0W0": 11.093,
@@ -46,6 +78,17 @@
       "evGW": 11.088,
       "evGW0": 11.094,
       "exp": 11.0
+    },
+    "BH3": {
+      "COHSEX": 14.45,
+      "G0W0": 13.375,
+      "G0W0pbe": 12.612,
+      "Koop": 13.524,
+      "dRPA": 13.142,
+      "dSCF": 12.41,
+      "evGW": 13.357,
+      "evGW0": 13.363,
+      "exp": 12.03
     },
     "BN": {
       "COHSEX": 12.644,
@@ -124,6 +167,17 @@
       "evGW0": 10.404,
       "exp": 10.68
     },
+    "C2H4O": {
+      "COHSEX": 11.463,
+      "G0W0": 10.416,
+      "G0W0pbe": 9.083,
+      "Koop": 11.545,
+      "dRPA": 10.208,
+      "dSCF": 8.841,
+      "evGW": 10.355,
+      "evGW0": 10.376,
+      "exp": 10.24
+    },
     "C2H6": {
       "COHSEX": 14.036,
       "G0W0": 12.9,
@@ -134,6 +188,17 @@
       "evGW": 12.884,
       "evGW0": 12.892,
       "exp": 11.99
+    },
+    "C2H6O": {
+      "COHSEX": 12.001,
+      "G0W0": 10.916,
+      "G0W0pbe": 9.675,
+      "Koop": 12.007,
+      "dRPA": 10.699,
+      "dSCF": 9.396,
+      "evGW": 10.858,
+      "evGW0": 10.875,
+      "exp": 10.64
     },
     "C3H6": {
       "COHSEX": 12.019,
@@ -179,6 +244,17 @@
       "evGW0": 11.819,
       "exp": 11.09
     },
+    "C5H5N": {
+      "COHSEX": null,
+      "G0W0": 9.597,
+      "G0W0pbe": 8.601,
+      "Koop": 9.453,
+      "dRPA": null,
+      "dSCF": null,
+      "evGW": null,
+      "evGW0": null,
+      "exp": 9.66
+    },
     "C5H6": {
       "COHSEX": 9.622,
       "G0W0": 8.536,
@@ -212,6 +288,17 @@
       "evGW0": 16.403,
       "exp": 16.2
     },
+    "CH2O2": {
+      "COHSEX": 12.658,
+      "G0W0": 11.57,
+      "G0W0pbe": 10.276,
+      "Koop": 12.902,
+      "dRPA": 11.34,
+      "dSCF": 10.007,
+      "evGW": 11.475,
+      "evGW0": 11.513,
+      "exp": 11.5
+    },
     "CH3OH": {
       "COHSEX": 12.153,
       "G0W0": 11.075,
@@ -233,6 +320,17 @@
       "evGW": 14.435,
       "evGW0": 14.444,
       "exp": 13.6
+    },
+    "CH4N2O": {
+      "COHSEX": 11.413,
+      "G0W0": 10.315,
+      "G0W0pbe": 8.874,
+      "Koop": 11.378,
+      "dRPA": 10.445,
+      "dSCF": 9.269,
+      "evGW": 10.239,
+      "evGW0": 10.271,
+      "exp": 9.8
     },
     "CO": {
       "COHSEX": 15.54,
@@ -256,6 +354,28 @@
       "evGW0": 13.788,
       "exp": 13.78
     },
+    "COS": {
+      "COHSEX": 12.078,
+      "G0W0": 11.236,
+      "G0W0pbe": 10.36,
+      "Koop": 11.485,
+      "dRPA": 11.252,
+      "dSCF": 10.188,
+      "evGW": 11.221,
+      "evGW0": 11.228,
+      "exp": 11.19
+    },
+    "CS2": {
+      "COHSEX": 10.798,
+      "G0W0": 10.042,
+      "G0W0pbe": 9.261,
+      "Koop": 10.203,
+      "dRPA": 10.048,
+      "dSCF": 8.837,
+      "evGW": 10.036,
+      "evGW0": 10.043,
+      "exp": 10.09
+    },
     "Cl2": {
       "COHSEX": 12.139,
       "G0W0": 11.47,
@@ -266,6 +386,17 @@
       "evGW": 11.424,
       "evGW0": 11.439,
       "exp": 11.49
+    },
+    "Cl2Mg": {
+      "COHSEX": 12.361,
+      "G0W0": 11.639,
+      "G0W0pbe": 10.649,
+      "Koop": 12.28,
+      "dRPA": 11.319,
+      "dSCF": 11.424,
+      "evGW": 11.599,
+      "evGW0": 11.611,
+      "exp": 11.8
     },
     "ClGa": {
       "COHSEX": 10.387,
@@ -300,6 +431,28 @@
       "evGW0": 15.915,
       "exp": 15.7
     },
+    "F2Mg": {
+      "COHSEX": 14.641,
+      "G0W0": 13.513,
+      "G0W0pbe": 12.051,
+      "Koop": 15.409,
+      "dRPA": 13.22,
+      "dSCF": 13.375,
+      "evGW": 13.324,
+      "evGW0": 13.388,
+      "exp": 13.3
+    },
+    "F4S": {
+      "COHSEX": 13.902,
+      "G0W0": 12.907,
+      "G0W0pbe": 11.62,
+      "Koop": 13.828,
+      "dRPA": 12.854,
+      "dSCF": 12.092,
+      "evGW": 12.873,
+      "evGW0": 12.888,
+      "exp": 11.69
+    },
     "FLi": {
       "COHSEX": 12.143,
       "G0W0": 11.026,
@@ -310,6 +463,17 @@
       "evGW": 10.775,
       "evGW0": 10.894,
       "exp": 11.3
+    },
+    "GeH4": {
+      "COHSEX": 13.572,
+      "G0W0": 12.627,
+      "G0W0pbe": 11.699,
+      "Koop": 12.864,
+      "dRPA": 12.418,
+      "dSCF": 11.735,
+      "evGW": 12.611,
+      "evGW0": 12.618,
+      "exp": 11.34
     },
     "H2": {
       "COHSEX": 17.376,
@@ -344,6 +508,17 @@
       "evGW0": 12.417,
       "exp": 12.62
     },
+    "H2O2": {
+      "COHSEX": 12.692,
+      "G0W0": 11.656,
+      "G0W0pbe": 10.347,
+      "Koop": 13.308,
+      "dRPA": 11.671,
+      "dSCF": 11.402,
+      "evGW": 11.549,
+      "evGW0": 11.587,
+      "exp": 11.7
+    },
     "H2S": {
       "COHSEX": 10.898,
       "G0W0": 10.17,
@@ -354,6 +529,50 @@
       "evGW": 10.151,
       "evGW0": 10.159,
       "exp": 10.5
+    },
+    "H3P": {
+      "COHSEX": 11.306,
+      "G0W0": 10.467,
+      "G0W0pbe": 9.826,
+      "Koop": 10.559,
+      "dRPA": 10.313,
+      "dSCF": 9.462,
+      "evGW": 10.459,
+      "evGW0": 10.463,
+      "exp": 10.59
+    },
+    "H4N2": {
+      "COHSEX": 10.846,
+      "G0W0": 9.798,
+      "G0W0pbe": 8.794,
+      "Koop": 10.707,
+      "dRPA": 9.675,
+      "dSCF": 9.121,
+      "evGW": 9.736,
+      "evGW0": 9.758,
+      "exp": 8.98
+    },
+    "H4Si": {
+      "COHSEX": 13.964,
+      "G0W0": 12.962,
+      "G0W0pbe": 11.991,
+      "Koop": 13.195,
+      "dRPA": 12.709,
+      "dSCF": 11.946,
+      "evGW": 12.947,
+      "evGW0": 12.954,
+      "exp": 12.3
+    },
+    "H6Si2": {
+      "COHSEX": 11.576,
+      "G0W0": 10.785,
+      "G0W0pbe": 9.871,
+      "Koop": 11.035,
+      "dRPA": 10.547,
+      "dSCF": 9.88,
+      "evGW": 10.772,
+      "evGW0": 10.776,
+      "exp": 10.53
     },
     "HCN": {
       "COHSEX": 14.752,
@@ -398,6 +617,17 @@
       "evGW": 8.021,
       "evGW0": 8.03,
       "exp": 7.9
+    },
+    "HN3": {
+      "COHSEX": 11.856,
+      "G0W0": 10.739,
+      "G0W0pbe": 9.982,
+      "Koop": 11.009,
+      "dRPA": 10.831,
+      "dSCF": 8.93,
+      "evGW": 10.719,
+      "evGW0": 10.73,
+      "exp": 10.72
     },
     "He": {
       "COHSEX": 25.425,
@@ -508,6 +738,28 @@
       "evGW": 20.931,
       "evGW0": 21.009,
       "exp": 21.56
+    },
+    "O2S": {
+      "COHSEX": 13.354,
+      "G0W0": 12.413,
+      "G0W0pbe": 11.071,
+      "Koop": 13.387,
+      "dRPA": 12.362,
+      "dSCF": 11.941,
+      "evGW": 12.357,
+      "evGW0": 12.383,
+      "exp": 12.5
+    },
+    "O3": {
+      "COHSEX": 14.567,
+      "G0W0": 13.243,
+      "G0W0pbe": 12.064,
+      "Koop": 13.363,
+      "dRPA": 13.391,
+      "dSCF": 10.017,
+      "evGW": 13.223,
+      "evGW0": 13.243,
+      "exp": 12.73
     },
     "P2": {
       "COHSEX": 11.157,
