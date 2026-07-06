@@ -37,13 +37,15 @@ struct Case {
 
 fn cases() -> Vec<Case> {
     vec![
-        // The remaining GW100 failures — all closed-shell singlets that PySCF RHF
-        // converges (def2-TZVP). Test whether the level-shift fix recovers them.
-        Case { name: "K2",   xyz: "2\nmol\nK 0.0000 0.0000 0.0000\nK 0.0000 0.0000 3.9051\n", ip_ref: 4.06 },
-        Case { name: "HK",   xyz: "2\nmol\nK 0.0000 0.0000 0.0000\nH 0.0000 0.0000 2.244\n", ip_ref: 8.00 },
-        Case { name: "BrK",  xyz: "2\nmol\nBr 0.0000 0.0000 0.0000\nK 0.0000 0.0000 2.8208\n", ip_ref: 8.82 },
-        Case { name: "Cu2",  xyz: "2\nmol\nCu 0.0 0.0 0.0\nCu 0.0 0.0 2.2197\n", ip_ref: 7.46 },
-        Case { name: "F4Ti", xyz: "5\nmol\nTi 0.0000 0.0000 0.0000\nF 1.0127 -1.0127 1.0127\nF -1.0127 1.0127 1.0127\nF -1.0127 -1.0127 -1.0127\nF 1.0127 1.0127 -1.0127\n", ip_ref: 13.30 },
+Case { name: "C2H3Br", xyz: "6
+mol
+C 0.000000 0.000000 0.000000
+C 0.000000 0.000000 1.325600
+H -0.895976 0.000000 -0.602298
+H -0.894897 0.000000 1.927173
+H 0.908386 0.000000 -0.581003
+Br 1.357668 0.000000 2.194533
+", ip_ref: 9.90 },
     ]
 }
 
@@ -91,11 +93,19 @@ fn probe(case: &Case, obs_name: &str, dfbs_name: &str) {
         }
         Err(e) => {
             say!("  RHF ERR: {e:?}");
-            let cfg2 = RhfConfig { max_iter: 500, level_shift: 0.2, ..Default::default() };
-            say!("  retry RHF(500 iter, level_shift=0.2)...");
+            // Driver uses level_shift=0.5; replicate it, then escalate to 1.0.
+            let cfg2 = RhfConfig { max_iter: 500, level_shift: 0.5, ..Default::default() };
+            say!("  retry RHF(500 iter, level_shift=0.5)...");
             match solve_rhf(&ctx, &neutral, &obs_n, op, &bounds_n, &cfg2) {
-                Ok(r) => { say!("  retry OK conv={} iters={} E={:.8}", r.converged, r.iterations, r.energy); r }
-                Err(e) => { say!("  retry STILL ERR: {e:?} -> RHF is the failure point"); return; }
+                Ok(r) if r.converged => { say!("  retry OK conv={} iters={} E={:.8}", r.converged, r.iterations, r.energy); r }
+                _ => {
+                    let cfg3 = RhfConfig { max_iter: 500, level_shift: 1.0, ..Default::default() };
+                    say!("  retry2 RHF(500 iter, level_shift=1.0)...");
+                    match solve_rhf(&ctx, &neutral, &obs_n, op, &bounds_n, &cfg3) {
+                        Ok(r) => { say!("  retry2 conv={} iters={} E={:.8}", r.converged, r.iterations, r.energy); r }
+                        Err(e) => { say!("  retry2 STILL ERR: {e:?} -> RHF is the failure point"); return; }
+                    }
+                }
             }
         }
     };
