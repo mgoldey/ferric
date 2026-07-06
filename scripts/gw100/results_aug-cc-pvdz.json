@@ -1,5 +1,6 @@
 {
   "failed": [
+    "C2H3Br",
     "CCuN"
   ],
   "failure_reasons": {
@@ -117,6 +118,17 @@
       "evGW": 10.509,
       "evGW0": 10.521,
       "exp": 10.51
+    },
+    "BrK": {
+      "COHSEX": null,
+      "G0W0": 8.177,
+      "G0W0pbe": 7.527,
+      "Koop": 8.518,
+      "dRPA": null,
+      "dSCF": null,
+      "evGW": null,
+      "evGW0": null,
+      "exp": 8.82
     },
     "C2H2": {
       "COHSEX": 12.385,
@@ -382,6 +394,17 @@
       "evGW0": null,
       "exp": 8.82
     },
+    "C8H10": {
+      "COHSEX": null,
+      "G0W0": 8.804,
+      "G0W0pbe": 8.109,
+      "Koop": 8.788,
+      "dRPA": null,
+      "dSCF": null,
+      "evGW": null,
+      "evGW0": null,
+      "exp": 8.77
+    },
     "C8H8": {
       "COHSEX": null,
       "G0W0": 8.354,
@@ -503,6 +526,17 @@
       "evGW0": 11.228,
       "exp": 11.19
     },
+    "COSe": {
+      "COHSEX": null,
+      "G0W0": 10.411,
+      "G0W0pbe": null,
+      "Koop": 10.588,
+      "dRPA": null,
+      "dSCF": null,
+      "evGW": null,
+      "evGW0": null,
+      "exp": 10.37
+    },
     "CS2": {
       "COHSEX": 10.798,
       "G0W0": 10.042,
@@ -590,6 +624,17 @@
       "evGW": 12.873,
       "evGW0": 12.888,
       "exp": 11.69
+    },
+    "F4Ti": {
+      "COHSEX": null,
+      "G0W0": 15.752,
+      "G0W0pbe": 13.514,
+      "Koop": 18.012,
+      "dRPA": null,
+      "dSCF": null,
+      "evGW": null,
+      "evGW0": null,
+      "exp": 13.3
     },
     "FLi": {
       "COHSEX": 12.143,
@@ -756,6 +801,17 @@
       "evGW0": 15.78,
       "exp": 16.12
     },
+    "HK": {
+      "COHSEX": null,
+      "G0W0": 6.097,
+      "G0W0pbe": 6.943,
+      "Koop": 6.529,
+      "dRPA": null,
+      "dSCF": null,
+      "evGW": null,
+      "evGW0": null,
+      "exp": 8.0
+    },
     "HLi": {
       "COHSEX": 8.995,
       "G0W0": 8.04,
@@ -788,6 +844,17 @@
       "evGW": 24.23,
       "evGW0": 24.25,
       "exp": 24.59
+    },
+    "K2": {
+      "COHSEX": null,
+      "G0W0": 4.028,
+      "G0W0pbe": 4.309,
+      "Koop": 3.605,
+      "dRPA": null,
+      "dSCF": null,
+      "evGW": null,
+      "evGW0": null,
+      "exp": 4.06
     },
     "Kr": {
       "COHSEX": 14.383,
