@@ -1,6 +1,8 @@
 //! `KsXc`: caches the molecular grid + AO + ∇AO + (optional) NLC grid + AO,
 //! and implements `XcContribution` for use in the closed-shell KS SCF.
 
+use std::sync::Mutex;
+
 use ndarray::{Array2, Array3};
 use thiserror::Error;
 
@@ -12,7 +14,7 @@ use crate::density_on_grid::{eval_density_closed, eval_density_uks, DensityGrid}
 use crate::grid::{build_atomic_grid, AtomicGridConfig, GridPoint};
 use crate::libxc::{xc_def_from_name, xc_def_from_name_nspin, LibxcError, XcDef};
 use crate::vv10::add_vv10;
-use crate::vxc::{semilocal_vxc_closed, semilocal_vxc_polarized};
+use crate::vxc::{semilocal_vxc_closed_scratch, semilocal_vxc_polarized_scratch, VxcScratch};
 use crate::xc_trait::{KMix, UksXcContribution, XcContribution};
 
 #[derive(Error, Debug)]
@@ -37,6 +39,9 @@ pub struct KsXc {
     pub nlc_grid: Option<Vec<GridPoint>>,
     pub nlc_chi: Option<Array2<f64>>,
     pub nlc_dchi: Option<Array3<f64>>,
+    /// Pre-scaled χ scratch reused across SCF iterations (`add_xc` takes
+    /// `&self`, hence the Mutex; it is uncontended — one lock per Fock build).
+    scratch: Mutex<VxcScratch>,
 }
 
 impl KsXc {
@@ -62,15 +67,21 @@ impl KsXc {
             (None, None, None)
         };
 
-        Ok(Self { xc, grid, chi, dchi, nlc_grid, nlc_chi, nlc_dchi })
+        Ok(Self {
+            xc, grid, chi, dchi, nlc_grid, nlc_chi, nlc_dchi,
+            scratch: Mutex::new(VxcScratch::new()),
+        })
     }
 }
 
 impl XcContribution for KsXc {
     fn add_xc(&self, d: &Array2<f64>, f: &mut Array2<f64>) -> f64 {
         // Semilocal piece.
+        let mut scratch = self.scratch.lock().expect("vxc scratch mutex poisoned");
         let dens = eval_density_closed(d, &self.chi, &self.dchi);
-        let (e_xc, vxc) = semilocal_vxc_closed(&self.grid, &self.chi, &self.dchi, &dens, &self.xc);
+        let (e_xc, vxc) = semilocal_vxc_closed_scratch(
+            &self.grid, &self.chi, &self.dchi, &dens, &self.xc, &mut scratch,
+        );
         *f += &vxc;
 
         // VV10 nonlocal correlation (stub returns 0.0 for now).
@@ -117,6 +128,8 @@ pub struct KsXcUks {
     pub nlc_grid: Option<Vec<GridPoint>>,
     pub nlc_chi: Option<Array2<f64>>,
     pub nlc_dchi: Option<Array3<f64>>,
+    /// See `KsXc::scratch` — shared by both spin builds.
+    scratch: Mutex<VxcScratch>,
 }
 
 impl KsXcUks {
@@ -142,7 +155,10 @@ impl KsXcUks {
             (None, None, None)
         };
 
-        Ok(Self { xc, grid, chi, dchi, nlc_grid, nlc_chi, nlc_dchi })
+        Ok(Self {
+            xc, grid, chi, dchi, nlc_grid, nlc_chi, nlc_dchi,
+            scratch: Mutex::new(VxcScratch::new()),
+        })
     }
 }
 
@@ -156,9 +172,10 @@ impl UksXcContribution for KsXcUks {
     ) -> f64 {
         // Semilocal: build (ρ_α, ρ_β, σ_αα, σ_αβ, σ_ββ) on the main grid
         // then call the polarized libxc path.
+        let mut scratch = self.scratch.lock().expect("vxc scratch mutex poisoned");
         let dens = eval_density_uks(d_a, d_b, &self.chi, &self.dchi);
-        let (e_xc, vxc_a, vxc_b) = semilocal_vxc_polarized(
-            &self.grid, &self.chi, &self.dchi, &dens, &self.xc,
+        let (e_xc, vxc_a, vxc_b) = semilocal_vxc_polarized_scratch(
+            &self.grid, &self.chi, &self.dchi, &dens, &self.xc, &mut scratch,
         );
         *f_a += &vxc_a;
         *f_b += &vxc_b;
