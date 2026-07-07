@@ -10,6 +10,7 @@
 //! ε̃·V, *not* the V^T·ε̃·V projection that Davidson asks for).
 
 use ferric_core::FerricError;
+use ferric_integrals::blas_threads::with_blas_threads;
 use ndarray::{s, Array2};
 use ndarray_linalg::{Eigh, QR, UPLO};
 
@@ -34,6 +35,23 @@ fn qr_orthonormalize(mat: Array2<f64>) -> Result<Array2<f64>, FerricError> {
     Ok(q)
 }
 
+/// BLAS thread count for the Lanczos solve. An explicit
+/// `FERRIC_LANCZOS_BLAS_THREADS` override wins (clamped ≥ 1); otherwise all
+/// cores — unless we are already inside a rayon worker, where multi-threaded
+/// BLAS is the segfault/oversubscription mode (see blas_threads.rs and the
+/// openblas-rayon-dgetrf-crash memory), in which case fall back to 1.
+fn lanczos_blas_threads() -> usize {
+    if let Ok(v) = std::env::var("FERRIC_LANCZOS_BLAS_THREADS") {
+        if let Ok(n) = v.trim().parse::<usize>() {
+            return n.max(1);
+        }
+    }
+    if rayon::current_thread_index().is_some() {
+        return 1;
+    }
+    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
+}
+
 /// Block Lanczos with full reorthogonalization.
 ///
 /// `seed` is the initial block (naux × block_size); columns are QR'd to form
@@ -46,7 +64,32 @@ fn qr_orthonormalize(mat: Array2<f64>) -> Result<Array2<f64>, FerricError> {
 /// `max_iter` outer block iterations, returns the best Ritz pairs from the
 /// final iteration without error (matching Davidson's "soft" fall-through
 /// pattern when subspace expansion is exhausted).
+///
+/// The block matvec, full reorthogonalization (Qᵀ·W, Q·proj), QR, and Ritz
+/// assembly are all naux-wide GEMMs with no rayon region active anywhere on
+/// this call path (every dielectric_apply variant is BLAS-only), so this is
+/// the one place BLAS threads are temporarily raised; the scoped guard
+/// restores the prior count on exit. Because the raise covers the matvec
+/// closure too, `matvec` must NOT enter a rayon parallel region — if a future
+/// caller needs that, it must set `FERRIC_LANCZOS_BLAS_THREADS=1`.
 pub fn run_lanczos_seeded<F>(
+    seed: Array2<f64>,
+    matvec: F,
+    n_desired: usize,
+    max_iter: usize,
+    conv_thresh: f64,
+) -> Result<LanczosResult, FerricError>
+where
+    F: Fn(&Array2<f64>) -> Array2<f64>,
+{
+    with_blas_threads(lanczos_blas_threads(), || {
+        lanczos_iterations(seed, matvec, n_desired, max_iter, conv_thresh)
+    })
+}
+
+/// Serial Lanczos iteration body; BLAS threading is managed by the caller
+/// (`run_lanczos_seeded`).
+fn lanczos_iterations<F>(
     seed: Array2<f64>,
     matvec: F,
     n_desired: usize,
