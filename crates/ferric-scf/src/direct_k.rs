@@ -11,11 +11,15 @@ pub struct DirectK<'a> {
     prep: &'a PreparedBasis,
     bounds: &'a SchwarzBounds,
     thresh: f64,
+    // Lazily built on first build() and reused for the builder's lifetime:
+    // libint2 engine construction is serialized behind a global ctor mutex,
+    // so hoist the builder out of the SCF loop to pay it once, not per iteration.
+    pool: Option<crate::engine_pool::EnginePool>,
 }
 
 impl<'a> DirectK<'a> {
     pub fn new(ctx: &'a ParallelContext, prep: &'a PreparedBasis, bounds: &'a SchwarzBounds, thresh: f64) -> Self {
-        DirectK { ctx, prep, bounds, thresh }
+        DirectK { ctx, prep, bounds, thresh, pool: None }
     }
 }
 
@@ -43,7 +47,10 @@ impl<'a> KBuilder for DirectK<'a> {
 
         // One engine per rayon thread (see engine_pool) — avoids the per-chunk
         // libint2-ctor-mutex storm that made heavy-element bases 10×+ slower.
-        let pool = crate::engine_pool::EnginePool::new(self.bounds.op, self.prep, 1e-14)?;
+        if self.pool.is_none() {
+            self.pool = Some(crate::engine_pool::EnginePool::new(self.bounds.op, self.prep, 1e-14)?);
+        }
+        let pool = self.pool.as_ref().expect("pool initialized above");
         let total_k = pairs_for_this_rank.into_par_iter().fold(
             || (Array2::zeros(k.raw_dim()), 0usize),
             |(mut local_k, mut local_count), (s1, s2)| {
