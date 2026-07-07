@@ -1,13 +1,8 @@
 {
   "failed": [
-    "C2H3Br",
     "CCuN"
   ],
-  "failure_reasons": {
-    "BrK": "K (Z=19) has no aug-cc-pVDZ/TZ orbital basis bundled in ferric; aux rifit covers K but the orbital set does not. Genuine basis gap.",
-    "HK": "K (Z=19) has no aug-cc-pVDZ/TZ orbital basis bundled in ferric. Genuine basis gap.",
-    "K2": "K (Z=19) has no aug-cc-pVDZ/TZ orbital basis bundled in ferric. Genuine basis gap."
-  },
+  "failure_reasons": {},
   "molecules": {
     "AlF3": {
       "COHSEX": 16.464,
@@ -998,6 +993,17 @@
       "evGW": 10.352,
       "evGW0": 10.351,
       "exp": 10.62
+    },
+    "C2H3Br": {
+      "COHSEX": null,
+      "G0W0": 9.165,
+      "G0W0pbe": null,
+      "Koop": null,
+      "dRPA": null,
+      "dSCF": null,
+      "evGW": null,
+      "evGW0": null,
+      "exp": 9.9
     }
   }
 }

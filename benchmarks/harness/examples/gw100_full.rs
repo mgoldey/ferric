@@ -248,11 +248,22 @@ fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, Cation
     // (COSe, C2H3Br: energy oscillates ±100 Ha, never settles). Retry with a
     // virtual-block level shift, which ramps off as the gradient converges so the
     // final energy is unperturbed — recovers those molecules at PySCF accuracy.
+    // Escalation ladder: default DIIS → ls=0.5 → ls=1.0. The hcore initial guess
+    // diverges DIIS for some heavy-atom systems (COSe recovers at ls=0.5; C2H3Br
+    // needs ls=1.0 — verified converges to PySCF −2649.796875 in 57 iters). ls=0.5
+    // returns Err(ScfConvergence) on C2H3Br, so we must catch that and step up,
+    // not just `.ok()?` (which would drop it to FAILED).
     let rhf_n = match solve_rhf(&ctx, &neutral, &obs_n, op, &bounds_n, &RhfConfig::default()) {
         Ok(r) => r,
         Err(_) => {
-            let shifted = RhfConfig { level_shift: 0.5, ..Default::default() };
-            solve_rhf(&ctx, &neutral, &obs_n, op, &bounds_n, &shifted).ok()?
+            let ls05 = RhfConfig { level_shift: 0.5, ..Default::default() };
+            match solve_rhf(&ctx, &neutral, &obs_n, op, &bounds_n, &ls05) {
+                Ok(r) if r.converged => r,
+                _ => {
+                    let ls10 = RhfConfig { max_iter: 300, level_shift: 1.0, ..Default::default() };
+                    solve_rhf(&ctx, &neutral, &obs_n, op, &bounds_n, &ls10).ok()?
+                }
+            }
         }
     };
     let nocc_n = (neutral.nelec() as usize) / 2;
