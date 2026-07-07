@@ -1,7 +1,5 @@
 {
-  "failed": [
-    "CCuN"
-  ],
+  "failed": [],
   "failure_reasons": {},
   "molecules": {
     "AlF3": {
@@ -1004,6 +1002,28 @@
       "evGW": null,
       "evGW0": null,
       "exp": 9.9
+    },
+    "CCuN": {
+      "COHSEX": null,
+      "G0W0": 10.948,
+      "G0W0pbe": null,
+      "Koop": 11.32,
+      "dRPA": null,
+      "dSCF": null,
+      "evGW": null,
+      "evGW0": null,
+      "exp": null
+    },
+    "Cu2": {
+      "COHSEX": null,
+      "G0W0": 7.2,
+      "G0W0pbe": null,
+      "Koop": 6.461,
+      "dRPA": null,
+      "dSCF": null,
+      "evGW": null,
+      "evGW0": null,
+      "exp": 7.46
     }
   }
 }

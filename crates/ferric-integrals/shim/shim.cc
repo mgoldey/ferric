@@ -230,8 +230,14 @@ int scf_engine_set_point_charges(scf_engine *eng,
     }
 }
 
+/* Compute functions: libint2's Engine::compute can throw (std::bad_alloc under
+ * memory pressure, or invalid engine/shell combinations). A C++ exception must
+ * never unwind across the C ABI into Rust (undefined behavior), so every
+ * compute path catches and returns SCF_EINTERNAL. */
+
 int scf_compute_1e_block(scf_engine *eng, const scf_basis *bs,
                            int sh1, int sh2, double *out) {
+  try {
     const auto &shells = bs->bs;
     eng->engine.compute(shells[sh1], shells[sh2]);
     const auto &result = eng->engine.results();
@@ -243,10 +249,14 @@ int scf_compute_1e_block(scf_engine *eng, const scf_basis *bs,
         for (int i = 0; i < n; ++i) out[i] = result[0][i];
     }
     return n;
+  } catch (...) {
+    return SCF_EINTERNAL;
+  }
 }
 
 int scf_compute_eri_quartet(scf_engine *eng, const scf_basis *bs,
                               int sh1, int sh2, int sh3, int sh4, double *out) {
+  try {
     const auto &shells = bs->bs;
     eng->engine.compute(shells[sh1], shells[sh2], shells[sh3], shells[sh4]);
     const auto &result = eng->engine.results();
@@ -256,9 +266,13 @@ int scf_compute_eri_quartet(scf_engine *eng, const scf_basis *bs,
     int n = bs->nfunc[sh1] * bs->nfunc[sh2] * bs->nfunc[sh3] * bs->nfunc[sh4];
     for (int i = 0; i < n; ++i) out[i] = result[0][i];
     return n;
+  } catch (...) {
+    return SCF_EINTERNAL;
+  }
 }
 
-void scf_compute_schwarz(scf_engine *eng, const scf_basis *bs, double *qmat) {
+int scf_compute_schwarz(scf_engine *eng, const scf_basis *bs, double *qmat) {
+  try {
     const int nsh = static_cast<int>(bs->bs.size());
     for (int i = 0; i < nsh; ++i) {
         for (int j = 0; j <= i; ++j) {
@@ -284,11 +298,16 @@ void scf_compute_schwarz(scf_engine *eng, const scf_basis *bs, double *qmat) {
             qmat[j * nsh + i] = q;
         }
     }
+    return SCF_OK;
+  } catch (...) {
+    return SCF_EINTERNAL;
+  }
 }
 
 int scf_compute_1e_deriv_block(scf_engine *eng, const scf_basis *bs,
                                  int sh1, int sh2, double *out) {
 #if LIBINT2_MAX_DERIV_ORDER >= 1
+  try {
     const auto &shells = bs->bs;
     eng->engine.compute(shells[sh1], shells[sh2]);
     const auto &result = eng->engine.results();
@@ -310,6 +329,9 @@ int scf_compute_1e_deriv_block(scf_engine *eng, const scf_basis *bs,
         }
     }
     return nderiv * n;
+  } catch (...) {
+    return SCF_EINTERNAL;
+  }
 #else
     (void)eng; (void)bs; (void)sh1; (void)sh2; (void)out;
     return 0;
@@ -319,6 +341,7 @@ int scf_compute_1e_deriv_block(scf_engine *eng, const scf_basis *bs,
 int scf_compute_eri_deriv_quartet(scf_engine *eng, const scf_basis *bs,
                                     int sh1, int sh2, int sh3, int sh4, double *out) {
 #if LIBINT2_MAX_DERIV_ORDER >= 1
+  try {
     const auto &shells = bs->bs;
     eng->engine.compute(shells[sh1], shells[sh2], shells[sh3], shells[sh4]);
     const auto &result = eng->engine.results();
@@ -338,6 +361,9 @@ int scf_compute_eri_deriv_quartet(scf_engine *eng, const scf_basis *bs,
         }
     }
     return nderiv * n;
+  } catch (...) {
+    return SCF_EINTERNAL;
+  }
 #else
     (void)eng; (void)bs; (void)sh1; (void)sh2; (void)sh3; (void)sh4; (void)out;
     return 0;
@@ -444,6 +470,7 @@ int scf_compute_eri3(scf_engine *eng, const scf_basis *obs,
                        const scf_basis *dfbs,
                        int shP, int sh1, int sh2, double *out) {
 #if LIBINT2_SUPPORT_ERI3
+  try {
     // BraKet::xs_xx rank=3: compute(aux_shell, obs_shell1, obs_shell2)
     eng->engine.compute(dfbs->bs[shP], obs->bs[sh1], obs->bs[sh2]);
     const auto &result = eng->engine.results();
@@ -454,6 +481,9 @@ int scf_compute_eri3(scf_engine *eng, const scf_basis *obs,
     int n = nP * n1 * n2;
     for (int i = 0; i < n; ++i) out[i] = result[0][i];
     return n;
+  } catch (...) {
+    return SCF_EINTERNAL;
+  }
 #else
     (void)eng; (void)obs; (void)dfbs; (void)shP; (void)sh1; (void)sh2; (void)out;
     return 0;
@@ -463,6 +493,7 @@ int scf_compute_eri3(scf_engine *eng, const scf_basis *obs,
 int scf_compute_eri2(scf_engine *eng, const scf_basis *dfbs,
                        int shP, int shQ, double *out) {
 #if LIBINT2_SUPPORT_ERI2
+  try {
     // BraKet::xs_xs rank=2: compute(aux_shell_P, aux_shell_Q)
     eng->engine.compute(dfbs->bs[shP], dfbs->bs[shQ]);
     const auto &result = eng->engine.results();
@@ -473,6 +504,9 @@ int scf_compute_eri2(scf_engine *eng, const scf_basis *dfbs,
         for (int i = 0; i < n; ++i) out[i] = result[0][i];
     }
     return n;
+  } catch (...) {
+    return SCF_EINTERNAL;
+  }
 #else
     (void)eng; (void)dfbs; (void)shP; (void)shQ; (void)out;
     return 0;
@@ -527,6 +561,7 @@ int scf_compute_eri3_deriv(scf_engine *eng, const scf_basis *obs,
                              const scf_basis *dfbs,
                              int shP, int sh1, int sh2, double *out) {
 #if LIBINT2_SUPPORT_ERI3 && LIBINT2_MAX_DERIV_ORDER >= 1
+  try {
     eng->engine.compute(dfbs->bs[shP], obs->bs[sh1], obs->bs[sh2]);
     const auto &result = eng->engine.results();
     if (result[0] == nullptr) return 0;
@@ -545,6 +580,9 @@ int scf_compute_eri3_deriv(scf_engine *eng, const scf_basis *obs,
         }
     }
     return nderiv * n;
+  } catch (...) {
+    return SCF_EINTERNAL;
+  }
 #else
     (void)eng; (void)obs; (void)dfbs; (void)shP; (void)sh1; (void)sh2; (void)out;
     return 0;
@@ -554,6 +592,7 @@ int scf_compute_eri3_deriv(scf_engine *eng, const scf_basis *obs,
 int scf_compute_eri2_deriv(scf_engine *eng, const scf_basis *dfbs,
                              int shP, int shQ, double *out) {
 #if LIBINT2_SUPPORT_ERI2 && LIBINT2_MAX_DERIV_ORDER >= 1
+  try {
     eng->engine.compute(dfbs->bs[shP], dfbs->bs[shQ]);
     const auto &result = eng->engine.results();
     if (result[0] == nullptr) return 0;
@@ -571,6 +610,9 @@ int scf_compute_eri2_deriv(scf_engine *eng, const scf_basis *dfbs,
         }
     }
     return nderiv * n;
+  } catch (...) {
+    return SCF_EINTERNAL;
+  }
 #else
     (void)eng; (void)dfbs; (void)shP; (void)shQ; (void)out;
     return 0;

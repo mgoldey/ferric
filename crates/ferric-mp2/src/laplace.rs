@@ -32,6 +32,7 @@ use ferric_quadrature::LaplaceQuadrature;
 use ferric_scf::ScfResult;
 use ndarray::{Array1, Array2};
 
+use crate::rimp2::active_occ;
 use crate::boys::{boys_localize, build_domains, build_pseudo_density_occ_sparse,
                   build_pseudo_density_vir_sparse};
 
@@ -186,7 +187,7 @@ impl LaplaceMp2 {
     ) -> Result<f64, FerricError> {
         let nbas = obs.nbasis();
         let nocc_total = mol.nelec() as usize / 2;
-        let nocc = nocc_total - frozen_core;
+        let nocc = active_occ(nocc_total, frozen_core)?;
         let nvir = nbas - nocc_total;
         let naux = dfbs.nbasis();
 
@@ -282,7 +283,7 @@ impl LaplaceMp2 {
     ) -> Result<(f64, f64, f64), FerricError> {
         let nbas = obs.nbasis();
         let nocc_total = mol.nelec() as usize / 2;
-        let nocc = nocc_total - frozen_core;
+        let nocc = active_occ(nocc_total, frozen_core)?;
         let nvir = nbas - nocc_total;
         let naux = dfbs.nbasis();
 

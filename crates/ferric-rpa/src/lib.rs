@@ -489,10 +489,10 @@ pub fn run_pdep_rpa_from_intermediates(
     let eigenvalues_freq = match laplace_chi0_quad.as_ref() {
         None => energy::eval_eigenvalues_at_frequencies(
             &eigenvectors, b_ov, &eps_occ, &eps_vir, &quad_freqs,
-        ),
+        )?,
         Some(q) => energy::eval_eigenvalues_at_frequencies_laplace(
             &eigenvectors, b_ov, &eps_occ, &eps_vir, &quad_freqs, q,
-        ),
+        )?,
     };
 
     // Step 6b: Per-frequency full inverse-dielectric matrices in the PDEP basis
@@ -501,7 +501,7 @@ pub fn run_pdep_rpa_from_intermediates(
     let inv_dielectric_freq = match laplace_chi0_quad.as_ref() {
         None => Some(energy::eval_inv_dielectric_matrices(
             &eigenvectors, b_ov, &eps_occ, &eps_vir, &quad_freqs,
-        )),
+        )?),
         Some(_) => None,
     };
 
@@ -683,13 +683,13 @@ pub fn run_u_pdep_rpa(
     let eigenvalues_freq = match laplace_pair.as_ref() {
         None => energy::eval_eigenvalues_at_frequencies_unrestricted(
             &eigenvectors, &freq_chan_a, &freq_chan_b, &quad_freqs,
-        ),
+        )?,
         Some((qa, qb)) => energy::eval_eigenvalues_at_frequencies_laplace_unrestricted(
             &eigenvectors,
             &freq_chan_a, qa,
             &freq_chan_b, qb,
             &quad_freqs,
-        ),
+        )?,
     };
 
     let e_rpa = energy::rpa_correlation_energy(&quad_weights, &eigenvalues_freq);
@@ -697,7 +697,7 @@ pub fn run_u_pdep_rpa(
     let inv_dielectric_freq = match laplace_pair.as_ref() {
         None => Some(energy::eval_inv_dielectric_matrices_unrestricted(
             &eigenvectors, &freq_chan_a, &freq_chan_b, &quad_freqs,
-        )),
+        )?),
         Some(_) => None,
     };
 

@@ -14,7 +14,7 @@
 //! response terms from the MO integral derivatives.
 
 use crate::mo_transform::transform_3center_ov;
-use crate::rimp2::cholesky_inverse_sqrt;
+use crate::rimp2::{active_occ, cholesky_inverse_sqrt};
 use ferric_core::mol::Molecule;
 use ferric_core::orbitals::OrbitalSpace;
 use ferric_core::FerricError;
@@ -559,7 +559,7 @@ pub fn oo_ri_mp2(
     let nbas = obs.nbasis();
     let nelec = mol.nelec() as usize;
     let nocc_total = nelec / 2;
-    let nocc = nocc_total - config.frozen_core;
+    let nocc = active_occ(nocc_total, config.frozen_core)?;
     let first_occ = config.frozen_core;
     let nvir = nbas - nocc_total;
     let orb = OrbitalSpace::new(nocc, nvir, nocc_total, first_occ);

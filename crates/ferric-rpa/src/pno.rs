@@ -264,7 +264,7 @@ pub fn run_pdep_rpa_osv(
     let (quad_freqs, quad_weights) = crate::quadrature::build_quadrature(&config.quadrature);
     let eigenvalues_freq = crate::energy::eval_eigenvalues_at_frequencies(
         &v_kept, &b_ov, &eps_occ, &eps_vir, &quad_freqs,
-    );
+    )?;
     let e_c = crate::energy::rpa_correlation_energy(&quad_weights, &eigenvalues_freq);
 
     let _ = n_vir_red; // returned below

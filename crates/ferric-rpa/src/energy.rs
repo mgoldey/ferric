@@ -3,7 +3,15 @@
 //! E_c^RPA = (1/2π) Σ_k w_k Σ_α [ln(λ_α(iω_k)) + (1 − λ_α(iω_k))].
 
 use crate::channel::RpaChannel;
+use ferric_core::FerricError;
 use ndarray::Array2;
+
+/// Map an eigh/inv failure on the (projected) dielectric to a clean error.
+/// A NaN/Inf dielectric — e.g. from a near-zero occ/vir gap poisoning χ₀ —
+/// must surface as `Err`, not abort the process from inside a rayon worker.
+fn dielectric_lapack_err(what: &str, e: impl std::fmt::Display) -> FerricError {
+    FerricError::Lapack(format!("{what} (NaN/Inf dielectric from near-degenerate reference?): {e}"))
+}
 
 /// E_c^RPA = (1/2π) Σ_k w_k Σ_α [ln(λ_α(iω_k)) + (1 − λ_α(iω_k))].
 ///
@@ -59,7 +67,7 @@ pub fn eval_eigenvalues_at_frequencies_laplace(
     eps_vir: &[f64],
     quad_freqs: &[f64],
     laplace: &ferric_quadrature::LaplaceQuadrature,
-) -> Array2<f64> {
+) -> Result<Array2<f64>, FerricError> {
     use crate::laplace_chi0::dielectric_matrix_laplace_into;
     use ferric_integrals::blas_threads::with_blas_threads;
     use ndarray::Array2;
@@ -84,12 +92,14 @@ pub fn eval_eigenvalues_at_frequencies_laplace(
                     dielectric_matrix_laplace_into(
                         eigenvectors, b_ov, eps_occ, eps_vir, omega, laplace, rhs_scaled, out,
                     );
-                    let (evals, _) = out.eigh(UPLO::Upper).expect("dielectric eigh failed");
-                    evals.to_vec()
+                    let (evals, _) = out
+                        .eigh(UPLO::Upper)
+                        .map_err(|e| dielectric_lapack_err("Laplace dielectric eigh failed", e))?;
+                    Ok(evals.to_vec())
                 },
             )
-            .collect()
-    });
+            .collect::<Result<Vec<Vec<f64>>, FerricError>>()
+    })?;
 
     let mut eigenvalues_freq = Array2::zeros((n_quad, m));
     for (k, row) in rows.into_iter().enumerate() {
@@ -97,7 +107,7 @@ pub fn eval_eigenvalues_at_frequencies_laplace(
             eigenvalues_freq[(k, alpha)] = val;
         }
     }
-    eigenvalues_freq
+    Ok(eigenvalues_freq)
 }
 
 /// Unrestricted variant: per-frequency eigenvalues of ε̃_U = I + Π_α + Π_β.
@@ -110,7 +120,7 @@ pub fn eval_eigenvalues_at_frequencies_unrestricted(
     chan_a: &RpaChannel,
     chan_b: &RpaChannel,
     quad_freqs: &[f64],
-) -> Array2<f64> {
+) -> Result<Array2<f64>, FerricError> {
     use crate::sternheimer::dielectric_matrix_unrestricted;
     use ferric_integrals::blas_threads::with_blas_threads;
     use ndarray_linalg::{Eigh, UPLO};
@@ -127,11 +137,13 @@ pub fn eval_eigenvalues_at_frequencies_unrestricted(
                 let eps_proj = dielectric_matrix_unrestricted(
                     eigenvectors, chan_a, chan_b, omega,
                 );
-                let (evals, _) = eps_proj.eigh(UPLO::Upper).expect("unrestricted dielectric eigh failed");
-                evals.to_vec()
+                let (evals, _) = eps_proj
+                    .eigh(UPLO::Upper)
+                    .map_err(|e| dielectric_lapack_err("unrestricted dielectric eigh failed", e))?;
+                Ok(evals.to_vec())
             })
-            .collect()
-    });
+            .collect::<Result<Vec<Vec<f64>>, FerricError>>()
+    })?;
 
     let mut out = Array2::zeros((n_quad, m));
     for (k, row) in rows.into_iter().enumerate() {
@@ -139,7 +151,7 @@ pub fn eval_eigenvalues_at_frequencies_unrestricted(
             out[(k, alpha)] = val;
         }
     }
-    out
+    Ok(out)
 }
 
 /// Laplace + unrestricted variant of [`eval_eigenvalues_at_frequencies`].
@@ -153,7 +165,7 @@ pub fn eval_eigenvalues_at_frequencies_laplace_unrestricted(
     chan_b: &RpaChannel,
     laplace_b: &ferric_quadrature::LaplaceQuadrature,
     quad_freqs: &[f64],
-) -> Array2<f64> {
+) -> Result<Array2<f64>, FerricError> {
     use crate::laplace_chi0::dielectric_matrix_laplace_unrestricted;
     use ferric_integrals::blas_threads::with_blas_threads;
     use ndarray_linalg::{Eigh, UPLO};
@@ -173,11 +185,13 @@ pub fn eval_eigenvalues_at_frequencies_laplace_unrestricted(
                     chan_b, laplace_b,
                     omega,
                 );
-                let (evals, _) = eps_proj.eigh(UPLO::Upper).expect("U-Laplace dielectric eigh failed");
-                evals.to_vec()
+                let (evals, _) = eps_proj
+                    .eigh(UPLO::Upper)
+                    .map_err(|e| dielectric_lapack_err("U-Laplace dielectric eigh failed", e))?;
+                Ok(evals.to_vec())
             })
-            .collect()
-    });
+            .collect::<Result<Vec<Vec<f64>>, FerricError>>()
+    })?;
 
     let mut out = Array2::zeros((n_quad, m));
     for (k, row) in rows.into_iter().enumerate() {
@@ -185,7 +199,7 @@ pub fn eval_eigenvalues_at_frequencies_laplace_unrestricted(
             out[(k, alpha)] = val;
         }
     }
-    out
+    Ok(out)
 }
 
 pub fn eval_eigenvalues_at_frequencies(
@@ -194,7 +208,7 @@ pub fn eval_eigenvalues_at_frequencies(
     eps_occ: &[f64],
     eps_vir: &[f64],
     quad_freqs: &[f64],
-) -> Array2<f64> {
+) -> Result<Array2<f64>, FerricError> {
     use crate::sternheimer::{build_scale_factors, dielectric_matrix_from_projection};
     use ferric_integrals::blas_threads::with_blas_threads;
     use ndarray_linalg::{Eigh, UPLO};
@@ -217,11 +231,13 @@ pub fn eval_eigenvalues_at_frequencies(
                 let scale = build_scale_factors(eps_occ, eps_vir, omega);
                 let eps_proj = dielectric_matrix_from_projection(&y, &scale);
                 // Diagonalize at each frequency — eigenvectors at ω=0 don't diagonalize ε̃(iω)
-                let (evals, _) = eps_proj.eigh(UPLO::Upper).expect("dielectric eigh failed");
-                evals.to_vec()
+                let (evals, _) = eps_proj
+                    .eigh(UPLO::Upper)
+                    .map_err(|e| dielectric_lapack_err("dielectric eigh failed", e))?;
+                Ok(evals.to_vec())
             })
-            .collect()
-    });
+            .collect::<Result<Vec<Vec<f64>>, FerricError>>()
+    })?;
 
     let mut eigenvalues_freq = Array2::zeros((n_quad, m));
     for (k, row) in rows.into_iter().enumerate() {
@@ -229,7 +245,7 @@ pub fn eval_eigenvalues_at_frequencies(
             eigenvalues_freq[(k, alpha)] = val;
         }
     }
-    eigenvalues_freq
+    Ok(eigenvalues_freq)
 }
 
 /// Per-frequency *dynamic inverse-dielectric* matrices in the PDEP basis.
@@ -250,7 +266,7 @@ pub fn eval_inv_dielectric_matrices(
     eps_occ: &[f64],
     eps_vir: &[f64],
     quad_freqs: &[f64],
-) -> Vec<Array2<f64>> {
+) -> Result<Vec<Array2<f64>>, FerricError> {
     use crate::sternheimer::{build_scale_factors, dielectric_matrix_from_projection};
     use ferric_integrals::blas_threads::with_blas_threads;
     use ndarray_linalg::Inverse;
@@ -269,12 +285,12 @@ pub fn eval_inv_dielectric_matrices(
                 let eps_proj = dielectric_matrix_from_projection(&y, &scale);
                 let mut winv = eps_proj
                     .inv()
-                    .expect("PDEP-basis dielectric inversion failed");
+                    .map_err(|e| dielectric_lapack_err("PDEP-basis dielectric inversion failed", e))?;
                 // Subtract identity → dynamic part W̃_d = ε̃⁻¹ − I.
                 for d in 0..m {
                     winv[(d, d)] -= 1.0;
                 }
-                winv
+                Ok(winv)
             })
             .collect()
     })
@@ -287,7 +303,7 @@ pub fn eval_inv_dielectric_matrices_unrestricted(
     chan_a: &RpaChannel,
     chan_b: &RpaChannel,
     quad_freqs: &[f64],
-) -> Vec<Array2<f64>> {
+) -> Result<Vec<Array2<f64>>, FerricError> {
     use crate::sternheimer::dielectric_matrix_unrestricted;
     use ferric_integrals::blas_threads::with_blas_threads;
     use ndarray_linalg::Inverse;
@@ -302,11 +318,11 @@ pub fn eval_inv_dielectric_matrices_unrestricted(
                 let eps_proj = dielectric_matrix_unrestricted(eigenvectors, chan_a, chan_b, omega);
                 let mut winv = eps_proj
                     .inv()
-                    .expect("U PDEP-basis dielectric inversion failed");
+                    .map_err(|e| dielectric_lapack_err("U PDEP-basis dielectric inversion failed", e))?;
                 for d in 0..m {
                     winv[(d, d)] -= 1.0;
                 }
-                winv
+                Ok(winv)
             })
             .collect()
     })

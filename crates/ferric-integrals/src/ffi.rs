@@ -39,7 +39,7 @@ extern "C" {
     pub fn scf_engine_set_point_charges(eng: *mut c_void, atoms: *const CAtom, natoms: c_int) -> c_int;
     pub fn scf_compute_1e_block(eng: *mut c_void, bs: *const c_void, sh1: c_int, sh2: c_int, out: *mut c_double) -> c_int;
     pub fn scf_compute_eri_quartet(eng: *mut c_void, bs: *const c_void, sh1: c_int, sh2: c_int, sh3: c_int, sh4: c_int, out: *mut c_double) -> c_int;
-    pub fn scf_compute_schwarz(eng: *mut c_void, bs: *const c_void, qmat: *mut c_double);
+    pub fn scf_compute_schwarz(eng: *mut c_void, bs: *const c_void, qmat: *mut c_double) -> c_int;
     pub fn scf_engine_create_deriv(op_kind: c_int, omega: c_double, max_nprim: c_int, max_l: c_int, precision: c_double) -> *mut c_void;
     pub fn scf_engine_create_geminal(op_kind: c_int, ngauss: c_int, exps: *const c_double, coefs: *const c_double, max_nprim: c_int, max_l: c_int, precision: c_double) -> *mut c_void;
     pub fn scf_compute_1e_deriv_block(eng: *mut c_void, bs: *const c_void, sh1: c_int, sh2: c_int, out: *mut c_double) -> c_int;

@@ -115,9 +115,10 @@ impl Engine {
         
         let mut max_written = 0;
         self.buf[..n].fill(0.0);
-        
+
         for &(coeff, h) in &self.handles {
             let written = unsafe { ffi::scf_compute_eri_quartet(h, prep.handle(), sh1 as c_int, sh2 as c_int, sh3 as c_int, sh4 as c_int, self.scratch.as_mut_ptr()) };
+            assert!(written >= 0, "libint2 internal error in eri quartet ({sh1},{sh2},{sh3},{sh4}): status {written}");
             if written > 0 {
                 let w = written as usize;
                 max_written = max_written.max(w);
@@ -133,6 +134,7 @@ impl Engine {
         let n = prep.shell_dims()[sh1] * prep.shell_dims()[sh2];
         if self.buf.len() < n { self.buf.resize(n, 0.0); }
         let written = unsafe { ffi::scf_compute_1e_block(self.handles[0].1, prep.handle(), sh1 as c_int, sh2 as c_int, self.buf.as_mut_ptr()) };
+        assert!(written >= 0, "libint2 internal error in 1e block ({sh1},{sh2}): status {written}");
         &self.buf[..written as usize]
     }
 
@@ -164,13 +166,20 @@ impl Engine {
         Ok(Engine { handles, buf: vec![0.0; 12 * max_fn * max_fn * max_fn * max_fn], scratch: vec![0.0; 12 * max_fn * max_fn * max_fn * max_fn] })
     }
 
-    /// Returns 6 blocks of n1*n2 doubles: [dx1, dy1, dz1, dx2, dy2, dz2].
+    /// Returns the derivative blocks of n1*n2 doubles each: 6 blocks
+    /// [dx1, dy1, dz1, dx2, dy2, dz2] for overlap/kinetic engines, and
+    /// 3*(2 + natoms) blocks for a nuclear engine with point charges set
+    /// (the extra blocks are the operator-center derivatives).
     /// Returns None if all derivatives were screened to zero.
     pub fn compute_1e_deriv_block(&mut self, prep: &PreparedBasis, sh1: usize, sh2: usize) -> Option<&[f64]> {
         let n = prep.shell_dims()[sh1] * prep.shell_dims()[sh2];
-        let total = 6 * n;
+        // Worst case is the nuclear operator: 3*(2 + natoms) blocks. Sizing for
+        // it unconditionally keeps the shim's write (nderiv * n doubles) in
+        // bounds for every 1e engine kind.
+        let total = 3 * (2 + prep.atoms().len()) * n;
         if self.buf.len() < total { self.buf.resize(total, 0.0); }
         let written = unsafe { ffi::scf_compute_1e_deriv_block(self.handles[0].1, prep.handle(), sh1 as c_int, sh2 as c_int, self.buf.as_mut_ptr()) };
+        assert!(written >= 0, "libint2 internal error in 1e deriv block ({sh1},{sh2}): status {written}");
         if written == 0 { None } else { Some(&self.buf[..written as usize]) }
     }
 
@@ -230,6 +239,7 @@ impl Engine {
         
         for &(coeff, h) in &self.handles {
             let written = unsafe { ffi::scf_compute_eri3(h, obs.handle(), dfbs.handle(), sh_p as c_int, sh1 as c_int, sh2 as c_int, self.scratch.as_mut_ptr()) };
+            assert!(written >= 0, "libint2 internal error in eri3 ({sh_p}|{sh1},{sh2}): status {written}");
             if written > 0 {
                 let w = written as usize;
                 max_written = max_written.max(w);
@@ -250,6 +260,7 @@ impl Engine {
         
         for &(coeff, h) in &self.handles {
             let written = unsafe { ffi::scf_compute_eri2(h, dfbs.handle(), sh_p as c_int, sh_q as c_int, self.scratch.as_mut_ptr()) };
+            assert!(written >= 0, "libint2 internal error in eri2 ({sh_p}|{sh_q}): status {written}");
             if written > 0 {
                 let w = written as usize;
                 max_written = max_written.max(w);
@@ -274,6 +285,7 @@ impl Engine {
         
         for &(coeff, h) in &self.handles {
             let written = unsafe { ffi::scf_compute_eri_deriv_quartet(h, prep.handle(), sh1 as c_int, sh2 as c_int, sh3 as c_int, sh4 as c_int, self.scratch.as_mut_ptr()) };
+            assert!(written >= 0, "libint2 internal error in eri deriv quartet ({sh1},{sh2},{sh3},{sh4}): status {written}");
             if written > 0 {
                 let w = written as usize;
                 max_written = max_written.max(w);
@@ -340,6 +352,7 @@ impl Engine {
         
         for &(coeff, h) in &self.handles {
             let written = unsafe { ffi::scf_compute_eri3_deriv(h, obs.handle(), dfbs.handle(), sh_p as c_int, sh1 as c_int, sh2 as c_int, self.scratch.as_mut_ptr()) };
+            assert!(written >= 0, "libint2 internal error in eri3 deriv ({sh_p}|{sh1},{sh2}): status {written}");
             if written > 0 {
                 let w = written as usize;
                 max_written = max_written.max(w);
@@ -361,6 +374,7 @@ impl Engine {
         
         for &(coeff, h) in &self.handles {
             let written = unsafe { ffi::scf_compute_eri2_deriv(h, dfbs.handle(), sh_p as c_int, sh_q as c_int, self.scratch.as_mut_ptr()) };
+            assert!(written >= 0, "libint2 internal error in eri2 deriv ({sh_p}|{sh_q}): status {written}");
             if written > 0 {
                 let w = written as usize;
                 max_written = max_written.max(w);
@@ -542,6 +556,31 @@ mod tests {
         let v_coulomb = eng_coulomb.compute_quartet(&prep, 0, 0, 0, 0).unwrap()[0];
         
         assert!(v > 0.0 && v < v_coulomb, "terfc integral {v} should be attenuated (0 < v < {v_coulomb})");
+    }
+
+    #[test]
+    fn test_nuclear_deriv_block_safe_wrapper_sized_for_operator_centers() {
+        // A nuclear deriv engine with point charges returns 3*(2+natoms) blocks,
+        // not 6 — the safe wrapper must size its buffer for the operator-center
+        // derivatives too (regression: it allocated 6*n and the shim wrote
+        // 3*(2+natoms)*n, past the end of the Vec).
+        let (_, prep) = h2_sto3g();
+        let mut eng = Engine::new_1e_deriv(ffi::OP_NUCLEAR, &prep, 1e-14).unwrap();
+        eng.set_point_charges(&prep);
+        let n = prep.shell_dims()[0] * prep.shell_dims()[1];
+        let natoms = prep.atoms().len();
+        let deriv = eng
+            .compute_1e_deriv_block(&prep, 0, 1)
+            .expect("nuclear deriv block screened unexpectedly");
+        assert_eq!(deriv.len(), 3 * (2 + natoms) * n);
+        // Translational invariance: shell-center + charge-center derivatives
+        // sum to zero per coordinate.
+        for coord in 0..3 {
+            for idx in 0..n {
+                let sum: f64 = (0..2 + natoms).map(|c| deriv[(3 * c + coord) * n + idx]).sum();
+                assert!(sum.abs() < 1e-10, "coord={coord} idx={idx} sum={sum:.2e}");
+            }
+        }
     }
 
     #[test]

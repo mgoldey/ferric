@@ -103,7 +103,7 @@
 //! advantage is reduced basis-set requirements.
 
 use crate::mo_transform::transform_3center_ov;
-use crate::rimp2::{cholesky_inverse_sqrt, ri_mp2_spin_components, RiMp2Config, SpinComponents};
+use crate::rimp2::{active_occ, cholesky_inverse_sqrt, ri_mp2_spin_components, RiMp2Config, SpinComponents};
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -240,7 +240,7 @@ fn attenuated_spin_components_screened(
     let nbas = obs.nbasis();
     let nelec = mol.nelec() as usize;
     let nocc_total = nelec / 2;
-    let nocc = nocc_total - frozen_core;
+    let nocc = active_occ(nocc_total, frozen_core)?;
     let first_occ = frozen_core;
     let nvir = nbas - nocc_total;
     let naux = dfbs.nbasis();

@@ -28,6 +28,24 @@ use ndarray::Array2;
 
 use crate::config::PdepRpaConfig;
 
+/// Solve the (naux × naux) screened-dielectric system ε̃·y^d = w^d for the
+/// three Cartesian right-hand sides, propagating LAPACK failure (singular ε̃
+/// from a near-zero orbital-energy gap) instead of panicking.
+pub(crate) fn solve_dielectric_3(
+    eps_mat: &Array2<f64>,
+    w: &[ndarray::Array1<f64>; 3],
+) -> Result<[ndarray::Array1<f64>; 3], FerricError> {
+    use ndarray_linalg::Solve;
+    let mut solve_one = |d: usize| -> Result<ndarray::Array1<f64>, FerricError> {
+        eps_mat.solve(&w[d]).map_err(|e| {
+            FerricError::Lapack(format!(
+                "dielectric solve failed (singular ε̃ — near-degenerate occ/vir gap?): {e}"
+            ))
+        })
+    };
+    Ok([solve_one(0)?, solve_one(1)?, solve_one(2)?])
+}
+
 /// Static (ω=0) closed-shell polarizability tensor in atomic units.
 #[derive(Debug, Clone)]
 pub struct PolarizabilityResult {
@@ -289,6 +307,7 @@ pub fn electric_field_at_atoms(
                         buf.as_mut_ptr(),
                     )
                 };
+                assert!(written >= 0, "libint2 internal error in nuclear deriv block ({s1},{s2}): status {written}");
                 if written == 0 {
                     continue;
                 }
@@ -501,10 +520,7 @@ pub fn pdep_polarizability_static(
     }
 
     // Solve ε̃ · y^d = w^d  (naux × naux SPD).
-    let y_vec: [ndarray::Array1<f64>; 3] = {
-        use ndarray_linalg::Solve;
-        std::array::from_fn(|d| eps_mat.solve(&w_vec[d]).unwrap())
-    };
+    let y_vec = solve_dielectric_3(&eps_mat, &w_vec)?;
 
     // α_ij = 4 μ^i^T D^{-1} μ^j − 16 w^i^T y^j
     //
@@ -684,7 +700,6 @@ pub fn pdep_polarizability_static_unrestricted(
     _cfg: &PdepRpaConfig,
 ) -> Result<PolarizabilityResult, FerricError> {
     use ferric_mp2::rimp2::{compute_rpa_intermediates_spin, RiMp2Config};
-    use ndarray_linalg::Solve;
 
     let mp2_cfg = RiMp2Config { frozen_core: 0 };
 
@@ -772,7 +787,7 @@ pub fn pdep_polarizability_static_unrestricted(
     }
 
     // Solve ε̃ · y^d = w_total^d
-    let y_vec: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| eps_mat.solve(&w_total[d]).unwrap());
+    let y_vec = solve_dielectric_3(&eps_mat, &w_total)?;
 
     // Correct UHF formula derived from the full 2×2 spin-block SMW:
     //   α = 2 · μ̃^T (A+B)^{-1} μ̃
@@ -870,7 +885,6 @@ pub fn pdep_polarizability_becke(
 ) -> Result<Vec<[[f64; 3]; 3]>, FerricError> {
     use ferric_dft::grid::{build_atomic_grid, AtomicGridConfig};
     use ferric_dft::ao_grid::eval_basis_on_points;
-    use ndarray_linalg::Solve;
 
     // Open-shell: the dynamic Becke path has a complete per-spin (U) branch, and
     // ω=0 reproduces the static per-atom α exactly. Delegate to it rather than
@@ -1056,8 +1070,7 @@ pub fn pdep_polarizability_becke(
         std::array::from_fn(|d| &mu_flat[d] * &inv_de);
     let w_mol: [ndarray::Array1<f64>; 3] =
         std::array::from_fn(|d| b_ov.dot(&mu_flat_inv[d]));
-    let y_mol: [ndarray::Array1<f64>; 3] =
-        std::array::from_fn(|d| eps_mat.solve(&w_mol[d]).unwrap());
+    let y_mol = solve_dielectric_3(&eps_mat, &w_mol)?;
 
     // Assemble per-atom α^A.
     let mut alpha_per_atom: Vec<[[f64; 3]; 3]> = vec![[[0.0; 3]; 3]; natoms];
@@ -1127,7 +1140,6 @@ pub fn pdep_polarizability_becke_dynamic(
     // Closed-shell falls through to the single-B̃ path below.
     if !matches!(rhf.spin, Spin::Restricted) {
         use ferric_mp2::rimp2::compute_rpa_intermediates_spin;
-        use ndarray_linalg::Solve;
 
         let inter_a = compute_rpa_intermediates_spin(mol, obs, dfbs, op, rhf, &mp2_cfg, true)?;
         let inter_b = compute_rpa_intermediates_spin(mol, obs, dfbs, op, rhf, &mp2_cfg, false)?;
@@ -1287,8 +1299,7 @@ pub fn pdep_polarizability_becke_dynamic(
                 let wb = inter_b.b_ov.dot(&(&mu_flat_b[d] * &g_b));
                 wa + wb
             });
-            let y_total: [ndarray::Array1<f64>; 3] =
-                std::array::from_fn(|d| eps_mat.solve(&w_total[d]).unwrap());
+            let y_total = solve_dielectric_3(&eps_mat, &w_total)?;
 
             for a in 0..natoms {
                 // w_ai_total^d = B̃_α (μ_α^{A,d} ⊙ g_α) + B̃_β (μ_β^{A,d} ⊙ g_β).
@@ -1518,10 +1529,7 @@ pub fn pdep_polarizability_becke_dynamic(
         // Solve ε̃ y^j = B·(g⊙μ^{Becke,j}) once per direction.
         let mu_g: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| &mu_flat[d] * &g);
         let w_mol: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| b_ov.dot(&mu_g[d]));
-        let y_mol: [ndarray::Array1<f64>; 3] = {
-            use ndarray_linalg::Solve;
-            std::array::from_fn(|d| eps_mat.solve(&w_mol[d]).unwrap())
-        };
+        let y_mol = solve_dielectric_3(&eps_mat, &w_mol)?;
 
         for a in 0..natoms {
             let mut tensor = [[0.0_f64; 3]; 3];
@@ -1560,7 +1568,6 @@ pub fn pdep_polarizability_hirshfeld(
 ) -> Result<Vec<[[f64; 3]; 3]>, FerricError> {
     use ferric_export::cube::GridSpec;
     use ferric_export::gto_eval::eval_basis_on_grid;
-    use ndarray_linalg::Solve;
 
     if !matches!(rhf.spin, Spin::Restricted) {
         return Err(FerricError::General(
@@ -1810,8 +1817,7 @@ pub fn pdep_polarizability_hirshfeld(
         std::array::from_fn(|d| &mu_flat[d] * &inv_de);
     let w_mol: [ndarray::Array1<f64>; 3] =
         std::array::from_fn(|d| b_ov.dot(&mu_flat_inv[d]));
-    let y_mol: [ndarray::Array1<f64>; 3] =
-        std::array::from_fn(|d| eps_mat.solve(&w_mol[d]).unwrap());
+    let y_mol = solve_dielectric_3(&eps_mat, &w_mol)?;
 
     // PASS 2: assemble α^A.
     for a in 0..natoms {
@@ -1934,7 +1940,6 @@ pub fn pdep_polarizability_hirshfeld_dynamic(
 ) -> Result<Vec<Vec<[[f64; 3]; 3]>>, FerricError> {
     use ferric_export::cube::GridSpec;
     use ferric_export::gto_eval::eval_basis_on_grid;
-    use ndarray_linalg::Solve;
 
     if !matches!(rhf.spin, Spin::Restricted) {
         return Err(FerricError::General(
@@ -2101,8 +2106,7 @@ pub fn pdep_polarizability_hirshfeld_dynamic(
         // Solve ε̃ y^j = B·(g⊙μ^j) once per direction (molecular Hirshfeld dipole).
         let mu_g: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| &mu_flat[d] * &g);
         let w_mol: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| b_ov.dot(&mu_g[d]));
-        let y_mol: [ndarray::Array1<f64>; 3] =
-            std::array::from_fn(|d| eps_mat.solve(&w_mol[d]).unwrap());
+        let y_mol = solve_dielectric_3(&eps_mat, &w_mol)?;
 
         for a in 0..natoms {
             let mut tensor = [[0.0_f64; 3]; 3];
@@ -2142,7 +2146,6 @@ pub fn molecular_dynamic_polarizability(
     _cfg: &PdepRpaConfig,
     freqs: &[f64],
 ) -> Result<Vec<[[f64; 3]; 3]>, FerricError> {
-    use ndarray_linalg::Solve;
 
     // Open-shell: spin-summed dielectric ε̃ = I + 2 B̃_α diag(g_α) B̃_αᵀ
     // + 2 B̃_β diag(g_β) B̃_βᵀ, lab-frame molecular dipole per spin. Mirrors the
@@ -2254,8 +2257,7 @@ pub fn molecular_dynamic_polarizability(
                 }
                 wa + inter_b.b_ov.dot(&(&mu_b[d] * &g_b))
             });
-            let y_total: [ndarray::Array1<f64>; 3] =
-                std::array::from_fn(|d| eps_mat.solve(&w_total[d]).unwrap());
+            let y_total = solve_dielectric_3(&eps_mat, &w_total)?;
 
             let mut t = [[0.0_f64; 3]; 3];
             for d in 0..3 {
@@ -2336,8 +2338,8 @@ pub fn molecular_dynamic_polarizability(
             eps_mat[(p, p)] += 1.0;
         }
         let mu_g: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| &mu_flat[d] * &g);
-        let y: [ndarray::Array1<f64>; 3] =
-            std::array::from_fn(|d| eps_mat.solve(&b_ov.dot(&mu_g[d])).unwrap());
+        let w: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| b_ov.dot(&mu_g[d]));
+        let y = solve_dielectric_3(&eps_mat, &w)?;
 
         let mut t = [[0.0_f64; 3]; 3];
         for d in 0..3 {

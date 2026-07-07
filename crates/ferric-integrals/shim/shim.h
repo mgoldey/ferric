@@ -80,21 +80,26 @@ void          scf_engine_destroy(scf_engine *eng);
 int  scf_engine_set_point_charges(scf_engine *eng,
                                     const scf_atom *atoms, int natoms);
 
+/* All scf_compute_* functions catch C++ exceptions from libint (an exception
+ * must never unwind across the C ABI) and return SCF_EINTERNAL (negative). */
+
 /* Compute one shell-pair block of a one-electron operator. Writes into out
  * (caller-allocated, sized n1*n2 doubles where n1, n2 are the shells'
- * function counts). Returns the number of doubles written. */
+ * function counts). Returns the number of doubles written, or SCF_EINTERNAL. */
 int scf_compute_1e_block(scf_engine *eng, const scf_basis *bs,
                            int sh1, int sh2, double *out);
 
 /* Compute one shell-quartet (sh1 sh2 | sh3 sh4). Writes n1*n2*n3*n4 doubles
- * into out in row-major (i j k l). Returns n_written, or 0 if libint screened. */
+ * into out in row-major (i j k l). Returns n_written, 0 if libint screened,
+ * or SCF_EINTERNAL. */
 int scf_compute_eri_quartet(scf_engine *eng, const scf_basis *bs,
                               int sh1, int sh2, int sh3, int sh4,
                               double *out);
 
 /* Compute the shell-pair Schwarz Q matrix, Q[i,j] = sqrt(max |(ij|ij)|).
- * out is caller-allocated row-major (nshells, nshells). */
-void scf_compute_schwarz(scf_engine *eng, const scf_basis *bs, double *qmat);
+ * out is caller-allocated row-major (nshells, nshells).
+ * Returns SCF_OK or SCF_EINTERNAL. */
+int scf_compute_schwarz(scf_engine *eng, const scf_basis *bs, double *qmat);
 
 /* --- 3-center and 2-center ERIs for density fitting / RI --- */
 
