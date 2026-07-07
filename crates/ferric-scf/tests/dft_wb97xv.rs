@@ -68,6 +68,8 @@ fn run_case(label: &str, xyz: &str, expected_file: &str) {
         "[{label}] ferric = {:.10} Ha,  PySCF = {:.10} Ha,  err = {err:.2e}",
         res.energy, r.e_total
     );
+    // Full-precision print for bit-level cross-run comparison.
+    eprintln!("[{label}] ferric full precision = {:.17e} Ha", res.energy);
     assert!(
         err < TOL,
         "wB97X-V E_total mismatch for {label}: err = {err:.2e} (ferric={:.10}, pyscf={:.10})",

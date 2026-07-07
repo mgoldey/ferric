@@ -3,7 +3,7 @@
 //! Closed-shell only this round. The input density matrix is expected to be
 //! the **total** density (trace = N_e), as produced by ferric's `ScfResult::density_total`.
 
-use ndarray::{Array1, Array2, Array3};
+use ndarray::{Array1, Array2, Array3, Axis, Zip};
 
 #[derive(Debug, Clone)]
 pub struct DensityGrid {
@@ -25,6 +25,10 @@ pub struct DensityGrid {
 ///
 /// The ∇ρ expression uses μ↔ν symmetry of D: the full sum
 /// Σ_μν D_μν (χ_μ ∇χ_ν + χ_ν ∇χ_μ) equals 2 Σ_μν D_μν χ_μ ∇χ_ν when D = Dᵀ.
+///
+/// The reductions over μ run row-wise (contiguous in the C-order (nbf, npts)
+/// layout) with per-point accumulation order identical to the naive
+/// point-major loops.
 pub fn eval_density_closed(
     d: &Array2<f64>,
     chi: &Array2<f64>,        // (nbf, npts)
@@ -37,33 +41,35 @@ pub fn eval_density_closed(
     // Phi_{μg} = Σ_ν D_μν χ_νg  (one GEMM)
     let phi: Array2<f64> = d.dot(chi);
 
+    // ρ_g = Σ_μ χ_μg · Φ_μg
     let mut rho = Array1::<f64>::zeros(npts);
-    for g in 0..npts {
-        let mut s = 0.0_f64;
-        for mu in 0..nbf {
-            s += chi[(mu, g)] * phi[(mu, g)];
-        }
-        rho[g] = s;
+    for mu in 0..nbf {
+        Zip::from(&mut rho)
+            .and(chi.row(mu))
+            .and(phi.row(mu))
+            .for_each(|r, &c, &p| *r += c * p);
     }
 
+    // ∇ρ_ag = 2 Σ_μ Φ_μg · ∂_a χ_μg
     let mut grad = Array2::<f64>::zeros((3, npts));
     for axis in 0..3 {
-        for g in 0..npts {
-            let mut s = 0.0_f64;
-            for mu in 0..nbf {
-                s += phi[(mu, g)] * dchi[(axis, mu, g)];
-            }
-            grad[(axis, g)] = 2.0 * s;
+        let dchi_axis = dchi.index_axis(Axis(0), axis);
+        let mut grow = grad.row_mut(axis);
+        for mu in 0..nbf {
+            Zip::from(&mut grow)
+                .and(phi.row(mu))
+                .and(dchi_axis.row(mu))
+                .for_each(|g, &p, &dc| *g += p * dc);
         }
+        grow.mapv_inplace(|x| 2.0 * x);
     }
 
     let mut sigma = Array1::<f64>::zeros(npts);
-    for g in 0..npts {
-        let gx = grad[(0, g)];
-        let gy = grad[(1, g)];
-        let gz = grad[(2, g)];
-        sigma[g] = gx * gx + gy * gy + gz * gz;
-    }
+    Zip::from(&mut sigma)
+        .and(grad.row(0))
+        .and(grad.row(1))
+        .and(grad.row(2))
+        .for_each(|s, &gx, &gy, &gz| *s = gx * gx + gy * gy + gz * gz);
 
     DensityGrid { rho, grad, sigma }
 }
@@ -84,28 +90,67 @@ pub struct UksDensityGrid {
     pub sigma: Array2<f64>,
 }
 
+/// Fused α/β evaluation: two GEMMs (one per spin — unavoidable, D differs),
+/// then a single pass over χ / ∇χ accumulating both spins at once, and all
+/// three σ channels (αα, αβ, ββ) computed together. χ and ∇χ are read once
+/// instead of twice, and σ_αα/σ_ββ are not computed twice as they were when
+/// this delegated to `eval_density_closed` per spin.
 pub fn eval_density_uks(
     d_a: &Array2<f64>,
     d_b: &Array2<f64>,
     chi: &Array2<f64>,
     dchi: &Array3<f64>,
 ) -> UksDensityGrid {
-    let a = eval_density_closed(d_a, chi, dchi);
-    let b = eval_density_closed(d_b, chi, dchi);
-    let npts = a.rho.len();
+    let (nbf, npts) = chi.dim();
+    debug_assert_eq!(d_a.dim(), (nbf, nbf));
+    debug_assert_eq!(d_b.dim(), (nbf, nbf));
+    debug_assert_eq!(dchi.dim(), (3, nbf, npts));
+
+    let phi_a: Array2<f64> = d_a.dot(chi);
+    let phi_b: Array2<f64> = d_b.dot(chi);
+
+    let mut rho_a = Array1::<f64>::zeros(npts);
+    let mut rho_b = Array1::<f64>::zeros(npts);
+    for mu in 0..nbf {
+        Zip::from(&mut rho_a)
+            .and(&mut rho_b)
+            .and(chi.row(mu))
+            .and(phi_a.row(mu))
+            .and(phi_b.row(mu))
+            .for_each(|ra, rb, &c, &pa, &pb| {
+                *ra += c * pa;
+                *rb += c * pb;
+            });
+    }
+
+    let mut grad_a = Array2::<f64>::zeros((3, npts));
+    let mut grad_b = Array2::<f64>::zeros((3, npts));
+    for axis in 0..3 {
+        let dchi_axis = dchi.index_axis(Axis(0), axis);
+        let mut ga = grad_a.row_mut(axis);
+        let mut gb = grad_b.row_mut(axis);
+        for mu in 0..nbf {
+            Zip::from(&mut ga)
+                .and(&mut gb)
+                .and(phi_a.row(mu))
+                .and(phi_b.row(mu))
+                .and(dchi_axis.row(mu))
+                .for_each(|ga, gb, &pa, &pb, &dc| {
+                    *ga += pa * dc;
+                    *gb += pb * dc;
+                });
+        }
+        ga.mapv_inplace(|x| 2.0 * x);
+        gb.mapv_inplace(|x| 2.0 * x);
+    }
+
     let mut sigma = Array2::<f64>::zeros((3, npts));
     for g in 0..npts {
-        let (ax, ay, az) = (a.grad[(0, g)], a.grad[(1, g)], a.grad[(2, g)]);
-        let (bx, by, bz) = (b.grad[(0, g)], b.grad[(1, g)], b.grad[(2, g)]);
+        let (ax, ay, az) = (grad_a[(0, g)], grad_a[(1, g)], grad_a[(2, g)]);
+        let (bx, by, bz) = (grad_b[(0, g)], grad_b[(1, g)], grad_b[(2, g)]);
         sigma[(0, g)] = ax * ax + ay * ay + az * az;
         sigma[(1, g)] = ax * bx + ay * by + az * bz;
         sigma[(2, g)] = bx * bx + by * by + bz * bz;
     }
-    UksDensityGrid {
-        rho_a: a.rho,
-        rho_b: b.rho,
-        grad_a: a.grad,
-        grad_b: b.grad,
-        sigma,
-    }
+    UksDensityGrid { rho_a, rho_b, grad_a, grad_b, sigma }
 }
