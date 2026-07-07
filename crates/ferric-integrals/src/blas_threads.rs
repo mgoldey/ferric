@@ -75,9 +75,16 @@ pub fn with_blas_threads<R>(n: usize, f: impl FnOnce() -> R) -> R {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    // The BLAS thread count and OPENBLAS_NUM_THREADS are process-global, and
+    // the default test harness runs tests on parallel threads — serialize
+    // every test that touches them.
+    static GLOBAL_THREAD_STATE: Mutex<()> = Mutex::new(());
 
     #[test]
     fn sets_and_restores() {
+        let _g = GLOBAL_THREAD_STATE.lock().unwrap_or_else(|e| e.into_inner());
         let outer = unsafe { openblas_get_num_threads() };
         let inside = with_blas_threads(1, || unsafe { openblas_get_num_threads() });
         assert_eq!(inside, 1, "guard should set BLAS threads to 1 inside");
@@ -87,6 +94,7 @@ mod tests {
 
     #[test]
     fn init_threading_pins_to_one_by_default() {
+        let _g = GLOBAL_THREAD_STATE.lock().unwrap_or_else(|e| e.into_inner());
         // No explicit override → baseline pinned to 1.
         std::env::remove_var("OPENBLAS_NUM_THREADS");
         init_threading();
@@ -96,6 +104,7 @@ mod tests {
 
     #[test]
     fn init_threading_respects_explicit_override() {
+        let _g = GLOBAL_THREAD_STATE.lock().unwrap_or_else(|e| e.into_inner());
         // Explicit OPENBLAS_NUM_THREADS is honored, not clobbered to 1.
         std::env::set_var("OPENBLAS_NUM_THREADS", "3");
         init_threading();
@@ -105,6 +114,7 @@ mod tests {
 
     #[test]
     fn nested_compose() {
+        let _g = GLOBAL_THREAD_STATE.lock().unwrap_or_else(|e| e.into_inner());
         with_blas_threads(4, || {
             let n4 = unsafe { openblas_get_num_threads() };
             assert_eq!(n4, 4);
