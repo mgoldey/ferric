@@ -12,7 +12,7 @@
 
 use crate::rimp2::active_occ;
 use crate::u_rimp2::{compute_u_mp2_amplitudes, compute_u_mp2_orbital_gradient, URiMp2Components};
-use crate::oo_rimp2::compute_b_full_mo;
+use crate::oo_rimp2::{compute_b_full_mo_with, OoRiMp2AoTensors};
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_core::parallel::ParallelContext;
@@ -262,6 +262,9 @@ pub fn u_oo_ri_mp2(
 
     let h = oneelectron::hcore(obs);
 
+    // AO-side invariants for the full-MO B tensors: built once, reused every iter.
+    let ao = OoRiMp2AoTensors::build(obs, dfbs, op)?;
+
     // Initial UHF energy + Fock
     let (mut e_hf, mut f_a, mut f_b) = compute_uhf_energy(
         &ctx, mol, obs, bounds, &c_a, &c_b, nocc_total_a, nocc_total_b, &h,
@@ -291,8 +294,8 @@ pub fn u_oo_ri_mp2(
 
     for iter in 1..=config.max_iter {
         // Full-MO B tensors for gradient
-        let b_full_a = compute_b_full_mo(obs, dfbs, op, &c_a)?;
-        let b_full_b = compute_b_full_mo(obs, dfbs, op, &c_b)?;
+        let b_full_a = compute_b_full_mo_with(&ao, &c_a);
+        let b_full_b = compute_b_full_mo_with(&ao, &c_b);
         let (g_mp2_a, g_mp2_b) = compute_u_mp2_orbital_gradient(&amps, &b_full_a, &b_full_b);
 
         // Add HF Brillouin term: g_total = g_mp2 − 2·F^σ_{a+nocc, i}
