@@ -68,7 +68,9 @@ fn atom_ground_state_mult(z: i32) -> usize {
 /// # Arguments
 /// * `mol`  – the molecular geometry (atoms' Z and positions)
 /// * `prep` – the full molecular prepared basis (provides atom→basis mapping)
-/// * `bs_name` – name of the orbital basis set (looked up via `ferric_core::basis::bundled`)
+/// * `bs`   – the orbital basis set (typically `prep.basis_set()`); its shells
+///   and any ECP definitions are reused for the per-element free-atom solves, so
+///   file-loaded (non-bundled) bases work without a name round-trip.
 ///
 /// # Returns
 /// A block-diagonal density matrix D of shape `(nbasis, nbasis)` where each
@@ -77,9 +79,8 @@ fn atom_ground_state_mult(z: i32) -> usize {
 pub fn sad_guess(
     mol: &ferric_core::mol::Molecule,
     prep: &ferric_integrals::basis_bridge::PreparedBasis,
-    bs_name: &str,
+    bs: &ferric_core::basis::BasisSet,
 ) -> Result<Array2<f64>, FerricError> {
-    use ferric_core::basis;
     use ferric_core::mol::Molecule;
     use ferric_integrals::basis_bridge::PreparedBasis;
     use ferric_core::parallel::ParallelContext;
@@ -114,7 +115,6 @@ pub fn sad_guess(
     // Key = Z; Value = atomic density matrix (nao_atom × nao_atom).
     let mut atom_density_cache: HashMap<i32, Array2<f64>> = HashMap::new();
 
-    let bs = basis::bundled(bs_name)?;
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
 
@@ -133,13 +133,19 @@ pub fn sad_guess(
                 .ok_or_else(|| FerricError::General(format!("unknown Z={z}")))?;
             let axyz = format!("1\n{sym}\n{sym} 0 0 0\n");
             let mult = atom_ground_state_mult(z);
-            let amol = Molecule::parse_xyz(&axyz, 0, mult)?;
-            let aprep = PreparedBasis::new(&amol, &bs)?;
+            let mut amol = Molecule::parse_xyz(&axyz, 0, mult)?;
+            // Carry the ECP core count for PP bases (Rb, I, …) so the free-atom
+            // electron count matches the valence-only molecular solve. No-op for
+            // all-electron bases (apply_ecp early-returns on empty bs.ecps).
+            amol.apply_ecp(bs);
+            let aprep = PreparedBasis::new(&amol, bs)?;
             let abounds = SchwarzBounds::compute(op, &aprep)?;
 
             // Run the free-atom SCF on a serial 1-thread rayon pool to avoid the
             // 18× rayon overhead on single-atom systems (see rayon-penalty-on-free-atom-scf
             // memory). Serial pool ensures the atom solve doesn't starve the caller.
+            // `use_sad_guess: false` breaks the recursion: these free-atom solves
+            // ARE the SAD building blocks, so they must start from hcore.
             let atom_d_full: Array2<f64> = run_serial_pool(|| {
                 if mult == 1 {
                     // Closed-shell atom: use RHF.
@@ -147,6 +153,7 @@ pub fn sad_guess(
                         max_iter: 200,
                         energy_conv: 1e-8,
                         density_conv: 1e-6,
+                        use_sad_guess: false,
                         ..Default::default()
                     };
                     solve_rhf(&ctx, &amol, &aprep, op, &abounds, &acfg)
@@ -158,6 +165,7 @@ pub fn sad_guess(
                         energy_conv: 1e-8,
                         density_conv: 1e-6,
                         mom_after_iter: 5,
+                        use_sad_guess: false,
                         ..Default::default()
                     };
                     solve_uhf(&ctx, &amol, &aprep, &abounds, &acfg)
@@ -270,7 +278,7 @@ mod tests {
         let bs = basis::bundled("sto-3g").unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
         let s = oneelectron::overlap(&prep);
-        let d = sad_guess(&mol, &prep, "sto-3g").unwrap();
+        let d = sad_guess(&mol, &prep, &bs).unwrap();
         let n = prep.nbasis();
         // D symmetric
         for i in 0..n {
@@ -313,7 +321,7 @@ mod tests {
         let ctx = ParallelContext::default();
 
         // Build SAD initial density
-        let d_sad = sad_guess(&mol, &prep, "aug-cc-pvdz").expect("SAD guess must succeed");
+        let d_sad = sad_guess(&mol, &prep, &bs).expect("SAD guess must succeed");
 
         // Run RHF starting from the SAD density, NO level shift
         let config = RhfConfig {

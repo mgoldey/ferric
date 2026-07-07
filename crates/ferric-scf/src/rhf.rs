@@ -103,6 +103,13 @@ pub struct RhfConfig {
     /// hcore or SAD guess internally. Shape must match `(nbasis, nbasis)`. The
     /// primary use-case is a SAD guess built by `guess::sad_guess(...)`.
     pub init_guess_density: Option<Array2<f64>>,
+    /// When `true` (the default) and no `init_guess_density` is supplied, the SCF
+    /// starts from a SAD (superposition-of-atomic-densities) guess computed via
+    /// `guess::sad_guess`, falling back to the hcore guess if SAD fails. SAD cures
+    /// the heavy-atom RHF divergence class (COSe/C2H3Br) that hcore triggers. Set
+    /// `false` to force the bare hcore guess — used internally by `sad_guess` for
+    /// its free-atom solves to break the recursion.
+    pub use_sad_guess: bool,
 }
 
 impl Default for RhfConfig {
@@ -131,6 +138,7 @@ impl Default for RhfConfig {
             fractional_occ: false,
             three_index_budget_bytes: 2 * 1024 * 1024 * 1024,
             init_guess_density: None,
+            use_sad_guess: true,
         }
     }
 }
@@ -176,8 +184,17 @@ pub fn solve_rhf(
     let nocc = (nelec / 2) as usize;
     let vnn = mol.nuclear_repulsion();
 
+    // Initial density: explicit override > SAD (default) > hcore. SAD is the
+    // default because the bare hcore guess diverges on heavy-atom closed shells
+    // (COSe/C2H3Br); if SAD fails to build (e.g. a free-atom solve doesn't
+    // converge) we fall back to hcore rather than aborting the whole SCF.
     let mut d = if let Some(d0) = config.init_guess_density.as_ref() {
         d0.clone()
+    } else if config.use_sad_guess {
+        match crate::guess::sad_guess(mol, prep, prep.basis_set()) {
+            Ok(d_sad) => d_sad,
+            Err(_) => hcore_guess(&s, &h, nocc)?,
+        }
     } else {
         hcore_guess(&s, &h, nocc)?
     };
