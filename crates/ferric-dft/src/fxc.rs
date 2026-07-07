@@ -126,23 +126,23 @@ impl LdaFxcKernel {
         }
 
         // Back-project to AO: δV^σ_{μν} = Σ_g w_g δV^σ(r_g) χ_μ(r_g) χ_ν(r_g)
-        let mut dvxc_a = Array2::<f64>::zeros((nbf, nbf));
-        let mut dvxc_b = Array2::<f64>::zeros((nbf, nbf));
+        //
+        // Pre-scale χ columns by (w · δV^σ) per grid point, then GEMM:
+        // chi_scaled @ chiᵀ — same idiom as vxc.rs::semilocal_vxc_closed's
+        // LDA piece.
+        let mut chi_scaled_a = self.chi.clone();
+        let mut chi_scaled_b = self.chi.clone();
         for g in 0..npts {
             let w = self.grid[g].weight;
             let wa = w * dv_a[g];
             let wb = w * dv_b[g];
             for mu in 0..nbf {
-                let chi_mu = self.chi[(mu, g)];
-                let kmu_a = wa * chi_mu;
-                let kmu_b = wb * chi_mu;
-                for nu in 0..nbf {
-                    let chi_nu = self.chi[(nu, g)];
-                    dvxc_a[(mu, nu)] += kmu_a * chi_nu;
-                    dvxc_b[(mu, nu)] += kmu_b * chi_nu;
-                }
+                chi_scaled_a[(mu, g)] *= wa;
+                chi_scaled_b[(mu, g)] *= wb;
             }
         }
+        let dvxc_a: Array2<f64> = chi_scaled_a.dot(&self.chi.t());
+        let dvxc_b: Array2<f64> = chi_scaled_b.dot(&self.chi.t());
         (dvxc_a, dvxc_b)
     }
 
@@ -156,5 +156,102 @@ impl LdaFxcKernel {
         let rho_a = eval_density_closed(d_a, &self.chi, &self.dchi).rho.to_vec();
         let rho_b = eval_density_closed(d_b, &self.chi, &self.dchi).rho.to_vec();
         (rho_a, rho_b)
+    }
+}
+
+/// Reference triple-loop back-projection, kept only to prove the GEMM in
+/// `apply_with_ref` is numerically equivalent. Mirrors the pre-optimization
+/// code exactly:
+///   δV^σ_{μν} = Σ_g w_g δV^σ(r_g) χ_μ(r_g) χ_ν(r_g)
+#[cfg(test)]
+fn backproject_loop_reference(
+    chi: &Array2<f64>,
+    weights: &[f64],
+    dv_a: &[f64],
+    dv_b: &[f64],
+) -> (Array2<f64>, Array2<f64>) {
+    let (nbf, npts) = chi.dim();
+    let mut dvxc_a = Array2::<f64>::zeros((nbf, nbf));
+    let mut dvxc_b = Array2::<f64>::zeros((nbf, nbf));
+    for g in 0..npts {
+        let w = weights[g];
+        let wa = w * dv_a[g];
+        let wb = w * dv_b[g];
+        for mu in 0..nbf {
+            let chi_mu = chi[(mu, g)];
+            let kmu_a = wa * chi_mu;
+            let kmu_b = wb * chi_mu;
+            for nu in 0..nbf {
+                let chi_nu = chi[(nu, g)];
+                dvxc_a[(mu, nu)] += kmu_a * chi_nu;
+                dvxc_b[(mu, nu)] += kmu_b * chi_nu;
+            }
+        }
+    }
+    (dvxc_a, dvxc_b)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Deterministic xorshift64 PRNG — no external `rand` dependency in the
+    /// workspace, and we only need reproducible values in [-1, 1).
+    struct Xorshift64(u64);
+    impl Xorshift64 {
+        fn next_f64(&mut self) -> f64 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.0 = x;
+            // Map to [-1, 1).
+            ((x >> 11) as f64) / ((1u64 << 53) as f64) * 2.0 - 1.0
+        }
+    }
+
+    /// GEMM back-projection must agree with the old triple loop to
+    /// ~1e-12 (summation-order differences only), on small random inputs.
+    #[test]
+    fn gemm_backprojection_matches_loop_reference() {
+        let npts = 64;
+        let nbf = 10;
+        let mut rng = Xorshift64(0x243F6A8885A308D3);
+
+        let chi = Array2::<f64>::from_shape_fn((nbf, npts), |_| rng.next_f64());
+        let weights: Vec<f64> = (0..npts).map(|_| 0.5 + 0.5 * rng.next_f64().abs()).collect();
+        let dv_a: Vec<f64> = (0..npts).map(|_| rng.next_f64()).collect();
+        let dv_b: Vec<f64> = (0..npts).map(|_| rng.next_f64()).collect();
+
+        // Reference: old scalar triple loop.
+        let (ref_a, ref_b) = backproject_loop_reference(&chi, &weights, &dv_a, &dv_b);
+
+        // New: GEMM idiom (chi_scaled.dot(&chi.t())), exactly as in
+        // LdaFxcKernel::apply_with_ref.
+        let mut chi_scaled_a = chi.clone();
+        let mut chi_scaled_b = chi.clone();
+        for g in 0..npts {
+            let w = weights[g];
+            let wa = w * dv_a[g];
+            let wb = w * dv_b[g];
+            for mu in 0..nbf {
+                chi_scaled_a[(mu, g)] *= wa;
+                chi_scaled_b[(mu, g)] *= wb;
+            }
+        }
+        let gemm_a: Array2<f64> = chi_scaled_a.dot(&chi.t());
+        let gemm_b: Array2<f64> = chi_scaled_b.dot(&chi.t());
+
+        let max_abs_diff = |x: &Array2<f64>, y: &Array2<f64>| -> f64 {
+            x.iter()
+                .zip(y.iter())
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0_f64, f64::max)
+        };
+
+        let diff_a = max_abs_diff(&gemm_a, &ref_a);
+        let diff_b = max_abs_diff(&gemm_b, &ref_b);
+        assert!(diff_a < 1e-12, "V_a GEMM vs loop max abs diff = {diff_a:e}");
+        assert!(diff_b < 1e-12, "V_b GEMM vs loop max abs diff = {diff_b:e}");
     }
 }
