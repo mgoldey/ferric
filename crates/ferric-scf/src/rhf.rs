@@ -19,7 +19,6 @@ use crate::screening::SchwarzBounds;
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
-use ferric_integrals::engine::Engine;
 use ferric_integrals::oneelectron;
 use ferric_integrals::operator::Operator;
 use ferric_core::parallel::ParallelContext;
@@ -307,6 +306,27 @@ pub fn solve_rhf(
     // shift (a projector onto the prior virtuals). None before the first solve.
     let mut c_prev: Option<Array2<f64>> = None;
 
+    // Direct J/K builders hoisted out of the SCF loop: each lazily builds a
+    // per-thread libint2 EnginePool on first use (engines are constructed behind
+    // a global ctor mutex), so a loop-local builder would pay that construction
+    // every iteration. Which builders exist mirrors the branch structure below.
+    let df_any = df_j.is_some() || df_k.is_some();
+    let mut direct_j: Option<DirectJ> = if (df_any && df_j.is_none()) || (!df_any && k_builder.is_some()) {
+        Some(DirectJ::new(ctx, prep, bounds, config.integral_thresh))
+    } else {
+        None
+    };
+    let mut direct_k: Option<DirectK> = if df_any && df_k.is_none() {
+        Some(DirectK::new(ctx, prep, bounds, config.integral_thresh))
+    } else {
+        None
+    };
+    let mut direct_jk: Option<DirectJK> = if !df_any && k_builder.is_none() {
+        Some(DirectJK::new(ctx, prep, bounds, config.integral_thresh))
+    } else {
+        None
+    };
+
     for iter in 1..=config.max_iter {
         ctx.check_interrupted()?;
         // Build J and K using selected builder (reuse pre-allocated buffers)
@@ -314,27 +334,27 @@ pub fn solve_rhf(
         k_buf.fill(0.0);
         // Build J: DF-J if configured, else fall through to combined direct path below.
         // Build K: DF-K > LinkK > combined DirectJK, in priority order.
-        if df_j.is_some() || df_k.is_some() {
+        if df_any {
             if let Some(dfj) = df_j.as_mut() {
                 dfj.build(&d, &mut j_buf)?;
             } else {
-                let mut direct_j = DirectJ::new(ctx, prep, bounds, config.integral_thresh);
-                total_quartets += direct_j.build(&d, &mut j_buf)?;
+                let dj = direct_j.as_mut().expect("DirectJ built before loop");
+                total_quartets += dj.build(&d, &mut j_buf)?;
             }
             if let Some(dfk) = df_k.as_mut() {
                 dfk.build(&d, &mut k_buf)?;
             } else {
-                let mut direct_k = DirectK::new(ctx, prep, bounds, config.integral_thresh);
-                total_quartets += <DirectK as KBuilder>::build(&mut direct_k, &d, &mut k_buf)?;
+                let dk = direct_k.as_mut().expect("DirectK built before loop");
+                total_quartets += <DirectK as KBuilder>::build(dk, &d, &mut k_buf)?;
             }
         } else if let Some(lk) = k_builder.as_mut() {
-            let mut direct_j = DirectJ::new(ctx, prep, bounds, config.integral_thresh);
-            total_quartets += direct_j.build(&d, &mut j_buf)?;
+            let dj = direct_j.as_mut().expect("DirectJ built before loop");
+            total_quartets += dj.build(&d, &mut j_buf)?;
             lk.update_density(&d);
             total_quartets += lk.build(&d, &mut k_buf)?;
         } else {
-            let mut direct_jk = DirectJK::new(ctx, prep, bounds, config.integral_thresh);
-            total_quartets += direct_jk.build(&d, &mut j_buf, &mut k_buf)?;
+            let djk = direct_jk.as_mut().expect("DirectJK built before loop");
+            total_quartets += djk.build(&d, &mut j_buf, &mut k_buf)?;
         }
 
         // k_total accumulates the exact-exchange contribution to be subtracted from F
@@ -530,16 +550,19 @@ pub fn build_jk(
         .flat_map(|s1| (0..=s1).map(move |s2| (s1, s2)))
         .collect();
 
+    // One engine per rayon thread (see engine_pool) — constructing an engine in
+    // the fold init fires once per work-chunk, not per thread, storming the
+    // global libint2 ctor mutex on heavy-element bases.
+    let pool = crate::engine_pool::EnginePool::new(bounds.op, prep, 1e-14)?;
     let total_jk = shell_pairs.into_par_iter().fold(
         || (
-            Engine::new_2e(bounds.op, prep, 1e-14).unwrap(),
             Array2::zeros((nbf, nbf)),
             Array2::zeros((nbf, nbf)),
             0usize
         ),
-        |(mut engine, mut local_j, mut local_k, mut local_count), (s1, s2)| {
+        |(mut local_j, mut local_k, mut local_count), (s1, s2)| {
             if ferric_core::INTERRUPT.load(std::sync::atomic::Ordering::Relaxed) {
-                return (engine, local_j, local_k, local_count);
+                return (local_j, local_k, local_count);
             }
             let b12 = bounds.q[(s1, s2)];
             let d12 = d_max_shell[(s1, s2)];
@@ -547,9 +570,10 @@ pub fn build_jk(
             let (o1, o2) = (offs[s1], offs[s2]);
             let sym12 = s1 != s2;
 
+            pool.with(|engine| {
             for s3 in 0..=s1 {
                 if s3 % 100 == 0 && ferric_core::INTERRUPT.load(Ordering::Relaxed) {
-                    return (engine, local_j, local_k, local_count);
+                    return;
                 }
                 let s4max = if s3 == s1 { s2 } else { s3 };
                 let d13 = d_max_shell[(s1, s3)];
@@ -660,9 +684,10 @@ pub fn build_jk(
                     }
                 }
             }
-            (engine, local_j, local_k, local_count)
+            });
+            (local_j, local_k, local_count)
         }
-    ).map(|(_, j, k, count)| {
+    ).map(|(j, k, count)| {
         computed_quartets.fetch_add(count, Ordering::Relaxed);
         (j, k)
     }).reduce(

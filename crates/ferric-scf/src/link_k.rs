@@ -13,7 +13,6 @@ use crate::screening::Bound;
 use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
-use ferric_integrals::engine::Engine;
 use ferric_integrals::operator::Operator;
 use ndarray::Array2;
 
@@ -32,6 +31,10 @@ pub struct LinkK<'a, B: Bound> {
     dp: Option<DensityPairs>,
     op: Operator,
     thresh: f64,
+    // Lazily built on first build() and reused for the builder's lifetime:
+    // libint2 engine construction is serialized behind a global ctor mutex,
+    // so constructing engines per fold-chunk (or per iteration) storms it.
+    pool: Option<crate::engine_pool::EnginePool>,
 }
 
 impl<'a, B: Bound> LinkK<'a, B> {
@@ -57,6 +60,7 @@ impl<'a, B: Bound> LinkK<'a, B> {
             dp: None,
             op,
             thresh,
+            pool: None,
         }
     }
 }
@@ -66,6 +70,14 @@ use rayon::prelude::*;
 impl<'a, B: Bound + Sync> KBuilder for LinkK<'a, B> {
     fn build(&mut self, d: &Array2<f64>, k: &mut Array2<f64>) -> Result<usize, FerricError> {
         self.ctx.check_interrupted()?;
+
+        // One engine per rayon thread (see engine_pool) — the fold init below
+        // runs once per work-chunk, so constructing an engine there storms the
+        // global libint2 ctor mutex.
+        if self.pool.is_none() {
+            self.pool = Some(crate::engine_pool::EnginePool::new(self.op, self.prep, 1e-14)?);
+        }
+        let pool = self.pool.as_ref().expect("pool initialized above");
 
         // Ensure density pairs are built.
         if self.dp.is_none() {
@@ -77,7 +89,6 @@ impl<'a, B: Bound + Sync> KBuilder for LinkK<'a, B> {
         let dims = self.prep.shell_dims();
         let offs = self.prep.shell_offsets();
         let thresh = self.thresh;
-        let op = self.op;
         let rank = self.ctx.rank;
         let size = self.ctx.size;
 
@@ -100,16 +111,16 @@ impl<'a, B: Bound + Sync> KBuilder for LinkK<'a, B> {
             .fold(
                 || {
                     let k_local = Array2::zeros(k.raw_dim());
-                    let engine = Engine::new_2e(op, self.prep, 1e-14).unwrap();
                     // Bitvec dedup for (cs3, cs4) — size nsh² bits; ish and jsh are fixed per task.
                     let seen: Vec<u64> = vec![0u64; (nsh * nsh).div_ceil(64)];
-                    Ok((k_local, engine, seen, Vec::<usize>::new(), 0usize))
+                    Ok((k_local, seen, Vec::<usize>::new(), 0usize))
                 },
                 |acc: Result<_, FerricError>, (ish, jsh)| {
-                    let (mut k_local, mut engine, mut seen, mut dirty, mut count) = acc?;
+                    let (mut k_local, mut seen, mut dirty, mut count) = acc?;
                     for &w in &dirty { seen[w] = 0; }
                     dirty.clear();
 
+                    pool.with(|engine| {
                     // Inline merge: sp.partners(ish) ∩ dp.partners(jsh) — no Vec allocation.
                     let sp_ish = self.sp.partners(ish);
                     let dp_jsh = dp.partners(jsh);
@@ -183,10 +194,11 @@ impl<'a, B: Bound + Sync> KBuilder for LinkK<'a, B> {
                             }
                         }
                     }
-                    Ok((k_local, engine, seen, dirty, count))
+                    });
+                    Ok((k_local, seen, dirty, count))
                 },
             )
-            .map(|res| res.map(|(k_local, _, _, _, count)| (k_local, count)))
+            .map(|res| res.map(|(k_local, _, _, count)| (k_local, count)))
             .reduce(
                 || Ok((Array2::zeros(k.raw_dim()), 0usize)),
                 |a, b| {
