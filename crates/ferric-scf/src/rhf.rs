@@ -98,6 +98,11 @@ pub struct RhfConfig {
     /// aux-blocks to disk instead of allocating in core. Default 2 GB. The env
     /// var `FERRIC_OOC_BUDGET_GB` overrides this at runtime.
     pub three_index_budget_bytes: usize,
+    /// Optional externally-supplied initial density matrix. When `Some(d)`, the
+    /// SCF loop uses this density as the starting point instead of computing an
+    /// hcore or SAD guess internally. Shape must match `(nbasis, nbasis)`. The
+    /// primary use-case is a SAD guess built by `guess::sad_guess(...)`.
+    pub init_guess_density: Option<Array2<f64>>,
 }
 
 impl Default for RhfConfig {
@@ -125,6 +130,7 @@ impl Default for RhfConfig {
             cdft_lambda_tol: 1e-5,
             fractional_occ: false,
             three_index_budget_bytes: 2 * 1024 * 1024 * 1024,
+            init_guess_density: None,
         }
     }
 }
@@ -170,7 +176,11 @@ pub fn solve_rhf(
     let nocc = (nelec / 2) as usize;
     let vnn = mol.nuclear_repulsion();
 
-    let mut d = hcore_guess(&s, &h, nocc)?;
+    let mut d = if let Some(d0) = config.init_guess_density.as_ref() {
+        d0.clone()
+    } else {
+        hcore_guess(&s, &h, nocc)?
+    };
     let mut f = Array2::zeros((n, n));
     let mut j_buf = Array2::<f64>::zeros((n, n));
     let mut k_buf = Array2::<f64>::zeros((n, n));
