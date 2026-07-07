@@ -372,10 +372,7 @@ pub fn solve_rhf(
 
         // Electronic energy BEFORE adding V_xc (V_xc is one-body in F but
         // E_xc is its own integral).
-        let e_elec_no_xc: f64 = (0..n)
-            .flat_map(|i| (0..n).map(move |j| (i, j)))
-            .map(|(i, j)| 0.5 * d[(i, j)] * (h[(i, j)] + f[(i, j)]))
-            .sum();
+        let e_elec_no_xc: f64 = 0.5 * (&d * &(&h + &f)).sum();
         let e_xc = if let Some(x) = xc_contrib.as_ref() {
             x.add_xc(&d, &mut f)
         } else {

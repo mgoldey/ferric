@@ -217,14 +217,8 @@ pub fn solve_rohf(
         }
 
         // Pre-XC electronic energy.
-        let e_elec_no_xc: f64 = 0.5
-            * ((0..n)
-                .flat_map(|i| (0..n).map(move |j| (i, j)))
-                .map(|(i, j)| {
-                    (h[(i, j)] + f_a[(i, j)]) * d_a[(i, j)]
-                        + (h[(i, j)] + f_b[(i, j)]) * d_b[(i, j)]
-                })
-                .sum::<f64>());
+        let e_elec_no_xc: f64 =
+            0.5 * ((&(&h + &f_a) * &d_a).sum() + (&(&h + &f_b) * &d_b).sum());
         let e_xc = if let Some(x) = xc_contrib.as_ref() {
             x.add_xc_uks(&d_a, &d_b, &mut f_a, &mut f_b)
         } else {
