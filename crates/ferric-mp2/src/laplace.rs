@@ -18,7 +18,8 @@
 //! 1. **MO-based (`compute_mo`)**: Transforms the 3-center integrals to the MO basis.
 //!    This is $O(N^4)$ and used primarily for validating the quadrature convergence.
 //! 2. **AO/MO hybrid (`compute_ao`)**: J term in AO basis via pseudo-densities (supports
-//!    future sparse path); K term in MO basis via Gram matrix (cheaper than AO Gram).
+//!    future sparse path); K term in MO basis via blocked wide-GEMM Gram contraction
+//!    (`laplace_exchange_energy`) on τ-weighted amplitudes hoisted out of the point loop.
 //!
 //! ## Reference
 //! Häser & Almlöf, Chem. Phys. Lett. 191, 299 (1992).
@@ -89,6 +90,74 @@ pub struct LaplaceMp2Result {
     pub e_ss: f64,
 }
 
+/// Laplace-MP2 exchange (K) trace for one quadrature point.
+///
+/// Given the τ-weighted RI amplitudes `b_t` in MO basis, shaped
+/// `(naux, nocc*nvir)` row-major so that `b_t[P, i*nvir + a] = B^P_ia(t)`,
+/// compute
+/// ```text
+/// e_exch = Σ_{P,i,Q,j} G_PQ[i,j] · G_PQ[j,i],   G_PQ[i,j] = Σ_a B^P_ia B^Q_ja.
+/// ```
+///
+/// Reshaping `b_t` to `X[(P,i), a]` of shape `(naux*nocc) × nvir` is free
+/// (the storage is already contiguous in that order), so `Y = X Xᵀ` gives
+/// `Y[(P,i),(Q,j)] = G_PQ[i,j]` in a SINGLE wide GEMM per row-block. We block
+/// the leading `(P,i)` index so the intermediate `Y_blk` stays bounded while the
+/// GEMM contraction dimension (`nvir`) and inner dimension (`naux*nocc`) stay
+/// wide — one large GEMM per block instead of `naux²` tiny `nocc×nocc` GEMMs.
+///
+/// The contraction `Σ Y[Pi,Qj]·Y[Pj,Qi]` swaps the occupied indices *within*
+/// each `(P,Q)` block, so it is evaluated per `nocc×nocc` sub-block of `Y`.
+fn laplace_exchange_energy(b_t: &Array2<f64>, naux: usize, nocc: usize, nvir: usize) -> f64 {
+    // X[(P,i), a]: same buffer as b_t, reinterpreted (naux*nocc) × nvir.
+    let x = b_t
+        .view()
+        .into_shape_with_order((naux * nocc, nvir))
+        .expect("b_t is contiguous (naux, nocc*nvir)");
+    let rows = naux * nocc;
+
+    // Block the leading (P,i) index, capping the Y_blk intermediate at ~64 MiB.
+    // Block rows are whole P's (multiples of nocc) because the occupied-swap
+    // contraction needs the full (P,Q) nocc×nocc sub-block inside one Y_blk.
+    const TARGET_BYTES: usize = 64 * 1024 * 1024;
+    let block_rows = (TARGET_BYTES / (rows.max(1) * 8)).clamp(nocc.max(1), rows);
+    let block_p = (block_rows / nocc.max(1)).max(1);
+
+    (0..naux)
+        .step_by(block_p)
+        .map(|p0| {
+            let p_end = (p0 + block_p).min(naux);
+            let x_blk = x.slice(ndarray::s![p0 * nocc..p_end * nocc, ..]);
+            // Y_blk[(P,i),(Q,j)] = G_PQ[i,j], shape (block*nocc) × (naux*nocc):
+            // one wide GEMM with inner dimension nvir.
+            let y_blk = x_blk.dot(&x.t());
+
+            // Contract: for each P in this block and every Q, sum over the
+            // nocc×nocc sub-block G_PQ[i,j]*G_PQ[j,i].
+            let mut e_blk = 0.0f64;
+            let ys = y_blk.as_slice().unwrap();
+            let ncol = naux * nocc;
+            for pi_local in 0..(p_end - p0) {
+                for q in 0..naux {
+                    // G_PQ[i,j] = y_blk[pi_local*nocc + i, q*nocc + j]
+                    // G_PQ[j,i] = y_blk[pi_local*nocc + j, q*nocc + i]
+                    let base_i = pi_local * nocc; // block-local row base for occ i
+                    let col_base = q * nocc;
+                    for i in 0..nocc {
+                        let row_i = (base_i + i) * ncol + col_base;
+                        for j in 0..nocc {
+                            let g_ij = ys[row_i + j];
+                            let g_ji = ys[(base_i + j) * ncol + col_base + i];
+                            e_blk += g_ij * g_ji;
+                        }
+                    }
+                }
+            }
+            e_blk
+        })
+        .sum()
+}
+
 pub fn laplace_ri_mp2(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -136,6 +205,39 @@ pub fn laplace_lmp2(
         e_os,
         e_ss,
     })
+}
+
+/// Apply the τ-weighting `B^P_ia(t) = B^P_ia · exp(-t(ε_a - ε_i)/2)` to a copy
+/// of the hoisted MO amplitudes.
+///
+/// `b_mo_flat` is `(naux, nocc*nvir)` row-major (`[P, i*nvir + a]`) and stays
+/// constant across quadrature points — only the diagonal scaling depends on `t`.
+/// The factor separates as `exp(t ε_i/2) · exp(-t ε_a/2)`; we precompute the
+/// per-occ and per-vir exponentials (nocc + nvir `exp` calls) and scale by their
+/// outer product instead of one `exp` per (i,a) element.
+fn weighted_b_mo(
+    b_mo_flat: &Array2<f64>,
+    eps_occ: &[f64],
+    eps_vir: &[f64],
+    nocc: usize,
+    nvir: usize,
+    t: f64,
+) -> Array2<f64> {
+    // Per-point scalings: occ_e[i] = exp(t ε_i/2), vir_e[a] = exp(-t ε_a/2).
+    let occ_e: Vec<f64> = eps_occ.iter().map(|&e| (0.5 * t * e).exp()).collect();
+    let vir_e: Vec<f64> = eps_vir.iter().map(|&e| (-0.5 * t * e).exp()).collect();
+    let mut b_t = b_mo_flat.clone();
+    for mut row in b_t.rows_mut() {
+        let r = row.as_slice_mut().unwrap();
+        for i in 0..nocc {
+            let oi = occ_e[i];
+            let base = i * nvir;
+            for a in 0..nvir {
+                r[base + a] *= oi * vir_e[a];
+            }
+        }
+    }
+    b_t
 }
 
 /// Laplace-transform MP2 energy builder.
@@ -208,53 +310,22 @@ impl LaplaceMp2 {
         let eri3_mo = crate::mo_transform::transform_3center_ov(&eri3_ao, &c_occ, &c_vir);
         let b_flat = v_inv_sqrt.dot(&eri3_mo.into_shape_with_order((naux, nocc * nvir)).unwrap());
 
+        // Hoist per-orbital energies: only the diagonal τ-scaling depends on the
+        // quadrature point, `b_flat` (geometry/basis) is constant.
+        let occ_scale: Vec<f64> = (0..nocc).map(|i| eps[frozen_core + i]).collect();
+        let vir_scale: Vec<f64> = (0..nvir).map(|a| eps[nocc_total + a]).collect();
+
         // 2. Parallel quadrature over points
         let e_corr: f64 = self.points.par_iter().zip(self.weights.par_iter()).map(|(&t, &w)| {
             // Weighted amplitudes: B_ia(t) = B_ia * exp(-t * (eps_a - eps_i) / 2)
-            let mut b_t = b_flat.clone();
-            for i in 0..nocc {
-                let e_i = eps[frozen_core + i];
-                for a in 0..nvir {
-                    let e_a = eps[nocc_total + a];
-                    let factor = (-0.5 * t * (e_a - e_i)).exp();
-                    for p in 0..naux {
-                        b_t[(p, i * nvir + a)] *= factor;
-                    }
-                }
-            }
+            let b_t = weighted_b_mo(&b_flat, &occ_scale, &vir_scale, nocc, nvir, t);
 
             // J_PQ = sum_{ia} B_ia^P B_ia^Q
             let j_mat = b_t.dot(&b_t.t());
             let e_coul = j_mat.iter().map(|&x| x * x).sum::<f64>();
 
-            // Exchange part: sum_{Pi, Qj} G_{Pi, Qj} G_{Pj, Qi}
-            let b_reshape = b_t.into_shape_with_order((naux, nocc, nvir)).unwrap();
-            let mut g = Array2::<f64>::zeros((naux * nocc, naux * nocc));
-            for a in 0..nvir {
-                for i in 0..nocc {
-                    for p in 0..naux {
-                        let val_pi = b_reshape[(p, i, a)];
-                        for j in 0..nocc {
-                            for q in 0..naux {
-                                g[(p * nocc + i, q * nocc + j)] += val_pi * b_reshape[(q, j, a)];
-                            }
-                        }
-                    }
-                }
-            }
-
-            let mut e_exch: f64 = 0.0;
-            for p in 0..naux {
-                for i in 0..nocc {
-                    for q in 0..naux {
-                        for j in 0..nocc {
-                            let g_pi_qj: f64 = g[(p * nocc + i, q * nocc + j)];
-                            let g_pj_qi: f64 = g[(p * nocc + j, q * nocc + i)];
-                            e_exch += g_pi_qj * g_pj_qi;
-                        }
-                    }
-                }
-            }
+            // Exchange: single blocked wide GEMM instead of the dense (naux·nocc)² Gram.
+            let e_exch = laplace_exchange_energy(&b_t, naux, nocc, nvir);
 
             -w * (2.0 * e_coul - e_exch)
         }).sum();
@@ -267,7 +338,9 @@ impl LaplaceMp2 {
     /// - J term: AO pseudo-density formulation. With `domain_cutoff_bohr = Some(r)`,
     ///   Boys-localizes the occupied MOs and restricts P(t) to spatial domains,
     ///   enabling linear-scaling pseudo-densities for large molecules.
-    /// - K term: MO Gram matrix — O(naux² × nocc² × nvir).
+    /// - K term: MO basis, blocked wide-GEMM Gram contraction — O(naux² × nocc² × nvir)
+    ///   FLOPs but executed as (naux·nocc)×nvir GEMM blocks with a ~64 MiB intermediate cap,
+    ///   with the un-weighted (P|ia) amplitudes hoisted out of the quadrature loop.
     // Distinct inputs (system, two bases, operator, reference, and two locality
     // knobs); nothing to bundle beyond what `self` already holds.
     #[allow(clippy::too_many_arguments)]
@@ -336,9 +409,12 @@ impl LaplaceMp2 {
             .map(|p| SparseBSlice::from_dense(&b_ao.slice(ndarray::s![p, .., ..]).to_owned(), 1e-12))
             .collect();
 
-        // MO-basis integrals for K: b_mo[P, i*nvir+a] = (P|ia)
+        // MO-basis integrals for K: b_mo[P, i*nvir+a] = (P|ia). Hoisted — constant
+        // across quadrature points; only the diagonal τ-scaling depends on t.
         let eri3_mo = crate::mo_transform::transform_3center_ov(&b_ao, &c_occ, &c_vir);
         let b_mo_flat = eri3_mo.into_shape_with_order((naux, nocc * nvir)).unwrap();
+        let occ_scale: Vec<f64> = (0..nocc).map(|i| eps[frozen_core + i]).collect();
+        let vir_scale: Vec<f64> = (0..nvir).map(|a| eps[nocc_total + a]).collect();
 
         // Parallel over quadrature points — each point is independent.
         // Inner BLAS calls use multithreaded DGEMM; no nested rayon.
@@ -375,33 +451,12 @@ impl LaplaceMp2 {
             let e_os_k: f64 = j_mat.iter().map(|&x| x * x).sum();
 
             // --- K term in MO basis ---
-            // Apply Laplace weights: B_ia(t) = B_ia * exp(-t*(ε_a - ε_i)/2)
-            let mut b_t = b_mo_flat.clone();
-            for i in 0..nocc {
-                let e_i = eps[frozen_core + i];
-                for a in 0..nvir {
-                    let factor = (-0.5 * t * (eps[nocc_total + a] - e_i)).exp();
-                    for p in 0..naux {
-                        b_t[(p, i * nvir + a)] *= factor;
-                    }
-                }
-            }
-            // e_exch = Σ_{Pi,Qj} G[Pi,Qj]*G[Pj,Qi]
-            //        = Σ_{P,Q} Σ_{ij} G_PQ[i,j] * G_PQ[j,i]
-            //        = Σ_{P,Q} Tr(G_PQ²)   where G_PQ = B_P @ B_Q^T (nocc×nocc)
-            // Memory: O(naux × nocc × nvir) — no large Gram matrix.
-            let b_3d = b_t.into_shape_with_order((naux, nocc, nvir)).unwrap();
-            let b_slices_mo: Vec<Array2<f64>> = (0..naux)
-                .map(|p| b_3d.slice(ndarray::s![p, .., ..]).to_owned())
-                .collect();
-            let e_exch_k: f64 = (0..naux).map(|p| {
-                (0..naux).map(|q| {
-                    let g_pq = b_slices_mo[p].dot(&b_slices_mo[q].t()); // nocc × nocc
-                    // Tr(G_PQ²) = Σ_{ij} G_PQ[i,j] * G_PQ[j,i]
-                    let gs = g_pq.as_slice().unwrap();
-                    (0..nocc).map(|i| (0..nocc).map(|j| gs[i*nocc+j] * gs[j*nocc+i]).sum::<f64>()).sum::<f64>()
-                }).sum::<f64>()
-            }).sum();
+            // Apply Laplace weights B_ia(t) = B_ia·exp(-t(ε_a-ε_i)/2) to the
+            // hoisted amplitudes, then contract via one blocked wide GEMM
+            // (Y = X Xᵀ, X = b_t viewed as (naux·nocc)×nvir) instead of the
+            // naux² tiny nocc×nocc GEMMs the previous loop used.
+            let b_t = weighted_b_mo(&b_mo_flat, &occ_scale, &vir_scale, nocc, nvir, t);
+            let e_exch_k = laplace_exchange_energy(&b_t, naux, nocc, nvir);
 
             let e_ss_k = e_os_k - e_exch_k;
             (-w * e_os_k, -w * e_ss_k)
