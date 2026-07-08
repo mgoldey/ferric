@@ -712,10 +712,29 @@ pub fn build_jk(
     Ok(computed_quartets.load(Ordering::SeqCst))
 }
 
-/// Linear-dependence threshold for canonical orthogonalization: eigenvectors of
-/// the overlap matrix with eigenvalue below this are dropped from the variational
-/// space. PySCF's default is ~1e-6 to 1e-7; 1e-6 is conservative.
+/// Default linear-dependence threshold for canonical orthogonalization:
+/// eigenvectors of the overlap matrix with eigenvalue below this are dropped from
+/// the variational space. PySCF's default is ~1e-6 to 1e-7; 1e-6 is conservative.
 pub(crate) const LINDEP_THRESH: f64 = 1e-6;
+
+/// Effective linear-dependence threshold, overridable via `FERRIC_LINDEP_THRESH`.
+///
+/// The default [`LINDEP_THRESH`] (1e-6) drops nothing on the diffuse alkali/d-block
+/// clusters (Na4/Na6/Cu2 at aug-cc-pVTZ), whose near-null overlap modes sit at
+/// λ ≈ 3e-5–5e-5 — kept and amplified ~150× by 1/√λ, which parks the DIIS orbital
+/// gradient just above `density_conv` so the SCF plateau-spins to `max_iter`
+/// without ever declaring convergence. Raising the threshold for those systems
+/// projects the offending modes out and lets DIIS converge. Env-scoped rather
+/// than a global bump because a blanket 1e-4 would also drop legitimate in-band
+/// modes on well-conditioned aromatics (C6H6/aug-cc-pVTZ has 19 modes in
+/// [1e-6,1e-4) that DIIS drains fine), perturbing their banked energies.
+fn lindep_thresh() -> f64 {
+    std::env::var("FERRIC_LINDEP_THRESH")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .filter(|v| v.is_finite() && *v > 0.0)
+        .unwrap_or(LINDEP_THRESH)
+}
 
 /// Build the canonical orthogonalizer X (n × m) from the overlap matrix S.
 ///
@@ -731,8 +750,10 @@ pub(crate) fn canonical_orthogonalizer(s: &Array2<f64>) -> Result<Array2<f64>, F
     let (s_evals, s_evecs) = s
         .eigh(ndarray_linalg::UPLO::Upper)
         .map_err(|e| FerricError::Lapack(format!("S diag: {e}")))?;
-    // eigenvalues ascending: kept columns are those with λ ≥ LINDEP_THRESH.
-    let kept: Vec<usize> = (0..n).filter(|&i| s_evals[i] >= LINDEP_THRESH).collect();
+    // eigenvalues ascending: kept columns are those with λ ≥ the effective
+    // threshold (default LINDEP_THRESH, overridable via FERRIC_LINDEP_THRESH).
+    let thresh = lindep_thresh();
+    let kept: Vec<usize> = (0..n).filter(|&i| s_evals[i] >= thresh).collect();
     let m = kept.len();
     let mut x = Array2::<f64>::zeros((n, m));
     for (col, &i) in kept.iter().enumerate() {
