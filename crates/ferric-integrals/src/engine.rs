@@ -17,6 +17,10 @@ pub struct Engine {
     handles: Vec<(f64, *mut c_void)>,
     buf: Vec<f64>,
     scratch: Vec<f64>,
+    /// When true, the 3/2-center compute paths dispatch to the standalone terfc
+    /// table engine (`scf_compute_terfc_eri*`) instead of the libint2 `scf_compute_eri*`.
+    /// The handle stored in `handles` is a terfc engine (`scf_engine_create_terfc_*`).
+    is_terfc: bool,
 }
 
 unsafe impl Send for Engine {}
@@ -45,7 +49,7 @@ impl Engine {
             handles.push((coeff, h));
         }
         
-        Ok(Engine { handles, buf: vec![0.0; max_fn * max_fn * max_fn * max_fn], scratch: vec![0.0; max_fn * max_fn * max_fn * max_fn] })
+        Ok(Engine { handles, buf: vec![0.0; max_fn * max_fn * max_fn * max_fn], scratch: vec![0.0; max_fn * max_fn * max_fn * max_fn] , is_terfc: false })
     }
 
     /// Create a geminal (F12) two-electron engine from an STG `Operator`
@@ -84,6 +88,7 @@ impl Engine {
             handles: vec![(1.0, handle)],
             buf: vec![0.0; max_fn * max_fn * max_fn * max_fn],
             scratch: vec![0.0; max_fn * max_fn * max_fn * max_fn],
+            is_terfc: false,
         })
     }
 
@@ -92,7 +97,7 @@ impl Engine {
         let handle = unsafe { ffi::scf_engine_create(op_kind, 0.0, prep.max_nprim(), prep.max_l(), precision) };
         if handle.is_null() { return Err(FerricError::Libint("engine_create returned null".into())); }
         let max_fn = prep.shell_dims().iter().copied().max().unwrap_or(1);
-        Ok(Engine { handles: vec![(1.0, handle)], buf: vec![0.0; max_fn * max_fn], scratch: Vec::new() })
+        Ok(Engine { handles: vec![(1.0, handle)], buf: vec![0.0; max_fn * max_fn], scratch: Vec::new() , is_terfc: false })
     }
 
     /// Mutable pointer to the underlying libint2 engine handle. (Returns the first component).
@@ -143,7 +148,7 @@ impl Engine {
         let handle = unsafe { ffi::scf_engine_create_deriv(op_kind, 0.0, prep.max_nprim(), prep.max_l(), precision) };
         if handle.is_null() { return Err(FerricError::Libint("derivative engine not available".into())); }
         let max_fn = prep.shell_dims().iter().copied().max().unwrap_or(1);
-        Ok(Engine { handles: vec![(1.0, handle)], buf: vec![0.0; 6 * max_fn * max_fn], scratch: Vec::new() })
+        Ok(Engine { handles: vec![(1.0, handle)], buf: vec![0.0; 6 * max_fn * max_fn], scratch: Vec::new() , is_terfc: false })
     }
 
     /// Create a first-derivative 4-center two-electron integral engine.
@@ -163,7 +168,7 @@ impl Engine {
             if h.is_null() { return Err(FerricError::Libint("derivative engine not available".into())); }
             handles.push((coeff, h));
         }
-        Ok(Engine { handles, buf: vec![0.0; 12 * max_fn * max_fn * max_fn * max_fn], scratch: vec![0.0; 12 * max_fn * max_fn * max_fn * max_fn] })
+        Ok(Engine { handles, buf: vec![0.0; 12 * max_fn * max_fn * max_fn * max_fn], scratch: vec![0.0; 12 * max_fn * max_fn * max_fn * max_fn] , is_terfc: false })
     }
 
     /// Returns the derivative blocks of n1*n2 doubles each: 6 blocks
@@ -189,8 +194,27 @@ impl Engine {
         let max_l = obs.max_l().max(dfbs.max_l());
         let max_fn_obs = obs.shell_dims().iter().copied().max().unwrap_or(1);
         let max_fn_df = dfbs.shell_dims().iter().copied().max().unwrap_or(1);
+
+        // Exact terfc goes through the standalone table engine, not libint2.
+        if matches!(op.kind, OperatorKind::Terfc) {
+            let h = unsafe {
+                ffi::scf_engine_create_terfc_3center(op.distance, op.omega, max_nprim, max_l, precision, std::ptr::null())
+            };
+            if h.is_null() {
+                return Err(FerricError::Libint(
+                    "terfc 3-center engine not available (tables missing? set FERRIC_TERF_TABLE_DIR)".into(),
+                ));
+            }
+            return Ok(Engine {
+                handles: vec![(1.0, h)],
+                buf: vec![0.0; max_fn_df * max_fn_obs * max_fn_obs],
+                scratch: vec![0.0; max_fn_df * max_fn_obs * max_fn_obs],
+                is_terfc: true,
+            });
+        }
+
         let mut handles = Vec::new();
-        
+
         let n_comp = if op.is_composite { op.num_components } else { 1 };
         for i in 0..n_comp {
             let (coeff, kind, omega) = if op.is_composite { (op.c_coeffs[i], op.c_kinds[i], op.c_omegas[i]) } else { (1.0, op.kind, op.omega) };
@@ -204,14 +228,33 @@ impl Engine {
             if h.is_null() { return Err(FerricError::Libint("3-center engine not available".into())); }
             handles.push((coeff, h));
         }
-        Ok(Engine { handles, buf: vec![0.0; max_fn_df * max_fn_obs * max_fn_obs], scratch: vec![0.0; max_fn_df * max_fn_obs * max_fn_obs] })
+        Ok(Engine { handles, buf: vec![0.0; max_fn_df * max_fn_obs * max_fn_obs], scratch: vec![0.0; max_fn_df * max_fn_obs * max_fn_obs] , is_terfc: false })
     }
 
     /// Create a 2-center integral engine for the Coulomb metric: (P|Q).
     pub fn new_2center(op: Operator, dfbs: &PreparedBasis, precision: f64) -> Result<Self, FerricError> {
         let max_fn = dfbs.shell_dims().iter().copied().max().unwrap_or(1);
+
+        // Exact terfc goes through the standalone table engine, not libint2.
+        if matches!(op.kind, OperatorKind::Terfc) {
+            let h = unsafe {
+                ffi::scf_engine_create_terfc_2center(op.distance, op.omega, dfbs.max_nprim(), dfbs.max_l(), precision, std::ptr::null())
+            };
+            if h.is_null() {
+                return Err(FerricError::Libint(
+                    "terfc 2-center engine not available (tables missing? set FERRIC_TERF_TABLE_DIR)".into(),
+                ));
+            }
+            return Ok(Engine {
+                handles: vec![(1.0, h)],
+                buf: vec![0.0; max_fn * max_fn],
+                scratch: vec![0.0; max_fn * max_fn],
+                is_terfc: true,
+            });
+        }
+
         let mut handles = Vec::new();
-        
+
         let n_comp = if op.is_composite { op.num_components } else { 1 };
         for i in 0..n_comp {
             let (coeff, kind, omega) = if op.is_composite { (op.c_coeffs[i], op.c_kinds[i], op.c_omegas[i]) } else { (1.0, op.kind, op.omega) };
@@ -225,7 +268,7 @@ impl Engine {
             if h.is_null() { return Err(FerricError::Libint("2-center engine not available".into())); }
             handles.push((coeff, h));
         }
-        Ok(Engine { handles, buf: vec![0.0; max_fn * max_fn], scratch: vec![0.0; max_fn * max_fn] })
+        Ok(Engine { handles, buf: vec![0.0; max_fn * max_fn], scratch: vec![0.0; max_fn * max_fn] , is_terfc: false })
     }
 
     /// Compute a 3-center ERI shell triplet (P|mu nu). Returns `None` if screened.
@@ -238,8 +281,14 @@ impl Engine {
         self.buf[..n].fill(0.0);
         
         for &(coeff, h) in &self.handles {
-            let written = unsafe { ffi::scf_compute_eri3(h, obs.handle(), dfbs.handle(), sh_p as c_int, sh1 as c_int, sh2 as c_int, self.scratch.as_mut_ptr()) };
-            assert!(written >= 0, "libint2 internal error in eri3 ({sh_p}|{sh1},{sh2}): status {written}");
+            let written = unsafe {
+                if self.is_terfc {
+                    ffi::scf_compute_terfc_eri3(h, obs.handle(), dfbs.handle(), sh_p as c_int, sh1 as c_int, sh2 as c_int, self.scratch.as_mut_ptr())
+                } else {
+                    ffi::scf_compute_eri3(h, obs.handle(), dfbs.handle(), sh_p as c_int, sh1 as c_int, sh2 as c_int, self.scratch.as_mut_ptr())
+                }
+            };
+            assert!(written >= 0, "internal error in eri3 ({sh_p}|{sh1},{sh2}): status {written}");
             if written > 0 {
                 let w = written as usize;
                 max_written = max_written.max(w);
@@ -259,8 +308,14 @@ impl Engine {
         self.buf[..n].fill(0.0);
         
         for &(coeff, h) in &self.handles {
-            let written = unsafe { ffi::scf_compute_eri2(h, dfbs.handle(), sh_p as c_int, sh_q as c_int, self.scratch.as_mut_ptr()) };
-            assert!(written >= 0, "libint2 internal error in eri2 ({sh_p}|{sh_q}): status {written}");
+            let written = unsafe {
+                if self.is_terfc {
+                    ffi::scf_compute_terfc_eri2(h, dfbs.handle(), sh_p as c_int, sh_q as c_int, self.scratch.as_mut_ptr())
+                } else {
+                    ffi::scf_compute_eri2(h, dfbs.handle(), sh_p as c_int, sh_q as c_int, self.scratch.as_mut_ptr())
+                }
+            };
+            assert!(written >= 0, "internal error in eri2 ({sh_p}|{sh_q}): status {written}");
             if written > 0 {
                 let w = written as usize;
                 max_written = max_written.max(w);
@@ -316,7 +371,7 @@ impl Engine {
             if h.is_null() { return Err(FerricError::Libint("3-center derivative engine not available".into())); }
             handles.push((coeff, h));
         }
-        Ok(Engine { handles, buf: vec![0.0; 9 * max_fn_df * max_fn_obs * max_fn_obs], scratch: vec![0.0; 9 * max_fn_df * max_fn_obs * max_fn_obs] })
+        Ok(Engine { handles, buf: vec![0.0; 9 * max_fn_df * max_fn_obs * max_fn_obs], scratch: vec![0.0; 9 * max_fn_df * max_fn_obs * max_fn_obs] , is_terfc: false })
     }
 
     /// Create a 2-center derivative engine: d(P|Q)/dR.
@@ -337,7 +392,7 @@ impl Engine {
             if h.is_null() { return Err(FerricError::Libint("2-center derivative engine not available".into())); }
             handles.push((coeff, h));
         }
-        Ok(Engine { handles, buf: vec![0.0; 6 * max_fn * max_fn], scratch: vec![0.0; 6 * max_fn * max_fn] })
+        Ok(Engine { handles, buf: vec![0.0; 6 * max_fn * max_fn], scratch: vec![0.0; 6 * max_fn * max_fn] , is_terfc: false })
     }
 
     /// Compute 3-center ERI derivatives: 9 blocks (3 centers × 3 coords) of nP*n1*n2.

@@ -1,6 +1,9 @@
 //! Spin-component scaled MP2 variants.
 //!
 //! - SCS-MP2: E = c_OS * E_OS + c_SS * E_SS (Grimme, JCP 2003)
+//! - SCS-MP2(2terfc): dual-attenuated SCS (Goldey, Dutoi, Head-Gordon, PCCP 2013)
+//!   E = c_OS * E_OS(r0_1) + c_SS * [E_SS(r0_2) - E_SS(r0_1)], using the EXACT
+//!   `terfc` operator (2D interpolation tables), not the erfc approximation.
 
 use crate::rimp2::{ri_mp2_spin_components, RiMp2Config};
 use ferric_core::mol::Molecule;
@@ -8,6 +11,9 @@ use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::ScfResult;
+
+/// Angstrom to Bohr conversion factor.
+const ANGSTROM_TO_BOHR: f64 = 1.8897259886;
 
 
 /// Standard SCS-MP2 configuration (Grimme, JCP 2003).
@@ -64,7 +70,68 @@ pub fn scs_mp2(
     })
 }
 
+/// SCS-MP2(2terfc) configuration (Goldey, Dutoi, Head-Gordon, PCCP 2013; thesis Eq 5.6).
+#[derive(Debug, Clone)]
+pub struct ScsMp2TerfcConfig {
+    /// Bonded attenuation distance r0(1) in Bohr.
+    pub r0_bonded: f64,
+    /// Non-bonded attenuation distance r0(2) in Bohr (must be > r0(1)).
+    pub r0_nonbonded: f64,
+    /// Opposite-spin scaling coefficient.
+    pub c_os: f64,
+    /// Same-spin scaling coefficient.
+    pub c_ss: f64,
+    /// Frozen core orbitals.
+    pub frozen_core: usize,
+}
 
+impl Default for ScsMp2TerfcConfig {
+    fn default() -> Self {
+        // Optimal parameters from thesis: r0(1)=0.75 A, r0(2)=1.05 A, c_OS=1.27, c_SS=4.05.
+        Self {
+            r0_bonded: 0.75 * ANGSTROM_TO_BOHR,
+            r0_nonbonded: 1.05 * ANGSTROM_TO_BOHR,
+            c_os: 1.27,
+            c_ss: 4.05,
+            frozen_core: 0,
+        }
+    }
+}
+
+/// SCS-MP2(2terfc): E = c_OS * E_OS(r0_1) + c_SS * [E_SS(r0_2) - E_SS(r0_1)].
+///
+/// Dual-attenuated SCS-MP2 from Goldey, Dutoi, Head-Gordon (PCCP 2013). Calls
+/// `ri_mp2_spin_components` twice with the EXACT `terfc` operator at the bonded
+/// (r0_1) and non-bonded (r0_2) attenuation distances. Unlike the deprecated
+/// spike, this uses the interpolation-table terfc integrals, not an erfc fit.
+pub fn scs_mp2_2terfc(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    rhf: &ScfResult,
+    config: &ScsMp2TerfcConfig,
+) -> Result<ScsMp2Result, FerricError> {
+    assert!(config.r0_nonbonded > config.r0_bonded, "r0(2) must be > r0(1)");
+    let ri_config = RiMp2Config { frozen_core: config.frozen_core };
+
+    // Spin components at r0(1) (bonded, shorter range) via exact terfc.
+    let (sc1, _) =
+        ri_mp2_spin_components(mol, obs, dfbs, Operator::terfc(config.r0_bonded), rhf, &ri_config)?;
+    // Spin components at r0(2) (non-bonded, longer range).
+    let (sc2, _) = ri_mp2_spin_components(
+        mol, obs, dfbs, Operator::terfc(config.r0_nonbonded), rhf, &ri_config,
+    )?;
+
+    // Thesis Eq 5.6: E = c_OS * E_OS(r0_1) + c_SS * [E_SS(r0_2) - E_SS(r0_1)].
+    let e_ss = sc2.e_ss - sc1.e_ss;
+    let scs_corr = config.c_os * sc1.e_os + config.c_ss * e_ss;
+    Ok(ScsMp2Result {
+        total_energy: rhf.energy + scs_corr,
+        scs_corr,
+        e_os: sc1.e_os,
+        e_ss,
+    })
+}
 
 #[cfg(test)]
 mod tests {
