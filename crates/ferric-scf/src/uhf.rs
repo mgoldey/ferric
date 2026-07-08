@@ -303,6 +303,10 @@ pub fn solve_uhf_fockmod(
         let err_max_b = err_b.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
         let err_max = err_max_a.max(err_max_b);
 
+        if std::env::var("FERRIC_SCF_TRACE").ok().as_deref() == Some("1") {
+            eprintln!("UHF iter={iter:4}  E={energy:.12}  dE={de:.3e}  err_max={err_max:.3e}");
+        }
+
         let converged = de < config.energy_conv && err_max < config.density_conv;
 
         if iter > 1 && converged {
