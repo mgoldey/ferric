@@ -35,21 +35,36 @@ fn qr_orthonormalize(mat: Array2<f64>) -> Result<Array2<f64>, FerricError> {
     Ok(q)
 }
 
-/// BLAS thread count for the Lanczos solve. An explicit
-/// `FERRIC_LANCZOS_BLAS_THREADS` override wins (clamped ≥ 1); otherwise all
-/// cores — unless we are already inside a rayon worker, where multi-threaded
-/// BLAS is the segfault/oversubscription mode (see blas_threads.rs and the
-/// openblas-rayon-dgetrf-crash memory), in which case fall back to 1.
+/// BLAS thread count for the Lanczos solve.
+///
+/// Defaults to **1** (deterministic, safe). Raising OpenBLAS above 1 thread for
+/// the Lanczos `eigh`/QR is opt-in via `FERRIC_LANCZOS_BLAS_THREADS`, for two
+/// reasons proven during the perf-integration verification:
+///
+///  1. **Stack overflow.** A multi-threaded OpenBLAS `eigh` on a large
+///     block-tridiagonal T (or QR of a naux-wide Krylov block) runs on worker
+///     stacks that overflow when the solve is large and/or `run_pdep_rpa` is
+///     itself invoked concurrently (the test harness runs tests in parallel;
+///     see the openblas-rayon-dgetrf-crash memory and blas_threads.rs). The
+///     aug-cc-pV{D,T}Z PDEP-RPA tests abort with `stack overflow` when this
+///     defaults to `available_parallelism()`; they pass at 1.
+///  2. **Reproducibility.** Multi-threaded OpenBLAS GEMM/eigh changes the
+///     reduction order run-to-run, which the crate's equivalence tests
+///     (screened-vs-dense at thresh=0) are built to hold at a tight tolerance.
+///
+/// An explicit `FERRIC_LANCZOS_BLAS_THREADS=N` override wins (clamped ≥ 1) for
+/// callers who want the wide-GEMM speedup and manage rayon/stack sizing
+/// themselves. Such a caller must ensure the Lanczos solve is not running
+/// inside a rayon worker, where nested OpenBLAS threads are the documented
+/// segfault/oversubscription mode.
 fn lanczos_blas_threads() -> usize {
     if let Ok(v) = std::env::var("FERRIC_LANCZOS_BLAS_THREADS") {
         if let Ok(n) = v.trim().parse::<usize>() {
             return n.max(1);
         }
     }
-    if rayon::current_thread_index().is_some() {
-        return 1;
-    }
-    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
+    // Deterministic, stack-safe default. Speed is opt-in via the env override.
+    1
 }
 
 /// Block Lanczos with full reorthogonalization.
