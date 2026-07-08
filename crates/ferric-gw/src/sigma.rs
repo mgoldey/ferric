@@ -36,6 +36,7 @@ use ferric_rpa::PdepRpaResult;
 use ferric_scf::ScfResult;
 use ndarray::{Array1, Array2};
 use num_complex::Complex64;
+use rayon::prelude::*;
 
 /// Fermi level (mid-gap) of the active-space spectrum: midpoint between the
 /// active HOMO and active LUMO. Used to center the analytic-continuation
@@ -235,35 +236,43 @@ pub fn run_g0w0(
     let mut sc_out = Array1::<f64>::zeros(mo_indices.len());
     let mut z_out = Array1::<f64>::ones(mo_indices.len());
 
-    for (idx, &mo_abs) in mo_indices.iter().enumerate() {
-        if mo_abs < first_act {
-            return Err(FerricError::General(format!(
-                "qp_mos index {mo_abs} is in the frozen-core block"
-            )));
-        }
-        let m_loc = mo_abs - first_act;
-        let eps_m = mo_b.eps_act[m_loc];
-        eps_mf[idx] = eps_m;
-        sx_out[idx] = sigma_x_all[m_loc];
+    // Each MO's QP solve is independent (scalar math only — no BLAS inside),
+    // so parallelize over the QP index; per-state summation order is unchanged.
+    let qp_rows = mo_indices
+        .par_iter()
+        .map(|&mo_abs| {
+            if mo_abs < first_act {
+                return Err(FerricError::General(format!(
+                    "qp_mos index {mo_abs} is in the frozen-core block"
+                )));
+            }
+            let m_loc = mo_abs - first_act;
+            let eps_m = mo_b.eps_act[m_loc];
 
-        // KS reference: shift = Σ_x − v_xc (inside the QP self-consistency).
-        let shift = vxc_diag.map(|v| sigma_x_all[m_loc] - v[mo_abs]).unwrap_or(0.0);
-        let (eps_qp_m, sc_final, z_renorm) = solve_qp_for_mo(
-            m_loc,
-            eps_m,
-            &m_proj,
-            inv_diel_freq,
-            &quad_weights,
-            &quad_freqs,
-            &mo_b.eps_act,
-            gw_cfg.pade_npts,
-            gw_cfg.qp_newton_damp,
-            ef,
-            shift,
-        );
+            // KS reference: shift = Σ_x − v_xc (inside the QP self-consistency).
+            let shift = vxc_diag.map(|v| sigma_x_all[m_loc] - v[mo_abs]).unwrap_or(0.0);
+            let (eps_qp_m, sc_final, z_renorm) = solve_qp_for_mo(
+                m_loc,
+                eps_m,
+                &m_proj,
+                inv_diel_freq,
+                &quad_weights,
+                &quad_freqs,
+                &mo_b.eps_act,
+                gw_cfg.pade_npts,
+                gw_cfg.qp_newton_damp,
+                ef,
+                shift,
+            );
+            Ok((eps_m, sigma_x_all[m_loc], eps_qp_m, sc_final, z_renorm))
+        })
+        .collect::<Result<Vec<_>, FerricError>>()?;
+    for (idx, &(eps_m, sx, eps_qp_m, sc_final, z_renorm)) in qp_rows.iter().enumerate() {
+        eps_mf[idx] = eps_m;
+        sx_out[idx] = sx;
+        eps_qp[idx] = eps_qp_m;
         sc_out[idx] = sc_final;
         z_out[idx] = z_renorm;
-        eps_qp[idx] = eps_qp_m;
     }
 
     Ok(GwResult {
@@ -336,22 +345,29 @@ pub fn run_evgw0(
             let m_loc = mo_abs - first_act;
             eps_prop[m_loc] = eps_qp[idx];
         }
-        for (idx, &mo_abs) in mo_indices.iter().enumerate() {
-            let m_loc = mo_abs - first_act;
-            let eps_m_mf = mo_b.eps_act[m_loc];
-            let (eps_new, sc_new, z_new) = solve_qp_for_mo(
-                m_loc,
-                eps_m_mf,
-                &m_proj,
-                inv_diel_freq,
-                &quad_weights,
-                &quad_freqs,
-                &eps_prop,
-                gw_cfg.pade_npts,
-                gw_cfg.qp_newton_damp,
-                ef,
-                0.0,
-            );
+        // eps_prop is a frozen snapshot for this iteration (Jacobi-style
+        // update), so each QP state's solve is independent — parallelize.
+        let qp_new: Vec<(f64, f64, f64)> = mo_indices
+            .par_iter()
+            .map(|&mo_abs| {
+                let m_loc = mo_abs - first_act;
+                let eps_m_mf = mo_b.eps_act[m_loc];
+                solve_qp_for_mo(
+                    m_loc,
+                    eps_m_mf,
+                    &m_proj,
+                    inv_diel_freq,
+                    &quad_weights,
+                    &quad_freqs,
+                    &eps_prop,
+                    gw_cfg.pade_npts,
+                    gw_cfg.qp_newton_damp,
+                    ef,
+                    0.0,
+                )
+            })
+            .collect();
+        for (idx, &(eps_new, sc_new, z_new)) in qp_new.iter().enumerate() {
             max_dev = max_dev.max((eps_new - eps_qp[idx]).abs());
             eps_qp[idx] = eps_new;
             sc_out[idx] = sc_new;
@@ -452,21 +468,27 @@ pub fn run_evgw(
             eps_prop[m_loc] = eps_qp[idx];
         }
         let mut max_dev = 0.0_f64;
-        for (idx, &mo_abs) in mo_indices.iter().enumerate() {
-            let m_loc = mo_abs - first_act;
-            let (eps_new, sc_new, z_new) = solve_qp_for_mo(
-                m_loc,
-                mo_b.eps_act[m_loc],
-                &m_proj,
-                inv_diel_freq,
-                &current_pdep.quad_weights,
-                &current_pdep.quad_freqs,
-                &eps_prop,
-                gw_cfg.pade_npts,
-                gw_cfg.qp_newton_damp,
-                ef,
-                0.0,
-            );
+        // Frozen (m_proj, W, eps_prop) snapshot ⇒ independent per-state solves.
+        let qp_new: Vec<(f64, f64, f64)> = mo_indices
+            .par_iter()
+            .map(|&mo_abs| {
+                let m_loc = mo_abs - first_act;
+                solve_qp_for_mo(
+                    m_loc,
+                    mo_b.eps_act[m_loc],
+                    &m_proj,
+                    inv_diel_freq,
+                    &current_pdep.quad_weights,
+                    &current_pdep.quad_freqs,
+                    &eps_prop,
+                    gw_cfg.pade_npts,
+                    gw_cfg.qp_newton_damp,
+                    ef,
+                    0.0,
+                )
+            })
+            .collect();
+        for (idx, &(eps_new, sc_new, z_new)) in qp_new.iter().enumerate() {
             max_dev = max_dev.max((eps_new - eps_qp[idx]).abs());
             eps_qp[idx] = eps_new;
             sc_out[idx] = sc_new;

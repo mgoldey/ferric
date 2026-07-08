@@ -145,11 +145,13 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "benchmark: run with --release --ignored --nocapture"]
     fn decane_step_timing_sto3g() {
         run_decane("sto-3g", "cc-pvdz-ri");
     }
 
     #[test]
+    #[ignore = "benchmark: run with --release --ignored --nocapture"]
     fn decane_step_timing_ccpvdz() {
         run_decane("cc-pvdz", "cc-pvdz-ri");
     }

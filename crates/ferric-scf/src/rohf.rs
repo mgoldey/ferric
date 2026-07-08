@@ -164,6 +164,18 @@ pub fn solve_rohf(
     let mut mom_ref: Option<(Array2<f64>, Array2<f64>)> = None;
     let mut total_quartets = 0usize;
 
+    // K built per spin (same convention as solve_uhf's RSH path). Builders
+    // hoisted out of the loop: each lazily builds a per-thread libint2
+    // EnginePool on first use (ctors serialized behind a global mutex), so a
+    // loop-local builder would pay that construction every iteration.
+    let need_k = c_k != 0.0 || k_mix.omega > 0.0;
+    let mut direct_j = DirectJ::new(ctx, prep, bounds, config.integral_thresh);
+    let mut direct_k: Option<DirectK> = if need_k && k_mix.omega == 0.0 {
+        Some(DirectK::new(ctx, prep, bounds, config.integral_thresh))
+    } else {
+        None
+    };
+
     for iter in 1..=config.max_iter {
         ctx.check_interrupted()?;
         j_buf.fill(0.0);
@@ -172,12 +184,7 @@ pub fn solve_rohf(
         let d_total = &d_a + &d_b;
 
         // J from D_total
-        {
-            let mut dj = DirectJ::new(ctx, prep, bounds, config.integral_thresh);
-            total_quartets += dj.build(&d_total, &mut j_buf)?;
-        }
-        // K built per spin (same convention as solve_uhf's RSH path).
-        let need_k = c_k != 0.0 || k_mix.omega > 0.0;
+        total_quartets += direct_j.build(&d_total, &mut j_buf)?;
         let mut k_a_total = Array2::<f64>::zeros((n, n));
         let mut k_b_total = Array2::<f64>::zeros((n, n));
         if k_mix.omega > 0.0 {
@@ -194,14 +201,9 @@ pub fn solve_rohf(
             k_a_total = k_mix.sr * &k_sr_a + k_mix.lr * &k_lr_a;
             k_b_total = k_mix.sr * &k_sr_b + k_mix.lr * &k_lr_b;
         } else if need_k {
-            {
-                let mut dk = DirectK::new(ctx, prep, bounds, config.integral_thresh);
-                total_quartets += <DirectK as KBuilder>::build(&mut dk, &d_a, &mut k_a_buf)?;
-            }
-            {
-                let mut dk = DirectK::new(ctx, prep, bounds, config.integral_thresh);
-                total_quartets += <DirectK as KBuilder>::build(&mut dk, &d_b, &mut k_b_buf)?;
-            }
+            let dk = direct_k.as_mut().expect("DirectK built before loop");
+            total_quartets += <DirectK as KBuilder>::build(dk, &d_a, &mut k_a_buf)?;
+            total_quartets += <DirectK as KBuilder>::build(dk, &d_b, &mut k_b_buf)?;
             k_a_total = c_k * &k_a_buf;
             k_b_total = c_k * &k_b_buf;
         }
@@ -215,14 +217,8 @@ pub fn solve_rohf(
         }
 
         // Pre-XC electronic energy.
-        let e_elec_no_xc: f64 = 0.5
-            * ((0..n)
-                .flat_map(|i| (0..n).map(move |j| (i, j)))
-                .map(|(i, j)| {
-                    (h[(i, j)] + f_a[(i, j)]) * d_a[(i, j)]
-                        + (h[(i, j)] + f_b[(i, j)]) * d_b[(i, j)]
-                })
-                .sum::<f64>());
+        let e_elec_no_xc: f64 =
+            0.5 * ((&(&h + &f_a) * &d_a).sum() + (&(&h + &f_b) * &d_b).sum());
         let e_xc = if let Some(x) = xc_contrib.as_ref() {
             x.add_xc_uks(&d_a, &d_b, &mut f_a, &mut f_b)
         } else {

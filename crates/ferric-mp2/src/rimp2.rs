@@ -170,26 +170,34 @@ pub fn spin_components_from_b_ov(
 ) -> SpinComponents {
     // (ia|jb) comes from i-blocked wide GEMMs G_i = B_i^T·B (nvir x nocc*nvir)
     // instead of per-element strided dots over P: same FLOPs at BLAS3
-    // throughput, and OPENBLAS_NUM_THREADS parallelizes it. G_i transient is
-    // nvir*nocc*nvir*8 bytes.
-    let mut e_os = 0.0;
-    let mut e_ss = 0.0;
-    for i in 0..nocc {
-        let b_i = b_ov.slice(ndarray::s![.., i * nvir..(i + 1) * nvir]);
-        let g_i = b_i.t().dot(b_ov); // (nvir, nocc*nvir); g_i[a, jb] = (ia|jb)
-        for j in 0..nocc {
-            let e_ij = eps[first_occ + i] + eps[first_occ + j];
-            for a in 0..nvir {
-                for b in 0..nvir {
-                    let g_ab = g_i[(a, j * nvir + b)]; // (ia|jb)
-                    let g_ba = g_i[(b, j * nvir + a)]; // (ib|ja)
-                    let denom = e_ij - eps[nocc_total + a] - eps[nocc_total + b];
-                    e_os += g_ab * g_ab / denom;
-                    e_ss += g_ab * (g_ab - g_ba) / denom;
+    // throughput. The outer i-loop is near-embarrassingly parallel (each i owns
+    // an independent G_i transient of nvir*nocc*nvir*8 bytes and a private
+    // (e_os, e_ss) partial), so we fan it across rayon and tuple-reduce. BLAS
+    // stays serial inside each closure via OPENBLAS_NUM_THREADS=1 — nested
+    // BLAS threads under rayon is the documented dgetrf-crash footgun.
+    use rayon::prelude::*;
+    let (e_os, e_ss): (f64, f64) = (0..nocc)
+        .into_par_iter()
+        .map(|i| {
+            let b_i = b_ov.slice(ndarray::s![.., i * nvir..(i + 1) * nvir]);
+            let g_i = b_i.t().dot(b_ov); // (nvir, nocc*nvir); g_i[a, jb] = (ia|jb)
+            let mut e_os_i = 0.0;
+            let mut e_ss_i = 0.0;
+            for j in 0..nocc {
+                let e_ij = eps[first_occ + i] + eps[first_occ + j];
+                for a in 0..nvir {
+                    for b in 0..nvir {
+                        let g_ab = g_i[(a, j * nvir + b)]; // (ia|jb)
+                        let g_ba = g_i[(b, j * nvir + a)]; // (ib|ja)
+                        let denom = e_ij - eps[nocc_total + a] - eps[nocc_total + b];
+                        e_os_i += g_ab * g_ab / denom;
+                        e_ss_i += g_ab * (g_ab - g_ba) / denom;
+                    }
                 }
             }
-        }
-    }
+            (e_os_i, e_ss_i)
+        })
+        .reduce(|| (0.0, 0.0), |a, b| (a.0 + b.0, a.1 + b.1));
     SpinComponents { e_os, e_ss, e_total: e_os + e_ss }
 }
 

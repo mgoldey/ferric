@@ -14,11 +14,15 @@ pub struct DirectJ<'a> {
     prep: &'a PreparedBasis,
     bounds: &'a SchwarzBounds,
     thresh: f64,
+    // Lazily built on first build() and reused for the builder's lifetime:
+    // libint2 engine construction is serialized behind a global ctor mutex,
+    // so hoist the builder out of the SCF loop to pay it once, not per iteration.
+    pool: Option<crate::engine_pool::EnginePool>,
 }
 
 impl<'a> DirectJ<'a> {
     pub fn new(ctx: &'a ParallelContext, prep: &'a PreparedBasis, bounds: &'a SchwarzBounds, thresh: f64) -> Self {
-        DirectJ { ctx, prep, bounds, thresh }
+        DirectJ { ctx, prep, bounds, thresh, pool: None }
     }
 }
 
@@ -66,7 +70,10 @@ impl<'a> JBuilder for DirectJ<'a> {
 
         // One engine per rayon thread (see engine_pool) — avoids the per-chunk
         // libint2-ctor-mutex storm that made heavy-element bases 10×+ slower.
-        let pool = crate::engine_pool::EnginePool::new(op, prep, 1e-14)?;
+        if self.pool.is_none() {
+            self.pool = Some(crate::engine_pool::EnginePool::new(op, prep, 1e-14)?);
+        }
+        let pool = self.pool.as_ref().expect("pool initialized above");
         let total_j = quads.into_par_iter().fold(
             || (Array2::zeros(j.raw_dim()), 0usize),
             |(mut local_j, mut local_count), (s1, s2, s3, s4)| {

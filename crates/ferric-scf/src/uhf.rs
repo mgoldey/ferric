@@ -221,6 +221,21 @@ pub fn solve_uhf_fockmod(
     let mut mom_ref_b: Option<Array2<f64>> = None;
     let empty_open: Array2<f64> = Array2::<f64>::zeros((n, 0));
 
+    // K built per spin:
+    //   * RSH (ω > 0): K_σ = c_SR · K_SR[D_σ] + c_LR · K_LR[D_σ] via DfK
+    //   * Plain hybrid / pure HF (ω = 0): K_σ = c_K · K[D_σ] via DirectK
+    //   * Pure DFT (c_K = 0): K skipped
+    // Builders hoisted out of the loop: each lazily builds a per-thread libint2
+    // EnginePool on first use (ctors serialized behind a global mutex), so a
+    // loop-local builder would pay that construction every iteration.
+    let need_k = c_k != 0.0 || k_mix.omega > 0.0;
+    let mut direct_j = DirectJ::new(ctx, prep, bounds, config.integral_thresh);
+    let mut direct_k: Option<DirectK> = if need_k && k_mix.omega == 0.0 {
+        Some(DirectK::new(ctx, prep, bounds, config.integral_thresh))
+    } else {
+        None
+    };
+
     for iter in 1..=config.max_iter {
         ctx.check_interrupted()?;
         j_buf.fill(0.0);
@@ -229,15 +244,7 @@ pub fn solve_uhf_fockmod(
         let d_total = &d_a + &d_b;
 
         // J built from total density (one call).
-        {
-            let mut dj = DirectJ::new(ctx, prep, bounds, config.integral_thresh);
-            total_quartets += dj.build(&d_total, &mut j_buf)?;
-        }
-        // K built per spin:
-        //   * RSH (ω > 0): K_σ = c_SR · K_SR[D_σ] + c_LR · K_LR[D_σ] via DfK
-        //   * Plain hybrid / pure HF (ω = 0): K_σ = c_K · K[D_σ] via DirectK
-        //   * Pure DFT (c_K = 0): K skipped
-        let need_k = c_k != 0.0 || k_mix.omega > 0.0;
+        total_quartets += direct_j.build(&d_total, &mut j_buf)?;
         let mut k_a_total = Array2::<f64>::zeros((n, n));
         let mut k_b_total = Array2::<f64>::zeros((n, n));
         if k_mix.omega > 0.0 {
@@ -254,14 +261,9 @@ pub fn solve_uhf_fockmod(
             k_a_total = k_mix.sr * &k_sr_a + k_mix.lr * &k_lr_a;
             k_b_total = k_mix.sr * &k_sr_b + k_mix.lr * &k_lr_b;
         } else if need_k {
-            {
-                let mut dk = DirectK::new(ctx, prep, bounds, config.integral_thresh);
-                total_quartets += <DirectK as KBuilder>::build(&mut dk, &d_a, &mut k_a_buf)?;
-            }
-            {
-                let mut dk = DirectK::new(ctx, prep, bounds, config.integral_thresh);
-                total_quartets += <DirectK as KBuilder>::build(&mut dk, &d_b, &mut k_b_buf)?;
-            }
+            let dk = direct_k.as_mut().expect("DirectK built before loop");
+            total_quartets += <DirectK as KBuilder>::build(dk, &d_a, &mut k_a_buf)?;
+            total_quartets += <DirectK as KBuilder>::build(dk, &d_b, &mut k_b_buf)?;
             k_a_total = c_k * &k_a_buf;
             k_b_total = c_k * &k_b_buf;
         }
@@ -276,14 +278,8 @@ pub fn solve_uhf_fockmod(
 
         // Electronic energy BEFORE adding V_xc (V_xc is one-body in F_σ but
         // E_xc is its own integral).
-        let e_elec_no_xc: f64 = 0.5
-            * ((0..n)
-                .flat_map(|i| (0..n).map(move |j| (i, j)))
-                .map(|(i, j)| {
-                    (h[(i, j)] + f_a[(i, j)]) * d_a[(i, j)]
-                        + (h[(i, j)] + f_b[(i, j)]) * d_b[(i, j)]
-                })
-                .sum::<f64>());
+        let e_elec_no_xc: f64 =
+            0.5 * ((&(&h + &f_a) * &d_a).sum() + (&(&h + &f_b) * &d_b).sum());
         let e_xc = if let Some(x) = xc_contrib.as_ref() {
             x.add_xc_uks(&d_a, &d_b, &mut f_a, &mut f_b)
         } else {

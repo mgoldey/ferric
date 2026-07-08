@@ -10,6 +10,7 @@
 //! ε̃·V, *not* the V^T·ε̃·V projection that Davidson asks for).
 
 use ferric_core::FerricError;
+use ferric_integrals::blas_threads::with_blas_threads;
 use ndarray::{s, Array2};
 use ndarray_linalg::{Eigh, QR, UPLO};
 
@@ -34,6 +35,38 @@ fn qr_orthonormalize(mat: Array2<f64>) -> Result<Array2<f64>, FerricError> {
     Ok(q)
 }
 
+/// BLAS thread count for the Lanczos solve.
+///
+/// Defaults to **1** (deterministic, safe). Raising OpenBLAS above 1 thread for
+/// the Lanczos `eigh`/QR is opt-in via `FERRIC_LANCZOS_BLAS_THREADS`, for two
+/// reasons proven during the perf-integration verification:
+///
+///  1. **Stack overflow.** A multi-threaded OpenBLAS `eigh` on a large
+///     block-tridiagonal T (or QR of a naux-wide Krylov block) runs on worker
+///     stacks that overflow when the solve is large and/or `run_pdep_rpa` is
+///     itself invoked concurrently (the test harness runs tests in parallel;
+///     see the openblas-rayon-dgetrf-crash memory and blas_threads.rs). The
+///     aug-cc-pV{D,T}Z PDEP-RPA tests abort with `stack overflow` when this
+///     defaults to `available_parallelism()`; they pass at 1.
+///  2. **Reproducibility.** Multi-threaded OpenBLAS GEMM/eigh changes the
+///     reduction order run-to-run, which the crate's equivalence tests
+///     (screened-vs-dense at thresh=0) are built to hold at a tight tolerance.
+///
+/// An explicit `FERRIC_LANCZOS_BLAS_THREADS=N` override wins (clamped ≥ 1) for
+/// callers who want the wide-GEMM speedup and manage rayon/stack sizing
+/// themselves. Such a caller must ensure the Lanczos solve is not running
+/// inside a rayon worker, where nested OpenBLAS threads are the documented
+/// segfault/oversubscription mode.
+fn lanczos_blas_threads() -> usize {
+    if let Ok(v) = std::env::var("FERRIC_LANCZOS_BLAS_THREADS") {
+        if let Ok(n) = v.trim().parse::<usize>() {
+            return n.max(1);
+        }
+    }
+    // Deterministic, stack-safe default. Speed is opt-in via the env override.
+    1
+}
+
 /// Block Lanczos with full reorthogonalization.
 ///
 /// `seed` is the initial block (naux × block_size); columns are QR'd to form
@@ -46,7 +79,32 @@ fn qr_orthonormalize(mat: Array2<f64>) -> Result<Array2<f64>, FerricError> {
 /// `max_iter` outer block iterations, returns the best Ritz pairs from the
 /// final iteration without error (matching Davidson's "soft" fall-through
 /// pattern when subspace expansion is exhausted).
+///
+/// The block matvec, full reorthogonalization (Qᵀ·W, Q·proj), QR, and Ritz
+/// assembly are all naux-wide GEMMs with no rayon region active anywhere on
+/// this call path (every dielectric_apply variant is BLAS-only), so this is
+/// the one place BLAS threads are temporarily raised; the scoped guard
+/// restores the prior count on exit. Because the raise covers the matvec
+/// closure too, `matvec` must NOT enter a rayon parallel region — if a future
+/// caller needs that, it must set `FERRIC_LANCZOS_BLAS_THREADS=1`.
 pub fn run_lanczos_seeded<F>(
+    seed: Array2<f64>,
+    matvec: F,
+    n_desired: usize,
+    max_iter: usize,
+    conv_thresh: f64,
+) -> Result<LanczosResult, FerricError>
+where
+    F: Fn(&Array2<f64>) -> Array2<f64>,
+{
+    with_blas_threads(lanczos_blas_threads(), || {
+        lanczos_iterations(seed, matvec, n_desired, max_iter, conv_thresh)
+    })
+}
+
+/// Serial Lanczos iteration body; BLAS threading is managed by the caller
+/// (`run_lanczos_seeded`).
+fn lanczos_iterations<F>(
     seed: Array2<f64>,
     matvec: F,
     n_desired: usize,
