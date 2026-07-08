@@ -14,6 +14,151 @@ use ferric_integrals::blas_threads::with_blas_threads;
 use ndarray::{s, Array2};
 use ndarray_linalg::{Eigh, QR, UPLO};
 
+/// Panel width (number of identity-seed columns processed per matvec) for the
+/// full-rank paneled dielectric assembly in [`run_lanczos_full_rank`].
+///
+/// The full-rank identity seed drives the block Lanczos as a *single* outer
+/// iteration whose only algebraic content is `A = ε̃(0) = matvec(I)` followed by
+/// one dense `eigh(A)` (see [`run_lanczos_full_rank`]). Materializing the whole
+/// `naux`-wide block at once forces the matvec closure to allocate its full
+/// `(nov × naux)` and several `naux × naux` temporaries simultaneously — the
+/// ~17 GB peak at benzene/aTZ scale (atz-benzene-rpa-memory-bound). Assembling
+/// `A` in `k`-column panels caps that transient footprint at `O(nov·k + naux·k)`
+/// while producing the identical `A` and identical eigenpairs.
+///
+/// The width is budget-derived from `FERRIC_ERI3_BUDGET_GB` (the same process-wide
+/// resident-tensor ceiling used by the 3-index source), reserving budget for one
+/// `(nov × k)` matvec scratch plus one `(naux × k)` output panel. An explicit
+/// `FERRIC_LANCZOS_PANEL=N` override wins (clamped ≥ 1). Unset budget ⇒ a
+/// conservative default panel so the win applies even without an explicit budget.
+fn lanczos_panel_width(naux: usize, nov: usize) -> usize {
+    // Explicit override wins.
+    if let Ok(v) = std::env::var("FERRIC_LANCZOS_PANEL") {
+        if let Ok(n) = v.trim().parse::<usize>() {
+            return n.max(1).min(naux.max(1));
+        }
+    }
+    // Budget-derived: reserve one (nov × k) matvec scratch + one (naux × k)
+    // output panel per panel column. Bytes per panel column ≈ (nov + naux)·8.
+    let budget = ferric_integrals::three_index_source::env_budget_bytes();
+    let per_col_bytes = (nov.saturating_add(naux)).saturating_mul(8).max(1);
+    if budget == usize::MAX {
+        // No explicit budget: default to a panel that keeps the transient matvec
+        // scratch to roughly a few hundred MB regardless of naux — enough BLAS-3
+        // width to stay efficient, small enough to let benzene/aTZ jobs run
+        // concurrently. 256 columns of (nov+naux) doubles ≈ 26 MB at benzene/aTZ.
+        return 256usize.max(1).min(naux.max(1));
+    }
+    // Use ~1/2 of the budget for the panel scratch (the assembled A and its
+    // eigenvectors, each naux², live for the whole solve and are counted
+    // separately by the caller's footprint).
+    let k = (budget / 2 / per_col_bytes).max(1);
+    k.min(naux.max(1))
+}
+
+/// Full-rank PDEP eigensolve via **paneled dense dielectric assembly**.
+///
+/// Semantically identical to running [`run_lanczos_seeded`] with the full
+/// `naux`-wide identity seed, but restructured for memory: the identity seed
+/// collapses block Lanczos to a single outer iteration — `V_0 = QR(I)` is an
+/// orthogonal `naux × naux`, `α_0 = V_0ᵀ A V_0` is a similarity transform of
+/// `A = ε̃(0)`, and the returned Ritz pairs are the eigenpairs of `A`. This
+/// function computes exactly those eigenpairs by assembling `A` column-panel by
+/// column-panel through the same `matvec` closure (so `A[:, j..j+k] =
+/// matvec(I[:, j..j+k])`), symmetrizing, and doing one `eigh`. Peak transient
+/// memory is the panel scratch (`O((nov + naux)·k)`) instead of the full
+/// `naux`-wide block's `O(nov·naux)` + several `naux²` temporaries.
+///
+/// `n_desired` Ritz pairs are returned ordered by `|λ − 1|` descending, matching
+/// the identity-seed Lanczos and Davidson conventions. Eigenvalues match the
+/// identity-seed path to LAPACK precision; eigenvectors span the same eigenspaces
+/// (gauge/sign within degenerate blocks is immaterial to every downstream
+/// consumer — the RPA energy trace-log is basis-invariant, and GW/property paths
+/// pair each eigenvector with its own eigenvalue).
+///
+/// BLAS threading is managed exactly as in [`run_lanczos_seeded`] (default 1;
+/// `FERRIC_LANCZOS_BLAS_THREADS` opt-in). The `matvec` closure must be BLAS-only
+/// (no rayon region) for the same reason.
+pub fn run_lanczos_full_rank<F>(
+    naux: usize,
+    nov: usize,
+    matvec: F,
+    n_desired: usize,
+) -> Result<LanczosResult, FerricError>
+where
+    F: Fn(&Array2<f64>) -> Array2<f64>,
+{
+    with_blas_threads(lanczos_blas_threads(), || {
+        full_rank_paneled(naux, nov, matvec, n_desired)
+    })
+}
+
+/// Serial body for [`run_lanczos_full_rank`]; BLAS threading managed by caller.
+fn full_rank_paneled<F>(
+    naux: usize,
+    nov: usize,
+    matvec: F,
+    n_desired: usize,
+) -> Result<LanczosResult, FerricError>
+where
+    F: Fn(&Array2<f64>) -> Array2<f64>,
+{
+    if n_desired == 0 || naux == 0 {
+        return Ok(LanczosResult {
+            eigenvalues: Vec::new(),
+            eigenvectors: Array2::zeros((naux, 0)),
+        });
+    }
+
+    let panel = lanczos_panel_width(naux, nov);
+
+    // Assemble A = ε̃(0) one column-panel at a time. `matvec(I_panel)` yields the
+    // corresponding naux-row × k-col slab of A; scatter it into A. Only one
+    // (naux × k) identity panel + the matvec's internal (nov × k)/(naux × k)
+    // scratch are live at once, so peak transient memory scales by k/naux.
+    let mut a = Array2::<f64>::zeros((naux, naux));
+    let mut col = 0usize;
+    while col < naux {
+        let w = panel.min(naux - col);
+        let mut e_panel = Array2::<f64>::zeros((naux, w));
+        for j in 0..w {
+            e_panel[(col + j, j)] = 1.0;
+        }
+        let a_panel = matvec(&e_panel); // (naux × w)
+        a.slice_mut(s![.., col..col + w]).assign(&a_panel);
+        col += w;
+    }
+
+    // Symmetrize to wash out any asymmetry in the matvec's floating-point path
+    // (the operator ε̃ = I + Π is symmetric by construction).
+    let a_sym: Array2<f64> = 0.5 * (&a + &a.t());
+    drop(a);
+
+    let (theta, y) = a_sym
+        .eigh(UPLO::Upper)
+        .map_err(|e| FerricError::General(format!("Full-rank PDEP eigh failed: {e}")))?;
+
+    // Order by |λ − 1| descending (PDEP relevance metric), matching Lanczos/Davidson.
+    let mut order: Vec<usize> = (0..theta.len()).collect();
+    order.sort_by(|&i, &j| {
+        (theta[j] - 1.0)
+            .abs()
+            .partial_cmp(&(theta[i] - 1.0).abs())
+            .unwrap()
+    });
+    let n_keep = n_desired.min(order.len());
+    let picks = &order[..n_keep];
+
+    let mut eigenvectors = Array2::<f64>::zeros((naux, n_keep));
+    let mut eigenvalues = Vec::with_capacity(n_keep);
+    for (slot, &c) in picks.iter().enumerate() {
+        eigenvectors.slice_mut(s![.., slot]).assign(&y.slice(s![.., c]));
+        eigenvalues.push(theta[c]);
+    }
+
+    Ok(LanczosResult { eigenvalues, eigenvectors })
+}
+
 /// Result of a block-Lanczos run.
 pub struct LanczosResult {
     /// Converged eigenvalues, sorted by `|λ − 1|` descending (most significant
@@ -392,6 +537,119 @@ mod tests {
             let resid: Array1<f64> = &av - &(lam * &v);
             let nrm = resid.dot(&resid).sqrt();
             assert!(nrm < 1e-8, "residual too large: {nrm}");
+        }
+    }
+
+    /// Build a dielectric-shaped operator ε̃ = I + B diag(s²) Bᵀ (SPD, λ ≥ 1),
+    /// matching the production `sternheimer::dielectric_apply` structure, and a
+    /// closure that applies it to a block. Returns (matvec, dense A) for cross-
+    /// checking. `naux`×`nov` random B, positive scale factors.
+    fn make_dielectric_op(
+        naux: usize,
+        nov: usize,
+        seed: u64,
+    ) -> (impl Fn(&Array2<f64>) -> Array2<f64>, Array2<f64>) {
+        let mut state = seed.wrapping_add(0x9E3779B97F4A7C15);
+        let mut next = || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((state >> 33) as f64 / u32::MAX as f64) - 0.5
+        };
+        let mut b = Array2::<f64>::zeros((naux, nov));
+        for v in b.iter_mut() {
+            *v = next();
+        }
+        // Positive scale factors s² (like 2·e_ia/(ω²+e_ia²) at ω=0 → 2/e_ia > 0).
+        let s2: Vec<f64> = (0..nov).map(|k| 0.3 + (k as f64 % 7.0) * 0.1).collect();
+
+        // Dense A = I + B diag(s²) Bᵀ.
+        let mut bs = b.clone();
+        for k in 0..nov {
+            let col = bs.column(k).to_owned() * s2[k];
+            bs.column_mut(k).assign(&col);
+        }
+        let mut a = bs.dot(&b.t());
+        for i in 0..naux {
+            a[(i, i)] += 1.0;
+        }
+
+        let b_mv = b.clone();
+        let s2_mv = s2.clone();
+        let matvec = move |v: &Array2<f64>| -> Array2<f64> {
+            // out = V + B (diag(s²) (Bᵀ V))
+            let mut y = b_mv.t().dot(v); // (nov × m)
+            for k in 0..y.nrows() {
+                let sk = s2_mv[k];
+                let row = y.row(k).to_owned() * sk;
+                y.row_mut(k).assign(&row);
+            }
+            let mut out = v.to_owned();
+            out = &out + &b_mv.dot(&y);
+            out
+        };
+        (matvec, a)
+    }
+
+    /// The paneled full-rank path must reproduce the identity-seed block Lanczos
+    /// to LAPACK precision on a production-shaped dielectric operator — the exact
+    /// equivalence guarantee the run_pdep_rpa driver relies on. Also checks that
+    /// the panel width (via FERRIC_LANCZOS_PANEL) does not change the answer.
+    #[test]
+    fn full_rank_matches_identity_seed_lanczos() {
+        let naux = 60;
+        let nov = 140;
+        let (matvec, a) = make_dielectric_op(naux, nov, 7);
+
+        // Reference: identity-seed block Lanczos (the old production path).
+        let ref_res = run_lanczos_seeded(
+            Array2::<f64>::eye(naux),
+            |v| matvec(v),
+            naux,
+            naux + 4,
+            1e-12,
+        )
+        .unwrap();
+
+        // Sanity: identity-seed Lanczos itself ≡ dense eigh of A.
+        let (theta_dense, _) = a.eigh(UPLO::Upper).unwrap();
+        let mut dense_sorted = theta_dense.to_vec();
+        dense_sorted.sort_by(|x, y| x.partial_cmp(y).unwrap());
+
+        for panel in [7usize, 16, 60, 200] {
+            std::env::set_var("FERRIC_LANCZOS_PANEL", panel.to_string());
+            let new_res = run_lanczos_full_rank(naux, nov, |v| matvec(v), naux).unwrap();
+            std::env::remove_var("FERRIC_LANCZOS_PANEL");
+
+            assert_eq!(new_res.eigenvalues.len(), ref_res.eigenvalues.len());
+
+            // Eigenvalues match the identity-seed path to LAPACK precision
+            // (both are ordered by |λ − 1| descending).
+            for (g, r) in new_res.eigenvalues.iter().zip(ref_res.eigenvalues.iter()) {
+                assert!(
+                    (g - r).abs() < 1e-10,
+                    "panel {panel}: eigenvalue mismatch new={g} ref={r}"
+                );
+            }
+
+            // And match the dense reference spectrum (sorted ascending).
+            let mut got_sorted = new_res.eigenvalues.clone();
+            got_sorted.sort_by(|x, y| x.partial_cmp(y).unwrap());
+            for (g, d) in got_sorted.iter().zip(dense_sorted.iter()) {
+                assert!(
+                    (g - d).abs() < 1e-10,
+                    "panel {panel}: vs dense eigh mismatch {g} vs {d}"
+                );
+            }
+
+            // Eigenvectors satisfy A·v ≈ λ·v (each paired with its own λ).
+            for (idx, &lam) in new_res.eigenvalues.iter().enumerate() {
+                let v = new_res.eigenvectors.column(idx).to_owned();
+                let av = a.dot(&v);
+                let resid = &av - &(lam * &v);
+                let nrm = resid.dot(&resid).sqrt();
+                assert!(nrm < 1e-9, "panel {panel}: residual {nrm}");
+            }
         }
     }
 }
