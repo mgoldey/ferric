@@ -15,6 +15,17 @@ pub struct Config {
     pub rpa: RpaCfg,
     #[serde(default)]
     pub dft: DftCfg,
+    #[serde(default)]
+    pub memory: MemoryCfg,
+}
+
+#[derive(Deserialize, Default)]
+pub struct MemoryCfg {
+    /// Hard ceiling (in GiB) for the resident 3-index integral footprint in
+    /// DF-J/DF-K. When the dense tensor would exceed this, the integral source
+    /// spills aux-blocks to disk instead of allocating in core. Default 2 GiB.
+    /// Env var `FERRIC_OOC_BUDGET_GB` overrides this at runtime.
+    pub three_index_budget_gb: Option<f64>,
 }
 
 #[derive(Deserialize, Default)]
@@ -70,6 +81,22 @@ pub struct RpaCfg {
     pub quadrature: Option<String>,
     pub trunc_thresh: Option<f64>,
     pub davidson_conv_thresh: Option<f64>,
+    /// χ₀ sparsity strategy. One of:
+    ///   "dense"            — dense MO-basis χ₀ (default; fastest ≤~20 atoms)
+    ///   "boys"             — Boys-screened, default thresh 1e-4
+    ///   "boys:<thresh>"    — Boys-screened with explicit threshold, e.g. "boys:1e-3"
+    ///   "auto"             — pick Dense/Boys by atom count (cutoff 30, thresh 1e-4)
+    ///   "auto:<cutoff>"    — auto with explicit atom cutoff, e.g. "auto:24"
+    ///   "auto:<cutoff>:<thresh>" — auto with explicit cutoff and Boys threshold
+    ///
+    /// Recommendations (see `boys-screening-crossover`): Boys-screening's
+    /// per-orbital tile overhead makes it SLOWER than Dense below ~20 atoms and a
+    /// win only above the naphthalene-scale crossover, so the conservative auto
+    /// cutoff is 30. The 1e-4 default threshold keeps the auto-switch energy
+    /// within ~µHa of Dense; loosen to 1e-3 only on large aromatics where ~50%
+    /// pair reduction costs <1e-4 Ha. For reproducible benchmarks across sizes,
+    /// pin "dense" explicitly rather than "auto".
+    pub chi0_sparsity: Option<String>,
     pub u0: Option<f64>,
     #[serde(default)]
     pub run_diagnostics: bool,
@@ -134,6 +161,22 @@ pub struct RpaCfg {
     /// C6 are built on KS orbitals (RPA@PBE0 etc.) — KS orbitals have smaller
     /// HOMO-LUMO gaps, raising the polarizability toward experiment.
     pub xc: Option<String>,
+}
+
+impl RpaCfg {
+    /// Parse the `chi0_sparsity` TOML string into a [`Chi0Sparsity`].
+    ///
+    /// Accepted forms (case-insensitive, whitespace-trimmed):
+    ///   None / "dense"            → Dense (default; backward compatible)
+    ///   "boys"                    → BoysScreened { thresh: 1e-3 }
+    ///   "boys:<thresh>"           → BoysScreened with that threshold
+    ///   "auto"                    → Auto { atom_cutoff: 30, boys_thresh: 1e-3 }
+    ///   "auto:<cutoff>"           → Auto with that atom cutoff
+    ///   "auto:<cutoff>:<thresh>"  → Auto with that cutoff and Boys threshold
+    pub fn parse_chi0_sparsity(&self) -> Result<ferric_rpa::config::Chi0Sparsity, String> {
+        // Canonical parser lives on the type (shared with the Python bindings).
+        ferric_rpa::config::Chi0Sparsity::parse_config_str(self.chi0_sparsity.as_deref())
+    }
 }
 
 #[derive(Deserialize)]
@@ -317,4 +360,58 @@ formulation = "delta-lr"
         assert_eq!(cfg.mp2.formulation.as_deref(), Some("delta-lr"));
     }
 
+    #[test]
+    fn parse_chi0_sparsity_variants() {
+        use ferric_rpa::config::Chi0Sparsity;
+        let mk = |s: Option<&str>| {
+            let mut r = RpaCfg::default();
+            r.chi0_sparsity = s.map(|x| x.to_string());
+            r.parse_chi0_sparsity()
+        };
+        // None / "dense" → Dense (default, backward compatible).
+        assert_eq!(mk(None).unwrap(), Chi0Sparsity::Dense);
+        assert_eq!(mk(Some("dense")).unwrap(), Chi0Sparsity::Dense);
+        // boys with default (1e-4) + explicit threshold.
+        assert_eq!(mk(Some("boys")).unwrap(), Chi0Sparsity::BoysScreened { thresh: 1e-4 });
+        assert_eq!(mk(Some("boys:1e-3")).unwrap(), Chi0Sparsity::BoysScreened { thresh: 1e-3 });
+        // auto with defaults (cutoff 30, thresh 1e-4), explicit cutoff, explicit cutoff+thresh.
+        assert_eq!(mk(Some("auto")).unwrap(), Chi0Sparsity::Auto { boys_thresh: 1e-4, atom_cutoff: 30 });
+        assert_eq!(mk(Some("auto:24")).unwrap(), Chi0Sparsity::Auto { boys_thresh: 1e-4, atom_cutoff: 24 });
+        assert_eq!(mk(Some("auto:24:5e-4")).unwrap(), Chi0Sparsity::Auto { boys_thresh: 5e-4, atom_cutoff: 24 });
+        // case-insensitive + whitespace tolerant.
+        assert_eq!(mk(Some("  AUTO ")).unwrap(), Chi0Sparsity::Auto { boys_thresh: 1e-4, atom_cutoff: 30 });
+        // garbage → error (not silently ignored).
+        assert!(mk(Some("frobnicate")).is_err());
+        assert!(mk(Some("boys:notanumber")).is_err());
+    }
+
+    #[test]
+    fn memory_budget_parses() {
+        let toml_str = r#"
+[molecule]
+xyz = "x.xyz"
+[basis]
+name = "cc-pvdz"
+[method]
+kind = "rhf"
+[memory]
+three_index_budget_gb = 6.0
+"#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.memory.three_index_budget_gb, Some(6.0));
+    }
+
+    #[test]
+    fn memory_budget_defaults_to_none() {
+        let toml_str = r#"
+[molecule]
+xyz = "x.xyz"
+[basis]
+name = "cc-pvdz"
+[method]
+kind = "rhf"
+"#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.memory.three_index_budget_gb, None);
+    }
 }

@@ -3,6 +3,7 @@
 //! Supports BSE-JSON and Gaussian-94 input formats, plus a set of bundled
 //! basis sets compiled into the binary via `include_str!`.
 
+use crate::ecp::{EcpDef, EcpShell, EcpTerm};
 use crate::elements::symbol_to_z;
 use crate::FerricError;
 use serde::Deserialize;
@@ -28,12 +29,22 @@ pub struct BasisSet {
     pub name: String,
     /// Map from atomic number Z to the list of shells for that element.
     pub shells: HashMap<i32, Vec<Shell>>,
+    /// Optional ECP definitions keyed by Z. Populated only when the source JSON
+    /// carries `ecp_electrons`/`ecp_potentials` blocks (e.g. cc-pVnZ-PP). Empty
+    /// for ECP-free basis sets — existing loads are unaffected.
+    pub ecps: HashMap<i32, EcpDef>,
 }
 
 impl BasisSet {
     /// Return the shells for element with atomic number `z`, or `None` if absent.
     pub fn for_element(&self, z: i32) -> Option<&[Shell]> {
         self.shells.get(&z).map(|v| v.as_slice())
+    }
+
+    /// Return the ECP definition for element `z`, or `None` if this basis carries
+    /// no ECP for it.
+    pub fn ecp_for_element(&self, z: i32) -> Option<&EcpDef> {
+        self.ecps.get(&z)
     }
 }
 
@@ -54,7 +65,22 @@ struct BseFile {
 
 #[derive(Deserialize)]
 struct BseElement {
+    #[serde(default)]
     electron_shells: Vec<BseShell>,
+    /// Number of core electrons replaced by an ECP (present only in *-PP / def2-ECP files).
+    #[serde(default)]
+    ecp_electrons: Option<i32>,
+    /// Semilocal ECP expansion (present only when `ecp_electrons` is).
+    #[serde(default)]
+    ecp_potentials: Option<Vec<BseEcpPotential>>,
+}
+
+#[derive(Deserialize)]
+struct BseEcpPotential {
+    angular_momentum: Vec<i32>,
+    r_exponents: Vec<i32>,
+    gaussian_exponents: Vec<String>,
+    coefficients: Vec<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -75,9 +101,13 @@ pub fn load_bse_json(path: &str) -> Result<BasisSet, FerricError> {
 fn parse_bse_json(text: &str, name: &str) -> Result<BasisSet, FerricError> {
     let bf: BseFile = serde_json::from_str(text).map_err(|e| FerricError::Basis(format!("BSE JSON: {e}")))?;
     let mut shells: HashMap<i32, Vec<Shell>> = HashMap::new();
+    let mut ecps: HashMap<i32, EcpDef> = HashMap::new();
     let bs_name = bf.name.unwrap_or_else(|| name.to_string());
     for (z_str, elem) in &bf.elements {
         let z: i32 = z_str.parse().map_err(|e| FerricError::Basis(format!("bad element key {z_str:?}: {e}")))?;
+        if let (Some(n_core), Some(pots)) = (elem.ecp_electrons, elem.ecp_potentials.as_ref()) {
+            ecps.insert(z, parse_ecp_block(z, n_core, pots)?);
+        }
         for sh in &elem.electron_shells {
             let exps = parse_float_list(&sh.exponents)?;
             let pure = match sh.function_type.as_deref() {
@@ -114,7 +144,40 @@ fn parse_bse_json(text: &str, name: &str) -> Result<BasisSet, FerricError> {
             }
         }
     }
-    Ok(BasisSet { name: bs_name, shells })
+    Ok(BasisSet { name: bs_name, shells, ecps })
+}
+
+/// Parse a single element's `ecp_potentials` block (BSE-JSON) into an [`EcpDef`].
+fn parse_ecp_block(z: i32, n_core: i32, pots: &[BseEcpPotential]) -> Result<EcpDef, FerricError> {
+    let mut ecp_shells = Vec::with_capacity(pots.len());
+    for pot in pots {
+        if pot.angular_momentum.len() != 1 {
+            return Err(FerricError::Basis(format!(
+                "ECP channel for Z={z} has {} angular momenta, expected 1",
+                pot.angular_momentum.len()
+            )));
+        }
+        let l = pot.angular_momentum[0];
+        let gexps = parse_float_list(&pot.gaussian_exponents)?;
+        if pot.coefficients.len() != 1 {
+            return Err(FerricError::Basis(format!(
+                "ECP channel l={l} for Z={z} has {} coefficient columns, expected 1",
+                pot.coefficients.len()
+            )));
+        }
+        let coefs = parse_float_list(&pot.coefficients[0])?;
+        let n = gexps.len();
+        if pot.r_exponents.len() != n || coefs.len() != n {
+            return Err(FerricError::Basis(format!(
+                "ECP channel l={l} for Z={z}: ragged term lists"
+            )));
+        }
+        let terms = (0..n)
+            .map(|k| EcpTerm { coef: coefs[k], r_exp: pot.r_exponents[k], gexp: gexps[k] })
+            .collect();
+        ecp_shells.push(EcpShell { angular_momentum: l, terms });
+    }
+    Ok(EcpDef { n_core, shells: ecp_shells })
 }
 
 /// Rescale a contraction so its contracted AO has unit self-overlap.
@@ -219,7 +282,7 @@ fn parse_g94(text: &str, name: &str) -> Result<BasisSet, FerricError> {
             shells.entry(z).or_default().push(Shell { l, pure, exponents: exps, coefficients: c0 });
         }
     }
-    Ok(BasisSet { name: name.to_string(), shells })
+    Ok(BasisSet { name: name.to_string(), shells, ecps: HashMap::new() })
 }
 
 // --- Bundled basis sets ---
@@ -256,6 +319,7 @@ pub fn bundled(name: &str) -> Result<BasisSet, FerricError> {
         "def2-qzvp-rifit" => include_str!("basis/bundled/def2-qzvp-rifit.json"),
         "def2-qzvpp-rifit" => include_str!("basis/bundled/def2-qzvpp-rifit.json"),
         "aug-cc-pvdz" => include_str!("basis/bundled/aug-cc-pvdz.json"),
+        "aug-cc-pvdz-pp" => include_str!("basis/bundled/aug-cc-pvdz-pp.json"),
         "aug-cc-pvdz-rifit" => include_str!("basis/bundled/aug-cc-pvdz-rifit.json"),
         "aug-cc-pvtz" => include_str!("basis/bundled/aug-cc-pvtz.json"),
         "aug-cc-pvtz-rifit" => include_str!("basis/bundled/aug-cc-pvtz-rifit.json"),
@@ -295,6 +359,25 @@ mod tests {
         let o_ri = ri.for_element(8).unwrap();
         let max_l = o_ri.iter().map(|s| s.l).max().unwrap();
         assert!(max_l >= 3, "OptRI O should reach >= f, got max L={max_l}");
+    }
+
+    #[test]
+    fn test_bundled_augccpvdz_pp_carries_ecp() {
+        // aug-cc-pVDZ-PP bundles heavy atoms (I/Xe/Ag) WITH their inline ECP and
+        // light atoms (H/C/Al/Cl) from regular aug-cc-pVDZ (no ECP). The GW100
+        // ECP molecules (I2, CH3I, AlI3, Xe, Ag2, AgCl) need exactly this mix.
+        let bs = bundled("aug-cc-pVDZ-PP").unwrap();
+        // Heavy atoms present with ECP (28-electron core for all three).
+        for &z in &[47, 53, 54] {
+            assert!(bs.for_element(z).is_some(), "Z={z} orbital shells missing");
+            let ecp = bs.ecp_for_element(z).unwrap_or_else(|| panic!("Z={z} ECP missing"));
+            assert_eq!(ecp.n_core, 28, "Z={z} should replace a 28-electron core");
+        }
+        // Light atoms present WITHOUT ECP.
+        for &z in &[1, 6, 13, 17] {
+            assert!(bs.for_element(z).is_some(), "light Z={z} shells missing");
+            assert!(bs.ecp_for_element(z).is_none(), "light Z={z} must not carry an ECP");
+        }
     }
 
     #[test]

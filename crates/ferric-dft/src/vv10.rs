@@ -13,16 +13,44 @@
 //! V_nl potential is the functional derivative δE_nl/δρ + δE_nl/δσ via the
 //! chain rule through ω₀ and κ — see PySCF `_vv10nlc` for the exact form.
 //! Algorithm direct from PySCF's `pyscf/dft/numint.py::_vv10nlc`.
+//!
+//! The O(npts²) pair sums parallelize over the outer (row) index with rayon;
+//! each row's inner (partner) loop stays serial, so the per-row summation
+//! order — and therefore the floating-point result — is identical to the
+//! serial code.
 
-use ndarray::{Array2, Array3, Axis};
+use ndarray::{Array1, Array2, Array3, Axis};
+use rayon::prelude::*;
 
 use crate::density_on_grid::DensityGrid;
 use crate::grid::GridPoint;
 use crate::libxc::Vv10Params;
+use crate::vxc::scale_columns_into;
 
 /// Density threshold below which a grid point is skipped — keeps κ, ω₀, and
 /// their derivatives well-conditioned. Matches PySCF's `_vv10nlc` thresh=1e-8.
 const RHO_THRESH: f64 = 1e-8;
+
+/// Below this many outer points the O(npts²) pair sums run serially — rayon
+/// spawn/join/steal overhead dwarfs the work on tiny grids (the free-atom
+/// SCF case; see the matching guard in `ao_grid`).
+const PAR_MIN_PTS: usize = 128;
+
+/// Map `row_fn` over `0..n`, in parallel when the pair-sum work is large
+/// enough to amortize rayon overhead. `row_fn` must be a pure function of
+/// its row index; rows are accumulated independently (no shared state), so
+/// the result is bit-identical to the serial map.
+fn map_rows<T, F>(n: usize, row_fn: F) -> Vec<T>
+where
+    T: Send,
+    F: Fn(usize) -> T + Sync + Send,
+{
+    if n >= PAR_MIN_PTS {
+        (0..n).into_par_iter().map(row_fn).collect()
+    } else {
+        (0..n).map(row_fn).collect()
+    }
+}
 
 /// Compute per-grid-point VV10 potentials `(v_ρ, v_σ)` plus the energy E_nl.
 ///
@@ -33,9 +61,8 @@ pub fn compute_vv10_potentials(
     dens: &DensityGrid,
     params: &Vv10Params,
 ) -> (Vec<f64>, Vec<f64>) {
-    let (e, vr, vs, _) = vv10_internal(grid, dens, params);
-    let _ = e;
-    (vr, vs)
+    let out = vv10_internal(grid, dens, params);
+    (out.vrho, out.vsig)
 }
 
 /// Like `compute_vv10_potentials` but also returns E_nl.
@@ -44,8 +71,8 @@ pub fn compute_vv10_energy_and_potentials(
     dens: &DensityGrid,
     params: &Vv10Params,
 ) -> (f64, Vec<f64>, Vec<f64>) {
-    let (e, vr, vs, _) = vv10_internal(grid, dens, params);
-    (e, vr, vs)
+    let out = vv10_internal(grid, dens, params);
+    (out.e_nl, out.vrho, out.vsig)
 }
 
 /// Compute the per-grid-point VV10 energy density ε_nl(g) = β + ½ · f(g)
@@ -56,76 +83,11 @@ pub fn compute_vv10_full(
     dens: &DensityGrid,
     params: &Vv10Params,
 ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
-    let (_e, vr, vs, active) = vv10_internal(grid, dens, params);
-    // Re-derive ε(g) from the same pair sum used internally. `vv10_internal`
-    // already integrated this; re-doing it here keeps the function shape simple
-    // at the cost of a single extra pair-sum traversal. For typical grids the
-    // pair-sum dominates the cost regardless.
-    let (exc_per_point, _) = vv10_exc_per_point(grid, dens, params, &active);
-    (vr, vs, exc_per_point)
-}
-
-/// Per-grid-point ε_nl(g) = β + ½ · f(g) on the union NLC grid. Returns
-/// `(exc, active_mask)`. Skips grid points whose density is below threshold.
-fn vv10_exc_per_point(
-    grid: &[GridPoint],
-    dens: &DensityGrid,
-    params: &Vv10Params,
-    active: &[bool],
-) -> (Vec<f64>, ()) {
-    let npts = dens.rho.len();
-    let b_vv = params.b;
-    let c_vv = params.c;
-    let pi = std::f64::consts::PI;
-    let pi43 = 4.0 * pi / 3.0;
-    let k_vv = b_vv * 1.5 * pi * (9.0 * pi).powf(-1.0 / 6.0);
-    let beta = (3.0 / (b_vv * b_vv)).powf(0.75) / 32.0;
-
-    let mut w0 = vec![0.0f64; npts];
-    let mut kp = vec![0.0f64; npts];
-    let mut rho_w = vec![0.0f64; npts];
-    let mut xyz = vec![[0.0f64; 3]; npts];
-    for g in 0..npts {
-        if !active[g] {
-            continue;
-        }
-        let r = dens.rho[g];
-        let s = dens.sigma[g];
-        let w0sq = c_vv * (s / (r * r)).powi(2) + pi43 * r;
-        w0[g] = w0sq.sqrt();
-        kp[g] = k_vv * r.powf(1.0 / 6.0);
-        rho_w[g] = r * grid[g].weight;
-        xyz[g] = grid[g].xyz;
-    }
-
-    let mut exc = vec![0.0f64; npts];
-    for i in 0..npts {
-        if !active[i] {
-            continue;
-        }
-        let xi = xyz[i];
-        let w0i = w0[i];
-        let ki = kp[i];
-        let mut fi = 0.0f64;
-        for p in 0..npts {
-            if !active[p] {
-                continue;
-            }
-            let dx = xyz[p][0] - xi[0];
-            let dy = xyz[p][1] - xi[1];
-            let dz = xyz[p][2] - xi[2];
-            let r2 = dx * dx + dy * dy + dz * dz;
-            let gp_val = r2 * w0[p] + kp[p];
-            let gi_val = r2 * w0i + ki;
-            let gt_val = gi_val + gp_val;
-            if gi_val < 1e-30 || gp_val < 1e-30 || gt_val < 1e-30 {
-                continue;
-            }
-            fi += rho_w[p] / (gi_val * gp_val * gt_val);
-        }
-        exc[i] = beta + 0.5 * (-1.5 * fi);
-    }
-    (exc, ())
+    // ε(g) is a byproduct of the same pair sum that yields the potentials, so
+    // a single traversal covers everything (this used to re-run the full
+    // O(npts²) pair sum a second time just to recover ε).
+    let out = vv10_internal(grid, dens, params);
+    (out.vrho, out.vsig, out.exc)
 }
 
 /// Per-grid-point VV10 egrad `F[g, axis] = -3 · Σ_p RpW_p · Q[g,p] · DR[g,p]`
@@ -192,10 +154,10 @@ pub fn vv10_egrad(
         active_in[j] = true;
     }
 
-    let mut f = ndarray::Array2::<f64>::zeros((n_out, 3));
-    for i in 0..n_out {
+    // Outer rows are independent — parallel map, serial inner loop.
+    let rows = map_rows(n_out, |i| {
         if !active_out[i] {
-            continue;
+            return [0.0f64; 3];
         }
         let xi = xyz_out[i];
         let w0i = w0_out[i];
@@ -223,19 +185,30 @@ pub fn vv10_egrad(
             fy += q * dy;
             fz += q * dz;
         }
-        f[(i, 0)] = -3.0 * fx;
-        f[(i, 1)] = -3.0 * fy;
-        f[(i, 2)] = -3.0 * fz;
+        [-3.0 * fx, -3.0 * fy, -3.0 * fz]
+    });
+
+    let mut f = ndarray::Array2::<f64>::zeros((n_out, 3));
+    for (i, row) in rows.iter().enumerate() {
+        f[(i, 0)] = row[0];
+        f[(i, 1)] = row[1];
+        f[(i, 2)] = row[2];
     }
     f
 }
 
-/// Internal: compute (E_nl, vrho, vsig, active) on a single grid.
-fn vv10_internal(
-    grid: &[GridPoint],
-    dens: &DensityGrid,
-    params: &Vv10Params,
-) -> (f64, Vec<f64>, Vec<f64>, Vec<bool>) {
+/// Everything the single VV10 pair-sum traversal yields.
+struct Vv10Internal {
+    e_nl: f64,
+    vrho: Vec<f64>,
+    vsig: Vec<f64>,
+    /// Per-grid-point energy density ε_nl(g) = β + ½ · f(g); 0.0 on inactive points.
+    exc: Vec<f64>,
+    active: Vec<bool>,
+}
+
+/// Internal: compute (E_nl, vrho, vsig, ε_nl, active) on a single grid.
+fn vv10_internal(grid: &[GridPoint], dens: &DensityGrid, params: &Vv10Params) -> Vv10Internal {
     let npts = dens.rho.len();
     let b_vv = params.b;
     let c_vv = params.c;
@@ -273,11 +246,10 @@ fn vv10_internal(
         }
     }
 
-    let mut f_arr = vec![0.0_f64; npts];
-    let mut u_arr = vec![0.0_f64; npts];
-    let mut w_arr = vec![0.0_f64; npts];
-    for i in 0..npts {
-        if !active[i] { continue; }
+    // O(npts²) pair sum: outer rows independent → parallel map; inner loop
+    // serial so each row's accumulation order matches the serial code.
+    let fuw = map_rows(npts, |i| {
+        if !active[i] { return (0.0_f64, 0.0_f64, 0.0_f64); }
         let xi = xyz[i];
         let w0i = w0[i];
         let ki = kp[i];
@@ -300,22 +272,23 @@ fn vv10_internal(
             ui += t_u;
             wi += t_u * r2;
         }
-        f_arr[i] = -1.5 * fi;
-        u_arr[i] = ui;
-        w_arr[i] = wi;
-    }
+        (-1.5 * fi, ui, wi)
+    });
 
     let mut vrho = vec![0.0_f64; npts];
     let mut vsig = vec![0.0_f64; npts];
+    let mut exc = vec![0.0_f64; npts];
     let mut e_nl = 0.0_f64;
     for g in 0..npts {
         if !active[g] { continue; }
-        let exc_g = beta + 0.5 * f_arr[g];
-        vrho[g] = beta + f_arr[g] + 1.5 * (u_arr[g] * dk_dr[g] + w_arr[g] * dw0_dr[g]);
-        vsig[g] = 1.5 * w_arr[g] * dw0_dg[g];
+        let (f_g, u_g, w_g) = fuw[g];
+        let exc_g = beta + 0.5 * f_g;
+        exc[g] = exc_g;
+        vrho[g] = beta + f_g + 1.5 * (u_g * dk_dr[g] + w_g * dw0_dr[g]);
+        vsig[g] = 1.5 * w_g * dw0_dg[g];
         e_nl += grid[g].weight * rho[g] * exc_g;
     }
-    (e_nl, vrho, vsig, active)
+    Vv10Internal { e_nl, vrho, vsig, exc, active }
 }
 
 /// Compute the VV10 energy contribution and add the matrix V_nl to `f`.
@@ -335,36 +308,35 @@ pub fn add_vv10(
     debug_assert_eq!(dens.rho.len(), npts);
 
     // Compute energy + per-point potentials via the shared pair-sum routine.
-    let (e_nl, vrho, vsig, active) = vv10_internal(grid, dens, params);
+    let out = vv10_internal(grid, dens, params);
+    let Vv10Internal { e_nl, vrho, vsig, active, .. } = out;
 
     // V_nl matrix contribution — same GEMM pattern as semilocal V_xc.
     //   LDA-like piece: V_μν += Σ_g w_g · vrho_g · χ_μg · χ_νg
     //   GGA-like piece: V_μν += Σ_g 2·w_g · vsig_g · Σ_axis ∇ρ_axis_g ·
     //                           [χ_μg · ∂_axis χ_νg + χ_νg · ∂_axis χ_μg]
-    let mut chi_scaled = chi.clone();
-    for g in 0..npts {
-        let s = if active[g] { grid[g].weight * vrho[g] } else { 0.0 };
-        for mu in 0..nbf {
-            chi_scaled[(mu, g)] *= s;
-        }
-    }
-    let mut v_nl: Array2<f64> = chi_scaled.dot(&chi.t());
+    // One scratch buffer serves all four GEMM operands (refilled per use).
+    let mut buf = Array2::<f64>::zeros((nbf, npts));
 
-    let mut chi_scaled_axis = chi.clone();
+    let s: Array1<f64> = (0..npts)
+        .map(|g| if active[g] { grid[g].weight * vrho[g] } else { 0.0 })
+        .collect();
+    scale_columns_into(chi, &s, &mut buf);
+    let mut v_nl: Array2<f64> = buf.dot(&chi.t());
+
     for axis in 0..3 {
-        chi_scaled_axis.assign(chi);
         let dchi_axis = dchi.index_axis(Axis(0), axis);
-        for g in 0..npts {
-            let f_ag = if active[g] {
-                2.0 * grid[g].weight * vsig[g] * dens.grad[(axis, g)]
-            } else {
-                0.0
-            };
-            for mu in 0..nbf {
-                chi_scaled_axis[(mu, g)] *= f_ag;
-            }
-        }
-        let m_axis: Array2<f64> = chi_scaled_axis.dot(&dchi_axis.t());
+        let f_ax: Array1<f64> = (0..npts)
+            .map(|g| {
+                if active[g] {
+                    2.0 * grid[g].weight * vsig[g] * dens.grad[(axis, g)]
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        scale_columns_into(chi, &f_ax, &mut buf);
+        let m_axis: Array2<f64> = buf.dot(&dchi_axis.t());
         v_nl = v_nl + &m_axis + &m_axis.t();
     }
 

@@ -1,6 +1,7 @@
 //! Canonical MP2 using full 4-center ERIs transformed to MO basis.
 //! For cross-validation only -- O(N^5) or worse.
 
+use crate::rimp2::active_occ;
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -22,7 +23,7 @@ pub fn canonical_mp2(
     let nbas = prep.nbasis();
     let nelec = mol.nelec() as usize;
     let nocc_total = nelec / 2;
-    let nocc = nocc_total - frozen_core;
+    let nocc = active_occ(nocc_total, frozen_core)?;
     let first_occ = frozen_core;
     let nvir = nbas - nocc_total;
     let eps = rhf.eps_r();

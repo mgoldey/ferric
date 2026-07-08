@@ -57,6 +57,7 @@ fn union_basis_sets(obs: &BasisSet, aux: &BasisSet) -> BasisSet {
     BasisSet {
         name: format!("{}∪{}", obs.name, aux.name),
         shells,
+        ecps: HashMap::new(),
     }
 }
 

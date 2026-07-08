@@ -27,9 +27,15 @@ pub fn schwarz(op: Operator, prep: &PreparedBasis) -> Result<Array2<f64>, Ferric
     }
     let nsh = prep.nshells();
     let mut qmat = Array2::zeros((nsh, nsh));
-    unsafe {
-        ffi::scf_compute_schwarz(handle, prep.handle(), qmat.as_mut_ptr());
+    let status = unsafe {
+        let s = ffi::scf_compute_schwarz(handle, prep.handle(), qmat.as_mut_ptr());
         ffi::scf_engine_destroy(handle);
+        s
+    };
+    if status < 0 {
+        return Err(FerricError::Libint(format!(
+            "libint2 internal error computing Schwarz matrix: status {status}"
+        )));
     }
     Ok(qmat)
 }

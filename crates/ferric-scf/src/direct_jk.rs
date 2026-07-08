@@ -17,6 +17,10 @@ pub struct DirectJK<'a> {
     prep: &'a PreparedBasis,
     bounds: &'a SchwarzBounds,
     thresh: f64,
+    // Lazily built on first build() and reused for the builder's lifetime:
+    // libint2 engine construction is serialized behind a global ctor mutex,
+    // so hoist the builder out of the SCF loop to pay it once, not per iteration.
+    pool: Option<crate::engine_pool::EnginePool>,
 }
 
 impl<'a> DirectJK<'a> {
@@ -26,7 +30,7 @@ impl<'a> DirectJK<'a> {
         bounds: &'a SchwarzBounds,
         thresh: f64,
     ) -> Self {
-        DirectJK { ctx, prep, bounds, thresh }
+        DirectJK { ctx, prep, bounds, thresh, pool: None }
     }
 
     /// Build J and K matrices simultaneously from a single pass over shell quartets.
@@ -116,7 +120,10 @@ impl<'a> DirectJK<'a> {
         // One engine per rayon thread (see engine_pool): constructing it in the
         // fold init below would fire once per work-chunk and storm the global
         // libint2 ctor mutex (catastrophic for heavy-element bases).
-        let pool = crate::engine_pool::EnginePool::new(op, prep, 1e-14)?;
+        if self.pool.is_none() {
+            self.pool = Some(crate::engine_pool::EnginePool::new(op, prep, 1e-14)?);
+        }
+        let pool = self.pool.as_ref().expect("pool initialized above");
         let total_jk = quads
             .into_par_iter()
             .fold(

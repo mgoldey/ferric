@@ -226,6 +226,7 @@ pub fn oneelectron_gradient(
                         nbuf.as_mut_ptr(),
                     )
                 };
+                assert!(written >= 0, "libint2 internal error in nuclear deriv block ({s1},{s2}): status {written}");
                 if written == 0 { continue; }
                 let a1 = sh2at[s1];
                 let a2 = sh2at[s2];
@@ -816,6 +817,7 @@ mod tests {
                             nbuf.as_mut_ptr(),
                         )
                     };
+                    assert!(written >= 0, "libint2 internal error in nuclear deriv block ({s1},{s2}): status {written}");
                     if written == 0 { continue; }
                     let a1 = sh2at[s1];
                     let a2 = sh2at[s2];

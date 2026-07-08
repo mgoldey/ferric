@@ -21,6 +21,7 @@ use crate::{GwConfig, UGwResult};
 use ferric_core::FerricError;
 use ferric_rpa::PdepRpaResult;
 use ndarray::Array1;
+use rayon::prelude::*;
 
 /// Run U-G0W0 given pre-built per-spin MoB and a shared U-PDEP-RPA result.
 pub fn run_u_g0w0(
@@ -86,23 +87,30 @@ fn qp_per_spin_g0w0(
     let mut sx_out = Array1::<f64>::zeros(mo_indices.len());
     let mut sc_out = Array1::<f64>::zeros(mo_indices.len());
     let mut z_out = Array1::<f64>::ones(mo_indices.len());
-    for (idx, &mo_abs) in mo_indices.iter().enumerate() {
-        if mo_abs < first_act {
-            return Err(FerricError::General(format!(
-                "qp_mos index {mo_abs} is in the frozen-core block"
-            )));
-        }
-        let m_loc = mo_abs - first_act;
-        let eps_m = mo_b.eps_act[m_loc];
+    // Independent per-state QP solves (scalar math only) — parallelize.
+    let qp_rows = mo_indices
+        .par_iter()
+        .map(|&mo_abs| {
+            if mo_abs < first_act {
+                return Err(FerricError::General(format!(
+                    "qp_mos index {mo_abs} is in the frozen-core block"
+                )));
+            }
+            let m_loc = mo_abs - first_act;
+            let eps_m = mo_b.eps_act[m_loc];
+            let (eps_qp_m, sc_final, z_renorm) = solve_qp_for_mo(
+                m_loc, eps_m, m_proj, inv_diel_freq, quad_weights, quad_freqs,
+                &mo_b.eps_act, gw_cfg.pade_npts, gw_cfg.qp_newton_damp, ef, 0.0,
+            );
+            Ok((eps_m, sigma_x_all[m_loc], eps_qp_m, sc_final, z_renorm))
+        })
+        .collect::<Result<Vec<_>, FerricError>>()?;
+    for (idx, &(eps_m, sx, eps_qp_m, sc_final, z_renorm)) in qp_rows.iter().enumerate() {
         eps_mf[idx] = eps_m;
-        sx_out[idx] = sigma_x_all[m_loc];
-        let (eps_qp_m, sc_final, z_renorm) = solve_qp_for_mo(
-            m_loc, eps_m, m_proj, inv_diel_freq, quad_weights, quad_freqs,
-            &mo_b.eps_act, gw_cfg.pade_npts, gw_cfg.qp_newton_damp, ef,
-        );
+        sx_out[idx] = sx;
+        eps_qp[idx] = eps_qp_m;
         sc_out[idx] = sc_final;
         z_out[idx] = z_renorm;
-        eps_qp[idx] = eps_qp_m;
     }
     Ok((eps_qp, eps_mf, sx_out, sc_out, z_out))
 }
@@ -168,19 +176,26 @@ pub fn run_u_evgw0(
             eps_prop_b[mo_abs - first_act_b] = eps_qp_b[idx];
         }
         let mut max_dev = 0.0_f64;
-        for (idx, &mo_abs) in mo_indices.iter().enumerate() {
-            let mla = mo_abs - first_act_a;
-            let mlb = mo_abs - first_act_b;
-            let (ena, sca, za) = solve_qp_for_mo(
-                mla, mo_b_a.eps_act[mla], &m_proj_a, inv_diel_freq,
-                &pdep.quad_weights, &pdep.quad_freqs, &eps_prop_a,
-                gw_cfg.pade_npts, gw_cfg.qp_newton_damp, ef_a,
-            );
-            let (enb, scb, zb) = solve_qp_for_mo(
-                mlb, mo_b_b.eps_act[mlb], &m_proj_b, inv_diel_freq,
-                &pdep.quad_weights, &pdep.quad_freqs, &eps_prop_b,
-                gw_cfg.pade_npts, gw_cfg.qp_newton_damp, ef_b,
-            );
+        // Frozen per-iteration eps_prop snapshots ⇒ independent per-state solves.
+        let qp_new: Vec<((f64, f64, f64), (f64, f64, f64))> = mo_indices
+            .par_iter()
+            .map(|&mo_abs| {
+                let mla = mo_abs - first_act_a;
+                let mlb = mo_abs - first_act_b;
+                let ra = solve_qp_for_mo(
+                    mla, mo_b_a.eps_act[mla], &m_proj_a, inv_diel_freq,
+                    &pdep.quad_weights, &pdep.quad_freqs, &eps_prop_a,
+                    gw_cfg.pade_npts, gw_cfg.qp_newton_damp, ef_a, 0.0,
+                );
+                let rb = solve_qp_for_mo(
+                    mlb, mo_b_b.eps_act[mlb], &m_proj_b, inv_diel_freq,
+                    &pdep.quad_weights, &pdep.quad_freqs, &eps_prop_b,
+                    gw_cfg.pade_npts, gw_cfg.qp_newton_damp, ef_b, 0.0,
+                );
+                (ra, rb)
+            })
+            .collect();
+        for (idx, &((ena, sca, za), (enb, scb, zb))) in qp_new.iter().enumerate() {
             max_dev = max_dev.max((ena - eps_qp_a[idx]).abs()).max((enb - eps_qp_b[idx]).abs());
             eps_qp_a[idx] = ena; sc_a[idx] = sca; z_a[idx] = za;
             eps_qp_b[idx] = enb; sc_b[idx] = scb; z_b[idx] = zb;
@@ -282,19 +297,26 @@ pub fn run_u_evgw(
             eps_prop_b[mo_abs - first_act_b] = eps_qp_b[idx];
         }
         let mut max_dev = 0.0_f64;
-        for (idx, &mo_abs) in mo_indices.iter().enumerate() {
-            let mla = mo_abs - first_act_a;
-            let mlb = mo_abs - first_act_b;
-            let (ena, sca, za) = solve_qp_for_mo(
-                mla, mo_b_a.eps_act[mla], &m_proj_a, inv_diel_freq,
-                &current_pdep.quad_weights, &current_pdep.quad_freqs, &eps_prop_a,
-                gw_cfg.pade_npts, gw_cfg.qp_newton_damp, ef_a,
-            );
-            let (enb, scb, zb) = solve_qp_for_mo(
-                mlb, mo_b_b.eps_act[mlb], &m_proj_b, inv_diel_freq,
-                &current_pdep.quad_weights, &current_pdep.quad_freqs, &eps_prop_b,
-                gw_cfg.pade_npts, gw_cfg.qp_newton_damp, ef_b,
-            );
+        // Frozen (m_proj, W, eps_prop) snapshot ⇒ independent per-state solves.
+        let qp_new: Vec<((f64, f64, f64), (f64, f64, f64))> = mo_indices
+            .par_iter()
+            .map(|&mo_abs| {
+                let mla = mo_abs - first_act_a;
+                let mlb = mo_abs - first_act_b;
+                let ra = solve_qp_for_mo(
+                    mla, mo_b_a.eps_act[mla], &m_proj_a, inv_diel_freq,
+                    &current_pdep.quad_weights, &current_pdep.quad_freqs, &eps_prop_a,
+                    gw_cfg.pade_npts, gw_cfg.qp_newton_damp, ef_a, 0.0,
+                );
+                let rb = solve_qp_for_mo(
+                    mlb, mo_b_b.eps_act[mlb], &m_proj_b, inv_diel_freq,
+                    &current_pdep.quad_weights, &current_pdep.quad_freqs, &eps_prop_b,
+                    gw_cfg.pade_npts, gw_cfg.qp_newton_damp, ef_b, 0.0,
+                );
+                (ra, rb)
+            })
+            .collect();
+        for (idx, &((ena, sca, za), (enb, scb, zb))) in qp_new.iter().enumerate() {
             max_dev = max_dev.max((ena - eps_qp_a[idx]).abs()).max((enb - eps_qp_b[idx]).abs());
             eps_qp_a[idx] = ena; sc_a[idx] = sca; z_a[idx] = za;
             eps_qp_b[idx] = enb; sc_b[idx] = scb; z_b[idx] = zb;

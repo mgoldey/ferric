@@ -44,6 +44,7 @@ pub mod screen;
 pub mod seeds;
 pub mod sternheimer;
 pub mod sternheimer_sparse;
+pub mod timing;
 
 pub use lanczos::{run_lanczos_seeded, LanczosResult};
 pub use rs_mp2_rpa::{rs_mp2_lr_rpa, RsMp2RpaConfig, RsMp2RpaFormulation, RsMp2RpaResult};
@@ -239,7 +240,9 @@ pub fn run_pdep_rpa(
     // occ-vir block; skip the full-MP2 amplitudes/density that the gradient
     // path requires.
     let mp2_cfg = RiMp2Config { frozen_core: config.frozen_core };
+    let _t_setup = crate::timing::Stage::start("pdep:rpa_intermediates(ERI3+metric+MOtransform)");
     let inter = compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
+    _t_setup.end();
     run_pdep_rpa_from_intermediates(&inter, mol, obs, dfbs, op, rhf, config)
 }
 
@@ -314,7 +317,20 @@ pub fn run_pdep_rpa_from_intermediates(
     // per-orbital aux-row screening). Only used inside the Davidson/Lanczos
     // matvec closure when `chi0_sparsity = BoysScreened`. The post-Davidson
     // energy integration still uses the dense b_ov path for correctness.
-    let screened_bov_opt: Option<ScreenedBov> = match config.chi0_sparsity {
+    // Resolve Auto → Dense/BoysScreened by atom count (boys-screening-crossover).
+    let resolved_sparsity = config.chi0_sparsity.resolve(mol.atoms.len());
+    if let Chi0Sparsity::Auto { boys_thresh, atom_cutoff } = config.chi0_sparsity {
+        let picked = match resolved_sparsity {
+            Chi0Sparsity::BoysScreened { thresh } => format!("BoysScreened{{{thresh:e}}}"),
+            _ => "Dense".to_string(),
+        };
+        let cmp = if mol.atoms.len() >= atom_cutoff { "≥" } else { "<" };
+        eprintln!(
+            "chi0_sparsity auto: {} atoms {cmp} cutoff {atom_cutoff} → {picked} (boys_thresh {boys_thresh:e})",
+            mol.atoms.len()
+        );
+    }
+    let screened_bov_opt: Option<ScreenedBov> = match resolved_sparsity {
         Chi0Sparsity::Dense => None,
         Chi0Sparsity::BoysScreened { thresh } => {
             let (sb, _boys) = screen::build_screened_bov_boys(
@@ -328,8 +344,12 @@ pub fn run_pdep_rpa_from_intermediates(
             )?;
             Some(sb)
         }
+        // `resolve` never returns Auto; this arm is unreachable but keeps the
+        // match exhaustive without a catch-all that could hide a future variant.
+        Chi0Sparsity::Auto { .. } => unreachable!("resolve() collapses Auto"),
     };
 
+    let _t_eig = crate::timing::Stage::start("pdep:eigensolve(Davidson/Lanczos)");
     let davidson_result = match (config.eigensolver, screened_bov_opt.as_ref()) {
         // --- Sparse Boys-screened path ---
         (Eigensolver::Davidson, Some(sb)) => {
@@ -441,6 +461,7 @@ pub fn run_pdep_rpa_from_intermediates(
             }
         }
     };
+    _t_eig.end();
 
     // Step 4: Truncate by departure from identity: keep eigenpotentials where
     // (λ_α(0) − 1) > trunc_thresh. The dielectric ε̃ = I + Π has eigenvalues ≥ 1,
@@ -464,13 +485,14 @@ pub fn run_pdep_rpa_from_intermediates(
 
     // Step 6: Evaluate λ_α(iω_k). Dispatch to the Laplace-separable kernel
     // when the user opted in via `chi0_backend`.
+    let _t_quad = crate::timing::Stage::start("pdep:freq_quad(lambda+invdielectric)");
     let eigenvalues_freq = match laplace_chi0_quad.as_ref() {
         None => energy::eval_eigenvalues_at_frequencies(
             &eigenvectors, b_ov, &eps_occ, &eps_vir, &quad_freqs,
-        ),
+        )?,
         Some(q) => energy::eval_eigenvalues_at_frequencies_laplace(
             &eigenvectors, b_ov, &eps_occ, &eps_vir, &quad_freqs, q,
-        ),
+        )?,
     };
 
     // Step 6b: Per-frequency full inverse-dielectric matrices in the PDEP basis
@@ -479,9 +501,11 @@ pub fn run_pdep_rpa_from_intermediates(
     let inv_dielectric_freq = match laplace_chi0_quad.as_ref() {
         None => Some(energy::eval_inv_dielectric_matrices(
             &eigenvectors, b_ov, &eps_occ, &eps_vir, &quad_freqs,
-        )),
+        )?),
         Some(_) => None,
     };
+
+    _t_quad.end();
 
     // Step 7: Integrate RPA correlation energy.
     let e_rpa = energy::rpa_correlation_energy(&quad_weights, &eigenvalues_freq);
@@ -659,13 +683,13 @@ pub fn run_u_pdep_rpa(
     let eigenvalues_freq = match laplace_pair.as_ref() {
         None => energy::eval_eigenvalues_at_frequencies_unrestricted(
             &eigenvectors, &freq_chan_a, &freq_chan_b, &quad_freqs,
-        ),
+        )?,
         Some((qa, qb)) => energy::eval_eigenvalues_at_frequencies_laplace_unrestricted(
             &eigenvectors,
             &freq_chan_a, qa,
             &freq_chan_b, qb,
             &quad_freqs,
-        ),
+        )?,
     };
 
     let e_rpa = energy::rpa_correlation_energy(&quad_weights, &eigenvalues_freq);
@@ -673,7 +697,7 @@ pub fn run_u_pdep_rpa(
     let inv_dielectric_freq = match laplace_pair.as_ref() {
         None => Some(energy::eval_inv_dielectric_matrices_unrestricted(
             &eigenvectors, &freq_chan_a, &freq_chan_b, &quad_freqs,
-        )),
+        )?),
         Some(_) => None,
     };
 

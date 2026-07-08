@@ -333,7 +333,7 @@ pub fn build_screened_bov_boys(
     let nbas = obs.nbasis();
     let nelec = mol.nelec() as usize;
     let nocc_total = nelec / 2;
-    let nocc_active = nocc_total - frozen_core;
+    let nocc_active = ferric_mp2::rimp2::active_occ(nocc_total, frozen_core)?;
     let _ = nbas;
 
     let boys = boys_localize_occupied(rhf, obs, frozen_core, nocc_active)?;

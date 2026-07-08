@@ -3,6 +3,21 @@ name = "ferric-cli"
 version = "0.1.0"
 edition = "2021"
 
+# Primary CLI driver. Built under both names: `ferric-cli` (historical, used by
+# README/tutorials/scripts) and `ferric` (friendlier; the name `ferric-batch`
+# shells out to — see src/bin/ferric-batch.rs).
+[[bin]]
+name = "ferric-cli"
+path = "src/main.rs"
+
+[[bin]]
+name = "ferric"
+path = "src/main.rs"
+
+[[bin]]
+name = "ferric-batch"
+path = "src/bin/ferric-batch.rs"
+
 [dependencies]
 ferric-core = { path = "../ferric-core" }
 ferric-integrals = { path = "../ferric-integrals" }

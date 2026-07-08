@@ -28,6 +28,24 @@ use ndarray::Array2;
 
 use crate::config::PdepRpaConfig;
 
+/// Solve the (naux × naux) screened-dielectric system ε̃·y^d = w^d for the
+/// three Cartesian right-hand sides, propagating LAPACK failure (singular ε̃
+/// from a near-zero orbital-energy gap) instead of panicking.
+pub(crate) fn solve_dielectric_3(
+    eps_mat: &Array2<f64>,
+    w: &[ndarray::Array1<f64>; 3],
+) -> Result<[ndarray::Array1<f64>; 3], FerricError> {
+    use ndarray_linalg::Solve;
+    let mut solve_one = |d: usize| -> Result<ndarray::Array1<f64>, FerricError> {
+        eps_mat.solve(&w[d]).map_err(|e| {
+            FerricError::Lapack(format!(
+                "dielectric solve failed (singular ε̃ — near-degenerate occ/vir gap?): {e}"
+            ))
+        })
+    };
+    Ok([solve_one(0)?, solve_one(1)?, solve_one(2)?])
+}
+
 /// Static (ω=0) closed-shell polarizability tensor in atomic units.
 #[derive(Debug, Clone)]
 pub struct PolarizabilityResult {
@@ -289,6 +307,7 @@ pub fn electric_field_at_atoms(
                         buf.as_mut_ptr(),
                     )
                 };
+                assert!(written >= 0, "libint2 internal error in nuclear deriv block ({s1},{s2}): status {written}");
                 if written == 0 {
                     continue;
                 }
@@ -501,10 +520,7 @@ pub fn pdep_polarizability_static(
     }
 
     // Solve ε̃ · y^d = w^d  (naux × naux SPD).
-    let y_vec: [ndarray::Array1<f64>; 3] = {
-        use ndarray_linalg::Solve;
-        std::array::from_fn(|d| eps_mat.solve(&w_vec[d]).unwrap())
-    };
+    let y_vec = solve_dielectric_3(&eps_mat, &w_vec)?;
 
     // α_ij = 4 μ^i^T D^{-1} μ^j − 16 w^i^T y^j
     //
@@ -684,7 +700,6 @@ pub fn pdep_polarizability_static_unrestricted(
     _cfg: &PdepRpaConfig,
 ) -> Result<PolarizabilityResult, FerricError> {
     use ferric_mp2::rimp2::{compute_rpa_intermediates_spin, RiMp2Config};
-    use ndarray_linalg::Solve;
 
     let mp2_cfg = RiMp2Config { frozen_core: 0 };
 
@@ -772,7 +787,7 @@ pub fn pdep_polarizability_static_unrestricted(
     }
 
     // Solve ε̃ · y^d = w_total^d
-    let y_vec: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| eps_mat.solve(&w_total[d]).unwrap());
+    let y_vec = solve_dielectric_3(&eps_mat, &w_total)?;
 
     // Correct UHF formula derived from the full 2×2 spin-block SMW:
     //   α = 2 · μ̃^T (A+B)^{-1} μ̃
@@ -870,7 +885,6 @@ pub fn pdep_polarizability_becke(
 ) -> Result<Vec<[[f64; 3]; 3]>, FerricError> {
     use ferric_dft::grid::{build_atomic_grid, AtomicGridConfig};
     use ferric_dft::ao_grid::eval_basis_on_points;
-    use ndarray_linalg::Solve;
 
     // Open-shell: the dynamic Becke path has a complete per-spin (U) branch, and
     // ω=0 reproduces the static per-atom α exactly. Delegate to it rather than
@@ -1056,8 +1070,7 @@ pub fn pdep_polarizability_becke(
         std::array::from_fn(|d| &mu_flat[d] * &inv_de);
     let w_mol: [ndarray::Array1<f64>; 3] =
         std::array::from_fn(|d| b_ov.dot(&mu_flat_inv[d]));
-    let y_mol: [ndarray::Array1<f64>; 3] =
-        std::array::from_fn(|d| eps_mat.solve(&w_mol[d]).unwrap());
+    let y_mol = solve_dielectric_3(&eps_mat, &w_mol)?;
 
     // Assemble per-atom α^A.
     let mut alpha_per_atom: Vec<[[f64; 3]; 3]> = vec![[[0.0; 3]; 3]; natoms];
@@ -1127,7 +1140,6 @@ pub fn pdep_polarizability_becke_dynamic(
     // Closed-shell falls through to the single-B̃ path below.
     if !matches!(rhf.spin, Spin::Restricted) {
         use ferric_mp2::rimp2::compute_rpa_intermediates_spin;
-        use ndarray_linalg::Solve;
 
         let inter_a = compute_rpa_intermediates_spin(mol, obs, dfbs, op, rhf, &mp2_cfg, true)?;
         let inter_b = compute_rpa_intermediates_spin(mol, obs, dfbs, op, rhf, &mp2_cfg, false)?;
@@ -1287,8 +1299,7 @@ pub fn pdep_polarizability_becke_dynamic(
                 let wb = inter_b.b_ov.dot(&(&mu_flat_b[d] * &g_b));
                 wa + wb
             });
-            let y_total: [ndarray::Array1<f64>; 3] =
-                std::array::from_fn(|d| eps_mat.solve(&w_total[d]).unwrap());
+            let y_total = solve_dielectric_3(&eps_mat, &w_total)?;
 
             for a in 0..natoms {
                 // w_ai_total^d = B̃_α (μ_α^{A,d} ⊙ g_α) + B̃_β (μ_β^{A,d} ⊙ g_β).
@@ -1518,10 +1529,7 @@ pub fn pdep_polarizability_becke_dynamic(
         // Solve ε̃ y^j = B·(g⊙μ^{Becke,j}) once per direction.
         let mu_g: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| &mu_flat[d] * &g);
         let w_mol: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| b_ov.dot(&mu_g[d]));
-        let y_mol: [ndarray::Array1<f64>; 3] = {
-            use ndarray_linalg::Solve;
-            std::array::from_fn(|d| eps_mat.solve(&w_mol[d]).unwrap())
-        };
+        let y_mol = solve_dielectric_3(&eps_mat, &w_mol)?;
 
         for a in 0..natoms {
             let mut tensor = [[0.0_f64; 3]; 3];
@@ -1560,7 +1568,6 @@ pub fn pdep_polarizability_hirshfeld(
 ) -> Result<Vec<[[f64; 3]; 3]>, FerricError> {
     use ferric_export::cube::GridSpec;
     use ferric_export::gto_eval::eval_basis_on_grid;
-    use ndarray_linalg::Solve;
 
     if !matches!(rhf.spin, Spin::Restricted) {
         return Err(FerricError::General(
@@ -1810,8 +1817,7 @@ pub fn pdep_polarizability_hirshfeld(
         std::array::from_fn(|d| &mu_flat[d] * &inv_de);
     let w_mol: [ndarray::Array1<f64>; 3] =
         std::array::from_fn(|d| b_ov.dot(&mu_flat_inv[d]));
-    let y_mol: [ndarray::Array1<f64>; 3] =
-        std::array::from_fn(|d| eps_mat.solve(&w_mol[d]).unwrap());
+    let y_mol = solve_dielectric_3(&eps_mat, &w_mol)?;
 
     // PASS 2: assemble α^A.
     for a in 0..natoms {
@@ -1934,7 +1940,6 @@ pub fn pdep_polarizability_hirshfeld_dynamic(
 ) -> Result<Vec<Vec<[[f64; 3]; 3]>>, FerricError> {
     use ferric_export::cube::GridSpec;
     use ferric_export::gto_eval::eval_basis_on_grid;
-    use ndarray_linalg::Solve;
 
     if !matches!(rhf.spin, Spin::Restricted) {
         return Err(FerricError::General(
@@ -2101,8 +2106,7 @@ pub fn pdep_polarizability_hirshfeld_dynamic(
         // Solve ε̃ y^j = B·(g⊙μ^j) once per direction (molecular Hirshfeld dipole).
         let mu_g: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| &mu_flat[d] * &g);
         let w_mol: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| b_ov.dot(&mu_g[d]));
-        let y_mol: [ndarray::Array1<f64>; 3] =
-            std::array::from_fn(|d| eps_mat.solve(&w_mol[d]).unwrap());
+        let y_mol = solve_dielectric_3(&eps_mat, &w_mol)?;
 
         for a in 0..natoms {
             let mut tensor = [[0.0_f64; 3]; 3];
@@ -2142,7 +2146,6 @@ pub fn molecular_dynamic_polarizability(
     _cfg: &PdepRpaConfig,
     freqs: &[f64],
 ) -> Result<Vec<[[f64; 3]; 3]>, FerricError> {
-    use ndarray_linalg::Solve;
 
     // Open-shell: spin-summed dielectric ε̃ = I + 2 B̃_α diag(g_α) B̃_αᵀ
     // + 2 B̃_β diag(g_β) B̃_βᵀ, lab-frame molecular dipole per spin. Mirrors the
@@ -2254,8 +2257,7 @@ pub fn molecular_dynamic_polarizability(
                 }
                 wa + inter_b.b_ov.dot(&(&mu_b[d] * &g_b))
             });
-            let y_total: [ndarray::Array1<f64>; 3] =
-                std::array::from_fn(|d| eps_mat.solve(&w_total[d]).unwrap());
+            let y_total = solve_dielectric_3(&eps_mat, &w_total)?;
 
             let mut t = [[0.0_f64; 3]; 3];
             for d in 0..3 {
@@ -2336,8 +2338,8 @@ pub fn molecular_dynamic_polarizability(
             eps_mat[(p, p)] += 1.0;
         }
         let mu_g: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| &mu_flat[d] * &g);
-        let y: [ndarray::Array1<f64>; 3] =
-            std::array::from_fn(|d| eps_mat.solve(&b_ov.dot(&mu_g[d])).unwrap());
+        let w: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| b_ov.dot(&mu_g[d]));
+        let y = solve_dielectric_3(&eps_mat, &w)?;
 
         let mut t = [[0.0_f64; 3]; 3];
         for d in 0..3 {
@@ -2345,6 +2347,116 @@ pub fn molecular_dynamic_polarizability(
             for j in 0..3 {
                 let bare = mu_flat[d].dot(&mu_g[j]);
                 let coupled = w_d.dot(&y[j]);
+                t[d][j] = 4.0 * bare - 16.0 * coupled;
+            }
+        }
+        for i in 0..3 {
+            for j in (i + 1)..3 {
+                let avg = 0.5 * (t[i][j] + t[j][i]);
+                t[i][j] = avg;
+                t[j][i] = avg;
+            }
+        }
+        out[k] = t;
+    }
+    Ok(out)
+}
+
+/// Molecular α_ij(iω_k) built in the TRUNCATED PDEP eigenbasis carried by `rpa`.
+/// Shares the retained eigenpotentials (hence trunc_thresh) with the energy/GW
+/// paths. Closed-shell (RHF) only. Errors if `rpa.inv_dielectric_freq` is None
+/// (Laplace χ₀ path — the projected screening matrices are required).
+///
+/// Algebra (derived from `molecular_dynamic_polarizability`):
+///   α_dj(iω) = 4·μ_d·(μ_j⊙g) − 16·p_dᵀ (W̃_k + I) p_j,
+///   p_d = y(μ_d⊙g),  y = Uᵀ B̃,  U = dressed_eigenvectors,
+///   W̃_k = inv_dielectric_freq[k] = ε̃_proj⁻¹ − I.
+/// At M = naux (thresh 0) this equals the full-naux result to round-off.
+pub fn molecular_dynamic_polarizability_pdep(
+    rpa: &crate::PdepRpaResult,
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    rhf: &ScfResult,
+    op: Operator,
+) -> Result<Vec<[[f64; 3]; 3]>, FerricError> {
+    if !matches!(rhf.spin, Spin::Restricted) {
+        return Err(FerricError::General(
+            "molecular_dynamic_polarizability_pdep: closed-shell (RHF) only".into(),
+        ));
+    }
+    let winv = rpa.inv_dielectric_freq.as_ref().ok_or_else(|| {
+        FerricError::General(
+            "molecular_dynamic_polarizability_pdep: inv_dielectric_freq is None \
+             (Laplace χ₀ path unsupported)".into(),
+        )
+    })?;
+
+    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0 };
+    let inter = ferric_mp2::rimp2::compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
+    let b_ov = &inter.b_ov; // V^{-1/2}-dressed occ-vir RI-MO tensor (naux × nov)
+    let nocc = inter.nocc;
+    let nvir = inter.nvir;
+    let nocc_total = inter.nocc_total;
+    let first_occ = inter.first_occ;
+    let nov = nocc * nvir;
+
+    let eps = rhf.eps_r();
+    let eps_occ: Vec<f64> = eps[first_occ..first_occ + nocc].to_vec();
+    let eps_vir: Vec<f64> = eps[nocc_total..nocc_total + nvir].to_vec();
+    let mut e_ia = ndarray::Array1::<f64>::zeros(nov);
+    for i in 0..nocc {
+        for a in 0..nvir {
+            e_ia[i * nvir + a] = eps_vir[a] - eps_occ[i];
+        }
+    }
+
+    // Lab-frame molecular dipole in the MO occ-vir basis (origin [0,0,0]).
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let c = rhf.mos_r();
+    let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
+    let c_vir = c.slice(ndarray::s![.., nocc_total..nocc_total + nvir]).to_owned();
+    let mu_flat: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
+        let mo = c_occ.t().dot(&dip_ao[d]).dot(&c_vir);
+        let mut v = ndarray::Array1::<f64>::zeros(nov);
+        for i in 0..nocc {
+            for a in 0..nvir {
+                v[i * nvir + a] = mo[(i, a)];
+            }
+        }
+        v
+    });
+
+    // Project the dressed B̃ onto the retained PDEP subspace: y = Uᵀ B̃ (M × nov).
+    let u = &rpa.dressed_eigenvectors; // (naux × M)
+    let y = u.t().dot(b_ov);
+
+    let freqs = &rpa.quad_freqs;
+    let mut out = vec![[[0.0_f64; 3]; 3]; freqs.len()];
+    for (k, &omega) in freqs.iter().enumerate() {
+        let omega2 = omega * omega;
+        let mut g = ndarray::Array1::<f64>::zeros(nov);
+        for ia in 0..nov {
+            let e = e_ia[ia];
+            g[ia] = e / (omega2 + e * e);
+        }
+        let mu_g: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| &mu_flat[d] * &g);
+        // p_d = y (μ_d ⊙ g), length M.
+        let p: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| y.dot(&mu_g[d]));
+        // W̃_k + I  (M × M).
+        let wpi = {
+            let mut m = winv[k].clone();
+            for d in 0..m.nrows() {
+                m[(d, d)] += 1.0;
+            }
+            m
+        };
+        let mut t = [[0.0_f64; 3]; 3];
+        for d in 0..3 {
+            let wp_d = wpi.dot(&p[d]);
+            for j in 0..3 {
+                let bare = mu_flat[d].dot(&mu_g[j]);
+                let coupled = p[j].dot(&wp_d);
                 t[d][j] = 4.0 * bare - 16.0 * coupled;
             }
         }
@@ -2649,7 +2761,7 @@ pub fn spherically_averaged_proatom(
 
     let sym = ferric_core::elements::z_to_symbol(z).unwrap_or("X");
     let atom_mol = Molecule {
-        atoms: vec![Atom { symbol: sym.to_string(), z, x: 0.0, y: 0.0, zpos: 0.0, ghost: false }],
+        atoms: vec![Atom { symbol: sym.to_string(), z, x: 0.0, y: 0.0, zpos: 0.0, ghost: false, n_core_ecp: 0 }],
         charge: 0,
         multiplicity: 1,
     };
@@ -3077,6 +3189,54 @@ mod tests {
     use ferric_integrals::operator::Operator;
     use ferric_scf::rhf::{solve_rhf, RhfConfig};
     use ferric_scf::screening::SchwarzBounds;
+
+    /// At trunc_thresh = 0 (all eigenpotentials retained, M = naux), the
+    /// PDEP-projected molecular α(iω) must reproduce the full-naux-dielectric
+    /// `molecular_dynamic_polarizability` to ≤1e-8 per tensor element.
+    #[test]
+    fn molecular_pdep_untruncated_matches_full() {
+        use crate::config::{PdepRpaConfig, QuadratureConfig, QuadratureScheme};
+        use crate::run_pdep_rpa;
+
+        let ctx = ParallelContext::default();
+        let xyz = "3\nH2O\nO 0.0 0.0 0.117790\nH 0.0 0.755453 -0.471161\nH 0.0 -0.755453 -0.471161\n";
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let obs_bs = basis::bundled("cc-pvdz").unwrap();
+        let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
+
+        let cfg = PdepRpaConfig {
+            quadrature: QuadratureConfig {
+                scheme: QuadratureScheme::GaussLegendre, n_points: 12, u0: 0.5,
+            },
+            trunc_thresh: 0.0,
+            davidson_conv_thresh: 1e-9,
+            ..Default::default()
+        };
+        let rpa = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
+
+        let full = molecular_dynamic_polarizability(
+            &mol, &obs, &dfbs, &rhf, op, &cfg, &rpa.quad_freqs,
+        ).unwrap();
+        let pdep = molecular_dynamic_polarizability_pdep(
+            &rpa, &mol, &obs, &dfbs, &rhf, op,
+        ).unwrap();
+
+        assert_eq!(full.len(), pdep.len());
+        let mut max_abs = 0.0_f64;
+        for k in 0..full.len() {
+            for i in 0..3 {
+                for j in 0..3 {
+                    max_abs = max_abs.max((full[k][i][j] - pdep[k][i][j]).abs());
+                }
+            }
+        }
+        assert!(max_abs < 1e-8, "untruncated PDEP α deviates from full by {max_abs:.3e}");
+    }
 
     fn build_h2() -> (Molecule, PreparedBasis, PreparedBasis, Operator, ScfResult) {
         // H2 at 1.4 Bohr, cc-pVDZ orbital + cc-pVDZ-RI aux.

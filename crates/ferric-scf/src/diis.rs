@@ -134,7 +134,7 @@ impl Diis {
 }  // impl Diis
 
 fn dot(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
-    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
+    (a * b).sum()
 }
 
 fn solve_linear(mut a: Vec<f64>, mut x: Vec<f64>, n: usize) -> Option<Vec<f64>> {

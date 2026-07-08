@@ -19,7 +19,6 @@ use crate::screening::SchwarzBounds;
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
-use ferric_integrals::engine::Engine;
 use ferric_integrals::oneelectron;
 use ferric_integrals::operator::Operator;
 use ferric_core::parallel::ParallelContext;
@@ -93,6 +92,23 @@ pub struct RhfConfig {
     /// integer occupation + PBE). Default `false` — opt-in; integer-occupation
     /// paths are unchanged.
     pub fractional_occ: bool,
+    /// Hard ceiling (bytes) for the resident 3-index footprint in DfJ/DfK. When
+    /// the dense `(naux,nao,nao)` tensor would exceed this, the source spills
+    /// aux-blocks to disk instead of allocating in core. Default 2 GB. The env
+    /// var `FERRIC_OOC_BUDGET_GB` overrides this at runtime.
+    pub three_index_budget_bytes: usize,
+    /// Optional externally-supplied initial density matrix. When `Some(d)`, the
+    /// SCF loop uses this density as the starting point instead of computing an
+    /// hcore or SAD guess internally. Shape must match `(nbasis, nbasis)`. The
+    /// primary use-case is a SAD guess built by `guess::sad_guess(...)`.
+    pub init_guess_density: Option<Array2<f64>>,
+    /// When `true` (the default) and no `init_guess_density` is supplied, the SCF
+    /// starts from a SAD (superposition-of-atomic-densities) guess computed via
+    /// `guess::sad_guess`, falling back to the hcore guess if SAD fails. SAD cures
+    /// the heavy-atom RHF divergence class (COSe/C2H3Br) that hcore triggers. Set
+    /// `false` to force the bare hcore guess — used internally by `sad_guess` for
+    /// its free-atom solves to break the recursion.
+    pub use_sad_guess: bool,
 }
 
 impl Default for RhfConfig {
@@ -119,8 +135,23 @@ impl Default for RhfConfig {
             constraints: Vec::new(),
             cdft_lambda_tol: 1e-5,
             fractional_occ: false,
+            three_index_budget_bytes: 2 * 1024 * 1024 * 1024,
+            init_guess_density: None,
+            use_sad_guess: true,
         }
     }
+}
+
+/// Resolve the 3-index memory budget in bytes: `FERRIC_OOC_BUDGET_GB` env var
+/// (in GiB) takes precedence over the config field. Shared by RHF/UHF/ROHF so
+/// the budget is honored uniformly across all DF-J/DF-K construction sites.
+pub fn resolve_three_index_budget(config_bytes: usize) -> usize {
+    std::env::var("FERRIC_OOC_BUDGET_GB")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .filter(|g| *g > 0.0)
+        .map(|g| (g * 1024.0 * 1024.0 * 1024.0) as usize)
+        .unwrap_or(config_bytes)
 }
 
 /// Solve the closed-shell RHF equations for a molecule.
@@ -138,7 +169,9 @@ pub fn solve_rhf(
     config: &RhfConfig,
 ) -> Result<ScfResult, FerricError> {
     let s = oneelectron::overlap(prep);
-    let h = oneelectron::hcore(prep);
+    // hcore_ecp adds the ECP projector V_ECP when the basis carries ECPs;
+    // identical to hcore() (zero extra cost) for all-electron basis sets.
+    let h = oneelectron::hcore_ecp(prep, mol, prep.basis_set());
     let n = prep.nbasis();
     let nelec = mol.nelec();
     if nelec % 2 != 0 {
@@ -150,7 +183,20 @@ pub fn solve_rhf(
     let nocc = (nelec / 2) as usize;
     let vnn = mol.nuclear_repulsion();
 
-    let mut d = hcore_guess(&s, &h, nocc)?;
+    // Initial density: explicit override > SAD (default) > hcore. SAD is the
+    // default because the bare hcore guess diverges on heavy-atom closed shells
+    // (COSe/C2H3Br); if SAD fails to build (e.g. a free-atom solve doesn't
+    // converge) we fall back to hcore rather than aborting the whole SCF.
+    let mut d = if let Some(d0) = config.init_guess_density.as_ref() {
+        d0.clone()
+    } else if config.use_sad_guess {
+        match crate::guess::sad_guess(mol, prep, prep.basis_set()) {
+            Ok(d_sad) => d_sad,
+            Err(_) => hcore_guess(&s, &h, nocc)?,
+        }
+    } else {
+        hcore_guess(&s, &h, nocc)?
+    };
     let mut f = Array2::zeros((n, n));
     let mut j_buf = Array2::<f64>::zeros((n, n));
     let mut k_buf = Array2::<f64>::zeros((n, n));
@@ -185,6 +231,9 @@ pub fn solve_rhf(
 
     let k_mix: KMix = xc_contrib.as_ref().map(|x| x.k_mix()).unwrap_or_default();
 
+    // Resolve the out-of-core 3-index memory budget once (env override wins).
+    let ooc_budget = resolve_three_index_budget(config.three_index_budget_bytes);
+
     // Auto-default JK aux bases when the functional needs exact exchange but
     // the caller hasn't explicitly set df_j_aux / df_k_aux. This makes
     // `cfg.xc = Some("B3LYP")` (or any hybrid/RSH) work out of the box.
@@ -201,7 +250,7 @@ pub fn solve_rhf(
     let mut df_j: Option<DfJ> = if let Some(aux_name) = df_j_aux_eff.as_deref() {
         let dfbs_set = ferric_core::basis::bundled(aux_name)?;
         let dfbs = PreparedBasis::new(mol, &dfbs_set)?;
-        Some(DfJ::new(op, prep, &dfbs, ferric_integrals::three_index_source::env_budget_bytes())?)
+        Some(DfJ::new(op, prep, &dfbs, ooc_budget)?)
     } else {
         None
     };
@@ -210,7 +259,7 @@ pub fn solve_rhf(
     let mut df_k: Option<DfK> = if let Some(aux_name) = df_k_aux_eff.as_deref() {
         let dfbs_set = ferric_core::basis::bundled(aux_name)?;
         let dfbs = PreparedBasis::new(mol, &dfbs_set)?;
-        Some(DfK::new(op, prep, &dfbs, ferric_integrals::three_index_source::env_budget_bytes())?)
+        Some(DfK::new(op, prep, &dfbs, ooc_budget)?)
     } else {
         None
     };
@@ -227,8 +276,8 @@ pub fn solve_rhf(
         let dfbs_set = ferric_core::basis::bundled(aux_name)?;
         let dfbs_prep = PreparedBasis::new(mol, &dfbs_set)?;
         (
-            Some(DfK::new(Operator::erfc(k_mix.omega), prep, &dfbs_prep, ferric_integrals::three_index_source::env_budget_bytes())?),
-            Some(DfK::new(Operator::erf(k_mix.omega), prep, &dfbs_prep, ferric_integrals::three_index_source::env_budget_bytes())?),
+            Some(DfK::new(Operator::erfc(k_mix.omega), prep, &dfbs_prep, ooc_budget)?),
+            Some(DfK::new(Operator::erf(k_mix.omega), prep, &dfbs_prep, ooc_budget)?),
         )
     } else {
         (None, None)
@@ -247,19 +296,36 @@ pub fn solve_rhf(
         Box::new(lk) as Box<dyn KBuilder>
     });
 
-    // Precompute S^{-1/2} = U * diag(1/sqrt(λ)) * U^T  (BLAS dgemm)
-    let (s_evals, s_evecs) = s
-        .eigh(ndarray_linalg::UPLO::Upper)
-        .map_err(|e| FerricError::Lapack(format!("S diag: {e}")))?;
-    // Scale each column i of U by 1/sqrt(λ_i)
-    let mut u_scaled = s_evecs.clone();
-    for i in 0..n {
-        let scale = 1.0 / s_evals[i].sqrt();
-        for mu in 0..n {
-            u_scaled[(mu, i)] *= scale;
-        }
-    }
-    let s_inv_sqrt = u_scaled.dot(&s_evecs.t());
+    // Canonical orthogonalizer X = U_kept · diag(1/sqrt(λ_kept)), shape (n × m),
+    // dropping eigenvectors of S with λ < LINDEP_THRESH (near-linear-dependence).
+    // For well-conditioned S, m == n and X reproduces existing energies; see
+    // canonical_orthogonalizer / diagonalize for the padding-back-to-n convention.
+    let x = canonical_orthogonalizer(&s)?;
+
+    // Previous-iteration MO coefficients, needed to build the virtual-block level
+    // shift (a projector onto the prior virtuals). None before the first solve.
+    let mut c_prev: Option<Array2<f64>> = None;
+
+    // Direct J/K builders hoisted out of the SCF loop: each lazily builds a
+    // per-thread libint2 EnginePool on first use (engines are constructed behind
+    // a global ctor mutex), so a loop-local builder would pay that construction
+    // every iteration. Which builders exist mirrors the branch structure below.
+    let df_any = df_j.is_some() || df_k.is_some();
+    let mut direct_j: Option<DirectJ> = if (df_any && df_j.is_none()) || (!df_any && k_builder.is_some()) {
+        Some(DirectJ::new(ctx, prep, bounds, config.integral_thresh))
+    } else {
+        None
+    };
+    let mut direct_k: Option<DirectK> = if df_any && df_k.is_none() {
+        Some(DirectK::new(ctx, prep, bounds, config.integral_thresh))
+    } else {
+        None
+    };
+    let mut direct_jk: Option<DirectJK> = if !df_any && k_builder.is_none() {
+        Some(DirectJK::new(ctx, prep, bounds, config.integral_thresh))
+    } else {
+        None
+    };
 
     for iter in 1..=config.max_iter {
         ctx.check_interrupted()?;
@@ -268,27 +334,27 @@ pub fn solve_rhf(
         k_buf.fill(0.0);
         // Build J: DF-J if configured, else fall through to combined direct path below.
         // Build K: DF-K > LinkK > combined DirectJK, in priority order.
-        if df_j.is_some() || df_k.is_some() {
+        if df_any {
             if let Some(dfj) = df_j.as_mut() {
                 dfj.build(&d, &mut j_buf)?;
             } else {
-                let mut direct_j = DirectJ::new(ctx, prep, bounds, config.integral_thresh);
-                total_quartets += direct_j.build(&d, &mut j_buf)?;
+                let dj = direct_j.as_mut().expect("DirectJ built before loop");
+                total_quartets += dj.build(&d, &mut j_buf)?;
             }
             if let Some(dfk) = df_k.as_mut() {
                 dfk.build(&d, &mut k_buf)?;
             } else {
-                let mut direct_k = DirectK::new(ctx, prep, bounds, config.integral_thresh);
-                total_quartets += <DirectK as KBuilder>::build(&mut direct_k, &d, &mut k_buf)?;
+                let dk = direct_k.as_mut().expect("DirectK built before loop");
+                total_quartets += <DirectK as KBuilder>::build(dk, &d, &mut k_buf)?;
             }
         } else if let Some(lk) = k_builder.as_mut() {
-            let mut direct_j = DirectJ::new(ctx, prep, bounds, config.integral_thresh);
-            total_quartets += direct_j.build(&d, &mut j_buf)?;
+            let dj = direct_j.as_mut().expect("DirectJ built before loop");
+            total_quartets += dj.build(&d, &mut j_buf)?;
             lk.update_density(&d);
             total_quartets += lk.build(&d, &mut k_buf)?;
         } else {
-            let mut direct_jk = DirectJK::new(ctx, prep, bounds, config.integral_thresh);
-            total_quartets += direct_jk.build(&d, &mut j_buf, &mut k_buf)?;
+            let djk = direct_jk.as_mut().expect("DirectJK built before loop");
+            total_quartets += djk.build(&d, &mut j_buf, &mut k_buf)?;
         }
 
         // k_total accumulates the exact-exchange contribution to be subtracted from F
@@ -323,10 +389,7 @@ pub fn solve_rhf(
 
         // Electronic energy BEFORE adding V_xc (V_xc is one-body in F but
         // E_xc is its own integral).
-        let e_elec_no_xc: f64 = (0..n)
-            .flat_map(|i| (0..n).map(move |j| (i, j)))
-            .map(|(i, j)| 0.5 * d[(i, j)] * (h[(i, j)] + f[(i, j)]))
-            .sum();
+        let e_elec_no_xc: f64 = 0.5 * (&d * &(&h + &f)).sum();
         let e_xc = if let Some(x) = xc_contrib.as_ref() {
             x.add_xc(&d, &mut f)
         } else {
@@ -366,7 +429,7 @@ pub fn solve_rhf(
         let converged = if df_active { grad_ok || df_noise_floor_ok } else { energy_ok && grad_ok };
 
         if iter > 1 && converged {
-            let (orb_e, c) = diagonalize(&f, &s_inv_sqrt)?;
+            let (orb_e, c) = diagonalize(&f, &x)?;
             let density_alpha = 0.5 * &d;
             return Ok(ScfResult {
                 spin: Spin::Restricted,
@@ -387,8 +450,35 @@ pub fn solve_rhf(
         }
         prev_e = energy;
 
-        let f_new = diis.step(&f, &err);
-        let (_, mut c) = diagonalize(&f_new, &s_inv_sqrt)?;
+        let mut f_new = diis.step(&f, &err);
+
+        // Virtual-block level shift (config.level_shift > 0): add `shift` to the
+        // diagonal of the virtual block in MO basis, i.e. F += shift · S·C_v·C_vᵀ·S
+        // where C_v are the previous iteration's virtual MOs. This widens the
+        // occupied–virtual gap and damps the orbital rotation that bare DIIS
+        // overshoots — the standard cure for SCF oscillation/divergence on
+        // heavy-atom closed shells (e.g. COSe, C2H3Br). The shift is ramped to
+        // zero as the gradient converges (err_max → 0), so the converged Fock is
+        // unshifted and the final energy is unperturbed. Applied from iter ≥ 2
+        // (needs a prior C); the convergence check above runs on the *unshifted*
+        // F, so an accepted solution never carries the shift.
+        if config.level_shift > 0.0 {
+            if let Some(c_p) = c_prev.as_ref() {
+                let shift_ramp = config.level_shift * (err_max / 0.1).min(1.0);
+                if shift_ramp > 0.0 {
+                    let c_vir = c_p.slice(ndarray::s![.., nocc..]);
+                    let scv = s.dot(&c_vir); // (n × nvir)
+                    f_new = &f_new + &(shift_ramp * scv.dot(&scv.t()));
+                }
+            }
+        }
+
+        let (_, mut c) = diagonalize(&f_new, &x)?;
+        // Only retain C across iterations when the level shift needs it; the
+        // default (shift = 0) path skips the clone entirely.
+        if config.level_shift > 0.0 {
+            c_prev = Some(c.clone());
+        }
 
         // MOM occupied-orbital selection from iter mom_after_iter+1: pin the
         // occupied set by AO-overlap with the previous accepted occupation
@@ -457,16 +547,19 @@ pub fn build_jk(
         .flat_map(|s1| (0..=s1).map(move |s2| (s1, s2)))
         .collect();
 
+    // One engine per rayon thread (see engine_pool) — constructing an engine in
+    // the fold init fires once per work-chunk, not per thread, storming the
+    // global libint2 ctor mutex on heavy-element bases.
+    let pool = crate::engine_pool::EnginePool::new(bounds.op, prep, 1e-14)?;
     let total_jk = shell_pairs.into_par_iter().fold(
         || (
-            Engine::new_2e(bounds.op, prep, 1e-14).unwrap(),
             Array2::zeros((nbf, nbf)),
             Array2::zeros((nbf, nbf)),
             0usize
         ),
-        |(mut engine, mut local_j, mut local_k, mut local_count), (s1, s2)| {
+        |(mut local_j, mut local_k, mut local_count), (s1, s2)| {
             if ferric_core::INTERRUPT.load(std::sync::atomic::Ordering::Relaxed) {
-                return (engine, local_j, local_k, local_count);
+                return (local_j, local_k, local_count);
             }
             let b12 = bounds.q[(s1, s2)];
             let d12 = d_max_shell[(s1, s2)];
@@ -474,9 +567,10 @@ pub fn build_jk(
             let (o1, o2) = (offs[s1], offs[s2]);
             let sym12 = s1 != s2;
 
+            pool.with(|engine| {
             for s3 in 0..=s1 {
                 if s3 % 100 == 0 && ferric_core::INTERRUPT.load(Ordering::Relaxed) {
-                    return (engine, local_j, local_k, local_count);
+                    return;
                 }
                 let s4max = if s3 == s1 { s2 } else { s3 };
                 let d13 = d_max_shell[(s1, s3)];
@@ -587,9 +681,10 @@ pub fn build_jk(
                     }
                 }
             }
-            (engine, local_j, local_k, local_count)
+            });
+            (local_j, local_k, local_count)
         }
-    ).map(|(_, j, k, count)| {
+    ).map(|(j, k, count)| {
         computed_quartets.fetch_add(count, Ordering::Relaxed);
         (j, k)
     }).reduce(
@@ -617,16 +712,65 @@ pub fn build_jk(
     Ok(computed_quartets.load(Ordering::SeqCst))
 }
 
+/// Linear-dependence threshold for canonical orthogonalization: eigenvectors of
+/// the overlap matrix with eigenvalue below this are dropped from the variational
+/// space. PySCF's default is ~1e-6 to 1e-7; 1e-6 is conservative.
+pub(crate) const LINDEP_THRESH: f64 = 1e-6;
+
+/// Build the canonical orthogonalizer X (n × m) from the overlap matrix S.
+///
+/// X = U_kept · diag(1/sqrt(λ_kept)), where U_kept are the eigenvectors of S
+/// whose eigenvalue λ ≥ [`LINDEP_THRESH`]. `eigh` returns eigenvalues in
+/// ASCENDING order, so the near-singular modes are first and are skipped.
+/// For a well-conditioned S, m == n and no mode is dropped (regression-safe).
+///
+/// X is NOT symmetric (even when m == n) — callers must use the rectangular
+/// transform Fʹ = Xᵀ F X, C = X Vʹ (see [`diagonalize`]).
+pub(crate) fn canonical_orthogonalizer(s: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
+    let n = s.nrows();
+    let (s_evals, s_evecs) = s
+        .eigh(ndarray_linalg::UPLO::Upper)
+        .map_err(|e| FerricError::Lapack(format!("S diag: {e}")))?;
+    // eigenvalues ascending: kept columns are those with λ ≥ LINDEP_THRESH.
+    let kept: Vec<usize> = (0..n).filter(|&i| s_evals[i] >= LINDEP_THRESH).collect();
+    let m = kept.len();
+    let mut x = Array2::<f64>::zeros((n, m));
+    for (col, &i) in kept.iter().enumerate() {
+        let scale = 1.0 / s_evals[i].sqrt();
+        for mu in 0..n {
+            x[(mu, col)] = s_evecs[(mu, i)] * scale;
+        }
+    }
+    Ok(x)
+}
+
+/// Diagonalize the Fock matrix in the canonical-orthogonal basis.
+///
+/// With X (n × m) rectangular: Fʹ = Xᵀ F X is (m × m), its eigenvectors Vʹ are
+/// (m × m), and C_kept = X Vʹ is (n × m). The result is PADDED back to (n × n)
+/// by appending (n − m) zero MO columns with sentinel energy 1e6, so every
+/// downstream consumer (GW, RPA, density build) sees the historical (n × n) /
+/// length-n shapes while the near-singular directions are inert virtuals.
 fn diagonalize(
     f: &Array2<f64>,
-    s_inv_sqrt: &Array2<f64>,
+    x: &Array2<f64>,
 ) -> Result<(Vec<f64>, Array2<f64>), FerricError> {
-    let f_prime = s_inv_sqrt.dot(f).dot(s_inv_sqrt);
+    let n = x.nrows();
+    let m = x.ncols();
+    let f_prime = x.t().dot(f).dot(x);
     let (evals, evecs) = f_prime
         .eigh(ndarray_linalg::UPLO::Upper)
         .map_err(|e| FerricError::Lapack(format!("F diag: {e}")))?;
-    let c = s_inv_sqrt.dot(&evecs);
-    Ok((evals.to_vec(), c))
+    let c_kept = x.dot(&evecs); // (n × m)
+    if m == n {
+        return Ok((evals.to_vec(), c_kept));
+    }
+    // Pad to (n × n): zero MO columns + sentinel high energy for dropped modes.
+    let mut c = Array2::<f64>::zeros((n, n));
+    c.slice_mut(ndarray::s![.., ..m]).assign(&c_kept);
+    let mut eps = evals.to_vec();
+    eps.resize(n, 1e6);
+    Ok((eps, c))
 }
 
 #[cfg(test)]
@@ -760,6 +904,37 @@ mod tests {
             "6-31g",
             "h2o_6-31g_rhf.json",
             1e-8,
+        );
+    }
+
+    /// COSe (O=C=Se) at aug-cc-pVDZ is a closed-shell singlet that PySCF RHF
+    /// converges cleanly to E = -2512.5713600 Ha, but ferric's bare Roothaan+DIIS
+    /// *diverges* (energy oscillates ±100 Ha, never settles — heavy-atom Se dense
+    /// low-virtual manifold drives DIIS into a limit cycle). A virtual-block level
+    /// shift, ramped off as the gradient drops, tames the oscillation. This test
+    /// is the regression for that fix: it must converge to the PySCF energy.
+    /// Slow (~1-2 min release): run with --ignored.
+    #[test]
+    #[ignore]
+    fn rhf_level_shift_converges_cose() {
+        let xyz = "3\nCOSe\nO 0.0000 0.0000 1.159\nC 0.0000 0.0000 0.0000\nSe 0.0000 0.0000 -1.709\n";
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let bs = basis::bundled("aug-cc-pvdz").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ParallelContext::default();
+        let config = RhfConfig {
+            max_iter: 200,
+            level_shift: 0.5,
+            ..Default::default()
+        };
+        let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
+        assert!(result.converged, "COSe RHF did not converge with level shift");
+        assert!(
+            (result.energy - (-2512.5713600037)).abs() < 1e-5,
+            "COSe RHF: got {:.10}, expected PySCF -2512.5713600037",
+            result.energy
         );
     }
 }

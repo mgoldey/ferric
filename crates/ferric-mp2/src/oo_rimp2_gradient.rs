@@ -4,6 +4,7 @@
 //! the orbitals are optimized and the response equations differ.
 //! This module provides the interface; full implementation is pending.
 
+use crate::rimp2::active_occ;
 use crate::oo_rimp2::{compute_b_full_mo, compute_t2_and_integrals, build_mp2_density, OoRiMp2Result};
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
@@ -25,7 +26,7 @@ pub fn oo_ri_mp2_gradient(
 ) -> Result<Array2<f64>, FerricError> {
     let nbas = obs.nbasis();
     let nocc_total = (mol.nelec() / 2) as usize;
-    let nocc = nocc_total - frozen_core;
+    let nocc = active_occ(nocc_total, frozen_core)?;
     let nvir = nbas - nocc_total;
     let naux = dfbs.nbasis();
 

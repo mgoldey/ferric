@@ -1,5 +1,6 @@
 //! Molecular geometry: atoms, XYZ parser, and nuclear repulsion energy.
 
+use crate::basis::BasisSet;
 use crate::elements::symbol_to_z;
 use crate::FerricError;
 use std::fs;
@@ -25,6 +26,22 @@ pub struct Atom {
     pub zpos: f64,
     /// `true` if this is a ghost (basis-only) center: zero nuclear charge, zero electrons.
     pub ghost: bool,
+    /// Number of core electrons replaced by an effective core potential (ECP).
+    /// Zero for all-electron atoms. Set by [`Molecule::apply_ecp`] when an ECP
+    /// basis is loaded. The effective nuclear charge seen by the electrons is
+    /// `z - n_core_ecp`, and the valence electron count is reduced accordingly.
+    pub n_core_ecp: i32,
+}
+
+impl Atom {
+    /// Effective nuclear charge: `0` for a ghost (basis-only) center, else
+    /// `z - n_core_ecp`. Equals `z` for an ordinary all-electron atom. This is
+    /// the point charge the nuclear-attraction operator and the nuclear-repulsion
+    /// energy must use.
+    #[inline]
+    pub fn effective_z(&self) -> i32 {
+        if self.ghost { 0 } else { self.z - self.n_core_ecp }
+    }
 }
 
 /// A collection of atoms forming a molecule.
@@ -104,6 +121,7 @@ impl Molecule {
                 y: y * ANGSTROM_TO_BOHR,
                 zpos: zpos * ANGSTROM_TO_BOHR,
                 ghost,
+                n_core_ecp: 0,
             });
         }
         Ok(Molecule { atoms, charge, multiplicity })
@@ -124,18 +142,39 @@ impl Molecule {
                 let dy = a.y - b.y;
                 let dz = a.zpos - b.zpos;
                 let r = (dx * dx + dy * dy + dz * dz).sqrt();
-                v += (a.z as f64) * (b.z as f64) / r;
+                v += (a.effective_z() as f64) * (b.effective_z() as f64) / r;
             }
         }
         v
     }
 
-    /// Total number of electrons (sum of atomic numbers of real atoms minus charge).
-    ///
-    /// Ghost atoms (zero nuclear charge) contribute 0 electrons.
+    /// Total number of (explicitly treated) electrons:
+    /// `Σ effective_z − charge`. Ghost atoms contribute 0 (basis-only centers);
+    /// for ECP atoms the core electrons replaced by the potential are excluded
+    /// (via `effective_z = z − n_core_ecp`), so this is the valence electron count.
     pub fn nelec(&self) -> i32 {
-        let z_sum: i32 = self.atoms.iter().filter(|a| !a.ghost).map(|a| a.z).sum();
+        let z_sum: i32 = self.atoms.iter().map(|a| a.effective_z()).sum();
         z_sum - self.charge
+    }
+
+    /// Populate each atom's `n_core_ecp` from an ECP-carrying basis set.
+    ///
+    /// For every atom whose element has an ECP definition in `bs.ecps`, set its
+    /// `n_core_ecp` to that definition's `n_core`. Atoms without an ECP are left
+    /// untouched (`n_core_ecp` stays 0). This is the single point where the
+    /// reduced electron count and effective nuclear charge enter the molecule;
+    /// `nelec()` and `nuclear_repulsion()` both read `n_core_ecp` afterward.
+    ///
+    /// No-op when `bs.ecps` is empty (the all-electron path).
+    pub fn apply_ecp(&mut self, bs: &BasisSet) {
+        if bs.ecps.is_empty() {
+            return;
+        }
+        for atom in &mut self.atoms {
+            if let Some(def) = bs.ecp_for_element(atom.z) {
+                atom.n_core_ecp = def.n_core;
+            }
+        }
     }
 }
 
@@ -170,7 +209,7 @@ mod tests {
 
     // ── Ghost atom tests ──────────────────────────────────────────────────────
 
-    /// Parse a 4-atom XYZ with an `@O` ghost: verify ghost flag, z, nelec, Vnn.
+    // (ghost) Parse a 4-atom XYZ with an `@O` ghost: verify ghost flag, z, nelec, Vnn.
     #[test]
     fn test_ghost_parse_at_o() {
         // Water (3 real atoms) + a ghost O far away at (0, 0, 100 Å)
@@ -211,5 +250,37 @@ mod tests {
         assert!(mol.atoms[0].ghost);
         assert_eq!(mol.atoms[0].z, 2); // He
         assert_eq!(mol.nelec(), -0); // 0 real electrons, charge 0
+    }
+
+    // ── ECP tests ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_nelec_i2_def2ecp() {
+        // I2 with def2-ECP: each iodine has its 28-electron core replaced, leaving
+        // 53 − 28 = 25 explicit electrons each → 50 total, not 2*53 = 106.
+        // (Verified against PySCF: gto.M(...,ecp='def2-svp').nelectron == 50,
+        // atom_charge == 25. The "7 valence" chemical count is NOT the def2-ECP
+        // explicit electron count — def2-ECP removes only [Kr]4d10 = 28.)
+        use crate::basis;
+        let xyz = "2\nI2\nI 0.0 0.0 0.0\nI 0.0 0.0 2.666\n";
+        let mut mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        assert_eq!(mol.nelec(), 106, "before apply_ecp: all-electron count");
+        let bs = basis::bundled("def2-svp").unwrap();
+        mol.apply_ecp(&bs);
+        assert_eq!(mol.atoms[0].n_core_ecp, 28);
+        assert_eq!(mol.atoms[0].effective_z(), 25);
+        assert_eq!(mol.nelec(), 50, "I2 explicit electrons (25 each)");
+    }
+
+    #[test]
+    fn test_apply_ecp_noop_without_ecp() {
+        // A basis set with no ECP block must leave n_core_ecp untouched.
+        use crate::basis;
+        let mol_xyz = "3\nwater\nO 0 0 0.117790\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n";
+        let mut mol = Molecule::parse_xyz(mol_xyz, 0, 1).unwrap();
+        let bs = basis::bundled("sto-3g").unwrap();
+        mol.apply_ecp(&bs);
+        assert!(mol.atoms.iter().all(|a| a.n_core_ecp == 0));
+        assert_eq!(mol.nelec(), 10);
     }
 }

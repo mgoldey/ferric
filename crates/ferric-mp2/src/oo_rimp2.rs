@@ -14,7 +14,7 @@
 //! response terms from the MO integral derivatives.
 
 use crate::mo_transform::transform_3center_ov;
-use crate::rimp2::cholesky_inverse_sqrt;
+use crate::rimp2::{active_occ, cholesky_inverse_sqrt};
 use ferric_core::mol::Molecule;
 use ferric_core::orbitals::OrbitalSpace;
 use ferric_core::FerricError;
@@ -82,125 +82,105 @@ pub struct OoRiMp2Result {
     pub orbital_energies: Vec<f64>,
 }
 
+/// AO-side invariants for OO-RI-MP2, built once and reused across every
+/// orbital-rotation iteration. These depend only on `(obs, dfbs, op)` — not on
+/// the MO coefficients — so rebuilding them per iteration (and per line-search
+/// backtrack) was pure waste. Keeping the `(naux, nao, nao)` AO 3-index tensor
+/// resident costs the same peak memory as one build.
+pub struct OoRiMp2AoTensors {
+    /// V^{-1/2}, shape (naux, naux).
+    pub v2c_inv_sqrt: Array2<f64>,
+    /// AO 3-center integrals (P|mu nu), shape (naux, nao, nao).
+    pub eri3_ao: Array3<f64>,
+}
+
+impl OoRiMp2AoTensors {
+    /// Build the AO-side invariants once.
+    pub fn build(
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        op: Operator,
+    ) -> Result<Self, FerricError> {
+        let v2c = threeindex::coulomb_metric_2c(op, dfbs)?;
+        let v2c_inv_sqrt = cholesky_inverse_sqrt(&v2c)?;
+        let eri3_ao = threeindex::eri3_tensor(op, obs, dfbs)?;
+        Ok(Self { v2c_inv_sqrt, eri3_ao })
+    }
+}
+
 /// Compute the full-MO 3-center B tensor: B^P_{pq} for all MO pairs p,q.
 ///
 /// Returns b_full of shape (naux, nmo, nmo) where:
 ///   b_full[(P, p, q)] = sum_Q V^{-1/2}_{PQ} sum_{mu,nu} (Q|mu nu) C_{mu,p} C_{nu,q}
+///
+/// AO-side objects are rebuilt each call; prefer [`compute_b_full_mo_with`] in
+/// hot loops where the AO invariants are hoisted.
 pub fn compute_b_full_mo(
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
     op: Operator,
     c: &Array2<f64>,
 ) -> Result<Array3<f64>, FerricError> {
-    let nbas = obs.nbasis();
-    let naux = dfbs.nbasis();
+    let ao = OoRiMp2AoTensors::build(obs, dfbs, op)?;
+    Ok(compute_b_full_mo_with(&ao, c))
+}
+
+/// Full-MO 3-center B tensor from pre-built AO invariants.
+///
+/// The MO transform is per-P BLAS3: half = (B^P_AO)·C, then eri3_mo = C^T·half,
+/// replacing the former scalar quadruple loops.
+pub fn compute_b_full_mo_with(ao: &OoRiMp2AoTensors, c: &Array2<f64>) -> Array3<f64> {
+    let naux = ao.eri3_ao.shape()[0];
     let nmo = c.ncols();
 
-    // (P|Q) metric and V^{-1/2}
-    let v2c = threeindex::coulomb_metric_2c(op, dfbs)?;
-    let v2c_inv_sqrt = cholesky_inverse_sqrt(&v2c)?;
-
-    // (P|mu nu) 3-center integrals
-    let eri3_ao = threeindex::eri3_tensor(op, obs, dfbs)?;
-
-    // Full MO transform: (P|mu nu) -> (P|p q) for all MO pairs
-    // Half-transform: (P|mu nu) C_{nu,q} -> (P|mu,q)
-    let mut half = Array3::zeros((naux, nbas, nmo));
-    for p in 0..naux {
-        for mu in 0..nbas {
-            for q in 0..nmo {
-                let mut sum = 0.0;
-                for nu in 0..nbas {
-                    sum += eri3_ao[(p, mu, nu)] * c[(nu, q)];
-                }
-                half[(p, mu, q)] = sum;
-            }
-        }
-    }
-
-    // Second half: C_{mu,p}^T (P|mu,q) -> (P|p,q)
+    // Full MO transform per aux P: eri3_mo[P] = C^T · (B^P_AO · C)  (BLAS3).
     let mut eri3_mo = Array3::zeros((naux, nmo, nmo));
-    for p_aux in 0..naux {
-        for p in 0..nmo {
-            for q in 0..nmo {
-                let mut sum = 0.0;
-                for mu in 0..nbas {
-                    sum += c[(mu, p)] * half[(p_aux, mu, q)];
-                }
-                eri3_mo[(p_aux, p, q)] = sum;
-            }
-        }
+    for p in 0..naux {
+        let bp_ao = ao.eri3_ao.slice(ndarray::s![p, .., ..]);
+        let half = bp_ao.dot(c); // (nao, nmo)
+        let bp_mo = c.t().dot(&half); // (nmo, nmo)
+        eri3_mo.slice_mut(ndarray::s![p, .., ..]).assign(&bp_mo);
     }
 
     // Apply V^{-1/2}: B^P_{pq} = sum_Q V^{-1/2}_{PQ} (Q|pq)
     let eri3_flat = eri3_mo
         .into_shape_with_order((naux, nmo * nmo))
         .unwrap();
-    let b_flat = v2c_inv_sqrt.dot(&eri3_flat);
-    let b_full = b_flat
-        .into_shape_with_order((naux, nmo, nmo))
-        .unwrap();
-    Ok(b_full)
+    let b_flat = ao.v2c_inv_sqrt.dot(&eri3_flat);
+    b_flat.into_shape_with_order((naux, nmo, nmo)).unwrap()
 }
 
 /// Compute the RI-MP2 energy for a given set of MO coefficients.
 ///
 /// Returns (e_mp2, b_ov_flat) where b_ov_flat is (naux, nocc*nvir) for reuse.
+/// Uses pre-built AO invariants (see [`OoRiMp2AoTensors`]); only the MO
+/// transform + fitting contraction depend on `c`.
 fn compute_rimp2_with_orbitals(
-    obs: &PreparedBasis,
-    dfbs: &PreparedBasis,
-    op: Operator,
+    ao: &OoRiMp2AoTensors,
     c: &Array2<f64>,
     eps: &[f64],
     orb: &OrbitalSpace,
 ) -> Result<(f64, Array2<f64>), FerricError> {
-    let OrbitalSpace { nocc, nocc_total, first_occ, .. } = *orb;
-    let nbas = obs.nbasis();
-    let nvir = nbas - nocc_total;
-    let naux = dfbs.nbasis();
+    let OrbitalSpace { nocc, nocc_total, first_occ, nvir } = *orb;
+    let naux = ao.eri3_ao.shape()[0];
 
     let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
     let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
 
-    // (P|Q) metric and V^{-1/2}
-    let v2c = threeindex::coulomb_metric_2c(op, dfbs)?;
-    let v2c_inv_sqrt = cholesky_inverse_sqrt(&v2c)?;
-
-    // (P|mu nu) 3-center integrals
-    let eri3_ao = threeindex::eri3_tensor(op, obs, dfbs)?;
-
     // MO transform -> (P|ia)
-    let eri3_mo = transform_3center_ov(&eri3_ao, &c_occ, &c_vir);
+    let eri3_mo = transform_3center_ov(&ao.eri3_ao, &c_occ, &c_vir);
 
     // B^P_{ia} = sum_Q (P|Q)^{-1/2} (Q|ia)
     let eri3_flat = eri3_mo
         .into_shape_with_order((naux, nocc * nvir))
         .unwrap();
-    let b_flat = v2c_inv_sqrt.dot(&eri3_flat); // (naux, nocc*nvir)
+    let b_flat = ao.v2c_inv_sqrt.dot(&eri3_flat); // (naux, nocc*nvir)
 
-    // MP2 energy
-    let mut e_mp2 = 0.0;
-    for i in 0..nocc {
-        for j in 0..nocc {
-            for a in 0..nvir {
-                for b in 0..nvir {
-                    let ia = i * nvir + a;
-                    let jb = j * nvir + b;
-                    let ib = i * nvir + b;
-                    let ja = j * nvir + a;
-                    let eri_iajb: f64 =
-                        (0..naux).map(|p| b_flat[(p, ia)] * b_flat[(p, jb)]).sum();
-                    let eri_ibja: f64 =
-                        (0..naux).map(|p| b_flat[(p, ib)] * b_flat[(p, ja)]).sum();
-                    let denom = eps[first_occ + i] + eps[first_occ + j]
-                        - eps[nocc_total + a]
-                        - eps[nocc_total + b];
-                    e_mp2 += eri_iajb * (2.0 * eri_iajb - eri_ibja) / denom;
-                }
-            }
-        }
-    }
-    Ok((e_mp2, b_flat))
+    // MP2 energy via i-blocked wide GEMMs (same path as the main RI-MP2 lane).
+    let sc = crate::rimp2::spin_components_from_b_ov(
+        &b_flat, eps, nocc, nvir, first_occ, nocc_total,
+    );
+    Ok((sc.e_total, b_flat))
 }
 
 /// Build the HF energy from MO coefficients + 1e integrals + J/K.
@@ -410,10 +390,41 @@ fn compute_orbital_gradient(
     let naux = b_full.shape()[0];
     let nov = nocc * nvir;
 
-    // Helper: compute (pq|rs) = sum_P B^P_{pq} * B^P_{rs} using absolute MO indices
-    let eri = |p: usize, q: usize, r: usize, s: usize| -> f64 {
-        (0..naux).map(|aux| b_full[(aux, p, q)] * b_full[(aux, r, s)]).sum()
-    };
+    // Dressed B blocks (contiguous, aux-major) sliced out of the full-MO tensor.
+    //   Bov[P, i*nvir+a] = B^P_{i,a}   (occ, vir)
+    //   Bvv[P, a*nvir+b] = B^P_{a,b}   (vir, vir)
+    //   Boo[P, i*nocc+j] = B^P_{i,j}   (occ, occ)
+    // Building the dense MO-ERI blocks below is then a single wide GEMM each,
+    // replacing the former per-element O(naux) dot inside the ijab loops
+    // (which cost O(naux · nvir³ nocc³)).
+    let mut b_ov = Array2::<f64>::zeros((naux, nov));
+    let mut b_vv = Array2::<f64>::zeros((naux, nvir * nvir));
+    let mut b_oo = Array2::<f64>::zeros((naux, nocc * nocc));
+    for p in 0..naux {
+        for i in 0..nocc {
+            let i_mo = first_occ + i;
+            for a in 0..nvir {
+                b_ov[(p, i * nvir + a)] = b_full[(p, i_mo, nocc_total + a)];
+            }
+            for j in 0..nocc {
+                b_oo[(p, i * nocc + j)] = b_full[(p, i_mo, first_occ + j)];
+            }
+        }
+        for a in 0..nvir {
+            let a_mo = nocc_total + a;
+            for b in 0..nvir {
+                b_vv[(p, a * nvir + b)] = b_full[(p, a_mo, nocc_total + b)];
+            }
+        }
+    }
+
+    // Dense MO-ERI blocks via wide GEMMs (BLAS3):
+    //   VVOV[(c*nvir+a), (j*nvir+b)] = (ca|jb)   shape (nvir², nocc·nvir)
+    //   OOOV[(i*nocc+k), (j*nvir+b)] = (ik|jb)   shape (nocc², nocc·nvir)
+    // All ERIs needed below are reindexings of these two (using the 8-fold
+    // permutational symmetry of the density-fitted (pq|rs)).
+    let vvov = b_vv.t().dot(&b_ov); // (nvir², nocc·nvir)
+    let ooov = b_oo.t().dot(&b_ov); // (nocc², nocc·nvir)
 
     // g_{ai} has shape (nvir, nocc) -- virtual index a, occupied index i
     let mut g = Array2::zeros((nvir, nocc));
@@ -441,25 +452,24 @@ fn compute_orbital_gradient(
     // - delta_{bc} * [2*(ia|jk) - (ik|ja)]
     //
     // For each (c, k) pair, we sum over ijab with the appropriate delta contractions.
+    // ERIs are read from the precomputed VVOV / OOOV blocks:
+    //   (ca|jb) = vvov[c*nvir+a, j*nvir+b]
+    //   (ik|jb) = ooov[i*nocc+k, j*nvir+b]     ((ib|jk)=(jk|ib)=ooov[j*nocc+k, i*nvir+b])
 
     for c_idx in 0..nvir {
-        let c_mo = nocc_total + c_idx;
         for k in 0..nocc {
-            let k_mo = first_occ + k;
-
             let mut grad_ck = 0.0;
 
             // Term 1: delta_{ik} -> i=k, sum over j,a,b
             // 2 * sum_{jab} t_{kj,ab} * [2*(ca|jb) - (cb|ja)]
             for j in 0..nocc {
-                let j_mo = first_occ + j;
                 for a in 0..nvir {
-                    let a_mo = nocc_total + a;
+                    let ca = c_idx * nvir + a;
+                    let cb_row = c_idx * nvir; // + b below
                     for b in 0..nvir {
-                        let b_mo = nocc_total + b;
                         let t_kj_ab = t2[(k * nvir + a) * nov + j * nvir + b];
-                        let eri_cajb = eri(c_mo, a_mo, j_mo, b_mo);
-                        let eri_cbja = eri(c_mo, b_mo, j_mo, a_mo);
+                        let eri_cajb = vvov[(ca, j * nvir + b)];
+                        let eri_cbja = vvov[(cb_row + b, j * nvir + a)];
                         grad_ck += t_kj_ab * (2.0 * eri_cajb - eri_cbja);
                     }
                 }
@@ -467,15 +477,14 @@ fn compute_orbital_gradient(
 
             // Term 2: delta_{jk} -> j=k, sum over i,a,b
             // 2 * sum_{iab} t_{ik,ab} * [2*(ia|cb) - (ib|ca)]
+            // (ia|cb) = (cb|ia) = vvov[c*nvir+b, i*nvir+a];
+            // (ib|ca) = (ca|ib) = vvov[c*nvir+a, i*nvir+b]
             for i in 0..nocc {
-                let i_mo = first_occ + i;
                 for a in 0..nvir {
-                    let a_mo = nocc_total + a;
                     for b in 0..nvir {
-                        let b_mo = nocc_total + b;
                         let t_ik_ab = t2[(i * nvir + a) * nov + k * nvir + b];
-                        let eri_iacb = eri(i_mo, a_mo, c_mo, b_mo);
-                        let eri_ibca = eri(i_mo, b_mo, c_mo, a_mo);
+                        let eri_iacb = vvov[(c_idx * nvir + b, i * nvir + a)];
+                        let eri_ibca = vvov[(c_idx * nvir + a, i * nvir + b)];
                         grad_ck += t_ik_ab * (2.0 * eri_iacb - eri_ibca);
                     }
                 }
@@ -483,15 +492,14 @@ fn compute_orbital_gradient(
 
             // Term 3: delta_{ac} -> a=c, sum over i,j,b
             // -2 * sum_{ijb} t_{ij,cb} * [2*(ik|jb) - (ib|jk)]
+            // (ik|jb) = ooov[i*nocc+k, j*nvir+b];
+            // (ib|jk) = (jk|ib) = ooov[j*nocc+k, i*nvir+b]
             for i in 0..nocc {
-                let i_mo = first_occ + i;
                 for j in 0..nocc {
-                    let j_mo = first_occ + j;
                     for b in 0..nvir {
-                        let b_mo = nocc_total + b;
                         let t_ij_cb = t2[(i * nvir + c_idx) * nov + j * nvir + b];
-                        let eri_ikjb = eri(i_mo, k_mo, j_mo, b_mo);
-                        let eri_ibjk = eri(i_mo, b_mo, j_mo, k_mo);
+                        let eri_ikjb = ooov[(i * nocc + k, j * nvir + b)];
+                        let eri_ibjk = ooov[(j * nocc + k, i * nvir + b)];
                         grad_ck -= t_ij_cb * (2.0 * eri_ikjb - eri_ibjk);
                     }
                 }
@@ -499,15 +507,14 @@ fn compute_orbital_gradient(
 
             // Term 4: delta_{bc} -> b=c, sum over i,j,a
             // -2 * sum_{ija} t_{ij,ac} * [2*(ia|jk) - (ik|ja)]
+            // (ia|jk) = (jk|ia) = ooov[j*nocc+k, i*nvir+a];
+            // (ik|ja) = ooov[i*nocc+k, j*nvir+a]
             for i in 0..nocc {
-                let i_mo = first_occ + i;
                 for j in 0..nocc {
-                    let j_mo = first_occ + j;
                     for a in 0..nvir {
-                        let a_mo = nocc_total + a;
                         let t_ij_ac = t2[(i * nvir + a) * nov + j * nvir + c_idx];
-                        let eri_iajk = eri(i_mo, a_mo, j_mo, k_mo);
-                        let eri_ikja = eri(i_mo, k_mo, j_mo, a_mo);
+                        let eri_iajk = ooov[(j * nocc + k, i * nvir + a)];
+                        let eri_ikja = ooov[(i * nocc + k, j * nvir + a)];
                         grad_ck -= t_ij_ac * (2.0 * eri_iajk - eri_ikja);
                     }
                 }
@@ -559,7 +566,7 @@ pub fn oo_ri_mp2(
     let nbas = obs.nbasis();
     let nelec = mol.nelec() as usize;
     let nocc_total = nelec / 2;
-    let nocc = nocc_total - config.frozen_core;
+    let nocc = active_occ(nocc_total, config.frozen_core)?;
     let first_occ = config.frozen_core;
     let nvir = nbas - nocc_total;
     let orb = OrbitalSpace::new(nocc, nvir, nocc_total, first_occ);
@@ -567,13 +574,16 @@ pub fn oo_ri_mp2(
     // One-electron integrals (fixed)
     let h = oneelectron::hcore(obs);
 
+    // AO-side invariants: built once, reused every iteration + backtrack.
+    let ao = OoRiMp2AoTensors::build(obs, dfbs, op)?;
+
     // Start from converged RHF orbitals
     let mut c = rhf.mos_r().clone();
 
     // Initial energies
     let (mut e_hf, mut f_ao, _d) = compute_hf_energy(mol, obs, bounds, &c, nocc_total, &h)?;
     let mut eps = orbital_energies(&c, &f_ao);
-    let (mut e_mp2, mut b_ov) = compute_rimp2_with_orbitals(obs, dfbs, op, &c, &eps, &orb)?;
+    let (mut e_mp2, mut b_ov) = compute_rimp2_with_orbitals(&ao, &c, &eps, &orb)?;
     let mut total_energy = e_hf + e_mp2;
     let mut grad_norm = f64::MAX;
     let nmo = nbas;
@@ -597,7 +607,7 @@ pub fn oo_ri_mp2(
 
     for iter in 1..=config.max_iter {
         // Compute full-MO B tensor for gradient evaluation
-        let b_full = compute_b_full_mo(obs, dfbs, op, &c)?;
+        let b_full = compute_b_full_mo_with(&ao, &c);
 
         // Build t2 amplitudes
         let naux = dfbs.nbasis();
@@ -690,7 +700,7 @@ pub fn oo_ri_mp2(
         let (ehf, fao, _d) =
             compute_hf_energy(mol, obs, bounds, &c_new, nocc_total, &h)?;
         let epsnew = orbital_energies(&c_new, &fao);
-        let (emp2, bov) = compute_rimp2_with_orbitals(obs, dfbs, op, &c_new, &epsnew, &orb)?;
+        let (emp2, bov) = compute_rimp2_with_orbitals(&ao, &c_new, &epsnew, &orb)?;
         let total_new = ehf + emp2;
         let de = (total_new - total_energy).abs();
 
@@ -723,7 +733,7 @@ pub fn oo_ri_mp2(
                 let (eh, fa, _) =
                     compute_hf_energy(mol, obs, bounds, &bt_c, nocc_total, &h)?;
                 let en = orbital_energies(&bt_c, &fa);
-                let (em, bo) = compute_rimp2_with_orbitals(obs, dfbs, op, &bt_c, &en, &orb)?;
+                let (em, bo) = compute_rimp2_with_orbitals(&ao, &bt_c, &en, &orb)?;
                 bt_total = eh + em;
                 if bt_total <= total_energy + 1e-12 {
                     bt_ehf = eh;
@@ -768,7 +778,7 @@ pub fn oo_ri_mp2(
 
         if de < config.energy_conv && iter > 1 {
             // Energy converged; recompute gradient to check convergence.
-            let b_full2 = compute_b_full_mo(obs, dfbs, op, &c)?;
+            let b_full2 = compute_b_full_mo_with(&ao, &c);
             let naux2 = dfbs.nbasis();
             let (t2_2, _) = compute_t2_and_integrals(
                 &b_ov, &eps, nocc, nvir, nocc_total, first_occ, naux2,
@@ -825,11 +835,12 @@ pub fn energy_at_kappa(
 ) -> Result<f64, FerricError> {
     let nocc_total = orb.nocc_total;
     let h = oneelectron::hcore(obs);
+    let ao = OoRiMp2AoTensors::build(obs, dfbs, op)?;
     let u = cayley_rotation(kappa)?;
     let c_rot = c_init.dot(&u);
     let (e_hf, f_ao, _) = compute_hf_energy(mol, obs, bounds, &c_rot, nocc_total, &h)?;
     let eps = orbital_energies(&c_rot, &f_ao);
-    let (e_mp2, _) = compute_rimp2_with_orbitals(obs, dfbs, op, &c_rot, &eps, orb)?;
+    let (e_mp2, _) = compute_rimp2_with_orbitals(&ao, &c_rot, &eps, orb)?;
     Ok(e_hf + e_mp2)
 }
 
@@ -934,9 +945,10 @@ mod tests {
         // Compute analytic gradient at RHF orbitals
         let c = rhf.mos_r();
         let h = oneelectron::hcore(&obs);
+        let ao = OoRiMp2AoTensors::build(&obs, &dfbs, op).unwrap();
         let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h).unwrap();
         let eps = orbital_energies(c, &f_ao);
-        let (_e_mp2, b_ov) = compute_rimp2_with_orbitals(&obs, &dfbs, op, c, &eps, &orb).unwrap();
+        let (_e_mp2, b_ov) = compute_rimp2_with_orbitals(&ao, c, &eps, &orb).unwrap();
 
         // Build t2 amplitudes
         let (t2, _) = compute_t2_and_integrals(
@@ -944,7 +956,7 @@ mod tests {
         );
 
         // Build full-MO B tensor for gradient
-        let b_full = compute_b_full_mo(&obs, &dfbs, op, c).unwrap();
+        let b_full = compute_b_full_mo_with(&ao, c);
 
         let f_mo = c.t().dot(&f_ao).dot(c);
         let g = compute_orbital_gradient(

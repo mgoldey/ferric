@@ -41,6 +41,10 @@ where
 }
 
 fn main() {
+    // Safe-by-default threading: pin OpenBLAS to 1 thread (rayon owns ferric's
+    // parallelism) unless the user explicitly set OPENBLAS_NUM_THREADS. Without
+    // this, running the release binary directly oversubscribes rayon × BLAS.
+    ferric_integrals::blas_threads::init_threading();
     let ctx = ParallelContext::new();
     let args: Vec<String> = std::env::args().collect();
     if args.len() != 2 {
@@ -64,7 +68,7 @@ fn main() {
         eprintln!("error: unsupported method.task = \"{task}\"; expected energy or optimize");
         std::process::exit(1);
     }
-    let mol = Molecule::load_xyz_with_charge(&cfg.molecule.xyz, cfg.molecule.charge, cfg.molecule.multiplicity).unwrap_or_else(|e| {
+    let mut mol = Molecule::load_xyz_with_charge(&cfg.molecule.xyz, cfg.molecule.charge, cfg.molecule.multiplicity).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
     });
@@ -79,6 +83,12 @@ fn main() {
         eprintln!("error: {e}");
         std::process::exit(1);
     });
+
+    // Populate per-atom n_core_ecp when the basis carries ECPs (no-op otherwise),
+    // so nelec()/nuclear_repulsion() use the effective valence electron count and
+    // charge. PreparedBasis::new derives the effective nuclear charge directly
+    // from bs.ecps, so this must happen before any nelec()-derived occupation.
+    mol.apply_ecp(&bs);
 
     let prep = PreparedBasis::new(&mol, &bs).unwrap_or_else(|e| {
         eprintln!("error: {e}");
@@ -141,6 +151,13 @@ fn main() {
         constraints: Vec::new(),
         cdft_lambda_tol: 1e-5,
         fractional_occ: false,
+        three_index_budget_bytes: cfg
+            .memory
+            .three_index_budget_gb
+            .map(|g| (g * 1024.0 * 1024.0 * 1024.0) as usize)
+            .unwrap_or(2 * 1024 * 1024 * 1024),
+        init_guess_density: None,
+        use_sad_guess: true,
     };
 
     if task == "optimize" {
@@ -191,7 +208,10 @@ fn main() {
                     run_diagnostics: false,
                     eigensolver: ferric_rpa::Eigensolver::default(),
                     chi0_backend: ferric_rpa::config::Chi0Backend::default(),
-                    chi0_sparsity: ferric_rpa::config::Chi0Sparsity::default(),
+                    chi0_sparsity: cfg.rpa.parse_chi0_sparsity().unwrap_or_else(|e| {
+                        eprintln!("config error: {e}");
+                        std::process::exit(1);
+                    }),
                 };
                 let h_fd = 5e-4;
                 let opt_result =
@@ -638,7 +658,10 @@ fn main() {
                 run_diagnostics: cfg.rpa.run_diagnostics,
                 eigensolver: ferric_rpa::Eigensolver::default(),
                 chi0_backend: ferric_rpa::config::Chi0Backend::default(),
-                chi0_sparsity: ferric_rpa::config::Chi0Sparsity::default(),
+                chi0_sparsity: cfg.rpa.parse_chi0_sparsity().unwrap_or_else(|e| {
+                    eprintln!("config error: {e}");
+                    std::process::exit(1);
+                }),
             };
             // For open-shell molecules (multiplicity > 1) re-run with UHF + MOM so
             // the reference is converged, then dispatch to the unrestricted RPA.

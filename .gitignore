@@ -47,3 +47,12 @@ docs/papers/*.aux
 docs/papers/*.fdb_latexmk
 docs/papers/*.fls
 docs/papers/*.log
+
+# Python bytecode — everywhere
+__pycache__/
+*.pyc
+
+# Scratch zone: load-gated queue stdout, one-off probes, debug logs.
+# Promote a file into the permanent record deliberately with `git add -f`.
+scripts/queue/out/
+scripts/**/*.log

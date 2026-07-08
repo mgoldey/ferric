@@ -536,9 +536,7 @@ pub fn pdep_dynamic_polarizability_truncated(
         // Molecular projected dipole: w_M^d = Uᵀ B̃_g μ^d = ct_b_g · μ^d
         let w_mol_m: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| ct_b_g.dot(&mu_flat[d]));
         // Solve ε̃_M y_M^d = w_M^d  (M×M, small)
-        use ndarray_linalg::Solve;
-        let y_mol_m: [ndarray::Array1<f64>; 3] =
-            std::array::from_fn(|d| eps_m.solve(&w_mol_m[d]).unwrap());
+        let y_mol_m = crate::properties::solve_dielectric_3(&eps_m, &w_mol_m)?;
 
         for a in 0..natoms {
             // Per-atom projected dipole: w_M^{A,d} = ct_b_g · μ^{A,d}

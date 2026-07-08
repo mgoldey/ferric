@@ -115,14 +115,15 @@ pub fn solve_uhf_fockmod(
         let aux_name = config.df_k_aux.as_deref().unwrap_or("def2-universal-jkfit");
         let dfbs_set = ferric_core::basis::bundled(aux_name)?;
         let dfbs_prep = _PB::new(mol, &dfbs_set)?;
+        let ooc_budget = crate::rhf::resolve_three_index_budget(config.three_index_budget_bytes);
         (
             Some(crate::df_k::DfK::new(
                 ferric_integrals::operator::Operator::erfc(k_mix.omega),
-                prep, &dfbs_prep, usize::MAX,
+                prep, &dfbs_prep, ooc_budget,
             )?),
             Some(crate::df_k::DfK::new(
                 ferric_integrals::operator::Operator::erf(k_mix.omega),
-                prep, &dfbs_prep, usize::MAX,
+                prep, &dfbs_prep, ooc_budget,
             )?),
         )
     } else {
@@ -156,18 +157,10 @@ pub fn solve_uhf_fockmod(
     }
     let vnn = mol.nuclear_repulsion();
 
-    // S^{-1/2}
-    let (s_evals, s_evecs) = s
-        .eigh(ndarray_linalg::UPLO::Upper)
-        .map_err(|e| FerricError::Lapack(format!("S diag: {e}")))?;
-    let mut u_scaled = s_evecs.clone();
-    for i in 0..n {
-        let scale = 1.0 / s_evals[i].sqrt();
-        for mu in 0..n {
-            u_scaled[(mu, i)] *= scale;
-        }
-    }
-    let s_inv_sqrt = u_scaled.dot(&s_evecs.t());
+    // Canonical orthogonalizer X (n × m): drops eigenvectors of S below
+    // LINDEP_THRESH to handle near-linear-dependent basis sets (Na clusters in
+    // aug-cc-pVDZ). m == n for well-conditioned S. See crate::rhf for details.
+    let x = crate::rhf::canonical_orthogonalizer(&s)?;
 
     // Initial guess: caller-supplied MOs if provided, else hcore.
     let (mut c_a, mut c_b) = if let Some((ca0, cb0)) = initial_mos {
@@ -179,13 +172,10 @@ pub fn solve_uhf_fockmod(
         }
         (ca0.clone(), cb0.clone())
     } else {
-        // hcore guess: get MO coefficients from H' = S^{-1/2} H S^{-1/2}.
+        // hcore guess: get MO coefficients from H' = Xᵀ H X (canonical-orthog).
+        // diagonalize() pads to (n × n), keeping the guess shape historical.
         let _ = hcore_guess(&s, &h, nocc_a.max(1))?; // sanity check it succeeds
-        let h_prime = s_inv_sqrt.dot(&h).dot(&s_inv_sqrt);
-        let (_, c_prime) = h_prime
-            .eigh(ndarray_linalg::UPLO::Upper)
-            .map_err(|e| FerricError::Lapack(format!("H' diag: {e}")))?;
-        let c = s_inv_sqrt.dot(&c_prime);
+        let (_, c) = diagonalize(&h, &x)?;
         (c.clone(), c)
     };
 
@@ -231,6 +221,21 @@ pub fn solve_uhf_fockmod(
     let mut mom_ref_b: Option<Array2<f64>> = None;
     let empty_open: Array2<f64> = Array2::<f64>::zeros((n, 0));
 
+    // K built per spin:
+    //   * RSH (ω > 0): K_σ = c_SR · K_SR[D_σ] + c_LR · K_LR[D_σ] via DfK
+    //   * Plain hybrid / pure HF (ω = 0): K_σ = c_K · K[D_σ] via DirectK
+    //   * Pure DFT (c_K = 0): K skipped
+    // Builders hoisted out of the loop: each lazily builds a per-thread libint2
+    // EnginePool on first use (ctors serialized behind a global mutex), so a
+    // loop-local builder would pay that construction every iteration.
+    let need_k = c_k != 0.0 || k_mix.omega > 0.0;
+    let mut direct_j = DirectJ::new(ctx, prep, bounds, config.integral_thresh);
+    let mut direct_k: Option<DirectK> = if need_k && k_mix.omega == 0.0 {
+        Some(DirectK::new(ctx, prep, bounds, config.integral_thresh))
+    } else {
+        None
+    };
+
     for iter in 1..=config.max_iter {
         ctx.check_interrupted()?;
         j_buf.fill(0.0);
@@ -239,15 +244,7 @@ pub fn solve_uhf_fockmod(
         let d_total = &d_a + &d_b;
 
         // J built from total density (one call).
-        {
-            let mut dj = DirectJ::new(ctx, prep, bounds, config.integral_thresh);
-            total_quartets += dj.build(&d_total, &mut j_buf)?;
-        }
-        // K built per spin:
-        //   * RSH (ω > 0): K_σ = c_SR · K_SR[D_σ] + c_LR · K_LR[D_σ] via DfK
-        //   * Plain hybrid / pure HF (ω = 0): K_σ = c_K · K[D_σ] via DirectK
-        //   * Pure DFT (c_K = 0): K skipped
-        let need_k = c_k != 0.0 || k_mix.omega > 0.0;
+        total_quartets += direct_j.build(&d_total, &mut j_buf)?;
         let mut k_a_total = Array2::<f64>::zeros((n, n));
         let mut k_b_total = Array2::<f64>::zeros((n, n));
         if k_mix.omega > 0.0 {
@@ -264,14 +261,9 @@ pub fn solve_uhf_fockmod(
             k_a_total = k_mix.sr * &k_sr_a + k_mix.lr * &k_lr_a;
             k_b_total = k_mix.sr * &k_sr_b + k_mix.lr * &k_lr_b;
         } else if need_k {
-            {
-                let mut dk = DirectK::new(ctx, prep, bounds, config.integral_thresh);
-                total_quartets += <DirectK as KBuilder>::build(&mut dk, &d_a, &mut k_a_buf)?;
-            }
-            {
-                let mut dk = DirectK::new(ctx, prep, bounds, config.integral_thresh);
-                total_quartets += <DirectK as KBuilder>::build(&mut dk, &d_b, &mut k_b_buf)?;
-            }
+            let dk = direct_k.as_mut().expect("DirectK built before loop");
+            total_quartets += <DirectK as KBuilder>::build(dk, &d_a, &mut k_a_buf)?;
+            total_quartets += <DirectK as KBuilder>::build(dk, &d_b, &mut k_b_buf)?;
             k_a_total = c_k * &k_a_buf;
             k_b_total = c_k * &k_b_buf;
         }
@@ -286,14 +278,8 @@ pub fn solve_uhf_fockmod(
 
         // Electronic energy BEFORE adding V_xc (V_xc is one-body in F_σ but
         // E_xc is its own integral).
-        let e_elec_no_xc: f64 = 0.5
-            * ((0..n)
-                .flat_map(|i| (0..n).map(move |j| (i, j)))
-                .map(|(i, j)| {
-                    (h[(i, j)] + f_a[(i, j)]) * d_a[(i, j)]
-                        + (h[(i, j)] + f_b[(i, j)]) * d_b[(i, j)]
-                })
-                .sum::<f64>());
+        let e_elec_no_xc: f64 =
+            0.5 * ((&(&h + &f_a) * &d_a).sum() + (&(&h + &f_b) * &d_b).sum());
         let e_xc = if let Some(x) = xc_contrib.as_ref() {
             x.add_xc_uks(&d_a, &d_b, &mut f_a, &mut f_b)
         } else {
@@ -320,8 +306,8 @@ pub fn solve_uhf_fockmod(
         let converged = de < config.energy_conv && err_max < config.density_conv;
 
         if iter > 1 && converged {
-            let (eps_a, c_a_f) = diagonalize(&f_a, &s_inv_sqrt)?;
-            let (eps_b, c_b_f) = diagonalize(&f_b, &s_inv_sqrt)?;
+            let (eps_a, c_a_f) = diagonalize(&f_a, &x)?;
+            let (eps_b, c_b_f) = diagonalize(&f_b, &x)?;
             // ⟨S²⟩ diagnostic
             let s2 = expectation_s_squared(&c_a_f, &c_b_f, &s, nocc_a, nocc_b);
             let s_true = 0.5 * (nocc_a as f64 - nocc_b as f64);
@@ -378,8 +364,8 @@ pub fn solve_uhf_fockmod(
                 f_b_new += &(shift_eff * s.dot(&p_bv).dot(&s));
             }
         }
-        let (eps_a_new, mut c_a_new) = diagonalize(&f_a_new, &s_inv_sqrt)?;
-        let (eps_b_new, mut c_b_new) = diagonalize(&f_b_new, &s_inv_sqrt)?;
+        let (eps_a_new, mut c_a_new) = diagonalize(&f_a_new, &x)?;
+        let (eps_b_new, mut c_b_new) = diagonalize(&f_b_new, &x)?;
 
         // MOM occupied-orbital selection (per spin) from iter mom_after_iter+1.
         if config.mom_after_iter > 0 && iter > config.mom_after_iter {
@@ -503,16 +489,29 @@ fn density_fractional(c: &Array2<f64>, eps: &[f64], nocc: usize) -> Array2<f64> 
     d
 }
 
+/// Diagonalize F in the canonical-orthogonal basis X (n × m), padding the
+/// result back to (n × n) with sentinel-energy zero columns for any dropped
+/// near-singular modes. Mirrors `crate::rhf::diagonalize`. See that function for
+/// the shape/padding rationale.
 fn diagonalize(
     f: &Array2<f64>,
-    s_inv_sqrt: &Array2<f64>,
+    x: &Array2<f64>,
 ) -> Result<(Vec<f64>, Array2<f64>), FerricError> {
-    let f_prime = s_inv_sqrt.dot(f).dot(s_inv_sqrt);
+    let n = x.nrows();
+    let m = x.ncols();
+    let f_prime = x.t().dot(f).dot(x);
     let (evals, evecs) = f_prime
         .eigh(ndarray_linalg::UPLO::Upper)
         .map_err(|e| FerricError::Lapack(format!("F diag: {e}")))?;
-    let c = s_inv_sqrt.dot(&evecs);
-    Ok((evals.to_vec(), c))
+    let c_kept = x.dot(&evecs);
+    if m == n {
+        return Ok((evals.to_vec(), c_kept));
+    }
+    let mut c = Array2::<f64>::zeros((n, n));
+    c.slice_mut(ndarray::s![.., ..m]).assign(&c_kept);
+    let mut eps = evals.to_vec();
+    eps.resize(n, 1e6);
+    Ok((eps, c))
 }
 
 /// ⟨S²⟩ for a UHF determinant:

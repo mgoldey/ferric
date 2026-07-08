@@ -34,7 +34,15 @@ pub fn coulomb_metric_2c(op: Operator, dfbs: &PreparedBasis) -> Result<Array2<f6
 }
 
 /// Build 3-center integrals (P|mn), shape (naux, nbasis, nbasis).
+///
+/// Parallelized over aux shells `sp` (independent outer loop). Each rayon worker
+/// builds its own `Engine` (Engine: Send) once per region via `for_each_init`.
+/// Writes go to disjoint `(p, mu, nu)` regions — each `sp` owns a distinct
+/// aux-row band — so the raw-pointer scatter is data-race-free and bit-identical
+/// to the serial build.
 pub fn eri3_tensor(op: Operator, obs: &PreparedBasis, dfbs: &PreparedBasis) -> Result<Array3<f64>, FerricError> {
+    use rayon::prelude::*;
+
     let naux = dfbs.nbasis();
     let nbas = obs.nbasis();
     let nsh_obs = obs.nshells();
@@ -43,28 +51,57 @@ pub fn eri3_tensor(op: Operator, obs: &PreparedBasis, dfbs: &PreparedBasis) -> R
     let offs_obs = obs.shell_offsets();
     let dims_df = dfbs.shell_dims();
     let offs_df = dfbs.shell_offsets();
-    let mut eng = Engine::new_3center(op, obs, dfbs, 1e-14)?;
-    let mut eri = Array3::zeros((naux, nbas, nbas));
-    for sp in 0..nsh_df {
-        for s1 in 0..nsh_obs {
-            for s2 in 0..=s1 {
-                if let Some(block) = eng.compute_eri3(obs, dfbs, sp, s1, s2) {
-                    let np = dims_df[sp];
-                    let n1 = dims_obs[s1];
-                    let n2 = dims_obs[s2];
-                    for p in 0..np {
-                        for i in 0..n1 {
-                            for j in 0..n2 {
-                                let val = block[(p * n1 + i) * n2 + j];
-                                eri[(offs_df[sp] + p, offs_obs[s1] + i, offs_obs[s2] + j)] = val;
-                                eri[(offs_df[sp] + p, offs_obs[s2] + j, offs_obs[s1] + i)] = val;
+
+    // Surface any engine-construction error up front (serial, cheap). After this
+    // succeeds the per-worker rebuilds below cannot fail for the same args, so
+    // they `.expect()` — `FerricError` is not `Clone`, so we cannot thread the
+    // error out of the per-worker init closure.
+    Engine::new_3center(op, obs, dfbs, 1e-14)?;
+
+    let mut eri = Array3::<f64>::zeros((naux, nbas, nbas));
+
+    // Raw-pointer scatter: each aux shell `sp` writes a disjoint band of aux rows,
+    // so the `(p, mu, nu)` regions written by distinct workers never overlap.
+    let eri_ptr = eri.as_mut_ptr() as usize;
+    let stride0 = nbas * nbas; // p-stride
+    let stride1 = nbas; // mu-stride
+
+    // One `Engine` per rayon worker, built by the `init` closure scoped to THIS
+    // parallel region (so it is always built for the current op/obs/dfbs — a
+    // process-wide TLS cache would reuse a stale engine on a later call with a
+    // different operator). `Engine: Send`.
+    (0..nsh_df).into_par_iter().for_each_init(
+        || Engine::new_3center(op, obs, dfbs, 1e-14).expect("3-center engine (pre-validated)"),
+        |eng, sp| {
+            let np = dims_df[sp];
+            let p0 = offs_df[sp];
+            for s1 in 0..nsh_obs {
+                let n1 = dims_obs[s1];
+                let m0 = offs_obs[s1];
+                for s2 in 0..=s1 {
+                    if let Some(block) = eng.compute_eri3(obs, dfbs, sp, s1, s2) {
+                        let n2 = dims_obs[s2];
+                        let n0 = offs_obs[s2];
+                        for p in 0..np {
+                            for i in 0..n1 {
+                                for j in 0..n2 {
+                                    let val = block[(p * n1 + i) * n2 + j];
+                                    let pp = p0 + p;
+                                    let mm = m0 + i;
+                                    let nn = n0 + j;
+                                    unsafe {
+                                        let base = eri_ptr as *mut f64;
+                                        *base.add(pp * stride0 + mm * stride1 + nn) = val;
+                                        *base.add(pp * stride0 + nn * stride1 + mm) = val;
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
-        }
-    }
+        },
+    );
     Ok(eri)
 }
 
@@ -120,12 +157,20 @@ pub fn eri3_block(
 ///
 /// Returns `(tensor, n_kept, n_total)` where the shell-triple counts let
 /// callers report screening effectiveness without re-walking the loop.
+///
+/// Parallelized over aux shells `sp` exactly like [`eri3_tensor`] (one
+/// `Engine` per rayon worker, disjoint aux-row-band raw-pointer scatter).
+/// Screening decisions are evaluated per `(sp, s1, s2)` triple with the same
+/// bound and threshold as the serial loop, so the kept/skipped set — and the
+/// output tensor — are bit-identical to a serial build.
 pub fn eri3_tensor_screened(
     op: Operator,
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
     thresh: f64,
 ) -> Result<(Array3<f64>, usize, usize), FerricError> {
+    use rayon::prelude::*;
+
     let naux = dfbs.nbasis();
     let nbas = obs.nbasis();
     let nsh_obs = obs.nshells();
@@ -139,36 +184,60 @@ pub fn eri3_tensor_screened(
     let q_obs = schwarz(op, obs)?;
     let q3 = schwarz3_aux(op, dfbs)?;
 
-    let mut eng = Engine::new_3center(op, obs, dfbs, 1e-14)?;
-    let mut eri = Array3::zeros((naux, nbas, nbas));
-    let mut n_kept = 0usize;
-    let mut n_total = 0usize;
+    // Surface any engine-construction error up front (see eri3_tensor).
+    Engine::new_3center(op, obs, dfbs, 1e-14)?;
 
-    for sp in 0..nsh_df {
-        let q3p = q3[sp];
-        for s1 in 0..nsh_obs {
-            for s2 in 0..=s1 {
-                n_total += 1;
-                if q3p * q_obs[(s1, s2)] < thresh {
-                    continue;
-                }
-                let Some(block) = eng.compute_eri3(obs, dfbs, sp, s1, s2) else { continue };
-                n_kept += 1;
+    let mut eri = Array3::<f64>::zeros((naux, nbas, nbas));
+
+    // Raw-pointer scatter: each aux shell `sp` writes a disjoint band of aux
+    // rows, so writes from distinct workers never overlap.
+    let eri_ptr = eri.as_mut_ptr() as usize;
+    let stride0 = nbas * nbas; // p-stride
+    let stride1 = nbas; // mu-stride
+
+    let (n_kept, n_total) = (0..nsh_df)
+        .into_par_iter()
+        .map_init(
+            || Engine::new_3center(op, obs, dfbs, 1e-14).expect("3-center engine (pre-validated)"),
+            |eng, sp| {
+                let mut kept = 0usize;
+                let mut total = 0usize;
+                let q3p = q3[sp];
                 let np = dims_df[sp];
-                let n1 = dims_obs[s1];
-                let n2 = dims_obs[s2];
-                for p in 0..np {
-                    for i in 0..n1 {
-                        for j in 0..n2 {
-                            let val = block[(p * n1 + i) * n2 + j];
-                            eri[(offs_df[sp] + p, offs_obs[s1] + i, offs_obs[s2] + j)] = val;
-                            eri[(offs_df[sp] + p, offs_obs[s2] + j, offs_obs[s1] + i)] = val;
+                let p0 = offs_df[sp];
+                for s1 in 0..nsh_obs {
+                    let n1 = dims_obs[s1];
+                    let m0 = offs_obs[s1];
+                    for s2 in 0..=s1 {
+                        total += 1;
+                        if q3p * q_obs[(s1, s2)] < thresh {
+                            continue;
+                        }
+                        let Some(block) = eng.compute_eri3(obs, dfbs, sp, s1, s2) else { continue };
+                        kept += 1;
+                        let n2 = dims_obs[s2];
+                        let n0 = offs_obs[s2];
+                        for p in 0..np {
+                            for i in 0..n1 {
+                                for j in 0..n2 {
+                                    let val = block[(p * n1 + i) * n2 + j];
+                                    let pp = p0 + p;
+                                    let mm = m0 + i;
+                                    let nn = n0 + j;
+                                    unsafe {
+                                        let base = eri_ptr as *mut f64;
+                                        *base.add(pp * stride0 + mm * stride1 + nn) = val;
+                                        *base.add(pp * stride0 + nn * stride1 + mm) = val;
+                                    }
+                                }
+                            }
                         }
                     }
                 }
-            }
-        }
-    }
+                (kept, total)
+            },
+        )
+        .reduce(|| (0usize, 0usize), |a, b| (a.0 + b.0, a.1 + b.1));
     Ok((eri, n_kept, n_total))
 }
 
@@ -181,6 +250,13 @@ pub fn eri3_tensor_screened(
 /// no notion of bra-ket distance.
 ///
 /// Skipped blocks remain zero. Returns `(tensor, n_kept, n_total)`.
+///
+/// Parallelized over aux shells `sp` exactly like [`eri3_tensor`] (one
+/// `Engine` per rayon worker, disjoint aux-row-band raw-pointer scatter).
+/// The QQR bound is evaluated per `(sp, s1, s2)` triple with the same
+/// threshold as the serial loop (`QqrBounds3` is shared read-only), so the
+/// kept/skipped set — and the output tensor — are bit-identical to a serial
+/// build.
 pub fn eri3_tensor_screened_qqr(
     op: Operator,
     obs: &PreparedBasis,
@@ -188,6 +264,8 @@ pub fn eri3_tensor_screened_qqr(
     bounds: &QqrBounds3,
     thresh: f64,
 ) -> Result<(Array3<f64>, usize, usize), FerricError> {
+    use rayon::prelude::*;
+
     let naux = dfbs.nbasis();
     let nbas = obs.nbasis();
     let nsh_obs = obs.nshells();
@@ -197,35 +275,59 @@ pub fn eri3_tensor_screened_qqr(
     let dims_df = dfbs.shell_dims();
     let offs_df = dfbs.shell_offsets();
 
-    let mut eng = Engine::new_3center(op, obs, dfbs, 1e-14)?;
-    let mut eri = Array3::zeros((naux, nbas, nbas));
-    let mut n_kept = 0usize;
-    let mut n_total = 0usize;
+    // Surface any engine-construction error up front (see eri3_tensor).
+    Engine::new_3center(op, obs, dfbs, 1e-14)?;
 
-    for sp in 0..nsh_df {
-        for s1 in 0..nsh_obs {
-            for s2 in 0..=s1 {
-                n_total += 1;
-                if bounds.estimate3(sp, s1, s2) < thresh {
-                    continue;
-                }
-                let Some(block) = eng.compute_eri3(obs, dfbs, sp, s1, s2) else { continue };
-                n_kept += 1;
+    let mut eri = Array3::<f64>::zeros((naux, nbas, nbas));
+
+    // Raw-pointer scatter: each aux shell `sp` writes a disjoint band of aux
+    // rows, so writes from distinct workers never overlap.
+    let eri_ptr = eri.as_mut_ptr() as usize;
+    let stride0 = nbas * nbas; // p-stride
+    let stride1 = nbas; // mu-stride
+
+    let (n_kept, n_total) = (0..nsh_df)
+        .into_par_iter()
+        .map_init(
+            || Engine::new_3center(op, obs, dfbs, 1e-14).expect("3-center engine (pre-validated)"),
+            |eng, sp| {
+                let mut kept = 0usize;
+                let mut total = 0usize;
                 let np = dims_df[sp];
-                let n1 = dims_obs[s1];
-                let n2 = dims_obs[s2];
-                for p in 0..np {
-                    for i in 0..n1 {
-                        for j in 0..n2 {
-                            let val = block[(p * n1 + i) * n2 + j];
-                            eri[(offs_df[sp] + p, offs_obs[s1] + i, offs_obs[s2] + j)] = val;
-                            eri[(offs_df[sp] + p, offs_obs[s2] + j, offs_obs[s1] + i)] = val;
+                let p0 = offs_df[sp];
+                for s1 in 0..nsh_obs {
+                    let n1 = dims_obs[s1];
+                    let m0 = offs_obs[s1];
+                    for s2 in 0..=s1 {
+                        total += 1;
+                        if bounds.estimate3(sp, s1, s2) < thresh {
+                            continue;
+                        }
+                        let Some(block) = eng.compute_eri3(obs, dfbs, sp, s1, s2) else { continue };
+                        kept += 1;
+                        let n2 = dims_obs[s2];
+                        let n0 = offs_obs[s2];
+                        for p in 0..np {
+                            for i in 0..n1 {
+                                for j in 0..n2 {
+                                    let val = block[(p * n1 + i) * n2 + j];
+                                    let pp = p0 + p;
+                                    let mm = m0 + i;
+                                    let nn = n0 + j;
+                                    unsafe {
+                                        let base = eri_ptr as *mut f64;
+                                        *base.add(pp * stride0 + mm * stride1 + nn) = val;
+                                        *base.add(pp * stride0 + nn * stride1 + mm) = val;
+                                    }
+                                }
+                            }
                         }
                     }
                 }
-            }
-        }
-    }
+                (kept, total)
+            },
+        )
+        .reduce(|| (0usize, 0usize), |a, b| (a.0 + b.0, a.1 + b.1));
     Ok((eri, n_kept, n_total))
 }
 
@@ -234,6 +336,164 @@ mod tests {
     use super::*;
     use ferric_core::basis;
     use ferric_core::mol::Molecule;
+
+    /// Serial reference for `eri3_tensor_screened` (the pre-parallelization
+    /// implementation, kept verbatim). The parallel builder must reproduce it
+    /// bit-for-bit: same screening decisions, same single-write-per-element
+    /// scatter, no accumulation anywhere.
+    fn eri3_tensor_screened_serial(
+        op: Operator,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        thresh: f64,
+    ) -> Result<(Array3<f64>, usize, usize), FerricError> {
+        let naux = dfbs.nbasis();
+        let nbas = obs.nbasis();
+        let nsh_obs = obs.nshells();
+        let nsh_df = dfbs.nshells();
+        let dims_obs = obs.shell_dims();
+        let offs_obs = obs.shell_offsets();
+        let dims_df = dfbs.shell_dims();
+        let offs_df = dfbs.shell_offsets();
+
+        let q_obs = schwarz(op, obs)?;
+        let q3 = schwarz3_aux(op, dfbs)?;
+
+        let mut eng = Engine::new_3center(op, obs, dfbs, 1e-14)?;
+        let mut eri = Array3::zeros((naux, nbas, nbas));
+        let mut n_kept = 0usize;
+        let mut n_total = 0usize;
+
+        for sp in 0..nsh_df {
+            let q3p = q3[sp];
+            for s1 in 0..nsh_obs {
+                for s2 in 0..=s1 {
+                    n_total += 1;
+                    if q3p * q_obs[(s1, s2)] < thresh {
+                        continue;
+                    }
+                    let Some(block) = eng.compute_eri3(obs, dfbs, sp, s1, s2) else { continue };
+                    n_kept += 1;
+                    let np = dims_df[sp];
+                    let n1 = dims_obs[s1];
+                    let n2 = dims_obs[s2];
+                    for p in 0..np {
+                        for i in 0..n1 {
+                            for j in 0..n2 {
+                                let val = block[(p * n1 + i) * n2 + j];
+                                eri[(offs_df[sp] + p, offs_obs[s1] + i, offs_obs[s2] + j)] = val;
+                                eri[(offs_df[sp] + p, offs_obs[s2] + j, offs_obs[s1] + i)] = val;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok((eri, n_kept, n_total))
+    }
+
+    /// Serial reference for `eri3_tensor_screened_qqr` (pre-parallelization
+    /// implementation, kept verbatim).
+    fn eri3_tensor_screened_qqr_serial(
+        op: Operator,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        bounds: &QqrBounds3,
+        thresh: f64,
+    ) -> Result<(Array3<f64>, usize, usize), FerricError> {
+        let naux = dfbs.nbasis();
+        let nbas = obs.nbasis();
+        let nsh_obs = obs.nshells();
+        let nsh_df = dfbs.nshells();
+        let dims_obs = obs.shell_dims();
+        let offs_obs = obs.shell_offsets();
+        let dims_df = dfbs.shell_dims();
+        let offs_df = dfbs.shell_offsets();
+
+        let mut eng = Engine::new_3center(op, obs, dfbs, 1e-14)?;
+        let mut eri = Array3::zeros((naux, nbas, nbas));
+        let mut n_kept = 0usize;
+        let mut n_total = 0usize;
+
+        for sp in 0..nsh_df {
+            for s1 in 0..nsh_obs {
+                for s2 in 0..=s1 {
+                    n_total += 1;
+                    if bounds.estimate3(sp, s1, s2) < thresh {
+                        continue;
+                    }
+                    let Some(block) = eng.compute_eri3(obs, dfbs, sp, s1, s2) else { continue };
+                    n_kept += 1;
+                    let np = dims_df[sp];
+                    let n1 = dims_obs[s1];
+                    let n2 = dims_obs[s2];
+                    for p in 0..np {
+                        for i in 0..n1 {
+                            for j in 0..n2 {
+                                let val = block[(p * n1 + i) * n2 + j];
+                                eri[(offs_df[sp] + p, offs_obs[s1] + i, offs_obs[s2] + j)] = val;
+                                eri[(offs_df[sp] + p, offs_obs[s2] + j, offs_obs[s1] + i)] = val;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok((eri, n_kept, n_total))
+    }
+
+    /// Assert two tensors are bit-identical (not just close): the parallel
+    /// scatter writes each element exactly once, so no FP summation order can
+    /// change and any difference at all is a bug.
+    fn assert_bit_identical(a: &Array3<f64>, b: &Array3<f64>, what: &str) {
+        assert_eq!(a.dim(), b.dim(), "{what}: shape mismatch");
+        let n_diff = a.iter().zip(b.iter()).filter(|(x, y)| x.to_bits() != y.to_bits()).count();
+        assert_eq!(n_diff, 0, "{what}: {n_diff} elements differ bitwise");
+    }
+
+    #[test]
+    fn test_eri3_screened_parallel_bitidentical_to_serial() {
+        // Parallel Schwarz-screened builder must match the serial reference
+        // bit-for-bit — including at a loose threshold where screening
+        // actually fires and the skip set is nontrivial.
+        let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        for op in [Operator::coulomb(), Operator::erfc(0.222)] {
+            for &thresh in &[0.0, 1e-10, 1e-4, 1e-2] {
+                let (ser, k_ser, t_ser) = eri3_tensor_screened_serial(op, &obs, &dfbs, thresh).unwrap();
+                let (par, k_par, t_par) = eri3_tensor_screened(op, &obs, &dfbs, thresh).unwrap();
+                assert_eq!((k_par, t_par), (k_ser, t_ser),
+                    "screening counts diverge at thresh={thresh:.0e}");
+                assert_bit_identical(&ser, &par, &format!("schwarz-screened thresh={thresh:.0e}"));
+            }
+        }
+        // Sanity: at 1e-2 screening must actually drop triples, otherwise the
+        // "screening fires" leg of this test is vacuous.
+        let (_, k, t) = eri3_tensor_screened(Operator::erfc(0.222), &obs, &dfbs, 1e-2).unwrap();
+        assert!(k < t, "expected screening to fire at thresh=1e-2 ({k}/{t} kept)");
+    }
+
+    #[test]
+    fn test_eri3_qqr_screened_parallel_bitidentical_to_serial() {
+        let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let op = Operator::erfc(0.222);
+        let bounds = crate::qqr3::QqrBounds3::new(op, &mol, &obs, &dfbs).unwrap();
+        for &thresh in &[0.0, 1e-10, 1e-4, 1e-2] {
+            let (ser, k_ser, t_ser) =
+                eri3_tensor_screened_qqr_serial(op, &obs, &dfbs, &bounds, thresh).unwrap();
+            let (par, k_par, t_par) =
+                eri3_tensor_screened_qqr(op, &obs, &dfbs, &bounds, thresh).unwrap();
+            assert_eq!((k_par, t_par), (k_ser, t_ser),
+                "QQR screening counts diverge at thresh={thresh:.0e}");
+            assert_bit_identical(&ser, &par, &format!("qqr-screened thresh={thresh:.0e}"));
+        }
+        // Sanity: the loose threshold must actually drop triples.
+        let (_, k, t) = eri3_tensor_screened_qqr(op, &obs, &dfbs, &bounds, 1e-2).unwrap();
+        assert!(k < t, "expected QQR screening to fire at thresh=1e-2 ({k}/{t} kept)");
+    }
 
     #[test]
     fn eri3_block_equals_dense_slice() {

@@ -24,6 +24,20 @@ pub struct RiMp2Config {
     pub frozen_core: usize,
 }
 
+/// Number of active (correlated) occupied orbitals after freezing
+/// `frozen_core`. Errors instead of underflowing when the freeze covers the
+/// whole occupied space — `frozen_core` comes straight from user config.
+/// (`frozen_core == 0` with zero occupied orbitals is allowed: an empty spin
+/// channel, e.g. β of a hydrogen atom, is legitimate.)
+pub fn active_occ(nocc_total: usize, frozen_core: usize) -> Result<usize, FerricError> {
+    if frozen_core != 0 && frozen_core >= nocc_total {
+        return Err(FerricError::General(format!(
+            "frozen_core = {frozen_core} freezes all {nocc_total} occupied orbitals — nothing left to correlate"
+        )));
+    }
+    Ok(nocc_total - frozen_core)
+}
+
 /// Results from an RI-MP2 calculation.
 #[derive(Debug)]
 pub struct RiMp2Result {
@@ -112,7 +126,7 @@ pub fn ri_mp2_spin_components(
     let nbas = obs.nbasis();
     let nelec = mol.nelec() as usize;
     let nocc_total = nelec / 2;
-    let nocc = nocc_total - config.frozen_core;
+    let nocc = active_occ(nocc_total, config.frozen_core)?;
     let first_occ = config.frozen_core;
     let nvir = nbas - nocc_total;
     let naux = dfbs.nbasis();
@@ -156,26 +170,34 @@ pub fn spin_components_from_b_ov(
 ) -> SpinComponents {
     // (ia|jb) comes from i-blocked wide GEMMs G_i = B_i^T·B (nvir x nocc*nvir)
     // instead of per-element strided dots over P: same FLOPs at BLAS3
-    // throughput, and OPENBLAS_NUM_THREADS parallelizes it. G_i transient is
-    // nvir*nocc*nvir*8 bytes.
-    let mut e_os = 0.0;
-    let mut e_ss = 0.0;
-    for i in 0..nocc {
-        let b_i = b_ov.slice(ndarray::s![.., i * nvir..(i + 1) * nvir]);
-        let g_i = b_i.t().dot(b_ov); // (nvir, nocc*nvir); g_i[a, jb] = (ia|jb)
-        for j in 0..nocc {
-            let e_ij = eps[first_occ + i] + eps[first_occ + j];
-            for a in 0..nvir {
-                for b in 0..nvir {
-                    let g_ab = g_i[(a, j * nvir + b)]; // (ia|jb)
-                    let g_ba = g_i[(b, j * nvir + a)]; // (ib|ja)
-                    let denom = e_ij - eps[nocc_total + a] - eps[nocc_total + b];
-                    e_os += g_ab * g_ab / denom;
-                    e_ss += g_ab * (g_ab - g_ba) / denom;
+    // throughput. The outer i-loop is near-embarrassingly parallel (each i owns
+    // an independent G_i transient of nvir*nocc*nvir*8 bytes and a private
+    // (e_os, e_ss) partial), so we fan it across rayon and tuple-reduce. BLAS
+    // stays serial inside each closure via OPENBLAS_NUM_THREADS=1 — nested
+    // BLAS threads under rayon is the documented dgetrf-crash footgun.
+    use rayon::prelude::*;
+    let (e_os, e_ss): (f64, f64) = (0..nocc)
+        .into_par_iter()
+        .map(|i| {
+            let b_i = b_ov.slice(ndarray::s![.., i * nvir..(i + 1) * nvir]);
+            let g_i = b_i.t().dot(b_ov); // (nvir, nocc*nvir); g_i[a, jb] = (ia|jb)
+            let mut e_os_i = 0.0;
+            let mut e_ss_i = 0.0;
+            for j in 0..nocc {
+                let e_ij = eps[first_occ + i] + eps[first_occ + j];
+                for a in 0..nvir {
+                    for b in 0..nvir {
+                        let g_ab = g_i[(a, j * nvir + b)]; // (ia|jb)
+                        let g_ba = g_i[(b, j * nvir + a)]; // (ib|ja)
+                        let denom = e_ij - eps[nocc_total + a] - eps[nocc_total + b];
+                        e_os_i += g_ab * g_ab / denom;
+                        e_ss_i += g_ab * (g_ab - g_ba) / denom;
+                    }
                 }
             }
-        }
-    }
+            (e_os_i, e_ss_i)
+        })
+        .reduce(|| (0.0, 0.0), |a, b| (a.0 + b.0, a.1 + b.1));
     SpinComponents { e_os, e_ss, e_total: e_os + e_ss }
 }
 
@@ -322,7 +344,7 @@ pub fn compute_rpa_intermediates_spin(
         rhf.mos_b()
     };
 
-    let nocc = nocc_total - config.frozen_core;
+    let nocc = active_occ(nocc_total, config.frozen_core)?;
     let first_occ = config.frozen_core;
     let nvir = nbas - nocc_total;
     let naux = dfbs.nbasis();
@@ -359,7 +381,7 @@ pub fn compute_rpa_intermediates(
     let nbas = obs.nbasis();
     let nelec = mol.nelec() as usize;
     let nocc_total = nelec / 2;
-    let nocc = nocc_total - config.frozen_core;
+    let nocc = active_occ(nocc_total, config.frozen_core)?;
     let first_occ = config.frozen_core;
     let nvir = nbas - nocc_total;
     let naux = dfbs.nbasis();
@@ -399,7 +421,7 @@ pub fn compute_mp2_intermediates(
     let nbas = obs.nbasis();
     let nelec = mol.nelec() as usize;
     let nocc_total = nelec / 2;
-    let nocc = nocc_total - config.frozen_core;
+    let nocc = active_occ(nocc_total, config.frozen_core)?;
     let first_occ = config.frozen_core;
     let nvir = nbas - nocc_total;
     let naux = dfbs.nbasis();
@@ -575,7 +597,7 @@ pub fn ri_mp2_einsum(
     let nbas = obs.nbasis();
     let nelec = mol.nelec() as usize;
     let nocc_total = nelec / 2;
-    let nocc = nocc_total - config.frozen_core;
+    let nocc = active_occ(nocc_total, config.frozen_core)?;
     let first_occ = config.frozen_core;
     let nvir = nbas - nocc_total;
     let naux = dfbs.nbasis();
@@ -795,6 +817,28 @@ mod tests {
         assert!((sc_ein.e_os - sc_ref.e_os).abs() < 1e-9, "os {} vs {}", sc_ein.e_os, sc_ref.e_os);
         assert!((sc_ein.e_ss - sc_ref.e_ss).abs() < 1e-9, "ss {} vs {}", sc_ein.e_ss, sc_ref.e_ss);
         assert!((sc_ein.e_total - sc_ref.e_total).abs() < 1e-9, "tot {} vs {}", sc_ein.e_total, sc_ref.e_total);
+    }
+
+    #[test]
+    fn frozen_core_exceeding_occupied_is_an_error() {
+        // H2 has exactly 1 occupied orbital; frozen_core = 2 must come back
+        // as a clean Err, not a usize underflow panic.
+        let xyz = "2\nH2\nH 0 0 0\nH 0 0 0.74\n";
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let bs = basis::bundled("cc-pvdz").unwrap();
+        let obs = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
+        let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
+
+        let cfg = RiMp2Config { frozen_core: 2 };
+        let res = ri_mp2(&mol, &obs, &dfbs, op, &rhf, &cfg);
+        assert!(res.is_err(), "frozen_core > nocc must be an error, got {res:?}");
+        let cfg_all = RiMp2Config { frozen_core: 1 };
+        let res_all = ri_mp2(&mol, &obs, &dfbs, op, &rhf, &cfg_all);
+        assert!(res_all.is_err(), "freezing every occupied orbital must be an error, got {res_all:?}");
     }
 
     #[test]
