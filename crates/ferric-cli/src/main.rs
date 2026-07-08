@@ -523,8 +523,26 @@ fn main() {
                     std::process::exit(1);
                 }
             };
+            let attenuator = match cfg.mp2.attenuator.as_deref().unwrap_or("erf") {
+                "erf" => ferric_rpa::rs_mp2_rpa::Attenuator::Erf,
+                "terf" => ferric_rpa::rs_mp2_rpa::Attenuator::Terf,
+                other => {
+                    eprintln!("error: unknown [mp2] attenuator = \"{other}\"; expected \"erf\" or \"terf\"");
+                    std::process::exit(1);
+                }
+            };
+            // r0 in Bohr; only meaningful for terf. Default matches the erf
+            // operating point (r0=3.18 Bohr ⇒ ω≈0.42 Å⁻¹).
+            let r0 = cfg.mp2.r0.unwrap_or(3.18);
+            if matches!(attenuator, ferric_rpa::rs_mp2_rpa::Attenuator::Terf)
+                && cfg.mp2.omega.is_some()
+            {
+                eprintln!("warning: [mp2] omega is ignored when attenuator = \"terf\" (ω is derived from r0 = {r0} Bohr as ω = 1/(r0·√2))");
+            }
             let mut rs_cfg = ferric_rpa::rs_mp2_rpa::RsMp2RpaConfig {
                 omega: omega_ang_inv * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV,
+                attenuator,
+                r0,
                 frozen_core: cfg.mp2.frozen_core,
                 formulation,
                 ..Default::default()
@@ -542,7 +560,15 @@ fn main() {
                 bs.name, aux_name, omega_ang_inv, cfg.molecule.xyz
             );
             println!("  nbasis     = {}", prep.nbasis());
-            println!("RS-MP2-RPA (ω = {omega_ang_inv:.3} Å⁻¹ = {:.4} Bohr⁻¹)", rs_cfg.omega);
+            match rs_cfg.attenuator {
+                ferric_rpa::rs_mp2_rpa::Attenuator::Erf => {
+                    println!("RS-MP2-RPA [erf split] (ω = {omega_ang_inv:.3} Å⁻¹ = {:.4} Bohr⁻¹)", rs_cfg.omega);
+                }
+                ferric_rpa::rs_mp2_rpa::Attenuator::Terf => {
+                    let w_derived = 1.0 / (rs_cfg.r0 * std::f64::consts::SQRT_2);
+                    println!("RS-MP2-RPA [terf split] (r0 = {:.4} Bohr, ω = 1/(r0·√2) = {:.4} Bohr⁻¹)", rs_cfg.r0, w_derived);
+                }
+            }
             // Common lines printed for all formulations.
             println!("  E(MP2, Coulomb)      = {:>16.10} Hartree", r.e_mp2_full);
             println!("  E(SR-MP2, erfc)      = {:>16.10} Hartree", r.e_sr_mp2);

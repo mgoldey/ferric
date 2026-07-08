@@ -564,14 +564,20 @@ pub fn eigh_inverse_sqrt(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
 }
 
 /// V^{-1/2} that auto-selects: regularized eigendecomposition for the long-range
-/// `erf` operator (indefinite metric), fast Cholesky otherwise (Coulomb/erfc,
-/// positive-definite). Centralizes the erf-metric handling for all RI paths.
+/// `erf`/`terf` operators (indefinite/rank-deficient metric as omega->0 /
+/// r0->inf), fast Cholesky otherwise (Coulomb/erfc/terfc, positive-definite).
+/// Centralizes the erf-metric handling for all RI paths.
+///
+/// `terf` is the tempered LR complement (terf + terfc = Coulomb; see
+/// `Operator::terf`) and plays the same algebraic role as `erf` (r0 -> inf
+/// drives terf -> 0, same as omega -> 0 for erf), so it needs the same
+/// regularized eigh branch, not Cholesky.
 pub fn metric_inverse_sqrt(
     v: &Array2<f64>,
     op: ferric_integrals::operator::Operator,
 ) -> Result<Array2<f64>, FerricError> {
     use ferric_integrals::operator::OperatorKind;
-    if matches!(op.kind, OperatorKind::ErfCoulomb) {
+    if matches!(op.kind, OperatorKind::ErfCoulomb | OperatorKind::Terf) {
         eigh_inverse_sqrt(v)
     } else {
         cholesky_inverse_sqrt(v)

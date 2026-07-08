@@ -502,11 +502,12 @@ struct PyRsMp2RpaResult {
 }
 
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, omega=None, frozen_core=None, k_builder=None, formulation=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, omega=None, frozen_core=None, k_builder=None, formulation=None, attenuator=None, r0=None))]
 fn run_rs_mp2_rpa(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
                   omega: Option<f64>, frozen_core: Option<usize>,
                   k_builder: Option<&str>,
-                  formulation: Option<&str>) -> PyResult<PyRsMp2RpaResult> {
+                  formulation: Option<&str>,
+                  attenuator: Option<&str>, r0: Option<f64>) -> PyResult<PyRsMp2RpaResult> {
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
     let op = Operator::coulomb();
@@ -527,9 +528,19 @@ fn run_rs_mp2_rpa(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSe
             "unknown formulation \"{other}\"; expected \"delta-lr\" or \"coupled-rings\""
         ))),
     };
-    // omega is supplied in Å⁻¹; convert to Bohr⁻¹ for the operator.
+    // attenuator: "erf" (default, ω in Å⁻¹) or "terf" (r0 in Bohr, ω derived).
+    let atten = match attenuator.unwrap_or("erf") {
+        "erf" => ferric_rpa::rs_mp2_rpa::Attenuator::Erf,
+        "terf" => ferric_rpa::rs_mp2_rpa::Attenuator::Terf,
+        other => return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "unknown attenuator \"{other}\"; expected \"erf\" or \"terf\""
+        ))),
+    };
+    // omega is supplied in Å⁻¹; convert to Bohr⁻¹ for the operator. r0 is in Bohr.
     let cfg = ferric_rpa::RsMp2RpaConfig {
         omega: omega.unwrap_or(0.420) * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV,
+        attenuator: atten,
+        r0: r0.unwrap_or(3.18),
         frozen_core: frozen_core.unwrap_or(0),
         formulation: form,
         ..Default::default()

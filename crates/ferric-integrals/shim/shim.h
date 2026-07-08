@@ -191,6 +191,36 @@ int scf_compute_terfc_eri3(scf_engine *eng, const scf_basis *obs,
 int scf_compute_terfc_eri2(scf_engine *eng, const scf_basis *dfbs,
                               int shP, int shQ, double *out);
 
+/* --- terf(r,r0)/r = tempered LONG-RANGE complement of terfc, via the SAME
+ * 2D interpolation tables --- *
+ *
+ * Exact identity: terf(r,r0)/r + terfc(r,r0)/r = 1/r (Coulomb), verified to
+ * machine precision because both share the identical table lookup / OS
+ * recurrence / cart->pure transform; only the final combine step differs
+ * (terfc subtracts this same block from Coulomb, terf returns it directly).
+ *
+ * Same r0/omega curvature constraint as terfc: r0 * omega = 1/sqrt(2).
+ */
+
+scf_engine *scf_engine_create_terf_3center(double r0, double omega,
+                                              int max_nprim, int max_L,
+                                              double precision,
+                                              const char *table_dir);
+
+scf_engine *scf_engine_create_terf_2center(double r0, double omega,
+                                              int max_nprim, int max_L,
+                                              double precision,
+                                              const char *table_dir);
+
+/* Compute (shP|terf|sh1 sh2). Returns nP*n1*n2, 0 if screened, SCF_EINTERNAL on error. */
+int scf_compute_terf_eri3(scf_engine *eng, const scf_basis *obs,
+                             const scf_basis *dfbs,
+                             int shP, int sh1, int sh2, double *out);
+
+/* Compute (shP|terf|shQ). Returns nP*nQ or SCF_EINTERNAL on error. */
+int scf_compute_terf_eri2(scf_engine *eng, const scf_basis *dfbs,
+                             int shP, int shQ, double *out);
+
 #ifdef __cplusplus
 }
 #endif

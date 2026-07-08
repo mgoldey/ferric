@@ -60,6 +60,26 @@ pub enum RsMp2RpaFormulation {
     CoupledRings,
 }
 
+/// Which range-separation kernel splits Coulomb into short + long range.
+///
+/// Both choices satisfy the SAME split identity (SR + LR = Coulomb) and thus give
+/// the SAME exact limits, so either drops into formulations B and T without
+/// changing the ring-diagram telescoping. They differ only in the *shape* of the
+/// attenuator, which changes intermediate-ω behavior (basis-set convergence,
+/// π-stack over/under-binding), not the ω→0 / ω→∞ endpoints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Attenuator {
+    /// Standard error-function split: LR = erf(ωr)/r, SR = erfc(ωr)/r.
+    /// Parameterized by ω (Bohr⁻¹). Default — preserves all existing behavior.
+    #[default]
+    Erf,
+    /// Tempered (Dutoi/Goldey) split: LR = terf(r,r0)/r, SR = terfc(r,r0)/r,
+    /// with terf + terfc = Coulomb exactly. Parameterized by r0 (Bohr); the
+    /// curvature ω = 1/(r0·√2) is derived, never set independently. Exact via
+    /// 2D interpolation tables (needs FERRIC_TERF_TABLE_DIR).
+    Terf,
+}
+
 /// Configuration for SR-MP2 + LR-RPA.
 #[derive(Debug, Clone)]
 pub struct RsMp2RpaConfig {
@@ -70,6 +90,17 @@ pub struct RsMp2RpaConfig {
     /// Small-ω caveat: the erf 2-center metric loses rank as ω→0 (regularized
     /// eigh inverse handles it); ω=0.05 Bohr⁻¹ is the tested floor.
     pub omega: f64,
+    /// Which attenuator splits Coulomb (see [`Attenuator`]). Default `Erf`.
+    ///
+    /// When `Terf`, the long/short-range operators become `terf(r0)`/`terfc(r0)`
+    /// and `omega` is IGNORED — the curvature is derived from `r0` as
+    /// ω = 1/(r0·√2). Use [`RsMp2RpaConfig::r0`] as the single knob then.
+    pub attenuator: Attenuator,
+    /// Range-separation length r0 in Bohr, used ONLY when `attenuator == Terf`.
+    /// The single tempered-split knob; ω is derived (ω = 1/(r0·√2)). Ignored for
+    /// `Erf`. Default 3.18 Bohr ⇒ ω ≈ 0.222 Bohr⁻¹ = 0.42 Å⁻¹ (the erf operating
+    /// point), so the terf and erf arms are directly comparable at the default.
+    pub r0: f64,
     pub frozen_core: usize,
     /// dRPA solver knobs. Default forces trunc_thresh = 0.0 (full rank):
     /// this is an energy method; PDEP truncation is a production-size opt-in.
@@ -86,6 +117,8 @@ impl Default for RsMp2RpaConfig {
     fn default() -> Self {
         Self {
             omega: 0.420 * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV,
+            attenuator: Attenuator::Erf,
+            r0: 3.18,
             frozen_core: 0,
             rpa: PdepRpaConfig { trunc_thresh: 0.0, ..Default::default() },
             formulation: RsMp2RpaFormulation::DeltaLr,
@@ -171,36 +204,45 @@ pub fn rs_mp2_lr_rpa(
     let mut rpa_cfg = cfg.rpa.clone();
     rpa_cfg.frozen_core = cfg.frozen_core;
 
-    // erf intermediates: needed for sc_lr (always, for e_dmp2_lr) and for the
-    // DeltaLr dRPA. Coulomb/erfc built inside their arms to avoid unused work.
+    // Range-separation operators. `Erf` uses erf(ω)/erfc(ω); `Terf` uses the
+    // tempered terf(r0)/terfc(r0), with terf + terfc = Coulomb exactly (same
+    // split identity ⇒ same exact limits ⇒ same telescoping). r0 is the single
+    // Terf knob; ω is not consulted for Terf. The Coulomb pieces are unchanged.
+    let (op_lr, op_sr) = match cfg.attenuator {
+        Attenuator::Erf => (Operator::erf(cfg.omega), Operator::erfc(cfg.omega)),
+        Attenuator::Terf => (Operator::terf(cfg.r0), Operator::terfc(cfg.r0)),
+    };
+
+    // LR/SR intermediates: needed for sc_lr (always, for e_dmp2_lr) and for the
+    // DeltaLr dRPA. Coulomb/SR built inside their arms to avoid unused work.
     let (e_corr, e_drpa_lr, e_corr_naive, e_delta_drpa_full, e_delta_drpa_sr,
          sc_full, sc_sr, sc_lr) =
         match cfg.formulation {
             RsMp2RpaFormulation::DeltaLr => {
-                let it_lr = inter_of(Operator::erf(cfg.omega))?;
+                let it_lr = inter_of(op_lr)?;
                 let sc_lr = sc_of(&it_lr);
                 let sc_full = sc_of(&inter_of(Operator::coulomb())?);
-                let sc_sr = sc_of(&inter_of(Operator::erfc(cfg.omega))?);
+                let sc_sr = sc_of(&inter_of(op_sr)?);
                 let e_dmp2_lr = 2.0 * sc_lr.e_os;
                 let rpa = run_pdep_rpa_from_intermediates(
-                    &it_lr, mol, obs, dfbs, Operator::erf(cfg.omega), rhf, &rpa_cfg,
+                    &it_lr, mol, obs, dfbs, op_lr, rhf, &rpa_cfg,
                 )?;
                 let e_corr = sc_full.e_total + rpa.e_rpa - e_dmp2_lr;
                 (e_corr, Some(rpa.e_rpa), Some(sc_sr.e_total + rpa.e_rpa),
                  None, None, sc_full, sc_sr, sc_lr)
             }
             RsMp2RpaFormulation::CoupledRings => {
-                // erf only enters via e_dmp2_lr = 2·E_OS[erf]; no erf dRPA needed.
-                let sc_lr = sc_of(&inter_of(Operator::erf(cfg.omega))?);
+                // LR only enters via e_dmp2_lr = 2·E_OS[lr]; no LR dRPA needed.
+                let sc_lr = sc_of(&inter_of(op_lr)?);
                 let it_full = inter_of(Operator::coulomb())?;
-                let it_sr = inter_of(Operator::erfc(cfg.omega))?;
+                let it_sr = inter_of(op_sr)?;
                 let sc_full = sc_of(&it_full);
                 let sc_sr = sc_of(&it_sr);
                 let rpa_coul = run_pdep_rpa_from_intermediates(
                     &it_full, mol, obs, dfbs, Operator::coulomb(), rhf, &rpa_cfg,
                 )?;
                 let rpa_erfc = run_pdep_rpa_from_intermediates(
-                    &it_sr, mol, obs, dfbs, Operator::erfc(cfg.omega), rhf, &rpa_cfg,
+                    &it_sr, mol, obs, dfbs, op_sr, rhf, &rpa_cfg,
                 )?;
                 let delta_full = rpa_coul.e_rpa - 2.0 * sc_full.e_os;
                 let delta_sr = rpa_erfc.e_rpa - 2.0 * sc_sr.e_os;
@@ -415,5 +457,122 @@ mod tests {
             (fused.e_corr - expected).abs() < 1e-10,
             "fusion not bit-identical: {} vs {}", fused.e_corr, expected
         );
+    }
+
+    // ── terf/terfc attenuator arm ─────────────────────────────────────────
+    //
+    // The tempered split satisfies terf + terfc = Coulomb exactly, so it has the
+    // SAME exact limits as erf/erfc — but the mapping to r0 is INVERTED vs ω:
+    //   large r0 ⇒ ω=1/(r0√2)→0 ⇒ terfc→Coulomb, terf→0  ⇒ plain MP2
+    //   small r0 ⇒ ω→∞          ⇒ terfc→0, terf→Coulomb  ⇒ MP2 + ΔdRPA[Coulomb]
+    // These tests need the interpolation tables. They resolve FERRIC_TERF_TABLE_DIR
+    // (or the main-repo `terf-tables/` — the worktree copy is generators-only, the
+    // .bin tables are uncommitted), and SKIP with a note if absent, matching
+    // crates/ferric-integrals/tests/terfc_base_validation.rs.
+
+    /// Locate the terf .bin tables; None (→ skip) if not found.
+    fn terf_tables_available() -> bool {
+        if let Ok(d) = std::env::var("FERRIC_TERF_TABLE_DIR") {
+            if std::path::Path::new(&d).join("16_4_2.bin").exists() {
+                return true;
+            }
+        }
+        // Fallback: the main checkout's terf-tables/ (uncommitted .bin live there).
+        for cand in [
+            "/home/matt/qc/ferric/terf-tables/16_4_2.bin",
+        ] {
+            if std::path::Path::new(cand).exists() {
+                // Point the shim at that dir for this process.
+                std::env::set_var(
+                    "FERRIC_TERF_TABLE_DIR",
+                    std::path::Path::new(cand).parent().unwrap(),
+                );
+                return true;
+            }
+        }
+        false
+    }
+
+    /// terf, large r0 (ω→0): terf→0 ⇒ both DeltaLr and CoupledRings reduce to
+    /// plain RI-MP2. r0=20 Bohr ⇒ ω≈0.035 Bohr⁻¹.
+    #[test]
+    fn terf_large_r0_reduces_to_mp2() {
+        if !terf_tables_available() {
+            eprintln!("SKIP terf_large_r0_reduces_to_mp2: terf tables absent");
+            return;
+        }
+        let (mol, obs, dfbs, rhf) = setup_h2();
+        let full = ferric_mp2::rimp2::ri_mp2(
+            &mol, &obs, &dfbs, Operator::coulomb(), &rhf,
+            &ferric_mp2::rimp2::RiMp2Config::default(),
+        ).unwrap();
+        for form in [RsMp2RpaFormulation::DeltaLr, RsMp2RpaFormulation::CoupledRings] {
+            let cfg = RsMp2RpaConfig {
+                attenuator: Attenuator::Terf,
+                r0: 20.0,
+                formulation: form,
+                ..Default::default()
+            };
+            let r = rs_mp2_lr_rpa(&mol, &obs, &dfbs, &rhf, &cfg).unwrap();
+            eprintln!("terf(r0=20, {form:?}): MP2={:.10} e_corr={:.10} diff={:.2e}",
+                full.mp2_corr, r.e_corr, r.e_corr - full.mp2_corr);
+            assert!((r.e_corr - full.mp2_corr).abs() < 1e-4,
+                "terf large-r0 must reduce to MP2 ({form:?}): {} vs {}",
+                r.e_corr, full.mp2_corr);
+            assert!((r.total_energy - (rhf.energy + r.e_corr)).abs() < 1e-12);
+        }
+    }
+
+    /// terf, small r0 (ω→∞): terf→Coulomb ⇒ both formulations equal
+    /// E_MP2[Coulomb] + (E_dRPA[Coulomb] − 2·E_OS[Coulomb]). r0=0.05 Bohr ⇒ ω≈14.
+    ///
+    /// Tolerance is 5e-4, not tighter, because r0=0.05 is the finite-range floor:
+    /// the CLI sweep converges monotonically toward the target as r0 shrinks
+    /// (-0.02258 @0.30 → -0.01861 @0.05, target -0.01843), the SAME finite-range
+    /// truncation the erf ω→∞ test documents (it needs ω=200 for 1e-6; ω≈14 here
+    /// leaves ~1.8e-4). This confirms the limit direction, not machine-precision
+    /// equality — pushing r0 smaller runs off the terf table domain.
+    #[test]
+    fn terf_small_r0_is_mp2_plus_delta_drpa() {
+        if !terf_tables_available() {
+            eprintln!("SKIP terf_small_r0_is_mp2_plus_delta_drpa: terf tables absent");
+            return;
+        }
+        let (mol, obs, dfbs, rhf) = setup_h2();
+        let ri_cfg = RiMp2Config::default();
+        let (sc, _) = ri_mp2_spin_components(
+            &mol, &obs, &dfbs, Operator::coulomb(), &rhf, &ri_cfg).unwrap();
+        let rpa_cfg = PdepRpaConfig { trunc_thresh: 0.0, ..Default::default() };
+        let rpa_coul = run_pdep_rpa(
+            &mol, &obs, &dfbs, Operator::coulomb(), &rhf, &rpa_cfg).unwrap();
+        let expected = sc.e_total + rpa_coul.e_rpa - 2.0 * sc.e_os;
+        for form in [RsMp2RpaFormulation::DeltaLr, RsMp2RpaFormulation::CoupledRings] {
+            let cfg = RsMp2RpaConfig {
+                attenuator: Attenuator::Terf,
+                r0: 0.05,
+                formulation: form,
+                ..Default::default()
+            };
+            let r = rs_mp2_lr_rpa(&mol, &obs, &dfbs, &rhf, &cfg).unwrap();
+            eprintln!("terf(r0=0.05, {form:?}): e_corr={:.10} MP2+ΔdRPA[Coul]={:.10} diff={:.2e}",
+                r.e_corr, expected, r.e_corr - expected);
+            assert!((r.e_corr - expected).abs() < 5e-4,
+                "terf small-r0 limit broken ({form:?}): {} vs {}", r.e_corr, expected);
+            assert!((r.total_energy - (rhf.energy + r.e_corr)).abs() < 1e-12);
+        }
+    }
+
+    /// The erf default must be untouched by the terf plumbing: an explicit
+    /// Attenuator::Erf config equals the pre-change default at ω=0.42.
+    #[test]
+    fn erf_default_unchanged_by_terf_plumbing() {
+        let (mol, obs, dfbs, rhf) = setup_h2();
+        let a = rs_mp2_lr_rpa(&mol, &obs, &dfbs, &rhf,
+            &RsMp2RpaConfig { omega: 0.42, ..Default::default() }).unwrap();
+        let b = rs_mp2_lr_rpa(&mol, &obs, &dfbs, &rhf,
+            &RsMp2RpaConfig { omega: 0.42, attenuator: Attenuator::Erf,
+                ..Default::default() }).unwrap();
+        assert_eq!(a.e_corr.to_bits(), b.e_corr.to_bits(),
+            "explicit Erf must be bit-identical to the default");
     }
 }
