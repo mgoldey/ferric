@@ -348,11 +348,19 @@ fn main() {
     let proatom_gs_mult = |z: i32| -> usize {
         match z {
             // Doublets: H, Li, B, F, Na, Al, Cl, Ga, Br (one unpaired p/s e⁻)
-            1 | 3 | 5 | 9 | 11 | 13 | 17 | 31 | 35 => 2,
+            1 | 3 | 5 | 9 | 11 | 13 | 17 | 31 | 35 | 53 => 2,
+            // ²S alkali-like heavy atoms + coinage metals (single ns valence e⁻):
+            // K, Cu, Rb, Ag. Kept in sync with guess::atom_ground_state_mult —
+            // without these an odd-electron atom hits `_ => 1` and its closed-shell
+            // proatom RHF fails at iter 0 (breaks the Hirshfeld/TS proatom for any
+            // Cu/K/Rb/Ag-containing molecule).
+            19 | 29 | 37 | 47 => 2,
             // Triplets (³P): C, O, Si, S, Ge, Se
             6 | 8 | 14 | 16 | 32 | 34 => 3,
             // Quartets (⁴S): N, P, As
             7 | 15 | 33 => 4,
+            // Odd electron count can never be a singlet: default odd Z to a doublet.
+            _ if z % 2 == 1 => 2,
             _ => 1,
         }
     };

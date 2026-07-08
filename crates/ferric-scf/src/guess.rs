@@ -45,11 +45,24 @@ fn atom_ground_state_mult(z: i32) -> usize {
     match z {
         // Doublets (²S or ²P): H, Li, B, F, Na, Al, Cl, Ga, Br, I, ...
         1 | 3 | 5 | 9 | 11 | 13 | 17 | 31 | 35 | 53 => 2,
+        // ²S alkali-like heavy atoms + coinage metals with a single ns valence
+        // electron over a closed (or pseudo-closed) shell: K (⁴s¹), Cu ([Ar]3d¹⁰4s¹),
+        // Rb (⁵s¹), Ag ([Kr]4d¹⁰5s¹). Without these they fell into the `_` arm and
+        // were forced to a singlet, which for their ODD electron count makes the
+        // free-atom RHF fail at iteration 0 — silently defeating SAD for Cu2/CCuN
+        // and the alkali/coinage members (the guess then falls back to hcore).
+        19 | 29 | 37 | 47 => 2,
         // Triplets (³P): C, O, Si, S, Ge, Se, Te
         6 | 8 | 14 | 16 | 32 | 34 | 52 => 3,
         // Quartets (⁴S): N, P, As, Sb
         7 | 15 | 33 | 51 => 4,
-        // Everything else (closed-shell or handled by UHF): singlet / even electron
+        // Fallback: an odd electron count can NEVER be a singlet, so default odd Z
+        // to a doublet and only even Z to a singlet. This keeps the free-atom SCF
+        // from erroring on any odd-Z element not enumerated above (a closed-shell
+        // RHF requires an even electron count). Not necessarily the true ground
+        // state for open-shell transition metals, but a valid, convergent solve —
+        // the SAD block only needs a reasonable atomic density, not the exact term.
+        _ if z % 2 == 1 => 2,
         _ => 1,
     }
 }
