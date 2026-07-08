@@ -176,7 +176,12 @@ pub fn spin_components_from_b_ov(
     // stays serial inside each closure via OPENBLAS_NUM_THREADS=1 — nested
     // BLAS threads under rayon is the documented dgetrf-crash footgun.
     use rayon::prelude::*;
-    let (e_os, e_ss): (f64, f64) = (0..nocc)
+    // Compute each i's (e_os_i, e_ss_i) partial in parallel, then collect into an
+    // i-ordered Vec and sum SEQUENTIALLY. A rayon `reduce` combines partials in a
+    // tree whose shape depends on the worker count, so floating-point non-associativity
+    // makes the total vary with RAYON_NUM_THREADS (~µHa). Collect-then-serial-sum keeps
+    // the parallel per-i compute but fixes the accumulation order to be thread-independent.
+    let partials: Vec<(f64, f64)> = (0..nocc)
         .into_par_iter()
         .map(|i| {
             let b_i = b_ov.slice(ndarray::s![.., i * nvir..(i + 1) * nvir]);
@@ -197,7 +202,13 @@ pub fn spin_components_from_b_ov(
             }
             (e_os_i, e_ss_i)
         })
-        .reduce(|| (0.0, 0.0), |a, b| (a.0 + b.0, a.1 + b.1));
+        .collect();
+    let mut e_os = 0.0;
+    let mut e_ss = 0.0;
+    for (e_os_i, e_ss_i) in partials {
+        e_os += e_os_i;
+        e_ss += e_ss_i;
+    }
     SpinComponents { e_os, e_ss, e_total: e_os + e_ss }
 }
 
