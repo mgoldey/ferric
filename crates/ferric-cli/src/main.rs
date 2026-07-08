@@ -157,6 +157,7 @@ fn main() {
             .map(|g| (g * 1024.0 * 1024.0 * 1024.0) as usize)
             .unwrap_or(2 * 1024 * 1024 * 1024),
         init_guess_density: None,
+        use_sad_guess: true,
     };
 
     if task == "optimize" {
