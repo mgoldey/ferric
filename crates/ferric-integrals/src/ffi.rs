@@ -3,7 +3,7 @@
 //! These are unsafe C-linkage functions. Prefer the safe wrappers in
 //! [`crate::engine`] and [`crate::basis_bridge`].
 
-use std::os::raw::{c_double, c_int, c_void};
+use std::os::raw::{c_char, c_double, c_int, c_void};
 
 /// C-compatible shell descriptor passed to the libint2 shim.
 #[repr(C)]
@@ -52,6 +52,12 @@ extern "C" {
     pub fn scf_engine_create_2center_deriv(op_kind: c_int, omega: c_double, max_nprim: c_int, max_l: c_int, precision: c_double) -> *mut c_void;
     pub fn scf_compute_eri3_deriv(eng: *mut c_void, obs: *const c_void, dfbs: *const c_void, shP: c_int, sh1: c_int, sh2: c_int, out: *mut c_double) -> c_int;
     pub fn scf_compute_eri2_deriv(eng: *mut c_void, dfbs: *const c_void, shP: c_int, shQ: c_int, out: *mut c_double) -> c_int;
+    // Exact terfc(r,r0)/r via 2D interpolation tables (Dutoi/Goldey). table_dir may be
+    // null (falls back to FERRIC_TERF_TABLE_DIR). See shim.h / terf-tables/terf_plan.md.
+    pub fn scf_engine_create_terfc_3center(r0: c_double, omega: c_double, max_nprim: c_int, max_l: c_int, precision: c_double, table_dir: *const c_char) -> *mut c_void;
+    pub fn scf_engine_create_terfc_2center(r0: c_double, omega: c_double, max_nprim: c_int, max_l: c_int, precision: c_double, table_dir: *const c_char) -> *mut c_void;
+    pub fn scf_compute_terfc_eri3(eng: *mut c_void, obs: *const c_void, dfbs: *const c_void, shP: c_int, sh1: c_int, sh2: c_int, out: *mut c_double) -> c_int;
+    pub fn scf_compute_terfc_eri2(eng: *mut c_void, dfbs: *const c_void, shP: c_int, shQ: c_int, out: *mut c_double) -> c_int;
     pub fn scf_compute_dipole(
         bs: *const c_void,
         origin: *const c_double,

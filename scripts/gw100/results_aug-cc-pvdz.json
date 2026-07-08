@@ -134,6 +134,17 @@
       "evGW0": 11.294,
       "exp": 11.4
     },
+    "C2H3Br": {
+      "COHSEX": null,
+      "G0W0": 9.165,
+      "G0W0pbe": null,
+      "Koop": null,
+      "dRPA": null,
+      "dSCF": null,
+      "evGW": null,
+      "evGW0": null,
+      "exp": 9.9
+    },
     "C2H3Cl": {
       "COHSEX": 11.016,
       "G0W0": 10.057,
@@ -431,6 +442,17 @@
       "evGW0": null,
       "exp": 11.69
     },
+    "CCuN": {
+      "COHSEX": null,
+      "G0W0": 10.948,
+      "G0W0pbe": null,
+      "Koop": 11.32,
+      "dRPA": null,
+      "dSCF": null,
+      "evGW": null,
+      "evGW0": null,
+      "exp": null
+    },
     "CF4": {
       "COHSEX": 17.574,
       "G0W0": 16.452,
@@ -584,6 +606,17 @@
       "evGW": 8.874,
       "evGW0": 8.9,
       "exp": 9.8
+    },
+    "Cu2": {
+      "COHSEX": null,
+      "G0W0": 7.2,
+      "G0W0pbe": null,
+      "Koop": 6.461,
+      "dRPA": null,
+      "dSCF": null,
+      "evGW": null,
+      "evGW0": null,
+      "exp": 7.46
     },
     "F2": {
       "COHSEX": 17.023,
@@ -992,38 +1025,16 @@
       "evGW0": 10.351,
       "exp": 10.62
     },
-    "C2H3Br": {
-      "COHSEX": null,
-      "G0W0": 9.165,
-      "G0W0pbe": null,
-      "Koop": null,
-      "dRPA": null,
-      "dSCF": null,
-      "evGW": null,
-      "evGW0": null,
-      "exp": 9.9
-    },
-    "CCuN": {
-      "COHSEX": null,
-      "G0W0": 10.948,
-      "G0W0pbe": null,
-      "Koop": 11.32,
-      "dRPA": null,
-      "dSCF": null,
-      "evGW": null,
-      "evGW0": null,
-      "exp": null
-    },
-    "Cu2": {
-      "COHSEX": null,
-      "G0W0": 7.2,
-      "G0W0pbe": null,
-      "Koop": 6.461,
-      "dRPA": null,
-      "dSCF": null,
-      "evGW": null,
-      "evGW0": null,
-      "exp": 7.46
+    "Rb2": {
+      "COHSEX": 4.312,
+      "G0W0": 3.841,
+      "G0W0pbe": 4.095,
+      "Koop": 3.424,
+      "dRPA": -2305.909,
+      "dSCF": -2302.01,
+      "evGW": 3.848,
+      "evGW0": 3.841,
+      "exp": 3.9
     }
   }
 }

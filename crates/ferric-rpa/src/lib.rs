@@ -46,7 +46,7 @@ pub mod sternheimer;
 pub mod sternheimer_sparse;
 pub mod timing;
 
-pub use lanczos::{run_lanczos_seeded, LanczosResult};
+pub use lanczos::{run_lanczos_full_rank, run_lanczos_seeded, LanczosResult};
 pub use rs_mp2_rpa::{rs_mp2_lr_rpa, RsMp2RpaConfig, RsMp2RpaFormulation, RsMp2RpaResult};
 
 use ferric_core::mol::Molecule;
@@ -430,31 +430,24 @@ pub fn run_pdep_rpa_from_intermediates(
             }
         }
         (Eigensolver::Lanczos, None) => {
-            // Lanczos uses the full identity seed, NOT the atom-localized seed.
-            // The atom seed is a Davidson optimization: Davidson grows its
-            // subspace adaptively and recovers from a seed that doesn't span the
-            // dominant dielectric eigenspace, but block-Lanczos is confined to
-            // the Krylov span of its seed — a non-spanning atom seed yields
-            // unphysical ghost Ritz values (ε̃ = I+Π has eigenvalues ≥ 1, yet
-            // the atom-seeded Lanczos produced negatives on small systems),
-            // which broke FD gradients. The identity seed matches Davidson to
-            // machine precision. A properly-spanning reduced Lanczos seed for
-            // large-system scaling is future work.
-            let seed = Array2::<f64>::eye(naux);
-            let block_size = seed.ncols().max(1);
-            let max_iter = (max_vecs / block_size).max(8);
+            // Full-rank identity seed. Block Lanczos with the naux-wide identity
+            // seed collapses to a single dense eigh of A = ε̃(0) = I + Π (the
+            // atom-localized seed is a Davidson-only optimization: Lanczos is
+            // confined to the Krylov span of its seed, and a non-spanning atom
+            // seed produced unphysical negative ghost Ritz values that broke FD
+            // gradients). `run_lanczos_full_rank` reproduces that single-eigh
+            // result exactly, but assembles A in column-panels so the matvec
+            // never materializes the whole naux-wide block at once — the
+            // memory-bound benzene/aTZ jobs (atz-benzene-rpa-memory-bound) drop
+            // from concurrency-1 to concurrency-N per box. Eigenpairs match the
+            // identity-seed Lanczos (hence Davidson) to LAPACK precision.
+            let nov = nocc * nvir;
             let matvec = move |v: &Array2<f64>| -> Array2<f64> {
                 sternheimer::dielectric_apply(
                     v, &b_ov_clone, &eps_occ_clone, &eps_vir_clone, 0.0,
                 )
             };
-            let lz = lanczos::run_lanczos_seeded(
-                seed,
-                matvec,
-                naux,
-                max_iter,
-                config.davidson_conv_thresh,
-            )?;
+            let lz = lanczos::run_lanczos_full_rank(naux, nov, matvec, naux)?;
             davidson::DavidsonResult {
                 eigenvalues: lz.eigenvalues,
                 eigenvectors: lz.eigenvectors,
@@ -620,9 +613,12 @@ pub fn run_u_pdep_rpa(
 
     let davidson_result = match (config.eigensolver, lap_for_solver) {
         (Eigensolver::Lanczos, lap_opt) => {
-            let seed = Array2::eye(naux);
-            let block_size = seed.ncols().max(1);
-            let max_iter = (max_vecs / block_size).max(8);
+            // Full-rank identity seed → single dense eigh of the spin-summed
+            // ε̃_U(0) = I + Π_α + Π_β, assembled in column-panels to cap the
+            // matvec's transient footprint (see run_lanczos_full_rank; closed-
+            // shell arm for the memory rationale). Eigenpairs match the prior
+            // identity-seed Lanczos to LAPACK precision.
+            let nov = inter_a.nocc * inter_a.nvir + inter_b.nocc * inter_b.nvir;
             let lap = lap_opt;
             let matvec = move |v: &Array2<f64>| -> Array2<f64> {
                 let chan_a = channel::RpaChannel::new(&b_a, &ea_o, &ea_v);
@@ -634,9 +630,7 @@ pub fn run_u_pdep_rpa(
                     ),
                 }
             };
-            let lz = lanczos::run_lanczos_seeded(
-                seed, matvec, naux, max_iter, config.davidson_conv_thresh,
-            )?;
+            let lz = lanczos::run_lanczos_full_rank(naux, nov, matvec, naux)?;
             davidson::DavidsonResult {
                 eigenvalues: lz.eigenvalues,
                 eigenvectors: lz.eigenvectors,
