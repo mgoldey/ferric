@@ -9,6 +9,11 @@ pub enum OperatorKind {
     ErfCoulomb,
     /// erfc(omega * r12) / r12 -- short-range attenuated Coulomb.
     ErfcCoulomb,
+    /// terfc(r12, r0) / r12 -- exact "tempered" short-range Coulomb via 2D
+    /// interpolation tables (Dutoi/Goldey). `distance` carries r0, `omega` the
+    /// curvature-constrained 1/(r0*sqrt2). Handled by the standalone table engine,
+    /// not libint2.
+    Terfc,
     /// exp(-omega * r12) / r12 -- Yukawa / screened Coulomb.
     Yukawa,
     /// Contracted Gaussian geminal f12 ≈ Slater geminal -exp(-gamma r12)/gamma.
@@ -79,6 +84,14 @@ impl Operator {
     /// Short-range attenuated Coulomb: erfc(omega * r12) / r12.
     pub fn erfc(omega: f64) -> Self {
         Self::primitive(OperatorKind::ErfcCoulomb, omega, 0.0)
+    }
+
+    /// Exact tempered short-range Coulomb terfc(r12, r0) / r12, evaluated via the
+    /// Dutoi/Goldey 2D interpolation tables. `omega` is fixed by the curvature
+    /// constraint r0 * omega = 1/sqrt(2); `distance` carries r0 (Bohr).
+    pub fn terfc(r0: f64) -> Self {
+        let omega = 1.0 / (r0 * std::f64::consts::SQRT_2);
+        Self::primitive(OperatorKind::Terfc, omega, r0)
     }
 
     /// Slater-type geminal f12 = -exp(-gamma·r12)/gamma, represented as the
