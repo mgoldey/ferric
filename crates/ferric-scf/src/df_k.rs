@@ -114,7 +114,14 @@ impl KBuilder for DfK {
             // its per-P GEMM stack into two wide GEMMs. Block streaming (and its
             // disk IO on the spill path) stays sequential in for_each_block; only
             // the in-memory contraction of the current block fans out.
-            let k_block = (0..b.div_ceil(chunk))
+            // Compute each aux-chunk's K contribution in rayon-parallel, then
+            // collect into a chunk-ordered Vec and sum SEQUENTIALLY. A rayon
+            // `try_reduce` combines partials in a tree whose shape depends on the
+            // worker count, so floating-point non-associativity made the K matrix
+            // (and thus the SCF energy) vary with RAYON_NUM_THREADS by ~µHa.
+            // Collect-then-serial-sum keeps the parallel per-chunk GEMMs but pins
+            // the accumulation order to be thread-independent.
+            let kc_chunks: Vec<Array2<f64>> = (0..b.div_ceil(chunk))
                 .into_par_iter()
                 .map(|ci| -> Result<Array2<f64>, FerricError> {
                     let q0 = ci * chunk;
@@ -148,14 +155,10 @@ impl KBuilder for DfK {
                     general_mat_mul(1.0, &zt_wide, &bt_flat, 0.0, &mut kc);
                     Ok(kc)
                 })
-                .try_reduce(
-                    || Array2::<f64>::zeros((n, n)),
-                    |mut acc, kc| {
-                        acc += &kc;
-                        Ok(acc)
-                    },
-                )?;
-            *k += &k_block;
+                .collect::<Result<Vec<Array2<f64>>, FerricError>>()?;
+            for kc in &kc_chunks {
+                *k += kc;
+            }
             Ok(())
         })?;
         Ok(0)
@@ -210,6 +213,56 @@ mod tests {
         let max_diff: f64 = (&k_df - &k_direct).iter().map(|v| v.abs()).fold(0.0, f64::max);
         // JK-fit basis should give K accurate to ~1e-3 for this small system.
         assert!(max_diff < 5e-3, "DF-K vs direct-K max diff = {} too large", max_diff);
+    }
+
+    #[test]
+    fn df_k_bit_identical_across_thread_counts() {
+        // Regression guard: the aux-chunk accumulation in `build` must be
+        // bit-identical regardless of RAYON_NUM_THREADS. A rayon `try_reduce`
+        // combined partials in a worker-count-dependent tree, so the K matrix
+        // (and hence the SCF energy) drifted ~µHa between thread counts. The
+        // collect-then-serial-sum fix pins the order. Uses several heavy atoms so
+        // the aux dimension spans multiple chunks (making order actually matter).
+        let mol = Molecule::parse_xyz(
+            "3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n",
+            0,
+            1,
+        )
+        .unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let n = obs.nbasis();
+
+        // Dense symmetric density that couples every (P,σ) pair.
+        let mut d = Array2::<f64>::zeros((n, n));
+        for i in 0..n {
+            for j in 0..n {
+                d[(i, j)] = 0.01 * ((i * 7 + j * 3) % 11) as f64;
+            }
+        }
+        let d = 0.5 * (&d + &d.t());
+
+        let build_k = |threads: usize| -> Array2<f64> {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            pool.install(|| {
+                let mut k = Array2::zeros((n, n));
+                let mut dfk = DfK::new(op, &obs, &dfbs, usize::MAX).unwrap();
+                dfk.build(&d, &mut k).unwrap();
+                k
+            })
+        };
+
+        let k1 = build_k(1);
+        let k4 = build_k(4);
+        // Bit-identical: exact equality, not a tolerance.
+        assert_eq!(
+            k1, k4,
+            "DfK build must be bit-identical across thread counts (rayon reduction order leak)"
+        );
     }
 
     #[test]
