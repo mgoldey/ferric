@@ -56,3 +56,7 @@ __pycache__/
 # Promote a file into the permanent record deliberately with `git add -f`.
 scripts/queue/out/
 scripts/**/*.log
+
+# Experimental parking lot: salvaged drivers/probes kept out of the build and
+# out of version control (e.g. c9_driver.rs). Promote deliberately with add -f.
+experimental/
