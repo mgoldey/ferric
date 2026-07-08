@@ -15,7 +15,7 @@ use ferric_integrals::operator::Operator;
 use ferric_mp2::attenuated::{attenuated_ri_mp2, AttenuatedMp2Config};
 use ferric_mp2::laplace::laplace_ri_mp2;
 use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
-use ferric_mp2::scs::{scs_mp2, ScsMp2Config};
+use ferric_mp2::scs::{scs_mp2, scs_mp2_2terfc, ScsMp2Config, ScsMp2TerfcConfig};
 use ferric_scf::ks_gradient::ks_gradient_closed;
 use ferric_scf::optimize::{optimize_geometry, OptimizeConfig};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
@@ -382,6 +382,30 @@ fn run_attenuated_rimp2(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyB
     })
 }
 
+// ── terfc-attenuated RI-MP2 (exact terfc via interpolation tables) ──
+
+/// MP2(terfc): RI-MP2 with the EXACT tempered-erfc operator (Dutoi/Goldey
+/// interpolation tables), a single cutoff `r0` (Å). SCF stays full-Coulomb; only
+/// the MP2 correlation is attenuated. Requires the terfc tables on disk
+/// (FERRIC_TERF_TABLE_DIR). Paper aDZ-optimal r0 = 1.05 Å.
+#[pyfunction]
+#[pyo3(signature = (mol, basis_set, auxbasis, r0=None, frozen_core=None, k_builder=None))]
+fn run_terfc_rimp2(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
+                   r0: Option<f64>, frozen_core: Option<usize>,
+                   k_builder: Option<&str>) -> PyResult<PyRiMp2Result> {
+    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
+    let coul = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(coul, &prep).map_err(make_err)?;
+    let ctx = ParallelContext::default();
+    let rhf = solve_rhf(&ctx, &mol.inner, &prep, coul, &bounds, &rhf_config(k_builder)).map_err(make_err)?;
+    // r0 supplied in Å; convert to Bohr for the operator.
+    let r0_bohr = r0.unwrap_or(1.05) * 1.8897259886;
+    let mp2 = ri_mp2(&mol.inner, &prep, &dfbs, Operator::terfc(r0_bohr), &rhf,
+                      &RiMp2Config { frozen_core: frozen_core.unwrap_or(0) }).map_err(make_err)?;
+    Ok(PyRiMp2Result { total_energy: mp2.total_energy, rhf_energy: rhf.energy, mp2_corr: mp2.mp2_corr })
+}
+
 // ── SCS-MP2 ──
 
 #[pyclass]
@@ -410,6 +434,42 @@ fn run_scs_mp2(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
         frozen_core: frozen_core.unwrap_or(0),
     };
     let r = scs_mp2(&mol.inner, &prep, &dfbs, &rhf, &cfg).map_err(make_err)?;
+    Ok(PyScsMp2Result {
+        total_energy: r.total_energy, rhf_energy: rhf.energy, scs_corr: r.scs_corr,
+        e_os: r.e_os, e_ss: r.e_ss,
+    })
+}
+
+/// SCS-MP2(2terfc): dual-attenuated SCS-MP2 (Goldey, Dutoi, Head-Gordon, PCCP
+/// 2013) using the EXACT terfc operator at two cutoffs `r0_bonded` < `r0_nonbonded`
+/// (Å). E = c_OS·E_OS(r0_1) + c_SS·[E_SS(r0_2) − E_SS(r0_1)]. Requires the terfc
+/// tables (FERRIC_TERF_TABLE_DIR). Paper defaults: r0=0.75/1.05 Å, c_OS=1.27, c_SS=4.05.
+#[pyfunction]
+#[pyo3(signature = (mol, basis_set, auxbasis, r0_bonded=None, r0_nonbonded=None, c_os=None, c_ss=None, frozen_core=None, k_builder=None))]
+#[allow(clippy::too_many_arguments)]
+fn run_scs_mp2_2terfc(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
+                      r0_bonded: Option<f64>, r0_nonbonded: Option<f64>,
+                      c_os: Option<f64>, c_ss: Option<f64>, frozen_core: Option<usize>,
+                      k_builder: Option<&str>) -> PyResult<PyScsMp2Result> {
+    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
+    let coul = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(coul, &prep).map_err(make_err)?;
+    let ctx = ParallelContext::default();
+    let rhf = solve_rhf(&ctx, &mol.inner, &prep, coul, &bounds, &rhf_config(k_builder)).map_err(make_err)?;
+    const ANG2BOHR: f64 = 1.8897259886;
+    let cfg = ScsMp2TerfcConfig {
+        r0_bonded: r0_bonded.unwrap_or(0.75) * ANG2BOHR,
+        r0_nonbonded: r0_nonbonded.unwrap_or(1.05) * ANG2BOHR,
+        c_os: c_os.unwrap_or(1.27), c_ss: c_ss.unwrap_or(4.05),
+        frozen_core: frozen_core.unwrap_or(0),
+    };
+    if cfg.r0_nonbonded <= cfg.r0_bonded {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "r0_nonbonded must be > r0_bonded",
+        ));
+    }
+    let r = scs_mp2_2terfc(&mol.inner, &prep, &dfbs, &rhf, &cfg).map_err(make_err)?;
     Ok(PyScsMp2Result {
         total_energy: r.total_energy, rhf_energy: rhf.energy, scs_corr: r.scs_corr,
         e_os: r.e_os, e_ss: r.e_ss,
@@ -825,7 +885,9 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_optimize, m)?)?;
     m.add_function(wrap_pyfunction!(run_rimp2, m)?)?;
     m.add_function(wrap_pyfunction!(run_attenuated_rimp2, m)?)?;
+    m.add_function(wrap_pyfunction!(run_terfc_rimp2, m)?)?;
     m.add_function(wrap_pyfunction!(run_scs_mp2, m)?)?;
+    m.add_function(wrap_pyfunction!(run_scs_mp2_2terfc, m)?)?;
 
     m.add_function(wrap_pyfunction!(run_laplace_mp2, m)?)?;
     m.add_function(wrap_pyfunction!(run_dft, m)?)?;
