@@ -21,6 +21,7 @@ pub mod screening;
 pub mod qqr;
 pub mod pairs;
 pub mod fock;
+pub mod reduce;
 pub mod direct_j;
 pub mod direct_k;
 pub mod direct_jk;

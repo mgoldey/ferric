@@ -32,7 +32,6 @@ use ferric_integrals::threeindex::coulomb_metric_2c;
 use ndarray::linalg::general_mat_mul;
 use ndarray::{Array2, Array3};
 use ndarray_linalg::{Eigh, UPLO};
-use rayon::prelude::*;
 
 /// DF-K exchange builder. Caches the V^{-1/2}-dressed 3-center source; the
 /// per-chunk repack/GEMM scratch in `build` is allocated per rayon task
@@ -115,15 +114,23 @@ impl KBuilder for DfK {
             // disk IO on the spill path) stays sequential in for_each_block; only
             // the in-memory contraction of the current block fans out.
             // Compute each aux-chunk's K contribution in rayon-parallel, then
-            // collect into a chunk-ordered Vec and sum SEQUENTIALLY. A rayon
-            // `try_reduce` combines partials in a tree whose shape depends on the
-            // worker count, so floating-point non-associativity made the K matrix
-            // (and thus the SCF energy) vary with RAYON_NUM_THREADS by ~µHa.
-            // Collect-then-serial-sum keeps the parallel per-chunk GEMMs but pins
-            // the accumulation order to be thread-independent.
-            let kc_chunks: Vec<Array2<f64>> = (0..b.div_ceil(chunk))
-                .into_par_iter()
-                .map(|ci| -> Result<Array2<f64>, FerricError> {
+            // fold into `k` in strict chunk order. A rayon `try_reduce` combines
+            // partials in a tree whose shape depends on the worker count, so
+            // floating-point non-associativity made the K matrix (and thus the
+            // SCF energy) vary with RAYON_NUM_THREADS by ~µHa. Collecting *all*
+            // per-chunk partials then serial-summing pins the order but holds
+            // (b/chunk)·n²·8 bytes live at once — the DF-K scaling hazard
+            // (~97 GB at 50-atom/aug-cc-pVTZ). `grouped_deterministic_sum`
+            // processes the chunks in byte-budgeted bands, summing each band in
+            // chunk order before the next: same ascending-chunk fold order (so
+            // still bit-identical across thread counts), but the live set is one
+            // band (≤512 MiB), not every chunk.
+            let n_chunks = b.div_ceil(chunk);
+            crate::reduce::grouped_deterministic_sum(
+                k,
+                n_chunks,
+                n,
+                |ci| -> Result<Array2<f64>, FerricError> {
                     let q0 = ci * chunk;
                     let q1 = (q0 + chunk).min(b);
                     let c = q1 - q0;
@@ -154,11 +161,8 @@ impl KBuilder for DfK {
                     let mut kc = Array2::<f64>::zeros((n, n));
                     general_mat_mul(1.0, &zt_wide, &bt_flat, 0.0, &mut kc);
                     Ok(kc)
-                })
-                .collect::<Result<Vec<Array2<f64>>, FerricError>>()?;
-            for kc in &kc_chunks {
-                *k += kc;
-            }
+                },
+            )?;
             Ok(())
         })?;
         Ok(0)
@@ -266,6 +270,51 @@ mod tests {
     }
 
     #[test]
+    fn df_k_bit_identical_across_threads_with_narrow_bands() {
+        // Same guarantee as above, but with a deliberately tiny reduce-band
+        // budget so the two-level grouped_deterministic_sum path actually splits
+        // the aux chunks across several bands. The banding must not perturb the
+        // ascending-chunk fold order, so K stays bit-identical at 1/2/8 threads.
+        let mol = Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n", 0, 1)
+            .unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let dfbs =
+            PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let n = obs.nbasis();
+
+        let mut d = Array2::<f64>::zeros((n, n));
+        for i in 0..n {
+            for j in 0..n {
+                d[(i, j)] = 0.01 * ((i * 7 + j * 3) % 11) as f64;
+            }
+        }
+        let d = 0.5 * (&d + &d.t());
+
+        // One nbf² partial for cc-pVDZ water is ~24² · 8 ≈ 4.6 kB; a 4 kB band
+        // budget forces band width 1 (each aux chunk its own band).
+        std::env::set_var("FERRIC_REDUCE_BAND_BYTES", "4096");
+        let build_k = |threads: usize| -> Array2<f64> {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            pool.install(|| {
+                let mut k = Array2::zeros((n, n));
+                let mut dfk = DfK::new(op, &obs, &dfbs, usize::MAX).unwrap();
+                dfk.build(&d, &mut k).unwrap();
+                k
+            })
+        };
+        let k1 = build_k(1);
+        let k2 = build_k(2);
+        let k8 = build_k(8);
+        std::env::remove_var("FERRIC_REDUCE_BAND_BYTES");
+        assert_eq!(k1, k2, "narrow-band DfK must be bit-identical at 1 vs 2 threads");
+        assert_eq!(k1, k8, "narrow-band DfK must be bit-identical at 1 vs 8 threads");
+    }
+
+    #[test]
     fn df_k_wide_gemm_matches_naive_contraction() {
         // Implementation-equivalence test for the wide-GEMM restructure: the
         // chunked two-wide-GEMM contraction in `build` must reproduce the naive
@@ -318,6 +367,46 @@ mod tests {
             max_diff < 1e-10,
             "wide-GEMM DF-K vs naive per-P contraction max diff = {} too large",
             max_diff
+        );
+    }
+
+    /// Determinism demo, run explicitly at several thread counts:
+    ///   RAYON_NUM_THREADS=N cargo test -p ferric-scf --lib \
+    ///     df_k_scf_energy_determinism_demo -- --ignored --nocapture
+    /// Full DF-JK RHF (water/cc-pVDZ, def2-universal-jkfit) on the AMBIENT rayon
+    /// pool; prints the total energy to 17 significant digits plus its raw f64
+    /// bit pattern. The printed value must be identical at N = 1, 2, 8: DF-J is
+    /// serial GEMM and DF-K is the only rayon reduction in this configuration,
+    /// so this pins the grouped deterministic accumulation end-to-end through a
+    /// real SCF energy.
+    #[test]
+    #[ignore]
+    fn df_k_scf_energy_determinism_demo() {
+        use crate::rhf::{solve_rhf, RhfConfig};
+        let mol = Molecule::parse_xyz(
+            "3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n",
+            0,
+            1,
+        )
+        .unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let ctx = ParallelContext::default();
+        let config = RhfConfig {
+            energy_conv: 1e-12,
+            density_conv: 1e-10,
+            df_j_aux: Some("def2-universal-jkfit".into()),
+            df_k_aux: Some("def2-universal-jkfit".into()),
+            ..Default::default()
+        };
+        let result = solve_rhf(&ctx, &mol, &obs, op, &bounds, &config).unwrap();
+        assert!(result.converged);
+        println!(
+            "DF-JK RHF energy @ {} rayon threads: {:.17e}  bits=0x{:016x}",
+            rayon::current_num_threads(),
+            result.energy,
+            result.energy.to_bits()
         );
     }
 

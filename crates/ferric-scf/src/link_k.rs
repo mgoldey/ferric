@@ -65,8 +65,6 @@ impl<'a, B: Bound> LinkK<'a, B> {
     }
 }
 
-use rayon::prelude::*;
-
 impl<'a, B: Bound + Sync> KBuilder for LinkK<'a, B> {
     fn build(&mut self, d: &Array2<f64>, k: &mut Array2<f64>) -> Result<usize, FerricError> {
         self.ctx.check_interrupted()?;
@@ -106,17 +104,38 @@ impl<'a, B: Bound + Sync> KBuilder for LinkK<'a, B> {
             .map(|(_, p)| p)
             .collect();
 
-        let k_final = ij_pairs
-            .into_par_iter()
-            .fold(
-                || {
-                    let k_local = Array2::zeros(k.raw_dim());
-                    // Bitvec dedup for (cs3, cs4) — size nsh² bits; ish and jsh are fixed per task.
-                    let seen: Vec<u64> = vec![0u64; (nsh * nsh).div_ceil(64)];
-                    Ok((k_local, seen, Vec::<usize>::new(), 0usize))
-                },
-                |acc: Result<_, FerricError>, (ish, jsh)| {
-                    let (mut k_local, mut seen, mut dirty, mut count) = acc?;
+        // Deterministic, memory-bounded reduction (see direct_k / reduce.rs). The
+        // old `fold(..).reduce(..)` tree held one nbf² K partial per work-chunk
+        // and combined them in a worker-count-dependent order. Group the
+        // significant (ish,jsh) pair list, fold each group's quartets serially
+        // into one partial (reusing one `seen`/`dirty` scratch per group), and
+        // sum group partials in strict group order — bit-identical across thread
+        // counts, live set bounded to one byte-budgeted band.
+        // Group partition is a pure function of the pair list (never the thread
+        // count): group boundaries set the floating-point association of the
+        // per-group folds, so a thread-dependent partition would break
+        // bit-identity across RAYON_NUM_THREADS.
+        let n_pairs = ij_pairs.len();
+        let group_size = crate::reduce::deterministic_group_size(n_pairs);
+        let n_groups = n_pairs.div_ceil(group_size);
+        let nbf = self.prep.nbasis();
+        let count_acc = std::sync::atomic::AtomicUsize::new(0);
+
+        let mut k_out = Array2::<f64>::zeros((nbf, nbf));
+        crate::reduce::grouped_deterministic_sum(
+            &mut k_out,
+            n_groups,
+            nbf,
+            |g| -> Result<Array2<f64>, FerricError> {
+                let lo = g * group_size;
+                let hi = (lo + group_size).min(n_pairs);
+                let mut k_local = Array2::<f64>::zeros((nbf, nbf));
+                // Bitvec dedup for (cs3, cs4) — size nsh² bits; ish and jsh are
+                // fixed per pair, so the scratch is reset per pair below.
+                let mut seen: Vec<u64> = vec![0u64; (nsh * nsh).div_ceil(64)];
+                let mut dirty: Vec<usize> = Vec::new();
+                let mut count = 0usize;
+                for &(ish, jsh) in &ij_pairs[lo..hi] {
                     for &w in &dirty { seen[w] = 0; }
                     dirty.clear();
 
@@ -195,21 +214,13 @@ impl<'a, B: Bound + Sync> KBuilder for LinkK<'a, B> {
                         }
                     }
                     });
-                    Ok((k_local, seen, dirty, count))
-                },
-            )
-            .map(|res| res.map(|(k_local, _, _, count)| (k_local, count)))
-            .reduce(
-                || Ok((Array2::zeros(k.raw_dim()), 0usize)),
-                |a, b| {
-                    let (mut k_a, count_a) = a?;
-                    let (k_b, count_b) = b?;
-                    k_a += &k_b;
-                    Ok((k_a, count_a + count_b))
-                },
-            )?;
+                }
+                count_acc.fetch_add(count, std::sync::atomic::Ordering::Relaxed);
+                Ok(k_local)
+            },
+        )?;
 
-        k.assign(&k_final.0);
+        k.assign(&k_out);
 
         #[cfg(feature = "mpi")]
         if let Some(world) = &self.ctx.world {
@@ -222,7 +233,7 @@ impl<'a, B: Bound + Sync> KBuilder for LinkK<'a, B> {
             *k = k_global;
         }
 
-        Ok(k_final.1)
+        Ok(count_acc.load(std::sync::atomic::Ordering::Relaxed))
     }
 
     fn update_density(&mut self, d: &Array2<f64>) {

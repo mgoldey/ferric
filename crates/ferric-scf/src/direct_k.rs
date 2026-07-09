@@ -25,7 +25,6 @@ impl<'a> DirectK<'a> {
 
 impl<'a> KBuilder for DirectK<'a> {
     fn build(&mut self, d: &Array2<f64>, k: &mut Array2<f64>) -> Result<usize, FerricError> {
-        use rayon::prelude::*;
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         let nsh = self.prep.nshells();
@@ -51,9 +50,34 @@ impl<'a> KBuilder for DirectK<'a> {
             self.pool = Some(crate::engine_pool::EnginePool::new(self.bounds.op, self.prep, 1e-14)?);
         }
         let pool = self.pool.as_ref().expect("pool initialized above");
-        let total_k = pairs_for_this_rank.into_par_iter().fold(
-            || (Array2::zeros(k.raw_dim()), 0usize),
-            |(mut local_k, mut local_count), (s1, s2)| {
+
+        // Deterministic, memory-bounded reduction. The old rayon
+        // `fold(..).reduce(..)` tree combined one nbf² partial per work-chunk in
+        // a worker-count-dependent order (both non-deterministic across thread
+        // counts AND unbounded: ~10.8 GB at 50-atom/aug-cc-pVTZ, 32 threads).
+        // Instead, partition the bra-pair list into fixed-size GROUPS, fold each
+        // group's quartets serially into one partial (parallel across groups),
+        // and sum the group partials in strict group order via
+        // `grouped_deterministic_sum`. Group order is thread-count-independent,
+        // so K is bit-identical across RAYON_NUM_THREADS; the live set is one
+        // byte-budgeted band of partials, not one-per-chunk.
+        let pairs = &pairs_for_this_rank;
+        let n_pairs = pairs.len();
+        // Group partition is a pure function of the pair list (never the thread
+        // count): group boundaries set the floating-point association of the
+        // per-group folds, so a thread-dependent partition would break
+        // bit-identity across RAYON_NUM_THREADS. Memory is bounded separately by
+        // the reduce helper's band width, not by the group count.
+        let group_size = crate::reduce::deterministic_group_size(n_pairs);
+        let n_groups = n_pairs.div_ceil(group_size);
+        let nbf = self.prep.nbasis();
+
+        crate::reduce::grouped_deterministic_sum(k, n_groups, nbf, |g| {
+            let lo = g * group_size;
+            let hi = (lo + group_size).min(n_pairs);
+            let mut local_k = Array2::<f64>::zeros((nbf, nbf));
+            let mut local_count = 0usize;
+            for &(s1, s2) in &pairs[lo..hi] {
                 let b12 = self.bounds.q[(s1, s2)];
                 let (n1, n2) = (dims[s1], dims[s2]);
                 let (o1, o2) = (offs[s1], offs[s2]);
@@ -102,20 +126,10 @@ impl<'a> KBuilder for DirectK<'a> {
                         if computed { local_count += 1; }
                     }
                 }
-                (local_k, local_count)
             }
-        ).map(|(local_k, count)| {
-            computed_quartets.fetch_add(count, Ordering::Relaxed);
-            local_k
-        }).reduce(
-            || Array2::zeros(k.raw_dim()),
-            |mut acc, next| {
-                acc += &next;
-                acc
-            }
-        );
-
-        *k += &total_k;
+            computed_quartets.fetch_add(local_count, Ordering::Relaxed);
+            Ok(local_k)
+        })?;
 
         #[cfg(feature = "mpi")]
         if let Some(world) = &self.ctx.world {
