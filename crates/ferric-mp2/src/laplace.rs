@@ -31,11 +31,32 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_quadrature::LaplaceQuadrature;
 use ferric_scf::ScfResult;
-use ndarray::{Array1, Array2};
+use ndarray::Array2;
 
 use crate::rimp2::active_occ;
 use crate::boys::{boys_localize, build_domains, build_pseudo_density_occ_sparse,
                   build_pseudo_density_vir_sparse};
+
+/// Effective per-task memory budget for the quadrature-point closures.
+///
+/// The J and K terms both allocate large per-point intermediates INSIDE the
+/// `par_iter` over quadrature points, so every resident buffer is multiplied by
+/// the number of rayon worker threads. We derive a per-task ceiling by dividing
+/// the process-wide 3-index budget (`FERRIC_ERI3_BUDGET_GB`, else unlimited) by
+/// the active thread count, then reserve a fraction of that for the blocked
+/// intermediates. Falls back to a fixed default when the budget is unlimited so
+/// the blocking still bounds a single point's footprint.
+fn per_task_budget_bytes() -> usize {
+    // Default per-task ceiling when no explicit process budget is set. 512 MiB
+    // is generous for the (naux, nbas²)-panel intermediates yet still forces
+    // blocking at the nbf=900/naux=2200 scale (a full-width buffer is 14 GB).
+    const DEFAULT_PER_TASK: usize = 512 * 1024 * 1024;
+    let threads = rayon::current_num_threads().max(1);
+    match ferric_integrals::three_index_source::env_budget_bytes() {
+        usize::MAX => DEFAULT_PER_TASK,
+        total => (total / threads).max(64 * 1024 * 1024),
+    }
+}
 
 /// Row-sparse representation of a B^P slice (nbas × nbas matrix).
 ///
@@ -65,13 +86,20 @@ impl SparseBSlice {
         Self { rows, nbas }
     }
 
-    /// Compute M = self @ rhs (dense nbas×nbas), return as flattened row-major Vec.
+    /// Compute rows [m0, m1) of M = self @ rhs (dense) into `out`, which must be
+    /// exactly (m1-m0)*nbas long, row-major over (μ∈[m0,m1), ν).
     /// Output M[μ,ν] = Σ_{σ∈nnz(row μ)} B^P_{μσ} rhs_{σν}.
-    fn mat_mul_flat(&self, rhs: &Array2<f64>) -> Vec<f64> {
+    ///
+    /// `out` is caller-provided and MUST be zeroed for the columns this fills
+    /// (this method overwrites, not accumulates) — we zero it here so panel
+    /// buffers can be reused across μ-panels without a separate clear.
+    fn mat_mul_flat_rows(&self, rhs: &Array2<f64>, m0: usize, m1: usize, out: &mut [f64]) {
         let nbas = self.nbas;
-        let mut out = vec![0.0f64; nbas * nbas];
-        for (mu, (cols, vals)) in self.rows.iter().enumerate() {
-            let out_row = &mut out[mu * nbas..(mu + 1) * nbas];
+        debug_assert_eq!(out.len(), (m1 - m0) * nbas);
+        out.fill(0.0);
+        for mu in m0..m1 {
+            let (cols, vals) = &self.rows[mu];
+            let out_row = &mut out[(mu - m0) * nbas..(mu - m0 + 1) * nbas];
             for (&nu, &b_val) in cols.iter().zip(vals.iter()) {
                 let rhs_row = rhs.row(nu as usize);
                 for (&r, o) in rhs_row.iter().zip(out_row.iter_mut()) {
@@ -79,7 +107,31 @@ impl SparseBSlice {
                 }
             }
         }
-        out
+    }
+
+    /// Compute rows [m0, m1) of (rhs · Bᵀ) into `out` ((m1-m0)*nbas long, row-major):
+    /// out[μ,ν] = Σ_{σ∈nnz(B row ν)} rhs_{μσ} B_{νσ}.
+    ///
+    /// With a SYMMETRIC `rhs` (the pseudo-densities P(t)/Q(t) are symmetric by
+    /// construction), this equals the transposed slab (B·rhs)ᵀ[μ∈[m0,m1), ν] —
+    /// i.e. N^Q[ν, μ] laid out with μ as the panel row, which is exactly the
+    /// pairing the J-term trace Tr(M^P·N^Q) = Σ_μν M^P_μν N^Q_νμ needs.
+    fn mat_mul_t_rows(&self, rhs: &Array2<f64>, m0: usize, m1: usize, out: &mut [f64]) {
+        let nbas = self.nbas;
+        debug_assert_eq!(out.len(), (m1 - m0) * nbas);
+        for mu in m0..m1 {
+            let rhs_row = rhs.row(mu);
+            let rhs_row = rhs_row.as_slice().expect("pseudo-density rows are contiguous");
+            let out_row = &mut out[(mu - m0) * nbas..(mu - m0 + 1) * nbas];
+            for (nu, o) in out_row.iter_mut().enumerate() {
+                let (cols, vals) = &self.rows[nu];
+                let mut acc = 0.0f64;
+                for (&sigma, &v) in cols.iter().zip(vals.iter()) {
+                    acc += rhs_row[sigma as usize] * v;
+                }
+                *o = acc;
+            }
+        }
     }
 }
 
@@ -108,7 +160,13 @@ pub struct LaplaceMp2Result {
 ///
 /// The contraction `Σ Y[Pi,Qj]·Y[Pj,Qi]` swaps the occupied indices *within*
 /// each `(P,Q)` block, so it is evaluated per `nocc×nocc` sub-block of `Y`.
-fn laplace_exchange_energy(b_t: &Array2<f64>, naux: usize, nocc: usize, nvir: usize) -> f64 {
+fn laplace_exchange_energy(
+    b_t: &Array2<f64>,
+    naux: usize,
+    nocc: usize,
+    nvir: usize,
+    budget_bytes: usize,
+) -> f64 {
     // X[(P,i), a]: same buffer as b_t, reinterpreted (naux*nocc) × nvir.
     let x = b_t
         .view()
@@ -116,12 +174,15 @@ fn laplace_exchange_energy(b_t: &Array2<f64>, naux: usize, nocc: usize, nvir: us
         .expect("b_t is contiguous (naux, nocc*nvir)");
     let rows = naux * nocc;
 
-    // Block the leading (P,i) index, capping the Y_blk intermediate at ~64 MiB.
-    // Block rows are whole P's (multiples of nocc) because the occupied-swap
-    // contraction needs the full (P,Q) nocc×nocc sub-block inside one Y_blk.
-    const TARGET_BYTES: usize = 64 * 1024 * 1024;
-    let block_rows = (TARGET_BYTES / (rows.max(1) * 8)).clamp(nocc.max(1), rows);
-    let block_p = (block_rows / nocc.max(1)).max(1);
+    // The intermediate `y_blk = x_blk.dot(&x.t())` has shape
+    // (block_p*nocc) × (naux*nocc), so its true footprint is
+    //   block_p * nocc * (naux*nocc) * 8  =  block_rows × (naux·nocc) × 8.
+    // Choose block_p (whole P's — the occupied-swap contraction needs the full
+    // (P,Q) nocc×nocc sub-block inside one Y_blk) so that footprint fits the
+    // per-task budget, clamped to [1, naux].
+    // Bytes contributed to y_blk by one P of the block = nocc rows × ncol cols × 8.
+    let row_bytes = rows.max(1) * nocc.max(1) * 8;
+    let block_p = (budget_bytes / row_bytes.max(1)).clamp(1, naux.max(1));
 
     (0..naux)
         .step_by(block_p)
@@ -303,17 +364,22 @@ impl LaplaceMp2 {
         let c_occ = c.slice(ndarray::s![.., frozen_core..nocc_total]).to_owned();
         let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
 
-        // 1. Get (P|ia) RI amplitudes
+        // 1. Get (P|ia) RI amplitudes. The raw AO 3-index tensor is generated in
+        // budget-sized aux blocks and transformed to MO immediately
+        // (bit-identical to the dense eri3_tensor + transform_3center_ov path),
+        // so the naux·nbas² AO tensor is never materialized here.
         let v2c = ferric_integrals::threeindex::coulomb_metric_2c(op, dfbs)?;
         let v_inv_sqrt = crate::rimp2::cholesky_inverse_sqrt(&v2c)?;
-        let eri3_ao = ferric_integrals::threeindex::eri3_tensor(op, obs, dfbs)?;
-        let eri3_mo = crate::mo_transform::transform_3center_ov(&eri3_ao, &c_occ, &c_vir);
+        let eri3_mo = crate::rimp2::eri3_mo_ov_blocked(
+            op, obs, dfbs, &c_occ, &c_vir, crate::rimp2::eri3_budget_bytes(),
+        )?;
         let b_flat = v_inv_sqrt.dot(&eri3_mo.into_shape_with_order((naux, nocc * nvir)).unwrap());
 
         // Hoist per-orbital energies: only the diagonal τ-scaling depends on the
         // quadrature point, `b_flat` (geometry/basis) is constant.
         let occ_scale: Vec<f64> = (0..nocc).map(|i| eps[frozen_core + i]).collect();
         let vir_scale: Vec<f64> = (0..nvir).map(|a| eps[nocc_total + a]).collect();
+        let k_budget = per_task_budget_bytes();
 
         // 2. Parallel quadrature over points
         let e_corr: f64 = self.points.par_iter().zip(self.weights.par_iter()).map(|(&t, &w)| {
@@ -325,7 +391,7 @@ impl LaplaceMp2 {
             let e_coul = j_mat.iter().map(|&x| x * x).sum::<f64>();
 
             // Exchange: single blocked wide GEMM instead of the dense (naux·nocc)² Gram.
-            let e_exch = laplace_exchange_energy(&b_t, naux, nocc, nvir);
+            let e_exch = laplace_exchange_energy(&b_t, naux, nocc, nvir, k_budget);
 
             -w * (2.0 * e_coul - e_exch)
         }).sum();
@@ -367,6 +433,27 @@ impl LaplaceMp2 {
         self.init_quadrature(ymin, ymax);
 
         // Build RI-fitted 3-center integrals: b_ao[P, μ, ν] = Σ_Q V^{-1/2}_{PQ} (Q|μν)
+        //
+        // NOTE: the AO J term random-accesses `b_sparse[P]` for every P at every
+        // quadrature point (points are the parallel axis), so the dressed 3-index
+        // tensor must be held resident — a streaming ThreeIndexSource would force
+        // re-reading the whole tensor per point or serializing the quadrature.
+        // We therefore keep it dense and fail fast if it would not fit the budget,
+        // rather than silently allocating a ~14 GB tensor per process. (The former
+        // per-point 28.5 GB J-term buffers are what the μ-panel blocking below
+        // eliminates; this resident tensor is the irreducible O(naux·nbas²) cost.)
+        {
+            let dense_bytes = naux.saturating_mul(nbas).saturating_mul(nbas).saturating_mul(8);
+            let budget = ferric_integrals::three_index_source::env_budget_bytes();
+            if dense_bytes > budget {
+                return Err(FerricError::General(format!(
+                    "laplace-MP2 AO path needs a resident dressed 3-index tensor of \
+                     {:.2} GB (naux={naux}, nbas={nbas}) but FERRIC_ERI3_BUDGET_GB caps \
+                     it at {:.2} GB. Raise the budget or use compute_mo.",
+                    dense_bytes as f64 / 1e9, budget as f64 / 1e9,
+                )));
+            }
+        }
         let v2c = ferric_integrals::threeindex::coulomb_metric_2c(op, dfbs)?;
         let v_inv_sqrt = crate::rimp2::cholesky_inverse_sqrt(&v2c)?;
         let eri3_ao = ferric_integrals::threeindex::eri3_tensor(op, obs, dfbs)?;
@@ -412,9 +499,27 @@ impl LaplaceMp2 {
         // MO-basis integrals for K: b_mo[P, i*nvir+a] = (P|ia). Hoisted — constant
         // across quadrature points; only the diagonal τ-scaling depends on t.
         let eri3_mo = crate::mo_transform::transform_3center_ov(&b_ao, &c_occ, &c_vir);
+        // b_ao's last use is the MO transform above; free the dense (naux, nbas²)
+        // tensor now instead of holding it across the whole quadrature loop next
+        // to b_sparse (which duplicates its significant entries).
+        drop(b_ao);
         let b_mo_flat = eri3_mo.into_shape_with_order((naux, nocc * nvir)).unwrap();
         let occ_scale: Vec<f64> = (0..nocc).map(|i| eps[frozen_core + i]).collect();
         let vir_scale: Vec<f64> = (0..nvir).map(|a| eps[nocc_total + a]).collect();
+
+        // Per-task memory ceiling. Both the J-term panels and the K-term Gram
+        // are allocated INSIDE the per-point par_iter, so every buffer is
+        // multiplied by the active rayon thread count — the budget is already
+        // divided by that count in per_task_budget_bytes().
+        let task_budget = per_task_budget_bytes();
+        // J-term panel width over the μ (leading AO) axis. Each open μ-row of the
+        // M and N panels is (naux · nbas · 8) bytes; hold two panels (M, N), so
+        //   block_mu · naux · nbas · 8 · 2 ≤ task_budget.
+        // Blocking over μ keeps the P and Q (aux) axes full so the Gram
+        //   J[P,Q] = Σ_μν M^P_μν N^Q_μν = Σ_{μ-panel} Σ_ν M_panel N_panel^T
+        // accumulates exactly across panels. Clamp to [1, nbas].
+        let mu_row_bytes = naux.max(1) * nbas.max(1) * 8 * 2;
+        let block_mu = (task_budget / mu_row_bytes.max(1)).clamp(1, nbas.max(1));
 
         // Parallel over quadrature points — each point is independent.
         // Inner BLAS calls use multithreaded DGEMM; no nested rayon.
@@ -432,22 +537,39 @@ impl LaplaceMp2 {
                 (pt, qt)
             };
 
-            // M^P = B^P_sparse @ P,  N^P = B^P_sparse @ Q
-            // Pack into (naux, nbas²) buffers for the final J = M @ N^T DGEMM.
-            let mut m_buf = Array2::<f64>::zeros((naux, nbas * nbas));
-            let mut n_t_buf = Array2::<f64>::zeros((naux, nbas * nbas));
-            for p in 0..naux {
-                let ms = b_sparse[p].mat_mul_flat(&pt);
-                let ns = b_sparse[p].mat_mul_flat(&qt);
-                m_buf.row_mut(p).assign(&Array1::from(ms));
-                // Transpose N^P when packing: n_t_buf[p, ν*nbas+μ] = N^P[μ,ν]
-                for mu in 0..nbas {
-                    for nu in 0..nbas {
-                        n_t_buf[(p, nu * nbas + mu)] = ns[mu * nbas + nu];
-                    }
+            // J[P,Q] = Tr(M^P·N^Q) = Σ_μ Σ_ν M^P_μν N^Q_νμ, with M^P = B^P·P(t),
+            // N^Q = B^Q·Q(t). Block the μ axis: for each μ-panel [m0,m1), build the
+            // (naux, pw·nbas) slabs
+            //   m_panel[P, μν] = M^P[μ, ν]          (rows of B^P·P)
+            //   n_panel[Q, μν] = N^Q[ν, μ]          (transposed slab, via Q(t)·B^Qᵀ
+            //                                        with Q(t) symmetric)
+            // and accumulate their Gram into j_mat — the shared μν column index then
+            // realizes exactly the μ↔ν-swapped trace pairing of the old full-width
+            // n_t_buf packing. This bounds the per-task footprint to
+            // block_mu·naux·nbas·8·2 instead of the old (naux, nbas²) full-width
+            // buffers (naux·nbas²·8 each — ~14 GB at nbf=900/naux=2200, ×2 ×threads
+            // inside the par_iter).
+            let mut j_mat = Array2::<f64>::zeros((naux, naux));
+            let mut m0 = 0;
+            while m0 < nbas {
+                let m1 = (m0 + block_mu).min(nbas);
+                let pw = m1 - m0; // panel width in μ rows
+                // Panel buffers sized exactly pw·nbas so each Array2 row is
+                // contiguous (needed for as_slice_mut in the sparse fill methods).
+                let mut m_panel = Array2::<f64>::zeros((naux, pw * nbas));
+                let mut n_panel = Array2::<f64>::zeros((naux, pw * nbas));
+                for p in 0..naux {
+                    // Sparse B^P times the dense pseudo-densities, restricted to the
+                    // μ rows in this panel (avoids materializing the full nbas² row).
+                    b_sparse[p].mat_mul_flat_rows(&pt, m0, m1,
+                        m_panel.row_mut(p).as_slice_mut().unwrap());
+                    b_sparse[p].mat_mul_t_rows(&qt, m0, m1,
+                        n_panel.row_mut(p).as_slice_mut().unwrap());
                 }
+                // j_mat += M_panel · N_panelᵀ: Σ_{μ∈panel,ν} M^P[μ,ν]·N^Q[ν,μ]
+                j_mat += &m_panel.dot(&n_panel.t());
+                m0 = m1;
             }
-            let j_mat = m_buf.dot(&n_t_buf.t());
             let e_os_k: f64 = j_mat.iter().map(|&x| x * x).sum();
 
             // --- K term in MO basis ---
@@ -456,7 +578,7 @@ impl LaplaceMp2 {
             // (Y = X Xᵀ, X = b_t viewed as (naux·nocc)×nvir) instead of the
             // naux² tiny nocc×nocc GEMMs the previous loop used.
             let b_t = weighted_b_mo(&b_mo_flat, &occ_scale, &vir_scale, nocc, nvir, t);
-            let e_exch_k = laplace_exchange_energy(&b_t, naux, nocc, nvir);
+            let e_exch_k = laplace_exchange_energy(&b_t, naux, nocc, nvir, task_budget);
 
             let e_ss_k = e_os_k - e_exch_k;
             (-w * e_os_k, -w * e_ss_k)
