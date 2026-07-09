@@ -13,7 +13,6 @@
 //! which includes both the 1-PDM/Fock terms and the 2-electron integral
 //! response terms from the MO integral derivatives.
 
-use crate::mo_transform::transform_3center_ov;
 use crate::rimp2::{active_occ, cholesky_inverse_sqrt};
 use ferric_core::mol::Molecule;
 use ferric_core::orbitals::OrbitalSpace;
@@ -21,6 +20,7 @@ use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::oneelectron;
 use ferric_integrals::operator::Operator;
+use ferric_integrals::three_index_source::{env_budget_bytes, ThreeIndexSource};
 use ferric_integrals::threeindex;
 use ferric_scf::diis::Diis;
 use ferric_scf::rhf::build_jk;
@@ -28,6 +28,7 @@ use ferric_scf::ScfResult;
 use ferric_scf::screening::SchwarzBounds;
 use ndarray::{Array2, Array3};
 use ndarray_linalg::Solve;
+use std::cell::RefCell;
 
 /// Configuration for OO-RI-MP2.
 #[derive(Debug, Clone)]
@@ -85,26 +86,60 @@ pub struct OoRiMp2Result {
 /// AO-side invariants for OO-RI-MP2, built once and reused across every
 /// orbital-rotation iteration. These depend only on `(obs, dfbs, op)` — not on
 /// the MO coefficients — so rebuilding them per iteration (and per line-search
-/// backtrack) was pure waste. Keeping the `(naux, nao, nao)` AO 3-index tensor
-/// resident costs the same peak memory as one build.
+/// backtrack) was pure waste.
+///
+/// The `(naux, nao, nao)` AO 3-index tensor is served through a
+/// memory-budgeted [`ThreeIndexSource`] (`FERRIC_ERI3_BUDGET_GB`): in-core when
+/// it fits the budget (identical to the old resident `Array3`), disk-spilled in
+/// aux-blocks when it does not. Consumers pull raw aux-blocks via
+/// `for_each_block` and dress each block with `V^{-1/2}` on the fly, so the peak
+/// resident 3-index footprint is one aux-block, not the full tensor.
+///
+/// `RefCell` gives the `for_each_block` iterator the `&mut` it needs (disk seek
+/// + scratch reuse) while `OoRiMp2AoTensors` is shared as `&self` across the
+/// hot orbital-optimization loop. Borrows are non-overlapping (each transform
+/// takes the borrow, streams, drops it), so no runtime borrow conflict arises.
 pub struct OoRiMp2AoTensors {
     /// V^{-1/2}, shape (naux, naux).
     pub v2c_inv_sqrt: Array2<f64>,
-    /// AO 3-center integrals (P|mu nu), shape (naux, nao, nao).
-    pub eri3_ao: Array3<f64>,
+    /// Budget-aware raw AO 3-center integral source (P|mu nu), (naux, nao, nao).
+    pub eri3_ao: RefCell<ThreeIndexSource>,
+    naux: usize,
+    nao: usize,
 }
 
 impl OoRiMp2AoTensors {
-    /// Build the AO-side invariants once.
+    /// Build the AO-side invariants once, budget from `FERRIC_ERI3_BUDGET_GB`.
     pub fn build(
         obs: &PreparedBasis,
         dfbs: &PreparedBasis,
         op: Operator,
     ) -> Result<Self, FerricError> {
+        Self::build_with_budget(obs, dfbs, op, env_budget_bytes())
+    }
+
+    /// Build with an explicit resident-bytes budget for the raw 3-index tensor.
+    pub fn build_with_budget(
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        op: Operator,
+        budget_bytes: usize,
+    ) -> Result<Self, FerricError> {
         let v2c = threeindex::coulomb_metric_2c(op, dfbs)?;
         let v2c_inv_sqrt = cholesky_inverse_sqrt(&v2c)?;
-        let eri3_ao = threeindex::eri3_tensor(op, obs, dfbs)?;
-        Ok(Self { v2c_inv_sqrt, eri3_ao })
+        let src = ThreeIndexSource::build(op, obs, dfbs, budget_bytes)?;
+        let naux = src.naux();
+        let nao = src.nao();
+        Ok(Self { v2c_inv_sqrt, eri3_ao: RefCell::new(src), naux, nao })
+    }
+
+    /// Number of auxiliary basis functions (rows of the 3-index tensor).
+    pub fn naux(&self) -> usize {
+        self.naux
+    }
+    /// Number of AO basis functions.
+    pub fn nao(&self) -> usize {
+        self.nao
     }
 }
 
@@ -122,32 +157,68 @@ pub fn compute_b_full_mo(
     c: &Array2<f64>,
 ) -> Result<Array3<f64>, FerricError> {
     let ao = OoRiMp2AoTensors::build(obs, dfbs, op)?;
-    Ok(compute_b_full_mo_with(&ao, c))
+    compute_b_full_mo_with(&ao, c)
 }
+
+/// Aux-row chunk for the streamed MO transform + metric dressing. Caps the
+/// MO-transformed transient at `MO_CHUNK · width · 8` bytes regardless of the
+/// raw source's block size (the in-core backend serves one block spanning all
+/// of naux, which would otherwise reintroduce a full-size transient). 256 keeps
+/// the dressing GEMM's inner dimension wide (k = 256) while bounding the panel.
+const MO_CHUNK: usize = 256;
 
 /// Full-MO 3-center B tensor from pre-built AO invariants.
 ///
-/// The MO transform is per-P BLAS3: half = (B^P_AO)·C, then eri3_mo = C^T·half,
-/// replacing the former scalar quadruple loops.
-pub fn compute_b_full_mo_with(ao: &OoRiMp2AoTensors, c: &Array2<f64>) -> Array3<f64> {
-    let naux = ao.eri3_ao.shape()[0];
+/// Memory: streams raw AO aux-blocks from the budgeted [`ThreeIndexSource`],
+/// MO-transforms them in chunks of at most [`MO_CHUNK`] aux rows (BLAS3:
+/// half = (B^Q_AO)·C, then C^T·half), and dresses each chunk into the output
+/// with `V^{-1/2}` on the fly. The output `(naux, nmo, nmo)` tensor is
+/// allocated once; the transient is one `(≤MO_CHUNK, nmo²)` panel. This removes
+/// the former 2× peak (the resident full `eri3_mo` AND its `b_flat` copy held
+/// simultaneously during the metric GEMM).
+///
+/// Exactness: `b_full[P,p,q] = Σ_Q V^{-1/2}[P,Q] · (C^T (Q|μν) C)[p,q]`, the
+/// same contraction as before — reordered, not approximated.
+pub fn compute_b_full_mo_with(
+    ao: &OoRiMp2AoTensors,
+    c: &Array2<f64>,
+) -> Result<Array3<f64>, FerricError> {
+    let naux = ao.naux();
     let nmo = c.ncols();
 
-    // Full MO transform per aux P: eri3_mo[P] = C^T · (B^P_AO · C)  (BLAS3).
-    let mut eri3_mo = Array3::zeros((naux, nmo, nmo));
-    for p in 0..naux {
-        let bp_ao = ao.eri3_ao.slice(ndarray::s![p, .., ..]);
-        let half = bp_ao.dot(c); // (nao, nmo)
-        let bp_mo = c.t().dot(&half); // (nmo, nmo)
-        eri3_mo.slice_mut(ndarray::s![p, .., ..]).assign(&bp_mo);
-    }
-
-    // Apply V^{-1/2}: B^P_{pq} = sum_Q V^{-1/2}_{PQ} (Q|pq)
-    let eri3_flat = eri3_mo
-        .into_shape_with_order((naux, nmo * nmo))
-        .unwrap();
-    let b_flat = ao.v2c_inv_sqrt.dot(&eri3_flat);
-    b_flat.into_shape_with_order((naux, nmo, nmo)).unwrap()
+    let mut b_full = Array3::<f64>::zeros((naux, nmo, nmo));
+    let m = &ao.v2c_inv_sqrt;
+    ao.eri3_ao.borrow_mut().for_each_block(|blk| {
+        let qb = blk.data.shape()[0];
+        let mut q0 = 0;
+        while q0 < qb {
+            let q1 = (q0 + MO_CHUNK).min(qb);
+            let qc = q1 - q0;
+            // MO-transform this chunk: mo[q,p,r] = C^T (Q|μν) C  (BLAS3 per q).
+            let mut mo_blk = Array2::<f64>::zeros((qc, nmo * nmo));
+            for q in 0..qc {
+                let bq_ao = blk.data.slice(ndarray::s![q0 + q, .., ..]);
+                let half = bq_ao.dot(c); // (nao, nmo)
+                let bq_mo = c.t().dot(&half); // (nmo, nmo)
+                mo_blk
+                    .slice_mut(ndarray::s![q, ..])
+                    .assign(&bq_mo.into_shape_with_order(nmo * nmo).unwrap());
+            }
+            // Dress into every output aux row, accumulating IN PLACE (beta=1):
+            //   b_full[:, p, q] += V^{-1/2}[:, Qchunk] · mo_blk.
+            // general_mat_mul writes straight into b_full — no (naux, nmo²)
+            // `contrib` allocation, which would itself be a second full copy.
+            let msub = m.slice(ndarray::s![.., blk.p0 + q0..blk.p0 + q1]);
+            let mut b_flat = b_full
+                .view_mut()
+                .into_shape_with_order((naux, nmo * nmo))
+                .unwrap();
+            ndarray::linalg::general_mat_mul(1.0, &msub, &mo_blk, 1.0, &mut b_flat);
+            q0 = q1;
+        }
+        Ok(())
+    })?;
+    Ok(b_full)
 }
 
 /// Compute the RI-MP2 energy for a given set of MO coefficients.
@@ -162,19 +233,41 @@ fn compute_rimp2_with_orbitals(
     orb: &OrbitalSpace,
 ) -> Result<(f64, Array2<f64>), FerricError> {
     let OrbitalSpace { nocc, nocc_total, first_occ, nvir } = *orb;
-    let naux = ao.eri3_ao.shape()[0];
+    let naux = ao.naux();
 
     let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
     let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
 
-    // MO transform -> (P|ia)
-    let eri3_mo = transform_3center_ov(&ao.eri3_ao, &c_occ, &c_vir);
-
-    // B^P_{ia} = sum_Q (P|Q)^{-1/2} (Q|ia)
-    let eri3_flat = eri3_mo
-        .into_shape_with_order((naux, nocc * nvir))
-        .unwrap();
-    let b_flat = ao.v2c_inv_sqrt.dot(&eri3_flat); // (naux, nocc*nvir)
+    // MO transform (P|μν) -> (P|ia) and dress with V^{-1/2} on the fly, streaming
+    // raw AO aux-blocks in ≤MO_CHUNK-row chunks.
+    //   b_flat[P, ia] = Σ_Q V^{-1/2}[P,Q] (C_occ^T (Q|μν) C_vir)[ia]
+    // The dressing GEMM accumulates in place (beta=1); the peak transient is one
+    // (≤MO_CHUNK, nocc·nvir) MO panel, never a second full-size copy.
+    let nov = nocc * nvir;
+    let mut b_flat = Array2::<f64>::zeros((naux, nov));
+    let m = &ao.v2c_inv_sqrt;
+    ao.eri3_ao.borrow_mut().for_each_block(|blk| {
+        let qb = blk.data.shape()[0];
+        let mut q0 = 0;
+        while q0 < qb {
+            let q1 = (q0 + MO_CHUNK).min(qb);
+            let qc = q1 - q0;
+            let mut mo_blk = Array2::<f64>::zeros((qc, nov));
+            for q in 0..qc {
+                let bq_ao = blk.data.slice(ndarray::s![q0 + q, .., ..]);
+                // (P|ia) = C_occ^T (Q|μν) C_vir
+                let tmp = bq_ao.dot(&c_vir); // (nao, nvir)
+                let bq_mo = c_occ.t().dot(&tmp); // (nocc, nvir)
+                mo_blk
+                    .slice_mut(ndarray::s![q, ..])
+                    .assign(&bq_mo.into_shape_with_order(nov).unwrap());
+            }
+            let msub = m.slice(ndarray::s![.., blk.p0 + q0..blk.p0 + q1]);
+            ndarray::linalg::general_mat_mul(1.0, &msub, &mo_blk, 1.0, &mut b_flat);
+            q0 = q1;
+        }
+        Ok(())
+    })?;
 
     // MP2 energy via i-blocked wide GEMMs (same path as the main RI-MP2 lane).
     let sc = crate::rimp2::spin_components_from_b_ov(
@@ -387,6 +480,33 @@ fn compute_orbital_gradient(
     first_occ: usize,
     nocc_total: usize,
 ) -> Array2<f64> {
+    // VVOV panel width from the resident-bytes budget: one c-value costs
+    // nvir·nocc·nvir·8 bytes of VVOV rows. Unset budget = one full-width panel
+    // (bit-identical to the former unblocked path).
+    let nov = nocc * nvir;
+    let row_bytes = nvir.saturating_mul(nov).saturating_mul(8).max(1);
+    let panel_c = (env_budget_bytes() / row_bytes).max(1).min(nvir.max(1));
+    compute_orbital_gradient_panelled(
+        f_mo, t2, b_full, nocc, nvir, first_occ, nocc_total, panel_c,
+    )
+}
+
+/// [`compute_orbital_gradient`] with an explicit VVOV c-panel width. The
+/// panelled evaluation is exact for any `panel_c >= 1` — panels change memory
+/// shape only, never the contraction. Split out so tests can force multi-panel
+/// execution regardless of the environment budget.
+// Orbital-space sizes plus the panel width are all irreducibly distinct.
+#[allow(clippy::too_many_arguments)]
+fn compute_orbital_gradient_panelled(
+    f_mo: &Array2<f64>,
+    t2: &[f64],
+    b_full: &Array3<f64>,
+    nocc: usize,
+    nvir: usize,
+    first_occ: usize,
+    nocc_total: usize,
+    panel_c: usize,
+) -> Array2<f64> {
     let naux = b_full.shape()[0];
     let nov = nocc * nvir;
 
@@ -418,13 +538,18 @@ fn compute_orbital_gradient(
         }
     }
 
-    // Dense MO-ERI blocks via wide GEMMs (BLAS3):
-    //   VVOV[(c*nvir+a), (j*nvir+b)] = (ca|jb)   shape (nvir², nocc·nvir)
-    //   OOOV[(i*nocc+k), (j*nvir+b)] = (ik|jb)   shape (nocc², nocc·nvir)
-    // All ERIs needed below are reindexings of these two (using the 8-fold
-    // permutational symmetry of the density-fitted (pq|rs)).
-    let vvov = b_vv.t().dot(&b_ov); // (nvir², nocc·nvir)
+    // OOOV is small (nocc²·nov·8 ≈ 0.44 GB at the audit scale) — build once.
+    //   OOOV[(i*nocc+k), (j*nvir+b)] = (ik|jb)
     let ooov = b_oo.t().dot(&b_ov); // (nocc², nocc·nvir)
+
+    // VVOV[(c*nvir+a), (j*nvir+b)] = (ca|jb), shape (nvir², nocc·nvir), is the
+    // single largest transient in the crate (~203 GB at the audit scale). Every
+    // VVOV read inside the c_idx loop below is confined to the `nvir` rows
+    // [c_idx*nvir, c_idx*nvir+nvir), so we never need more than a panel of c
+    // rows resident. Block over c-panels: build vvov_panel for a panel of
+    // c-values (a wide GEMM: b_vv[:, panel].t() · b_ov), consume it, discard it.
+    // Peak VVOV footprint is one panel instead of the full (nvir², nov) square.
+    let panel_c = panel_c.max(1).min(nvir.max(1));
 
     // g_{ai} has shape (nvir, nocc) -- virtual index a, occupied index i
     let mut g = Array2::zeros((nvir, nocc));
@@ -452,76 +577,85 @@ fn compute_orbital_gradient(
     // - delta_{bc} * [2*(ia|jk) - (ik|ja)]
     //
     // For each (c, k) pair, we sum over ijab with the appropriate delta contractions.
-    // ERIs are read from the precomputed VVOV / OOOV blocks:
-    //   (ca|jb) = vvov[c*nvir+a, j*nvir+b]
+    // ERIs are read from the (panelled) VVOV / (full) OOOV blocks:
+    //   (ca|jb) = vvov[c*nvir+a, j*nvir+b]  (vvov row = local c-panel offset)
     //   (ik|jb) = ooov[i*nocc+k, j*nvir+b]     ((ib|jk)=(jk|ib)=ooov[j*nocc+k, i*nvir+b])
 
-    for c_idx in 0..nvir {
-        for k in 0..nocc {
-            let mut grad_ck = 0.0;
+    let mut c0 = 0;
+    while c0 < nvir {
+        let c1 = (c0 + panel_c).min(nvir);
+        // vvov_panel rows correspond to c in [c0, c1): local row (c-c0)*nvir + a.
+        let bvv_panel = b_vv.slice(ndarray::s![.., c0 * nvir..c1 * nvir]);
+        let vvov_panel = bvv_panel.t().dot(&b_ov); // ((c1-c0)·nvir, nov)
 
-            // Term 1: delta_{ik} -> i=k, sum over j,a,b
-            // 2 * sum_{jab} t_{kj,ab} * [2*(ca|jb) - (cb|ja)]
-            for j in 0..nocc {
-                for a in 0..nvir {
-                    let ca = c_idx * nvir + a;
-                    let cb_row = c_idx * nvir; // + b below
-                    for b in 0..nvir {
-                        let t_kj_ab = t2[(k * nvir + a) * nov + j * nvir + b];
-                        let eri_cajb = vvov[(ca, j * nvir + b)];
-                        let eri_cbja = vvov[(cb_row + b, j * nvir + a)];
-                        grad_ck += t_kj_ab * (2.0 * eri_cajb - eri_cbja);
-                    }
-                }
-            }
+        for c_idx in c0..c1 {
+            let cbase = (c_idx - c0) * nvir; // local vvov_panel row base for this c
+            for k in 0..nocc {
+                let mut grad_ck = 0.0;
 
-            // Term 2: delta_{jk} -> j=k, sum over i,a,b
-            // 2 * sum_{iab} t_{ik,ab} * [2*(ia|cb) - (ib|ca)]
-            // (ia|cb) = (cb|ia) = vvov[c*nvir+b, i*nvir+a];
-            // (ib|ca) = (ca|ib) = vvov[c*nvir+a, i*nvir+b]
-            for i in 0..nocc {
-                for a in 0..nvir {
-                    for b in 0..nvir {
-                        let t_ik_ab = t2[(i * nvir + a) * nov + k * nvir + b];
-                        let eri_iacb = vvov[(c_idx * nvir + b, i * nvir + a)];
-                        let eri_ibca = vvov[(c_idx * nvir + a, i * nvir + b)];
-                        grad_ck += t_ik_ab * (2.0 * eri_iacb - eri_ibca);
-                    }
-                }
-            }
-
-            // Term 3: delta_{ac} -> a=c, sum over i,j,b
-            // -2 * sum_{ijb} t_{ij,cb} * [2*(ik|jb) - (ib|jk)]
-            // (ik|jb) = ooov[i*nocc+k, j*nvir+b];
-            // (ib|jk) = (jk|ib) = ooov[j*nocc+k, i*nvir+b]
-            for i in 0..nocc {
-                for j in 0..nocc {
-                    for b in 0..nvir {
-                        let t_ij_cb = t2[(i * nvir + c_idx) * nov + j * nvir + b];
-                        let eri_ikjb = ooov[(i * nocc + k, j * nvir + b)];
-                        let eri_ibjk = ooov[(j * nocc + k, i * nvir + b)];
-                        grad_ck -= t_ij_cb * (2.0 * eri_ikjb - eri_ibjk);
-                    }
-                }
-            }
-
-            // Term 4: delta_{bc} -> b=c, sum over i,j,a
-            // -2 * sum_{ija} t_{ij,ac} * [2*(ia|jk) - (ik|ja)]
-            // (ia|jk) = (jk|ia) = ooov[j*nocc+k, i*nvir+a];
-            // (ik|ja) = ooov[i*nocc+k, j*nvir+a]
-            for i in 0..nocc {
+                // Term 1: delta_{ik} -> i=k, sum over j,a,b
+                // 2 * sum_{jab} t_{kj,ab} * [2*(ca|jb) - (cb|ja)]
                 for j in 0..nocc {
                     for a in 0..nvir {
-                        let t_ij_ac = t2[(i * nvir + a) * nov + j * nvir + c_idx];
-                        let eri_iajk = ooov[(j * nocc + k, i * nvir + a)];
-                        let eri_ikja = ooov[(i * nocc + k, j * nvir + a)];
-                        grad_ck -= t_ij_ac * (2.0 * eri_iajk - eri_ikja);
+                        let ca = cbase + a;
+                        for b in 0..nvir {
+                            let t_kj_ab = t2[(k * nvir + a) * nov + j * nvir + b];
+                            let eri_cajb = vvov_panel[(ca, j * nvir + b)];
+                            let eri_cbja = vvov_panel[(cbase + b, j * nvir + a)];
+                            grad_ck += t_kj_ab * (2.0 * eri_cajb - eri_cbja);
+                        }
                     }
                 }
-            }
 
-            g[(c_idx, k)] -= 2.0 * grad_ck;
+                // Term 2: delta_{jk} -> j=k, sum over i,a,b
+                // 2 * sum_{iab} t_{ik,ab} * [2*(ia|cb) - (ib|ca)]
+                // (ia|cb) = (cb|ia) = vvov[c*nvir+b, i*nvir+a];
+                // (ib|ca) = (ca|ib) = vvov[c*nvir+a, i*nvir+b]
+                for i in 0..nocc {
+                    for a in 0..nvir {
+                        for b in 0..nvir {
+                            let t_ik_ab = t2[(i * nvir + a) * nov + k * nvir + b];
+                            let eri_iacb = vvov_panel[(cbase + b, i * nvir + a)];
+                            let eri_ibca = vvov_panel[(cbase + a, i * nvir + b)];
+                            grad_ck += t_ik_ab * (2.0 * eri_iacb - eri_ibca);
+                        }
+                    }
+                }
+
+                // Term 3: delta_{ac} -> a=c, sum over i,j,b
+                // -2 * sum_{ijb} t_{ij,cb} * [2*(ik|jb) - (ib|jk)]
+                // (ik|jb) = ooov[i*nocc+k, j*nvir+b];
+                // (ib|jk) = (jk|ib) = ooov[j*nocc+k, i*nvir+b]
+                for i in 0..nocc {
+                    for j in 0..nocc {
+                        for b in 0..nvir {
+                            let t_ij_cb = t2[(i * nvir + c_idx) * nov + j * nvir + b];
+                            let eri_ikjb = ooov[(i * nocc + k, j * nvir + b)];
+                            let eri_ibjk = ooov[(j * nocc + k, i * nvir + b)];
+                            grad_ck -= t_ij_cb * (2.0 * eri_ikjb - eri_ibjk);
+                        }
+                    }
+                }
+
+                // Term 4: delta_{bc} -> b=c, sum over i,j,a
+                // -2 * sum_{ija} t_{ij,ac} * [2*(ia|jk) - (ik|ja)]
+                // (ia|jk) = (jk|ia) = ooov[j*nocc+k, i*nvir+a];
+                // (ik|ja) = ooov[i*nocc+k, j*nvir+a]
+                for i in 0..nocc {
+                    for j in 0..nocc {
+                        for a in 0..nvir {
+                            let t_ij_ac = t2[(i * nvir + a) * nov + j * nvir + c_idx];
+                            let eri_iajk = ooov[(j * nocc + k, i * nvir + a)];
+                            let eri_ikja = ooov[(i * nocc + k, j * nvir + a)];
+                            grad_ck -= t_ij_ac * (2.0 * eri_iajk - eri_ikja);
+                        }
+                    }
+                }
+
+                g[(c_idx, k)] -= 2.0 * grad_ck;
+            }
         }
+        c0 = c1;
     }
 
     g
@@ -607,7 +741,7 @@ pub fn oo_ri_mp2(
 
     for iter in 1..=config.max_iter {
         // Compute full-MO B tensor for gradient evaluation
-        let b_full = compute_b_full_mo_with(&ao, &c);
+        let b_full = compute_b_full_mo_with(&ao, &c)?;
 
         // Build t2 amplitudes
         let naux = dfbs.nbasis();
@@ -778,7 +912,7 @@ pub fn oo_ri_mp2(
 
         if de < config.energy_conv && iter > 1 {
             // Energy converged; recompute gradient to check convergence.
-            let b_full2 = compute_b_full_mo_with(&ao, &c);
+            let b_full2 = compute_b_full_mo_with(&ao, &c)?;
             let naux2 = dfbs.nbasis();
             let (t2_2, _) = compute_t2_and_integrals(
                 &b_ov, &eps, nocc, nvir, nocc_total, first_occ, naux2,
@@ -956,7 +1090,7 @@ mod tests {
         );
 
         // Build full-MO B tensor for gradient
-        let b_full = compute_b_full_mo_with(&ao, c);
+        let b_full = compute_b_full_mo_with(&ao, c).unwrap();
 
         let f_mo = c.t().dot(&f_ao).dot(c);
         let g = compute_orbital_gradient(
@@ -1070,6 +1204,85 @@ mod tests {
             "OO={:.10} should be <= RI={:.10}",
             oo.total_energy, ri.total_energy
         );
+    }
+
+    /// The aux-blocked (disk-spill) path through the ThreeIndexSource must give
+    /// bit-comparable results to the in-core path: b_full, the OV-dressed MP2
+    /// energy, and the orbital gradient all agree to machine precision.
+    #[test]
+    fn test_spill_budget_paths_match_incore() {
+        let (mol, obs, dfbs, op, bounds, rhf) = setup_h2();
+        let nbas = obs.nbasis();
+        let nocc_total = (mol.nelec() as usize) / 2;
+        let nvir = nbas - nocc_total;
+        let orb = OrbitalSpace::new(nocc_total, nvir, nocc_total, 0);
+        let c = rhf.mos_r();
+        let h = oneelectron::hcore(&obs);
+
+        // In-core reference (unlimited budget).
+        let ao_ref = OoRiMp2AoTensors::build_with_budget(&obs, &dfbs, op, usize::MAX).unwrap();
+        assert_eq!(ao_ref.eri3_ao.borrow().n_blocks(), 1);
+        // Tiny budget: ~3 aux rows per block, forces disk spill + many blocks.
+        let tiny = obs.nbasis() * obs.nbasis() * 8 * 3;
+        let ao_spill = OoRiMp2AoTensors::build_with_budget(&obs, &dfbs, op, tiny).unwrap();
+        assert!(
+            ao_spill.eri3_ao.borrow().n_blocks() > 1,
+            "expected multi-block spill, got {}",
+            ao_spill.eri3_ao.borrow().n_blocks()
+        );
+
+        // b_full identical.
+        let b_ref = compute_b_full_mo_with(&ao_ref, c).unwrap();
+        let b_spill = compute_b_full_mo_with(&ao_spill, c).unwrap();
+        let maxdiff = (&b_ref - &b_spill).iter().map(|v| v.abs()).fold(0.0, f64::max);
+        assert!(maxdiff < 1e-12, "b_full spill vs in-core maxdiff={maxdiff:.2e}");
+
+        // MP2 energy + b_ov identical.
+        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h).unwrap();
+        let eps = orbital_energies(c, &f_ao);
+        let (e_ref, bov_ref) = compute_rimp2_with_orbitals(&ao_ref, c, &eps, &orb).unwrap();
+        let (e_spill, bov_spill) = compute_rimp2_with_orbitals(&ao_spill, c, &eps, &orb).unwrap();
+        assert!((e_ref - e_spill).abs() < 1e-12, "E_MP2 spill vs in-core: {:.3e}", (e_ref - e_spill).abs());
+        let bovdiff = (&bov_ref - &bov_spill).iter().map(|v| v.abs()).fold(0.0, f64::max);
+        assert!(bovdiff < 1e-12, "b_ov spill vs in-core maxdiff={bovdiff:.2e}");
+    }
+
+    /// The VVOV c-panelled gradient must be exact for any panel width:
+    /// panel_c = 1 (max blocking) vs panel_c = nvir (single panel, the former
+    /// unblocked path).
+    #[test]
+    fn test_vvov_panelled_gradient_exact() {
+        let (mol, obs, dfbs, op, bounds, rhf) = setup_h2();
+        let nbas = obs.nbasis();
+        let nocc_total = (mol.nelec() as usize) / 2;
+        let nocc = nocc_total;
+        let first_occ = 0;
+        let nvir = nbas - nocc_total;
+        let naux = dfbs.nbasis();
+        let orb = OrbitalSpace::new(nocc, nvir, nocc_total, first_occ);
+        let c = rhf.mos_r();
+        let h = oneelectron::hcore(&obs);
+        let ao = OoRiMp2AoTensors::build(&obs, &dfbs, op).unwrap();
+        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h).unwrap();
+        let eps = orbital_energies(c, &f_ao);
+        let (_e, b_ov) = compute_rimp2_with_orbitals(&ao, c, &eps, &orb).unwrap();
+        let (t2, _) = compute_t2_and_integrals(&b_ov, &eps, nocc, nvir, nocc_total, first_occ, naux);
+        let b_full = compute_b_full_mo_with(&ao, c).unwrap();
+        let f_mo = c.t().dot(&f_ao).dot(c);
+
+        let g_full = compute_orbital_gradient_panelled(
+            &f_mo, &t2, &b_full, nocc, nvir, first_occ, nocc_total, nvir,
+        );
+        for panel in [1usize, 2, 3] {
+            let g_p = compute_orbital_gradient_panelled(
+                &f_mo, &t2, &b_full, nocc, nvir, first_occ, nocc_total, panel,
+            );
+            let maxdiff = (&g_full - &g_p).iter().map(|v| v.abs()).fold(0.0, f64::max);
+            assert!(
+                maxdiff < 1e-13,
+                "panelled gradient (panel_c={panel}) differs from full: {maxdiff:.2e}"
+            );
+        }
     }
 
     #[test]
