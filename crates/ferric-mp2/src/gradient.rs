@@ -29,6 +29,9 @@ fn total_energy(
     };
     let ctx = ferric_core::parallel::ParallelContext::default();
     let rhf = solve_rhf(&ctx, mol, &obs, op, &bounds, &rhf_config)?;
+    if !rhf.converged {
+        return Err(FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy });
+    }
     let dfbs = PreparedBasis::new(mol, aux_basis)?;
     let mp2 = ri_mp2(mol, &obs, &dfbs, op, &rhf, mp2_config)?;
     Ok(mp2.total_energy)

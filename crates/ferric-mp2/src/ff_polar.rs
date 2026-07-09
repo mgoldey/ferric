@@ -164,6 +164,7 @@ pub(crate) fn solve_rhf_with_external(
                 fock_alpha: f,
                 fock_beta: None,
                 converged: true,
+                exit: ferric_scf::result::ScfExit::Converged,
                 iterations: iter,
                 computed_quartets: total_quartets,
             });

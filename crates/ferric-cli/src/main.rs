@@ -164,6 +164,8 @@ fn main() {
         three_index_budget_bytes: budget_bytes.unwrap_or(2 * 1024 * 1024 * 1024),
         init_guess_density: None,
         use_sad_guess: true,
+        stall_window: None,
+        divergence_tol: None,
     };
 
     if task == "optimize" {
@@ -325,7 +327,16 @@ fn main() {
         return;
     }
 
-    let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &rhf_config).unwrap_or_else(|e| {
+    let result = if method == "rhf" {
+        let ladder = cfg.scf.build_ladder(&rhf_config);
+        let lr = ferric_scf::ladder::solve_rhf_ladder(&ctx, &mol, &prep, op, &bounds, &ladder)
+            .unwrap_or_else(|e| { eprintln!("error: SCF ladder failed: {e:?}"); std::process::exit(1); });
+        if !lr.converged {
+            eprintln!("warning: SCF did not fully converge (best rung {}, exit {:?})", lr.rung_reached, lr.rung_outcomes.last().map(|o| o.exit));
+        }
+        lr.result
+    } else {
+        solve_rhf(&ctx, &mol, &prep, op, &bounds, &rhf_config).unwrap_or_else(|e| {
         // For pdep-rpa with open-shell molecules the UHF dispatch inside the arm
         // handles convergence; the global RHF result is not used.
         if method == "pdep-rpa" && mol.multiplicity > 1 {
@@ -345,7 +356,8 @@ fn main() {
             eprintln!("error: {e}");
             std::process::exit(1);
         }
-    });
+        })
+    };
 
     // Ad-hoc same-basis Hirshfeld proatom: neutral free-atom densities computed
     // in the molecule's OWN basis (basis-consistent partition; fixes the legacy

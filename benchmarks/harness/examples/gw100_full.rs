@@ -253,18 +253,18 @@ fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, Cation
     // needs ls=1.0 — verified converges to PySCF −2649.796875 in 57 iters). ls=0.5
     // returns Err(ScfConvergence) on C2H3Br, so we must catch that and step up,
     // not just `.ok()?` (which would drop it to FAILED).
-    let rhf_n = match solve_rhf(&ctx, &neutral, &obs_n, op, &bounds_n, &RhfConfig::default()) {
-        Ok(r) => r,
-        Err(_) => {
-            let ls05 = RhfConfig { level_shift: 0.5, ..Default::default() };
-            match solve_rhf(&ctx, &neutral, &obs_n, op, &bounds_n, &ls05) {
-                Ok(r) if r.converged => r,
-                _ => {
-                    let ls10 = RhfConfig { max_iter: 300, level_shift: 1.0, ..Default::default() };
-                    solve_rhf(&ctx, &neutral, &obs_n, op, &bounds_n, &ls10).ok()?
-                }
-            }
+    // Configurable SCF convergence ladder (DF-JK default, stall/divergence abort,
+    // density carried forward). Replaces the old hardcoded default->ls0.5->ls1.0
+    // escalation. DF-JK makes g-function atoms (Cu/aTZ) ~28x cheaper per iter.
+    use ferric_scf::ladder::{solve_rhf_ladder, default_ladder};
+    let rhf_n = match solve_rhf_ladder(&ctx, &neutral, &obs_n, op, &bounds_n, &default_ladder()) {
+        Ok(lr) if lr.converged => lr.result,
+        Ok(lr) => {
+            eprintln!("  [!] {} neutral RHF did not converge (best rung {}, exit {:?})",
+                case.name, lr.rung_reached, lr.rung_outcomes.last().map(|o| o.exit));
+            return None;
         }
+        Err(e) => { eprintln!("  [!] {} neutral RHF ladder error: {e:?}", case.name); return None; }
     };
     let nocc_n = (neutral.nelec() as usize) / 2;
     let homo_abs = nocc_n - 1;
@@ -294,7 +294,15 @@ fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, Cation
     if !g0w0_only {
         let rpa_n = run_pdep_rpa(&neutral, &obs_n, &dfbs_n, op, &rhf_n, &rpa_cfg).ok()?;
 
-        let uhf_cfg = UhfConfig { max_iter: 200, ..Default::default() };
+        // DF-JK for the cation UHF (matches the neutral RHF ladder). def2-universal-jkfit
+        // avoids the direct <gg|gg> quartets that make g-function atoms (Cu/aTZ) ~28x
+        // slower per iteration. solve_uhf honors df_j_aux/df_k_aux for plain HF (omega=0).
+        let uhf_cfg = UhfConfig {
+            max_iter: 200,
+            df_j_aux: Some("def2-universal-jkfit".to_string()),
+            df_k_aux: Some("def2-universal-jkfit".to_string()),
+            ..Default::default()
+        };
         let c_seed = rhf_n.mos_alpha.clone();
         let (uhf_c, diag_method) = match solve_uhf_with_guess(&ctx, &cation, &obs_c, &bounds_c, &uhf_cfg, Some((&c_seed, &c_seed))) {
             Ok(r) => (r, "UHF(neutral-seed)"),
@@ -343,7 +351,6 @@ fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, Cation
         chi0_sparsity: Chi0Sparsity::Dense,
         eigensolver: Eigensolver::Davidson,
         sternheimer: SternheimerConfig::default(),
-        memory_budget_bytes: None,
     };
     // Method-depth by molecule size. The full @HF stack (G0W0+COHSEX+evGW0+
     // evGW×8) plus a second full @PBE GW is ~13 PDEP solves/molecule — on big

@@ -321,6 +321,9 @@ fn run_rimp2(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
     let ctx = ParallelContext::default();
     let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &rhf_config(k_builder)).map_err(make_err)?;
+    if !rhf.converged {
+        return Err(make_err(ferric_core::FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy }));
+    }
     let mp2 = ri_mp2(&mol.inner, &prep, &dfbs, op, &rhf,
                       &RiMp2Config { frozen_core: frozen_core.unwrap_or(0), memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb) }).map_err(make_err)?;
     Ok(PyRiMp2Result { total_energy: mp2.total_energy, rhf_energy: rhf.energy, mp2_corr: mp2.mp2_corr })
@@ -348,6 +351,9 @@ fn run_laplace_mp2(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisS
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
     let ctx = ParallelContext::default();
     let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &rhf_config(k_builder)).map_err(make_err)?;
+    if !rhf.converged {
+        return Err(make_err(ferric_core::FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy }));
+    }
     let r = laplace_ri_mp2(&mol.inner, &prep, &dfbs, op, &rhf,
                            n_quad.unwrap_or(7), frozen_core.unwrap_or(0)).map_err(make_err)?;
     Ok(PyLaplaceMp2Result { 
@@ -382,6 +388,9 @@ fn run_attenuated_rimp2(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyB
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
     let ctx = ParallelContext::default();
     let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &rhf_config(k_builder)).map_err(make_err)?;
+    if !rhf.converged {
+        return Err(make_err(ferric_core::FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy }));
+    }
     // omega is supplied in Å⁻¹; convert to Bohr⁻¹ for the operator.
     let cfg = AttenuatedMp2Config {
         omega: omega.unwrap_or(0.420) * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV,
@@ -414,6 +423,9 @@ fn run_terfc_rimp2(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisS
     let bounds = SchwarzBounds::compute(coul, &prep).map_err(make_err)?;
     let ctx = ParallelContext::default();
     let rhf = solve_rhf(&ctx, &mol.inner, &prep, coul, &bounds, &rhf_config(k_builder)).map_err(make_err)?;
+    if !rhf.converged {
+        return Err(make_err(ferric_core::FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy }));
+    }
     // r0 supplied in Å; convert to Bohr for the operator.
     let r0_bohr = r0.unwrap_or(1.05) * 1.8897259886;
     let mp2 = ri_mp2(&mol.inner, &prep, &dfbs, Operator::terfc(r0_bohr), &rhf,
@@ -445,6 +457,9 @@ fn run_scs_mp2(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
     let ctx = ParallelContext::default();
     let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &rhf_config(k_builder)).map_err(make_err)?;
+    if !rhf.converged {
+        return Err(make_err(ferric_core::FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy }));
+    }
     let cfg = ScsMp2Config {
         c_os: c_os.unwrap_or(6.0 / 5.0), c_ss: c_ss.unwrap_or(1.0 / 3.0),
         frozen_core: frozen_core.unwrap_or(0),
@@ -475,6 +490,9 @@ fn run_scs_mp2_2terfc(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBas
     let bounds = SchwarzBounds::compute(coul, &prep).map_err(make_err)?;
     let ctx = ParallelContext::default();
     let rhf = solve_rhf(&ctx, &mol.inner, &prep, coul, &bounds, &rhf_config(k_builder)).map_err(make_err)?;
+    if !rhf.converged {
+        return Err(make_err(ferric_core::FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy }));
+    }
     const ANG2BOHR: f64 = 1.8897259886;
     let cfg = ScsMp2TerfcConfig {
         r0_bonded: r0_bonded.unwrap_or(0.75) * ANG2BOHR,
@@ -540,6 +558,9 @@ fn run_rs_mp2_rpa(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSe
     cfg_rhf.df_j_aux = Some("def2-universal-jkfit".to_string());
     cfg_rhf.df_k_aux = Some("def2-universal-jkfit".to_string());
     let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &cfg_rhf).map_err(make_err)?;
+    if !rhf.converged {
+        return Err(make_err(ferric_core::FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy }));
+    }
     // Map formulation string to enum.
     let form = match formulation.unwrap_or("delta-lr") {
         "delta-lr" => ferric_rpa::RsMp2RpaFormulation::DeltaLr,
@@ -632,6 +653,9 @@ fn run_dft(mol: &PyMolecule, basis_set: &PyBasisSet,
     // when k_mix.sr == 0 and k_mix.omega == 0).
     cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
     let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &cfg).map_err(make_err)?;
+    if !rhf.converged {
+        return Err(make_err(ferric_core::FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy }));
+    }
     let nbf = rhf.mos_alpha.nrows();
     let gradient_data = if with_gradient {
         Some(
@@ -685,6 +709,9 @@ fn run_ccd(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
     let ctx = ParallelContext::default();
     let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &rhf_config(k_builder)).map_err(make_err)?;
+    if !rhf.converged {
+        return Err(make_err(ferric_core::FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy }));
+    }
     let cfg = CcConfig { frozen_core: frozen_core.unwrap_or(0), memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb), ..Default::default() };
     let r = run_ccd_inner(&mol.inner, &prep, &dfbs, op, &rhf, &cfg).map_err(make_err)?;
     Ok(PyCcResult { correlation_energy: r.correlation_energy, t_correction: None })
@@ -701,6 +728,9 @@ fn run_ccsd(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
     let ctx = ParallelContext::default();
     let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &rhf_config(k_builder)).map_err(make_err)?;
+    if !rhf.converged {
+        return Err(make_err(ferric_core::FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy }));
+    }
     let cfg = CcConfig { frozen_core: frozen_core.unwrap_or(0), memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb), ..Default::default() };
     let r = run_ccsd_inner(&mol.inner, &prep, &dfbs, op, &rhf, &cfg).map_err(make_err)?;
     Ok(PyCcResult { correlation_energy: r.correlation_energy, t_correction: None })
@@ -717,6 +747,9 @@ fn run_ccsd_t(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
     let ctx = ParallelContext::default();
     let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &rhf_config(k_builder)).map_err(make_err)?;
+    if !rhf.converged {
+        return Err(make_err(ferric_core::FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy }));
+    }
     let cfg = CcConfig { frozen_core: frozen_core.unwrap_or(0), memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb), ..Default::default() };
     let r = run_ccsd_inner(&mol.inner, &prep, &dfbs, op, &rhf, &cfg).map_err(make_err)?;
     let e_t = run_ccsd_t_inner(&mol.inner, &prep, &dfbs, op, &rhf, &r, &cfg).map_err(make_err)?;
@@ -842,6 +875,9 @@ fn run_pdep_rpa(
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
     let ctx = ParallelContext::default();
     let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &rhf_config(k_builder)).map_err(make_err)?;
+    if !rhf.converged {
+        return Err(make_err(ferric_core::FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy }));
+    }
 
     let scheme = match quadrature.unwrap_or("gauss-legendre") {
         "minimax" | "mm" => QuadratureScheme::MiniMax,

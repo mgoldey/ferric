@@ -173,6 +173,7 @@ fn make_scf_view(
         fock_alpha: f_a.clone(),
         fock_beta: Some(f_b.clone()),
         converged: true,
+        exit: ferric_scf::result::ScfExit::Converged,
         iterations: 0,
         computed_quartets: 0,
     }

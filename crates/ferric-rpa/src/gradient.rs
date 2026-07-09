@@ -151,6 +151,9 @@ fn rpa_correlation_energy(
         ..Default::default()
     };
     let rhf = solve_rhf(&ctx, mol, &obs, op, &bounds, &rhf_cfg)?;
+    if !rhf.converged {
+        return Err(FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy });
+    }
     let r = run_pdep_rpa(mol, &obs, &dfbs, op, &rhf, rpa_config)?;
     Ok(rhf.energy + r.e_rpa)
 }
@@ -179,6 +182,9 @@ pub fn total_rpa_gradient(
         ..Default::default()
     };
     let rhf = solve_rhf(&ctx, mol, &obs, op, &bounds, &rhf_cfg)?;
+    if !rhf.converged {
+        return Err(FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy });
+    }
     let r: PdepRpaResult = run_pdep_rpa(mol, &obs, &dfbs, op, &rhf, rpa_config)?;
     let e_tot = rhf.energy + r.e_rpa;
 

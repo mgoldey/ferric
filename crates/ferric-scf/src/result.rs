@@ -10,6 +10,23 @@ pub enum Spin {
     RestrictedOpen,
 }
 
+/// Why the SCF loop stopped. Distinguishes acceptable exits (Converged,
+/// Plateau) from failures the ladder should escalate past (Stalled, Diverged,
+/// MaxIter).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScfExit {
+    /// Standard convergence: energy + orbital gradient below thresholds.
+    Converged,
+    /// Near-degeneracy plateau accepted (gradient stalled below the 1e-4 floor).
+    Plateau,
+    /// Gradient running-minimum stopped falling above the 1e-4 floor.
+    Stalled,
+    /// Energy climbed beyond divergence_tol for consecutive iterations.
+    Diverged,
+    /// Hit max_iter without any of the above.
+    MaxIter,
+}
+
 #[derive(Debug, Clone)]
 pub struct ScfResult {
     pub spin: Spin,
@@ -28,6 +45,7 @@ pub struct ScfResult {
     pub fock_alpha: Array2<f64>,
     pub fock_beta: Option<Array2<f64>>,
     pub converged: bool,
+    pub exit: ScfExit,
     pub iterations: usize,
     pub computed_quartets: usize,
 }
@@ -65,5 +83,17 @@ impl ScfResult {
     pub fn eps_a(&self) -> &[f64] { &self.eps_alpha }
     pub fn eps_b(&self) -> &[f64] {
         self.eps_beta.as_deref().expect("eps_b() called on Restricted result")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scf_exit_variants_distinct() {
+        assert_ne!(ScfExit::Converged, ScfExit::Stalled);
+        assert_ne!(ScfExit::Plateau, ScfExit::MaxIter);
+        assert_ne!(ScfExit::Diverged, ScfExit::Converged);
     }
 }

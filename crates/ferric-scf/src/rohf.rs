@@ -319,6 +319,7 @@ pub fn solve_rohf(
                 fock_alpha: f_eff,
                 fock_beta: None,
                 converged: true,
+                exit: crate::result::ScfExit::Converged,
                 iterations: iter,
                 computed_quartets: total_quartets,
             });

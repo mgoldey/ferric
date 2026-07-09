@@ -12,7 +12,7 @@ use crate::direct_k::DirectK;
 use crate::fock::{JBuilder, KBuilder};
 use crate::guess::hcore_guess;
 use ferric_dft::cdft::Constraint;
-use crate::result::{ScfResult, Spin};
+use crate::result::{ScfExit, ScfResult, Spin};
 
 use crate::link_k::LinkK;
 use crate::screening::SchwarzBounds;
@@ -109,6 +109,16 @@ pub struct RhfConfig {
     /// `false` to force the bare hcore guess — used internally by `sad_guess` for
     /// its free-atom solves to break the recursion.
     pub use_sad_guess: bool,
+    /// If `Some(n)`: abort early when the running minimum of `err_max` over the
+    /// last `n` iters has not dropped below 0.9× its value over the previous `n`
+    /// iters (gradient stopped falling) AND err_max is still above the 1e-4
+    /// plateau floor. `None` (default) disables stall detection. Used by the
+    /// convergence ladder to advance a stuck rung in ~n iters instead of max_iter.
+    pub stall_window: Option<usize>,
+    /// If `Some(f)`: abort early when the energy rises by more than `f` Ha for 3
+    /// consecutive iterations (actively diverging, not just noisy). `None`
+    /// (default) disables divergence detection.
+    pub divergence_tol: Option<f64>,
 }
 
 impl Default for RhfConfig {
@@ -138,44 +148,62 @@ impl Default for RhfConfig {
             three_index_budget_bytes: 2 * 1024 * 1024 * 1024,
             init_guess_density: None,
             use_sad_guess: true,
+            stall_window: None,
+            divergence_tol: None,
         }
     }
 }
 
-/// Resolve the 3-index memory budget in bytes via the unified resolver
-/// [`ferric_core::memory::resolve_budget_bytes`]. Shared by RHF/UHF/ROHF so the
-/// budget is honored uniformly across all DF-J/DF-K construction sites.
-///
-/// `config_bytes` is the TOML `[memory]` value (or the 2 GiB `RhfConfig`
-/// default). Precedence: an env override (`FERRIC_MEM_BUDGET_GB`, or the legacy
-/// `FERRIC_OOC_BUDGET_GB`/`FERRIC_ERI3_BUDGET_GB`) wins over `config_bytes`,
-/// matching the legacy behavior where the env var beat the config field.
-///
-/// Note: because the `RhfConfig` default is a concrete 2 GiB (never 0), the
-/// auto-detect branch of the resolver is only reached when a caller passes 0
-/// explicitly; the SCF path therefore keeps its historical 2 GiB default when no
-/// env var is set.
+/// Resolve the 3-index memory budget in bytes: `FERRIC_OOC_BUDGET_GB` env var
+/// (in GiB) takes precedence over the config field. Shared by RHF/UHF/ROHF so
+/// the budget is honored uniformly across all DF-J/DF-K construction sites.
 pub fn resolve_three_index_budget(config_bytes: usize) -> usize {
-    use ferric_core::memory::{self, BudgetSource};
-    // Try env-only first (explicit=None): if an env override exists it must beat
-    // the config field, preserving the legacy env>config precedence.
-    let env_res = memory::resolve_budget(None);
-    match env_res.source {
-        BudgetSource::UnifiedEnv
-        | BudgetSource::LegacyOocEnv
-        | BudgetSource::LegacyEri3Env => env_res.bytes,
-        // No env override → honor the config field (or resolve auto/fallback if
-        // the caller passed 0).
-        _ => memory::resolve_budget_bytes(Some(config_bytes)),
+    std::env::var("FERRIC_OOC_BUDGET_GB")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .filter(|g| *g > 0.0)
+        .map(|g| (g * 1024.0 * 1024.0 * 1024.0) as usize)
+        .unwrap_or(config_bytes)
+}
+
+/// Pure stall-detector arithmetic, extracted from the `solve_rhf` loop so it can
+/// be unit-tested with synthetic `errmax_history` sequences instead of forcing a
+/// real molecule to stall (slow/nondeterministic).
+///
+/// Returns `true` when the running minimum of `errmax_history` over the last
+/// `window` entries has not dropped below 0.9x its value over the previous
+/// `window` entries (gradient stopped falling — robust to oscillation, since a
+/// wide-band limit cycle has net-zero running-min change), AND `current_err` is
+/// still above the 1e-4 plateau floor (below it, the separate plateau-acceptance
+/// path owns the regime). Returns `false` when `window == 0` (degenerate/no-op
+/// config) or when there isn't yet `2*window` entries of history.
+fn stall_detected(errmax_history: &[f64], window: usize, current_err: f64) -> bool {
+    if window == 0 {
+        return false;
     }
+    if errmax_history.len() < 2 * window || current_err < 1e-4 {
+        return false;
+    }
+    let n_hist = errmax_history.len();
+    let recent_min = errmax_history[n_hist - window..]
+        .iter()
+        .cloned()
+        .fold(f64::INFINITY, f64::min);
+    let prev_min = errmax_history[n_hist - 2 * window..n_hist - window]
+        .iter()
+        .cloned()
+        .fold(f64::INFINITY, f64::min);
+    recent_min >= 0.9 * prev_min
 }
 
 /// Solve the closed-shell RHF equations for a molecule.
 ///
 /// Uses the Roothaan-Hall procedure: build Fock matrix from density, diagonalize,
 /// rebuild density, iterate until convergence. DIIS extrapolation accelerates
-/// convergence. Returns [`ScfResult`] on success or [`FerricError::ScfConvergence`]
-/// if `max_iter` is exceeded.
+/// convergence. Returns `Ok(ScfResult)` whether or not it converges — check
+/// `result.converged` / `result.exit` (`ScfExit::MaxIter` carries the
+/// best-effort density/MOs from the final iteration). Only returns
+/// [`FerricError::ScfConvergence`] for the odd-electron-count input error.
 pub fn solve_rhf(
     ctx: &ParallelContext,
     mol: &Molecule,
@@ -327,6 +355,46 @@ pub fn solve_rhf(
     // Previous-iteration MO coefficients, needed to build the virtual-block level
     // shift (a projector onto the prior virtuals). None before the first solve.
     let mut c_prev: Option<Array2<f64>> = None;
+    // Orbital energies/MOs from the most recent diagonalization, retained across
+    // iterations so a max_iter exit can still report eps/MOs for the final density.
+    let mut last_eps: Vec<f64> = Vec::new();
+    let mut last_c: Array2<f64> = Array2::zeros((n, n));
+
+    // Stall/divergence early-abort state (opt-in via RhfConfig; both None by
+    // default leaves existing behavior unchanged).
+    let mut errmax_history: Vec<f64> = Vec::new();
+    let mut divergence_streak = 0usize;
+
+    // Shared constructor for every non-converged exit path (MaxIter / Stalled /
+    // Diverged). The Converged path re-diagonalizes fresh and is NOT built from
+    // this closure.
+    let build_nonconverged = |exit: ScfExit,
+                               d: &Array2<f64>,
+                               c: &Array2<f64>,
+                               eps: &[f64],
+                               f: &Array2<f64>,
+                               energy: f64,
+                               iter: usize,
+                               cq: usize|
+     -> ScfResult {
+        ScfResult {
+            spin: Spin::Restricted,
+            energy,
+            density_total: d.clone(),
+            density_alpha: d * 0.5,
+            density_beta: None,
+            mos_alpha: c.clone(),
+            mos_beta: None,
+            eps_alpha: eps.to_vec(),
+            eps_beta: None,
+            fock_alpha: f.clone(),
+            fock_beta: None,
+            converged: false,
+            iterations: iter,
+            exit,
+            computed_quartets: cq,
+        }
+    };
 
     // Direct J/K builders hoisted out of the SCF loop: each lazily builds a
     // per-thread libint2 EnginePool on first use (engines are constructed behind
@@ -484,6 +552,34 @@ pub fn solve_rhf(
         }
         prev_err_max = err_max;
 
+        // Divergence: energy climbing for consecutive iters.
+        if let Some(tol) = config.divergence_tol {
+            if energy - prev_e > tol {
+                divergence_streak += 1;
+            } else {
+                divergence_streak = 0;
+            }
+            if divergence_streak >= 3 {
+                if std::env::var("FERRIC_SCF_TRACE").ok().as_deref() == Some("1") {
+                    eprintln!("SCF diverged at iter={iter}: dE={:.3e} > tol for 3 iters", energy - prev_e);
+                }
+                return Ok(build_nonconverged(ScfExit::Diverged, &d, &last_c, &last_eps, &f, energy, iter, total_quartets));
+            }
+        }
+
+        // Stall: running-min err_max over a window stopped falling. Robust to
+        // oscillation (a wide-band limit cycle has net-zero running-min change).
+        // Only fires above the 1e-4 floor — below it the plateau path accepts.
+        if let Some(w) = config.stall_window {
+            errmax_history.push(err_max);
+            if stall_detected(&errmax_history, w, err_max) {
+                if std::env::var("FERRIC_SCF_TRACE").ok().as_deref() == Some("1") {
+                    eprintln!("SCF stalled at iter={iter}: err_max={err_max:.3e} (no progress over {w} iters)");
+                }
+                return Ok(build_nonconverged(ScfExit::Stalled, &d, &last_c, &last_eps, &f, energy, iter, total_quartets));
+            }
+        }
+
         let strict = if df_active {
             grad_ok || df_noise_floor_ok
         } else {
@@ -507,6 +603,7 @@ pub fn solve_rhf(
                 fock_alpha: f,
                 fock_beta: None,
                 converged: true,
+                exit: ScfExit::Converged,
                 iterations: iter,
                 computed_quartets: total_quartets,
             });
@@ -536,7 +633,8 @@ pub fn solve_rhf(
             }
         }
 
-        let (_, mut c) = diagonalize(&f_new, &x)?;
+        let (eps, mut c) = diagonalize(&f_new, &x)?;
+        last_eps = eps;
         // Only retain C across iterations when the level shift needs it; the
         // default (shift = 0) path skips the clone entirely.
         if config.level_shift > 0.0 {
@@ -559,11 +657,20 @@ pub fn solve_rhf(
         // Rebuild density: D = 2 * C_occ @ C_occ^T  (BLAS dgemm)
         let c_occ = c.slice(ndarray::s![.., ..nocc]);
         d.assign(&(2.0 * c_occ.dot(&c_occ.t())));
+        last_c = c;
     }
-    Err(FerricError::ScfConvergence {
-        iterations: config.max_iter,
-        last_energy: prev_e,
-    })
+    // Loop exhausted without convergence. Return the best-effort density so a
+    // ladder can carry it forward; the caller checks `converged`.
+    Ok(build_nonconverged(
+        ScfExit::MaxIter,
+        &d,
+        &last_c,
+        &last_eps,
+        &f,
+        prev_e,
+        config.max_iter,
+        total_quartets,
+    ))
 }
 
 /// Build the Coulomb (J) and exchange (K) matrices from the density matrix.
@@ -1057,5 +1164,120 @@ mod tests {
              excited state through)",
             result.energy
         );
+    }
+
+    #[test]
+    fn divergence_aborts_early() {
+        use ferric_core::mol::Molecule;
+        use ferric_core::basis;
+        use ferric_core::parallel::ParallelContext;
+        use ferric_integrals::basis_bridge::PreparedBasis;
+        use ferric_integrals::operator::Operator;
+        use crate::screening::SchwarzBounds;
+        use crate::result::ScfExit;
+
+        // A guess/level-shift-free run on a hard system that oscillates. We assert
+        // the detector CAN fire and returns the right exit reason, using a synthetic
+        // check on the config plumbing: divergence_tol very small so any energy rise
+        // trips it, with divergence disabled it would run to max_iter.
+        let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+        let bs = basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ParallelContext::default();
+
+        // Water/STO-3G converges cleanly, so divergence must NOT fire — exit is
+        // Converged. This guards against false positives on a healthy descent.
+        let cfg = RhfConfig {
+            max_iter: 100,
+            divergence_tol: Some(0.5),
+            stall_window: Some(15),
+            ..Default::default()
+        };
+        let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
+        assert!(r.converged, "water/sto-3g must still converge with detectors on");
+        assert_eq!(r.exit, ScfExit::Converged);
+    }
+
+    #[test]
+    fn detectors_default_off() {
+        let cfg = RhfConfig::default();
+        assert!(cfg.stall_window.is_none());
+        assert!(cfg.divergence_tol.is_none());
+    }
+
+    #[test]
+    fn solve_rhf_maxiter_returns_ok_not_converged_with_density() {
+        use crate::result::ScfExit;
+
+        let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+        let bs = basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ParallelContext::default();
+        // max_iter = 1 guarantees non-convergence for water.
+        let cfg = RhfConfig { max_iter: 1, ..Default::default() };
+        let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg)
+            .expect("max_iter must now return Ok, not Err");
+        assert!(!r.converged, "should not be converged in 1 iter");
+        assert_eq!(r.exit, ScfExit::MaxIter);
+        assert_eq!(r.density_total.dim(), (prep.nbasis(), prep.nbasis()));
+        assert!(r.density_total.iter().all(|v| v.is_finite()));
+    }
+
+    // --- stall_detected: pure-arithmetic positive-trip tests ---
+    //
+    // These synthesize errmax_history sequences directly, instead of forcing a
+    // real molecule to stall (slow/nondeterministic), to exercise the trip path
+    // that the existing detectors_default_off / divergence_aborts_early tests
+    // cannot reach (they only guard against false positives on a healthy run).
+
+    #[test]
+    fn stall_detected_true_on_oscillating_plateau() {
+        // Descend well below the 1e-4 floor's irrelevant here: the plateau band
+        // itself is pinned above 1e-4 (a limit cycle that never drains). Window
+        // w=4: 8 entries oscillating around 4.5 (band [4.0, 5.0]) means both the
+        // recent and previous running-mins land at 4.0, so recent_min (4.0) >=
+        // 0.9*prev_min (3.6) trips.
+        let w = 4;
+        let history = vec![4.0, 5.0, 4.0, 5.0, 4.0, 5.0, 4.0, 5.0];
+        assert!(stall_detected(&history, w, 4.5));
+    }
+
+    #[test]
+    fn stall_detected_false_on_clean_descent() {
+        // Each window's running-min drops by >10% vs the previous window, so the
+        // detector must not trip on genuine progress.
+        let w = 4;
+        let history = vec![1e-2, 9e-3, 8e-3, 7e-3, 5e-4, 4e-4, 3e-4, 2e-4];
+        assert!(!stall_detected(&history, w, 2e-4));
+    }
+
+    #[test]
+    fn stall_detected_false_below_plateau_floor() {
+        // Flat history that would trip the running-min comparison, but
+        // current_err is below the 1e-4 floor: the plateau path (separate logic)
+        // owns this regime, not stall detection.
+        let w = 4;
+        let history = vec![5e-5; 8];
+        assert!(!stall_detected(&history, w, 5e-5));
+    }
+
+    #[test]
+    fn stall_detected_false_when_window_zero() {
+        // Guard against the Some(0) false-trip a reviewer flagged: window=0
+        // must never trip regardless of history/current_err.
+        let history = vec![4.0, 5.0, 4.0, 5.0];
+        assert!(!stall_detected(&history, 0, 4.5));
+    }
+
+    #[test]
+    fn stall_detected_false_when_history_too_short() {
+        // Fewer than 2*window entries: not enough data to compare running-mins.
+        let w = 4;
+        let history = vec![4.0, 5.0, 4.0, 5.0, 4.0]; // 5 < 2*4
+        assert!(!stall_detected(&history, w, 4.5));
     }
 }

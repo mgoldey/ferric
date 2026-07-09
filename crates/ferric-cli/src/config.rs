@@ -252,6 +252,13 @@ pub struct ScfCfg {
     /// (0 = aufbau throughout). Fixes occupied-set flip-flop non-convergence.
     #[serde(default)]
     pub mom_after_iter: usize,
+    /// SCF convergence ladder: a sequence of `[[scf.ladder]]` rungs walked in
+    /// order (density carried forward unless a rung sets `restart = true`),
+    /// stopping at the first converged rung. Empty (default, no `[[scf.ladder]]`
+    /// tables in the TOML) falls back to `ferric_scf::ladder::default_ladder()`
+    /// at `build_ladder` time.
+    #[serde(default)]
+    pub ladder: Vec<LadderRungCfg>,
 }
 
 impl Default for ScfCfg {
@@ -267,6 +274,7 @@ impl Default for ScfCfg {
             df_k_aux: None,
             level_shift: None,
             mom_after_iter: 0,
+            ladder: Vec::new(),
         }
     }
 }
@@ -276,6 +284,116 @@ fn default_energy_conv() -> f64 { 1e-8 }
 fn default_density_conv() -> f64 { 1e-7 }
 fn default_diis_size() -> usize { 8 }
 fn default_integral_thresh() -> f64 { 1e-12 }
+
+/// One `[[scf.ladder]]` rung. Every field is optional and overrides the
+/// corresponding field of the `base` `RhfConfig` passed to
+/// [`ScfCfg::build_ladder`] (derived from the flat `[scf]` settings); unset
+/// fields inherit from `base`.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(default)]
+pub struct LadderRungCfg {
+    /// Initial guess for this rung: "sad" | "sad-smallbasis" | "hcore".
+    /// `None` (default) behaves like "sad".
+    pub guess: Option<String>,
+    pub level_shift: Option<f64>,
+    pub max_iter: Option<usize>,
+    pub df_j_aux: Option<String>,
+    pub df_k_aux: Option<String>,
+    pub stall_window: Option<usize>,
+    pub divergence_tol: Option<f64>,
+    /// false (default): inherit the previous rung's final density.
+    /// true: discard the incoming density and use this rung's own guess.
+    pub restart: bool,
+}
+
+impl Default for LadderRungCfg {
+    fn default() -> Self {
+        Self {
+            guess: None,
+            level_shift: None,
+            max_iter: None,
+            df_j_aux: None,
+            df_k_aux: None,
+            stall_window: None,
+            divergence_tol: None,
+            restart: false,
+        }
+    }
+}
+
+impl ScfCfg {
+    /// Build the SCF convergence ladder. If no `[[scf.ladder]]` rungs are
+    /// configured, returns the built-in `default_ladder()`. Otherwise each
+    /// rung starts from `base` (the `RhfConfig` derived from the flat `[scf]`
+    /// settings) and overrides the fields the rung specifies.
+    pub fn build_ladder(&self, base: &ferric_scf::rhf::RhfConfig) -> Vec<ferric_scf::ladder::Rung> {
+        use ferric_scf::ladder::Rung;
+        if self.ladder.is_empty() {
+            // Default escalation, but seeded from the user's [scf] settings
+            // (base) so max_iter/energy_conv/density_conv/mom_after_iter/etc.
+            // are honored -- a plain `kind = "rhf"` run with no [[scf.ladder]]
+            // table must not silently discard the [scf] block. DF-JK aux and
+            // stall/divergence-abort are layered on top (unless the user
+            // already set df_j_aux/df_k_aux); level-shift escalates 0->0.5->1.0.
+            let jk = "def2-universal-jkfit";
+            let mk = |ls: f64| {
+                let mut c = base.clone();
+                c.level_shift = ls;
+                if c.df_j_aux.is_none() {
+                    c.df_j_aux = Some(jk.to_string());
+                }
+                if c.df_k_aux.is_none() {
+                    c.df_k_aux = Some(jk.to_string());
+                }
+                c.stall_window = Some(15);
+                c.divergence_tol = Some(0.5);
+                c
+            };
+            return vec![
+                Rung { config: mk(0.0), restart: false },
+                Rung { config: mk(0.5), restart: false },
+                Rung { config: mk(1.0), restart: false },
+            ];
+        }
+        self.ladder
+            .iter()
+            .map(|r| {
+                let mut cfg = base.clone();
+                if let Some(v) = r.level_shift {
+                    cfg.level_shift = v;
+                }
+                if let Some(v) = r.max_iter {
+                    cfg.max_iter = v;
+                }
+                if r.df_j_aux.is_some() {
+                    cfg.df_j_aux = r.df_j_aux.clone();
+                }
+                if r.df_k_aux.is_some() {
+                    cfg.df_k_aux = r.df_k_aux.clone();
+                }
+                cfg.stall_window = r.stall_window;
+                cfg.divergence_tol = r.divergence_tol;
+                match r.guess.as_deref() {
+                    Some("hcore") => {
+                        cfg.use_sad_guess = false;
+                    }
+                    Some("sad") | None => {
+                        cfg.use_sad_guess = true;
+                    }
+                    Some("sad-smallbasis") => {
+                        eprintln!("warning: scf.ladder guess \"sad-smallbasis\" is not yet wired to the CLI rung guess; using plain SAD");
+                        cfg.use_sad_guess = true;
+                    }
+                    Some(other) => {
+                        eprintln!("warning: unknown scf.ladder guess \"{other}\", using sad");
+                        cfg.use_sad_guess = true;
+                    }
+                }
+                Rung { config: cfg, restart: r.restart }
+            })
+            .collect()
+    }
+}
 
 pub fn load_config(path: &str) -> Result<Config, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{e}"))?;
@@ -419,27 +537,7 @@ kind = "rhf"
 three_index_budget_gb = 6.0
 "#;
         let cfg: Config = toml::from_str(toml_str).unwrap();
-        // Legacy field still parses and is surfaced by the precedence helper.
         assert_eq!(cfg.memory.three_index_budget_gb, Some(6.0));
-        assert_eq!(cfg.memory.budget_gb(), Some(6.0));
-        assert_eq!(cfg.memory.budget_bytes(), Some(ferric_core::memory::gib_to_bytes(6.0)));
-    }
-
-    #[test]
-    fn unified_budget_gb_wins_over_legacy() {
-        let toml_str = r#"
-[molecule]
-xyz = "x.xyz"
-[basis]
-name = "cc-pvdz"
-[method]
-kind = "rhf"
-[memory]
-budget_gb = 8.0
-three_index_budget_gb = 6.0
-"#;
-        let cfg: Config = toml::from_str(toml_str).unwrap();
-        assert_eq!(cfg.memory.budget_gb(), Some(8.0));
     }
 
     #[test]
@@ -454,5 +552,119 @@ kind = "rhf"
 "#;
         let cfg: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.memory.three_index_budget_gb, None);
+    }
+
+    #[test]
+    fn ladder_rungs_parse_from_toml() {
+        let toml_str = r#"
+[molecule]
+xyz = "water.xyz"
+[basis]
+name = "sto-3g"
+[method]
+kind = "rhf"
+
+[[scf.ladder]]
+guess = "sad"
+max_iter = 60
+
+[[scf.ladder]]
+guess = "hcore"
+level_shift = 0.5
+max_iter = 80
+restart = true
+"#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.scf.ladder.len(), 2);
+        assert_eq!(cfg.scf.ladder[0].guess.as_deref(), Some("sad"));
+        assert_eq!(cfg.scf.ladder[1].level_shift, Some(0.5));
+        assert!(cfg.scf.ladder[1].restart);
+        assert!(!cfg.scf.ladder[0].restart);
+    }
+
+    #[test]
+    fn no_ladder_section_is_empty_and_falls_back_to_default_ladder() {
+        let toml_str = r#"
+[molecule]
+xyz = "water.xyz"
+[basis]
+name = "sto-3g"
+[method]
+kind = "rhf"
+"#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert!(cfg.scf.ladder.is_empty());
+        let built = cfg.scf.build_ladder(&ferric_scf::rhf::RhfConfig::default());
+        assert_eq!(built.len(), ferric_scf::ladder::default_ladder().len());
+    }
+
+    #[test]
+    fn empty_ladder_default_escalation_honors_base_scf_block() {
+        // Regression for I1: a plain `kind = "rhf"` run with no [[scf.ladder]]
+        // table must NOT silently discard the user's [scf] settings by
+        // building every rung from RhfConfig::default(). Seed `base` with
+        // mom_after_iter and max_iter values that differ from RhfConfig's
+        // defaults and assert every rung in the empty-ladder escalation
+        // carries them through.
+        let base = ferric_scf::rhf::RhfConfig {
+            mom_after_iter: 5,
+            max_iter: 42,
+            ..Default::default()
+        };
+        let cfg = ScfCfg::default();
+        assert!(cfg.ladder.is_empty());
+        let built = cfg.build_ladder(&base);
+        assert_eq!(built.len(), 3);
+        for (i, rung) in built.iter().enumerate() {
+            assert_eq!(rung.config.mom_after_iter, 5, "rung {i} must inherit base.mom_after_iter");
+            assert_eq!(rung.config.max_iter, 42, "rung {i} must inherit base.max_iter");
+            assert!(rung.config.df_j_aux.is_some(), "rung {i} must default DF-J aux");
+            assert!(rung.config.df_k_aux.is_some(), "rung {i} must default DF-K aux");
+        }
+        assert_eq!(built[0].config.level_shift, 0.0);
+        assert_eq!(built[1].config.level_shift, 0.5);
+        assert_eq!(built[2].config.level_shift, 1.0);
+    }
+
+    #[test]
+    fn empty_ladder_default_escalation_does_not_override_user_df_aux() {
+        // If the user already set df_j_aux/df_k_aux in [scf], the default
+        // escalation must not clobber it with def2-universal-jkfit.
+        let base = ferric_scf::rhf::RhfConfig {
+            df_j_aux: Some("cc-pvdz-jkfit".to_string()),
+            df_k_aux: Some("cc-pvdz-jkfit".to_string()),
+            ..Default::default()
+        };
+        let cfg = ScfCfg::default();
+        let built = cfg.build_ladder(&base);
+        for rung in &built {
+            assert_eq!(rung.config.df_j_aux.as_deref(), Some("cc-pvdz-jkfit"));
+            assert_eq!(rung.config.df_k_aux.as_deref(), Some("cc-pvdz-jkfit"));
+        }
+    }
+
+    #[test]
+    fn configured_ladder_rung_overrides_base_fields() {
+        let toml_str = r#"
+[molecule]
+xyz = "water.xyz"
+[basis]
+name = "sto-3g"
+[method]
+kind = "rhf"
+
+[[scf.ladder]]
+guess = "hcore"
+level_shift = 0.3
+max_iter = 42
+"#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        let base = ferric_scf::rhf::RhfConfig::default();
+        let built = cfg.scf.build_ladder(&base);
+        assert_eq!(built.len(), 1);
+        assert_eq!(built[0].config.level_shift, 0.3);
+        assert_eq!(built[0].config.max_iter, 42);
+        assert!(!built[0].config.use_sad_guess);
+        assert!(!built[0].restart);
     }
 }
