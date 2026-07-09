@@ -1,6 +1,6 @@
 //! RI-MP2 nuclear gradients: analytical and finite-difference reference.
 
-use crate::rimp2::{ri_mp2, compute_mp2_intermediates, RiMp2Config};
+use crate::rimp2::{ri_mp2, compute_mp2_intermediates_ov_only, RiMp2Config};
 use crate::zvector::{solve_zvector, build_relaxed_density_ao, build_relaxed_w_ao};
 use ferric_core::basis::BasisSet;
 use ferric_core::mol::Molecule;
@@ -97,7 +97,9 @@ pub fn rimp2_gradient_analytical(
     rhf: &ScfResult,
     config: &RiMp2Config,
 ) -> Result<Array2<f64>, FerricError> {
-    let inter = compute_mp2_intermediates(mol, obs, dfbs, op, rhf, config)?;
+    // ov-only intermediates: the gradient/zvector pipeline never reads
+    // b_oo/b_vv, so the (naux, nvir²) block is never materialized here.
+    let inter = compute_mp2_intermediates_ov_only(mol, obs, dfbs, op, rhf, config)?;
 
     let (z, l) = solve_zvector(mol, obs, dfbs, op, bounds, rhf, &inter)?;
 
@@ -322,7 +324,7 @@ pub fn scs_mp2_gradient_analytical(
     config: &crate::scs::ScsMp2Config,
 ) -> Result<Array2<f64>, FerricError> {
     let mp2_config = RiMp2Config { frozen_core: config.frozen_core, memory_budget_bytes: config.memory_budget_bytes };
-    let inter = compute_mp2_intermediates(mol, obs, dfbs, op, rhf, &mp2_config)?;
+    let inter = compute_mp2_intermediates_ov_only(mol, obs, dfbs, op, rhf, &mp2_config)?;
     let (z, l) = solve_zvector(mol, obs, dfbs, op, bounds, rhf, &inter)?;
     let p_relax_ao = build_relaxed_density_ao(
         rhf.mos_r(), &inter.p_oo, &inter.p_vv, &z, &inter.orbital_space(),

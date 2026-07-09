@@ -279,6 +279,21 @@ fn bget(b: &Array2<f64>, p: usize, r: usize, c: usize, m: usize) -> f64 {
     b[(p, r * m + c)]
 }
 
+/// The CPKS response needs the occ-occ and vir-vir dressed B blocks, which the
+/// gradient-path builder (`compute_mp2_intermediates_ov_only`) skips. All CPKS
+/// entry points call the full `compute_mp2_intermediates`, so this errors only
+/// on a programming mistake — but it must be a clean Err, not a panic.
+fn require_oo_vv(
+    inter: &crate::rimp2::Mp2Intermediates,
+) -> Result<(&Array2<f64>, &Array2<f64>), FerricError> {
+    match (inter.b_oo.as_ref(), inter.b_vv.as_ref()) {
+        (Some(oo), Some(vv)) => Ok((oo, vv)),
+        _ => Err(FerricError::General(
+            "CPKS needs b_oo/b_vv: intermediates were built ov-only (use compute_mp2_intermediates, not _ov_only)".into(),
+        )),
+    }
+}
+
 /// Analytic ∂t2/∂F along `axis`. Returns (dt2 [nov*nov, ia*nov+jb], U^x, ∂f_mo)
 /// — the full set of first-order responses downstream layers reuse.
 #[allow(clippy::too_many_arguments)]
@@ -313,16 +328,17 @@ pub fn analytic_dt2_full(
     }
 
     // --- ∂B^P_ia = Σ_c U_ci b_vv[P,c,a] − Σ_k U_ak b_oo[P,i,k] ---
+    let (b_oo, b_vv) = require_oo_vv(&inter)?;
     let mut db_ov = Array2::<f64>::zeros((naux, nov));
     for p in 0..naux {
         for i in 0..nocc {
             for a in 0..nvir {
                 let mut s = 0.0;
                 for cc in 0..nvir {
-                    s += u[(cc, i)] * bget(&inter.b_vv, p, cc, a, nvir);
+                    s += u[(cc, i)] * bget(b_vv, p, cc, a, nvir);
                 }
                 for k in 0..nocc {
-                    s -= u[(a, k)] * bget(&inter.b_oo, p, i, k, nocc);
+                    s -= u[(a, k)] * bget(b_oo, p, i, k, nocc);
                 }
                 db_ov[(p, i * nvir + a)] = s;
             }
@@ -485,16 +501,17 @@ pub fn analytic_de_mp2_along(
     let (dt2, u) = analytic_dt2_along(ctx, mol, obs, dfbs, op, bounds, rhf, mp2_config, axis)?;
 
     // ∂B_ov (rebuild here from U for ∂(ia|jb); mirrors analytic_dt2_along).
+    let (b_oo, b_vv) = require_oo_vv(&inter)?;
     let mut db_ov = Array2::<f64>::zeros((naux, nov));
     for p in 0..naux {
         for i in 0..nocc {
             for a in 0..nvir {
                 let mut s = 0.0;
                 for cc in 0..nvir {
-                    s += u[(cc, i)] * bget(&inter.b_vv, p, cc, a, nvir);
+                    s += u[(cc, i)] * bget(b_vv, p, cc, a, nvir);
                 }
                 for k in 0..nocc {
-                    s -= u[(a, k)] * bget(&inter.b_oo, p, i, k, nocc);
+                    s -= u[(a, k)] * bget(b_oo, p, i, k, nocc);
                 }
                 db_ov[(p, i * nvir + a)] = s;
             }

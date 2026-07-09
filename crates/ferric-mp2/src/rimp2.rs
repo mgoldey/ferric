@@ -292,10 +292,15 @@ pub struct Mp2Intermediates {
     pub t2: Vec<f64>,
     /// B^P_{ia}, shape (naux, nocc*nvir), occ-vir block
     pub b_ov: Array2<f64>,
-    /// B^P_{ij}, shape (naux, nocc*nocc), occ-occ block
-    pub b_oo: Array2<f64>,
-    /// B^P_{ab}, shape (naux, nvir*nvir), vir-vir block
-    pub b_vv: Array2<f64>,
+    /// B^P_{ij}, shape (naux, nocc*nocc), occ-occ block. `None` when built via
+    /// [`compute_mp2_intermediates_ov_only`] — the gradient/zvector pipeline
+    /// never reads it; only the CPKS polarizability path does.
+    pub b_oo: Option<Array2<f64>>,
+    /// B^P_{ab}, shape (naux, nvir*nvir), vir-vir block. `None` when built via
+    /// [`compute_mp2_intermediates_ov_only`]: at nvir≈860/naux≈2200 this block
+    /// alone is ~13 GB, and holding it across the gradient/zvector pipeline was
+    /// the M4-audit peak. Consumers (cpks_polar) must unwrap with a clear error.
+    pub b_vv: Option<Array2<f64>>,
     /// V^{-1/2} matrix, shape (naux, naux)
     pub v_inv_sqrt: Array2<f64>,
     pub p_oo: Array2<f64>,
@@ -483,6 +488,36 @@ pub fn compute_mp2_intermediates(
     rhf: &ScfResult,
     config: &RiMp2Config,
 ) -> Result<Mp2Intermediates, FerricError> {
+    compute_mp2_intermediates_impl(mol, obs, dfbs, op, rhf, config, true)
+}
+
+/// [`compute_mp2_intermediates`] without the occ-occ and vir-vir B blocks
+/// (`b_oo = b_vv = None`). The analytical-gradient pipeline
+/// (`rimp2_gradient_analytical` → `solve_zvector` → 3c/2c derivative
+/// contractions) reads only `t2`, `b_ov`, `v_inv_sqrt`, `p_oo`, `p_vv`, so the
+/// (naux, nvir²) vir-vir block — the single largest resident of the old
+/// intermediates (13 GB at nvir≈860/naux≈2200) — need never exist there.
+/// Use the full builder only on paths that consume `b_oo`/`b_vv` (CPKS α).
+pub fn compute_mp2_intermediates_ov_only(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &ScfResult,
+    config: &RiMp2Config,
+) -> Result<Mp2Intermediates, FerricError> {
+    compute_mp2_intermediates_impl(mol, obs, dfbs, op, rhf, config, false)
+}
+
+fn compute_mp2_intermediates_impl(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &ScfResult,
+    config: &RiMp2Config,
+    with_oo_vv: bool,
+) -> Result<Mp2Intermediates, FerricError> {
     let nbas = obs.nbasis();
     let nelec = mol.nelec() as usize;
     let nocc_total = nelec / 2;
@@ -507,10 +542,17 @@ pub fn compute_mp2_intermediates(
         op, obs, dfbs, eri3_budget_bytes(config.memory_budget_bytes),
     )?;
 
-    // B^P_{ia} = V^{-1/2} (P|ia), B^P_{ij} = V^{-1/2} (P|ij), B^P_{ab} = V^{-1/2} (P|ab)
+    // B^P_{ia} = V^{-1/2} (P|ia); optionally B^P_{ij} and B^P_{ab} (CPKS only —
+    // the gradient pipeline never reads them, and b_vv is the 13 GB hog).
     let b_ov = eri3_mo_block_dressed(&mut src, &v_inv_sqrt, &c_occ, &c_vir)?;
-    let b_oo = eri3_mo_block_dressed(&mut src, &v_inv_sqrt, &c_occ, &c_occ)?;
-    let b_vv = eri3_mo_block_dressed(&mut src, &v_inv_sqrt, &c_vir, &c_vir)?;
+    let (b_oo, b_vv) = if with_oo_vv {
+        (
+            Some(eri3_mo_block_dressed(&mut src, &v_inv_sqrt, &c_occ, &c_occ)?),
+            Some(eri3_mo_block_dressed(&mut src, &v_inv_sqrt, &c_vir, &c_vir)?),
+        )
+    } else {
+        (None, None)
+    };
 
     // Energy via i-blocked wide GEMMs (BLAS3), same path as the main RI-MP2
     // lane — replaces the per-element O(naux) double-dot quadruple loop.
