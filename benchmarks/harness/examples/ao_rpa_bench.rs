@@ -108,7 +108,7 @@ fn main() {
         let nvir = nbas - nocc;
 
         let inter = compute_rpa_intermediates(
-            &mol, &obs, &dfbs, op, &rhf, &ferric_mp2::rimp2::RiMp2Config { frozen_core: 0 },
+            &mol, &obs, &dfbs, op, &rhf, &ferric_mp2::rimp2::RiMp2Config { frozen_core: 0, memory_budget_bytes: None },
         ).unwrap();
         let eps = rhf.eps_r();
         let eps_occ: Vec<f64> = eps.iter().take(nocc).copied().collect();

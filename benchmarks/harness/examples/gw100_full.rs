@@ -343,6 +343,7 @@ fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, Cation
         chi0_sparsity: Chi0Sparsity::Dense,
         eigensolver: Eigensolver::Davidson,
         sternheimer: SternheimerConfig::default(),
+        memory_budget_bytes: None,
     };
     // Method-depth by molecule size. The full @HF stack (G0W0+COHSEX+evGW0+
     // evGW×8) plus a second full @PBE GW is ~13 PDEP solves/molecule — on big

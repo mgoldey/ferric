@@ -132,6 +132,14 @@ fn main() {
     } else {
         (None, None, None)
     };
+    // Unified memory budget from [memory] (bytes), threaded into EVERY method
+    // config below. `None` → each method's resolver auto-detects (0.8 × RAM).
+    // Log the resolved value + source once, up front, so runs are auditable.
+    let budget_bytes: Option<usize> = cfg.memory.budget_bytes();
+    {
+        let resolution = ferric_core::memory::resolve_budget(budget_bytes);
+        eprintln!("[ferric] {}", resolution.audit_line());
+    }
     let rhf_config = RhfConfig {
         max_iter: cfg.scf.max_iter,
         energy_conv: cfg.scf.energy_conv,
@@ -151,11 +159,9 @@ fn main() {
         constraints: Vec::new(),
         cdft_lambda_tol: 1e-5,
         fractional_occ: false,
-        three_index_budget_bytes: cfg
-            .memory
-            .three_index_budget_gb
-            .map(|g| (g * 1024.0 * 1024.0 * 1024.0) as usize)
-            .unwrap_or(2 * 1024 * 1024 * 1024),
+        // Keep the historical 2 GiB default for the SCF DF-JK path when [memory]
+        // is unset (the resolver's auto-detect is only reached if this is 0).
+        three_index_budget_bytes: budget_bytes.unwrap_or(2 * 1024 * 1024 * 1024),
         init_guess_density: None,
         use_sad_guess: true,
     };
@@ -212,6 +218,7 @@ fn main() {
                         eprintln!("config error: {e}");
                         std::process::exit(1);
                     }),
+                    memory_budget_bytes: budget_bytes,
                 };
                 let h_fd = 5e-4;
                 let opt_result =
@@ -433,6 +440,7 @@ fn main() {
                 &result,
                 &RiMp2Config {
                     frozen_core: cfg.mp2.frozen_core,
+                    memory_budget_bytes: budget_bytes,
                 },
             )
             .unwrap_or_else(|e| {
@@ -460,6 +468,7 @@ fn main() {
             });
             let oo_config = OoRiMp2Config {
                 frozen_core: cfg.mp2.frozen_core,
+                memory_budget_bytes: budget_bytes,
                 ..Default::default()
             };
             let oo_result = oo_ri_mp2(&mol, &prep, &dfbs, op, &bounds, &result, &oo_config)
@@ -495,6 +504,7 @@ fn main() {
                 scaling: 1.0,
                 frozen_core: cfg.mp2.frozen_core,
                 screen_thresh: None,
+                memory_budget_bytes: budget_bytes,
             };
             let att_result = attenuated_ri_mp2(&mol, &prep, &dfbs, &result, &att_config)
                 .unwrap_or_else(|e| {
@@ -543,6 +553,7 @@ fn main() {
             if let Some(t) = cfg.rpa.trunc_thresh {
                 rs_cfg.rpa.trunc_thresh = t;
             }
+            rs_cfg.rpa.memory_budget_bytes = budget_bytes;
             let r = ferric_rpa::rs_mp2_rpa::rs_mp2_lr_rpa(&mol, &prep, &dfbs, &result, &rs_cfg)
                 .unwrap_or_else(|e| { eprintln!("error: {e}"); std::process::exit(1); });
             println!(
@@ -585,6 +596,7 @@ fn main() {
                 c_os: cfg.mp2.c_os.unwrap_or(6.0 / 5.0),
                 c_ss: cfg.mp2.c_ss.unwrap_or(1.0 / 3.0),
                 frozen_core: cfg.mp2.frozen_core,
+                memory_budget_bytes: budget_bytes,
             };
             let scs_result = scs_mp2(&mol, &prep, &dfbs, &result, &scs_config)
                 .unwrap_or_else(|e| {
@@ -670,6 +682,7 @@ fn main() {
                     eprintln!("config error: {e}");
                     std::process::exit(1);
                 }),
+                    memory_budget_bytes: budget_bytes,
             };
             // For open-shell molecules (multiplicity > 1) re-run with UHF + MOM so
             // the reference is converged, then dispatch to the unrestricted RPA.

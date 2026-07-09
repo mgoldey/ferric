@@ -317,7 +317,7 @@ pub fn scs_mp2_gradient_analytical(
     rhf: &ScfResult,
     config: &crate::scs::ScsMp2Config,
 ) -> Result<Array2<f64>, FerricError> {
-    let mp2_config = RiMp2Config { frozen_core: config.frozen_core };
+    let mp2_config = RiMp2Config { frozen_core: config.frozen_core, memory_budget_bytes: config.memory_budget_bytes };
     let inter = compute_mp2_intermediates(mol, obs, dfbs, op, rhf, &mp2_config)?;
     let (z, l) = solve_zvector(mol, obs, dfbs, op, bounds, rhf, &inter)?;
     let p_relax_ao = build_relaxed_density_ao(

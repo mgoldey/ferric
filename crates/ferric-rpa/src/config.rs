@@ -136,6 +136,11 @@ pub struct PdepRpaConfig {
     pub chi0_backend: Chi0Backend,
     /// χ₀ sparsity strategy. Default `Dense` preserves legacy behavior.
     pub chi0_sparsity: Chi0Sparsity,
+    /// Optional resident-bytes ceiling for the RI 3-index transform and the
+    /// Lanczos matvec panel. `None` → resolved via
+    /// [`ferric_core::memory::resolve_budget_bytes`] (env override > auto
+    /// 0.8×RAM > 2 GiB). Threaded into the `RiMp2Config` this driver builds.
+    pub memory_budget_bytes: Option<usize>,
 }
 
 impl Default for PdepRpaConfig {
@@ -151,6 +156,7 @@ impl Default for PdepRpaConfig {
             eigensolver: Eigensolver::Lanczos,
             chi0_backend: Chi0Backend::Dense,
             chi0_sparsity: Chi0Sparsity::Dense,
+            memory_budget_bytes: None,
         }
     }
 }

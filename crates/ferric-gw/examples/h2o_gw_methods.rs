@@ -54,6 +54,7 @@ H  0.0  -0.755453 -0.471161
         chi0_sparsity: Chi0Sparsity::Dense,
         eigensolver: Eigensolver::Davidson,
         sternheimer: SternheimerConfig::default(),
+        memory_budget_bytes: None,
     };
 
     for method in [

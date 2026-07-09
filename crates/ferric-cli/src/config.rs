@@ -21,11 +21,32 @@ pub struct Config {
 
 #[derive(Deserialize, Default)]
 pub struct MemoryCfg {
-    /// Hard ceiling (in GiB) for the resident 3-index integral footprint in
-    /// DF-J/DF-K. When the dense tensor would exceed this, the integral source
-    /// spills aux-blocks to disk instead of allocating in core. Default 2 GiB.
-    /// Env var `FERRIC_OOC_BUDGET_GB` overrides this at runtime.
+    /// Unified memory budget (in GiB) for every method's resident 3-index
+    /// tensors and MO transforms (SCF DF-JK, RI-MP2, OO-MP2, RPA, GW, CC).
+    /// When set, it is threaded into ALL method configs. Resolution precedence
+    /// (highest first): this field / a Python kwarg → `FERRIC_MEM_BUDGET_GB`
+    /// env → legacy `FERRIC_OOC_BUDGET_GB`/`FERRIC_ERI3_BUDGET_GB` env →
+    /// auto (0.8 × detected available RAM: cgroup limit ∧ MemAvailable) →
+    /// 2 GiB fallback. Leave unset to auto-detect.
+    pub budget_gb: Option<f64>,
+    /// Deprecated alias for `budget_gb`, retained so existing TOML that only set
+    /// `three_index_budget_gb` still parses. Prefer `budget_gb`. When both are
+    /// present, `budget_gb` wins.
     pub three_index_budget_gb: Option<f64>,
+}
+
+impl MemoryCfg {
+    /// The effective unified budget in GiB, preferring the new `budget_gb`
+    /// field, else the deprecated `three_index_budget_gb`.
+    pub fn budget_gb(&self) -> Option<f64> {
+        self.budget_gb.or(self.three_index_budget_gb)
+    }
+
+    /// The unified budget in bytes for passing as an explicit `Option<usize>` to
+    /// method configs / the resolver.
+    pub fn budget_bytes(&self) -> Option<usize> {
+        self.budget_gb().map(ferric_core::memory::gib_to_bytes)
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -398,7 +419,27 @@ kind = "rhf"
 three_index_budget_gb = 6.0
 "#;
         let cfg: Config = toml::from_str(toml_str).unwrap();
+        // Legacy field still parses and is surfaced by the precedence helper.
         assert_eq!(cfg.memory.three_index_budget_gb, Some(6.0));
+        assert_eq!(cfg.memory.budget_gb(), Some(6.0));
+        assert_eq!(cfg.memory.budget_bytes(), Some(ferric_core::memory::gib_to_bytes(6.0)));
+    }
+
+    #[test]
+    fn unified_budget_gb_wins_over_legacy() {
+        let toml_str = r#"
+[molecule]
+xyz = "x.xyz"
+[basis]
+name = "cc-pvdz"
+[method]
+kind = "rhf"
+[memory]
+budget_gb = 8.0
+three_index_budget_gb = 6.0
+"#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.memory.budget_gb(), Some(8.0));
     }
 
     #[test]

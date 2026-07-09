@@ -54,6 +54,10 @@ pub struct GwConfig {
     pub qp_newton_damp: f64,
     /// Frozen core for both PDEP and GW (must match for self-consistency).
     pub frozen_core: usize,
+    /// Optional resident-bytes ceiling propagated into the underlying
+    /// `PdepRpaConfig`/`RiMp2Config` transforms. `None` → resolved via
+    /// [`ferric_core::memory::resolve_budget_bytes`].
+    pub memory_budget_bytes: Option<usize>,
 }
 
 impl Default for GwConfig {
@@ -66,6 +70,7 @@ impl Default for GwConfig {
             pade_npts: 0,
             qp_newton_damp: 1.0,
             frozen_core: 0,
+            memory_budget_bytes: None,
         }
     }
 }

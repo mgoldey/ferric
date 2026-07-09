@@ -239,7 +239,7 @@ pub fn run_pdep_rpa(
     // Step 1: Build RI-MO B^P_ia tensor and V^{-1/2}. RPA only needs the
     // occ-vir block; skip the full-MP2 amplitudes/density that the gradient
     // path requires.
-    let mp2_cfg = RiMp2Config { frozen_core: config.frozen_core };
+    let mp2_cfg = RiMp2Config { frozen_core: config.frozen_core, memory_budget_bytes: config.memory_budget_bytes };
     let _t_setup = crate::timing::Stage::start("pdep:rpa_intermediates(ERI3+metric+MOtransform)");
     let inter = compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
     _t_setup.end();
@@ -555,7 +555,7 @@ pub fn run_u_pdep_rpa(
         ));
     }
 
-    let mp2_cfg = RiMp2Config { frozen_core: config.frozen_core };
+    let mp2_cfg = RiMp2Config { frozen_core: config.frozen_core, memory_budget_bytes: config.memory_budget_bytes };
     let inter_a = compute_rpa_intermediates_spin(mol, obs, dfbs, op, rhf, &mp2_cfg, true)?;
     let inter_b = compute_rpa_intermediates_spin(mol, obs, dfbs, op, rhf, &mp2_cfg, false)?;
     let naux = inter_a.naux;

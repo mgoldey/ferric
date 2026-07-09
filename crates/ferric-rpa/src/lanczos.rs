@@ -40,9 +40,21 @@ fn lanczos_panel_width(naux: usize, nov: usize) -> usize {
     }
     // Budget-derived: reserve one (nov × k) matvec scratch + one (naux × k)
     // output panel per panel column. Bytes per panel column ≈ (nov + naux)·8.
-    let budget = ferric_integrals::three_index_source::env_budget_bytes();
+    //
+    // Resolve via the unified budget. When no *explicit or env* budget is set
+    // (the resolver falls back to auto-detect or the 2 GiB fallback), keep the
+    // legacy behavior of a conservative fixed 256-column panel so concurrency on
+    // memory-tight boxes is preserved — the auto/fallback figure is an OOM guard
+    // for the big resident tensors, not a hint that this panel should widen.
+    use ferric_core::memory::{self, BudgetSource};
+    let resolution = memory::resolve_budget(None);
+    let explicitly_budgeted = matches!(
+        resolution.source,
+        BudgetSource::UnifiedEnv | BudgetSource::LegacyOocEnv | BudgetSource::LegacyEri3Env
+    );
+    let budget = resolution.bytes;
     let per_col_bytes = (nov.saturating_add(naux)).saturating_mul(8).max(1);
-    if budget == usize::MAX {
+    if !explicitly_budgeted {
         // No explicit budget: default to a panel that keeps the transient matvec
         // scratch to roughly a few hundred MB regardless of naux — enough BLAS-3
         // width to stay efficient, small enough to let benzene/aTZ jobs run

@@ -131,7 +131,7 @@ fn cpks_dmp2_energy_matches_fd() {
     // ambiguity in the perturbed RHF; the correlation ENERGY is rotation-immune.
     use ferric_mp2::cpks_polar::{analytic_de_mp2_along, fd_de_mp2_along};
     let (mol, obs, dfbs, op, bounds, ctx, rhf) = water_ccpvdz();
-    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0 };
+    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
     let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
     let an = analytic_de_mp2_along(&ctx,&mol,&obs,&dfbs,op,&bounds,&rhf,&mp2_cfg,2).unwrap();
     let fd = fd_de_mp2_along(&ctx,&mol,&obs,&dfbs,op,&bounds,&scf_cfg,&mp2_cfg,2,1e-3).unwrap();
@@ -143,7 +143,7 @@ fn cpks_dmp2_energy_matches_fd() {
 fn diag_dt2_distribution() {
     use ferric_mp2::cpks_polar::{analytic_dt2_along, fd_dt2_along};
     let (mol, obs, dfbs, op, bounds, ctx, rhf) = water_ccpvdz();
-    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0 };
+    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
     let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
     let (an, _u) = analytic_dt2_along(&ctx,&mol,&obs,&dfbs,op,&bounds,&rhf,&mp2_cfg,2).unwrap();
     // FD at two field strengths to check linearity (phase/degeneracy contamination
@@ -166,7 +166,7 @@ fn diag_dt2_distribution() {
 fn diag_de_components() {
     use ferric_mp2::cpks_polar::{analytic_de_mp2_along, fd_de_mp2_along, analytic_dt2_along};
     let (mol, obs, dfbs, op, bounds, ctx, rhf) = water_ccpvdz();
-    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0 };
+    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
     let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
     let an = analytic_de_mp2_along(&ctx,&mol,&obs,&dfbs,op,&bounds,&rhf,&mp2_cfg,2).unwrap();
     for &h in &[1e-3_f64, 1e-2, 2e-2] {
@@ -206,7 +206,7 @@ fn diag_dd_traces() {
 fn diag_emp2_parabola() {
     use ferric_mp2::cpks_polar::{debug_emp2_at_field, analytic_de_mp2_along};
     let (mol, obs, dfbs, op, bounds, ctx, rhf) = water_ccpvdz();
-    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0 };
+    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
     let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
     for &f in &[-1e-2_f64,-1e-3,0.0,1e-3,1e-2] {
         let e = debug_emp2_at_field(&ctx,&mol,&obs,&dfbs,op,&bounds,&scf_cfg,&mp2_cfg,2,f).unwrap();
@@ -223,7 +223,7 @@ fn diag_alpha_amplitude_only_vs_ff() {
     use ferric_mp2::cpks_polar::analytic_alpha_amplitude_only;
     use ferric_mp2::ff_polar::{mp2_polarizability_static, DensityMode};
     let (mol, obs, dfbs, op, bounds, ctx, rhf) = water_ccpvdz();
-    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0 };
+    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
     let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
     let amp = analytic_alpha_amplitude_only(&ctx,&mol,&obs,&dfbs,op,&bounds,&rhf,&mp2_cfg).unwrap();
     let ff = mp2_polarizability_static(&ctx,&mol,&obs,&dfbs,op,&bounds,&scf_cfg,&mp2_cfg,1e-3,DensityMode::Relaxed).unwrap();
@@ -239,7 +239,7 @@ fn diag_alpha_relaxed_vs_ff() {
     use ferric_mp2::cpks_polar::analytic_alpha_relaxed;
     use ferric_mp2::ff_polar::{mp2_polarizability_static, DensityMode};
     let (mol, obs, dfbs, op, bounds, ctx, rhf) = water_ccpvdz();
-    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0 };
+    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
     let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
     let an = analytic_alpha_relaxed(&ctx,&mol,&obs,&dfbs,op,&bounds,&rhf,&mp2_cfg).unwrap();
     let ff = mp2_polarizability_static(&ctx,&mol,&obs,&dfbs,op,&bounds,&scf_cfg,&mp2_cfg,1e-3,DensityMode::Relaxed).unwrap();
@@ -269,7 +269,7 @@ fn diag_ferric_static_relaxed_dipole() {
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
-    let mp2_cfg = RiMp2Config { frozen_core: 0 };
+    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
     let inter = compute_mp2_intermediates(&mol, &obs, &dfbs, op, &rhf, &mp2_cfg).unwrap();
     let (z, _l) = solve_zvector(&mol, &obs, &dfbs, op, &bounds, &rhf, &inter).unwrap();
     let p_relax = build_relaxed_density_ao(rhf.mos_r(), &inter.p_oo, &inter.p_vv, &z, &inter.orbital_space());
@@ -301,7 +301,7 @@ fn cpks_static_relaxed_dipole_vs_pyscf() {
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
-    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0 };
+    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
     let p = static_relaxed_density_ao(&ctx,&mol,&obs,&dfbs,op,&bounds,&rhf,&mp2_cfg).unwrap();
     let dip_ao = oneelectron::dipole(&obs, [0.0,0.0,0.0]);
     let mut mu=[0.0f64;3];
@@ -331,7 +331,7 @@ fn cpks_analytic_alpha_full_vs_oracle() {
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
-    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0 };
+    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
     let a = analytic_alpha_full(&ctx,&mol,&obs,&dfbs,op,&bounds,&rhf,&mp2_cfg).unwrap();
     eprintln!("Rust analytic α diag = [{:.5} {:.5} {:.5}]  iso {:.5}",
         a.tensor[0][0],a.tensor[1][1],a.tensor[2][2],a.iso);
@@ -371,7 +371,7 @@ fn cpks_attenuation_sweep() {
 
     let ctx = ParallelContext::default();
     let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
-    let mp2_cfg = RiMp2Config { frozen_core: 0 };
+    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
 
     eprintln!("\n=== Analytic relaxed-MP2 α attenuation sweep (att-MP2 ansatz) ===");
     eprintln!("basis cc-pVDZ / cc-pVDZ-RI; α isotropic (Bohr³); ω in Bohr⁻¹\n");
@@ -422,7 +422,7 @@ fn cpks_attenuation_aug_water() {
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("aug-cc-pvdz-rifit").unwrap()).unwrap();
     let ctx = ParallelContext::default();
     let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
-    let mp2_cfg = RiMp2Config { frozen_core: 0 };
+    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
     let cb = Operator::coulomb();
     let cb_bounds = SchwarzBounds::compute(cb, &obs).unwrap();
     let rhf = solve_rhf(&ctx, &mol, &obs, cb, &cb_bounds, &scf_cfg).unwrap();
@@ -498,7 +498,7 @@ fn cpks_dynamic_alpha_w0_matches_static() {
 fn cpks_c6_attenuation_sweep() {
     use ferric_mp2::cpks_polar::cphf_c6_molecular;
     use ferric_mp2::rimp2::RiMp2Config;
-    let _ = RiMp2Config { frozen_core: 0 };
+    let _ = RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
 
     let mols: &[(&str, &str, f64)] = &[
         // label, xyz, DOSD molecular C6_AA (a.u.) for context
@@ -558,7 +558,7 @@ fn cpks_frozen_mp2_c6_sweep() {
 
     let ctx = ParallelContext::default();
     let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
-    let mp2_cfg = RiMp2Config { frozen_core: 0 };
+    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
 
     eprintln!("\n=== Frozen-amplitude MP2 C6 attenuation sweep (HF shape × MP2 magnitude) ===");
     eprintln!("basis aug-cc-pVDZ; molecular C6_AA (a.u.); ω in Bohr⁻¹\n");

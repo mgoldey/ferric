@@ -22,6 +22,11 @@ use ndarray_linalg::{Cholesky, Eigh, UPLO};
 #[derive(Debug, Clone, Default)]
 pub struct RiMp2Config {
     pub frozen_core: usize,
+    /// Optional resident-bytes ceiling for the 3-index MO transform. `None` →
+    /// the unified resolver ([`ferric_core::memory::resolve_budget_bytes`]) picks
+    /// it (env override > auto 0.8×RAM > 2 GiB). `Some(bytes)` forces the ceiling
+    /// unless an env override wins.
+    pub memory_budget_bytes: Option<usize>,
 }
 
 /// Number of active (correlated) occupied orbitals after freezing
@@ -58,10 +63,14 @@ pub struct SpinComponents {
     pub e_total: f64,
 }
 
-/// Resident-bytes ceiling for the raw (P|μν) tensor during MO transforms,
-/// from `FERRIC_ERI3_BUDGET_GB` (unset = unlimited, fully in-core).
-pub fn eri3_budget_bytes() -> usize {
-    ferric_integrals::three_index_source::env_budget_bytes()
+/// Resident-bytes ceiling for the raw (P|μν) tensor during MO transforms.
+///
+/// Resolves via [`ferric_core::memory::resolve_budget_bytes`]: `explicit`
+/// (from [`RiMp2Config::memory_budget_bytes`]) is honored unless an env override
+/// (`FERRIC_MEM_BUDGET_GB` / legacy vars) wins; otherwise auto 0.8×RAM, then a
+/// 2 GiB fallback. Passing `None` reproduces the pure-env/auto chain.
+pub fn eri3_budget_bytes(explicit: Option<usize>) -> usize {
+    ferric_core::memory::resolve_budget_bytes(explicit)
 }
 
 /// Build (P|ia) without materializing the full AO 3-index tensor: raw (P|μν)
@@ -141,7 +150,7 @@ pub fn ri_mp2_spin_components(
     let v2c_inv_sqrt = metric_inverse_sqrt(&v2c, op)?;
 
     // (P|mu nu) -> (P|ia), aux-blocked under FERRIC_ERI3_BUDGET_GB
-    let eri3_mo = eri3_mo_ov_blocked(op, obs, dfbs, &c_occ, &c_vir, eri3_budget_bytes())?;
+    let eri3_mo = eri3_mo_ov_blocked(op, obs, dfbs, &c_occ, &c_vir, eri3_budget_bytes(config.memory_budget_bytes))?;
 
     // B_ia^P = sum_Q (P|Q)^{-1/2} (Q|ia)
     let eri3_flat = eri3_mo
@@ -368,7 +377,7 @@ pub fn compute_rpa_intermediates_spin(
     let c_occ = c_full.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
     let c_vir = c_full.slice(ndarray::s![.., nocc_total..]).to_owned();
 
-    let eri3_ov = eri3_mo_ov_blocked(op, obs, dfbs, &c_occ, &c_vir, eri3_budget_bytes())?;
+    let eri3_ov = eri3_mo_ov_blocked(op, obs, dfbs, &c_occ, &c_vir, eri3_budget_bytes(config.memory_budget_bytes))?;
     let b_ov = v_inv_sqrt.dot(
         &eri3_ov.into_shape_with_order((naux, nocc * nvir)).unwrap(),
     );
@@ -406,7 +415,7 @@ pub fn compute_rpa_intermediates(
     let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
     let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
 
-    let eri3_ov = eri3_mo_ov_blocked(op, obs, dfbs, &c_occ, &c_vir, eri3_budget_bytes())?;
+    let eri3_ov = eri3_mo_ov_blocked(op, obs, dfbs, &c_occ, &c_vir, eri3_budget_bytes(config.memory_budget_bytes))?;
     let b_ov = v_inv_sqrt.dot(
         &eri3_ov.into_shape_with_order((naux, nocc * nvir)).unwrap(),
     );
@@ -621,7 +630,7 @@ pub fn ri_mp2_einsum(
     // V^{-1/2} and AO 3-center integrals — identical to ri_mp2_spin_components
     let v2c = threeindex::coulomb_metric_2c(op, dfbs)?;
     let v_inv_sqrt = cholesky_inverse_sqrt(&v2c)?;
-    let eri3_mo = eri3_mo_ov_blocked(op, obs, dfbs, &c_occ, &c_vir, eri3_budget_bytes())?; // (naux, nocc, nvir)
+    let eri3_mo = eri3_mo_ov_blocked(op, obs, dfbs, &c_occ, &c_vir, eri3_budget_bytes(config.memory_budget_bytes))?; // (naux, nocc, nvir)
 
     // B^P_{ia} = V^{-1/2} (Q|ia); same b_flat as the scalar path
     let flat = eri3_mo
@@ -821,7 +830,7 @@ mod tests {
         let ctx = ParallelContext::default();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
-        let cfg = RiMp2Config { frozen_core: 0 };
+        let cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
 
         let (sc_ref, _) = ri_mp2_spin_components(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
         let sc_ein = ri_mp2_einsum(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
@@ -844,10 +853,10 @@ mod tests {
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
         let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
 
-        let cfg = RiMp2Config { frozen_core: 2 };
+        let cfg = RiMp2Config { frozen_core: 2, memory_budget_bytes: None };
         let res = ri_mp2(&mol, &obs, &dfbs, op, &rhf, &cfg);
         assert!(res.is_err(), "frozen_core > nocc must be an error, got {res:?}");
-        let cfg_all = RiMp2Config { frozen_core: 1 };
+        let cfg_all = RiMp2Config { frozen_core: 1, memory_budget_bytes: None };
         let res_all = ri_mp2(&mol, &obs, &dfbs, op, &rhf, &cfg_all);
         assert!(res_all.is_err(), "freezing every occupied orbital must be an error, got {res_all:?}");
     }

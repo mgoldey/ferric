@@ -142,16 +142,32 @@ impl Default for RhfConfig {
     }
 }
 
-/// Resolve the 3-index memory budget in bytes: `FERRIC_OOC_BUDGET_GB` env var
-/// (in GiB) takes precedence over the config field. Shared by RHF/UHF/ROHF so
-/// the budget is honored uniformly across all DF-J/DF-K construction sites.
+/// Resolve the 3-index memory budget in bytes via the unified resolver
+/// [`ferric_core::memory::resolve_budget_bytes`]. Shared by RHF/UHF/ROHF so the
+/// budget is honored uniformly across all DF-J/DF-K construction sites.
+///
+/// `config_bytes` is the TOML `[memory]` value (or the 2 GiB `RhfConfig`
+/// default). Precedence: an env override (`FERRIC_MEM_BUDGET_GB`, or the legacy
+/// `FERRIC_OOC_BUDGET_GB`/`FERRIC_ERI3_BUDGET_GB`) wins over `config_bytes`,
+/// matching the legacy behavior where the env var beat the config field.
+///
+/// Note: because the `RhfConfig` default is a concrete 2 GiB (never 0), the
+/// auto-detect branch of the resolver is only reached when a caller passes 0
+/// explicitly; the SCF path therefore keeps its historical 2 GiB default when no
+/// env var is set.
 pub fn resolve_three_index_budget(config_bytes: usize) -> usize {
-    std::env::var("FERRIC_OOC_BUDGET_GB")
-        .ok()
-        .and_then(|s| s.parse::<f64>().ok())
-        .filter(|g| *g > 0.0)
-        .map(|g| (g * 1024.0 * 1024.0 * 1024.0) as usize)
-        .unwrap_or(config_bytes)
+    use ferric_core::memory::{self, BudgetSource};
+    // Try env-only first (explicit=None): if an env override exists it must beat
+    // the config field, preserving the legacy env>config precedence.
+    let env_res = memory::resolve_budget(None);
+    match env_res.source {
+        BudgetSource::UnifiedEnv
+        | BudgetSource::LegacyOocEnv
+        | BudgetSource::LegacyEri3Env => env_res.bytes,
+        // No env override → honor the config field (or resolve auto/fallback if
+        // the caller passed 0).
+        _ => memory::resolve_budget_bytes(Some(config_bytes)),
+    }
 }
 
 /// Solve the closed-shell RHF equations for a molecule.

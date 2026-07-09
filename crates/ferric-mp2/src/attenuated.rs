@@ -129,6 +129,10 @@ pub struct AttenuatedMp2Config {
     /// to <1 µHa on test molecules); 1e-8 acceptable for production; 1e-6
     /// is aggressive. See `eri3_tensor_screened_qqr`.
     pub screen_thresh: Option<f64>,
+    /// Optional resident-bytes ceiling for the 3-index MO transform, propagated
+    /// into the internal `RiMp2Config`. `None` → resolved via
+    /// [`ferric_core::memory::resolve_budget_bytes`].
+    pub memory_budget_bytes: Option<usize>,
 }
 
 /// Bohr⁻¹ per Å⁻¹ (inverse of the Å-to-Bohr conversion).
@@ -141,6 +145,7 @@ impl Default for AttenuatedMp2Config {
             scaling: 1.0,
             frozen_core: 0,
             screen_thresh: None,
+            memory_budget_bytes: None,
         }
     }
 }
@@ -184,7 +189,7 @@ pub fn attenuated_ri_mp2_long_range(
     config: &AttenuatedMp2Config,
 ) -> Result<AttenuatedMp2Result, FerricError> {
     let op = Operator::erf(config.omega);
-    let ri_config = RiMp2Config { frozen_core: config.frozen_core };
+    let ri_config = RiMp2Config { frozen_core: config.frozen_core, memory_budget_bytes: config.memory_budget_bytes };
     let (sc, _) = ri_mp2_spin_components(mol, obs, dfbs, op, rhf, &ri_config)?;
     let scaled_corr = config.scaling * sc.e_total;
     Ok(AttenuatedMp2Result {
@@ -211,7 +216,7 @@ pub fn attenuated_ri_mp2(
     let sc = if let Some(thresh) = config.screen_thresh {
         attenuated_spin_components_screened(mol, obs, dfbs, op, rhf, config.frozen_core, thresh)?
     } else {
-        let ri_config = RiMp2Config { frozen_core: config.frozen_core };
+        let ri_config = RiMp2Config { frozen_core: config.frozen_core, memory_budget_bytes: config.memory_budget_bytes };
         ri_mp2_spin_components(mol, obs, dfbs, op, rhf, &ri_config)?.0
     };
     let scaled_corr = config.scaling * sc.e_total;
@@ -309,7 +314,7 @@ pub fn rs_mp2_decomposition(
     let sr = erfc_attenuated_ri_mp2(mol, obs, dfbs, rhf, config)?.mp2_corr;
     let lr = attenuated_ri_mp2_long_range(mol, obs, dfbs, rhf, config)?.mp2_corr;
     let op = Operator::coulomb();
-    let ri_config = RiMp2Config { frozen_core: config.frozen_core };
+    let ri_config = RiMp2Config { frozen_core: config.frozen_core, memory_budget_bytes: config.memory_budget_bytes };
     let (sc, _) = ri_mp2_spin_components(mol, obs, dfbs, op, rhf, &ri_config)?;
     Ok((sr, lr, sc.e_total))
 }

@@ -17,6 +17,12 @@ pub struct CcConfig {
     pub energy_conv: f64,
     pub diis_start: usize,
     pub diis_subspace: usize,
+    /// Optional resident-bytes ceiling for RI integral transforms feeding the
+    /// CC amplitude equations. `None` → resolved via
+    /// [`ferric_core::memory::resolve_budget_bytes`]. Currently wiring-only:
+    /// the dense CC contractions dominate memory, but the field lets callers
+    /// propagate the unified budget uniformly.
+    pub memory_budget_bytes: Option<usize>,
 }
 
 impl Default for CcConfig {
@@ -27,6 +33,7 @@ impl Default for CcConfig {
             energy_conv: 1e-8,
             diis_start: 5,
             diis_subspace: 6,
+            memory_budget_bytes: None,
         }
     }
 }

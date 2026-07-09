@@ -44,6 +44,9 @@ pub struct OoRiMp2Config {
     pub diis_size: usize,
     /// Whether to use DIIS for orbital rotations.
     pub use_diis: bool,
+    /// Optional resident-bytes ceiling for the 3-index MO transform. `None` →
+    /// resolved via [`ferric_core::memory::resolve_budget_bytes`].
+    pub memory_budget_bytes: Option<usize>,
 }
 
 impl Default for OoRiMp2Config {
@@ -57,6 +60,7 @@ impl Default for OoRiMp2Config {
             level_shift: 0.1,
             diis_size: 6,
             use_diis: true,
+            memory_budget_bytes: None,
         }
     }
 }

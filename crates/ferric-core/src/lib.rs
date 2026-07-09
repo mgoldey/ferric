@@ -15,6 +15,7 @@ pub mod basis;
 pub mod ecp;
 pub mod orbitals;
 pub mod parallel;
+pub mod memory;
 
 pub use error::FerricError;
 pub use orbitals::OrbitalSpace;

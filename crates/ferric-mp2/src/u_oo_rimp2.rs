@@ -278,7 +278,7 @@ pub fn u_oo_ri_mp2(
         nocc_total_a, nocc_total_b, e_hf,
     );
     let mut amps = compute_u_mp2_amplitudes(
-        mol, obs, dfbs, op, &scf_view, &crate::rimp2::RiMp2Config { frozen_core: config.frozen_core },
+        mol, obs, dfbs, op, &scf_view, &crate::rimp2::RiMp2Config { frozen_core: config.frozen_core, memory_budget_bytes: None },
     )?;
     let mut e_mp2 = amps.components.e_total;
     let mut total_energy = e_hf + e_mp2;
@@ -423,7 +423,7 @@ pub fn u_oo_ri_mp2(
             nocc_total_a, nocc_total_b, e_hf_new,
         );
         let amps_new = compute_u_mp2_amplitudes(
-            mol, obs, dfbs, op, &scf_view_new, &crate::rimp2::RiMp2Config { frozen_core: config.frozen_core },
+            mol, obs, dfbs, op, &scf_view_new, &crate::rimp2::RiMp2Config { frozen_core: config.frozen_core, memory_budget_bytes: None },
         )?;
         let total_new = e_hf_new + amps_new.components.e_total;
         let de = (total_new - total_energy).abs();
@@ -458,7 +458,7 @@ pub fn u_oo_ri_mp2(
                 let sv = make_scf_view(&bt_c_a, &bt_c_b, &fa, &fb, ea.clone(), eb.clone(),
                     nocc_total_a, nocc_total_b, eh);
                 let am = compute_u_mp2_amplitudes(
-                    mol, obs, dfbs, op, &sv, &crate::rimp2::RiMp2Config { frozen_core: config.frozen_core },
+                    mol, obs, dfbs, op, &sv, &crate::rimp2::RiMp2Config { frozen_core: config.frozen_core, memory_budget_bytes: None },
                 )?;
                 bt_total = eh + am.components.e_total;
                 bt_ehf = eh; bt_fa = fa; bt_fb = fb;

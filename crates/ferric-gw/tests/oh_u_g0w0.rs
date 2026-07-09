@@ -67,6 +67,7 @@ fn pdep_cfg() -> PdepRpaConfig {
         chi0_sparsity: Chi0Sparsity::Dense,
         eigensolver: Eigensolver::Davidson,
         sternheimer: SternheimerConfig::default(),
+        memory_budget_bytes: None,
     }
 }
 

@@ -71,6 +71,7 @@ fn main() {
         chi0_sparsity: Chi0Sparsity::Dense,
         eigensolver: Eigensolver::Davidson,
         sternheimer: SternheimerConfig::default(),
+        memory_budget_bytes: None,
     };
     let gcfg = GwConfig {
         method: GwMethod::G0W0,

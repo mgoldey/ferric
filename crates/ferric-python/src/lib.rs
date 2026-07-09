@@ -77,6 +77,17 @@ fn make_err(e: impl std::fmt::Display) -> PyErr {
     pyo3::exceptions::PyRuntimeError::new_err(format!("{e}"))
 }
 
+/// Convert an optional `memory_budget_gb` kwarg (GiB) to the explicit
+/// `Option<usize>` bytes expected by the method configs / the unified resolver.
+/// `None` (unset) stays `None` → the resolver auto-detects. A non-positive value
+/// also maps to `None` (treated as "unset").
+fn budget_bytes_from_gb(memory_budget_gb: Option<f64>) -> Option<usize> {
+    memory_budget_gb.and_then(|g| {
+        let b = ferric_core::memory::gib_to_bytes(g);
+        if b == 0 { None } else { Some(b) }
+    })
+}
+
 fn rhf_config(k_builder: Option<&str>) -> RhfConfig {
     RhfConfig { k_builder: k_builder.map(|s| s.to_string()), ..Default::default() }
 }
@@ -300,9 +311,10 @@ struct PyRiMp2Result {
 }
 
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None))]
 fn run_rimp2(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
-             frozen_core: Option<usize>, k_builder: Option<&str>) -> PyResult<PyRiMp2Result> {
+             frozen_core: Option<usize>, k_builder: Option<&str>,
+             memory_budget_gb: Option<f64>) -> PyResult<PyRiMp2Result> {
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
     let op = Operator::coulomb();
@@ -310,7 +322,7 @@ fn run_rimp2(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
     let ctx = ParallelContext::default();
     let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &rhf_config(k_builder)).map_err(make_err)?;
     let mp2 = ri_mp2(&mol.inner, &prep, &dfbs, op, &rhf,
-                      &RiMp2Config { frozen_core: frozen_core.unwrap_or(0) }).map_err(make_err)?;
+                      &RiMp2Config { frozen_core: frozen_core.unwrap_or(0), memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb) }).map_err(make_err)?;
     Ok(PyRiMp2Result { total_energy: mp2.total_energy, rhf_energy: rhf.energy, mp2_corr: mp2.mp2_corr })
 }
 
@@ -359,10 +371,11 @@ struct PyAttenuatedMp2Result {
 }
 
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, omega=None, frozen_core=None, k_builder=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, omega=None, frozen_core=None, k_builder=None, memory_budget_gb=None))]
 fn run_attenuated_rimp2(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
                         omega: Option<f64>, frozen_core: Option<usize>,
-                        k_builder: Option<&str>) -> PyResult<PyAttenuatedMp2Result> {
+                        k_builder: Option<&str>,
+                        memory_budget_gb: Option<f64>) -> PyResult<PyAttenuatedMp2Result> {
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
     let op = Operator::coulomb();
@@ -374,6 +387,7 @@ fn run_attenuated_rimp2(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyB
         omega: omega.unwrap_or(0.420) * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV,
         scaling: 1.0, frozen_core: frozen_core.unwrap_or(0),
         screen_thresh: None,
+        memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
     };
     let r = attenuated_ri_mp2(&mol.inner, &prep, &dfbs, &rhf, &cfg).map_err(make_err)?;
     Ok(PyAttenuatedMp2Result {
@@ -389,10 +403,11 @@ fn run_attenuated_rimp2(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyB
 /// the MP2 correlation is attenuated. Requires the terfc tables on disk
 /// (FERRIC_TERF_TABLE_DIR). Paper aDZ-optimal r0 = 1.05 Å.
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, r0=None, frozen_core=None, k_builder=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, r0=None, frozen_core=None, k_builder=None, memory_budget_gb=None))]
 fn run_terfc_rimp2(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
                    r0: Option<f64>, frozen_core: Option<usize>,
-                   k_builder: Option<&str>) -> PyResult<PyRiMp2Result> {
+                   k_builder: Option<&str>,
+                   memory_budget_gb: Option<f64>) -> PyResult<PyRiMp2Result> {
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
     let coul = Operator::coulomb();
@@ -402,7 +417,7 @@ fn run_terfc_rimp2(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisS
     // r0 supplied in Å; convert to Bohr for the operator.
     let r0_bohr = r0.unwrap_or(1.05) * 1.8897259886;
     let mp2 = ri_mp2(&mol.inner, &prep, &dfbs, Operator::terfc(r0_bohr), &rhf,
-                      &RiMp2Config { frozen_core: frozen_core.unwrap_or(0) }).map_err(make_err)?;
+                      &RiMp2Config { frozen_core: frozen_core.unwrap_or(0), memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb) }).map_err(make_err)?;
     Ok(PyRiMp2Result { total_energy: mp2.total_energy, rhf_energy: rhf.energy, mp2_corr: mp2.mp2_corr })
 }
 
@@ -419,10 +434,11 @@ struct PyScsMp2Result {
 }
 
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, c_os=None, c_ss=None, frozen_core=None, k_builder=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, c_os=None, c_ss=None, frozen_core=None, k_builder=None, memory_budget_gb=None))]
 fn run_scs_mp2(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
                c_os: Option<f64>, c_ss: Option<f64>, frozen_core: Option<usize>,
-               k_builder: Option<&str>) -> PyResult<PyScsMp2Result> {
+               k_builder: Option<&str>,
+               memory_budget_gb: Option<f64>) -> PyResult<PyScsMp2Result> {
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
     let op = Operator::coulomb();
@@ -432,6 +448,7 @@ fn run_scs_mp2(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
     let cfg = ScsMp2Config {
         c_os: c_os.unwrap_or(6.0 / 5.0), c_ss: c_ss.unwrap_or(1.0 / 3.0),
         frozen_core: frozen_core.unwrap_or(0),
+        memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
     };
     let r = scs_mp2(&mol.inner, &prep, &dfbs, &rhf, &cfg).map_err(make_err)?;
     Ok(PyScsMp2Result {
@@ -445,12 +462,13 @@ fn run_scs_mp2(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
 /// (Å). E = c_OS·E_OS(r0_1) + c_SS·[E_SS(r0_2) − E_SS(r0_1)]. Requires the terfc
 /// tables (FERRIC_TERF_TABLE_DIR). Paper defaults: r0=0.75/1.05 Å, c_OS=1.27, c_SS=4.05.
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, r0_bonded=None, r0_nonbonded=None, c_os=None, c_ss=None, frozen_core=None, k_builder=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, r0_bonded=None, r0_nonbonded=None, c_os=None, c_ss=None, frozen_core=None, k_builder=None, memory_budget_gb=None))]
 #[allow(clippy::too_many_arguments)]
 fn run_scs_mp2_2terfc(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
                       r0_bonded: Option<f64>, r0_nonbonded: Option<f64>,
                       c_os: Option<f64>, c_ss: Option<f64>, frozen_core: Option<usize>,
-                      k_builder: Option<&str>) -> PyResult<PyScsMp2Result> {
+                      k_builder: Option<&str>,
+                      memory_budget_gb: Option<f64>) -> PyResult<PyScsMp2Result> {
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
     let coul = Operator::coulomb();
@@ -463,6 +481,7 @@ fn run_scs_mp2_2terfc(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBas
         r0_nonbonded: r0_nonbonded.unwrap_or(1.05) * ANG2BOHR,
         c_os: c_os.unwrap_or(1.27), c_ss: c_ss.unwrap_or(4.05),
         frozen_core: frozen_core.unwrap_or(0),
+        memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
     };
     if cfg.r0_nonbonded <= cfg.r0_bonded {
         return Err(pyo3::exceptions::PyValueError::new_err(
@@ -502,11 +521,13 @@ struct PyRsMp2RpaResult {
 }
 
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, omega=None, frozen_core=None, k_builder=None, formulation=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, omega=None, frozen_core=None, k_builder=None, formulation=None, memory_budget_gb=None))]
+#[allow(clippy::too_many_arguments)]
 fn run_rs_mp2_rpa(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
                   omega: Option<f64>, frozen_core: Option<usize>,
                   k_builder: Option<&str>,
-                  formulation: Option<&str>) -> PyResult<PyRsMp2RpaResult> {
+                  formulation: Option<&str>,
+                  memory_budget_gb: Option<f64>) -> PyResult<PyRsMp2RpaResult> {
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
     let op = Operator::coulomb();
@@ -528,12 +549,13 @@ fn run_rs_mp2_rpa(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSe
         ))),
     };
     // omega is supplied in Å⁻¹; convert to Bohr⁻¹ for the operator.
-    let cfg = ferric_rpa::RsMp2RpaConfig {
+    let mut cfg = ferric_rpa::RsMp2RpaConfig {
         omega: omega.unwrap_or(0.420) * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV,
         frozen_core: frozen_core.unwrap_or(0),
         formulation: form,
         ..Default::default()
     };
+    cfg.rpa.memory_budget_bytes = budget_bytes_from_gb(memory_budget_gb);
     let r = ferric_rpa::rs_mp2_lr_rpa(&mol.inner, &prep, &dfbs, &rhf, &cfg)
         .map_err(make_err)?;
     Ok(PyRsMp2RpaResult {
@@ -653,46 +675,49 @@ struct PyCcResult {
 }
 
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None))]
 fn run_ccd(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
-           frozen_core: Option<usize>, k_builder: Option<&str>) -> PyResult<PyCcResult> {
+           frozen_core: Option<usize>, k_builder: Option<&str>,
+           memory_budget_gb: Option<f64>) -> PyResult<PyCcResult> {
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
     let ctx = ParallelContext::default();
     let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &rhf_config(k_builder)).map_err(make_err)?;
-    let cfg = CcConfig { frozen_core: frozen_core.unwrap_or(0), ..Default::default() };
+    let cfg = CcConfig { frozen_core: frozen_core.unwrap_or(0), memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb), ..Default::default() };
     let r = run_ccd_inner(&mol.inner, &prep, &dfbs, op, &rhf, &cfg).map_err(make_err)?;
     Ok(PyCcResult { correlation_energy: r.correlation_energy, t_correction: None })
 }
 
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None))]
 fn run_ccsd(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
-            frozen_core: Option<usize>, k_builder: Option<&str>) -> PyResult<PyCcResult> {
+            frozen_core: Option<usize>, k_builder: Option<&str>,
+            memory_budget_gb: Option<f64>) -> PyResult<PyCcResult> {
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
     let ctx = ParallelContext::default();
     let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &rhf_config(k_builder)).map_err(make_err)?;
-    let cfg = CcConfig { frozen_core: frozen_core.unwrap_or(0), ..Default::default() };
+    let cfg = CcConfig { frozen_core: frozen_core.unwrap_or(0), memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb), ..Default::default() };
     let r = run_ccsd_inner(&mol.inner, &prep, &dfbs, op, &rhf, &cfg).map_err(make_err)?;
     Ok(PyCcResult { correlation_energy: r.correlation_energy, t_correction: None })
 }
 
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None))]
 fn run_ccsd_t(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
-              frozen_core: Option<usize>, k_builder: Option<&str>) -> PyResult<PyCcResult> {
+              frozen_core: Option<usize>, k_builder: Option<&str>,
+              memory_budget_gb: Option<f64>) -> PyResult<PyCcResult> {
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
     let ctx = ParallelContext::default();
     let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &rhf_config(k_builder)).map_err(make_err)?;
-    let cfg = CcConfig { frozen_core: frozen_core.unwrap_or(0), ..Default::default() };
+    let cfg = CcConfig { frozen_core: frozen_core.unwrap_or(0), memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb), ..Default::default() };
     let r = run_ccsd_inner(&mol.inner, &prep, &dfbs, op, &rhf, &cfg).map_err(make_err)?;
     let e_t = run_ccsd_t_inner(&mol.inner, &prep, &dfbs, op, &rhf, &r, &cfg).map_err(make_err)?;
     Ok(PyCcResult { correlation_energy: r.correlation_energy, t_correction: Some(e_t) })
@@ -790,6 +815,7 @@ impl PyPdepRpaResult {
     frozen_core=None, n_quad=None, quadrature=None, u0=None,
     trunc_thresh=None, davidson_conv_thresh=None,
     run_diagnostics=false, k_builder=None, chi0_sparsity=None,
+    memory_budget_gb=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_pdep_rpa(
@@ -805,6 +831,7 @@ fn run_pdep_rpa(
     run_diagnostics: bool,
     k_builder: Option<&str>,
     chi0_sparsity: Option<&str>,
+    memory_budget_gb: Option<f64>,
 ) -> PyResult<PyPdepRpaResult> {
     use ferric_rpa::config::{QuadratureConfig, QuadratureScheme, SternheimerConfig};
     use ferric_rpa::{run_pdep_rpa as run_pdep_rpa_inner, PdepRpaConfig};
@@ -836,6 +863,7 @@ fn run_pdep_rpa(
         chi0_backend: ferric_rpa::config::Chi0Backend::default(),
         chi0_sparsity: ferric_rpa::config::Chi0Sparsity::parse_config_str(chi0_sparsity)
             .map_err(make_err)?,
+        memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
     };
     let r = run_pdep_rpa_inner(&mol.inner, &prep, &dfbs, op, &rhf, &cfg).map_err(make_err)?;
     Ok(PyPdepRpaResult {
