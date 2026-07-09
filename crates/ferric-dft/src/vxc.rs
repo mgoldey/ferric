@@ -50,7 +50,7 @@ impl VxcScratch {
     }
 
     /// Buffer of exactly `dim`, reallocating only on shape change.
-    fn ensure(&mut self, dim: (usize, usize)) -> &mut Array2<f64> {
+    pub(crate) fn ensure(&mut self, dim: (usize, usize)) -> &mut Array2<f64> {
         if self.buf.dim() != dim {
             self.buf = Array2::zeros(dim);
         }

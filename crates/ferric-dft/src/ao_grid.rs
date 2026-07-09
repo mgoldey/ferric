@@ -457,10 +457,25 @@ pub fn eval_basis_and_grad_on_points(
     let nbf: usize = shells.iter().map(|s| num_functions(s.l, s.pure)).sum();
     let npts = points.len();
 
-    // Per-point AO + ∇AO evaluation (pure scalar; the parallelizable unit).
-    let eval_point = |p: &[f64; 3]| -> Result<(Vec<f64>, [Vec<f64>; 3]), GtoEvalError> {
-        let mut chi_col = vec![0.0f64; nbf];
-        let mut dchi_col = [vec![0.0f64; nbf], vec![0.0f64; nbf], vec![0.0f64; nbf]];
+    // Output arrays, allocated ONCE. chi is (nbf, npts) row-major, so
+    // chi[(i, g)] lives at offset i*npts + g. dchi is (3, nbf, npts), so
+    // dchi[(a, i, g)] lives at offset a*nbf*npts + i*npts + g. We scatter each
+    // grid column's values directly into these buffers (no per-point Vec collect
+    // + copy), halving the construction peak vs. the old materialize-then-copy.
+    let mut chi = Array2::<f64>::zeros((nbf, npts));
+    let mut dchi = Array3::<f64>::zeros((3, nbf, npts));
+
+    // Evaluate all AO + ∇AO values for grid point `g` and scatter them into the
+    // pre-allocated columns via raw pointers. Each grid point owns a disjoint
+    // set of column offsets (column `g` of chi, and column `g` of each of the 3
+    // dchi planes), so distinct points never write overlapping addresses — the
+    // scatter is data-race-free and bit-identical to a serial fill.
+    let dchi_plane = nbf * npts;
+    let eval_into = |g: usize,
+                     p: &[f64; 3],
+                     chi_base: *mut f64,
+                     dchi_base: *mut f64|
+     -> Result<(), GtoEvalError> {
         let mut buf = [0.0f64; 10];
         let mut gradbuf: [[f64; 10]; 3] = [[0.0; 10]; 3];
 
@@ -476,45 +491,42 @@ pub fn eval_basis_and_grad_on_points(
 
             eval_shell_and_grad(sh, dx, dy, dz, &mut buf[..n], &mut gradbuf)?;
             for i in 0..n {
-                chi_col[row_offset + i] = buf[i];
-                dchi_col[0][row_offset + i] = gradbuf[0][i];
-                dchi_col[1][row_offset + i] = gradbuf[1][i];
-                dchi_col[2][row_offset + i] = gradbuf[2][i];
+                let row = row_offset + i;
+                // SAFETY: `row < nbf` and `g < npts`, so every offset lies in
+                // bounds of the respective array, and column `g` is written by
+                // this grid point alone (see the disjointness argument above).
+                unsafe {
+                    *chi_base.add(row * npts + g) = buf[i];
+                    *dchi_base.add(row * npts + g) = gradbuf[0][i];
+                    *dchi_base.add(dchi_plane + row * npts + g) = gradbuf[1][i];
+                    *dchi_base.add(2 * dchi_plane + row * npts + g) = gradbuf[2][i];
+                }
             }
             row_offset += n;
         }
-        Ok((chi_col, dchi_col))
+        Ok(())
     };
 
     // Grid points are independent. Parallelize over points (pure scalar work, no
-    // BLAS inside → no oversubscription against BLAS threads), then assemble into
-    // the (nbf, npts) / (3, nbf, npts) arrays. BUT parallelism POISONS tiny
-    // workloads: rayon spawn/join/steal dwarfs the work on small grids (the
-    // free-atom/proatom SCF case — single atom, few points — was ~18× slower
-    // under threads). Below a work threshold, run serially. The free-atom SCF
-    // path additionally pins rayon to one thread, but this guard makes the
+    // BLAS inside → no oversubscription against BLAS threads). BUT parallelism
+    // POISONS tiny workloads: rayon spawn/join/steal dwarfs the work on small
+    // grids (the free-atom/proatom SCF case — single atom, few points — was ~18×
+    // slower under threads). Below a work threshold, run serially. The free-atom
+    // SCF path additionally pins rayon to one thread, but this guard makes the
     // function never-slower regardless of caller threading.
     const PAR_WORK_THRESHOLD: usize = 50_000; // ~npts·nbf flops-ish
-    let per_point: Vec<(Vec<f64>, [Vec<f64>; 3])> = if npts * nbf >= PAR_WORK_THRESHOLD {
+    let chi_addr = chi.as_mut_ptr() as usize;
+    let dchi_addr = dchi.as_mut_ptr() as usize;
+    if npts * nbf >= PAR_WORK_THRESHOLD {
         points
             .par_iter()
-            .map(&eval_point)
-            .collect::<Result<Vec<_>, _>>()?
+            .enumerate()
+            .try_for_each(|(g, p)| {
+                eval_into(g, p, chi_addr as *mut f64, dchi_addr as *mut f64)
+            })?;
     } else {
-        points
-            .iter()
-            .map(&eval_point)
-            .collect::<Result<Vec<_>, _>>()?
-    };
-
-    let mut chi = Array2::<f64>::zeros((nbf, npts));
-    let mut dchi = Array3::<f64>::zeros((3, nbf, npts));
-    for (g, (chi_col, dchi_col)) in per_point.iter().enumerate() {
-        for i in 0..nbf {
-            chi[(i, g)] = chi_col[i];
-            dchi[(0, i, g)] = dchi_col[0][i];
-            dchi[(1, i, g)] = dchi_col[1][i];
-            dchi[(2, i, g)] = dchi_col[2][i];
+        for (g, p) in points.iter().enumerate() {
+            eval_into(g, p, chi_addr as *mut f64, dchi_addr as *mut f64)?;
         }
     }
     Ok((chi, dchi))
@@ -874,18 +886,33 @@ pub fn eval_basis_grad_hess_on_points(
     bs: &ferric_core::basis::BasisSet,
     points: &[[f64; 3]],
 ) -> Result<(Array2<f64>, Array3<f64>, ndarray::Array4<f64>), GtoEvalError> {
+    use rayon::prelude::*;
+
     let shells = collect_shells(mol, bs)?;
     let nbf: usize = shells.iter().map(|s| num_functions(s.l, s.pure)).sum();
     let npts = points.len();
+
+    // Output arrays, allocated once; each grid point scatters into its own
+    // column `g` of every plane, so writes of distinct points are disjoint —
+    // same raw-pointer scatter (and same disjointness argument) as
+    // `eval_basis_and_grad_on_points`. This function was always single-copy
+    // (it never had the per-point collect); the scatter adds the same
+    // point-parallelism without any extra buffer.
     let mut chi = Array2::<f64>::zeros((nbf, npts));
     let mut dchi = Array3::<f64>::zeros((3, nbf, npts));
     let mut ddchi = ndarray::Array4::<f64>::zeros((3, 3, nbf, npts));
 
-    let mut buf = [0.0f64; 10];
-    let mut gradbuf: [[f64; 10]; 3] = [[0.0; 10]; 3];
-    let mut hessbuf: [[f64; 10]; 9] = [[0.0; 10]; 9];
+    let plane = nbf * npts; // stride between axis-planes of dchi / (a,b)-planes of ddchi
+    let eval_into = |g: usize,
+                     p: &[f64; 3],
+                     chi_base: *mut f64,
+                     dchi_base: *mut f64,
+                     ddchi_base: *mut f64|
+     -> Result<(), GtoEvalError> {
+        let mut buf = [0.0f64; 10];
+        let mut gradbuf: [[f64; 10]; 3] = [[0.0; 10]; 3];
+        let mut hessbuf: [[f64; 10]; 9] = [[0.0; 10]; 9];
 
-    for (g, p) in points.iter().enumerate() {
         let mut row_offset = 0usize;
         for sh in &shells {
             buf.fill(0.0);
@@ -899,15 +926,51 @@ pub fn eval_basis_grad_hess_on_points(
 
             eval_shell_grad_hess(sh, dx, dy, dz, &mut buf[..n], &mut gradbuf, &mut hessbuf)?;
             for i in 0..n {
-                chi[(row_offset + i, g)] = buf[i];
-                for a in 0..3 {
-                    dchi[(a, row_offset + i, g)] = gradbuf[a][i];
-                    for b in 0..3 {
-                        ddchi[(a, b, row_offset + i, g)] = hessbuf[a * 3 + b][i];
+                let row = row_offset + i;
+                // SAFETY: `row < nbf`, `g < npts`, and plane indices < 3
+                // (resp. 9), so every offset is in bounds; column `g` is
+                // written by this grid point alone (disjointness above).
+                unsafe {
+                    *chi_base.add(row * npts + g) = buf[i];
+                    for a in 0..3 {
+                        *dchi_base.add(a * plane + row * npts + g) = gradbuf[a][i];
+                        for b in 0..3 {
+                            *ddchi_base.add((a * 3 + b) * plane + row * npts + g) =
+                                hessbuf[a * 3 + b][i];
+                        }
                     }
                 }
             }
             row_offset += n;
+        }
+        Ok(())
+    };
+
+    // Same small-workload guard as `eval_basis_and_grad_on_points`: rayon
+    // overhead poisons tiny grids, so run those serially.
+    const PAR_WORK_THRESHOLD: usize = 50_000; // ~npts·nbf flops-ish
+    let chi_addr = chi.as_mut_ptr() as usize;
+    let dchi_addr = dchi.as_mut_ptr() as usize;
+    let ddchi_addr = ddchi.as_mut_ptr() as usize;
+    if npts * nbf >= PAR_WORK_THRESHOLD {
+        points.par_iter().enumerate().try_for_each(|(g, p)| {
+            eval_into(
+                g,
+                p,
+                chi_addr as *mut f64,
+                dchi_addr as *mut f64,
+                ddchi_addr as *mut f64,
+            )
+        })?;
+    } else {
+        for (g, p) in points.iter().enumerate() {
+            eval_into(
+                g,
+                p,
+                chi_addr as *mut f64,
+                dchi_addr as *mut f64,
+                ddchi_addr as *mut f64,
+            )?;
         }
     }
     Ok((chi, dchi, ddchi))
