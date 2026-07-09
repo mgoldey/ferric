@@ -108,7 +108,7 @@ def run_one(basis, mol, rayon):
     max_atoms = os.environ.get("GW100_FULL_MAX_ATOMS", "10")
     pbe_all = os.environ.get("GW100_PBE_ALL", "0")
     env = dict(os.environ,
-               OPENBLAS_NUM_THREADS="2", RAYON_NUM_THREADS=str(rayon),
+               OPENBLAS_NUM_THREADS="1", RAYON_NUM_THREADS=str(rayon),
                OMP_NUM_THREADS="1", MKL_NUM_THREADS="1",
                GW100_TRUNC="1e-4", GW100_FULL_MAX_ATOMS=max_atoms,
                GW100_PBE_ALL=pbe_all, GW100_DONE=skip)
