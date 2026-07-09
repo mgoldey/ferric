@@ -34,8 +34,8 @@ SRC = ROOT / "benchmarks" / "harness" / "examples" / "gw100_full.rs"
 BASES = ["aug-cc-pvdz", "aug-cc-pvtz"]
 METHODS = ["Koop", "dSCF", "dRPA", "G0W0", "COHSEX", "evGW0", "evGW", "G0W0pbe"]
 ROW = re.compile(
-    r"^(?P<mol>[A-Za-z0-9]+)\s+(?P<exp>[-+0-9.]+)\s+"
-    + r"\s+".join(rf"(?P<{m}>[-+0-9.]+)" for m in METHODS)
+    r"^(?P<mol>[A-Za-z0-9]+)\s+(?P<exp>[-+0-9.]+|NaN|nan)\s+"
+    + r"\s+".join(rf"(?P<{m}>[-+0-9.]+|NaN|nan)" for m in METHODS)
 )
 _lock = threading.Lock()
 MOL_BUDGET = float(os.environ.get("GW100_MOL_BUDGET", "5400"))
