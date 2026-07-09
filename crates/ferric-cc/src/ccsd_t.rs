@@ -79,6 +79,22 @@ pub fn ccsd_t(
         return Ok(0.0);
     }
 
+    // Fail-fast size guard: the dense (T) materializes several full 6D
+    // [no2,no2,no2,nv2,nv2,nv2] tensors (d3 :133, t3c :162, t3d :170, plus the
+    // einsum! term1/term2/t3d intermediates and p_a_bc/p_i_jk permutation copies
+    // :39-49). Peak ≈ 8 co-resident 6D f64 buffers → 8·(no2·nv2)³·8 bytes. This
+    // MUST stay next to those allocations; a butane input is ~1.8 TB here.
+    let peak6d = (no2.saturating_mul(nv2))
+        .saturating_pow(3)
+        .saturating_mul(8) // ~8 co-resident 6D tensors
+        .saturating_mul(8); // f64
+    let budget = ferric_core::memory::resolve_budget_bytes(cfg.memory_budget_bytes);
+    ferric_core::memory::check_alloc(
+        &format!("CCSD(T) (no={no}, nv={nv} spatial; no2={no2}, nv2={nv2} spin-orbitals)"),
+        peak6d,
+        budget,
+    )?;
+
     let eps = rhf.eps_r();
     let c = rhf.mos_r();
     let c_occ = c.slice(ndarray::s![.., first_occ..nocc_total]).to_owned();
@@ -239,5 +255,46 @@ mod tests {
             (t_corr - (-0.0030587091)).abs() < 1e-4,
             "(T) = {t_corr:.10}, expected -0.0030587091"
         );
+    }
+
+    #[test]
+    fn ccsd_t_fails_fast_under_tiny_budget() {
+        // The M2 size guard must ERROR cleanly (not OOM-kill) before the dense 6D
+        // allocation when the budget is tiny. Uses an EXPLICIT config budget so no
+        // process-global env var is touched (explicit wins in resolve_budget_bytes).
+        // We build a valid RHF + a dummy CcResult (t1/t2 shapes don't matter — the
+        // guard fires before they are used numerically), then assert the error.
+        let mol = Molecule::parse_xyz(
+            "3\n\nO 0.0 0.0 0.1173\nH 0.0 0.7572 -0.4692\nH 0.0 -0.7572 -0.4692\n",
+            0,
+            1,
+        )
+        .unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("def2-qzvpp-rifit").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let ctx = ParallelContext::default();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
+
+        // Dummy CCSD result — the guard runs before t1/t2 are consumed.
+        let nbas = obs.nbasis();
+        let nocc = rhf.eps_r().iter().filter(|&&e| e < 0.0).count();
+        let nv = nbas - nocc;
+        let dummy = CcResult {
+            correlation_energy: 0.0,
+            t1: Some(ndarray::Array2::<f64>::zeros((nocc, nv))),
+            t2: ndarray::Array4::<f64>::zeros((nocc, nocc, nv, nv)),
+        };
+        // 1e-6 GiB ≈ 1 KB budget — far below the H2O/cc-pVDZ (T) peak.
+        let cc_cfg = CcConfig {
+            frozen_core: 0,
+            memory_budget_bytes: Some(ferric_core::memory::gib_to_bytes(1e-6)),
+            ..Default::default()
+        };
+        let err = ccsd_t(&mol, &obs, &dfbs, op, &rhf, &dummy, &cc_cfg).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("CCSD(T)"), "unexpected error: {msg}");
+        assert!(msg.contains("budget is"), "unexpected error: {msg}");
     }
 }

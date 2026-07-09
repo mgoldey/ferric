@@ -33,6 +33,29 @@ use crate::cohsex::project_b_into_pdep;
 use crate::method::GwMethod;
 use crate::{mo_b, run_gw, w_pdep, GwConfig};
 
+/// Fail-fast pre-flight guard for the dense particle–hole matrices these BSE/CIS
+/// drivers build over the (ia) space of size `n = nocc·nvir`. `n_dense` is the
+/// number of co-resident n×n f64 buffers at the peak: 1 for the single TDA
+/// `a_mat` (:162, :243), 3 for the C6 drivers (apb + amb + per-frequency sysm,
+/// :370-371/:409, :547-548/:584). Placed here so an M3/M5 restructure updates
+/// the count in the same diff.
+fn check_bse_dense_alloc(
+    label: &str,
+    n: usize,
+    n_dense: usize,
+    explicit_budget: Option<usize>,
+) -> Result<(), FerricError> {
+    let peak = n
+        .saturating_mul(n)
+        .saturating_mul(n_dense)
+        .saturating_mul(8); // f64
+    ferric_core::memory::check_alloc(
+        &format!("{label} (dense (ia) matrix, n=nocc·nvir={n})"),
+        peak,
+        ferric_core::memory::resolve_budget_bytes(explicit_budget),
+    )
+}
+
 /// Result of a BSE-TDA singlet excitation calculation.
 #[derive(Debug, Clone)]
 pub struct BseResult {
@@ -102,6 +125,8 @@ pub fn run_bse_tda(
     if n == 0 {
         return Err(FerricError::General("run_bse_tda: empty (ia) space".into()));
     }
+    // Fail-fast on the dense TDA matrix a_mat (:162, one n×n f64 buffer).
+    check_bse_dense_alloc("BSE-TDA", n, 1, pdep_cfg.memory_budget_bytes)?;
 
     // 3. Dressed B̃^P_{pq} over all MO pairs + projection M[α,p,q] = Σ_P Ṽ_α b̃^P_pq.
     let mob = mo_b::build_full_b(mol, obs, dfbs, op, rhf, frozen_core)?;
@@ -228,6 +253,9 @@ pub fn run_cis_tda(
     let nocc = nocc_total - frozen_core;
     let nvir = nmo - nocc_total;
     let n = nocc * nvir;
+    // Fail-fast on the dense TDA matrix a_mat (:243, one n×n f64 buffer). No
+    // config budget on this reference path, so resolve from env/auto.
+    check_bse_dense_alloc("CIS-TDA", n, 1, None)?;
 
     let mob = mo_b::build_full_b(mol, obs, dfbs, op, rhf, frozen_core)?;
     let b = &mob.b_full;
@@ -338,6 +366,9 @@ pub fn run_bse_c6(
     let nocc = nocc_total - frozen_core;
     let nvir = nmo - nocc_total;
     let n = nocc * nvir;
+    // Fail-fast on the dense (A±B) + per-frequency sysm buffers (:398-399, :437 —
+    // 3 co-resident n×n f64 buffers).
+    check_bse_dense_alloc("BSE-C6", n, 3, pdep_cfg.memory_budget_bytes)?;
 
     // Projected screened modes + bare integrals (same path as run_bse_tda).
     let mob = mo_b::build_full_b(mol, obs, dfbs, op, rhf, frozen_core)?;
@@ -490,6 +521,9 @@ pub fn run_bse_c6_ks(
     let nocc = nocc_total - frozen_core;
     let nvir = nmo - nocc_total;
     let n = nocc * nvir;
+    // Fail-fast on the dense (A±B) + per-frequency sysm buffers (:575-576, :614 —
+    // 3 co-resident n×n f64 buffers).
+    check_bse_dense_alloc("BSE-C6 (KS)", n, 3, pdep_cfg.memory_budget_bytes)?;
 
     let mob = mo_b::build_full_b(mol, obs, dfbs, op, ks, frozen_core)?;
     let (v_dressed, _dev) = w_pdep::redress_with_check(&mob.v_inv_sqrt, &pdep.eigenpotentials)?;
@@ -598,4 +632,38 @@ pub fn run_bse_c6_ks(
     let c6 = 3.0 / PI * (0..freqs.len()).map(|k| weights[k] * alpha_iso[k] * alpha_iso[k]).sum::<f64>();
     let alpha_static = *alpha_iso.first().unwrap_or(&0.0);
     Ok(BseC6Result { c6, alpha_iso, alpha_static, nocc, nvir })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ferric_core::basis;
+    use ferric_core::parallel::ParallelContext;
+    use ferric_scf::rhf::{solve_rhf, RhfConfig};
+    use ferric_scf::screening::SchwarzBounds;
+
+    // FERRIC_MEM_BUDGET_GB is process-global; serialize env-mutating tests
+    // (blas_threads.rs / ferric-core memory.rs pattern).
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn cis_tda_fails_fast_under_tiny_env_budget() {
+        // M2 size guard: the dense (ia)×(ia) TDA matrix must ERROR cleanly under
+        // a tiny budget, before build_full_b / the a_mat allocation. RHF runs
+        // BEFORE the env var is set so only the guarded path sees the tiny budget.
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let ctx = ParallelContext::default();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
+        std::env::set_var("FERRIC_MEM_BUDGET_GB", "0.0000001");
+        let res = run_cis_tda(&mol, &obs, &dfbs, op, &rhf, 0);
+        std::env::remove_var("FERRIC_MEM_BUDGET_GB");
+        let err = res.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("CIS-TDA") && msg.contains("budget is"), "unexpected: {msg}");
+    }
 }

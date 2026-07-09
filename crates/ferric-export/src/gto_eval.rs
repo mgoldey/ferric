@@ -25,8 +25,22 @@ pub fn eval_basis_on_grid(
     grid: &GridSpec,
 ) -> Result<Array2<f64>, GtoEvalError> {
     let shells = collect_shells(mol, bs)?;
-    let nbf = shells.iter().map(|s| num_functions(s.l, s.pure)).sum();
+    let nbf: usize = shells.iter().map(|s| num_functions(s.l, s.pure)).sum();
     let npts = grid.n_x * grid.n_y * grid.n_z;
+
+    // Fail-fast size guard: the dense AO-on-grid buffer chi is (nbf, npts) f64
+    // (:30). GridSpec::for_molecule derives npts = n_x·n_y·n_z from a
+    // user-chosen spacing with no upper bound (cube.rs:53-55), so a fine grid on
+    // a large molecule can request an unbounded allocation. No config budget on
+    // this export path, so resolve from env/auto. Keep next to the chi alloc.
+    let peak = nbf.saturating_mul(npts).saturating_mul(8); // f64
+    ferric_core::memory::check_alloc(
+        &format!("cube AO-on-grid (nbf={nbf}, npts={npts} = {}×{}×{})", grid.n_x, grid.n_y, grid.n_z),
+        peak,
+        ferric_core::memory::resolve_budget_bytes(None),
+    )
+    .map_err(|e| GtoEvalError::OutOfBudget(e.to_string()))?;
+
     let mut chi = Array2::<f64>::zeros((nbf, npts));
 
     // Assume orthogonal grid (step vectors are axis-aligned). The cube exporter
@@ -101,5 +115,34 @@ mod tests {
         // Second H at z=1.4: its 1s should be smaller at origin
         assert!(chi[(1, 0)] > 0.0);
         assert!(chi[(0, 0)] > chi[(1, 0)]);
+    }
+
+    // FERRIC_MEM_BUDGET_GB is process-global; serialize env-mutating tests
+    // (blas_threads.rs / ferric-core memory.rs pattern).
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn eval_basis_on_grid_fails_fast_under_tiny_env_budget() {
+        // M2 size guard: an unbounded npts (fine spacing) must ERROR cleanly
+        // before the (nbf, npts) allocation when the budget is tiny.
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mol = h2_mol();
+        let bs = basis::bundled("sto-3g").unwrap();
+        let grid = GridSpec {
+            origin: [0.0, 0.0, 0.0],
+            n_x: 50, n_y: 50, n_z: 50, // 125k pts × 2 bf × 8 B = 2 MB > tiny budget
+            step_x: [0.1, 0.0, 0.0],
+            step_y: [0.0, 0.1, 0.0],
+            step_z: [0.0, 0.0, 0.1],
+        };
+        std::env::set_var("FERRIC_MEM_BUDGET_GB", "0.000001");
+        let res = eval_basis_on_grid(&mol, &bs, &grid);
+        std::env::remove_var("FERRIC_MEM_BUDGET_GB");
+        let err = res.unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("cube AO-on-grid") && msg.contains("budget is"),
+            "unexpected: {msg}"
+        );
     }
 }
