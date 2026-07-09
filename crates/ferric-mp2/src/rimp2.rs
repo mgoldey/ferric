@@ -13,6 +13,7 @@ use ferric_core::orbitals::OrbitalSpace;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
+use ferric_integrals::three_index_source::ThreeIndexSource;
 use ferric_integrals::threeindex;
 use ferric_scf::ScfResult;
 use ndarray::{Array2, Array3};
@@ -111,6 +112,50 @@ pub fn eri3_mo_ov_blocked(
         p0 = p1;
     }
     Ok(mo)
+}
+
+/// Build a DRESSED MO 3-index block `B^P_{pq} = Σ_Q V^{-1/2}[P,Q] (c_left^T
+/// (Q|μν) c_right)[pq]`, shape `(naux, nleft*nright)`, streaming raw AO
+/// aux-blocks from `src` under its budget and dressing each block on the fly.
+///
+/// This is the general (occ/vir agnostic) form of the `eri3_mo_ov_blocked` +
+/// `v_inv_sqrt.dot(..)` pair used by the energy path, mirroring M3's
+/// `compute_b_full_mo_with` streaming idiom: the output is allocated once and
+/// the metric GEMM accumulates in place (beta=1), so the peak transient is one
+/// aux-block MO panel instead of the full `(naux, nao²)` AO tensor plus a
+/// second full-size dressed copy. Exactness: the same contraction as
+/// `v_inv_sqrt.dot(transform_3center(eri3_tensor(..), c_left, c_right))`,
+/// reordered per aux-block, not approximated.
+fn eri3_mo_block_dressed(
+    src: &mut ThreeIndexSource,
+    v_inv_sqrt: &Array2<f64>,
+    c_left: &Array2<f64>,
+    c_right: &Array2<f64>,
+) -> Result<Array2<f64>, FerricError> {
+    let naux = src.naux();
+    let nleft = c_left.ncols();
+    let nright = c_right.ncols();
+    let width = nleft * nright;
+    let mut b_flat = Array2::<f64>::zeros((naux, width));
+    src.for_each_block(|blk| {
+        let qb = blk.data.shape()[0];
+        // MO-transform this raw aux-block: mo[q, pq] = c_left^T (Q|μν) c_right.
+        let mut mo_blk = Array2::<f64>::zeros((qb, width));
+        for q in 0..qb {
+            let bq_ao = blk.data.slice(ndarray::s![q, .., ..]);
+            let tmp = bq_ao.dot(c_right); // (nao, nright)
+            let bq_mo = c_left.t().dot(&tmp); // (nleft, nright)
+            mo_blk
+                .slice_mut(ndarray::s![q, ..])
+                .assign(&bq_mo.into_shape_with_order(width).unwrap());
+        }
+        // Dress into every output aux row, accumulating in place (beta=1):
+        //   b_flat[:, pq] += V^{-1/2}[:, Qblock] · mo_blk.
+        let msub = v_inv_sqrt.slice(ndarray::s![.., blk.p0..blk.p0 + qb]);
+        ndarray::linalg::general_mat_mul(1.0, &msub, &mo_blk, 1.0, &mut b_flat);
+        Ok(())
+    })?;
+    Ok(b_flat)
 }
 
 /// Compute RI-MP2 with spin-component resolution.
@@ -449,51 +494,29 @@ pub fn compute_mp2_intermediates(
 
     let v2c = threeindex::coulomb_metric_2c(op, dfbs)?;
     let v_inv_sqrt = cholesky_inverse_sqrt(&v2c)?;
-    let eri3_ao = threeindex::eri3_tensor(op, obs, dfbs)?;
 
     let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
     let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
 
-    // B^P_{ia} = V^{-1/2} (P|ia)
-    let eri3_ov = crate::mo_transform::transform_3center_ov(&eri3_ao, &c_occ, &c_vir);
-    let b_ov = v_inv_sqrt.dot(
-        &eri3_ov.into_shape_with_order((naux, nocc * nvir)).unwrap()
-    );
+    // Budget-aware raw (P|μν) source: in-core when it fits, disk-spilled in
+    // aux-blocks otherwise. The three MO blocks below each stream this source
+    // and dress with V^{-1/2} on the fly (see eri3_mo_block_dressed), so the
+    // peak transient is one aux-block MO panel — not the former dense
+    // (naux, nao², 14.3 GB) AO tensor plus its three transformed copies.
+    let mut src = ThreeIndexSource::build(
+        op, obs, dfbs, eri3_budget_bytes(config.memory_budget_bytes),
+    )?;
 
-    // B^P_{ij} = V^{-1/2} (P|ij)
-    let eri3_oo = crate::mo_transform::transform_3center_ov(&eri3_ao, &c_occ, &c_occ);
-    let b_oo = v_inv_sqrt.dot(
-        &eri3_oo.into_shape_with_order((naux, nocc * nocc)).unwrap()
-    );
+    // B^P_{ia} = V^{-1/2} (P|ia), B^P_{ij} = V^{-1/2} (P|ij), B^P_{ab} = V^{-1/2} (P|ab)
+    let b_ov = eri3_mo_block_dressed(&mut src, &v_inv_sqrt, &c_occ, &c_vir)?;
+    let b_oo = eri3_mo_block_dressed(&mut src, &v_inv_sqrt, &c_occ, &c_occ)?;
+    let b_vv = eri3_mo_block_dressed(&mut src, &v_inv_sqrt, &c_vir, &c_vir)?;
 
-    // B^P_{ab} = V^{-1/2} (P|ab)
-    let eri3_vv = crate::mo_transform::transform_3center_ov(&eri3_ao, &c_vir, &c_vir);
-    let b_vv = v_inv_sqrt.dot(
-        &eri3_vv.into_shape_with_order((naux, nvir * nvir)).unwrap()
-    );
-
-    // Energy from occ-vir B tensor
+    // Energy via i-blocked wide GEMMs (BLAS3), same path as the main RI-MP2
+    // lane — replaces the per-element O(naux) double-dot quadruple loop.
     let eps = rhf.eps_r();
-    let mut e_os = 0.0;
-    let mut e_ss = 0.0;
-    for i in 0..nocc {
-        for j in 0..nocc {
-            for a in 0..nvir {
-                for b in 0..nvir {
-                    let ia = i * nvir + a;
-                    let jb = j * nvir + b;
-                    let ib = i * nvir + b;
-                    let ja = j * nvir + a;
-                    let eri_iajb: f64 = (0..naux).map(|p| b_ov[(p, ia)] * b_ov[(p, jb)]).sum();
-                    let eri_ibja: f64 = (0..naux).map(|p| b_ov[(p, ib)] * b_ov[(p, ja)]).sum();
-                    let denom = eps[first_occ + i] + eps[first_occ + j]
-                        - eps[nocc_total + a] - eps[nocc_total + b];
-                    e_os += eri_iajb * eri_iajb / denom;
-                    e_ss += eri_iajb * (eri_iajb - eri_ibja) / denom;
-                }
-            }
-        }
-    }
+    let sc = spin_components_from_b_ov(&b_ov, eps, nocc, nvir, first_occ, nocc_total);
+    let (e_os, e_ss) = (sc.e_os, sc.e_ss);
 
     let (t2, _) = crate::oo_rimp2::compute_t2_and_integrals(
         &b_ov, rhf.eps_r(), nocc, nvir, nocc_total, first_occ, naux,

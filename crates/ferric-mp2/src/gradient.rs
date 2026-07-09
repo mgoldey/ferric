@@ -148,58 +148,39 @@ pub fn rimp2_gradient_analytical(
     let c = rhf.mos_r();
     let t2 = &inter.t2;
 
-    // Build X^P_{ia} = Σ_{jb} (2*t_{ij,ab} - t_{ij,ba}) * B^P_{jb}
+    // Build X^P_{ia} = Σ_{jb} (2*t_{ij,ab} - t_{ij,ba}) * B^P_{jb} via a wide GEMM
+    // per i: X_i[P, a] = B_ov · TT_i^T where TT_i[a, jb] = 2 t_{ij,ab} - t_{ij,ba}.
+    // Replaces the per-element (P,i,a) scalar loop over (j,b): same FLOPs, BLAS3
+    // throughput. t2 layout is t2[(i*nvir+a)*nov + j*nvir+b] = t_{ij,ab}.
     let mut x_ov = Array2::zeros((naux, nocc * nvir));
     for i in 0..nocc {
+        // TT_i[a, jb] = 2 t_{ij,ab} - t_{ij,ba}
+        let mut tt_i = Array2::<f64>::zeros((nvir, nov));
         for a in 0..nvir {
-            let ia = i * nvir + a;
-            for p_aux in 0..naux {
-                let mut sum = 0.0;
-                for j in 0..nocc {
-                    for b in 0..nvir {
-                        let jb = j * nvir + b;
-                        let t_ij_ab = t2[(i * nvir + a) * nov + j * nvir + b];
-                        let t_ij_ba = t2[(i * nvir + b) * nov + j * nvir + a];
-                        let tt = 2.0 * t_ij_ab - t_ij_ba;
-                        sum += tt * inter.b_ov[(p_aux, jb)];
-                    }
+            for j in 0..nocc {
+                for b in 0..nvir {
+                    let jb = j * nvir + b;
+                    let t_ij_ab = t2[(i * nvir + a) * nov + j * nvir + b];
+                    let t_ij_ba = t2[(i * nvir + b) * nov + j * nvir + a];
+                    tt_i[(a, jb)] = 2.0 * t_ij_ab - t_ij_ba;
                 }
-                x_ov[(p_aux, ia)] = sum;
             }
         }
+        // X_i[P, a] = Σ_{jb} B_ov[P, jb] · TT_i[a, jb] = B_ov · TT_i^T  (naux, nvir)
+        let x_i = inter.b_ov.dot(&tt_i.t());
+        x_ov
+            .slice_mut(ndarray::s![.., i * nvir..(i + 1) * nvir])
+            .assign(&x_i);
     }
 
-    // Back-transform X to AO: G3c_{P,μ,ν} = Σ_{ia} X^P_{ia} C_{μi} C_{νa} (+ symmetrize)
+    // Back-transform X to AO and contract with 3-center derivative integrals,
+    // blocked over the aux SHELL index. For each aux shell sp we build only its
+    // g3c slab G3c_{p,μ,ν} = Σ_{ia} X^p_{ia} C_{μi} C_{νa} (symmetrized), then
+    // contract it with that shell's derivative block. Peak g3c footprint is one
+    // aux-shell slab (np, nbf, nbf) instead of the full (naux, nbf, nbf) tensor.
     let nbas = obs.nbasis();
-    let mut g3c = ndarray::Array3::zeros((naux, nbas, nbas));
-    let c_occ = c.slice(ndarray::s![.., inter.first_occ..inter.first_occ + nocc]);
-    let c_vir = c.slice(ndarray::s![.., inter.nocc_total..]);
-    for p_aux in 0..naux {
-        for mu in 0..nbas {
-            for nu in 0..nbas {
-                let mut sum = 0.0;
-                for i in 0..nocc {
-                    for a in 0..nvir {
-                        sum += x_ov[(p_aux, i * nvir + a)] * c_occ[(mu, i)] * c_vir[(nu, a)];
-                    }
-                }
-                g3c[(p_aux, mu, nu)] = sum;
-            }
-        }
-    }
-    // Symmetrize: G3c_{S,μ,ν} += G3c_{S,ν,μ}
-    for p_aux in 0..naux {
-        for mu in 0..nbas {
-            for nu in (mu + 1)..nbas {
-                let sum = g3c[(p_aux, mu, nu)] + g3c[(p_aux, nu, mu)];
-                g3c[(p_aux, mu, nu)] = sum;
-                g3c[(p_aux, nu, mu)] = sum;
-            }
-            g3c[(p_aux, mu, mu)] *= 2.0;
-        }
-    }
-
-    // Contract G3c with 3-center derivative integrals
+    let c_occ = c.slice(ndarray::s![.., inter.first_occ..inter.first_occ + nocc]).to_owned();
+    let c_vir = c.slice(ndarray::s![.., inter.nocc_total..]).to_owned();
     {
         use ferric_integrals::engine::Engine;
         let mut eng3d = Engine::new_3center_deriv(op, obs, dfbs, 1e-14)?;
@@ -213,10 +194,31 @@ pub fn rimp2_gradient_analytical(
         let sh2at_df = dfbs.shell_to_atom();
 
         for sp in 0..nsh_df {
+            let np = dims_df[sp];
+            let pf0 = offs_df[sp];
+            // g3c for just this aux shell's rows: (np, nbf, nbf), symmetrized.
+            // For each aux fn p: X_p is (nocc, nvir); G_raw = C_occ · X_p · C_vir^T,
+            // then G3c_p = G_raw + G_raw^T (matches the old full-tensor symmetrize,
+            // including the ×2 on the diagonal via mu==nu).
+            let mut g3c_sp = ndarray::Array3::<f64>::zeros((np, nbas, nbas));
+            for p in 0..np {
+                let pf = pf0 + p;
+                let x_p = x_ov
+                    .slice(ndarray::s![pf, ..])
+                    .into_shape_with_order((nocc, nvir))
+                    .unwrap();
+                // G_raw_{μν} = Σ_{ia} X^p_{ia} C_{μi} C_{νa} = C_occ · X_p · C_vir^T
+                let g_raw = c_occ.dot(&x_p).dot(&c_vir.t());
+                // old code did g3c[mu,mu] *= 2 after adding the (mu,nu)+(nu,mu)
+                // off-diagonals; G_raw + G_raw^T already doubles the diagonal, so
+                // g_sym matches the symmetrized full-tensor g3c to rounding.
+                let g_sym = &g_raw + &g_raw.t();
+                g3c_sp.slice_mut(ndarray::s![p, .., ..]).assign(&g_sym);
+            }
+
             for s1 in 0..nsh_obs {
                 for s2 in 0..=s1 {
                     if let Some(deriv) = eng3d.compute_eri3_deriv(obs, dfbs, sp, s1, s2) {
-                        let np = dims_df[sp];
                         let n1 = dims_obs[s1];
                         let n2 = dims_obs[s2];
                         let block_sz = np * n1 * n2;
@@ -227,13 +229,12 @@ pub fn rimp2_gradient_analytical(
                                 for j in 0..n2 {
                                     let mu = offs_obs[s1] + i;
                                     let nu = offs_obs[s2] + j;
-                                    let pf = offs_df[sp] + p;
                                     let idx = (p * n1 + i) * n2 + j;
 
                                     let gval = if sym12 {
-                                        g3c[(pf, mu, nu)] + g3c[(pf, nu, mu)]
+                                        g3c_sp[(p, mu, nu)] + g3c_sp[(p, nu, mu)]
                                     } else {
-                                        g3c[(pf, mu, nu)]
+                                        g3c_sp[(p, mu, nu)]
                                     };
 
                                     // 9 derivative blocks: [dP_x, dP_y, dP_z, d1_x, d1_y, d1_z, d2_x, d2_y, d2_z]
