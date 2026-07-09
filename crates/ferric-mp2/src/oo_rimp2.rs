@@ -713,7 +713,13 @@ pub fn oo_ri_mp2(
     let h = oneelectron::hcore(obs);
 
     // AO-side invariants: built once, reused every iteration + backtrack.
-    let ao = OoRiMp2AoTensors::build(obs, dfbs, op)?;
+    // Thread the config budget (M1 resolver) rather than the env-only default.
+    let ao = OoRiMp2AoTensors::build_with_budget(
+        obs,
+        dfbs,
+        op,
+        ferric_core::memory::resolve_budget_bytes(config.memory_budget_bytes),
+    )?;
 
     // Start from converged RHF orbitals
     let mut c = rhf.mos_r().clone();

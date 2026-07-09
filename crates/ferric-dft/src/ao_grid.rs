@@ -14,6 +14,11 @@ pub enum GtoEvalError {
     MissingElement { z: i32 },
     #[error("angular momentum l={l} not supported for grid evaluation (only s, p, d)")]
     UnsupportedL { l: i32 },
+    /// Pre-flight size guard: the dense AO-on-grid buffer would exceed the memory
+    /// budget. Carries the fully-formatted message from
+    /// `ferric_core::memory::check_alloc`.
+    #[error("{0}")]
+    OutOfBudget(String),
 }
 
 /// One contracted GTO shell located in space (centered on its parent atom).

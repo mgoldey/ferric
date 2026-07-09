@@ -177,6 +177,38 @@ pub fn resolve_budget_bytes(explicit: Option<usize>) -> usize {
     resolve_budget(explicit).bytes
 }
 
+/// Fail-fast pre-flight allocation guard (M2).
+///
+/// Returns `Err` when a method's projected peak resident allocation (`bytes`)
+/// exceeds the resolved memory `budget` (from [`resolve_budget_bytes`]). Callers
+/// place this *before* the first large allocation on a dense path so an oversized
+/// job errors cleanly (a `Result`, propagated to the CLI / a Python exception)
+/// instead of walking into a TB-scale allocation that OOM-kills the process (in
+/// Python, the host interpreter).
+///
+/// `label` should identify the method and carry the shape context, e.g.
+/// `"CCSD(T) (no=13, nv=102 spin-orbitals)"`. The produced message reads:
+///
+/// ```text
+/// CCSD(T) (no=13, nv=102 spin-orbitals) requires 1834.20 GB; budget is 18.40 GB
+/// — raise [memory] budget_gb / FERRIC_MEM_BUDGET_GB or shrink the system
+/// ```
+///
+/// The guard is a pure pre-check: it never allocates and never changes a result
+/// for a job that fits. GB in the message are decimal (÷1e9) to match the other
+/// ferric size diagnostics.
+pub fn check_alloc(label: &str, bytes: usize, budget: usize) -> Result<(), crate::FerricError> {
+    if bytes > budget {
+        return Err(crate::FerricError::General(format!(
+            "{label} requires {:.2} GB; budget is {:.2} GB — raise [memory] \
+             budget_gb / FERRIC_MEM_BUDGET_GB or shrink the system",
+            bytes as f64 / 1e9,
+            budget as f64 / 1e9,
+        )));
+    }
+    Ok(())
+}
+
 /// Detect available memory in bytes: the minimum of any active cgroup memory
 /// limit and `/proc/meminfo`'s `MemAvailable`. Returns `None` if nothing can be
 /// read (non-Linux, sandboxed, or missing files) so the caller falls back.
@@ -313,6 +345,25 @@ mod tests {
         assert_eq!(parse_meminfo_available("MemTotal: 32000000 kB\n"), None);
         // Malformed value → None.
         assert_eq!(parse_meminfo_available("MemAvailable: notanumber kB\n"), None);
+    }
+
+    #[test]
+    fn check_alloc_fits_and_errors() {
+        // Fits: bytes <= budget → Ok.
+        assert!(check_alloc("test", 100, 100).is_ok());
+        assert!(check_alloc("test", 99, 100).is_ok());
+        // Exceeds → Err with the shape label and both GB figures.
+        let err = check_alloc(
+            "CCSD(T) (no=13, nv=102 spin-orbitals)",
+            1_834_200_000_000,
+            18_400_000_000,
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("CCSD(T) (no=13, nv=102 spin-orbitals)"));
+        assert!(msg.contains("1834.20 GB"));
+        assert!(msg.contains("18.40 GB"));
+        assert!(msg.contains("FERRIC_MEM_BUDGET_GB"));
     }
 
     #[test]
