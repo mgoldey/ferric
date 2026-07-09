@@ -16,9 +16,36 @@ use crate::w_pdep;
 use crate::{GwConfig, GwResult};
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
+use ferric_integrals::three_index_source::env_budget_bytes;
 use ferric_rpa::PdepRpaResult;
 use ferric_scf::ScfResult;
 use ndarray::{Array1, Array2};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Warn (once) if the projected M tensor (m_modes, n_act, n_act) would exceed
+/// `FERRIC_ERI3_BUDGET_GB`. `project_b_into_pdep` is infallible and called from
+/// many sites (including per-iteration evGW rebuilds and both U-GW spins), so we
+/// surface the concrete GB number rather than change the signature to `Result`.
+/// M2 owns the hard allocation guards; this keeps the documented formula in sync.
+static M_PROJ_WARNED: AtomicBool = AtomicBool::new(false);
+fn guard_m_proj(m_modes: usize, n_act: usize) {
+    let budget = env_budget_bytes();
+    let need = m_modes
+        .saturating_mul(n_act)
+        .saturating_mul(n_act)
+        .saturating_mul(8);
+    if need > budget && !M_PROJ_WARNED.swap(true, Ordering::Relaxed) {
+        eprintln!(
+            "ferric-gw WARNING: projected M tensor ({m_modes}×{n_act}×{n_act} f64 = \
+             {:.2} GB) exceeds FERRIC_ERI3_BUDGET_GB ({:.2} GB) and is rebuilt every \
+             evGW iteration (×2 for U-GW). Full-rank GW at this scale needs \
+             trunc_thresh > 0 (rank truncation shrinks this quadratically), a smaller \
+             active space, or a larger budget.",
+            need as f64 / 1e9,
+            budget as f64 / 1e9,
+        );
+    }
+}
 
 /// Σ_x(m) = −Σ_i Σ_P B̃^P_{mi}²  (closed-shell RHF exchange diagonal, MO basis).
 pub fn sigma_x_diag(mo_b: &MoB) -> Array1<f64> {
@@ -42,10 +69,18 @@ pub fn sigma_x_diag(mo_b: &MoB) -> Array1<f64> {
 
 /// Project B̃^P_{mn} onto PDEP dressed eigenpotentials V_α^P:
 ///   M[(α, m, n)] = Σ_P V_α^P · B̃^P_{mn}
+///
+/// Peak: a single (m_modes, n_act, n_act) f64 tensor. At full rank
+/// (`trunc_thresh = 0`, the default) m_modes = naux, so this is the same
+/// ~12.5 GB footprint as `b_full` and it is REBUILT every evGW outer iteration
+/// (and once per spin for U-GW). Rank truncation (`trunc_thresh > 0`) shrinks
+/// m_modes and this tensor quadratically. We warn (once) with the concrete GB
+/// number if the projection would exceed `FERRIC_ERI3_BUDGET_GB`.
 pub fn project_b_into_pdep(mo_b: &MoB, v_dressed: &Array2<f64>) -> ndarray::Array3<f64> {
     let naux = mo_b.naux;
     let n_act = mo_b.n_act;
     let m_modes = v_dressed.ncols();
+    guard_m_proj(m_modes, n_act);
     // Reshape b_full (naux, n_act, n_act) → (naux, n_act*n_act) for one GEMM.
     let b_flat = mo_b
         .b_full
