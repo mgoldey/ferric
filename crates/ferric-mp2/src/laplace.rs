@@ -371,7 +371,7 @@ impl LaplaceMp2 {
         let v2c = ferric_integrals::threeindex::coulomb_metric_2c(op, dfbs)?;
         let v_inv_sqrt = crate::rimp2::cholesky_inverse_sqrt(&v2c)?;
         let eri3_mo = crate::rimp2::eri3_mo_ov_blocked(
-            op, obs, dfbs, &c_occ, &c_vir, crate::rimp2::eri3_budget_bytes(),
+            op, obs, dfbs, &c_occ, &c_vir, crate::rimp2::eri3_budget_bytes(None),
         )?;
         let b_flat = v_inv_sqrt.dot(&eri3_mo.into_shape_with_order((naux, nocc * nvir)).unwrap());
 
