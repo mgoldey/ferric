@@ -263,6 +263,14 @@ pub fn u_oo_ri_mp2(
     let h = oneelectron::hcore(obs);
 
     // AO-side invariants for the full-MO B tensors: built once, reused every iter.
+    // Served through the budgeted ThreeIndexSource (FERRIC_ERI3_BUDGET_GB), so
+    // the raw (naux, nao, nao) AO tensor is no longer held resident across the
+    // whole orbital-optimization loop when it exceeds the budget.
+    //
+    // MEMORY NOTE (deliberately not restructured in the M3 lane): `amps` keeps
+    // the t_aa/t_bb/t_ab amplitude trio (nocc²·nvir² each) resident across
+    // iterations, and the gradient step below holds b_full_a AND b_full_b
+    // (naux·nmo² each) simultaneously — the remaining O(N⁴) residents here.
     let ao = OoRiMp2AoTensors::build(obs, dfbs, op)?;
 
     // Initial UHF energy + Fock
@@ -294,8 +302,8 @@ pub fn u_oo_ri_mp2(
 
     for iter in 1..=config.max_iter {
         // Full-MO B tensors for gradient
-        let b_full_a = compute_b_full_mo_with(&ao, &c_a);
-        let b_full_b = compute_b_full_mo_with(&ao, &c_b);
+        let b_full_a = compute_b_full_mo_with(&ao, &c_a)?;
+        let b_full_b = compute_b_full_mo_with(&ao, &c_b)?;
         let (g_mp2_a, g_mp2_b) = compute_u_mp2_orbital_gradient(&amps, &b_full_a, &b_full_b);
 
         // Add HF Brillouin term: g_total = g_mp2 − 2·F^σ_{a+nocc, i}
