@@ -25,7 +25,7 @@ use rayon::prelude::*;
 use crate::density_on_grid::DensityGrid;
 use crate::grid::GridPoint;
 use crate::libxc::Vv10Params;
-use crate::vxc::scale_columns_into;
+use crate::vxc::{scale_columns_into, VxcScratch};
 
 /// Density threshold below which a grid point is skipped — keeps κ, ω₀, and
 /// their derivatives well-conditioned. Matches PySCF's `_vv10nlc` thresh=1e-8.
@@ -293,8 +293,9 @@ fn vv10_internal(grid: &[GridPoint], dens: &DensityGrid, params: &Vv10Params) ->
 
 /// Compute the VV10 energy contribution and add the matrix V_nl to `f`.
 ///
-/// Single-grid implementation: the NLC grid serves as both outer (integration)
-/// and inner (kernel partner) points. O(N²) in grid size.
+/// Convenience wrapper over [`add_vv10_scratch`] that allocates a fresh scratch
+/// — fine for one-shot callers; SCF loops should hold a [`VxcScratch`] and call
+/// the `_scratch` variant to skip the per-iteration `(nbf, npts)` allocation.
 pub fn add_vv10(
     grid: &[GridPoint],
     chi: &Array2<f64>,        // (nbf, npts)
@@ -302,6 +303,25 @@ pub fn add_vv10(
     dens: &DensityGrid,
     params: &Vv10Params,
     f: &mut Array2<f64>,
+) -> f64 {
+    add_vv10_scratch(grid, chi, dchi, dens, params, f, &mut VxcScratch::new())
+}
+
+/// VV10 energy + V_nl assembly with caller-owned scratch (see [`VxcScratch`]).
+///
+/// Single-grid implementation: the NLC grid serves as both outer (integration)
+/// and inner (kernel partner) points. O(N²) in grid size. The `(nbf, npts)`
+/// pre-scaled-χ scratch is refilled per GEMM operand; holding it across SCF
+/// iterations (via `KsXc::scratch`) removes the per-iteration allocation that
+/// the semilocal path already amortizes.
+pub fn add_vv10_scratch(
+    grid: &[GridPoint],
+    chi: &Array2<f64>,        // (nbf, npts)
+    dchi: &Array3<f64>,       // (3, nbf, npts)
+    dens: &DensityGrid,
+    params: &Vv10Params,
+    f: &mut Array2<f64>,
+    scratch: &mut VxcScratch,
 ) -> f64 {
     let (nbf, npts) = chi.dim();
     debug_assert_eq!(dchi.dim(), (3, nbf, npts));
@@ -315,13 +335,13 @@ pub fn add_vv10(
     //   LDA-like piece: V_μν += Σ_g w_g · vrho_g · χ_μg · χ_νg
     //   GGA-like piece: V_μν += Σ_g 2·w_g · vsig_g · Σ_axis ∇ρ_axis_g ·
     //                           [χ_μg · ∂_axis χ_νg + χ_νg · ∂_axis χ_μg]
-    // One scratch buffer serves all four GEMM operands (refilled per use).
-    let mut buf = Array2::<f64>::zeros((nbf, npts));
+    // One reused scratch buffer serves all four GEMM operands (refilled per use).
+    let buf = scratch.ensure((nbf, npts));
 
     let s: Array1<f64> = (0..npts)
         .map(|g| if active[g] { grid[g].weight * vrho[g] } else { 0.0 })
         .collect();
-    scale_columns_into(chi, &s, &mut buf);
+    scale_columns_into(chi, &s, buf);
     let mut v_nl: Array2<f64> = buf.dot(&chi.t());
 
     for axis in 0..3 {
@@ -335,7 +355,7 @@ pub fn add_vv10(
                 }
             })
             .collect();
-        scale_columns_into(chi, &f_ax, &mut buf);
+        scale_columns_into(chi, &f_ax, buf);
         let m_axis: Array2<f64> = buf.dot(&dchi_axis.t());
         v_nl = v_nl + &m_axis + &m_axis.t();
     }
