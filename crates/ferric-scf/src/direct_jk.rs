@@ -41,7 +41,6 @@ impl<'a> DirectJK<'a> {
         j: &mut Array2<f64>,
         k: &mut Array2<f64>,
     ) -> Result<usize, FerricError> {
-        use rayon::prelude::*;
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         self.ctx.check_interrupted()?;
@@ -124,11 +123,36 @@ impl<'a> DirectJK<'a> {
             self.pool = Some(crate::engine_pool::EnginePool::new(op, prep, 1e-14)?);
         }
         let pool = self.pool.as_ref().expect("pool initialized above");
-        let total_jk = quads
-            .into_par_iter()
-            .fold(
-                || (Array2::<f64>::zeros((nbf, nbf)), Array2::<f64>::zeros((nbf, nbf)), 0usize),
-                |(mut local_j, mut local_k, mut local_count), (s1, s2, s3, s4)| {
+
+        // Deterministic, memory-bounded reduction (see direct_k / reduce.rs). The
+        // old `fold(..).reduce(..)` tree held one J and one K nbf² partial per
+        // work-chunk (~2× the direct-K footprint, ~21 GB at 50-atom/aug-cc-pVTZ,
+        // 32 threads) and combined them in a worker-count-dependent order. Group
+        // the canonical quartet list, fold each group's (J,K) serially, and sum
+        // group partials in strict group order — bit-identical across thread
+        // counts, live set bounded to one byte-budgeted band.
+        // Group partition is a pure function of the quartet list (never the
+        // thread count): group boundaries set the floating-point association of
+        // the per-group folds, so a thread-dependent partition would break
+        // bit-identity across RAYON_NUM_THREADS.
+        let n_quads = quads.len();
+        let group_size = crate::reduce::deterministic_group_size(n_quads);
+        let n_groups = n_quads.div_ceil(group_size);
+
+        let mut total_j = Array2::<f64>::zeros((nbf, nbf));
+        let mut total_k = Array2::<f64>::zeros((nbf, nbf));
+        crate::reduce::grouped_deterministic_sum_pair(
+            &mut total_j,
+            &mut total_k,
+            n_groups,
+            nbf,
+            |g| {
+                let lo = g * group_size;
+                let hi = (lo + group_size).min(n_quads);
+                let mut local_j = Array2::<f64>::zeros((nbf, nbf));
+                let mut local_k = Array2::<f64>::zeros((nbf, nbf));
+                let mut local_count = 0usize;
+                for &(s1, s2, s3, s4) in &quads[lo..hi] {
                     let (n1, n2) = (dims[s1], dims[s2]);
                     let (o1, o2) = (offs[s1], offs[s2]);
                     let sym12 = s1 != s2;
@@ -192,24 +216,14 @@ impl<'a> DirectJK<'a> {
                             }
                         }
                     });
-                    (local_j, local_k, local_count)
-                },
-            )
-            .map(|(local_j, local_k, count)| {
-                computed_quartets.fetch_add(count, Ordering::Relaxed);
-                (local_j, local_k)
-            })
-            .reduce(
-                || (Array2::zeros((nbf, nbf)), Array2::zeros((nbf, nbf))),
-                |mut acc, next| {
-                    acc.0 += &next.0;
-                    acc.1 += &next.1;
-                    acc
-                },
-            );
+                }
+                computed_quartets.fetch_add(local_count, Ordering::Relaxed);
+                Ok((local_j, local_k))
+            },
+        )?;
 
-        *j += &total_jk.0;
-        *k += &total_jk.1;
+        *j += &total_j;
+        *k += &total_k;
 
         #[cfg(feature = "mpi")]
         if let Some(world) = &self.ctx.world {
@@ -230,5 +244,79 @@ impl<'a> DirectJK<'a> {
         }
 
         Ok(computed_quartets.load(Ordering::SeqCst))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::direct_j::DirectJ;
+    use crate::direct_k::DirectK;
+    use crate::fock::{JBuilder, KBuilder};
+    use ferric_core::basis;
+    use ferric_core::mol::Molecule;
+    use ferric_integrals::operator::Operator;
+
+    /// Regression guard for the grouped deterministic reduction: J and K from
+    /// the direct builders (DirectJK combined, DirectJ, DirectK) must be
+    /// bit-identical regardless of the rayon worker count. The old
+    /// `fold(..).reduce(..)` trees combined per-chunk partials in a
+    /// worker-count-dependent order, so J/K (and the SCF energy) drifted ~µHa
+    /// with RAYON_NUM_THREADS. The group partition is a pure function of the
+    /// work list and group partials are summed in ascending group order, so the
+    /// result cannot depend on the thread count.
+    #[test]
+    fn direct_builders_bit_identical_across_thread_counts() {
+        let mol = Molecule::parse_xyz(
+            "3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n",
+            0,
+            1,
+        )
+        .unwrap();
+        let bs = basis::bundled("cc-pvdz").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let n = prep.nbasis();
+
+        // Dense symmetric density so every quartet contributes.
+        let mut d = Array2::<f64>::zeros((n, n));
+        for i in 0..n {
+            for j in 0..n {
+                d[(i, j)] = 0.01 * ((i * 7 + j * 3) % 11) as f64;
+            }
+        }
+        let d = 0.5 * (&d + &d.t());
+
+        let build_all = |threads: usize| -> (Array2<f64>, Array2<f64>, Array2<f64>, Array2<f64>) {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            pool.install(|| {
+                let ctx = ParallelContext::default();
+                let mut j_jk = Array2::zeros((n, n));
+                let mut k_jk = Array2::zeros((n, n));
+                let mut djk = DirectJK::new(&ctx, &prep, &bounds, 1e-14);
+                djk.build(&d, &mut j_jk, &mut k_jk).unwrap();
+
+                let mut j_only = Array2::zeros((n, n));
+                let mut dj = DirectJ::new(&ctx, &prep, &bounds, 1e-14);
+                <DirectJ as JBuilder>::build(&mut dj, &d, &mut j_only).unwrap();
+
+                let mut k_only = Array2::zeros((n, n));
+                let mut dk = DirectK::new(&ctx, &prep, &bounds, 1e-14);
+                <DirectK as KBuilder>::build(&mut dk, &d, &mut k_only).unwrap();
+
+                (j_jk, k_jk, j_only, k_only)
+            })
+        };
+
+        let r1 = build_all(1);
+        let r4 = build_all(4);
+        assert_eq!(r1.0, r4.0, "DirectJK J must be bit-identical across thread counts");
+        assert_eq!(r1.1, r4.1, "DirectJK K must be bit-identical across thread counts");
+        assert_eq!(r1.2, r4.2, "DirectJ J must be bit-identical across thread counts");
+        assert_eq!(r1.3, r4.3, "DirectK K must be bit-identical across thread counts");
     }
 }

@@ -28,7 +28,6 @@ impl<'a> DirectJ<'a> {
 
 impl<'a> JBuilder for DirectJ<'a> {
     fn build(&mut self, d: &Array2<f64>, j: &mut Array2<f64>) -> Result<usize, FerricError> {
-        use rayon::prelude::*;
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         let nsh = self.prep.nshells();
@@ -74,9 +73,29 @@ impl<'a> JBuilder for DirectJ<'a> {
             self.pool = Some(crate::engine_pool::EnginePool::new(op, prep, 1e-14)?);
         }
         let pool = self.pool.as_ref().expect("pool initialized above");
-        let total_j = quads.into_par_iter().fold(
-            || (Array2::zeros(j.raw_dim()), 0usize),
-            |(mut local_j, mut local_count), (s1, s2, s3, s4)| {
+
+        // Deterministic, memory-bounded reduction (see reduce.rs). The old rayon
+        // `fold(..).reduce(..)` tree held one nbf² J partial per work-chunk and
+        // combined them in a worker-count-dependent order (thread-count-dependent
+        // rounding + unbounded partial memory). Group the quartet list, fold each
+        // group serially into one partial (parallel across groups), and sum group
+        // partials in strict group order — bit-identical across RAYON_NUM_THREADS,
+        // live set bounded to one byte-budgeted band of partials.
+        // Group partition is a pure function of the quartet list (never the
+        // thread count): group boundaries set the floating-point association of
+        // the per-group folds, so a thread-dependent partition would break
+        // bit-identity across RAYON_NUM_THREADS.
+        let n_quads = quads.len();
+        let group_size = crate::reduce::deterministic_group_size(n_quads);
+        let n_groups = n_quads.div_ceil(group_size);
+        let nbf = prep.nbasis();
+
+        crate::reduce::grouped_deterministic_sum(j, n_groups, nbf, |g| {
+            let lo = g * group_size;
+            let hi = (lo + group_size).min(n_quads);
+            let mut local_j = Array2::<f64>::zeros((nbf, nbf));
+            let mut local_count = 0usize;
+            for &(s1, s2, s3, s4) in &quads[lo..hi] {
                 let (n1, n2) = (dims[s1], dims[s2]);
                 let (o1, o2) = (offs[s1], offs[s2]);
                 let sym12 = s1 != s2;
@@ -115,17 +134,10 @@ impl<'a> JBuilder for DirectJ<'a> {
                     }).is_some()
                 });
                 if computed { local_count += 1; }
-                (local_j, local_count)
             }
-        ).map(|(local_j, count)| {
-            computed_quartets.fetch_add(count, Ordering::Relaxed);
-            local_j
-        }).reduce(
-            || Array2::zeros(j.raw_dim()),
-            |mut acc, next| { acc += &next; acc }
-        );
-
-        *j += &total_j;
+            computed_quartets.fetch_add(local_count, Ordering::Relaxed);
+            Ok(local_j)
+        })?;
 
         #[cfg(feature = "mpi")]
         if let Some(world) = &self.ctx.world {

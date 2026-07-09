@@ -201,6 +201,20 @@ pub fn solve_uhf_fockmod(
     let mut j_buf = Array2::<f64>::zeros((n, n));
     let mut k_a_buf = Array2::<f64>::zeros((n, n));
     let mut k_b_buf = Array2::<f64>::zeros((n, n));
+    // Spin K totals and the RSH SR/LR partials, plus the two spin Focks, hoisted
+    // out of the loop and reused in place each iteration (T6r): on the RSH path
+    // the old body allocated 6 fresh n² arrays (k_sr/lr × a/b, k_a/b_total) plus
+    // f_a/f_b every cycle. `.fill(0.0)` + in-place ops keep the working set at a
+    // fixed handful of n² buffers instead of churning ~8·n²·8 bytes/iteration.
+    let mut k_a_total = Array2::<f64>::zeros((n, n));
+    let mut k_b_total = Array2::<f64>::zeros((n, n));
+    let mut k_sr_a = Array2::<f64>::zeros((n, n));
+    let mut k_lr_a = Array2::<f64>::zeros((n, n));
+    let mut k_sr_b = Array2::<f64>::zeros((n, n));
+    let mut k_lr_b = Array2::<f64>::zeros((n, n));
+    let mut f_a = Array2::<f64>::zeros((n, n));
+    let mut f_b = Array2::<f64>::zeros((n, n));
+    let mut d_total = Array2::<f64>::zeros((n, n));
 
     // Coupled α/β DIIS — single subspace, joint error norm. PySCF-style.
     // Independent per-spin DIIS desyncs α and β on cations (e.g. H2O+ took
@@ -241,36 +255,51 @@ pub fn solve_uhf_fockmod(
         j_buf.fill(0.0);
         k_a_buf.fill(0.0);
         k_b_buf.fill(0.0);
-        let d_total = &d_a + &d_b;
+        k_a_total.fill(0.0);
+        k_b_total.fill(0.0);
+        ndarray::Zip::from(&mut d_total)
+            .and(&d_a)
+            .and(&d_b)
+            .for_each(|t, &a, &b| *t = a + b);
 
         // J built from total density (one call).
         total_quartets += direct_j.build(&d_total, &mut j_buf)?;
-        let mut k_a_total = Array2::<f64>::zeros((n, n));
-        let mut k_b_total = Array2::<f64>::zeros((n, n));
         if k_mix.omega > 0.0 {
             let dfk_sr = dfk_sr.as_mut().expect("dfk_sr built when omega>0");
             let dfk_lr = dfk_lr.as_mut().expect("dfk_lr built when omega>0");
-            let mut k_sr_a = Array2::<f64>::zeros((n, n));
-            let mut k_lr_a = Array2::<f64>::zeros((n, n));
-            let mut k_sr_b = Array2::<f64>::zeros((n, n));
-            let mut k_lr_b = Array2::<f64>::zeros((n, n));
+            k_sr_a.fill(0.0);
+            k_lr_a.fill(0.0);
+            k_sr_b.fill(0.0);
+            k_lr_b.fill(0.0);
             dfk_sr.build(&d_a, &mut k_sr_a)?;
             dfk_lr.build(&d_a, &mut k_lr_a)?;
             dfk_sr.build(&d_b, &mut k_sr_b)?;
             dfk_lr.build(&d_b, &mut k_lr_b)?;
-            k_a_total = k_mix.sr * &k_sr_a + k_mix.lr * &k_lr_a;
-            k_b_total = k_mix.sr * &k_sr_b + k_mix.lr * &k_lr_b;
+            // K_σ_total = c_SR·K_SR[D_σ] + c_LR·K_LR[D_σ], in place.
+            ndarray::Zip::from(&mut k_a_total)
+                .and(&k_sr_a)
+                .and(&k_lr_a)
+                .for_each(|t, &sr, &lr| *t = k_mix.sr * sr + k_mix.lr * lr);
+            ndarray::Zip::from(&mut k_b_total)
+                .and(&k_sr_b)
+                .and(&k_lr_b)
+                .for_each(|t, &sr, &lr| *t = k_mix.sr * sr + k_mix.lr * lr);
         } else if need_k {
             let dk = direct_k.as_mut().expect("DirectK built before loop");
             total_quartets += <DirectK as KBuilder>::build(dk, &d_a, &mut k_a_buf)?;
             total_quartets += <DirectK as KBuilder>::build(dk, &d_b, &mut k_b_buf)?;
-            k_a_total = c_k * &k_a_buf;
-            k_b_total = c_k * &k_b_buf;
+            k_a_total.assign(&k_a_buf);
+            k_a_total *= c_k;
+            k_b_total.assign(&k_b_buf);
+            k_b_total *= c_k;
         }
 
         // F_σ = H + J − K_σ_total  (then + V_xc^σ below for UKS path)
-        let mut f_a: Array2<f64> = &h + &j_buf;
-        let mut f_b: Array2<f64> = &h + &j_buf;
+        ndarray::Zip::from(&mut f_a)
+            .and(&h)
+            .and(&j_buf)
+            .for_each(|f, &hh, &jj| *f = hh + jj);
+        f_b.assign(&f_a);
         if need_k {
             f_a -= &k_a_total;
             f_b -= &k_b_total;
@@ -294,7 +323,11 @@ pub fn solve_uhf_fockmod(
         }
         let energy = e_elec_no_xc + e_xc + vnn;
 
-        // DIIS errors per spin: F_σ D_σ S − S D_σ F_σ
+        // DIIS errors per spin: F_σ D_σ S − S D_σ F_σ. Kept as the original
+        // triple-product form so the DIIS error — and thus the extrapolation
+        // path and converged energy — is bit-identical to main. (An FDS−(FDS)ᵀ
+        // rewrite would halve the matmuls but perturb rounding; not worth
+        // changing energies for the modest per-iteration temporary saving.)
         let err_a = f_a.dot(&d_a).dot(&s) - s.dot(&d_a).dot(&f_a);
         let err_b = f_b.dot(&d_b).dot(&s) - s.dot(&d_b).dot(&f_b);
 
