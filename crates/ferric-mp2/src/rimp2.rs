@@ -621,6 +621,27 @@ pub fn eigh_inverse_sqrt(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
         .eigh(UPLO::Upper)
         .map_err(|e| FerricError::Lapack(format!("eigh on (P|Q): {e}")))?;
     const LINDEP_THRESH: f64 = 1e-10;
+    // A physical RI metric is Gram-PSD for any positive-definite kernel (erf,
+    // erfc, Coulomb, terfc all are; verified for terfc via its 3D Fourier
+    // transform k̂(q) > 0). Negative eigenvalues beyond eigensolver noise
+    // therefore signal an UPSTREAM INTEGRAL BUG (e.g. the 2026-07 terfc shim
+    // far-field table-domain bug) or a non-PD kernel — not something a drop
+    // threshold can repair (the accompanying positive modes are contaminated
+    // too). Warn loudly instead of silently regularizing.
+    let lmax = evals[n - 1]; // eigh returns ascending order
+    let max_neg = evals
+        .iter()
+        .filter(|&&e| e < 0.0)
+        .fold(0.0_f64, |acc, &e| acc.max(-e));
+    if max_neg > 1e-8 * lmax {
+        eprintln!(
+            "WARNING eigh_inverse_sqrt: (P|Q) metric INDEFINITE beyond noise \
+             (max|λ_neg|={max_neg:.3e}, λ_max={lmax:.3e}, rel={:.1e}). \
+             Indefinite metric = upstream integral bug or non-PD kernel; \
+             downstream RI energies are untrustworthy.",
+            max_neg / lmax
+        );
+    }
     let mut u_scaled = evecs.clone();
     for k in 0..n {
         if evals[k] < LINDEP_THRESH {
@@ -637,9 +658,24 @@ pub fn eigh_inverse_sqrt(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
     Ok(u_scaled.dot(&evecs.t()))
 }
 
-/// V^{-1/2} that auto-selects: regularized eigendecomposition for the long-range
-/// `erf` operator (indefinite metric), fast Cholesky otherwise (Coulomb/erfc,
-/// positive-definite). Centralizes the erf-metric handling for all RI paths.
+/// V^{-1/2} that auto-selects: regularized eigendecomposition for operators whose
+/// 2-center metric can go numerically indefinite, fast Cholesky otherwise
+/// (Coulomb/erfc/Terfc/Yukawa, positive-definite). Centralizes indefinite-metric
+/// handling for all RI paths.
+///
+/// Eigh path:
+/// - `ErfCoulomb`: the long-range erf metric goes numerically indefinite in a
+///   Coulomb-optimized aux basis (near-null modes from tight aux functions).
+///
+/// `Terfc` is deliberately on the CHOLESKY path: the terfc kernel is
+/// positive-definite (3D Fourier transform k̂(q) > 0 for all q, r0), so its
+/// Gram metric is PD and Cholesky must succeed. The apparent indefiniteness
+/// that previously forced Terfc through eigh (dpotrf return_code=225 on
+/// alkane_4/cc-pVDZ-RI at r0≈1.417 Bohr) was an upstream integral bug — the
+/// shim skipped the terf subtraction for far-field primitives outside the
+/// interpolation tables, leaving full-Coulomb contamination. With that fixed
+/// (exact Poisson-series fallback in shim.cc), a Cholesky failure here is a
+/// real regression signal and must stay loud, not be regularized away.
 pub fn metric_inverse_sqrt(
     v: &Array2<f64>,
     op: ferric_integrals::operator::Operator,
@@ -961,5 +997,136 @@ mod tests {
         assert!(tr_vv > 0.0, "tr(P_vv) should be positive: {}", tr_vv);
         assert!((tr_oo + tr_vv).abs() < 1e-10,
             "density not conserved: tr(P_oo)={} + tr(P_vv)={} = {}", tr_oo, tr_vv, tr_oo + tr_vv);
+    }
+
+    /// The terfc kernel is positive-definite (3D Fourier transform k̂(q) > 0), so
+    /// (P|Q)_terfc must be PD and Cholesky must succeed — including the exact
+    /// configuration that USED to fail (alkane_4/cc-pVDZ-RI at r0=0.75 Å,
+    /// dpotrf return_code=225). The old failure was the shim's far-field
+    /// table-domain bug (terf subtraction skipped for S > 20 primitives,
+    /// leaving full-Coulomb contamination that made the metric spuriously
+    /// indefinite). This test pins the integral fix at the metric level.
+    /// Requires FERRIC_TERF_TABLE_DIR to point at the terfc interpolation tables.
+    #[test]
+    fn terfc_metric_positive_definite_alkane4() {
+        if std::env::var("FERRIC_TERF_TABLE_DIR").is_err() {
+            eprintln!("skipping: FERRIC_TERF_TABLE_DIR not set");
+            return;
+        }
+        let mol = Molecule::load_xyz(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/molecules/alkane_4.xyz"),
+        )
+        .unwrap();
+        let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
+        // r0 = 0.75 Angstrom -> Bohr; historically the worst case (most far-field
+        // primitives beyond the table domain).
+        let op = Operator::terfc(0.75 * 1.889_725_988_6);
+
+        let v2c = threeindex::coulomb_metric_2c(op, &dfbs).unwrap();
+        let v_inv_sqrt = metric_inverse_sqrt(&v2c, op).expect(
+            "(P|Q)_terfc must be positive-definite (Cholesky); a dpotrf failure here \
+             means far-field terfc integrals regressed",
+        );
+
+        // M V Mᵀ = I for any valid inverse-sqrt factor M (Cholesky L⁻¹ or
+        // symmetric eigh form).
+        let p = v_inv_sqrt.dot(&v2c).dot(&v_inv_sqrt.t());
+        let n = p.nrows();
+        let mut max_dev = 0.0_f64;
+        for i in 0..n {
+            for j in 0..n {
+                let target = if i == j { 1.0 } else { 0.0 };
+                max_dev = max_dev.max((p[(i, j)] - target).abs());
+            }
+        }
+        assert!(
+            max_dev < 1e-8,
+            "V^(-1/2) V V^(-T/2) != I: max deviation {max_dev:e}"
+        );
+    }
+
+    /// PHYSICS regression for the terfc far-field integral fix (shim.cc
+    /// table-domain bug: out-of-table primitives skipped the terf subtraction,
+    /// leaving full-Coulomb contamination in far-field (P|Q) and (P|ia)).
+    ///
+    /// terfc(r,r₀)/r is a tempered SHORT-range Coulomb: smaller r₀ screens more,
+    /// so |E_corr| must grow monotonically with r₀ and approach full-Coulomb
+    /// correlation as r₀ → ∞:
+    ///     |E(0.75Å)| < |E(1.05Å)| < |E(2.0Å)| < |E(Coulomb)|,
+    ///     E(2.0Å)/E(Coulomb) > 0.95.
+    ///
+    /// Before the fix this failed catastrophically (alkane_4 E(0.75Å) = −1.289 Ha
+    /// vs Coulomb −0.733 Ha — |ratio| 1.76, wrong side of Coulomb), and no eigh
+    /// drop-threshold could repair it because the 3-index tensor was contaminated
+    /// too. A projector-idempotency check passes even with garbage physics; this
+    /// energy-ordering test is the discriminating one. Runs on the plain Cholesky
+    /// metric path. Requires FERRIC_TERF_TABLE_DIR.
+    #[test]
+    fn terfc_ri_energy_monotone_in_r0_alkane4() {
+        if std::env::var("FERRIC_TERF_TABLE_DIR").is_err() {
+            eprintln!("skipping: FERRIC_TERF_TABLE_DIR not set");
+            return;
+        }
+        const A2B: f64 = 1.889_725_988_6;
+        let mol = Molecule::load_xyz(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../testdata/molecules/alkane_4.xyz"
+        ))
+        .unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let opc = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(opc, &obs).unwrap();
+        let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol,
+            &obs,
+            opc,
+            &bounds,
+            &RhfConfig { energy_conv: 1e-9, ..Default::default() },
+        )
+        .unwrap();
+        let cfg = RiMp2Config::default();
+
+        let e = |op: Operator| {
+            ri_mp2_spin_components(&mol, &obs, &dfbs, op, &rhf, &cfg)
+                .unwrap()
+                .0
+                .e_total
+        };
+        let e_coul = e(opc);
+        let e075 = e(Operator::terfc(0.75 * A2B));
+        let e105 = e(Operator::terfc(1.05 * A2B));
+        let e20 = e(Operator::terfc(2.0 * A2B));
+
+        eprintln!(
+            "terfc alkane_4: E(0.75)={e075:.6} E(1.05)={e105:.6} E(2.0)={e20:.6} E(coul)={e_coul:.6}"
+        );
+
+        // Correlation energies are negative; compare magnitudes.
+        assert!(
+            e075.abs() < e105.abs(),
+            "|E(0.75)|={} should be < |E(1.05)|={}",
+            e075.abs(),
+            e105.abs()
+        );
+        assert!(
+            e105.abs() < e20.abs(),
+            "|E(1.05)|={} should be < |E(2.0)|={}",
+            e105.abs(),
+            e20.abs()
+        );
+        assert!(
+            e20.abs() < e_coul.abs(),
+            "|E(2.0)|={} should be < |E(coulomb)|={}",
+            e20.abs(),
+            e_coul.abs()
+        );
+        assert!(
+            e20 / e_coul > 0.95,
+            "E(2.0)/E(coulomb)={} should exceed 0.95 (terfc→Coulomb as r0→∞)",
+            e20 / e_coul
+        );
     }
 }
