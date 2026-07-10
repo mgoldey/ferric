@@ -67,6 +67,10 @@ pub enum DispersionPartition {
     Hirshfeld,
 }
 
+/// One row of the (a,b) Casimir-Polder pair reduction: (isotropic C6 row,
+/// anisotropic C6 tensor row), both indexed by `b`.
+type C6PairRow = (Vec<f64>, Vec<[[f64; 3]; 3]>);
+
 /// Casimir-Polder contraction. SHARED SEAM between TS and PDEP-RPA sources.
 ///
 /// ```text
@@ -95,7 +99,7 @@ pub fn casimir_polder_c6(dyn_pol: &DynamicPolarizability) -> C6Result {
     // — no with_blas_threads guard needed. Each pair writes disjoint output
     // cells, so a flat par_iter over the row index with an order-preserving
     // collect reproduces the serial nested loop exactly.
-    let rows: Vec<(Vec<f64>, Vec<[[f64; 3]; 3]>)> = (0..natoms)
+    let rows: Vec<C6PairRow> = (0..natoms)
         .into_par_iter()
         .map(|a| {
             let mut iso_row = vec![0.0_f64; natoms];
