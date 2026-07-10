@@ -15,6 +15,7 @@
 //! and an analytic continuation to real ω.
 
 use ferric_core::FerricError;
+use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ndarray::Array2;
 
 /// Re-dress the PDEP eigenpotentials from physical aux basis (cube-export
@@ -31,11 +32,20 @@ pub fn redress_eigenpotentials(
     // PDEP stores `eigenpotentials = v_inv_sqrt · V_dressed` (lib.rs line
     // 391). To recover V_dressed we just invert v_inv_sqrt (it is lower
     // triangular as produced by `solve_triangular(L, I)`).
+    //
+    // Call-path proof: called from top-level GW entry points (lib.rs:213,
+    // :285) and from the serial evGW outer loops (sigma.rs:503,
+    // u_sigma.rs:260/:312 — plain `for` loops, not inside any par_iter; see
+    // sigma.rs::run_evgw). Also reached via bse.rs's top-level
+    // `redress_with_check` calls. `opt_in_blas_threads()` defaults to 1 and
+    // self-guards to 1 if ever invoked from a rayon worker.
     use ndarray_linalg::Inverse;
-    let v_sqrt_factor = v_inv_sqrt
-        .inv()
-        .map_err(|e| FerricError::General(format!("inv(v_inv_sqrt) failed: {e}")))?;
-    Ok(v_sqrt_factor.dot(eigenpotentials_phys))
+    with_blas_threads(opt_in_blas_threads(), || {
+        let v_sqrt_factor = v_inv_sqrt
+            .inv()
+            .map_err(|e| FerricError::General(format!("inv(v_inv_sqrt) failed: {e}")))?;
+        Ok(v_sqrt_factor.dot(eigenpotentials_phys))
+    })
 }
 
 /// Build the dressed eigenpotentials *and* a consistency check: for the
@@ -70,3 +80,9 @@ pub fn inverse_dielectric_weights(eigenvalues_freq: &Array2<f64>) -> Array2<f64>
 pub fn static_weights(eigenvalues_static: &[f64]) -> Vec<f64> {
     eigenvalues_static.iter().map(|&l| 1.0 / l - 1.0).collect()
 }
+
+// NOTE: the real-env FERRIC_BLAS_THREADS=2 identity test for the wrapped
+// inv()+GEMM in redress_eigenpotentials lives in tests/blas_raise_identity.rs,
+// a dedicated integration-test binary: raising the process-global OpenBLAS
+// thread count inside the parallel lib test binary races other BLAS-doing
+// tests in the same process (observed corruption, not hypothetical).
