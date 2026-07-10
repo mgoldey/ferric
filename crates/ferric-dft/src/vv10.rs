@@ -19,6 +19,7 @@
 //! order — and therefore the floating-point result — is identical to the
 //! serial code.
 
+use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ndarray::{Array1, Array2, Array3, Axis};
 use rayon::prelude::*;
 
@@ -387,7 +388,12 @@ pub fn add_vv10_scratch(
         .map(|g| if active[g] { grid[g].weight * vrho[g] } else { 0.0 })
         .collect();
     scale_columns_into(chi, &s, buf);
-    let mut v_nl: Array2<f64> = buf.dot(&chi.t());
+    // Digestion GEMM (nbf, npts)·(npts, nbf), outside any rayon region — this
+    // whole function runs once per KS iteration at the top level (called from
+    // ks.rs, never from inside map_rows' rayon fan-out above). Opt-in BLAS
+    // raise via FERRIC_BLAS_THREADS (default 1, unchanged behavior); mirrors
+    // vxc.rs's semilocal_vxc_closed_scratch idiom exactly.
+    let mut v_nl: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || buf.dot(&chi.t()));
 
     for axis in 0..3 {
         let dchi_axis = dchi.index_axis(Axis(0), axis);
@@ -401,7 +407,9 @@ pub fn add_vv10_scratch(
             })
             .collect();
         scale_columns_into(chi, &f_ax, buf);
-        let m_axis: Array2<f64> = buf.dot(&dchi_axis.t());
+        // Same opt-in-raise digestion GEMM as the LDA-like piece above.
+        let m_axis: Array2<f64> =
+            with_blas_threads(opt_in_blas_threads(), || buf.dot(&dchi_axis.t()));
         v_nl = v_nl + &m_axis + &m_axis.t();
     }
 

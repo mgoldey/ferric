@@ -12,6 +12,7 @@
 use crate::becke::becke_weights_all;
 use crate::grid::GridPoint;
 use ferric_core::mol::Molecule;
+use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ndarray::Array2;
 use rayon::prelude::*;
 
@@ -73,7 +74,10 @@ pub fn build_weight_matrix(
             chi_scaled[(mu, g)] *= s;
         }
     }
-    let w: Array2<f64> = chi_scaled.dot(&chi.t());
+    // Digestion GEMM, after the rayon-gated scale_for map above has already
+    // collected. Opt-in BLAS raise via FERRIC_BLAS_THREADS (default 1,
+    // unchanged behavior); mirrors vxc.rs's semilocal_vxc_closed idiom.
+    let w: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || chi_scaled.dot(&chi.t()));
     // Symmetrize (defends against grid asymmetry).
     0.5 * (&w + &w.t())
 }

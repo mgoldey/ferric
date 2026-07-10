@@ -19,6 +19,7 @@ use crate::screening::SchwarzBounds;
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
+use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::oneelectron;
 use ferric_integrals::operator::Operator;
 use ferric_core::parallel::ParallelContext;
@@ -487,9 +488,17 @@ pub fn solve_rhf(
         };
         let energy = e_elec_no_xc + e_xc + vnn;
 
-        // DIIS error: e = FDS - SDF
-        let fds = f.dot(&d).dot(&s);
-        let sdf = s.dot(&d).dot(&f);
+        // DIIS error: e = FDS - SDF. Runs once per SCF iteration, serially
+        // (this whole loop body is outside any rayon region — the JK build
+        // above is the only rayon-parallel step and has already returned).
+        // Opt-in BLAS raise via FERRIC_BLAS_THREADS (default 1, unchanged
+        // behavior): opt_in_blas_threads()'s rayon-worker self-guard also
+        // protects the SAD/free-atom path, which calls solve_rhf from inside
+        // guess.rs's run_serial_pool (a 1-thread rayon pool — still "inside
+        // rayon" for the guard's purposes, so it always resolves to 1 there).
+        let (fds, sdf) = with_blas_threads(opt_in_blas_threads(), || {
+            (f.dot(&d).dot(&s), s.dot(&d).dot(&f))
+        });
         let err = &fds - &sdf;
 
         let de = (energy - prev_e).abs();
@@ -654,9 +663,11 @@ pub fn solve_rhf(
             mom_ref = Some(c.slice(ndarray::s![.., ..nocc]).to_owned());
         }
 
-        // Rebuild density: D = 2 * C_occ @ C_occ^T  (BLAS dgemm)
+        // Rebuild density: D = 2 * C_occ @ C_occ^T  (BLAS dgemm). Same opt-in
+        // raise + SAD/free-atom protection as the DIIS FDS/SDF pair above.
         let c_occ = c.slice(ndarray::s![.., ..nocc]);
-        d.assign(&(2.0 * c_occ.dot(&c_occ.t())));
+        let d_new = with_blas_threads(opt_in_blas_threads(), || 2.0 * c_occ.dot(&c_occ.t()));
+        d.assign(&d_new);
         last_c = c;
     }
     // Loop exhausted without convergence. Return the best-effort density so a
@@ -923,9 +934,15 @@ fn lindep_thresh() -> f64 {
 /// transform Fʹ = Xᵀ F X, C = X Vʹ (see [`diagonalize`]).
 pub(crate) fn canonical_orthogonalizer(s: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
     let n = s.nrows();
-    let (s_evals, s_evecs) = s
-        .eigh(ndarray_linalg::UPLO::Upper)
-        .map_err(|e| FerricError::Lapack(format!("S diag: {e}")))?;
+    // Runs once at SCF setup, serially (called before the iteration loop, no
+    // enclosing rayon region). Opt-in BLAS raise (default 1, unchanged
+    // behavior) — see the DIIS FDS/SDF comment above for the SAD/free-atom
+    // protection argument (identical here: opt_in_blas_threads()'s
+    // rayon-worker self-guard resolves to 1 inside guess.rs's run_serial_pool).
+    let (s_evals, s_evecs) = with_blas_threads(opt_in_blas_threads(), || {
+        s.eigh(ndarray_linalg::UPLO::Upper)
+    })
+    .map_err(|e| FerricError::Lapack(format!("S diag: {e}")))?;
     // eigenvalues ascending: kept columns are those with λ ≥ the effective
     // threshold (default LINDEP_THRESH, overridable via FERRIC_LINDEP_THRESH).
     let thresh = lindep_thresh();
@@ -954,11 +971,17 @@ fn diagonalize(
 ) -> Result<(Vec<f64>, Array2<f64>), FerricError> {
     let n = x.nrows();
     let m = x.ncols();
-    let f_prime = x.t().dot(f).dot(x);
-    let (evals, evecs) = f_prime
-        .eigh(ndarray_linalg::UPLO::Upper)
-        .map_err(|e| FerricError::Lapack(format!("F diag: {e}")))?;
-    let c_kept = x.dot(&evecs); // (n × m)
+    // Runs once per SCF iteration, serially (called from the main loop body,
+    // outside any rayon region — the JK build is the only rayon-parallel step
+    // per iteration and has already returned by this point). Opt-in BLAS
+    // raise (default 1); SAD/free-atom protection per the DIIS comment above.
+    let (evals, c_kept) = with_blas_threads(opt_in_blas_threads(), || {
+        let f_prime = x.t().dot(f).dot(x);
+        let (evals, evecs) = f_prime.eigh(ndarray_linalg::UPLO::Upper)?;
+        let c_kept = x.dot(&evecs); // (n × m)
+        Ok::<_, ndarray_linalg::error::LinalgError>((evals, c_kept))
+    })
+    .map_err(|e| FerricError::Lapack(format!("F diag: {e}")))?;
     if m == n {
         return Ok((evals.to_vec(), c_kept));
     }

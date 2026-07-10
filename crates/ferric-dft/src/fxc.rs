@@ -17,6 +17,7 @@ use crate::libxc::{FunctionalFamily, XcDef};
 use crate::vxc::{scale_columns_into, VxcScratch};
 use ferric_core::basis::BasisSet;
 use ferric_core::mol::Molecule;
+use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ndarray::{Array1, Array2, Array3};
 use std::sync::Mutex;
 
@@ -143,12 +144,18 @@ impl LdaFxcKernel {
         let fac_a: Array1<f64> =
             (0..npts).map(|g| self.grid[g].weight * dv_a[g]).collect();
         scale_columns_into(&self.chi, &fac_a, buf);
-        let dvxc_a: Array2<f64> = buf.dot(&self.chi.t());
+        // Digestion GEMM (nbf, npts)·(npts, nbf), outside any rayon region —
+        // apply_with_ref is called once per matvec from the serial ROHF
+        // AH-Newton solver (rohf_newton.rs/rohf_ah.rs; neither uses rayon).
+        // Opt-in BLAS raise via FERRIC_BLAS_THREADS (default 1, unchanged
+        // behavior); mirrors vxc.rs's semilocal_vxc_closed_scratch idiom.
+        let dvxc_a: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || buf.dot(&self.chi.t()));
 
         let fac_b: Array1<f64> =
             (0..npts).map(|g| self.grid[g].weight * dv_b[g]).collect();
         scale_columns_into(&self.chi, &fac_b, buf);
-        let dvxc_b: Array2<f64> = buf.dot(&self.chi.t());
+        // Same opt-in-raise digestion GEMM as the alpha-spin piece above.
+        let dvxc_b: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || buf.dot(&self.chi.t()));
         (dvxc_a, dvxc_b)
     }
 

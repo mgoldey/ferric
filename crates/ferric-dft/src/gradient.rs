@@ -17,6 +17,7 @@
 //! are equal — hence the 2.)
 
 use ferric_core::mol::Molecule;
+use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ndarray::{Array2, Array3, ArrayView1, ArrayView2, Axis, Zip};
 use rayon::prelude::*;
 
@@ -289,8 +290,10 @@ pub fn xc_gradient_closed_lda(
     //                = -2 · Σ_g w_g · v_ρ · Σ_{μ∈A, ν} D_μν · ∂_axis χ_μ · χ_ν
     //
     // M = D · χ as a matrix product (D is (nbf, nbf), χ is (nbf, npts)). FD-verified
-    // against H2/STO-3G LDA — see tests/dft_gradient_lda.rs.
-    let m: Array2<f64> = d_total.dot(chi);
+    // against H2/STO-3G LDA — see tests/dft_gradient_lda.rs. Runs before the
+    // rayon-gated row_dot contraction below starts. Opt-in BLAS raise via
+    // FERRIC_BLAS_THREADS (default 1, unchanged behavior).
+    let m: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d_total.dot(chi));
 
     let natoms = mol.atoms.len();
     let mut grad = Array2::<f64>::zeros((natoms, 3));
@@ -430,13 +433,16 @@ pub fn gga_gradient_from_potentials(
         }
     }
 
-    // M_μ(g) = Σ_ν D_μν · χ_ν(r_g)
-    let m: Array2<f64> = d_total.dot(chi);
+    // M_μ(g) = Σ_ν D_μν · χ_ν(r_g). Runs before the rayon-gated ao-partial
+    // reductions below start. Opt-in BLAS raise via FERRIC_BLAS_THREADS
+    // (default 1, unchanged behavior).
+    let m: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d_total.dot(chi));
     // Mdχ[b, μ, g] = Σ_ν D_μν · ∂_b χ_ν(r_g)
     let mut mdchi = ndarray::Array3::<f64>::zeros((3, nbf, npts));
     for b in 0..3 {
         let slice = dchi.index_axis(ndarray::Axis(0), b);
-        let prod: Array2<f64> = d_total.dot(&slice);
+        let prod: Array2<f64> =
+            with_blas_threads(opt_in_blas_threads(), || d_total.dot(&slice));
         mdchi.index_axis_mut(ndarray::Axis(0), b).assign(&prod);
     }
 
@@ -578,12 +584,15 @@ pub fn xc_gradient_closed_gga_from_density(
     }
 
     // Precompute Σ_ν D_μν · χ_ν (= M_μ) and Σ_ν D_μν · ∂_b χ_ν (= Mdχ[b, μ, g])
-    // via matrix products.
-    let m: Array2<f64> = d_total.dot(&chi);   // (nbf, npts)
+    // via matrix products. Both run before the rayon-gated ao-partial
+    // reductions below start. Opt-in BLAS raise via FERRIC_BLAS_THREADS
+    // (default 1, unchanged behavior).
+    let m: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d_total.dot(&chi));   // (nbf, npts)
     let mut mdchi = ndarray::Array3::<f64>::zeros((3, nbf, npts));
     for b in 0..3 {
         let slice = dchi.index_axis(ndarray::Axis(0), b);   // (nbf, npts)
-        let prod: Array2<f64> = d_total.dot(&slice);
+        let prod: Array2<f64> =
+            with_blas_threads(opt_in_blas_threads(), || d_total.dot(&slice));
         mdchi.index_axis_mut(ndarray::Axis(0), b).assign(&prod);
     }
 
@@ -766,11 +775,16 @@ pub fn xc_gradient_uks_from_density(
                 }
             }
         }
-        let m: Array2<f64> = d_sigma.dot(&chi);
+        // Both GEMMs run before the rayon-gated ao-partial reductions below
+        // start; add_spin_contribution itself is called sequentially (twice),
+        // never from inside rayon. Opt-in BLAS raise via FERRIC_BLAS_THREADS
+        // (default 1, unchanged behavior).
+        let m: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d_sigma.dot(&chi));
         let mut mdchi = ndarray::Array3::<f64>::zeros((3, nbf, npts));
         for b in 0..3 {
             let slice = dchi.index_axis(ndarray::Axis(0), b);
-            let prod: Array2<f64> = d_sigma.dot(&slice);
+            let prod: Array2<f64> =
+                with_blas_threads(opt_in_blas_threads(), || d_sigma.dot(&slice));
             mdchi.index_axis_mut(ndarray::Axis(0), b).assign(&prod);
         }
         let partials = gga_ao_partials(&m, &mdchi, &dchi, &ddchi, &c, &t_rho);
@@ -811,15 +825,17 @@ pub fn xc_gradient_uks_from_density(
     // implements the lab-fixed-r path so the home-translation correction
     // exactly closes the chain rule.
 
-    // Precompute per-spin (D · χ) and (D · ∂χ).
-    let m_a: Array2<f64> = d_a.dot(&chi);
-    let m_b: Array2<f64> = d_b.dot(&chi);
+    // Precompute per-spin (D · χ) and (D · ∂χ). Runs before the rayon-gated
+    // hess_col reduction below starts. Opt-in BLAS raise via
+    // FERRIC_BLAS_THREADS (default 1, unchanged behavior).
+    let m_a: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d_a.dot(&chi));
+    let m_b: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d_b.dot(&chi));
     let mut mdchi_a = Array3::<f64>::zeros((3, nbf, npts));
     let mut mdchi_b = Array3::<f64>::zeros((3, nbf, npts));
     for b in 0..3 {
         let slice = dchi.index_axis(ndarray::Axis(0), b);
-        let pa: Array2<f64> = d_a.dot(&slice);
-        let pb: Array2<f64> = d_b.dot(&slice);
+        let pa: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d_a.dot(&slice));
+        let pb: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d_b.dot(&slice));
         mdchi_a.index_axis_mut(ndarray::Axis(0), b).assign(&pa);
         mdchi_b.index_axis_mut(ndarray::Axis(0), b).assign(&pb);
     }

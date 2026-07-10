@@ -26,6 +26,7 @@
 use crate::fock::KBuilder;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
+use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::operator::Operator;
 use ferric_integrals::three_index_source::ThreeIndexSource;
 use ferric_integrals::threeindex::coulomb_metric_2c;
@@ -49,8 +50,13 @@ pub struct DfK {
 /// `lindep` threshold in `df.aux_e2`.
 fn v_inv_sqrt_lindep(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
     let naux = v.nrows();
-    let (evals, evecs) = v
-        .eigh(UPLO::Upper)
+    // One-time (naux, naux) setup factorization, called once per SCF
+    // construction outside any rayon region. Opt-in BLAS raise via
+    // FERRIC_BLAS_THREADS (default 1, unchanged behavior);
+    // opt_in_blas_threads()'s rayon-worker self-guard also covers any caller
+    // reached from a single-thread rayon pool (e.g. free-atom SAD), resolving
+    // to 1 there regardless of the env var.
+    let (evals, evecs) = with_blas_threads(opt_in_blas_threads(), || v.eigh(UPLO::Upper))
         .map_err(|e| FerricError::Lapack(format!("V eigh in DfK: {e}")))?;
     const LINDEP_THRESH: f64 = 1e-10;
     let mut u_scaled = evecs.clone();
@@ -73,7 +79,10 @@ fn v_inv_sqrt_lindep(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
     // Silent on n_dropped: this is expected for range-separated operators
     // (erf, erfc) with JK-fit aux on heavy atoms and is benign.
     let _ = n_dropped;
-    Ok(u_scaled.dot(&evecs.t())) // (naux, naux)
+    // Same one-time-setup opt-in raise as the eigh above.
+    Ok(with_blas_threads(opt_in_blas_threads(), || {
+        u_scaled.dot(&evecs.t())
+    })) // (naux, naux)
 }
 
 impl DfK {

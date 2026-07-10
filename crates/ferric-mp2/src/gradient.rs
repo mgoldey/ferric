@@ -6,6 +6,7 @@ use ferric_core::basis::BasisSet;
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
+use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::operator::Operator;
 use ferric_scf::gradient::hf_gradient_with_density;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
@@ -331,8 +332,12 @@ fn integral_response_gradient_3c2c(
         }
     }
 
-    // 2-center metric derivative: Σ_{PQ} Γ^2c_{PQ} * d(P|Q)/dR
-    let gamma_2c = -0.5 * x_ov.dot(&x_ov.t());
+    // 2-center metric derivative: Σ_{PQ} Γ^2c_{PQ} * d(P|Q)/dR. This GEMM sits
+    // between two rayon regions (the 3c-derivative fan-out above has already
+    // collected/returned; the 2c-derivative fan-out below hasn't started) —
+    // outside any rayon region itself. Opt-in BLAS raise via
+    // FERRIC_BLAS_THREADS (default 1, unchanged behavior).
+    let gamma_2c = with_blas_threads(opt_in_blas_threads(), || -0.5 * x_ov.dot(&x_ov.t()));
 
     {
         use ferric_integrals::engine::Engine;

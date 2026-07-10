@@ -3,6 +3,7 @@
 //! Closed-shell only this round. The input density matrix is expected to be
 //! the **total** density (trace = N_e), as produced by ferric's `ScfResult::density_total`.
 
+use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ndarray::{Array1, Array2, Array3, Zip};
 use rayon::prelude::*;
 
@@ -47,9 +48,10 @@ pub fn eval_density_closed(
     debug_assert_eq!(d.dim(), (nbf, nbf));
     debug_assert_eq!(dchi.dim(), (3, nbf, npts));
 
-    // Phi_{μg} = Σ_ν D_μν χ_νg  (one GEMM; stays outside any rayon region —
-    // OpenBLAS is process-pinned to 1 thread by convention, see blas_threads.rs)
-    let phi: Array2<f64> = d.dot(chi);
+    // Phi_{μg} = Σ_ν D_μν χ_νg  (one GEMM; runs before the point-parallel rayon
+    // region below starts, never overlapping it). Opt-in BLAS raise via
+    // FERRIC_BLAS_THREADS (default 1, unchanged behavior) — see blas_threads.rs.
+    let phi: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d.dot(chi));
 
     // ρ_g = Σ_μ χ_μg · Φ_μg, and ∇ρ_ag = 2 Σ_μ Φ_μg · ∂_a χ_μg.
     //
@@ -140,8 +142,11 @@ pub fn eval_density_uks(
     debug_assert_eq!(d_b.dim(), (nbf, nbf));
     debug_assert_eq!(dchi.dim(), (3, nbf, npts));
 
-    let phi_a: Array2<f64> = d_a.dot(chi);
-    let phi_b: Array2<f64> = d_b.dot(chi);
+    // Two GEMMs, both before the point-parallel rayon region below starts.
+    // Opt-in BLAS raise via FERRIC_BLAS_THREADS (default 1, unchanged
+    // behavior) — same reasoning as eval_density_closed above.
+    let phi_a: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d_a.dot(chi));
+    let phi_b: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d_b.dot(chi));
 
     // Point-outer / μ-inner restructuring — see the comment in
     // `eval_density_closed` for the determinism argument (disjoint per-point
