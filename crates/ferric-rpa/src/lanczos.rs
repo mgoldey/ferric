@@ -237,14 +237,42 @@ fn qr_orthonormalize(mat: Array2<f64>) -> Result<Array2<f64>, FerricError> {
 /// themselves. Such a caller must ensure the Lanczos solve is not running
 /// inside a rayon worker, where nested OpenBLAS threads are the documented
 /// segfault/oversubscription mode.
+///
+/// Precedence: `FERRIC_LANCZOS_BLAS_THREADS` (this var, back-compat) >
+/// `FERRIC_BLAS_THREADS` (umbrella, see `ferric_integrals::blas_threads::
+/// opt_in_blas_threads`) > `1`. Falls back to the umbrella resolver when this
+/// var is unset, so the umbrella's rayon-worker guard (return 1 if
+/// `rayon::current_thread_index().is_some()`) still applies on that path;
+/// replicated here too so a caller who sets ONLY the Lanczos-specific var
+/// gets the same belt-and-suspenders protection.
+///
+/// Shared with Davidson (`davidson.rs::davidson_blas_threads`): the two are
+/// alternative eigensolvers for the same call site (`config.eigensolver` in
+/// lib.rs), and a caller tuning one expects the other to behave the same way
+/// when swapped in.
 fn lanczos_blas_threads() -> usize {
-    if let Ok(v) = std::env::var("FERRIC_LANCZOS_BLAS_THREADS") {
+    solver_blas_threads_with(|k| std::env::var(k).ok())
+}
+
+/// [`lanczos_blas_threads`] with an injected env lookup — the testable core,
+/// also used by Davidson. Injection instead of `set_var` in tests: see
+/// `ferric_integrals::blas_threads::opt_in_blas_threads_with` for why
+/// env-mutating resolver tests are a data race under the parallel test
+/// harness (process-global OpenBLAS state + concurrent BLAS-doing tests).
+/// Real-env raise tests live in `tests/blas_raise_identity.rs` (a dedicated
+/// process where nothing else runs BLAS concurrently).
+pub(crate) fn solver_blas_threads_with(get: impl Fn(&str) -> Option<String> + Copy) -> usize {
+    if rayon::current_thread_index().is_some() {
+        return 1;
+    }
+    if let Some(v) = get("FERRIC_LANCZOS_BLAS_THREADS") {
         if let Ok(n) = v.trim().parse::<usize>() {
             return n.max(1);
         }
     }
-    // Deterministic, stack-safe default. Speed is opt-in via the env override.
-    1
+    // Unset: fall back to the umbrella convention (itself defaulting to 1,
+    // and itself re-checking the rayon-worker guard).
+    ferric_integrals::blas_threads::opt_in_blas_threads_with(get)
 }
 
 /// Block Lanczos with full reorthogonalization.
@@ -528,6 +556,44 @@ where
 mod tests {
     use super::*;
     use ndarray::Array1;
+
+    // Resolver tests use the injected-lookup variant (solver_blas_threads_with)
+    // so they never mutate the real process-global env — see
+    // opt_in_blas_threads_with's doc comment for why set_var-based tests are a
+    // data race with the other (BLAS-doing) tests in this binary.
+
+    #[test]
+    fn solver_blas_threads_defaults_to_one() {
+        assert_eq!(solver_blas_threads_with(|_| None), 1);
+    }
+
+    #[test]
+    fn solver_blas_threads_falls_back_to_umbrella() {
+        let get = |k: &str| (k == "FERRIC_BLAS_THREADS").then(|| "5".to_string());
+        assert_eq!(solver_blas_threads_with(get), 5);
+    }
+
+    #[test]
+    fn solver_blas_threads_own_var_wins_over_umbrella() {
+        let get = |k: &str| match k {
+            "FERRIC_LANCZOS_BLAS_THREADS" => Some("2".to_string()),
+            "FERRIC_BLAS_THREADS" => Some("5".to_string()),
+            _ => None,
+        };
+        assert_eq!(solver_blas_threads_with(get), 2, "Lanczos-specific var must win over umbrella");
+    }
+
+    #[test]
+    fn solver_blas_threads_forces_one_inside_rayon_worker() {
+        let get = |k: &str| (k == "FERRIC_LANCZOS_BLAS_THREADS").then(|| "4".to_string());
+        assert_eq!(solver_blas_threads_with(get), 4);
+        let inside = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap()
+            .install(|| solver_blas_threads_with(get));
+        assert_eq!(inside, 1, "rayon-worker guard must force 1 even with own var set");
+    }
 
     fn make_symmetric_with_spectrum(lambdas: &[f64], seed: u64) -> Array2<f64> {
         let n = lambdas.len();

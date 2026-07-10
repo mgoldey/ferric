@@ -1,6 +1,7 @@
 //! Davidson subspace eigensolver for PDEP dielectric eigenpotentials.
 
 use ferric_core::FerricError;
+use ferric_integrals::blas_threads::with_blas_threads;
 use ndarray::{Array1, Array2};
 use ndarray_linalg::{Eigh, QR, UPLO};
 
@@ -44,7 +45,51 @@ where
 /// ε̃_αβ(iω) for trial vectors V (columns of v_mat).
 ///
 /// `n_desired`: number of eigenpairs to extract
+///
+/// BLAS threading: the whole iteration (dielectric-matrix matvec via the
+/// caller-supplied `dielectric_fn`, `eigh`, the Ritz-vector GEMMs, and QR
+/// re-orthonormalization) runs under one `with_blas_threads` scope — see
+/// [`run_davidson_seeded_impl`]. Default 1 (unchanged behavior); opt-in via
+/// `FERRIC_BLAS_THREADS`/`FERRIC_LANCZOS_BLAS_THREADS` closes the
+/// Davidson/Lanczos gating asymmetry (Lanczos has had this since the
+/// FERRIC_LANCZOS_BLAS_THREADS precedent; Davidson did not).
 pub fn run_davidson_seeded<F>(
+    seed: Array2<f64>,
+    dielectric_fn: F,
+    conv_thresh: f64,
+    max_vecs: usize,
+    n_desired: usize,
+    find_lowest: bool,
+) -> Result<DavidsonResult, FerricError>
+where
+    F: Fn(&Array2<f64>, f64) -> Array2<f64>,
+{
+    with_blas_threads(davidson_blas_threads(), || {
+        run_davidson_seeded_impl(seed, dielectric_fn, conv_thresh, max_vecs, n_desired, find_lowest)
+    })
+}
+
+/// BLAS thread count for the Davidson solve. Same resolver as Lanczos
+/// (`lanczos::solver_blas_threads_with` — see that doc comment and
+/// `blas_threads::opt_in_blas_threads` for the precedence and hazard model):
+/// `FERRIC_LANCZOS_BLAS_THREADS` > `FERRIC_BLAS_THREADS` > 1, plus the
+/// rayon-worker runtime guard. Sharing the Lanczos var (not a separate
+/// `FERRIC_DAVIDSON_BLAS_THREADS`) is deliberate: Davidson and Lanczos are
+/// alternative eigensolvers for the same call site (`config.eigensolver` in
+/// lib.rs) and a caller tuning one expects the other to behave the same way
+/// when swapped in.
+fn davidson_blas_threads() -> usize {
+    crate::lanczos::solver_blas_threads_with(|k| std::env::var(k).ok())
+}
+
+/// Serial body for [`run_davidson_seeded`]; BLAS threading managed by caller.
+/// Call-path proof: `run_davidson_seeded`/`run_davidson_static` are called
+/// from `run_pdep_rpa`'s body (lib.rs:369,:408,:423) and `run_u_pdep_rpa`'s
+/// body (lib.rs:649) — both plain function bodies, never inside a
+/// `par_iter`. The `dielectric_fn` closures passed in from lib.rs
+/// (sternheimer/sternheimer_sparse/laplace_chi0) are BLAS-only with no rayon
+/// region, matching the same requirement Lanczos's `matvec` already carries.
+fn run_davidson_seeded_impl<F>(
     seed: Array2<f64>,
     dielectric_fn: F,
     conv_thresh: f64,
@@ -206,6 +251,14 @@ fn qr_orthonormalize(mat: Array2<f64>) -> Result<Array2<f64>, FerricError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Resolver precedence/guard tests live in lanczos.rs (the shared
+    // solver_blas_threads_with, injection-based — no env mutation). The
+    // real-env FERRIC_BLAS_THREADS=2 identity test lives in
+    // tests/blas_raise_identity.rs (its own process): raising the
+    // process-global OpenBLAS thread count inside this parallel lib test
+    // binary races other BLAS-doing tests (observed corruption, not
+    // hypothetical).
 
     #[test]
     fn davidson_recovers_known_eigenvalues() {

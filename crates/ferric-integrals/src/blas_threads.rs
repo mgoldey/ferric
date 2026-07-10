@@ -53,6 +53,86 @@ pub fn init_threading() {
     std::env::set_var("OPENBLAS_NUM_THREADS", "1");
 }
 
+/// Umbrella opt-in BLAS thread count for call sites *outside* any rayon
+/// parallel region.
+///
+/// Defaults to **1** (matches [`init_threading`]'s process-wide default; a
+/// caller who does nothing gets byte-identical behavior to before this
+/// function existed). Raising it is opt-in via the `FERRIC_BLAS_THREADS`
+/// environment variable, parsed the same way as the longstanding
+/// `FERRIC_LANCZOS_BLAS_THREADS` (see `lanczos::lanczos_blas_threads`, the
+/// precedent this generalizes): non-numeric/absent → default, present →
+/// `.max(1)`.
+///
+/// ## Hazard model — read before wrapping a new call site
+///
+/// A raise here is safe **only** at call sites with a call-path proof that no
+/// enclosing rayon parallel region is active when the wrapped closure runs.
+/// Two independent hazards fire when that proof doesn't hold:
+///
+///  1. **Oversubscription.** rayon workers × OpenBLAS threads multiplies —
+///     3–5× slowdown (see [`init_threading`]'s doc comment).
+///  2. **Stack overflow.** A multi-threaded OpenBLAS `eigh`/`dgetrf` running
+///     on a 2 MB rayon worker stack can overflow it outright (this is what
+///     78bc70b reverted — see `openblas-rayon-dgetrf-crash`). This is not a
+///     slowdown, it's a crash.
+///
+/// A raise must **never** reach the SAD / free-atom solve paths. Those run
+/// inside `run_serial` — a single-thread rayon pool used specifically to
+/// avoid the 18× per-atom-SCF regression rayon causes there (see
+/// `rayon-penalty-on-free-atom-scf`). A single-thread rayon pool is still a
+/// rayon pool: any BLAS call inside it is, by definition, "inside a rayon
+/// parallel region" for purposes of hazard (2) above, so it is exactly the
+/// rayon-adjacent hazard this doc warns about — even though only one worker
+/// is active. Sites reachable from SAD/free-atom code must gate the raise
+/// off with an explicit config flag (never a bare env read that fires
+/// unconditionally), or must not call this function at all.
+///
+/// ## Precedence
+///
+/// `FERRIC_LANCZOS_BLAS_THREADS` (Lanczos-specific, kept for back-compat) >
+/// `FERRIC_BLAS_THREADS` (this umbrella) > `1` (safe default). Lanczos's own
+/// resolver (`lanczos::lanczos_blas_threads`) implements this by falling back
+/// to this function when its own var is unset.
+///
+/// ## Runtime rayon-worker guard
+///
+/// Belt-and-suspenders on top of the call-path proof: if this function is
+/// itself invoked from a rayon worker thread (`rayon::current_thread_index()
+/// .is_some()`), it returns `1` regardless of the env var. A correct
+/// call-path proof means this branch never fires in practice, but a future
+/// refactor that accidentally moves a wrapped site inside a `par_iter` (or
+/// runs it under `run_serial`'s single-thread pool — see the hazard note
+/// above) degrades to today's safe default instead of silently reintroducing
+/// the 78bc70b stack-overflow class of bug.
+pub fn opt_in_blas_threads() -> usize {
+    opt_in_blas_threads_with(|k| std::env::var(k).ok())
+}
+
+/// [`opt_in_blas_threads`] with an injected env lookup — the testable core.
+///
+/// Why injection instead of `set_var` in tests: `FERRIC_BLAS_THREADS` (and the
+/// OpenBLAS thread count it drives through [`with_blas_threads`]) is
+/// process-global, and the default test harness runs tests on parallel
+/// threads. A test that raises the global count while any other test in the
+/// same binary does BLAS work concurrently hits OpenBLAS's documented
+/// non-thread-safety in multi-threaded mode — observed as silently corrupted
+/// GEMM output, not a crash. Injecting the lookup lets precedence/guard tests
+/// run with zero global mutation. Real-env raise tests live in dedicated
+/// integration-test binaries (their own process) where nothing else runs.
+#[doc(hidden)]
+pub fn opt_in_blas_threads_with(get: impl Fn(&str) -> Option<String>) -> usize {
+    if rayon::current_thread_index().is_some() {
+        return 1;
+    }
+    if let Some(v) = get("FERRIC_BLAS_THREADS") {
+        if let Ok(n) = v.trim().parse::<usize>() {
+            return n.max(1);
+        }
+    }
+    1
+}
+
 /// Run `f` with OpenBLAS pinned to `n` threads, restoring the previous count
 /// afterward (including on panic). `n` is clamped to >= 1.
 pub fn with_blas_threads<R>(n: usize, f: impl FnOnce() -> R) -> R {
@@ -110,6 +190,50 @@ mod tests {
         init_threading();
         assert_eq!(unsafe { openblas_get_num_threads() }, 3);
         std::env::remove_var("OPENBLAS_NUM_THREADS");
+    }
+
+    // The opt_in resolver tests use the injected-lookup variant so they never
+    // mutate the real (process-global) env — see opt_in_blas_threads_with's
+    // doc comment for why set_var-based tests are a data race here.
+
+    #[test]
+    fn opt_in_blas_threads_defaults_to_one() {
+        assert_eq!(opt_in_blas_threads_with(|_| None), 1);
+    }
+
+    #[test]
+    fn opt_in_blas_threads_respects_umbrella_env() {
+        let get = |k: &str| (k == "FERRIC_BLAS_THREADS").then(|| "3".to_string());
+        assert_eq!(opt_in_blas_threads_with(get), 3);
+    }
+
+    #[test]
+    fn opt_in_blas_threads_clamps_to_at_least_one() {
+        let get = |k: &str| (k == "FERRIC_BLAS_THREADS").then(|| "0".to_string());
+        assert_eq!(opt_in_blas_threads_with(get), 1);
+    }
+
+    #[test]
+    fn opt_in_blas_threads_ignores_garbage() {
+        let get = |k: &str| (k == "FERRIC_BLAS_THREADS").then(|| "not-a-number".to_string());
+        assert_eq!(opt_in_blas_threads_with(get), 1);
+    }
+
+    #[test]
+    fn opt_in_blas_threads_forces_one_inside_rayon_worker() {
+        let get = |k: &str| (k == "FERRIC_BLAS_THREADS").then(|| "4".to_string());
+        // Outside rayon: honors the (injected) env var.
+        assert_eq!(opt_in_blas_threads_with(get), 4);
+        // Inside a rayon worker: the runtime guard overrides the env var to 1,
+        // even though it is set — this is the belt-and-suspenders check that
+        // a wrapped call site accidentally moved inside a par_iter (or run
+        // under run_serial's single-thread pool) still degrades safely.
+        let inside = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap()
+            .install(|| opt_in_blas_threads_with(get));
+        assert_eq!(inside, 1, "rayon-worker guard must force 1 regardless of env");
     }
 
     #[test]
