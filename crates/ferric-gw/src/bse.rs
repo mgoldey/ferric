@@ -184,25 +184,48 @@ pub fn run_bse_tda(
     // 4. Assemble the singlet BSE-TDA matrix A (n × n), Hermitian.
     //    local occ i: 0..nocc   local vir a: nocc + a_loc, a_loc in 0..nvir
     //    A_{ia,jb} = (ε_a − ε_i) δ + 2(ia|jb)_v − (ab|W|ij)
+    //
+    // Rows are independent: row `ia` is written exactly once, in full, by a
+    // single (i,a) pair. Parallelize over the flat `ia` row axis of the SAME
+    // preallocated matrix (order-preserving `par_chunks_mut`, no per-worker
+    // copies, no reduction — bit-identical by construction). The `bare`/
+    // `screened` closures are scalar contractions (no BLAS), so no
+    // with_blas_threads guard is needed. Serial below PAR_ROWS_THRESHOLD.
     let mut a_mat = Array2::<f64>::zeros((n, n));
-    for i in 0..nocc {
+    let fill_row = |ia: usize, row: &mut [f64]| {
+        let i = ia / nvir;
+        let a = ia % nvir;
         let i_loc = i; // occupied-active local index
         let eps_i = eps_qp_full[first_act + i];
-        for a in 0..nvir {
-            let a_loc = nocc + a; // virtual local index in the active block
-            let eps_a = eps_qp_full[nocc_total + a];
-            let ia = i * nvir + a;
-            for j in 0..nocc {
-                let j_loc = j;
-                for bb in 0..nvir {
-                    let b_loc = nocc + bb;
-                    let jb = j * nvir + bb;
-                    let coul = bare(i_loc, a_loc, j_loc, b_loc); // (ia|jb)
-                    let scr = screened(a_loc, b_loc, i_loc, j_loc); // (ab|W|ij)
-                    a_mat[(ia, jb)] = 2.0 * coul - scr;
-                }
+        let a_loc = nocc + a; // virtual local index in the active block
+        let eps_a = eps_qp_full[nocc_total + a];
+        for j in 0..nocc {
+            let j_loc = j;
+            for bb in 0..nvir {
+                let b_loc = nocc + bb;
+                let jb = j * nvir + bb;
+                let coul = bare(i_loc, a_loc, j_loc, b_loc); // (ia|jb)
+                let scr = screened(a_loc, b_loc, i_loc, j_loc); // (ab|W|ij)
+                row[jb] = 2.0 * coul - scr;
             }
-            a_mat[(ia, ia)] += eps_a - eps_i;
+        }
+        row[ia] += eps_a - eps_i;
+    };
+    const PAR_ROWS_THRESHOLD: usize = 8;
+    if n >= PAR_ROWS_THRESHOLD {
+        use rayon::prelude::*;
+        a_mat
+            .as_slice_mut()
+            .expect("a_mat is contiguous (row-major default)")
+            .par_chunks_mut(n)
+            .enumerate()
+            .for_each(|(ia, row)| fill_row(ia, row));
+    } else {
+        let flat = a_mat
+            .as_slice_mut()
+            .expect("a_mat is contiguous (row-major default)");
+        for (ia, row) in flat.chunks_mut(n).enumerate() {
+            fill_row(ia, row);
         }
     }
 
@@ -268,23 +291,44 @@ pub fn run_cis_tda(
         acc
     };
 
+    // Same row-independent structure as `run_bse_tda` (see the comment there):
+    // row `ia` is written exactly once by a single (i,a) pair, so parallelize
+    // over the flat `ia` axis with order-preserving `par_chunks_mut` into the
+    // SAME preallocated matrix. No BLAS inside `bare`, so no
+    // with_blas_threads guard needed. Serial below PAR_ROWS_THRESHOLD.
     let mut a_mat = Array2::<f64>::zeros((n, n));
-    for i in 0..nocc {
+    let fill_row = |ia: usize, row: &mut [f64]| {
+        let i = ia / nvir;
+        let a = ia % nvir;
         let eps_i = eps[first_act + i];
-        for a in 0..nvir {
-            let a_loc = nocc + a;
-            let eps_a = eps[nocc_total + a];
-            let ia = i * nvir + a;
-            for j in 0..nocc {
-                for bb in 0..nvir {
-                    let b_loc = nocc + bb;
-                    let jb = j * nvir + bb;
-                    let coul = bare(i, a_loc, j, b_loc); // (ia|jb)
-                    let exch = bare(a_loc, b_loc, i, j); // (ab|ij)  bare
-                    a_mat[(ia, jb)] = 2.0 * coul - exch;
-                }
+        let a_loc = nocc + a;
+        let eps_a = eps[nocc_total + a];
+        for j in 0..nocc {
+            for bb in 0..nvir {
+                let b_loc = nocc + bb;
+                let jb = j * nvir + bb;
+                let coul = bare(i, a_loc, j, b_loc); // (ia|jb)
+                let exch = bare(a_loc, b_loc, i, j); // (ab|ij)  bare
+                row[jb] = 2.0 * coul - exch;
             }
-            a_mat[(ia, ia)] += eps_a - eps_i;
+        }
+        row[ia] += eps_a - eps_i;
+    };
+    const PAR_ROWS_THRESHOLD: usize = 8;
+    if n >= PAR_ROWS_THRESHOLD {
+        use rayon::prelude::*;
+        a_mat
+            .as_slice_mut()
+            .expect("a_mat is contiguous (row-major default)")
+            .par_chunks_mut(n)
+            .enumerate()
+            .for_each(|(ia, row)| fill_row(ia, row));
+    } else {
+        let flat = a_mat
+            .as_slice_mut()
+            .expect("a_mat is contiguous (row-major default)");
+        for (ia, row) in flat.chunks_mut(n).enumerate() {
+            fill_row(ia, row);
         }
     }
     let (evals, _) = a_mat
@@ -398,27 +442,62 @@ pub fn run_bse_c6(
     // Full screened (A±B) in (ia)-space. local occ i:0..nocc ; vir a: nocc+a.
     // (A+B) = Δε δ + 4(ia|jb)_v − (ab|W|ij) − (ib|W|aj)
     // (A−B) = Δε δ            + (ib|W|aj) − (ab|W|ij)
+    //
+    // Row `ia` of BOTH apb and amb is written exactly once by a single (i,a)
+    // pair — independent rows. Zip the two matrices' row-chunk iterators and
+    // parallelize over the flat `ia` axis, filling the SAME two preallocated
+    // matrices (order-preserving, no reduction, bit-identical by
+    // construction). No BLAS inside `bare`/`screened`. Serial below
+    // PAR_ROWS_THRESHOLD.
     let mut apb = Array2::<f64>::zeros((n, n));
     let mut amb = Array2::<f64>::zeros((n, n));
-    for i in 0..nocc {
+    let fill_row = |ia: usize, apb_row: &mut [f64], amb_row: &mut [f64]| {
+        let i = ia / nvir;
+        let a = ia % nvir;
         let eps_i = eps_qp[first_act + i];
-        for a in 0..nvir {
-            let a_loc = nocc + a;
-            let eps_a = eps_qp[nocc_total + a];
-            let ia = i * nvir + a;
-            for j in 0..nocc {
-                for bb in 0..nvir {
-                    let b_loc = nocc + bb;
-                    let jb = j * nvir + bb;
-                    let coul = bare(i, a_loc, j, b_loc); // (ia|jb)
-                    let w_abij = screened(a_loc, b_loc, i, j); // (ab|W|ij)
-                    let w_ibaj = screened(i, b_loc, a_loc, j); // (ib|W|aj)
-                    apb[(ia, jb)] = 4.0 * coul - w_abij - w_ibaj;
-                    amb[(ia, jb)] = w_ibaj - w_abij;
-                }
+        let a_loc = nocc + a;
+        let eps_a = eps_qp[nocc_total + a];
+        for j in 0..nocc {
+            for bb in 0..nvir {
+                let b_loc = nocc + bb;
+                let jb = j * nvir + bb;
+                let coul = bare(i, a_loc, j, b_loc); // (ia|jb)
+                let w_abij = screened(a_loc, b_loc, i, j); // (ab|W|ij)
+                let w_ibaj = screened(i, b_loc, a_loc, j); // (ib|W|aj)
+                apb_row[jb] = 4.0 * coul - w_abij - w_ibaj;
+                amb_row[jb] = w_ibaj - w_abij;
             }
-            apb[(ia, ia)] += eps_a - eps_i;
-            amb[(ia, ia)] += eps_a - eps_i;
+        }
+        apb_row[ia] += eps_a - eps_i;
+        amb_row[ia] += eps_a - eps_i;
+    };
+    const PAR_ROWS_THRESHOLD: usize = 8;
+    if n >= PAR_ROWS_THRESHOLD {
+        use rayon::prelude::*;
+        let apb_flat = apb
+            .as_slice_mut()
+            .expect("apb is contiguous (row-major default)");
+        let amb_flat = amb
+            .as_slice_mut()
+            .expect("amb is contiguous (row-major default)");
+        apb_flat
+            .par_chunks_mut(n)
+            .zip(amb_flat.par_chunks_mut(n))
+            .enumerate()
+            .for_each(|(ia, (apb_row, amb_row))| fill_row(ia, apb_row, amb_row));
+    } else {
+        let apb_flat = apb
+            .as_slice_mut()
+            .expect("apb is contiguous (row-major default)");
+        let amb_flat = amb
+            .as_slice_mut()
+            .expect("amb is contiguous (row-major default)");
+        for (ia, (apb_row, amb_row)) in apb_flat
+            .chunks_mut(n)
+            .zip(amb_flat.chunks_mut(n))
+            .enumerate()
+        {
+            fill_row(ia, apb_row, amb_row);
         }
     }
 
@@ -435,22 +514,43 @@ pub fn run_bse_c6(
     }
 
     // α(iω) = 4 μᵀ (A−B)[(A−B)(A+B)+ω²]⁻¹ μ, isotropic average over axes.
-    let mut alpha_iso = Vec::with_capacity(freqs.len());
-    for &w in freqs {
-        let mut sysm = amb.dot(&apb);
-        for k in 0..n {
-            sysm[(k, k)] += w * w;
+    // Frequencies are independent (each does a full n×n GEMM + solve) — par
+    // over freqs, order-preserving collect (energy.rs pattern), BLAS pinned
+    // to 1 inside the rayon region to avoid nested-thread oversubscription /
+    // the dgetrf stack-overflow crash site.
+    let alpha_iso: Vec<f64> = {
+        use ferric_integrals::blas_threads::with_blas_threads;
+        use rayon::prelude::*;
+        const PAR_FREQ_THRESHOLD: usize = 4;
+        let compute_one = |&w: &f64| -> Result<f64, FerricError> {
+            let mut sysm = amb.dot(&apb);
+            for k in 0..n {
+                sysm[(k, k)] += w * w;
+            }
+            let mut iso = 0.0;
+            for axis in mu.iter() {
+                let rhs = amb.dot(axis);
+                let t = sysm
+                    .solve(&rhs)
+                    .map_err(|e| FerricError::Lapack(format!("BSE α(iω) solve: {e}")))?;
+                iso += 4.0 * axis.dot(&t);
+            }
+            Ok(iso / 3.0)
+        };
+        if freqs.len() >= PAR_FREQ_THRESHOLD {
+            with_blas_threads(1, || {
+                freqs
+                    .par_iter()
+                    .map(compute_one)
+                    .collect::<Result<Vec<f64>, FerricError>>()
+            })?
+        } else {
+            freqs
+                .iter()
+                .map(compute_one)
+                .collect::<Result<Vec<f64>, FerricError>>()?
         }
-        let mut iso = 0.0;
-        for axis in mu.iter() {
-            let rhs = amb.dot(axis);
-            let t = sysm
-                .solve(&rhs)
-                .map_err(|e| FerricError::Lapack(format!("BSE α(iω) solve: {e}")))?;
-            iso += 4.0 * axis.dot(&t);
-        }
-        alpha_iso.push(iso / 3.0);
-    }
+    };
 
     let c6 = 3.0 / PI * (0..freqs.len()).map(|k| weights[k] * alpha_iso[k] * alpha_iso[k]).sum::<f64>();
     let alpha_static = *alpha_iso.first().unwrap_or(&0.0);
@@ -578,27 +678,57 @@ pub fn run_bse_c6_ks(
         );
     }
 
+    // Same row-independent structure as `run_bse_c6` (see the comment there):
+    // row `ia` of both apb/amb written exactly once by a single (i,a) pair.
     let mut apb = Array2::<f64>::zeros((n, n));
     let mut amb = Array2::<f64>::zeros((n, n));
-    for i in 0..nocc {
+    let fill_row = |ia: usize, apb_row: &mut [f64], amb_row: &mut [f64]| {
+        let i = ia / nvir;
+        let a = ia % nvir;
         let eps_i = eps[first_act + i];
-        for a in 0..nvir {
-            let a_loc = nocc + a;
-            let eps_a = eps[nocc_total + a];
-            let ia = i * nvir + a;
-            for j in 0..nocc {
-                for bb in 0..nvir {
-                    let b_loc = nocc + bb;
-                    let jb = j * nvir + bb;
-                    let coul = bare(i, a_loc, j, b_loc);
-                    let w_abij = screened(a_loc, b_loc, i, j);
-                    let w_ibaj = screened(i, b_loc, a_loc, j);
-                    apb[(ia, jb)] = 4.0 * coul - w_abij - w_ibaj;
-                    amb[(ia, jb)] = w_ibaj - w_abij;
-                }
+        let a_loc = nocc + a;
+        let eps_a = eps[nocc_total + a];
+        for j in 0..nocc {
+            for bb in 0..nvir {
+                let b_loc = nocc + bb;
+                let jb = j * nvir + bb;
+                let coul = bare(i, a_loc, j, b_loc);
+                let w_abij = screened(a_loc, b_loc, i, j);
+                let w_ibaj = screened(i, b_loc, a_loc, j);
+                apb_row[jb] = 4.0 * coul - w_abij - w_ibaj;
+                amb_row[jb] = w_ibaj - w_abij;
             }
-            apb[(ia, ia)] += eps_a - eps_i;
-            amb[(ia, ia)] += eps_a - eps_i;
+        }
+        apb_row[ia] += eps_a - eps_i;
+        amb_row[ia] += eps_a - eps_i;
+    };
+    const PAR_ROWS_THRESHOLD: usize = 8;
+    if n >= PAR_ROWS_THRESHOLD {
+        use rayon::prelude::*;
+        let apb_flat = apb
+            .as_slice_mut()
+            .expect("apb is contiguous (row-major default)");
+        let amb_flat = amb
+            .as_slice_mut()
+            .expect("amb is contiguous (row-major default)");
+        apb_flat
+            .par_chunks_mut(n)
+            .zip(amb_flat.par_chunks_mut(n))
+            .enumerate()
+            .for_each(|(ia, (apb_row, amb_row))| fill_row(ia, apb_row, amb_row));
+    } else {
+        let apb_flat = apb
+            .as_slice_mut()
+            .expect("apb is contiguous (row-major default)");
+        let amb_flat = amb
+            .as_slice_mut()
+            .expect("amb is contiguous (row-major default)");
+        for (ia, (apb_row, amb_row)) in apb_flat
+            .chunks_mut(n)
+            .zip(amb_flat.chunks_mut(n))
+            .enumerate()
+        {
+            fill_row(ia, apb_row, amb_row);
         }
     }
 
@@ -613,22 +743,40 @@ pub fn run_bse_c6_ks(
         }
     }
 
-    let mut alpha_iso = Vec::with_capacity(freqs.len());
-    for &w in freqs {
-        let mut sysm = amb.dot(&apb);
-        for k in 0..n {
-            sysm[(k, k)] += w * w;
+    // Frequencies independent — same par-over-freqs pattern as run_bse_c6.
+    let alpha_iso: Vec<f64> = {
+        use ferric_integrals::blas_threads::with_blas_threads;
+        use rayon::prelude::*;
+        const PAR_FREQ_THRESHOLD: usize = 4;
+        let compute_one = |&w: &f64| -> Result<f64, FerricError> {
+            let mut sysm = amb.dot(&apb);
+            for k in 0..n {
+                sysm[(k, k)] += w * w;
+            }
+            let mut iso = 0.0;
+            for axis in mu.iter() {
+                let rhs = amb.dot(axis);
+                let t = sysm
+                    .solve(&rhs)
+                    .map_err(|e| FerricError::Lapack(format!("RPAx α(iω) solve: {e}")))?;
+                iso += 4.0 * axis.dot(&t);
+            }
+            Ok(iso / 3.0)
+        };
+        if freqs.len() >= PAR_FREQ_THRESHOLD {
+            with_blas_threads(1, || {
+                freqs
+                    .par_iter()
+                    .map(compute_one)
+                    .collect::<Result<Vec<f64>, FerricError>>()
+            })?
+        } else {
+            freqs
+                .iter()
+                .map(compute_one)
+                .collect::<Result<Vec<f64>, FerricError>>()?
         }
-        let mut iso = 0.0;
-        for axis in mu.iter() {
-            let rhs = amb.dot(axis);
-            let t = sysm
-                .solve(&rhs)
-                .map_err(|e| FerricError::Lapack(format!("RPAx α(iω) solve: {e}")))?;
-            iso += 4.0 * axis.dot(&t);
-        }
-        alpha_iso.push(iso / 3.0);
-    }
+    };
     let c6 = 3.0 / PI * (0..freqs.len()).map(|k| weights[k] * alpha_iso[k] * alpha_iso[k]).sum::<f64>();
     let alpha_static = *alpha_iso.first().unwrap_or(&0.0);
     Ok(BseC6Result { c6, alpha_iso, alpha_static, nocc, nvir })
@@ -665,5 +813,50 @@ mod tests {
         let err = res.unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("CIS-TDA") && msg.contains("budget is"), "unexpected: {msg}");
+    }
+
+    #[test]
+    fn cis_tda_a_matrix_bit_identical_across_thread_counts() {
+        // P4: the row-parallel A-matrix fill (par_chunks_mut over the flat
+        // `ia` axis) must be bit-identical regardless of RAYON_NUM_THREADS —
+        // each row is written by exactly one worker, no reduction, so thread
+        // count must not perturb a single f64 bit. CIS-TDA is the cheapest
+        // path that exercises the row-fill (no GW needed). H2/cc-pVDZ gives
+        // nocc=1, nvir=9 → n=9 rows, above PAR_ROWS_THRESHOLD=8 so the
+        // parallel branch actually runs at 4 threads.
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let ctx = ParallelContext::default();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
+
+        let run_with_threads = |n: usize| -> BseResult {
+            let pool = rayon::ThreadPoolBuilder::new().num_threads(n).build().unwrap();
+            pool.install(|| run_cis_tda(&mol, &obs, &dfbs, op, &rhf, 0).unwrap())
+        };
+
+        let r1 = run_with_threads(1);
+        let r4 = run_with_threads(4);
+
+        assert_eq!(r1.nocc, r4.nocc);
+        assert_eq!(r1.nvir, r4.nvir);
+        assert!(
+            r1.nocc * r1.nvir >= 8,
+            "test must exercise the parallel branch (n>=8), got n={}",
+            r1.nocc * r1.nvir
+        );
+        assert_eq!(r1.omega.len(), r4.omega.len());
+        for (k, (a, b)) in r1.omega.iter().zip(r4.omega.iter()).enumerate() {
+            assert_eq!(
+                a.to_bits(),
+                b.to_bits(),
+                "CIS-TDA eigenvalue {k} not bit-identical across thread counts: \
+                 1-thread={a:.17e} (0x{:016x}), 4-thread={b:.17e} (0x{:016x})",
+                a.to_bits(),
+                b.to_bits(),
+            );
+        }
     }
 }
