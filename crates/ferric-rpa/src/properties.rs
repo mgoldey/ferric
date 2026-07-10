@@ -116,7 +116,7 @@ pub fn esp_at_atoms(
                     //   ⟨μ| −Z / |r − R| |ν⟩
                     // so for Z=1 we get −⟨μ| 1/|r−R_A| |ν⟩ in the engine output.
                     let probe = [CAtom {
-                        atomic_number: 1,
+                        atomic_number: 1.0,
                         x: atom_a.x,
                         y: atom_a.y,
                         z: atom_a.zpos,
@@ -304,7 +304,7 @@ pub fn electric_field_at_atoms(
 
                     // Override point charges: single Z=+1 probe at R_A.
                     let probe = [CAtom {
-                        atomic_number: 1,
+                        atomic_number: 1.0,
                         x: atom_a.x,
                         y: atom_a.y,
                         z: atom_a.zpos,

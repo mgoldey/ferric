@@ -59,7 +59,7 @@ impl PreparedBasis {
                 }
             };
             CAtom {
-                atomic_number: z_eff as c_int, x: a.x, y: a.y, z: a.zpos,
+                atomic_number: z_eff as f64, x: a.x, y: a.y, z: a.zpos,
             }
         }).collect();
 
