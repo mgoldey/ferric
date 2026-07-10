@@ -1528,6 +1528,22 @@ extern "C" double scf_terfc_debug_interp_G(const char *dir, double S, double s,
     }
 }
 
+/* TEST-ONLY hook: evaluate G_{m,0}(S,s) via the SHIPPED far-field Poisson
+ * series (terf_G_series — the exact code path terf_aux uses for out-of-table
+ * (S,s)), so the Rust oracle-anchor tests exercise production code, not a
+ * reimplementation. Returns NaN on invalid m or internal error (never
+ * unwinds across the C ABI). */
+extern "C" double scf_terfc_debug_series_G(double S, double s, int m) {
+    try {
+        if (m < 0 || m >= TERFC_DIMM) return std::nan("");
+        double G[TERFC_DIMM];
+        terf_G_series(S, s, m, G);
+        return G[m];
+    } catch (...) {
+        return std::nan("");
+    }
+}
+
 /* TEMP DEBUG (milestone validation only; remove before Task 2). Computes the
  * Coulomb 3-center block (shP|sh1 sh2) via the SAME MD machinery the terfc path
  * uses (use_boys=true), so a comparison against libint's scf_compute_eri3
