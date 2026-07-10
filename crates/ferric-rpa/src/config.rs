@@ -122,10 +122,14 @@ pub struct PdepRpaConfig {
     pub frozen_core: usize,
     /// Truncate eigenpotentials whose |λ_α(0) − 1| ≤ trunc_thresh.
     pub trunc_thresh: f64,
-    /// Maximum Davidson subspace size before restart.
-    pub davidson_max_vecs: usize,
-    /// Davidson eigenvalue convergence threshold.
-    pub davidson_conv_thresh: f64,
+    /// Maximum subspace size before restart. Applies to whichever
+    /// [`Eigensolver`] is selected: Davidson's subspace cap, and (via
+    /// `max_vecs / block_size`) the Lanczos outer-iteration cap. `0` = auto.
+    pub eigensolver_max_vecs: usize,
+    /// Eigenvalue convergence threshold for the static dielectric eigenproblem.
+    /// Applies to whichever [`Eigensolver`] is selected — the default is
+    /// [`Eigensolver::Lanczos`], not Davidson.
+    pub eigensolver_conv_thresh: f64,
     pub quadrature: QuadratureConfig,
     pub sternheimer: SternheimerConfig,
     /// If true, also compute the full-basis RI-dRPA diagnostic energy (expensive).
@@ -148,8 +152,8 @@ impl Default for PdepRpaConfig {
         Self {
             frozen_core: 0,
             trunc_thresh: 1e-4,
-            davidson_max_vecs: 0,
-            davidson_conv_thresh: 1e-6,
+            eigensolver_max_vecs: 0,
+            eigensolver_conv_thresh: 1e-6,
             quadrature: QuadratureConfig::default(),
             sternheimer: SternheimerConfig::default(),
             run_diagnostics: false,

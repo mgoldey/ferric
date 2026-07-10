@@ -207,7 +207,7 @@ mod tests {
         PdepRpaConfig {
             frozen_core: 0,
             trunc_thresh: 1e-4,
-            davidson_conv_thresh: 1e-10,
+            eigensolver_conv_thresh: 1e-10,
             quadrature: QuadratureConfig {
                 scheme: QuadratureScheme::GaussLegendre,
                 n_points: 16,

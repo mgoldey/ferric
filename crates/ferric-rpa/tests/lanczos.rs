@@ -42,7 +42,7 @@ fn pyscf_compat_config(n_quad: usize) -> PdepRpaConfig {
         },
         frozen_core: 0,
         trunc_thresh: 0.0,
-        davidson_conv_thresh: 1e-10,
+        eigensolver_conv_thresh: 1e-10,
         ..Default::default()
     }
 }

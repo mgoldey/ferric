@@ -101,7 +101,12 @@ pub struct RpaCfg {
     pub n_quad: Option<usize>,
     pub quadrature: Option<String>,
     pub trunc_thresh: Option<f64>,
-    pub davidson_conv_thresh: Option<f64>,
+    /// Convergence threshold for the static dielectric eigensolver (Lanczos by
+    /// default, Davidson if selected). The old name `davidson_conv_thresh` is
+    /// accepted as an alias — it was misleading (it never was Davidson-specific)
+    /// but existing TOML files must not break.
+    #[serde(alias = "davidson_conv_thresh")]
+    pub eigensolver_conv_thresh: Option<f64>,
     /// χ₀ sparsity strategy. One of:
     ///   "dense"            — dense MO-basis χ₀ (default; fastest ≤~20 atoms)
     ///   "boys"             — Boys-screened, default thresh 1e-4

@@ -3215,7 +3215,7 @@ mod tests {
                 scheme: QuadratureScheme::GaussLegendre, n_points: 12, u0: 0.5,
             },
             trunc_thresh: 0.0,
-            davidson_conv_thresh: 1e-9,
+            eigensolver_conv_thresh: 1e-9,
             ..Default::default()
         };
         let rpa = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
@@ -3492,7 +3492,7 @@ mod tests {
         let cfg = PdepRpaConfig {
             frozen_core: 0,
             trunc_thresh: 0.0,
-            davidson_conv_thresh: 1e-9,
+            eigensolver_conv_thresh: 1e-9,
             ..Default::default()
         };
         let r = pdep_polarizability_static(&mol, &obs, &dfbs, &rhf, op, &cfg).unwrap();

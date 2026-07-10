@@ -20,7 +20,7 @@ fn small_rpa_cfg(n_quad: usize) -> PdepRpaConfig {
     PdepRpaConfig {
         frozen_core: 0,
         trunc_thresh: 1e-4,
-        davidson_conv_thresh: 1e-10,
+        eigensolver_conv_thresh: 1e-10,
         quadrature: QuadratureConfig {
             scheme: QuadratureScheme::GaussLegendre,
             n_points: n_quad,

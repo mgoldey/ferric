@@ -846,7 +846,7 @@ impl PyPdepRpaResult {
 #[pyo3(signature = (
     mol, basis_set, auxbasis,
     frozen_core=None, n_quad=None, quadrature=None, u0=None,
-    trunc_thresh=None, davidson_conv_thresh=None,
+    trunc_thresh=None, eigensolver_conv_thresh=None,
     run_diagnostics=false, k_builder=None, chi0_sparsity=None,
     memory_budget_gb=None,
 ))]
@@ -860,7 +860,7 @@ fn run_pdep_rpa(
     quadrature: Option<&str>,
     u0: Option<f64>,
     trunc_thresh: Option<f64>,
-    davidson_conv_thresh: Option<f64>,
+    eigensolver_conv_thresh: Option<f64>,
     run_diagnostics: bool,
     k_builder: Option<&str>,
     chi0_sparsity: Option<&str>,
@@ -886,8 +886,8 @@ fn run_pdep_rpa(
     let cfg = PdepRpaConfig {
         frozen_core: frozen_core.unwrap_or(0),
         trunc_thresh: trunc_thresh.unwrap_or(1e-4),
-        davidson_max_vecs: 0,
-        davidson_conv_thresh: davidson_conv_thresh.unwrap_or(1e-6),
+        eigensolver_max_vecs: 0,
+        eigensolver_conv_thresh: eigensolver_conv_thresh.unwrap_or(1e-6),
         quadrature: QuadratureConfig {
             scheme,
             n_points: n_quad.unwrap_or(40),

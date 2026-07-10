@@ -275,7 +275,7 @@ fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, Cation
             scheme: QuadratureScheme::GaussLegendre, n_points: 20, u0: 0.5,
         },
         trunc_thresh: trunc_thresh(),
-        davidson_conv_thresh: 1e-9,
+        eigensolver_conv_thresh: 1e-9,
         ..Default::default()
     };
     // GW100_G0W0_ONLY=1 drops the ΔSCF/ΔRPA lane entirely — the cation UHF solve
@@ -342,8 +342,8 @@ fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, Cation
         quadrature: QuadratureConfig {
             scheme: QuadratureScheme::GaussLegendre, n_points: 16, u0: 0.5,
         },
-        davidson_conv_thresh: 1e-7,
-        davidson_max_vecs: 0,
+        eigensolver_conv_thresh: 1e-7,
+        eigensolver_max_vecs: 0,
         trunc_thresh: trunc_thresh(),
         run_diagnostics: false,
         frozen_core: 0,

@@ -280,10 +280,10 @@ pub fn run_pdep_rpa_from_intermediates(
     let eps_vir: Vec<f64> = rhf.eps_r()[nocc_total..nocc_total + nvir].to_vec();
 
     // Step 3: Run Davidson at ω=0.
-    let max_vecs = if config.davidson_max_vecs == 0 {
+    let max_vecs = if config.eigensolver_max_vecs == 0 {
         3 * naux
     } else {
-        config.davidson_max_vecs
+        config.eigensolver_max_vecs
     };
 
     let b_ov_clone = b_ov.clone();
@@ -367,7 +367,7 @@ pub fn run_pdep_rpa_from_intermediates(
                         v_mat, sb_ref, &eps_vir_seed, omega,
                     )
                 },
-                config.davidson_conv_thresh,
+                config.eigensolver_conv_thresh,
                 max_vecs,
                 naux,
                 false,
@@ -387,7 +387,7 @@ pub fn run_pdep_rpa_from_intermediates(
                 matvec,
                 naux,
                 max_iter,
-                config.davidson_conv_thresh,
+                config.eigensolver_conv_thresh,
             )?;
             davidson::DavidsonResult {
                 eigenvalues: lz.eigenvalues,
@@ -407,7 +407,7 @@ pub fn run_pdep_rpa_from_intermediates(
                             laplace_q.as_ref(),
                         )
                     },
-                    config.davidson_conv_thresh,
+                    config.eigensolver_conv_thresh,
                     max_vecs,
                     naux,
                     false,
@@ -422,7 +422,7 @@ pub fn run_pdep_rpa_from_intermediates(
                             laplace_q.as_ref(),
                         )
                     },
-                    config.davidson_conv_thresh,
+                    config.eigensolver_conv_thresh,
                     max_vecs,
                     naux,
                     false,
@@ -577,10 +577,10 @@ pub fn run_u_pdep_rpa(
     let eps_vir_b: Vec<f64> =
         eps_b_full[inter_b.nocc_total..inter_b.nocc_total + inter_b.nvir].to_vec();
 
-    let max_vecs = if config.davidson_max_vecs == 0 {
+    let max_vecs = if config.eigensolver_max_vecs == 0 {
         3 * naux
     } else {
-        config.davidson_max_vecs
+        config.eigensolver_max_vecs
     };
 
     // Build per-spin Laplace quadratures if the Laplace χ₀ backend is
@@ -650,7 +650,7 @@ pub fn run_u_pdep_rpa(
                         ),
                     }
                 },
-                config.davidson_conv_thresh,
+                config.eigensolver_conv_thresh,
                 max_vecs,
                 naux,
                 false,

@@ -158,7 +158,7 @@ fn main() {
             u0: 0.5,
         },
         trunc_thresh: thresh,
-        davidson_conv_thresh: 1e-7,
+        eigensolver_conv_thresh: 1e-7,
         ..Default::default()
     };
 

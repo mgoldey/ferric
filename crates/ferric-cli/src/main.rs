@@ -205,8 +205,8 @@ fn main() {
                 let rpa_cfg = PdepRpaConfig {
                     frozen_core: cfg.rpa.frozen_core,
                     trunc_thresh: cfg.rpa.trunc_thresh.unwrap_or(1e-4),
-                    davidson_max_vecs: 0,
-                    davidson_conv_thresh: cfg.rpa.davidson_conv_thresh.unwrap_or(1e-8),
+                    eigensolver_max_vecs: 0,
+                    eigensolver_conv_thresh: cfg.rpa.eigensolver_conv_thresh.unwrap_or(1e-8),
                     quadrature: QuadratureConfig {
                         scheme,
                         n_points: cfg.rpa.n_quad.unwrap_or(16),
@@ -679,8 +679,8 @@ fn main() {
             let rpa_cfg = PdepRpaConfig {
                 frozen_core: cfg.rpa.frozen_core,
                 trunc_thresh: cfg.rpa.trunc_thresh.unwrap_or(1e-4),
-                davidson_max_vecs: 0,
-                davidson_conv_thresh: cfg.rpa.davidson_conv_thresh.unwrap_or(1e-6),
+                eigensolver_max_vecs: 0,
+                eigensolver_conv_thresh: cfg.rpa.eigensolver_conv_thresh.unwrap_or(1e-6),
                 quadrature: QuadratureConfig {
                     scheme,
                     n_points: cfg.rpa.n_quad.unwrap_or(20),

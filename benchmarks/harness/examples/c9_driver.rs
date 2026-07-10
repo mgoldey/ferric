@@ -152,7 +152,7 @@ fn run_rhf_rpa(
     let pdep_cfg = PdepRpaConfig {
         frozen_core: frozen_core_for(mol),
         trunc_thresh: 1e-4,
-        davidson_conv_thresh: 1e-6,
+        eigensolver_conv_thresh: 1e-6,
         chi0_sparsity: Chi0Sparsity::Dense,
         ..Default::default()
     };

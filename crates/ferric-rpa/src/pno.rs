@@ -244,7 +244,7 @@ pub fn run_pdep_rpa_osv(
     // Davidson/Lanczos eigensolve with identity seed (matches the closed-
     // shell test path for trunc_thresh=0).
     let seed = Array2::<f64>::eye(naux);
-    let max_iter = if config.davidson_max_vecs == 0 { 3 * naux } else { config.davidson_max_vecs };
+    let max_iter = if config.eigensolver_max_vecs == 0 { 3 * naux } else { config.eigensolver_max_vecs };
 
     let b_ref = b_ov.clone();
     let eo = eps_occ.clone();
@@ -253,7 +253,7 @@ pub fn run_pdep_rpa_osv(
         crate::sternheimer::dielectric_apply(v, &b_ref, &eo, &ev, 0.0)
     };
     let lz = lanczos::run_lanczos_seeded(
-        seed, matvec, naux, max_iter, config.davidson_conv_thresh,
+        seed, matvec, naux, max_iter, config.eigensolver_conv_thresh,
     )?;
     let eigvals = &lz.eigenvalues;
     let eigvecs = &lz.eigenvectors;
@@ -335,7 +335,7 @@ mod tests {
             },
             frozen_core: 0,
             trunc_thresh: 0.0,
-            davidson_conv_thresh: 1e-9,
+            eigensolver_conv_thresh: 1e-9,
             ..Default::default()
         };
 
@@ -375,7 +375,7 @@ mod tests {
             },
             frozen_core: 0,
             trunc_thresh: 0.0,
-            davidson_conv_thresh: 1e-9,
+            eigensolver_conv_thresh: 1e-9,
             ..Default::default()
         };
 
