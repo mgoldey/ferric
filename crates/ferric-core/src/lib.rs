@@ -13,6 +13,7 @@ pub mod elements;
 pub mod mol;
 pub mod basis;
 pub mod ecp;
+pub mod external_potential;
 pub mod orbitals;
 pub mod parallel;
 pub mod memory;
