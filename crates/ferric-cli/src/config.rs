@@ -17,6 +17,8 @@ pub struct Config {
     pub dft: DftCfg,
     #[serde(default)]
     pub memory: MemoryCfg,
+    #[serde(default)]
+    pub external_potential: ExternalPotentialCfg,
 }
 
 #[derive(Deserialize, Default)]
@@ -53,6 +55,50 @@ impl MemoryCfg {
 pub struct DftCfg {
     /// XC functional name: "LDA", "PBE", "B3LYP", "wB97X-V", or any libxc name.
     pub functional: Option<String>,
+}
+
+/// One `[[external_potential.point_charges]]` entry: a fixed point charge
+/// (units: e for `q`, Bohr for coordinates) contributing to the one-electron
+/// Hamiltonian and nuclear-repulsion-like energy term.
+#[derive(Deserialize, Default)]
+pub struct PointChargeCfg {
+    pub q: f64,
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+}
+
+/// The `[external_potential]` TOML section: an array of fixed point charges
+/// plus an optional uniform external electric field (a.u.).
+#[derive(Deserialize, Default)]
+pub struct ExternalPotentialCfg {
+    #[serde(default)]
+    pub point_charges: Vec<PointChargeCfg>,
+    pub field: Option<[f64; 3]>,
+}
+
+impl ExternalPotentialCfg {
+    /// Convert into the solver-facing type. Returns `None` when both
+    /// `point_charges` is empty and `field` is unset (a true no-op,
+    /// matching `RhfConfig.external_potential`'s `None` default).
+    pub fn to_external_potential(&self) -> Option<ferric_core::external_potential::ExternalPotential> {
+        if self.point_charges.is_empty() && self.field.is_none() {
+            return None;
+        }
+        Some(ferric_core::external_potential::ExternalPotential {
+            point_charges: self
+                .point_charges
+                .iter()
+                .map(|pc| ferric_core::external_potential::PointCharge {
+                    q: pc.q,
+                    x: pc.x,
+                    y: pc.y,
+                    z: pc.z,
+                })
+                .collect(),
+            field: self.field,
+        })
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -641,6 +687,48 @@ kind = "rhf"
             assert_eq!(rung.config.df_j_aux.as_deref(), Some("cc-pvdz-jkfit"));
             assert_eq!(rung.config.df_k_aux.as_deref(), Some("cc-pvdz-jkfit"));
         }
+    }
+
+    #[test]
+    fn external_potential_section_parses() {
+        let toml_str = r#"
+[molecule]
+xyz = "water.xyz"
+[basis]
+name = "sto-3g"
+[method]
+kind = "rhf"
+task = "energy"
+
+[[external_potential.point_charges]]
+q = 1.0
+x = 0.0
+y = 0.0
+z = 5.0
+
+[external_potential]
+field = [0.0, 0.0, 0.001]
+"#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.external_potential.point_charges.len(), 1);
+        assert_eq!(cfg.external_potential.point_charges[0].q, 1.0);
+        assert_eq!(cfg.external_potential.field, Some([0.0, 0.0, 0.001]));
+    }
+
+    #[test]
+    fn external_potential_section_optional() {
+        let toml_str = r#"
+[molecule]
+xyz = "water.xyz"
+[basis]
+name = "sto-3g"
+[method]
+kind = "rhf"
+task = "energy"
+"#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert!(cfg.external_potential.point_charges.is_empty());
+        assert!(cfg.external_potential.field.is_none());
     }
 
     #[test]

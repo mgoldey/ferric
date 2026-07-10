@@ -166,7 +166,7 @@ fn main() {
         use_sad_guess: true,
         stall_window: None,
         divergence_tol: None,
-        external_potential: None,
+        external_potential: cfg.external_potential.to_external_potential(),
     };
 
     if task == "optimize" {
