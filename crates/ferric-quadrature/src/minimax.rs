@@ -64,7 +64,15 @@ pub fn select_minimax_points(k: usize, r: f64) -> (Vec<f64>, Vec<f64>) {
         3 => MINIMAX_K3,
         5 => MINIMAX_K5,
         7 => MINIMAX_K7,
-        _ => MINIMAX_K7,
+        other => {
+            // Was a silent fallback: `n_quad = 10` ran a 7-point quadrature
+            // while the caller believed it had 10-point accuracy.
+            eprintln!(
+                "warning: minimax-Laplace n_quad = {other} is not tabulated \
+                 (only 3, 5, 7); using the 7-point table"
+            );
+            MINIMAX_K7
+        }
     };
 
     for (r_tab, t, w) in table.iter() {
@@ -72,7 +80,14 @@ pub fn select_minimax_points(k: usize, r: f64) -> (Vec<f64>, Vec<f64>) {
             return (t.to_vec(), w.to_vec());
         }
     }
-    let (_, t, w) = &table[table.len() - 1];
+    // Was a silent fallback: an energy-gap ratio beyond the largest tabulated
+    // R reused the R=1000 table, whose minimax error bound no longer applies.
+    let (r_max, t, w) = &table[table.len() - 1];
+    eprintln!(
+        "warning: minimax-Laplace range R = {r:.1} exceeds the largest \
+         tabulated R = {r_max:.0}; quadrature error is unvalidated beyond the \
+         table (denominator decomposition may be inaccurate)"
+    );
     (t.to_vec(), w.to_vec())
 }
 
