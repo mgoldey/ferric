@@ -1032,6 +1032,36 @@ mod tests {
         assert_eq!(a.energy, b.energy);
     }
 
+    #[test]
+    fn external_point_charge_changes_rks_pbe_energy() {
+        // KS-DFT here is just RhfConfig{xc: Some(...), ..} through solve_rhf (no
+        // separate RKS solver). This proves the external_potential wiring from
+        // Task 5 composes with the xc.is_some() code path, not just the bare-HF one.
+        let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+        let bs = ferric_core::basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ParallelContext::default();
+
+        let base_config = RhfConfig { xc: Some("PBE".to_string()), ..Default::default() };
+        let base = solve_rhf(&ctx, &mol, &prep, op, &bounds, &base_config).unwrap();
+
+        let ext = ExternalPotential {
+            point_charges: vec![PointCharge { q: 1.0, x: 0.0, y: 0.0, z: 20.0 }],
+            field: None,
+        };
+        let config = RhfConfig {
+            xc: Some("PBE".to_string()),
+            external_potential: Some(ext),
+            ..Default::default()
+        };
+        let perturbed = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
+
+        assert!(perturbed.converged);
+        assert!((perturbed.energy - base.energy).abs() > 1e-8);
+    }
+
     fn run_rhf_test(xyz: &str, basis_name: &str, ref_slug: &str, tol: f64) {
         let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
         let bs = basis::bundled(basis_name).unwrap();
