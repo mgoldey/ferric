@@ -78,6 +78,9 @@ pub fn esp_at_atoms(
     prep: &PreparedBasis,
     density: &Array2<f64>,
 ) -> Result<Vec<f64>, FerricError> {
+    use ferric_integrals::blas_threads::with_blas_threads;
+    use rayon::prelude::*;
+
     let natoms = mol.atoms.len();
     let nbas = prep.nbasis();
     if density.shape() != [nbas, nbas] {
@@ -87,100 +90,115 @@ pub fn esp_at_atoms(
         )));
     }
 
-    // Construct a reusable nuclear-attraction engine; we will rewrite its
-    // point-charge list once per atom.
-    let mut eng = Engine::new_1e(ffi::OP_NUCLEAR, prep, 1e-14)?;
-
     let dims = prep.shell_dims();
     let offs = prep.shell_offsets();
     let nsh = prep.nshells();
 
-    let mut out = Vec::with_capacity(natoms);
-    for a in 0..natoms {
-        let atom_a = &mol.atoms[a];
+    // Each atom is an independent probe: a fresh point-charge list is
+    // written into the engine, then contracted with D. The engine is
+    // stateful (Send, not Sync) so each rayon worker gets its own via
+    // map_init instead of sharing/cloning per element. BLAS is pinned to 1
+    // inside the rayon region per repo convention (no GEMM here, but keeps
+    // the discipline uniform with the other P5 sites).
+    let out: Vec<f64> = with_blas_threads(1, || {
+        (0..natoms)
+            .into_par_iter()
+            .map_init(
+                || Engine::new_1e(ffi::OP_NUCLEAR, prep, 1e-14),
+                |eng, a| -> Result<f64, FerricError> {
+                    let eng = eng.as_mut().map_err(|e| {
+                        FerricError::General(format!("esp_at_atoms: engine init failed: {e}"))
+                    })?;
+                    let atom_a = &mol.atoms[a];
 
-        // Override engine params with a single Z=1 charge at R_A.
-        // libint's nuclear-attraction operator returns
-        //   ⟨μ| −Z / |r − R| |ν⟩
-        // so for Z=1 we get −⟨μ| 1/|r−R_A| |ν⟩ in the engine output.
-        let probe = [CAtom {
-            atomic_number: 1,
-            x: atom_a.x,
-            y: atom_a.y,
-            z: atom_a.zpos,
-        }];
-        let rc = unsafe {
-            ffi::scf_engine_set_point_charges(
-                eng.handle_mut(),
-                probe.as_ptr(),
-                probe.len() as c_int,
+                    // Override engine params with a single Z=1 charge at R_A.
+                    // libint's nuclear-attraction operator returns
+                    //   ⟨μ| −Z / |r − R| |ν⟩
+                    // so for Z=1 we get −⟨μ| 1/|r−R_A| |ν⟩ in the engine output.
+                    let probe = [CAtom {
+                        atomic_number: 1,
+                        x: atom_a.x,
+                        y: atom_a.y,
+                        z: atom_a.zpos,
+                    }];
+                    let rc = unsafe {
+                        ffi::scf_engine_set_point_charges(
+                            eng.handle_mut(),
+                            probe.as_ptr(),
+                            probe.len() as c_int,
+                        )
+                    };
+                    if rc < 0 {
+                        return Err(FerricError::General(format!(
+                            "esp_at_atoms: set_point_charges failed (rc={rc}) for atom {a}"
+                        )));
+                    }
+
+                    // Build M^A_μν = ⟨μ| −1/|r−R_A| |ν⟩ from libint with Z=+1.
+                    //
+                    //   V_elec(R_A) = − ∫ ρ(r) / |r − R_A| dr
+                    //               = − Σ_{μν} D_{μν} T_{μν}      with T_{μν} = ⟨μ|1/r|ν⟩
+                    //               = + Σ_{μν} D_{μν} M^A_{μν}    since M^A = −T.
+                    //
+                    // So summing density · block directly (full square, no symmetry
+                    // collapse) yields V_elec.
+                    // Iterate upper-triangle shell pairs and contribute both (μν) and
+                    // (νμ) by symmetry: the operator and density are symmetric so the
+                    // two contributions are equal.
+                    let mut v_elec = 0.0_f64;
+                    for s1 in 0..nsh {
+                        for s2 in 0..=s1 {
+                            let block = eng.compute_1e_block(prep, s1, s2);
+                            let n1 = dims[s1];
+                            let n2 = dims[s2];
+                            let o1 = offs[s1];
+                            let o2 = offs[s2];
+                            if s1 == s2 {
+                                for i in 0..n1 {
+                                    for j in 0..n2 {
+                                        // Full block entries, no symmetry collapse needed.
+                                        v_elec +=
+                                            density[(o1 + i, o2 + j)] * block[i * n2 + j];
+                                    }
+                                }
+                            } else {
+                                // Off-diagonal shell pair: block covers (s1,s2); add
+                                // 2× since (s2,s1) is the symmetric partner.
+                                for i in 0..n1 {
+                                    for j in 0..n2 {
+                                        v_elec += 2.0
+                                            * density[(o1 + i, o2 + j)]
+                                            * block[i * n2 + j];
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Nuclear sum: Σ_{B ≠ A} Z_B / |R_A − R_B|
+                    let mut v_nuc = 0.0_f64;
+                    for b in 0..natoms {
+                        if b == a {
+                            continue;
+                        }
+                        let atom_b = &mol.atoms[b];
+                        let dx = atom_a.x - atom_b.x;
+                        let dy = atom_a.y - atom_b.y;
+                        let dz = atom_a.zpos - atom_b.zpos;
+                        let r = (dx * dx + dy * dy + dz * dz).sqrt();
+                        if r < 1e-12 {
+                            return Err(FerricError::General(format!(
+                                "esp_at_atoms: atoms {a} and {b} coincide"
+                            )));
+                        }
+                        v_nuc += atom_b.z as f64 / r;
+                    }
+
+                    Ok(v_nuc + v_elec)
+                },
             )
-        };
-        if rc < 0 {
-            return Err(FerricError::General(format!(
-                "esp_at_atoms: set_point_charges failed (rc={rc}) for atom {a}"
-            )));
-        }
-
-        // Build M^A_μν = ⟨μ| −1/|r−R_A| |ν⟩ from libint with Z=+1.
-        //
-        //   V_elec(R_A) = − ∫ ρ(r) / |r − R_A| dr
-        //               = − Σ_{μν} D_{μν} T_{μν}      with T_{μν} = ⟨μ|1/r|ν⟩
-        //               = + Σ_{μν} D_{μν} M^A_{μν}    since M^A = −T.
-        //
-        // So summing density · block directly (full square, no symmetry
-        // collapse) yields V_elec.
-        // Iterate upper-triangle shell pairs and contribute both (μν) and
-        // (νμ) by symmetry: the operator and density are symmetric so the
-        // two contributions are equal.
-        let mut v_elec = 0.0_f64;
-        for s1 in 0..nsh {
-            for s2 in 0..=s1 {
-                let block = eng.compute_1e_block(prep, s1, s2);
-                let n1 = dims[s1];
-                let n2 = dims[s2];
-                let o1 = offs[s1];
-                let o2 = offs[s2];
-                if s1 == s2 {
-                    for i in 0..n1 {
-                        for j in 0..n2 {
-                            // Full block entries, no symmetry collapse needed.
-                            v_elec += density[(o1 + i, o2 + j)] * block[i * n2 + j];
-                        }
-                    }
-                } else {
-                    // Off-diagonal shell pair: block covers (s1,s2); add
-                    // 2× since (s2,s1) is the symmetric partner.
-                    for i in 0..n1 {
-                        for j in 0..n2 {
-                            v_elec += 2.0 * density[(o1 + i, o2 + j)] * block[i * n2 + j];
-                        }
-                    }
-                }
-            }
-        }
-
-        // Nuclear sum: Σ_{B ≠ A} Z_B / |R_A − R_B|
-        let mut v_nuc = 0.0_f64;
-        for b in 0..natoms {
-            if b == a {
-                continue;
-            }
-            let atom_b = &mol.atoms[b];
-            let dx = atom_a.x - atom_b.x;
-            let dy = atom_a.y - atom_b.y;
-            let dz = atom_a.zpos - atom_b.zpos;
-            let r = (dx * dx + dy * dy + dz * dz).sqrt();
-            if r < 1e-12 {
-                return Err(FerricError::General(format!(
-                    "esp_at_atoms: atoms {a} and {b} coincide"
-                )));
-            }
-            v_nuc += atom_b.z as f64 / r;
-        }
-
-        out.push(v_nuc + v_elec);
-    }
+            .collect::<Result<Vec<f64>, FerricError>>()
+    })?;
 
     Ok(out)
 }
@@ -240,6 +258,9 @@ pub fn electric_field_at_atoms(
     prep: &PreparedBasis,
     density: &Array2<f64>,
 ) -> Result<Vec<[f64; 3]>, FerricError> {
+    use ferric_integrals::blas_threads::with_blas_threads;
+    use rayon::prelude::*;
+
     let natoms = mol.atoms.len();
     let nbas = prep.nbasis();
     if density.shape() != [nbas, nbas] {
@@ -248,9 +269,6 @@ pub fn electric_field_at_atoms(
             density.shape()
         )));
     }
-
-    // First-derivative nuclear-attraction engine, reused across atoms.
-    let mut eng = Engine::new_1e_deriv(ffi::OP_NUCLEAR, prep, 1e-14)?;
 
     let dims = prep.shell_dims();
     let offs = prep.shell_offsets();
@@ -261,116 +279,138 @@ pub fn electric_field_at_atoms(
     // derivative blocks of size n1*n2 each.
     let nderiv = 6 + 3; // 6 shell-center + 3 (xyz) charge-center derivatives
     let max_block = max_fn * max_fn;
-    let mut buf = vec![0.0_f64; nderiv * max_block];
 
-    let mut out: Vec<[f64; 3]> = Vec::with_capacity(natoms);
-    for a in 0..natoms {
-        let atom_a = &mol.atoms[a];
+    // Each atom probe needs its own stateful derivative engine plus its own
+    // hand-sized raw-FFI scratch buffer (reliability convention: 1e-deriv
+    // sizing is per-caller, not per-engine). map_init hands each rayon
+    // worker exactly one (engine, buf) pair, reused across the atoms that
+    // worker processes — never cloned per atom, never shared across workers.
+    let out: Vec<[f64; 3]> = with_blas_threads(1, || {
+        (0..natoms)
+            .into_par_iter()
+            .map_init(
+                || {
+                    let eng = Engine::new_1e_deriv(ffi::OP_NUCLEAR, prep, 1e-14);
+                    let buf = vec![0.0_f64; nderiv * max_block];
+                    (eng, buf)
+                },
+                |(eng, buf), a| -> Result<[f64; 3], FerricError> {
+                    let eng = eng.as_mut().map_err(|e| {
+                        FerricError::General(format!(
+                            "electric_field_at_atoms: engine init failed: {e}"
+                        ))
+                    })?;
+                    let atom_a = &mol.atoms[a];
 
-        // Override point charges: single Z=+1 probe at R_A.
-        let probe = [CAtom {
-            atomic_number: 1,
-            x: atom_a.x,
-            y: atom_a.y,
-            z: atom_a.zpos,
-        }];
-        let rc = unsafe {
-            ffi::scf_engine_set_point_charges(
-                eng.handle_mut(),
-                probe.as_ptr(),
-                probe.len() as c_int,
-            )
-        };
-        if rc < 0 {
-            return Err(FerricError::General(format!(
-                "electric_field_at_atoms: set_point_charges failed (rc={rc}) for atom {a}"
-            )));
-        }
+                    // Override point charges: single Z=+1 probe at R_A.
+                    let probe = [CAtom {
+                        atomic_number: 1,
+                        x: atom_a.x,
+                        y: atom_a.y,
+                        z: atom_a.zpos,
+                    }];
+                    let rc = unsafe {
+                        ffi::scf_engine_set_point_charges(
+                            eng.handle_mut(),
+                            probe.as_ptr(),
+                            probe.len() as c_int,
+                        )
+                    };
+                    if rc < 0 {
+                        return Err(FerricError::General(format!(
+                            "electric_field_at_atoms: set_point_charges failed (rc={rc}) for atom {a}"
+                        )));
+                    }
 
-        // Contract D with charge-center derivative blocks (indices 6,7,8).
-        let mut e_elec = [0.0_f64; 3];
-        for s1 in 0..nsh {
-            for s2 in 0..=s1 {
-                let n1 = dims[s1];
-                let n2 = dims[s2];
-                let block_sz = n1 * n2;
-                let total = nderiv * block_sz;
-                if buf.len() < total {
-                    buf.resize(total, 0.0);
-                }
-                let written = unsafe {
-                    ffi::scf_compute_1e_deriv_block(
-                        eng.handle_mut(),
-                        prep.handle(),
-                        s1 as c_int,
-                        s2 as c_int,
-                        buf.as_mut_ptr(),
-                    )
-                };
-                assert!(written >= 0, "libint2 internal error in nuclear deriv block ({s1},{s2}): status {written}");
-                if written == 0 {
-                    continue;
-                }
-                let o1 = offs[s1];
-                let o2 = offs[s2];
-                // Charge-center derivative blocks start at index 6.
-                // dM^A/dR_A_d = -<μ|(r-R_A)_d/|r-R_A|³|ν>
-                // E^elec_d = +Σ D * <μ|(r-R_A)_d/|r-R_A|³|ν> = -Σ D * dM^A/dR_A_d
-                for d in 0..3 {
-                    let blk_off = (6 + d) * block_sz;
-                    let mut acc = 0.0_f64;
-                    if s1 == s2 {
-                        for i in 0..n1 {
-                            for j in 0..n2 {
-                                acc += density[(o1 + i, o2 + j)] * buf[blk_off + i * n2 + j];
+                    // Contract D with charge-center derivative blocks (indices 6,7,8).
+                    let mut e_elec = [0.0_f64; 3];
+                    for s1 in 0..nsh {
+                        for s2 in 0..=s1 {
+                            let n1 = dims[s1];
+                            let n2 = dims[s2];
+                            let block_sz = n1 * n2;
+                            let total = nderiv * block_sz;
+                            if buf.len() < total {
+                                buf.resize(total, 0.0);
                             }
-                        }
-                    } else {
-                        // Off-diagonal shell pair: density and operator are
-                        // both symmetric in (μ,ν), so the (s2,s1) partner
-                        // contributes equally → factor 2.
-                        for i in 0..n1 {
-                            for j in 0..n2 {
-                                acc +=
-                                    2.0 * density[(o1 + i, o2 + j)] * buf[blk_off + i * n2 + j];
+                            let written = unsafe {
+                                ffi::scf_compute_1e_deriv_block(
+                                    eng.handle_mut(),
+                                    prep.handle(),
+                                    s1 as c_int,
+                                    s2 as c_int,
+                                    buf.as_mut_ptr(),
+                                )
+                            };
+                            assert!(written >= 0, "libint2 internal error in nuclear deriv block ({s1},{s2}): status {written}");
+                            if written == 0 {
+                                continue;
+                            }
+                            let o1 = offs[s1];
+                            let o2 = offs[s2];
+                            // Charge-center derivative blocks start at index 6.
+                            // dM^A/dR_A_d = -<μ|(r-R_A)_d/|r-R_A|³|ν>
+                            // E^elec_d = +Σ D * <μ|(r-R_A)_d/|r-R_A|³|ν> = -Σ D * dM^A/dR_A_d
+                            for d in 0..3 {
+                                let blk_off = (6 + d) * block_sz;
+                                let mut acc = 0.0_f64;
+                                if s1 == s2 {
+                                    for i in 0..n1 {
+                                        for j in 0..n2 {
+                                            acc += density[(o1 + i, o2 + j)]
+                                                * buf[blk_off + i * n2 + j];
+                                        }
+                                    }
+                                } else {
+                                    // Off-diagonal shell pair: density and operator are
+                                    // both symmetric in (μ,ν), so the (s2,s1) partner
+                                    // contributes equally → factor 2.
+                                    for i in 0..n1 {
+                                        for j in 0..n2 {
+                                            acc += 2.0
+                                                * density[(o1 + i, o2 + j)]
+                                                * buf[blk_off + i * n2 + j];
+                                        }
+                                    }
+                                }
+                                e_elec[d] -= acc;
                             }
                         }
                     }
-                    e_elec[d] -= acc;
-                }
-            }
-        }
 
-        // Nuclear contribution: Σ_{B≠A} Z_B (R_A − R_B)_d / |R_A − R_B|³
-        let mut e_nuc = [0.0_f64; 3];
-        for b in 0..natoms {
-            if b == a {
-                continue;
-            }
-            let atom_b = &mol.atoms[b];
-            let dx = atom_a.x - atom_b.x;
-            let dy = atom_a.y - atom_b.y;
-            let dz = atom_a.zpos - atom_b.zpos;
-            let r2 = dx * dx + dy * dy + dz * dz;
-            let r = r2.sqrt();
-            if r < 1e-12 {
-                return Err(FerricError::General(format!(
-                    "electric_field_at_atoms: atoms {a} and {b} coincide"
-                )));
-            }
-            let inv_r3 = 1.0 / (r2 * r);
-            let zb = atom_b.z as f64;
-            e_nuc[0] += zb * dx * inv_r3;
-            e_nuc[1] += zb * dy * inv_r3;
-            e_nuc[2] += zb * dz * inv_r3;
-        }
+                    // Nuclear contribution: Σ_{B≠A} Z_B (R_A − R_B)_d / |R_A − R_B|³
+                    let mut e_nuc = [0.0_f64; 3];
+                    for b in 0..natoms {
+                        if b == a {
+                            continue;
+                        }
+                        let atom_b = &mol.atoms[b];
+                        let dx = atom_a.x - atom_b.x;
+                        let dy = atom_a.y - atom_b.y;
+                        let dz = atom_a.zpos - atom_b.zpos;
+                        let r2 = dx * dx + dy * dy + dz * dz;
+                        let r = r2.sqrt();
+                        if r < 1e-12 {
+                            return Err(FerricError::General(format!(
+                                "electric_field_at_atoms: atoms {a} and {b} coincide"
+                            )));
+                        }
+                        let inv_r3 = 1.0 / (r2 * r);
+                        let zb = atom_b.z as f64;
+                        e_nuc[0] += zb * dx * inv_r3;
+                        e_nuc[1] += zb * dy * inv_r3;
+                        e_nuc[2] += zb * dz * inv_r3;
+                    }
 
-        out.push([
-            e_elec[0] + e_nuc[0],
-            e_elec[1] + e_nuc[1],
-            e_elec[2] + e_nuc[2],
-        ]);
-    }
+                    Ok([
+                        e_elec[0] + e_nuc[0],
+                        e_elec[1] + e_nuc[1],
+                        e_elec[2] + e_nuc[2],
+                    ])
+                },
+            )
+            .collect::<Result<Vec<[f64; 3]>, FerricError>>()
+    })?;
 
     Ok(out)
 }
@@ -1129,6 +1169,8 @@ pub fn pdep_polarizability_becke_dynamic(
 ) -> Result<Vec<Vec<[[f64; 3]; 3]>>, FerricError> {
     use ferric_dft::ao_grid::eval_basis_on_points;
     use ferric_dft::grid::{build_atomic_grid, AtomicGridConfig};
+    use ferric_integrals::blas_threads::with_blas_threads;
+    use rayon::prelude::*;
 
     let natoms = mol.atoms.len();
     let nfreq = freqs.len();
@@ -1256,85 +1298,103 @@ pub fn pdep_polarizability_becke_dynamic(
             mu_ai_flat_b.iter().fold(ndarray::Array1::zeros(nov_b), |acc, ai| acc + &ai[d])
         });
 
-        // Frequency loop.
+        // Frequency loop: each ω is fully independent. Parallelize over
+        // frequencies (energy.rs pattern); the per-spin (naux × nov_σ)
+        // column-scaled B̃_σ scratch that M9 hoisted out of the loop becomes
+        // per-thread via map_init (one (b_scaled_a, b_scaled_b) pair per
+        // rayon worker, reused across the ω's it processes — never cloned
+        // per frequency, never shared across workers). BLAS pinned to 1
+        // inside the rayon region (per-frequency dielectric solve must not
+        // nest OpenBLAS threads under rayon workers).
+        let rows: Vec<Result<Vec<[[f64; 3]; 3]>, FerricError>> = with_blas_threads(1, || {
+            freqs
+                .par_iter()
+                .map_init(
+                    || (inter_a.b_ov.clone(), inter_b.b_ov.clone()),
+                    |(b_scaled_a, b_scaled_b), &omega| -> Result<Vec<[[f64; 3]; 3]>, FerricError> {
+                        let omega2 = omega * omega;
+
+                        // Per-spin g_σ(ω) = e_iaσ / (ω² + e_iaσ²), prefactor 2.
+                        let g_a = {
+                            let n = e_ia_a.len();
+                            let mut v = ndarray::Array1::<f64>::zeros(n);
+                            for ia in 0..n { let e = e_ia_a[ia]; v[ia] = e/(omega2+e*e); }
+                            v
+                        };
+                        let g_b = if inter_b.nocc > 0 {
+                            let n = e_ia_b.len();
+                            let mut v = ndarray::Array1::<f64>::zeros(n);
+                            for ia in 0..n { let e = e_ia_b[ia]; v[ia] = e/(omega2+e*e); }
+                            v
+                        } else {
+                            ndarray::Array1::<f64>::zeros(1)
+                        };
+
+                        // ε̃(ω) = I + 2 B̃_α diag(g_α) B̃_αᵀ + 2 B̃_β diag(g_β) B̃_βᵀ.
+                        let mut eps_mat = Array2::<f64>::zeros((naux, naux));
+                        for p in 0..naux { eps_mat[(p,p)] = 1.0; }
+                        for (b_ov, g, b_scaled) in [
+                            (&inter_a.b_ov, &g_a, &mut *b_scaled_a),
+                            (&inter_b.b_ov, &g_b, &mut *b_scaled_b),
+                        ] {
+                            let nov = b_ov.shape()[1];
+                            if nov == 0 { continue; }
+                            b_scaled.assign(b_ov);
+                            for ia in 0..nov {
+                                let s = (2.0 * g[ia]).sqrt();
+                                b_scaled.column_mut(ia).mapv_inplace(|x| x * s);
+                            }
+                            let chi_s = b_scaled.dot(&b_scaled.t());
+                            eps_mat += &chi_s;
+                        }
+
+                        // w_total^d(ω) = B̃_α (μ_α^d ⊙ g_α) + B̃_β (μ_β^d ⊙ g_β).
+                        let w_total: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
+                            let wa = inter_a.b_ov.dot(&(&mu_flat_a[d] * &g_a));
+                            if inter_b.nocc == 0 { return wa; }
+                            let wb = inter_b.b_ov.dot(&(&mu_flat_b[d] * &g_b));
+                            wa + wb
+                        });
+                        let y_total = solve_dielectric_3(&eps_mat, &w_total)?;
+
+                        let mut row: Vec<[[f64; 3]; 3]> = vec![[[0.0; 3]; 3]; natoms];
+                        for a in 0..natoms {
+                            // w_ai_total^d = B̃_α (μ_α^{A,d} ⊙ g_α) + B̃_β (μ_β^{A,d} ⊙ g_β).
+                            let w_ai: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
+                                let wa = inter_a.b_ov.dot(&(&mu_ai_flat_a[a][d] * &g_a));
+                                if inter_b.nocc == 0 { return wa; }
+                                let wb = inter_b.b_ov.dot(&(&mu_ai_flat_b[a][d] * &g_b));
+                                wa + wb
+                            });
+                            for d in 0..3 {
+                                for j in 0..3 {
+                                    let bare_a = 2.0 * mu_ai_flat_a[a][d].dot(&(&mu_flat_a[j] * &g_a));
+                                    let bare_b = if inter_b.nocc > 0 {
+                                        2.0 * mu_ai_flat_b[a][d].dot(&(&mu_flat_b[j] * &g_b))
+                                    } else { 0.0 };
+                                    let coupled = w_ai[d].dot(&y_total[j]);
+                                    row[a][d][j] = bare_a + bare_b - 4.0 * coupled;
+                                }
+                            }
+                            // Symmetrize.
+                            for i in 0..3 {
+                                for j in (i+1)..3 {
+                                    let avg = 0.5*(row[a][i][j]+row[a][j][i]);
+                                    row[a][i][j] = avg; row[a][j][i] = avg;
+                                }
+                            }
+                        }
+                        Ok(row)
+                    },
+                )
+                .collect::<Vec<Result<Vec<[[f64; 3]; 3]>, FerricError>>>()
+        });
+
         let mut out: Vec<Vec<[[f64; 3]; 3]>> = vec![vec![[[0.0; 3]; 3]; nfreq]; natoms];
-
-        // Per-spin reused (naux × nov_σ) scratch for the column-scaled B̃_σ;
-        // allocated once instead of cloned per frequency (M9: only the g-scaling
-        // changes with ω).
-        let mut b_scaled_a = inter_a.b_ov.clone();
-        let mut b_scaled_b = inter_b.b_ov.clone();
-        for (k, &omega) in freqs.iter().enumerate() {
-            let omega2 = omega * omega;
-
-            // Per-spin g_σ(ω) = e_iaσ / (ω² + e_iaσ²), prefactor 2.
-            let g_a = {
-                let n = e_ia_a.len();
-                let mut v = ndarray::Array1::<f64>::zeros(n);
-                for ia in 0..n { let e = e_ia_a[ia]; v[ia] = e/(omega2+e*e); }
-                v
-            };
-            let g_b = if inter_b.nocc > 0 {
-                let n = e_ia_b.len();
-                let mut v = ndarray::Array1::<f64>::zeros(n);
-                for ia in 0..n { let e = e_ia_b[ia]; v[ia] = e/(omega2+e*e); }
-                v
-            } else {
-                ndarray::Array1::<f64>::zeros(1)
-            };
-
-            // ε̃(ω) = I + 2 B̃_α diag(g_α) B̃_αᵀ + 2 B̃_β diag(g_β) B̃_βᵀ.
-            let mut eps_mat = Array2::<f64>::zeros((naux, naux));
-            for p in 0..naux { eps_mat[(p,p)] = 1.0; }
-            for (b_ov, g, b_scaled) in [
-                (&inter_a.b_ov, &g_a, &mut b_scaled_a),
-                (&inter_b.b_ov, &g_b, &mut b_scaled_b),
-            ] {
-                let nov = b_ov.shape()[1];
-                if nov == 0 { continue; }
-                b_scaled.assign(b_ov);
-                for ia in 0..nov {
-                    let s = (2.0 * g[ia]).sqrt();
-                    b_scaled.column_mut(ia).mapv_inplace(|x| x * s);
-                }
-                let chi_s = b_scaled.dot(&b_scaled.t());
-                eps_mat += &chi_s;
-            }
-
-            // w_total^d(ω) = B̃_α (μ_α^d ⊙ g_α) + B̃_β (μ_β^d ⊙ g_β).
-            let w_total: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
-                let wa = inter_a.b_ov.dot(&(&mu_flat_a[d] * &g_a));
-                if inter_b.nocc == 0 { return wa; }
-                let wb = inter_b.b_ov.dot(&(&mu_flat_b[d] * &g_b));
-                wa + wb
-            });
-            let y_total = solve_dielectric_3(&eps_mat, &w_total)?;
-
+        for (k, row) in rows.into_iter().enumerate() {
+            let row = row?;
             for a in 0..natoms {
-                // w_ai_total^d = B̃_α (μ_α^{A,d} ⊙ g_α) + B̃_β (μ_β^{A,d} ⊙ g_β).
-                let w_ai: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
-                    let wa = inter_a.b_ov.dot(&(&mu_ai_flat_a[a][d] * &g_a));
-                    if inter_b.nocc == 0 { return wa; }
-                    let wb = inter_b.b_ov.dot(&(&mu_ai_flat_b[a][d] * &g_b));
-                    wa + wb
-                });
-                for d in 0..3 {
-                    for j in 0..3 {
-                        let bare_a = 2.0 * mu_ai_flat_a[a][d].dot(&(&mu_flat_a[j] * &g_a));
-                        let bare_b = if inter_b.nocc > 0 {
-                            2.0 * mu_ai_flat_b[a][d].dot(&(&mu_flat_b[j] * &g_b))
-                        } else { 0.0 };
-                        let coupled = w_ai[d].dot(&y_total[j]);
-                        out[a][k][d][j] = bare_a + bare_b - 4.0 * coupled;
-                    }
-                }
-                // Symmetrize.
-                for i in 0..3 {
-                    for j in (i+1)..3 {
-                        let avg = 0.5*(out[a][k][i][j]+out[a][k][j][i]);
-                        out[a][k][i][j] = avg; out[a][k][j][i] = avg;
-                    }
-                }
+                out[a][k] = row[a];
             }
         }
         return Ok(out);
@@ -1519,46 +1579,64 @@ pub fn pdep_polarizability_becke_dynamic(
     // Σ_A α^A = α_mol(μ^Becke) exactly. This matches pdep_dynamic_polarizability_truncated.
     // The anisotropy reflects the Becke partition's atom-centred displacements;
     // for isotropic C6 via Casimir-Polder this is the correct formula.
+    //
+    // Each ω is independent — parallelize over frequencies. The (naux × nov)
+    // column-scaled B̃ scratch M9 hoisted out of the loop becomes per-thread
+    // via map_init (one buffer per rayon worker, reused across the ω's it
+    // handles). BLAS pinned to 1 inside the rayon region.
+    let rows: Vec<Result<Vec<[[f64; 3]; 3]>, FerricError>> = with_blas_threads(1, || {
+        freqs
+            .par_iter()
+            .map_init(
+                || b_ov.clone(),
+                |b_scaled, &omega| -> Result<Vec<[[f64; 3]; 3]>, FerricError> {
+                    let omega2 = omega * omega;
+                    let mut g = ndarray::Array1::<f64>::zeros(nov);
+                    for ia in 0..nov { let e = e_ia[ia]; g[ia] = e / (omega2 + e * e); }
+
+                    // ε̃(ω) = I + 4 B̃ diag(g) B̃^T
+                    b_scaled.assign(b_ov);
+                    for ia in 0..nov {
+                        b_scaled.column_mut(ia).mapv_inplace(|x| x * (4.0 * g[ia]).sqrt());
+                    }
+                    let mut eps_mat: Array2<f64> = b_scaled.dot(&b_scaled.t());
+                    for p in 0..naux { eps_mat[(p, p)] += 1.0; }
+
+                    // Solve ε̃ y^j = B·(g⊙μ^{Becke,j}) once per direction.
+                    let mu_g: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| &mu_flat[d] * &g);
+                    let w_mol: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| b_ov.dot(&mu_g[d]));
+                    let y_mol = solve_dielectric_3(&eps_mat, &w_mol)?;
+
+                    let mut row: Vec<[[f64; 3]; 3]> = vec![[[0.0; 3]; 3]; natoms];
+                    for a in 0..natoms {
+                        let mut tensor = [[0.0_f64; 3]; 3];
+                        for d in 0..3 {
+                            let w_ai = b_ov.dot(&(&mu_ai_flat[a][d] * &g));
+                            for j in 0..3 {
+                                let bare = mu_ai_flat[a][d].dot(&mu_g[j]);
+                                let coupled = w_ai.dot(&y_mol[j]);
+                                tensor[d][j] = 4.0 * bare - 16.0 * coupled;
+                            }
+                        }
+                        // Symmetrize.
+                        for i in 0..3 { for j in (i+1)..3 {
+                            let avg = 0.5*(tensor[i][j]+tensor[j][i]);
+                            tensor[i][j] = avg; tensor[j][i] = avg;
+                        }}
+                        row[a] = tensor;
+                    }
+                    Ok(row)
+                },
+            )
+            .collect::<Vec<Result<Vec<[[f64; 3]; 3]>, FerricError>>>()
+    });
+
     let mut out: Vec<Vec<[[f64; 3]; 3]>> =
         vec![vec![[[0.0; 3]; 3]; nfreq]; natoms];
-
-    // Reused (naux × nov) scratch for the column-scaled B̃; allocated once
-    // instead of cloned per frequency (M9: only the g-scaling changes with ω).
-    let mut b_scaled = b_ov.clone();
-    for (k, &omega) in freqs.iter().enumerate() {
-        let omega2 = omega * omega;
-        let mut g = ndarray::Array1::<f64>::zeros(nov);
-        for ia in 0..nov { let e = e_ia[ia]; g[ia] = e / (omega2 + e * e); }
-
-        // ε̃(ω) = I + 4 B̃ diag(g) B̃^T
-        b_scaled.assign(b_ov);
-        for ia in 0..nov {
-            b_scaled.column_mut(ia).mapv_inplace(|x| x * (4.0 * g[ia]).sqrt());
-        }
-        let mut eps_mat: Array2<f64> = b_scaled.dot(&b_scaled.t());
-        for p in 0..naux { eps_mat[(p, p)] += 1.0; }
-
-        // Solve ε̃ y^j = B·(g⊙μ^{Becke,j}) once per direction.
-        let mu_g: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| &mu_flat[d] * &g);
-        let w_mol: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| b_ov.dot(&mu_g[d]));
-        let y_mol = solve_dielectric_3(&eps_mat, &w_mol)?;
-
+    for (k, row) in rows.into_iter().enumerate() {
+        let row = row?;
         for a in 0..natoms {
-            let mut tensor = [[0.0_f64; 3]; 3];
-            for d in 0..3 {
-                let w_ai = b_ov.dot(&(&mu_ai_flat[a][d] * &g));
-                for j in 0..3 {
-                    let bare = mu_ai_flat[a][d].dot(&mu_g[j]);
-                    let coupled = w_ai.dot(&y_mol[j]);
-                    tensor[d][j] = 4.0 * bare - 16.0 * coupled;
-                }
-            }
-            // Symmetrize.
-            for i in 0..3 { for j in (i+1)..3 {
-                let avg = 0.5*(tensor[i][j]+tensor[j][i]);
-                tensor[i][j] = avg; tensor[j][i] = avg;
-            }}
-            out[a][k] = tensor;
+            out[a][k] = row[a];
         }
     }
 
@@ -1952,6 +2030,8 @@ pub fn pdep_polarizability_hirshfeld_dynamic(
 ) -> Result<Vec<Vec<[[f64; 3]; 3]>>, FerricError> {
     use ferric_export::cube::GridSpec;
     use ferric_export::gto_eval::eval_basis_on_grid;
+    use ferric_integrals::blas_threads::with_blas_threads;
+    use rayon::prelude::*;
 
     if !matches!(rhf.spin, Spin::Restricted) {
         return Err(FerricError::General(
@@ -2101,43 +2181,62 @@ pub fn pdep_polarizability_hirshfeld_dynamic(
     });
 
     // --- Frequency loop ---
+    //
+    // Each ω is independent — parallelize over frequencies. The (naux × nov)
+    // column-scaled B̃ scratch M9 hoisted out of the loop (the buffer this
+    // comment used to call out at ~766 MB for large aux bases) becomes
+    // per-thread via map_init: one buffer allocated per rayon worker,
+    // reused across the ω's that worker processes. BLAS pinned to 1 inside
+    // the rayon region.
+    let rows: Vec<Result<Vec<[[f64; 3]; 3]>, FerricError>> = with_blas_threads(1, || {
+        freqs
+            .par_iter()
+            .map_init(
+                || b_ov.clone(),
+                |b_scaled, &omega| -> Result<Vec<[[f64; 3]; 3]>, FerricError> {
+                    let omega2 = omega * omega;
+                    let mut g = ndarray::Array1::<f64>::zeros(nov);
+                    for ia in 0..nov { let e = e_ia[ia]; g[ia] = e / (omega2 + e*e); }
+
+                    // ε̃(ω) = I + 4 B̃ diag(g) B̃^T
+                    b_scaled.assign(b_ov);
+                    for ia in 0..nov { b_scaled.column_mut(ia).mapv_inplace(|x| x * (4.0*g[ia]).sqrt()); }
+                    let mut eps_mat: Array2<f64> = b_scaled.dot(&b_scaled.t());
+                    for p in 0..naux { eps_mat[(p,p)] += 1.0; }
+
+                    // Solve ε̃ y^j = B·(g⊙μ^j) once per direction (molecular Hirshfeld dipole).
+                    let mu_g: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| &mu_flat[d] * &g);
+                    let w_mol: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| b_ov.dot(&mu_g[d]));
+                    let y_mol = solve_dielectric_3(&eps_mat, &w_mol)?;
+
+                    let mut row: Vec<[[f64; 3]; 3]> = vec![[[0.0; 3]; 3]; natoms];
+                    for a in 0..natoms {
+                        let mut tensor = [[0.0_f64; 3]; 3];
+                        for d in 0..3 {
+                            let w_ai = b_ov.dot(&(&mu_ai_flat[a][d] * &g));
+                            for j in 0..3 {
+                                let bare = mu_ai_flat[a][d].dot(&mu_g[j]);
+                                let coupled = w_ai.dot(&y_mol[j]);
+                                tensor[d][j] = 4.0 * bare - 16.0 * coupled;
+                            }
+                        }
+                        for i in 0..3 { for j in (i+1)..3 {
+                            let avg = 0.5*(tensor[i][j]+tensor[j][i]);
+                            tensor[i][j] = avg; tensor[j][i] = avg;
+                        }}
+                        row[a] = tensor;
+                    }
+                    Ok(row)
+                },
+            )
+            .collect::<Vec<Result<Vec<[[f64; 3]; 3]>, FerricError>>>()
+    });
+
     let mut out: Vec<Vec<[[f64; 3]; 3]>> = vec![vec![[[0.0; 3]; 3]; nfreq]; natoms];
-
-    // Reused (naux × nov) scratch for the column-scaled B̃; only the per-column
-    // g-scaling changes with ω, so the 766 MB buffer is allocated once instead
-    // of cloned per frequency (M9: freq-independent structure hoisted).
-    let mut b_scaled = b_ov.clone();
-    for (k, &omega) in freqs.iter().enumerate() {
-        let omega2 = omega * omega;
-        let mut g = ndarray::Array1::<f64>::zeros(nov);
-        for ia in 0..nov { let e = e_ia[ia]; g[ia] = e / (omega2 + e*e); }
-
-        // ε̃(ω) = I + 4 B̃ diag(g) B̃^T
-        b_scaled.assign(b_ov);
-        for ia in 0..nov { b_scaled.column_mut(ia).mapv_inplace(|x| x * (4.0*g[ia]).sqrt()); }
-        let mut eps_mat: Array2<f64> = b_scaled.dot(&b_scaled.t());
-        for p in 0..naux { eps_mat[(p,p)] += 1.0; }
-
-        // Solve ε̃ y^j = B·(g⊙μ^j) once per direction (molecular Hirshfeld dipole).
-        let mu_g: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| &mu_flat[d] * &g);
-        let w_mol: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| b_ov.dot(&mu_g[d]));
-        let y_mol = solve_dielectric_3(&eps_mat, &w_mol)?;
-
+    for (k, row) in rows.into_iter().enumerate() {
+        let row = row?;
         for a in 0..natoms {
-            let mut tensor = [[0.0_f64; 3]; 3];
-            for d in 0..3 {
-                let w_ai = b_ov.dot(&(&mu_ai_flat[a][d] * &g));
-                for j in 0..3 {
-                    let bare = mu_ai_flat[a][d].dot(&mu_g[j]);
-                    let coupled = w_ai.dot(&y_mol[j]);
-                    tensor[d][j] = 4.0 * bare - 16.0 * coupled;
-                }
-            }
-            for i in 0..3 { for j in (i+1)..3 {
-                let avg = 0.5*(tensor[i][j]+tensor[j][i]);
-                tensor[i][j] = avg; tensor[j][i] = avg;
-            }}
-            out[a][k] = tensor;
+            out[a][k] = row[a];
         }
     }
 
@@ -2161,6 +2260,8 @@ pub fn molecular_dynamic_polarizability(
     _cfg: &PdepRpaConfig,
     freqs: &[f64],
 ) -> Result<Vec<[[f64; 3]; 3]>, FerricError> {
+    use ferric_integrals::blas_threads::with_blas_threads;
+    use rayon::prelude::*;
 
     // Open-shell: spin-summed dielectric ε̃ = I + 2 B̃_α diag(g_α) B̃_αᵀ
     // + 2 B̃_β diag(g_β) B̃_βᵀ, lab-frame molecular dipole per spin. Mirrors the
@@ -2229,77 +2330,86 @@ pub fn molecular_dynamic_polarizability(
         let mu_a = mk_mu(&inter_a, c_a);
         let mu_b = mk_mu(&inter_b, c_b);
 
-        let mut out = vec![[[0.0_f64; 3]; 3]; freqs.len()];
-        // Per-spin reused (naux × nov_σ) scratch for the column-scaled B̃_σ;
-        // allocated once instead of cloned per frequency (M9).
-        let mut b_scaled_a = inter_a.b_ov.clone();
-        let mut b_scaled_b = inter_b.b_ov.clone();
-        for (k, &omega) in freqs.iter().enumerate() {
-            let omega2 = omega * omega;
-            let g_of = |e_ia: &ndarray::Array1<f64>| {
-                let mut v = ndarray::Array1::<f64>::zeros(e_ia.len().max(1));
-                for ia in 0..e_ia.len() {
-                    let e = e_ia[ia];
-                    v[ia] = e / (omega2 + e * e);
-                }
-                v
-            };
-            let g_a = g_of(&e_ia_a);
-            let g_b = g_of(&e_ia_b);
+        // Each ω is independent — parallelize over frequencies. Per-spin
+        // (naux × nov_σ) column-scaled B̃_σ scratch becomes per-thread via
+        // map_init (one (b_scaled_a, b_scaled_b) pair per rayon worker).
+        // BLAS pinned to 1 inside the rayon region.
+        let rows: Vec<Result<[[f64; 3]; 3], FerricError>> = with_blas_threads(1, || {
+            freqs
+                .par_iter()
+                .map_init(
+                    || (inter_a.b_ov.clone(), inter_b.b_ov.clone()),
+                    |(b_scaled_a, b_scaled_b), &omega| -> Result<[[f64; 3]; 3], FerricError> {
+                        let omega2 = omega * omega;
+                        let g_of = |e_ia: &ndarray::Array1<f64>| {
+                            let mut v = ndarray::Array1::<f64>::zeros(e_ia.len().max(1));
+                            for ia in 0..e_ia.len() {
+                                let e = e_ia[ia];
+                                v[ia] = e / (omega2 + e * e);
+                            }
+                            v
+                        };
+                        let g_a = g_of(&e_ia_a);
+                        let g_b = g_of(&e_ia_b);
 
-            // ε̃(ω) = I + 2 B̃_α diag(g_α) B̃_αᵀ + 2 B̃_β diag(g_β) B̃_βᵀ.
-            let mut eps_mat = Array2::<f64>::zeros((naux, naux));
-            for p in 0..naux {
-                eps_mat[(p, p)] = 1.0;
-            }
-            for (b_ov, g, nocc, b_scaled) in [
-                (&inter_a.b_ov, &g_a, inter_a.nocc, &mut b_scaled_a),
-                (&inter_b.b_ov, &g_b, inter_b.nocc, &mut b_scaled_b),
-            ] {
-                if nocc == 0 {
-                    continue;
-                }
-                let nov = b_ov.shape()[1];
-                b_scaled.assign(b_ov);
-                for ia in 0..nov {
-                    let s = (2.0 * g[ia]).sqrt();
-                    b_scaled.column_mut(ia).mapv_inplace(|x| x * s);
-                }
-                eps_mat += &b_scaled.dot(&b_scaled.t());
-            }
+                        // ε̃(ω) = I + 2 B̃_α diag(g_α) B̃_αᵀ + 2 B̃_β diag(g_β) B̃_βᵀ.
+                        let mut eps_mat = Array2::<f64>::zeros((naux, naux));
+                        for p in 0..naux {
+                            eps_mat[(p, p)] = 1.0;
+                        }
+                        for (b_ov, g, nocc, b_scaled) in [
+                            (&inter_a.b_ov, &g_a, inter_a.nocc, &mut *b_scaled_a),
+                            (&inter_b.b_ov, &g_b, inter_b.nocc, &mut *b_scaled_b),
+                        ] {
+                            if nocc == 0 {
+                                continue;
+                            }
+                            let nov = b_ov.shape()[1];
+                            b_scaled.assign(b_ov);
+                            for ia in 0..nov {
+                                let s = (2.0 * g[ia]).sqrt();
+                                b_scaled.column_mut(ia).mapv_inplace(|x| x * s);
+                            }
+                            eps_mat += &b_scaled.dot(&b_scaled.t());
+                        }
 
-            // w_total^d = B̃_α (μ_α^d ⊙ g_α) + B̃_β (μ_β^d ⊙ g_β).
-            let w_total: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
-                let wa = inter_a.b_ov.dot(&(&mu_a[d] * &g_a));
-                if inter_b.nocc == 0 {
-                    return wa;
-                }
-                wa + inter_b.b_ov.dot(&(&mu_b[d] * &g_b))
-            });
-            let y_total = solve_dielectric_3(&eps_mat, &w_total)?;
+                        // w_total^d = B̃_α (μ_α^d ⊙ g_α) + B̃_β (μ_β^d ⊙ g_β).
+                        let w_total: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
+                            let wa = inter_a.b_ov.dot(&(&mu_a[d] * &g_a));
+                            if inter_b.nocc == 0 {
+                                return wa;
+                            }
+                            wa + inter_b.b_ov.dot(&(&mu_b[d] * &g_b))
+                        });
+                        let y_total = solve_dielectric_3(&eps_mat, &w_total)?;
 
-            let mut t = [[0.0_f64; 3]; 3];
-            for d in 0..3 {
-                for j in 0..3 {
-                    let bare_a = 2.0 * mu_a[d].dot(&(&mu_a[j] * &g_a));
-                    let bare_b = if inter_b.nocc > 0 {
-                        2.0 * mu_b[d].dot(&(&mu_b[j] * &g_b))
-                    } else {
-                        0.0
-                    };
-                    let coupled = w_total[d].dot(&y_total[j]);
-                    t[d][j] = bare_a + bare_b - 4.0 * coupled;
-                }
-            }
-            for i in 0..3 {
-                for j in (i + 1)..3 {
-                    let avg = 0.5 * (t[i][j] + t[j][i]);
-                    t[i][j] = avg;
-                    t[j][i] = avg;
-                }
-            }
-            out[k] = t;
-        }
+                        let mut t = [[0.0_f64; 3]; 3];
+                        for d in 0..3 {
+                            for j in 0..3 {
+                                let bare_a = 2.0 * mu_a[d].dot(&(&mu_a[j] * &g_a));
+                                let bare_b = if inter_b.nocc > 0 {
+                                    2.0 * mu_b[d].dot(&(&mu_b[j] * &g_b))
+                                } else {
+                                    0.0
+                                };
+                                let coupled = w_total[d].dot(&y_total[j]);
+                                t[d][j] = bare_a + bare_b - 4.0 * coupled;
+                            }
+                        }
+                        for i in 0..3 {
+                            for j in (i + 1)..3 {
+                                let avg = 0.5 * (t[i][j] + t[j][i]);
+                                t[i][j] = avg;
+                                t[j][i] = avg;
+                            }
+                        }
+                        Ok(t)
+                    },
+                )
+                .collect::<Vec<Result<[[f64; 3]; 3], FerricError>>>()
+        });
+
+        let out: Vec<[[f64; 3]; 3]> = rows.into_iter().collect::<Result<Vec<_>, FerricError>>()?;
         return Ok(out);
     }
 
@@ -2339,48 +2449,57 @@ pub fn molecular_dynamic_polarizability(
         v
     });
 
-    let mut out = vec![[[0.0_f64; 3]; 3]; freqs.len()];
-    // Reused (naux × nov) scratch for the column-scaled B̃; allocated once
-    // instead of cloned per frequency (M9).
-    let mut b_scaled = b_ov.clone();
-    for (k, &omega) in freqs.iter().enumerate() {
-        let omega2 = omega * omega;
-        let mut g = ndarray::Array1::<f64>::zeros(nov);
-        for ia in 0..nov {
-            let e = e_ia[ia];
-            g[ia] = e / (omega2 + e * e);
-        }
-        // ε̃(ω) = I + 4 B̃ diag(g) B̃^T
-        b_scaled.assign(b_ov);
-        for ia in 0..nov {
-            b_scaled.column_mut(ia).mapv_inplace(|x| x * (4.0 * g[ia]).sqrt());
-        }
-        let mut eps_mat: Array2<f64> = b_scaled.dot(&b_scaled.t());
-        for p in 0..naux {
-            eps_mat[(p, p)] += 1.0;
-        }
-        let mu_g: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| &mu_flat[d] * &g);
-        let w: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| b_ov.dot(&mu_g[d]));
-        let y = solve_dielectric_3(&eps_mat, &w)?;
+    // Each ω is independent — parallelize over frequencies. The (naux × nov)
+    // column-scaled B̃ scratch becomes per-thread via map_init. BLAS pinned
+    // to 1 inside the rayon region.
+    let rows: Vec<Result<[[f64; 3]; 3], FerricError>> = with_blas_threads(1, || {
+        freqs
+            .par_iter()
+            .map_init(
+                || b_ov.clone(),
+                |b_scaled, &omega| -> Result<[[f64; 3]; 3], FerricError> {
+                    let omega2 = omega * omega;
+                    let mut g = ndarray::Array1::<f64>::zeros(nov);
+                    for ia in 0..nov {
+                        let e = e_ia[ia];
+                        g[ia] = e / (omega2 + e * e);
+                    }
+                    // ε̃(ω) = I + 4 B̃ diag(g) B̃^T
+                    b_scaled.assign(b_ov);
+                    for ia in 0..nov {
+                        b_scaled.column_mut(ia).mapv_inplace(|x| x * (4.0 * g[ia]).sqrt());
+                    }
+                    let mut eps_mat: Array2<f64> = b_scaled.dot(&b_scaled.t());
+                    for p in 0..naux {
+                        eps_mat[(p, p)] += 1.0;
+                    }
+                    let mu_g: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| &mu_flat[d] * &g);
+                    let w: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| b_ov.dot(&mu_g[d]));
+                    let y = solve_dielectric_3(&eps_mat, &w)?;
 
-        let mut t = [[0.0_f64; 3]; 3];
-        for d in 0..3 {
-            let w_d = b_ov.dot(&mu_g[d]);
-            for j in 0..3 {
-                let bare = mu_flat[d].dot(&mu_g[j]);
-                let coupled = w_d.dot(&y[j]);
-                t[d][j] = 4.0 * bare - 16.0 * coupled;
-            }
-        }
-        for i in 0..3 {
-            for j in (i + 1)..3 {
-                let avg = 0.5 * (t[i][j] + t[j][i]);
-                t[i][j] = avg;
-                t[j][i] = avg;
-            }
-        }
-        out[k] = t;
-    }
+                    let mut t = [[0.0_f64; 3]; 3];
+                    for d in 0..3 {
+                        let w_d = b_ov.dot(&mu_g[d]);
+                        for j in 0..3 {
+                            let bare = mu_flat[d].dot(&mu_g[j]);
+                            let coupled = w_d.dot(&y[j]);
+                            t[d][j] = 4.0 * bare - 16.0 * coupled;
+                        }
+                    }
+                    for i in 0..3 {
+                        for j in (i + 1)..3 {
+                            let avg = 0.5 * (t[i][j] + t[j][i]);
+                            t[i][j] = avg;
+                            t[j][i] = avg;
+                        }
+                    }
+                    Ok(t)
+                },
+            )
+            .collect::<Vec<Result<[[f64; 3]; 3], FerricError>>>()
+    });
+
+    let out: Vec<[[f64; 3]; 3]> = rows.into_iter().collect::<Result<Vec<_>, FerricError>>()?;
     Ok(out)
 }
 
@@ -2402,6 +2521,9 @@ pub fn molecular_dynamic_polarizability_pdep(
     rhf: &ScfResult,
     op: Operator,
 ) -> Result<Vec<[[f64; 3]; 3]>, FerricError> {
+    use ferric_integrals::blas_threads::with_blas_threads;
+    use rayon::prelude::*;
+
     if !matches!(rhf.spin, Spin::Restricted) {
         return Err(FerricError::General(
             "molecular_dynamic_polarizability_pdep: closed-shell (RHF) only".into(),
@@ -2454,43 +2576,55 @@ pub fn molecular_dynamic_polarizability_pdep(
     let y = u.t().dot(b_ov);
 
     let freqs = &rpa.quad_freqs;
-    let mut out = vec![[[0.0_f64; 3]; 3]; freqs.len()];
-    for (k, &omega) in freqs.iter().enumerate() {
-        let omega2 = omega * omega;
-        let mut g = ndarray::Array1::<f64>::zeros(nov);
-        for ia in 0..nov {
-            let e = e_ia[ia];
-            g[ia] = e / (omega2 + e * e);
-        }
-        let mu_g: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| &mu_flat[d] * &g);
-        // p_d = y (μ_d ⊙ g), length M.
-        let p: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| y.dot(&mu_g[d]));
-        // W̃_k + I  (M × M).
-        let wpi = {
-            let mut m = winv[k].clone();
-            for d in 0..m.nrows() {
-                m[(d, d)] += 1.0;
-            }
-            m
-        };
-        let mut t = [[0.0_f64; 3]; 3];
-        for d in 0..3 {
-            let wp_d = wpi.dot(&p[d]);
-            for j in 0..3 {
-                let bare = mu_flat[d].dot(&mu_g[j]);
-                let coupled = p[j].dot(&wp_d);
-                t[d][j] = 4.0 * bare - 16.0 * coupled;
-            }
-        }
-        for i in 0..3 {
-            for j in (i + 1)..3 {
-                let avg = 0.5 * (t[i][j] + t[j][i]);
-                t[i][j] = avg;
-                t[j][i] = avg;
-            }
-        }
-        out[k] = t;
-    }
+    // Each ω is independent — parallelize over frequencies. No scratch to
+    // hoist here (unlike the full-naux siblings): `wpi`/`p` are small
+    // (M × M / length-M, M = truncated PDEP rank) and cheaply allocated
+    // fresh per element; `winv[k]` is precomputed and indexed read-only.
+    // BLAS pinned to 1 inside the rayon region per repo convention, uniform
+    // with the full-rank siblings even though the per-element GEMM here is
+    // small (M, not naux).
+    let out: Vec<[[f64; 3]; 3]> = with_blas_threads(1, || {
+        freqs
+            .par_iter()
+            .enumerate()
+            .map(|(k, &omega)| {
+                let omega2 = omega * omega;
+                let mut g = ndarray::Array1::<f64>::zeros(nov);
+                for ia in 0..nov {
+                    let e = e_ia[ia];
+                    g[ia] = e / (omega2 + e * e);
+                }
+                let mu_g: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| &mu_flat[d] * &g);
+                // p_d = y (μ_d ⊙ g), length M.
+                let p: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| y.dot(&mu_g[d]));
+                // W̃_k + I  (M × M).
+                let wpi = {
+                    let mut m = winv[k].clone();
+                    for d in 0..m.nrows() {
+                        m[(d, d)] += 1.0;
+                    }
+                    m
+                };
+                let mut t = [[0.0_f64; 3]; 3];
+                for d in 0..3 {
+                    let wp_d = wpi.dot(&p[d]);
+                    for j in 0..3 {
+                        let bare = mu_flat[d].dot(&mu_g[j]);
+                        let coupled = p[j].dot(&wp_d);
+                        t[d][j] = 4.0 * bare - 16.0 * coupled;
+                    }
+                }
+                for i in 0..3 {
+                    for j in (i + 1)..3 {
+                        let avg = 0.5 * (t[i][j] + t[j][i]);
+                        t[i][j] = avg;
+                        t[j][i] = avg;
+                    }
+                }
+                t
+            })
+            .collect::<Vec<[[f64; 3]; 3]>>()
+    });
     Ok(out)
 }
 

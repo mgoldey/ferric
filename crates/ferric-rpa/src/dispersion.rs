@@ -67,6 +67,10 @@ pub enum DispersionPartition {
     Hirshfeld,
 }
 
+/// One row of the (a,b) Casimir-Polder pair reduction: (isotropic C6 row,
+/// anisotropic C6 tensor row), both indexed by `b`.
+type C6PairRow = (Vec<f64>, Vec<[[f64; 3]; 3]>);
+
 /// Casimir-Polder contraction. SHARED SEAM between TS and PDEP-RPA sources.
 ///
 /// ```text
@@ -75,6 +79,7 @@ pub enum DispersionPartition {
 /// ```
 /// where α_iso(iω_k) = (1/3) Tr α(iω_k).
 pub fn casimir_polder_c6(dyn_pol: &DynamicPolarizability) -> C6Result {
+    use rayon::prelude::*;
     use std::f64::consts::PI;
     let natoms = dyn_pol.per_atom.len();
     let nfreq = dyn_pol.freqs.len();
@@ -89,32 +94,49 @@ pub fn casimir_polder_c6(dyn_pol: &DynamicPolarizability) -> C6Result {
         }
     }
 
+    // The (a,b) pair reduction is embarrassingly parallel and independent of
+    // BLAS (plain scalar contractions over the frequency axis, no GEMM/eigh)
+    // — no with_blas_threads guard needed. Each pair writes disjoint output
+    // cells, so a flat par_iter over the row index with an order-preserving
+    // collect reproduces the serial nested loop exactly.
+    let rows: Vec<C6PairRow> = (0..natoms)
+        .into_par_iter()
+        .map(|a| {
+            let mut iso_row = vec![0.0_f64; natoms];
+            let mut aniso_row = vec![[[0.0_f64; 3]; 3]; natoms];
+            for b in 0..natoms {
+                // Isotropic.
+                let mut s_iso = 0.0;
+                for k in 0..nfreq {
+                    s_iso += dyn_pol.weights[k] * iso[a][k] * iso[b][k];
+                }
+                iso_row[b] = pref * s_iso;
+
+                // Anisotropic, element-wise.
+                for i in 0..3 {
+                    for j in 0..3 {
+                        let mut s = 0.0;
+                        for k in 0..nfreq {
+                            s += dyn_pol.weights[k]
+                                * dyn_pol.per_atom[a][k][i][j]
+                                * dyn_pol.per_atom[b][k][i][j];
+                        }
+                        aniso_row[b][i][j] = pref * s;
+                    }
+                }
+            }
+            (iso_row, aniso_row)
+        })
+        .collect();
+
     let mut c6_iso_pair = Array2::<f64>::zeros((natoms, natoms));
     let mut c6_aniso_pair: Vec<Vec<[[f64; 3]; 3]>> =
         vec![vec![[[0.0; 3]; 3]; natoms]; natoms];
-
-    for a in 0..natoms {
+    for (a, (iso_row, aniso_row)) in rows.into_iter().enumerate() {
         for b in 0..natoms {
-            // Isotropic.
-            let mut s_iso = 0.0;
-            for k in 0..nfreq {
-                s_iso += dyn_pol.weights[k] * iso[a][k] * iso[b][k];
-            }
-            c6_iso_pair[(a, b)] = pref * s_iso;
-
-            // Anisotropic, element-wise.
-            for i in 0..3 {
-                for j in 0..3 {
-                    let mut s = 0.0;
-                    for k in 0..nfreq {
-                        s += dyn_pol.weights[k]
-                            * dyn_pol.per_atom[a][k][i][j]
-                            * dyn_pol.per_atom[b][k][i][j];
-                    }
-                    c6_aniso_pair[a][b][i][j] = pref * s;
-                }
-            }
+            c6_iso_pair[(a, b)] = iso_row[b];
         }
+        c6_aniso_pair[a] = aniso_row;
     }
 
     // Molecular isotropic C6 from the molecular α(iω) — the DOSD-comparable
@@ -357,8 +379,10 @@ pub fn pdep_dynamic_polarizability_truncated(
 ) -> Result<DynamicPolarizability, FerricError> {
     use ferric_dft::ao_grid::eval_basis_on_points;
     use ferric_dft::grid::{build_atomic_grid, AtomicGridConfig};
+    use ferric_integrals::blas_threads::with_blas_threads;
     use ferric_mp2::rimp2::RiMp2Config;
     use ferric_scf::result::Spin;
+    use rayon::prelude::*;
 
     let _ = partition; // Becke only for now (same as full path)
 
@@ -517,50 +541,71 @@ pub fn pdep_dynamic_polarizability_truncated(
     //   α_ij   = 4 bare_ij − 16 w_M^{i,T} y_M^j
     // This is exact within the M-dimensional PDEP subspace; modes outside
     // the subspace contribute only through the bare (non-interacting) term.
+    // Each ω is independent — parallelize over frequencies (energy.rs
+    // pattern). The (M × nov) `ct_b_g` scratch (a full clone of `ct_b` per
+    // frequency in the serial version) becomes per-thread via map_init: one
+    // buffer allocated per rayon worker, reused across the ω's it handles.
+    // BLAS pinned to 1 inside the rayon region (the per-frequency M×M
+    // dielectric solve must not nest OpenBLAS threads under rayon workers).
+    let rows: Vec<Result<Vec<[[f64; 3]; 3]>, FerricError>> = with_blas_threads(1, || {
+        freqs
+            .par_iter()
+            .map_init(
+                || ct_b.clone(),
+                |ct_b_g, &omega| -> Result<Vec<[[f64; 3]; 3]>, FerricError> {
+                    let omega2 = omega * omega;
+                    let mut g = ndarray::Array1::<f64>::zeros(nov);
+                    for ia in 0..nov { let e = e_ia[ia]; g[ia] = e / (omega2 + e*e); }
+
+                    // B̃_g = B̃ diag(g): (naux, nov) → scale columns.
+                    // We compute Uᵀ B̃_g = (Uᵀ B̃) diag(g) = ct_b * diag(g) efficiently
+                    // as a column-scaled product, refilled from ct_b each ω.
+                    ct_b_g.assign(&ct_b);
+                    for ia in 0..nov { ct_b_g.column_mut(ia).mapv_inplace(|x| x * g[ia]); }
+
+                    // ε̃_M(ω) = I_M + 4 (Uᵀ B̃_g) (Uᵀ B̃_g)ᵀ  [M×M SPD]
+                    // = I + 4 ct_b_g · ct_b_gᵀ
+                    let mut eps_m: Array2<f64> = ct_b_g.dot(&ct_b_g.t());
+                    eps_m.mapv_inplace(|x| x * 4.0);
+                    for alpha in 0..n_modes { eps_m[(alpha, alpha)] += 1.0; }
+
+                    // Molecular projected dipole: w_M^d = Uᵀ B̃_g μ^d = ct_b_g · μ^d
+                    let w_mol_m: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| ct_b_g.dot(&mu_flat[d]));
+                    // Solve ε̃_M y_M^d = w_M^d  (M×M, small)
+                    let y_mol_m = crate::properties::solve_dielectric_3(&eps_m, &w_mol_m)?;
+
+                    let mut row: Vec<[[f64; 3]; 3]> = vec![[[0.0; 3]; 3]; natoms];
+                    for a in 0..natoms {
+                        // Per-atom projected dipole: w_M^{A,d} = ct_b_g · μ^{A,d}
+                        let w_ai_m: [ndarray::Array1<f64>; 3] =
+                            std::array::from_fn(|d| ct_b_g.dot(&mu_ai_flat[a][d]));
+
+                        let mut tensor = [[0.0_f64; 3]; 3];
+                        for d in 0..3 {
+                            for j in 0..3 {
+                                let bare = mu_ai_flat[a][d].dot(&(&mu_flat[j] * &g));
+                                let coupled = w_ai_m[d].dot(&y_mol_m[j]);
+                                tensor[d][j] = 4.0 * bare - 16.0 * coupled;
+                            }
+                        }
+                        // Symmetrize.
+                        for i in 0..3 { for j in (i+1)..3 {
+                            let avg = 0.5*(tensor[i][j]+tensor[j][i]);
+                            tensor[i][j] = avg; tensor[j][i] = avg;
+                        }}
+                        row[a] = tensor;
+                    }
+                    Ok(row)
+                },
+            )
+            .collect::<Vec<Result<Vec<[[f64; 3]; 3]>, FerricError>>>()
+    });
+
     let mut out: Vec<Vec<[[f64; 3]; 3]>> = vec![vec![[[0.0; 3]; 3]; nfreq]; natoms];
-
-    for (k, &omega) in freqs.iter().enumerate() {
-        let omega2 = omega * omega;
-        let mut g = ndarray::Array1::<f64>::zeros(nov);
-        for ia in 0..nov { let e = e_ia[ia]; g[ia] = e / (omega2 + e*e); }
-
-        // B̃_g = B̃ diag(g): (naux, nov) → scale columns.
-        // We compute Uᵀ B̃_g = (Uᵀ B̃) diag(g) = ct_b * diag(g) efficiently
-        // as a column-scaled product.
-        let ct_b_g: Array2<f64> = {
-            let mut m = ct_b.clone(); // (M, nov)
-            for ia in 0..nov { m.column_mut(ia).mapv_inplace(|x| x * g[ia]); }
-            m
-        };
-
-        // ε̃_M(ω) = I_M + 4 (Uᵀ B̃_g) (Uᵀ B̃_g)ᵀ  [M×M SPD]
-        // = I + 4 ct_b_g · ct_b_gᵀ
-        let mut eps_m: Array2<f64> = ct_b_g.dot(&ct_b_g.t());
-        eps_m.mapv_inplace(|x| x * 4.0);
-        for alpha in 0..n_modes { eps_m[(alpha, alpha)] += 1.0; }
-
-        // Molecular projected dipole: w_M^d = Uᵀ B̃_g μ^d = ct_b_g · μ^d
-        let w_mol_m: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| ct_b_g.dot(&mu_flat[d]));
-        // Solve ε̃_M y_M^d = w_M^d  (M×M, small)
-        let y_mol_m = crate::properties::solve_dielectric_3(&eps_m, &w_mol_m)?;
-
+    for (k, row) in rows.into_iter().enumerate() {
+        let row = row?;
         for a in 0..natoms {
-            // Per-atom projected dipole: w_M^{A,d} = ct_b_g · μ^{A,d}
-            let w_ai_m: [ndarray::Array1<f64>; 3] =
-                std::array::from_fn(|d| ct_b_g.dot(&mu_ai_flat[a][d]));
-
-            for d in 0..3 {
-                for j in 0..3 {
-                    let bare = mu_ai_flat[a][d].dot(&(&mu_flat[j] * &g));
-                    let coupled = w_ai_m[d].dot(&y_mol_m[j]);
-                    out[a][k][d][j] = 4.0 * bare - 16.0 * coupled;
-                }
-            }
-            // Symmetrize.
-            for i in 0..3 { for j in (i+1)..3 {
-                let avg = 0.5*(out[a][k][i][j]+out[a][k][j][i]);
-                out[a][k][i][j] = avg; out[a][k][j][i] = avg;
-            }}
+            out[a][k] = row[a];
         }
     }
 
