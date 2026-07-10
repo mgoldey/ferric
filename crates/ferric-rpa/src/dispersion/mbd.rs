@@ -3,6 +3,7 @@
 
 use crate::dispersion::free_atom_ref::ts_free_atom;
 use crate::dispersion::DynamicPolarizability;
+use ferric_core::FerricError;
 use ndarray::Array2;
 use ndarray_linalg::Inverse;
 
@@ -74,35 +75,47 @@ pub fn dipole_coupling_tensor(positions: &[[f64; 3]], sigma: &[f64]) -> Array2<f
 /// Per-atom TS parameters: (α_eff, ω_A) for each atom.
 ///
 /// α_eff = (volume ratio) · α_free; C6_eff = ratio²·C6_free; ω_A = (4/3)C6_eff/α_eff².
-/// For Z outside the table, falls back to the static isotropic α with the H
-/// London frequency (matches `ts_dynamic_polarizability`'s fallback).
+///
+/// Errors when any Z has no TS free-atom reference (table covers Z ≤ 18).
+/// The old behavior silently substituted the molecular static α with
+/// HYDROGEN's characteristic frequency for such atoms — a fabricated C6 that
+/// looked like a real TS number (Br, Kr, and every heavier element).
 pub fn ts_atom_params(
     z: &[usize],
     vol_ratio: &[f64],
-    alpha_static: &[[[f64; 3]; 3]],
-) -> Vec<(f64, f64)> {
-    z.iter()
+) -> Result<Vec<(f64, f64)>, FerricError> {
+    let missing: Vec<usize> = {
+        let mut m: Vec<usize> = z.iter().copied().filter(|&za| ts_free_atom(za).is_none()).collect();
+        m.sort_unstable();
+        m.dedup();
+        m
+    };
+    if !missing.is_empty() {
+        let names: Vec<String> = missing
+            .iter()
+            .map(|&za| {
+                let sym = ferric_core::elements::z_to_symbol(za as i32).unwrap_or("?");
+                format!("{sym} (Z={za})")
+            })
+            .collect();
+        return Err(FerricError::General(format!(
+            "TS/MBD C6 is not parameterized for {}: the TS free-atom reference \
+             table (PRL 102, 073005 Table I) covers Z <= 18 only. Use \
+             c6_source = \"pdep\" for molecules containing these elements",
+            names.join(", ")
+        )));
+    }
+    Ok(z.iter()
         .enumerate()
         .map(|(a, &za)| {
-            let st = alpha_static[a];
-            let st_iso = (st[0][0] + st[1][1] + st[2][2]) / 3.0;
-            let (alpha_eff, c6_eff) = match ts_free_atom(za) {
-                Some((alpha_free, c6_free, _)) => {
-                    let r = vol_ratio[a];
-                    (r * alpha_free, r * r * c6_free)
-                }
-                None => {
-                    let (af_h, c6_h, _) = ts_free_atom(1).unwrap();
-                    let omega_h = (4.0 / 3.0) * c6_h / (af_h * af_h);
-                    let a_iso = st_iso.max(1e-6);
-                    (a_iso, 0.75 * a_iso * a_iso * omega_h)
-                }
-            };
+            let (alpha_free, c6_free, _) = ts_free_atom(za).expect("checked above");
+            let r = vol_ratio[a];
+            let (alpha_eff, c6_eff) = (r * alpha_free, r * r * c6_free);
             let alpha_eff = alpha_eff.max(1e-8);
             let omega_a = (4.0 / 3.0) * c6_eff / (alpha_eff * alpha_eff);
             (alpha_eff, omega_a)
         })
-        .collect()
+        .collect())
 }
 
 /// MBD@TS screened per-atom α(iω). For each frequency, builds the coupled matrix
@@ -116,7 +129,7 @@ pub fn mbd_screen(
     positions: &[[f64; 3]],
     _alpha_eff: &[f64],
     freqs: &[f64],
-) -> Vec<Vec<[[f64; 3]; 3]>> {
+) -> Result<Vec<Vec<[[f64; 3]; 3]>>, FerricError> {
     let n = positions.len();
     let nfreq = freqs.len();
     let mut out: Vec<Vec<[[f64; 3]; 3]>> = vec![vec![[[0.0; 3]; 3]; nfreq]; n];
@@ -139,7 +152,14 @@ pub fn mbd_screen(
         }
         let tmat = dipole_coupling_tensor(positions, &sigma);
         let c = &a_inv + &tmat;
-        let cinv = c.inv().unwrap_or_else(|_| Array2::eye(3 * n));
+        // A singular coupled matrix used to fall back to the identity —
+        // silently reporting UNSCREENED (in fact unit) polarizabilities.
+        let cinv = c.inv().map_err(|e| {
+            FerricError::General(format!(
+                "MBD coupled-dipole matrix is singular at freq index {k} \
+                 (near-degenerate per-atom α?): {e}"
+            ))
+        })?;
         for a in 0..n {
             for b in 0..n {
                 for i in 0..3 {
@@ -150,7 +170,7 @@ pub fn mbd_screen(
             }
         }
     }
-    out
+    Ok(out)
 }
 
 /// Build a `DynamicPolarizability` from MBD-screened per-atom α(iω). Drop-in
@@ -162,17 +182,17 @@ pub fn mbd_dynamic_polarizability(
     alpha_static: &[[[f64; 3]; 3]],
     freqs: &[f64],
     weights: &[f64],
-) -> DynamicPolarizability {
+) -> Result<DynamicPolarizability, FerricError> {
     let ts = crate::dispersion::ts_dynamic_polarizability(
         z,
         vol_ratio,
         alpha_static,
         freqs,
         weights,
-    );
-    let params = ts_atom_params(z, vol_ratio, alpha_static);
+    )?;
+    let params = ts_atom_params(z, vol_ratio)?;
     let alpha_eff: Vec<f64> = params.iter().map(|p| p.0).collect();
-    let screened = mbd_screen(&ts.per_atom, positions, &alpha_eff, freqs);
+    let screened = mbd_screen(&ts.per_atom, positions, &alpha_eff, freqs)?;
     let nfreq = freqs.len();
     let molecular: Vec<[[f64; 3]; 3]> = (0..nfreq)
         .map(|k| {
@@ -187,12 +207,12 @@ pub fn mbd_dynamic_polarizability(
             m
         })
         .collect();
-    DynamicPolarizability {
+    Ok(DynamicPolarizability {
         freqs: freqs.to_vec(),
         weights: weights.to_vec(),
         per_atom: screened,
         molecular,
-    }
+    })
 }
 
 /// MBD@TS coupled-plasmon dispersion energy (validation path).
@@ -239,11 +259,30 @@ mod tests {
     #[test]
     fn ts_atom_params_free_atom_reproduces_table() {
         // Carbon at ratio=1: α_eff = α_free = 12.0, ω_A = (4/3)·46.6/12² = 0.4315.
-        let st = [[12.0, 0.0, 0.0], [0.0, 12.0, 0.0], [0.0, 0.0, 12.0]];
-        let p = ts_atom_params(&[6], &[1.0], &[st]);
+        let p = ts_atom_params(&[6], &[1.0]).unwrap();
         assert!((p[0].0 - 12.0).abs() < 1e-9, "α_eff = {}", p[0].0);
         let omega_expected = (4.0 / 3.0) * 46.6 / (12.0 * 12.0);
         assert!((p[0].1 - omega_expected).abs() < 1e-9, "ω_A = {}", p[0].1);
+    }
+
+    /// Z > 18 regression: the old code silently substituted the molecular α
+    /// with HYDROGEN's characteristic frequency, fabricating a TS C6 for Br,
+    /// Kr, and every heavier element. It must now be a hard error naming the
+    /// unsupported element(s), through every public entry point.
+    #[test]
+    fn ts_unparameterized_element_errors_instead_of_hydrogen_omega() {
+        let err = ts_atom_params(&[1, 35], &[1.0, 1.0]).unwrap_err().to_string();
+        assert!(err.contains("Br") && err.contains("35"), "error should name Br: {err}");
+
+        let st = [[3.0, 0.0, 0.0], [0.0, 3.0, 0.0], [0.0, 0.0, 3.0]];
+        let freqs = [0.0, 0.5];
+        let weights = [0.5, 0.5];
+        assert!(crate::dispersion::ts_dynamic_polarizability(
+            &[35], &[1.0], &[st], &freqs, &weights
+        ).is_err());
+        assert!(mbd_dynamic_polarizability(
+            &[[0.0, 0.0, 0.0]], &[35], &[1.0], &[st], &freqs, &weights
+        ).is_err());
     }
 
     #[test]
@@ -279,7 +318,7 @@ mod tests {
         };
         let input: Vec<Vec<[[f64; 3]; 3]>> =
             (0..2).map(|_| (0..3).map(mk).collect()).collect();
-        let scr = mbd_screen(&input, &pos, &alpha_eff, &freqs);
+        let scr = mbd_screen(&input, &pos, &alpha_eff, &freqs).unwrap();
         for a in 0..2 {
             for k in 0..3 {
                 let in_iso =
@@ -307,8 +346,8 @@ mod tests {
         let alpha_static = [st, st];
         let freqs: Vec<f64> = (0..12).map(|i| 0.1 * i as f64).collect();
         let weights = vec![1.0; freqs.len()];
-        let ts = ts_dynamic_polarizability(&z, &vr, &alpha_static, &freqs, &weights);
-        let mbd = mbd_dynamic_polarizability(&pos, &z, &vr, &alpha_static, &freqs, &weights);
+        let ts = ts_dynamic_polarizability(&z, &vr, &alpha_static, &freqs, &weights).unwrap();
+        let mbd = mbd_dynamic_polarizability(&pos, &z, &vr, &alpha_static, &freqs, &weights).unwrap();
         let c6_ts = casimir_polder_c6(&ts).c6_molecular_iso;
         let c6_mbd = casimir_polder_c6(&mbd).c6_molecular_iso;
         assert!(c6_mbd.is_finite() && c6_mbd > 0.0, "MBD C6 not finite/positive: {c6_mbd}");
@@ -328,7 +367,7 @@ mod tests {
         let a0 = 8.0_f64;
         let iso = [[a0, 0.0, 0.0], [0.0, a0, 0.0], [0.0, 0.0, a0]];
         let input: Vec<Vec<[[f64; 3]; 3]>> = vec![vec![iso], vec![iso]];
-        let scr = mbd_screen(&input, &pos, &alpha_eff, &freqs);
+        let scr = mbd_screen(&input, &pos, &alpha_eff, &freqs).unwrap();
         let xx = scr[0][0][0][0];
         let zz = scr[0][0][2][2];
         assert!(zz > a0, "bond-parallel αzz should be enhanced: {zz} vs {a0}");

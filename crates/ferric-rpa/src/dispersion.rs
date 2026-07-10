@@ -225,14 +225,15 @@ pub fn ts_dynamic_polarizability(
     alpha_static: &[[[f64; 3]; 3]],
     freqs: &[f64],
     weights: &[f64],
-) -> DynamicPolarizability {
+) -> Result<DynamicPolarizability, FerricError> {
     let natoms = z.len();
     let nfreq = freqs.len();
     let mut per_atom: Vec<Vec<[[f64; 3]; 3]>> =
         vec![vec![[[0.0; 3]; 3]; nfreq]; natoms];
 
     // Per-atom (α_eff, ω_A) — shared with the MBD path (mbd::ts_atom_params).
-    let params = crate::dispersion::mbd::ts_atom_params(z, vol_ratio, alpha_static);
+    // Errors for elements outside the TS free-atom table (Z > 18).
+    let params = crate::dispersion::mbd::ts_atom_params(z, vol_ratio)?;
 
     for a in 0..natoms {
         let st = alpha_static[a];
@@ -282,12 +283,12 @@ pub fn ts_dynamic_polarizability(
         })
         .collect();
 
-    DynamicPolarizability {
+    Ok(DynamicPolarizability {
         freqs: freqs.to_vec(),
         weights: weights.to_vec(),
         per_atom,
         molecular,
-    }
+    })
 }
 
 /// PDEP-RPA per-atom dynamic polarizability α^A(iω) (Phase 2 source).
@@ -705,7 +706,7 @@ mod tests {
         let vol_ratio = vec![1.0_f64];
         let alpha_static = vec![[[4.5, 0.0, 0.0], [0.0, 4.5, 0.0], [0.0, 0.0, 4.5]]];
         let (freqs, weights) = trapezoid_grid(20000, 200.0);
-        let dp = ts_dynamic_polarizability(&z, &vol_ratio, &alpha_static, &freqs, &weights);
+        let dp = ts_dynamic_polarizability(&z, &vol_ratio, &alpha_static, &freqs, &weights).unwrap();
         let res = casimir_polder_c6(&dp);
         let c6 = res.c6_iso_pair[(0, 0)];
         assert!(
@@ -721,7 +722,7 @@ mod tests {
         let vol_ratio = vec![1.0_f64];
         let alpha_static = vec![[[9.0, 0.0, 0.0], [0.0, 9.0, 0.0], [0.0, 0.0, 18.0]]];
         let (freqs, weights) = trapezoid_grid(4000, 100.0);
-        let dp = ts_dynamic_polarizability(&z, &vol_ratio, &alpha_static, &freqs, &weights);
+        let dp = ts_dynamic_polarizability(&z, &vol_ratio, &alpha_static, &freqs, &weights).unwrap();
         let res = casimir_polder_c6(&dp);
         let czz = res.c6_aniso_pair[0][0][2][2];
         let cxx = res.c6_aniso_pair[0][0][0][0];

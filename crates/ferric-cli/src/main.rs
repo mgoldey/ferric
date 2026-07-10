@@ -972,31 +972,44 @@ fn main() {
                         }
                     } else {
                         // Phase 1: Tkatchenko-Scheffler single-pole model.
-                        let alpha_static: Vec<[[f64; 3]; 3]> =
-                            if partition == DispersionPartition::Hirshfeld {
-                                pdep_polarizability_hirshfeld(
-                                    &mol, &prep, &bs, &dfbs, &result, op, &rpa_cfg, Some(&proatom),
-                                )
-                                .unwrap_or_else(|_| vec![[[0.0; 3]; 3]; mol.atoms.len()])
-                            } else {
-                                match alpha_atomic_vec.as_ref() {
-                                    Some(v) => v.clone(),
-                                    None => pdep_polarizability_becke(
-                                        &mol, &prep, &bs, &dfbs, &result, op, &rpa_cfg,
-                                    )
-                                    .unwrap_or_else(|_| vec![[[0.0; 3]; 3]; mol.atoms.len()]),
-                                }
-                            };
+                        // Any failure below warns and SKIPS C6 (None) — the old
+                        // fallbacks (zero α, unit volumes, unit ratios) exported
+                        // wrong numbers that looked like results.
+                        (|| -> Option<ferric_rpa::dispersion::C6Result> {
+                        let alpha_res = if partition == DispersionPartition::Hirshfeld {
+                            pdep_polarizability_hirshfeld(
+                                &mol, &prep, &bs, &dfbs, &result, op, &rpa_cfg, Some(&proatom),
+                            )
+                        } else {
+                            match alpha_atomic_vec.as_ref() {
+                                Some(v) => Ok(v.clone()),
+                                None => pdep_polarizability_becke(
+                                    &mol, &prep, &bs, &dfbs, &result, op, &rpa_cfg,
+                                ),
+                            }
+                        };
+                        let alpha_static: Vec<[[f64; 3]; 3]> = match alpha_res {
+                            Ok(v) => v,
+                            Err(e) => {
+                                eprintln!("warning: TS C6 skipped — per-atom static α failed: {e}");
+                                return None;
+                            }
+                        };
                         // TS volumes must always use Hirshfeld partition — TS was
                         // parameterized with Hirshfeld volumes (TS PRL 2009). Becke
                         // volumes blow up for π-system H atoms (vol_ratio >> 1)
                         // because Becke is atom-size-blind; Hirshfeld proatom weights
                         // correctly compress H relative to C. The c6_partition setting
                         // only governs the alpha_static shape tensor, not these volumes.
-                        let vols = atomic_effective_volumes_hirshfeld(
+                        let vols = match atomic_effective_volumes_hirshfeld(
                             &mol, &bs, result.density_total(), Some(&proatom),
-                        )
-                        .unwrap_or_else(|_| vec![1.0; mol.atoms.len()]);
+                        ) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                eprintln!("warning: TS C6 skipped — Hirshfeld effective volumes failed: {e}");
+                                return None;
+                            }
+                        };
                         let z: Vec<usize> = mol.atoms.iter().map(|a| a.z as usize).collect();
 
                         // Compute free-atom vol_free using Hirshfeld on isolated atoms.
@@ -1069,24 +1082,43 @@ fn main() {
                             }
                         }
 
-                        let ratio: Vec<f64> = z
-                            .iter()
-                            .enumerate()
-                            .map(|(i, &zi)| {
-                                // Use the ferric-computed free-atom volume (consistent scale
-                                // with the molecular vols[i]). The TS-PRL table v_free is a
-                                // LAST resort only — it is on a different integration scale,
-                                // so a ratio built from it is unreliable (see the free-atom
-                                // solve above, which now retries pure HF to avoid this path).
-                                let vf = vol_free_computed.get(&zi).copied()
-                                    .or_else(|| ts_free_atom(zi).map(|(_, _, v)| v))
-                                    .unwrap_or(1.0);
-                                if vf > 1e-10 { vols[i] / vf } else { 1.0 }
-                            })
-                            .collect();
+                        // Use the ferric-computed free-atom volume (consistent scale
+                        // with the molecular vols[i]). The TS-PRL table v_free is a
+                        // LAST resort only — it is on a different integration scale,
+                        // so a ratio built from it is unreliable (see the free-atom
+                        // solve above, which now retries pure HF to avoid this path).
+                        // No reference at all used to silently become ratio = 1.0.
+                        let mut ratio = Vec::with_capacity(z.len());
+                        for (i, &zi) in z.iter().enumerate() {
+                            let sym = ferric_core::elements::z_to_symbol(zi as i32).unwrap_or("?");
+                            let vf = match vol_free_computed.get(&zi).copied() {
+                                Some(v) => v,
+                                None => match ts_free_atom(zi) {
+                                    Some((_, _, v)) => {
+                                        eprintln!(
+                                            "warning: free-atom SCF volume unavailable for {sym} (Z={zi});                                              using the unverified TS-table v_free — the volume ratio is                                              on a mismatched integration scale (treat this C6 as approximate)"
+                                        );
+                                        v
+                                    }
+                                    None => {
+                                        eprintln!(
+                                            "warning: TS C6 skipped — no free-atom volume reference for                                              {sym} (Z={zi}): free-atom SCF failed and the TS table covers                                              Z <= 18 only"
+                                        );
+                                        return None;
+                                    }
+                                },
+                            };
+                            if vf <= 1e-10 {
+                                eprintln!(
+                                    "warning: TS C6 skipped — degenerate free-atom volume {vf:.3e}                                      for {sym} (Z={zi})"
+                                );
+                                return None;
+                            }
+                            ratio.push(vols[i] / vf);
+                        }
                         let (freqs, weights) = build_quadrature(&rpa_cfg.quadrature);
                         let is_mbd = c6_source == C6Source::Mbd;
-                        let dp = if is_mbd {
+                        let dp_res = if is_mbd {
                             let positions: Vec<[f64; 3]> =
                                 mol.atoms.iter().map(|a| [a.x, a.y, a.zpos]).collect();
                             ferric_rpa::dispersion::mbd_dynamic_polarizability(
@@ -1094,6 +1126,16 @@ fn main() {
                             )
                         } else {
                             ts_dynamic_polarizability(&z, &ratio, &alpha_static, &freqs, &weights)
+                        };
+                        let dp = match dp_res {
+                            Ok(dp) => dp,
+                            Err(e) => {
+                                eprintln!(
+                                    "warning: {} C6 skipped: {e}",
+                                    if is_mbd { "MBD" } else { "TS" }
+                                );
+                                return None;
+                            }
                         };
                         let ts_res = casimir_polder_c6(&dp);
                         println!(
@@ -1103,6 +1145,7 @@ fn main() {
                             ts_res.c6_molecular_iso
                         );
                         Some(ts_res)
+                        })()
                     };
 
                     if let Some(res) = res_opt {
