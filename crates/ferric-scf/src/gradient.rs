@@ -12,6 +12,213 @@ use ferric_integrals::engine::Engine;
 use ferric_integrals::ffi;
 use ferric_integrals::operator::Operator;
 use ndarray::Array2;
+use std::sync::Mutex;
+
+// ---------------------------------------------------------------------------
+// Parallel derivative-loop infrastructure (P1)
+//
+// Every SCF/KS 2e nuclear-gradient path is the same shape: a Schwarz-screened
+// canonical shell-quartet loop contracting ERI first derivatives with a
+// two-particle density Γ built from one or more one-particle densities. The
+// 1e paths are canonical shell-pair loops. Both were serial — the dominant
+// cost of every RHF/UHF/KS geometry step ran on one core.
+//
+// Design (mirrors direct_jk.rs + ferric-mp2 P7):
+//  * enumerate the flat screened work list up front — a pure function of
+//    (prep, bounds, max|D|), never of the thread count;
+//  * partition it with reduce::deterministic_group_size (pure function of the
+//    list length) and reduce per-group (natoms,3) partials with
+//    reduce::grouped_deterministic_sum — fold order is ascending group index,
+//    so the gradient is bit-identical across RAYON_NUM_THREADS;
+//  * one derivative engine per rayon worker via a small pool (engine_pool.rs
+//    pattern: libint2 engine ctors are serialized behind a global mutex, so
+//    construct them O(threads) times, not O(groups));
+//  * below a small work threshold (free-atom rule) run the plain serial loop —
+//    the threshold is a pure function of the work-list length, so the
+//    serial/parallel path choice can never depend on the thread count either.
+// ---------------------------------------------------------------------------
+
+/// Below this many screened quartets the 2e-derivative loop runs serially
+/// (pool construction + rayon fan-out overhead beats the win on tiny jobs,
+/// e.g. free atoms / diatomics in minimal bases). Pure function of the
+/// screened-list length — never of the thread count.
+const PAR_2E_QUARTET_THRESHOLD: usize = 512;
+
+/// Below this many shell pairs the 1e-derivative loops run serially.
+const PAR_1E_PAIR_THRESHOLD: usize = 64;
+
+/// One derivative engine per rayon worker (+1 spare for non-pool threads),
+/// same rationale as `engine_pool::EnginePool`: engine construction is
+/// expensive and serialized behind a global libint2 ctor mutex, so it must
+/// happen O(threads) times, not once per rayon work chunk. Generic over the
+/// constructor so the same pool serves 2e-deriv and 1e-deriv engines.
+struct GradEnginePool {
+    engines: Vec<Mutex<Engine>>,
+}
+
+impl GradEnginePool {
+    fn new(mk: &(dyn Fn() -> Result<Engine, FerricError> + Sync)) -> Result<Self, FerricError> {
+        let n = rayon::current_num_threads().max(1) + 1;
+        let mut engines = Vec::with_capacity(n);
+        for _ in 0..n {
+            engines.push(Mutex::new(mk()?));
+        }
+        Ok(GradEnginePool { engines })
+    }
+
+    /// Run `f` with this thread's engine (index by `current_thread_index()`,
+    /// spare slot for non-pool threads). The per-slot mutex is uncontended —
+    /// it only satisfies `&mut Engine` borrowing.
+    #[inline]
+    fn with<R>(&self, f: impl FnOnce(&mut Engine) -> R) -> R {
+        let idx = rayon::current_thread_index().unwrap_or(self.engines.len() - 1);
+        let slot = idx.min(self.engines.len() - 1);
+        let mut eng = self.engines[slot].lock().unwrap();
+        f(&mut eng)
+    }
+}
+
+/// Flat screened canonical quartet list — identical enumeration order and
+/// screen (`Q12·Q34·max|D| < 1e-12`) to the old serial loops, and a pure
+/// function of (nsh, bounds, max_d): group boundaries derived from it fix the
+/// floating-point association of the reduction, so it must never depend on
+/// the thread count.
+fn screened_quartets(
+    nsh: usize,
+    bounds: &SchwarzBounds,
+    max_d: f64,
+) -> Vec<(usize, usize, usize, usize)> {
+    let mut quads = Vec::new();
+    for s1 in 0..nsh {
+        for s2 in 0..=s1 {
+            let b12 = bounds.q[(s1, s2)];
+            for s3 in 0..=s1 {
+                let s4max = if s3 == s1 { s2 } else { s3 };
+                for s4 in 0..=s4max {
+                    let b34 = bounds.q[(s3, s4)];
+                    if b12 * b34 * max_d < 1e-12 {
+                        continue;
+                    }
+                    quads.push((s1, s2, s3, s4));
+                }
+            }
+        }
+    }
+    quads
+}
+
+/// Shared driver for every 4-center 2e-derivative gradient contribution:
+/// `grad[atom,coord] += Σ_quartets Σ_perms Γ(μ,ν,λ,σ) · d(μν|λσ)/dR`.
+///
+/// `gamma` is the two-particle density for one AO index permutation; the
+/// permutational symmetry sums (8-fold canonical) are handled here. All six
+/// former serial twins (RHF, UHF, KS scaled-K, K-only, UKS scaled-K, UKS
+/// K-only) are thin wrappers differing only in `gamma` and `max_d`.
+pub(crate) fn par_twoelectron_gradient<G>(
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    max_d: f64,
+    gamma: G,
+) -> Result<Array2<f64>, FerricError>
+where
+    G: Fn(usize, usize, usize, usize) -> f64 + Sync,
+{
+    let natoms = prep.shell_to_atom().iter().copied().max().unwrap_or(0) + 1;
+    let nsh = prep.nshells();
+    let dims = prep.shell_dims();
+    let offs = prep.shell_offsets();
+    let sh2at = prep.shell_to_atom();
+
+    let quads = screened_quartets(nsh, bounds, max_d);
+    let n_quads = quads.len();
+    let mut grad = Array2::zeros((natoms, 3));
+    if n_quads == 0 {
+        return Ok(grad);
+    }
+
+    if n_quads < PAR_2E_QUARTET_THRESHOLD {
+        // Serial fallback (free-atom rule). Path choice is a pure function of
+        // the screened-list length, so it cannot vary with thread count.
+        let mut eng = Engine::new_2e_deriv(op, prep, 1e-14)?;
+        for &(s1, s2, s3, s4) in &quads {
+            if let Some(dq) = eng.compute_eri_deriv_quartet(prep, s1, s2, s3, s4) {
+                let blk = QuartetBlock::new(dims, offs, sh2at, s1, s2, s3, s4);
+                accum_2e_grad_gamma(&mut grad, dq, &blk, &gamma);
+            }
+        }
+        return Ok(grad);
+    }
+
+    let pool = GradEnginePool::new(&|| Engine::new_2e_deriv(op, prep, 1e-14))?;
+    let group_size = crate::reduce::deterministic_group_size(n_quads);
+    let n_groups = n_quads.div_ceil(group_size);
+    // Per-group partials are (natoms,3) — tiny — so the band budget in
+    // grouped_deterministic_sum is effectively unbounded here; what we use it
+    // for is the ascending-group-order fold (bit-identical across threads).
+    crate::reduce::grouped_deterministic_sum(&mut grad, n_groups, natoms.max(2), |g| {
+        let lo = g * group_size;
+        let hi = (lo + group_size).min(n_quads);
+        let mut local = Array2::<f64>::zeros((natoms, 3));
+        for &(s1, s2, s3, s4) in &quads[lo..hi] {
+            pool.with(|eng| {
+                if let Some(dq) = eng.compute_eri_deriv_quartet(prep, s1, s2, s3, s4) {
+                    let blk = QuartetBlock::new(dims, offs, sh2at, s1, s2, s3, s4);
+                    accum_2e_grad_gamma(&mut local, dq, &blk, &gamma);
+                }
+            });
+        }
+        Ok(local)
+    })?;
+    Ok(grad)
+}
+
+/// Shared driver for the 1e-derivative shell-pair loops (overlap, kinetic,
+/// nuclear). `accum` computes one canonical pair's contribution into the
+/// per-group partial using the worker's engine; reduction is the same
+/// deterministic grouped sum as the 2e path.
+fn par_pair_gradient<M, F>(
+    prep: &PreparedBasis,
+    natoms: usize,
+    mk_engine: M,
+    accum: F,
+) -> Result<Array2<f64>, FerricError>
+where
+    M: Fn() -> Result<Engine, FerricError> + Sync,
+    F: Fn(&mut Array2<f64>, &mut Engine, usize, usize) + Sync,
+{
+    let nsh = prep.nshells();
+    let pairs: Vec<(usize, usize)> = (0..nsh)
+        .flat_map(|s1| (0..=s1).map(move |s2| (s1, s2)))
+        .collect();
+    let n_pairs = pairs.len();
+    let mut grad = Array2::zeros((natoms, 3));
+    if n_pairs == 0 {
+        return Ok(grad);
+    }
+
+    if n_pairs < PAR_1E_PAIR_THRESHOLD {
+        let mut eng = mk_engine()?;
+        for &(s1, s2) in &pairs {
+            accum(&mut grad, &mut eng, s1, s2);
+        }
+        return Ok(grad);
+    }
+
+    let pool = GradEnginePool::new(&mk_engine)?;
+    let group_size = crate::reduce::deterministic_group_size(n_pairs);
+    let n_groups = n_pairs.div_ceil(group_size);
+    crate::reduce::grouped_deterministic_sum(&mut grad, n_groups, natoms.max(2), |g| {
+        let lo = g * group_size;
+        let hi = (lo + group_size).min(n_pairs);
+        let mut local = Array2::<f64>::zeros((natoms, 3));
+        for &(s1, s2) in &pairs[lo..hi] {
+            pool.with(|eng| accum(&mut local, eng, s1, s2));
+        }
+        Ok(local)
+    })?;
+    Ok(grad)
+}
 
 /// Build the HF energy-weighted density: W_μν = 2 Σ_i^occ ε_i C_μi C_νi.
 pub fn build_energy_weighted_density(result: &ScfResult, nocc: usize) -> Array2<f64> {
@@ -81,7 +288,6 @@ pub fn oneelectron_gradient(
     w: &Array2<f64>,
 ) -> Result<Array2<f64>, FerricError> {
     let natoms = mol.atoms.len();
-    let nsh = prep.nshells();
     let dims = prep.shell_dims();
     let offs = prep.shell_offsets();
     let sh2at = prep.shell_to_atom();
@@ -114,67 +320,70 @@ pub fn oneelectron_gradient(
 
     // 2. One-electron gradient: Σ_μν D_μν dH_μν/dR - Σ_μν W_μν dS_μν/dR
     // H = T + V, so we need dT/dR, dV/dR, dS/dR
+    //
+    // Each piece is a canonical shell-pair loop fanned out through
+    // par_pair_gradient (deterministic grouped reduction, per-worker engines).
 
     // 2a. Overlap derivative (Pulay force): -W_μν dS_μν/dR
-    {
-        let mut eng = Engine::new_1e_deriv(ffi::OP_OVERLAP, prep, 1e-14)?;
-        for s1 in 0..nsh {
-            for s2 in 0..=s1 {
-                if let Some(deriv) = eng.compute_1e_deriv_block(prep, s1, s2) {
-                    let n1 = dims[s1];
-                    let n2 = dims[s2];
-                    let block_sz = n1 * n2;
-                    let a1 = sh2at[s1];
-                    let a2 = sh2at[s2];
-                    for i in 0..n1 {
-                        for j in 0..n2 {
-                            let mu = offs[s1] + i;
-                            let nu = offs[s2] + j;
-                            let idx = i * n2 + j;
-                            let wval = if s1 == s2 { w[(mu, nu)] } else { 2.0 * w[(mu, nu)] };
-                            for c in 0..3 {
-                                // deriv layout: [dx1, dy1, dz1, dx2, dy2, dz2]
-                                let d1 = deriv[c * block_sz + idx];
-                                let d2 = deriv[(3 + c) * block_sz + idx];
-                                grad[(a1, c)] -= wval * d1;
-                                grad[(a2, c)] -= wval * d2;
-                            }
+    grad += &par_pair_gradient(
+        prep,
+        natoms,
+        || Engine::new_1e_deriv(ffi::OP_OVERLAP, prep, 1e-14),
+        |local, eng, s1, s2| {
+            if let Some(deriv) = eng.compute_1e_deriv_block(prep, s1, s2) {
+                let n1 = dims[s1];
+                let n2 = dims[s2];
+                let block_sz = n1 * n2;
+                let a1 = sh2at[s1];
+                let a2 = sh2at[s2];
+                for i in 0..n1 {
+                    for j in 0..n2 {
+                        let mu = offs[s1] + i;
+                        let nu = offs[s2] + j;
+                        let idx = i * n2 + j;
+                        let wval = if s1 == s2 { w[(mu, nu)] } else { 2.0 * w[(mu, nu)] };
+                        for c in 0..3 {
+                            // deriv layout: [dx1, dy1, dz1, dx2, dy2, dz2]
+                            let d1 = deriv[c * block_sz + idx];
+                            let d2 = deriv[(3 + c) * block_sz + idx];
+                            local[(a1, c)] -= wval * d1;
+                            local[(a2, c)] -= wval * d2;
                         }
                     }
                 }
             }
-        }
-    }
+        },
+    )?;
 
     // 2b. Kinetic derivative: D_μν dT_μν/dR
-    {
-        let mut eng = Engine::new_1e_deriv(ffi::OP_KINETIC, prep, 1e-14)?;
-        for s1 in 0..nsh {
-            for s2 in 0..=s1 {
-                if let Some(deriv) = eng.compute_1e_deriv_block(prep, s1, s2) {
-                    let n1 = dims[s1];
-                    let n2 = dims[s2];
-                    let block_sz = n1 * n2;
-                    let a1 = sh2at[s1];
-                    let a2 = sh2at[s2];
-                    for i in 0..n1 {
-                        for j in 0..n2 {
-                            let mu = offs[s1] + i;
-                            let nu = offs[s2] + j;
-                            let idx = i * n2 + j;
-                            let dval = if s1 == s2 { d[(mu, nu)] } else { 2.0 * d[(mu, nu)] };
-                            for c in 0..3 {
-                                let d1 = deriv[c * block_sz + idx];
-                                let d2 = deriv[(3 + c) * block_sz + idx];
-                                grad[(a1, c)] += dval * d1;
-                                grad[(a2, c)] += dval * d2;
-                            }
+    grad += &par_pair_gradient(
+        prep,
+        natoms,
+        || Engine::new_1e_deriv(ffi::OP_KINETIC, prep, 1e-14),
+        |local, eng, s1, s2| {
+            if let Some(deriv) = eng.compute_1e_deriv_block(prep, s1, s2) {
+                let n1 = dims[s1];
+                let n2 = dims[s2];
+                let block_sz = n1 * n2;
+                let a1 = sh2at[s1];
+                let a2 = sh2at[s2];
+                for i in 0..n1 {
+                    for j in 0..n2 {
+                        let mu = offs[s1] + i;
+                        let nu = offs[s2] + j;
+                        let idx = i * n2 + j;
+                        let dval = if s1 == s2 { d[(mu, nu)] } else { 2.0 * d[(mu, nu)] };
+                        for c in 0..3 {
+                            let d1 = deriv[c * block_sz + idx];
+                            let d2 = deriv[(3 + c) * block_sz + idx];
+                            local[(a1, c)] += dval * d1;
+                            local[(a2, c)] += dval * d2;
                         }
                     }
                 }
             }
-        }
-    }
+        },
+    )?;
 
     // 2c. Nuclear attraction derivative: D_μν dV_μν/dR
     // Nuclear has 2 shell centers + natoms nuclear centers = 2+natoms centers for derivatives
@@ -202,32 +411,23 @@ pub fn oneelectron_gradient(
     // Blocks 9, 10, 11 are d/d(charge center 1), etc.
     //
     // So we need to handle this specially.
-    {
-        let mut eng = Engine::new_1e_deriv(ffi::OP_NUCLEAR, prep, 1e-14)?;
-        eng.set_point_charges(prep);
-        // For nuclear derivative, the buffer needs to hold (6 + 3*natoms) blocks
-        // Let's compute it and handle the extended result.
-        let max_fn = prep.shell_dims().iter().copied().max().unwrap_or(1);
-        let nderiv_nuclear = 6 + 3 * natoms;
-        let max_block = max_fn * max_fn;
-        let mut nbuf = vec![0.0f64; nderiv_nuclear * max_block];
-
-        for s1 in 0..nsh {
-            for s2 in 0..=s1 {
+    grad += &par_pair_gradient(
+        prep,
+        natoms,
+        || {
+            let mut eng = Engine::new_1e_deriv(ffi::OP_NUCLEAR, prep, 1e-14)?;
+            eng.set_point_charges(prep);
+            Ok(eng)
+        },
+        |local, eng, s1, s2| {
+            // Engine::compute_1e_deriv_block sizes its buffer for the nuclear
+            // worst case, 3*(2 + natoms) blocks (see the 1e-deriv sizing
+            // convention): blocks 0-5 are the two shell-center derivatives,
+            // blocks 6.. are the per-atom operator-center derivatives.
+            if let Some(deriv) = eng.compute_1e_deriv_block(prep, s1, s2) {
                 let n1 = dims[s1];
                 let n2 = dims[s2];
                 let block_sz = n1 * n2;
-                let total = nderiv_nuclear * block_sz;
-                if nbuf.len() < total { nbuf.resize(total, 0.0); }
-                let written = unsafe {
-                    ffi::scf_compute_1e_deriv_block(
-                        eng.handle_mut(), prep.handle(),
-                        s1 as std::os::raw::c_int, s2 as std::os::raw::c_int,
-                        nbuf.as_mut_ptr(),
-                    )
-                };
-                assert!(written >= 0, "libint2 internal error in nuclear deriv block ({s1},{s2}): status {written}");
-                if written == 0 { continue; }
                 let a1 = sh2at[s1];
                 let a2 = sh2at[s2];
                 for i in 0..n1 {
@@ -238,21 +438,21 @@ pub fn oneelectron_gradient(
                         let dval = if s1 == s2 { d[(mu, nu)] } else { 2.0 * d[(mu, nu)] };
                         // Shell center derivatives (first 6 blocks)
                         for c in 0..3 {
-                            grad[(a1, c)] += dval * nbuf[c * block_sz + idx];
-                            grad[(a2, c)] += dval * nbuf[(3 + c) * block_sz + idx];
+                            local[(a1, c)] += dval * deriv[c * block_sz + idx];
+                            local[(a2, c)] += dval * deriv[(3 + c) * block_sz + idx];
                         }
                         // Nuclear center derivatives (blocks 6 onwards)
                         for atom_c in 0..natoms {
                             for c in 0..3 {
                                 let blk = 6 + atom_c * 3 + c;
-                                grad[(atom_c, c)] += dval * nbuf[blk * block_sz + idx];
+                                local[(atom_c, c)] += dval * deriv[blk * block_sz + idx];
                             }
                         }
                     }
                 }
             }
-        }
-    }
+        },
+    )?;
 
     Ok(grad)
 }
@@ -269,50 +469,15 @@ pub fn twoelectron_gradient(
     bounds: &SchwarzBounds,
     d: &Array2<f64>,
 ) -> Result<Array2<f64>, FerricError> {
-    let natoms = prep.shell_to_atom().iter().copied().max().unwrap_or(0) + 1;
-    let nsh = prep.nshells();
-    let dims = prep.shell_dims();
-    let offs = prep.shell_offsets();
-    let sh2at = prep.shell_to_atom();
-
-    let mut grad = Array2::zeros((natoms, 3));
-
-    // Two-electron gradient
-    // We use a canonical shell loop with explicit permutation handling.
-    // For each canonical quartet (s1>=s2, s3>=s4, (s1,s2)>=(s3,s4)), we enumerate
-    // all equivalent permutations and accumulate with the correct two-particle
-    // density for each permutation.
-    //
     // The 2e gradient contribution from each integral (μν|λσ) is:
     //   Γ_μνλσ * d(μν|λσ)/dR
-    // where Γ_μνλσ = 0.5*D_μν*D_λσ - 0.25*D_μλ*D_νσ
-    //
-    // The derivative d(s1,s2|s3,s4)/dR gives 12 blocks for centers {s1,s2,s3,s4}.
-    // For permuted quartets, the derivative blocks are remapped by swapping centers.
-    {
-        let mut eng = Engine::new_2e_deriv(op, prep, 1e-14)?;
-        let max_d = d.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
-
-        for s1 in 0..nsh {
-            for s2 in 0..=s1 {
-                let b12 = bounds.q[(s1, s2)];
-                for s3 in 0..=s1 {
-                    let s4max = if s3 == s1 { s2 } else { s3 };
-                    for s4 in 0..=s4max {
-                        let b34 = bounds.q[(s3, s4)];
-                        if b12 * b34 * max_d < 1e-12 { continue; }
-                        let deriv = eng.compute_eri_deriv_quartet(prep, s1, s2, s3, s4);
-                        if let Some(dq) = deriv {
-                            let blk = QuartetBlock::new(dims, offs, sh2at, s1, s2, s3, s4);
-                            accum_2e_grad(&mut grad, d, dq, &blk);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(grad)
+    // where Γ_μνλσ = 0.5*D_μν*D_λσ - 0.25*D_μλ*D_νσ.
+    // Canonical-quartet enumeration, permutational symmetry, and the parallel
+    // deterministic reduction all live in par_twoelectron_gradient.
+    let max_d = d.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
+    par_twoelectron_gradient(prep, op, bounds, max_d, |mu, nu, la, sg| {
+        gamma(d, mu, nu, la, sg)
+    })
 }
 
 /// Geometry and permutational-symmetry bundle for one shell quartet.
@@ -358,7 +523,8 @@ impl QuartetBlock {
     }
 }
 
-/// Accumulate the 2e gradient for one shell quartet, handling all permutational symmetry.
+/// Accumulate the 2e gradient for one shell quartet, handling all permutational
+/// symmetry, for an arbitrary two-particle density `gamma(μ,ν,λ,σ)`.
 ///
 /// dq layout: 12 blocks of block_sz each. Block ordering:
 ///   [dx1,dy1,dz1, dx2,dy2,dz2, dx3,dy3,dz3, dx4,dy4,dz4]
@@ -370,7 +536,10 @@ impl QuartetBlock {
 ///
 /// The total Γ prefactor for each derivative block is the sum of Γ over all
 /// equivalent permutations.
-fn accum_2e_grad(grad: &mut Array2<f64>, d: &Array2<f64>, dq: &[f64], blk: &QuartetBlock) {
+fn accum_2e_grad_gamma<G>(grad: &mut Array2<f64>, dq: &[f64], blk: &QuartetBlock, gamma: &G)
+where
+    G: Fn(usize, usize, usize, usize) -> f64,
+{
     let [n1, n2, n3, n4] = blk.n;
     let [o1, o2, o3, o4] = blk.o;
     let QuartetBlock { block_sz, atoms, sym12, sym34, sym1234, .. } = *blk;
@@ -385,28 +554,27 @@ fn accum_2e_grad(grad: &mut Array2<f64>, d: &Array2<f64>, dq: &[f64], blk: &Quar
                     let sg = o4 + dd;
 
                     // Sum Γ over all equivalent permutations of (μ,ν,λ,σ).
-                    // Γ_pqrs = 0.5*D_pq*D_rs - 0.25*D_pr*D_qs
-                    let mut g = gamma(d, mu, nu, la, sg);
+                    let mut g = gamma(mu, nu, la, sg);
 
                     if sym12 {
-                        g += gamma(d, nu, mu, la, sg);
+                        g += gamma(nu, mu, la, sg);
                     }
                     if sym34 {
-                        g += gamma(d, mu, nu, sg, la);
+                        g += gamma(mu, nu, sg, la);
                     }
                     if sym12 && sym34 {
-                        g += gamma(d, nu, mu, sg, la);
+                        g += gamma(nu, mu, sg, la);
                     }
                     if sym1234 {
-                        g += gamma(d, la, sg, mu, nu);
+                        g += gamma(la, sg, mu, nu);
                         if sym12 {
-                            g += gamma(d, la, sg, nu, mu);
+                            g += gamma(la, sg, nu, mu);
                         }
                         if sym34 {
-                            g += gamma(d, sg, la, mu, nu);
+                            g += gamma(sg, la, mu, nu);
                         }
                         if sym12 && sym34 {
-                            g += gamma(d, sg, la, nu, mu);
+                            g += gamma(sg, la, nu, mu);
                         }
                     }
 
@@ -422,6 +590,13 @@ fn accum_2e_grad(grad: &mut Array2<f64>, d: &Array2<f64>, dq: &[f64], blk: &Quar
             }
         }
     }
+}
+
+/// RHF-Γ specialization of [`accum_2e_grad_gamma`], kept for the
+/// component-breakdown test harness.
+#[cfg(test)]
+fn accum_2e_grad(grad: &mut Array2<f64>, d: &Array2<f64>, dq: &[f64], blk: &QuartetBlock) {
+    accum_2e_grad_gamma(grad, dq, blk, &|mu, nu, la, sg| gamma(d, mu, nu, la, sg));
 }
 
 /// Two-particle density matrix element: Γ_μνλσ = 0.5*D_μν*D_λσ - 0.25*D_μλ*D_νσ
@@ -576,93 +751,10 @@ pub fn twoelectron_gradient_uhf(
     d_alpha: &Array2<f64>,
     d_beta: &Array2<f64>,
 ) -> Result<Array2<f64>, FerricError> {
-    let natoms = prep.shell_to_atom().iter().copied().max().unwrap_or(0) + 1;
-    let nsh = prep.nshells();
-    let dims = prep.shell_dims();
-    let offs = prep.shell_offsets();
-    let sh2at = prep.shell_to_atom();
-
-    let mut grad = Array2::zeros((natoms, 3));
-    let mut eng = Engine::new_2e_deriv(op, prep, 1e-14)?;
     let max_d = d_total.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
-
-    for s1 in 0..nsh {
-        for s2 in 0..=s1 {
-            let b12 = bounds.q[(s1, s2)];
-            for s3 in 0..=s1 {
-                let s4max = if s3 == s1 { s2 } else { s3 };
-                for s4 in 0..=s4max {
-                    let b34 = bounds.q[(s3, s4)];
-                    if b12 * b34 * max_d < 1e-12 {
-                        continue;
-                    }
-                    let deriv = eng.compute_eri_deriv_quartet(prep, s1, s2, s3, s4);
-                    if let Some(dq) = deriv {
-                        let blk = QuartetBlock::new(dims, offs, sh2at, s1, s2, s3, s4);
-                        accum_2e_grad_uhf(&mut grad, d_total, d_alpha, d_beta, dq, &blk);
-                    }
-                }
-            }
-        }
-    }
-    Ok(grad)
-}
-
-fn accum_2e_grad_uhf(
-    grad: &mut Array2<f64>,
-    d: &Array2<f64>,
-    da: &Array2<f64>,
-    db: &Array2<f64>,
-    dq: &[f64],
-    blk: &QuartetBlock,
-) {
-    let [n1, n2, n3, n4] = blk.n;
-    let [o1, o2, o3, o4] = blk.o;
-    let QuartetBlock { block_sz, atoms, sym12, sym34, sym1234, .. } = *blk;
-    for a in 0..n1 {
-        for b in 0..n2 {
-            for c in 0..n3 {
-                for dd in 0..n4 {
-                    let idx = ((a * n2 + b) * n3 + c) * n4 + dd;
-                    let mu = o1 + a;
-                    let nu = o2 + b;
-                    let la = o3 + c;
-                    let sg = o4 + dd;
-
-                    let mut g = gamma_uhf(d, da, db, mu, nu, la, sg);
-                    if sym12 {
-                        g += gamma_uhf(d, da, db, nu, mu, la, sg);
-                    }
-                    if sym34 {
-                        g += gamma_uhf(d, da, db, mu, nu, sg, la);
-                    }
-                    if sym12 && sym34 {
-                        g += gamma_uhf(d, da, db, nu, mu, sg, la);
-                    }
-                    if sym1234 {
-                        g += gamma_uhf(d, da, db, la, sg, mu, nu);
-                        if sym12 {
-                            g += gamma_uhf(d, da, db, la, sg, nu, mu);
-                        }
-                        if sym34 {
-                            g += gamma_uhf(d, da, db, sg, la, mu, nu);
-                        }
-                        if sym12 && sym34 {
-                            g += gamma_uhf(d, da, db, sg, la, nu, mu);
-                        }
-                    }
-
-                    for center in 0..4 {
-                        let atom = atoms[center];
-                        for coord in 0..3 {
-                            let dv = dq[(center * 3 + coord) * block_sz + idx];
-                            grad[(atom, coord)] += g * dv;
-                        }
-                    }
-                }
-            }
-        }
-    }
+    par_twoelectron_gradient(prep, op, bounds, max_d, |mu, nu, la, sg| {
+        gamma_uhf(d_total, d_alpha, d_beta, mu, nu, la, sg)
+    })
 }
 
 #[cfg(test)]
@@ -1006,6 +1098,43 @@ mod tests {
                     analytic[(atom, c)], fd[(atom, c)], diff
                 );
             }
+        }
+    }
+
+    /// P1 regression guard: the full RHF gradient (1e pair loops + 2e quartet
+    /// loop, both parallelized) must be bit-identical across rayon thread
+    /// counts. Water/cc-pVDZ has 78 shell pairs and ~3k screened quartets —
+    /// above both serial-fallback thresholds, so the parallel grouped-reduction
+    /// path is exercised in both pools.
+    #[test]
+    fn rhf_gradient_bit_identical_across_thread_counts() {
+        let xyz = "3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n";
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let bs = basis::bundled("cc-pvdz").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let config = RhfConfig { energy_conv: 1e-10, ..Default::default() };
+        // One SCF solve outside the pools: the same ScfResult feeds both
+        // gradient evaluations, so any difference is the gradient's own.
+        let result = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol, &prep, op, &bounds, &config,
+        )
+        .unwrap();
+
+        let run = |threads: usize| -> Array2<f64> {
+            let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+            pool.install(|| rhf_gradient(&mol, &prep, op, &bounds, &result).unwrap())
+        };
+        let g1 = run(1);
+        let g4 = run(4);
+        for (a, (v1, v4)) in g1.iter().zip(g4.iter()).enumerate() {
+            assert_eq!(
+                v1.to_bits(),
+                v4.to_bits(),
+                "gradient element {a} differs across thread counts: {v1:e} vs {v4:e}"
+            );
         }
     }
 
