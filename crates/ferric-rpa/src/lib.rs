@@ -59,7 +59,7 @@ use ndarray::{Array1, Array2};
 
 pub use config::{Chi0Backend, Chi0Sparsity, Eigensolver, PdepRpaConfig};
 pub use dispersion::{
-    casimir_polder_c6, pdep_dynamic_polarizability, ts_dynamic_polarizability, C6Result,
+    casimir_polder_c6, pdep_dynamic_polarizability, ts_dynamic_polarizability, C6Result, C6Source,
     DispersionPartition, DynamicPolarizability,
 };
 pub use screen::{build_screened_bov, build_screened_bov_boys, ScreenedBov};

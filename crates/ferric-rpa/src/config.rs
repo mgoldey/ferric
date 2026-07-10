@@ -171,7 +171,14 @@ pub struct QuadratureConfig {
     pub scheme: QuadratureScheme,
     /// Number of quadrature points (default 20).
     pub n_points: usize,
-    /// Gauss-Legendre domain scale parameter u₀ in Eₕ (default 0.5).
+    /// Domain scale parameter u₀ in Eₕ (default 0.5).
+    ///
+    /// Honoured by [`QuadratureScheme::GaussLegendre`] and
+    /// [`QuadratureScheme::ChebyshevTan`]. **Ignored** by
+    /// [`QuadratureScheme::MiniMax`], which derives u₀ from `n_points` via the
+    /// literature-optimized table (`optimized_u0`). Callers that set `u0`
+    /// alongside `MiniMax` should expect it to have no effect — see
+    /// [`QuadratureScheme::honours_u0`].
     pub u0: f64,
 }
 
@@ -196,6 +203,44 @@ pub enum QuadratureScheme {
     MiniMax,
     /// Gauss-Legendre nodes mapped to [0,∞) via ω = u₀(1+x)/(1−x).
     GaussLegendre,
+}
+
+impl QuadratureScheme {
+    /// Parse a `[rpa] quadrature` TOML string / Python kwarg into a scheme.
+    ///
+    /// Accepted forms (case-insensitive, whitespace-trimmed):
+    ///   None                              → `GaussLegendre` (back-compat default)
+    ///   "gauss-legendre" | "gl"           → `GaussLegendre`
+    ///   "minimax" | "mm"                  → `MiniMax`
+    ///   "chebyshev-tan" | "chebyshev" | "ct" → `ChebyshevTan`
+    ///
+    /// Errors on any other string rather than silently falling back to
+    /// Gauss-Legendre — a typo'd scheme used to run a *different* quadrature
+    /// than requested with no diagnostic.
+    pub fn parse_config_str(s: Option<&str>) -> Result<Self, String> {
+        match s.map(|x| x.trim().to_ascii_lowercase()).as_deref() {
+            None | Some("gauss-legendre") | Some("gauss_legendre") | Some("gl") => {
+                Ok(QuadratureScheme::GaussLegendre)
+            }
+            Some("minimax") | Some("mini-max") | Some("mm") => Ok(QuadratureScheme::MiniMax),
+            Some("chebyshev-tan") | Some("chebyshev_tan") | Some("chebyshev") | Some("ct") => {
+                Ok(QuadratureScheme::ChebyshevTan)
+            }
+            Some(other) => Err(format!(
+                "unknown quadrature scheme {other:?}; expected one of \
+                 \"gauss-legendre\" (\"gl\"), \"minimax\" (\"mm\"), \
+                 or \"chebyshev-tan\" (\"ct\")"
+            )),
+        }
+    }
+
+    /// Whether this scheme uses the caller-supplied [`QuadratureConfig::u0`].
+    ///
+    /// `MiniMax` derives u₀ from `n_points` internally and ignores the field;
+    /// callers use this to warn instead of silently dropping a user setting.
+    pub fn honours_u0(&self) -> bool {
+        !matches!(self, QuadratureScheme::MiniMax)
+    }
 }
 
 /// Sternheimer linear solver configuration.
@@ -239,6 +284,38 @@ mod tests {
         assert_eq!(Chi0Sparsity::parse_config_str(Some("  AUTO ")).unwrap(), Auto { boys_thresh: 1e-4, atom_cutoff: 30 });
         assert!(Chi0Sparsity::parse_config_str(Some("frobnicate")).is_err());
         assert!(Chi0Sparsity::parse_config_str(Some("boys:nope")).is_err());
+    }
+
+    #[test]
+    fn quadrature_parse_config_str_all_forms() {
+        use QuadratureScheme::*;
+        let p = QuadratureScheme::parse_config_str;
+        assert_eq!(p(None).unwrap(), GaussLegendre);
+        assert_eq!(p(Some("gauss-legendre")).unwrap(), GaussLegendre);
+        assert_eq!(p(Some("gl")).unwrap(), GaussLegendre);
+        assert_eq!(p(Some("minimax")).unwrap(), MiniMax);
+        assert_eq!(p(Some("mm")).unwrap(), MiniMax);
+        assert_eq!(p(Some("chebyshev-tan")).unwrap(), ChebyshevTan);
+        assert_eq!(p(Some("chebyshev")).unwrap(), ChebyshevTan);
+        assert_eq!(p(Some("ct")).unwrap(), ChebyshevTan);
+        assert_eq!(p(Some("  MiniMax ")).unwrap(), MiniMax);
+    }
+
+    /// A typo'd scheme must ERROR, not silently run Gauss-Legendre. The old
+    /// `_ => GaussLegendre` catch-all ran a different quadrature than the user
+    /// asked for with no diagnostic.
+    #[test]
+    fn quadrature_typo_errors_instead_of_silent_gauss_legendre() {
+        assert!(QuadratureScheme::parse_config_str(Some("minmax")).is_err());
+        assert!(QuadratureScheme::parse_config_str(Some("cheby")).is_err());
+        assert!(QuadratureScheme::parse_config_str(Some("frobnicate")).is_err());
+    }
+
+    #[test]
+    fn only_minimax_ignores_u0() {
+        assert!(QuadratureScheme::GaussLegendre.honours_u0());
+        assert!(QuadratureScheme::ChebyshevTan.honours_u0());
+        assert!(!QuadratureScheme::MiniMax.honours_u0());
     }
 
     #[test]

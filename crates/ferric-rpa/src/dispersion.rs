@@ -67,6 +67,63 @@ pub enum DispersionPartition {
     Hirshfeld,
 }
 
+impl DispersionPartition {
+    /// Parse a `[rpa] c6_partition` string. `None` yields `Ok(None)` so the
+    /// caller can apply its source-dependent default (Hirshfeld for PDEP,
+    /// Becke for TS). Unknown strings are an error — they used to fall through
+    /// to that same default, silently producing a *different* per-atom
+    /// decomposition than requested (per-atom α/C6 are partition-dependent by
+    /// ~10×, so this changed numbers, not just performance).
+    pub fn parse_config_str(s: Option<&str>) -> Result<Option<Self>, String> {
+        match s.map(|x| x.trim().to_ascii_lowercase()).as_deref() {
+            None => Ok(None),
+            Some("becke") => Ok(Some(DispersionPartition::Becke)),
+            Some("hirshfeld") => Ok(Some(DispersionPartition::Hirshfeld)),
+            Some(other) => Err(format!(
+                "unknown c6_partition {other:?}; expected \"becke\" or \"hirshfeld\""
+            )),
+        }
+    }
+}
+
+/// Source of the dynamic polarizability α(iω) that feeds the Casimir-Polder C6.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum C6Source {
+    /// Tkatchenko-Scheffler single-pole model scaled by Hirshfeld volume ratios.
+    #[default]
+    Ts,
+    /// True PDEP-RPA dynamic α(iω) evaluated on the RPA quadrature grid.
+    Pdep,
+    /// Many-body dispersion on top of the TS single-pole α (coupled-dipole).
+    /// Known-bad for soft atoms — see the `mbd-does-not-fix-silicon` finding.
+    Mbd,
+}
+
+impl C6Source {
+    /// Parse a `[rpa] c6_source` string. Unknown values are an error; they
+    /// previously fell through to the TS branch silently.
+    pub fn parse_config_str(s: Option<&str>) -> Result<Self, String> {
+        match s.map(|x| x.trim().to_ascii_lowercase()).as_deref() {
+            None | Some("ts") => Ok(C6Source::Ts),
+            Some("pdep") => Ok(C6Source::Pdep),
+            Some("mbd") => Ok(C6Source::Mbd),
+            Some(other) => Err(format!(
+                "unknown c6_source {other:?}; expected \"ts\", \"pdep\", or \"mbd\""
+            )),
+        }
+    }
+
+    /// The per-atom partition used when `c6_partition` is unset. PDEP needs
+    /// Hirshfeld for correct anisotropy (proatom sum rule); TS/MBD default to
+    /// Becke, which only shapes `alpha_static` (volumes are always Hirshfeld).
+    pub fn default_partition(&self) -> DispersionPartition {
+        match self {
+            C6Source::Pdep => DispersionPartition::Hirshfeld,
+            C6Source::Ts | C6Source::Mbd => DispersionPartition::Becke,
+        }
+    }
+}
+
 /// Casimir-Polder contraction. SHARED SEAM between TS and PDEP-RPA sources.
 ///
 /// ```text
@@ -567,6 +624,38 @@ pub fn pdep_dynamic_polarizability_truncated(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn c6_source_parses_all_documented_values() {
+        let p = C6Source::parse_config_str;
+        assert_eq!(p(None).unwrap(), C6Source::Ts);
+        assert_eq!(p(Some("ts")).unwrap(), C6Source::Ts);
+        assert_eq!(p(Some("pdep")).unwrap(), C6Source::Pdep);
+        // "mbd" was read by the CLI but undocumented; it is now first-class.
+        assert_eq!(p(Some("mbd")).unwrap(), C6Source::Mbd);
+        assert_eq!(p(Some("  PDEP ")).unwrap(), C6Source::Pdep);
+    }
+
+    /// A typo'd source must ERROR, not silently compute TS C6 and label it
+    /// as whatever the user asked for.
+    #[test]
+    fn c6_source_typo_errors_instead_of_silent_ts() {
+        assert!(C6Source::parse_config_str(Some("tsx")).is_err());
+        assert!(C6Source::parse_config_str(Some("rpa")).is_err());
+    }
+
+    #[test]
+    fn c6_partition_parse_and_defaults() {
+        let p = DispersionPartition::parse_config_str;
+        assert_eq!(p(None).unwrap(), None);
+        assert_eq!(p(Some("becke")).unwrap(), Some(DispersionPartition::Becke));
+        assert_eq!(p(Some("hirshfeld")).unwrap(), Some(DispersionPartition::Hirshfeld));
+        assert!(p(Some("mulliken")).is_err());
+        // Source-dependent default when unset.
+        assert_eq!(C6Source::Pdep.default_partition(), DispersionPartition::Hirshfeld);
+        assert_eq!(C6Source::Ts.default_partition(), DispersionPartition::Becke);
+        assert_eq!(C6Source::Mbd.default_partition(), DispersionPartition::Becke);
+    }
 
     /// Fine trapezoid grid on [0, ωmax] for analytic Casimir-Polder checks.
     fn trapezoid_grid(n: usize, wmax: f64) -> (Vec<f64>, Vec<f64>) {

@@ -10,7 +10,7 @@ use ferric_mp2::laplace::laplace_ri_mp2;
 use ferric_mp2::oo_rimp2::{oo_ri_mp2, OoRiMp2Config};
 use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
 use ferric_mp2::scs::{scs_mp2, ScsMp2Config};
-use ferric_rpa::config::{QuadratureConfig, QuadratureScheme, SternheimerConfig};
+use ferric_rpa::config::{QuadratureConfig, SternheimerConfig};
 use ferric_rpa::{run_pdep_rpa, PdepRpaConfig};
 use ferric_core::parallel::ParallelContext;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
@@ -108,7 +108,7 @@ fn main() {
             Some("def2-universal-jkfit".to_string()),
             Some("def2-universal-jkfit".to_string()),
         )
-    } else if matches!(method, "pdep-rpa" | "rpa") && cfg.rpa.xc.is_some() {
+    } else if matches!(method, "pdep-rpa") && cfg.rpa.xc.is_some() {
         // RPA on a KS-DFT reference (RPA@PBE0 etc.): run the closed-shell KS
         // solver for the reference orbitals. Hybrids need RI-J/RI-K.
         (
@@ -116,7 +116,7 @@ fn main() {
             Some("def2-universal-jkfit".to_string()),
             Some("def2-universal-jkfit".to_string()),
         )
-    } else if matches!(method, "pdep-rpa" | "rpa" | "rs-mp2-rpa") {
+    } else if matches!(method, "pdep-rpa" | "rs-mp2-rpa") {
         // RPA@HF (no xc): the HF reference SCF defaults to RI-J/RI-K with
         // def2-universal-jkfit too. Exact 4-index J/K per iteration makes the
         // HF reference 10-20× slower than the RI-JK PBE reference (hcl/aug-cc-
@@ -198,10 +198,10 @@ fn main() {
                     eprintln!("error: {e}");
                     std::process::exit(1);
                 });
-                let scheme = match cfg.rpa.quadrature.as_deref().unwrap_or("gauss-legendre") {
-                    "minimax" | "mm" => QuadratureScheme::MiniMax,
-                    _ => QuadratureScheme::GaussLegendre,
-                };
+                let scheme = cfg.rpa.parse_quadrature().unwrap_or_else(|e| {
+                    eprintln!("config error: {e}");
+                    std::process::exit(1);
+                });
                 let rpa_cfg = PdepRpaConfig {
                     frozen_core: cfg.rpa.frozen_core,
                     trunc_thresh: cfg.rpa.trunc_thresh.unwrap_or(1e-4),
@@ -672,10 +672,10 @@ fn main() {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             });
-            let scheme = match cfg.rpa.quadrature.as_deref().unwrap_or("gauss-legendre") {
-                "minimax" | "mm" => QuadratureScheme::MiniMax,
-                _ => QuadratureScheme::GaussLegendre,
-            };
+            let scheme = cfg.rpa.parse_quadrature().unwrap_or_else(|e| {
+                eprintln!("config error: {e}");
+                std::process::exit(1);
+            });
             let rpa_cfg = PdepRpaConfig {
                 frozen_core: cfg.rpa.frozen_core,
                 trunc_thresh: cfg.rpa.trunc_thresh.unwrap_or(1e-4),
@@ -777,6 +777,19 @@ fn main() {
                 let compute_pol = cfg.rpa.compute_polarizability.unwrap_or(true);
                 let compute_ef = cfg.rpa.compute_electric_field.unwrap_or(true);
                 let compute_alpha_atomic = cfg.rpa.compute_alpha_atomic.unwrap_or(true);
+
+                // trunc_thresh only truncates the RPA *energy* eigensolve; the
+                // polarizability/C6 property paths below rebuild the response
+                // full-rank and ignore it (see pdep-trunc-noop-on-property-paths).
+                // Say so instead of letting a user believe their property run
+                // was truncated.
+                if cfg.rpa.trunc_thresh.is_some() {
+                    eprintln!(
+                        "warning: [rpa] trunc_thresh applies to the RPA energy \
+                         eigensolve only; polarizability/C6/NPZ property paths \
+                         run full-rank and ignore it"
+                    );
+                }
 
                 let coords_arr = {
                     let mut a = Array2::<f64>::zeros((mol.atoms.len(), 3));
@@ -908,7 +921,7 @@ fn main() {
                     use ferric_rpa::dispersion::free_atom_ref::ts_free_atom;
                     use ferric_rpa::dispersion::{
                         casimir_polder_c6, pdep_dynamic_polarizability,
-                        ts_dynamic_polarizability, DispersionPartition,
+                        ts_dynamic_polarizability, C6Source, DispersionPartition,
                     };
                     use ferric_rpa::properties::{
                         atomic_effective_volumes_hirshfeld,
@@ -916,15 +929,22 @@ fn main() {
                     };
                     use ferric_rpa::quadrature::build_quadrature;
 
-                    let use_pdep = cfg.rpa.c6_source.as_deref() == Some("pdep");
-                    // Default partition: Hirshfeld for PDEP (correct anisotropy via
-                    // proatom sum rule), Becke for TS (only affects alpha_static shape;
-                    // volume ratio always uses Hirshfeld regardless).
-                    let partition = match cfg.rpa.c6_partition.as_deref() {
-                        Some("becke") => DispersionPartition::Becke,
-                        Some("hirshfeld") => DispersionPartition::Hirshfeld,
-                        _ => if use_pdep { DispersionPartition::Hirshfeld } else { DispersionPartition::Becke },
-                    };
+                    // Strict parse: an unknown c6_source/c6_partition used to fall
+                    // through to TS/Becke silently, producing different numbers than
+                    // the user asked for.
+                    let c6_source = C6Source::parse_config_str(cfg.rpa.c6_source.as_deref())
+                        .unwrap_or_else(|e| {
+                            eprintln!("config error: [rpa] {e}");
+                            std::process::exit(1);
+                        });
+                    let partition =
+                        DispersionPartition::parse_config_str(cfg.rpa.c6_partition.as_deref())
+                            .unwrap_or_else(|e| {
+                                eprintln!("config error: [rpa] {e}");
+                                std::process::exit(1);
+                            })
+                            .unwrap_or_else(|| c6_source.default_partition());
+                    let use_pdep = c6_source == C6Source::Pdep;
 
                     let res_opt = if use_pdep {
                         // Phase 2: PDEP-RPA dynamic α(iω). Origin-independent for
@@ -1065,7 +1085,7 @@ fn main() {
                             })
                             .collect();
                         let (freqs, weights) = build_quadrature(&rpa_cfg.quadrature);
-                        let is_mbd = cfg.rpa.c6_source.as_deref() == Some("mbd");
+                        let is_mbd = c6_source == C6Source::Mbd;
                         let dp = if is_mbd {
                             let positions: Vec<[f64; 3]> =
                                 mol.atoms.iter().map(|a| [a.x, a.y, a.zpos]).collect();

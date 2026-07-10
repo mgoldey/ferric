@@ -879,10 +879,16 @@ fn run_pdep_rpa(
         return Err(make_err(ferric_core::FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy }));
     }
 
-    let scheme = match quadrature.unwrap_or("gauss-legendre") {
-        "minimax" | "mm" => QuadratureScheme::MiniMax,
-        _ => QuadratureScheme::GaussLegendre,
-    };
+    // Canonical parser (shared with the CLI): unknown schemes error rather than
+    // silently running Gauss-Legendre.
+    let scheme = QuadratureScheme::parse_config_str(quadrature)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("quadrature: {e}")))?;
+    if u0.is_some() && !scheme.honours_u0() {
+        eprintln!(
+            "warning: u0 is ignored by quadrature='minimax' (it derives u0 from \
+             n_quad); pass quadrature='gauss-legendre' or 'chebyshev-tan' to use it"
+        );
+    }
     let cfg = PdepRpaConfig {
         frozen_core: frozen_core.unwrap_or(0),
         trunc_thresh: trunc_thresh.unwrap_or(1e-4),
