@@ -685,7 +685,6 @@ pub fn build_jk(
     j: &mut Array2<f64>,
     k: &mut Array2<f64>,
 ) -> Result<usize, FerricError> {
-    use rayon::prelude::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     ctx.check_interrupted()?;
@@ -721,15 +720,31 @@ pub fn build_jk(
     // the fold init fires once per work-chunk, not per thread, storming the
     // global libint2 ctor mutex on heavy-element bases.
     let pool = crate::engine_pool::EnginePool::new(bounds.op, prep, 1e-14)?;
-    let total_jk = shell_pairs.into_par_iter().fold(
-        || (
-            Array2::zeros((nbf, nbf)),
-            Array2::zeros((nbf, nbf)),
-            0usize
-        ),
-        |(mut local_j, mut local_k, mut local_count), (s1, s2)| {
+
+    // Deterministic, memory-bounded reduction (see direct_jk.rs / reduce.rs).
+    // The old `fold(..).reduce(..)` tree combined per-chunk (J,K) partials in a
+    // worker-count-dependent order, so J/K (and every downstream SCF energy,
+    // gradient, and MP2/RPA number built on this density) drifted ~1 ULP with
+    // RAYON_NUM_THREADS (proven by the P7 whole-pipeline gradient bit-identity
+    // test: RHF gradient differed in the last bits between 1 and 4 threads,
+    // traced here). Partition the (s1,s2) shell-pair work list — a pure
+    // function of nsh, never of the thread count — and fold group partials in
+    // strict ascending group order: bit-identical across thread counts.
+    let n_pairs = shell_pairs.len();
+    let group_size = crate::reduce::deterministic_group_size(n_pairs);
+    let n_groups = n_pairs.div_ceil(group_size.max(1)).max(1);
+
+    let mut total_j = Array2::<f64>::zeros((nbf, nbf));
+    let mut total_k = Array2::<f64>::zeros((nbf, nbf));
+    crate::reduce::grouped_deterministic_sum_pair(&mut total_j, &mut total_k, n_groups, nbf, |g| {
+        let lo = g * group_size;
+        let hi = (lo + group_size).min(n_pairs);
+        let mut local_j = Array2::<f64>::zeros((nbf, nbf));
+        let mut local_k = Array2::<f64>::zeros((nbf, nbf));
+        let mut local_count = 0usize;
+        for &(s1, s2) in &shell_pairs[lo..hi] {
             if ferric_core::INTERRUPT.load(std::sync::atomic::Ordering::Relaxed) {
-                return (local_j, local_k, local_count);
+                continue;
             }
             let b12 = bounds.q[(s1, s2)];
             let d12 = d_max_shell[(s1, s2)];
@@ -852,22 +867,13 @@ pub fn build_jk(
                 }
             }
             });
-            (local_j, local_k, local_count)
         }
-    ).map(|(j, k, count)| {
-        computed_quartets.fetch_add(count, Ordering::Relaxed);
-        (j, k)
-    }).reduce(
-        || (Array2::zeros((nbf, nbf)), Array2::zeros((nbf, nbf))),
-        |mut acc, next| {
-            acc.0 += &next.0;
-            acc.1 += &next.1;
-            acc
-        }
-    );
+        computed_quartets.fetch_add(local_count, Ordering::Relaxed);
+        Ok((local_j, local_k))
+    })?;
 
-    *j += &total_jk.0;
-    *k += &total_jk.1;
+    *j += &total_j;
+    *k += &total_k;
 
     #[cfg(feature = "mpi")]
     if let Some(world) = &ctx.world {
@@ -1279,5 +1285,137 @@ mod tests {
         let w = 4;
         let history = vec![4.0, 5.0, 4.0, 5.0, 4.0]; // 5 < 2*4
         assert!(!stall_detected(&history, w, 4.5));
+    }
+
+    /// P14: `build_jk`'s J/K accumulation must be bit-identical regardless of
+    /// the rayon worker count. Before this fix the shell-pair work list was
+    /// combined via `fold(..).reduce(..)`, a binary tree whose association
+    /// (and hence floating-point rounding) depends on the thread count — this
+    /// was the root cause the P7 lane traced a whole-pipeline RHF gradient
+    /// bit-identity mismatch (last-bit drift, 0x...dfc3 vs 0x...dfbf) back to.
+    /// `grouped_deterministic_sum_pair` folds group partials in a fixed,
+    /// thread-count-independent ascending order, so the result must match
+    /// exactly across pools of different sizes.
+    #[test]
+    fn build_jk_bit_identical_across_thread_counts() {
+        let mol = Molecule::parse_xyz(
+            "3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n",
+            0,
+            1,
+        )
+        .unwrap();
+        let bs = basis::bundled("cc-pvdz").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let n = prep.nbasis();
+
+        // Dense symmetric density so every screened quartet contributes.
+        let mut d = Array2::<f64>::zeros((n, n));
+        for i in 0..n {
+            for j in 0..n {
+                d[(i, j)] = 0.01 * ((i * 7 + j * 3) % 11) as f64;
+            }
+        }
+        let d = 0.5 * (&d + &d.t());
+
+        let run = |threads: usize| -> (Array2<f64>, Array2<f64>) {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            pool.install(|| {
+                let ctx = ParallelContext::default();
+                let mut j = Array2::zeros((n, n));
+                let mut k = Array2::zeros((n, n));
+                build_jk(&ctx, &prep, &bounds, 1e-14, &d, &mut j, &mut k).unwrap();
+                (j, k)
+            })
+        };
+
+        let (j1, k1) = run(1);
+        let (j4, k4) = run(4);
+
+        for i in 0..n {
+            for jj in 0..n {
+                assert_eq!(
+                    j1[(i, jj)].to_bits(),
+                    j4[(i, jj)].to_bits(),
+                    "build_jk J not bit-identical across thread counts at ({i},{jj}): \
+                     1-thread={:.17e}, 4-thread={:.17e}",
+                    j1[(i, jj)],
+                    j4[(i, jj)],
+                );
+                assert_eq!(
+                    k1[(i, jj)].to_bits(),
+                    k4[(i, jj)].to_bits(),
+                    "build_jk K not bit-identical across thread counts at ({i},{jj}): \
+                     1-thread={:.17e}, 4-thread={:.17e}",
+                    k1[(i, jj)],
+                    k4[(i, jj)],
+                );
+            }
+        }
+    }
+
+    /// P14: whole-pipeline RHF gradient bit-identity, un-gating the finding
+    /// left by the P7 lane (see the comment on
+    /// `test_3c2c_assembly_bit_identical_across_thread_counts` in
+    /// ferric-mp2/src/gradient.rs). Runs a full `solve_rhf` (which drives
+    /// `build_jk` every SCF iteration) followed by `rhf_gradient` under
+    /// dedicated 1- and 4-worker rayon pools and compares every component via
+    /// `f64::to_bits`. This is the acceptance bar P14 was scoped to satisfy:
+    /// build_jk's grouped deterministic reduction must make the *converged*
+    /// SCF state — and everything built on it — thread-count-invariant, not
+    /// just one isolated builder call.
+    #[test]
+    fn whole_pipeline_rhf_gradient_bit_identical_across_thread_counts() {
+        let xyz = "3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n";
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let bs = basis::bundled("cc-pvdz").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let config = RhfConfig {
+            energy_conv: 1e-12,
+            density_conv: 1e-10,
+            integral_thresh: 1e-14,
+            ..Default::default()
+        };
+
+        let run = |threads: usize| -> (f64, Array2<f64>) {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            pool.install(|| {
+                let ctx = ParallelContext::default();
+                let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
+                assert!(result.converged, "RHF did not converge at {threads} threads");
+                let grad = crate::gradient::rhf_gradient(&mol, &prep, op, &bounds, &result).unwrap();
+                (result.energy, grad)
+            })
+        };
+
+        let (e1, g1) = run(1);
+        let (e4, g4) = run(4);
+
+        assert_eq!(
+            e1.to_bits(),
+            e4.to_bits(),
+            "RHF energy not bit-identical across thread counts: 1-thread={e1:.17e}, 4-thread={e4:.17e}"
+        );
+        for atom in 0..3 {
+            for c in 0..3 {
+                assert_eq!(
+                    g1[(atom, c)].to_bits(),
+                    g4[(atom, c)].to_bits(),
+                    "RHF gradient not bit-identical across thread counts at atom={atom} coord={c}: \
+                     1-thread={:.17e} (0x{:016x}), 4-thread={:.17e} (0x{:016x})",
+                    g1[(atom, c)], g1[(atom, c)].to_bits(),
+                    g4[(atom, c)], g4[(atom, c)].to_bits(),
+                );
+            }
+        }
     }
 }

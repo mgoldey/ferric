@@ -522,8 +522,14 @@ impl LaplaceMp2 {
         let mu_row_bytes = naux.max(1) * nbas.max(1) * 8 * 2;
         let block_mu = (task_budget / mu_row_bytes.max(1)).clamp(1, nbas.max(1));
 
-        // Parallel over quadrature points — each point is independent.
-        // Inner BLAS calls use multithreaded DGEMM; no nested rayon.
+        // Parallel over quadrature points — each point is independent. The
+        // J-term panel fill (mat_mul_flat_rows/mat_mul_t_rows) is hand-rolled
+        // sparse-times-dense, not BLAS. The two GEMMs that do run per point
+        // (m_panel.dot(&n_panel.t()) below, and x_blk.dot(&x.t()) inside
+        // laplace_exchange_energy) execute under this rayon map, i.e. nested
+        // BLAS-under-rayon — callers must run with OPENBLAS_NUM_THREADS=1 (or
+        // an equivalent with_blas_threads(1, ..) scope) per the project's
+        // rayon/BLAS threading convention; nothing here raises BLAS threads.
         let (e_os, e_ss): (f64, f64) = self.points.par_iter().zip(self.weights.par_iter()).map(|(&t, &w)| {
             // --- J term in AO basis ---
             // Build pseudo-densities: sparse (domain-restricted) when Boys-localized,

@@ -595,6 +595,7 @@ pub fn ao_rpa_correlation_energy(
     n_tau: usize,
     b_ov_fallback: Option<&Array2<f64>>,
 ) -> Result<(f64, usize, usize, usize), FerricError> {
+    use ferric_integrals::blas_threads::with_blas_threads;
     use ndarray_linalg::{Eigh, UPLO};
     use rayon::prelude::*;
 
@@ -613,29 +614,34 @@ pub fn ao_rpa_correlation_energy(
     // High ω (ω·t_max > π/2) → use MO Π fallback if provided.
     let naux = eri3.dim().0;
     let n_fallback = std::sync::atomic::AtomicUsize::new(0);
-    let contribs: Result<Vec<f64>, FerricError> = quad_freqs
-        .par_iter()
-        .zip(quad_weights.par_iter())
-        .map(|(&omega, &wk)| {
-            let pi = if omega > omega_cutoff {
-                match b_ov_fallback {
-                    Some(b) => {
-                        n_fallback.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        pi_mo_dressed(b, eps_occ, eps_vir, omega)
+    // Pin BLAS to 1 inside the rayon region: `eigh` below runs per-frequency
+    // under rayon workers — nested OpenBLAS threads oversubscribe and can
+    // overflow the 2 MB rayon worker stack (openblas-rayon-dgetrf-crash).
+    let contribs: Result<Vec<f64>, FerricError> = with_blas_threads(1, || {
+        quad_freqs
+            .par_iter()
+            .zip(quad_weights.par_iter())
+            .map(|(&omega, &wk)| {
+                let pi = if omega > omega_cutoff {
+                    match b_ov_fallback {
+                        Some(b) => {
+                            n_fallback.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            pi_mo_dressed(b, eps_occ, eps_vir, omega)
+                        }
+                        None => pi_ao_at_omega(&chi0_stack, &laplace, omega),
                     }
-                    None => pi_ao_at_omega(&chi0_stack, &laplace, omega),
-                }
-            } else {
-                pi_ao_at_omega(&chi0_stack, &laplace, omega)
-            };
-            let mut eps_mat = pi;
-            for p in 0..naux { eps_mat[(p, p)] += 1.0; }
-            let (evals, _) = eps_mat.eigh(UPLO::Upper)
-                .map_err(|e| FerricError::General(format!("AO-RPA eigh: {e}")))?;
-            let contrib: f64 = evals.iter().map(|&lam| lam.ln() + (1.0 - lam)).sum();
-            Ok(wk * contrib)
-        })
-        .collect();
+                } else {
+                    pi_ao_at_omega(&chi0_stack, &laplace, omega)
+                };
+                let mut eps_mat = pi;
+                for p in 0..naux { eps_mat[(p, p)] += 1.0; }
+                let (evals, _) = eps_mat.eigh(UPLO::Upper)
+                    .map_err(|e| FerricError::General(format!("AO-RPA eigh: {e}")))?;
+                let contrib: f64 = evals.iter().map(|&lam| lam.ln() + (1.0 - lam)).sum();
+                Ok(wk * contrib)
+            })
+            .collect()
+    });
 
     let e_c: f64 = contribs?.iter().sum::<f64>() / (2.0 * std::f64::consts::PI);
     let n_fb = n_fallback.load(std::sync::atomic::Ordering::Relaxed);
@@ -657,6 +663,7 @@ pub fn ao_rpa_correlation_energy_minimax(
     eps_vir: &[f64],
     joint_grids: &MinimaxJointQuadrature,
 ) -> Result<(f64, usize, usize), FerricError> {
+    use ferric_integrals::blas_threads::with_blas_threads;
     use ndarray_linalg::{Eigh, UPLO};
     use rayon::prelude::*;
 
@@ -692,25 +699,30 @@ pub fn ao_rpa_correlation_energy_minimax(
     )?;
 
     let naux = eri3.dim().0;
-    
-    // Evaluate trace-log for each frequency using the minimax mapping
-    let contribs: Result<Vec<f64>, FerricError> = joint_grids.omega_points
-        .par_iter()
-        .zip(joint_grids.omega_weights.par_iter())
-        .enumerate()
-        .map(|(k, (&_omega, &wk))| {
-            let pi = pi_ao_at_omega_minimax(&chi0_stack, joint_grids, k);
-            
-            let mut eps_mat = pi;
-            for p in 0..naux { eps_mat[(p, p)] += 1.0; }
-            
-            let (evals, _) = eps_mat.eigh(UPLO::Upper)
-                .map_err(|e| FerricError::General(format!("AO-RPA minimax eigh: {e}")))?;
-                
-            let contrib: f64 = evals.iter().map(|&lam| lam.ln() + (1.0 - lam)).sum();
-            Ok(wk * contrib)
-        })
-        .collect();
+
+    // Evaluate trace-log for each frequency using the minimax mapping.
+    // Pin BLAS to 1 inside the rayon region: `eigh` below runs per-frequency
+    // under rayon workers — nested OpenBLAS threads oversubscribe and can
+    // overflow the 2 MB rayon worker stack (openblas-rayon-dgetrf-crash).
+    let contribs: Result<Vec<f64>, FerricError> = with_blas_threads(1, || {
+        joint_grids.omega_points
+            .par_iter()
+            .zip(joint_grids.omega_weights.par_iter())
+            .enumerate()
+            .map(|(k, (&_omega, &wk))| {
+                let pi = pi_ao_at_omega_minimax(&chi0_stack, joint_grids, k);
+
+                let mut eps_mat = pi;
+                for p in 0..naux { eps_mat[(p, p)] += 1.0; }
+
+                let (evals, _) = eps_mat.eigh(UPLO::Upper)
+                    .map_err(|e| FerricError::General(format!("AO-RPA minimax eigh: {e}")))?;
+
+                let contrib: f64 = evals.iter().map(|&lam| lam.ln() + (1.0 - lam)).sum();
+                Ok(wk * contrib)
+            })
+            .collect()
+    });
 
     let e_c: f64 = contribs?.iter().sum::<f64>() / (2.0 * std::f64::consts::PI);
     Ok((e_c, joint_grids.tau_points.len(), joint_grids.omega_points.len()))
