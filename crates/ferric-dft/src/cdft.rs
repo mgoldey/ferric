@@ -13,6 +13,7 @@ use crate::becke::becke_weights_all;
 use crate::grid::GridPoint;
 use ferric_core::mol::Molecule;
 use ndarray::Array2;
+use rayon::prelude::*;
 
 /// Which population a constraint targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,12 +50,20 @@ pub fn build_weight_matrix(
     debug_assert_eq!(npts, grid.len());
 
     // Per-point fragment weight times quadrature weight: scale_g = w_g · w_C(r_g).
-    let mut scale = vec![0.0_f64; npts];
-    for (g, gp) in grid.iter().enumerate() {
+    // Each point's Becke evaluation is independent; order-preserving parallel
+    // map (bit-identical to the serial loop). Serial below the same
+    // point-count threshold as grid.rs to keep tiny grids rayon-free.
+    const PAR_WORK_THRESHOLD: usize = 2_000;
+    let scale_for = |gp: &GridPoint| -> f64 {
         let w_atoms = becke_weights_all(mol, gp.xyz);
         let w_c: f64 = fragment.iter().map(|&a| w_atoms[a]).sum();
-        scale[g] = gp.weight * w_c;
-    }
+        gp.weight * w_c
+    };
+    let scale: Vec<f64> = if npts >= PAR_WORK_THRESHOLD {
+        grid.par_iter().map(scale_for).collect()
+    } else {
+        grid.iter().map(scale_for).collect()
+    };
 
     // Mirror vxc.rs: prescale chi columns, then chi_scaled · chiᵀ.
     let mut chi_scaled = chi.clone();
@@ -91,4 +100,67 @@ pub fn population(
         }
     }
     acc
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::grid::{build_atomic_grid, AtomicGridConfig};
+    use ferric_core::mol::{Atom, Molecule};
+
+    #[test]
+    fn parallel_weight_matrix_bit_identical_to_serial() {
+        // 2 atoms * 25 radial * 50 angular = 2,500 points — above the 2,000
+        // point PAR_WORK_THRESHOLD, so build_weight_matrix takes the rayon path.
+        let mol = Molecule {
+            atoms: vec![
+                Atom { symbol: "H".into(), z: 1, x: 0.0, y: 0.0, zpos: 0.0, ghost: false, n_core_ecp: 0 },
+                Atom { symbol: "H".into(), z: 1, x: 0.0, y: 0.0, zpos: 1.4, ghost: false, n_core_ecp: 0 },
+            ],
+            charge: 0,
+            multiplicity: 1,
+        };
+        let grid = build_atomic_grid(&mol, &AtomicGridConfig { n_radial: 25, n_angular: 50 });
+        let npts = grid.len();
+        assert!(npts >= 2_000, "test must exercise the parallel path (npts={npts})");
+
+        // Deterministic synthetic AO values (nbf = 2).
+        let nbf = 2;
+        let chi = Array2::from_shape_fn((nbf, npts), |(mu, g)| {
+            0.1 * (mu as f64 + 1.0) + (0.001 * g as f64).sin()
+        });
+        let fragment = [0usize];
+
+        let w_par = build_weight_matrix(&mol, &grid, &chi, &fragment);
+
+        // Serial reference: pre-P2 per-point loop, verbatim, then the same
+        // prescale + GEMM tail.
+        let mut scale = vec![0.0_f64; npts];
+        for (g, gp) in grid.iter().enumerate() {
+            let w_atoms = becke_weights_all(&mol, gp.xyz);
+            let w_c: f64 = fragment.iter().map(|&a| w_atoms[a]).sum();
+            scale[g] = gp.weight * w_c;
+        }
+        let mut chi_scaled = chi.clone();
+        for g in 0..npts {
+            let s = scale[g];
+            for mu in 0..nbf {
+                chi_scaled[(mu, g)] *= s;
+            }
+        }
+        let w: Array2<f64> = chi_scaled.dot(&chi.t());
+        let w_ser = 0.5 * (&w + &w.t());
+
+        for i in 0..nbf {
+            for j in 0..nbf {
+                assert_eq!(
+                    w_par[(i, j)].to_bits(),
+                    w_ser[(i, j)].to_bits(),
+                    "W[{i},{j}] not bit-identical: par {} vs ser {}",
+                    w_par[(i, j)],
+                    w_ser[(i, j)]
+                );
+            }
+        }
+    }
 }
