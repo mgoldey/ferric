@@ -33,7 +33,6 @@
 use crate::fock::JBuilder;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
-use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::operator::Operator;
 use ferric_integrals::threeindex::coulomb_metric_2c;
 use ferric_integrals::three_index_source::ThreeIndexSource;
