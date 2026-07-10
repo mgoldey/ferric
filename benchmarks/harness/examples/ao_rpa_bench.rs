@@ -76,7 +76,9 @@ fn main() {
     let obs_set = basis::bundled("cc-pvdz").unwrap();
     let dfbs_set = basis::bundled("cc-pvdz-ri").unwrap();
     let op = Operator::coulomb();
-    let n_tau = 12usize;
+    // Only {3,5,7} are tabulated; 12 used to silently fall back to the
+    // 7-point table. Round explicitly (still 7) now that the coercion is gone.
+    let n_tau = ferric_quadrature::minimax::nearest_supported_n_quad(12);
 
     println!("AO-RPA Kaltak-Kresse ω-quadrature spike  —  cc-pVDZ / cc-pVDZ-RI");
     println!("τ-grid: {n_tau}-pt minimax for AO path; canonical uses same ω-grid as AO");
@@ -120,7 +122,7 @@ fn main() {
         let c_vir = c.slice(ndarray::s![.., nocc..]).to_owned();
 
         // Report t_max so we know the safe-ω window for this molecule.
-        let lap = build_tau_quadrature(&eps_occ, &eps_vir, n_tau);
+        let lap = build_tau_quadrature(&eps_occ, &eps_vir, n_tau).unwrap();
         let t_max = lap.points.iter().cloned().fold(0.0_f64, f64::max);
         let omega_safe = std::f64::consts::FRAC_PI_2 / t_max;
         println!(">> {} nbas={} nocc={} t_max={:.3}  ω·t_max≤π/2 ⇒ ω≤{:.3} Ha",

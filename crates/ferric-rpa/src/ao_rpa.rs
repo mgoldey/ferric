@@ -49,7 +49,7 @@ pub fn build_tau_quadrature(
     eps_occ: &[f64],
     eps_vir: &[f64],
     n_quad: usize,
-) -> LaplaceQuadrature {
+) -> Result<LaplaceQuadrature, FerricError> {
     let eps_homo = eps_occ.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
     let eps_lumo = eps_vir.iter().cloned().fold(f64::INFINITY, f64::min);
     let eps_min = eps_occ.iter().cloned().fold(f64::INFINITY, f64::min);
@@ -602,7 +602,7 @@ pub fn ao_rpa_correlation_energy(
     let eri3_dressed = dress_eri3_with_metric(eri3, v_inv_sqrt);
 
     // Step 2: AO-basis χ⁰(τ) stack on minimax grid.
-    let laplace = build_tau_quadrature(eps_occ, eps_vir, n_tau);
+    let laplace = build_tau_quadrature(eps_occ, eps_vir, n_tau)?;
     let chi0_stack = chi0_ao_full_time(
         &eri3_dressed, c_occ, c_vir, eps_occ, eps_vir, &laplace,
     )?;
@@ -761,8 +761,11 @@ mod tests {
 
         let b_ov = build_b_ov(&eri3, &c_occ, &c_vir);
 
-        // Pick a few τ-points to compare.
-        let laplace = build_tau_quadrature(&eps_occ, &eps_vir, 8);
+        // Pick a few τ-points to compare. n_quad=8 is not tabulated (only
+        // {3,5,7} are); round explicitly to preserve the original test's
+        // 7-point coverage instead of relying on the old silent fallback.
+        let n_quad = ferric_quadrature::minimax::nearest_supported_n_quad(8);
+        let laplace = build_tau_quadrature(&eps_occ, &eps_vir, n_quad).unwrap();
         for &tau in &[0.05_f64, 0.2, 0.5, 1.0] {
             // AO-basis route
             let p_occ = pseudo_density_occ(&c_occ, &eps_occ, tau);
@@ -826,7 +829,11 @@ mod tests {
         let v_mat = Array2::<f64>::eye(naux);
         let omega = 0.5;
 
-        let laplace = build_tau_quadrature(&eps_occ, &eps_vir, 8);
+        // n_quad=8 is not tabulated (only {3,5,7} are); round explicitly to
+        // preserve the original test's 7-point coverage instead of relying
+        // on the old silent fallback.
+        let n_quad = ferric_quadrature::minimax::nearest_supported_n_quad(8);
+        let laplace = build_tau_quadrature(&eps_occ, &eps_vir, n_quad).unwrap();
         let eps_imag = dielectric_matrix_imag_time(&v_mat, &b_ov, &eps_occ, &eps_vir, omega, &laplace).unwrap();
         let eps_dense = dielectric_matrix(&v_mat, &b_ov, &eps_occ, &eps_vir, omega);
 
