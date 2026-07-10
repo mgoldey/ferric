@@ -50,6 +50,7 @@ fn pdep_cfg() -> PdepRpaConfig {
         eigensolver: Eigensolver::Davidson,
         sternheimer: SternheimerConfig::default(),
         memory_budget_bytes: None,
+        need_inv_dielectric_freq: false, // GW/BSE entry points force this on (M9 gate)
     }
 }
 

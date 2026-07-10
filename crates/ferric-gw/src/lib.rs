@@ -36,6 +36,16 @@ use ferric_rpa::{run_pdep_rpa, PdepRpaResult};
 use ferric_scf::ScfResult;
 use ndarray::Array1;
 
+/// Clone a PDEP-RPA config with `need_inv_dielectric_freq` forced on. Every GW
+/// method's Σ_c reads `PdepRpaResult.inv_dielectric_freq`, so the GW crate sets
+/// the flag itself rather than trusting the external caller to have set it
+/// (M9 memory gate: energy-only RPA runs default it off).
+fn with_inv_dielectric(cfg: &PdepRpaConfig) -> PdepRpaConfig {
+    let mut c = cfg.clone();
+    c.need_inv_dielectric_freq = true;
+    c
+}
+
 /// Top-level GW configuration.
 #[derive(Debug, Clone)]
 pub struct GwConfig {
@@ -90,16 +100,19 @@ pub struct GwResult {
     pub sigma_c: Array1<f64>,
     /// Z-factor (renormalization), dimensionless.
     pub z_factor: Array1<f64>,
+    /// Per-state QP Newton-solve convergence flag, aligned with `mo_indices`.
+    /// `false` means the Newton iteration exhausted its step budget (or hit a
+    /// near-pole `|f'|` bailout) without reaching its step-size tolerance —
+    /// the corresponding `eps_qp`/`sigma_c`/`z_factor` entries are the last
+    /// iterate, not a converged root. Always `true` for COHSEX (closed-form,
+    /// no Newton solve). See `sigma::solve_qp_for_mo`.
+    pub qp_converged: Vec<bool>,
     /// Iteration count for ev-loops (0 for non-iterative methods).
     pub n_ev_iter: usize,
-    /// Whether the evGW0/evGW eigenvalue self-consistency met `ev_conv_thresh`
-    /// within `max_ev_iter`. Always `true` for one-shot methods (G0W0/COHSEX).
-    /// `false` means the QP energies are the last (unconverged) sweep.
-    pub ev_converged: bool,
-    /// Per-MO: whether the QP Newton fixed-point solve converged (final/only
-    /// iteration). `false` entries are best-effort roots — typically a QP
-    /// solution near a pole of the Padé-continued Σc.
-    pub qp_converged: Vec<bool>,
+    /// Whether the evGW/evGW₀ outer (eigenvalue self-consistency) loop met
+    /// `ev_conv_thresh` within `max_ev_iter`. Always `true` for non-iterative
+    /// methods (G0W0, COHSEX).
+    pub outer_converged: bool,
     /// Underlying PDEP result (so callers can inspect W).
     pub pdep: PdepRpaResult,
 }
@@ -137,12 +150,15 @@ pub struct UGwResult {
     pub sigma_x_b: Array1<f64>,
     pub sigma_c_b: Array1<f64>,
     pub z_factor_b: Array1<f64>,
-    pub n_ev_iter: usize,
-    /// See [`GwResult::ev_converged`].
-    pub ev_converged: bool,
-    /// Per-MO α/β-combined QP-Newton flags — see [`GwResult::qp_converged`].
+    /// Per-state QP Newton-solve convergence flags, aligned with `mo_indices`
+    /// (α/β channels separately — see `GwResult::qp_converged` for the
+    /// per-flag meaning). Always all-`true` for COHSEX.
     pub qp_converged_a: Vec<bool>,
     pub qp_converged_b: Vec<bool>,
+    pub n_ev_iter: usize,
+    /// Whether the U-evGW/U-evGW₀ outer loop met `ev_conv_thresh` within
+    /// `max_ev_iter`. Always `true` for non-iterative methods.
+    pub outer_converged: bool,
     pub pdep: PdepRpaResult,
 }
 
@@ -188,6 +204,9 @@ pub fn run_u_gw(
         ));
     }
 
+    // GW Σ_c requires the per-frequency inverse-dielectric stack; force it on
+    // regardless of what the external caller left in `pdep_cfg` (M9 gate).
+    let pdep_cfg = &with_inv_dielectric(pdep_cfg);
     let pdep = run_u_pdep_rpa(mol, obs, dfbs, op, scf, pdep_cfg)?;
     let (mo_b_a, mo_b_b) = mo_b::build_full_b_both_spins(mol, obs, dfbs, op, scf, gw_cfg.frozen_core)?;
     let (v_dressed, dress_dev) =
@@ -209,7 +228,7 @@ pub fn run_u_gw(
             "U-sc-COHSEX not implemented; see plan P2.".into(),
         )),
     }?;
-    if !result.ev_converged {
+    if !result.outer_converged {
         eprintln!(
             "warning: U-{:?} eigenvalue self-consistency did NOT converge in {} \
              iterations (thresh {:.1e}); QP energies are the last sweep",
@@ -274,6 +293,8 @@ pub fn run_gw(
         ));
     }
     // 1. Run PDEP-RPA to get {λ_α(iω_k), V_α^dressed, B̃^P_ia}.
+    //    GW Σ_c needs the inverse-dielectric stack — force the flag (M9 gate).
+    let pdep_cfg = &with_inv_dielectric(pdep_cfg);
     let pdep = run_pdep_rpa(mol, obs, dfbs, op, rhf, pdep_cfg)?;
 
     // 2. Build dressed B̃ tensor over ALL (m,n) MO pairs needed for Σ.
@@ -313,7 +334,7 @@ pub fn run_gw(
 /// dropped — a stalled evGW or a Newton solve stuck at a Σc pole printed the
 /// same table as a converged run).
 fn warn_gw_unconverged(result: &GwResult, gw_cfg: &GwConfig) {
-    if !result.ev_converged {
+    if !result.outer_converged {
         eprintln!(
             "warning: {:?} eigenvalue self-consistency did NOT converge in {} \
              iterations (thresh {:.1e}); QP energies are the last sweep",

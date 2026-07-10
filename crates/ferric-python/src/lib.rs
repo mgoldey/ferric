@@ -906,6 +906,9 @@ fn run_pdep_rpa(
         chi0_sparsity: ferric_rpa::config::Chi0Sparsity::parse_config_str(chi0_sparsity)
             .map_err(make_err)?,
         memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
+        // Python run_pdep_rpa is energy-only; the GW/property paths that consume
+        // the inverse-dielectric stack have their own entry points (M9 gate).
+        need_inv_dielectric_freq: false,
     };
     let r = run_pdep_rpa_inner(&mol.inner, &prep, &dfbs, op, &rhf, &cfg).map_err(make_err)?;
     Ok(PyPdepRpaResult {

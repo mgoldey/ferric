@@ -108,7 +108,7 @@ fn main() {
             Some("def2-universal-jkfit".to_string()),
             Some("def2-universal-jkfit".to_string()),
         )
-    } else if matches!(method, "pdep-rpa") && cfg.rpa.xc.is_some() {
+    } else if matches!(method, "pdep-rpa" | "rpa") && cfg.rpa.xc.is_some() {
         // RPA on a KS-DFT reference (RPA@PBE0 etc.): run the closed-shell KS
         // solver for the reference orbitals. Hybrids need RI-J/RI-K.
         (
@@ -116,7 +116,7 @@ fn main() {
             Some("def2-universal-jkfit".to_string()),
             Some("def2-universal-jkfit".to_string()),
         )
-    } else if matches!(method, "pdep-rpa" | "rs-mp2-rpa") {
+    } else if matches!(method, "pdep-rpa" | "rpa" | "rs-mp2-rpa") {
         // RPA@HF (no xc): the HF reference SCF defaults to RI-J/RI-K with
         // def2-universal-jkfit too. Exact 4-index J/K per iteration makes the
         // HF reference 10-20× slower than the RI-JK PBE reference (hcl/aug-cc-
@@ -221,6 +221,8 @@ fn main() {
                         std::process::exit(1);
                     }),
                     memory_budget_bytes: budget_bytes,
+                    // CLI RPA optimize is energy/gradient only (M9 gate).
+                    need_inv_dielectric_freq: false,
                 };
                 let h_fd = 5e-4;
                 let opt_result =
@@ -695,6 +697,10 @@ fn main() {
                     std::process::exit(1);
                 }),
                     memory_budget_bytes: budget_bytes,
+                // CLI RPA energy + NPZ property export; the property paths that
+                // consume the inverse-dielectric stack rebuild their own
+                // dielectric, so energy-only here is correct (M9 gate).
+                need_inv_dielectric_freq: false,
             };
             // For open-shell molecules (multiplicity > 1) re-run with UHF + MOM so
             // the reference is converged, then dispatch to the unrestricted RPA.
@@ -777,19 +783,6 @@ fn main() {
                 let compute_pol = cfg.rpa.compute_polarizability.unwrap_or(true);
                 let compute_ef = cfg.rpa.compute_electric_field.unwrap_or(true);
                 let compute_alpha_atomic = cfg.rpa.compute_alpha_atomic.unwrap_or(true);
-
-                // trunc_thresh only truncates the RPA *energy* eigensolve; the
-                // polarizability/C6 property paths below rebuild the response
-                // full-rank and ignore it (see pdep-trunc-noop-on-property-paths).
-                // Say so instead of letting a user believe their property run
-                // was truncated.
-                if cfg.rpa.trunc_thresh.is_some() {
-                    eprintln!(
-                        "warning: [rpa] trunc_thresh applies to the RPA energy \
-                         eigensolve only; polarizability/C6/NPZ property paths \
-                         run full-rank and ignore it"
-                    );
-                }
 
                 let coords_arr = {
                     let mut a = Array2::<f64>::zeros((mol.atoms.len(), 3));
@@ -1096,13 +1089,18 @@ fn main() {
                                 None => match ts_free_atom(zi) {
                                     Some((_, _, v)) => {
                                         eprintln!(
-                                            "warning: free-atom SCF volume unavailable for {sym} (Z={zi});                                              using the unverified TS-table v_free — the volume ratio is                                              on a mismatched integration scale (treat this C6 as approximate)"
+                                            "warning: free-atom SCF volume unavailable for {sym} \
+                                             (Z={zi}); using the unverified TS-table v_free — the \
+                                             volume ratio is on a mismatched integration scale \
+                                             (treat this C6 as approximate)"
                                         );
                                         v
                                     }
                                     None => {
                                         eprintln!(
-                                            "warning: TS C6 skipped — no free-atom volume reference for                                              {sym} (Z={zi}): free-atom SCF failed and the TS table covers                                              Z <= 18 only"
+                                            "warning: TS C6 skipped — no free-atom volume reference \
+                                             for {sym} (Z={zi}): free-atom SCF failed and the TS \
+                                             table covers Z <= 18 only"
                                         );
                                         return None;
                                     }
@@ -1110,7 +1108,8 @@ fn main() {
                             };
                             if vf <= 1e-10 {
                                 eprintln!(
-                                    "warning: TS C6 skipped — degenerate free-atom volume {vf:.3e}                                      for {sym} (Z={zi})"
+                                    "warning: TS C6 skipped — degenerate free-atom volume \
+                                     {vf:.3e} for {sym} (Z={zi})"
                                 );
                                 return None;
                             }

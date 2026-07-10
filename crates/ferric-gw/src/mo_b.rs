@@ -8,6 +8,7 @@
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
+use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::operator::Operator;
 use ferric_integrals::three_index_source::{env_budget_bytes, ThreeIndexSource};
 use ferric_integrals::threeindex;
@@ -67,16 +68,26 @@ fn guard_b_full_at(
     Ok(())
 }
 
+/// Metric Cholesky + triangular solve (naux×naux). Call-path proof: reached
+/// only from `build_full_b_with_mos`/`build_full_b_both_spins`, which are in
+/// turn reached only from top-level GW entry points (lib.rs:211,:279) and
+/// BSE's top-level `build_full_b` calls (bse.rs) — none of which run inside a
+/// rayon `par_iter`. `opt_in_blas_threads()` defaults to 1 (identical to
+/// today) and additionally self-guards to 1 if it is ever invoked from a
+/// rayon worker thread, so this raise is safe even if a future caller's
+/// assumption breaks.
 fn cholesky_inverse_sqrt(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
     let n = v.nrows();
-    let l = v
-        .cholesky(UPLO::Lower)
-        .map_err(|e| FerricError::General(format!("V cholesky failed: {e}")))?;
-    let eye = Array2::<f64>::eye(n);
-    let v_inv_sqrt = l
-        .solve_triangular(UPLO::Lower, Diag::NonUnit, &eye)
-        .map_err(|e| FerricError::General(format!("triangular solve failed: {e}")))?;
-    Ok(v_inv_sqrt)
+    with_blas_threads(opt_in_blas_threads(), || {
+        let l = v
+            .cholesky(UPLO::Lower)
+            .map_err(|e| FerricError::General(format!("V cholesky failed: {e}")))?;
+        let eye = Array2::<f64>::eye(n);
+        let v_inv_sqrt = l
+            .solve_triangular(UPLO::Lower, Diag::NonUnit, &eye)
+            .map_err(|e| FerricError::General(format!("triangular solve failed: {e}")))?;
+        Ok(v_inv_sqrt)
+    })
 }
 
 /// Build B̃^P_{mn} over the full active-MO square (closed-shell RHF reference).
@@ -200,23 +211,34 @@ fn build_mo_b_from_source(
 
     // 1. Accumulate the raw MO tensor eri3_mm[(P,m,n)] aux-block by aux-block.
     //    For each AO panel (block_naux, nbf, nbf): B^P_mn = C_actᵀ B^P_AO C_act.
+    //    Call-path proof: `for_each_block` (three_index_source.rs) is a plain
+    //    serial iterator — no rayon anywhere inside it — and this function is
+    //    only reached from the top-level/serial callers cited above. Wrapping
+    //    the whole block loop (not each GEMM) in one with_blas_threads scope
+    //    avoids per-block set/restore overhead.
     let mut eri3_mm = Array3::<f64>::zeros((naux, n_act, n_act));
-    ao_src.for_each_block(|blk| {
-        let p0 = blk.p0;
-        let bnaux = blk.data.shape()[0];
-        for pl in 0..bnaux {
-            let bp_ao = blk.data.slice(s![pl, .., ..]);
-            let tmp = bp_ao.dot(&c_act); // (nbf, n_act)
-            let bp_mo = c_act.t().dot(&tmp); // (n_act, n_act)
-            eri3_mm.slice_mut(s![p0 + pl, .., ..]).assign(&bp_mo);
-        }
-        Ok(())
+    with_blas_threads(opt_in_blas_threads(), || -> Result<(), FerricError> {
+        ao_src.for_each_block(|blk| {
+            let p0 = blk.p0;
+            let bnaux = blk.data.shape()[0];
+            for pl in 0..bnaux {
+                let bp_ao = blk.data.slice(s![pl, .., ..]);
+                let tmp = bp_ao.dot(&c_act); // (nbf, n_act)
+                let bp_mo = c_act.t().dot(&tmp); // (n_act, n_act)
+                eri3_mm.slice_mut(s![p0 + pl, .., ..]).assign(&bp_mo);
+            }
+            Ok(())
+        })
     })?;
 
     // 2. Dress in place over pair-column panels: b_full[:, c] = V^{-1/2} · eri3_mm[:, c].
     //    Output column `c` depends only on input column `c` (all aux rows), so we
     //    compute a small (naux, cblk) temp and write it back into eri3_mm[:, c] —
-    //    no second full-size (naux, n_act²) allocation.
+    //    no second full-size (naux, n_act²) allocation. The panel while-loop
+    //    itself is deliberately serial (M5 memory bound: only one (naux,cblk)
+    //    temp lives at a time) — BLAS threads on the wide (naux×naux)·(naux×cblk)
+    //    GEMM is the right lever here, not rayon over panels. Same call-path
+    //    proof as step 1 above (no enclosing rayon region on any caller).
     let npair = n_act * n_act;
     let mut mm_flat = eri3_mm
         .view_mut()
@@ -224,13 +246,15 @@ fn build_mo_b_from_source(
         .map_err(|e| FerricError::General(format!("reshape failed: {e}")))?;
     // Column-panel width: bound the temp (naux × cblk × 8) to ~256 MB, ≥1.
     let cblk = (256_usize * 1024 * 1024 / (naux.max(1) * 8)).clamp(1, npair.max(1));
-    let mut c0 = 0;
-    while c0 < npair {
-        let c1 = (c0 + cblk).min(npair);
-        let dressed = v_inv_sqrt.dot(&mm_flat.slice(s![.., c0..c1])); // (naux, c1-c0)
-        mm_flat.slice_mut(s![.., c0..c1]).assign(&dressed);
-        c0 = c1;
-    }
+    with_blas_threads(opt_in_blas_threads(), || {
+        let mut c0 = 0;
+        while c0 < npair {
+            let c1 = (c0 + cblk).min(npair);
+            let dressed = v_inv_sqrt.dot(&mm_flat.slice(s![.., c0..c1])); // (naux, c1-c0)
+            mm_flat.slice_mut(s![.., c0..c1]).assign(&dressed);
+            c0 = c1;
+        }
+    });
     let b_full = eri3_mm; // now holds the dressed tensor
 
     let eps_act = eps_full[frozen_core..nmo].to_vec();
@@ -293,6 +317,14 @@ pub fn build_full_b_both_spins(
 mod tests {
     use super::*;
     use ferric_core::basis;
+
+    // NOTE: the real-env FERRIC_BLAS_THREADS=2 identity test for the wrapped
+    // BLAS sites in this file lives in tests/blas_raise_identity.rs, a
+    // dedicated integration-test binary: raising the process-global OpenBLAS
+    // thread count inside this parallel lib test binary races other
+    // BLAS-doing tests in the same process (observed as corrupted GEMM
+    // output — OpenBLAS multi-thread mode is not safe against concurrent
+    // callers).
 
     fn water_setup() -> (PreparedBasis, PreparedBasis, Operator) {
         let mol = Molecule::parse_xyz(

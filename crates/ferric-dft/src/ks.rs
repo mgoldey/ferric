@@ -25,8 +25,8 @@ pub enum KsXcError {
     Libxc(LibxcError),
     #[error(
         "DFT grid AO cache needs {needed_gb:.2} GB (nbf={nbf}, npts={npts}{vv10}) \
-         but the budget is {budget_gb:.2} GB — raise FERRIC_ERI3_BUDGET_GB, use a \
-         smaller grid, or a smaller basis"
+         but the budget is {budget_gb:.2} GB — raise [memory] budget_gb / \
+         FERRIC_MEM_BUDGET_GB, use a smaller grid, or a smaller basis"
     )]
     OverBudget {
         needed_gb: f64,
@@ -40,31 +40,18 @@ pub enum KsXcError {
 impl From<GtoEvalError> for KsXcError { fn from(e: GtoEvalError) -> Self { Self::Eval(e) } }
 impl From<LibxcError>  for KsXcError { fn from(e: LibxcError)  -> Self { Self::Libxc(e) } }
 
-/// Process-wide resident-bytes ceiling, read from `FERRIC_ERI3_BUDGET_GB`
-/// (unset/unparsable ⇒ unlimited). Mirrors
-/// `ferric_integrals::three_index_source::env_budget_bytes` — duplicated here
-/// because `ferric-dft` does not take a normal dependency on `ferric-integrals`
-/// (the C-shim build) just to read one env var. When M1's
-/// `ferric_core::memory::resolve_budget_bytes` lands, switch to it.
-fn env_budget_bytes() -> usize {
-    std::env::var("FERRIC_ERI3_BUDGET_GB")
-        .ok()
-        .and_then(|s| s.parse::<f64>().ok())
-        .map(|g| (g * 1e9) as usize)
-        .unwrap_or(usize::MAX)
-}
-
 /// Fail fast if the resident χ + ∇χ cache would exceed the memory budget.
 ///
 /// The cache is `chi (nbf·npts·8)` + `dchi (3·nbf·npts·8)` = `4·nbf·npts·8`;
 /// with VV10 a second (smaller) NLC grid's cache is resident too, so we bound
 /// by `2×` when `has_vv10`. This catches the 50-atom/aTZ case (~30 GB, doubling
 /// to ~60 GB with VV10) before the allocation aborts the process.
+///
+/// The budget comes from the unified M1 resolver
+/// [`ferric_core::memory::resolve_budget_bytes`] (no explicit config field on
+/// this path yet, so `None` → `FERRIC_MEM_BUDGET_GB` > legacy vars > 0.8×RAM).
 fn check_grid_budget(nbf: usize, npts: usize, has_vv10: bool) -> Result<(), KsXcError> {
-    let budget = env_budget_bytes();
-    if budget == usize::MAX {
-        return Ok(());
-    }
+    let budget = ferric_core::memory::resolve_budget_bytes(None);
     let base = 4usize
         .saturating_mul(nbf)
         .saturating_mul(npts)

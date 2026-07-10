@@ -145,6 +145,14 @@ pub struct PdepRpaConfig {
     /// [`ferric_core::memory::resolve_budget_bytes`] (env override > auto
     /// 0.8×RAM > 2 GiB). Threaded into the `RiMp2Config` this driver builds.
     pub memory_budget_bytes: Option<usize>,
+    /// If true, materialize the per-frequency full inverse-dielectric matrices
+    /// `PdepRpaResult.inv_dielectric_freq` (nquad × M² dense stack, up to ~1.85 GB
+    /// at dimer/aTZ scale). Only the GW self-energy (ferric-gw sigma/u_sigma),
+    /// BSE, and the PDEP dynamic-polarizability property paths consume them; an
+    /// energy-only RPA run leaves this `false` and never allocates the stack.
+    /// Default `false` — set `true` at every call site that later reads
+    /// `PdepRpaResult.inv_dielectric_freq`.
+    pub need_inv_dielectric_freq: bool,
 }
 
 impl Default for PdepRpaConfig {
@@ -161,6 +169,7 @@ impl Default for PdepRpaConfig {
             chi0_backend: Chi0Backend::Dense,
             chi0_sparsity: Chi0Sparsity::Dense,
             memory_budget_bytes: None,
+            need_inv_dielectric_freq: false,
         }
     }
 }

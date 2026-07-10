@@ -128,6 +128,7 @@ fn probe(case: &Case, obs_name: &str, dfbs_name: &str) {
         eigensolver: Eigensolver::Davidson,
         sternheimer: SternheimerConfig::default(),
         memory_budget_bytes: None,
+        need_inv_dielectric_freq: false,
     };
     let gcfg = GwConfig { method: GwMethod::G0W0, max_ev_iter: 8, ev_conv_thresh: 1e-4, ..Default::default() };
     say!("  G0W0@HF...");

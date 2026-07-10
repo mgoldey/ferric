@@ -86,6 +86,18 @@ pub fn ccd_spinorbital(
     let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + no]).to_owned();
     let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
 
+    // Fail-fast size guard: peak is the antisymmetrized VVVV ladder block v_vvvv
+    // (:110) — a (2nv)⁴ f64 tensor held co-resident with the einsum! g_abcd
+    // intermediate (:111) → ~2× (2nv)⁴. Keep this next to that allocation.
+    let nv2 = 2 * nv;
+    let peak_vvvv = nv2.saturating_pow(4).saturating_mul(2).saturating_mul(8); // ~2× (2nv)⁴ f64
+    let budget = ferric_core::memory::resolve_budget_bytes(cfg.memory_budget_bytes);
+    ferric_core::memory::check_alloc(
+        &format!("CCD (no={no}, nv={nv} spatial; VVVV ladder over {nv2} spin-orbital virtuals)"),
+        peak_vvvv,
+        budget,
+    )?;
+
     // V^{-1/2} metric and AO 3-center integrals.
     let v2c = ferric_integrals::threeindex::coulomb_metric_2c(op, dfbs)?;
     let v_inv_sqrt = cholesky_inverse_sqrt(&v2c)?;
@@ -128,7 +140,7 @@ pub fn ccd_spinorbital(
     let ovvo_t = Tensor::new(v_ovvo, [Axis::O, Axis::V, Axis::V, Axis::O]);
 
     // --- Spin-orbital energies ---
-    let (no2, nv2) = (2 * no, 2 * nv);
+    let no2 = 2 * no; // nv2 computed above for the size guard
     let mut eo = vec![0.0f64; no2];
     let mut ev = vec![0.0f64; nv2];
     for i in 0..no {
@@ -299,6 +311,32 @@ mod tests {
         // (= CCSD for 2 electrons) is -0.02052453; cc-pVDZ-RI aux adds ~5e-6 RI
         // error. The exact value is gated tightly by `ccd_so_h2_sto3g` below.
         assert!((result.correlation_energy - (-0.02052453)).abs() < 1e-4);
+    }
+
+    #[test]
+    fn ccd_fails_fast_under_tiny_budget() {
+        // M2 size guard: an explicit ~1 KB budget must ERROR before the VVVV
+        // ladder allocation. Explicit config budget → no env var touched.
+        // cc-pVDZ (nv2=18 → ~1.7 MB VVVV peak) so the tiny budget actually trips
+        // (H2/STO-3G's VVVV is only 256 bytes — under even a 1 KB budget).
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let ctx = ParallelContext::default();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
+        let cc_cfg = CcConfig {
+            frozen_core: 0,
+            memory_budget_bytes: Some(ferric_core::memory::gib_to_bytes(1e-6)),
+            ..Default::default()
+        };
+        let err = match ccd(&mol, &obs, &dfbs, op, &rhf, &cc_cfg) {
+            Err(e) => e,
+            Ok(_) => panic!("CCD should fail fast under tiny budget"),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("CCD") && msg.contains("budget is"), "unexpected: {msg}");
     }
 
     #[test]

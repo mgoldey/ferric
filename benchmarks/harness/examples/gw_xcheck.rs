@@ -66,6 +66,7 @@ fn main() {
         eigensolver: Eigensolver::Davidson,
         sternheimer: SternheimerConfig::default(),
         memory_budget_bytes: None,
+        need_inv_dielectric_freq: false,
     };
     let gcfg = GwConfig {
         method: GwMethod::G0W0,

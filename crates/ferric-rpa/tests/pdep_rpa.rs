@@ -62,6 +62,44 @@ fn h2_sto3g_rpa_energy_sign() {
 }
 
 #[test]
+fn energy_only_run_does_not_materialize_inv_dielectric_freq() {
+    // M9: the default (energy-only) config must NOT build the nquad × M²
+    // inverse-dielectric stack — it is only consumed by GW/BSE/property paths.
+    let (mol, obs, dfbs, op, rhf) = setup("../../testdata/molecules/h2.xyz", "sto-3g", "sto-3g");
+    let cfg = PdepRpaConfig::default();
+    assert!(!cfg.need_inv_dielectric_freq, "default config must be energy-only");
+    let result = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
+    assert!(
+        result.inv_dielectric_freq.is_none(),
+        "energy-only run must leave inv_dielectric_freq None (never allocate the stack)"
+    );
+    assert!(result.e_rpa < 0.0);
+}
+
+#[test]
+fn inv_dielectric_freq_built_when_flag_set() {
+    // M9: setting the flag materializes the per-frequency stack for GW/property
+    // consumers, one (M×M) matrix per quadrature point.
+    let (mol, obs, dfbs, op, rhf) = setup("../../testdata/molecules/h2.xyz", "sto-3g", "sto-3g");
+    let cfg = PdepRpaConfig {
+        need_inv_dielectric_freq: true,
+        ..PdepRpaConfig::default()
+    };
+    let result = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
+    let winv = result
+        .inv_dielectric_freq
+        .as_ref()
+        .expect("flag set → inv_dielectric_freq must be Some");
+    assert_eq!(
+        winv.len(),
+        result.quad_freqs.len(),
+        "one inverse-dielectric matrix per quadrature frequency"
+    );
+    let m = result.n_eigenpotentials;
+    assert_eq!(winv[0].shape(), &[m, m], "each matrix is M×M in the PDEP basis");
+}
+
+#[test]
 fn h2_sto3g_pdep_rpa_matches_pyscf() {
     // Reference uses STO-3G/STO-3G-RI to match ferric's RI basis exactly.
     let e_ref = load_ref("../../testdata/reference/h2_sto-3g_rpa.json");

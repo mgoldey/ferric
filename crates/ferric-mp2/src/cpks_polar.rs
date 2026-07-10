@@ -279,6 +279,21 @@ fn bget(b: &Array2<f64>, p: usize, r: usize, c: usize, m: usize) -> f64 {
     b[(p, r * m + c)]
 }
 
+/// The CPKS response needs the occ-occ and vir-vir dressed B blocks, which the
+/// gradient-path builder (`compute_mp2_intermediates_ov_only`) skips. All CPKS
+/// entry points call the full `compute_mp2_intermediates`, so this errors only
+/// on a programming mistake — but it must be a clean Err, not a panic.
+fn require_oo_vv(
+    inter: &crate::rimp2::Mp2Intermediates,
+) -> Result<(&Array2<f64>, &Array2<f64>), FerricError> {
+    match (inter.b_oo.as_ref(), inter.b_vv.as_ref()) {
+        (Some(oo), Some(vv)) => Ok((oo, vv)),
+        _ => Err(FerricError::General(
+            "CPKS needs b_oo/b_vv: intermediates were built ov-only (use compute_mp2_intermediates, not _ov_only)".into(),
+        )),
+    }
+}
+
 /// Analytic ∂t2/∂F along `axis`. Returns (dt2 [nov*nov, ia*nov+jb], U^x, ∂f_mo)
 /// — the full set of first-order responses downstream layers reuse.
 #[allow(clippy::too_many_arguments)]
@@ -313,16 +328,17 @@ pub fn analytic_dt2_full(
     }
 
     // --- ∂B^P_ia = Σ_c U_ci b_vv[P,c,a] − Σ_k U_ak b_oo[P,i,k] ---
+    let (b_oo, b_vv) = require_oo_vv(&inter)?;
     let mut db_ov = Array2::<f64>::zeros((naux, nov));
     for p in 0..naux {
         for i in 0..nocc {
             for a in 0..nvir {
                 let mut s = 0.0;
                 for cc in 0..nvir {
-                    s += u[(cc, i)] * bget(&inter.b_vv, p, cc, a, nvir);
+                    s += u[(cc, i)] * bget(b_vv, p, cc, a, nvir);
                 }
                 for k in 0..nocc {
-                    s -= u[(a, k)] * bget(&inter.b_oo, p, i, k, nocc);
+                    s -= u[(a, k)] * bget(b_oo, p, i, k, nocc);
                 }
                 db_ov[(p, i * nvir + a)] = s;
             }
@@ -485,16 +501,17 @@ pub fn analytic_de_mp2_along(
     let (dt2, u) = analytic_dt2_along(ctx, mol, obs, dfbs, op, bounds, rhf, mp2_config, axis)?;
 
     // ∂B_ov (rebuild here from U for ∂(ia|jb); mirrors analytic_dt2_along).
+    let (b_oo, b_vv) = require_oo_vv(&inter)?;
     let mut db_ov = Array2::<f64>::zeros((naux, nov));
     for p in 0..naux {
         for i in 0..nocc {
             for a in 0..nvir {
                 let mut s = 0.0;
                 for cc in 0..nvir {
-                    s += u[(cc, i)] * bget(&inter.b_vv, p, cc, a, nvir);
+                    s += u[(cc, i)] * bget(b_vv, p, cc, a, nvir);
                 }
                 for k in 0..nocc {
-                    s -= u[(a, k)] * bget(&inter.b_oo, p, i, k, nocc);
+                    s -= u[(a, k)] * bget(b_oo, p, i, k, nocc);
                 }
                 db_ov[(p, i * nvir + a)] = s;
             }
@@ -1136,6 +1153,24 @@ pub fn analytic_alpha_relaxed(
 // ===========================================================================
 use ndarray::Array4;
 
+/// Fail-fast pre-flight guard for every `full_mo_eri` caller. The dense (pq|rs)
+/// tensor is nmo⁴, built co-resident with its (nmo²)²=nmo⁴ Gram matrix (:1146),
+/// and the analytic-α path additionally holds central-diff ∂Imo copies —
+/// budget for ~3 live nmo⁴ f64 buffers. Placed next to `full_mo_eri` so an M3/M5
+/// restructure that shrinks the peak updates the formula in the same diff.
+fn check_full_mo_eri_alloc(
+    label: &str,
+    nmo: usize,
+    explicit_budget: Option<usize>,
+) -> Result<(), FerricError> {
+    let peak = nmo.saturating_pow(4).saturating_mul(3).saturating_mul(8); // ~3× nmo⁴ f64
+    ferric_core::memory::check_alloc(
+        &format!("{label}: dense nmo⁴ MO-ERI (nmo={nmo})"),
+        peak,
+        ferric_core::memory::resolve_budget_bytes(explicit_budget),
+    )
+}
+
 /// Full-MO ERI (pq|rs) from the dressed B tensor. (nmo^4 — small systems only.)
 fn full_mo_eri(b_full: &ndarray::Array3<f64>) -> Array4<f64> {
     let naux = b_full.shape()[0];
@@ -1266,7 +1301,7 @@ pub fn analytic_alpha_full(
     op: Operator,
     _bounds: &SchwarzBounds,
     rhf: &ScfResult,
-    _mp2_config: &RiMp2Config,
+    mp2_config: &RiMp2Config,
 ) -> Result<Mp2Polarizability, FerricError> {
     // `_bounds` unused: the full-MO recipe uses the dense ERI tensor (no screened
     // JK). Kept in the signature for API parity with the finite-field path.
@@ -1279,6 +1314,17 @@ pub fn analytic_alpha_full(
     let nvir = nmo - nocc;
     let eps_full: Vec<f64> = rhf.eps_r().to_vec();
     let orb = OrbitalSpace::new(nocc, nvir, nocc, 0);
+
+    // Fail-fast size guard: the full-MO recipe holds the dense (pq|rs) ERI tensor
+    // imo0 (nmo⁴, full_mo_eri :1143) co-resident with its Gram matrix g
+    // ((nmo²)²=nmo⁴, :1146) and the central-diff ∂Imo copies in the axis loop.
+    // The solve_zvec_dense (Δε+A) Hessian ((nocc·nvir)², :1243) is subsumed by
+    // this larger nmo⁴ peak.
+    check_full_mo_eri_alloc(
+        &format!("relaxed-MP2 α (analytic; nmo={nmo}, nocc={nocc}, nvir={nvir})"),
+        nmo,
+        mp2_config.memory_budget_bytes,
+    )?;
 
     // Full-MO ERI tensor (unperturbed).
     let b_full = crate::oo_rimp2::compute_b_full_mo(obs, dfbs, op, c)?;
@@ -1506,6 +1552,8 @@ pub fn bse_gate0_residuals(
     let nvir = nmo - nocc;
     let eps: Vec<f64> = rhf.eps_r().to_vec();
 
+    // Fail-fast size guard: full_mo_eri holds the nmo⁴ ERI + nmo⁴ Gram (:1143-1146).
+    check_full_mo_eri_alloc("BSE gate-0 residuals", nmo, None)?;
     let b_full = crate::oo_rimp2::compute_b_full_mo(obs, dfbs, op, c)?; // (naux, nmo, nmo)
     let imo = full_mo_eri(&b_full);
 
@@ -1549,6 +1597,8 @@ pub fn dynamic_cphf_alpha_iw(
     let n = nvir * nocc;
     let eps: Vec<f64> = rhf.eps_r().to_vec();
 
+    // Fail-fast size guard: full_mo_eri holds the nmo⁴ ERI + nmo⁴ Gram (:1143-1146).
+    check_full_mo_eri_alloc("dynamic CPHF/TDHF α(iω)", nmo, None)?;
     let b_full = crate::oo_rimp2::compute_b_full_mo(obs, dfbs, op, c)?;
     let imo = full_mo_eri(&b_full);
     let (apb, amb) = build_apb_amb(&imo, &eps, nocc, nvir);
@@ -1677,4 +1727,35 @@ pub fn frozen_mp2_c6_molecular(
         s += weights[k] * iso_prof[k] * iso_prof[k];
     }
     Ok((3.0 / PI * s, iso_prof, mp2_iso, hf0_iso))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ferric_core::basis;
+    use ferric_scf::rhf::{solve_rhf, RhfConfig};
+
+    #[test]
+    fn analytic_alpha_fails_fast_under_tiny_budget() {
+        // M2 size guard: an explicit ~1 KB budget must ERROR before the dense
+        // nmo⁴ full-MO ERI is built. Explicit config budget → no env var touched.
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let ctx = ParallelContext::default();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
+        let cfg = RiMp2Config {
+            frozen_core: 0,
+            memory_budget_bytes: Some(ferric_core::memory::gib_to_bytes(1e-6)),
+        };
+        let err = mp2_polarizability_analytic(&ctx, &mol, &obs, &dfbs, op, &bounds, &rhf, &cfg)
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("MO-ERI") && msg.contains("budget is"),
+            "unexpected: {msg}"
+        );
+    }
 }

@@ -9,7 +9,12 @@ use ndarray::Array2;
 /// Generic trait for shell-quartet integral upper bounds.
 ///
 /// Both Schwarz and QQR implement this, so LinK can be agnostic to the bound type.
-pub trait Bound {
+///
+/// `Sync + Send` supertraits: both implementors (`SchwarzBounds`, `QqrBounds`)
+/// are plain read-only data (no interior mutability), and `DensityPairs::build`
+/// (pairs.rs) shares `&dyn Bound` across rayon workers — the trait object needs
+/// `Sync` for that `&` to cross threads.
+pub trait Bound: Sync + Send {
     /// Upper bound estimate for |(sh1 sh2 | sh3 sh4)|.
     fn estimate(&self, sh1: usize, sh2: usize, sh3: usize, sh4: usize) -> f64;
 }

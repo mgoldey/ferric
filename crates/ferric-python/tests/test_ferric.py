@@ -80,3 +80,24 @@ def test_ksdft_h2o_lda_with_gradient():
     # Translational invariance: Σ_A ∂E/∂R_A ≈ 0 (limited by grid quadrature).
     tot = grad.sum(axis=0)
     assert abs(tot).max() < 5e-3, f"translational drift {tot}"
+
+
+def test_oversized_ccsd_t_raises_not_oom():
+    """M2 fail-fast guard: a deliberately-oversized run_ccsd_t must raise a
+    Python exception (RuntimeError carrying the GB numbers), NOT walk into a
+    TB-scale allocation that OOM-kills the interpreter. The tiny budget is
+    passed explicitly via the memory_budget_gb kwarg (explicit beats env in
+    ferric_core::memory::resolve_budget_bytes)."""
+    mol = ferric.Molecule.from_xyz(os.path.join(TESTDATA, "molecules", "water.xyz"))
+    obs = ferric.BasisSet.bundled("cc-pvdz")
+    aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+    try:
+        ferric.run_ccsd_t(mol, obs, aux, memory_budget_gb=1e-6)
+    except RuntimeError as e:
+        msg = str(e)
+        # The CCSD stage (runs before (T)) or the (T) stage fires first —
+        # either way the process survives and the message names the budget.
+        assert "budget is" in msg, msg
+        assert "CCSD" in msg, msg
+        return
+    raise AssertionError("run_ccsd_t did not raise under a tiny memory budget")

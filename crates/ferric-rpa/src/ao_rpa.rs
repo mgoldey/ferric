@@ -49,7 +49,7 @@ pub fn build_tau_quadrature(
     eps_occ: &[f64],
     eps_vir: &[f64],
     n_quad: usize,
-) -> LaplaceQuadrature {
+) -> Result<LaplaceQuadrature, FerricError> {
     let eps_homo = eps_occ.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
     let eps_lumo = eps_vir.iter().cloned().fold(f64::INFINITY, f64::min);
     let eps_min = eps_occ.iter().cloned().fold(f64::INFINITY, f64::min);
@@ -602,7 +602,7 @@ pub fn ao_rpa_correlation_energy(
     let eri3_dressed = dress_eri3_with_metric(eri3, v_inv_sqrt);
 
     // Step 2: AO-basis χ⁰(τ) stack on minimax grid.
-    let laplace = build_tau_quadrature(eps_occ, eps_vir, n_tau);
+    let laplace = build_tau_quadrature(eps_occ, eps_vir, n_tau)?;
     let chi0_stack = chi0_ao_full_time(
         &eri3_dressed, c_occ, c_vir, eps_occ, eps_vir, &laplace,
     )?;
@@ -660,6 +660,24 @@ pub fn ao_rpa_correlation_energy_minimax(
     use ndarray_linalg::{Eigh, UPLO};
     use rayon::prelude::*;
 
+    // Fail-fast size guard: the dense input eri3 (naux·nbf², passed in) is held
+    // co-resident with the dressed copy from dress_eri3_with_metric (:663 → naux·nbf²)
+    // and the χ⁰(τ) stack (n_tau·naux², chi0_ao_full_time :672). Peak ≈ 2× naux·nbf²
+    // plus the τ-stack. No config budget on this reference path. Keep next to the
+    // dress + full-time build.
+    let (naux, nbf1, nbf2) = eri3.dim();
+    let n_tau = joint_grids.tau_points.len();
+    let eri3_bytes = naux.saturating_mul(nbf1).saturating_mul(nbf2).saturating_mul(8);
+    let chi0_stack_bytes = n_tau.saturating_mul(naux).saturating_mul(naux).saturating_mul(8);
+    let peak = eri3_bytes
+        .saturating_mul(2) // input eri3 + dressed copy
+        .saturating_add(chi0_stack_bytes);
+    ferric_core::memory::check_alloc(
+        &format!("AO-RPA minimax (naux={naux}, nbf={nbf1}, n_tau={n_tau}; dense eri3 + χ⁰ stack)"),
+        peak,
+        ferric_core::memory::resolve_budget_bytes(None),
+    )?;
+
     let eri3_dressed = dress_eri3_with_metric(eri3, v_inv_sqrt);
 
     // Build the τ-quadrature mock from the joint arrays
@@ -702,6 +720,40 @@ pub fn ao_rpa_correlation_energy_minimax(
 mod tests {
     use super::*;
     use crate::sternheimer::dielectric_matrix;
+
+    // FERRIC_MEM_BUDGET_GB is process-global; serialize env-mutating tests
+    // (blas_threads.rs / ferric-core memory.rs pattern).
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn ao_rpa_minimax_fails_fast_under_tiny_env_budget() {
+        // M2 size guard: a tiny env budget must ERROR before dress_eri3_with_metric
+        // duplicates the dense eri3. Synthetic inputs — the guard fires first, so
+        // no numerics are exercised.
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (nbasis, nocc, nvir, naux) = (4usize, 1usize, 3usize, 5usize);
+        let eri3 = Array3::<f64>::zeros((naux, nbasis, nbasis));
+        let v_inv_sqrt = Array2::<f64>::eye(naux);
+        let c_occ = Array2::<f64>::zeros((nbasis, nocc));
+        let c_vir = Array2::<f64>::zeros((nbasis, nvir));
+        let eps_occ = vec![-0.5];
+        let eps_vir = vec![0.2, 0.6, 1.1];
+        let joint = MinimaxJointQuadrature {
+            tau_points: vec![0.1, 0.5],
+            omega_points: vec![0.2],
+            omega_weights: vec![1.0],
+            w_transform: vec![0.0, 0.0],
+        };
+        // 1e-7 GiB ≈ 107 bytes; even this tiny synthetic tensor set exceeds it.
+        std::env::set_var("FERRIC_MEM_BUDGET_GB", "0.0000001");
+        let res = ao_rpa_correlation_energy_minimax(
+            &eri3, &v_inv_sqrt, &c_occ, &c_vir, &eps_occ, &eps_vir, &joint,
+        );
+        std::env::remove_var("FERRIC_MEM_BUDGET_GB");
+        let err = res.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("AO-RPA") && msg.contains("budget is"), "unexpected: {msg}");
+    }
 
     /// Build B^P_ia = Σ_{μν} C_{μi} (P|μν) C_{νa} for synthetic test below.
     fn build_b_ov(eri3: &Array3<f64>, c_occ: &Array2<f64>, c_vir: &Array2<f64>) -> Array2<f64> {
@@ -761,8 +813,11 @@ mod tests {
 
         let b_ov = build_b_ov(&eri3, &c_occ, &c_vir);
 
-        // Pick a few τ-points to compare.
-        let laplace = build_tau_quadrature(&eps_occ, &eps_vir, 8);
+        // Pick a few τ-points to compare. n_quad=8 is not tabulated (only
+        // {3,5,7} are); round explicitly to preserve the original test's
+        // 7-point coverage instead of relying on the old silent fallback.
+        let n_quad = ferric_quadrature::minimax::nearest_supported_n_quad(8);
+        let laplace = build_tau_quadrature(&eps_occ, &eps_vir, n_quad).unwrap();
         for &tau in &[0.05_f64, 0.2, 0.5, 1.0] {
             // AO-basis route
             let p_occ = pseudo_density_occ(&c_occ, &eps_occ, tau);
@@ -826,7 +881,11 @@ mod tests {
         let v_mat = Array2::<f64>::eye(naux);
         let omega = 0.5;
 
-        let laplace = build_tau_quadrature(&eps_occ, &eps_vir, 8);
+        // n_quad=8 is not tabulated (only {3,5,7} are); round explicitly to
+        // preserve the original test's 7-point coverage instead of relying
+        // on the old silent fallback.
+        let n_quad = ferric_quadrature::minimax::nearest_supported_n_quad(8);
+        let laplace = build_tau_quadrature(&eps_occ, &eps_vir, n_quad).unwrap();
         let eps_imag = dielectric_matrix_imag_time(&v_mat, &b_ov, &eps_occ, &eps_vir, omega, &laplace).unwrap();
         let eps_dense = dielectric_matrix(&v_mat, &b_ov, &eps_occ, &eps_vir, omega);
 

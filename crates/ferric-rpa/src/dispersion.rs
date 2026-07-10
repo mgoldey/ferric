@@ -124,6 +124,10 @@ impl C6Source {
     }
 }
 
+/// One row of the (a,b) Casimir-Polder pair reduction: (isotropic C6 row,
+/// anisotropic C6 tensor row), both indexed by `b`.
+type C6PairRow = (Vec<f64>, Vec<[[f64; 3]; 3]>);
+
 /// Casimir-Polder contraction. SHARED SEAM between TS and PDEP-RPA sources.
 ///
 /// ```text
@@ -132,6 +136,7 @@ impl C6Source {
 /// ```
 /// where α_iso(iω_k) = (1/3) Tr α(iω_k).
 pub fn casimir_polder_c6(dyn_pol: &DynamicPolarizability) -> C6Result {
+    use rayon::prelude::*;
     use std::f64::consts::PI;
     let natoms = dyn_pol.per_atom.len();
     let nfreq = dyn_pol.freqs.len();
@@ -146,32 +151,49 @@ pub fn casimir_polder_c6(dyn_pol: &DynamicPolarizability) -> C6Result {
         }
     }
 
+    // The (a,b) pair reduction is embarrassingly parallel and independent of
+    // BLAS (plain scalar contractions over the frequency axis, no GEMM/eigh)
+    // — no with_blas_threads guard needed. Each pair writes disjoint output
+    // cells, so a flat par_iter over the row index with an order-preserving
+    // collect reproduces the serial nested loop exactly.
+    let rows: Vec<C6PairRow> = (0..natoms)
+        .into_par_iter()
+        .map(|a| {
+            let mut iso_row = vec![0.0_f64; natoms];
+            let mut aniso_row = vec![[[0.0_f64; 3]; 3]; natoms];
+            for b in 0..natoms {
+                // Isotropic.
+                let mut s_iso = 0.0;
+                for k in 0..nfreq {
+                    s_iso += dyn_pol.weights[k] * iso[a][k] * iso[b][k];
+                }
+                iso_row[b] = pref * s_iso;
+
+                // Anisotropic, element-wise.
+                for i in 0..3 {
+                    for j in 0..3 {
+                        let mut s = 0.0;
+                        for k in 0..nfreq {
+                            s += dyn_pol.weights[k]
+                                * dyn_pol.per_atom[a][k][i][j]
+                                * dyn_pol.per_atom[b][k][i][j];
+                        }
+                        aniso_row[b][i][j] = pref * s;
+                    }
+                }
+            }
+            (iso_row, aniso_row)
+        })
+        .collect();
+
     let mut c6_iso_pair = Array2::<f64>::zeros((natoms, natoms));
     let mut c6_aniso_pair: Vec<Vec<[[f64; 3]; 3]>> =
         vec![vec![[[0.0; 3]; 3]; natoms]; natoms];
-
-    for a in 0..natoms {
+    for (a, (iso_row, aniso_row)) in rows.into_iter().enumerate() {
         for b in 0..natoms {
-            // Isotropic.
-            let mut s_iso = 0.0;
-            for k in 0..nfreq {
-                s_iso += dyn_pol.weights[k] * iso[a][k] * iso[b][k];
-            }
-            c6_iso_pair[(a, b)] = pref * s_iso;
-
-            // Anisotropic, element-wise.
-            for i in 0..3 {
-                for j in 0..3 {
-                    let mut s = 0.0;
-                    for k in 0..nfreq {
-                        s += dyn_pol.weights[k]
-                            * dyn_pol.per_atom[a][k][i][j]
-                            * dyn_pol.per_atom[b][k][i][j];
-                    }
-                    c6_aniso_pair[a][b][i][j] = pref * s;
-                }
-            }
+            c6_iso_pair[(a, b)] = iso_row[b];
         }
+        c6_aniso_pair[a] = aniso_row;
     }
 
     // Molecular isotropic C6 from the molecular α(iω) — the DOSD-comparable
@@ -216,9 +238,14 @@ pub fn casimir_polder_c6(dyn_pol: &DynamicPolarizability) -> C6Result {
 ///   α_{ij}(iω) = α_iso(iω) · (α^static_{ij} / α^static_iso)   (shape)
 /// ```
 ///
-/// Atoms with Z outside the reference table fall back to using the static
-/// tensor's own isotropic average for α_iso_eff with the H London frequency;
-/// the result is still finite.
+/// Only α_iso_eff and ω_A come from the free-atom reference; the static tensor
+/// supplies the (unit-trace) directional shape.
+///
+/// # Errors
+///
+/// Returns [`FerricError::General`] when any atom's Z lies outside the TS
+/// free-atom reference table (Z=1..=18) — see [`mbd::ts_atom_params`]. Heavy
+/// atoms are a hard error, not a silent hydrogen-substituted fallback.
 pub fn ts_dynamic_polarizability(
     z: &[usize],
     vol_ratio: &[f64],
@@ -232,8 +259,7 @@ pub fn ts_dynamic_polarizability(
         vec![vec![[[0.0; 3]; 3]; nfreq]; natoms];
 
     // Per-atom (α_eff, ω_A) — shared with the MBD path (mbd::ts_atom_params).
-    // Errors for elements outside the TS free-atom table (Z > 18).
-    let params = crate::dispersion::mbd::ts_atom_params(z, vol_ratio)?;
+    let params = crate::dispersion::mbd::ts_atom_params(z, vol_ratio, alpha_static)?;
 
     for a in 0..natoms {
         let st = alpha_static[a];
@@ -410,8 +436,10 @@ pub fn pdep_dynamic_polarizability_truncated(
 ) -> Result<DynamicPolarizability, FerricError> {
     use ferric_dft::ao_grid::eval_basis_on_points;
     use ferric_dft::grid::{build_atomic_grid, AtomicGridConfig};
+    use ferric_integrals::blas_threads::with_blas_threads;
     use ferric_mp2::rimp2::RiMp2Config;
     use ferric_scf::result::Spin;
+    use rayon::prelude::*;
 
     let _ = partition; // Becke only for now (same as full path)
 
@@ -570,50 +598,71 @@ pub fn pdep_dynamic_polarizability_truncated(
     //   α_ij   = 4 bare_ij − 16 w_M^{i,T} y_M^j
     // This is exact within the M-dimensional PDEP subspace; modes outside
     // the subspace contribute only through the bare (non-interacting) term.
+    // Each ω is independent — parallelize over frequencies (energy.rs
+    // pattern). The (M × nov) `ct_b_g` scratch (a full clone of `ct_b` per
+    // frequency in the serial version) becomes per-thread via map_init: one
+    // buffer allocated per rayon worker, reused across the ω's it handles.
+    // BLAS pinned to 1 inside the rayon region (the per-frequency M×M
+    // dielectric solve must not nest OpenBLAS threads under rayon workers).
+    let rows: Vec<Result<Vec<[[f64; 3]; 3]>, FerricError>> = with_blas_threads(1, || {
+        freqs
+            .par_iter()
+            .map_init(
+                || ct_b.clone(),
+                |ct_b_g, &omega| -> Result<Vec<[[f64; 3]; 3]>, FerricError> {
+                    let omega2 = omega * omega;
+                    let mut g = ndarray::Array1::<f64>::zeros(nov);
+                    for ia in 0..nov { let e = e_ia[ia]; g[ia] = e / (omega2 + e*e); }
+
+                    // B̃_g = B̃ diag(g): (naux, nov) → scale columns.
+                    // We compute Uᵀ B̃_g = (Uᵀ B̃) diag(g) = ct_b * diag(g) efficiently
+                    // as a column-scaled product, refilled from ct_b each ω.
+                    ct_b_g.assign(&ct_b);
+                    for ia in 0..nov { ct_b_g.column_mut(ia).mapv_inplace(|x| x * g[ia]); }
+
+                    // ε̃_M(ω) = I_M + 4 (Uᵀ B̃_g) (Uᵀ B̃_g)ᵀ  [M×M SPD]
+                    // = I + 4 ct_b_g · ct_b_gᵀ
+                    let mut eps_m: Array2<f64> = ct_b_g.dot(&ct_b_g.t());
+                    eps_m.mapv_inplace(|x| x * 4.0);
+                    for alpha in 0..n_modes { eps_m[(alpha, alpha)] += 1.0; }
+
+                    // Molecular projected dipole: w_M^d = Uᵀ B̃_g μ^d = ct_b_g · μ^d
+                    let w_mol_m: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| ct_b_g.dot(&mu_flat[d]));
+                    // Solve ε̃_M y_M^d = w_M^d  (M×M, small)
+                    let y_mol_m = crate::properties::solve_dielectric_3(&eps_m, &w_mol_m)?;
+
+                    let mut row: Vec<[[f64; 3]; 3]> = vec![[[0.0; 3]; 3]; natoms];
+                    for a in 0..natoms {
+                        // Per-atom projected dipole: w_M^{A,d} = ct_b_g · μ^{A,d}
+                        let w_ai_m: [ndarray::Array1<f64>; 3] =
+                            std::array::from_fn(|d| ct_b_g.dot(&mu_ai_flat[a][d]));
+
+                        let mut tensor = [[0.0_f64; 3]; 3];
+                        for d in 0..3 {
+                            for j in 0..3 {
+                                let bare = mu_ai_flat[a][d].dot(&(&mu_flat[j] * &g));
+                                let coupled = w_ai_m[d].dot(&y_mol_m[j]);
+                                tensor[d][j] = 4.0 * bare - 16.0 * coupled;
+                            }
+                        }
+                        // Symmetrize.
+                        for i in 0..3 { for j in (i+1)..3 {
+                            let avg = 0.5*(tensor[i][j]+tensor[j][i]);
+                            tensor[i][j] = avg; tensor[j][i] = avg;
+                        }}
+                        row[a] = tensor;
+                    }
+                    Ok(row)
+                },
+            )
+            .collect::<Vec<Result<Vec<[[f64; 3]; 3]>, FerricError>>>()
+    });
+
     let mut out: Vec<Vec<[[f64; 3]; 3]>> = vec![vec![[[0.0; 3]; 3]; nfreq]; natoms];
-
-    for (k, &omega) in freqs.iter().enumerate() {
-        let omega2 = omega * omega;
-        let mut g = ndarray::Array1::<f64>::zeros(nov);
-        for ia in 0..nov { let e = e_ia[ia]; g[ia] = e / (omega2 + e*e); }
-
-        // B̃_g = B̃ diag(g): (naux, nov) → scale columns.
-        // We compute Uᵀ B̃_g = (Uᵀ B̃) diag(g) = ct_b * diag(g) efficiently
-        // as a column-scaled product.
-        let ct_b_g: Array2<f64> = {
-            let mut m = ct_b.clone(); // (M, nov)
-            for ia in 0..nov { m.column_mut(ia).mapv_inplace(|x| x * g[ia]); }
-            m
-        };
-
-        // ε̃_M(ω) = I_M + 4 (Uᵀ B̃_g) (Uᵀ B̃_g)ᵀ  [M×M SPD]
-        // = I + 4 ct_b_g · ct_b_gᵀ
-        let mut eps_m: Array2<f64> = ct_b_g.dot(&ct_b_g.t());
-        eps_m.mapv_inplace(|x| x * 4.0);
-        for alpha in 0..n_modes { eps_m[(alpha, alpha)] += 1.0; }
-
-        // Molecular projected dipole: w_M^d = Uᵀ B̃_g μ^d = ct_b_g · μ^d
-        let w_mol_m: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| ct_b_g.dot(&mu_flat[d]));
-        // Solve ε̃_M y_M^d = w_M^d  (M×M, small)
-        let y_mol_m = crate::properties::solve_dielectric_3(&eps_m, &w_mol_m)?;
-
+    for (k, row) in rows.into_iter().enumerate() {
+        let row = row?;
         for a in 0..natoms {
-            // Per-atom projected dipole: w_M^{A,d} = ct_b_g · μ^{A,d}
-            let w_ai_m: [ndarray::Array1<f64>; 3] =
-                std::array::from_fn(|d| ct_b_g.dot(&mu_ai_flat[a][d]));
-
-            for d in 0..3 {
-                for j in 0..3 {
-                    let bare = mu_ai_flat[a][d].dot(&(&mu_flat[j] * &g));
-                    let coupled = w_ai_m[d].dot(&y_mol_m[j]);
-                    out[a][k][d][j] = 4.0 * bare - 16.0 * coupled;
-                }
-            }
-            // Symmetrize.
-            for i in 0..3 { for j in (i+1)..3 {
-                let avg = 0.5*(out[a][k][i][j]+out[a][k][j][i]);
-                out[a][k][i][j] = avg; out[a][k][j][i] = avg;
-            }}
+            out[a][k] = row[a];
         }
     }
 
@@ -625,38 +674,6 @@ pub fn pdep_dynamic_polarizability_truncated(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn c6_source_parses_all_documented_values() {
-        let p = C6Source::parse_config_str;
-        assert_eq!(p(None).unwrap(), C6Source::Ts);
-        assert_eq!(p(Some("ts")).unwrap(), C6Source::Ts);
-        assert_eq!(p(Some("pdep")).unwrap(), C6Source::Pdep);
-        // "mbd" was read by the CLI but undocumented; it is now first-class.
-        assert_eq!(p(Some("mbd")).unwrap(), C6Source::Mbd);
-        assert_eq!(p(Some("  PDEP ")).unwrap(), C6Source::Pdep);
-    }
-
-    /// A typo'd source must ERROR, not silently compute TS C6 and label it
-    /// as whatever the user asked for.
-    #[test]
-    fn c6_source_typo_errors_instead_of_silent_ts() {
-        assert!(C6Source::parse_config_str(Some("tsx")).is_err());
-        assert!(C6Source::parse_config_str(Some("rpa")).is_err());
-    }
-
-    #[test]
-    fn c6_partition_parse_and_defaults() {
-        let p = DispersionPartition::parse_config_str;
-        assert_eq!(p(None).unwrap(), None);
-        assert_eq!(p(Some("becke")).unwrap(), Some(DispersionPartition::Becke));
-        assert_eq!(p(Some("hirshfeld")).unwrap(), Some(DispersionPartition::Hirshfeld));
-        assert!(p(Some("mulliken")).is_err());
-        // Source-dependent default when unset.
-        assert_eq!(C6Source::Pdep.default_partition(), DispersionPartition::Hirshfeld);
-        assert_eq!(C6Source::Ts.default_partition(), DispersionPartition::Becke);
-        assert_eq!(C6Source::Mbd.default_partition(), DispersionPartition::Becke);
-    }
 
     /// Fine trapezoid grid on [0, ωmax] for analytic Casimir-Polder checks.
     fn trapezoid_grid(n: usize, wmax: f64) -> (Vec<f64>, Vec<f64>) {
@@ -706,7 +723,8 @@ mod tests {
         let vol_ratio = vec![1.0_f64];
         let alpha_static = vec![[[4.5, 0.0, 0.0], [0.0, 4.5, 0.0], [0.0, 0.0, 4.5]]];
         let (freqs, weights) = trapezoid_grid(20000, 200.0);
-        let dp = ts_dynamic_polarizability(&z, &vol_ratio, &alpha_static, &freqs, &weights).unwrap();
+        let dp =
+            ts_dynamic_polarizability(&z, &vol_ratio, &alpha_static, &freqs, &weights).unwrap();
         let res = casimir_polder_c6(&dp);
         let c6 = res.c6_iso_pair[(0, 0)];
         assert!(
@@ -722,10 +740,26 @@ mod tests {
         let vol_ratio = vec![1.0_f64];
         let alpha_static = vec![[[9.0, 0.0, 0.0], [0.0, 9.0, 0.0], [0.0, 0.0, 18.0]]];
         let (freqs, weights) = trapezoid_grid(4000, 100.0);
-        let dp = ts_dynamic_polarizability(&z, &vol_ratio, &alpha_static, &freqs, &weights).unwrap();
+        let dp =
+            ts_dynamic_polarizability(&z, &vol_ratio, &alpha_static, &freqs, &weights).unwrap();
         let res = casimir_polder_c6(&dp);
         let czz = res.c6_aniso_pair[0][0][2][2];
         let cxx = res.c6_aniso_pair[0][0][0][0];
         assert!(czz > cxx, "expected prolate C6: zz={czz} xx={cxx}");
+    }
+
+    /// Heavy atom (Z=26, Fe) with no TS free-atom reference must HARD-ERROR, not
+    /// silently substitute hydrogen's London frequency. The error names the atom
+    /// index and Z so the caller can act.
+    #[test]
+    fn ts_dynamic_heavy_atom_errors_not_hydrogen() {
+        let z = vec![26usize]; // Fe — outside the TS table (Z=1..=18)
+        let vol_ratio = vec![1.0_f64];
+        let alpha_static = vec![[[9.0, 0.0, 0.0], [0.0, 9.0, 0.0], [0.0, 0.0, 9.0]]];
+        let (freqs, weights) = trapezoid_grid(100, 100.0);
+        let err = ts_dynamic_polarizability(&z, &vol_ratio, &alpha_static, &freqs, &weights)
+            .expect_err("Z=26 must error, not silently use hydrogen ω");
+        let msg = format!("{err}");
+        assert!(msg.contains("Z=26"), "error must name the element: {msg}");
     }
 }

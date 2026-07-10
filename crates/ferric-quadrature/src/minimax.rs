@@ -10,6 +10,17 @@
 //!
 //! Tables are taken from Takatsuka, Ten-no, Hackbusch (JCP 129, 044112, 2008)
 //! as bundled in Helmich-Paris' `laplace-minimax` library.
+//!
+//! Only `n_quad ∈ {3, 5, 7}` are tabulated, and each table only covers `R` up
+//! to a finite maximum (100 for k=3, 1000 for k=5/7). Requesting an
+//! unsupported `n_quad` or an `R` beyond the table is a hard [`FerricError`]
+//! — earlier versions silently coerced both (falling back to the k=7 table,
+//! clamping to the largest tabulated `R`), which handed callers a different
+//! quadrature than requested with no signal. Callers that want the old
+//! "round to nearest supported size" behavior can opt in explicitly via
+//! [`nearest_supported_n_quad`].
+
+use ferric_core::FerricError;
 
 /// A normalized minimax-Laplace quadrature: exponents `t_k` and weights `w_k`
 /// rescaled to a problem-specific energy range `[ymin, ymax]`.
@@ -18,9 +29,10 @@
 /// `[ymin, ymax]`.
 #[derive(Debug, Clone)]
 pub struct LaplaceQuadrature {
-    /// Requested number of quadrature points (table size may differ if unsupported).
+    /// Requested number of quadrature points (equals `points.len()` — the
+    /// table for an unsupported size is now a hard error, not a fallback).
     pub n_quad: usize,
-    /// Rescaled exponents `t_k` (length = number of points actually used).
+    /// Rescaled exponents `t_k`.
     pub points: Vec<f64>,
     /// Rescaled weights `w_k`.
     pub weights: Vec<f64>,
@@ -32,16 +44,20 @@ impl LaplaceQuadrature {
     /// Picks the tabulated minimax data with `R_tab ≥ ymax/ymin` (with a 1%
     /// slack to absorb floating-point round-off) and rescales:
     ///   `t_actual = t_table / ymin`, `w_actual = w_table / ymin`.
-    pub fn new(n_quad: usize, ymin: f64, ymax: f64) -> Self {
+    ///
+    /// # Errors
+    /// Returns `Err` if `n_quad` is not tabulated ({3, 5, 7}) or if
+    /// `ymax/ymin` exceeds the largest tabulated `R` for that `n_quad`.
+    pub fn new(n_quad: usize, ymin: f64, ymax: f64) -> Result<Self, FerricError> {
         let r = ymax / ymin;
-        let (raw_t, raw_w) = select_minimax_points(n_quad, r);
+        let (raw_t, raw_w) = select_minimax_points(n_quad, r)?;
         let points: Vec<f64> = raw_t.iter().map(|&t| t / ymin).collect();
         let weights: Vec<f64> = raw_w.iter().map(|&w| w / ymin).collect();
-        Self { n_quad, points, weights }
+        Ok(Self { n_quad, points, weights })
     }
 
-    /// Length of the actual quadrature (may differ from `n_quad` for
-    /// unsupported sizes — `select_minimax_points` falls back to k=7).
+    /// Length of the actual quadrature (always equals `n_quad` — kept for
+    /// call-site compatibility with the pre-Result API).
     pub fn len(&self) -> usize {
         self.points.len()
     }
@@ -57,38 +73,49 @@ impl LaplaceQuadrature {
 /// via Helmich-Paris `laplace-minimax`.
 /// Returns `(exponents, weights)` for the unnormalized interval `[1, R]`.
 ///
-/// If `k` is not directly tabulated, falls back to the k=7 table — callers
-/// should validate convergence externally.
-pub fn select_minimax_points(k: usize, r: f64) -> (Vec<f64>, Vec<f64>) {
+/// # Errors
+/// Returns `Err` if `k` is not one of the tabulated sizes ({3, 5, 7}), or if
+/// `r` exceeds the largest tabulated range for that `k`. Use
+/// [`nearest_supported_n_quad`] to round an arbitrary request to a supported
+/// size when that coercion is actually wanted.
+pub fn select_minimax_points(k: usize, r: f64) -> Result<(Vec<f64>, Vec<f64>), FerricError> {
     let table: &[MinimaxEntry] = match k {
         3 => MINIMAX_K3,
         5 => MINIMAX_K5,
         7 => MINIMAX_K7,
-        other => {
-            // Was a silent fallback: `n_quad = 10` ran a 7-point quadrature
-            // while the caller believed it had 10-point accuracy.
-            eprintln!(
-                "warning: minimax-Laplace n_quad = {other} is not tabulated \
-                 (only 3, 5, 7); using the 7-point table"
-            );
-            MINIMAX_K7
+        _ => {
+            return Err(FerricError::General(format!(
+                "minimax quadrature: n_quad={k} is not tabulated (supported: 3, 5, 7); \
+                 use ferric_quadrature::minimax::nearest_supported_n_quad to round to a \
+                 supported size if that is intended"
+            )))
         }
     };
 
     for (r_tab, t, w) in table.iter() {
         if *r_tab >= r * 0.99 {
-            return (t.to_vec(), w.to_vec());
+            return Ok((t.to_vec(), w.to_vec()));
         }
     }
-    // Was a silent fallback: an energy-gap ratio beyond the largest tabulated
-    // R reused the R=1000 table, whose minimax error bound no longer applies.
-    let (r_max, t, w) = &table[table.len() - 1];
-    eprintln!(
-        "warning: minimax-Laplace range R = {r:.1} exceeds the largest \
-         tabulated R = {r_max:.0}; quadrature error is unvalidated beyond the \
-         table (denominator decomposition may be inaccurate)"
-    );
-    (t.to_vec(), w.to_vec())
+    let r_max = table.last().map(|(r_tab, _, _)| *r_tab).unwrap_or(0.0);
+    Err(FerricError::General(format!(
+        "minimax quadrature: requested R={r} (ymax/ymin) exceeds the largest tabulated \
+         range R_max={r_max} for n_quad={k}; the energy-gap spread is too wide for this \
+         quadrature table"
+    )))
+}
+
+/// Round an arbitrary requested `n_quad` up to the nearest tabulated size
+/// ({3, 5, 7}), saturating at 7 for anything larger. Explicit opt-in
+/// replacement for the old implicit fallback in [`select_minimax_points`].
+pub fn nearest_supported_n_quad(n_quad: usize) -> usize {
+    if n_quad <= 3 {
+        3
+    } else if n_quad <= 5 {
+        5
+    } else {
+        7
+    }
 }
 
 type MinimaxEntry = (f64, &'static [f64], &'static [f64]);
@@ -146,10 +173,10 @@ mod tests {
 
     #[test]
     fn quadrature_rescaling_basic() {
-        let q = LaplaceQuadrature::new(7, 1.0, 50.0);
+        let q = LaplaceQuadrature::new(7, 1.0, 50.0).unwrap();
         assert_eq!(q.points.len(), 7);
         assert_eq!(q.weights.len(), 7);
-        let (raw_t, _) = select_minimax_points(7, 50.0);
+        let (raw_t, _) = select_minimax_points(7, 50.0).unwrap();
         assert!((q.points[0] - raw_t[0]).abs() < 1e-15);
     }
 
@@ -158,7 +185,7 @@ mod tests {
         // Σ_k w_k exp(-t_k x) ≈ 1/x on [ymin, ymax].
         let ymin = 0.5;
         let ymax = 20.0;
-        let q = LaplaceQuadrature::new(7, ymin, ymax);
+        let q = LaplaceQuadrature::new(7, ymin, ymax).unwrap();
         for &x in &[ymin, 1.0, 5.0, ymax] {
             let approx: f64 =
                 q.points.iter().zip(q.weights.iter()).map(|(&t, &w)| w * (-t * x).exp()).sum();
@@ -166,5 +193,73 @@ mod tests {
             let rel = ((approx - exact) / exact).abs();
             assert!(rel < 1e-3, "x={x}: approx={approx}, exact={exact}, rel={rel}");
         }
+    }
+
+    /// Unsupported `n_quad` (not in {3,5,7}) must be a hard error, not a
+    /// silent fallback to the k=7 table. This was the TD-QUAD audit finding:
+    /// callers sweeping n_quad got 7-point quadrature back with no signal.
+    #[test]
+    fn unsupported_n_quad_errors() {
+        let err = select_minimax_points(4, 10.0).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains('4'), "error should mention the requested n_quad: {msg}");
+        assert!(
+            msg.contains('3') && msg.contains('5') && msg.contains('7'),
+            "error should list supported values: {msg}"
+        );
+    }
+
+    #[test]
+    fn unsupported_n_quad_errors_via_laplace_quadrature_new() {
+        let err = LaplaceQuadrature::new(4, 1.0, 10.0).unwrap_err();
+        assert!(err.to_string().contains('4'));
+    }
+
+    /// R beyond the largest tabulated range must be a hard error, not a
+    /// silent clamp to the largest available row (which would return
+    /// quadrature tuned for a much narrower range than requested).
+    #[test]
+    fn r_beyond_table_range_errors() {
+        // k=3 table tops out at R=100.
+        let err = select_minimax_points(3, 1e6).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("100"), "error should mention table max R: {msg}");
+        assert!(
+            msg.contains("1000000") || msg.contains("1e6"),
+            "error should mention requested R: {msg}"
+        );
+    }
+
+    #[test]
+    fn r_beyond_table_range_errors_via_laplace_quadrature_new() {
+        // ymax/ymin = 1e6 exceeds the k=3 table's max R=100.
+        let err = LaplaceQuadrature::new(3, 1.0, 1e6).unwrap_err();
+        assert!(err.to_string().contains("100"));
+    }
+
+    /// Valid, tabulated (n_quad, R) combinations must be unaffected — same
+    /// numerical output as before the audit fix.
+    #[test]
+    fn valid_inputs_unchanged() {
+        for &k in &[3usize, 5, 7] {
+            let (t, w) = select_minimax_points(k, 20.0).unwrap();
+            assert_eq!(t.len(), k);
+            assert_eq!(w.len(), k);
+        }
+        let q = LaplaceQuadrature::new(7, 1.0, 50.0).unwrap();
+        assert_eq!(q.points.len(), 7);
+    }
+
+    /// `nearest_supported_n_quad` gives callers an explicit opt-in path to
+    /// the old "round up to a tabulated size" behavior.
+    #[test]
+    fn nearest_supported_n_quad_rounds_up() {
+        assert_eq!(nearest_supported_n_quad(1), 3);
+        assert_eq!(nearest_supported_n_quad(3), 3);
+        assert_eq!(nearest_supported_n_quad(4), 5);
+        assert_eq!(nearest_supported_n_quad(5), 5);
+        assert_eq!(nearest_supported_n_quad(6), 7);
+        assert_eq!(nearest_supported_n_quad(7), 7);
+        assert_eq!(nearest_supported_n_quad(100), 7);
     }
 }

@@ -34,6 +34,21 @@ pub fn canonical_mp2(
 
     // Build (ia|jb) MO integrals directly from AO shell-quartet loop
     let nov = nocc * nvir;
+
+    // Fail-fast size guard: peak is the dense (nov, nov) MO-ERI buffer mo_eri
+    // (:37) plus the reshaped (i,a,j,b) copy g (:100) and the permuted V (:120)
+    // — ~5 co-resident (nocc·nvir)² f64 buffers. No config budget on this
+    // reference path, so resolve from env/auto. Keep next to mo_eri.
+    let peak = nov
+        .saturating_mul(nov)
+        .saturating_mul(5)
+        .saturating_mul(8);
+    ferric_core::memory::check_alloc(
+        &format!("canonical MP2 (nocc={nocc}, nvir={nvir}; dense MO-ERI (nov={nov})²)"),
+        peak,
+        ferric_core::memory::resolve_budget_bytes(None),
+    )?;
+
     let mut mo_eri = vec![0.0f64; nov * nov];
     let mut eng = Engine::new_2e(op, prep, 1e-14)?;
 
@@ -159,9 +174,33 @@ mod tests {
     use ferric_integrals::basis_bridge::PreparedBasis;
     use ferric_scf::rhf::{solve_rhf, RhfConfig};
     use ferric_scf::screening::SchwarzBounds;
+    use std::sync::Mutex;
+
+    // FERRIC_MEM_BUDGET_GB is process-global; serialize any test that sets it
+    // (blas_threads.rs / memory.rs pattern).
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     // Baseline canonical MP2 energy for H2/cc-pVDZ from the pre-port scalar loop.
     const CANONICAL_MP2_H2_CCPVDZ: f64 = -0.026371557616130;
+
+    #[test]
+    fn canonical_mp2_fails_fast_under_tiny_env_budget() {
+        use ferric_core::parallel::ParallelContext;
+        use ferric_integrals::operator::Operator;
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mol = Molecule::parse_xyz("2\n\nH 0.0 0.0 0.0\nH 0.0 0.0 0.74\n", 0, 1).unwrap();
+        let prep = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let rhf = solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &RhfConfig::default()).unwrap();
+        // Tiny env budget → the guard (which resolves via None) must fire.
+        std::env::set_var("FERRIC_MEM_BUDGET_GB", "0.000001");
+        let res = canonical_mp2(&mol, &prep, op, &rhf, 0);
+        std::env::remove_var("FERRIC_MEM_BUDGET_GB");
+        let err = res.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("canonical MP2") && msg.contains("budget is"), "unexpected: {msg}");
+    }
 
     #[test]
     fn canonical_mp2_energy_via_einsum_matches_scalar() {
