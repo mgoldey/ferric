@@ -119,6 +119,8 @@ where
         return Ok(LanczosResult {
             eigenvalues: Vec::new(),
             eigenvectors: Array2::zeros((naux, 0)),
+            converged: true,
+            max_resid: 0.0,
         });
     }
 
@@ -168,7 +170,7 @@ where
         eigenvalues.push(theta[c]);
     }
 
-    Ok(LanczosResult { eigenvalues, eigenvectors })
+    Ok(LanczosResult { eigenvalues, eigenvectors, converged: true, max_resid: 0.0 })
 }
 
 /// Result of a block-Lanczos run.
@@ -178,6 +180,14 @@ pub struct LanczosResult {
     pub eigenvalues: Vec<f64>,
     /// Eigenvectors in the original space, shape `(naux, n_converged)`.
     pub eigenvectors: Array2<f64>,
+    /// Whether the Ritz residual criterion was met. `false` means max_iter was
+    /// exhausted and these are best-effort (possibly inaccurate) eigenpairs —
+    /// callers must surface this, not treat the result as converged.
+    /// Dense/exact paths (full-rank eigh, invariant-subspace termination) are
+    /// always `true`.
+    pub converged: bool,
+    /// Final max Ritz residual estimate (0.0 for exact paths).
+    pub max_resid: f64,
 }
 
 /// QR-orthonormalize columns; returns Q with the same shape as the input when
@@ -276,6 +286,8 @@ where
         return Ok(LanczosResult {
             eigenvalues: Vec::new(),
             eigenvectors: Array2::zeros((naux, 0)),
+            converged: true,
+            max_resid: 0.0,
         });
     }
 
@@ -286,6 +298,8 @@ where
         return Ok(LanczosResult {
             eigenvalues: Vec::new(),
             eigenvectors: Array2::zeros((naux, 0)),
+            converged: true,
+            max_resid: 0.0,
         });
     }
 
@@ -432,7 +446,14 @@ where
             max_resid = 0.0;
         }
 
-        let result = LanczosResult { eigenvalues, eigenvectors: ritz };
+        let result = LanczosResult {
+            eigenvalues,
+            eigenvectors: ritz,
+            // v_next_opt == None (invariant Krylov subspace) leaves max_resid
+            // at 0.0 — exact within the span, genuinely converged.
+            converged: max_resid < conv_thresh,
+            max_resid,
+        };
         last_result = Some(result);
 
         // Termination criteria:
@@ -501,6 +522,29 @@ mod tests {
             }
         }
         a
+    }
+
+    /// Iteration-starved runs must say so: `converged` was silently absent
+    /// before (best-effort Ritz pairs looked identical to converged ones).
+    #[test]
+    fn lanczos_flags_unconverged_when_iteration_starved() {
+        // Dense spread-out spectrum (n=50) that a single-column seed cannot
+        // resolve in one block iteration.
+        let lambdas: Vec<f64> = (0..50).map(|i| 1.0 + 0.2 * (i as f64)).collect();
+        let a = make_symmetric_with_spectrum(&lambdas, 7);
+        let n = 50;
+        let mut seed = Array2::<f64>::zeros((n, 1));
+        for i in 0..n {
+            seed[(i, 0)] = ((i * 3 + 1) as f64).sin();
+        }
+        // max_iter = 2: nowhere near enough Krylov depth for 8 eigenpairs at 1e-12.
+        let starved = run_lanczos_seeded(seed.clone(), |v| a.dot(v), 8, 2, 1e-12).unwrap();
+        assert!(!starved.converged, "2-iteration run cannot be converged");
+        assert!(starved.max_resid > 1e-12, "residual should be reported: {}", starved.max_resid);
+
+        // Generous iterations on the same problem must converge and say so.
+        let ok = run_lanczos_seeded(seed, |v| a.dot(v), 8, 100, 1e-10).unwrap();
+        assert!(ok.converged, "full run should converge (max_resid = {})", ok.max_resid);
     }
 
     #[test]

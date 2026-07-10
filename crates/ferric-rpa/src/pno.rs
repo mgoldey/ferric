@@ -255,6 +255,13 @@ pub fn run_pdep_rpa_osv(
     let lz = lanczos::run_lanczos_seeded(
         seed, matvec, naux, max_iter, config.eigensolver_conv_thresh,
     )?;
+    if !lz.converged {
+        eprintln!(
+            "warning: Lanczos eigensolve did NOT converge (max Ritz residual {:.3e} \
+             > {:.3e}); OSV/PNO eigenpotentials are best-effort",
+            lz.max_resid, config.eigensolver_conv_thresh
+        );
+    }
     let eigvals = &lz.eigenvalues;
     let eigvecs = &lz.eigenvectors;
 
