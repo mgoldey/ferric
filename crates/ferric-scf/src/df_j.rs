@@ -403,4 +403,87 @@ mod tests {
         assert_eq!(j1, j2, "narrow-band DfJ must be bit-identical at 1 vs 2 threads");
         assert_eq!(j1, j8, "narrow-band DfJ must be bit-identical at 1 vs 8 threads");
     }
+
+    /// Timing demo, run explicitly:
+    ///   OPENBLAS_NUM_THREADS=1 cargo test -p ferric-scf --lib \
+    ///     df_j_timing_chunked_vs_naive_demo -- --ignored --nocapture
+    /// Min-of-3 wall time for the rayon-chunked `build` vs a naive per-block
+    /// unchunked two-pass contraction (the pre-restructure algorithm, same
+    /// code path exercised for correctness by
+    /// `df_j_chunked_matches_naive_contraction`) on benzene/cc-pVDZ with
+    /// cc-pVDZ-RI aux — large enough (na=132, naux~450) that the aux
+    /// dimension spans several rayon chunks, unlike the 24-bf water fixture
+    /// used by the other unit tests.
+    #[test]
+    #[ignore]
+    fn df_j_timing_chunked_vs_naive_demo() {
+        use std::time::Instant;
+        let mol = Molecule::load_xyz("../../testdata/molecules/benzene.xyz").unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let n = obs.nbasis();
+
+        let mut d = Array2::<f64>::zeros((n, n));
+        for i in 0..n {
+            for j in 0..n {
+                d[(i, j)] = 0.01 * (((i * 7 + j * 3) % 11) as f64);
+            }
+        }
+        let d = 0.5 * (&d + &d.t());
+
+        let mut dfj = DfJ::new(op, &obs, &dfbs, usize::MAX).unwrap();
+        let naux = dfj.source.naux();
+        println!("benzene/cc-pVDZ: nbf={n}, naux={naux}");
+
+        // "After": current rayon-chunked build.
+        let mut best_after = f64::MAX;
+        for _ in 0..3 {
+            let mut j = Array2::zeros((n, n));
+            let t0 = Instant::now();
+            dfj.build(&d, &mut j).unwrap();
+            best_after = best_after.min(t0.elapsed().as_secs_f64());
+        }
+
+        // "Before": naive per-block, unchunked two-pass contraction (the
+        // pre-restructure serial GEMV chain this task replaced).
+        let d_flat = d.view().into_shape_with_order(n * n).unwrap();
+        let mut best_before = f64::MAX;
+        for _ in 0..3 {
+            let t0 = Instant::now();
+            let mut d_p_ref = ndarray::Array1::<f64>::zeros(naux);
+            dfj.source
+                .for_each_block(|blk| {
+                    let b = blk.data.shape()[0];
+                    let flat = blk.data.into_shape_with_order((b, n * n)).unwrap();
+                    let part = flat.dot(&d_flat);
+                    d_p_ref.slice_mut(ndarray::s![blk.p0..blk.p0 + b]).assign(&part);
+                    Ok(())
+                })
+                .unwrap();
+            let c_p_ref = dfj.v_inv.dot(&d_p_ref);
+            let mut j_ref = Array2::<f64>::zeros((n, n));
+            {
+                let mut j_flat = j_ref.view_mut().into_shape_with_order(n * n).unwrap();
+                dfj.source
+                    .for_each_block(|blk| {
+                        let b = blk.data.shape()[0];
+                        let flat = blk.data.into_shape_with_order((b, n * n)).unwrap();
+                        let c_blk = c_p_ref.slice(ndarray::s![blk.p0..blk.p0 + b]);
+                        let contrib = flat.t().dot(&c_blk);
+                        j_flat += &contrib;
+                        Ok(())
+                    })
+                    .unwrap();
+            }
+            best_before = best_before.min(t0.elapsed().as_secs_f64());
+        }
+
+        println!(
+            "DF-J build, benzene/cc-pVDZ (min-of-3): naive={:.4}s  chunked={:.4}s  speedup={:.2}x",
+            best_before,
+            best_after,
+            best_before / best_after
+        );
+    }
 }
