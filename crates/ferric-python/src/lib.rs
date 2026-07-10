@@ -92,6 +92,26 @@ fn rhf_config(k_builder: Option<&str>) -> RhfConfig {
     RhfConfig { k_builder: k_builder.map(|s| s.to_string()), ..Default::default() }
 }
 
+/// Convert the Python `point_charges` / `external_field` kwargs into an
+/// `ExternalPotential`. Returns `None` when both are unset (no perturbation),
+/// matching `RhfConfig`'s "None = no external potential" convention.
+fn build_external_potential(
+    point_charges: Option<Vec<(f64, f64, f64, f64)>>,
+    external_field: Option<(f64, f64, f64)>,
+) -> Option<ferric_core::external_potential::ExternalPotential> {
+    let pcs: Vec<ferric_core::external_potential::PointCharge> = point_charges
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(q, x, y, z)| ferric_core::external_potential::PointCharge { q, x, y, z })
+        .collect();
+    let field = external_field.map(|(ex, ey, ez)| [ex, ey, ez]);
+    if pcs.is_empty() && field.is_none() {
+        None
+    } else {
+        Some(ferric_core::external_potential::ExternalPotential { point_charges: pcs, field })
+    }
+}
+
 // ── RHF ──
 
 #[pyclass]
@@ -130,12 +150,19 @@ impl PyRhfResult {
 ///   df_j_aux        auxiliary basis name for density-fitted Coulomb (RI-J).
 ///   df_k_aux        auxiliary basis name for density-fitted exchange (RI-K);
 ///                   should be a JK-fit basis, not an MP2-fit basis.
+/// External perturbation:
+///   point_charges   list of (q, x, y, z) classical point charges (Hartree
+///                   atomic units; coordinates in Bohr) added to the one-electron
+///                   Hamiltonian and nuclear repulsion. None/empty = no charges.
+///   external_field  uniform (Ex, Ey, Ez) electric field in Hartree atomic units.
+///                   None = no field.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set,
     max_iter=None, energy_conv=None, density_conv=None, diis_size=None,
     integral_thresh=None, k_builder=None, df_j_aux=None, df_k_aux=None,
     level_shift=None, mom_after_iter=None,
+    point_charges=None, external_field=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_rhf(
@@ -151,6 +178,8 @@ fn run_rhf(
     df_k_aux: Option<&str>,
     level_shift: Option<f64>,
     mom_after_iter: Option<usize>,
+    point_charges: Option<Vec<(f64, f64, f64, f64)>>,
+    external_field: Option<(f64, f64, f64)>,
 ) -> PyResult<PyRhfResult> {
     // Apply ECP core-electron counts (no-op without an ECP basis) so nelec()
     // gives the valence count; the effective nuclear charge is set inside
@@ -172,6 +201,7 @@ fn run_rhf(
         df_k_aux: df_k_aux.map(|s| s.to_string()),
         level_shift: level_shift.unwrap_or(0.0),
         mom_after_iter: mom_after_iter.unwrap_or(0),
+        external_potential: build_external_potential(point_charges, external_field),
         ..Default::default()
     };
     let ctx = ParallelContext::default();
@@ -225,6 +255,7 @@ impl PyUhfResult {
     max_iter=None, energy_conv=None, density_conv=None, diis_size=None,
     integral_thresh=None, k_builder=None, df_j_aux=None, df_k_aux=None,
     level_shift=None, mom_after_iter=None,
+    point_charges=None, external_field=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_uhf(
@@ -240,6 +271,8 @@ fn run_uhf(
     df_k_aux: Option<&str>,
     level_shift: Option<f64>,
     mom_after_iter: Option<usize>,
+    point_charges: Option<Vec<(f64, f64, f64, f64)>>,
+    external_field: Option<(f64, f64, f64)>,
 ) -> PyResult<PyUhfResult> {
     let mut emol = mol.inner.clone();
     emol.apply_ecp(&basis_set.inner);
@@ -258,6 +291,7 @@ fn run_uhf(
         df_k_aux: df_k_aux.map(|s| s.to_string()),
         level_shift: level_shift.unwrap_or(0.0),
         mom_after_iter: mom_after_iter.unwrap_or(0),
+        external_potential: build_external_potential(point_charges, external_field),
         ..Default::default()
     };
     let ctx = ParallelContext::default();
@@ -628,13 +662,16 @@ impl PyDftResult {
     mol, basis_set, functional=None, k_builder=None, with_gradient=false,
     max_iter=None, energy_conv=None, density_conv=None,
     level_shift=None, mom_after_iter=None,
+    point_charges=None, external_field=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_dft(mol: &PyMolecule, basis_set: &PyBasisSet,
            functional: Option<&str>, k_builder: Option<&str>,
            with_gradient: bool,
            max_iter: Option<usize>, energy_conv: Option<f64>, density_conv: Option<f64>,
-           level_shift: Option<f64>, mom_after_iter: Option<usize>) -> PyResult<PyDftResult> {
+           level_shift: Option<f64>, mom_after_iter: Option<usize>,
+           point_charges: Option<Vec<(f64, f64, f64, f64)>>,
+           external_field: Option<(f64, f64, f64)>) -> PyResult<PyDftResult> {
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
@@ -645,6 +682,7 @@ fn run_dft(mol: &PyMolecule, basis_set: &PyBasisSet,
     if let Some(v) = density_conv { cfg.density_conv = v; }
     if let Some(v) = level_shift { cfg.level_shift = v; }
     if let Some(v) = mom_after_iter { cfg.mom_after_iter = v; }
+    cfg.external_potential = build_external_potential(point_charges, external_field);
     let xc_name = functional.unwrap_or("LDA").to_string();
     cfg.xc = Some(xc_name.clone());
     // RI-J always on (matches PySCF density_fit reference convention).
@@ -659,7 +697,8 @@ fn run_dft(mol: &PyMolecule, basis_set: &PyBasisSet,
     let nbf = rhf.mos_alpha.nrows();
     let gradient_data = if with_gradient {
         Some(
-            ks_gradient_closed(&mol.inner, &prep, &basis_set.inner, op, &bounds, &xc_name, &rhf, None)
+            ks_gradient_closed(&mol.inner, &prep, &basis_set.inner, op, &bounds, &xc_name, &rhf,
+                                cfg.external_potential.as_ref())
                 .map_err(make_err)?
         )
     } else {
@@ -678,15 +717,19 @@ fn run_dft(mol: &PyMolecule, basis_set: &PyBasisSet,
     mol, basis_set, functional=None, k_builder=None, with_gradient=false,
     max_iter=None, energy_conv=None, density_conv=None,
     level_shift=None, mom_after_iter=None,
+    point_charges=None, external_field=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_ksdft(mol: &PyMolecule, basis_set: &PyBasisSet,
              functional: Option<&str>, k_builder: Option<&str>,
              with_gradient: bool,
              max_iter: Option<usize>, energy_conv: Option<f64>, density_conv: Option<f64>,
-             level_shift: Option<f64>, mom_after_iter: Option<usize>) -> PyResult<PyDftResult> {
+             level_shift: Option<f64>, mom_after_iter: Option<usize>,
+             point_charges: Option<Vec<(f64, f64, f64, f64)>>,
+             external_field: Option<(f64, f64, f64)>) -> PyResult<PyDftResult> {
     run_dft(mol, basis_set, functional, k_builder, with_gradient,
-            max_iter, energy_conv, density_conv, level_shift, mom_after_iter)
+            max_iter, energy_conv, density_conv, level_shift, mom_after_iter,
+            point_charges, external_field)
 }
 
 // ── CC (stub) ──

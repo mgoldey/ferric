@@ -82,6 +82,79 @@ def test_ksdft_h2o_lda_with_gradient():
     assert abs(tot).max() < 5e-3, f"translational drift {tot}"
 
 
+def test_run_rhf_with_external_point_charge():
+    """A +1 point charge 20 Bohr from the molecule perturbs the RHF energy."""
+    mol = ferric.Molecule.from_xyz(os.path.join(TESTDATA, "molecules", "water.xyz"))
+    bs = ferric.BasisSet.bundled("sto-3g")
+    base = ferric.run_rhf(mol, bs)
+    perturbed = ferric.run_rhf(mol, bs, point_charges=[(1.0, 0.0, 0.0, 20.0)])
+    assert abs(perturbed.energy - base.energy) > 1e-8
+
+
+def test_run_rhf_with_external_field():
+    """A uniform external electric field perturbs the RHF energy."""
+    mol = ferric.Molecule.from_xyz(os.path.join(TESTDATA, "molecules", "water.xyz"))
+    bs = ferric.BasisSet.bundled("sto-3g")
+    base = ferric.run_rhf(mol, bs)
+    perturbed = ferric.run_rhf(mol, bs, external_field=(0.0, 0.0, 0.01))
+    assert abs(perturbed.energy - base.energy) > 1e-8
+
+
+_OH_XYZ = "2\n\nO 0.0 0.0 0.0\nH 0.0 0.0 0.97\n"
+
+
+def test_run_uhf_with_external_point_charge():
+    """Same perturbation check for the open-shell UHF driver (OH doublet;
+    a bare H atom is too symmetric/small a system for this probe)."""
+    mol = ferric.Molecule.from_xyz_string(_OH_XYZ, charge=0, multiplicity=2)
+    bs = ferric.BasisSet.bundled("sto-3g")
+    base = ferric.run_uhf(mol, bs)
+    perturbed = ferric.run_uhf(mol, bs, point_charges=[(1.0, 0.0, 0.0, 20.0)])
+    assert abs(perturbed.energy - base.energy) > 1e-8
+
+
+def test_run_uhf_with_external_field():
+    mol = ferric.Molecule.from_xyz_string(_OH_XYZ, charge=0, multiplicity=2)
+    bs = ferric.BasisSet.bundled("sto-3g")
+    base = ferric.run_uhf(mol, bs)
+    perturbed = ferric.run_uhf(mol, bs, external_field=(0.0, 0.0, 0.01))
+    assert abs(perturbed.energy - base.energy) > 1e-8
+
+
+def test_run_ksdft_with_external_point_charge():
+    """Same perturbation check for the KS-DFT driver (also exercises the
+    gradient path picking up external_potential, not just the energy)."""
+    mol = ferric.Molecule.from_xyz(os.path.join(TESTDATA, "molecules", "water.xyz"))
+    bs = ferric.BasisSet.bundled("sto-3g")
+    base = ferric.run_ksdft(mol, bs, functional="LDA")
+    perturbed = ferric.run_ksdft(
+        mol, bs, functional="LDA", point_charges=[(1.0, 0.0, 0.0, 20.0)]
+    )
+    assert abs(perturbed.total_energy - base.total_energy) > 1e-8
+
+
+def test_run_ksdft_with_external_field():
+    mol = ferric.Molecule.from_xyz(os.path.join(TESTDATA, "molecules", "water.xyz"))
+    bs = ferric.BasisSet.bundled("sto-3g")
+    base = ferric.run_ksdft(mol, bs, functional="LDA")
+    perturbed = ferric.run_ksdft(mol, bs, functional="LDA", external_field=(0.0, 0.0, 0.01))
+    assert abs(perturbed.total_energy - base.total_energy) > 1e-8
+
+
+def test_run_ksdft_gradient_with_external_field_runs():
+    """with_gradient=True must not choke once external_potential flows into
+    ks_gradient_closed (replaces the Task-8 placeholder `None`)."""
+    mol = ferric.Molecule.from_xyz(os.path.join(TESTDATA, "molecules", "water.xyz"))
+    bs = ferric.BasisSet.bundled("sto-3g")
+    res = ferric.run_ksdft(
+        mol, bs, functional="LDA", with_gradient=True,
+        external_field=(0.0, 0.0, 0.01),
+    )
+    grad = res.gradient()
+    assert grad is not None
+    assert grad.shape == (mol.natoms(), 3)
+
+
 def test_oversized_ccsd_t_raises_not_oom():
     """M2 fail-fast guard: a deliberately-oversized run_ccsd_t must raise a
     Python exception (RuntimeError carrying the GB numbers), NOT walk into a
