@@ -8,47 +8,102 @@ use ferric_core::basis::BasisSet;
 use ferric_core::mol::Molecule;
 use ndarray::Array2;
 
-/// Build a symmetric matrix from a one-electron engine by iterating over upper-triangle shell pairs.
-fn build_symmetric(prep: &PreparedBasis, mut eng: Engine) -> Array2<f64> {
+/// Below this many shell-pair units, run the serial loop directly — avoids
+/// rayon/engine-construction overhead for free-atom/tiny-basis jobs (see the
+/// free-atom rule: single-atom SCF must not pay a parallel-setup tax).
+const PAR_SHELL_PAIR_THRESHOLD: usize = 64;
+
+/// Build a symmetric one-electron matrix by iterating over upper-triangle shell
+/// pairs. `make_eng` constructs a fresh, fully-configured [`Engine`] (overlap /
+/// kinetic / nuclear-with-point-charges) — called once for the serial path and
+/// once per rayon worker via `for_each_init`, never per shell pair (engine
+/// construction runs under a global ctor mutex; per-item construction would
+/// serialize on that mutex and defeat the parallelism).
+///
+/// Parallelized over the outer shell index `s1` (independent row bands) once
+/// `nsh` clears [`PAR_SHELL_PAIR_THRESHOLD`]. For a fixed `s1`, the write set is
+/// `{(offs[s1]+i, offs[s2]+j), (offs[s2]+j, offs[s1]+i) : s2 ≤ s1}` — every
+/// written row index is either in `[offs[s1], offs[s1]+n1)` (first form) or
+/// equals `offs[s1]+i` for the same range (second form, transposed). So each
+/// `s1` owns a disjoint band of *rows* `[offs[s1], offs[s1]+dims[s1])` in
+/// `out`; distinct `s1` values touch disjoint row bands, so the raw-pointer
+/// scatter below is data-race-free and, since every element is written
+/// exactly once (no accumulation), bit-identical to the serial loop
+/// regardless of thread count or scheduling order.
+fn build_symmetric(prep: &PreparedBasis, make_eng: impl Fn() -> Engine + Sync) -> Array2<f64> {
     let n = prep.nbasis();
     let nsh = prep.nshells();
     let dims = prep.shell_dims();
     let offs = prep.shell_offsets();
     let mut out = Array2::zeros((n, n));
-    for s1 in 0..nsh {
-        for s2 in 0..=s1 {
-            let block = eng.compute_1e_block(prep, s1, s2);
-            let n1 = dims[s1];
-            let n2 = dims[s2];
-            for i in 0..n1 {
-                for j in 0..n2 {
-                    let v = block[i * n2 + j];
-                    out[(offs[s1] + i, offs[s2] + j)] = v;
-                    out[(offs[s2] + j, offs[s1] + i)] = v;
+
+    if nsh < PAR_SHELL_PAIR_THRESHOLD {
+        let mut eng = make_eng();
+        for s1 in 0..nsh {
+            for s2 in 0..=s1 {
+                let block = eng.compute_1e_block(prep, s1, s2);
+                let n1 = dims[s1];
+                let n2 = dims[s2];
+                for i in 0..n1 {
+                    for j in 0..n2 {
+                        let v = block[i * n2 + j];
+                        out[(offs[s1] + i, offs[s2] + j)] = v;
+                        out[(offs[s2] + j, offs[s1] + i)] = v;
+                    }
                 }
             }
         }
+        return out;
     }
+
+    use rayon::prelude::*;
+    let out_ptr = out.as_mut_ptr() as usize;
+    let stride = n; // row-major (n, n): element (r, c) at r*stride + c
+
+    (0..nsh).into_par_iter().for_each_init(
+        &make_eng,
+        |worker_eng, s1| {
+            let n1 = dims[s1];
+            let o1 = offs[s1];
+            for s2 in 0..=s1 {
+                let block = worker_eng.compute_1e_block(prep, s1, s2);
+                let n2 = dims[s2];
+                let o2 = offs[s2];
+                for i in 0..n1 {
+                    for j in 0..n2 {
+                        let v = block[i * n2 + j];
+                        let r = o1 + i;
+                        let c = o2 + j;
+                        unsafe {
+                            let base = out_ptr as *mut f64;
+                            *base.add(r * stride + c) = v;
+                            *base.add(c * stride + r) = v;
+                        }
+                    }
+                }
+            }
+        },
+    );
     out
 }
 
 /// Compute the overlap matrix S, shape (nbasis, nbasis).
 pub fn overlap(prep: &PreparedBasis) -> Array2<f64> {
-    let eng = Engine::new_1e(ffi::OP_OVERLAP, prep, 1e-14).unwrap();
-    build_symmetric(prep, eng)
+    build_symmetric(prep, || Engine::new_1e(ffi::OP_OVERLAP, prep, 1e-14).unwrap())
 }
 
 /// Compute the kinetic energy matrix T, shape (nbasis, nbasis).
 pub fn kinetic(prep: &PreparedBasis) -> Array2<f64> {
-    let eng = Engine::new_1e(ffi::OP_KINETIC, prep, 1e-14).unwrap();
-    build_symmetric(prep, eng)
+    build_symmetric(prep, || Engine::new_1e(ffi::OP_KINETIC, prep, 1e-14).unwrap())
 }
 
 /// Compute the nuclear attraction matrix V, shape (nbasis, nbasis).
 pub fn nuclear(prep: &PreparedBasis) -> Array2<f64> {
-    let mut eng = Engine::new_1e(ffi::OP_NUCLEAR, prep, 1e-14).unwrap();
-    eng.set_point_charges(prep);
-    build_symmetric(prep, eng)
+    build_symmetric(prep, || {
+        let mut eng = Engine::new_1e(ffi::OP_NUCLEAR, prep, 1e-14).unwrap();
+        eng.set_point_charges(prep);
+        eng
+    })
 }
 
 /// Compute the core Hamiltonian H = T + V, shape (nbasis, nbasis).
@@ -202,5 +257,74 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Serial reference for `build_symmetric` (pre-parallelization implementation,
+    /// kept verbatim). The parallel version must reproduce it bit-for-bit.
+    fn build_symmetric_serial(prep: &PreparedBasis, mut eng: Engine) -> Array2<f64> {
+        let n = prep.nbasis();
+        let nsh = prep.nshells();
+        let dims = prep.shell_dims();
+        let offs = prep.shell_offsets();
+        let mut out = Array2::zeros((n, n));
+        for s1 in 0..nsh {
+            for s2 in 0..=s1 {
+                let block = eng.compute_1e_block(prep, s1, s2);
+                let n1 = dims[s1];
+                let n2 = dims[s2];
+                for i in 0..n1 {
+                    for j in 0..n2 {
+                        let v = block[i * n2 + j];
+                        out[(offs[s1] + i, offs[s2] + j)] = v;
+                        out[(offs[s2] + j, offs[s1] + i)] = v;
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn assert_bit_identical(a: &Array2<f64>, b: &Array2<f64>, what: &str) {
+        assert_eq!(a.dim(), b.dim(), "{what}: shape mismatch");
+        let n_diff = a.iter().zip(b.iter()).filter(|(x, y)| x.to_bits() != y.to_bits()).count();
+        assert_eq!(n_diff, 0, "{what}: {n_diff} elements differ bitwise");
+    }
+
+    /// alkane_6/cc-pVDZ clears `PAR_SHELL_PAIR_THRESHOLD` (64 shells), so this
+    /// test actually exercises the rayon path, not just the serial fallback.
+    fn alkane6_cc_pvdz() -> PreparedBasis {
+        let mol = Molecule::load_xyz("../../testdata/molecules/alkane_6.xyz").unwrap();
+        let bs = basis::bundled("cc-pvdz").unwrap();
+        PreparedBasis::new(&mol, &bs).unwrap()
+    }
+
+    #[test]
+    fn test_build_symmetric_bitidentical_to_serial_overlap() {
+        let prep = alkane6_cc_pvdz();
+        assert!(prep.nshells() >= PAR_SHELL_PAIR_THRESHOLD,
+            "test molecule too small to exercise the parallel path: {} shells", prep.nshells());
+        let par = overlap(&prep);
+        let eng_ref = Engine::new_1e(ffi::OP_OVERLAP, &prep, 1e-14).unwrap();
+        let ser = build_symmetric_serial(&prep, eng_ref);
+        assert_bit_identical(&ser, &par, "overlap");
+    }
+
+    #[test]
+    fn test_build_symmetric_bitidentical_to_serial_kinetic() {
+        let prep = alkane6_cc_pvdz();
+        let par = kinetic(&prep);
+        let eng_ref = Engine::new_1e(ffi::OP_KINETIC, &prep, 1e-14).unwrap();
+        let ser = build_symmetric_serial(&prep, eng_ref);
+        assert_bit_identical(&ser, &par, "kinetic");
+    }
+
+    #[test]
+    fn test_build_symmetric_bitidentical_to_serial_nuclear() {
+        let prep = alkane6_cc_pvdz();
+        let par = nuclear(&prep);
+        let mut eng_ref = Engine::new_1e(ffi::OP_NUCLEAR, &prep, 1e-14).unwrap();
+        eng_ref.set_point_charges(&prep);
+        let ser = build_symmetric_serial(&prep, eng_ref);
+        assert_bit_identical(&ser, &par, "nuclear");
     }
 }
