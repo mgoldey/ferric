@@ -37,6 +37,11 @@ fn diag_worker_budget(naux: usize, nov: usize, n_spin: usize, nfreq: usize) -> u
 /// memory below the budget while leaving per-task numerics untouched (results
 /// are order-independent — they are summed). Falls back to the ambient pool if
 /// the capped pool cannot be built.
+///
+/// Both call sites' `f` run `syrk_aat`/`eigh` (BLAS/LAPACK) per frequency
+/// inside this rayon region — pin BLAS to 1 thread for the duration so nested
+/// OpenBLAS threads don't oversubscribe under rayon workers or overflow the
+/// 2 MB rayon worker stack (openblas-rayon-dgetrf-crash convention).
 fn par_map_capped<F>(
     quad_freqs: &[f64],
     quad_weights: &[f64],
@@ -46,12 +51,15 @@ fn par_map_capped<F>(
 where
     F: Fn(f64, f64) -> Result<f64, FerricError> + Sync + Send,
 {
+    use ferric_integrals::blas_threads::with_blas_threads;
     let run = || {
-        quad_freqs
-            .par_iter()
-            .zip(quad_weights.par_iter())
-            .map(|(&omega, &wk)| f(omega, wk))
-            .collect::<Result<Vec<f64>, FerricError>>()
+        with_blas_threads(1, || {
+            quad_freqs
+                .par_iter()
+                .zip(quad_weights.par_iter())
+                .map(|(&omega, &wk)| f(omega, wk))
+                .collect::<Result<Vec<f64>, FerricError>>()
+        })
     };
     match rayon::ThreadPoolBuilder::new().num_threads(max_workers).build() {
         Ok(pool) => pool.install(run),

@@ -1067,10 +1067,13 @@ mod tests {
         // Scope: ONLY the P7-parallelized region (x_ov par-i build, aux-shell
         // 3c-derivative assembly, aux-pair 2c-derivative assembly), fed the
         // SAME precomputed intermediates in rayon pools pinned to 1 and 4
-        // workers, compared via f64::to_bits. Whole-pipeline bit-identity is
-        // gated on P14 (docs/parallelism-gaps-2026-07-09.md) — build_jk's
-        // legacy fold/reduce tree drifts ~1 ULP by thread count inside
-        // solve_zvector, which is upstream of (and outside) this region.
+        // workers, compared via f64::to_bits. The whole-pipeline gate this
+        // test used to carry is RESOLVED: P14 migrated build_jk (used inside
+        // solve_zvector, upstream of this region) off its thread-count-
+        // dependent fold/reduce tree onto the grouped deterministic sum, and
+        // the full solve_rhf → rhf_gradient pipeline is now covered by
+        // `whole_pipeline_rhf_gradient_bit_identical_across_thread_counts`
+        // in ferric-scf/src/rhf.rs.
         let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
         let obs_bs = basis::bundled("cc-pvdz").unwrap();
         let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
