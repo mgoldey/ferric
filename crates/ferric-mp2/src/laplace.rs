@@ -328,10 +328,11 @@ impl LaplaceMp2 {
     /// The exponents (t) and weights (w) approximate 1/x on [ymin, ymax] as
     /// 1/x ≈ Σ_k w_k exp(-t_k x). Points are scaled: t_actual = t_table / ymin,
     /// w_actual = w_table / ymin.
-    fn init_quadrature(&mut self, ymin: f64, ymax: f64) {
-        let q = LaplaceQuadrature::new(self.n_quad, ymin, ymax);
+    fn init_quadrature(&mut self, ymin: f64, ymax: f64) -> Result<(), FerricError> {
+        let q = LaplaceQuadrature::new(self.n_quad, ymin, ymax)?;
         self.points = q.points;
         self.weights = q.weights;
+        Ok(())
     }
 
     /// Compute the MP2 energy using MO-based RI-Laplace transform.
@@ -358,7 +359,7 @@ impl LaplaceMp2 {
         let nmo = eps.len();
         let ymin = 2.0 * (eps[nocc_total] - eps[nocc_total - 1]);
         let ymax = 2.0 * (eps[nmo - 1] - eps[0]);
-        self.init_quadrature(ymin, ymax);
+        self.init_quadrature(ymin, ymax)?;
 
         let c = rhf.mos_r();
         let c_occ = c.slice(ndarray::s![.., frozen_core..nocc_total]).to_owned();
@@ -430,7 +431,7 @@ impl LaplaceMp2 {
         let nmo = eps.len();
         let ymin = 2.0 * (eps[nocc_total] - eps[nocc_total - 1]);
         let ymax = 2.0 * (eps[nmo - 1] - eps[0]);
-        self.init_quadrature(ymin, ymax);
+        self.init_quadrature(ymin, ymax)?;
 
         // Build RI-fitted 3-center integrals: b_ao[P, μ, ν] = Σ_Q V^{-1/2}_{PQ} (Q|μν)
         //

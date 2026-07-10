@@ -303,7 +303,7 @@ pub fn run_pdep_rpa_from_intermediates(
         match config.chi0_backend {
             Chi0Backend::Dense => None,
             Chi0Backend::Laplace { n_quad } => Some(
-                laplace_chi0::build_laplace_for_gaps(&eps_occ_clone, &eps_vir_clone, n_quad),
+                laplace_chi0::build_laplace_for_gaps(&eps_occ_clone, &eps_vir_clone, n_quad)?,
             ),
         };
     let laplace_for_davidson = laplace_chi0_quad.clone();
@@ -597,13 +597,13 @@ pub fn run_u_pdep_rpa(
         match config.chi0_backend {
             Chi0Backend::Dense => None,
             Chi0Backend::Laplace { n_quad } => {
-                let qa = laplace_chi0::build_laplace_for_gaps(&eps_occ_a, &eps_vir_a, n_quad);
+                let qa = laplace_chi0::build_laplace_for_gaps(&eps_occ_a, &eps_vir_a, n_quad)?;
                 let qb = if eps_occ_b.is_empty() {
                     // Empty spin channel: build a degenerate quadrature; it
                     // never gets used in the per-spin accumulator (early-out).
                     qa.clone()
                 } else {
-                    laplace_chi0::build_laplace_for_gaps(&eps_occ_b, &eps_vir_b, n_quad)
+                    laplace_chi0::build_laplace_for_gaps(&eps_occ_b, &eps_vir_b, n_quad)?
                 };
                 Some((qa, qb))
             }

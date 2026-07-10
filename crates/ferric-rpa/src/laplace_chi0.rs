@@ -56,7 +56,7 @@ pub fn build_laplace_for_gaps(
     eps_occ: &[f64],
     eps_vir: &[f64],
     n_quad: usize,
-) -> LaplaceQuadrature {
+) -> Result<LaplaceQuadrature, ferric_core::FerricError> {
     let eps_homo = eps_occ.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
     let eps_lumo = eps_vir.iter().cloned().fold(f64::INFINITY, f64::min);
     let eps_min = eps_occ.iter().cloned().fold(f64::INFINITY, f64::min);
@@ -70,8 +70,10 @@ pub fn build_laplace_for_gaps(
 ///
 /// Same in-place signature as [`crate::sternheimer::dielectric_matrix_into`] but
 /// uses the Laplace-quadrature form of `4·e_ia/(ω²+e_ia²)`. Numerically matches
-/// the Dense path to the quadrature tolerance (`O(1e-6)` for `n_quad = 12`,
-/// `O(1e-8)` for `n_quad = 20`).
+/// the Dense path to the quadrature tolerance (~1e-3 relative elementwise for
+/// the tabulated `n_quad = 7`). Only `n_quad ∈ {3, 5, 7}` are tabulated — the
+/// previous `n_quad = 12/20` accuracy claims were never real; those sizes
+/// silently fell back to the 7-point table before the TD-QUAD fix.
 ///
 /// # Arguments
 /// * `v_mat` — trial-vector block of shape `(naux, m)`.
@@ -325,7 +327,7 @@ mod tests {
         let eps_vir = vec![0.2_f64, 0.7, 1.5];
 
         let omega = 0.5;
-        let laplace = build_laplace_for_gaps(&eps_occ, &eps_vir, 7);
+        let laplace = build_laplace_for_gaps(&eps_occ, &eps_vir, 7).unwrap();
 
         let dense = dielectric_matrix(&v_mat, &b_ov, &eps_occ, &eps_vir, omega);
         let lap = dielectric_matrix_laplace(&v_mat, &b_ov, &eps_occ, &eps_vir, omega, &laplace);
@@ -357,7 +359,7 @@ mod tests {
         let errs: Vec<f64> = [3usize, 5, 7]
             .iter()
             .map(|&n| {
-                let lap = build_laplace_for_gaps(&eps_occ, &eps_vir, n);
+                let lap = build_laplace_for_gaps(&eps_occ, &eps_vir, n).unwrap();
                 let mat = dielectric_matrix_laplace(&v_mat, &b_ov, &eps_occ, &eps_vir, omega, &lap);
                 dense.iter().zip(mat.iter()).map(|(a, b)| (a - b).abs()).fold(0.0, f64::max)
             })
