@@ -36,7 +36,7 @@ pub(crate) fn solve_dielectric_3(
     w: &[ndarray::Array1<f64>; 3],
 ) -> Result<[ndarray::Array1<f64>; 3], FerricError> {
     use ndarray_linalg::Solve;
-    let mut solve_one = |d: usize| -> Result<ndarray::Array1<f64>, FerricError> {
+    let solve_one = |d: usize| -> Result<ndarray::Array1<f64>, FerricError> {
         eps_mat.solve(&w[d]).map_err(|e| {
             FerricError::Lapack(format!(
                 "dielectric solve failed (singular ε̃ — near-degenerate occ/vir gap?): {e}"
