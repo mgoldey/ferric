@@ -151,6 +151,14 @@ pub struct RpaCfg {
     /// CM5 charge derivation and density-derived properties.
     /// Default: true when `export_npz` is set.
     pub compute_density_matrix: Option<bool>,
+    /// Compute and include the molecular dipole moment in the NPZ bundle
+    /// (stored as `dipole`, shape (3,), float64, atomic units e·a0). This is the
+    /// exact dipole of the SCF/RPA total density, μ = −Tr(P·D) + Σ_A Z_A R_A,
+    /// where D is the AO dipole-integral matrix ⟨μ|r|ν⟩ about the origin. Neutral
+    /// molecules → origin-independent. It is the QC ground-truth dipole against
+    /// which partition-derived (Löwdin/Hirshfeld) dipoles are adjudicated.
+    /// Default: true when `export_npz` is set.
+    pub compute_dipole: Option<bool>,
     /// Compute and include Hirshfeld atomic charges in the NPZ bundle
     /// (stored as `hirshfeld_charges`, shape (natoms,), float64, units of e).
     /// These are the Hirshfeld baseline charges; downstream CM5 pair-correction

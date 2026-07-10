@@ -26,6 +26,7 @@ pub fn export_npz(
     alpha_atomic_dynamic: Option<&[Vec<[[f64; 3]; 3]>]>,
     c6_iso: Option<&Array2<f64>>,
     c6_aniso: Option<&[Vec<[[f64; 3]; 3]>]>,
+    dipole: Option<&[f64; 3]>,
 ) -> Result<(), ExportError> {
     let file = File::create(path)?;
     let mut writer = NpzWriter::new(file);
@@ -157,6 +158,11 @@ pub fn export_npz(
         }
         let arr = Array4::from_shape_vec((n, n, 3, 3), flat).unwrap();
         writer.add_array("c6_aniso", &arr).map_err(|e| ExportError::Other(e.to_string()))?;
+    }
+
+    if let Some(mu) = dipole {
+        let mu_arr = Array1::from_vec(mu.to_vec());
+        writer.add_array("dipole", &mu_arr).map_err(|e| ExportError::Other(e.to_string()))?;
     }
 
     writer.finish().map_err(|e| ExportError::Other(e.to_string()))?;

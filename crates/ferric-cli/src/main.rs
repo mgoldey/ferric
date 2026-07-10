@@ -865,6 +865,34 @@ fn main() {
                 let compute_dm = cfg.rpa.compute_density_matrix.unwrap_or(true);
                 let dm_ref = if compute_dm { Some(result.density_total()) } else { None };
 
+                // Molecular dipole μ = −Tr(P·D) + Σ_A Z_A R_A of the total density
+                // (QC ground truth vs partition-derived Löwdin/Hirshfeld dipoles).
+                // Origin [0,0,0]; neutral molecules → origin-independent. Mirrors
+                // ferric-mp2 ff_polar::mp2_dipole; P·D summed elementwise = Tr(P·D)
+                // since both AO matrices are symmetric.
+                let compute_dip = cfg.rpa.compute_dipole.unwrap_or(true);
+                let dip_arr: Option<[f64; 3]> = if compute_dip {
+                    let dip_ao = ferric_integrals::oneelectron::dipole(&prep, [0.0, 0.0, 0.0]);
+                    let p = result.density_total();
+                    let mut mu = [0.0f64; 3];
+                    for d in 0..3 {
+                        let elec = (p * &dip_ao[d]).sum();
+                        let nuc: f64 = mol
+                            .atoms
+                            .iter()
+                            .map(|a| a.z as f64 * [a.x, a.y, a.zpos][d])
+                            .sum();
+                        mu[d] = nuc - elec;
+                    }
+                    println!(
+                        "dipole (e·a0): [{:.4}, {:.4}, {:.4}] |μ| = {:.4}",
+                        mu[0], mu[1], mu[2], (mu[0] * mu[0] + mu[1] * mu[1] + mu[2] * mu[2]).sqrt()
+                    );
+                    Some(mu)
+                } else {
+                    None
+                };
+
                 let compute_lq = cfg.rpa.compute_lowdin_charges.unwrap_or(true);
                 let lq_vec = if compute_lq {
                     match lowdin_charges(&mol, &prep, result.density_total()) {
@@ -1140,6 +1168,7 @@ fn main() {
                     if alpha_dyn_v.is_empty() { None } else { Some(alpha_dyn_v.as_slice()) },
                     c6_iso_opt.as_ref(),
                     if c6_aniso_v.is_empty() { None } else { Some(c6_aniso_v.as_slice()) },
+                    dip_arr.as_ref(),
                 ) {
                     eprintln!("warning: failed to write {}: {}", npz_path, e);
                 } else {

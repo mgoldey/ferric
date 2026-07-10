@@ -259,6 +259,47 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_dipole_symmetric() {
+        // ⟨μ|r_d|ν⟩ is symmetric in (μ,ν) — r is a multiplicative operator.
+        let prep = water_sto3g();
+        let dip = dipole(&prep, [0.0, 0.0, 0.0]);
+        let n = prep.nbasis();
+        for (d, mat) in dip.iter().enumerate() {
+            for i in 0..n {
+                for j in 0..n {
+                    assert!(
+                        (mat[(i, j)] - mat[(j, i)]).abs() < 1e-12,
+                        "dipole axis {d} not symmetric at ({i},{j})"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_dipole_origin_shift_diagonal() {
+        // Shifting the origin by δ subtracts δ·S from ⟨μ|r|ν⟩ (since
+        // ⟨μ|(r−δ)|ν⟩ = ⟨μ|r|ν⟩ − δ⟨μ|ν⟩). Validates the origin argument wiring.
+        let prep = water_sto3g();
+        let s = overlap(&prep);
+        let d0 = dipole(&prep, [0.0, 0.0, 0.0]);
+        let delta = [0.3, -0.7, 1.1];
+        let dshift = dipole(&prep, delta);
+        let n = prep.nbasis();
+        for (ax, dl) in delta.iter().enumerate() {
+            for i in 0..n {
+                for j in 0..n {
+                    let expected = d0[ax][(i, j)] - dl * s[(i, j)];
+                    assert!(
+                        (dshift[ax][(i, j)] - expected).abs() < 1e-10,
+                        "axis {ax} origin-shift mismatch at ({i},{j})"
+                    );
+                }
+            }
+        }
+    }
+
     /// Serial reference for `build_symmetric` (pre-parallelization implementation,
     /// kept verbatim). The parallel version must reproduce it bit-for-bit.
     fn build_symmetric_serial(prep: &PreparedBasis, mut eng: Engine) -> Array2<f64> {
