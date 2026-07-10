@@ -1055,40 +1055,60 @@ fn main() {
                             }
                         }
 
-                        let ratio: Vec<f64> = z
-                            .iter()
-                            .enumerate()
-                            .map(|(i, &zi)| {
-                                // Use the ferric-computed free-atom volume (consistent scale
-                                // with the molecular vols[i]). The TS-PRL table v_free is a
-                                // LAST resort only — it is on a different integration scale,
-                                // so a ratio built from it is unreliable (see the free-atom
-                                // solve above, which now retries pure HF to avoid this path).
+                        // Build the TS volume ratios. A MISSING free-atom volume is a
+                        // HARD error (no silent unwrap_or(1.0)): if both the ferric
+                        // free-atom SCF and the TS-PRL table lack an entry for Z, there
+                        // is no honest denominator and defaulting the ratio to the raw
+                        // molecular volume would put plausibly-shaped, wrong C6 into the
+                        // NPZ with no signal. The whole TS/MBD C6 block below is fallible
+                        // and warns-and-skips (res_opt = None) on any such error, mirroring
+                        // the PDEP path — the C6 arrays are simply omitted from the export.
+                        let ts_c6: Result<_, ferric_core::FerricError> = (|| {
+                            let mut ratio: Vec<f64> = Vec::with_capacity(z.len());
+                            for (i, &zi) in z.iter().enumerate() {
+                                // Prefer the ferric-computed free-atom volume (consistent
+                                // scale with the molecular vols[i]). The TS-PRL table v_free
+                                // is a LAST resort only — different integration scale, so a
+                                // ratio built from it is unreliable (see the free-atom solve
+                                // above, which retries pure HF to avoid this path).
                                 let vf = vol_free_computed.get(&zi).copied()
                                     .or_else(|| ts_free_atom(zi).map(|(_, _, v)| v))
-                                    .unwrap_or(1.0);
-                                if vf > 1e-10 { vols[i] / vf } else { 1.0 }
-                            })
-                            .collect();
-                        let (freqs, weights) = build_quadrature(&rpa_cfg.quadrature);
-                        let is_mbd = cfg.rpa.c6_source.as_deref() == Some("mbd");
-                        let dp = if is_mbd {
-                            let positions: Vec<[f64; 3]> =
-                                mol.atoms.iter().map(|a| [a.x, a.y, a.zpos]).collect();
-                            ferric_rpa::dispersion::mbd_dynamic_polarizability(
-                                &positions, &z, &ratio, &alpha_static, &freqs, &weights,
-                            )
-                        } else {
-                            ts_dynamic_polarizability(&z, &ratio, &alpha_static, &freqs, &weights)
-                        };
-                        let ts_res = casimir_polder_c6(&dp);
-                        println!(
-                            "Computed {} C6: {} atoms; molecular C6 = {:.3} a.u.",
-                            if is_mbd { "MBD" } else { "TS" },
-                            z.len(),
-                            ts_res.c6_molecular_iso
-                        );
-                        Some(ts_res)
+                                    .ok_or_else(|| ferric_core::FerricError::General(format!(
+                                        "TS/MBD C6: no free-atom reference volume for atom {i} \
+                                         (Z={zi}); the free-atom SCF did not converge and Z is \
+                                         outside the TS table (Z=1..=18). Refusing to default the \
+                                         volume ratio to 1.0 (raw molecular volume), which would \
+                                         silently corrupt C6. Use c6_source=\"pdep\" for Z>18."
+                                    )))?;
+                                ratio.push(if vf > 1e-10 { vols[i] / vf } else { 1.0 });
+                            }
+                            let (freqs, weights) = build_quadrature(&rpa_cfg.quadrature);
+                            let is_mbd = cfg.rpa.c6_source.as_deref() == Some("mbd");
+                            let dp = if is_mbd {
+                                let positions: Vec<[f64; 3]> =
+                                    mol.atoms.iter().map(|a| [a.x, a.y, a.zpos]).collect();
+                                ferric_rpa::dispersion::mbd_dynamic_polarizability(
+                                    &positions, &z, &ratio, &alpha_static, &freqs, &weights,
+                                )?
+                            } else {
+                                ts_dynamic_polarizability(&z, &ratio, &alpha_static, &freqs, &weights)?
+                            };
+                            let ts_res = casimir_polder_c6(&dp);
+                            println!(
+                                "Computed {} C6: {} atoms; molecular C6 = {:.3} a.u.",
+                                if is_mbd { "MBD" } else { "TS" },
+                                z.len(),
+                                ts_res.c6_molecular_iso
+                            );
+                            Ok(ts_res)
+                        })();
+                        match ts_c6 {
+                            Ok(res) => Some(res),
+                            Err(e) => {
+                                eprintln!("warning: TS/MBD C6 failed: {e}");
+                                None
+                            }
+                        }
                     };
 
                     if let Some(res) = res_opt {

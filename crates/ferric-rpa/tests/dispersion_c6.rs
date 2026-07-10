@@ -35,7 +35,7 @@ fn free_atom_c6_matches_ts_reference() {
         [[4.5, 0.0, 0.0], [0.0, 4.5, 0.0], [0.0, 0.0, 4.5]],
         [[5.4, 0.0, 0.0], [0.0, 5.4, 0.0], [0.0, 0.0, 5.4]],
     ];
-    let dp = ts_dynamic_polarizability(&z, &ratio, &alpha_static, &freqs, &weights);
+    let dp = ts_dynamic_polarizability(&z, &ratio, &alpha_static, &freqs, &weights).unwrap();
     let res = casimir_polder_c6(&dp);
 
     // Homonuclear C6 reproduces the table by construction.
