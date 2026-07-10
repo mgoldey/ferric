@@ -161,9 +161,18 @@ pub fn eri3_tensor(op: Operator, obs: &PreparedBasis, dfbs: &PreparedBasis) -> R
 
 /// Build raw (P|μν) for aux rows [p0, p1) only, returned as (p1-p0, nbas, nbas).
 /// Same values as the corresponding slice of `eri3_tensor`.
+///
+/// Parallelized over aux shells `sp` exactly like [`eri3_tensor`] (one `Engine`
+/// per rayon worker via `for_each_init`, disjoint aux-row-band raw-pointer
+/// scatter). Only aux shells overlapping `[p0, p1)` do any work; each such `sp`
+/// owns a distinct band of local rows `pl = offs_df[sp] + p − p0`, so writes
+/// from distinct workers never overlap and every element is written exactly
+/// once — the output is bit-identical to the serial fill.
 pub fn eri3_block(
     op: Operator, obs: &PreparedBasis, dfbs: &PreparedBasis, p0: usize, p1: usize,
 ) -> Result<Array3<f64>, FerricError> {
+    use rayon::prelude::*;
+
     let nbas = obs.nbasis();
     let nsh_obs = obs.nshells();
     let nsh_df = dfbs.nshells();
@@ -171,34 +180,58 @@ pub fn eri3_block(
     let offs_obs = obs.shell_offsets();
     let dims_df = dfbs.shell_dims();
     let offs_df = dfbs.shell_offsets();
-    let mut eng = Engine::new_3center(op, obs, dfbs, 1e-14)?;
-    let mut eri = Array3::zeros((p1 - p0, nbas, nbas));
-    for sp in 0..nsh_df {
-        let pbase = offs_df[sp];
-        let np = dims_df[sp];
-        // Skip aux shells entirely outside [p0, p1).
-        if pbase + np <= p0 || pbase >= p1 { continue; }
-        for s1 in 0..nsh_obs {
-            for s2 in 0..=s1 {
-                if let Some(block) = eng.compute_eri3(obs, dfbs, sp, s1, s2) {
-                    let n1 = dims_obs[s1];
-                    let n2 = dims_obs[s2];
-                    for p in 0..np {
-                        let pg = pbase + p;
-                        if pg < p0 || pg >= p1 { continue; }
-                        let pl = pg - p0;
-                        for i in 0..n1 {
-                            for j in 0..n2 {
-                                let val = block[(p * n1 + i) * n2 + j];
-                                eri[(pl, offs_obs[s1] + i, offs_obs[s2] + j)] = val;
-                                eri[(pl, offs_obs[s2] + j, offs_obs[s1] + i)] = val;
+
+    // Surface any engine-construction error up front (serial, cheap). After this
+    // succeeds the per-worker rebuilds below cannot fail for the same args, so
+    // they `.expect()` — `FerricError` is not `Clone`, so we cannot thread the
+    // error out of the per-worker init closure. (See eri3_tensor.)
+    Engine::new_3center(op, obs, dfbs, 1e-14)?;
+
+    let mut eri = Array3::<f64>::zeros((p1 - p0, nbas, nbas));
+
+    // Raw-pointer scatter: each aux shell `sp` writes a disjoint band of local
+    // aux rows, so the `(pl, mu, nu)` regions written by distinct workers never
+    // overlap.
+    let eri_ptr = eri.as_mut_ptr() as usize;
+    let stride0 = nbas * nbas; // pl-stride
+    let stride1 = nbas; // mu-stride
+
+    (0..nsh_df).into_par_iter().for_each_init(
+        || Engine::new_3center(op, obs, dfbs, 1e-14).expect("3-center engine (pre-validated)"),
+        |eng, sp| {
+            let pbase = offs_df[sp];
+            let np = dims_df[sp];
+            // Skip aux shells entirely outside [p0, p1).
+            if pbase + np <= p0 || pbase >= p1 { return; }
+            for s1 in 0..nsh_obs {
+                let n1 = dims_obs[s1];
+                let m0 = offs_obs[s1];
+                for s2 in 0..=s1 {
+                    if let Some(block) = eng.compute_eri3(obs, dfbs, sp, s1, s2) {
+                        let n2 = dims_obs[s2];
+                        let n0 = offs_obs[s2];
+                        for p in 0..np {
+                            let pg = pbase + p;
+                            if pg < p0 || pg >= p1 { continue; }
+                            let pl = pg - p0;
+                            for i in 0..n1 {
+                                for j in 0..n2 {
+                                    let val = block[(p * n1 + i) * n2 + j];
+                                    let mm = m0 + i;
+                                    let nn = n0 + j;
+                                    unsafe {
+                                        let base = eri_ptr as *mut f64;
+                                        *base.add(pl * stride0 + mm * stride1 + nn) = val;
+                                        *base.add(pl * stride0 + nn * stride1 + mm) = val;
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
-        }
-    }
+        },
+    );
     Ok(eri)
 }
 
