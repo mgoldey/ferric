@@ -2,6 +2,7 @@
 //! checks are exact identities or self-consistency conditions.
 
 use ferric_core::basis;
+use ferric_core::external_potential::{ExternalPotential, PointCharge};
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_dft::cdft::{population, Constraint, SpinChannel};
@@ -98,6 +99,47 @@ fn charge_constraint_is_satisfied() {
         res.populations[0]
     );
     assert!(res.scf.converged, "inner SCF not converged");
+}
+
+/// cDFT's per-iteration UhfFockMod closure (constraint) and the external
+/// potential's hcore-level addition are architecturally independent — this
+/// proves it empirically: both the SCF and the population constraint must
+/// still converge with an external point charge present.
+#[test]
+fn cdft_composes_with_external_point_charge() {
+    let (mol, bs, prep, _op, bounds) = setup();
+    let ctx = ParallelContext::default();
+    let target = 2.2; // same target as charge_constraint_is_satisfied
+    let ext = ExternalPotential {
+        point_charges: vec![PointCharge {
+            q: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 20.0,
+        }],
+        field: None,
+    };
+    let cfg = RhfConfig {
+        constraints: vec![Constraint {
+            fragment: vec![0],
+            spin: SpinChannel::Total,
+            target,
+        }],
+        cdft_lambda_tol: 1e-5,
+        fractional_occ: false,
+        external_potential: Some(ext),
+        ..Default::default()
+    };
+    let res = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &cfg).unwrap();
+    assert!(
+        res.scf.converged,
+        "inner SCF not converged with cDFT + external potential"
+    );
+    assert!(
+        (res.populations[0] - target).abs() < 1e-5,
+        "Li pop {} vs target {target} (cDFT constraint broken by external potential)",
+        res.populations[0]
+    );
 }
 
 /// λ = 0 (no constraint added) reproduces plain UHF. Exercises the
