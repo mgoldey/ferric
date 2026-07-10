@@ -20,10 +20,18 @@
 //! is what distinguishes per-atom from total.)
 
 use ferric_core::mol::Molecule;
+use rayon::prelude::*;
 
 use crate::becke::{becke_weights_all, becke_weights_and_grad};
 use crate::lebedev::lebedev;
 use crate::radial::treutler_ahlrichs_m4;
+
+/// Below this many points, run the Becke-weight pass serially. Rayon
+/// spawn/join/steal overhead dominates on small (e.g. free-atom SAD) grids —
+/// same rationale and threshold order-of-magnitude as `ao_grid.rs`'s
+/// `PAR_WORK_THRESHOLD` (per-point Becke weight is O(natoms) to O(natoms²)
+/// work, comparable to a handful of AO evaluations per point).
+const PAR_WORK_THRESHOLD: usize = 2_000;
 
 /// One grid point.
 #[derive(Debug, Clone, Copy)]
@@ -53,9 +61,19 @@ impl Default for AtomicGridConfig {
 
 /// Build the full molecular grid for `mol`. Returns a flat Vec of GridPoints
 /// summed across all atoms.
+///
+/// The Becke-weight evaluation at each point is independent of every other
+/// point (it only reads `mol` and that point's `xyz`), so this is a pure map
+/// over the point axis: build the un-weighted `(home_atom, xyz, w_r*w_l)`
+/// list first (cheap, serial — radial/angular quadrature only), then map
+/// `becke_weights_all` over it with an order-preserving `into_par_iter().
+/// map().collect()`. Collecting in index order makes the output bit-identical
+/// to the old serial loop regardless of thread count — no reduction, so no
+/// nondeterminism to guard against.
 pub fn build_atomic_grid(mol: &Molecule, cfg: &AtomicGridConfig) -> Vec<GridPoint> {
     let (lebedev_pts, lebedev_w) = lebedev(cfg.n_angular);
-    let mut grid = Vec::with_capacity(mol.atoms.len() * cfg.n_radial * lebedev_pts.len());
+    let mut pre: Vec<(usize, [f64; 3], f64)> =
+        Vec::with_capacity(mol.atoms.len() * cfg.n_radial * lebedev_pts.len());
 
     for (a_idx, atom) in mol.atoms.iter().enumerate() {
         let (rs, ws) = treutler_ahlrichs_m4(atom.z, cfg.n_radial);
@@ -66,19 +84,26 @@ pub fn build_atomic_grid(mol: &Molecule, cfg: &AtomicGridConfig) -> Vec<GridPoin
                     atom.y + r * pt[1],
                     atom.zpos + r * pt[2],
                 ];
-                // Becke partition weight for the home atom.
-                let becke = becke_weights_all(mol, xyz);
-                let w_becke = becke[a_idx];
-                let weight = w_r * w_l * w_becke;
-                grid.push(GridPoint {
-                    xyz,
-                    weight,
-                    home_atom: a_idx,
-                });
+                pre.push((a_idx, xyz, w_r * w_l));
             }
         }
     }
-    grid
+
+    let build_point = |&(a_idx, xyz, w_rl): &(usize, [f64; 3], f64)| -> GridPoint {
+        let becke = becke_weights_all(mol, xyz);
+        let weight = w_rl * becke[a_idx];
+        GridPoint {
+            xyz,
+            weight,
+            home_atom: a_idx,
+        }
+    };
+
+    if pre.len() >= PAR_WORK_THRESHOLD {
+        pre.par_iter().map(build_point).collect()
+    } else {
+        pre.iter().map(build_point).collect()
+    }
 }
 
 /// Build the molecular grid AND the per-grid-point full quadrature-weight
@@ -106,10 +131,9 @@ pub fn build_atomic_grid_with_response(
     cfg: &AtomicGridConfig,
 ) -> (Vec<GridPoint>, Vec<Vec<[f64; 3]>>) {
     let (lebedev_pts, lebedev_w) = lebedev(cfg.n_angular);
-    let total_pts = mol.atoms.len() * cfg.n_radial * lebedev_pts.len();
-    let mut grid = Vec::with_capacity(total_pts);
-    let mut weight1: Vec<Vec<[f64; 3]>> = Vec::with_capacity(total_pts);
     let natoms = mol.atoms.len();
+    let mut pre: Vec<(usize, [f64; 3], f64)> =
+        Vec::with_capacity(natoms * cfg.n_radial * lebedev_pts.len());
 
     for (a_idx, atom) in mol.atoms.iter().enumerate() {
         let (rs, ws) = treutler_ahlrichs_m4(atom.z, cfg.n_radial);
@@ -120,44 +144,57 @@ pub fn build_atomic_grid_with_response(
                     atom.y + r * pt[1],
                     atom.zpos + r * pt[2],
                 ];
-                let (becke, dw_lab) = becke_weights_and_grad(mol, xyz);
-                let w_becke = becke[a_idx];
-                let weight = w_r * w_l * w_becke;
-                grid.push(GridPoint {
-                    xyz,
-                    weight,
-                    home_atom: a_idx,
-                });
-
-                // Lab-fixed partition derivative for the HOME atom's weight:
-                // dw_lab[a_idx][c][k] is ∂w_becke^{a_idx}/∂R_c^k at fixed r.
-                // PySCF's weight1 adds ∇_r w_becke to the home-atom row, then
-                // multiplies through by the radial-angular Jacobian.
-                let scale = w_r * w_l;
-                let mut grad_r = [0.0_f64; 3]; // = -Σ_c dw_lab[a_idx][c]
-                for c in 0..natoms {
-                    grad_r[0] -= dw_lab[a_idx][c][0];
-                    grad_r[1] -= dw_lab[a_idx][c][1];
-                    grad_r[2] -= dw_lab[a_idx][c][2];
-                }
-                let mut row = Vec::with_capacity(natoms);
-                for b in 0..natoms {
-                    let mut entry = [
-                        scale * dw_lab[a_idx][b][0],
-                        scale * dw_lab[a_idx][b][1],
-                        scale * dw_lab[a_idx][b][2],
-                    ];
-                    if b == a_idx {
-                        entry[0] += scale * grad_r[0];
-                        entry[1] += scale * grad_r[1];
-                        entry[2] += scale * grad_r[2];
-                    }
-                    row.push(entry);
-                }
-                weight1.push(row);
+                pre.push((a_idx, xyz, w_r * w_l));
             }
         }
     }
+
+    // Per-point work is O(natoms³) via becke_weights_and_grad and independent
+    // across points — same order-preserving parallel map as build_atomic_grid
+    // (bit-identical to the serial loop; no reduction).
+    let build_point =
+        |&(a_idx, xyz, scale): &(usize, [f64; 3], f64)| -> (GridPoint, Vec<[f64; 3]>) {
+            let (becke, dw_lab) = becke_weights_and_grad(mol, xyz);
+            let weight = scale * becke[a_idx];
+            let gp = GridPoint {
+                xyz,
+                weight,
+                home_atom: a_idx,
+            };
+
+            // Lab-fixed partition derivative for the HOME atom's weight:
+            // dw_lab[a_idx][c][k] is ∂w_becke^{a_idx}/∂R_c^k at fixed r.
+            // PySCF's weight1 adds ∇_r w_becke to the home-atom row, then
+            // multiplies through by the radial-angular Jacobian.
+            let mut grad_r = [0.0_f64; 3]; // = -Σ_c dw_lab[a_idx][c]
+            for c in 0..natoms {
+                grad_r[0] -= dw_lab[a_idx][c][0];
+                grad_r[1] -= dw_lab[a_idx][c][1];
+                grad_r[2] -= dw_lab[a_idx][c][2];
+            }
+            let mut row = Vec::with_capacity(natoms);
+            for b in 0..natoms {
+                let mut entry = [
+                    scale * dw_lab[a_idx][b][0],
+                    scale * dw_lab[a_idx][b][1],
+                    scale * dw_lab[a_idx][b][2],
+                ];
+                if b == a_idx {
+                    entry[0] += scale * grad_r[0];
+                    entry[1] += scale * grad_r[1];
+                    entry[2] += scale * grad_r[2];
+                }
+                row.push(entry);
+            }
+            (gp, row)
+        };
+
+    let (grid, weight1): (Vec<GridPoint>, Vec<Vec<[f64; 3]>>) =
+        if pre.len() >= PAR_WORK_THRESHOLD {
+            pre.par_iter().map(build_point).unzip()
+        } else {
+            pre.iter().map(build_point).unzip()
+        };
     (grid, weight1)
 }
 
@@ -204,6 +241,132 @@ mod tests {
         let err = (approx - exact).abs() / exact;
         eprintln!("H2 grid: ∫ Gaussian = {approx:.6}, exact = {exact:.6}, relerr={err:.2e}");
         assert!(err < 1e-3, "H2 Becke-Lebedev Gaussian relerr {err:.2e}");
+    }
+
+    /// Serial reference: the pre-P2 per-point loop, verbatim.
+    fn build_atomic_grid_serial_ref(mol: &Molecule, cfg: &AtomicGridConfig) -> Vec<GridPoint> {
+        let (lebedev_pts, lebedev_w) = lebedev(cfg.n_angular);
+        let mut grid = Vec::new();
+        for (a_idx, atom) in mol.atoms.iter().enumerate() {
+            let (rs, ws) = treutler_ahlrichs_m4(atom.z, cfg.n_radial);
+            for (r, w_r) in rs.iter().zip(ws.iter()) {
+                for (pt, w_l) in lebedev_pts.iter().zip(lebedev_w.iter()) {
+                    let xyz = [
+                        atom.x + r * pt[0],
+                        atom.y + r * pt[1],
+                        atom.zpos + r * pt[2],
+                    ];
+                    let becke = becke_weights_all(mol, xyz);
+                    let weight = w_r * w_l * becke[a_idx];
+                    grid.push(GridPoint { xyz, weight, home_atom: a_idx });
+                }
+            }
+        }
+        grid
+    }
+
+    #[test]
+    fn parallel_grid_bit_identical_to_serial() {
+        // Default fine grid on H2: 2 * 75 * 110 = 16,500 points — well above
+        // PAR_WORK_THRESHOLD, so build_atomic_grid takes the rayon path.
+        let mol = h2();
+        let cfg = AtomicGridConfig::default();
+        assert!(
+            mol.atoms.len() * cfg.n_radial * 110 >= PAR_WORK_THRESHOLD,
+            "test must exercise the parallel path"
+        );
+        let par = build_atomic_grid(&mol, &cfg);
+        let ser = build_atomic_grid_serial_ref(&mol, &cfg);
+        assert_eq!(par.len(), ser.len());
+        for (g, (p, s)) in par.iter().zip(ser.iter()).enumerate() {
+            assert_eq!(p.home_atom, s.home_atom, "home_atom mismatch at point {g}");
+            for k in 0..3 {
+                assert_eq!(
+                    p.xyz[k].to_bits(),
+                    s.xyz[k].to_bits(),
+                    "xyz[{k}] not bit-identical at point {g}"
+                );
+            }
+            assert_eq!(
+                p.weight.to_bits(),
+                s.weight.to_bits(),
+                "weight not bit-identical at point {g}: par {} vs ser {}",
+                p.weight,
+                s.weight
+            );
+        }
+    }
+
+    #[test]
+    fn parallel_grid_with_response_bit_identical_to_serial() {
+        // Serial reference for the with-response variant: pre-P2 loop, verbatim.
+        let mol = h2();
+        let cfg = AtomicGridConfig::default();
+        let (par_grid, par_w1) = build_atomic_grid_with_response(&mol, &cfg);
+
+        let (lebedev_pts, lebedev_w) = lebedev(cfg.n_angular);
+        let natoms = mol.atoms.len();
+        let mut ser_grid = Vec::new();
+        let mut ser_w1: Vec<Vec<[f64; 3]>> = Vec::new();
+        for (a_idx, atom) in mol.atoms.iter().enumerate() {
+            let (rs, ws) = treutler_ahlrichs_m4(atom.z, cfg.n_radial);
+            for (r, w_r) in rs.iter().zip(ws.iter()) {
+                for (pt, w_l) in lebedev_pts.iter().zip(lebedev_w.iter()) {
+                    let xyz = [
+                        atom.x + r * pt[0],
+                        atom.y + r * pt[1],
+                        atom.zpos + r * pt[2],
+                    ];
+                    let (becke, dw_lab) = becke_weights_and_grad(&mol, xyz);
+                    let weight = w_r * w_l * becke[a_idx];
+                    ser_grid.push(GridPoint { xyz, weight, home_atom: a_idx });
+                    let scale = w_r * w_l;
+                    let mut grad_r = [0.0_f64; 3];
+                    for c in 0..natoms {
+                        grad_r[0] -= dw_lab[a_idx][c][0];
+                        grad_r[1] -= dw_lab[a_idx][c][1];
+                        grad_r[2] -= dw_lab[a_idx][c][2];
+                    }
+                    let mut row = Vec::with_capacity(natoms);
+                    for b in 0..natoms {
+                        let mut entry = [
+                            scale * dw_lab[a_idx][b][0],
+                            scale * dw_lab[a_idx][b][1],
+                            scale * dw_lab[a_idx][b][2],
+                        ];
+                        if b == a_idx {
+                            entry[0] += scale * grad_r[0];
+                            entry[1] += scale * grad_r[1];
+                            entry[2] += scale * grad_r[2];
+                        }
+                        row.push(entry);
+                    }
+                    ser_w1.push(row);
+                }
+            }
+        }
+
+        assert_eq!(par_grid.len(), ser_grid.len());
+        assert_eq!(par_w1.len(), ser_w1.len());
+        for (g, (p, s)) in par_grid.iter().zip(ser_grid.iter()).enumerate() {
+            assert_eq!(p.home_atom, s.home_atom);
+            for k in 0..3 {
+                assert_eq!(p.xyz[k].to_bits(), s.xyz[k].to_bits(), "xyz at point {g}");
+            }
+            assert_eq!(p.weight.to_bits(), s.weight.to_bits(), "weight at point {g}");
+        }
+        for (g, (pr, sr)) in par_w1.iter().zip(ser_w1.iter()).enumerate() {
+            assert_eq!(pr.len(), sr.len());
+            for (b, (pe, se)) in pr.iter().zip(sr.iter()).enumerate() {
+                for k in 0..3 {
+                    assert_eq!(
+                        pe[k].to_bits(),
+                        se[k].to_bits(),
+                        "weight1 not bit-identical at point {g}, atom {b}, axis {k}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
