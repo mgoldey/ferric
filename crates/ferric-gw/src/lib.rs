@@ -92,6 +92,14 @@ pub struct GwResult {
     pub z_factor: Array1<f64>,
     /// Iteration count for ev-loops (0 for non-iterative methods).
     pub n_ev_iter: usize,
+    /// Whether the evGW0/evGW eigenvalue self-consistency met `ev_conv_thresh`
+    /// within `max_ev_iter`. Always `true` for one-shot methods (G0W0/COHSEX).
+    /// `false` means the QP energies are the last (unconverged) sweep.
+    pub ev_converged: bool,
+    /// Per-MO: whether the QP Newton fixed-point solve converged (final/only
+    /// iteration). `false` entries are best-effort roots — typically a QP
+    /// solution near a pole of the Padé-continued Σc.
+    pub qp_converged: Vec<bool>,
     /// Underlying PDEP result (so callers can inspect W).
     pub pdep: PdepRpaResult,
 }
@@ -130,6 +138,11 @@ pub struct UGwResult {
     pub sigma_c_b: Array1<f64>,
     pub z_factor_b: Array1<f64>,
     pub n_ev_iter: usize,
+    /// See [`GwResult::ev_converged`].
+    pub ev_converged: bool,
+    /// Per-MO α/β-combined QP-Newton flags — see [`GwResult::qp_converged`].
+    pub qp_converged_a: Vec<bool>,
+    pub qp_converged_b: Vec<bool>,
     pub pdep: PdepRpaResult,
 }
 
@@ -185,7 +198,7 @@ pub fn run_u_gw(
 
     let qp_range = gw_cfg.qp_mos.clone().unwrap_or_else(|| default_u_qp_range(mol, scf));
 
-    match gw_cfg.method {
+    let result = match gw_cfg.method {
         GwMethod::G0W0 => u_sigma::run_u_g0w0(&mo_b_a, &mo_b_b, pdep, qp_range, gw_cfg, &v_dressed),
         GwMethod::Cohsex => u_cohsex::run_u_cohsex(&mo_b_a, &mo_b_b, pdep, qp_range, gw_cfg, &v_dressed),
         GwMethod::EvGw0 => u_sigma::run_u_evgw0(&mo_b_a, &mo_b_b, pdep, qp_range, gw_cfg, &v_dressed),
@@ -195,7 +208,29 @@ pub fn run_u_gw(
         GwMethod::ScCohsex => Err(FerricError::General(
             "U-sc-COHSEX not implemented; see plan P2.".into(),
         )),
+    }?;
+    if !result.ev_converged {
+        eprintln!(
+            "warning: U-{:?} eigenvalue self-consistency did NOT converge in {} \
+             iterations (thresh {:.1e}); QP energies are the last sweep",
+            gw_cfg.method, result.n_ev_iter, gw_cfg.ev_conv_thresh
+        );
     }
+    for (spin, flags) in [("alpha", &result.qp_converged_a), ("beta", &result.qp_converged_b)] {
+        let bad: Vec<usize> = flags
+            .iter()
+            .enumerate()
+            .filter(|(_, &c)| !c)
+            .map(|(i, _)| result.mo_indices[i])
+            .collect();
+        if !bad.is_empty() {
+            eprintln!(
+                "warning: QP Newton solve did not converge for {spin} MO(s) {bad:?}; \
+                 those QP energies are best-effort"
+            );
+        }
+    }
+    Ok(result)
 }
 
 fn default_u_qp_range(mol: &Molecule, scf: &ScfResult) -> std::ops::Range<usize> {
@@ -257,7 +292,7 @@ pub fn run_gw(
     let qp_range = gw_cfg.qp_mos.clone().unwrap_or_else(|| default_qp_range(mol, rhf));
 
     // 5. Dispatch by method.
-    match gw_cfg.method {
+    let result = match gw_cfg.method {
         GwMethod::Cohsex => cohsex::run_cohsex(mol, rhf, &mo_b, &v_dressed, pdep, qp_range, gw_cfg),
         GwMethod::G0W0 => sigma::run_g0w0(mol, rhf, &mo_b, &v_dressed, pdep, qp_range, gw_cfg, vxc_diag),
         GwMethod::EvGw0 => sigma::run_evgw0(
@@ -269,6 +304,34 @@ pub fn run_gw(
         GwMethod::ScCohsex => Err(FerricError::General(
             "sc-COHSEX not implemented in spike P0; see plan P2.".into(),
         )),
+    }?;
+    warn_gw_unconverged(&result, gw_cfg);
+    Ok(result)
+}
+
+/// Surface non-convergence (reliability audit: flags used to be silently
+/// dropped — a stalled evGW or a Newton solve stuck at a Σc pole printed the
+/// same table as a converged run).
+fn warn_gw_unconverged(result: &GwResult, gw_cfg: &GwConfig) {
+    if !result.ev_converged {
+        eprintln!(
+            "warning: {:?} eigenvalue self-consistency did NOT converge in {} \
+             iterations (thresh {:.1e}); QP energies are the last sweep",
+            gw_cfg.method, result.n_ev_iter, gw_cfg.ev_conv_thresh
+        );
+    }
+    let bad: Vec<usize> = result
+        .qp_converged
+        .iter()
+        .enumerate()
+        .filter(|(_, &c)| !c)
+        .map(|(i, _)| result.mo_indices[i])
+        .collect();
+    if !bad.is_empty() {
+        eprintln!(
+            "warning: QP Newton solve did not converge for MO(s) {bad:?} \
+             (root near a Σc pole?); those QP energies are best-effort"
+        );
     }
 }
 

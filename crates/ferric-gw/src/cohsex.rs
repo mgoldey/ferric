@@ -193,6 +193,7 @@ pub fn run_cohsex(
         eps_qp[idx] = eps_mf[idx] + sc_out[idx];
     }
 
+    let n_qp = mo_indices.len();
     Ok(GwResult {
         mo_indices,
         eps_mf,
@@ -201,6 +202,8 @@ pub fn run_cohsex(
         sigma_c: sc_out,
         z_factor: z_out,
         n_ev_iter: 0,
+        ev_converged: true,
+        qp_converged: vec![true; n_qp],
         pdep,
     })
 }

@@ -127,7 +127,7 @@ pub(crate) fn solve_qp_for_mo(
     // KS reference it is Σ_x − v_xc and is large (~−7 eV), moving the QP root by
     // several eV — so Σ_c must be evaluated at the shifted energy, not post-hoc.
     static_shift: f64,
-) -> (f64, f64, f64) {
+) -> (f64, f64, f64, bool) {
     let n_pade = if pade_npts == 0 {
         quad_freqs.len().min(16)
     } else {
@@ -166,6 +166,11 @@ pub(crate) fn solve_qp_for_mo(
     let eps_qp_lin = eps_m_mf + z_renorm * (sc_at_ref + static_shift);
     let mut eps_curr = eps_qp_lin;
     let damp = newton_damp.clamp(0.1, 1.0);
+    // The doc always promised this flag; it was computed and then dropped.
+    // false = the 30-step cap was exhausted or Σc'(ε) ≈ 1 (singular Newton
+    // slope, e.g. a QP root near a pole of the Padé model) — the returned
+    // ε_qp is best-effort, not a solved fixed point.
+    let mut newton_converged = false;
     for _ in 0..30 {
         let sc = pade.eval(Complex64::new(eps_curr, 0.0)).re;
         // QP residual: ε − ε_mf − static_shift − Σc(ε) = 0.
@@ -178,11 +183,12 @@ pub(crate) fn solve_qp_for_mo(
         let step = -damp * f / fprime;
         eps_curr += step;
         if step.abs() < 1e-7 {
+            newton_converged = true;
             break;
         }
     }
     let sc_final = pade.eval(Complex64::new(eps_curr, 0.0)).re;
-    (eps_curr, sc_final, z_renorm)
+    (eps_curr, sc_final, z_renorm, newton_converged)
 }
 
 /// Run G0W0. `vxc_diag`, if given (KS reference), is the absolute-MO-indexed
@@ -251,7 +257,7 @@ pub fn run_g0w0(
 
             // KS reference: shift = Σ_x − v_xc (inside the QP self-consistency).
             let shift = vxc_diag.map(|v| sigma_x_all[m_loc] - v[mo_abs]).unwrap_or(0.0);
-            let (eps_qp_m, sc_final, z_renorm) = solve_qp_for_mo(
+            let (eps_qp_m, sc_final, z_renorm, conv) = solve_qp_for_mo(
                 m_loc,
                 eps_m,
                 &m_proj,
@@ -264,15 +270,17 @@ pub fn run_g0w0(
                 ef,
                 shift,
             );
-            Ok((eps_m, sigma_x_all[m_loc], eps_qp_m, sc_final, z_renorm))
+            Ok((eps_m, sigma_x_all[m_loc], eps_qp_m, sc_final, z_renorm, conv))
         })
         .collect::<Result<Vec<_>, FerricError>>()?;
-    for (idx, &(eps_m, sx, eps_qp_m, sc_final, z_renorm)) in qp_rows.iter().enumerate() {
+    let mut qp_converged = vec![true; mo_indices.len()];
+    for (idx, &(eps_m, sx, eps_qp_m, sc_final, z_renorm, conv)) in qp_rows.iter().enumerate() {
         eps_mf[idx] = eps_m;
         sx_out[idx] = sx;
         eps_qp[idx] = eps_qp_m;
         sc_out[idx] = sc_final;
         z_out[idx] = z_renorm;
+        qp_converged[idx] = conv;
     }
 
     Ok(GwResult {
@@ -283,6 +291,8 @@ pub fn run_g0w0(
         sigma_c: sc_out,
         z_factor: z_out,
         n_ev_iter: 0,
+        ev_converged: true,
+        qp_converged,
         pdep,
     })
 }
@@ -338,6 +348,8 @@ pub fn run_evgw0(
     // Outer loop.
     let mut eps_prop = mo_b.eps_act.clone();
     let mut iter_done = 0usize;
+    let mut ev_converged = false;
+    let mut qp_converged = vec![true; mo_indices.len()];
     for it in 0..gw_cfg.max_ev_iter {
         let mut max_dev = 0.0_f64;
         // First update eps_prop using the *previous* QP energies.
@@ -347,7 +359,7 @@ pub fn run_evgw0(
         }
         // eps_prop is a frozen snapshot for this iteration (Jacobi-style
         // update), so each QP state's solve is independent — parallelize.
-        let qp_new: Vec<(f64, f64, f64)> = mo_indices
+        let qp_new: Vec<(f64, f64, f64, bool)> = mo_indices
             .par_iter()
             .map(|&mo_abs| {
                 let m_loc = mo_abs - first_act;
@@ -367,14 +379,16 @@ pub fn run_evgw0(
                 )
             })
             .collect();
-        for (idx, &(eps_new, sc_new, z_new)) in qp_new.iter().enumerate() {
+        for (idx, &(eps_new, sc_new, z_new, conv)) in qp_new.iter().enumerate() {
             max_dev = max_dev.max((eps_new - eps_qp[idx]).abs());
             eps_qp[idx] = eps_new;
             sc_out[idx] = sc_new;
             z_out[idx] = z_new;
+            qp_converged[idx] = conv;
         }
         iter_done = it + 1;
         if max_dev < gw_cfg.ev_conv_thresh {
+            ev_converged = true;
             break;
         }
     }
@@ -387,6 +401,8 @@ pub fn run_evgw0(
         sigma_c: sc_out,
         z_factor: z_out,
         n_ev_iter: iter_done,
+        ev_converged,
+        qp_converged,
         pdep,
     })
 }
@@ -439,6 +455,8 @@ pub fn run_evgw(
         eps_qp[idx] = eps_mf[idx];
     }
     let mut iter_done = 0usize;
+    let mut ev_converged = false;
+    let mut qp_converged = vec![true; mo_indices.len()];
     for it in 0..gw_cfg.max_ev_iter {
         // Update shifted_rhf.eps_alpha by overlaying QP energies for the
         // QP block (in absolute MO indices).
@@ -469,7 +487,7 @@ pub fn run_evgw(
         }
         let mut max_dev = 0.0_f64;
         // Frozen (m_proj, W, eps_prop) snapshot ⇒ independent per-state solves.
-        let qp_new: Vec<(f64, f64, f64)> = mo_indices
+        let qp_new: Vec<(f64, f64, f64, bool)> = mo_indices
             .par_iter()
             .map(|&mo_abs| {
                 let m_loc = mo_abs - first_act;
@@ -488,14 +506,16 @@ pub fn run_evgw(
                 )
             })
             .collect();
-        for (idx, &(eps_new, sc_new, z_new)) in qp_new.iter().enumerate() {
+        for (idx, &(eps_new, sc_new, z_new, conv)) in qp_new.iter().enumerate() {
             max_dev = max_dev.max((eps_new - eps_qp[idx]).abs());
             eps_qp[idx] = eps_new;
             sc_out[idx] = sc_new;
             z_out[idx] = z_new;
+            qp_converged[idx] = conv;
         }
         iter_done = it + 1;
         if max_dev < gw_cfg.ev_conv_thresh && it > 0 {
+            ev_converged = true;
             break;
         }
     }
@@ -508,6 +528,8 @@ pub fn run_evgw(
         sigma_c: sc_out,
         z_factor: z_out,
         n_ev_iter: iter_done,
+        ev_converged,
+        qp_converged,
         pdep: current_pdep,
     })
 }

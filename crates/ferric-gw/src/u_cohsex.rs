@@ -65,11 +65,15 @@ pub fn run_u_cohsex(
         eps_qp_b[idx] = eps_mf_b[idx] + sc_b[idx];
     }
 
+    let n_qp = mo_indices.len();
     Ok(UGwResult {
         mo_indices,
         eps_mf_a, eps_qp_a, sigma_x_a: sx_a, sigma_c_a: sc_a, z_factor_a: z_a,
         eps_mf_b, eps_qp_b, sigma_x_b: sx_b, sigma_c_b: sc_b, z_factor_b: z_b,
         n_ev_iter: 0,
+        ev_converged: true,
+        qp_converged_a: vec![true; n_qp],
+        qp_converged_b: vec![true; n_qp],
         pdep,
     })
 }
