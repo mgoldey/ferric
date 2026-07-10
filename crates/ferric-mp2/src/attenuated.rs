@@ -103,7 +103,10 @@
 //! advantage is reduced basis-set requirements.
 
 use crate::mo_transform::transform_3center_ov;
-use crate::rimp2::{active_occ, cholesky_inverse_sqrt, ri_mp2_spin_components, RiMp2Config, SpinComponents};
+use crate::rimp2::{
+    active_occ, cholesky_inverse_sqrt, ri_mp2_spin_components, spin_components_from_b_ov,
+    RiMp2Config, SpinComponents,
+};
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -275,30 +278,15 @@ fn attenuated_spin_components_screened(
         .unwrap();
     let b_flat = v2c_inv_sqrt.dot(&eri3_flat);
 
-    let mut e_os = 0.0;
-    let mut e_ss = 0.0;
-    for i in 0..nocc {
-        for j in 0..nocc {
-            for a in 0..nvir {
-                for b in 0..nvir {
-                    let ia = i * nvir + a;
-                    let jb = j * nvir + b;
-                    let ib = i * nvir + b;
-                    let ja = j * nvir + a;
-                    let eri_iajb: f64 =
-                        (0..naux).map(|p| b_flat[(p, ia)] * b_flat[(p, jb)]).sum();
-                    let eri_ibja: f64 =
-                        (0..naux).map(|p| b_flat[(p, ib)] * b_flat[(p, ja)]).sum();
-                    let denom = eps[first_occ + i] + eps[first_occ + j]
-                        - eps[nocc_total + a]
-                        - eps[nocc_total + b];
-                    e_os += eri_iajb * eri_iajb / denom;
-                    e_ss += eri_iajb * (eri_iajb - eri_ibja) / denom;
-                }
-            }
-        }
-    }
-    Ok(SpinComponents { e_os, e_ss, e_total: e_os + e_ss })
+    // b_flat is exactly the dressed (naux, nocc*nvir) B_ov tensor that
+    // ri_mp2_spin_components hands to spin_components_from_b_ov — same shape,
+    // same B^P_ia = sum_Q V^{-1/2}_PQ (Q|ia) contraction, only the upstream
+    // 3-index build differs (QQR-3 screened vs dense). Reuse the shared,
+    // i-blocked-GEMM + par-i spin-component assembly instead of the hand-rolled
+    // serial (i,j,a,b) O(naux) double-dot loop, which had neither the M4 GEMM
+    // port nor parallelization.
+    let sc = spin_components_from_b_ov(&b_flat, eps, nocc, nvir, first_occ, nocc_total);
+    Ok(sc)
 }
 
 /// Helper for range-separated MP2: returns (E_erfc_sr, E_erf_lr, E_full).
