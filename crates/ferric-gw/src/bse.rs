@@ -22,6 +22,7 @@
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
+use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::operator::Operator;
 use ferric_integrals::oneelectron;
 use ferric_rpa::PdepRpaConfig;
@@ -229,9 +230,16 @@ pub fn run_bse_tda(
         }
     }
 
-    // 5. Eigenvalues (Hermitian).
-    let (evals, _) = a_mat
-        .eigh(UPLO::Upper)
+    // 5. Eigenvalues (Hermitian). The nov×nov dense eigendecomposition is the
+    //    dominant serial cost of BSE-TDA — raise BLAS threads on it under the
+    //    opt-in guard.
+    //    Call-path proof: this eigh runs AFTER the row-parallel `a_mat` fill
+    //    above (that par region has fully joined — `a_mat` is consumed here) and
+    //    `run_bse_tda` is a top-level driver invoked only from serial callers
+    //    (CLI/Python/tests), never from inside a rayon par_iter. So no enclosing
+    //    parallel region; opt_in_blas_threads() self-guards to 1 from a rayon
+    //    worker regardless, and defaults to 1 (bit-identical to today).
+    let (evals, _) = with_blas_threads(opt_in_blas_threads(), || a_mat.eigh(UPLO::Upper))
         .map_err(|e| FerricError::Lapack(format!("BSE-TDA eigh: {e}")))?;
     let mut omega: Vec<f64> = evals.to_vec();
     omega.sort_by(|x, y| x.partial_cmp(y).unwrap());
@@ -331,8 +339,12 @@ pub fn run_cis_tda(
             fill_row(ia, row);
         }
     }
-    let (evals, _) = a_mat
-        .eigh(UPLO::Upper)
+    // nov×nov Hermitian eigendecomposition — same BLAS-raise treatment and
+    // call-path proof as run_bse_tda's eigh: it runs after the row-parallel
+    // a_mat fill (joined; a_mat consumed here) and run_cis_tda is a top-level
+    // serial driver, never called from a rayon par_iter. opt_in_blas_threads()
+    // self-guards to 1 from a rayon worker and defaults to 1.
+    let (evals, _) = with_blas_threads(opt_in_blas_threads(), || a_mat.eigh(UPLO::Upper))
         .map_err(|e| FerricError::Lapack(format!("CIS-TDA eigh: {e}")))?;
     let mut omega: Vec<f64> = evals.to_vec();
     omega.sort_by(|x, y| x.partial_cmp(y).unwrap());
@@ -519,7 +531,6 @@ pub fn run_bse_c6(
     // to 1 inside the rayon region to avoid nested-thread oversubscription /
     // the dgetrf stack-overflow crash site.
     let alpha_iso: Vec<f64> = {
-        use ferric_integrals::blas_threads::with_blas_threads;
         use rayon::prelude::*;
         const PAR_FREQ_THRESHOLD: usize = 4;
         let compute_one = |&w: &f64| -> Result<f64, FerricError> {
@@ -745,7 +756,6 @@ pub fn run_bse_c6_ks(
 
     // Frequencies independent — same par-over-freqs pattern as run_bse_c6.
     let alpha_iso: Vec<f64> = {
-        use ferric_integrals::blas_threads::with_blas_threads;
         use rayon::prelude::*;
         const PAR_FREQ_THRESHOLD: usize = 4;
         let compute_one = |&w: &f64| -> Result<f64, FerricError> {
