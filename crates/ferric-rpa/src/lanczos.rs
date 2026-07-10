@@ -119,6 +119,8 @@ where
         return Ok(LanczosResult {
             eigenvalues: Vec::new(),
             eigenvectors: Array2::zeros((naux, 0)),
+            converged: true,
+            residual_norm: 0.0,
         });
     }
 
@@ -168,7 +170,15 @@ where
         eigenvalues.push(theta[c]);
     }
 
-    Ok(LanczosResult { eigenvalues, eigenvectors })
+    // Exact dense eigh of the fully-assembled A — not an iterative subspace
+    // solve, so there is no residual to converge and this path is always
+    // "converged" by construction.
+    Ok(LanczosResult {
+        eigenvalues,
+        eigenvectors,
+        converged: true,
+        residual_norm: 0.0,
+    })
 }
 
 /// Result of a block-Lanczos run.
@@ -178,6 +188,19 @@ pub struct LanczosResult {
     pub eigenvalues: Vec<f64>,
     /// Eigenvectors in the original space, shape `(naux, n_converged)`.
     pub eigenvectors: Array2<f64>,
+    /// Whether the returned Ritz pairs met the caller's residual-norm
+    /// tolerance (`conv_thresh` in [`run_lanczos_seeded`]) within the
+    /// iteration budget. `true` unconditionally for [`run_lanczos_full_rank`]
+    /// (single dense `eigh`, no iterative residual). `false` means the block
+    /// Lanczos recurrence exhausted `max_iter` (or ran out of Krylov space
+    /// before reaching Ambient dimension) while `residual_norm` was still
+    /// above `conv_thresh` — the returned Ritz pairs are the best available,
+    /// not verified eigenpairs.
+    pub converged: bool,
+    /// Residual norm `max_i ||A v_i − λ_i v_i||` (block-Lanczos estimate) of
+    /// the returned Ritz pairs at the point the solve stopped. `0.0` for the
+    /// full-rank (exact) path.
+    pub residual_norm: f64,
 }
 
 /// QR-orthonormalize columns; returns Q with the same shape as the input when
@@ -254,9 +277,18 @@ pub fn run_lanczos_seeded<F>(
 where
     F: Fn(&Array2<f64>) -> Array2<f64>,
 {
-    with_blas_threads(lanczos_blas_threads(), || {
+    let result = with_blas_threads(lanczos_blas_threads(), || {
         lanczos_iterations(seed, matvec, n_desired, max_iter, conv_thresh)
-    })
+    })?;
+    if !result.converged {
+        eprintln!(
+            "ferric-rpa WARNING: block Lanczos did not converge within max_iter={max_iter} \
+             (conv_thresh={conv_thresh:.3e}, worst residual={:.3e}); returned Ritz pairs \
+             are the best available, not verified eigenpairs of the dielectric matrix.",
+            result.residual_norm,
+        );
+    }
+    Ok(result)
 }
 
 /// Serial Lanczos iteration body; BLAS threading is managed by the caller
@@ -276,6 +308,8 @@ where
         return Ok(LanczosResult {
             eigenvalues: Vec::new(),
             eigenvectors: Array2::zeros((naux, 0)),
+            converged: true,
+            residual_norm: 0.0,
         });
     }
 
@@ -286,6 +320,8 @@ where
         return Ok(LanczosResult {
             eigenvalues: Vec::new(),
             eigenvectors: Array2::zeros((naux, 0)),
+            converged: true,
+            residual_norm: 0.0,
         });
     }
 
@@ -432,16 +468,33 @@ where
             max_resid = 0.0;
         }
 
-        let result = LanczosResult { eigenvalues, eigenvectors: ritz };
+        // Termination criteria (checked in order):
+        //   1. No further Krylov expansion possible (v_next_opt is None) — the
+        //      subspace is either invariant (lucky breakdown) or spans the
+        //      full ambient naux-dim space, so the block-tridiagonal T's
+        //      eigenpairs are exact for that (sub)space — converged.
+        //   2. Residual below threshold with enough eigenpairs — converged.
+        //   3. Neither holds and the outer-iteration budget is exhausted on
+        //      this pass — NOT converged; the caller gets the best Ritz pairs
+        //      found so far, flagged accordingly (mirrors Davidson's "soft"
+        //      fall-through, but with the flag Davidson doesn't have).
+        let no_more_expansion = v_next_opt.is_none();
+        let residual_ok = max_resid < conv_thresh && nb * block_size >= n_desired;
+        let is_last_iter = k + 1 == outer_iters;
+        let converged = no_more_expansion || residual_ok || !is_last_iter;
+
+        let result = LanczosResult {
+            eigenvalues,
+            eigenvectors: ritz,
+            converged,
+            residual_norm: max_resid,
+        };
         last_result = Some(result);
 
-        // Termination criteria:
-        //   1. No further expansion possible (v_next_opt is None) — return what we have.
-        //   2. Residuals below threshold and we already have enough eigenpairs.
-        if v_next_opt.is_none() {
+        if no_more_expansion {
             break;
         }
-        if max_resid < conv_thresh && nb * block_size >= n_desired {
+        if residual_ok {
             break;
         }
 
@@ -662,6 +715,76 @@ mod tests {
                 let nrm = resid.dot(&resid).sqrt();
                 assert!(nrm < 1e-9, "panel {panel}: residual {nrm}");
             }
+
+            // Full-rank is a single exact dense eigh — always converged.
+            assert!(new_res.converged, "panel {panel}: full-rank must report converged=true");
+            assert_eq!(new_res.residual_norm, 0.0, "panel {panel}: full-rank residual must be 0");
         }
+    }
+
+    /// TD-CONV: a full-width identity-seed block Lanczos with a generous
+    /// iteration budget must reach its residual tolerance and report
+    /// `converged: true` with a small residual — the control case for the
+    /// unconverged test below.
+    #[test]
+    fn seeded_lanczos_converges_with_ample_budget() {
+        let naux = 40;
+        let nov = 90;
+        let (matvec, _a) = make_dielectric_op(naux, nov, 11);
+        let res = run_lanczos_seeded(
+            Array2::<f64>::eye(naux),
+            |v| matvec(v),
+            naux,
+            naux + 4, // ample outer-iteration budget
+            1e-10,
+        )
+        .unwrap();
+        assert!(res.converged, "expected convergence with a generous iteration budget");
+        assert!(
+            res.residual_norm < 1e-8,
+            "expected a small residual, got {}",
+            res.residual_norm
+        );
+    }
+
+    /// TD-CONV: driving the block Lanczos with `max_iter=1` on a seed that
+    /// does NOT span the ambient space forces the outer-iteration budget to
+    /// exhaust before either termination criterion (no-more-expansion or
+    /// residual-below-threshold) is met — the eigensolver equivalent of the
+    /// "max_iter=1" non-convergence probe requested by the TD-CONV brief.
+    /// Asserts the unconverged flag is set and the residual is (verifiably)
+    /// above the requested tolerance, so the flag is not a false negative.
+    #[test]
+    fn seeded_lanczos_max_iter_one_reports_unconverged() {
+        let naux = 40;
+        let nov = 90;
+        let (matvec, _a) = make_dielectric_op(naux, nov, 11);
+        // Narrow seed block (4 columns out of 40) so one Lanczos step cannot
+        // possibly span the full ambient space, and an unreachably tight
+        // conv_thresh so the residual check also can't pass in one step.
+        let mut seed = Array2::<f64>::zeros((naux, 4));
+        for j in 0..4 {
+            for i in 0..naux {
+                seed[(i, j)] = ((i + j * 13) as f64).cos();
+            }
+        }
+        let res = run_lanczos_seeded(
+            seed,
+            |v| matvec(v),
+            naux, // n_desired = full naux, unreachable from a 4-wide block in 1 step
+            1,    // max_iter = 1
+            1e-14,
+        )
+        .unwrap();
+        assert!(
+            !res.converged,
+            "expected max_iter=1 on a narrow, non-spanning seed to be flagged unconverged"
+        );
+        assert!(
+            res.residual_norm > 1e-14,
+            "unconverged result should carry a residual above the (unreachable) tolerance, \
+             got {}",
+            res.residual_norm
+        );
     }
 }

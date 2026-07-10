@@ -193,6 +193,7 @@ pub fn run_cohsex(
         eps_qp[idx] = eps_mf[idx] + sc_out[idx];
     }
 
+    let n_states = mo_indices.len();
     Ok(GwResult {
         mo_indices,
         eps_mf,
@@ -200,7 +201,9 @@ pub fn run_cohsex(
         sigma_x: sx_out,
         sigma_c: sc_out,
         z_factor: z_out,
+        qp_converged: vec![true; n_states], // closed-form static, no Newton solve
         n_ev_iter: 0,
+        outer_converged: true,
         pdep,
     })
 }
