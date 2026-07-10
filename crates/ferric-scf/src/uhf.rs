@@ -132,7 +132,7 @@ pub fn solve_uhf_fockmod(
         (None, None)
     };
     let s = oneelectron::overlap(prep);
-    let h = oneelectron::hcore(prep);
+    let h = oneelectron::hcore_with_external(prep, config.external_potential.as_ref());
     let n = prep.nbasis();
     let nelec = mol.nelec() as i64;
     let mult = mol.multiplicity as i64;
@@ -157,7 +157,10 @@ pub fn solve_uhf_fockmod(
     if nocc_b > nocc_a {
         return Err(FerricError::General("UHF: nocc_b > nocc_a".into()));
     }
-    let vnn = mol.nuclear_repulsion();
+    let vnn = mol.nuclear_repulsion()
+        + config.external_potential.as_ref().map_or(0.0, |ext| {
+            ext.charge_nuclear_energy(mol) + ext.field_nuclear_energy(mol)
+        });
 
     // Canonical orthogonalizer X (n × m): drops eigenvectors of S below
     // LINDEP_THRESH to handle near-linear-dependent basis sets (Na clusters in

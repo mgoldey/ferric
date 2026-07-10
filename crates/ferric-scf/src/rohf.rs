@@ -99,7 +99,7 @@ pub fn solve_rohf(
         (None, None)
     };
     let s = oneelectron::overlap(prep);
-    let h = oneelectron::hcore(prep);
+    let h = oneelectron::hcore_with_external(prep, config.external_potential.as_ref());
     let n = prep.nbasis();
     let nelec = mol.nelec() as i64;
     let mult = mol.multiplicity as i64;
@@ -123,7 +123,10 @@ pub fn solve_rohf(
             "ROHF: nocc_a + nocc_b != nelec".into(),
         ));
     }
-    let vnn = mol.nuclear_repulsion();
+    let vnn = mol.nuclear_repulsion()
+        + config.external_potential.as_ref().map_or(0.0, |ext| {
+            ext.charge_nuclear_energy(mol) + ext.field_nuclear_energy(mol)
+        });
 
     // S^{-1/2}
     let (s_evals, s_evecs) = s
