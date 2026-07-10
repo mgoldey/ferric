@@ -370,6 +370,45 @@ pub fn compute_t2_and_integrals(
     (t2, eri_ov)
 }
 
+/// Compute only the t2 amplitudes from the B tensor, without materializing the
+/// (ia|jb) integral array.
+///
+/// Identical numerics to [`compute_t2_and_integrals`] for its first return value,
+/// but allocates a single `nov²` buffer instead of two — the `eri_ov` tensor is
+/// never built. Callers that discard the integrals (e.g. OSV/PNO construction in
+/// ferric-rpa) should prefer this to halve the transient footprint (~10 GB → ~5 GB
+/// at dimer/aTZ scale). Indexing matches: t2[ia*nov + jb], ia = i*nvir + a.
+pub fn compute_t2_only(
+    b_flat: &Array2<f64>,
+    eps: &[f64],
+    nocc: usize,
+    nvir: usize,
+    nocc_total: usize,
+    first_occ: usize,
+    naux: usize,
+) -> Vec<f64> {
+    let nov = nocc * nvir;
+    let mut t2 = vec![0.0f64; nov * nov];
+
+    for i in 0..nocc {
+        for a in 0..nvir {
+            let ia = i * nvir + a;
+            for j in 0..nocc {
+                for b in 0..nvir {
+                    let jb = j * nvir + b;
+                    let eri_iajb: f64 =
+                        (0..naux).map(|p| b_flat[(p, ia)] * b_flat[(p, jb)]).sum();
+                    let denom = eps[first_occ + i] + eps[first_occ + j]
+                        - eps[nocc_total + a]
+                        - eps[nocc_total + b];
+                    t2[ia * nov + jb] = eri_iajb / denom;
+                }
+            }
+        }
+    }
+    t2
+}
+
 /// Build the full relaxed 1-PDM for OO-MP2 in MO basis.
 ///
 /// For OO-MP2, the density is already "relaxed" because it is a stationary

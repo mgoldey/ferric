@@ -36,6 +36,16 @@ use ferric_rpa::{run_pdep_rpa, PdepRpaResult};
 use ferric_scf::ScfResult;
 use ndarray::Array1;
 
+/// Clone a PDEP-RPA config with `need_inv_dielectric_freq` forced on. Every GW
+/// method's Σ_c reads `PdepRpaResult.inv_dielectric_freq`, so the GW crate sets
+/// the flag itself rather than trusting the external caller to have set it
+/// (M9 memory gate: energy-only RPA runs default it off).
+fn with_inv_dielectric(cfg: &PdepRpaConfig) -> PdepRpaConfig {
+    let mut c = cfg.clone();
+    c.need_inv_dielectric_freq = true;
+    c
+}
+
 /// Top-level GW configuration.
 #[derive(Debug, Clone)]
 pub struct GwConfig {
@@ -175,6 +185,9 @@ pub fn run_u_gw(
         ));
     }
 
+    // GW Σ_c requires the per-frequency inverse-dielectric stack; force it on
+    // regardless of what the external caller left in `pdep_cfg` (M9 gate).
+    let pdep_cfg = &with_inv_dielectric(pdep_cfg);
     let pdep = run_u_pdep_rpa(mol, obs, dfbs, op, scf, pdep_cfg)?;
     let (mo_b_a, mo_b_b) = mo_b::build_full_b_both_spins(mol, obs, dfbs, op, scf, gw_cfg.frozen_core)?;
     let (v_dressed, dress_dev) =
@@ -239,6 +252,8 @@ pub fn run_gw(
         ));
     }
     // 1. Run PDEP-RPA to get {λ_α(iω_k), V_α^dressed, B̃^P_ia}.
+    //    GW Σ_c needs the inverse-dielectric stack — force the flag (M9 gate).
+    let pdep_cfg = &with_inv_dielectric(pdep_cfg);
     let pdep = run_pdep_rpa(mol, obs, dfbs, op, rhf, pdep_cfg)?;
 
     // 2. Build dressed B̃ tensor over ALL (m,n) MO pairs needed for Σ.

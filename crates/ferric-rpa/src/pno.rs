@@ -29,7 +29,7 @@
 //! thresholds.
 
 use ferric_core::FerricError;
-use ferric_mp2::oo_rimp2::compute_t2_and_integrals;
+use ferric_mp2::oo_rimp2::compute_t2_only;
 use ferric_mp2::rimp2::RpaIntermediates;
 use ndarray::{s, Array2};
 use ndarray_linalg::Eigh;
@@ -73,7 +73,9 @@ pub fn build_dnv_transform(
     let nocc_total = inter.nocc_total;
     let b_ov = &inter.b_ov;
 
-    let (t2, _eri) = compute_t2_and_integrals(
+    // Only the t2 amplitudes are needed for OSV construction; the discarded
+    // (ia|jb) tensor is never built (M9: ~10 GB → ~5 GB transient at dimer/aTZ).
+    let t2 = compute_t2_only(
         b_ov, eps, nocc, nvir, nocc_total, first_occ, naux,
     );
     let nov = nocc * nvir;

@@ -221,6 +221,8 @@ fn main() {
                         std::process::exit(1);
                     }),
                     memory_budget_bytes: budget_bytes,
+                    // CLI RPA optimize is energy/gradient only (M9 gate).
+                    need_inv_dielectric_freq: false,
                 };
                 let h_fd = 5e-4;
                 let opt_result =
@@ -695,6 +697,10 @@ fn main() {
                     std::process::exit(1);
                 }),
                     memory_budget_bytes: budget_bytes,
+                // CLI RPA energy + NPZ property export; the property paths that
+                // consume the inverse-dielectric stack rebuild their own
+                // dielectric, so energy-only here is correct (M9 gate).
+                need_inv_dielectric_freq: false,
             };
             // For open-shell molecules (multiplicity > 1) re-run with UHF + MOM so
             // the reference is converged, then dispatch to the unrestricted RPA.
