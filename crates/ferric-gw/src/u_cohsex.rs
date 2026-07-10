@@ -78,6 +78,10 @@ pub fn run_u_cohsex(
     })
 }
 
+/// Independent per m_idx (each (delta_sex[m_idx], coh[m_idx]) pair is
+/// written exactly once) — parallelize over m_idx, order-preserving
+/// par_iter + collect (no reduction), mirroring `cohsex.rs::run_cohsex`'s
+/// sex_coh pattern. No BLAS inside. Serial below PAR_ROWS_THRESHOLD.
 fn cohsex_pieces(
     mo_b: &MoB,
     m_proj: &ndarray::Array3<f64>,
@@ -86,9 +90,10 @@ fn cohsex_pieces(
     let n_act = mo_b.n_act;
     let n_occ = mo_b.n_occ_act;
     let m_modes = w_static.len();
-    let mut delta_sex = Array1::<f64>::zeros(n_act);
-    let mut coh = Array1::<f64>::zeros(n_act);
-    for m_idx in 0..n_act {
+    const PAR_ROWS_THRESHOLD: usize = 8;
+    let compute_one = |m_idx: usize| -> (f64, f64) {
+        let mut delta_sex = 0.0;
+        let mut coh = 0.0;
         for alpha in 0..m_modes {
             let w_a = w_static[alpha];
             let mut sex_acc = 0.0;
@@ -96,14 +101,27 @@ fn cohsex_pieces(
                 let v = m_proj[(alpha, m_idx, i)];
                 sex_acc += v * v;
             }
-            delta_sex[m_idx] -= w_a * sex_acc;
+            delta_sex -= w_a * sex_acc;
             let mut coh_acc = 0.0;
             for p in 0..n_act {
                 let v = m_proj[(alpha, m_idx, p)];
                 coh_acc += v * v;
             }
-            coh[m_idx] += 0.5 * w_a * coh_acc;
+            coh += 0.5 * w_a * coh_acc;
         }
+        (delta_sex, coh)
+    };
+    let pieces: Vec<(f64, f64)> = if n_act >= PAR_ROWS_THRESHOLD {
+        use rayon::prelude::*;
+        (0..n_act).into_par_iter().map(compute_one).collect()
+    } else {
+        (0..n_act).map(compute_one).collect()
+    };
+    let mut delta_sex = Array1::<f64>::zeros(n_act);
+    let mut coh = Array1::<f64>::zeros(n_act);
+    for (m_idx, (ds, c)) in pieces.into_iter().enumerate() {
+        delta_sex[m_idx] = ds;
+        coh[m_idx] = c;
     }
     (delta_sex, coh)
 }
