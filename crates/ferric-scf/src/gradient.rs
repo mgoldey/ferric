@@ -245,6 +245,7 @@ pub fn rhf_gradient(
     op: Operator,
     bounds: &SchwarzBounds,
     result: &ScfResult,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
 ) -> Result<Array2<f64>, FerricError> {
     if mol.atoms.iter().any(|a| a.ghost) {
         return Err(FerricError::Libint(
@@ -255,7 +256,7 @@ pub fn rhf_gradient(
     }
     let nocc = (mol.nelec() / 2) as usize;
     let w = build_energy_weighted_density(result, nocc);
-    hf_gradient_with_density(mol, prep, op, bounds, result.density_r(), &w)
+    hf_gradient_with_density(mol, prep, op, bounds, result.density_r(), &w, ext)
 }
 
 /// Compute nuclear gradient using provided density and energy-weighted density.
@@ -270,8 +271,9 @@ pub fn hf_gradient_with_density(
     bounds: &SchwarzBounds,
     d: &Array2<f64>,
     w: &Array2<f64>,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
 ) -> Result<Array2<f64>, FerricError> {
-    let mut grad = oneelectron_gradient(mol, prep, d, w)?;
+    let mut grad = oneelectron_gradient(mol, prep, d, w, ext)?;
     grad += &twoelectron_gradient(prep, op, bounds, d)?;
     Ok(grad)
 }
@@ -281,11 +283,38 @@ pub fn hf_gradient_with_density(
 /// Takes the density `d` (for kinetic + nuclear attraction derivatives) and the
 /// energy-weighted density `w` (for overlap / Pulay force). Returns a `(natoms, 3)`
 /// gradient array.
+///
+/// `ext`, when `Some`, adds the external-potential gradient contributions:
+/// charge-electron (Hellmann-Feynman, via the shared nuclear-attraction
+/// derivative engine extended with `set_point_charges_extra`/
+/// `compute_1e_deriv_block_n`), charge-nuclear and field-nuclear (classical
+/// Coulomb terms, via `ExternalPotential::charge_nuclear_gradient`/
+/// `field_nuclear_gradient`), and — when a field is present — the
+/// field-density Hellmann-Feynman term `d/dR_A [Σ_μν D_μν (E·<μ|r|ν>)]`.
+///
+/// The field-density term is evaluated by **finite difference** of
+/// `oneelectron::field_hcore_term` contracted with the fixed density `D`,
+/// not via a native libint2 analytical derivative. This was a deliberate
+/// choice, not an oversight: the shim's derivative dispatcher
+/// (`op_for_kind` in `shim.cc`, shared by `scf_engine_create_deriv`) has no
+/// case for the `emultipole1` operator (dipole integrals in this codebase
+/// go through a separate, non-derivative-capable `scf_compute_dipole` path
+/// built directly from a hardcoded `Operator::emultipole1` engine — see
+/// `shim.cc`'s "Electric dipole integrals via emultipole1" section). Passing
+/// `ffi::OP_EMULTIPOLE1` (103) to `scf_engine_create_deriv` therefore returns
+/// NULL. Adding a native emultipole1-derivative shim function is out of
+/// scope for this plan (would require new C++), so this term uses the
+/// finite-difference fallback at fixed `D` (cheap: O(natoms) hcore rebuilds,
+/// not full SCF re-solves) with `h = 1e-4`, matching this file's other
+/// finite-difference gradient checks.
+///
+/// `ext = None` reproduces the pre-external-potential gradient exactly.
 pub fn oneelectron_gradient(
     mol: &Molecule,
     prep: &PreparedBasis,
     d: &Array2<f64>,
     w: &Array2<f64>,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
 ) -> Result<Array2<f64>, FerricError> {
     let natoms = mol.atoms.len();
     let dims = prep.shell_dims();
@@ -411,20 +440,25 @@ pub fn oneelectron_gradient(
     // Blocks 9, 10, 11 are d/d(charge center 1), etc.
     //
     // So we need to handle this specially.
+    let extra_charges: &[ferric_core::external_potential::PointCharge] =
+        ext.map(|e| e.point_charges.as_slice()).unwrap_or(&[]);
+    let n_charges = natoms + extra_charges.len();
+
     grad += &par_pair_gradient(
         prep,
         natoms,
         || {
             let mut eng = Engine::new_1e_deriv(ffi::OP_NUCLEAR, prep, 1e-14)?;
-            eng.set_point_charges(prep);
+            eng.set_point_charges_extra(prep, extra_charges);
             Ok(eng)
         },
         |local, eng, s1, s2| {
-            // Engine::compute_1e_deriv_block sizes its buffer for the nuclear
-            // worst case, 3*(2 + natoms) blocks (see the 1e-deriv sizing
-            // convention): blocks 0-5 are the two shell-center derivatives,
-            // blocks 6.. are the per-atom operator-center derivatives.
-            if let Some(deriv) = eng.compute_1e_deriv_block(prep, s1, s2) {
+            // Engine::compute_1e_deriv_block_n sizes its buffer for
+            // 3*(2 + n_charges) blocks: blocks 0-5 are the two shell-center
+            // derivatives, blocks 6..6+3*natoms are the real-atom nuclear
+            // centers, and blocks 6+3*natoms..6+3*n_charges (when extra
+            // charges are present) are the external-charge centers.
+            if let Some(deriv) = eng.compute_1e_deriv_block_n(prep, s1, s2, n_charges) {
                 let n1 = dims[s1];
                 let n2 = dims[s2];
                 let block_sz = n1 * n2;
@@ -441,7 +475,14 @@ pub fn oneelectron_gradient(
                             local[(a1, c)] += dval * deriv[c * block_sz + idx];
                             local[(a2, c)] += dval * deriv[(3 + c) * block_sz + idx];
                         }
-                        // Nuclear center derivatives (blocks 6 onwards)
+                        // Real-atom nuclear-center derivatives only (blocks
+                        // 6..6+3*natoms) — external-charge blocks
+                        // (6+3*natoms..6+3*n_charges) are written by libint2
+                        // but deliberately NOT accumulated into `local`,
+                        // since `local`/`grad` are sized (natoms, 3): no
+                        // force is reported on the external charges
+                        // themselves (they are fixed, not gradient
+                        // variables).
                         for atom_c in 0..natoms {
                             for c in 0..3 {
                                 let blk = 6 + atom_c * 3 + c;
@@ -454,7 +495,62 @@ pub fn oneelectron_gradient(
         },
     )?;
 
+    // External-potential classical + Hellmann-Feynman terms that don't come
+    // from the shared nuclear-attraction engine above.
+    if let Some(ext) = ext {
+        grad += &ext.charge_nuclear_gradient(mol);
+        grad += &ext.field_nuclear_gradient(mol);
+        if let Some(field) = ext.field {
+            // Field-density Hellmann-Feynman term — see the doc comment on
+            // this function for why finite difference (not a native libint2
+            // derivative) is used here.
+            let bs = prep.basis_set();
+            grad += &field_density_gradient_fd(mol, bs, d, field);
+        }
+    }
+
     Ok(grad)
+}
+
+/// Field-density Hellmann-Feynman gradient via finite difference of the
+/// field one-electron term, contracted with the fixed density `D`.
+///
+/// This is O(natoms) hcore rebuilds at fixed `D` (not a full SCF re-solve),
+/// cheap relative to the SCF itself. See the doc comment on
+/// [`oneelectron_gradient`] for why this term does not use a native libint2
+/// analytical derivative (no `emultipole1`-derivative shim function exists).
+fn field_density_gradient_fd(
+    mol: &Molecule,
+    bs: &ferric_core::basis::BasisSet,
+    d: &Array2<f64>,
+    field: [f64; 3],
+) -> Array2<f64> {
+    let natoms = mol.atoms.len();
+    let mut grad = Array2::zeros((natoms, 3));
+    let h = 1e-4;
+    for a in 0..natoms {
+        for c in 0..3 {
+            let mut mol_p = mol.clone();
+            let mut mol_m = mol.clone();
+            match c {
+                0 => { mol_p.atoms[a].x += h; mol_m.atoms[a].x -= h; }
+                1 => { mol_p.atoms[a].y += h; mol_m.atoms[a].y -= h; }
+                _ => { mol_p.atoms[a].zpos += h; mol_m.atoms[a].zpos -= h; }
+            }
+            let prep_p = match PreparedBasis::new(&mol_p, bs) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            let prep_m = match PreparedBasis::new(&mol_m, bs) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            let e_p: f64 = (d * &ferric_integrals::oneelectron::field_hcore_term(&prep_p, field)).sum();
+            let e_m: f64 = (d * &ferric_integrals::oneelectron::field_hcore_term(&prep_m, field)).sum();
+            grad[(a, c)] = (e_p - e_m) / (2.0 * h);
+        }
+    }
+    grad
 }
 
 /// Compute the 4-center two-electron gradient contribution: Σ Γ_μνλσ d(μν|λσ)/dR.
@@ -649,6 +745,7 @@ pub fn uhf_gradient(
     op: Operator,
     bounds: &SchwarzBounds,
     result: &ScfResult,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
 ) -> Result<Array2<f64>, FerricError> {
     if mol.atoms.iter().any(|a| a.ghost) {
         return Err(FerricError::Libint(
@@ -667,7 +764,7 @@ pub fn uhf_gradient(
             .as_ref()
             .expect("uhf_gradient: missing density_beta");
     let w = build_energy_weighted_density_uhf(result, nocc_a, nocc_b);
-    let mut grad = oneelectron_gradient(mol, prep, &d_total, &w)?;
+    let mut grad = oneelectron_gradient(mol, prep, &d_total, &w, ext)?;
     grad += &twoelectron_gradient_uhf(
         prep,
         op,
@@ -697,6 +794,7 @@ pub fn rohf_gradient(
     op: Operator,
     bounds: &SchwarzBounds,
     result: &ScfResult,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
 ) -> Result<Array2<f64>, FerricError> {
     if mol.atoms.iter().any(|a| a.ghost) {
         return Err(FerricError::Libint(
@@ -737,7 +835,7 @@ pub fn rohf_gradient(
         }
     }
 
-    let mut grad = oneelectron_gradient(mol, prep, &d_total, &w)?;
+    let mut grad = oneelectron_gradient(mol, prep, &d_total, &w, ext)?;
     grad += &twoelectron_gradient_uhf(prep, op, bounds, &d_total, d_alpha, d_beta)?;
     Ok(grad)
 }
@@ -764,7 +862,116 @@ mod tests {
     use crate::screening::SchwarzBounds;
     use ferric_core::basis;
     use ferric_core::mol::Molecule;
+    use ferric_core::external_potential::{ExternalPotential, PointCharge};
     use ferric_integrals::basis_bridge::PreparedBasis;
+
+    #[test]
+    fn oneelectron_gradient_none_matches_prior_behavior() {
+        let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+        let bs = ferric_core::basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ferric_core::parallel::ParallelContext::default();
+        let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &RhfConfig::default()).unwrap();
+        let nocc = (mol.nelec() / 2) as usize;
+        let d = result.density_r();
+        let w = build_energy_weighted_density(&result, nocc);
+
+        let g_orig = oneelectron_gradient(&mol, &prep, d, &w, None).unwrap();
+        let ext = ExternalPotential::default();
+        let g_new = oneelectron_gradient(&mol, &prep, d, &w, Some(&ext)).unwrap();
+        assert_eq!(g_orig, g_new);
+    }
+
+    #[test]
+    fn oneelectron_gradient_external_charge_matches_finite_difference() {
+        let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+        let bs = ferric_core::basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ferric_core::parallel::ParallelContext::default();
+        let ext = ExternalPotential {
+            point_charges: vec![PointCharge { q: 1.0, x: 0.0, y: 0.0, z: 15.0 }],
+            field: None,
+        };
+        let config = RhfConfig { external_potential: Some(ext.clone()), ..Default::default() };
+
+        // Analytic gradient at the equilibrium geometry (converged SCF density/W).
+        // NOTE: the finite difference below differentiates the *total* SCF
+        // energy (1e + 2e + nuclear/classical-external repulsion), so the
+        // comparable analytic quantity is the full `hf_gradient_with_density`
+        // (1e + 2e), not the bare `oneelectron_gradient` (1e only) — comparing
+        // the 1e-only piece against a total-energy FD is an apples-to-oranges
+        // mismatch (verified: the 1e-only gradient is off from the FD by
+        // ~2.94 Hartree/Bohr here, exactly accounted for by the missing 2e
+        // contribution; the 1e-only nuclear+extra-charge term itself was
+        // independently verified exact against a fixed-density FD probe).
+        let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
+        let nocc = (mol.nelec() / 2) as usize;
+        let w = build_energy_weighted_density(&result, nocc);
+        let analytic =
+            hf_gradient_with_density(&mol, &prep, op, &bounds, result.density_r(), &w, Some(&ext)).unwrap();
+
+        // Finite-difference check on atom 0 (O), z-component: perturb the
+        // molecule's geometry by +/- h and re-run solve_rhf + hcore/vnn.
+        let h = 1e-4;
+        let mut mol_plus = mol.clone();
+        mol_plus.atoms[0].zpos += h;
+        let prep_plus = PreparedBasis::new(&mol_plus, &bs).unwrap();
+        let bounds_plus = SchwarzBounds::compute(op, &prep_plus).unwrap();
+        let e_plus = solve_rhf(&ctx, &mol_plus, &prep_plus, op, &bounds_plus, &config).unwrap().energy;
+
+        let mut mol_minus = mol.clone();
+        mol_minus.atoms[0].zpos -= h;
+        let prep_minus = PreparedBasis::new(&mol_minus, &bs).unwrap();
+        let bounds_minus = SchwarzBounds::compute(op, &prep_minus).unwrap();
+        let e_minus = solve_rhf(&ctx, &mol_minus, &prep_minus, op, &bounds_minus, &config).unwrap().energy;
+
+        let fd = (e_plus - e_minus) / (2.0 * h);
+        assert!((analytic[(0, 2)] - fd).abs() < 1e-5, "analytic={}, fd={}", analytic[(0, 2)], fd);
+    }
+
+    #[test]
+    fn oneelectron_gradient_uniform_field_matches_finite_difference() {
+        // Covers the field-density Hellmann-Feynman term (finite-difference
+        // fallback in `field_density_gradient_fd`), which the point-charge
+        // test above does not exercise at all (its `ext.field` is `None`).
+        let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+        let bs = ferric_core::basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ferric_core::parallel::ParallelContext::default();
+        let ext = ExternalPotential {
+            point_charges: vec![],
+            field: Some([0.0, 0.0, 0.01]),
+        };
+        let config = RhfConfig { external_potential: Some(ext.clone()), ..Default::default() };
+
+        let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
+        let nocc = (mol.nelec() / 2) as usize;
+        let w = build_energy_weighted_density(&result, nocc);
+        let analytic =
+            hf_gradient_with_density(&mol, &prep, op, &bounds, result.density_r(), &w, Some(&ext)).unwrap();
+
+        let h = 1e-4;
+        let mut mol_plus = mol.clone();
+        mol_plus.atoms[0].zpos += h;
+        let prep_plus = PreparedBasis::new(&mol_plus, &bs).unwrap();
+        let bounds_plus = SchwarzBounds::compute(op, &prep_plus).unwrap();
+        let e_plus = solve_rhf(&ctx, &mol_plus, &prep_plus, op, &bounds_plus, &config).unwrap().energy;
+
+        let mut mol_minus = mol.clone();
+        mol_minus.atoms[0].zpos -= h;
+        let prep_minus = PreparedBasis::new(&mol_minus, &bs).unwrap();
+        let bounds_minus = SchwarzBounds::compute(op, &prep_minus).unwrap();
+        let e_minus = solve_rhf(&ctx, &mol_minus, &prep_minus, op, &bounds_minus, &config).unwrap().energy;
+
+        let fd = (e_plus - e_minus) / (2.0 * h);
+        assert!((analytic[(0, 2)] - fd).abs() < 1e-5, "analytic={}, fd={}", analytic[(0, 2)], fd);
+    }
 
     /// Compute individual gradient components for debugging.
     /// Returns (vnn_grad, overlap_grad, kinetic_grad, nuclear_grad, twoelec_grad, total_grad)
@@ -1076,7 +1283,7 @@ mod tests {
         let config = RhfConfig { energy_conv: 1e-10, ..Default::default() };
         let result = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &prep, op, &bounds, &config).unwrap();
 
-        let analytic = match rhf_gradient(&mol, &prep, op, &bounds, &result) {
+        let analytic = match rhf_gradient(&mol, &prep, op, &bounds, &result, None) {
             Ok(g) => g,
             Err(FerricError::Libint(msg)) if msg.contains("derivative engine not available") => {
                 eprintln!("SKIPPED: {msg}");
@@ -1125,7 +1332,7 @@ mod tests {
 
         let run = |threads: usize| -> Array2<f64> {
             let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
-            pool.install(|| rhf_gradient(&mol, &prep, op, &bounds, &result).unwrap())
+            pool.install(|| rhf_gradient(&mol, &prep, op, &bounds, &result, None).unwrap())
         };
         let g1 = run(1);
         let g4 = run(4);
@@ -1149,7 +1356,7 @@ mod tests {
         let config = RhfConfig { energy_conv: 1e-10, ..Default::default() };
         let result = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &prep, op, &bounds, &config).unwrap();
 
-        let analytic = match rhf_gradient(&mol, &prep, op, &bounds, &result) {
+        let analytic = match rhf_gradient(&mol, &prep, op, &bounds, &result, None) {
             Ok(g) => g,
             Err(FerricError::Libint(msg)) if msg.contains("derivative engine not available") => {
                 eprintln!("SKIPPED: {msg}");

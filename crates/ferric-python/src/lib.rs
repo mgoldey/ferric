@@ -659,7 +659,7 @@ fn run_dft(mol: &PyMolecule, basis_set: &PyBasisSet,
     let nbf = rhf.mos_alpha.nrows();
     let gradient_data = if with_gradient {
         Some(
-            ks_gradient_closed(&mol.inner, &prep, &basis_set.inner, op, &bounds, &xc_name, &rhf)
+            ks_gradient_closed(&mol.inner, &prep, &basis_set.inner, op, &bounds, &xc_name, &rhf, None)
                 .map_err(make_err)?
         )
     } else {

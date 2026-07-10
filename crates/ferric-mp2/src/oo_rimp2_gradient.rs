@@ -72,7 +72,7 @@ pub fn oo_ri_mp2_gradient(
     }
     let w_ao = result.mos.dot(&w_mo).dot(&result.mos.t());
 
-    let grad = oneelectron_gradient(mol, obs, &d_ao, &w_ao)?;
+    let grad = oneelectron_gradient(mol, obs, &d_ao, &w_ao, None)?;
 
     Ok(grad)
 }

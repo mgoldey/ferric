@@ -79,7 +79,7 @@ fn run_case(label: &str, xc: &str, xyz: &str, mult: usize, basis_name: &str, tol
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let cfg = cfg(xc);
     let res = run_one(&mol, &prep, &bounds, &cfg);
-    let g_ana = ks_gradient_roks(&mol, &prep, &bs, op, &bounds, xc, &res).unwrap();
+    let g_ana = ks_gradient_roks(&mol, &prep, &bs, op, &bounds, xc, &res, None).unwrap();
     let g_fd = fd_gradient(xyz, mult, basis_name, xc, 5e-4);
 
     eprintln!("=== {label} {xc} ROKS gradient analytic vs FD ===");

@@ -122,7 +122,7 @@ fn rohf_gradient_oh_sto3g_fd() {
     };
     let ctx = ParallelContext::default();
     let res = solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
-    let analytic = rohf_gradient(&mol, &prep, op, &bounds, &res).unwrap();
+    let analytic = rohf_gradient(&mol, &prep, op, &bounds, &res, None).unwrap();
 
     let h = 5e-4_f64;
     let natoms = mol.atoms.len();

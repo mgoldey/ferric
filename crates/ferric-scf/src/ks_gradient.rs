@@ -65,6 +65,7 @@ pub fn ks_gradient_closed(
     bounds: &SchwarzBounds,
     xc_name: &str,
     result: &ScfResult,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
 ) -> Result<Array2<f64>, FerricError> {
     if mol.atoms.iter().any(|a| a.ghost) {
         return Err(FerricError::General(
@@ -103,7 +104,7 @@ pub fn ks_gradient_closed(
     let d = result.density_r().clone();
 
     // 1e + nuclear repulsion gradient — identical to HF.
-    let mut grad = oneelectron_gradient(mol, prep, &d, &w)?;
+    let mut grad = oneelectron_gradient(mol, prep, &d, &w, ext)?;
 
     // 2e gradient:
     //   * J piece always uses full Coulomb with Γ_J = 0.5·D·D
@@ -209,6 +210,7 @@ pub fn ks_gradient_uks(
     bounds: &SchwarzBounds,
     xc_name: &str,
     result: &ScfResult,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
 ) -> Result<Array2<f64>, FerricError> {
     assert!(
         matches!(result.spin, Spin::Unrestricted),
@@ -240,7 +242,7 @@ pub fn ks_gradient_uks(
 
     // 1e + nn gradient.
     let w = build_energy_weighted_density_uhf(result, nocc_a, nocc_b);
-    let mut grad = oneelectron_gradient(mol, prep, &d_total, &w)?;
+    let mut grad = oneelectron_gradient(mol, prep, &d_total, &w, ext)?;
 
     // 2e gradient:
     //   * ω = 0: single Γ = 0.5·D·D − 0.5·c_K·(D_α·D_α + D_β·D_β) at Coulomb
@@ -316,6 +318,7 @@ pub fn ks_gradient_roks(
     bounds: &SchwarzBounds,
     xc_name: &str,
     result: &ScfResult,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
 ) -> Result<Array2<f64>, FerricError> {
     assert!(
         matches!(result.spin, Spin::RestrictedOpen),
@@ -363,7 +366,7 @@ pub fn ks_gradient_roks(
         }
     }
 
-    let mut grad = oneelectron_gradient(mol, prep, &d_total, &w)?;
+    let mut grad = oneelectron_gradient(mol, prep, &d_total, &w, ext)?;
 
     // 2e gradient:
     //   * ω = 0: single Γ = 0.5·D·D − 0.5·c_K·(D_α·D_α + D_β·D_β) at Coulomb

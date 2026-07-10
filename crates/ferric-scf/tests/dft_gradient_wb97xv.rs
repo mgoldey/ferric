@@ -64,7 +64,7 @@ fn run_case(label: &str, xyz: &str, basis_name: &str, tol: f64) {
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let cfg = cfg();
     let res = solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap();
-    let g_ana = ks_gradient_closed(&mol, &prep, &bs, op, &bounds, "wB97X-V", &res).unwrap();
+    let g_ana = ks_gradient_closed(&mol, &prep, &bs, op, &bounds, "wB97X-V", &res, None).unwrap();
     let g_fd = fd_gradient(xyz, basis_name, 5e-4);
 
     eprintln!("=== {label} wB97X-V gradient analytic vs FD ===");

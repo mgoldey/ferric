@@ -87,7 +87,7 @@ fn test_gradient_errors_on_ghost() {
     let ctx = ParallelContext::default();
     let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
 
-    let grad_result = rhf_gradient(&mol, &prep, op, &bounds, &result);
+    let grad_result = rhf_gradient(&mol, &prep, op, &bounds, &result, None);
     assert!(
         grad_result.is_err(),
         "rhf_gradient should return Err for a molecule containing ghost atoms"

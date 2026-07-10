@@ -66,7 +66,7 @@ fn run_case(label: &str, xyz: &str, basis_name: &str, tol: f64) {
     let cfg = cfg();
     let res = solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap();
     let g_ana = ks_gradient_closed(
-        &mol, &prep, &bs, op, &bounds, "HYB_GGA_XC_WB97X", &res,
+        &mol, &prep, &bs, op, &bounds, "HYB_GGA_XC_WB97X", &res, None,
     ).unwrap();
     let g_fd = fd_gradient(xyz, basis_name, 5e-4);
 

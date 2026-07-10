@@ -36,7 +36,7 @@ fn run(xc: &str, basis_name: &str) -> ndarray::Array2<f64> {
         ..Default::default()
     };
     let rhf = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &cfg).unwrap();
-    ks_gradient_closed(&mol, &obs, &bs, op, &bounds, xc, &rhf).unwrap()
+    ks_gradient_closed(&mol, &obs, &bs, op, &bounds, xc, &rhf, None).unwrap()
 }
 
 #[test]
@@ -99,7 +99,7 @@ fn uks_b3lyp_h2o_ccpvdz_translational_invariance() {
     };
     let uhf = solve_uhf(&ParallelContext::default(), &mol, &prep, &bounds, &cfg).unwrap();
 
-    let g = ks_gradient_uks(&mol, &prep, &bs, op, &bounds, xc, &uhf).unwrap();
+    let g = ks_gradient_uks(&mol, &prep, &bs, op, &bounds, xc, &uhf, None).unwrap();
     let sum = g.sum_axis(ndarray::Axis(0));
     let max_drift = sum.iter().cloned().fold(0.0_f64, |a, b| a.max(b.abs()));
     eprintln!("UKS B3LYP/cc-pvdz H2O Σ_A ∂E/∂R = {sum:?}, max drift = {max_drift:.3e}");

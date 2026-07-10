@@ -139,7 +139,7 @@ pub fn rimp2_gradient_analytical(
         rhf.mos_r(), &f_mo, &p_relax_mo, &l, &inter.orbital_space(),
     );
 
-    let mut grad = hf_gradient_with_density(mol, obs, op, bounds, &p_relax_ao, &w_relax_ao)?;
+    let mut grad = hf_gradient_with_density(mol, obs, op, bounds, &p_relax_ao, &w_relax_ao, None)?;
     grad += &integral_response_gradient_3c2c(mol, obs, dfbs, op, &inter, rhf.mos_r())?;
 
     Ok(grad)
@@ -448,10 +448,10 @@ pub fn scs_mp2_gradient_analytical(
     let w_relax_ao = build_relaxed_w_ao(
         rhf.mos_r(), &f_mo, &p_relax_mo, &l, &inter.orbital_space(),
     );
-    let mut grad = hf_gradient_with_density(mol, obs, op, bounds, &p_relax_ao, &w_relax_ao)?;
+    let mut grad = hf_gradient_with_density(mol, obs, op, bounds, &p_relax_ao, &w_relax_ao, None)?;
     // Approximate scaling: multiply MP2 part by average SCS scaling
     let scale = (config.c_os + config.c_ss) / 2.0;
-    let rhf_grad = ferric_scf::gradient::rhf_gradient(mol, obs, op, bounds, rhf)?;
+    let rhf_grad = ferric_scf::gradient::rhf_gradient(mol, obs, op, bounds, rhf, None)?;
     for i in 0..mol.atoms.len() {
         for c in 0..3 {
             let mp2_part = grad[(i, c)] - rhf_grad[(i, c)];
@@ -895,6 +895,7 @@ mod tests {
                     rhf.mos_r(), &f_mo, &p_relax_mo, &l, &inter.orbital_space(),
                 )
             },
+            None,
         ).unwrap();
         let analytic_3c2c = full_grad[(0, 2)] - hf_relax[(0, 2)];
         eprintln!("Analytical 3c+2c contribution:   {:.12}", analytic_3c2c);
@@ -916,7 +917,7 @@ mod tests {
         let analytical = rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config).unwrap();
 
         // Also compute the HF gradient and the hf_gradient_with_density(P_relax, W_relax) to decompose
-        let rhf_grad = ferric_scf::gradient::rhf_gradient(&mol, &obs, op, &bounds, &rhf).unwrap();
+        let rhf_grad = ferric_scf::gradient::rhf_gradient(&mol, &obs, op, &bounds, &rhf, None).unwrap();
 
         // Compute P_relax and W_relax like in rimp2_gradient_analytical
         let inter = crate::rimp2::compute_mp2_intermediates(&mol, &obs, &dfbs, op, &rhf, &config).unwrap();
@@ -954,7 +955,7 @@ mod tests {
         let w_relax_ao = crate::zvector::build_relaxed_w_ao(
             rhf.mos_r(), &f_mo, &p_relax_mo, &l, &inter.orbital_space(),
         );
-        let hf_with_relax = hf_gradient_with_density(&mol, &obs, op, &bounds, &p_relax_ao, &w_relax_ao).unwrap();
+        let hf_with_relax = hf_gradient_with_density(&mol, &obs, op, &bounds, &p_relax_ao, &w_relax_ao, None).unwrap();
 
         // The 3c+2c contribution = analytical - hf_with_relax
         let corr_3c2c = analytical[(0, 2)] - hf_with_relax[(0, 2)];
@@ -1000,9 +1001,9 @@ mod tests {
         // Decompose 1e vs 2e for both D_HF and P_relax
         let nocc_hf = (mol.nelec() / 2) as usize;
         let w_hf = ferric_scf::gradient::build_energy_weighted_density(&rhf, nocc_hf);
-        let oe_dhf = oneelectron_gradient(&mol, &obs, rhf.density_r(), &w_hf).unwrap();
+        let oe_dhf = oneelectron_gradient(&mol, &obs, rhf.density_r(), &w_hf, None).unwrap();
         let te_dhf = twoelectron_gradient(&obs, op, &bounds, rhf.density_r()).unwrap();
-        let oe_relax = oneelectron_gradient(&mol, &obs, &p_relax_ao, &w_relax_ao).unwrap();
+        let oe_relax = oneelectron_gradient(&mol, &obs, &p_relax_ao, &w_relax_ao, None).unwrap();
         let te_relax = twoelectron_gradient(&obs, op, &bounds, &p_relax_ao).unwrap();
 
         eprintln!();
@@ -1171,8 +1172,8 @@ mod tests {
         let nocc = (mol.nelec() / 2) as usize;
         let w = ferric_scf::gradient::build_energy_weighted_density(&rhf, nocc);
 
-        let combined = hf_gradient_with_density(&mol, &obs, op, &bounds, rhf.density_r(), &w).unwrap();
-        let oe = oneelectron_gradient(&mol, &obs, rhf.density_r(), &w).unwrap();
+        let combined = hf_gradient_with_density(&mol, &obs, op, &bounds, rhf.density_r(), &w, None).unwrap();
+        let oe = oneelectron_gradient(&mol, &obs, rhf.density_r(), &w, None).unwrap();
         let te = twoelectron_gradient(&obs, op, &bounds, rhf.density_r()).unwrap();
         let split = &oe + &te;
 
