@@ -16,6 +16,7 @@ use crate::w_pdep;
 use crate::{GwConfig, GwResult};
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
+use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::three_index_source::env_budget_bytes;
 use ferric_rpa::PdepRpaResult;
 use ferric_scf::ScfResult;
@@ -98,8 +99,29 @@ pub fn project_b_into_pdep(mo_b: &MoB, v_dressed: &Array2<f64>) -> ndarray::Arra
         .view()
         .into_shape_with_order((naux, n_act * n_act))
         .expect("reshape b_full");
-    // M_flat[(α, mn)] = Σ_P V[(P,α)] · b_flat[(P, mn)] = V^T · b_flat
-    let m_flat: Array2<f64> = v_dressed.t().dot(&b_flat);
+    // M_flat[(α, mn)] = Σ_P V[(P,α)] · b_flat[(P, mn)] = V^T · b_flat.
+    // This (m_modes×naux)·(naux×n_act²) product is the single largest GEMM in
+    // GW (rebuilt every evGW iteration, ×2 per spin for U-GW), so raise BLAS
+    // threads on it under the opt-in guard.
+    //
+    // Call-path proof (this must NOT run inside a rayon parallel region — the
+    // rayon-worker self-guard in opt_in_blas_threads() would silently degrade
+    // the raise to 1 there, AND a raise inside a par region is a design error).
+    // `project_b_into_pdep` is `pub` but every caller invokes it from serial
+    // driver code, before any assembly/quadrature par_iter:
+    //   * cohsex.rs::run_cohsex (:132) — before the row-parallel SEX/COH loops;
+    //   * u_cohsex.rs::run_u_cohsex (:30-31) — before cohsex_pieces' par loops;
+    //   * sigma.rs G0W0 (:245) / evGW outer `for it` loop (:508 — a plain
+    //     serial for-loop, not rayon) — before the per-MO frequency work;
+    //   * u_sigma.rs (:41-42,:142-143,:316-317) — same serial-driver placement;
+    //   * bse.rs run_bse_tda/run_bse_c6/run_bse_c6_ks (:134,:420,:630) — before
+    //     the row-parallel A-matrix assembly.
+    // None of these enclose the call in a par_iter. opt_in_blas_threads()
+    // additionally defaults to 1 (bit-identical to today) and self-guards to 1
+    // from any rayon worker, so this is safe even if a future caller breaks the
+    // assumption.
+    let m_flat: Array2<f64> =
+        with_blas_threads(opt_in_blas_threads(), || v_dressed.t().dot(&b_flat));
     m_flat
         .into_shape_with_order((m_modes, n_act, n_act))
         .expect("reshape M")
