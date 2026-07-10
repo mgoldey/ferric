@@ -102,14 +102,44 @@ fn charge_constraint_is_satisfied() {
 }
 
 /// cDFT's per-iteration UhfFockMod closure (constraint) and the external
-/// potential's hcore-level addition are architecturally independent — this
-/// proves it empirically: both the SCF and the population constraint must
-/// still converge with an external point charge present.
+/// potential's hcore-level addition are architecturally independent. The
+/// outer λ-Newton loop is *designed* to hit `target` regardless of what else
+/// perturbs hcore, so convergence + population-at-target alone would pass
+/// identically even if `external_potential` were silently dropped somewhere
+/// in the cDFT path. To get genuine evidence the point charge reached the
+/// inner SCF, run the same constraint TWICE — once with no external
+/// potential (baseline) and once with the point charge (perturbed) — and
+/// check that the converged solution actually differs: the converged λ must
+/// shift (λ absorbs exactly the hcore perturbation needed to hold the
+/// population at the fixed target, so a nonzero shift is direct evidence the
+/// point charge's Fock contribution was present during the inner solve), and
+/// the converged total energy must differ (which also picks up the classical
+/// `ext.charge_nuclear_energy(&mol)` term added to `vnn`).
 #[test]
 fn cdft_composes_with_external_point_charge() {
     let (mol, bs, prep, _op, bounds) = setup();
     let ctx = ParallelContext::default();
     let target = 2.2; // same target as charge_constraint_is_satisfied
+
+    let base_cfg = RhfConfig {
+        constraints: vec![Constraint {
+            fragment: vec![0],
+            spin: SpinChannel::Total,
+            target,
+        }],
+        cdft_lambda_tol: 1e-5,
+        fractional_occ: false,
+        external_potential: None,
+        ..Default::default()
+    };
+    let base = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &base_cfg).unwrap();
+    assert!(base.scf.converged, "baseline inner SCF not converged");
+    assert!(
+        (base.populations[0] - target).abs() < 1e-5,
+        "baseline Li pop {} vs target {target}",
+        base.populations[0]
+    );
+
     let ext = ExternalPotential {
         point_charges: vec![PointCharge {
             q: 1.0,
@@ -119,7 +149,7 @@ fn cdft_composes_with_external_point_charge() {
         }],
         field: None,
     };
-    let cfg = RhfConfig {
+    let perturbed_cfg = RhfConfig {
         constraints: vec![Constraint {
             fragment: vec![0],
             spin: SpinChannel::Total,
@@ -130,15 +160,32 @@ fn cdft_composes_with_external_point_charge() {
         external_potential: Some(ext),
         ..Default::default()
     };
-    let res = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &cfg).unwrap();
+    let perturbed = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &perturbed_cfg).unwrap();
     assert!(
-        res.scf.converged,
+        perturbed.scf.converged,
         "inner SCF not converged with cDFT + external potential"
     );
     assert!(
-        (res.populations[0] - target).abs() < 1e-5,
+        (perturbed.populations[0] - target).abs() < 1e-5,
         "Li pop {} vs target {target} (cDFT constraint broken by external potential)",
-        res.populations[0]
+        perturbed.populations[0]
+    );
+
+    // The population constraint is satisfied identically in both runs (by
+    // construction of the outer loop) — the real evidence is that reaching
+    // it required a different λ and produced a different converged energy.
+    assert!(
+        (perturbed.lambdas[0] - base.lambdas[0]).abs() > 1e-6,
+        "lambda did not shift: base {} vs perturbed {} (point charge's Fock \
+         contribution may not have reached the inner SCF)",
+        base.lambdas[0],
+        perturbed.lambdas[0]
+    );
+    assert!(
+        (perturbed.scf.energy - base.scf.energy).abs() > 1e-6,
+        "energy did not change: base {} vs perturbed {}",
+        base.scf.energy,
+        perturbed.scf.energy
     );
 }
 
