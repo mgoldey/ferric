@@ -60,6 +60,12 @@ impl SignificantPairs {
     }
 }
 
+/// Below this many shells, run `DensityPairs::build` serially — this is pure
+/// scalar arithmetic (no libint engines), so the rayon dispatch/collect
+/// overhead only pays off once `nsh` is large enough; keeps free-atom/tiny-
+/// basis SCF cycles on the cheap serial path.
+const PAR_DENSITY_PAIRS_THRESHOLD: usize = 64;
+
 /// Density-dependent pair lists rebuilt each SCF cycle.
 ///
 /// `pairs[j]` is a sorted list of shell indices `sigma` where the maximum
@@ -75,6 +81,15 @@ impl DensityPairs {
     /// For each shell `j`, finds shells `sigma` where the maximum absolute density
     /// matrix element in the (j, sigma) block times `bound.estimate(j, sigma, j, sigma).sqrt()`
     /// exceeds `threshold`.
+    ///
+    /// Parallelized over the outer shell index `j` once `nsh` clears
+    /// [`PAR_DENSITY_PAIRS_THRESHOLD`]. Each `j` reads only `d`/`bound`/`prep`
+    /// (shared, read-only) and *produces* its own `row: Vec<usize>` — there is
+    /// no shared mutable state or scatter to reason about, just a per-index
+    /// pure function `j ↦ row(j)`. `into_par_iter().map(..).collect()` is
+    /// index-order-preserving (rayon's documented guarantee), so the resulting
+    /// `Vec<Vec<usize>>` is in ascending-`j` order exactly like the serial
+    /// push loop — bit/element-for-element identical, not just equal as sets.
     pub fn build(
         d: &Array2<f64>,
         bound: &dyn Bound,
@@ -84,9 +99,8 @@ impl DensityPairs {
         let nsh = prep.nshells();
         let dims = prep.shell_dims();
         let offs = prep.shell_offsets();
-        let mut pairs = Vec::with_capacity(nsh);
 
-        for j in 0..nsh {
+        let row_for = |j: usize| -> Vec<usize> {
             let mut row = Vec::new();
             for sigma in 0..nsh {
                 // Find max |D_element| in the (j, sigma) shell block.
@@ -103,8 +117,15 @@ impl DensityPairs {
                 }
             }
             // Already sorted ascending since sigma iterates 0..nsh.
-            pairs.push(row);
-        }
+            row
+        };
+
+        let pairs: Vec<Vec<usize>> = if nsh < PAR_DENSITY_PAIRS_THRESHOLD {
+            (0..nsh).map(row_for).collect()
+        } else {
+            use rayon::prelude::*;
+            (0..nsh).into_par_iter().map(row_for).collect()
+        };
         DensityPairs { pairs }
     }
 
@@ -259,6 +280,79 @@ mod tests {
             total > nsh,
             "expected more density pairs than just diagonal: got {total}"
         );
+    }
+
+    /// Serial reference for `DensityPairs::build` (pre-parallelization
+    /// implementation, kept verbatim).
+    fn density_pairs_build_serial(
+        d: &Array2<f64>,
+        bound: &dyn crate::screening::Bound,
+        prep: &PreparedBasis,
+        threshold: f64,
+    ) -> Vec<Vec<usize>> {
+        let nsh = prep.nshells();
+        let dims = prep.shell_dims();
+        let offs = prep.shell_offsets();
+        let mut pairs = Vec::with_capacity(nsh);
+        for j in 0..nsh {
+            let mut row = Vec::new();
+            for sigma in 0..nsh {
+                let mut dmax = 0.0f64;
+                for mu in offs[j]..offs[j] + dims[j] {
+                    for nu in offs[sigma]..offs[sigma] + dims[sigma] {
+                        dmax = dmax.max(d[(mu, nu)].abs());
+                    }
+                }
+                let q_js = bound.estimate(j, sigma, j, sigma).sqrt();
+                if dmax * q_js > threshold {
+                    row.push(sigma);
+                }
+            }
+            pairs.push(row);
+        }
+        pairs
+    }
+
+    #[test]
+    fn test_density_pairs_build_exact_match_to_serial() {
+        // alkane_6/cc-pVDZ clears PAR_DENSITY_PAIRS_THRESHOLD (64 shells), so
+        // this exercises the rayon path. A synthetic density matrix (no SCF
+        // needed) keeps the test fast while still exercising real geometry-
+        // dependent Schwarz bounds.
+        let mol = Molecule::load_xyz("../../testdata/molecules/alkane_6.xyz").unwrap();
+        let bs = basis::bundled("cc-pvdz").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        assert!(prep.nshells() >= 64,
+            "test basis too small to exercise the parallel path: {} shells", prep.nshells());
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+
+        let n = prep.nbasis();
+        // Deterministic pseudo-random symmetric density matrix (no RNG dep):
+        // a simple LCG-derived pattern gives varied magnitudes across blocks
+        // so both the "kept" and "skipped" branches of the threshold fire.
+        let mut d = Array2::<f64>::zeros((n, n));
+        let mut state: u64 = 0x243F6A8885A308D3;
+        for i in 0..n {
+            for j in 0..=i {
+                state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                let v = ((state >> 33) as f64 / u32::MAX as f64) * 2.0 - 1.0;
+                d[(i, j)] = v;
+                d[(j, i)] = v;
+            }
+        }
+
+        for threshold in [1e-14, 1e-6, 1e-2] {
+            let par = DensityPairs::build(&d, &bounds, &prep, threshold);
+            let ser = density_pairs_build_serial(&d, &bounds, &prep, threshold);
+            assert_eq!(par.pairs.len(), ser.len());
+            for j in 0..ser.len() {
+                assert_eq!(
+                    par.partners(j), ser[j].as_slice(),
+                    "DensityPairs row {j} mismatch at threshold={threshold:.0e}"
+                );
+            }
+        }
     }
 
     #[test]

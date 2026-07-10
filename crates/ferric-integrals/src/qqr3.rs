@@ -319,27 +319,63 @@ pub fn erfc(x: f64) -> f64 {
     (-z).exp() / x * (SQRT_PI_INV - r)
 }
 
+/// Below this many shells, run the tight-Schwarz seed loops serially — avoids
+/// rayon/engine-construction overhead for free-atom/tiny-basis jobs.
+const PAR_SEED_SHELL_THRESHOLD: usize = 64;
+
 /// Per-aux-shell Schwarz `Q3[P] = sqrt(max_a |(P_a|P_a)|)` at tight precision.
 ///
 /// Same quantity as [`crate::schwarz::schwarz3_aux`] but computed at
 /// [`QQR3_SEED_PREC`] so diffuse self-integrals are not screened to 0.
+///
+/// Parallelized over `p` once `nsh` clears [`PAR_SEED_SHELL_THRESHOLD`]: each
+/// rayon worker builds its own `Engine` via `for_each_init` (never per-item).
+/// Each iteration writes only `q3[p]` — a single distinct index per task — so
+/// the write set is trivially disjoint across workers with no scatter pattern
+/// needed; `into_par_iter().map().collect()` is order-preserving, giving a
+/// `Vec` bit-identical to the serial loop.
 fn q3_aux_tight(op: Operator, dfbs: &PreparedBasis) -> Result<Vec<f64>, FerricError> {
     let nsh = dfbs.nshells();
     let dims = dfbs.shell_dims();
-    let mut eng = Engine::new_2center(op, dfbs, QQR3_SEED_PREC)?;
-    let mut q3 = vec![0.0f64; nsh];
-    for p in 0..nsh {
-        let block = eng.compute_eri2(dfbs, p, p);
-        let np = dims[p];
-        let mut maxv = 0.0f64;
-        for a in 0..np {
-            let v = block[a * np + a].abs();
-            if v > maxv {
-                maxv = v;
+
+    if nsh < PAR_SEED_SHELL_THRESHOLD {
+        let mut eng = Engine::new_2center(op, dfbs, QQR3_SEED_PREC)?;
+        let mut q3 = vec![0.0f64; nsh];
+        for p in 0..nsh {
+            let block = eng.compute_eri2(dfbs, p, p);
+            let np = dims[p];
+            let mut maxv = 0.0f64;
+            for a in 0..np {
+                let v = block[a * np + a].abs();
+                if v > maxv {
+                    maxv = v;
+                }
             }
+            q3[p] = maxv.sqrt();
         }
-        q3[p] = maxv.sqrt();
+        return Ok(q3);
     }
+
+    use rayon::prelude::*;
+    Engine::new_2center(op, dfbs, QQR3_SEED_PREC)?;
+    let q3: Vec<f64> = (0..nsh)
+        .into_par_iter()
+        .map_init(
+            || Engine::new_2center(op, dfbs, QQR3_SEED_PREC).expect("2-center engine (pre-validated)"),
+            |eng, p| {
+                let block = eng.compute_eri2(dfbs, p, p);
+                let np = dims[p];
+                let mut maxv = 0.0f64;
+                for a in 0..np {
+                    let v = block[a * np + a].abs();
+                    if v > maxv {
+                        maxv = v;
+                    }
+                }
+                maxv.sqrt()
+            },
+        )
+        .collect();
     Ok(q3)
 }
 
@@ -348,35 +384,86 @@ fn q3_aux_tight(op: Operator, dfbs: &PreparedBasis) -> Result<Vec<f64>, FerricEr
 ///
 /// Returns a dense `nsh × nsh` matrix mirroring [`crate::schwarz::schwarz`],
 /// but built from the diagonal `(μν|μν)` elements at [`QQR3_SEED_PREC`].
+///
+/// Parallelized over the outer shell index `s1` (independent row bands) once
+/// `nsh` clears [`PAR_SEED_SHELL_THRESHOLD`]; each rayon worker builds its own
+/// `Engine` via `for_each_init`. Worker `s1` writes the coordinate pairs
+/// `{(s1,s2), (s2,s1) : s2 ≤ s1}` — i.e. every unordered pair `{i,j}` with
+/// `i ≤ j` is written exactly once, by the worker whose `s1` equals the larger
+/// index `j`. Two distinct workers `s1 ≠ s1'` (say `s1 < s1'`) can only
+/// collide if some pair `{s1, s2}` from the first equals some pair
+/// `{s1', s2'}` from the second; since `s1'` is the larger index in every one
+/// of *its* pairs while `s1` is the larger index in every one of *its* own
+/// pairs, and `s1 ≠ s1'`, no such collision exists. So distinct workers'
+/// write sets are disjoint and each `(row, col)` element of `q` is written
+/// exactly once.
 fn q_obs_tight(op: Operator, obs: &PreparedBasis) -> Result<Array2<f64>, FerricError> {
     let nsh = obs.nshells();
     let dims = obs.shell_dims();
-    let mut eng = Engine::new_2e(op, obs, QQR3_SEED_PREC)?;
     let mut q = Array2::zeros((nsh, nsh));
-    for s1 in 0..nsh {
-        for s2 in 0..=s1 {
-            let mut maxv = 0.0f64;
-            if let Some(block) = eng.compute_quartet(obs, s1, s2, s1, s2) {
-                let n1 = dims[s1];
-                let n2 = dims[s2];
-                // Diagonal element (μν|μν) lives at flat index ((i*n2+j)*n1+i)*n2+j.
-                for i in 0..n1 {
-                    for j in 0..n2 {
-                        let idx = ((i * n2 + j) * n1 + i) * n2 + j;
-                        if idx < block.len() {
-                            let v = block[idx].abs();
-                            if v > maxv {
-                                maxv = v;
+
+    if nsh < PAR_SEED_SHELL_THRESHOLD {
+        let mut eng = Engine::new_2e(op, obs, QQR3_SEED_PREC)?;
+        for s1 in 0..nsh {
+            for s2 in 0..=s1 {
+                let mut maxv = 0.0f64;
+                if let Some(block) = eng.compute_quartet(obs, s1, s2, s1, s2) {
+                    let n1 = dims[s1];
+                    let n2 = dims[s2];
+                    for i in 0..n1 {
+                        for j in 0..n2 {
+                            let idx = ((i * n2 + j) * n1 + i) * n2 + j;
+                            if idx < block.len() {
+                                let v = block[idx].abs();
+                                if v > maxv {
+                                    maxv = v;
+                                }
                             }
                         }
                     }
                 }
+                let val = maxv.sqrt();
+                q[(s1, s2)] = val;
+                q[(s2, s1)] = val;
             }
-            let val = maxv.sqrt();
-            q[(s1, s2)] = val;
-            q[(s2, s1)] = val;
         }
+        return Ok(q);
     }
+
+    use rayon::prelude::*;
+    Engine::new_2e(op, obs, QQR3_SEED_PREC)?;
+    let q_ptr = q.as_mut_ptr() as usize;
+    let stride = nsh;
+
+    (0..nsh).into_par_iter().for_each_init(
+        || Engine::new_2e(op, obs, QQR3_SEED_PREC).expect("2e engine (pre-validated)"),
+        |eng, s1| {
+            let n1 = dims[s1];
+            for s2 in 0..=s1 {
+                let mut maxv = 0.0f64;
+                if let Some(block) = eng.compute_quartet(obs, s1, s2, s1, s2) {
+                    let n2 = dims[s2];
+                    for i in 0..n1 {
+                        for j in 0..n2 {
+                            let idx = ((i * n2 + j) * n1 + i) * n2 + j;
+                            if idx < block.len() {
+                                let v = block[idx].abs();
+                                if v > maxv {
+                                    maxv = v;
+                                }
+                            }
+                        }
+                    }
+                }
+                let val = maxv.sqrt();
+                unsafe {
+                    let base = q_ptr as *mut f64;
+                    *base.add(s1 * stride + s2) = val;
+                    *base.add(s2 * stride + s1) = val;
+                }
+            }
+        },
+    );
     Ok(q)
 }
 
@@ -559,5 +646,92 @@ mod tests {
         }
         assert!(found_strictly_smaller,
             "erfc QQR3 should be strictly smaller than Coulomb QQR3 somewhere");
+    }
+
+    /// Serial references for `q3_aux_tight`/`q_obs_tight` (pre-parallelization
+    /// implementations, kept verbatim).
+    fn q3_aux_tight_serial(op: Operator, dfbs: &PreparedBasis) -> Vec<f64> {
+        let nsh = dfbs.nshells();
+        let dims = dfbs.shell_dims();
+        let mut eng = Engine::new_2center(op, dfbs, QQR3_SEED_PREC).unwrap();
+        let mut q3 = vec![0.0f64; nsh];
+        for p in 0..nsh {
+            let block = eng.compute_eri2(dfbs, p, p);
+            let np = dims[p];
+            let mut maxv = 0.0f64;
+            for a in 0..np {
+                let v = block[a * np + a].abs();
+                if v > maxv {
+                    maxv = v;
+                }
+            }
+            q3[p] = maxv.sqrt();
+        }
+        q3
+    }
+
+    fn q_obs_tight_serial(op: Operator, obs: &PreparedBasis) -> Array2<f64> {
+        let nsh = obs.nshells();
+        let dims = obs.shell_dims();
+        let mut eng = Engine::new_2e(op, obs, QQR3_SEED_PREC).unwrap();
+        let mut q = Array2::zeros((nsh, nsh));
+        for s1 in 0..nsh {
+            for s2 in 0..=s1 {
+                let mut maxv = 0.0f64;
+                if let Some(block) = eng.compute_quartet(obs, s1, s2, s1, s2) {
+                    let n1 = dims[s1];
+                    let n2 = dims[s2];
+                    for i in 0..n1 {
+                        for j in 0..n2 {
+                            let idx = ((i * n2 + j) * n1 + i) * n2 + j;
+                            if idx < block.len() {
+                                let v = block[idx].abs();
+                                if v > maxv {
+                                    maxv = v;
+                                }
+                            }
+                        }
+                    }
+                }
+                let val = maxv.sqrt();
+                q[(s1, s2)] = val;
+                q[(s2, s1)] = val;
+            }
+        }
+        q
+    }
+
+    #[test]
+    fn test_q3_aux_tight_bitidentical_to_serial() {
+        // alkane_6/cc-pVDZ-RI clears PAR_SEED_SHELL_THRESHOLD (64 aux shells).
+        let mol = Molecule::load_xyz("../../testdata/molecules/alkane_6.xyz").unwrap();
+        let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let aux = PreparedBasis::new(&mol, &aux_bs).unwrap();
+        assert!(aux.nshells() >= 64,
+            "test aux basis too small to exercise the parallel path: {} shells", aux.nshells());
+        for op in [Operator::coulomb(), Operator::erfc(0.222)] {
+            let par = q3_aux_tight(op, &aux).unwrap();
+            let ser = q3_aux_tight_serial(op, &aux);
+            assert_eq!(par.len(), ser.len());
+            let n_diff = par.iter().zip(ser.iter()).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+            assert_eq!(n_diff, 0, "q3_aux_tight: {n_diff} elements differ bitwise (op={op:?})");
+        }
+    }
+
+    #[test]
+    fn test_q_obs_tight_bitidentical_to_serial() {
+        // alkane_6/cc-pVDZ clears PAR_SEED_SHELL_THRESHOLD (64 obs shells).
+        let mol = Molecule::load_xyz("../../testdata/molecules/alkane_6.xyz").unwrap();
+        let obs_bs = basis::bundled("cc-pvdz").unwrap();
+        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+        assert!(obs.nshells() >= 64,
+            "test obs basis too small to exercise the parallel path: {} shells", obs.nshells());
+        for op in [Operator::coulomb(), Operator::erfc(0.222)] {
+            let par = q_obs_tight(op, &obs).unwrap();
+            let ser = q_obs_tight_serial(op, &obs);
+            assert_eq!(par.dim(), ser.dim());
+            let n_diff = par.iter().zip(ser.iter()).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+            assert_eq!(n_diff, 0, "q_obs_tight: {n_diff} elements differ bitwise (op={op:?})");
+        }
     }
 }
