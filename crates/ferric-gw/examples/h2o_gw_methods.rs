@@ -55,6 +55,8 @@ H  0.0  -0.755453 -0.471161
         eigensolver: Eigensolver::Davidson,
         sternheimer: SternheimerConfig::default(),
         memory_budget_bytes: None,
+        // run_gw forces this on internally; false is fine here (M9 gate).
+        need_inv_dielectric_freq: false,
     };
 
     for method in [

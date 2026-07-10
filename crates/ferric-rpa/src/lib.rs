@@ -280,6 +280,12 @@ pub fn run_pdep_rpa_from_intermediates(
     let eps_vir: Vec<f64> = rhf.eps_r()[nocc_total..nocc_total + nvir].to_vec();
 
     // Step 3: Run Davidson at ω=0.
+    // NOTE (M9 memory): the default subspace cap 3·naux bounds the Davidson
+    // basis at naux·(3·naux)·8 bytes (≈346 MB at dimer/aTZ naux≈3800). This is
+    // borderline but only pays on the Davidson path — Lanczos is the default
+    // solver (config.eigensolver) and never grows a 3·naux basis. If Davidson
+    // becomes the hot path at larger naux, gate this multiplier on
+    // memory_budget_bytes / (naux·8) instead of the fixed 3×.
     let max_vecs = if config.davidson_max_vecs == 0 {
         3 * naux
     } else {
@@ -490,12 +496,14 @@ pub fn run_pdep_rpa_from_intermediates(
 
     // Step 6b: Per-frequency full inverse-dielectric matrices in the PDEP basis
     // (for the GW self-energy; not needed by the RPA energy). Only the dense
-    // (non-Laplace) χ₀ path is wired here.
-    let inv_dielectric_freq = match laplace_chi0_quad.as_ref() {
-        None => Some(energy::eval_inv_dielectric_matrices(
+    // (non-Laplace) χ₀ path is wired here. Gated on `need_inv_dielectric_freq`
+    // so energy-only runs never materialize the nquad × M² stack (~1.85 GB at
+    // dimer/aTZ scale) — GW/BSE/property callers set the flag (M9).
+    let inv_dielectric_freq = match (config.need_inv_dielectric_freq, laplace_chi0_quad.as_ref()) {
+        (true, None) => Some(energy::eval_inv_dielectric_matrices(
             &eigenvectors, b_ov, &eps_occ, &eps_vir, &quad_freqs,
         )?),
-        Some(_) => None,
+        _ => None,
     };
 
     _t_quad.end();
@@ -688,11 +696,13 @@ pub fn run_u_pdep_rpa(
 
     let e_rpa = energy::rpa_correlation_energy(&quad_weights, &eigenvalues_freq);
 
-    let inv_dielectric_freq = match laplace_pair.as_ref() {
-        None => Some(energy::eval_inv_dielectric_matrices_unrestricted(
+    // Gated on `need_inv_dielectric_freq` (M9): only U-GW consumes the
+    // nquad × M² inverse-dielectric stack; energy-only runs skip it.
+    let inv_dielectric_freq = match (config.need_inv_dielectric_freq, laplace_pair.as_ref()) {
+        (true, None) => Some(energy::eval_inv_dielectric_matrices_unrestricted(
             &eigenvectors, &freq_chan_a, &freq_chan_b, &quad_freqs,
         )?),
-        Some(_) => None,
+        _ => None,
     };
 
     Ok(PdepRpaResult {

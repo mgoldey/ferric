@@ -1259,6 +1259,11 @@ pub fn pdep_polarizability_becke_dynamic(
         // Frequency loop.
         let mut out: Vec<Vec<[[f64; 3]; 3]>> = vec![vec![[[0.0; 3]; 3]; nfreq]; natoms];
 
+        // Per-spin reused (naux × nov_σ) scratch for the column-scaled B̃_σ;
+        // allocated once instead of cloned per frequency (M9: only the g-scaling
+        // changes with ω).
+        let mut b_scaled_a = inter_a.b_ov.clone();
+        let mut b_scaled_b = inter_b.b_ov.clone();
         for (k, &omega) in freqs.iter().enumerate() {
             let omega2 = omega * omega;
 
@@ -1281,10 +1286,13 @@ pub fn pdep_polarizability_becke_dynamic(
             // ε̃(ω) = I + 2 B̃_α diag(g_α) B̃_αᵀ + 2 B̃_β diag(g_β) B̃_βᵀ.
             let mut eps_mat = Array2::<f64>::zeros((naux, naux));
             for p in 0..naux { eps_mat[(p,p)] = 1.0; }
-            for (b_ov, g) in [(&inter_a.b_ov, &g_a), (&inter_b.b_ov, &g_b)] {
+            for (b_ov, g, b_scaled) in [
+                (&inter_a.b_ov, &g_a, &mut b_scaled_a),
+                (&inter_b.b_ov, &g_b, &mut b_scaled_b),
+            ] {
                 let nov = b_ov.shape()[1];
                 if nov == 0 { continue; }
-                let mut b_scaled = b_ov.clone();
+                b_scaled.assign(b_ov);
                 for ia in 0..nov {
                     let s = (2.0 * g[ia]).sqrt();
                     b_scaled.column_mut(ia).mapv_inplace(|x| x * s);
@@ -1514,13 +1522,16 @@ pub fn pdep_polarizability_becke_dynamic(
     let mut out: Vec<Vec<[[f64; 3]; 3]>> =
         vec![vec![[[0.0; 3]; 3]; nfreq]; natoms];
 
+    // Reused (naux × nov) scratch for the column-scaled B̃; allocated once
+    // instead of cloned per frequency (M9: only the g-scaling changes with ω).
+    let mut b_scaled = b_ov.clone();
     for (k, &omega) in freqs.iter().enumerate() {
         let omega2 = omega * omega;
         let mut g = ndarray::Array1::<f64>::zeros(nov);
         for ia in 0..nov { let e = e_ia[ia]; g[ia] = e / (omega2 + e * e); }
 
         // ε̃(ω) = I + 4 B̃ diag(g) B̃^T
-        let mut b_scaled = b_ov.clone();
+        b_scaled.assign(b_ov);
         for ia in 0..nov {
             b_scaled.column_mut(ia).mapv_inplace(|x| x * (4.0 * g[ia]).sqrt());
         }
@@ -2046,13 +2057,18 @@ pub fn pdep_polarizability_hirshfeld_dynamic(
     let eps_floor = 1e-12;
     let atom_pos: Vec<[f64; 3]> =
         mol.atoms.iter().map(|at| [at.x, at.y, at.zpos]).collect();
-    let mut d_ai_ao_all: Vec<[Array2<f64>; 3]> = (0..natoms)
-        .map(|_| std::array::from_fn(|_| Array2::<f64>::zeros((nbf, nbf)))).collect();
-    for a in 0..natoms {
+
+    // Build each atom's 3 AO dipole matrices and transform to the (small) MO
+    // occ-vir basis in the SAME pass, so only one atom's AO copy (3·nbf²) is
+    // live at a time instead of all natoms·3·nbf² at once (M9 streaming). This
+    // site has NO cross-atom renormalization (see the gauge note above), so the
+    // per-atom AO matrices are independent — dropping each before the next is
+    // exact. Numerics are unchanged vs the previous build-all-then-transform.
+    let mu_ai_flat: Vec<[ndarray::Array1<f64>; 3]> = (0..natoms).map(|a| {
         let ra = atom_pos[a];
         let mut wa = vec![0.0_f64; npts];
         for g in 0..npts { wa[g] = rho_free[a][g] / (rho_sum[g] + eps_floor); }
-        for i_cart in 0..3 {
+        std::array::from_fn(|i_cart| {
             let ra_d = ra[i_cart];
             let mut combined = Array2::<f64>::zeros((nbf, npts));
             for mu in 0..nbf {
@@ -2064,14 +2080,8 @@ pub fn pdep_polarizability_hirshfeld_dynamic(
             let d = chi.dot(&combined.t());
             let mut d_sym = Array2::<f64>::zeros((nbf, nbf));
             for mu in 0..nbf { for nu in 0..nbf { d_sym[(mu,nu)] = 0.5*(d[(mu,nu)]+d[(nu,mu)]); } }
-            d_ai_ao_all[a][i_cart] = d_sym;
-        }
-    }
-
-    // Transform renormalized AO dipoles to MO occ-vir basis (ω-independent).
-    let mu_ai_flat: Vec<[ndarray::Array1<f64>; 3]> = (0..natoms).map(|a| {
-        std::array::from_fn(|d| {
-            let mo = c_occ.t().dot(&d_ai_ao_all[a][d]).dot(&c_vir);
+            // Transform to MO and keep only the length-nov vector; d_sym drops here.
+            let mo = c_occ.t().dot(&d_sym).dot(&c_vir);
             let mut v = ndarray::Array1::<f64>::zeros(nov);
             for i in 0..nocc { for ax in 0..nvir { v[i*nvir+ax] = mo[(i,ax)]; } }
             v
@@ -2093,13 +2103,17 @@ pub fn pdep_polarizability_hirshfeld_dynamic(
     // --- Frequency loop ---
     let mut out: Vec<Vec<[[f64; 3]; 3]>> = vec![vec![[[0.0; 3]; 3]; nfreq]; natoms];
 
+    // Reused (naux × nov) scratch for the column-scaled B̃; only the per-column
+    // g-scaling changes with ω, so the 766 MB buffer is allocated once instead
+    // of cloned per frequency (M9: freq-independent structure hoisted).
+    let mut b_scaled = b_ov.clone();
     for (k, &omega) in freqs.iter().enumerate() {
         let omega2 = omega * omega;
         let mut g = ndarray::Array1::<f64>::zeros(nov);
         for ia in 0..nov { let e = e_ia[ia]; g[ia] = e / (omega2 + e*e); }
 
         // ε̃(ω) = I + 4 B̃ diag(g) B̃^T
-        let mut b_scaled = b_ov.clone();
+        b_scaled.assign(b_ov);
         for ia in 0..nov { b_scaled.column_mut(ia).mapv_inplace(|x| x * (4.0*g[ia]).sqrt()); }
         let mut eps_mat: Array2<f64> = b_scaled.dot(&b_scaled.t());
         for p in 0..naux { eps_mat[(p,p)] += 1.0; }
@@ -2216,6 +2230,10 @@ pub fn molecular_dynamic_polarizability(
         let mu_b = mk_mu(&inter_b, c_b);
 
         let mut out = vec![[[0.0_f64; 3]; 3]; freqs.len()];
+        // Per-spin reused (naux × nov_σ) scratch for the column-scaled B̃_σ;
+        // allocated once instead of cloned per frequency (M9).
+        let mut b_scaled_a = inter_a.b_ov.clone();
+        let mut b_scaled_b = inter_b.b_ov.clone();
         for (k, &omega) in freqs.iter().enumerate() {
             let omega2 = omega * omega;
             let g_of = |e_ia: &ndarray::Array1<f64>| {
@@ -2234,15 +2252,15 @@ pub fn molecular_dynamic_polarizability(
             for p in 0..naux {
                 eps_mat[(p, p)] = 1.0;
             }
-            for (b_ov, g, nocc) in [
-                (&inter_a.b_ov, &g_a, inter_a.nocc),
-                (&inter_b.b_ov, &g_b, inter_b.nocc),
+            for (b_ov, g, nocc, b_scaled) in [
+                (&inter_a.b_ov, &g_a, inter_a.nocc, &mut b_scaled_a),
+                (&inter_b.b_ov, &g_b, inter_b.nocc, &mut b_scaled_b),
             ] {
                 if nocc == 0 {
                     continue;
                 }
                 let nov = b_ov.shape()[1];
-                let mut b_scaled = b_ov.clone();
+                b_scaled.assign(b_ov);
                 for ia in 0..nov {
                     let s = (2.0 * g[ia]).sqrt();
                     b_scaled.column_mut(ia).mapv_inplace(|x| x * s);
@@ -2322,6 +2340,9 @@ pub fn molecular_dynamic_polarizability(
     });
 
     let mut out = vec![[[0.0_f64; 3]; 3]; freqs.len()];
+    // Reused (naux × nov) scratch for the column-scaled B̃; allocated once
+    // instead of cloned per frequency (M9).
+    let mut b_scaled = b_ov.clone();
     for (k, &omega) in freqs.iter().enumerate() {
         let omega2 = omega * omega;
         let mut g = ndarray::Array1::<f64>::zeros(nov);
@@ -2330,7 +2351,7 @@ pub fn molecular_dynamic_polarizability(
             g[ia] = e / (omega2 + e * e);
         }
         // ε̃(ω) = I + 4 B̃ diag(g) B̃^T
-        let mut b_scaled = b_ov.clone();
+        b_scaled.assign(b_ov);
         for ia in 0..nov {
             b_scaled.column_mut(ia).mapv_inplace(|x| x * (4.0 * g[ia]).sqrt());
         }
@@ -3216,6 +3237,8 @@ mod tests {
             },
             trunc_thresh: 0.0,
             davidson_conv_thresh: 1e-9,
+            // The PDEP dynamic-α property path reads inv_dielectric_freq (M9 gate).
+            need_inv_dielectric_freq: true,
             ..Default::default()
         };
         let rpa = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
