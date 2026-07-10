@@ -17,6 +17,7 @@
 //! Hybrid GGA and range-separated GGA functionals use the same semilocal
 //! eval path as plain GGA — the exact-exchange mixing is the SCF's job.
 
+use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ndarray::{Array1, Array2, Array3, Axis, Zip};
 use rayon::prelude::*;
 
@@ -200,7 +201,14 @@ pub fn semilocal_vxc_closed_scratch(
         .and(&vrho_total)
         .map_collect(|&w, &r, &v| if r > DENSITY_FLOOR { w * v } else { 0.0 });
     scale_columns_into(chi, &s, buf);
-    let mut vxc: Array2<f64> = buf.dot(&chi.t());
+    // Digestion GEMM (nbf, npts)·(npts, nbf), outside any rayon region — this
+    // whole function runs serially at the top level of one SCF/grid-response
+    // iteration. Opt-in BLAS raise via FERRIC_BLAS_THREADS (default 1,
+    // unchanged behavior); opt_in_blas_threads()'s rayon-worker self-guard
+    // also protects any caller reached from inside a rayon pool (e.g.
+    // free-atom SAD grid builds under run_serial_pool).
+    let mut vxc: Array2<f64> =
+        with_blas_threads(opt_in_blas_threads(), || buf.dot(&chi.t()));
 
     // ──────────────────────────────────────────────────────────────────────
     // GGA piece: V_gga_μν = Σ_g (2 w_g v_σ_g) ·
@@ -223,7 +231,9 @@ pub fn semilocal_vxc_closed_scratch(
                     if r > DENSITY_FLOOR { 2.0 * w * v * gr } else { 0.0 }
                 });
             scale_columns_into(chi, &f_ax, buf);
-            let m_axis: Array2<f64> = buf.dot(&dchi_axis.t());
+            // Same opt-in-raise digestion GEMM as the LDA piece above.
+            let m_axis: Array2<f64> =
+                with_blas_threads(opt_in_blas_threads(), || buf.dot(&dchi_axis.t()));
             vxc = vxc + &m_axis + &m_axis.t();
         }
     }

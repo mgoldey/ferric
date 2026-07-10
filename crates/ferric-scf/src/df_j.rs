@@ -33,6 +33,7 @@
 use crate::fock::JBuilder;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
+use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::operator::Operator;
 use ferric_integrals::threeindex::coulomb_metric_2c;
 use ferric_integrals::three_index_source::ThreeIndexSource;
@@ -61,9 +62,20 @@ impl DfJ {
     ) -> Result<Self, FerricError> {
         let source = ThreeIndexSource::build(op, obs, dfbs, budget_bytes)?;
         let v = coulomb_metric_2c(op, dfbs)?;
-        let v_inv = v
-            .inv()
-            .map_err(|e| FerricError::Lapack(format!("V^-1 in DfJ: {e}")))?;
+        // NOT wrapped in with_blas_threads, deliberately: `.inv()` is
+        // LU-based (dgetrf/dgetri). Verified 2026-07-10 that OpenBLAS's
+        // multi-threaded dgetrf_parallel overflows the stack even OUTSIDE any
+        // rayon region — reproduced in isolation on a plain OS thread (8 MB
+        // ulimit -s) at a realistic (113, 113) JK-fit metric size with
+        // FERRIC_BLAS_THREADS=2 (SIGABRT "stack overflow, aborting"); the
+        // unwrapped call at the same size succeeds. This is the same
+        // dgetrf_parallel hazard the openblas-rayon-dgetrf-crash memory
+        // documents for rayon workers, just proven to also hit plain threads
+        // — `.cholesky()`/`.eigh()` at comparable sizes were NOT observed to
+        // crash, so this is specific to the LU/getri path, not a general BLAS
+        // thread-count issue. Stays at the OPENBLAS_NUM_THREADS=1 process
+        // default (correct, safe, and identical to pre-B6 behavior).
+        let v_inv = v.inv().map_err(|e| FerricError::Lapack(format!("V^-1 in DfJ: {e}")))?;
         Ok(DfJ { source, v_inv })
     }
 }

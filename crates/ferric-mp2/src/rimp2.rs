@@ -12,6 +12,7 @@ use ferric_core::mol::Molecule;
 use ferric_core::orbitals::OrbitalSpace;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
+use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::operator::Operator;
 use ferric_integrals::three_index_source::ThreeIndexSource;
 use ferric_integrals::threeindex;
@@ -197,11 +198,14 @@ pub fn ri_mp2_spin_components(
     // (P|mu nu) -> (P|ia), aux-blocked under FERRIC_ERI3_BUDGET_GB
     let eri3_mo = eri3_mo_ov_blocked(op, obs, dfbs, &c_occ, &c_vir, eri3_budget_bytes(config.memory_budget_bytes))?;
 
-    // B_ia^P = sum_Q (P|Q)^{-1/2} (Q|ia)
+    // B_ia^P = sum_Q (P|Q)^{-1/2} (Q|ia). One dressing GEMM per top-level
+    // call, outside any rayon region (the rayon fan-out in
+    // spin_components_from_b_ov below hasn't started yet). Opt-in BLAS raise
+    // via FERRIC_BLAS_THREADS (default 1, unchanged behavior).
     let eri3_flat = eri3_mo
         .into_shape_with_order((naux, nocc * nvir))
         .unwrap();
-    let b_flat = v2c_inv_sqrt.dot(&eri3_flat); // (naux, nocc*nvir)
+    let b_flat = with_blas_threads(opt_in_blas_threads(), || v2c_inv_sqrt.dot(&eri3_flat)); // (naux, nocc*nvir)
 
     let sc = spin_components_from_b_ov(
         &b_flat, eps, nocc, nvir, first_occ, nocc_total,
@@ -428,9 +432,11 @@ pub fn compute_rpa_intermediates_spin(
     let c_vir = c_full.slice(ndarray::s![.., nocc_total..]).to_owned();
 
     let eri3_ov = eri3_mo_ov_blocked(op, obs, dfbs, &c_occ, &c_vir, eri3_budget_bytes(config.memory_budget_bytes))?;
-    let b_ov = v_inv_sqrt.dot(
-        &eri3_ov.into_shape_with_order((naux, nocc * nvir)).unwrap(),
-    );
+    // Dressing GEMM, outside any rayon region (top-level driver call). Opt-in
+    // BLAS raise via FERRIC_BLAS_THREADS (default 1, unchanged behavior).
+    let b_ov = with_blas_threads(opt_in_blas_threads(), || {
+        v_inv_sqrt.dot(&eri3_ov.into_shape_with_order((naux, nocc * nvir)).unwrap())
+    });
 
     Ok(RpaIntermediates {
         b_ov, v_inv_sqrt,
@@ -466,9 +472,11 @@ pub fn compute_rpa_intermediates(
     let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
 
     let eri3_ov = eri3_mo_ov_blocked(op, obs, dfbs, &c_occ, &c_vir, eri3_budget_bytes(config.memory_budget_bytes))?;
-    let b_ov = v_inv_sqrt.dot(
-        &eri3_ov.into_shape_with_order((naux, nocc * nvir)).unwrap(),
-    );
+    // Dressing GEMM, outside any rayon region (top-level driver call). Opt-in
+    // BLAS raise via FERRIC_BLAS_THREADS (default 1, unchanged behavior).
+    let b_ov = with_blas_threads(opt_in_blas_threads(), || {
+        v_inv_sqrt.dot(&eri3_ov.into_shape_with_order((naux, nocc * nvir)).unwrap())
+    });
 
     Ok(RpaIntermediates {
         b_ov, v_inv_sqrt,
@@ -577,8 +585,14 @@ fn compute_mp2_intermediates_impl(
 /// Given a positive-definite matrix V = L L^T, returns L^{-1} so that
 /// L^{-1} V L^{-T} = I, i.e., L^{-1} acts as V^{-1/2}.
 pub fn cholesky_inverse_sqrt(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
-    let l = v
-        .cholesky(UPLO::Lower)
+    // One-time (naux, naux) setup factorization, called once per RI-MP2/RPA/GW
+    // intermediates build, outside any rayon region. Opt-in BLAS raise via
+    // FERRIC_BLAS_THREADS (default 1, unchanged behavior);
+    // opt_in_blas_threads()'s rayon-worker self-guard also covers any caller
+    // reached from inside a rayon pool. The forward-substitution triangular
+    // solve below stays untouched (scalar, deliberately serial — see
+    // docs/parallelism-gaps-2026-07-09.md's "deliberately serial" list).
+    let l = with_blas_threads(opt_in_blas_threads(), || v.cholesky(UPLO::Lower))
         .map_err(|e| FerricError::Lapack(format!("Cholesky on (P|Q): {e}")))?;
     let n = l.nrows();
     // Forward-substitution to invert lower-triangular L
@@ -617,8 +631,10 @@ pub fn cholesky_inverse_sqrt(v: &Array2<f64>) -> Result<Array2<f64>, FerricError
 /// fast path for Coulomb/erfc (positive-definite).
 pub fn eigh_inverse_sqrt(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
     let n = v.nrows();
-    let (evals, evecs) = v
-        .eigh(UPLO::Upper)
+    // One-time (naux, naux) setup factorization, outside any rayon region.
+    // Same opt-in raise + rayon-worker self-guard as cholesky_inverse_sqrt
+    // above.
+    let (evals, evecs) = with_blas_threads(opt_in_blas_threads(), || v.eigh(UPLO::Upper))
         .map_err(|e| FerricError::Lapack(format!("eigh on (P|Q): {e}")))?;
     const LINDEP_THRESH: f64 = 1e-10;
     // A physical RI metric is Gram-PSD for any positive-definite kernel (erf,
@@ -655,7 +671,9 @@ pub fn eigh_inverse_sqrt(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
             }
         }
     }
-    Ok(u_scaled.dot(&evecs.t()))
+    Ok(with_blas_threads(opt_in_blas_threads(), || {
+        u_scaled.dot(&evecs.t())
+    }))
 }
 
 /// V^{-1/2} that auto-selects: regularized eigendecomposition for operators whose
@@ -733,11 +751,13 @@ pub fn ri_mp2_einsum(
     let v_inv_sqrt = cholesky_inverse_sqrt(&v2c)?;
     let eri3_mo = eri3_mo_ov_blocked(op, obs, dfbs, &c_occ, &c_vir, eri3_budget_bytes(config.memory_budget_bytes))?; // (naux, nocc, nvir)
 
-    // B^P_{ia} = V^{-1/2} (Q|ia); same b_flat as the scalar path
+    // B^P_{ia} = V^{-1/2} (Q|ia); same b_flat as the scalar path. Outside any
+    // rayon region (einsum! runs after this returns). Opt-in BLAS raise via
+    // FERRIC_BLAS_THREADS (default 1, unchanged behavior).
     let flat = eri3_mo
         .into_shape_with_order((naux, nocc * nvir))
         .unwrap();
-    let b_flat = v_inv_sqrt.dot(&flat); // (naux, nocc*nvir)
+    let b_flat = with_blas_threads(opt_in_blas_threads(), || v_inv_sqrt.dot(&flat)); // (naux, nocc*nvir)
     let b_3d = b_flat
         .into_shape_with_order((naux, nocc, nvir))
         .unwrap()
