@@ -100,8 +100,19 @@ pub struct GwResult {
     pub sigma_c: Array1<f64>,
     /// Z-factor (renormalization), dimensionless.
     pub z_factor: Array1<f64>,
+    /// Per-state QP Newton-solve convergence flag, aligned with `mo_indices`.
+    /// `false` means the Newton iteration exhausted its step budget (or hit a
+    /// near-pole `|f'|` bailout) without reaching its step-size tolerance —
+    /// the corresponding `eps_qp`/`sigma_c`/`z_factor` entries are the last
+    /// iterate, not a converged root. Always `true` for COHSEX (closed-form,
+    /// no Newton solve). See `sigma::solve_qp_for_mo`.
+    pub qp_converged: Vec<bool>,
     /// Iteration count for ev-loops (0 for non-iterative methods).
     pub n_ev_iter: usize,
+    /// Whether the evGW/evGW₀ outer (eigenvalue self-consistency) loop met
+    /// `ev_conv_thresh` within `max_ev_iter`. Always `true` for non-iterative
+    /// methods (G0W0, COHSEX).
+    pub outer_converged: bool,
     /// Underlying PDEP result (so callers can inspect W).
     pub pdep: PdepRpaResult,
 }
@@ -139,7 +150,15 @@ pub struct UGwResult {
     pub sigma_x_b: Array1<f64>,
     pub sigma_c_b: Array1<f64>,
     pub z_factor_b: Array1<f64>,
+    /// Per-state QP Newton-solve convergence flags, aligned with `mo_indices`
+    /// (α/β channels separately — see `GwResult::qp_converged` for the
+    /// per-flag meaning). Always all-`true` for COHSEX.
+    pub qp_converged_a: Vec<bool>,
+    pub qp_converged_b: Vec<bool>,
     pub n_ev_iter: usize,
+    /// Whether the U-evGW/U-evGW₀ outer loop met `ev_conv_thresh` within
+    /// `max_ev_iter`. Always `true` for non-iterative methods.
+    pub outer_converged: bool,
     pub pdep: PdepRpaResult,
 }
 

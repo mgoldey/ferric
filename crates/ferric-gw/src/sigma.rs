@@ -38,6 +38,28 @@ use ndarray::{Array1, Array2};
 use num_complex::Complex64;
 use rayon::prelude::*;
 
+/// Emit one stderr warning (per call) if any per-state Newton QP solve failed
+/// to converge. Pure observability: does not affect returned energies. `label`
+/// identifies the calling method (e.g. "G0W0", "evGW0") for the message.
+pub(crate) fn warn_if_unconverged(label: &str, mo_indices: &[usize], qp_converged: &[bool]) {
+    let n_bad = qp_converged.iter().filter(|&&c| !c).count();
+    if n_bad == 0 {
+        return;
+    }
+    let bad_mos: Vec<usize> = mo_indices
+        .iter()
+        .zip(qp_converged.iter())
+        .filter(|(_, &c)| !c)
+        .map(|(&m, _)| m)
+        .collect();
+    eprintln!(
+        "ferric-gw WARNING: {label} QP Newton solve did not converge for {n_bad}/{} \
+         state(s) (MO indices {bad_mos:?}); returned ε_qp for these states is the last \
+         Newton iterate, not a converged root.",
+        mo_indices.len(),
+    );
+}
+
 /// Fermi level (mid-gap) of the active-space spectrum: midpoint between the
 /// active HOMO and active LUMO. Used to center the analytic-continuation
 /// support line `z = ef + iω`, matching PySCF gw_ac. For an all-occupied or
@@ -111,6 +133,12 @@ pub(crate) fn sigma_c_at_z(
 
 /// Per-MO QP solve given a fixed (m_proj, w_α(iω), quadrature, propagator-ε)
 /// snapshot. Returns (ε_qp, Σ_c at ε_qp, Z, was Newton-converged).
+///
+/// "Converged" means the Newton iteration hit its `|step| < 1e-7` stopping
+/// criterion within the 30-iteration budget. If the loop instead exits because
+/// `|f'| < 1e-3` (near a Σ_c pole) or because it ran out of iterations without
+/// the step shrinking below tolerance, the returned `ε_qp` is the *last
+/// iterate*, not a converged root — this flag is what lets callers detect that.
 pub(crate) fn solve_qp_for_mo(
     m_loc: usize,
     eps_m_mf: f64,
@@ -127,7 +155,7 @@ pub(crate) fn solve_qp_for_mo(
     // KS reference it is Σ_x − v_xc and is large (~−7 eV), moving the QP root by
     // several eV — so Σ_c must be evaluated at the shifted energy, not post-hoc.
     static_shift: f64,
-) -> (f64, f64, f64) {
+) -> (f64, f64, f64, bool) {
     let n_pade = if pade_npts == 0 {
         quad_freqs.len().min(16)
     } else {
@@ -166,6 +194,7 @@ pub(crate) fn solve_qp_for_mo(
     let eps_qp_lin = eps_m_mf + z_renorm * (sc_at_ref + static_shift);
     let mut eps_curr = eps_qp_lin;
     let damp = newton_damp.clamp(0.1, 1.0);
+    let mut newton_converged = false;
     for _ in 0..30 {
         let sc = pade.eval(Complex64::new(eps_curr, 0.0)).re;
         // QP residual: ε − ε_mf − static_shift − Σc(ε) = 0.
@@ -178,11 +207,12 @@ pub(crate) fn solve_qp_for_mo(
         let step = -damp * f / fprime;
         eps_curr += step;
         if step.abs() < 1e-7 {
+            newton_converged = true;
             break;
         }
     }
     let sc_final = pade.eval(Complex64::new(eps_curr, 0.0)).re;
-    (eps_curr, sc_final, z_renorm)
+    (eps_curr, sc_final, z_renorm, newton_converged)
 }
 
 /// Run G0W0. `vxc_diag`, if given (KS reference), is the absolute-MO-indexed
@@ -235,6 +265,7 @@ pub fn run_g0w0(
     let mut sx_out = Array1::<f64>::zeros(mo_indices.len());
     let mut sc_out = Array1::<f64>::zeros(mo_indices.len());
     let mut z_out = Array1::<f64>::ones(mo_indices.len());
+    let mut qp_converged = vec![true; mo_indices.len()];
 
     // Each MO's QP solve is independent (scalar math only — no BLAS inside),
     // so parallelize over the QP index; per-state summation order is unchanged.
@@ -251,7 +282,7 @@ pub fn run_g0w0(
 
             // KS reference: shift = Σ_x − v_xc (inside the QP self-consistency).
             let shift = vxc_diag.map(|v| sigma_x_all[m_loc] - v[mo_abs]).unwrap_or(0.0);
-            let (eps_qp_m, sc_final, z_renorm) = solve_qp_for_mo(
+            let (eps_qp_m, sc_final, z_renorm, converged) = solve_qp_for_mo(
                 m_loc,
                 eps_m,
                 &m_proj,
@@ -264,16 +295,18 @@ pub fn run_g0w0(
                 ef,
                 shift,
             );
-            Ok((eps_m, sigma_x_all[m_loc], eps_qp_m, sc_final, z_renorm))
+            Ok((eps_m, sigma_x_all[m_loc], eps_qp_m, sc_final, z_renorm, converged))
         })
         .collect::<Result<Vec<_>, FerricError>>()?;
-    for (idx, &(eps_m, sx, eps_qp_m, sc_final, z_renorm)) in qp_rows.iter().enumerate() {
+    for (idx, &(eps_m, sx, eps_qp_m, sc_final, z_renorm, converged)) in qp_rows.iter().enumerate() {
         eps_mf[idx] = eps_m;
         sx_out[idx] = sx;
         eps_qp[idx] = eps_qp_m;
         sc_out[idx] = sc_final;
         z_out[idx] = z_renorm;
+        qp_converged[idx] = converged;
     }
+    warn_if_unconverged("G0W0", &mo_indices, &qp_converged);
 
     Ok(GwResult {
         mo_indices,
@@ -282,7 +315,9 @@ pub fn run_g0w0(
         sigma_x: sx_out,
         sigma_c: sc_out,
         z_factor: z_out,
+        qp_converged,
         n_ev_iter: 0,
+        outer_converged: true,
         pdep,
     })
 }
@@ -328,6 +363,7 @@ pub fn run_evgw0(
     let mut sx_out = Array1::<f64>::zeros(mo_indices.len());
     let mut sc_out = Array1::<f64>::zeros(mo_indices.len());
     let mut z_out = Array1::<f64>::ones(mo_indices.len());
+    let mut qp_converged = vec![true; mo_indices.len()];
     for (idx, &mo_abs) in mo_indices.iter().enumerate() {
         let m_loc = mo_abs - first_act;
         eps_mf[idx] = mo_b.eps_act[m_loc];
@@ -338,6 +374,7 @@ pub fn run_evgw0(
     // Outer loop.
     let mut eps_prop = mo_b.eps_act.clone();
     let mut iter_done = 0usize;
+    let mut outer_converged = gw_cfg.max_ev_iter == 0;
     for it in 0..gw_cfg.max_ev_iter {
         let mut max_dev = 0.0_f64;
         // First update eps_prop using the *previous* QP energies.
@@ -347,7 +384,7 @@ pub fn run_evgw0(
         }
         // eps_prop is a frozen snapshot for this iteration (Jacobi-style
         // update), so each QP state's solve is independent — parallelize.
-        let qp_new: Vec<(f64, f64, f64)> = mo_indices
+        let qp_new: Vec<(f64, f64, f64, bool)> = mo_indices
             .par_iter()
             .map(|&mo_abs| {
                 let m_loc = mo_abs - first_act;
@@ -367,16 +404,27 @@ pub fn run_evgw0(
                 )
             })
             .collect();
-        for (idx, &(eps_new, sc_new, z_new)) in qp_new.iter().enumerate() {
+        for (idx, &(eps_new, sc_new, z_new, converged)) in qp_new.iter().enumerate() {
             max_dev = max_dev.max((eps_new - eps_qp[idx]).abs());
             eps_qp[idx] = eps_new;
             sc_out[idx] = sc_new;
             z_out[idx] = z_new;
+            qp_converged[idx] = converged;
         }
         iter_done = it + 1;
         if max_dev < gw_cfg.ev_conv_thresh {
+            outer_converged = true;
             break;
         }
+    }
+    warn_if_unconverged("evGW0", &mo_indices, &qp_converged);
+    if !outer_converged {
+        eprintln!(
+            "ferric-gw WARNING: evGW0 outer loop did not converge within max_ev_iter={} \
+             (ev_conv_thresh={:.3e}); returned energies are the last iterate, not \
+             self-consistent.",
+            gw_cfg.max_ev_iter, gw_cfg.ev_conv_thresh
+        );
     }
 
     Ok(GwResult {
@@ -386,7 +434,9 @@ pub fn run_evgw0(
         sigma_x: sx_out,
         sigma_c: sc_out,
         z_factor: z_out,
+        qp_converged,
         n_ev_iter: iter_done,
+        outer_converged,
         pdep,
     })
 }
@@ -428,6 +478,7 @@ pub fn run_evgw(
     let mut sx_out = Array1::<f64>::zeros(mo_indices.len());
     let mut sc_out = Array1::<f64>::zeros(mo_indices.len());
     let mut z_out = Array1::<f64>::ones(mo_indices.len());
+    let mut qp_converged = vec![true; mo_indices.len()];
 
     let first_act = mo_b.first_act;
     let sigma_x_all = sigma_x_diag(mo_b);
@@ -439,6 +490,7 @@ pub fn run_evgw(
         eps_qp[idx] = eps_mf[idx];
     }
     let mut iter_done = 0usize;
+    let mut outer_converged = false;
     for it in 0..gw_cfg.max_ev_iter {
         // Update shifted_rhf.eps_alpha by overlaying QP energies for the
         // QP block (in absolute MO indices).
@@ -469,7 +521,7 @@ pub fn run_evgw(
         }
         let mut max_dev = 0.0_f64;
         // Frozen (m_proj, W, eps_prop) snapshot ⇒ independent per-state solves.
-        let qp_new: Vec<(f64, f64, f64)> = mo_indices
+        let qp_new: Vec<(f64, f64, f64, bool)> = mo_indices
             .par_iter()
             .map(|&mo_abs| {
                 let m_loc = mo_abs - first_act;
@@ -488,16 +540,27 @@ pub fn run_evgw(
                 )
             })
             .collect();
-        for (idx, &(eps_new, sc_new, z_new)) in qp_new.iter().enumerate() {
+        for (idx, &(eps_new, sc_new, z_new, converged)) in qp_new.iter().enumerate() {
             max_dev = max_dev.max((eps_new - eps_qp[idx]).abs());
             eps_qp[idx] = eps_new;
             sc_out[idx] = sc_new;
             z_out[idx] = z_new;
+            qp_converged[idx] = converged;
         }
         iter_done = it + 1;
         if max_dev < gw_cfg.ev_conv_thresh && it > 0 {
+            outer_converged = true;
             break;
         }
+    }
+    warn_if_unconverged("evGW", &mo_indices, &qp_converged);
+    if !outer_converged {
+        eprintln!(
+            "ferric-gw WARNING: evGW outer loop did not converge within max_ev_iter={} \
+             (ev_conv_thresh={:.3e}); returned energies (and W) are the last iterate, \
+             not self-consistent.",
+            gw_cfg.max_ev_iter, gw_cfg.ev_conv_thresh
+        );
     }
 
     Ok(GwResult {
@@ -507,7 +570,89 @@ pub fn run_evgw(
         sigma_x: sx_out,
         sigma_c: sc_out,
         z_factor: z_out,
+        qp_converged,
         n_ev_iter: iter_done,
+        outer_converged,
         pdep: current_pdep,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn qp_newton_converges_for_a_mild_self_energy() {
+        // Small screened-exchange weight ⇒ Σc is a gentle, well-behaved
+        // function near ε_mf ⇒ Newton should converge well within budget.
+        let eps_act = vec![-0.5_f64, 0.3_f64];
+        let mut m_proj = ndarray::Array3::<f64>::zeros((1, 2, 2));
+        m_proj[(0, 0, 1)] = 1.0;
+        m_proj[(0, 1, 0)] = 1.0;
+        let quad_freqs = vec![0.5_f64];
+        let quad_weights = vec![1.0_f64];
+        let mut d = Array2::<f64>::zeros((1, 1));
+        d[(0, 0)] = 0.05; // mild coupling
+        let inv_diel_freq = vec![d];
+        let ef = fermi_level(&eps_act, 1);
+
+        let (eps_qp, _sc, _z, converged) = solve_qp_for_mo(
+            0, eps_act[0], &m_proj, &inv_diel_freq, &quad_weights, &quad_freqs,
+            &eps_act, 0, 1.0, ef, 0.0,
+        );
+        assert!(converged, "expected Newton to converge for a mild self-energy");
+        assert!(eps_qp.is_finite());
+    }
+
+    #[test]
+    fn qp_newton_flags_nonconvergence_when_iteration_budget_exhausted() {
+        // Drive the fixed 30-iteration Newton budget to exhaustion — the
+        // "max_iter=1"-style probe requested by the TD-CONV brief. The Newton
+        // loop has no external max_iter knob, but its per-step damping is the
+        // public `qp_newton_damp` config. At the clamp minimum (0.1) each
+        // damped step removes only 10% of the remaining distance to the root,
+        // so the distance shrinks by at most 0.9 per iteration: starting more
+        // than ~1e-4 from the root, |step| = 0.1·dist ≥ 0.1·1e-4·0.9³⁰ ≈ 4e-7
+        // > 1e-7 on every one of the 30 passes — the `|step| < 1e-7` success
+        // criterion is unreachable within budget, deterministically.
+        //
+        // A moderate coupling (d = 0.5, Σc(ε_mf) ≈ 0.14 Ha with curvature)
+        // guarantees the Z-linearized starting guess is displaced well beyond
+        // 1e-4 from the self-consistent root.
+        let eps_act = vec![-0.5_f64, 0.3_f64];
+        let mut m_proj = ndarray::Array3::<f64>::zeros((1, 2, 2));
+        m_proj[(0, 0, 1)] = 1.0;
+        m_proj[(0, 1, 0)] = 1.0;
+        let quad_freqs = vec![0.5_f64];
+        let quad_weights = vec![1.0_f64];
+        let mut d = Array2::<f64>::zeros((1, 1));
+        d[(0, 0)] = 0.5; // moderate coupling: sizeable, curved Σc
+        let inv_diel_freq = vec![d];
+        let ef = fermi_level(&eps_act, 1);
+
+        // pade_npts = 8 (NOT 0): with a single quadrature node, npts=0 would
+        // collapse to a 1-point Padé — a *constant* Σc model whose linearized
+        // start is exactly the root (Z=1), converging in zero steps. Eight
+        // support points give the model genuine curvature so the linearized
+        // start is displaced ~1e-3 from the self-consistent root.
+        let (eps_qp, _sc, _z, converged) = solve_qp_for_mo(
+            0, eps_act[0], &m_proj, &inv_diel_freq, &quad_weights, &quad_freqs,
+            &eps_act, 8, 0.1, // qp_newton_damp at clamp minimum
+            ef, 0.0,
+        );
+        assert!(
+            !converged,
+            "expected the heavily-damped Newton to exhaust its 30-iteration budget \
+             without meeting |step| < 1e-7 (got apparently-converged eps_qp={eps_qp})"
+        );
+        assert!(eps_qp.is_finite());
+
+        // Same system, undamped: must converge — proves the flag tracks the
+        // solve outcome and not the system construction.
+        let (_e, _s, _z2, converged_full) = solve_qp_for_mo(
+            0, eps_act[0], &m_proj, &inv_diel_freq, &quad_weights, &quad_freqs,
+            &eps_act, 8, 1.0, ef, 0.0,
+        );
+        assert!(converged_full, "undamped Newton on the same system must converge");
+    }
 }
