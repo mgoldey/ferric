@@ -155,7 +155,7 @@ pub(crate) fn solve_qp_for_mo(
     // KS reference it is Σ_x − v_xc and is large (~−7 eV), moving the QP root by
     // several eV — so Σ_c must be evaluated at the shifted energy, not post-hoc.
     static_shift: f64,
-) -> (f64, f64, f64, bool) {
+) -> Result<(f64, f64, f64, bool), FerricError> {
     let n_pade = if pade_npts == 0 {
         quad_freqs.len().min(16)
     } else {
@@ -182,7 +182,7 @@ pub(crate) fn solve_qp_for_mo(
             )
         })
         .collect();
-    let pade = PadeCF::fit(z_nodes, &f_vals);
+    let pade = PadeCF::fit(z_nodes, &f_vals)?;
     let h = 0.05;
     let sc_at_ref = pade.eval(Complex64::new(eps_m_mf, 0.0)).re;
     let dsig = pade.deriv_real(eps_m_mf, h).re;
@@ -212,7 +212,7 @@ pub(crate) fn solve_qp_for_mo(
         }
     }
     let sc_final = pade.eval(Complex64::new(eps_curr, 0.0)).re;
-    (eps_curr, sc_final, z_renorm, newton_converged)
+    Ok((eps_curr, sc_final, z_renorm, newton_converged))
 }
 
 /// Run G0W0. `vxc_diag`, if given (KS reference), is the absolute-MO-indexed
@@ -294,7 +294,7 @@ pub fn run_g0w0(
                 gw_cfg.qp_newton_damp,
                 ef,
                 shift,
-            );
+            )?;
             Ok((eps_m, sigma_x_all[m_loc], eps_qp_m, sc_final, z_renorm, converged))
         })
         .collect::<Result<Vec<_>, FerricError>>()?;
@@ -403,7 +403,7 @@ pub fn run_evgw0(
                     0.0,
                 )
             })
-            .collect();
+            .collect::<Result<Vec<_>, FerricError>>()?;
         for (idx, &(eps_new, sc_new, z_new, converged)) in qp_new.iter().enumerate() {
             max_dev = max_dev.max((eps_new - eps_qp[idx]).abs());
             eps_qp[idx] = eps_new;
@@ -539,7 +539,7 @@ pub fn run_evgw(
                     0.0,
                 )
             })
-            .collect();
+            .collect::<Result<Vec<_>, FerricError>>()?;
         for (idx, &(eps_new, sc_new, z_new, converged)) in qp_new.iter().enumerate() {
             max_dev = max_dev.max((eps_new - eps_qp[idx]).abs());
             eps_qp[idx] = eps_new;
@@ -599,7 +599,8 @@ mod tests {
         let (eps_qp, _sc, _z, converged) = solve_qp_for_mo(
             0, eps_act[0], &m_proj, &inv_diel_freq, &quad_weights, &quad_freqs,
             &eps_act, 0, 1.0, ef, 0.0,
-        );
+        )
+        .expect("well-conditioned Padé fit must not error");
         assert!(converged, "expected Newton to converge for a mild self-energy");
         assert!(eps_qp.is_finite());
     }
@@ -639,7 +640,8 @@ mod tests {
             0, eps_act[0], &m_proj, &inv_diel_freq, &quad_weights, &quad_freqs,
             &eps_act, 8, 0.1, // qp_newton_damp at clamp minimum
             ef, 0.0,
-        );
+        )
+        .expect("well-conditioned Padé fit must not error");
         assert!(
             !converged,
             "expected the heavily-damped Newton to exhaust its 30-iteration budget \
@@ -652,7 +654,19 @@ mod tests {
         let (_e, _s, _z2, converged_full) = solve_qp_for_mo(
             0, eps_act[0], &m_proj, &inv_diel_freq, &quad_weights, &quad_freqs,
             &eps_act, 8, 1.0, ef, 0.0,
-        );
+        )
+        .expect("well-conditioned Padé fit must not error");
         assert!(converged_full, "undamped Newton on the same system must converge");
     }
+
+    // The degenerate-Padé-node guard (repeated support point -> Err instead
+    // of silent NaN/Inf) is exercised directly on `PadeCF::fit` in
+    // `pade::tests::fit_errors_on_repeated_support_node` — `solve_qp_for_mo`
+    // builds its support nodes from `n_pade` strictly-increasing log-spaced
+    // frequencies (see `pade_omegas` above), which are independent of
+    // `quad_freqs`'s *values* (only `quad_freqs.last()` sets the range), so
+    // duplicate `quad_freqs` entries cannot reach this call chain to produce
+    // duplicate `z_nodes`. There is no way to trigger the guard through this
+    // higher-level API without duplicating `pade_omegas`'s own internals in
+    // the test, which the direct `PadeCF::fit` test already covers.
 }

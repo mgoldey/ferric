@@ -15,6 +15,7 @@
 //!                  ((z_k − z_{p-1}) · g_{p-1}(z_k))
 //!   a_p          = g_p(z_p)
 
+use ferric_core::FerricError;
 use num_complex::Complex64;
 
 /// Padé continued-fraction model.
@@ -28,7 +29,14 @@ pub struct PadeCF {
 
 impl PadeCF {
     /// Construct from N support pairs (z_k, f(z_k)).
-    pub fn fit(z: Vec<Complex64>, f: &[Complex64]) -> Self {
+    ///
+    /// The Thiele recursion divides by `(z_k - z_{p-1}) * g_prev[k]`. A
+    /// degenerate/repeated support point (`z_k == z_{p-1}`) or a sample that
+    /// has converged onto a pole of the running continued fraction
+    /// (`g_prev[k] == 0`) drives that denominator to zero, and the quotient
+    /// silently becomes NaN/Inf — which would otherwise flow uncaught into
+    /// downstream GW quasiparticle energies. Fail loudly instead.
+    pub fn fit(z: Vec<Complex64>, f: &[Complex64]) -> Result<Self, FerricError> {
         let n = z.len();
         assert_eq!(f.len(), n, "Padé fit: z and f length mismatch");
         // g[p][k] for p,k in 0..n. We only need the diagonal g[p][p] as a_p
@@ -41,12 +49,27 @@ impl PadeCF {
             for k in p..n {
                 let num = g_prev[p - 1] - g_prev[k];
                 let den = (z[k] - z[p - 1]) * g_prev[k];
-                g_curr[k] = num / den;
+                if den == Complex64::new(0.0, 0.0) {
+                    return Err(FerricError::Convergence(format!(
+                        "Padé fit: degenerate Thiele recursion at order p={p}, sample k={k} \
+                         (den=0 — repeated support point z[{k}]==z[{}], or g_prev[{k}] hit a \
+                         continued-fraction pole); cannot continue analytic continuation",
+                        p - 1
+                    )));
+                }
+                let quotient = num / den;
+                if !quotient.is_finite() {
+                    return Err(FerricError::Convergence(format!(
+                        "Padé fit: non-finite Thiele coefficient at order p={p}, sample k={k} \
+                         (got {quotient:?}); refusing to propagate NaN/Inf into GW self-energy"
+                    )));
+                }
+                g_curr[k] = quotient;
             }
             coeffs[p] = g_curr[p];
             g_prev = g_curr;
         }
-        Self { z, coeffs }
+        Ok(Self { z, coeffs })
     }
 
     /// Evaluate C_N(z) using the bottom-up recursion.
@@ -91,7 +114,7 @@ mod tests {
             .iter()
             .map(|&zi| Complex64::new(1.0, 0.0) / (zi * zi + Complex64::new(1.0, 0.0)))
             .collect();
-        let pade = PadeCF::fit(z.clone(), &f);
+        let pade = PadeCF::fit(z.clone(), &f).expect("well-conditioned Padé fit must not error");
         for (zi, fi) in z.iter().zip(f.iter()) {
             let pi = pade.eval(*zi);
             let err = (pi - *fi).norm();
@@ -118,7 +141,7 @@ mod tests {
             })
             .collect();
         let fv: Vec<Complex64> = z.iter().map(|&zi| f(zi)).collect();
-        let pade = PadeCF::fit(z, &fv);
+        let pade = PadeCF::fit(z, &fv).expect("well-conditioned Padé fit must not error");
         let val = pade.eval(Complex64::new(-0.17, 0.0));
         let exact = f(Complex64::new(-0.17, 0.0)).re; // −1.2012751775
         assert!(
@@ -138,13 +161,35 @@ mod tests {
             .iter()
             .map(|&zi| Complex64::new(1.0, 0.0) / (Complex64::new(1.0, 0.0) - zi * zi))
             .collect();
-        let pade = PadeCF::fit(z, &f);
+        let pade = PadeCF::fit(z, &f).expect("well-conditioned Padé fit must not error");
         // Evaluate at real ω = 0.5 → exact = 1/(1−0.25) = 4/3.
         let val = pade.eval(Complex64::new(0.5, 0.0));
         let exact = 1.0 / (1.0 - 0.25);
         assert!(
             (val.re - exact).abs() < 1e-6 && val.im.abs() < 1e-6,
             "Padé real-axis eval failed: got {val:?}, exact {exact}"
+        );
+    }
+
+    /// A repeated support node (z_1 == z_0) drives the Thiele recursion's
+    /// first denominator, (z_1 − z_0) · g_prev[1], to zero. Before the
+    /// guard this silently produced NaN/Inf coefficients that would flow
+    /// uncaught into `eval`/`deriv_real`; now `fit` must return `Err`.
+    #[test]
+    fn fit_errors_on_repeated_support_node() {
+        let z = vec![
+            Complex64::new(0.0, 0.5),
+            Complex64::new(0.0, 0.5), // duplicate of z[0]
+            Complex64::new(0.0, 1.0),
+        ];
+        let f: Vec<Complex64> = z
+            .iter()
+            .map(|&zi| Complex64::new(1.0, 0.0) / (zi * zi + Complex64::new(1.0, 0.0)))
+            .collect();
+        let result = PadeCF::fit(z, &f);
+        assert!(
+            result.is_err(),
+            "repeated support node must return Err, not silently propagate NaN/Inf coefficients"
         );
     }
 }

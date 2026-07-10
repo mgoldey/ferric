@@ -286,7 +286,10 @@ fn main() {
                                  i, atom.symbol, g[(i,0)], g[(i,1)], g[(i,2)]);
                     }
                 }
-                Err(e) => eprintln!("UHF gradient error: {e}"),
+                Err(e) => {
+                    eprintln!("UHF gradient error: {e}");
+                    std::process::exit(1);
+                }
             }
         }
         return;
@@ -323,7 +326,10 @@ fn main() {
                                  i, atom.symbol, g[(i,0)], g[(i,1)], g[(i,2)]);
                     }
                 }
-                Err(e) => eprintln!("ROHF gradient error: {e}"),
+                Err(e) => {
+                    eprintln!("ROHF gradient error: {e}");
+                    std::process::exit(1);
+                }
             }
         }
         return;

@@ -118,12 +118,22 @@ pub fn ts_atom_params(
 /// contracts each atom's row of blocks back to a per-atom 3×3 tensor:
 ///   α_A^scs = Σ_B (C⁻¹)_{AB}.
 /// Returns the same shape as the input (`[atom][freq][3][3]`).
+///
+/// # Errors
+///
+/// Returns [`FerricError::Lapack`] naming the frequency index if the coupled
+/// matrix C = A⁻¹ + T is singular. This is a HARD error, not a silent
+/// fallback: the previous behaviour substituted the identity matrix for
+/// C⁻¹, which silently set α_A^scs = 1 (in whatever units A⁻¹ was stored),
+/// contaminating the downstream Casimir-Polder C6 with a plausible-looking
+/// but physically meaningless number. There is no honest screened α to
+/// return for a singular coupled matrix, so the caller must be told.
 pub fn mbd_screen(
     per_atom_alpha: &[Vec<[[f64; 3]; 3]>],
     positions: &[[f64; 3]],
     _alpha_eff: &[f64],
     freqs: &[f64],
-) -> Vec<Vec<[[f64; 3]; 3]>> {
+) -> Result<Vec<Vec<[[f64; 3]; 3]>>, FerricError> {
     let n = positions.len();
     let nfreq = freqs.len();
     let mut out: Vec<Vec<[[f64; 3]; 3]>> = vec![vec![[[0.0; 3]; 3]; nfreq]; n];
@@ -146,7 +156,19 @@ pub fn mbd_screen(
         }
         let tmat = dipole_coupling_tensor(positions, &sigma);
         let c = &a_inv + &tmat;
-        let cinv = c.inv().unwrap_or_else(|_| Array2::eye(3 * n));
+        let cinv = c.inv().map_err(|e| {
+            FerricError::Lapack(format!(
+                "MBD screening: coupled matrix C = A⁻¹ + T singular at frequency \
+                 index {k} (ω={freq}, {n} atoms): {e}. Refusing to substitute the \
+                 identity matrix, which would silently set the screened α to a \
+                 physically meaningless value and contaminate the downstream \
+                 Casimir-Polder C6.",
+                k = k,
+                freq = freqs[k],
+                n = n,
+                e = e
+            ))
+        })?;
         for a in 0..n {
             for b in 0..n {
                 for i in 0..3 {
@@ -157,7 +179,7 @@ pub fn mbd_screen(
             }
         }
     }
-    out
+    Ok(out)
 }
 
 /// Build a `DynamicPolarizability` from MBD-screened per-atom α(iω). Drop-in
@@ -179,7 +201,7 @@ pub fn mbd_dynamic_polarizability(
     )?;
     let params = ts_atom_params(z, vol_ratio, alpha_static)?;
     let alpha_eff: Vec<f64> = params.iter().map(|p| p.0).collect();
-    let screened = mbd_screen(&ts.per_atom, positions, &alpha_eff, freqs);
+    let screened = mbd_screen(&ts.per_atom, positions, &alpha_eff, freqs)?;
     let nfreq = freqs.len();
     let molecular: Vec<[[f64; 3]; 3]> = (0..nfreq)
         .map(|k| {
@@ -299,7 +321,7 @@ mod tests {
         };
         let input: Vec<Vec<[[f64; 3]; 3]>> =
             (0..2).map(|_| (0..3).map(mk).collect()).collect();
-        let scr = mbd_screen(&input, &pos, &alpha_eff, &freqs);
+        let scr = mbd_screen(&input, &pos, &alpha_eff, &freqs).unwrap();
         for a in 0..2 {
             for k in 0..3 {
                 let in_iso =
@@ -349,7 +371,7 @@ mod tests {
         let a0 = 8.0_f64;
         let iso = [[a0, 0.0, 0.0], [0.0, a0, 0.0], [0.0, 0.0, a0]];
         let input: Vec<Vec<[[f64; 3]; 3]>> = vec![vec![iso], vec![iso]];
-        let scr = mbd_screen(&input, &pos, &alpha_eff, &freqs);
+        let scr = mbd_screen(&input, &pos, &alpha_eff, &freqs).unwrap();
         let xx = scr[0][0][0][0];
         let zz = scr[0][0][2][2];
         assert!(zz > a0, "bond-parallel αzz should be enhanced: {zz} vs {a0}");
