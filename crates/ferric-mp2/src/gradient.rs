@@ -140,6 +140,28 @@ pub fn rimp2_gradient_analytical(
     );
 
     let mut grad = hf_gradient_with_density(mol, obs, op, bounds, &p_relax_ao, &w_relax_ao)?;
+    grad += &integral_response_gradient_3c2c(mol, obs, dfbs, op, &inter, rhf.mos_r())?;
+
+    Ok(grad)
+}
+
+/// 3-center + 2-center RI integral-response gradient terms.
+///
+/// Factored out of [`rimp2_gradient_analytical`] so the P7-parallelized region
+/// (x_ov par-i build, aux-shell 3c-derivative assembly, aux-pair 2c-derivative
+/// assembly) can be exercised in isolation — e.g. by the thread-count
+/// bit-identity test — with fixed precomputed intermediates, independent of the
+/// z-vector/JK pipeline upstream. Returns just the 3c+2c contribution as a
+/// `(natoms, 3)` array; the caller adds it onto the relaxed-density HF gradient.
+fn integral_response_gradient_3c2c(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    inter: &crate::rimp2::Mp2Intermediates,
+    c: &Array2<f64>,
+) -> Result<Array2<f64>, FerricError> {
+    let mut grad = Array2::<f64>::zeros((mol.atoms.len(), 3));
 
     // 3-center derivative: Σ_{P,μ,ν} G3c_{P,μ,ν} * d(P|μν)/dR
     // G3c = "effective density" contracted with t2-weighted amplitudes
@@ -147,32 +169,46 @@ pub fn rimp2_gradient_analytical(
     let nvir = inter.nvir;
     let naux = inter.naux;
     let nov = nocc * nvir;
-    let c = rhf.mos_r();
     let t2 = &inter.t2;
 
     // Build X^P_{ia} = Σ_{jb} (2*t_{ij,ab} - t_{ij,ba}) * B^P_{jb} via a wide GEMM
     // per i: X_i[P, a] = B_ov · TT_i^T where TT_i[a, jb] = 2 t_{ij,ab} - t_{ij,ba}.
     // Replaces the per-element (P,i,a) scalar loop over (j,b): same FLOPs, BLAS3
     // throughput. t2 layout is t2[(i*nvir+a)*nov + j*nvir+b] = t_{ij,ab}.
+    //
+    // Each i owns a disjoint (naux, nvir) column band of x_ov and reads only its
+    // own TT_i slice of t2, so the i-loop is embarrassingly parallel: fan it over
+    // rayon via axis_chunks_iter_mut on the column-chunked view (order-preserving,
+    // no shared accumulator — bit-identical to the serial loop regardless of
+    // thread count). BLAS stays serial inside each closure (OPENBLAS_NUM_THREADS=1).
     let mut x_ov = Array2::zeros((naux, nocc * nvir));
-    for i in 0..nocc {
-        // TT_i[a, jb] = 2 t_{ij,ab} - t_{ij,ba}
-        let mut tt_i = Array2::<f64>::zeros((nvir, nov));
-        for a in 0..nvir {
-            for j in 0..nocc {
-                for b in 0..nvir {
-                    let jb = j * nvir + b;
-                    let t_ij_ab = t2[(i * nvir + a) * nov + j * nvir + b];
-                    let t_ij_ba = t2[(i * nvir + b) * nov + j * nvir + a];
-                    tt_i[(a, jb)] = 2.0 * t_ij_ab - t_ij_ba;
+    {
+        use ndarray::Axis;
+        use rayon::prelude::*;
+        // AxisChunksIterMut is an IndexedParallelIterator: chunk i is exactly
+        // columns [i*nvir, (i+1)*nvir), so `enumerate()` recovers i without any
+        // extra bookkeeping, and the disjoint-column writes make this
+        // order-independent/bit-identical to the serial loop.
+        x_ov.axis_chunks_iter_mut(Axis(1), nvir)
+            .into_par_iter()
+            .enumerate()
+            .for_each(|(i, mut x_i_slot)| {
+                // TT_i[a, jb] = 2 t_{ij,ab} - t_{ij,ba}
+                let mut tt_i = Array2::<f64>::zeros((nvir, nov));
+                for a in 0..nvir {
+                    for j in 0..nocc {
+                        for b in 0..nvir {
+                            let jb = j * nvir + b;
+                            let t_ij_ab = t2[(i * nvir + a) * nov + j * nvir + b];
+                            let t_ij_ba = t2[(i * nvir + b) * nov + j * nvir + a];
+                            tt_i[(a, jb)] = 2.0 * t_ij_ab - t_ij_ba;
+                        }
+                    }
                 }
-            }
-        }
-        // X_i[P, a] = Σ_{jb} B_ov[P, jb] · TT_i[a, jb] = B_ov · TT_i^T  (naux, nvir)
-        let x_i = inter.b_ov.dot(&tt_i.t());
-        x_ov
-            .slice_mut(ndarray::s![.., i * nvir..(i + 1) * nvir])
-            .assign(&x_i);
+                // X_i[P, a] = Σ_{jb} B_ov[P, jb] · TT_i[a, jb] = B_ov · TT_i^T  (naux, nvir)
+                let x_i = inter.b_ov.dot(&tt_i.t());
+                x_i_slot.assign(&x_i);
+            });
     }
 
     // Back-transform X to AO and contract with 3-center derivative integrals,
@@ -185,7 +221,7 @@ pub fn rimp2_gradient_analytical(
     let c_vir = c.slice(ndarray::s![.., inter.nocc_total..]).to_owned();
     {
         use ferric_integrals::engine::Engine;
-        let mut eng3d = Engine::new_3center_deriv(op, obs, dfbs, 1e-14)?;
+        use rayon::prelude::*;
         let nsh_obs = obs.nshells();
         let nsh_df = dfbs.nshells();
         let dims_obs = obs.shell_dims();
@@ -194,71 +230,104 @@ pub fn rimp2_gradient_analytical(
         let offs_df = dfbs.shell_offsets();
         let sh2at_obs = obs.shell_to_atom();
         let sh2at_df = dfbs.shell_to_atom();
+        let natoms = mol.atoms.len();
 
-        for sp in 0..nsh_df {
-            let np = dims_df[sp];
-            let pf0 = offs_df[sp];
-            // g3c for just this aux shell's rows: (np, nbf, nbf), symmetrized.
-            // For each aux fn p: X_p is (nocc, nvir); G_raw = C_occ · X_p · C_vir^T,
-            // then G3c_p = G_raw + G_raw^T (matches the old full-tensor symmetrize,
-            // including the ×2 on the diagonal via mu==nu).
-            let mut g3c_sp = ndarray::Array3::<f64>::zeros((np, nbas, nbas));
-            for p in 0..np {
-                let pf = pf0 + p;
-                let x_p = x_ov
-                    .slice(ndarray::s![pf, ..])
-                    .into_shape_with_order((nocc, nvir))
-                    .unwrap();
-                // G_raw_{μν} = Σ_{ia} X^p_{ia} C_{μi} C_{νa} = C_occ · X_p · C_vir^T
-                let g_raw = c_occ.dot(&x_p).dot(&c_vir.t());
-                // old code did g3c[mu,mu] *= 2 after adding the (mu,nu)+(nu,mu)
-                // off-diagonals; G_raw + G_raw^T already doubles the diagonal, so
-                // g_sym matches the symmetrized full-tensor g3c to rounding.
-                let g_sym = &g_raw + &g_raw.t();
-                g3c_sp.slice_mut(ndarray::s![p, .., ..]).assign(&g_sym);
-            }
+        // Surface any engine-construction error up front (serial, cheap) so the
+        // per-worker rebuilds inside for_each_init cannot fail for the same args
+        // (mirrors ferric_integrals::threeindex::eri3_tensor).
+        Engine::new_3center_deriv(op, obs, dfbs, 1e-14)?;
 
-            for s1 in 0..nsh_obs {
-                for s2 in 0..=s1 {
-                    if let Some(deriv) = eng3d.compute_eri3_deriv(obs, dfbs, sp, s1, s2) {
-                        let n1 = dims_obs[s1];
-                        let n2 = dims_obs[s2];
-                        let block_sz = np * n1 * n2;
-                        let sym12 = s1 != s2;
+        // Axis: aux shells `sp`. Each sp is independent (own g3c slab, own deriv
+        // engine call) and produces a (natoms, 3) partial. Reduction must not use
+        // a rayon fold/reduce tree (thread-count-dependent FP association) or a
+        // shared accumulator (data race) — instead: par-map sp -> partial via
+        // for_each_init (one Engine per rayon worker), `collect` into an
+        // sp-ordered Vec (IndexedParallelIterator preserves order regardless of
+        // worker count), then fold serially in ascending sp order. This mirrors
+        // ferric_scf::reduce::grouped_deterministic_sum's group-order-fold
+        // discipline without depending on ferric-scf (mp2 does not link it);
+        // natoms is small so no banding is needed — the live set is one
+        // (natoms,3) partial per aux shell, negligible memory.
+        let partials: Vec<Array2<f64>> = (0..nsh_df)
+            .into_par_iter()
+            .map_init(
+                || Engine::new_3center_deriv(op, obs, dfbs, 1e-14).expect("3-center deriv engine (pre-validated)"),
+                |eng3d, sp| {
+                    let np = dims_df[sp];
+                    let pf0 = offs_df[sp];
+                    let mut local_grad = Array2::<f64>::zeros((natoms, 3));
 
-                        for p in 0..np {
-                            for i in 0..n1 {
-                                for j in 0..n2 {
-                                    let mu = offs_obs[s1] + i;
-                                    let nu = offs_obs[s2] + j;
-                                    let idx = (p * n1 + i) * n2 + j;
+                    // g3c for just this aux shell's rows: (np, nbf, nbf), symmetrized.
+                    // For each aux fn p: X_p is (nocc, nvir); G_raw = C_occ · X_p · C_vir^T,
+                    // then G3c_p = G_raw + G_raw^T (matches the old full-tensor symmetrize,
+                    // including the ×2 on the diagonal via mu==nu).
+                    let mut g3c_sp = ndarray::Array3::<f64>::zeros((np, nbas, nbas));
+                    for p in 0..np {
+                        let pf = pf0 + p;
+                        let x_p = x_ov
+                            .slice(ndarray::s![pf, ..])
+                            .into_shape_with_order((nocc, nvir))
+                            .unwrap();
+                        // G_raw_{μν} = Σ_{ia} X^p_{ia} C_{μi} C_{νa} = C_occ · X_p · C_vir^T
+                        let g_raw = c_occ.dot(&x_p).dot(&c_vir.t());
+                        // old code did g3c[mu,mu] *= 2 after adding the (mu,nu)+(nu,mu)
+                        // off-diagonals; G_raw + G_raw^T already doubles the diagonal, so
+                        // g_sym matches the symmetrized full-tensor g3c to rounding.
+                        let g_sym = &g_raw + &g_raw.t();
+                        g3c_sp.slice_mut(ndarray::s![p, .., ..]).assign(&g_sym);
+                    }
 
-                                    let gval = if sym12 {
-                                        g3c_sp[(p, mu, nu)] + g3c_sp[(p, nu, mu)]
-                                    } else {
-                                        g3c_sp[(p, mu, nu)]
-                                    };
+                    for s1 in 0..nsh_obs {
+                        for s2 in 0..=s1 {
+                            if let Some(deriv) = eng3d.compute_eri3_deriv(obs, dfbs, sp, s1, s2) {
+                                let n1 = dims_obs[s1];
+                                let n2 = dims_obs[s2];
+                                let block_sz = np * n1 * n2;
+                                let sym12 = s1 != s2;
 
-                                    // 9 derivative blocks: [dP_x, dP_y, dP_z, d1_x, d1_y, d1_z, d2_x, d2_y, d2_z]
-                                    let atom_p = sh2at_df[sp];
-                                    let atom_1 = sh2at_obs[s1];
-                                    let atom_2 = sh2at_obs[s2];
+                                for p in 0..np {
+                                    for i in 0..n1 {
+                                        for j in 0..n2 {
+                                            let mu = offs_obs[s1] + i;
+                                            let nu = offs_obs[s2] + j;
+                                            let idx = (p * n1 + i) * n2 + j;
 
-                                    for coord in 0..3 {
-                                        let dp = deriv[coord * block_sz + idx];
-                                        let d1 = deriv[(3 + coord) * block_sz + idx];
-                                        let d2 = deriv[(6 + coord) * block_sz + idx];
+                                            let gval = if sym12 {
+                                                g3c_sp[(p, mu, nu)] + g3c_sp[(p, nu, mu)]
+                                            } else {
+                                                g3c_sp[(p, mu, nu)]
+                                            };
 
-                                        grad[(atom_p, coord)] += gval * dp;
-                                        grad[(atom_1, coord)] += gval * d1;
-                                        grad[(atom_2, coord)] += gval * d2;
+                                            // 9 derivative blocks: [dP_x, dP_y, dP_z, d1_x, d1_y, d1_z, d2_x, d2_y, d2_z]
+                                            let atom_p = sh2at_df[sp];
+                                            let atom_1 = sh2at_obs[s1];
+                                            let atom_2 = sh2at_obs[s2];
+
+                                            for coord in 0..3 {
+                                                let dp = deriv[coord * block_sz + idx];
+                                                let d1 = deriv[(3 + coord) * block_sz + idx];
+                                                let d2 = deriv[(6 + coord) * block_sz + idx];
+
+                                                local_grad[(atom_p, coord)] += gval * dp;
+                                                local_grad[(atom_1, coord)] += gval * d1;
+                                                local_grad[(atom_2, coord)] += gval * d2;
+                                            }
+                                        }
                                     }
                                 }
                             }
                         }
                     }
-                }
-            }
+                    local_grad
+                },
+            )
+            .collect();
+
+        // Serial fold in ascending sp order — the determinism anchor (same
+        // discipline as grouped_deterministic_sum, just without banding since
+        // the partials are tiny).
+        for p in &partials {
+            grad += p;
         }
     }
 
@@ -267,46 +336,66 @@ pub fn rimp2_gradient_analytical(
 
     {
         use ferric_integrals::engine::Engine;
-        let mut eng2d = Engine::new_2center_deriv(op, dfbs, 1e-14)?;
+        use rayon::prelude::*;
         let nsh_df = dfbs.nshells();
         let dims_df = dfbs.shell_dims();
         let offs_df = dfbs.shell_offsets();
         let sh2at_df = dfbs.shell_to_atom();
+        let natoms = mol.atoms.len();
 
-        for sp in 0..nsh_df {
-            for sq in 0..=sp {
-                if let Some(deriv) = eng2d.compute_eri2_deriv(dfbs, sp, sq) {
-                    let np = dims_df[sp];
-                    let nq = dims_df[sq];
-                    let block_sz = np * nq;
-                    let sym_pq = sp != sq;
+        Engine::new_2center_deriv(op, dfbs, 1e-14)?;
 
-                    for p in 0..np {
-                        for q in 0..nq {
-                            let pf = offs_df[sp] + p;
-                            let qf = offs_df[sq] + q;
-                            let idx = p * nq + q;
+        // Axis: aux shell `sp` (outer loop of the sp>=sq triangle). Same
+        // par-map + sp-ordered collect + serial fold discipline as the 3c block
+        // above — each sp owns the full sq<=sp inner sweep as its unit of work,
+        // so partials are independent and the fold order is sp-ascending only.
+        let partials: Vec<Array2<f64>> = (0..nsh_df)
+            .into_par_iter()
+            .map_init(
+                || Engine::new_2center_deriv(op, dfbs, 1e-14).expect("2-center deriv engine (pre-validated)"),
+                |eng2d, sp| {
+                    let mut local_grad = Array2::<f64>::zeros((natoms, 3));
+                    for sq in 0..=sp {
+                        if let Some(deriv) = eng2d.compute_eri2_deriv(dfbs, sp, sq) {
+                            let np = dims_df[sp];
+                            let nq = dims_df[sq];
+                            let block_sz = np * nq;
+                            let sym_pq = sp != sq;
 
-                            let gval = if sym_pq {
-                                gamma_2c[(pf, qf)] + gamma_2c[(qf, pf)]
-                            } else {
-                                gamma_2c[(pf, qf)]
-                            };
+                            for p in 0..np {
+                                for q in 0..nq {
+                                    let pf = offs_df[sp] + p;
+                                    let qf = offs_df[sq] + q;
+                                    let idx = p * nq + q;
 
-                            let atom_p = sh2at_df[sp];
-                            let atom_q = sh2at_df[sq];
+                                    let gval = if sym_pq {
+                                        gamma_2c[(pf, qf)] + gamma_2c[(qf, pf)]
+                                    } else {
+                                        gamma_2c[(pf, qf)]
+                                    };
 
-                            for coord in 0..3 {
-                                let dp = deriv[coord * block_sz + idx];
-                                let dq = deriv[(3 + coord) * block_sz + idx];
+                                    let atom_p = sh2at_df[sp];
+                                    let atom_q = sh2at_df[sq];
 
-                                grad[(atom_p, coord)] += gval * dp;
-                                grad[(atom_q, coord)] += gval * dq;
+                                    for coord in 0..3 {
+                                        let dp = deriv[coord * block_sz + idx];
+                                        let dq = deriv[(3 + coord) * block_sz + idx];
+
+                                        local_grad[(atom_p, coord)] += gval * dp;
+                                        local_grad[(atom_q, coord)] += gval * dq;
+                                    }
+                                }
                             }
                         }
                     }
-                }
-            }
+                    local_grad
+                },
+            )
+            .collect();
+
+        // Serial fold in ascending sp order.
+        for p in &partials {
+            grad += p;
         }
     }
 
@@ -971,6 +1060,53 @@ mod tests {
         // missing separation of 1e/2e gradient contributions.
         assert!(max_diff < 0.1,
             "H2O analytical vs FD max diff = {:.2e} (expected < 0.1)", max_diff);
+    }
+
+    #[test]
+    fn test_3c2c_assembly_bit_identical_across_thread_counts() {
+        // Scope: ONLY the P7-parallelized region (x_ov par-i build, aux-shell
+        // 3c-derivative assembly, aux-pair 2c-derivative assembly), fed the
+        // SAME precomputed intermediates in rayon pools pinned to 1 and 4
+        // workers, compared via f64::to_bits. Whole-pipeline bit-identity is
+        // gated on P14 (docs/parallelism-gaps-2026-07-09.md) — build_jk's
+        // legacy fold/reduce tree drifts ~1 ULP by thread count inside
+        // solve_zvector, which is upstream of (and outside) this region.
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
+        let obs_bs = basis::bundled("cc-pvdz").unwrap();
+        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+        let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &obs, op, &bounds, &RhfConfig { energy_conv: 1e-10, ..Default::default() }).unwrap();
+        let config = RiMp2Config::default();
+
+        // Precompute intermediates ONCE, outside any pinned pool, so both runs
+        // see bit-identical inputs and only the P7 region is under test.
+        let inter = compute_mp2_intermediates_ov_only(&mol, &obs, &dfbs, op, &rhf, &config).unwrap();
+
+        let run_with_threads = |n: usize| -> Array2<f64> {
+            let pool = rayon::ThreadPoolBuilder::new().num_threads(n).build().unwrap();
+            pool.install(|| {
+                integral_response_gradient_3c2c(&mol, &obs, &dfbs, op, &inter, rhf.mos_r()).unwrap()
+            })
+        };
+
+        let g1 = run_with_threads(1);
+        let g4 = run_with_threads(4);
+
+        for atom in 0..2 {
+            for c in 0..3 {
+                assert_eq!(
+                    g1[(atom, c)].to_bits(),
+                    g4[(atom, c)].to_bits(),
+                    "3c+2c assembly not bit-identical across thread counts at atom={atom} coord={c}: \
+                     1-thread={:.17e} (0x{:016x}), 4-thread={:.17e} (0x{:016x})",
+                    g1[(atom, c)], g1[(atom, c)].to_bits(),
+                    g4[(atom, c)], g4[(atom, c)].to_bits(),
+                );
+            }
+        }
     }
 
     #[test]
