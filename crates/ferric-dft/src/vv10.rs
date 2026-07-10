@@ -217,6 +217,56 @@ fn vv10_internal(grid: &[GridPoint], dens: &DensityGrid, params: &Vv10Params) ->
     let k_vv = b_vv * 1.5 * pi * (9.0 * pi).powf(-1.0 / 6.0);
     let beta = (3.0 / (b_vv * b_vv)).powf(0.75) / 32.0;
 
+    // Per-point setup (ω₀, κ and their derivatives): sqrt/powf transcendentals
+    // per point, each point independent and write-once into its own slot g —
+    // parallel map is bit-identical to the serial loop by construction
+    // (index-order-preserving collect, no cross-point accumulation).
+    #[derive(Clone, Copy)]
+    struct PointSetup {
+        active: bool,
+        rho: f64,
+        w0: f64,
+        kp: f64,
+        dw0_dr: f64,
+        dw0_dg: f64,
+        dk_dr: f64,
+        xyz: [f64; 3],
+        rho_w: f64,
+    }
+    let setup_point = |g: usize| -> PointSetup {
+        let mut p = PointSetup {
+            active: false,
+            rho: 0.0,
+            w0: 0.0,
+            kp: 0.0,
+            dw0_dr: 0.0,
+            dw0_dg: 0.0,
+            dk_dr: 0.0,
+            xyz: [0.0; 3],
+            rho_w: 0.0,
+        };
+        let r = dens.rho[g];
+        let s = dens.sigma[g];
+        if r < RHO_THRESH {
+            return p;
+        }
+        p.active = true;
+        p.rho = r;
+        p.xyz = grid[g].xyz;
+        p.rho_w = r * grid[g].weight;
+        let w0tmp = c_vv * (s / (r * r)).powi(2);
+        let w0sq = w0tmp + pi43 * r;
+        p.w0 = w0sq.sqrt();
+        p.kp = k_vv * r.powf(1.0 / 6.0);
+        p.dk_dr = p.kp / 6.0;
+        p.dw0_dr = (0.5 * pi43 * r - 2.0 * w0tmp) / p.w0;
+        if s > RHO_THRESH {
+            p.dw0_dg = w0tmp * r / (s * p.w0);
+        }
+        p
+    };
+    let setup = map_rows(npts, setup_point);
+
     let mut rho = vec![0.0_f64; npts];
     let mut w0  = vec![0.0_f64; npts];
     let mut kp  = vec![0.0_f64; npts];
@@ -226,24 +276,16 @@ fn vv10_internal(grid: &[GridPoint], dens: &DensityGrid, params: &Vv10Params) ->
     let mut active = vec![false; npts];
     let mut xyz = vec![[0.0_f64; 3]; npts];
     let mut rho_w = vec![0.0_f64; npts];
-
-    for g in 0..npts {
-        let r = dens.rho[g];
-        let s = dens.sigma[g];
-        if r < RHO_THRESH { continue; }
-        active[g] = true;
-        rho[g] = r;
-        xyz[g] = grid[g].xyz;
-        rho_w[g] = r * grid[g].weight;
-        let w0tmp = c_vv * (s / (r * r)).powi(2);
-        let w0sq = w0tmp + pi43 * r;
-        w0[g] = w0sq.sqrt();
-        kp[g] = k_vv * r.powf(1.0 / 6.0);
-        dk_dr[g] = kp[g] / 6.0;
-        dw0_dr[g] = (0.5 * pi43 * r - 2.0 * w0tmp) / w0[g];
-        if s > RHO_THRESH {
-            dw0_dg[g] = w0tmp * r / (s * w0[g]);
-        }
+    for (g, p) in setup.iter().enumerate() {
+        active[g] = p.active;
+        rho[g] = p.rho;
+        w0[g] = p.w0;
+        kp[g] = p.kp;
+        dw0_dr[g] = p.dw0_dr;
+        dw0_dg[g] = p.dw0_dg;
+        dk_dr[g] = p.dk_dr;
+        xyz[g] = p.xyz;
+        rho_w[g] = p.rho_w;
     }
 
     // O(npts²) pair sum: outer rows independent → parallel map; inner loop
@@ -275,6 +317,9 @@ fn vv10_internal(grid: &[GridPoint], dens: &DensityGrid, params: &Vv10Params) ->
         (-1.5 * fi, ui, wi)
     });
 
+    // Finalization left serial: ~10 flops/point next to the O(npts²) pair sum
+    // above, and the e_nl scalar fold would have to be re-associated to go
+    // parallel — no win to buy with that risk.
     let mut vrho = vec![0.0_f64; npts];
     let mut vsig = vec![0.0_f64; npts];
     let mut exc = vec![0.0_f64; npts];

@@ -18,6 +18,7 @@
 //! eval path as plain GGA — the exact-exchange mixing is the SCF's job.
 
 use ndarray::{Array1, Array2, Array3, Axis, Zip};
+use rayon::prelude::*;
 
 /// Below this density, libxc-returned v_ρ / v_σ may diverge; skip grid points
 /// to keep V_xc well-conditioned. Matches libxc's internal `dens_threshold` default.
@@ -26,6 +27,49 @@ const DENSITY_FLOOR: f64 = 1e-10;
 use crate::density_on_grid::{DensityGrid, UksDensityGrid};
 use crate::grid::GridPoint;
 use crate::libxc::{FunctionalFamily, XcDef};
+
+/// Below this many grid points, run point loops serially — rayon overhead
+/// dwarfs the work on tiny grids (free-atom SAD solves). Pure function of
+/// grid size only, matching the `ao_grid`/`vv10`/`density_on_grid` guards.
+const PAR_MIN_PTS: usize = 512;
+
+/// Fixed group count for the deterministic chunked `E_xc` reduction below —
+/// mirrors `ferric_scf::reduce::TARGET_GROUPS`. The point range is split into
+/// at most this many contiguous, equal-ish groups; group boundaries are a
+/// pure function of `npts`, never of thread count.
+const EXC_SUM_GROUPS: usize = 256;
+
+/// Deterministic, thread-count-invariant Σ_g `term(g)` over `0..npts`.
+///
+/// Splits `0..npts` into a fixed number of contiguous groups (a pure function
+/// of `npts`), sums each group serially (in ascending-index order) — in
+/// parallel across groups — then folds the group partials in ascending group
+/// order. The total addition order is always: within a group, ascending `g`;
+/// across groups, ascending group index. That order never depends on the
+/// worker count, so the result is bit-identical across thread counts, and
+/// (because it's the same order the flat serial `(0..npts).map(term).sum()`
+/// would use within each group, just re-associated at group boundaries)
+/// numerically matches the serial sum to machine precision — see the
+/// `deterministic_sum_matches_serial_fold` test.
+fn deterministic_point_sum<F>(npts: usize, term: F) -> f64
+where
+    F: Fn(usize) -> f64 + Sync,
+{
+    if npts < PAR_MIN_PTS {
+        return (0..npts).map(term).sum();
+    }
+    let group_size = npts.div_ceil(EXC_SUM_GROUPS).max(1);
+    let n_groups = npts.div_ceil(group_size);
+    let partials: Vec<f64> = (0..n_groups)
+        .into_par_iter()
+        .map(|grp| {
+            let g0 = grp * group_size;
+            let g1 = (g0 + group_size).min(npts);
+            (g0..g1).map(&term).sum::<f64>()
+        })
+        .collect();
+    partials.into_iter().sum()
+}
 
 /// Reusable (nbf, npts) scratch holding the pre-scaled χ GEMM operand.
 ///
@@ -110,7 +154,11 @@ pub fn semilocal_vxc_closed_scratch(
     let rho_slice   = dens.rho.as_slice().expect("rho is contiguous");
     let sigma_slice = dens.sigma.as_slice().expect("sigma is contiguous");
 
-    // Accumulate ε_xc, v_ρ, v_σ across all component functionals.
+    // Accumulate ε_xc, v_ρ, v_σ across all component functionals. Left
+    // serial: the O(npts) `+=` merges below are ~1 flop/point, dwarfed by the
+    // libxc eval call that fills `exc`/`vrho`/`vsigma`; `xc.funcs` itself is
+    // typically 1-3 iterations, so there's no compute here worth fanning out
+    // (rayon collect/join overhead would exceed the work).
     for func in &xc.funcs {
         let mut exc  = vec![0.0_f64; npts];
         let mut vrho = vec![0.0_f64; npts];
@@ -136,10 +184,9 @@ pub fn semilocal_vxc_closed_scratch(
         vrho_total.iter_mut().zip(&vrho).for_each(|(t, &v)| *t += v);
     }
 
-    // E_xc = Σ_g w_g · ρ(r_g) · ε_xc(r_g)
-    let e_xc: f64 = (0..npts)
-        .map(|g| w[g] * dens.rho[g] * exc_total[g])
-        .sum();
+    // E_xc = Σ_g w_g · ρ(r_g) · ε_xc(r_g). Deterministic grouped reduction —
+    // see `deterministic_point_sum`: bit-identical across thread counts.
+    let e_xc: f64 = deterministic_point_sum(npts, |g| w[g] * dens.rho[g] * exc_total[g]);
 
     let buf = scratch.ensure((nbf, npts));
 
@@ -225,7 +272,9 @@ pub fn semilocal_vxc_polarized_scratch(
 
     let w: Array1<f64> = grid.iter().map(|g| g.weight).collect();
 
-    // Build interleaved rho / sigma input for libxc.
+    // Build interleaved rho / sigma input for libxc. Left serial: a handful
+    // of loads/stores per point, one pass, no reduction — memory-bound with
+    // no compute to amortize rayon overhead against.
     let mut rho_in = vec![0.0_f64; 2 * npts];
     let mut sigma_in = vec![0.0_f64; 3 * npts];
     for g in 0..npts {
@@ -243,6 +292,8 @@ pub fn semilocal_vxc_polarized_scratch(
     let mut vsigma_ab_total = Array1::<f64>::zeros(npts);
     let mut vsigma_bb_total = Array1::<f64>::zeros(npts);
 
+    // Left serial: same reasoning as the closed-shell accumulation above —
+    // the O(npts) merges are trivial next to the libxc eval call itself.
     for func in &xc.funcs {
         let mut exc = vec![0.0_f64; npts];
         let mut vrho = vec![0.0_f64; 2 * npts];
@@ -272,10 +323,11 @@ pub fn semilocal_vxc_polarized_scratch(
         }
     }
 
-    // E_xc = Σ_g w_g · (ρ_α + ρ_β) · ε_xc
-    let e_xc: f64 = (0..npts)
-        .map(|g| w[g] * (dens.rho_a[g] + dens.rho_b[g]) * exc_total[g])
-        .sum();
+    // E_xc = Σ_g w_g · (ρ_α + ρ_β) · ε_xc. Deterministic grouped reduction —
+    // see `deterministic_point_sum`: bit-identical across thread counts.
+    let e_xc: f64 = deterministic_point_sum(npts, |g| {
+        w[g] * (dens.rho_a[g] + dens.rho_b[g]) * exc_total[g]
+    });
 
     let has_gga = xc.funcs.iter().any(|f| !matches!(f.family(), FunctionalFamily::Lda));
 
@@ -348,4 +400,49 @@ pub fn semilocal_vxc_polarized_scratch(
     );
 
     (e_xc, v_a, v_b)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn term(g: usize) -> f64 {
+        // Irregular magnitudes so the sum is genuinely order-sensitive in
+        // floating point.
+        ((g as f64) + 0.7).sin() / ((g % 97) as f64 + 1.3)
+    }
+
+    #[test]
+    fn deterministic_sum_bit_identical_across_thread_counts() {
+        // Sized above PAR_MIN_PTS so the parallel grouped path is exercised.
+        let npts = 4 * PAR_MIN_PTS + 37;
+        let run = |threads: usize| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap()
+                .install(|| deterministic_point_sum(npts, term))
+        };
+        let r1 = run(1);
+        let r4 = run(4);
+        let r8 = run(8);
+        assert_eq!(r1.to_bits(), r4.to_bits(), "1 vs 4 threads: {r1:e} vs {r4:e}");
+        assert_eq!(r1.to_bits(), r8.to_bits(), "1 vs 8 threads: {r1:e} vs {r8:e}");
+
+        // Grouped re-association may differ from the flat serial fold in the
+        // last ulps, but must agree to near machine precision.
+        let serial: f64 = (0..npts).map(term).sum();
+        assert!(
+            (r1 - serial).abs() <= 1e-12 * serial.abs().max(1.0),
+            "grouped {r1:e} vs flat serial {serial:e}"
+        );
+    }
+
+    #[test]
+    fn deterministic_sum_below_threshold_is_flat_serial() {
+        let npts = PAR_MIN_PTS - 1;
+        let expected: f64 = (0..npts).map(term).sum();
+        let got = deterministic_point_sum(npts, term);
+        assert_eq!(got.to_bits(), expected.to_bits());
+    }
 }
