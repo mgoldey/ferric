@@ -576,7 +576,7 @@ fn run_rs_mp2_rpa(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSe
         formulation: form,
         ..Default::default()
     };
-    cfg.rpa.memory_budget_bytes = budget_bytes_from_gb(memory_budget_gb);
+    cfg.drpa.memory_budget_bytes = budget_bytes_from_gb(memory_budget_gb);
     let r = ferric_rpa::rs_mp2_lr_rpa(&mol.inner, &prep, &dfbs, &rhf, &cfg)
         .map_err(make_err)?;
     Ok(PyRsMp2RpaResult {

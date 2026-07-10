@@ -563,9 +563,9 @@ fn main() {
             // (default 0.0 = full rank; production-size opt-in, validate vs
             // full-rank per system class before trusting).
             if let Some(t) = cfg.rpa.trunc_thresh {
-                rs_cfg.rpa.trunc_thresh = t;
+                rs_cfg.drpa.trunc_thresh = t;
             }
-            rs_cfg.rpa.memory_budget_bytes = budget_bytes;
+            rs_cfg.drpa.memory_budget_bytes = budget_bytes;
             let r = ferric_rpa::rs_mp2_rpa::rs_mp2_lr_rpa(&mol, &prep, &dfbs, &result, &rs_cfg)
                 .unwrap_or_else(|e| { eprintln!("error: {e}"); std::process::exit(1); });
             println!(
