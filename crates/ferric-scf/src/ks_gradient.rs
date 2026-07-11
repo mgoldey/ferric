@@ -57,6 +57,7 @@ use ndarray::Array2;
 ///   neglected, giving ~1e-5 Ha/Bohr error.
 /// - Range-separated hybrids not supported (would need erfc/erf 2e derivative
 ///   integrals contributing to ∇E_2e_scaled).
+#[allow(clippy::too_many_arguments)]
 pub fn ks_gradient_closed(
     mol: &Molecule,
     prep: &PreparedBasis,
@@ -202,6 +203,7 @@ pub fn twoelectron_gradient_scaled_k(
 /// Limitations (this round):
 /// - RSH (ω > 0) is rejected. UKS-RSH needs per-spin DfK_SR/DfK_LR derivative
 ///   integrals — same pattern as ks_gradient_closed's RSH path but doubled.
+#[allow(clippy::too_many_arguments)]
 pub fn ks_gradient_uks(
     mol: &Molecule,
     prep: &PreparedBasis,
@@ -310,6 +312,7 @@ pub fn twoelectron_gradient_uhf_scaled_k(
 /// weighted 1ε) and the same UKS XC gradient via `xc_gradient_uks_from_density`.
 /// The per-spin densities from a ROKS `ScfResult` already satisfy the
 /// projector structure so the UKS XC path applies verbatim.
+#[allow(clippy::too_many_arguments)]
 pub fn ks_gradient_roks(
     mol: &Molecule,
     prep: &PreparedBasis,
