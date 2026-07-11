@@ -52,7 +52,7 @@ fn per_task_budget_bytes() -> usize {
     // blocking at the nbf=900/naux=2200 scale (a full-width buffer is 14 GB).
     const DEFAULT_PER_TASK: usize = 512 * 1024 * 1024;
     let threads = rayon::current_num_threads().max(1);
-    match ferric_integrals::three_index_source::env_budget_bytes() {
+    match ferric_core::memory::resolve_budget_bytes(None) {
         usize::MAX => DEFAULT_PER_TASK,
         total => (total / threads).max(64 * 1024 * 1024),
     }
@@ -445,7 +445,7 @@ impl LaplaceMp2 {
         // eliminates; this resident tensor is the irreducible O(naux·nbas²) cost.)
         {
             let dense_bytes = naux.saturating_mul(nbas).saturating_mul(nbas).saturating_mul(8);
-            let budget = ferric_integrals::three_index_source::env_budget_bytes();
+            let budget = ferric_core::memory::resolve_budget_bytes(None);
             if dense_bytes > budget {
                 return Err(FerricError::General(format!(
                     "laplace-MP2 AO path needs a resident dressed 3-index tensor of \

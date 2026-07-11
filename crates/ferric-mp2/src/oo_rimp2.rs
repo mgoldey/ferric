@@ -20,7 +20,7 @@ use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::oneelectron;
 use ferric_integrals::operator::Operator;
-use ferric_integrals::three_index_source::{env_budget_bytes, ThreeIndexSource};
+use ferric_integrals::three_index_source::ThreeIndexSource;
 use ferric_integrals::threeindex;
 use ferric_scf::diis::Diis;
 use ferric_scf::rhf::build_jk;
@@ -119,7 +119,7 @@ impl OoRiMp2AoTensors {
         dfbs: &PreparedBasis,
         op: Operator,
     ) -> Result<Self, FerricError> {
-        Self::build_with_budget(obs, dfbs, op, env_budget_bytes())
+        Self::build_with_budget(obs, dfbs, op, ferric_core::memory::resolve_budget_bytes(None))
     }
 
     /// Build with an explicit resident-bytes budget for the raw 3-index tensor.
@@ -528,7 +528,7 @@ fn compute_orbital_gradient(
     // (bit-identical to the former unblocked path).
     let nov = nocc * nvir;
     let row_bytes = nvir.saturating_mul(nov).saturating_mul(8).max(1);
-    let panel_c = (env_budget_bytes() / row_bytes).max(1).min(nvir.max(1));
+    let panel_c = (ferric_core::memory::resolve_budget_bytes(None) / row_bytes).max(1).min(nvir.max(1));
     compute_orbital_gradient_panelled(
         f_mo, t2, b_full, nocc, nvir, first_occ, nocc_total, panel_c,
     )

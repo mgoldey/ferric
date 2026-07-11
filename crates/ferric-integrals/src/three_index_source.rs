@@ -12,25 +12,6 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::io::AsRawFd;
 
-/// Process-wide resident-bytes ceiling for raw/dressed 3-index tensors.
-///
-/// Delegates to the unified resolver [`ferric_core::memory::resolve_budget_bytes`]
-/// with no explicit budget, so the resolution chain applies: unified
-/// `FERRIC_MEM_BUDGET_GB` > legacy `FERRIC_OOC_BUDGET_GB`/`FERRIC_ERI3_BUDGET_GB`
-/// > auto (0.8 × available RAM) > 2 GiB fallback.
-///
-/// BEHAVIORAL CHANGE (M1): the historical default here was `usize::MAX`
-/// (unlimited, fully in-core). It is now the auto-detected budget, which may
-/// newly trigger aux-blocking on machines with less RAM than the tensor. The
-/// blocked path in [`eri3_mo_ov_blocked`] is bit-identical to the in-core path,
-/// so results are unchanged — only the peak memory drops.
-///
-/// Callers holding an explicit config budget should prefer
-/// [`ferric_core::memory::resolve_budget_bytes(Some(bytes))`] to honor it.
-pub fn env_budget_bytes() -> usize {
-    ferric_core::memory::resolve_budget_bytes(None)
-}
-
 /// Largest number of aux rows whose (block_naux × nao × nao × 8) bytes fit the
 /// budget; at least 1 (a single aux row must always be representable).
 fn block_naux_for(budget_bytes: usize, nao: usize) -> usize {

@@ -17,7 +17,6 @@ use crate::{GwConfig, GwResult};
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
-use ferric_integrals::three_index_source::env_budget_bytes;
 use ferric_rpa::PdepRpaResult;
 use ferric_scf::ScfResult;
 use ndarray::{Array1, Array2};
@@ -30,7 +29,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// M2 owns the hard allocation guards; this keeps the documented formula in sync.
 static M_PROJ_WARNED: AtomicBool = AtomicBool::new(false);
 fn guard_m_proj(m_modes: usize, n_act: usize) {
-    let budget = env_budget_bytes();
+    let budget = ferric_core::memory::resolve_budget_bytes(None);
     let need = m_modes
         .saturating_mul(n_act)
         .saturating_mul(n_act)
