@@ -139,6 +139,10 @@ pub fn rimp2_gradient_analytical(
         rhf.mos_r(), &f_mo, &p_relax_mo, &l, &inter.orbital_space(),
     );
 
+    // NOTE: external_potential is not threaded into correlated gradients; passing
+    // None here silently omits any external point-charge/field contribution from
+    // the returned gradient even if `rhf` was solved with one. See the external-
+    // potentials design doc's non-goals (correlated-method gradients out of scope).
     let mut grad = hf_gradient_with_density(mol, obs, op, bounds, &p_relax_ao, &w_relax_ao, None)?;
     grad += &integral_response_gradient_3c2c(mol, obs, dfbs, op, &inter, rhf.mos_r())?;
 
@@ -448,6 +452,10 @@ pub fn scs_mp2_gradient_analytical(
     let w_relax_ao = build_relaxed_w_ao(
         rhf.mos_r(), &f_mo, &p_relax_mo, &l, &inter.orbital_space(),
     );
+    // NOTE: external_potential is not threaded into correlated gradients; passing
+    // None here silently omits any external point-charge/field contribution from
+    // the returned gradient even if `rhf` was solved with one. See the external-
+    // potentials design doc's non-goals (correlated-method gradients out of scope).
     let mut grad = hf_gradient_with_density(mol, obs, op, bounds, &p_relax_ao, &w_relax_ao, None)?;
     // Approximate scaling: multiply MP2 part by average SCS scaling
     let scale = (config.c_os + config.c_ss) / 2.0;
