@@ -320,18 +320,49 @@ struct PyOptimizeResult {
 }
 
 #[pyfunction]
-#[pyo3(signature = (mol, basis_name, max_steps=None, e_conv=None))]
+#[pyo3(signature = (mol, basis_name, max_steps=None, e_conv=None, point_charges=None, external_field=None))]
 fn run_optimize(mol: &PyMolecule, basis_name: &str,
-                max_steps: Option<usize>, e_conv: Option<f64>) -> PyResult<PyOptimizeResult> {
+                max_steps: Option<usize>, e_conv: Option<f64>,
+                point_charges: Option<Vec<(f64, f64, f64, f64)>>,
+                external_field: Option<(f64, f64, f64)>) -> PyResult<PyOptimizeResult> {
     let ctx = ParallelContext::default();
+    let rhf_config = RhfConfig {
+        external_potential: build_external_potential(point_charges, external_field),
+        ..Default::default()
+    };
     let r = optimize_geometry(&ctx, &mol.inner, basis_name, Operator::coulomb(),
-                              &RhfConfig::default(),
+                              &rhf_config,
                               &OptimizeConfig {
                                   max_steps: max_steps.unwrap_or(100),
                                   e_conv: e_conv.unwrap_or(1e-6),
                                   ..Default::default()
                               }).map_err(make_err)?;
     Ok(PyOptimizeResult { energy: r.energy, converged: r.converged, steps: r.steps })
+}
+
+// ── Electronic properties (ESP / Hirshfeld / Löwdin charges) ──
+
+/// Electrostatic potential at each nucleus, in Hartree atomic units (e/Bohr).
+#[pyfunction]
+fn esp_at_atoms(mol: &PyMolecule, basis_set: &PyBasisSet, rhf: &PyRhfResult) -> PyResult<Vec<f64>> {
+    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    ferric_rpa::properties::esp_at_atoms(&mol.inner, &prep, &rhf.density_data).map_err(make_err)
+}
+
+/// Hirshfeld partial charges (units of e), using the default free-atom
+/// (single-exponential Slater) proatom reference.
+#[pyfunction]
+fn hirshfeld_charges(mol: &PyMolecule, basis_set: &PyBasisSet, rhf: &PyRhfResult) -> PyResult<Vec<f64>> {
+    ferric_rpa::properties::hirshfeld_charges(&mol.inner, &basis_set.inner, &rhf.density_data, None)
+        .map_err(make_err)
+}
+
+/// Löwdin (symmetric-orthogonalization) partial charges (units of e).
+/// Closed-shell only.
+#[pyfunction]
+fn lowdin_charges(mol: &PyMolecule, basis_set: &PyBasisSet, rhf: &PyRhfResult) -> PyResult<Vec<f64>> {
+    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    ferric_rpa::properties::lowdin_charges(&mol.inner, &prep, &rhf.density_data).map_err(make_err)
 }
 
 // ── RI-MP2 ──
@@ -993,6 +1024,9 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_rhf, m)?)?;
     m.add_function(wrap_pyfunction!(run_uhf, m)?)?;
     m.add_function(wrap_pyfunction!(run_optimize, m)?)?;
+    m.add_function(wrap_pyfunction!(esp_at_atoms, m)?)?;
+    m.add_function(wrap_pyfunction!(hirshfeld_charges, m)?)?;
+    m.add_function(wrap_pyfunction!(lowdin_charges, m)?)?;
     m.add_function(wrap_pyfunction!(run_rimp2, m)?)?;
     m.add_function(wrap_pyfunction!(run_attenuated_rimp2, m)?)?;
     m.add_function(wrap_pyfunction!(run_terfc_rimp2, m)?)?;
