@@ -47,7 +47,7 @@ fn run_case(label: &str, xyz: &str, xc: &str, hybrid: bool, ref_file: &str, tol:
         ..Default::default()
     };
     let res = solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap();
-    let g_ferric = ks_gradient_closed(&mol, &prep, &bs, op, &bounds, xc, &res).unwrap();
+    let g_ferric = ks_gradient_closed(&mol, &prep, &bs, op, &bounds, xc, &res, None).unwrap();
 
     let r: GradRef =
         serde_json::from_str(&fs::read_to_string(ref_path(ref_file)).unwrap()).unwrap();

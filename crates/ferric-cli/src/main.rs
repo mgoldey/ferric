@@ -166,6 +166,7 @@ fn main() {
         use_sad_guess: true,
         stall_window: None,
         divergence_tol: None,
+        external_potential: cfg.external_potential.to_external_potential(),
     };
 
     if task == "optimize" {
@@ -278,7 +279,7 @@ fn main() {
         println!("  <S^2>      = {:.6} (ideal {:.6})", s2, s_ideal);
         if task == "optimize" {
             // TODO: UHF geometry optimization not yet wired; print the gradient.
-            match uhf_gradient(&mol, &prep, op, &bounds, &result) {
+            match uhf_gradient(&mol, &prep, op, &bounds, &result, None) {
                 Ok(g) => {
                     println!("UHF gradient (Hartree/Bohr):");
                     for (i, atom) in mol.atoms.iter().enumerate() {
@@ -318,7 +319,7 @@ fn main() {
         println!("  <S^2>      = {:.6} (exact by construction)", s_ideal);
         if task == "optimize" {
             // TODO: ROHF geometry optimization not yet wired; print the gradient.
-            match rohf_gradient(&mol, &prep, op, &bounds, &result) {
+            match rohf_gradient(&mol, &prep, op, &bounds, &result, None) {
                 Ok(g) => {
                     println!("ROHF gradient (Hartree/Bohr):");
                     for (i, atom) in mol.atoms.iter().enumerate() {

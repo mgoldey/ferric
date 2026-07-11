@@ -5,6 +5,7 @@ use crate::ecp::{ecp_matrix_spherical, gto_norm, EcpCenter, EcpGaussianShell};
 use crate::engine::Engine;
 use crate::ffi;
 use ferric_core::basis::BasisSet;
+use ferric_core::external_potential::ExternalPotential;
 use ferric_core::mol::Molecule;
 use ndarray::Array2;
 
@@ -116,6 +117,66 @@ pub fn hcore(prep: &PreparedBasis) -> Array2<f64> {
     let t = kinetic(prep);
     let v = nuclear(prep);
     t + v
+}
+
+/// Nuclear attraction matrix including external point charges (appended
+/// after the real atoms). Falls back to plain `nuclear(prep)` semantics
+/// when `ext.point_charges` is empty.
+pub fn nuclear_with_external(prep: &PreparedBasis, ext: &ExternalPotential) -> Array2<f64> {
+    build_symmetric(prep, || {
+        let mut eng = Engine::new_1e(ffi::OP_NUCLEAR, prep, 1e-14).unwrap();
+        eng.set_point_charges_extra(prep, &ext.point_charges);
+        eng
+    })
+}
+
+/// One-electron term for a uniform external field: H' = +E·r per electron
+/// (i.e. V = -E·mu), built from the dipole integrals about the origin.
+/// Returns the zero matrix when `field == [0,0,0]`.
+pub fn field_hcore_term(prep: &PreparedBasis, field: [f64; 3]) -> Array2<f64> {
+    let n = prep.nbasis();
+    if field == [0.0, 0.0, 0.0] {
+        return Array2::zeros((n, n));
+    }
+    let dip = dipole(prep, [0.0, 0.0, 0.0]);
+    field[0] * &dip[0] + field[1] * &dip[1] + field[2] * &dip[2]
+}
+
+/// Core Hamiltonian H = T + V, optionally including an external potential's
+/// point-charge nuclear-attraction term and uniform-field term. `ext = None`
+/// is byte-for-byte identical to `hcore(prep)`.
+pub fn hcore_with_external(prep: &PreparedBasis, ext: Option<&ExternalPotential>) -> Array2<f64> {
+    let t = kinetic(prep);
+    let Some(ext) = ext else { return t + nuclear(prep) };
+    if ext.is_empty() {
+        return t + nuclear(prep);
+    }
+    let v = if ext.point_charges.is_empty() {
+        nuclear(prep)
+    } else {
+        nuclear_with_external(prep, ext)
+    };
+    let mut h = t + v;
+    if let Some(field) = ext.field {
+        h += &field_hcore_term(prep, field);
+    }
+    h
+}
+
+/// `hcore_ecp` extended with an external potential — see [`hcore_with_external`]
+/// and [`hcore_ecp`]. `ext = None` is byte-for-byte identical to `hcore_ecp`.
+pub fn hcore_ecp_with_external(
+    prep: &PreparedBasis,
+    mol: &Molecule,
+    bs: &BasisSet,
+    ext: Option<&ExternalPotential>,
+) -> Array2<f64> {
+    let mut h = hcore_with_external(prep, ext);
+    if let Some(vecp) = ecp_potential(mol, bs) {
+        assert_eq!(vecp.dim(), h.dim(), "V_ECP dimension {:?} != hcore dimension {:?}", vecp.dim(), h.dim());
+        h += &vecp;
+    }
+    h
 }
 
 /// Compute the dense spherical ECP projector matrix `V_ECP`, shape
@@ -367,5 +428,69 @@ mod tests {
         eng_ref.set_point_charges(&prep);
         let ser = build_symmetric_serial(&prep, eng_ref);
         assert_bit_identical(&ser, &par, "nuclear");
+    }
+
+    use ferric_core::external_potential::{ExternalPotential, PointCharge};
+
+    #[test]
+    fn hcore_with_external_none_matches_hcore() {
+        let prep = water_sto3g();
+        let h_orig = hcore(&prep);
+        let h_new = hcore_with_external(&prep, None);
+        assert_eq!(h_orig, h_new);
+    }
+
+    #[test]
+    fn hcore_with_external_empty_matches_hcore() {
+        let prep = water_sto3g();
+        let h_orig = hcore(&prep);
+        let ext = ExternalPotential::default();
+        let h_new = hcore_with_external(&prep, Some(&ext));
+        assert_eq!(h_orig, h_new);
+    }
+
+    #[test]
+    fn nuclear_with_external_adds_point_charge_attraction() {
+        let prep = water_sto3g();
+        let v_orig = nuclear(&prep);
+        let ext = ExternalPotential {
+            point_charges: vec![PointCharge { q: 1.0, x: 0.0, y: 0.0, z: 10.0 }],
+            field: None,
+        };
+        let v_new = nuclear_with_external(&prep, &ext);
+        // The external charge must change every element that has nonzero AO
+        // density overlap; at minimum, the matrix must differ from v_orig.
+        let diff: f64 = (&v_new - &v_orig).iter().map(|x| x.abs()).sum();
+        assert!(diff > 1e-10, "external point charge had no effect on V");
+        // Symmetric.
+        let n = prep.nbasis();
+        for i in 0..n {
+            for j in 0..n {
+                assert!((v_new[(i, j)] - v_new[(j, i)]).abs() < 1e-10);
+            }
+        }
+    }
+
+    #[test]
+    fn field_hcore_term_zero_field_is_zero_matrix() {
+        let prep = water_sto3g();
+        let h = field_hcore_term(&prep, [0.0, 0.0, 0.0]);
+        assert!(h.iter().all(|&v| v == 0.0));
+    }
+
+    #[test]
+    fn field_hcore_term_matches_dipole_integral_scaled() {
+        let prep = water_sto3g();
+        let dip = dipole(&prep, [0.0, 0.0, 0.0]);
+        let field = [0.0, 0.0, 0.02];
+        let h = field_hcore_term(&prep, field);
+        // H' = +E·r per electron => h = field[2] * dip[2] (using dip = <mu|r|nu>)
+        let expected = &dip[2] * field[2];
+        let n = prep.nbasis();
+        for i in 0..n {
+            for j in 0..n {
+                assert!((h[(i, j)] - expected[(i, j)]).abs() < 1e-12);
+            }
+        }
     }
 }

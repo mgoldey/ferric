@@ -63,7 +63,7 @@ fn run_fd_test(label: &str, xyz: &str, basis_name: &str, xc: &str, hybrid: bool,
     let cfg = rhf_cfg(xc, hybrid);
     let res = solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap();
 
-    let g_ana = ks_gradient_closed(&mol, &prep, &bs, op, &bounds, xc, &res).unwrap();
+    let g_ana = ks_gradient_closed(&mol, &prep, &bs, op, &bounds, xc, &res, None).unwrap();
     let g_fd = fd_gradient(xyz, basis_name, xc, hybrid, 5e-4);
 
     eprintln!("=== {label} {xc} gradient (analytic vs FD) ===");

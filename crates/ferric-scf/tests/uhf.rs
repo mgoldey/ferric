@@ -160,7 +160,7 @@ fn uhf_gradient_h_atom_fd() {
     let cfg = UhfConfig { energy_conv: 1e-12, ..Default::default() };
     let ctx = ParallelContext::default();
     let res = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap();
-    let g = uhf_gradient(&mol, &prep, op, &bounds, &res).unwrap();
+    let g = uhf_gradient(&mol, &prep, op, &bounds, &res, None).unwrap();
     for v in g.iter() {
         assert!(v.abs() < 1e-8, "H atom UHF gradient not zero: {}", v);
     }
@@ -182,7 +182,7 @@ fn uhf_gradient_oh_sto3g_fd() {
     };
     let ctx = ParallelContext::default();
     let res = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap();
-    let analytic = uhf_gradient(&mol, &prep, op, &bounds, &res).unwrap();
+    let analytic = uhf_gradient(&mol, &prep, op, &bounds, &res, None).unwrap();
 
     let h = 5e-4_f64;
     let natoms = mol.atoms.len();

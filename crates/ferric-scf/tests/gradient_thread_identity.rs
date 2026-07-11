@@ -41,7 +41,7 @@ fn b3lyp_gradient_bit_identical_across_thread_counts() {
 
     let run = |threads: usize| -> Array2<f64> {
         let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
-        pool.install(|| ks_gradient_closed(&mol, &prep, &bs, op, &bounds, "b3lyp", &result).unwrap())
+        pool.install(|| ks_gradient_closed(&mol, &prep, &bs, op, &bounds, "b3lyp", &result, None).unwrap())
     };
     let g1 = run(1);
     let g4 = run(4);

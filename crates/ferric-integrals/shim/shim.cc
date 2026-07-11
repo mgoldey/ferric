@@ -75,7 +75,7 @@ scf_basis *scf_basis_create(const scf_shell *shells, int nshells,
         // Build per-atom Atom records (libint type) for nuclear positions.
         std::vector<libint2::Atom> li_atoms(natoms);
         for (int a = 0; a < natoms; ++a) {
-            li_atoms[a].atomic_number = atoms[a].Z;
+            li_atoms[a].atomic_number = static_cast<int>(atoms[a].Z);
             li_atoms[a].x = atoms[a].x;
             li_atoms[a].y = atoms[a].y;
             li_atoms[a].z = atoms[a].z;

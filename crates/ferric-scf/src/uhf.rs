@@ -132,7 +132,7 @@ pub fn solve_uhf_fockmod(
         (None, None)
     };
     let s = oneelectron::overlap(prep);
-    let h = oneelectron::hcore(prep);
+    let h = oneelectron::hcore_with_external(prep, config.external_potential.as_ref());
     let n = prep.nbasis();
     let nelec = mol.nelec() as i64;
     let mult = mol.multiplicity as i64;
@@ -157,7 +157,10 @@ pub fn solve_uhf_fockmod(
     if nocc_b > nocc_a {
         return Err(FerricError::General("UHF: nocc_b > nocc_a".into()));
     }
-    let vnn = mol.nuclear_repulsion();
+    let vnn = mol.nuclear_repulsion()
+        + config.external_potential.as_ref().map_or(0.0, |ext| {
+            ext.charge_nuclear_energy(mol) + ext.field_nuclear_energy(mol)
+        });
 
     // Canonical orthogonalizer X (n × m): drops eigenvectors of S below
     // LINDEP_THRESH to handle near-linear-dependent basis sets (Na clusters in
@@ -609,6 +612,7 @@ fn expectation_s_squared(
 mod tests {
     use super::*;
     use ferric_core::basis;
+    use ferric_core::external_potential::{ExternalPotential, PointCharge};
     use ferric_core::parallel::ParallelContext;
 
     #[test]
@@ -712,6 +716,48 @@ mod tests {
             17,
         );
         assert!((s2 - 0.75).abs() < 0.1, "Br atom ⟨S²⟩ = {} (expected ≈0.75)", s2);
+    }
+
+    #[test]
+    fn external_point_charge_changes_uks_pbe_energy() {
+        // Reuses the test_uks_pbe_bromine_atom_converges fixture verbatim (free
+        // Br atom, doublet, aug-cc-pvdz, fractional_occ, mom_after_iter: 5),
+        // adding only the external point charge. Proves the external_potential
+        // wiring from Task 5 composes with UKS (xc.is_some() + open-shell).
+        let mol = Molecule::parse_xyz("1\nBr\nBr 0 0 0\n", 0, 2).unwrap();
+        let bs = basis::bundled("aug-cc-pvdz").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = ferric_integrals::operator::Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ParallelContext::default();
+
+        let base_cfg = UhfConfig {
+            xc: Some("PBE".to_string()),
+            fractional_occ: true,
+            mom_after_iter: 5,
+            max_iter: 200,
+            ..Default::default()
+        };
+        let base = solve_uhf(&ctx, &mol, &prep, &bounds, &base_cfg)
+            .expect("UKS-PBE Br atom baseline should converge");
+
+        let ext = ExternalPotential {
+            point_charges: vec![PointCharge { q: 1.0, x: 0.0, y: 0.0, z: 20.0 }],
+            field: None,
+        };
+        let perturbed_cfg = UhfConfig {
+            xc: Some("PBE".to_string()),
+            fractional_occ: true,
+            mom_after_iter: 5,
+            max_iter: 200,
+            external_potential: Some(ext),
+            ..Default::default()
+        };
+        let perturbed = solve_uhf(&ctx, &mol, &prep, &bounds, &perturbed_cfg)
+            .expect("UKS-PBE Br atom + external potential should converge");
+
+        assert!(perturbed.converged);
+        assert!((perturbed.energy - base.energy).abs() > 1e-8);
     }
 
     #[test]

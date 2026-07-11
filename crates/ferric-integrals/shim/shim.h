@@ -27,7 +27,7 @@ typedef struct {
 } scf_shell;
 
 typedef struct {
-    int    Z;             /* atomic number */
+    double Z;             /* atomic number (fractional for external point charges) */
     double x, y, z;       /* Bohr */
 } scf_atom;
 

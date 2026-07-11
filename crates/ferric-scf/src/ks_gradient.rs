@@ -57,6 +57,7 @@ use ndarray::Array2;
 ///   neglected, giving ~1e-5 Ha/Bohr error.
 /// - Range-separated hybrids not supported (would need erfc/erf 2e derivative
 ///   integrals contributing to ∇E_2e_scaled).
+#[allow(clippy::too_many_arguments)]
 pub fn ks_gradient_closed(
     mol: &Molecule,
     prep: &PreparedBasis,
@@ -65,6 +66,7 @@ pub fn ks_gradient_closed(
     bounds: &SchwarzBounds,
     xc_name: &str,
     result: &ScfResult,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
 ) -> Result<Array2<f64>, FerricError> {
     if mol.atoms.iter().any(|a| a.ghost) {
         return Err(FerricError::General(
@@ -103,7 +105,7 @@ pub fn ks_gradient_closed(
     let d = result.density_r().clone();
 
     // 1e + nuclear repulsion gradient — identical to HF.
-    let mut grad = oneelectron_gradient(mol, prep, &d, &w)?;
+    let mut grad = oneelectron_gradient(mol, prep, &d, &w, ext)?;
 
     // 2e gradient:
     //   * J piece always uses full Coulomb with Γ_J = 0.5·D·D
@@ -201,6 +203,7 @@ pub fn twoelectron_gradient_scaled_k(
 /// Limitations (this round):
 /// - RSH (ω > 0) is rejected. UKS-RSH needs per-spin DfK_SR/DfK_LR derivative
 ///   integrals — same pattern as ks_gradient_closed's RSH path but doubled.
+#[allow(clippy::too_many_arguments)]
 pub fn ks_gradient_uks(
     mol: &Molecule,
     prep: &PreparedBasis,
@@ -209,6 +212,7 @@ pub fn ks_gradient_uks(
     bounds: &SchwarzBounds,
     xc_name: &str,
     result: &ScfResult,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
 ) -> Result<Array2<f64>, FerricError> {
     assert!(
         matches!(result.spin, Spin::Unrestricted),
@@ -240,7 +244,7 @@ pub fn ks_gradient_uks(
 
     // 1e + nn gradient.
     let w = build_energy_weighted_density_uhf(result, nocc_a, nocc_b);
-    let mut grad = oneelectron_gradient(mol, prep, &d_total, &w)?;
+    let mut grad = oneelectron_gradient(mol, prep, &d_total, &w, ext)?;
 
     // 2e gradient:
     //   * ω = 0: single Γ = 0.5·D·D − 0.5·c_K·(D_α·D_α + D_β·D_β) at Coulomb
@@ -308,6 +312,7 @@ pub fn twoelectron_gradient_uhf_scaled_k(
 /// weighted 1ε) and the same UKS XC gradient via `xc_gradient_uks_from_density`.
 /// The per-spin densities from a ROKS `ScfResult` already satisfy the
 /// projector structure so the UKS XC path applies verbatim.
+#[allow(clippy::too_many_arguments)]
 pub fn ks_gradient_roks(
     mol: &Molecule,
     prep: &PreparedBasis,
@@ -316,6 +321,7 @@ pub fn ks_gradient_roks(
     bounds: &SchwarzBounds,
     xc_name: &str,
     result: &ScfResult,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
 ) -> Result<Array2<f64>, FerricError> {
     assert!(
         matches!(result.spin, Spin::RestrictedOpen),
@@ -363,7 +369,7 @@ pub fn ks_gradient_roks(
         }
     }
 
-    let mut grad = oneelectron_gradient(mol, prep, &d_total, &w)?;
+    let mut grad = oneelectron_gradient(mol, prep, &d_total, &w, ext)?;
 
     // 2e gradient:
     //   * ω = 0: single Γ = 0.5·D·D − 0.5·c_K·(D_α·D_α + D_β·D_β) at Coulomb
