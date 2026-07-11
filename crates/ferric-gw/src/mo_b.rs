@@ -10,7 +10,7 @@ use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::operator::Operator;
-use ferric_integrals::three_index_source::{env_budget_bytes, ThreeIndexSource};
+use ferric_integrals::three_index_source::ThreeIndexSource;
 use ferric_integrals::threeindex;
 use ferric_scf::{ScfResult, Spin};
 use ndarray::{s, Array2, Array3};
@@ -46,7 +46,7 @@ fn b_full_bytes(naux: usize, n_act: usize) -> usize {
 /// transform (the old code held eri3_mm + b_flat simultaneously → 2×). The AO
 /// source is streamed aux-blocked under the same budget, so it is not the peak.
 fn guard_b_full(naux: usize, n_act: usize, label: &str) -> Result<(), FerricError> {
-    guard_b_full_at(env_budget_bytes(), naux, n_act, label)
+    guard_b_full_at(ferric_core::memory::resolve_budget_bytes(None), naux, n_act, label)
 }
 
 fn guard_b_full_at(
@@ -162,7 +162,9 @@ fn build_full_b_with_mos(
     let v_inv_sqrt = cholesky_inverse_sqrt(&v2c)?;
     // Stream the AO 3-index tensor aux-blocked under FERRIC_ERI3_BUDGET_GB rather
     // than materializing the dense (naux, nbf, nbf) tensor (~37 GB at dimer/aTZ).
-    let mut ao_src = ThreeIndexSource::build(op, obs, dfbs, env_budget_bytes())?;
+    let mut ao_src = ThreeIndexSource::build(
+        op, obs, dfbs, ferric_core::memory::resolve_budget_bytes(None),
+    )?;
     build_mo_b_from_source(&mut ao_src, &v_inv_sqrt, c, eps_full, nocc_total, frozen_core)
 }
 
@@ -297,7 +299,9 @@ pub fn build_full_b_both_spins(
     // a single dressed (naux, n_act, n_act) buffer; α and β MoBs still co-reside
     // (the caller holds both), but no separate MO intermediate is co-resident.
     // The AO source stays budget-bounded across both passes.
-    let mut ao_src = ThreeIndexSource::build(op, obs, dfbs, env_budget_bytes())?;
+    let mut ao_src = ThreeIndexSource::build(
+        op, obs, dfbs, ferric_core::memory::resolve_budget_bytes(None),
+    )?;
 
     let mo_b_a = build_mo_b_from_source(
         &mut ao_src, &v_inv_sqrt, scf.mos_a(), scf.eps_a(), nocc_a, frozen_core,

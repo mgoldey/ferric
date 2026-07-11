@@ -15,7 +15,6 @@ use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_integrals::three_index_source::env_budget_bytes;
 use ferric_scf::{ScfResult, Spin};
 use ndarray::{Array2, Array3, Array4};
 
@@ -499,7 +498,7 @@ pub fn compute_u_mp2_orbital_gradient_blocks(
     // is resident at a time, mirroring the CS gradient.
     let panel_width = |nvir: usize, nov: usize| -> usize {
         let row_bytes = nvir.saturating_mul(nov).saturating_mul(8).max(1);
-        (env_budget_bytes() / row_bytes).max(1).min(nvir.max(1))
+        (ferric_core::memory::resolve_budget_bytes(None) / row_bytes).max(1).min(nvir.max(1))
     };
 
     let nov_a = nocc_a * nvir_a;
