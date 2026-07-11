@@ -550,6 +550,8 @@ fn compute_orbital_gradient_panelled(
     nocc_total: usize,
     panel_c: usize,
 ) -> Array2<f64> {
+    use rayon::prelude::*;
+
     let naux = b_full.shape()[0];
     let nov = nocc * nvir;
 
@@ -631,71 +633,89 @@ fn compute_orbital_gradient_panelled(
         let bvv_panel = b_vv.slice(ndarray::s![.., c0 * nvir..c1 * nvir]);
         let vvov_panel = bvv_panel.t().dot(&b_ov); // ((c1-c0)·nvir, nov)
 
-        for c_idx in c0..c1 {
-            let cbase = (c_idx - c0) * nvir; // local vvov_panel row base for this c
-            for k in 0..nocc {
-                let mut grad_ck = 0.0;
+        // Parallelize over the panel's c-values. Each c_idx reads only shared,
+        // read-only inputs (vvov_panel/ooov/t2) and produces its own row of nocc
+        // gradient contributions — a disjoint-write pattern. We collect each
+        // c_idx's row independently and scatter into `g` serially afterward.
+        // The per-c_idx `grad_ck` accumulation order is byte-for-byte the same
+        // as the serial version regardless of thread count, so the result is
+        // bit-identical (no cross-c_idx summation whose order could vary).
+        let panel_rows: Vec<(usize, Vec<f64>)> = (c0..c1)
+            .into_par_iter()
+            .map(|c_idx| {
+                let cbase = (c_idx - c0) * nvir; // local vvov_panel row base for this c
+                let mut row = vec![0.0_f64; nocc];
+                for (k, row_k) in row.iter_mut().enumerate() {
+                    let mut grad_ck = 0.0;
 
-                // Term 1: delta_{ik} -> i=k, sum over j,a,b
-                // 2 * sum_{jab} t_{kj,ab} * [2*(ca|jb) - (cb|ja)]
-                for j in 0..nocc {
-                    for a in 0..nvir {
-                        let ca = cbase + a;
-                        for b in 0..nvir {
-                            let t_kj_ab = t2[(k * nvir + a) * nov + j * nvir + b];
-                            let eri_cajb = vvov_panel[(ca, j * nvir + b)];
-                            let eri_cbja = vvov_panel[(cbase + b, j * nvir + a)];
-                            grad_ck += t_kj_ab * (2.0 * eri_cajb - eri_cbja);
-                        }
-                    }
-                }
-
-                // Term 2: delta_{jk} -> j=k, sum over i,a,b
-                // 2 * sum_{iab} t_{ik,ab} * [2*(ia|cb) - (ib|ca)]
-                // (ia|cb) = (cb|ia) = vvov[c*nvir+b, i*nvir+a];
-                // (ib|ca) = (ca|ib) = vvov[c*nvir+a, i*nvir+b]
-                for i in 0..nocc {
-                    for a in 0..nvir {
-                        for b in 0..nvir {
-                            let t_ik_ab = t2[(i * nvir + a) * nov + k * nvir + b];
-                            let eri_iacb = vvov_panel[(cbase + b, i * nvir + a)];
-                            let eri_ibca = vvov_panel[(cbase + a, i * nvir + b)];
-                            grad_ck += t_ik_ab * (2.0 * eri_iacb - eri_ibca);
-                        }
-                    }
-                }
-
-                // Term 3: delta_{ac} -> a=c, sum over i,j,b
-                // -2 * sum_{ijb} t_{ij,cb} * [2*(ik|jb) - (ib|jk)]
-                // (ik|jb) = ooov[i*nocc+k, j*nvir+b];
-                // (ib|jk) = (jk|ib) = ooov[j*nocc+k, i*nvir+b]
-                for i in 0..nocc {
-                    for j in 0..nocc {
-                        for b in 0..nvir {
-                            let t_ij_cb = t2[(i * nvir + c_idx) * nov + j * nvir + b];
-                            let eri_ikjb = ooov[(i * nocc + k, j * nvir + b)];
-                            let eri_ibjk = ooov[(j * nocc + k, i * nvir + b)];
-                            grad_ck -= t_ij_cb * (2.0 * eri_ikjb - eri_ibjk);
-                        }
-                    }
-                }
-
-                // Term 4: delta_{bc} -> b=c, sum over i,j,a
-                // -2 * sum_{ija} t_{ij,ac} * [2*(ia|jk) - (ik|ja)]
-                // (ia|jk) = (jk|ia) = ooov[j*nocc+k, i*nvir+a];
-                // (ik|ja) = ooov[i*nocc+k, j*nvir+a]
-                for i in 0..nocc {
+                    // Term 1: delta_{ik} -> i=k, sum over j,a,b
+                    // 2 * sum_{jab} t_{kj,ab} * [2*(ca|jb) - (cb|ja)]
                     for j in 0..nocc {
                         for a in 0..nvir {
-                            let t_ij_ac = t2[(i * nvir + a) * nov + j * nvir + c_idx];
-                            let eri_iajk = ooov[(j * nocc + k, i * nvir + a)];
-                            let eri_ikja = ooov[(i * nocc + k, j * nvir + a)];
-                            grad_ck -= t_ij_ac * (2.0 * eri_iajk - eri_ikja);
+                            let ca = cbase + a;
+                            for b in 0..nvir {
+                                let t_kj_ab = t2[(k * nvir + a) * nov + j * nvir + b];
+                                let eri_cajb = vvov_panel[(ca, j * nvir + b)];
+                                let eri_cbja = vvov_panel[(cbase + b, j * nvir + a)];
+                                grad_ck += t_kj_ab * (2.0 * eri_cajb - eri_cbja);
+                            }
                         }
                     }
-                }
 
-                g[(c_idx, k)] -= 2.0 * grad_ck;
+                    // Term 2: delta_{jk} -> j=k, sum over i,a,b
+                    // 2 * sum_{iab} t_{ik,ab} * [2*(ia|cb) - (ib|ca)]
+                    // (ia|cb) = (cb|ia) = vvov[c*nvir+b, i*nvir+a];
+                    // (ib|ca) = (ca|ib) = vvov[c*nvir+a, i*nvir+b]
+                    for i in 0..nocc {
+                        for a in 0..nvir {
+                            for b in 0..nvir {
+                                let t_ik_ab = t2[(i * nvir + a) * nov + k * nvir + b];
+                                let eri_iacb = vvov_panel[(cbase + b, i * nvir + a)];
+                                let eri_ibca = vvov_panel[(cbase + a, i * nvir + b)];
+                                grad_ck += t_ik_ab * (2.0 * eri_iacb - eri_ibca);
+                            }
+                        }
+                    }
+
+                    // Term 3: delta_{ac} -> a=c, sum over i,j,b
+                    // -2 * sum_{ijb} t_{ij,cb} * [2*(ik|jb) - (ib|jk)]
+                    // (ik|jb) = ooov[i*nocc+k, j*nvir+b];
+                    // (ib|jk) = (jk|ib) = ooov[j*nocc+k, i*nvir+b]
+                    for i in 0..nocc {
+                        for j in 0..nocc {
+                            for b in 0..nvir {
+                                let t_ij_cb = t2[(i * nvir + c_idx) * nov + j * nvir + b];
+                                let eri_ikjb = ooov[(i * nocc + k, j * nvir + b)];
+                                let eri_ibjk = ooov[(j * nocc + k, i * nvir + b)];
+                                grad_ck -= t_ij_cb * (2.0 * eri_ikjb - eri_ibjk);
+                            }
+                        }
+                    }
+
+                    // Term 4: delta_{bc} -> b=c, sum over i,j,a
+                    // -2 * sum_{ija} t_{ij,ac} * [2*(ia|jk) - (ik|ja)]
+                    // (ia|jk) = (jk|ia) = ooov[j*nocc+k, i*nvir+a];
+                    // (ik|ja) = ooov[i*nocc+k, j*nvir+a]
+                    for i in 0..nocc {
+                        for j in 0..nocc {
+                            for a in 0..nvir {
+                                let t_ij_ac = t2[(i * nvir + a) * nov + j * nvir + c_idx];
+                                let eri_iajk = ooov[(j * nocc + k, i * nvir + a)];
+                                let eri_ikja = ooov[(i * nocc + k, j * nvir + a)];
+                                grad_ck -= t_ij_ac * (2.0 * eri_iajk - eri_ikja);
+                            }
+                        }
+                    }
+
+                    *row_k = -2.0 * grad_ck;
+                }
+                (c_idx, row)
+            })
+            .collect();
+
+        for (c_idx, row) in panel_rows {
+            for (k, &val) in row.iter().enumerate() {
+                g[(c_idx, k)] += val;
             }
         }
         c0 = c1;
@@ -1331,6 +1351,92 @@ mod tests {
                 maxdiff < 1e-13,
                 "panelled gradient (panel_c={panel}) differs from full: {maxdiff:.2e}"
             );
+        }
+    }
+
+    /// The rayon-parallelized c_idx response-term loop (P6) must produce a
+    /// byte-for-byte identical gradient regardless of thread count. Each c_idx
+    /// writes only its own row via a disjoint-write collect, so there is no
+    /// summation whose order varies with scheduling — bit-identity, not merely
+    /// close-agreement, is the correct assertion. Mirrors
+    /// `whole_pipeline_rhf_gradient_bit_identical_across_thread_counts` in
+    /// ferric-scf/src/rhf.rs.
+    #[test]
+    fn test_oo_gradient_bit_identical_across_thread_counts() {
+        // Water/cc-pVDZ gives nocc=5, nvir=19 — enough c-values for rayon to
+        // actually split work across threads, unlike H2 (nvir=9, nocc=1).
+        let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+        let bs = basis::bundled("cc-pvdz").unwrap();
+        let obs = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig {
+                energy_conv: 1e-10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
+
+        let nbas = obs.nbasis();
+        let nocc_total = (mol.nelec() as usize) / 2;
+        let nocc = nocc_total;
+        let first_occ = 0;
+        let nvir = nbas - nocc_total;
+        let naux = dfbs.nbasis();
+        let orb = OrbitalSpace::new(nocc, nvir, nocc_total, first_occ);
+        let c = rhf.mos_r();
+        let h = oneelectron::hcore(&obs);
+        let ao = OoRiMp2AoTensors::build(&obs, &dfbs, op).unwrap();
+        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h).unwrap();
+        let eps = orbital_energies(c, &f_ao);
+        let (_e, b_ov) = compute_rimp2_with_orbitals(&ao, c, &eps, &orb).unwrap();
+        let (t2, _) = compute_t2_and_integrals(&b_ov, &eps, nocc, nvir, nocc_total, first_occ, naux);
+        let b_full = compute_b_full_mo_with(&ao, c).unwrap();
+        let f_mo = c.t().dot(&f_ao).dot(c);
+
+        // Force a multi-panel width (panel_c=3) so the parallel region runs
+        // inside more than one GEMM panel, exercising the interaction of
+        // panelling and rayon scheduling together.
+        let run_with_threads = |n: usize| -> Array2<f64> {
+            let pool = rayon::ThreadPoolBuilder::new().num_threads(n).build().unwrap();
+            pool.install(|| {
+                compute_orbital_gradient_panelled(
+                    &f_mo, &t2, &b_full, nocc, nvir, first_occ, nocc_total, 3,
+                )
+            })
+        };
+
+        let g1 = run_with_threads(1);
+        let g4 = run_with_threads(4);
+        let g8 = run_with_threads(8);
+
+        for a in 0..nvir {
+            for i in 0..nocc {
+                assert_eq!(
+                    g1[(a, i)].to_bits(),
+                    g4[(a, i)].to_bits(),
+                    "OO gradient not bit-identical 1 vs 4 threads at (a={a}, i={i}): \
+                     1={:.17e} (0x{:016x}), 4={:.17e} (0x{:016x})",
+                    g1[(a, i)], g1[(a, i)].to_bits(),
+                    g4[(a, i)], g4[(a, i)].to_bits(),
+                );
+                assert_eq!(
+                    g1[(a, i)].to_bits(),
+                    g8[(a, i)].to_bits(),
+                    "OO gradient not bit-identical 1 vs 8 threads at (a={a}, i={i}): \
+                     1={:.17e} (0x{:016x}), 8={:.17e} (0x{:016x})",
+                    g1[(a, i)], g1[(a, i)].to_bits(),
+                    g8[(a, i)], g8[(a, i)].to_bits(),
+                );
+            }
         }
     }
 
