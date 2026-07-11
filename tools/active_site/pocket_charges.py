@@ -2,12 +2,28 @@
 from __future__ import annotations
 
 import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .pdb2pqr_runner import run_pdb2pqr
 from .pqr_parser import ANGSTROM_TO_BOHR, parse_pqr
 
 PointCharge = tuple[float, float, float, float]
+
+
+@dataclass
+class PocketCharges:
+    """A pocket's classical point charges, derived once and reusable across
+    many ligand evaluations — cheap to construct, plain-data (picklable),
+    safe to pass into multiprocessing/BoTorch-style optimization workers.
+    """
+    charges: list[PointCharge]
+    source_pdb: Path
+    ff: str
+    n_charges: int = field(init=False)
+
+    def __post_init__(self):
+        self.n_charges = len(self.charges)
 
 
 def _too_close(px: float, py: float, pz: float, ligand_bohr: list[tuple[float, float, float]],
@@ -53,3 +69,18 @@ def pocket_point_charges(
             )
 
     return charges
+
+
+def derive_pocket_charges(
+    pocket_pdb: str | Path,
+    ff: str = "AMBER",
+    ligand_coords_angstrom: list[tuple[float, float, float]] | None = None,
+    overlap_cutoff_angstrom: float = 1.5,
+) -> PocketCharges:
+    """Derive a pocket's point charges once, as a reusable `PocketCharges`.
+
+    Call this once per pocket, then reuse the result across many ligand
+    evaluations (`embed_ligand`) instead of re-running PDB2PQR per candidate.
+    """
+    charges = pocket_point_charges(pocket_pdb, ff, ligand_coords_angstrom, overlap_cutoff_angstrom)
+    return PocketCharges(charges=charges, source_pdb=Path(pocket_pdb), ff=ff)

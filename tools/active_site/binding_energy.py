@@ -6,6 +6,17 @@ E_int = E(ligand, QM, embedded in the pocket's classical point-charge field)
 The pocket is always classical point charges (via PDB2PQR); only the ligand
 is ever a QM `Molecule`. This sidesteps BSSE/counterpoise entirely since
 there is no QM-QM supermolecular interaction energy being computed.
+
+This is a thin orchestration over four composable, independently reusable
+stages — read it as a worked example for building your own variant (e.g.
+cache `PocketCharges` across many ligands/conformers, skip `compute_charges`
+for speed, or swap `use_field`/`method` per call):
+
+    pocket    = derive_pocket_charges(pocket_pdb)      # once per pocket
+    embedded  = embed_ligand(ligand_xyz, pocket)        # once per ligand geometry
+    e_vacuum  = compute_energy(embedded, use_field=False)
+    e_field   = compute_energy(embedded, use_field=True)
+    charges   = compute_charges(embedded, e_field)
 """
 from __future__ import annotations
 
@@ -14,9 +25,10 @@ from pathlib import Path
 
 import psutil
 
-import ferric
-
-from .pocket_charges import PointCharge, pocket_point_charges
+from .energy import compute_energy
+from .ligand_embedding import embed_ligand
+from .pocket_charges import derive_pocket_charges
+from .properties import compute_charges
 
 HARTREE_TO_KCAL_MOL = 627.5094740631
 
@@ -49,16 +61,6 @@ class BindingEnergyResult:
     n_pocket_charges: int
 
 
-def _run_energy(mol, basis, method: str, xc: str | None, point_charges: list[PointCharge] | None):
-    if method == "rhf":
-        return ferric.run_rhf(mol, basis, point_charges=point_charges)
-    if method == "dft":
-        if xc is None:
-            raise ValueError("method='dft' requires xc=<functional name>")
-        return ferric.run_dft(mol, basis, functional=xc, point_charges=point_charges)
-    raise ValueError(f"unknown method {method!r}; expected 'rhf' or 'dft'")
-
-
 def compute_binding_energy(
     ligand_xyz: str | Path,
     pocket_pdb: str | Path,
@@ -69,7 +71,7 @@ def compute_binding_energy(
     min_available_gb: float = 2.0,
 ) -> BindingEnergyResult:
     """Compute the field-vs-vacuum electrostatic binding energy for a ligand
-    in a protein pocket, plus ESP/Hirshfeld/Löwdin charges in both states.
+    in a protein pocket, plus Hirshfeld/Löwdin charges in both states.
 
     Raises MemoryError up front if fewer than `min_available_gb` GB are free
     (set to 0 to disable the check).
@@ -77,53 +79,23 @@ def compute_binding_energy(
     if min_available_gb > 0:
         check_available_memory(min_available_gb)
 
-    mol = ferric.Molecule.from_xyz(str(ligand_xyz))
-    basis_set = ferric.BasisSet.bundled(basis)
+    pocket = derive_pocket_charges(pocket_pdb, ff=ff)
+    embedded = embed_ligand(ligand_xyz, pocket=pocket, basis=basis)
 
-    ligand_coords_angstrom = [(a.x, a.y, a.z) for a in _read_xyz_atoms(ligand_xyz)]
-    point_charges = pocket_point_charges(
-        pocket_pdb, ff=ff, ligand_coords_angstrom=ligand_coords_angstrom,
-    )
+    e_vac = compute_energy(embedded, method=method, xc=xc, use_field=False)
+    e_field = compute_energy(embedded, method=method, xc=xc, use_field=True)
 
-    rhf_vac = _run_energy(mol, basis_set, method, xc, None)
-    rhf_field = _run_energy(mol, basis_set, method, xc, point_charges)
+    charges_vacuum = compute_charges(embedded, e_vac)
+    charges_field = compute_charges(embedded, e_field)
 
-    delta_e = rhf_field.energy - rhf_vac.energy
-
-    charges_vacuum = {
-        "hirshfeld": ferric.hirshfeld_charges(mol, basis_set, rhf_vac),
-        "lowdin": ferric.lowdin_charges(mol, basis_set, rhf_vac),
-    }
-    charges_field = {
-        "hirshfeld": ferric.hirshfeld_charges(mol, basis_set, rhf_field),
-        "lowdin": ferric.lowdin_charges(mol, basis_set, rhf_field),
-    }
+    delta_e = e_field.energy - e_vac.energy
 
     return BindingEnergyResult(
-        e_vacuum=rhf_vac.energy,
-        e_field=rhf_field.energy,
+        e_vacuum=e_vac.energy,
+        e_field=e_field.energy,
         delta_e_hartree=delta_e,
         delta_e_kcal_mol=delta_e * HARTREE_TO_KCAL_MOL,
         charges_vacuum=charges_vacuum,
         charges_field=charges_field,
-        n_pocket_charges=len(point_charges),
+        n_pocket_charges=pocket.n_charges,
     )
-
-
-@dataclass
-class _XyzAtom:
-    symbol: str
-    x: float
-    y: float
-    z: float
-
-
-def _read_xyz_atoms(xyz_path: str | Path) -> list[_XyzAtom]:
-    with open(xyz_path) as f:
-        lines = f.readlines()
-    n = int(lines[0].strip())
-    atoms = []
-    for line in lines[2:2 + n]:
-        parts = line.split()
-        atoms.append(_XyzAtom(parts[0], float(parts[1]), float(parts[2]), float(parts[3])))
-    return atoms

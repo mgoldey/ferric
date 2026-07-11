@@ -317,6 +317,15 @@ struct PyOptimizeResult {
     #[pyo3(get)] energy: f64,
     #[pyo3(get)] converged: bool,
     #[pyo3(get)] steps: usize,
+    mol_data: Molecule,
+}
+
+#[pymethods]
+impl PyOptimizeResult {
+    /// The optimized geometry as a new `Molecule`.
+    fn mol(&self) -> PyMolecule {
+        PyMolecule { inner: self.mol_data.clone() }
+    }
 }
 
 #[pyfunction]
@@ -337,32 +346,67 @@ fn run_optimize(mol: &PyMolecule, basis_name: &str,
                                   e_conv: e_conv.unwrap_or(1e-6),
                                   ..Default::default()
                               }).map_err(make_err)?;
-    Ok(PyOptimizeResult { energy: r.energy, converged: r.converged, steps: r.steps })
+    Ok(PyOptimizeResult { energy: r.energy, converged: r.converged, steps: r.steps, mol_data: r.mol })
 }
 
 // ── Electronic properties (ESP / Hirshfeld / Löwdin charges) ──
 
+/// Accepts either an `RhfResult` or a `DftResult` — both carry a converged
+/// closed-shell density, which is all these property functions need. Lets
+/// `esp_at_atoms`/`hirshfeld_charges`/`lowdin_charges` work on any energy
+/// result rather than being RHF-only.
+enum DensitySource<'py> {
+    Rhf(PyRef<'py, PyRhfResult>),
+    Dft(PyRef<'py, PyDftResult>),
+}
+
+impl<'py> DensitySource<'py> {
+    fn density(&self) -> &Array2<f64> {
+        match self {
+            DensitySource::Rhf(r) => &r.density_data,
+            DensitySource::Dft(d) => &d.density_data,
+        }
+    }
+}
+
+impl<'py> FromPyObject<'py> for DensitySource<'py> {
+    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+        if let Ok(r) = ob.extract::<PyRef<'py, PyRhfResult>>() {
+            return Ok(DensitySource::Rhf(r));
+        }
+        if let Ok(d) = ob.extract::<PyRef<'py, PyDftResult>>() {
+            return Ok(DensitySource::Dft(d));
+        }
+        Err(pyo3::exceptions::PyTypeError::new_err(
+            "expected an RhfResult or DftResult",
+        ))
+    }
+}
+
 /// Electrostatic potential at each nucleus, in Hartree atomic units (e/Bohr).
+/// `result` is an `RhfResult` or `DftResult` from a converged SCF.
 #[pyfunction]
-fn esp_at_atoms(mol: &PyMolecule, basis_set: &PyBasisSet, rhf: &PyRhfResult) -> PyResult<Vec<f64>> {
+fn esp_at_atoms(mol: &PyMolecule, basis_set: &PyBasisSet, result: DensitySource) -> PyResult<Vec<f64>> {
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    ferric_rpa::properties::esp_at_atoms(&mol.inner, &prep, &rhf.density_data).map_err(make_err)
+    ferric_rpa::properties::esp_at_atoms(&mol.inner, &prep, result.density()).map_err(make_err)
 }
 
 /// Hirshfeld partial charges (units of e), using the default free-atom
-/// (single-exponential Slater) proatom reference.
+/// (single-exponential Slater) proatom reference. `result` is an `RhfResult`
+/// or `DftResult` from a converged SCF.
 #[pyfunction]
-fn hirshfeld_charges(mol: &PyMolecule, basis_set: &PyBasisSet, rhf: &PyRhfResult) -> PyResult<Vec<f64>> {
-    ferric_rpa::properties::hirshfeld_charges(&mol.inner, &basis_set.inner, &rhf.density_data, None)
+fn hirshfeld_charges(mol: &PyMolecule, basis_set: &PyBasisSet, result: DensitySource) -> PyResult<Vec<f64>> {
+    ferric_rpa::properties::hirshfeld_charges(&mol.inner, &basis_set.inner, result.density(), None)
         .map_err(make_err)
 }
 
 /// Löwdin (symmetric-orthogonalization) partial charges (units of e).
-/// Closed-shell only.
+/// Closed-shell only. `result` is an `RhfResult` or `DftResult` from a
+/// converged SCF.
 #[pyfunction]
-fn lowdin_charges(mol: &PyMolecule, basis_set: &PyBasisSet, rhf: &PyRhfResult) -> PyResult<Vec<f64>> {
+fn lowdin_charges(mol: &PyMolecule, basis_set: &PyBasisSet, result: DensitySource) -> PyResult<Vec<f64>> {
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    ferric_rpa::properties::lowdin_charges(&mol.inner, &prep, &rhf.density_data).map_err(make_err)
+    ferric_rpa::properties::lowdin_charges(&mol.inner, &prep, result.density()).map_err(make_err)
 }
 
 // ── RI-MP2 ──
@@ -665,7 +709,9 @@ fn run_rs_mp2_rpa(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSe
 #[pyo3(name = "DftResult")]
 struct PyDftResult {
     #[pyo3(get)] total_energy: f64,
+    #[pyo3(get)] converged: bool,
     vxc_data: Array2<f64>,
+    density_data: Array2<f64>,
     /// Analytic nuclear gradient (natoms × 3) in Ha/Bohr, when computed
     /// (i.e. `with_gradient=True` was passed to `run_ksdft`). Closed-shell
     /// LDA / GGA / hybrid / RSH only; VV10 nonlocal piece is excluded.
@@ -676,6 +722,10 @@ struct PyDftResult {
 impl PyDftResult {
     fn vxc<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
         PyArray2::from_array(py, &self.vxc_data)
+    }
+
+    fn density<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        PyArray2::from_array(py, &self.density_data)
     }
 
     /// Return the cached analytic nuclear gradient as an (natoms, 3) array.
@@ -737,7 +787,9 @@ fn run_dft(mol: &PyMolecule, basis_set: &PyBasisSet,
     };
     Ok(PyDftResult {
         total_energy: rhf.energy,
+        converged: rhf.converged,
         vxc_data: Array2::<f64>::zeros((nbf, nbf)),
+        density_data: rhf.density_total,
         gradient_data,
     })
 }
