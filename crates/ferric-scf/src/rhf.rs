@@ -160,16 +160,35 @@ impl Default for RhfConfig {
     }
 }
 
-/// Resolve the 3-index memory budget in bytes: `FERRIC_OOC_BUDGET_GB` env var
-/// (in GiB) takes precedence over the config field. Shared by RHF/UHF/ROHF so
-/// the budget is honored uniformly across all DF-J/DF-K construction sites.
+/// The historical hard-coded SCF 3-index budget default (2 GiB). A `config_bytes`
+/// equal to this is treated as "unset" so the RAM-aware auto-detect can run; a
+/// caller who deliberately wants a different budget passes a different value.
+const LEGACY_DEFAULT_OOC_BYTES: usize = 2 * 1024 * 1024 * 1024;
+
+/// Resolve the 3-index memory budget in bytes. Precedence:
+/// 1. `FERRIC_OOC_BUDGET_GB` env var (in GiB) — explicit operator override.
+/// 2. A `config_bytes` that differs from the legacy 2 GiB default — an explicit
+///    caller choice, honored as-is.
+/// 3. Otherwise delegate to the unified [`ferric_core::memory::resolve_budget_bytes`]
+///    auto-detect (`FERRIC_MEM_BUDGET_GB` → legacy vars → 0.8×available RAM →
+///    2 GiB fallback). This is what makes the DF-JK tensor stay IN RAM on a box
+///    with adequate memory instead of spilling to disk under a blind 2 GiB cap.
+///
+/// Shared by RHF/UHF/ROHF so the budget is honored uniformly across all
+/// DF-J/DF-K construction sites.
 pub fn resolve_three_index_budget(config_bytes: usize) -> usize {
-    std::env::var("FERRIC_OOC_BUDGET_GB")
+    if let Some(g) = std::env::var("FERRIC_OOC_BUDGET_GB")
         .ok()
         .and_then(|s| s.parse::<f64>().ok())
         .filter(|g| *g > 0.0)
-        .map(|g| (g * 1024.0 * 1024.0 * 1024.0) as usize)
-        .unwrap_or(config_bytes)
+    {
+        return (g * 1024.0 * 1024.0 * 1024.0) as usize;
+    }
+    // A non-default config value is an explicit caller choice; pass it through
+    // the unified resolver as `explicit`. The legacy default falls through to
+    // auto-detect (explicit = None).
+    let explicit = (config_bytes != LEGACY_DEFAULT_OOC_BYTES).then_some(config_bytes);
+    ferric_core::memory::resolve_budget_bytes(explicit)
 }
 
 /// Pure stall-detector arithmetic, extracted from the `solve_rhf` loop so it can
@@ -1016,6 +1035,62 @@ mod tests {
     use ferric_integrals::basis_bridge::PreparedBasis;
 
     #[test]
+    fn three_index_budget_auto_detects_ram_on_default() {
+        // The whole point of the RAM-aware resolver: on a box with adequate RAM,
+        // the legacy 2 GiB default must NOT cap the budget — it must fall through
+        // to auto-detect (0.8×available), so the DF-JK tensor stays in RAM
+        // instead of spilling to disk. Env-var precedence is also asserted here.
+        // These sub-cases mutate process env, so they live in ONE test (cargo
+        // runs tests in a shared process; a separate test could race the env).
+        let legacy = super::LEGACY_DEFAULT_OOC_BYTES;
+
+        // Guard: don't let a caller-set FERRIC_OOC_BUDGET_GB in the test env
+        // perturb the auto-detect assertion.
+        let saved = std::env::var("FERRIC_OOC_BUDGET_GB").ok();
+        std::env::remove_var("FERRIC_OOC_BUDGET_GB");
+
+        // (1) Default config value -> auto-detect. On any real CI/dev box this is
+        // 0.8×available RAM, which is >2 GiB; the legacy default must be exceeded.
+        // (We assert it is NOT pinned to exactly the legacy default, which is the
+        // bug we fixed. If available RAM were truly <2.5 GiB the fallback would
+        // also equal 2 GiB — accept that degenerate case rather than flake.)
+        let auto = resolve_three_index_budget(legacy);
+        let avail = ferric_core::memory::detect_available_bytes();
+        if let Some(a) = avail {
+            if (a as f64 * 0.8) as usize > legacy {
+                assert!(
+                    auto > legacy,
+                    "default budget should auto-detect above the 2 GiB legacy cap \
+                     on a box with {a} bytes available; got {auto}"
+                );
+            }
+        }
+
+        // (2) A non-default config value is an explicit choice, honored as-is.
+        let explicit = 7 * 1024 * 1024 * 1024;
+        assert_eq!(resolve_three_index_budget(explicit), explicit);
+
+        // (3) FERRIC_OOC_BUDGET_GB wins over everything.
+        std::env::set_var("FERRIC_OOC_BUDGET_GB", "3");
+        assert_eq!(
+            resolve_three_index_budget(legacy),
+            3 * 1024 * 1024 * 1024,
+            "env override must win"
+        );
+        assert_eq!(
+            resolve_three_index_budget(explicit),
+            3 * 1024 * 1024 * 1024,
+            "env override must win even over an explicit config value"
+        );
+        std::env::remove_var("FERRIC_OOC_BUDGET_GB");
+
+        // Restore whatever the harness had set.
+        if let Some(v) = saved {
+            std::env::set_var("FERRIC_OOC_BUDGET_GB", v);
+        }
+    }
+
+    #[test]
     fn external_point_charge_changes_rhf_energy_and_matches_hand_calc() {
         let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
         let bs = ferric_core::basis::bundled("sto-3g").unwrap();
@@ -1505,7 +1580,7 @@ mod tests {
                 let ctx = ParallelContext::default();
                 let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
                 assert!(result.converged, "RHF did not converge at {threads} threads");
-                let grad = crate::gradient::rhf_gradient(&mol, &prep, op, &bounds, &result).unwrap();
+                let grad = crate::gradient::rhf_gradient(&mol, &prep, op, &bounds, &result, None).unwrap();
                 (result.energy, grad)
             })
         };
