@@ -676,7 +676,12 @@ pub fn solve_rhf(
                 fock_alpha: f,
                 fock_beta: None,
                 converged: true,
-                exit: ScfExit::Converged,
+                // Populate the gradient-looseness signal the enum exists for:
+                // a plateau/noise-band acceptance (err_max parked above
+                // density_conv) is reported as Plateau so downstream consumers
+                // can distinguish it from a strict gradient-converged run.
+                // `converged` stays true either way — callers gate on that today.
+                exit: if strict { ScfExit::Converged } else { ScfExit::Plateau },
                 iterations: iter,
                 computed_quartets: total_quartets,
             });

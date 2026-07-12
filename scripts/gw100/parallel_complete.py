@@ -129,11 +129,11 @@ def run_one(basis, mol, rayon):
             row = {k: float(v) for k, v in dd.items()}
             save_row(basis, mol, row)
             got = True
-            print(f"  [+] {basis[:8]} {mol}  G0W0={row['G0W0']:.3f}", flush=True)
+            print(f"  [+] {basis[:8]} {mol}  G0W0={row['G0W0']:.3f}  ({time.monotonic()-start:.0f}s)", flush=True)
     proc.wait()
     if not got:
         mark_failed(basis, mol)
-        print(f"  [x] {basis[:8]} {mol} FAILED/timeout", flush=True)
+        print(f"  [x] {basis[:8]} {mol} FAILED/timeout  ({time.monotonic()-start:.0f}s)", flush=True)
 
 
 def main():
