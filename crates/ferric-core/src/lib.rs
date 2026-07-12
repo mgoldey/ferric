@@ -17,6 +17,7 @@ pub mod external_potential;
 pub mod orbitals;
 pub mod parallel;
 pub mod memory;
+pub mod config;
 
 pub use error::FerricError;
 pub use orbitals::OrbitalSpace;
