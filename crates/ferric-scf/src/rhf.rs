@@ -150,7 +150,8 @@ impl Default for RhfConfig {
             constraints: Vec::new(),
             cdft_lambda_tol: 1e-5,
             fractional_occ: false,
-            three_index_budget_bytes: 2 * 1024 * 1024 * 1024,
+            // 0 = "unset" → resolve_three_index_budget auto-detects (0.8×RAM).
+            three_index_budget_bytes: 0,
             init_guess_density: None,
             use_sad_guess: true,
             stall_window: None,
@@ -160,19 +161,19 @@ impl Default for RhfConfig {
     }
 }
 
-/// The historical hard-coded SCF 3-index budget default (2 GiB). A `config_bytes`
-/// equal to this is treated as "unset" so the RAM-aware auto-detect can run; a
-/// caller who deliberately wants a different budget passes a different value.
-const LEGACY_DEFAULT_OOC_BYTES: usize = 2 * 1024 * 1024 * 1024;
-
 /// Resolve the 3-index memory budget in bytes. Precedence:
 /// 1. `FERRIC_OOC_BUDGET_GB` env var (in GiB) — explicit operator override.
-/// 2. A `config_bytes` that differs from the legacy 2 GiB default — an explicit
-///    caller choice, honored as-is.
-/// 3. Otherwise delegate to the unified [`ferric_core::memory::resolve_budget_bytes`]
-///    auto-detect (`FERRIC_MEM_BUDGET_GB` → legacy vars → 0.8×available RAM →
-///    2 GiB fallback). This is what makes the DF-JK tensor stay IN RAM on a box
-///    with adequate memory instead of spilling to disk under a blind 2 GiB cap.
+/// 2. A non-zero `config_bytes` — an explicit caller choice (TOML `[memory]`
+///    budget / config field / kwarg), honored as-is.
+/// 3. `config_bytes == 0` ("unset") → delegate to the unified
+///    [`ferric_core::memory::resolve_budget_bytes`] auto-detect
+///    (`FERRIC_MEM_BUDGET_GB` → legacy vars → 0.8×available RAM → 2 GiB
+///    fallback). This is what makes the DF-JK tensor stay IN RAM on a box with
+///    adequate memory instead of spilling to disk under a blind 2 GiB cap.
+///
+/// `0` is the unset sentinel to match the unified resolver, which likewise
+/// treats `Some(0)` as "no explicit budget". Callers that have no budget to
+/// pass should pass `0`, not a hard-coded default.
 ///
 /// Shared by RHF/UHF/ROHF so the budget is honored uniformly across all
 /// DF-J/DF-K construction sites.
@@ -184,10 +185,10 @@ pub fn resolve_three_index_budget(config_bytes: usize) -> usize {
     {
         return (g * 1024.0 * 1024.0 * 1024.0) as usize;
     }
-    // A non-default config value is an explicit caller choice; pass it through
-    // the unified resolver as `explicit`. The legacy default falls through to
-    // auto-detect (explicit = None).
-    let explicit = (config_bytes != LEGACY_DEFAULT_OOC_BYTES).then_some(config_bytes);
+    // A non-zero config value is an explicit caller choice; 0 ("unset") falls
+    // through to the unified resolver's auto-detect. resolve_budget itself
+    // treats Some(0) as unset, so passing config_bytes directly is correct.
+    let explicit = (config_bytes != 0).then_some(config_bytes);
     ferric_core::memory::resolve_budget_bytes(explicit)
 }
 
@@ -1042,40 +1043,46 @@ mod tests {
         // instead of spilling to disk. Env-var precedence is also asserted here.
         // These sub-cases mutate process env, so they live in ONE test (cargo
         // runs tests in a shared process; a separate test could race the env).
-        let legacy = super::LEGACY_DEFAULT_OOC_BYTES;
+        let legacy_2gib = 2 * 1024 * 1024 * 1024;
 
         // Guard: don't let a caller-set FERRIC_OOC_BUDGET_GB in the test env
         // perturb the auto-detect assertion.
         let saved = std::env::var("FERRIC_OOC_BUDGET_GB").ok();
         std::env::remove_var("FERRIC_OOC_BUDGET_GB");
 
-        // (1) Default config value -> auto-detect. On any real CI/dev box this is
-        // 0.8×available RAM, which is >2 GiB; the legacy default must be exceeded.
-        // (We assert it is NOT pinned to exactly the legacy default, which is the
-        // bug we fixed. If available RAM were truly <2.5 GiB the fallback would
-        // also equal 2 GiB — accept that degenerate case rather than flake.)
-        let auto = resolve_three_index_budget(legacy);
+        // (1) Unset (config_bytes == 0) -> auto-detect. On any real CI/dev box
+        // this is 0.8×available RAM, which is >2 GiB; the old blind 2 GiB cap
+        // must be exceeded. (If available RAM were truly <2.5 GiB the fallback
+        // would also equal 2 GiB — accept that degenerate case rather than flake.)
+        let auto = resolve_three_index_budget(0);
         let avail = ferric_core::memory::detect_available_bytes();
         if let Some(a) = avail {
-            if (a as f64 * 0.8) as usize > legacy {
+            if (a as f64 * 0.8) as usize > legacy_2gib {
                 assert!(
-                    auto > legacy,
-                    "default budget should auto-detect above the 2 GiB legacy cap \
-                     on a box with {a} bytes available; got {auto}"
+                    auto > legacy_2gib,
+                    "unset budget should auto-detect above the old 2 GiB cap on a \
+                     box with {a} bytes available; got {auto}"
                 );
             }
         }
 
-        // (2) A non-default config value is an explicit choice, honored as-is.
+        // (2) A non-zero config value is an explicit choice, honored as-is —
+        // INCLUDING a deliberate 2 GiB (the bug the 0-sentinel fixes: an
+        // explicit 2 GiB must NOT be swallowed by auto-detect).
         let explicit = 7 * 1024 * 1024 * 1024;
         assert_eq!(resolve_three_index_budget(explicit), explicit);
+        assert_eq!(
+            resolve_three_index_budget(legacy_2gib),
+            legacy_2gib,
+            "an explicit 2 GiB budget must be honored, not auto-detected"
+        );
 
         // (3) FERRIC_OOC_BUDGET_GB wins over everything.
         std::env::set_var("FERRIC_OOC_BUDGET_GB", "3");
         assert_eq!(
-            resolve_three_index_budget(legacy),
+            resolve_three_index_budget(0),
             3 * 1024 * 1024 * 1024,
-            "env override must win"
+            "env override must win over unset"
         );
         assert_eq!(
             resolve_three_index_budget(explicit),

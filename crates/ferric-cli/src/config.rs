@@ -595,6 +595,48 @@ three_index_budget_gb = 6.0
     }
 
     #[test]
+    fn memory_budget_gb_parses_and_converts_to_bytes() {
+        // The preferred `budget_gb` field: it must parse AND flow through the
+        // budget_gb()/budget_bytes() accessors that thread it into every method.
+        let toml_str = r#"
+[molecule]
+xyz = "x.xyz"
+[basis]
+name = "cc-pvdz"
+[method]
+kind = "rhf"
+[memory]
+budget_gb = 16.0
+"#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.memory.budget_gb, Some(16.0));
+        assert_eq!(cfg.memory.budget_gb(), Some(16.0));
+        assert_eq!(
+            cfg.memory.budget_bytes(),
+            Some(16 * 1024 * 1024 * 1024),
+            "budget_gb must convert to GiB bytes for the resolver"
+        );
+    }
+
+    #[test]
+    fn memory_budget_gb_wins_over_deprecated_alias() {
+        // When both are set, the new field wins (documented precedence).
+        let toml_str = r#"
+[molecule]
+xyz = "x.xyz"
+[basis]
+name = "cc-pvdz"
+[method]
+kind = "rhf"
+[memory]
+budget_gb = 20.0
+three_index_budget_gb = 6.0
+"#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.memory.budget_gb(), Some(20.0));
+    }
+
+    #[test]
     fn memory_budget_defaults_to_none() {
         let toml_str = r#"
 [molecule]

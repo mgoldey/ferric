@@ -159,9 +159,9 @@ fn main() {
         constraints: Vec::new(),
         cdft_lambda_tol: 1e-5,
         fractional_occ: false,
-        // Keep the historical 2 GiB default for the SCF DF-JK path when [memory]
-        // is unset (the resolver's auto-detect is only reached if this is 0).
-        three_index_budget_bytes: budget_bytes.unwrap_or(2 * 1024 * 1024 * 1024),
+        // 0 = "unset" → the SCF resolver auto-detects (0.8×RAM). An explicit
+        // [memory] budget (incl. a deliberate 2 GiB) is passed through and honored.
+        three_index_budget_bytes: budget_bytes.unwrap_or(0),
         init_guess_density: None,
         use_sad_guess: true,
         stall_window: None,
