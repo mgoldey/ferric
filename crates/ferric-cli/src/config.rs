@@ -25,11 +25,18 @@ pub struct Config {
 pub struct MemoryCfg {
     /// Unified memory budget (in GiB) for every method's resident 3-index
     /// tensors and MO transforms (SCF DF-JK, RI-MP2, OO-MP2, RPA, GW, CC).
-    /// When set, it is threaded into ALL method configs. Resolution precedence
-    /// (highest first): this field / a Python kwarg → `FERRIC_MEM_BUDGET_GB`
-    /// env → legacy `FERRIC_OOC_BUDGET_GB`/`FERRIC_ERI3_BUDGET_GB` env →
-    /// auto (0.8 × detected available RAM: cgroup limit ∧ MemAvailable) →
-    /// 2 GiB fallback. Leave unset to auto-detect.
+    /// When set, it is threaded into ALL method configs.
+    ///
+    /// Every memory-budget setting shares ONE precedence chain, and **TOML/config
+    /// overrides env** (highest first):
+    ///   1. this field / a Python kwarg  (TOML — wins over env)
+    ///   2. `FERRIC_MEM_BUDGET_GB` env (GiB)
+    ///   3. legacy `FERRIC_OOC_BUDGET_GB` / `FERRIC_ERI3_BUDGET_GB` env (GiB)
+    ///   4. auto: 0.8 × detected available RAM (cgroup limit ∧ MemAvailable)
+    ///   5. 2 GiB fallback
+    /// Leave unset to auto-detect. (The only memory-related env var with no TOML
+    /// field is `FERRIC_OOC_TRACE`, a debug-print toggle — env-only by the same
+    /// convention as every other `FERRIC_*_TRACE` flag, not a budget setting.)
     pub budget_gb: Option<f64>,
     /// Deprecated alias for `budget_gb`, retained so existing TOML that only set
     /// `three_index_budget_gb` still parses. Prefer `budget_gb`. When both are

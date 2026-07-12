@@ -95,8 +95,10 @@ pub struct RhfConfig {
     pub fractional_occ: bool,
     /// Hard ceiling (bytes) for the resident 3-index footprint in DfJ/DfK. When
     /// the dense `(naux,nao,nao)` tensor would exceed this, the source spills
-    /// aux-blocks to disk instead of allocating in core. Default 2 GB. The env
-    /// var `FERRIC_OOC_BUDGET_GB` overrides this at runtime.
+    /// aux-blocks to disk instead of allocating in core. `0` = unset → resolved
+    /// via [`resolve_three_index_budget`] (this value, when non-zero, OVERRIDES
+    /// the `FERRIC_MEM_BUDGET_GB` / `FERRIC_OOC_BUDGET_GB` env vars; env fills in
+    /// only when this is 0; then auto-detect 0.8×RAM; then a 2 GiB fallback).
     pub three_index_budget_bytes: usize,
     /// Optional externally-supplied initial density matrix. When `Some(d)`, the
     /// SCF loop uses this density as the starting point instead of computing an
@@ -161,33 +163,25 @@ impl Default for RhfConfig {
     }
 }
 
-/// Resolve the 3-index memory budget in bytes. Precedence:
-/// 1. `FERRIC_OOC_BUDGET_GB` env var (in GiB) — explicit operator override.
-/// 2. A non-zero `config_bytes` — an explicit caller choice (TOML `[memory]`
-///    budget / config field / kwarg), honored as-is.
-/// 3. `config_bytes == 0` ("unset") → delegate to the unified
-///    [`ferric_core::memory::resolve_budget_bytes`] auto-detect
-///    (`FERRIC_MEM_BUDGET_GB` → legacy vars → 0.8×available RAM → 2 GiB
-///    fallback). This is what makes the DF-JK tensor stay IN RAM on a box with
-///    adequate memory instead of spilling to disk under a blind 2 GiB cap.
+/// Resolve the 3-index memory budget in bytes by delegating to the single
+/// unified resolver [`ferric_core::memory::resolve_budget_bytes`], so every
+/// memory setting shares ONE precedence chain (TOML/config > env > auto):
+/// 1. A non-zero `config_bytes` — an explicit caller choice (TOML `[memory]`
+///    budget / config field / kwarg). **TOML/config overrides env.**
+/// 2. `FERRIC_MEM_BUDGET_GB` env var (GiB).
+/// 3. Legacy `FERRIC_OOC_BUDGET_GB` / `FERRIC_ERI3_BUDGET_GB` env vars (GiB).
+/// 4. Auto: 0.8 × detected available RAM (keeps the DF-JK tensor IN RAM on a
+///    box with adequate memory instead of spilling under a blind 2 GiB cap).
+/// 5. 2 GiB fallback.
 ///
-/// `0` is the unset sentinel to match the unified resolver, which likewise
-/// treats `Some(0)` as "no explicit budget". Callers that have no budget to
-/// pass should pass `0`, not a hard-coded default.
+/// `0` is the unset sentinel (matches the unified resolver, which treats
+/// `Some(0)` as "no explicit budget"). Callers with no budget pass `0`.
 ///
 /// Shared by RHF/UHF/ROHF so the budget is honored uniformly across all
-/// DF-J/DF-K construction sites.
+/// DF-J/DF-K construction sites. This function no longer reads any env var
+/// itself — env fallback lives entirely in the unified resolver, so TOML can
+/// never be silently overridden by `FERRIC_OOC_BUDGET_GB` (it previously was).
 pub fn resolve_three_index_budget(config_bytes: usize) -> usize {
-    if let Some(g) = std::env::var("FERRIC_OOC_BUDGET_GB")
-        .ok()
-        .and_then(|s| s.parse::<f64>().ok())
-        .filter(|g| *g > 0.0)
-    {
-        return (g * 1024.0 * 1024.0 * 1024.0) as usize;
-    }
-    // A non-zero config value is an explicit caller choice; 0 ("unset") falls
-    // through to the unified resolver's auto-detect. resolve_budget itself
-    // treats Some(0) as unset, so passing config_bytes directly is correct.
     let explicit = (config_bytes != 0).then_some(config_bytes);
     ferric_core::memory::resolve_budget_bytes(explicit)
 }
@@ -1081,10 +1075,12 @@ mod tests {
         // runs tests in a shared process; a separate test could race the env).
         let legacy_2gib = 2 * 1024 * 1024 * 1024;
 
-        // Guard: don't let a caller-set FERRIC_OOC_BUDGET_GB in the test env
-        // perturb the auto-detect assertion.
-        let saved = std::env::var("FERRIC_OOC_BUDGET_GB").ok();
+        // Guard: don't let caller-set budget env vars perturb the assertions.
+        // Both the unified var and the legacy OOC var feed the resolver now.
+        let saved_ooc = std::env::var("FERRIC_OOC_BUDGET_GB").ok();
+        let saved_mem = std::env::var("FERRIC_MEM_BUDGET_GB").ok();
         std::env::remove_var("FERRIC_OOC_BUDGET_GB");
+        std::env::remove_var("FERRIC_MEM_BUDGET_GB");
 
         // (1) Unset (config_bytes == 0) -> auto-detect. On any real CI/dev box
         // this is 0.8×available RAM, which is >2 GiB; the old blind 2 GiB cap
@@ -1113,23 +1109,43 @@ mod tests {
             "an explicit 2 GiB budget must be honored, not auto-detected"
         );
 
-        // (3) FERRIC_OOC_BUDGET_GB wins over everything.
+        // (3) Precedence: TOML/config OVERRIDES env; env fills in only when
+        // config is unset. (Corrected from the earlier env-first behavior so all
+        // memory settings share one chain: TOML/config > env > auto.)
         std::env::set_var("FERRIC_OOC_BUDGET_GB", "3");
         assert_eq!(
             resolve_three_index_budget(0),
             3 * 1024 * 1024 * 1024,
-            "env override must win over unset"
+            "env fills in when config is unset (config_bytes == 0)"
         );
         assert_eq!(
             resolve_three_index_budget(explicit),
-            3 * 1024 * 1024 * 1024,
-            "env override must win even over an explicit config value"
+            explicit,
+            "TOML/config budget must OVERRIDE the FERRIC_OOC_BUDGET_GB env var"
         );
         std::env::remove_var("FERRIC_OOC_BUDGET_GB");
 
+        // (4) The unified var FERRIC_MEM_BUDGET_GB is also overridden by config,
+        // and itself takes precedence over the legacy OOC var when config unset.
+        std::env::set_var("FERRIC_MEM_BUDGET_GB", "5");
+        assert_eq!(
+            resolve_three_index_budget(0),
+            5 * 1024 * 1024 * 1024,
+            "FERRIC_MEM_BUDGET_GB fills in when config is unset"
+        );
+        assert_eq!(
+            resolve_three_index_budget(explicit),
+            explicit,
+            "TOML/config budget must OVERRIDE FERRIC_MEM_BUDGET_GB too"
+        );
+        std::env::remove_var("FERRIC_MEM_BUDGET_GB");
+
         // Restore whatever the harness had set.
-        if let Some(v) = saved {
+        if let Some(v) = saved_ooc {
             std::env::set_var("FERRIC_OOC_BUDGET_GB", v);
+        }
+        if let Some(v) = saved_mem {
+            std::env::set_var("FERRIC_MEM_BUDGET_GB", v);
         }
     }
 
