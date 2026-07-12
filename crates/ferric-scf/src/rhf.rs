@@ -288,6 +288,13 @@ pub fn solve_rhf(
     // Count of consecutive iterations where the energy is stationary but err_max
     // has stopped improving. Used only as a last-resort plateau acceptance.
     let mut plateau_streak = 0usize;
+    // Oscillation-robust plateau: consecutive iters where err_max sits inside a
+    // low noise-floor band while the energy is stationary. Unlike plateau_streak
+    // (which needs a MONOTONIC park), this tolerates err_max bouncing around the
+    // DF/RI fitting noise floor — the failure mode on larger aTZ closed shells
+    // (benzene: err_max oscillates 1.06e-7↔1.37e-7 forever, energy stationary at
+    // ~1e-6, never reaching density_conv=1e-8 nor a monotonic stall).
+    let mut noise_band_streak = 0usize;
     let mut total_quartets = 0;
 
     if let Some(kb) = config.k_builder.as_deref() {
@@ -585,11 +592,35 @@ pub fn solve_rhf(
         } else {
             plateau_streak = 0;
         }
-        let plateau_ok = plateau_streak >= 3;
+
+        // Oscillation-robust plateau (DF/RI noise floor). err_max parked in a low
+        // band while the energy is stationary — accept even if err_max is NOT
+        // monotonically stalled (it bounces around the fitting noise). The band
+        // ceiling (1e-6) is two orders below the 1e-4 stall/plateau ceiling and
+        // well above the ~1e-7 DF noise floor, so it accepts a genuinely-converged
+        // SCF (benzene at ~1.1e-7) but never a still-descending or truly-stuck run
+        // (those sit at err_max ≫ 1e-6). Requires DF active AND a settled energy —
+        // on a direct-JK run err_max drains to density_conv normally, so this path
+        // stays dormant there.
+        // err_max is the reliable signal here (DIIS gradient FDS−SDF); it sits
+        // rock-solid < 2e-7 once benzene converges. The ENERGY, by contrast,
+        // bounces at the DF noise floor up to ~1e-5 iter-to-iter — so the energy
+        // gate must be loose (settled, not descending), not tight. A genuinely
+        // descending SCF has err_max ≫ 1e-6, so err_max is what excludes it.
+        const NOISE_BAND: f64 = 1e-6;
+        if df_active && err_max < NOISE_BAND && de < 1e-4 {
+            noise_band_streak += 1;
+        } else {
+            noise_band_streak = 0;
+        }
+        let noise_band_ok = noise_band_streak >= 8;
+
+        let plateau_ok = plateau_streak >= 3 || noise_band_ok;
         if plateau_ok && std::env::var("FERRIC_SCF_TRACE").ok().as_deref() == Some("1") {
             eprintln!(
                 "SCF plateau accepted at iter={iter}: E={energy:.9} err_max={err_max:.3e} \
-                 (gradient stalled on near-degeneracy noise floor)"
+                 (gradient parked on {} noise floor)",
+                if noise_band_ok { "DF-fitting" } else { "near-degeneracy" }
             );
         }
         prev_err_max = err_max;
