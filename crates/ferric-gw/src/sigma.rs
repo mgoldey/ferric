@@ -34,6 +34,7 @@ use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_rpa::PdepRpaResult;
 use ferric_scf::ScfResult;
+use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ndarray::{Array1, Array2};
 use num_complex::Complex64;
 use rayon::prelude::*;
@@ -92,16 +93,34 @@ pub(crate) fn sigma_c_at_z(
     quad_freqs: &[f64],
     eps_act: &[f64],
 ) -> Complex64 {
-    let m_modes = m_proj.shape()[0];
     let n_quad = quad_freqs.len();
     let n_act = eps_act.len();
 
-    // Precompute the screened matrix element W_{mn}(iω_k) = Mᵀ_{mn} · W̃_d(iω_k) · M_{mn}
-    // using the FULL inverse-dielectric matrix in the PDEP basis. The earlier
-    // diagonal-only form  Σ_α M²_α (1/λ_α − 1)  was wrong: the scalar
-    // eigenvalues λ_α(iω) live in a per-ω rotated eigenbasis, inconsistent with
-    // the static B̃ projection M, which corrupts the per-(m,n) matrix elements
-    // (only the trace survives, which is why the RPA energy was unaffected).
+    // The screened matrix element W_{mn}(iω_k) = Mᵀ_{mn} · W̃_d(iω_k) · M_{mn}
+    // (FULL inverse-dielectric matrix in the PDEP basis; the earlier diagonal-only
+    // form was wrong — the scalar eigenvalues λ_α(iω) live in a per-ω rotated
+    // eigenbasis, inconsistent with the static B̃ projection M).
+    //
+    // For a fixed m_idx, let V = M[:, m_idx, :] be the (m_modes × n_act) matrix of
+    // projected elements. W̃_d(iω_k) depends only on k and V only on n, so the
+    // per-(n,k) quadratic form vᵀ·W̃_d·v is one BLAS3 GEMM per frequency:
+    //   WV_k = W̃_d(iω_k) · V            (m_modes × n_act)
+    //   W_{n,k} = Σ_α V[α,n] · WV_k[α,n]  (column-wise dot)
+    // replacing n_act·n_quad scalar O(m_modes²) forms with n_quad GEMMs. The
+    // summation order differs from the old scalar loop (BLAS vs nested-scalar), so
+    // results agree to machine precision, not bit-identically.
+    let v = m_proj.index_axis(ndarray::Axis(1), m_idx); // (m_modes, n_act)
+    let v = v.as_standard_layout(); // ensure contiguous for GEMM
+
+    // w_nk[(n, k)] = screened element W_{mn}(iω_k), real.
+    let mut w_nk = Array2::<f64>::zeros((n_act, n_quad));
+    for k in 0..n_quad {
+        let wv = with_blas_threads(opt_in_blas_threads(), || inv_diel_freq[k].dot(&v)); // (m_modes, n_act)
+        // Column-wise dot: W_{n,k} = Σ_α V[α,n]·WV[α,n].
+        let col = (&v.to_owned() * &wv).sum_axis(ndarray::Axis(0)); // (n_act,)
+        w_nk.column_mut(k).assign(&col);
+    }
+
     let mut sigma = Complex64::new(0.0, 0.0);
     for n_idx in 0..n_act {
         let eps_n = eps_act[n_idx];
@@ -110,21 +129,7 @@ pub(crate) fn sigma_c_at_z(
         for k in 0..n_quad {
             let omk = quad_freqs[k];
             let den = diff * diff + Complex64::new(omk * omk, 0.0);
-            let wd = &inv_diel_freq[k];
-            // w_mn = Σ_αβ M_α D_αβ M_β  (real, symmetric D).
-            let mut w_mn = 0.0_f64;
-            for a in 0..m_modes {
-                let ma = m_proj[(a, m_idx, n_idx)];
-                if ma == 0.0 {
-                    continue;
-                }
-                let mut row = 0.0_f64;
-                for b in 0..m_modes {
-                    row += wd[(a, b)] * m_proj[(b, m_idx, n_idx)];
-                }
-                w_mn += ma * row;
-            }
-            inner += Complex64::new(quad_weights[k] * w_mn, 0.0) / den;
+            inner += Complex64::new(quad_weights[k] * w_nk[(n_idx, k)], 0.0) / den;
         }
         sigma += diff * inner;
     }
@@ -580,6 +585,103 @@ pub fn run_evgw(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Reference scalar implementation of sigma_c_at_z (the pre-BLAS3 loop nest),
+    /// kept in the test module to pin the optimized version's numerics.
+    fn sigma_c_at_z_scalar_ref(
+        m_idx: usize,
+        z: Complex64,
+        m_proj: &ndarray::Array3<f64>,
+        inv_diel_freq: &[Array2<f64>],
+        quad_weights: &[f64],
+        quad_freqs: &[f64],
+        eps_act: &[f64],
+    ) -> Complex64 {
+        let m_modes = m_proj.shape()[0];
+        let n_quad = quad_freqs.len();
+        let n_act = eps_act.len();
+        let mut sigma = Complex64::new(0.0, 0.0);
+        for n_idx in 0..n_act {
+            let diff = z - Complex64::new(eps_act[n_idx], 0.0);
+            let mut inner = Complex64::new(0.0, 0.0);
+            for k in 0..n_quad {
+                let omk = quad_freqs[k];
+                let den = diff * diff + Complex64::new(omk * omk, 0.0);
+                let wd = &inv_diel_freq[k];
+                let mut w_mn = 0.0_f64;
+                for a in 0..m_modes {
+                    let ma = m_proj[(a, m_idx, n_idx)];
+                    let mut row = 0.0_f64;
+                    for b in 0..m_modes {
+                        row += wd[(a, b)] * m_proj[(b, m_idx, n_idx)];
+                    }
+                    w_mn += ma * row;
+                }
+                inner += Complex64::new(quad_weights[k] * w_mn, 0.0) / den;
+            }
+            sigma += diff * inner;
+        }
+        -Complex64::new(1.0 / std::f64::consts::PI, 0.0) * sigma
+    }
+
+    #[test]
+    fn sigma_c_blas3_matches_scalar_reference() {
+        // The BLAS3 rewrite reorders the α,β summation (GEMM vs nested scalar),
+        // so it agrees with the reference to machine precision, not bit-identically.
+        // Use a non-trivial, dense, non-symmetric-in-(m,n) m_proj and a symmetric
+        // inv_diel to exercise every path.
+        let m_modes = 7;
+        let n_act = 5;
+        let n_quad = 4;
+        // Deterministic pseudo-random fill (no rng dep): a cheap LCG-ish hash.
+        let val = |i: usize| ((i.wrapping_mul(2654435761) % 1000) as f64) / 500.0 - 1.0;
+        let mut m_proj = ndarray::Array3::<f64>::zeros((m_modes, n_act, n_act));
+        let mut c = 0usize;
+        for a in 0..m_modes {
+            for m in 0..n_act {
+                for n in 0..n_act {
+                    m_proj[(a, m, n)] = val(c);
+                    c += 1;
+                }
+            }
+        }
+        // Symmetric inv-dielectric matrices per frequency (W̃_d is symmetric).
+        let mut inv_diel_freq = Vec::new();
+        for k in 0..n_quad {
+            let mut d = Array2::<f64>::zeros((m_modes, m_modes));
+            for a in 0..m_modes {
+                for b in a..m_modes {
+                    let x = val(c);
+                    c += 1;
+                    d[(a, b)] = x;
+                    d[(b, a)] = x;
+                }
+            }
+            inv_diel_freq.push(d);
+        }
+        let quad_freqs: Vec<f64> = (0..n_quad).map(|k| 0.2 + 0.3 * k as f64).collect();
+        let quad_weights: Vec<f64> = (0..n_quad).map(|k| 1.0 / (k as f64 + 1.0)).collect();
+        let eps_act: Vec<f64> = (0..n_act).map(|n| -0.6 + 0.25 * n as f64).collect();
+
+        for &m_idx in &[0usize, 2, 4] {
+            for &z in &[
+                Complex64::new(0.1, 0.4),
+                Complex64::new(-0.3, 0.0),
+                Complex64::new(0.05, 1.2),
+            ] {
+                let got = sigma_c_at_z(
+                    m_idx, z, &m_proj, &inv_diel_freq, &quad_weights, &quad_freqs, &eps_act,
+                );
+                let want = sigma_c_at_z_scalar_ref(
+                    m_idx, z, &m_proj, &inv_diel_freq, &quad_weights, &quad_freqs, &eps_act,
+                );
+                assert!(
+                    (got.re - want.re).abs() < 1e-12 && (got.im - want.im).abs() < 1e-12,
+                    "m_idx={m_idx} z={z}: BLAS3 {got} vs scalar {want}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn qp_newton_converges_for_a_mild_self_energy() {
