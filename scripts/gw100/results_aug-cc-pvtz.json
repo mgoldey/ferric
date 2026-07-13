@@ -1,47 +1,5 @@
 {
-  "failed": [
-    "AlF3",
-    "B2H6",
-    "C2H3Br",
-    "C2H3Cl",
-    "C2H3F",
-    "C2H4O",
-    "C2H6O",
-    "C3H8",
-    "C4H10",
-    "C4H10O",
-    "C4H4N2O2",
-    "C4H5N3O",
-    "C5H5N",
-    "C5H5N5",
-    "C5H5N5O",
-    "C5H6",
-    "C5H6N2O2",
-    "C6F6",
-    "C6H6",
-    "C6H6O",
-    "C6H7N",
-    "C7H8",
-    "C8H10",
-    "C8H8",
-    "CBr4",
-    "CCl4",
-    "CCuN",
-    "CF4",
-    "CH2O2",
-    "CH4N2O",
-    "Cu2",
-    "F4S",
-    "F4Ti",
-    "GeH4",
-    "H12Si5",
-    "H2O2",
-    "H4N2",
-    "H4Si",
-    "H6Si2",
-    "Na4",
-    "Na6"
-  ],
+  "failed": [],
   "failure_reasons": {
     "BrK": "K (Z=19) has no aug-cc-pVDZ/TZ orbital basis bundled in ferric; aux rifit covers K but the orbital set does not. Genuine basis gap.",
     "HK": "K (Z=19) has no aug-cc-pVDZ/TZ orbital basis bundled in ferric. Genuine basis gap.",
@@ -58,6 +16,17 @@
     "evGW0": 0.4088
   },
   "molecules": {
+    "AlF3": {
+      "COHSEX": 17.582,
+      "G0W0": 15.669,
+      "G0W0pbe": 14.199,
+      "Koop": 17.27,
+      "dRPA": 15.336,
+      "dSCF": 15.665,
+      "evGW": 15.611,
+      "evGW0": 15.638,
+      "exp": 15.45
+    },
     "Ar": {
       "COHSEX": 16.92,
       "G0W0": 15.711,
@@ -90,6 +59,17 @@
       "evGW": 10.557,
       "evGW0": 10.556,
       "exp": 10.58
+    },
+    "B2H6": {
+      "COHSEX": 14.265,
+      "G0W0": 12.797,
+      "G0W0pbe": 11.811,
+      "Koop": 12.842,
+      "dRPA": 12.421,
+      "dSCF": 12.079,
+      "evGW": 12.791,
+      "evGW0": 12.793,
+      "exp": 11.9
     },
     "BF": {
       "COHSEX": 12.606,
@@ -168,6 +148,39 @@
       "evGW0": 11.589,
       "exp": 11.4
     },
+    "C2H3Br": {
+      "COHSEX": 10.762,
+      "G0W0": 9.46,
+      "G0W0pbe": 8.903,
+      "Koop": 9.196,
+      "dRPA": 9.193,
+      "dSCF": 8.082,
+      "evGW": 9.459,
+      "evGW0": 9.459,
+      "exp": 9.9
+    },
+    "C2H3Cl": {
+      "COHSEX": 11.794,
+      "G0W0": 10.358,
+      "G0W0pbe": 9.631,
+      "Koop": 10.119,
+      "dRPA": 10.088,
+      "dSCF": 8.918,
+      "evGW": 10.356,
+      "evGW0": 10.357,
+      "exp": 10.2
+    },
+    "C2H3F": {
+      "COHSEX": 12.39,
+      "G0W0": 10.827,
+      "G0W0pbe": 10.069,
+      "Koop": 10.493,
+      "dRPA": 10.468,
+      "dSCF": 9.171,
+      "evGW": 10.833,
+      "evGW0": 10.836,
+      "exp": 10.63
+    },
     "C2H4": {
       "COHSEX": 12.216,
       "G0W0": 10.699,
@@ -178,6 +191,17 @@
       "evGW": 10.714,
       "evGW0": 10.714,
       "exp": 10.68
+    },
+    "C2H4O": {
+      "COHSEX": 12.515,
+      "G0W0": 10.811,
+      "G0W0pbe": 9.53,
+      "Koop": 11.575,
+      "dRPA": 10.39,
+      "dSCF": 8.824,
+      "evGW": 10.772,
+      "evGW0": 10.784,
+      "exp": 10.24
     },
     "C2H6": {
       "COHSEX": 14.767,
@@ -190,6 +214,17 @@
       "evGW0": 13.193,
       "exp": 11.99
     },
+    "C2H6O": {
+      "COHSEX": 12.981,
+      "G0W0": 11.29,
+      "G0W0pbe": 10.096,
+      "Koop": 12.041,
+      "dRPA": 10.872,
+      "dSCF": 9.38,
+      "evGW": 11.251,
+      "evGW0": 11.262,
+      "exp": 10.64
+    },
     "C3H6": {
       "COHSEX": 12.89,
       "G0W0": 11.273,
@@ -201,6 +236,17 @@
       "evGW0": 11.27,
       "exp": 10.54
     },
+    "C3H8": {
+      "COHSEX": NaN,
+      "G0W0": 12.612,
+      "G0W0pbe": NaN,
+      "Koop": 12.738,
+      "dRPA": 12.392,
+      "dSCF": 11.661,
+      "evGW": NaN,
+      "evGW0": NaN,
+      "exp": 11.51
+    },
     "C4": {
       "COHSEX": 8.834,
       "G0W0": 7.223,
@@ -211,6 +257,237 @@
       "evGW": 6.772,
       "evGW0": 6.859,
       "exp": 12.54
+    },
+    "C4H10": {
+      "COHSEX": NaN,
+      "G0W0": 12.163,
+      "G0W0pbe": NaN,
+      "Koop": 12.412,
+      "dRPA": 11.745,
+      "dSCF": 10.802,
+      "evGW": NaN,
+      "evGW0": NaN,
+      "exp": 11.09
+    },
+    "C4H10O": {
+      "COHSEX": NaN,
+      "G0W0": 10.484,
+      "G0W0pbe": NaN,
+      "Koop": 11.382,
+      "dRPA": 10.006,
+      "dSCF": 8.549,
+      "evGW": NaN,
+      "evGW0": NaN,
+      "exp": 9.61
+    },
+    "C4H4N2O2": {
+      "COHSEX": NaN,
+      "G0W0": 10.089,
+      "G0W0pbe": NaN,
+      "Koop": 10.041,
+      "dRPA": 9.849,
+      "dSCF": 8.425,
+      "evGW": NaN,
+      "evGW0": NaN,
+      "exp": 9.68
+    },
+    "C4H5N3O": {
+      "COHSEX": NaN,
+      "G0W0": 9.289,
+      "G0W0pbe": NaN,
+      "Koop": 9.352,
+      "dRPA": 9.221,
+      "dSCF": 7.526,
+      "evGW": NaN,
+      "evGW0": NaN,
+      "exp": 8.94
+    },
+    "C5H5N": {
+      "COHSEX": NaN,
+      "G0W0": 9.896,
+      "G0W0pbe": NaN,
+      "Koop": 9.462,
+      "dRPA": 9.753,
+      "dSCF": 8.173,
+      "evGW": NaN,
+      "evGW0": NaN,
+      "exp": 9.66
+    },
+    "C5H5N5": {
+      "COHSEX": NaN,
+      "G0W0": 8.713,
+      "G0W0pbe": NaN,
+      "Koop": 8.394,
+      "dRPA": 8.567,
+      "dSCF": 7.236,
+      "evGW": NaN,
+      "evGW0": NaN,
+      "exp": 8.48
+    },
+    "C5H5N5O": {
+      "COHSEX": NaN,
+      "G0W0": 8.448,
+      "G0W0pbe": NaN,
+      "Koop": 8.162,
+      "dRPA": 8.438,
+      "dSCF": 6.759,
+      "evGW": NaN,
+      "evGW0": NaN,
+      "exp": 8.24
+    },
+    "C5H6": {
+      "COHSEX": NaN,
+      "G0W0": 8.843,
+      "G0W0pbe": NaN,
+      "Koop": 8.404,
+      "dRPA": 8.562,
+      "dSCF": 7.128,
+      "evGW": NaN,
+      "evGW0": NaN,
+      "exp": 8.53
+    },
+    "C5H6N2O2": {
+      "COHSEX": NaN,
+      "G0W0": 9.676,
+      "G0W0pbe": NaN,
+      "Koop": 9.605,
+      "dRPA": 9.403,
+      "dSCF": 8.094,
+      "evGW": NaN,
+      "evGW0": NaN,
+      "exp": 9.2
+    },
+    "C6F6": {
+      "COHSEX": NaN,
+      "G0W0": 10.632,
+      "G0W0pbe": NaN,
+      "Koop": 10.491,
+      "dRPA": 10.365,
+      "dSCF": 9.243,
+      "evGW": NaN,
+      "evGW0": NaN,
+      "exp": 10.2
+    },
+    "C6H6": {
+      "COHSEX": NaN,
+      "G0W0": 9.508,
+      "G0W0pbe": NaN,
+      "Koop": 9.16,
+      "dRPA": 9.346,
+      "dSCF": 7.864,
+      "evGW": NaN,
+      "evGW0": NaN,
+      "exp": 9.23
+    },
+    "C6H6O": {
+      "COHSEX": NaN,
+      "G0W0": 9.022,
+      "G0W0pbe": NaN,
+      "Koop": 8.772,
+      "dRPA": 8.67,
+      "dSCF": 7.903,
+      "evGW": NaN,
+      "evGW0": NaN,
+      "exp": 8.75
+    },
+    "C6H7N": {
+      "COHSEX": NaN,
+      "G0W0": 8.347,
+      "G0W0pbe": NaN,
+      "Koop": 8.112,
+      "dRPA": 7.944,
+      "dSCF": 7.292,
+      "evGW": NaN,
+      "evGW0": NaN,
+      "exp": 8.05
+    },
+    "C7H8": {
+      "COHSEX": NaN,
+      "G0W0": 9.14,
+      "G0W0pbe": NaN,
+      "Koop": 8.814,
+      "dRPA": 9.089,
+      "dSCF": 7.513,
+      "evGW": NaN,
+      "evGW0": NaN,
+      "exp": 8.82
+    },
+    "C8H10": {
+      "COHSEX": NaN,
+      "G0W0": 9.106,
+      "G0W0pbe": NaN,
+      "Koop": 8.799,
+      "dRPA": 9.05,
+      "dSCF": 7.466,
+      "evGW": NaN,
+      "evGW0": NaN,
+      "exp": 8.77
+    },
+    "C8H8": {
+      "COHSEX": NaN,
+      "G0W0": 8.665,
+      "G0W0pbe": NaN,
+      "Koop": 8.291,
+      "dRPA": 8.372,
+      "dSCF": 7.458,
+      "evGW": NaN,
+      "evGW0": NaN,
+      "exp": 8.43
+    },
+    "CBr4": {
+      "COHSEX": 11.76,
+      "G0W0": 10.768,
+      "G0W0pbe": 9.717,
+      "Koop": 11.249,
+      "dRPA": 10.537,
+      "dSCF": 10.495,
+      "evGW": 10.752,
+      "evGW0": 10.759,
+      "exp": 10.54
+    },
+    "CCl4": {
+      "COHSEX": 13.173,
+      "G0W0": 11.966,
+      "G0W0pbe": 10.836,
+      "Koop": 12.532,
+      "dRPA": 11.63,
+      "dSCF": 11.635,
+      "evGW": 11.95,
+      "evGW0": 11.956,
+      "exp": 11.69
+    },
+    "CCuN": {
+      "COHSEX": 13.005,
+      "G0W0": 11.258,
+      "G0W0pbe": NaN,
+      "Koop": 11.319,
+      "dRPA": 11.077,
+      "dSCF": 9.454,
+      "evGW": 11.24,
+      "evGW0": 11.254,
+      "exp": NaN
+    },
+    "CF4": {
+      "COHSEX": 18.81,
+      "G0W0": 16.858,
+      "G0W0pbe": 15.195,
+      "Koop": 18.655,
+      "dRPA": 16.784,
+      "dSCF": 16.225,
+      "evGW": 16.796,
+      "evGW0": 16.817,
+      "exp": 16.2
+    },
+    "CH2O2": {
+      "COHSEX": 13.744,
+      "G0W0": 11.963,
+      "G0W0pbe": 10.717,
+      "Koop": 12.922,
+      "dRPA": 11.521,
+      "dSCF": 9.974,
+      "evGW": 11.896,
+      "evGW0": 11.921,
+      "exp": 11.5
     },
     "CH3OH": {
       "COHSEX": 13.179,
@@ -233,6 +510,17 @@
       "evGW": 14.739,
       "evGW0": 14.741,
       "exp": 13.6
+    },
+    "CH4N2O": {
+      "COHSEX": 12.451,
+      "G0W0": 10.702,
+      "G0W0pbe": 9.308,
+      "Koop": 11.401,
+      "dRPA": 10.621,
+      "dSCF": 9.245,
+      "evGW": 10.651,
+      "evGW0": 10.673,
+      "exp": 9.8
     },
     "CO": {
       "COHSEX": 16.329,
@@ -333,6 +621,17 @@
       "evGW0": 9.183,
       "exp": 9.8
     },
+    "Cu2": {
+      "COHSEX": 8.206,
+      "G0W0": 7.267,
+      "G0W0pbe": NaN,
+      "Koop": 6.455,
+      "dRPA": 7.306,
+      "dSCF": 5.909,
+      "evGW": 7.283,
+      "evGW0": 7.271,
+      "exp": 7.46
+    },
     "F2": {
       "COHSEX": 18.303,
       "G0W0": 16.343,
@@ -355,6 +654,28 @@
       "evGW0": 13.781,
       "exp": 13.3
     },
+    "F4S": {
+      "COHSEX": 14.94,
+      "G0W0": 13.282,
+      "G0W0pbe": 12.084,
+      "Koop": 13.804,
+      "dRPA": 13.02,
+      "dSCF": 12.038,
+      "evGW": 13.259,
+      "evGW0": 13.27,
+      "exp": 11.69
+    },
+    "F4Ti": {
+      "COHSEX": 17.984,
+      "G0W0": 16.09,
+      "G0W0pbe": 13.908,
+      "Koop": 17.97,
+      "dRPA": 16.13,
+      "dSCF": 15.126,
+      "evGW": 16.011,
+      "evGW0": 16.044,
+      "exp": 13.3
+    },
     "FLi": {
       "COHSEX": 13.287,
       "G0W0": 11.433,
@@ -365,6 +686,28 @@
       "evGW": 11.234,
       "evGW0": 11.326,
       "exp": 11.3
+    },
+    "GeH4": {
+      "COHSEX": 14.114,
+      "G0W0": 12.858,
+      "G0W0pbe": 11.936,
+      "Koop": 12.889,
+      "dRPA": 12.553,
+      "dSCF": 11.65,
+      "evGW": 12.856,
+      "evGW0": 12.857,
+      "exp": 11.34
+    },
+    "H12Si5": {
+      "COHSEX": NaN,
+      "G0W0": 9.746,
+      "G0W0pbe": NaN,
+      "Koop": 9.798,
+      "dRPA": 9.369,
+      "dSCF": 8.653,
+      "evGW": NaN,
+      "evGW0": NaN,
+      "exp": 9.36
     },
     "H2": {
       "COHSEX": 17.911,
@@ -399,6 +742,17 @@
       "evGW0": 12.835,
       "exp": 12.62
     },
+    "H2O2": {
+      "COHSEX": 13.896,
+      "G0W0": 12.073,
+      "G0W0pbe": 10.825,
+      "Koop": 13.316,
+      "dRPA": 11.889,
+      "dSCF": 11.365,
+      "evGW": 11.997,
+      "evGW0": 12.022,
+      "exp": 11.7
+    },
     "H2S": {
       "COHSEX": 11.653,
       "G0W0": 10.499,
@@ -420,6 +774,39 @@
       "evGW": 10.764,
       "evGW0": 10.763,
       "exp": 10.59
+    },
+    "H4N2": {
+      "COHSEX": 11.836,
+      "G0W0": 10.178,
+      "G0W0pbe": 9.22,
+      "Koop": 10.723,
+      "dRPA": 9.871,
+      "dSCF": 9.111,
+      "evGW": 10.141,
+      "evGW0": 10.153,
+      "exp": 8.98
+    },
+    "H4Si": {
+      "COHSEX": 14.536,
+      "G0W0": 13.217,
+      "G0W0pbe": 12.232,
+      "Koop": 13.232,
+      "dRPA": 12.87,
+      "dSCF": 11.96,
+      "evGW": 13.215,
+      "evGW0": 13.216,
+      "exp": 12.3
+    },
+    "H6Si2": {
+      "COHSEX": 12.21,
+      "G0W0": 11.05,
+      "G0W0pbe": 10.166,
+      "Koop": 11.05,
+      "dRPA": 10.676,
+      "dSCF": 9.82,
+      "evGW": 11.048,
+      "evGW0": 11.049,
+      "exp": 10.53
     },
     "HCN": {
       "COHSEX": 15.593,
@@ -585,6 +972,28 @@
       "evGW": 4.97,
       "evGW0": 4.967,
       "exp": 4.89
+    },
+    "Na4": {
+      "COHSEX": 4.968,
+      "G0W0": 4.274,
+      "G0W0pbe": 4.48,
+      "Koop": 3.827,
+      "dRPA": 4.05,
+      "dSCF": 3.382,
+      "evGW": 4.291,
+      "evGW0": 4.287,
+      "exp": 4.27
+    },
+    "Na6": {
+      "COHSEX": 5.181,
+      "G0W0": 4.449,
+      "G0W0pbe": 4.734,
+      "Koop": 4.073,
+      "dRPA": 4.292,
+      "dSCF": 3.326,
+      "evGW": 4.449,
+      "evGW0": 4.447,
+      "exp": 4.12
     },
     "Ne": {
       "COHSEX": 23.434,
