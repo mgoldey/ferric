@@ -994,11 +994,22 @@ pub(crate) fn scf_trace() -> bool {
 /// modes on well-conditioned aromatics (C6H6/aug-cc-pVTZ has 19 modes in
 /// [1e-6,1e-4) that DIIS drains fine), perturbing their banked energies.
 fn lindep_thresh() -> f64 {
-    std::env::var("FERRIC_LINDEP_THRESH")
-        .ok()
-        .and_then(|s| s.parse::<f64>().ok())
-        .filter(|v| v.is_finite() && *v > 0.0)
-        .unwrap_or(LINDEP_THRESH)
+    static LINDEP: ferric_core::config::ConfigVar<f64> = ferric_core::config::ConfigVar {
+        env_name: "FERRIC_LINDEP_THRESH",
+        default: LINDEP_THRESH,
+        parse: |s| s.parse::<f64>().map_err(|e| e.to_string()),
+        validate: |v| {
+            (v.is_finite() && *v > 0.0)
+                .then_some(())
+                .ok_or_else(|| "must be finite > 0".to_string())
+        },
+    };
+    // A malformed/invalid override uses the default (was silent; now warns) —
+    // this is read on the SCF hot path with no Result to propagate.
+    LINDEP.get().map(|r| r.value).unwrap_or_else(|e| {
+        eprintln!("[config] FERRIC_LINDEP_THRESH: {e}; using default {LINDEP_THRESH}");
+        LINDEP_THRESH
+    })
 }
 
 /// Build the canonical orthogonalizer X (n × m) from the overlap matrix S.

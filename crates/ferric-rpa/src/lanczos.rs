@@ -32,11 +32,22 @@ use ndarray_linalg::{Eigh, QR, UPLO};
 /// `FERRIC_LANCZOS_PANEL=N` override wins (clamped ≥ 1). Unset budget ⇒ a
 /// conservative default panel so the win applies even without an explicit budget.
 fn lanczos_panel_width(naux: usize, nov: usize) -> usize {
-    // Explicit override wins.
-    if let Ok(v) = std::env::var("FERRIC_LANCZOS_PANEL") {
-        if let Ok(n) = v.trim().parse::<usize>() {
-            return n.max(1).min(naux.max(1));
+    // Explicit override wins, clamped to [1, naux]. The clamp target depends on
+    // naux (not a constant), so this reads the raw value via ConfigVar for
+    // consistent parse/validate but applies the context clamp here rather than a
+    // fixed default; a malformed value warns and falls through to budget-derived.
+    static PANEL: ferric_core::config::ConfigVar<usize> = ferric_core::config::ConfigVar {
+        env_name: "FERRIC_LANCZOS_PANEL",
+        default: 0, // sentinel: 0 means "unset" here → fall through to budget-derived
+        parse: |s| s.trim().parse::<usize>().map_err(|e| e.to_string()),
+        validate: ferric_core::config::accept_any,
+    };
+    match PANEL.get() {
+        Ok(r) if r.source == ferric_core::config::ConfigSource::Env => {
+            return r.value.max(1).min(naux.max(1));
         }
+        Ok(_) => {} // Default sentinel → budget-derived below.
+        Err(e) => eprintln!("[config] FERRIC_LANCZOS_PANEL: {e}; using budget-derived width"),
     }
     // Budget-derived: reserve one (nov × k) matvec scratch + one (naux × k)
     // output panel per panel column. Bytes per panel column ≈ (nov + naux)·8.

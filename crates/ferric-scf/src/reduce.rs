@@ -49,11 +49,16 @@ use rayon::prelude::*;
 const DEFAULT_BAND_BYTES: usize = 512 * 1024 * 1024;
 
 fn band_bytes_budget() -> usize {
-    std::env::var("FERRIC_REDUCE_BAND_BYTES")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .filter(|&b| b > 0)
-        .unwrap_or(DEFAULT_BAND_BYTES)
+    static BAND_BYTES: ferric_core::config::ConfigVar<usize> = ferric_core::config::ConfigVar {
+        env_name: "FERRIC_REDUCE_BAND_BYTES",
+        default: DEFAULT_BAND_BYTES,
+        parse: |s| s.parse::<usize>().map_err(|e| e.to_string()),
+        validate: |b| (*b > 0).then_some(()).ok_or_else(|| "must be > 0".to_string()),
+    };
+    BAND_BYTES.get().map(|r| r.value).unwrap_or_else(|e| {
+        eprintln!("[config] FERRIC_REDUCE_BAND_BYTES: {e}; using default {DEFAULT_BAND_BYTES}");
+        DEFAULT_BAND_BYTES
+    })
 }
 
 /// Compute a band width (number of `nbf×nbf` partials held live at once) from the
