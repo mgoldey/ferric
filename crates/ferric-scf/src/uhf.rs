@@ -213,6 +213,11 @@ pub fn solve_uhf_fockmod(
     // in ~15-25 cycles).
     let mut diis = Diis::new(config.diis_size);
     let mut prev_e = 0.0;
+    // Density change ΔP from the previous iteration's rebuild, over the TOTAL
+    // density (α+β) — the ORCA/PySCF primary convergence signal, shared with
+    // solve_rhf (see rhf::scf_converged). INFINITY until the first rebuild.
+    let mut dp_rms = f64::INFINITY;
+    let mut dp_max = f64::INFINITY;
     let mut total_quartets = 0usize;
 
     // Maximum-Overlap Method (MOM) references: the previously-accepted occupied
@@ -271,12 +276,6 @@ pub fn solve_uhf_fockmod(
     } else {
         None
     };
-
-    // DF is active either via the omega=0 DfJ/DfK builders above, or via the
-    // RSH dfk_sr/dfk_lr fitters. Computed once (builder identities don't
-    // change across iterations) to avoid borrowing df_j/df_k inside the loop
-    // where they're also `.as_mut()`'d.
-    let df_active = df_j.is_some() || df_k.is_some() || dfk_sr.is_some() || dfk_lr.is_some();
 
     for iter in 1..=config.max_iter {
         ctx.check_interrupted()?;
@@ -356,27 +355,24 @@ pub fn solve_uhf_fockmod(
         let err_max = err_max_a.max(err_max_b);
 
         if crate::rhf::scf_trace() {
-            eprintln!("UHF iter={iter:4}  E={energy:.12}  dE={de:.3e}  err_max={err_max:.3e}");
+            eprintln!(
+                "UHF iter={iter:4}  E={energy:.12}  dE={de:.3e}  \
+                 dp_rms={dp_rms:.3e}  dp_max={dp_max:.3e}  err_max={err_max:.3e}"
+            );
         }
 
-        // DF (RI) fitting introduces ~1e-6 Ha noise in J/K per iteration that
-        // can prevent err_max from draining below a tight density_conv even
-        // once the orbitals have fully converged. Mirrors solve_rhf's DF
-        // noise-floor acceptance: when DF is active, accept on the orbital
-        // gradient alone, or once the gradient is within a 10x factor of the
-        // threshold AND the energy change is safely in the noise floor
-        // (< 1e-5 Ha, not still descending). The non-DF (direct) path is
-        // byte-identical to the prior strict gate.
-        let energy_ok = de < config.energy_conv;
-        let grad_ok = err_max < config.density_conv;
-        let df_noise_floor_ok = df_active && err_max < 10.0 * config.density_conv && de < 1e-5;
-        let converged = if df_active {
-            grad_ok || df_noise_floor_ok
-        } else {
-            energy_ok && grad_ok
-        };
+        // Convergence: energy + total-density change (ΔP), the same
+        // ORCA/PySCF gate as solve_rhf — NOT the DIIS commutator, which parks on
+        // the naux-dependent RI noise floor and never drains. See
+        // rhf::scf_converged. This replaces the old df_noise_floor_ok hack; the
+        // `df_active` distinction is gone (ΔP handles DF and direct uniformly).
+        let conv_exit = crate::rhf::scf_converged(
+            crate::rhf::ConvergenceSignals { de, dp_rms, dp_max },
+            config.energy_conv,
+            config.density_conv,
+        );
 
-        if iter > 1 && converged {
+        if iter > 1 && conv_exit.is_some() {
             let (eps_a, c_a_f) = diagonalize(&f_a, &x)?;
             let (eps_b, c_b_f) = diagonalize(&f_b, &x)?;
             // ⟨S²⟩ diagnostic
@@ -462,12 +458,22 @@ pub fn solve_uhf_fockmod(
             mom_ref_a = Some(c_a.slice(ndarray::s![.., ..nocc_a]).to_owned());
             mom_ref_b = Some(c_b.slice(ndarray::s![.., ..nocc_b]).to_owned());
         }
+        let d_tot_old = &d_a + &d_b;
         if config.fractional_occ {
             d_a = density_fractional(&c_a, &eps_a_new, nocc_a);
             d_b = density_fractional(&c_b, &eps_b_new, nocc_b);
         } else {
             d_a = density(&c_a, nocc_a);
             d_b = density(&c_b, nocc_b);
+        }
+        // ΔP over the total density (α+β) — consumed at the top of the next
+        // iteration by rhf::scf_converged. Drains to zero at the RI fixed point
+        // even when the DIIS commutator parks on the naux noise floor.
+        {
+            let diff = &(&d_a + &d_b) - &d_tot_old;
+            let n2 = (diff.len() as f64).max(1.0);
+            dp_rms = (diff.iter().map(|v| v * v).sum::<f64>() / n2).sqrt();
+            dp_max = diff.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
         }
     }
     Err(FerricError::ScfConvergence {
