@@ -1,0 +1,26 @@
+PDEP stage timing — C3H6 / aug-cc-pVTZ (9 atoms), first neutral-RPA invocation.
+5 repeats per threshold, via FERRIC_TIMING=1. All times in ms.
+Purpose: is the full-rank PDEP eigensolve at trunc_thresh=0 an overhead penalty?
+
+### thresh=0 ###
+run1: eigensolve=301.3 freq_quad=1100.3 rpa_int=534.8
+run2: eigensolve=297.8 freq_quad=1081.4 rpa_int=525.9
+run3: eigensolve=301.2 freq_quad=1097.6 rpa_int=539.1
+run4: eigensolve=403.8 freq_quad=2199.3 rpa_int=798.7   <- all-stages-high blip (machine contention)
+run5: eigensolve=293.4 freq_quad=1107.0 rpa_int=519.7
+
+### thresh=1e-4 ###
+run1: eigensolve=765.3  freq_quad=2021.6 rpa_int=1967.8  <- blip
+run2: eigensolve=1071.4 freq_quad=3878.2 rpa_int=1621.1  <- blip
+run3: eigensolve=286.9  freq_quad=727.3  rpa_int=534.7
+run4: eigensolve=292.9  freq_quad=679.0  rpa_int=562.9
+run5: eigensolve=299.4  freq_quad=677.9  rpa_int=549.3
+
+MEDIANS (robust to the blips):
+              thresh=0   thresh=1e-4
+eigensolve      301        299       <- IDENTICAL within noise (~110ms spread); NOT faster at 0
+freq_quad      1100        727       <- the real truncation win (~1.5x, clears noise)
+rpa_int         535        563
+
+CONCLUSION: no full-rank eigensolve penalty at thresh=0 (it's ~15% of PDEP and
+threshold-invariant). Truncation's win is entirely freq_quad (O(M^3) inversion).
