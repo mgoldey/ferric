@@ -24,8 +24,13 @@ fn total_energy(
 ) -> Result<f64, FerricError> {
     let obs = PreparedBasis::new(mol, obs_basis)?;
     let bounds = SchwarzBounds::compute(op, &obs)?;
+    // Tight SCF so finite-difference gradients are not noise-limited. Under the
+    // ΔP convergence gate the *reachable* tight signal is density_conv (the
+    // density drains cleanly to ~1e-9); energy_conv is only a loose
+    // "not-descending" bound and floors above 1e-10 under DF noise, so setting it
+    // tight would just hang the SCF at MaxIter (see rhf::scf_converged).
     let rhf_config = RhfConfig {
-        energy_conv: 1e-10,
+        density_conv: 1e-9,
         ..Default::default()
     };
     let ctx = ferric_core::parallel::ParallelContext::default();

@@ -326,8 +326,12 @@ impl Default for ScfCfg {
     fn default() -> Self {
         ScfCfg {
             max_iter: 100,
-            energy_conv: 1e-8,
-            density_conv: 1e-7,
+            // Match the library convergence gate (rhf::scf_converged): density_conv
+            // is the tight (reachable) ΔP signal, energy_conv a loose
+            // "not-descending" bound. A tight energy_conv here would hang a large
+            // DF molecule at MaxIter, since dE floors on the RI noise level.
+            energy_conv: 1e-3,
+            density_conv: 1e-6,
             diis_size: 8,
             integral_thresh: 1e-12,
             k_builder: None,
@@ -341,8 +345,11 @@ impl Default for ScfCfg {
 }
 
 fn default_max_iter() -> usize { 100 }
-fn default_energy_conv() -> f64 { 1e-8 }
-fn default_density_conv() -> f64 { 1e-7 }
+// Match the library convergence gate (rhf::scf_converged): density_conv is the
+// tight (reachable) ΔP signal; energy_conv is a LOOSE "not-descending" bound. A
+// tight energy_conv hangs a large DF molecule (dE floors on the RI noise level).
+fn default_energy_conv() -> f64 { 1e-3 }
+fn default_density_conv() -> f64 { 1e-6 }
 fn default_diis_size() -> usize { 8 }
 fn default_integral_thresh() -> f64 { 1e-12 }
 

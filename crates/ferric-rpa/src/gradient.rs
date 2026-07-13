@@ -144,9 +144,12 @@ fn rpa_correlation_energy(
     let obs = PreparedBasis::new(mol, obs_basis)?;
     let dfbs = PreparedBasis::new(mol, aux_basis)?;
     let bounds = SchwarzBounds::compute(op, &obs)?;
-    // Tighten SCF convergence so FD differences are not noise-limited.
+    // Tighten SCF convergence so FD differences are not noise-limited. Under the
+    // ΔP convergence gate the tight signal is density_conv (reachable, ~1e-9);
+    // energy_conv is only a loose "not-descending" bound (floors above 1e-10
+    // under DF noise), so it is left at the default rather than set to 1e-10 —
+    // a tight energy_conv would hang the SCF at MaxIter. See rhf::scf_converged.
     let rhf_cfg = RhfConfig {
-        energy_conv: 1e-10,
         density_conv: 1e-9,
         ..Default::default()
     };
@@ -176,8 +179,9 @@ pub fn total_rpa_gradient(
     let obs = PreparedBasis::new(mol, obs_basis)?;
     let dfbs = PreparedBasis::new(mol, aux_basis)?;
     let bounds = SchwarzBounds::compute(op, &obs)?;
+    // Tight SCF via density_conv (reachable under the ΔP gate); energy_conv left
+    // at the loose default — a tight 1e-10 would hang at MaxIter. See above / gradient.rs:149.
     let rhf_cfg = RhfConfig {
-        energy_conv: 1e-10,
         density_conv: 1e-9,
         ..Default::default()
     };

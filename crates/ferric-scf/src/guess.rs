@@ -219,10 +219,12 @@ fn free_atom_density(
     // ARE the SAD building blocks, so they must start from hcore.
     run_serial_pool(|| {
         if mult == 1 {
-            // Closed-shell atom: use RHF.
+            // Closed-shell atom: use RHF. density_conv is the tight (reachable)
+            // signal under the ΔP gate; energy_conv is left at the loose default
+            // (a tighter one could stall a heavy atom whose dE floors above it —
+            // see rhf::scf_converged / the guess is density-valued anyway).
             let acfg = RhfConfig {
                 max_iter: 200,
-                energy_conv: 1e-8,
                 density_conv: 1e-6,
                 use_sad_guess: false,
                 ..Default::default()
@@ -230,10 +232,11 @@ fn free_atom_density(
             solve_rhf(&ctx, &amol, &aprep, op, &abounds, &acfg)
                 .map(|r| r.density_total().to_owned())
         } else {
-            // Open-shell atom: use UHF + MOM to pin the occupation.
+            // Open-shell atom: use UHF + MOM to pin the occupation. density_conv
+            // is the tight (reachable) signal; energy_conv left at the loose
+            // default (see the closed-shell branch above).
             let acfg = RhfConfig {
                 max_iter: 200,
-                energy_conv: 1e-8,
                 density_conv: 1e-6,
                 mom_after_iter: 5,
                 use_sad_guess: false,

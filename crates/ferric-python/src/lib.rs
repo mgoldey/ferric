@@ -192,8 +192,8 @@ fn run_rhf(
     // Defaults mirror the CLI `[scf]` section (config.rs) so CLI and Python agree.
     let config = RhfConfig {
         max_iter: max_iter.unwrap_or(100),
-        energy_conv: energy_conv.unwrap_or(1e-8),
-        density_conv: density_conv.unwrap_or(1e-7),
+        energy_conv: energy_conv.unwrap_or(1e-3),
+        density_conv: density_conv.unwrap_or(1e-6),
         diis_size: diis_size.unwrap_or(8),
         integral_thresh: integral_thresh.unwrap_or(1e-12),
         k_builder: k_builder.map(|s| s.to_string()),
@@ -282,8 +282,8 @@ fn run_uhf(
     // Same defaults as run_rhf / the CLI [scf] section.
     let config = UhfConfig {
         max_iter: max_iter.unwrap_or(100),
-        energy_conv: energy_conv.unwrap_or(1e-8),
-        density_conv: density_conv.unwrap_or(1e-7),
+        energy_conv: energy_conv.unwrap_or(1e-3),
+        density_conv: density_conv.unwrap_or(1e-6),
         diis_size: diis_size.unwrap_or(8),
         integral_thresh: integral_thresh.unwrap_or(1e-12),
         k_builder: k_builder.map(|s| s.to_string()),
