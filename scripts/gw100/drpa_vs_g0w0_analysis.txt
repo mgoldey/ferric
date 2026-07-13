@@ -1,0 +1,25 @@
+Does ΔRPA beat G0W0@HF because of error cancellation? — aug-cc-pVTZ, n=91
+
+G0W0@HF : MAE 0.491  signed_mean +0.378  RMS 0.682
+ΔRPA    : MAE 0.374  signed_mean +0.139  RMS 0.586
+
+Pearson r(errors) = 0.97  → fail on SAME molecules (method-independent error dominates)
+G0W0 RMS after removing its +0.38 bias = 0.568  ≈ ΔRPA RMS 0.586
+
+VERDICT: ΔRPA's win is ENTIRELY the removal of G0W0@HF's +0.38 eV HF-overshoot
+bias (a total-energy-difference cancels the cation/neutral correlation error).
+De-biased, the two have identical scatter; r=0.97 says same physics. Not superior.
+
+ΔRPA helps most where G0W0 over-IP'd:
+  C4H10O   G0W0 +0.87  ΔRPA +0.40
+  F2Mg     G0W0 +0.56  ΔRPA +0.09
+  CH2O2    G0W0 +0.46  ΔRPA +0.02
+  C2H4O    G0W0 +0.57  ΔRPA +0.15
+  C4H10    G0W0 +1.07  ΔRPA +0.65
+  C2H6O    G0W0 +0.65  ΔRPA +0.23
+ΔRPA WORSE where G0W0 was accurate/under-IP:
+  MgO      G0W0 -0.33  ΔRPA -0.76
+  C2H4     G0W0 +0.02  ΔRPA -0.35
+  HK       G0W0 -1.90  ΔRPA -2.20
+  Cl2Mg    G0W0 +0.08  ΔRPA -0.36
+  C2H3Br   G0W0 -0.44  ΔRPA -0.71
