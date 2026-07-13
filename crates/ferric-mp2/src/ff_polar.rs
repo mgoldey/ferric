@@ -41,6 +41,19 @@ static FF_TRACE: ferric_core::config::ConfigVar<bool> = ferric_core::config::Con
 fn ff_trace() -> bool {
     FF_TRACE.toggle()
 }
+
+/// `FERRIC_FF_UNRELAXED` descriptor: use the unrelaxed (no orbital-response)
+/// MP2 density instead of the relaxed one — a dev-only diagnostic for isolating
+/// the orbital-relaxation contribution to α in this (experimental) finite-field
+/// path. Routed through the shared toggle so `FERRIC_FF_UNRELAXED=0` means off
+/// (the old `== Some("1")` read already treated 0 as off, but any other value
+/// too — this canonicalizes it).
+static FF_UNRELAXED: ferric_core::config::ConfigVar<bool> = ferric_core::config::ConfigVar {
+    env_name: "FERRIC_FF_UNRELAXED",
+    default: false,
+    parse: ferric_core::config::parse_toggle,
+    validate: ferric_core::config::accept_any,
+};
 use ndarray::Array2;
 use ndarray_linalg::{Eigh, UPLO};
 
@@ -252,7 +265,7 @@ pub fn debug_perturbed_dipole_z(
         }
     }
     let rhf = solve_rhf_with_external(ctx, mol, obs, bounds, scf_config, &v)?;
-    let mode = if std::env::var("FERRIC_FF_UNRELAXED").ok().as_deref() == Some("1") {
+    let mode = if FF_UNRELAXED.toggle() {
         DensityMode::Unrelaxed
     } else {
         DensityMode::Relaxed

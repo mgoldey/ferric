@@ -34,6 +34,31 @@ static CPKS_TRACE: ferric_core::config::ConfigVar<bool> = ferric_core::config::C
 fn cpks_trace() -> bool {
     CPKS_TRACE.toggle()
 }
+
+/// Resolve one of the CPKS term-scaling tuning knobs (`CPKS_*`, all default
+/// `1.0` = neutral). These are dev-only probes for isolating individual response
+/// terms, so any *finite* value is legal — including `0.0` (disable a term) or a
+/// negative weight — hence `accept_any`, not `positive_f64`'s `> 0` rule. A
+/// malformed value warns and falls back to the default rather than aborting an
+/// experimental run. Centralizes the previously copy-pasted
+/// `env::var(..).and_then(parse).unwrap_or(default)` idiom (notably `CPKS_WP`,
+/// read at four sites) onto the shared descriptor for one parse path.
+fn cpks_weight(env_name: &'static str, default: f64) -> f64 {
+    let var = ferric_core::config::ConfigVar::<f64> {
+        env_name,
+        default,
+        parse: |s| s.parse::<f64>().map_err(|e| e.to_string()),
+        validate: |v| {
+            v.is_finite()
+                .then_some(())
+                .ok_or_else(|| "must be finite".to_string())
+        },
+    };
+    var.get().map(|r| r.value).unwrap_or_else(|e| {
+        eprintln!("[config] {env_name}: {e}; using default {default}");
+        default
+    })
+}
 use ferric_scf::screening::SchwarzBounds;
 use ndarray::Array2;
 
@@ -397,7 +422,7 @@ pub fn analytic_dt2_full(
     let mut jdd = Array2::<f64>::zeros((nbas, nbas));
     let mut kdd = Array2::<f64>::zeros((nbas, nbas));
     ferric_scf::rhf::build_jk(ctx, obs, bounds, 1e-12, &dd_ao, &mut jdd, &mut kdd)?;
-    let gscale: f64 = std::env::var("CPKS_GSCALE").ok().and_then(|s| s.parse().ok()).unwrap_or(1.0);
+    let gscale: f64 = cpks_weight("CPKS_GSCALE", 1.0);
     let g_ao = gscale * (2.0 * &jdd - &kdd);
     // ∂F_AO = −r_axis + G[∂D];  ∂F_MO = Cᵀ ∂F_AO C
     let df_ao = &(-&dip_ao[axis]) + &g_ao;
@@ -543,8 +568,8 @@ pub fn analytic_de_mp2_along(
                     let ja = j * nvir + a;
                     let k = 2.0 * eri(ia, jb) - eri(ib, ja);
                     let dk = 2.0 * deri(ia, jb) - deri(ib, ja);
-                    let w_t = std::env::var("CPKS_W_DT2").ok().and_then(|s| s.parse().ok()).unwrap_or(1.0_f64);
-                    let w_k = std::env::var("CPKS_W_DK").ok().and_then(|s| s.parse().ok()).unwrap_or(1.0_f64);
+                    let w_t = cpks_weight("CPKS_W_DT2", 1.0);
+                    let w_k = cpks_weight("CPKS_W_DK", 1.0);
                     de += w_t * dt2[ia * nov + jb] * k + w_k * inter.t2[ia * nov + jb] * dk;
                 }
             }
@@ -900,12 +925,12 @@ pub fn analytic_alpha_amplitude_only(
         let mut ddm = Array2::<f64>::zeros((nmo, nmo));
         for i in 0..nocc {
             for j in 0..nocc {
-                ddm[(first_occ + i, first_occ + j)] = (dp_oo[(i, j)] + dp_oo[(j, i)]) * std::env::var("CPKS_WP").ok().and_then(|x|x.parse().ok()).unwrap_or(1.0_f64);
+                ddm[(first_occ + i, first_occ + j)] = (dp_oo[(i, j)] + dp_oo[(j, i)]) * cpks_weight("CPKS_WP", 1.0);
             }
         }
         for a in 0..nvir {
             for b in 0..nvir {
-                ddm[(nocc_total + a, nocc_total + b)] = (dp_vv[(a, b)] + dp_vv[(b, a)]) * std::env::var("CPKS_WP").ok().and_then(|x|x.parse().ok()).unwrap_or(1.0_f64);
+                ddm[(nocc_total + a, nocc_total + b)] = (dp_vv[(a, b)] + dp_vv[(b, a)]) * cpks_weight("CPKS_WP", 1.0);
             }
         }
         let ddm_ao = c.dot(&ddm).dot(&c.t());
@@ -1001,7 +1026,7 @@ pub fn analytic_alpha_relaxed(
 
         // ∂L via directional central difference of build_lagrangian in ε along the
         // analytic input derivatives (smooth → exact at small ε, no gauge issue).
-        let eps_step: f64 = std::env::var("CPKS_EPS").ok().and_then(|x|x.parse().ok()).unwrap_or(1e-4);
+        let eps_step: f64 = cpks_weight("CPKS_EPS", 1e-4);
         let lag_at = |s: f64| -> Array2<f64> {
             let f = &f_mo0 + &(s * &df_mo);
             let t: Vec<f64> = inter.t2.iter().zip(dt2.iter()).map(|(a, b)| a + s * b).collect();
@@ -1029,7 +1054,7 @@ pub fn analytic_alpha_relaxed(
         //   (i)  rotation of the z₀-density:  Cᵀ G(∂D^{z₀}) C
         //   (ii) rotation of the outer projection: Σ_p Θ_pa (Az₀)_pi + Θ_pi (Az₀)_ap
         // where Az₀_full = Cᵀ G(D^{z₀}) C in FULL MO. (Az₀ in vo only = A·z₀.)
-        let waz: f64 = std::env::var("CPKS_WAZ").ok().and_then(|x| x.parse().ok()).unwrap_or(1.0);
+        let waz: f64 = cpks_weight("CPKS_WAZ", 1.0);
         if waz != 0.0 {
             // Full-MO Θ generator.
             let mut theta = Array2::<f64>::zeros((nmo, nmo)); // Θ_{q,p}
@@ -1113,12 +1138,12 @@ pub fn analytic_alpha_relaxed(
         let mut ddm = Array2::<f64>::zeros((nmo, nmo));
         for i in 0..nocc {
             for j in 0..nocc {
-                ddm[(first_occ + i, first_occ + j)] = (dp_oo[(i, j)] + dp_oo[(j, i)]) * std::env::var("CPKS_WP").ok().and_then(|x|x.parse().ok()).unwrap_or(1.0_f64);
+                ddm[(first_occ + i, first_occ + j)] = (dp_oo[(i, j)] + dp_oo[(j, i)]) * cpks_weight("CPKS_WP", 1.0);
             }
         }
         for a in 0..nvir {
             for b in 0..nvir {
-                ddm[(nocc_total + a, nocc_total + b)] = (dp_vv[(a, b)] + dp_vv[(b, a)]) * std::env::var("CPKS_WP").ok().and_then(|x|x.parse().ok()).unwrap_or(1.0_f64);
+                ddm[(nocc_total + a, nocc_total + b)] = (dp_vv[(a, b)] + dp_vv[(b, a)]) * cpks_weight("CPKS_WP", 1.0);
             }
         }
         // vo/ov block: SCF reference orbital response (2·U, the ∂ of the 2δ core
@@ -1127,8 +1152,8 @@ pub fn analytic_alpha_relaxed(
         // MP2 orbital-relaxation ∂z.
         for a in 0..nvir {
             for i in 0..nocc {
-                let w2u: f64 = std::env::var("CPKS_W2U").ok().and_then(|x| x.parse().ok()).unwrap_or(1.0);
-                let wz: f64 = std::env::var("CPKS_WZ").ok().and_then(|x|x.parse().ok()).unwrap_or(1.0); let vo = w2u * 2.0 * u[(a, i)] + wz * dz[(a, i)];
+                let w2u: f64 = cpks_weight("CPKS_W2U", 1.0);
+                let wz: f64 = cpks_weight("CPKS_WZ", 1.0); let vo = w2u * 2.0 * u[(a, i)] + wz * dz[(a, i)];
                 ddm[(nocc_total + a, first_occ + i)] += vo;
                 ddm[(first_occ + i, nocc_total + a)] += vo;
             }

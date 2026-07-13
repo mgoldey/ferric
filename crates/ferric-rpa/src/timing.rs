@@ -7,9 +7,22 @@
 use std::sync::OnceLock;
 use std::time::Instant;
 
+/// `FERRIC_TIMING` descriptor: opt-in stage timing (env-only debug toggle).
+/// Routed through the shared `parse_toggle` so `FERRIC_TIMING=0` means OFF,
+/// matching every other ferric toggle. (This is a deliberate behavior change
+/// from the prior `var_os(..).is_some()` read, under which `FERRIC_TIMING=0`
+/// was ON — the cross-flag "0 means off everywhere" consistency fix.) Resolved
+/// once and cached in a `OnceLock` since it gates a hot-path timer.
+static TIMING: ferric_core::config::ConfigVar<bool> = ferric_core::config::ConfigVar {
+    env_name: "FERRIC_TIMING",
+    default: false,
+    parse: ferric_core::config::parse_toggle,
+    validate: ferric_core::config::accept_any,
+};
+
 fn enabled() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("FERRIC_TIMING").is_some())
+    *ON.get_or_init(|| TIMING.toggle())
 }
 
 /// A scoped stage timer. Construct with `start`, call `end` when the stage
