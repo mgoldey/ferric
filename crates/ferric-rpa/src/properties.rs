@@ -42,6 +42,39 @@ fn debug_toggle(env_name: &'static str) -> bool {
     var.toggle()
 }
 
+/// Hirshfeld/α bounding-box grid knobs (Bohr), read at 5 sites here with one
+/// shared default each (verified identical: spacing 0.20, margin 6.0).
+/// These are result-affecting, so the value is VALIDATED (finite > 0); a
+/// malformed override logs a warning and uses the default rather than aborting a
+/// deep property calc (2 of the 5 call sites don't return Result, so a hard Err
+/// can't propagate uniformly without a signature change — deferred).
+fn positive_f64(env_name: &'static str, default: f64) -> f64 {
+    let var = ferric_core::config::ConfigVar::<f64> {
+        env_name,
+        default,
+        parse: |s| s.parse::<f64>().map_err(|e| e.to_string()),
+        validate: |v| {
+            (v.is_finite() && *v > 0.0)
+                .then_some(())
+                .ok_or_else(|| "must be finite > 0".to_string())
+        },
+    };
+    var.get().map(|r| r.value).unwrap_or_else(|e| {
+        eprintln!("[config] {env_name}: {e}; using default {default}");
+        default
+    })
+}
+
+/// Grid spacing (Bohr) for the Hirshfeld/α bounding-box grid. `FERRIC_HIRSHFELD_SPACING`.
+fn hirshfeld_spacing() -> f64 {
+    positive_f64("FERRIC_HIRSHFELD_SPACING", 0.20)
+}
+
+/// Bounding-box margin (Bohr) covering the diffuse α tail. `FERRIC_HIRSHFELD_MARGIN`.
+fn hirshfeld_margin() -> f64 {
+    positive_f64("FERRIC_HIRSHFELD_MARGIN", 6.0)
+}
+
 /// Solve the (naux × naux) screened-dielectric system ε̃·y^d = w^d for the
 /// three Cartesian right-hand sides, propagating LAPACK failure (singular ε̃
 /// from a near-zero orbital-energy gap) instead of panicking.
@@ -1739,14 +1772,8 @@ pub fn pdep_polarizability_hirshfeld(
     //    Grid spacing chosen to balance integration error vs cost; the
     //    sum-rule gate validates whatever choice we make.
     // ---------------------------------------------------------------------
-    let spacing = std::env::var("FERRIC_HIRSHFELD_SPACING")
-        .ok()
-        .and_then(|s| s.parse::<f64>().ok())
-        .unwrap_or(0.20); // Bohr
-    let margin = std::env::var("FERRIC_HIRSHFELD_MARGIN")
-        .ok()
-        .and_then(|s| s.parse::<f64>().ok())
-        .unwrap_or(6.0); // Bohr — needs to cover the diffuse tail of α
+    let spacing = hirshfeld_spacing();
+    let margin = hirshfeld_margin();
     let grid = GridSpec::bounding_box(mol, margin, spacing);
     let dv = spacing * spacing * spacing;
     let npts = grid.n_x * grid.n_y * grid.n_z;
@@ -2079,10 +2106,8 @@ pub fn pdep_polarizability_hirshfeld_dynamic(
 
     // --- Grid setup (identical to static Hirshfeld path) ---
     let _dip_ao_analytical = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
-    let spacing = std::env::var("FERRIC_HIRSHFELD_SPACING")
-        .ok().and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.20);
-    let margin = std::env::var("FERRIC_HIRSHFELD_MARGIN")
-        .ok().and_then(|s| s.parse::<f64>().ok()).unwrap_or(6.0);
+    let spacing = hirshfeld_spacing();
+    let margin = hirshfeld_margin();
     let grid = GridSpec::bounding_box(mol, margin, spacing);
     let dv = spacing * spacing * spacing;
     let npts = grid.n_x * grid.n_y * grid.n_z;
@@ -2728,10 +2753,8 @@ pub fn atomic_effective_volumes_hirshfeld(
     use ferric_export::gto_eval::eval_basis_on_grid;
 
     let natoms = mol.atoms.len();
-    let spacing = std::env::var("FERRIC_HIRSHFELD_SPACING")
-        .ok().and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.20);
-    let margin = std::env::var("FERRIC_HIRSHFELD_MARGIN")
-        .ok().and_then(|s| s.parse::<f64>().ok()).unwrap_or(6.0);
+    let spacing = hirshfeld_spacing();
+    let margin = hirshfeld_margin();
     let grid = GridSpec::bounding_box(mol, margin, spacing);
     let dv = spacing * spacing * spacing;
     let npts = grid.n_x * grid.n_y * grid.n_z;
@@ -2986,10 +3009,8 @@ pub fn hirshfeld_i_charges(
     use ferric_export::gto_eval::eval_basis_on_grid;
 
     let natoms = mol.atoms.len();
-    let spacing = std::env::var("FERRIC_HIRSHFELD_SPACING")
-        .ok().and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.20);
-    let margin = std::env::var("FERRIC_HIRSHFELD_MARGIN")
-        .ok().and_then(|s| s.parse::<f64>().ok()).unwrap_or(6.0);
+    let spacing = hirshfeld_spacing();
+    let margin = hirshfeld_margin();
     let grid = GridSpec::bounding_box(mol, margin, spacing);
     let dv = spacing * spacing * spacing;
     let npts = grid.n_x * grid.n_y * grid.n_z;
@@ -3114,14 +3135,8 @@ pub fn hirshfeld_charges(
     use ferric_export::gto_eval::eval_basis_on_grid;
 
     let natoms = mol.atoms.len();
-    let spacing = std::env::var("FERRIC_HIRSHFELD_SPACING")
-        .ok()
-        .and_then(|s| s.parse::<f64>().ok())
-        .unwrap_or(0.20);
-    let margin = std::env::var("FERRIC_HIRSHFELD_MARGIN")
-        .ok()
-        .and_then(|s| s.parse::<f64>().ok())
-        .unwrap_or(6.0);
+    let spacing = hirshfeld_spacing();
+    let margin = hirshfeld_margin();
     let grid = GridSpec::bounding_box(mol, margin, spacing);
     let dv = spacing * spacing * spacing;
     let npts = grid.n_x * grid.n_y * grid.n_z;
