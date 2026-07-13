@@ -131,12 +131,21 @@ pub struct RhfConfig {
 impl Default for RhfConfig {
     fn default() -> Self {
         Self {
-            // Tightened from (1e-8, 1e-7, 100) after H2O+ false-convergence
-            // diagnosis: with the looser tolerances, UHF would report
-            // converged=true at a state 85 mHa above the true minimum.
+            // Convergence gate = ΔP primary + ΔE loose sanity (see scf_converged),
+            // NOT the DIIS commutator. `density_conv` is the TIGHT threshold on
+            // dp_rms (ORCA TolRMSP): the density genuinely drains here (MEASURED
+            // ~1e-9 at aTZ). `energy_conv` is a LOOSE "not still descending"
+            // bound on |ΔE| — deliberately 1e-3, far above the ~2e-5 DF energy
+            // noise floor, because ΔE (like the commutator) floors with naux and
+            // a tight ΔE is unreachable. ΔP does the real work.
+            //
+            // History: (1e-10, 1e-8) once guarded an H2O+ UHF false convergence
+            // (a *gradient*-gated accept of a state 85 mHa high). ΔP is a stronger
+            // wrong-basin signal than that gradient — regression-guarded by the
+            // h2o_plus_* UHF tests, which pass under this gate.
             max_iter: 200,
-            energy_conv: 1e-10,
-            density_conv: 1e-8,
+            energy_conv: 1e-3,
+            density_conv: 1e-6,
             diis_size: 8,
             integral_thresh: 1e-12,
             k_builder: None,
@@ -216,6 +225,74 @@ fn stall_detected(errmax_history: &[f64], window: usize, current_err: f64) -> bo
     recent_min >= 0.9 * prev_min
 }
 
+/// The settled convergence signals for one SCF iteration. All are magnitudes
+/// (already `.abs()`/norm'd by the caller).
+///
+/// - `de`: |E − E_prev|, energy change.
+/// - `dp_rms`: RMS of the density change ΔP = D_new − D_last, i.e.
+///   `‖ΔP‖_F / sqrt(nao²)`.
+/// - `dp_max`: max element of |ΔP|.
+///
+/// The DIIS commutator (FDS−SDF) is deliberately absent: it is a *diagnostic*
+/// (printed in the trace), never a gate — see [`scf_converged`] for why.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ConvergenceSignals {
+    pub de: f64,
+    pub dp_rms: f64,
+    pub dp_max: f64,
+}
+
+/// Decide SCF convergence from the settled signals — the ORCA `ConvCheckMode=2`
+/// design, where the **density change ΔP is the primary (tight) signal** and the
+/// energy change is only a *loose* "not still descending" sanity bound. Both
+/// ORCA and PySCF use ΔP-primary in place of gating on the DIIS/orbital-gradient
+/// commutator, and ORCA's default checks energy *stability*, not a tight ΔE.
+///
+/// # Why ΔP, and why ΔE only loosely
+///
+/// Under RI-J/RI-JK the fitted Fock carries a self-consistency error that grows
+/// with `naux`. This floors BOTH the commutator's max element AND the
+/// iteration-to-iteration energy change — MEASURED at aug-cc-pVTZ (toluene,
+/// RI-JK): `err_max` parks at ~1.26e-6 and `dE` oscillates at ~2e-5, neither
+/// draining. Gating on *either* has the same naux-chasing pathology (a fixed
+/// small tolerance is unreachable and the floor scales with the aux basis).
+///
+/// `dp_rms` is the ONE signal that drains cleanly at the RI fixed point: the
+/// density stops moving (D_{n+1} = D_n to fitting precision) even while the
+/// commutator and the energy still jitter on the noise floor. MEASURED same run:
+/// `dp_rms` drains monotonically to ~1e-9 while `dE` sits at 2e-5. So ΔP is the
+/// convergence criterion; ΔE is used only to reject a run that is *still
+/// actively descending* (early iterations have `dE ≫` any noise floor).
+///
+/// # The gate
+///
+/// Converged ⟺ density settled **and** energy not actively descending:
+/// - `dp_rms < density_conv`         (primary, tight — the real signal)
+/// - `dp_max < 10·density_conv`      (ORCA `TolMaxP` companion: guards a single
+///   still-moving element while the RMS looks settled)
+/// - `de   < energy_conv`            (LOOSE sanity bound, default 1e-3 — well
+///   above the ~2e-5 DF energy floor, so it excludes a descending run without
+///   demanding an unreachable tight ΔE)
+///
+/// The commutator (FDS−SDF) is *not* consulted — diagnostic only.
+///
+/// Returns `Some(ScfExit::Converged)` when met, else `None` (keep iterating).
+/// The caller still owns divergence/stall/max-iter exits.
+pub(crate) fn scf_converged(
+    sig: ConvergenceSignals,
+    energy_conv: f64,
+    density_conv: f64,
+) -> Option<crate::result::ScfExit> {
+    let dp_rms_ok = sig.dp_rms < density_conv;
+    let dp_max_ok = sig.dp_max < 10.0 * density_conv;
+    let energy_not_descending = sig.de < energy_conv;
+    if dp_rms_ok && dp_max_ok && energy_not_descending {
+        Some(crate::result::ScfExit::Converged)
+    } else {
+        None
+    }
+}
+
 /// Solve the closed-shell RHF equations for a molecule.
 ///
 /// Uses the Roothaan-Hall procedure: build Fock matrix from density, diagonalize,
@@ -276,19 +353,13 @@ pub fn solve_rhf(
     // MOM reference: last accepted occupied MO block (None until armed).
     let mut mom_ref: Option<Array2<f64>> = None;
     let mut prev_e = 0.0;
-    // Previous iteration's err_max, for detecting a stalled DIIS gradient plateau
-    // (near-degenerate manifolds park err_max on a noise floor it can't drain).
-    let mut prev_err_max = f64::INFINITY;
-    // Count of consecutive iterations where the energy is stationary but err_max
-    // has stopped improving. Used only as a last-resort plateau acceptance.
-    let mut plateau_streak = 0usize;
-    // Oscillation-robust plateau: consecutive iters where err_max sits inside a
-    // low noise-floor band while the energy is stationary. Unlike plateau_streak
-    // (which needs a MONOTONIC park), this tolerates err_max bouncing around the
-    // DF/RI fitting noise floor — the failure mode on larger aTZ closed shells
-    // (benzene: err_max oscillates 1.06e-7↔1.37e-7 forever, energy stationary at
-    // ~1e-6, never reaching density_conv=1e-8 nor a monotonic stall).
-    let mut noise_band_streak = 0usize;
+    // Density change from the PREVIOUS iteration's D update (ΔP = D_new − D_old),
+    // the ORCA/PySCF primary convergence signal. Carried into the next
+    // iteration's convergence check (ΔP for iter N is known only after iter N's
+    // density rebuild). INFINITY on iter 1 so the gate can never fire before a
+    // real ΔP exists. See scf_converged / the df-jk-noise-floor memory.
+    let mut dp_rms = f64::INFINITY;
+    let mut dp_max = f64::INFINITY;
     let mut total_quartets = 0;
 
     if let Some(kb) = config.k_builder.as_deref() {
@@ -537,96 +608,35 @@ pub fn solve_rhf(
 
         let de = (energy - prev_e).abs();
         let err_max = err.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
+        // RMS commutator (‖FDS−SDF‖_F / sqrt(size)) — a diagnostic, NOT a gate.
+        let grad_rms = {
+            let n = (err.len() as f64).max(1.0);
+            (err.iter().map(|v| v * v).sum::<f64>() / n).sqrt()
+        };
 
         if scf_trace() {
-            eprintln!("SCF iter={:4}  E={:.12}  dE={:.3e}  err_max={:.3e}", iter, energy, de, err_max);
-        }
-
-        // DF builds introduce O(1e-6) Ha noise in the K matrix per iteration that
-        // breaks strict energy variational convergence even when orbitals have
-        // fully converged. When DF is active, accept on |FDS-SDF| (orbital gradient)
-        // alone — the same criterion PySCF uses for DF-SCF.
-        //
-        // For large polyaromatic molecules with near-degenerate π orbitals the DF
-        // noise floor can park err_max at ~1-5×density_conv indefinitely (H1
-        // diagnosis: plateau, not oscillation). The fallback below accepts when
-        // the gradient is within a 10× factor of the threshold AND the energy
-        // change is below 1e-5 Ha (safely in the noise floor plateau, not still
-        // descending toward the minimum).
-        let df_active = df_j.is_some() || df_k.is_some();
-        let energy_ok = de < config.energy_conv;
-        let grad_ok = err_max < config.density_conv;
-        let df_noise_floor_ok = df_active
-            && err_max < 10.0 * config.density_conv
-            && de < 1e-5;
-
-        // Near-degeneracy plateau acceptance (both J/K paths). On diffuse
-        // alkali/d-block clusters (Na4/Na6/Cu2 at aug-cc-pVTZ) the occupied
-        // manifold is near-degenerate: DIIS reaches the correct ground-state
-        // energy but the orbital gradient parks on a noise floor (err_max ≈ 3e-5)
-        // it can never drain below density_conv, so bare `energy_ok && grad_ok`
-        // never trips and the SCF spins to max_iter. We accept once the gradient
-        // has demonstrably STALLED — improving <10% per iter for several iters —
-        // while the energy is stationary (|dE| < 1e-6, safely at the noise floor,
-        // NOT still descending). This preserves the basin bare DIIS already found
-        // (verified lowest-energy for Na4: −774.894 vs the −771.5/−771.7 wrong
-        // excited states that MOM / a raised lindep threshold converge to), and
-        // cannot fire mid-descent (err_max would be dropping fast) or on an
-        // oscillating run (err_max would not be monotonically stalled). The
-        // result is flagged `converged` but the caller should treat a plateau
-        // exit as gradient-loose; we surface it via the trace below.
-        // err_max ceiling of 1e-4: the correct Na4 ground state plateaus at
-        // err_max ≤ 3e-5, whereas the wrong excited states reached by MOM / a
-        // raised lindep threshold plateau at ≥1e-3 — so 1e-4 accepts the former
-        // with margin and excludes the latter. Never relax this above the value
-        // that separates the two, or a genuinely-unconverged state could slip in.
-        let grad_stalled = err_max <= prev_err_max && err_max > 0.9 * prev_err_max;
-        if de < 1e-6 && grad_stalled && err_max < 1e-4 {
-            plateau_streak += 1;
-        } else {
-            plateau_streak = 0;
-        }
-
-        // Oscillation-robust plateau (DF/RI noise floor). err_max parked in a low
-        // band while the energy is stationary — accept even if err_max is NOT
-        // monotonically stalled (it bounces around the fitting noise). The band
-        // ceiling (5e-6) is 20× below the 1e-4 stall/plateau ceiling and above the
-        // DF noise floor at every basis size measured, so it accepts a genuinely-
-        // converged SCF but never a still-descending or truly-stuck run (those sit
-        // at err_max ≫ 5e-6 AND falling). Requires DF active AND a settled energy —
-        // on a direct-JK run err_max drains to density_conv normally, so this path
-        // stays dormant there.
-        //
-        // The floor is basis- AND size-dependent (grows with naux): ~1e-7 for
-        // benzene/aTZ but ~1.26e-6 for toluene/xylene/aTZ (more aux functions →
-        // higher RI-J fitting noise, see df-jk-noise-floor-irreducible memory).
-        // The original 1e-6 ceiling was calibrated on benzene and left toluene's
-        // 1.26e-6 floor JUST above the band → it never accumulated the streak and
-        // exited MaxIter. 5e-6 clears the naux-scaled floor with margin (toluene
-        // parks rock-solid at 1.256-1.266e-6) while still excluding a descending
-        // run: the healthy descent phase sits at err_max ≥ 6e-6 and is FALLING, so
-        // it cannot accrue the 8-iter energy-stationary streak.
-        // err_max is the reliable signal here (DIIS gradient FDS−SDF); it parks in
-        // a <2% band once at the floor. The ENERGY bounces at the DF noise floor up
-        // to ~1e-5 iter-to-iter — so the energy gate is loose (settled, not
-        // descending), and err_max's tight parking is what excludes a live SCF.
-        const NOISE_BAND: f64 = 5e-6;
-        if df_active && err_max < NOISE_BAND && de < 1e-4 {
-            noise_band_streak += 1;
-        } else {
-            noise_band_streak = 0;
-        }
-        let noise_band_ok = noise_band_streak >= 8;
-
-        let plateau_ok = plateau_streak >= 3 || noise_band_ok;
-        if plateau_ok && scf_trace() {
             eprintln!(
-                "SCF plateau accepted at iter={iter}: E={energy:.9} err_max={err_max:.3e} \
-                 (gradient parked on {} noise floor)",
-                if noise_band_ok { "DF-fitting" } else { "near-degeneracy" }
+                "SCF iter={iter:4}  E={energy:.12}  dE={de:.3e}  \
+                 dp_rms={dp_rms:.3e}  dp_max={dp_max:.3e}  \
+                 |g|_rms={grad_rms:.3e}  err_max={err_max:.3e}"
             );
         }
-        prev_err_max = err_max;
+
+        // Convergence decision: energy + density change (ORCA ConvCheckMode-2 /
+        // PySCF), NOT the DIIS commutator. Under RI-J/RI-JK the commutator parks
+        // on a naux-dependent noise floor and never drains; ΔP does (MEASURED),
+        // so we gate on ΔP and treat the commutator as diagnostic only. This
+        // replaces the former tower of naux-chasing plateau hacks (df_noise_floor,
+        // near-degeneracy grad_stalled, oscillation noise-band) with one
+        // size-independent criterion. See scf_converged.
+        //
+        // dp_rms/dp_max are INFINITY until the first density rebuild (iter 1), so
+        // the `iter > 1` guard below is belt-and-suspenders on top of that.
+        let conv_exit = scf_converged(
+            ConvergenceSignals { de, dp_rms, dp_max },
+            config.energy_conv,
+            config.density_conv,
+        );
 
         // Divergence: energy climbing for consecutive iters.
         if let Some(tol) = config.divergence_tol {
@@ -656,38 +666,28 @@ pub fn solve_rhf(
             }
         }
 
-        let strict = if df_active {
-            grad_ok || df_noise_floor_ok
-        } else {
-            energy_ok && grad_ok
-        };
-        let converged = strict || plateau_ok;
-
-        if iter > 1 && converged {
-            let (orb_e, c) = diagonalize(&f, &x)?;
-            let density_alpha = 0.5 * &d;
-            return Ok(ScfResult {
-                spin: Spin::Restricted,
-                energy,
-                density_total: d,
-                density_alpha,
-                density_beta: None,
-                mos_alpha: c,
-                mos_beta: None,
-                eps_alpha: orb_e,
-                eps_beta: None,
-                fock_alpha: f,
-                fock_beta: None,
-                converged: true,
-                // Populate the gradient-looseness signal the enum exists for:
-                // a plateau/noise-band acceptance (err_max parked above
-                // density_conv) is reported as Plateau so downstream consumers
-                // can distinguish it from a strict gradient-converged run.
-                // `converged` stays true either way — callers gate on that today.
-                exit: if strict { ScfExit::Converged } else { ScfExit::Plateau },
-                iterations: iter,
-                computed_quartets: total_quartets,
-            });
+        if iter > 1 {
+            if let Some(exit) = conv_exit {
+                let (orb_e, c) = diagonalize(&f, &x)?;
+                let density_alpha = 0.5 * &d;
+                return Ok(ScfResult {
+                    spin: Spin::Restricted,
+                    energy,
+                    density_total: d,
+                    density_alpha,
+                    density_beta: None,
+                    mos_alpha: c,
+                    mos_beta: None,
+                    eps_alpha: orb_e,
+                    eps_beta: None,
+                    fock_alpha: f,
+                    fock_beta: None,
+                    converged: true,
+                    exit,
+                    iterations: iter,
+                    computed_quartets: total_quartets,
+                });
+            }
         }
         prev_e = energy;
 
@@ -739,6 +739,16 @@ pub fn solve_rhf(
         // raise + SAD/free-atom protection as the DIIS FDS/SDF pair above.
         let c_occ = c.slice(ndarray::s![.., ..nocc]);
         let d_new = with_blas_threads(opt_in_blas_threads(), || 2.0 * c_occ.dot(&c_occ.t()));
+        // Density change ΔP = D_new − D_old — the primary convergence signal
+        // (consumed at the top of the next iteration by scf_converged). Unlike
+        // the DIIS commutator, ΔP drains to zero at the RI fixed point even when
+        // the commutator parks on the naux-dependent noise floor.
+        {
+            let diff = &d_new - &d;
+            let n2 = (diff.len() as f64).max(1.0);
+            dp_rms = (diff.iter().map(|v| v * v).sum::<f64>() / n2).sqrt();
+            dp_max = diff.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
+        }
         d.assign(&d_new);
         last_c = c;
     }
@@ -1513,6 +1523,60 @@ mod tests {
         assert_eq!(r.exit, ScfExit::MaxIter);
         assert_eq!(r.density_total.dim(), (prep.nbasis(), prep.nbasis()));
         assert!(r.density_total.iter().all(|v| v.is_finite()));
+    }
+
+    // --- scf_converged: pure-decision tests (ΔE + ΔP gate, ORCA ConvCheckMode-2) ---
+
+    fn sig(de: f64, dp_rms: f64, dp_max: f64) -> ConvergenceSignals {
+        ConvergenceSignals { de, dp_rms, dp_max }
+    }
+
+    // Tolerances mirror the defaults: energy_conv (loose ΔE sanity) = 1e-3,
+    // density_conv (tight ΔP) = 1e-6.
+    const E_CONV: f64 = 1e-3;
+    const D_CONV: f64 = 1e-6;
+
+    #[test]
+    fn scf_converged_accepts_settled_density_and_nondescending_energy() {
+        // ΔP under the tight tol AND ΔE under the loose sanity bound → Converged.
+        let r = scf_converged(sig(2e-5, 5e-7, 4e-6), E_CONV, D_CONV);
+        assert_eq!(r, Some(ScfExit::Converged));
+    }
+
+    #[test]
+    fn scf_converged_accepts_when_energy_and_gradient_park_on_ri_floor() {
+        // THE key case (MEASURED toluene/aTZ): the commutator parks at ~1.26e-6
+        // AND ΔE floors at ~2e-5 — neither drains. But dp_rms has drained to
+        // ~1e-9. The gate accepts on ΔP; the loose ΔE bound (1e-3) clears the
+        // 2e-5 energy floor. This is the whole point of the redesign: BOTH the
+        // gradient and ΔE floor with naux, only ΔP converges.
+        let r = scf_converged(sig(2e-5, 1e-9, 9e-8), E_CONV, D_CONV);
+        assert_eq!(r, Some(ScfExit::Converged),
+            "must converge on ΔP even when BOTH the gradient and ΔE floor above their tols");
+    }
+
+    #[test]
+    fn scf_converged_rejects_still_descending_density() {
+        // Density still moving (dp_rms ≫ density_conv): a mid-descent iteration.
+        let r = scf_converged(sig(2e-5, 3e-5, 1e-3), E_CONV, D_CONV);
+        assert_eq!(r, None, "a still-moving density must not be accepted");
+    }
+
+    #[test]
+    fn scf_converged_rejects_actively_descending_energy() {
+        // Density looks settled but the energy is still dropping fast (ΔE ≫ the
+        // loose bound) — an early iteration where DIIS briefly stalls the density
+        // while the energy is far from settled. The loose ΔE bound still catches it.
+        let r = scf_converged(sig(1e-2, 5e-7, 4e-6), E_CONV, D_CONV);
+        assert_eq!(r, None, "an actively-descending energy must not be accepted");
+    }
+
+    #[test]
+    fn scf_converged_dp_max_companion_guards_a_single_moving_element() {
+        // dp_rms looks settled but one density element is still swinging
+        // (dp_max > 10·density_conv) → reject (ORCA TolMaxP guard).
+        let r = scf_converged(sig(2e-5, 5e-7, 5e-5), E_CONV, D_CONV);
+        assert_eq!(r, None, "dp_max companion must reject a single moving element");
     }
 
     // --- stall_detected: pure-arithmetic positive-trip tests ---
