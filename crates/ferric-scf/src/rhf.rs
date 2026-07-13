@@ -590,18 +590,27 @@ pub fn solve_rhf(
         // Oscillation-robust plateau (DF/RI noise floor). err_max parked in a low
         // band while the energy is stationary — accept even if err_max is NOT
         // monotonically stalled (it bounces around the fitting noise). The band
-        // ceiling (1e-6) is two orders below the 1e-4 stall/plateau ceiling and
-        // well above the ~1e-7 DF noise floor, so it accepts a genuinely-converged
-        // SCF (benzene at ~1.1e-7) but never a still-descending or truly-stuck run
-        // (those sit at err_max ≫ 1e-6). Requires DF active AND a settled energy —
+        // ceiling (5e-6) is 20× below the 1e-4 stall/plateau ceiling and above the
+        // DF noise floor at every basis size measured, so it accepts a genuinely-
+        // converged SCF but never a still-descending or truly-stuck run (those sit
+        // at err_max ≫ 5e-6 AND falling). Requires DF active AND a settled energy —
         // on a direct-JK run err_max drains to density_conv normally, so this path
         // stays dormant there.
-        // err_max is the reliable signal here (DIIS gradient FDS−SDF); it sits
-        // rock-solid < 2e-7 once benzene converges. The ENERGY, by contrast,
-        // bounces at the DF noise floor up to ~1e-5 iter-to-iter — so the energy
-        // gate must be loose (settled, not descending), not tight. A genuinely
-        // descending SCF has err_max ≫ 1e-6, so err_max is what excludes it.
-        const NOISE_BAND: f64 = 1e-6;
+        //
+        // The floor is basis- AND size-dependent (grows with naux): ~1e-7 for
+        // benzene/aTZ but ~1.26e-6 for toluene/xylene/aTZ (more aux functions →
+        // higher RI-J fitting noise, see df-jk-noise-floor-irreducible memory).
+        // The original 1e-6 ceiling was calibrated on benzene and left toluene's
+        // 1.26e-6 floor JUST above the band → it never accumulated the streak and
+        // exited MaxIter. 5e-6 clears the naux-scaled floor with margin (toluene
+        // parks rock-solid at 1.256-1.266e-6) while still excluding a descending
+        // run: the healthy descent phase sits at err_max ≥ 6e-6 and is FALLING, so
+        // it cannot accrue the 8-iter energy-stationary streak.
+        // err_max is the reliable signal here (DIIS gradient FDS−SDF); it parks in
+        // a <2% band once at the floor. The ENERGY bounces at the DF noise floor up
+        // to ~1e-5 iter-to-iter — so the energy gate is loose (settled, not
+        // descending), and err_max's tight parking is what excludes a live SCF.
+        const NOISE_BAND: f64 = 5e-6;
         if df_active && err_max < NOISE_BAND && de < 1e-4 {
             noise_band_streak += 1;
         } else {
