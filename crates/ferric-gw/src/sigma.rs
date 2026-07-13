@@ -35,6 +35,44 @@ use ferric_core::FerricError;
 use ferric_rpa::PdepRpaResult;
 use ferric_scf::ScfResult;
 use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
+
+/// Sub-sample `npts` node indices from an `nw`-point evaluation grid with a
+/// *decreasing* step size — a direct port of PySCF `gw_ac._get_ac_idx`
+/// (pyscf/gw/utils/ac_grid.py). `steps = linspace(1, step_ratio, npts)`,
+/// normalized, cumulatively summed × nw, offset so the first index is
+/// `idx_start`, then rounded. Denser near ω=0 (where Σc varies fastest) and
+/// sparser at large ω — the node distribution that makes the Thiele–Padé fit
+/// stable for the long ε_HOMO→ε_F extrapolation that a small-gap (KS/PBE)
+/// reference requires. Returns strictly-increasing, in-range indices.
+pub(crate) fn pade_node_indices(nw: usize, npts: usize, step_ratio: f64, idx_start: usize) -> Vec<usize> {
+    // PySCF requires nw > npts; if the caller passes a grid too small, fall back
+    // to using every available node (still ascending) rather than erroring.
+    if nw <= npts {
+        return (0..nw).collect();
+    }
+    let n = npts as f64;
+    // steps[k] = 1 + (step_ratio − 1)·k/(npts−1)   (== linspace(1, step_ratio, npts))
+    let raw: Vec<f64> = (0..npts)
+        .map(|k| 1.0 + (step_ratio - 1.0) * (k as f64) / (n - 1.0))
+        .collect();
+    let s: f64 = raw.iter().sum();
+    // cumsum(steps/sum · nw), then shift so the first entry lands on idx_start.
+    let mut cum = 0.0;
+    let mut out: Vec<usize> = Vec::with_capacity(npts);
+    let mut first = None;
+    for r in &raw {
+        cum += r / s * (nw as f64);
+        if first.is_none() {
+            first = Some(cum);
+        }
+        let shifted = cum + idx_start as f64 - first.unwrap();
+        out.push(shifted.round() as usize);
+    }
+    // Clamp into range and dedup (rounding can collide at the dense end).
+    out.iter_mut().for_each(|i| *i = (*i).min(nw - 1));
+    out.dedup();
+    out
+}
 use ndarray::{Array1, Array2};
 use num_complex::Complex64;
 use rayon::prelude::*;
@@ -161,23 +199,35 @@ pub(crate) fn solve_qp_for_mo(
     // several eV — so Σ_c must be evaluated at the shifted energy, not post-hoc.
     static_shift: f64,
 ) -> Result<(f64, f64, f64, bool), FerricError> {
-    let n_pade = if pade_npts == 0 {
-        quad_freqs.len().min(16)
-    } else {
-        pade_npts
-    };
-    let pade_omegas: Vec<f64> = (0..n_pade)
-        .map(|k| {
-            let t = (k as f64 + 0.5) / n_pade as f64;
-            let lo = 0.05_f64.ln();
-            let hi = (3.0 * quad_freqs.last().copied().unwrap_or(5.0)).ln();
-            (lo + t * (hi - lo)).exp()
-        })
-        .collect();
+    // Padé analytic-continuation nodes, matching PySCF gw_ac.
+    //
+    // Σc(z) is analytic (closed-form ω-integral over the PDEP quadrature, see
+    // sigma_c_at_z), so the AC nodes are INDEPENDENT of the quad_freqs used for
+    // that integral — they are just where we sample Σc(iω') to fit the Padé.
+    // PySCF samples on `ef + i·[0, scaled-Legendre freqs]` sub-sampled with a
+    // decreasing step (_get_ac_idx: npts=18, step_ratio=2/3), NOT on a fixed
+    // log grid. The old bespoke log grid (0.05 → 3·ω_max, non-ef-aware) gave the
+    // right answer for @HF (ε_HOMO≈ε_F ⇒ short extrapolation) but swung @PBE by
+    // eV per molecule (small gap ⇒ ε_HOMO far from ε_F ⇒ long extrapolation on
+    // the wrong nodes). See the gw-ks-sigma-c-offset diagnosis.
+    let npts = if pade_npts == 0 { 18 } else { pade_npts };
+    const STEP_RATIO: f64 = 2.0 / 3.0;
+    // Dense scaled-Legendre evaluation grid (u0=0.5 matches PySCF
+    // _get_scaled_legendre_roots and ferric's own GW quadrature), prepended with
+    // ω=0, then sub-sampled. Use a grid comfortably larger than npts so the
+    // decreasing-step selection is meaningful (PySCF's default nw is 100).
+    let nw_eval = 100usize;
+    let (leg_freqs, _leg_wts) = ferric_rpa::quadrature::gauss_legendre_nodes(nw_eval, 0.5);
+    let mut eval_grid: Vec<f64> = Vec::with_capacity(nw_eval + 1);
+    eval_grid.push(0.0);
+    eval_grid.extend_from_slice(&leg_freqs);
+    // idx_start = 1 (PySCF default): skip the ω=0 node as the first fit point but
+    // keep it available; the decreasing step still lands nodes near it.
+    let idx = pade_node_indices(eval_grid.len(), npts, STEP_RATIO, 1);
     // Sample Σ_c on the Fermi-shifted imaginary axis z = ef + iω'.
-    let z_nodes: Vec<Complex64> = pade_omegas
+    let z_nodes: Vec<Complex64> = idx
         .iter()
-        .map(|&w| Complex64::new(ef, w))
+        .map(|&i| Complex64::new(ef, eval_grid[i]))
         .collect();
     let f_vals: Vec<Complex64> = z_nodes
         .iter()
@@ -586,6 +636,23 @@ pub fn run_evgw(
 mod tests {
     use super::*;
 
+    #[test]
+    fn pade_node_indices_matches_pyscf_get_ac_idx() {
+        // Reference values from PySCF gw_ac._get_ac_idx (npts=18, step_ratio=2/3,
+        // idx_start=1), the convention this ports. Computed against the local
+        // pyscf checkout — see the fix commit message.
+        let got = pade_node_indices(101, 18, 2.0 / 3.0, 1);
+        let expect = vec![1, 8, 14, 20, 27, 33, 39, 44, 50, 56, 61, 66, 72, 77, 81, 86, 91, 95];
+        assert_eq!(got, expect, "must reproduce PySCF _get_ac_idx(101,18,2/3,1)");
+
+        let got2 = pade_node_indices(50, 18, 2.0 / 3.0, 1);
+        let expect2 = vec![1, 4, 7, 11, 14, 17, 20, 23, 25, 28, 31, 33, 36, 38, 41, 43, 45, 48];
+        assert_eq!(got2, expect2, "must reproduce PySCF _get_ac_idx(50,18,2/3,1)");
+
+        // Degenerate guard: nw <= npts falls back to all indices (ascending).
+        assert_eq!(pade_node_indices(10, 18, 2.0 / 3.0, 1), (0..10).collect::<Vec<_>>());
+    }
+
     /// Reference scalar implementation of sigma_c_at_z (the pre-BLAS3 loop nest),
     /// kept in the test module to pin the optimized version's numerics.
     fn sigma_c_at_z_scalar_ref(
@@ -764,11 +831,10 @@ mod tests {
     // The degenerate-Padé-node guard (repeated support point -> Err instead
     // of silent NaN/Inf) is exercised directly on `PadeCF::fit` in
     // `pade::tests::fit_errors_on_repeated_support_node` — `solve_qp_for_mo`
-    // builds its support nodes from `n_pade` strictly-increasing log-spaced
-    // frequencies (see `pade_omegas` above), which are independent of
-    // `quad_freqs`'s *values* (only `quad_freqs.last()` sets the range), so
-    // duplicate `quad_freqs` entries cannot reach this call chain to produce
-    // duplicate `z_nodes`. There is no way to trigger the guard through this
-    // higher-level API without duplicating `pade_omegas`'s own internals in
-    // the test, which the direct `PadeCF::fit` test already covers.
+    // builds its support nodes by sub-sampling a strictly-increasing
+    // scaled-Legendre eval grid via `pade_node_indices` (PySCF `_get_ac_idx`),
+    // which is independent of `quad_freqs`'s *values*, so duplicate `quad_freqs`
+    // entries cannot reach this call chain to produce duplicate `z_nodes`.
+    // The node-index port is pinned against PySCF in
+    // `pade_node_indices_matches_pyscf_get_ac_idx`.
 }
