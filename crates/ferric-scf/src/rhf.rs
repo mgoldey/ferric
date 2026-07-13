@@ -538,7 +538,7 @@ pub fn solve_rhf(
         let de = (energy - prev_e).abs();
         let err_max = err.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
 
-        if std::env::var("FERRIC_SCF_TRACE").ok().as_deref() == Some("1") {
+        if scf_trace() {
             eprintln!("SCF iter={:4}  E={:.12}  dE={:.3e}  err_max={:.3e}", iter, energy, de, err_max);
         }
 
@@ -610,7 +610,7 @@ pub fn solve_rhf(
         let noise_band_ok = noise_band_streak >= 8;
 
         let plateau_ok = plateau_streak >= 3 || noise_band_ok;
-        if plateau_ok && std::env::var("FERRIC_SCF_TRACE").ok().as_deref() == Some("1") {
+        if plateau_ok && scf_trace() {
             eprintln!(
                 "SCF plateau accepted at iter={iter}: E={energy:.9} err_max={err_max:.3e} \
                  (gradient parked on {} noise floor)",
@@ -627,7 +627,7 @@ pub fn solve_rhf(
                 divergence_streak = 0;
             }
             if divergence_streak >= 3 {
-                if std::env::var("FERRIC_SCF_TRACE").ok().as_deref() == Some("1") {
+                if scf_trace() {
                     eprintln!("SCF diverged at iter={iter}: dE={:.3e} > tol for 3 iters", energy - prev_e);
                 }
                 return Ok(build_nonconverged(ScfExit::Diverged, &d, &last_c, &last_eps, &f, energy, iter, total_quartets));
@@ -640,7 +640,7 @@ pub fn solve_rhf(
         if let Some(w) = config.stall_window {
             errmax_history.push(err_max);
             if stall_detected(&errmax_history, w, err_max) {
-                if std::env::var("FERRIC_SCF_TRACE").ok().as_deref() == Some("1") {
+                if scf_trace() {
                     eprintln!("SCF stalled at iter={iter}: err_max={err_max:.3e} (no progress over {w} iters)");
                 }
                 return Ok(build_nonconverged(ScfExit::Stalled, &d, &last_c, &last_eps, &f, energy, iter, total_quartets));
@@ -966,6 +966,21 @@ pub fn build_jk(
 /// eigenvectors of the overlap matrix with eigenvalue below this are dropped from
 /// the variational space. PySCF's default is ~1e-6 to 1e-7; 1e-6 is conservative.
 pub(crate) const LINDEP_THRESH: f64 = 1e-6;
+
+/// `FERRIC_SCF_TRACE` descriptor: per-iteration SCF convergence trace (env-only
+/// debug toggle). Read at several sites in rhf/uhf/guess via [`scf_trace`].
+static SCF_TRACE: ferric_core::config::ConfigVar<bool> = ferric_core::config::ConfigVar {
+    env_name: "FERRIC_SCF_TRACE",
+    default: false,
+    parse: ferric_core::config::parse_toggle,
+    validate: ferric_core::config::accept_any,
+};
+
+/// Whether the per-iteration SCF trace is on. `FERRIC_SCF_TRACE=1/true/on/yes`,
+/// off for `0/false/off/no`/unset; a malformed value logs a warning and stays off.
+pub(crate) fn scf_trace() -> bool {
+    SCF_TRACE.toggle()
+}
 
 /// Effective linear-dependence threshold, overridable via `FERRIC_LINDEP_THRESH`.
 ///

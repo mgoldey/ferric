@@ -23,6 +23,17 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::oneelectron;
 use ferric_integrals::operator::Operator;
 use ferric_scf::result::{ScfResult, Spin};
+
+/// `FERRIC_CPKS_TRACE` descriptor: CPKS residual trace (env-only debug toggle).
+static CPKS_TRACE: ferric_core::config::ConfigVar<bool> = ferric_core::config::ConfigVar {
+    env_name: "FERRIC_CPKS_TRACE",
+    default: false,
+    parse: ferric_core::config::parse_toggle,
+    validate: ferric_core::config::accept_any,
+};
+fn cpks_trace() -> bool {
+    CPKS_TRACE.toggle()
+}
 use ferric_scf::screening::SchwarzBounds;
 use ndarray::Array2;
 
@@ -127,7 +138,7 @@ pub(crate) fn solve_cphf_cg_scaled(
 
     let max_iter = 200;
     let tol = 1e-10;
-    let trace = std::env::var("FERRIC_CPKS_TRACE").ok().as_deref() == Some("1");
+    let trace = cpks_trace();
     let mut resid_max = r.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
     let mut converged = false;
     let mut it_done = 0;

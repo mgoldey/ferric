@@ -30,6 +30,17 @@ use ferric_scf::diis::Diis;
 use ferric_scf::rhf::{build_jk, RhfConfig};
 use ferric_scf::result::{ScfResult, Spin};
 use ferric_scf::screening::SchwarzBounds;
+
+/// `FERRIC_FF_TRACE` descriptor: finite-field α driver trace (env-only debug toggle).
+static FF_TRACE: ferric_core::config::ConfigVar<bool> = ferric_core::config::ConfigVar {
+    env_name: "FERRIC_FF_TRACE",
+    default: false,
+    parse: ferric_core::config::parse_toggle,
+    validate: ferric_core::config::accept_any,
+};
+fn ff_trace() -> bool {
+    FF_TRACE.toggle()
+}
 use ndarray::Array2;
 use ndarray_linalg::{Eigh, UPLO};
 
@@ -248,7 +259,7 @@ pub fn debug_perturbed_dipole_z(
     };
     let p = mp2_relaxed_density_ao(mol, obs, dfbs, op, bounds, &rhf, mp2_config, mode)?;
 
-    if std::env::var("FERRIC_FF_TRACE").ok().as_deref() == Some("1") {
+    if ff_trace() {
         // Electron count of the relaxed density and of the SCF reference, plus the
         // SCF-only μ_z vs the full MP2-relaxed μ_z. Localizes a 1/F blow-up to the
         // SCF reference vs the MP2 correction.
@@ -374,7 +385,7 @@ fn solve_zvector_cg(
 
     let max_iter = 100;
     let tol = 1e-10; // tighter than the 1e-8 the FF dipole difference needs
-    let trace = std::env::var("FERRIC_ZVEC_TRACE").ok().as_deref() == Some("1");
+    let trace = crate::zvector::zvec_trace();
     for it in 0..max_iter {
         let resid_max = r.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
         if trace { eprintln!("  [zvec-cg] iter={it:3}  max_resid={resid_max:.3e}"); }

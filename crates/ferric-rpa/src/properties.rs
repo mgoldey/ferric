@@ -28,6 +28,20 @@ use ndarray::Array2;
 
 use crate::config::PdepRpaConfig;
 
+/// Debug-print toggles for the property/Hirshfeld/α diagnostics (env-only).
+/// NOTE behavior change: all three were previously read via `.is_ok()` (any
+/// value, incl. `=0`, enabled them); now `=0`/`false`/`off` disable them, via
+/// the shared [`ferric_core::config::parse_toggle`].
+fn debug_toggle(env_name: &'static str) -> bool {
+    let var = ferric_core::config::ConfigVar::<bool> {
+        env_name,
+        default: false,
+        parse: ferric_core::config::parse_toggle,
+        validate: ferric_core::config::accept_any,
+    };
+    var.toggle()
+}
+
 /// Solve the (naux × naux) screened-dielectric system ε̃·y^d = w^d for the
 /// three Cartesian right-hand sides, propagating LAPACK failure (singular ε̃
 /// from a near-zero orbital-energy gap) instead of panicking.
@@ -580,7 +594,7 @@ pub fn pdep_polarizability_static(
         }
     }
 
-    if std::env::var("FERRIC_DEBUG_ALPHA").is_ok() {
+    if debug_toggle("FERRIC_DEBUG_ALPHA") {
         eprintln!("[alpha-debug] tensor=\n{:?}", tensor);
         let bare_iso: f64 = (0..3)
             .map(|i| 4.0 * mu_flat[i].dot(&mu_flat_inv[i]))
@@ -1976,7 +1990,7 @@ pub fn pdep_polarizability_hirshfeld(
             max_diff = max_diff.max((sum_tensor[i][j] - mol_tensor[i][j]).abs());
         }
     }
-    if std::env::var("FERRIC_DEBUG_HIRSHFELD").is_ok() {
+    if debug_toggle("FERRIC_DEBUG_HIRSHFELD") {
         eprintln!(
             "[hirshfeld] grid {}×{}×{} (spacing={}, margin={}), max|Σα^A − α_mol| = {:.3e}",
             grid.n_x, grid.n_y, grid.n_z, spacing, margin, max_diff
@@ -3076,7 +3090,7 @@ pub fn hirshfeld_i_charges(
             max_dq = max_dq.max((q_new - q[a]).abs());
             q[a] = 0.5 * q[a] + 0.5 * q_new; // damped
         }
-        if std::env::var("FERRIC_HI_DEBUG").is_ok() {
+        if debug_toggle("FERRIC_HI_DEBUG") {
             let r: Vec<f64> = q.iter().map(|x| (x * 1000.0).round() / 1000.0).collect();
             eprintln!("HI iter {_it}: q = {r:?} (max_dq={max_dq:.2e})");
         }

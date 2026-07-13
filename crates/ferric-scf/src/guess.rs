@@ -142,7 +142,7 @@ pub fn sad_guess(
             .map(|shells| shells.iter().any(|sh| sh.l >= 4))
             .unwrap_or(false);
         if has_high_l {
-            if std::env::var("FERRIC_SCF_TRACE").ok().as_deref() == Some("1") {
+            if crate::rhf::scf_trace() {
                 let sym = ferric_core::elements::z_to_symbol(z).unwrap_or("?");
                 eprintln!(
                     "SAD: skipping free-atom solve for {sym} (Z={z}) — basis has l≥4 (g functions); block left zero"
@@ -344,7 +344,7 @@ pub fn sad_guess_smallbasis(
                 None => {
                     // Neither def2-svp nor def2-tzvp carries this element —
                     // same zero-block fallback as sad_guess's g-skip.
-                    if std::env::var("FERRIC_SCF_TRACE").ok().as_deref() == Some("1") {
+                    if crate::rhf::scf_trace() {
                         let sym = ferric_core::elements::z_to_symbol(z).unwrap_or("?");
                         eprintln!(
                             "SAD-smallbasis: {sym} (Z={z}) has l≥4 in target basis and is absent from def2-svp and def2-tzvp; block left zero"
@@ -355,7 +355,7 @@ pub fn sad_guess_smallbasis(
                     block
                 }
                 Some(small_bs) => {
-                    if std::env::var("FERRIC_SCF_TRACE").ok().as_deref() == Some("1") {
+                    if crate::rhf::scf_trace() {
                         let sym = ferric_core::elements::z_to_symbol(z).unwrap_or("?");
                         eprintln!(
                             "SAD-smallbasis: {sym} (Z={z}) via {}",

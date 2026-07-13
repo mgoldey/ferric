@@ -12,6 +12,19 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::io::AsRawFd;
 
+/// `FERRIC_OOC_TRACE` descriptor: 3-index in-core/spill decision trace (env-only
+/// debug toggle). NOTE behavior change: previously `.is_ok()` (any value, incl.
+/// `=0`, enabled it); now `=0`/`false`/`off` disable it.
+static OOC_TRACE: ferric_core::config::ConfigVar<bool> = ferric_core::config::ConfigVar {
+    env_name: "FERRIC_OOC_TRACE",
+    default: false,
+    parse: ferric_core::config::parse_toggle,
+    validate: ferric_core::config::accept_any,
+};
+fn ooc_trace() -> bool {
+    OOC_TRACE.toggle()
+}
+
 /// Largest number of aux rows whose (block_naux × nao × nao × 8) bytes fit the
 /// budget; at least 1 (a single aux row must always be representable).
 fn block_naux_for(budget_bytes: usize, nao: usize) -> usize {
@@ -76,7 +89,7 @@ impl ThreeIndexSource {
         let naux = dfbs.nbasis();
         let nao = obs.nbasis();
         let needed = naux.saturating_mul(nao).saturating_mul(nao).saturating_mul(8);
-        if std::env::var("FERRIC_OOC_TRACE").is_ok() {
+        if ooc_trace() {
             eprintln!(
                 "[OOC build] naux={naux} nao={nao} needed={:.2}GB budget={:.2}GB -> {}",
                 needed as f64 / 1e9, budget_bytes as f64 / 1e9,
@@ -155,7 +168,7 @@ impl ThreeIndexSource {
         let needed = naux.saturating_mul(nao).saturating_mul(nao).saturating_mul(8);
         let block_naux = block_naux_for(budget_bytes, nao);
         let in_core = needed <= budget_bytes;
-        if std::env::var("FERRIC_OOC_TRACE").is_ok() {
+        if ooc_trace() {
             eprintln!(
                 "[OOC dress] naux={naux} nao={nao} needed={:.2}GB budget={:.2}GB block_naux={block_naux} -> {}",
                 needed as f64 / 1e9, budget_bytes as f64 / 1e9,

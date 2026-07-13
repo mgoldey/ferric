@@ -41,6 +41,22 @@ use ferric_integrals::operator::Operator;
 use ndarray::Array2;
 use ndarray_linalg::Eigh;
 
+/// `FERRIC_ROHF_TRACE` descriptor: per-iteration ROHF plateau-dynamics trace
+/// (env-only debug toggle). NOTE behavior change: previously read via `.is_ok()`,
+/// so ANY value (incl. `=0`) enabled it; now `=0`/`false`/`off` disable it,
+/// consistent with every other `FERRIC_*_TRACE` flag.
+static ROHF_TRACE: ferric_core::config::ConfigVar<bool> = ferric_core::config::ConfigVar {
+    env_name: "FERRIC_ROHF_TRACE",
+    default: false,
+    parse: ferric_core::config::parse_toggle,
+    validate: ferric_core::config::accept_any,
+};
+
+/// Whether the per-iteration ROHF trace is on. Malformed value → warn + off.
+fn rohf_trace() -> bool {
+    ROHF_TRACE.toggle()
+}
+
 /// ROHF configuration mirrors RHF.
 pub type RohfConfig = RhfConfig;
 
@@ -274,7 +290,7 @@ pub fn solve_rohf(
         // FERRIC_ROHF_TRACE=1: per-iter diagnostic of plateau dynamics.
         // Logs (iter, energy, ΔE, err_max, per-block gradient max,
         // eigenvalues straddling SOMO, and the occupied-α↔virt overlap).
-        if std::env::var("FERRIC_ROHF_TRACE").is_ok() {
+        if rohf_trace() {
             let (eps_now, _c_now) = diagonalize(&f_eff, &s_inv_sqrt)?;
             // Eigenvalues around the SOMO. With nocc_double β-pairs and
             // nocc_open singly-α-occupied orbitals, the SOMO index range is

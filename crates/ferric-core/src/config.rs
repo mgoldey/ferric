@@ -124,6 +124,21 @@ impl<T: Clone + std::fmt::Display> ConfigVar<T> {
     }
 }
 
+impl ConfigVar<bool> {
+    /// A debug/trace toggle's resolved value against the process env, no explicit
+    /// override. A malformed value logs a one-line warning and returns the
+    /// default (`false` for a trace flag) — a DEBUG toggle must never abort a
+    /// real run over a typo like `FERRIC_X=tru`. (This is the deliberate
+    /// exception to the "malformed override Errs loudly" rule, which applies to
+    /// *result-affecting* knobs, not diagnostic prints.)
+    pub fn toggle(&self) -> bool {
+        self.get().map(|r| r.value).unwrap_or_else(|e| {
+            eprintln!("[config] {}: {e}; treating as off", self.env_name);
+            self.default
+        })
+    }
+}
+
 /// The production env lookup: `|k| std::env::var(k).ok()`. Pass to
 /// [`ConfigVar::resolve`] (or use [`ConfigVar::get`]). Kept as a named fn so call
 /// sites read consistently and tests can substitute a closure.

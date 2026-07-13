@@ -16,6 +16,18 @@ use ferric_scf::ScfResult;
 use ferric_scf::screening::SchwarzBounds;
 use ndarray::{Array2, Array3};
 
+/// `FERRIC_ZVEC_TRACE` descriptor: Z-vector CPHF residual trace (env-only debug
+/// toggle). Read here and in ff_polar.rs via [`zvec_trace`].
+static ZVEC_TRACE: ferric_core::config::ConfigVar<bool> = ferric_core::config::ConfigVar {
+    env_name: "FERRIC_ZVEC_TRACE",
+    default: false,
+    parse: ferric_core::config::parse_toggle,
+    validate: ferric_core::config::accept_any,
+};
+pub(crate) fn zvec_trace() -> bool {
+    ZVEC_TRACE.toggle()
+}
+
 /// Solve the Z-vector equation for the RI-MP2 orbital response.
 ///
 /// Returns z of shape (nvir, nocc) — the occupied-virtual block of the
@@ -65,7 +77,7 @@ pub fn solve_zvector(
             }
         }
 
-        if std::env::var("FERRIC_ZVEC_TRACE").ok().as_deref() == Some("1") {
+        if zvec_trace() {
             eprintln!("  [zvec] iter={_iter:3}  max_resid={max_resid:.3e}");
         }
 
@@ -92,7 +104,7 @@ pub fn solve_zvector(
     // FERRIC_ZVEC_TRACE so the finite-field noise-floor diagnosis can see it.
     // (Not promoted to a hard error yet: the analytic-gradient callers tolerate
     // a loosely-converged z; the FF-α path is what needs the tighter floor.)
-    if std::env::var("FERRIC_ZVEC_TRACE").ok().as_deref() == Some("1") {
+    if zvec_trace() {
         eprintln!("  [zvec] DID NOT CONVERGE in {max_iter} iters");
     }
 
