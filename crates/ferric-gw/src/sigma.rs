@@ -647,7 +647,7 @@ mod tests {
         }
         // Symmetric inv-dielectric matrices per frequency (W̃_d is symmetric).
         let mut inv_diel_freq = Vec::new();
-        for k in 0..n_quad {
+        for _k in 0..n_quad {
             let mut d = Array2::<f64>::zeros((m_modes, m_modes));
             for a in 0..m_modes {
                 for b in a..m_modes {

@@ -276,13 +276,20 @@ pub(crate) fn solver_blas_threads_with(get: impl Fn(&str) -> Option<String> + Co
     if rayon::current_thread_index().is_some() {
         return 1;
     }
+    // The Lanczos-specific override wins when set to a parseable value. This
+    // keeps a hand-rolled read rather than routing through ConfigVar: its
+    // precedence is cross-var (a present-but-unparseable value must fall THROUGH
+    // to the umbrella `FERRIC_BLAS_THREADS`, not degrade to this var's own
+    // default), which `ConfigVar::resolve` — single-var, no sibling fallback —
+    // does not model. The umbrella side IS a ConfigVar (see
+    // `blas_threads::BLAS_THREADS`); this resolver composes on top of it.
     if let Some(v) = get("FERRIC_LANCZOS_BLAS_THREADS") {
         if let Ok(n) = v.trim().parse::<usize>() {
             return n.max(1);
         }
     }
-    // Unset: fall back to the umbrella convention (itself defaulting to 1,
-    // and itself re-checking the rayon-worker guard).
+    // Unset (or unparseable): fall back to the umbrella convention (itself
+    // defaulting to 1, and itself re-checking the rayon-worker guard).
     ferric_integrals::blas_threads::opt_in_blas_threads_with(get)
 }
 

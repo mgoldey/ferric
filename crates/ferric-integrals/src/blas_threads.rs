@@ -109,6 +109,26 @@ pub fn opt_in_blas_threads() -> usize {
     opt_in_blas_threads_with(|k| std::env::var(k).ok())
 }
 
+/// The umbrella BLAS-thread descriptor. Routed through [`ConfigVar`] for the
+/// same uniform parse/validate/audit as every other ferric setting.
+///
+/// A thread count is a *performance* knob, not a result-affecting one, so a
+/// malformed value must degrade to the safe default (`1`) rather than abort a
+/// run (the [`ConfigVar<bool>::toggle`] exception class — see that method's
+/// doc). Both hazards are handled *outside* the descriptor: the rayon-worker
+/// guard is a pre-check in the resolver, and the `.max(1)` floor is applied to
+/// the resolved value. The `validate` here is therefore `accept_any` and the
+/// `parse` maps garbage to the default (an `Err` here would only be swallowed
+/// by the wrapper anyway).
+pub(crate) const BLAS_THREADS: ferric_core::config::ConfigVar<usize> =
+    ferric_core::config::ConfigVar {
+        env_name: "FERRIC_BLAS_THREADS",
+        default: 1,
+        // Garbage → default; the wrapper floors the result at 1 regardless.
+        parse: |s| Ok(s.trim().parse::<usize>().unwrap_or(1)),
+        validate: ferric_core::config::accept_any,
+    };
+
 /// [`opt_in_blas_threads`] with an injected env lookup — the testable core.
 ///
 /// Why injection instead of `set_var` in tests: `FERRIC_BLAS_THREADS` (and the
@@ -122,15 +142,20 @@ pub fn opt_in_blas_threads() -> usize {
 /// integration-test binaries (their own process) where nothing else runs.
 #[doc(hidden)]
 pub fn opt_in_blas_threads_with(get: impl Fn(&str) -> Option<String>) -> usize {
+    // Hazard (2) pre-check: inside a rayon worker, force 1 regardless of env —
+    // this must happen BEFORE consulting the descriptor (see the doc comment on
+    // [`opt_in_blas_threads`]).
     if rayon::current_thread_index().is_some() {
         return 1;
     }
-    if let Some(v) = get("FERRIC_BLAS_THREADS") {
-        if let Ok(n) = v.trim().parse::<usize>() {
-            return n.max(1);
-        }
-    }
-    1
+    // Resolve value through the shared descriptor (no TOML/explicit path here —
+    // this is a pure env knob), then floor at 1. A malformed value degrades to
+    // the default via the descriptor's lenient parse.
+    BLAS_THREADS
+        .resolve(None, get)
+        .map(|r| r.value)
+        .unwrap_or(1)
+        .max(1)
 }
 
 /// Run `f` with OpenBLAS pinned to `n` threads, restoring the previous count
