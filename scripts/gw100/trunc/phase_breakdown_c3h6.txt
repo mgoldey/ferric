@@ -1,0 +1,26 @@
+Phase wall-time breakdown — C3H6 / aug-cc-pVTZ full-ladder, thresh=1e-4.
+3 repeats via FERRIC_TIMING=1 (driver phase:* stages). Times in ms.
+
+              run1     run2     run3    median
+neutral_RHF   18813     9384    12792    12792
+neutral_RPA    5072     1737     1554     1737
+cation_UHF    35940    11474    17127    17127
+cation_URPA    6591     3475     2785     3475
+GW_columns    43011    51070    40412    43011
+
+MEDIAN SHARES (total ~78s):
+  GW columns @HF     43.0s  55%   <- DOMINANT (4 @HF methods; Σ evaluation)
+  cation UHF         17.1s  22%
+  neutral RHF        12.8s  16%
+  cation U-PDEP-RPA   3.5s   4%
+  neutral PDEP-RPA    1.7s   2%
+  -- SCF (RHF+UHF) = 38%; NOT dominant (corrects earlier "SCF dominates") --
+
+REDUNDANCY NOTE: the 4 @HF GW columns (G0W0/COHSEX/evGW0/evGW) each call run_gw,
+and each rebuilds the SAME neutral-reference PDEP (lib.rs:276) though they screen
+with identical W. ~3 redundant rebuilds ≈ 5s (~7% of total) here. Modest because
+the Σ evaluation inside each column (which legitimately differs per method)
+dominates the GW phase, not the PDEP build. WITHIN a solve the eigensolve is
+once-at-ω=0 and reused across the frequency quadrature (Galli/WEST-style) — no
+per-frequency re-diagonalization. Truncation = within-basis rank cut (M modes),
+NOT a smaller basis: obs/dfbs/naux unchanged, IP invariant ≤2 meV.

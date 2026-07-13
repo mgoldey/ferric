@@ -257,6 +257,7 @@ fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, Cation
     // density carried forward). Replaces the old hardcoded default->ls0.5->ls1.0
     // escalation. DF-JK makes g-function atoms (Cu/aTZ) ~28x cheaper per iter.
     use ferric_scf::ladder::{solve_rhf_ladder, default_ladder};
+    let _t_rhf = ferric_rpa::timing::Stage::start("phase:neutral_RHF");
     let rhf_n = match solve_rhf_ladder(&ctx, &neutral, &obs_n, op, &bounds_n, &default_ladder()) {
         Ok(lr) if lr.converged => lr.result,
         Ok(lr) => {
@@ -266,6 +267,7 @@ fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, Cation
         }
         Err(e) => { eprintln!("  [!] {} neutral RHF ladder error: {e:?}", case.name); return None; }
     };
+    _t_rhf.end();
     let nocc_n = (neutral.nelec() as usize) / 2;
     let homo_abs = nocc_n - 1;
     let ip_koop = -rhf_n.eps_r()[homo_abs] * HA_TO_EV;
@@ -292,7 +294,9 @@ fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, Cation
         s2: f64::NAN, s2_ideal: f64::NAN, energy: f64::NAN,
     };
     if !g0w0_only {
+        let _t_rpan = ferric_rpa::timing::Stage::start("phase:neutral_PDEP_RPA");
         let rpa_n = run_pdep_rpa(&neutral, &obs_n, &dfbs_n, op, &rhf_n, &rpa_cfg).ok()?;
+        _t_rpan.end();
 
         // DF-JK for the cation UHF (matches the neutral RHF ladder). def2-universal-jkfit
         // avoids the direct <gg|gg> quartets that make g-function atoms (Cu/aTZ) ~28x
@@ -304,6 +308,7 @@ fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, Cation
             ..Default::default()
         };
         let c_seed = rhf_n.mos_alpha.clone();
+        let _t_uhf = ferric_rpa::timing::Stage::start("phase:cation_UHF");
         let (uhf_c, diag_method) = match solve_uhf_with_guess(&ctx, &cation, &obs_c, &bounds_c, &uhf_cfg, Some((&c_seed, &c_seed))) {
             Ok(r) => (r, "UHF(neutral-seed)"),
             Err(_) => match solve_uhf(&ctx, &cation, &obs_c, &bounds_c, &uhf_cfg) {
@@ -314,6 +319,7 @@ fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, Cation
                 }
             },
         };
+        _t_uhf.end();
         let s_ao = oneelectron::overlap(&obs_c);
         let nelec_c = cation.nelec() as i64;
         let two_s = cation.multiplicity as i64 - 1;
@@ -330,7 +336,9 @@ fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, Cation
         };
 
         ip_dscf = (uhf_c.energy - rhf_n.energy) * HA_TO_EV;
+        let _t_rpac = ferric_rpa::timing::Stage::start("phase:cation_UPDEP_RPA");
         let rpa_c = run_u_pdep_rpa(&cation, &obs_c, &dfbs_c, op, &uhf_c, &rpa_cfg).ok()?;
+        _t_rpac.end();
         ip_drpa = {
             let e_n = rhf_n.energy + rpa_n.e_rpa;
             let e_c = uhf_c.energy + rpa_c.e_rpa;
@@ -382,6 +390,7 @@ fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, Cation
         // big molecule: G0W0@HF only (the PySCF-validated core number)
         vec![(GwMethod::G0W0, &mut ip_g0w0)]
     };
+    let _t_gw = ferric_rpa::timing::Stage::start("phase:GW_columns@HF");
     for (method, slot) in methods {
         let gcfg = GwConfig { method, max_ev_iter: 8, ev_conv_thresh: 1e-4, ..Default::default() };
         if let Ok(res) = run_gw(&neutral, &obs_n, &dfbs_n, op, &rhf_n, &pdep_cfg_gw, &gcfg, None) {
@@ -390,6 +399,7 @@ fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, Cation
             }
         }
     }
+    _t_gw.end();
 
     // G0W0@PBE: a second full GW. By default full-depth molecules only, but
     // GW100_PBE_ALL=1 forces it for every molecule too (used when the rest of the
