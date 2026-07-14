@@ -1,25 +1,24 @@
-Does ΔRPA beat G0W0@HF because of error cancellation? — aug-cc-pVTZ, n=91
+Does ΔRPA beat G0W0 because of error cancellation? — FINAL (vs clean external refs)
 
-G0W0@HF : MAE 0.491  signed_mean +0.378  RMS 0.682
-ΔRPA    : MAE 0.374  signed_mean +0.139  RMS 0.586
+ferric aug-cc-pVTZ ΔRPA & G0W0@HF vs experiment, AND vs a published external
+G0W0@PBE (TURBOMOLE 7.0, def2-TZVP, lit_ref/G0W0atPBE_HOMO_Tv7.0_def2-TZVP_cbas.json).
+Common scoreable subset n=72 (excl C4/Rb2/H12Si5/CCuN).
 
-Pearson r(errors) = 0.97  → fail on SAME molecules (method-independent error dominates)
-G0W0 RMS after removing its +0.38 bias = 0.568  ≈ ΔRPA RMS 0.586
+Errors vs EXPERIMENT:
+  method          raw MAE   signed bias   de-biased RMS (scatter)
+  ΔRPA (ferric)    0.381      +0.120           0.598
+  G0W0@HF (ferric) 0.490      +0.348           0.592
+  G0W0@PBE (lit)   0.748      -0.683           0.615
 
-VERDICT: ΔRPA's win is ENTIRELY the removal of G0W0@HF's +0.38 eV HF-overshoot
-bias (a total-energy-difference cancels the cation/neutral correlation error).
-De-biased, the two have identical scatter; r=0.97 says same physics. Not superior.
+VERDICT: all three have the SAME ~0.60 eV scatter once bias is removed. They are
+the same physics; the only difference is a rigid starting-point offset:
+  G0W0@HF over-IPs (+0.35, HF gap too wide);
+  G0W0@PBE under-IPs (-0.68, semilocal gap too small);
+  ΔRPA is nearly unbiased (+0.12) because a total-energy DIFFERENCE cancels the
+  correlation error common to cation and neutral.
+So ΔRPA "wins" purely by sitting between the two G0W0 biases — a bias-cancellation
+effect, NOT superior physics. Confirmed against a CLEAN external @PBE (r=0.72),
+so it is not an artifact of ferric's earlier (Padé-node-broken) @PBE.
 
-ΔRPA helps most where G0W0 over-IP'd:
-  C4H10O   G0W0 +0.87  ΔRPA +0.40
-  F2Mg     G0W0 +0.56  ΔRPA +0.09
-  CH2O2    G0W0 +0.46  ΔRPA +0.02
-  C2H4O    G0W0 +0.57  ΔRPA +0.15
-  C4H10    G0W0 +1.07  ΔRPA +0.65
-  C2H6O    G0W0 +0.65  ΔRPA +0.23
-ΔRPA WORSE where G0W0 was accurate/under-IP:
-  MgO      G0W0 -0.33  ΔRPA -0.76
-  C2H4     G0W0 +0.02  ΔRPA -0.35
-  HK       G0W0 -1.90  ΔRPA -2.20
-  Cl2Mg    G0W0 +0.08  ΔRPA -0.36
-  C2H3Br   G0W0 -0.44  ΔRPA -0.71
+Earlier contaminated result (RETRACTED): "ΔRPA beats ferric @PBE, r=0.12" used
+ferric's own @PBE which was corrupted by the Padé-node bug (fixed d7c3506).
