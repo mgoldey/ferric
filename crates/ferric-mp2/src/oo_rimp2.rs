@@ -171,6 +171,17 @@ pub fn compute_b_full_mo(
 /// the dressing GEMM's inner dimension wide (k = 256) while bounding the panel.
 const MO_CHUNK: usize = 256;
 
+/// Below this per-chunk work size (`qc * nmo²`, the number of scalar
+/// multiply-adds the per-q GEMM pair touches) the per-q MO-transform loop
+/// runs serially — rayon dispatch overhead swamps the win on small jobs.
+/// Measured (min-of-5, release, 12-core/loaded box): at qc=116, nao=nmo=24
+/// (water/cc-pVDZ scale, work=116*24²=66,816) serial 368µs vs rayon 283µs —
+/// a real but noisy ~1.3x win with a long rayon tail under contention. At
+/// qc=256, nao=nmo=80 (work=256*80²=1,638,400) serial 19.4ms vs rayon
+/// 7.2ms — a clean ~2.7x win. The threshold sits an order of magnitude above
+/// the small-noisy point and well below the large-clean-win point.
+const PAR_MO_TRANSFORM_WORK_THRESHOLD: usize = 200_000;
+
 /// Full-MO 3-center B tensor from pre-built AO invariants.
 ///
 /// Memory: streams raw AO aux-blocks from the budgeted [`ThreeIndexSource`],
@@ -199,14 +210,27 @@ pub fn compute_b_full_mo_with(
             let q1 = (q0 + MO_CHUNK).min(qb);
             let qc = q1 - q0;
             // MO-transform this chunk: mo[q,p,r] = C^T (Q|μν) C  (BLAS3 per q).
+            // Each q owns a disjoint output row and reads only its own AO
+            // slab, so above the work threshold this fans out over rayon
+            // (mirrors mo_transform.rs::transform_3center's per-P pattern);
+            // BLAS stays at its ambient (serial, OPENBLAS_NUM_THREADS=1)
+            // count inside each closure — never raised under rayon.
             let mut mo_blk = Array2::<f64>::zeros((qc, nmo * nmo));
-            for q in 0..qc {
+            let mo_transform_row = |q: usize, mut row: ndarray::ArrayViewMut1<f64>| {
                 let bq_ao = blk.data.slice(ndarray::s![q0 + q, .., ..]);
                 let half = bq_ao.dot(c); // (nao, nmo)
                 let bq_mo = c.t().dot(&half); // (nmo, nmo)
-                mo_blk
-                    .slice_mut(ndarray::s![q, ..])
-                    .assign(&bq_mo.into_shape_with_order(nmo * nmo).unwrap());
+                row.assign(&bq_mo.into_shape_with_order(nmo * nmo).unwrap());
+            };
+            if qc * nmo * nmo < PAR_MO_TRANSFORM_WORK_THRESHOLD {
+                for q in 0..qc {
+                    mo_transform_row(q, mo_blk.slice_mut(ndarray::s![q, ..]));
+                }
+            } else {
+                use rayon::prelude::*;
+                ndarray::Zip::indexed(mo_blk.axis_iter_mut(ndarray::Axis(0)))
+                    .into_par_iter()
+                    .for_each(|(q, row)| mo_transform_row(q, row));
             }
             // Dress into every output aux row, accumulating IN PLACE (beta=1):
             //   b_full[:, p, q] += V^{-1/2}[:, Qchunk] · mo_blk.
@@ -257,14 +281,24 @@ fn compute_rimp2_with_orbitals(
             let q1 = (q0 + MO_CHUNK).min(qb);
             let qc = q1 - q0;
             let mut mo_blk = Array2::<f64>::zeros((qc, nov));
-            for q in 0..qc {
+            // Disjoint per-q rows; same rayon-above-threshold gate as
+            // compute_b_full_mo_with (mirrors mo_transform.rs::transform_3center).
+            let mo_transform_row = |q: usize, mut row: ndarray::ArrayViewMut1<f64>| {
                 let bq_ao = blk.data.slice(ndarray::s![q0 + q, .., ..]);
                 // (P|ia) = C_occ^T (Q|μν) C_vir
                 let tmp = bq_ao.dot(&c_vir); // (nao, nvir)
                 let bq_mo = c_occ.t().dot(&tmp); // (nocc, nvir)
-                mo_blk
-                    .slice_mut(ndarray::s![q, ..])
-                    .assign(&bq_mo.into_shape_with_order(nov).unwrap());
+                row.assign(&bq_mo.into_shape_with_order(nov).unwrap());
+            };
+            if qc * nov < PAR_MO_TRANSFORM_WORK_THRESHOLD {
+                for q in 0..qc {
+                    mo_transform_row(q, mo_blk.slice_mut(ndarray::s![q, ..]));
+                }
+            } else {
+                use rayon::prelude::*;
+                ndarray::Zip::indexed(mo_blk.axis_iter_mut(ndarray::Axis(0)))
+                    .into_par_iter()
+                    .for_each(|(q, row)| mo_transform_row(q, row));
             }
             let msub = m.slice(ndarray::s![.., blk.p0 + q0..blk.p0 + q1]);
             ndarray::linalg::general_mat_mul(1.0, &msub, &mo_blk, 1.0, &mut b_flat);
@@ -331,12 +365,27 @@ fn orbital_energies(c: &Array2<f64>, f: &Array2<f64>) -> Vec<f64> {
     (0..n).map(|i| f_mo[(i, i)]).collect()
 }
 
+/// Below this many (ia,jb) pairs the elementwise denominator-divide pass
+/// after the `eri_ov` GEMM runs serially (rayon dispatch overhead beats the
+/// win on tiny jobs). Pure function of `nov²`, never of thread count — same
+/// discipline as `PAR_2E_QUARTET_THRESHOLD` (ferric-scf/src/gradient.rs) and
+/// `PAR_DENSITY_PAIRS_THRESHOLD` (ferric-scf/src/pairs.rs).
+const PAR_T2_ELEMENT_THRESHOLD: usize = 4096;
+
 /// Compute t2 amplitudes and (ia|jb) integrals from B tensor.
 ///
 /// t2 is stored as flat vec of length (nocc*nvir)^2 with indexing t2[ia*nov + jb]
 /// where ia = i*nvir + a, jb = j*nvir + b.
 ///
 /// Returns (t2, eri_ov) where eri_ov[ia*nov + jb] = (ia|jb).
+///
+/// `eri_iajb = Σ_p b_flat[p,ia]·b_flat[p,jb]` is exactly the (ia,jb) entry of
+/// `b_flat^T @ b_flat` — computed here as one wide `(nov × naux) @ (naux ×
+/// nov)` GEMM instead of the former per-element scalar strided dot product
+/// (the BLAS3-hostile anti-pattern: an O(nov²) loop of O(naux) scalar dots).
+/// This call site is not inside a rayon region (see `oo_ri_mp2`'s main loop
+/// and callers in rimp2.rs/oo_rimp2_gradient.rs), so the GEMM runs at the
+/// ambient BLAS thread count.
 pub fn compute_t2_and_integrals(
     b_flat: &Array2<f64>,
     eps: &[f64],
@@ -344,40 +393,72 @@ pub fn compute_t2_and_integrals(
     nvir: usize,
     nocc_total: usize,
     first_occ: usize,
-    naux: usize,
+    _naux: usize,
 ) -> (Vec<f64>, Vec<f64>) {
     let nov = nocc * nvir;
-    let mut t2 = vec![0.0f64; nov * nov];
-    let mut eri_ov = vec![0.0f64; nov * nov];
+    let eri_ov_mat = b_flat.t().dot(b_flat); // (nov, nov), GEMM: eri_ov_mat[ia,jb] = Σ_p b[p,ia]·b[p,jb]
 
-    for i in 0..nocc {
-        for a in 0..nvir {
-            let ia = i * nvir + a;
-            for j in 0..nocc {
-                for b in 0..nvir {
-                    let jb = j * nvir + b;
-                    let eri_iajb: f64 =
-                        (0..naux).map(|p| b_flat[(p, ia)] * b_flat[(p, jb)]).sum();
-                    let denom = eps[first_occ + i] + eps[first_occ + j]
-                        - eps[nocc_total + a]
-                        - eps[nocc_total + b];
-                    eri_ov[ia * nov + jb] = eri_iajb;
-                    t2[ia * nov + jb] = eri_iajb / denom;
-                }
+    let mut t2 = vec![0.0f64; nov * nov];
+    // `.dot()`'s output memory layout is not guaranteed C-order (it can go
+    // F-order in degenerate shapes — see ndarray-dot-forder-when-both-stride1
+    // memory pitfall), and the public contract here is a flat C-order Vec
+    // (`eri_ov[ia*nov+jb]`). `as_standard_layout` forces a C-contiguous copy
+    // if needed (a no-op if already C-order) before flattening, so the raw
+    // Vec extraction below is always correctly ordered regardless of what
+    // `.dot()` chose internally.
+    let eri_ov = eri_ov_mat
+        .as_standard_layout()
+        .into_owned()
+        .into_raw_vec_and_offset()
+        .0;
+
+    let fill_row = |ia: usize, t2_row: &mut [f64]| {
+        let i = ia / nvir;
+        let a = ia % nvir;
+        let base = ia * nov;
+        for j in 0..nocc {
+            for b in 0..nvir {
+                let jb = j * nvir + b;
+                let denom = eps[first_occ + i] + eps[first_occ + j]
+                    - eps[nocc_total + a]
+                    - eps[nocc_total + b];
+                t2_row[jb] = eri_ov[base + jb] / denom;
             }
         }
+    };
+
+    if nov * nov < PAR_T2_ELEMENT_THRESHOLD {
+        for ia in 0..nov {
+            fill_row(ia, &mut t2[ia * nov..(ia + 1) * nov]);
+        }
+    } else {
+        use rayon::prelude::*;
+        t2.par_chunks_mut(nov)
+            .enumerate()
+            .for_each(|(ia, row)| fill_row(ia, row));
     }
+
     (t2, eri_ov)
 }
 
 /// Compute only the t2 amplitudes from the B tensor, without materializing the
 /// (ia|jb) integral array.
 ///
-/// Identical numerics to [`compute_t2_and_integrals`] for its first return value,
-/// but allocates a single `nov²` buffer instead of two — the `eri_ov` tensor is
-/// never built. Callers that discard the integrals (e.g. OSV/PNO construction in
-/// ferric-rpa) should prefer this to halve the transient footprint (~10 GB → ~5 GB
-/// at dimer/aTZ scale). Indexing matches: t2[ia*nov + jb], ia = i*nvir + a.
+/// Identical numerics to [`compute_t2_and_integrals`] for its first return
+/// value, via the same wide-GEMM restructure (`b_flat^T @ b_flat`). The GEMM
+/// output (`eri_ov_mat`, one `nov²` buffer) is local scratch: it is read
+/// row-by-row to fill `t2` and dropped at the end of this call, never
+/// returned or retained by the caller. Peak transient footprint *inside this
+/// function* is momentarily ~2×`nov²` (`eri_ov_mat` + `t2` both resident
+/// during the fold) — up from the former scalar loop's ~1×`nov²` (`t2`
+/// alone, no GEMM buffer) — but the important axis for callers is *retained*
+/// memory after the call returns: [`compute_t2_and_integrals`] hands back and
+/// the caller keeps two live `nov²` buffers for the rest of its scope, while
+/// this function's caller keeps exactly one (`t2`); `eri_ov_mat` never
+/// escapes. Callers that discard the integrals (e.g. OSV/PNO construction in
+/// ferric-rpa) should still prefer this function for that reason — it is the
+/// post-call retained footprint, not the momentary in-call peak, that halves.
+/// Indexing matches: t2[ia*nov + jb], ia = i*nvir + a.
 pub fn compute_t2_only(
     b_flat: &Array2<f64>,
     eps: &[f64],
@@ -385,27 +466,39 @@ pub fn compute_t2_only(
     nvir: usize,
     nocc_total: usize,
     first_occ: usize,
-    naux: usize,
+    _naux: usize,
 ) -> Vec<f64> {
     let nov = nocc * nvir;
+    let eri_ov_mat = b_flat.t().dot(b_flat); // (nov, nov) transient, dropped at end of scope
+
     let mut t2 = vec![0.0f64; nov * nov];
 
-    for i in 0..nocc {
-        for a in 0..nvir {
-            let ia = i * nvir + a;
-            for j in 0..nocc {
-                for b in 0..nvir {
-                    let jb = j * nvir + b;
-                    let eri_iajb: f64 =
-                        (0..naux).map(|p| b_flat[(p, ia)] * b_flat[(p, jb)]).sum();
-                    let denom = eps[first_occ + i] + eps[first_occ + j]
-                        - eps[nocc_total + a]
-                        - eps[nocc_total + b];
-                    t2[ia * nov + jb] = eri_iajb / denom;
-                }
+    let fill_row = |ia: usize, t2_row: &mut [f64]| {
+        let i = ia / nvir;
+        let a = ia % nvir;
+        let eri_row = eri_ov_mat.row(ia);
+        for j in 0..nocc {
+            for b in 0..nvir {
+                let jb = j * nvir + b;
+                let denom = eps[first_occ + i] + eps[first_occ + j]
+                    - eps[nocc_total + a]
+                    - eps[nocc_total + b];
+                t2_row[jb] = eri_row[jb] / denom;
             }
         }
+    };
+
+    if nov * nov < PAR_T2_ELEMENT_THRESHOLD {
+        for ia in 0..nov {
+            fill_row(ia, &mut t2[ia * nov..(ia + 1) * nov]);
+        }
+    } else {
+        use rayon::prelude::*;
+        t2.par_chunks_mut(nov)
+            .enumerate()
+            .for_each(|(ia, row)| fill_row(ia, row));
     }
+
     t2
 }
 
@@ -1080,6 +1173,87 @@ mod tests {
         (mol, obs, dfbs, op, bounds, rhf)
     }
 
+    /// GEMM restructure (P6-residual) regression: `compute_t2_and_integrals`
+    /// and `compute_t2_only` must reproduce the original per-element scalar
+    /// formula `eri_iajb = Σ_p b_flat[p,ia]·b_flat[p,jb]` exactly (to
+    /// numerical noise) — this is the check that would catch a transposition
+    /// bug in the `b_flat^T @ b_flat` GEMM reindexing that a same-shape
+    /// (nov×nov, symmetric-looking) mistake could otherwise hide.
+    #[test]
+    fn test_t2_gemm_matches_scalar_formula() {
+        let (mol, obs, dfbs, op, bounds, rhf) = setup_h2();
+        let nbas = obs.nbasis();
+        let nocc_total = (mol.nelec() as usize) / 2;
+        let nocc = nocc_total;
+        let first_occ = 0;
+        let nvir = nbas - nocc_total;
+        let naux = dfbs.nbasis();
+        let orb = OrbitalSpace::new(nocc, nvir, nocc_total, first_occ);
+        let c = rhf.mos_r();
+        let h = oneelectron::hcore(&obs);
+        let ao = OoRiMp2AoTensors::build(&obs, &dfbs, op).unwrap();
+        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h).unwrap();
+        let eps = orbital_energies(c, &f_ao);
+        let (_e, b_flat) = compute_rimp2_with_orbitals(&ao, c, &eps, &orb).unwrap();
+
+        let nov = nocc * nvir;
+        // Reference: the original O(nov^2 * naux) scalar double-dot formula,
+        // reimplemented independently of compute_t2_and_integrals/compute_t2_only.
+        let mut t2_ref = vec![0.0f64; nov * nov];
+        let mut eri_ov_ref = vec![0.0f64; nov * nov];
+        for i in 0..nocc {
+            for a in 0..nvir {
+                let ia = i * nvir + a;
+                for j in 0..nocc {
+                    for b in 0..nvir {
+                        let jb = j * nvir + b;
+                        let eri_iajb: f64 =
+                            (0..naux.min(b_flat.nrows())).map(|p| b_flat[(p, ia)] * b_flat[(p, jb)]).sum();
+                        let denom = eps[first_occ + i] + eps[first_occ + j]
+                            - eps[nocc_total + a]
+                            - eps[nocc_total + b];
+                        eri_ov_ref[ia * nov + jb] = eri_iajb;
+                        t2_ref[ia * nov + jb] = eri_iajb / denom;
+                    }
+                }
+            }
+        }
+
+        let (t2_gemm, eri_ov_gemm) =
+            compute_t2_and_integrals(&b_flat, &eps, nocc, nvir, nocc_total, first_occ, naux);
+        let t2_only_gemm =
+            compute_t2_only(&b_flat, &eps, nocc, nvir, nocc_total, first_occ, naux);
+
+        let max_t2_diff = t2_ref
+            .iter()
+            .zip(t2_gemm.iter())
+            .map(|(r, g)| (r - g).abs())
+            .fold(0.0, f64::max);
+        let max_eri_diff = eri_ov_ref
+            .iter()
+            .zip(eri_ov_gemm.iter())
+            .map(|(r, g)| (r - g).abs())
+            .fold(0.0, f64::max);
+        let max_t2_only_diff = t2_ref
+            .iter()
+            .zip(t2_only_gemm.iter())
+            .map(|(r, g)| (r - g).abs())
+            .fold(0.0, f64::max);
+
+        assert!(
+            max_t2_diff < 1e-12,
+            "compute_t2_and_integrals t2 vs scalar formula maxdiff={max_t2_diff:.3e}"
+        );
+        assert!(
+            max_eri_diff < 1e-12,
+            "compute_t2_and_integrals eri_ov vs scalar formula maxdiff={max_eri_diff:.3e}"
+        );
+        assert!(
+            max_t2_only_diff < 1e-12,
+            "compute_t2_only vs scalar formula maxdiff={max_t2_only_diff:.3e}"
+        );
+    }
+
     #[test]
     fn test_oo_rimp2_lowers_energy() {
         let (mol, obs, dfbs, op, bounds, rhf) = setup_h2();
@@ -1352,6 +1526,113 @@ mod tests {
                 "panelled gradient (panel_c={panel}) differs from full: {maxdiff:.2e}"
             );
         }
+    }
+
+    /// Region 2 (P6-residual): the per-q MO-transform loops in
+    /// `compute_b_full_mo_with` / `compute_rimp2_with_orbitals` fan out over
+    /// rayon above `PAR_MO_TRANSFORM_WORK_THRESHOLD`. `OoRiMp2AoTensors` holds
+    /// a `RefCell` (not `Sync`), so we cannot force distinct rayon thread-pool
+    /// sizes around a call that borrows it (rayon's `ThreadPool::install`
+    /// requires `Send` on the closure and its captures) the way
+    /// `test_oo_gradient_bit_identical_across_thread_counts` does for the
+    /// (pure-data) orbital-gradient path. Instead, cross-check the rayon-path
+    /// result (this system clears `PAR_MO_TRANSFORM_WORK_THRESHOLD`, so the
+    /// default global rayon pool exercises the parallel branch) against a
+    /// direct (non-chunked, non-parallel) scalar MO transform built straight
+    /// from the raw AO 3-index tensor + metric, proving the rayon branch
+    /// computes the identical contraction to ground truth.
+    #[test]
+    fn test_region2_mo_transform_matches_scalar_reference() {
+        let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+        let bs = basis::bundled("aug-cc-pvtz").unwrap();
+        let obs = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig {
+                energy_conv: 1e-10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(rhf.converged);
+        let aux_bs = basis::bundled("aug-cc-pvtz-rifit").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
+
+        let nbas = obs.nbasis();
+        let nocc_total = (mol.nelec() as usize) / 2;
+        let nvir = nbas - nocc_total;
+        let orb = OrbitalSpace::new(nocc_total, nvir, nocc_total, 0);
+        let c = rhf.mos_r().clone();
+        let ao = OoRiMp2AoTensors::build(&obs, &dfbs, op).unwrap();
+
+        // Sanity: confirm this system actually clears the rayon threshold for
+        // at least one of the two loops, so the test is exercising the branch
+        // it claims to.
+        let naux = ao.naux();
+        let qc_full = naux.min(MO_CHUNK);
+        let nov = nocc_total * nvir;
+        assert!(
+            qc_full * nbas * nbas >= PAR_MO_TRANSFORM_WORK_THRESHOLD
+                || qc_full * nov >= PAR_MO_TRANSFORM_WORK_THRESHOLD,
+            "test fixture too small to exercise Region 2 rayon branch: \
+             qc={qc_full} nbas={nbas} nov={nov}"
+        );
+
+        let b_full = compute_b_full_mo_with(&ao, &c).unwrap();
+        let (_e, b_ov) = compute_rimp2_with_orbitals(&ao, &c, rhf.eps_r(), &orb).unwrap();
+
+        // Independent, unchunked, unparallelized scalar reference for both
+        // outputs, built directly from the raw AO 3-index tensor + metric
+        // (bypasses for_each_block/MO_CHUNK/rayon entirely).
+        let v2c = threeindex::coulomb_metric_2c(op, &dfbs).unwrap();
+        let v2c_inv_sqrt = cholesky_inverse_sqrt(&v2c).unwrap();
+        let eri3_raw = threeindex::eri3_tensor(op, &obs, &dfbs).unwrap(); // (naux, nao, nao)
+        let nao = obs.nbasis();
+        let nmo = nbas;
+
+        // b_full_ref[P,p,q] = sum_Q v2c_inv_sqrt[P,Q] * (C^T (Q|mu nu) C)[p,q]
+        let mut mo_raw = Array3::<f64>::zeros((naux, nmo, nmo));
+        for qidx in 0..naux {
+            let bq_ao = eri3_raw.slice(ndarray::s![qidx, .., ..]);
+            let half = bq_ao.dot(&c);
+            let bq_mo = c.t().dot(&half);
+            mo_raw.slice_mut(ndarray::s![qidx, .., ..]).assign(&bq_mo);
+        }
+        let mo_raw_flat = mo_raw.into_shape_with_order((naux, nmo * nmo)).unwrap();
+        let b_full_ref_flat = v2c_inv_sqrt.dot(&mo_raw_flat);
+        let b_full_ref = b_full_ref_flat.into_shape_with_order((naux, nmo, nmo)).unwrap();
+
+        let b_full_maxdiff = (&b_full - &b_full_ref).iter().map(|v| v.abs()).fold(0.0, f64::max);
+        assert!(
+            b_full_maxdiff < 1e-10,
+            "compute_b_full_mo_with (rayon path) vs unchunked scalar reference: maxdiff={b_full_maxdiff:.3e}"
+        );
+
+        // b_ov_ref[P,ia] = sum_Q v2c_inv_sqrt[P,Q] * (C_occ^T (Q|mu nu) C_vir)[ia]
+        let c_occ = c.slice(ndarray::s![.., 0..nocc_total]).to_owned();
+        let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
+        let mut mo_ov_raw = Array2::<f64>::zeros((naux, nov));
+        for qidx in 0..naux {
+            let bq_ao = eri3_raw.slice(ndarray::s![qidx, .., ..]);
+            let tmp = bq_ao.dot(&c_vir);
+            let bq_mo = c_occ.t().dot(&tmp);
+            mo_ov_raw
+                .slice_mut(ndarray::s![qidx, ..])
+                .assign(&bq_mo.into_shape_with_order(nov).unwrap());
+        }
+        let b_ov_ref = v2c_inv_sqrt.dot(&mo_ov_raw);
+        let b_ov_maxdiff = (&b_ov - &b_ov_ref).iter().map(|v| v.abs()).fold(0.0, f64::max);
+        assert!(
+            b_ov_maxdiff < 1e-10,
+            "compute_rimp2_with_orbitals b_ov (rayon path) vs unchunked scalar reference: maxdiff={b_ov_maxdiff:.3e}"
+        );
+        let _ = nao; // used only for the (naux, nao, nao) shape documented above
     }
 
     /// The rayon-parallelized c_idx response-term loop (P6) must produce a
