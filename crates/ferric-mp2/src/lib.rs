@@ -32,3 +32,4 @@ pub mod f12;
 pub mod laplace;
 pub mod oo_rimp2_gradient;
 pub mod mpi_rimp2;
+pub mod optimize;

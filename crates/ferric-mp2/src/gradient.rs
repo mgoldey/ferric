@@ -479,6 +479,40 @@ pub fn scs_mp2_gradient_analytical(
     Ok(grad)
 }
 
+/// Compute the total RI-MP2 energy and its analytical nuclear gradient at a
+/// single geometry: solve RHF, then run `rimp2_gradient_analytical`.
+///
+/// Mirrors `ferric_rpa::gradient::total_rpa_gradient`'s energy+gradient
+/// pairing so `ferric_mp2::optimize::optimize_geometry_rimp2` can drive a
+/// BFGS loop the same way `ferric_rpa::optimize::optimize_geometry_rpa`
+/// does for RPA. `E_total = E_HF + E_MP2`; the returned gradient is
+/// dE_total/dR (analytical, not finite-difference).
+pub fn total_rimp2_gradient(
+    mol: &Molecule,
+    obs_basis: &BasisSet,
+    aux_basis: &BasisSet,
+    op: Operator,
+    mp2_config: &RiMp2Config,
+) -> Result<(f64, Array2<f64>), FerricError> {
+    let ctx = ferric_core::parallel::ParallelContext::default();
+    let obs = PreparedBasis::new(mol, obs_basis)?;
+    let dfbs = PreparedBasis::new(mol, aux_basis)?;
+    let bounds = SchwarzBounds::compute(op, &obs)?;
+    // Tight SCF via density_conv (reachable under the ΔP gate); energy_conv left
+    // at the loose default — a tight 1e-10 would hang at MaxIter. See total_energy above.
+    let rhf_cfg = RhfConfig {
+        density_conv: 1e-9,
+        ..Default::default()
+    };
+    let rhf = solve_rhf(&ctx, mol, &obs, op, &bounds, &rhf_cfg)?;
+    if !rhf.converged {
+        return Err(FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy });
+    }
+    let mp2 = ri_mp2(mol, &obs, &dfbs, op, &rhf, mp2_config)?;
+    let grad = rimp2_gradient_analytical(mol, &obs, &dfbs, op, &bounds, &rhf, mp2_config)?;
+    Ok((mp2.total_energy, grad))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
