@@ -771,7 +771,15 @@ fn run_dft(mol: &PyMolecule, basis_set: &PyBasisSet,
     // RI-K only matters for hybrid/RSH; harmless for pure DFT (path is bypassed
     // when k_mix.sr == 0 and k_mix.omega == 0).
     cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
-    let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &cfg).map_err(make_err)?;
+    // Run through the level-shift ladder (KS-DFT = solve_rhf with cfg.xc set),
+    // so a hybrid on a hard system that DIIS-limit-cycles at level_shift=0
+    // escalates the virtual-block shift instead of erroring out at max_iter.
+    // The base cfg carries xc / grid / DF-JK aux into every rung. Only surface
+    // a convergence error if the whole ladder fails to converge.
+    let ladder = ferric_scf::ladder::ksdft_ladder(&cfg);
+    let lr = ferric_scf::ladder::solve_rhf_ladder(&ctx, &mol.inner, &prep, op, &bounds, &ladder)
+        .map_err(make_err)?;
+    let rhf = lr.result;
     if !rhf.converged {
         return Err(make_err(ferric_core::FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy }));
     }

@@ -113,6 +113,52 @@ pub fn default_ladder() -> Vec<Rung> {
     ]
 }
 
+/// Level-shift escalation ladder for a KS-DFT (or any) base config, carrying
+/// the base's `xc` / DFT-grid / DF-JK-aux settings into every rung.
+///
+/// `default_ladder()` hard-codes DF-JK for the *pure-HF* heavy-atom-divergence
+/// use-case and does NOT set `xc`; it cannot be reused verbatim for KS-DFT
+/// because it would discard the functional. This builder starts from the
+/// caller's `base` (so `xc`, `dft_grid`, `nlc_grid`, and any explicit DF-JK aux
+/// survive) and layers on the same 0 → 0.5 → 1.0 level-shift escalation plus
+/// stall/divergence early-abort. It fixes the DF-B3LYP DIIS limit-cycle
+/// (docs/profiles-2026-07-14.md finding (2)) the exact same way the virtual-
+/// block level shift fixes closed-shell heavy-atom RHF divergence: KS-DFT
+/// closed-shell IS `solve_rhf` with `cfg.xc = Some(...)`, so the shift damps
+/// the same overshooting orbital rotation.
+///
+/// DF-JK aux is auto-defaulted to `def2-universal-jkfit` only when the base
+/// leaves it unset AND a functional is present (hybrids/RSH need K; pure DFT
+/// still benefits from RI-J) — a bare-HF base with no aux keeps direct J/K.
+pub fn ksdft_ladder(base: &RhfConfig) -> Vec<Rung> {
+    let mk = |level_shift: f64, max_iter: usize| {
+        let mut c = base.clone();
+        c.level_shift = level_shift;
+        c.max_iter = max_iter;
+        c.stall_window = Some(15);
+        c.divergence_tol = Some(0.5);
+        if c.xc.is_some() {
+            if c.df_j_aux.is_none() {
+                c.df_j_aux = Some("def2-universal-jkfit".to_string());
+            }
+            if c.df_k_aux.is_none() {
+                c.df_k_aux = Some("def2-universal-jkfit".to_string());
+            }
+        }
+        c
+    };
+    // Rung 1 honors the caller's own level_shift (0 by default) and max_iter
+    // (respect a user budget). The escalation rungs raise the shift ABOVE
+    // whatever rung 1 used and get a fixed generous budget, since they only run
+    // if rung 1 stalled.
+    let ls0 = base.level_shift;
+    vec![
+        Rung { config: mk(ls0, base.max_iter), restart: false },
+        Rung { config: mk(ls0.max(0.5), 60), restart: false },
+        Rung { config: mk(ls0.max(0.5) + 0.5, 80), restart: false },
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -181,6 +227,100 @@ mod tests {
         assert_eq!(l[0].config.level_shift, 0.0);
         assert!(l[1].config.level_shift > 0.0, "rung 2 must add level shift");
         assert!(!l[1].restart, "rung 2 must inherit density");
+    }
+
+    /// KS-DFT (B3LYP) via the level-shift ladder: benzene/def2-SVP, the
+    /// workload from docs/profiles-2026-07-14.md finding (2).
+    ///
+    /// KS-DFT closed-shell IS `solve_rhf` with `cfg.xc = Some(...)`, so the same
+    /// virtual-block level-shift ladder that fixes heavy-atom RHF divergence
+    /// applies unchanged — `ksdft_ladder` clones the B3LYP base into every rung
+    /// (carrying `xc` / DFT grid / DF-JK aux). This guards two things:
+    ///
+    ///  1. `ksdft_ladder` produces a working ladder for a hybrid functional
+    ///     (functional/grid/aux survive the clone into each rung — a regression
+    ///     that dropped `xc` would silently run bare HF and give ~-230.7 Ha).
+    ///  2. The B3LYP SCF converges via the ladder and lands the expected energy
+    ///     (rung 1's level_shift=0 already suffices on this well-behaved system
+    ///     under the ΔP convergence gate — the escalation rungs are the harder-
+    ///     system safety net, exercised by unit tests on synthetic stalls).
+    ///
+    /// Ignored by default (~10 s release: production (75,110) grid × 12 atoms).
+    #[test]
+    #[ignore] // ~10 s release: benzene/def2-SVP B3LYP, production DFT grid
+    fn benzene_dfb3lyp_ksdft_ladder_converges() {
+        let mol = Molecule::load_xyz("../../testdata/molecules/benzene.xyz").unwrap();
+        let bs = basis::bundled("def2-svp").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ParallelContext::default();
+
+        // Base config mirrors the CLI ksdft path: B3LYP + DF-JK, max_iter=100.
+        let base = RhfConfig {
+            xc: Some("B3LYP".to_string()),
+            max_iter: 100,
+            ..Default::default()
+        };
+        let ladder = ksdft_ladder(&base);
+        // Every rung must keep the functional (else it silently runs bare HF).
+        assert!(ladder.iter().all(|r| r.config.xc.as_deref() == Some("B3LYP")),
+            "ksdft_ladder must carry xc into every rung");
+        assert!(ladder[0].config.df_k_aux.is_some(),
+            "hybrid needs RI-K aux auto-defaulted");
+
+        let lr = solve_rhf_ladder(&ctx, &mol, &prep, op, &bounds, &ladder).unwrap();
+        assert!(lr.converged, "B3LYP ladder must converge benzene (reached rung {})", lr.rung_reached);
+        // Sanity vs the profiling run's last energy (-232.0846616020); a bare-HF
+        // regression would land near -230.78 instead.
+        assert!(
+            (lr.result.energy - (-232.0846729516)).abs() < 1e-3,
+            "B3LYP/def2-SVP benzene E={:.10}, expected ~-232.0847", lr.result.energy
+        );
+    }
+
+    /// `ksdft_ladder` structural guarantees (fast, no SCF): carries the base's
+    /// functional/grid into every rung, escalates the level shift, and layers
+    /// stall/divergence early-abort on top.
+    #[test]
+    fn ksdft_ladder_carries_xc_and_escalates() {
+        let grid = ferric_dft::grid::AtomicGridConfig { n_radial: 99, n_angular: 302 };
+        let base = RhfConfig {
+            xc: Some("PBE".to_string()),
+            dft_grid: Some(grid.clone()),
+            max_iter: 42,
+            ..Default::default()
+        };
+        let l = ksdft_ladder(&base);
+        assert_eq!(l.len(), 3);
+        // xc + custom grid survive into every rung.
+        for r in &l {
+            assert_eq!(r.config.xc.as_deref(), Some("PBE"));
+            let g = r.config.dft_grid.as_ref().expect("grid carried");
+            assert_eq!((g.n_radial, g.n_angular), (99, 302));
+            assert_eq!(r.config.stall_window, Some(15));
+            assert_eq!(r.config.divergence_tol, Some(0.5));
+            assert!(!r.restart, "rungs inherit density");
+        }
+        // Level-shift escalates; rung 1 respects the caller's max_iter.
+        assert_eq!(l[0].config.level_shift, 0.0);
+        assert_eq!(l[0].config.max_iter, 42);
+        assert!(l[1].config.level_shift > 0.0);
+        assert!(l[2].config.level_shift > l[1].config.level_shift);
+        // Pure PBE (no exact exchange) still gets RI-J auto-defaulted for speed.
+        assert!(l[0].config.df_j_aux.is_some(), "RI-J auto-defaulted when xc set");
+    }
+
+    /// A bare-HF base (no xc) must NOT get DF-JK aux auto-forced by ksdft_ladder
+    /// — that's the `default_ladder` use-case; ksdft_ladder leaves HF J/K as the
+    /// caller set them (here: unset → direct J/K).
+    #[test]
+    fn ksdft_ladder_bare_hf_keeps_direct_jk() {
+        let base = RhfConfig::default(); // no xc, no aux
+        let l = ksdft_ladder(&base);
+        assert!(l[0].config.xc.is_none());
+        assert!(l[0].config.df_j_aux.is_none(), "bare HF keeps direct J");
+        assert!(l[0].config.df_k_aux.is_none(), "bare HF keeps direct K");
     }
 
     #[test]
