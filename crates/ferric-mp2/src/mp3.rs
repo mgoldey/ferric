@@ -14,6 +14,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_integrals::threeindex;
 use ferric_scf::ScfResult;
+use crate::rimp2::active_occ;
 use crate::spinorbital::{asym_oovv, asym_ovvo, asym_same, build_b, transpose_b};
 use ferric_tensors::{einsum, Axis, Tensor};
 use ndarray::{ArrayD, IxDyn};
@@ -47,7 +48,7 @@ pub fn mp3_energy(
     let nbas = obs.nbasis();
     let nelec = mol.nelec() as usize;
     let nocc_total = nelec / 2;
-    let no = nocc_total - frozen_core; // spatial active occupied
+    let no = active_occ(nocc_total, frozen_core)?; // spatial active occupied
     let first_occ = frozen_core;
     let nv = nbas - nocc_total; // spatial virtual
 
@@ -250,6 +251,23 @@ mod tests {
         let err = res.unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("MP3") && msg.contains("budget is"), "unexpected: {msg}");
+    }
+
+    #[test]
+    fn mp3_frozen_core_exceeding_nocc_errors_not_panics() {
+        // H2/STO-3G has nocc_total = 1; frozen_core = 2 must Err (not underflow
+        // `nocc_total - frozen_core` as a usize and panic).
+        let mol = Molecule::parse_xyz("2\n\nH 0.0 0.0 0.0\nH 0.0 0.0 0.74\n", 0, 1).unwrap();
+        let obs_bs = basis::bundled("sto-3g").unwrap();
+        let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let op = Operator::coulomb();
+        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
+        let ctx = ParallelContext::default();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
+        let res = mp3_energy(&mol, &obs, &dfbs, op, &rhf, 2);
+        assert!(res.is_err(), "expected Err for frozen_core > nocc_total, got {res:?}");
     }
 
     // Tolerances reflect the RI density-fitting error vs the exact-integral

@@ -648,7 +648,7 @@ pub fn pdep_polarizability_static(
     let iso = (tensor[0][0] + tensor[1][1] + tensor[2][2]) / 3.0;
 
     // Principal values via 3x3 symmetric eig.
-    let principal = eig3_sym(tensor);
+    let principal = eig3_sym(tensor)?;
 
     Ok(PolarizabilityResult {
         tensor,
@@ -747,7 +747,7 @@ pub fn dielectric_spectrum_static(
         .eigh(UPLO::Upper)
         .map_err(|e| FerricError::Lapack(format!("dielectric eigh: {e}")))?;
     let mut eigenvalues: Vec<f64> = evals.to_vec();
-    eigenvalues.sort_by(|x, y| x.partial_cmp(y).unwrap());
+    eigenvalues.sort_by(|x, y| x.total_cmp(y));
 
     let rank = eigenvalues.iter().filter(|&&l| l - 1.0 > thresh).count();
     let trace_log: f64 = eigenvalues
@@ -905,7 +905,7 @@ pub fn pdep_polarizability_static_unrestricted(
         }
     }
     let iso = (tensor[0][0] + tensor[1][1] + tensor[2][2]) / 3.0;
-    let principal = eig3_sym(tensor);
+    let principal = eig3_sym(tensor)?;
 
     Ok(PolarizabilityResult { tensor, iso, principal })
 }
@@ -3355,15 +3355,17 @@ fn slater_xi_for_z(z: i32) -> f64 {
 
 /// 3x3 symmetric eigenvalue solver via Jacobi rotations.  Returns the three
 /// eigenvalues sorted ascending.  Used to report principal polarizabilities.
-fn eig3_sym(a: [[f64; 3]; 3]) -> [f64; 3] {
+fn eig3_sym(a: [[f64; 3]; 3]) -> Result<[f64; 3], FerricError> {
     // Use ndarray-linalg for robustness.
     use ndarray::arr2;
     use ndarray_linalg::Eigh;
     let m = arr2(&a);
-    let (vals, _) = m.eigh(ndarray_linalg::UPLO::Upper).unwrap();
+    let (vals, _) = m
+        .eigh(ndarray_linalg::UPLO::Upper)
+        .map_err(|e| FerricError::Lapack(format!("principal-axis eigh: {e}")))?;
     let mut v = [vals[0], vals[1], vals[2]];
-    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    v
+    v.sort_by(|a, b| a.total_cmp(b));
+    Ok(v)
 }
 
 #[cfg(test)]
