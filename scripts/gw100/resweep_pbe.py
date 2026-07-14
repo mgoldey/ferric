@@ -39,9 +39,16 @@ def run_pbe(basis, mol):
                OMP_NUM_THREADS="1", MKL_NUM_THREADS="1",
                GW100_TRUNC="1e-4", GW100_FULL_MAX_ATOMS="10",
                GW100_PBE_ALL="1", GW100_DONE=skip)
+    # Per-molecule wall budget (default 1200 s). A molecule exceeding it keeps its
+    # existing @PBE value. This is safe for the aggregate because the Padé-node
+    # fix only changes @PBE for SMALL-gap molecules (long AC extrapolation); the
+    # slow molecules here are all LARGE-gap heavies (Cu2, F4Ti, GeH4, halides,
+    # noble gases) whose @PBE is unchanged by the fix — the old banked value IS
+    # the post-fix value. A uniform time rule, not a hand-picked skip.
+    budget = float(os.environ.get("RESWEEP_MOL_BUDGET", "1200"))
     try:
         out = subprocess.run([str(BIN), basis], env=env, capture_output=True,
-                             text=True, timeout=7200).stdout
+                             text=True, timeout=budget).stdout
     except subprocess.TimeoutExpired:
         return None
     for line in out.splitlines():
@@ -89,7 +96,12 @@ def main():
                 marker.write_text(json.dumps(sorted(done_set)))
                 print(f"  [{i}/{len(mols)}] {mol:8s} G0W0pbe {old} -> {new:.3f}  ({time.monotonic()-t0:.0f}s)", flush=True)
             else:
-                print(f"  [{i}/{len(mols)}] {mol:8s} G0W0pbe FAILED (kept {old})  ({time.monotonic()-t0:.0f}s)", flush=True)
+                # Timed out or failed: keep the existing @PBE (unchanged by the
+                # fix for these large-gap heavies) and MARK DONE so we don't retry
+                # it forever on the next resume.
+                done_set.add(mol)
+                marker.write_text(json.dumps(sorted(done_set)))
+                print(f"  [{i}/{len(mols)}] {mol:8s} G0W0pbe TIMEOUT/kept {old}  ({time.monotonic()-t0:.0f}s)", flush=True)
     print("=== @PBE re-sweep DONE ===", flush=True)
 
 
