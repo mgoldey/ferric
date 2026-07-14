@@ -24,7 +24,7 @@
 //! volume, and None refuses rather than fabricating a denominator.
 
 /// Free-atom TS reference: `(alpha_free, c6_free, vol_free)` in a.u.
-/// Indexed by atomic number `z` (1..=18 covered). Returns `None` outside the
+/// Indexed by atomic number `z` (1..=54 covered). Returns `None` outside the
 /// table.
 pub fn ts_free_atom(z: usize) -> Option<(f64, f64, Option<f64>)> {
     // alpha_free (a.u.)    — TS PRL 102, 073005 (2009) Table I  [verified]
