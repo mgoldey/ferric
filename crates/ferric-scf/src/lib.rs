@@ -51,4 +51,4 @@ pub use ks_gradient::ks_gradient_closed;
 pub mod optimize;
 pub mod cfmm;
 pub mod ladder;
-pub use ladder::{solve_rhf_ladder, default_ladder, Rung, LadderResult, RungOutcome};
+pub use ladder::{solve_rhf_ladder, default_ladder, ksdft_ladder, Rung, LadderResult, RungOutcome};
