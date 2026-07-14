@@ -93,7 +93,14 @@ fn uks_b3lyp_h2o_ccpvdz_translational_invariance() {
         xc: Some(xc.into()),
         df_j_aux: Some("def2-universal-jkfit".into()),
         df_k_aux: Some("def2-universal-jkfit".into()),
-        energy_conv: 1e-10,
+        // energy_conv/density_conv intentionally left at the crate default
+        // (see `run()` above and rhf.rs's RhfConfig::default doc comment):
+        // dp_rms is the real convergence signal under DF, ΔE floors well
+        // above any very tight bound. A prior energy_conv=1e-10 override
+        // here (not present in the other three tests in this file) demanded
+        // a gate scf_converged is designed to never satisfy under DF,
+        // causing an intermittent MaxIter -> Err(ScfConvergence) depending
+        // on exactly how many DIIS cycles the run happened to take.
         density_conv: 1e-8,
         ..Default::default()
     };
