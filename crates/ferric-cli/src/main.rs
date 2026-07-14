@@ -1107,7 +1107,7 @@ fn main() {
                                 // ratio built from it is unreliable (see the free-atom solve
                                 // above, which retries pure HF to avoid this path).
                                 let vf = vol_free_computed.get(&zi).copied()
-                                    .or_else(|| ts_free_atom(zi).map(|(_, _, v)| v))
+                                    .or_else(|| ts_free_atom(zi).and_then(|(_, _, v)| v))
                                     .ok_or_else(|| ferric_core::FerricError::General(format!(
                                         "TS/MBD C6: no free-atom reference volume for atom {i} \
                                          (Z={zi}); the free-atom SCF did not converge and Z is \
