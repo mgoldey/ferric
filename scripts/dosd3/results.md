@@ -11,7 +11,7 @@ across MULTIPLE Si compounds.
 | SiF4 | Si | 22.40 | 21.76 | 22.08 | −1.4% | TS C6=3815 vs PBE 296 = **+1190%** (DZ); TS-TZ did not finish (free-atom SCF too slow) |
 | PH3  | P  | 28.59 | 26.50 | —     | −7%   | TS C6=323 vs PBE 248 = +30% (DZ, mild) |
 | GeH4 | Ge (32) | 32.19 | 31.44 | 31.64 | −1.7% | TS +57.7% (now computes — see below) |
-| CH3Br | Br (35) | — | 31.68 | 33.22 | — | TS computes (Br Z=35 now in table) |
+| CH3Br | Br (35) | — | 31.68 | 33.22 | — | TS +39.4% (now computes — see below) |
 | Br2  | Br (35) | — | 37.38 | 40.25 | — | TS +27.9% (now computes — see below) |
 
 ### RPA@PBE molecular C6 for the heavy-Z set (a.u.)
@@ -32,15 +32,16 @@ The free-atom *volume* is still generated live (per-Z UKS-PBE ∫ρr³dr); only 
 | Molecule | TS C6 | RPA@PBE C6 | TS overshoot |
 |----------|-------|-----------|--------------|
 | GeH4 | 541.07 | 343.19 | **+57.7%** |
+| CH3Br | 597.66 | 428.83 | **+39.4%** |
 | Br2  | 728.83 | 569.88 | **+27.9%** |
 
 As predicted from the Si precedent, TS on Ge/Br overshoots RPA@PBE — the
 soft/heavy-atom failure mode extends past the third row. But the overshoot is
-far *milder* here (+28–58%) than for Si (+474%/+1190%): Ge/Br are less "soft"
-than Si relative to their free-atom reference. This makes the failure look more
-like the curable P/S class (+30%) than the catastrophic Si class. PDEP-RPA
-remains the recommended heavy-Z source; the TS number now exists for cross-check
-rather than being a blanket refusal.
+far *milder* here (+28% to +58%) than for Si (+474%/+1190%): Ge/Br are less
+"soft" than Si relative to their free-atom reference. This makes the failure
+look more like the curable P/S class (+30%) than the catastrophic Si class.
+PDEP-RPA remains the recommended heavy-Z source; the TS number now exists for
+cross-check rather than being a blanket refusal.
 
 ## Conclusions
 1. **RPA@PBE α is uniform on heavier atoms too**: −1.4% (SiF4) to −10% (SiH4),
@@ -56,9 +57,9 @@ rather than being a blanket refusal.
    heavy set. Br compounds have no CRC α₀ reference here, but their α is smooth
    and basis-monotone (DZ→TZ +0.7% GeH4, +5% CH3Br, +8% Br2). RPA@PBE stays
    accurate all the way past the third row.
-5. **Heavy-Z TS now computes and overshoots — mildly (N=2 new)**: with the
-   Gould-Bučko free-atom table (Z=19–54), GeH4/Br2 TS produce a C6 instead of
-   refusing, and both overshoot RPA@PBE (+57.7%, +27.9%). The soft/heavy-atom TS
+5. **Heavy-Z TS now computes and overshoots — mildly (N=3 new)**: with the
+   Gould-Bučko free-atom table (Z=19–54), GeH4/CH3Br/Br2 TS produce a C6 instead
+   of refusing, all overshooting RPA@PBE (+57.7%, +39.4%, +27.9%). The soft/heavy-atom TS
    failure mode does extend past row 3 — but at Ge/Br it looks like the *curable*
    P/S class (+30%), not the catastrophic Si class (+474%/+1190%). So the earlier
    blanket refusal was conservative: Ge/Br TS is wrong but not catastrophically
@@ -74,9 +75,9 @@ rather than being a blanket refusal.
   plateau-acceptance SCF fixes (HEAD) resolved the earlier non-convergence/hangs.
   All 6 RPA@PBE cases ran at RAYON=12 in minutes each; NPZs under runs/.
 - Heavy-Z TS now computes (Z=19–54 via Gould-Bučko free-atom refs, 2026-07-14);
-  GeH4/Br2 TS overshoot RPA@PBE by +58%/+28% — see conclusion 5. The α_free/C6_free
-  spread between the Gould-Bučko and Chu04 sources is ~13% on Br C6 (documented
-  inline in free_atom_ref.rs), negligible next to the TS model error itself.
+  GeH4/CH3Br/Br2 TS overshoot RPA@PBE by +58%/+39%/+28% — see conclusion 5. The
+  α_free/C6_free spread between the Gould-Bučko and Chu04 sources is ~13% on Br C6
+  (documented inline in free_atom_ref.rs), negligible next to the TS model error.
 - SiF4 TS at TZ did not finish (free-atom Si+4F SCFs too slow serially); the DZ
   +1190% plus SiH4's basis-invariance carry the conclusion.
 - The rayon-on-small-problem penalty (PH3 note below) is superseded for these

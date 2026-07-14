@@ -1,0 +1,14 @@
+[ferric] memory budget: 12.25 GiB  [source: auto (0.8 × available RAM)]
+PDEP-RPA/aug-cc-pvdz (aux: aug-cc-pvdz-rifit) on testdata/molecules/ch3br.xyz
+  nbasis     = 86
+RHF energy:                -2613.5946936850 Hartree
+RPA correlation:              -0.5111933670 Hartree
+Total (RHF+RPA):           -2614.1058870520 Hartree
+Eigenpotentials kept:  271 / 271
+Polarizability α (a.u.):  iso=31.6804, principal=[27.5919, 27.5919, 39.8574]
+Per-atom Becke α (iso, a.u.): [18.54908724738211, 1.5757909365302496, 3.973242520715552, 3.791136049848536, 3.791135825107402]
+dipole (e·a0): [-0.0004, -0.0000, -0.7325] |μ| = 0.7325
+Löwdin charges (e): [0.407, -0.5586, 0.0505, 0.0505, 0.0505]
+Hirshfeld charges (e): [0.3152, -0.3338, 0.0062, 0.0062, 0.0062]
+Computed TS C6: 5 atoms; molecular C6 = 597.661 a.u.
+Wrote NPZ feature bundle: scripts/dosd3/runs/augccpvdz/ch3br_ts.npz
