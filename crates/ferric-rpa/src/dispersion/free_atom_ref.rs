@@ -16,6 +16,12 @@
 //!
 //! TODO: verify vol_free by running PBE free-atom calculations in PySCF or GPAW
 //! and computing ∫ ρ(r) r³ dr on the resulting densities.
+//!
+//! Z=19–54 α_free/C6_free are from Gould & Bučko JCTC 12, 3603 (2016) Table 2
+//! (same Chu-Dalgarno lineage as TS-PRL Table I; cross-checks vs the Z≤18 rows
+//! agree <5% — see docs/superpowers/specs/refs/source-crosscheck.md). Their
+//! vol_free is None (no sourced fallback): the live free-atom SCF supplies the
+//! volume, and None refuses rather than fabricating a denominator.
 
 /// Free-atom TS reference: `(alpha_free, c6_free, vol_free)` in a.u.
 /// Indexed by atomic number `z` (1..=18 covered). Returns `None` outside the
@@ -45,6 +51,47 @@ pub fn ts_free_atom(z: usize) -> Option<(f64, f64, Option<f64>)> {
         16 => (19.600,   134.000,  Some(41.50)),  // S
         17 => (15.000,   94.600,   Some(34.50)),  // Cl
         18 => (11.100,   64.300,   Some(28.90)),  // Ar
+        // Z=19–54: alpha_free/c6_free from Gould & Bučko JCTC 12, 3603 (2016)
+        // Table 2 (neutral atoms), a.u. — see refs/gould-bucko-2016-table2-neutral.txt.
+        // vol_free = None: no sourced free-atom volume for Z>18; the live free-atom
+        // SCF (cli main.rs) supplies it, and None refuses if that path fails rather
+        // than dividing by a fabricated volume. Chu04 C6 alt noted where spread >5%.
+        19 => (290.0,  3910.0, None),  // K
+        20 => (160.0,  2230.0, None),  // Ca
+        21 => (123.0,  1570.0, None),  // Sc   Chu04 C6=1383 (~12%)
+        22 => (102.0,  1200.0, None),  // Ti   Chu04 C6=1044 (~13%)
+        23 => (87.3,   955.0,  None),  // V    Chu04 C6=832  (~13%)
+        24 => (78.4,   709.0,  None),  // Cr   Chu04 C6=602  (~15%)
+        25 => (66.8,   635.0,  None),  // Mn   Chu04 C6=552  (~13%)
+        26 => (60.4,   548.0,  None),  // Fe   Chu04 C6=482  (~12%)
+        27 => (53.9,   461.0,  None),  // Co   Chu04 C6=408  (~11%)
+        28 => (48.4,   393.0,  None),  // Ni   Chu04 C6=373  (~5%)
+        29 => (41.7,   264.0,  None),  // Cu
+        30 => (38.4,   276.0,  None),  // Zn
+        31 => (52.1,   456.0,  None),  // Ga
+        32 => (40.2,   365.0,  None),  // Ge
+        33 => (29.6,   260.0,  None),  // As   Chu04 C6=246  (~5%)
+        34 => (26.2,   233.0,  None),  // Se   Chu04 C6=210  (~10%)
+        35 => (21.6,   187.0,  None),  // Br   Chu04 C6=162  (~13%)
+        36 => (16.8,   136.0,  None),  // Kr
+        37 => (317.0,  4660.0, None),  // Rb
+        38 => (198.0,  3230.0, None),  // Sr
+        39 => (163.0,  2600.0, None),  // Y
+        40 => (112.0,  1360.0, None),  // Zr
+        41 => (97.9,   1140.0, None),  // Nb
+        42 => (87.1,   1030.0, None),  // Mo
+        43 => (79.6,   939.0,  None),  // Tc
+        44 => (72.3,   809.0,  None),  // Ru
+        45 => (66.4,   708.0,  None),  // Rh
+        46 => (61.7,   628.0,  None),  // Pd   (Chu04/ASE 158 is Ruiz12 in-molecular, NOT free-atom)
+        47 => (46.2,   341.0,  None),  // Ag
+        48 => (46.7,   405.0,  None),  // Cd
+        49 => (62.1,   643.0,  None),  // In
+        50 => (60.0,   715.0,  None),  // Sn
+        51 => (44.0,   504.0,  None),  // Sb
+        52 => (40.0,   471.0,  None),  // Te   Chu04 C6=445  (~6%)
+        53 => (33.6,   389.0,  None),  // I
+        54 => (27.2,   302.0,  None),  // Xe
         _ => return None,
     };
     Some(row)
@@ -68,5 +115,25 @@ mod tests {
         let (_, _, v_o) = ts_free_atom(8).unwrap();
         assert!((v_o.unwrap() - 19.750).abs() < 1e-3, "O vol_free wrong: {v_o:?}");
         assert!(ts_free_atom(200).is_none(), "out-of-table should be None");
+    }
+
+    #[test]
+    fn heavy_z_rows_present_gould_bucko() {
+        // Gould & Bučko JCTC 12, 3603 (2016) Table 2 (neutral atoms), a.u.
+        let (a_ge, c6_ge, v_ge) = ts_free_atom(32).unwrap(); // Ge
+        assert!((a_ge - 40.2).abs() < 1e-9, "Ge alpha: {a_ge}");
+        assert!((c6_ge - 365.0).abs() < 1e-9, "Ge C6: {c6_ge}");
+        assert!(v_ge.is_none(), "Ge vol_free must be None (no sourced fallback)");
+
+        let (a_br, c6_br, v_br) = ts_free_atom(35).unwrap(); // Br
+        assert!((a_br - 21.6).abs() < 1e-9, "Br alpha: {a_br}");
+        assert!((c6_br - 187.0).abs() < 1e-9, "Br C6: {c6_br}");
+        assert!(v_br.is_none(), "Br vol_free must be None");
+
+        // Range endpoints present.
+        assert!(ts_free_atom(19).is_some(), "K (Z=19) must be present");
+        assert!(ts_free_atom(54).is_some(), "Xe (Z=54) must be present");
+        // Still refuses genuinely-absent elements above the added range.
+        assert!(ts_free_atom(55).is_none(), "Cs (Z=55) not added -> None");
     }
 }
