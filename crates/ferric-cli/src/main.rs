@@ -1110,10 +1110,12 @@ fn main() {
                                     .or_else(|| ts_free_atom(zi).and_then(|(_, _, v)| v))
                                     .ok_or_else(|| ferric_core::FerricError::General(format!(
                                         "TS/MBD C6: no free-atom reference volume for atom {i} \
-                                         (Z={zi}); the free-atom SCF did not converge and Z is \
-                                         outside the TS table (Z=1..=18). Refusing to default the \
-                                         volume ratio to 1.0 (raw molecular volume), which would \
-                                         silently corrupt C6. Use c6_source=\"pdep\" for Z>18."
+                                         (Z={zi}); the live free-atom SCF did not converge and no \
+                                         sourced fallback volume exists (the TS free-atom α/C6 table \
+                                         covers Z=1..=54, but its fallback volumes are None for \
+                                         Z>18, so a heavy atom relies on the live SCF). Refusing to \
+                                         default the volume ratio to 1.0 (raw molecular volume), \
+                                         which would silently corrupt C6. Use c6_source=\"pdep\"."
                                     )))?;
                                 ratio.push(if vf > 1e-10 { vols[i] / vf } else { 1.0 });
                             }

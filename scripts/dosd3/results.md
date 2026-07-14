@@ -25,7 +25,7 @@ across MULTIPLE Si compounds.
 ### Heavy-Z TS now computable (Gould-Bučko free-atom α/C6 for Z=19–54) — DZ
 
 As of 2026-07-14 the TS free-atom table covers Z=19–54 (Gould & Bučko JCTC 12,
-3603 (2016) Table 2), so GeH4/Br2 TS produce a molecular C6 instead of refusing.
+3603 (2016) Table 2), so GeH4/CH3Br/Br2 TS produce a molecular C6 instead of refusing.
 The free-atom *volume* is still generated live (per-Z UKS-PBE ∫ρr³dr); only the
 α_free/C6_free lookup was extended.
 
