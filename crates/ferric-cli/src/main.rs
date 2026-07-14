@@ -241,8 +241,34 @@ fn main() {
                 println!("  steps      = {}", opt_result.steps);
                 println!("  final E    = {:.10} Hartree (RHF + RPA)", opt_result.energy);
             }
+            "rimp2" => {
+                let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+                let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                });
+                let mp2_config = RiMp2Config {
+                    frozen_core: cfg.mp2.frozen_core,
+                    memory_budget_bytes: budget_bytes,
+                };
+                let opt_result = ferric_mp2::optimize::optimize_geometry_rimp2(
+                    &mol, &bs, &aux_bs, op, &mp2_config, &opt_config,
+                )
+                .unwrap_or_else(|e| {
+                    eprintln!("error during RI-MP2 optimization: {e}");
+                    std::process::exit(1);
+                });
+                println!("\nFinal Optimized Geometry (Bohr):");
+                for (i, atom) in opt_result.mol.atoms.iter().enumerate() {
+                    println!("  {:2} {:2} {:12.8} {:12.8} {:12.8}", i, atom.symbol, atom.x, atom.y, atom.zpos);
+                }
+                println!("\nRI-MP2 Optimization Result:");
+                println!("  converged  = {}", opt_result.converged);
+                println!("  steps      = {}", opt_result.steps);
+                println!("  final E    = {:.10} Hartree (RHF + MP2)", opt_result.energy);
+            }
             _ => {
-                eprintln!("error: geometry optimization is currently only supported for method.kind = \"rhf\" or \"pdep-rpa\"");
+                eprintln!("error: geometry optimization is currently only supported for method.kind = \"rhf\", \"pdep-rpa\", or \"rimp2\"");
                 std::process::exit(1);
             }
         }
