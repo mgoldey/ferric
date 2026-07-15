@@ -187,7 +187,7 @@ pub fn casimir_polder_c6(dyn_pol: &DynamicPolarizability) -> C6Result {
 /// # Errors
 ///
 /// Returns [`FerricError::General`] when any atom's Z lies outside the TS
-/// free-atom reference table (Z=1..=18) — see [`mbd::ts_atom_params`]. Heavy
+/// free-atom reference table (Z=1..=54) — see [`mbd::ts_atom_params`]. Heavy
 /// atoms are a hard error, not a silent hydrogen-substituted fallback.
 pub fn ts_dynamic_polarizability(
     z: &[usize],

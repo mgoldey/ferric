@@ -79,11 +79,11 @@ pub fn dipole_coupling_tensor(positions: &[[f64; 3]], sigma: &[f64]) -> Array2<f
 /// # Errors
 ///
 /// Returns [`FerricError::General`] naming the atom index and Z when no
-/// free-atom TS reference exists for that element (the table covers Z=1..=18).
+/// free-atom TS reference exists for that element (the table covers Z=1..=54).
 /// This is a HARD error, not a silent fallback: the previous behaviour
 /// substituted hydrogen's London frequency for Z>18, which silently produced
 /// H-like (wrong) C6 for every 4th-row / heavy-atom system. TS is not
-/// parameterised beyond Z=18; there is no honest value to return, so the caller
+/// parameterised beyond Z=54; there is no honest value to return, so the caller
 /// must be told rather than handed plausible-shaped garbage.
 pub fn ts_atom_params(
     z: &[usize],
@@ -96,10 +96,10 @@ pub fn ts_atom_params(
             let (alpha_free, c6_free, _) = ts_free_atom(za).ok_or_else(|| {
                 FerricError::General(format!(
                     "TS dispersion: no free-atom reference for atom {a} (Z={za}); \
-                     the Tkatchenko-Scheffler table covers Z=1..=18 only. Heavy-atom \
+                     the Tkatchenko-Scheffler table covers Z=1..=54 only. Heavy-atom \
                      TS/MBD C6 is not parameterised — refusing to substitute hydrogen's \
                      London frequency (which would silently yield H-like C6). Use the \
-                     PDEP-RPA C6 source (c6_source=\"pdep\") for Z>18 instead."
+                     PDEP-RPA C6 source (c6_source=\"pdep\") for Z>54 instead."
                 ))
             })?;
             let _ = alpha_static; // static tensor drives shape, not (α_eff, ω_A).
