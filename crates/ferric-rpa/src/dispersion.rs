@@ -691,18 +691,18 @@ mod tests {
         assert!(czz > cxx, "expected prolate C6: zz={czz} xx={cxx}");
     }
 
-    /// Heavy atom (Z=26, Fe) with no TS free-atom reference must HARD-ERROR, not
+    /// Heavy atom (Z=55, Cs) with no TS free-atom reference must HARD-ERROR, not
     /// silently substitute hydrogen's London frequency. The error names the atom
     /// index and Z so the caller can act.
     #[test]
     fn ts_dynamic_heavy_atom_errors_not_hydrogen() {
-        let z = vec![26usize]; // Fe — outside the TS table (Z=1..=18)
+        let z = vec![55usize]; // Cs — outside the TS table (Z=1..=54)
         let vol_ratio = vec![1.0_f64];
         let alpha_static = vec![[[9.0, 0.0, 0.0], [0.0, 9.0, 0.0], [0.0, 0.0, 9.0]]];
         let (freqs, weights) = trapezoid_grid(100, 100.0);
         let err = ts_dynamic_polarizability(&z, &vol_ratio, &alpha_static, &freqs, &weights)
-            .expect_err("Z=26 must error, not silently use hydrogen ω");
+            .expect_err("Z=55 must error, not silently use hydrogen ω");
         let msg = format!("{err}");
-        assert!(msg.contains("Z=26"), "error must name the element: {msg}");
+        assert!(msg.contains("Z=55"), "error must name the element: {msg}");
     }
 }

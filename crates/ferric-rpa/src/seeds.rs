@@ -200,7 +200,7 @@ fn build_seed_inner(
                     pairs.push((i_loc, a, importance));
                 }
             }
-            pairs.sort_by(|x, y| y.2.abs().partial_cmp(&x.2.abs()).unwrap());
+            pairs.sort_by(|x, y| y.2.abs().total_cmp(&x.2.abs()));
             let n_take = n_seed_target.min(pairs.len()).max(1);
             let mut seed = Array2::<f64>::zeros((naux, n_take));
             for (slot, &(i_loc, a, w)) in pairs[..n_take].iter().enumerate() {
@@ -346,7 +346,7 @@ pub fn build_boys_seed(
                     pairs.push((i_loc, a, importance));
                 }
             }
-            pairs.sort_by(|x, y| y.2.abs().partial_cmp(&x.2.abs()).unwrap());
+            pairs.sort_by(|x, y| y.2.abs().total_cmp(&x.2.abs()));
 
             let n_take = n_seed_target.min(pairs.len()).max(1);
             let mut seed = Array2::<f64>::zeros((naux, n_take));

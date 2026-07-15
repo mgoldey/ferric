@@ -275,16 +275,16 @@ mod tests {
         assert!((p[0].1 - omega_expected).abs() < 1e-9, "ω_A = {}", p[0].1);
     }
 
-    /// Z outside the TS table (Z=1..=18) must HARD-ERROR from `ts_atom_params`,
+    /// Z outside the TS table (Z=1..=54) must HARD-ERROR from `ts_atom_params`,
     /// not fall back to hydrogen's ω. Names the atom index and Z.
     #[test]
     fn ts_atom_params_heavy_atom_errors() {
         let st = [[9.0, 0.0, 0.0], [0.0, 9.0, 0.0], [0.0, 0.0, 9.0]];
-        // Two atoms: C (ok) then Br (Z=35, out of table) — error must point at idx 1.
-        let err = ts_atom_params(&[6, 35], &[1.0, 1.0], &[st, st])
-            .expect_err("Z=35 must error");
+        // Two atoms: C (ok) then Cs (Z=55, out of table) — error must point at idx 1.
+        let err = ts_atom_params(&[6, 55], &[1.0, 1.0], &[st, st])
+            .expect_err("Z=55 must error");
         let msg = format!("{err}");
-        assert!(msg.contains("Z=35"), "error must name Z: {msg}");
+        assert!(msg.contains("Z=55"), "error must name Z: {msg}");
         assert!(msg.contains("atom 1"), "error must name the atom index: {msg}");
     }
 
