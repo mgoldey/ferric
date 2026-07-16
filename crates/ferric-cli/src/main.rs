@@ -1161,8 +1161,8 @@ fn main() {
                             let sym = ferric_core::elements::z_to_symbol(zi as i32).unwrap_or("?");
                             let vf = match vol_free_computed.get(&zi).copied() {
                                 Some(v) => v,
-                                None => match ts_free_atom(zi) {
-                                    Some((_, _, v)) => {
+                                None => match ts_free_atom(zi).and_then(|(_, _, v)| v) {
+                                    Some(v) => {
                                         eprintln!(
                                             "warning: free-atom SCF volume unavailable for {sym} \
                                              (Z={zi}); using the unverified TS-table v_free — the \
@@ -1174,8 +1174,10 @@ fn main() {
                                     None => {
                                         eprintln!(
                                             "warning: TS C6 skipped — no free-atom volume reference \
-                                             for {sym} (Z={zi}): free-atom SCF failed and the TS \
-                                             table covers Z <= 18 only"
+                                             for {sym} (Z={zi}): free-atom SCF failed and no sourced \
+                                             fallback volume exists (the TS free-atom α/C6 table \
+                                             covers Z=1..=54, but its fallback volumes are None for \
+                                             several elements outside {{H,He,C,N,O,F,Ne}})"
                                         );
                                         return None;
                                     }
