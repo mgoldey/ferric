@@ -29,9 +29,13 @@ RESULTS = HERE / "results.json"
 
 METHODS = ["Koop", "dSCF", "dRPA", "G0W0", "COHSEX", "evGW0", "evGW", "G0W0pbe"]
 # per-molecule data row: "H2O  12.62  13.889  10.989  12.549  12.890  14.672  12.835  12.801"
+# NaN columns must parse (same fix as parallel_complete.py, commit 5284e07):
+# Cu2/CCuN print G0W0pbe=NaN with finite GW columns. An unparsed row meant the
+# molecule was never recorded, so the relaunch loop re-ran it FOREVER (clean
+# exit + unchanged remaining-set = infinite relaunch).
 ROW = re.compile(
-    r"^(?P<mol>[A-Za-z0-9]+)\s+(?P<exp>[-+0-9.]+)\s+" + r"\s+".join(
-        rf"(?P<{m}>[-+0-9.]+)" for m in METHODS
+    r"^(?P<mol>[A-Za-z0-9]+)\s+(?P<exp>[-+0-9.]+|NaN|nan)\s+" + r"\s+".join(
+        rf"(?P<{m}>[-+0-9.]+|NaN|nan)" for m in METHODS
     )
 )
 MAE = re.compile(r"^MAE\s+(?P<vals>.+)$")
@@ -69,15 +73,35 @@ def load_basis(basis):
 
 
 def save_basis(basis, slot):
-    # Re-emit documented provenance for whatever has actually failed, so the
-    # annotation survives restarts and is never clobbered by an in-memory slot.
-    failed = set(slot.get("failed", []))
-    reasons = globals().get("FAILURE_REASONS", {})
-    slot["failure_reasons"] = {k: reasons[k] for k in sorted(failed) if k in reasons}
+    """Persist under a cross-process lock, MERGING with what is on disk.
+
+    The old version rewrote the whole file from the in-memory slot: a second
+    same-basis writer (another run_sweep, or parallel_complete.py) had its
+    rows silently clobbered by whichever process saved last (load-once /
+    rewrite-all lost-update). Merge semantics: molecule rows union (ours win
+    for molecules we ran); failed = union minus anything that now has a row
+    (a molecule completed elsewhere must not stay marked failed). The tmp
+    file is per-pid so two writers can never interleave into one tmp.
+    """
+    import fcntl
     p = _basis_path(basis)
-    tmp = p.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(slot, indent=2, sort_keys=True))
-    tmp.replace(p)
+    reasons = globals().get("FAILURE_REASONS", {})
+    with open(p.with_suffix(".lock"), "w") as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        disk = json.loads(p.read_text()) if p.exists() else {}
+        mols = slot.setdefault("molecules", {})
+        for k, v in disk.get("molecules", {}).items():
+            mols.setdefault(k, v)
+        failed = (set(disk.get("failed", [])) | set(slot.get("failed", []))) - set(mols)
+        out = dict(disk)
+        out.update(slot)
+        out["molecules"] = mols
+        out["failed"] = sorted(failed)
+        out["failure_reasons"] = {k: reasons[k] for k in out["failed"] if k in reasons}
+        slot["failed"] = out["failed"]
+        tmp = p.with_suffix(f".json.tmp.{os.getpid()}")
+        tmp.write_text(json.dumps(out, indent=2, sort_keys=True))
+        tmp.replace(p)
 
 
 def load():
@@ -189,6 +213,7 @@ def run_basis(basis, force=False):
 
         last_progress = [__import__("time").monotonic()]
         stalled = [False]
+        progressed = False  # any row/FAILED parsed from THIS launch
 
         def watchdog(p=proc, lp=last_progress, st=stalled):
             import time
@@ -210,6 +235,7 @@ def run_basis(basis, force=False):
                 slot["molecules"] = mols
                 save_basis(basis, slot)         # persist EACH molecule immediately
                 last_progress[0] = __import__("time").monotonic()
+                progressed = True
                 print(f"  [+] {name} ({len(mols)} done)", flush=True)
                 continue
             fm = FAILED_RE.match(line.strip())
@@ -217,6 +243,7 @@ def run_basis(basis, force=False):
                 failed.add(fm.group(1)); slot["failed"] = sorted(failed)
                 save_basis(basis, slot)
                 last_progress[0] = __import__("time").monotonic()
+                progressed = True
                 print(f"  [x] {fm.group(1)} FAILED", flush=True)
                 continue
         proc.wait()
@@ -241,7 +268,15 @@ def run_basis(basis, force=False):
                 print(f"  [!] {nxt} — driver exited {proc.returncode}, FAILED, resuming past it", flush=True)
             else:
                 break
-        # clean exit with nothing stalled → loop re-checks `remaining` (should be empty)
+        elif not progressed:
+            # Clean exit, no stall, yet NOTHING parsed: relaunching with an
+            # identical remaining-set would loop forever (this was the NaN-row
+            # infinite relaunch before the regex fix above). Abort loudly.
+            print(f"  [!] driver exited cleanly but no row for {sorted(remaining)} "
+                  f"parsed — output format vs ROW regex mismatch? Aborting to "
+                  f"avoid an infinite relaunch loop.", flush=True)
+            break
+        # clean exit with progress → loop re-checks `remaining`
 
     # Recompute MAE from the persisted molecule set (independent of run completion).
     _recompute_mae(slot)

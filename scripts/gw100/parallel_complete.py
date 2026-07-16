@@ -74,27 +74,39 @@ def remaining():
     return work
 
 
-def save_row(basis, mol, row):
+def _locked_update(basis, mutate):
+    """Read-mutate-write under BOTH the thread lock (in-process workers) and a
+    cross-process flock (a concurrent run_sweep.py or second parallel_complete
+    on the same basis — the threading.Lock alone cannot see them). Same .lock
+    path as run_sweep.save_basis. Per-pid tmp so writers never share one tmp."""
+    import fcntl
     with _lock:
         p = HERE / f"results_{basis}.json"
-        d = json.loads(p.read_text())
+        with open(p.with_suffix(".lock"), "w") as lf:
+            fcntl.flock(lf, fcntl.LOCK_EX)
+            d = json.loads(p.read_text())
+            if mutate(d):
+                tmp = p.with_suffix(f".json.tmp.{os.getpid()}")
+                tmp.write_text(json.dumps(d, indent=2, sort_keys=True))
+                tmp.replace(p)
+
+
+def save_row(basis, mol, row):
+    def mutate(d):
         d["molecules"][mol] = row
         d["failed"] = [f for f in d.get("failed", []) if f != mol]
-        tmp = p.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(d, indent=2, sort_keys=True))
-        tmp.replace(p)
+        return True
+    _locked_update(basis, mutate)
 
 
 def mark_failed(basis, mol):
-    with _lock:
-        p = HERE / f"results_{basis}.json"
-        d = json.loads(p.read_text())
-        if mol not in d["molecules"]:
-            fl = set(d.get("failed", [])); fl.add(mol)
-            d["failed"] = sorted(fl)
-            tmp = p.with_suffix(".json.tmp")
-            tmp.write_text(json.dumps(d, indent=2, sort_keys=True))
-            tmp.replace(p)
+    def mutate(d):
+        if mol in d["molecules"]:
+            return False
+        fl = set(d.get("failed", [])); fl.add(mol)
+        d["failed"] = sorted(fl)
+        return True
+    _locked_update(basis, mutate)
 
 
 def run_one(basis, mol, rayon):
