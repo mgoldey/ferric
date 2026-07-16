@@ -269,8 +269,12 @@ fn default_u_qp_range(mol: &Molecule, scf: &ScfResult) -> std::ops::Range<usize>
 /// given, the QP equation includes Σ_x − v_xc *inside* the self-consistency
 /// (correct for a KS reference; Σ_c is then evaluated at the shifted QP root).
 /// `None` ⇒ HF reference (no shift). Use `vxc_mo::vxc_diagonal_mo` to build it.
-/// Currently wired for `GwMethod::G0W0`; passing `Some(..)` with another method
-/// is an error (evGW@KS not yet implemented).
+/// Wired for `GwMethod::G0W0`, `GwMethod::EvGw0`, and `GwMethod::EvGw`: for the
+/// latter two, the Σ_x − v_xc shift is computed once from the frozen starting
+/// KS orbitals and held fixed across the outer eigenvalue (and, for evGW, W)
+/// self-consistency loop — it is a property of the KS reference, not
+/// something that evolves with QP self-consistency (see the doc comments on
+/// `sigma::run_evgw0`/`sigma::run_evgw`).
 pub fn run_gw(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -281,12 +285,6 @@ pub fn run_gw(
     gw_cfg: &GwConfig,
     vxc_diag: Option<&ndarray::Array1<f64>>,
 ) -> Result<GwResult, FerricError> {
-    if vxc_diag.is_some() && !matches!(gw_cfg.method, GwMethod::G0W0) {
-        return Err(FerricError::General(
-            "run_gw: KS reference (vxc_diag) is only wired for G0W0; evGW@KS is not \
-             yet implemented".into(),
-        ));
-    }
     if !matches!(rhf.spin, ferric_scf::Spin::Restricted) {
         return Err(FerricError::General(
             "ferric-gw: spike supports closed-shell (RHF) only".into(),
@@ -317,10 +315,10 @@ pub fn run_gw(
         GwMethod::Cohsex => cohsex::run_cohsex(mol, rhf, &mo_b, &v_dressed, pdep, qp_range, gw_cfg),
         GwMethod::G0W0 => sigma::run_g0w0(mol, rhf, &mo_b, &v_dressed, pdep, qp_range, gw_cfg, vxc_diag),
         GwMethod::EvGw0 => sigma::run_evgw0(
-            mol, rhf, &mo_b, &v_dressed, pdep, qp_range, gw_cfg,
+            mol, rhf, &mo_b, &v_dressed, pdep, qp_range, gw_cfg, vxc_diag,
         ),
         GwMethod::EvGw => sigma::run_evgw(
-            mol, obs, dfbs, op, rhf, pdep_cfg, &mo_b, pdep, qp_range, gw_cfg,
+            mol, obs, dfbs, op, rhf, pdep_cfg, &mo_b, pdep, qp_range, gw_cfg, vxc_diag,
         ),
         GwMethod::ScCohsex => Err(FerricError::General(
             "sc-COHSEX not implemented in spike P0; see plan P2.".into(),
