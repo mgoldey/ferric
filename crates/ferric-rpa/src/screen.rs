@@ -166,13 +166,25 @@ pub fn build_screened_bov(
     // Reuse a single 3-center engine across orbitals.
     let mut eng3 = Engine::new_3center(op, obs, dfbs, 1e-14)?;
 
-    // C7-fuse: single-pass screen + tile build. Previously each orbital ran
-    // two integral passes (metric (P|i i), then tile (P|i a)) — every libint2
-    // shell triple was evaluated twice. Now we evaluate each triple once and
-    // accumulate both quantities from the same integral block. The transient
-    // full-naux raw tile costs ~naux·nvir·8 B (~14 MB at danuglipron scale),
-    // well within budget. At thresh=0 the result is bit-identical to the
-    // two-pass form.
+    // C7-fuse-v2: screen-before-allocate two-pass build. The previous C7
+    // single-pass form fused the two *integral evaluations* (metric (P|i i)
+    // and tile (P|i a)) into one, but still did the expensive nvir-scaled
+    // accumulation into a full-naux `raw_full` for EVERY aux shell, deciding
+    // which shells to keep only afterward — so the O(nvir) work ran on
+    // screened-out shells too. That made the sparse path 10-50× slower than
+    // dense (docs/spikes/sparse-pdep-scaling.md).
+    //
+    // Now we genuinely separate the two passes and let the cheap one gate the
+    // expensive one:
+    //   Pass 1 (cheap, nvir-INDEPENDENT): compute only the density-pair metric
+    //     p_ii[P] += c_i[μ] (P|μν) c_i[ν]. Decide keep_p_shells/p_list from it.
+    //   Pass 2 (expensive, nvir-SCALED, RESTRICTED to kept aux shells): redo
+    //     the (P|μν) evaluation for kept shells only and accumulate the raw
+    //     tile sized (m_i × nvir), not (naux × nvir).
+    // Re-evaluating (P|μν) for kept shells in pass 2 is deliberate: the win is
+    // skipping the O(nvir) accumulation (and the (naux×nvir) allocation) for
+    // the shells we now know are screened out, which dominates. At thresh=0
+    // every aux shell is kept and this is algebraically equivalent to dense.
     for i_loc in 0..nocc_loc {
         let ci = c_occ_loc.slice(s![.., i_loc]).to_owned(); // (nbas,)
 
@@ -200,16 +212,11 @@ pub fn build_screened_bov(
             }
         }
 
-        // 2. Single integral pass: for each (p_sh, s_mu, s_nu) compute the
-        //    (P|μν) block ONCE and accumulate both:
-        //      - p_ii[P] += c_i[μ] (P|μν) c_i[ν]   (density-pair metric)
-        //      - raw_full[P, a] += c_i[μ] (P|μν) c_vir[ν, a]   (raw tile)
-        //    Loops are structured (p_sh, sig_pair) — same iteration count as
-        //    each individual pass in the original two-pass code, but only
-        //    one integral evaluation per triple.
+        // ---- Pass 1 (cheap, nvir-independent): density-pair metric only ----
+        // For each (p_sh, s_mu, s_nu) compute the (P|μν) block and accumulate
+        // p_ii[P] += c_i[μ] (P|μν) c_i[ν]. Cost O(nsh_df · sig_pairs · dim²) —
+        // NO nvir factor, so it is cheap regardless of virtual-space size.
         let mut p_ii = vec![0.0f64; naux];
-        let mut raw_full = Array2::<f64>::zeros((naux, nvir));
-
         for p_sh in 0..nsh_df {
             let np = dims_df[p_sh];
             let p0 = offs_df[p_sh];
@@ -233,26 +240,11 @@ pub fn build_screened_bov(
                         for ni in 0..n_nu {
                             let nu = o_nu + ni;
                             let v = block[(p_off * n_mu + mi) * n_nu + ni];
-                            // (μν) contribution.
-                            //   metric: cim * v * ci[nu]
-                            //   tile:   raw_full[p_idx, a] += cim * v * c_vir[nu, a]
+                            // (μν) contribution to the density-pair metric.
                             metric_acc += cim * v * ci[nu];
-                            if cim != 0.0 {
-                                let w = cim * v;
-                                for a in 0..nvir {
-                                    raw_full[(p_idx, a)] += w * c_vir[(nu, a)];
-                                }
-                            }
                             // (νμ) contribution by symmetry (P|μν) = (P|νμ).
                             if off_diag {
-                                let cin = ci[nu];
-                                metric_acc += cin * v * cim;
-                                if cin != 0.0 {
-                                    let w = cin * v;
-                                    for a in 0..nvir {
-                                        raw_full[(p_idx, a)] += w * c_vir[(mu, a)];
-                                    }
-                                }
+                                metric_acc += ci[nu] * v * cim;
                             }
                         }
                     }
@@ -261,7 +253,9 @@ pub fn build_screened_bov(
             }
         }
 
-        // 3. Retain aux shells where any function p in P has |(p|i i)| > thresh.
+        // 2. Retain aux shells where any function p in P has |(p|i i)| > thresh.
+        //    This decision uses ONLY the cheap pass-1 metric — no nvir-scaled
+        //    work has touched any shell yet.
         let mut keep_p_shells: Vec<usize> = Vec::new();
         for p_sh in 0..nsh_df {
             let mut m = 0.0f64;
@@ -273,20 +267,71 @@ pub fn build_screened_bov(
             }
         }
 
-        // Expand kept aux shells into kept aux function indices (sorted).
+        // Expand kept aux shells into kept aux function indices (sorted), and
+        // build slot_of[P] = compact-tile row for each kept aux function so
+        // pass 2 can scatter directly into the (m_i × nvir) raw tile. Aux
+        // functions in dropped shells keep slot_of = usize::MAX and are never
+        // visited in pass 2.
         let mut p_list: Vec<usize> = Vec::new();
+        let mut slot_of: Vec<usize> = vec![usize::MAX; naux];
         for &p_sh in &keep_p_shells {
             for p in offs_df[p_sh]..offs_df[p_sh] + dims_df[p_sh] {
+                slot_of[p] = p_list.len();
                 p_list.push(p);
             }
         }
         let m_i = p_list.len();
 
-        // 4. Compact: extract retained rows from raw_full into raw (m_i × nvir).
+        // ---- Pass 2 (expensive, nvir-scaled, RESTRICTED to kept aux shells) ----
+        // Redo the (P|μν) evaluation for KEPT aux shells only and accumulate
+        // raw[(slot, a)] += c_i[μ] (P|μν) c_vir[ν, a] into the compact
+        // (m_i × nvir) tile. Screened-out aux shells are never evaluated here
+        // and never touch the O(nvir) inner loop, and the tile is allocated
+        // (m_i × nvir) not (naux × nvir) — this is the memory + FLOP win.
         let mut raw = Array2::<f64>::zeros((m_i, nvir));
-        for (slot, &p_idx) in p_list.iter().enumerate() {
-            for a in 0..nvir {
-                raw[(slot, a)] = raw_full[(p_idx, a)];
+        for &p_sh in &keep_p_shells {
+            let np = dims_df[p_sh];
+            let p0 = offs_df[p_sh];
+            for &(s_mu, s_nu, _b) in &sig_pairs {
+                let block = match eng3.compute_eri3(obs, dfbs, p_sh, s_mu, s_nu) {
+                    Some(b) => b,
+                    None => continue,
+                };
+                let n_mu = dims_obs[s_mu];
+                let n_nu = dims_obs[s_nu];
+                let o_mu = offs_obs[s_mu];
+                let o_nu = offs_obs[s_nu];
+                let off_diag = s_mu != s_nu;
+
+                for p_off in 0..np {
+                    let slot = slot_of[p0 + p_off];
+                    debug_assert_ne!(slot, usize::MAX, "kept-shell aux fn must have a slot");
+                    for mi in 0..n_mu {
+                        let mu = o_mu + mi;
+                        let cim = ci[mu];
+                        for ni in 0..n_nu {
+                            let nu = o_nu + ni;
+                            let v = block[(p_off * n_mu + mi) * n_nu + ni];
+                            // (μν) contribution: raw[slot, a] += cim v c_vir[nu, a].
+                            if cim != 0.0 {
+                                let w = cim * v;
+                                for a in 0..nvir {
+                                    raw[(slot, a)] += w * c_vir[(nu, a)];
+                                }
+                            }
+                            // (νμ) contribution by symmetry (P|μν) = (P|νμ).
+                            if off_diag {
+                                let cin = ci[nu];
+                                if cin != 0.0 {
+                                    let w = cin * v;
+                                    for a in 0..nvir {
+                                        raw[(slot, a)] += w * c_vir[(mu, a)];
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
