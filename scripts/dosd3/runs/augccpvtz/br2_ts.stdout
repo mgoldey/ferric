@@ -1,0 +1,14 @@
+[ferric] memory budget: 5.39 GiB  [source: auto (0.8 × available RAM)]
+PDEP-RPA/aug-cc-pvtz (aux: aug-cc-pvtz-rifit) on testdata/molecules/br2.xyz
+  nbasis     = 118
+RHF energy:                -5147.6256865189 Hartree
+RPA correlation:              -0.8438707964 Hartree
+Total (RHF+RPA):           -5148.4695573154 Hartree
+Eigenpotentials kept:  382 / 382
+Polarizability α (a.u.):  iso=40.2490, principal=[32.7765, 32.7765, 55.1939]
+Per-atom Becke α (iso, a.u.): [14.0012777078784, 26.247674696112266]
+dipole (e·a0): [-0.0000, 0.0000, -0.0000] |μ| = 0.0000
+Löwdin charges (e): [0.0, -0.0]
+Hirshfeld charges (e): [-27.0754, 27.0754]
+Computed TS C6: 2 atoms; molecular C6 = 725.379 a.u.
+Wrote NPZ feature bundle: scripts/dosd3/runs/augccpvtz/br2_ts.npz

@@ -1,0 +1,14 @@
+[ferric] memory budget: 11.16 GiB  [source: auto (0.8 × available RAM)]
+PDEP-RPA/aug-cc-pvtz (aux: aug-cc-pvtz-rifit) on testdata/molecules/geh4.xyz
+  nbasis     = 151
+RHF energy:                -2079.0963823374 Hartree
+RPA correlation:              -0.5252091524 Hartree
+Total (RHF+RPA):           -2079.6215914898 Hartree
+Eigenpotentials kept:  375 / 375
+Polarizability α (a.u.):  iso=31.6363, principal=[31.6363, 31.6363, 31.6363]
+Per-atom Becke α (iso, a.u.): [7.84952279349509, 5.9466842364849155, 5.94668442389451, 5.946684329435391, 5.946684463316281]
+dipole (e·a0): [-0.0000, -0.0000, -0.0000] |μ| = 0.0000
+Löwdin charges (e): [1.5916, -0.3979, -0.3979, -0.3979, -0.3979]
+Hirshfeld charges (e): [0.4427, -0.1106, -0.1107, -0.1107, -0.1107]
+Computed TS C6: 5 atoms; molecular C6 = 535.505 a.u.
+Wrote NPZ feature bundle: scripts/dosd3/runs/augccpvtz/geh4_ts.npz
