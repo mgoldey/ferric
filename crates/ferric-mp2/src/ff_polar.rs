@@ -257,7 +257,7 @@ pub fn debug_perturbed_dipole_z(
     field: f64,
 ) -> Result<f64, FerricError> {
     let n = obs.nbasis();
-    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
     let mut v = Array2::<f64>::zeros((n, n));
     for mu in 0..n {
         for nu in 0..n {
@@ -302,7 +302,7 @@ pub fn debug_scf_dipole_z(
     field: f64,
 ) -> Result<f64, FerricError> {
     let n = obs.nbasis();
-    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
     let mut v = Array2::<f64>::zeros((n, n));
     for mu in 0..n {
         for nu in 0..n {
@@ -325,7 +325,7 @@ pub fn debug_scf_dipole_axis(
     field: f64,
 ) -> Result<[f64; 3], FerricError> {
     let n = obs.nbasis();
-    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
     let mut v = Array2::<f64>::zeros((n, n));
     for mu in 0..n {
         for nu in 0..n {
@@ -466,7 +466,7 @@ pub fn mp2_polarizability_static(
 ) -> Result<Mp2Polarizability, FerricError> {
     let n = obs.nbasis();
     // AO dipole integrals ⟨μ|r_d|ν⟩ about the origin.
-    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
 
     let h = field_strength;
     let mut tensor = [[0.0_f64; 3]; 3];

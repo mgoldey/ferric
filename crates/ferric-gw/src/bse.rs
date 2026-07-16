@@ -514,7 +514,7 @@ pub fn run_bse_c6(
     }
 
     // Dipole μ in (ia)-space (bare operator), per Cartesian axis.
-    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
     let r_mo: [Array2<f64>; 3] = std::array::from_fn(|d| c.t().dot(&dip_ao[d]).dot(c));
     let mut mu: [Array1<f64>; 3] = std::array::from_fn(|_| Array1::zeros(n));
     for (d, m) in mu.iter_mut().enumerate() {
@@ -743,7 +743,7 @@ pub fn run_bse_c6_ks(
         }
     }
 
-    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
     let r_mo: [Array2<f64>; 3] = std::array::from_fn(|d| c.t().dot(&dip_ao[d]).dot(c));
     let mut mu: [Array1<f64>; 3] = std::array::from_fn(|_| Array1::zeros(n));
     for (d, m) in mu.iter_mut().enumerate() {

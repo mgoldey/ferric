@@ -545,7 +545,7 @@ pub fn pdep_polarizability_static(
     let eps_vir: Vec<f64> = eps[nocc_total..nocc_total + nvir].to_vec();
 
     // MO-basis dipole μ^d_{ia} = ⟨ψ_i|r_d|ψ_a⟩ from AO dipole + MO transform.
-    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
     let c = rhf.mos_r();
     let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
     let c_vir = c.slice(ndarray::s![.., nocc_total..nocc_total + nvir]).to_owned();
@@ -808,7 +808,7 @@ pub fn pdep_polarizability_static_unrestricted(
     let eps_vir_b: Vec<f64> = eps_b_full[inter_b.nocc_total..inter_b.nocc_total + inter_b.nvir].to_vec();
 
     // Per-spin MO-basis dipole μ_σ^d_{ia} = ⟨ψ_iσ|r_d|ψ_aσ⟩.
-    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
     let c_a = rhf.mos_a();
     let c_b = if matches!(rhf.spin, Spin::RestrictedOpen) { rhf.mos_a() } else { rhf.mos_b() };
     let c_occ_a = c_a.slice(ndarray::s![.., inter_a.first_occ..inter_a.first_occ + inter_a.nocc]).to_owned();
@@ -1095,7 +1095,7 @@ pub fn pdep_polarizability_becke(
     // by analytical/grid_total. This is exact decoupling of the partition
     // (Becke fraction) from the magnitude (analytical AO dipole), giving
     // grid-noise-free results.
-    let dip_ao_analytical = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let dip_ao_analytical = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
     let inv_n = 1.0 / (natoms as f64);
     let small = 1e-10;
     for d in 0..3 {
@@ -1738,7 +1738,7 @@ pub fn pdep_polarizability_hirshfeld(
     // sum-rule check at the end; the per-atom partition is fully grid-based
     // (numerical Σ_A D^{A,i}_AO = numerical D^i_AO), so the sum rule is
     // checked between the grid-α and the *grid-built* molecular α.
-    let _dip_ao_analytical = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let _dip_ao_analytical = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
     // (used below to rescale grid-numerical per-atom partitions into the
     // analytical sum rule.)
     let c = rhf.mos_r();
@@ -2105,7 +2105,7 @@ pub fn pdep_polarizability_hirshfeld_dynamic(
     let c_vir = c.slice(ndarray::s![.., nocc_total..nocc_total + nvir]).to_owned();
 
     // --- Grid setup (identical to static Hirshfeld path) ---
-    let _dip_ao_analytical = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let _dip_ao_analytical = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
     let spacing = hirshfeld_spacing();
     let margin = hirshfeld_margin();
     let grid = GridSpec::bounding_box(mol, margin, spacing);
@@ -2336,7 +2336,7 @@ pub fn molecular_dynamic_polarizability(
         let e_ia_b = mk_eia(&inter_b, eps_b_full);
 
         // Lab-frame molecular dipole in each spin's occ-vir MO basis.
-        let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+        let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
         let c_a = rhf.mos_a();
         let c_b = if matches!(rhf.spin, Spin::RestrictedOpen) {
             rhf.mos_a()
@@ -2473,7 +2473,7 @@ pub fn molecular_dynamic_polarizability(
     }
 
     // Lab-frame molecular dipole in the MO occ-vir basis.
-    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
     let c = rhf.mos_r();
     let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
     let c_vir = c.slice(ndarray::s![.., nocc_total..nocc_total + nvir]).to_owned();
@@ -2595,7 +2595,7 @@ pub fn molecular_dynamic_polarizability_pdep(
     }
 
     // Lab-frame molecular dipole in the MO occ-vir basis (origin [0,0,0]).
-    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
     let c = rhf.mos_r();
     let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
     let c_vir = c.slice(ndarray::s![.., nocc_total..nocc_total + nvir]).to_owned();

@@ -115,7 +115,7 @@ pub fn solve_rohf(
         (None, None)
     };
     let s = oneelectron::overlap(prep);
-    let h = oneelectron::hcore_with_external(prep, config.external_potential.as_ref());
+    let h = oneelectron::hcore_with_external(prep, config.external_potential.as_ref())?;
     let n = prep.nbasis();
     let nelec = mol.nelec() as i64;
     let mult = mol.multiplicity as i64;

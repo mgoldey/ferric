@@ -126,7 +126,7 @@ fn boys_seed_one_spin(
     let c_occ_active = c_full
         .slice(s![.., first_occ..first_occ + nocc])
         .to_owned();
-    let dip = dipole(obs, [0.0, 0.0, 0.0]);
+    let dip = dipole(obs, [0.0, 0.0, 0.0])?;
     let boys = boys_localize(&c_occ_active, &dip, 200);
     let s_mat = overlap(obs);
     let sc_loc = s_mat.dot(&boys.c_loc);
@@ -275,7 +275,7 @@ pub fn build_boys_seed(
     // Dipole AO integrals at origin; Boys formula only needs the diagonal
     // differences and off-diagonals — origin choice is gauge-invariant for
     // the localization rotation.
-    let dip = dipole(obs, [0.0, 0.0, 0.0]);
+    let dip = dipole(obs, [0.0, 0.0, 0.0])?;
 
     let boys = boys_localize(&c_occ_active, &dip, 200);
     // c_loc unused beyond the rotation U: the seed only cares about how Boys

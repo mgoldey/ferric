@@ -273,7 +273,7 @@ fn diag_ferric_static_relaxed_dipole() {
     let inter = compute_mp2_intermediates(&mol, &obs, &dfbs, op, &rhf, &mp2_cfg).unwrap();
     let (z, _l) = solve_zvector(&mol, &obs, &dfbs, op, &bounds, &rhf, &inter).unwrap();
     let p_relax = build_relaxed_density_ao(rhf.mos_r(), &inter.p_oo, &inter.p_vv, &z, &inter.orbital_space());
-    let dip_ao = oneelectron::dipole(&obs, [0.0,0.0,0.0]);
+    let dip_ao = oneelectron::dipole(&obs, [0.0,0.0,0.0]).unwrap();
     let mut mu = [0.0f64;3];
     for d in 0..3 {
         let elec = (&p_relax * &dip_ao[d]).sum();
@@ -303,7 +303,7 @@ fn cpks_static_relaxed_dipole_vs_pyscf() {
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
     let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
     let p = static_relaxed_density_ao(&ctx,&mol,&obs,&dfbs,op,&bounds,&rhf,&mp2_cfg).unwrap();
-    let dip_ao = oneelectron::dipole(&obs, [0.0,0.0,0.0]);
+    let dip_ao = oneelectron::dipole(&obs, [0.0,0.0,0.0]).unwrap();
     let mut mu=[0.0f64;3];
     for d in 0..3 {
         let elec=(&p*&dip_ao[d]).sum();

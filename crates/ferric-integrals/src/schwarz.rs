@@ -6,6 +6,25 @@ use crate::ffi;
 use crate::operator::{Operator, OperatorKind};
 use ferric_core::FerricError;
 use ndarray::Array2;
+use std::os::raw::c_void;
+
+/// RAII guard around a raw `scf_engine_create`/`scf_engine_destroy` handle
+/// pair, mirroring [`Engine`]'s own `Drop` impl (see `engine.rs`). Without
+/// this, a manual create/destroy pairing inside one `unsafe` block leaks the
+/// handle if anything in between panics or returns early (e.g. a libint2
+/// internal error surfacing as a Rust panic from `scf_compute_schwarz`) —
+/// the raw `ffi::scf_engine_destroy(handle)` call would simply never run.
+/// Wrapping the handle here guarantees cleanup runs on every exit path,
+/// panic included.
+struct RawEngineHandle(*mut c_void);
+
+impl Drop for RawEngineHandle {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe { ffi::scf_engine_destroy(self.0) };
+        }
+    }
+}
 
 /// Compute the Schwarz screening matrix Q(i,j) = sqrt(|(ij|ij)|) for all shell pairs.
 ///
@@ -19,19 +38,19 @@ pub fn schwarz(op: Operator, prep: &PreparedBasis) -> Result<Array2<f64>, Ferric
             "operator {:?} not implemented", op.kind
         ))),
     };
-    let handle = unsafe {
+    let raw = unsafe {
         ffi::scf_engine_create(op_kind, op.omega, prep.max_nprim(), prep.max_l(), 1e-14)
     };
-    if handle.is_null() {
+    if raw.is_null() {
         return Err(FerricError::Libint("schwarz engine_create null".into()));
     }
+    // Handle is now owned by the guard: destroyed on every exit path
+    // (normal return, `?`, or panic unwind), not just the happy path.
+    let handle = RawEngineHandle(raw);
     let nsh = prep.nshells();
     let mut qmat = Array2::zeros((nsh, nsh));
-    let status = unsafe {
-        let s = ffi::scf_compute_schwarz(handle, prep.handle(), qmat.as_mut_ptr());
-        ffi::scf_engine_destroy(handle);
-        s
-    };
+    let status = unsafe { ffi::scf_compute_schwarz(handle.0, prep.handle(), qmat.as_mut_ptr()) };
+    drop(handle);
     if status < 0 {
         return Err(FerricError::Libint(format!(
             "libint2 internal error computing Schwarz matrix: status {status}"
