@@ -386,6 +386,19 @@ pub fn run_g0w0(
 /// Iterate: at each step k, replace ε_n in the propagator denominator by
 /// the current QP estimate. W stays frozen at iteration 0 (so PDEP is not
 /// re-run). Converges in a few iterations for closed-shell molecules.
+///
+/// `vxc_diag`, if given (KS reference), is the absolute-MO-indexed diagonal
+/// v_xc — same convention as `run_g0w0`. The static shift Σ_x − v_xc for
+/// each QP state is computed ONCE, before the outer eigenvalue
+/// self-consistency loop starts, from the frozen mean-field `sigma_x_all`/
+/// `vxc_diag` snapshot, and is held FIXED across every outer iteration: it
+/// does not get recomputed as ε^QP updates. This matches `run_g0w0`'s
+/// treatment of the same quantity — `vxc_diag` is a property of the
+/// *starting* KS orbitals, not something that evolves with QP
+/// self-consistency, so re-deriving it per outer iteration would be wrong
+/// (and would just reproduce the same fixed value at extra cost, since it
+/// does not depend on `eps_prop`). `None` ⇒ HF reference (no shift,
+/// unchanged behavior).
 pub fn run_evgw0(
     mol: &Molecule,
     rhf: &ScfResult,
@@ -394,6 +407,7 @@ pub fn run_evgw0(
     pdep: PdepRpaResult,
     qp_range: std::ops::Range<usize>,
     gw_cfg: &GwConfig,
+    vxc_diag: Option<&Array1<f64>>,
 ) -> Result<GwResult, FerricError> {
     let _ = (mol, rhf);
     let first_act = mo_b.first_act;
@@ -423,6 +437,17 @@ pub fn run_evgw0(
     let mut sc_out = Array1::<f64>::zeros(mo_indices.len());
     let mut z_out = Array1::<f64>::ones(mo_indices.len());
     let mut qp_converged = vec![true; mo_indices.len()];
+    // KS static shift Σ_x − v_xc, one value per QP MO. Computed ONCE here
+    // (outside/before the outer self-consistency loop below) from the fixed
+    // mean-field sigma_x_all/vxc_diag — see the doc comment on this function
+    // for why it must NOT be recomputed per outer iteration.
+    let static_shifts: Vec<f64> = mo_indices
+        .iter()
+        .map(|&mo_abs| {
+            let m_loc = mo_abs - first_act;
+            vxc_diag.map(|v| sigma_x_all[m_loc] - v[mo_abs]).unwrap_or(0.0)
+        })
+        .collect();
     for (idx, &mo_abs) in mo_indices.iter().enumerate() {
         let m_loc = mo_abs - first_act;
         eps_mf[idx] = mo_b.eps_act[m_loc];
@@ -445,7 +470,8 @@ pub fn run_evgw0(
         // update), so each QP state's solve is independent — parallelize.
         let qp_new: Vec<(f64, f64, f64, bool)> = mo_indices
             .par_iter()
-            .map(|&mo_abs| {
+            .zip(static_shifts.par_iter())
+            .map(|(&mo_abs, &shift)| {
                 let m_loc = mo_abs - first_act;
                 let eps_m_mf = mo_b.eps_act[m_loc];
                 solve_qp_for_mo(
@@ -459,7 +485,7 @@ pub fn run_evgw0(
                     gw_cfg.pade_npts,
                     gw_cfg.qp_newton_damp,
                     ef,
-                    0.0,
+                    shift,
                 )
             })
             .collect::<Result<Vec<_>, FerricError>>()?;
@@ -511,6 +537,17 @@ pub fn run_evgw0(
 /// to shift the RHF eigenvalue vector before re-calling `run_pdep_rpa`.
 /// We mutate a `ScfResult` clone so it presents the QP-shifted ε's. All
 /// other RHF data (orbitals, density, energy) stays.
+///
+/// `vxc_diag`, if given (KS reference), is the absolute-MO-indexed diagonal
+/// v_xc — same convention as `run_g0w0`/`run_evgw0`. The static shift
+/// Σ_x − v_xc for each QP state is computed ONCE, before the outer G+W
+/// self-consistency loop, from the frozen mean-field `sigma_x_all`/
+/// `vxc_diag` snapshot, and held FIXED across every outer iteration (which
+/// here also rebuilds W via a fresh PDEP-RPA run) — it is never recomputed
+/// from the QP-shifted propagator. `vxc_diag` is a property of the
+/// *starting* KS orbitals, not of the evolving QP/W self-consistency, so
+/// this matches `run_g0w0`/`run_evgw0`'s treatment. `None` ⇒ HF reference
+/// (no shift, unchanged behavior).
 pub fn run_evgw(
     mol: &Molecule,
     obs: &ferric_integrals::basis_bridge::PreparedBasis,
@@ -522,6 +559,7 @@ pub fn run_evgw(
     pdep0: PdepRpaResult,
     qp_range: std::ops::Range<usize>,
     gw_cfg: &GwConfig,
+    vxc_diag: Option<&Array1<f64>>,
 ) -> Result<GwResult, FerricError> {
     // We rebuild PDEP from a *modified* ScfResult that has QP-shifted
     // eigenvalues for the QP block. mo_b.eps_act stays as the original
@@ -542,6 +580,17 @@ pub fn run_evgw(
     let first_act = mo_b.first_act;
     let sigma_x_all = sigma_x_diag(mo_b);
     let ef = fermi_level(&mo_b.eps_act, mo_b.n_occ_act);
+    // KS static shift Σ_x − v_xc, one value per QP MO. Computed ONCE here
+    // (outside/before the outer G+W self-consistency loop below) from the
+    // fixed mean-field sigma_x_all/vxc_diag — see the doc comment on this
+    // function for why it must NOT be recomputed per outer iteration.
+    let static_shifts: Vec<f64> = mo_indices
+        .iter()
+        .map(|&mo_abs| {
+            let m_loc = mo_abs - first_act;
+            vxc_diag.map(|v| sigma_x_all[m_loc] - v[mo_abs]).unwrap_or(0.0)
+        })
+        .collect();
     for (idx, &mo_abs) in mo_indices.iter().enumerate() {
         let m_loc = mo_abs - first_act;
         eps_mf[idx] = mo_b.eps_act[m_loc];
@@ -582,7 +631,8 @@ pub fn run_evgw(
         // Frozen (m_proj, W, eps_prop) snapshot ⇒ independent per-state solves.
         let qp_new: Vec<(f64, f64, f64, bool)> = mo_indices
             .par_iter()
-            .map(|&mo_abs| {
+            .zip(static_shifts.par_iter())
+            .map(|(&mo_abs, &shift)| {
                 let m_loc = mo_abs - first_act;
                 solve_qp_for_mo(
                     m_loc,
@@ -595,7 +645,7 @@ pub fn run_evgw(
                     gw_cfg.pade_npts,
                     gw_cfg.qp_newton_damp,
                     ef,
-                    0.0,
+                    shift,
                 )
             })
             .collect::<Result<Vec<_>, FerricError>>()?;
