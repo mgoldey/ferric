@@ -900,6 +900,11 @@ struct PyPdepRpaResult {
     #[pyo3(get)] total_energy: f64,
     #[pyo3(get)] n_eigenpotentials: usize,
     #[pyo3(get)] e_rpa_dft_diag: Option<f64>,
+    /// Whether the static-dielectric eigensolve (Davidson or Lanczos) met its
+    /// residual-norm convergence tolerance. `false` means `eigenvalues_static`
+    /// / `eigenpotentials` are the eigensolver's best-effort Ritz pairs after
+    /// exhausting its iteration budget, not verified eigenpairs.
+    #[pyo3(get)] eigensolver_converged: bool,
     eigenvalues_static: Vec<f64>,
     eigenpotentials: Array2<f64>,
     quad_freqs: Vec<f64>,
@@ -1039,12 +1044,19 @@ fn run_pdep_rpa(
         need_inv_dielectric_freq: false,
     };
     let r = run_pdep_rpa_inner(&mol.inner, &prep, &dfbs, op, &rhf, &cfg).map_err(make_err)?;
+    if !r.eigensolver_converged {
+        eprintln!(
+            "warning: PDEP-RPA eigensolver did not fully converge (best-effort Ritz pairs; \
+             eigenvalues_static/eigenpotentials are not verified to residual tolerance)"
+        );
+    }
     Ok(PyPdepRpaResult {
         rhf_energy: rhf.energy,
         e_rpa: r.e_rpa,
         total_energy: rhf.energy + r.e_rpa,
         n_eigenpotentials: r.n_eigenpotentials,
         e_rpa_dft_diag: r.e_rpa_dft_diag,
+        eigensolver_converged: r.eigensolver_converged,
         eigenvalues_static: r.eigenvalues_static,
         eigenpotentials: r.eigenpotentials,
         quad_freqs: r.quad_freqs,

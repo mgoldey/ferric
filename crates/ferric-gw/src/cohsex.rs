@@ -345,6 +345,7 @@ mod tests {
             eigenvalues_freq: Array2::<f64>::zeros((0, naux)),
             inv_dielectric_freq: None,
             e_rpa_dft_diag: None,
+            eigensolver_converged: true,
         };
         // run_cohsex needs an rhf/gw_cfg but only for logging (`let _ = (mol,
         // gw_cfg, rhf)`), so any RHF result over the fixture molecule works —
