@@ -7,6 +7,7 @@ use crate::ffi;
 use ferric_core::basis::BasisSet;
 use ferric_core::external_potential::ExternalPotential;
 use ferric_core::mol::Molecule;
+use ferric_core::FerricError;
 use ndarray::Array2;
 
 /// Below this many shell-pair units, run the serial loop directly — avoids
@@ -102,7 +103,7 @@ pub fn kinetic(prep: &PreparedBasis) -> Array2<f64> {
 pub fn nuclear(prep: &PreparedBasis) -> Array2<f64> {
     build_symmetric(prep, || {
         let mut eng = Engine::new_1e(ffi::OP_NUCLEAR, prep, 1e-14).unwrap();
-        eng.set_point_charges(prep);
+        eng.set_point_charges(prep).unwrap();
         eng
     })
 }
@@ -125,7 +126,7 @@ pub fn hcore(prep: &PreparedBasis) -> Array2<f64> {
 pub fn nuclear_with_external(prep: &PreparedBasis, ext: &ExternalPotential) -> Array2<f64> {
     build_symmetric(prep, || {
         let mut eng = Engine::new_1e(ffi::OP_NUCLEAR, prep, 1e-14).unwrap();
-        eng.set_point_charges_extra(prep, &ext.point_charges);
+        eng.set_point_charges_extra(prep, &ext.point_charges).unwrap();
         eng
     })
 }
@@ -133,23 +134,23 @@ pub fn nuclear_with_external(prep: &PreparedBasis, ext: &ExternalPotential) -> A
 /// One-electron term for a uniform external field: H' = +E·r per electron
 /// (i.e. V = -E·mu), built from the dipole integrals about the origin.
 /// Returns the zero matrix when `field == [0,0,0]`.
-pub fn field_hcore_term(prep: &PreparedBasis, field: [f64; 3]) -> Array2<f64> {
+pub fn field_hcore_term(prep: &PreparedBasis, field: [f64; 3]) -> Result<Array2<f64>, FerricError> {
     let n = prep.nbasis();
     if field == [0.0, 0.0, 0.0] {
-        return Array2::zeros((n, n));
+        return Ok(Array2::zeros((n, n)));
     }
-    let dip = dipole(prep, [0.0, 0.0, 0.0]);
-    field[0] * &dip[0] + field[1] * &dip[1] + field[2] * &dip[2]
+    let dip = dipole(prep, [0.0, 0.0, 0.0])?;
+    Ok(field[0] * &dip[0] + field[1] * &dip[1] + field[2] * &dip[2])
 }
 
 /// Core Hamiltonian H = T + V, optionally including an external potential's
 /// point-charge nuclear-attraction term and uniform-field term. `ext = None`
 /// is byte-for-byte identical to `hcore(prep)`.
-pub fn hcore_with_external(prep: &PreparedBasis, ext: Option<&ExternalPotential>) -> Array2<f64> {
+pub fn hcore_with_external(prep: &PreparedBasis, ext: Option<&ExternalPotential>) -> Result<Array2<f64>, FerricError> {
     let t = kinetic(prep);
-    let Some(ext) = ext else { return t + nuclear(prep) };
+    let Some(ext) = ext else { return Ok(t + nuclear(prep)) };
     if ext.is_empty() {
-        return t + nuclear(prep);
+        return Ok(t + nuclear(prep));
     }
     let v = if ext.point_charges.is_empty() {
         nuclear(prep)
@@ -158,9 +159,9 @@ pub fn hcore_with_external(prep: &PreparedBasis, ext: Option<&ExternalPotential>
     };
     let mut h = t + v;
     if let Some(field) = ext.field {
-        h += &field_hcore_term(prep, field);
+        h += &field_hcore_term(prep, field)?;
     }
-    h
+    Ok(h)
 }
 
 /// `hcore_ecp` extended with an external potential — see [`hcore_with_external`]
@@ -170,13 +171,13 @@ pub fn hcore_ecp_with_external(
     mol: &Molecule,
     bs: &BasisSet,
     ext: Option<&ExternalPotential>,
-) -> Array2<f64> {
-    let mut h = hcore_with_external(prep, ext);
+) -> Result<Array2<f64>, FerricError> {
+    let mut h = hcore_with_external(prep, ext)?;
     if let Some(vecp) = ecp_potential(mol, bs) {
         assert_eq!(vecp.dim(), h.dim(), "V_ECP dimension {:?} != hcore dimension {:?}", vecp.dim(), h.dim());
         h += &vecp;
     }
-    h
+    Ok(h)
 }
 
 /// Compute the dense spherical ECP projector matrix `V_ECP`, shape
@@ -263,8 +264,14 @@ pub fn hcore_ecp(prep: &PreparedBasis, mol: &Molecule, bs: &BasisSet) -> Array2<
 }
 
 /// Compute the 3 electric dipole matrices ⟨μ|(r - origin)|ν⟩, shape (nbasis, nbasis) each.
-/// `origin` is in Bohr. Returns [x_mat, y_mat, z_mat].
-pub fn dipole(prep: &PreparedBasis, origin: [f64; 3]) -> [Array2<f64>; 3] {
+/// `origin` is in Bohr. Returns `[x_mat, y_mat, z_mat]`.
+///
+/// Returns `Err(FerricError::Libint(..))` instead of panicking if the
+/// underlying `scf_compute_dipole` shim call reports a libint2-internal
+/// failure (negative status) — see the FFI exception-safety convention:
+/// every `scf_*` shim call catches C++ exceptions and returns a status code
+/// that must be checked, never silently trusted.
+pub fn dipole(prep: &PreparedBasis, origin: [f64; 3]) -> Result<[Array2<f64>; 3], FerricError> {
     let nbas = prep.nbasis();
     let mut flat = vec![0.0f64; 3 * nbas * nbas];
     let ret = unsafe {
@@ -275,12 +282,14 @@ pub fn dipole(prep: &PreparedBasis, origin: [f64; 3]) -> [Array2<f64>; 3] {
             flat.as_mut_ptr(),
         )
     };
-    assert!(ret >= 0, "scf_compute_dipole failed: {}", ret);
+    if ret < 0 {
+        return Err(FerricError::Libint(format!("scf_compute_dipole failed: {ret}")));
+    }
     let make_mat = |offset: usize| {
         let slice = &flat[offset..offset + nbas * nbas];
         Array2::from_shape_vec((nbas, nbas), slice.to_vec()).unwrap()
     };
-    [make_mat(0), make_mat(nbas * nbas), make_mat(2 * nbas * nbas)]
+    Ok([make_mat(0), make_mat(nbas * nbas), make_mat(2 * nbas * nbas)])
 }
 
 #[cfg(test)]
@@ -324,7 +333,7 @@ mod tests {
     fn test_dipole_symmetric() {
         // ⟨μ|r_d|ν⟩ is symmetric in (μ,ν) — r is a multiplicative operator.
         let prep = water_sto3g();
-        let dip = dipole(&prep, [0.0, 0.0, 0.0]);
+        let dip = dipole(&prep, [0.0, 0.0, 0.0]).unwrap();
         let n = prep.nbasis();
         for (d, mat) in dip.iter().enumerate() {
             for i in 0..n {
@@ -344,9 +353,9 @@ mod tests {
         // ⟨μ|(r−δ)|ν⟩ = ⟨μ|r|ν⟩ − δ⟨μ|ν⟩). Validates the origin argument wiring.
         let prep = water_sto3g();
         let s = overlap(&prep);
-        let d0 = dipole(&prep, [0.0, 0.0, 0.0]);
+        let d0 = dipole(&prep, [0.0, 0.0, 0.0]).unwrap();
         let delta = [0.3, -0.7, 1.1];
-        let dshift = dipole(&prep, delta);
+        let dshift = dipole(&prep, delta).unwrap();
         let n = prep.nbasis();
         for (ax, dl) in delta.iter().enumerate() {
             for i in 0..n {
@@ -425,7 +434,7 @@ mod tests {
         let prep = alkane6_cc_pvdz();
         let par = nuclear(&prep);
         let mut eng_ref = Engine::new_1e(ffi::OP_NUCLEAR, &prep, 1e-14).unwrap();
-        eng_ref.set_point_charges(&prep);
+        eng_ref.set_point_charges(&prep).unwrap();
         let ser = build_symmetric_serial(&prep, eng_ref);
         assert_bit_identical(&ser, &par, "nuclear");
     }
@@ -436,7 +445,7 @@ mod tests {
     fn hcore_with_external_none_matches_hcore() {
         let prep = water_sto3g();
         let h_orig = hcore(&prep);
-        let h_new = hcore_with_external(&prep, None);
+        let h_new = hcore_with_external(&prep, None).unwrap();
         assert_eq!(h_orig, h_new);
     }
 
@@ -445,7 +454,7 @@ mod tests {
         let prep = water_sto3g();
         let h_orig = hcore(&prep);
         let ext = ExternalPotential::default();
-        let h_new = hcore_with_external(&prep, Some(&ext));
+        let h_new = hcore_with_external(&prep, Some(&ext)).unwrap();
         assert_eq!(h_orig, h_new);
     }
 
@@ -474,16 +483,16 @@ mod tests {
     #[test]
     fn field_hcore_term_zero_field_is_zero_matrix() {
         let prep = water_sto3g();
-        let h = field_hcore_term(&prep, [0.0, 0.0, 0.0]);
+        let h = field_hcore_term(&prep, [0.0, 0.0, 0.0]).unwrap();
         assert!(h.iter().all(|&v| v == 0.0));
     }
 
     #[test]
     fn field_hcore_term_matches_dipole_integral_scaled() {
         let prep = water_sto3g();
-        let dip = dipole(&prep, [0.0, 0.0, 0.0]);
+        let dip = dipole(&prep, [0.0, 0.0, 0.0]).unwrap();
         let field = [0.0, 0.0, 0.02];
-        let h = field_hcore_term(&prep, field);
+        let h = field_hcore_term(&prep, field).unwrap();
         // H' = +E·r per electron => h = field[2] * dip[2] (using dip = <mu|r|nu>)
         let expected = &dip[2] * field[2];
         let n = prep.nbasis();

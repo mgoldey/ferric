@@ -208,19 +208,19 @@ pub(crate) fn dipole_ov_mo(
     obs: &PreparedBasis,
     c: &Array2<f64>,
     orb: &OrbitalSpace,
-) -> [Array2<f64>; 3] {
+) -> Result<[Array2<f64>; 3], FerricError> {
     let OrbitalSpace {
         nocc,
         nvir,
         nocc_total,
         first_occ,
     } = *orb;
-    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
     let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
     let c_vir = c
         .slice(ndarray::s![.., nocc_total..nocc_total + nvir])
         .to_owned();
-    std::array::from_fn(|d| c_occ.t().dot(&dip_ao[d]).dot(&c_vir))
+    Ok(std::array::from_fn(|d| c_occ.t().dot(&dip_ao[d]).dot(&c_vir)))
 }
 
 /// HF-level analytic (CPHF) polarizability — Layer 1 only. Validation rung and
@@ -244,7 +244,7 @@ pub fn mp2_polarizability_analytic_hf(
     let orb = OrbitalSpace::new(nocc, nvir, nocc, 0);
 
     // μ^d_ov as (nvir, nocc) (CG convention).
-    let mu_oc = dipole_ov_mo(obs, c, &orb); // [d] = (nocc, nvir)
+    let mu_oc = dipole_ov_mo(obs, c, &orb)?; // [d] = (nocc, nvir)
     let mu: [Array2<f64>; 3] = std::array::from_fn(|d| mu_oc[d].t().to_owned()); // (nvir,nocc)
 
     // U^x: (Δε+A) U^x = −μ^x
@@ -354,7 +354,7 @@ pub fn analytic_dt2_full(
     let orb = OrbitalSpace::new(nocc, nvir, nocc_total, first_occ);
 
     // --- CPHF U^x: (Δε + 0.5 A) U = −μ^x_ov  (same operator/conventions as HF α) ---
-    let mu_oc = dipole_ov_mo(obs, c, &orb); // (nocc,nvir)
+    let mu_oc = dipole_ov_mo(obs, c, &orb)?; // (nocc,nvir)
     let mu_vo = mu_oc[axis].t().to_owned(); // (nvir,nocc)
     let (u, resid, iters, conv) = solve_cphf_cg(c, &(-&mu_vo), obs, bounds, &orb, eps)?;
     if !conv {
@@ -384,7 +384,7 @@ pub fn analytic_dt2_full(
     // --- ∂ε_p = −μ_pp + Σ_ck U_ck [2(pp|ck) − (pc|pk)] ---
     // Need full-MO dipole diagonal and the coupling integrals via dressed B.
     // μ in MO: μ_pq = Cᵀ D^x_AO C.
-    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
     let mu_mo = c.t().dot(&dip_ao[axis]).dot(c); // (nmo,nmo)
     // (pp|ck): for occ p=i → Σ_P b_oo[P,i,i] b_ov[P,c? ...]; ck is occ-vir (k occ, c vir).
     // Use B_ov for (ck): (ck)≡(k c) with k occ, c vir → b_ov[P, k*nvir + c].
@@ -498,7 +498,7 @@ pub fn fd_dt2_along(
     h: f64,
 ) -> Result<Vec<f64>, FerricError> {
     let n = obs.nbasis();
-    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
     let t2_at = |field: f64| -> Result<Vec<f64>, FerricError> {
         let mut v = Array2::<f64>::zeros((n, n));
         for mu in 0..n {
@@ -599,7 +599,7 @@ pub fn fd_de_mp2_along(
     h: f64,
 ) -> Result<f64, FerricError> {
     let n = obs.nbasis();
-    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
     let e_at = |field: f64| -> Result<f64, FerricError> {
         let mut v = Array2::<f64>::zeros((n, n));
         for mu in 0..n {
@@ -635,7 +635,7 @@ pub fn debug_dd_norms(
     let eps = rhf.eps_r();
     let orb = OrbitalSpace::new(nocc, nvir, nocc, 0);
     // analytic ∂D from U
-    let mu_oc = dipole_ov_mo(obs, c, &orb);
+    let mu_oc = dipole_ov_mo(obs, c, &orb)?;
     let mu_vo = mu_oc[axis].t().to_owned();
     let (u, _r, _it, _cv) = solve_cphf_cg(c, &(-&mu_vo), obs, bounds, &orb, eps)?;
     let c_occ = c.slice(ndarray::s![.., 0..nocc]).to_owned();
@@ -652,7 +652,7 @@ pub fn debug_dd_norms(
         }
     }
     // FD of SCF total density
-    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
     let dens = |field: f64| -> Result<Array2<f64>, FerricError> {
         let mut v = Array2::<f64>::zeros((nbas, nbas));
         for m in 0..nbas { for n in 0..nbas { v[(m, n)] = -field * dip_ao[axis][(m, n)]; } }
@@ -688,8 +688,8 @@ pub fn debug_dd_traces(
     let c = rhf.mos_r();
     let eps = rhf.eps_r();
     let orb = OrbitalSpace::new(nocc, nvir, nocc, 0);
-    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
-    let mu_oc = dipole_ov_mo(obs, c, &orb);
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
+    let mu_oc = dipole_ov_mo(obs, c, &orb)?;
     let mu_vo = mu_oc[axis].t().to_owned();
     let (u, _r, _it, _cv) = solve_cphf_cg(c, &(-&mu_vo), obs, bounds, &orb, eps)?;
     let c_occ = c.slice(ndarray::s![.., 0..nocc]).to_owned();
@@ -721,7 +721,7 @@ pub fn debug_emp2_at_field(
     mp2_config: &RiMp2Config, axis: usize, field: f64,
 ) -> Result<f64, FerricError> {
     let n = obs.nbasis();
-    let dip = oneelectron::dipole(obs, [0.0,0.0,0.0]);
+    let dip = oneelectron::dipole(obs, [0.0,0.0,0.0])?;
     let mut v = Array2::<f64>::zeros((n,n));
     for m in 0..n { for k in 0..n { v[(m,k)] = -field*dip[axis][(m,k)]; } }
     let r = crate::ff_polar::solve_rhf_with_external(ctx, mol, obs, bounds, scf_config, &v)?;
@@ -915,7 +915,7 @@ pub fn analytic_alpha_amplitude_only(
     let (first_occ, nocc_total) = (inter.first_occ, inter.nocc_total);
     let c = rhf.mos_r();
     let nmo = c.ncols();
-    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
 
     let mut tensor = [[0.0f64; 3]; 3];
     for x in 0..3 {
@@ -1009,7 +1009,7 @@ pub fn analytic_alpha_relaxed(
     let eps = rhf.eps_r();
     let nmo = c.ncols();
     let orb = OrbitalSpace::new(nocc, nvir, nocc_total, first_occ);
-    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
 
     // Un-perturbed pieces (field-independent): base Lagrangian inputs + z.
     let f_mo0 = c.t().dot(rhf.fock_r()).dot(c);
@@ -1367,7 +1367,7 @@ pub fn analytic_alpha_full(
     let imo0 = full_mo_eri(&b_full);
 
     // MO dipole r_pq per axis (full MO).
-    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
     let r_mo: [Array2<f64>; 3] = std::array::from_fn(|d| c.t().dot(&dip_ao[d]).dot(c));
 
     let ed = 1e-5;
@@ -1646,7 +1646,7 @@ pub fn dynamic_cphf_alpha_iw(
     }
 
     // dipole μ in (ai)-space per axis (MO), bare Coulomb operator.
-    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
     let r_mo: [Array2<f64>; 3] = std::array::from_fn(|d| c.t().dot(&dip_ao[d]).dot(c));
     let mut mu: [ndarray::Array1<f64>; 3] = std::array::from_fn(|_| ndarray::Array1::zeros(n));
     for (d, m) in mu.iter_mut().enumerate() {

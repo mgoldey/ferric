@@ -473,7 +473,7 @@ impl LaplaceMp2 {
         // use the domains to decide which (μ,ν) pairs to include (AO sparsity).
         let eps_occ: Vec<f64> = (frozen_core..nocc_total).map(|k| eps[k]).collect();
         let boys_domains = if let Some(cutoff) = domain_cutoff_bohr {
-            let dip = ferric_integrals::oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+            let dip = ferric_integrals::oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
             let boys = boys_localize(&c_occ, &dip, 200);
             let shell_centers = obs.shell_centers();
             let nshells = obs.nshells();

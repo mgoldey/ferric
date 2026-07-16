@@ -317,7 +317,7 @@ pub fn solve_rhf(
         mol,
         prep.basis_set(),
         config.external_potential.as_ref(),
-    );
+    )?;
     let n = prep.nbasis();
     let nelec = mol.nelec();
     if nelec % 2 != 0 {

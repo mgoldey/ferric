@@ -449,7 +449,7 @@ pub fn oneelectron_gradient(
         natoms,
         || {
             let mut eng = Engine::new_1e_deriv(ffi::OP_NUCLEAR, prep, 1e-14)?;
-            eng.set_point_charges_extra(prep, extra_charges);
+            eng.set_point_charges_extra(prep, extra_charges)?;
             Ok(eng)
         },
         |local, eng, s1, s2| {
@@ -505,7 +505,7 @@ pub fn oneelectron_gradient(
             // this function for why finite difference (not a native libint2
             // derivative) is used here.
             let bs = prep.basis_set();
-            grad += &field_density_gradient_fd(mol, bs, d, field);
+            grad += &field_density_gradient_fd(mol, bs, d, field)?;
         }
     }
 
@@ -524,7 +524,7 @@ fn field_density_gradient_fd(
     bs: &ferric_core::basis::BasisSet,
     d: &Array2<f64>,
     field: [f64; 3],
-) -> Array2<f64> {
+) -> Result<Array2<f64>, FerricError> {
     let natoms = mol.atoms.len();
     let mut grad = Array2::zeros((natoms, 3));
     let h = 1e-4;
@@ -545,12 +545,12 @@ fn field_density_gradient_fd(
                 Ok(p) => p,
                 Err(_) => continue,
             };
-            let e_p: f64 = (d * &ferric_integrals::oneelectron::field_hcore_term(&prep_p, field)).sum();
-            let e_m: f64 = (d * &ferric_integrals::oneelectron::field_hcore_term(&prep_m, field)).sum();
+            let e_p: f64 = (d * &ferric_integrals::oneelectron::field_hcore_term(&prep_p, field)?).sum();
+            let e_m: f64 = (d * &ferric_integrals::oneelectron::field_hcore_term(&prep_m, field)?).sum();
             grad[(a, c)] = (e_p - e_m) / (2.0 * h);
         }
     }
-    grad
+    Ok(grad)
 }
 
 /// Compute the 4-center two-electron gradient contribution: Σ Γ_μνλσ d(μν|λσ)/dR.
@@ -1097,7 +1097,7 @@ mod tests {
         // Nuclear attraction gradient
         {
             let mut eng = Engine::new_1e_deriv(ffi::OP_NUCLEAR, prep, 1e-14).unwrap();
-            eng.set_point_charges(prep);
+            eng.set_point_charges(prep).unwrap();
             let max_fn = prep.shell_dims().iter().copied().max().unwrap_or(1);
             let nderiv_nuclear = 6 + 3 * natoms;
             let max_block = max_fn * max_fn;

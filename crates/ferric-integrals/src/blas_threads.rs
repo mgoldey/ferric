@@ -8,8 +8,13 @@ use std::os::raw::c_int;
 
 // OpenBLAS runtime API. Present in the OpenBLAS we link (verified: `nm -D`
 // shows openblas_set_num_threads / openblas_get_num_threads as T). The `#[link]`
-// is implicit — the binary already links openblas. Wrapped weakly so a
-// reference-LAPACK build (no symbol) degrades to a no-op instead of a link error.
+// is implicit — the binary already links openblas. NOT weakly linked: this
+// `extern "C"` block has no weak-linkage attribute, so a build against a
+// reference-LAPACK/BLAS (lacking these symbols) fails at link time with an
+// undefined-symbol error, not a runtime no-op. If ferric ever needs to
+// support a non-OpenBLAS backend, this file's calls would need to become
+// truly optional (e.g. via a cfg-gated feature or `dlsym`-based lookup), not
+// just documented as such.
 extern "C" {
     fn openblas_get_num_threads() -> c_int;
     fn openblas_set_num_threads(n: c_int);

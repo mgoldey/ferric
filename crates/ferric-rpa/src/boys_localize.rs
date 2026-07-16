@@ -45,7 +45,7 @@ pub fn boys_localize_occupied(
     // Dipole AO integrals at origin; localization rotation is gauge-invariant
     // for the choice of origin (only diagonal differences and off-diagonals are
     // used in the Foster-Boys 2×2 functional).
-    let dip = dipole(obs, [0.0, 0.0, 0.0]);
+    let dip = dipole(obs, [0.0, 0.0, 0.0])?;
 
     let boys = boys_localize(&c_occ_active, &dip, 200);
 

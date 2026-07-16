@@ -301,7 +301,7 @@ mod tests {
         let c_occ = rhf.mos_r().slice(s![.., ..nocc]).to_owned();
 
         // Compute dipole integrals at origin (0,0,0)
-        let dip = dipole(&prep, [0.0, 0.0, 0.0]);
+        let dip = dipole(&prep, [0.0, 0.0, 0.0]).unwrap();
 
         let result = boys_localize(&c_occ, &dip, 200);
 

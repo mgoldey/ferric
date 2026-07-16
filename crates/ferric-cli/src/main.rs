@@ -919,23 +919,30 @@ fn main() {
                 // since both AO matrices are symmetric.
                 let compute_dip = cfg.rpa.compute_dipole.unwrap_or(true);
                 let dip_arr: Option<[f64; 3]> = if compute_dip {
-                    let dip_ao = ferric_integrals::oneelectron::dipole(&prep, [0.0, 0.0, 0.0]);
-                    let p = result.density_total();
-                    let mut mu = [0.0f64; 3];
-                    for d in 0..3 {
-                        let elec = (p * &dip_ao[d]).sum();
-                        let nuc: f64 = mol
-                            .atoms
-                            .iter()
-                            .map(|a| a.z as f64 * [a.x, a.y, a.zpos][d])
-                            .sum();
-                        mu[d] = nuc - elec;
+                    match ferric_integrals::oneelectron::dipole(&prep, [0.0, 0.0, 0.0]) {
+                        Ok(dip_ao) => {
+                            let p = result.density_total();
+                            let mut mu = [0.0f64; 3];
+                            for d in 0..3 {
+                                let elec = (p * &dip_ao[d]).sum();
+                                let nuc: f64 = mol
+                                    .atoms
+                                    .iter()
+                                    .map(|a| a.z as f64 * [a.x, a.y, a.zpos][d])
+                                    .sum();
+                                mu[d] = nuc - elec;
+                            }
+                            println!(
+                                "dipole (e·a0): [{:.4}, {:.4}, {:.4}] |μ| = {:.4}",
+                                mu[0], mu[1], mu[2], (mu[0] * mu[0] + mu[1] * mu[1] + mu[2] * mu[2]).sqrt()
+                            );
+                            Some(mu)
+                        }
+                        Err(e) => {
+                            eprintln!("warning: dipole failed: {e}");
+                            None
+                        }
                     }
-                    println!(
-                        "dipole (e·a0): [{:.4}, {:.4}, {:.4}] |μ| = {:.4}",
-                        mu[0], mu[1], mu[2], (mu[0] * mu[0] + mu[1] * mu[1] + mu[2] * mu[2]).sqrt()
-                    );
-                    Some(mu)
                 } else {
                     None
                 };
