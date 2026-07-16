@@ -10,6 +10,16 @@ pub struct DavidsonResult {
     pub eigenvalues: Vec<f64>,
     /// Eigenpotentials, shape (naux, n_converged). Columns = V_α.
     pub eigenvectors: Array2<f64>,
+    /// Whether the returned Ritz pairs met `conv_thresh` (Davidson path) or
+    /// the caller's residual tolerance (Lanczos path, when a
+    /// [`crate::lanczos::LanczosResult`] is threaded into a `DavidsonResult`
+    /// at the `lib.rs` call sites). `run_davidson_seeded_impl` only ever
+    /// returns `Ok` after its own residual check passes — on `max_iter`
+    /// exhaustion it hard-errors via
+    /// `Err(FerricError::General("Davidson did not converge"))` rather than
+    /// returning an unconverged `Ok` — so every genuine Davidson-solver
+    /// construction site sets this `true`.
+    pub converged: bool,
 }
 
 /// Run Davidson at ω=0 to find the leading eigenpotentials of ε̃(0).
@@ -166,7 +176,7 @@ where
                     let eigenvectors = eigenvectors.slice(ndarray::s![.., ..;-1]).to_owned();
                     (eigenvalues, eigenvectors)
                 };
-                return Ok(DavidsonResult { eigenvalues, eigenvectors });
+                return Ok(DavidsonResult { eigenvalues, eigenvectors, converged: true });
             }
 
             // m < n_desired: current Ritz vectors all converged, but subspace is too small.
@@ -185,7 +195,7 @@ where
                     let eigenvectors = ritz.slice(ndarray::s![.., ..;-1]).to_owned();
                     (eigenvalues, eigenvectors)
                 };
-                return Ok(DavidsonResult { eigenvalues, eigenvectors });
+                return Ok(DavidsonResult { eigenvalues, eigenvectors, converged: true });
             }
             // Add a batch of orthogonal unit vectors to bootstrap coverage of the missing space.
             let n_to_add = (n_desired - m).min(budget).min(naux - m);
@@ -311,6 +321,102 @@ mod tests {
             (result.eigenvalues[0] - expected_lo).abs() < 1e-6,
             "find_lowest returned {} expected {}",
             result.eigenvalues[0], expected_lo,
+        );
+    }
+
+    /// A genuine Davidson solve only ever returns `Ok` after its own residual
+    /// check passes (`run_davidson_seeded_impl` hard-errors via
+    /// `Err(FerricError::General("Davidson did not converge"))` on `max_iter`
+    /// exhaustion instead of returning an unconverged `Ok`) — so `converged`
+    /// must be `true` at both `Ok(DavidsonResult { .. })` sites. Regression
+    /// guard for the TD-CONV field-threading fix: previously `DavidsonResult`
+    /// had no `converged` field at all and the flag was dropped everywhere.
+    #[test]
+    fn davidson_result_reports_converged_true() {
+        use ndarray::array;
+        let result = run_davidson_static(
+            2,
+            |v_mat: &Array2<f64>, _omega: f64| -> Array2<f64> {
+                let fixed = array![[2.0f64, 0.5], [0.5, 3.0]];
+                v_mat.t().dot(&fixed.dot(v_mat))
+            },
+            1e-6,
+            20,
+            2,
+            false,
+        ).unwrap();
+        assert!(result.converged, "a returned Ok(DavidsonResult) must always be converged");
+    }
+
+    /// TD-CONV regression: reproduces the exact `davidson::DavidsonResult {
+    /// eigenvalues: lz.eigenvalues, eigenvectors: lz.eigenvectors, converged:
+    /// lz.converged }` wiring used at the three Lanczos call sites in
+    /// `lib.rs` (`run_pdep_rpa_from_intermediates`'s Boys-screened Lanczos arm
+    /// and both `run_lanczos_full_rank` sites). Before the fix, `converged`
+    /// was silently dropped when a `LanczosResult` was folded into a
+    /// `DavidsonResult`; this test drives `run_lanczos_seeded` into the same
+    /// deliberately-unconverged regime as
+    /// `lanczos::tests::seeded_lanczos_max_iter_one_reports_unconverged`
+    /// (narrow non-spanning seed + `max_iter=1` + an unreachably tight
+    /// `conv_thresh`) and asserts the `false` flag survives the
+    /// `DavidsonResult` wrapping unchanged.
+    #[test]
+    fn davidson_result_carries_unconverged_lanczos_flag() {
+        use crate::lanczos::run_lanczos_seeded;
+
+        let naux = 40;
+        let nov = 90;
+        // Dense dielectric-shaped operator ε̃ = I + B diag(s²) Bᵀ (SPD, λ ≥ 1),
+        // same construction as lanczos.rs's make_dielectric_op (duplicated
+        // here since that helper is private to lanczos::tests).
+        let mut state = 11u64.wrapping_add(0x9E3779B97F4A7C15);
+        let mut next = || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((state >> 33) as f64 / u32::MAX as f64) - 0.5
+        };
+        let mut b = Array2::<f64>::zeros((naux, nov));
+        for v in b.iter_mut() {
+            *v = next();
+        }
+        let s2: Vec<f64> = (0..nov).map(|k| 0.3 + (k as f64 % 7.0) * 0.1).collect();
+        let b_mv = b.clone();
+        let s2_mv = s2.clone();
+        let matvec = move |v: &Array2<f64>| -> Array2<f64> {
+            let mut y = b_mv.t().dot(v);
+            for k in 0..y.nrows() {
+                let sk = s2_mv[k];
+                let row = y.row(k).to_owned() * sk;
+                y.row_mut(k).assign(&row);
+            }
+            let mut out = v.to_owned();
+            out += &b_mv.dot(&y);
+            out
+        };
+
+        // Narrow seed block (4 of 40 columns): one Lanczos step cannot span
+        // the ambient space, and max_iter=1 with an unreachable conv_thresh
+        // forces the outer-iteration budget to exhaust.
+        let mut seed = Array2::<f64>::zeros((naux, 4));
+        for j in 0..4 {
+            for i in 0..naux {
+                seed[(i, j)] = ((i + j * 13) as f64).cos();
+            }
+        }
+        let lz = run_lanczos_seeded(seed, matvec, naux, 1, 1e-14).unwrap();
+        assert!(!lz.converged, "test setup must reproduce an unconverged Lanczos result");
+
+        // Exact lib.rs wiring pattern under test.
+        let dr = DavidsonResult {
+            eigenvalues: lz.eigenvalues,
+            eigenvectors: lz.eigenvectors,
+            converged: lz.converged,
+        };
+        assert!(
+            !dr.converged,
+            "DavidsonResult must carry converged=false through from the Lanczos result, \
+             not silently default to true"
         );
     }
 }

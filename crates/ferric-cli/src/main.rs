@@ -770,6 +770,12 @@ fn main() {
                     });
                 (rr, "RHF", result)
             };
+            if !rpa_result.eigensolver_converged {
+                eprintln!(
+                    "warning: PDEP-RPA eigensolver did not fully converge (best-effort Ritz pairs; \
+                     eigenvalues_static/eigenpotentials below are not verified to residual tolerance)"
+                );
+            }
             println!(
                 "PDEP-RPA/{} (aux: {}) on {}",
                 bs.name, aux_name, cfg.molecule.xyz

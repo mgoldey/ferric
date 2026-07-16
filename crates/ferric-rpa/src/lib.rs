@@ -225,6 +225,16 @@ pub struct PdepRpaResult {
     pub inv_dielectric_freq: Option<Vec<Array2<f64>>>,
     /// RI-dRPA sanity-check energy (None unless run_diagnostics=true).
     pub e_rpa_dft_diag: Option<f64>,
+    /// Whether the static-dielectric eigensolve (Davidson or Lanczos, per
+    /// `config.eigensolver`) met its residual-norm convergence tolerance.
+    /// `false` means the eigenvalues/eigenpotentials above are the
+    /// eigensolver's best-effort Ritz pairs after exhausting its iteration
+    /// budget, not verified eigenpairs — Davidson itself hard-errors instead
+    /// of ever returning `false` here (see [`davidson::DavidsonResult`]), so
+    /// in practice only the Lanczos path (the default eigensolver) can set
+    /// this `false`. Callers that need a hard guarantee should check this
+    /// explicitly; the CLI and Python bindings only warn.
+    pub eigensolver_converged: bool,
 }
 
 /// Top-level PDEP-RPA energy calculation.
@@ -398,6 +408,7 @@ pub fn run_pdep_rpa_from_intermediates(
             davidson::DavidsonResult {
                 eigenvalues: lz.eigenvalues,
                 eigenvectors: lz.eigenvectors,
+                converged: lz.converged,
             }
         }
         // --- Dense legacy path ---
@@ -457,6 +468,7 @@ pub fn run_pdep_rpa_from_intermediates(
             davidson::DavidsonResult {
                 eigenvalues: lz.eigenvalues,
                 eigenvectors: lz.eigenvectors,
+                converged: lz.converged,
             }
         }
     };
@@ -531,6 +543,7 @@ pub fn run_pdep_rpa_from_intermediates(
         eigenvalues_freq,
         inv_dielectric_freq,
         e_rpa_dft_diag,
+        eigensolver_converged: davidson_result.converged,
     })
 }
 
@@ -642,6 +655,7 @@ pub fn run_u_pdep_rpa(
             davidson::DavidsonResult {
                 eigenvalues: lz.eigenvalues,
                 eigenvectors: lz.eigenvectors,
+                converged: lz.converged,
             }
         }
         (Eigensolver::Davidson, lap_opt) => {
@@ -716,5 +730,6 @@ pub fn run_u_pdep_rpa(
         eigenvalues_freq,
         inv_dielectric_freq,
         e_rpa_dft_diag: None,
+        eigensolver_converged: davidson_result.converged,
     })
 }
