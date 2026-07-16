@@ -42,7 +42,7 @@ fn main() {
 
     let pdep_cfg = PdepRpaConfig {
         quadrature: QuadratureConfig { scheme: QuadratureScheme::GaussLegendre, n_points: 16, u0: 0.5 },
-        davidson_conv_thresh: 1e-7,
+        eigensolver_conv_thresh: 1e-7,
         trunc_thresh: 0.0,
         ..Default::default()
     };

@@ -1,6 +1,7 @@
 use serde::Deserialize;
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub molecule: MoleculeCfg,
     pub basis: BasisCfg,
@@ -22,6 +23,7 @@ pub struct Config {
 }
 
 #[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct MemoryCfg {
     /// Unified memory budget (in GiB) for every method's resident 3-index
     /// tensors and MO transforms (SCF DF-JK, RI-MP2, OO-MP2, RPA, GW, CC).
@@ -59,6 +61,7 @@ impl MemoryCfg {
 }
 
 #[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct DftCfg {
     /// XC functional name: "LDA", "PBE", "B3LYP", "wB97X-V", or any libxc name.
     pub functional: Option<String>,
@@ -109,6 +112,7 @@ impl ExternalPotentialCfg {
 }
 
 #[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct OptimizeCfg {
     pub max_steps: Option<usize>,
     pub g_max_thresh: Option<f64>,
@@ -118,13 +122,17 @@ pub struct OptimizeCfg {
 }
 
 #[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct Mp2Cfg {
     pub auxbasis: Option<String>,
     #[serde(default)]
     pub frozen_core: usize,
-    #[allow(dead_code)]
-    #[serde(default)]
-    pub orbital_optimize: bool,
+    // NOTE: `orbital_optimize` used to live here behind `#[allow(dead_code)]`.
+    // Nothing ever read it — orbital optimization is selected with
+    // `method.kind = "oo-rimp2"`. Setting it did nothing, which silently gave
+    // plain RI-MP2 to anyone who expected OO-RI-MP2. Removed rather than wired
+    // up: `kind` is already the selector, and with `deny_unknown_fields` the
+    // stale key now errors instead of lying.
     /// Range-separation parameter ω in Å⁻¹ (for att-rimp2 and rs-mp2-rpa). Default 0.420.
     pub omega: Option<f64>,
     /// SCS opposite-spin scaling coefficient.
@@ -147,14 +155,34 @@ pub struct Mp2Cfg {
 }
 
 #[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct RpaCfg {
     pub auxbasis: Option<String>,
     #[serde(default)]
     pub frozen_core: usize,
+    /// Number of imaginary-frequency quadrature points.
+    ///
+    /// NOTE: the fallback when unset is surface-dependent (historical drift,
+    /// kept to avoid silently changing published numbers): 20 for a pdep-rpa
+    /// energy run, 16 for `task = "optimize"` (finite-difference gradients
+    /// re-run the RPA energy 6·natoms times), 40 in the Python
+    /// `run_pdep_rpa` binding. Set it explicitly for reproducibility.
     pub n_quad: Option<usize>,
+    /// Imaginary-frequency quadrature scheme. One of:
+    ///   "gauss-legendre" | "gl"           — GL nodes mapped via ω = u₀(1+x)/(1−x) (default)
+    ///   "minimax" | "mm"                  — GL nodes with literature-optimized u₀(n_quad)
+    ///   "chebyshev-tan" | "chebyshev" | "ct" — Eshuis-Yarkony-Furche tan-map (bounded ω)
+    ///
+    /// Unknown values are a hard error. `u0` is honoured by "gauss-legendre" and
+    /// "chebyshev-tan"; "minimax" derives u₀ from `n_quad` and ignores it.
     pub quadrature: Option<String>,
     pub trunc_thresh: Option<f64>,
-    pub davidson_conv_thresh: Option<f64>,
+    /// Convergence threshold for the static dielectric eigensolver (Lanczos by
+    /// default, Davidson if selected). The old name `davidson_conv_thresh` is
+    /// accepted as an alias — it was misleading (it never was Davidson-specific)
+    /// but existing TOML files must not break.
+    #[serde(alias = "davidson_conv_thresh")]
+    pub eigensolver_conv_thresh: Option<f64>,
     /// χ₀ sparsity strategy. One of:
     ///   "dense"            — dense MO-basis χ₀ (default; fastest ≤~20 atoms)
     ///   "boys"             — Boys-screened, default thresh 1e-4
@@ -191,8 +219,14 @@ pub struct RpaCfg {
     /// Compute and include the static polarizability tensor in the NPZ bundle.
     /// Default: true when `export_npz` is set.
     pub compute_polarizability: Option<bool>,
-    /// Compute and include the per-atom Hirshfeld polarizability decomposition
+    /// Compute and include the per-atom **Becke** polarizability decomposition
     /// (`alpha_atomic`, shape (N, 3, 3), additive to `alpha_tensor`).
+    ///
+    /// This path always uses the Becke partition (`pdep_polarizability_becke`);
+    /// it is NOT governed by `c6_partition`, which only selects the partition
+    /// for the C6 lane. Per-atom magnitudes are strongly partition-dependent
+    /// (~10× between schemes) — see the `per-atom-c6-status` finding — so do
+    /// not compare these against Hirshfeld-partitioned per-atom α.
     /// Default: true when `export_npz` is set.
     pub compute_alpha_atomic: Option<bool>,
     /// Compute and include the electric field at each nuclear position in the
@@ -228,14 +262,22 @@ pub struct RpaCfg {
     /// in the NPZ bundle (`c6_iso`, `c6_aniso`, `alpha_atomic_dynamic`,
     /// `c6_freqs`, `c6_weights`). Default: true when `export_npz` is set.
     pub compute_c6: Option<bool>,
-    /// C6 polarizability source: "ts" (Tkatchenko-Scheffler single-pole,
-    /// default) or "pdep" (PDEP-RPA dynamic α(iω), Phase 2).
+    /// C6 polarizability source. One of:
+    ///   "ts"   — Tkatchenko-Scheffler single-pole model (default)
+    ///   "pdep" — true PDEP-RPA dynamic α(iω) on the RPA quadrature grid
+    ///   "mbd"  — many-body dispersion (coupled-dipole) on top of the TS α.
+    ///            Known-bad for soft atoms; makes silicon worse, not better.
+    ///
+    /// Unknown values are a hard error (they used to silently run "ts").
     pub c6_source: Option<String>,
-    /// Per-atom partition for C6: "hirshfeld" (default for pdep) or "becke".
+    /// Per-atom partition for C6: "hirshfeld" or "becke". Unset defaults to
+    /// Hirshfeld when `c6_source = "pdep"`, Becke for "ts"/"mbd".
     /// Hirshfeld is required for correct anisotropy in pdep C6 — Becke atom-centred
     /// dipoles lose charge-transfer contributions and invert bond-axis ordering.
     /// For TS, partition only affects alpha_static shape; Hirshfeld volumes are
     /// always used for the volume ratio regardless of this setting.
+    ///
+    /// Unknown values are a hard error (they used to silently use the default).
     pub c6_partition: Option<String>,
     /// XC functional for the RPA *reference* orbitals (e.g. "PBE0", "PBE").
     /// `None` (default) uses a Hartree-Fock reference (RPA@HF). Setting this
@@ -250,18 +292,38 @@ impl RpaCfg {
     ///
     /// Accepted forms (case-insensitive, whitespace-trimmed):
     ///   None / "dense"            → Dense (default; backward compatible)
-    ///   "boys"                    → BoysScreened { thresh: 1e-3 }
+    ///   "boys"                    → BoysScreened { thresh: 1e-4 }
     ///   "boys:<thresh>"           → BoysScreened with that threshold
-    ///   "auto"                    → Auto { atom_cutoff: 30, boys_thresh: 1e-3 }
+    ///   "auto"                    → Auto { atom_cutoff: 30, boys_thresh: 1e-4 }
     ///   "auto:<cutoff>"           → Auto with that atom cutoff
     ///   "auto:<cutoff>:<thresh>"  → Auto with that cutoff and Boys threshold
     pub fn parse_chi0_sparsity(&self) -> Result<ferric_rpa::config::Chi0Sparsity, String> {
         // Canonical parser lives on the type (shared with the Python bindings).
         ferric_rpa::config::Chi0Sparsity::parse_config_str(self.chi0_sparsity.as_deref())
     }
+
+    /// Parse the `[rpa] quadrature` TOML string into a [`QuadratureScheme`],
+    /// warning if `u0` was set but the chosen scheme ignores it.
+    ///
+    /// Unknown strings are an error (they used to silently run Gauss-Legendre).
+    pub fn parse_quadrature(&self) -> Result<ferric_rpa::config::QuadratureScheme, String> {
+        let scheme =
+            ferric_rpa::config::QuadratureScheme::parse_config_str(self.quadrature.as_deref())
+                .map_err(|e| format!("[rpa] quadrature: {e}"))?;
+        if self.u0.is_some() && !scheme.honours_u0() {
+            eprintln!(
+                "warning: [rpa] u0 is ignored by quadrature = \"{}\" \
+                 (it derives u0 from n_quad); remove u0 or pick \
+                 \"gauss-legendre\"/\"chebyshev-tan\"",
+                self.quadrature.as_deref().unwrap_or("minimax")
+            );
+        }
+        Ok(scheme)
+    }
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MoleculeCfg {
     pub xyz: String,
     #[serde(default)]
@@ -273,12 +335,14 @@ pub struct MoleculeCfg {
 fn default_multiplicity() -> usize { 1 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BasisCfg {
     pub name: Option<String>,
     pub path: Option<String>,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MethodCfg {
     pub kind: String,
     #[serde(default = "default_task")]
@@ -288,6 +352,7 @@ pub struct MethodCfg {
 fn default_task() -> String { "energy".into() }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ScfCfg {
     #[serde(default = "default_max_iter")]
     pub max_iter: usize,
@@ -471,6 +536,48 @@ pub fn load_config(path: &str) -> Result<Config, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every shipped example must parse. With `deny_unknown_fields` on all
+    /// config structs, this doubles as the guard that the strict parser never
+    /// rejects a key the examples (and thus users' existing files) rely on.
+    #[test]
+    fn all_shipped_examples_parse() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+        let mut n = 0;
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+                continue;
+            }
+            let s = std::fs::read_to_string(&path).unwrap();
+            if let Err(e) = toml::from_str::<Config>(&s) {
+                panic!("example {} no longer parses: {e}", path.display());
+            }
+            n += 1;
+        }
+        assert!(n > 0, "no example TOMLs found in {}", dir.display());
+    }
+
+    /// Unknown/typo'd keys must be a parse error, not silently ignored. A
+    /// misspelled `trunc_thresh` used to run at the default and report success.
+    #[test]
+    fn unknown_keys_are_rejected() {
+        let toml_str = r#"
+[molecule]
+xyz = "water.xyz"
+[basis]
+name = "sto-3g"
+[method]
+kind = "pdep-rpa"
+[rpa]
+trunc_threshold = 1e-12
+"#;
+        let err = match toml::from_str::<Config>(toml_str) {
+            Ok(_) => panic!("typo'd key parsed successfully — deny_unknown_fields regressed"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("trunc_threshold"), "error should name the bad key: {err}");
+    }
 
     #[test]
     fn test_parse_config() {

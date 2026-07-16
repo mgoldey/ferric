@@ -10,7 +10,7 @@ use ferric_mp2::laplace::laplace_ri_mp2;
 use ferric_mp2::oo_rimp2::{oo_ri_mp2, OoRiMp2Config};
 use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
 use ferric_mp2::scs::{scs_mp2, ScsMp2Config};
-use ferric_rpa::config::{QuadratureConfig, QuadratureScheme, SternheimerConfig};
+use ferric_rpa::config::{QuadratureConfig, SternheimerConfig};
 use ferric_rpa::{run_pdep_rpa, PdepRpaConfig};
 use ferric_core::parallel::ParallelContext;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
@@ -199,15 +199,15 @@ fn main() {
                     eprintln!("error: {e}");
                     std::process::exit(1);
                 });
-                let scheme = match cfg.rpa.quadrature.as_deref().unwrap_or("gauss-legendre") {
-                    "minimax" | "mm" => QuadratureScheme::MiniMax,
-                    _ => QuadratureScheme::GaussLegendre,
-                };
+                let scheme = cfg.rpa.parse_quadrature().unwrap_or_else(|e| {
+                    eprintln!("config error: {e}");
+                    std::process::exit(1);
+                });
                 let rpa_cfg = PdepRpaConfig {
                     frozen_core: cfg.rpa.frozen_core,
                     trunc_thresh: cfg.rpa.trunc_thresh.unwrap_or(1e-4),
-                    davidson_max_vecs: 0,
-                    davidson_conv_thresh: cfg.rpa.davidson_conv_thresh.unwrap_or(1e-8),
+                    eigensolver_max_vecs: 0,
+                    eigensolver_conv_thresh: cfg.rpa.eigensolver_conv_thresh.unwrap_or(1e-8),
                     quadrature: QuadratureConfig {
                         scheme,
                         n_points: cfg.rpa.n_quad.unwrap_or(16),
@@ -606,9 +606,9 @@ fn main() {
             // (default 0.0 = full rank; production-size opt-in, validate vs
             // full-rank per system class before trusting).
             if let Some(t) = cfg.rpa.trunc_thresh {
-                rs_cfg.rpa.trunc_thresh = t;
+                rs_cfg.drpa.trunc_thresh = t;
             }
-            rs_cfg.rpa.memory_budget_bytes = budget_bytes;
+            rs_cfg.drpa.memory_budget_bytes = budget_bytes;
             let r = ferric_rpa::rs_mp2_rpa::rs_mp2_lr_rpa(&mol, &prep, &dfbs, &result, &rs_cfg)
                 .unwrap_or_else(|e| { eprintln!("error: {e}"); std::process::exit(1); });
             println!(
@@ -715,15 +715,15 @@ fn main() {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             });
-            let scheme = match cfg.rpa.quadrature.as_deref().unwrap_or("gauss-legendre") {
-                "minimax" | "mm" => QuadratureScheme::MiniMax,
-                _ => QuadratureScheme::GaussLegendre,
-            };
+            let scheme = cfg.rpa.parse_quadrature().unwrap_or_else(|e| {
+                eprintln!("config error: {e}");
+                std::process::exit(1);
+            });
             let rpa_cfg = PdepRpaConfig {
                 frozen_core: cfg.rpa.frozen_core,
                 trunc_thresh: cfg.rpa.trunc_thresh.unwrap_or(1e-4),
-                davidson_max_vecs: 0,
-                davidson_conv_thresh: cfg.rpa.davidson_conv_thresh.unwrap_or(1e-6),
+                eigensolver_max_vecs: 0,
+                eigensolver_conv_thresh: cfg.rpa.eigensolver_conv_thresh.unwrap_or(1e-6),
                 quadrature: QuadratureConfig {
                     scheme,
                     n_points: cfg.rpa.n_quad.unwrap_or(20),
@@ -989,7 +989,7 @@ fn main() {
                     use ferric_rpa::dispersion::free_atom_ref::ts_free_atom;
                     use ferric_rpa::dispersion::{
                         casimir_polder_c6, pdep_dynamic_polarizability,
-                        ts_dynamic_polarizability, DispersionPartition,
+                        ts_dynamic_polarizability, C6Source, DispersionPartition,
                     };
                     use ferric_rpa::properties::{
                         atomic_effective_volumes_hirshfeld,
@@ -997,15 +997,22 @@ fn main() {
                     };
                     use ferric_rpa::quadrature::build_quadrature;
 
-                    let use_pdep = cfg.rpa.c6_source.as_deref() == Some("pdep");
-                    // Default partition: Hirshfeld for PDEP (correct anisotropy via
-                    // proatom sum rule), Becke for TS (only affects alpha_static shape;
-                    // volume ratio always uses Hirshfeld regardless).
-                    let partition = match cfg.rpa.c6_partition.as_deref() {
-                        Some("becke") => DispersionPartition::Becke,
-                        Some("hirshfeld") => DispersionPartition::Hirshfeld,
-                        _ => if use_pdep { DispersionPartition::Hirshfeld } else { DispersionPartition::Becke },
-                    };
+                    // Strict parse: an unknown c6_source/c6_partition used to fall
+                    // through to TS/Becke silently, producing different numbers than
+                    // the user asked for.
+                    let c6_source = C6Source::parse_config_str(cfg.rpa.c6_source.as_deref())
+                        .unwrap_or_else(|e| {
+                            eprintln!("config error: [rpa] {e}");
+                            std::process::exit(1);
+                        });
+                    let partition =
+                        DispersionPartition::parse_config_str(cfg.rpa.c6_partition.as_deref())
+                            .unwrap_or_else(|e| {
+                                eprintln!("config error: [rpa] {e}");
+                                std::process::exit(1);
+                            })
+                            .unwrap_or_else(|| c6_source.default_partition());
+                    let use_pdep = c6_source == C6Source::Pdep;
 
                     let res_opt = if use_pdep {
                         // Phase 2: PDEP-RPA dynamic α(iω). Origin-independent for
@@ -1033,31 +1040,44 @@ fn main() {
                         }
                     } else {
                         // Phase 1: Tkatchenko-Scheffler single-pole model.
-                        let alpha_static: Vec<[[f64; 3]; 3]> =
-                            if partition == DispersionPartition::Hirshfeld {
-                                pdep_polarizability_hirshfeld(
-                                    &mol, &prep, &bs, &dfbs, &result, op, &rpa_cfg, Some(&proatom),
-                                )
-                                .unwrap_or_else(|_| vec![[[0.0; 3]; 3]; mol.atoms.len()])
-                            } else {
-                                match alpha_atomic_vec.as_ref() {
-                                    Some(v) => v.clone(),
-                                    None => pdep_polarizability_becke(
-                                        &mol, &prep, &bs, &dfbs, &result, op, &rpa_cfg,
-                                    )
-                                    .unwrap_or_else(|_| vec![[[0.0; 3]; 3]; mol.atoms.len()]),
-                                }
-                            };
+                        // Any failure below warns and SKIPS C6 (None) — the old
+                        // fallbacks (zero α, unit volumes, unit ratios) exported
+                        // wrong numbers that looked like results.
+                        (|| -> Option<ferric_rpa::dispersion::C6Result> {
+                        let alpha_res = if partition == DispersionPartition::Hirshfeld {
+                            pdep_polarizability_hirshfeld(
+                                &mol, &prep, &bs, &dfbs, &result, op, &rpa_cfg, Some(&proatom),
+                            )
+                        } else {
+                            match alpha_atomic_vec.as_ref() {
+                                Some(v) => Ok(v.clone()),
+                                None => pdep_polarizability_becke(
+                                    &mol, &prep, &bs, &dfbs, &result, op, &rpa_cfg,
+                                ),
+                            }
+                        };
+                        let alpha_static: Vec<[[f64; 3]; 3]> = match alpha_res {
+                            Ok(v) => v,
+                            Err(e) => {
+                                eprintln!("warning: TS C6 skipped — per-atom static α failed: {e}");
+                                return None;
+                            }
+                        };
                         // TS volumes must always use Hirshfeld partition — TS was
                         // parameterized with Hirshfeld volumes (TS PRL 2009). Becke
                         // volumes blow up for π-system H atoms (vol_ratio >> 1)
                         // because Becke is atom-size-blind; Hirshfeld proatom weights
                         // correctly compress H relative to C. The c6_partition setting
                         // only governs the alpha_static shape tensor, not these volumes.
-                        let vols = atomic_effective_volumes_hirshfeld(
+                        let vols = match atomic_effective_volumes_hirshfeld(
                             &mol, &bs, result.density_total(), Some(&proatom),
-                        )
-                        .unwrap_or_else(|_| vec![1.0; mol.atoms.len()]);
+                        ) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                eprintln!("warning: TS C6 skipped — Hirshfeld effective volumes failed: {e}");
+                                return None;
+                            }
+                        };
                         let z: Vec<usize> = mol.atoms.iter().map(|a| a.z as usize).collect();
 
                         // Compute free-atom vol_free using Hirshfeld on isolated atoms.
@@ -1130,62 +1150,76 @@ fn main() {
                             }
                         }
 
-                        // Build the TS volume ratios. A MISSING free-atom volume is a
-                        // HARD error (no silent unwrap_or(1.0)): if both the ferric
-                        // free-atom SCF and the TS-PRL table lack an entry for Z, there
-                        // is no honest denominator and defaulting the ratio to the raw
-                        // molecular volume would put plausibly-shaped, wrong C6 into the
-                        // NPZ with no signal. The whole TS/MBD C6 block below is fallible
-                        // and warns-and-skips (res_opt = None) on any such error, mirroring
-                        // the PDEP path — the C6 arrays are simply omitted from the export.
-                        let ts_c6: Result<_, ferric_core::FerricError> = (|| {
-                            let mut ratio: Vec<f64> = Vec::with_capacity(z.len());
-                            for (i, &zi) in z.iter().enumerate() {
-                                // Prefer the ferric-computed free-atom volume (consistent
-                                // scale with the molecular vols[i]). The TS-PRL table v_free
-                                // is a LAST resort only — different integration scale, so a
-                                // ratio built from it is unreliable (see the free-atom solve
-                                // above, which retries pure HF to avoid this path).
-                                let vf = vol_free_computed.get(&zi).copied()
-                                    .or_else(|| ts_free_atom(zi).and_then(|(_, _, v)| v))
-                                    .ok_or_else(|| ferric_core::FerricError::General(format!(
-                                        "TS/MBD C6: no free-atom reference volume for atom {i} \
-                                         (Z={zi}); the live free-atom SCF did not converge and no \
-                                         sourced fallback volume exists (the TS free-atom α/C6 table \
-                                         covers Z=1..=54, but its fallback volumes are None for \
-                                         Z>18, so a heavy atom relies on the live SCF). Refusing to \
-                                         default the volume ratio to 1.0 (raw molecular volume), \
-                                         which would silently corrupt C6. Use c6_source=\"pdep\"."
-                                    )))?;
-                                ratio.push(if vf > 1e-10 { vols[i] / vf } else { 1.0 });
-                            }
-                            let (freqs, weights) = build_quadrature(&rpa_cfg.quadrature);
-                            let is_mbd = cfg.rpa.c6_source.as_deref() == Some("mbd");
-                            let dp = if is_mbd {
-                                let positions: Vec<[f64; 3]> =
-                                    mol.atoms.iter().map(|a| [a.x, a.y, a.zpos]).collect();
-                                ferric_rpa::dispersion::mbd_dynamic_polarizability(
-                                    &positions, &z, &ratio, &alpha_static, &freqs, &weights,
-                                )?
-                            } else {
-                                ts_dynamic_polarizability(&z, &ratio, &alpha_static, &freqs, &weights)?
+                        // Use the ferric-computed free-atom volume (consistent scale
+                        // with the molecular vols[i]). The TS-PRL table v_free is a
+                        // LAST resort only — it is on a different integration scale,
+                        // so a ratio built from it is unreliable (see the free-atom
+                        // solve above, which now retries pure HF to avoid this path).
+                        // No reference at all used to silently become ratio = 1.0.
+                        let mut ratio = Vec::with_capacity(z.len());
+                        for (i, &zi) in z.iter().enumerate() {
+                            let sym = ferric_core::elements::z_to_symbol(zi as i32).unwrap_or("?");
+                            let vf = match vol_free_computed.get(&zi).copied() {
+                                Some(v) => v,
+                                None => match ts_free_atom(zi) {
+                                    Some((_, _, v)) => {
+                                        eprintln!(
+                                            "warning: free-atom SCF volume unavailable for {sym} \
+                                             (Z={zi}); using the unverified TS-table v_free — the \
+                                             volume ratio is on a mismatched integration scale \
+                                             (treat this C6 as approximate)"
+                                        );
+                                        v
+                                    }
+                                    None => {
+                                        eprintln!(
+                                            "warning: TS C6 skipped — no free-atom volume reference \
+                                             for {sym} (Z={zi}): free-atom SCF failed and the TS \
+                                             table covers Z <= 18 only"
+                                        );
+                                        return None;
+                                    }
+                                },
                             };
-                            let ts_res = casimir_polder_c6(&dp);
-                            println!(
-                                "Computed {} C6: {} atoms; molecular C6 = {:.3} a.u.",
-                                if is_mbd { "MBD" } else { "TS" },
-                                z.len(),
-                                ts_res.c6_molecular_iso
-                            );
-                            Ok(ts_res)
-                        })();
-                        match ts_c6 {
-                            Ok(res) => Some(res),
-                            Err(e) => {
-                                eprintln!("warning: TS/MBD C6 failed: {e}");
-                                None
+                            if vf <= 1e-10 {
+                                eprintln!(
+                                    "warning: TS C6 skipped — degenerate free-atom volume \
+                                     {vf:.3e} for {sym} (Z={zi})"
+                                );
+                                return None;
                             }
+                            ratio.push(vols[i] / vf);
                         }
+                        let (freqs, weights) = build_quadrature(&rpa_cfg.quadrature);
+                        let is_mbd = c6_source == C6Source::Mbd;
+                        let dp_res = if is_mbd {
+                            let positions: Vec<[f64; 3]> =
+                                mol.atoms.iter().map(|a| [a.x, a.y, a.zpos]).collect();
+                            ferric_rpa::dispersion::mbd_dynamic_polarizability(
+                                &positions, &z, &ratio, &alpha_static, &freqs, &weights,
+                            )
+                        } else {
+                            ts_dynamic_polarizability(&z, &ratio, &alpha_static, &freqs, &weights)
+                        };
+                        let dp = match dp_res {
+                            Ok(dp) => dp,
+                            Err(e) => {
+                                eprintln!(
+                                    "warning: {} C6 skipped: {e}",
+                                    if is_mbd { "MBD" } else { "TS" }
+                                );
+                                return None;
+                            }
+                        };
+                        let ts_res = casimir_polder_c6(&dp);
+                        println!(
+                            "Computed {} C6: {} atoms; molecular C6 = {:.3} a.u.",
+                            if is_mbd { "MBD" } else { "TS" },
+                            z.len(),
+                            ts_res.c6_molecular_iso
+                        );
+                        Some(ts_res)
+                        })()
                     };
 
                     if let Some(res) = res_opt {

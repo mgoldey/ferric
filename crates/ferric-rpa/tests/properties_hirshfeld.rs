@@ -44,7 +44,7 @@ fn h2o_hirshfeld_sum_rule_and_symmetry() {
     let cfg = PdepRpaConfig {
         frozen_core: 0,
         trunc_thresh: 0.0,
-        davidson_conv_thresh: 1e-10,
+        eigensolver_conv_thresh: 1e-10,
         ..Default::default()
     };
 

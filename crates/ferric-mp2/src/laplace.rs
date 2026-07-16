@@ -195,8 +195,16 @@ fn laplace_exchange_energy(
 
             // Contract: for each P in this block and every Q, sum over the
             // nocc×nocc sub-block G_PQ[i,j]*G_PQ[j,i].
+            //
+            // Layout: ndarray's `dot` allocates its output COLUMN-major when
+            // both operands have row-stride 1 (impl_linalg.rs `set_f`), which
+            // happens here exactly when nvir == 1 (x_blk strides [nvir, 1],
+            // x.t() row-stride always 1). The flat-index contraction below
+            // assumes C order, so normalize first — a borrow (free) in the
+            // common C-order case, a copy only for the tiny nvir == 1 case.
             let mut e_blk = 0.0f64;
-            let ys = y_blk.as_slice().unwrap();
+            let y_std = y_blk.as_standard_layout();
+            let ys = y_std.as_slice().expect("as_standard_layout is C-contiguous");
             let ncol = naux * nocc;
             for pi_local in 0..(p_end - p0) {
                 for q in 0..naux {
@@ -785,5 +793,42 @@ mod tests {
         // They should all be within ~0.001 Ha of each other for H2
         assert!((e3 - e5).abs() < 1e-3);
         assert!((e5 - e7).abs() < 1e-4);
+    }
+
+    /// nvir = 1 regression: with a single virtual orbital (H2/STO-3G) BOTH
+    /// operands of the exchange-energy GEMM have row-stride 1, and ndarray's
+    /// `dot` then allocates its output in COLUMN-major order
+    /// (`(m, n).set_f(lhs_s0 == 1 && rhs_s0 == 1)` in impl_linalg.rs). The
+    /// flat-index contraction assumed C order and `as_slice()` panicked.
+    #[test]
+    fn test_laplace_mp2_h2_sto3g_single_virtual() {
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
+        let bs = basis::bundled("sto-3g").unwrap();
+        let obs = PreparedBasis::new(&mol, &bs).unwrap();
+        let dfbs_set = basis::bundled("cc-pvdz-ri").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &dfbs_set).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig { energy_conv: 1e-10, ..Default::default() },
+        ).unwrap();
+
+        let mut laplace = LaplaceMp2::new(7);
+        let e_laplace = laplace.compute_mo(&mol, &obs, &dfbs, op, &rhf, 0).unwrap();
+
+        let ri = crate::rimp2::ri_mp2(
+            &mol, &obs, &dfbs, op, &rhf, &crate::rimp2::RiMp2Config::default(),
+        ).unwrap();
+        eprintln!("Laplace: {e_laplace:.10}  RI-MP2: {:.10}", ri.mp2_corr);
+        assert!(
+            (e_laplace - ri.mp2_corr).abs() < 1e-5,
+            "Laplace-MP2 must match RI-MP2 on a single-virtual system: {e_laplace} vs {}",
+            ri.mp2_corr
+        );
     }
 }

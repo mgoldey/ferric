@@ -288,6 +288,29 @@ mod tests {
         assert!(msg.contains("atom 1"), "error must name the atom index: {msg}");
     }
 
+    /// Z > 18 regression: the old code silently substituted the molecular α
+    /// with HYDROGEN's characteristic frequency, fabricating a TS C6 for Br,
+    /// Kr, and every heavier element. It must now be a hard error through
+    /// every public entry point, including the MBD-screened path (which has
+    /// its own `ts_atom_params` call independent of `ts_dynamic_polarizability`).
+    #[test]
+    fn ts_unparameterized_element_errors_instead_of_hydrogen_omega() {
+        let err = ts_atom_params(&[1, 35], &[1.0, 1.0], &[[[0.0; 3]; 3]; 2])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Br") || err.contains("35"), "error should name Br: {err}");
+
+        let st = [[3.0, 0.0, 0.0], [0.0, 3.0, 0.0], [0.0, 0.0, 3.0]];
+        let freqs = [0.0, 0.5];
+        let weights = [0.5, 0.5];
+        assert!(crate::dispersion::ts_dynamic_polarizability(
+            &[35], &[1.0], &[st], &freqs, &weights
+        ).is_err());
+        assert!(mbd_dynamic_polarizability(
+            &[[0.0, 0.0, 0.0]], &[35], &[1.0], &[st], &freqs, &weights
+        ).is_err());
+    }
+
     #[test]
     fn dipole_tensor_offsite_decays_and_onsite_zero() {
         // Two atoms on z-axis at R=10 Bohr, widths σ=1.5 each.

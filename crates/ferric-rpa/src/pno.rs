@@ -29,7 +29,7 @@
 //! thresholds.
 
 use ferric_core::FerricError;
-use ferric_mp2::oo_rimp2::compute_t2_only;
+use ferric_mp2::oo_rimp2::compute_t2_and_integrals;
 use ferric_mp2::rimp2::RpaIntermediates;
 use ndarray::{s, Array2};
 use ndarray_linalg::Eigh;
@@ -73,9 +73,7 @@ pub fn build_dnv_transform(
     let nocc_total = inter.nocc_total;
     let b_ov = &inter.b_ov;
 
-    // Only the t2 amplitudes are needed for OSV construction; the discarded
-    // (ia|jb) tensor is never built (M9: ~10 GB → ~5 GB transient at dimer/aTZ).
-    let t2 = compute_t2_only(
+    let (t2, _eri) = compute_t2_and_integrals(
         b_ov, eps, nocc, nvir, nocc_total, first_occ, naux,
     );
     let nov = nocc * nvir;
@@ -246,7 +244,7 @@ pub fn run_pdep_rpa_osv(
     // Davidson/Lanczos eigensolve with identity seed (matches the closed-
     // shell test path for trunc_thresh=0).
     let seed = Array2::<f64>::eye(naux);
-    let max_iter = if config.davidson_max_vecs == 0 { 3 * naux } else { config.davidson_max_vecs };
+    let max_iter = if config.eigensolver_max_vecs == 0 { 3 * naux } else { config.eigensolver_max_vecs };
 
     let b_ref = b_ov.clone();
     let eo = eps_occ.clone();
@@ -255,8 +253,15 @@ pub fn run_pdep_rpa_osv(
         crate::sternheimer::dielectric_apply(v, &b_ref, &eo, &ev, 0.0)
     };
     let lz = lanczos::run_lanczos_seeded(
-        seed, matvec, naux, max_iter, config.davidson_conv_thresh,
+        seed, matvec, naux, max_iter, config.eigensolver_conv_thresh,
     )?;
+    if !lz.converged {
+        eprintln!(
+            "warning: Lanczos eigensolve did NOT converge (max Ritz residual {:.3e} \
+             > {:.3e}); OSV/PNO eigenpotentials are best-effort",
+            lz.max_resid, config.eigensolver_conv_thresh
+        );
+    }
     let eigvals = &lz.eigenvalues;
     let eigvecs = &lz.eigenvectors;
 
@@ -337,7 +342,7 @@ mod tests {
             },
             frozen_core: 0,
             trunc_thresh: 0.0,
-            davidson_conv_thresh: 1e-9,
+            eigensolver_conv_thresh: 1e-9,
             ..Default::default()
         };
 
@@ -377,7 +382,7 @@ mod tests {
             },
             frozen_core: 0,
             trunc_thresh: 0.0,
-            davidson_conv_thresh: 1e-9,
+            eigensolver_conv_thresh: 1e-9,
             ..Default::default()
         };
 

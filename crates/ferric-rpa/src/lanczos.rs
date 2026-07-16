@@ -131,7 +131,7 @@ where
             eigenvalues: Vec::new(),
             eigenvectors: Array2::zeros((naux, 0)),
             converged: true,
-            residual_norm: 0.0,
+            max_resid: 0.0,
         });
     }
 
@@ -188,7 +188,7 @@ where
         eigenvalues,
         eigenvectors,
         converged: true,
-        residual_norm: 0.0,
+        max_resid: 0.0,
     })
 }
 
@@ -204,14 +204,14 @@ pub struct LanczosResult {
     /// iteration budget. `true` unconditionally for [`run_lanczos_full_rank`]
     /// (single dense `eigh`, no iterative residual). `false` means the block
     /// Lanczos recurrence exhausted `max_iter` (or ran out of Krylov space
-    /// before reaching Ambient dimension) while `residual_norm` was still
+    /// before reaching Ambient dimension) while `max_resid` was still
     /// above `conv_thresh` — the returned Ritz pairs are the best available,
     /// not verified eigenpairs.
     pub converged: bool,
     /// Residual norm `max_i ||A v_i − λ_i v_i||` (block-Lanczos estimate) of
     /// the returned Ritz pairs at the point the solve stopped. `0.0` for the
     /// full-rank (exact) path.
-    pub residual_norm: f64,
+    pub max_resid: f64,
 }
 
 /// QR-orthonormalize columns; returns Q with the same shape as the input when
@@ -331,7 +331,7 @@ where
             "ferric-rpa WARNING: block Lanczos did not converge within max_iter={max_iter} \
              (conv_thresh={conv_thresh:.3e}, worst residual={:.3e}); returned Ritz pairs \
              are the best available, not verified eigenpairs of the dielectric matrix.",
-            result.residual_norm,
+            result.max_resid,
         );
     }
     Ok(result)
@@ -355,7 +355,7 @@ where
             eigenvalues: Vec::new(),
             eigenvectors: Array2::zeros((naux, 0)),
             converged: true,
-            residual_norm: 0.0,
+            max_resid: 0.0,
         });
     }
 
@@ -367,7 +367,7 @@ where
             eigenvalues: Vec::new(),
             eigenvectors: Array2::zeros((naux, 0)),
             converged: true,
-            residual_norm: 0.0,
+            max_resid: 0.0,
         });
     }
 
@@ -533,7 +533,7 @@ where
             eigenvalues,
             eigenvectors: ritz,
             converged,
-            residual_norm: max_resid,
+            max_resid,
         };
         last_result = Some(result);
 
@@ -802,7 +802,7 @@ mod tests {
 
             // Full-rank is a single exact dense eigh — always converged.
             assert!(new_res.converged, "panel {panel}: full-rank must report converged=true");
-            assert_eq!(new_res.residual_norm, 0.0, "panel {panel}: full-rank residual must be 0");
+            assert_eq!(new_res.max_resid, 0.0, "panel {panel}: full-rank residual must be 0");
         }
     }
 
@@ -825,9 +825,9 @@ mod tests {
         .unwrap();
         assert!(res.converged, "expected convergence with a generous iteration budget");
         assert!(
-            res.residual_norm < 1e-8,
+            res.max_resid < 1e-8,
             "expected a small residual, got {}",
-            res.residual_norm
+            res.max_resid
         );
     }
 
@@ -865,10 +865,10 @@ mod tests {
             "expected max_iter=1 on a narrow, non-spanning seed to be flagged unconverged"
         );
         assert!(
-            res.residual_norm > 1e-14,
+            res.max_resid > 1e-14,
             "unconverged result should carry a residual above the (unreachable) tolerance, \
              got {}",
-            res.residual_norm
+            res.max_resid
         );
     }
 }

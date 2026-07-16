@@ -249,6 +249,10 @@ pub(crate) fn solve_qp_for_mo(
     let eps_qp_lin = eps_m_mf + z_renorm * (sc_at_ref + static_shift);
     let mut eps_curr = eps_qp_lin;
     let damp = newton_damp.clamp(0.1, 1.0);
+    // The doc always promised this flag; it was computed and then dropped.
+    // false = the 30-step cap was exhausted or Σc'(ε) ≈ 1 (singular Newton
+    // slope, e.g. a QP root near a pole of the Padé model) — the returned
+    // ε_qp is best-effort, not a solved fixed point.
     let mut newton_converged = false;
     for _ in 0..30 {
         let sc = pade.eval(Complex64::new(eps_curr, 0.0)).re;

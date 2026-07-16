@@ -164,7 +164,7 @@ fn main() {
             let pdep_cfg = PdepRpaConfig {
                 frozen_core: sys.frozen_core,
                 trunc_thresh: 1e-4,
-                davidson_conv_thresh: 1e-6,
+                eigensolver_conv_thresh: 1e-6,
                 chi0_sparsity: cfg.sparsity,
                 ..Default::default()
             };

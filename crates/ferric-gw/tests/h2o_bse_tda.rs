@@ -40,8 +40,8 @@ fn prepare_h2o() -> (Molecule, PreparedBasis, PreparedBasis, ferric_scf::ScfResu
 fn pdep_cfg() -> PdepRpaConfig {
     PdepRpaConfig {
         quadrature: QuadratureConfig { scheme: QuadratureScheme::GaussLegendre, n_points: 16, u0: 0.5 },
-        davidson_conv_thresh: 1e-7,
-        davidson_max_vecs: 0,
+        eigensolver_conv_thresh: 1e-7,
+        eigensolver_max_vecs: 0,
         trunc_thresh: 0.0, // keep ALL modes (full screened W, for reference match)
         run_diagnostics: false,
         frozen_core: 0,

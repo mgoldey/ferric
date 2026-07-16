@@ -187,7 +187,7 @@ fn run_case_diag(case: &Case) -> Option<(f64, f64, f64, f64, CationDiag)> {
             scheme: QuadratureScheme::GaussLegendre, n_points: 20, u0: 0.5,
         },
         trunc_thresh: 0.0,
-        davidson_conv_thresh: 1e-9,
+        eigensolver_conv_thresh: 1e-9,
         ..Default::default()
     };
     let rpa_n = run_pdep_rpa(&neutral, &obs_n, &dfbs_n, op, &rhf_n, &rpa_cfg).ok()?;

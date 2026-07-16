@@ -37,7 +37,7 @@ fn cfg_full_basis() -> PdepRpaConfig {
         },
         frozen_core: 0,
         trunc_thresh: 0.0,
-        davidson_conv_thresh: 1e-9,
+        eigensolver_conv_thresh: 1e-9,
         ..Default::default()
     }
 }

@@ -685,7 +685,7 @@ fn run_rs_mp2_rpa(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSe
         formulation: form,
         ..Default::default()
     };
-    cfg.rpa.memory_budget_bytes = budget_bytes_from_gb(memory_budget_gb);
+    cfg.drpa.memory_budget_bytes = budget_bytes_from_gb(memory_budget_gb);
     let r = ferric_rpa::rs_mp2_lr_rpa(&mol.inner, &prep, &dfbs, &rhf, &cfg)
         .map_err(make_err)?;
     Ok(PyRsMp2RpaResult {
@@ -985,7 +985,7 @@ impl PyPdepRpaResult {
 #[pyo3(signature = (
     mol, basis_set, auxbasis,
     frozen_core=None, n_quad=None, quadrature=None, u0=None,
-    trunc_thresh=None, davidson_conv_thresh=None,
+    trunc_thresh=None, eigensolver_conv_thresh=None,
     run_diagnostics=false, k_builder=None, chi0_sparsity=None,
     memory_budget_gb=None,
 ))]
@@ -999,7 +999,7 @@ fn run_pdep_rpa(
     quadrature: Option<&str>,
     u0: Option<f64>,
     trunc_thresh: Option<f64>,
-    davidson_conv_thresh: Option<f64>,
+    eigensolver_conv_thresh: Option<f64>,
     run_diagnostics: bool,
     k_builder: Option<&str>,
     chi0_sparsity: Option<&str>,
@@ -1018,15 +1018,21 @@ fn run_pdep_rpa(
         return Err(make_err(ferric_core::FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy }));
     }
 
-    let scheme = match quadrature.unwrap_or("gauss-legendre") {
-        "minimax" | "mm" => QuadratureScheme::MiniMax,
-        _ => QuadratureScheme::GaussLegendre,
-    };
+    // Canonical parser (shared with the CLI): unknown schemes error rather than
+    // silently running Gauss-Legendre.
+    let scheme = QuadratureScheme::parse_config_str(quadrature)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("quadrature: {e}")))?;
+    if u0.is_some() && !scheme.honours_u0() {
+        eprintln!(
+            "warning: u0 is ignored by quadrature='minimax' (it derives u0 from \
+             n_quad); pass quadrature='gauss-legendre' or 'chebyshev-tan' to use it"
+        );
+    }
     let cfg = PdepRpaConfig {
         frozen_core: frozen_core.unwrap_or(0),
         trunc_thresh: trunc_thresh.unwrap_or(1e-4),
-        davidson_max_vecs: 0,
-        davidson_conv_thresh: davidson_conv_thresh.unwrap_or(1e-6),
+        eigensolver_max_vecs: 0,
+        eigensolver_conv_thresh: eigensolver_conv_thresh.unwrap_or(1e-6),
         quadrature: QuadratureConfig {
             scheme,
             n_points: n_quad.unwrap_or(40),

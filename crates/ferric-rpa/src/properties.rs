@@ -83,7 +83,7 @@ pub(crate) fn solve_dielectric_3(
     w: &[ndarray::Array1<f64>; 3],
 ) -> Result<[ndarray::Array1<f64>; 3], FerricError> {
     use ndarray_linalg::Solve;
-    let mut solve_one = |d: usize| -> Result<ndarray::Array1<f64>, FerricError> {
+    let solve_one = |d: usize| -> Result<ndarray::Array1<f64>, FerricError> {
         eps_mat.solve(&w[d]).map_err(|e| {
             FerricError::Lapack(format!(
                 "dielectric solve failed (singular ε̃ — near-degenerate occ/vir gap?): {e}"
@@ -3401,7 +3401,7 @@ mod tests {
                 scheme: QuadratureScheme::GaussLegendre, n_points: 12, u0: 0.5,
             },
             trunc_thresh: 0.0,
-            davidson_conv_thresh: 1e-9,
+            eigensolver_conv_thresh: 1e-9,
             // The PDEP dynamic-α property path reads inv_dielectric_freq (M9 gate).
             need_inv_dielectric_freq: true,
             ..Default::default()
@@ -3680,7 +3680,7 @@ mod tests {
         let cfg = PdepRpaConfig {
             frozen_core: 0,
             trunc_thresh: 0.0,
-            davidson_conv_thresh: 1e-9,
+            eigensolver_conv_thresh: 1e-9,
             ..Default::default()
         };
         let r = pdep_polarizability_static(&mol, &obs, &dfbs, &rhf, op, &cfg).unwrap();

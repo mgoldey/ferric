@@ -67,6 +67,63 @@ pub enum DispersionPartition {
     Hirshfeld,
 }
 
+impl DispersionPartition {
+    /// Parse a `[rpa] c6_partition` string. `None` yields `Ok(None)` so the
+    /// caller can apply its source-dependent default (Hirshfeld for PDEP,
+    /// Becke for TS). Unknown strings are an error — they used to fall through
+    /// to that same default, silently producing a *different* per-atom
+    /// decomposition than requested (per-atom α/C6 are partition-dependent by
+    /// ~10×, so this changed numbers, not just performance).
+    pub fn parse_config_str(s: Option<&str>) -> Result<Option<Self>, String> {
+        match s.map(|x| x.trim().to_ascii_lowercase()).as_deref() {
+            None => Ok(None),
+            Some("becke") => Ok(Some(DispersionPartition::Becke)),
+            Some("hirshfeld") => Ok(Some(DispersionPartition::Hirshfeld)),
+            Some(other) => Err(format!(
+                "unknown c6_partition {other:?}; expected \"becke\" or \"hirshfeld\""
+            )),
+        }
+    }
+}
+
+/// Source of the dynamic polarizability α(iω) that feeds the Casimir-Polder C6.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum C6Source {
+    /// Tkatchenko-Scheffler single-pole model scaled by Hirshfeld volume ratios.
+    #[default]
+    Ts,
+    /// True PDEP-RPA dynamic α(iω) evaluated on the RPA quadrature grid.
+    Pdep,
+    /// Many-body dispersion on top of the TS single-pole α (coupled-dipole).
+    /// Known-bad for soft atoms — see the `mbd-does-not-fix-silicon` finding.
+    Mbd,
+}
+
+impl C6Source {
+    /// Parse a `[rpa] c6_source` string. Unknown values are an error; they
+    /// previously fell through to the TS branch silently.
+    pub fn parse_config_str(s: Option<&str>) -> Result<Self, String> {
+        match s.map(|x| x.trim().to_ascii_lowercase()).as_deref() {
+            None | Some("ts") => Ok(C6Source::Ts),
+            Some("pdep") => Ok(C6Source::Pdep),
+            Some("mbd") => Ok(C6Source::Mbd),
+            Some(other) => Err(format!(
+                "unknown c6_source {other:?}; expected \"ts\", \"pdep\", or \"mbd\""
+            )),
+        }
+    }
+
+    /// The per-atom partition used when `c6_partition` is unset. PDEP needs
+    /// Hirshfeld for correct anisotropy (proatom sum rule); TS/MBD default to
+    /// Becke, which only shapes `alpha_static` (volumes are always Hirshfeld).
+    pub fn default_partition(&self) -> DispersionPartition {
+        match self {
+            C6Source::Pdep => DispersionPartition::Hirshfeld,
+            C6Source::Ts | C6Source::Mbd => DispersionPartition::Becke,
+        }
+    }
+}
+
 /// One row of the (a,b) Casimir-Polder pair reduction: (isotropic C6 row,
 /// anisotropic C6 tensor row), both indexed by `b`.
 type C6PairRow = (Vec<f64>, Vec<[[f64; 3]; 3]>);
