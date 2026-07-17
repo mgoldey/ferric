@@ -1,9 +1,17 @@
 # C6 dispersion coefficients for water via PDEP-RPA dynamic polarizability.
 #
 # DOSD molecular reference (Meath/Toulouse): C6(H2O–H2O) = 45.3 a.u.
-# (Hartree·Bohr^6). The per-atom c6_iso sums (Σ_AB C6^AB) give the molecular
-# C6; aug basis + diffuse functions are required for a quantitative dipole
-# response — cc-pVDZ underbinds the polarizability badly.
+# (Hartree·Bohr^6). The DOSD-comparable number is the CLI's printed
+# "molecular C6 = X a.u." line (= NPZ-independent c6_molecular_iso, the
+# global-origin molecular response). It is NOT the NPZ c6_iso sum: the
+# per-atom pair tensor uses an atom-centred (r-R_A) operator that excludes
+# inter-atomic charge-transfer/coupling, so Σ_AB C6^AB systematically
+# undershoots c6_molecular_iso (S9 spike, 2026-07-17: water aug-cc-pVDZ
+# RPA@PBE, Hirshfeld partition, gap ≈ -20%; Becke partition, gap ≈ -58%).
+# See docs/open-work-triage-2026-07-14-open.md item #9 and the
+# dosd-c6-sweep memory's "correctness trap" note. aug basis + diffuse
+# functions are required for a quantitative dipole response — cc-pVDZ
+# underbinds the polarizability badly.
 [molecule]
 xyz = "testdata/molecules/water.xyz"
 
