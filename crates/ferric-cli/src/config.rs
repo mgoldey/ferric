@@ -15,6 +15,8 @@ pub struct Config {
     #[serde(default)]
     pub rpa: RpaCfg,
     #[serde(default)]
+    pub gw: GwCfg,
+    #[serde(default)]
     pub dft: DftCfg,
     #[serde(default)]
     pub memory: MemoryCfg,
@@ -322,6 +324,56 @@ impl RpaCfg {
     }
 }
 
+/// The `[gw]` TOML section: `GwConfig` knobs for `method.kind = "gw"`. Reuses
+/// the existing `[rpa]` section for the underlying `PdepRpaConfig` (a GW run
+/// needs both — `[rpa]` for the screened-interaction PDEP basis, `[gw]` for
+/// the self-energy/QP-solver knobs), exactly like `pdep-rpa` already does.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct GwCfg {
+    /// GW method: "g0w0" | "cohsex" | "evgw0" | "evgw" (case-insensitive).
+    /// Unknown values are a hard error — never silently defaults to G0W0.
+    pub method: Option<String>,
+    /// Range of MOs (absolute indices, `[lo, hi)`) for which to compute QP
+    /// energies. Unset → library default `{HOMO-2..LUMO+2}`.
+    pub qp_mos: Option<[usize; 2]>,
+    /// Max evGW/evGW0 outer (eigenvalue self-consistency) iterations.
+    pub max_ev_iter: Option<usize>,
+    /// evGW/evGW0 convergence threshold on |Δε^QP|_max (Ha).
+    pub ev_conv_thresh: Option<f64>,
+    /// Number of Padé continued-fraction coefficients. 0/unset → use
+    /// `[rpa] n_quad`.
+    pub pade_npts: Option<usize>,
+    /// Newton-step damping for the QP solver.
+    pub qp_newton_damp: Option<f64>,
+    /// Frozen core for the GW self-energy build. Must match `[rpa]
+    /// frozen_core` for self-consistency between W and Σ — the CLI passes
+    /// this value to both `GwConfig.frozen_core` and overrides the PDEP
+    /// config's frozen_core with it.
+    pub frozen_core: Option<usize>,
+}
+
+impl GwCfg {
+    /// Parse the `[gw] method` TOML string into a [`ferric_gw::GwMethod`].
+    /// Unset defaults to G0W0 (matches `GwConfig::default()`); unknown
+    /// strings are a hard error (this repo's strict-config-parsing
+    /// convention — never silently default to a method the user didn't ask
+    /// for).
+    pub fn parse_method(&self) -> Result<ferric_gw::GwMethod, String> {
+        use ferric_gw::GwMethod;
+        match self.method.as_deref().map(|s| s.trim().to_ascii_lowercase()) {
+            None => Ok(GwMethod::G0W0),
+            Some(ref s) if s == "g0w0" => Ok(GwMethod::G0W0),
+            Some(ref s) if s == "cohsex" => Ok(GwMethod::Cohsex),
+            Some(ref s) if s == "evgw0" => Ok(GwMethod::EvGw0),
+            Some(ref s) if s == "evgw" => Ok(GwMethod::EvGw),
+            Some(other) => Err(format!(
+                "[gw] method: unknown value \"{other}\"; expected \"g0w0\", \"cohsex\", \"evgw0\", or \"evgw\""
+            )),
+        }
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MoleculeCfg {
@@ -615,6 +667,67 @@ omega = 0.420
         let cfg: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.method.kind, "att-rimp2");
         assert!((cfg.mp2.omega.unwrap() - 0.420).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_parse_gw_config() {
+        let toml_str = r#"
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+[basis]
+name = "cc-pvdz"
+[method]
+kind = "gw"
+[rpa]
+auxbasis = "cc-pvdz-ri"
+n_quad = 16
+[gw]
+method = "evgw0"
+qp_mos = [3, 6]
+max_ev_iter = 30
+ev_conv_thresh = 1e-5
+qp_newton_damp = 0.8
+frozen_core = 1
+"#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.method.kind, "gw");
+        assert_eq!(cfg.gw.method.as_deref(), Some("evgw0"));
+        assert_eq!(cfg.gw.qp_mos, Some([3, 6]));
+        assert_eq!(cfg.gw.max_ev_iter, Some(30));
+        assert!((cfg.gw.ev_conv_thresh.unwrap() - 1e-5).abs() < 1e-12);
+        assert!((cfg.gw.qp_newton_damp.unwrap() - 0.8).abs() < 1e-12);
+        assert_eq!(cfg.gw.frozen_core, Some(1));
+        assert_eq!(cfg.gw.parse_method().unwrap(), ferric_gw::GwMethod::EvGw0);
+    }
+
+    #[test]
+    fn test_parse_gw_config_defaults() {
+        // Empty [gw] section (or absent entirely) must parse and default to G0W0.
+        let toml_str = r#"
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+[basis]
+name = "cc-pvdz"
+[method]
+kind = "gw"
+"#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.gw.parse_method().unwrap(), ferric_gw::GwMethod::G0W0);
+    }
+
+    #[test]
+    fn gw_method_unknown_string_is_an_error() {
+        let mut gw = GwCfg::default();
+        gw.method = Some("gw-bse".to_string());
+        let err = gw.parse_method().unwrap_err();
+        assert!(err.contains("gw-bse"), "error should name the bad value: {err}");
+    }
+
+    #[test]
+    fn gw_method_is_case_insensitive() {
+        let mut gw = GwCfg::default();
+        gw.method = Some("EvGW".to_string());
+        assert_eq!(gw.parse_method().unwrap(), ferric_gw::GwMethod::EvGw);
     }
 
     #[test]

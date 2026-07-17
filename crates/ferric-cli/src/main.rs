@@ -60,8 +60,8 @@ fn main() {
     };
     let method = cfg.method.kind.as_str();
     let task = cfg.method.task.as_str();
-    if !matches!(method, "rhf" | "uhf" | "rohf" | "ksdft" | "rimp2" | "oo-rimp2" | "att-rimp2" | "scs-mp2" | "laplace-mp2" | "pdep-rpa" | "rs-mp2-rpa") {
-        eprintln!("error: unsupported method.kind = \"{method}\"; expected rhf, uhf, rohf, ksdft, rimp2, oo-rimp2, att-rimp2, scs-mp2, laplace-mp2, pdep-rpa, or rs-mp2-rpa");
+    if !matches!(method, "rhf" | "uhf" | "rohf" | "ksdft" | "rimp2" | "oo-rimp2" | "att-rimp2" | "scs-mp2" | "laplace-mp2" | "pdep-rpa" | "rs-mp2-rpa" | "gw") {
+        eprintln!("error: unsupported method.kind = \"{method}\"; expected rhf, uhf, rohf, ksdft, rimp2, oo-rimp2, att-rimp2, scs-mp2, laplace-mp2, pdep-rpa, rs-mp2-rpa, or gw");
         std::process::exit(1);
     }
     if !matches!(task, "energy" | "optimize") {
@@ -108,15 +108,17 @@ fn main() {
             Some("def2-universal-jkfit".to_string()),
             Some("def2-universal-jkfit".to_string()),
         )
-    } else if matches!(method, "pdep-rpa" | "rpa") && cfg.rpa.xc.is_some() {
+    } else if matches!(method, "pdep-rpa" | "rpa" | "gw") && cfg.rpa.xc.is_some() {
         // RPA on a KS-DFT reference (RPA@PBE0 etc.): run the closed-shell KS
         // solver for the reference orbitals. Hybrids need RI-J/RI-K.
+        // GW reuses [rpa].xc for its own KS-reference switch (GW needs the
+        // same vxc_diag plumbing pdep-rpa's KS path already has).
         (
             cfg.rpa.xc.clone(),
             Some("def2-universal-jkfit".to_string()),
             Some("def2-universal-jkfit".to_string()),
         )
-    } else if matches!(method, "pdep-rpa" | "rpa" | "rs-mp2-rpa") {
+    } else if matches!(method, "pdep-rpa" | "rpa" | "rs-mp2-rpa" | "gw") {
         // RPA@HF (no xc): the HF reference SCF defaults to RI-J/RI-K with
         // def2-universal-jkfit too. Exact 4-index J/K per iteration makes the
         // HF reference 10-20× slower than the RI-JK PBE reference (hcl/aug-cc-
@@ -1266,6 +1268,158 @@ fn main() {
                 } else {
                     println!("Wrote NPZ feature bundle: {}", npz_path);
                 }
+            }
+        }
+        "gw" => {
+            if mol.multiplicity > 1 {
+                eprintln!(
+                    "error: method.kind = \"gw\" is closed-shell only in this spike \
+                     (run_gw requires a Restricted reference); open-shell GW needs \
+                     run_u_gw, not yet wired into the CLI (see triage #54)"
+                );
+                std::process::exit(1);
+            }
+            let aux_name = cfg.rpa.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+            let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
+            let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
+            let scheme = cfg.rpa.parse_quadrature().unwrap_or_else(|e| {
+                eprintln!("config error: {e}");
+                std::process::exit(1);
+            });
+            let gw_method = cfg.gw.parse_method().unwrap_or_else(|e| {
+                eprintln!("config error: {e}");
+                std::process::exit(1);
+            });
+            // frozen_core must match between the PDEP (W) build and the GW self-
+            // energy (Σ) build for self-consistency (see GwConfig::frozen_core
+            // doc). [gw].frozen_core is the source of truth when set; otherwise
+            // fall back to [rpa].frozen_core so a plain [rpa] block still works.
+            let gw_frozen_core = cfg.gw.frozen_core.unwrap_or(cfg.rpa.frozen_core);
+            let rpa_cfg = PdepRpaConfig {
+                frozen_core: gw_frozen_core,
+                trunc_thresh: cfg.rpa.trunc_thresh.unwrap_or(1e-4),
+                eigensolver_max_vecs: 0,
+                eigensolver_conv_thresh: cfg.rpa.eigensolver_conv_thresh.unwrap_or(1e-6),
+                quadrature: QuadratureConfig {
+                    scheme,
+                    n_points: cfg.rpa.n_quad.unwrap_or(20),
+                    u0: cfg.rpa.u0.unwrap_or(0.5),
+                },
+                sternheimer: SternheimerConfig::default(),
+                run_diagnostics: cfg.rpa.run_diagnostics,
+                eigensolver: ferric_rpa::Eigensolver::default(),
+                chi0_backend: ferric_rpa::config::Chi0Backend::default(),
+                chi0_sparsity: cfg.rpa.parse_chi0_sparsity().unwrap_or_else(|e| {
+                    eprintln!("config error: {e}");
+                    std::process::exit(1);
+                }),
+                memory_budget_bytes: budget_bytes,
+                // run_gw forces this on internally regardless of what's set
+                // here (GW's Σ_c needs the inverse-dielectric stack), but set
+                // it explicitly for clarity at the call site too.
+                need_inv_dielectric_freq: true,
+            };
+            let gw_cfg = ferric_gw::GwConfig {
+                method: gw_method,
+                qp_mos: cfg.gw.qp_mos.map(|[lo, hi]| lo..hi),
+                max_ev_iter: cfg.gw.max_ev_iter.unwrap_or(20),
+                ev_conv_thresh: cfg.gw.ev_conv_thresh.unwrap_or(1e-4),
+                pade_npts: cfg.gw.pade_npts.unwrap_or(0),
+                qp_newton_damp: cfg.gw.qp_newton_damp.unwrap_or(1.0),
+                frozen_core: gw_frozen_core,
+                memory_budget_bytes: budget_bytes,
+            };
+            // KS reference (RPA@PBE0-style): [rpa].xc set ⇒ `result` above is
+            // already the KS-DFT solve (via the xc/df_j_default/df_k_default
+            // block); build vxc_diag so Σx−vxc enters the QP self-consistency.
+            // None (HF reference) ⇒ no shift, matches run_gw's documented
+            // contract.
+            let vxc_diag = match cfg.rpa.xc.as_deref() {
+                Some(xc_name) => {
+                    let (diag, _beta) = ferric_gw::vxc_mo::vxc_diagonal_mo(&mol, &bs, xc_name, &result)
+                        .unwrap_or_else(|e| {
+                            eprintln!("error: vxc_diagonal_mo failed: {e}");
+                            std::process::exit(1);
+                        });
+                    Some(diag)
+                }
+                None => None,
+            };
+            let gw_result = ferric_gw::run_gw(
+                &mol, &prep, &dfbs, op, &result, &rpa_cfg, &gw_cfg, vxc_diag.as_ref(),
+            )
+            .unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
+            let ref_label = if cfg.rpa.xc.is_some() { "KS" } else { "HF" };
+            let ha_to_ev = 27.211_386_245_988_f64;
+            println!(
+                "GW[{:?}]/{} (aux: {}, ref: {ref_label}) on {}",
+                gw_cfg.method, bs.name, aux_name, cfg.molecule.xyz
+            );
+            println!("  nbasis     = {}", prep.nbasis());
+            println!("  {ref_label} energy: {:.10} Hartree", result.energy);
+            println!("  ev iterations = {}", gw_result.n_ev_iter);
+            println!("  outer converged = {}", gw_result.outer_converged);
+            println!(
+                "  {:>4} {:>14} {:>14} {:>10} {:>10} {:>10}  {}",
+                "MO", "eps_mf(eV)", "eps_qp(eV)", "Sigma_x", "Sigma_c", "Z", "qp_converged"
+            );
+            let nocc = (mol.nelec() as usize) / 2;
+            for (idx, &mo) in gw_result.mo_indices.iter().enumerate() {
+                let tag = if mo == nocc - 1 {
+                    " (HOMO)"
+                } else if mo == nocc {
+                    " (LUMO)"
+                } else {
+                    ""
+                };
+                println!(
+                    "  {:>4} {:>14.4} {:>14.4} {:>10.4} {:>10.4} {:>10.4}  {}{}",
+                    mo,
+                    gw_result.eps_mf[idx] * ha_to_ev,
+                    gw_result.eps_qp[idx] * ha_to_ev,
+                    gw_result.sigma_x[idx],
+                    gw_result.sigma_c[idx],
+                    gw_result.z_factor[idx],
+                    gw_result.qp_converged[idx],
+                    tag,
+                );
+            }
+            if nocc >= 1 {
+                if let Some(loc) = gw_result.mo_indices.iter().position(|&m| m == nocc - 1) {
+                    println!("  HOMO IP = {:.4} eV", -gw_result.eps_qp[loc] * ha_to_ev);
+                }
+            }
+            if let Some(loc) = gw_result.mo_indices.iter().position(|&m| m == nocc) {
+                println!("  LUMO EA = {:.4} eV", -gw_result.eps_qp[loc] * ha_to_ev);
+            }
+            if !gw_result.outer_converged {
+                eprintln!(
+                    "warning: {:?} eigenvalue self-consistency did NOT converge in {} \
+                     iterations (thresh {:.1e}); QP energies above are the last sweep",
+                    gw_cfg.method, gw_result.n_ev_iter, gw_cfg.ev_conv_thresh
+                );
+            }
+            let unconverged_mos: Vec<usize> = gw_result
+                .mo_indices
+                .iter()
+                .zip(gw_result.qp_converged.iter())
+                .filter(|(_, &c)| !c)
+                .map(|(&m, _)| m)
+                .collect();
+            if !unconverged_mos.is_empty() {
+                eprintln!(
+                    "warning: QP Newton solve did not converge for MO(s) {unconverged_mos:?}; \
+                     those QP energies are best-effort"
+                );
             }
         }
         _ => unreachable!(),
