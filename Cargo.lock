@@ -425,6 +425,7 @@ version = "0.1.0"
 dependencies = [
  "ferric-core",
  "ferric-export",
+ "ferric-gw",
  "ferric-integrals",
  "ferric-mp2",
  "ferric-rpa",
@@ -531,6 +532,7 @@ dependencies = [
  "ferric-cc",
  "ferric-core",
  "ferric-dft",
+ "ferric-gw",
  "ferric-integrals",
  "ferric-mp2",
  "ferric-rpa",
