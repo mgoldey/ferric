@@ -1,0 +1,11 @@
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "cc-pvdz"
+
+[method]
+kind = "mp3"
+
+[mp2]
+auxbasis = "cc-pvdz-ri"

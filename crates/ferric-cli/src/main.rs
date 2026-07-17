@@ -7,6 +7,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_mp2::attenuated::{attenuated_ri_mp2, AttenuatedMp2Config};
 use ferric_mp2::laplace::laplace_ri_mp2;
+use ferric_mp2::mp3::mp3_energy;
 use ferric_mp2::oo_rimp2::{oo_ri_mp2, OoRiMp2Config};
 use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
 use ferric_mp2::scs::{scs_mp2, ScsMp2Config};
@@ -60,8 +61,8 @@ fn main() {
     };
     let method = cfg.method.kind.as_str();
     let task = cfg.method.task.as_str();
-    if !matches!(method, "rhf" | "uhf" | "rohf" | "ksdft" | "rimp2" | "oo-rimp2" | "att-rimp2" | "scs-mp2" | "laplace-mp2" | "pdep-rpa" | "rs-mp2-rpa" | "gw") {
-        eprintln!("error: unsupported method.kind = \"{method}\"; expected rhf, uhf, rohf, ksdft, rimp2, oo-rimp2, att-rimp2, scs-mp2, laplace-mp2, pdep-rpa, rs-mp2-rpa, or gw");
+    if !matches!(method, "rhf" | "uhf" | "rohf" | "ksdft" | "rimp2" | "mp3" | "oo-rimp2" | "att-rimp2" | "scs-mp2" | "laplace-mp2" | "pdep-rpa" | "rs-mp2-rpa" | "gw") {
+        eprintln!("error: unsupported method.kind = \"{method}\"; expected rhf, uhf, rohf, ksdft, rimp2, mp3, oo-rimp2, att-rimp2, scs-mp2, laplace-mp2, pdep-rpa, rs-mp2-rpa, or gw");
         std::process::exit(1);
     }
     if !matches!(task, "energy" | "optimize") {
@@ -512,6 +513,32 @@ fn main() {
             println!("  RHF energy = {:.10} Hartree", result.energy);
             println!("  MP2 corr   = {:.10} Hartree", mp2_result.mp2_corr);
             println!("  Total      = {:.10} Hartree", mp2_result.total_energy);
+        }
+        "mp3" => {
+            let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+            let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
+            let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
+            let mp3_result = mp3_energy(&mol, &prep, &dfbs, op, &result, cfg.mp2.frozen_core)
+                .unwrap_or_else(|e| {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                });
+            println!(
+                "MP3/{} (aux: {}) on {}",
+                bs.name, aux_name, cfg.molecule.xyz
+            );
+            println!("  nbasis     = {}", prep.nbasis());
+            println!("  RHF energy = {:.10} Hartree", mp3_result.e_hf);
+            println!("  MP2 corr   = {:.10} Hartree", mp3_result.e_mp2);
+            println!("  MP3 corr   = {:.10} Hartree", mp3_result.e_mp3);
+            println!("  Total corr = {:.10} Hartree", mp3_result.e_corr);
+            println!("  Total      = {:.10} Hartree", mp3_result.e_total);
         }
         "oo-rimp2" => {
             let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
