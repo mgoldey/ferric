@@ -2,6 +2,67 @@
 members = ["crates/*", "benchmarks/harness"]
 resolver = "2"
 
+# G1 correctness gate (docs/perf-tasks/G1-correctness-ci-gate.md): allow-list
+# derived empirically from `cargo clippy --workspace --all-targets` on current,
+# accepted main (2026-07-16) -- every entry below is a lint that already fires
+# on real, reviewed numerical code, not a guess. Categories tolerated per the
+# repo's clippy lint policy (prod lib is 0-warning on everything else; these
+# are numerical/formatting idioms this codebase deliberately keeps):
+#   - excessive_precision: literal rational-approximation/quadrature constants
+#     copied verbatim from reference sources (e.g. qqr3.rs Cody erf coefficients)
+#     -- truncating digits would silently change the constant.
+#   - neg_multiply: `-1.0 * x` / `1.0 * x` terms in spherical-harmonic and
+#     tensor-contraction expansions (ao_grid.rs) kept for readability/symmetry
+#     with the surrounding formula, not accidental.
+#   - needless_range_loop: index-based loops in tight integral/tensor kernels
+#     (qqr3.rs) where the index itself (not just the element) is used in the
+#     body (flat-index arithmetic) -- idiomatic `.iter()` rewrite would obscure
+#     the math, not simplify it.
+#   - doc_lazy_continuation: doc-comment list items (field docs in
+#     oo_rimp2.rs-style structs) whose continuation lines aren't re-indented;
+#     cosmetic doc-rendering nit, not a correctness or clarity issue.
+#   - too_many_arguments: numerical routines (e.g. ff_polar.rs) whose argument
+#     lists mirror the physics (mol/basis/operator/bounds/config/...); forcing
+#     them into a config struct is real refactoring work, out of scope here.
+#   - derivable_impls / field_reassign_with_default: hand-written `Default`
+#     impls / post-default field assignment in CLI config structs
+#     (ferric-cli/src/config.rs) that predate #[derive(Default)] support for
+#     the same shape; cosmetic.
+#   - redundant_pattern_matching / unnecessary_map_or / unnecessary_min_or_max:
+#     small idiom nits in vv10.rs/ladder.rs/lanczos.rs on already-reviewed,
+#     validated code.
+#   - type_complexity: cpks_polar.rs return-type tuple flagged by the default
+#     complexity threshold; a type alias would be pure bookkeeping.
+#   - needless_borrows_for_generic_args: benchmarks/harness probe example, not
+#     production code.
+#   - if_same_then_else: rsh_rpa_dispersion.rs test bisection branches that are
+#     textually identical but exist for documentation/symmetry of the two NaN
+#     guard conditions; not a logic bug (see the comments at the call site).
+#   - unused_parens: parenthesized block-return value in a test-only comparator
+#     closure (terfc_base_validation.rs); harmless.
+# Deliberately NOT allow-listed (would still fail the gate if they appear):
+# everything else, including all `clippy::correctness`/`clippy::suspicious`
+# lints and plain `unused`/dead-code warnings outside the one instance above.
+# See scripts/ci-gate.sh for the matching allow-list used by the wrapper script
+# -- keep the two in sync.
+[workspace.lints.clippy]
+excessive_precision = "allow"
+neg_multiply = "allow"
+needless_range_loop = "allow"
+doc_lazy_continuation = "allow"
+too_many_arguments = "allow"
+derivable_impls = "allow"
+field_reassign_with_default = "allow"
+redundant_pattern_matching = "allow"
+unnecessary_map_or = "allow"
+unnecessary_min_or_max = "allow"
+type_complexity = "allow"
+needless_borrows_for_generic_args = "allow"
+if_same_then_else = "allow"
+
+[workspace.lints.rust]
+unused_parens = "allow"
+
 # Numerical test suite: debug-mode (opt-level 0) SCF/MP2/RPA math is 10-50x
 # slower, pushing the workspace suite past 30 minutes. opt-level 2 for test
 # builds (and for dependencies like ndarray in dev/test builds) fixes that.
