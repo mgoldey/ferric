@@ -24,6 +24,25 @@
 //! verification pass — disagreements are flagged for human review, not
 //! silently corrected (this table feeds production TS C6 numbers).
 //!
+//! Root-cause dig (docs/vol-free-verification.md "Reading the pattern"):
+//! `git log --follow` on this file shows the disagreeing dozen were never
+//! actually sourced. The original commit (007bfe8) claimed all 18 came from
+//! TS PRL Table I, which does not tabulate vol_free at all. A later commit
+//! (f3ec1ca) corrected only {H,He,C,N,O,F,Ne} against a Bučko-2013
+//! citation (itself later downgraded to "could not be independently
+//! verified", commit 1907ec5) and explicitly left Li-Ar outside that set
+//! as acknowledged-unverified placeholders. So the Li/Be/B "agree" verdict
+//! above is numerical coincidence, not corroboration — they were exactly
+//! as unsourced as the elements that disagree; they just happen to land
+//! close to the independently computed number. Separately: Na's specific
+//! disagreement sign flips (+13.4% vs the unbounded-grid Becke number used
+//! for the table above, but -17.5% vs ferric-cli's actual bounded
+//! 6-Bohr-margin free-atom volume convention) — a real quadrature-
+//! truncation effect for Na's diffuse valence density, confirmed not to
+//! apply to the rest of the disagreeing set (Ne/Si/Ar all show <1% gap
+//! between the two quadratures, so their disagreement with the table is
+//! not a grid artifact).
+//!
 //! Z=19–54 α_free/C6_free are from Gould & Bučko JCTC 12, 3603 (2016) Table 2
 //! (same Chu-Dalgarno lineage as TS-PRL Table I; cross-checks vs the Z≤18 rows
 //! agree <5% — see docs/superpowers/specs/refs/source-crosscheck.md). Their
@@ -44,9 +63,9 @@ pub fn ts_free_atom(z: usize) -> Option<(f64, f64, Option<f64>)> {
         // <10% agreement (see docs/vol-free-verification.md).
         1  => (4.500,    6.500,    Some(9.149)),  // H    vol: verified (PBE/Becke -4.9%)
         2  => (1.380,    1.460,    Some(4.711)),  // He   vol: verified (PBE/Becke -7.5%)
-        3  => (164.200,  1387.000, Some(91.96)),  // Li   vol: Bučko S1; verified (PBE/Becke -1.8%)
-        4  => (38.000,   214.000,  Some(61.50)),  // Be   vol: verified (PBE/Becke -1.4%)
-        5  => (21.000,   99.500,   Some(49.18)),  // B    vol: verified (PBE/Becke +1.7%)
+        3  => (164.200,  1387.000, Some(91.96)),  // Li   vol: verified (PBE/Becke -1.8%); no real source ever found for this number (git-log dig: f3ec1ca's Bučko fix touched only H/He/C/N/O/F/Ne, not Li) -- numeric agreement is coincidental, not corroborated sourcing
+        4  => (38.000,   214.000,  Some(61.50)),  // Be   vol: verified (PBE/Becke -1.4%); same caveat -- no real source found, agreement is coincidental
+        5  => (21.000,   99.500,   Some(49.18)),  // B    vol: verified (PBE/Becke +1.7%); same caveat -- no real source found, agreement is coincidental
         6  => (12.000,   46.600,   Some(34.054)), // C    vol: verified (PBE/Becke +7.8%)
         // vol_free FLAGGED SUSPECT 2026-07-17: disagrees >=10% with ferric's
         // free-atom PBE/Becke value (see docs/vol-free-verification.md). NOT
@@ -55,7 +74,7 @@ pub fn ts_free_atom(z: usize) -> Option<(f64, f64, Option<f64>)> {
         8  => (5.400,    15.600,   Some(19.750)), // O    vol: SUSPECT (PBE/Becke +19.5%)
         9  => (3.800,    9.520,    Some(15.746)), // F    vol: SUSPECT (PBE/Becke +22.8%)
         10 => (2.670,    6.380,    Some(12.443)), // Ne   vol: SUSPECT (PBE/Becke +28.7%)
-        11 => (162.700,  1556.000, Some(100.5)),  // Na   vol: SUSPECT (PBE/Becke +13.4%)
+        11 => (162.700,  1556.000, Some(100.5)),  // Na   vol: SUSPECT (PBE/Becke +13.4%; sign FLIPS to -17.5% under ferric-cli's actual bounded 6-Bohr-margin grid convention -- diffuse Na 3s tail is grid-truncation-sensitive, see docs/vol-free-verification.md)
         12 => (71.000,   627.000,  Some(91.0)),   // Mg   vol: SUSPECT (PBE/Becke +15.9%)
         13 => (60.000,   528.000,  Some(86.0)),   // Al   vol: SUSPECT (PBE/Becke +42.5%)
         14 => (37.000,   305.000,  Some(60.0)),   // Si   vol: SUSPECT (PBE/Becke +73.1%)
