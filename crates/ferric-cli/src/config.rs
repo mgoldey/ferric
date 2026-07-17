@@ -618,6 +618,24 @@ omega = 0.420
     }
 
     #[test]
+    fn test_parse_mp3_config() {
+        let toml_str = r#"
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+[basis]
+name = "cc-pvdz"
+[method]
+kind = "mp3"
+[mp2]
+auxbasis = "cc-pvdz-ri"
+"#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.method.kind, "mp3");
+        assert_eq!(cfg.mp2.auxbasis.as_deref(), Some("cc-pvdz-ri"));
+        assert_eq!(cfg.mp2.frozen_core, 0);
+    }
+
+    #[test]
     fn test_parse_rs_mp2_rpa_config() {
         let toml_str = r#"
 [molecule]

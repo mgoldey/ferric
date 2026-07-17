@@ -14,6 +14,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_mp2::attenuated::{attenuated_ri_mp2, AttenuatedMp2Config};
 use ferric_mp2::laplace::laplace_ri_mp2;
+use ferric_mp2::mp3::mp3_energy;
 use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
 use ferric_mp2::scs::{scs_mp2, scs_mp2_2terfc, ScsMp2Config, ScsMp2TerfcConfig};
 use ferric_scf::ks_gradient::ks_gradient_closed;
@@ -436,6 +437,38 @@ fn run_rimp2(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
     let mp2 = ri_mp2(&mol.inner, &prep, &dfbs, op, &rhf,
                       &RiMp2Config { frozen_core: frozen_core.unwrap_or(0), memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb) }).map_err(make_err)?;
     Ok(PyRiMp2Result { total_energy: mp2.total_energy, rhf_energy: rhf.energy, mp2_corr: mp2.mp2_corr })
+}
+
+// ── MP3 (spin-orbital, via einsum!) ──
+
+#[pyclass]
+#[pyo3(name = "Mp3Result")]
+struct PyMp3Result {
+    #[pyo3(get)] e_hf: f64,
+    #[pyo3(get)] e_mp2: f64,
+    #[pyo3(get)] e_mp3: f64,
+    #[pyo3(get)] e_corr: f64,
+    #[pyo3(get)] e_total: f64,
+}
+
+#[pyfunction]
+#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None))]
+fn run_mp3(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
+           frozen_core: Option<usize>, k_builder: Option<&str>) -> PyResult<PyMp3Result> {
+    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
+    let ctx = ParallelContext::default();
+    let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &rhf_config(k_builder)).map_err(make_err)?;
+    if !rhf.converged {
+        return Err(make_err(ferric_core::FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy }));
+    }
+    // mp3_energy has no memory-budget parameter (unlike ri_mp2/laplace_ri_mp2);
+    // its internal VVVV size guard resolves the budget itself via
+    // ferric_core::memory::resolve_budget_bytes(None) (env/auto-detect only).
+    let mp3 = mp3_energy(&mol.inner, &prep, &dfbs, op, &rhf, frozen_core.unwrap_or(0)).map_err(make_err)?;
+    Ok(PyMp3Result { e_hf: mp3.e_hf, e_mp2: mp3.e_mp2, e_mp3: mp3.e_mp3, e_corr: mp3.e_corr, e_total: mp3.e_total })
 }
 
 // ── Laplace RI-MP2 ──
@@ -1092,6 +1125,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyUhfResult>()?;
     m.add_class::<PyOptimizeResult>()?;
     m.add_class::<PyRiMp2Result>()?;
+    m.add_class::<PyMp3Result>()?;
     m.add_class::<PyAttenuatedMp2Result>()?;
     m.add_class::<PyScsMp2Result>()?;
     m.add_class::<PyLaplaceMp2Result>()?;
@@ -1106,6 +1140,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(hirshfeld_charges, m)?)?;
     m.add_function(wrap_pyfunction!(lowdin_charges, m)?)?;
     m.add_function(wrap_pyfunction!(run_rimp2, m)?)?;
+    m.add_function(wrap_pyfunction!(run_mp3, m)?)?;
     m.add_function(wrap_pyfunction!(run_attenuated_rimp2, m)?)?;
     m.add_function(wrap_pyfunction!(run_terfc_rimp2, m)?)?;
     m.add_function(wrap_pyfunction!(run_scs_mp2, m)?)?;
