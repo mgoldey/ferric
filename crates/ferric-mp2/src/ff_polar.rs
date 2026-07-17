@@ -58,7 +58,7 @@ use ndarray::Array2;
 use ndarray_linalg::{Eigh, UPLO};
 
 use crate::rimp2::{compute_mp2_intermediates, RiMp2Config};
-use crate::zvector::{build_relaxed_density_ao, solve_zvector};
+use crate::zvector::{build_lagrangian, build_relaxed_density_ao};
 
 /// Which MP2 1-PDM to difference for the finite-field polarizability.
 ///
@@ -219,16 +219,22 @@ fn mp2_relaxed_density_ao(
 ) -> Result<Array2<f64>, FerricError> {
     let inter = compute_mp2_intermediates(mol, obs, dfbs, op, rhf, config)?;
     let orb = inter.orbital_space();
-    // Relaxed: solve the Z-vector. We discard solve_zvector's unreliable iterative
-    // z (its Jacobi-DIIS plateaus/diverges) but keep its EXACT Lagrangian L, then
-    // re-solve (Δε+A)z=L by CG. Unrelaxed: z=0 (no orbital response → no
-    // near-singular 1/F mode for symmetric molecules). solve_zvector (production
-    // gradient) is untouched either way.
+    // Relaxed: build the CPHF Lagrangian RHS L via build_lagrangian, then re-solve
+    // (Δε+A)z=L by CG (its Jacobi-DIIS analog in solve_zvector plateaus/diverges
+    // here). Unrelaxed: z=0 (no orbital response → no near-singular 1/F mode for
+    // symmetric molecules). NOTE: this uses the finite-field-α Lagrangian
+    // (build_lagrangian), which is the CPHF RHS for the FF-α path specifically;
+    // the production analytic gradient's solve_zvector uses the PySCF Xvo RHS and
+    // returns the RI-MP2 Lagrangian matrix Imat instead — a different second
+    // return value, hence the direct build_lagrangian call here.
     let z = match density_mode {
         DensityMode::Unrelaxed => Array2::<f64>::zeros((orb.nvir, orb.nocc)),
         DensityMode::Relaxed => {
-            let (_z_iter, l) = solve_zvector(mol, obs, dfbs, op, bounds, rhf, &inter)?;
-            solve_zvector_cg(rhf.mos_r(), &l, obs, bounds, &orb, rhf.eps_r())?
+            let c = rhf.mos_r();
+            let f_mo = c.t().dot(rhf.fock_r()).dot(c);
+            let b_full = crate::oo_rimp2::compute_b_full_mo(obs, dfbs, op, c)?;
+            let l = build_lagrangian(&f_mo, &inter.t2, &inter.p_oo, &inter.p_vv, &orb, &b_full);
+            solve_zvector_cg(c, &l, obs, bounds, &orb, rhf.eps_r())?
         }
     };
     Ok(build_relaxed_density_ao(
