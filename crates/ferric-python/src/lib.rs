@@ -1,9 +1,10 @@
 //! Python bindings for ferric (pyo3).
 //!
 //! Exposes the engine to Python: `Molecule` / `BasisSet` constructors plus
-//! `run_rhf`, `run_rimp2`, `run_attenuated_rimp2`, `run_scs_mp2`, the Laplace and
-//! coupled-cluster drivers, and geometry optimization. Each binding wraps the
-//! corresponding Rust driver and returns a result object with energies/components.
+//! `run_rhf`, `run_uhf`, `run_rohf`, `run_rimp2`, `run_oo_rimp2`,
+//! `run_attenuated_rimp2`, `run_scs_mp2`, the Laplace and coupled-cluster
+//! drivers, and geometry optimization. Each binding wraps the corresponding
+//! Rust driver and returns a result object with energies/components.
 //! Build with `uv run maturin develop --release` (see the README for the venv
 //! caveat).
 
@@ -14,11 +15,13 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_mp2::attenuated::{attenuated_ri_mp2, AttenuatedMp2Config};
 use ferric_mp2::laplace::laplace_ri_mp2;
+use ferric_mp2::oo_rimp2::{oo_ri_mp2, OoRiMp2Config};
 use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
 use ferric_mp2::scs::{scs_mp2, scs_mp2_2terfc, ScsMp2Config, ScsMp2TerfcConfig};
 use ferric_scf::ks_gradient::ks_gradient_closed;
 use ferric_scf::optimize::{optimize_geometry, OptimizeConfig};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
+use ferric_scf::rohf::{solve_rohf, RohfConfig};
 use ferric_scf::uhf::{solve_uhf, UhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_cc::ccd::ccd as run_ccd_inner;
@@ -309,6 +312,77 @@ fn run_uhf(
     })
 }
 
+// ── ROHF (open-shell, spin-pure) ──
+
+/// Restricted Open-Shell Hartree-Fock. α/β occupations come from the
+/// molecule's `charge` and `multiplicity` (set via `Molecule.from_xyz_string`):
+/// `nocc_open = multiplicity - 1` singly-occupied (α) orbitals, the remainder
+/// doubly occupied. Coupling is Guest-Saunders (PySCF default; not a knob).
+/// Returns the same `UhfResult` shape as `run_uhf` — ROHF's `alpha`/`beta`
+/// density and orbital-energy accessors carry the doubly + singly occupied
+/// α set and the doubly-occupied-only β set respectively (single set of
+/// spin-pure MOs, so `mos_alpha`/`mos_beta` coincide internally but the
+/// occupied-orbital semantics differ from UHF). Exposes the same SCF knob
+/// set as `run_rhf`/`run_uhf`.
+#[pyfunction]
+#[pyo3(signature = (
+    mol, basis_set,
+    max_iter=None, energy_conv=None, density_conv=None, diis_size=None,
+    integral_thresh=None, k_builder=None, df_j_aux=None, df_k_aux=None,
+    level_shift=None, mom_after_iter=None,
+    point_charges=None, external_field=None,
+))]
+#[allow(clippy::too_many_arguments)]
+fn run_rohf(
+    mol: &PyMolecule,
+    basis_set: &PyBasisSet,
+    max_iter: Option<usize>,
+    energy_conv: Option<f64>,
+    density_conv: Option<f64>,
+    diis_size: Option<usize>,
+    integral_thresh: Option<f64>,
+    k_builder: Option<&str>,
+    df_j_aux: Option<&str>,
+    df_k_aux: Option<&str>,
+    level_shift: Option<f64>,
+    mom_after_iter: Option<usize>,
+    point_charges: Option<Vec<(f64, f64, f64, f64)>>,
+    external_field: Option<(f64, f64, f64)>,
+) -> PyResult<PyUhfResult> {
+    let mut emol = mol.inner.clone();
+    emol.apply_ecp(&basis_set.inner);
+    let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
+    // Same defaults as run_rhf / run_uhf / the CLI [scf] section.
+    let config: RohfConfig = RhfConfig {
+        max_iter: max_iter.unwrap_or(100),
+        energy_conv: energy_conv.unwrap_or(1e-3),
+        density_conv: density_conv.unwrap_or(1e-6),
+        diis_size: diis_size.unwrap_or(8),
+        integral_thresh: integral_thresh.unwrap_or(1e-12),
+        k_builder: k_builder.map(|s| s.to_string()),
+        df_j_aux: df_j_aux.map(|s| s.to_string()),
+        df_k_aux: df_k_aux.map(|s| s.to_string()),
+        level_shift: level_shift.unwrap_or(0.0),
+        mom_after_iter: mom_after_iter.unwrap_or(0),
+        external_potential: build_external_potential(point_charges, external_field),
+        ..Default::default()
+    };
+    let ctx = ParallelContext::default();
+    let r = solve_rohf(&ctx, &emol, &prep, op, &bounds, &config).map_err(make_err)?;
+    Ok(PyUhfResult {
+        energy: r.energy,
+        converged: r.converged,
+        iterations: r.iterations,
+        computed_quartets: r.computed_quartets,
+        density_alpha_data: r.density_alpha,
+        density_beta_data: r.density_beta.unwrap_or_else(|| r.density_total.clone()),
+        eps_alpha_data: r.eps_alpha,
+        eps_beta_data: r.eps_beta.unwrap_or_default(),
+    })
+}
+
 // ── Optimize ──
 
 #[pyclass]
@@ -436,6 +510,71 @@ fn run_rimp2(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
     let mp2 = ri_mp2(&mol.inner, &prep, &dfbs, op, &rhf,
                       &RiMp2Config { frozen_core: frozen_core.unwrap_or(0), memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb) }).map_err(make_err)?;
     Ok(PyRiMp2Result { total_energy: mp2.total_energy, rhf_energy: rhf.energy, mp2_corr: mp2.mp2_corr })
+}
+
+// ── OO-RI-MP2 (orbital-optimized) ──
+
+#[pyclass]
+#[pyo3(name = "OoRiMp2Result")]
+struct PyOoRiMp2Result {
+    #[pyo3(get)] total_energy: f64,
+    #[pyo3(get)] hf_energy: f64,
+    #[pyo3(get)] mp2_corr: f64,
+    #[pyo3(get)] converged: bool,
+    #[pyo3(get)] iterations: usize,
+    #[pyo3(get)] grad_norm: f64,
+}
+
+/// Orbital-optimized RI-MP2: jointly minimizes E_HF + E_MP2 over orbital
+/// rotations (level-shifted approximate Newton + DIIS + Cayley rotation).
+/// Starts from a converged RHF reference (same convention as `run_rimp2`).
+/// `max_iter`/`grad_conv`/`level_shift`/`diis_size` control the orbital
+/// rotation loop; the rest of `OoRiMp2Config` (energy_conv, step_size,
+/// use_diis) stays at its library default, matching the CLI's `oo-rimp2`
+/// arm which only threads `frozen_core` + `memory_budget_bytes` through.
+#[pyfunction]
+#[pyo3(signature = (
+    mol, basis_set, auxbasis, frozen_core=None, k_builder=None,
+    max_iter=None, grad_conv=None, level_shift=None, diis_size=None,
+    memory_budget_gb=None,
+))]
+#[allow(clippy::too_many_arguments)]
+fn run_oo_rimp2(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
+                frozen_core: Option<usize>, k_builder: Option<&str>,
+                max_iter: Option<usize>, grad_conv: Option<f64>,
+                level_shift: Option<f64>, diis_size: Option<usize>,
+                memory_budget_gb: Option<f64>) -> PyResult<PyOoRiMp2Result> {
+    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
+    let ctx = ParallelContext::default();
+    let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &rhf_config(k_builder)).map_err(make_err)?;
+    if !rhf.converged {
+        return Err(make_err(ferric_core::FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy }));
+    }
+    // Orbital-rotation loop knobs default to OoRiMp2Config::default() (same
+    // library default the CLI's oo-rimp2 arm uses); frozen_core/memory_budget
+    // follow the run_rimp2 convention.
+    let default_cfg = OoRiMp2Config::default();
+    let cfg = OoRiMp2Config {
+        max_iter: max_iter.unwrap_or(default_cfg.max_iter),
+        grad_conv: grad_conv.unwrap_or(default_cfg.grad_conv),
+        level_shift: level_shift.unwrap_or(default_cfg.level_shift),
+        diis_size: diis_size.unwrap_or(default_cfg.diis_size),
+        frozen_core: frozen_core.unwrap_or(0),
+        memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
+        ..default_cfg
+    };
+    let r = oo_ri_mp2(&mol.inner, &prep, &dfbs, op, &bounds, &rhf, &cfg).map_err(make_err)?;
+    Ok(PyOoRiMp2Result {
+        total_energy: r.total_energy,
+        hf_energy: r.hf_energy,
+        mp2_corr: r.mp2_corr,
+        converged: r.converged,
+        iterations: r.iterations,
+        grad_norm: r.grad_norm,
+    })
 }
 
 // ── Laplace RI-MP2 ──
@@ -1092,6 +1231,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyUhfResult>()?;
     m.add_class::<PyOptimizeResult>()?;
     m.add_class::<PyRiMp2Result>()?;
+    m.add_class::<PyOoRiMp2Result>()?;
     m.add_class::<PyAttenuatedMp2Result>()?;
     m.add_class::<PyScsMp2Result>()?;
     m.add_class::<PyLaplaceMp2Result>()?;
@@ -1101,11 +1241,13 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRsMp2RpaResult>()?;
     m.add_function(wrap_pyfunction!(run_rhf, m)?)?;
     m.add_function(wrap_pyfunction!(run_uhf, m)?)?;
+    m.add_function(wrap_pyfunction!(run_rohf, m)?)?;
     m.add_function(wrap_pyfunction!(run_optimize, m)?)?;
     m.add_function(wrap_pyfunction!(esp_at_atoms, m)?)?;
     m.add_function(wrap_pyfunction!(hirshfeld_charges, m)?)?;
     m.add_function(wrap_pyfunction!(lowdin_charges, m)?)?;
     m.add_function(wrap_pyfunction!(run_rimp2, m)?)?;
+    m.add_function(wrap_pyfunction!(run_oo_rimp2, m)?)?;
     m.add_function(wrap_pyfunction!(run_attenuated_rimp2, m)?)?;
     m.add_function(wrap_pyfunction!(run_terfc_rimp2, m)?)?;
     m.add_function(wrap_pyfunction!(run_scs_mp2, m)?)?;
