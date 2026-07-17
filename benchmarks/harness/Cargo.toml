@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
+[lints]
+workspace = true
+
 # Benchmark / research harnesses, decoupled from the shippable `ferric-*`
 # library crates. Each harness lives under `examples/` and is run via, e.g.
 #   cargo run --release -p ferric-benchmarks --example gw100_full
