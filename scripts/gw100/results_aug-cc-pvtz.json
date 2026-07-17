@@ -327,7 +327,7 @@
     "C5H5N5O": {
       "COHSEX": NaN,
       "G0W0": 8.448,
-      "G0W0pbe": NaN,
+      "G0W0pbe": 7.579,
       "Koop": 8.162,
       "dRPA": 8.438,
       "dSCF": 6.759,
@@ -404,7 +404,7 @@
     "C7H8": {
       "COHSEX": NaN,
       "G0W0": 9.14,
-      "G0W0pbe": NaN,
+      "G0W0pbe": 8.504,
       "Koop": 8.814,
       "dRPA": 9.089,
       "dSCF": 7.513,
@@ -415,7 +415,7 @@
     "C8H10": {
       "COHSEX": NaN,
       "G0W0": 9.106,
-      "G0W0pbe": NaN,
+      "G0W0pbe": 8.444,
       "Koop": 8.799,
       "dRPA": 9.05,
       "dSCF": 7.466,
@@ -426,7 +426,7 @@
     "C8H8": {
       "COHSEX": NaN,
       "G0W0": 8.665,
-      "G0W0pbe": NaN,
+      "G0W0pbe": 7.932,
       "Koop": 8.291,
       "dRPA": 8.372,
       "dSCF": 7.458,
