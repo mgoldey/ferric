@@ -294,7 +294,7 @@
     "C4H5N3O": {
       "COHSEX": NaN,
       "G0W0": 9.289,
-      "G0W0pbe": NaN,
+      "G0W0pbe": 8.167,
       "Koop": 9.352,
       "dRPA": 9.221,
       "dSCF": 7.526,
@@ -305,7 +305,7 @@
     "C5H5N": {
       "COHSEX": NaN,
       "G0W0": 9.896,
-      "G0W0pbe": NaN,
+      "G0W0pbe": 8.931,
       "Koop": 9.462,
       "dRPA": 9.753,
       "dSCF": 8.173,
@@ -316,7 +316,7 @@
     "C5H5N5": {
       "COHSEX": NaN,
       "G0W0": 8.713,
-      "G0W0pbe": NaN,
+      "G0W0pbe": 7.862,
       "Koop": 8.394,
       "dRPA": 8.567,
       "dSCF": 7.236,
@@ -338,7 +338,7 @@
     "C5H6": {
       "COHSEX": NaN,
       "G0W0": 8.843,
-      "G0W0pbe": NaN,
+      "G0W0pbe": 8.236,
       "Koop": 8.404,
       "dRPA": 8.562,
       "dSCF": 7.128,
@@ -349,7 +349,7 @@
     "C5H6N2O2": {
       "COHSEX": NaN,
       "G0W0": 9.676,
-      "G0W0pbe": NaN,
+      "G0W0pbe": 8.592,
       "Koop": 9.605,
       "dRPA": 9.403,
       "dSCF": 8.094,
@@ -360,7 +360,7 @@
     "C6F6": {
       "COHSEX": NaN,
       "G0W0": 10.632,
-      "G0W0pbe": NaN,
+      "G0W0pbe": 9.365,
       "Koop": 10.491,
       "dRPA": 10.365,
       "dSCF": 9.243,
@@ -371,7 +371,7 @@
     "C6H6": {
       "COHSEX": NaN,
       "G0W0": 9.508,
-      "G0W0pbe": NaN,
+      "G0W0pbe": 8.877,
       "Koop": 9.16,
       "dRPA": 9.346,
       "dSCF": 7.864,
@@ -382,7 +382,7 @@
     "C6H6O": {
       "COHSEX": NaN,
       "G0W0": 9.022,
-      "G0W0pbe": NaN,
+      "G0W0pbe": 8.245,
       "Koop": 8.772,
       "dRPA": 8.67,
       "dSCF": 7.903,
@@ -393,7 +393,7 @@
     "C6H7N": {
       "COHSEX": NaN,
       "G0W0": 8.347,
-      "G0W0pbe": NaN,
+      "G0W0pbe": 7.532,
       "Koop": 8.112,
       "dRPA": 7.944,
       "dSCF": 7.292,
@@ -701,7 +701,7 @@
     "H12Si5": {
       "COHSEX": NaN,
       "G0W0": 9.746,
-      "G0W0pbe": NaN,
+      "G0W0pbe": 8.773,
       "Koop": 9.798,
       "dRPA": 9.369,
       "dSCF": 8.653,
