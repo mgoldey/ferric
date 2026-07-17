@@ -8,14 +8,21 @@
 //! (a.u.). **This quantity is NOT tabulated in the TS paper.** In production TS
 //! implementations (FHI-aims, VASP, ASE) the volume ratio v_eff/v_free is
 //! computed on-the-fly from a PBE/LDA free-atom DFT run; there is no canonical
-//! hard-coded table. The values below for {H,He,C,N,O,F,Ne} are believed to
-//! match those DFT free-atom volumes (consistent with Bučko et al. JCTC 9, 4293
-//! (2013)), but **have not been independently verified against a primary source
-//! we can read**. Values for the remaining elements (Li-Ar outside that set) are
-//! unverified placeholders carried over from an earlier draft.
+//! hard-coded table.
 //!
-//! TODO: verify vol_free by running PBE free-atom calculations in PySCF or GPAW
-//! and computing ∫ ρ(r) r³ dr on the resulting densities.
+//! Z=1..=18 `vol_free` was independently verified 2026-07-17 against ferric's
+//! own free-atom UKS/RKS-PBE + Becke-volume pipeline (see
+//! `crates/ferric-rpa/tests/free_atom_volumes_pbe.rs` and
+//! `docs/vol-free-verification.md` for the full table + methodology). Result:
+//! **H, He, Li, Be, B, C agree (<10%)** with the independently computed
+//! value and are considered verified. **N, O, F, Ne, Na, Mg, Al, Si, P, S,
+//! Cl, Ar disagree significantly (11%-98%, growing with Z)** with the
+//! independently computed PBE/Becke value and are flagged suspect — do NOT
+//! treat them as verified; see docs/vol-free-verification.md for the full
+//! per-element comparison and the disagreement pattern. Per-element notes
+//! below reflect this. No table value has been changed based on this
+//! verification pass — disagreements are flagged for human review, not
+//! silently corrected (this table feeds production TS C6 numbers).
 //!
 //! Z=19–54 α_free/C6_free are from Gould & Bučko JCTC 12, 3603 (2016) Table 2
 //! (same Chu-Dalgarno lineage as TS-PRL Table I; cross-checks vs the Z≤18 rows
@@ -33,24 +40,29 @@ pub fn ts_free_atom(z: usize) -> Option<(f64, f64, Option<f64>)> {
     //                        None = no sourced fallback (live SCF must supply it,
     //                        else the TS C6 refuses — no fabricated denominator).
     let row = match z {
-        1  => (4.500,    6.500,    Some(9.149)),  // H
-        2  => (1.380,    1.460,    Some(4.711)),  // He
-        3  => (164.200,  1387.000, Some(91.96)),  // Li   (vol: Bučko S1)
-        4  => (38.000,   214.000,  Some(61.50)),  // Be
-        5  => (21.000,   99.500,   Some(49.18)),  // B
-        6  => (12.000,   46.600,   Some(34.054)), // C
-        7  => (7.400,    24.200,   Some(25.097)), // N
-        8  => (5.400,    15.600,   Some(19.750)), // O
-        9  => (3.800,    9.520,    Some(15.746)), // F
-        10 => (2.670,    6.380,    Some(12.443)), // Ne
-        11 => (162.700,  1556.000, Some(100.5)),  // Na
-        12 => (71.000,   627.000,  Some(91.0)),   // Mg
-        13 => (60.000,   528.000,  Some(86.0)),   // Al
-        14 => (37.000,   305.000,  Some(60.0)),   // Si
-        15 => (25.000,   185.000,  Some(49.0)),   // P
-        16 => (19.600,   134.000,  Some(41.50)),  // S
-        17 => (15.000,   94.600,   Some(34.50)),  // Cl
-        18 => (11.100,   64.300,   Some(28.90)),  // Ar
+        // vol_free verified 2026-07-17 vs ferric free-atom PBE/Becke pipeline,
+        // <10% agreement (see docs/vol-free-verification.md).
+        1  => (4.500,    6.500,    Some(9.149)),  // H    vol: verified (PBE/Becke -4.9%)
+        2  => (1.380,    1.460,    Some(4.711)),  // He   vol: verified (PBE/Becke -7.5%)
+        3  => (164.200,  1387.000, Some(91.96)),  // Li   vol: Bučko S1; verified (PBE/Becke -1.8%)
+        4  => (38.000,   214.000,  Some(61.50)),  // Be   vol: verified (PBE/Becke -1.4%)
+        5  => (21.000,   99.500,   Some(49.18)),  // B    vol: verified (PBE/Becke +1.7%)
+        6  => (12.000,   46.600,   Some(34.054)), // C    vol: verified (PBE/Becke +7.8%)
+        // vol_free FLAGGED SUSPECT 2026-07-17: disagrees >=10% with ferric's
+        // free-atom PBE/Becke value (see docs/vol-free-verification.md). NOT
+        // edited pending human review — do not treat as verified.
+        7  => (7.400,    24.200,   Some(25.097)), // N    vol: SUSPECT (PBE/Becke +10.8%)
+        8  => (5.400,    15.600,   Some(19.750)), // O    vol: SUSPECT (PBE/Becke +19.5%)
+        9  => (3.800,    9.520,    Some(15.746)), // F    vol: SUSPECT (PBE/Becke +22.8%)
+        10 => (2.670,    6.380,    Some(12.443)), // Ne   vol: SUSPECT (PBE/Becke +28.7%)
+        11 => (162.700,  1556.000, Some(100.5)),  // Na   vol: SUSPECT (PBE/Becke +13.4%)
+        12 => (71.000,   627.000,  Some(91.0)),   // Mg   vol: SUSPECT (PBE/Becke +15.9%)
+        13 => (60.000,   528.000,  Some(86.0)),   // Al   vol: SUSPECT (PBE/Becke +42.5%)
+        14 => (37.000,   305.000,  Some(60.0)),   // Si   vol: SUSPECT (PBE/Becke +73.1%)
+        15 => (25.000,   185.000,  Some(49.0)),   // P    vol: SUSPECT (PBE/Becke +76.8%)
+        16 => (19.600,   134.000,  Some(41.50)),  // S    vol: SUSPECT (PBE/Becke +84.9%)
+        17 => (15.000,   94.600,   Some(34.50)),  // Cl   vol: SUSPECT (PBE/Becke +92.0%)
+        18 => (11.100,   64.300,   Some(28.90)),  // Ar   vol: SUSPECT (PBE/Becke +98.5%)
         // Z=19–54: alpha_free/c6_free from Gould & Bučko JCTC 12, 3603 (2016)
         // Table 2 (neutral atoms), a.u. — see refs/gould-bucko-2016-table2-neutral.txt.
         // vol_free = None: no sourced free-atom volume for Z>18; the live free-atom
