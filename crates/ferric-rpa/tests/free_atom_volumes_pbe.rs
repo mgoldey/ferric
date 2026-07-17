@@ -1,28 +1,37 @@
-//! Verify `free_atom_ref::ts_free_atom`'s `vol_free` table (Z=1..=18)
-//! against ferric's own free-atom UKS-PBE + Becke-volume pipeline.
+//! Free-atom UKS/RKS-PBE + Becke-volume pipeline check for Z=1..=18.
 //!
-//! This reuses exactly the machinery `ferric-cli`'s TS-C6 free-atom fallback
-//! already uses (see `crates/ferric-cli/src/main.rs` around the "Compute
-//! free-atom vol_free" comment): a free neutral-atom SCF at the correct
-//! ground-state multiplicity (UKS-PBE with `fractional_occ: true` for
-//! open-shell atoms to avoid the degenerate-p-shell GGA oscillation, RHF-PBE
-//! for closed shells), followed by `atomic_effective_volumes_becke` on the
-//! resulting density. For a single isolated atom the Becke partition weight
-//! is 1 everywhere (no neighbors), so this computes exactly
-//! `v_free = ∫ ρ_atom(r) |r|³ dr` — the TS vol_free denominator.
+//! Originally (G7, docs/perf-tasks/G7-verify-vol-free-table.md) this verified
+//! `free_atom_ref::ts_free_atom`'s hardcoded `vol_free` table against a live
+//! free-atom calc and found 12 of 18 entries were never sourced and disagreed
+//! 11%–98%. G8 (docs/perf-tasks/G8-fix-vol-free-table.md) removed the CLI's
+//! table fallback entirely and dropped the Z≤18 `vol_free` entries to `None`,
+//! so the live free-atom SCF is now the ONLY source of the TS vol_free
+//! denominator. This test therefore no longer compares against a table — its
+//! lasting job is a **robustness gate**: for every Z=1..=18 at its ground-state
+//! multiplicity, does the live free-atom SCF actually converge and yield a
+//! finite volume? An element that fails here would have TS C6 silently skipped
+//! for any molecule containing it (the honest new behavior), so a regression to
+//! "flaky free-atom SCF" is worth catching.
 //!
-//! See docs/perf-tasks/G7-verify-vol-free-table.md (task) and
-//! docs/vol-free-verification.md (result table + per-element verdicts +
-//! root-cause dig: which table entries were ever actually sourced, and
-//! whether the disagreement is a grid-quadrature artifact or real).
+//! It reuses exactly the machinery `ferric-cli`'s TS-C6 branch uses (see
+//! `crates/ferric-cli/src/main.rs` around the "Compute free-atom vol_free"
+//! comment): a free neutral-atom SCF at the correct ground-state multiplicity
+//! (UKS-PBE with `fractional_occ: true` for open-shell atoms to avoid the
+//! degenerate-p-shell GGA oscillation, RHF-PBE for closed shells), followed by
+//! `atomic_effective_volumes_becke` on the resulting density. For a single
+//! isolated atom the Becke partition weight is 1 everywhere (no neighbors), so
+//! this computes exactly `v_free = ∫ ρ_atom(r) |r|³ dr` — the TS vol_free
+//! denominator.
+//!
+//! See docs/vol-free-verification.md (the G7 result table + per-element
+//! verdicts + root-cause dig + the G8 disposition update).
 //!
 //!   OPENBLAS_NUM_THREADS=1 cargo test -p ferric-rpa --test free_atom_volumes_pbe \
 //!     --release -- --nocapture --ignored
 //!
 //! `#[ignore]`d by default: 18 free-atom UKS-PBE solves at aug-cc-pVDZ are
 //! slow (open-shell p/d-degenerate atoms in particular) and this is a
-//! one-time verification, not a regression gate (the regression gate is
-//! `free_atom_ref::tests`, which pins the *current* table values).
+//! convergence-robustness probe, not a fast CI gate.
 //!
 //! This file also has a second, smaller `#[ignore]`d test,
 //! `diagnose_becke_vs_hirshfeld_grid_truncation`, which cross-checks the
@@ -38,7 +47,6 @@ use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_rpa::dispersion::free_atom_ref::ts_free_atom;
 use ferric_rpa::properties::{atomic_effective_volumes_becke, atomic_effective_volumes_hirshfeld};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
@@ -102,70 +110,72 @@ fn pbe_vol_free(z: usize, basis_name: &str) -> Option<f64> {
 
 #[test]
 #[ignore] // slow: 18 free-atom UKS-PBE solves at aug-cc-pVDZ; run explicitly.
-fn verify_vol_free_table_z1_18_pbe() {
+fn free_atom_scf_converges_z1_18_pbe() {
     println!(
-        "\nVerification of free_atom_ref::ts_free_atom vol_free (Z=1..=18) \
-         against ferric's own free-atom UKS/RKS-PBE + Becke-volume pipeline."
+        "\nRobustness gate: does the live free-atom UKS/RKS-PBE + Becke-volume \
+         pipeline converge and yield a finite v_free for every Z=1..=18?"
     );
     println!(
-        "Reuses the exact SCF convention ferric-cli/src/main.rs already uses for \
-         its free-atom TS fallback (xc=PBE, fractional_occ for open shells, \
-         mom_after_iter=5, Becke partition; single free atom => Becke w=1 \
-         everywhere, so this is exactly v_free = integral rho(r) |r|^3 dr)."
+        "The hardcoded vol_free table was removed (G8) — this live SCF is now \
+         the ONLY source of the TS vol_free denominator, so an element that \
+         fails here would have TS C6 silently skipped for any molecule \
+         containing it. Reuses the exact SCF convention ferric-cli/src/main.rs \
+         uses (xc=PBE, fractional_occ for open shells, mom_after_iter=5, Becke \
+         partition; single free atom => Becke w=1 everywhere, so this is exactly \
+         v_free = integral rho(r) |r|^3 dr). Also prints the G7 aug-cc-pVTZ \
+         reference volumes for the record (docs/vol-free-verification.md)."
     );
     println!();
     println!(
-        "{:>4} {:>4} {:>6} {:>12} {:>14} {:>14} {:>8}",
-        "Z", "Sym", "mult", "table", "aug-cc-pvdz", "aug-cc-pvtz", "%diff(pvtz)"
+        "{:>4} {:>4} {:>6} {:>14} {:>14} {:>10}",
+        "Z", "Sym", "mult", "aug-cc-pvdz", "aug-cc-pvtz", "DZ->TZ%"
     );
 
-    let mut rows = Vec::new();
+    let mut failed = Vec::new();
     for z in 1..=18usize {
-        let (_, _, table_vf) = ts_free_atom(z).expect("Z=1..=18 must be in table");
-        let table_vf = table_vf.expect("Z=1..=18 vol_free must be Some");
-
         let v_dz = pbe_vol_free(z, "aug-cc-pvdz");
         let v_tz = pbe_vol_free(z, "aug-cc-pvtz");
-
-        let pct = v_tz.map(|v| 100.0 * (v - table_vf) / table_vf);
+        let dz_tz = match (v_dz, v_tz) {
+            (Some(a), Some(b)) => Some(100.0 * (b - a) / a),
+            _ => None,
+        };
 
         println!(
-            "{:>4} {:>4} {:>6} {:>12.3} {:>14} {:>14} {:>8}",
+            "{:>4} {:>4} {:>6} {:>14} {:>14} {:>10}",
             z,
             symbol(z),
             gs_mult(z),
-            table_vf,
             v_dz.map(|v| format!("{v:.3}")).unwrap_or_else(|| "FAILED".into()),
             v_tz.map(|v| format!("{v:.3}")).unwrap_or_else(|| "FAILED".into()),
-            pct.map(|p| format!("{p:+.1}%")).unwrap_or_else(|| "N/A".into()),
+            dz_tz.map(|p| format!("{p:+.1}%")).unwrap_or_else(|| "N/A".into()),
         );
-        rows.push((z, table_vf, v_dz, v_tz, pct));
+
+        // The gate: a finite converged volume at BOTH bases. aug-cc-pVTZ is the
+        // production-relevant basis (the C6 examples run at aug-cc-pVTZ); DZ is
+        // the cheaper cross-check. Fail loud on any element that can't produce a
+        // volume — that's the regression this test exists to catch.
+        if v_dz.is_none() || v_tz.map(|v| !(v.is_finite() && v > 0.0)).unwrap_or(true) {
+            failed.push(z);
+        }
     }
 
     println!();
-    println!("Agreement threshold: <10% (Bučko et al. JCTC 9, 4293 (2013) cross-validation precedent).");
-    let mut agree = Vec::new();
-    let mut disagree = Vec::new();
-    let mut failed = Vec::new();
-    for (z, table_vf, _v_dz, v_tz, pct) in &rows {
-        match pct {
-            Some(p) if p.abs() < 10.0 => agree.push((*z, *table_vf, v_tz.unwrap(), *p)),
-            Some(p) => disagree.push((*z, *table_vf, v_tz.unwrap(), *p)),
-            None => failed.push(*z),
-        }
-    }
-    println!("AGREE (<10%): {:?}", agree.iter().map(|r| symbol(r.0)).collect::<Vec<_>>());
-    println!("DISAGREE (>=10%): {:?}", disagree.iter().map(|r| symbol(r.0)).collect::<Vec<_>>());
     if !failed.is_empty() {
-        println!("SCF FAILED (no computed value): {:?}", failed.iter().map(|z| symbol(*z)).collect::<Vec<_>>());
+        println!(
+            "SCF FAILED / non-finite volume for: {:?}",
+            failed.iter().map(|z| symbol(*z)).collect::<Vec<_>>()
+        );
+    } else {
+        println!("All Z=1..=18 free-atom SCF converged to a finite v_free.");
     }
 
-    // This test is a verification report, not a regression gate — it always
-    // "passes" (info only) unless every single SCF failed outright, which
-    // would indicate the pipeline itself is broken (not a table disagreement).
     assert!(
-        rows.iter().any(|(_, _, _, v_tz, _)| v_tz.is_some()),
-        "every free-atom PBE SCF failed — pipeline is broken, not a table mismatch"
+        failed.is_empty(),
+        "live free-atom SCF failed to yield a finite volume for {:?} — TS C6 \
+         would be silently skipped for molecules containing these elements; \
+         fix the convergence issue (mirror the O/S/Si fractional_occ+MOM fix) \
+         rather than accepting a gap",
+        failed.iter().map(|z| symbol(*z)).collect::<Vec<_>>()
     );
 }
 
@@ -190,13 +200,10 @@ fn diagnose_becke_vs_hirshfeld_grid_truncation() {
          free-atom volumes (aug-cc-pVTZ PBE), representative Z."
     );
     println!(
-        "{:>4} {:>4} {:>14} {:>14} {:>10} {:>12}",
-        "Z", "Sym", "table", "Becke", "Hirshfeld", "Hirsh %diff"
+        "{:>4} {:>4} {:>14} {:>10} {:>14}",
+        "Z", "Sym", "Becke(unbdd)", "Hirshfeld", "Becke<->Hirsh%"
     );
     for z in [1usize, 6, 10, 11, 14, 18] {
-        let (_, _, table_vf) = ts_free_atom(z).unwrap();
-        let table_vf = table_vf.unwrap();
-
         let sym = symbol(z);
         let xyz = format!("1\n{sym}\n{sym} 0 0 0\n");
         let mult = gs_mult(z);
@@ -234,11 +241,14 @@ fn diagnose_becke_vs_hirshfeld_grid_truncation() {
         let v_becke = atomic_effective_volumes_becke(&mol, &obs, &bs, &density).unwrap()[0];
         let v_hirsh =
             atomic_effective_volumes_hirshfeld(&mol, &bs, &density, None).unwrap()[0];
-        let pct_hirsh = 100.0 * (v_hirsh - table_vf) / table_vf;
+        // Both partition weights are trivially 1 for a single free atom, so any
+        // gap between the two is a pure grid/truncation artifact (the bounded
+        // 6-Bohr Hirshfeld grid truncates diffuse tails, e.g. Na's 3s valence).
+        let gap = 100.0 * (v_becke - v_hirsh) / v_hirsh;
 
         println!(
-            "{:>4} {:>4} {:>14.3} {:>14.3} {:>10.3} {:>+11.1}%",
-            z, sym, table_vf, v_becke, v_hirsh, pct_hirsh
+            "{:>4} {:>4} {:>14.3} {:>10.3} {:>+13.1}%",
+            z, sym, v_becke, v_hirsh, gap
         );
     }
 }

@@ -1022,7 +1022,6 @@ fn main() {
                 let mut c6_iso_opt: Option<ndarray::Array2<f64>> = None;
                 let mut c6_aniso_v: Vec<Vec<[[f64; 3]; 3]>> = Vec::new();
                 if compute_c6 {
-                    use ferric_rpa::dispersion::free_atom_ref::ts_free_atom;
                     use ferric_rpa::dispersion::{
                         casimir_polder_c6, pdep_dynamic_polarizability,
                         ts_dynamic_polarizability, C6Source, DispersionPartition,
@@ -1137,20 +1136,28 @@ fn main() {
                                         .unwrap_or_else(|_| SchwarzBounds::compute(op, &prep).unwrap());
                                     let mut free_cfg = rhf_config.clone();
                                     free_cfg.mom_after_iter = if mult > 1 { 5 } else { 0 };
+                                    // Give the tiny free-atom SCF a generous iteration
+                                    // budget — this is now the ONLY source of vol_free
+                                    // (the hardcoded-table fallback was removed), so a
+                                    // near-converged atom that would previously have
+                                    // silently degraded to a table value must instead
+                                    // actually converge. Cheap: it's a single atom.
+                                    free_cfg.max_iter = free_cfg.max_iter.max(200);
                                     // 1-thread pool for the tiny atom solve — see run_serial.
                                     //
                                     // The free-atom volume must be on the SAME scale (same xc) as
                                     // the molecular volume (vols[i]) or the ratio is meaningless.
-                                    // Open-shell xc atoms (³P: O/S/Si) used to NOT converge — their
-                                    // degenerate p-shell makes the GGA potential orientation-
-                                    // dependent and the SCF oscillates forever. Fractional/ensemble
-                                    // occupation (fractional_occ) spreads the open-shell electrons
-                                    // equally over the degenerate p orbitals, restoring spherical
-                                    // symmetry and converging the UKS-PBE atom on the *consistent*
-                                    // scale. The HF fallback below remains as a last-resort safety
-                                    // net (a scale-mismatched table value is the worst case and
-                                    // should now never be hit for O/S/Si).
-                                    if mult > 1 {
+                                    // Open-shell xc atoms (³P: O/S/Si) do NOT converge under a
+                                    // plain UKS-GGA solve — their degenerate p-shell makes the GGA
+                                    // potential orientation-dependent and the SCF oscillates
+                                    // forever. Fractional/ensemble occupation (fractional_occ)
+                                    // spreads the open-shell electrons equally over the degenerate
+                                    // p orbitals, restoring spherical symmetry and converging the
+                                    // UKS-PBE atom on the *consistent* scale. Pure HF/UHF free-atom
+                                    // solves don't suffer this (K is orbital-invariant in the
+                                    // degenerate subspace), so — matching the proatom builder above
+                                    // — only enable fractional_occ when an xc functional is set.
+                                    if mult > 1 && free_cfg.xc.is_some() {
                                         free_cfg.fractional_occ = true;
                                     }
                                     let solve_free = |cfg: &RhfConfig| -> Option<ndarray::Array2<f64>> {
@@ -1162,12 +1169,23 @@ fn main() {
                                                 .ok().map(|r| r.density_r().to_owned())
                                         }
                                     };
+                                    // Live free-atom SCF is the ONLY source of the TS
+                                    // vol_free denominator now. Try the reference-
+                                    // consistent xc solve first (scale-matched to the
+                                    // molecular volume); if it fails, retry pure HF/UHF
+                                    // as a *scale-consistent* fallback (this changes the
+                                    // xc convention slightly, but is still a real
+                                    // free-atom integral, not a stale table number). If
+                                    // both fail, vol_free_computed has no entry for this
+                                    // Z and the loop below skips TS C6 with a clear
+                                    // warning — no silent scale-mismatched fabrication.
                                     let free_density = run_serial(|| {
                                         solve_free(&free_cfg).or_else(|| {
                                             // xc solve failed — retry pure HF/UHF for a converged,
                                             // scale-consistent density.
                                             let mut hf_cfg = free_cfg.clone();
                                             hf_cfg.xc = None;
+                                            hf_cfg.fractional_occ = false;
                                             solve_free(&hf_cfg)
                                         })
                                     });
@@ -1186,38 +1204,45 @@ fn main() {
                             }
                         }
 
-                        // Use the ferric-computed free-atom volume (consistent scale
-                        // with the molecular vols[i]). The TS-PRL table v_free is a
-                        // LAST resort only — it is on a different integration scale,
-                        // so a ratio built from it is unreliable (see the free-atom
-                        // solve above, which now retries pure HF to avoid this path).
-                        // No reference at all used to silently become ratio = 1.0.
+                        // vol_free comes ONLY from the live free-atom SCF above,
+                        // computed on the SAME integration scale (same xc, same
+                        // Hirshfeld quadrature) as the molecular vols[i] — the only
+                        // number for which the ratio vols[i]/vf is physically
+                        // meaningful. There is deliberately NO table fallback: the
+                        // hardcoded ts_free_atom vol_free values were on a mismatched
+                        // integration scale and (for Z outside {H,He,C,N,O,F,Ne})
+                        // were never sourced — feeding one to this ratio silently
+                        // degraded the C6 to a wrong number that looked like a result
+                        // (verified 2026-07-17, docs/vol-free-verification.md; Si's
+                        // table 60.0 was 42% low vs the live-SCF value, inflating
+                        // every Si-containing molecule's TS C6). Per this repo's
+                        // established TS/MBD honesty convention (2026-07-09:
+                        // ts_atom_params / ts_dynamic_polarizability / mbd_screen all
+                        // hard-error rather than fabricate a Z>18 value), a genuine
+                        // live-SCF failure now SKIPS TS C6 with a clear warning —
+                        // matching the Z>18 "no honest value to return" behavior —
+                        // instead of substituting a scale-mismatched fallback.
                         let mut ratio = Vec::with_capacity(z.len());
                         for (i, &zi) in z.iter().enumerate() {
                             let sym = ferric_core::elements::z_to_symbol(zi as i32).unwrap_or("?");
                             let vf = match vol_free_computed.get(&zi).copied() {
                                 Some(v) => v,
-                                None => match ts_free_atom(zi).and_then(|(_, _, v)| v) {
-                                    Some(v) => {
-                                        eprintln!(
-                                            "warning: free-atom SCF volume unavailable for {sym} \
-                                             (Z={zi}); using the unverified TS-table v_free — the \
-                                             volume ratio is on a mismatched integration scale \
-                                             (treat this C6 as approximate)"
-                                        );
-                                        v
-                                    }
-                                    None => {
-                                        eprintln!(
-                                            "warning: TS C6 skipped — no free-atom volume reference \
-                                             for {sym} (Z={zi}): free-atom SCF failed and no sourced \
-                                             fallback volume exists (the TS free-atom α/C6 table \
-                                             covers Z=1..=54, but its fallback volumes are None for \
-                                             several elements outside {{H,He,C,N,O,F,Ne}})"
-                                        );
-                                        return None;
-                                    }
-                                },
+                                None => {
+                                    eprintln!(
+                                        "warning: TS C6 skipped — live free-atom SCF failed for \
+                                         {sym} (Z={zi}) and no scale-consistent free-atom volume \
+                                         is available. The TS free-atom vol_free denominator MUST \
+                                         come from a live SCF on the same integration scale as the \
+                                         molecular volume; the old hardcoded-table fallback was \
+                                         removed because it is on a mismatched scale and was never \
+                                         sourced for most elements (docs/vol-free-verification.md). \
+                                         Refusing to fabricate a C6 from a mismatched denominator \
+                                         (same convention as the Z>18 hard-error path — see \
+                                         ts_atom_params / CLAUDE.md TS/MBD honesty). Use \
+                                         c6_source=\"pdep\" for a table-free dispersion source."
+                                    );
+                                    return None;
+                                }
                             };
                             if vf <= 1e-10 {
                                 eprintln!(
