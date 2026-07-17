@@ -2684,7 +2684,12 @@ pub fn molecular_dynamic_polarizability_pdep(
 ///   v_A = ∫ w^A_Becke(r) ρ(r) |r − R_A|³ dr
 /// ```
 /// Returned in a.u. (Bohr³·e). The TS volume *ratio* is v_A / v_free[Z_A],
-/// with `v_free` taken from [`crate::dispersion::free_atom_ref::ts_free_atom`].
+/// where `v_free` is computed by running this same integral on a live
+/// free-atom SCF density (ferric-cli's TS-C6 branch), NOT read from a table:
+/// [`crate::dispersion::free_atom_ref::ts_free_atom`]'s `vol_free` is `None`
+/// for every Z (no sourced hardcoded free-atom volume — see that module's
+/// doc and docs/vol-free-verification.md). The live-SCF free-atom volume is
+/// the only denominator on a scale consistent with `v_A`.
 pub fn atomic_effective_volumes_becke(
     mol: &Molecule,
     _prep: &PreparedBasis,

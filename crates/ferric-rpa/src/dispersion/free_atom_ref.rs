@@ -8,46 +8,38 @@
 //! (a.u.). **This quantity is NOT tabulated in the TS paper.** In production TS
 //! implementations (FHI-aims, VASP, ASE) the volume ratio v_eff/v_free is
 //! computed on-the-fly from a PBE/LDA free-atom DFT run; there is no canonical
-//! hard-coded table.
+//! hard-coded table. **ferric follows suit: `vol_free` is `None` for EVERY Z.**
+//! The production TS C6 path (`ferric-cli`'s TS-C6 branch) supplies the
+//! denominator from a live free-atom SCF run on the SAME integration scale
+//! (same xc, same Hirshfeld quadrature) as the molecular volume — the only
+//! ratio that is physically meaningful — and now hard-skips TS C6 with a
+//! warning if that live SCF fails, rather than dividing by a hardcoded number.
 //!
-//! Z=1..=18 `vol_free` was independently verified 2026-07-17 against ferric's
-//! own free-atom UKS/RKS-PBE + Becke-volume pipeline (see
-//! `crates/ferric-rpa/tests/free_atom_volumes_pbe.rs` and
-//! `docs/vol-free-verification.md` for the full table + methodology). Result:
-//! **H, He, Li, Be, B, C agree (<10%)** with the independently computed
-//! value and are considered verified. **N, O, F, Ne, Na, Mg, Al, Si, P, S,
-//! Cl, Ar disagree significantly (11%-98%, growing with Z)** with the
-//! independently computed PBE/Becke value and are flagged suspect — do NOT
-//! treat them as verified; see docs/vol-free-verification.md for the full
-//! per-element comparison and the disagreement pattern. Per-element notes
-//! below reflect this. No table value has been changed based on this
-//! verification pass — disagreements are flagged for human review, not
-//! silently corrected (this table feeds production TS C6 numbers).
-//!
-//! Root-cause dig (docs/vol-free-verification.md "Reading the pattern"):
-//! `git log --follow` on this file shows the disagreeing dozen were never
-//! actually sourced. The original commit (007bfe8) claimed all 18 came from
-//! TS PRL Table I, which does not tabulate vol_free at all. A later commit
-//! (f3ec1ca) corrected only {H,He,C,N,O,F,Ne} against a Bučko-2013
-//! citation (itself later downgraded to "could not be independently
-//! verified", commit 1907ec5) and explicitly left Li-Ar outside that set
-//! as acknowledged-unverified placeholders. So the Li/Be/B "agree" verdict
-//! above is numerical coincidence, not corroboration — they were exactly
-//! as unsourced as the elements that disagree; they just happen to land
-//! close to the independently computed number. Separately: Na's specific
-//! disagreement sign flips (+13.4% vs the unbounded-grid Becke number used
-//! for the table above, but -17.5% vs ferric-cli's actual bounded
-//! 6-Bohr-margin free-atom volume convention) — a real quadrature-
-//! truncation effect for Na's diffuse valence density, confirmed not to
-//! apply to the rest of the disagreeing set (Ne/Si/Ar all show <1% gap
-//! between the two quadratures, so their disagreement with the table is
-//! not a grid artifact).
+//! History (G7 verification 2026-07-17, docs/vol-free-verification.md;
+//! G8 removal, docs/perf-tasks/G8-fix-vol-free-table.md): the Z=1..=18 rows
+//! previously carried `Some(..)` hardcoded volumes. G7 checked all 18 against
+//! ferric's own free-atom UKS/RKS-PBE + Becke-volume pipeline and found that
+//! 12 of them (N, O, F, Ne, Na, Mg, Al, Si, P, S, Cl, Ar) disagreed by
+//! 11%–98% (growing with Z), and a `git log --follow` dig showed those 12
+//! were never actually sourced (the original commit 007bfe8 attributed all
+//! 18 to TS PRL Table I, which does not tabulate vol_free; the follow-up
+//! f3ec1ca only touched {H,He,C,N,O,F,Ne}, citing a Bučko-2013 table later
+//! downgraded to "could not be independently verified", commit 1907ec5). The
+//! CLI already ran a scale-consistent live free-atom SCF as its PRIMARY path
+//! and only used these table numbers as a last-resort, scale-mismatched
+//! fallback. G8 removed that fallback entirely (extending this repo's
+//! established no-silent-fallback / TS-MBD-honesty convention — see the 2026
+//! -07-09 `ts_atom_params` / `ts_dynamic_polarizability` / `mbd_screen` hard
+//! -error work) and, consequently, dropped the now-dead Z≤18 `Some(..)`
+//! values to `None`. Nothing in the codebase reads a Z≤18 `vol_free` anymore
+//! (the MBD path destructures it away; the CLI takes only the live-SCF value).
 //!
 //! Z=19–54 α_free/C6_free are from Gould & Bučko JCTC 12, 3603 (2016) Table 2
 //! (same Chu-Dalgarno lineage as TS-PRL Table I; cross-checks vs the Z≤18 rows
 //! agree <5% — see docs/superpowers/specs/refs/source-crosscheck.md). Their
-//! vol_free is None (no sourced fallback): the live free-atom SCF supplies the
-//! volume, and None refuses rather than fabricating a denominator.
+//! vol_free is None (no sourced fallback), same as Z≤18 now: the live free-atom
+//! SCF supplies the volume, and None refuses rather than fabricating a
+//! denominator.
 
 /// Free-atom TS reference: `(alpha_free, c6_free, vol_free)` in a.u.
 /// Indexed by atomic number `z` (1..=54 covered). Returns `None` outside the
@@ -55,33 +47,35 @@
 pub fn ts_free_atom(z: usize) -> Option<(f64, f64, Option<f64>)> {
     // alpha_free (a.u.)    — TS PRL 102, 073005 (2009) Table I  [verified]
     // c6_free (a.u.)       — TS PRL 102, 073005 (2009) Table I  [verified]
-    // vol_free (a.u.)      — Some(..) = sourced free-atom ∫ρr³dr fallback;
-    //                        None = no sourced fallback (live SCF must supply it,
-    //                        else the TS C6 refuses — no fabricated denominator).
+    // vol_free (a.u.)      — None for EVERY Z: no sourced hardcoded free-atom
+    //                        ∫ρr³dr. The live free-atom SCF (ferric-cli TS-C6
+    //                        branch) supplies the volume on a scale consistent
+    //                        with the molecular volume; if that SCF fails, TS C6
+    //                        is skipped with a warning — no fabricated denominator.
+    //                        (Z≤18 previously carried Some(..) values; G7 found 12
+    //                        of 18 were never sourced and disagreed 11%–98% with a
+    //                        live free-atom PBE/Becke calc, and G8 removed the
+    //                        CLI's table fallback that read them — see the module
+    //                        doc and docs/vol-free-verification.md.)
     let row = match z {
-        // vol_free verified 2026-07-17 vs ferric free-atom PBE/Becke pipeline,
-        // <10% agreement (see docs/vol-free-verification.md).
-        1  => (4.500,    6.500,    Some(9.149)),  // H    vol: verified (PBE/Becke -4.9%)
-        2  => (1.380,    1.460,    Some(4.711)),  // He   vol: verified (PBE/Becke -7.5%)
-        3  => (164.200,  1387.000, Some(91.96)),  // Li   vol: verified (PBE/Becke -1.8%); no real source ever found for this number (git-log dig: f3ec1ca's Bučko fix touched only H/He/C/N/O/F/Ne, not Li) -- numeric agreement is coincidental, not corroborated sourcing
-        4  => (38.000,   214.000,  Some(61.50)),  // Be   vol: verified (PBE/Becke -1.4%); same caveat -- no real source found, agreement is coincidental
-        5  => (21.000,   99.500,   Some(49.18)),  // B    vol: verified (PBE/Becke +1.7%); same caveat -- no real source found, agreement is coincidental
-        6  => (12.000,   46.600,   Some(34.054)), // C    vol: verified (PBE/Becke +7.8%)
-        // vol_free FLAGGED SUSPECT 2026-07-17: disagrees >=10% with ferric's
-        // free-atom PBE/Becke value (see docs/vol-free-verification.md). NOT
-        // edited pending human review — do not treat as verified.
-        7  => (7.400,    24.200,   Some(25.097)), // N    vol: SUSPECT (PBE/Becke +10.8%)
-        8  => (5.400,    15.600,   Some(19.750)), // O    vol: SUSPECT (PBE/Becke +19.5%)
-        9  => (3.800,    9.520,    Some(15.746)), // F    vol: SUSPECT (PBE/Becke +22.8%)
-        10 => (2.670,    6.380,    Some(12.443)), // Ne   vol: SUSPECT (PBE/Becke +28.7%)
-        11 => (162.700,  1556.000, Some(100.5)),  // Na   vol: SUSPECT (PBE/Becke +13.4%; sign FLIPS to -17.5% under ferric-cli's actual bounded 6-Bohr-margin grid convention -- diffuse Na 3s tail is grid-truncation-sensitive, see docs/vol-free-verification.md)
-        12 => (71.000,   627.000,  Some(91.0)),   // Mg   vol: SUSPECT (PBE/Becke +15.9%)
-        13 => (60.000,   528.000,  Some(86.0)),   // Al   vol: SUSPECT (PBE/Becke +42.5%)
-        14 => (37.000,   305.000,  Some(60.0)),   // Si   vol: SUSPECT (PBE/Becke +73.1%)
-        15 => (25.000,   185.000,  Some(49.0)),   // P    vol: SUSPECT (PBE/Becke +76.8%)
-        16 => (19.600,   134.000,  Some(41.50)),  // S    vol: SUSPECT (PBE/Becke +84.9%)
-        17 => (15.000,   94.600,   Some(34.50)),  // Cl   vol: SUSPECT (PBE/Becke +92.0%)
-        18 => (11.100,   64.300,   Some(28.90)),  // Ar   vol: SUSPECT (PBE/Becke +98.5%)
+        1  => (4.500,    6.500,    None),  // H
+        2  => (1.380,    1.460,    None),  // He
+        3  => (164.200,  1387.000, None),  // Li
+        4  => (38.000,   214.000,  None),  // Be
+        5  => (21.000,   99.500,   None),  // B
+        6  => (12.000,   46.600,   None),  // C
+        7  => (7.400,    24.200,   None),  // N
+        8  => (5.400,    15.600,   None),  // O
+        9  => (3.800,    9.520,    None),  // F
+        10 => (2.670,    6.380,    None),  // Ne
+        11 => (162.700,  1556.000, None),  // Na
+        12 => (71.000,   627.000,  None),  // Mg
+        13 => (60.000,   528.000,  None),  // Al
+        14 => (37.000,   305.000,  None),  // Si
+        15 => (25.000,   185.000,  None),  // P
+        16 => (19.600,   134.000,  None),  // S
+        17 => (15.000,   94.600,   None),  // Cl
+        18 => (11.100,   64.300,   None),  // Ar
         // Z=19–54: alpha_free/c6_free from Gould & Bučko JCTC 12, 3603 (2016)
         // Table 2 (neutral atoms), a.u. — see refs/gould-bucko-2016-table2-neutral.txt.
         // vol_free = None: no sourced free-atom volume for Z>18; the live free-atom
@@ -137,14 +131,16 @@ mod tests {
         let (a_h, c6_h, v_h) = ts_free_atom(1).unwrap();
         assert!((a_h - 4.5).abs() < 1e-9, "H alpha_free wrong: {a_h}");
         assert!((c6_h - 6.5).abs() < 1e-9, "H C6_free wrong: {c6_h}");
-        // vol_free: Some(..) for Z≤18 (believed correct for {H,He,C,N,O,F,Ne})
-        assert!((v_h.unwrap() - 9.149).abs() < 1e-3, "H vol_free wrong: {v_h:?}");
+        // vol_free is None for EVERY Z (G8): no sourced hardcoded free-atom
+        // volume; the live free-atom SCF supplies the denominator and None
+        // refuses rather than fabricating a scale-mismatched one.
+        assert!(v_h.is_none(), "H vol_free must be None (no hardcoded fallback): {v_h:?}");
         let (a_c, c6_c, v_c) = ts_free_atom(6).unwrap();
         assert!((a_c - 12.0).abs() < 1e-9);
         assert!((c6_c - 46.6).abs() < 1e-9);
-        assert!((v_c.unwrap() - 34.054).abs() < 1e-3, "C vol_free wrong: {v_c:?}");
+        assert!(v_c.is_none(), "C vol_free must be None: {v_c:?}");
         let (_, _, v_o) = ts_free_atom(8).unwrap();
-        assert!((v_o.unwrap() - 19.750).abs() < 1e-3, "O vol_free wrong: {v_o:?}");
+        assert!(v_o.is_none(), "O vol_free must be None: {v_o:?}");
         assert!(ts_free_atom(200).is_none(), "out-of-table should be None");
     }
 
