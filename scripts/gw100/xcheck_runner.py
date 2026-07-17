@@ -43,9 +43,30 @@ def load():
 
 
 def save(d):
-    tmp = CACHE.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(d, indent=2, sort_keys=True))
-    tmp.replace(CACHE)
+    """Persist under a cross-process lock, MERGING with what is on disk.
+
+    Mirrors run_sweep.py's save_basis (scripts/gw100/run_sweep.py): the old
+    version rewrote the whole cache file from the in-memory dict, so a second
+    concurrent writer of xcheck_results.json had its rows silently clobbered
+    by whichever process saved last (load-once / rewrite-all lost-update).
+    Merge semantics: per-basis mol rows union (ours win for mols we just
+    computed). The tmp file is per-pid so two writers can never interleave
+    into one tmp.
+    """
+    import fcntl
+    with open(CACHE.with_suffix(".lock"), "w") as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        disk = json.loads(CACHE.read_text()) if CACHE.exists() else {}
+        out = dict(disk)
+        for basis, mols in d.items():
+            merged = dict(out.get(basis, {}))
+            merged.update(mols)
+            out[basis] = merged
+        d.clear()
+        d.update(out)
+        tmp = CACHE.with_suffix(f".json.tmp.{os.getpid()}")
+        tmp.write_text(json.dumps(out, indent=2, sort_keys=True))
+        tmp.replace(CACHE)
 
 
 def run_ferric(xyz, basis, aux):
