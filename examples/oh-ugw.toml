@@ -1,0 +1,26 @@
+# U-G0W0@UHF / cc-pVDZ on the OH radical (doublet). Wiring-correctness smoke
+# test: the printed alpha/beta HOMO IPs should match
+# crates/ferric-gw/tests/oh_u_g0w0.rs's validated reference (alpha-HOMO IP in
+# the ~13-14 eV window, bracketing experiment 13.02 eV) -- same
+# molecule/basis/method/quadrature, just reached through the CLI instead of
+# the Rust test suite.
+[molecule]
+xyz = "testdata/molecules/oh.xyz"
+charge = 0
+multiplicity = 2
+
+[basis]
+name = "cc-pvdz"
+
+[method]
+kind = "gw"
+
+[rpa]
+auxbasis = "cc-pvdz-ri"
+n_quad = 16
+quadrature = "gauss-legendre"
+trunc_thresh = 0.0
+eigensolver_conv_thresh = 1e-7
+
+[gw]
+method = "g0w0"

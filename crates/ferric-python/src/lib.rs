@@ -1458,6 +1458,268 @@ fn run_gw(
     })
 }
 
+// ── U-GW (open-shell: U-G0W0 / U-COHSEX / U-evGW0 / U-evGW) ──
+//
+// The `bse.rs` entry points are NOT wired here — see
+// docs/open-work-triage-2026-07-14-open.md #54.
+
+#[pyclass]
+#[pyo3(name = "UGwResult")]
+struct PyUGwResult {
+    #[pyo3(get)] ref_energy: f64,
+    /// MO indices (absolute) for which QP energies were computed, shared by
+    /// both spin channels.
+    #[pyo3(get)] mo_indices: Vec<usize>,
+    eps_mf_a: Vec<f64>,
+    eps_qp_a: Vec<f64>,
+    sigma_x_a: Vec<f64>,
+    sigma_c_a: Vec<f64>,
+    z_factor_a: Vec<f64>,
+    eps_mf_b: Vec<f64>,
+    eps_qp_b: Vec<f64>,
+    sigma_x_b: Vec<f64>,
+    sigma_c_b: Vec<f64>,
+    z_factor_b: Vec<f64>,
+    /// Per-state QP Newton-solve convergence flags, aligned with `mo_indices`
+    /// (see `PyGwResult::qp_converged` for the per-flag meaning). Always
+    /// all-`true` for COHSEX.
+    #[pyo3(get)] qp_converged_a: Vec<bool>,
+    #[pyo3(get)] qp_converged_b: Vec<bool>,
+    /// evGW/evGW0 outer eigenvalue self-consistency iteration count (0 for
+    /// G0W0/COHSEX).
+    #[pyo3(get)] n_ev_iter: usize,
+    /// Whether the U-evGW/U-evGW0 outer loop met `ev_conv_thresh` within
+    /// `max_ev_iter`. Always `true` for U-G0W0/U-COHSEX.
+    #[pyo3(get)] outer_converged: bool,
+}
+
+#[pymethods]
+impl PyUGwResult {
+    #[getter]
+    fn eps_mf_a<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        PyArray1::from_slice(py, &self.eps_mf_a)
+    }
+    #[getter]
+    fn eps_qp_a<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        PyArray1::from_slice(py, &self.eps_qp_a)
+    }
+    #[getter]
+    fn sigma_x_a<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        PyArray1::from_slice(py, &self.sigma_x_a)
+    }
+    #[getter]
+    fn sigma_c_a<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        PyArray1::from_slice(py, &self.sigma_c_a)
+    }
+    #[getter]
+    fn z_factor_a<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        PyArray1::from_slice(py, &self.z_factor_a)
+    }
+    #[getter]
+    fn eps_mf_b<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        PyArray1::from_slice(py, &self.eps_mf_b)
+    }
+    #[getter]
+    fn eps_qp_b<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        PyArray1::from_slice(py, &self.eps_qp_b)
+    }
+    #[getter]
+    fn sigma_x_b<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        PyArray1::from_slice(py, &self.sigma_x_b)
+    }
+    #[getter]
+    fn sigma_c_b<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        PyArray1::from_slice(py, &self.sigma_c_b)
+    }
+    #[getter]
+    fn z_factor_b<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        PyArray1::from_slice(py, &self.z_factor_b)
+    }
+}
+
+/// Open-shell U-G0W0/U-COHSEX/U-evGW0/U-evGW on a UHF/UKS or ROHF reference.
+///
+/// `reference`: "uhf" (default) | "rohf" (case-insensitive; unknown values
+/// are a hard `ValueError`). `method`/`xc`/`qp_mos`/... mirror `run_gw`'s
+/// kwarg shape exactly; `xc` set runs the open-shell KS-DFT ladder (UKS) and
+/// applies the Σx−vxc correction per spin channel via
+/// `UGwResult::apply_kohn_sham_correction` (run_u_gw itself doesn't thread
+/// vxc_diag through — see its doc in `ferric_gw::run_u_gw`).
+#[pyfunction]
+#[pyo3(signature = (
+    mol, basis_set, auxbasis,
+    reference=None, method=None, xc=None, qp_mos=None,
+    max_ev_iter=None, ev_conv_thresh=None, pade_npts=None, qp_newton_damp=None,
+    frozen_core=None, n_quad=None, quadrature=None, u0=None,
+    trunc_thresh=None, eigensolver_conv_thresh=None,
+    k_builder=None, chi0_sparsity=None, memory_budget_gb=None,
+))]
+#[allow(clippy::too_many_arguments)]
+fn run_u_gw(
+    mol: &PyMolecule,
+    basis_set: &PyBasisSet,
+    auxbasis: &PyBasisSet,
+    reference: Option<&str>,
+    method: Option<&str>,
+    xc: Option<&str>,
+    qp_mos: Option<(usize, usize)>,
+    max_ev_iter: Option<usize>,
+    ev_conv_thresh: Option<f64>,
+    pade_npts: Option<usize>,
+    qp_newton_damp: Option<f64>,
+    frozen_core: Option<usize>,
+    n_quad: Option<usize>,
+    quadrature: Option<&str>,
+    u0: Option<f64>,
+    trunc_thresh: Option<f64>,
+    eigensolver_conv_thresh: Option<f64>,
+    k_builder: Option<&str>,
+    chi0_sparsity: Option<&str>,
+    memory_budget_gb: Option<f64>,
+) -> PyResult<PyUGwResult> {
+    use ferric_gw::{run_u_gw as run_u_gw_inner, vxc_mo::vxc_diagonal_mo, GwConfig, GwMethod};
+    use ferric_rpa::config::{QuadratureConfig, QuadratureScheme, SternheimerConfig};
+    use ferric_rpa::PdepRpaConfig;
+    use ferric_scf::rohf::solve_rohf;
+
+    let gw_method = match method.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+        None | Some("g0w0") => GwMethod::G0W0,
+        Some("cohsex") => GwMethod::Cohsex,
+        Some("evgw0") => GwMethod::EvGw0,
+        Some("evgw") => GwMethod::EvGw,
+        Some(other) => {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "method: unknown value \"{other}\"; expected \"g0w0\", \"cohsex\", \"evgw0\", or \"evgw\""
+            )));
+        }
+    };
+    let reference = match reference.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+        None | Some("uhf") => "uhf",
+        Some("rohf") => "rohf",
+        Some(other) => {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "reference: unknown value \"{other}\"; expected \"uhf\" or \"rohf\""
+            )));
+        }
+    };
+
+    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
+    let ctx = ParallelContext::default();
+
+    let mut cfg = rhf_config(k_builder);
+    // MOM after 5 DIIS iters prevents orbital reordering on open-shell atoms
+    // (same precedent as the CLI's "pdep-rpa"/"gw" open-shell dispatch).
+    cfg.mom_after_iter = 5;
+    let vxc_diag = if let Some(xc_name) = xc {
+        cfg.xc = Some(xc_name.to_string());
+        cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
+        cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
+        let scf = if reference == "rohf" {
+            solve_rohf(&ctx, &mol.inner, &prep, op, &bounds, &cfg).map_err(make_err)?
+        } else {
+            solve_uhf(&ctx, &mol.inner, &prep, &bounds, &cfg).map_err(make_err)?
+        };
+        if !scf.converged {
+            return Err(make_err(ferric_core::FerricError::ScfConvergence {
+                iterations: scf.iterations, last_energy: scf.energy,
+            }));
+        }
+        let (diag_a, diag_b) = vxc_diagonal_mo(&mol.inner, &basis_set.inner, xc_name, &scf).map_err(make_err)?;
+        (scf, Some((diag_a, diag_b)))
+    } else {
+        let scf = if reference == "rohf" {
+            solve_rohf(&ctx, &mol.inner, &prep, op, &bounds, &cfg).map_err(make_err)?
+        } else {
+            solve_uhf(&ctx, &mol.inner, &prep, &bounds, &cfg).map_err(make_err)?
+        };
+        if !scf.converged {
+            return Err(make_err(ferric_core::FerricError::ScfConvergence {
+                iterations: scf.iterations, last_energy: scf.energy,
+            }));
+        }
+        (scf, None)
+    };
+    let (scf, vxc_diag) = vxc_diag;
+
+    let scheme = QuadratureScheme::parse_config_str(quadrature)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("quadrature: {e}")))?;
+    let fc = frozen_core.unwrap_or(0);
+    let pdep_cfg = PdepRpaConfig {
+        frozen_core: fc,
+        trunc_thresh: trunc_thresh.unwrap_or(1e-4),
+        eigensolver_max_vecs: 0,
+        eigensolver_conv_thresh: eigensolver_conv_thresh.unwrap_or(1e-6),
+        quadrature: QuadratureConfig {
+            scheme,
+            n_points: n_quad.unwrap_or(20),
+            u0: u0.unwrap_or(0.5),
+        },
+        sternheimer: SternheimerConfig::default(),
+        run_diagnostics: false,
+        eigensolver: ferric_rpa::Eigensolver::default(),
+        chi0_backend: ferric_rpa::config::Chi0Backend::default(),
+        chi0_sparsity: ferric_rpa::config::Chi0Sparsity::parse_config_str(chi0_sparsity)
+            .map_err(make_err)?,
+        memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
+        // run_u_gw forces this on internally; set explicitly for clarity too.
+        need_inv_dielectric_freq: true,
+    };
+    let gw_cfg = GwConfig {
+        method: gw_method,
+        qp_mos: qp_mos.map(|(lo, hi)| lo..hi),
+        max_ev_iter: max_ev_iter.unwrap_or(20),
+        ev_conv_thresh: ev_conv_thresh.unwrap_or(1e-4),
+        pade_npts: pade_npts.unwrap_or(0),
+        qp_newton_damp: qp_newton_damp.unwrap_or(1.0),
+        frozen_core: fc,
+        memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
+    };
+
+    let mut r = run_u_gw_inner(&mol.inner, &prep, &dfbs, op, &scf, &pdep_cfg, &gw_cfg)
+        .map_err(make_err)?;
+    if let Some((diag_a, diag_b)) = vxc_diag.as_ref() {
+        r.apply_kohn_sham_correction(diag_a, diag_b);
+    }
+    if !r.outer_converged {
+        eprintln!(
+            "warning: U-{:?} eigenvalue self-consistency did NOT converge in {} \
+             iterations (thresh {:.1e}); QP energies are the last sweep",
+            gw_cfg.method, r.n_ev_iter, gw_cfg.ev_conv_thresh
+        );
+    }
+    for (spin_label, flags) in [("alpha", &r.qp_converged_a), ("beta", &r.qp_converged_b)] {
+        let bad: Vec<usize> = flags.iter().enumerate()
+            .filter(|(_, &c)| !c).map(|(i, _)| r.mo_indices[i]).collect();
+        if !bad.is_empty() {
+            eprintln!(
+                "warning: QP Newton solve did not converge for {spin_label} MO(s) {bad:?}; \
+                 those QP energies are best-effort"
+            );
+        }
+    }
+    Ok(PyUGwResult {
+        ref_energy: scf.energy,
+        mo_indices: r.mo_indices,
+        eps_mf_a: r.eps_mf_a.to_vec(),
+        eps_qp_a: r.eps_qp_a.to_vec(),
+        sigma_x_a: r.sigma_x_a.to_vec(),
+        sigma_c_a: r.sigma_c_a.to_vec(),
+        z_factor_a: r.z_factor_a.to_vec(),
+        eps_mf_b: r.eps_mf_b.to_vec(),
+        eps_qp_b: r.eps_qp_b.to_vec(),
+        sigma_x_b: r.sigma_x_b.to_vec(),
+        sigma_c_b: r.sigma_c_b.to_vec(),
+        z_factor_b: r.z_factor_b.to_vec(),
+        qp_converged_a: r.qp_converged_a,
+        qp_converged_b: r.qp_converged_b,
+        n_ev_iter: r.n_ev_iter,
+        outer_converged: r.outer_converged,
+    })
+}
+
 // ── Module ──
 
 #[pymodule]
@@ -1489,6 +1751,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPdepRpaResult>()?;
     m.add_class::<PyRsMp2RpaResult>()?;
     m.add_class::<PyGwResult>()?;
+    m.add_class::<PyUGwResult>()?;
     m.add_function(wrap_pyfunction!(run_rhf, m)?)?;
     m.add_function(wrap_pyfunction!(run_uhf, m)?)?;
     m.add_function(wrap_pyfunction!(run_rohf, m)?)?;
@@ -1513,5 +1776,6 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_pdep_rpa, m)?)?;
     m.add_function(wrap_pyfunction!(run_rs_mp2_rpa, m)?)?;
     m.add_function(wrap_pyfunction!(run_gw, m)?)?;
+    m.add_function(wrap_pyfunction!(run_u_gw, m)?)?;
     Ok(())
 }

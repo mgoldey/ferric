@@ -383,9 +383,9 @@ fn main() {
         lr.result
     } else {
         solve_rhf(&ctx, &mol, &prep, op, &bounds, &rhf_config).unwrap_or_else(|e| {
-        // For pdep-rpa with open-shell molecules the UHF dispatch inside the arm
-        // handles convergence; the global RHF result is not used.
-        if method == "pdep-rpa" && mol.multiplicity > 1 {
+        // For pdep-rpa/gw with open-shell molecules the UHF dispatch inside the
+        // arm handles convergence; the global RHF result is not used.
+        if (method == "pdep-rpa" || method == "gw") && mol.multiplicity > 1 {
             // Return a dummy result — it will be shadowed immediately in the arm.
             // The SCF failure is expected here; suppress the exit.
             let _ = e;
@@ -1298,14 +1298,6 @@ fn main() {
             }
         }
         "gw" => {
-            if mol.multiplicity > 1 {
-                eprintln!(
-                    "error: method.kind = \"gw\" is closed-shell only in this spike \
-                     (run_gw requires a Restricted reference); open-shell GW needs \
-                     run_u_gw, not yet wired into the CLI (see triage #54)"
-                );
-                std::process::exit(1);
-            }
             let aux_name = cfg.rpa.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
             let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
                 eprintln!("error: {e}");
@@ -1362,6 +1354,130 @@ fn main() {
                 frozen_core: gw_frozen_core,
                 memory_budget_bytes: budget_bytes,
             };
+            let ha_to_ev = 27.211_386_245_988_f64;
+            if mol.multiplicity > 1 {
+                // Open-shell path: re-run with UHF + MOM (same precedent as the
+                // "pdep-rpa" arm's open-shell dispatch) so the reference is
+                // converged, then dispatch to run_u_gw. Shadow `result` so it
+                // carries the correct (possibly UKS) SCF density.
+                let mut uhf_cfg = rhf_config.clone();
+                uhf_cfg.mom_after_iter = 5;
+                let result = solve_uhf(&ctx, &mol, &prep, &bounds, &uhf_cfg).unwrap_or_else(|e| {
+                    eprintln!("error (UHF): {e}");
+                    std::process::exit(1);
+                });
+                // KS reference (RPA@PBE0-style): [rpa].xc set ⇒ `result` above is
+                // already the UKS solve; build vxc_diag_a/b and apply the Σx−vxc
+                // shift post-hoc via UGwResult::apply_kohn_sham_correction (U-GW
+                // doesn't thread vxc_diag through run_u_gw itself — see its doc).
+                // None (HF reference) ⇒ no shift, matches run_u_gw's contract.
+                let vxc_diag = match cfg.rpa.xc.as_deref() {
+                    Some(xc_name) => {
+                        let (diag_a, diag_b) =
+                            ferric_gw::vxc_mo::vxc_diagonal_mo(&mol, &bs, xc_name, &result)
+                                .unwrap_or_else(|e| {
+                                    eprintln!("error: vxc_diagonal_mo failed: {e}");
+                                    std::process::exit(1);
+                                });
+                        Some((diag_a, diag_b))
+                    }
+                    None => None,
+                };
+                let mut gw_result = ferric_gw::run_u_gw(
+                    &mol, &prep, &dfbs, op, &result, &rpa_cfg, &gw_cfg,
+                )
+                .unwrap_or_else(|e| {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                });
+                if let Some((diag_a, diag_b)) = vxc_diag.as_ref() {
+                    gw_result.apply_kohn_sham_correction(diag_a, diag_b);
+                }
+                let ref_label = if cfg.rpa.xc.is_some() { "UKS" } else { "UHF" };
+                println!(
+                    "U-GW[{:?}]/{} (aux: {}, ref: {ref_label}) on {}",
+                    gw_cfg.method, bs.name, aux_name, cfg.molecule.xyz
+                );
+                println!("  nbasis     = {}", prep.nbasis());
+                println!("  {ref_label} energy: {:.10} Hartree", result.energy);
+                println!("  ev iterations = {}", gw_result.n_ev_iter);
+                println!("  outer converged = {}", gw_result.outer_converged);
+                let two_s = mol.multiplicity as i64 - 1;
+                let nocc_a = ((mol.nelec() as i64 + two_s) / 2) as usize;
+                let nocc_b = ((mol.nelec() as i64 - two_s) / 2) as usize;
+                for (spin_label, nocc, eps_mf, eps_qp, sigma_x, sigma_c, z_factor, qp_converged) in [
+                    (
+                        "alpha", nocc_a,
+                        &gw_result.eps_mf_a, &gw_result.eps_qp_a, &gw_result.sigma_x_a,
+                        &gw_result.sigma_c_a, &gw_result.z_factor_a, &gw_result.qp_converged_a,
+                    ),
+                    (
+                        "beta", nocc_b,
+                        &gw_result.eps_mf_b, &gw_result.eps_qp_b, &gw_result.sigma_x_b,
+                        &gw_result.sigma_c_b, &gw_result.z_factor_b, &gw_result.qp_converged_b,
+                    ),
+                ] {
+                    println!("  -- {spin_label} spin channel --");
+                    println!(
+                        "  {:>4} {:>14} {:>14} {:>10} {:>10} {:>10}  {}",
+                        "MO", "eps_mf(eV)", "eps_qp(eV)", "Sigma_x", "Sigma_c", "Z", "qp_converged"
+                    );
+                    for (idx, &mo) in gw_result.mo_indices.iter().enumerate() {
+                        let tag = if nocc >= 1 && mo == nocc - 1 {
+                            " (HOMO)"
+                        } else if mo == nocc {
+                            " (LUMO)"
+                        } else {
+                            ""
+                        };
+                        println!(
+                            "  {:>4} {:>14.4} {:>14.4} {:>10.4} {:>10.4} {:>10.4}  {}{}",
+                            mo,
+                            eps_mf[idx] * ha_to_ev,
+                            eps_qp[idx] * ha_to_ev,
+                            sigma_x[idx],
+                            sigma_c[idx],
+                            z_factor[idx],
+                            qp_converged[idx],
+                            tag,
+                        );
+                    }
+                    if nocc >= 1 {
+                        if let Some(loc) = gw_result.mo_indices.iter().position(|&m| m == nocc - 1) {
+                            println!("  {spin_label}-HOMO IP = {:.4} eV", -eps_qp[loc] * ha_to_ev);
+                        }
+                    }
+                    if let Some(loc) = gw_result.mo_indices.iter().position(|&m| m == nocc) {
+                        println!("  {spin_label}-LUMO EA = {:.4} eV", -eps_qp[loc] * ha_to_ev);
+                    }
+                }
+                if !gw_result.outer_converged {
+                    eprintln!(
+                        "warning: U-{:?} eigenvalue self-consistency did NOT converge in {} \
+                         iterations (thresh {:.1e}); QP energies above are the last sweep",
+                        gw_cfg.method, gw_result.n_ev_iter, gw_cfg.ev_conv_thresh
+                    );
+                }
+                for (spin_label, flags) in [
+                    ("alpha", &gw_result.qp_converged_a),
+                    ("beta", &gw_result.qp_converged_b),
+                ] {
+                    let unconverged_mos: Vec<usize> = gw_result
+                        .mo_indices
+                        .iter()
+                        .zip(flags.iter())
+                        .filter(|(_, &c)| !c)
+                        .map(|(&m, _)| m)
+                        .collect();
+                    if !unconverged_mos.is_empty() {
+                        eprintln!(
+                            "warning: QP Newton solve did not converge for {spin_label} MO(s) \
+                             {unconverged_mos:?}; those QP energies are best-effort"
+                        );
+                    }
+                }
+                return;
+            }
             // KS reference (RPA@PBE0-style): [rpa].xc set ⇒ `result` above is
             // already the KS-DFT solve (via the xc/df_j_default/df_k_default
             // block); build vxc_diag so Σx−vxc enters the QP self-consistency.
@@ -1386,7 +1502,6 @@ fn main() {
                 std::process::exit(1);
             });
             let ref_label = if cfg.rpa.xc.is_some() { "KS" } else { "HF" };
-            let ha_to_ev = 27.211_386_245_988_f64;
             println!(
                 "GW[{:?}]/{} (aux: {}, ref: {ref_label}) on {}",
                 gw_cfg.method, bs.name, aux_name, cfg.molecule.xyz
