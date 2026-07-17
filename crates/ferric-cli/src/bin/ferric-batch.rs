@@ -5,6 +5,7 @@ use std::process::Command;
 use std::sync::mpsc;
 use std::sync::Mutex;
 use std::thread;
+use std::time::{Duration, Instant};
 
 /// One unit of work: a molecule's TOML config plus where to write its logs.
 struct Job {
@@ -26,6 +27,19 @@ fn print_usage() {
     eprintln!(
         "Usage: ferric-batch [--jobs N] <template.toml> <xyz_dir> <output_dir>"
     );
+}
+
+/// Extract `(file_stem, full_path)` as UTF-8 strings, or `None` if either is
+/// unavailable. `file_stem()` is `None` for a path with no stem (e.g. `.xyz`);
+/// `to_str()` is `None` for any path component that isn't valid UTF-8. Both
+/// are real possibilities for a directory of externally-supplied xyz files
+/// (not internal invariants this binary controls), so the caller skips the
+/// entry with a diagnostic instead of the previous bare `.unwrap().unwrap()`
+/// panicking the whole batch run over one bad filename.
+fn utf8_stem_and_path(path: &Path) -> Option<(String, &str)> {
+    let file_stem = path.file_stem()?.to_str()?.to_string();
+    let path_str = path.to_str()?;
+    Some((file_stem, path_str))
 }
 
 fn main() {
@@ -126,9 +140,18 @@ fn main() {
         let path = entry.path();
 
         if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("xyz") {
-            let file_stem = path.file_stem().unwrap().to_str().unwrap().to_string();
+            let (file_stem, path_str) = match utf8_stem_and_path(&path) {
+                Some(pair) => pair,
+                None => {
+                    eprintln!(
+                        "Warning: skipping {} (non-UTF-8 or missing file stem)",
+                        path.display()
+                    );
+                    continue;
+                }
+            };
 
-            let config_content = template.replace("{XYZ_FILE}", path.to_str().unwrap());
+            let config_content = template.replace("{XYZ_FILE}", path_str);
 
             let toml_path = out_dir.join(format!("{}.toml", file_stem));
             let out_log_path = out_dir.join(format!("{}.out", file_stem));
@@ -249,13 +272,71 @@ fn run_job(
         cmd.env("FERRIC_MEM_BUDGET_GB", format!("{}", budget_gb));
     }
 
-    let status = cmd.status();
-
-    let success = matches!(status, Ok(s) if s.success());
+    let timeout = job_timeout();
+    let success = match run_with_timeout(&mut cmd, timeout) {
+        Ok(RunOutcome::Exited(status)) => status.success(),
+        Ok(RunOutcome::TimedOut) => {
+            eprintln!("{}: timed out after {:?}, killed", job.file_stem, timeout);
+            false
+        }
+        Err(e) => {
+            eprintln!("{}: failed to run job: {}", job.file_stem, e);
+            false
+        }
+    };
     let _ = result_tx.send(JobResult {
         file_stem: job.file_stem.clone(),
         success,
     });
+}
+
+/// Per-job wall-clock budget: a hung child (stuck SCF, deadlocked solver,
+/// zombie waiting on a resource) previously blocked its worker thread
+/// forever inside `cmd.status()`, silently stalling the whole batch (the
+/// job queue never advances past a job whose worker never returns).
+/// Overridable via `FERRIC_BATCH_JOB_TIMEOUT_S`; 4 hours is comfortably
+/// above any single-molecule job this binary is used for today (the
+/// gw100 driver's own stall watchdog uses 30 min per molecule for a much
+/// finer-grained workload — this is a coarser last-resort backstop).
+fn job_timeout() -> Duration {
+    let secs = env::var("FERRIC_BATCH_JOB_TIMEOUT_S")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|&s| s > 0)
+        .unwrap_or(4 * 3600);
+    Duration::from_secs(secs)
+}
+
+enum RunOutcome {
+    Exited(std::process::ExitStatus),
+    TimedOut,
+}
+
+/// Spawn `cmd` and poll `try_wait()` on a deadline instead of blocking
+/// indefinitely in `Command::status()`. No `wait-timeout`-style crate is in
+/// this workspace's dependency tree (checked Cargo.toml/Cargo.lock) and
+/// pulling one in for a single call site is out of proportion here, so this
+/// is a plain spawn + poll loop: cheap, no new dependency, and this
+/// function's only caller runs on a per-job worker thread (not the async/perf
+/// hot path), so the poll interval's latency doesn't matter.
+fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> std::io::Result<RunOutcome> {
+    let mut child = cmd.spawn()?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(RunOutcome::Exited(status));
+        }
+        if Instant::now() >= deadline {
+            // Best-effort kill; if the process already exited between the
+            // try_wait() above and here, `kill()` returns an error we can
+            // ignore (nothing left to signal). Reap it either way so it
+            // doesn't linger as a zombie.
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(RunOutcome::TimedOut);
+        }
+        thread::sleep(Duration::from_millis(500).min(deadline - Instant::now()));
+    }
 }
 
 /// Resolve the per-child FERRIC_MEM_BUDGET_GB to pass down to each of the
@@ -274,4 +355,43 @@ fn resolve_per_child_budget_gib(njobs: usize) -> Option<f64> {
         return None;
     }
     Some(per_child_bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn utf8_stem_and_path_normal_file() {
+        let path = Path::new("/tmp/water.xyz");
+        let (stem, s) = utf8_stem_and_path(path).expect("valid UTF-8 path");
+        assert_eq!(stem, "water");
+        assert_eq!(s, "/tmp/water.xyz");
+    }
+
+    #[test]
+    fn utf8_stem_and_path_no_stem_returns_none() {
+        // file_stem() is None exactly when file_name() is None (per
+        // std::path docs). A path with no file-name component at all --
+        // root -- is the reliable way to hit that: "/tmp/" normalizes its
+        // trailing slash away (file_name() == Some("tmp")), so it does NOT
+        // trigger this case; "/" has no file-name component at all.
+        let path = Path::new("/");
+        assert!(utf8_stem_and_path(path).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn utf8_stem_and_path_non_utf8_returns_none_not_panic() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        // 0xFF is not valid UTF-8 in any position; build a non-UTF-8 filename
+        // the way a real (externally supplied) directory entry could contain
+        // one. Before the fix, path.file_stem().unwrap().to_str().unwrap()
+        // (or path.to_str().unwrap()) would panic here.
+        let bad_name = OsStr::from_bytes(&[0x66, 0x6f, 0xff, 0x2e, 0x78, 0x79, 0x7a]); // "fo\xFF.xyz"
+        let path = Path::new(bad_name);
+        assert!(utf8_stem_and_path(path).is_none());
+    }
 }
