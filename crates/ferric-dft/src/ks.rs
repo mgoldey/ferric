@@ -133,7 +133,10 @@ impl XcContribution for KsXc {
         );
         *f += &vxc;
 
-        // VV10 nonlocal correlation (stub returns 0.0 for now).
+        // VV10 nonlocal correlation (add_vv10_scratch, vv10.rs): full energy
+        // + potential on the (usually coarser) NLC grid, only when the
+        // functional carries VV10 params (e.g. wB97X-V) and the NLC grid was
+        // built; 0.0 for any functional without an NLC term.
         let e_nl = if let (Some(g), Some(c), Some(dc), Some(params)) = (
             self.nlc_grid.as_ref(),
             self.nlc_chi.as_ref(),
