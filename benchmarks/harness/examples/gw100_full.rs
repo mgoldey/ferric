@@ -219,13 +219,24 @@ fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, Cation
     // ALSO fail in aug-cc-pV*Z, but from near-linear-dependence of the augmented
     // diffuse functions — fixed by canonical orthogonalization, NOT a basis swap.)
     //
-    // Rb(37): def2-TZVP for Rb is an ECP-VALENCE basis (28-core def2 ECP, bundled
-    // inline in def2-tzvp.json), NOT all-electron — so apply_ecp below reduces Rb
-    // from 37 to 9 valence electrons. Running it all-electron is unphysical (the
-    // valence-only functions can't bind the core). K/Ca are all-electron (no ECP).
+    // Rb(37): the def2 basis for Rb is an ECP-VALENCE basis (28-core def2 ECP,
+    // bundled inline), NOT all-electron — so apply_ecp below reduces Rb from 37 to
+    // 9 valence electrons. Running it all-electron is unphysical (the valence-only
+    // functions can't bind the core). K/Ca and Br are all-electron (no ECP).
+    //
+    // LEVEL-MATCH the def2 basis to the cc column: def2-SVP is double-ζ (matches
+    // aug-cc-pVDZ), def2-TZVP is triple-ζ (matches aug-cc-pVTZ). Using def2-TZVP
+    // in the aDZ column would over-resolve these few molecules relative to the
+    // rest of the double-ζ sweep. def2-svp.json carries K/Rb (Rb with its 28-core
+    // ECP) + a Br block sourced from BSE for BrK.
     let needs_def2 = neutral.atoms.iter().any(|a| a.z == 19 || a.z == 20 || a.z == 37);
+    let is_dz = obs_name.contains("pvdz");
     let (obs_name, dfbs_name): (&str, &str) = if needs_def2 {
-        ("def2-tzvp", "def2-tzvp-rifit")
+        if is_dz {
+            ("def2-svp", "def2-svp-rifit")
+        } else {
+            ("def2-tzvp", "def2-tzvp-rifit")
+        }
     } else {
         (obs_name, dfbs_name)
     };

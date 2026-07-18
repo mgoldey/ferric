@@ -113,14 +113,14 @@
       "exp": 10.51
     },
     "BrK": {
-      "COHSEX": null,
-      "G0W0": 8.177,
-      "G0W0pbe": 7.27,
-      "Koop": 8.518,
-      "dRPA": null,
-      "dSCF": null,
-      "evGW": null,
-      "evGW0": null,
+      "COHSEX": 8.239,
+      "G0W0": 7.711,
+      "G0W0pbe": 6.895,
+      "Koop": 8.228,
+      "dRPA": 7.642,
+      "dSCF": 7.104,
+      "evGW": 7.675,
+      "evGW0": 7.691,
       "exp": 8.82
     },
     "C2H2": {
@@ -828,14 +828,14 @@
       "exp": 16.12
     },
     "HK": {
-      "COHSEX": null,
-      "G0W0": 6.097,
-      "G0W0pbe": 5.348,
-      "Koop": 6.529,
-      "dRPA": null,
-      "dSCF": null,
-      "evGW": null,
-      "evGW0": null,
+      "COHSEX": 6.658,
+      "G0W0": 5.936,
+      "G0W0pbe": 5.006,
+      "Koop": 6.454,
+      "dRPA": 5.675,
+      "dSCF": 5.026,
+      "evGW": 5.837,
+      "evGW0": 5.887,
       "exp": 8.0
     },
     "HLi": {
@@ -872,14 +872,14 @@
       "exp": 24.59
     },
     "K2": {
-      "COHSEX": null,
-      "G0W0": 4.028,
-      "G0W0pbe": 3.981,
-      "Koop": 3.605,
-      "dRPA": null,
-      "dSCF": null,
-      "evGW": null,
-      "evGW0": null,
+      "COHSEX": 4.321,
+      "G0W0": 3.895,
+      "G0W0pbe": 3.821,
+      "Koop": 3.585,
+      "dRPA": 3.783,
+      "dSCF": 3.253,
+      "evGW": 3.914,
+      "evGW0": 3.914,
       "exp": 4.06
     },
     "Kr": {
@@ -1026,14 +1026,14 @@
       "exp": 10.62
     },
     "Rb2": {
-      "COHSEX": 4.312,
-      "G0W0": 3.841,
-      "G0W0pbe": 3.891,
-      "Koop": 3.424,
-      "dRPA": -2305.909,
-      "dSCF": -2302.01,
-      "evGW": 3.848,
-      "evGW0": 3.841,
+      "COHSEX": 4.186,
+      "G0W0": 3.774,
+      "G0W0pbe": 3.789,
+      "Koop": 3.426,
+      "dRPA": -1280.45,
+      "dSCF": -1276.238,
+      "evGW": 3.797,
+      "evGW0": 3.791,
       "exp": 3.9
     }
   }
