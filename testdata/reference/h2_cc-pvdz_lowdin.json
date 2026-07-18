@@ -1,0 +1,15 @@
+{
+  "molecule": "h2",
+  "basis": "cc-pvdz",
+  "scf_energy": -1.128709260618651,
+  "lowdin_charges": [
+    0.0,
+    -1.5543122344752192e-15
+  ],
+  "lowdin_charges_cross_check_orth_ao": [
+    2.886579864025407e-15,
+    -2.220446049250313e-16
+  ],
+  "charge_sum": -1.5543122344752192e-15,
+  "note": "Symmetric Lowdin population charges (S^1/2 D S^1/2), NOT meta-lowdin and NOT Mulliken. Basis loaded from ferric's OWN bundled JSON (authentic Dunning general contraction), NOT PySCF's internal segmented cc-pvdz.dat -- see task F1 / docs/basis-data-corrections.md. Two independent PySCF code paths (hand eigh vs pyscf.lo.orth_ao(method='lowdin')) agree to 2.9e-15."
+}
