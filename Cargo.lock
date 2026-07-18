@@ -420,6 +420,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferric-ci"
+version = "0.1.0"
+dependencies = [
+ "ferric-core",
+ "ferric-integrals",
+ "ferric-scf",
+ "ndarray",
+ "ndarray-linalg",
+]
+
+[[package]]
 name = "ferric-cli"
 version = "0.1.0"
 dependencies = [
