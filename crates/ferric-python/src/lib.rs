@@ -1245,7 +1245,8 @@ fn run_pdep_rpa(
 
 // ── GW (closed-shell: G0W0 / COHSEX / evGW0 / evGW) ──
 //
-// Open-shell (`run_u_gw`) and the `bse.rs` entry points are NOT wired here —
+// `run_u_gw` is wired below; `bse.rs`'s `run_bse_tda` is wired further down
+// (see `run_cis_tda`/`run_bse_c6`/`run_bse_c6_ks`'s still-open note there) —
 // see docs/open-work-triage-2026-07-14-open.md #54.
 
 #[pyclass]
@@ -1460,8 +1461,8 @@ fn run_gw(
 
 // ── U-GW (open-shell: U-G0W0 / U-COHSEX / U-evGW0 / U-evGW) ──
 //
-// The `bse.rs` entry points are NOT wired here — see
-// docs/open-work-triage-2026-07-14-open.md #54.
+// BSE-TDA (`run_bse_tda`) is closed-shell only and wired further down
+// (see the "── BSE-TDA ──" section) — see docs/open-work-triage-2026-07-14-open.md #54.
 
 #[pyclass]
 #[pyo3(name = "UGwResult")]
@@ -1720,6 +1721,130 @@ fn run_u_gw(
     })
 }
 
+// ── BSE-TDA (closed-shell singlet excitation energies on a G0W0@HF reference) ──
+//
+// `run_cis_tda`/`run_bse_c6`/`run_bse_c6_ks` are NOT wired here — see
+// docs/open-work-triage-2026-07-14-open.md #54. `run_cis_tda` is a
+// diagnostic-only assembly cross-check (not a production entry point, per
+// its own doc comment in `ferric_gw::bse`); the C6/dispersion variants are
+// lower-priority per the G9 task brief and still open.
+
+#[pyclass]
+#[pyo3(name = "BseResult")]
+struct PyBseResult {
+    /// Number of occupied / virtual orbitals in the BSE (ia) window
+    /// (frozen-core aware).
+    #[pyo3(get)] nocc: usize,
+    #[pyo3(get)] nvir: usize,
+    /// Singlet excitation energies Ω_n (Hartree), ascending.
+    omega: Vec<f64>,
+    /// GW quasiparticle energies used for the diagonal (active block, Ha).
+    eps_qp: Vec<f64>,
+}
+
+#[pymethods]
+impl PyBseResult {
+    #[getter]
+    fn omega<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        PyArray1::from_slice(py, &self.omega)
+    }
+    #[getter]
+    fn eps_qp<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        PyArray1::from_slice(py, &self.eps_qp)
+    }
+    /// Lowest singlet excitation energy in eV.
+    fn lowest_ev(&self) -> f64 {
+        self.omega[0] * 27.211_386_245_988
+    }
+}
+
+/// BSE-TDA singlet excitation energies on a closed-shell (RHF) reference.
+///
+/// Computes G0W0@HF quasiparticle energies internally for every MO (so every
+/// particle–hole pair in the active window has a real QP energy), builds the
+/// static-screened TDA matrix, and returns its eigenvalues. Closed-shell
+/// only — `ferric_gw::bse::run_bse_tda` hard-errors on a non-restricted
+/// reference; there is no `reference`/UHF kwarg (mirrors `run_gw`'s HF-only
+/// default path, not `run_u_gw`). Kwargs mirror `run_gw`'s `[rpa]`-equivalent
+/// shape (n_quad/quadrature/u0/trunc_thresh/eigensolver_conv_thresh/
+/// k_builder/chi0_sparsity/memory_budget_gb) plus `frozen_core`, which is
+/// threaded to both the PDEP (W) build and the internal GW self-energy build
+/// for consistency, exactly like the CLI's `"bse-tda"` dispatch arm.
+#[pyfunction]
+#[pyo3(signature = (
+    mol, basis_set, auxbasis,
+    frozen_core=None, n_quad=None, quadrature=None, u0=None,
+    trunc_thresh=None, eigensolver_conv_thresh=None,
+    k_builder=None, chi0_sparsity=None, memory_budget_gb=None,
+))]
+#[allow(clippy::too_many_arguments)]
+fn run_bse_tda(
+    mol: &PyMolecule,
+    basis_set: &PyBasisSet,
+    auxbasis: &PyBasisSet,
+    frozen_core: Option<usize>,
+    n_quad: Option<usize>,
+    quadrature: Option<&str>,
+    u0: Option<f64>,
+    trunc_thresh: Option<f64>,
+    eigensolver_conv_thresh: Option<f64>,
+    k_builder: Option<&str>,
+    chi0_sparsity: Option<&str>,
+    memory_budget_gb: Option<f64>,
+) -> PyResult<PyBseResult> {
+    use ferric_gw::bse::run_bse_tda as run_bse_tda_inner;
+    use ferric_rpa::config::{QuadratureConfig, QuadratureScheme, SternheimerConfig};
+    use ferric_rpa::PdepRpaConfig;
+
+    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
+    let ctx = ParallelContext::default();
+
+    let cfg = rhf_config(k_builder);
+    let scf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &cfg).map_err(make_err)?;
+    if !scf.converged {
+        return Err(make_err(ferric_core::FerricError::ScfConvergence {
+            iterations: scf.iterations, last_energy: scf.energy,
+        }));
+    }
+
+    let scheme = QuadratureScheme::parse_config_str(quadrature)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("quadrature: {e}")))?;
+    let fc = frozen_core.unwrap_or(0);
+    let pdep_cfg = PdepRpaConfig {
+        frozen_core: fc,
+        trunc_thresh: trunc_thresh.unwrap_or(1e-4),
+        eigensolver_max_vecs: 0,
+        eigensolver_conv_thresh: eigensolver_conv_thresh.unwrap_or(1e-6),
+        quadrature: QuadratureConfig {
+            scheme,
+            n_points: n_quad.unwrap_or(20),
+            u0: u0.unwrap_or(0.5),
+        },
+        sternheimer: SternheimerConfig::default(),
+        run_diagnostics: false,
+        eigensolver: ferric_rpa::Eigensolver::default(),
+        chi0_backend: ferric_rpa::config::Chi0Backend::default(),
+        chi0_sparsity: ferric_rpa::config::Chi0Sparsity::parse_config_str(chi0_sparsity)
+            .map_err(make_err)?,
+        memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
+        // run_bse_tda's internal GW build forces this on regardless; set it
+        // explicitly for clarity at the call site too (matches run_gw).
+        need_inv_dielectric_freq: true,
+    };
+
+    let r = run_bse_tda_inner(&mol.inner, &prep, &dfbs, op, &scf, &pdep_cfg, fc)
+        .map_err(make_err)?;
+    Ok(PyBseResult {
+        nocc: r.nocc,
+        nvir: r.nvir,
+        omega: r.omega,
+        eps_qp: r.eps_qp,
+    })
+}
+
 // ── Module ──
 
 #[pymodule]
@@ -1752,6 +1877,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRsMp2RpaResult>()?;
     m.add_class::<PyGwResult>()?;
     m.add_class::<PyUGwResult>()?;
+    m.add_class::<PyBseResult>()?;
     m.add_function(wrap_pyfunction!(run_rhf, m)?)?;
     m.add_function(wrap_pyfunction!(run_uhf, m)?)?;
     m.add_function(wrap_pyfunction!(run_rohf, m)?)?;
@@ -1777,5 +1903,6 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_rs_mp2_rpa, m)?)?;
     m.add_function(wrap_pyfunction!(run_gw, m)?)?;
     m.add_function(wrap_pyfunction!(run_u_gw, m)?)?;
+    m.add_function(wrap_pyfunction!(run_bse_tda, m)?)?;
     Ok(())
 }

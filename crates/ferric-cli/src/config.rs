@@ -737,6 +737,50 @@ kind = "gw"
     }
 
     #[test]
+    fn test_parse_bse_tda_config() {
+        // "bse-tda" reuses [rpa] + [gw] verbatim (no new TOML section) --
+        // confirm both sections still parse and thread through with
+        // method.kind = "bse-tda".
+        let toml_str = r#"
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+[basis]
+name = "cc-pvdz"
+[method]
+kind = "bse-tda"
+[rpa]
+auxbasis = "cc-pvdz-ri"
+n_quad = 16
+quadrature = "gauss-legendre"
+trunc_thresh = 0.0
+eigensolver_conv_thresh = 1e-7
+[gw]
+frozen_core = 0
+"#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.method.kind, "bse-tda");
+        assert_eq!(cfg.rpa.auxbasis.as_deref(), Some("cc-pvdz-ri"));
+        assert_eq!(cfg.rpa.n_quad, Some(16));
+        assert_eq!(cfg.gw.frozen_core, Some(0));
+    }
+
+    #[test]
+    fn test_parse_bse_tda_config_defaults() {
+        // Empty [rpa]/[gw] sections (or absent entirely) must still parse.
+        let toml_str = r#"
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+[basis]
+name = "cc-pvdz"
+[method]
+kind = "bse-tda"
+"#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.method.kind, "bse-tda");
+        assert_eq!(cfg.gw.frozen_core, None);
+    }
+
+    #[test]
     fn gw_method_unknown_string_is_an_error() {
         let mut gw = GwCfg::default();
         gw.method = Some("gw-bse".to_string());
