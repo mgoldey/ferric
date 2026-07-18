@@ -21,7 +21,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_rpa::dispersion::{casimir_polder_c6, pdep_dynamic_polarizability, DispersionPartition};
 use ferric_rpa::properties::pdep_polarizability_static;
-use ferric_rpa::PdepRpaConfig;
+use ferric_rpa::{run_pdep_rpa, PdepRpaConfig};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 
@@ -528,4 +528,79 @@ fn erf_rpa_c6_and_structure() {
     }
     println!("\n  Read: does any erf ω land C6 near DOSD with a HIGH-iω-structured correction");
     println!("  (real short-range physics) vs erfc's scalar-like low-iω lift?");
+}
+
+/// S3 spike (open triage item #3): pin the SR-RPA CORRELATION-ENERGY recovery
+/// ratio claimed in the `attenuated-rpa-recovers-most-correlation` memory
+/// file: "SR-RPA with erfc(ω=0.222 Bohr⁻¹) on H2O/cc-pVDZ recovers 97.7% of
+/// full Coulomb-RPA correlation energy." That number previously existed only
+/// as a memory-file record from an ad-hoc investigation; no test computed and
+/// asserted this specific ratio (grepped — no `e_rpa` recovery-ratio
+/// computation at ω=0.222 existed anywhere in ferric-rpa's tests or src).
+///
+/// Distinct quantity from `attenuated_water_alpha_c6_probe` above: this test
+/// is about the RPA CORRELATION ENERGY (`run_pdep_rpa(...).e_rpa`, the
+/// dielectric-trace-log quantity consumed by SCS/RS-MP2-RPA-style methods),
+/// not static polarizability or C6.
+///
+/// SCF (RHF) is always full Coulomb; only the RPA response kernel is
+/// attenuated (erfc(ωr)/r replaces 1/r in the dielectric build), matching the
+/// convention used throughout this file and in
+/// `ferric_mp2::attenuated::attenuated_ri_mp2` (ω in Bohr⁻¹, library-native
+/// unit — the CLI/Python Å⁻¹→Bohr⁻¹ conversion happens only at that
+/// boundary).
+///
+/// `PdepRpaConfig::default()` (Lanczos eigensolver, no diagnostics) is the
+/// same cheap config the non-`#[ignore]`d `h2o_cc_pvdz_pdep_rpa_matches_pyscf`
+/// test in `pdep_rpa.rs` uses at cc-pVDZ — so this is cheap enough to run
+/// un-ignored in plain `cargo test -p ferric-rpa`.
+#[test]
+fn attenuated_rpa_correlation_recovery_water_ccpvdz() {
+    let xyz = "3\nh2o\nO 0 0 0.117790\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n";
+    let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+    let obs_bs = basis::bundled("cc-pvdz").unwrap();
+    let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
+    let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+    let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
+    let ctx = ParallelContext::default();
+
+    // SCF is always full Coulomb.
+    let scf_op = Operator::coulomb();
+    let scf_bounds = SchwarzBounds::compute(scf_op, &obs).unwrap();
+    let rhf = solve_rhf(&ctx, &mol, &obs, scf_op, &scf_bounds, &RhfConfig::default()).unwrap();
+    assert!(rhf.converged, "H2O/cc-pVDZ RHF reference did not converge");
+
+    let cfg = PdepRpaConfig::default();
+
+    // Full Coulomb-RPA correlation energy.
+    let full = run_pdep_rpa(&mol, &obs, &dfbs, Operator::coulomb(), &rhf, &cfg).unwrap();
+    // SR-RPA at the production omega (0.420 A^-1 -> 0.222 Bohr^-1, the same
+    // value used throughout attenuated_ri_mp2's default and this file's
+    // erfc probes).
+    let omega_bohr = 0.222_f64;
+    let sr = run_pdep_rpa(&mol, &obs, &dfbs, Operator::erfc(omega_bohr), &rhf, &cfg).unwrap();
+
+    assert!(full.e_rpa < 0.0, "full-Coulomb E_c should be negative, got {}", full.e_rpa);
+    assert!(sr.e_rpa < 0.0, "SR (erfc) E_c should be negative, got {}", sr.e_rpa);
+
+    let recovery = sr.e_rpa / full.e_rpa;
+    println!(
+        "\nH2O/cc-pVDZ RPA correlation: full(Coulomb)={:.10} Ha, SR(erfc ω=0.222)={:.10} Ha, recovery={:.4}%\n",
+        full.e_rpa, sr.e_rpa, 100.0 * recovery
+    );
+
+    // Memory-claimed value: 97.7% recovery. Measured here from a real
+    // run_pdep_rpa call (not carried over from the prior ad-hoc
+    // investigation) — pin with a tolerance wide enough to survive minor
+    // eigensolver/config drift since the original measurement, but tight
+    // enough to catch a qualitatively different picture (e.g. off by several
+    // percentage points).
+    let expected_recovery_pct = 97.7;
+    let measured_pct = 100.0 * recovery;
+    let diff_pct = (measured_pct - expected_recovery_pct).abs();
+    assert!(
+        diff_pct < 1.0,
+        "SR-RPA recovery = {measured_pct:.3}%, expected ~{expected_recovery_pct}% \
+         (memory: attenuated-rpa-recovers-most-correlation); diff={diff_pct:.3} pct pts"
+    );
 }
