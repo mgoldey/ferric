@@ -61,8 +61,8 @@ fn main() {
     };
     let method = cfg.method.kind.as_str();
     let task = cfg.method.task.as_str();
-    if !matches!(method, "rhf" | "uhf" | "rohf" | "ksdft" | "rimp2" | "mp3" | "oo-rimp2" | "att-rimp2" | "scs-mp2" | "laplace-mp2" | "pdep-rpa" | "rs-mp2-rpa" | "gw") {
-        eprintln!("error: unsupported method.kind = \"{method}\"; expected rhf, uhf, rohf, ksdft, rimp2, mp3, oo-rimp2, att-rimp2, scs-mp2, laplace-mp2, pdep-rpa, rs-mp2-rpa, or gw");
+    if !matches!(method, "rhf" | "uhf" | "rohf" | "ksdft" | "rimp2" | "mp3" | "oo-rimp2" | "att-rimp2" | "scs-mp2" | "laplace-mp2" | "pdep-rpa" | "rs-mp2-rpa" | "gw" | "bse-tda") {
+        eprintln!("error: unsupported method.kind = \"{method}\"; expected rhf, uhf, rohf, ksdft, rimp2, mp3, oo-rimp2, att-rimp2, scs-mp2, laplace-mp2, pdep-rpa, rs-mp2-rpa, gw, or bse-tda");
         std::process::exit(1);
     }
     if !matches!(task, "energy" | "optimize") {
@@ -113,13 +113,16 @@ fn main() {
         // RPA on a KS-DFT reference (RPA@PBE0 etc.): run the closed-shell KS
         // solver for the reference orbitals. Hybrids need RI-J/RI-K.
         // GW reuses [rpa].xc for its own KS-reference switch (GW needs the
-        // same vxc_diag plumbing pdep-rpa's KS path already has).
+        // same vxc_diag plumbing pdep-rpa's KS path already has). BSE-TDA is
+        // closed-shell (RHF) only (see the "bse-tda" arm's guard) and does
+        // not currently expose a KS-reference switch, so it is intentionally
+        // excluded from this branch even though it's included below.
         (
             cfg.rpa.xc.clone(),
             Some("def2-universal-jkfit".to_string()),
             Some("def2-universal-jkfit".to_string()),
         )
-    } else if matches!(method, "pdep-rpa" | "rpa" | "rs-mp2-rpa" | "gw") {
+    } else if matches!(method, "pdep-rpa" | "rpa" | "rs-mp2-rpa" | "gw" | "bse-tda") {
         // RPA@HF (no xc): the HF reference SCF defaults to RI-J/RI-K with
         // def2-universal-jkfit too. Exact 4-index J/K per iteration makes the
         // HF reference 10-20× slower than the RI-JK PBE reference (hcl/aug-cc-
@@ -1588,6 +1591,83 @@ fn main() {
                      those QP energies are best-effort"
                 );
             }
+        }
+        "bse-tda" => {
+            // Closed-shell (RHF) only — run_bse_tda itself hard-errors on a
+            // non-restricted reference; the top-level `result` above is always
+            // an RHF solve for method.kind = "bse-tda" (no UHF branch, unlike
+            // "gw"), so surface a clearer CLI-level message before the library
+            // guard would otherwise fire.
+            if mol.multiplicity > 1 {
+                eprintln!(
+                    "error: method.kind = \"bse-tda\" is closed-shell (RHF) only; \
+                     mol.multiplicity = {} is unsupported (no open-shell BSE-TDA exists)",
+                    mol.multiplicity
+                );
+                std::process::exit(1);
+            }
+            let aux_name = cfg.rpa.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+            let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
+            let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
+            let scheme = cfg.rpa.parse_quadrature().unwrap_or_else(|e| {
+                eprintln!("config error: {e}");
+                std::process::exit(1);
+            });
+            // frozen_core must match between the PDEP (W) build and the BSE/GW
+            // self-energy build for self-consistency, same as the "gw" arm.
+            // [gw].frozen_core is the source of truth when set; otherwise fall
+            // back to [rpa].frozen_core.
+            let bse_frozen_core = cfg.gw.frozen_core.unwrap_or(cfg.rpa.frozen_core);
+            let rpa_cfg = PdepRpaConfig {
+                frozen_core: bse_frozen_core,
+                trunc_thresh: cfg.rpa.trunc_thresh.unwrap_or(1e-4),
+                eigensolver_max_vecs: 0,
+                eigensolver_conv_thresh: cfg.rpa.eigensolver_conv_thresh.unwrap_or(1e-6),
+                quadrature: QuadratureConfig {
+                    scheme,
+                    n_points: cfg.rpa.n_quad.unwrap_or(20),
+                    u0: cfg.rpa.u0.unwrap_or(0.5),
+                },
+                sternheimer: SternheimerConfig::default(),
+                run_diagnostics: cfg.rpa.run_diagnostics,
+                eigensolver: ferric_rpa::Eigensolver::default(),
+                chi0_backend: ferric_rpa::config::Chi0Backend::default(),
+                chi0_sparsity: cfg.rpa.parse_chi0_sparsity().unwrap_or_else(|e| {
+                    eprintln!("config error: {e}");
+                    std::process::exit(1);
+                }),
+                memory_budget_bytes: budget_bytes,
+                // run_bse_tda runs GW internally, which forces this on regardless
+                // of what's set here; set it explicitly for clarity at the call
+                // site too (matches the "gw" arm).
+                need_inv_dielectric_freq: true,
+            };
+            let ha_to_ev = 27.211_386_245_988_f64;
+            let bse = ferric_gw::bse::run_bse_tda(
+                &mol, &prep, &dfbs, op, &result, &rpa_cfg, bse_frozen_core,
+            )
+            .unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
+            println!(
+                "BSE-TDA[G0W0@HF]/{} (aux: {}) on {}",
+                bs.name, aux_name, cfg.molecule.xyz
+            );
+            println!("  nbasis     = {}", prep.nbasis());
+            println!("  RHF energy = {:.10} Hartree", result.energy);
+            println!("  nocc = {}  nvir = {}  ({} singlet states)", bse.nocc, bse.nvir, bse.omega.len());
+            println!("  {:>4} {:>12}", "n", "Omega (eV)");
+            for (n, &om) in bse.omega.iter().enumerate() {
+                println!("  {:>4} {:>12.4}", n + 1, om * ha_to_ev);
+            }
+            println!("  lowest singlet excitation = {:.4} eV", bse.lowest_ev());
         }
         _ => unreachable!(),
     }
