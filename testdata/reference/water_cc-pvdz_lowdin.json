@@ -1,0 +1,17 @@
+{
+  "molecule": "water",
+  "basis": "cc-pvdz",
+  "scf_energy": -76.0267679973765,
+  "lowdin_charges": [
+    -0.48084935437182175,
+    0.24042467718591243,
+    0.24042467718590377
+  ],
+  "lowdin_charges_cross_check_orth_ao": [
+    -0.4808493543718022,
+    0.24042467718591332,
+    0.24042467718590432
+  ],
+  "charge_sum": -5.551115123125783e-15,
+  "note": "Symmetric Lowdin population charges (S^1/2 D S^1/2), NOT meta-lowdin and NOT Mulliken. Basis loaded from ferric's OWN bundled JSON (authentic Dunning general contraction), NOT PySCF's internal segmented cc-pvdz.dat -- see task F1 / docs/basis-data-corrections.md. Two independent PySCF code paths (hand eigh vs pyscf.lo.orth_ao(method='lowdin')) agree to 2.0e-14."
+}
