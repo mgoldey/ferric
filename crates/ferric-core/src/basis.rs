@@ -322,6 +322,7 @@ pub fn bundled(name: &str) -> Result<BasisSet, FerricError> {
         "aug-cc-pvdz-pp" => include_str!("basis/bundled/aug-cc-pvdz-pp.json"),
         "aug-cc-pvdz-rifit" => include_str!("basis/bundled/aug-cc-pvdz-rifit.json"),
         "aug-cc-pvtz" => include_str!("basis/bundled/aug-cc-pvtz.json"),
+        "aug-cc-pvtz-pp" => include_str!("basis/bundled/aug-cc-pvtz-pp.json"),
         "aug-cc-pvtz-rifit" => include_str!("basis/bundled/aug-cc-pvtz-rifit.json"),
         "def2-universal-jkfit" => include_str!("basis/bundled/def2-universal-jkfit.json"),
         _ => return Err(FerricError::Basis(format!("unknown bundled basis: {name}"))),
@@ -377,6 +378,30 @@ mod tests {
         for &z in &[1, 6, 13, 17] {
             assert!(bs.for_element(z).is_some(), "light Z={z} shells missing");
             assert!(bs.ecp_for_element(z).is_none(), "light Z={z} must not carry an ECP");
+        }
+    }
+
+    #[test]
+    fn test_bundled_augccpvtz_pp_carries_ecp_and_grows_over_dz() {
+        // aug-cc-pVTZ-PP mirrors the DZ-PP merge: heavy (I/Xe/Ag) WITH inline
+        // 28-core ECP, light (H/C/Al/Cl) from plain aug-cc-pVTZ (no ECP). Each
+        // element must have strictly MORE orbital shells than at DZ (TZ > DZ).
+        let dz = bundled("aug-cc-pVDZ-PP").unwrap();
+        let tz = bundled("aug-cc-pVTZ-PP").unwrap();
+        // Heavy atoms present with 28-core ECP, and TZ shell count > DZ.
+        for &z in &[47, 53, 54] {
+            let tz_sh = tz.for_element(z).unwrap_or_else(|| panic!("Z={z} orbital shells missing"));
+            let ecp = tz.ecp_for_element(z).unwrap_or_else(|| panic!("Z={z} ECP missing"));
+            assert_eq!(ecp.n_core, 28, "Z={z} should replace a 28-electron core");
+            let dz_n = dz.for_element(z).unwrap().len();
+            assert!(tz_sh.len() > dz_n, "Z={z} TZ shells ({}) should exceed DZ ({dz_n})", tz_sh.len());
+        }
+        // Light atoms present WITHOUT ECP, and TZ shell count > DZ.
+        for &z in &[1, 6, 13, 17] {
+            let tz_sh = tz.for_element(z).unwrap_or_else(|| panic!("light Z={z} shells missing"));
+            assert!(tz.ecp_for_element(z).is_none(), "light Z={z} must not carry an ECP");
+            let dz_n = dz.for_element(z).unwrap().len();
+            assert!(tz_sh.len() > dz_n, "light Z={z} TZ shells ({}) should exceed DZ ({dz_n})", tz_sh.len());
         }
     }
 

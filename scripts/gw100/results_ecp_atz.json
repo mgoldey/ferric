@@ -1,0 +1,58 @@
+{
+  "basis": "aug-cc-pVTZ-PP (heavy Ag/I/Xe with 28-core ECP) + def2-tzvp-rifit aux",
+  "molecules": {
+    "Ag2": {
+      "basis": "aug-cc-pVTZ-PP",
+      "cas": "12187-06-3",
+      "delta_mev": 0.4,
+      "exp_ip": 7.6557,
+      "ferric_g0w0": 7.2856,
+      "koopmans": 6.3407,
+      "nelec": 38,
+      "pyscf_g0w0": 7.2852
+    },
+    "AlI3": {
+      "basis": "aug-cc-pVTZ-PP",
+      "cas": "7784-23-8",
+      "exp_ip": 9.66,
+      "ferric_g0w0": 9.9129,
+      "koopmans": 10.1743,
+      "nelec": 88
+    },
+    "C2H3I": {
+      "basis": "aug-cc-pVTZ-PP",
+      "cas": "593-66-8",
+      "exp_ip": 9.35,
+      "ferric_g0w0": 9.4457,
+      "koopmans": 9.3648,
+      "nelec": 40
+    },
+    "CI4": {
+      "basis": "aug-cc-pVTZ-PP",
+      "cas": "507-25-5",
+      "exp_ip": 9.1,
+      "ferric_g0w0": 9.4394,
+      "koopmans": 9.7854,
+      "nelec": 106
+    },
+    "I2": {
+      "basis": "aug-cc-pVTZ-PP",
+      "cas": "7553-56-2",
+      "exp_ip": 9.356,
+      "ferric_g0w0": 9.6121,
+      "koopmans": 9.806,
+      "nelec": 50
+    },
+    "Xe": {
+      "basis": "aug-cc-pVTZ-PP",
+      "cas": "7440-63-3",
+      "delta_mev": 2.8,
+      "exp_ip": 12.12987,
+      "ferric_g0w0": 12.2781,
+      "koopmans": 12.4211,
+      "nelec": 26,
+      "pyscf_g0w0": 12.2753
+    }
+  },
+  "note": "aTZ ECP set, 6/6 complete. Ag2 required an aDZ-PP-seeded RHF guess: ferric's SAD guess zeroes high-l (g-function) atom blocks, so Ag/aug-cc-pVTZ-PP flowed to an unphysical basin; seeding from the converged aug-cc-pVDZ-PP density (projected via cross-basis overlap) reaches the physical state, matching PySCF to 0.4 meV. Rb2 not here: no aug-cc-pVTZ-PP for Rb; stays def2-TZVP (its native TZ basis)."
+}
