@@ -61,8 +61,8 @@ fn main() {
     };
     let method = cfg.method.kind.as_str();
     let task = cfg.method.task.as_str();
-    if !matches!(method, "rhf" | "uhf" | "rohf" | "ksdft" | "rimp2" | "mp3" | "oo-rimp2" | "att-rimp2" | "scs-mp2" | "laplace-mp2" | "pdep-rpa" | "rs-mp2-rpa" | "gw" | "bse-tda") {
-        eprintln!("error: unsupported method.kind = \"{method}\"; expected rhf, uhf, rohf, ksdft, rimp2, mp3, oo-rimp2, att-rimp2, scs-mp2, laplace-mp2, pdep-rpa, rs-mp2-rpa, gw, or bse-tda");
+    if !matches!(method, "rhf" | "uhf" | "rohf" | "ksdft" | "rimp2" | "mp3" | "oo-rimp2" | "att-rimp2" | "scs-mp2" | "laplace-mp2" | "pdep-rpa" | "rs-mp2-rpa" | "gw" | "bse-tda" | "tdhf-static-polarizability") {
+        eprintln!("error: unsupported method.kind = \"{method}\"; expected rhf, uhf, rohf, ksdft, rimp2, mp3, oo-rimp2, att-rimp2, scs-mp2, laplace-mp2, pdep-rpa, rs-mp2-rpa, gw, bse-tda, or tdhf-static-polarizability");
         std::process::exit(1);
     }
     if !matches!(task, "energy" | "optimize") {
@@ -109,7 +109,7 @@ fn main() {
             Some("def2-universal-jkfit".to_string()),
             Some("def2-universal-jkfit".to_string()),
         )
-    } else if matches!(method, "pdep-rpa" | "rpa" | "gw") && cfg.rpa.xc.is_some() {
+    } else if matches!(method, "pdep-rpa" | "rpa" | "gw" | "tdhf-static-polarizability") && cfg.rpa.xc.is_some() {
         // RPA on a KS-DFT reference (RPA@PBE0 etc.): run the closed-shell KS
         // solver for the reference orbitals. Hybrids need RI-J/RI-K.
         // GW reuses [rpa].xc for its own KS-reference switch (GW needs the
@@ -117,12 +117,18 @@ fn main() {
         // closed-shell (RHF) only (see the "bse-tda" arm's guard) and does
         // not currently expose a KS-reference switch, so it is intentionally
         // excluded from this branch even though it's included below.
+        // "tdhf-static-polarizability" (RPAx@KS static alpha) REQUIRES a KS
+        // reference -- its own dispatch arm hard-errors below if [rpa].xc is
+        // unset, since the validated static-alpha accuracy (9.24 vs DOSD
+        // 9.64 a.u. on water/PBE) is a KS-reference result; the HF-reference
+        // variant of this same kernel gives a much worse static alpha (5.24
+        // a.u. gate-2 measurement) and is deliberately not offered here.
         (
             cfg.rpa.xc.clone(),
             Some("def2-universal-jkfit".to_string()),
             Some("def2-universal-jkfit".to_string()),
         )
-    } else if matches!(method, "pdep-rpa" | "rpa" | "rs-mp2-rpa" | "gw" | "bse-tda") {
+    } else if matches!(method, "pdep-rpa" | "rpa" | "rs-mp2-rpa" | "gw" | "bse-tda" | "tdhf-static-polarizability") {
         // RPA@HF (no xc): the HF reference SCF defaults to RI-J/RI-K with
         // def2-universal-jkfit too. Exact 4-index J/K per iteration makes the
         // HF reference 10-20× slower than the RI-JK PBE reference (hcl/aug-cc-
@@ -1694,6 +1700,97 @@ fn main() {
                 println!("  {:>4} {:>12.4}", n + 1, om * ha_to_ev);
             }
             println!("  lowest singlet excitation = {:.4} eV", bse.lowest_ev());
+        }
+        "tdhf-static-polarizability" => {
+            // RPAx@KS static (omega=0) polarizability only. SCOPE: this method
+            // is deliberately narrow -- static alpha, nothing else. Do not
+            // extend this arm to surface C6/dynamic alpha(iw); docs/VALIDATION.md
+            // records a validated negative result for that extension of this
+            // exact kernel (C6 stays ~63% low regardless of gap, worse than
+            // ferric's production dRPA/PDEP C6 pipeline). See
+            // ferric_gw::bse::run_rpax_static_polarizability's doc comment.
+            if mol.multiplicity > 1 {
+                eprintln!(
+                    "error: method.kind = \"tdhf-static-polarizability\" is closed-shell only; \
+                     mol.multiplicity = {} is unsupported",
+                    mol.multiplicity
+                );
+                std::process::exit(1);
+            }
+            // This method's validated accuracy (static alpha ~= DOSD) is a
+            // KS-reference result; require [rpa].xc explicitly rather than
+            // silently falling back to an HF reference with a much worse
+            // static alpha (see the xc-routing block's comment above).
+            if cfg.rpa.xc.is_none() {
+                eprintln!(
+                    "error: method.kind = \"tdhf-static-polarizability\" requires [rpa] xc \
+                     (e.g. xc = \"PBE\") -- this method's validated accuracy is a KS-reference \
+                     result; an HF reference gives a much worse static alpha"
+                );
+                std::process::exit(1);
+            }
+            let aux_name = cfg.rpa.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+            let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
+            let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
+            let scheme = cfg.rpa.parse_quadrature().unwrap_or_else(|e| {
+                eprintln!("config error: {e}");
+                std::process::exit(1);
+            });
+            let frozen_core = cfg.gw.frozen_core.unwrap_or(cfg.rpa.frozen_core);
+            let scissor = cfg.gw.scissor.unwrap_or(0.0);
+            let rpa_cfg = PdepRpaConfig {
+                frozen_core,
+                trunc_thresh: cfg.rpa.trunc_thresh.unwrap_or(1e-4),
+                eigensolver_max_vecs: 0,
+                eigensolver_conv_thresh: cfg.rpa.eigensolver_conv_thresh.unwrap_or(1e-6),
+                quadrature: QuadratureConfig {
+                    scheme,
+                    n_points: cfg.rpa.n_quad.unwrap_or(20),
+                    u0: cfg.rpa.u0.unwrap_or(0.5),
+                },
+                sternheimer: SternheimerConfig::default(),
+                run_diagnostics: cfg.rpa.run_diagnostics,
+                eigensolver: ferric_rpa::Eigensolver::default(),
+                chi0_backend: ferric_rpa::config::Chi0Backend::default(),
+                chi0_sparsity: cfg.rpa.parse_chi0_sparsity().unwrap_or_else(|e| {
+                    eprintln!("config error: {e}");
+                    std::process::exit(1);
+                }),
+                memory_budget_bytes: budget_bytes,
+                // No GW self-energy build in this path (static screening
+                // modes from run_pdep_rpa only) -- unlike "gw"/"bse-tda",
+                // this does NOT need the inverse-dielectric frequency stack.
+                need_inv_dielectric_freq: false,
+            };
+            let res = ferric_gw::bse::run_rpax_static_polarizability(
+                &mol, &prep, &dfbs, op, &result, &rpa_cfg, frozen_core, scissor,
+            )
+            .unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
+            println!(
+                "RPAx@KS[{}] static polarizability /{} (aux: {}) on {}",
+                cfg.rpa.xc.as_deref().unwrap_or("?"), bs.name, aux_name, cfg.molecule.xyz
+            );
+            println!(
+                "  NOTE: static polarizability only -- do not use for C6/dispersion \
+                 (known negative accuracy result, see docs/VALIDATION.md)"
+            );
+            println!("  nbasis     = {}", prep.nbasis());
+            println!("  KS energy  = {:.10} Hartree", result.energy);
+            println!("  nocc = {}  nvir = {}", res.nocc, res.nvir);
+            println!("  alpha tensor (a.u.):");
+            for row in &res.tensor {
+                println!("    {:>12.6} {:>12.6} {:>12.6}", row[0], row[1], row[2]);
+            }
+            println!("  alpha_iso (static) = {:.6} a.u.", res.iso);
         }
         _ => unreachable!(),
     }

@@ -18,6 +18,16 @@
 //!
 //! The GW quasiparticle energies are taken from `run_gw` (G0W0@HF for the first
 //! gate). Validation target: lowest singlet of H₂O / cc-pVDZ vs MOLGW BSE@G0W0.
+//!
+//! This module also holds the related TDHF/RPAx dense-(A±B) polarizability
+//! family (`run_bse_c6`, `run_bse_c6_ks`, `run_rpax_static_polarizability`).
+//! Of these, only [`run_rpax_static_polarizability`] is wired into the
+//! CLI/Python surface — it is **static (ω=0) polarizability only**.
+//! `run_bse_c6`/`run_bse_c6_ks` (dynamic α(iω) and C6) are deliberately
+//! library-only: `docs/VALIDATION.md` records a validated negative result
+//! (C6 from this exact kernel stays ~63% low regardless of the HOMO-LUMO
+//! gap, worse than ferric's production dRPA/PDEP C6). See
+//! [`run_rpax_static_polarizability`]'s doc for the full caveat.
 
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
@@ -790,6 +800,200 @@ pub fn run_bse_c6_ks(
     let c6 = 3.0 / PI * (0..freqs.len()).map(|k| weights[k] * alpha_iso[k] * alpha_iso[k]).sum::<f64>();
     let alpha_static = *alpha_iso.first().unwrap_or(&0.0);
     Ok(BseC6Result { c6, alpha_iso, alpha_static, nocc, nvir })
+}
+
+/// Result of a static-only RPAx@KS polarizability calculation.
+///
+/// **Scope: static (ω=0) polarizability only.** This is deliberately narrow —
+/// see the module-level and function-level docs on [`run_rpax_static_polarizability`]
+/// for why the dynamic α(iω)/C6 variant (`run_bse_c6_ks`) is NOT exposed as a
+/// production capability alongside this one.
+#[derive(Debug, Clone)]
+pub struct RpaxStaticPolarizabilityResult {
+    /// Cartesian α_ij(0) tensor, i,j ∈ {x,y,z}, in a.u. (e²·a₀²/E_h).
+    pub tensor: [[f64; 3]; 3],
+    /// Isotropic average (1/3) Tr α.
+    pub iso: f64,
+    pub nocc: usize,
+    pub nvir: usize,
+}
+
+/// RPAx@KS **static** polarizability (ω=0 only) on a Kohn–Sham reference.
+///
+/// Same screened-(A±B) kernel as [`run_bse_c6_ks`] (KS orbital energies on the
+/// diagonal, PDEP screening modes built from the SAME KS response — no GW),
+/// but solves the CPHF-like linear response ONLY at ω=0 instead of looping
+/// over a Casimir–Polder imaginary-frequency grid. That keeps this entry
+/// point cheap (one dense linear solve per Cartesian axis, not one per
+/// frequency point) and, more importantly, keeps it HONEST about what it
+/// computes: static polarizability, nothing else.
+///
+/// ```text
+///   (A+B) = Δε^KS δ + 4(ia|jb)_v − (ab|W|ij) − (ib|W|aj)
+///   (A−B) = Δε^KS δ            + (ib|W|aj) − (ab|W|ij)
+///   α_ij(0) = 4 μ_iᵀ (A−B) [(A−B)(A+B)]⁻¹ μ_j
+/// ```
+///
+/// # Scope — READ BEFORE USING FOR ANYTHING BEYOND α(0)
+///
+/// This function and its CLI/Python wiring are **static polarizability
+/// only**. Do **not** use this method, or extrapolate from its output, for
+/// C6/dispersion coefficients. `docs/VALIDATION.md`'s "Correlation / response
+/// (RPA, GW, BSE)" table records a validated NEGATIVE result for the dynamic
+/// extension of this exact kernel: RPAx@PBE static α matches DOSD water
+/// almost exactly (9.24 vs 9.64 a.u.), but the C6 built from α(iω) on the
+/// same kernel stays ~63% low regardless of the HOMO-LUMO gap (a scissor-
+/// shift scan from the KS gap to the true GW gap ruled out "just a gap
+/// problem" — α(iω) itself falls off ~2× too fast at higher imaginary
+/// frequency). That is a *worse*, mechanistically *different* C6 failure
+/// than ferric's existing production dRPA/PDEP C6 pipeline (~−12 to −16%
+/// deficit). The dynamic/C6 variant (`run_bse_c6_ks`) remains library-only
+/// and unwired from the CLI/Python surface for exactly this reason.
+///
+/// `scissor` (Hartree) is added to every virtual orbital energy before
+/// assembling the diagonal, matching `run_bse_c6_ks`'s knob (a cheap proxy
+/// for widening the KS gap toward the true GW gap). Pass 0.0 for plain KS.
+#[allow(clippy::too_many_arguments)]
+pub fn run_rpax_static_polarizability(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    ks: &ScfResult,
+    pdep_cfg: &PdepRpaConfig,
+    frozen_core: usize,
+    scissor: f64,
+) -> Result<RpaxStaticPolarizabilityResult, FerricError> {
+    if !matches!(ks.spin, ferric_scf::Spin::Restricted) {
+        return Err(FerricError::General(
+            "run_rpax_static_polarizability: closed-shell only".into(),
+        ));
+    }
+    let nmo = ks.eps_r().len();
+    let nocc_total = (mol.nelec() as usize) / 2;
+    let c = ks.mos_r();
+    let mut eps = ks.eps_r().to_vec();
+    for p in nocc_total..nmo {
+        eps[p] += scissor;
+    }
+
+    // PDEP screening modes from the KS response (same as run_bse_c6_ks).
+    let pdep = ferric_rpa::run_pdep_rpa(mol, obs, dfbs, op, ks, pdep_cfg)?;
+
+    let first_act = frozen_core;
+    let nocc = nocc_total - frozen_core;
+    let nvir = nmo - nocc_total;
+    let n = nocc * nvir;
+    // Fail-fast on the dense (A±B) buffers: apb + amb + sysm co-resident, same
+    // 3 n×n f64 buffers as run_bse_c6_ks's per-frequency solve (here there's
+    // only ONE "frequency", ω=0, so peak residency is identical).
+    check_bse_dense_alloc("RPAx static polarizability (KS)", n, 3, pdep_cfg.memory_budget_bytes)?;
+
+    let mob = mo_b::build_full_b(mol, obs, dfbs, op, ks, frozen_core)?;
+    let (v_dressed, _dev) = w_pdep::redress_with_check(&mob.v_inv_sqrt, &pdep.eigenpotentials)?;
+    let m_proj = project_b_into_pdep(&mob, &v_dressed);
+    let m_modes = m_proj.shape()[0];
+    let w_red: Vec<f64> = pdep.eigenvalues_static.iter().map(|&l| 1.0 / l - 1.0).collect();
+    let b = &mob.b_full;
+    let naux = mob.naux;
+    let bare = |p: usize, q: usize, r: usize, s: usize| -> f64 {
+        let mut acc = 0.0;
+        for pp in 0..naux {
+            acc += b[(pp, p, q)] * b[(pp, r, s)];
+        }
+        acc
+    };
+    let screened = |p: usize, q: usize, r: usize, s: usize| -> f64 {
+        let mut acc = bare(p, q, r, s);
+        for alpha in 0..m_modes {
+            acc += w_red[alpha] * m_proj[(alpha, p, q)] * m_proj[(alpha, r, s)];
+        }
+        acc
+    };
+
+    let mut apb = Array2::<f64>::zeros((n, n));
+    let mut amb = Array2::<f64>::zeros((n, n));
+    let fill_row = |ia: usize, apb_row: &mut [f64], amb_row: &mut [f64]| {
+        let i = ia / nvir;
+        let a = ia % nvir;
+        let eps_i = eps[first_act + i];
+        let a_loc = nocc + a;
+        let eps_a = eps[nocc_total + a];
+        for j in 0..nocc {
+            for bb in 0..nvir {
+                let b_loc = nocc + bb;
+                let jb = j * nvir + bb;
+                let coul = bare(i, a_loc, j, b_loc);
+                let w_abij = screened(a_loc, b_loc, i, j);
+                let w_ibaj = screened(i, b_loc, a_loc, j);
+                apb_row[jb] = 4.0 * coul - w_abij - w_ibaj;
+                amb_row[jb] = w_ibaj - w_abij;
+            }
+        }
+        apb_row[ia] += eps_a - eps_i;
+        amb_row[ia] += eps_a - eps_i;
+    };
+    const PAR_ROWS_THRESHOLD: usize = 8;
+    if n >= PAR_ROWS_THRESHOLD {
+        use rayon::prelude::*;
+        let apb_flat = apb
+            .as_slice_mut()
+            .expect("apb is contiguous (row-major default)");
+        let amb_flat = amb
+            .as_slice_mut()
+            .expect("amb is contiguous (row-major default)");
+        apb_flat
+            .par_chunks_mut(n)
+            .zip(amb_flat.par_chunks_mut(n))
+            .enumerate()
+            .for_each(|(ia, (apb_row, amb_row))| fill_row(ia, apb_row, amb_row));
+    } else {
+        let apb_flat = apb
+            .as_slice_mut()
+            .expect("apb is contiguous (row-major default)");
+        let amb_flat = amb
+            .as_slice_mut()
+            .expect("amb is contiguous (row-major default)");
+        for (ia, (apb_row, amb_row)) in apb_flat
+            .chunks_mut(n)
+            .zip(amb_flat.chunks_mut(n))
+            .enumerate()
+        {
+            fill_row(ia, apb_row, amb_row);
+        }
+    }
+
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
+    let r_mo: [Array2<f64>; 3] = std::array::from_fn(|d| c.t().dot(&dip_ao[d]).dot(c));
+    let mut mu: [Array1<f64>; 3] = std::array::from_fn(|_| Array1::zeros(n));
+    for (d, m) in mu.iter_mut().enumerate() {
+        for i in 0..nocc {
+            for a in 0..nvir {
+                m[i * nvir + a] = r_mo[d][(first_act + i, nocc_total + a)];
+            }
+        }
+    }
+
+    // ω=0 ONLY: a single dense solve, no frequency loop. sysm = (A−B)(A+B)
+    // (the ω²·I shift vanishes at ω=0).
+    let sysm = amb.dot(&apb);
+    // α_ij(0) = 4 μ_iᵀ (A−B) sysm⁻¹ μ_j, full 3×3 tensor (not just the
+    // isotropic average run_bse_c6_ks reports).
+    let mut t: [Array1<f64>; 3] = std::array::from_fn(|_| Array1::zeros(n));
+    for d in 0..3 {
+        let rhs = amb.dot(&mu[d]);
+        t[d] = sysm
+            .solve(&rhs)
+            .map_err(|e| FerricError::Lapack(format!("RPAx static α(0) solve: {e}")))?;
+    }
+    let mut tensor = [[0.0_f64; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            tensor[i][j] = 4.0 * mu[i].dot(&t[j]);
+        }
+    }
+    let iso = (tensor[0][0] + tensor[1][1] + tensor[2][2]) / 3.0;
+    Ok(RpaxStaticPolarizabilityResult { tensor, iso, nocc, nvir })
 }
 
 #[cfg(test)]

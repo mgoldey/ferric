@@ -1912,6 +1912,143 @@ fn run_bse_tda(
     })
 }
 
+// ── TDHF/RPAx static polarizability (closed-shell, KS reference) ──
+//
+// `run_bse_c6`/`run_bse_c6_ks` (the dynamic alpha(iw)/C6 variants of this same
+// kernel) are deliberately NOT wired here. docs/VALIDATION.md's "Correlation /
+// response (RPA, GW, BSE)" table records a validated negative result: C6 from
+// alpha(iw) on this kernel stays ~63% low regardless of the HOMO-LUMO gap,
+// worse than ferric's production dRPA/PDEP C6 pipeline. Only the STATIC
+// (omega=0) polarizability is exposed as a production entry point.
+
+#[pyclass]
+#[pyo3(name = "TdhfStaticPolarizabilityResult")]
+struct PyTdhfStaticPolarizabilityResult {
+    #[pyo3(get)] nocc: usize,
+    #[pyo3(get)] nvir: usize,
+    /// Isotropic average (1/3) Tr(alpha), a.u.
+    #[pyo3(get)] iso: f64,
+    tensor: [[f64; 3]; 3],
+}
+
+#[pymethods]
+impl PyTdhfStaticPolarizabilityResult {
+    /// Cartesian alpha_ij(0) tensor (3x3, a.u.), i,j in {x,y,z}.
+    #[getter]
+    fn tensor<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        let flat: Vec<f64> = self.tensor.iter().flat_map(|row| row.iter().copied()).collect();
+        let arr = Array2::from_shape_vec((3, 3), flat).expect("3x3 tensor is always well-shaped");
+        PyArray2::from_array(py, &arr)
+    }
+}
+
+/// RPAx@KS **static** polarizability (omega=0) on a closed-shell KS reference.
+///
+/// **Scope: static polarizability only.** Do not use this method, or its
+/// output, for C6/dispersion — see the module doc above and
+/// `ferric_gw::bse::run_rpax_static_polarizability`'s doc comment for the
+/// full negative-result caveat (validated in `docs/VALIDATION.md`: C6 built
+/// from this same kernel's dynamic alpha(iw) stays ~63% low regardless of
+/// the HOMO-LUMO gap, worse than ferric's production dRPA/PDEP C6 pipeline).
+///
+/// `xc` is REQUIRED (e.g. `"pbe"`) — this method's validated accuracy
+/// (static alpha ~= DOSD water, 9.24 vs 9.64 a.u.) is specifically a
+/// KS-reference result; the HF-reference variant of this same kernel gives a
+/// much worse static alpha (~5.24 a.u.), so there is no HF-default fallback
+/// here (unlike `run_gw`'s `xc=None` HF default). `scissor` (Hartree, default
+/// 0.0) is added to every virtual orbital energy before assembling the
+/// diagonal — a cheap proxy for widening the KS gap toward a GW-level gap.
+/// Other kwargs mirror `run_bse_tda`'s `[rpa]`-equivalent shape (n_quad/
+/// quadrature/u0/trunc_thresh/eigensolver_conv_thresh/k_builder/
+/// chi0_sparsity/memory_budget_gb) plus `frozen_core`.
+#[pyfunction]
+#[pyo3(signature = (
+    mol, basis_set, auxbasis, xc,
+    scissor=None, frozen_core=None, n_quad=None, quadrature=None, u0=None,
+    trunc_thresh=None, eigensolver_conv_thresh=None,
+    k_builder=None, chi0_sparsity=None, memory_budget_gb=None,
+))]
+#[allow(clippy::too_many_arguments)]
+fn run_tdhf_static_polarizability(
+    mol: &PyMolecule,
+    basis_set: &PyBasisSet,
+    auxbasis: &PyBasisSet,
+    xc: &str,
+    scissor: Option<f64>,
+    frozen_core: Option<usize>,
+    n_quad: Option<usize>,
+    quadrature: Option<&str>,
+    u0: Option<f64>,
+    trunc_thresh: Option<f64>,
+    eigensolver_conv_thresh: Option<f64>,
+    k_builder: Option<&str>,
+    chi0_sparsity: Option<&str>,
+    memory_budget_gb: Option<f64>,
+) -> PyResult<PyTdhfStaticPolarizabilityResult> {
+    use ferric_gw::bse::run_rpax_static_polarizability;
+    use ferric_rpa::config::{QuadratureConfig, QuadratureScheme, SternheimerConfig};
+    use ferric_rpa::PdepRpaConfig;
+
+    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
+    let ctx = ParallelContext::default();
+
+    // KS reference (required — see doc comment above), same ladder path
+    // run_gw's xc branch uses.
+    let mut cfg = rhf_config(k_builder);
+    cfg.xc = Some(xc.to_string());
+    cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
+    cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
+    let ladder = ferric_scf::ladder::ksdft_ladder(&cfg);
+    let lr = ferric_scf::ladder::solve_rhf_ladder(&ctx, &mol.inner, &prep, op, &bounds, &ladder)
+        .map_err(make_err)?;
+    let scf = lr.result;
+    if !scf.converged {
+        return Err(make_err(ferric_core::FerricError::ScfConvergence {
+            iterations: scf.iterations, last_energy: scf.energy,
+        }));
+    }
+
+    let scheme = QuadratureScheme::parse_config_str(quadrature)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("quadrature: {e}")))?;
+    let fc = frozen_core.unwrap_or(0);
+    let pdep_cfg = PdepRpaConfig {
+        frozen_core: fc,
+        trunc_thresh: trunc_thresh.unwrap_or(1e-4),
+        eigensolver_max_vecs: 0,
+        eigensolver_conv_thresh: eigensolver_conv_thresh.unwrap_or(1e-6),
+        quadrature: QuadratureConfig {
+            scheme,
+            n_points: n_quad.unwrap_or(20),
+            u0: u0.unwrap_or(0.5),
+        },
+        sternheimer: SternheimerConfig::default(),
+        run_diagnostics: false,
+        eigensolver: ferric_rpa::Eigensolver::default(),
+        chi0_backend: ferric_rpa::config::Chi0Backend::default(),
+        chi0_sparsity: ferric_rpa::config::Chi0Sparsity::parse_config_str(chi0_sparsity)
+            .map_err(make_err)?,
+        memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
+        // No GW self-energy build in this path (static screening modes from
+        // run_pdep_rpa only) — does not need the inverse-dielectric
+        // frequency stack that run_bse_tda/run_gw force on.
+        need_inv_dielectric_freq: false,
+    };
+
+    let r = run_rpax_static_polarizability(
+        &mol.inner, &prep, &dfbs, op, &scf, &pdep_cfg, fc, scissor.unwrap_or(0.0),
+    )
+    .map_err(make_err)?;
+    Ok(PyTdhfStaticPolarizabilityResult {
+        nocc: r.nocc,
+        nvir: r.nvir,
+        iso: r.iso,
+        tensor: r.tensor,
+    })
+}
+
 // ── Module ──
 
 #[pymodule]
@@ -1945,6 +2082,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyGwResult>()?;
     m.add_class::<PyUGwResult>()?;
     m.add_class::<PyBseResult>()?;
+    m.add_class::<PyTdhfStaticPolarizabilityResult>()?;
     m.add_function(wrap_pyfunction!(run_rhf, m)?)?;
     m.add_function(wrap_pyfunction!(run_uhf, m)?)?;
     m.add_function(wrap_pyfunction!(run_rohf, m)?)?;
@@ -1972,5 +2110,6 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_gw, m)?)?;
     m.add_function(wrap_pyfunction!(run_u_gw, m)?)?;
     m.add_function(wrap_pyfunction!(run_bse_tda, m)?)?;
+    m.add_function(wrap_pyfunction!(run_tdhf_static_polarizability, m)?)?;
     Ok(())
 }

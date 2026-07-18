@@ -197,6 +197,54 @@ fn rpax_pbe_c6_h2o_vs_dosd() {
     assert!(res.alpha_static > 0.0, "static α must be positive");
 }
 
+/// Static-only RPAx@PBE polarizability: the CLI/Python-wired entry point
+/// (`run_rpax_static_polarizability`). Same kernel + reference as
+/// `rpax_pbe_c6_h2o_vs_dosd` above, but solving ONLY ω=0 (no CP frequency
+/// grid) and returning the full 3×3 tensor. The isotropic average must match
+/// `run_bse_c6_ks`'s `alpha_static` (= `alpha_iso[0]` at freq 0) — cross-check
+/// that the static-only fast path agrees with the dynamic path's ω=0 point.
+#[test]
+#[ignore = "slow: PBE-KS + PDEP-RPA + RPAx static α(0); --release --ignored"]
+fn rpax_static_polarizability_h2o_matches_dynamic_omega0() {
+    use ferric_gw::bse::{run_bse_c6_ks, run_rpax_static_polarizability};
+    let xyz = "3\nH2O\nO 0.0 0.0 0.117790\nH 0.0 0.755453 -0.471161\nH 0.0 -0.755453 -0.471161\n";
+    let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+    let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+    let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+    let ctx = ParallelContext::default();
+    let scf_cfg = RhfConfig { xc: Some("PBE".to_string()), ..Default::default() };
+    let ks = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
+
+    let res = run_rpax_static_polarizability(&mol, &obs, &dfbs, op, &ks, &pdep_cfg(), 0, 0.0)
+        .expect("static RPAx@PBE polarizability runs");
+    let dosd = 9.64;
+    eprintln!("\nRPAx@PBE static polarizability / cc-pVDZ H2O");
+    eprintln!("  alpha_iso = {:.4} a.u.  (DOSD alpha0 = {dosd})", res.iso);
+    eprintln!("  tensor = {:?}", res.tensor);
+    assert!(res.iso.is_finite() && res.iso > 0.0, "static alpha must be finite positive");
+    assert!(
+        (5.0..15.0).contains(&res.iso),
+        "static alpha {:.3} outside sane window for water",
+        res.iso
+    );
+
+    // Cross-check against the dynamic path's own ω=0 point (single-point CP
+    // grid so freqs[0] == 0 exactly).
+    let (freqs, weights) = (vec![0.0_f64], vec![1.0_f64]);
+    let dyn_res = run_bse_c6_ks(&mol, &obs, &dfbs, op, &ks, &pdep_cfg(), 0, &freqs, &weights, 0.0)
+        .expect("dynamic RPAx@PBE (single freq) runs");
+    let diff = (res.iso - dyn_res.alpha_static).abs();
+    eprintln!("  static-only iso = {:.6}  dynamic-at-0 = {:.6}  diff = {diff:e}", res.iso, dyn_res.alpha_static);
+    assert!(
+        diff < 1e-6,
+        "static-only fast path must match the dynamic path's omega=0 point: {:.8} vs {:.8}",
+        res.iso,
+        dyn_res.alpha_static
+    );
+}
+
 /// α(iω)-falloff test: scan a scissor shift on RPAx@PBE virtuals from KS gap
 /// (7.05 eV) toward the GW gap (16.86 eV, scissor≈0.36 Ha). RPAx@PBE gives the
 /// right static α (9.24) but C6 −63% because α(iω) falls too fast. If widening
