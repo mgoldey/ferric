@@ -116,15 +116,15 @@ pub fn rimp2_gradient_fd(
 ///    `Γ(P_relax,P_relax)`. Verified equal to PySCF's `vhf1·dm1p` element-by-element.
 ///    PySCF lines 103-109, 167, 184.
 /// 6. **RI 3c/2c integral response** [`integral_response_gradient_3c2c`]: the RI
-///    analog of PySCF's `part_dm2·int2e_ip1` (non-separable t·t 2-PDM contracted
-///    with the differentiated integrals). 3-center uses `y_ov = V^{-1/2}·x_ov`;
-///    2-center uses `−½·(V^{-1}b_ov)·y_ov^T·dV`.
+///    analog of PySCF's `part_dm2·int2e_ip1` (the separable 2-PDM contracted with
+///    the differentiated integrals). Carries the closed-shell 2-PDM factor
+///    Γ2 = 2·(2t−t̄): 3-center uses `2·y_ov = 2·V^{-1/2}·x_ov`; 2-center uses
+///    `−2·(V^{-1}b_ov)·y_ov^T·dV` (the extra 2 vs 3-center from the metric
+///    contracting both fitting legs).
 ///
 /// Cross-checked block-by-block against `pyscf/grad/mp2.py::grad_elec`: blocks 1-5
-/// match to ≤1e-4 for H2/cc-pVDZ AND H2O/STO-3G. H2 (nocc=1) is exact overall
-/// (~3e-5); H2O (nocc>1) reaches ~1e-2 — a residual isolated to block 6's summed
-/// 3-center response for multi-occupied systems (see the note on
-/// [`test_analytical_vs_fd_h2o`]).
+/// match to ≤1e-4, block 6 to PySCF's `part_dm2·int2e_ip1`, for H2/cc-pVDZ AND
+/// H2O/STO-3G. Both H2 (nocc=1) and H2O (nocc>1) are exact overall (~1e-9 vs FD).
 pub fn rimp2_gradient_analytical(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -424,8 +424,15 @@ fn integral_response_gradient_3c2c(
                         // couples ia symmetrically; a raw 3c integral (P|μν) and its μ↔ν
                         // transpose share the derivative). g_raw + g_raw^T doubles the
                         // diagonal correctly (matches the FD single-element probe).
+                        // The 3-center weight carries the closed-shell 2-PDM factor
+                        // Γ2 = 2·(2t−t̄) (PySCF `part_dm2 = 4t − 2t^T`, grad/mp2.py
+                        // lines 61-62). `x_ov`/`y_ov` are built with the ENERGY weight
+                        // (2t−t̄) (shared with the Imat/energy path), so the separable
+                        // 2-PDM gradient needs an explicit ×2 here. Verified: the term
+                        // then equals PySCF's `dm2buf·int2e_ip1` contribution and drives
+                        // both H2 (nocc=1) and H2O (nocc=5) analytic−FD to ~1e-9.
                         let g_raw = c_occ.dot(&x_p).dot(&c_vir.t());
-                        let g_sym = &g_raw + &g_raw.t();
+                        let g_sym = 2.0 * (&g_raw + &g_raw.t());
                         g3c_sp.slice_mut(ndarray::s![p, .., ..]).assign(&g_sym);
                     }
 
@@ -489,17 +496,22 @@ fn integral_response_gradient_3c2c(
     // outside any rayon region itself. Opt-in BLAS raise via
     // FERRIC_BLAS_THREADS (default 1, unchanged behavior).
     // 2-center metric-derivative weight Γ2c for V^{-1/2} fitting. Deriving the RI
-    // energy `E = ½ Σ Γ_ia,jb (ia|P) V^{-1}_PQ (Q|jb)` w.r.t. R gives the 2-center
-    // term `−½ Σ_PQ Γ2c_PQ dV_PQ` with `Γ2c_PQ = Σ_ia C^P_ia y_ov^Q_ia`, where
+    // energy `E = Σ Γ_ia,jb (ia|P) V^{-1}_PQ (Q|jb)` w.r.t. R gives the 2-center
+    // term `Σ_PQ Γ2c_PQ dV_PQ` with base weight `−½·C·y_ov^T`, where
     // `C = V^{-1}(P|ov) = V^{-1/2}·b_ov` (the Coulomb-fitted 3-index integrals) and
     // `y_ov = V^{-1/2}·x_ov` (the same V^{-1/2}-dressed amplitudes the 3-center term
     // uses). The pair loop below symmetrizes (Γ2c_PQ + Γ2c_QP), so the asymmetric
-    // C·y^T is contracted correctly. Verified against PySCF's part_dm2·int2e_ip1
-    // reference (H2/cc-pVDZ atom0 z: 3c+2c = +0.008305 vs PySCF +0.008308).
-    // (The prior `−½ x_ov·x_ov^T` form was wrong — it omitted the C factor and
-    // used x_ov instead of the fitted C/y pair, giving the wrong 2-center metric.)
+    // C·y^T is contracted correctly. (The prior `−½ x_ov·x_ov^T` form was wrong — it
+    // omitted the C factor and used x_ov instead of the fitted C/y pair.)
+    //
+    // The base weight is scaled by 4: the SAME closed-shell 2-PDM factor 2 the
+    // 3-center term carries (Γ2 = 2·(2t−t̄)), PLUS a second factor 2 because the
+    // metric appears on BOTH fitting legs — differentiating V^{-1} = −V^{-1}·dV·V^{-1}
+    // contracts symmetrically against the P and Q legs. Verified against PySCF's
+    // `part_dm2·int2e_ip1` DF-metric response and the frozen-amplitude FD (H2 + H2O
+    // analytic−FD ~1e-9; the pre-fix ×1 weight left H2O ~1e-2 off).
     let c_fit = with_blas_threads(opt_in_blas_threads(), || inter.v_inv_sqrt.t().dot(&inter.b_ov));
-    let gamma_2c = with_blas_threads(opt_in_blas_threads(), || -0.5 * c_fit.dot(&y_ov.t()));
+    let gamma_2c = with_blas_threads(opt_in_blas_threads(), || -2.0 * c_fit.dot(&y_ov.t()));
 
     {
         use ferric_integrals::engine::Engine;
@@ -779,9 +791,10 @@ mod tests {
         }
         eprintln!("  max diff = {:.2e}", max_diff);
         // Full multi-block Lagrangian (Imat/zeta/vhf_s1occ) + RI 3c/2c response.
-        // (using P_relax in Gamma instead of D_HF).
-        assert!(max_diff < 1e-4,
-            "analytical vs FD max diff = {:.2e} (expected < 1e-4)", max_diff);
+        // Analytic == FD to ~1e-9 after the 3c/2c 2-PDM-factor fix; 1e-6 leaves
+        // headroom over the delta=1e-4 central-difference reference's truncation floor.
+        assert!(max_diff < 1e-6,
+            "analytical vs FD max diff = {:.2e} (expected < 1e-6)", max_diff);
     }
 
     #[test]
@@ -949,34 +962,18 @@ mod tests {
             }
         }
         eprintln!("  max diff = {:.2e}", max_diff);
-        // H2O (nocc=5) reaches ~1.0e-2; H2 (nocc=1) is tight at ~2.8e-5. The
-        // analytical is a systematic ~10-15% SHORT of FD on every nonzero component
-        // (atom0 z 0.0838 vs 0.0942; atom1 y 0.0319 vs 0.0385; atom1 z 0.0419 vs
-        // 0.0471) — a uniform-fraction shortfall, not a factor-of-2 or sign error.
-        //
-        // The RI 3c/2c integral-response term is NOT the culprit — proven directly:
-        // scaling ONLY that term by 0.5 in `rimp2_gradient_analytical` regresses BOTH
-        // H2 (2.8e-5 -> 4.1e-3) AND H2O (1.0e-2 -> 2.5e-2), and its atom0-z value
-        // matches PySCF's DF-MP2 `part_dm2·int2e_ip1` reference (0.008305 vs 0.008308).
-        // So it is correct at 1.0x; no rescaling of it can fix H2O without breaking H2.
-        // (A "2×dE_corr/dR|_t" frozen-amplitude isolation identity for this term holds
-        // ONLY at nocc=1 — it is a coincidence of the H2 3c/2c magnitudes, and is
-        // false at nocc>1, so it cannot be used as a correctness probe. The real guard
-        // is H2's tight full-gradient FD above.)
-        //
-        // The residual is in the relaxed-density / z-vector-coupled blocks, which
-        // degenerate at nocc=1 and so are untested by H2. Isolation via per-block
-        // scaling on H2O (FERRIC_SC_* probes, since removed) localized the dominant
-        // sensitivity to the unrelaxed occ-occ/vir-vir density (doo/dvv): scaling it
-        // to ~1.7 drives H2O to 4.6e-4, but that same scale breaks H2 (1.7e-2) and is
-        // not a clean integer factor — i.e. doo/dvv themselves are fine, but a term
-        // that COUPLES to them (most likely the CPHF/z-vector Lagrangian RHS, whose
-        // off-diagonal j≠i occ contributions vanish at nocc=1) is under-counted for
-        // nocc>1. Closing it needs the exact PySCF `_gamma1_intermediates` / CPHF-RHS
-        // coupling re-derived for nocc>1 (triage #30 follow-up). The tolerance reflects
-        // the current measured accuracy so this test cannot silently regress.
-        assert!(max_diff < 1.5e-2,
-            "H2O analytical vs FD max diff = {:.2e} (expected < 1.5e-2)", max_diff);
+        // Both H2 (nocc=1) and H2O (nocc=5) now agree with FD to ~1e-9 after the
+        // RI 3c/2c integral-response 2-PDM-factor fix (see
+        // `integral_response_gradient_3c2c`). Previously H2O sat at ~1.0e-2: the
+        // 3-center weight was missing the closed-shell 2-PDM factor 2 (Γ2 = 2·(2t−t̄))
+        // and the 2-center metric weight was missing 4 (that same 2, times a second 2
+        // from the metric contracting both fitting legs). At nocc=1 the two channel
+        // errors cancelled in the total (H2 was accidentally tight at 2.8e-5); at
+        // nocc>1 they did not. Term-by-term cross-check vs PySCF conventional MP2
+        // (hcore/im1/zeta/vhf_s1occ/bilinear-2e all already matched to ≤1e-4; only the
+        // RI 2e-response `part_dm2·int2e_ip1` term was off) pinned it precisely.
+        assert!(max_diff < 1e-6,
+            "H2O analytical vs FD max diff = {:.2e} (expected < 1e-6)", max_diff);
     }
 
     #[test]
