@@ -949,18 +949,32 @@ mod tests {
             }
         }
         eprintln!("  max diff = {:.2e}", max_diff);
-        // H2O (nocc=5) currently reaches ~1.0e-2, down from ~5.3e-2 before the
-        // z-vector/RI-response fixes (H2, nocc=1, is exact at ~3e-5). Every
-        // Lagrangian block (im1, zeta, vhf_s1occ, hcore, and the bilinear-2e
-        // `vhf1·dm1p` term) now matches a PySCF grad/mp2 element-by-element cross-
-        // check to ≤1e-4; the residual is isolated to the RI 3-center integral-
-        // response (`integral_response_gradient_3c2c`), whose single-element
-        // `y_ov = V^{-1/2}·x_ov` density is verified (test_3c_density_numerical)
-        // but whose *summed* 3-center gradient is ~7.5e-3 short for multi-occupied
-        // systems (the 2-center metric term `-½·C·y_ov^T·dV` is derived-exact and
-        // reproduces H2 to machine precision). Pinning that last nocc>1 3-center
-        // discrepancy is tracked as follow-up; the tolerance reflects the current
-        // measured accuracy so this test cannot silently regress.
+        // H2O (nocc=5) reaches ~1.0e-2; H2 (nocc=1) is tight at ~2.8e-5. The
+        // analytical is a systematic ~10-15% SHORT of FD on every nonzero component
+        // (atom0 z 0.0838 vs 0.0942; atom1 y 0.0319 vs 0.0385; atom1 z 0.0419 vs
+        // 0.0471) — a uniform-fraction shortfall, not a factor-of-2 or sign error.
+        //
+        // The RI 3c/2c integral-response term is NOT the culprit — proven directly:
+        // scaling ONLY that term by 0.5 in `rimp2_gradient_analytical` regresses BOTH
+        // H2 (2.8e-5 -> 4.1e-3) AND H2O (1.0e-2 -> 2.5e-2), and its atom0-z value
+        // matches PySCF's DF-MP2 `part_dm2·int2e_ip1` reference (0.008305 vs 0.008308).
+        // So it is correct at 1.0x; no rescaling of it can fix H2O without breaking H2.
+        // (A "2×dE_corr/dR|_t" frozen-amplitude isolation identity for this term holds
+        // ONLY at nocc=1 — it is a coincidence of the H2 3c/2c magnitudes, and is
+        // false at nocc>1, so it cannot be used as a correctness probe. The real guard
+        // is H2's tight full-gradient FD above.)
+        //
+        // The residual is in the relaxed-density / z-vector-coupled blocks, which
+        // degenerate at nocc=1 and so are untested by H2. Isolation via per-block
+        // scaling on H2O (FERRIC_SC_* probes, since removed) localized the dominant
+        // sensitivity to the unrelaxed occ-occ/vir-vir density (doo/dvv): scaling it
+        // to ~1.7 drives H2O to 4.6e-4, but that same scale breaks H2 (1.7e-2) and is
+        // not a clean integer factor — i.e. doo/dvv themselves are fine, but a term
+        // that COUPLES to them (most likely the CPHF/z-vector Lagrangian RHS, whose
+        // off-diagonal j≠i occ contributions vanish at nocc=1) is under-counted for
+        // nocc>1. Closing it needs the exact PySCF `_gamma1_intermediates` / CPHF-RHS
+        // coupling re-derived for nocc>1 (triage #30 follow-up). The tolerance reflects
+        // the current measured accuracy so this test cannot silently regress.
         assert!(max_diff < 1.5e-2,
             "H2O analytical vs FD max diff = {:.2e} (expected < 1.5e-2)", max_diff);
     }
