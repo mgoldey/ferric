@@ -21,6 +21,7 @@ use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
 use ferric_mp2::scs::{scs_mp2, scs_mp2_2terfc, ScsMp2Config, ScsMp2TerfcConfig};
 use ferric_scf::ks_gradient::ks_gradient_closed;
 use ferric_scf::optimize::{optimize_geometry, OptimizeConfig};
+use ferric_scf::result::ScfResult;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::rohf::{solve_rohf, RohfConfig};
 use ferric_scf::uhf::{solve_uhf, UhfConfig};
@@ -29,8 +30,8 @@ use ferric_cc::ccd::ccd as run_ccd_inner;
 use ferric_cc::ccsd::ccsd as run_ccsd_inner;
 use ferric_cc::ccsd_t::ccsd_t as run_ccsd_t_inner;
 use ferric_cc::CcConfig;
-use ndarray::Array2;
-use numpy::{PyArray1, PyArray2};
+use ndarray::{Array2, Array3};
+use numpy::{PyArray1, PyArray2, PyArray3};
 use pyo3::prelude::*;
 
 // ── Molecule ──
@@ -127,6 +128,7 @@ struct PyRhfResult {
     #[pyo3(get)] computed_quartets: usize,
     density_data: Array2<f64>,
     orbital_energies_data: Vec<f64>,
+    scf_data: ScfResult,
 }
 
 #[pymethods]
@@ -213,7 +215,8 @@ fn run_rhf(
     Ok(PyRhfResult {
         energy: r.energy, converged: r.converged, iterations: r.iterations,
         computed_quartets: r.computed_quartets,
-        density_data: r.density_total, orbital_energies_data: r.eps_alpha,
+        density_data: r.density_total.clone(), orbital_energies_data: r.eps_alpha.clone(),
+        scf_data: r,
     })
 }
 
@@ -442,6 +445,13 @@ impl<'py> DensitySource<'py> {
             DensitySource::Dft(d) => &d.density_data,
         }
     }
+
+    fn scf(&self) -> &ScfResult {
+        match self {
+            DensitySource::Rhf(r) => &r.scf_data,
+            DensitySource::Dft(d) => &d.scf_data,
+        }
+    }
 }
 
 impl<'py> FromPyObject<'py> for DensitySource<'py> {
@@ -482,6 +492,50 @@ fn hirshfeld_charges(mol: &PyMolecule, basis_set: &PyBasisSet, result: DensitySo
 fn lowdin_charges(mol: &PyMolecule, basis_set: &PyBasisSet, result: DensitySource) -> PyResult<Vec<f64>> {
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     ferric_rpa::properties::lowdin_charges(&mol.inner, &prep, result.density()).map_err(make_err)
+}
+
+/// Per-atom Hirshfeld-partitioned static dipole polarizability tensors
+/// (Bohr^3), via true PDEP-RPA α(ω=0) on a real-space Becke/Hirshfeld grid.
+/// Closed-shell (Restricted) only — `result` must come from `run_rhf` or
+/// `run_dft` on a closed-shell molecule. `auxbasis` is the RI auxiliary basis
+/// (e.g. a `*-rifit`/`*-ri` bundled set, NOT the SCF's own `df_j_aux`).
+///
+/// This is materially more expensive than `esp_at_atoms`/`hirshfeld_charges`/
+/// `lowdin_charges`: it builds RI intermediates plus an AO-value grid over
+/// the whole molecule (`FERRIC_HIRSHFELD_SPACING`/`FERRIC_HIRSHFELD_MARGIN`
+/// env vars control resolution vs. memory; the grid is budget-checked
+/// against `memory_budget_gb`, auto-resolved to 80% of available RAM when
+/// omitted — see `ferric_core::memory::resolve_budget_bytes`).
+#[pyfunction]
+#[pyo3(signature = (mol, basis_set, auxbasis, result, memory_budget_gb=None))]
+fn hirshfeld_polarizability<'py>(
+    py: Python<'py>,
+    mol: &PyMolecule,
+    basis_set: &PyBasisSet,
+    auxbasis: &PyBasisSet,
+    result: DensitySource,
+    memory_budget_gb: Option<f64>,
+) -> PyResult<Bound<'py, PyArray3<f64>>> {
+    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
+    let op = Operator::coulomb();
+    let cfg = ferric_rpa::PdepRpaConfig {
+        memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
+        ..Default::default()
+    };
+    let alpha = ferric_rpa::properties::pdep_polarizability_hirshfeld(
+        &mol.inner, &prep, &basis_set.inner, &dfbs, result.scf(), op, &cfg, None,
+    ).map_err(make_err)?;
+    let natoms = alpha.len();
+    let mut arr = Array3::<f64>::zeros((natoms, 3, 3));
+    for (a, tensor) in alpha.iter().enumerate() {
+        for i in 0..3 {
+            for j in 0..3 {
+                arr[(a, i, j)] = tensor[i][j];
+            }
+        }
+    }
+    Ok(PyArray3::from_owned_array(py, arr))
 }
 
 // ── RI-MP2 ──
@@ -888,6 +942,7 @@ struct PyDftResult {
     /// (i.e. `with_gradient=True` was passed to `run_ksdft`). Closed-shell
     /// LDA / GGA / hybrid / RSH only; VV10 nonlocal piece is excluded.
     gradient_data: Option<Array2<f64>>,
+    scf_data: ScfResult,
 }
 
 #[pymethods]
@@ -969,8 +1024,9 @@ fn run_dft(mol: &PyMolecule, basis_set: &PyBasisSet,
         total_energy: rhf.energy,
         converged: rhf.converged,
         vxc_data: Array2::<f64>::zeros((nbf, nbf)),
-        density_data: rhf.density_total,
+        density_data: rhf.density_total.clone(),
         gradient_data,
+        scf_data: rhf,
     })
 }
 
@@ -1885,6 +1941,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(esp_at_atoms, m)?)?;
     m.add_function(wrap_pyfunction!(hirshfeld_charges, m)?)?;
     m.add_function(wrap_pyfunction!(lowdin_charges, m)?)?;
+    m.add_function(wrap_pyfunction!(hirshfeld_polarizability, m)?)?;
     m.add_function(wrap_pyfunction!(run_rimp2, m)?)?;
     m.add_function(wrap_pyfunction!(run_oo_rimp2, m)?)?;
     m.add_function(wrap_pyfunction!(run_mp3, m)?)?;
