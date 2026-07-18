@@ -135,14 +135,14 @@
       "exp": 11.4
     },
     "C2H3Br": {
-      "COHSEX": null,
+      "COHSEX": 10.012,
       "G0W0": 9.165,
       "G0W0pbe": 8.459,
-      "Koop": null,
-      "dRPA": null,
-      "dSCF": null,
-      "evGW": null,
-      "evGW0": null,
+      "Koop": 9.204,
+      "dRPA": 9.037,
+      "dSCF": 8.123,
+      "evGW": 9.151,
+      "evGW0": 9.155,
       "exp": 9.9
     },
     "C2H3Cl": {
