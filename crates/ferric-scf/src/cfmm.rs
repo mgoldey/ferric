@@ -315,16 +315,43 @@ impl CfmmBox {
         }
     }
 
+    // ---------------------------------------------------------------------
+    // ROOT CAUSE of the `test_cfmm_j_matches_direct_j` failure (G10 / item #13):
+    // the three functions below are the only points where this file touches
+    // actual basis-function integrals, and ALL THREE ARE UNIMPLEMENTED STUBS.
+    // Because of that, `CfmmJ::build` returns an identically-zero J matrix
+    // (measured: max|J_cfmm| = 0.0 exactly for water/STO-3G), so the "max
+    // diff 17.37" is just max|J_direct| — the largest element of the *true*
+    // Coulomb matrix, not a small multipole-truncation error. The M2L /
+    // interaction-list traversal (`collect_m2l`/`find_neighbors_by_coords`/
+    // `add_m2l_contribution`) that earlier notes suspected is inert: it reads
+    // `multipoles` (all zero, since `add_shell_multipoles` never fills them)
+    // and writes `local_exp`, which `add_far_field_to_j` never reads back
+    // into J. See docs/cfmm-m2l-investigation.md for the full trace and the
+    // list of what a real implementation would need.
+    // ---------------------------------------------------------------------
+
     fn direct_interaction(&self, _other: &CfmmBox, _d: &Array2<f64>, _j: &mut Array2<f64>, _prep: &PreparedBasis) {
-        // TODO: Direct integration for shell pairs
+        // STUB — unimplemented. Should add the exact near-field Coulomb
+        // contribution J_{μν} += Σ_{λσ} (μν|λσ) D_{λσ} for shell pairs in
+        // this leaf and its adjacent leaves, via the 4-center ERI engine.
+        // Currently a no-op, so ALL near-field J is missing.
     }
 
     fn add_shell_multipoles(&mut self, _sh_idx: usize, _d: &Array2<f64>, _prep: &PreparedBasis, _l_max: usize) {
-        // TODO: Gaussian product moments integral
+        // STUB — unimplemented. Should accumulate the density-weighted
+        // Cartesian multipole moments of the shell's product distributions
+        // about this box center into `self.multipoles`. No arbitrary-order
+        // Cartesian multipole integral routine exists in the FFI (only
+        // dipole/l=1 via `oneelectron::dipole`), so this needs new integral
+        // machinery. Currently a no-op, so ALL box multipoles stay zero.
     }
 
     fn add_far_field_to_j(&self, _sh_idx: usize, _j: &mut Array2<f64>, _prep: &PreparedBasis, _l_max: usize) {
-        // TODO: evaluate local expansion at shell center
+        // STUB — unimplemented. Should contract this leaf's `local_exp`
+        // against the shell-pair multipole moments to add the far-field
+        // Coulomb contribution to J. Currently a no-op, so ALL far-field J
+        // is missing (and `local_exp` is never consumed anywhere).
     }
 
     #[allow(dead_code)]
@@ -536,17 +563,30 @@ mod tests {
     /// computes a correct Coulomb matrix at all (triage item #13).
     ///
     /// RESULT (2026-07-17): it does not. Max diff vs the direct/dense J is
-    /// 1.74e1 — ~7 orders of magnitude past what multipole-truncation error
-    /// alone should cause. `#[ignore]`d rather than fixed here: root-causing
-    /// the M2L/interaction-list traversal (`collect_m2l`/`find_neighbors_by_coords`
-    /// in this file) is a real algorithmic investigation, not a quick fix, and
-    /// this struct is unused dead code elsewhere in the workspace (no other
-    /// `CfmmJ::new` callers), so a broken build shouldn't block CI while nobody
-    /// depends on it. Kept as a real (not deleted) regression marker: if a
-    /// future fix genuinely closes this gap, un-ignore and tighten the
-    /// tolerance back toward the LinK-style 1e-6 this test already asserts.
+    /// 1.74e1.
+    ///
+    /// ROOT CAUSE (2026-07-18, G10): NOT an M2L-traversal bug. Instrumenting
+    /// this test shows `max|J_cfmm| = 0.0` exactly while `max|J_direct| =
+    /// 1.737e1` — i.e. CFMM returns an identically-zero J matrix, and the
+    /// "max diff" is simply the largest element of the *true* Coulomb matrix.
+    /// The three functions that are the only bridge from this octree/multipole
+    /// scaffolding to actual basis-function integrals are all unimplemented
+    /// stubs (`add_shell_multipoles`, `add_far_field_to_j`, `direct_interaction`
+    /// — each an empty body). So every box multipole is zero, the far-field
+    /// path adds nothing, and the near-field path adds nothing. The M2L /
+    /// interaction-list traversal earlier notes suspected is inert (it reads
+    /// all-zero multipoles and writes a `local_exp` that is never consumed).
+    /// A real fix is a from-scratch numerics implementation (a general
+    /// Cartesian multipole integral routine — which the FFI does not expose
+    /// beyond l=1 dipole — plus the far-field contraction and near-field
+    /// direct ERIs), well beyond a traversal fix; deliberately left as a
+    /// documented partial result rather than a rushed unverified fix, since
+    /// `CfmmJ` is genuinely dead code (zero callers) and nobody depends on it.
+    /// Full trace + implementation checklist: docs/cfmm-m2l-investigation.md.
+    /// If a future fix genuinely implements the stubs, un-ignore and keep the
+    /// 1e-6 tolerance this test already asserts.
     #[test]
-    #[ignore = "CfmmJ has a real, uninvestigated correctness bug (max diff 17.37 vs direct J) -- see the RESULT note above; not fixed here, unused elsewhere in the workspace"]
+    #[ignore = "CfmmJ returns an all-zero J: its integral kernels (add_shell_multipoles/add_far_field_to_j/direct_interaction) are unimplemented stubs -- NOT an M2L bug. Root-caused not fixed (dead code, zero callers); see docs/cfmm-m2l-investigation.md"]
     fn test_cfmm_j_matches_direct_j_water_sto3g() {
         let water_xyz = "3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n";
         let (d, mol) = converged_density(water_xyz, "sto-3g");
