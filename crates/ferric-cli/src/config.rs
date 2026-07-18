@@ -596,9 +596,17 @@ mod tests {
     /// Every shipped example must parse. With `deny_unknown_fields` on all
     /// config structs, this doubles as the guard that the strict parser never
     /// rejects a key the examples (and thus users' existing files) rely on.
+    ///
+    /// Also checks that each example's `[molecule].xyz` path actually resolves
+    /// (relative to the workspace root, matching how `ferric` is normally
+    /// invoked) — TOML syntax validity alone let `h2_opt.toml` reference a
+    /// nonexistent `h2_stretched.xyz` silently for as long as the example
+    /// existed (found 2026-07-18 while spot-checking geometry optimization
+    /// against literature/PySCF).
     #[test]
     fn all_shipped_examples_parse() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+        let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let mut n = 0;
         for entry in std::fs::read_dir(&dir).unwrap() {
             let path = entry.unwrap().path();
@@ -606,9 +614,18 @@ mod tests {
                 continue;
             }
             let s = std::fs::read_to_string(&path).unwrap();
-            if let Err(e) = toml::from_str::<Config>(&s) {
-                panic!("example {} no longer parses: {e}", path.display());
-            }
+            let cfg: Config = match toml::from_str(&s) {
+                Ok(c) => c,
+                Err(e) => panic!("example {} no longer parses: {e}", path.display()),
+            };
+            let xyz_path = workspace_root.join(&cfg.molecule.xyz);
+            assert!(
+                xyz_path.is_file(),
+                "example {} references [molecule].xyz = {:?}, which does not exist at {}",
+                path.display(),
+                cfg.molecule.xyz,
+                xyz_path.display()
+            );
             n += 1;
         }
         assert!(n > 0, "no example TOMLs found in {}", dir.display());

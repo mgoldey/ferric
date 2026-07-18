@@ -104,7 +104,12 @@ impl Chi0Sparsity {
                 let radius = r.parse::<f64>().map_err(|_| {
                     format!("chi0_sparsity: invalid distance cutoff '{r}' (expected radius in Bohr)")
                 })?;
-                if !(radius > 0.0) {
+                // Explicit NaN check + `<= 0.0` instead of `!(radius > 0.0)`: the
+                // negated-comparison form is equivalent (NaN fails `> 0.0`, so its
+                // negation is true) but clippy::neg_cmp_op_on_partial_ord flags it
+                // as unclear on a partially-ordered type; this spells out the same
+                // "reject NaN or non-positive" intent without tripping the lint.
+                if radius.is_nan() || radius <= 0.0 {
                     return Err(format!(
                         "chi0_sparsity: distance cutoff must be a positive radius in Bohr, got '{r}'"
                     ));

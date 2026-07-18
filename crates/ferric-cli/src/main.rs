@@ -1444,8 +1444,8 @@ fn main() {
                 ] {
                     println!("  -- {spin_label} spin channel --");
                     println!(
-                        "  {:>4} {:>14} {:>14} {:>10} {:>10} {:>10}  {}",
-                        "MO", "eps_mf(eV)", "eps_qp(eV)", "Sigma_x", "Sigma_c", "Z", "qp_converged"
+                        "  {:>4} {:>14} {:>14} {:>10} {:>10} {:>10}  qp_converged",
+                        "MO", "eps_mf(eV)", "eps_qp(eV)", "Sigma_x", "Sigma_c", "Z"
                     );
                     for (idx, &mo) in gw_result.mo_indices.iter().enumerate() {
                         let tag = if nocc >= 1 && mo == nocc - 1 {
@@ -1536,8 +1536,8 @@ fn main() {
             println!("  ev iterations = {}", gw_result.n_ev_iter);
             println!("  outer converged = {}", gw_result.outer_converged);
             println!(
-                "  {:>4} {:>14} {:>14} {:>10} {:>10} {:>10}  {}",
-                "MO", "eps_mf(eV)", "eps_qp(eV)", "Sigma_x", "Sigma_c", "Z", "qp_converged"
+                "  {:>4} {:>14} {:>14} {:>10} {:>10} {:>10}  qp_converged",
+                "MO", "eps_mf(eV)", "eps_qp(eV)", "Sigma_x", "Sigma_c", "Z"
             );
             let nocc = (mol.nelec() as usize) / 2;
             for (idx, &mo) in gw_result.mo_indices.iter().enumerate() {
