@@ -18,10 +18,12 @@
 //!
 //! MEMORY WARNING: this is the *dense* formulation — it materializes full 6D
 //! `[2no, 2no, 2no, 2nv, 2nv, 2nv]` tensors. That is O((2no·2nv)³) storage:
-//! ~0.4 GB for H2O/cc-pVDZ but ~1.8 TB for butane/cc-pVDZ. It is correct and
-//! validated, but only runnable for very small systems. A production (T) must
-//! loop over occupied triples i<j<k, forming one `[2nv,2nv,2nv]` block at a
-//! time (~MB) — that rewrite is not done here.
+//! ~0.3 GB for H2O/cc-pVDZ but ~1.35 TB for butane/cc-pVDZ (peak buffer count
+//! trimmed 8→6 by consuming intermediates in place in `p_a_bc`/`p_i_jk` and
+//! the term1/term2 combine — same complexity class, lower constant). It is
+//! correct and validated, but only runnable for very small systems. A
+//! production (T) must loop over occupied triples i<j<k, forming one
+//! `[2nv,2nv,2nv]` block at a time (~MB) — that rewrite is not done here.
 
 use super::{CcConfig, CcResult};
 use ferric_core::mol::Molecule;
@@ -36,16 +38,27 @@ use ferric_tensors::{einsum, Axis, Tensor};
 use ndarray::{ArrayD, IxDyn};
 
 /// P(a/bc) on the (…,a,b,c) axes 3,4,5: x − x.swap(a,b) − x.swap(a,c).
-fn p_a_bc(x: &ArrayD<f64>) -> ArrayD<f64> {
+/// Consumes `x` and subtracts each permuted copy (taken from the ORIGINAL,
+/// unmutated `x`) one at a time, so only one extra 6D buffer is ever
+/// co-resident with the accumulator instead of both `s_ab` and `s_ac` at once.
+fn p_a_bc(x: ArrayD<f64>) -> ArrayD<f64> {
     let s_ab = x.view().permuted_axes(IxDyn(&[0, 1, 2, 4, 3, 5])).as_standard_layout().into_owned();
     let s_ac = x.view().permuted_axes(IxDyn(&[0, 1, 2, 5, 4, 3])).as_standard_layout().into_owned();
-    x - &s_ab - &s_ac
+    let mut out = x;
+    out -= &s_ab;
+    drop(s_ab);
+    out -= &s_ac;
+    out
 }
 /// P(i/jk) on the (i,j,k,…) axes 0,1,2: x − x.swap(i,j) − x.swap(i,k).
-fn p_i_jk(x: &ArrayD<f64>) -> ArrayD<f64> {
+fn p_i_jk(x: ArrayD<f64>) -> ArrayD<f64> {
     let s_ij = x.view().permuted_axes(IxDyn(&[1, 0, 2, 3, 4, 5])).as_standard_layout().into_owned();
     let s_ik = x.view().permuted_axes(IxDyn(&[2, 1, 0, 3, 4, 5])).as_standard_layout().into_owned();
-    x - &s_ij - &s_ik
+    let mut out = x;
+    out -= &s_ij;
+    drop(s_ij);
+    out -= &s_ik;
+    out
 }
 
 /// Compute the (T) triples correction to CCSD.
@@ -80,13 +93,17 @@ pub fn ccsd_t(
     }
 
     // Fail-fast size guard: the dense (T) materializes several full 6D
-    // [no2,no2,no2,nv2,nv2,nv2] tensors (d3 :133, t3c :162, t3d :170, plus the
-    // einsum! term1/term2/t3d intermediates and p_a_bc/p_i_jk permutation copies
-    // :39-49). Peak ≈ 8 co-resident 6D f64 buffers → 8·(no2·nv2)³·8 bytes. This
-    // MUST stay next to those allocations; a butane input is ~1.8 TB here.
+    // [no2,no2,no2,nv2,nv2,nv2] tensors. d3 lives for the whole function; t3c
+    // and t3d are built and consumed via in-place `-=`/`/=` through p_a_bc/
+    // p_i_jk (each holds at most one extra permuted-copy buffer alongside the
+    // accumulator, not two), and the final energy line has d3+t3c+t3d+sum+
+    // weighted (5) briefly co-resident — that is the true worst case, ~6
+    // 6D buffers incl. margin (was 8 before the p_a_bc/p_i_jk/term1-term2
+    // in-place rewrite; same O((no2·nv2)^3) complexity, lower constant).
+    // This MUST stay next to those allocations; a butane input is ~1.35 TB here.
     let peak6d = (no2.saturating_mul(nv2))
         .saturating_pow(3)
-        .saturating_mul(8) // ~8 co-resident 6D tensors
+        .saturating_mul(6) // ~6 co-resident 6D tensors (down from 8)
         .saturating_mul(8); // f64
     let budget = ferric_core::memory::resolve_budget_bytes(cfg.memory_budget_bytes);
     ferric_core::memory::check_alloc(
@@ -175,19 +192,23 @@ pub fn ccsd_t(
     // -> 'ibcajk'; want 'ijkabc' => src[i=0,b=1,c=2,a=3,j=4,k=5] -> [0,4,5,3,1,2].
     let term2: ArrayD<f64> = einsum!("imbc,majk->ibcajk", &t2, &majk_t);
     let term2 = term2.permuted_axes(IxDyn(&[0, 4, 5, 3, 1, 2])).as_standard_layout().into_owned();
-    let mut t3c = &term1 - &term2;
-    t3c = p_a_bc(&t3c);
-    t3c = p_i_jk(&t3c);
-    t3c = &t3c / &d3;
+    // Consume term1 in place (term1 -= term2) instead of `&term1 - &term2`, so
+    // term2 drops immediately and no separate output buffer is allocated.
+    let mut t3c = term1;
+    t3c -= &term2;
+    drop(term2);
+    let mut t3c = p_a_bc(t3c);
+    t3c = p_i_jk(t3c);
+    t3c /= &d3;
 
     // --- Disconnected triples: t3d = einsum('ia,bcjk->ijkabc'); canonical fock[v,o]=0.
     // left (i,a) free, contract (none), right free (b,c,j,k) -> 'iabcjk';
     // want 'ijkabc' => src[i=0,a=1,b=2,c=3,j=4,k=5] -> [0,4,5,1,2,3].
     let t3d: ArrayD<f64> = einsum!("ia,bcjk->iabcjk", &t1, &bcjk_t);
     let t3d = t3d.permuted_axes(IxDyn(&[0, 4, 5, 1, 2, 3])).as_standard_layout().into_owned();
-    let mut t3d = p_a_bc(&t3d);
-    t3d = p_i_jk(&t3d);
-    t3d = &t3d / &d3;
+    let mut t3d = p_a_bc(t3d);
+    t3d = p_i_jk(t3d);
+    t3d /= &d3;
 
     // --- Energy: (1/36) Σ (t3c + t3d) · D · t3c  (t3c,t3d already divided by D).
     let sum = &t3c + &t3d;
