@@ -1390,6 +1390,141 @@ mod tests {
         );
     }
 
+    /// S1 spike (item #1, docs/perf-tasks/S1-spike-oo-rimp2-reference-energy.md):
+    /// no external reference is reachable for OO-RI-MP2's absolute energy —
+    /// PySCF's `pyscf.mp` has no orbital-optimization capability (confirmed by
+    /// this spike; `dir(mp)` = GMP2/MP2/RMP2/UMP2/dfgmp2/dfmp2/dfump2, no OO/OMP2
+    /// variant) and no psi4/forte (which does ship OMP2) is installed in this
+    /// environment. This is an INTERNAL SELF-CONSISTENCY check only, not an
+    /// absolute-energy validation:
+    ///
+    /// `test_oo_rimp2_gradient_finite_difference` (above) already proves the
+    /// analytic orbital-gradient FORMULA matches finite differences at an
+    /// arbitrary point (kappa=0, i.e. the starting RHF orbitals) — that
+    /// catches formula/sign bugs in `compute_orbital_gradient`. It does NOT
+    /// prove that the Newton+DIIS+Cayley solver's declared convergence in
+    /// `oo_ri_mp2` (`converged: true`, gated on `grad_norm < grad_conv`) is a
+    /// real stationary point of the true Hylleraas-derived analytic gradient
+    /// — the solver could in principle converge (self-consistently, by its
+    /// own gradient evaluation) to a point where an INDEPENDENT finite
+    /// difference of the total energy is nonzero, e.g. from a subtle bug
+    /// shared between the gradient used for the Newton step and the gradient
+    /// used for the convergence check (they are the same function call, so a
+    /// systematic error would not self-cancel).
+    ///
+    /// This test converges OO-RI-MP2 on H2/cc-pVDZ, then independently
+    /// recomputes the orbital gradient via central finite difference of
+    /// `energy_at_kappa` around the CONVERGED orbitals (not kappa=0), and
+    /// checks both (a) the FD gradient itself is near zero (true stationary
+    /// point) and (b) it agrees with the analytic gradient recomputed at
+    /// convergence. What this DOES validate: internal self-consistency of the
+    /// converged point (no drift between the solver's stopping criterion and
+    /// the actual energy landscape). What this does NOT validate: the
+    /// absolute converged energy against any external ground truth (no such
+    /// reference is reachable in this environment/timebox — see spike doc).
+    #[test]
+    fn test_oo_rimp2_converged_gradient_vanishes_h2_ccpvdz() {
+        let (mol, obs, dfbs, op, bounds, rhf) = setup_h2();
+
+        let config = OoRiMp2Config {
+            grad_conv: 1e-6,
+            energy_conv: 1e-10,
+            ..Default::default()
+        };
+        let oo = oo_ri_mp2(&mol, &obs, &dfbs, op, &bounds, &rhf, &config).unwrap();
+        assert!(
+            oo.converged,
+            "OO-RI-MP2 H2/cc-pVDZ did not converge: {} iters, |g|={:.2e}",
+            oo.iterations, oo.grad_norm
+        );
+        eprintln!(
+            "Converged at iter {}: E_tot={:.10}, solver |g|={:.2e}",
+            oo.iterations, oo.total_energy, oo.grad_norm
+        );
+
+        let nbas = obs.nbasis();
+        let nocc_total = (mol.nelec() as usize) / 2;
+        let nocc = nocc_total;
+        let first_occ = 0;
+        let nvir = nbas - nocc_total;
+        let orb = OrbitalSpace::new(nocc, nvir, nocc_total, first_occ);
+        let c = &oo.mos;
+
+        // Independently recompute the analytic gradient at the converged
+        // orbitals (same formula as the solver, but evaluated fresh here
+        // rather than trusting the solver's last internal value).
+        let h = oneelectron::hcore(&obs);
+        let ao = OoRiMp2AoTensors::build(&obs, &dfbs, op).unwrap();
+        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h).unwrap();
+        let eps = orbital_energies(c, &f_ao);
+        let (_e_mp2, b_ov) = compute_rimp2_with_orbitals(&ao, c, &eps, &orb).unwrap();
+        let naux = dfbs.nbasis();
+        let (t2, _) = compute_t2_and_integrals(&b_ov, &eps, nocc, nvir, nocc_total, first_occ, naux);
+        let b_full = compute_b_full_mo_with(&ao, c).unwrap();
+        let f_mo = c.t().dot(&f_ao).dot(c);
+        let g_analytic = compute_orbital_gradient(&f_mo, &t2, &b_full, nocc, nvir, first_occ, nocc_total);
+        let analytic_norm = g_analytic.iter().map(|x| x * x).sum::<f64>().sqrt();
+        eprintln!("Independently recomputed analytic |g| at convergence: {:.2e}", analytic_norm);
+
+        // Central finite difference of the total energy around the converged
+        // orbitals, in every (a,i) rotation direction — an FD gradient that is
+        // itself near zero is direct evidence of a true stationary point,
+        // independent of whatever internal gradient the solver trusted.
+        let delta = 1e-5;
+        let mut max_fd_grad = 0.0f64;
+        let mut max_err_vs_analytic = 0.0f64;
+        for a in 0..nvir {
+            let a_mo = nocc_total + a;
+            for i in 0..nocc {
+                let i_mo = first_occ + i;
+
+                let mut kappa_plus = Array2::zeros((nbas, nbas));
+                kappa_plus[(a_mo, i_mo)] = delta;
+                kappa_plus[(i_mo, a_mo)] = -delta;
+                let e_plus =
+                    energy_at_kappa(&mol, &obs, &dfbs, op, &bounds, c, &kappa_plus, &orb).unwrap();
+
+                let mut kappa_minus = Array2::zeros((nbas, nbas));
+                kappa_minus[(a_mo, i_mo)] = -delta;
+                kappa_minus[(i_mo, a_mo)] = delta;
+                let e_minus =
+                    energy_at_kappa(&mol, &obs, &dfbs, op, &bounds, c, &kappa_minus, &orb).unwrap();
+
+                let fd_grad = (e_plus - e_minus) / (2.0 * delta);
+                let analytic = g_analytic[(a, i)];
+                max_fd_grad = max_fd_grad.max(fd_grad.abs());
+                max_err_vs_analytic = max_err_vs_analytic.max((fd_grad - analytic).abs());
+
+                eprintln!(
+                    "converged grad[a={},i={}]: analytic={:+.8e}, FD={:+.8e}",
+                    a, i, analytic, fd_grad
+                );
+            }
+        }
+
+        eprintln!(
+            "At convergence: max|FD grad|={:.2e}, max FD-vs-analytic err={:.2e}",
+            max_fd_grad, max_err_vs_analytic
+        );
+
+        // (a) The converged point is a real stationary point of the true
+        // energy landscape, not just of the solver's own gradient evaluation.
+        assert!(
+            max_fd_grad < 1e-3,
+            "FD gradient at converged orbitals is not near zero: max|FD grad|={:.2e}",
+            max_fd_grad
+        );
+        // (b) The analytic gradient formula still agrees with FD at this
+        // (different from kappa=0) point -- same check as
+        // test_oo_rimp2_gradient_finite_difference but at the solver's actual
+        // output rather than the starting point.
+        assert!(
+            max_err_vs_analytic < 1e-3,
+            "Analytic vs FD gradient mismatch at convergence: {:.2e}",
+            max_err_vs_analytic
+        );
+    }
+
     #[test]
     fn test_oo_rimp2_h2o_ccpvdz() {
         let xyz = "3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n";
