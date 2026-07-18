@@ -369,6 +369,13 @@ pub struct GwCfg {
     /// this value to both `GwConfig.frozen_core` and overrides the PDEP
     /// config's frozen_core with it.
     pub frozen_core: Option<usize>,
+    /// Scissor shift (Hartree) added to every virtual orbital energy before
+    /// assembling the RPAx@KS diagonal. Only consumed by
+    /// `method.kind = "tdhf-static-polarizability"`
+    /// (`ferric_gw::bse::run_rpax_static_polarizability`'s `scissor` arg) — a
+    /// cheap proxy for widening a KS gap toward a GW-level gap. Unset → 0.0
+    /// (plain KS). Ignored by the other `[gw]`-consuming method kinds.
+    pub scissor: Option<f64>,
 }
 
 impl GwCfg {
@@ -792,6 +799,54 @@ kind = "bse-tda"
         let cfg: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.method.kind, "bse-tda");
         assert_eq!(cfg.gw.frozen_core, None);
+    }
+
+    #[test]
+    fn test_parse_tdhf_static_polarizability_config() {
+        // "tdhf-static-polarizability" reuses [rpa] + [gw] verbatim (no new
+        // TOML section), same pattern as "bse-tda". Requires [rpa].xc (a KS
+        // reference) -- confirm both sections + xc + scissor parse and thread
+        // through with method.kind = "tdhf-static-polarizability".
+        let toml_str = r#"
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+[basis]
+name = "cc-pvdz"
+[method]
+kind = "tdhf-static-polarizability"
+[rpa]
+auxbasis = "cc-pvdz-ri"
+n_quad = 16
+quadrature = "gauss-legendre"
+trunc_thresh = 0.0
+eigensolver_conv_thresh = 1e-7
+xc = "PBE"
+[gw]
+frozen_core = 0
+scissor = 0.1
+"#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.method.kind, "tdhf-static-polarizability");
+        assert_eq!(cfg.rpa.auxbasis.as_deref(), Some("cc-pvdz-ri"));
+        assert_eq!(cfg.rpa.xc.as_deref(), Some("PBE"));
+        assert_eq!(cfg.gw.frozen_core, Some(0));
+        assert!((cfg.gw.scissor.unwrap() - 0.1).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_parse_tdhf_static_polarizability_config_defaults() {
+        // Empty [rpa]/[gw] sections (or absent entirely) must still parse.
+        let toml_str = r#"
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+[basis]
+name = "cc-pvdz"
+[method]
+kind = "tdhf-static-polarizability"
+"#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.method.kind, "tdhf-static-polarizability");
+        assert_eq!(cfg.gw.scissor, None);
     }
 
     #[test]

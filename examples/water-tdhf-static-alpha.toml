@@ -1,0 +1,38 @@
+# RPAx@PBE STATIC polarizability / cc-pVDZ on water.
+#
+# SCOPE: static (omega=0) polarizability ONLY. Do not use this method for
+# C6/dispersion or extrapolate a dynamic alpha(iw) from it -- docs/VALIDATION.md's
+# "Correlation / response (RPA, GW, BSE)" table records a validated NEGATIVE
+# result for the dynamic extension of this exact kernel: static alpha matches
+# DOSD water almost exactly (measured 9.24 vs DOSD 9.64 a.u. at this same
+# functional/basis via the underlying run_bse_c6_ks spike), but a C6 built
+# from alpha(iw) on this kernel stays ~63% low regardless of the HOMO-LUMO
+# gap. That is a *worse*, mechanistically *different* C6 failure than
+# ferric's existing production dRPA/PDEP C6 pipeline (~-12 to -16% deficit),
+# not a fix for it. See crates/ferric-gw/src/bse.rs's
+# run_rpax_static_polarizability doc comment for the full caveat.
+#
+# This method REQUIRES a KS reference ([rpa].xc) -- the validated accuracy
+# above is specifically a KS-reference (RPAx@PBE) result; an HF reference on
+# the same kernel gives a much worse static alpha (~5.24 a.u. gate-2
+# measurement), so the CLI hard-errors if [rpa].xc is unset rather than
+# silently falling back to HF.
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "cc-pvdz"
+
+[method]
+kind = "tdhf-static-polarizability"
+
+[rpa]
+auxbasis = "cc-pvdz-ri"
+n_quad = 16
+quadrature = "gauss-legendre"
+trunc_thresh = 0.0
+eigensolver_conv_thresh = 1e-7
+xc = "PBE"
+
+[gw]
+frozen_core = 0
