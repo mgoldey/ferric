@@ -202,3 +202,70 @@ fn rohf_newton_oh_hf_matches_diis_only() {
     );
 }
 
+/// End-to-end proof that the GGA f_xc Newton acceleration engages for a real
+/// open-shell GGA ROKS run (was LDA-only before). Triplet H₂ at 2.0 Å / cc-pVDZ
+/// under PBE — the same benign open-shell case the LDA test above uses (well-
+/// separated SOMOs, no SOMO/HOMO near-degeneracy), so it isolates the GGA f_xc
+/// kernel + Newton matvec from the OH-doublet instability that dominates that
+/// harder case. Asserts:
+///   - The Newton path builds a *GGA* f_xc kernel (not a silent DIIS fallback)
+///     — via the `GGA_FXC_KERNEL_BUILDS` counter. This is the load-bearing
+///     "the GGA branch is actually taken" check.
+///   - Newton+GGA-fxc reaches the SAME energy as DIIS-only.
+#[test]
+fn roks_h2_triplet_pbe_gga_fxc_newton_engages_and_matches_diis() {
+    use std::sync::atomic::Ordering;
+
+    let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 2.0\n", 0, 3).unwrap();
+    let bs = basis::bundled("cc-pvdz").unwrap();
+    let prep = PreparedBasis::new(&mol, &bs).unwrap();
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+    let ctx = ParallelContext::default();
+
+    let cfg_diis = RohfConfig {
+        xc: Some("PBE".into()),
+        energy_conv: 1e-9,
+        density_conv: 1e-7,
+        max_iter: 200,
+        ..Default::default()
+    };
+    let cfg_newton = RohfConfig {
+        newton_trigger: 1e-2,
+        ..cfg_diis.clone()
+    };
+
+    let r_diis = solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg_diis).unwrap();
+
+    let before = ferric_scf::rohf::GGA_FXC_KERNEL_BUILDS.load(Ordering::Relaxed);
+    let r_newton = solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg_newton).unwrap();
+    let after = ferric_scf::rohf::GGA_FXC_KERNEL_BUILDS.load(Ordering::Relaxed);
+    let gga_builds = after.saturating_sub(before);
+
+    eprintln!(
+        "H₂ triplet/PBE  DIIS:   E = {:.10}, iters = {}",
+        r_diis.energy, r_diis.iterations
+    );
+    eprintln!(
+        "H₂ triplet/PBE  Newton: E = {:.10}, iters = {}, GGA-fxc kernel builds = {}",
+        r_newton.energy, r_newton.iterations, gga_builds
+    );
+
+    assert!(r_diis.converged, "DIIS-only H₂/PBE must converge");
+    assert!(r_newton.converged, "Newton+GGA-fxc H₂/PBE must converge");
+
+    // The GGA fxc Newton path must have actually engaged (the whole point —
+    // before this change GGA ROKS silently fell back to DIIS).
+    assert!(
+        gga_builds >= 1,
+        "GGA f_xc Newton path must engage for PBE ROKS (got {gga_builds} builds); \
+         it must not silently fall back to DIIS"
+    );
+
+    assert!(
+        (r_diis.energy - r_newton.energy).abs() < 1e-6,
+        "Newton+GGA-fxc must reach the same energy as DIIS-only: ΔE = {:.3e}",
+        (r_diis.energy - r_newton.energy).abs()
+    );
+}
+
