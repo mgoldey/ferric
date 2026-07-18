@@ -1325,7 +1325,7 @@ fn main() {
 
                 if let Err(e) = export_npz(
                     npz_path,
-                    None,
+                    if result.spin == ferric_scf::result::Spin::Restricted { Some(result.mos_r()) } else { None },
                     if result.spin == ferric_scf::result::Spin::Restricted { Some(result.eps_r()) } else { None },
                     Some(&rpa_result.eigenpotentials),
                     None,

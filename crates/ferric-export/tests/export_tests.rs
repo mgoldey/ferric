@@ -1,7 +1,8 @@
 use ferric_core::mol::{Molecule, Atom};
 use ferric_export::cube::{export_cube, GridSpec};
 use ferric_export::ml::export_npz;
-use ndarray::{Array2, Array3};
+use ndarray::{Array1, Array2, Array3};
+use ndarray_npy::NpzReader;
 use std::fs;
 
 #[test]
@@ -60,5 +61,44 @@ fn test_export_npz() {
     ).unwrap();
 
     assert!(std::path::Path::new(path).exists());
+    fs::remove_file(path).unwrap();
+}
+
+/// Real round-trip check (not just "the file exists"): write non-trivial
+/// mo_coeffs/orbital_energies, read the NPZ back with NpzReader, and assert
+/// the values match exactly. Catches silent-None-passthrough bugs like the
+/// one found 2026-07-18 (item #11 in the triage doc): the CLI's export_npz
+/// call site hardcoded `None` for mo_coeffs despite the library API
+/// supporting it, so mo_coeffs was never actually written by any real
+/// caller even though the synthetic library-level test above always
+/// "passed" (it only checked file existence, not content).
+#[test]
+fn test_export_npz_round_trip_values() {
+    let mo_coeffs = Array2::<f64>::from_shape_vec((2, 3), vec![
+        1.0, 2.0, 3.0,
+        4.0, 5.0, 6.0,
+    ]).unwrap();
+    let orbital_energies = vec![-1.5, -0.75, 0.25];
+    let path = "test_round_trip.npz";
+
+    export_npz(
+        path,
+        Some(&mo_coeffs),
+        Some(&orbital_energies),
+        None, None, None, None, None, None, None, None, None, None, None,
+        None, None, None, None, None, None,
+    ).unwrap();
+
+    let mut npz = NpzReader::new(fs::File::open(path).unwrap()).unwrap();
+    let read_mo_coeffs: Array2<f64> = npz.by_name("mo_coeffs.npy").unwrap();
+    let read_orbital_energies: Array1<f64> = npz.by_name("orbital_energies.npy").unwrap();
+
+    assert_eq!(read_mo_coeffs, mo_coeffs, "mo_coeffs round-trip mismatch");
+    assert_eq!(
+        read_orbital_energies.to_vec(),
+        orbital_energies,
+        "orbital_energies round-trip mismatch"
+    );
+
     fs::remove_file(path).unwrap();
 }
