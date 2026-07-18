@@ -221,6 +221,63 @@ where
 }
 
 /// Build the HF energy-weighted density: W_μν = 2 Σ_i^occ ε_i C_μi C_νi.
+/// Contract an arbitrary weight matrix with the overlap first derivative:
+/// returns `(natoms, 3)` with `grad[A,c] = Σ_μν W_μν · ∂S_μν/∂R_{A,c}`.
+///
+/// Unlike [`oneelectron_gradient`]'s Pulay term (which assumes a symmetric `W`
+/// and folds a `−` sign in), this is the raw, sign-free `Σ W·dS/dR` for a general
+/// (possibly asymmetric) `W`. Both bra- and ket-center derivatives are summed, so
+/// `W` is used exactly as given — no implicit symmetrization or factor. The
+/// correlated-gradient assembly needs this to contract the asymmetric `im1`/`zeta`
+/// Lagrangian matrices with `dS/dR` under PySCF's explicit sign conventions.
+pub fn overlap_deriv_contract(
+    prep: &PreparedBasis,
+    w: &Array2<f64>,
+) -> Result<Array2<f64>, FerricError> {
+    let natoms = prep.shell_to_atom().iter().copied().max().unwrap_or(0) + 1;
+    let dims = prep.shell_dims();
+    let offs = prep.shell_offsets();
+    let sh2at = prep.shell_to_atom();
+    // Canonical shell-pair loop (s1 >= s2). For the off-diagonal pair we add both
+    // (μ,ν) and (ν,μ) contributions explicitly, so an asymmetric W is contracted
+    // exactly. dS deriv layout: [dx_bra, dy_bra, dz_bra, dx_ket, dy_ket, dz_ket].
+    par_pair_gradient(
+        prep,
+        natoms,
+        || Engine::new_1e_deriv(ffi::OP_OVERLAP, prep, 1e-14),
+        |local, eng, s1, s2| {
+            if let Some(deriv) = eng.compute_1e_deriv_block(prep, s1, s2) {
+                let n1 = dims[s1];
+                let n2 = dims[s2];
+                let block_sz = n1 * n2;
+                let a1 = sh2at[s1];
+                let a2 = sh2at[s2];
+                for i in 0..n1 {
+                    for j in 0..n2 {
+                        let mu = offs[s1] + i;
+                        let nu = offs[s2] + j;
+                        let idx = i * n2 + j;
+                        // W contribution for this (μ,ν) block. For s1 != s2 the
+                        // canonical loop only visits (s1,s2) once, so include the
+                        // transposed (ν,μ) weight against the same symmetric dS.
+                        let wval = if s1 == s2 {
+                            w[(mu, nu)]
+                        } else {
+                            w[(mu, nu)] + w[(nu, mu)]
+                        };
+                        for c in 0..3 {
+                            let d1 = deriv[c * block_sz + idx];
+                            let d2 = deriv[(3 + c) * block_sz + idx];
+                            local[(a1, c)] += wval * d1;
+                            local[(a2, c)] += wval * d2;
+                        }
+                    }
+                }
+            }
+        },
+    )
+}
+
 pub fn build_energy_weighted_density(result: &ScfResult, nocc: usize) -> Array2<f64> {
     let c = result.mos_r();
     let eps = result.eps_r();
@@ -573,6 +630,37 @@ pub fn twoelectron_gradient(
     let max_d = d.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
     par_twoelectron_gradient(prep, op, bounds, max_d, |mu, nu, la, sg| {
         gamma(d, mu, nu, la, sg)
+    })
+}
+
+/// Bilinear two-electron gradient: `Σ Γ(D1,D2)_μνλσ · d(μν|λσ)/dR`.
+///
+/// Uses the symmetrized bilinear 2-particle density
+/// `Γ(D1,D2)_μνλσ = 0.25(D1_μν D2_λσ + D2_μν D1_λσ) − 0.125(D1_μλ D2_νσ + D2_μλ D1_νσ)`,
+/// the polarization of the quadratic RHF `Γ(D)` (so `Γ(D,D) ≡ gamma(D)` and this
+/// reduces to [`twoelectron_gradient`] when `D1 == D2`).
+///
+/// This is the exact form the correlated (MP2) gradient needs for the
+/// two-electron-integral-derivative energy term: PySCF's `grad/mp2.py::grad_elec`
+/// contracts `∂veff(hf_dm1)/∂R` with `dm1p = hf_dm1 + 2·dm1_corr` (line 184), i.e.
+/// `Γ(hf_dm1, hf_dm1 + 2·dm1_corr)` — NOT `Γ(P_relax, P_relax)`. Passing
+/// `d1 = hf_dm1`, `d2 = hf_dm1 + 2·dm1_corr` reproduces that term.
+pub fn twoelectron_gradient_bilinear(
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    d1: &Array2<f64>,
+    d2: &Array2<f64>,
+) -> Result<Array2<f64>, FerricError> {
+    let m1 = d1.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
+    let m2 = d2.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
+    // Screening bound: the bilinear Γ magnitude scales with max|D1|·max|D2|; use
+    // the geometric-mean-free product-safe bound sqrt(m1·m2) is too loose — pass
+    // the larger so screening never drops a significant quartet.
+    let max_d = m1.max(m2);
+    par_twoelectron_gradient(prep, op, bounds, max_d, |mu, nu, la, sg| {
+        0.25 * (d1[(mu, nu)] * d2[(la, sg)] + d2[(mu, nu)] * d1[(la, sg)])
+            - 0.125 * (d1[(mu, la)] * d2[(nu, sg)] + d2[(mu, la)] * d1[(nu, sg)])
     })
 }
 
