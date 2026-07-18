@@ -68,6 +68,26 @@ mod ffi {
             v2rho2: *mut f64,
         );
 
+        /// Second functional derivatives of a GGA. For polarized (nspin=2) the
+        /// output layouts are (per grid point):
+        ///   v2rho2      → 3 components: [ρ_αρ_α, ρ_αρ_β, ρ_βρ_β]
+        ///   v2rhosigma  → 6 components: [ρ_α·σ_αα, ρ_α·σ_αβ, ρ_α·σ_ββ,
+        ///                                ρ_β·σ_αα, ρ_β·σ_αβ, ρ_β·σ_ββ]
+        ///   v2sigma2    → 6 components: [σ_αα·σ_αα, σ_αα·σ_αβ, σ_αα·σ_ββ,
+        ///                                σ_αβ·σ_αβ, σ_αβ·σ_ββ, σ_ββ·σ_ββ]
+        /// (This is the standard libxc symmetric-pack ordering; note
+        /// v2rhosigma is a full 2×3 block — 6, NOT 9 — because libxc packs the
+        /// two ρ spins against the three σ channels with no symmetry to fold.)
+        pub fn xc_gga_fxc(
+            p: *const XcFuncOpaque,
+            np: usize,
+            rho: *const f64,
+            sigma: *const f64,
+            v2rho2: *mut f64,
+            v2rhosigma: *mut f64,
+            v2sigma2: *mut f64,
+        );
+
         pub fn xc_hyb_cam_coef(
             p: *const XcFuncOpaque,
             omega: *mut f64,
@@ -271,6 +291,60 @@ impl XcFunctional {
                 n,
                 rho.as_ptr(),
                 v2rho2.as_mut_ptr(),
+            );
+        }
+    }
+
+    /// GGA second derivatives, polarized (nspin=2). Inputs interleaved as in
+    /// `eval_gga_polarized`:
+    ///   `rho[2g+0]   = ρ_α`,  `rho[2g+1]   = ρ_β`
+    ///   `sigma[3g+0] = σ_αα`, `sigma[3g+1] = σ_αβ`, `sigma[3g+2] = σ_ββ`
+    ///
+    /// Outputs (libxc symmetric-pack ordering; verified against libxc 7.0.0
+    /// `util.c::internal_counters_set_gga` — 3 / 6 / 6 components per point —
+    /// and PySCF `dft/libxc.py` layout notes):
+    ///   `v2rho2[3g+0]      = ∂²E/∂ρ_α∂ρ_α`
+    ///   `v2rho2[3g+1]      = ∂²E/∂ρ_α∂ρ_β`
+    ///   `v2rho2[3g+2]      = ∂²E/∂ρ_β∂ρ_β`
+    ///
+    ///   `v2rhosigma[6g+0]  = ∂²E/∂ρ_α∂σ_αα`
+    ///   `v2rhosigma[6g+1]  = ∂²E/∂ρ_α∂σ_αβ`
+    ///   `v2rhosigma[6g+2]  = ∂²E/∂ρ_α∂σ_ββ`
+    ///   `v2rhosigma[6g+3]  = ∂²E/∂ρ_β∂σ_αα`
+    ///   `v2rhosigma[6g+4]  = ∂²E/∂ρ_β∂σ_αβ`
+    ///   `v2rhosigma[6g+5]  = ∂²E/∂ρ_β∂σ_ββ`
+    ///
+    ///   `v2sigma2[6g+0]    = ∂²E/∂σ_αα∂σ_αα`
+    ///   `v2sigma2[6g+1]    = ∂²E/∂σ_αα∂σ_αβ`
+    ///   `v2sigma2[6g+2]    = ∂²E/∂σ_αα∂σ_ββ`
+    ///   `v2sigma2[6g+3]    = ∂²E/∂σ_αβ∂σ_αβ`
+    ///   `v2sigma2[6g+4]    = ∂²E/∂σ_αβ∂σ_ββ`
+    ///   `v2sigma2[6g+5]    = ∂²E/∂σ_ββ∂σ_ββ`
+    pub fn eval_gga_fxc_polarized(
+        &self,
+        rho: &[f64],
+        sigma: &[f64],
+        v2rho2: &mut [f64],
+        v2rhosigma: &mut [f64],
+        v2sigma2: &mut [f64],
+    ) {
+        debug_assert!(self.nspin == 2, "eval_gga_fxc_polarized requires nspin=2");
+        let n = v2rho2.len() / 3;
+        assert_eq!(rho.len(), 2 * n, "polarized rho buffer must be 2 * npts");
+        assert_eq!(sigma.len(), 3 * n, "polarized sigma buffer must be 3 * npts");
+        assert_eq!(v2rho2.len(), 3 * n, "polarized v2rho2 buffer must be 3 * npts");
+        assert_eq!(v2rhosigma.len(), 6 * n, "polarized v2rhosigma buffer must be 6 * npts");
+        assert_eq!(v2sigma2.len(), 6 * n, "polarized v2sigma2 buffer must be 6 * npts");
+        // SAFETY: handle is non-null + fully initialised; lengths verified.
+        unsafe {
+            ffi::xc_gga_fxc(
+                self.ptr as *const _,
+                n,
+                rho.as_ptr(),
+                sigma.as_ptr(),
+                v2rho2.as_mut_ptr(),
+                v2rhosigma.as_mut_ptr(),
+                v2sigma2.as_mut_ptr(),
             );
         }
     }
