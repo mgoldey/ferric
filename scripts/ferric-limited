@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Run a ferric-cli (or any) command under a hard cgroup memory ceiling, so a
+# runaway job gets killed on its own instead of triggering the systemwide OOM
+# killer (which has repeatedly picked off unrelated processes on this shared
+# box — see dmesg: ferric-cli hit 16-17GB anon-rss three times on 2026-07-13,
+# once collaterally killing an unrelated gw100_full sweep).
+#
+# Usage:
+#   scripts/ferric-limited [--max=12G] [--high=10G] -- <command> [args...]
+#
+# Defaults are conservative for a 23GB box shared with other jobs; override
+# per-call if you know a job needs more (or the box has more headroom free).
+set -euo pipefail
+
+MAX="12G"
+HIGH="10G"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --max=*) MAX="${1#--max=}"; shift ;;
+    --high=*) HIGH="${1#--high=}"; shift ;;
+    --) shift; break ;;
+    *) break ;;
+  esac
+done
+
+if [[ $# -eq 0 ]]; then
+  echo "usage: $0 [--max=12G] [--high=10G] -- <command> [args...]" >&2
+  exit 1
+fi
+
+exec systemd-run --user --scope --quiet \
+  -p MemoryHigh="${HIGH}" \
+  -p MemoryMax="${MAX}" \
+  -p MemorySwapMax=0 \
+  -- "$@"

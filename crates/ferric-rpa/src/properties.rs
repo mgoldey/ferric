@@ -960,6 +960,123 @@ pub fn pdep_polarizability_static_unrestricted(
 ///     μ^i = Σ_A μ^{A,i}                       (sum-rule exact for Becke)
 /// ```
 ///
+/// Live-set byte budget for one band of grid-point chunk partials (mirrors
+/// `ferric_scf::reduce`'s `DEFAULT_BAND_BYTES`). Each partial here is
+/// `natoms * 3 * nbf^2 * 8` bytes — far bigger than a DF-K `nbf^2` partial —
+/// so this budget bounds the SAME hazard `ferric_scf::reduce`'s doc comment
+/// warns about ("holding all partials at once... ~97 GB at 50-atom/aug-cc-pVTZ
+/// for DF-K"): naively `.collect()`-ing one partial per chunk over ~1024
+/// chunks at 71-atom/def2-svp size (natoms*3*nbf^2*8 ≈ 0.43 GB/chunk) would
+/// reach ~440 GB — a real, measured regression (mid-2026-07-13 dataset build:
+/// jobs still on their first conformer after 3.5 hours, one process pinned at
+/// its memory cgroup cap with 3M+ throttle events). Banding is not optional.
+const DIPOLE_BAND_BYTES: usize = 512 * 1024 * 1024;
+
+/// How many chunk-partials (each `natoms * 3 * nbf^2 * 8` bytes) may be live
+/// at once, given a byte budget. Floored at rayon's worker count so banding
+/// never starves parallelism below one chunk per worker (mirrors
+/// `ferric_scf::reduce::band_width`'s floor). A pure function of
+/// `(natoms, nbf, budget_bytes)` and the ambient rayon pool's worker count —
+/// never of chunk count or grid layout — so it cannot perturb the fold order.
+fn dipole_band_width(natoms: usize, nbf: usize, budget_bytes: usize) -> usize {
+    let per_partial_bytes =
+        natoms.max(1) * 3 * nbf.max(1) * nbf.max(1) * std::mem::size_of::<f64>();
+    (budget_bytes / per_partial_bytes.max(1))
+        .max(rayon::current_num_threads())
+        .max(1)
+}
+
+/// Rayon-parallel, thread-count-independent, MEMORY-BOUNDED accumulation of
+/// the atom-centred Becke-weighted AO dipole matrices
+/// `D^{A,d}_{μν} = Σ_g w^A(r_g) (r_g − R_A)_d χ_μ(r_g) χ_ν(r_g)` over all grid
+/// points `g`.
+///
+/// This was previously a fully serial `for g in 0..npts` loop — the dominant
+/// wall-clock cost of `pdep_polarizability_becke`/`_dynamic` for large systems
+/// (O(npts·nbf²): ~586k grid points × nbf² for a 71-atom/def2-svp system is
+/// ~4e11 scalar ops). Follows the exact two-level banded pattern documented in
+/// `ferric_scf::reduce::grouped_deterministic_sum`: partition into fixed-size,
+/// thread-count-independent chunks (a pure function of `npts`, never of the
+/// worker count, so the fold order — and hence the exact floating-point
+/// result — cannot depend on `RAYON_NUM_THREADS`), process one BAND of chunks
+/// in parallel at a time (bounded by `DIPOLE_BAND_BYTES`), and fold each band
+/// into the running accumulator in ascending order before moving to the next
+/// band. At most one band of partials is ever live, not all chunks at once.
+#[allow(clippy::too_many_arguments)]
+fn accumulate_atom_centred_dipoles(
+    npts: usize,
+    natoms: usize,
+    nbf: usize,
+    home_atom: &[usize],
+    weights: &[f64],
+    points: &[[f64; 3]],
+    atom_pos: &[[f64; 3]],
+    chi: &Array2<f64>,
+) -> Vec<[Array2<f64>; 3]> {
+    use rayon::prelude::*;
+
+    // Chunk size: same "≥1024 groups, floored at 1" convention as
+    // ferric_scf::reduce::TARGET_GROUPS — a pure function of npts, never of
+    // rayon::current_num_threads().
+    const TARGET_CHUNKS: usize = 1024;
+    let chunk_size = npts.div_ceil(TARGET_CHUNKS).max(1);
+    let chunk_starts: Vec<usize> = (0..npts).step_by(chunk_size).collect();
+    let n_chunks = chunk_starts.len();
+
+    let band_width = dipole_band_width(natoms, nbf, DIPOLE_BAND_BYTES);
+
+    let mut d_ai_ao: Vec<[Array2<f64>; 3]> = (0..natoms)
+        .map(|_| std::array::from_fn(|_| Array2::<f64>::zeros((nbf, nbf))))
+        .collect();
+
+    let mut band0 = 0usize;
+    while band0 < n_chunks {
+        let band1 = (band0 + band_width).min(n_chunks);
+        // Parallel over this band's chunks only; collect preserves ascending
+        // chunk-index order regardless of worker count.
+        let band_partials: Vec<Vec<[Array2<f64>; 3]>> = chunk_starts[band0..band1]
+            .to_vec()
+            .into_par_iter()
+            .map(|g0| {
+                let g1 = (g0 + chunk_size).min(npts);
+                let mut local: Vec<[Array2<f64>; 3]> = (0..natoms)
+                    .map(|_| std::array::from_fn(|_| Array2::<f64>::zeros((nbf, nbf))))
+                    .collect();
+                for g in g0..g1 {
+                    let a = home_atom[g];
+                    let w = weights[g];
+                    let r = points[g];
+                    let ra = atom_pos[a];
+                    for d in 0..3 {
+                        let factor = w * (r[d] - ra[d]);
+                        for mu in 0..nbf {
+                            let chi_mu = chi[(mu, g)];
+                            let weighted_chi_mu = factor * chi_mu;
+                            if weighted_chi_mu.abs() < 1e-30 {
+                                continue;
+                            }
+                            for nu in 0..nbf {
+                                local[a][d][(mu, nu)] += weighted_chi_mu * chi[(nu, g)];
+                            }
+                        }
+                    }
+                }
+                local
+            })
+            .collect();
+        // Serial fold in ascending chunk order — the determinism anchor.
+        for chunk in &band_partials {
+            for a in 0..natoms {
+                for d in 0..3 {
+                    d_ai_ao[a][d] += &chunk[a][d];
+                }
+            }
+        }
+        band0 = band1;
+    }
+    d_ai_ao
+}
+
 /// Closed-shell only. Returns Vec<[[f64; 3]; 3]>, one (3×3) tensor per atom.
 pub fn pdep_polarizability_becke(
     mol: &Molecule,
@@ -1041,84 +1158,22 @@ pub fn pdep_polarizability_becke(
     let nbf = chi.nrows();
     debug_assert_eq!(nbf, obs.nbasis());
 
-    // Build per-atom Becke-weighted AO dipole using lab-frame r_i. We then
-    // renormalize per-AO-pair so the sum across atoms reproduces the
-    // **analytical** AO dipole exactly (decouples the partition fraction
-    // — Becke, robust — from the absolute dipole magnitude — libint
-    // analytical). Same trick as `pdep_polarizability_hirshfeld` uses with
-    // Slater proatoms; the renormalization makes the result robust to
-    // grid quadrature error.
-    let mut d_ai_ao: Vec<[Array2<f64>; 3]> = (0..natoms)
-        .map(|_| std::array::from_fn(|_| Array2::<f64>::zeros((nbf, nbf))))
-        .collect();
-    let mut d_sum: [Array2<f64>; 3] = std::array::from_fn(|_| Array2::<f64>::zeros((nbf, nbf)));
-    for g in 0..npts {
-        let a = home_atom[g];
-        let w = weights[g];
-        let r = points[g];
-        for d in 0..3 {
-            let factor = w * r[d];
-            for mu in 0..nbf {
-                let chi_mu = chi[(mu, g)];
-                let weighted_chi_mu = factor * chi_mu;
-                if weighted_chi_mu.abs() < 1e-30 { continue; }
-                for nu in 0..nbf {
-                    let contrib = weighted_chi_mu * chi[(nu, g)];
-                    d_ai_ao[a][d][(mu, nu)] += contrib;
-                    d_sum[d][(mu, nu)] += contrib;
-                }
-            }
-        }
-    }
-    // Symmetrize per-atom AO dipoles and the sum.
+    // Build per-atom Becke-weighted AO dipole using the ATOM-CENTRED position
+    // operator (r − R_A). This yields the intrinsic atomic polarizability:
+    // origin-independent and charge-transfer-free, matching
+    // `pdep_polarizability_becke_dynamic`'s ω=0 limit exactly. We deliberately
+    // do NOT renormalize to the global lab-frame analytical dipole — that
+    // renormalization is the gauge-breaking step (it scales each atom's
+    // contribution by a shared factor derived from a lab-frame quantity and
+    // cannot restore per-atom symmetry for off-origin geometries; see the
+    // 2026-07-13 gauge-origin regression: danuglipron's cryo-EM lab-frame
+    // pose produced α^A up to hundreds of a.u. via this renormalization).
+    let atom_pos: Vec<[f64; 3]> = mol.atoms.iter().map(|at| [at.x, at.y, at.zpos]).collect();
+    let mut d_ai_ao: Vec<[Array2<f64>; 3]> =
+        accumulate_atom_centred_dipoles(npts, natoms, nbf, &home_atom, &weights, &points, &atom_pos, &chi);
+    // Symmetrize per-atom AO dipoles.
     for d in 0..3 {
         for a in 0..natoms {
-            let m = &mut d_ai_ao[a][d];
-            for i in 0..nbf {
-                for j in (i + 1)..nbf {
-                    let avg = 0.5 * (m[(i, j)] + m[(j, i)]);
-                    m[(i, j)] = avg;
-                    m[(j, i)] = avg;
-                }
-            }
-        }
-        for i in 0..nbf {
-            for j in (i + 1)..nbf {
-                let avg = 0.5 * (d_sum[d][(i, j)] + d_sum[d][(j, i)]);
-                d_sum[d][(i, j)] = avg;
-                d_sum[d][(j, i)] = avg;
-            }
-        }
-    }
-
-    // Renormalize: per AO-pair (μ, ν), rescale each atom's contribution
-    // by analytical/grid_total. This is exact decoupling of the partition
-    // (Becke fraction) from the magnitude (analytical AO dipole), giving
-    // grid-noise-free results.
-    let dip_ao_analytical = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
-    let inv_n = 1.0 / (natoms as f64);
-    let small = 1e-10;
-    for d in 0..3 {
-        for mu in 0..nbf {
-            for nu in 0..nbf {
-                let total_grid = d_sum[d][(mu, nu)];
-                let total_analytical = dip_ao_analytical[d][(mu, nu)];
-                if total_grid.abs() < small * (1.0 + total_analytical.abs()) {
-                    for a in 0..natoms {
-                        d_ai_ao[a][d][(mu, nu)] = total_analytical * inv_n;
-                    }
-                } else {
-                    let scale = total_analytical / total_grid;
-                    for a in 0..natoms {
-                        d_ai_ao[a][d][(mu, nu)] *= scale;
-                    }
-                }
-            }
-        }
-    }
-    // Symmetrize each AO dipole matrix.
-    for a in 0..natoms {
-        for d in 0..3 {
             let m = &mut d_ai_ao[a][d];
             for i in 0..nbf {
                 for j in (i + 1)..nbf {
@@ -1134,16 +1189,20 @@ pub fn pdep_polarizability_becke(
     let mut mu_ai_mo: Vec<[Array2<f64>; 3]> = (0..natoms)
         .map(|_| std::array::from_fn(|_| Array2::<f64>::zeros((nocc, nvir))))
         .collect();
-    let mut mu_mo: [Array2<f64>; 3] = std::array::from_fn(|_| Array2::<f64>::zeros((nocc, nvir)));
     for a in 0..natoms {
         for d in 0..3 {
-            let m = c_occ.t().dot(&d_ai_ao[a][d]).dot(&c_vir);
-            mu_mo[d] = &mu_mo[d] + &m;
-            mu_ai_mo[a][d] = m;
+            mu_ai_mo[a][d] = c_occ.t().dot(&d_ai_ao[a][d]).dot(&c_vir);
         }
     }
 
-    // Flatten molecular dipole; build w^d and y^d (the SMW solve).
+    // Molecular (field-side) dipole: the TRUE lab-frame molecular dipole from
+    // the analytical AO integrals — the perturbation a uniform field couples
+    // to. Paired below with the atom-centred bra (mu_ai_flat) to give
+    // α^A_{dj} = ∂μ^A_d/∂E_j, exactly as in pdep_polarizability_hirshfeld.
+    let dip_ao_analytical = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
+    let mu_mo: [Array2<f64>; 3] = std::array::from_fn(|d| {
+        c_occ.t().dot(&dip_ao_analytical[d]).dot(&c_vir)
+    });
     let mu_flat: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
         let mut v = ndarray::Array1::<f64>::zeros(nov);
         for i in 0..nocc {
@@ -1283,26 +1342,9 @@ pub fn pdep_polarizability_becke_dynamic(
         let atom_pos: Vec<[f64; 3]> = mol.atoms.iter().map(|at| [at.x, at.y, at.zpos]).collect();
 
         // Per-atom atom-centred AO dipole matrices (ω-independent).
-        let mut d_ai_ao: Vec<[Array2<f64>; 3]> = (0..natoms)
-            .map(|_| std::array::from_fn(|_| Array2::<f64>::zeros((nbf, nbf))))
-            .collect();
-        for g in 0..npts {
-            let a = home_atom[g];
-            let w = weights_g[g];
-            let r = points[g];
-            let ra = atom_pos[a];
-            for d in 0..3 {
-                let factor = w * (r[d] - ra[d]);
-                for mu in 0..nbf {
-                    let chi_mu = chi[(mu, g)];
-                    let wchi = factor * chi_mu;
-                    if wchi.abs() < 1e-30 { continue; }
-                    for nu in 0..nbf {
-                        d_ai_ao[a][d][(mu, nu)] += wchi * chi[(nu, g)];
-                    }
-                }
-            }
-        }
+        let mut d_ai_ao: Vec<[Array2<f64>; 3]> = accumulate_atom_centred_dipoles(
+            npts, natoms, nbf, &home_atom, &weights_g, &points, &atom_pos, &chi,
+        );
         for a in 0..natoms {
             for d in 0..3 {
                 let m = &mut d_ai_ao[a][d];
@@ -1501,32 +1543,8 @@ pub fn pdep_polarizability_becke_dynamic(
         .map(|at| [at.x, at.y, at.zpos])
         .collect();
 
-    let mut d_ai_ao: Vec<[Array2<f64>; 3]> = (0..natoms)
-        .map(|_| std::array::from_fn(|_| Array2::<f64>::zeros((nbf, nbf))))
-        .collect();
-    let mut d_sum: [Array2<f64>; 3] = std::array::from_fn(|_| Array2::<f64>::zeros((nbf, nbf)));
-    for g in 0..npts {
-        let a = home_atom[g];
-        let w = weights[g];
-        let r = points[g];
-        let ra = atom_pos[a];
-        for d in 0..3 {
-            // Atom-centred displacement: (r_d - R_{A,d}) makes α^A(iω) origin-independent.
-            let factor = w * (r[d] - ra[d]);
-            for mu in 0..nbf {
-                let chi_mu = chi[(mu, g)];
-                let weighted_chi_mu = factor * chi_mu;
-                if weighted_chi_mu.abs() < 1e-30 {
-                    continue;
-                }
-                for nu in 0..nbf {
-                    let contrib = weighted_chi_mu * chi[(nu, g)];
-                    d_ai_ao[a][d][(mu, nu)] += contrib;
-                    d_sum[d][(mu, nu)] += contrib;
-                }
-            }
-        }
-    }
+    let mut d_ai_ao: Vec<[Array2<f64>; 3]> =
+        accumulate_atom_centred_dipoles(npts, natoms, nbf, &home_atom, &weights, &points, &atom_pos, &chi);
     for d in 0..3 {
         for a in 0..natoms {
             let m = &mut d_ai_ao[a][d];
@@ -1536,13 +1554,6 @@ pub fn pdep_polarizability_becke_dynamic(
                     m[(i, j)] = avg;
                     m[(j, i)] = avg;
                 }
-            }
-        }
-        for i in 0..nbf {
-            for j in (i + 1)..nbf {
-                let avg = 0.5 * (d_sum[d][(i, j)] + d_sum[d][(j, i)]);
-                d_sum[d][(i, j)] = avg;
-                d_sum[d][(j, i)] = avg;
             }
         }
     }
@@ -1733,20 +1744,17 @@ pub fn pdep_polarizability_hirshfeld(
     let eps_occ: Vec<f64> = eps[first_occ..first_occ + nocc].to_vec();
     let eps_vir: Vec<f64> = eps[nocc_total..nocc_total + nvir].to_vec();
 
-    // Molecular MO dipole (origin = 0) — same as in pdep_polarizability_static.
-    // NOTE: this analytical dipole is used only for the optional informational
-    // sum-rule check at the end; the per-atom partition is fully grid-based
-    // (numerical Σ_A D^{A,i}_AO = numerical D^i_AO), so the sum rule is
-    // checked between the grid-α and the *grid-built* molecular α.
-    let _dip_ao_analytical = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
-    // (used below to rescale grid-numerical per-atom partitions into the
-    // analytical sum rule.)
+    // Molecular (field-side) dipole: the TRUE lab-frame molecular dipole from
+    // the analytical AO integrals — the perturbation a uniform field couples
+    // to. Paired below with the atom-centred bra (mu_ai_flat) to give
+    // α^A_{dj} = ∂μ^A_d/∂E_j, exactly as in pdep_polarizability_hirshfeld_dynamic.
+    let dip_ao_analytical = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
     let c = rhf.mos_r();
     let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
     let c_vir = c.slice(ndarray::s![.., nocc_total..nocc_total + nvir]).to_owned();
-    // mu_mo will be built numerically below (sum of per-atom Hirshfeld
-    // partitions) so the sum rule is exact up to grid noise.
-    let mut mu_mo: [Array2<f64>; 3] = std::array::from_fn(|_| Array2::<f64>::zeros((nocc, nvir)));
+    let mu_mo: [Array2<f64>; 3] = std::array::from_fn(|d| {
+        c_occ.t().dot(&dip_ao_analytical[d]).dot(&c_vir)
+    });
 
     let mut inv_de = ndarray::Array1::<f64>::zeros(nov);
     for i in 0..nocc {
@@ -1829,18 +1837,25 @@ pub fn pdep_polarizability_hirshfeld(
     }
 
     // ---------------------------------------------------------------------
-    // 4. For each atom A and Cartesian i, build the Hirshfeld-weighted
-    //    AO dipole matrix
-    //        D^{A,i}_{μν} = ∫ dr χ_μ(r) χ_ν(r) w^A(r) r_i
-    //    by direct quadrature on the regular grid.
+    // 4. For each atom A and Cartesian i, build the Hirshfeld-weighted,
+    //    ATOM-CENTRED AO dipole matrix
+    //        D^{A,i}_{μν} = ∫ dr χ_μ(r) χ_ν(r) w^A(r) (r_i − R_{A,i})
+    //    by direct quadrature on the regular grid. Using (r_i − R_{A,i})
+    //    instead of the lab-frame r_i makes α^A origin-independent (matches
+    //    pdep_polarizability_hirshfeld_dynamic / pdep_polarizability_becke_dynamic).
+    //    We deliberately do NOT renormalize the per-atom pieces to the
+    //    lab-frame analytical dipole — that renormalization is the
+    //    gauge-breaking step (it scales each atom by a shared factor derived
+    //    from a lab-frame quantity and cannot restore per-atom symmetry for
+    //    off-origin geometries).
     //
-    //    Implementation: combine χ with w^A and r_i into a "weighted χ̃"
-    //    on grid, then χ · χ̃^T (a single DGEMM per atom per Cartesian).
+    //    Implementation: combine χ with w^A and (r_i − R_{A,i}) into a
+    //    "weighted χ̃" on grid, then χ · χ̃^T (one DGEMM per atom per Cartesian).
     // ---------------------------------------------------------------------
     let eps_floor = 1e-12;
     let mut alpha_per_atom: Vec<[[f64; 3]; 3]> = vec![[[0.0; 3]; 3]; natoms];
 
-    // Precompute r_i(g) per Cartesian.
+    // Precompute r_i(g) per Cartesian (lab-frame grid coordinates).
     let mut ri_grid: [Vec<f64>; 3] = [vec![0.0; npts], vec![0.0; npts], vec![0.0; npts]];
     for ix in 0..grid.n_x {
         let x = grid.origin[0] + ix as f64 * hx;
@@ -1856,85 +1871,37 @@ pub fn pdep_polarizability_hirshfeld(
         }
     }
 
-    // PASS 1: build per-atom AO dipole matrices D^{A,i}_AO on the grid and
-    // their per-atom sum (numerical molecular dipole). We then *renormalize*
-    // per-AO-pair to enforce the analytical sum-rule:
-    //   D^{A,i}_AO_corrected_{μν} = D^{A,i}_AO_grid_{μν} · ratio_{μν}
-    //   ratio_{μν} = D^i_AO_analytical_{μν} / Σ_B D^{B,i}_AO_grid_{μν}
-    // (when the denominator is small, fall back to a flat 1/N partition).
-    // This decouples the partitioning fraction (Hirshfeld, robust on a
-    // coarse grid) from the absolute dipole values (libint analytical).
-    let mut d_ai_ao_all: Vec<[Array2<f64>; 3]> = (0..natoms)
-        .map(|_| std::array::from_fn(|_| Array2::<f64>::zeros((nbf, nbf))))
-        .collect();
-    let mut d_ai_ao_sum: [Array2<f64>; 3] =
-        std::array::from_fn(|_| Array2::<f64>::zeros((nbf, nbf)));
-
-    for a in 0..natoms {
-        let mut wa = vec![0.0_f64; npts];
-        for g in 0..npts {
-            let denom = rho_sum[g] + eps_floor;
-            wa[g] = rho_free[a][g] / denom;
-        }
-        for i_cart in 0..3 {
-            let mut combined = Array2::<f64>::zeros((nbf, npts));
-            for mu in 0..nbf {
-                let chi_mu = chi.row(mu);
-                let mut row = combined.row_mut(mu);
-                for g in 0..npts {
-                    row[g] = chi_mu[g] * wa[g] * ri_grid[i_cart][g] * dv;
-                }
+    let mu_ai_mo_all: Vec<[Array2<f64>; 3]> = (0..natoms)
+        .map(|a| {
+            let ra = [mol.atoms[a].x, mol.atoms[a].y, mol.atoms[a].zpos];
+            let mut wa = vec![0.0_f64; npts];
+            for g in 0..npts {
+                let denom = rho_sum[g] + eps_floor;
+                wa[g] = rho_free[a][g] / denom;
             }
-            let d: Array2<f64> = chi.dot(&combined.t());
-            // Symmetrize.
-            let mut d_sym = Array2::<f64>::zeros((nbf, nbf));
-            for mu in 0..nbf {
-                for nu in 0..nbf {
-                    d_sym[(mu, nu)] = 0.5 * (d[(mu, nu)] + d[(nu, mu)]);
-                }
-            }
-            d_ai_ao_sum[i_cart] = &d_ai_ao_sum[i_cart] + &d_sym;
-            d_ai_ao_all[a][i_cart] = d_sym;
-        }
-    }
-
-    // Renormalize: replace per-atom partition with analytical-sum × fraction.
-    let dip_ao = &_dip_ao_analytical;
-    let inv_n = 1.0 / (natoms as f64);
-    let small = 1e-10;
-    for i_cart in 0..3 {
-        for mu in 0..nbf {
-            for nu in 0..nbf {
-                let total_grid = d_ai_ao_sum[i_cart][(mu, nu)];
-                let total_analytical = dip_ao[i_cart][(mu, nu)];
-                if total_grid.abs() < small * (1.0 + total_analytical.abs()) {
-                    // Fall back to equal partition.
-                    for a in 0..natoms {
-                        d_ai_ao_all[a][i_cart][(mu, nu)] = total_analytical * inv_n;
-                    }
-                } else {
-                    let scale = total_analytical / total_grid;
-                    for a in 0..natoms {
-                        d_ai_ao_all[a][i_cart][(mu, nu)] *= scale;
+            std::array::from_fn(|i_cart| {
+                let ra_d = ra[i_cart];
+                let mut combined = Array2::<f64>::zeros((nbf, npts));
+                for mu in 0..nbf {
+                    let chi_mu = chi.row(mu);
+                    let mut row = combined.row_mut(mu);
+                    for g in 0..npts {
+                        row[g] = chi_mu[g] * wa[g] * (ri_grid[i_cart][g] - ra_d) * dv;
                     }
                 }
-            }
-        }
-    }
-
-    // Transform to MO occ-vir basis.
-    let mut mu_ai_mo_all: Vec<[Array2<f64>; 3]> = (0..natoms)
-        .map(|_| std::array::from_fn(|_| Array2::<f64>::zeros((nocc, nvir))))
+                let d: Array2<f64> = chi.dot(&combined.t());
+                let mut d_sym = Array2::<f64>::zeros((nbf, nbf));
+                for mu in 0..nbf {
+                    for nu in 0..nbf {
+                        d_sym[(mu, nu)] = 0.5 * (d[(mu, nu)] + d[(nu, mu)]);
+                    }
+                }
+                c_occ.t().dot(&d_sym).dot(&c_vir)
+            })
+        })
         .collect();
-    for a in 0..natoms {
-        for i_cart in 0..3 {
-            let mu_ai_mo = c_occ.t().dot(&d_ai_ao_all[a][i_cart]).dot(&c_vir);
-            mu_mo[i_cart] = &mu_mo[i_cart] + &mu_ai_mo;
-            mu_ai_mo_all[a][i_cart] = mu_ai_mo;
-        }
-    }
 
-    // Now we have grid-consistent molecular μ^j_MO. Build μ^j_flat, w_mol, y_mol.
+    // Molecular μ^j_flat (lab-frame, analytical) — the field-side ket.
     let mu_flat: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
         let mut v = ndarray::Array1::<f64>::zeros(nov);
         for i in 0..nocc {
@@ -1950,7 +1917,8 @@ pub fn pdep_polarizability_hirshfeld(
         std::array::from_fn(|d| b_ov.dot(&mu_flat_inv[d]));
     let y_mol = solve_dielectric_3(&eps_mat, &w_mol)?;
 
-    // PASS 2: assemble α^A.
+    // Assemble α^A: pair the atom-centred bra (mu_ai_flat) with the lab-frame
+    // molecular ket (mu_flat_inv), exactly as in the dynamic sibling.
     for a in 0..natoms {
         for i_cart in 0..3 {
             let mu_ai_mo = &mu_ai_mo_all[a][i_cart];
@@ -1983,44 +1951,17 @@ pub fn pdep_polarizability_hirshfeld(
     }
 
     // ---------------------------------------------------------------------
-    // 5. Sum-rule gate.  Σ_A α^A vs molecular α from the same path.
-    //    Tolerance 1e-3 a.u. as specified.
+    // 5. Sanity/debug log. NOTE: Σ_A α^A is NOT expected to equal the
+    //    molecular α_mol here — the atom-centred per-atom tensors omit
+    //    inter-atomic coupling (charge-transfer) terms by construction, same
+    //    as pdep_polarizability_hirshfeld_dynamic. There is no sum-rule gate;
+    //    use molecular_polarizability (or the static analog) for the
+    //    partition-independent molecular total.
     // ---------------------------------------------------------------------
-    let mut sum_tensor = [[0.0_f64; 3]; 3];
-    for a in 0..natoms {
-        for i in 0..3 {
-            for j in 0..3 {
-                sum_tensor[i][j] += alpha_per_atom[a][i][j];
-            }
-        }
-    }
-    // Molecular reference built from grid-consistent dipole.
-    let mut mol_tensor = [[0.0_f64; 3]; 3];
-    for i in 0..3 {
-        for j in 0..3 {
-            let bare = mu_flat[i].dot(&mu_flat_inv[j]);
-            let coupled = w_mol[i].dot(&y_mol[j]);
-            mol_tensor[i][j] = 4.0 * bare - 16.0 * coupled;
-        }
-    }
-    // Symmetrize molecular for fair comparison.
-    for i in 0..3 {
-        for j in (i + 1)..3 {
-            let avg = 0.5 * (mol_tensor[i][j] + mol_tensor[j][i]);
-            mol_tensor[i][j] = avg;
-            mol_tensor[j][i] = avg;
-        }
-    }
-    let mut max_diff = 0.0_f64;
-    for i in 0..3 {
-        for j in 0..3 {
-            max_diff = max_diff.max((sum_tensor[i][j] - mol_tensor[i][j]).abs());
-        }
-    }
-    if debug_toggle("FERRIC_DEBUG_HIRSHFELD") {
+    if std::env::var("FERRIC_DEBUG_HIRSHFELD").is_ok() {
         eprintln!(
-            "[hirshfeld] grid {}×{}×{} (spacing={}, margin={}), max|Σα^A − α_mol| = {:.3e}",
-            grid.n_x, grid.n_y, grid.n_z, spacing, margin, max_diff
+            "[hirshfeld] grid {}×{}×{} (spacing={}, margin={})",
+            grid.n_x, grid.n_y, grid.n_z, spacing, margin
         );
         for a in 0..natoms {
             eprintln!(
@@ -2030,13 +1971,6 @@ pub fn pdep_polarizability_hirshfeld(
                 (alpha_per_atom[a][0][0] + alpha_per_atom[a][1][1] + alpha_per_atom[a][2][2]) / 3.0
             );
         }
-    }
-    if max_diff > 1e-3 {
-        return Err(FerricError::General(format!(
-            "pdep_polarizability_hirshfeld: sum rule failed — max|Σ_A α^A − α_mol| = {:.3e} > 1e-3. \
-             Grid spacing {} Bohr, margin {} Bohr may be too coarse.",
-            max_diff, spacing, margin
-        )));
     }
 
     Ok(alpha_per_atom)
@@ -3381,6 +3315,55 @@ mod tests {
     use ferric_integrals::operator::Operator;
     use ferric_scf::rhf::{solve_rhf, RhfConfig};
     use ferric_scf::screening::SchwarzBounds;
+
+    /// Regression test for the 2026-07-13 unbounded-memory bug: naively
+    /// `.collect()`-ing one chunk-partial per grid-point chunk (no banding)
+    /// caused a real dataset build to sit for 3.5 hours with one process
+    /// pinned at its memory cgroup cap (3M+ throttle events) before being
+    /// killed — at 71-atom/def2-svp scale, ~1024 unbanded chunk-partials
+    /// would have reached ~440 GB live. `dipole_band_width` must keep the
+    /// live set (band_width * per_partial_bytes) within a small multiple of
+    /// the byte budget, never anywhere close to that.
+    #[test]
+    fn dipole_band_width_bounds_live_memory_at_realistic_scale() {
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(6).build().unwrap();
+        pool.install(|| {
+            // Danuglipron/def2-svp-scale: 71 atoms, nbf~500.
+            let natoms = 71;
+            let nbf = 500;
+            let bw = dipole_band_width(natoms, nbf, DIPOLE_BAND_BYTES);
+            let per_partial_bytes = natoms * 3 * nbf * nbf * std::mem::size_of::<f64>();
+            let live_bytes = bw * per_partial_bytes;
+            // The worker-count floor can push live memory above the raw byte
+            // budget (by design — banding must never starve parallelism
+            // below one chunk per worker), but it must stay a small, bounded
+            // multiple of the budget, nowhere near the ~440 GB unbanded
+            // worst case this test guards against.
+            assert!(
+                live_bytes < 10 * DIPOLE_BAND_BYTES,
+                "live memory {live_bytes} bytes ({:.2} GB) is not bounded by the band budget \
+                 — band_width={bw}, per_partial_bytes={per_partial_bytes}",
+                live_bytes as f64 / 1e9
+            );
+            assert!(
+                live_bytes < 10_000_000_000,
+                "live memory {live_bytes} bytes must be well under 10 GB at this scale"
+            );
+        });
+    }
+
+    #[test]
+    fn dipole_band_width_respects_budget_and_floors() {
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap();
+        pool.install(|| {
+            // natoms=1, nbf=100: per_partial = 1*3*100*100*8 = 240_000 bytes;
+            // 2_400_000 byte budget -> 10.
+            assert_eq!(dipole_band_width(1, 100, 2_400_000), 10);
+            // Budget below one partial floors at the worker count.
+            assert_eq!(dipole_band_width(1, 100, 1), 2);
+            assert_eq!(dipole_band_width(0, 0, 1), 2);
+        });
+    }
 
     /// At trunc_thresh = 0 (all eigenpotentials retained, M = naux), the
     /// PDEP-projected molecular α(iω) must reproduce the full-naux-dielectric
