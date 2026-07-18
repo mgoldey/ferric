@@ -1,14 +1,63 @@
 # Launching the two SR-MP2 + LR-RPA sweeps
 
+## TL;DR — copy/paste relaunch (both are idempotent; safe to re-run anytime)
+
+```bash
+cd /home/matt/qc/ferric/.claude/worktrees/sr-mp2-lr-rpa
+
+# 1. terfc/terf small-case r0 sweep (serial, ~0.1-1.5 GB/job, coexists with anything)
+TERFC_CONC=1 TERFC_PER_JOB_GB=2 \
+  setsid nohup python3 benchmarks/omega_diag/terfc_sweep.py \
+  >> benchmarks/omega_diag/terfc_sweep.log 2>&1 & disown
+
+# 2. benzene aTZ erf/erfc crossing (CONC=1 while GW100 holds ~8 GB; bump to 2-3 if the box is clear)
+BZ_CONC=1 BZ_PER_JOB_GB=7 BZ_YIELD_TO= \
+  setsid nohup python3 benchmarks/omega_diag/finish_benzene_atz_par.py \
+  >> benchmarks/omega_diag/finish_benzene.log 2>&1 & disown
+```
+
+Both skip already-finished jobs (marker-checked), so relaunching after a death
+resumes exactly where it stopped — nothing is recomputed. `BZ_YIELD_TO=` (empty)
+is REQUIRED (see the pgrep gotcha below). The terfc driver auto-resolves
+FERRIC_TERF_TABLE_DIR. Pick `BZ_CONC` by free RAM: 1 job ≈ 6.4 GB, and GW100 (if
+running) holds ~8 GB — check `free -g` first. `BZ_CONC=3` ONLY if nothing else
+(GW, a build) is resident.
+
+**Check what's alive** (never trust `pgrep -f`):
+```bash
+pgrep -x ferric-cli | while read p; do tr '\0' ' ' </proc/$p/cmdline; echo " [$p]"; done
+tail -f benchmarks/omega_diag/terfc_sweep.log        # or finish_benzene.log
+free -g                                              # watch avail vs GW100's ~8 GB
+```
+
+---
+
+
+
 Two independent sweeps. **They share one 23 GB box — read the memory rule before
 running them together.**
 
 ## Memory rule (learned the hard way, 2026-07-08)
 
-The box is 23 GB. A benzene aTZ job peaks ~6.4 GB (post-T12). A `cargo`/`rustc`/
-`rust-lld` build is multi-GB. **3 benzene jobs + a concurrent build = OOM cascade**
-(it killed a job, the driver, and tmux). So:
+The box is 23 GB. A benzene aTZ job peaks ~6.4 GB (post-T12) — **this includes the
+CP ghost-monomers (cpA/cpB), which are NOT cheap**: they climb from ~2 GB at
+startup to 6.4 GB at the RPA eigensolve, same as the dimer. Do NOT size
+concurrency off startup RSS — measure the PEAK (see 2026-07-10 note below). A
+`cargo`/`rustc`/`rust-lld` build is multi-GB. **3 benzene jobs + a concurrent
+build = OOM cascade** (it killed a job, the driver, and tmux). So:
 
+- **BZ_CONC=1 is the standing safe default for aTZ.** MEASURED 2026-07-10: a single
+  benzene aTZ RS-MP2-RPA job — INCLUDING the CP ghost-monomers (cpA/cpB) — peaks at
+  **~10.6 GB, and does so TWICE** (two eigensolve stages), with a ~1 GB dip between.
+  On a 23 GB box with ~4 GB of desktop/claude processes resident, that leaves room
+  for exactly ONE job. CONC=2 (2 × 10.6 = 21 GB + 4 GB other = 25 GB) OOMs. CONC=6
+  OOM-killed tmux. **Do not exceed CONC=1 unless the box has >21 GB genuinely free
+  AND you have re-measured the peak.**
+- Startup RSS (~2 GB) is a LIE — the peak is 5× that at the eigensolve. Always
+  measure peak, not startup, when sizing concurrency.
+- Before any launch, check `free -m` swap: if swap > ~500 MB (residue of a prior
+  crash), a fresh 10 GB peak will thrash against it and run slow. Let it drain or
+  accept the slowdown, but never stack a second peak on a full swap.
 - **3 benzene jobs XOR a build, never both.**
 - If code must be rebuilt (e.g. to land the terf arm), first **stop the benzene
   driver** (or run it at `BZ_CONC=2`), build, then relaunch.
