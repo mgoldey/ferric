@@ -8,14 +8,27 @@ down to the handful worth spending real QM time on via
 `binding_energy.compute_binding_energy` — the classical field a pocket
 exerts at a badly-clashing or poorly-oriented pose's atoms is usually already
 a strong, nearly-free signal before any electronic response is computed.
+
+`batch_prescreen` is the entry point for a real screening run: derive the
+pocket's charges ONCE (`pocket_charges.derive_pocket_charges`), then rank an
+entire conformer/pose ensemble against it in one call. Typical shape of a
+real workflow:
+
+    pocket = derive_pocket_charges(pocket_pdb)
+    ranked = batch_prescreen(pocket, ligand_xyz_paths, charge_source=my_charges)
+    top_5 = [r for r in ranked if r.error is None][:5]
+    for r in top_5:
+        result = compute_binding_energy(r.ligand_xyz, pocket_pdb, ...)  # real QM
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Callable
 
 import numpy as np
 
-from .ligand_embedding import EmbeddedLigand
+from .ligand_embedding import EmbeddedLigand, embed_ligand
 from .pocket_charges import PocketCharges
 from .pocket_field import pocket_field_at_atoms
 
@@ -89,3 +102,79 @@ def prescreen_pose(
         score=score,
         n_pocket_charges=filtered_pocket.n_charges,
     )
+
+
+ChargeSource = Callable[[EmbeddedLigand], "list[float] | np.ndarray"]
+
+
+@dataclass
+class BatchPrescreenEntry:
+    """One conformer's outcome in a `batch_prescreen` run.
+
+    `result` is `None` and `error` is set if this pose failed embedding or
+    scoring (e.g. a malformed xyz, or every pocket charge filtered out as
+    ligand-overlapping) — batch runs over real-world conformer ensembles
+    routinely include a few bad poses, and a single failure must not abort
+    the whole ranking. `rank` is filled in on the SORTED list `batch_prescreen`
+    returns (1-based, ascending score = most favorable first); entries with
+    `error is not None` are sorted to the end with `rank = None`.
+    """
+    ligand_xyz: Path
+    result: PrescreenResult | None
+    error: str | None
+    rank: int | None = field(default=None)
+
+
+def batch_prescreen(
+    pocket: PocketCharges,
+    ligand_xyz_paths: list[str | Path],
+    charge_source: ChargeSource,
+    basis: str = "def2-svp",
+    overlap_cutoff_angstrom: float = 1.5,
+) -> list[BatchPrescreenEntry]:
+    """Rank a whole conformer/pose ensemble against one pocket by the cheap
+    classical prescreen score, most electrostatically favorable first.
+
+    `pocket` should be derived ONCE via `pocket_charges.derive_pocket_charges`
+    and reused across the whole ensemble (this is the entire reason
+    `PocketCharges` exists as its own reusable object — re-running PDB2PQR
+    per conformer would be wasteful and pointless, since the pocket doesn't
+    change between ligand poses).
+
+    `charge_source(embedded) -> atom_charges` is called once per successfully
+    embedded pose to get its `prescreen_pose` charges — e.g. a fixed
+    per-atom-index force-field charge table for a single rigid ligand
+    topology screened across many poses, or a cheap semi-empirical/QM charge
+    computation per conformer if the atom ORDER can vary between them. There
+    is deliberately no default charge source (same reasoning as
+    `prescreen_pose`'s mandatory `atom_charges`: a silent all-zero fallback
+    would make every score exactly 0 and the whole ranking meaningless
+    without the caller necessarily noticing).
+
+    Returns one `BatchPrescreenEntry` per input path, in RANKED order
+    (ascending score; failed poses last, in input order, `rank=None`) — not
+    in input order. Never raises for a single bad conformer; check `.error`
+    on each entry. Basis mismatches, missing files, etc. are the same kind of
+    per-pose failure and are caught here too.
+    """
+    entries: list[BatchPrescreenEntry] = []
+    for xyz_path in ligand_xyz_paths:
+        xyz_path = Path(xyz_path)
+        try:
+            embedded = embed_ligand(
+                xyz_path, pocket=pocket, basis=basis,
+                overlap_cutoff_angstrom=overlap_cutoff_angstrom,
+            )
+            charges = charge_source(embedded)
+            result = prescreen_pose(embedded, charges)
+            entries.append(BatchPrescreenEntry(ligand_xyz=xyz_path, result=result, error=None))
+        except Exception as e:  # noqa: BLE001 -- deliberately broad: one bad
+            # conformer (malformed xyz, all pocket charges filtered out,
+            # charge_source raising, ...) must not abort the whole batch.
+            entries.append(BatchPrescreenEntry(ligand_xyz=xyz_path, result=None, error=str(e)))
+
+    ok = sorted((e for e in entries if e.error is None), key=lambda e: e.result.score)
+    failed = [e for e in entries if e.error is not None]
+    for i, e in enumerate(ok, start=1):
+        e.rank = i
+    return ok + failed
