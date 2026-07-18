@@ -437,6 +437,42 @@ mod tests {
     }
 
     #[test]
+    fn test_attenuated_mp2_matches_pyscf_production_omega_water() {
+        // S2 spike (open triage item #2): first ABSOLUTE cross-check of
+        // attenuated_ri_mp2 at production omega (0.420 A^-1), not just the
+        // omega->0 / SR<full limit tests above. Independent reference from
+        // scripts/gen_pyscf_attenuated_rimp2_ref.py: PySCF/libcint (a
+        // different integral library from ferric's libint2 shim) with
+        // mol.set_range_coulomb(-omega) applied to BOTH the 2-center metric
+        // (via auxmol) and the 3-center (P|mu nu) integrals (via mol),
+        // reproducing ferric's ri_mp2_spin_components formula line-for-line
+        // (same Cholesky V^{-1/2} branch erfc uses, same (ia|jb)/(ib|ja)
+        // same-spin contraction). See
+        // testdata/reference/h2o_cc-pvdz_attenuated-rimp2-erfc0p420.json.
+        let (mol, obs, dfbs, rhf) = setup_h2o();
+        let config = AttenuatedMp2Config::default(); // omega = 0.420 A^-1 -> Bohr^-1
+        let att = attenuated_ri_mp2(&mol, &obs, &dfbs, &rhf, &config).unwrap();
+
+        let ref_rhf = -76.0267833622895;
+        let ref_mp2_corr = -0.19863072759724415;
+        let ref_e_os = -0.1487223945984868;
+        let ref_e_ss = -0.04990833299875735;
+
+        let d_rhf = (rhf.energy - ref_rhf).abs();
+        let d_mp2 = (att.mp2_corr - ref_mp2_corr).abs();
+        let d_os = (att.spin_components.e_os - ref_e_os).abs();
+        let d_ss = (att.spin_components.e_ss - ref_e_ss).abs();
+        eprintln!(
+            "ferric mp2_corr={:.12}, pyscf ref={:.12}, diff={:.2e}",
+            att.mp2_corr, ref_mp2_corr, d_mp2
+        );
+        assert!(d_rhf < 1e-8, "RHF energy diverges from PySCF: diff={d_rhf:.2e}");
+        assert!(d_mp2 < 1e-6, "attenuated MP2 corr diverges from PySCF: diff={d_mp2:.2e}");
+        assert!(d_os < 1e-6, "e_os diverges from PySCF: diff={d_os:.2e}");
+        assert!(d_ss < 1e-6, "e_ss diverges from PySCF: diff={d_ss:.2e}");
+    }
+
+    #[test]
     fn test_erfc_alias_matches_attenuated() {
         // The explicit erfc-named API must be bit-identical to attenuated_ri_mp2.
         let (mol, obs, dfbs, rhf) = setup_h2();
