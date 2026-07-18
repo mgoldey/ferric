@@ -471,6 +471,108 @@ impl JBuilder for CfmmJ {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rhf::{build_jk, solve_rhf, RhfConfig};
+    use crate::screening::SchwarzBounds;
+    use ferric_core::basis;
+    use ferric_core::mol::Molecule;
+    use ferric_integrals::operator::Operator;
+
+    /// Run RHF to convergence and return the density and molecule. Mirrors
+    /// `link_k::tests::converged_density` exactly (same pattern, same repo
+    /// convention for this kind of accelerator-vs-direct cross-check).
+    fn converged_density(xyz: &str, basis_name: &str) -> (Array2<f64>, Molecule) {
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let bs = basis::bundled(basis_name).unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let config = RhfConfig {
+            energy_conv: 1e-12,
+            density_conv: 1e-10,
+            integral_thresh: 1e-14,
+            ..Default::default()
+        };
+        let result = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &prep, op, &bounds, &config).unwrap();
+        assert!(result.converged, "RHF did not converge");
+        (result.density_total, mol)
+    }
+
+    /// Build J via the direct (canonical, screened-quartet) method in rhf.rs
+    /// — the same ground-truth reference `link_k.rs`'s cross-check tests use.
+    fn direct_j(mol: &Molecule, basis_name: &str, d: &Array2<f64>) -> Array2<f64> {
+        let bs = basis::bundled(basis_name).unwrap();
+        let prep = PreparedBasis::new(mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let n = prep.nbasis();
+        let mut j = Array2::zeros((n, n));
+        let mut k = Array2::zeros((n, n));
+        build_jk(&ferric_core::parallel::ParallelContext::default(), &prep, &bounds, 1e-14, d, &mut j, &mut k).unwrap();
+        j
+    }
+
+    /// Build J via CFMM. `l_max=8` (multipole truncation order) is a
+    /// standard chemistry-grade FMM accuracy choice (FMM literature commonly
+    /// uses 6-10); `max_level=2` gives a shallow octree appropriate for a
+    /// 3-atom test molecule (deep enough to actually exercise both the
+    /// near-field direct-integration path and the far-field multipole path,
+    /// not so deep that a 3-atom system degenerates to all-near-field).
+    fn cfmm_j(mol: &Molecule, basis_name: &str, d: &Array2<f64>) -> Array2<f64> {
+        let bs = basis::bundled(basis_name).unwrap();
+        let prep = PreparedBasis::new(mol, &bs).unwrap();
+        let n = prep.nbasis();
+        let mut cfmm = CfmmJ::new(prep, bs, 8, 2);
+        let mut j = Array2::zeros((n, n));
+        JBuilder::build(&mut cfmm, d, &mut j).unwrap();
+        j
+    }
+
+    /// `CfmmJ` (White & Head-Gordon FMM Coulomb builder) has never been
+    /// cross-checked against a direct/dense reference — until this test, its
+    /// only coverage was structural (octree insertion, multipole-shift
+    /// arithmetic in isolation). It also has zero callers anywhere else in
+    /// the codebase (`grep CfmmJ::new` outside this file returns nothing),
+    /// so this is the first end-to-end evidence of whether it actually
+    /// computes a correct Coulomb matrix at all (triage item #13).
+    ///
+    /// RESULT (2026-07-17): it does not. Max diff vs the direct/dense J is
+    /// 1.74e1 — ~7 orders of magnitude past what multipole-truncation error
+    /// alone should cause. `#[ignore]`d rather than fixed here: root-causing
+    /// the M2L/interaction-list traversal (`collect_m2l`/`find_neighbors_by_coords`
+    /// in this file) is a real algorithmic investigation, not a quick fix, and
+    /// this struct is unused dead code elsewhere in the workspace (no other
+    /// `CfmmJ::new` callers), so a broken build shouldn't block CI while nobody
+    /// depends on it. Kept as a real (not deleted) regression marker: if a
+    /// future fix genuinely closes this gap, un-ignore and tighten the
+    /// tolerance back toward the LinK-style 1e-6 this test already asserts.
+    #[test]
+    #[ignore = "CfmmJ has a real, uninvestigated correctness bug (max diff 17.37 vs direct J) -- see the RESULT note above; not fixed here, unused elsewhere in the workspace"]
+    fn test_cfmm_j_matches_direct_j_water_sto3g() {
+        let water_xyz = "3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n";
+        let (d, mol) = converged_density(water_xyz, "sto-3g");
+
+        let j_direct = direct_j(&mol, "sto-3g", &d);
+        let j_cfmm = cfmm_j(&mol, "sto-3g", &d);
+
+        let n = j_direct.nrows();
+        let mut max_diff = 0.0f64;
+        for i in 0..n {
+            for jc in 0..n {
+                let diff = (j_direct[(i, jc)] - j_cfmm[(i, jc)]).abs();
+                max_diff = max_diff.max(diff);
+            }
+        }
+        println!("CFMM J vs direct J (water/STO-3G) max diff = {max_diff:.3e}");
+        assert!(
+            max_diff < 1e-6,
+            "CFMM J vs direct J max diff = {max_diff:.2e} (water/STO-3G) — CFMM's \
+             multipole far-field approximation is expected to have SOME error \
+             (unlike LinK's K, which is exact screened-direct), so this tolerance \
+             is looser than the LinK cross-check's 1e-10; if this genuinely fails \
+             far above 1e-6, CFMM has a real correctness bug, not just expected \
+             multipole truncation error"
+        );
+    }
 
     #[test]
     fn test_cfmm_octree_insertion() {
