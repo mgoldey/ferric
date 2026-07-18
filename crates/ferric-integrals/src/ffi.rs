@@ -63,6 +63,12 @@ extern "C" {
     pub fn scf_engine_create_terfc_2center(r0: c_double, omega: c_double, max_nprim: c_int, max_l: c_int, precision: c_double, table_dir: *const c_char) -> *mut c_void;
     pub fn scf_compute_terfc_eri3(eng: *mut c_void, obs: *const c_void, dfbs: *const c_void, shP: c_int, sh1: c_int, sh2: c_int, out: *mut c_double) -> c_int;
     pub fn scf_compute_terfc_eri2(eng: *mut c_void, dfbs: *const c_void, shP: c_int, shQ: c_int, out: *mut c_double) -> c_int;
+    // terf(r,r0)/r = tempered LONG-RANGE complement of terfc (terf + terfc = coulomb),
+    // same tables/curvature constraint. See shim.h.
+    pub fn scf_engine_create_terf_3center(r0: c_double, omega: c_double, max_nprim: c_int, max_l: c_int, precision: c_double, table_dir: *const c_char) -> *mut c_void;
+    pub fn scf_engine_create_terf_2center(r0: c_double, omega: c_double, max_nprim: c_int, max_l: c_int, precision: c_double, table_dir: *const c_char) -> *mut c_void;
+    pub fn scf_compute_terf_eri3(eng: *mut c_void, obs: *const c_void, dfbs: *const c_void, shP: c_int, sh1: c_int, sh2: c_int, out: *mut c_double) -> c_int;
+    pub fn scf_compute_terf_eri2(eng: *mut c_void, dfbs: *const c_void, shP: c_int, shQ: c_int, out: *mut c_double) -> c_int;
     pub fn scf_compute_dipole(
         bs: *const c_void,
         origin: *const c_double,

@@ -14,6 +14,13 @@ pub enum OperatorKind {
     /// curvature-constrained 1/(r0*sqrt2). Handled by the standalone table engine,
     /// not libint2.
     Terfc,
+    /// terf(r12, r0) / r12 -- exact "tempered" LONG-range complement of Terfc:
+    /// terf + terfc = Coulomb (identity, exact to machine precision -- both
+    /// share the identical table lookup / OS recurrence / cart->pure
+    /// transform in the shim; only the final combine step differs). Same
+    /// `distance`/`omega` (r0, curvature-constrained 1/(r0*sqrt2)) convention
+    /// as Terfc. Handled by the standalone table engine, not libint2.
+    Terf,
     /// exp(-omega * r12) / r12 -- Yukawa / screened Coulomb.
     Yukawa,
     /// Contracted Gaussian geminal f12 ≈ Slater geminal -exp(-gamma r12)/gamma.
@@ -92,6 +99,18 @@ impl Operator {
     pub fn terfc(r0: f64) -> Self {
         let omega = 1.0 / (r0 * std::f64::consts::SQRT_2);
         Self::primitive(OperatorKind::Terfc, omega, r0)
+    }
+
+    /// Exact tempered LONG-range Coulomb complement terf(r12, r0) / r12 = Coulomb
+    /// − terfc(r12, r0) / r12, evaluated via the same Dutoi/Goldey 2D
+    /// interpolation tables as [`Operator::terfc`]. Same curvature constraint
+    /// r0 * omega = 1/sqrt(2); `distance` carries r0 (Bohr).
+    ///
+    /// Limits (matching erf/erfc exactly): r0 -> inf (omega -> 0): terf -> 0.
+    /// r0 -> 0 (omega -> inf): terf -> Coulomb.
+    pub fn terf(r0: f64) -> Self {
+        let omega = 1.0 / (r0 * std::f64::consts::SQRT_2);
+        Self::primitive(OperatorKind::Terf, omega, r0)
     }
 
     /// Slater-type geminal f12 = -exp(-gamma·r12)/gamma, represented as the

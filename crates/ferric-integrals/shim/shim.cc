@@ -38,6 +38,11 @@ struct scf_engine {
     Engine engine;
     // --- terfc extension (unused/default for ordinary libint engines) ---
     bool                            is_terfc = false;
+    // When true, the compute functions below return the "terf" complement
+    // (the tempered LR piece) instead of "terfc" (coulomb - terf). Both reuse
+    // the identical table set / OS machinery; only the final combine step
+    // differs (see scf_compute_terf_eri3/2 vs scf_compute_terfc_eri3/2).
+    bool                            is_terf_complement = false;
     double                          r0 = 0.0;
     double                          omega = 0.0;
     double                          precision = 1e-14;
@@ -1696,6 +1701,111 @@ extern "C" int scf_compute_terfc_eri2(scf_engine *eng, const scf_basis *dfbs,
         }
         std::vector<double> pureout;
         transform_cart_to_pure2(shPsh, shQsh, cart, pureout);
+        if ((int)pureout.size() != n) return SCF_EINTERNAL;
+        for (int i = 0; i < n; ++i) out[i] = pureout[i];
+        return n;
+    } catch (...) {
+        return SCF_EINTERNAL;
+    }
+}
+
+/* --------------------------------------------------------------------------
+ *  C ABI: terf (tempered LR complement) engine creation and compute.
+ *
+ *  terf(r,r0)/r = erf-like LONG-RANGE piece of the exact tempered kernel:
+ *      terf(r,r0)/r = (erf(w(r-r0)) + erf(w(r+r0))) / (2 r),  w = 1/(r0 sqrt2)
+ *  identically the "cart_terf" Cartesian block already computed inside
+ *  scf_compute_terfc_eri3/2 (terfc = coulomb - terf). This entry point
+ *  returns that SAME block directly instead of subtracting it from Coulomb,
+ *  so terf + terfc = coulomb holds at machine precision by construction
+ *  (both share the identical table lookup / OS recurrence / cart->pure
+ *  transform code path -- only the final combine differs).
+ *
+ *  Engine creation reuses scf_engine_create_terfc_3center's table-loading
+ *  logic verbatim; only the is_terf_complement tag differs, so the SAME
+ *  process-global table cache (get_terfc_tables) is shared between the terf
+ *  and terfc engines for a given table_dir.
+ * -------------------------------------------------------------------------- */
+
+extern "C" scf_engine *scf_engine_create_terf_3center(double r0, double omega,
+                                                      int max_nprim, int max_L,
+                                                      double precision,
+                                                      const char *table_dir) {
+    scf_engine *eng = scf_engine_create_terfc_3center(r0, omega, max_nprim, max_L,
+                                                       precision, table_dir);
+    if (eng) eng->is_terf_complement = true;
+    return eng;
+}
+
+extern "C" scf_engine *scf_engine_create_terf_2center(double r0, double omega,
+                                                      int max_nprim, int max_L,
+                                                      double precision,
+                                                      const char *table_dir) {
+    scf_engine *eng = scf_engine_create_terfc_2center(r0, omega, max_nprim, max_L,
+                                                       precision, table_dir);
+    if (eng) eng->is_terf_complement = true;
+    return eng;
+}
+
+extern "C" int scf_compute_terf_eri3(scf_engine *eng, const scf_basis *obs,
+                                     const scf_basis *dfbs,
+                                     int shP, int sh1, int sh2, double *out) {
+    try {
+        if (!eng || !eng->is_terfc || !eng->is_terf_complement || !eng->terfc_tables) {
+            return SCF_EINVAL;
+        }
+        if (!obs || !dfbs || !out) return SCF_EINVAL;
+        const Shell &shPsh = dfbs->bs[shP];
+        const Shell &shAsh = obs->bs[sh1];
+        const Shell &shBsh = obs->bs[sh2];
+
+        // terf is the SAME Cartesian block terfc subtracts from Coulomb --
+        // return it directly (no combine), so terf + terfc = coulomb exactly.
+        std::vector<double> cart_terf;
+        bool any_t = compute_cart_eri3(shPsh, shAsh, shBsh, eng->terfc_tables.get(),
+                                       eng->omega, eng->r0, /*use_boys=*/false,
+                                       cart_terf);
+        int nP = dfbs->nfunc[shP];
+        int n1 = obs->nfunc[sh1];
+        int n2 = obs->nfunc[sh2];
+        int n = nP * n1 * n2;
+        if (!any_t) {
+            for (int i = 0; i < n; ++i) out[i] = 0.0;
+            return 0;  // fully screened
+        }
+        std::vector<double> pureout;
+        transform_cart_to_pure3(shPsh, shAsh, shBsh, cart_terf, pureout);
+        if ((int)pureout.size() != n) return SCF_EINTERNAL;
+        for (int i = 0; i < n; ++i) out[i] = pureout[i];
+        return n;
+    } catch (...) {
+        return SCF_EINTERNAL;
+    }
+}
+
+extern "C" int scf_compute_terf_eri2(scf_engine *eng, const scf_basis *dfbs,
+                                     int shP, int shQ, double *out) {
+    try {
+        if (!eng || !eng->is_terfc || !eng->is_terf_complement || !eng->terfc_tables) {
+            return SCF_EINVAL;
+        }
+        if (!dfbs || !out) return SCF_EINVAL;
+        const Shell &shPsh = dfbs->bs[shP];
+        const Shell &shQsh = dfbs->bs[shQ];
+
+        std::vector<double> cart_terf;
+        bool any_t = compute_cart_eri2(shPsh, shQsh, eng->terfc_tables.get(),
+                                       eng->omega, eng->r0, /*use_boys=*/false,
+                                       cart_terf);
+        int nP = dfbs->nfunc[shP];
+        int nQ = dfbs->nfunc[shQ];
+        int n = nP * nQ;
+        if (!any_t) {
+            for (int i = 0; i < n; ++i) out[i] = 0.0;
+            return 0;
+        }
+        std::vector<double> pureout;
+        transform_cart_to_pure2(shPsh, shQsh, cart_terf, pureout);
         if ((int)pureout.size() != n) return SCF_EINTERNAL;
         for (int i = 0; i < n; ++i) out[i] = pureout[i];
         return n;

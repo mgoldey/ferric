@@ -677,13 +677,17 @@ pub fn eigh_inverse_sqrt(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
 }
 
 /// V^{-1/2} that auto-selects: regularized eigendecomposition for operators whose
-/// 2-center metric can go numerically indefinite, fast Cholesky otherwise
-/// (Coulomb/erfc/Terfc/Yukawa, positive-definite). Centralizes indefinite-metric
-/// handling for all RI paths.
+/// 2-center metric can go numerically indefinite / rank-deficient, fast Cholesky
+/// otherwise (Coulomb/erfc/Terfc/Yukawa, positive-definite). Centralizes
+/// indefinite-metric handling for all RI paths.
 ///
 /// Eigh path:
 /// - `ErfCoulomb`: the long-range erf metric goes numerically indefinite in a
 ///   Coulomb-optimized aux basis (near-null modes from tight aux functions).
+/// - `Terf`: the tempered LONG-range complement (terf + terfc = Coulomb; see
+///   `Operator::terf`) plays the same algebraic role as `erf` — r0 → ∞ drives
+///   terf → 0, exactly as ω → 0 does for erf — so its metric loses rank in the
+///   same limit and needs the same regularized eigh branch, not Cholesky.
 ///
 /// `Terfc` is deliberately on the CHOLESKY path: the terfc kernel is
 /// positive-definite (3D Fourier transform k̂(q) > 0 for all q, r0), so its
@@ -699,7 +703,7 @@ pub fn metric_inverse_sqrt(
     op: ferric_integrals::operator::Operator,
 ) -> Result<Array2<f64>, FerricError> {
     use ferric_integrals::operator::OperatorKind;
-    if matches!(op.kind, OperatorKind::ErfCoulomb) {
+    if matches!(op.kind, OperatorKind::ErfCoulomb | OperatorKind::Terf) {
         eigh_inverse_sqrt(v)
     } else {
         cholesky_inverse_sqrt(v)

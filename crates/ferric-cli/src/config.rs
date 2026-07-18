@@ -154,6 +154,20 @@ pub struct Mp2Cfg {
     ///
     /// Both formulations have the same exact limits: ω→0 ⇒ plain MP2; ω→∞ ⇒ MP2+ΔdRPA[Coulomb].
     pub formulation: Option<String>,
+    /// SR-MP2 + LR-RPA range-separation kernel (for rs-mp2-rpa):
+    ///
+    ///   "erf"  (default) — LR=erf(ωr)/r, SR=erfc(ωr)/r, parameterized by `omega` (Å⁻¹).
+    ///   "terf"           — tempered Dutoi/Goldey split: LR=terf(r,r0)/r, SR=terfc(r,r0)/r
+    ///                      with terf+terfc=Coulomb exactly; parameterized by `r0` (Bohr).
+    ///                      When "terf", `omega` is IGNORED (ω=1/(r0·√2) is derived).
+    ///
+    /// Same split identity ⇒ same exact limits as erf; only the attenuator SHAPE
+    /// differs. terf needs the interpolation tables (FERRIC_TERF_TABLE_DIR).
+    pub attenuator: Option<String>,
+    /// Range-separation length r0 in **Bohr**, used ONLY when `attenuator = "terf"`.
+    /// The single tempered-split knob; ω is derived (ω = 1/(r0·√2)). Default 3.18
+    /// Bohr ⇒ ω ≈ 0.42 Å⁻¹ (the erf operating point). Ignored for erf.
+    pub r0: Option<f64>,
 }
 
 #[derive(Deserialize, Default)]
