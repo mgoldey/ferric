@@ -292,13 +292,17 @@ pub struct RpaCfg {
 impl RpaCfg {
     /// Parse the `chi0_sparsity` TOML string into a [`Chi0Sparsity`].
     ///
-    /// Accepted forms (case-insensitive, whitespace-trimmed):
-    ///   None / "dense"            → Dense (default; backward compatible)
-    ///   "boys"                    → BoysScreened { thresh: 1e-4 }
-    ///   "boys:<thresh>"           → BoysScreened with that threshold
-    ///   "auto"                    → Auto { atom_cutoff: 30, boys_thresh: 1e-4 }
-    ///   "auto:<cutoff>"           → Auto with that atom cutoff
-    ///   "auto:<cutoff>:<thresh>"  → Auto with that cutoff and Boys threshold
+    /// Accepted forms (case-insensitive, whitespace-trimmed); an optional
+    /// `@<radius_bohr>` suffix on the boys/auto forms sets the G6 centroid
+    /// distance pre-filter (omit → ∞ = filter off, byte-identical to pre-G6):
+    ///   None / "dense"                 → Dense (default; backward compatible)
+    ///   "boys"                         → BoysScreened { thresh: 1e-4, dist: ∞ }
+    ///   "boys:<thresh>"                → BoysScreened with that threshold
+    ///   "boys:<thresh>@<radius>"       → …and that distance-cutoff radius (Bohr)
+    ///   "auto"                         → Auto { cutoff: 30, thresh: 1e-4, dist ∞ }
+    ///   "auto:<cutoff>"                → Auto with that atom cutoff
+    ///   "auto:<cutoff>:<thresh>"       → …and that Boys threshold
+    ///   "auto:<cutoff>:<thresh>@<rad>" → …and that distance-cutoff radius (Bohr)
     pub fn parse_chi0_sparsity(&self) -> Result<ferric_rpa::config::Chi0Sparsity, String> {
         // Canonical parser lives on the type (shared with the Python bindings).
         ferric_rpa::config::Chi0Sparsity::parse_config_str(self.chi0_sparsity.as_deref())
@@ -816,15 +820,19 @@ formulation = "delta-lr"
         // None / "dense" → Dense (default, backward compatible).
         assert_eq!(mk(None).unwrap(), Chi0Sparsity::Dense);
         assert_eq!(mk(Some("dense")).unwrap(), Chi0Sparsity::Dense);
-        // boys with default (1e-4) + explicit threshold.
-        assert_eq!(mk(Some("boys")).unwrap(), Chi0Sparsity::BoysScreened { thresh: 1e-4 });
-        assert_eq!(mk(Some("boys:1e-3")).unwrap(), Chi0Sparsity::BoysScreened { thresh: 1e-3 });
+        // boys with default (1e-4) + explicit threshold. dist_cutoff defaults to ∞.
+        const INF: f64 = f64::INFINITY;
+        assert_eq!(mk(Some("boys")).unwrap(), Chi0Sparsity::BoysScreened { thresh: 1e-4, dist_cutoff: INF });
+        assert_eq!(mk(Some("boys:1e-3")).unwrap(), Chi0Sparsity::BoysScreened { thresh: 1e-3, dist_cutoff: INF });
+        // boys/auto with an explicit `@<radius>` distance cutoff (Bohr).
+        assert_eq!(mk(Some("boys:1e-3@12")).unwrap(), Chi0Sparsity::BoysScreened { thresh: 1e-3, dist_cutoff: 12.0 });
+        assert_eq!(mk(Some("auto:24:5e-4@8")).unwrap(), Chi0Sparsity::Auto { boys_thresh: 5e-4, atom_cutoff: 24, dist_cutoff: 8.0 });
         // auto with defaults (cutoff 30, thresh 1e-4), explicit cutoff, explicit cutoff+thresh.
-        assert_eq!(mk(Some("auto")).unwrap(), Chi0Sparsity::Auto { boys_thresh: 1e-4, atom_cutoff: 30 });
-        assert_eq!(mk(Some("auto:24")).unwrap(), Chi0Sparsity::Auto { boys_thresh: 1e-4, atom_cutoff: 24 });
-        assert_eq!(mk(Some("auto:24:5e-4")).unwrap(), Chi0Sparsity::Auto { boys_thresh: 5e-4, atom_cutoff: 24 });
+        assert_eq!(mk(Some("auto")).unwrap(), Chi0Sparsity::Auto { boys_thresh: 1e-4, atom_cutoff: 30, dist_cutoff: INF });
+        assert_eq!(mk(Some("auto:24")).unwrap(), Chi0Sparsity::Auto { boys_thresh: 1e-4, atom_cutoff: 24, dist_cutoff: INF });
+        assert_eq!(mk(Some("auto:24:5e-4")).unwrap(), Chi0Sparsity::Auto { boys_thresh: 5e-4, atom_cutoff: 24, dist_cutoff: INF });
         // case-insensitive + whitespace tolerant.
-        assert_eq!(mk(Some("  AUTO ")).unwrap(), Chi0Sparsity::Auto { boys_thresh: 1e-4, atom_cutoff: 30 });
+        assert_eq!(mk(Some("  AUTO ")).unwrap(), Chi0Sparsity::Auto { boys_thresh: 1e-4, atom_cutoff: 30, dist_cutoff: INF });
         // garbage → error (not silently ignored).
         assert!(mk(Some("frobnicate")).is_err());
         assert!(mk(Some("boys:notanumber")).is_err());

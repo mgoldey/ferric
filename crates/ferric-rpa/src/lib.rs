@@ -335,9 +335,11 @@ pub fn run_pdep_rpa_from_intermediates(
     // energy integration still uses the dense b_ov path for correctness.
     // Resolve Auto → Dense/BoysScreened by atom count (boys-screening-crossover).
     let resolved_sparsity = config.chi0_sparsity.resolve(mol.atoms.len());
-    if let Chi0Sparsity::Auto { boys_thresh, atom_cutoff } = config.chi0_sparsity {
+    if let Chi0Sparsity::Auto { boys_thresh, atom_cutoff, .. } = config.chi0_sparsity {
         let picked = match resolved_sparsity {
-            Chi0Sparsity::BoysScreened { thresh } => format!("BoysScreened{{{thresh:e}}}"),
+            Chi0Sparsity::BoysScreened { thresh, dist_cutoff } => {
+                format!("BoysScreened{{{thresh:e}, dist_cutoff {dist_cutoff}}}")
+            }
             _ => "Dense".to_string(),
         };
         let cmp = if mol.atoms.len() >= atom_cutoff { "≥" } else { "<" };
@@ -348,7 +350,7 @@ pub fn run_pdep_rpa_from_intermediates(
     }
     let screened_bov_opt: Option<ScreenedBov> = match resolved_sparsity {
         Chi0Sparsity::Dense => None,
-        Chi0Sparsity::BoysScreened { thresh } => {
+        Chi0Sparsity::BoysScreened { thresh, dist_cutoff } => {
             let (sb, _boys) = screen::build_screened_bov_boys(
                 mol,
                 obs,
@@ -357,6 +359,7 @@ pub fn run_pdep_rpa_from_intermediates(
                 rhf,
                 config.frozen_core,
                 thresh,
+                dist_cutoff,
             )?;
             Some(sb)
         }

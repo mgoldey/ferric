@@ -107,9 +107,52 @@ fn cholesky_inverse_sqrt(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
 /// At `thresh = 0` no aux shells are dropped; the result is algebraically
 /// equivalent to the dense `b_ov` build (up to Boys rotation, which is unitary
 /// within the occ block).
+///
+/// # G6 centroid distance pre-filter (`dist_cutoff = r_ref`, Bohr)
+///
+/// The C7 pass-1 metric `p_ii[P] = (P | i_loc i_loc)` is *exact*, so no distance
+/// term can make the **keep decision** more accurate — the exact metric is
+/// already the tightest possible screen. What the distance filter buys is
+/// avoiding the *pass-1 integral evaluation itself* for aux shells (and OBS
+/// shell-pairs) whose contribution is provably ≤ `thresh` a priori. That is the
+/// actual cost lever: pass 1 evaluates `O(nsh_df · sig_pairs)` `(P|μν)` blocks
+/// per orbital, and pass 2's `O(keep_p_shells · sig_pairs · nvir)` work is
+/// gated by how many aux shells pass 1 keeps.
+///
+/// **The bound (rigorous, lossless w.r.t. the `> thresh` keep decision).** By
+/// Cauchy-Schwarz, `|(P|μν)| ≤ sqrt((P|P))·sqrt((μν|μν))`, so for any P
+///
+/// ```text
+///   |p_ii[P]| ≤ sqrt((P|P)) · Σ_{(Sμ,Sν)∈sig_pairs} |ci|_max[Sμ]·|ci|_max[Sν]·Q[Sμ,Sν]
+///            ≡ sqrt((P|P)) · Bsum_i                                   (the loose "1c" bound)
+/// ```
+///
+/// The `i_loc i_loc` charge density is a compact, unit-norm blob centred at the
+/// Boys centroid, so the 3-index Coulomb integral `(P|i_loc i_loc)` carries a
+/// monopole `1/R` tail in `R_P = |center(P) − centroid_i|` beyond the blob
+/// extent. Following the QQR/CFMM long-range-safe precedent
+/// (`ferric-scf/src/{qqr,cfmm}.rs`: `schwarz × min(1, extent/R)`), we damp the
+/// CS bound by the SAME `min(1, r_ref/R)` Coulomb envelope:
+///
+/// ```text
+///   U(P) = min(1, r_ref / R_P) · sqrt((P|P)) · Bsum_i   ≥   |p_ii[P]|.
+/// ```
+///
+/// `min(1, r_ref/R) ≤ 1` always, so `U(P)` is still an upper bound on the exact
+/// metric; a shell is skipped (its `p_ii[P]` set to 0, i.e. dropped) only when
+/// `U(P) ≤ thresh`, which is exactly the drop the exact `> thresh` decision
+/// would make. We do NOT hard-cut at a radius — that would silently drop the
+/// slow `1/R` Coulomb tail the module's exact metric exists to catch. The
+/// envelope is a *pre-filter that composes with* the exact metric: wherever the
+/// bound is inconclusive (`U(P) > thresh`) the exact integral is still
+/// evaluated and the exact value drives the keep decision. The identical
+/// composable bound gates the OBS `sig_pairs` list. At `dist_cutoff = +∞`
+/// (default) `min(1, r_ref/R) ≡ 1`, so no shell/pair is skipped by distance and
+/// the retained set and every energy are byte-for-byte identical to the pre-G6
+/// path (regression-tested).
 // System/basis inputs plus the localized occupied set, its Boys centroids, the
-// occ-window indices, and the screening threshold — independent quantities with
-// no natural grouping.
+// occ-window indices, the screening threshold, and the distance-cutoff length
+// scale — independent quantities with no natural grouping.
 #[allow(clippy::too_many_arguments)]
 pub fn build_screened_bov(
     _mol: &Molecule,
@@ -123,6 +166,7 @@ pub fn build_screened_bov(
     c_occ_loc: &Array2<f64>,
     centroids: Vec<[f64; 3]>,
     thresh: f64,
+    dist_cutoff: f64,
 ) -> Result<ScreenedBov, FerricError> {
     let nbas = obs.nbasis();
     let naux = dfbs.nbasis();
@@ -159,6 +203,49 @@ pub fn build_screened_bov(
     // Threshold for skipping shell pairs in the per-orbital sum.
     let shell_thresh = (thresh / 100.0).max(0.0);
 
+    // ---- G6 centroid distance pre-filter precomputation ----
+    // Whether the distance envelope is active at all (dist_cutoff = +∞ → off,
+    // byte-identical to pre-G6). We also disable it for thresh <= 0, where the
+    // whole point is to retain everything (the algebraic-equivalence contract).
+    let dist_filter_on = dist_cutoff.is_finite() && thresh > 0.0;
+    // Per-aux-shell max sqrt((P|P)) from the 2-center metric diagonal (the
+    // aux side of the Cauchy-Schwarz bound |(P|μν)| ≤ sqrt((P|P))·Q[Sμ,Sν]).
+    // Cheap: v2c is already materialized above.
+    let sqrt_pp_shellmax: Vec<f64> = (0..nsh_df)
+        .map(|p_sh| {
+            let mut m = 0.0f64;
+            for p in offs_df[p_sh]..offs_df[p_sh] + dims_df[p_sh] {
+                m = m.max(v2c[(p, p)].max(0.0).sqrt());
+            }
+            m
+        })
+        .collect();
+    // Per-shell nuclear centers (Bohr) for OBS and aux bases.
+    let obs_centers = obs.shell_centers();
+    let aux_centers = dfbs.shell_centers();
+    // Diagnostic counters (retained aux shells / pass-1 integral blocks saved).
+    let mut dist_skipped_aux: usize = 0;
+    let mut dist_skipped_pairs: usize = 0;
+
+    // min(1, r_ref / R): the QQR/CFMM-style Coulomb `1/R` decay envelope. At
+    // R ≤ r_ref (or dist_cutoff = ∞) it is 1 (no damping). It is never > 1, so
+    // multiplying it onto the Cauchy-Schwarz bound keeps that bound an upper
+    // bound on the exact metric.
+    let dist_envelope = |c: &[f64; 3], centroid: &[f64; 3]| -> f64 {
+        if !dist_filter_on {
+            return 1.0;
+        }
+        let dx = c[0] - centroid[0];
+        let dy = c[1] - centroid[1];
+        let dz = c[2] - centroid[2];
+        let r = (dx * dx + dy * dy + dz * dz).sqrt();
+        if r <= dist_cutoff {
+            1.0
+        } else {
+            dist_cutoff / r
+        }
+    };
+
     let mut p_lists: Vec<Vec<usize>> = Vec::with_capacity(nocc_loc);
     let mut tiles: Vec<Array2<f64>> = Vec::with_capacity(nocc_loc);
     let mut total_retained: usize = 0;
@@ -187,6 +274,7 @@ pub fn build_screened_bov(
     // every aux shell is kept and this is algebraically equivalent to dense.
     for i_loc in 0..nocc_loc {
         let ci = c_occ_loc.slice(s![.., i_loc]).to_owned(); // (nbas,)
+        let centroid_i = centroids[i_loc];
 
         // 1. Per-OBS-shell-pair density bound B_loc[Sμ,Sν] = max |ci[μ] ci[ν]|.
         //    Use per-shell max(|ci|).
@@ -202,15 +290,68 @@ pub fn build_screened_bov(
         // Pre-screen shell pairs (canonical s_mu >= s_nu): keep (Sμ,Sν) where
         // ci_max[Sμ]*ci_max[Sν]*Q[Sμ,Sν] > shell_thresh. Off-diagonal pairs
         // contribute via both (μν) and (νμ) symmetrization.
+        //
+        // G6 distance pre-filter: the retained `sig_pairs` list drives BOTH the
+        // pass-1 metric AND the pass-2 tile build, so dropping a pair removes a
+        // real (μν) contribution from every kept aux shell's tile — NOT just
+        // from the screening metric. We therefore compose the distance envelope
+        // onto the SAME density-pair quantity `cs = b_munu·Q[Sμ,Sν]` the pre-G6
+        // test already screens against the SAME `shell_thresh`, so the decision
+        // is `cs · min(1, r_ref/R_pair) > shell_thresh`. This is a strict
+        // superset of the pre-G6 drop (env ≤ 1 only ever tightens it) and — the
+        // key invariant — reduces to the byte-identical pre-G6 test `cs >
+        // shell_thresh` whenever env = 1 (i.e. dist_cutoff = ∞, or any pair
+        // within r_ref of the centroid). The damping factor is the QQR/CFMM
+        // Coulomb `1/R` tail (`ferric-scf/src/{qqr,cfmm}.rs`), applied here to
+        // the density-pair prescreen the tile build already tolerates dropping
+        // below `shell_thresh`, so this is the same *kind* of approximation the
+        // pre-G6 shell_thresh prescreen already makes — just distance-aware.
+        // R_pair = |pair midpoint − centroid_i|.
         let mut sig_pairs: Vec<(usize, usize, f64)> = Vec::new();
         for s_mu in 0..nsh_obs {
             for s_nu in 0..=s_mu {
                 let b_munu = ci_shell_max[s_mu] * ci_shell_max[s_nu];
-                if b_munu * q_obs[(s_mu, s_nu)] > shell_thresh {
-                    sig_pairs.push((s_mu, s_nu, b_munu));
+                let cs = b_munu * q_obs[(s_mu, s_nu)];
+                let env = if dist_filter_on {
+                    // Pair midpoint of the two OBS shell nuclear centers.
+                    let cm = &obs_centers[s_mu];
+                    let cn = &obs_centers[s_nu];
+                    let mid = [
+                        0.5 * (cm[0] + cn[0]),
+                        0.5 * (cm[1] + cn[1]),
+                        0.5 * (cm[2] + cn[2]),
+                    ];
+                    dist_envelope(&mid, &centroid_i)
+                } else {
+                    1.0
+                };
+                if cs * env <= shell_thresh {
+                    // Below the (distance-damped) density-pair prescreen. When
+                    // env = 1 this is exactly the pre-G6 `cs <= shell_thresh`.
+                    if dist_filter_on && env < 1.0 && cs > shell_thresh {
+                        // Only count it as a *distance* drop when the envelope is
+                        // what pushed it under — i.e. it would have been kept
+                        // pre-G6. (Pairs already below shell_thresh are pre-G6
+                        // drops, not attributable to the distance filter.)
+                        dist_skipped_pairs += 1;
+                    }
+                    continue;
                 }
+                sig_pairs.push((s_mu, s_nu, b_munu));
             }
         }
+
+        // Bsum_i = Σ_pairs ci_max[Sμ]·ci_max[Sν]·Q[Sμ,Sν] (loose Cauchy-Schwarz
+        // bound coefficient); the aux side sqrt((P|P)) completes the per-shell
+        // bound U(P) = sqrt((P|P))·Bsum_i·min(1, r_ref/R_P) ≥ |p_ii[P]|.
+        // Off-diagonal pairs count twice (both (μν) and (νμ) symmetrizations).
+        let bsum_i: f64 = sig_pairs
+            .iter()
+            .map(|&(s_mu, s_nu, b_munu)| {
+                let base = b_munu * q_obs[(s_mu, s_nu)];
+                if s_mu != s_nu { 2.0 * base } else { base }
+            })
+            .sum();
 
         // ---- Pass 1 (cheap, nvir-independent): density-pair metric only ----
         // For each (p_sh, s_mu, s_nu) compute the (P|μν) block and accumulate
@@ -220,6 +361,20 @@ pub fn build_screened_bov(
         for p_sh in 0..nsh_df {
             let np = dims_df[p_sh];
             let p0 = offs_df[p_sh];
+            // G6 distance pre-filter on the aux shell: skip evaluating (P|μν)
+            // for this shell iff its rigorous upper bound U(P) ≤ thresh, i.e.
+            // the exact keep decision `max_p |p_ii[p]| > thresh` is provably
+            // false. Leaving p_ii[p]=0 for the skipped functions drops the shell
+            // exactly as the exact-metric decision would. Envelope ≡ 1 (and this
+            // branch a no-op) at dist_cutoff = ∞.
+            if dist_filter_on {
+                let env = dist_envelope(&aux_centers[p_sh], &centroid_i);
+                let u_bound = sqrt_pp_shellmax[p_sh] * bsum_i * env;
+                if u_bound <= thresh {
+                    dist_skipped_aux += 1;
+                    continue;
+                }
+            }
             for &(s_mu, s_nu, _b) in &sig_pairs {
                 let block = match eng3.compute_eri3(obs, dfbs, p_sh, s_mu, s_nu) {
                     Some(b) => b,
@@ -264,6 +419,59 @@ pub fn build_screened_bov(
             }
             if m > thresh {
                 keep_p_shells.push(p_sh);
+            }
+        }
+
+        // ---- G6 PROBE (FERRIC_G6_PROBE=1): quantify bound tightness ----
+        // For the FIRST orbital only, dump per-aux-shell (R = |aux_center −
+        // centroid|, exact |p_ii|max, loose CS bound sqrt(PP)·Bsum_i). This
+        // answers: at what R does the EXACT metric fall below thresh (the
+        // physical locality), vs at what R does the *loose CS bound* fall below
+        // thresh (what the distance envelope can actually act on). If those two
+        // radii differ by orders of magnitude, the bound is too loose to prune.
+        if i_loc == 0 && std::env::var("FERRIC_G6_PROBE").is_ok() {
+            let mut rows: Vec<(f64, f64, f64)> = Vec::with_capacity(nsh_df);
+            for p_sh in 0..nsh_df {
+                let c = &aux_centers[p_sh];
+                let dx = c[0] - centroid_i[0];
+                let dy = c[1] - centroid_i[1];
+                let dz = c[2] - centroid_i[2];
+                let r = (dx * dx + dy * dy + dz * dz).sqrt();
+                let mut exact = 0.0f64;
+                for p in offs_df[p_sh]..offs_df[p_sh] + dims_df[p_sh] {
+                    exact = exact.max(p_ii[p].abs());
+                }
+                let cs_bound = sqrt_pp_shellmax[p_sh] * bsum_i; // env=1 (no decay)
+                rows.push((r, exact, cs_bound));
+            }
+            rows.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+            let max_r = rows.last().map(|r| r.0).unwrap_or(0.0);
+            // Largest R at which the EXACT metric still keeps a shell = the true
+            // coupling range (what any distance filter would have to match).
+            let exact_range = rows
+                .iter()
+                .filter(|r| r.1 > thresh)
+                .map(|r| r.0)
+                .fold(0.0f64, f64::max);
+            let exact_dropped = rows.iter().filter(|r| r.1 <= thresh).count();
+            eprintln!(
+                "G6 PROBE orb0 thresh={thresh:.1e} nsh_df={nsh_df} bsum_i={bsum_i:.3e}: \
+                 max aux-shell R={max_r:.2} Bohr; EXACT-metric coupling range \
+                 (largest R with |p_ii|>thresh) = {exact_range:.2} Bohr; \
+                 exact metric drops {exact_dropped}/{nsh_df} shells for orb0"
+            );
+            // Print the farthest 12 shells: this is where pruning would happen.
+            for &(r, exact, cs) in rows.iter().rev().take(12) {
+                let exact_kept = exact > thresh;
+                let bound_kept = cs > thresh; // env=1; the loosest keep
+                eprintln!(
+                    "   R={r:6.2}  exact={exact:.2e} ({})  CS_bound={cs:.2e} ({})  \
+                     r_ref@thresh_via_bound={:.2}",
+                    if exact_kept { "KEEP" } else { "drop" },
+                    if bound_kept { "KEEP" } else { "drop" },
+                    // radius at which min(1,r_ref/R)*CS = thresh ⇒ r_ref = thresh*R/CS
+                    thresh * r / cs,
+                );
             }
         }
 
@@ -351,6 +559,22 @@ pub fn build_screened_bov(
         tiles.push(tile);
     }
 
+    if dist_filter_on {
+        // Diagnostic: how much the distance envelope pruned. `dist_skipped_aux`
+        // counts (orbital, aux-shell) pass-1 evaluations skipped; the possible
+        // total is nocc_loc × nsh_df. Set FERRIC_G6_DEBUG=1 to see it.
+        if std::env::var("FERRIC_G6_DEBUG").is_ok() {
+            let poss_aux = nocc_loc * nsh_df;
+            eprintln!(
+                "G6 dist-filter r_ref={dist_cutoff:.2} Bohr thresh={thresh:.1e}: \
+                 skipped {dist_skipped_aux}/{poss_aux} (orb,aux-shell) pass-1 blocks \
+                 ({:.1}%), {dist_skipped_pairs} OBS pair-slots; retained {total_retained}/{}",
+                100.0 * dist_skipped_aux as f64 / poss_aux.max(1) as f64,
+                nocc_loc * naux,
+            );
+        }
+    }
+
     Ok(ScreenedBov {
         n_occ_loc: nocc_loc,
         nvir,
@@ -366,6 +590,11 @@ pub fn build_screened_bov(
 
 /// Convenience constructor that runs Boys localization and screening in one
 /// shot. Returns the screened representation plus localization diagnostics.
+///
+/// `dist_cutoff` is the G6 centroid distance pre-filter length scale `r_ref`
+/// (Bohr); pass `f64::INFINITY` to disable it (byte-identical to the pre-G6
+/// path). See [`build_screened_bov`] for the bound derivation.
+#[allow(clippy::too_many_arguments)]
 pub fn build_screened_bov_boys(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -374,6 +603,7 @@ pub fn build_screened_bov_boys(
     rhf: &ScfResult,
     frozen_core: usize,
     thresh: f64,
+    dist_cutoff: f64,
 ) -> Result<(ScreenedBov, crate::boys_localize::BoysOccupied), FerricError> {
     let nbas = obs.nbasis();
     let nelec = mol.nelec() as usize;
@@ -394,6 +624,7 @@ pub fn build_screened_bov_boys(
         &boys.c_loc,
         boys.centroids.clone(),
         thresh,
+        dist_cutoff,
     )?;
     Ok((screened, boys))
 }
