@@ -176,6 +176,12 @@ mod tests {
     #[test]
     fn h2_sto3g_s_function_normalization() {
         // At the H nucleus, the STO-3G 1s contracted GTO should be positive and finite.
+        // Holds ENV_LOCK (declared below) because eval_basis_on_grid reads the
+        // process-global FERRIC_MEM_BUDGET_GB internally (resolve_budget_bytes(None))
+        // -- any test calling it can observe another test's tiny-budget env
+        // mutation under cargo test's default parallelism, not just the test
+        // that sets the var itself.
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mol = h2_mol();
         let bs = basis::bundled("sto-3g").unwrap();
         let grid = GridSpec {
@@ -197,7 +203,13 @@ mod tests {
     }
 
     // FERRIC_MEM_BUDGET_GB is process-global; serialize env-mutating tests
-    // (blas_threads.rs / ferric-core memory.rs pattern).
+    // (blas_threads.rs / ferric-core memory.rs pattern). MUST be held by
+    // every test in this module that calls eval_basis_on_grid, not just the
+    // one that sets the var -- resolve_budget_bytes(None) reads the ambient
+    // env value internally, so any concurrent caller can observe another
+    // test's tiny-budget mutation under cargo test's default parallelism
+    // (found 2026-07-18: eval_basis_on_grid_serial_and_parallel_paths_agree
+    // flaked with OutOfBudget from exactly this race).
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
@@ -231,6 +243,7 @@ mod tests {
     /// so the parallel scatter path is exercised in both dedicated pools.
     #[test]
     fn eval_basis_on_grid_bit_identical_across_thread_counts() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let xyz = "3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n";
         let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
         let bs = basis::bundled("cc-pvdz").unwrap();
@@ -269,6 +282,7 @@ mod tests {
     /// (matching (ix, iy, iz)) agree exactly.
     #[test]
     fn eval_basis_on_grid_serial_and_parallel_paths_agree() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let xyz = "3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n";
         let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
         let bs = basis::bundled("cc-pvdz").unwrap();
