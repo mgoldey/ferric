@@ -204,6 +204,20 @@ pub fn run_u_gw(
         ));
     }
 
+    // Fail fast on an out-of-range qp_mos BEFORE the expensive RPA/B̃-tensor
+    // work below — same reasoning as run_gw's identical check (found
+    // 2026-07-18: an out-of-range upper bound used to panic deep inside a
+    // rayon closure in u_sigma.rs/u_cohsex.rs instead of surfacing a clean
+    // error).
+    let qp_range = gw_cfg.qp_mos.clone().unwrap_or_else(|| default_u_qp_range(mol, scf));
+    let nmo = scf.eps_alpha.len();
+    if qp_range.end > nmo {
+        return Err(FerricError::General(format!(
+            "run_u_gw: qp_mos upper bound {} exceeds the number of MOs ({nmo})",
+            qp_range.end
+        )));
+    }
+
     // GW Σ_c requires the per-frequency inverse-dielectric stack; force it on
     // regardless of what the external caller left in `pdep_cfg` (M9 gate).
     let pdep_cfg = &with_inv_dielectric(pdep_cfg);
@@ -214,8 +228,6 @@ pub fn run_u_gw(
     eprintln!(
         "ferric-gw [U]: redressed eigenpotentials, max |‖V_α‖² − 1| = {dress_dev:.3e}"
     );
-
-    let qp_range = gw_cfg.qp_mos.clone().unwrap_or_else(|| default_u_qp_range(mol, scf));
 
     let result = match gw_cfg.method {
         GwMethod::G0W0 => u_sigma::run_u_g0w0(&mo_b_a, &mo_b_b, pdep, qp_range, gw_cfg, &v_dressed),
@@ -290,6 +302,20 @@ pub fn run_gw(
             "ferric-gw: spike supports closed-shell (RHF) only".into(),
         ));
     }
+    // Fail fast on an out-of-range qp_mos BEFORE the expensive RPA/B̃-tensor
+    // work below — qp_range is a plain user-suppliable Range<usize> with no
+    // upper-bound validation anywhere else, and an out-of-range upper bound
+    // used to panic deep inside a rayon closure in sigma.rs/cohsex.rs
+    // instead of surfacing a clean error (found 2026-07-18).
+    let qp_range = gw_cfg.qp_mos.clone().unwrap_or_else(|| default_qp_range(mol, rhf));
+    let nmo = rhf.eps_r().len();
+    if qp_range.end > nmo {
+        return Err(FerricError::General(format!(
+            "run_gw: qp_mos upper bound {} exceeds the number of MOs ({nmo})",
+            qp_range.end
+        )));
+    }
+
     // 1. Run PDEP-RPA to get {λ_α(iω_k), V_α^dressed, B̃^P_ia}.
     //    GW Σ_c needs the inverse-dielectric stack — force the flag (M9 gate).
     let pdep_cfg = &with_inv_dielectric(pdep_cfg);
@@ -307,10 +333,7 @@ pub fn run_gw(
         "ferric-gw: redressed eigenpotentials, max |‖V_α‖² − 1| = {dress_dev:.3e}"
     );
 
-    // 4. Decide which MOs to compute Σ for.
-    let qp_range = gw_cfg.qp_mos.clone().unwrap_or_else(|| default_qp_range(mol, rhf));
-
-    // 5. Dispatch by method.
+    // 4. Dispatch by method.
     let result = match gw_cfg.method {
         GwMethod::Cohsex => cohsex::run_cohsex(mol, rhf, &mo_b, &v_dressed, pdep, qp_range, gw_cfg),
         GwMethod::G0W0 => sigma::run_g0w0(mol, rhf, &mo_b, &v_dressed, pdep, qp_range, gw_cfg, vxc_diag),
