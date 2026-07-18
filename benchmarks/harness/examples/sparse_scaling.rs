@@ -31,9 +31,9 @@ struct SparsityCfg {
 fn cfgs() -> Vec<SparsityCfg> {
     vec![
         SparsityCfg { label: "Dense", sparsity: Chi0Sparsity::Dense },
-        SparsityCfg { label: "Boys-1e-3", sparsity: Chi0Sparsity::BoysScreened { thresh: 1e-3 } },
-        SparsityCfg { label: "Boys-1e-4", sparsity: Chi0Sparsity::BoysScreened { thresh: 1e-4 } },
-        SparsityCfg { label: "Boys-1e-5", sparsity: Chi0Sparsity::BoysScreened { thresh: 1e-5 } },
+        SparsityCfg { label: "Boys-1e-3", sparsity: Chi0Sparsity::BoysScreened { thresh: 1e-3, dist_cutoff: f64::INFINITY } },
+        SparsityCfg { label: "Boys-1e-4", sparsity: Chi0Sparsity::BoysScreened { thresh: 1e-4, dist_cutoff: f64::INFINITY } },
+        SparsityCfg { label: "Boys-1e-5", sparsity: Chi0Sparsity::BoysScreened { thresh: 1e-5, dist_cutoff: f64::INFINITY } },
     ]
 }
 
@@ -174,8 +174,8 @@ fn main() {
                 // Auto picks Dense/Boys by atom count at runtime; for this diagnostic
                 // we report it like Dense (no static screening stats to show).
                 Chi0Sparsity::Dense | Chi0Sparsity::Auto { .. } => (0usize, 0usize, 0.0_f64),
-                Chi0Sparsity::BoysScreened { thresh } => {
-                    match screen::build_screened_bov_boys(&mol, &obs, &dfbs, op, &rhf, sys.frozen_core, thresh) {
+                Chi0Sparsity::BoysScreened { thresh, dist_cutoff } => {
+                    match screen::build_screened_bov_boys(&mol, &obs, &dfbs, op, &rhf, sys.frozen_core, thresh, dist_cutoff) {
                         Ok((sb, _)) => (sb.total_retained, sb.n_occ_loc * sb.naux, thresh),
                         Err(e) => { eprintln!("  screen failed ({}): {e}", cfg.label); (0, 0, thresh) }
                     }
