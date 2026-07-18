@@ -207,6 +207,12 @@ mod tests {
         use ferric_core::parallel::ParallelContext;
         use ferric_integrals::operator::Operator;
 
+        // canonical_mp2 reads the process-global FERRIC_MEM_BUDGET_GB
+        // internally (via resolve_budget_bytes(None)); hold ENV_LOCK so this
+        // can't observe canonical_mp2_fails_fast_under_tiny_env_budget's
+        // temporary tiny-budget mutation under cargo test's default
+        // parallelism (found 2026-07-18, same class of bug as gto_eval.rs).
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let xyz = "2\n\nH 0.0 0.0 0.0\nH 0.0 0.0 0.74\n";
         let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
         let bs = basis::bundled("cc-pvdz").unwrap();
@@ -221,6 +227,7 @@ mod tests {
 
     #[test]
     fn test_canonical_mp2_h2_sto3g() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
         let bs = basis::bundled("sto-3g").unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
@@ -252,6 +259,7 @@ mod tests {
 
     #[test]
     fn test_canonical_vs_ri_mp2_h2_ccpvdz() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
         let bs = basis::bundled("cc-pvdz").unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();

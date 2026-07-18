@@ -219,6 +219,12 @@ mod tests {
     use ferric_scf::screening::SchwarzBounds;
 
     fn run_mp3(xyz: &str, obs_name: &str, dfbs_name: &str) -> Mp3Result {
+        // mp3_energy reads the process-global FERRIC_MEM_BUDGET_GB internally;
+        // hold ENV_LOCK so callers can't observe
+        // mp3_fails_fast_under_tiny_env_budget's temporary tiny-budget
+        // mutation under cargo test's default parallelism (found 2026-07-18,
+        // same class of bug as gto_eval.rs).
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
         let obs_bs = basis::bundled(obs_name).unwrap();
         let dfbs_bs = basis::bundled(dfbs_name).unwrap();
@@ -257,6 +263,12 @@ mod tests {
     fn mp3_frozen_core_exceeding_nocc_errors_not_panics() {
         // H2/STO-3G has nocc_total = 1; frozen_core = 2 must Err (not underflow
         // `nocc_total - frozen_core` as a usize and panic).
+        // mp3_energy reads the process-global FERRIC_MEM_BUDGET_GB internally;
+        // hold ENV_LOCK so this can't observe
+        // mp3_fails_fast_under_tiny_env_budget's temporary tiny-budget
+        // mutation under cargo test's default parallelism (found 2026-07-18,
+        // same class of bug as gto_eval.rs).
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mol = Molecule::parse_xyz("2\n\nH 0.0 0.0 0.0\nH 0.0 0.0 0.74\n", 0, 1).unwrap();
         let obs_bs = basis::bundled("sto-3g").unwrap();
         let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();

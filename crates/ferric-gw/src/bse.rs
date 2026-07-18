@@ -827,6 +827,12 @@ mod tests {
 
     #[test]
     fn cis_tda_a_matrix_bit_identical_across_thread_counts() {
+        // run_cis_tda reads the process-global FERRIC_MEM_BUDGET_GB
+        // internally; hold ENV_LOCK so this can't observe
+        // cis_tda_fails_fast_under_tiny_env_budget's temporary tiny-budget
+        // mutation under cargo test's default parallelism (found 2026-07-18,
+        // same class of bug as gto_eval.rs).
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // P4: the row-parallel A-matrix fill (par_chunks_mut over the flat
         // `ia` axis) must be bit-identical regardless of RAYON_NUM_THREADS —
         // each row is written by exactly one worker, no reduction, so thread
