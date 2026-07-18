@@ -406,6 +406,70 @@ pub fn solve_uhf_fockmod(
         }
         prev_e = energy;
 
+        // ── Second-order (Newton) update, UHF/UKS ────────────────────────────
+        // When enabled (newton_trigger > 0) and err_max has dropped below the
+        // trigger, take a damped-Newton step on the α/β orbital rotations
+        // instead of DIIS. For UKS this uses the SAME LDA/GGA f_xc kernel the
+        // ROKS Newton path uses (via FxcKernelStore), so PBE/B3LYP/etc. UKS now
+        // gets real second-order acceleration, not just LDA. Gated to the
+        // non-RSH case (ω = 0): the Newton matvec's K comes from the plain
+        // Coulomb `build_jk`, so range-separated K would be inconsistent — RSH
+        // keeps the DIIS path.
+        let use_newton = config.newton_trigger > 0.0
+            && iter > 3
+            && err_max < config.newton_trigger
+            && k_mix.omega == 0.0;
+        if use_newton {
+            let f_a_mo = c_a.t().dot(&f_a).dot(&c_a);
+            let f_b_mo = c_b.t().dot(&f_b).dot(&c_b);
+
+            // Build the f_xc kernel (LDA or GGA) + reference density once per
+            // Newton step (None for pure UHF). The response closure borrows it.
+            let fxc_store = if xc_contrib.is_some() {
+                let main = config.dft_grid.clone().unwrap_or_default();
+                let name = config.xc.as_deref().expect("xc_contrib implies Some(xc)");
+                Some(crate::rohf::FxcKernelStore::build(mol, prep, &main, name, &d_a, &d_b)?)
+            } else {
+                None
+            };
+            let fxc_storage = fxc_store.as_ref().map(|s| s.response());
+            let fxc_ref: Option<&crate::rohf_newton::FxcResponse<'_>> = fxc_storage.as_deref();
+
+            let inputs = crate::uhf_newton::UhfNewtonInputs {
+                prep,
+                bounds,
+                c_a: &c_a,
+                c_b: &c_b,
+                f_a_mo: &f_a_mo,
+                f_b_mo: &f_b_mo,
+                nocc_a,
+                nocc_b,
+                k_mix_sr: if xc_contrib.is_some() { c_k } else { 1.0 },
+                fxc: fxc_ref,
+                thresh: config.integral_thresh,
+            };
+            let (c_a_n, c_b_n, _kmax) = crate::uhf_newton::uhf_newton_step(
+                ctx,
+                &inputs,
+                config.level_shift.max(1e-6),
+                0.2, // trust radius
+                20,
+                1e-7,
+            )?;
+            c_a = c_a_n;
+            c_b = c_b_n;
+            let d_tot_old = &d_a + &d_b;
+            d_a = density(&c_a, nocc_a);
+            d_b = density(&c_b, nocc_b);
+            {
+                let diff = &(&d_a + &d_b) - &d_tot_old;
+                let n2 = (diff.len() as f64).max(1.0);
+                dp_rms = (diff.iter().map(|v| v * v).sum::<f64>() / n2).sqrt();
+                dp_max = diff.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
+            }
+            continue;
+        }
+
         // Coupled DIIS extrapolation: one set of coefficients applied to
         // both spin Fock histories.
         let (mut f_a_new, mut f_b_new) = diis.step_pair(&f_a, &f_b, &err_a, &err_b);

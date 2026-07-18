@@ -75,7 +75,7 @@ pub static GGA_FXC_KERNEL_BUILDS: std::sync::atomic::AtomicUsize =
 /// (which adds the σ = |∇ρ|² coupling terms). Building this once per Newton step
 /// and borrowing the closure from it keeps the (heavy) grid + AO evaluation out
 /// of the per-matvec inner loop.
-enum FxcKernelStore {
+pub(crate) enum FxcKernelStore {
     Lda {
         kernel: Box<ferric_dft::fxc::LdaFxcKernel>,
         rho_a0: Vec<f64>,
@@ -92,7 +92,7 @@ impl FxcKernelStore {
     /// the given reference densities. `xc_name` is the functional string that
     /// already produced a live `xc_contrib` upstream, so it is guaranteed
     /// LDA/GGA/hybrid/RSH (meta-GGA rejected at KsXcUks::new).
-    fn build(
+    pub(crate) fn build(
         mol: &Molecule,
         prep: &PreparedBasis,
         cfg: &ferric_dft::grid::AtomicGridConfig,
@@ -122,7 +122,7 @@ impl FxcKernelStore {
 
     /// The `Fn(δD_α, δD_β) -> (δV_α, δV_β)` response closure, borrowing `self`.
     #[allow(clippy::type_complexity)]
-    fn response(
+    pub(crate) fn response(
         &self,
     ) -> Box<dyn Fn(&Array2<f64>, &Array2<f64>) -> (Array2<f64>, Array2<f64>) + Sync + '_> {
         match self {

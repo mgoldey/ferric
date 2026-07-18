@@ -42,6 +42,7 @@ pub mod rohf;
 pub use rohf::{solve_rohf, RohfConfig};
 pub mod mom;
 pub mod rohf_newton;
+pub mod uhf_newton;
 pub mod davidson_local;
 pub mod rohf_ah;
 pub mod gradient;
