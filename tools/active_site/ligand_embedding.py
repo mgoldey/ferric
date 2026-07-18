@@ -47,6 +47,8 @@ class EmbeddedLigand:
     point_charges: list[PointCharge] | None
     pocket: PocketCharges | None
     source_xyz: Path | None
+    coords_angstrom: list[tuple[float, float, float]]
+    symbols: list[str]
 
 
 def _filter_pocket_for_ligand(
@@ -76,11 +78,13 @@ def embed_ligand(
     """
     mol = ferric.Molecule.from_xyz(str(ligand_xyz))
     basis_set = ferric.BasisSet.bundled(basis)
-    ligand_coords_angstrom = [(a.x, a.y, a.z) for a in _read_xyz_atoms(ligand_xyz)]
+    atoms = _read_xyz_atoms(ligand_xyz)
+    ligand_coords_angstrom = [(a.x, a.y, a.z) for a in atoms]
     point_charges = _filter_pocket_for_ligand(pocket, ligand_coords_angstrom, overlap_cutoff_angstrom)
     return EmbeddedLigand(
         mol=mol, basis_set=basis_set, basis_name=basis,
         point_charges=point_charges, pocket=pocket, source_xyz=Path(ligand_xyz),
+        coords_angstrom=ligand_coords_angstrom, symbols=[a.symbol for a in atoms],
     )
 
 
@@ -108,4 +112,5 @@ def embed_ligand_from_coords(
     return EmbeddedLigand(
         mol=mol, basis_set=basis_set, basis_name=basis,
         point_charges=point_charges, pocket=pocket, source_xyz=None,
+        coords_angstrom=list(coords_angstrom), symbols=list(symbols),
     )

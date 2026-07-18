@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from tools.active_site.ligand_embedding import embed_ligand, embed_ligand_from_coords
 from tools.active_site.pocket_charges import PocketCharges
 
@@ -32,3 +34,19 @@ def test_embed_ligand_from_coords_matches_file():
     from_coords = embed_ligand_from_coords(["O", "H", "H"], WATER_COORDS, basis="sto-3g")
     assert from_file.mol.natoms() == from_coords.mol.natoms()
     assert from_file.mol.nuclear_repulsion() == from_coords.mol.nuclear_repulsion()
+
+
+def test_embed_ligand_stores_coords_and_symbols():
+    # coords_angstrom/symbols must be populated and match the source data
+    # (needed downstream by prescreen.prescreen_pose, which has no other way
+    # to recover atom positions from a ferric.Molecule).
+    embedded = embed_ligand(WATER_XYZ, basis="sto-3g")
+    assert embedded.symbols == ["O", "H", "H"]
+    assert len(embedded.coords_angstrom) == 3
+    assert embedded.coords_angstrom[0] == pytest.approx((0.0, 0.0, 0.117790))
+
+
+def test_embed_ligand_from_coords_stores_coords_and_symbols():
+    embedded = embed_ligand_from_coords(["O", "H", "H"], WATER_COORDS, basis="sto-3g")
+    assert embedded.symbols == ["O", "H", "H"]
+    assert embedded.coords_angstrom == WATER_COORDS
