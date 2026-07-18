@@ -42,7 +42,7 @@ fn base_cfg() -> PdepRpaConfig {
         },
         frozen_core: 0,
         trunc_thresh: 0.0,
-        davidson_conv_thresh: 1e-10,
+        eigensolver_conv_thresh: 1e-10,
         ..Default::default()
     }
 }
@@ -58,7 +58,7 @@ fn h2o_cc_pvdz_screened_equivalence_thresh_zero() {
     let r_dense = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg_dense).unwrap();
 
     let mut cfg_screen = base_cfg();
-    cfg_screen.chi0_sparsity = Chi0Sparsity::BoysScreened { thresh: 0.0 };
+    cfg_screen.chi0_sparsity = Chi0Sparsity::BoysScreened { thresh: 0.0, dist_cutoff: f64::INFINITY };
     let r_scr = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg_screen).unwrap();
 
     let diff = (r_scr.e_rpa - r_dense.e_rpa).abs();
@@ -96,11 +96,12 @@ fn h2o_cc_pvdz_screened_production_thresh() {
 
     let thresh = 1e-6;
     let mut cfg = base_cfg();
-    cfg.chi0_sparsity = Chi0Sparsity::BoysScreened { thresh };
+    cfg.chi0_sparsity = Chi0Sparsity::BoysScreened { thresh, dist_cutoff: f64::INFINITY };
     let r_scr = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
 
     // Diagnostic: pair retention.
-    let (sb, _) = screen::build_screened_bov_boys(&mol, &obs, &dfbs, op, &rhf, 0, thresh).unwrap();
+    let (sb, _) =
+        screen::build_screened_bov_boys(&mol, &obs, &dfbs, op, &rhf, 0, thresh, f64::INFINITY).unwrap();
     let total_possible = sb.n_occ_loc * sb.naux;
     println!(
         "H2O/cc-pVDZ thresh={:.0e}  retained {}/{} ({:.1}%)  ΔE={:.2e}",
@@ -116,6 +117,252 @@ fn h2o_cc_pvdz_screened_production_thresh() {
         diff < 1e-7,
         "screened-vs-dense diff at thresh={:.0e} = {:.2e}; expected <1e-7",
         thresh, diff
+    );
+}
+
+/// G6 equivalence-at-large-radius regression test (item 4 of the brief).
+///
+/// A distance cutoff larger than the whole molecule can prune nothing: every
+/// aux shell and OBS pair sits within `r_ref` of every Boys centroid, so the
+/// `min(1, r_ref/R)` envelope is ≡ 1 and `build_screened_bov`'s output — the
+/// retained aux lists AND the dressed tile values themselves — must be
+/// **bit-for-bit identical** to the `dist_cutoff = ∞` build. This is the direct,
+/// noise-free proof that the distance filter is a strict pre-filter that
+/// composes with — never replaces — the exact metric: at a radius where it
+/// cannot fire, `screen.rs`'s output is byte-identical to the pre-G6 path.
+///
+/// We assert on `ScreenedBov` (screen.rs's actual product), NOT on the
+/// downstream RPA energy: the energy is built by an *iterative* block-Lanczos
+/// eigensolve whose "best-effort" Ritz pairs are not run-to-run deterministic at
+/// the 1e-13 level when it does not fully converge (see the solver-honesty
+/// reliability convention — an unconverged Lanczos warns and returns best-effort
+/// pairs). Byte-identical tiles feeding a nondeterministic-at-1e-9 downstream
+/// solver is exactly the invariant the brief's "algebraically equivalent to
+/// today's screen.rs output" demands; the downstream energy noise is not part of
+/// screen.rs and must not be smuggled into this test's tolerance.
+#[test]
+fn h2o_cc_pvdz_dist_cutoff_large_radius_equivalence() {
+    let (mol, obs, dfbs, op, rhf) =
+        setup("../../testdata/molecules/water.xyz", "cc-pvdz", "cc-pvdz-ri");
+
+    let thresh = 1e-5;
+    // Water spans < 4 Bohr; 1e6 Bohr is astronomically larger than any pair.
+    let r_ref = 1.0e6;
+
+    let (sb_inf, _) =
+        screen::build_screened_bov_boys(&mol, &obs, &dfbs, op, &rhf, 0, thresh, f64::INFINITY)
+            .unwrap();
+    let (sb_big, _) =
+        screen::build_screened_bov_boys(&mol, &obs, &dfbs, op, &rhf, 0, thresh, r_ref).unwrap();
+
+    // Retained sets must be bit-identical.
+    assert_eq!(
+        sb_inf.total_retained, sb_big.total_retained,
+        "large-radius total_retained {} != infinite-radius {}",
+        sb_big.total_retained, sb_inf.total_retained
+    );
+    assert_eq!(
+        sb_inf.p_lists, sb_big.p_lists,
+        "large-radius per-orbital aux lists differ from infinite-radius"
+    );
+
+    // The dressed tiles — the actual screen.rs output that feeds χ₀ — must be
+    // element-wise bit-for-bit identical (same integrals, same contraction
+    // order; the envelope only gates *which* shells are evaluated, and here it
+    // gates none, so nothing about the arithmetic changes).
+    assert_eq!(
+        sb_inf.tiles.len(),
+        sb_big.tiles.len(),
+        "tile count differs between ∞ and large-radius builds"
+    );
+    let mut max_tile_diff = 0.0f64;
+    for (i, (t_inf, t_big)) in sb_inf.tiles.iter().zip(sb_big.tiles.iter()).enumerate() {
+        assert_eq!(
+            t_inf.dim(),
+            t_big.dim(),
+            "tile {i} shape differs between ∞ and large-radius builds"
+        );
+        for (a, b) in t_inf.iter().zip(t_big.iter()) {
+            max_tile_diff = max_tile_diff.max((a - b).abs());
+        }
+    }
+    println!(
+        "H2O/cc-pVDZ dist_cutoff ∞ vs {r_ref:.0e} Bohr @thresh={thresh:.0e}: \
+         retained {} (both), max|Δtile|={max_tile_diff:.2e}",
+        sb_inf.total_retained
+    );
+    assert_eq!(
+        max_tile_diff, 0.0,
+        "large-radius screened tiles differ from infinite-radius by {max_tile_diff:.2e}; \
+         expected bit-for-bit identical (the envelope must be a strict no-op here)"
+    );
+}
+
+/// G6 PROBE (run with `FERRIC_G6_PROBE=1 --nocapture`): quantify how tight the
+/// Cauchy-Schwarz bound is on n-hexane vs the exact `p_ii` locality. Builds the
+/// screened representation once and lets screen.rs dump per-aux-shell (R, exact,
+/// bound). Cheap: no RPA energy solve. This is the diagnostic that decides
+/// whether the distance envelope can prune at all.
+#[test]
+#[ignore] // diagnostic: run explicitly with FERRIC_G6_PROBE=1 --nocapture
+fn n_hexane_g6_probe() {
+    let (mol, obs, dfbs, op, rhf) =
+        setup("../../testdata/molecules/scaling/n-hexane.xyz", "cc-pvdz", "cc-pvdz-ri");
+    let thresh = 1e-4;
+    let frozen = 6;
+    let (sb, _) =
+        screen::build_screened_bov_boys(&mol, &obs, &dfbs, op, &rhf, frozen, thresh, 10.0).unwrap();
+    let poss = sb.n_occ_loc * sb.naux;
+    println!(
+        "n-hexane probe: total_retained={}/{} ({:.1}%)",
+        sb.total_retained,
+        poss,
+        100.0 * sb.total_retained as f64 / poss as f64
+    );
+}
+
+/// G6 probe on a LONG chain (n-hexadecane, ~43.6 Bohr) — the geometry where a
+/// Boys centroid at one end is genuinely >30 Bohr from aux functions at the
+/// other. This is the definitive test of whether distance screening EVER bites:
+/// if the exact |p_ii| still keeps ~100% even here, the `1/r` Coulomb tail is
+/// simply not local at any molecular scale we care about.
+#[test]
+#[ignore] // diagnostic: run explicitly with FERRIC_G6_PROBE=1 --nocapture
+fn n_hexadecane_g6_probe() {
+    let (mol, obs, dfbs, op, rhf) =
+        setup("../../testdata/molecules/scaling/n-hexadecane.xyz", "cc-pvdz", "cc-pvdz-ri");
+    let thresh = 1e-4;
+    let frozen = 16;
+    let (sb, _) =
+        screen::build_screened_bov_boys(&mol, &obs, &dfbs, op, &rhf, frozen, thresh, 15.0).unwrap();
+    let poss = sb.n_occ_loc * sb.naux;
+    println!(
+        "n-hexadecane probe: total_retained={}/{} ({:.1}%)",
+        sb.total_retained,
+        poss,
+        100.0 * sb.total_retained as f64 / poss as f64
+    );
+}
+
+/// G6 probe with a MINIMAL orbital basis (STO-3G) on the long chain. Matt's
+/// suggestion: does a compact basis make distance screening bite? STO-3G orbital
+/// products are spatially tighter, but the aux `(P|i_loc i_loc)` metric still
+/// carries the `1/R` monopole tail of the unit-charge localized density, which
+/// is basis-independent. This probe measures the exact-metric retention for the
+/// minimal case to confirm the tail — not the orbital extent — is what governs.
+#[test]
+#[ignore] // diagnostic: run explicitly with FERRIC_G6_PROBE=1 --nocapture
+fn n_hexadecane_sto3g_g6_probe() {
+    let (mol, obs, dfbs, op, rhf) =
+        setup("../../testdata/molecules/scaling/n-hexadecane.xyz", "sto-3g", "cc-pvdz-ri");
+    let thresh = 1e-4;
+    let frozen = 16;
+    let (sb, _) =
+        screen::build_screened_bov_boys(&mol, &obs, &dfbs, op, &rhf, frozen, thresh, 15.0).unwrap();
+    let poss = sb.n_occ_loc * sb.naux;
+    println!(
+        "n-hexadecane/STO-3G probe: total_retained={}/{} ({:.1}%)",
+        sb.total_retained,
+        poss,
+        100.0 * sb.total_retained as f64 / poss as f64
+    );
+}
+
+#[test]
+#[ignore] // diagnostic: run explicitly with FERRIC_G6_PROBE=1 --nocapture
+fn naphthalene_g6_probe() {
+    let (mol, obs, dfbs, op, rhf) =
+        setup("../../testdata/molecules/scaling/naphthalene.xyz", "cc-pvdz", "cc-pvdz-ri");
+    let thresh = 1e-4;
+    let frozen = 10; // 10 carbon 1s cores
+    let (sb, _) =
+        screen::build_screened_bov_boys(&mol, &obs, &dfbs, op, &rhf, frozen, thresh, 8.0).unwrap();
+    let poss = sb.n_occ_loc * sb.naux;
+    println!(
+        "naphthalene probe: total_retained={}/{} ({:.1}%)",
+        sb.total_retained,
+        poss,
+        100.0 * sb.total_retained as f64 / poss as f64
+    );
+}
+
+/// G6 MEASURED DEAD-END (see docs/pdep-boys-laplace-scaling.md "G6" section and
+/// docs/open-work-triage-2026-07-14-open.md #38): on n-hexane the distance
+/// pre-filter prunes NOTHING at any usable radius, so it cannot speed sparse-RPA
+/// up. This test pins that measured fact so a future change that *did* start
+/// pruning here would flip it and force a re-read of the analysis.
+///
+/// Root cause, measured (`FERRIC_G6_PROBE=1`): at thresh=1e-4 the *exact*
+/// pass-1 metric `|p_ii[P]|` already retains 100% of aux functions
+/// (`total_retained == n_occ_loc·naux`) — the diagnosis the brief started from.
+/// The farthest aux shell from any Boys centroid is only ~9.3 Bohr away, and at
+/// that distance the exact metric is still 2e-2…1.4 (200×…14000× above thresh):
+/// the `1/r` Coulomb tail of the unit-charge `i_loc i_loc` density does NOT
+/// decay across the molecule's own diameter. Because the distance envelope
+/// `min(1,r_ref/R)·CS_bound` is a composable *upper* bound on that exact metric,
+/// it can only ever drop a SUBSET of what the exact metric drops — and the exact
+/// metric drops nothing. Hence: `retained(r_ref) == retained(∞)` for every
+/// r_ref large enough to leave the genuine physics intact, and the energy is
+/// unchanged. The only r_ref that would make the *bound* fire (≈2e-4 Bohr, from
+/// the probe's `r_ref@thresh_via_bound` column) is far smaller than the molecule
+/// and would wrongly drop shells whose exact coupling is O(1) — i.e. it would be
+/// physically wrong, not a speedup. So the honest assertion here is EQUIVALENCE,
+/// not pruning.
+#[test]
+#[ignore] // moderately slow: n-hexane/cc-pVDZ SCF + two PDEP builds
+fn n_hexane_dist_cutoff_is_measured_noop_at_production_radius() {
+    let (mol, obs, dfbs, op, rhf) =
+        setup("../../testdata/molecules/scaling/n-hexane.xyz", "cc-pvdz", "cc-pvdz-ri");
+
+    let thresh = 1e-4;
+    let frozen = 6; // 6 carbon 1s cores
+    let r_ref = 10.0; // Bohr — shorter than the ~14.5 Bohr chain, yet prunes nothing.
+
+    let (sb_inf, _) =
+        screen::build_screened_bov_boys(&mol, &obs, &dfbs, op, &rhf, frozen, thresh, f64::INFINITY)
+            .unwrap();
+    let (sb_cut, _) =
+        screen::build_screened_bov_boys(&mol, &obs, &dfbs, op, &rhf, frozen, thresh, r_ref).unwrap();
+
+    let poss = sb_inf.n_occ_loc * sb_inf.naux;
+    println!(
+        "n-hexane/cc-pVDZ @thresh={thresh:.0e}: retained ∞={}/{} ({:.1}%) cut(r={r_ref})={}",
+        sb_inf.total_retained,
+        poss,
+        100.0 * sb_inf.total_retained as f64 / poss as f64,
+        sb_cut.total_retained,
+    );
+
+    // MEASURED: the exact metric already keeps everything, so distance pruning is
+    // a no-op — retained sets and tiles are bit-identical to the ∞ build.
+    assert_eq!(
+        sb_cut.total_retained, sb_inf.total_retained,
+        "distance cutoff changed n-hexane retention — the measured dead-end (exact \
+         metric keeps 100%, envelope can only prune a subset of that) would be broken; \
+         re-read docs/pdep-boys-laplace-scaling.md G6"
+    );
+    assert_eq!(
+        sb_cut.p_lists, sb_inf.p_lists,
+        "distance cutoff changed n-hexane per-orbital aux lists (expected identical)"
+    );
+
+    // And the downstream RPA energy is therefore unchanged (byte-identical tiles).
+    let mut cfg_inf = base_cfg();
+    cfg_inf.frozen_core = frozen;
+    cfg_inf.chi0_sparsity = Chi0Sparsity::BoysScreened { thresh, dist_cutoff: f64::INFINITY };
+    let r_inf = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg_inf).unwrap();
+
+    let mut cfg_cut = base_cfg();
+    cfg_cut.frozen_core = frozen;
+    cfg_cut.chi0_sparsity = Chi0Sparsity::BoysScreened { thresh, dist_cutoff: r_ref };
+    let r_cut = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg_cut).unwrap();
+
+    let diff = (r_inf.e_rpa - r_cut.e_rpa).abs();
+    println!("n-hexane ΔE(cut vs ∞) = {diff:.2e}");
+    assert!(
+        diff < 1e-8,
+        "distance cutoff changed n-hexane RPA energy by {diff:.2e}; expected ~0 \
+         (it prunes nothing at r={r_ref} Bohr, so the energy must be identical)"
     );
 }
 
@@ -141,12 +388,13 @@ fn benzene_cc_pvdz_screened_scaling() {
     let thresh = 5e-3;
     let mut cfg_scr = base_cfg();
     cfg_scr.frozen_core = 6;
-    cfg_scr.chi0_sparsity = Chi0Sparsity::BoysScreened { thresh };
+    cfg_scr.chi0_sparsity = Chi0Sparsity::BoysScreened { thresh, dist_cutoff: f64::INFINITY };
     let t0 = Instant::now();
     let r_scr = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg_scr).unwrap();
     let dt_scr = t0.elapsed().as_secs_f64();
 
-    let (sb, _) = screen::build_screened_bov_boys(&mol, &obs, &dfbs, op, &rhf, 6, thresh).unwrap();
+    let (sb, _) =
+        screen::build_screened_bov_boys(&mol, &obs, &dfbs, op, &rhf, 6, thresh, f64::INFINITY).unwrap();
     let total_possible = sb.n_occ_loc * sb.naux;
     let reduction = total_possible as f64 / sb.total_retained.max(1) as f64;
 
@@ -194,12 +442,13 @@ fn benzene_cc_pvdz_thresh_sweep() {
         use std::time::Instant;
         let t_build = Instant::now();
         let (sb, _) =
-            screen::build_screened_bov_boys(&mol, &obs, &dfbs, op, &rhf, 6, thresh).unwrap();
+            screen::build_screened_bov_boys(&mol, &obs, &dfbs, op, &rhf, 6, thresh, f64::INFINITY)
+                .unwrap();
         let dt_build = t_build.elapsed().as_secs_f64();
 
         let mut cfg = base_cfg();
         cfg.frozen_core = 6;
-        cfg.chi0_sparsity = Chi0Sparsity::BoysScreened { thresh };
+        cfg.chi0_sparsity = Chi0Sparsity::BoysScreened { thresh, dist_cutoff: f64::INFINITY };
         let t_run = Instant::now();
         let r = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
         let dt_run = t_run.elapsed().as_secs_f64();

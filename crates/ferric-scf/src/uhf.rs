@@ -3,12 +3,14 @@
 //! Parallels `rhf.rs` but tracks independent α/β densities, Fock matrices, and
 //! DIIS streams. Uses J built from D_total = D_α + D_β and K built per spin.
 
+use crate::df_j::DfJ;
+use crate::df_k::DfK;
 use crate::diis::Diis;
 use crate::direct_j::DirectJ;
 use crate::direct_k::DirectK;
 use crate::fock::{JBuilder, KBuilder};
 use crate::guess::hcore_guess;
-use crate::result::{ScfResult, Spin};
+use crate::result::{ScfExit, ScfResult, Spin};
 use crate::rhf::RhfConfig;
 use crate::screening::SchwarzBounds;
 
@@ -130,7 +132,7 @@ pub fn solve_uhf_fockmod(
         (None, None)
     };
     let s = oneelectron::overlap(prep);
-    let h = oneelectron::hcore(prep);
+    let h = oneelectron::hcore_with_external(prep, config.external_potential.as_ref())?;
     let n = prep.nbasis();
     let nelec = mol.nelec() as i64;
     let mult = mol.multiplicity as i64;
@@ -155,7 +157,10 @@ pub fn solve_uhf_fockmod(
     if nocc_b > nocc_a {
         return Err(FerricError::General("UHF: nocc_b > nocc_a".into()));
     }
-    let vnn = mol.nuclear_repulsion();
+    let vnn = mol.nuclear_repulsion()
+        + config.external_potential.as_ref().map_or(0.0, |ext| {
+            ext.charge_nuclear_energy(mol) + ext.field_nuclear_energy(mol)
+        });
 
     // Canonical orthogonalizer X (n × m): drops eigenvectors of S below
     // LINDEP_THRESH to handle near-linear-dependent basis sets (Na clusters in
@@ -208,6 +213,11 @@ pub fn solve_uhf_fockmod(
     // in ~15-25 cycles).
     let mut diis = Diis::new(config.diis_size);
     let mut prev_e = 0.0;
+    // Density change ΔP from the previous iteration's rebuild, over the TOTAL
+    // density (α+β) — the ORCA/PySCF primary convergence signal, shared with
+    // solve_rhf (see rhf::scf_converged). INFINITY until the first rebuild.
+    let mut dp_rms = f64::INFINITY;
+    let mut dp_max = f64::INFINITY;
     let mut total_quartets = 0usize;
 
     // Maximum-Overlap Method (MOM) references: the previously-accepted occupied
@@ -223,14 +233,45 @@ pub fn solve_uhf_fockmod(
 
     // K built per spin:
     //   * RSH (ω > 0): K_σ = c_SR · K_SR[D_σ] + c_LR · K_LR[D_σ] via DfK
-    //   * Plain hybrid / pure HF (ω = 0): K_σ = c_K · K[D_σ] via DirectK
+    //   * Plain hybrid / pure HF (ω = 0): K_σ = c_K · K[D_σ] via DirectK, or DfK
+    //     when config.df_k_aux is set (density-fitted exchange).
     //   * Pure DFT (c_K = 0): K skipped
+    // J (ω = 0 path only — RSH doesn't touch J here) is DirectJ, or DfJ when
+    // config.df_j_aux is set (density-fitted Coulomb).
     // Builders hoisted out of the loop: each lazily builds a per-thread libint2
     // EnginePool on first use (ctors serialized behind a global mutex), so a
     // loop-local builder would pay that construction every iteration.
     let need_k = c_k != 0.0 || k_mix.omega > 0.0;
-    let mut direct_j = DirectJ::new(ctx, prep, bounds, config.integral_thresh);
-    let mut direct_k: Option<DirectK> = if need_k && k_mix.omega == 0.0 {
+    let ooc_budget = crate::rhf::resolve_three_index_budget(config.three_index_budget_bytes);
+    let coulomb_op = bounds.op;
+    let mut df_j: Option<DfJ> = if k_mix.omega == 0.0 {
+        if let Some(aux_name) = config.df_j_aux.as_deref() {
+            let dfbs_set = ferric_core::basis::bundled(aux_name)?;
+            let dfbs = PreparedBasis::new(mol, &dfbs_set)?;
+            Some(DfJ::new(coulomb_op, prep, &dfbs, ooc_budget)?)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let mut direct_j: Option<DirectJ> = if df_j.is_none() {
+        Some(DirectJ::new(ctx, prep, bounds, config.integral_thresh))
+    } else {
+        None
+    };
+    let mut df_k: Option<DfK> = if need_k && k_mix.omega == 0.0 {
+        if let Some(aux_name) = config.df_k_aux.as_deref() {
+            let dfbs_set = ferric_core::basis::bundled(aux_name)?;
+            let dfbs = PreparedBasis::new(mol, &dfbs_set)?;
+            Some(DfK::new(coulomb_op, prep, &dfbs, ooc_budget)?)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let mut direct_k: Option<DirectK> = if need_k && k_mix.omega == 0.0 && df_k.is_none() {
         Some(DirectK::new(ctx, prep, bounds, config.integral_thresh))
     } else {
         None
@@ -243,8 +284,13 @@ pub fn solve_uhf_fockmod(
         k_b_buf.fill(0.0);
         let d_total = &d_a + &d_b;
 
-        // J built from total density (one call).
-        total_quartets += direct_j.build(&d_total, &mut j_buf)?;
+        // J built from total density (one call). DF-J if configured, else direct.
+        if let Some(dfj) = df_j.as_mut() {
+            dfj.build(&d_total, &mut j_buf)?;
+        } else {
+            let dj = direct_j.as_mut().expect("DirectJ built before loop");
+            total_quartets += dj.build(&d_total, &mut j_buf)?;
+        }
         let mut k_a_total = Array2::<f64>::zeros((n, n));
         let mut k_b_total = Array2::<f64>::zeros((n, n));
         if k_mix.omega > 0.0 {
@@ -261,9 +307,14 @@ pub fn solve_uhf_fockmod(
             k_a_total = k_mix.sr * &k_sr_a + k_mix.lr * &k_lr_a;
             k_b_total = k_mix.sr * &k_sr_b + k_mix.lr * &k_lr_b;
         } else if need_k {
-            let dk = direct_k.as_mut().expect("DirectK built before loop");
-            total_quartets += <DirectK as KBuilder>::build(dk, &d_a, &mut k_a_buf)?;
-            total_quartets += <DirectK as KBuilder>::build(dk, &d_b, &mut k_b_buf)?;
+            if let Some(dfk) = df_k.as_mut() {
+                dfk.build(&d_a, &mut k_a_buf)?;
+                dfk.build(&d_b, &mut k_b_buf)?;
+            } else {
+                let dk = direct_k.as_mut().expect("DirectK built before loop");
+                total_quartets += <DirectK as KBuilder>::build(dk, &d_a, &mut k_a_buf)?;
+                total_quartets += <DirectK as KBuilder>::build(dk, &d_b, &mut k_b_buf)?;
+            }
             k_a_total = c_k * &k_a_buf;
             k_b_total = c_k * &k_b_buf;
         }
@@ -303,9 +354,25 @@ pub fn solve_uhf_fockmod(
         let err_max_b = err_b.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
         let err_max = err_max_a.max(err_max_b);
 
-        let converged = de < config.energy_conv && err_max < config.density_conv;
+        if crate::rhf::scf_trace() {
+            eprintln!(
+                "UHF iter={iter:4}  E={energy:.12}  dE={de:.3e}  \
+                 dp_rms={dp_rms:.3e}  dp_max={dp_max:.3e}  err_max={err_max:.3e}"
+            );
+        }
 
-        if iter > 1 && converged {
+        // Convergence: energy + total-density change (ΔP), the same
+        // ORCA/PySCF gate as solve_rhf — NOT the DIIS commutator, which parks on
+        // the naux-dependent RI noise floor and never drains. See
+        // rhf::scf_converged. This replaces the old df_noise_floor_ok hack; the
+        // `df_active` distinction is gone (ΔP handles DF and direct uniformly).
+        let conv_exit = crate::rhf::scf_converged(
+            crate::rhf::ConvergenceSignals { de, dp_rms, dp_max },
+            config.energy_conv,
+            config.density_conv,
+        );
+
+        if iter > 1 && conv_exit.is_some() {
             let (eps_a, c_a_f) = diagonalize(&f_a, &x)?;
             let (eps_b, c_b_f) = diagonalize(&f_b, &x)?;
             // ⟨S²⟩ diagnostic
@@ -332,6 +399,7 @@ pub fn solve_uhf_fockmod(
                 fock_alpha: f_a,
                 fock_beta: Some(f_b),
                 converged: true,
+                exit: ScfExit::Converged,
                 iterations: iter,
                 computed_quartets: total_quartets,
             });
@@ -390,12 +458,22 @@ pub fn solve_uhf_fockmod(
             mom_ref_a = Some(c_a.slice(ndarray::s![.., ..nocc_a]).to_owned());
             mom_ref_b = Some(c_b.slice(ndarray::s![.., ..nocc_b]).to_owned());
         }
+        let d_tot_old = &d_a + &d_b;
         if config.fractional_occ {
             d_a = density_fractional(&c_a, &eps_a_new, nocc_a);
             d_b = density_fractional(&c_b, &eps_b_new, nocc_b);
         } else {
             d_a = density(&c_a, nocc_a);
             d_b = density(&c_b, nocc_b);
+        }
+        // ΔP over the total density (α+β) — consumed at the top of the next
+        // iteration by rhf::scf_converged. Drains to zero at the RI fixed point
+        // even when the DIIS commutator parks on the naux noise floor.
+        {
+            let diff = &(&d_a + &d_b) - &d_tot_old;
+            let n2 = (diff.len() as f64).max(1.0);
+            dp_rms = (diff.iter().map(|v| v * v).sum::<f64>() / n2).sqrt();
+            dp_max = diff.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
         }
     }
     Err(FerricError::ScfConvergence {
@@ -540,6 +618,7 @@ fn expectation_s_squared(
 mod tests {
     use super::*;
     use ferric_core::basis;
+    use ferric_core::external_potential::{ExternalPotential, PointCharge};
     use ferric_core::parallel::ParallelContext;
 
     #[test]
@@ -646,6 +725,48 @@ mod tests {
     }
 
     #[test]
+    fn external_point_charge_changes_uks_pbe_energy() {
+        // Reuses the test_uks_pbe_bromine_atom_converges fixture verbatim (free
+        // Br atom, doublet, aug-cc-pvdz, fractional_occ, mom_after_iter: 5),
+        // adding only the external point charge. Proves the external_potential
+        // wiring from Task 5 composes with UKS (xc.is_some() + open-shell).
+        let mol = Molecule::parse_xyz("1\nBr\nBr 0 0 0\n", 0, 2).unwrap();
+        let bs = basis::bundled("aug-cc-pvdz").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = ferric_integrals::operator::Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ParallelContext::default();
+
+        let base_cfg = UhfConfig {
+            xc: Some("PBE".to_string()),
+            fractional_occ: true,
+            mom_after_iter: 5,
+            max_iter: 200,
+            ..Default::default()
+        };
+        let base = solve_uhf(&ctx, &mol, &prep, &bounds, &base_cfg)
+            .expect("UKS-PBE Br atom baseline should converge");
+
+        let ext = ExternalPotential {
+            point_charges: vec![PointCharge { q: 1.0, x: 0.0, y: 0.0, z: 20.0 }],
+            field: None,
+        };
+        let perturbed_cfg = UhfConfig {
+            xc: Some("PBE".to_string()),
+            fractional_occ: true,
+            mom_after_iter: 5,
+            max_iter: 200,
+            external_potential: Some(ext),
+            ..Default::default()
+        };
+        let perturbed = solve_uhf(&ctx, &mol, &prep, &bounds, &perturbed_cfg)
+            .expect("UKS-PBE Br atom + external potential should converge");
+
+        assert!(perturbed.converged);
+        assert!((perturbed.energy - base.energy).abs() > 1e-8);
+    }
+
+    #[test]
     fn test_uks_pbe_oxygen_atom_fractional_occ_converges() {
         // Free O atom (³P) via UKS-PBE. With INTEGER occupation the degenerate
         // 2p shell makes the GGA potential orientation-dependent and the SCF
@@ -673,4 +794,54 @@ mod tests {
         assert!(res.converged, "UKS-PBE O atom did not converge with fractional occ");
     }
 
+    #[test]
+    fn uhf_dfjk_matches_direct_small() {
+        // Water cation (H2O+), doublet, def2-svp: standard small open-shell
+        // UHF benchmark. Compares direct J/K against DF-JK
+        // (def2-universal-jkfit) for plain HF (omega=0).
+        let mol = Molecule::parse_xyz(
+            "3\nwater cation\nO 0.000000 0.000000 0.117300\nH 0.000000 0.757200 -0.469200\nH 0.000000 -0.757200 -0.469200\n",
+            1,
+            2,
+        )
+        .unwrap();
+        let bs = basis::bundled("def2-svp").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = ferric_integrals::operator::Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ParallelContext::default();
+
+        let cfg_direct = UhfConfig {
+            max_iter: 100,
+            ..Default::default()
+        };
+        let r_direct = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg_direct).unwrap();
+
+        let cfg_df = UhfConfig {
+            max_iter: 100,
+            df_j_aux: Some("def2-universal-jkfit".to_string()),
+            df_k_aux: Some("def2-universal-jkfit".to_string()),
+            ..Default::default()
+        };
+        let r_df = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg_df).unwrap();
+
+        assert!(
+            (r_direct.energy - r_df.energy).abs() < 2e-4,
+            "UHF DF-JK {} vs direct {} differ by {:.2e}",
+            r_df.energy,
+            r_direct.energy,
+            (r_df.energy - r_direct.energy).abs()
+        );
+        assert!(r_df.converged);
+        // DF-JK must actually be used (not silently ignored): it builds J/K from
+        // 3-center integrals, not 4-center quartets, so it should report strictly
+        // fewer computed direct quartets than the fully-direct path.
+        assert!(
+            r_df.computed_quartets < r_direct.computed_quartets,
+            "DF-JK computed_quartets={} should be less than direct's {} \
+             (df_j_aux/df_k_aux appear to be ignored)",
+            r_df.computed_quartets,
+            r_direct.computed_quartets
+        );
+    }
 }

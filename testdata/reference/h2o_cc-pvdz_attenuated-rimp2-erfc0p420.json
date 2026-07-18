@@ -1,0 +1,16 @@
+{
+  "rhf_energy": -76.0267833622895,
+  "e_os": -0.1487223945984868,
+  "e_ss": -0.04990833299875735,
+  "mp2_corr": -0.19863072759724415,
+  "total_energy": -76.22541408988675,
+  "nbasis": 24,
+  "naux": 84,
+  "nocc": 5,
+  "omega_bohr_inv": 0.2222544445775211,
+  "molecule": "h2o",
+  "basis": "cc-pvdz",
+  "auxbasis": "cc-pvdz-ri",
+  "method": "attenuated_rimp2_erfc",
+  "omega_ang_inv": 0.42
+}

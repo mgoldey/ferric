@@ -144,13 +144,19 @@ fn rpa_correlation_energy(
     let obs = PreparedBasis::new(mol, obs_basis)?;
     let dfbs = PreparedBasis::new(mol, aux_basis)?;
     let bounds = SchwarzBounds::compute(op, &obs)?;
-    // Tighten SCF convergence so FD differences are not noise-limited.
+    // Tighten SCF convergence so FD differences are not noise-limited. Under the
+    // ΔP convergence gate the tight signal is density_conv (reachable, ~1e-9);
+    // energy_conv is only a loose "not-descending" bound (floors above 1e-10
+    // under DF noise), so it is left at the default rather than set to 1e-10 —
+    // a tight energy_conv would hang the SCF at MaxIter. See rhf::scf_converged.
     let rhf_cfg = RhfConfig {
-        energy_conv: 1e-10,
         density_conv: 1e-9,
         ..Default::default()
     };
     let rhf = solve_rhf(&ctx, mol, &obs, op, &bounds, &rhf_cfg)?;
+    if !rhf.converged {
+        return Err(FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy });
+    }
     let r = run_pdep_rpa(mol, &obs, &dfbs, op, &rhf, rpa_config)?;
     Ok(rhf.energy + r.e_rpa)
 }
@@ -173,12 +179,16 @@ pub fn total_rpa_gradient(
     let obs = PreparedBasis::new(mol, obs_basis)?;
     let dfbs = PreparedBasis::new(mol, aux_basis)?;
     let bounds = SchwarzBounds::compute(op, &obs)?;
+    // Tight SCF via density_conv (reachable under the ΔP gate); energy_conv left
+    // at the loose default — a tight 1e-10 would hang at MaxIter. See above / gradient.rs:149.
     let rhf_cfg = RhfConfig {
-        energy_conv: 1e-10,
         density_conv: 1e-9,
         ..Default::default()
     };
     let rhf = solve_rhf(&ctx, mol, &obs, op, &bounds, &rhf_cfg)?;
+    if !rhf.converged {
+        return Err(FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy });
+    }
     let r: PdepRpaResult = run_pdep_rpa(mol, &obs, &dfbs, op, &rhf, rpa_config)?;
     let e_tot = rhf.energy + r.e_rpa;
 
@@ -201,7 +211,7 @@ mod tests {
         PdepRpaConfig {
             frozen_core: 0,
             trunc_thresh: 1e-4,
-            davidson_conv_thresh: 1e-10,
+            eigensolver_conv_thresh: 1e-10,
             quadrature: QuadratureConfig {
                 scheme: QuadratureScheme::GaussLegendre,
                 n_points: 16,

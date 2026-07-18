@@ -12,7 +12,9 @@ use ferric_core::mol::Molecule;
 use ferric_core::orbitals::OrbitalSpace;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
+use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::operator::Operator;
+use ferric_integrals::three_index_source::ThreeIndexSource;
 use ferric_integrals::threeindex;
 use ferric_scf::ScfResult;
 use ndarray::{Array2, Array3};
@@ -22,6 +24,11 @@ use ndarray_linalg::{Cholesky, Eigh, UPLO};
 #[derive(Debug, Clone, Default)]
 pub struct RiMp2Config {
     pub frozen_core: usize,
+    /// Optional resident-bytes ceiling for the 3-index MO transform. `None` →
+    /// the unified resolver ([`ferric_core::memory::resolve_budget_bytes`]) picks
+    /// it (env override > auto 0.8×RAM > 2 GiB). `Some(bytes)` forces the ceiling
+    /// unless an env override wins.
+    pub memory_budget_bytes: Option<usize>,
 }
 
 /// Number of active (correlated) occupied orbitals after freezing
@@ -58,10 +65,14 @@ pub struct SpinComponents {
     pub e_total: f64,
 }
 
-/// Resident-bytes ceiling for the raw (P|μν) tensor during MO transforms,
-/// from `FERRIC_ERI3_BUDGET_GB` (unset = unlimited, fully in-core).
-pub fn eri3_budget_bytes() -> usize {
-    ferric_integrals::three_index_source::env_budget_bytes()
+/// Resident-bytes ceiling for the raw (P|μν) tensor during MO transforms.
+///
+/// Resolves via [`ferric_core::memory::resolve_budget_bytes`]: `explicit`
+/// (from [`RiMp2Config::memory_budget_bytes`]) is honored unless an env override
+/// (`FERRIC_MEM_BUDGET_GB` / legacy vars) wins; otherwise auto 0.8×RAM, then a
+/// 2 GiB fallback. Passing `None` reproduces the pure-env/auto chain.
+pub fn eri3_budget_bytes(explicit: Option<usize>) -> usize {
+    ferric_core::memory::resolve_budget_bytes(explicit)
 }
 
 /// Build (P|ia) without materializing the full AO 3-index tensor: raw (P|μν)
@@ -104,6 +115,50 @@ pub fn eri3_mo_ov_blocked(
     Ok(mo)
 }
 
+/// Build a DRESSED MO 3-index block `B^P_{pq} = Σ_Q V^{-1/2}[P,Q] (c_left^T
+/// (Q|μν) c_right)[pq]`, shape `(naux, nleft*nright)`, streaming raw AO
+/// aux-blocks from `src` under its budget and dressing each block on the fly.
+///
+/// This is the general (occ/vir agnostic) form of the `eri3_mo_ov_blocked` +
+/// `v_inv_sqrt.dot(..)` pair used by the energy path, mirroring M3's
+/// `compute_b_full_mo_with` streaming idiom: the output is allocated once and
+/// the metric GEMM accumulates in place (beta=1), so the peak transient is one
+/// aux-block MO panel instead of the full `(naux, nao²)` AO tensor plus a
+/// second full-size dressed copy. Exactness: the same contraction as
+/// `v_inv_sqrt.dot(transform_3center(eri3_tensor(..), c_left, c_right))`,
+/// reordered per aux-block, not approximated.
+fn eri3_mo_block_dressed(
+    src: &mut ThreeIndexSource,
+    v_inv_sqrt: &Array2<f64>,
+    c_left: &Array2<f64>,
+    c_right: &Array2<f64>,
+) -> Result<Array2<f64>, FerricError> {
+    let naux = src.naux();
+    let nleft = c_left.ncols();
+    let nright = c_right.ncols();
+    let width = nleft * nright;
+    let mut b_flat = Array2::<f64>::zeros((naux, width));
+    src.for_each_block(|blk| {
+        let qb = blk.data.shape()[0];
+        // MO-transform this raw aux-block: mo[q, pq] = c_left^T (Q|μν) c_right.
+        let mut mo_blk = Array2::<f64>::zeros((qb, width));
+        for q in 0..qb {
+            let bq_ao = blk.data.slice(ndarray::s![q, .., ..]);
+            let tmp = bq_ao.dot(c_right); // (nao, nright)
+            let bq_mo = c_left.t().dot(&tmp); // (nleft, nright)
+            mo_blk
+                .slice_mut(ndarray::s![q, ..])
+                .assign(&bq_mo.into_shape_with_order(width).unwrap());
+        }
+        // Dress into every output aux row, accumulating in place (beta=1):
+        //   b_flat[:, pq] += V^{-1/2}[:, Qblock] · mo_blk.
+        let msub = v_inv_sqrt.slice(ndarray::s![.., blk.p0..blk.p0 + qb]);
+        ndarray::linalg::general_mat_mul(1.0, &msub, &mo_blk, 1.0, &mut b_flat);
+        Ok(())
+    })?;
+    Ok(b_flat)
+}
+
 /// Compute RI-MP2 with spin-component resolution.
 ///
 /// Returns `(SpinComponents, B_flat)` where `B_flat` is the dressed 3-index tensor
@@ -141,13 +196,16 @@ pub fn ri_mp2_spin_components(
     let v2c_inv_sqrt = metric_inverse_sqrt(&v2c, op)?;
 
     // (P|mu nu) -> (P|ia), aux-blocked under FERRIC_ERI3_BUDGET_GB
-    let eri3_mo = eri3_mo_ov_blocked(op, obs, dfbs, &c_occ, &c_vir, eri3_budget_bytes())?;
+    let eri3_mo = eri3_mo_ov_blocked(op, obs, dfbs, &c_occ, &c_vir, eri3_budget_bytes(config.memory_budget_bytes))?;
 
-    // B_ia^P = sum_Q (P|Q)^{-1/2} (Q|ia)
+    // B_ia^P = sum_Q (P|Q)^{-1/2} (Q|ia). One dressing GEMM per top-level
+    // call, outside any rayon region (the rayon fan-out in
+    // spin_components_from_b_ov below hasn't started yet). Opt-in BLAS raise
+    // via FERRIC_BLAS_THREADS (default 1, unchanged behavior).
     let eri3_flat = eri3_mo
         .into_shape_with_order((naux, nocc * nvir))
         .unwrap();
-    let b_flat = v2c_inv_sqrt.dot(&eri3_flat); // (naux, nocc*nvir)
+    let b_flat = with_blas_threads(opt_in_blas_threads(), || v2c_inv_sqrt.dot(&eri3_flat)); // (naux, nocc*nvir)
 
     let sc = spin_components_from_b_ov(
         &b_flat, eps, nocc, nvir, first_occ, nocc_total,
@@ -238,10 +296,15 @@ pub struct Mp2Intermediates {
     pub t2: Vec<f64>,
     /// B^P_{ia}, shape (naux, nocc*nvir), occ-vir block
     pub b_ov: Array2<f64>,
-    /// B^P_{ij}, shape (naux, nocc*nocc), occ-occ block
-    pub b_oo: Array2<f64>,
-    /// B^P_{ab}, shape (naux, nvir*nvir), vir-vir block
-    pub b_vv: Array2<f64>,
+    /// B^P_{ij}, shape (naux, nocc*nocc), occ-occ block. `None` when built via
+    /// [`compute_mp2_intermediates_ov_only`] — the gradient/zvector pipeline
+    /// never reads it; only the CPKS polarizability path does.
+    pub b_oo: Option<Array2<f64>>,
+    /// B^P_{ab}, shape (naux, nvir*nvir), vir-vir block. `None` when built via
+    /// [`compute_mp2_intermediates_ov_only`]: at nvir≈860/naux≈2200 this block
+    /// alone is ~13 GB, and holding it across the gradient/zvector pipeline was
+    /// the M4-audit peak. Consumers (cpks_polar) must unwrap with a clear error.
+    pub b_vv: Option<Array2<f64>>,
     /// V^{-1/2} matrix, shape (naux, naux)
     pub v_inv_sqrt: Array2<f64>,
     pub p_oo: Array2<f64>,
@@ -368,10 +431,12 @@ pub fn compute_rpa_intermediates_spin(
     let c_occ = c_full.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
     let c_vir = c_full.slice(ndarray::s![.., nocc_total..]).to_owned();
 
-    let eri3_ov = eri3_mo_ov_blocked(op, obs, dfbs, &c_occ, &c_vir, eri3_budget_bytes())?;
-    let b_ov = v_inv_sqrt.dot(
-        &eri3_ov.into_shape_with_order((naux, nocc * nvir)).unwrap(),
-    );
+    let eri3_ov = eri3_mo_ov_blocked(op, obs, dfbs, &c_occ, &c_vir, eri3_budget_bytes(config.memory_budget_bytes))?;
+    // Dressing GEMM, outside any rayon region (top-level driver call). Opt-in
+    // BLAS raise via FERRIC_BLAS_THREADS (default 1, unchanged behavior).
+    let b_ov = with_blas_threads(opt_in_blas_threads(), || {
+        v_inv_sqrt.dot(&eri3_ov.into_shape_with_order((naux, nocc * nvir)).unwrap())
+    });
 
     Ok(RpaIntermediates {
         b_ov, v_inv_sqrt,
@@ -406,10 +471,12 @@ pub fn compute_rpa_intermediates(
     let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
     let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
 
-    let eri3_ov = eri3_mo_ov_blocked(op, obs, dfbs, &c_occ, &c_vir, eri3_budget_bytes())?;
-    let b_ov = v_inv_sqrt.dot(
-        &eri3_ov.into_shape_with_order((naux, nocc * nvir)).unwrap(),
-    );
+    let eri3_ov = eri3_mo_ov_blocked(op, obs, dfbs, &c_occ, &c_vir, eri3_budget_bytes(config.memory_budget_bytes))?;
+    // Dressing GEMM, outside any rayon region (top-level driver call). Opt-in
+    // BLAS raise via FERRIC_BLAS_THREADS (default 1, unchanged behavior).
+    let b_ov = with_blas_threads(opt_in_blas_threads(), || {
+        v_inv_sqrt.dot(&eri3_ov.into_shape_with_order((naux, nocc * nvir)).unwrap())
+    });
 
     Ok(RpaIntermediates {
         b_ov, v_inv_sqrt,
@@ -429,6 +496,36 @@ pub fn compute_mp2_intermediates(
     rhf: &ScfResult,
     config: &RiMp2Config,
 ) -> Result<Mp2Intermediates, FerricError> {
+    compute_mp2_intermediates_impl(mol, obs, dfbs, op, rhf, config, true)
+}
+
+/// [`compute_mp2_intermediates`] without the occ-occ and vir-vir B blocks
+/// (`b_oo = b_vv = None`). The analytical-gradient pipeline
+/// (`rimp2_gradient_analytical` → `solve_zvector` → 3c/2c derivative
+/// contractions) reads only `t2`, `b_ov`, `v_inv_sqrt`, `p_oo`, `p_vv`, so the
+/// (naux, nvir²) vir-vir block — the single largest resident of the old
+/// intermediates (13 GB at nvir≈860/naux≈2200) — need never exist there.
+/// Use the full builder only on paths that consume `b_oo`/`b_vv` (CPKS α).
+pub fn compute_mp2_intermediates_ov_only(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &ScfResult,
+    config: &RiMp2Config,
+) -> Result<Mp2Intermediates, FerricError> {
+    compute_mp2_intermediates_impl(mol, obs, dfbs, op, rhf, config, false)
+}
+
+fn compute_mp2_intermediates_impl(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &ScfResult,
+    config: &RiMp2Config,
+    with_oo_vv: bool,
+) -> Result<Mp2Intermediates, FerricError> {
     let nbas = obs.nbasis();
     let nelec = mol.nelec() as usize;
     let nocc_total = nelec / 2;
@@ -440,51 +537,36 @@ pub fn compute_mp2_intermediates(
 
     let v2c = threeindex::coulomb_metric_2c(op, dfbs)?;
     let v_inv_sqrt = cholesky_inverse_sqrt(&v2c)?;
-    let eri3_ao = threeindex::eri3_tensor(op, obs, dfbs)?;
 
     let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
     let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
 
-    // B^P_{ia} = V^{-1/2} (P|ia)
-    let eri3_ov = crate::mo_transform::transform_3center_ov(&eri3_ao, &c_occ, &c_vir);
-    let b_ov = v_inv_sqrt.dot(
-        &eri3_ov.into_shape_with_order((naux, nocc * nvir)).unwrap()
-    );
+    // Budget-aware raw (P|μν) source: in-core when it fits, disk-spilled in
+    // aux-blocks otherwise. The three MO blocks below each stream this source
+    // and dress with V^{-1/2} on the fly (see eri3_mo_block_dressed), so the
+    // peak transient is one aux-block MO panel — not the former dense
+    // (naux, nao², 14.3 GB) AO tensor plus its three transformed copies.
+    let mut src = ThreeIndexSource::build(
+        op, obs, dfbs, eri3_budget_bytes(config.memory_budget_bytes),
+    )?;
 
-    // B^P_{ij} = V^{-1/2} (P|ij)
-    let eri3_oo = crate::mo_transform::transform_3center_ov(&eri3_ao, &c_occ, &c_occ);
-    let b_oo = v_inv_sqrt.dot(
-        &eri3_oo.into_shape_with_order((naux, nocc * nocc)).unwrap()
-    );
+    // B^P_{ia} = V^{-1/2} (P|ia); optionally B^P_{ij} and B^P_{ab} (CPKS only —
+    // the gradient pipeline never reads them, and b_vv is the 13 GB hog).
+    let b_ov = eri3_mo_block_dressed(&mut src, &v_inv_sqrt, &c_occ, &c_vir)?;
+    let (b_oo, b_vv) = if with_oo_vv {
+        (
+            Some(eri3_mo_block_dressed(&mut src, &v_inv_sqrt, &c_occ, &c_occ)?),
+            Some(eri3_mo_block_dressed(&mut src, &v_inv_sqrt, &c_vir, &c_vir)?),
+        )
+    } else {
+        (None, None)
+    };
 
-    // B^P_{ab} = V^{-1/2} (P|ab)
-    let eri3_vv = crate::mo_transform::transform_3center_ov(&eri3_ao, &c_vir, &c_vir);
-    let b_vv = v_inv_sqrt.dot(
-        &eri3_vv.into_shape_with_order((naux, nvir * nvir)).unwrap()
-    );
-
-    // Energy from occ-vir B tensor
+    // Energy via i-blocked wide GEMMs (BLAS3), same path as the main RI-MP2
+    // lane — replaces the per-element O(naux) double-dot quadruple loop.
     let eps = rhf.eps_r();
-    let mut e_os = 0.0;
-    let mut e_ss = 0.0;
-    for i in 0..nocc {
-        for j in 0..nocc {
-            for a in 0..nvir {
-                for b in 0..nvir {
-                    let ia = i * nvir + a;
-                    let jb = j * nvir + b;
-                    let ib = i * nvir + b;
-                    let ja = j * nvir + a;
-                    let eri_iajb: f64 = (0..naux).map(|p| b_ov[(p, ia)] * b_ov[(p, jb)]).sum();
-                    let eri_ibja: f64 = (0..naux).map(|p| b_ov[(p, ib)] * b_ov[(p, ja)]).sum();
-                    let denom = eps[first_occ + i] + eps[first_occ + j]
-                        - eps[nocc_total + a] - eps[nocc_total + b];
-                    e_os += eri_iajb * eri_iajb / denom;
-                    e_ss += eri_iajb * (eri_iajb - eri_ibja) / denom;
-                }
-            }
-        }
-    }
+    let sc = spin_components_from_b_ov(&b_ov, eps, nocc, nvir, first_occ, nocc_total);
+    let (e_os, e_ss) = (sc.e_os, sc.e_ss);
 
     let (t2, _) = crate::oo_rimp2::compute_t2_and_integrals(
         &b_ov, rhf.eps_r(), nocc, nvir, nocc_total, first_occ, naux,
@@ -503,8 +585,14 @@ pub fn compute_mp2_intermediates(
 /// Given a positive-definite matrix V = L L^T, returns L^{-1} so that
 /// L^{-1} V L^{-T} = I, i.e., L^{-1} acts as V^{-1/2}.
 pub fn cholesky_inverse_sqrt(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
-    let l = v
-        .cholesky(UPLO::Lower)
+    // One-time (naux, naux) setup factorization, called once per RI-MP2/RPA/GW
+    // intermediates build, outside any rayon region. Opt-in BLAS raise via
+    // FERRIC_BLAS_THREADS (default 1, unchanged behavior);
+    // opt_in_blas_threads()'s rayon-worker self-guard also covers any caller
+    // reached from inside a rayon pool. The forward-substitution triangular
+    // solve below stays untouched (scalar, deliberately serial — see
+    // docs/parallelism-gaps-2026-07-09.md's "deliberately serial" list).
+    let l = with_blas_threads(opt_in_blas_threads(), || v.cholesky(UPLO::Lower))
         .map_err(|e| FerricError::Lapack(format!("Cholesky on (P|Q): {e}")))?;
     let n = l.nrows();
     // Forward-substitution to invert lower-triangular L
@@ -543,10 +631,33 @@ pub fn cholesky_inverse_sqrt(v: &Array2<f64>) -> Result<Array2<f64>, FerricError
 /// fast path for Coulomb/erfc (positive-definite).
 pub fn eigh_inverse_sqrt(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
     let n = v.nrows();
-    let (evals, evecs) = v
-        .eigh(UPLO::Upper)
+    // One-time (naux, naux) setup factorization, outside any rayon region.
+    // Same opt-in raise + rayon-worker self-guard as cholesky_inverse_sqrt
+    // above.
+    let (evals, evecs) = with_blas_threads(opt_in_blas_threads(), || v.eigh(UPLO::Upper))
         .map_err(|e| FerricError::Lapack(format!("eigh on (P|Q): {e}")))?;
     const LINDEP_THRESH: f64 = 1e-10;
+    // A physical RI metric is Gram-PSD for any positive-definite kernel (erf,
+    // erfc, Coulomb, terfc all are; verified for terfc via its 3D Fourier
+    // transform k̂(q) > 0). Negative eigenvalues beyond eigensolver noise
+    // therefore signal an UPSTREAM INTEGRAL BUG (e.g. the 2026-07 terfc shim
+    // far-field table-domain bug) or a non-PD kernel — not something a drop
+    // threshold can repair (the accompanying positive modes are contaminated
+    // too). Warn loudly instead of silently regularizing.
+    let lmax = evals[n - 1]; // eigh returns ascending order
+    let max_neg = evals
+        .iter()
+        .filter(|&&e| e < 0.0)
+        .fold(0.0_f64, |acc, &e| acc.max(-e));
+    if max_neg > 1e-8 * lmax {
+        eprintln!(
+            "WARNING eigh_inverse_sqrt: (P|Q) metric INDEFINITE beyond noise \
+             (max|λ_neg|={max_neg:.3e}, λ_max={lmax:.3e}, rel={:.1e}). \
+             Indefinite metric = upstream integral bug or non-PD kernel; \
+             downstream RI energies are untrustworthy.",
+            max_neg / lmax
+        );
+    }
     let mut u_scaled = evecs.clone();
     for k in 0..n {
         if evals[k] < LINDEP_THRESH {
@@ -560,18 +671,33 @@ pub fn eigh_inverse_sqrt(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
             }
         }
     }
-    Ok(u_scaled.dot(&evecs.t()))
+    Ok(with_blas_threads(opt_in_blas_threads(), || {
+        u_scaled.dot(&evecs.t())
+    }))
 }
 
-/// V^{-1/2} that auto-selects: regularized eigendecomposition for the long-range
-/// `erf`/`terf` operators (indefinite/rank-deficient metric as omega->0 /
-/// r0->inf), fast Cholesky otherwise (Coulomb/erfc/terfc, positive-definite).
-/// Centralizes the erf-metric handling for all RI paths.
+/// V^{-1/2} that auto-selects: regularized eigendecomposition for operators whose
+/// 2-center metric can go numerically indefinite / rank-deficient, fast Cholesky
+/// otherwise (Coulomb/erfc/Terfc/Yukawa, positive-definite). Centralizes
+/// indefinite-metric handling for all RI paths.
 ///
-/// `terf` is the tempered LR complement (terf + terfc = Coulomb; see
-/// `Operator::terf`) and plays the same algebraic role as `erf` (r0 -> inf
-/// drives terf -> 0, same as omega -> 0 for erf), so it needs the same
-/// regularized eigh branch, not Cholesky.
+/// Eigh path:
+/// - `ErfCoulomb`: the long-range erf metric goes numerically indefinite in a
+///   Coulomb-optimized aux basis (near-null modes from tight aux functions).
+/// - `Terf`: the tempered LONG-range complement (terf + terfc = Coulomb; see
+///   `Operator::terf`) plays the same algebraic role as `erf` — r0 → ∞ drives
+///   terf → 0, exactly as ω → 0 does for erf — so its metric loses rank in the
+///   same limit and needs the same regularized eigh branch, not Cholesky.
+///
+/// `Terfc` is deliberately on the CHOLESKY path: the terfc kernel is
+/// positive-definite (3D Fourier transform k̂(q) > 0 for all q, r0), so its
+/// Gram metric is PD and Cholesky must succeed. The apparent indefiniteness
+/// that previously forced Terfc through eigh (dpotrf return_code=225 on
+/// alkane_4/cc-pVDZ-RI at r0≈1.417 Bohr) was an upstream integral bug — the
+/// shim skipped the terf subtraction for far-field primitives outside the
+/// interpolation tables, leaving full-Coulomb contamination. With that fixed
+/// (exact Poisson-series fallback in shim.cc), a Cholesky failure here is a
+/// real regression signal and must stay loud, not be regularized away.
 pub fn metric_inverse_sqrt(
     v: &Array2<f64>,
     op: ferric_integrals::operator::Operator,
@@ -627,13 +753,15 @@ pub fn ri_mp2_einsum(
     // V^{-1/2} and AO 3-center integrals — identical to ri_mp2_spin_components
     let v2c = threeindex::coulomb_metric_2c(op, dfbs)?;
     let v_inv_sqrt = cholesky_inverse_sqrt(&v2c)?;
-    let eri3_mo = eri3_mo_ov_blocked(op, obs, dfbs, &c_occ, &c_vir, eri3_budget_bytes())?; // (naux, nocc, nvir)
+    let eri3_mo = eri3_mo_ov_blocked(op, obs, dfbs, &c_occ, &c_vir, eri3_budget_bytes(config.memory_budget_bytes))?; // (naux, nocc, nvir)
 
-    // B^P_{ia} = V^{-1/2} (Q|ia); same b_flat as the scalar path
+    // B^P_{ia} = V^{-1/2} (Q|ia); same b_flat as the scalar path. Outside any
+    // rayon region (einsum! runs after this returns). Opt-in BLAS raise via
+    // FERRIC_BLAS_THREADS (default 1, unchanged behavior).
     let flat = eri3_mo
         .into_shape_with_order((naux, nocc * nvir))
         .unwrap();
-    let b_flat = v_inv_sqrt.dot(&flat); // (naux, nocc*nvir)
+    let b_flat = with_blas_threads(opt_in_blas_threads(), || v_inv_sqrt.dot(&flat)); // (naux, nocc*nvir)
     let b_3d = b_flat
         .into_shape_with_order((naux, nocc, nvir))
         .unwrap()
@@ -827,7 +955,7 @@ mod tests {
         let ctx = ParallelContext::default();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
-        let cfg = RiMp2Config { frozen_core: 0 };
+        let cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
 
         let (sc_ref, _) = ri_mp2_spin_components(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
         let sc_ein = ri_mp2_einsum(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
@@ -850,10 +978,10 @@ mod tests {
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
         let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
 
-        let cfg = RiMp2Config { frozen_core: 2 };
+        let cfg = RiMp2Config { frozen_core: 2, memory_budget_bytes: None };
         let res = ri_mp2(&mol, &obs, &dfbs, op, &rhf, &cfg);
         assert!(res.is_err(), "frozen_core > nocc must be an error, got {res:?}");
-        let cfg_all = RiMp2Config { frozen_core: 1 };
+        let cfg_all = RiMp2Config { frozen_core: 1, memory_budget_bytes: None };
         let res_all = ri_mp2(&mol, &obs, &dfbs, op, &rhf, &cfg_all);
         assert!(res_all.is_err(), "freezing every occupied orbital must be an error, got {res_all:?}");
     }
@@ -893,5 +1021,136 @@ mod tests {
         assert!(tr_vv > 0.0, "tr(P_vv) should be positive: {}", tr_vv);
         assert!((tr_oo + tr_vv).abs() < 1e-10,
             "density not conserved: tr(P_oo)={} + tr(P_vv)={} = {}", tr_oo, tr_vv, tr_oo + tr_vv);
+    }
+
+    /// The terfc kernel is positive-definite (3D Fourier transform k̂(q) > 0), so
+    /// (P|Q)_terfc must be PD and Cholesky must succeed — including the exact
+    /// configuration that USED to fail (alkane_4/cc-pVDZ-RI at r0=0.75 Å,
+    /// dpotrf return_code=225). The old failure was the shim's far-field
+    /// table-domain bug (terf subtraction skipped for S > 20 primitives,
+    /// leaving full-Coulomb contamination that made the metric spuriously
+    /// indefinite). This test pins the integral fix at the metric level.
+    /// Requires FERRIC_TERF_TABLE_DIR to point at the terfc interpolation tables.
+    #[test]
+    fn terfc_metric_positive_definite_alkane4() {
+        if std::env::var("FERRIC_TERF_TABLE_DIR").is_err() {
+            eprintln!("skipping: FERRIC_TERF_TABLE_DIR not set");
+            return;
+        }
+        let mol = Molecule::load_xyz(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/molecules/alkane_4.xyz"),
+        )
+        .unwrap();
+        let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
+        // r0 = 0.75 Angstrom -> Bohr; historically the worst case (most far-field
+        // primitives beyond the table domain).
+        let op = Operator::terfc(0.75 * 1.889_725_988_6);
+
+        let v2c = threeindex::coulomb_metric_2c(op, &dfbs).unwrap();
+        let v_inv_sqrt = metric_inverse_sqrt(&v2c, op).expect(
+            "(P|Q)_terfc must be positive-definite (Cholesky); a dpotrf failure here \
+             means far-field terfc integrals regressed",
+        );
+
+        // M V Mᵀ = I for any valid inverse-sqrt factor M (Cholesky L⁻¹ or
+        // symmetric eigh form).
+        let p = v_inv_sqrt.dot(&v2c).dot(&v_inv_sqrt.t());
+        let n = p.nrows();
+        let mut max_dev = 0.0_f64;
+        for i in 0..n {
+            for j in 0..n {
+                let target = if i == j { 1.0 } else { 0.0 };
+                max_dev = max_dev.max((p[(i, j)] - target).abs());
+            }
+        }
+        assert!(
+            max_dev < 1e-8,
+            "V^(-1/2) V V^(-T/2) != I: max deviation {max_dev:e}"
+        );
+    }
+
+    /// PHYSICS regression for the terfc far-field integral fix (shim.cc
+    /// table-domain bug: out-of-table primitives skipped the terf subtraction,
+    /// leaving full-Coulomb contamination in far-field (P|Q) and (P|ia)).
+    ///
+    /// terfc(r,r₀)/r is a tempered SHORT-range Coulomb: smaller r₀ screens more,
+    /// so |E_corr| must grow monotonically with r₀ and approach full-Coulomb
+    /// correlation as r₀ → ∞:
+    ///     |E(0.75Å)| < |E(1.05Å)| < |E(2.0Å)| < |E(Coulomb)|,
+    ///     E(2.0Å)/E(Coulomb) > 0.95.
+    ///
+    /// Before the fix this failed catastrophically (alkane_4 E(0.75Å) = −1.289 Ha
+    /// vs Coulomb −0.733 Ha — |ratio| 1.76, wrong side of Coulomb), and no eigh
+    /// drop-threshold could repair it because the 3-index tensor was contaminated
+    /// too. A projector-idempotency check passes even with garbage physics; this
+    /// energy-ordering test is the discriminating one. Runs on the plain Cholesky
+    /// metric path. Requires FERRIC_TERF_TABLE_DIR.
+    #[test]
+    fn terfc_ri_energy_monotone_in_r0_alkane4() {
+        if std::env::var("FERRIC_TERF_TABLE_DIR").is_err() {
+            eprintln!("skipping: FERRIC_TERF_TABLE_DIR not set");
+            return;
+        }
+        const A2B: f64 = 1.889_725_988_6;
+        let mol = Molecule::load_xyz(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../testdata/molecules/alkane_4.xyz"
+        ))
+        .unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let opc = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(opc, &obs).unwrap();
+        let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol,
+            &obs,
+            opc,
+            &bounds,
+            &RhfConfig { energy_conv: 1e-9, ..Default::default() },
+        )
+        .unwrap();
+        let cfg = RiMp2Config::default();
+
+        let e = |op: Operator| {
+            ri_mp2_spin_components(&mol, &obs, &dfbs, op, &rhf, &cfg)
+                .unwrap()
+                .0
+                .e_total
+        };
+        let e_coul = e(opc);
+        let e075 = e(Operator::terfc(0.75 * A2B));
+        let e105 = e(Operator::terfc(1.05 * A2B));
+        let e20 = e(Operator::terfc(2.0 * A2B));
+
+        eprintln!(
+            "terfc alkane_4: E(0.75)={e075:.6} E(1.05)={e105:.6} E(2.0)={e20:.6} E(coul)={e_coul:.6}"
+        );
+
+        // Correlation energies are negative; compare magnitudes.
+        assert!(
+            e075.abs() < e105.abs(),
+            "|E(0.75)|={} should be < |E(1.05)|={}",
+            e075.abs(),
+            e105.abs()
+        );
+        assert!(
+            e105.abs() < e20.abs(),
+            "|E(1.05)|={} should be < |E(2.0)|={}",
+            e105.abs(),
+            e20.abs()
+        );
+        assert!(
+            e20.abs() < e_coul.abs(),
+            "|E(2.0)|={} should be < |E(coulomb)|={}",
+            e20.abs(),
+            e_coul.abs()
+        );
+        assert!(
+            e20 / e_coul > 0.95,
+            "E(2.0)/E(coulomb)={} should exceed 0.95 (terfc→Coulomb as r0→∞)",
+            e20 / e_coul
+        );
     }
 }

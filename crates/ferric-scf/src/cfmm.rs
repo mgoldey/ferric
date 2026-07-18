@@ -315,16 +315,43 @@ impl CfmmBox {
         }
     }
 
+    // ---------------------------------------------------------------------
+    // ROOT CAUSE of the `test_cfmm_j_matches_direct_j` failure (G10 / item #13):
+    // the three functions below are the only points where this file touches
+    // actual basis-function integrals, and ALL THREE ARE UNIMPLEMENTED STUBS.
+    // Because of that, `CfmmJ::build` returns an identically-zero J matrix
+    // (measured: max|J_cfmm| = 0.0 exactly for water/STO-3G), so the "max
+    // diff 17.37" is just max|J_direct| — the largest element of the *true*
+    // Coulomb matrix, not a small multipole-truncation error. The M2L /
+    // interaction-list traversal (`collect_m2l`/`find_neighbors_by_coords`/
+    // `add_m2l_contribution`) that earlier notes suspected is inert: it reads
+    // `multipoles` (all zero, since `add_shell_multipoles` never fills them)
+    // and writes `local_exp`, which `add_far_field_to_j` never reads back
+    // into J. See docs/cfmm-m2l-investigation.md for the full trace and the
+    // list of what a real implementation would need.
+    // ---------------------------------------------------------------------
+
     fn direct_interaction(&self, _other: &CfmmBox, _d: &Array2<f64>, _j: &mut Array2<f64>, _prep: &PreparedBasis) {
-        // TODO: Direct integration for shell pairs
+        // STUB — unimplemented. Should add the exact near-field Coulomb
+        // contribution J_{μν} += Σ_{λσ} (μν|λσ) D_{λσ} for shell pairs in
+        // this leaf and its adjacent leaves, via the 4-center ERI engine.
+        // Currently a no-op, so ALL near-field J is missing.
     }
 
     fn add_shell_multipoles(&mut self, _sh_idx: usize, _d: &Array2<f64>, _prep: &PreparedBasis, _l_max: usize) {
-        // TODO: Gaussian product moments integral
+        // STUB — unimplemented. Should accumulate the density-weighted
+        // Cartesian multipole moments of the shell's product distributions
+        // about this box center into `self.multipoles`. No arbitrary-order
+        // Cartesian multipole integral routine exists in the FFI (only
+        // dipole/l=1 via `oneelectron::dipole`), so this needs new integral
+        // machinery. Currently a no-op, so ALL box multipoles stay zero.
     }
 
     fn add_far_field_to_j(&self, _sh_idx: usize, _j: &mut Array2<f64>, _prep: &PreparedBasis, _l_max: usize) {
-        // TODO: evaluate local expansion at shell center
+        // STUB — unimplemented. Should contract this leaf's `local_exp`
+        // against the shell-pair multipole moments to add the far-field
+        // Coulomb contribution to J. Currently a no-op, so ALL far-field J
+        // is missing (and `local_exp` is never consumed anywhere).
     }
 
     #[allow(dead_code)]
@@ -471,6 +498,121 @@ impl JBuilder for CfmmJ {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rhf::{build_jk, solve_rhf, RhfConfig};
+    use crate::screening::SchwarzBounds;
+    use ferric_core::basis;
+    use ferric_core::mol::Molecule;
+    use ferric_integrals::operator::Operator;
+
+    /// Run RHF to convergence and return the density and molecule. Mirrors
+    /// `link_k::tests::converged_density` exactly (same pattern, same repo
+    /// convention for this kind of accelerator-vs-direct cross-check).
+    fn converged_density(xyz: &str, basis_name: &str) -> (Array2<f64>, Molecule) {
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let bs = basis::bundled(basis_name).unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let config = RhfConfig {
+            energy_conv: 1e-12,
+            density_conv: 1e-10,
+            integral_thresh: 1e-14,
+            ..Default::default()
+        };
+        let result = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &prep, op, &bounds, &config).unwrap();
+        assert!(result.converged, "RHF did not converge");
+        (result.density_total, mol)
+    }
+
+    /// Build J via the direct (canonical, screened-quartet) method in rhf.rs
+    /// — the same ground-truth reference `link_k.rs`'s cross-check tests use.
+    fn direct_j(mol: &Molecule, basis_name: &str, d: &Array2<f64>) -> Array2<f64> {
+        let bs = basis::bundled(basis_name).unwrap();
+        let prep = PreparedBasis::new(mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let n = prep.nbasis();
+        let mut j = Array2::zeros((n, n));
+        let mut k = Array2::zeros((n, n));
+        build_jk(&ferric_core::parallel::ParallelContext::default(), &prep, &bounds, 1e-14, d, &mut j, &mut k).unwrap();
+        j
+    }
+
+    /// Build J via CFMM. `l_max=8` (multipole truncation order) is a
+    /// standard chemistry-grade FMM accuracy choice (FMM literature commonly
+    /// uses 6-10); `max_level=2` gives a shallow octree appropriate for a
+    /// 3-atom test molecule (deep enough to actually exercise both the
+    /// near-field direct-integration path and the far-field multipole path,
+    /// not so deep that a 3-atom system degenerates to all-near-field).
+    fn cfmm_j(mol: &Molecule, basis_name: &str, d: &Array2<f64>) -> Array2<f64> {
+        let bs = basis::bundled(basis_name).unwrap();
+        let prep = PreparedBasis::new(mol, &bs).unwrap();
+        let n = prep.nbasis();
+        let mut cfmm = CfmmJ::new(prep, bs, 8, 2);
+        let mut j = Array2::zeros((n, n));
+        JBuilder::build(&mut cfmm, d, &mut j).unwrap();
+        j
+    }
+
+    /// `CfmmJ` (White & Head-Gordon FMM Coulomb builder) has never been
+    /// cross-checked against a direct/dense reference — until this test, its
+    /// only coverage was structural (octree insertion, multipole-shift
+    /// arithmetic in isolation). It also has zero callers anywhere else in
+    /// the codebase (`grep CfmmJ::new` outside this file returns nothing),
+    /// so this is the first end-to-end evidence of whether it actually
+    /// computes a correct Coulomb matrix at all (triage item #13).
+    ///
+    /// RESULT (2026-07-17): it does not. Max diff vs the direct/dense J is
+    /// 1.74e1.
+    ///
+    /// ROOT CAUSE (2026-07-18, G10): NOT an M2L-traversal bug. Instrumenting
+    /// this test shows `max|J_cfmm| = 0.0` exactly while `max|J_direct| =
+    /// 1.737e1` — i.e. CFMM returns an identically-zero J matrix, and the
+    /// "max diff" is simply the largest element of the *true* Coulomb matrix.
+    /// The three functions that are the only bridge from this octree/multipole
+    /// scaffolding to actual basis-function integrals are all unimplemented
+    /// stubs (`add_shell_multipoles`, `add_far_field_to_j`, `direct_interaction`
+    /// — each an empty body). So every box multipole is zero, the far-field
+    /// path adds nothing, and the near-field path adds nothing. The M2L /
+    /// interaction-list traversal earlier notes suspected is inert (it reads
+    /// all-zero multipoles and writes a `local_exp` that is never consumed).
+    /// A real fix is a from-scratch numerics implementation (a general
+    /// Cartesian multipole integral routine — which the FFI does not expose
+    /// beyond l=1 dipole — plus the far-field contraction and near-field
+    /// direct ERIs), well beyond a traversal fix; deliberately left as a
+    /// documented partial result rather than a rushed unverified fix, since
+    /// `CfmmJ` is genuinely dead code (zero callers) and nobody depends on it.
+    /// Full trace + implementation checklist: docs/cfmm-m2l-investigation.md.
+    /// If a future fix genuinely implements the stubs, un-ignore and keep the
+    /// 1e-6 tolerance this test already asserts.
+    #[test]
+    #[ignore = "CfmmJ returns an all-zero J: its integral kernels (add_shell_multipoles/add_far_field_to_j/direct_interaction) are unimplemented stubs -- NOT an M2L bug. Root-caused not fixed (dead code, zero callers); see docs/cfmm-m2l-investigation.md"]
+    fn test_cfmm_j_matches_direct_j_water_sto3g() {
+        let water_xyz = "3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n";
+        let (d, mol) = converged_density(water_xyz, "sto-3g");
+
+        let j_direct = direct_j(&mol, "sto-3g", &d);
+        let j_cfmm = cfmm_j(&mol, "sto-3g", &d);
+
+        let n = j_direct.nrows();
+        let mut max_diff = 0.0f64;
+        for i in 0..n {
+            for jc in 0..n {
+                let diff = (j_direct[(i, jc)] - j_cfmm[(i, jc)]).abs();
+                max_diff = max_diff.max(diff);
+            }
+        }
+        println!("CFMM J vs direct J (water/STO-3G) max diff = {max_diff:.3e}");
+        assert!(
+            max_diff < 1e-6,
+            "CFMM J vs direct J max diff = {max_diff:.2e} (water/STO-3G) — CFMM's \
+             multipole far-field approximation is expected to have SOME error \
+             (unlike LinK's K, which is exact screened-direct), so this tolerance \
+             is looser than the LinK cross-check's 1e-10; if this genuinely fails \
+             far above 1e-6, CFMM has a real correctness bug, not just expected \
+             multipole truncation error"
+        );
+    }
 
     #[test]
     fn test_cfmm_octree_insertion() {

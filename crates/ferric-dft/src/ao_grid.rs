@@ -12,8 +12,13 @@ use thiserror::Error;
 pub enum GtoEvalError {
     #[error("no basis shells for Z={z} in basis set")]
     MissingElement { z: i32 },
-    #[error("angular momentum l={l} not supported for grid evaluation (only s, p, d)")]
+    #[error("angular momentum l={l} not supported for grid evaluation (only s, p, d, f, g)")]
     UnsupportedL { l: i32 },
+    /// Pre-flight size guard: the dense AO-on-grid buffer would exceed the memory
+    /// budget. Carries the fully-formatted message from
+    /// `ferric_core::memory::check_alloc`.
+    #[error("{0}")]
+    OutOfBudget(String),
 }
 
 /// One contracted GTO shell located in space (centered on its parent atom).
@@ -72,12 +77,13 @@ pub fn nbasis(mol: &Molecule, bs: &BasisSet) -> Result<usize, GtoEvalError> {
 fn radial(shell: &LocatedShell, r2: f64) -> f64 {
     let l = shell.l;
     let pi = std::f64::consts::PI;
-    // (2l-1)!! for l = 0..3
+    // (2l-1)!! for l = 0..4
     let dbl_fact: f64 = match l {
         0 => 1.0,
         1 => 1.0,
         2 => 3.0,
         3 => 15.0,
+        4 => 105.0,
         _ => 1.0,
     };
     let mut v = 0.0;
@@ -97,6 +103,8 @@ fn radial(shell: &LocatedShell, r2: f64) -> f64 {
 /// proportionality; the contraction coefficients absorb the radial normalization).
 ///
 /// For Cartesian d: order is xx, xy, xz, yy, yz, zz (libint2 convention).
+///
+/// Supports s, p, d, f, and g (pure + Cartesian); l ≥ 5 returns `UnsupportedL`.
 pub fn eval_shell(shell: &LocatedShell, dx: f64, dy: f64, dz: f64, out: &mut [f64]) -> Result<(), GtoEvalError> {
     let r2 = dx * dx + dy * dy + dz * dz;
     let rad = radial(shell, r2);
@@ -172,6 +180,58 @@ pub fn eval_shell(shell: &LocatedShell, dx: f64, dy: f64, dz: f64, out: &mut [f6
             out[8] = rad * dy * z2;
             out[9] = rad * z2 * dz;
         }
+        (4, true) => {
+            // Pure g: 9 real solid harmonics, m = -4 .. +4 (libint2 STANDARD
+            // order). Angular normalizations are the raw libint2
+            // solidharmonics::coeff() applied to the bare monomials (the same
+            // convention the d/f arms use); `radial` supplies the uniform l=4
+            // shell normalization. Verified against the analytic overlap matrix.
+            let s35 = 35.0_f64.sqrt();
+            let s70 = 70.0_f64.sqrt();
+            let s5 = 5.0_f64.sqrt();
+            let s10 = 10.0_f64.sqrt();
+            let x2 = dx * dx; let y2 = dy * dy; let z2 = dz * dz;
+            let r2v = x2 + y2 + z2;
+            // m = -4: (√35/2) · xy(x² − y²)
+            out[0] = rad * 0.5 * s35 * dx * dy * (x2 - y2);
+            // m = -3: (√70/4) · yz(3x² − y²)
+            out[1] = rad * 0.25 * s70 * dy * dz * (3.0 * x2 - y2);
+            // m = -2: (√5/2) · xy(7z² − r²)
+            out[2] = rad * 0.5 * s5 * dx * dy * (7.0 * z2 - r2v);
+            // m = -1: (√10/4) · yz(7z² − 3r²)
+            out[3] = rad * 0.25 * s10 * dy * dz * (7.0 * z2 - 3.0 * r2v);
+            // m =  0: (1/8) · (35z⁴ − 30z²r² + 3r⁴)
+            out[4] = rad * 0.125 * (35.0 * z2 * z2 - 30.0 * z2 * r2v + 3.0 * r2v * r2v);
+            // m = +1: (√10/4) · xz(7z² − 3r²)
+            out[5] = rad * 0.25 * s10 * dx * dz * (7.0 * z2 - 3.0 * r2v);
+            // m = +2: (√5/4) · (x² − y²)(7z² − r²)
+            out[6] = rad * 0.25 * s5 * (x2 - y2) * (7.0 * z2 - r2v);
+            // m = +3: (√70/4) · xz(x² − 3y²)
+            out[7] = rad * 0.25 * s70 * dx * dz * (x2 - 3.0 * y2);
+            // m = +4: (√35/8) · (x⁴ − 6x²y² + y⁴)
+            out[8] = rad * 0.125 * s35 * (x2 * x2 - 6.0 * x2 * y2 + y2 * y2);
+        }
+        (4, false) => {
+            // Cartesian g: 15 functions in libint2 STANDARD order
+            //   xxxx, xxxy, xxxz, xxyy, xxyz, xxzz, xyyy, xyyz, xyzz, xzzz,
+            //   yyyy, yyyz, yyzz, yzzz, zzzz
+            let x2 = dx * dx; let y2 = dy * dy; let z2 = dz * dz;
+            out[0] = rad * x2 * x2;
+            out[1] = rad * x2 * dx * dy;
+            out[2] = rad * x2 * dx * dz;
+            out[3] = rad * x2 * y2;
+            out[4] = rad * x2 * dy * dz;
+            out[5] = rad * x2 * z2;
+            out[6] = rad * dx * y2 * dy;
+            out[7] = rad * dx * y2 * dz;
+            out[8] = rad * dx * dy * z2;
+            out[9] = rad * dx * z2 * dz;
+            out[10] = rad * y2 * y2;
+            out[11] = rad * y2 * dy * dz;
+            out[12] = rad * y2 * z2;
+            out[13] = rad * dy * z2 * dz;
+            out[14] = rad * z2 * z2;
+        }
         (l, _) => return Err(GtoEvalError::UnsupportedL { l }),
     }
     Ok(())
@@ -192,7 +252,7 @@ pub fn eval_basis_on_points(
     let npts = points.len();
     let mut chi = Array2::<f64>::zeros((nbf, npts));
 
-    let mut shell_buf = [0.0f64; 10];
+    let mut shell_buf = [0.0f64; 15];
 
     for (g, p) in points.iter().enumerate() {
         let mut row_offset = 0usize;
@@ -222,11 +282,12 @@ pub fn eval_basis_on_points(
 fn radial_and_d(shell: &LocatedShell, r2: f64) -> (f64, f64) {
     let l = shell.l;
     let pi = std::f64::consts::PI;
-    // (2l-1)!! for l = 0..3
+    // (2l-1)!! for l = 0..4
     let dbl_fact: f64 = match l {
         0 | 1 => 1.0,
         2 => 3.0,
         3 => 15.0,
+        4 => 105.0,
         _ => 1.0,
     };
     let mut rad = 0.0_f64;
@@ -249,6 +310,7 @@ fn radial_and_d_d2(shell: &LocatedShell, r2: f64) -> (f64, f64, f64) {
         0 | 1 => 1.0,
         2 => 3.0,
         3 => 15.0,
+        4 => 105.0,
         _ => 1.0,
     };
     let mut rad = 0.0_f64;
@@ -274,14 +336,16 @@ fn radial_and_d_d2(shell: &LocatedShell, r2: f64) -> (f64, f64, f64) {
 ///   * cart-d:  6 functions in libint2 xx, xy, xz, yy, yz, zz order
 ///   * pure-f:  7 solid harmonics, m = -3..+3 order
 ///   * cart-f:  10 functions in libint2 xxx, xxy, xxz, xyy, xyz, xzz, yyy, yyz, yzz, zzz order
-///   * l ≥ 4:   not supported (UnsupportedL)
+///   * pure-g:  9 solid harmonics, m = -4..+4 order
+///   * cart-g:  15 functions in libint2 xxxx, xxxy, xxxz, xxyy, xxyz, xxzz, xyyy, xyyz, xyzz, xzzz, yyyy, yyyz, yyzz, yzzz, zzzz order
+///   * l ≥ 5:   not supported (UnsupportedL)
 fn eval_shell_and_grad(
     sh: &LocatedShell,
     dx: f64,
     dy: f64,
     dz: f64,
     out: &mut [f64],
-    out_grad: &mut [[f64; 10]; 3],
+    out_grad: &mut [[f64; 15]; 3],
 ) -> Result<(), GtoEvalError> {
     let r2 = dx * dx + dy * dy + dz * dz;
     let (rad, drad_dr2) = radial_and_d(sh, r2);
@@ -431,6 +495,99 @@ fn eval_shell_and_grad(
                 out_grad[2][m] = two_dr * dz * a_m[m] + rad * amz[m];
             }
         }
+        (4, true) => {
+            // Pure g (libint2 m = -4 .. +4), normalizations matching `eval_shell`.
+            // Angular polynomials and their derivatives are generated from the
+            // real solid harmonics via sympy (see docs) so no term is
+            // hand-transcribed; validated against grid overlap + FD.
+            let s35 = 35.0_f64.sqrt();
+            let s70 = 70.0_f64.sqrt();
+            let s5 = 5.0_f64.sqrt();
+            let s10 = 10.0_f64.sqrt();
+            let a_m = [
+                0.5*s35 * (1.0*dx*dx*dx*dy - 1.0*dx*dy*dy*dy),  // m=-4
+                0.25*s70 * (-1.0*dy*dy*dy*dz + 3.0*dx*dx*dy*dz),  // m=-3
+                0.5*s5 * (-1.0*dx*dy*dy*dy - 1.0*dx*dx*dx*dy + 6.0*dx*dy*dz*dz),  // m=-2
+                0.25*s10 * (-3.0*dy*dy*dy*dz + 4.0*dy*dz*dz*dz - 3.0*dx*dx*dy*dz),  // m=-1
+                0.125 * (3.0*dx*dx*dx*dx + 3.0*dy*dy*dy*dy + 8.0*dz*dz*dz*dz - 24.0*dx*dx*dz*dz - 24.0*dy*dy*dz*dz + 6.0*dx*dx*dy*dy),  // m= 0
+                0.25*s10 * (-3.0*dx*dx*dx*dz + 4.0*dx*dz*dz*dz - 3.0*dx*dy*dy*dz),  // m=+1
+                0.25*s5 * (1.0*dy*dy*dy*dy - 1.0*dx*dx*dx*dx - 6.0*dy*dy*dz*dz + 6.0*dx*dx*dz*dz),  // m=+2
+                0.25*s70 * (1.0*dx*dx*dx*dz - 3.0*dx*dy*dy*dz),  // m=+3
+                0.125*s35 * (1.0*dx*dx*dx*dx + 1.0*dy*dy*dy*dy - 6.0*dx*dx*dy*dy),  // m=+4
+            ];
+            let amx = [
+                0.5*s35 * (-1.0*dy*dy*dy + 3.0*dx*dx*dy),  // m=-4
+                0.25*s70 * (6.0*dx*dy*dz),  // m=-3
+                0.5*s5 * (-1.0*dy*dy*dy - 3.0*dx*dx*dy + 6.0*dy*dz*dz),  // m=-2
+                0.25*s10 * (-6.0*dx*dy*dz),  // m=-1
+                0.125 * (12.0*dx*dx*dx - 48.0*dx*dz*dz + 12.0*dx*dy*dy),  // m= 0
+                0.25*s10 * (4.0*dz*dz*dz - 9.0*dx*dx*dz - 3.0*dy*dy*dz),  // m=+1
+                0.25*s5 * (-4.0*dx*dx*dx + 12.0*dx*dz*dz),  // m=+2
+                0.25*s70 * (-3.0*dy*dy*dz + 3.0*dx*dx*dz),  // m=+3
+                0.125*s35 * (4.0*dx*dx*dx - 12.0*dx*dy*dy),  // m=+4
+            ];
+            let amy = [
+                0.5*s35 * (1.0*dx*dx*dx - 3.0*dx*dy*dy),  // m=-4
+                0.25*s70 * (-3.0*dy*dy*dz + 3.0*dx*dx*dz),  // m=-3
+                0.5*s5 * (-1.0*dx*dx*dx - 3.0*dx*dy*dy + 6.0*dx*dz*dz),  // m=-2
+                0.25*s10 * (4.0*dz*dz*dz - 9.0*dy*dy*dz - 3.0*dx*dx*dz),  // m=-1
+                0.125 * (12.0*dy*dy*dy - 48.0*dy*dz*dz + 12.0*dx*dx*dy),  // m= 0
+                0.25*s10 * (-6.0*dx*dy*dz),  // m=+1
+                0.25*s5 * (4.0*dy*dy*dy - 12.0*dy*dz*dz),  // m=+2
+                0.25*s70 * (-6.0*dx*dy*dz),  // m=+3
+                0.125*s35 * (4.0*dy*dy*dy - 12.0*dx*dx*dy),  // m=+4
+            ];
+            let amz = [
+                0.0,  // m=-4
+                0.25*s70 * (-1.0*dy*dy*dy + 3.0*dx*dx*dy),  // m=-3
+                0.5*s5 * (12.0*dx*dy*dz),  // m=-2
+                0.25*s10 * (-3.0*dy*dy*dy - 3.0*dx*dx*dy + 12.0*dy*dz*dz),  // m=-1
+                0.125 * (32.0*dz*dz*dz - 48.0*dx*dx*dz - 48.0*dy*dy*dz),  // m= 0
+                0.25*s10 * (-3.0*dx*dx*dx - 3.0*dx*dy*dy + 12.0*dx*dz*dz),  // m=+1
+                0.25*s5 * (-12.0*dy*dy*dz + 12.0*dx*dx*dz),  // m=+2
+                0.25*s70 * (1.0*dx*dx*dx - 3.0*dx*dy*dy),  // m=+3
+                0.0,  // m=+4
+            ];
+            for m in 0..9 {
+                out[m] = rad * a_m[m];
+                out_grad[0][m] = two_dr * dx * a_m[m] + rad * amx[m];
+                out_grad[1][m] = two_dr * dy * a_m[m] + rad * amy[m];
+                out_grad[2][m] = two_dr * dz * a_m[m] + rad * amz[m];
+            }
+        }
+        (4, false) => {
+            // Cartesian g (libint2 STANDARD order):
+            //   xxxx, xxxy, xxxz, xxyy, xxyz, xxzz, xyyy, xyyz, xyzz, xzzz,
+            //   yyyy, yyyz, yyzz, yzzz, zzzz
+            let x2 = dx * dx; let y2 = dy * dy; let z2 = dz * dz;
+            let x3 = x2 * dx; let y3 = y2 * dy; let z3 = z2 * dz;
+            let a_m = [
+                x2 * x2, x3 * dy, x3 * dz, x2 * y2, x2 * dy * dz,
+                x2 * z2, dx * y3, dx * y2 * dz, dx * dy * z2, dx * z3,
+                y2 * y2, y3 * dz, y2 * z2, dy * z3, z2 * z2,
+            ];
+            let amx = [
+                4.0 * x3, 3.0 * x2 * dy, 3.0 * x2 * dz, 2.0 * dx * y2, 2.0 * dx * dy * dz,
+                2.0 * dx * z2, y3, y2 * dz, dy * z2, z3,
+                0.0, 0.0, 0.0, 0.0, 0.0,
+            ];
+            let amy = [
+                0.0, x3, 0.0, 2.0 * x2 * dy, x2 * dz,
+                0.0, 3.0 * dx * y2, 2.0 * dx * dy * dz, dx * z2, 0.0,
+                4.0 * y3, 3.0 * y2 * dz, 2.0 * dy * z2, z3, 0.0,
+            ];
+            let amz = [
+                0.0, 0.0, x3, 0.0, x2 * dy,
+                2.0 * x2 * dz, 0.0, dx * y2, 2.0 * dx * dy * dz, 3.0 * dx * z2,
+                0.0, y3, 2.0 * y2 * dz, 3.0 * dy * z2, 4.0 * z3,
+            ];
+            for m in 0..15 {
+                out[m] = rad * a_m[m];
+                out_grad[0][m] = two_dr * dx * a_m[m] + rad * amx[m];
+                out_grad[1][m] = two_dr * dy * a_m[m] + rad * amy[m];
+                out_grad[2][m] = two_dr * dz * a_m[m] + rad * amz[m];
+            }
+        }
         (l, _) => return Err(GtoEvalError::UnsupportedL { l }),
     }
     Ok(())
@@ -457,12 +614,27 @@ pub fn eval_basis_and_grad_on_points(
     let nbf: usize = shells.iter().map(|s| num_functions(s.l, s.pure)).sum();
     let npts = points.len();
 
-    // Per-point AO + ∇AO evaluation (pure scalar; the parallelizable unit).
-    let eval_point = |p: &[f64; 3]| -> Result<(Vec<f64>, [Vec<f64>; 3]), GtoEvalError> {
-        let mut chi_col = vec![0.0f64; nbf];
-        let mut dchi_col = [vec![0.0f64; nbf], vec![0.0f64; nbf], vec![0.0f64; nbf]];
-        let mut buf = [0.0f64; 10];
-        let mut gradbuf: [[f64; 10]; 3] = [[0.0; 10]; 3];
+    // Output arrays, allocated ONCE. chi is (nbf, npts) row-major, so
+    // chi[(i, g)] lives at offset i*npts + g. dchi is (3, nbf, npts), so
+    // dchi[(a, i, g)] lives at offset a*nbf*npts + i*npts + g. We scatter each
+    // grid column's values directly into these buffers (no per-point Vec collect
+    // + copy), halving the construction peak vs. the old materialize-then-copy.
+    let mut chi = Array2::<f64>::zeros((nbf, npts));
+    let mut dchi = Array3::<f64>::zeros((3, nbf, npts));
+
+    // Evaluate all AO + ∇AO values for grid point `g` and scatter them into the
+    // pre-allocated columns via raw pointers. Each grid point owns a disjoint
+    // set of column offsets (column `g` of chi, and column `g` of each of the 3
+    // dchi planes), so distinct points never write overlapping addresses — the
+    // scatter is data-race-free and bit-identical to a serial fill.
+    let dchi_plane = nbf * npts;
+    let eval_into = |g: usize,
+                     p: &[f64; 3],
+                     chi_base: *mut f64,
+                     dchi_base: *mut f64|
+     -> Result<(), GtoEvalError> {
+        let mut buf = [0.0f64; 15];
+        let mut gradbuf: [[f64; 15]; 3] = [[0.0; 15]; 3];
 
         let mut row_offset = 0usize;
         for sh in &shells {
@@ -476,45 +648,42 @@ pub fn eval_basis_and_grad_on_points(
 
             eval_shell_and_grad(sh, dx, dy, dz, &mut buf[..n], &mut gradbuf)?;
             for i in 0..n {
-                chi_col[row_offset + i] = buf[i];
-                dchi_col[0][row_offset + i] = gradbuf[0][i];
-                dchi_col[1][row_offset + i] = gradbuf[1][i];
-                dchi_col[2][row_offset + i] = gradbuf[2][i];
+                let row = row_offset + i;
+                // SAFETY: `row < nbf` and `g < npts`, so every offset lies in
+                // bounds of the respective array, and column `g` is written by
+                // this grid point alone (see the disjointness argument above).
+                unsafe {
+                    *chi_base.add(row * npts + g) = buf[i];
+                    *dchi_base.add(row * npts + g) = gradbuf[0][i];
+                    *dchi_base.add(dchi_plane + row * npts + g) = gradbuf[1][i];
+                    *dchi_base.add(2 * dchi_plane + row * npts + g) = gradbuf[2][i];
+                }
             }
             row_offset += n;
         }
-        Ok((chi_col, dchi_col))
+        Ok(())
     };
 
     // Grid points are independent. Parallelize over points (pure scalar work, no
-    // BLAS inside → no oversubscription against BLAS threads), then assemble into
-    // the (nbf, npts) / (3, nbf, npts) arrays. BUT parallelism POISONS tiny
-    // workloads: rayon spawn/join/steal dwarfs the work on small grids (the
-    // free-atom/proatom SCF case — single atom, few points — was ~18× slower
-    // under threads). Below a work threshold, run serially. The free-atom SCF
-    // path additionally pins rayon to one thread, but this guard makes the
+    // BLAS inside → no oversubscription against BLAS threads). BUT parallelism
+    // POISONS tiny workloads: rayon spawn/join/steal dwarfs the work on small
+    // grids (the free-atom/proatom SCF case — single atom, few points — was ~18×
+    // slower under threads). Below a work threshold, run serially. The free-atom
+    // SCF path additionally pins rayon to one thread, but this guard makes the
     // function never-slower regardless of caller threading.
     const PAR_WORK_THRESHOLD: usize = 50_000; // ~npts·nbf flops-ish
-    let per_point: Vec<(Vec<f64>, [Vec<f64>; 3])> = if npts * nbf >= PAR_WORK_THRESHOLD {
+    let chi_addr = chi.as_mut_ptr() as usize;
+    let dchi_addr = dchi.as_mut_ptr() as usize;
+    if npts * nbf >= PAR_WORK_THRESHOLD {
         points
             .par_iter()
-            .map(&eval_point)
-            .collect::<Result<Vec<_>, _>>()?
+            .enumerate()
+            .try_for_each(|(g, p)| {
+                eval_into(g, p, chi_addr as *mut f64, dchi_addr as *mut f64)
+            })?;
     } else {
-        points
-            .iter()
-            .map(&eval_point)
-            .collect::<Result<Vec<_>, _>>()?
-    };
-
-    let mut chi = Array2::<f64>::zeros((nbf, npts));
-    let mut dchi = Array3::<f64>::zeros((3, nbf, npts));
-    for (g, (chi_col, dchi_col)) in per_point.iter().enumerate() {
-        for i in 0..nbf {
-            chi[(i, g)] = chi_col[i];
-            dchi[(0, i, g)] = dchi_col[0][i];
-            dchi[(1, i, g)] = dchi_col[1][i];
-            dchi[(2, i, g)] = dchi_col[2][i];
+        for (g, p) in points.iter().enumerate() {
+            eval_into(g, p, chi_addr as *mut f64, dchi_addr as *mut f64)?;
         }
     }
     Ok((chi, dchi))
@@ -527,8 +696,8 @@ fn eval_shell_grad_hess(
     sh: &LocatedShell,
     dx: f64, dy: f64, dz: f64,
     out: &mut [f64],
-    out_grad: &mut [[f64; 10]; 3],
-    out_hess: &mut [[f64; 10]; 9],   // axis-pair index 3*a+b, function index i
+    out_grad: &mut [[f64; 15]; 3],
+    out_hess: &mut [[f64; 15]; 9],   // axis-pair index 3*a+b, function index i
 ) -> Result<(), GtoEvalError> {
     let r2 = dx * dx + dy * dy + dz * dz;
     let (rad, drad, d2rad) = radial_and_d_d2(sh, r2);
@@ -852,6 +1021,172 @@ fn eval_shell_grad_hess(
                 }
             }
         }
+        (4, true) => {
+            // Pure g (libint2 m = -4 .. +4), matches `eval_shell` normalizations.
+            let s35 = 35.0_f64.sqrt();
+            let s70 = 70.0_f64.sqrt();
+            let s5 = 5.0_f64.sqrt();
+            let s10 = 10.0_f64.sqrt();
+            let a_m = [
+                0.5*s35 * (1.0*dx*dx*dx*dy - 1.0*dx*dy*dy*dy),  // m=-4
+                0.25*s70 * (-1.0*dy*dy*dy*dz + 3.0*dx*dx*dy*dz),  // m=-3
+                0.5*s5 * (-1.0*dx*dy*dy*dy - 1.0*dx*dx*dx*dy + 6.0*dx*dy*dz*dz),  // m=-2
+                0.25*s10 * (-3.0*dy*dy*dy*dz + 4.0*dy*dz*dz*dz - 3.0*dx*dx*dy*dz),  // m=-1
+                0.125 * (3.0*dx*dx*dx*dx + 3.0*dy*dy*dy*dy + 8.0*dz*dz*dz*dz - 24.0*dx*dx*dz*dz - 24.0*dy*dy*dz*dz + 6.0*dx*dx*dy*dy),  // m= 0
+                0.25*s10 * (-3.0*dx*dx*dx*dz + 4.0*dx*dz*dz*dz - 3.0*dx*dy*dy*dz),  // m=+1
+                0.25*s5 * (1.0*dy*dy*dy*dy - 1.0*dx*dx*dx*dx - 6.0*dy*dy*dz*dz + 6.0*dx*dx*dz*dz),  // m=+2
+                0.25*s70 * (1.0*dx*dx*dx*dz - 3.0*dx*dy*dy*dz),  // m=+3
+                0.125*s35 * (1.0*dx*dx*dx*dx + 1.0*dy*dy*dy*dy - 6.0*dx*dx*dy*dy),  // m=+4
+            ];
+            let amx = [
+                0.5*s35 * (-1.0*dy*dy*dy + 3.0*dx*dx*dy),  // m=-4
+                0.25*s70 * (6.0*dx*dy*dz),  // m=-3
+                0.5*s5 * (-1.0*dy*dy*dy - 3.0*dx*dx*dy + 6.0*dy*dz*dz),  // m=-2
+                0.25*s10 * (-6.0*dx*dy*dz),  // m=-1
+                0.125 * (12.0*dx*dx*dx - 48.0*dx*dz*dz + 12.0*dx*dy*dy),  // m= 0
+                0.25*s10 * (4.0*dz*dz*dz - 9.0*dx*dx*dz - 3.0*dy*dy*dz),  // m=+1
+                0.25*s5 * (-4.0*dx*dx*dx + 12.0*dx*dz*dz),  // m=+2
+                0.25*s70 * (-3.0*dy*dy*dz + 3.0*dx*dx*dz),  // m=+3
+                0.125*s35 * (4.0*dx*dx*dx - 12.0*dx*dy*dy),  // m=+4
+            ];
+            let amy = [
+                0.5*s35 * (1.0*dx*dx*dx - 3.0*dx*dy*dy),  // m=-4
+                0.25*s70 * (-3.0*dy*dy*dz + 3.0*dx*dx*dz),  // m=-3
+                0.5*s5 * (-1.0*dx*dx*dx - 3.0*dx*dy*dy + 6.0*dx*dz*dz),  // m=-2
+                0.25*s10 * (4.0*dz*dz*dz - 9.0*dy*dy*dz - 3.0*dx*dx*dz),  // m=-1
+                0.125 * (12.0*dy*dy*dy - 48.0*dy*dz*dz + 12.0*dx*dx*dy),  // m= 0
+                0.25*s10 * (-6.0*dx*dy*dz),  // m=+1
+                0.25*s5 * (4.0*dy*dy*dy - 12.0*dy*dz*dz),  // m=+2
+                0.25*s70 * (-6.0*dx*dy*dz),  // m=+3
+                0.125*s35 * (4.0*dy*dy*dy - 12.0*dx*dx*dy),  // m=+4
+            ];
+            let amz = [
+                0.0,  // m=-4
+                0.25*s70 * (-1.0*dy*dy*dy + 3.0*dx*dx*dy),  // m=-3
+                0.5*s5 * (12.0*dx*dy*dz),  // m=-2
+                0.25*s10 * (-3.0*dy*dy*dy - 3.0*dx*dx*dy + 12.0*dy*dz*dz),  // m=-1
+                0.125 * (32.0*dz*dz*dz - 48.0*dx*dx*dz - 48.0*dy*dy*dz),  // m= 0
+                0.25*s10 * (-3.0*dx*dx*dx - 3.0*dx*dy*dy + 12.0*dx*dz*dz),  // m=+1
+                0.25*s5 * (-12.0*dy*dy*dz + 12.0*dx*dx*dz),  // m=+2
+                0.25*s70 * (1.0*dx*dx*dx - 3.0*dx*dy*dy),  // m=+3
+                0.0,  // m=+4
+            ];
+            // Angular Hessians ∂²A_m/∂a∂b (a*3+b indexing), cols m=-4..+4.
+            // Generated from the same sympy solid-harmonic derivation.
+            let ah: [[f64; 9]; 9] = [
+                // xx
+                [ 0.5*s35*(6.0*dx*dy), 0.25*s70*(6.0*dy*dz), 0.5*s5*(-6.0*dx*dy), 0.25*s10*(-6.0*dy*dz), 0.125*(-48.0*dz*dz + 12.0*dy*dy + 36.0*dx*dx), 0.25*s10*(-18.0*dx*dz), 0.25*s5*(-12.0*dx*dx + 12.0*dz*dz), 0.25*s70*(6.0*dx*dz), 0.125*s35*(-12.0*dy*dy + 12.0*dx*dx) ],
+                // xy
+                [ 0.5*s35*(-3.0*dy*dy + 3.0*dx*dx), 0.25*s70*(6.0*dx*dz), 0.5*s5*(-3.0*dx*dx - 3.0*dy*dy + 6.0*dz*dz), 0.25*s10*(-6.0*dx*dz), 0.125*(24.0*dx*dy), 0.25*s10*(-6.0*dy*dz), 0.0, 0.25*s70*(-6.0*dy*dz), 0.125*s35*(-24.0*dx*dy) ],
+                // xz
+                [ 0.0, 0.25*s70*(6.0*dx*dy), 0.5*s5*(12.0*dy*dz), 0.25*s10*(-6.0*dx*dy), 0.125*(-96.0*dx*dz), 0.25*s10*(-9.0*dx*dx - 3.0*dy*dy + 12.0*dz*dz), 0.25*s5*(24.0*dx*dz), 0.25*s70*(-3.0*dy*dy + 3.0*dx*dx), 0.0 ],
+                // yx (= xy)
+                [ 0.5*s35*(-3.0*dy*dy + 3.0*dx*dx), 0.25*s70*(6.0*dx*dz), 0.5*s5*(-3.0*dx*dx - 3.0*dy*dy + 6.0*dz*dz), 0.25*s10*(-6.0*dx*dz), 0.125*(24.0*dx*dy), 0.25*s10*(-6.0*dy*dz), 0.0, 0.25*s70*(-6.0*dy*dz), 0.125*s35*(-24.0*dx*dy) ],
+                // yy
+                [ 0.5*s35*(-6.0*dx*dy), 0.25*s70*(-6.0*dy*dz), 0.5*s5*(-6.0*dx*dy), 0.25*s10*(-18.0*dy*dz), 0.125*(-48.0*dz*dz + 12.0*dx*dx + 36.0*dy*dy), 0.25*s10*(-6.0*dx*dz), 0.25*s5*(-12.0*dz*dz + 12.0*dy*dy), 0.25*s70*(-6.0*dx*dz), 0.125*s35*(-12.0*dx*dx + 12.0*dy*dy) ],
+                // yz
+                [ 0.0, 0.25*s70*(-3.0*dy*dy + 3.0*dx*dx), 0.5*s5*(12.0*dx*dz), 0.25*s10*(-9.0*dy*dy - 3.0*dx*dx + 12.0*dz*dz), 0.125*(-96.0*dy*dz), 0.25*s10*(-6.0*dx*dy), 0.25*s5*(-24.0*dy*dz), 0.25*s70*(-6.0*dx*dy), 0.0 ],
+                // zx (= xz)
+                [ 0.0, 0.25*s70*(6.0*dx*dy), 0.5*s5*(12.0*dy*dz), 0.25*s10*(-6.0*dx*dy), 0.125*(-96.0*dx*dz), 0.25*s10*(-9.0*dx*dx - 3.0*dy*dy + 12.0*dz*dz), 0.25*s5*(24.0*dx*dz), 0.25*s70*(-3.0*dy*dy + 3.0*dx*dx), 0.0 ],
+                // zy (= yz)
+                [ 0.0, 0.25*s70*(-3.0*dy*dy + 3.0*dx*dx), 0.5*s5*(12.0*dx*dz), 0.25*s10*(-9.0*dy*dy - 3.0*dx*dx + 12.0*dz*dz), 0.125*(-96.0*dy*dz), 0.25*s10*(-6.0*dx*dy), 0.25*s5*(-24.0*dy*dz), 0.25*s70*(-6.0*dx*dy), 0.0 ],
+                // zz
+                [ 0.0, 0.0, 0.5*s5*(12.0*dx*dy), 0.25*s10*(24.0*dy*dz), 0.125*(-48.0*dx*dx - 48.0*dy*dy + 96.0*dz*dz), 0.25*s10*(24.0*dx*dz), 0.25*s5*(-12.0*dy*dy + 12.0*dx*dx), 0.0, 0.0 ],
+            ];
+            let ag = [amx, amy, amz];
+            for m in 0..9 {
+                out[m] = rad * a_m[m];
+                for a in 0..3 {
+                    out_grad[a][m] = two_dr * d[a] * a_m[m] + rad * ag[a][m];
+                }
+                for a in 0..3 {
+                    for b in 0..3 {
+                        let delta_ab = if a == b { 1.0 } else { 0.0 };
+                        out_hess[a * 3 + b][m] =
+                              two_dr * delta_ab * a_m[m]
+                            + four_d2r * d[a] * d[b] * a_m[m]
+                            + two_dr * d[a] * ag[b][m]
+                            + two_dr * d[b] * ag[a][m]
+                            + rad * ah[a * 3 + b][m];
+                    }
+                }
+            }
+        }
+        (4, false) => {
+            // Cartesian g (libint2 STANDARD order):
+            //   xxxx, xxxy, xxxz, xxyy, xxyz, xxzz, xyyy, xyyz, xyzz, xzzz,
+            //   yyyy, yyyz, yyzz, yzzz, zzzz
+            let x2 = dx * dx; let y2 = dy * dy; let z2 = dz * dz;
+            let x3 = x2 * dx; let y3 = y2 * dy; let z3 = z2 * dz;
+            let a_m = [
+                x2 * x2, x3 * dy, x3 * dz, x2 * y2, x2 * dy * dz,
+                x2 * z2, dx * y3, dx * y2 * dz, dx * dy * z2, dx * z3,
+                y2 * y2, y3 * dz, y2 * z2, dy * z3, z2 * z2,
+            ];
+            let amx = [
+                4.0 * x3, 3.0 * x2 * dy, 3.0 * x2 * dz, 2.0 * dx * y2, 2.0 * dx * dy * dz,
+                2.0 * dx * z2, y3, y2 * dz, dy * z2, z3,
+                0.0, 0.0, 0.0, 0.0, 0.0,
+            ];
+            let amy = [
+                0.0, x3, 0.0, 2.0 * x2 * dy, x2 * dz,
+                0.0, 3.0 * dx * y2, 2.0 * dx * dy * dz, dx * z2, 0.0,
+                4.0 * y3, 3.0 * y2 * dz, 2.0 * dy * z2, z3, 0.0,
+            ];
+            let amz = [
+                0.0, 0.0, x3, 0.0, x2 * dy,
+                2.0 * x2 * dz, 0.0, dx * y2, 2.0 * dx * dy * dz, 3.0 * dx * z2,
+                0.0, y3, 2.0 * y2 * dz, 3.0 * dy * z2, 4.0 * z3,
+            ];
+            // Angular Hessians ∂²A_m/∂a∂b, rows = axis-pair (a*3+b), cols = 15 g cart.
+            let ah: [[f64; 15]; 9] = [
+                // xx
+                [12.0*x2, 6.0*dx*dy, 6.0*dx*dz, 2.0*y2, 2.0*dy*dz, 2.0*z2,
+                 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                // xy
+                [0.0, 3.0*x2, 0.0, 4.0*dx*dy, 2.0*dx*dz, 0.0,
+                 3.0*y2, 2.0*dy*dz, z2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                // xz
+                [0.0, 0.0, 3.0*x2, 0.0, 2.0*dx*dy, 4.0*dx*dz,
+                 0.0, y2, 2.0*dy*dz, 3.0*z2, 0.0, 0.0, 0.0, 0.0, 0.0],
+                // yx (= xy)
+                [0.0, 3.0*x2, 0.0, 4.0*dx*dy, 2.0*dx*dz, 0.0,
+                 3.0*y2, 2.0*dy*dz, z2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                // yy
+                [0.0, 0.0, 0.0, 2.0*x2, 0.0, 0.0,
+                 6.0*dx*dy, 2.0*dx*dz, 0.0, 0.0, 12.0*y2, 6.0*dy*dz, 2.0*z2, 0.0, 0.0],
+                // yz
+                [0.0, 0.0, 0.0, 0.0, x2, 0.0,
+                 0.0, 2.0*dx*dy, 2.0*dx*dz, 0.0, 0.0, 3.0*y2, 4.0*dy*dz, 3.0*z2, 0.0],
+                // zx (= xz)
+                [0.0, 0.0, 3.0*x2, 0.0, 2.0*dx*dy, 4.0*dx*dz,
+                 0.0, y2, 2.0*dy*dz, 3.0*z2, 0.0, 0.0, 0.0, 0.0, 0.0],
+                // zy (= yz)
+                [0.0, 0.0, 0.0, 0.0, x2, 0.0,
+                 0.0, 2.0*dx*dy, 2.0*dx*dz, 0.0, 0.0, 3.0*y2, 4.0*dy*dz, 3.0*z2, 0.0],
+                // zz
+                [0.0, 0.0, 0.0, 0.0, 0.0, 2.0*x2,
+                 0.0, 0.0, 2.0*dx*dy, 6.0*dx*dz, 0.0, 0.0, 2.0*y2, 6.0*dy*dz, 12.0*z2],
+            ];
+            let ag = [amx, amy, amz];
+            for m in 0..15 {
+                out[m] = rad * a_m[m];
+                for a in 0..3 {
+                    out_grad[a][m] = two_dr * d[a] * a_m[m] + rad * ag[a][m];
+                }
+                for a in 0..3 {
+                    for b in 0..3 {
+                        let delta_ab = if a == b { 1.0 } else { 0.0 };
+                        out_hess[a * 3 + b][m] =
+                              two_dr * delta_ab * a_m[m]
+                            + four_d2r * d[a] * d[b] * a_m[m]
+                            + two_dr * d[a] * ag[b][m]
+                            + two_dr * d[b] * ag[a][m]
+                            + rad * ah[a * 3 + b][m];
+                    }
+                }
+            }
+        }
         (l, _) => return Err(GtoEvalError::UnsupportedL { l }),
     }
     Ok(())
@@ -864,8 +1199,8 @@ fn eval_shell_grad_hess(
 ///   `dchi`  has shape `(3, nbasis, npts)` with axis order [x, y, z]
 ///   `ddchi` has shape `(3, 3, nbasis, npts)` — full 3×3 Hessian
 ///
-/// Supports s, p, d, and f (pure + Cartesian) shells. g and higher still
-/// return `UnsupportedL`.
+/// Supports s, p, d, f, and g (pure + Cartesian) shells. l ≥ 5 still
+/// returns `UnsupportedL`.
 // Returns (values, gradients, hessians) as rank-2/3/4 arrays; the tuple is
 // self-documenting and used once, so a type alias would only add indirection.
 #[allow(clippy::type_complexity)]
@@ -874,18 +1209,33 @@ pub fn eval_basis_grad_hess_on_points(
     bs: &ferric_core::basis::BasisSet,
     points: &[[f64; 3]],
 ) -> Result<(Array2<f64>, Array3<f64>, ndarray::Array4<f64>), GtoEvalError> {
+    use rayon::prelude::*;
+
     let shells = collect_shells(mol, bs)?;
     let nbf: usize = shells.iter().map(|s| num_functions(s.l, s.pure)).sum();
     let npts = points.len();
+
+    // Output arrays, allocated once; each grid point scatters into its own
+    // column `g` of every plane, so writes of distinct points are disjoint —
+    // same raw-pointer scatter (and same disjointness argument) as
+    // `eval_basis_and_grad_on_points`. This function was always single-copy
+    // (it never had the per-point collect); the scatter adds the same
+    // point-parallelism without any extra buffer.
     let mut chi = Array2::<f64>::zeros((nbf, npts));
     let mut dchi = Array3::<f64>::zeros((3, nbf, npts));
     let mut ddchi = ndarray::Array4::<f64>::zeros((3, 3, nbf, npts));
 
-    let mut buf = [0.0f64; 10];
-    let mut gradbuf: [[f64; 10]; 3] = [[0.0; 10]; 3];
-    let mut hessbuf: [[f64; 10]; 9] = [[0.0; 10]; 9];
+    let plane = nbf * npts; // stride between axis-planes of dchi / (a,b)-planes of ddchi
+    let eval_into = |g: usize,
+                     p: &[f64; 3],
+                     chi_base: *mut f64,
+                     dchi_base: *mut f64,
+                     ddchi_base: *mut f64|
+     -> Result<(), GtoEvalError> {
+        let mut buf = [0.0f64; 15];
+        let mut gradbuf: [[f64; 15]; 3] = [[0.0; 15]; 3];
+        let mut hessbuf: [[f64; 15]; 9] = [[0.0; 15]; 9];
 
-    for (g, p) in points.iter().enumerate() {
         let mut row_offset = 0usize;
         for sh in &shells {
             buf.fill(0.0);
@@ -899,15 +1249,51 @@ pub fn eval_basis_grad_hess_on_points(
 
             eval_shell_grad_hess(sh, dx, dy, dz, &mut buf[..n], &mut gradbuf, &mut hessbuf)?;
             for i in 0..n {
-                chi[(row_offset + i, g)] = buf[i];
-                for a in 0..3 {
-                    dchi[(a, row_offset + i, g)] = gradbuf[a][i];
-                    for b in 0..3 {
-                        ddchi[(a, b, row_offset + i, g)] = hessbuf[a * 3 + b][i];
+                let row = row_offset + i;
+                // SAFETY: `row < nbf`, `g < npts`, and plane indices < 3
+                // (resp. 9), so every offset is in bounds; column `g` is
+                // written by this grid point alone (disjointness above).
+                unsafe {
+                    *chi_base.add(row * npts + g) = buf[i];
+                    for a in 0..3 {
+                        *dchi_base.add(a * plane + row * npts + g) = gradbuf[a][i];
+                        for b in 0..3 {
+                            *ddchi_base.add((a * 3 + b) * plane + row * npts + g) =
+                                hessbuf[a * 3 + b][i];
+                        }
                     }
                 }
             }
             row_offset += n;
+        }
+        Ok(())
+    };
+
+    // Same small-workload guard as `eval_basis_and_grad_on_points`: rayon
+    // overhead poisons tiny grids, so run those serially.
+    const PAR_WORK_THRESHOLD: usize = 50_000; // ~npts·nbf flops-ish
+    let chi_addr = chi.as_mut_ptr() as usize;
+    let dchi_addr = dchi.as_mut_ptr() as usize;
+    let ddchi_addr = ddchi.as_mut_ptr() as usize;
+    if npts * nbf >= PAR_WORK_THRESHOLD {
+        points.par_iter().enumerate().try_for_each(|(g, p)| {
+            eval_into(
+                g,
+                p,
+                chi_addr as *mut f64,
+                dchi_addr as *mut f64,
+                ddchi_addr as *mut f64,
+            )
+        })?;
+    } else {
+        for (g, p) in points.iter().enumerate() {
+            eval_into(
+                g,
+                p,
+                chi_addr as *mut f64,
+                dchi_addr as *mut f64,
+                ddchi_addr as *mut f64,
+            )?;
         }
     }
     Ok((chi, dchi, ddchi))

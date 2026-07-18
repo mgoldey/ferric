@@ -5,50 +5,107 @@ use crate::ecp::{ecp_matrix_spherical, gto_norm, EcpCenter, EcpGaussianShell};
 use crate::engine::Engine;
 use crate::ffi;
 use ferric_core::basis::BasisSet;
+use ferric_core::external_potential::ExternalPotential;
 use ferric_core::mol::Molecule;
+use ferric_core::FerricError;
 use ndarray::Array2;
 
-/// Build a symmetric matrix from a one-electron engine by iterating over upper-triangle shell pairs.
-fn build_symmetric(prep: &PreparedBasis, mut eng: Engine) -> Array2<f64> {
+/// Below this many shell-pair units, run the serial loop directly — avoids
+/// rayon/engine-construction overhead for free-atom/tiny-basis jobs (see the
+/// free-atom rule: single-atom SCF must not pay a parallel-setup tax).
+const PAR_SHELL_PAIR_THRESHOLD: usize = 64;
+
+/// Build a symmetric one-electron matrix by iterating over upper-triangle shell
+/// pairs. `make_eng` constructs a fresh, fully-configured [`Engine`] (overlap /
+/// kinetic / nuclear-with-point-charges) — called once for the serial path and
+/// once per rayon worker via `for_each_init`, never per shell pair (engine
+/// construction runs under a global ctor mutex; per-item construction would
+/// serialize on that mutex and defeat the parallelism).
+///
+/// Parallelized over the outer shell index `s1` (independent row bands) once
+/// `nsh` clears [`PAR_SHELL_PAIR_THRESHOLD`]. For a fixed `s1`, the write set is
+/// `{(offs[s1]+i, offs[s2]+j), (offs[s2]+j, offs[s1]+i) : s2 ≤ s1}` — every
+/// written row index is either in `[offs[s1], offs[s1]+n1)` (first form) or
+/// equals `offs[s1]+i` for the same range (second form, transposed). So each
+/// `s1` owns a disjoint band of *rows* `[offs[s1], offs[s1]+dims[s1])` in
+/// `out`; distinct `s1` values touch disjoint row bands, so the raw-pointer
+/// scatter below is data-race-free and, since every element is written
+/// exactly once (no accumulation), bit-identical to the serial loop
+/// regardless of thread count or scheduling order.
+fn build_symmetric(prep: &PreparedBasis, make_eng: impl Fn() -> Engine + Sync) -> Array2<f64> {
     let n = prep.nbasis();
     let nsh = prep.nshells();
     let dims = prep.shell_dims();
     let offs = prep.shell_offsets();
     let mut out = Array2::zeros((n, n));
-    for s1 in 0..nsh {
-        for s2 in 0..=s1 {
-            let block = eng.compute_1e_block(prep, s1, s2);
-            let n1 = dims[s1];
-            let n2 = dims[s2];
-            for i in 0..n1 {
-                for j in 0..n2 {
-                    let v = block[i * n2 + j];
-                    out[(offs[s1] + i, offs[s2] + j)] = v;
-                    out[(offs[s2] + j, offs[s1] + i)] = v;
+
+    if nsh < PAR_SHELL_PAIR_THRESHOLD {
+        let mut eng = make_eng();
+        for s1 in 0..nsh {
+            for s2 in 0..=s1 {
+                let block = eng.compute_1e_block(prep, s1, s2);
+                let n1 = dims[s1];
+                let n2 = dims[s2];
+                for i in 0..n1 {
+                    for j in 0..n2 {
+                        let v = block[i * n2 + j];
+                        out[(offs[s1] + i, offs[s2] + j)] = v;
+                        out[(offs[s2] + j, offs[s1] + i)] = v;
+                    }
                 }
             }
         }
+        return out;
     }
+
+    use rayon::prelude::*;
+    let out_ptr = out.as_mut_ptr() as usize;
+    let stride = n; // row-major (n, n): element (r, c) at r*stride + c
+
+    (0..nsh).into_par_iter().for_each_init(
+        &make_eng,
+        |worker_eng, s1| {
+            let n1 = dims[s1];
+            let o1 = offs[s1];
+            for s2 in 0..=s1 {
+                let block = worker_eng.compute_1e_block(prep, s1, s2);
+                let n2 = dims[s2];
+                let o2 = offs[s2];
+                for i in 0..n1 {
+                    for j in 0..n2 {
+                        let v = block[i * n2 + j];
+                        let r = o1 + i;
+                        let c = o2 + j;
+                        unsafe {
+                            let base = out_ptr as *mut f64;
+                            *base.add(r * stride + c) = v;
+                            *base.add(c * stride + r) = v;
+                        }
+                    }
+                }
+            }
+        },
+    );
     out
 }
 
 /// Compute the overlap matrix S, shape (nbasis, nbasis).
 pub fn overlap(prep: &PreparedBasis) -> Array2<f64> {
-    let eng = Engine::new_1e(ffi::OP_OVERLAP, prep, 1e-14).unwrap();
-    build_symmetric(prep, eng)
+    build_symmetric(prep, || Engine::new_1e(ffi::OP_OVERLAP, prep, 1e-14).unwrap())
 }
 
 /// Compute the kinetic energy matrix T, shape (nbasis, nbasis).
 pub fn kinetic(prep: &PreparedBasis) -> Array2<f64> {
-    let eng = Engine::new_1e(ffi::OP_KINETIC, prep, 1e-14).unwrap();
-    build_symmetric(prep, eng)
+    build_symmetric(prep, || Engine::new_1e(ffi::OP_KINETIC, prep, 1e-14).unwrap())
 }
 
 /// Compute the nuclear attraction matrix V, shape (nbasis, nbasis).
 pub fn nuclear(prep: &PreparedBasis) -> Array2<f64> {
-    let mut eng = Engine::new_1e(ffi::OP_NUCLEAR, prep, 1e-14).unwrap();
-    eng.set_point_charges(prep);
-    build_symmetric(prep, eng)
+    build_symmetric(prep, || {
+        let mut eng = Engine::new_1e(ffi::OP_NUCLEAR, prep, 1e-14).unwrap();
+        eng.set_point_charges(prep).unwrap();
+        eng
+    })
 }
 
 /// Compute the core Hamiltonian H = T + V, shape (nbasis, nbasis).
@@ -61,6 +118,66 @@ pub fn hcore(prep: &PreparedBasis) -> Array2<f64> {
     let t = kinetic(prep);
     let v = nuclear(prep);
     t + v
+}
+
+/// Nuclear attraction matrix including external point charges (appended
+/// after the real atoms). Falls back to plain `nuclear(prep)` semantics
+/// when `ext.point_charges` is empty.
+pub fn nuclear_with_external(prep: &PreparedBasis, ext: &ExternalPotential) -> Array2<f64> {
+    build_symmetric(prep, || {
+        let mut eng = Engine::new_1e(ffi::OP_NUCLEAR, prep, 1e-14).unwrap();
+        eng.set_point_charges_extra(prep, &ext.point_charges).unwrap();
+        eng
+    })
+}
+
+/// One-electron term for a uniform external field: H' = +E·r per electron
+/// (i.e. V = -E·mu), built from the dipole integrals about the origin.
+/// Returns the zero matrix when `field == [0,0,0]`.
+pub fn field_hcore_term(prep: &PreparedBasis, field: [f64; 3]) -> Result<Array2<f64>, FerricError> {
+    let n = prep.nbasis();
+    if field == [0.0, 0.0, 0.0] {
+        return Ok(Array2::zeros((n, n)));
+    }
+    let dip = dipole(prep, [0.0, 0.0, 0.0])?;
+    Ok(field[0] * &dip[0] + field[1] * &dip[1] + field[2] * &dip[2])
+}
+
+/// Core Hamiltonian H = T + V, optionally including an external potential's
+/// point-charge nuclear-attraction term and uniform-field term. `ext = None`
+/// is byte-for-byte identical to `hcore(prep)`.
+pub fn hcore_with_external(prep: &PreparedBasis, ext: Option<&ExternalPotential>) -> Result<Array2<f64>, FerricError> {
+    let t = kinetic(prep);
+    let Some(ext) = ext else { return Ok(t + nuclear(prep)) };
+    if ext.is_empty() {
+        return Ok(t + nuclear(prep));
+    }
+    let v = if ext.point_charges.is_empty() {
+        nuclear(prep)
+    } else {
+        nuclear_with_external(prep, ext)
+    };
+    let mut h = t + v;
+    if let Some(field) = ext.field {
+        h += &field_hcore_term(prep, field)?;
+    }
+    Ok(h)
+}
+
+/// `hcore_ecp` extended with an external potential — see [`hcore_with_external`]
+/// and [`hcore_ecp`]. `ext = None` is byte-for-byte identical to `hcore_ecp`.
+pub fn hcore_ecp_with_external(
+    prep: &PreparedBasis,
+    mol: &Molecule,
+    bs: &BasisSet,
+    ext: Option<&ExternalPotential>,
+) -> Result<Array2<f64>, FerricError> {
+    let mut h = hcore_with_external(prep, ext)?;
+    if let Some(vecp) = ecp_potential(mol, bs) {
+        assert_eq!(vecp.dim(), h.dim(), "V_ECP dimension {:?} != hcore dimension {:?}", vecp.dim(), h.dim());
+        h += &vecp;
+    }
+    Ok(h)
 }
 
 /// Compute the dense spherical ECP projector matrix `V_ECP`, shape
@@ -147,8 +264,14 @@ pub fn hcore_ecp(prep: &PreparedBasis, mol: &Molecule, bs: &BasisSet) -> Array2<
 }
 
 /// Compute the 3 electric dipole matrices ⟨μ|(r - origin)|ν⟩, shape (nbasis, nbasis) each.
-/// `origin` is in Bohr. Returns [x_mat, y_mat, z_mat].
-pub fn dipole(prep: &PreparedBasis, origin: [f64; 3]) -> [Array2<f64>; 3] {
+/// `origin` is in Bohr. Returns `[x_mat, y_mat, z_mat]`.
+///
+/// Returns `Err(FerricError::Libint(..))` instead of panicking if the
+/// underlying `scf_compute_dipole` shim call reports a libint2-internal
+/// failure (negative status) — see the FFI exception-safety convention:
+/// every `scf_*` shim call catches C++ exceptions and returns a status code
+/// that must be checked, never silently trusted.
+pub fn dipole(prep: &PreparedBasis, origin: [f64; 3]) -> Result<[Array2<f64>; 3], FerricError> {
     let nbas = prep.nbasis();
     let mut flat = vec![0.0f64; 3 * nbas * nbas];
     let ret = unsafe {
@@ -159,12 +282,14 @@ pub fn dipole(prep: &PreparedBasis, origin: [f64; 3]) -> [Array2<f64>; 3] {
             flat.as_mut_ptr(),
         )
     };
-    assert!(ret >= 0, "scf_compute_dipole failed: {}", ret);
+    if ret < 0 {
+        return Err(FerricError::Libint(format!("scf_compute_dipole failed: {ret}")));
+    }
     let make_mat = |offset: usize| {
         let slice = &flat[offset..offset + nbas * nbas];
         Array2::from_shape_vec((nbas, nbas), slice.to_vec()).unwrap()
     };
-    [make_mat(0), make_mat(nbas * nbas), make_mat(2 * nbas * nbas)]
+    Ok([make_mat(0), make_mat(nbas * nbas), make_mat(2 * nbas * nbas)])
 }
 
 #[cfg(test)]
@@ -200,6 +325,180 @@ mod tests {
                     (s[(i, j)] - s[(j, i)]).abs() < 1e-12,
                     "S not symmetric at ({i},{j})"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn test_dipole_symmetric() {
+        // ⟨μ|r_d|ν⟩ is symmetric in (μ,ν) — r is a multiplicative operator.
+        let prep = water_sto3g();
+        let dip = dipole(&prep, [0.0, 0.0, 0.0]).unwrap();
+        let n = prep.nbasis();
+        for (d, mat) in dip.iter().enumerate() {
+            for i in 0..n {
+                for j in 0..n {
+                    assert!(
+                        (mat[(i, j)] - mat[(j, i)]).abs() < 1e-12,
+                        "dipole axis {d} not symmetric at ({i},{j})"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_dipole_origin_shift_diagonal() {
+        // Shifting the origin by δ subtracts δ·S from ⟨μ|r|ν⟩ (since
+        // ⟨μ|(r−δ)|ν⟩ = ⟨μ|r|ν⟩ − δ⟨μ|ν⟩). Validates the origin argument wiring.
+        let prep = water_sto3g();
+        let s = overlap(&prep);
+        let d0 = dipole(&prep, [0.0, 0.0, 0.0]).unwrap();
+        let delta = [0.3, -0.7, 1.1];
+        let dshift = dipole(&prep, delta).unwrap();
+        let n = prep.nbasis();
+        for (ax, dl) in delta.iter().enumerate() {
+            for i in 0..n {
+                for j in 0..n {
+                    let expected = d0[ax][(i, j)] - dl * s[(i, j)];
+                    assert!(
+                        (dshift[ax][(i, j)] - expected).abs() < 1e-10,
+                        "axis {ax} origin-shift mismatch at ({i},{j})"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Serial reference for `build_symmetric` (pre-parallelization implementation,
+    /// kept verbatim). The parallel version must reproduce it bit-for-bit.
+    fn build_symmetric_serial(prep: &PreparedBasis, mut eng: Engine) -> Array2<f64> {
+        let n = prep.nbasis();
+        let nsh = prep.nshells();
+        let dims = prep.shell_dims();
+        let offs = prep.shell_offsets();
+        let mut out = Array2::zeros((n, n));
+        for s1 in 0..nsh {
+            for s2 in 0..=s1 {
+                let block = eng.compute_1e_block(prep, s1, s2);
+                let n1 = dims[s1];
+                let n2 = dims[s2];
+                for i in 0..n1 {
+                    for j in 0..n2 {
+                        let v = block[i * n2 + j];
+                        out[(offs[s1] + i, offs[s2] + j)] = v;
+                        out[(offs[s2] + j, offs[s1] + i)] = v;
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn assert_bit_identical(a: &Array2<f64>, b: &Array2<f64>, what: &str) {
+        assert_eq!(a.dim(), b.dim(), "{what}: shape mismatch");
+        let n_diff = a.iter().zip(b.iter()).filter(|(x, y)| x.to_bits() != y.to_bits()).count();
+        assert_eq!(n_diff, 0, "{what}: {n_diff} elements differ bitwise");
+    }
+
+    /// alkane_6/cc-pVDZ clears `PAR_SHELL_PAIR_THRESHOLD` (64 shells), so this
+    /// test actually exercises the rayon path, not just the serial fallback.
+    fn alkane6_cc_pvdz() -> PreparedBasis {
+        let mol = Molecule::load_xyz("../../testdata/molecules/alkane_6.xyz").unwrap();
+        let bs = basis::bundled("cc-pvdz").unwrap();
+        PreparedBasis::new(&mol, &bs).unwrap()
+    }
+
+    #[test]
+    fn test_build_symmetric_bitidentical_to_serial_overlap() {
+        let prep = alkane6_cc_pvdz();
+        assert!(prep.nshells() >= PAR_SHELL_PAIR_THRESHOLD,
+            "test molecule too small to exercise the parallel path: {} shells", prep.nshells());
+        let par = overlap(&prep);
+        let eng_ref = Engine::new_1e(ffi::OP_OVERLAP, &prep, 1e-14).unwrap();
+        let ser = build_symmetric_serial(&prep, eng_ref);
+        assert_bit_identical(&ser, &par, "overlap");
+    }
+
+    #[test]
+    fn test_build_symmetric_bitidentical_to_serial_kinetic() {
+        let prep = alkane6_cc_pvdz();
+        let par = kinetic(&prep);
+        let eng_ref = Engine::new_1e(ffi::OP_KINETIC, &prep, 1e-14).unwrap();
+        let ser = build_symmetric_serial(&prep, eng_ref);
+        assert_bit_identical(&ser, &par, "kinetic");
+    }
+
+    #[test]
+    fn test_build_symmetric_bitidentical_to_serial_nuclear() {
+        let prep = alkane6_cc_pvdz();
+        let par = nuclear(&prep);
+        let mut eng_ref = Engine::new_1e(ffi::OP_NUCLEAR, &prep, 1e-14).unwrap();
+        eng_ref.set_point_charges(&prep).unwrap();
+        let ser = build_symmetric_serial(&prep, eng_ref);
+        assert_bit_identical(&ser, &par, "nuclear");
+    }
+
+    use ferric_core::external_potential::{ExternalPotential, PointCharge};
+
+    #[test]
+    fn hcore_with_external_none_matches_hcore() {
+        let prep = water_sto3g();
+        let h_orig = hcore(&prep);
+        let h_new = hcore_with_external(&prep, None).unwrap();
+        assert_eq!(h_orig, h_new);
+    }
+
+    #[test]
+    fn hcore_with_external_empty_matches_hcore() {
+        let prep = water_sto3g();
+        let h_orig = hcore(&prep);
+        let ext = ExternalPotential::default();
+        let h_new = hcore_with_external(&prep, Some(&ext)).unwrap();
+        assert_eq!(h_orig, h_new);
+    }
+
+    #[test]
+    fn nuclear_with_external_adds_point_charge_attraction() {
+        let prep = water_sto3g();
+        let v_orig = nuclear(&prep);
+        let ext = ExternalPotential {
+            point_charges: vec![PointCharge { q: 1.0, x: 0.0, y: 0.0, z: 10.0 }],
+            field: None,
+        };
+        let v_new = nuclear_with_external(&prep, &ext);
+        // The external charge must change every element that has nonzero AO
+        // density overlap; at minimum, the matrix must differ from v_orig.
+        let diff: f64 = (&v_new - &v_orig).iter().map(|x| x.abs()).sum();
+        assert!(diff > 1e-10, "external point charge had no effect on V");
+        // Symmetric.
+        let n = prep.nbasis();
+        for i in 0..n {
+            for j in 0..n {
+                assert!((v_new[(i, j)] - v_new[(j, i)]).abs() < 1e-10);
+            }
+        }
+    }
+
+    #[test]
+    fn field_hcore_term_zero_field_is_zero_matrix() {
+        let prep = water_sto3g();
+        let h = field_hcore_term(&prep, [0.0, 0.0, 0.0]).unwrap();
+        assert!(h.iter().all(|&v| v == 0.0));
+    }
+
+    #[test]
+    fn field_hcore_term_matches_dipole_integral_scaled() {
+        let prep = water_sto3g();
+        let dip = dipole(&prep, [0.0, 0.0, 0.0]).unwrap();
+        let field = [0.0, 0.0, 0.02];
+        let h = field_hcore_term(&prep, field).unwrap();
+        // H' = +E·r per electron => h = field[2] * dip[2] (using dip = <mu|r|nu>)
+        let expected = &dip[2] * field[2];
+        let n = prep.nbasis();
+        for i in 0..n {
+            for j in 0..n {
+                assert!((h[(i, j)] - expected[(i, j)]).abs() < 1e-12);
             }
         }
     }

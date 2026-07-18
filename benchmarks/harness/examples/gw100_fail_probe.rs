@@ -118,8 +118,8 @@ fn probe(case: &Case, obs_name: &str, dfbs_name: &str) {
     let homo_abs = (neutral.nelec() as usize) / 2 - 1;
     let pdep_cfg = PdepRpaConfig {
         quadrature: QuadratureConfig { scheme: QuadratureScheme::GaussLegendre, n_points: 16, u0: 0.5 },
-        davidson_conv_thresh: 1e-7,
-        davidson_max_vecs: 0,
+        eigensolver_conv_thresh: 1e-7,
+        eigensolver_max_vecs: 0,
         trunc_thresh: 1e-4,
         run_diagnostics: false,
         frozen_core: 0,
@@ -127,6 +127,10 @@ fn probe(case: &Case, obs_name: &str, dfbs_name: &str) {
         chi0_sparsity: Chi0Sparsity::Dense,
         eigensolver: Eigensolver::Davidson,
         sternheimer: SternheimerConfig::default(),
+        memory_budget_bytes: None,
+        // run_gw forces this on internally (gw::with_inv_dielectric); standalone
+        // RPA uses here are energy-only, so stay lean per M9.
+        need_inv_dielectric_freq: false,
     };
     let gcfg = GwConfig { method: GwMethod::G0W0, max_ev_iter: 8, ev_conv_thresh: 1e-4, ..Default::default() };
     say!("  G0W0@HF...");

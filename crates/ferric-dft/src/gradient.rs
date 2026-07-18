@@ -17,11 +17,168 @@
 //! are equal — hence the 2.)
 
 use ferric_core::mol::Molecule;
-use ndarray::{Array2, Array3};
+use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
+use ndarray::{Array2, Array3, ArrayView1, ArrayView2, Axis, Zip};
+use rayon::prelude::*;
 
 use crate::density_on_grid::{eval_density_closed, eval_density_uks};
 use crate::grid::{build_atomic_grid, build_atomic_grid_with_response, AtomicGridConfig};
 use crate::libxc::{xc_def_from_name, xc_def_from_name_nspin, FunctionalFamily, LibxcError, XcDef};
+
+/// Total element-count (`nbf·npts`) below which the row/column contractions stay
+/// serial — rayon spawn/join overhead dwarfs the reduction on tiny grids (the
+/// free-atom SCF case). Mirrors the `PAR_MIN_PTS` guard in `vv10`/`ao_grid`.
+const PAR_MIN_ELEMS: usize = 128 * 128;
+
+/// Row-wise contraction `out[μ] = Σ_g a[μ,g] · b[μ,g]` over two `(nbf, npts)`
+/// operands sharing the row index μ.
+///
+/// This is the diagonal of `a · bᵀ`; forming the full GEMM would compute `nbf×`
+/// too much work (the off-diagonal μ≠ν terms are never used), so we fuse the
+/// element-wise product and the row reduction into one contiguous pass instead.
+/// The μ rows are fanned out over rayon — disjoint reads, one output slot per
+/// row, each row a fixed-order left-to-right fold — so the result is
+/// bit-identical to the serial reduction regardless of thread count.
+#[inline]
+fn row_dot(a: &ArrayView2<'_, f64>, b: &ArrayView2<'_, f64>) -> ndarray::Array1<f64> {
+    debug_assert_eq!(a.dim(), b.dim());
+    let (nbf, npts) = a.dim();
+    // Per-row deterministic left-to-right fold: row μ of `a` · row μ of `b`.
+    // Each row is a fully independent reduction, so parallel and serial paths
+    // give bit-identical results.
+    let reduce = |mu: usize| -> f64 {
+        let ar = a.row(mu);
+        let br = b.row(mu);
+        Zip::from(ar).and(br).fold(0.0_f64, |acc, &x, &y| acc + x * y)
+    };
+    let out: Vec<f64> = if nbf.saturating_mul(npts) >= PAR_MIN_ELEMS {
+        (0..nbf).into_par_iter().map(reduce).collect()
+    } else {
+        (0..nbf).map(reduce).collect()
+    };
+    ndarray::Array1::from_vec(out)
+}
+
+/// Column-wise contraction `out[g] = Σ_μ a[μ,g] · b[μ,g]` over two `(nbf, npts)`
+/// operands sharing the row index μ, reducing along μ to a length-`npts` vector.
+///
+/// Used by the GGA grid-response path to form ∂²ρ on the grid. Fans out over
+/// grid-point columns; each column's μ-reduction is an independent, fixed-order
+/// left-to-right fold, so the output is bit-identical across thread counts.
+fn col_dot(a: &ArrayView2<'_, f64>, b: &ArrayView2<'_, f64>) -> ndarray::Array1<f64> {
+    debug_assert_eq!(a.dim(), b.dim());
+    let (nbf, npts) = a.dim();
+    let mut out = ndarray::Array1::<f64>::zeros(npts);
+    let reduce = |g: usize| -> f64 {
+        let mut acc = 0.0_f64;
+        for mu in 0..nbf {
+            acc += a[(mu, g)] * b[(mu, g)];
+        }
+        acc
+    };
+    if nbf.saturating_mul(npts) >= PAR_MIN_ELEMS {
+        out.as_slice_mut()
+            .expect("contiguous")
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(g, o)| *o = reduce(g));
+    } else {
+        for g in 0..npts {
+            out[g] = reduce(g);
+        }
+    }
+    out
+}
+
+/// Scatter per-basis-function, per-axis partial sums into the `(natoms, 3)`
+/// gradient: `grad[atom(μ), axis] -= 2 · partial[axis][μ]`.
+///
+/// `partial[axis]` has length nbf. The scatter itself is a short serial pass
+/// (nbf ≪ the npts contraction it follows), and keeping it serial preserves a
+/// fixed summation order over μ so the result is thread-count independent.
+fn scatter_partials(
+    partials: &[ndarray::Array1<f64>; 3],
+    bf_to_atom_map: &[usize],
+    grad: &mut Array2<f64>,
+) {
+    let nbf = partials[0].len();
+    for (axis, part) in partials.iter().enumerate() {
+        for mu in 0..nbf {
+            let atom = bf_to_atom_map[mu];
+            grad[(atom, axis)] -= 2.0 * part[mu];
+        }
+    }
+}
+
+/// `out[(μ, g)] = a[(μ, g)] · s[g]` — fused row-major column scaling into a
+/// fresh array. (The gradient sites' analogue of `vxc::scale_columns_into`, but
+/// allocating since the operands are reused unscaled elsewhere.)
+#[inline]
+fn scale_cols(a: &ArrayView2<'_, f64>, s: &ArrayView1<'_, f64>) -> Array2<f64> {
+    let mut out = a.to_owned();
+    Zip::from(out.rows_mut()).for_each(|mut row| {
+        Zip::from(&mut row).and(s).for_each(|v, &sg| *v *= sg);
+    });
+    out
+}
+
+/// Assemble the per-axis, per-μ AO-derivative partial sums for a GGA-form
+/// gradient (closed shell, or one UKS spin channel).
+///
+/// Computes, for each Cartesian `axis` and basis function μ:
+/// ```text
+///   partial[axis][μ] = Σ_g [ t_rho[g] · m[μ,g] · ∂_axis χ[μ,g]
+///     + Σ_b c[b,g] · ( ∂_axis χ[μ,g] · mdchi[b,μ,g]
+///                     + ∂²_{axis,b} χ[μ,g] · m[μ,g] ) ]
+/// ```
+/// where `c[b,g]` is the caller-supplied per-direction GGA weight column
+/// (closed shell: `t_sig[g]·∇ρ_b[g]`; UKS: the mixed `G^σ_b(g)`).
+///
+/// Each term is a row-wise contraction (see [`row_dot`]) of two pre-scaled
+/// `(nbf, npts)` operands; the μ-row reductions fan out over rayon. The caller
+/// scatters the result via [`scatter_partials`].
+fn gga_ao_partials(
+    m: &Array2<f64>,
+    mdchi: &Array3<f64>,
+    dchi: &Array3<f64>,
+    ddchi: &ndarray::Array4<f64>,
+    c: &Array2<f64>, // (3, npts) per-direction GGA weight column
+    t_rho: &[f64],
+) -> [ndarray::Array1<f64>; 3] {
+    let t_rho_v = ArrayView1::from(t_rho);
+    // LDA-like operand: mt[μ,g] = m[μ,g] · t_rho[g].
+    let mt = scale_cols(&m.view(), &t_rho_v);
+    std::array::from_fn(|axis| {
+        let dchi_axis = dchi.index_axis(Axis(0), axis);
+        // LDA piece.
+        let mut partial = row_dot(&mt.view(), &dchi_axis);
+        for b in 0..3 {
+            let cb_v = c.index_axis(Axis(0), b);
+            // term1: ∂_axis χ · (mdchi_b · c_b)
+            let mdchi_b_scaled = scale_cols(&mdchi.index_axis(Axis(0), b), &cb_v);
+            partial = partial + row_dot(&dchi_axis, &mdchi_b_scaled.view());
+            // term2: ∂²_{axis,b} χ · (m · c_b)
+            let m_scaled = scale_cols(&m.view(), &cb_v);
+            let ddchi_a = ddchi.index_axis(Axis(0), axis);
+            let ddchi_ab = ddchi_a.index_axis(Axis(0), b);
+            partial = partial + row_dot(&ddchi_ab, &m_scaled.view());
+        }
+        partial
+    })
+}
+
+/// Build the closed-shell GGA weight columns `c[b,g] = t_sig[g] · ∇ρ_b[g]`.
+fn gga_weight_columns(t_sig: &[f64], grad_rho: &Array2<f64>) -> Array2<f64> {
+    let t_sig_v = ArrayView1::from(t_sig);
+    let mut c = Array2::<f64>::zeros((3, grad_rho.ncols()));
+    for b in 0..3 {
+        Zip::from(&mut c.index_axis_mut(Axis(0), b))
+            .and(&t_sig_v)
+            .and(&grad_rho.index_axis(Axis(0), b))
+            .for_each(|o, &t, &gr| *o = t * gr);
+    }
+    c
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum KsGradError {
@@ -133,22 +290,22 @@ pub fn xc_gradient_closed_lda(
     //                = -2 · Σ_g w_g · v_ρ · Σ_{μ∈A, ν} D_μν · ∂_axis χ_μ · χ_ν
     //
     // M = D · χ as a matrix product (D is (nbf, nbf), χ is (nbf, npts)). FD-verified
-    // against H2/STO-3G LDA — see tests/dft_gradient_lda.rs.
-    let m: Array2<f64> = d_total.dot(chi);
+    // against H2/STO-3G LDA — see tests/dft_gradient_lda.rs. Runs before the
+    // rayon-gated row_dot contraction below starts. Opt-in BLAS raise via
+    // FERRIC_BLAS_THREADS (default 1, unchanged behavior).
+    let m: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d_total.dot(chi));
 
     let natoms = mol.atoms.len();
     let mut grad = Array2::<f64>::zeros((natoms, 3));
 
-    for axis in 0..3 {
-        for mu in 0..nbf {
-            let atom = bf_to_atom_map[mu];
-            let mut sum = 0.0_f64;
-            for g in 0..npts {
-                sum += t[g] * m[(mu, g)] * dchi[(axis, mu, g)];
-            }
-            grad[(atom, axis)] -= 2.0 * sum;
-        }
-    }
+    // Pre-scale M by the per-point coefficient t once (fused, reused across the
+    // three axes): mt[μ,g] = m[μ,g] · t[g]. Then each axis is a row-wise
+    // contraction Σ_g mt[μ,g] · ∂_axis χ[μ,g].
+    let mt = scale_cols(&m.view(), &ArrayView1::from(&t[..]));
+    let partials: [ndarray::Array1<f64>; 3] = std::array::from_fn(|axis| {
+        row_dot(&mt.view(), &dchi.index_axis(Axis(0), axis))
+    });
+    scatter_partials(&partials, bf_to_atom_map, &mut grad);
 
     Ok(grad)
 }
@@ -276,34 +433,23 @@ pub fn gga_gradient_from_potentials(
         }
     }
 
-    // M_μ(g) = Σ_ν D_μν · χ_ν(r_g)
-    let m: Array2<f64> = d_total.dot(chi);
+    // M_μ(g) = Σ_ν D_μν · χ_ν(r_g). Runs before the rayon-gated ao-partial
+    // reductions below start. Opt-in BLAS raise via FERRIC_BLAS_THREADS
+    // (default 1, unchanged behavior).
+    let m: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d_total.dot(chi));
     // Mdχ[b, μ, g] = Σ_ν D_μν · ∂_b χ_ν(r_g)
     let mut mdchi = ndarray::Array3::<f64>::zeros((3, nbf, npts));
     for b in 0..3 {
         let slice = dchi.index_axis(ndarray::Axis(0), b);
-        let prod: Array2<f64> = d_total.dot(&slice);
+        let prod: Array2<f64> =
+            with_blas_threads(opt_in_blas_threads(), || d_total.dot(&slice));
         mdchi.index_axis_mut(ndarray::Axis(0), b).assign(&prod);
     }
 
     let mut grad = Array2::<f64>::zeros((natoms, 3));
-    for axis in 0..3 {
-        for mu in 0..nbf {
-            let atom = bf_to_atom_map[mu];
-            let mut sum = 0.0_f64;
-            for g in 0..npts {
-                let lda_term = t_rho[g] * m[(mu, g)] * dchi[(axis, mu, g)];
-                let mut gga_term = 0.0_f64;
-                for b in 0..3 {
-                    let gb = grad_rho[(b, g)];
-                    gga_term += dchi[(axis, mu, g)] * mdchi[(b, mu, g)] * gb;
-                    gga_term += ddchi[(axis, b, mu, g)] * m[(mu, g)] * gb;
-                }
-                sum += lda_term + t_sig[g] * gga_term;
-            }
-            grad[(atom, axis)] -= 2.0 * sum;
-        }
-    }
+    let c = gga_weight_columns(&t_sig, grad_rho);
+    let partials = gga_ao_partials(&m, &mdchi, dchi, ddchi, &c, &t_rho);
+    scatter_partials(&partials, bf_to_atom_map, &mut grad);
     grad
 }
 
@@ -438,39 +584,24 @@ pub fn xc_gradient_closed_gga_from_density(
     }
 
     // Precompute Σ_ν D_μν · χ_ν (= M_μ) and Σ_ν D_μν · ∂_b χ_ν (= Mdχ[b, μ, g])
-    // via matrix products.
-    let m: Array2<f64> = d_total.dot(&chi);   // (nbf, npts)
+    // via matrix products. Both run before the rayon-gated ao-partial
+    // reductions below start. Opt-in BLAS raise via FERRIC_BLAS_THREADS
+    // (default 1, unchanged behavior).
+    let m: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d_total.dot(&chi));   // (nbf, npts)
     let mut mdchi = ndarray::Array3::<f64>::zeros((3, nbf, npts));
     for b in 0..3 {
         let slice = dchi.index_axis(ndarray::Axis(0), b);   // (nbf, npts)
-        let prod: Array2<f64> = d_total.dot(&slice);
+        let prod: Array2<f64> =
+            with_blas_threads(opt_in_blas_threads(), || d_total.dot(&slice));
         mdchi.index_axis_mut(ndarray::Axis(0), b).assign(&prod);
     }
 
     let natoms = mol.atoms.len();
     let mut grad = Array2::<f64>::zeros((natoms, 3));
 
-    for axis in 0..3 {
-        for mu in 0..nbf {
-            let atom = map[mu];
-            let mut sum = 0.0_f64;
-            for g in 0..npts {
-                // LDA-like piece: t_rho · M_μ · ∂_axis χ_μ
-                let lda_term = t_rho[g] * m[(mu, g)] * dchi[(axis, mu, g)];
-                // GGA pieces:
-                //   Σ_b t_sig · ∇ρ_b · ∂_axis χ_μ · (D · ∂_b χ)_μ
-                //   Σ_b t_sig · ∇ρ_b · ∂²_{axis,b} χ_μ · M_μ
-                let mut gga_term = 0.0_f64;
-                for b in 0..3 {
-                    let gb = dens.grad[(b, g)];
-                    gga_term += dchi[(axis, mu, g)] * mdchi[(b, mu, g)] * gb;
-                    gga_term += ddchi[(axis, b, mu, g)] * m[(mu, g)] * gb;
-                }
-                sum += lda_term + t_sig[g] * gga_term;
-            }
-            grad[(atom, axis)] -= 2.0 * sum;
-        }
-    }
+    let c = gga_weight_columns(&t_sig, &dens.grad);
+    let partials = gga_ao_partials(&m, &mdchi, &dchi, &ddchi, &c, &t_rho);
+    scatter_partials(&partials, &map, &mut grad);
 
     // ── Grid-response correction (P2.1, PySCF convention) ──
     //
@@ -491,6 +622,22 @@ pub fn xc_gradient_closed_gga_from_density(
             grad[(b, 2)] += weight1[g][b][2] * f;
         }
     }
+    // ∂²_{αb} ρ(r_g) = 2 Σ_μ [ ∂_α χ_μ · (D ∂_b χ)_μ + m_μ · ∂²_{αb} χ_μ ].
+    // Precompute the per-(axis,b) column over the grid (reduction over μ) so the
+    // per-point scatter below is a short serial pass. `hess_col[axis][b]` is a
+    // length-npts array; the μ-reduction fans out over grid points via rayon.
+    let hess_col: [[ndarray::Array1<f64>; 3]; 3] = std::array::from_fn(|axis| {
+        let dchi_axis = dchi.index_axis(Axis(0), axis);
+        let ddchi_a = ddchi.index_axis(Axis(0), axis);
+        std::array::from_fn(|b| {
+            let mdchi_b = mdchi.index_axis(Axis(0), b);
+            let ddchi_ab = ddchi_a.index_axis(Axis(0), b);
+            let mut hb = col_dot(&dchi_axis, &mdchi_b);
+            hb += &col_dot(&m.view(), &ddchi_ab);
+            hb.mapv_inplace(|v| 2.0 * v);
+            hb
+        })
+    });
     for (gi, gp) in grid.iter().enumerate() {
         if dens.rho[gi] <= RHO_FLOOR {
             continue;
@@ -503,17 +650,11 @@ pub fn xc_gradient_closed_gga_from_density(
         for k in 0..3 {
             grad[(a, k)] += w * vr * dens.grad[(k, gi)];
         }
-        // 2 v_σ Σ_b ∇ρ_b · ∂²_{αb} ρ — compute ∂²_{αb} ρ on the fly.
+        // 2 v_σ Σ_b ∇ρ_b · ∂²_{αb} ρ.
         for axis in 0..3 {
             let mut sum_b = 0.0_f64;
             for b in 0..3 {
-                let gb = dens.grad[(b, gi)];
-                let mut hess_ab = 0.0_f64;
-                for mu in 0..nbf {
-                    hess_ab += dchi[(axis, mu, gi)] * mdchi[(b, mu, gi)]
-                        + m[(mu, gi)] * ddchi[(axis, b, mu, gi)];
-                }
-                sum_b += gb * 2.0 * hess_ab;
+                sum_b += dens.grad[(b, gi)] * hess_col[axis][b][gi];
             }
             grad[(a, axis)] += w * 2.0 * vs * sum_b;
         }
@@ -618,46 +759,36 @@ pub fn xc_gradient_uks_from_density(
                                      rho_sigma: &ndarray::Array1<f64>,
                                      grad_out: &mut Array2<f64>| {
         let mut t_rho = vec![0.0_f64; npts];
-        // G^σ_b(g) = w_g · (2 v_σ(σσ) · ∇ρ_σ_b + v_σ(αβ) · ∇ρ_other_b)
-        let mut g_dir = vec![[0.0_f64; 3]; npts];
+        // c[b,g] = G^σ_b(g) = w_g · (2 v_σ(σσ) · ∇ρ_σ_b + v_σ(αβ) · ∇ρ_other_b).
+        // (For UKS the weight w and the factor 2 are folded into c directly, so
+        // the LDA weight t_rho carries no extra factor — matching the original.)
+        let mut c = Array2::<f64>::zeros((3, npts));
         for g in 0..npts {
             if rho_sigma[g] > RHO_FLOOR {
                 t_rho[g] = weights[g] * vrho_sigma[g];
                 let w = weights[g];
                 for b in 0..3 {
-                    g_dir[g][b] = w * (
+                    c[(b, g)] = w * (
                           2.0 * vsig_same[g] * grad_same[(b, g)]
                         +       vsig_cross[g] * grad_cross[(b, g)]
                     );
                 }
             }
         }
-        let m: Array2<f64> = d_sigma.dot(&chi);
+        // Both GEMMs run before the rayon-gated ao-partial reductions below
+        // start; add_spin_contribution itself is called sequentially (twice),
+        // never from inside rayon. Opt-in BLAS raise via FERRIC_BLAS_THREADS
+        // (default 1, unchanged behavior).
+        let m: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d_sigma.dot(&chi));
         let mut mdchi = ndarray::Array3::<f64>::zeros((3, nbf, npts));
         for b in 0..3 {
             let slice = dchi.index_axis(ndarray::Axis(0), b);
-            let prod: Array2<f64> = d_sigma.dot(&slice);
+            let prod: Array2<f64> =
+                with_blas_threads(opt_in_blas_threads(), || d_sigma.dot(&slice));
             mdchi.index_axis_mut(ndarray::Axis(0), b).assign(&prod);
         }
-        for axis in 0..3 {
-            for mu in 0..nbf {
-                let atom = map[mu];
-                let mut sum = 0.0_f64;
-                for g in 0..npts {
-                    let lda_term = t_rho[g] * m[(mu, g)] * dchi[(axis, mu, g)];
-                    let mut gga_term = 0.0_f64;
-                    for b in 0..3 {
-                        let gb = g_dir[g][b];
-                        gga_term += gb * (
-                              dchi[(axis, mu, g)] * mdchi[(b, mu, g)]
-                            + ddchi[(axis, b, mu, g)] * m[(mu, g)]
-                        );
-                    }
-                    sum += lda_term + gga_term;
-                }
-                grad_out[(atom, axis)] -= 2.0 * sum;
-            }
-        }
+        let partials = gga_ao_partials(&m, &mdchi, &dchi, &ddchi, &c, &t_rho);
+        scatter_partials(&partials, &map, grad_out);
     };
 
     add_spin_contribution(
@@ -694,35 +825,41 @@ pub fn xc_gradient_uks_from_density(
     // implements the lab-fixed-r path so the home-translation correction
     // exactly closes the chain rule.
 
-    // Precompute per-spin (D · χ) and (D · ∂χ).
-    let m_a: Array2<f64> = d_a.dot(&chi);
-    let m_b: Array2<f64> = d_b.dot(&chi);
+    // Precompute per-spin (D · χ) and (D · ∂χ). Runs before the rayon-gated
+    // hess_col reduction below starts. Opt-in BLAS raise via
+    // FERRIC_BLAS_THREADS (default 1, unchanged behavior).
+    let m_a: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d_a.dot(&chi));
+    let m_b: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d_b.dot(&chi));
     let mut mdchi_a = Array3::<f64>::zeros((3, nbf, npts));
     let mut mdchi_b = Array3::<f64>::zeros((3, nbf, npts));
     for b in 0..3 {
         let slice = dchi.index_axis(ndarray::Axis(0), b);
-        let pa: Array2<f64> = d_a.dot(&slice);
-        let pb: Array2<f64> = d_b.dot(&slice);
+        let pa: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d_a.dot(&slice));
+        let pb: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d_b.dot(&slice));
         mdchi_a.index_axis_mut(ndarray::Axis(0), b).assign(&pa);
         mdchi_b.index_axis_mut(ndarray::Axis(0), b).assign(&pb);
     }
 
-    // ∂²_{αb} ρ_σ(r_g) = Σ_μ [ ∂_α χ_μ · (D_σ ∂_b χ)_μ + (D_σ χ)_μ · ∂²_{αb} χ_μ ]
-    // (factor 2 absorbed below since ρ_σ = Σ_{μν} D_σ χ_μ χ_ν * 2 with μ↔ν).
-    let hess_rho_spin =
-        |m_s: &Array2<f64>, mdchi_s: &Array3<f64>, axis: usize, b: usize, g: usize| -> f64 {
-            let mut s = 0.0_f64;
-            for mu in 0..nbf {
-                s += dchi[(axis, mu, g)] * mdchi_s[(b, mu, g)]
-                    + m_s[(mu, g)] * ddchi[(axis, b, mu, g)];
-            }
-            // Per-spin ∂²ρ_σ = 2 · (this sum) (μ↔ν symmetry of D_σ).
-            // No: D_σ here is per-spin (tr = N_σ), and ρ_σ = Σ_μν D_σ χ_μ χ_ν
-            // (without a factor 2). So ∂²ρ_σ = Σ_μν D_σ (∂χ_μ ∂χ_ν + χ_μ ∂²χ_ν
-            // + χ_ν ∂²χ_μ + ∂²χ_μ χ_ν)/_/etc — by symmetry that's
-            // 2·Σ_μν D_σ (∂_α χ_μ · ∂_b χ_ν + χ_ν · ∂²_{αb} χ_μ).
-            2.0 * s
-        };
+    // ∂²_{αb} ρ_σ(r_g) = 2 Σ_μ [ ∂_α χ_μ · (D_σ ∂_b χ)_μ + (D_σ χ)_μ · ∂²_{αb} χ_μ ].
+    // (Factor 2 from the μ↔ν symmetry of the per-spin density; see the original
+    // derivation comment retained here.) Precompute the full per-spin, per-(axis,b)
+    // column over the grid via a μ-reduction so the per-point scatter is cheap.
+    let hess_cols = |m_s: &Array2<f64>, mdchi_s: &Array3<f64>| -> [[ndarray::Array1<f64>; 3]; 3] {
+        std::array::from_fn(|axis| {
+            let dchi_axis = dchi.index_axis(Axis(0), axis);
+            let ddchi_a = ddchi.index_axis(Axis(0), axis);
+            std::array::from_fn(|b| {
+                let mdchi_sb = mdchi_s.index_axis(Axis(0), b);
+                let ddchi_ab = ddchi_a.index_axis(Axis(0), b);
+                let mut hb = col_dot(&dchi_axis, &mdchi_sb);
+                hb += &col_dot(&m_s.view(), &ddchi_ab);
+                hb.mapv_inplace(|v| 2.0 * v);
+                hb
+            })
+        })
+    };
+    let hess_a = hess_cols(&m_a, &mdchi_a);
+    let hess_b = hess_cols(&m_b, &mdchi_b);
 
     // (1) weight response.
     for g in 0..npts {
@@ -753,8 +890,8 @@ pub fn xc_gradient_uks_from_density(
             for b in 0..3 {
                 let gba = dens.grad_a[(b, gi)];
                 let gbb = dens.grad_b[(b, gi)];
-                let h_aa = hess_rho_spin(&m_a, &mdchi_a, axis, b, gi);
-                let h_bb = hess_rho_spin(&m_b, &mdchi_b, axis, b, gi);
+                let h_aa = hess_a[axis][b][gi];
+                let h_bb = hess_b[axis][b][gi];
                 sig_piece += 2.0 * vsaa * gba * h_aa
                     + 2.0 * vsbb * gbb * h_bb
                     + vsab * (gba * h_bb + gbb * h_aa);

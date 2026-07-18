@@ -45,8 +45,8 @@ H  0.0  -0.755453 -0.471161
             n_points: 16,
             u0: 0.5,
         },
-        davidson_conv_thresh: 1e-7,
-        davidson_max_vecs: 0,
+        eigensolver_conv_thresh: 1e-7,
+        eigensolver_max_vecs: 0,
         trunc_thresh: 0.0,
         run_diagnostics: false,
         frozen_core: 0,
@@ -54,6 +54,9 @@ H  0.0  -0.755453 -0.471161
         chi0_sparsity: Chi0Sparsity::Dense,
         eigensolver: Eigensolver::Davidson,
         sternheimer: SternheimerConfig::default(),
+        memory_budget_bytes: None,
+        // run_gw forces this on internally; false is fine here (M9 gate).
+        need_inv_dielectric_freq: false,
     };
 
     for method in [

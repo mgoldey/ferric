@@ -17,9 +17,14 @@ pub struct CShell {
 }
 
 /// C-compatible atom descriptor (atomic number + Cartesian position in Bohr).
+///
+/// `atomic_number` is `f64` (not an integer type) so that external point
+/// charges (e.g. QM/MM partial charges) can carry a fractional charge;
+/// libint2's own `Engine::set_params` already takes `double` internally.
 #[repr(C)]
+#[derive(Clone)]
 pub struct CAtom {
-    pub atomic_number: c_int,
+    pub atomic_number: c_double,
     pub x: c_double,
     pub y: c_double,
     pub z: c_double,

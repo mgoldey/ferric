@@ -105,9 +105,9 @@ pub struct RsMp2RpaConfig {
     /// dRPA solver knobs. Default forces trunc_thresh = 0.0 (full rank):
     /// this is an energy method; PDEP truncation is a production-size opt-in.
     ///
-    /// Note: the nested `rpa.frozen_core` field is ignored — `cfg.frozen_core`
+    /// Note: the nested `drpa.frozen_core` field is ignored — `cfg.frozen_core`
     /// is authoritative and overwrites it before each RPA call.
-    pub rpa: PdepRpaConfig,
+    pub drpa: PdepRpaConfig,
     /// Which algebraic formulation to use. Default is `DeltaLr` (formulation B),
     /// which preserves all existing behavior.
     pub formulation: RsMp2RpaFormulation,
@@ -120,7 +120,7 @@ impl Default for RsMp2RpaConfig {
             attenuator: Attenuator::Erf,
             r0: 3.18,
             frozen_core: 0,
-            rpa: PdepRpaConfig { trunc_thresh: 0.0, ..Default::default() },
+            drpa: PdepRpaConfig { trunc_thresh: 0.0, ..Default::default() },
             formulation: RsMp2RpaFormulation::DeltaLr,
         }
     }
@@ -183,7 +183,7 @@ pub fn rs_mp2_lr_rpa(
     rhf: &ScfResult,
     cfg: &RsMp2RpaConfig,
 ) -> Result<RsMp2RpaResult, FerricError> {
-    let ri_cfg = RiMp2Config { frozen_core: cfg.frozen_core };
+    let ri_cfg = RiMp2Config { frozen_core: cfg.frozen_core, memory_budget_bytes: cfg.drpa.memory_budget_bytes };
 
     // SHARED-INTERMEDIATE FUSION. The MP2 spin components and the dRPA solves
     // both need the dressed b_ov = V^{-1/2}(P|op|ia) for the SAME operator, and
@@ -201,8 +201,8 @@ pub fn rs_mp2_lr_rpa(
         )
     };
 
-    let mut rpa_cfg = cfg.rpa.clone();
-    rpa_cfg.frozen_core = cfg.frozen_core;
+    let mut drpa_cfg = cfg.drpa.clone();
+    drpa_cfg.frozen_core = cfg.frozen_core;
 
     // Range-separation operators. `Erf` uses erf(ω)/erfc(ω); `Terf` uses the
     // tempered terf(r0)/terfc(r0), with terf + terfc = Coulomb exactly (same
@@ -224,11 +224,14 @@ pub fn rs_mp2_lr_rpa(
                 let sc_full = sc_of(&inter_of(Operator::coulomb())?);
                 let sc_sr = sc_of(&inter_of(op_sr)?);
                 let e_dmp2_lr = 2.0 * sc_lr.e_os;
-                let rpa = run_pdep_rpa_from_intermediates(
-                    &it_lr, mol, obs, dfbs, op_lr, rhf, &rpa_cfg,
+                // op_lr is erf(ω) for Erf, terf(r0) for Terf — the LR dRPA must
+                // use the SAME long-range operator the attenuator selected, not a
+                // hardcoded erf. drpa_cfg carries main's memory budget knobs.
+                let drpa_lr = run_pdep_rpa_from_intermediates(
+                    &it_lr, mol, obs, dfbs, op_lr, rhf, &drpa_cfg,
                 )?;
-                let e_corr = sc_full.e_total + rpa.e_rpa - e_dmp2_lr;
-                (e_corr, Some(rpa.e_rpa), Some(sc_sr.e_total + rpa.e_rpa),
+                let e_corr = sc_full.e_total + drpa_lr.e_rpa - e_dmp2_lr;
+                (e_corr, Some(drpa_lr.e_rpa), Some(sc_sr.e_total + drpa_lr.e_rpa),
                  None, None, sc_full, sc_sr, sc_lr)
             }
             RsMp2RpaFormulation::CoupledRings => {
@@ -238,14 +241,16 @@ pub fn rs_mp2_lr_rpa(
                 let it_sr = inter_of(op_sr)?;
                 let sc_full = sc_of(&it_full);
                 let sc_sr = sc_of(&it_sr);
-                let rpa_coul = run_pdep_rpa_from_intermediates(
-                    &it_full, mol, obs, dfbs, Operator::coulomb(), rhf, &rpa_cfg,
+                let drpa_coul = run_pdep_rpa_from_intermediates(
+                    &it_full, mol, obs, dfbs, Operator::coulomb(), rhf, &drpa_cfg,
                 )?;
-                let rpa_erfc = run_pdep_rpa_from_intermediates(
-                    &it_sr, mol, obs, dfbs, op_sr, rhf, &rpa_cfg,
+                // op_sr is erfc(ω) for Erf, terfc(r0) for Terf — the SR dRPA must
+                // use the attenuator-selected short-range operator, not hardcoded erfc.
+                let drpa_erfc = run_pdep_rpa_from_intermediates(
+                    &it_sr, mol, obs, dfbs, op_sr, rhf, &drpa_cfg,
                 )?;
-                let delta_full = rpa_coul.e_rpa - 2.0 * sc_full.e_os;
-                let delta_sr = rpa_erfc.e_rpa - 2.0 * sc_sr.e_os;
+                let delta_full = drpa_coul.e_rpa - 2.0 * sc_full.e_os;
+                let delta_sr = drpa_erfc.e_rpa - 2.0 * sc_sr.e_os;
                 // T: E_MP2[Coulomb] + ΔdRPA[Coulomb] − ΔdRPA[erfc]
                 let e_corr = sc_full.e_total + delta_full - delta_sr;
                 (e_corr, None, None, Some(delta_full), Some(delta_sr),
@@ -345,10 +350,10 @@ mod tests {
         let ri_cfg = RiMp2Config::default();
         let (sc, _) = ri_mp2_spin_components(
             &mol, &obs, &dfbs, Operator::coulomb(), &rhf, &ri_cfg).unwrap();
-        let rpa_cfg = PdepRpaConfig { trunc_thresh: 0.0, ..Default::default() };
-        let rpa_coul = run_pdep_rpa(
-            &mol, &obs, &dfbs, Operator::coulomb(), &rhf, &rpa_cfg).unwrap();
-        let expected = sc.e_total + rpa_coul.e_rpa - 2.0 * sc.e_os;
+        let drpa_cfg = PdepRpaConfig { trunc_thresh: 0.0, ..Default::default() };
+        let drpa_coul = run_pdep_rpa(
+            &mol, &obs, &dfbs, Operator::coulomb(), &rhf, &drpa_cfg).unwrap();
+        let expected = sc.e_total + drpa_coul.e_rpa - 2.0 * sc.e_os;
         eprintln!("Δ-form(ω=200) {:.10}  MP2+ΔdRPA[Coulomb] {:.10}", r.e_corr, expected);
         assert!((r.e_corr - expected).abs() < 1e-6,
             "omega→∞ limit broken: {} vs {}", r.e_corr, expected);
@@ -403,10 +408,10 @@ mod tests {
         let ri_cfg = RiMp2Config::default();
         let (sc, _) = ri_mp2_spin_components(
             &mol, &obs, &dfbs, Operator::coulomb(), &rhf, &ri_cfg).unwrap();
-        let rpa_cfg = PdepRpaConfig { trunc_thresh: 0.0, ..Default::default() };
-        let rpa_coul = run_pdep_rpa(
-            &mol, &obs, &dfbs, Operator::coulomb(), &rhf, &rpa_cfg).unwrap();
-        let expected = sc.e_total + rpa_coul.e_rpa - 2.0 * sc.e_os;
+        let drpa_cfg = PdepRpaConfig { trunc_thresh: 0.0, ..Default::default() };
+        let drpa_coul = run_pdep_rpa(
+            &mol, &obs, &dfbs, Operator::coulomb(), &rhf, &drpa_cfg).unwrap();
+        let expected = sc.e_total + drpa_coul.e_rpa - 2.0 * sc.e_os;
         eprintln!(
             "CoupledRings(ω=200): e_corr={:.10}  MP2+ΔdRPA[Coulomb]={:.10}  diff={:.2e}",
             r.e_corr, expected, r.e_corr - expected
@@ -440,13 +445,13 @@ mod tests {
             &mol, &obs, &dfbs, Operator::coulomb(), &rhf, &ri_cfg).unwrap();
         let (sc_sr, _) = ri_mp2_spin_components(
             &mol, &obs, &dfbs, Operator::erfc(omega), &rhf, &ri_cfg).unwrap();
-        let rpa_cfg = cfg.rpa.clone();
-        let rpa_coul = run_pdep_rpa(
-            &mol, &obs, &dfbs, Operator::coulomb(), &rhf, &rpa_cfg).unwrap();
-        let rpa_erfc = run_pdep_rpa(
-            &mol, &obs, &dfbs, Operator::erfc(omega), &rhf, &rpa_cfg).unwrap();
-        let delta_full = rpa_coul.e_rpa - 2.0 * sc_full.e_os;
-        let delta_sr = rpa_erfc.e_rpa - 2.0 * sc_sr.e_os;
+        let drpa_cfg = cfg.drpa.clone();
+        let drpa_coul = run_pdep_rpa(
+            &mol, &obs, &dfbs, Operator::coulomb(), &rhf, &drpa_cfg).unwrap();
+        let drpa_erfc = run_pdep_rpa(
+            &mol, &obs, &dfbs, Operator::erfc(omega), &rhf, &drpa_cfg).unwrap();
+        let delta_full = drpa_coul.e_rpa - 2.0 * sc_full.e_os;
+        let delta_sr = drpa_erfc.e_rpa - 2.0 * sc_sr.e_os;
         let expected = sc_full.e_total + delta_full - delta_sr;
 
         eprintln!(

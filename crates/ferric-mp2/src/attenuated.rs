@@ -103,7 +103,10 @@
 //! advantage is reduced basis-set requirements.
 
 use crate::mo_transform::transform_3center_ov;
-use crate::rimp2::{active_occ, cholesky_inverse_sqrt, ri_mp2_spin_components, RiMp2Config, SpinComponents};
+use crate::rimp2::{
+    active_occ, cholesky_inverse_sqrt, ri_mp2_spin_components, spin_components_from_b_ov,
+    RiMp2Config, SpinComponents,
+};
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -129,6 +132,10 @@ pub struct AttenuatedMp2Config {
     /// to <1 µHa on test molecules); 1e-8 acceptable for production; 1e-6
     /// is aggressive. See `eri3_tensor_screened_qqr`.
     pub screen_thresh: Option<f64>,
+    /// Optional resident-bytes ceiling for the 3-index MO transform, propagated
+    /// into the internal `RiMp2Config`. `None` → resolved via
+    /// [`ferric_core::memory::resolve_budget_bytes`].
+    pub memory_budget_bytes: Option<usize>,
 }
 
 /// Bohr⁻¹ per Å⁻¹ (inverse of the Å-to-Bohr conversion).
@@ -141,6 +148,7 @@ impl Default for AttenuatedMp2Config {
             scaling: 1.0,
             frozen_core: 0,
             screen_thresh: None,
+            memory_budget_bytes: None,
         }
     }
 }
@@ -184,7 +192,7 @@ pub fn attenuated_ri_mp2_long_range(
     config: &AttenuatedMp2Config,
 ) -> Result<AttenuatedMp2Result, FerricError> {
     let op = Operator::erf(config.omega);
-    let ri_config = RiMp2Config { frozen_core: config.frozen_core };
+    let ri_config = RiMp2Config { frozen_core: config.frozen_core, memory_budget_bytes: config.memory_budget_bytes };
     let (sc, _) = ri_mp2_spin_components(mol, obs, dfbs, op, rhf, &ri_config)?;
     let scaled_corr = config.scaling * sc.e_total;
     Ok(AttenuatedMp2Result {
@@ -211,7 +219,7 @@ pub fn attenuated_ri_mp2(
     let sc = if let Some(thresh) = config.screen_thresh {
         attenuated_spin_components_screened(mol, obs, dfbs, op, rhf, config.frozen_core, thresh)?
     } else {
-        let ri_config = RiMp2Config { frozen_core: config.frozen_core };
+        let ri_config = RiMp2Config { frozen_core: config.frozen_core, memory_budget_bytes: config.memory_budget_bytes };
         ri_mp2_spin_components(mol, obs, dfbs, op, rhf, &ri_config)?.0
     };
     let scaled_corr = config.scaling * sc.e_total;
@@ -270,30 +278,15 @@ fn attenuated_spin_components_screened(
         .unwrap();
     let b_flat = v2c_inv_sqrt.dot(&eri3_flat);
 
-    let mut e_os = 0.0;
-    let mut e_ss = 0.0;
-    for i in 0..nocc {
-        for j in 0..nocc {
-            for a in 0..nvir {
-                for b in 0..nvir {
-                    let ia = i * nvir + a;
-                    let jb = j * nvir + b;
-                    let ib = i * nvir + b;
-                    let ja = j * nvir + a;
-                    let eri_iajb: f64 =
-                        (0..naux).map(|p| b_flat[(p, ia)] * b_flat[(p, jb)]).sum();
-                    let eri_ibja: f64 =
-                        (0..naux).map(|p| b_flat[(p, ib)] * b_flat[(p, ja)]).sum();
-                    let denom = eps[first_occ + i] + eps[first_occ + j]
-                        - eps[nocc_total + a]
-                        - eps[nocc_total + b];
-                    e_os += eri_iajb * eri_iajb / denom;
-                    e_ss += eri_iajb * (eri_iajb - eri_ibja) / denom;
-                }
-            }
-        }
-    }
-    Ok(SpinComponents { e_os, e_ss, e_total: e_os + e_ss })
+    // b_flat is exactly the dressed (naux, nocc*nvir) B_ov tensor that
+    // ri_mp2_spin_components hands to spin_components_from_b_ov — same shape,
+    // same B^P_ia = sum_Q V^{-1/2}_PQ (Q|ia) contraction, only the upstream
+    // 3-index build differs (QQR-3 screened vs dense). Reuse the shared,
+    // i-blocked-GEMM + par-i spin-component assembly instead of the hand-rolled
+    // serial (i,j,a,b) O(naux) double-dot loop, which had neither the M4 GEMM
+    // port nor parallelization.
+    let sc = spin_components_from_b_ov(&b_flat, eps, nocc, nvir, first_occ, nocc_total);
+    Ok(sc)
 }
 
 /// Helper for range-separated MP2: returns (E_erfc_sr, E_erf_lr, E_full).
@@ -309,7 +302,7 @@ pub fn rs_mp2_decomposition(
     let sr = erfc_attenuated_ri_mp2(mol, obs, dfbs, rhf, config)?.mp2_corr;
     let lr = attenuated_ri_mp2_long_range(mol, obs, dfbs, rhf, config)?.mp2_corr;
     let op = Operator::coulomb();
-    let ri_config = RiMp2Config { frozen_core: config.frozen_core };
+    let ri_config = RiMp2Config { frozen_core: config.frozen_core, memory_budget_bytes: config.memory_budget_bytes };
     let (sc, _) = ri_mp2_spin_components(mol, obs, dfbs, op, rhf, &ri_config)?;
     Ok((sr, lr, sc.e_total))
 }
@@ -441,6 +434,42 @@ mod tests {
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
         let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
         (mol, obs, dfbs, rhf)
+    }
+
+    #[test]
+    fn test_attenuated_mp2_matches_pyscf_production_omega_water() {
+        // S2 spike (open triage item #2): first ABSOLUTE cross-check of
+        // attenuated_ri_mp2 at production omega (0.420 A^-1), not just the
+        // omega->0 / SR<full limit tests above. Independent reference from
+        // scripts/gen_pyscf_attenuated_rimp2_ref.py: PySCF/libcint (a
+        // different integral library from ferric's libint2 shim) with
+        // mol.set_range_coulomb(-omega) applied to BOTH the 2-center metric
+        // (via auxmol) and the 3-center (P|mu nu) integrals (via mol),
+        // reproducing ferric's ri_mp2_spin_components formula line-for-line
+        // (same Cholesky V^{-1/2} branch erfc uses, same (ia|jb)/(ib|ja)
+        // same-spin contraction). See
+        // testdata/reference/h2o_cc-pvdz_attenuated-rimp2-erfc0p420.json.
+        let (mol, obs, dfbs, rhf) = setup_h2o();
+        let config = AttenuatedMp2Config::default(); // omega = 0.420 A^-1 -> Bohr^-1
+        let att = attenuated_ri_mp2(&mol, &obs, &dfbs, &rhf, &config).unwrap();
+
+        let ref_rhf = -76.0267833622895;
+        let ref_mp2_corr = -0.19863072759724415;
+        let ref_e_os = -0.1487223945984868;
+        let ref_e_ss = -0.04990833299875735;
+
+        let d_rhf = (rhf.energy - ref_rhf).abs();
+        let d_mp2 = (att.mp2_corr - ref_mp2_corr).abs();
+        let d_os = (att.spin_components.e_os - ref_e_os).abs();
+        let d_ss = (att.spin_components.e_ss - ref_e_ss).abs();
+        eprintln!(
+            "ferric mp2_corr={:.12}, pyscf ref={:.12}, diff={:.2e}",
+            att.mp2_corr, ref_mp2_corr, d_mp2
+        );
+        assert!(d_rhf < 1e-8, "RHF energy diverges from PySCF: diff={d_rhf:.2e}");
+        assert!(d_mp2 < 1e-6, "attenuated MP2 corr diverges from PySCF: diff={d_mp2:.2e}");
+        assert!(d_os < 1e-6, "e_os diverges from PySCF: diff={d_os:.2e}");
+        assert!(d_ss < 1e-6, "e_ss diverges from PySCF: diff={d_ss:.2e}");
     }
 
     #[test]

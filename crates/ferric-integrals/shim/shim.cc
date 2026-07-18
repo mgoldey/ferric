@@ -80,7 +80,7 @@ scf_basis *scf_basis_create(const scf_shell *shells, int nshells,
         // Build per-atom Atom records (libint type) for nuclear positions.
         std::vector<libint2::Atom> li_atoms(natoms);
         for (int a = 0; a < natoms; ++a) {
-            li_atoms[a].atomic_number = atoms[a].Z;
+            li_atoms[a].atomic_number = static_cast<int>(atoms[a].Z);
             li_atoms[a].x = atoms[a].x;
             li_atoms[a].y = atoms[a].y;
             li_atoms[a].z = atoms[a].z;
@@ -859,6 +859,56 @@ void boys_upto(int mmax, double T, double *F) {
     }
 }
 
+// Exact evaluation of the Dutoi auxiliary G_{m,0}(S,s) by its DEFINING Poisson
+// series (generate_tables.py `_compute_Gmn`):
+//   pmf_S[i] = e^{-S} S^i / i!                        (k=1 row)
+//   gS[k][i] = gS[k-1][i] - gS[k-1][i-1], k >= 2      (forward differences)
+//   cdf_s[i] = sum_{j<=i} e^{-s} s^j / j!             (n=0 row)
+//   df(2i)   = (2i)!! / (2i+1)!!
+//   G_{m,0}(S,s) = sum_i df(2i) * gS[m+1][i] * cdf_s[i]
+//
+// Used when (S,s) lies outside every interpolation table. The only reachable
+// out-of-table region is S > 20 with s < 1/2: the curvature constraint
+// r0*omega = 1/sqrt2 gives s = phi^2 r0^2 <= omega^2 r0^2 = 1/2, so s is always
+// deep inside every table's s-range and coverage reduces to S <= 20.
+//
+// float64 series validated against the 256-bit mpmath reference: <= 6e-12
+// relative for S in [20.25, 200], s in [0, 0.5], m <= 16 (worst 5e-5 at m=16,
+// S=200 where |G| ~ 1e-26). At s=0 the series reduces exactly to the Boys
+// function, G_m(S,0) = F_m(S) (verified to 1e-77). For S > 600 the
+// s-dependence is < e^{-580} relative, so Boys is used directly (also avoids
+// e^{-S} underflow in the PMF recurrence).
+void terf_G_series(double S, double s, int mmax, double *G) {
+    if (S > 600.0) {
+        boys_upto(mmax, S, G);
+        return;
+    }
+    const int N = (int)(S + 12.0 * std::sqrt(S) + 60.0);
+    std::vector<double> pmf(N), cdf(N), df(N), next(N);
+    pmf[0] = std::exp(-S);
+    for (int i = 1; i < N; ++i) pmf[i] = pmf[i - 1] * S / i;
+    double t = std::exp(-s), acc = t;
+    cdf[0] = acc;
+    for (int i = 1; i < N; ++i) {
+        t *= s / i;
+        acc += t;
+        cdf[i] = acc < 1.0 ? acc : 1.0;
+    }
+    df[0] = 1.0;
+    for (int i = 1; i < N; ++i) df[i] = df[i - 1] * (2.0 * i) / (2.0 * i + 1.0);
+    std::vector<double> row = pmf;  // k=1 row; order m uses row k=m+1
+    for (int m = 0; m <= mmax; ++m) {
+        if (m > 0) {  // advance k=m -> k=m+1 by one forward difference
+            next[0] = row[0];
+            for (int i = 1; i < N; ++i) next[i] = row[i] - row[i - 1];
+            row.swap(next);
+        }
+        double total = 0.0;
+        for (int i = 0; i < N; ++i) total += df[i] * row[i] * cdf[i];
+        G[m] = total;
+    }
+}
+
 // -------------------------------------------------------------------------
 //  terf Boys-replacement vector  A[m] = (phi/theta) * G_{m,0}(S,s).
 //
@@ -875,16 +925,33 @@ void boys_upto(int mmax, double T, double *F) {
 //  fundamental normalisations (Dutoi Eq 9 vs Eq 6) and is m-independent.
 //
 //  For ENERGY integrals the n-index is a fixed spectator at 0 (s already carries
-//  r0 through phi). Returns false if (S,s) fall outside all tables (large S =>
-//  distant shells; the contribution is negligible for bound pairs).
+//  r0 through phi).
+//
+//  Out-of-table (S,s) — i.e. far-field S > 20 — falls back to the exact
+//  Poisson-series evaluation (terf_G_series). This is NOT optional: at large
+//  separation terf -> full Coulomb (it is terfc that is negligible), so
+//  SKIPPING the terf subtraction leaves the full Coulomb value in the terfc
+//  result and inflates far-field integrals from ~0 to 1/R magnitude. That bug
+//  made (P|Q)_terfc spuriously INDEFINITE on larger systems (alkane_4+/
+//  cc-pVDZ-RI at r0=0.75 A; alkane_12 at r0=1.05 A) and blew up downstream
+//  RI-MP2 energies. Always returns true.
 // -------------------------------------------------------------------------
 inline bool terf_aux(const TerfcTableSet &set, double S, double s,
                      double phi_over_theta, int mmax, double *A) {
-    for (int m = 0; m <= mmax; ++m) {
-        double g;
-        if (!interp_G(set, S, s, m, /*n=*/0, g)) return false;
-        A[m] = phi_over_theta * g;
+    double g;
+    if (interp_G(set, S, s, /*m=*/0, /*n=*/0, g)) {
+        A[0] = phi_over_theta * g;
+        for (int m = 1; m <= mmax; ++m) {
+            // coverage is (S,s)-only, so these cannot fail after m=0 succeeded
+            if (!interp_G(set, S, s, m, /*n=*/0, g)) return false;
+            A[m] = phi_over_theta * g;
+        }
+        return true;
     }
+    // Outside all tables: exact series (reachable only for S > 20, s < 1/2).
+    double gser[TERFC_DIMM];
+    terf_G_series(S, s, mmax, gser);
+    for (int m = 0; m <= mmax; ++m) A[m] = phi_over_theta * gser[m];
     return true;
 }
 
@@ -1150,8 +1217,12 @@ bool compute_cart_eri3(const Shell &shP, const Shell &shA, const Shell &shB,
                     const double S = phi2 * PQ2;
                     const double s = phi2 * r02;
                     const double phi_over_theta = std::sqrt(phi2 / theta2);
+                    // terf_aux always succeeds (table interp, or exact series
+                    // for far-field S > 20); the guard is defensive only.
+                    // Skipping here would leave the full Coulomb value
+                    // un-subtracted (terf -> 1/r at large r, NOT negligible).
                     if (!terf_aux(*tables, S, s, phi_over_theta, Ltot, Fn)) {
-                        continue;  // negligible: outside all tables
+                        continue;
                     }
                     alpha_R = phi2;
                 }
@@ -1267,6 +1338,7 @@ bool compute_cart_eri2(const Shell &shP, const Shell &shQ,
                 const double S = phi2 * PQ2;
                 const double s = phi2 * r02;
                 const double phi_over_theta = std::sqrt(phi2 / theta2);
+                // Always succeeds (table or exact far-field series); defensive.
                 if (!terf_aux(*tables, S, s, phi_over_theta, Ltot, Fn)) continue;
                 alpha_R = phi2;
             }
@@ -1456,6 +1528,22 @@ extern "C" double scf_terfc_debug_interp_G(const char *dir, double S, double s,
         double out = 0.0;
         if (!interp_G(*set, S, s, m, n, out)) return std::nan("");
         return out;
+    } catch (...) {
+        return std::nan("");
+    }
+}
+
+/* TEST-ONLY hook: evaluate G_{m,0}(S,s) via the SHIPPED far-field Poisson
+ * series (terf_G_series — the exact code path terf_aux uses for out-of-table
+ * (S,s)), so the Rust oracle-anchor tests exercise production code, not a
+ * reimplementation. Returns NaN on invalid m or internal error (never
+ * unwinds across the C ABI). */
+extern "C" double scf_terfc_debug_series_G(double S, double s, int m) {
+    try {
+        if (m < 0 || m >= TERFC_DIMM) return std::nan("");
+        double G[TERFC_DIMM];
+        terf_G_series(S, s, m, G);
+        return G[m];
     } catch (...) {
         return std::nan("");
     }

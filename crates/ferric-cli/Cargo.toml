@@ -3,6 +3,9 @@ name = "ferric-cli"
 version = "0.1.0"
 edition = "2021"
 
+[lints]
+workspace = true
+
 # Primary CLI driver. Built under both names: `ferric-cli` (historical, used by
 # README/tutorials/scripts) and `ferric` (friendlier; the name `ferric-batch`
 # shells out to — see src/bin/ferric-batch.rs).
@@ -24,6 +27,7 @@ ferric-integrals = { path = "../ferric-integrals" }
 ferric-scf = { path = "../ferric-scf" }
 ferric-mp2 = { path = "../ferric-mp2" }
 ferric-rpa = { path = "../ferric-rpa" }
+ferric-gw = { path = "../ferric-gw" }
 ferric-export = { path = "../ferric-export" }
 toml = { workspace = true }
 serde = { workspace = true }

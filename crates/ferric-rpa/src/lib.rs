@@ -225,6 +225,16 @@ pub struct PdepRpaResult {
     pub inv_dielectric_freq: Option<Vec<Array2<f64>>>,
     /// RI-dRPA sanity-check energy (None unless run_diagnostics=true).
     pub e_rpa_dft_diag: Option<f64>,
+    /// Whether the static-dielectric eigensolve (Davidson or Lanczos, per
+    /// `config.eigensolver`) met its residual-norm convergence tolerance.
+    /// `false` means the eigenvalues/eigenpotentials above are the
+    /// eigensolver's best-effort Ritz pairs after exhausting its iteration
+    /// budget, not verified eigenpairs — Davidson itself hard-errors instead
+    /// of ever returning `false` here (see [`davidson::DavidsonResult`]), so
+    /// in practice only the Lanczos path (the default eigensolver) can set
+    /// this `false`. Callers that need a hard guarantee should check this
+    /// explicitly; the CLI and Python bindings only warn.
+    pub eigensolver_converged: bool,
 }
 
 /// Top-level PDEP-RPA energy calculation.
@@ -239,7 +249,7 @@ pub fn run_pdep_rpa(
     // Step 1: Build RI-MO B^P_ia tensor and V^{-1/2}. RPA only needs the
     // occ-vir block; skip the full-MP2 amplitudes/density that the gradient
     // path requires.
-    let mp2_cfg = RiMp2Config { frozen_core: config.frozen_core };
+    let mp2_cfg = RiMp2Config { frozen_core: config.frozen_core, memory_budget_bytes: config.memory_budget_bytes };
     let _t_setup = crate::timing::Stage::start("pdep:rpa_intermediates(ERI3+metric+MOtransform)");
     let inter = compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
     _t_setup.end();
@@ -280,10 +290,16 @@ pub fn run_pdep_rpa_from_intermediates(
     let eps_vir: Vec<f64> = rhf.eps_r()[nocc_total..nocc_total + nvir].to_vec();
 
     // Step 3: Run Davidson at ω=0.
-    let max_vecs = if config.davidson_max_vecs == 0 {
+    // NOTE (M9 memory): the default subspace cap 3·naux bounds the Davidson
+    // basis at naux·(3·naux)·8 bytes (≈346 MB at dimer/aTZ naux≈3800). This is
+    // borderline but only pays on the Davidson path — Lanczos is the default
+    // solver (config.eigensolver) and never grows a 3·naux basis. If Davidson
+    // becomes the hot path at larger naux, gate this multiplier on
+    // memory_budget_bytes / (naux·8) instead of the fixed 3×.
+    let max_vecs = if config.eigensolver_max_vecs == 0 {
         3 * naux
     } else {
-        config.davidson_max_vecs
+        config.eigensolver_max_vecs
     };
 
     let b_ov_clone = b_ov.clone();
@@ -297,7 +313,7 @@ pub fn run_pdep_rpa_from_intermediates(
         match config.chi0_backend {
             Chi0Backend::Dense => None,
             Chi0Backend::Laplace { n_quad } => Some(
-                laplace_chi0::build_laplace_for_gaps(&eps_occ_clone, &eps_vir_clone, n_quad),
+                laplace_chi0::build_laplace_for_gaps(&eps_occ_clone, &eps_vir_clone, n_quad)?,
             ),
         };
     let laplace_for_davidson = laplace_chi0_quad.clone();
@@ -319,9 +335,11 @@ pub fn run_pdep_rpa_from_intermediates(
     // energy integration still uses the dense b_ov path for correctness.
     // Resolve Auto → Dense/BoysScreened by atom count (boys-screening-crossover).
     let resolved_sparsity = config.chi0_sparsity.resolve(mol.atoms.len());
-    if let Chi0Sparsity::Auto { boys_thresh, atom_cutoff } = config.chi0_sparsity {
+    if let Chi0Sparsity::Auto { boys_thresh, atom_cutoff, .. } = config.chi0_sparsity {
         let picked = match resolved_sparsity {
-            Chi0Sparsity::BoysScreened { thresh } => format!("BoysScreened{{{thresh:e}}}"),
+            Chi0Sparsity::BoysScreened { thresh, dist_cutoff } => {
+                format!("BoysScreened{{{thresh:e}, dist_cutoff {dist_cutoff}}}")
+            }
             _ => "Dense".to_string(),
         };
         let cmp = if mol.atoms.len() >= atom_cutoff { "≥" } else { "<" };
@@ -332,7 +350,7 @@ pub fn run_pdep_rpa_from_intermediates(
     }
     let screened_bov_opt: Option<ScreenedBov> = match resolved_sparsity {
         Chi0Sparsity::Dense => None,
-        Chi0Sparsity::BoysScreened { thresh } => {
+        Chi0Sparsity::BoysScreened { thresh, dist_cutoff } => {
             let (sb, _boys) = screen::build_screened_bov_boys(
                 mol,
                 obs,
@@ -341,6 +359,7 @@ pub fn run_pdep_rpa_from_intermediates(
                 rhf,
                 config.frozen_core,
                 thresh,
+                dist_cutoff,
             )?;
             Some(sb)
         }
@@ -367,7 +386,7 @@ pub fn run_pdep_rpa_from_intermediates(
                         v_mat, sb_ref, &eps_vir_seed, omega,
                     )
                 },
-                config.davidson_conv_thresh,
+                config.eigensolver_conv_thresh,
                 max_vecs,
                 naux,
                 false,
@@ -387,11 +406,20 @@ pub fn run_pdep_rpa_from_intermediates(
                 matvec,
                 naux,
                 max_iter,
-                config.davidson_conv_thresh,
+                config.eigensolver_conv_thresh,
             )?;
+            if !lz.converged {
+                eprintln!(
+                    "warning: Lanczos eigensolve did NOT converge (max Ritz residual \
+                     {:.3e} > {:.3e} after {max_iter} block iterations); PDEP \
+                     eigenpotentials and the RPA energy built on them are best-effort",
+                    lz.max_resid, config.eigensolver_conv_thresh
+                );
+            }
             davidson::DavidsonResult {
                 eigenvalues: lz.eigenvalues,
                 eigenvectors: lz.eigenvectors,
+                converged: lz.converged,
             }
         }
         // --- Dense legacy path ---
@@ -407,7 +435,7 @@ pub fn run_pdep_rpa_from_intermediates(
                             laplace_q.as_ref(),
                         )
                     },
-                    config.davidson_conv_thresh,
+                    config.eigensolver_conv_thresh,
                     max_vecs,
                     naux,
                     false,
@@ -422,7 +450,7 @@ pub fn run_pdep_rpa_from_intermediates(
                             laplace_q.as_ref(),
                         )
                     },
-                    config.davidson_conv_thresh,
+                    config.eigensolver_conv_thresh,
                     max_vecs,
                     naux,
                     false,
@@ -451,6 +479,7 @@ pub fn run_pdep_rpa_from_intermediates(
             davidson::DavidsonResult {
                 eigenvalues: lz.eigenvalues,
                 eigenvectors: lz.eigenvectors,
+                converged: lz.converged,
             }
         }
     };
@@ -490,12 +519,14 @@ pub fn run_pdep_rpa_from_intermediates(
 
     // Step 6b: Per-frequency full inverse-dielectric matrices in the PDEP basis
     // (for the GW self-energy; not needed by the RPA energy). Only the dense
-    // (non-Laplace) χ₀ path is wired here.
-    let inv_dielectric_freq = match laplace_chi0_quad.as_ref() {
-        None => Some(energy::eval_inv_dielectric_matrices(
+    // (non-Laplace) χ₀ path is wired here. Gated on `need_inv_dielectric_freq`
+    // so energy-only runs never materialize the nquad × M² stack (~1.85 GB at
+    // dimer/aTZ scale) — GW/BSE/property callers set the flag (M9).
+    let inv_dielectric_freq = match (config.need_inv_dielectric_freq, laplace_chi0_quad.as_ref()) {
+        (true, None) => Some(energy::eval_inv_dielectric_matrices(
             &eigenvectors, b_ov, &eps_occ, &eps_vir, &quad_freqs,
         )?),
-        Some(_) => None,
+        _ => None,
     };
 
     _t_quad.end();
@@ -523,6 +554,7 @@ pub fn run_pdep_rpa_from_intermediates(
         eigenvalues_freq,
         inv_dielectric_freq,
         e_rpa_dft_diag,
+        eigensolver_converged: davidson_result.converged,
     })
 }
 
@@ -555,7 +587,7 @@ pub fn run_u_pdep_rpa(
         ));
     }
 
-    let mp2_cfg = RiMp2Config { frozen_core: config.frozen_core };
+    let mp2_cfg = RiMp2Config { frozen_core: config.frozen_core, memory_budget_bytes: config.memory_budget_bytes };
     let inter_a = compute_rpa_intermediates_spin(mol, obs, dfbs, op, rhf, &mp2_cfg, true)?;
     let inter_b = compute_rpa_intermediates_spin(mol, obs, dfbs, op, rhf, &mp2_cfg, false)?;
     let naux = inter_a.naux;
@@ -577,10 +609,10 @@ pub fn run_u_pdep_rpa(
     let eps_vir_b: Vec<f64> =
         eps_b_full[inter_b.nocc_total..inter_b.nocc_total + inter_b.nvir].to_vec();
 
-    let max_vecs = if config.davidson_max_vecs == 0 {
+    let max_vecs = if config.eigensolver_max_vecs == 0 {
         3 * naux
     } else {
-        config.davidson_max_vecs
+        config.eigensolver_max_vecs
     };
 
     // Build per-spin Laplace quadratures if the Laplace χ₀ backend is
@@ -589,13 +621,13 @@ pub fn run_u_pdep_rpa(
         match config.chi0_backend {
             Chi0Backend::Dense => None,
             Chi0Backend::Laplace { n_quad } => {
-                let qa = laplace_chi0::build_laplace_for_gaps(&eps_occ_a, &eps_vir_a, n_quad);
+                let qa = laplace_chi0::build_laplace_for_gaps(&eps_occ_a, &eps_vir_a, n_quad)?;
                 let qb = if eps_occ_b.is_empty() {
                     // Empty spin channel: build a degenerate quadrature; it
                     // never gets used in the per-spin accumulator (early-out).
                     qa.clone()
                 } else {
-                    laplace_chi0::build_laplace_for_gaps(&eps_occ_b, &eps_vir_b, n_quad)
+                    laplace_chi0::build_laplace_for_gaps(&eps_occ_b, &eps_vir_b, n_quad)?
                 };
                 Some((qa, qb))
             }
@@ -634,6 +666,7 @@ pub fn run_u_pdep_rpa(
             davidson::DavidsonResult {
                 eigenvalues: lz.eigenvalues,
                 eigenvectors: lz.eigenvectors,
+                converged: lz.converged,
             }
         }
         (Eigensolver::Davidson, lap_opt) => {
@@ -650,7 +683,7 @@ pub fn run_u_pdep_rpa(
                         ),
                     }
                 },
-                config.davidson_conv_thresh,
+                config.eigensolver_conv_thresh,
                 max_vecs,
                 naux,
                 false,
@@ -688,11 +721,13 @@ pub fn run_u_pdep_rpa(
 
     let e_rpa = energy::rpa_correlation_energy(&quad_weights, &eigenvalues_freq);
 
-    let inv_dielectric_freq = match laplace_pair.as_ref() {
-        None => Some(energy::eval_inv_dielectric_matrices_unrestricted(
+    // Gated on `need_inv_dielectric_freq` (M9): only U-GW consumes the
+    // nquad × M² inverse-dielectric stack; energy-only runs skip it.
+    let inv_dielectric_freq = match (config.need_inv_dielectric_freq, laplace_pair.as_ref()) {
+        (true, None) => Some(energy::eval_inv_dielectric_matrices_unrestricted(
             &eigenvectors, &freq_chan_a, &freq_chan_b, &quad_freqs,
         )?),
-        Some(_) => None,
+        _ => None,
     };
 
     Ok(PdepRpaResult {
@@ -706,5 +741,6 @@ pub fn run_u_pdep_rpa(
         eigenvalues_freq,
         inv_dielectric_freq,
         e_rpa_dft_diag: None,
+        eigensolver_converged: davidson_result.converged,
     })
 }

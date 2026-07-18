@@ -7,9 +7,19 @@
 # (NOT run_sweep.py) on its OWN partition of fast molecules, writing to its OWN
 # log — no shared results.json write race. Merge with merge_driver_log.py after.
 #
-# Each worker runs at RAYON=2 (the SCF phase is ~1-thread anyway, so low real
-# oversubscription) + OPENBLAS=2. Slow/big molecules are handled by the main
-# sweeps separately.
+# Each worker runs at RAYON=2 + OPENBLAS=1. Slow/big molecules are handled by
+# the main sweeps separately.
+#
+# OPENBLAS_NUM_THREADS was 2 here from this script's original commit
+# (dcc70b4, 2026-06-23) reasoning only about CPU oversubscription ("SCF phase
+# is ~1-thread anyway, so low real oversubscription"). That predates the
+# 2026-07-10 finding (openblas-rayon-dgetrf-crash memory / df_j.rs) that
+# DF-JK SCF's `v.inv()` (LU/dgetrf-based) is deliberately left OUTSIDE
+# with_blas_threads and so inherits the process-level OPENBLAS_NUM_THREADS
+# directly -- dgetrf_parallel at threads>1 stack-overflows regardless of
+# rayon. gw100_full runs DF-JK SCF, so OPENBLAS=2 here was a live crash risk,
+# not a validated-safe throughput choice. Repo convention
+# (OPENBLAS_NUM_THREADS=1 always) applies; RAYON=2 is unaffected.
 #
 # Usage: fast_lane.sh <basis> <nworkers>
 set -u
@@ -54,7 +64,7 @@ print(','.join(c for c in allm if c not in mine))
   LOG=scripts/queue/out/fastlane_${short}_w${i}_${TS}.txt
   echo "worker $i ($short): $MINE -> $LOG"
   systemd-run --user --scope -p MemoryMax=10G -p MemorySwapMax=0 -u fastlane-${short}-w${i}-${TS} \
-    nice -n 12 env OPENBLAS_NUM_THREADS=2 RAYON_NUM_THREADS=2 GW100_TRUNC=1e-4 GW100_FULL_MAX_ATOMS=10 \
+    nice -n 12 env OPENBLAS_NUM_THREADS=1 RAYON_NUM_THREADS=2 GW100_TRUNC=1e-4 GW100_FULL_MAX_ATOMS=10 \
       GW100_DONE="$SKIP" \
       timeout 190000 "$BIN" "$BASIS" \
     > "$LOG" 2>&1 &

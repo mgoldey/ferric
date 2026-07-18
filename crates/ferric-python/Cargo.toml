@@ -3,6 +3,9 @@ name = "ferric-python"
 version = "0.1.0"
 edition = "2021"
 
+[lints]
+workspace = true
+
 [lib]
 name = "ferric"
 crate-type = ["cdylib"]
@@ -13,6 +16,7 @@ ferric-integrals = { path = "../ferric-integrals" }
 ferric-scf = { path = "../ferric-scf" }
 ferric-mp2 = { path = "../ferric-mp2" }
 ferric-rpa = { path = "../ferric-rpa" }
+ferric-gw = { path = "../ferric-gw" }
 ferric-dft = { path = "../ferric-dft" }
 ferric-cc = { path = "../ferric-cc" }
 pyo3 = { workspace = true }

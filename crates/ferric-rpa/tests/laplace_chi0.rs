@@ -50,7 +50,7 @@ fn h2o_ccpvdz_laplace_matches_dense_at_static() {
         "cc-pvdz-ri",
     );
 
-    let mp2_cfg = RiMp2Config { frozen_core: 0 };
+    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
     let inter = compute_rpa_intermediates(&mol, &obs, &dfbs, op, &rhf, &mp2_cfg).unwrap();
     let b_ov = &inter.b_ov;
     let eps_occ: Vec<f64> = rhf.eps_r()[inter.first_occ..inter.first_occ + inter.nocc].to_vec();
@@ -63,7 +63,7 @@ fn h2o_ccpvdz_laplace_matches_dense_at_static() {
 
     let dense = dielectric_matrix(&v_mat, b_ov, &eps_occ, &eps_vir, 0.0);
 
-    let lap_q = build_laplace_for_gaps(&eps_occ, &eps_vir, 7);
+    let lap_q = build_laplace_for_gaps(&eps_occ, &eps_vir, 7).unwrap();
     let lap = dielectric_matrix_laplace(&v_mat, b_ov, &eps_occ, &eps_vir, 0.0, &lap_q);
 
     let max_abs_dense = dense.iter().fold(0.0_f64, |a, &x| a.max(x.abs()));
@@ -103,7 +103,7 @@ fn small_system_laplace_static_tight() {
     });
 
     let dense = dielectric_matrix(&v_mat, &b_ov, &eps_occ, &eps_vir, 0.0);
-    let q = build_laplace_for_gaps(&eps_occ, &eps_vir, 7);
+    let q = build_laplace_for_gaps(&eps_occ, &eps_vir, 7).unwrap();
     let lap = dielectric_matrix_laplace(&v_mat, &b_ov, &eps_occ, &eps_vir, 0.0, &q);
     let err = dense.iter().zip(lap.iter()).map(|(a, b)| (a - b).abs()).fold(0.0, f64::max);
     eprintln!("small-system static: max err = {err:.3e}");

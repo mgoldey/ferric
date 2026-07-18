@@ -421,208 +421,285 @@ pub fn compute_u_mp2_orbital_gradient_blocks(
     let naux = b_full_a.shape()[0];
     debug_assert_eq!(naux, b_full_b.shape()[0]);
 
-    // ERI helpers — (pq|rs) for same-spin (α or β) blocks via the full-MO B tensor.
-    let eri_aa = |p: usize, q: usize, r: usize, s: usize| -> f64 {
-        (0..naux).map(|aux| b_full_a[(aux, p, q)] * b_full_a[(aux, r, s)]).sum()
-    };
-    let eri_bb = |p: usize, q: usize, r: usize, s: usize| -> f64 {
-        (0..naux).map(|aux| b_full_b[(aux, p, q)] * b_full_b[(aux, r, s)]).sum()
-    };
-    // αβ integrals: α-MO indices (p,q) on the α tensor, β-MO (r,s) on the β tensor.
-    let eri_ab = |p: usize, q: usize, r: usize, s: usize| -> f64 {
-        (0..naux).map(|aux| b_full_a[(aux, p, q)] * b_full_b[(aux, r, s)]).sum()
-    };
-
     let t_aa = &amps.t_aa;
     let t_bb = &amps.t_bb;
     let t_ab = &amps.t_ab;
+
+    // ---------------------------------------------------------------------
+    // GEMM restructure (ports oo_rimp2::compute_orbital_gradient to the U path).
+    //
+    // Each per-element `eri_σσ(p,q,r,s) = Σ_P B^P_{pq} B^P_{rs}` closure used to
+    // cost an O(naux) strided dot, called O(nvir³·nocc³) times per spin. Instead
+    // we slice the dressed occ/vir MO blocks out of the full-MO B tensors once,
+    //   Bov_σ[P, i·nvir_σ+a] = B^P_{i,a}   (occ, vir)
+    //   Bvv_σ[P, a·nvir_σ+b] = B^P_{a,b}   (vir, vir)
+    //   Boo_σ[P, i·nocc_σ+j] = B^P_{i,j}   (occ, occ)
+    // and form the dense MO-ERI blocks with a single wide GEMM each (contraction
+    // over P). All eight ERI patterns in the four same-spin response terms — plus
+    // the cross-spin αβ patterns — are then reindexings of these blocks via the
+    // (pq|rs) permutational symmetries, identical numerics to the scalar path.
+    //
+    // Extract Bov/Bvv/Boo for one spin from its full-MO tensor.
+    let extract_blocks = |b_full: &Array3<f64>,
+                          nocc: usize,
+                          nvir: usize,
+                          first_occ: usize,
+                          nocc_total: usize|
+     -> (Array2<f64>, Array2<f64>, Array2<f64>) {
+        let mut b_ov = Array2::<f64>::zeros((naux, nocc * nvir));
+        let mut b_vv = Array2::<f64>::zeros((naux, nvir * nvir));
+        let mut b_oo = Array2::<f64>::zeros((naux, nocc * nocc));
+        for p in 0..naux {
+            for i in 0..nocc {
+                let i_mo = first_occ + i;
+                for a in 0..nvir {
+                    b_ov[(p, i * nvir + a)] = b_full[(p, i_mo, nocc_total + a)];
+                }
+                for j in 0..nocc {
+                    b_oo[(p, i * nocc + j)] = b_full[(p, i_mo, first_occ + j)];
+                }
+            }
+            for a in 0..nvir {
+                let a_mo = nocc_total + a;
+                for b in 0..nvir {
+                    b_vv[(p, a * nvir + b)] = b_full[(p, a_mo, nocc_total + b)];
+                }
+            }
+        }
+        (b_ov, b_vv, b_oo)
+    };
+
+    let (bov_a, bvv_a, boo_a) =
+        extract_blocks(b_full_a, nocc_a, nvir_a, first_occ_a, nocc_total_a);
+    let (bov_b, bvv_b, boo_b) =
+        extract_blocks(b_full_b, nocc_b, nvir_b, first_occ_b, nocc_total_b);
+
+    // OOOV blocks are small (nocc²·nov) — build once for each spin and the two
+    // cross-spin orderings.
+    //   ooov_a[i·nocc_a+k, j·nvir_a+b] = (ik|jb)_α
+    //   ooov_b[i·nocc_b+k, j·nvir_b+b] = (ik|jb)_β
+    let ooov_a = boo_a.t().dot(&bov_a); // (nocc_a², nocc_a·nvir_a)
+    let ooov_b = boo_b.t().dot(&bov_b); // (nocc_b², nocc_b·nvir_b)
+    // Cross-spin OOOV / OVOO:
+    //   ooov_ab[i·nocc_a+k, J·nvir_b+B] = (ik_α | JB_β)
+    //   ovoo_ab[i·nvir_a+a, J·nocc_b+K] = (ia_α | JK_β)
+    let ooov_ab = boo_a.t().dot(&bov_b); // (nocc_a², nocc_b·nvir_b)
+    let ovoo_ab = bov_a.t().dot(&boo_b); // (nocc_a·nvir_a, nocc_b²)
 
     let mut same_a = Array2::<f64>::zeros((nvir_a, nocc_a));
     let mut ab_a   = Array2::<f64>::zeros((nvir_a, nocc_a));
     let mut same_b = Array2::<f64>::zeros((nvir_b, nocc_b));
     let mut ab_b   = Array2::<f64>::zeros((nvir_b, nocc_b));
 
+    // VVOV panel width from the resident-bytes budget: one c-value of a VVOV
+    // panel costs nvir·nov·8 bytes. Unset budget = one full-width panel
+    // (bit-identical to an unblocked build). We panel over the outer virtual
+    // index `c` so only a `panel_c`-wide slice of the (nvir², nov) VVOV square
+    // is resident at a time, mirroring the CS gradient.
+    let panel_width = |nvir: usize, nov: usize| -> usize {
+        let row_bytes = nvir.saturating_mul(nov).saturating_mul(8).max(1);
+        (ferric_core::memory::resolve_budget_bytes(None) / row_bytes).max(1).min(nvir.max(1))
+    };
+
+    let nov_a = nocc_a * nvir_a;
+    let nov_b = nocc_b * nvir_b;
+
     // --- α gradient: g^α_{ck} = ∂E_MP2/∂κ^α_{ck} -------------------------
-    for c in 0..nvir_a {
-        let c_mo = nocc_total_a + c;
-        for k in 0..nocc_a {
-            let k_mo = first_occ_a + k;
-            let mut s_same = 0.0;
-            let mut s_ab = 0.0;
+    // The VVOV blocks read below (rows confined to the c-panel [c0,c1)):
+    //   vvov_a[(c·nvir_a+a), (j·nvir_a+b)] = (ca|jb)_α   (same-spin α GEMM)
+    //   vvov_ab[(c·nvir_a+a), (J·nvir_b+B)] = (ca_α | JB_β)  (cross-spin)
+    let panel_c_a = panel_width(nvir_a, nov_a.max(nov_b));
+    let mut c0 = 0;
+    while c0 < nvir_a {
+        let c1 = (c0 + panel_c_a).min(nvir_a);
+        let bvv_panel = bvv_a.slice(ndarray::s![.., c0 * nvir_a..c1 * nvir_a]);
+        // (ca|jb)_α, panel rows local (c-c0)·nvir_a+a
+        let vvov_a = bvv_panel.t().dot(&bov_a); // ((c1-c0)·nvir_a, nov_a)
+        // (ca_α | JB_β), panel rows local (c-c0)·nvir_a+a
+        let vvov_ab = bvv_panel.t().dot(&bov_b); // ((c1-c0)·nvir_a, nov_b)
 
-            // αα Term 1: i=k branch
-            for j in 0..nocc_a {
-                let j_mo = first_occ_a + j;
-                for a in 0..nvir_a {
-                    let a_mo = nocc_total_a + a;
-                    for b in 0..nvir_a {
-                        let b_mo = nocc_total_a + b;
-                        let t = t_aa[(k, j, a, b)];
-                        let e1 = eri_aa(c_mo, a_mo, j_mo, b_mo);
-                        let e2 = eri_aa(c_mo, b_mo, j_mo, a_mo);
-                        s_same += 0.5 * t * (e1 - e2);
-                    }
-                }
-            }
-            // αα Term 2: j=k branch
-            for i in 0..nocc_a {
-                let i_mo = first_occ_a + i;
-                for a in 0..nvir_a {
-                    let a_mo = nocc_total_a + a;
-                    for b in 0..nvir_a {
-                        let b_mo = nocc_total_a + b;
-                        let t = t_aa[(i, k, a, b)];
-                        let e1 = eri_aa(i_mo, a_mo, c_mo, b_mo);
-                        let e2 = eri_aa(i_mo, b_mo, c_mo, a_mo);
-                        s_same += 0.5 * t * (e1 - e2);
-                    }
-                }
-            }
-            // αα Term 3: a=c branch
-            for i in 0..nocc_a {
-                let i_mo = first_occ_a + i;
+        for c in c0..c1 {
+            let cbase = (c - c0) * nvir_a; // local vvov row base for this c
+            for k in 0..nocc_a {
+                let mut s_same = 0.0;
+                let mut s_ab = 0.0;
+
+                // αα Term 1: i=k branch — 0.5·t_aa[k,j,a,b]·[(ca|jb) - (cb|ja)]
+                //   (ca|jb) = vvov_a[cbase+a, j·nvir_a+b]
+                //   (cb|ja) = vvov_a[cbase+b, j·nvir_a+a]
                 for j in 0..nocc_a {
-                    let j_mo = first_occ_a + j;
-                    for b in 0..nvir_a {
-                        let b_mo = nocc_total_a + b;
-                        let t = t_aa[(i, j, c, b)];
-                        let e1 = eri_aa(i_mo, k_mo, j_mo, b_mo);
-                        let e2 = eri_aa(i_mo, b_mo, j_mo, k_mo);
-                        s_same -= 0.5 * t * (e1 - e2);
-                    }
-                }
-            }
-            // αα Term 4: b=c branch
-            for i in 0..nocc_a {
-                let i_mo = first_occ_a + i;
-                for j in 0..nocc_a {
-                    let j_mo = first_occ_a + j;
                     for a in 0..nvir_a {
-                        let a_mo = nocc_total_a + a;
-                        let t = t_aa[(i, j, a, c)];
-                        let e1 = eri_aa(i_mo, a_mo, j_mo, k_mo);
-                        let e2 = eri_aa(i_mo, k_mo, j_mo, a_mo);
-                        s_same -= 0.5 * t * (e1 - e2);
+                        for b in 0..nvir_a {
+                            let t = t_aa[(k, j, a, b)];
+                            let e1 = vvov_a[(cbase + a, j * nvir_a + b)];
+                            let e2 = vvov_a[(cbase + b, j * nvir_a + a)];
+                            s_same += 0.5 * t * (e1 - e2);
+                        }
                     }
                 }
-            }
+                // αα Term 2: j=k branch — 0.5·t_aa[i,k,a,b]·[(ia|cb) - (ib|ca)]
+                //   (ia|cb) = (cb|ia) = vvov_a[cbase+b, i·nvir_a+a]
+                //   (ib|ca) = (ca|ib) = vvov_a[cbase+a, i·nvir_a+b]
+                for i in 0..nocc_a {
+                    for a in 0..nvir_a {
+                        for b in 0..nvir_a {
+                            let t = t_aa[(i, k, a, b)];
+                            let e1 = vvov_a[(cbase + b, i * nvir_a + a)];
+                            let e2 = vvov_a[(cbase + a, i * nvir_a + b)];
+                            s_same += 0.5 * t * (e1 - e2);
+                        }
+                    }
+                }
+                // αα Term 3: a=c branch — -0.5·t_aa[i,j,c,b]·[(ik|jb) - (ib|jk)]
+                //   (ik|jb) = ooov_a[i·nocc_a+k, j·nvir_a+b]
+                //   (ib|jk) = (jk|ib) = ooov_a[j·nocc_a+k, i·nvir_a+b]
+                for i in 0..nocc_a {
+                    for j in 0..nocc_a {
+                        for b in 0..nvir_a {
+                            let t = t_aa[(i, j, c, b)];
+                            let e1 = ooov_a[(i * nocc_a + k, j * nvir_a + b)];
+                            let e2 = ooov_a[(j * nocc_a + k, i * nvir_a + b)];
+                            s_same -= 0.5 * t * (e1 - e2);
+                        }
+                    }
+                }
+                // αα Term 4: b=c branch — -0.5·t_aa[i,j,a,c]·[(ia|jk) - (ik|ja)]
+                //   (ia|jk) = (jk|ia) = ooov_a[j·nocc_a+k, i·nvir_a+a]
+                //   (ik|ja) = ooov_a[i·nocc_a+k, j·nvir_a+a]
+                for i in 0..nocc_a {
+                    for j in 0..nocc_a {
+                        for a in 0..nvir_a {
+                            let t = t_aa[(i, j, a, c)];
+                            let e1 = ooov_a[(j * nocc_a + k, i * nvir_a + a)];
+                            let e2 = ooov_a[(i * nocc_a + k, j * nvir_a + a)];
+                            s_same -= 0.5 * t * (e1 - e2);
+                        }
+                    }
+                }
 
-            // αβ contribution to g^α_{ck}
-            for jj in 0..nocc_b {
-                let j_mo = first_occ_b + jj;
-                for a in 0..nvir_a {
-                    let a_mo = nocc_total_a + a;
-                    for bb in 0..nvir_b {
-                        let b_mo = nocc_total_b + bb;
-                        let t = t_ab[(k, jj, a, bb)];
-                        let e = eri_ab(c_mo, a_mo, j_mo, b_mo);
-                        s_ab += t * e;
-                    }
-                }
-            }
-            for i in 0..nocc_a {
-                let i_mo = first_occ_a + i;
+                // αβ contribution to g^α_{ck}
+                // Part 1: t_ab[k,J,a,B]·(ca_α | JB_β), (ca|JB) = vvov_ab[cbase+a, J·nvir_b+B]
                 for jj in 0..nocc_b {
-                    let j_mo = first_occ_b + jj;
-                    for bb in 0..nvir_b {
-                        let b_mo = nocc_total_b + bb;
-                        let t = t_ab[(i, jj, c, bb)];
-                        let e = eri_ab(i_mo, k_mo, j_mo, b_mo);
-                        s_ab -= t * e;
+                    for a in 0..nvir_a {
+                        for bb in 0..nvir_b {
+                            let t = t_ab[(k, jj, a, bb)];
+                            let e = vvov_ab[(cbase + a, jj * nvir_b + bb)];
+                            s_ab += t * e;
+                        }
                     }
                 }
-            }
+                // Part 2: -t_ab[i,J,c,B]·(ik_α | JB_β), (ik|JB) = ooov_ab[i·nocc_a+k, J·nvir_b+B]
+                for i in 0..nocc_a {
+                    for jj in 0..nocc_b {
+                        for bb in 0..nvir_b {
+                            let t = t_ab[(i, jj, c, bb)];
+                            let e = ooov_ab[(i * nocc_a + k, jj * nvir_b + bb)];
+                            s_ab -= t * e;
+                        }
+                    }
+                }
 
-            same_a[(c, k)] = s_same;
-            ab_a[(c, k)] = 2.0 * s_ab;  // factor 2: both t and (ia|JB) depend on integrals
+                same_a[(c, k)] = s_same;
+                ab_a[(c, k)] = 2.0 * s_ab; // factor 2: both t and (ia|JB) depend on integrals
+            }
         }
+        c0 = c1;
     }
 
     // --- β gradient ------------------------------------------------------
-    for c in 0..nvir_b {
-        let c_mo = nocc_total_b + c;
-        for k in 0..nocc_b {
-            let k_mo = first_occ_b + k;
-            let mut s_same = 0.0;
-            let mut s_ab = 0.0;
+    // The VVOV blocks read below (rows confined to the c-panel [c0,c1)):
+    //   vvov_b[(c·nvir_b+a), (j·nvir_b+b)] = (ca|jb)_β   (same-spin β GEMM)
+    //   ovvv_ab[(i·nvir_a+a), (c·nvir_b+B)] = (ia_α | CB_β)  (cross-spin, c on β side)
+    // ovvv_ab keeps the β-vir index in its columns, so we panel it over `c` by
+    // slicing bvv_b down to the panel columns; its α-ov rows stay full.
+    let panel_c_b = panel_width(nvir_b, nov_b);
+    let mut c0 = 0;
+    while c0 < nvir_b {
+        let c1 = (c0 + panel_c_b).min(nvir_b);
+        let bvv_panel = bvv_b.slice(ndarray::s![.., c0 * nvir_b..c1 * nvir_b]);
+        // (ca|jb)_β, panel rows local (c-c0)·nvir_b+a
+        let vvov_b = bvv_panel.t().dot(&bov_b); // ((c1-c0)·nvir_b, nov_b)
+        // (ia_α | CB_β), C in the c-panel; cols local (c-c0)·nvir_b+B
+        let ovvv_ab = bov_a.t().dot(&bvv_panel); // (nov_a, (c1-c0)·nvir_b)
 
-            for j in 0..nocc_b {
-                let j_mo = first_occ_b + j;
-                for a in 0..nvir_b {
-                    let a_mo = nocc_total_b + a;
-                    for b in 0..nvir_b {
-                        let b_mo = nocc_total_b + b;
-                        let t = t_bb[(k, j, a, b)];
-                        s_same += 0.5 * t * (eri_bb(c_mo, a_mo, j_mo, b_mo)
-                                           - eri_bb(c_mo, b_mo, j_mo, a_mo));
-                    }
-                }
-            }
-            for i in 0..nocc_b {
-                let i_mo = first_occ_b + i;
-                for a in 0..nvir_b {
-                    let a_mo = nocc_total_b + a;
-                    for b in 0..nvir_b {
-                        let b_mo = nocc_total_b + b;
-                        let t = t_bb[(i, k, a, b)];
-                        s_same += 0.5 * t * (eri_bb(i_mo, a_mo, c_mo, b_mo)
-                                           - eri_bb(i_mo, b_mo, c_mo, a_mo));
-                    }
-                }
-            }
-            for i in 0..nocc_b {
-                let i_mo = first_occ_b + i;
+        for c in c0..c1 {
+            let cbase = (c - c0) * nvir_b; // local vvov_b / ovvv_ab base for this c
+            for k in 0..nocc_b {
+                let mut s_same = 0.0;
+                let mut s_ab = 0.0;
+
+                // ββ Term 1: i=k — 0.5·t_bb[k,j,a,b]·[(ca|jb) - (cb|ja)]
                 for j in 0..nocc_b {
-                    let j_mo = first_occ_b + j;
-                    for b in 0..nvir_b {
-                        let b_mo = nocc_total_b + b;
-                        let t = t_bb[(i, j, c, b)];
-                        s_same -= 0.5 * t * (eri_bb(i_mo, k_mo, j_mo, b_mo)
-                                           - eri_bb(i_mo, b_mo, j_mo, k_mo));
-                    }
-                }
-            }
-            for i in 0..nocc_b {
-                let i_mo = first_occ_b + i;
-                for j in 0..nocc_b {
-                    let j_mo = first_occ_b + j;
                     for a in 0..nvir_b {
-                        let a_mo = nocc_total_b + a;
-                        let t = t_bb[(i, j, a, c)];
-                        s_same -= 0.5 * t * (eri_bb(i_mo, a_mo, j_mo, k_mo)
-                                           - eri_bb(i_mo, k_mo, j_mo, a_mo));
+                        for b in 0..nvir_b {
+                            let t = t_bb[(k, j, a, b)];
+                            let e1 = vvov_b[(cbase + a, j * nvir_b + b)];
+                            let e2 = vvov_b[(cbase + b, j * nvir_b + a)];
+                            s_same += 0.5 * t * (e1 - e2);
+                        }
                     }
                 }
-            }
+                // ββ Term 2: j=k — 0.5·t_bb[i,k,a,b]·[(ia|cb) - (ib|ca)]
+                for i in 0..nocc_b {
+                    for a in 0..nvir_b {
+                        for b in 0..nvir_b {
+                            let t = t_bb[(i, k, a, b)];
+                            let e1 = vvov_b[(cbase + b, i * nvir_b + a)];
+                            let e2 = vvov_b[(cbase + a, i * nvir_b + b)];
+                            s_same += 0.5 * t * (e1 - e2);
+                        }
+                    }
+                }
+                // ββ Term 3: a=c — -0.5·t_bb[i,j,c,b]·[(ik|jb) - (ib|jk)]
+                for i in 0..nocc_b {
+                    for j in 0..nocc_b {
+                        for b in 0..nvir_b {
+                            let t = t_bb[(i, j, c, b)];
+                            let e1 = ooov_b[(i * nocc_b + k, j * nvir_b + b)];
+                            let e2 = ooov_b[(j * nocc_b + k, i * nvir_b + b)];
+                            s_same -= 0.5 * t * (e1 - e2);
+                        }
+                    }
+                }
+                // ββ Term 4: b=c — -0.5·t_bb[i,j,a,c]·[(ia|jk) - (ik|ja)]
+                for i in 0..nocc_b {
+                    for j in 0..nocc_b {
+                        for a in 0..nvir_b {
+                            let t = t_bb[(i, j, a, c)];
+                            let e1 = ooov_b[(j * nocc_b + k, i * nvir_b + a)];
+                            let e2 = ooov_b[(i * nocc_b + k, j * nvir_b + a)];
+                            s_same -= 0.5 * t * (e1 - e2);
+                        }
+                    }
+                }
 
-            for i in 0..nocc_a {
-                let i_mo = first_occ_a + i;
-                for a in 0..nvir_a {
-                    let a_mo = nocc_total_a + a;
-                    for bb in 0..nvir_b {
-                        let b_mo = nocc_total_b + bb;
-                        let t = t_ab[(i, k, a, bb)];
-                        let e = eri_ab(i_mo, a_mo, c_mo, b_mo);
-                        s_ab += t * e;
-                    }
-                }
-            }
-            for i in 0..nocc_a {
-                let i_mo = first_occ_a + i;
-                for jj in 0..nocc_b {
-                    let j_mo = first_occ_b + jj;
+                // αβ contribution to g^β_{ck} (c,k on the β side)
+                // Part 1: t_ab[i,k,a,C·B]·(ia_α | CB_β), (ia|CB) = ovvv_ab[i·nvir_a+a, cbase+B]
+                for i in 0..nocc_a {
                     for a in 0..nvir_a {
-                        let a_mo = nocc_total_a + a;
-                        let t = t_ab[(i, jj, a, c)];
-                        let e = eri_ab(i_mo, a_mo, j_mo, k_mo);
-                        s_ab -= t * e;
+                        for bb in 0..nvir_b {
+                            let t = t_ab[(i, k, a, bb)];
+                            let e = ovvv_ab[(i * nvir_a + a, cbase + bb)];
+                            s_ab += t * e;
+                        }
                     }
                 }
-            }
+                // Part 2: -t_ab[i,J,a,c]·(ia_α | JK_β), (ia|JK) = ovoo_ab[i·nvir_a+a, J·nocc_b+k]
+                for i in 0..nocc_a {
+                    for jj in 0..nocc_b {
+                        for a in 0..nvir_a {
+                            let t = t_ab[(i, jj, a, c)];
+                            let e = ovoo_ab[(i * nvir_a + a, jj * nocc_b + k)];
+                            s_ab -= t * e;
+                        }
+                    }
+                }
 
-            same_b[(c, k)] = s_same;
-            ab_b[(c, k)] = 2.0 * s_ab;  // factor 2: both t and (ia|JB) depend on integrals
+                same_b[(c, k)] = s_same;
+                ab_b[(c, k)] = 2.0 * s_ab; // factor 2: both t and (ia|JB) depend on integrals
+            }
         }
+        c0 = c1;
     }
 
     UMp2GradientBlocks { same_a, same_b, ab_a, ab_b }
@@ -1089,8 +1166,10 @@ mod tests {
     /// UHF orbital energies held fixed, matching the "integral-response-only"
     /// part of the gradient that the analytic code computes.
     ///
-    /// NOTE: DIAGNOSTIC test — reports per-block agreement and asserts c > 0.95
-    /// and max|Δ|/|g_fd| < 0.05.
+    /// Gate: per-block analytic-vs-central-difference agreement max|Δ| ≤ 1e-6
+    /// (h = 1e-4 central difference; observed ~1e-10 across all four blocks, so
+    /// the bound also catches any reindexing sign/stride regression). Direction
+    /// (c ≈ +1) is reported alongside for diagnostics.
     #[test]
     fn u_mp2_orbital_gradient_vs_fd_on_oh() {
         let ctx = ParallelContext::default();
@@ -1189,7 +1268,11 @@ mod tests {
             let nrm2_fd: f64 = g_fd.iter().map(|v| v*v).sum();
             let c = if nrm2_fd > 0.0 { dot / nrm2_fd } else { 0.0 };
             let rel = if nfd > 0.0 { max_diff / nfd } else { 0.0 };
-            let ok = c > 0.95 && rel < 0.05;
+            // Absolute gate: analytic and FD share the same RI B-tensor path, so
+            // the only residual is the O(h²) central-difference truncation
+            // (~1e-10 here). 1e-6 is a strict correctness bound for the GEMM
+            // reindexings, far tighter than the direction check c>0.95.
+            let ok = max_diff < 1e-6 && c > 0.95;
             println!("[{}] |g_an|max={:.4e} |g_fd|max={:.4e}  max|Δ|={:.4e}  rms={:.4e}  c={:+.4}  rel={:.3}  {}",
                      label, n, nfd, max_diff, rms, c, rel, if ok { "✓" } else { "✗" });
             ok

@@ -56,8 +56,8 @@ fn main() {
             n_points: 16,
             u0: 0.5,
         },
-        davidson_conv_thresh: 1e-7,
-        davidson_max_vecs: 0,
+        eigensolver_conv_thresh: 1e-7,
+        eigensolver_max_vecs: 0,
         trunc_thresh: 0.0,
         run_diagnostics: false,
         frozen_core: 0,
@@ -65,6 +65,10 @@ fn main() {
         chi0_sparsity: Chi0Sparsity::Dense,
         eigensolver: Eigensolver::Davidson,
         sternheimer: SternheimerConfig::default(),
+        memory_budget_bytes: None,
+        // run_gw forces this on internally (gw::with_inv_dielectric); standalone
+        // RPA uses here are energy-only, so stay lean per M9.
+        need_inv_dielectric_freq: false,
     };
     let gcfg = GwConfig {
         method: GwMethod::G0W0,

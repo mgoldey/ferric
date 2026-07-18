@@ -14,6 +14,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_integrals::threeindex;
 use ferric_scf::ScfResult;
+use crate::rimp2::active_occ;
 use crate::spinorbital::{asym_oovv, asym_ovvo, asym_same, build_b, transpose_b};
 use ferric_tensors::{einsum, Axis, Tensor};
 use ndarray::{ArrayD, IxDyn};
@@ -47,7 +48,7 @@ pub fn mp3_energy(
     let nbas = obs.nbasis();
     let nelec = mol.nelec() as usize;
     let nocc_total = nelec / 2;
-    let no = nocc_total - frozen_core; // spatial active occupied
+    let no = active_occ(nocc_total, frozen_core)?; // spatial active occupied
     let first_occ = frozen_core;
     let nv = nbas - nocc_total; // spatial virtual
 
@@ -55,6 +56,18 @@ pub fn mp3_energy(
     let c = rhf.mos_r();
     let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + no]).to_owned();
     let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
+
+    // Fail-fast size guard: peak is the spin-orbital VVVV block v_vvvv (:96) —
+    // a (2nv)⁴ f64 tensor built from the einsum! g_abcd intermediate (:98) held
+    // co-resident with the asym_same result → ~2× (2nv)⁴. No config budget on
+    // this reference path. Keep next to that allocation.
+    let nv2 = 2 * nv;
+    let peak_vvvv = nv2.saturating_pow(4).saturating_mul(2).saturating_mul(8); // ~2× (2nv)⁴ f64
+    ferric_core::memory::check_alloc(
+        &format!("MP3 (no={no}, nv={nv} spatial; VVVV block over {nv2} spin-orbital virtuals)"),
+        peak_vvvv,
+        ferric_core::memory::resolve_budget_bytes(None),
+    )?;
 
     // V^{-1/2} metric and AO 3-center integrals.
     let v2c = threeindex::coulomb_metric_2c(op, dfbs)?;
@@ -112,7 +125,7 @@ pub fn mp3_energy(
     };
 
     // --- Spin-orbital energies and amplitudes ---
-    let (no2, nv2) = (2 * no, 2 * nv);
+    let no2 = 2 * no; // nv2 computed above for the size guard
     let mut eo = vec![0.0f64; no2];
     let mut ev = vec![0.0f64; nv2];
     for i in 0..no {
@@ -216,6 +229,45 @@ mod tests {
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
         mp3_energy(&mol, &obs, &dfbs, op, &rhf, 0).unwrap()
+    }
+
+    // FERRIC_MEM_BUDGET_GB is process-global; serialize env-mutating tests.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn mp3_fails_fast_under_tiny_env_budget() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // cc-pVDZ (nv2=18 → ~1.7 MB VVVV peak) so the ~1 KB budget actually
+        // trips (H2/STO-3G's VVVV is only 256 bytes — under even a 1 KB budget).
+        let mol = Molecule::parse_xyz("2\n\nH 0.0 0.0 0.0\nH 0.0 0.0 0.74\n", 0, 1).unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
+        std::env::set_var("FERRIC_MEM_BUDGET_GB", "0.000001");
+        let res = mp3_energy(&mol, &obs, &dfbs, op, &rhf, 0);
+        std::env::remove_var("FERRIC_MEM_BUDGET_GB");
+        let err = res.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("MP3") && msg.contains("budget is"), "unexpected: {msg}");
+    }
+
+    #[test]
+    fn mp3_frozen_core_exceeding_nocc_errors_not_panics() {
+        // H2/STO-3G has nocc_total = 1; frozen_core = 2 must Err (not underflow
+        // `nocc_total - frozen_core` as a usize and panic).
+        let mol = Molecule::parse_xyz("2\n\nH 0.0 0.0 0.0\nH 0.0 0.0 0.74\n", 0, 1).unwrap();
+        let obs_bs = basis::bundled("sto-3g").unwrap();
+        let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let op = Operator::coulomb();
+        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
+        let ctx = ParallelContext::default();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
+        let res = mp3_energy(&mol, &obs, &dfbs, op, &rhf, 2);
+        assert!(res.is_err(), "expected Err for frozen_core > nocc_total, got {res:?}");
     }
 
     // Tolerances reflect the RI density-fitting error vs the exact-integral

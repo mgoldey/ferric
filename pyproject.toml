@@ -27,3 +27,8 @@ features = ["pyo3/extension-module"]
 # Prevent uv from rebuilding the Rust extension on every `uv run`.
 # The maturin editable install in .venv is the source of truth; cargo is invoked explicitly.
 no-build-isolation-package = ["ferric"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

@@ -1,0 +1,36 @@
+Does ΔRPA beat G0W0 because of error cancellation? — FINAL (vs clean external refs)
+
+ferric aug-cc-pVTZ ΔRPA & G0W0@HF vs experiment, AND vs a published external
+G0W0@PBE (TURBOMOLE 7.0, def2-TZVP, lit_ref/G0W0atPBE_HOMO_Tv7.0_def2-TZVP_cbas.json).
+Common scoreable subset n=72 (excl C4/Rb2/H12Si5/CCuN).
+
+Errors vs EXPERIMENT:
+  method          raw MAE   signed bias   de-biased RMS (scatter)
+  ΔRPA (ferric)    0.381      +0.120           0.598
+  G0W0@HF (ferric) 0.490      +0.348           0.592
+  G0W0@PBE (lit)   0.748      -0.683           0.615
+
+VERDICT: all three have the SAME ~0.60 eV scatter once bias is removed. They are
+the same physics; the only difference is a rigid starting-point offset:
+  G0W0@HF over-IPs (+0.35, HF gap too wide);
+  G0W0@PBE under-IPs (-0.68, semilocal gap too small);
+  ΔRPA is nearly unbiased (+0.12) because a total-energy DIFFERENCE cancels the
+  correlation error common to cation and neutral.
+So ΔRPA "wins" purely by sitting between the two G0W0 biases — a bias-cancellation
+effect, NOT superior physics. Confirmed against a CLEAN external @PBE (r=0.72),
+so it is not an artifact of ferric's earlier (Padé-node-broken) @PBE.
+
+Earlier contaminated result (RETRACTED): "ΔRPA beats ferric @PBE, r=0.12" used
+ferric's own @PBE which was corrupted by the Padé-node bug (fixed d7c3506).
+
+--- Is ΔRPA "just ΔSCF"? (n=90) — NO, it does TWO things ---
+  method    MAE     bias    de-biased RMS
+  ΔSCF     1.088   -0.991     0.789
+  ΔRPA     0.379   +0.141     0.572
+  G0W0@HF  0.493   +0.378     0.571
+ΔRPA = ΔSCF + RPA(cation-neutral correlation diff). vs plain ΔSCF it (1) removes
+the -0.99 bias (HF has no correlation) AND (2) cuts de-biased scatter 0.79->0.57
+(=G0W0 level). So NOT just a bias fix on ΔSCF — the correlation does real
+per-molecule work. Known ACFDT relative-energy strength applied to N/N-1.
+But de-biased scatter = G0W0's (0.57) and r(ΔRPA,G0W0@HF)=0.97 → NOT better
+physics than GW; it just avoids both GW starting-point biases.

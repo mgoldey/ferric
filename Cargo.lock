@@ -425,6 +425,7 @@ version = "0.1.0"
 dependencies = [
  "ferric-core",
  "ferric-export",
+ "ferric-gw",
  "ferric-integrals",
  "ferric-mp2",
  "ferric-rpa",
@@ -440,6 +441,7 @@ name = "ferric-core"
 version = "0.1.0"
 dependencies = [
  "mpi",
+ "ndarray",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -467,6 +469,7 @@ dependencies = [
  "ferric-scf",
  "ndarray",
  "ndarray-npy",
+ "rayon",
  "thiserror 2.0.18",
 ]
 
@@ -529,6 +532,7 @@ dependencies = [
  "ferric-cc",
  "ferric-core",
  "ferric-dft",
+ "ferric-gw",
  "ferric-integrals",
  "ferric-mp2",
  "ferric-rpa",
@@ -961,6 +965,7 @@ dependencies = [
  "portable-atomic",
  "portable-atomic-util",
  "rawpointer",
+ "rayon",
 ]
 
 [[package]]

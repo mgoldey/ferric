@@ -229,7 +229,7 @@ pub fn run_pdep_rpa_osv(
     use crate::lanczos;
     use ferric_mp2::rimp2::{compute_rpa_intermediates, RiMp2Config};
 
-    let mp2_cfg = RiMp2Config { frozen_core: config.frozen_core };
+    let mp2_cfg = RiMp2Config { frozen_core: config.frozen_core, memory_budget_bytes: config.memory_budget_bytes };
     let inter = compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
 
     let dnv = build_dnv_transform(&inter, rhf.eps_r(), t_osv)?;
@@ -244,7 +244,7 @@ pub fn run_pdep_rpa_osv(
     // Davidson/Lanczos eigensolve with identity seed (matches the closed-
     // shell test path for trunc_thresh=0).
     let seed = Array2::<f64>::eye(naux);
-    let max_iter = if config.davidson_max_vecs == 0 { 3 * naux } else { config.davidson_max_vecs };
+    let max_iter = if config.eigensolver_max_vecs == 0 { 3 * naux } else { config.eigensolver_max_vecs };
 
     let b_ref = b_ov.clone();
     let eo = eps_occ.clone();
@@ -253,8 +253,15 @@ pub fn run_pdep_rpa_osv(
         crate::sternheimer::dielectric_apply(v, &b_ref, &eo, &ev, 0.0)
     };
     let lz = lanczos::run_lanczos_seeded(
-        seed, matvec, naux, max_iter, config.davidson_conv_thresh,
+        seed, matvec, naux, max_iter, config.eigensolver_conv_thresh,
     )?;
+    if !lz.converged {
+        eprintln!(
+            "warning: Lanczos eigensolve did NOT converge (max Ritz residual {:.3e} \
+             > {:.3e}); OSV/PNO eigenpotentials are best-effort",
+            lz.max_resid, config.eigensolver_conv_thresh
+        );
+    }
     let eigvals = &lz.eigenvalues;
     let eigvecs = &lz.eigenvectors;
 
@@ -295,7 +302,7 @@ mod tests {
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
         let inter = compute_rpa_intermediates(
-            &mol, &obs, &dfbs, op, &rhf, &RiMp2Config { frozen_core: 0 },
+            &mol, &obs, &dfbs, op, &rhf, &RiMp2Config { frozen_core: 0, memory_budget_bytes: None },
         ).unwrap();
         (inter, rhf.eps_r().to_vec())
     }
@@ -335,7 +342,7 @@ mod tests {
             },
             frozen_core: 0,
             trunc_thresh: 0.0,
-            davidson_conv_thresh: 1e-9,
+            eigensolver_conv_thresh: 1e-9,
             ..Default::default()
         };
 
@@ -375,7 +382,7 @@ mod tests {
             },
             frozen_core: 0,
             trunc_thresh: 0.0,
-            davidson_conv_thresh: 1e-9,
+            eigensolver_conv_thresh: 1e-9,
             ..Default::default()
         };
 

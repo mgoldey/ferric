@@ -9,11 +9,11 @@ use thiserror::Error;
 use ferric_core::basis::BasisSet;
 use ferric_core::mol::Molecule;
 
-use crate::ao_grid::{eval_basis_and_grad_on_points, GtoEvalError};
+use crate::ao_grid::{eval_basis_and_grad_on_points, nbasis, GtoEvalError};
 use crate::density_on_grid::{eval_density_closed, eval_density_uks, DensityGrid};
 use crate::grid::{build_atomic_grid, AtomicGridConfig, GridPoint};
 use crate::libxc::{xc_def_from_name, xc_def_from_name_nspin, LibxcError, XcDef};
-use crate::vv10::add_vv10;
+use crate::vv10::add_vv10_scratch;
 use crate::vxc::{semilocal_vxc_closed_scratch, semilocal_vxc_polarized_scratch, VxcScratch};
 use crate::xc_trait::{KMix, UksXcContribution, XcContribution};
 
@@ -23,10 +23,51 @@ pub enum KsXcError {
     Eval(GtoEvalError),
     #[error("libxc resolver failed: {0}")]
     Libxc(LibxcError),
+    #[error(
+        "DFT grid AO cache needs {needed_gb:.2} GB (nbf={nbf}, npts={npts}{vv10}) \
+         but the budget is {budget_gb:.2} GB — raise [memory] budget_gb / \
+         FERRIC_MEM_BUDGET_GB, use a smaller grid, or a smaller basis"
+    )]
+    OverBudget {
+        needed_gb: f64,
+        budget_gb: f64,
+        nbf: usize,
+        npts: usize,
+        vv10: &'static str,
+    },
 }
 
 impl From<GtoEvalError> for KsXcError { fn from(e: GtoEvalError) -> Self { Self::Eval(e) } }
 impl From<LibxcError>  for KsXcError { fn from(e: LibxcError)  -> Self { Self::Libxc(e) } }
+
+/// Fail fast if the resident χ + ∇χ cache would exceed the memory budget.
+///
+/// The cache is `chi (nbf·npts·8)` + `dchi (3·nbf·npts·8)` = `4·nbf·npts·8`;
+/// with VV10 a second (smaller) NLC grid's cache is resident too, so we bound
+/// by `2×` when `has_vv10`. This catches the 50-atom/aTZ case (~30 GB, doubling
+/// to ~60 GB with VV10) before the allocation aborts the process.
+///
+/// The budget comes from the unified M1 resolver
+/// [`ferric_core::memory::resolve_budget_bytes`] (no explicit config field on
+/// this path yet, so `None` → `FERRIC_MEM_BUDGET_GB` > legacy vars > 0.8×RAM).
+fn check_grid_budget(nbf: usize, npts: usize, has_vv10: bool) -> Result<(), KsXcError> {
+    let budget = ferric_core::memory::resolve_budget_bytes(None);
+    let base = 4usize
+        .saturating_mul(nbf)
+        .saturating_mul(npts)
+        .saturating_mul(8);
+    let needed = if has_vv10 { base.saturating_mul(2) } else { base };
+    if needed > budget {
+        return Err(KsXcError::OverBudget {
+            needed_gb: needed as f64 / 1e9,
+            budget_gb: budget as f64 / 1e9,
+            nbf,
+            npts,
+            vv10: if has_vv10 { ", +VV10 NLC grid" } else { "" },
+        });
+    }
+    Ok(())
+}
 
 /// Caches everything needed to compute V_xc and V_nl per SCF iteration:
 /// a Becke-Lebedev grid plus precomputed χ, ∇χ on its points. If the XC
@@ -42,6 +83,11 @@ pub struct KsXc {
     /// Pre-scaled χ scratch reused across SCF iterations (`add_xc` takes
     /// `&self`, hence the Mutex; it is uncontended — one lock per Fock build).
     scratch: Mutex<VxcScratch>,
+    /// VV10's own scratch: it is sized for the NLC grid, and sharing the
+    /// semilocal scratch would flip the buffer shape twice per iteration
+    /// (main ↔ NLC), turning the amortization into two big reallocs per
+    /// Fock build. `(nbf, npts_nlc)` — much smaller than the main scratch.
+    nlc_scratch: Mutex<VxcScratch>,
 }
 
 impl KsXc {
@@ -55,6 +101,8 @@ impl KsXc {
         let xc = xc_def_from_name(xc_name)?;
 
         let grid = build_atomic_grid(mol, main);
+        let nbf = nbasis(mol, bs)?;
+        check_grid_budget(nbf, grid.len(), xc.vv10.is_some())?;
         let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
         let (chi, dchi) = eval_basis_and_grad_on_points(mol, bs, &pts)?;
 
@@ -70,6 +118,7 @@ impl KsXc {
         Ok(Self {
             xc, grid, chi, dchi, nlc_grid, nlc_chi, nlc_dchi,
             scratch: Mutex::new(VxcScratch::new()),
+            nlc_scratch: Mutex::new(VxcScratch::new()),
         })
     }
 }
@@ -92,7 +141,9 @@ impl XcContribution for KsXc {
             self.xc.vv10.as_ref(),
         ) {
             let nlc_dens = eval_density_closed(d, c, dc);
-            add_vv10(g, c, dc, &nlc_dens, params, f)
+            let mut nlc_scratch =
+                self.nlc_scratch.lock().expect("vv10 scratch mutex poisoned");
+            add_vv10_scratch(g, c, dc, &nlc_dens, params, f, &mut nlc_scratch)
         } else {
             0.0
         };
@@ -130,6 +181,8 @@ pub struct KsXcUks {
     pub nlc_dchi: Option<Array3<f64>>,
     /// See `KsXc::scratch` — shared by both spin builds.
     scratch: Mutex<VxcScratch>,
+    /// See `KsXc::nlc_scratch` — VV10-only, sized for the NLC grid.
+    nlc_scratch: Mutex<VxcScratch>,
 }
 
 impl KsXcUks {
@@ -143,6 +196,8 @@ impl KsXcUks {
         let xc = xc_def_from_name_nspin(xc_name, 2)?;
 
         let grid = build_atomic_grid(mol, main);
+        let nbf = nbasis(mol, bs)?;
+        check_grid_budget(nbf, grid.len(), xc.vv10.is_some())?;
         let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
         let (chi, dchi) = eval_basis_and_grad_on_points(mol, bs, &pts)?;
 
@@ -158,6 +213,7 @@ impl KsXcUks {
         Ok(Self {
             xc, grid, chi, dchi, nlc_grid, nlc_chi, nlc_dchi,
             scratch: Mutex::new(VxcScratch::new()),
+            nlc_scratch: Mutex::new(VxcScratch::new()),
         })
     }
 }
@@ -192,8 +248,10 @@ impl UksXcContribution for KsXcUks {
             let d_total = d_a + d_b;
             let dens_total: DensityGrid = eval_density_closed(&d_total, c, dc);
             // Apply VV10 to a single Fock buffer, then add to both spins.
+            let mut nlc_scratch =
+                self.nlc_scratch.lock().expect("vv10 scratch mutex poisoned");
             let mut v_nl = Array2::<f64>::zeros(f_a.dim());
-            let e = add_vv10(g, c, dc, &dens_total, params, &mut v_nl);
+            let e = add_vv10_scratch(g, c, dc, &dens_total, params, &mut v_nl, &mut nlc_scratch);
             *f_a += &v_nl;
             *f_b += &v_nl;
             e

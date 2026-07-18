@@ -1,0 +1,33 @@
+# BSE-TDA[G0W0@HF] / cc-pVDZ on water. Wiring-correctness smoke test: the
+# printed lowest singlet excitation should land in the [5,12] eV sane window
+# asserted by crates/ferric-gw/tests/h2o_bse_tda.rs's bse_tda_h2o_lowest_singlet
+# test (that test also documents a literature cluster of ~8.1-8.4 eV and an
+# independent PySCF-integral BSE cross-check of 8.46 eV on the same kernel).
+# Measured via this exact TOML (2026-07-18): 8.4572 eV, matching the PySCF
+# cross-check closely. NOTE: the referenced test's own inline "ferric 7.24 eV"
+# comment is from 2026-07-10 and appears stale relative to unrelated GW
+# convergence/honesty fixes landed later in the same week -- not re-verified
+# or touched here (ferric-gw internals are out of scope for this CLI-wiring
+# task); if you're chasing that gap, start there, not in this TOML. Also
+# note the CLI's "bse-tda" arm uses Eigensolver::default() (Lanczos) while
+# the reference test explicitly pins Davidson -- documented in this repo as
+# numerically equivalent (~17% faster), but flagging the difference here in
+# case it ever needs cross-checking.
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "cc-pvdz"
+
+[method]
+kind = "bse-tda"
+
+[rpa]
+auxbasis = "cc-pvdz-ri"
+n_quad = 16
+quadrature = "gauss-legendre"
+trunc_thresh = 0.0
+eigensolver_conv_thresh = 1e-7
+
+[gw]
+frozen_core = 0

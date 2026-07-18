@@ -1,0 +1,39 @@
+[build-system]
+requires = ["ChimeraX-BundleBuilder>=1.1"]
+build-backend = "chimerax.bundle_builder.cx_pep517"
+
+[project]
+name = "ChimeraX-ActiveSite"
+version = "0.1.0"
+license = { text = "Unspecified" }
+authors = [{ name = "Matt Goldey" }]
+description = "Ligand-in-pocket electrostatic binding energy via ferric"
+dynamic = ["classifiers", "requires-python"]
+
+dependencies = ["ChimeraX-Core >= 1.0"]
+
+[chimerax]
+min-session-ver = 1
+max-session-ver = 1
+categories = ["General"]
+classifiers = ["Development Status :: 3 - Alpha"]
+
+[chimerax.command.activesite_charges]
+category = "General"
+synopsis = "Derive pocket point charges from a PDB via PDB2PQR"
+
+[chimerax.command.activesite_embed]
+category = "General"
+synopsis = "Embed a ligand against a pocket's point-charge field"
+
+[chimerax.command.activesite_energy]
+category = "General"
+synopsis = "Compute an RHF/DFT energy for an embedded ligand"
+
+[chimerax.command.activesite_properties]
+category = "General"
+synopsis = "Compute Hirshfeld/Löwdin charges for an energy result"
+
+[chimerax.command.activesite_bindingenergy]
+category = "General"
+synopsis = "Compute field-vs-vacuum binding energy for a ligand in a pocket"

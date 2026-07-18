@@ -36,7 +36,7 @@ fn rpa_energy(mol: &Molecule, trunc_thresh: f64) -> (f64, usize) {
         },
         frozen_core: 0,
         trunc_thresh,
-        davidson_conv_thresh: 1e-10,
+        eigensolver_conv_thresh: 1e-10,
         ..Default::default()
     };
 

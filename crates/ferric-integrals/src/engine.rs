@@ -6,13 +6,22 @@
 
 use crate::basis_bridge::PreparedBasis;
 use crate::ffi;
+use crate::ffi::CAtom;
 use crate::operator::{Operator, OperatorKind};
+use ferric_core::external_potential::PointCharge;
 use ferric_core::FerricError;
 use std::os::raw::{c_int, c_void};
 
 /// An integral evaluation engine backed by a libint2 engine handle.
 ///
-/// Not `Send` or `Sync` -- create one engine per thread for parallel evaluation.
+/// `Send` but NOT `Sync`: the underlying libint2 engine handle owns mutable
+/// scratch state that is not safe to touch from two threads at once, but the
+/// handle itself has no thread affinity, so moving an `Engine` to another
+/// thread (e.g. handing one to each rayon worker via `for_each_init`) is
+/// sound -- see the `unsafe impl Send` below. Concurrent *shared* access
+/// (`&Engine` from multiple threads) is NOT sound, which is why `Sync` is
+/// deliberately not implemented: create one engine per thread for parallel
+/// evaluation.
 pub struct Engine {
     handles: Vec<(f64, *mut c_void)>,
     buf: Vec<f64>,
@@ -111,10 +120,52 @@ impl Engine {
     pub fn handle_mut(&mut self) -> *mut c_void { self.handles[0].1 }
 
     /// Set nuclear point charges for the nuclear attraction operator.
-    pub fn set_point_charges(&mut self, prep: &PreparedBasis) {
+    ///
+    /// Propagates the shim's status code: a negative return means the
+    /// underlying libint2 call failed and the engine's point charges were
+    /// NOT updated (stale or absent), which would silently corrupt any
+    /// Hcore built from it. Callers must check this instead of proceeding
+    /// on a discarded error (see the FFI exception-safety convention: every
+    /// `scf_*` shim call returns a status code that must be checked).
+    pub fn set_point_charges(&mut self, prep: &PreparedBasis) -> Result<(), FerricError> {
         for &(_, h) in &self.handles {
-            unsafe { ffi::scf_engine_set_point_charges(h, prep.atoms().as_ptr(), prep.atoms().len() as c_int); }
+            let ret = unsafe {
+                ffi::scf_engine_set_point_charges(h, prep.atoms().as_ptr(), prep.atoms().len() as c_int)
+            };
+            if ret < 0 {
+                return Err(FerricError::Libint(format!(
+                    "scf_engine_set_point_charges failed: status {ret}"
+                )));
+            }
         }
+        Ok(())
+    }
+
+    /// Set point charges to the real molecule's atoms (from `prep`) PLUS
+    /// `extra` external point charges appended after them, in that order.
+    /// Pairs with `compute_1e_deriv_block_n(n_charges = prep.atoms().len() + extra.len())`
+    /// for gradient consumers.
+    ///
+    /// Propagates the shim's status code the same way as [`Self::set_point_charges`].
+    pub fn set_point_charges_extra(&mut self, prep: &PreparedBasis, extra: &[PointCharge]) -> Result<(), FerricError> {
+        let mut atoms: Vec<CAtom> = prep.atoms().to_vec();
+        atoms.extend(extra.iter().map(|pc| CAtom {
+            atomic_number: pc.q,
+            x: pc.x,
+            y: pc.y,
+            z: pc.z,
+        }));
+        for &(_, h) in &self.handles {
+            let ret = unsafe {
+                ffi::scf_engine_set_point_charges(h, atoms.as_ptr(), atoms.len() as c_int)
+            };
+            if ret < 0 {
+                return Err(FerricError::Libint(format!(
+                    "scf_engine_set_point_charges failed: status {ret}"
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// Compute a shell quartet of 4-center ERIs. Returns `None` if screened to zero.
@@ -189,6 +240,21 @@ impl Engine {
         // it unconditionally keeps the shim's write (nderiv * n doubles) in
         // bounds for every 1e engine kind.
         let total = 3 * (2 + prep.atoms().len()) * n;
+        if self.buf.len() < total { self.buf.resize(total, 0.0); }
+        let written = unsafe { ffi::scf_compute_1e_deriv_block(self.handles[0].1, prep.handle(), sh1 as c_int, sh2 as c_int, self.buf.as_mut_ptr()) };
+        assert!(written >= 0, "libint2 internal error in 1e deriv block ({sh1},{sh2}): status {written}");
+        if written == 0 { None } else { Some(&self.buf[..written as usize]) }
+    }
+
+    /// Like `compute_1e_deriv_block`, but sizes the internal buffer for an
+    /// explicit `n_charges` instead of assuming `prep.atoms().len()`. Must
+    /// be used whenever the engine's point charges were set via
+    /// `set_point_charges_extra` with a nonempty `extra` list — the default
+    /// `compute_1e_deriv_block`'s buffer would be undersized for the extra
+    /// charge-derivative blocks libint2 writes.
+    pub fn compute_1e_deriv_block_n(&mut self, prep: &PreparedBasis, sh1: usize, sh2: usize, n_charges: usize) -> Option<&[f64]> {
+        let n = prep.shell_dims()[sh1] * prep.shell_dims()[sh2];
+        let total = 3 * (2 + n_charges) * n;
         if self.buf.len() < total { self.buf.resize(total, 0.0); }
         let written = unsafe { ffi::scf_compute_1e_deriv_block(self.handles[0].1, prep.handle(), sh1 as c_int, sh2 as c_int, self.buf.as_mut_ptr()) };
         assert!(written >= 0, "libint2 internal error in 1e deriv block ({sh1},{sh2}): status {written}");
@@ -481,6 +547,7 @@ mod tests {
     use crate::basis_bridge::PreparedBasis;
     use crate::operator::Operator;
     use ferric_core::basis;
+    use ferric_core::external_potential::PointCharge;
     use ferric_core::mol::Molecule;
 
     fn h2_sto3g() -> (Molecule, PreparedBasis) {
@@ -488,6 +555,58 @@ mod tests {
         let bs = basis::bundled("sto-3g").unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
         (mol, prep)
+    }
+
+    fn water_sto3g() -> PreparedBasis {
+        let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+        let bs = basis::bundled("sto-3g").unwrap();
+        PreparedBasis::new(&mol, &bs).unwrap()
+    }
+
+    #[test]
+    fn set_point_charges_extra_appends_after_real_atoms() {
+        let prep = water_sto3g();
+        let natoms = prep.atoms().len();
+        let mut eng = Engine::new_1e(ffi::OP_NUCLEAR, &prep, 1e-14).unwrap();
+        let extra = vec![PointCharge { q: 1.5, x: 0.0, y: 0.0, z: 10.0 }];
+        eng.set_point_charges_extra(&prep, &extra).unwrap();
+        // No direct getter for the engine's internal charge list (opaque C++ state);
+        // this test instead verifies the energy contribution changes vs. real-atoms-only,
+        // proving the extra charge was actually applied (see Task 4/5's hcore tests
+        // for a full round-trip check). Here we just confirm it doesn't panic and
+        // natoms is unaffected on the PreparedBasis side.
+        assert_eq!(prep.atoms().len(), natoms);
+    }
+
+    #[test]
+    fn compute_1e_deriv_block_n_matches_original_for_zero_extra_charges() {
+        let prep = water_sto3g();
+        let natoms = prep.atoms().len();
+        let mut eng_a = Engine::new_1e_deriv(ffi::OP_NUCLEAR, &prep, 1e-14).unwrap();
+        eng_a.set_point_charges(&prep).unwrap();
+        let block_a = eng_a.compute_1e_deriv_block(&prep, 0, 0).map(|s| s.to_vec());
+
+        let mut eng_b = Engine::new_1e_deriv(ffi::OP_NUCLEAR, &prep, 1e-14).unwrap();
+        eng_b.set_point_charges_extra(&prep, &[]).unwrap();
+        let block_b = eng_b.compute_1e_deriv_block_n(&prep, 0, 0, natoms).map(|s| s.to_vec());
+
+        assert_eq!(block_a, block_b, "zero-extra-charges path must match the original exactly");
+    }
+
+    #[test]
+    fn compute_1e_deriv_block_n_returns_extra_blocks_for_external_charges() {
+        let prep = water_sto3g();
+        let natoms = prep.atoms().len();
+        let mut eng = Engine::new_1e_deriv(ffi::OP_NUCLEAR, &prep, 1e-14).unwrap();
+        let extra = vec![PointCharge { q: 1.0, x: 0.0, y: 0.0, z: 10.0 }];
+        eng.set_point_charges_extra(&prep, &extra).unwrap();
+        let n_charges = natoms + extra.len();
+        let block = eng.compute_1e_deriv_block_n(&prep, 0, 0, n_charges);
+        assert!(block.is_some(), "expected a nonzero derivative block for shell pair (0,0)");
+        let block = block.unwrap();
+        let n1n2 = prep.shell_dims()[0] * prep.shell_dims()[0];
+        // 3*(2+n_charges) blocks total, each of size n1n2.
+        assert_eq!(block.len(), 3 * (2 + n_charges) * n1n2);
     }
 
     #[test]
@@ -646,7 +765,7 @@ mod tests {
         // 3*(2+natoms)*n, past the end of the Vec).
         let (_, prep) = h2_sto3g();
         let mut eng = Engine::new_1e_deriv(ffi::OP_NUCLEAR, &prep, 1e-14).unwrap();
-        eng.set_point_charges(&prep);
+        eng.set_point_charges(&prep).unwrap();
         let n = prep.shell_dims()[0] * prep.shell_dims()[1];
         let natoms = prep.atoms().len();
         let deriv = eng

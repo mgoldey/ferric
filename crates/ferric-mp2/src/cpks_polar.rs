@@ -23,6 +23,42 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::oneelectron;
 use ferric_integrals::operator::Operator;
 use ferric_scf::result::{ScfResult, Spin};
+
+/// `FERRIC_CPKS_TRACE` descriptor: CPKS residual trace (env-only debug toggle).
+static CPKS_TRACE: ferric_core::config::ConfigVar<bool> = ferric_core::config::ConfigVar {
+    env_name: "FERRIC_CPKS_TRACE",
+    default: false,
+    parse: ferric_core::config::parse_toggle,
+    validate: ferric_core::config::accept_any,
+};
+fn cpks_trace() -> bool {
+    CPKS_TRACE.toggle()
+}
+
+/// Resolve one of the CPKS term-scaling tuning knobs (`CPKS_*`, all default
+/// `1.0` = neutral). These are dev-only probes for isolating individual response
+/// terms, so any *finite* value is legal — including `0.0` (disable a term) or a
+/// negative weight — hence `accept_any`, not `positive_f64`'s `> 0` rule. A
+/// malformed value warns and falls back to the default rather than aborting an
+/// experimental run. Centralizes the previously copy-pasted
+/// `env::var(..).and_then(parse).unwrap_or(default)` idiom (notably `CPKS_WP`,
+/// read at four sites) onto the shared descriptor for one parse path.
+fn cpks_weight(env_name: &'static str, default: f64) -> f64 {
+    let var = ferric_core::config::ConfigVar::<f64> {
+        env_name,
+        default,
+        parse: |s| s.parse::<f64>().map_err(|e| e.to_string()),
+        validate: |v| {
+            v.is_finite()
+                .then_some(())
+                .ok_or_else(|| "must be finite".to_string())
+        },
+    };
+    var.get().map(|r| r.value).unwrap_or_else(|e| {
+        eprintln!("[config] {env_name}: {e}; using default {default}");
+        default
+    })
+}
 use ferric_scf::screening::SchwarzBounds;
 use ndarray::Array2;
 
@@ -127,7 +163,7 @@ pub(crate) fn solve_cphf_cg_scaled(
 
     let max_iter = 200;
     let tol = 1e-10;
-    let trace = std::env::var("FERRIC_CPKS_TRACE").ok().as_deref() == Some("1");
+    let trace = cpks_trace();
     let mut resid_max = r.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
     let mut converged = false;
     let mut it_done = 0;
@@ -172,19 +208,19 @@ pub(crate) fn dipole_ov_mo(
     obs: &PreparedBasis,
     c: &Array2<f64>,
     orb: &OrbitalSpace,
-) -> [Array2<f64>; 3] {
+) -> Result<[Array2<f64>; 3], FerricError> {
     let OrbitalSpace {
         nocc,
         nvir,
         nocc_total,
         first_occ,
     } = *orb;
-    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
     let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
     let c_vir = c
         .slice(ndarray::s![.., nocc_total..nocc_total + nvir])
         .to_owned();
-    std::array::from_fn(|d| c_occ.t().dot(&dip_ao[d]).dot(&c_vir))
+    Ok(std::array::from_fn(|d| c_occ.t().dot(&dip_ao[d]).dot(&c_vir)))
 }
 
 /// HF-level analytic (CPHF) polarizability — Layer 1 only. Validation rung and
@@ -208,7 +244,7 @@ pub fn mp2_polarizability_analytic_hf(
     let orb = OrbitalSpace::new(nocc, nvir, nocc, 0);
 
     // μ^d_ov as (nvir, nocc) (CG convention).
-    let mu_oc = dipole_ov_mo(obs, c, &orb); // [d] = (nocc, nvir)
+    let mu_oc = dipole_ov_mo(obs, c, &orb)?; // [d] = (nocc, nvir)
     let mu: [Array2<f64>; 3] = std::array::from_fn(|d| mu_oc[d].t().to_owned()); // (nvir,nocc)
 
     // U^x: (Δε+A) U^x = −μ^x
@@ -279,6 +315,21 @@ fn bget(b: &Array2<f64>, p: usize, r: usize, c: usize, m: usize) -> f64 {
     b[(p, r * m + c)]
 }
 
+/// The CPKS response needs the occ-occ and vir-vir dressed B blocks, which the
+/// gradient-path builder (`compute_mp2_intermediates_ov_only`) skips. All CPKS
+/// entry points call the full `compute_mp2_intermediates`, so this errors only
+/// on a programming mistake — but it must be a clean Err, not a panic.
+fn require_oo_vv(
+    inter: &crate::rimp2::Mp2Intermediates,
+) -> Result<(&Array2<f64>, &Array2<f64>), FerricError> {
+    match (inter.b_oo.as_ref(), inter.b_vv.as_ref()) {
+        (Some(oo), Some(vv)) => Ok((oo, vv)),
+        _ => Err(FerricError::General(
+            "CPKS needs b_oo/b_vv: intermediates were built ov-only (use compute_mp2_intermediates, not _ov_only)".into(),
+        )),
+    }
+}
+
 /// Analytic ∂t2/∂F along `axis`. Returns (dt2 [nov*nov, ia*nov+jb], U^x, ∂f_mo)
 /// — the full set of first-order responses downstream layers reuse.
 #[allow(clippy::too_many_arguments)]
@@ -303,7 +354,7 @@ pub fn analytic_dt2_full(
     let orb = OrbitalSpace::new(nocc, nvir, nocc_total, first_occ);
 
     // --- CPHF U^x: (Δε + 0.5 A) U = −μ^x_ov  (same operator/conventions as HF α) ---
-    let mu_oc = dipole_ov_mo(obs, c, &orb); // (nocc,nvir)
+    let mu_oc = dipole_ov_mo(obs, c, &orb)?; // (nocc,nvir)
     let mu_vo = mu_oc[axis].t().to_owned(); // (nvir,nocc)
     let (u, resid, iters, conv) = solve_cphf_cg(c, &(-&mu_vo), obs, bounds, &orb, eps)?;
     if !conv {
@@ -313,16 +364,17 @@ pub fn analytic_dt2_full(
     }
 
     // --- ∂B^P_ia = Σ_c U_ci b_vv[P,c,a] − Σ_k U_ak b_oo[P,i,k] ---
+    let (b_oo, b_vv) = require_oo_vv(&inter)?;
     let mut db_ov = Array2::<f64>::zeros((naux, nov));
     for p in 0..naux {
         for i in 0..nocc {
             for a in 0..nvir {
                 let mut s = 0.0;
                 for cc in 0..nvir {
-                    s += u[(cc, i)] * bget(&inter.b_vv, p, cc, a, nvir);
+                    s += u[(cc, i)] * bget(b_vv, p, cc, a, nvir);
                 }
                 for k in 0..nocc {
-                    s -= u[(a, k)] * bget(&inter.b_oo, p, i, k, nocc);
+                    s -= u[(a, k)] * bget(b_oo, p, i, k, nocc);
                 }
                 db_ov[(p, i * nvir + a)] = s;
             }
@@ -332,7 +384,7 @@ pub fn analytic_dt2_full(
     // --- ∂ε_p = −μ_pp + Σ_ck U_ck [2(pp|ck) − (pc|pk)] ---
     // Need full-MO dipole diagonal and the coupling integrals via dressed B.
     // μ in MO: μ_pq = Cᵀ D^x_AO C.
-    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
     let mu_mo = c.t().dot(&dip_ao[axis]).dot(c); // (nmo,nmo)
     // (pp|ck): for occ p=i → Σ_P b_oo[P,i,i] b_ov[P,c? ...]; ck is occ-vir (k occ, c vir).
     // Use B_ov for (ck): (ck)≡(k c) with k occ, c vir → b_ov[P, k*nvir + c].
@@ -370,7 +422,7 @@ pub fn analytic_dt2_full(
     let mut jdd = Array2::<f64>::zeros((nbas, nbas));
     let mut kdd = Array2::<f64>::zeros((nbas, nbas));
     ferric_scf::rhf::build_jk(ctx, obs, bounds, 1e-12, &dd_ao, &mut jdd, &mut kdd)?;
-    let gscale: f64 = std::env::var("CPKS_GSCALE").ok().and_then(|s| s.parse().ok()).unwrap_or(1.0);
+    let gscale: f64 = cpks_weight("CPKS_GSCALE", 1.0);
     let g_ao = gscale * (2.0 * &jdd - &kdd);
     // ∂F_AO = −r_axis + G[∂D];  ∂F_MO = Cᵀ ∂F_AO C
     let df_ao = &(-&dip_ao[axis]) + &g_ao;
@@ -446,7 +498,7 @@ pub fn fd_dt2_along(
     h: f64,
 ) -> Result<Vec<f64>, FerricError> {
     let n = obs.nbasis();
-    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
     let t2_at = |field: f64| -> Result<Vec<f64>, FerricError> {
         let mut v = Array2::<f64>::zeros((n, n));
         for mu in 0..n {
@@ -485,16 +537,17 @@ pub fn analytic_de_mp2_along(
     let (dt2, u) = analytic_dt2_along(ctx, mol, obs, dfbs, op, bounds, rhf, mp2_config, axis)?;
 
     // ∂B_ov (rebuild here from U for ∂(ia|jb); mirrors analytic_dt2_along).
+    let (b_oo, b_vv) = require_oo_vv(&inter)?;
     let mut db_ov = Array2::<f64>::zeros((naux, nov));
     for p in 0..naux {
         for i in 0..nocc {
             for a in 0..nvir {
                 let mut s = 0.0;
                 for cc in 0..nvir {
-                    s += u[(cc, i)] * bget(&inter.b_vv, p, cc, a, nvir);
+                    s += u[(cc, i)] * bget(b_vv, p, cc, a, nvir);
                 }
                 for k in 0..nocc {
-                    s -= u[(a, k)] * bget(&inter.b_oo, p, i, k, nocc);
+                    s -= u[(a, k)] * bget(b_oo, p, i, k, nocc);
                 }
                 db_ov[(p, i * nvir + a)] = s;
             }
@@ -515,8 +568,8 @@ pub fn analytic_de_mp2_along(
                     let ja = j * nvir + a;
                     let k = 2.0 * eri(ia, jb) - eri(ib, ja);
                     let dk = 2.0 * deri(ia, jb) - deri(ib, ja);
-                    let w_t = std::env::var("CPKS_W_DT2").ok().and_then(|s| s.parse().ok()).unwrap_or(1.0_f64);
-                    let w_k = std::env::var("CPKS_W_DK").ok().and_then(|s| s.parse().ok()).unwrap_or(1.0_f64);
+                    let w_t = cpks_weight("CPKS_W_DT2", 1.0);
+                    let w_k = cpks_weight("CPKS_W_DK", 1.0);
                     de += w_t * dt2[ia * nov + jb] * k + w_k * inter.t2[ia * nov + jb] * dk;
                 }
             }
@@ -546,7 +599,7 @@ pub fn fd_de_mp2_along(
     h: f64,
 ) -> Result<f64, FerricError> {
     let n = obs.nbasis();
-    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
     let e_at = |field: f64| -> Result<f64, FerricError> {
         let mut v = Array2::<f64>::zeros((n, n));
         for mu in 0..n {
@@ -582,7 +635,7 @@ pub fn debug_dd_norms(
     let eps = rhf.eps_r();
     let orb = OrbitalSpace::new(nocc, nvir, nocc, 0);
     // analytic ∂D from U
-    let mu_oc = dipole_ov_mo(obs, c, &orb);
+    let mu_oc = dipole_ov_mo(obs, c, &orb)?;
     let mu_vo = mu_oc[axis].t().to_owned();
     let (u, _r, _it, _cv) = solve_cphf_cg(c, &(-&mu_vo), obs, bounds, &orb, eps)?;
     let c_occ = c.slice(ndarray::s![.., 0..nocc]).to_owned();
@@ -599,7 +652,7 @@ pub fn debug_dd_norms(
         }
     }
     // FD of SCF total density
-    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
     let dens = |field: f64| -> Result<Array2<f64>, FerricError> {
         let mut v = Array2::<f64>::zeros((nbas, nbas));
         for m in 0..nbas { for n in 0..nbas { v[(m, n)] = -field * dip_ao[axis][(m, n)]; } }
@@ -635,8 +688,8 @@ pub fn debug_dd_traces(
     let c = rhf.mos_r();
     let eps = rhf.eps_r();
     let orb = OrbitalSpace::new(nocc, nvir, nocc, 0);
-    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
-    let mu_oc = dipole_ov_mo(obs, c, &orb);
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
+    let mu_oc = dipole_ov_mo(obs, c, &orb)?;
     let mu_vo = mu_oc[axis].t().to_owned();
     let (u, _r, _it, _cv) = solve_cphf_cg(c, &(-&mu_vo), obs, bounds, &orb, eps)?;
     let c_occ = c.slice(ndarray::s![.., 0..nocc]).to_owned();
@@ -668,7 +721,7 @@ pub fn debug_emp2_at_field(
     mp2_config: &RiMp2Config, axis: usize, field: f64,
 ) -> Result<f64, FerricError> {
     let n = obs.nbasis();
-    let dip = oneelectron::dipole(obs, [0.0,0.0,0.0]);
+    let dip = oneelectron::dipole(obs, [0.0,0.0,0.0])?;
     let mut v = Array2::<f64>::zeros((n,n));
     for m in 0..n { for k in 0..n { v[(m,k)] = -field*dip[axis][(m,k)]; } }
     let r = crate::ff_polar::solve_rhf_with_external(ctx, mol, obs, bounds, scf_config, &v)?;
@@ -862,7 +915,7 @@ pub fn analytic_alpha_amplitude_only(
     let (first_occ, nocc_total) = (inter.first_occ, inter.nocc_total);
     let c = rhf.mos_r();
     let nmo = c.ncols();
-    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
 
     let mut tensor = [[0.0f64; 3]; 3];
     for x in 0..3 {
@@ -872,12 +925,12 @@ pub fn analytic_alpha_amplitude_only(
         let mut ddm = Array2::<f64>::zeros((nmo, nmo));
         for i in 0..nocc {
             for j in 0..nocc {
-                ddm[(first_occ + i, first_occ + j)] = (dp_oo[(i, j)] + dp_oo[(j, i)]) * std::env::var("CPKS_WP").ok().and_then(|x|x.parse().ok()).unwrap_or(1.0_f64);
+                ddm[(first_occ + i, first_occ + j)] = (dp_oo[(i, j)] + dp_oo[(j, i)]) * cpks_weight("CPKS_WP", 1.0);
             }
         }
         for a in 0..nvir {
             for b in 0..nvir {
-                ddm[(nocc_total + a, nocc_total + b)] = (dp_vv[(a, b)] + dp_vv[(b, a)]) * std::env::var("CPKS_WP").ok().and_then(|x|x.parse().ok()).unwrap_or(1.0_f64);
+                ddm[(nocc_total + a, nocc_total + b)] = (dp_vv[(a, b)] + dp_vv[(b, a)]) * cpks_weight("CPKS_WP", 1.0);
             }
         }
         let ddm_ao = c.dot(&ddm).dot(&c.t());
@@ -956,7 +1009,7 @@ pub fn analytic_alpha_relaxed(
     let eps = rhf.eps_r();
     let nmo = c.ncols();
     let orb = OrbitalSpace::new(nocc, nvir, nocc_total, first_occ);
-    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
 
     // Un-perturbed pieces (field-independent): base Lagrangian inputs + z.
     let f_mo0 = c.t().dot(rhf.fock_r()).dot(c);
@@ -973,7 +1026,7 @@ pub fn analytic_alpha_relaxed(
 
         // ∂L via directional central difference of build_lagrangian in ε along the
         // analytic input derivatives (smooth → exact at small ε, no gauge issue).
-        let eps_step: f64 = std::env::var("CPKS_EPS").ok().and_then(|x|x.parse().ok()).unwrap_or(1e-4);
+        let eps_step: f64 = cpks_weight("CPKS_EPS", 1e-4);
         let lag_at = |s: f64| -> Array2<f64> {
             let f = &f_mo0 + &(s * &df_mo);
             let t: Vec<f64> = inter.t2.iter().zip(dt2.iter()).map(|(a, b)| a + s * b).collect();
@@ -1001,7 +1054,7 @@ pub fn analytic_alpha_relaxed(
         //   (i)  rotation of the z₀-density:  Cᵀ G(∂D^{z₀}) C
         //   (ii) rotation of the outer projection: Σ_p Θ_pa (Az₀)_pi + Θ_pi (Az₀)_ap
         // where Az₀_full = Cᵀ G(D^{z₀}) C in FULL MO. (Az₀ in vo only = A·z₀.)
-        let waz: f64 = std::env::var("CPKS_WAZ").ok().and_then(|x| x.parse().ok()).unwrap_or(1.0);
+        let waz: f64 = cpks_weight("CPKS_WAZ", 1.0);
         if waz != 0.0 {
             // Full-MO Θ generator.
             let mut theta = Array2::<f64>::zeros((nmo, nmo)); // Θ_{q,p}
@@ -1085,12 +1138,12 @@ pub fn analytic_alpha_relaxed(
         let mut ddm = Array2::<f64>::zeros((nmo, nmo));
         for i in 0..nocc {
             for j in 0..nocc {
-                ddm[(first_occ + i, first_occ + j)] = (dp_oo[(i, j)] + dp_oo[(j, i)]) * std::env::var("CPKS_WP").ok().and_then(|x|x.parse().ok()).unwrap_or(1.0_f64);
+                ddm[(first_occ + i, first_occ + j)] = (dp_oo[(i, j)] + dp_oo[(j, i)]) * cpks_weight("CPKS_WP", 1.0);
             }
         }
         for a in 0..nvir {
             for b in 0..nvir {
-                ddm[(nocc_total + a, nocc_total + b)] = (dp_vv[(a, b)] + dp_vv[(b, a)]) * std::env::var("CPKS_WP").ok().and_then(|x|x.parse().ok()).unwrap_or(1.0_f64);
+                ddm[(nocc_total + a, nocc_total + b)] = (dp_vv[(a, b)] + dp_vv[(b, a)]) * cpks_weight("CPKS_WP", 1.0);
             }
         }
         // vo/ov block: SCF reference orbital response (2·U, the ∂ of the 2δ core
@@ -1099,8 +1152,8 @@ pub fn analytic_alpha_relaxed(
         // MP2 orbital-relaxation ∂z.
         for a in 0..nvir {
             for i in 0..nocc {
-                let w2u: f64 = std::env::var("CPKS_W2U").ok().and_then(|x| x.parse().ok()).unwrap_or(1.0);
-                let wz: f64 = std::env::var("CPKS_WZ").ok().and_then(|x|x.parse().ok()).unwrap_or(1.0); let vo = w2u * 2.0 * u[(a, i)] + wz * dz[(a, i)];
+                let w2u: f64 = cpks_weight("CPKS_W2U", 1.0);
+                let wz: f64 = cpks_weight("CPKS_WZ", 1.0); let vo = w2u * 2.0 * u[(a, i)] + wz * dz[(a, i)];
                 ddm[(nocc_total + a, first_occ + i)] += vo;
                 ddm[(first_occ + i, nocc_total + a)] += vo;
             }
@@ -1135,6 +1188,24 @@ pub fn analytic_alpha_relaxed(
 //   α_pq = −Σ ∂D · r_mo[p]
 // ===========================================================================
 use ndarray::Array4;
+
+/// Fail-fast pre-flight guard for every `full_mo_eri` caller. The dense (pq|rs)
+/// tensor is nmo⁴, built co-resident with its (nmo²)²=nmo⁴ Gram matrix (:1146),
+/// and the analytic-α path additionally holds central-diff ∂Imo copies —
+/// budget for ~3 live nmo⁴ f64 buffers. Placed next to `full_mo_eri` so an M3/M5
+/// restructure that shrinks the peak updates the formula in the same diff.
+fn check_full_mo_eri_alloc(
+    label: &str,
+    nmo: usize,
+    explicit_budget: Option<usize>,
+) -> Result<(), FerricError> {
+    let peak = nmo.saturating_pow(4).saturating_mul(3).saturating_mul(8); // ~3× nmo⁴ f64
+    ferric_core::memory::check_alloc(
+        &format!("{label}: dense nmo⁴ MO-ERI (nmo={nmo})"),
+        peak,
+        ferric_core::memory::resolve_budget_bytes(explicit_budget),
+    )
+}
 
 /// Full-MO ERI (pq|rs) from the dressed B tensor. (nmo^4 — small systems only.)
 fn full_mo_eri(b_full: &ndarray::Array3<f64>) -> Array4<f64> {
@@ -1266,7 +1337,7 @@ pub fn analytic_alpha_full(
     op: Operator,
     _bounds: &SchwarzBounds,
     rhf: &ScfResult,
-    _mp2_config: &RiMp2Config,
+    mp2_config: &RiMp2Config,
 ) -> Result<Mp2Polarizability, FerricError> {
     // `_bounds` unused: the full-MO recipe uses the dense ERI tensor (no screened
     // JK). Kept in the signature for API parity with the finite-field path.
@@ -1280,12 +1351,23 @@ pub fn analytic_alpha_full(
     let eps_full: Vec<f64> = rhf.eps_r().to_vec();
     let orb = OrbitalSpace::new(nocc, nvir, nocc, 0);
 
+    // Fail-fast size guard: the full-MO recipe holds the dense (pq|rs) ERI tensor
+    // imo0 (nmo⁴, full_mo_eri :1143) co-resident with its Gram matrix g
+    // ((nmo²)²=nmo⁴, :1146) and the central-diff ∂Imo copies in the axis loop.
+    // The solve_zvec_dense (Δε+A) Hessian ((nocc·nvir)², :1243) is subsumed by
+    // this larger nmo⁴ peak.
+    check_full_mo_eri_alloc(
+        &format!("relaxed-MP2 α (analytic; nmo={nmo}, nocc={nocc}, nvir={nvir})"),
+        nmo,
+        mp2_config.memory_budget_bytes,
+    )?;
+
     // Full-MO ERI tensor (unperturbed).
     let b_full = crate::oo_rimp2::compute_b_full_mo(obs, dfbs, op, c)?;
     let imo0 = full_mo_eri(&b_full);
 
     // MO dipole r_pq per axis (full MO).
-    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
     let r_mo: [Array2<f64>; 3] = std::array::from_fn(|d| c.t().dot(&dip_ao[d]).dot(c));
 
     let ed = 1e-5;
@@ -1506,6 +1588,8 @@ pub fn bse_gate0_residuals(
     let nvir = nmo - nocc;
     let eps: Vec<f64> = rhf.eps_r().to_vec();
 
+    // Fail-fast size guard: full_mo_eri holds the nmo⁴ ERI + nmo⁴ Gram (:1143-1146).
+    check_full_mo_eri_alloc("BSE gate-0 residuals", nmo, None)?;
     let b_full = crate::oo_rimp2::compute_b_full_mo(obs, dfbs, op, c)?; // (naux, nmo, nmo)
     let imo = full_mo_eri(&b_full);
 
@@ -1549,6 +1633,8 @@ pub fn dynamic_cphf_alpha_iw(
     let n = nvir * nocc;
     let eps: Vec<f64> = rhf.eps_r().to_vec();
 
+    // Fail-fast size guard: full_mo_eri holds the nmo⁴ ERI + nmo⁴ Gram (:1143-1146).
+    check_full_mo_eri_alloc("dynamic CPHF/TDHF α(iω)", nmo, None)?;
     let b_full = crate::oo_rimp2::compute_b_full_mo(obs, dfbs, op, c)?;
     let imo = full_mo_eri(&b_full);
     let (apb, amb) = build_apb_amb(&imo, &eps, nocc, nvir);
@@ -1560,7 +1646,7 @@ pub fn dynamic_cphf_alpha_iw(
     }
 
     // dipole μ in (ai)-space per axis (MO), bare Coulomb operator.
-    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
     let r_mo: [Array2<f64>; 3] = std::array::from_fn(|d| c.t().dot(&dip_ao[d]).dot(c));
     let mut mu: [ndarray::Array1<f64>; 3] = std::array::from_fn(|_| ndarray::Array1::zeros(n));
     for (d, m) in mu.iter_mut().enumerate() {
@@ -1677,4 +1763,35 @@ pub fn frozen_mp2_c6_molecular(
         s += weights[k] * iso_prof[k] * iso_prof[k];
     }
     Ok((3.0 / PI * s, iso_prof, mp2_iso, hf0_iso))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ferric_core::basis;
+    use ferric_scf::rhf::{solve_rhf, RhfConfig};
+
+    #[test]
+    fn analytic_alpha_fails_fast_under_tiny_budget() {
+        // M2 size guard: an explicit ~1 KB budget must ERROR before the dense
+        // nmo⁴ full-MO ERI is built. Explicit config budget → no env var touched.
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let ctx = ParallelContext::default();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
+        let cfg = RiMp2Config {
+            frozen_core: 0,
+            memory_budget_bytes: Some(ferric_core::memory::gib_to_bytes(1e-6)),
+        };
+        let err = mp2_polarizability_analytic(&ctx, &mol, &obs, &dfbs, op, &bounds, &rhf, &cfg)
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("MO-ERI") && msg.contains("budget is"),
+            "unexpected: {msg}"
+        );
+    }
 }

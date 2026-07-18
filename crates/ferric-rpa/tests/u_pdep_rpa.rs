@@ -37,7 +37,7 @@ fn cfg_full_basis() -> PdepRpaConfig {
         },
         frozen_core: 0,
         trunc_thresh: 0.0,
-        davidson_conv_thresh: 1e-9,
+        eigensolver_conv_thresh: 1e-9,
         ..Default::default()
     }
 }
@@ -232,7 +232,7 @@ fn u_ri_drpa_diagnostic_h_atom_matches_pyscf() {
     let uhf = solve_uhf(&ctx, &mol, &obs, &bounds,
         &UhfConfig { max_iter: 200, ..Default::default() }).unwrap();
 
-    let mp2_cfg = RiMp2Config { frozen_core: 0 };
+    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
     let ia = compute_rpa_intermediates_spin(&mol, &obs, &dfbs, op, &uhf, &mp2_cfg, true).unwrap();
     let ib = compute_rpa_intermediates_spin(&mol, &obs, &dfbs, op, &uhf, &mp2_cfg, false).unwrap();
 
@@ -280,7 +280,9 @@ fn closed_shell_rpa_laplace_chebyshev_matches_dense_h2o() {
     cfg.quadrature = QuadratureConfig {
         scheme: QuadratureScheme::ChebyshevTan, n_points: 20, u0: 0.5,
     };
-    cfg.chi0_backend = Chi0Backend::Laplace { n_quad: 20 };
+    // n_quad=20 is not tabulated ({3,5,7} only); the old code silently fell
+    // back to the 7-point table, so request 7 explicitly (numerics unchanged).
+    cfg.chi0_backend = Chi0Backend::Laplace { n_quad: 7 };
     let e_cheb_lap = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap().e_rpa;
 
     let dev = (e_dense - e_cheb_lap).abs();
@@ -307,7 +309,8 @@ fn closed_shell_rpa_laplace_matches_dense_h2o() {
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
     let e_dense = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg_full_basis()).unwrap().e_rpa;
     let mut cfg_l = cfg_full_basis();
-    cfg_l.chi0_backend = Chi0Backend::Laplace { n_quad: 20 };
+    // n_quad=20 is not tabulated; old silent fallback was the 7-point table.
+    cfg_l.chi0_backend = Chi0Backend::Laplace { n_quad: 7 };
     let e_lap = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg_l).unwrap().e_rpa;
     let dev = (e_dense - e_lap).abs();
     assert!(dev < 1e-4,
@@ -336,7 +339,9 @@ fn u_pdep_rpa_laplace_matches_dense_closed_shell_h2o() {
     let uhf = solve_uhf(&ctx, &mol, &obs, &bounds,
         &UhfConfig { max_iter: 200, ..Default::default() }).unwrap();
     let mut cfg = cfg_full_basis();
-    cfg.chi0_backend = Chi0Backend::Laplace { n_quad: 20 };
+    // n_quad=20 is not tabulated ({3,5,7} only); the old code silently fell
+    // back to the 7-point table, so request 7 explicitly (numerics unchanged).
+    cfg.chi0_backend = Chi0Backend::Laplace { n_quad: 7 };
     let e_u_lap = run_u_pdep_rpa(&mol, &obs, &dfbs, op, &uhf, &cfg).unwrap().e_rpa;
 
     let dev = (e_closed - e_u_lap).abs();
@@ -367,7 +372,7 @@ fn u_laplace_dielectric_matches_u_dense_at_omega_zero_oh() {
     let uhf = solve_uhf(&ctx, &mol, &obs, &bounds,
         &UhfConfig { max_iter: 200, ..Default::default() }).unwrap();
 
-    let mp2_cfg = RiMp2Config { frozen_core: 0 };
+    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
     let ia = compute_rpa_intermediates_spin(&mol, &obs, &dfbs, op, &uhf, &mp2_cfg, true).unwrap();
     let ib = compute_rpa_intermediates_spin(&mol, &obs, &dfbs, op, &uhf, &mp2_cfg, false).unwrap();
     let eo_a: Vec<f64> = uhf.eps_a()[..ia.nocc].to_vec();
@@ -382,8 +387,10 @@ fn u_laplace_dielectric_matches_u_dense_at_omega_zero_oh() {
     let chan_b = ferric_rpa::channel::RpaChannel::new(&ib.b_ov, &eo_b, &ev_b);
     let dense = dielectric_matrix_unrestricted(&v, &chan_a, &chan_b, 0.0);
 
-    let qa = build_laplace_for_gaps(&eo_a, &ev_a, 20);
-    let qb = build_laplace_for_gaps(&eo_b, &ev_b, 20);
+    // n_quad=20 is not tabulated ({3,5,7} only); the old code silently fell
+    // back to the 7-point table, so request 7 explicitly (numerics unchanged).
+    let qa = build_laplace_for_gaps(&eo_a, &ev_a, 7).unwrap();
+    let qb = build_laplace_for_gaps(&eo_b, &ev_b, 7).unwrap();
     let lap = dielectric_matrix_laplace_unrestricted(
         &v, &chan_a, &qa, &chan_b, &qb, 0.0,
     );
@@ -396,7 +403,8 @@ fn u_laplace_dielectric_matches_u_dense_at_omega_zero_oh() {
 #[test]
 fn u_pdep_rpa_laplace_matches_dense_oh() {
     // C8: U-Laplace χ₀ on OH/cc-pVDZ must match the Dense U-RPA E_c to
-    // within Laplace quadrature tolerance (~1e-6 Ha for n_quad=20).
+    // within Laplace quadrature tolerance (7-point minimax table; only {3,5,7}
+    // are tabulated — the previous "n_quad=20" silently used this same table).
     use ferric_rpa::config::Chi0Backend;
     let ctx = ParallelContext::default();
     let xyz = "2\noh\nO 0 0 0\nH 0 0 0.97\n";
@@ -415,7 +423,8 @@ fn u_pdep_rpa_laplace_matches_dense_oh() {
     let e_dense = run_u_pdep_rpa(&mol, &obs, &dfbs, op, &uhf, &cfg_dense).unwrap().e_rpa;
 
     let mut cfg_lap = cfg_full_basis();
-    cfg_lap.chi0_backend = Chi0Backend::Laplace { n_quad: 20 };
+    // n_quad=20 is not tabulated; old silent fallback was the 7-point table.
+    cfg_lap.chi0_backend = Chi0Backend::Laplace { n_quad: 7 };
     let e_lap = run_u_pdep_rpa(&mol, &obs, &dfbs, op, &uhf, &cfg_lap).unwrap().e_rpa;
 
     let dev = (e_dense - e_lap).abs();

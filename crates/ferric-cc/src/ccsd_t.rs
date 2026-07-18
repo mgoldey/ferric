@@ -18,10 +18,12 @@
 //!
 //! MEMORY WARNING: this is the *dense* formulation — it materializes full 6D
 //! `[2no, 2no, 2no, 2nv, 2nv, 2nv]` tensors. That is O((2no·2nv)³) storage:
-//! ~0.4 GB for H2O/cc-pVDZ but ~1.8 TB for butane/cc-pVDZ. It is correct and
-//! validated, but only runnable for very small systems. A production (T) must
-//! loop over occupied triples i<j<k, forming one `[2nv,2nv,2nv]` block at a
-//! time (~MB) — that rewrite is not done here.
+//! ~0.3 GB for H2O/cc-pVDZ but ~1.35 TB for butane/cc-pVDZ (peak buffer count
+//! trimmed 8→6 by consuming intermediates in place in `p_a_bc`/`p_i_jk` and
+//! the term1/term2 combine — same complexity class, lower constant). It is
+//! correct and validated, but only runnable for very small systems. A
+//! production (T) must loop over occupied triples i<j<k, forming one
+//! `[2nv,2nv,2nv]` block at a time (~MB) — that rewrite is not done here.
 
 use super::{CcConfig, CcResult};
 use ferric_core::mol::Molecule;
@@ -36,16 +38,27 @@ use ferric_tensors::{einsum, Axis, Tensor};
 use ndarray::{ArrayD, IxDyn};
 
 /// P(a/bc) on the (…,a,b,c) axes 3,4,5: x − x.swap(a,b) − x.swap(a,c).
-fn p_a_bc(x: &ArrayD<f64>) -> ArrayD<f64> {
+/// Consumes `x` and subtracts each permuted copy (taken from the ORIGINAL,
+/// unmutated `x`) one at a time, so only one extra 6D buffer is ever
+/// co-resident with the accumulator instead of both `s_ab` and `s_ac` at once.
+fn p_a_bc(x: ArrayD<f64>) -> ArrayD<f64> {
     let s_ab = x.view().permuted_axes(IxDyn(&[0, 1, 2, 4, 3, 5])).as_standard_layout().into_owned();
     let s_ac = x.view().permuted_axes(IxDyn(&[0, 1, 2, 5, 4, 3])).as_standard_layout().into_owned();
-    x - &s_ab - &s_ac
+    let mut out = x;
+    out -= &s_ab;
+    drop(s_ab);
+    out -= &s_ac;
+    out
 }
 /// P(i/jk) on the (i,j,k,…) axes 0,1,2: x − x.swap(i,j) − x.swap(i,k).
-fn p_i_jk(x: &ArrayD<f64>) -> ArrayD<f64> {
+fn p_i_jk(x: ArrayD<f64>) -> ArrayD<f64> {
     let s_ij = x.view().permuted_axes(IxDyn(&[1, 0, 2, 3, 4, 5])).as_standard_layout().into_owned();
     let s_ik = x.view().permuted_axes(IxDyn(&[2, 1, 0, 3, 4, 5])).as_standard_layout().into_owned();
-    x - &s_ij - &s_ik
+    let mut out = x;
+    out -= &s_ij;
+    drop(s_ij);
+    out -= &s_ik;
+    out
 }
 
 /// Compute the (T) triples correction to CCSD.
@@ -78,6 +91,26 @@ pub fn ccsd_t(
     if no2 < 3 || nv2 < 3 {
         return Ok(0.0);
     }
+
+    // Fail-fast size guard: the dense (T) materializes several full 6D
+    // [no2,no2,no2,nv2,nv2,nv2] tensors. d3 lives for the whole function; t3c
+    // and t3d are built and consumed via in-place `-=`/`/=` through p_a_bc/
+    // p_i_jk (each holds at most one extra permuted-copy buffer alongside the
+    // accumulator, not two), and the final energy line has d3+t3c+t3d+sum+
+    // weighted (5) briefly co-resident — that is the true worst case, ~6
+    // 6D buffers incl. margin (was 8 before the p_a_bc/p_i_jk/term1-term2
+    // in-place rewrite; same O((no2·nv2)^3) complexity, lower constant).
+    // This MUST stay next to those allocations; a butane input is ~1.35 TB here.
+    let peak6d = (no2.saturating_mul(nv2))
+        .saturating_pow(3)
+        .saturating_mul(6) // ~6 co-resident 6D tensors (down from 8)
+        .saturating_mul(8); // f64
+    let budget = ferric_core::memory::resolve_budget_bytes(cfg.memory_budget_bytes);
+    ferric_core::memory::check_alloc(
+        &format!("CCSD(T) (no={no}, nv={nv} spatial; no2={no2}, nv2={nv2} spin-orbitals)"),
+        peak6d,
+        budget,
+    )?;
 
     let eps = rhf.eps_r();
     let c = rhf.mos_r();
@@ -159,19 +192,23 @@ pub fn ccsd_t(
     // -> 'ibcajk'; want 'ijkabc' => src[i=0,b=1,c=2,a=3,j=4,k=5] -> [0,4,5,3,1,2].
     let term2: ArrayD<f64> = einsum!("imbc,majk->ibcajk", &t2, &majk_t);
     let term2 = term2.permuted_axes(IxDyn(&[0, 4, 5, 3, 1, 2])).as_standard_layout().into_owned();
-    let mut t3c = &term1 - &term2;
-    t3c = p_a_bc(&t3c);
-    t3c = p_i_jk(&t3c);
-    t3c = &t3c / &d3;
+    // Consume term1 in place (term1 -= term2) instead of `&term1 - &term2`, so
+    // term2 drops immediately and no separate output buffer is allocated.
+    let mut t3c = term1;
+    t3c -= &term2;
+    drop(term2);
+    let mut t3c = p_a_bc(t3c);
+    t3c = p_i_jk(t3c);
+    t3c /= &d3;
 
     // --- Disconnected triples: t3d = einsum('ia,bcjk->ijkabc'); canonical fock[v,o]=0.
     // left (i,a) free, contract (none), right free (b,c,j,k) -> 'iabcjk';
     // want 'ijkabc' => src[i=0,a=1,b=2,c=3,j=4,k=5] -> [0,4,5,1,2,3].
     let t3d: ArrayD<f64> = einsum!("ia,bcjk->iabcjk", &t1, &bcjk_t);
     let t3d = t3d.permuted_axes(IxDyn(&[0, 4, 5, 1, 2, 3])).as_standard_layout().into_owned();
-    let mut t3d = p_a_bc(&t3d);
-    t3d = p_i_jk(&t3d);
-    t3d = &t3d / &d3;
+    let mut t3d = p_a_bc(t3d);
+    t3d = p_i_jk(t3d);
+    t3d /= &d3;
 
     // --- Energy: (1/36) Σ (t3c + t3d) · D · t3c  (t3c,t3d already divided by D).
     let sum = &t3c + &t3d;
@@ -239,5 +276,46 @@ mod tests {
             (t_corr - (-0.0030587091)).abs() < 1e-4,
             "(T) = {t_corr:.10}, expected -0.0030587091"
         );
+    }
+
+    #[test]
+    fn ccsd_t_fails_fast_under_tiny_budget() {
+        // The M2 size guard must ERROR cleanly (not OOM-kill) before the dense 6D
+        // allocation when the budget is tiny. Uses an EXPLICIT config budget so no
+        // process-global env var is touched (explicit wins in resolve_budget_bytes).
+        // We build a valid RHF + a dummy CcResult (t1/t2 shapes don't matter — the
+        // guard fires before they are used numerically), then assert the error.
+        let mol = Molecule::parse_xyz(
+            "3\n\nO 0.0 0.0 0.1173\nH 0.0 0.7572 -0.4692\nH 0.0 -0.7572 -0.4692\n",
+            0,
+            1,
+        )
+        .unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("def2-qzvpp-rifit").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let ctx = ParallelContext::default();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
+
+        // Dummy CCSD result — the guard runs before t1/t2 are consumed.
+        let nbas = obs.nbasis();
+        let nocc = rhf.eps_r().iter().filter(|&&e| e < 0.0).count();
+        let nv = nbas - nocc;
+        let dummy = CcResult {
+            correlation_energy: 0.0,
+            t1: Some(ndarray::Array2::<f64>::zeros((nocc, nv))),
+            t2: ndarray::Array4::<f64>::zeros((nocc, nocc, nv, nv)),
+        };
+        // 1e-6 GiB ≈ 1 KB budget — far below the H2O/cc-pVDZ (T) peak.
+        let cc_cfg = CcConfig {
+            frozen_core: 0,
+            memory_budget_bytes: Some(ferric_core::memory::gib_to_bytes(1e-6)),
+            ..Default::default()
+        };
+        let err = ccsd_t(&mol, &obs, &dfbs, op, &rhf, &dummy, &cc_cfg).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("CCSD(T)"), "unexpected error: {msg}");
+        assert!(msg.contains("budget is"), "unexpected error: {msg}");
     }
 }

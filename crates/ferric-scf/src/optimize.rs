@@ -161,9 +161,9 @@ fn compute_energy_and_gradient(
     let bounds = SchwarzBounds::compute(op, &prep)?;
     let res = solve_rhf(ctx, mol, &prep, op, &bounds, rhf_config)?;
     let grad = if let Some(xc_name) = rhf_config.xc.as_deref() {
-        ks_gradient_closed(mol, &prep, &bs, op, &bounds, xc_name, &res)?
+        ks_gradient_closed(mol, &prep, &bs, op, &bounds, xc_name, &res, rhf_config.external_potential.as_ref())?
     } else {
-        rhf_gradient(mol, &prep, op, &bounds, &res)?
+        rhf_gradient(mol, &prep, op, &bounds, &res, rhf_config.external_potential.as_ref())?
     };
     Ok((res.energy, grad))
 }

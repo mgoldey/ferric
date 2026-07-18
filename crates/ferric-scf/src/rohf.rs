@@ -41,6 +41,22 @@ use ferric_integrals::operator::Operator;
 use ndarray::Array2;
 use ndarray_linalg::Eigh;
 
+/// `FERRIC_ROHF_TRACE` descriptor: per-iteration ROHF plateau-dynamics trace
+/// (env-only debug toggle). NOTE behavior change: previously read via `.is_ok()`,
+/// so ANY value (incl. `=0`) enabled it; now `=0`/`false`/`off` disable it,
+/// consistent with every other `FERRIC_*_TRACE` flag.
+static ROHF_TRACE: ferric_core::config::ConfigVar<bool> = ferric_core::config::ConfigVar {
+    env_name: "FERRIC_ROHF_TRACE",
+    default: false,
+    parse: ferric_core::config::parse_toggle,
+    validate: ferric_core::config::accept_any,
+};
+
+/// Whether the per-iteration ROHF trace is on. Malformed value → warn + off.
+fn rohf_trace() -> bool {
+    ROHF_TRACE.toggle()
+}
+
 /// ROHF configuration mirrors RHF.
 pub type RohfConfig = RhfConfig;
 
@@ -99,7 +115,7 @@ pub fn solve_rohf(
         (None, None)
     };
     let s = oneelectron::overlap(prep);
-    let h = oneelectron::hcore(prep);
+    let h = oneelectron::hcore_with_external(prep, config.external_potential.as_ref())?;
     let n = prep.nbasis();
     let nelec = mol.nelec() as i64;
     let mult = mol.multiplicity as i64;
@@ -123,7 +139,10 @@ pub fn solve_rohf(
             "ROHF: nocc_a + nocc_b != nelec".into(),
         ));
     }
-    let vnn = mol.nuclear_repulsion();
+    let vnn = mol.nuclear_repulsion()
+        + config.external_potential.as_ref().map_or(0.0, |ext| {
+            ext.charge_nuclear_energy(mol) + ext.field_nuclear_energy(mol)
+        });
 
     // S^{-1/2}
     let (s_evals, s_evecs) = s
@@ -163,6 +182,10 @@ pub fn solve_rohf(
     // recently accepted iter. None until iter `config.mom_after_iter`.
     let mut mom_ref: Option<(Array2<f64>, Array2<f64>)> = None;
     let mut total_quartets = 0usize;
+    // Previous iteration's total density, for the ΔP convergence signal (shared
+    // with solve_rhf via rhf::scf_converged). None on iter 1 → dp = INFINITY, so
+    // the gate can't fire before a real density change exists.
+    let mut prev_d_total: Option<Array2<f64>> = None;
 
     // K built per spin (same convention as solve_uhf's RSH path). Builders
     // hoisted out of the loop: each lazily builds a per-thread libint2
@@ -182,6 +205,20 @@ pub fn solve_rohf(
         k_a_buf.fill(0.0);
         k_b_buf.fill(0.0);
         let d_total = &d_a + &d_b;
+        // ΔP vs the previous iteration's total density — the primary convergence
+        // signal (see rhf::scf_converged). INFINITY on iter 1.
+        let (dp_rms, dp_max) = match prev_d_total.as_ref() {
+            Some(prev) => {
+                let diff = &d_total - prev;
+                let n2 = (diff.len() as f64).max(1.0);
+                (
+                    (diff.iter().map(|v| v * v).sum::<f64>() / n2).sqrt(),
+                    diff.iter().map(|v| v.abs()).fold(0.0f64, f64::max),
+                )
+            }
+            None => (f64::INFINITY, f64::INFINITY),
+        };
+        prev_d_total = Some(d_total.clone());
 
         // J from D_total
         total_quartets += direct_j.build(&d_total, &mut j_buf)?;
@@ -266,12 +303,21 @@ pub fn solve_rohf(
 
         let de = (energy - prev_e).abs();
         let err_max = err.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
-        let converged = de < config.energy_conv && err_max < config.density_conv;
+        // Converge on ΔP + loose ΔE, the same gate as solve_rhf/solve_uhf — the
+        // ROHF cation path (used as a gw100 fallback) hits the same RI energy/
+        // gradient noise floor at aTZ, so the old `err_max < density_conv` gate
+        // would grind to MaxIter there too. See rhf::scf_converged.
+        let conv_exit = crate::rhf::scf_converged(
+            crate::rhf::ConvergenceSignals { de, dp_rms, dp_max },
+            config.energy_conv,
+            config.density_conv,
+        );
+        let converged = conv_exit.is_some();
 
         // FERRIC_ROHF_TRACE=1: per-iter diagnostic of plateau dynamics.
         // Logs (iter, energy, ΔE, err_max, per-block gradient max,
         // eigenvalues straddling SOMO, and the occupied-α↔virt overlap).
-        if std::env::var("FERRIC_ROHF_TRACE").is_ok() {
+        if rohf_trace() {
             let (eps_now, _c_now) = diagonalize(&f_eff, &s_inv_sqrt)?;
             // Eigenvalues around the SOMO. With nocc_double β-pairs and
             // nocc_open singly-α-occupied orbitals, the SOMO index range is
@@ -319,6 +365,7 @@ pub fn solve_rohf(
                 fock_alpha: f_eff,
                 fock_beta: None,
                 converged: true,
+                exit: crate::result::ScfExit::Converged,
                 iterations: iter,
                 computed_quartets: total_quartets,
             });

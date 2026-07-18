@@ -24,7 +24,7 @@ fn main() {
         },
         frozen_core: 6,
         trunc_thresh: 0.0,
-        davidson_conv_thresh: 1e-10,
+        eigensolver_conv_thresh: 1e-10,
         ..Default::default()
     };
 
@@ -34,10 +34,10 @@ fn main() {
     println!("dense E_c={:.10}  t={:.2}s", r_dense.e_rpa, dt_dense);
 
     for &thresh in &[1e-3, 5e-3, 1e-2, 2e-2, 3e-2, 5e-2] {
-        let (sb, _) = screen::build_screened_bov_boys(&mol, &obs, &dfbs, op, &rhf, 6, thresh).unwrap();
+        let (sb, _) = screen::build_screened_bov_boys(&mol, &obs, &dfbs, op, &rhf, 6, thresh, f64::INFINITY).unwrap();
         let total = sb.n_occ_loc * sb.naux;
         let mut cfg_s = cfg.clone();
-        cfg_s.chi0_sparsity = Chi0Sparsity::BoysScreened { thresh };
+        cfg_s.chi0_sparsity = Chi0Sparsity::BoysScreened { thresh, dist_cutoff: f64::INFINITY };
         let t0 = Instant::now();
         let r_scr = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg_s).unwrap();
         let dt_scr = t0.elapsed().as_secs_f64();

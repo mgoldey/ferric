@@ -32,17 +32,40 @@ use ndarray_linalg::{Eigh, QR, UPLO};
 /// `FERRIC_LANCZOS_PANEL=N` override wins (clamped ≥ 1). Unset budget ⇒ a
 /// conservative default panel so the win applies even without an explicit budget.
 fn lanczos_panel_width(naux: usize, nov: usize) -> usize {
-    // Explicit override wins.
-    if let Ok(v) = std::env::var("FERRIC_LANCZOS_PANEL") {
-        if let Ok(n) = v.trim().parse::<usize>() {
-            return n.max(1).min(naux.max(1));
+    // Explicit override wins, clamped to [1, naux]. The clamp target depends on
+    // naux (not a constant), so this reads the raw value via ConfigVar for
+    // consistent parse/validate but applies the context clamp here rather than a
+    // fixed default; a malformed value warns and falls through to budget-derived.
+    static PANEL: ferric_core::config::ConfigVar<usize> = ferric_core::config::ConfigVar {
+        env_name: "FERRIC_LANCZOS_PANEL",
+        default: 0, // sentinel: 0 means "unset" here → fall through to budget-derived
+        parse: |s| s.trim().parse::<usize>().map_err(|e| e.to_string()),
+        validate: ferric_core::config::accept_any,
+    };
+    match PANEL.get() {
+        Ok(r) if r.source == ferric_core::config::ConfigSource::Env => {
+            return r.value.max(1).min(naux.max(1));
         }
+        Ok(_) => {} // Default sentinel → budget-derived below.
+        Err(e) => eprintln!("[config] FERRIC_LANCZOS_PANEL: {e}; using budget-derived width"),
     }
     // Budget-derived: reserve one (nov × k) matvec scratch + one (naux × k)
     // output panel per panel column. Bytes per panel column ≈ (nov + naux)·8.
-    let budget = ferric_integrals::three_index_source::env_budget_bytes();
+    //
+    // Resolve via the unified budget. When no *explicit or env* budget is set
+    // (the resolver falls back to auto-detect or the 2 GiB fallback), keep the
+    // legacy behavior of a conservative fixed 256-column panel so concurrency on
+    // memory-tight boxes is preserved — the auto/fallback figure is an OOM guard
+    // for the big resident tensors, not a hint that this panel should widen.
+    use ferric_core::memory::{self, BudgetSource};
+    let resolution = memory::resolve_budget(None);
+    let explicitly_budgeted = matches!(
+        resolution.source,
+        BudgetSource::UnifiedEnv | BudgetSource::LegacyOocEnv | BudgetSource::LegacyEri3Env
+    );
+    let budget = resolution.bytes;
     let per_col_bytes = (nov.saturating_add(naux)).saturating_mul(8).max(1);
-    if budget == usize::MAX {
+    if !explicitly_budgeted {
         // No explicit budget: default to a panel that keeps the transient matvec
         // scratch to roughly a few hundred MB regardless of naux — enough BLAS-3
         // width to stay efficient, small enough to let benzene/aTZ jobs run
@@ -107,6 +130,8 @@ where
         return Ok(LanczosResult {
             eigenvalues: Vec::new(),
             eigenvectors: Array2::zeros((naux, 0)),
+            converged: true,
+            max_resid: 0.0,
         });
     }
 
@@ -156,7 +181,15 @@ where
         eigenvalues.push(theta[c]);
     }
 
-    Ok(LanczosResult { eigenvalues, eigenvectors })
+    // Exact dense eigh of the fully-assembled A — not an iterative subspace
+    // solve, so there is no residual to converge and this path is always
+    // "converged" by construction.
+    Ok(LanczosResult {
+        eigenvalues,
+        eigenvectors,
+        converged: true,
+        max_resid: 0.0,
+    })
 }
 
 /// Result of a block-Lanczos run.
@@ -166,6 +199,19 @@ pub struct LanczosResult {
     pub eigenvalues: Vec<f64>,
     /// Eigenvectors in the original space, shape `(naux, n_converged)`.
     pub eigenvectors: Array2<f64>,
+    /// Whether the returned Ritz pairs met the caller's residual-norm
+    /// tolerance (`conv_thresh` in [`run_lanczos_seeded`]) within the
+    /// iteration budget. `true` unconditionally for [`run_lanczos_full_rank`]
+    /// (single dense `eigh`, no iterative residual). `false` means the block
+    /// Lanczos recurrence exhausted `max_iter` (or ran out of Krylov space
+    /// before reaching Ambient dimension) while `max_resid` was still
+    /// above `conv_thresh` — the returned Ritz pairs are the best available,
+    /// not verified eigenpairs.
+    pub converged: bool,
+    /// Residual norm `max_i ||A v_i − λ_i v_i||` (block-Lanczos estimate) of
+    /// the returned Ritz pairs at the point the solve stopped. `0.0` for the
+    /// full-rank (exact) path.
+    pub max_resid: f64,
 }
 
 /// QR-orthonormalize columns; returns Q with the same shape as the input when
@@ -202,14 +248,49 @@ fn qr_orthonormalize(mat: Array2<f64>) -> Result<Array2<f64>, FerricError> {
 /// themselves. Such a caller must ensure the Lanczos solve is not running
 /// inside a rayon worker, where nested OpenBLAS threads are the documented
 /// segfault/oversubscription mode.
+///
+/// Precedence: `FERRIC_LANCZOS_BLAS_THREADS` (this var, back-compat) >
+/// `FERRIC_BLAS_THREADS` (umbrella, see `ferric_integrals::blas_threads::
+/// opt_in_blas_threads`) > `1`. Falls back to the umbrella resolver when this
+/// var is unset, so the umbrella's rayon-worker guard (return 1 if
+/// `rayon::current_thread_index().is_some()`) still applies on that path;
+/// replicated here too so a caller who sets ONLY the Lanczos-specific var
+/// gets the same belt-and-suspenders protection.
+///
+/// Shared with Davidson (`davidson.rs::davidson_blas_threads`): the two are
+/// alternative eigensolvers for the same call site (`config.eigensolver` in
+/// lib.rs), and a caller tuning one expects the other to behave the same way
+/// when swapped in.
 fn lanczos_blas_threads() -> usize {
-    if let Ok(v) = std::env::var("FERRIC_LANCZOS_BLAS_THREADS") {
+    solver_blas_threads_with(|k| std::env::var(k).ok())
+}
+
+/// [`lanczos_blas_threads`] with an injected env lookup — the testable core,
+/// also used by Davidson. Injection instead of `set_var` in tests: see
+/// `ferric_integrals::blas_threads::opt_in_blas_threads_with` for why
+/// env-mutating resolver tests are a data race under the parallel test
+/// harness (process-global OpenBLAS state + concurrent BLAS-doing tests).
+/// Real-env raise tests live in `tests/blas_raise_identity.rs` (a dedicated
+/// process where nothing else runs BLAS concurrently).
+pub(crate) fn solver_blas_threads_with(get: impl Fn(&str) -> Option<String> + Copy) -> usize {
+    if rayon::current_thread_index().is_some() {
+        return 1;
+    }
+    // The Lanczos-specific override wins when set to a parseable value. This
+    // keeps a hand-rolled read rather than routing through ConfigVar: its
+    // precedence is cross-var (a present-but-unparseable value must fall THROUGH
+    // to the umbrella `FERRIC_BLAS_THREADS`, not degrade to this var's own
+    // default), which `ConfigVar::resolve` — single-var, no sibling fallback —
+    // does not model. The umbrella side IS a ConfigVar (see
+    // `blas_threads::BLAS_THREADS`); this resolver composes on top of it.
+    if let Some(v) = get("FERRIC_LANCZOS_BLAS_THREADS") {
         if let Ok(n) = v.trim().parse::<usize>() {
             return n.max(1);
         }
     }
-    // Deterministic, stack-safe default. Speed is opt-in via the env override.
-    1
+    // Unset (or unparseable): fall back to the umbrella convention (itself
+    // defaulting to 1, and itself re-checking the rayon-worker guard).
+    ferric_integrals::blas_threads::opt_in_blas_threads_with(get)
 }
 
 /// Block Lanczos with full reorthogonalization.
@@ -242,9 +323,18 @@ pub fn run_lanczos_seeded<F>(
 where
     F: Fn(&Array2<f64>) -> Array2<f64>,
 {
-    with_blas_threads(lanczos_blas_threads(), || {
+    let result = with_blas_threads(lanczos_blas_threads(), || {
         lanczos_iterations(seed, matvec, n_desired, max_iter, conv_thresh)
-    })
+    })?;
+    if !result.converged {
+        eprintln!(
+            "ferric-rpa WARNING: block Lanczos did not converge within max_iter={max_iter} \
+             (conv_thresh={conv_thresh:.3e}, worst residual={:.3e}); returned Ritz pairs \
+             are the best available, not verified eigenpairs of the dielectric matrix.",
+            result.max_resid,
+        );
+    }
+    Ok(result)
 }
 
 /// Serial Lanczos iteration body; BLAS threading is managed by the caller
@@ -264,6 +354,8 @@ where
         return Ok(LanczosResult {
             eigenvalues: Vec::new(),
             eigenvectors: Array2::zeros((naux, 0)),
+            converged: true,
+            max_resid: 0.0,
         });
     }
 
@@ -274,6 +366,8 @@ where
         return Ok(LanczosResult {
             eigenvalues: Vec::new(),
             eigenvectors: Array2::zeros((naux, 0)),
+            converged: true,
+            max_resid: 0.0,
         });
     }
 
@@ -420,16 +514,33 @@ where
             max_resid = 0.0;
         }
 
-        let result = LanczosResult { eigenvalues, eigenvectors: ritz };
+        // Termination criteria (checked in order):
+        //   1. No further Krylov expansion possible (v_next_opt is None) — the
+        //      subspace is either invariant (lucky breakdown) or spans the
+        //      full ambient naux-dim space, so the block-tridiagonal T's
+        //      eigenpairs are exact for that (sub)space — converged.
+        //   2. Residual below threshold with enough eigenpairs — converged.
+        //   3. Neither holds and the outer-iteration budget is exhausted on
+        //      this pass — NOT converged; the caller gets the best Ritz pairs
+        //      found so far, flagged accordingly (mirrors Davidson's "soft"
+        //      fall-through, but with the flag Davidson doesn't have).
+        let no_more_expansion = v_next_opt.is_none();
+        let residual_ok = max_resid < conv_thresh && nb * block_size >= n_desired;
+        let is_last_iter = k + 1 == outer_iters;
+        let converged = no_more_expansion || residual_ok || !is_last_iter;
+
+        let result = LanczosResult {
+            eigenvalues,
+            eigenvectors: ritz,
+            converged,
+            max_resid,
+        };
         last_result = Some(result);
 
-        // Termination criteria:
-        //   1. No further expansion possible (v_next_opt is None) — return what we have.
-        //   2. Residuals below threshold and we already have enough eigenpairs.
-        if v_next_opt.is_none() {
+        if no_more_expansion {
             break;
         }
-        if max_resid < conv_thresh && nb * block_size >= n_desired {
+        if residual_ok {
             break;
         }
 
@@ -463,6 +574,44 @@ where
 mod tests {
     use super::*;
     use ndarray::Array1;
+
+    // Resolver tests use the injected-lookup variant (solver_blas_threads_with)
+    // so they never mutate the real process-global env — see
+    // opt_in_blas_threads_with's doc comment for why set_var-based tests are a
+    // data race with the other (BLAS-doing) tests in this binary.
+
+    #[test]
+    fn solver_blas_threads_defaults_to_one() {
+        assert_eq!(solver_blas_threads_with(|_| None), 1);
+    }
+
+    #[test]
+    fn solver_blas_threads_falls_back_to_umbrella() {
+        let get = |k: &str| (k == "FERRIC_BLAS_THREADS").then(|| "5".to_string());
+        assert_eq!(solver_blas_threads_with(get), 5);
+    }
+
+    #[test]
+    fn solver_blas_threads_own_var_wins_over_umbrella() {
+        let get = |k: &str| match k {
+            "FERRIC_LANCZOS_BLAS_THREADS" => Some("2".to_string()),
+            "FERRIC_BLAS_THREADS" => Some("5".to_string()),
+            _ => None,
+        };
+        assert_eq!(solver_blas_threads_with(get), 2, "Lanczos-specific var must win over umbrella");
+    }
+
+    #[test]
+    fn solver_blas_threads_forces_one_inside_rayon_worker() {
+        let get = |k: &str| (k == "FERRIC_LANCZOS_BLAS_THREADS").then(|| "4".to_string());
+        assert_eq!(solver_blas_threads_with(get), 4);
+        let inside = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap()
+            .install(|| solver_blas_threads_with(get));
+        assert_eq!(inside, 1, "rayon-worker guard must force 1 even with own var set");
+    }
 
     fn make_symmetric_with_spectrum(lambdas: &[f64], seed: u64) -> Array2<f64> {
         let n = lambdas.len();
@@ -650,6 +799,76 @@ mod tests {
                 let nrm = resid.dot(&resid).sqrt();
                 assert!(nrm < 1e-9, "panel {panel}: residual {nrm}");
             }
+
+            // Full-rank is a single exact dense eigh — always converged.
+            assert!(new_res.converged, "panel {panel}: full-rank must report converged=true");
+            assert_eq!(new_res.max_resid, 0.0, "panel {panel}: full-rank residual must be 0");
         }
+    }
+
+    /// TD-CONV: a full-width identity-seed block Lanczos with a generous
+    /// iteration budget must reach its residual tolerance and report
+    /// `converged: true` with a small residual — the control case for the
+    /// unconverged test below.
+    #[test]
+    fn seeded_lanczos_converges_with_ample_budget() {
+        let naux = 40;
+        let nov = 90;
+        let (matvec, _a) = make_dielectric_op(naux, nov, 11);
+        let res = run_lanczos_seeded(
+            Array2::<f64>::eye(naux),
+            |v| matvec(v),
+            naux,
+            naux + 4, // ample outer-iteration budget
+            1e-10,
+        )
+        .unwrap();
+        assert!(res.converged, "expected convergence with a generous iteration budget");
+        assert!(
+            res.max_resid < 1e-8,
+            "expected a small residual, got {}",
+            res.max_resid
+        );
+    }
+
+    /// TD-CONV: driving the block Lanczos with `max_iter=1` on a seed that
+    /// does NOT span the ambient space forces the outer-iteration budget to
+    /// exhaust before either termination criterion (no-more-expansion or
+    /// residual-below-threshold) is met — the eigensolver equivalent of the
+    /// "max_iter=1" non-convergence probe requested by the TD-CONV brief.
+    /// Asserts the unconverged flag is set and the residual is (verifiably)
+    /// above the requested tolerance, so the flag is not a false negative.
+    #[test]
+    fn seeded_lanczos_max_iter_one_reports_unconverged() {
+        let naux = 40;
+        let nov = 90;
+        let (matvec, _a) = make_dielectric_op(naux, nov, 11);
+        // Narrow seed block (4 columns out of 40) so one Lanczos step cannot
+        // possibly span the full ambient space, and an unreachably tight
+        // conv_thresh so the residual check also can't pass in one step.
+        let mut seed = Array2::<f64>::zeros((naux, 4));
+        for j in 0..4 {
+            for i in 0..naux {
+                seed[(i, j)] = ((i + j * 13) as f64).cos();
+            }
+        }
+        let res = run_lanczos_seeded(
+            seed,
+            |v| matvec(v),
+            naux, // n_desired = full naux, unreachable from a 4-wide block in 1 step
+            1,    // max_iter = 1
+            1e-14,
+        )
+        .unwrap();
+        assert!(
+            !res.converged,
+            "expected max_iter=1 on a narrow, non-spanning seed to be flagged unconverged"
+        );
+        assert!(
+            res.max_resid > 1e-14,
+            "unconverged result should carry a residual above the (unreachable) tolerance, \
+             got {}",
+            res.max_resid
+        );
     }
 }

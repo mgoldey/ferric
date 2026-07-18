@@ -13,7 +13,6 @@
 //! which includes both the 1-PDM/Fock terms and the 2-electron integral
 //! response terms from the MO integral derivatives.
 
-use crate::mo_transform::transform_3center_ov;
 use crate::rimp2::{active_occ, cholesky_inverse_sqrt};
 use ferric_core::mol::Molecule;
 use ferric_core::orbitals::OrbitalSpace;
@@ -21,6 +20,7 @@ use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::oneelectron;
 use ferric_integrals::operator::Operator;
+use ferric_integrals::three_index_source::ThreeIndexSource;
 use ferric_integrals::threeindex;
 use ferric_scf::diis::Diis;
 use ferric_scf::rhf::build_jk;
@@ -28,6 +28,7 @@ use ferric_scf::ScfResult;
 use ferric_scf::screening::SchwarzBounds;
 use ndarray::{Array2, Array3};
 use ndarray_linalg::Solve;
+use std::cell::RefCell;
 
 /// Configuration for OO-RI-MP2.
 #[derive(Debug, Clone)]
@@ -44,6 +45,9 @@ pub struct OoRiMp2Config {
     pub diis_size: usize,
     /// Whether to use DIIS for orbital rotations.
     pub use_diis: bool,
+    /// Optional resident-bytes ceiling for the 3-index MO transform. `None` →
+    /// resolved via [`ferric_core::memory::resolve_budget_bytes`].
+    pub memory_budget_bytes: Option<usize>,
 }
 
 impl Default for OoRiMp2Config {
@@ -57,6 +61,7 @@ impl Default for OoRiMp2Config {
             level_shift: 0.1,
             diis_size: 6,
             use_diis: true,
+            memory_budget_bytes: None,
         }
     }
 }
@@ -85,26 +90,60 @@ pub struct OoRiMp2Result {
 /// AO-side invariants for OO-RI-MP2, built once and reused across every
 /// orbital-rotation iteration. These depend only on `(obs, dfbs, op)` — not on
 /// the MO coefficients — so rebuilding them per iteration (and per line-search
-/// backtrack) was pure waste. Keeping the `(naux, nao, nao)` AO 3-index tensor
-/// resident costs the same peak memory as one build.
+/// backtrack) was pure waste.
+///
+/// The `(naux, nao, nao)` AO 3-index tensor is served through a
+/// memory-budgeted [`ThreeIndexSource`] (`FERRIC_ERI3_BUDGET_GB`): in-core when
+/// it fits the budget (identical to the old resident `Array3`), disk-spilled in
+/// aux-blocks when it does not. Consumers pull raw aux-blocks via
+/// `for_each_block` and dress each block with `V^{-1/2}` on the fly, so the peak
+/// resident 3-index footprint is one aux-block, not the full tensor.
+///
+/// `RefCell` gives the `for_each_block` iterator the `&mut` it needs (disk seek
+/// + scratch reuse) while `OoRiMp2AoTensors` is shared as `&self` across the
+/// hot orbital-optimization loop. Borrows are non-overlapping (each transform
+/// takes the borrow, streams, drops it), so no runtime borrow conflict arises.
 pub struct OoRiMp2AoTensors {
     /// V^{-1/2}, shape (naux, naux).
     pub v2c_inv_sqrt: Array2<f64>,
-    /// AO 3-center integrals (P|mu nu), shape (naux, nao, nao).
-    pub eri3_ao: Array3<f64>,
+    /// Budget-aware raw AO 3-center integral source (P|mu nu), (naux, nao, nao).
+    pub eri3_ao: RefCell<ThreeIndexSource>,
+    naux: usize,
+    nao: usize,
 }
 
 impl OoRiMp2AoTensors {
-    /// Build the AO-side invariants once.
+    /// Build the AO-side invariants once, budget from `FERRIC_ERI3_BUDGET_GB`.
     pub fn build(
         obs: &PreparedBasis,
         dfbs: &PreparedBasis,
         op: Operator,
     ) -> Result<Self, FerricError> {
+        Self::build_with_budget(obs, dfbs, op, ferric_core::memory::resolve_budget_bytes(None))
+    }
+
+    /// Build with an explicit resident-bytes budget for the raw 3-index tensor.
+    pub fn build_with_budget(
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        op: Operator,
+        budget_bytes: usize,
+    ) -> Result<Self, FerricError> {
         let v2c = threeindex::coulomb_metric_2c(op, dfbs)?;
         let v2c_inv_sqrt = cholesky_inverse_sqrt(&v2c)?;
-        let eri3_ao = threeindex::eri3_tensor(op, obs, dfbs)?;
-        Ok(Self { v2c_inv_sqrt, eri3_ao })
+        let src = ThreeIndexSource::build(op, obs, dfbs, budget_bytes)?;
+        let naux = src.naux();
+        let nao = src.nao();
+        Ok(Self { v2c_inv_sqrt, eri3_ao: RefCell::new(src), naux, nao })
+    }
+
+    /// Number of auxiliary basis functions (rows of the 3-index tensor).
+    pub fn naux(&self) -> usize {
+        self.naux
+    }
+    /// Number of AO basis functions.
+    pub fn nao(&self) -> usize {
+        self.nao
     }
 }
 
@@ -122,32 +161,92 @@ pub fn compute_b_full_mo(
     c: &Array2<f64>,
 ) -> Result<Array3<f64>, FerricError> {
     let ao = OoRiMp2AoTensors::build(obs, dfbs, op)?;
-    Ok(compute_b_full_mo_with(&ao, c))
+    compute_b_full_mo_with(&ao, c)
 }
+
+/// Aux-row chunk for the streamed MO transform + metric dressing. Caps the
+/// MO-transformed transient at `MO_CHUNK · width · 8` bytes regardless of the
+/// raw source's block size (the in-core backend serves one block spanning all
+/// of naux, which would otherwise reintroduce a full-size transient). 256 keeps
+/// the dressing GEMM's inner dimension wide (k = 256) while bounding the panel.
+const MO_CHUNK: usize = 256;
+
+/// Below this per-chunk work size (`qc * nmo²`, the number of scalar
+/// multiply-adds the per-q GEMM pair touches) the per-q MO-transform loop
+/// runs serially — rayon dispatch overhead swamps the win on small jobs.
+/// Measured (min-of-5, release, 12-core/loaded box): at qc=116, nao=nmo=24
+/// (water/cc-pVDZ scale, work=116*24²=66,816) serial 368µs vs rayon 283µs —
+/// a real but noisy ~1.3x win with a long rayon tail under contention. At
+/// qc=256, nao=nmo=80 (work=256*80²=1,638,400) serial 19.4ms vs rayon
+/// 7.2ms — a clean ~2.7x win. The threshold sits an order of magnitude above
+/// the small-noisy point and well below the large-clean-win point.
+const PAR_MO_TRANSFORM_WORK_THRESHOLD: usize = 200_000;
 
 /// Full-MO 3-center B tensor from pre-built AO invariants.
 ///
-/// The MO transform is per-P BLAS3: half = (B^P_AO)·C, then eri3_mo = C^T·half,
-/// replacing the former scalar quadruple loops.
-pub fn compute_b_full_mo_with(ao: &OoRiMp2AoTensors, c: &Array2<f64>) -> Array3<f64> {
-    let naux = ao.eri3_ao.shape()[0];
+/// Memory: streams raw AO aux-blocks from the budgeted [`ThreeIndexSource`],
+/// MO-transforms them in chunks of at most [`MO_CHUNK`] aux rows (BLAS3:
+/// half = (B^Q_AO)·C, then C^T·half), and dresses each chunk into the output
+/// with `V^{-1/2}` on the fly. The output `(naux, nmo, nmo)` tensor is
+/// allocated once; the transient is one `(≤MO_CHUNK, nmo²)` panel. This removes
+/// the former 2× peak (the resident full `eri3_mo` AND its `b_flat` copy held
+/// simultaneously during the metric GEMM).
+///
+/// Exactness: `b_full[P,p,q] = Σ_Q V^{-1/2}[P,Q] · (C^T (Q|μν) C)[p,q]`, the
+/// same contraction as before — reordered, not approximated.
+pub fn compute_b_full_mo_with(
+    ao: &OoRiMp2AoTensors,
+    c: &Array2<f64>,
+) -> Result<Array3<f64>, FerricError> {
+    let naux = ao.naux();
     let nmo = c.ncols();
 
-    // Full MO transform per aux P: eri3_mo[P] = C^T · (B^P_AO · C)  (BLAS3).
-    let mut eri3_mo = Array3::zeros((naux, nmo, nmo));
-    for p in 0..naux {
-        let bp_ao = ao.eri3_ao.slice(ndarray::s![p, .., ..]);
-        let half = bp_ao.dot(c); // (nao, nmo)
-        let bp_mo = c.t().dot(&half); // (nmo, nmo)
-        eri3_mo.slice_mut(ndarray::s![p, .., ..]).assign(&bp_mo);
-    }
-
-    // Apply V^{-1/2}: B^P_{pq} = sum_Q V^{-1/2}_{PQ} (Q|pq)
-    let eri3_flat = eri3_mo
-        .into_shape_with_order((naux, nmo * nmo))
-        .unwrap();
-    let b_flat = ao.v2c_inv_sqrt.dot(&eri3_flat);
-    b_flat.into_shape_with_order((naux, nmo, nmo)).unwrap()
+    let mut b_full = Array3::<f64>::zeros((naux, nmo, nmo));
+    let m = &ao.v2c_inv_sqrt;
+    ao.eri3_ao.borrow_mut().for_each_block(|blk| {
+        let qb = blk.data.shape()[0];
+        let mut q0 = 0;
+        while q0 < qb {
+            let q1 = (q0 + MO_CHUNK).min(qb);
+            let qc = q1 - q0;
+            // MO-transform this chunk: mo[q,p,r] = C^T (Q|μν) C  (BLAS3 per q).
+            // Each q owns a disjoint output row and reads only its own AO
+            // slab, so above the work threshold this fans out over rayon
+            // (mirrors mo_transform.rs::transform_3center's per-P pattern);
+            // BLAS stays at its ambient (serial, OPENBLAS_NUM_THREADS=1)
+            // count inside each closure — never raised under rayon.
+            let mut mo_blk = Array2::<f64>::zeros((qc, nmo * nmo));
+            let mo_transform_row = |q: usize, mut row: ndarray::ArrayViewMut1<f64>| {
+                let bq_ao = blk.data.slice(ndarray::s![q0 + q, .., ..]);
+                let half = bq_ao.dot(c); // (nao, nmo)
+                let bq_mo = c.t().dot(&half); // (nmo, nmo)
+                row.assign(&bq_mo.into_shape_with_order(nmo * nmo).unwrap());
+            };
+            if qc * nmo * nmo < PAR_MO_TRANSFORM_WORK_THRESHOLD {
+                for q in 0..qc {
+                    mo_transform_row(q, mo_blk.slice_mut(ndarray::s![q, ..]));
+                }
+            } else {
+                use rayon::prelude::*;
+                ndarray::Zip::indexed(mo_blk.axis_iter_mut(ndarray::Axis(0)))
+                    .into_par_iter()
+                    .for_each(|(q, row)| mo_transform_row(q, row));
+            }
+            // Dress into every output aux row, accumulating IN PLACE (beta=1):
+            //   b_full[:, p, q] += V^{-1/2}[:, Qchunk] · mo_blk.
+            // general_mat_mul writes straight into b_full — no (naux, nmo²)
+            // `contrib` allocation, which would itself be a second full copy.
+            let msub = m.slice(ndarray::s![.., blk.p0 + q0..blk.p0 + q1]);
+            let mut b_flat = b_full
+                .view_mut()
+                .into_shape_with_order((naux, nmo * nmo))
+                .unwrap();
+            ndarray::linalg::general_mat_mul(1.0, &msub, &mo_blk, 1.0, &mut b_flat);
+            q0 = q1;
+        }
+        Ok(())
+    })?;
+    Ok(b_full)
 }
 
 /// Compute the RI-MP2 energy for a given set of MO coefficients.
@@ -162,19 +261,51 @@ fn compute_rimp2_with_orbitals(
     orb: &OrbitalSpace,
 ) -> Result<(f64, Array2<f64>), FerricError> {
     let OrbitalSpace { nocc, nocc_total, first_occ, nvir } = *orb;
-    let naux = ao.eri3_ao.shape()[0];
+    let naux = ao.naux();
 
     let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
     let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
 
-    // MO transform -> (P|ia)
-    let eri3_mo = transform_3center_ov(&ao.eri3_ao, &c_occ, &c_vir);
-
-    // B^P_{ia} = sum_Q (P|Q)^{-1/2} (Q|ia)
-    let eri3_flat = eri3_mo
-        .into_shape_with_order((naux, nocc * nvir))
-        .unwrap();
-    let b_flat = ao.v2c_inv_sqrt.dot(&eri3_flat); // (naux, nocc*nvir)
+    // MO transform (P|μν) -> (P|ia) and dress with V^{-1/2} on the fly, streaming
+    // raw AO aux-blocks in ≤MO_CHUNK-row chunks.
+    //   b_flat[P, ia] = Σ_Q V^{-1/2}[P,Q] (C_occ^T (Q|μν) C_vir)[ia]
+    // The dressing GEMM accumulates in place (beta=1); the peak transient is one
+    // (≤MO_CHUNK, nocc·nvir) MO panel, never a second full-size copy.
+    let nov = nocc * nvir;
+    let mut b_flat = Array2::<f64>::zeros((naux, nov));
+    let m = &ao.v2c_inv_sqrt;
+    ao.eri3_ao.borrow_mut().for_each_block(|blk| {
+        let qb = blk.data.shape()[0];
+        let mut q0 = 0;
+        while q0 < qb {
+            let q1 = (q0 + MO_CHUNK).min(qb);
+            let qc = q1 - q0;
+            let mut mo_blk = Array2::<f64>::zeros((qc, nov));
+            // Disjoint per-q rows; same rayon-above-threshold gate as
+            // compute_b_full_mo_with (mirrors mo_transform.rs::transform_3center).
+            let mo_transform_row = |q: usize, mut row: ndarray::ArrayViewMut1<f64>| {
+                let bq_ao = blk.data.slice(ndarray::s![q0 + q, .., ..]);
+                // (P|ia) = C_occ^T (Q|μν) C_vir
+                let tmp = bq_ao.dot(&c_vir); // (nao, nvir)
+                let bq_mo = c_occ.t().dot(&tmp); // (nocc, nvir)
+                row.assign(&bq_mo.into_shape_with_order(nov).unwrap());
+            };
+            if qc * nov < PAR_MO_TRANSFORM_WORK_THRESHOLD {
+                for q in 0..qc {
+                    mo_transform_row(q, mo_blk.slice_mut(ndarray::s![q, ..]));
+                }
+            } else {
+                use rayon::prelude::*;
+                ndarray::Zip::indexed(mo_blk.axis_iter_mut(ndarray::Axis(0)))
+                    .into_par_iter()
+                    .for_each(|(q, row)| mo_transform_row(q, row));
+            }
+            let msub = m.slice(ndarray::s![.., blk.p0 + q0..blk.p0 + q1]);
+            ndarray::linalg::general_mat_mul(1.0, &msub, &mo_blk, 1.0, &mut b_flat);
+            q0 = q1;
+        }
+        Ok(())
+    })?;
 
     // MP2 energy via i-blocked wide GEMMs (same path as the main RI-MP2 lane).
     let sc = crate::rimp2::spin_components_from_b_ov(
@@ -234,12 +365,27 @@ fn orbital_energies(c: &Array2<f64>, f: &Array2<f64>) -> Vec<f64> {
     (0..n).map(|i| f_mo[(i, i)]).collect()
 }
 
+/// Below this many (ia,jb) pairs the elementwise denominator-divide pass
+/// after the `eri_ov` GEMM runs serially (rayon dispatch overhead beats the
+/// win on tiny jobs). Pure function of `nov²`, never of thread count — same
+/// discipline as `PAR_2E_QUARTET_THRESHOLD` (ferric-scf/src/gradient.rs) and
+/// `PAR_DENSITY_PAIRS_THRESHOLD` (ferric-scf/src/pairs.rs).
+const PAR_T2_ELEMENT_THRESHOLD: usize = 4096;
+
 /// Compute t2 amplitudes and (ia|jb) integrals from B tensor.
 ///
 /// t2 is stored as flat vec of length (nocc*nvir)^2 with indexing t2[ia*nov + jb]
 /// where ia = i*nvir + a, jb = j*nvir + b.
 ///
 /// Returns (t2, eri_ov) where eri_ov[ia*nov + jb] = (ia|jb).
+///
+/// `eri_iajb = Σ_p b_flat[p,ia]·b_flat[p,jb]` is exactly the (ia,jb) entry of
+/// `b_flat^T @ b_flat` — computed here as one wide `(nov × naux) @ (naux ×
+/// nov)` GEMM instead of the former per-element scalar strided dot product
+/// (the BLAS3-hostile anti-pattern: an O(nov²) loop of O(naux) scalar dots).
+/// This call site is not inside a rayon region (see `oo_ri_mp2`'s main loop
+/// and callers in rimp2.rs/oo_rimp2_gradient.rs), so the GEMM runs at the
+/// ambient BLAS thread count.
 pub fn compute_t2_and_integrals(
     b_flat: &Array2<f64>,
     eps: &[f64],
@@ -247,30 +393,113 @@ pub fn compute_t2_and_integrals(
     nvir: usize,
     nocc_total: usize,
     first_occ: usize,
-    naux: usize,
+    _naux: usize,
 ) -> (Vec<f64>, Vec<f64>) {
     let nov = nocc * nvir;
-    let mut t2 = vec![0.0f64; nov * nov];
-    let mut eri_ov = vec![0.0f64; nov * nov];
+    let eri_ov_mat = b_flat.t().dot(b_flat); // (nov, nov), GEMM: eri_ov_mat[ia,jb] = Σ_p b[p,ia]·b[p,jb]
 
-    for i in 0..nocc {
-        for a in 0..nvir {
-            let ia = i * nvir + a;
-            for j in 0..nocc {
-                for b in 0..nvir {
-                    let jb = j * nvir + b;
-                    let eri_iajb: f64 =
-                        (0..naux).map(|p| b_flat[(p, ia)] * b_flat[(p, jb)]).sum();
-                    let denom = eps[first_occ + i] + eps[first_occ + j]
-                        - eps[nocc_total + a]
-                        - eps[nocc_total + b];
-                    eri_ov[ia * nov + jb] = eri_iajb;
-                    t2[ia * nov + jb] = eri_iajb / denom;
-                }
+    let mut t2 = vec![0.0f64; nov * nov];
+    // `.dot()`'s output memory layout is not guaranteed C-order (it can go
+    // F-order in degenerate shapes — see ndarray-dot-forder-when-both-stride1
+    // memory pitfall), and the public contract here is a flat C-order Vec
+    // (`eri_ov[ia*nov+jb]`). `as_standard_layout` forces a C-contiguous copy
+    // if needed (a no-op if already C-order) before flattening, so the raw
+    // Vec extraction below is always correctly ordered regardless of what
+    // `.dot()` chose internally.
+    let eri_ov = eri_ov_mat
+        .as_standard_layout()
+        .into_owned()
+        .into_raw_vec_and_offset()
+        .0;
+
+    let fill_row = |ia: usize, t2_row: &mut [f64]| {
+        let i = ia / nvir;
+        let a = ia % nvir;
+        let base = ia * nov;
+        for j in 0..nocc {
+            for b in 0..nvir {
+                let jb = j * nvir + b;
+                let denom = eps[first_occ + i] + eps[first_occ + j]
+                    - eps[nocc_total + a]
+                    - eps[nocc_total + b];
+                t2_row[jb] = eri_ov[base + jb] / denom;
             }
         }
+    };
+
+    if nov * nov < PAR_T2_ELEMENT_THRESHOLD {
+        for ia in 0..nov {
+            fill_row(ia, &mut t2[ia * nov..(ia + 1) * nov]);
+        }
+    } else {
+        use rayon::prelude::*;
+        t2.par_chunks_mut(nov)
+            .enumerate()
+            .for_each(|(ia, row)| fill_row(ia, row));
     }
+
     (t2, eri_ov)
+}
+
+/// Compute only the t2 amplitudes from the B tensor, without materializing the
+/// (ia|jb) integral array.
+///
+/// Identical numerics to [`compute_t2_and_integrals`] for its first return
+/// value, via the same wide-GEMM restructure (`b_flat^T @ b_flat`). The GEMM
+/// output (`eri_ov_mat`, one `nov²` buffer) is local scratch: it is read
+/// row-by-row to fill `t2` and dropped at the end of this call, never
+/// returned or retained by the caller. Peak transient footprint *inside this
+/// function* is momentarily ~2×`nov²` (`eri_ov_mat` + `t2` both resident
+/// during the fold) — up from the former scalar loop's ~1×`nov²` (`t2`
+/// alone, no GEMM buffer) — but the important axis for callers is *retained*
+/// memory after the call returns: [`compute_t2_and_integrals`] hands back and
+/// the caller keeps two live `nov²` buffers for the rest of its scope, while
+/// this function's caller keeps exactly one (`t2`); `eri_ov_mat` never
+/// escapes. Callers that discard the integrals (e.g. OSV/PNO construction in
+/// ferric-rpa) should still prefer this function for that reason — it is the
+/// post-call retained footprint, not the momentary in-call peak, that halves.
+/// Indexing matches: t2[ia*nov + jb], ia = i*nvir + a.
+pub fn compute_t2_only(
+    b_flat: &Array2<f64>,
+    eps: &[f64],
+    nocc: usize,
+    nvir: usize,
+    nocc_total: usize,
+    first_occ: usize,
+    _naux: usize,
+) -> Vec<f64> {
+    let nov = nocc * nvir;
+    let eri_ov_mat = b_flat.t().dot(b_flat); // (nov, nov) transient, dropped at end of scope
+
+    let mut t2 = vec![0.0f64; nov * nov];
+
+    let fill_row = |ia: usize, t2_row: &mut [f64]| {
+        let i = ia / nvir;
+        let a = ia % nvir;
+        let eri_row = eri_ov_mat.row(ia);
+        for j in 0..nocc {
+            for b in 0..nvir {
+                let jb = j * nvir + b;
+                let denom = eps[first_occ + i] + eps[first_occ + j]
+                    - eps[nocc_total + a]
+                    - eps[nocc_total + b];
+                t2_row[jb] = eri_row[jb] / denom;
+            }
+        }
+    };
+
+    if nov * nov < PAR_T2_ELEMENT_THRESHOLD {
+        for ia in 0..nov {
+            fill_row(ia, &mut t2[ia * nov..(ia + 1) * nov]);
+        }
+    } else {
+        use rayon::prelude::*;
+        t2.par_chunks_mut(nov)
+            .enumerate()
+            .for_each(|(ia, row)| fill_row(ia, row));
+    }
+
+    t2
 }
 
 /// Build the full relaxed 1-PDM for OO-MP2 in MO basis.
@@ -387,6 +616,35 @@ fn compute_orbital_gradient(
     first_occ: usize,
     nocc_total: usize,
 ) -> Array2<f64> {
+    // VVOV panel width from the resident-bytes budget: one c-value costs
+    // nvir·nocc·nvir·8 bytes of VVOV rows. Unset budget = one full-width panel
+    // (bit-identical to the former unblocked path).
+    let nov = nocc * nvir;
+    let row_bytes = nvir.saturating_mul(nov).saturating_mul(8).max(1);
+    let panel_c = (ferric_core::memory::resolve_budget_bytes(None) / row_bytes).max(1).min(nvir.max(1));
+    compute_orbital_gradient_panelled(
+        f_mo, t2, b_full, nocc, nvir, first_occ, nocc_total, panel_c,
+    )
+}
+
+/// [`compute_orbital_gradient`] with an explicit VVOV c-panel width. The
+/// panelled evaluation is exact for any `panel_c >= 1` — panels change memory
+/// shape only, never the contraction. Split out so tests can force multi-panel
+/// execution regardless of the environment budget.
+// Orbital-space sizes plus the panel width are all irreducibly distinct.
+#[allow(clippy::too_many_arguments)]
+fn compute_orbital_gradient_panelled(
+    f_mo: &Array2<f64>,
+    t2: &[f64],
+    b_full: &Array3<f64>,
+    nocc: usize,
+    nvir: usize,
+    first_occ: usize,
+    nocc_total: usize,
+    panel_c: usize,
+) -> Array2<f64> {
+    use rayon::prelude::*;
+
     let naux = b_full.shape()[0];
     let nov = nocc * nvir;
 
@@ -418,13 +676,18 @@ fn compute_orbital_gradient(
         }
     }
 
-    // Dense MO-ERI blocks via wide GEMMs (BLAS3):
-    //   VVOV[(c*nvir+a), (j*nvir+b)] = (ca|jb)   shape (nvir², nocc·nvir)
-    //   OOOV[(i*nocc+k), (j*nvir+b)] = (ik|jb)   shape (nocc², nocc·nvir)
-    // All ERIs needed below are reindexings of these two (using the 8-fold
-    // permutational symmetry of the density-fitted (pq|rs)).
-    let vvov = b_vv.t().dot(&b_ov); // (nvir², nocc·nvir)
+    // OOOV is small (nocc²·nov·8 ≈ 0.44 GB at the audit scale) — build once.
+    //   OOOV[(i*nocc+k), (j*nvir+b)] = (ik|jb)
     let ooov = b_oo.t().dot(&b_ov); // (nocc², nocc·nvir)
+
+    // VVOV[(c*nvir+a), (j*nvir+b)] = (ca|jb), shape (nvir², nocc·nvir), is the
+    // single largest transient in the crate (~203 GB at the audit scale). Every
+    // VVOV read inside the c_idx loop below is confined to the `nvir` rows
+    // [c_idx*nvir, c_idx*nvir+nvir), so we never need more than a panel of c
+    // rows resident. Block over c-panels: build vvov_panel for a panel of
+    // c-values (a wide GEMM: b_vv[:, panel].t() · b_ov), consume it, discard it.
+    // Peak VVOV footprint is one panel instead of the full (nvir², nov) square.
+    let panel_c = panel_c.max(1).min(nvir.max(1));
 
     // g_{ai} has shape (nvir, nocc) -- virtual index a, occupied index i
     let mut g = Array2::zeros((nvir, nocc));
@@ -452,76 +715,103 @@ fn compute_orbital_gradient(
     // - delta_{bc} * [2*(ia|jk) - (ik|ja)]
     //
     // For each (c, k) pair, we sum over ijab with the appropriate delta contractions.
-    // ERIs are read from the precomputed VVOV / OOOV blocks:
-    //   (ca|jb) = vvov[c*nvir+a, j*nvir+b]
+    // ERIs are read from the (panelled) VVOV / (full) OOOV blocks:
+    //   (ca|jb) = vvov[c*nvir+a, j*nvir+b]  (vvov row = local c-panel offset)
     //   (ik|jb) = ooov[i*nocc+k, j*nvir+b]     ((ib|jk)=(jk|ib)=ooov[j*nocc+k, i*nvir+b])
 
-    for c_idx in 0..nvir {
-        for k in 0..nocc {
-            let mut grad_ck = 0.0;
+    let mut c0 = 0;
+    while c0 < nvir {
+        let c1 = (c0 + panel_c).min(nvir);
+        // vvov_panel rows correspond to c in [c0, c1): local row (c-c0)*nvir + a.
+        let bvv_panel = b_vv.slice(ndarray::s![.., c0 * nvir..c1 * nvir]);
+        let vvov_panel = bvv_panel.t().dot(&b_ov); // ((c1-c0)·nvir, nov)
 
-            // Term 1: delta_{ik} -> i=k, sum over j,a,b
-            // 2 * sum_{jab} t_{kj,ab} * [2*(ca|jb) - (cb|ja)]
-            for j in 0..nocc {
-                for a in 0..nvir {
-                    let ca = c_idx * nvir + a;
-                    let cb_row = c_idx * nvir; // + b below
-                    for b in 0..nvir {
-                        let t_kj_ab = t2[(k * nvir + a) * nov + j * nvir + b];
-                        let eri_cajb = vvov[(ca, j * nvir + b)];
-                        let eri_cbja = vvov[(cb_row + b, j * nvir + a)];
-                        grad_ck += t_kj_ab * (2.0 * eri_cajb - eri_cbja);
+        // Parallelize over the panel's c-values. Each c_idx reads only shared,
+        // read-only inputs (vvov_panel/ooov/t2) and produces its own row of nocc
+        // gradient contributions — a disjoint-write pattern. We collect each
+        // c_idx's row independently and scatter into `g` serially afterward.
+        // The per-c_idx `grad_ck` accumulation order is byte-for-byte the same
+        // as the serial version regardless of thread count, so the result is
+        // bit-identical (no cross-c_idx summation whose order could vary).
+        let panel_rows: Vec<(usize, Vec<f64>)> = (c0..c1)
+            .into_par_iter()
+            .map(|c_idx| {
+                let cbase = (c_idx - c0) * nvir; // local vvov_panel row base for this c
+                let mut row = vec![0.0_f64; nocc];
+                for (k, row_k) in row.iter_mut().enumerate() {
+                    let mut grad_ck = 0.0;
+
+                    // Term 1: delta_{ik} -> i=k, sum over j,a,b
+                    // 2 * sum_{jab} t_{kj,ab} * [2*(ca|jb) - (cb|ja)]
+                    for j in 0..nocc {
+                        for a in 0..nvir {
+                            let ca = cbase + a;
+                            for b in 0..nvir {
+                                let t_kj_ab = t2[(k * nvir + a) * nov + j * nvir + b];
+                                let eri_cajb = vvov_panel[(ca, j * nvir + b)];
+                                let eri_cbja = vvov_panel[(cbase + b, j * nvir + a)];
+                                grad_ck += t_kj_ab * (2.0 * eri_cajb - eri_cbja);
+                            }
+                        }
                     }
-                }
-            }
 
-            // Term 2: delta_{jk} -> j=k, sum over i,a,b
-            // 2 * sum_{iab} t_{ik,ab} * [2*(ia|cb) - (ib|ca)]
-            // (ia|cb) = (cb|ia) = vvov[c*nvir+b, i*nvir+a];
-            // (ib|ca) = (ca|ib) = vvov[c*nvir+a, i*nvir+b]
-            for i in 0..nocc {
-                for a in 0..nvir {
-                    for b in 0..nvir {
-                        let t_ik_ab = t2[(i * nvir + a) * nov + k * nvir + b];
-                        let eri_iacb = vvov[(c_idx * nvir + b, i * nvir + a)];
-                        let eri_ibca = vvov[(c_idx * nvir + a, i * nvir + b)];
-                        grad_ck += t_ik_ab * (2.0 * eri_iacb - eri_ibca);
+                    // Term 2: delta_{jk} -> j=k, sum over i,a,b
+                    // 2 * sum_{iab} t_{ik,ab} * [2*(ia|cb) - (ib|ca)]
+                    // (ia|cb) = (cb|ia) = vvov[c*nvir+b, i*nvir+a];
+                    // (ib|ca) = (ca|ib) = vvov[c*nvir+a, i*nvir+b]
+                    for i in 0..nocc {
+                        for a in 0..nvir {
+                            for b in 0..nvir {
+                                let t_ik_ab = t2[(i * nvir + a) * nov + k * nvir + b];
+                                let eri_iacb = vvov_panel[(cbase + b, i * nvir + a)];
+                                let eri_ibca = vvov_panel[(cbase + a, i * nvir + b)];
+                                grad_ck += t_ik_ab * (2.0 * eri_iacb - eri_ibca);
+                            }
+                        }
                     }
-                }
-            }
 
-            // Term 3: delta_{ac} -> a=c, sum over i,j,b
-            // -2 * sum_{ijb} t_{ij,cb} * [2*(ik|jb) - (ib|jk)]
-            // (ik|jb) = ooov[i*nocc+k, j*nvir+b];
-            // (ib|jk) = (jk|ib) = ooov[j*nocc+k, i*nvir+b]
-            for i in 0..nocc {
-                for j in 0..nocc {
-                    for b in 0..nvir {
-                        let t_ij_cb = t2[(i * nvir + c_idx) * nov + j * nvir + b];
-                        let eri_ikjb = ooov[(i * nocc + k, j * nvir + b)];
-                        let eri_ibjk = ooov[(j * nocc + k, i * nvir + b)];
-                        grad_ck -= t_ij_cb * (2.0 * eri_ikjb - eri_ibjk);
+                    // Term 3: delta_{ac} -> a=c, sum over i,j,b
+                    // -2 * sum_{ijb} t_{ij,cb} * [2*(ik|jb) - (ib|jk)]
+                    // (ik|jb) = ooov[i*nocc+k, j*nvir+b];
+                    // (ib|jk) = (jk|ib) = ooov[j*nocc+k, i*nvir+b]
+                    for i in 0..nocc {
+                        for j in 0..nocc {
+                            for b in 0..nvir {
+                                let t_ij_cb = t2[(i * nvir + c_idx) * nov + j * nvir + b];
+                                let eri_ikjb = ooov[(i * nocc + k, j * nvir + b)];
+                                let eri_ibjk = ooov[(j * nocc + k, i * nvir + b)];
+                                grad_ck -= t_ij_cb * (2.0 * eri_ikjb - eri_ibjk);
+                            }
+                        }
                     }
-                }
-            }
 
-            // Term 4: delta_{bc} -> b=c, sum over i,j,a
-            // -2 * sum_{ija} t_{ij,ac} * [2*(ia|jk) - (ik|ja)]
-            // (ia|jk) = (jk|ia) = ooov[j*nocc+k, i*nvir+a];
-            // (ik|ja) = ooov[i*nocc+k, j*nvir+a]
-            for i in 0..nocc {
-                for j in 0..nocc {
-                    for a in 0..nvir {
-                        let t_ij_ac = t2[(i * nvir + a) * nov + j * nvir + c_idx];
-                        let eri_iajk = ooov[(j * nocc + k, i * nvir + a)];
-                        let eri_ikja = ooov[(i * nocc + k, j * nvir + a)];
-                        grad_ck -= t_ij_ac * (2.0 * eri_iajk - eri_ikja);
+                    // Term 4: delta_{bc} -> b=c, sum over i,j,a
+                    // -2 * sum_{ija} t_{ij,ac} * [2*(ia|jk) - (ik|ja)]
+                    // (ia|jk) = (jk|ia) = ooov[j*nocc+k, i*nvir+a];
+                    // (ik|ja) = ooov[i*nocc+k, j*nvir+a]
+                    for i in 0..nocc {
+                        for j in 0..nocc {
+                            for a in 0..nvir {
+                                let t_ij_ac = t2[(i * nvir + a) * nov + j * nvir + c_idx];
+                                let eri_iajk = ooov[(j * nocc + k, i * nvir + a)];
+                                let eri_ikja = ooov[(i * nocc + k, j * nvir + a)];
+                                grad_ck -= t_ij_ac * (2.0 * eri_iajk - eri_ikja);
+                            }
+                        }
                     }
-                }
-            }
 
-            g[(c_idx, k)] -= 2.0 * grad_ck;
+                    *row_k = -2.0 * grad_ck;
+                }
+                (c_idx, row)
+            })
+            .collect();
+
+        for (c_idx, row) in panel_rows {
+            for (k, &val) in row.iter().enumerate() {
+                g[(c_idx, k)] += val;
+            }
         }
+        c0 = c1;
     }
 
     g
@@ -575,7 +865,13 @@ pub fn oo_ri_mp2(
     let h = oneelectron::hcore(obs);
 
     // AO-side invariants: built once, reused every iteration + backtrack.
-    let ao = OoRiMp2AoTensors::build(obs, dfbs, op)?;
+    // Thread the config budget (M1 resolver) rather than the env-only default.
+    let ao = OoRiMp2AoTensors::build_with_budget(
+        obs,
+        dfbs,
+        op,
+        ferric_core::memory::resolve_budget_bytes(config.memory_budget_bytes),
+    )?;
 
     // Start from converged RHF orbitals
     let mut c = rhf.mos_r().clone();
@@ -607,7 +903,7 @@ pub fn oo_ri_mp2(
 
     for iter in 1..=config.max_iter {
         // Compute full-MO B tensor for gradient evaluation
-        let b_full = compute_b_full_mo_with(&ao, &c);
+        let b_full = compute_b_full_mo_with(&ao, &c)?;
 
         // Build t2 amplitudes
         let naux = dfbs.nbasis();
@@ -778,7 +1074,7 @@ pub fn oo_ri_mp2(
 
         if de < config.energy_conv && iter > 1 {
             // Energy converged; recompute gradient to check convergence.
-            let b_full2 = compute_b_full_mo_with(&ao, &c);
+            let b_full2 = compute_b_full_mo_with(&ao, &c)?;
             let naux2 = dfbs.nbasis();
             let (t2_2, _) = compute_t2_and_integrals(
                 &b_ov, &eps, nocc, nvir, nocc_total, first_occ, naux2,
@@ -877,6 +1173,87 @@ mod tests {
         (mol, obs, dfbs, op, bounds, rhf)
     }
 
+    /// GEMM restructure (P6-residual) regression: `compute_t2_and_integrals`
+    /// and `compute_t2_only` must reproduce the original per-element scalar
+    /// formula `eri_iajb = Σ_p b_flat[p,ia]·b_flat[p,jb]` exactly (to
+    /// numerical noise) — this is the check that would catch a transposition
+    /// bug in the `b_flat^T @ b_flat` GEMM reindexing that a same-shape
+    /// (nov×nov, symmetric-looking) mistake could otherwise hide.
+    #[test]
+    fn test_t2_gemm_matches_scalar_formula() {
+        let (mol, obs, dfbs, op, bounds, rhf) = setup_h2();
+        let nbas = obs.nbasis();
+        let nocc_total = (mol.nelec() as usize) / 2;
+        let nocc = nocc_total;
+        let first_occ = 0;
+        let nvir = nbas - nocc_total;
+        let naux = dfbs.nbasis();
+        let orb = OrbitalSpace::new(nocc, nvir, nocc_total, first_occ);
+        let c = rhf.mos_r();
+        let h = oneelectron::hcore(&obs);
+        let ao = OoRiMp2AoTensors::build(&obs, &dfbs, op).unwrap();
+        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h).unwrap();
+        let eps = orbital_energies(c, &f_ao);
+        let (_e, b_flat) = compute_rimp2_with_orbitals(&ao, c, &eps, &orb).unwrap();
+
+        let nov = nocc * nvir;
+        // Reference: the original O(nov^2 * naux) scalar double-dot formula,
+        // reimplemented independently of compute_t2_and_integrals/compute_t2_only.
+        let mut t2_ref = vec![0.0f64; nov * nov];
+        let mut eri_ov_ref = vec![0.0f64; nov * nov];
+        for i in 0..nocc {
+            for a in 0..nvir {
+                let ia = i * nvir + a;
+                for j in 0..nocc {
+                    for b in 0..nvir {
+                        let jb = j * nvir + b;
+                        let eri_iajb: f64 =
+                            (0..naux.min(b_flat.nrows())).map(|p| b_flat[(p, ia)] * b_flat[(p, jb)]).sum();
+                        let denom = eps[first_occ + i] + eps[first_occ + j]
+                            - eps[nocc_total + a]
+                            - eps[nocc_total + b];
+                        eri_ov_ref[ia * nov + jb] = eri_iajb;
+                        t2_ref[ia * nov + jb] = eri_iajb / denom;
+                    }
+                }
+            }
+        }
+
+        let (t2_gemm, eri_ov_gemm) =
+            compute_t2_and_integrals(&b_flat, &eps, nocc, nvir, nocc_total, first_occ, naux);
+        let t2_only_gemm =
+            compute_t2_only(&b_flat, &eps, nocc, nvir, nocc_total, first_occ, naux);
+
+        let max_t2_diff = t2_ref
+            .iter()
+            .zip(t2_gemm.iter())
+            .map(|(r, g)| (r - g).abs())
+            .fold(0.0, f64::max);
+        let max_eri_diff = eri_ov_ref
+            .iter()
+            .zip(eri_ov_gemm.iter())
+            .map(|(r, g)| (r - g).abs())
+            .fold(0.0, f64::max);
+        let max_t2_only_diff = t2_ref
+            .iter()
+            .zip(t2_only_gemm.iter())
+            .map(|(r, g)| (r - g).abs())
+            .fold(0.0, f64::max);
+
+        assert!(
+            max_t2_diff < 1e-12,
+            "compute_t2_and_integrals t2 vs scalar formula maxdiff={max_t2_diff:.3e}"
+        );
+        assert!(
+            max_eri_diff < 1e-12,
+            "compute_t2_and_integrals eri_ov vs scalar formula maxdiff={max_eri_diff:.3e}"
+        );
+        assert!(
+            max_t2_only_diff < 1e-12,
+            "compute_t2_only vs scalar formula maxdiff={max_t2_only_diff:.3e}"
+        );
+    }
+
     #[test]
     fn test_oo_rimp2_lowers_energy() {
         let (mol, obs, dfbs, op, bounds, rhf) = setup_h2();
@@ -956,7 +1333,7 @@ mod tests {
         );
 
         // Build full-MO B tensor for gradient
-        let b_full = compute_b_full_mo_with(&ao, c);
+        let b_full = compute_b_full_mo_with(&ao, c).unwrap();
 
         let f_mo = c.t().dot(&f_ao).dot(c);
         let g = compute_orbital_gradient(
@@ -1010,6 +1387,141 @@ mod tests {
             max_err < 1e-3,
             "Gradient FD check failed: max_err={:.2e}",
             max_err
+        );
+    }
+
+    /// S1 spike (item #1, docs/perf-tasks/S1-spike-oo-rimp2-reference-energy.md):
+    /// no external reference is reachable for OO-RI-MP2's absolute energy —
+    /// PySCF's `pyscf.mp` has no orbital-optimization capability (confirmed by
+    /// this spike; `dir(mp)` = GMP2/MP2/RMP2/UMP2/dfgmp2/dfmp2/dfump2, no OO/OMP2
+    /// variant) and no psi4/forte (which does ship OMP2) is installed in this
+    /// environment. This is an INTERNAL SELF-CONSISTENCY check only, not an
+    /// absolute-energy validation:
+    ///
+    /// `test_oo_rimp2_gradient_finite_difference` (above) already proves the
+    /// analytic orbital-gradient FORMULA matches finite differences at an
+    /// arbitrary point (kappa=0, i.e. the starting RHF orbitals) — that
+    /// catches formula/sign bugs in `compute_orbital_gradient`. It does NOT
+    /// prove that the Newton+DIIS+Cayley solver's declared convergence in
+    /// `oo_ri_mp2` (`converged: true`, gated on `grad_norm < grad_conv`) is a
+    /// real stationary point of the true Hylleraas-derived analytic gradient
+    /// — the solver could in principle converge (self-consistently, by its
+    /// own gradient evaluation) to a point where an INDEPENDENT finite
+    /// difference of the total energy is nonzero, e.g. from a subtle bug
+    /// shared between the gradient used for the Newton step and the gradient
+    /// used for the convergence check (they are the same function call, so a
+    /// systematic error would not self-cancel).
+    ///
+    /// This test converges OO-RI-MP2 on H2/cc-pVDZ, then independently
+    /// recomputes the orbital gradient via central finite difference of
+    /// `energy_at_kappa` around the CONVERGED orbitals (not kappa=0), and
+    /// checks both (a) the FD gradient itself is near zero (true stationary
+    /// point) and (b) it agrees with the analytic gradient recomputed at
+    /// convergence. What this DOES validate: internal self-consistency of the
+    /// converged point (no drift between the solver's stopping criterion and
+    /// the actual energy landscape). What this does NOT validate: the
+    /// absolute converged energy against any external ground truth (no such
+    /// reference is reachable in this environment/timebox — see spike doc).
+    #[test]
+    fn test_oo_rimp2_converged_gradient_vanishes_h2_ccpvdz() {
+        let (mol, obs, dfbs, op, bounds, rhf) = setup_h2();
+
+        let config = OoRiMp2Config {
+            grad_conv: 1e-6,
+            energy_conv: 1e-10,
+            ..Default::default()
+        };
+        let oo = oo_ri_mp2(&mol, &obs, &dfbs, op, &bounds, &rhf, &config).unwrap();
+        assert!(
+            oo.converged,
+            "OO-RI-MP2 H2/cc-pVDZ did not converge: {} iters, |g|={:.2e}",
+            oo.iterations, oo.grad_norm
+        );
+        eprintln!(
+            "Converged at iter {}: E_tot={:.10}, solver |g|={:.2e}",
+            oo.iterations, oo.total_energy, oo.grad_norm
+        );
+
+        let nbas = obs.nbasis();
+        let nocc_total = (mol.nelec() as usize) / 2;
+        let nocc = nocc_total;
+        let first_occ = 0;
+        let nvir = nbas - nocc_total;
+        let orb = OrbitalSpace::new(nocc, nvir, nocc_total, first_occ);
+        let c = &oo.mos;
+
+        // Independently recompute the analytic gradient at the converged
+        // orbitals (same formula as the solver, but evaluated fresh here
+        // rather than trusting the solver's last internal value).
+        let h = oneelectron::hcore(&obs);
+        let ao = OoRiMp2AoTensors::build(&obs, &dfbs, op).unwrap();
+        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h).unwrap();
+        let eps = orbital_energies(c, &f_ao);
+        let (_e_mp2, b_ov) = compute_rimp2_with_orbitals(&ao, c, &eps, &orb).unwrap();
+        let naux = dfbs.nbasis();
+        let (t2, _) = compute_t2_and_integrals(&b_ov, &eps, nocc, nvir, nocc_total, first_occ, naux);
+        let b_full = compute_b_full_mo_with(&ao, c).unwrap();
+        let f_mo = c.t().dot(&f_ao).dot(c);
+        let g_analytic = compute_orbital_gradient(&f_mo, &t2, &b_full, nocc, nvir, first_occ, nocc_total);
+        let analytic_norm = g_analytic.iter().map(|x| x * x).sum::<f64>().sqrt();
+        eprintln!("Independently recomputed analytic |g| at convergence: {:.2e}", analytic_norm);
+
+        // Central finite difference of the total energy around the converged
+        // orbitals, in every (a,i) rotation direction — an FD gradient that is
+        // itself near zero is direct evidence of a true stationary point,
+        // independent of whatever internal gradient the solver trusted.
+        let delta = 1e-5;
+        let mut max_fd_grad = 0.0f64;
+        let mut max_err_vs_analytic = 0.0f64;
+        for a in 0..nvir {
+            let a_mo = nocc_total + a;
+            for i in 0..nocc {
+                let i_mo = first_occ + i;
+
+                let mut kappa_plus = Array2::zeros((nbas, nbas));
+                kappa_plus[(a_mo, i_mo)] = delta;
+                kappa_plus[(i_mo, a_mo)] = -delta;
+                let e_plus =
+                    energy_at_kappa(&mol, &obs, &dfbs, op, &bounds, c, &kappa_plus, &orb).unwrap();
+
+                let mut kappa_minus = Array2::zeros((nbas, nbas));
+                kappa_minus[(a_mo, i_mo)] = -delta;
+                kappa_minus[(i_mo, a_mo)] = delta;
+                let e_minus =
+                    energy_at_kappa(&mol, &obs, &dfbs, op, &bounds, c, &kappa_minus, &orb).unwrap();
+
+                let fd_grad = (e_plus - e_minus) / (2.0 * delta);
+                let analytic = g_analytic[(a, i)];
+                max_fd_grad = max_fd_grad.max(fd_grad.abs());
+                max_err_vs_analytic = max_err_vs_analytic.max((fd_grad - analytic).abs());
+
+                eprintln!(
+                    "converged grad[a={},i={}]: analytic={:+.8e}, FD={:+.8e}",
+                    a, i, analytic, fd_grad
+                );
+            }
+        }
+
+        eprintln!(
+            "At convergence: max|FD grad|={:.2e}, max FD-vs-analytic err={:.2e}",
+            max_fd_grad, max_err_vs_analytic
+        );
+
+        // (a) The converged point is a real stationary point of the true
+        // energy landscape, not just of the solver's own gradient evaluation.
+        assert!(
+            max_fd_grad < 1e-3,
+            "FD gradient at converged orbitals is not near zero: max|FD grad|={:.2e}",
+            max_fd_grad
+        );
+        // (b) The analytic gradient formula still agrees with FD at this
+        // (different from kappa=0) point -- same check as
+        // test_oo_rimp2_gradient_finite_difference but at the solver's actual
+        // output rather than the starting point.
+        assert!(
+            max_err_vs_analytic < 1e-3,
+            "Analytic vs FD gradient mismatch at convergence: {:.2e}",
+            max_err_vs_analytic
         );
     }
 
@@ -1070,6 +1582,278 @@ mod tests {
             "OO={:.10} should be <= RI={:.10}",
             oo.total_energy, ri.total_energy
         );
+    }
+
+    /// The aux-blocked (disk-spill) path through the ThreeIndexSource must give
+    /// bit-comparable results to the in-core path: b_full, the OV-dressed MP2
+    /// energy, and the orbital gradient all agree to machine precision.
+    #[test]
+    fn test_spill_budget_paths_match_incore() {
+        let (mol, obs, dfbs, op, bounds, rhf) = setup_h2();
+        let nbas = obs.nbasis();
+        let nocc_total = (mol.nelec() as usize) / 2;
+        let nvir = nbas - nocc_total;
+        let orb = OrbitalSpace::new(nocc_total, nvir, nocc_total, 0);
+        let c = rhf.mos_r();
+        let h = oneelectron::hcore(&obs);
+
+        // In-core reference (unlimited budget).
+        let ao_ref = OoRiMp2AoTensors::build_with_budget(&obs, &dfbs, op, usize::MAX).unwrap();
+        assert_eq!(ao_ref.eri3_ao.borrow().n_blocks(), 1);
+        // Tiny budget: ~3 aux rows per block, forces disk spill + many blocks.
+        let tiny = obs.nbasis() * obs.nbasis() * 8 * 3;
+        let ao_spill = OoRiMp2AoTensors::build_with_budget(&obs, &dfbs, op, tiny).unwrap();
+        assert!(
+            ao_spill.eri3_ao.borrow().n_blocks() > 1,
+            "expected multi-block spill, got {}",
+            ao_spill.eri3_ao.borrow().n_blocks()
+        );
+
+        // b_full identical.
+        let b_ref = compute_b_full_mo_with(&ao_ref, c).unwrap();
+        let b_spill = compute_b_full_mo_with(&ao_spill, c).unwrap();
+        let maxdiff = (&b_ref - &b_spill).iter().map(|v| v.abs()).fold(0.0, f64::max);
+        assert!(maxdiff < 1e-12, "b_full spill vs in-core maxdiff={maxdiff:.2e}");
+
+        // MP2 energy + b_ov identical.
+        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h).unwrap();
+        let eps = orbital_energies(c, &f_ao);
+        let (e_ref, bov_ref) = compute_rimp2_with_orbitals(&ao_ref, c, &eps, &orb).unwrap();
+        let (e_spill, bov_spill) = compute_rimp2_with_orbitals(&ao_spill, c, &eps, &orb).unwrap();
+        assert!((e_ref - e_spill).abs() < 1e-12, "E_MP2 spill vs in-core: {:.3e}", (e_ref - e_spill).abs());
+        let bovdiff = (&bov_ref - &bov_spill).iter().map(|v| v.abs()).fold(0.0, f64::max);
+        assert!(bovdiff < 1e-12, "b_ov spill vs in-core maxdiff={bovdiff:.2e}");
+    }
+
+    /// The VVOV c-panelled gradient must be exact for any panel width:
+    /// panel_c = 1 (max blocking) vs panel_c = nvir (single panel, the former
+    /// unblocked path).
+    #[test]
+    fn test_vvov_panelled_gradient_exact() {
+        let (mol, obs, dfbs, op, bounds, rhf) = setup_h2();
+        let nbas = obs.nbasis();
+        let nocc_total = (mol.nelec() as usize) / 2;
+        let nocc = nocc_total;
+        let first_occ = 0;
+        let nvir = nbas - nocc_total;
+        let naux = dfbs.nbasis();
+        let orb = OrbitalSpace::new(nocc, nvir, nocc_total, first_occ);
+        let c = rhf.mos_r();
+        let h = oneelectron::hcore(&obs);
+        let ao = OoRiMp2AoTensors::build(&obs, &dfbs, op).unwrap();
+        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h).unwrap();
+        let eps = orbital_energies(c, &f_ao);
+        let (_e, b_ov) = compute_rimp2_with_orbitals(&ao, c, &eps, &orb).unwrap();
+        let (t2, _) = compute_t2_and_integrals(&b_ov, &eps, nocc, nvir, nocc_total, first_occ, naux);
+        let b_full = compute_b_full_mo_with(&ao, c).unwrap();
+        let f_mo = c.t().dot(&f_ao).dot(c);
+
+        let g_full = compute_orbital_gradient_panelled(
+            &f_mo, &t2, &b_full, nocc, nvir, first_occ, nocc_total, nvir,
+        );
+        for panel in [1usize, 2, 3] {
+            let g_p = compute_orbital_gradient_panelled(
+                &f_mo, &t2, &b_full, nocc, nvir, first_occ, nocc_total, panel,
+            );
+            let maxdiff = (&g_full - &g_p).iter().map(|v| v.abs()).fold(0.0, f64::max);
+            assert!(
+                maxdiff < 1e-13,
+                "panelled gradient (panel_c={panel}) differs from full: {maxdiff:.2e}"
+            );
+        }
+    }
+
+    /// Region 2 (P6-residual): the per-q MO-transform loops in
+    /// `compute_b_full_mo_with` / `compute_rimp2_with_orbitals` fan out over
+    /// rayon above `PAR_MO_TRANSFORM_WORK_THRESHOLD`. `OoRiMp2AoTensors` holds
+    /// a `RefCell` (not `Sync`), so we cannot force distinct rayon thread-pool
+    /// sizes around a call that borrows it (rayon's `ThreadPool::install`
+    /// requires `Send` on the closure and its captures) the way
+    /// `test_oo_gradient_bit_identical_across_thread_counts` does for the
+    /// (pure-data) orbital-gradient path. Instead, cross-check the rayon-path
+    /// result (this system clears `PAR_MO_TRANSFORM_WORK_THRESHOLD`, so the
+    /// default global rayon pool exercises the parallel branch) against a
+    /// direct (non-chunked, non-parallel) scalar MO transform built straight
+    /// from the raw AO 3-index tensor + metric, proving the rayon branch
+    /// computes the identical contraction to ground truth.
+    #[test]
+    fn test_region2_mo_transform_matches_scalar_reference() {
+        let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+        let bs = basis::bundled("aug-cc-pvtz").unwrap();
+        let obs = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig {
+                energy_conv: 1e-10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(rhf.converged);
+        let aux_bs = basis::bundled("aug-cc-pvtz-rifit").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
+
+        let nbas = obs.nbasis();
+        let nocc_total = (mol.nelec() as usize) / 2;
+        let nvir = nbas - nocc_total;
+        let orb = OrbitalSpace::new(nocc_total, nvir, nocc_total, 0);
+        let c = rhf.mos_r().clone();
+        let ao = OoRiMp2AoTensors::build(&obs, &dfbs, op).unwrap();
+
+        // Sanity: confirm this system actually clears the rayon threshold for
+        // at least one of the two loops, so the test is exercising the branch
+        // it claims to.
+        let naux = ao.naux();
+        let qc_full = naux.min(MO_CHUNK);
+        let nov = nocc_total * nvir;
+        assert!(
+            qc_full * nbas * nbas >= PAR_MO_TRANSFORM_WORK_THRESHOLD
+                || qc_full * nov >= PAR_MO_TRANSFORM_WORK_THRESHOLD,
+            "test fixture too small to exercise Region 2 rayon branch: \
+             qc={qc_full} nbas={nbas} nov={nov}"
+        );
+
+        let b_full = compute_b_full_mo_with(&ao, &c).unwrap();
+        let (_e, b_ov) = compute_rimp2_with_orbitals(&ao, &c, rhf.eps_r(), &orb).unwrap();
+
+        // Independent, unchunked, unparallelized scalar reference for both
+        // outputs, built directly from the raw AO 3-index tensor + metric
+        // (bypasses for_each_block/MO_CHUNK/rayon entirely).
+        let v2c = threeindex::coulomb_metric_2c(op, &dfbs).unwrap();
+        let v2c_inv_sqrt = cholesky_inverse_sqrt(&v2c).unwrap();
+        let eri3_raw = threeindex::eri3_tensor(op, &obs, &dfbs).unwrap(); // (naux, nao, nao)
+        let nao = obs.nbasis();
+        let nmo = nbas;
+
+        // b_full_ref[P,p,q] = sum_Q v2c_inv_sqrt[P,Q] * (C^T (Q|mu nu) C)[p,q]
+        let mut mo_raw = Array3::<f64>::zeros((naux, nmo, nmo));
+        for qidx in 0..naux {
+            let bq_ao = eri3_raw.slice(ndarray::s![qidx, .., ..]);
+            let half = bq_ao.dot(&c);
+            let bq_mo = c.t().dot(&half);
+            mo_raw.slice_mut(ndarray::s![qidx, .., ..]).assign(&bq_mo);
+        }
+        let mo_raw_flat = mo_raw.into_shape_with_order((naux, nmo * nmo)).unwrap();
+        let b_full_ref_flat = v2c_inv_sqrt.dot(&mo_raw_flat);
+        let b_full_ref = b_full_ref_flat.into_shape_with_order((naux, nmo, nmo)).unwrap();
+
+        let b_full_maxdiff = (&b_full - &b_full_ref).iter().map(|v| v.abs()).fold(0.0, f64::max);
+        assert!(
+            b_full_maxdiff < 1e-10,
+            "compute_b_full_mo_with (rayon path) vs unchunked scalar reference: maxdiff={b_full_maxdiff:.3e}"
+        );
+
+        // b_ov_ref[P,ia] = sum_Q v2c_inv_sqrt[P,Q] * (C_occ^T (Q|mu nu) C_vir)[ia]
+        let c_occ = c.slice(ndarray::s![.., 0..nocc_total]).to_owned();
+        let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
+        let mut mo_ov_raw = Array2::<f64>::zeros((naux, nov));
+        for qidx in 0..naux {
+            let bq_ao = eri3_raw.slice(ndarray::s![qidx, .., ..]);
+            let tmp = bq_ao.dot(&c_vir);
+            let bq_mo = c_occ.t().dot(&tmp);
+            mo_ov_raw
+                .slice_mut(ndarray::s![qidx, ..])
+                .assign(&bq_mo.into_shape_with_order(nov).unwrap());
+        }
+        let b_ov_ref = v2c_inv_sqrt.dot(&mo_ov_raw);
+        let b_ov_maxdiff = (&b_ov - &b_ov_ref).iter().map(|v| v.abs()).fold(0.0, f64::max);
+        assert!(
+            b_ov_maxdiff < 1e-10,
+            "compute_rimp2_with_orbitals b_ov (rayon path) vs unchunked scalar reference: maxdiff={b_ov_maxdiff:.3e}"
+        );
+        let _ = nao; // used only for the (naux, nao, nao) shape documented above
+    }
+
+    /// The rayon-parallelized c_idx response-term loop (P6) must produce a
+    /// byte-for-byte identical gradient regardless of thread count. Each c_idx
+    /// writes only its own row via a disjoint-write collect, so there is no
+    /// summation whose order varies with scheduling — bit-identity, not merely
+    /// close-agreement, is the correct assertion. Mirrors
+    /// `whole_pipeline_rhf_gradient_bit_identical_across_thread_counts` in
+    /// ferric-scf/src/rhf.rs.
+    #[test]
+    fn test_oo_gradient_bit_identical_across_thread_counts() {
+        // Water/cc-pVDZ gives nocc=5, nvir=19 — enough c-values for rayon to
+        // actually split work across threads, unlike H2 (nvir=9, nocc=1).
+        let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+        let bs = basis::bundled("cc-pvdz").unwrap();
+        let obs = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig {
+                energy_conv: 1e-10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
+
+        let nbas = obs.nbasis();
+        let nocc_total = (mol.nelec() as usize) / 2;
+        let nocc = nocc_total;
+        let first_occ = 0;
+        let nvir = nbas - nocc_total;
+        let naux = dfbs.nbasis();
+        let orb = OrbitalSpace::new(nocc, nvir, nocc_total, first_occ);
+        let c = rhf.mos_r();
+        let h = oneelectron::hcore(&obs);
+        let ao = OoRiMp2AoTensors::build(&obs, &dfbs, op).unwrap();
+        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h).unwrap();
+        let eps = orbital_energies(c, &f_ao);
+        let (_e, b_ov) = compute_rimp2_with_orbitals(&ao, c, &eps, &orb).unwrap();
+        let (t2, _) = compute_t2_and_integrals(&b_ov, &eps, nocc, nvir, nocc_total, first_occ, naux);
+        let b_full = compute_b_full_mo_with(&ao, c).unwrap();
+        let f_mo = c.t().dot(&f_ao).dot(c);
+
+        // Force a multi-panel width (panel_c=3) so the parallel region runs
+        // inside more than one GEMM panel, exercising the interaction of
+        // panelling and rayon scheduling together.
+        let run_with_threads = |n: usize| -> Array2<f64> {
+            let pool = rayon::ThreadPoolBuilder::new().num_threads(n).build().unwrap();
+            pool.install(|| {
+                compute_orbital_gradient_panelled(
+                    &f_mo, &t2, &b_full, nocc, nvir, first_occ, nocc_total, 3,
+                )
+            })
+        };
+
+        let g1 = run_with_threads(1);
+        let g4 = run_with_threads(4);
+        let g8 = run_with_threads(8);
+
+        for a in 0..nvir {
+            for i in 0..nocc {
+                assert_eq!(
+                    g1[(a, i)].to_bits(),
+                    g4[(a, i)].to_bits(),
+                    "OO gradient not bit-identical 1 vs 4 threads at (a={a}, i={i}): \
+                     1={:.17e} (0x{:016x}), 4={:.17e} (0x{:016x})",
+                    g1[(a, i)], g1[(a, i)].to_bits(),
+                    g4[(a, i)], g4[(a, i)].to_bits(),
+                );
+                assert_eq!(
+                    g1[(a, i)].to_bits(),
+                    g8[(a, i)].to_bits(),
+                    "OO gradient not bit-identical 1 vs 8 threads at (a={a}, i={i}): \
+                     1={:.17e} (0x{:016x}), 8={:.17e} (0x{:016x})",
+                    g1[(a, i)], g1[(a, i)].to_bits(),
+                    g8[(a, i)], g8[(a, i)].to_bits(),
+                );
+            }
+        }
     }
 
     #[test]

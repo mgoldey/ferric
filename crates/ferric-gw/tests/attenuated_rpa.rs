@@ -22,8 +22,8 @@ fn pdep_cfg() -> PdepRpaConfig {
             n_points: 16,
             u0: 0.5,
         },
-        davidson_conv_thresh: 1e-7,
-        davidson_max_vecs: 0,
+        eigensolver_conv_thresh: 1e-7,
+        eigensolver_max_vecs: 0,
         trunc_thresh: 0.0,
         run_diagnostics: false,
         frozen_core: 0,
@@ -31,6 +31,8 @@ fn pdep_cfg() -> PdepRpaConfig {
         chi0_sparsity: Chi0Sparsity::Dense,
         eigensolver: Eigensolver::Davidson,
         sternheimer: SternheimerConfig::default(),
+        memory_budget_bytes: None,
+        need_inv_dielectric_freq: false, // energy-only attenuated-RPA (M9 gate)
     }
 }
 

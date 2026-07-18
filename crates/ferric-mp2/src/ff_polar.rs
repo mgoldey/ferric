@@ -30,11 +30,35 @@ use ferric_scf::diis::Diis;
 use ferric_scf::rhf::{build_jk, RhfConfig};
 use ferric_scf::result::{ScfResult, Spin};
 use ferric_scf::screening::SchwarzBounds;
+
+/// `FERRIC_FF_TRACE` descriptor: finite-field α driver trace (env-only debug toggle).
+static FF_TRACE: ferric_core::config::ConfigVar<bool> = ferric_core::config::ConfigVar {
+    env_name: "FERRIC_FF_TRACE",
+    default: false,
+    parse: ferric_core::config::parse_toggle,
+    validate: ferric_core::config::accept_any,
+};
+fn ff_trace() -> bool {
+    FF_TRACE.toggle()
+}
+
+/// `FERRIC_FF_UNRELAXED` descriptor: use the unrelaxed (no orbital-response)
+/// MP2 density instead of the relaxed one — a dev-only diagnostic for isolating
+/// the orbital-relaxation contribution to α in this (experimental) finite-field
+/// path. Routed through the shared toggle so `FERRIC_FF_UNRELAXED=0` means off
+/// (the old `== Some("1")` read already treated 0 as off, but any other value
+/// too — this canonicalizes it).
+static FF_UNRELAXED: ferric_core::config::ConfigVar<bool> = ferric_core::config::ConfigVar {
+    env_name: "FERRIC_FF_UNRELAXED",
+    default: false,
+    parse: ferric_core::config::parse_toggle,
+    validate: ferric_core::config::accept_any,
+};
 use ndarray::Array2;
 use ndarray_linalg::{Eigh, UPLO};
 
 use crate::rimp2::{compute_mp2_intermediates, RiMp2Config};
-use crate::zvector::{build_relaxed_density_ao, solve_zvector};
+use crate::zvector::{build_lagrangian, build_relaxed_density_ao};
 
 /// Which MP2 1-PDM to difference for the finite-field polarizability.
 ///
@@ -164,6 +188,7 @@ pub(crate) fn solve_rhf_with_external(
                 fock_alpha: f,
                 fock_beta: None,
                 converged: true,
+                exit: ferric_scf::result::ScfExit::Converged,
                 iterations: iter,
                 computed_quartets: total_quartets,
             });
@@ -194,16 +219,22 @@ fn mp2_relaxed_density_ao(
 ) -> Result<Array2<f64>, FerricError> {
     let inter = compute_mp2_intermediates(mol, obs, dfbs, op, rhf, config)?;
     let orb = inter.orbital_space();
-    // Relaxed: solve the Z-vector. We discard solve_zvector's unreliable iterative
-    // z (its Jacobi-DIIS plateaus/diverges) but keep its EXACT Lagrangian L, then
-    // re-solve (Δε+A)z=L by CG. Unrelaxed: z=0 (no orbital response → no
-    // near-singular 1/F mode for symmetric molecules). solve_zvector (production
-    // gradient) is untouched either way.
+    // Relaxed: build the CPHF Lagrangian RHS L via build_lagrangian, then re-solve
+    // (Δε+A)z=L by CG (its Jacobi-DIIS analog in solve_zvector plateaus/diverges
+    // here). Unrelaxed: z=0 (no orbital response → no near-singular 1/F mode for
+    // symmetric molecules). NOTE: this uses the finite-field-α Lagrangian
+    // (build_lagrangian), which is the CPHF RHS for the FF-α path specifically;
+    // the production analytic gradient's solve_zvector uses the PySCF Xvo RHS and
+    // returns the RI-MP2 Lagrangian matrix Imat instead — a different second
+    // return value, hence the direct build_lagrangian call here.
     let z = match density_mode {
         DensityMode::Unrelaxed => Array2::<f64>::zeros((orb.nvir, orb.nocc)),
         DensityMode::Relaxed => {
-            let (_z_iter, l) = solve_zvector(mol, obs, dfbs, op, bounds, rhf, &inter)?;
-            solve_zvector_cg(rhf.mos_r(), &l, obs, bounds, &orb, rhf.eps_r())?
+            let c = rhf.mos_r();
+            let f_mo = c.t().dot(rhf.fock_r()).dot(c);
+            let b_full = crate::oo_rimp2::compute_b_full_mo(obs, dfbs, op, c)?;
+            let l = build_lagrangian(&f_mo, &inter.t2, &inter.p_oo, &inter.p_vv, &orb, &b_full);
+            solve_zvector_cg(c, &l, obs, bounds, &orb, rhf.eps_r())?
         }
     };
     Ok(build_relaxed_density_ao(
@@ -232,7 +263,7 @@ pub fn debug_perturbed_dipole_z(
     field: f64,
 ) -> Result<f64, FerricError> {
     let n = obs.nbasis();
-    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
     let mut v = Array2::<f64>::zeros((n, n));
     for mu in 0..n {
         for nu in 0..n {
@@ -240,14 +271,14 @@ pub fn debug_perturbed_dipole_z(
         }
     }
     let rhf = solve_rhf_with_external(ctx, mol, obs, bounds, scf_config, &v)?;
-    let mode = if std::env::var("FERRIC_FF_UNRELAXED").ok().as_deref() == Some("1") {
+    let mode = if FF_UNRELAXED.toggle() {
         DensityMode::Unrelaxed
     } else {
         DensityMode::Relaxed
     };
     let p = mp2_relaxed_density_ao(mol, obs, dfbs, op, bounds, &rhf, mp2_config, mode)?;
 
-    if std::env::var("FERRIC_FF_TRACE").ok().as_deref() == Some("1") {
+    if ff_trace() {
         // Electron count of the relaxed density and of the SCF reference, plus the
         // SCF-only μ_z vs the full MP2-relaxed μ_z. Localizes a 1/F blow-up to the
         // SCF reference vs the MP2 correction.
@@ -277,7 +308,7 @@ pub fn debug_scf_dipole_z(
     field: f64,
 ) -> Result<f64, FerricError> {
     let n = obs.nbasis();
-    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
     let mut v = Array2::<f64>::zeros((n, n));
     for mu in 0..n {
         for nu in 0..n {
@@ -300,7 +331,7 @@ pub fn debug_scf_dipole_axis(
     field: f64,
 ) -> Result<[f64; 3], FerricError> {
     let n = obs.nbasis();
-    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
     let mut v = Array2::<f64>::zeros((n, n));
     for mu in 0..n {
         for nu in 0..n {
@@ -373,7 +404,7 @@ fn solve_zvector_cg(
 
     let max_iter = 100;
     let tol = 1e-10; // tighter than the 1e-8 the FF dipole difference needs
-    let trace = std::env::var("FERRIC_ZVEC_TRACE").ok().as_deref() == Some("1");
+    let trace = crate::zvector::zvec_trace();
     for it in 0..max_iter {
         let resid_max = r.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
         if trace { eprintln!("  [zvec-cg] iter={it:3}  max_resid={resid_max:.3e}"); }
@@ -441,7 +472,7 @@ pub fn mp2_polarizability_static(
 ) -> Result<Mp2Polarizability, FerricError> {
     let n = obs.nbasis();
     // AO dipole integrals ⟨μ|r_d|ν⟩ about the origin.
-    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0]);
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
 
     let h = field_strength;
     let mut tensor = [[0.0_f64; 3]; 3];

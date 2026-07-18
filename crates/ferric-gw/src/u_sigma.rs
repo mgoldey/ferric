@@ -15,7 +15,7 @@
 
 use crate::cohsex::{project_b_into_pdep, sigma_x_diag};
 use crate::mo_b::MoB;
-use crate::sigma::{fermi_level, solve_qp_for_mo};
+use crate::sigma::{fermi_level, solve_qp_for_mo, warn_if_unconverged};
 use crate::w_pdep;
 use crate::{GwConfig, UGwResult};
 use ferric_core::FerricError;
@@ -50,25 +50,32 @@ pub fn run_u_g0w0(
     let quad_freqs = pdep.quad_freqs.clone();
     let quad_weights = pdep.quad_weights.clone();
 
-    let (eps_qp_a, eps_mf_a, sx_a, sc_a, z_a) = qp_per_spin_g0w0(
+    let (eps_qp_a, eps_mf_a, sx_a, sc_a, z_a, conv_a) = qp_per_spin_g0w0(
         mo_b_a, &m_proj_a, &sigma_x_a_all, inv_diel_freq, &quad_weights, &quad_freqs,
         &qp_range, gw_cfg,
     )?;
-    let (eps_qp_b, eps_mf_b, sx_b, sc_b, z_b) = qp_per_spin_g0w0(
+    let (eps_qp_b, eps_mf_b, sx_b, sc_b, z_b, conv_b) = qp_per_spin_g0w0(
         mo_b_b, &m_proj_b, &sigma_x_b_all, inv_diel_freq, &quad_weights, &quad_freqs,
         &qp_range, gw_cfg,
     )?;
+    let mo_indices: Vec<usize> = qp_range.collect();
+    warn_if_unconverged("U-G0W0 (alpha)", &mo_indices, &conv_a);
+    warn_if_unconverged("U-G0W0 (beta)", &mo_indices, &conv_b);
 
     Ok(UGwResult {
-        mo_indices: qp_range.collect(),
+        mo_indices,
         eps_mf_a, eps_qp_a, sigma_x_a: sx_a, sigma_c_a: sc_a, z_factor_a: z_a,
         eps_mf_b, eps_qp_b, sigma_x_b: sx_b, sigma_c_b: sc_b, z_factor_b: z_b,
+        qp_converged_a: conv_a,
+        qp_converged_b: conv_b,
         n_ev_iter: 0,
+        outer_converged: true,
         pdep,
     })
 }
 
 /// Helper: per-spin G0W0 QP loop.
+#[allow(clippy::type_complexity)]
 fn qp_per_spin_g0w0(
     mo_b: &MoB,
     m_proj: &ndarray::Array3<f64>,
@@ -78,7 +85,7 @@ fn qp_per_spin_g0w0(
     quad_freqs: &[f64],
     qp_range: &std::ops::Range<usize>,
     gw_cfg: &GwConfig,
-) -> Result<(Array1<f64>, Array1<f64>, Array1<f64>, Array1<f64>, Array1<f64>), FerricError> {
+) -> Result<(Array1<f64>, Array1<f64>, Array1<f64>, Array1<f64>, Array1<f64>, Vec<bool>), FerricError> {
     let first_act = mo_b.first_act;
     let ef = fermi_level(&mo_b.eps_act, mo_b.n_occ_act);
     let mo_indices: Vec<usize> = qp_range.clone().collect();
@@ -87,6 +94,7 @@ fn qp_per_spin_g0w0(
     let mut sx_out = Array1::<f64>::zeros(mo_indices.len());
     let mut sc_out = Array1::<f64>::zeros(mo_indices.len());
     let mut z_out = Array1::<f64>::ones(mo_indices.len());
+    let mut qp_converged = vec![true; mo_indices.len()];
     // Independent per-state QP solves (scalar math only) — parallelize.
     let qp_rows = mo_indices
         .par_iter()
@@ -98,21 +106,22 @@ fn qp_per_spin_g0w0(
             }
             let m_loc = mo_abs - first_act;
             let eps_m = mo_b.eps_act[m_loc];
-            let (eps_qp_m, sc_final, z_renorm) = solve_qp_for_mo(
+            let (eps_qp_m, sc_final, z_renorm, converged) = solve_qp_for_mo(
                 m_loc, eps_m, m_proj, inv_diel_freq, quad_weights, quad_freqs,
                 &mo_b.eps_act, gw_cfg.pade_npts, gw_cfg.qp_newton_damp, ef, 0.0,
-            );
-            Ok((eps_m, sigma_x_all[m_loc], eps_qp_m, sc_final, z_renorm))
+            )?;
+            Ok((eps_m, sigma_x_all[m_loc], eps_qp_m, sc_final, z_renorm, converged))
         })
         .collect::<Result<Vec<_>, FerricError>>()?;
-    for (idx, &(eps_m, sx, eps_qp_m, sc_final, z_renorm)) in qp_rows.iter().enumerate() {
+    for (idx, &(eps_m, sx, eps_qp_m, sc_final, z_renorm, converged)) in qp_rows.iter().enumerate() {
         eps_mf[idx] = eps_m;
         sx_out[idx] = sx;
         eps_qp[idx] = eps_qp_m;
         sc_out[idx] = sc_final;
         z_out[idx] = z_renorm;
+        qp_converged[idx] = converged;
     }
-    Ok((eps_qp, eps_mf, sx_out, sc_out, z_out))
+    Ok((eps_qp, eps_mf, sx_out, sc_out, z_out, qp_converged))
 }
 
 /// U-evGW₀: per-spin eigenvalue self-consistency on G; W frozen at iter 0.
@@ -153,6 +162,8 @@ pub fn run_u_evgw0(
     let mut sc_b = Array1::<f64>::zeros(mo_indices.len());
     let mut z_a = Array1::<f64>::ones(mo_indices.len());
     let mut z_b = Array1::<f64>::ones(mo_indices.len());
+    let mut conv_a = vec![true; mo_indices.len()];
+    let mut conv_b = vec![true; mo_indices.len()];
     for (idx, &mo_abs) in mo_indices.iter().enumerate() {
         let mla = mo_abs - first_act_a;
         let mlb = mo_abs - first_act_b;
@@ -169,6 +180,7 @@ pub fn run_u_evgw0(
     let mut eps_prop_a = mo_b_a.eps_act.clone();
     let mut eps_prop_b = mo_b_b.eps_act.clone();
     let mut iter_done = 0usize;
+    let mut outer_converged = gw_cfg.max_ev_iter == 0;
     for it in 0..gw_cfg.max_ev_iter {
         // Update propagator ε's per spin from previous QP estimates.
         for (idx, &mo_abs) in mo_indices.iter().enumerate() {
@@ -177,7 +189,7 @@ pub fn run_u_evgw0(
         }
         let mut max_dev = 0.0_f64;
         // Frozen per-iteration eps_prop snapshots ⇒ independent per-state solves.
-        let qp_new: Vec<((f64, f64, f64), (f64, f64, f64))> = mo_indices
+        let qp_new: Vec<((f64, f64, f64, bool), (f64, f64, f64, bool))> = mo_indices
             .par_iter()
             .map(|&mo_abs| {
                 let mla = mo_abs - first_act_a;
@@ -186,29 +198,45 @@ pub fn run_u_evgw0(
                     mla, mo_b_a.eps_act[mla], &m_proj_a, inv_diel_freq,
                     &pdep.quad_weights, &pdep.quad_freqs, &eps_prop_a,
                     gw_cfg.pade_npts, gw_cfg.qp_newton_damp, ef_a, 0.0,
-                );
+                )?;
                 let rb = solve_qp_for_mo(
                     mlb, mo_b_b.eps_act[mlb], &m_proj_b, inv_diel_freq,
                     &pdep.quad_weights, &pdep.quad_freqs, &eps_prop_b,
                     gw_cfg.pade_npts, gw_cfg.qp_newton_damp, ef_b, 0.0,
-                );
-                (ra, rb)
+                )?;
+                Ok((ra, rb))
             })
-            .collect();
-        for (idx, &((ena, sca, za), (enb, scb, zb))) in qp_new.iter().enumerate() {
+            .collect::<Result<Vec<_>, FerricError>>()?;
+        for (idx, &((ena, sca, za, cona), (enb, scb, zb, conb))) in qp_new.iter().enumerate() {
             max_dev = max_dev.max((ena - eps_qp_a[idx]).abs()).max((enb - eps_qp_b[idx]).abs());
-            eps_qp_a[idx] = ena; sc_a[idx] = sca; z_a[idx] = za;
-            eps_qp_b[idx] = enb; sc_b[idx] = scb; z_b[idx] = zb;
+            eps_qp_a[idx] = ena; sc_a[idx] = sca; z_a[idx] = za; conv_a[idx] = cona;
+            eps_qp_b[idx] = enb; sc_b[idx] = scb; z_b[idx] = zb; conv_b[idx] = conb;
         }
         iter_done = it + 1;
-        if max_dev < gw_cfg.ev_conv_thresh { break; }
+        if max_dev < gw_cfg.ev_conv_thresh {
+            outer_converged = true;
+            break;
+        }
+    }
+    warn_if_unconverged("U-evGW0 (alpha)", &mo_indices, &conv_a);
+    warn_if_unconverged("U-evGW0 (beta)", &mo_indices, &conv_b);
+    if !outer_converged {
+        eprintln!(
+            "ferric-gw WARNING: U-evGW0 outer loop did not converge within max_ev_iter={} \
+             (ev_conv_thresh={:.3e}); returned energies are the last iterate, not \
+             self-consistent.",
+            gw_cfg.max_ev_iter, gw_cfg.ev_conv_thresh
+        );
     }
 
     Ok(UGwResult {
         mo_indices,
         eps_mf_a, eps_qp_a, sigma_x_a: sx_a, sigma_c_a: sc_a, z_factor_a: z_a,
         eps_mf_b, eps_qp_b, sigma_x_b: sx_b, sigma_c_b: sc_b, z_factor_b: z_b,
+        qp_converged_a: conv_a,
+        qp_converged_b: conv_b,
         n_ev_iter: iter_done,
+        outer_converged,
         pdep,
     })
 }
@@ -249,6 +277,8 @@ pub fn run_u_evgw(
     let mut sc_b = Array1::<f64>::zeros(mo_indices.len());
     let mut z_a = Array1::<f64>::ones(mo_indices.len());
     let mut z_b = Array1::<f64>::ones(mo_indices.len());
+    let mut conv_a = vec![true; mo_indices.len()];
+    let mut conv_b = vec![true; mo_indices.len()];
     for (idx, &mo_abs) in mo_indices.iter().enumerate() {
         let mla = mo_abs - first_act_a;
         let mlb = mo_abs - first_act_b;
@@ -263,6 +293,7 @@ pub fn run_u_evgw(
     let ef_a = fermi_level(&mo_b_a.eps_act, mo_b_a.n_occ_act);
     let ef_b = fermi_level(&mo_b_b.eps_act, mo_b_b.n_occ_act);
     let mut iter_done = 0usize;
+    let mut outer_converged = false;
     for it in 0..gw_cfg.max_ev_iter {
         // Overlay current QP energies on shifted_scf so PDEP χ₀ denominators
         // see the QP gaps. For ROHF, β reuses α — we still write both arrays
@@ -298,7 +329,7 @@ pub fn run_u_evgw(
         }
         let mut max_dev = 0.0_f64;
         // Frozen (m_proj, W, eps_prop) snapshot ⇒ independent per-state solves.
-        let qp_new: Vec<((f64, f64, f64), (f64, f64, f64))> = mo_indices
+        let qp_new: Vec<((f64, f64, f64, bool), (f64, f64, f64, bool))> = mo_indices
             .par_iter()
             .map(|&mo_abs| {
                 let mla = mo_abs - first_act_a;
@@ -307,29 +338,45 @@ pub fn run_u_evgw(
                     mla, mo_b_a.eps_act[mla], &m_proj_a, inv_diel_freq,
                     &current_pdep.quad_weights, &current_pdep.quad_freqs, &eps_prop_a,
                     gw_cfg.pade_npts, gw_cfg.qp_newton_damp, ef_a, 0.0,
-                );
+                )?;
                 let rb = solve_qp_for_mo(
                     mlb, mo_b_b.eps_act[mlb], &m_proj_b, inv_diel_freq,
                     &current_pdep.quad_weights, &current_pdep.quad_freqs, &eps_prop_b,
                     gw_cfg.pade_npts, gw_cfg.qp_newton_damp, ef_b, 0.0,
-                );
-                (ra, rb)
+                )?;
+                Ok((ra, rb))
             })
-            .collect();
-        for (idx, &((ena, sca, za), (enb, scb, zb))) in qp_new.iter().enumerate() {
+            .collect::<Result<Vec<_>, FerricError>>()?;
+        for (idx, &((ena, sca, za, cona), (enb, scb, zb, conb))) in qp_new.iter().enumerate() {
             max_dev = max_dev.max((ena - eps_qp_a[idx]).abs()).max((enb - eps_qp_b[idx]).abs());
-            eps_qp_a[idx] = ena; sc_a[idx] = sca; z_a[idx] = za;
-            eps_qp_b[idx] = enb; sc_b[idx] = scb; z_b[idx] = zb;
+            eps_qp_a[idx] = ena; sc_a[idx] = sca; z_a[idx] = za; conv_a[idx] = cona;
+            eps_qp_b[idx] = enb; sc_b[idx] = scb; z_b[idx] = zb; conv_b[idx] = conb;
         }
         iter_done = it + 1;
-        if max_dev < gw_cfg.ev_conv_thresh && it > 0 { break; }
+        if max_dev < gw_cfg.ev_conv_thresh && it > 0 {
+            outer_converged = true;
+            break;
+        }
+    }
+    warn_if_unconverged("U-evGW (alpha)", &mo_indices, &conv_a);
+    warn_if_unconverged("U-evGW (beta)", &mo_indices, &conv_b);
+    if !outer_converged {
+        eprintln!(
+            "ferric-gw WARNING: U-evGW outer loop did not converge within max_ev_iter={} \
+             (ev_conv_thresh={:.3e}); returned energies (and W) are the last iterate, \
+             not self-consistent.",
+            gw_cfg.max_ev_iter, gw_cfg.ev_conv_thresh
+        );
     }
 
     Ok(UGwResult {
         mo_indices,
         eps_mf_a, eps_qp_a, sigma_x_a: sx_a, sigma_c_a: sc_a, z_factor_a: z_a,
         eps_mf_b, eps_qp_b, sigma_x_b: sx_b, sigma_c_b: sc_b, z_factor_b: z_b,
+        qp_converged_a: conv_a,
+        qp_converged_b: conv_b,
         n_ev_iter: iter_done,
+        outer_converged,
         pdep: current_pdep,
     })
 }

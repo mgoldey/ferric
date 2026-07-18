@@ -48,7 +48,7 @@ fn pyscf_compat_config(n_quad: usize) -> PdepRpaConfig {
         frozen_core: 0,
         // Disable PDEP truncation: compare full-basis dielectric to PySCF's full RI-RPA.
         trunc_thresh: 0.0,
-        davidson_conv_thresh: 1e-10,
+        eigensolver_conv_thresh: 1e-10,
         ..Default::default()
     }
 }
@@ -59,6 +59,44 @@ fn h2_sto3g_rpa_energy_sign() {
     let result = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &PdepRpaConfig::default()).unwrap();
     assert!(result.e_rpa < 0.0, "E_c should be negative, got {}", result.e_rpa);
     assert!(result.n_eigenpotentials > 0);
+}
+
+#[test]
+fn energy_only_run_does_not_materialize_inv_dielectric_freq() {
+    // M9: the default (energy-only) config must NOT build the nquad × M²
+    // inverse-dielectric stack — it is only consumed by GW/BSE/property paths.
+    let (mol, obs, dfbs, op, rhf) = setup("../../testdata/molecules/h2.xyz", "sto-3g", "sto-3g");
+    let cfg = PdepRpaConfig::default();
+    assert!(!cfg.need_inv_dielectric_freq, "default config must be energy-only");
+    let result = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
+    assert!(
+        result.inv_dielectric_freq.is_none(),
+        "energy-only run must leave inv_dielectric_freq None (never allocate the stack)"
+    );
+    assert!(result.e_rpa < 0.0);
+}
+
+#[test]
+fn inv_dielectric_freq_built_when_flag_set() {
+    // M9: setting the flag materializes the per-frequency stack for GW/property
+    // consumers, one (M×M) matrix per quadrature point.
+    let (mol, obs, dfbs, op, rhf) = setup("../../testdata/molecules/h2.xyz", "sto-3g", "sto-3g");
+    let cfg = PdepRpaConfig {
+        need_inv_dielectric_freq: true,
+        ..PdepRpaConfig::default()
+    };
+    let result = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
+    let winv = result
+        .inv_dielectric_freq
+        .as_ref()
+        .expect("flag set → inv_dielectric_freq must be Some");
+    assert_eq!(
+        winv.len(),
+        result.quad_freqs.len(),
+        "one inverse-dielectric matrix per quadrature frequency"
+    );
+    let m = result.n_eigenpotentials;
+    assert_eq!(winv[0].shape(), &[m, m], "each matrix is M×M in the PDEP basis");
 }
 
 #[test]
@@ -121,7 +159,7 @@ fn h2_sto3g_pdep_rpa_vs_ri_drpa() {
     let (mol, obs, dfbs, op, rhf) = setup("../../testdata/molecules/h2.xyz", "sto-3g", "sto-3g");
     let cfg = PdepRpaConfig {
         trunc_thresh: 0.0,
-        davidson_conv_thresh: 1e-10,
+        eigensolver_conv_thresh: 1e-10,
         run_diagnostics: true,
         ..Default::default()
     };
@@ -160,7 +198,7 @@ fn h2o_cc_pvdz_pdep_truncation_convergence() {
     for thresh in &[1e-1, 1e-2, 1e-3, 1e-4, 1e-6, 1e-10] {
         let mut cfg = pyscf_compat_config(40);
         cfg.trunc_thresh = *thresh;
-        cfg.davidson_conv_thresh = 1e-10;
+        cfg.eigensolver_conv_thresh = 1e-10;
         let result = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
         let diff = result.e_rpa - e_ref;
         println!(

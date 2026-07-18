@@ -8,28 +8,82 @@ use crate::schwarz::{schwarz, schwarz3_aux};
 use ferric_core::FerricError;
 use ndarray::{Array2, Array3};
 
+/// Below this many aux shells, run the serial loop directly — avoids
+/// rayon/engine-construction overhead for free-atom/tiny-basis jobs.
+const PAR_METRIC_SHELL_THRESHOLD: usize = 64;
+
 /// Build the 2-center Coulomb metric (P|Q), shape (naux, naux).
+///
+/// Parallelized over the outer aux-shell index `sp` (independent row bands)
+/// once `nsh` clears [`PAR_METRIC_SHELL_THRESHOLD`]; each rayon worker builds
+/// its own `Engine` via `for_each_init` (never per-item — construction runs
+/// under a global ctor mutex). For a fixed `sp`, the write set is
+/// `{(offs[sp]+p, offs[sq]+q), (offs[sq]+q, offs[sp]+p) : sq ≤ sp}` — every
+/// written row index lies in `[offs[sp], offs[sp]+np)` (directly, or via the
+/// transposed form using the same range), so distinct `sp` values own disjoint
+/// row bands of `v` — the same disjointness argument as `eri3_tensor`'s
+/// aux-row-band scatter below. Each element is written exactly once, so the
+/// result is bit-identical to the serial loop regardless of thread count.
 pub fn coulomb_metric_2c(op: Operator, dfbs: &PreparedBasis) -> Result<Array2<f64>, FerricError> {
     let naux = dfbs.nbasis();
     let nsh = dfbs.nshells();
     let dims = dfbs.shell_dims();
     let offs = dfbs.shell_offsets();
-    let mut eng = Engine::new_2center(op, dfbs, 1e-14)?;
     let mut v = Array2::zeros((naux, naux));
-    for sp in 0..nsh {
-        for sq in 0..=sp {
-            let block = eng.compute_eri2(dfbs, sp, sq);
-            let np = dims[sp];
-            let nq = dims[sq];
-            for p in 0..np {
-                for q in 0..nq {
-                    let val = block[p * nq + q];
-                    v[(offs[sp] + p, offs[sq] + q)] = val;
-                    v[(offs[sq] + q, offs[sp] + p)] = val;
+
+    if nsh < PAR_METRIC_SHELL_THRESHOLD {
+        let mut eng = Engine::new_2center(op, dfbs, 1e-14)?;
+        for sp in 0..nsh {
+            for sq in 0..=sp {
+                let block = eng.compute_eri2(dfbs, sp, sq);
+                let np = dims[sp];
+                let nq = dims[sq];
+                for p in 0..np {
+                    for q in 0..nq {
+                        let val = block[p * nq + q];
+                        v[(offs[sp] + p, offs[sq] + q)] = val;
+                        v[(offs[sq] + q, offs[sp] + p)] = val;
+                    }
                 }
             }
         }
+        return Ok(v);
     }
+
+    use rayon::prelude::*;
+
+    // Surface any engine-construction error up front (serial, cheap) — see
+    // eri3_tensor's rationale: FerricError is not Clone so per-worker rebuilds
+    // below must `.expect()`.
+    Engine::new_2center(op, dfbs, 1e-14)?;
+
+    let v_ptr = v.as_mut_ptr() as usize;
+    let stride = naux; // row-major (naux, naux)
+
+    (0..nsh).into_par_iter().for_each_init(
+        || Engine::new_2center(op, dfbs, 1e-14).expect("2-center engine (pre-validated)"),
+        |eng, sp| {
+            let np = dims[sp];
+            let o_p = offs[sp];
+            for sq in 0..=sp {
+                let block = eng.compute_eri2(dfbs, sp, sq);
+                let nq = dims[sq];
+                let o_q = offs[sq];
+                for p in 0..np {
+                    for q in 0..nq {
+                        let val = block[p * nq + q];
+                        let r = o_p + p;
+                        let c = o_q + q;
+                        unsafe {
+                            let base = v_ptr as *mut f64;
+                            *base.add(r * stride + c) = val;
+                            *base.add(c * stride + r) = val;
+                        }
+                    }
+                }
+            }
+        },
+    );
     Ok(v)
 }
 
@@ -107,9 +161,18 @@ pub fn eri3_tensor(op: Operator, obs: &PreparedBasis, dfbs: &PreparedBasis) -> R
 
 /// Build raw (P|μν) for aux rows [p0, p1) only, returned as (p1-p0, nbas, nbas).
 /// Same values as the corresponding slice of `eri3_tensor`.
+///
+/// Parallelized over aux shells `sp` exactly like [`eri3_tensor`] (one `Engine`
+/// per rayon worker via `for_each_init`, disjoint aux-row-band raw-pointer
+/// scatter). Only aux shells overlapping `[p0, p1)` do any work; each such `sp`
+/// owns a distinct band of local rows `pl = offs_df[sp] + p − p0`, so writes
+/// from distinct workers never overlap and every element is written exactly
+/// once — the output is bit-identical to the serial fill.
 pub fn eri3_block(
     op: Operator, obs: &PreparedBasis, dfbs: &PreparedBasis, p0: usize, p1: usize,
 ) -> Result<Array3<f64>, FerricError> {
+    use rayon::prelude::*;
+
     let nbas = obs.nbasis();
     let nsh_obs = obs.nshells();
     let nsh_df = dfbs.nshells();
@@ -117,34 +180,58 @@ pub fn eri3_block(
     let offs_obs = obs.shell_offsets();
     let dims_df = dfbs.shell_dims();
     let offs_df = dfbs.shell_offsets();
-    let mut eng = Engine::new_3center(op, obs, dfbs, 1e-14)?;
-    let mut eri = Array3::zeros((p1 - p0, nbas, nbas));
-    for sp in 0..nsh_df {
-        let pbase = offs_df[sp];
-        let np = dims_df[sp];
-        // Skip aux shells entirely outside [p0, p1).
-        if pbase + np <= p0 || pbase >= p1 { continue; }
-        for s1 in 0..nsh_obs {
-            for s2 in 0..=s1 {
-                if let Some(block) = eng.compute_eri3(obs, dfbs, sp, s1, s2) {
-                    let n1 = dims_obs[s1];
-                    let n2 = dims_obs[s2];
-                    for p in 0..np {
-                        let pg = pbase + p;
-                        if pg < p0 || pg >= p1 { continue; }
-                        let pl = pg - p0;
-                        for i in 0..n1 {
-                            for j in 0..n2 {
-                                let val = block[(p * n1 + i) * n2 + j];
-                                eri[(pl, offs_obs[s1] + i, offs_obs[s2] + j)] = val;
-                                eri[(pl, offs_obs[s2] + j, offs_obs[s1] + i)] = val;
+
+    // Surface any engine-construction error up front (serial, cheap). After this
+    // succeeds the per-worker rebuilds below cannot fail for the same args, so
+    // they `.expect()` — `FerricError` is not `Clone`, so we cannot thread the
+    // error out of the per-worker init closure. (See eri3_tensor.)
+    Engine::new_3center(op, obs, dfbs, 1e-14)?;
+
+    let mut eri = Array3::<f64>::zeros((p1 - p0, nbas, nbas));
+
+    // Raw-pointer scatter: each aux shell `sp` writes a disjoint band of local
+    // aux rows, so the `(pl, mu, nu)` regions written by distinct workers never
+    // overlap.
+    let eri_ptr = eri.as_mut_ptr() as usize;
+    let stride0 = nbas * nbas; // pl-stride
+    let stride1 = nbas; // mu-stride
+
+    (0..nsh_df).into_par_iter().for_each_init(
+        || Engine::new_3center(op, obs, dfbs, 1e-14).expect("3-center engine (pre-validated)"),
+        |eng, sp| {
+            let pbase = offs_df[sp];
+            let np = dims_df[sp];
+            // Skip aux shells entirely outside [p0, p1).
+            if pbase + np <= p0 || pbase >= p1 { return; }
+            for s1 in 0..nsh_obs {
+                let n1 = dims_obs[s1];
+                let m0 = offs_obs[s1];
+                for s2 in 0..=s1 {
+                    if let Some(block) = eng.compute_eri3(obs, dfbs, sp, s1, s2) {
+                        let n2 = dims_obs[s2];
+                        let n0 = offs_obs[s2];
+                        for p in 0..np {
+                            let pg = pbase + p;
+                            if pg < p0 || pg >= p1 { continue; }
+                            let pl = pg - p0;
+                            for i in 0..n1 {
+                                for j in 0..n2 {
+                                    let val = block[(p * n1 + i) * n2 + j];
+                                    let mm = m0 + i;
+                                    let nn = n0 + j;
+                                    unsafe {
+                                        let base = eri_ptr as *mut f64;
+                                        *base.add(pl * stride0 + mm * stride1 + nn) = val;
+                                        *base.add(pl * stride0 + nn * stride1 + mm) = val;
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
-        }
-    }
+        },
+    );
     Ok(eri)
 }
 
@@ -526,6 +613,50 @@ mod tests {
         }
         // Diagonal should be positive
         for i in 0..n { assert!(v[(i, i)] > 0.0, "(P|P) should be positive"); }
+    }
+
+    /// Serial reference for `coulomb_metric_2c` (pre-parallelization
+    /// implementation, kept verbatim).
+    fn coulomb_metric_2c_serial(op: Operator, dfbs: &PreparedBasis) -> Array2<f64> {
+        let naux = dfbs.nbasis();
+        let nsh = dfbs.nshells();
+        let dims = dfbs.shell_dims();
+        let offs = dfbs.shell_offsets();
+        let mut eng = Engine::new_2center(op, dfbs, 1e-14).unwrap();
+        let mut v = Array2::zeros((naux, naux));
+        for sp in 0..nsh {
+            for sq in 0..=sp {
+                let block = eng.compute_eri2(dfbs, sp, sq);
+                let np = dims[sp];
+                let nq = dims[sq];
+                for p in 0..np {
+                    for q in 0..nq {
+                        let val = block[p * nq + q];
+                        v[(offs[sp] + p, offs[sq] + q)] = val;
+                        v[(offs[sq] + q, offs[sp] + p)] = val;
+                    }
+                }
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn test_coulomb_metric_2c_bitidentical_to_serial() {
+        // alkane_6/cc-pVDZ-RI clears PAR_METRIC_SHELL_THRESHOLD (64 aux shells),
+        // so this actually exercises the rayon path, not just the fallback.
+        let mol = Molecule::load_xyz("../../testdata/molecules/alkane_6.xyz").unwrap();
+        let dfbs_set = basis::bundled("cc-pvdz-ri").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &dfbs_set).unwrap();
+        assert!(dfbs.nshells() >= 64,
+            "test aux basis too small to exercise the parallel path: {} shells", dfbs.nshells());
+        for op in [Operator::coulomb(), Operator::erfc(0.222)] {
+            let par = coulomb_metric_2c(op, &dfbs).unwrap();
+            let ser = coulomb_metric_2c_serial(op, &dfbs);
+            assert_eq!(par.dim(), ser.dim());
+            let n_diff = par.iter().zip(ser.iter()).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+            assert_eq!(n_diff, 0, "coulomb_metric_2c: {n_diff} elements differ bitwise (op={op:?})");
+        }
     }
 
     #[test]

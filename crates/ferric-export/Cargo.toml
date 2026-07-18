@@ -3,6 +3,9 @@ name = "ferric-export"
 version = "0.1.0"
 edition = "2021"
 
+[lints]
+workspace = true
+
 [dependencies]
 ferric-core = { path = "../ferric-core" }
 ferric-dft = { path = "../ferric-dft" }
@@ -11,3 +14,4 @@ ferric-integrals = { path = "../ferric-integrals" }
 ndarray = { workspace = true }
 ndarray-npy = "0.9"
 thiserror = { workspace = true }
+rayon = { workspace = true }

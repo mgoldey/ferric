@@ -12,15 +12,17 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::io::AsRawFd;
 
-/// Process-wide resident-bytes ceiling for raw/dressed 3-index tensors, from
-/// `FERRIC_ERI3_BUDGET_GB` (unset/unparsable = unlimited, fully in-core).
-/// Consumed by the DF-JK SCF builders and the RI-MP2/RPA MO transforms.
-pub fn env_budget_bytes() -> usize {
-    std::env::var("FERRIC_ERI3_BUDGET_GB")
-        .ok()
-        .and_then(|s| s.parse::<f64>().ok())
-        .map(|g| (g * 1e9) as usize)
-        .unwrap_or(usize::MAX)
+/// `FERRIC_OOC_TRACE` descriptor: 3-index in-core/spill decision trace (env-only
+/// debug toggle). NOTE behavior change: previously `.is_ok()` (any value, incl.
+/// `=0`, enabled it); now `=0`/`false`/`off` disable it.
+static OOC_TRACE: ferric_core::config::ConfigVar<bool> = ferric_core::config::ConfigVar {
+    env_name: "FERRIC_OOC_TRACE",
+    default: false,
+    parse: ferric_core::config::parse_toggle,
+    validate: ferric_core::config::accept_any,
+};
+fn ooc_trace() -> bool {
+    OOC_TRACE.toggle()
 }
 
 /// Largest number of aux rows whose (block_naux × nao × nao × 8) bytes fit the
@@ -28,6 +30,16 @@ pub fn env_budget_bytes() -> usize {
 fn block_naux_for(budget_bytes: usize, nao: usize) -> usize {
     let row_bytes = nao.saturating_mul(nao).saturating_mul(8).max(1);
     (budget_bytes / row_bytes).max(1)
+}
+
+/// Spill-path block size honoring the double-buffered pipeline: the compute
+/// thread holds one block (N+1) while the write thread holds another (N), so at
+/// most TWO blocks are resident at once. Sizing each block to *half* the budget
+/// keeps that pair inside the ceiling. The `scratch` read-back buffer allocated
+/// for `DiskSpill` is one block of the same size, so a later streaming pass
+/// (one live scratch block) also stays well within budget.
+fn spill_block_naux_for(budget_bytes: usize, nao: usize) -> usize {
+    block_naux_for(budget_bytes / 2, nao)
 }
 
 /// Evict the file's pages from the OS page cache.
@@ -77,7 +89,7 @@ impl ThreeIndexSource {
         let naux = dfbs.nbasis();
         let nao = obs.nbasis();
         let needed = naux.saturating_mul(nao).saturating_mul(nao).saturating_mul(8);
-        if std::env::var("FERRIC_OOC_TRACE").is_ok() {
+        if ooc_trace() {
             eprintln!(
                 "[OOC build] naux={naux} nao={nao} needed={:.2}GB budget={:.2}GB -> {}",
                 needed as f64 / 1e9, budget_bytes as f64 / 1e9,
@@ -88,20 +100,57 @@ impl ThreeIndexSource {
             let eri = crate::threeindex::eri3_tensor(op, obs, dfbs)?;
             Ok(Self { naux, nao, block_naux: naux, backend: Backend::InCore(eri) })
         } else {
-            let block_naux = block_naux_for(budget_bytes, nao);
+            // Double-buffered spill: a producer thread computes block N+1 (via the
+            // rayon-parallel `eri3_block`) while this thread writes block N to
+            // disk, so compute and I/O overlap instead of serializing. A rendezvous
+            // `sync_channel(0)` bounds the pipeline to exactly TWO live blocks at
+            // any instant (one being written, one being computed) — the producer's
+            // `send` blocks until the writer takes the previous block, so it never
+            // runs more than one block ahead. `spill_block_naux_for` sizes each
+            // block to half the budget so that pair stays inside the ceiling
+            // (budget-honest). The write thread does pure I/O — no rayon here.
+            //
+            // Block content is byte-identical to the old serial loop: `eri3_block`
+            // is write-once per element (see threeindex.rs) and blocks are written
+            // in the same p0-ascending order, so the on-disk file — and thus the
+            // read-back path in `for_each_block` — is unchanged.
+            let block_naux = spill_block_naux_for(budget_bytes, nao);
             let mut file = tempfile::tempfile()
                 .map_err(|e| FerricError::General(format!("tempfile: {e}")))?;
-            let mut p0 = 0;
-            while p0 < naux {
-                let p1 = (p0 + block_naux).min(naux);
-                let blk = crate::threeindex::eri3_block(op, obs, dfbs, p0, p1)?;
-                let bytes: &[u8] = bytemuck::cast_slice(blk.as_slice().unwrap());
-                file.write_all(bytes).map_err(|e| FerricError::General(format!("spill write: {e}")))?;
-                // Evict just-written pages so the cgroup-charged page cache does
-                // not accumulate the whole (>budget) file. See drop_page_cache.
-                drop_page_cache(&file);
-                p0 = p1;
-            }
+
+            // Channel carries either a computed block or a producer-side error.
+            let (tx, rx) = std::sync::mpsc::sync_channel::<Result<Array3<f64>, FerricError>>(0);
+
+            std::thread::scope(|s| -> Result<(), FerricError> {
+                // Producer: compute blocks in ascending p0 order, hand each off.
+                s.spawn(move || {
+                    let mut p0 = 0;
+                    while p0 < naux {
+                        let p1 = (p0 + block_naux).min(naux);
+                        let blk = crate::threeindex::eri3_block(op, obs, dfbs, p0, p1);
+                        let is_err = blk.is_err();
+                        // If the receiver hung up (writer hit an I/O error and
+                        // returned early), stop producing.
+                        if tx.send(blk).is_err() || is_err {
+                            return;
+                        }
+                        p0 = p1;
+                    }
+                });
+
+                // Consumer (this thread): write each block as it arrives. Pure I/O.
+                for blk in rx.iter() {
+                    let blk = blk?;
+                    let bytes: &[u8] = bytemuck::cast_slice(blk.as_slice().unwrap());
+                    file.write_all(bytes)
+                        .map_err(|e| FerricError::General(format!("spill write: {e}")))?;
+                    // Evict just-written pages so the cgroup-charged page cache does
+                    // not accumulate the whole (>budget) file. See drop_page_cache.
+                    drop_page_cache(&file);
+                }
+                Ok(())
+            })?;
+
             file.flush().ok();
             drop_page_cache(&file);
             let scratch = Array3::<f64>::zeros((block_naux, nao, nao));
@@ -119,7 +168,7 @@ impl ThreeIndexSource {
         let needed = naux.saturating_mul(nao).saturating_mul(nao).saturating_mul(8);
         let block_naux = block_naux_for(budget_bytes, nao);
         let in_core = needed <= budget_bytes;
-        if std::env::var("FERRIC_OOC_TRACE").is_ok() {
+        if ooc_trace() {
             eprintln!(
                 "[OOC dress] naux={naux} nao={nao} needed={:.2}GB budget={:.2}GB block_naux={block_naux} -> {}",
                 needed as f64 / 1e9, budget_bytes as f64 / 1e9,
@@ -230,6 +279,42 @@ mod tests {
         assert_eq!(block_naux_for(4000, 10), 5);
         // budget smaller than one row → at least 1.
         assert_eq!(block_naux_for(500, 10), 1);
+    }
+
+    #[test]
+    fn spill_block_sizing_counts_both_live_blocks() {
+        // Double-buffered spill holds two blocks at once (one computing, one
+        // writing): the pair must fit the budget. nao=10 → row = 800 bytes.
+        // budget 4000 → 2 × (2 rows × 800) = 3200 ≤ 4000. block_naux_for
+        // would have said 5 rows (4000 bytes), whose pair would bust the budget.
+        assert_eq!(spill_block_naux_for(4000, 10), 2);
+        // Degenerate floor: even a budget below one row yields 1 (a single aux
+        // row must always be representable) — pre-existing behavior.
+        assert_eq!(spill_block_naux_for(500, 10), 1);
+    }
+
+    #[test]
+    fn spill_single_row_blocks_equal_dense_eri3() {
+        // Degenerate pipeline: budget below one aux row forces block_naux = 1,
+        // maximizing producer/consumer handoffs (one rendezvous per aux row).
+        // Content must still be bit-identical to the dense build.
+        let (mol,) = water();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let dense = crate::threeindex::eri3_tensor(op, &obs, &dfbs).unwrap();
+        let (naux, nao, _) = dense.dim();
+        let mut src = ThreeIndexSource::build(op, &obs, &dfbs, 1).unwrap();
+        assert_eq!(src.n_blocks(), naux, "budget=1 byte should force 1-row blocks");
+        let mut reassembled = ndarray::Array3::<f64>::zeros((naux, nao, nao));
+        src.for_each_block(|blk| {
+            let b = blk.data.shape()[0];
+            reassembled.slice_mut(ndarray::s![blk.p0..blk.p0 + b, .., ..]).assign(&blk.data);
+            Ok(())
+        }).unwrap();
+        let n_diff = reassembled.iter().zip(dense.iter())
+            .filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+        assert_eq!(n_diff, 0, "1-row spill blocks differ bitwise from dense eri3");
     }
 
     #[test]

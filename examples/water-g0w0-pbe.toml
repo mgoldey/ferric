@@ -1,0 +1,25 @@
+# G0W0@PBE / cc-pVDZ on water. Wiring-correctness smoke test: the printed
+# HOMO IP should match crates/ferric-gw/tests/g0w0_pbe_h2o.rs's PySCF gw_ac
+# reference (11.1714 eV) to <0.1 eV -- same molecule/basis/method/quadrature,
+# just reached through the CLI instead of the Rust test suite.
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "cc-pvdz"
+
+[method]
+kind = "gw"
+
+[rpa]
+auxbasis = "cc-pvdz-ri"
+xc = "pbe"
+n_quad = 16
+quadrature = "gauss-legendre"
+trunc_thresh = 0.0
+eigensolver_conv_thresh = 1e-7
+
+[gw]
+method = "g0w0"
+# water/cc-pVDZ: nocc = 5 (HOMO = MO 4). HOMO-1..LUMO+1.
+qp_mos = [3, 6]

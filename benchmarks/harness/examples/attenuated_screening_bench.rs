@@ -51,6 +51,7 @@ fn run_one(xyz_path: &str, label: &str) {
         scaling: 1.0,
         frozen_core: 0,
         screen_thresh: None,
+        memory_budget_bytes: None,
     };
     let t0 = Instant::now();
     let r_dense = attenuated_ri_mp2(&mol, &obs, &dfbs, &rhf, &cfg_dense).unwrap();
@@ -65,7 +66,8 @@ fn run_one(xyz_path: &str, label: &str) {
             scaling: 1.0,
             frozen_core: 0,
             screen_thresh: Some(thresh),
-        };
+            memory_budget_bytes: None,
+            };
         let t0 = Instant::now();
         let r = attenuated_ri_mp2(&mol, &obs, &dfbs, &rhf, &cfg).unwrap();
         let t = t0.elapsed();

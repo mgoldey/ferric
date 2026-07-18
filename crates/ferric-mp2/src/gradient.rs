@@ -1,13 +1,13 @@
 //! RI-MP2 nuclear gradients: analytical and finite-difference reference.
 
-use crate::rimp2::{ri_mp2, compute_mp2_intermediates, RiMp2Config};
-use crate::zvector::{solve_zvector, build_relaxed_density_ao, build_relaxed_w_ao};
+use crate::rimp2::{ri_mp2, compute_mp2_intermediates_ov_only, RiMp2Config};
+use crate::zvector::solve_zvector;
 use ferric_core::basis::BasisSet;
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
+use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::operator::Operator;
-use ferric_scf::gradient::hf_gradient_with_density;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::ScfResult;
 use ferric_scf::screening::SchwarzBounds;
@@ -23,12 +23,20 @@ fn total_energy(
 ) -> Result<f64, FerricError> {
     let obs = PreparedBasis::new(mol, obs_basis)?;
     let bounds = SchwarzBounds::compute(op, &obs)?;
+    // Tight SCF so finite-difference gradients are not noise-limited. Under the
+    // ΔP convergence gate the *reachable* tight signal is density_conv (the
+    // density drains cleanly to ~1e-9); energy_conv is only a loose
+    // "not-descending" bound and floors above 1e-10 under DF noise, so setting it
+    // tight would just hang the SCF at MaxIter (see rhf::scf_converged).
     let rhf_config = RhfConfig {
-        energy_conv: 1e-10,
+        density_conv: 1e-9,
         ..Default::default()
     };
     let ctx = ferric_core::parallel::ParallelContext::default();
     let rhf = solve_rhf(&ctx, mol, &obs, op, &bounds, &rhf_config)?;
+    if !rhf.converged {
+        return Err(FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy });
+    }
     let dfbs = PreparedBasis::new(mol, aux_basis)?;
     let mp2 = ri_mp2(mol, &obs, &dfbs, op, &rhf, mp2_config)?;
     Ok(mp2.total_energy)
@@ -74,17 +82,49 @@ pub fn rimp2_gradient_fd(
     Ok(grad)
 }
 
-/// Compute the analytical RI-MP2 nuclear gradient.
+/// Compute the analytical RI-MP2 nuclear gradient via the real multi-block
+/// Lagrangian, following PySCF's verified `grad/mp2.py::grad_elec` (line numbers
+/// below reference the fetched upstream source), RI-adapted.
 ///
-/// Uses the Z-vector / relaxed density approach:
-/// 1. Compute MP2 intermediates (t2, B, P_oo, P_vv)
-/// 2. Solve the Z-vector equation for orbital response
-/// 3. Build relaxed density and energy-weighted density in AO basis
-/// 4. Evaluate gradient via `hf_gradient_with_density` (DRY reuse of RHF gradient infrastructure)
+/// The gradient is the sum of FOUR structurally distinct energy-weighted-density
+/// contributions plus the hcore-deriv and RI 3c/2c integral-response terms — NOT
+/// a single `F·P_relax` object (the old, ~50%-wrong construction):
 ///
-/// Note: the Lagrangian currently only includes P*F terms (no integral response).
-/// The 3-center and 2-center derivative contributions are also TODO.
-/// The gradient will be approximate until these are added.
+/// 1. **Imat / overlap** (`+Σ dS·(im1+im1^T)`): the RI-MP2 Lagrangian matrix
+///    [`crate::zvector::build_imat_ri`] rotated to AO (`im1 = C·Imat·C^T`, with the
+///    vir-occ block set to the occ-vir transpose per PySCF line 145). This is the
+///    RI analog of the 2-particle-density-derived Lagrangian block — built from the
+///    same `x_ov`/`b_full` RI intermediates, no 4-index AO tensor. PySCF lines 121,
+///    145-146, 174-175.
+/// 2. **hcore-deriv** (`+Σ dH·dm1_total`): standard, `dm1_total = dm1_corr + hf_dm1`
+///    (full relaxed correlation density plus the HF density). PySCF line 178. Also
+///    carries the nuclear-repulsion gradient (once) via `oneelectron_gradient`.
+/// 3. **zeta / overlap** (`−Σ dS·(zeta+zeta^T)`): the orbital-energy-weighted
+///    relaxed density `zeta_mo = ζ ⊙ dm1mo` (ζ = 0.5(ε_i+ε_j) on oo/vv, ε_i on
+///    ov/vo) PLUS the plain-HF energy-weighted density (`Σ_i 2ε_i C_i C_i^T`, reused
+///    from `ferric_scf::gradient::build_energy_weighted_density`). This is
+///    fundamentally `(ε-weight)⊙P_relax`, NOT `F·P_relax`. PySCF lines 156-159, 169,
+///    180-181.
+/// 4. **vhf_s1occ / overlap** (`−2Σ dS·vhf_s1occ`): PySCF's `get_veff = J − ½K`
+///    potential of the full relaxed correlation density (`get_veff(dm1+dm1†)`, so
+///    `J[2·dm1_corr] − ½K[2·dm1_corr]` from `build_jk` — NOT the SCF `2J − K`
+///    convention on the already-doubled density), projected into the
+///    occupied-occupied AO subspace by the HF-occupied projector on both sides.
+///    PySCF lines 161-163, 183.
+/// 5. **2e-integral-deriv** (`−Σ Γ(hf_dm1, hf_dm1+2·dm1_corr)·d(μν|λσ)`): the
+///    BILINEAR two-electron gradient (`twoelectron_gradient_bilinear`), NOT
+///    `Γ(P_relax,P_relax)`. Verified equal to PySCF's `vhf1·dm1p` element-by-element.
+///    PySCF lines 103-109, 167, 184.
+/// 6. **RI 3c/2c integral response** [`integral_response_gradient_3c2c`]: the RI
+///    analog of PySCF's `part_dm2·int2e_ip1` (the separable 2-PDM contracted with
+///    the differentiated integrals). Carries the closed-shell 2-PDM factor
+///    Γ2 = 2·(2t−t̄): 3-center uses `2·y_ov = 2·V^{-1/2}·x_ov`; 2-center uses
+///    `−2·(V^{-1}b_ov)·y_ov^T·dV` (the extra 2 vs 3-center from the metric
+///    contracting both fitting legs).
+///
+/// Cross-checked block-by-block against `pyscf/grad/mp2.py::grad_elec`: blocks 1-5
+/// match to ≤1e-4, block 6 to PySCF's `part_dm2·int2e_ip1`, for H2/cc-pVDZ AND
+/// H2O/STO-3G. Both H2 (nocc=1) and H2O (nocc>1) are exact overall (~1e-9 vs FD).
 pub fn rimp2_gradient_analytical(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -94,47 +134,176 @@ pub fn rimp2_gradient_analytical(
     rhf: &ScfResult,
     config: &RiMp2Config,
 ) -> Result<Array2<f64>, FerricError> {
-    let inter = compute_mp2_intermediates(mol, obs, dfbs, op, rhf, config)?;
+    // ov-only intermediates: the gradient/zvector pipeline never reads
+    // b_oo/b_vv, so the (naux, nvir²) block is never materialized here.
+    let inter = compute_mp2_intermediates_ov_only(mol, obs, dfbs, op, rhf, config)?;
+    let (z, imat) = solve_zvector(mol, obs, dfbs, op, bounds, rhf, &inter)?;
+    let mut grad = mp2_relaxed_lagrangian_gradient(mol, obs, op, bounds, rhf, &inter, &z, &imat)?;
+    grad += &integral_response_gradient_3c2c(mol, obs, dfbs, op, &inter, rhf.mos_r())?;
+    Ok(grad)
+}
 
-    let (z, l) = solve_zvector(mol, obs, dfbs, op, bounds, rhf, &inter)?;
+/// Assemble the non-RI part of the MP2 analytical gradient (the four
+/// overlap/hcore/2e-deriv Lagrangian blocks) from the solved z-vector and the RI
+/// Lagrangian matrix `imat`. Shared by the RI-MP2 and SCS-MP2 gradient paths. The
+/// caller adds the RI 3c/2c integral-response term separately.
+///
+/// See [`rimp2_gradient_analytical`] for the block-by-block derivation and PySCF
+/// line citations.
+#[allow(clippy::too_many_arguments)]
+fn mp2_relaxed_lagrangian_gradient(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    rhf: &ScfResult,
+    inter: &crate::rimp2::Mp2Intermediates,
+    z: &Array2<f64>,
+    imat: &Array2<f64>,
+) -> Result<Array2<f64>, FerricError> {
+    use ferric_scf::gradient::{
+        build_energy_weighted_density, oneelectron_gradient, overlap_deriv_contract,
+        twoelectron_gradient_bilinear,
+    };
+    let c = rhf.mos_r();
+    let eps = rhf.eps_r();
+    let nmo = c.ncols();
+    let crate::rimp2::Mp2Intermediates { nocc, nvir, nocc_total, first_occ, .. } = *inter;
 
-    let p_relax_ao = build_relaxed_density_ao(
-        rhf.mos_r(), &inter.p_oo, &inter.p_vv, &z, &inter.orbital_space(),
-    );
-
-    let nocc_total = inter.nocc_total;
-    let f_mo = rhf.mos_r().t().dot(rhf.fock_r()).dot(rhf.mos_r());
-    let nmo = rhf.mos_r().ncols();
-    let mut p_relax_mo = Array2::zeros((nmo, nmo));
-    for i in 0..inter.nocc {
-        let i_mo = inter.first_occ + i;
-        p_relax_mo[(i_mo, i_mo)] += 2.0;
-        for j in 0..inter.nocc {
-            let j_mo = inter.first_occ + j;
-            p_relax_mo[(i_mo, j_mo)] += inter.p_oo[(i, j)];
+    // --- dm1mo: full relaxed correlation 1-PDM (MO), no HF 2·I part. ---
+    // occ-occ: doo+doo^T; vir-vir: dvv+dvv^T; occ-vir/vir-occ: z (PySCF lines
+    // 134-135 + _response_dm1). inter.p_oo==doo, inter.p_vv==dvv.
+    let mut dm1mo = Array2::<f64>::zeros((nmo, nmo));
+    for i in 0..nocc {
+        let i_mo = first_occ + i;
+        for j in 0..nocc {
+            let j_mo = first_occ + j;
+            dm1mo[(i_mo, j_mo)] = inter.p_oo[(i, j)] + inter.p_oo[(j, i)];
         }
     }
-    for a in 0..inter.nvir {
+    for a in 0..nvir {
         let a_mo = nocc_total + a;
-        for b in 0..inter.nvir {
+        for b in 0..nvir {
             let b_mo = nocc_total + b;
-            p_relax_mo[(a_mo, b_mo)] += inter.p_vv[(a, b)];
+            dm1mo[(a_mo, b_mo)] = inter.p_vv[(a, b)] + inter.p_vv[(b, a)];
         }
     }
-    for a in 0..inter.nvir {
+    for a in 0..nvir {
         let a_mo = nocc_total + a;
-        for i in 0..inter.nocc {
-            let i_mo = inter.first_occ + i;
-            p_relax_mo[(a_mo, i_mo)] += z[(a, i)];
-            p_relax_mo[(i_mo, a_mo)] += z[(a, i)];
+        for i in 0..nocc {
+            let i_mo = first_occ + i;
+            dm1mo[(a_mo, i_mo)] = z[(a, i)];
+            dm1mo[(i_mo, a_mo)] = z[(a, i)];
         }
     }
 
-    let w_relax_ao = build_relaxed_w_ao(
-        rhf.mos_r(), &f_mo, &p_relax_mo, &l, &inter.orbital_space(),
-    );
+    // Correlation density in AO, and the total (correlation + HF) density.
+    let dm1_corr_ao = {
+        let cp = c.dot(&dm1mo);
+        cp.dot(&c.t())
+    };
+    let hf_dm1 = rhf.density_r();
+    let dm1_total_ao = &dm1_corr_ao + hf_dm1;
 
-    let mut grad = hf_gradient_with_density(mol, obs, op, bounds, &p_relax_ao, &w_relax_ao)?;
+    // --- im1 = C · Imat_pulay · C^T (Imat with vir-occ := occ-vir^T, PySCF 145) ---
+    let mut imat_pulay = imat.clone();
+    for a in 0..nvir {
+        let a_mo = nocc_total + a;
+        for i in 0..nocc {
+            let i_mo = first_occ + i;
+            imat_pulay[(a_mo, i_mo)] = imat[(i_mo, a_mo)];
+        }
+    }
+    let im1 = {
+        let cp = c.dot(&imat_pulay);
+        cp.dot(&c.t())
+    };
+
+    // --- zeta_ao = C·(ζ ⊙ dm1mo)·C^T  +  make_rdm1e (PySCF lines 156-159, 169) ---
+    let mut zeta_mo = Array2::<f64>::zeros((nmo, nmo));
+    // ζ[i,j] = 0.5(ε_i+ε_j) on occ-occ AND vir-vir; ζ[vir,occ]=ε_i (occ energy);
+    // ζ[occ,vir]=ε_i. Multiply element-wise by dm1mo.
+    for p in 0..nmo {
+        for q in 0..nmo {
+            zeta_mo[(p, q)] = 0.5 * (eps[p] + eps[q]) * dm1mo[(p, q)];
+        }
+    }
+    for a in 0..nvir {
+        let a_mo = nocc_total + a;
+        for i in 0..nocc {
+            let i_mo = first_occ + i;
+            zeta_mo[(a_mo, i_mo)] = eps[i_mo] * dm1mo[(a_mo, i_mo)];
+            zeta_mo[(i_mo, a_mo)] = eps[i_mo] * dm1mo[(i_mo, a_mo)];
+        }
+    }
+    let mut zeta_ao = {
+        let cz = c.dot(&zeta_mo);
+        cz.dot(&c.t())
+    };
+    // + plain-HF energy-weighted density Σ_i 2 ε_i C_i C_i^T.
+    let nocc_hf = (mol.nelec() / 2) as usize;
+    zeta_ao += &build_energy_weighted_density(rhf, nocc_hf);
+
+    // --- vhf_s1occ = P_occ · get_veff(dm1_corr + dm1_corr^T) · P_occ (PySCF 161-163) ---
+    // dm1_corr symmetric ⇒ dm1_corr+dm1_corr^T = 2·dm1_corr. PySCF's `get_veff(D)`
+    // is `J[D] − ½K[D]` (the density D carries its own occupancy factor); here D is
+    // already the doubled 2·dm1_corr, so veff = J[2dm] − ½K[2dm]. build_jk returns
+    // raw J[D]/K[D], so this is `jv − 0.5·kv` — NOT the SCF `2J − K` convention
+    // (which expects the un-doubled electron-count density).
+    let n = c.nrows();
+    let (mut jv, mut kv) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
+    let ctx = ferric_core::parallel::ParallelContext::default();
+    let two_dm_corr = 2.0 * &dm1_corr_ao;
+    ferric_scf::rhf::build_jk(&ctx, obs, bounds, 1e-12, &two_dm_corr, &mut jv, &mut kv)?;
+    let veff_full = &jv - &(0.5 * &kv); // J[2dm] − ½K[2dm] == PySCF get_veff(dm1+dm1^T)
+    // P_occ = C_occ C_occ^T (HF-occupied AO projector).
+    let c_occ_hf = c.slice(ndarray::s![.., ..nocc_hf]);
+    let p_occ = c_occ_hf.dot(&c_occ_hf.t());
+    let vhf_s1occ = p_occ.dot(&veff_full).dot(&p_occ);
+
+    // --- Assemble with PySCF's explicit signs (grad/mp2.py lines 174-184). ---
+    // hcore-deriv (+ nuclear-repulsion, once) with dm1_total; pass W=0 so the
+    // overlap/Pulay terms are added explicitly below with the correct per-block
+    // signs (im1/zeta/vhf are asymmetric or differently-signed).
+    let zero_w = Array2::<f64>::zeros((c.nrows(), c.nrows()));
+    let mut grad = oneelectron_gradient(mol, obs, &dm1_total_ao, &zero_w, None)?;
+
+    // Overlap (Pulay) contributions:
+    //   + s1·im1 + s1^T·im1^T       →  + overlap_deriv_contract(im1)        (174-175)
+    //   − s1·zeta − s1^T·zeta^T     →  − overlap_deriv_contract(zeta_ao)    (180-181)
+    //   − 2·s1·vhf_s1occ            →  − overlap_deriv_contract(vhf_s1occ)  (183)
+    // overlap_deriv_contract(M) = Σ_μν dS_μν (M+M^T)_μν, so it reproduces PySCF's
+    // paired (s1 + s1^T) / ×2 conventions in one call per matrix (verified against
+    // the RHF EWD term). Combine into one weight matrix.
+    let w_overlap = &im1 - &zeta_ao - &vhf_s1occ;
+    grad += &overlap_deriv_contract(obs, &w_overlap)?;
+
+    // 2e-integral-derivative: bilinear Γ(hf_dm1, hf_dm1 + 2·dm1_corr) (PySCF 184,
+    // dm1p = hf_dm1 + 2·dm1). ferric's twoelectron_gradient(X) = −∂veff(X)·X for
+    // the HF case; the bilinear form generalizes it to −∂veff(hf_dm1)·dm1p.
+    let dm1p = hf_dm1 + &two_dm_corr;
+    grad += &twoelectron_gradient_bilinear(obs, op, bounds, hf_dm1, &dm1p)?;
+
+    Ok(grad)
+}
+
+/// 3-center + 2-center RI integral-response gradient terms.
+///
+/// Factored out of [`rimp2_gradient_analytical`] so the P7-parallelized region
+/// (x_ov par-i build, aux-shell 3c-derivative assembly, aux-pair 2c-derivative
+/// assembly) can be exercised in isolation — e.g. by the thread-count
+/// bit-identity test — with fixed precomputed intermediates, independent of the
+/// z-vector/JK pipeline upstream. Returns just the 3c+2c contribution as a
+/// `(natoms, 3)` array; the caller adds it onto the relaxed-density HF gradient.
+fn integral_response_gradient_3c2c(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    inter: &crate::rimp2::Mp2Intermediates,
+    c: &Array2<f64>,
+) -> Result<Array2<f64>, FerricError> {
+    let mut grad = Array2::<f64>::zeros((mol.atoms.len(), 3));
 
     // 3-center derivative: Σ_{P,μ,ν} G3c_{P,μ,ν} * d(P|μν)/dR
     // G3c = "effective density" contracted with t2-weighted amplitudes
@@ -142,64 +311,68 @@ pub fn rimp2_gradient_analytical(
     let nvir = inter.nvir;
     let naux = inter.naux;
     let nov = nocc * nvir;
-    let c = rhf.mos_r();
     let t2 = &inter.t2;
 
-    // Build X^P_{ia} = Σ_{jb} (2*t_{ij,ab} - t_{ij,ba}) * B^P_{jb}
+    // Build X^P_{ia} = Σ_{jb} (2*t_{ij,ab} - t_{ij,ba}) * B^P_{jb} via a wide GEMM
+    // per i: X_i[P, a] = B_ov · TT_i^T where TT_i[a, jb] = 2 t_{ij,ab} - t_{ij,ba}.
+    // Replaces the per-element (P,i,a) scalar loop over (j,b): same FLOPs, BLAS3
+    // throughput. t2 layout is t2[(i*nvir+a)*nov + j*nvir+b] = t_{ij,ab}.
+    //
+    // Each i owns a disjoint (naux, nvir) column band of x_ov and reads only its
+    // own TT_i slice of t2, so the i-loop is embarrassingly parallel: fan it over
+    // rayon via axis_chunks_iter_mut on the column-chunked view (order-preserving,
+    // no shared accumulator — bit-identical to the serial loop regardless of
+    // thread count). BLAS stays serial inside each closure (OPENBLAS_NUM_THREADS=1).
     let mut x_ov = Array2::zeros((naux, nocc * nvir));
-    for i in 0..nocc {
-        for a in 0..nvir {
-            let ia = i * nvir + a;
-            for p_aux in 0..naux {
-                let mut sum = 0.0;
-                for j in 0..nocc {
-                    for b in 0..nvir {
-                        let jb = j * nvir + b;
-                        let t_ij_ab = t2[(i * nvir + a) * nov + j * nvir + b];
-                        let t_ij_ba = t2[(i * nvir + b) * nov + j * nvir + a];
-                        let tt = 2.0 * t_ij_ab - t_ij_ba;
-                        sum += tt * inter.b_ov[(p_aux, jb)];
+    {
+        use ndarray::Axis;
+        use rayon::prelude::*;
+        // AxisChunksIterMut is an IndexedParallelIterator: chunk i is exactly
+        // columns [i*nvir, (i+1)*nvir), so `enumerate()` recovers i without any
+        // extra bookkeeping, and the disjoint-column writes make this
+        // order-independent/bit-identical to the serial loop.
+        x_ov.axis_chunks_iter_mut(Axis(1), nvir)
+            .into_par_iter()
+            .enumerate()
+            .for_each(|(i, mut x_i_slot)| {
+                // TT_i[a, jb] = 2 t_{ij,ab} - t_{ij,ba}
+                let mut tt_i = Array2::<f64>::zeros((nvir, nov));
+                for a in 0..nvir {
+                    for j in 0..nocc {
+                        for b in 0..nvir {
+                            let jb = j * nvir + b;
+                            let t_ij_ab = t2[(i * nvir + a) * nov + j * nvir + b];
+                            let t_ij_ba = t2[(i * nvir + b) * nov + j * nvir + a];
+                            tt_i[(a, jb)] = 2.0 * t_ij_ab - t_ij_ba;
+                        }
                     }
                 }
-                x_ov[(p_aux, ia)] = sum;
-            }
-        }
+                // X_i[P, a] = Σ_{jb} B_ov[P, jb] · TT_i[a, jb] = B_ov · TT_i^T  (naux, nvir)
+                let x_i = inter.b_ov.dot(&tt_i.t());
+                x_i_slot.assign(&x_i);
+            });
     }
 
-    // Back-transform X to AO: G3c_{P,μ,ν} = Σ_{ia} X^P_{ia} C_{μi} C_{νa} (+ symmetrize)
+    // The 3-center DERIVATIVE integrals d(P|μν)/dR are RAW (undressed) 3-center
+    // integrals, but the fitted amplitudes `x_ov` are dressed with V^{-1/2} on the
+    // aux leg (b_ov = V^{-1/2}(P|ov)). The energy `E = ½ Σ Γ B^P_ia B^P_jb` with
+    // `B = V^{-1/2}(Q|ia)` gives `dE/d(Q|ia)_raw = Σ_P V^{-1/2}_QP X^P_ia = y_ov`,
+    // so the 3-center contraction must use `y_ov = V^{-1/2}·x_ov`, NOT `x_ov`
+    // (verified element-by-element in test_3c_density_numerical: diff(y)≈8e-13,
+    // diff(x)≈1.4e-2). V^{-1/2} is symmetric so `v_inv_sqrt.t()` == `v_inv_sqrt`.
+    let y_ov = with_blas_threads(opt_in_blas_threads(), || inter.v_inv_sqrt.t().dot(&x_ov));
+
+    // Back-transform X to AO and contract with 3-center derivative integrals,
+    // blocked over the aux SHELL index. For each aux shell sp we build only its
+    // g3c slab G3c_{p,μ,ν} = Σ_{ia} X^p_{ia} C_{μi} C_{νa} (symmetrized), then
+    // contract it with that shell's derivative block. Peak g3c footprint is one
+    // aux-shell slab (np, nbf, nbf) instead of the full (naux, nbf, nbf) tensor.
     let nbas = obs.nbasis();
-    let mut g3c = ndarray::Array3::zeros((naux, nbas, nbas));
-    let c_occ = c.slice(ndarray::s![.., inter.first_occ..inter.first_occ + nocc]);
-    let c_vir = c.slice(ndarray::s![.., inter.nocc_total..]);
-    for p_aux in 0..naux {
-        for mu in 0..nbas {
-            for nu in 0..nbas {
-                let mut sum = 0.0;
-                for i in 0..nocc {
-                    for a in 0..nvir {
-                        sum += x_ov[(p_aux, i * nvir + a)] * c_occ[(mu, i)] * c_vir[(nu, a)];
-                    }
-                }
-                g3c[(p_aux, mu, nu)] = sum;
-            }
-        }
-    }
-    // Symmetrize: G3c_{S,μ,ν} += G3c_{S,ν,μ}
-    for p_aux in 0..naux {
-        for mu in 0..nbas {
-            for nu in (mu + 1)..nbas {
-                let sum = g3c[(p_aux, mu, nu)] + g3c[(p_aux, nu, mu)];
-                g3c[(p_aux, mu, nu)] = sum;
-                g3c[(p_aux, nu, mu)] = sum;
-            }
-            g3c[(p_aux, mu, mu)] *= 2.0;
-        }
-    }
-
-    // Contract G3c with 3-center derivative integrals
+    let c_occ = c.slice(ndarray::s![.., inter.first_occ..inter.first_occ + nocc]).to_owned();
+    let c_vir = c.slice(ndarray::s![.., inter.nocc_total..]).to_owned();
     {
         use ferric_integrals::engine::Engine;
-        let mut eng3d = Engine::new_3center_deriv(op, obs, dfbs, 1e-14)?;
+        use rayon::prelude::*;
         let nsh_obs = obs.nshells();
         let nsh_df = dfbs.nshells();
         let dims_obs = obs.shell_dims();
@@ -208,99 +381,200 @@ pub fn rimp2_gradient_analytical(
         let offs_df = dfbs.shell_offsets();
         let sh2at_obs = obs.shell_to_atom();
         let sh2at_df = dfbs.shell_to_atom();
+        let natoms = mol.atoms.len();
 
-        for sp in 0..nsh_df {
-            for s1 in 0..nsh_obs {
-                for s2 in 0..=s1 {
-                    if let Some(deriv) = eng3d.compute_eri3_deriv(obs, dfbs, sp, s1, s2) {
-                        let np = dims_df[sp];
-                        let n1 = dims_obs[s1];
-                        let n2 = dims_obs[s2];
-                        let block_sz = np * n1 * n2;
-                        let sym12 = s1 != s2;
+        // Surface any engine-construction error up front (serial, cheap) so the
+        // per-worker rebuilds inside for_each_init cannot fail for the same args
+        // (mirrors ferric_integrals::threeindex::eri3_tensor).
+        Engine::new_3center_deriv(op, obs, dfbs, 1e-14)?;
 
-                        for p in 0..np {
-                            for i in 0..n1 {
-                                for j in 0..n2 {
-                                    let mu = offs_obs[s1] + i;
-                                    let nu = offs_obs[s2] + j;
-                                    let pf = offs_df[sp] + p;
-                                    let idx = (p * n1 + i) * n2 + j;
+        // Axis: aux shells `sp`. Each sp is independent (own g3c slab, own deriv
+        // engine call) and produces a (natoms, 3) partial. Reduction must not use
+        // a rayon fold/reduce tree (thread-count-dependent FP association) or a
+        // shared accumulator (data race) — instead: par-map sp -> partial via
+        // for_each_init (one Engine per rayon worker), `collect` into an
+        // sp-ordered Vec (IndexedParallelIterator preserves order regardless of
+        // worker count), then fold serially in ascending sp order. This mirrors
+        // ferric_scf::reduce::grouped_deterministic_sum's group-order-fold
+        // discipline without depending on ferric-scf (mp2 does not link it);
+        // natoms is small so no banding is needed — the live set is one
+        // (natoms,3) partial per aux shell, negligible memory.
+        let partials: Vec<Array2<f64>> = (0..nsh_df)
+            .into_par_iter()
+            .map_init(
+                || Engine::new_3center_deriv(op, obs, dfbs, 1e-14).expect("3-center deriv engine (pre-validated)"),
+                |eng3d, sp| {
+                    let np = dims_df[sp];
+                    let pf0 = offs_df[sp];
+                    let mut local_grad = Array2::<f64>::zeros((natoms, 3));
 
-                                    let gval = if sym12 {
-                                        g3c[(pf, mu, nu)] + g3c[(pf, nu, mu)]
-                                    } else {
-                                        g3c[(pf, mu, nu)]
-                                    };
+                    // g3c for just this aux shell's rows: (np, nbf, nbf), symmetrized.
+                    // For each aux fn p: X_p is (nocc, nvir); G_raw = C_occ · X_p · C_vir^T,
+                    // then G3c_p = G_raw + G_raw^T (matches the old full-tensor symmetrize,
+                    // including the ×2 on the diagonal via mu==nu).
+                    let mut g3c_sp = ndarray::Array3::<f64>::zeros((np, nbas, nbas));
+                    for p in 0..np {
+                        let pf = pf0 + p;
+                        let x_p = y_ov
+                            .slice(ndarray::s![pf, ..])
+                            .into_shape_with_order((nocc, nvir))
+                            .unwrap();
+                        // G_raw_{μν} = Σ_{ia} X^p_{ia} C_{μi} C_{νa} = C_occ · X_p · C_vir^T
+                        // Symmetrized: dE/d(P|μν)_raw = g_raw[μν] + g_raw[νμ] (the aux fn P
+                        // couples ia symmetrically; a raw 3c integral (P|μν) and its μ↔ν
+                        // transpose share the derivative). g_raw + g_raw^T doubles the
+                        // diagonal correctly (matches the FD single-element probe).
+                        // The 3-center weight carries the closed-shell 2-PDM factor
+                        // Γ2 = 2·(2t−t̄) (PySCF `part_dm2 = 4t − 2t^T`, grad/mp2.py
+                        // lines 61-62). `x_ov`/`y_ov` are built with the ENERGY weight
+                        // (2t−t̄) (shared with the Imat/energy path), so the separable
+                        // 2-PDM gradient needs an explicit ×2 here. Verified: the term
+                        // then equals PySCF's `dm2buf·int2e_ip1` contribution and drives
+                        // both H2 (nocc=1) and H2O (nocc=5) analytic−FD to ~1e-9.
+                        let g_raw = c_occ.dot(&x_p).dot(&c_vir.t());
+                        let g_sym = 2.0 * (&g_raw + &g_raw.t());
+                        g3c_sp.slice_mut(ndarray::s![p, .., ..]).assign(&g_sym);
+                    }
 
-                                    // 9 derivative blocks: [dP_x, dP_y, dP_z, d1_x, d1_y, d1_z, d2_x, d2_y, d2_z]
-                                    let atom_p = sh2at_df[sp];
-                                    let atom_1 = sh2at_obs[s1];
-                                    let atom_2 = sh2at_obs[s2];
+                    for s1 in 0..nsh_obs {
+                        for s2 in 0..=s1 {
+                            if let Some(deriv) = eng3d.compute_eri3_deriv(obs, dfbs, sp, s1, s2) {
+                                let n1 = dims_obs[s1];
+                                let n2 = dims_obs[s2];
+                                let block_sz = np * n1 * n2;
+                                let sym12 = s1 != s2;
 
-                                    for coord in 0..3 {
-                                        let dp = deriv[coord * block_sz + idx];
-                                        let d1 = deriv[(3 + coord) * block_sz + idx];
-                                        let d2 = deriv[(6 + coord) * block_sz + idx];
+                                for p in 0..np {
+                                    for i in 0..n1 {
+                                        for j in 0..n2 {
+                                            let mu = offs_obs[s1] + i;
+                                            let nu = offs_obs[s2] + j;
+                                            let idx = (p * n1 + i) * n2 + j;
 
-                                        grad[(atom_p, coord)] += gval * dp;
-                                        grad[(atom_1, coord)] += gval * d1;
-                                        grad[(atom_2, coord)] += gval * d2;
+                                            let gval = if sym12 {
+                                                g3c_sp[(p, mu, nu)] + g3c_sp[(p, nu, mu)]
+                                            } else {
+                                                g3c_sp[(p, mu, nu)]
+                                            };
+
+                                            // 9 derivative blocks: [dP_x, dP_y, dP_z, d1_x, d1_y, d1_z, d2_x, d2_y, d2_z]
+                                            let atom_p = sh2at_df[sp];
+                                            let atom_1 = sh2at_obs[s1];
+                                            let atom_2 = sh2at_obs[s2];
+
+                                            for coord in 0..3 {
+                                                let dp = deriv[coord * block_sz + idx];
+                                                let d1 = deriv[(3 + coord) * block_sz + idx];
+                                                let d2 = deriv[(6 + coord) * block_sz + idx];
+
+                                                local_grad[(atom_p, coord)] += gval * dp;
+                                                local_grad[(atom_1, coord)] += gval * d1;
+                                                local_grad[(atom_2, coord)] += gval * d2;
+                                            }
+                                        }
                                     }
                                 }
                             }
                         }
                     }
-                }
-            }
+                    local_grad
+                },
+            )
+            .collect();
+
+        // Serial fold in ascending sp order — the determinism anchor (same
+        // discipline as grouped_deterministic_sum, just without banding since
+        // the partials are tiny).
+        for p in &partials {
+            grad += p;
         }
     }
 
-    // 2-center metric derivative: Σ_{PQ} Γ^2c_{PQ} * d(P|Q)/dR
-    let gamma_2c = -0.5 * x_ov.dot(&x_ov.t());
+    // 2-center metric derivative: Σ_{PQ} Γ^2c_{PQ} * d(P|Q)/dR. This GEMM sits
+    // between two rayon regions (the 3c-derivative fan-out above has already
+    // collected/returned; the 2c-derivative fan-out below hasn't started) —
+    // outside any rayon region itself. Opt-in BLAS raise via
+    // FERRIC_BLAS_THREADS (default 1, unchanged behavior).
+    // 2-center metric-derivative weight Γ2c for V^{-1/2} fitting. Deriving the RI
+    // energy `E = Σ Γ_ia,jb (ia|P) V^{-1}_PQ (Q|jb)` w.r.t. R gives the 2-center
+    // term `Σ_PQ Γ2c_PQ dV_PQ` with base weight `−½·C·y_ov^T`, where
+    // `C = V^{-1}(P|ov) = V^{-1/2}·b_ov` (the Coulomb-fitted 3-index integrals) and
+    // `y_ov = V^{-1/2}·x_ov` (the same V^{-1/2}-dressed amplitudes the 3-center term
+    // uses). The pair loop below symmetrizes (Γ2c_PQ + Γ2c_QP), so the asymmetric
+    // C·y^T is contracted correctly. (The prior `−½ x_ov·x_ov^T` form was wrong — it
+    // omitted the C factor and used x_ov instead of the fitted C/y pair.)
+    //
+    // The base weight is scaled by 4: the SAME closed-shell 2-PDM factor 2 the
+    // 3-center term carries (Γ2 = 2·(2t−t̄)), PLUS a second factor 2 because the
+    // metric appears on BOTH fitting legs — differentiating V^{-1} = −V^{-1}·dV·V^{-1}
+    // contracts symmetrically against the P and Q legs. Verified against PySCF's
+    // `part_dm2·int2e_ip1` DF-metric response and the frozen-amplitude FD (H2 + H2O
+    // analytic−FD ~1e-9; the pre-fix ×1 weight left H2O ~1e-2 off).
+    let c_fit = with_blas_threads(opt_in_blas_threads(), || inter.v_inv_sqrt.t().dot(&inter.b_ov));
+    let gamma_2c = with_blas_threads(opt_in_blas_threads(), || -2.0 * c_fit.dot(&y_ov.t()));
 
     {
         use ferric_integrals::engine::Engine;
-        let mut eng2d = Engine::new_2center_deriv(op, dfbs, 1e-14)?;
+        use rayon::prelude::*;
         let nsh_df = dfbs.nshells();
         let dims_df = dfbs.shell_dims();
         let offs_df = dfbs.shell_offsets();
         let sh2at_df = dfbs.shell_to_atom();
+        let natoms = mol.atoms.len();
 
-        for sp in 0..nsh_df {
-            for sq in 0..=sp {
-                if let Some(deriv) = eng2d.compute_eri2_deriv(dfbs, sp, sq) {
-                    let np = dims_df[sp];
-                    let nq = dims_df[sq];
-                    let block_sz = np * nq;
-                    let sym_pq = sp != sq;
+        Engine::new_2center_deriv(op, dfbs, 1e-14)?;
 
-                    for p in 0..np {
-                        for q in 0..nq {
-                            let pf = offs_df[sp] + p;
-                            let qf = offs_df[sq] + q;
-                            let idx = p * nq + q;
+        // Axis: aux shell `sp` (outer loop of the sp>=sq triangle). Same
+        // par-map + sp-ordered collect + serial fold discipline as the 3c block
+        // above — each sp owns the full sq<=sp inner sweep as its unit of work,
+        // so partials are independent and the fold order is sp-ascending only.
+        let partials: Vec<Array2<f64>> = (0..nsh_df)
+            .into_par_iter()
+            .map_init(
+                || Engine::new_2center_deriv(op, dfbs, 1e-14).expect("2-center deriv engine (pre-validated)"),
+                |eng2d, sp| {
+                    let mut local_grad = Array2::<f64>::zeros((natoms, 3));
+                    for sq in 0..=sp {
+                        if let Some(deriv) = eng2d.compute_eri2_deriv(dfbs, sp, sq) {
+                            let np = dims_df[sp];
+                            let nq = dims_df[sq];
+                            let block_sz = np * nq;
+                            let sym_pq = sp != sq;
 
-                            let gval = if sym_pq {
-                                gamma_2c[(pf, qf)] + gamma_2c[(qf, pf)]
-                            } else {
-                                gamma_2c[(pf, qf)]
-                            };
+                            for p in 0..np {
+                                for q in 0..nq {
+                                    let pf = offs_df[sp] + p;
+                                    let qf = offs_df[sq] + q;
+                                    let idx = p * nq + q;
 
-                            let atom_p = sh2at_df[sp];
-                            let atom_q = sh2at_df[sq];
+                                    let gval = if sym_pq {
+                                        gamma_2c[(pf, qf)] + gamma_2c[(qf, pf)]
+                                    } else {
+                                        gamma_2c[(pf, qf)]
+                                    };
 
-                            for coord in 0..3 {
-                                let dp = deriv[coord * block_sz + idx];
-                                let dq = deriv[(3 + coord) * block_sz + idx];
+                                    let atom_p = sh2at_df[sp];
+                                    let atom_q = sh2at_df[sq];
 
-                                grad[(atom_p, coord)] += gval * dp;
-                                grad[(atom_q, coord)] += gval * dq;
+                                    for coord in 0..3 {
+                                        let dp = deriv[coord * block_sz + idx];
+                                        let dq = deriv[(3 + coord) * block_sz + idx];
+
+                                        local_grad[(atom_p, coord)] += gval * dp;
+                                        local_grad[(atom_q, coord)] += gval * dq;
+                                    }
+                                }
                             }
                         }
                     }
-                }
-            }
+                    local_grad
+                },
+            )
+            .collect();
+
+        // Serial fold in ascending sp order.
+        for p in &partials {
+            grad += p;
         }
     }
 
@@ -317,46 +591,17 @@ pub fn scs_mp2_gradient_analytical(
     rhf: &ScfResult,
     config: &crate::scs::ScsMp2Config,
 ) -> Result<Array2<f64>, FerricError> {
-    let mp2_config = RiMp2Config { frozen_core: config.frozen_core };
-    let inter = compute_mp2_intermediates(mol, obs, dfbs, op, rhf, &mp2_config)?;
-    let (z, l) = solve_zvector(mol, obs, dfbs, op, bounds, rhf, &inter)?;
-    let p_relax_ao = build_relaxed_density_ao(
-        rhf.mos_r(), &inter.p_oo, &inter.p_vv, &z, &inter.orbital_space(),
-    );
-    let nmo = rhf.mos_r().ncols();
-    let nocc_total = inter.nocc_total;
-    let f_mo = rhf.mos_r().t().dot(rhf.fock_r()).dot(rhf.mos_r());
-    let mut p_relax_mo = Array2::zeros((nmo, nmo));
-    for i in 0..inter.nocc {
-        let i_mo = inter.first_occ + i;
-        p_relax_mo[(i_mo, i_mo)] += 2.0;
-        for j in 0..inter.nocc {
-            let j_mo = inter.first_occ + j;
-            p_relax_mo[(i_mo, j_mo)] += inter.p_oo[(i, j)];
-        }
-    }
-    for a in 0..inter.nvir {
-        let a_mo = nocc_total + a;
-        for b in 0..inter.nvir {
-            let b_mo = nocc_total + b;
-            p_relax_mo[(a_mo, b_mo)] += inter.p_vv[(a, b)];
-        }
-    }
-    for a in 0..inter.nvir {
-        let a_mo = nocc_total + a;
-        for i in 0..inter.nocc {
-            let i_mo = inter.first_occ + i;
-            p_relax_mo[(a_mo, i_mo)] += z[(a, i)];
-            p_relax_mo[(i_mo, a_mo)] += z[(a, i)];
-        }
-    }
-    let w_relax_ao = build_relaxed_w_ao(
-        rhf.mos_r(), &f_mo, &p_relax_mo, &l, &inter.orbital_space(),
-    );
-    let mut grad = hf_gradient_with_density(mol, obs, op, bounds, &p_relax_ao, &w_relax_ao)?;
+    let mp2_config = RiMp2Config { frozen_core: config.frozen_core, memory_budget_bytes: config.memory_budget_bytes };
+    let inter = compute_mp2_intermediates_ov_only(mol, obs, dfbs, op, rhf, &mp2_config)?;
+    let (z, imat) = solve_zvector(mol, obs, dfbs, op, bounds, rhf, &inter)?;
+    // Full (unscaled) RI-MP2 relaxed-Lagrangian gradient + RI 3c/2c response.
+    // NOTE: external_potential is not threaded into correlated gradients (see the
+    // external-potentials design doc's non-goals).
+    let mut grad = mp2_relaxed_lagrangian_gradient(mol, obs, op, bounds, rhf, &inter, &z, &imat)?;
+    grad += &integral_response_gradient_3c2c(mol, obs, dfbs, op, &inter, rhf.mos_r())?;
     // Approximate scaling: multiply MP2 part by average SCS scaling
     let scale = (config.c_os + config.c_ss) / 2.0;
-    let rhf_grad = ferric_scf::gradient::rhf_gradient(mol, obs, op, bounds, rhf)?;
+    let rhf_grad = ferric_scf::gradient::rhf_gradient(mol, obs, op, bounds, rhf, None)?;
     for i in 0..mol.atoms.len() {
         for c in 0..3 {
             let mp2_part = grad[(i, c)] - rhf_grad[(i, c)];
@@ -366,11 +611,45 @@ pub fn scs_mp2_gradient_analytical(
     Ok(grad)
 }
 
+/// Compute the total RI-MP2 energy and its analytical nuclear gradient at a
+/// single geometry: solve RHF, then run `rimp2_gradient_analytical`.
+///
+/// Mirrors `ferric_rpa::gradient::total_rpa_gradient`'s energy+gradient
+/// pairing so `ferric_mp2::optimize::optimize_geometry_rimp2` can drive a
+/// BFGS loop the same way `ferric_rpa::optimize::optimize_geometry_rpa`
+/// does for RPA. `E_total = E_HF + E_MP2`; the returned gradient is
+/// dE_total/dR (analytical, not finite-difference).
+pub fn total_rimp2_gradient(
+    mol: &Molecule,
+    obs_basis: &BasisSet,
+    aux_basis: &BasisSet,
+    op: Operator,
+    mp2_config: &RiMp2Config,
+) -> Result<(f64, Array2<f64>), FerricError> {
+    let ctx = ferric_core::parallel::ParallelContext::default();
+    let obs = PreparedBasis::new(mol, obs_basis)?;
+    let dfbs = PreparedBasis::new(mol, aux_basis)?;
+    let bounds = SchwarzBounds::compute(op, &obs)?;
+    // Tight SCF via density_conv (reachable under the ΔP gate); energy_conv left
+    // at the loose default — a tight 1e-10 would hang at MaxIter. See total_energy above.
+    let rhf_cfg = RhfConfig {
+        density_conv: 1e-9,
+        ..Default::default()
+    };
+    let rhf = solve_rhf(&ctx, mol, &obs, op, &bounds, &rhf_cfg)?;
+    if !rhf.converged {
+        return Err(FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy });
+    }
+    let mp2 = ri_mp2(mol, &obs, &dfbs, op, &rhf, mp2_config)?;
+    let grad = rimp2_gradient_analytical(mol, &obs, &dfbs, op, &bounds, &rhf, mp2_config)?;
+    Ok((mp2.total_energy, grad))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use ferric_core::basis;
-    use ferric_scf::gradient::{oneelectron_gradient, twoelectron_gradient};
+    use ferric_scf::gradient::{hf_gradient_with_density, oneelectron_gradient, twoelectron_gradient};
 
     #[test]
     fn test_rimp2_gradient_fd_h2_symmetry() {
@@ -511,10 +790,11 @@ mod tests {
             }
         }
         eprintln!("  max diff = {:.2e}", max_diff);
-        // With 3c + 2c derivative terms. Remaining error from 4-center overcounting
-        // (using P_relax in Gamma instead of D_HF).
-        assert!(max_diff < 1e-4,
-            "analytical vs FD max diff = {:.2e} (expected < 1e-4)", max_diff);
+        // Full multi-block Lagrangian (Imat/zeta/vhf_s1occ) + RI 3c/2c response.
+        // Analytic == FD to ~1e-9 after the 3c/2c 2-PDM-factor fix; 1e-6 leaves
+        // headroom over the delta=1e-4 central-difference reference's truncation floor.
+        assert!(max_diff < 1e-6,
+            "analytical vs FD max diff = {:.2e} (expected < 1e-6)", max_diff);
     }
 
     #[test]
@@ -654,284 +934,6 @@ mod tests {
         eprintln!("diff(2y):  {:.6e}", 2.0 * g3c_y_munu - fd_deriv);
     }
 
-    #[test]
-    fn test_3c_gradient_fd_check() {
-        // Test: compute the 3-center gradient contribution by finite differences
-        // of the raw 3-center integrals, and compare with the analytical formula.
-        // This isolates the 3c term from everything else.
-        use crate::rimp2::{compute_mp2_intermediates, RiMp2Config};
-        use ferric_integrals::threeindex;
-        use crate::rimp2::cholesky_inverse_sqrt;
-
-        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
-        let obs_bs = basis::bundled("cc-pvdz").unwrap();
-        let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
-        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
-        let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
-        let op = Operator::coulomb();
-        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let rhf = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &obs, op, &bounds, &RhfConfig { energy_conv: 1e-10, ..Default::default() }).unwrap();
-        let config = RiMp2Config::default();
-        let inter = compute_mp2_intermediates(&mol, &obs, &dfbs, op, &rhf, &config).unwrap();
-
-        let nocc = inter.nocc;
-        let nvir = inter.nvir;
-        let nov = nocc * nvir;
-        let naux = inter.naux;
-        let c = rhf.mos_r();
-        let t2 = &inter.t2;
-
-        // Build x_ov
-        let mut x_ov = Array2::zeros((naux, nov));
-        for i in 0..nocc {
-            for a in 0..nvir {
-                let ia = i * nvir + a;
-                for p_aux in 0..naux {
-                    let mut sum = 0.0;
-                    for j in 0..nocc {
-                        for b in 0..nvir {
-                            let jb = j * nvir + b;
-                            let t_ij_ab = t2[(i * nvir + a) * nov + j * nvir + b];
-                            let t_ij_ba = t2[(i * nvir + b) * nov + j * nvir + a];
-                            let tt = 2.0 * t_ij_ab - t_ij_ba;
-                            sum += tt * inter.b_ov[(p_aux, jb)];
-                        }
-                    }
-                    x_ov[(p_aux, ia)] = sum;
-                }
-            }
-        }
-
-        // FD: compute E_corr at displaced geometries using the SAME HF orbitals and t2
-        // but displaced 3-center integrals.
-        // E_corr = sum_{ia,jb} tilde_t * sum_P B_P_ia * B_P_jb
-        // where B = V^{-1/2} c3, and c3 = (P|mu,nu) * C_occ * C_vir
-        // We displace the nuclei, recompute c3 (and V), then recompute E_corr.
-        // This gives dE/dR from the integral response only (not orbital response).
-        //
-        // Actually, for a proper check of the 3c term only, we should keep V^{-1/2} fixed
-        // and only vary (P|mu,nu). But in practice both 3c and V change.
-        //
-        // Let's do a simpler check: FD of E_corr = sum_{P,ia,jb} tilde_t * B_{ia}^P * B_{jb}^P
-        // with respect to nuclear displacement, keeping tilde_t and MOs fixed.
-        let c_occ = c.slice(ndarray::s![.., inter.first_occ..inter.first_occ + nocc]).to_owned();
-        let c_vir = c.slice(ndarray::s![.., inter.nocc_total..]).to_owned();
-
-        let compute_ecorr_at_geom = |mol_disp: &Molecule| -> f64 {
-            let obs_d = PreparedBasis::new(mol_disp, &obs_bs).unwrap();
-            let dfbs_d = PreparedBasis::new(mol_disp, &aux_bs).unwrap();
-            let v2c = threeindex::coulomb_metric_2c(op, &dfbs_d).unwrap();
-            let v_inv_sqrt = cholesky_inverse_sqrt(&v2c).unwrap();
-            let eri3_ao = threeindex::eri3_tensor(op, &obs_d, &dfbs_d).unwrap();
-            let eri3_ov = crate::mo_transform::transform_3center_ov(&eri3_ao, &c_occ, &c_vir);
-            let b_ov = v_inv_sqrt.dot(&eri3_ov.into_shape_with_order((naux, nov)).unwrap());
-            let mut e = 0.0;
-            for i in 0..nocc {
-                for a in 0..nvir {
-                    let ia = i * nvir + a;
-                    for j in 0..nocc {
-                        for b in 0..nvir {
-                            let jb = j * nvir + b;
-                            let t_ij_ab = t2[ia * nov + jb];
-                            let t_ij_ba = t2[(i*nvir+b) * nov + (j*nvir+a)];
-                            let tt = 2.0 * t_ij_ab - t_ij_ba;
-                            let eri: f64 = (0..naux).map(|p| b_ov[(p, ia)] * b_ov[(p, jb)]).sum();
-                            e += tt * eri;
-                        }
-                    }
-                }
-            }
-            e * 0.5  // overcounting factor
-        };
-
-        let delta = 1e-5;
-        // Atom 0, z-component
-        let mut mol_p = mol.clone();
-        let mut mol_m = mol.clone();
-        mol_p.atoms[0].zpos += delta;
-        mol_m.atoms[0].zpos -= delta;
-        let fd_integral_grad = (compute_ecorr_at_geom(&mol_p) - compute_ecorr_at_geom(&mol_m)) / (2.0 * delta);
-
-        eprintln!("=== 3c+2c gradient check (integral-response only, atom 0, z) ===");
-        eprintln!("FD integral-response gradient: {:.12}", fd_integral_grad);
-
-        // Now compute the analytical 3c+2c contribution at the reference geometry
-        // (This is the 3c+2c part from the full analytical gradient)
-        let full_grad = rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config).unwrap();
-        let hf_relax = hf_gradient_with_density(&mol, &obs, op, &bounds,
-            &crate::zvector::build_relaxed_density_ao(
-                rhf.mos_r(), &inter.p_oo, &inter.p_vv,
-                &{
-                    let (z, _) = crate::zvector::solve_zvector(&mol, &obs, &dfbs, op, &bounds, &rhf, &inter).unwrap();
-                    z
-                },
-                &inter.orbital_space(),
-            ),
-            &{
-                let (z, l) = crate::zvector::solve_zvector(&mol, &obs, &dfbs, op, &bounds, &rhf, &inter).unwrap();
-                let nocc_total = inter.nocc_total;
-                let f_mo = rhf.mos_r().t().dot(rhf.fock_r()).dot(rhf.mos_r());
-                let nmo = rhf.mos_r().ncols();
-                let mut p_relax_mo = Array2::zeros((nmo, nmo));
-                for i in 0..inter.nocc {
-                    let i_mo = inter.first_occ + i;
-                    p_relax_mo[(i_mo, i_mo)] += 2.0;
-                    for j in 0..inter.nocc {
-                        let j_mo = inter.first_occ + j;
-                        p_relax_mo[(i_mo, j_mo)] += inter.p_oo[(i, j)];
-                    }
-                }
-                for a in 0..inter.nvir {
-                    let a_mo = nocc_total + a;
-                    for b in 0..inter.nvir {
-                        let b_mo = nocc_total + b;
-                        p_relax_mo[(a_mo, b_mo)] += inter.p_vv[(a, b)];
-                    }
-                }
-                for a in 0..inter.nvir {
-                    let a_mo = nocc_total + a;
-                    for i in 0..inter.nocc {
-                        let i_mo = inter.first_occ + i;
-                        p_relax_mo[(a_mo, i_mo)] += z[(a, i)];
-                        p_relax_mo[(i_mo, a_mo)] += z[(a, i)];
-                    }
-                }
-                crate::zvector::build_relaxed_w_ao(
-                    rhf.mos_r(), &f_mo, &p_relax_mo, &l, &inter.orbital_space(),
-                )
-            },
-        ).unwrap();
-        let analytic_3c2c = full_grad[(0, 2)] - hf_relax[(0, 2)];
-        eprintln!("Analytical 3c+2c contribution:   {:.12}", analytic_3c2c);
-        eprintln!("Diff:                            {:.6e}", analytic_3c2c - fd_integral_grad);
-    }
-
-    #[test]
-    fn test_fd_convergence_study() {
-        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
-        let obs_bs = basis::bundled("cc-pvdz").unwrap();
-        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
-        let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
-        let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
-        let op = Operator::coulomb();
-        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let rhf = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &obs, op, &bounds, &RhfConfig { energy_conv: 1e-10, ..Default::default() }).unwrap();
-        let config = RiMp2Config::default();
-
-        let analytical = rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config).unwrap();
-
-        // Also compute the HF gradient and the hf_gradient_with_density(P_relax, W_relax) to decompose
-        let rhf_grad = ferric_scf::gradient::rhf_gradient(&mol, &obs, op, &bounds, &rhf).unwrap();
-
-        // Compute P_relax and W_relax like in rimp2_gradient_analytical
-        let inter = crate::rimp2::compute_mp2_intermediates(&mol, &obs, &dfbs, op, &rhf, &config).unwrap();
-        let (z, l) = crate::zvector::solve_zvector(&mol, &obs, &dfbs, op, &bounds, &rhf, &inter).unwrap();
-        let p_relax_ao = crate::zvector::build_relaxed_density_ao(
-            rhf.mos_r(), &inter.p_oo, &inter.p_vv, &z, &inter.orbital_space(),
-        );
-        let nocc_total = inter.nocc_total;
-        let f_mo = rhf.mos_r().t().dot(rhf.fock_r()).dot(rhf.mos_r());
-        let nmo = rhf.mos_r().ncols();
-        let mut p_relax_mo = Array2::zeros((nmo, nmo));
-        for i in 0..inter.nocc {
-            let i_mo = inter.first_occ + i;
-            p_relax_mo[(i_mo, i_mo)] += 2.0;
-            for j in 0..inter.nocc {
-                let j_mo = inter.first_occ + j;
-                p_relax_mo[(i_mo, j_mo)] += inter.p_oo[(i, j)];
-            }
-        }
-        for a in 0..inter.nvir {
-            let a_mo = nocc_total + a;
-            for b in 0..inter.nvir {
-                let b_mo = nocc_total + b;
-                p_relax_mo[(a_mo, b_mo)] += inter.p_vv[(a, b)];
-            }
-        }
-        for a in 0..inter.nvir {
-            let a_mo = nocc_total + a;
-            for i in 0..inter.nocc {
-                let i_mo = inter.first_occ + i;
-                p_relax_mo[(a_mo, i_mo)] += z[(a, i)];
-                p_relax_mo[(i_mo, a_mo)] += z[(a, i)];
-            }
-        }
-        let w_relax_ao = crate::zvector::build_relaxed_w_ao(
-            rhf.mos_r(), &f_mo, &p_relax_mo, &l, &inter.orbital_space(),
-        );
-        let hf_with_relax = hf_gradient_with_density(&mol, &obs, op, &bounds, &p_relax_ao, &w_relax_ao).unwrap();
-
-        // The 3c+2c contribution = analytical - hf_with_relax
-        let corr_3c2c = analytical[(0, 2)] - hf_with_relax[(0, 2)];
-        let hf_corr_diff = hf_with_relax[(0, 2)] - rhf_grad[(0, 2)];
-
-        // FD for HF and total
-        let delta = 1e-5;
-        let fd_total = rimp2_gradient_fd(&mol, &obs_bs, &aux_bs, op, &config, delta).unwrap();
-        let mut fd_hf = Array2::zeros((2, 3));
-        for atom in 0..2 {
-            for coord in 0..3 {
-                let mut mol_p = mol.clone();
-                let mut mol_m = mol.clone();
-                match coord {
-                    0 => { mol_p.atoms[atom].x += delta; mol_m.atoms[atom].x -= delta; }
-                    1 => { mol_p.atoms[atom].y += delta; mol_m.atoms[atom].y -= delta; }
-                    _ => { mol_p.atoms[atom].zpos += delta; mol_m.atoms[atom].zpos -= delta; }
-                }
-                let bs2 = basis::bundled("cc-pvdz").unwrap();
-                let prep_p = PreparedBasis::new(&mol_p, &bs2).unwrap();
-                let bounds_p = SchwarzBounds::compute(op, &prep_p).unwrap();
-                let rhf_p = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol_p, &prep_p, op, &bounds_p, &RhfConfig { energy_conv: 1e-10, ..Default::default() }).unwrap();
-                let prep_m = PreparedBasis::new(&mol_m, &bs2).unwrap();
-                let bounds_m = SchwarzBounds::compute(op, &prep_m).unwrap();
-                let rhf_m = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol_m, &prep_m, op, &bounds_m, &RhfConfig { energy_conv: 1e-10, ..Default::default() }).unwrap();
-                fd_hf[(atom, coord)] = (rhf_p.energy - rhf_m.energy) / (2.0 * delta);
-            }
-        }
-        let fd_corr = fd_total[(0, 2)] - fd_hf[(0, 2)];
-
-        eprintln!("=== Gradient decomposition (z-component, atom 0) ===");
-        eprintln!("RHF gradient (analytical):        {:.12}", rhf_grad[(0, 2)]);
-        eprintln!("RHF gradient (FD):                {:.12}", fd_hf[(0, 2)]);
-        eprintln!("RHF diff:                         {:.6e}", rhf_grad[(0, 2)] - fd_hf[(0, 2)]);
-        eprintln!();
-        eprintln!("hf_grad_with_density(P_relax,W):  {:.12}", hf_with_relax[(0, 2)]);
-        eprintln!("delta from HF to relaxed-density: {:.12}", hf_corr_diff);
-        eprintln!();
-        eprintln!("3c+2c contribution (analytical):  {:.12}", corr_3c2c);
-        eprintln!("MP2 corr gradient (FD):           {:.12}", fd_corr);
-        eprintln!("3c+2c vs FD corr diff:            {:.6e}", corr_3c2c - fd_corr);
-        eprintln!();
-        // Decompose 1e vs 2e for both D_HF and P_relax
-        let nocc_hf = (mol.nelec() / 2) as usize;
-        let w_hf = ferric_scf::gradient::build_energy_weighted_density(&rhf, nocc_hf);
-        let oe_dhf = oneelectron_gradient(&mol, &obs, rhf.density_r(), &w_hf).unwrap();
-        let te_dhf = twoelectron_gradient(&obs, op, &bounds, rhf.density_r()).unwrap();
-        let oe_relax = oneelectron_gradient(&mol, &obs, &p_relax_ao, &w_relax_ao).unwrap();
-        let te_relax = twoelectron_gradient(&obs, op, &bounds, &p_relax_ao).unwrap();
-
-        eprintln!();
-        eprintln!("=== 1e/2e decomposition (z-component, atom 0) ===");
-        eprintln!("1e(D_HF):     {:.12}", oe_dhf[(0, 2)]);
-        eprintln!("2e(D_HF):     {:.12}", te_dhf[(0, 2)]);
-        eprintln!("sum(D_HF):    {:.12}", oe_dhf[(0, 2)] + te_dhf[(0, 2)]);
-        eprintln!("1e(P_relax):  {:.12}", oe_relax[(0, 2)]);
-        eprintln!("2e(P_relax):  {:.12}", te_relax[(0, 2)]);
-        eprintln!("sum(P_relax): {:.12}", oe_relax[(0, 2)] + te_relax[(0, 2)]);
-        eprintln!();
-        eprintln!("delta_1e = 1e(P_relax) - 1e(D_HF): {:.12}", oe_relax[(0, 2)] - oe_dhf[(0, 2)]);
-        eprintln!("delta_2e = 2e(P_relax) - 2e(D_HF): {:.12}", te_relax[(0, 2)] - te_dhf[(0, 2)]);
-        eprintln!();
-        eprintln!("If 4c uses D_HF: total = 1e(P_relax) + 2e(D_HF) + 3c2c");
-        let total_dhf_4c = oe_relax[(0, 2)] + te_dhf[(0, 2)] + corr_3c2c;
-        eprintln!("  = {:.12} + {:.12} + {:.12} = {:.12}", oe_relax[(0, 2)], te_dhf[(0, 2)], corr_3c2c, total_dhf_4c);
-        eprintln!("  diff from FD: {:.6e}", total_dhf_4c - fd_total[(0, 2)]);
-
-        eprintln!();
-        eprintln!("Total analytical:                 {:.12}", analytical[(0, 2)]);
-        eprintln!("Total FD:                         {:.12}", fd_total[(0, 2)]);
-        eprintln!("Total diff:                       {:.6e}", analytical[(0, 2)] - fd_total[(0, 2)]);
-    }
 
     #[test]
     fn test_analytical_vs_fd_h2o() {
@@ -960,11 +962,68 @@ mod tests {
             }
         }
         eprintln!("  max diff = {:.2e}", max_diff);
-        // H2O has larger error than H2 due to 4-center overcounting with relaxed density.
-        // Current accuracy limited by incomplete Lagrangian integral response and
-        // missing separation of 1e/2e gradient contributions.
-        assert!(max_diff < 0.1,
-            "H2O analytical vs FD max diff = {:.2e} (expected < 0.1)", max_diff);
+        // Both H2 (nocc=1) and H2O (nocc=5) now agree with FD to ~1e-9 after the
+        // RI 3c/2c integral-response 2-PDM-factor fix (see
+        // `integral_response_gradient_3c2c`). Previously H2O sat at ~1.0e-2: the
+        // 3-center weight was missing the closed-shell 2-PDM factor 2 (Γ2 = 2·(2t−t̄))
+        // and the 2-center metric weight was missing 4 (that same 2, times a second 2
+        // from the metric contracting both fitting legs). At nocc=1 the two channel
+        // errors cancelled in the total (H2 was accidentally tight at 2.8e-5); at
+        // nocc>1 they did not. Term-by-term cross-check vs PySCF conventional MP2
+        // (hcore/im1/zeta/vhf_s1occ/bilinear-2e all already matched to ≤1e-4; only the
+        // RI 2e-response `part_dm2·int2e_ip1` term was off) pinned it precisely.
+        assert!(max_diff < 1e-6,
+            "H2O analytical vs FD max diff = {:.2e} (expected < 1e-6)", max_diff);
+    }
+
+    #[test]
+    fn test_3c2c_assembly_bit_identical_across_thread_counts() {
+        // Scope: ONLY the P7-parallelized region (x_ov par-i build, aux-shell
+        // 3c-derivative assembly, aux-pair 2c-derivative assembly), fed the
+        // SAME precomputed intermediates in rayon pools pinned to 1 and 4
+        // workers, compared via f64::to_bits. The whole-pipeline gate this
+        // test used to carry is RESOLVED: P14 migrated build_jk (used inside
+        // solve_zvector, upstream of this region) off its thread-count-
+        // dependent fold/reduce tree onto the grouped deterministic sum, and
+        // the full solve_rhf → rhf_gradient pipeline is now covered by
+        // `whole_pipeline_rhf_gradient_bit_identical_across_thread_counts`
+        // in ferric-scf/src/rhf.rs.
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
+        let obs_bs = basis::bundled("cc-pvdz").unwrap();
+        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+        let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &obs, op, &bounds, &RhfConfig { energy_conv: 1e-10, ..Default::default() }).unwrap();
+        let config = RiMp2Config::default();
+
+        // Precompute intermediates ONCE, outside any pinned pool, so both runs
+        // see bit-identical inputs and only the P7 region is under test.
+        let inter = compute_mp2_intermediates_ov_only(&mol, &obs, &dfbs, op, &rhf, &config).unwrap();
+
+        let run_with_threads = |n: usize| -> Array2<f64> {
+            let pool = rayon::ThreadPoolBuilder::new().num_threads(n).build().unwrap();
+            pool.install(|| {
+                integral_response_gradient_3c2c(&mol, &obs, &dfbs, op, &inter, rhf.mos_r()).unwrap()
+            })
+        };
+
+        let g1 = run_with_threads(1);
+        let g4 = run_with_threads(4);
+
+        for atom in 0..2 {
+            for c in 0..3 {
+                assert_eq!(
+                    g1[(atom, c)].to_bits(),
+                    g4[(atom, c)].to_bits(),
+                    "3c+2c assembly not bit-identical across thread counts at atom={atom} coord={c}: \
+                     1-thread={:.17e} (0x{:016x}), 4-thread={:.17e} (0x{:016x})",
+                    g1[(atom, c)], g1[(atom, c)].to_bits(),
+                    g4[(atom, c)], g4[(atom, c)].to_bits(),
+                );
+            }
+        }
     }
 
     #[test]
@@ -1029,8 +1088,8 @@ mod tests {
         let nocc = (mol.nelec() / 2) as usize;
         let w = ferric_scf::gradient::build_energy_weighted_density(&rhf, nocc);
 
-        let combined = hf_gradient_with_density(&mol, &obs, op, &bounds, rhf.density_r(), &w).unwrap();
-        let oe = oneelectron_gradient(&mol, &obs, rhf.density_r(), &w).unwrap();
+        let combined = hf_gradient_with_density(&mol, &obs, op, &bounds, rhf.density_r(), &w, None).unwrap();
+        let oe = oneelectron_gradient(&mol, &obs, rhf.density_r(), &w, None).unwrap();
         let te = twoelectron_gradient(&obs, op, &bounds, rhf.density_r()).unwrap();
         let split = &oe + &te;
 

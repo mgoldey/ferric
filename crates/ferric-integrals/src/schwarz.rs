@@ -6,6 +6,25 @@ use crate::ffi;
 use crate::operator::{Operator, OperatorKind};
 use ferric_core::FerricError;
 use ndarray::Array2;
+use std::os::raw::c_void;
+
+/// RAII guard around a raw `scf_engine_create`/`scf_engine_destroy` handle
+/// pair, mirroring [`Engine`]'s own `Drop` impl (see `engine.rs`). Without
+/// this, a manual create/destroy pairing inside one `unsafe` block leaks the
+/// handle if anything in between panics or returns early (e.g. a libint2
+/// internal error surfacing as a Rust panic from `scf_compute_schwarz`) —
+/// the raw `ffi::scf_engine_destroy(handle)` call would simply never run.
+/// Wrapping the handle here guarantees cleanup runs on every exit path,
+/// panic included.
+struct RawEngineHandle(*mut c_void);
+
+impl Drop for RawEngineHandle {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe { ffi::scf_engine_destroy(self.0) };
+        }
+    }
+}
 
 /// Compute the Schwarz screening matrix Q(i,j) = sqrt(|(ij|ij)|) for all shell pairs.
 ///
@@ -19,19 +38,19 @@ pub fn schwarz(op: Operator, prep: &PreparedBasis) -> Result<Array2<f64>, Ferric
             "operator {:?} not implemented", op.kind
         ))),
     };
-    let handle = unsafe {
+    let raw = unsafe {
         ffi::scf_engine_create(op_kind, op.omega, prep.max_nprim(), prep.max_l(), 1e-14)
     };
-    if handle.is_null() {
+    if raw.is_null() {
         return Err(FerricError::Libint("schwarz engine_create null".into()));
     }
+    // Handle is now owned by the guard: destroyed on every exit path
+    // (normal return, `?`, or panic unwind), not just the happy path.
+    let handle = RawEngineHandle(raw);
     let nsh = prep.nshells();
     let mut qmat = Array2::zeros((nsh, nsh));
-    let status = unsafe {
-        let s = ffi::scf_compute_schwarz(handle, prep.handle(), qmat.as_mut_ptr());
-        ffi::scf_engine_destroy(handle);
-        s
-    };
+    let status = unsafe { ffi::scf_compute_schwarz(handle.0, prep.handle(), qmat.as_mut_ptr()) };
+    drop(handle);
     if status < 0 {
         return Err(FerricError::Libint(format!(
             "libint2 internal error computing Schwarz matrix: status {status}"
@@ -39,6 +58,10 @@ pub fn schwarz(op: Operator, prep: &PreparedBasis) -> Result<Array2<f64>, Ferric
     }
     Ok(qmat)
 }
+
+/// Below this many aux shells, run the loop serially — avoids
+/// rayon/engine-construction overhead for free-atom/tiny-basis jobs.
+const PAR_AUX_SHELL_THRESHOLD: usize = 64;
 
 /// Per-shell Schwarz bound for an auxiliary (density-fitting) basis:
 /// Q3[P] = sqrt(max_a |(P_a | P_a)|) over the functions a in aux shell P.
@@ -48,24 +71,56 @@ pub fn schwarz(op: Operator, prep: &PreparedBasis) -> Result<Array2<f64>, Ferric
 ///   |(P | μν)|  ≤  Q3[P] · Q(μ,ν)
 /// which lets `eri3_tensor_screened` skip shell triples whose contribution
 /// is below threshold without computing them.
+///
+/// Parallelized over `p` once `nsh` clears [`PAR_AUX_SHELL_THRESHOLD`]: each
+/// rayon worker builds its own `Engine` via `for_each_init` (never per-item —
+/// construction runs under a global ctor mutex). Each iteration writes only
+/// `q3[p]` — a single distinct index per task, so the write set is trivially
+/// disjoint across workers; `into_par_iter().map().collect()` is
+/// order-preserving, giving a `Vec` bit-identical to the serial loop.
 pub fn schwarz3_aux(op: Operator, dfbs: &PreparedBasis) -> Result<Vec<f64>, FerricError> {
     let nsh = dfbs.nshells();
     let dims = dfbs.shell_dims();
-    let mut eng = Engine::new_2center(op, dfbs, 1e-14)?;
-    let mut q3 = vec![0.0f64; nsh];
-    for p in 0..nsh {
-        let block = eng.compute_eri2(dfbs, p, p);
-        let np = dims[p];
-        // (P_a | P_a) lives on the diagonal of the np×np block.
-        let mut maxv = 0.0f64;
-        for a in 0..np {
-            let v = block[a * np + a].abs();
-            if v > maxv {
-                maxv = v;
+
+    if nsh < PAR_AUX_SHELL_THRESHOLD {
+        let mut eng = Engine::new_2center(op, dfbs, 1e-14)?;
+        let mut q3 = vec![0.0f64; nsh];
+        for p in 0..nsh {
+            let block = eng.compute_eri2(dfbs, p, p);
+            let np = dims[p];
+            // (P_a | P_a) lives on the diagonal of the np×np block.
+            let mut maxv = 0.0f64;
+            for a in 0..np {
+                let v = block[a * np + a].abs();
+                if v > maxv {
+                    maxv = v;
+                }
             }
+            q3[p] = maxv.sqrt();
         }
-        q3[p] = maxv.sqrt();
+        return Ok(q3);
     }
+
+    use rayon::prelude::*;
+    Engine::new_2center(op, dfbs, 1e-14)?;
+    let q3: Vec<f64> = (0..nsh)
+        .into_par_iter()
+        .map_init(
+            || Engine::new_2center(op, dfbs, 1e-14).expect("2-center engine (pre-validated)"),
+            |eng, p| {
+                let block = eng.compute_eri2(dfbs, p, p);
+                let np = dims[p];
+                let mut maxv = 0.0f64;
+                for a in 0..np {
+                    let v = block[a * np + a].abs();
+                    if v > maxv {
+                        maxv = v;
+                    }
+                }
+                maxv.sqrt()
+            },
+        )
+        .collect();
     Ok(q3)
 }
 
@@ -114,6 +169,45 @@ mod tests {
                 );
                 assert!(q[(i, j)] >= 0.0, "Q[{i},{j}] < 0");
             }
+        }
+    }
+
+    /// Serial reference for `schwarz3_aux` (pre-parallelization implementation,
+    /// kept verbatim).
+    fn schwarz3_aux_serial(op: Operator, dfbs: &PreparedBasis) -> Vec<f64> {
+        let nsh = dfbs.nshells();
+        let dims = dfbs.shell_dims();
+        let mut eng = Engine::new_2center(op, dfbs, 1e-14).unwrap();
+        let mut q3 = vec![0.0f64; nsh];
+        for p in 0..nsh {
+            let block = eng.compute_eri2(dfbs, p, p);
+            let np = dims[p];
+            let mut maxv = 0.0f64;
+            for a in 0..np {
+                let v = block[a * np + a].abs();
+                if v > maxv {
+                    maxv = v;
+                }
+            }
+            q3[p] = maxv.sqrt();
+        }
+        q3
+    }
+
+    #[test]
+    fn test_schwarz3_aux_bitidentical_to_serial() {
+        // alkane_6/cc-pVDZ-RI clears PAR_AUX_SHELL_THRESHOLD (64 aux shells).
+        let mol = Molecule::load_xyz("../../testdata/molecules/alkane_6.xyz").unwrap();
+        let dfbs_set = basis::bundled("cc-pvdz-ri").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &dfbs_set).unwrap();
+        assert!(dfbs.nshells() >= 64,
+            "test aux basis too small to exercise the parallel path: {} shells", dfbs.nshells());
+        for op in [Operator::coulomb(), Operator::erfc(0.222)] {
+            let par = schwarz3_aux(op, &dfbs).unwrap();
+            let ser = schwarz3_aux_serial(op, &dfbs);
+            assert_eq!(par.len(), ser.len());
+            let n_diff = par.iter().zip(ser.iter()).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+            assert_eq!(n_diff, 0, "schwarz3_aux: {n_diff} elements differ bitwise (op={op:?})");
         }
     }
 }

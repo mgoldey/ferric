@@ -29,9 +29,13 @@ RESULTS = HERE / "results.json"
 
 METHODS = ["Koop", "dSCF", "dRPA", "G0W0", "COHSEX", "evGW0", "evGW", "G0W0pbe"]
 # per-molecule data row: "H2O  12.62  13.889  10.989  12.549  12.890  14.672  12.835  12.801"
+# NaN columns must parse (same fix as parallel_complete.py, commit 5284e07):
+# Cu2/CCuN print G0W0pbe=NaN with finite GW columns. An unparsed row meant the
+# molecule was never recorded, so the relaunch loop re-ran it FOREVER (clean
+# exit + unchanged remaining-set = infinite relaunch).
 ROW = re.compile(
-    r"^(?P<mol>[A-Za-z0-9]+)\s+(?P<exp>[-+0-9.]+)\s+" + r"\s+".join(
-        rf"(?P<{m}>[-+0-9.]+)" for m in METHODS
+    r"^(?P<mol>[A-Za-z0-9]+)\s+(?P<exp>[-+0-9.]+|NaN|nan)\s+" + r"\s+".join(
+        rf"(?P<{m}>[-+0-9.]+|NaN|nan)" for m in METHODS
     )
 )
 MAE = re.compile(r"^MAE\s+(?P<vals>.+)$")
@@ -69,15 +73,42 @@ def load_basis(basis):
 
 
 def save_basis(basis, slot):
-    # Re-emit documented provenance for whatever has actually failed, so the
-    # annotation survives restarts and is never clobbered by an in-memory slot.
-    failed = set(slot.get("failed", []))
-    reasons = globals().get("FAILURE_REASONS", {})
-    slot["failure_reasons"] = {k: reasons[k] for k in sorted(failed) if k in reasons}
+    """Persist under a cross-process lock, MERGING with what is on disk.
+
+    The old version rewrote the whole file from the in-memory slot: a second
+    same-basis writer (another run_sweep, or parallel_complete.py) had its
+    rows silently clobbered by whichever process saved last (load-once /
+    rewrite-all lost-update). Merge semantics: molecule rows union (ours win
+    for molecules we ran); failed = union minus anything that now has a row
+    (a molecule completed elsewhere must not stay marked failed). The tmp
+    file is per-pid so two writers can never interleave into one tmp.
+    """
+    import fcntl
     p = _basis_path(basis)
-    tmp = p.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(slot, indent=2, sort_keys=True))
-    tmp.replace(p)
+    reasons = globals().get("FAILURE_REASONS", {})
+    log = globals().get("FAILURE_LOG", {})
+    with open(p.with_suffix(".lock"), "w") as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        disk = json.loads(p.read_text()) if p.exists() else {}
+        mols = slot.setdefault("molecules", {})
+        for k, v in disk.get("molecules", {}).items():
+            mols.setdefault(k, v)
+        failed = (set(disk.get("failed", [])) | set(slot.get("failed", []))) - set(mols)
+        out = dict(disk)
+        out.update(slot)
+        out["molecules"] = mols
+        out["failed"] = sorted(failed)
+        out["failure_reasons"] = {k: reasons[k] for k in out["failed"] if k in reasons}
+        # Merge captured attribution evidence (exit code + output tail) with
+        # whatever a prior process already recorded, same union-not-clobber
+        # rule as failed/molecules above.
+        merged_log = dict(disk.get("failure_log", {}))
+        merged_log.update({k: v for k, v in log.items() if k in failed})
+        out["failure_log"] = {k: merged_log[k] for k in out["failed"] if k in merged_log}
+        slot["failed"] = out["failed"]
+        tmp = p.with_suffix(f".json.tmp.{os.getpid()}")
+        tmp.write_text(json.dumps(out, indent=2, sort_keys=True))
+        tmp.replace(p)
 
 
 def load():
@@ -113,6 +144,18 @@ def parse_output(txt):
 
 
 FAILED_RE = re.compile(r"^(\w+)\s+FAILED\s*$")
+
+# Runtime failure-attribution evidence, populated in run_basis() each time a
+# molecule is marked `failed` via the stall/nonzero-exit paths: {mol: {reason,
+# returncode, tail, ...}}. Unlike FAILURE_REASONS below (hand-curated, static),
+# this captures what the subprocess actually said, so a stall/crash/OOM/panic
+# leaves a diagnosable trace instead of just a guessed mol name with no
+# evidence. Persisted to results_<basis>.json under "failure_log" by
+# save_basis. This does NOT replace real retry/classification (still a known
+# gap — see docs/perf-tasks/G5-gw100-driver-robustness-remainder.md item 2);
+# it only makes the existing "mark whichever molecule was in flight as failed"
+# behavior attributable after the fact.
+FAILURE_LOG = {}
 
 # Documented provenance for the known GW100 failures, so a "FAILED" row reads as
 # scoped exclusion (honest) rather than an undiagnosed bug. Re-emitted on every
@@ -154,6 +197,10 @@ def _next_undone_case(mols, failed):
     return None
 
 
+def _indent(text, prefix="        "):
+    return "\n".join(prefix + line for line in text.splitlines()) or prefix + "(no output captured)"
+
+
 def run_basis(basis, force=False):
     """Stream the driver, persisting each molecule row to results_<basis>.json as
     it lands. Per-basis file → concurrent sweeps in different bases don't clobber.
@@ -189,6 +236,9 @@ def run_basis(basis, force=False):
 
         last_progress = [__import__("time").monotonic()]
         stalled = [False]
+        progressed = False  # any row/FAILED parsed from THIS launch
+        import collections
+        tail = collections.deque(maxlen=40)  # last N raw lines, for failure attribution
 
         def watchdog(p=proc, lp=last_progress, st=stalled):
             import time
@@ -203,6 +253,7 @@ def run_basis(basis, force=False):
 
         for line in proc.stdout:
             line = line.rstrip("\n")
+            tail.append(line)
             m = ROW.match(line.strip())
             if m:
                 d = m.groupdict(); name = d.pop("mol")
@@ -210,6 +261,7 @@ def run_basis(basis, force=False):
                 slot["molecules"] = mols
                 save_basis(basis, slot)         # persist EACH molecule immediately
                 last_progress[0] = __import__("time").monotonic()
+                progressed = True
                 print(f"  [+] {name} ({len(mols)} done)", flush=True)
                 continue
             fm = FAILED_RE.match(line.strip())
@@ -217,9 +269,18 @@ def run_basis(basis, force=False):
                 failed.add(fm.group(1)); slot["failed"] = sorted(failed)
                 save_basis(basis, slot)
                 last_progress[0] = __import__("time").monotonic()
+                progressed = True
                 print(f"  [x] {fm.group(1)} FAILED", flush=True)
                 continue
         proc.wait()
+        # Attribution evidence for whichever molecule gets marked failed below:
+        # exit code + last lines of the driver's merged stdout/stderr (panic
+        # message, OOM-killer text, traceback, ...). Previously this was
+        # discarded once past the ROW/FAILED regex match, so a stall/crash
+        # only ever recorded a guessed mol name with no diagnostic — every
+        # non-regex line from the subprocess is captured here, not just a
+        # fixed set of known patterns.
+        tail_text = "\n".join(tail)
 
         if stalled[0]:
             # The molecule in flight when we killed the driver is the next un-done
@@ -227,8 +288,15 @@ def run_basis(basis, force=False):
             nxt = _next_undone_case(mols, failed)
             if nxt:
                 failed.add(nxt); slot["failed"] = sorted(failed)
+                FAILURE_LOG[nxt] = {
+                    "reason": "stall",
+                    "mol_budget_s": mol_budget,
+                    "returncode": proc.returncode,
+                    "tail": tail_text,
+                }
                 save_basis(basis, slot)
                 print(f"  [!] {nxt} exceeded {mol_budget:.0f}s/mol budget — FAILED, resuming past it", flush=True)
+                print(f"      last output before kill:\n{_indent(tail_text)}", flush=True)
             else:
                 break  # stalled but nothing left to attribute it to — stop
         elif proc.returncode not in (0, None):
@@ -237,11 +305,26 @@ def run_basis(basis, force=False):
             nxt = _next_undone_case(mols, failed)
             if nxt:
                 failed.add(nxt); slot["failed"] = sorted(failed)
+                FAILURE_LOG[nxt] = {
+                    "reason": "nonzero_exit",
+                    "returncode": proc.returncode,
+                    "tail": tail_text,
+                }
                 save_basis(basis, slot)
                 print(f"  [!] {nxt} — driver exited {proc.returncode}, FAILED, resuming past it", flush=True)
+                print(f"      last output before exit:\n{_indent(tail_text)}", flush=True)
             else:
                 break
-        # clean exit with nothing stalled → loop re-checks `remaining` (should be empty)
+        elif not progressed:
+            # Clean exit, no stall, yet NOTHING parsed: relaunching with an
+            # identical remaining-set would loop forever (this was the NaN-row
+            # infinite relaunch before the regex fix above). Abort loudly.
+            print(f"  [!] driver exited cleanly but no row for {sorted(remaining)} "
+                  f"parsed — output format vs ROW regex mismatch? Aborting to "
+                  f"avoid an infinite relaunch loop.", flush=True)
+            print(f"      last output:\n{_indent(tail_text)}", flush=True)
+            break
+        # clean exit with progress → loop re-checks `remaining`
 
     # Recompute MAE from the persisted molecule set (independent of run completion).
     _recompute_mae(slot)

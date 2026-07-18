@@ -14,9 +14,12 @@ use crate::ao_grid::eval_basis_and_grad_on_points;
 use crate::density_on_grid::eval_density_closed;
 use crate::grid::{build_atomic_grid, AtomicGridConfig, GridPoint};
 use crate::libxc::{FunctionalFamily, XcDef};
+use crate::vxc::{scale_columns_into, VxcScratch};
 use ferric_core::basis::BasisSet;
 use ferric_core::mol::Molecule;
-use ndarray::{Array2, Array3};
+use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
+use ndarray::{Array1, Array2, Array3};
+use std::sync::Mutex;
 
 /// Precomputed grid + AO data + libxc handle for an LDA f_xc response.
 /// Build once at SCF setup; reuse the closure across Newton iterations.
@@ -25,6 +28,9 @@ pub struct LdaFxcKernel {
     pub grid: Vec<GridPoint>,
     pub chi: Array2<f64>,     // (nbf, npts)
     pub dchi: Array3<f64>,    // (3, nbf, npts) — unused for LDA but kept for symmetry
+    /// Pre-scaled χ scratch reused across Newton iterations (`apply_with_ref`
+    /// takes `&self`, hence the Mutex; uncontended — one lock per matvec).
+    scratch: Mutex<VxcScratch>,
 }
 
 impl LdaFxcKernel {
@@ -43,7 +49,7 @@ impl LdaFxcKernel {
         let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
         let (chi, dchi) =
             eval_basis_and_grad_on_points(mol, bs, &pts).map_err(|e| format!("{e:?}"))?;
-        Ok(Self { xc, grid, chi, dchi })
+        Ok(Self { xc, grid, chi, dchi, scratch: Mutex::new(VxcScratch::new()) })
     }
 
     /// Compute (δV_xc^α, δV_xc^β) in AO basis given (δD_α, δD_β).
@@ -129,20 +135,27 @@ impl LdaFxcKernel {
         //
         // Pre-scale χ columns by (w · δV^σ) per grid point, then GEMM:
         // chi_scaled @ chiᵀ — same idiom as vxc.rs::semilocal_vxc_closed's
-        // LDA piece.
-        let mut chi_scaled_a = self.chi.clone();
-        let mut chi_scaled_b = self.chi.clone();
-        for g in 0..npts {
-            let w = self.grid[g].weight;
-            let wa = w * dv_a[g];
-            let wb = w * dv_b[g];
-            for mu in 0..nbf {
-                chi_scaled_a[(mu, g)] *= wa;
-                chi_scaled_b[(mu, g)] *= wb;
-            }
-        }
-        let dvxc_a: Array2<f64> = chi_scaled_a.dot(&self.chi.t());
-        let dvxc_b: Array2<f64> = chi_scaled_b.dot(&self.chi.t());
+        // LDA piece. One reused (nbf, npts) scratch serves both spins
+        // sequentially (a's GEMM completes before b refills), replacing the two
+        // full `chi.clone()` copies this call used to make every Newton step.
+        let mut scratch = self.scratch.lock().expect("fxc scratch mutex poisoned");
+        let buf = scratch.ensure((nbf, npts));
+
+        let fac_a: Array1<f64> =
+            (0..npts).map(|g| self.grid[g].weight * dv_a[g]).collect();
+        scale_columns_into(&self.chi, &fac_a, buf);
+        // Digestion GEMM (nbf, npts)·(npts, nbf), outside any rayon region —
+        // apply_with_ref is called once per matvec from the serial ROHF
+        // AH-Newton solver (rohf_newton.rs/rohf_ah.rs; neither uses rayon).
+        // Opt-in BLAS raise via FERRIC_BLAS_THREADS (default 1, unchanged
+        // behavior); mirrors vxc.rs's semilocal_vxc_closed_scratch idiom.
+        let dvxc_a: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || buf.dot(&self.chi.t()));
+
+        let fac_b: Array1<f64> =
+            (0..npts).map(|g| self.grid[g].weight * dv_b[g]).collect();
+        scale_columns_into(&self.chi, &fac_b, buf);
+        // Same opt-in-raise digestion GEMM as the alpha-spin piece above.
+        let dvxc_b: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || buf.dot(&self.chi.t()));
         (dvxc_a, dvxc_b)
     }
 

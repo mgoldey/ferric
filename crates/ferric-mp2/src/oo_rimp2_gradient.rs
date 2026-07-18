@@ -72,7 +72,12 @@ pub fn oo_ri_mp2_gradient(
     }
     let w_ao = result.mos.dot(&w_mo).dot(&result.mos.t());
 
-    let grad = oneelectron_gradient(mol, obs, &d_ao, &w_ao)?;
+    // NOTE: external_potential is not threaded into correlated gradients; passing
+    // None here silently omits any external point-charge/field contribution from
+    // the returned gradient even if the SCF reference was solved with one. See
+    // the external-potentials design doc's non-goals (correlated-method
+    // gradients out of scope).
+    let grad = oneelectron_gradient(mol, obs, &d_ao, &w_ao, None)?;
 
     Ok(grad)
 }

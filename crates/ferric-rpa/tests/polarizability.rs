@@ -74,7 +74,7 @@ fn h2_polarizability_matches_pyscf_direct_rpa() {
     let cfg = PdepRpaConfig {
         frozen_core: 0,
         trunc_thresh: 0.0,
-        davidson_conv_thresh: 1e-10,
+        eigensolver_conv_thresh: 1e-10,
         ..Default::default()
     };
 
@@ -136,7 +136,7 @@ fn h2o_polarizability_and_esp_match_pyscf() {
     let cfg = PdepRpaConfig {
         frozen_core: 0,
         trunc_thresh: 0.0,
-        davidson_conv_thresh: 1e-10,
+        eigensolver_conv_thresh: 1e-10,
         ..Default::default()
     };
     let pol = pdep_polarizability_static(&mol, &obs, &dfbs, &rhf, op, &cfg).unwrap();

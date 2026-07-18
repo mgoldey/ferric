@@ -19,8 +19,18 @@ use ndarray::Array2;
 fn cfg() -> RhfConfig {
     RhfConfig {
         xc: Some("PBE".into()),
-        energy_conv: 1e-10,
+        // energy_conv follows rhf.rs's documented convergence philosophy
+        // (see RhfConfig::default doc comment): dp_rms is the real
+        // convergence signal, ΔE floors well above any very tight bound and
+        // is only a "not still descending" sanity check. The previous
+        // energy_conv=1e-10 here demanded a gate the SCF's own gating
+        // (scf_converged) is designed to never satisfy on this basis, so
+        // affected geometries silently ran to max_iter with a stale,
+        // sometimes-wrong-basin density/energy (root cause of the FD
+        // reference blowing up at isolated displaced geometries).
+        energy_conv: 1e-8,
         density_conv: 1e-8,
+        max_iter: 500,
         ..Default::default()
     }
 }
@@ -30,7 +40,28 @@ fn fd_gradient(xyz: &str, basis_name: &str, delta: f64) -> Array2<f64> {
     let natoms = mol.atoms.len();
     let mut grad = Array2::<f64>::zeros((natoms, 3));
     let bs = basis::bundled(basis_name).unwrap();
-    let cfg = cfg();
+
+    // Seed every perturbed SCF from the *equilibrium*-geometry converged
+    // density rather than a fresh SAD guess at each displaced geometry. With
+    // a fresh SAD guess at each of the 3*natoms perturbed points, DIIS can
+    // land on a different (higher-energy) SCF solution than its +/- twin,
+    // producing a nonphysical FD "gradient" (observed on H2O/def2-TZVP:
+    // isolated components off by tens of Ha/Bohr while every other component
+    // agreed with the analytic gradient to <2e-4). Continuation from one
+    // common, well-converged starting density keeps every displacement in
+    // the same electronic-state basin.
+    let base_cfg = cfg();
+    let prep0 = PreparedBasis::new(&mol, &bs).unwrap();
+    let bounds0 = SchwarzBounds::compute(Operator::coulomb(), &prep0).unwrap();
+    let res0 = solve_rhf(
+        &ParallelContext::default(), &mol, &prep0, Operator::coulomb(), &bounds0, &base_cfg,
+    ).unwrap();
+    let cfg = RhfConfig {
+        init_guess_density: Some(res0.density_r().clone()),
+        use_sad_guess: false,
+        ..base_cfg
+    };
+
     for atom in 0..natoms {
         for coord in 0..3 {
             let mut mol_p = mol.clone();
@@ -45,11 +76,13 @@ fn fd_gradient(xyz: &str, basis_name: &str, delta: f64) -> Array2<f64> {
             let res_p = solve_rhf(
                 &ParallelContext::default(), &mol_p, &prep_p, Operator::coulomb(), &bounds_p, &cfg,
             ).unwrap();
+            assert!(res_p.converged, "FD solve did not converge at atom={atom} coord={coord} (+): exit={:?}", res_p.exit);
             let prep_m = PreparedBasis::new(&mol_m, &bs).unwrap();
             let bounds_m = SchwarzBounds::compute(Operator::coulomb(), &prep_m).unwrap();
             let res_m = solve_rhf(
                 &ParallelContext::default(), &mol_m, &prep_m, Operator::coulomb(), &bounds_m, &cfg,
             ).unwrap();
+            assert!(res_m.converged, "FD solve did not converge at atom={atom} coord={coord} (-): exit={:?}", res_m.exit);
             grad[(atom, coord)] = (res_p.energy - res_m.energy) / (2.0 * delta);
         }
     }
@@ -64,7 +97,7 @@ fn run_case(label: &str, xyz: &str, basis_name: &str, tol: f64) {
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let cfg = cfg();
     let res = solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap();
-    let g_ana = ks_gradient_closed(&mol, &prep, &bs, op, &bounds, "PBE", &res).unwrap();
+    let g_ana = ks_gradient_closed(&mol, &prep, &bs, op, &bounds, "PBE", &res, None).unwrap();
     let g_fd = fd_gradient(xyz, basis_name, 5e-4);
 
     eprintln!("=== {label} PBE gradient analytic vs FD ===");

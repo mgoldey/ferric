@@ -75,6 +75,22 @@ pub fn ccsd(
     let c_occ = c.slice(ndarray::s![.., first_occ..nocc_total]).to_owned();
     let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
 
+    // Fail-fast size guard: peak is the antisymmetrized VVVV block g_vvvv (:159)
+    // — a (2nv)⁴ f64 tensor built from ~3 co-resident copies (direct + exchange
+    // einsum! outputs + asym_phys result :159-162), plus the dense AO 3-center
+    // eri3_ao (:81, naux·nbf²). Keep this next to those allocations.
+    let nv2 = 2 * nv;
+    let naux = dfbs.nbasis();
+    let peak_vvvv = nv2.saturating_pow(4).saturating_mul(3).saturating_mul(8); // ~3× (2nv)⁴ f64
+    let eri3_bytes = naux.saturating_mul(nbas).saturating_mul(nbas).saturating_mul(8);
+    let peak = peak_vvvv.saturating_add(eri3_bytes);
+    let budget = ferric_core::memory::resolve_budget_bytes(cfg.memory_budget_bytes);
+    ferric_core::memory::check_alloc(
+        &format!("CCSD (no={no}, nv={nv} spatial; VVVV block over {nv2} spin-orbital virtuals)"),
+        peak,
+        budget,
+    )?;
+
     // V^{-1/2} metric and AO 3-center integrals.
     let v2c = ferric_integrals::threeindex::coulomb_metric_2c(op, dfbs)?;
     let v_inv_sqrt = cholesky_inverse_sqrt(&v2c)?;
@@ -176,7 +192,7 @@ pub fn ccsd(
     let vvvv = lbl4(g_vvvv, [V, V, V, V]);
 
     // --- Spin-orbital orbital energies and denominators ---
-    let (no2, nv2) = (2 * no, 2 * nv);
+    let no2 = 2 * no; // nv2 computed above for the size guard
     let mut eo = vec![0.0f64; no2];
     let mut ev = vec![0.0f64; nv2];
     for i in 0..no {
@@ -565,5 +581,29 @@ mod tests {
             "got {:.8}",
             r.correlation_energy
         );
+    }
+
+    #[test]
+    fn ccsd_fails_fast_under_tiny_budget() {
+        // M2 size guard: an explicit ~1 KB budget must ERROR before the VVVV /
+        // eri3 allocations. Explicit config budget → no env var touched.
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("def2-qzvpp-rifit").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let ctx = ParallelContext::default();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
+        let cfg = CcConfig {
+            frozen_core: 0,
+            memory_budget_bytes: Some(ferric_core::memory::gib_to_bytes(1e-6)),
+            ..Default::default()
+        };
+        let err = match ccsd(&mol, &obs, &dfbs, op, &rhf, &cfg) {
+            Err(e) => e,
+            Ok(_) => panic!("CCSD should fail fast under tiny budget"),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("CCSD") && msg.contains("budget is"), "unexpected: {msg}");
     }
 }

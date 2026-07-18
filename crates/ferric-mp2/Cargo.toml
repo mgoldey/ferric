@@ -3,13 +3,18 @@ name = "ferric-mp2"
 version = "0.1.0"
 edition = "2021"
 
+[lints]
+workspace = true
+
 [dependencies]
 ferric-core = { path = "../ferric-core" }
 ferric-integrals = { path = "../ferric-integrals" }
 ferric-scf = { path = "../ferric-scf" }
 ferric-tensors = { path = "../ferric-tensors" }
 ferric-quadrature = { path = "../ferric-quadrature" }
-ndarray = { workspace = true }
+# `rayon` feature enables ndarray::Zip::into_par_iter for the par-over-aux-P
+# 3-center MO transform (mo_transform.rs). Additive feature, local to this crate.
+ndarray = { workspace = true, features = ["rayon"] }
 ndarray-linalg = { workspace = true }
 rayon = { workspace = true }
 mpi = { version = "0.7", optional = true }

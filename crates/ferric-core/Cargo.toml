@@ -3,10 +3,14 @@ name = "ferric-core"
 version = "0.1.0"
 edition = "2021"
 
+[lints]
+workspace = true
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+ndarray = { workspace = true }
 mpi = { version = "0.7", optional = true }
 
 [features]
