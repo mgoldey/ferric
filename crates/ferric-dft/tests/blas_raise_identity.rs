@@ -304,7 +304,7 @@ fn wb97xv_gradient_consistent_across_blas_thread_counts() {
     };
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg).unwrap();
 
-    let run = || ks_gradient_closed(&mol, &obs, &bs, op, &bounds, "wB97X-V", &rhf).unwrap();
+    let run = || ks_gradient_closed(&mol, &obs, &bs, op, &bounds, "wB97X-V", &rhf, None).unwrap();
 
     let base = run();
     std::env::set_var("FERRIC_BLAS_THREADS", "2");

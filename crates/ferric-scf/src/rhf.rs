@@ -1505,7 +1505,7 @@ mod tests {
                 let ctx = ParallelContext::default();
                 let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
                 assert!(result.converged, "RHF did not converge at {threads} threads");
-                let grad = crate::gradient::rhf_gradient(&mol, &prep, op, &bounds, &result).unwrap();
+                let grad = crate::gradient::rhf_gradient(&mol, &prep, op, &bounds, &result, None).unwrap();
                 (result.energy, grad)
             })
         };
