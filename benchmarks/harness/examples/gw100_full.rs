@@ -440,12 +440,162 @@ fn run_g0w0_pbe(
     homo_abs: usize,
 ) -> Option<f64> {
     let cfg = RhfConfig { xc: Some("pbe".into()), ..Default::default() };
-    let ks = solve_rhf(ctx, neutral, obs_n, op, bounds_n, &cfg).ok()?;
-    let (vxc, _) = ferric_gw::vxc_mo::vxc_diagonal_mo(neutral, obs_bs, "pbe", &ks).ok()?;
+    // Closed-shell RKS-PBE first. This is the path every well-behaved molecule
+    // takes; it succeeds for 92/93 of the all-electron set.
+    if let Ok(ks) = solve_rhf(ctx, neutral, obs_n, op, bounds_n, &cfg) {
+        // PHYSICALITY GUARD. `converged = true` is NOT sufficient: a homonuclear
+        // transition-metal dimer's closed-shell RKS-PBE can converge to an
+        // UNPHYSICAL state — Cu2 lands on ε_HOMO = +0.17 Ha (positive → unbound)
+        // with a ~0.07 eV HOMO–LUMO gap (metallic). Feeding that to G0W0 gives a
+        // spurious IP (1.16 eV vs exp 7.46). Reject a positive HOMO or a
+        // near-vanishing gap and fall through to the broken-symmetry UKS path.
+        let eps = ks.eps_r();
+        let e_homo = eps[homo_abs];
+        let gap = eps[homo_abs + 1] - e_homo;
+        let physical = ks.converged && e_homo < 0.0 && gap > 0.02; // gap > ~0.5 eV
+        eprintln!(
+            "ferric-gw @PBE: reference = RKS(closed-shell), spin = restricted, \
+             ⟨S²⟩ = 0.000 (converged = {}, ε_HOMO = {e_homo:.4} Ha, gap = {:.4} Ha → {})",
+            ks.converged, gap,
+            if physical { "physical, using RKS" } else { "UNPHYSICAL → UKS-BS fallback" }
+        );
+        if !physical {
+            return run_u_g0w0_pbe(ctx, neutral, obs_n, dfbs_n, obs_bs, op, bounds_n, pdep_cfg_gw, homo_abs);
+        }
+        // Diagnostic: mean-field HOMO by ENERGY vs Aufbau index. If PBE reorders
+        // the occupied manifold (Cu d-band), the energy-max occupied MO ≠ index
+        // (nocc−1), and selecting by index gives the wrong QP level.
+        {
+            let eps = ks.eps_r();
+            let e_by_energy = (0..=homo_abs)
+                .max_by(|&a, &b| eps[a].partial_cmp(&eps[b]).unwrap())
+                .unwrap_or(homo_abs);
+            eprintln!(
+                "ferric-gw @PBE: mean-field HOMO — Aufbau idx {homo_abs} (ε={:.4} Ha), \
+                 energy-max-occ idx {e_by_energy} (ε={:.4} Ha), LUMO ε={:.4} Ha",
+                eps[homo_abs], eps[e_by_energy], eps[homo_abs + 1]
+            );
+        }
+        if let Ok((vxc, _)) = ferric_gw::vxc_mo::vxc_diagonal_mo(neutral, obs_bs, "pbe", &ks) {
+            let gcfg = GwConfig { method: GwMethod::G0W0, ..Default::default() };
+            if let Ok(res) = run_gw(neutral, obs_n, dfbs_n, op, &ks, pdep_cfg_gw, &gcfg, Some(&vxc)) {
+                if let Some(local) = res.mo_indices.iter().position(|&i| i == homo_abs) {
+                    let ip = -res.eps_qp[local] * HA_TO_EV;
+                    eprintln!(
+                        "ferric-gw @PBE: RKS G0W0 HOMO (abs MO {homo_abs}) — \
+                         ε_mf={:.4} Ha, ε_qp={:.4} Ha, IP={ip:.3} eV, QP-converged={}",
+                        res.eps_mf[local], res.eps_qp[local], res.qp_converged[local]
+                    );
+                    return Some(ip);
+                }
+            }
+        }
+    }
+    // Broken-symmetry UKS-PBE fallback. A homonuclear transition-metal dimer
+    // (Cu2) has a closed-shell RKS-PBE instability: the spin-restricted solution
+    // either fails to converge or is a saddle. Seeding α/β with DIFFERENT
+    // spatial orbitals (β HOMO↔LUMO swapped) lets UKS relax into the
+    // symmetry-broken singlet, then run_u_gw carries the open-shell Σ. The
+    // neutral is a singlet, so nocc_α = nocc_β = nelec/2.
+    run_u_g0w0_pbe(ctx, neutral, obs_n, dfbs_n, obs_bs, op, bounds_n, pdep_cfg_gw, homo_abs)
+}
+
+/// Broken-symmetry UKS-PBE → open-shell G0W0@PBE. Used when the closed-shell
+/// RKS-PBE reference in `run_g0w0_pbe` fails (Cu2). Returns the α-HOMO IP in eV.
+#[allow(clippy::too_many_arguments)]
+fn run_u_g0w0_pbe(
+    ctx: &ParallelContext,
+    neutral: &Molecule,
+    obs_n: &PreparedBasis,
+    dfbs_n: &PreparedBasis,
+    obs_bs: &basis::BasisSet,
+    op: Operator,
+    bounds_n: &SchwarzBounds,
+    pdep_cfg_gw: &PdepRpaConfig,
+    homo_abs: usize,
+) -> Option<f64> {
+    // Build a symmetry-broken guess from plain neutral RHF MOs (HF converges for
+    // Cu2 — its @HF GW columns all succeeded). α keeps the RHF occupied set; β
+    // swaps HOMO↔LUMO so the two spins localize on opposite atoms.
+    let hf_cfg = RhfConfig {
+        df_j_aux: Some("def2-universal-jkfit".to_string()),
+        df_k_aux: Some("def2-universal-jkfit".to_string()),
+        ..Default::default()
+    };
+    let rhf_n = solve_rhf(ctx, neutral, obs_n, op, bounds_n, &hf_cfg).ok()?;
+    let nocc = (neutral.nelec() as usize) / 2; // singlet
+    if nocc == 0 || nocc >= rhf_n.mos_alpha.ncols() {
+        return None;
+    }
+    // Broken-symmetry seed by HOMO/LUMO ROTATION (not a bare swap). For a
+    // homonuclear dimer the HOMO (σ, bonding) and LUMO (σ*, antibonding) are
+    // delocalized over both atoms; their ± combinations localize on opposite
+    // atoms. Rotating α by +45° and β by −45° puts α-density on one atom and
+    // β-density on the other — a genuine spin-polarized guess that a plain
+    // HOMO↔LUMO column swap does NOT produce (the swap keeps both spins
+    // delocalized, so UKS relaxes straight back to ⟨S²⟩=0, as observed).
+    let (homo, lumo) = (nocc - 1, nocc);
+    let (c, s) = (std::f64::consts::FRAC_1_SQRT_2, std::f64::consts::FRAC_1_SQRT_2);
+    let mut c_a = rhf_n.mos_alpha.clone();
+    let mut c_b = rhf_n.mos_alpha.clone();
+    for mu in 0..c_a.nrows() {
+        let (h, l) = (rhf_n.mos_alpha[(mu, homo)], rhf_n.mos_alpha[(mu, lumo)]);
+        // α: +45° → occupied HOMO becomes (H + L)/√2 (localizes on atom 1)
+        c_a[(mu, homo)] = c * h + s * l;
+        c_a[(mu, lumo)] = -s * h + c * l;
+        // β: −45° → occupied HOMO becomes (H − L)/√2 (localizes on atom 2)
+        c_b[(mu, homo)] = c * h - s * l;
+        c_b[(mu, lumo)] = s * h + c * l;
+    }
+    let uks_cfg = UhfConfig {
+        max_iter: 300,
+        xc: Some("pbe".into()),
+        df_j_aux: Some("def2-universal-jkfit".to_string()),
+        df_k_aux: Some("def2-universal-jkfit".to_string()),
+        ..Default::default()
+    };
+    let uks = solve_uhf_with_guess(ctx, neutral, obs_n, bounds_n, &uks_cfg, Some((&c_a, &c_b))).ok()?;
+    // Always print the spin state of the @PBE reference actually used. ⟨S²⟩ ≈ 0
+    // means UKS relaxed back to the closed-shell singlet (no symmetry broke — the
+    // BS seed didn't stick); ⟨S²⟩ > 0 means a genuine broken-symmetry solution.
+    let s_ao = oneelectron::overlap(obs_n);
+    let s2 = s_squared(&uks, &s_ao, nocc, nocc);
+    eprintln!(
+        "ferric-gw @PBE: reference = UKS(broken-symmetry fallback), spin = unrestricted, \
+         ⟨S²⟩ = {s2:.3} (converged = {}, {} iters)",
+        uks.converged, uks.iterations
+    );
+    // If ⟨S²⟩ ≈ 0 the broken-symmetry seed did NOT stick — UKS relaxed to a
+    // (wrong) closed-shell singlet, which over-IPs (Cu2: +3 eV). That state is
+    // the same failure mode as the unphysical RKS; running the expensive U-GW on
+    // it only banks a wrong number. Bail to NaN so the row is honestly excluded.
+    if s2 < 0.10 {
+        eprintln!(
+            "ferric-gw @PBE: ⟨S²⟩ = {s2:.3} < 0.10 — broken symmetry did not take; \
+             no bound spin-polarized singlet found → NaN"
+        );
+        return None;
+    }
+    // Per-spin v_xc diagonals (absolute-MO-indexed) for the Σ_x − v_xc KS
+    // correction — run_u_gw does NOT auto-apply it (see its docstring).
+    let (vxc_a, vxc_b) = ferric_gw::vxc_mo::vxc_diagonal_mo(neutral, obs_bs, "pbe", &uks).ok()?;
     let gcfg = GwConfig { method: GwMethod::G0W0, ..Default::default() };
-    let res = run_gw(neutral, obs_n, dfbs_n, op, &ks, pdep_cfg_gw, &gcfg, Some(&vxc)).ok()?;
+    let mut res = ferric_gw::run_u_gw(neutral, obs_n, dfbs_n, op, &uks, pdep_cfg_gw, &gcfg).ok()?;
+    res.apply_kohn_sham_correction(&vxc_a, &vxc_b);
+    // Singlet neutral: α-HOMO IP is the ionization energy (β is degenerate at a
+    // symmetry-restored solution; for a genuinely spin-broken one the α-HOMO is
+    // the correct highest-occupied α level).
     let local = res.mo_indices.iter().position(|&i| i == homo_abs)?;
-    Some(-res.eps_qp[local] * HA_TO_EV)
+    let ip = -res.eps_qp_a[local] * HA_TO_EV;
+    let ok = res.qp_converged_a[local] && ip > 2.0; // an IP < 2 eV is unphysical here
+    eprintln!(
+        "ferric-gw @PBE: UKS α-HOMO (abs MO {homo_abs}) QP IP = {ip:.3} eV \
+         (α-HOMO ε_qp = {:.4} Ha, QP-converged = {}) → {}",
+        res.eps_qp_a[local], res.qp_converged_a[local],
+        if ok { "accepted" } else { "REJECTED (unphysical) → NaN" }
+    );
+    // Don't bank a spurious IP: return None (→ NaN) rather than a wrong number.
+    ok.then_some(ip)
 }
 
 fn main() {
