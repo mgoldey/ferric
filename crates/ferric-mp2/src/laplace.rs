@@ -795,6 +795,93 @@ mod tests {
         assert!((e5 - e7).abs() < 1e-4);
     }
 
+    /// Widen the AO-Laplace-vs-RI-MP2 cross-check beyond H2/cc-pVDZ (see
+    /// `docs/VALIDATION.md`'s "AO-Laplace MP2 (O(N))" row, previously graded
+    /// "one molecule"). Methane/cc-pVDZ is a genuinely different test: Td
+    /// symmetry, 5 occupied / 4 heavy-plus-H centers, and a much larger
+    /// HOMO-LUMO gap than H2 or water — Laplace-quadrature error is
+    /// gap-dependent (the minimax range is set by ymin = 2*(LUMO-HOMO)), so
+    /// this exercises a different part of the quadrature's operating range.
+    ///
+    /// Cross-checked against ferric's OWN live `rimp2::ri_mp2` (not a
+    /// hardcoded literature number) — this is an internal two-code-path
+    /// agreement check, matching how `test_laplace_mp2_h2_sto3g_single_virtual`
+    /// already validates against live RI-MP2 rather than a stored reference.
+    #[test]
+    fn test_laplace_mp2_methane_ccpvdz_vs_live_rimp2() {
+        let mol = Molecule::load_xyz("../../testdata/molecules/methane.xyz").unwrap();
+        let bs = basis::bundled("cc-pvdz").unwrap();
+        let obs = PreparedBasis::new(&mol, &bs).unwrap();
+        let dfbs_set = basis::bundled("cc-pvdz-ri").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &dfbs_set).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig { energy_conv: 1e-10, ..Default::default() },
+        ).unwrap();
+
+        let mut laplace = LaplaceMp2::new(7);
+        let e_mo = laplace.compute_mo(&mol, &obs, &dfbs, op, &rhf, 0).unwrap();
+        let (e_ao, _, _) = laplace.compute_ao(&mol, &obs, &dfbs, op, &rhf, 0, None).unwrap();
+
+        let ri = crate::rimp2::ri_mp2(
+            &mol, &obs, &dfbs, op, &rhf, &crate::rimp2::RiMp2Config::default(),
+        ).unwrap();
+
+        eprintln!("CH4/cc-pVDZ Laplace MO: {e_mo:.10}  AO: {e_ao:.10}  live RI-MP2: {:.10}", ri.mp2_corr);
+
+        assert!((e_mo - e_ao).abs() < 1e-8,
+            "MO and AO Laplace methods should agree on methane: {e_mo} vs {e_ao}");
+        assert!((e_mo - ri.mp2_corr).abs() < 1e-3,
+            "Laplace RI-MP2 ({e_mo:.6}) should be within 1e-3 Ha of live RI-MP2 ({:.6}) on methane/cc-pVDZ",
+            ri.mp2_corr);
+    }
+
+    /// Widen basis coverage: water/aug-cc-pVDZ adds diffuse functions (a
+    /// wider, more diffuse virtual space than the plain cc-pVDZ case already
+    /// covered), cross-checked against ferric's own live RI-MP2 rather than
+    /// a stored reference number.
+    #[test]
+    fn test_laplace_mp2_water_augccpvdz_vs_live_rimp2() {
+        let xyz = "3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n";
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let bs = basis::bundled("aug-cc-pvdz").unwrap();
+        let obs = PreparedBasis::new(&mol, &bs).unwrap();
+        let dfbs_set = basis::bundled("aug-cc-pvdz-rifit").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &dfbs_set).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig { energy_conv: 1e-10, ..Default::default() },
+        ).unwrap();
+
+        let mut laplace = LaplaceMp2::new(7);
+        let e_mo = laplace.compute_mo(&mol, &obs, &dfbs, op, &rhf, 0).unwrap();
+        let (e_ao, _, _) = laplace.compute_ao(&mol, &obs, &dfbs, op, &rhf, 0, None).unwrap();
+
+        let ri = crate::rimp2::ri_mp2(
+            &mol, &obs, &dfbs, op, &rhf, &crate::rimp2::RiMp2Config::default(),
+        ).unwrap();
+
+        eprintln!("H2O/aug-cc-pVDZ Laplace MO: {e_mo:.10}  AO: {e_ao:.10}  live RI-MP2: {:.10}", ri.mp2_corr);
+
+        assert!((e_mo - e_ao).abs() < 1e-8,
+            "MO and AO Laplace methods should agree on water/aug-cc-pVDZ: {e_mo} vs {e_ao}");
+        assert!((e_mo - ri.mp2_corr).abs() < 1e-3,
+            "Laplace RI-MP2 ({e_mo:.6}) should be within 1e-3 Ha of live RI-MP2 ({:.6}) on water/aug-cc-pVDZ",
+            ri.mp2_corr);
+    }
+
     /// nvir = 1 regression: with a single virtual orbital (H2/STO-3G) BOTH
     /// operands of the exchange-energy GEMM have row-stride 1, and ndarray's
     /// `dot` then allocates its output in COLUMN-major order
