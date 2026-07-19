@@ -24,6 +24,7 @@
 //! basis (e.g. `def2-universal-jkfit`), not an RI/MP2-fit basis.
 
 use crate::fock::KBuilder;
+use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
@@ -37,9 +38,25 @@ use ndarray_linalg::{Eigh, UPLO};
 /// DF-K exchange builder. Caches the V^{-1/2}-dressed 3-center source; the
 /// per-chunk repack/GEMM scratch in `build` is allocated per rayon task
 /// (O(chunk·n²), negligible against the O(chunk·n³) GEMM it feeds).
-pub struct DfK {
-    /// Budget-bounded dressed 3-center source B[P,μ,ν] = Σ_Q V^{-1/2}_{PQ} (Q|μν).
+///
+/// ## MPI aux-band striping
+/// Under MPI (`new_banded` with a multi-rank [`ParallelContext`]), each rank
+/// dresses and holds ONLY its own contiguous aux band `[band_p0, band_p1)` of
+/// B[P,μ,ν] — the resident B footprint scales with rank count. Because
+/// K = Σ_P B_P D B_Pᵀ is a plain sum over P, each rank's band-restricted `build`
+/// yields a partial K and one final all_reduce sums them. (Dressing a band still
+/// reads all Q of the raw tensor — that raw is budget-bounded / spillable, so it
+/// does not defeat the resident-memory scaling.) With one rank (or the `mpi`
+/// feature off) the band is `0..naux` and the reduction is skipped, so behavior
+/// is byte-identical to the serial path.
+pub struct DfK<'a> {
+    /// Budget-bounded dressed 3-center source B[P,μ,ν] = Σ_Q V^{-1/2}_{PQ} (Q|μν)
+    /// — holds only this rank's aux band `[band_p0, band_p1)`.
     dressed: ThreeIndexSource,
+    /// Parallel context for the final cross-rank K reduction. `None` → serial /
+    /// non-MPI (no reduction, full band).
+    #[allow(dead_code)]
+    ctx: Option<&'a ParallelContext>,
 }
 
 /// V^{-1/2} via symmetric eigendecomposition with canonical orthogonalization.
@@ -85,8 +102,9 @@ fn v_inv_sqrt_lindep(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
     })) // (naux, naux)
 }
 
-impl DfK {
-    /// Build the DF-K cache from orbital and auxiliary bases.
+impl<'a> DfK<'a> {
+    /// Build the DF-K cache from orbital and auxiliary bases (FULL aux range,
+    /// serial / single-rank — byte-identical to the pre-MPI path).
     ///
     /// Computes V^{-1/2} = U · diag(λ^{-1/2}) · U^T from the symmetric eigendecomp
     /// of the (P|Q) Coulomb metric, then forms B[P,μ,ν] = Σ_Q V^{-1/2}_{PQ} (Q|μν)
@@ -97,18 +115,48 @@ impl DfK {
         dfbs: &PreparedBasis,
         budget_bytes: usize,
     ) -> Result<Self, FerricError> {
+        Self::new_banded(op, obs, dfbs, budget_bytes, None)
+    }
+
+    /// Build the DF-K cache, striping the aux band across the MPI ranks of `ctx`.
+    /// When `ctx` is `None` or `ctx.size == 1`, this is exactly [`DfK::new`]
+    /// (full band, no reduction). Otherwise this rank dresses/holds only its band
+    /// `ctx.aux_band(naux)`, and `build` all_reduces the partial K.
+    pub fn new_banded(
+        op: Operator,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        budget_bytes: usize,
+        ctx: Option<&'a ParallelContext>,
+    ) -> Result<Self, FerricError> {
         let v = coulomb_metric_2c(op, dfbs)?;
         let v_inv_sqrt = v_inv_sqrt_lindep(&v)?;
 
-        // Build raw source then dress it: B[P,μν] = Σ_Q V^{-1/2}_{PQ} (Q|μν).
-        let mut raw = ThreeIndexSource::build(op, obs, dfbs, budget_bytes)?;
-        let dressed = ThreeIndexSource::build_dressed(&mut raw, &v_inv_sqrt, budget_bytes)?;
+        let naux = dfbs.nbasis();
+        let (p0, p1) = match ctx {
+            Some(c) => c.aux_band(naux),
+            None => (0, naux),
+        };
 
-        Ok(DfK { dressed })
+        // Build the FULL raw source (dressing a band sums over all Q). The raw is
+        // budget-bounded / spillable, so its full footprint need not be resident;
+        // only this rank's dressed BAND is retained.
+        let mut raw = ThreeIndexSource::build(op, obs, dfbs, budget_bytes)?;
+        let dressed = if p0 == 0 && p1 == naux {
+            // Full band: identical call to the serial path (byte-identical B).
+            ThreeIndexSource::build_dressed(&mut raw, &v_inv_sqrt, budget_bytes)?
+        } else {
+            ThreeIndexSource::build_dressed_band(&mut raw, &v_inv_sqrt, budget_bytes, p0, p1)?
+        };
+        // Drop the full raw source's resident footprint before the SCF loop.
+        drop(raw);
+
+        let ctx = ctx.filter(|c| c.size > 1);
+        Ok(DfK { dressed, ctx })
     }
 }
 
-impl KBuilder for DfK {
+impl KBuilder for DfK<'_> {
     fn build(&mut self, d: &Array2<f64>, k: &mut Array2<f64>) -> Result<usize, FerricError> {
         let n = self.dressed.nao();
         k.fill(0.0);
@@ -174,6 +222,24 @@ impl KBuilder for DfK {
             )?;
             Ok(())
         })?;
+
+        // MPI: `build` accumulated only this rank's aux-band contribution to K
+        // (K = Σ_P B_P D B_Pᵀ is a plain sum over P, and bands are disjoint).
+        // Sum the per-rank partial K matrices → the full K on every rank.
+        #[cfg(feature = "mpi")]
+        if let Some(ctx) = self.ctx {
+            use mpi::traits::CommunicatorCollectives;
+            if let Some(world) = ctx.world() {
+                let mut k_global = Array2::<f64>::zeros(k.dim());
+                world.all_reduce_into(
+                    k.as_slice().unwrap(),
+                    k_global.as_slice_mut().unwrap(),
+                    mpi::collective::SystemOperation::sum(),
+                );
+                *k = k_global;
+            }
+        }
+
         Ok(0)
     }
 

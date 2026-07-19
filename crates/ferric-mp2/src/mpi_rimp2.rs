@@ -15,8 +15,11 @@ mod inner {
         pub total_energy: f64,
     }
 
+    // NOTE: mpi 0.7 renamed the world communicator type to `SimpleCommunicator`
+    // (`SystemCommunicator` was dropped). This stub is still T9 (unimplemented);
+    // only the type name is updated so the workspace compiles under `--features mpi`.
     pub fn run_mpi_ri_mp2(
-        _world: &mpi::topology::SystemCommunicator,
+        _world: &mpi::topology::SimpleCommunicator,
         _obs: &PreparedBasis,
         _dfbs: &PreparedBasis,
         _op: Operator,

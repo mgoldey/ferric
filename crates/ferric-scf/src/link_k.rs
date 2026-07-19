@@ -223,7 +223,8 @@ impl<'a, B: Bound + Sync> KBuilder for LinkK<'a, B> {
         k.assign(&k_out);
 
         #[cfg(feature = "mpi")]
-        if let Some(world) = &self.ctx.world {
+        if let Some(world) = self.ctx.world() {
+            use mpi::traits::CommunicatorCollectives;
             let mut k_global = Array2::zeros(k.dim());
             world.all_reduce_into(
                 k.as_slice().unwrap(),
@@ -309,12 +310,7 @@ mod tests {
 
     /// Simulate MPI sharding: build K using rank r of size n, return raw (un-reduced) partial K.
     fn link_k_rank(mol: &Molecule, basis_name: &str, d: &Array2<f64>, rank: usize, size: usize) -> Array2<f64> {
-        let ctx = ferric_core::parallel::ParallelContext {
-            rank,
-            size,
-            #[cfg(feature = "mpi")]
-            world: None,
-        };
+        let ctx = ferric_core::parallel::ParallelContext::for_rank(rank, size);
         link_k_with_ctx(mol, basis_name, d, &ctx)
     }
 

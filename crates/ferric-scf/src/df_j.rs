@@ -31,6 +31,7 @@
 //! current block fans out over chunks.
 
 use crate::fock::JBuilder;
+use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
@@ -41,15 +42,34 @@ use ndarray_linalg::Inverse;
 use rayon::prelude::*;
 
 /// DF-J Coulomb builder. Uses a budget-bounded ThreeIndexSource for raw (P|μν).
-pub struct DfJ {
-    /// Budget-bounded raw 3-index source (in-core or disk-spill).
+///
+/// ## MPI aux-band striping
+/// Under MPI (`new_banded` with a multi-rank [`ParallelContext`]), each rank
+/// builds and holds ONLY its own contiguous aux band `[band_p0, band_p1)` of the
+/// raw (P|μν) tensor — so the resident B footprint scales with rank count, not
+/// just the FLOPs. DF-J's two passes bracket a global coupling (`c_P = V^{-1}
+/// d_P` mixes all P), so `build` does TWO all_reduces:
+///   1. after Pass 1, sum the per-rank partial `d_P` vectors → the full `d_P`
+///      (a naux-vector, cheap) so every rank can apply the full V^{-1};
+///   2. after Pass 2, sum the per-rank partial J matrices → the full J.
+/// With one rank (or the `mpi` feature off) the band is `0..naux` and both
+/// reductions are skipped, so behavior is byte-identical to the serial path.
+pub struct DfJ<'a> {
+    /// Budget-bounded raw 3-index source (in-core or disk-spill) — holds only
+    /// this rank's aux band `[band_p0, band_p1)`.
     source: ThreeIndexSource,
-    /// (naux, naux) inverse Coulomb metric V^{-1}.
+    /// (naux, naux) inverse Coulomb metric V^{-1}. FULL (all ranks hold it — it
+    /// is small, O(naux²), and the V^{-1} d_P multiply couples all P).
     v_inv: Array2<f64>,
+    /// Parallel context for the cross-rank reductions. `None` → serial / non-MPI
+    /// (no reduction, full band).
+    #[allow(dead_code)]
+    ctx: Option<&'a ParallelContext>,
 }
 
-impl DfJ {
-    /// Build the DF-J cache from orbital and auxiliary bases.
+impl<'a> DfJ<'a> {
+    /// Build the DF-J cache from orbital and auxiliary bases (FULL aux range,
+    /// serial / single-rank — byte-identical to the pre-MPI path).
     ///
     /// `budget_bytes` is the hard ceiling for the resident raw 3-index footprint.
     /// Pass `usize::MAX` for the old in-core behaviour.
@@ -59,7 +79,26 @@ impl DfJ {
         dfbs: &PreparedBasis,
         budget_bytes: usize,
     ) -> Result<Self, FerricError> {
-        let source = ThreeIndexSource::build(op, obs, dfbs, budget_bytes)?;
+        Self::new_banded(op, obs, dfbs, budget_bytes, None)
+    }
+
+    /// Build the DF-J cache, striping the aux band across the MPI ranks of `ctx`.
+    /// When `ctx` is `None` or `ctx.size == 1`, this is exactly [`DfJ::new`]
+    /// (full band, no reduction). Otherwise this rank builds/holds only its band
+    /// `ctx.aux_band(naux)`, and `build` all_reduces the intermediates + result.
+    pub fn new_banded(
+        op: Operator,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        budget_bytes: usize,
+        ctx: Option<&'a ParallelContext>,
+    ) -> Result<Self, FerricError> {
+        let naux = dfbs.nbasis();
+        let (p0, p1) = match ctx {
+            Some(c) => c.aux_band(naux),
+            None => (0, naux),
+        };
+        let source = ThreeIndexSource::build_band(op, obs, dfbs, budget_bytes, p0, p1)?;
         let v = coulomb_metric_2c(op, dfbs)?;
         // NOT wrapped in with_blas_threads, deliberately: `.inv()` is
         // LU-based (dgetrf/dgetri). Verified 2026-07-10 that OpenBLAS's
@@ -75,7 +114,10 @@ impl DfJ {
         // thread-count issue. Stays at the OPENBLAS_NUM_THREADS=1 process
         // default (correct, safe, and identical to pre-B6 behavior).
         let v_inv = v.inv().map_err(|e| FerricError::Lapack(format!("V^-1 in DfJ: {e}")))?;
-        Ok(DfJ { source, v_inv })
+        // Store ctx only when it actually implies a reduction (>1 rank); a size-1
+        // ctx behaves exactly like None (full band, no all_reduce).
+        let ctx = ctx.filter(|c| c.size > 1);
+        Ok(DfJ { source, v_inv, ctx })
     }
 }
 
@@ -87,7 +129,7 @@ fn chunk_width(n: usize) -> usize {
     (4096 / n.max(1)).clamp(4, 64)
 }
 
-impl JBuilder for DfJ {
+impl JBuilder for DfJ<'_> {
     fn build(&mut self, d: &Array2<f64>, j: &mut Array2<f64>) -> Result<usize, FerricError> {
         let naux = self.source.naux();
         let n = self.source.nao();
@@ -127,7 +169,24 @@ impl JBuilder for DfJ {
             Ok(())
         })?;
 
-        // c_P = V^{-1} d_P
+        // MPI: this rank filled only its aux band of `d_P` (disjoint bands across
+        // ranks, zero elsewhere). Sum the partials so every rank holds the FULL
+        // `d_P` before the global V^{-1} coupling. Cheap: a naux-vector reduce.
+        #[cfg(feature = "mpi")]
+        if let Some(ctx) = self.ctx {
+            use mpi::traits::CommunicatorCollectives;
+            if let Some(world) = ctx.world() {
+                let mut d_p_global = ndarray::Array1::<f64>::zeros(naux);
+                world.all_reduce_into(
+                    d_p.as_slice().unwrap(),
+                    d_p_global.as_slice_mut().unwrap(),
+                    mpi::collective::SystemOperation::sum(),
+                );
+                d_p = d_p_global;
+            }
+        }
+
+        // c_P = V^{-1} d_P  (full d_P → identical c_P on every rank)
         let c_p = self.v_inv.dot(&d_p);
 
         // Pass 2: J[μν] = Σ_P B[P,μν] c_P. This IS a true reduction (every P
@@ -163,6 +222,22 @@ impl JBuilder for DfJ {
             )?;
             Ok(())
         })?;
+
+        // MPI: Pass 2 accumulated only this rank's band contribution to J. Sum
+        // the per-rank partial J matrices → the full J on every rank.
+        #[cfg(feature = "mpi")]
+        if let Some(ctx) = self.ctx {
+            use mpi::traits::CommunicatorCollectives;
+            if let Some(world) = ctx.world() {
+                let mut j_global = Array2::<f64>::zeros(j.dim());
+                world.all_reduce_into(
+                    j.as_slice().unwrap(),
+                    j_global.as_slice_mut().unwrap(),
+                    mpi::collective::SystemOperation::sum(),
+                );
+                *j = j_global;
+            }
+        }
 
         Ok(0)
     }

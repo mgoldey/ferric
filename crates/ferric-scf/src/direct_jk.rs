@@ -226,7 +226,8 @@ impl<'a> DirectJK<'a> {
         *k += &total_k;
 
         #[cfg(feature = "mpi")]
-        if let Some(world) = &self.ctx.world {
+        if let Some(world) = self.ctx.world() {
+            use mpi::traits::CommunicatorCollectives;
             let mut j_global = Array2::zeros(j.dim());
             let mut k_global = Array2::zeros(k.dim());
             world.all_reduce_into(

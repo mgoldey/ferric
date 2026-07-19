@@ -412,10 +412,13 @@ pub fn solve_rhf(
         .or_else(|| needs_k.then(|| DEFAULT_JK_AUX.into()));
 
     // Density-fitted Coulomb (RI-J). Builds 3-center tensor + inverse metric once.
+    // Under MPI, `new_banded(Some(ctx))` stripes the aux band across ranks so
+    // each rank builds/holds only its band of B (memory scales with rank count);
+    // size-1 / non-MPI is byte-identical to the serial path.
     let mut df_j: Option<DfJ> = if let Some(aux_name) = df_j_aux_eff.as_deref() {
         let dfbs_set = ferric_core::basis::bundled(aux_name)?;
         let dfbs = PreparedBasis::new(mol, &dfbs_set)?;
-        Some(DfJ::new(op, prep, &dfbs, ooc_budget)?)
+        Some(DfJ::new_banded(op, prep, &dfbs, ooc_budget, Some(ctx))?)
     } else {
         None
     };
@@ -424,7 +427,7 @@ pub fn solve_rhf(
     let mut df_k: Option<DfK> = if let Some(aux_name) = df_k_aux_eff.as_deref() {
         let dfbs_set = ferric_core::basis::bundled(aux_name)?;
         let dfbs = PreparedBasis::new(mol, &dfbs_set)?;
-        Some(DfK::new(op, prep, &dfbs, ooc_budget)?)
+        Some(DfK::new_banded(op, prep, &dfbs, ooc_budget, Some(ctx))?)
     } else {
         None
     };
@@ -441,8 +444,8 @@ pub fn solve_rhf(
         let dfbs_set = ferric_core::basis::bundled(aux_name)?;
         let dfbs_prep = PreparedBasis::new(mol, &dfbs_set)?;
         (
-            Some(DfK::new(Operator::erfc(k_mix.omega), prep, &dfbs_prep, ooc_budget)?),
-            Some(DfK::new(Operator::erf(k_mix.omega), prep, &dfbs_prep, ooc_budget)?),
+            Some(DfK::new_banded(Operator::erfc(k_mix.omega), prep, &dfbs_prep, ooc_budget, Some(ctx))?),
+            Some(DfK::new_banded(Operator::erf(k_mix.omega), prep, &dfbs_prep, ooc_budget, Some(ctx))?),
         )
     } else {
         (None, None)
@@ -985,7 +988,8 @@ pub fn build_jk(
     *k += &total_k;
 
     #[cfg(feature = "mpi")]
-    if let Some(world) = &ctx.world {
+    if let Some(world) = ctx.world() {
+        use mpi::traits::CommunicatorCollectives;
         let mut j_global = Array2::zeros(j.dim());
         let mut k_global = Array2::zeros(k.dim());
         world.all_reduce_into(j.as_slice().unwrap(), j_global.as_slice_mut().unwrap(), mpi::collective::SystemOperation::sum());
