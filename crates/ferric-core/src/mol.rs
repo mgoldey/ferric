@@ -44,6 +44,43 @@ impl Atom {
     }
 }
 
+/// Validate that `nelec` (total electron count) and `multiplicity` (2S+1) are
+/// consistent: `n_alpha = (nelec + multiplicity - 1) / 2` must be a
+/// non-negative integer.
+///
+/// Derivation: `n_alpha - n_beta = multiplicity - 1` (2S = multiplicity - 1
+/// unpaired electrons) and `n_alpha + n_beta = nelec`, so
+/// `n_alpha = (nelec + multiplicity - 1) / 2`. This fails (non-integer) when
+/// `nelec + multiplicity - 1` is odd, i.e. `nelec` and `multiplicity` have
+/// the same parity (both even or both odd) — an odd electron count requires
+/// an even multiplicity (doublet, quartet, ...) and vice versa. It also fails
+/// (negative `n_beta`) when `multiplicity - 1 > nelec`, i.e. more unpaired
+/// spin than there are electrons to supply.
+///
+/// Without this check, an inconsistent combination (e.g. an odd-electron
+/// molecule declared as a closed-shell singlet) sails through molecule
+/// construction and only fails deep in the SCF loop as a misleading
+/// `"SCF did not converge after 0 iterations"` error.
+fn validate_electron_multiplicity_parity(nelec: i32, multiplicity: usize) -> Result<(), FerricError> {
+    let two_s = multiplicity as i64 - 1; // multiplicity - 1 = 2S = n_alpha - n_beta
+    let numerator = nelec as i64 + two_s;
+    // n_alpha = numerator / 2 must be a non-negative integer, AND the implied
+    // n_beta = nelec - n_alpha must also be non-negative (numerator <= 2*nelec,
+    // i.e. two_s <= nelec) -- otherwise multiplicity demands more unpaired
+    // electrons than the molecule has electrons at all (e.g. 1 electron,
+    // multiplicity=4 would need 3 unpaired electrons from a single electron).
+    if numerator < 0 || numerator % 2 != 0 || numerator > 2 * nelec as i64 {
+        return Err(FerricError::General(format!(
+            "inconsistent charge/multiplicity: {nelec} electrons with multiplicity {multiplicity} \
+             implies n_alpha = ({nelec} + {multiplicity} - 1) / 2 = {numerator}/2, which is not a \
+             non-negative integer no greater than the electron count. An odd electron count needs \
+             an even multiplicity (2, 4, ...) and vice versa; multiplicity - 1 (unpaired electrons) \
+             must also not exceed the electron count."
+        )));
+    }
+    Ok(())
+}
+
 /// A collection of atoms forming a molecule.
 ///
 /// Coordinates are stored internally in Bohr. The XYZ parser converts from Angstroms.
@@ -59,13 +96,15 @@ impl Molecule {
     ///
     /// Coordinates in the file are expected in Angstroms and are converted to Bohr.
     pub fn load_xyz(path: &str) -> Result<Self, FerricError> {
-        let text = fs::read_to_string(path).map_err(FerricError::Io)?;
+        let text = fs::read_to_string(path)
+            .map_err(|e| FerricError::General(format!("cannot read xyz file {path:?}: {e}")))?;
         Self::parse_xyz(&text, 0, 1)
     }
 
     /// Load a molecule from an XYZ file with explicit charge and multiplicity.
     pub fn load_xyz_with_charge(path: &str, charge: i32, mult: usize) -> Result<Self, FerricError> {
-        let text = fs::read_to_string(path).map_err(FerricError::Io)?;
+        let text = fs::read_to_string(path)
+            .map_err(|e| FerricError::General(format!("cannot read xyz file {path:?}: {e}")))?;
         Self::parse_xyz(&text, charge, mult)
     }
 
@@ -124,7 +163,9 @@ impl Molecule {
                 n_core_ecp: 0,
             });
         }
-        Ok(Molecule { atoms, charge, multiplicity })
+        let mol = Molecule { atoms, charge, multiplicity };
+        validate_electron_multiplicity_parity(mol.nelec(), multiplicity)?;
+        Ok(mol)
     }
 
     /// Compute the classical nuclear repulsion energy in Hartree.
@@ -282,5 +323,67 @@ mod tests {
         mol.apply_ecp(&bs);
         assert!(mol.atoms.iter().all(|a| a.n_core_ecp == 0));
         assert_eq!(mol.nelec(), 10);
+    }
+
+    // ── Electron-count / multiplicity parity ────────────────────────────────
+
+    /// The exact broken case from the usability audit: an odd-electron
+    /// molecule (H atom, 1 electron) declared as a closed-shell singlet
+    /// (multiplicity=1). This must be a clear, immediate error at parse time,
+    /// not a silent pass-through that later fails deep in the SCF loop as a
+    /// misleading "SCF did not converge after 0 iterations" message.
+    #[test]
+    fn odd_electron_singlet_is_rejected_at_parse_time() {
+        let xyz = "1\nH atom\nH 0.0 0.0 0.0\n";
+        let err = Molecule::parse_xyz(xyz, 0, 1).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("inconsistent") && msg.contains("multiplicity"),
+            "expected a clear parity error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn odd_electron_doublet_is_accepted() {
+        // H atom, 1 electron, multiplicity 2 (doublet) is the physically
+        // consistent combination and must parse fine.
+        let xyz = "1\nH atom\nH 0.0 0.0 0.0\n";
+        let mol = Molecule::parse_xyz(xyz, 0, 2).unwrap();
+        assert_eq!(mol.nelec(), 1);
+    }
+
+    #[test]
+    fn even_electron_singlet_is_accepted() {
+        // Water, 10 electrons, multiplicity 1 (closed-shell singlet): the
+        // ordinary, common case must be unaffected by the new check.
+        let xyz = "3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n";
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        assert_eq!(mol.nelec(), 10);
+    }
+
+    #[test]
+    fn even_electron_doublet_is_rejected() {
+        // Water (10 electrons) declared as a doublet (multiplicity=2) is
+        // the reverse parity mismatch and must also be rejected.
+        let xyz = "3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n";
+        let err = Molecule::parse_xyz(xyz, 0, 2).unwrap_err();
+        assert!(err.to_string().contains("inconsistent"));
+    }
+
+    #[test]
+    fn multiplicity_exceeding_electron_count_is_rejected() {
+        // multiplicity - 1 (unpaired electrons) cannot exceed nelec.
+        let xyz = "1\nH atom\nH 0.0 0.0 0.0\n";
+        let err = Molecule::parse_xyz(xyz, 0, 4).unwrap_err(); // needs 3 unpaired e- but only has 1
+        assert!(err.to_string().contains("inconsistent"));
+    }
+
+    #[test]
+    fn charged_molecule_parity_uses_effective_electron_count() {
+        // H2+ : 2 protons - 1 charge = 1 electron -> must be a doublet, not a singlet.
+        let xyz = "2\nH2+\nH 0.0 0.0 0.0\nH 0.0 0.0 0.74\n";
+        assert!(Molecule::parse_xyz(xyz, 1, 1).is_err());
+        let mol = Molecule::parse_xyz(xyz, 1, 2).unwrap();
+        assert_eq!(mol.nelec(), 1);
     }
 }

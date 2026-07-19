@@ -94,7 +94,8 @@ struct BseShell {
 
 /// Load a basis set from a Basis Set Exchange JSON file.
 pub fn load_bse_json(path: &str) -> Result<BasisSet, FerricError> {
-    let text = fs::read_to_string(path).map_err(FerricError::Io)?;
+    let text = fs::read_to_string(path)
+        .map_err(|e| FerricError::General(format!("cannot read basis file {path:?}: {e}")))?;
     parse_bse_json(&text, path)
 }
 
@@ -224,7 +225,8 @@ fn parse_float_list(ss: &[String]) -> Result<Vec<f64>, FerricError> {
 
 /// Load a basis set from a Gaussian-94 format file.
 pub fn load_g94(path: &str) -> Result<BasisSet, FerricError> {
-    let text = fs::read_to_string(path).map_err(FerricError::Io)?;
+    let text = fs::read_to_string(path)
+        .map_err(|e| FerricError::General(format!("cannot read basis file {path:?}: {e}")))?;
     parse_g94(&text, path)
 }
 

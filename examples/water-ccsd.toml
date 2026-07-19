@@ -1,0 +1,20 @@
+# CCSD on H2/STO-3G -- the smallest system with a committed correctness
+# reference (crates/ferric-cc/src/ccsd.rs test_ccsd_h2_sto3g): CCSD
+# correlation energy = -0.02052453 Hartree (exact-integral numpy reference).
+# CCSD is expensive (dense spin-orbital residuals), so keep the system tiny;
+# see crates/ferric-cc/src/ccsd.rs's own tests for larger validated cases
+# (H2O/cc-pVDZ) if you need a bigger sanity check.
+[molecule]
+xyz = "testdata/molecules/h2.xyz"
+
+[basis]
+name = "sto-3g"
+
+[method]
+kind = "ccsd"
+
+[mp2]
+# def2-qzvpp-rifit keeps the RI fitting error below 1e-6 Ha for this system
+# (cc-pvdz-ri would leave ~5e-6 Ha of RI error -- see the ccd.rs
+# ri_convergence_check_h2 comment).
+auxbasis = "def2-qzvpp-rifit"

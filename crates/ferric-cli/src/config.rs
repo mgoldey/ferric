@@ -168,6 +168,15 @@ pub struct Mp2Cfg {
     /// The single tempered-split knob; ω is derived (ω = 1/(r0·√2)). Default 3.18
     /// Bohr ⇒ ω ≈ 0.42 Å⁻¹ (the erf operating point). Ignored for erf.
     pub r0: Option<f64>,
+    /// Bonded (shorter-range) terfc cutoff **r0(1)** in **Å**, used ONLY by
+    /// `method.kind = "scs-mp2-2terfc"`. Default 0.75 Å (thesis value).
+    /// Requires the terfc interpolation tables (`FERRIC_TERF_TABLE_DIR`).
+    pub r0_bonded: Option<f64>,
+    /// Non-bonded (longer-range) terfc cutoff **r0(2)** in **Å**, used ONLY by
+    /// `method.kind = "scs-mp2-2terfc"`. Must be > `r0_bonded`. Default 1.05 Å
+    /// (thesis value). Requires the terfc interpolation tables
+    /// (`FERRIC_TERF_TABLE_DIR`).
+    pub r0_nonbonded: Option<f64>,
 }
 
 #[derive(Deserialize, Default)]
@@ -606,8 +615,9 @@ impl ScfCfg {
 }
 
 pub fn load_config(path: &str) -> Result<Config, String> {
-    let text = std::fs::read_to_string(path).map_err(|e| format!("{e}"))?;
-    toml::from_str(&text).map_err(|e| format!("{e}"))
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("cannot read config file {path:?}: {e}"))?;
+    toml::from_str(&text).map_err(|e| format!("{path}: {e}"))
 }
 
 #[cfg(test)]

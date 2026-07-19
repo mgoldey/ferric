@@ -10,9 +10,11 @@ use ferric_mp2::laplace::laplace_ri_mp2;
 use ferric_mp2::mp3::mp3_energy;
 use ferric_mp2::oo_rimp2::{oo_ri_mp2, OoRiMp2Config};
 use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
-use ferric_mp2::scs::{scs_mp2, ScsMp2Config};
+use ferric_mp2::scs::{scs_mp2, scs_mp2_2terfc, ScsMp2Config, ScsMp2TerfcConfig};
 use ferric_rpa::config::{QuadratureConfig, SternheimerConfig};
 use ferric_rpa::{run_pdep_rpa, PdepRpaConfig};
+use ferric_cc::ccsd::ccsd;
+use ferric_cc::CcConfig;
 use ferric_core::parallel::ParallelContext;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::uhf::solve_uhf;
@@ -41,6 +43,13 @@ where
     }
 }
 
+fn print_usage() {
+    eprintln!("usage: ferric <input.toml>");
+    eprintln!();
+    eprintln!("Run a ferric quantum-chemistry calculation from a TOML input file.");
+    eprintln!("See examples/*.toml for sample inputs and docs/quickstart.md for a walkthrough.");
+}
+
 fn main() {
     // Safe-by-default threading: pin OpenBLAS to 1 thread (rayon owns ferric's
     // parallelism) unless the user explicitly set OPENBLAS_NUM_THREADS. Without
@@ -48,6 +57,10 @@ fn main() {
     ferric_integrals::blas_threads::init_threading();
     let ctx = ParallelContext::new();
     let args: Vec<String> = std::env::args().collect();
+    if args.len() < 2 || args[1] == "--help" || args[1] == "-h" {
+        print_usage();
+        std::process::exit(if args.len() < 2 { 2 } else { 0 });
+    }
     if args.len() != 2 {
         eprintln!("usage: ferric <input.toml>");
         std::process::exit(2);
@@ -61,8 +74,8 @@ fn main() {
     };
     let method = cfg.method.kind.as_str();
     let task = cfg.method.task.as_str();
-    if !matches!(method, "rhf" | "uhf" | "rohf" | "ksdft" | "rimp2" | "mp3" | "oo-rimp2" | "att-rimp2" | "scs-mp2" | "laplace-mp2" | "pdep-rpa" | "rs-mp2-rpa" | "gw" | "bse-tda" | "tdhf-static-polarizability") {
-        eprintln!("error: unsupported method.kind = \"{method}\"; expected rhf, uhf, rohf, ksdft, rimp2, mp3, oo-rimp2, att-rimp2, scs-mp2, laplace-mp2, pdep-rpa, rs-mp2-rpa, gw, bse-tda, or tdhf-static-polarizability");
+    if !matches!(method, "rhf" | "uhf" | "rohf" | "ksdft" | "rimp2" | "mp3" | "oo-rimp2" | "att-rimp2" | "scs-mp2" | "scs-mp2-2terfc" | "laplace-mp2" | "pdep-rpa" | "rs-mp2-rpa" | "gw" | "bse-tda" | "tdhf-static-polarizability" | "ccsd") {
+        eprintln!("error: unsupported method.kind = \"{method}\"; expected rhf, uhf, rohf, ksdft, rimp2, mp3, oo-rimp2, att-rimp2, scs-mp2, scs-mp2-2terfc, laplace-mp2, pdep-rpa, rs-mp2-rpa, gw, bse-tda, tdhf-static-polarizability, or ccsd");
         std::process::exit(1);
     }
     if !matches!(task, "energy" | "optimize") {
@@ -732,6 +745,80 @@ fn main() {
             println!("  E_OS       = {:.10} Hartree", scs_result.e_os);
             println!("  E_SS       = {:.10} Hartree", scs_result.e_ss);
             println!("  Total      = {:.10} Hartree", scs_result.total_energy);
+        }
+
+        "scs-mp2-2terfc" => {
+            let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+            let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
+            let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
+            // r0(1)/r0(2) are given in Å in the TOML (matching the Python
+            // binding's convention); the library config wants Bohr.
+            const ANG2BOHR: f64 = 1.8897259886;
+            let r0_bonded_ang = cfg.mp2.r0_bonded.unwrap_or(0.75);
+            let r0_nonbonded_ang = cfg.mp2.r0_nonbonded.unwrap_or(1.05);
+            let scs_config = ScsMp2TerfcConfig {
+                r0_bonded: r0_bonded_ang * ANG2BOHR,
+                r0_nonbonded: r0_nonbonded_ang * ANG2BOHR,
+                c_os: cfg.mp2.c_os.unwrap_or(1.27),
+                c_ss: cfg.mp2.c_ss.unwrap_or(4.05),
+                frozen_core: cfg.mp2.frozen_core,
+                memory_budget_bytes: budget_bytes,
+            };
+            if scs_config.r0_nonbonded <= scs_config.r0_bonded {
+                eprintln!("error: [mp2] r0_nonbonded must be > r0_bonded");
+                std::process::exit(1);
+            }
+            let scs_result = scs_mp2_2terfc(&mol, &prep, &dfbs, &result, &scs_config)
+                .unwrap_or_else(|e| {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                });
+            println!(
+                "SCS-MP2(2terfc)/{} (aux: {}, r0(1)={:.3} Å, r0(2)={:.3} Å, c_OS={:.3}, c_SS={:.3}) on {}",
+                bs.name, aux_name, r0_bonded_ang, r0_nonbonded_ang, scs_config.c_os, scs_config.c_ss, cfg.molecule.xyz
+            );
+            println!("  nbasis     = {}", prep.nbasis());
+            println!("  RHF energy = {:.10} Hartree", result.energy);
+            println!("  SCS corr   = {:.10} Hartree", scs_result.scs_corr);
+            println!("  E_OS       = {:.10} Hartree", scs_result.e_os);
+            println!("  E_SS       = {:.10} Hartree", scs_result.e_ss);
+            println!("  Total      = {:.10} Hartree", scs_result.total_energy);
+        }
+
+        "ccsd" => {
+            let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+            let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
+            let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
+            let cc_config = CcConfig {
+                frozen_core: cfg.mp2.frozen_core,
+                memory_budget_bytes: budget_bytes,
+                ..Default::default()
+            };
+            let cc_result = ccsd(&mol, &prep, &dfbs, op, &result, &cc_config)
+                .unwrap_or_else(|e| {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                });
+            println!(
+                "CCSD/{} (aux: {}) on {}",
+                bs.name, aux_name, cfg.molecule.xyz
+            );
+            println!("  nbasis     = {}", prep.nbasis());
+            println!("  RHF energy = {:.10} Hartree", result.energy);
+            println!("  CCSD corr  = {:.10} Hartree", cc_result.correlation_energy);
+            println!("  Total      = {:.10} Hartree", result.energy + cc_result.correlation_energy);
         }
 
         "laplace-mp2" => {

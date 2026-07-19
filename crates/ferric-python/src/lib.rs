@@ -36,18 +36,25 @@ use pyo3::prelude::*;
 
 // ── Molecule ──
 
+/// A molecular geometry (atoms, charge, multiplicity). Coordinates are stored
+/// internally in Bohr; XYZ input is in Ångström.
 #[pyclass]
 #[pyo3(name = "Molecule")]
 struct PyMolecule { inner: Molecule }
 
 #[pymethods]
 impl PyMolecule {
+    /// Load a molecule from an XYZ file on disk, assuming neutral singlet
+    /// (charge 0, multiplicity 1). For open-shell/charged molecules use
+    /// `from_xyz_string` instead.
     #[staticmethod]
     fn from_xyz(path: &str) -> PyResult<Self> {
         let mol = Molecule::load_xyz(path)
             .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("{e}")))?;
         Ok(PyMolecule { inner: mol })
     }
+    /// Parse a molecule from an XYZ-format string, with explicit `charge` and
+    /// `multiplicity` (2S+1). Use this for open-shell or charged molecules.
     #[staticmethod]
     #[pyo3(signature = (s, charge=0, multiplicity=1))]
     fn from_xyz_string(s: &str, charge: i32, multiplicity: usize) -> PyResult<Self> {
@@ -55,19 +62,27 @@ impl PyMolecule {
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{e}")))?;
         Ok(PyMolecule { inner: mol })
     }
+    /// Classical nuclear repulsion energy in Hartree.
     fn nuclear_repulsion(&self) -> f64 { self.inner.nuclear_repulsion() }
+    /// Number of atoms.
     fn natoms(&self) -> usize { self.inner.atoms.len() }
+    /// Total electron count (accounts for `charge` and any ECP core electrons).
     fn nelec(&self) -> i32 { self.inner.nelec() }
 }
 
 // ── BasisSet ──
 
+/// A Gaussian basis set (orbital or auxiliary/RI-fitting).
 #[pyclass]
 #[pyo3(name = "BasisSet")]
 struct PyBasisSet { inner: ferric_core::basis::BasisSet }
 
 #[pymethods]
 impl PyBasisSet {
+    /// Load one of ferric's bundled basis sets by name (e.g. `"sto-3g"`,
+    /// `"cc-pvdz"`, `"def2-svp"`, or an RI/JK auxiliary set like
+    /// `"cc-pvdz-ri"`/`"def2-universal-jkfit"`). Raises `ValueError` if `name`
+    /// is not a bundled set.
     #[staticmethod]
     fn bundled(name: &str) -> PyResult<Self> {
         let bs = basis::bundled(name)
@@ -119,12 +134,18 @@ fn build_external_potential(
 
 // ── RHF ──
 
+/// Result of a closed-shell RHF (or `run_ksdft` KS-DFT) calculation.
 #[pyclass]
 #[pyo3(name = "RhfResult")]
 struct PyRhfResult {
+    /// Total SCF energy in Hartree (electronic + nuclear repulsion).
     #[pyo3(get)] energy: f64,
+    /// Whether the SCF met both the energy and density convergence thresholds.
     #[pyo3(get)] converged: bool,
+    /// Number of SCF iterations run.
     #[pyo3(get)] iterations: usize,
+    /// Number of unique two-electron integral quartets actually computed
+    /// (reflects Schwarz/QQR screening; lower than the naive N^4 count).
     #[pyo3(get)] computed_quartets: usize,
     density_data: Array2<f64>,
     orbital_energies_data: Vec<f64>,
@@ -133,9 +154,11 @@ struct PyRhfResult {
 
 #[pymethods]
 impl PyRhfResult {
+    /// The converged AO-basis density matrix as a 2D numpy array (n_bf × n_bf).
     fn density<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
         PyArray2::from_array(py, &self.density_data)
     }
+    /// Molecular orbital energies (Hartree) as a 1D numpy array, ascending order.
     fn orbital_energies<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
         PyArray1::from_vec(py, self.orbital_energies_data.clone())
     }
@@ -540,14 +563,36 @@ fn hirshfeld_polarizability<'py>(
 
 // ── RI-MP2 ──
 
+/// Result of a `run_rimp2` calculation.
 #[pyclass]
 #[pyo3(name = "RiMp2Result")]
 struct PyRiMp2Result {
+    /// RHF + MP2 correlation energy, Hartree.
     #[pyo3(get)] total_energy: f64,
+    /// The converged reference RHF energy alone, Hartree.
     #[pyo3(get)] rhf_energy: f64,
+    /// MP2 correlation energy alone (always negative), Hartree.
     #[pyo3(get)] mp2_corr: f64,
 }
 
+/// Resolution-of-identity (density-fitted) MP2 on a closed-shell RHF
+/// reference. Runs its own internal RHF first (via `k_builder`, same
+/// convention as `run_rhf`'s `k_builder` kwarg), then the RI-MP2 correlation
+/// energy using `auxbasis` as the fitting basis.
+///
+/// `auxbasis` is the RI auxiliary basis (e.g. a bundled `*-ri`/`*-rifit` set
+/// such as `"cc-pvdz-ri"` for orbital basis `"cc-pvdz"`, or `"def2-svp-rifit"`
+/// for `"def2-svp"`) — NOT the SCF's own `df_j_aux`/`df_k_aux`. See
+/// `docs/quickstart.md`'s basis/auxiliary-basis pairing table.
+///
+/// `frozen_core` (default 0) excludes that many lowest-energy occupied
+/// orbitals from the correlation treatment.
+///
+/// Raises if the internal RHF does not converge.
+///
+/// Returns a [`RiMp2Result`](PyRiMp2Result) with `total_energy` (RHF + MP2
+/// correlation), `rhf_energy` (the reference energy), and `mp2_corr` (the
+/// correlation energy alone, always negative).
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None))]
 fn run_rimp2(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
@@ -2051,6 +2096,21 @@ fn run_tdhf_static_polarizability(
 
 // ── Module ──
 
+/// Python bindings for ferric (pyo3).
+///
+/// Exposes the engine to Python: `Molecule` / `BasisSet` constructors plus
+/// `run_rhf`, `run_uhf`, `run_rohf`, `run_rimp2`, `run_oo_rimp2`,
+/// `run_attenuated_rimp2`, `run_scs_mp2`, the Laplace and coupled-cluster
+/// drivers, and geometry optimization. Each binding wraps the corresponding
+/// Rust driver and returns a result object with energies/components.
+/// Build with `uv run maturin develop --release` (see the README for the venv
+/// caveat).
+///
+/// NOTE: this docstring is duplicated (not just referenced) from the file-level
+/// `//!` comment at the top of this file. pyo3 only picks up a `///` doc
+/// comment placed directly above `#[pymodule] fn ferric`, not a file-level
+/// `//!` — without this, `help(ferric)` / `ferric.__doc__` return empty even
+/// though the `//!` content renders fine in `cargo doc`. Keep both in sync.
 #[pymodule]
 fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Safe-by-default threading: pin OpenBLAS to 1 thread (rayon owns ferric's

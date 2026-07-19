@@ -45,6 +45,10 @@ pseudo-densities. Get the physics right, and the cheap method follows from its s
 - **RI-CCD, RI-CCSD, and the perturbative triples (T)** correction — all
   validated against exact-integral / PySCF references (H2O/cc-pVDZ (T) matches
   PySCF to ~1e-6). See [docs/VALIDATION.md](docs/VALIDATION.md).
+- CLI: only `method.kind = "ccsd"` is currently wired (see
+  `examples/water-ccsd.toml`). **CCD and CCSD(T) are library/Python-only, not
+  yet CLI-wired** — use `ferric.run_ccd` / `ferric.run_ccsd_t` from Python (see
+  the Quick Example below) until a CLI arm is added.
 
 **Many-body response (RPA & GW)**
 - **PDEP-RPA** — RPA correlation via projective dielectric-eigenpotentials (a low-rank W basis in Gaussians), closed- and open-shell (U-PDEP-RPA over a spin-summed dielectric)
@@ -99,6 +103,9 @@ cargo run --release -- examples/water-scs-mp2.toml
 
 # SCS-MP2(2terfc) (dual-attenuated, Goldey/Head-Gordon 2013)
 cargo run --release -- examples/water-scs-mp2-2terfc.toml
+
+# CCSD (H2/STO-3G; CCD and CCSD(T) are not yet CLI-wired, use Python)
+cargo run --release -- examples/water-ccsd.toml
 ```
 
 ### Python
