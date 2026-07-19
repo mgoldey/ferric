@@ -76,17 +76,44 @@ fn hirshfeld_margin() -> f64 {
 }
 
 /// Solve the (naux × naux) screened-dielectric system ε̃·y^d = w^d for the
-/// three Cartesian right-hand sides, propagating LAPACK failure (singular ε̃
-/// from a near-zero orbital-energy gap) instead of panicking.
+/// three Cartesian right-hand sides.
+///
+/// ε̃ = I + B·g·Bᵀ is symmetric positive-definite by construction (identity
+/// plus a positive-semi-definite term has all eigenvalues ≥ 1, so it can
+/// never be singular or indefinite for a mathematically valid input). We
+/// therefore factor it ONCE via Cholesky (`dpotrf`) and reuse that single
+/// factorization for all three x/y/z right-hand sides via `dpotrs`, rather
+/// than re-factorizing via general LU (`dgetrf`) three separate times: half
+/// the FLOPs of LU, and — since several call sites run inside rayon
+/// `par_iter` regions — this also removes `dgetrf` from this hot path
+/// entirely (see the `openblas-rayon-dgetrf-crash` history: `dgetrf` under
+/// OpenBLAS with >1 thread inside a rayon parallel region is a known
+/// segfault/corruption class; `OPENBLAS_NUM_THREADS=1` is still required as
+/// a structural convention, but this at least removes one more LU call from
+/// the hottest of these regions).
+///
+/// A Cholesky failure here means `dpotrf` detected a non-positive-definite
+/// matrix — for a genuinely valid ε̃ this is mathematically impossible, so
+/// hitting this branch means a NaN/Inf (or otherwise corrupted) entry
+/// reached `eps_mat` upstream, not an ordinary "near-degenerate occ/vir
+/// gap" solver failure.
 pub(crate) fn solve_dielectric_3(
     eps_mat: &Array2<f64>,
     w: &[ndarray::Array1<f64>; 3],
 ) -> Result<[ndarray::Array1<f64>; 3], FerricError> {
-    use ndarray_linalg::Solve;
+    use ndarray_linalg::{FactorizeC, SolveC, UPLO};
+    let chol = eps_mat.factorizec(UPLO::Upper).map_err(|e| {
+        FerricError::Lapack(format!(
+            "dielectric Cholesky factorization failed (ε̃ = I + B·g·Bᵀ is SPD by \
+             construction, so this should be mathematically impossible — a NaN/Inf \
+             or otherwise corrupted entry likely reached ε̃ upstream): {e}"
+        ))
+    })?;
     let solve_one = |d: usize| -> Result<ndarray::Array1<f64>, FerricError> {
-        eps_mat.solve(&w[d]).map_err(|e| {
+        chol.solvec(&w[d]).map_err(|e| {
             FerricError::Lapack(format!(
-                "dielectric solve failed (singular ε̃ — near-degenerate occ/vir gap?): {e}"
+                "dielectric solve failed against the Cholesky factor of ε̃ \
+                 (should be mathematically impossible for a valid SPD ε̃): {e}"
             ))
         })
     };
@@ -3682,6 +3709,69 @@ mod tests {
                     "α asymmetric at ({i},{j})"
                 );
             }
+        }
+    }
+
+    /// Regression guard for the LU→Cholesky, factor-three-times→factor-once
+    /// rewrite of `solve_dielectric_3`: on a small synthetic SPD matrix
+    /// ε̃ = I + BBᵀ (guaranteed SPD, mirroring the real dielectric's
+    /// structure) with three distinct RHS vectors, the Cholesky-based
+    /// `solve_dielectric_3` must agree with an independent general-LU solve
+    /// (`ndarray_linalg::Solve`, i.e. exactly the old implementation's
+    /// algorithm, computed fresh here rather than reused) to numerical
+    /// precision. This directly catches sign errors, upper/lower-triangular
+    /// mixups, or a transposed RHS in the Cholesky rewrite.
+    #[test]
+    fn solve_dielectric_3_cholesky_matches_general_lu() {
+        use ndarray::{array, Array1};
+        use ndarray_linalg::Solve;
+
+        // B is a nonsymmetric 4x5 matrix; eps = I + B Bᵀ is SPD by
+        // construction (identity plus PSD), same structure as the real
+        // ε̃ = I + B·g·Bᵀ dielectric.
+        let b: Array2<f64> = array![
+            [0.3, -0.7, 1.2, 0.4, -0.1],
+            [1.1, 0.2, -0.4, 0.9, 0.6],
+            [-0.5, 0.8, 0.3, -1.0, 0.2],
+            [0.7, -0.3, 0.6, 0.1, -0.9],
+        ];
+        let n = b.nrows();
+        let mut eps_mat = b.dot(&b.t());
+        for i in 0..n {
+            eps_mat[(i, i)] += 1.0;
+        }
+
+        let w: [Array1<f64>; 3] = [
+            array![1.0, 0.0, -1.0, 2.0],
+            array![0.5, -0.5, 1.5, -1.0],
+            array![-2.0, 1.0, 0.0, 0.5],
+        ];
+
+        // New implementation under test (Cholesky, factor-once).
+        let y_chol = solve_dielectric_3(&eps_mat, &w).expect("SPD system must solve");
+
+        // Independent reference: general LU solve per RHS (the old
+        // algorithm), computed directly here rather than by calling any
+        // shared helper, so this test does not silently pass if both paths
+        // shared a latent bug.
+        for d in 0..3 {
+            let y_lu = eps_mat.solve(&w[d]).expect("LU solve must succeed on SPD matrix");
+            for i in 0..n {
+                let diff = (y_chol[d][i] - y_lu[i]).abs();
+                assert!(
+                    diff < 1e-12,
+                    "Cholesky vs LU mismatch at rhs={d}, i={i}: chol={}, lu={}, diff={diff}",
+                    y_chol[d][i],
+                    y_lu[i]
+                );
+            }
+            // Cross-check both against the defining equation ε̃ y = w.
+            let resid = eps_mat.dot(&y_chol[d]) - &w[d];
+            let resid_norm: f64 = resid.iter().map(|x| x * x).sum::<f64>().sqrt();
+            assert!(
+                resid_norm < 1e-10,
+                "Cholesky solution does not satisfy ε̃y=w at rhs={d}: ||resid||={resid_norm}"
+            );
         }
     }
 }

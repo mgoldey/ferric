@@ -31,7 +31,10 @@ pub fn redress_eigenpotentials(
 ) -> Result<Array2<f64>, FerricError> {
     // PDEP stores `eigenpotentials = v_inv_sqrt · V_dressed` (lib.rs line
     // 391). To recover V_dressed we just invert v_inv_sqrt (it is lower
-    // triangular as produced by `solve_triangular(L, I)`).
+    // triangular as produced by `solve_triangular(L, I)`), so instead of a
+    // general LU inverse we solve the triangular system
+    // `v_inv_sqrt · v_sqrt_factor = I` directly (`dtrtrs`, not `dgetrf`) —
+    // mirrors the analogous `cholesky_inverse_sqrt` idiom in mo_b.rs.
     //
     // Call-path proof: called from top-level GW entry points (lib.rs:213,
     // :285) and from the serial evGW outer loops (sigma.rs:503,
@@ -39,11 +42,12 @@ pub fn redress_eigenpotentials(
     // sigma.rs::run_evgw). Also reached via bse.rs's top-level
     // `redress_with_check` calls. `opt_in_blas_threads()` defaults to 1 and
     // self-guards to 1 if ever invoked from a rayon worker.
-    use ndarray_linalg::Inverse;
+    use ndarray_linalg::{Diag, SolveTriangular, UPLO};
     with_blas_threads(opt_in_blas_threads(), || {
+        let eye = Array2::<f64>::eye(v_inv_sqrt.nrows());
         let v_sqrt_factor = v_inv_sqrt
-            .inv()
-            .map_err(|e| FerricError::General(format!("inv(v_inv_sqrt) failed: {e}")))?;
+            .solve_triangular(UPLO::Lower, Diag::NonUnit, &eye)
+            .map_err(|e| FerricError::General(format!("triangular solve(v_inv_sqrt) failed: {e}")))?;
         Ok(v_sqrt_factor.dot(eigenpotentials_phys))
     })
 }
