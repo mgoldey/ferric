@@ -134,10 +134,35 @@ fn eri3_mo_block_dressed(
     c_right: &Array2<f64>,
 ) -> Result<Array2<f64>, FerricError> {
     let naux = src.naux();
+    eri3_mo_block_dressed_band(src, v_inv_sqrt, c_left, c_right, 0, naux)
+}
+
+/// Band-restricted sibling of [`eri3_mo_block_dressed`]: builds only the
+/// GLOBAL output aux rows `[band_p0, band_p1)` of the dressed MO block, shape
+/// `(band_p1 - band_p0, nleft*nright)`. `src` must stream the FULL raw `[0,
+/// naux)` range — the dressing sum `Σ_Q V^{-1/2}[P,Q] (Q|pq)` runs over every
+/// Q regardless of which P band is requested, exactly like
+/// [`ThreeIndexSource::build_dressed_band`]'s `raw` requirement — but `src`
+/// itself may be budget-bounded / disk-spilled, so its full footprint need
+/// not be resident.
+///
+/// This is the MPI RI-MP2 memory lever (T9), mirroring DF-K's
+/// `build_dressed_band`: each rank calls this with its own
+/// `ctx.aux_band(naux)` so the **held** dressed `B^P_{ia}` is `(band) x
+/// nocc*nvir`, not the full `naux x nocc*nvir` tensor.
+pub(crate) fn eri3_mo_block_dressed_band(
+    src: &mut ThreeIndexSource,
+    v_inv_sqrt: &Array2<f64>,
+    c_left: &Array2<f64>,
+    c_right: &Array2<f64>,
+    band_p0: usize,
+    band_p1: usize,
+) -> Result<Array2<f64>, FerricError> {
     let nleft = c_left.ncols();
     let nright = c_right.ncols();
     let width = nleft * nright;
-    let mut b_flat = Array2::<f64>::zeros((naux, width));
+    let band = band_p1 - band_p0;
+    let mut b_flat = Array2::<f64>::zeros((band, width));
     src.for_each_block(|blk| {
         let qb = blk.data.shape()[0];
         // MO-transform this raw aux-block: mo[q, pq] = c_left^T (Q|μν) c_right.
@@ -150,9 +175,9 @@ fn eri3_mo_block_dressed(
                 .slice_mut(ndarray::s![q, ..])
                 .assign(&bq_mo.into_shape_with_order(width).unwrap());
         }
-        // Dress into every output aux row, accumulating in place (beta=1):
-        //   b_flat[:, pq] += V^{-1/2}[:, Qblock] · mo_blk.
-        let msub = v_inv_sqrt.slice(ndarray::s![.., blk.p0..blk.p0 + qb]);
+        // Dress into only the band's output aux rows, accumulating in place
+        // (beta=1): b_flat[P-band_p0, pq] += V^{-1/2}[band_p0..band_p1, Qblock] · mo_blk.
+        let msub = v_inv_sqrt.slice(ndarray::s![band_p0..band_p1, blk.p0..blk.p0 + qb]);
         ndarray::linalg::general_mat_mul(1.0, &msub, &mo_blk, 1.0, &mut b_flat);
         Ok(())
     })?;
