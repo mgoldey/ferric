@@ -434,6 +434,7 @@ dependencies = [
 name = "ferric-cli"
 version = "0.1.0"
 dependencies = [
+ "ferric-cc",
  "ferric-core",
  "ferric-export",
  "ferric-gw",

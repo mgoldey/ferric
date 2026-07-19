@@ -1,0 +1,18 @@
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "cc-pvdz"
+
+[method]
+kind = "scs-mp2-2terfc"
+
+[mp2]
+auxbasis = "cc-pvdz-ri"
+# Thesis defaults (Goldey, Dutoi, Head-Gordon, PCCP 2013): r0(1)=0.75 A,
+# r0(2)=1.05 A, c_os=1.27, c_ss=4.05. r0_bonded/r0_nonbonded are in
+# Angstroms; r0_nonbonded must be > r0_bonded.
+# Requires the terfc interpolation tables: set FERRIC_TERF_TABLE_DIR to point
+# at the generated *.bin tables (see terf-tables/).
+r0_bonded = 0.75
+r0_nonbonded = 1.05

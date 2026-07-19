@@ -100,7 +100,8 @@ struct BseEcpPotential {
 
 /// Load an ECP set from a Basis Set Exchange JSON file on disk.
 pub fn load_ecp_json(path: &str) -> Result<EcpSet, FerricError> {
-    let text = fs::read_to_string(path).map_err(FerricError::Io)?;
+    let text = fs::read_to_string(path)
+        .map_err(|e| FerricError::General(format!("cannot read ECP file {path:?}: {e}")))?;
     parse_ecp_json(&text, path)
 }
 
