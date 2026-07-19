@@ -3,9 +3,11 @@
 //! Implements the BFGS (Broyden-Fletcher-Goldfarb-Shanno) algorithm for
 //! minimizing the molecular energy with respect to nuclear coordinates.
 
-use crate::gradient::rhf_gradient;
+use crate::gradient::{rhf_gradient, rohf_gradient, uhf_gradient};
 use crate::ks_gradient::ks_gradient_closed;
 use crate::rhf::{solve_rhf, RhfConfig};
+use crate::rohf::solve_rohf;
+use crate::uhf::solve_uhf;
 use crate::screening::SchwarzBounds;
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
@@ -50,7 +52,8 @@ pub struct OptimizeResult {
     pub converged: bool,
 }
 
-/// Optimize the molecular geometry using RHF analytical gradients.
+/// Optimize the molecular geometry using RHF (or closed-shell KS-DFT, via
+/// `rhf_config.xc`) analytical gradients.
 pub fn optimize_geometry(
     ctx: &ParallelContext,
     mol: &Molecule,
@@ -59,17 +62,64 @@ pub fn optimize_geometry(
     rhf_config: &RhfConfig,
     opt_config: &OptimizeConfig,
 ) -> Result<OptimizeResult, FerricError> {
+    run_bfgs(mol, opt_config, |m| {
+        compute_energy_and_gradient(ctx, m, basis_name, op, rhf_config)
+    })
+}
+
+/// Optimize the molecular geometry using UHF analytical gradients.
+///
+/// `mol.charge`/`mol.multiplicity` fix the spin state for every step (the
+/// occupation is not re-derived from a Aufbau guess mid-optimization, mirroring
+/// how `solve_uhf` itself works — the caller is responsible for choosing a
+/// multiplicity that stays the correct ground state along the whole path).
+pub fn optimize_geometry_uhf(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    basis_name: &str,
+    op: Operator,
+    uhf_config: &RhfConfig,
+    opt_config: &OptimizeConfig,
+) -> Result<OptimizeResult, FerricError> {
+    run_bfgs(mol, opt_config, |m| {
+        compute_energy_and_gradient_uhf(ctx, m, basis_name, op, uhf_config)
+    })
+}
+
+/// Optimize the molecular geometry using ROHF analytical gradients.
+pub fn optimize_geometry_rohf(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    basis_name: &str,
+    op: Operator,
+    rohf_config: &RhfConfig,
+    opt_config: &OptimizeConfig,
+) -> Result<OptimizeResult, FerricError> {
+    run_bfgs(mol, opt_config, |m| {
+        compute_energy_and_gradient_rohf(ctx, m, basis_name, op, rohf_config)
+    })
+}
+
+/// Shared BFGS driver: minimizes `energy_and_gradient(mol)` over nuclear
+/// coordinates starting from `mol`. Identical algorithm for every reference
+/// (RHF/RKS/UHF/ROHF) — only how energy+gradient are computed at a geometry
+/// differs, which is captured entirely in the closure.
+fn run_bfgs(
+    mol: &Molecule,
+    opt_config: &OptimizeConfig,
+    mut energy_and_gradient: impl FnMut(&Molecule) -> Result<(f64, Array2<f64>), FerricError>,
+) -> Result<OptimizeResult, FerricError> {
     let mut current_mol = mol.clone();
     let natoms = current_mol.atoms.len();
     let n_coord = natoms * 3;
-    
+
     // Initial energy and gradient
-    let (mut energy, mut grad_arr) = compute_energy_and_gradient(ctx, &current_mol, basis_name, op, rhf_config)?;
+    let (mut energy, mut grad_arr) = energy_and_gradient(&current_mol)?;
     let mut grad = flatten_gradient(&grad_arr);
-    
+
     // Approximate inverse Hessian (initialized to identity)
     let mut h = Array2::<f64>::eye(n_coord);
-    
+
     let mut prev_energy = energy;
     let mut converged = false;
     let mut step_idx = 0;
@@ -95,7 +145,7 @@ pub fn optimize_geometry(
 
         // BFGS step: p = -H * g
         let p = -h.dot(&grad);
-        
+
         // Simple trust-radius scaling
         let p_norm = p.iter().map(|x| x * x).sum::<f64>().sqrt();
         let step = if p_norm > opt_config.trust_radius {
@@ -106,26 +156,26 @@ pub fn optimize_geometry(
 
         // Update geometry
         update_molecule_coords(&mut current_mol, &step);
-        
+
         let prev_grad = grad.clone();
         prev_energy = energy;
-        
+
         // Compute new energy and gradient
-        let res = compute_energy_and_gradient(ctx, &current_mol, basis_name, op, rhf_config)?;
+        let res = energy_and_gradient(&current_mol)?;
         energy = res.0;
         grad_arr = res.1;
         grad = flatten_gradient(&grad_arr);
-        
+
         // BFGS update for H
         let s = step; // x_{k+1} - x_k
         let y = &grad - &prev_grad; // g_{k+1} - g_k
-        
+
         let ys = y.dot(&s);
         if ys.abs() > 1e-12 {
             let hy = h.dot(&y);
             let yhy = y.dot(&hy);
             let rho = 1.0 / ys;
-            
+
             // H = H + (ys + yHy)/(ys^2) * (s s^T) - (H y s^T + s y^T H) / ys
             let term1 = (ys + yhy) * rho * rho;
             for i in 0..n_coord {
@@ -168,6 +218,53 @@ fn compute_energy_and_gradient(
     Ok((res.energy, grad))
 }
 
+fn compute_energy_and_gradient_uhf(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    basis_name: &str,
+    op: Operator,
+    uhf_config: &RhfConfig,
+) -> Result<(f64, Array2<f64>), FerricError> {
+    // uhf_gradient is HF-only (no XC term); UKS geometry optimization is not
+    // wired. Fail loudly rather than silently returning a gradient that
+    // ignores the XC potential the energy was computed with.
+    if uhf_config.xc.is_some() {
+        return Err(FerricError::General(
+            "UHF geometry optimization does not support method.kind = \"ksdft\"-style xc \
+             (uhf_gradient has no XC term; UKS analytical gradients are not yet wired)".into(),
+        ));
+    }
+    let bs = ferric_core::basis::bundled(basis_name)?;
+    let prep = PreparedBasis::new(mol, &bs)?;
+    let bounds = SchwarzBounds::compute(op, &prep)?;
+    let res = solve_uhf(ctx, mol, &prep, &bounds, uhf_config)?;
+    let grad = uhf_gradient(mol, &prep, op, &bounds, &res, uhf_config.external_potential.as_ref())?;
+    Ok((res.energy, grad))
+}
+
+fn compute_energy_and_gradient_rohf(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    basis_name: &str,
+    op: Operator,
+    rohf_config: &RhfConfig,
+) -> Result<(f64, Array2<f64>), FerricError> {
+    // rohf_gradient is HF-only (no XC term); ROKS geometry optimization is not
+    // wired. Same guard as the UHF path above.
+    if rohf_config.xc.is_some() {
+        return Err(FerricError::General(
+            "ROHF geometry optimization does not support method.kind = \"ksdft\"-style xc \
+             (rohf_gradient has no XC term; ROKS analytical gradients are not yet wired)".into(),
+        ));
+    }
+    let bs = ferric_core::basis::bundled(basis_name)?;
+    let prep = PreparedBasis::new(mol, &bs)?;
+    let bounds = SchwarzBounds::compute(op, &prep)?;
+    let res = solve_rohf(ctx, mol, &prep, op, &bounds, rohf_config)?;
+    let grad = rohf_gradient(mol, &prep, op, &bounds, &res, rohf_config.external_potential.as_ref())?;
+    Ok((res.energy, grad))
+}
+
 fn flatten_gradient(grad: &Array2<f64>) -> Array1<f64> {
     let mut flat = Array1::zeros(grad.len());
     let mut idx = 0;
@@ -201,18 +298,120 @@ mod tests {
         let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 1.0\n", 0, 1).unwrap();
         let op = Operator::coulomb();
         let rhf_config = RhfConfig { energy_conv: 1e-10, ..Default::default() };
-        let opt_config = OptimizeConfig { 
+        let opt_config = OptimizeConfig {
             trust_radius: 0.1,
             ..Default::default()
         };
 
         let ctx = ParallelContext::default();
         let result = optimize_geometry(&ctx, &mol, "sto-3g", op, &rhf_config, &opt_config).unwrap();
-        
+
         assert!(result.converged);
         let dist = (result.mol.atoms[0].zpos - result.mol.atoms[1].zpos).abs();
         eprintln!("H2/STO-3G optimized distance: {:.6} Bohr", dist);
         // STO-3G H2 bond length is ~1.346 Bohr
         assert!((dist - 1.346).abs() < 1e-2, "dist = {dist}, expected ~1.346");
+    }
+
+    #[test]
+    fn test_optimize_h2plus_uhf_sto3g() {
+        // H2+ (one electron, doublet), started stretched at 1.5 Angstrom
+        // (2.835 Bohr) -- well beyond the equilibrium bond -- and optimized
+        // with UHF/STO-3G analytical gradients. UHF on a single-electron
+        // system reduces exactly to RHF on that electron, so this is a
+        // useful sanity check that the UHF optimize path (a) actually
+        // iterates (not just prints one gradient) and (b) lands at a
+        // reasonable minimum.
+        let mol = Molecule::parse_xyz("2\nH2+\nH 0 0 0\nH 0 0 1.5\n", 1, 2).unwrap();
+        let op = Operator::coulomb();
+        let uhf_config = RhfConfig { energy_conv: 1e-10, ..Default::default() };
+        let opt_config = OptimizeConfig {
+            trust_radius: 0.1,
+            ..Default::default()
+        };
+
+        let ctx = ParallelContext::default();
+        let e0 = compute_energy_and_gradient_uhf(&ctx, &mol, "sto-3g", op, &uhf_config)
+            .unwrap()
+            .0;
+
+        let result = optimize_geometry_uhf(&ctx, &mol, "sto-3g", op, &uhf_config, &opt_config).unwrap();
+
+        assert!(result.converged, "UHF H2+ optimization did not converge in {} steps", result.steps);
+        assert!(result.steps > 0, "optimizer should take at least one step from a stretched start");
+        assert!(
+            result.energy < e0,
+            "optimized energy {} should be lower than initial energy {}",
+            result.energy,
+            e0
+        );
+
+        let dist = (result.mol.atoms[0].zpos - result.mol.atoms[1].zpos).abs();
+        eprintln!("H2+/UHF/STO-3G optimized distance: {:.6} Bohr, energy: {:.10} Ha", dist, result.energy);
+        // H2+/STO-3G equilibrium bond length is ~2.0 Bohr (literature/HF
+        // minimal-basis value); loose tolerance since this is a sanity
+        // check, not a basis-set-accuracy claim.
+        assert!((dist - 2.0).abs() < 0.3, "dist = {dist}, expected ~2.0 Bohr");
+
+        // Final gradient norm must be below the configured convergence
+        // thresholds -- re-derive it directly rather than trusting the
+        // driver's internal bookkeeping.
+        let (_, grad_arr) =
+            compute_energy_and_gradient_uhf(&ctx, &result.mol, "sto-3g", op, &uhf_config).unwrap();
+        let grad = flatten_gradient(&grad_arr);
+        let g_max = grad.iter().map(|g| g.abs()).fold(0.0f64, f64::max);
+        assert!(g_max < opt_config.g_max_thresh, "final |g|_max = {g_max:.3e} not converged");
+    }
+
+    #[test]
+    fn test_optimize_oh_radical_rohf_sto3g() {
+        // OH radical (doublet), started stretched at 1.3 Angstrom (vs the
+        // experimental 0.9697 Angstrom in testdata/molecules/oh.xyz) and
+        // optimized with ROHF/STO-3G analytical gradients.
+        let mol = Molecule::parse_xyz("2\nOH\nO 0 0 0\nH 0 0 1.3\n", 0, 2).unwrap();
+        let op = Operator::coulomb();
+        let rohf_config = RhfConfig { energy_conv: 1e-10, ..Default::default() };
+        let opt_config = OptimizeConfig {
+            trust_radius: 0.1,
+            ..Default::default()
+        };
+
+        let ctx = ParallelContext::default();
+        let e0 = compute_energy_and_gradient_rohf(&ctx, &mol, "sto-3g", op, &rohf_config)
+            .unwrap()
+            .0;
+
+        let result = optimize_geometry_rohf(&ctx, &mol, "sto-3g", op, &rohf_config, &opt_config).unwrap();
+
+        assert!(result.converged, "ROHF OH optimization did not converge in {} steps", result.steps);
+        assert!(result.steps > 0, "optimizer should take at least one step from a stretched start");
+        assert!(
+            result.energy < e0,
+            "optimized energy {} should be lower than initial energy {}",
+            result.energy,
+            e0
+        );
+
+        let dist_bohr = (result.mol.atoms[0].zpos - result.mol.atoms[1].zpos).abs();
+        let dist_ang = dist_bohr * 0.529_177_210_92;
+        eprintln!(
+            "OH/ROHF/STO-3G optimized distance: {:.6} Bohr ({:.4} Ang), energy: {:.10} Ha",
+            dist_bohr, dist_ang, result.energy
+        );
+        // STO-3G ROHF is a minimal basis, so the equilibrium bond will not
+        // match the experimental 0.9697 Ang exactly -- minimal-basis HF
+        // typically overbinds by several tenths of an Angstrom for OH.
+        // Loose cross-check band: this catches optimizing to the wrong
+        // stationary point (e.g. dissociation or a basis artifact far off).
+        assert!(
+            (dist_ang - 0.9697).abs() < 0.2,
+            "dist = {dist_ang} Ang, expected within 0.2 Ang of experimental 0.9697"
+        );
+
+        let (_, grad_arr) =
+            compute_energy_and_gradient_rohf(&ctx, &result.mol, "sto-3g", op, &rohf_config).unwrap();
+        let grad = flatten_gradient(&grad_arr);
+        let g_max = grad.iter().map(|g| g.abs()).fold(0.0f64, f64::max);
+        assert!(g_max < opt_config.g_max_thresh, "final |g|_max = {g_max:.3e} not converged");
     }
 }
