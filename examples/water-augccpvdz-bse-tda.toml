@@ -1,0 +1,28 @@
+# BSE-TDA[G0W0@HF] / aug-cc-pVDZ on water. Phase-1 pilot fix (see
+# docs/bse-tda-benchmark-plan.md, benchmarks/bse-tda-pilot/README.md): the
+# original pilot ran water at cc-pVDZ (no diffuse functions) and compared
+# against a literature TBE for the 1B1 (n->3s Rydberg) state that
+# structurally REQUIRES diffuse basis functions -- an apples-to-oranges
+# comparison, excluded from the pilot's own MAE. This config re-runs water
+# at aug-cc-pVDZ, matching the basis family (Dunning aug-cc-pVXZ with
+# diffuse functions) used by the literature TBE (Chrayteh, Blondel, Loos,
+# Jacquemin, JCTC 2021, arXiv:2011.08509, Table 2: aug-cc-pVDZ CCSDT
+# Delta_Evert = 9.279 eV, f = 0.058; CBS TBE = 7.71+-0.02 eV, f = 0.052+-0.001).
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "aug-cc-pvdz"
+
+[method]
+kind = "bse-tda"
+
+[rpa]
+auxbasis = "aug-cc-pvdz-rifit"
+n_quad = 16
+quadrature = "gauss-legendre"
+trunc_thresh = 0.0
+eigensolver_conv_thresh = 1e-7
+
+[gw]
+frozen_core = 0
