@@ -1130,6 +1130,28 @@ mod tests {
     use ferric_core::mol::Molecule;
     use ferric_integrals::basis_bridge::PreparedBasis;
 
+    // FERRIC_MEM_BUDGET_GB / FERRIC_OOC_BUDGET_GB are process-global; serialize
+    // env-mutating tests (blas_threads.rs / ferric-core memory.rs pattern).
+    // MUST be held by every test in this module that transitively reads the
+    // budget env var, not just the one that mutates it: `solve_rhf` calls
+    // `resolve_three_index_budget` unconditionally on every invocation (see the
+    // `let ooc_budget = ...` line near the top of `solve_rhf`), which falls
+    // through to `ferric_core::memory::resolve_budget_bytes` and reads the
+    // ambient env value whenever no explicit `config.three_index_budget_bytes`
+    // is set. Under cargo test's default parallelism, any test that calls
+    // `solve_rhf` (directly or via a helper like `run_rhf_test`) can observe
+    // `three_index_budget_auto_detects_ram_on_default`'s temporary near-zero /
+    // pinned-GB env mutation mid-flight if it doesn't also hold this lock —
+    // this file has 20+ such tests. Confirmed dormant (not actively flaky) as
+    // of 2026-07-18, but the same race that hit
+    // `eval_basis_on_grid_serial_and_parallel_paths_agree` in
+    // ferric-export/src/gto_eval.rs applies here structurally; fixed
+    // proactively rather than waiting for a flake. Pure-function tests that
+    // never call `solve_rhf` (e.g. `scf_converged_*`, `stall_detected_*`) do
+    // NOT need this lock — only reach for it when the test path touches
+    // `resolve_three_index_budget` (directly or transitively).
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn three_index_budget_auto_detects_ram_on_default() {
         // The whole point of the RAM-aware resolver: on a box with adequate RAM,
@@ -1138,6 +1160,7 @@ mod tests {
         // instead of spilling to disk. Env-var precedence is also asserted here.
         // These sub-cases mutate process env, so they live in ONE test (cargo
         // runs tests in a shared process; a separate test could race the env).
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let legacy_2gib = 2 * 1024 * 1024 * 1024;
 
         // Guard: don't let caller-set budget env vars perturb the assertions.
@@ -1216,6 +1239,11 @@ mod tests {
 
     #[test]
     fn external_point_charge_changes_rhf_energy_and_matches_hand_calc() {
+        // Holds ENV_LOCK (declared above) because solve_rhf reads the
+        // process-global FERRIC_MEM_BUDGET_GB/FERRIC_OOC_BUDGET_GB env vars
+        // internally via resolve_three_index_budget -- see the lock's doc
+        // comment.
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
         let bs = ferric_core::basis::bundled("sto-3g").unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
@@ -1247,6 +1275,8 @@ mod tests {
 
     #[test]
     fn external_potential_none_matches_default_exactly() {
+        // See ENV_LOCK doc comment: solve_rhf reads the budget env vars.
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
         let bs = ferric_core::basis::bundled("sto-3g").unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
@@ -1265,6 +1295,8 @@ mod tests {
         // KS-DFT here is just RhfConfig{xc: Some(...), ..} through solve_rhf (no
         // separate RKS solver). This proves the external_potential wiring from
         // Task 5 composes with the xc.is_some() code path, not just the bare-HF one.
+        // See ENV_LOCK doc comment: solve_rhf reads the budget env vars.
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
         let bs = ferric_core::basis::bundled("sto-3g").unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
@@ -1291,6 +1323,10 @@ mod tests {
     }
 
     fn run_rhf_test(xyz: &str, basis_name: &str, ref_slug: &str, tol: f64) {
+        // See ENV_LOCK doc comment: solve_rhf reads the budget env vars.
+        // Held here (not at each call site) so it covers all callers
+        // (test_rhf_h2_sto3g / test_rhf_h2o_sto3g / test_rhf_h2o_631g) in one place.
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
         let bs = basis::bundled(basis_name).unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
@@ -1327,6 +1363,8 @@ mod tests {
     /// MOM must not change where a well-behaved SCF converges.
     #[test]
     fn rhf_mom_no_harm_water() {
+        // See ENV_LOCK doc comment: solve_rhf reads the budget env vars.
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let xyz = "3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n";
         let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
         let bs = basis::bundled("cc-pvdz").unwrap();
@@ -1354,6 +1392,8 @@ mod tests {
     #[test]
     #[ignore]
     fn rhf_mom_converges_c2h4_ar_dimer() {
+        // See ENV_LOCK doc comment: solve_rhf reads the budget env vars.
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let xyz = "7\na24-21 dimer\nC 0.00000000 0.66718073 -2.29024825\nC 0.00000000 -0.66718073 -2.29024825\nH -0.92400768 1.23202333 -2.28975239\nH 0.92400768 1.23202333 -2.28975239\nH -0.92400768 -1.23202333 -2.28975239\nH 0.92400768 -1.23202333 -2.28975239\nAr -0.00000000 0.00000000 1.60829261\n";
         let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
         let bs = basis::bundled("aug-cc-pvdz").unwrap();
@@ -1426,6 +1466,8 @@ mod tests {
     #[test]
     #[ignore]
     fn rhf_level_shift_converges_cose() {
+        // See ENV_LOCK doc comment: solve_rhf reads the budget env vars.
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let xyz = "3\nCOSe\nO 0.0000 0.0000 1.159\nC 0.0000 0.0000 0.0000\nSe 0.0000 0.0000 -1.709\n";
         let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
         let bs = basis::bundled("aug-cc-pvdz").unwrap();
@@ -1459,6 +1501,8 @@ mod tests {
     #[test]
     #[ignore]
     fn rhf_na4_atz_near_degeneracy_plateau_converges() {
+        // See ENV_LOCK doc comment: solve_rhf reads the budget env vars.
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let xyz = "4\nNa4\nNa 0.0002445 -0.0998053 1.5471126\nNa -0.0002444 3.1776586 0.0486374\n\
                    Na 0.0002444 0.0997722 -1.5472150\nNa -0.0002444 -3.1776254 -0.0485350\n";
         let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
@@ -1498,6 +1542,8 @@ mod tests {
         // the detector CAN fire and returns the right exit reason, using a synthetic
         // check on the config plumbing: divergence_tol very small so any energy rise
         // trips it, with divergence disabled it would run to max_iter.
+        // See ENV_LOCK doc comment: solve_rhf reads the budget env vars.
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
         let bs = basis::bundled("sto-3g").unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
@@ -1529,6 +1575,8 @@ mod tests {
     fn solve_rhf_maxiter_returns_ok_not_converged_with_density() {
         use crate::result::ScfExit;
 
+        // See ENV_LOCK doc comment: solve_rhf reads the budget env vars.
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
         let bs = basis::bundled("sto-3g").unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
@@ -1736,6 +1784,8 @@ mod tests {
     /// just one isolated builder call.
     #[test]
     fn whole_pipeline_rhf_gradient_bit_identical_across_thread_counts() {
+        // See ENV_LOCK doc comment: solve_rhf reads the budget env vars.
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let xyz = "3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n";
         let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
         let bs = basis::bundled("cc-pvdz").unwrap();
