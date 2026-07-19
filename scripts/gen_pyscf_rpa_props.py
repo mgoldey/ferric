@@ -39,9 +39,10 @@ def build_mol(label, basis):
     if label == "h2":
         # H2 at 1.4 Bohr ≈ 0.74083 Angstrom along z.
         atom = "H 0 0 0; H 0 0 0.74083"
-    elif label == "h2o":
-        # Same geometry as testdata/molecules/water.xyz.
-        xyz_path = os.path.join(ROOT, "testdata/molecules/water.xyz")
+    elif label in ("h2o", "nh3"):
+        # Same geometry as testdata/molecules/{label}.xyz (h2o -> water.xyz).
+        fname = "water.xyz" if label == "h2o" else f"{label}.xyz"
+        xyz_path = os.path.join(ROOT, "testdata/molecules", fname)
         with open(xyz_path) as fh:
             lines = fh.read().splitlines()
         # XYZ header lines: count, comment.  Atoms after.
