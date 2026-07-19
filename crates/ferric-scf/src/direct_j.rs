@@ -140,7 +140,8 @@ impl<'a> JBuilder for DirectJ<'a> {
         })?;
 
         #[cfg(feature = "mpi")]
-        if let Some(world) = &self.ctx.world {
+        if let Some(world) = self.ctx.world() {
+            use mpi::traits::CommunicatorCollectives;
             let mut j_global = Array2::zeros(j.dim());
             world.all_reduce_into(j.as_slice().unwrap(), j_global.as_slice_mut().unwrap(), mpi::collective::SystemOperation::sum());
             *j = j_global;

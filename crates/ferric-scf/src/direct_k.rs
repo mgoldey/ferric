@@ -132,7 +132,8 @@ impl<'a> KBuilder for DirectK<'a> {
         })?;
 
         #[cfg(feature = "mpi")]
-        if let Some(world) = &self.ctx.world {
+        if let Some(world) = self.ctx.world() {
+            use mpi::traits::CommunicatorCollectives;
             let mut k_global = Array2::zeros(k.dim());
             world.all_reduce_into(k.as_slice().unwrap(), k_global.as_slice_mut().unwrap(), mpi::collective::SystemOperation::sum());
             *k = k_global;

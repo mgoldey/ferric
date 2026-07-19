@@ -75,30 +75,61 @@ enum Backend {
 }
 
 pub struct ThreeIndexSource {
+    /// GLOBAL number of aux functions (full tensor height), NOT the band height.
+    /// Consumers slice a (naux, naux) metric / (naux,) coefficient vector with the
+    /// GLOBAL aux index reported by `for_each_block`, so this stays global even
+    /// when only a band `[band_p0, band_p1)` is resident.
     naux: usize,
     nao: usize,
     block_naux: usize,
+    /// GLOBAL aux range this source actually holds: `[band_p0, band_p1)`.
+    /// For a non-banded (full) source this is `0..naux`. `for_each_block` reports
+    /// GLOBAL aux indices (`blk.p0 ∈ [band_p0, band_p1)`); the underlying storage
+    /// is band-local (height `band_p1 - band_p0`).
+    band_p0: usize,
+    band_p1: usize,
     backend: Backend,
 }
 
 impl ThreeIndexSource {
     /// `budget_bytes` is the hard ceiling for the resident raw 3-index footprint.
+    /// Builds the FULL aux range `[0, naux)`.
     pub fn build(
         op: Operator, obs: &PreparedBasis, dfbs: &PreparedBasis, budget_bytes: usize,
     ) -> Result<Self, FerricError> {
         let naux = dfbs.nbasis();
+        Self::build_band(op, obs, dfbs, budget_bytes, 0, naux)
+    }
+
+    /// Build only the GLOBAL aux band `[band_p0, band_p1)` of the raw (P|μν)
+    /// tensor. The resulting source holds ONLY that band in memory (or spilled),
+    /// so its resident footprint is `(band_p1 - band_p0) · nao² · 8`, not the full
+    /// tensor — this is the memory lever for MPI aux-band striping: each rank
+    /// builds/holds its own band. `for_each_block` reports GLOBAL aux indices.
+    ///
+    /// `naux()` still returns the GLOBAL count so consumers can size and slice the
+    /// full (naux, naux) metric with the global aux index.
+    pub fn build_band(
+        op: Operator, obs: &PreparedBasis, dfbs: &PreparedBasis, budget_bytes: usize,
+        band_p0: usize, band_p1: usize,
+    ) -> Result<Self, FerricError> {
+        let naux = dfbs.nbasis();
         let nao = obs.nbasis();
-        let needed = naux.saturating_mul(nao).saturating_mul(nao).saturating_mul(8);
+        assert!(band_p0 <= band_p1 && band_p1 <= naux, "invalid aux band [{band_p0},{band_p1}) for naux={naux}");
+        let band = band_p1 - band_p0;
+        let needed = band.saturating_mul(nao).saturating_mul(nao).saturating_mul(8);
         if ooc_trace() {
             eprintln!(
-                "[OOC build] naux={naux} nao={nao} needed={:.2}GB budget={:.2}GB -> {}",
+                "[OOC build] naux={naux} band=[{band_p0},{band_p1}) nao={nao} needed={:.2}GB budget={:.2}GB -> {}",
                 needed as f64 / 1e9, budget_bytes as f64 / 1e9,
                 if needed <= budget_bytes { "InCore" } else { "Spill" },
             );
         }
         if needed <= budget_bytes {
-            let eri = crate::threeindex::eri3_tensor(op, obs, dfbs)?;
-            Ok(Self { naux, nao, block_naux: naux, backend: Backend::InCore(eri) })
+            // In-core: build exactly the band (global rows [band_p0, band_p1)).
+            // eri3_block returns a (band, nao, nao) tensor indexed band-locally.
+            let eri = crate::threeindex::eri3_block(op, obs, dfbs, band_p0, band_p1)?;
+            Ok(Self { naux, nao, block_naux: band.max(1), band_p0, band_p1, backend: Backend::InCore(eri) })
         } else {
             // Double-buffered spill: a producer thread computes block N+1 (via the
             // rayon-parallel `eri3_block`) while this thread writes block N to
@@ -122,11 +153,13 @@ impl ThreeIndexSource {
             let (tx, rx) = std::sync::mpsc::sync_channel::<Result<Array3<f64>, FerricError>>(0);
 
             std::thread::scope(|s| -> Result<(), FerricError> {
-                // Producer: compute blocks in ascending p0 order, hand each off.
+                // Producer: compute blocks in ascending GLOBAL p0 order over the
+                // band [band_p0, band_p1), hand each off. Only band rows are ever
+                // computed or spilled — the on-disk file holds exactly the band.
                 s.spawn(move || {
-                    let mut p0 = 0;
-                    while p0 < naux {
-                        let p1 = (p0 + block_naux).min(naux);
+                    let mut p0 = band_p0;
+                    while p0 < band_p1 {
+                        let p1 = (p0 + block_naux).min(band_p1);
                         let blk = crate::threeindex::eri3_block(op, obs, dfbs, p0, p1);
                         let is_err = blk.is_err();
                         // If the receiver hung up (writer hit an I/O error and
@@ -154,38 +187,67 @@ impl ThreeIndexSource {
             file.flush().ok();
             drop_page_cache(&file);
             let scratch = Array3::<f64>::zeros((block_naux, nao, nao));
-            Ok(Self { naux, nao, block_naux, backend: Backend::DiskSpill { file, scratch } })
+            Ok(Self { naux, nao, block_naux, band_p0, band_p1, backend: Backend::DiskSpill { file, scratch } })
         }
     }
 
     /// Build a DRESSED source: out[P,:,:] = Σ_Q m[P,Q] · raw[Q,:,:], honoring budget.
-    /// `raw` is consumed (streamed) and `m` is (naux, naux).
+    /// `raw` is consumed (streamed) and `m` is (naux, naux). Produces the FULL
+    /// aux range `[0, naux)`.
     pub fn build_dressed(
         raw: &mut ThreeIndexSource, m: &Array2<f64>, budget_bytes: usize,
     ) -> Result<Self, FerricError> {
         let naux = raw.naux();
+        Self::build_dressed_band(raw, m, budget_bytes, 0, naux)
+    }
+
+    /// Build a DRESSED source restricted to the GLOBAL aux band `[band_p0,
+    /// band_p1)`:  out[P,:,:] = Σ_Q m[P,Q] · raw[Q,:,:]  for P ∈ [band_p0,
+    /// band_p1). The dressing SUM runs over ALL Q, so `raw` MUST be the FULL
+    /// `[0, naux)` source (it is streamed block-by-block; `raw` may itself be
+    /// budget-bounded / disk-spilled so its full footprint need not be resident).
+    /// The OUTPUT holds only the band — this is the memory lever for MPI DF-K:
+    /// each rank dresses/holds only its own aux-band of B[P,μ,ν].
+    pub fn build_dressed_band(
+        raw: &mut ThreeIndexSource, m: &Array2<f64>, budget_bytes: usize,
+        band_p0: usize, band_p1: usize,
+    ) -> Result<Self, FerricError> {
+        let naux = raw.naux();
+        assert!(
+            raw.band_p0 == 0 && raw.band_p1 == naux,
+            "build_dressed_band requires a FULL raw source (all Q); got raw band [{},{})",
+            raw.band_p0, raw.band_p1,
+        );
+        assert!(band_p0 <= band_p1 && band_p1 <= naux, "invalid aux band [{band_p0},{band_p1}) for naux={naux}");
         let nao = raw.nao();
-        let needed = naux.saturating_mul(nao).saturating_mul(nao).saturating_mul(8);
+        let band = band_p1 - band_p0;
+        // Sizing is on the BAND footprint (what this rank actually holds), not the
+        // full tensor — so a rank's budget applies to ITS band.
+        let needed = band.saturating_mul(nao).saturating_mul(nao).saturating_mul(8);
         let block_naux = block_naux_for(budget_bytes, nao);
         let in_core = needed <= budget_bytes;
         if ooc_trace() {
             eprintln!(
-                "[OOC dress] naux={naux} nao={nao} needed={:.2}GB budget={:.2}GB block_naux={block_naux} -> {}",
+                "[OOC dress] naux={naux} band=[{band_p0},{band_p1}) nao={nao} needed={:.2}GB budget={:.2}GB block_naux={block_naux} -> {}",
                 needed as f64 / 1e9, budget_bytes as f64 / 1e9,
                 if in_core { "InCore" } else { "Spill" },
             );
         }
+        // Output storage is band-local (height `band`), addressed by (P - band_p0).
         let mut out_incore: Option<Array3<f64>> =
-            if in_core { Some(Array3::zeros((naux, nao, nao))) } else { None };
+            if in_core { Some(Array3::zeros((band, nao, nao))) } else { None };
         let mut file: Option<File> =
             if in_core { None } else {
                 Some(tempfile::tempfile().map_err(|e| FerricError::General(format!("tempfile: {e}")))?)
             };
-        let mut p0 = 0;
-        while p0 < naux {
-            let p1 = (p0 + block_naux).min(naux);
+        let mut p0 = band_p0;
+        while p0 < band_p1 {
+            let p1 = (p0 + block_naux).min(band_p1);
             let b = p1 - p0;
             let mut accum = Array3::<f64>::zeros((b, nao, nao));
+            // Dressing out[P] = Σ_Q m[P,Q] raw[Q] sums over ALL Q — `raw` is the
+            // full source, streamed block-by-block. Only this band's output rows
+            // [p0, p1) are accumulated.
             raw.for_each_block(|rb| {
                 let rb_b = rb.data.shape()[0];
                 let raw_flat = rb.data.into_shape_with_order((rb_b, nao * nao))
@@ -197,7 +259,8 @@ impl ThreeIndexSource {
                 Ok(())
             })?;
             if let Some(arr) = out_incore.as_mut() {
-                arr.slice_mut(ndarray::s![p0..p1, .., ..]).assign(&accum);
+                // Band-local destination: global P maps to row (P - band_p0).
+                arr.slice_mut(ndarray::s![p0 - band_p0..p1 - band_p0, .., ..]).assign(&accum);
             } else if let Some(f) = file.as_mut() {
                 let bytes: &[u8] = bytemuck::cast_slice(accum.as_slice().unwrap());
                 f.write_all(bytes).map_err(|e| FerricError::General(format!("dress write: {e}")))?;
@@ -213,45 +276,66 @@ impl ThreeIndexSource {
             }
             _ => unreachable!(),
         };
-        Ok(Self { naux, nao, block_naux: if in_core { naux } else { block_naux }, backend })
+        Ok(Self {
+            naux,
+            nao,
+            block_naux: if in_core { band.max(1) } else { block_naux },
+            band_p0,
+            band_p1,
+            backend,
+        })
     }
 
+    /// GLOBAL number of aux functions (full tensor height), regardless of band.
     pub fn naux(&self) -> usize { self.naux }
     pub fn nao(&self) -> usize { self.nao }
+    /// The GLOBAL aux range `[p0, p1)` this source actually holds. `0..naux` for
+    /// a full (non-banded) source.
+    pub fn band(&self) -> (usize, usize) { (self.band_p0, self.band_p1) }
+    /// Number of aux rows resident in THIS source's band (`band_p1 - band_p0`).
+    pub fn band_naux(&self) -> usize { self.band_p1 - self.band_p0 }
     pub fn n_blocks(&self) -> usize {
-        self.naux.div_ceil(self.block_naux.max(1))
+        self.band_naux().div_ceil(self.block_naux.max(1))
     }
     pub fn block_naux(&self) -> usize { self.block_naux }
 
-    /// Primary iteration API. Calls `f` once per raw aux-block, in order.
+    /// Primary iteration API. Calls `f` once per aux-block, in order, over the
+    /// resident band. `blk.p0` is the GLOBAL aux index of the block's first row
+    /// (∈ [band_p0, band_p1)); the block data is the band-local storage sliced to
+    /// that block. Consumers slice a (naux, naux) metric / (naux,) coefficient
+    /// vector with `blk.p0` (global), so J/K contributions are placed correctly
+    /// whether the source is full or a per-rank band.
     pub fn for_each_block(
         &mut self,
         mut f: impl FnMut(AuxBlock<'_>) -> Result<(), FerricError>,
     ) -> Result<(), FerricError> {
+        let band = self.band_naux();
+        let band_p0 = self.band_p0;
         match &mut self.backend {
             Backend::InCore(eri) => {
-                let nb = self.naux.div_ceil(self.block_naux.max(1));
+                let nb = band.div_ceil(self.block_naux.max(1));
                 for i in 0..nb {
-                    let p0 = i * self.block_naux;
-                    let p1 = (p0 + self.block_naux).min(self.naux);
-                    let view = eri.slice(ndarray::s![p0..p1, .., ..]);
-                    f(AuxBlock { p0, data: view })?;
+                    // local rows into the band-local storage; global p0 reported.
+                    let l0 = i * self.block_naux;
+                    let l1 = (l0 + self.block_naux).min(band);
+                    let view = eri.slice(ndarray::s![l0..l1, .., ..]);
+                    f(AuxBlock { p0: band_p0 + l0, data: view })?;
                 }
                 Ok(())
             }
             Backend::DiskSpill { file, scratch } => {
                 file.seek(SeekFrom::Start(0)).map_err(|e| FerricError::General(format!("seek: {e}")))?;
-                let nb = self.naux.div_ceil(self.block_naux.max(1));
+                let nb = band.div_ceil(self.block_naux.max(1));
                 for i in 0..nb {
-                    let p0 = i * self.block_naux;
-                    let p1 = (p0 + self.block_naux).min(self.naux);
-                    let b = p1 - p0;
+                    let l0 = i * self.block_naux;
+                    let l1 = (l0 + self.block_naux).min(band);
+                    let b = l1 - l0;
                     let elems = b * self.nao * self.nao;
                     let buf = scratch.as_slice_mut().unwrap();
                     let bytes: &mut [u8] = bytemuck::cast_slice_mut(&mut buf[..elems]);
                     file.read_exact(bytes).map_err(|e| FerricError::General(format!("spill read: {e}")))?;
                     let view = scratch.slice(ndarray::s![0..b, .., ..]);
-                    f(AuxBlock { p0, data: view })?;
+                    f(AuxBlock { p0: band_p0 + l0, data: view })?;
                 }
                 // Reads also populate the cgroup-charged page cache; drop them so
                 // a full streaming pass doesn't pull the entire file into cache.
@@ -337,6 +421,151 @@ mod tests {
         }).unwrap();
         let maxdiff = (&reassembled - &dense).iter().map(|v| v.abs()).fold(0.0, f64::max);
         assert!(maxdiff == 0.0, "spill blocks != dense eri3, maxdiff={maxdiff}");
+    }
+
+    #[test]
+    fn bands_reassemble_to_full_raw_tensor() {
+        // The MPI aux-band striping invariant: building disjoint bands
+        // [0,k), [k,naux) and concatenating them (each block reports its GLOBAL
+        // p0) must reproduce the full dense (P|μν) tensor bit-for-bit. This is
+        // what makes summing per-rank partials equal the serial result.
+        let (mol,) = water();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let dense = crate::threeindex::eri3_tensor(op, &obs, &dfbs).unwrap();
+        let (naux, nao, _) = dense.dim();
+        let k = naux / 2;
+
+        let mut reassembled = ndarray::Array3::<f64>::zeros((naux, nao, nao));
+        for &(p0, p1) in &[(0usize, k), (k, naux)] {
+            let mut src = ThreeIndexSource::build_band(op, &obs, &dfbs, usize::MAX, p0, p1).unwrap();
+            assert_eq!(src.band(), (p0, p1));
+            assert_eq!(src.band_naux(), p1 - p0);
+            // naux stays GLOBAL even for a band.
+            assert_eq!(src.naux(), naux);
+            src.for_each_block(|blk| {
+                let b = blk.data.shape()[0];
+                // blk.p0 is the GLOBAL aux index.
+                assert!(blk.p0 >= p0 && blk.p0 + b <= p1);
+                reassembled
+                    .slice_mut(ndarray::s![blk.p0..blk.p0 + b, .., ..])
+                    .assign(&blk.data);
+                Ok(())
+            })
+            .unwrap();
+        }
+        let n_diff = reassembled
+            .iter()
+            .zip(dense.iter())
+            .filter(|(a, b)| a.to_bits() != b.to_bits())
+            .count();
+        assert_eq!(n_diff, 0, "reassembled bands differ bitwise from dense eri3");
+    }
+
+    #[test]
+    fn dressed_bands_reassemble_to_full_dressed_tensor() {
+        // Same invariant for the DRESSED (V^{-1/2}-mixed) source used by DF-K:
+        // each rank dresses only its band (summing over ALL Q of the full raw
+        // source), and concatenating the bands reproduces the full dressed
+        // tensor bit-for-bit.
+        let (mol,) = water();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let dfbs =
+            PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let naux = dfbs.nbasis();
+        let nao = obs.nbasis();
+
+        // A deterministic non-trivial (naux, naux) mixing matrix (stand-in for
+        // V^{-1/2}); the invariant is purely algebraic so any m works.
+        let mut m = Array2::<f64>::zeros((naux, naux));
+        for p in 0..naux {
+            for q in 0..naux {
+                m[(p, q)] = 0.001 * (((p * 7 + q * 3) % 13) as f64) + if p == q { 1.0 } else { 0.0 };
+            }
+        }
+
+        // Full dressed tensor (reference).
+        let mut raw_full = ThreeIndexSource::build(op, &obs, &dfbs, usize::MAX).unwrap();
+        let mut full = ThreeIndexSource::build_dressed(&mut raw_full, &m, usize::MAX).unwrap();
+        let mut full_dense = ndarray::Array3::<f64>::zeros((naux, nao, nao));
+        full.for_each_block(|blk| {
+            let b = blk.data.shape()[0];
+            full_dense
+                .slice_mut(ndarray::s![blk.p0..blk.p0 + b, .., ..])
+                .assign(&blk.data);
+            Ok(())
+        })
+        .unwrap();
+
+        // Banded dressed tensors, concatenated.
+        let k = naux / 3;
+        let mut reassembled = ndarray::Array3::<f64>::zeros((naux, nao, nao));
+        for &(p0, p1) in &[(0usize, k), (k, naux)] {
+            let mut raw = ThreeIndexSource::build(op, &obs, &dfbs, usize::MAX).unwrap();
+            let mut band =
+                ThreeIndexSource::build_dressed_band(&mut raw, &m, usize::MAX, p0, p1).unwrap();
+            assert_eq!(band.band(), (p0, p1));
+            band.for_each_block(|blk| {
+                let b = blk.data.shape()[0];
+                reassembled
+                    .slice_mut(ndarray::s![blk.p0..blk.p0 + b, .., ..])
+                    .assign(&blk.data);
+                Ok(())
+            })
+            .unwrap();
+        }
+        // The dressing is a GEMM `out[P,:] = Σ_Q m[P,Q] raw[Q,:]`. BLAS may pick
+        // a different internal tiling for a band's smaller M dimension than for
+        // the full M, so the result is NOT guaranteed bit-for-bit across a
+        // band-vs-full split (only the RAW integral band reassembly is bitwise —
+        // see `bands_reassemble_to_full_raw_tensor`). What MUST hold is numerical
+        // equivalence to machine precision: each output row P is the same linear
+        // combination of the same raw rows. The end-to-end MPI correctness bar
+        // (2-rank ≡ 1-rank ≤ 1e-12 Ha on real SCF energies) is verified
+        // separately in tests/mpi_dfjk_banding.rs.
+        let maxdiff = (&reassembled - &full_dense)
+            .iter()
+            .map(|v| v.abs())
+            .fold(0.0, f64::max);
+        assert!(
+            maxdiff < 1e-12,
+            "reassembled dressed bands differ from full dressed tensor: maxdiff={maxdiff}"
+        );
+    }
+
+    #[test]
+    fn banded_spill_reassembles_to_full() {
+        // Band + disk-spill together: a band built under a tiny budget must
+        // stream-reassemble bit-for-bit into the dense tensor's band. Exercises
+        // the global-index reporting on the spill read-back path.
+        let (mol,) = water();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let dense = crate::threeindex::eri3_tensor(op, &obs, &dfbs).unwrap();
+        let (naux, nao, _) = dense.dim();
+        let (p0, p1) = (naux / 4, naux); // an off-zero band
+        let tiny = nao * nao * 8 * 2; // ~2 aux rows per block → forces spill
+        let mut src = ThreeIndexSource::build_band(op, &obs, &dfbs, tiny, p0, p1).unwrap();
+        assert!(src.n_blocks() > 1, "expected spill into >1 block");
+        let mut reassembled = ndarray::Array3::<f64>::zeros((naux, nao, nao));
+        src.for_each_block(|blk| {
+            let b = blk.data.shape()[0];
+            assert!(blk.p0 >= p0 && blk.p0 + b <= p1);
+            reassembled
+                .slice_mut(ndarray::s![blk.p0..blk.p0 + b, .., ..])
+                .assign(&blk.data);
+            Ok(())
+        })
+        .unwrap();
+        let band_diff = (&reassembled.slice(ndarray::s![p0..p1, .., ..])
+            - &dense.slice(ndarray::s![p0..p1, .., ..]))
+            .iter()
+            .map(|v| v.abs())
+            .fold(0.0, f64::max);
+        assert_eq!(band_diff, 0.0, "spilled band != dense eri3 band");
     }
 
     #[test]

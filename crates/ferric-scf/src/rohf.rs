@@ -102,13 +102,13 @@ pub fn solve_rohf(
         let dfbs_prep = _PB::new(mol, &dfbs_set)?;
         let ooc_budget = crate::rhf::resolve_three_index_budget(config.three_index_budget_bytes);
         (
-            Some(crate::df_k::DfK::new(
+            Some(crate::df_k::DfK::new_banded(
                 ferric_integrals::operator::Operator::erfc(k_mix.omega),
-                prep, &dfbs_prep, ooc_budget,
+                prep, &dfbs_prep, ooc_budget, Some(ctx),
             )?),
-            Some(crate::df_k::DfK::new(
+            Some(crate::df_k::DfK::new_banded(
                 ferric_integrals::operator::Operator::erf(k_mix.omega),
-                prep, &dfbs_prep, ooc_budget,
+                prep, &dfbs_prep, ooc_budget, Some(ctx),
             )?),
         )
     } else {

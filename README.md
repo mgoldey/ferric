@@ -196,6 +196,9 @@ dissertation) — see the [methods guide](docs/guide/methods/00-index.md).
 - OpenBLAS and LAPACK
 - Eigen3 headers
 - Python 3.10+ and maturin (for Python bindings, optional)
+- For the optional `mpi` feature only: an MPI implementation (OpenMPI/MPICH) **and**
+  libclang (`libclang-dev`, for `mpi-sys`'s bindgen step) — see
+  [Optional: distributed-memory MPI](#optional-distributed-memory-mpi---features-mpi) below
 
 ### Building from Source
 
@@ -220,6 +223,52 @@ cargo build --release
 
 # Run tests
 cargo test --workspace
+```
+
+### Optional: distributed-memory MPI (`--features mpi`)
+
+MPI support (distributed DF-JK aux-band striping across ranks/nodes) is behind
+the optional `mpi` Cargo feature and is **off by default** — a normal build
+needs none of the packages below.
+
+To build `--features mpi` you need **two** things:
+
+1. **An MPI implementation** (OpenMPI or MPICH) providing `mpicc`, `mpirun`,
+   `mpi.h`, and `libmpi.so`. On Ubuntu/Mint:
+   ```bash
+   sudo apt-get install -y libopenmpi-dev openmpi-bin
+   ```
+   (A user-local OpenMPI on `PATH` works too — `rsmpi`/`mpi-sys` discovers it via
+   `mpicc`.)
+
+2. **libclang** — the `mpi-sys` crate runs `bindgen` over `mpi.h` at build time,
+   which needs libclang's shared library. **This is the piece most often
+   missing** (the MPI runtime can be present while libclang is not, giving
+   `Unable to find libclang` from the `mpi-sys` build script). Prefer the distro
+   package — it ships both the library and clang's builtin headers:
+   ```bash
+   sudo apt-get install -y libclang-dev
+   ```
+   If bindgen still can't find the library, point it at it explicitly:
+   ```bash
+   export LIBCLANG_PATH=$(dirname "$(find /usr/lib -name 'libclang.so*' | head -1)")
+   ```
+   *No sudo?* The `pip install --user libclang` wheel provides `libclang.so`, but
+   it does **not** bundle clang's builtin headers, so bindgen then fails with
+   `'stddef.h' file not found`. Point it at GCC's builtin headers to fix that:
+   ```bash
+   pip install --user libclang
+   export LIBCLANG_PATH="$(python3 -c 'import clang,os;print(os.path.join(os.path.dirname(clang.__file__),"native"))')"
+   export BINDGEN_EXTRA_CLANG_ARGS="-I$(dirname "$(find /usr/lib/gcc -name stddef.h | head -1)")"
+   ```
+
+Then build and run under `mpirun` (keep OpenBLAS single-threaded; see
+`docs/superpowers/mpi.md` for thread-layout guidance):
+
+```bash
+OPENBLAS_NUM_THREADS=1 cargo build --release --workspace --features mpi
+mpirun -np 4 -x OPENBLAS_NUM_THREADS=1 -x RAYON_NUM_THREADS=4 \
+    target/release/ferric input.toml
 ```
 
 ### Python Bindings
