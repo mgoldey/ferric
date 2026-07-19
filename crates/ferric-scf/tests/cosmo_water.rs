@@ -39,7 +39,7 @@ use ferric_scf::cosmo::CosmoConfig;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 
-const HARTREE_TO_KCAL: f64 = 627.509_474_0631;
+const HARTREE_TO_KCAL: f64 = 627.509_474_063_1;
 
 fn water_ccpvdz_rhf(config: &RhfConfig) -> ferric_scf::ScfResult {
     let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
