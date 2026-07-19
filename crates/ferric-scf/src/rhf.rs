@@ -883,6 +883,26 @@ pub fn build_jk(
         .flat_map(|s1| (0..=s1).map(move |s2| (s1, s2)))
         .collect();
 
+    // MPI rank striping (round-robin over the flat work list, mirroring
+    // DirectJK::build in direct_jk.rs). Every rank builds the identical
+    // `shell_pairs` list above, then keeps only the entries whose flat index
+    // is congruent to its rank mod world size — a disjoint, covering
+    // partition of the (s1,s2) pair list. Without this, every rank computed
+    // the FULL J/K redundantly and the unconditional Allreduce below N-folded
+    // the result instead of summing a genuine partition (confirmed: -np 2
+    // water RHF converged to ≈-3958 Ha instead of -76.03 Ha). With
+    // ctx.size == 1 (feature off, or a single rank), `idx % 1 == 0` is
+    // trivially true for every idx, so this filter is a no-op and the list is
+    // byte-identical to before — preserving the thread-count bit-identity
+    // invariant this function is already relied on for (see
+    // build_jk_bit_identical_across_thread_counts below).
+    let shell_pairs: Vec<_> = shell_pairs
+        .into_iter()
+        .enumerate()
+        .filter(|(idx, _)| idx % ctx.size == ctx.rank)
+        .map(|(_, pair)| pair)
+        .collect();
+
     // One engine per rayon thread (see engine_pool) — constructing an engine in
     // the fold init fires once per work-chunk, not per thread, storming the
     // global libint2 ctor mutex on heavy-element bases.
