@@ -1,6 +1,23 @@
-//! SINGLE-MOLECULE SANITY PROBE (preflight, not a CI assertion).
+//! Mostly SINGLE-MOLECULE SANITY PROBES (preflight, not CI assertions) for
+//! attenuated/screened RPA, PLUS (as of the S3-TIGHTEN pass) a handful of
+//! real, tight, `#[ignore]`-FREE regression tests that assert a number.
 //!
-//! Hypothesis under test: attenuating the Coulomb response kernel
+//! "Attenuated/screened RPA" is NOT a separate implementation from plain
+//! dRPA: it is `run_pdep_rpa`/`pdep_dynamic_polarizability` fed
+//! `Operator::erfc(ω)` (or `erf(ω)`) instead of `Operator::coulomb()` —
+//! verified by reading the call graph (`rs_mp2_rpa.rs`'s formulation T calls
+//! the SAME `run_pdep_rpa`). So the exact-limit test convention already used
+//! for `rs_mp2_lr_rpa` (ω→0/ω→∞ unit tests in `rs_mp2_rpa.rs`) applies
+//! directly to this file's erfc-attenuated `run_pdep_rpa` calls too — see
+//! `erfc_rpa_omega_to_zero_matches_coulomb_rpa` /
+//! `erfc_rpa_omega_to_infinity_vanishes` below, both real assertions, not
+//! `#[ignore]`d, run as part of plain `cargo test -p ferric-rpa`.
+//!
+//! What remains `#[ignore]`d (genuinely no ground truth to assert against —
+//! PySCF has no equivalent attenuated-RPA α/C6 method, and CRC α / DOSD C6
+//! are external empirical anchors, not a first-principles reference for
+//! *this specific* method): the α/C6 sweeps at production ω below.
+//! Hypothesis under test there: attenuating the Coulomb response kernel
 //! (erfc(ωr)/r in the (A+B) dielectric) moves RPA@HF static α and molecular
 //! C6 toward reference (CRC α, DOSD C6), at potentially lower cost.
 //!
@@ -11,8 +28,10 @@
 //!   * CRC static α_iso  ≈ 9.8  a.u. (1.45 Å³)
 //!   * DOSD molecular C6 ≈ 45.4 a.u.
 //!
-//! Run with:  cargo test -p ferric-rpa --test attenuated_alpha_c6_probe -- --nocapture --ignored
-//! Ignored by default so it never gates CI (it prints, it does not assert physics).
+//! Run the sweeps with:  cargo test -p ferric-rpa --test attenuated_alpha_c6_probe -- --nocapture --ignored
+//! Those remain `#[ignore]`d so they never gate CI (they print, they do not
+//! assert physics) — see `docs/VALIDATION.md`'s "Attenuated / screened RPA"
+//! row for the current grade split (limits: Proven (narrow); α/C6 sweeps: Smoke).
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
@@ -602,5 +621,106 @@ fn attenuated_rpa_correlation_recovery_water_ccpvdz() {
         diff_pct < 1.0,
         "SR-RPA recovery = {measured_pct:.3}%, expected ~{expected_recovery_pct}% \
          (memory: attenuated-rpa-recovers-most-correlation); diff={diff_pct:.3} pct pts"
+    );
+}
+
+/// S3-TIGHTEN (attenuated/screened RPA grade upgrade): the two ANALYTIC LIMITS
+/// of `run_pdep_rpa` under `Operator::erfc(ω)`, which is exactly the response
+/// kernel `attenuated_water_alpha_c6_probe`/`attenuated_water_rpa_pbe_c6_probe`
+/// above sweep — this file's "attenuated RPA" is NOT a separate implementation,
+/// it is plain `run_pdep_rpa`/`pdep_dynamic_polarizability` fed
+/// `Operator::erfc(ω)` instead of `Operator::coulomb()` (verified by reading
+/// `lib.rs`/`rs_mp2_rpa.rs`: `rs_mp2_lr_rpa`'s formulation T calls this SAME
+/// `run_pdep_rpa` with `Operator::erfc`/`Operator::coulomb`). So the exact
+/// ω→0/ω→∞ limit-test convention already used and Proven for
+/// `rs_mp2_lr_rpa` (`crate::rs_mp2_rpa::tests::omega_to_zero_reduces_to_mp2` /
+/// `omega_to_infinity_is_mp2_plus_delta_drpa`) applies verbatim here, one level
+/// down the call stack, to the plain dRPA correlation energy itself:
+///
+///   * ω→0: `erfc(ωr)/r → 1/r` pointwise (libint2's native range-separated
+///     Coulomb kernel; `OperatorKind::ErfcCoulomb` in `operator.rs`), so
+///     `run_pdep_rpa(erfc(ω))` must converge to `run_pdep_rpa(coulomb())`
+///     as ω→0. This is a DIFFERENT limit from `rs_mp2_lr_rpa`'s (which
+///     collapses the whole SR-MP2+LR-RPA composite to plain MP2 because the
+///     LR *dRPA correction relative to MP2* vanishes) — here it is the raw
+///     attenuated dRPA energy itself converging to the raw Coulomb dRPA
+///     energy, the literal quantity this probe file's α/C6 sweeps consume.
+///   * ω→∞: `erfc(ωr)/r → 0` pointwise (no interaction), so the RPA dielectric
+///     response vanishes (all eigenvalues λ_α(iω) → 1) and
+///     `e_rpa = Σ_k w_k Σ_α [ln λ_α + (1−λ_α)] → 0` (each bracket → ln 1 + 0 = 0
+///     as λ_α → 1; see `energy::rpa_correlation_energy`).
+///
+/// Measured on H2/cc-pVDZ (same cheap system `rs_mp2_rpa.rs`'s own limit
+/// tests use) before picking tolerances:
+///   ω=0.01 Bohr⁻¹: |e_rpa(erfc) − e_rpa(coulomb)| = 1.94e-7 Ha (monotone ↓ in ω)
+///   ω=20   Bohr⁻¹: |e_rpa(erfc)|                  = 2.95e-7 Ha (monotone ↓ in ω)
+/// Tolerances below are set at 5e-7 (~2.5x the measured residual) to leave
+/// headroom for eigensolver/config drift while still catching a qualitatively
+/// broken kernel (a convention bug here is off by orders of magnitude, not a
+/// few×1e-7 — see the `rs_mp2_rpa.rs` precedent's own tolerance commentary).
+#[test]
+fn erfc_rpa_omega_to_zero_matches_coulomb_rpa() {
+    let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
+    let obs_bs = basis::bundled("cc-pvdz").unwrap();
+    let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
+    let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+    let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
+    let ctx = ParallelContext::default();
+    let scf_op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(scf_op, &obs).unwrap();
+    let rhf = solve_rhf(
+        &ctx, &mol, &obs, scf_op, &bounds,
+        &RhfConfig { energy_conv: 1e-10, ..Default::default() },
+    ).unwrap();
+    assert!(rhf.converged, "H2/cc-pVDZ RHF reference did not converge");
+
+    // Full rank (trunc_thresh = 0.0): this is an energy comparison, not a
+    // production-size perf run, so no truncation noise should enter.
+    let cfg = PdepRpaConfig { trunc_thresh: 0.0, ..Default::default() };
+
+    let coul = run_pdep_rpa(&mol, &obs, &dfbs, Operator::coulomb(), &rhf, &cfg).unwrap();
+    let sr = run_pdep_rpa(&mol, &obs, &dfbs, Operator::erfc(0.01), &rhf, &cfg).unwrap();
+
+    let diff = (sr.e_rpa - coul.e_rpa).abs();
+    println!(
+        "\nH2/cc-pVDZ dRPA: coulomb e_rpa={:.12}  erfc(ω=0.01) e_rpa={:.12}  diff={:.3e}\n",
+        coul.e_rpa, sr.e_rpa, diff
+    );
+    assert!(
+        diff < 5e-7,
+        "erfc(ω→0) must reduce to plain Coulomb dRPA: coulomb={:.10}, erfc(0.01)={:.10}, diff={:.3e}",
+        coul.e_rpa, sr.e_rpa, diff
+    );
+}
+
+/// ω→∞ complement of the above: `erfc(ωr)/r → 0` everywhere, so the response
+/// vanishes and `e_rpa → 0`. See the doc comment on
+/// `erfc_rpa_omega_to_zero_matches_coulomb_rpa` for the full derivation and
+/// measured-residual justification of the tolerance.
+#[test]
+fn erfc_rpa_omega_to_infinity_vanishes() {
+    let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
+    let obs_bs = basis::bundled("cc-pvdz").unwrap();
+    let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
+    let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+    let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
+    let ctx = ParallelContext::default();
+    let scf_op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(scf_op, &obs).unwrap();
+    let rhf = solve_rhf(
+        &ctx, &mol, &obs, scf_op, &bounds,
+        &RhfConfig { energy_conv: 1e-10, ..Default::default() },
+    ).unwrap();
+    assert!(rhf.converged, "H2/cc-pVDZ RHF reference did not converge");
+
+    let cfg = PdepRpaConfig { trunc_thresh: 0.0, ..Default::default() };
+
+    let sr = run_pdep_rpa(&mol, &obs, &dfbs, Operator::erfc(20.0), &rhf, &cfg).unwrap();
+
+    println!("\nH2/cc-pVDZ dRPA: erfc(ω=20) e_rpa={:.12} (should -> 0)\n", sr.e_rpa);
+    assert!(
+        sr.e_rpa.abs() < 5e-7,
+        "erfc(ω→∞) must vanish: e_rpa={:.10}",
+        sr.e_rpa
     );
 }
