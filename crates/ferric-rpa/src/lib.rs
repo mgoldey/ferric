@@ -36,6 +36,8 @@ pub mod gradient;
 pub mod lanczos;
 pub mod optimize;
 pub mod laplace_chi0;
+#[cfg(feature = "mpi")]
+pub mod mpi_rpa;
 pub mod pno;
 pub mod properties;
 pub mod quadrature;
@@ -256,19 +258,31 @@ pub fn run_pdep_rpa(
     run_pdep_rpa_from_intermediates(&inter, mol, obs, dfbs, op, rhf, config)
 }
 
-/// dRPA energy from PRE-BUILT RI intermediates, skipping the (P|op|ia) transform.
+/// Output of the Davidson/Lanczos eigensolve stage (Steps 1-5 of
+/// [`run_pdep_rpa_from_intermediates`]) — everything needed to enter the
+/// imaginary-frequency quadrature loop (Steps 6-8), but not the
+/// frequency-dependent results themselves.
 ///
-/// The expensive part of [`run_pdep_rpa`] is `compute_rpa_intermediates`, which
-/// runs the aux-blocked 3-index integral transform `(P|op|ia)` and forms the
-/// dressed `b_ov = V^{-1/2}(Q|op|ia)`. The range-separated MP2 spin-component
-/// step (`ri_mp2_spin_components`) already builds exactly this `b_ov` for the
-/// same operator and returns it. Threading those intermediates in here lets the
-/// coupled-rings formulation reuse them instead of recomputing the transform —
-/// see [`ferric_mp2::rimp2::compute_rpa_intermediates`] for the struct and
-/// `rs_mp2_lr_rpa` for the fused caller. The result is bit-identical to
-/// `run_pdep_rpa` (same `inter`, same code path below).
+/// Factored out so [`crate::mpi_rpa::run_pdep_rpa_mpi`] can share this
+/// (replicated, NOT MPI-distributed — see that module's docs for why) setup
+/// stage verbatim instead of re-deriving it or duplicating
+/// `run_pdep_rpa_from_intermediates`'s eigensolver dispatch, and so the two
+/// entry points cannot silently drift apart on the eigensolve logic.
+pub(crate) struct EigensolveStage {
+    pub eigenvectors: Array2<f64>,
+    pub eigenvalues_static: Vec<f64>,
+    pub eigenpotentials_aux: Array2<f64>,
+    pub n_keep: usize,
+    pub quad_freqs: Vec<f64>,
+    pub quad_weights: Vec<f64>,
+    pub eigensolver_converged: bool,
+    /// `Some` only for `Chi0Backend::Laplace` — callers restricted to the
+    /// Dense backend (e.g. `run_pdep_rpa_mpi`) can assume this is `None`.
+    pub laplace_chi0_quad: Option<ferric_quadrature::LaplaceQuadrature>,
+}
+
 #[allow(clippy::too_many_arguments)]
-pub fn run_pdep_rpa_from_intermediates(
+pub(crate) fn run_pdep_rpa_eigensolve(
     inter: &ferric_mp2::rimp2::RpaIntermediates,
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -276,8 +290,7 @@ pub fn run_pdep_rpa_from_intermediates(
     op: Operator,
     rhf: &ScfResult,
     config: &PdepRpaConfig,
-) -> Result<PdepRpaResult, FerricError> {
-    let _ = mol; // retained for signature symmetry with run_pdep_rpa
+) -> Result<EigensolveStage, FerricError> {
     let b_ov = &inter.b_ov;
     let nocc = inter.nocc;
     let nvir = inter.nvir;
@@ -505,10 +518,55 @@ pub fn run_pdep_rpa_from_intermediates(
     // Step 5: Build quadrature grid.
     let (quad_freqs, quad_weights) = quadrature::build_quadrature(&config.quadrature);
 
+    Ok(EigensolveStage {
+        eigenvectors,
+        eigenvalues_static,
+        eigenpotentials_aux,
+        n_keep,
+        quad_freqs,
+        quad_weights,
+        eigensolver_converged: davidson_result.converged,
+        laplace_chi0_quad,
+    })
+}
+
+/// dRPA energy from PRE-BUILT RI intermediates, skipping the (P|op|ia) transform.
+///
+/// See the original doc comment (still accurate): this composes
+/// [`run_pdep_rpa_eigensolve`] (Steps 1-5, replicated/local eigensolve) with
+/// the serial imaginary-frequency quadrature evaluation (Steps 6-8). The
+/// eigensolve helper is shared verbatim with
+/// [`crate::mpi_rpa::run_pdep_rpa_mpi`], which instead routes Steps 6-8
+/// through the MPI-distributed frequency evaluators — the two entry points
+/// cannot silently diverge on the (replicated) Davidson/Lanczos setup because
+/// they call the exact same function for it.
+#[allow(clippy::too_many_arguments)]
+pub fn run_pdep_rpa_from_intermediates(
+    inter: &ferric_mp2::rimp2::RpaIntermediates,
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &ScfResult,
+    config: &PdepRpaConfig,
+) -> Result<PdepRpaResult, FerricError> {
+    let b_ov = &inter.b_ov;
+    let nocc = inter.nocc;
+    let nvir = inter.nvir;
+    let first_occ = inter.first_occ;
+    let nocc_total = inter.nocc_total;
+    let eps_occ: Vec<f64> = rhf.eps_r()[first_occ..first_occ + nocc].to_vec();
+    let eps_vir: Vec<f64> = rhf.eps_r()[nocc_total..nocc_total + nvir].to_vec();
+
+    let stage = run_pdep_rpa_eigensolve(inter, mol, obs, dfbs, op, rhf, config)?;
+    let eigenvectors = stage.eigenvectors;
+    let quad_freqs = stage.quad_freqs;
+    let quad_weights = stage.quad_weights;
+
     // Step 6: Evaluate λ_α(iω_k). Dispatch to the Laplace-separable kernel
     // when the user opted in via `chi0_backend`.
     let _t_quad = crate::timing::Stage::start("pdep:freq_quad(lambda+invdielectric)");
-    let eigenvalues_freq = match laplace_chi0_quad.as_ref() {
+    let eigenvalues_freq = match stage.laplace_chi0_quad.as_ref() {
         None => energy::eval_eigenvalues_at_frequencies(
             &eigenvectors, b_ov, &eps_occ, &eps_vir, &quad_freqs,
         )?,
@@ -522,7 +580,7 @@ pub fn run_pdep_rpa_from_intermediates(
     // (non-Laplace) χ₀ path is wired here. Gated on `need_inv_dielectric_freq`
     // so energy-only runs never materialize the nquad × M² stack (~1.85 GB at
     // dimer/aTZ scale) — GW/BSE/property callers set the flag (M9).
-    let inv_dielectric_freq = match (config.need_inv_dielectric_freq, laplace_chi0_quad.as_ref()) {
+    let inv_dielectric_freq = match (config.need_inv_dielectric_freq, stage.laplace_chi0_quad.as_ref()) {
         (true, None) => Some(energy::eval_inv_dielectric_matrices(
             &eigenvectors, b_ov, &eps_occ, &eps_vir, &quad_freqs,
         )?),
@@ -545,16 +603,16 @@ pub fn run_pdep_rpa_from_intermediates(
 
     Ok(PdepRpaResult {
         e_rpa,
-        n_eigenpotentials: n_keep,
-        eigenvalues_static,
-        eigenpotentials: eigenpotentials_aux,
+        n_eigenpotentials: stage.n_keep,
+        eigenvalues_static: stage.eigenvalues_static,
+        eigenpotentials: stage.eigenpotentials_aux,
         dressed_eigenvectors: eigenvectors,
         quad_freqs,
         quad_weights,
         eigenvalues_freq,
         inv_dielectric_freq,
         e_rpa_dft_diag,
-        eigensolver_converged: davidson_result.converged,
+        eigensolver_converged: stage.eigensolver_converged,
     })
 }
 

@@ -9,7 +9,10 @@ use ndarray::Array2;
 /// Map an eigh/inv failure on the (projected) dielectric to a clean error.
 /// A NaN/Inf dielectric — e.g. from a near-zero occ/vir gap poisoning χ₀ —
 /// must surface as `Err`, not abort the process from inside a rayon worker.
-fn dielectric_lapack_err(what: &str, e: impl std::fmt::Display) -> FerricError {
+/// `pub(crate)` (not private): `crate::mpi_rpa`'s MPI-distributed frequency
+/// loop reuses this exact error-mapping so its error messages match the
+/// serial path verbatim.
+pub(crate) fn dielectric_lapack_err(what: &str, e: impl std::fmt::Display) -> FerricError {
     FerricError::Lapack(format!("{what} (NaN/Inf dielectric from near-degenerate reference?): {e}"))
 }
 

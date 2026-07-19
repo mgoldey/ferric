@@ -19,6 +19,19 @@ ndarray = { workspace = true }
 ndarray-linalg = { workspace = true }
 openblas-src = { workspace = true }
 rayon = { workspace = true }
+mpi = { version = "0.7", optional = true }
+
+[features]
+default = []
+# Same transitive-feature-edge lesson T9 documented for ferric-mp2/Cargo.toml:
+# ferric-core/mpi alone makes ParallelContext report a real multi-rank world,
+# but does NOT compile in the #[cfg(feature = "mpi")] Allreduce blocks that
+# live INSIDE ferric-scf (DF-J/DF-K) or ferric-mp2 (RI-MP2 aux-band
+# reduction) themselves. run_pdep_rpa_mpi calls compute_rpa_intermediates
+# (ferric-mp2) on top of a DF-J/DF-K RHF reference (ferric-scf), so both of
+# those crates' OWN mpi features must be enabled transitively, not just
+# ferric-core's.
+mpi = ["dep:mpi", "ferric-core/mpi", "ferric-scf/mpi", "ferric-mp2/mpi"]
 
 [dev-dependencies]
 serde = { workspace = true }
