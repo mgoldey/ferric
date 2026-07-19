@@ -1,0 +1,21 @@
+{
+  "n": 24,
+  "basis": "aug-cc-pVTZ",
+  "wilcoxon_statistic": 79.0,
+  "wilcoxon_pvalue": 0.04248917102813721,
+  "ttest_statistic": 1.9458421977199996,
+  "ttest_pvalue": 0.06399375584577754,
+  "mean_abs_err_pct_rpa_pbe": 13.452175762732773,
+  "mean_abs_err_pct_ts": 11.103165163280979,
+  "median_abs_err_pct_rpa_pbe": 13.741000899847073,
+  "median_abs_err_pct_ts": 11.335888007517894,
+  "mean_signed_err_pct_rpa_pbe": -13.452175762732773,
+  "mean_signed_err_pct_ts": 6.713626221401266,
+  "win_rate_rpa_pbe": 9,
+  "win_rate_ts": 15,
+  "ties": 0,
+  "worst_case_rpa_pbe_pct": 19.504132231404956,
+  "worst_case_rpa_pbe_molecule": "h2",
+  "worst_case_ts_pct": 28.710380924687417,
+  "worst_case_ts_molecule": "sih4"
+}
