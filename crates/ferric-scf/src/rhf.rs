@@ -396,6 +396,15 @@ pub fn solve_rhf(
     // Pure HF (no xc) keeps the historical behavior of no auto-default.
     let needs_k = xc_contrib.is_some() && (k_mix.sr > 0.0 || k_mix.omega > 0.0);
     let needs_j = xc_contrib.is_some();
+    // Whether the SCF actually consumes an exact-exchange matrix. True for pure
+    // HF (no functional) and for hybrids / RSH. FALSE for a pure functional
+    // (LDA/GGA such as PBE), where k_mix is all-zero and any K built would be
+    // multiplied by 0 and thrown away. Gates both the exchange-builder
+    // construction and the per-iteration K build below, so pure DFT never pays
+    // for exact exchange it does not use. (For a pure functional this equals
+    // `needs_k`; for HF it is true where `needs_k` is false, since `needs_k` is
+    // DFT-specific.)
+    let k_consumed = xc_contrib.is_none() || k_mix.sr > 0.0 || k_mix.omega > 0.0;
     const DEFAULT_JK_AUX: &str = "def2-universal-jkfit";
     let df_j_aux_eff: Option<String> = config.df_j_aux.clone()
         .or_else(|| needs_j.then(|| DEFAULT_JK_AUX.into()));
@@ -512,7 +521,12 @@ pub fn solve_rhf(
     } else {
         None
     };
-    let mut direct_k: Option<DirectK> = if df_any && df_k.is_none() {
+    // Only build the exchange builder when exact exchange is actually consumed
+    // (see `k_consumed`). Pure DFT (LDA/GGA, k_mix all zero) discards any K it
+    // builds, so a full direct 4-center K on an all-electron heavy-atom system
+    // (e.g. Cu2/aug-cc-pVDZ) dominated the iteration at ~99 s while the actual XC
+    // grid work was ~0.4 s. HF and hybrids/RSH keep k_consumed = true, unaffected.
+    let mut direct_k: Option<DirectK> = if df_any && df_k.is_none() && k_consumed {
         Some(DirectK::new(ctx, prep, bounds, config.integral_thresh))
     } else {
         None
@@ -539,8 +553,10 @@ pub fn solve_rhf(
             }
             if let Some(dfk) = df_k.as_mut() {
                 dfk.build(&d, &mut k_buf)?;
-            } else {
-                let dk = direct_k.as_mut().expect("DirectK built before loop");
+            } else if let Some(dk) = direct_k.as_mut() {
+                // Only reached when exact exchange is consumed (k_consumed):
+                // for pure DFT `direct_k` is None and k_buf stays zero, since
+                // the discarded K would only be multiplied by k_mix = 0 below.
                 total_quartets += <DirectK as KBuilder>::build(dk, &d, &mut k_buf)?;
             }
         } else if let Some(lk) = k_builder.as_mut() {
