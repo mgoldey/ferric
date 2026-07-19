@@ -22,6 +22,16 @@ pub struct Config {
     pub memory: MemoryCfg,
     #[serde(default)]
     pub external_potential: ExternalPotentialCfg,
+    /// Optional `[cosmo]` section: COSMO implicit-solvent configuration.
+    /// Absent (or explicit `None`) means no solvation — byte-identical to a
+    /// build with no COSMO support, per `RhfConfig.cosmo`'s convention.
+    /// Reuses `ferric_scf::cosmo::CosmoConfig` directly (already
+    /// `#[serde(deny_unknown_fields)]`) so there is exactly one definition
+    /// of the COSMO config surface across CLI/Python/lib. `#[serde(default)]`
+    /// so the section can be omitted entirely (serde does not treat a
+    /// missing `Option` field as `None` automatically without it).
+    #[serde(default)]
+    pub cosmo: Option<ferric_scf::cosmo::CosmoConfig>,
 }
 
 #[derive(Deserialize, Default)]
@@ -1179,6 +1189,86 @@ task = "energy"
         let cfg: Config = toml::from_str(toml_str).unwrap();
         assert!(cfg.external_potential.point_charges.is_empty());
         assert!(cfg.external_potential.field.is_none());
+    }
+
+    #[test]
+    fn cosmo_section_parses() {
+        let toml_str = r#"
+[molecule]
+xyz = "water.xyz"
+[basis]
+name = "cc-pvdz"
+[method]
+kind = "rhf"
+task = "energy"
+
+[cosmo]
+epsilon = 78.39
+radius_scale = 1.17
+lebedev_order = 110
+"#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        let cosmo = cfg.cosmo.expect("cosmo section should parse to Some");
+        assert_eq!(cosmo.epsilon, 78.39);
+        assert_eq!(cosmo.radius_scale, 1.17);
+        assert_eq!(cosmo.lebedev_order, 110);
+    }
+
+    #[test]
+    fn cosmo_section_defaults_when_partially_specified() {
+        // radius_scale/lebedev_order have serde defaults; only epsilon is
+        // effectively required (no #[serde(default)] on it — an omitted
+        // epsilon is a real user error, not a silently-defaulted value).
+        let toml_str = r#"
+[molecule]
+xyz = "water.xyz"
+[basis]
+name = "sto-3g"
+[method]
+kind = "rhf"
+
+[cosmo]
+epsilon = 78.39
+"#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        let cosmo = cfg.cosmo.unwrap();
+        assert_eq!(cosmo.epsilon, 78.39);
+        assert_eq!(cosmo.radius_scale, ferric_scf::cosmo::DEFAULT_RADIUS_SCALE);
+        assert_eq!(cosmo.lebedev_order, ferric_scf::cosmo::DEFAULT_LEBEDEV_ORDER);
+    }
+
+    #[test]
+    fn cosmo_section_optional_defaults_to_none() {
+        let toml_str = r#"
+[molecule]
+xyz = "water.xyz"
+[basis]
+name = "sto-3g"
+[method]
+kind = "rhf"
+task = "energy"
+"#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert!(cfg.cosmo.is_none());
+    }
+
+    #[test]
+    fn cosmo_section_rejects_typo_key() {
+        // deny_unknown_fields on CosmoConfig: a typo'd key must hard-error,
+        // never silently no-op (config-honesty convention).
+        let toml_str = r#"
+[molecule]
+xyz = "water.xyz"
+[basis]
+name = "sto-3g"
+[method]
+kind = "rhf"
+
+[cosmo]
+epsilonn = 78.39
+"#;
+        let result: Result<Config, _> = toml::from_str(toml_str);
+        assert!(result.is_err(), "typo'd cosmo key should fail to parse, not silently default");
     }
 
     #[test]

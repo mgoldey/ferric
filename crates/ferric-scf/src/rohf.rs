@@ -254,6 +254,13 @@ pub fn solve_rohf(
             ext.charge_nuclear_energy(mol) + ext.field_nuclear_energy(mol)
         });
 
+    // COSMO cavity (geometry-only, built once). See rhf::solve_rhf for the
+    // full rationale.
+    let cosmo_cavity: Option<crate::cosmo::CosmoCavity> = match config.cosmo.as_ref() {
+        Some(cfg) => Some(crate::cosmo::CosmoCavity::build(mol, cfg)?),
+        None => None,
+    };
+
     // S^{-1/2}
     let (s_evals, s_evecs) = s
         .eigh(ndarray_linalg::UPLO::Upper)
@@ -371,7 +378,21 @@ pub fn solve_rohf(
         } else {
             0.0
         };
-        let energy = e_elec_no_xc + e_xc + vnn;
+
+        // COSMO reaction field, built from the total density D_a + D_b (see
+        // rhf::solve_rhf / uhf::solve_uhf_fockmod / crate::cosmo for the full
+        // derivation); spin-independent, added identically to both Focks.
+        let e_cosmo = if let Some(cavity) = cosmo_cavity.as_ref() {
+            let cosmo_cfg = config.cosmo.as_ref().expect("cosmo_cavity implies config.cosmo");
+            let cr = crate::cosmo::cosmo_reaction_field(mol, prep, cavity, cosmo_cfg, &d_total)?;
+            f_a += &cr.v_reaction;
+            f_b += &cr.v_reaction;
+            cr.e_cosmo
+        } else {
+            0.0
+        };
+
+        let energy = e_elec_no_xc + e_xc + e_cosmo + vnn;
 
         // Build Roothaan effective Fock (Guest-Saunders, via PySCF projector form).
         let f_eff = roothaan_fock(&f_a, &f_b, &d_a, &d_b, &s);

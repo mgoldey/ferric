@@ -176,6 +176,14 @@ pub fn solve_uhf_fockmod(
             ext.charge_nuclear_energy(mol) + ext.field_nuclear_energy(mol)
         });
 
+    // COSMO cavity (geometry-only, built once). See rhf::solve_rhf for the
+    // full rationale — same convention here: `None` when `config.cosmo` is
+    // `None`, so the loop below is unchanged when solvation is disabled.
+    let cosmo_cavity: Option<crate::cosmo::CosmoCavity> = match config.cosmo.as_ref() {
+        Some(cfg) => Some(crate::cosmo::CosmoCavity::build(mol, cfg)?),
+        None => None,
+    };
+
     // Canonical orthogonalizer X (n × m): drops eigenvectors of S below
     // LINDEP_THRESH to handle near-linear-dependent basis sets (Na clusters in
     // aug-cc-pVDZ). m == n for well-conditioned S. See crate::rhf for details.
@@ -357,7 +365,25 @@ pub fn solve_uhf_fockmod(
         if let Some(fm) = fock_mod {
             fm(&mut f_a, &mut f_b);
         }
-        let energy = e_elec_no_xc + e_xc + vnn;
+
+        // COSMO reaction field: built from the TOTAL density (D_a + D_b),
+        // recomputed every iteration (see rhf::solve_rhf / crate::cosmo for
+        // the full derivation). The reaction-field potential is spin-
+        // independent (a classical electrostatic term), so it is added
+        // identically to both spin Focks. Its energy is added directly to
+        // `energy`, not via the e_elec_no_xc trace (matches PySCF's
+        // e_solvent-added-on-top convention).
+        let e_cosmo = if let Some(cavity) = cosmo_cavity.as_ref() {
+            let cosmo_cfg = config.cosmo.as_ref().expect("cosmo_cavity implies config.cosmo");
+            let cr = crate::cosmo::cosmo_reaction_field(mol, prep, cavity, cosmo_cfg, &d_total)?;
+            f_a += &cr.v_reaction;
+            f_b += &cr.v_reaction;
+            cr.e_cosmo
+        } else {
+            0.0
+        };
+
+        let energy = e_elec_no_xc + e_xc + e_cosmo + vnn;
 
         // DIIS errors per spin: F_σ D_σ S − S D_σ F_σ
         let err_a = f_a.dot(&d_a).dot(&s) - s.dot(&d_a).dot(&f_a);

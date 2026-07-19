@@ -126,6 +126,12 @@ pub struct RhfConfig {
     /// `None` (default) = no external potential; folded into `hcore` once
     /// before the SCF loop, orthogonal to cDFT's per-iteration Fock hook.
     pub external_potential: Option<ferric_core::external_potential::ExternalPotential>,
+    /// COSMO implicit-solvent configuration. `None` (default) = no solvent;
+    /// the SCF loop is then byte-for-byte identical to a build with no COSMO
+    /// support at all. Unlike `external_potential` (folded into `hcore`
+    /// ONCE before the loop), COSMO's reaction-field potential depends on
+    /// the density and is recomputed EVERY iteration (see `crate::cosmo`).
+    pub cosmo: Option<crate::cosmo::CosmoConfig>,
 }
 
 impl Default for RhfConfig {
@@ -168,6 +174,7 @@ impl Default for RhfConfig {
             stall_window: None,
             divergence_tol: None,
             external_potential: None,
+            cosmo: None,
         }
     }
 }
@@ -331,6 +338,16 @@ pub fn solve_rhf(
         + config.external_potential.as_ref().map_or(0.0, |ext| {
             ext.charge_nuclear_energy(mol) + ext.field_nuclear_energy(mol)
         });
+
+    // COSMO cavity: geometry-only (independent of the density), so it is
+    // built once here, before the loop. `None` when `config.cosmo` is
+    // `None` — every downstream use is gated on this being `Some`, so the
+    // SCF loop below is byte-for-byte identical to a COSMO-less build when
+    // solvation is disabled.
+    let cosmo_cavity: Option<crate::cosmo::CosmoCavity> = match config.cosmo.as_ref() {
+        Some(cfg) => Some(crate::cosmo::CosmoCavity::build(mol, cfg)?),
+        None => None,
+    };
 
     // Initial density: explicit override > SAD (default) > hcore. SAD is the
     // default because the bare hcore guess diverges on heavy-atom closed shells
@@ -615,18 +632,40 @@ pub fn solve_rhf(
             Array2::<f64>::zeros((n, n))
         };
 
-        // F = H + J − ½ K_total  (V_xc added below)
+        // F = H + J − ½ K_total  (V_xc, COSMO reaction field added below)
         f.assign(&(&h + &j_buf - &(0.5 * &k_total)));
 
         // Electronic energy BEFORE adding V_xc (V_xc is one-body in F but
-        // E_xc is its own integral).
+        // E_xc is its own integral) and BEFORE adding the COSMO reaction
+        // field (same reasoning: E_cosmo = ½ q·v is its own closed-form
+        // energy expression, not the trace of D against V_reaction — see
+        // crate::cosmo module docs and the PySCF cross-check in its
+        // `energy_elec`/`get_veff` split, where `e_solvent` is added
+        // directly to the total rather than folded into the ½Tr[D·vhf] term).
         let e_elec_no_xc: f64 = 0.5 * (&d * &(&h + &f)).sum();
         let e_xc = if let Some(x) = xc_contrib.as_ref() {
             x.add_xc(&d, &mut f)
         } else {
             0.0
         };
-        let energy = e_elec_no_xc + e_xc + vnn;
+
+        // COSMO reaction field: depends on the CURRENT density, so it is
+        // recomputed every iteration (unlike `external_potential`, folded
+        // into `h` once before the loop). Added into F (so it enters the
+        // Fock matrix used for the next diagonalization/DIIS step, mirroring
+        // how PySCF's `get_fock` adds `v_solvent` on top of `vhf`), and its
+        // energy contribution is added directly to `energy` (not via the
+        // ½Tr[D·(h+F)] trace).
+        let e_cosmo = if let Some(cavity) = cosmo_cavity.as_ref() {
+            let cosmo_cfg = config.cosmo.as_ref().expect("cosmo_cavity implies config.cosmo");
+            let cr = crate::cosmo::cosmo_reaction_field(mol, prep, cavity, cosmo_cfg, &d)?;
+            f += &cr.v_reaction;
+            cr.e_cosmo
+        } else {
+            0.0
+        };
+
+        let energy = e_elec_no_xc + e_xc + e_cosmo + vnn;
 
         // DIIS error: e = FDS - SDF. Runs once per SCF iteration, serially
         // (this whole loop body is outside any rayon region — the JK build
