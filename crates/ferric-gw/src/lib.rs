@@ -24,6 +24,7 @@ pub mod qp;
 pub mod u_sigma;
 pub mod u_cohsex;
 pub mod vxc_mo;
+pub mod mpi_gw;
 
 pub use method::GwMethod;
 

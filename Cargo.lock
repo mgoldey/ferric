@@ -496,6 +496,7 @@ dependencies = [
  "ferric-quadrature",
  "ferric-rpa",
  "ferric-scf",
+ "mpi",
  "ndarray",
  "ndarray-linalg",
  "num-complex 0.4.6",
