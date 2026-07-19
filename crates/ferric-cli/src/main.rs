@@ -50,6 +50,62 @@ fn print_usage() {
     eprintln!("See examples/*.toml for sample inputs and docs/quickstart.md for a walkthrough.");
 }
 
+/// Epistemic-status warnings for `method.kind` values that are graded Smoke
+/// or Stub in `docs/VALIDATION.md` (i.e. NOT Proven / Proven (narrow)).
+///
+/// SOURCE OF TRUTH: `docs/VALIDATION.md`. This table is a condensed,
+/// CLI-facing pointer into it, not a second grading system -- when a
+/// method's grade in VALIDATION.md changes (promoted to Proven, demoted to
+/// Stub, caveat text edited), update BOTH this table and the doc. Proven /
+/// Proven (narrow) methods (rhf, uhf, rohf, ksdft, rimp2, mp3, att-rimp2,
+/// scs-mp2, scs-mp2-2terfc, laplace-mp2, pdep-rpa, ccsd) do not appear here
+/// and never print a warning.
+const EPISTEMIC_WARNINGS: &[(&str, &str)] = &[
+    (
+        "gw",
+        "method.kind = \"gw\" is Smoke-grade (see docs/VALIDATION.md): G0W0/COHSEX/evGW0/evGW \
+         validated to ~5 meV vs MOLGW on a single H2O/cc-pVDZ case but most asserts are loose \
+         range bands; treat results as accurate to roughly +/-0.3 eV, not a reference number.",
+    ),
+    (
+        "bse-tda",
+        "method.kind = \"bse-tda\" is Smoke-grade (see docs/VALIDATION.md): only excitation \
+         ordering and a physicality gate are checked; the excitation-energy gap error is \
+         inherited directly from the underlying GW quasiparticle gap (also Smoke-grade).",
+    ),
+    (
+        "tdhf-static-polarizability",
+        "method.kind = \"tdhf-static-polarizability\" is Smoke-grade (see docs/VALIDATION.md): \
+         static alpha at RPAx@KS matches DOSD water closely in the one case checked, but the \
+         same dense TDHF/RPAx kernel gives C6 ~63% low regardless of gap -- do not extrapolate \
+         this method's accuracy beyond static alpha on a KS reference.",
+    ),
+    (
+        "rs-mp2-rpa",
+        "method.kind = \"rs-mp2-rpa\" has Proven energy LIMITS (omega->0/infinity reduce exactly \
+         to MP2/MP2+dRPA) but is only Smoke-grade at production omega (see docs/VALIDATION.md): \
+         ACONF ties RI-MP2 at omega<=0.3 1/A, and the aug-cc-pVTZ benchmark criterion was met \
+         only marginally on one small subset -- treat mid-range-omega numbers as unproven on \
+         new systems.",
+    ),
+    (
+        "oo-rimp2",
+        "method.kind = \"oo-rimp2\" is Smoke-grade (see docs/VALIDATION.md): orbital \
+         optimization is checked for internal self-consistency (converged stationary point, \
+         analytic gradient vanishes) but there is NO external absolute-energy reference -- \
+         PySCF/psi4/forte all lack a directly comparable OO-MP2 implementation.",
+    ),
+];
+
+/// Print a one-line epistemic-status warning to stderr if `method` is a
+/// Smoke/Stub-grade `method.kind` per `docs/VALIDATION.md`. No-op (and no
+/// output) for Proven / Proven (narrow) methods.
+fn warn_if_epistemically_unproven(method: &str) {
+    if let Some((_, text)) = EPISTEMIC_WARNINGS.iter().find(|(k, _)| *k == method) {
+        eprintln!("[warning] {text}");
+    }
+}
+
 fn main() {
     // Safe-by-default threading: pin OpenBLAS to 1 thread (rayon owns ferric's
     // parallelism) unless the user explicitly set OPENBLAS_NUM_THREADS. Without
@@ -78,6 +134,7 @@ fn main() {
         eprintln!("error: unsupported method.kind = \"{method}\"; expected rhf, uhf, rohf, ksdft, rimp2, mp3, oo-rimp2, att-rimp2, scs-mp2, scs-mp2-2terfc, laplace-mp2, pdep-rpa, rs-mp2-rpa, gw, bse-tda, tdhf-static-polarizability, or ccsd");
         std::process::exit(1);
     }
+    warn_if_epistemically_unproven(method);
     if !matches!(task, "energy" | "optimize") {
         eprintln!("error: unsupported method.task = \"{task}\"; expected energy or optimize");
         std::process::exit(1);
