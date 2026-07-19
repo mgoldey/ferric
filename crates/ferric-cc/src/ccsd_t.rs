@@ -21,9 +21,24 @@
 //! ~0.3 GB for H2O/cc-pVDZ but ~1.35 TB for butane/cc-pVDZ (peak buffer count
 //! trimmed 8→6 by consuming intermediates in place in `p_a_bc`/`p_i_jk` and
 //! the term1/term2 combine — same complexity class, lower constant). It is
-//! correct and validated, but only runnable for very small systems. A
-//! production (T) must loop over occupied triples i<j<k, forming one
-//! `[2nv,2nv,2nv]` block at a time (~MB) — that rewrite is not done here.
+//! correct and validated, but only runnable for very small systems.
+//!
+//! **Deliberate scope decision (2026-07-19, see docs/ccsdt-roadmap-decision.md):**
+//! this module's role is a *correctness anchor* — a gold-standard reference
+//! for validating cheaper methods (CCSD, CCD, MP2 variants) on small test
+//! systems — not a production method. The newly-landed spin-adapted
+//! closed-shell CCSD (`ccsd_closed_shell.rs`) already covers "fast,
+//! trustworthy closed-shell correlation energy" for production-sized
+//! systems; (T)'s marginal accuracy gain matters most exactly where this
+//! dense formulation's memory ceiling also bites hardest, so a
+//! per-triple-block streaming rewrite (looping over occupied triples
+//! i<j<k, forming one `[2nv,2nv,2nv]` block at a time, ~MB instead of TB)
+//! is NOT planned unless a concrete need for CCSD(T) on production-sized
+//! systems arises. `ferric_core::memory::check_alloc` (see `ccsd_t()`
+//! below) fails fast with a clear error before allocating past budget,
+//! rather than letting a too-large system OOM silently — that guard is
+//! the actual safety net for this deliberately-narrow scope, not a
+//! rewrite.
 
 use super::{CcConfig, CcResult};
 use ferric_core::mol::Molecule;
