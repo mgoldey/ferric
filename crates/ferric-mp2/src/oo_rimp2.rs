@@ -1584,6 +1584,118 @@ mod tests {
         );
     }
 
+    /// External absolute-energy cross-check against Psi4's OMP2 implementation
+    /// (Bozkaya's `OMP2 (OO-MP2)` module, the same JCP 135, 104103 (2011)
+    /// method this module's doc comment cites).
+    ///
+    /// Reference source: Psi4's own regression-test suite,
+    /// `tests/omp2-1/{input.dat,output.ref}` (fetched from
+    /// `github.com/psi4/psi4`, Psi4 1.1rc3.dev5, run 2017-05-15) — a genuine,
+    /// independently-maintained OMP2 implementation, not a number we derived
+    /// ourselves. Geometry: H2O Z-matrix `O; H 1 0.958; H 1 0.958 2 104.4776`
+    /// (Angstrom), reproduced here as Cartesians built from the same bond
+    /// length/angle. Confirmed to be the *exact* same geometry Psi4 used: our
+    /// from-scratch nuclear-repulsion recomputation matches Psi4's printed
+    /// `refnuc = 9.18738642147759` to all 11 digits when using the older
+    /// CODATA Bohr radius (0.52917720859 Å) that 2017-era Psi4 shipped with;
+    /// ferric's own (newer CODATA 2018) constant gives NRE 9.187386462 instead
+    /// of 9.187386421 — a 4e-8 Ha geometry-constant drift, immaterial here.
+    /// Basis: cc-pVDZ, `mp2_type conv` (Psi4 ran CONVENTIONAL 4-index OMP2,
+    /// not density-fitted) — Psi4's DF-OMP2 variant exists but this test file
+    /// deliberately used the conventional-integral path.
+    ///
+    /// Method mismatch this test does NOT paper over: ferric's `oo_ri_mp2` is
+    /// density-fitted (RI) throughout, Psi4's reference here is not. The two
+    /// are different methods (RI-OMP2 vs conventional OMP2), not the same
+    /// method run twice, so exact agreement is neither expected nor claimed.
+    /// We bound the expected RI-fitting error independently: running plain
+    /// (non-orbital-optimized) MP2 on this exact geometry/basis through PySCF
+    /// gives conventional E_corr = -0.20401925 Ha vs DF-MP2 (aux=cc-pVDZ-RI)
+    /// E_corr = -0.20400407 Ha — a 1.52e-5 Ha RI error at the plain-MP2 level.
+    /// The tolerance below (2e-4 Ha) is set generously above that measured RI
+    /// floor to leave room for the RI error potentially differing somewhat
+    /// once orbitals are also relaxed, while still being tight enough that a
+    /// gross algorithmic error (wrong sign, wrong prefactor, wrong term) would
+    /// fail it by 1-2 orders of magnitude.
+    #[test]
+    fn test_oo_rimp2_h2o_ccpvdz_matches_psi4_omp2_reference() {
+        // Cartesian geometry reconstructed from Psi4's Z-matrx
+        // (O; H 1 0.958; H 1 0.958 2 104.4776, degrees), same convention Psi4
+        // prints in its "Geometry (in Angstrom)" block.
+        let xyz = "3\nwater (psi4 omp2-1 geometry)\n\
+                   O 0.000000000000 0.000000000000 0.000000000000\n\
+                   H 0.000000000000 0.000000000000 0.958000000000\n\
+                   H 0.000000000000 0.927579144347 -0.239501421649\n";
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+
+        // Sanity-check the geometry against Psi4's printed nuclear repulsion
+        // energy before trusting anything downstream (catches a transcription
+        // error in the Cartesian coordinates above, independent of any
+        // ferric-side bug).
+        let nre = mol.nuclear_repulsion();
+        let psi4_nre_newer_codata_bohr = 9.187386461930224; // matches ferric's ANGSTROM_TO_BOHR constant
+        assert!(
+            (nre - psi4_nre_newer_codata_bohr).abs() < 1e-7,
+            "geometry transcription mismatch: ferric NRE={nre:.10}, expected {psi4_nre_newer_codata_bohr:.10} \
+             (Psi4-printed refnuc 9.18738642147759 under Psi4's older CODATA Bohr radius)"
+        );
+
+        let bs = basis::bundled("cc-pvdz").unwrap();
+        let obs = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig {
+                energy_conv: 1e-10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(rhf.converged);
+
+        // SCF cross-check: Psi4 refscf = -76.02676109559437 Ha.
+        let psi4_refscf = -76.02676109559437;
+        assert!(
+            (rhf.energy - psi4_refscf).abs() < 1e-6,
+            "SCF mismatch vs Psi4 refscf: ferric={:.10}, psi4={:.10}, diff={:.2e}",
+            rhf.energy, psi4_refscf, (rhf.energy - psi4_refscf).abs()
+        );
+
+        let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
+
+        let config = OoRiMp2Config::default();
+        let oo = oo_ri_mp2(&mol, &obs, &dfbs, op, &bounds, &rhf, &config).unwrap();
+        assert!(
+            oo.converged,
+            "OO-RI-MP2 H2O (psi4 geometry) did not converge: {} iters, |g|={:.2e}",
+            oo.iterations, oo.grad_norm
+        );
+
+        // Psi4 OMP2 total energy (conventional integrals): refomp2 = -76.23167598916250.
+        // The output.ref run itself printed -76.23167597922692 (tiny
+        // version-drift between the pinned #TEST constant and the actual run
+        // in that same file) -- both agree to 1e-8 Ha, well inside our
+        // RI-driven tolerance, so either is a valid target.
+        let psi4_omp2_total = -76.23167598916250_f64;
+        let diff = oo.total_energy - psi4_omp2_total;
+        eprintln!(
+            "ferric OO-RI-MP2 total: {:.10}  Psi4 OMP2 (conventional) total: {:.10}  diff: {:.3e}",
+            oo.total_energy, psi4_omp2_total, diff
+        );
+        assert!(
+            diff.abs() < 2e-4,
+            "ferric OO-RI-MP2={:.10} vs Psi4 OMP2={:.10}: diff={:.3e} Ha exceeds the RI-error-informed \
+             2e-4 Ha tolerance (measured plain-MP2 RI floor on this system/basis is 1.52e-5 Ha)",
+            oo.total_energy, psi4_omp2_total, diff
+        );
+    }
+
     /// The aux-blocked (disk-spill) path through the ThreeIndexSource must give
     /// bit-comparable results to the in-core path: b_full, the OV-dressed MP2
     /// energy, and the orbital gradient all agree to machine precision.
