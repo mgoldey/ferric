@@ -11,6 +11,95 @@ aug-cc-pVDZ** (B never beats MP2; basis-incompleteness underbinding dominates),
 **criterion MET marginally at aug-cc-pVTZ** (B 0.139 vs MP2 0.143 at ω=0.42,
 the predicted π-overbinding mechanism). The naive sum (A) is worse everywhere.
 
+**UPDATE 2026-07-19 — the aTZ "win" is now flagged as likely inside the RI-fit
+noise floor.** See "RI-fit noise floor" section below: the 0.004 kcal/mol
+(0.143→0.139) effect size the aTZ verdict rests on is comparable to (63%) or
+smaller than (4.6× smaller) the empirically-measured RI-fit error on the exact
+same operator/aux, depending on which noise probe you compare against. Treat
+the aTZ "criterion met" line above as **not yet statistically established**
+until re-run with either a tighter aux basis or a non-RI cross-check on the
+actual A24 fragments (both out of scope for this pass — see caveats below).
+
+## RI-fit noise floor (2026-07-19)
+
+Before trusting the aTZ verdict above, this section asks: is the 0.004
+kcal/mol effect size (MP2 MAE 0.143 vs B MAE 0.139 at ω=0.42) bigger than the
+RI-fit error already baked into `E_MP2[Coulomb]` (the term B shares with plain
+MP2) at this basis/aux? `docs/VALIDATION.md`'s pre-existing claim was a
+generic "~mHa per operator" figure with no system-specific measurement behind
+it — this is a direct, empirical bound for the exact aug-cc-pVTZ /
+aug-cc-pvtz-rifit combination the aTZ sweep used.
+
+**Pre-registered criterion (written before running the probe):** if either
+(a) canonical (exact 4-index) vs RI-MP2[Coulomb] with the actual aug-cc-pvtz-
+rifit aux, or (b) RI-MP2[Coulomb] with aug-cc-pvtz-rifit vs a different
+independently-optimized aux (def2-tzvpp-rifit) for the same orbital level,
+differs by an amount comparable to or larger than 0.004 kcal/mol on a small
+test system, that is grounds to call the aTZ win statistically
+indistinguishable from RI-fit noise. If both differences are comfortably
+smaller (>5× smaller), that's grounds to call the win distinguishable from
+noise at this level (though still a small, 1-of-4-systems effect).
+
+**Method:** `crates/ferric-mp2/tests/ri_noise_floor_atz.rs`
+(`ri_fit_noise_floor_h2_augccpvtz`, `#[ignore]`d, run via
+`cargo test -p ferric-mp2 --release --test ri_noise_floor_atz -- --ignored
+--nocapture`). RHF solved once with exact 4-index J/K (no DF-JK SCF confound
+— that's a separate, much smaller ~1e-7 Ha convergence-tightness effect
+documented in `docs/df-noise-floor-scope.md` (the DF-JK SCF density-level
+self-consistency floor, not the RI-MP2 correlation-energy fitting error) and
+NOT what this section measures). `E_MP2[Coulomb]` computed three ways on
+the same orbitals: `canonical_mp2` (exact, O(N^5)+, `crates/ferric-mp2/src/
+canonical.rs`), `ri_mp2` with `aug-cc-pvtz-rifit` (the aux the A24-subset aTZ
+sweep used), and `ri_mp2` with `def2-tzvpp-rifit` (a different, reasonable
+aux for the same triple-zeta orbital level).
+
+**System:** H2/aug-cc-pVTZ. This is a lower-bound probe, not the A24 systems
+themselves — a water/aug-cc-pVTZ probe (closer in size to an actual A24
+fragment) was attempted but `canonical_mp2`'s doc comment warns it is
+"O(N^5) or worse... not intended for production use on large molecules," and
+it did not complete in the compute budget available on a heavily-contended
+shared box (one attempt ran 30+ min before being interrupted, a second ran
+44+ min; both killed to make room for the decisive, cheap H2 measurement).
+This is noted as **incomplete**, not as a negative result — see "What's not
+done" below.
+
+**Result (H2/aug-cc-pVTZ, `E_MP2[Coulomb]`):**
+
+| comparison | Δ (Ha) | Δ (kcal/mol) | vs 0.004 kcal/mol effect size |
+|---|---|---|---|
+| canonical (exact) vs RI(aug-cc-pvtz-rifit) | 3.976e-6 | **0.0025** | 63% of the effect |
+| RI(aug-cc-pvtz-rifit) vs RI(def2-tzvpp-rifit) | 2.919e-5 | **0.0183** | 4.6× the effect |
+
+**Reading:** by probe (a), the pure RI-vs-exact fitting error on the operator
+that IS `E_MP2[Coulomb]` (shared by both MP2 and B) is already 63% the size of
+the entire aTZ effect on a minimal 2-atom system — before any CP/interaction-
+energy differencing that could partially but not exactly cancel it across the
+5 fragment terms (dimer + 2 monomers + 2 ghost-monomers) that make up a single
+CP binding energy. By probe (b), swapping to a different, equally defensible
+aux basis moves `E_MP2[Coulomb]` by nearly 5× the claimed effect — i.e. an
+aux-basis choice ferric did NOT make (def2-tzvpp-rifit instead of
+aug-cc-pvtz-rifit) would by itself swamp the entire "B beats MP2" margin.
+
+**Verdict: the aTZ "criterion met" result is not distinguishable from RI-fit
+noise at this level.** Both noise probes are the same order of magnitude as,
+or larger than, the 0.004 kcal/mol effect the verdict rests on. This does not
+prove B is wrong or that the aTZ π-overbinding mechanism is fake (the physical
+argument — MP2 genuinely overbinds ethene dimer near the basis limit, and a
+screening correction should help — is independently plausible and matches the
+stacked-system aDZ/aTZ results elsewhere in this file). It means the specific
+*margin of victory* over MP2 at ω=0.42 cannot currently be trusted to be real
+rather than an RI-fit artifact, without either (i) a converged/near-CBS aux
+basis for the RI fit, or (ii) an exact non-RI cross-check on the actual A24
+fragments (both expensive; out of scope here — canonical_mp2 does not scale
+to the A24 fragment sizes, see above).
+
+**What's not done:** a water-sized (or A24-fragment-sized) canonical-vs-RI
+comparison, which would directly bound the noise floor on a system the same
+order of size as the A24 dimers rather than extrapolating from H2. H2 gives a
+real, decisive lower bound (the RI-fit error does not vanish at minimal
+system size, and is already comparable to the effect), but a larger-system
+number would either sharpen or soften this verdict. Left as future work.
+
 ## Setup
 
 - Systems: A24 #2 (H₂O·H₂O), #5 (NH₃·NH₃), #14 (C₂H₄·C₂H₄ C2v), #19 (CH₄·CH₄ D3d).
