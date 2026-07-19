@@ -403,16 +403,24 @@ fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, Cation
         // big molecule: G0W0@HF only (the PySCF-validated core number)
         vec![(GwMethod::G0W0, &mut ip_g0w0)]
     };
-    let _t_gw = ferric_rpa::timing::Stage::start("phase:GW_columns@HF");
-    for (method, slot) in methods {
-        let gcfg = GwConfig { method, max_ev_iter: 8, ev_conv_thresh: 1e-4, ..Default::default() };
-        if let Ok(res) = run_gw(&neutral, &obs_n, &dfbs_n, op, &rhf_n, &pdep_cfg_gw, &gcfg, None) {
-            if let Some(local) = res.mo_indices.iter().position(|&i| i == homo_abs) {
-                *slot = -res.eps_qp[local] * HA_TO_EV;
+    // GW100_PBE_ONLY=1 skips the entire @HF GW block (G0W0/COHSEX/evGW). Used to
+    // recompute ONLY the @PBE column for a molecule whose @HF numbers are already
+    // banked (e.g. filling a single Cu2.G0W0pbe gap without repeating the ~15-20
+    // min neutral @HF G0W0). The @HF slots stay NaN and are NOT merged back — the
+    // caller must merge only the G0W0pbe cell.
+    let pbe_only = std::env::var("GW100_PBE_ONLY").map(|s| s == "1").unwrap_or(false);
+    if !pbe_only {
+        let _t_gw = ferric_rpa::timing::Stage::start("phase:GW_columns@HF");
+        for (method, slot) in methods {
+            let gcfg = GwConfig { method, max_ev_iter: 8, ev_conv_thresh: 1e-4, ..Default::default() };
+            if let Ok(res) = run_gw(&neutral, &obs_n, &dfbs_n, op, &rhf_n, &pdep_cfg_gw, &gcfg, None) {
+                if let Some(local) = res.mo_indices.iter().position(|&i| i == homo_abs) {
+                    *slot = -res.eps_qp[local] * HA_TO_EV;
+                }
             }
         }
+        _t_gw.end();
     }
-    _t_gw.end();
 
     // G0W0@PBE: a second full GW. By default full-depth molecules only, but
     // GW100_PBE_ALL=1 forces it for every molecule too (used when the rest of the
@@ -451,26 +459,68 @@ fn run_g0w0_pbe(
     homo_abs: usize,
 ) -> Option<f64> {
     let cfg = RhfConfig { xc: Some("pbe".into()), ..Default::default() };
-    // Closed-shell RKS-PBE first. This is the path every well-behaved molecule
-    // takes; it succeeds for 92/93 of the all-electron set.
-    if let Ok(ks) = solve_rhf(ctx, neutral, obs_n, op, bounds_n, &cfg) {
-        // PHYSICALITY GUARD. `converged = true` is NOT sufficient: a homonuclear
-        // transition-metal dimer's closed-shell RKS-PBE can converge to an
-        // UNPHYSICAL state — Cu2 lands on ε_HOMO = +0.17 Ha (positive → unbound)
-        // with a ~0.07 eV HOMO–LUMO gap (metallic). Feeding that to G0W0 gives a
-        // spurious IP (1.16 eV vs exp 7.46). Reject a positive HOMO or a
-        // near-vanishing gap and fall through to the broken-symmetry UKS path.
+    // Physicality test for a closed-shell RKS reference: a bound HOMO and a real
+    // gap. `converged = true` is NOT sufficient — a homonuclear transition-metal
+    // dimer's closed-shell RKS-PBE can CONVERGE to an unphysical state (Cu2:
+    // ε_HOMO = +0.17 Ha unbound, ~0.07 eV gap), which feeds G0W0 a spurious IP.
+    let is_physical = |ks: &ferric_scf::result::ScfResult| -> bool {
         let eps = ks.eps_r();
-        let e_homo = eps[homo_abs];
-        let gap = eps[homo_abs + 1] - e_homo;
-        let physical = ks.converged && e_homo < 0.0 && gap > 0.02; // gap > ~0.5 eV
+        ks.converged && eps[homo_abs] < 0.0 && (eps[homo_abs + 1] - eps[homo_abs]) > 0.02
+    };
+    // Closed-shell RKS-PBE first (bare, no shift). Succeeds for 92/93 of the set.
+    if let Ok(mut ks) = solve_rhf(ctx, neutral, obs_n, op, bounds_n, &cfg) {
+        let eps = ks.eps_r();
         eprintln!(
             "ferric-gw @PBE: reference = RKS(closed-shell), spin = restricted, \
-             ⟨S²⟩ = 0.000 (converged = {}, ε_HOMO = {e_homo:.4} Ha, gap = {:.4} Ha → {})",
-            ks.converged, gap,
-            if physical { "physical, using RKS" } else { "UNPHYSICAL → UKS-BS fallback" }
+             ⟨S²⟩ = 0.000 (converged = {}, ε_HOMO = {:.4} Ha, gap = {:.4} Ha → {})",
+            ks.converged, eps[homo_abs], eps[homo_abs + 1] - eps[homo_abs],
+            if is_physical(&ks) { "physical, using RKS" } else { "UNPHYSICAL → level-shift ladder" }
         );
-        if !physical {
+        // LEVEL-SHIFT LADDER RESCUE (the default ksdft_ladder idea, extended with
+        // a physicality criterion). ferric's ladder walk stops at the first
+        // CONVERGED rung, so it never escalates past a converged-but-unphysical
+        // rung 0. Here we drive the KS rungs ourselves and keep the first PHYSICAL
+        // one: a rising virtual-block level shift damps the near-degenerate d-band
+        // rotation that lands Cu2 in the metallic basin, exactly as the shift
+        // cures closed-shell heavy-atom RHF divergence (see ladder::ksdft_ladder).
+        // The physical Cu2 PBE state exists (PySCF/TURBOMOLE reach it, 6.7 eV); it
+        // is only ferric's default guess+damping that mis-converges.
+        if !is_physical(&ks) {
+            for shift in [0.5f64, 1.0, 2.0] {
+                let sc = RhfConfig {
+                    xc: Some("pbe".into()),
+                    level_shift: shift,
+                    max_iter: 200,
+                    df_j_aux: Some("def2-universal-jkfit".to_string()),
+                    ..Default::default()
+                };
+                match solve_rhf(ctx, neutral, obs_n, op, bounds_n, &sc) {
+                    Ok(r) if is_physical(&r) => {
+                        let eps = r.eps_r();
+                        eprintln!(
+                            "ferric-gw @PBE: level-shift ls={shift} → PHYSICAL RKS \
+                             (ε_HOMO = {:.4} Ha, gap = {:.4} Ha)",
+                            eps[homo_abs], eps[homo_abs + 1] - eps[homo_abs]
+                        );
+                        ks = r;
+                        break;
+                    }
+                    Ok(r) => {
+                        let eps = r.eps_r();
+                        eprintln!(
+                            "ferric-gw @PBE: level-shift ls={shift} still unphysical \
+                             (ε_HOMO = {:.4} Ha, converged = {})",
+                            eps[homo_abs], r.converged
+                        );
+                    }
+                    Err(e) => eprintln!("ferric-gw @PBE: level-shift ls={shift} errored: {e:?}"),
+                }
+            }
+        }
+        // If the ladder still didn't reach a physical RKS state, fall back to the
+        // broken-symmetry UKS path (last resort; may itself return NaN).
+        if !is_physical(&ks) {
+            eprintln!("ferric-gw @PBE: RKS level-shift ladder exhausted → UKS-BS fallback");
             return run_u_g0w0_pbe(ctx, neutral, obs_n, dfbs_n, obs_bs, op, bounds_n, pdep_cfg_gw, homo_abs);
         }
         // Diagnostic: mean-field HOMO by ENERGY vs Aufbau index. If PBE reorders
