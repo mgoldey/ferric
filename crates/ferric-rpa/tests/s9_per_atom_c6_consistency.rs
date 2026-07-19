@@ -1,8 +1,22 @@
 //! S9 spike: per-atom anisotropic C6 tensor validation scoping (open-work
 //! triage item #9).
 //!
-//! Two diagnostics, both `--ignored` (preflight probes, not CI gates — they
-//! print physics, they don't assert a pass/fail tolerance that could rot):
+//! Three diagnostics, all `--ignored` (this file's tests build a real
+//! PBE/aug-cc-pVDZ RPA response, matching the rest of this crate's
+//! convention of keeping `xc: PBE` + aug-cc-pVDZ scale tests out of the
+//! default debug-mode `cargo test` run — see e.g.
+//! `dispersion_c6.rs::anisotropic_c6_vs_kumar_meath`). The first two are
+//! preflight probes (print physics, no pass/fail assertion). The third
+//! (`bounded_divergence_pair_sum_vs_molecular_c6_water`) IS a real
+//! assert-based regression test — run it explicitly (see below) whenever
+//! touching the per-atom or molecular dynamic-polarizability paths. It
+//! turns the finding from probe 1 into a documented, asserted, bounded fact
+//! instead of leaving it as a one-off printout: `c6_iso_pair.sum()` is NOT
+//! interchangeable with `c6_molecular_iso`, the gap is real physics (not a
+//! bug), and if the gap ever moved OUTSIDE the documented envelope that
+//! would itself be worth knowing about (e.g. a regression in the
+//! molecular-response path, or the per-atom operator silently changing
+//! definition).
 //!
 //! 1. `per_atom_pair_sum_vs_molecular_c6_water`: does
 //!    `c6_iso_pair.sum()` (per-atom-pair Casimir-Polder sum) reproduce the
@@ -21,7 +35,23 @@
 //!    H-starvation) now that Hirshfeld-I same-basis proatoms are wired in
 //!    (commits 72ec0b5..81df65a) — is the gap improved, same, or worse?
 //!
-//! Run: cargo test -p ferric-rpa --release --test s9_per_atom_c6_consistency \
+//! 3. `bounded_divergence_pair_sum_vs_molecular_c6_water`: asserts
+//!    `c6_iso_pair.sum()` vs `c6_molecular_iso` diverge by an amount inside
+//!    [`PAIR_SUM_GAP_LOWER_PCT`, `PAIR_SUM_GAP_UPPER_PCT`] for BOTH
+//!    partitions. Measured 2026-07-17 (S9 spike): Becke -57.6% (16.14 vs
+//!    38.05 a.u.), Hirshfeld -19.5% (30.61 vs 38.05 a.u.) — both signed
+//!    negative (pair sum under-counts the molecular total, consistent with
+//!    "coupling is missing, not double-counted"). The bound below has
+//!    deliberate headroom around those two measured points; it is NOT a
+//!    tight pin to 3 decimal places (that would make the test brittle to
+//!    ordinary numerical drift in the RPA quadrature/SCF path) — the point
+//!    is asserting "this gap exists, is negative, and stays within a sane
+//!    envelope," not reproducing today's digits exactly.
+//!
+//! Run all three: cargo test -p ferric-rpa --release --test \
+//!        s9_per_atom_c6_consistency -- --ignored --nocapture
+//! Run just the regression test: cargo test -p ferric-rpa --release --test \
+//!        s9_per_atom_c6_consistency bounded_divergence_pair_sum_vs_molecular_c6_water \
 //!        -- --ignored --nocapture
 
 use ferric_core::basis;
@@ -43,6 +73,20 @@ fn water_mol() -> Molecule {
     )
     .unwrap()
 }
+
+/// Bounded-divergence envelope for `100 * (c6_iso_pair.sum() - c6_molecular_iso)
+/// / c6_molecular_iso`, in percent. Measured 2026-07-17 (S9 spike, water,
+/// aug-cc-pVDZ, RPA@PBE): Becke -57.6%, Hirshfeld -19.5%. Both measured
+/// points sit comfortably inside this envelope, which has headroom on both
+/// ends: the pair sum is expected to consistently UNDER-count the molecular
+/// total (missing inter-atomic coupling, not double-counting it), so the gap
+/// should stay negative and non-trivial, but not implausibly close to -100%
+/// (which would suggest the per-atom operator had collapsed to ~0) or
+/// implausibly close to 0% (which would suggest the two quantities had
+/// become numerically identical, undermining the "these are different
+/// physical objects" story this test exists to protect).
+const PAIR_SUM_GAP_LOWER_PCT: f64 = -80.0;
+const PAIR_SUM_GAP_UPPER_PCT: f64 = -5.0;
 
 /// DOSD-anchor probe: PBE reference, aug-cc-pVDZ, matching the validated
 /// dRPA@PBE methodology from docs/dosd-c6-rpa-vs-ts.md (water DOSD=45.3 a.u.,
@@ -235,4 +279,74 @@ fn partition_dependence_becke_vs_hirshfeld_water() {
         "  partition-dependence spread across atoms (max ratio / min ratio) = {spread:.2}x \
          (memory's CH4 finding was ~10x-100x on individual atoms)"
     );
+}
+
+/// Regression test: `c6_iso_pair.sum()` and `c6_molecular_iso` are DIFFERENT
+/// physical quantities by construction (see the module doc comment and the
+/// CONSUMER WARNING on `dispersion::C6Result`), so this asserts the gap
+/// between them stays inside a documented, bounded envelope — not that they
+/// match. If this test ever fails, that is worth investigating (either a
+/// genuine regression in one of the two polarizability paths, or the
+/// envelope needs revisiting with a documented reason), but a small drift
+/// inside the envelope is expected and NOT a bug.
+///
+/// `#[ignore]`d for the same reason as the rest of this crate's PBE/
+/// aug-cc-pVDZ-scale tests (e.g. `dispersion_c6.rs::anisotropic_c6_vs_kumar_meath`):
+/// a full SCF+RPA solve is too slow for the default debug-mode `cargo test`
+/// run. This is still a real assert-based regression test, not a probe —
+/// run it explicitly (see the module doc comment for the exact command) any
+/// time the per-atom or molecular dynamic-polarizability code paths change.
+#[test]
+#[ignore = "slow: RPA@PBE water/aug-cc-pVDZ, real regression assert; \
+            cargo test -p ferric-rpa --release --test s9_per_atom_c6_consistency \
+            bounded_divergence_pair_sum_vs_molecular_c6_water -- --ignored --nocapture"]
+fn bounded_divergence_pair_sum_vs_molecular_c6_water() {
+    let mol = water_mol();
+    let obs_bs = basis::bundled("aug-cc-pvdz").unwrap();
+    let dfbs_bs = basis::bundled("aug-cc-pvdz-rifit").unwrap();
+    let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+    let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
+    let ctx = ParallelContext::default();
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+    let scf_cfg = RhfConfig {
+        xc: Some("PBE".to_string()),
+        df_j_aux: Some("def2-universal-jkfit".to_string()),
+        df_k_aux: Some("def2-universal-jkfit".to_string()),
+        ..Default::default()
+    };
+    let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
+    let cfg = PdepRpaConfig {
+        trunc_thresh: 0.0,
+        ..Default::default()
+    };
+
+    for partition in [DispersionPartition::Becke, DispersionPartition::Hirshfeld] {
+        let dp = pdep_dynamic_polarizability(
+            &mol, &obs, &obs_bs, &dfbs, &rhf, op, &cfg, partition, None,
+        )
+        .unwrap();
+        let res = casimir_polder_c6(&dp);
+
+        let pair_sum: f64 = res.c6_iso_pair.sum();
+        let molecular = res.c6_molecular_iso;
+        assert!(
+            molecular > 0.0,
+            "c6_molecular_iso must be positive for water ({partition:?}); got {molecular}"
+        );
+        let gap_pct = 100.0 * (pair_sum - molecular) / molecular;
+
+        assert!(
+            (PAIR_SUM_GAP_LOWER_PCT..=PAIR_SUM_GAP_UPPER_PCT).contains(&gap_pct),
+            "c6_iso_pair.sum() vs c6_molecular_iso gap out of the documented bounded-divergence \
+             envelope for water/aug-cc-pVDZ/RPA@PBE, partition={partition:?}: gap={gap_pct:+.1}% \
+             (pair_sum={pair_sum:.4} a.u., molecular={molecular:.4} a.u.), expected in \
+             [{PAIR_SUM_GAP_LOWER_PCT}%, {PAIR_SUM_GAP_UPPER_PCT}%]. This gap is EXPECTED physics \
+             (c6_iso_pair is the atom-centred r-R_A per-atom-pair tensor, c6_molecular_iso is the \
+             lab-frame molecular response with inter-atomic coupling included — see the \
+             CONSUMER WARNING on dispersion::C6Result) — a failure here means the gap moved \
+             outside the envelope measured 2026-07-17 (Becke -57.6%, Hirshfeld -19.5%), which is \
+             worth investigating, not silently widening the bound."
+        );
+    }
 }

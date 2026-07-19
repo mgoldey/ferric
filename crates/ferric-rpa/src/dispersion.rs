@@ -47,15 +47,38 @@ pub struct DynamicPolarizability {
 }
 
 /// C6 result: the fundamental per-atom α(iω) plus derived pair coefficients.
+///
+/// CONSUMER WARNING (open-work-triage item #9 / S9 spike, 2026-07-17):
+/// `c6_iso_pair.sum()` is **not** an approximation of `c6_molecular_iso`, and
+/// the gap is not a rounding-level effect — measured water/aug-cc-pVDZ/
+/// RPA@PBE: Becke partition -57.6% (16.14 vs 38.05 a.u.), Hirshfeld
+/// partition -19.5% (30.61 vs 38.05 a.u.). This is expected physics, not a
+/// bug: `c6_iso_pair`/`c6_aniso_pair` are built from the atom-centred
+/// (r-R_A) `per_atom` operator (see [`DynamicPolarizability::per_atom`]),
+/// which by construction excludes the inter-atomic charge-transfer/coupling
+/// that the lab-frame `molecular` response captures. See
+/// `crates/ferric-rpa/tests/s9_per_atom_c6_consistency.rs` — both the spike
+/// probes and `bounded_divergence_pair_sum_vs_molecular_c6_water` (the
+/// regression test asserting the gap is bounded, not a bug that got fixed)
+/// — and `docs/dosd-c6-rpa-vs-ts.md`'s "Numerical notes" for the analogous
+/// H2 case. If you want the DOSD-comparable molecular total, use
+/// `c6_molecular_iso`, not `c6_iso_pair.sum()`.
 #[derive(Debug, Clone)]
 pub struct C6Result {
     pub per_atom_dynamic: DynamicPolarizability,
-    /// Isotropic C6^{AB}, shape (N, N), a.u.
+    /// Isotropic C6^{AB}, shape (N, N), a.u. Per-atom PAIR tensor — see the
+    /// CONSUMER WARNING on [`C6Result`] before summing this to approximate
+    /// a molecular total; use `c6_molecular_iso` for that instead.
     pub c6_iso_pair: Array2<f64>,
-    /// Anisotropic C6^{AB}_{ij}: `c6_aniso_pair[a][b]` = 3×3 tensor.
+    /// Anisotropic C6^{AB}_{ij}: `c6_aniso_pair[a][b]` = 3×3 tensor. Same
+    /// per-atom-pair caveat as `c6_iso_pair` — see the CONSUMER WARNING on
+    /// [`C6Result`].
     pub c6_aniso_pair: Vec<Vec<[[f64; 3]; 3]>>,
     /// Molecular isotropic C6 from the molecular α(iω) (the DOSD-comparable
-    /// total), computed independently of the per-atom pair matrix.
+    /// total), computed independently of the per-atom pair matrix. This is
+    /// the correct quantity to compare against DOSD/experimental molecular
+    /// C6 — NOT `c6_iso_pair.sum()` (see the CONSUMER WARNING on
+    /// [`C6Result`]).
     pub c6_molecular_iso: f64,
 }
 

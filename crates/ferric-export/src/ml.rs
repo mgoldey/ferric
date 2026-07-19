@@ -5,6 +5,26 @@ use crate::cube::ExportError;
 
 /// Exports key tensors and metadata for Machine Learning (e.g. Diffusion models)
 /// into a compressed NPZ archive.
+///
+/// CONSUMER WARNING — `c6_iso`/`c6_aniso` (open-work-triage item #9 / S9
+/// spike, 2026-07-17): these two arrays are the per-atom PAIR Casimir-Polder
+/// tensors (`C6Result::c6_iso_pair`/`c6_aniso_pair` from
+/// `ferric_rpa::dispersion::casimir_polder_c6`), NOT the molecular C6 total.
+/// **`c6_iso.sum()` is NOT the molecular C6** and diverges from the correct,
+/// DOSD-comparable value by roughly -20% to -58% in measured cases (water/
+/// aug-cc-pVDZ/RPA@PBE: Becke -57.6%, Hirshfeld -19.5% — see the bounded
+/// regression test `bounded_divergence_pair_sum_vs_molecular_c6_water` in
+/// `crates/ferric-rpa/tests/s9_per_atom_c6_consistency.rs` and the
+/// CONSUMER WARNING on `dispersion::C6Result` for why: the per-atom pair
+/// tensors use an atom-centred operator that excludes inter-atomic
+/// charge-transfer/coupling that the molecular response includes). The
+/// correct DOSD-comparable molecular C6 is `C6Result::c6_molecular_iso`,
+/// which the CLI prints to stdout as `molecular C6 = X a.u.` but is
+/// currently NOT itself written to this NPZ file — a consumer who wants
+/// "the" molecular C6 must read it from CLI stdout (or call
+/// `casimir_polder_c6` directly), not sum this array. See also
+/// `docs/dosd-c6-rpa-vs-ts.md`'s "Numerical notes" for the analogous H2 case
+/// (6.88 pair-sum vs 9.22 correct).
 #[allow(clippy::too_many_arguments)]
 pub fn export_npz(
     path: &str,
@@ -24,6 +44,10 @@ pub fn export_npz(
     c6_freqs: Option<&[f64]>,
     c6_weights: Option<&[f64]>,
     alpha_atomic_dynamic: Option<&[Vec<[[f64; 3]; 3]>]>,
+    // Per-atom PAIR Casimir-Polder tensors — NOT the molecular C6 total.
+    // `c6_iso.sum()` != the molecular C6; see the CONSUMER WARNING on this
+    // function's doc comment before using these to approximate a molecular
+    // total.
     c6_iso: Option<&Array2<f64>>,
     c6_aniso: Option<&[Vec<[[f64; 3]; 3]>]>,
     dipole: Option<&[f64; 3]>,

@@ -1354,6 +1354,14 @@ fn main() {
                     eprintln!("warning: failed to write {}: {}", npz_path, e);
                 } else {
                     println!("Wrote NPZ feature bundle: {}", npz_path);
+                    if c6_iso_opt.is_some() {
+                        println!(
+                            "note: NPZ c6_iso/c6_aniso are per-atom PAIR tensors, not the \
+                             molecular C6 total — do not sum them to approximate it (can be \
+                             20-58% off; see the \"molecular C6 = ... a.u.\" line above for the \
+                             correct DOSD-comparable value, or docs/dosd-c6-rpa-vs-ts.md)."
+                        );
+                    }
                 }
             }
         }
