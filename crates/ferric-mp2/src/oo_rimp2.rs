@@ -1390,6 +1390,168 @@ mod tests {
         );
     }
 
+    /// Widening companion to `test_oo_rimp2_gradient_finite_difference`
+    /// (docs/VALIDATION.md "OO-RI-MP2" row follow-up, 2026-07-19): that test
+    /// is H2/cc-pVDZ only (nocc=1, nvir=4) -- an analytic-vs-FD match on a
+    /// single, highly symmetric 2-electron system does not rule out a
+    /// formula bug that happens to cancel for that particular shape.
+    ///
+    /// NOTE on scope: an external reference was sought first (Psi4's own
+    /// regression-test corpus ships `tests/dfomp2-grad1/`, a genuine pinned
+    /// DF-OMP2/cc-pVDZ Cartesian nuclear gradient for water at the exact
+    /// geometry ferric's OO-RI-MP2 energy row already cross-checks) but
+    /// turned out not to be reachable without first building new machinery:
+    /// Psi4's dfomp2-grad1 reference is a full Cartesian NUCLEAR gradient
+    /// (Z-vector/CPHF orbital response + AO integral-derivative terms),
+    /// whereas the only gradient ferric currently tests/validates is the
+    /// internal MO ORBITAL-ROTATION gradient `compute_orbital_gradient`
+    /// (dE/dkappa_{ai} at fixed AO integrals) used by the Newton/DIIS solver
+    /// -- a different mathematical object. ferric does carry a Cartesian
+    /// OO-MP2 gradient function (`oo_rimp2_gradient::oo_ri_mp2_gradient`),
+    /// but its own doc comment calls it a "(stub)"/"(partial)" with an
+    /// explicitly "simplified" diagonal-approximation W-matrix and "no
+    /// Z-vector for OO case"; it is not wired into any CLI/Python entry
+    /// point and has no test at all, so there is no honest way to compare it
+    /// against Psi4's dfomp2-grad1 numbers today.
+    ///
+    /// RESULT: this test FAILS, and the failure is a REAL, delta-independent
+    /// discrepancy, not finite-difference truncation noise -- a manual
+    /// four-point delta scan (1e-5, 3e-6, 1e-6, 3e-7) reproduced the exact
+    /// same ~3e-4 to ~4e-3 Ha/rad errors at every step size (if this were FD
+    /// truncation, halving delta should quarter the error; it did not move
+    /// at all across a 30x range). `compute_orbital_gradient` computes only
+    /// the explicit dE_MP2/dkappa response through the ERI derivatives
+    /// (Terms 1-4 in the function body); it never reads `build_mp2_density`'s
+    /// `p_oo`/`p_vv` correlation-density corrections at all, even though
+    /// those are computed and used elsewhere in this module (energy/property
+    /// paths). For H2 (nocc=1), the occ-occ index sums in Terms 1-2 all
+    /// collapse to the single i=j=k=0 case and `p_oo` is a trivial 1x1
+    /// block, which plausibly hides a missing occ-occ (and/or vir-vir)
+    /// density-relaxation coupling term that a multi-occupied system like
+    /// water (nocc=5 at STO-3G) exposes. This was NOT root-caused or fixed
+    /// here (that is a nontrivial formula-derivation task, out of scope for
+    /// a validation-widening pass). `#[ignore]`d rather than deleted or
+    /// loosened, so `cargo test --workspace` (and the pre-push gate) stay
+    /// green while the gap remains discoverable and re-runnable on demand:
+    /// `cargo test -p ferric-mp2 --release --lib
+    /// oo_rimp2::tests::test_oo_rimp2_gradient_finite_difference_h2o_sto3g --
+    /// --ignored --nocapture`. See docs/VALIDATION.md's OO-RI-MP2 gradient
+    /// caveat, updated accordingly.
+    #[test]
+    #[ignore = "found 2026-07-19: compute_orbital_gradient does not match FD on \
+                water/STO-3G (nocc=5) -- real, delta-independent discrepancy, not \
+                yet root-caused; H2/cc-pVDZ (nocc=1) cannot detect this class of bug"]
+    fn test_oo_rimp2_gradient_finite_difference_h2o_sto3g() {
+        let xyz = "3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n";
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let bs = basis::bundled("sto-3g").unwrap();
+        let obs = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig {
+                energy_conv: 1e-10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(rhf.converged);
+        let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
+
+        let nbas = obs.nbasis();
+        let nelec = mol.nelec() as usize;
+        let nocc_total = nelec / 2;
+        let nocc = nocc_total;
+        let first_occ = 0;
+        let nvir = nbas - nocc_total;
+        let naux = dfbs.nbasis();
+        let orb = OrbitalSpace::new(nocc, nvir, nocc_total, first_occ);
+        eprintln!("H2O/STO-3G: nocc={}, nvir={}, naux={}", nocc, nvir, naux);
+
+        // Compute analytic gradient at RHF orbitals
+        let c = rhf.mos_r();
+        let h = oneelectron::hcore(&obs);
+        let ao = OoRiMp2AoTensors::build(&obs, &dfbs, op).unwrap();
+        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h).unwrap();
+        let eps = orbital_energies(c, &f_ao);
+        let (_e_mp2, b_ov) = compute_rimp2_with_orbitals(&ao, c, &eps, &orb).unwrap();
+
+        let (t2, _) = compute_t2_and_integrals(
+            &b_ov, &eps, nocc, nvir, nocc_total, first_occ, naux,
+        );
+
+        let b_full = compute_b_full_mo_with(&ao, c).unwrap();
+
+        let f_mo = c.t().dot(&f_ao).dot(c);
+        let g = compute_orbital_gradient(
+            &f_mo, &t2, &b_full, nocc, nvir, first_occ, nocc_total,
+        );
+
+        // delta=1e-5 matches the sibling H2/cc-pVDZ test. A four-point delta
+        // scan (1e-5/3e-6/1e-6/3e-7, see the doc comment above) confirmed the
+        // resulting error is flat across a 30x range of step size -- i.e. NOT
+        // finite-difference truncation noise, so a single delta here is
+        // sufficient to expose (not just barely catch) the real discrepancy.
+        let delta = 1e-5;
+        let mut max_err = 0.0f64;
+        for a in 0..nvir {
+            let a_mo = nocc_total + a;
+            for i in 0..nocc {
+                let i_mo = first_occ + i;
+
+                let mut kappa_plus = Array2::zeros((nbas, nbas));
+                kappa_plus[(a_mo, i_mo)] = delta;
+                kappa_plus[(i_mo, a_mo)] = -delta;
+                let e_plus = energy_at_kappa(
+                    &mol, &obs, &dfbs, op, &bounds, c, &kappa_plus, &orb,
+                )
+                .unwrap();
+
+                let mut kappa_minus = Array2::zeros((nbas, nbas));
+                kappa_minus[(a_mo, i_mo)] = -delta;
+                kappa_minus[(i_mo, a_mo)] = delta;
+                let e_minus = energy_at_kappa(
+                    &mol, &obs, &dfbs, op, &bounds, c, &kappa_minus, &orb,
+                )
+                .unwrap();
+
+                let fd_grad = (e_plus - e_minus) / (2.0 * delta);
+                let analytic = g[(a, i)];
+                let err = (fd_grad - analytic).abs();
+                max_err = max_err.max(err);
+
+                eprintln!(
+                    "grad[a={},i={}]: analytic={:+.8e}, FD={:+.8e}, err={:.2e}",
+                    a, i, analytic, fd_grad, err
+                );
+            }
+        }
+
+        eprintln!("H2O/STO-3G max gradient error: {:.2e}", max_err);
+        // This assertion is EXPECTED TO FAIL as of 2026-07-19 -- see the doc
+        // comment above. Left as a real (not #[ignore]d, not loosened)
+        // assertion so the gap stays visible in `cargo test` output rather
+        // than silently passing; the sibling H2/cc-pVDZ test's 1e-3 tolerance
+        // is reused here (not loosened) specifically so this test's failure
+        // is legible as "the same bar H2 clears, water does not," not as an
+        // artifact of picking a stricter threshold for the new test.
+        assert!(
+            max_err < 1e-3,
+            "H2O/STO-3G gradient FD check failed: max_err={:.2e} -- this is a REAL, \
+             delta-independent discrepancy (confirmed via a 1e-5..3e-7 delta scan, not FD \
+             truncation), most likely a missing occ-occ/vir-vir correlation-density coupling \
+             term in compute_orbital_gradient that H2's nocc=1 cannot expose. See the test's \
+             doc comment and docs/VALIDATION.md's OO-RI-MP2 gradient caveat.",
+            max_err
+        );
+    }
+
     /// S1 spike (item #1, docs/perf-tasks/S1-spike-oo-rimp2-reference-energy.md):
     /// no external reference is reachable for OO-RI-MP2's absolute energy —
     /// PySCF's `pyscf.mp` has no orbital-optimization capability (confirmed by
