@@ -19,9 +19,8 @@ use ferric_core::parallel::ParallelContext;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::uhf::solve_uhf;
 use ferric_scf::rohf::solve_rohf;
-use ferric_scf::gradient::{rohf_gradient, uhf_gradient};
 use ferric_scf::screening::SchwarzBounds;
-use ferric_scf::optimize::{optimize_geometry, OptimizeConfig};
+use ferric_scf::optimize::{optimize_geometry, optimize_geometry_rohf, optimize_geometry_uhf, OptimizeConfig};
 
 /// Run `f` on a private single-thread rayon pool.
 ///
@@ -349,8 +348,38 @@ fn main() {
                 println!("  steps      = {}", opt_result.steps);
                 println!("  final E    = {:.10} Hartree (RHF + MP2)", opt_result.energy);
             }
+            "uhf" => {
+                let opt_result = optimize_geometry_uhf(&ctx, &mol, &bs.name, op, &rhf_config, &opt_config)
+                    .unwrap_or_else(|e| {
+                        eprintln!("error during UHF optimization: {e}");
+                        std::process::exit(1);
+                    });
+                println!("\nFinal Optimized Geometry (Bohr):");
+                for (i, atom) in opt_result.mol.atoms.iter().enumerate() {
+                    println!("  {:2} {:2} {:12.8} {:12.8} {:12.8}", i, atom.symbol, atom.x, atom.y, atom.zpos);
+                }
+                println!("\nUHF Optimization Result:");
+                println!("  converged  = {}", opt_result.converged);
+                println!("  steps      = {}", opt_result.steps);
+                println!("  final E    = {:.10} Hartree", opt_result.energy);
+            }
+            "rohf" => {
+                let opt_result = optimize_geometry_rohf(&ctx, &mol, &bs.name, op, &rhf_config, &opt_config)
+                    .unwrap_or_else(|e| {
+                        eprintln!("error during ROHF optimization: {e}");
+                        std::process::exit(1);
+                    });
+                println!("\nFinal Optimized Geometry (Bohr):");
+                for (i, atom) in opt_result.mol.atoms.iter().enumerate() {
+                    println!("  {:2} {:2} {:12.8} {:12.8} {:12.8}", i, atom.symbol, atom.x, atom.y, atom.zpos);
+                }
+                println!("\nROHF Optimization Result:");
+                println!("  converged  = {}", opt_result.converged);
+                println!("  steps      = {}", opt_result.steps);
+                println!("  final E    = {:.10} Hartree", opt_result.energy);
+            }
             _ => {
-                eprintln!("error: geometry optimization is currently only supported for method.kind = \"rhf\", \"pdep-rpa\", or \"rimp2\"");
+                eprintln!("error: geometry optimization is currently only supported for method.kind = \"rhf\", \"ksdft\", \"uhf\", \"rohf\", \"pdep-rpa\", or \"rimp2\"");
                 std::process::exit(1);
             }
         }
@@ -385,22 +414,8 @@ fn main() {
         println!("  converged  = {}", result.converged);
         println!("  energy     = {:.10} Hartree", result.energy);
         println!("  <S^2>      = {:.6} (ideal {:.6})", s2, s_ideal);
-        if task == "optimize" {
-            // TODO: UHF geometry optimization not yet wired; print the gradient.
-            match uhf_gradient(&mol, &prep, op, &bounds, &result, None) {
-                Ok(g) => {
-                    println!("UHF gradient (Hartree/Bohr):");
-                    for (i, atom) in mol.atoms.iter().enumerate() {
-                        println!("  {:2} {:2} {:14.8} {:14.8} {:14.8}",
-                                 i, atom.symbol, g[(i,0)], g[(i,1)], g[(i,2)]);
-                    }
-                }
-                Err(e) => {
-                    eprintln!("UHF gradient error: {e}");
-                    std::process::exit(1);
-                }
-            }
-        }
+        // task == "optimize" is handled by the top-level dispatch above
+        // (optimize_geometry_uhf), which returns before reaching here.
         return;
     }
 
@@ -425,22 +440,8 @@ fn main() {
         println!("  converged  = {}", result.converged);
         println!("  energy     = {:.10} Hartree", result.energy);
         println!("  <S^2>      = {:.6} (exact by construction)", s_ideal);
-        if task == "optimize" {
-            // TODO: ROHF geometry optimization not yet wired; print the gradient.
-            match rohf_gradient(&mol, &prep, op, &bounds, &result, None) {
-                Ok(g) => {
-                    println!("ROHF gradient (Hartree/Bohr):");
-                    for (i, atom) in mol.atoms.iter().enumerate() {
-                        println!("  {:2} {:2} {:14.8} {:14.8} {:14.8}",
-                                 i, atom.symbol, g[(i,0)], g[(i,1)], g[(i,2)]);
-                    }
-                }
-                Err(e) => {
-                    eprintln!("ROHF gradient error: {e}");
-                    std::process::exit(1);
-                }
-            }
-        }
+        // task == "optimize" is handled by the top-level dispatch above
+        // (optimize_geometry_rohf), which returns before reaching here.
         return;
     }
 
