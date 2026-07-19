@@ -89,6 +89,16 @@ pub fn ks_gradient_closed(
             FunctionalFamily::Lda => {}
             FunctionalFamily::Gga | FunctionalFamily::HybridGga
             | FunctionalFamily::RangeSepGga => needs_gga = true,
+            // Meta-GGA gradients (the τ Pulay + response terms) are Phase B —
+            // not implemented. Reject cleanly rather than silently drop the τ
+            // contribution and return a wrong-answer gradient.
+            FunctionalFamily::MetaGga => {
+                return Err(FerricError::General(format!(
+                    "meta-GGA gradients are not implemented ({xc_name}): SCAN / \
+                     r2SCAN support energy (single-point) only; the τ-dependent \
+                     nuclear gradient is future work"
+                )));
+            }
         }
     }
     // Pure DFT (LDA, PBE): no exact exchange, so sr=lr=0. KMix::default()
@@ -221,6 +231,15 @@ pub fn ks_gradient_uks(
 
     let xc = ferric_dft::libxc::xc_def_from_name(xc_name)
         .map_err(|e| FerricError::General(format!("libxc: {e:?}")))?;
+    // Reject meta-GGA gradients cleanly (same as ks_gradient_closed): the
+    // τ-dependent nuclear gradient is Phase B, energy-only for now.
+    if xc.funcs.iter().any(|f| matches!(f.family(), FunctionalFamily::MetaGga)) {
+        return Err(FerricError::General(format!(
+            "meta-GGA gradients are not implemented ({xc_name}): SCAN / r2SCAN \
+             support energy (single-point) only; the τ-dependent nuclear \
+             gradient is future work"
+        )));
+    }
     let k_mix: KMix = if let Some(cam) = xc.cam {
         KMix { sr: cam.c_sr, lr: cam.c_lr, omega: cam.omega }
     } else if let Some(mix) = xc.b3lyp_mix {
@@ -330,6 +349,15 @@ pub fn ks_gradient_roks(
 
     let xc = ferric_dft::libxc::xc_def_from_name(xc_name)
         .map_err(|e| FerricError::General(format!("libxc: {e:?}")))?;
+    // Reject meta-GGA gradients cleanly (same as ks_gradient_closed): the
+    // τ-dependent nuclear gradient is Phase B, energy-only for now.
+    if xc.funcs.iter().any(|f| matches!(f.family(), FunctionalFamily::MetaGga)) {
+        return Err(FerricError::General(format!(
+            "meta-GGA gradients are not implemented ({xc_name}): SCAN / r2SCAN \
+             support energy (single-point) only; the τ-dependent nuclear \
+             gradient is future work"
+        )));
+    }
     let k_mix: KMix = if let Some(cam) = xc.cam {
         KMix { sr: cam.c_sr, lr: cam.c_lr, omega: cam.omega }
     } else if let Some(mix) = xc.b3lyp_mix {

@@ -76,7 +76,7 @@ fn semilocal_vxc_gga_consistent_across_blas_thread_counts() {
     let dens = eval_density_closed(&rhf.density_total, &chi, &dchi);
     let xc = xc_def_from_name("PBE").unwrap();
 
-    let run = || semilocal_vxc_closed(&grid, &chi, &dchi, &dens, &xc);
+    let run = || semilocal_vxc_closed(&grid, &chi, &dchi, &dens, None, &xc);
 
     let (e_base, v_base) = run();
     std::env::set_var("FERRIC_BLAS_THREADS", "2");

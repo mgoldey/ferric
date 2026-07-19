@@ -387,6 +387,22 @@ pub fn solve_rhf(
 
     let k_mix: KMix = xc_contrib.as_ref().map(|x| x.k_mix()).unwrap_or_default();
 
+    // Meta-GGA (SCAN / r2SCAN) SCF is stiffer than LDA/GGA: with plain DIIS from
+    // a SAD guess it limit-cycles just above the tight density threshold (the
+    // τ-dependent Fock amplifies the grid-integration noise). A modest default
+    // virtual-block level shift (the same ramped shift used to cure heavy-atom
+    // closed-shell divergence) makes it converge cleanly — SCAN/H2O in ~13 iters
+    // vs. never at ls=0. Only applied when the user hasn't set their own shift,
+    // and ramped to zero as the gradient converges so the final energy is
+    // unperturbed. LDA/GGA/hybrid keep ls=0 (unchanged behavior).
+    let effective_level_shift = if config.level_shift == 0.0
+        && crate::rohf::xc_is_metagga(config.xc.as_deref())
+    {
+        0.5
+    } else {
+        config.level_shift
+    };
+
     // Resolve the out-of-core 3-index memory budget once (env override wins).
     let ooc_budget = resolve_three_index_budget(config.three_index_budget_bytes);
 
@@ -722,9 +738,9 @@ pub fn solve_rhf(
         // unshifted and the final energy is unperturbed. Applied from iter ≥ 2
         // (needs a prior C); the convergence check above runs on the *unshifted*
         // F, so an accepted solution never carries the shift.
-        if config.level_shift > 0.0 {
+        if effective_level_shift > 0.0 {
             if let Some(c_p) = c_prev.as_ref() {
-                let shift_ramp = config.level_shift * (err_max / 0.1).min(1.0);
+                let shift_ramp = effective_level_shift * (err_max / 0.1).min(1.0);
                 if shift_ramp > 0.0 {
                     let c_vir = c_p.slice(ndarray::s![.., nocc..]);
                     let scv = s.dot(&c_vir); // (n × nvir)
@@ -737,7 +753,7 @@ pub fn solve_rhf(
         last_eps = eps;
         // Only retain C across iterations when the level shift needs it; the
         // default (shift = 0) path skips the clone entirely.
-        if config.level_shift > 0.0 {
+        if effective_level_shift > 0.0 {
             c_prev = Some(c.clone());
         }
 
