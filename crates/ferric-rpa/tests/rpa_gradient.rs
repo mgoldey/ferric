@@ -16,6 +16,17 @@ fn h2o() -> Molecule {
     Molecule::parse_xyz(xyz, 0, 1).unwrap()
 }
 
+// NH3, C3v, same geometry as testdata/molecules/nh3.xyz (already used by the
+// RHF/RI-MP2 rows in docs/VALIDATION.md). Unlike H2 (trivial linear symmetry,
+// x/y forced to vanish) or the water translational-invariance-only STO-3G
+// smoke test, NH3 has no coordinate-axis symmetry to exploit, so every one of
+// its 4 atoms x 3 coords = 12 gradient components is a genuine independent
+// FD-vs-FD cross-check.
+fn nh3() -> Molecule {
+    let xyz = "4\nammonia C3v (exp r=1.012, angle=106.7)\nN 0.000000 0.000000 0.116489\nH 0.000000 0.939731 -0.271808\nH 0.813831 -0.469865 -0.271808\nH -0.813831 -0.469865 -0.271808\n";
+    Molecule::parse_xyz(xyz, 0, 1).unwrap()
+}
+
 fn small_rpa_cfg(n_quad: usize) -> PdepRpaConfig {
     PdepRpaConfig {
         frozen_core: 0,
@@ -91,6 +102,69 @@ fn rpa_gradient_h2_ccpvdz_symmetry() {
         grad[(0, 2)],
         grad[(1, 2)]
     );
+}
+
+#[test]
+fn rpa_gradient_nh3_sto3g_translational_invariance() {
+    // Cheap sanity check, same convention as the H2O/STO-3G test above:
+    // sum of forces over all atoms must vanish per Cartesian coordinate.
+    let mol = nh3();
+    let obs_bs = basis::bundled("sto-3g").unwrap();
+    let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
+    let op = Operator::coulomb();
+    let cfg = small_rpa_cfg(12);
+
+    let grad = rpa_correlation_gradient(&mol, &obs_bs, &aux_bs, op, &cfg, 5e-4).unwrap();
+
+    eprintln!("NH3/STO-3G RPA correlation gradient (Ha/Bohr):");
+    for (a, row) in grad.outer_iter().enumerate() {
+        eprintln!(
+            "  atom {a}: [{:+.8}, {:+.8}, {:+.8}]",
+            row[0], row[1], row[2]
+        );
+    }
+
+    for c in 0..3 {
+        let s: f64 = (0..4).map(|a| grad[(a, c)]).sum();
+        assert!(
+            s.abs() < 1e-6,
+            "translational invariance violated: coord {c}, sum {s:.3e}"
+        );
+    }
+}
+
+#[test]
+#[ignore] // ~2-3 min runtime
+fn rpa_gradient_nh3_ccpvdz_fd_self_consistent() {
+    // Second molecule at the production basis (cc-pVDZ), same FD-step
+    // self-consistency cross-check as rpa_gradient_h2o_ccpvdz_fd_self_consistent.
+    // NH3 has C3v symmetry but (unlike H2) no coordinate-axis component is
+    // forced to vanish, so this exercises the full 12-component gradient.
+    let mol = nh3();
+    let obs_bs = basis::bundled("cc-pvdz").unwrap();
+    let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
+    let op = Operator::coulomb();
+    let cfg = small_rpa_cfg(16);
+
+    let g1 = rpa_correlation_gradient(&mol, &obs_bs, &aux_bs, op, &cfg, 5e-4).unwrap();
+    let g2 = rpa_correlation_gradient(&mol, &obs_bs, &aux_bs, op, &cfg, 2.5e-4).unwrap();
+
+    eprintln!("=== NH3/cc-pVDZ RPA gradient: FD step consistency ===");
+    let mut max = 0.0f64;
+    for a in 0..4 {
+        for c in 0..3 {
+            let d = (g1[(a, c)] - g2[(a, c)]).abs();
+            max = max.max(d);
+            eprintln!(
+                "  atom={a} coord={c}: h=5e-4 {:+.8} h=2.5e-4 {:+.8} diff {:.2e}",
+                g1[(a, c)],
+                g2[(a, c)],
+                d
+            );
+        }
+    }
+    eprintln!("  max diff = {:.2e}", max);
+    assert!(max < 1e-4, "FD consistency failed: max diff {max:.2e}");
 }
 
 #[test]
