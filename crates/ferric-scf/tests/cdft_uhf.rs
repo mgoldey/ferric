@@ -101,6 +101,63 @@ fn charge_constraint_is_satisfied() {
     assert!(res.scf.converged, "inner SCF not converged");
 }
 
+/// Second constraint case: a genuine SPIN constraint (`SpinChannel::SpinDiff`),
+/// not another charge constraint. Every other end-to-end cDFT test in this
+/// file (and `cdft_weight.rs`) only ever exercises `SpinChannel::Total`; the
+/// `SpinDiff` arm of `population`/the driver's fock_mod sign convention
+/// (`+λW` on α, `−λW` on β, vs `Total`'s `+λW` on both) had never been run
+/// through the outer Newton loop before this test. This is a different
+/// molecule from the `charge_constraint_is_satisfied`/`residual_is_monotonic`
+/// LiH cases above: LiH⁺ (charge +1, doublet, 3 electrons — an open-shell
+/// system, required because a closed-shell singlet has Nα=Nβ globally and
+/// there is no unpaired spin density to redistribute onto a fragment).
+///
+/// Baseline (unconstrained UHF) puts N_α−N_β on Li at ≈0.274 e (the doublet's
+/// one unpaired electron is mostly delocalized/H-centered). A manual λ-scan
+/// (not part of the assertions here) showed a smooth, strictly monotonic,
+/// cliff-free response over λ∈[-0.5,+1.0] (spin_Li: 0.558 → 0.274 → 0.135),
+/// unlike He₂⁺'s plateau-then-cliff charge response — so this case does not
+/// need He₂⁺'s loose tolerance/level-shift workarounds. Target 0.45 e sits
+/// inside that smooth region, roughly the midpoint between baseline and the
+/// λ=-0.5 sample.
+#[test]
+fn spin_constraint_is_satisfied_lih_plus() {
+    let mol = Molecule::parse_xyz("2\nLiH+\nLi 0 0 0\nH 0 0 1.60\n", 1, 2).unwrap();
+    let bs = basis::bundled("def2-svp").unwrap();
+    let prep = PreparedBasis::new(&mol, &bs).unwrap();
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+    let ctx = ParallelContext::default();
+
+    let target = 0.45; // pull more of the unpaired spin density onto Li
+    let cfg = RhfConfig {
+        constraints: vec![Constraint {
+            fragment: vec![0],
+            spin: SpinChannel::SpinDiff,
+            target,
+        }],
+        cdft_lambda_tol: 1e-5,
+        fractional_occ: false,
+        ..Default::default()
+    };
+    let res = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &cfg).unwrap();
+    assert!(
+        (res.populations[0] - target).abs() < 1e-5,
+        "Li spin pop {} vs target {target}",
+        res.populations[0]
+    );
+    assert!(res.scf.converged, "inner SCF not converged");
+
+    // Sanity: the converged λ must be genuinely nonzero (a zero λ would mean
+    // the outer loop simply left the unconstrained density untouched, which
+    // is not the target — baseline spin_Li is ≈0.274, target is 0.45).
+    assert!(
+        res.lambdas[0].abs() > 1e-3,
+        "lambda suspiciously near zero: {}",
+        res.lambdas[0]
+    );
+}
+
 /// cDFT's per-iteration UhfFockMod closure (constraint) and the external
 /// potential's hcore-level addition are architecturally independent. The
 /// outer λ-Newton loop is *designed* to hit `target` regardless of what else
