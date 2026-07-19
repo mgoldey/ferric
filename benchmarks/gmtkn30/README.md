@@ -12,8 +12,58 @@ OPENBLAS_NUM_THREADS=1 RAYON_NUM_THREADS=6 \
   python benchmarks/gmtkn30/run_aconf.py rimp2 cc-pvdz
 ```
 
-methods: `rhf`, `rimp2`, `ccsd_t` (ccsd_t only feasible for ~H2O-sized systems —
-the dense (T) kernel needs ~TB RAM at butane scale; see docs/VALIDATION.md).
+methods: `rhf`, `rimp2`, `ccsd_t`. The (T) triples correction itself is now a
+cheap per-triple-block streaming kernel (2026-07-19 rewrite, see
+`docs/VALIDATION.md`) and is no longer the memory bottleneck. The remaining
+bottleneck is the **spin-orbital CCSD step's dense VVVV block** (`ccsd.rs`,
+unchanged by the (T) rewrite): at cc-pVDZ, even the smallest ACONF system
+(butane) needs ~24 GB peak RSS — more than this project's usual 23-24 GB
+shared dev box has available, so a cc-pVDZ CCSD(T) run on ACONF was not
+attempted. At **6-31G**, CCSD(T) is comfortably tractable in memory (a few
+GB peak) but still genuinely O(N^7)-expensive in wall time: ~9-10 min per
+butane conformer, ~43 min per pentane conformer on this box — see the
+2026-07-19 result below for what was actually run and why a full 15-reaction
+sweep wasn't attempted in one session.
+
+## Result (CCSD(T) / 6-31G, ferric, 2026-07-19 — partial, streaming-rewrite validation)
+
+Validates the 2026-07-19 per-triple-block streaming CCSD(T) rewrite (#89) on
+real ACONF systems, beyond the synthetic H2O/butane-STO-3G demos it shipped
+with. **Not a full benchmark run** — stopped deliberately after 3 of 18
+conformers to conserve shared-box CPU once enough evidence had accumulated;
+see scope note below.
+
+| Conformer | Basis | RHF (Ha) | RI-MP2 total (Ha) | CCSD(T) total (Ha) | Wall time |
+|---|---|---|---|---|---|
+| B_G (butane) | 6-31G | −157.232793 | −157.607696 | −157.670854 | 9.9 min |
+| B_T (butane) | 6-31G | −157.234361 | −157.608915 | −157.672048 | 8.9 min |
+| P_TT (pentane) | 6-31G | −196.252685 | −196.719776 | −196.797025 | 43.0 min |
+
+All three conformers converged cleanly with no memory or numerical issues —
+this is the first time ferric's CCSD(T) has run on a system this size
+end-to-end. B_G/B_T form one of the 15 real ACONF reactions (literature
+CCSD(T)/CBS relative energy 0.598 kcal/mol, `run_aconf.py`'s `REACTIONS`
+list); at 6-31G (nowhere near CBS), ferric gives **B_T − B_G = −0.749
+kcal/mol (CCSD(T)) / −0.765 kcal/mol (RI-MP2)** — the wrong *sign* relative
+to the CBS reference, but ferric's own CCSD(T) and RI-MP2 numbers agree
+tightly with each other (−0.749 vs −0.765), which is the more informative
+consistency check here: this is very plausibly an ordinary small-basis
+artifact on a genuinely small (~0.6 kcal/mol) conformer energy gap, not a
+CCSD(T)-specific bug — RI-MP2 (already validated elsewhere, unrelated to
+this rewrite) shows the same sign at the same basis. Not enough data to
+separate "6-31G is just too small for this particular reaction" from
+anything more interesting; a cc-pVDZ or larger-basis rerun would resolve it
+but hits the CCSD memory ceiling described above.
+
+**Scope note**: hexane conformers (12 of the 18 ACONF conformers) were not
+attempted — extrapolating the butane→pentane wall-time growth puts each
+hexane conformer at roughly 1.5-2+ hours, making a full 15-reaction sweep
+impractical in a single session, and the run was stopped after 3 conformers
+once they had demonstrated the streaming rewrite works correctly on
+real, non-trivial systems (the actual validation goal) rather than running
+the full set to exhaustion. A complete ACONF/CCSD(T) sweep, if wanted later,
+would need either a much larger basis-appropriate memory budget (for
+cc-pVDZ) or acceptance of multi-hour-per-conformer wall time at 6-31G.
 
 ## Result (RI-MP2 / cc-pVDZ, ferric, 2026-06-05)
 
