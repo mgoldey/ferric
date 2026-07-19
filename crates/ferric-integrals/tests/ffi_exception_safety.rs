@@ -33,6 +33,20 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::engine::Engine;
 use ferric_integrals::ffi;
 use std::collections::HashMap;
+use std::sync::Mutex;
+
+/// Serializes the tests in this file. `scf_libint_init`'s reference count guards
+/// the *call* to `libint2::initialize()` but not its *completion*: when two test
+/// threads race, the second thread's `fetch_add` returns non-zero so it skips
+/// re-init and proceeds straight to `Engine` compute, hitting
+/// `Engine::initialize()`'s `assert(libint2::initialized())` (engine.impl.h:643)
+/// before the first thread's `libint2::initialize()` has set the flag — an
+/// intermittent SIGABRT under the default multi-threaded `cargo test`. Running
+/// the two tests one at a time lets the first fully finish libint init before
+/// the second starts, so the flag is always set by the time compute runs.
+/// (Same `static Mutex<()>` serialization idiom the `blas_raise_identity.rs`
+/// suites use for their process-global-state tests.)
+static LIBINT_SERIAL: Mutex<()> = Mutex::new(());
 
 fn one_atom_mol() -> Molecule {
     Molecule {
@@ -74,6 +88,7 @@ fn single_shell_basis(z: i32, l: i32) -> BasisSet {
 /// (e.g. a panic from an unrelated setup bug rather than from the caught throw).
 #[test]
 fn in_range_shell_overlap_is_clean() {
+    let _serial = LIBINT_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     unsafe { ffi::scf_libint_init() };
     let mol = one_atom_mol();
     let bs = single_shell_basis(1, 2); // d shell, well within LIBINT_MAX_AM 6
@@ -97,6 +112,7 @@ fn in_range_shell_overlap_is_clean() {
 /// A process abort / segfault (the pre-fix UB) fails the test by never returning.
 #[test]
 fn over_max_am_shell_is_caught_not_ub() {
+    let _serial = LIBINT_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     unsafe { ffi::scf_libint_init() };
     let mol = one_atom_mol();
     let bs = single_shell_basis(1, 7); // L = 7 (k shell) > LIBINT_MAX_AM 6
