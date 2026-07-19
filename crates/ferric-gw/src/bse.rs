@@ -77,6 +77,10 @@ pub struct BseResult {
     pub nvir: usize,
     /// GW quasiparticle energies used for the diagonal (active block, Ha).
     pub eps_qp: Vec<f64>,
+    /// Length-gauge oscillator strengths f_n (dimensionless), same ordering
+    /// and length as `omega`. See [`tda_oscillator_strengths`] for the
+    /// convention and its PySCF cross-check.
+    pub oscillator_strength: Vec<f64>,
 }
 
 impl BseResult {
@@ -84,6 +88,85 @@ impl BseResult {
     pub fn lowest_ev(&self) -> f64 {
         self.omega[0] * 27.211_386_245_988
     }
+
+    /// Oscillator strength of the lowest singlet.
+    pub fn lowest_oscillator_strength(&self) -> f64 {
+        self.oscillator_strength[0]
+    }
+}
+
+/// Length-gauge TDA/CIS oscillator strengths for every state in a solved
+/// singlet particle–hole eigenproblem.
+///
+/// Standard closed-shell singlet TDA/CIS transition-dipole convention
+/// (Szabo & Ostlund; Dreuw & Head-Gordon, Chem. Rev. 105, 4009 (2005) §2;
+/// numerically cross-checked against PySCF's
+/// `tdscf.rhf.TDA.oscillator_strength`, length gauge — see
+/// `crates/ferric-gw/tests/bse_oscillator_strength.rs`):
+///
+/// ```text
+///   <0|r|n> = sqrt(2) * sum_{ia} X_n(i,a) * <i|r|a>
+///   f_n     = (2/3) * Omega_n * |<0|r|n>|^2
+/// ```
+///
+/// `X_n(i,a)` is column `n` of the eigenvector matrix returned by the dense
+/// `a_mat.eigh(...)` solve in [`run_bse_tda`]/[`run_cis_tda`] — LAPACK
+/// `dsyev`/`dsyevd` normalizes each column to unit L2 norm
+/// (`sum_{ia} X_n(i,a)^2 = 1`), which is the normalization this formula
+/// assumes. The `sqrt(2)` factor is the closed-shell singlet spin-adaptation
+/// factor (both spin channels contribute identically to a singlet
+/// particle–hole excitation) — verified numerically against PySCF: PySCF's
+/// internally-stored `xy` amplitude is `x1 * sqrt(0.5)` where `x1` is the
+/// same unit-normalized eigenvector ferric's `eigh` returns, and
+/// `_contract_multipole` contracts with an extra explicit factor of 2, i.e.
+/// PySCF's effective prefactor is `2 * sqrt(0.5) = sqrt(2)` — matching this
+/// implementation exactly (not just approximately) once the eigenvector
+/// normalization convention is aligned.
+///
+/// `evecs` is `(n, n)` with `n = nocc*nvir`, row-major flat index
+/// `ia = i*nvir + a` (LOCAL occ/vir indices within the active window, same
+/// convention as `fill_row` in [`run_bse_tda`]/[`run_cis_tda`]). `mu_ao` are
+/// the 3 AO dipole matrices about an arbitrary common origin (irrelevant —
+/// occ/vir transition dipoles are origin-independent by orbital
+/// orthogonality, also verified numerically). `mo_coeff` is the FULL
+/// nbasis×nmo MO coefficient matrix; `first_act`/`nocc_total` locate the
+/// active occ/vir columns within it.
+fn tda_oscillator_strengths(
+    evals: &Array1<f64>,
+    evecs: &Array2<f64>,
+    mu_ao: &[Array2<f64>; 3],
+    mo_coeff: &Array2<f64>,
+    first_act: usize,
+    nocc_total: usize,
+    nocc: usize,
+    nvir: usize,
+) -> Vec<f64> {
+    let n = nocc * nvir;
+    debug_assert_eq!(evecs.shape(), &[n, n]);
+
+    // Occ-virt dipole block <i|r|a> for i in the active occ window, a in the
+    // active virt window (local indices), one Array2 per Cartesian axis.
+    let orbo = mo_coeff.slice(ndarray::s![.., first_act..nocc_total]);
+    let orbv = mo_coeff.slice(ndarray::s![.., nocc_total..(nocc_total + nvir)]);
+    let dip_ia: [Array2<f64>; 3] = std::array::from_fn(|d| orbo.t().dot(&mu_ao[d]).dot(&orbv));
+
+    let mut f = Vec::with_capacity(n);
+    for state in 0..n {
+        let x = evecs.column(state);
+        let mut mu = [0.0_f64; 3];
+        for (d, dip) in dip_ia.iter().enumerate() {
+            let mut acc = 0.0;
+            for i in 0..nocc {
+                for a in 0..nvir {
+                    acc += x[i * nvir + a] * dip[(i, a)];
+                }
+            }
+            mu[d] = std::f64::consts::SQRT_2 * acc;
+        }
+        let mu2 = mu[0] * mu[0] + mu[1] * mu[1] + mu[2] * mu[2];
+        f.push((2.0 / 3.0) * evals[state] * mu2);
+    }
+    f
 }
 
 /// Run a BSE-TDA singlet calculation on a closed-shell RHF reference.
@@ -249,10 +332,31 @@ pub fn run_bse_tda(
     //    (CLI/Python/tests), never from inside a rayon par_iter. So no enclosing
     //    parallel region; opt_in_blas_threads() self-guards to 1 from a rayon
     //    worker regardless, and defaults to 1 (bit-identical to today).
-    let (evals, _) = with_blas_threads(opt_in_blas_threads(), || a_mat.eigh(UPLO::Upper))
+    let (evals, evecs) = with_blas_threads(opt_in_blas_threads(), || a_mat.eigh(UPLO::Upper))
         .map_err(|e| FerricError::Lapack(format!("BSE-TDA eigh: {e}")))?;
-    let mut omega: Vec<f64> = evals.to_vec();
-    omega.sort_by(|x, y| x.partial_cmp(y).unwrap());
+    // LAPACK dsyev/dsyevd (what ndarray-linalg's eigh wraps) returns
+    // eigenvalues already ascending, with evecs columns in the matching
+    // order — no re-sort needed, and re-sorting `omega` alone (as this used
+    // to do) would have silently DEsynchronized it from `evecs`'s column
+    // order once oscillator strengths needed both together. Assert the
+    // ascending invariant instead of re-deriving it.
+    debug_assert!(
+        evals.as_slice().unwrap().windows(2).all(|w| w[0] <= w[1] + 1e-9),
+        "eigh eigenvalues expected ascending"
+    );
+    let omega: Vec<f64> = evals.to_vec();
+
+    let mu_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
+    let oscillator_strength = tda_oscillator_strengths(
+        &evals,
+        &evecs,
+        &mu_ao,
+        rhf.mos_r(),
+        first_act,
+        nocc_total,
+        nocc,
+        nvir,
+    );
 
     let eps_qp_act: Vec<f64> = (first_act..nmo).map(|p| eps_qp_full[p]).collect();
     Ok(BseResult {
@@ -260,6 +364,7 @@ pub fn run_bse_tda(
         nocc,
         nvir,
         eps_qp: eps_qp_act,
+        oscillator_strength,
     })
 }
 
@@ -354,12 +459,20 @@ pub fn run_cis_tda(
     // a_mat fill (joined; a_mat consumed here) and run_cis_tda is a top-level
     // serial driver, never called from a rayon par_iter. opt_in_blas_threads()
     // self-guards to 1 from a rayon worker and defaults to 1.
-    let (evals, _) = with_blas_threads(opt_in_blas_threads(), || a_mat.eigh(UPLO::Upper))
+    let (evals, evecs) = with_blas_threads(opt_in_blas_threads(), || a_mat.eigh(UPLO::Upper))
         .map_err(|e| FerricError::Lapack(format!("CIS-TDA eigh: {e}")))?;
-    let mut omega: Vec<f64> = evals.to_vec();
-    omega.sort_by(|x, y| x.partial_cmp(y).unwrap());
+    // See run_bse_tda's identical comment: eigh already returns evals
+    // ascending with evecs columns in matching order; don't re-sort omega
+    // alone (that would desync it from evecs before oscillator strengths are
+    // built from both).
+    let omega: Vec<f64> = evals.to_vec();
+
+    let mu_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
+    let oscillator_strength =
+        tda_oscillator_strengths(&evals, &evecs, &mu_ao, rhf.mos_r(), first_act, nocc_total, nocc, nvir);
+
     let eps_act: Vec<f64> = (first_act..nmo).map(|p| eps[p]).collect();
-    Ok(BseResult { omega, nocc, nvir, eps_qp: eps_act })
+    Ok(BseResult { omega, nocc, nvir, eps_qp: eps_act, oscillator_strength })
 }
 
 /// Result of a BSE dynamic-polarizability / C6 calculation (gate 2).

@@ -1852,6 +1852,11 @@ struct PyBseResult {
     omega: Vec<f64>,
     /// GW quasiparticle energies used for the diagonal (active block, Ha).
     eps_qp: Vec<f64>,
+    /// Length-gauge oscillator strengths f_n (dimensionless), same ordering
+    /// as `omega`. See `ferric_gw::bse::tda_oscillator_strengths` for the
+    /// convention (PySCF-cross-checked, see
+    /// `crates/ferric-gw/tests/bse_oscillator_strength.rs`).
+    oscillator_strength: Vec<f64>,
 }
 
 #[pymethods]
@@ -1864,9 +1869,17 @@ impl PyBseResult {
     fn eps_qp<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
         PyArray1::from_slice(py, &self.eps_qp)
     }
+    #[getter]
+    fn oscillator_strength<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        PyArray1::from_slice(py, &self.oscillator_strength)
+    }
     /// Lowest singlet excitation energy in eV.
     fn lowest_ev(&self) -> f64 {
         self.omega[0] * 27.211_386_245_988
+    }
+    /// Oscillator strength of the lowest singlet.
+    fn lowest_oscillator_strength(&self) -> f64 {
+        self.oscillator_strength[0]
     }
 }
 
@@ -1954,6 +1967,7 @@ fn run_bse_tda(
         nvir: r.nvir,
         omega: r.omega,
         eps_qp: r.eps_qp,
+        oscillator_strength: r.oscillator_strength,
     })
 }
 

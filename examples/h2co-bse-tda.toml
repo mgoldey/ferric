@@ -1,0 +1,25 @@
+# BSE-TDA[G0W0@HF] / cc-pVDZ on formaldehyde (H2CO). Phase-1 oscillator-strength
+# pilot (see docs/bse-tda-benchmark-plan.md, benchmarks/bse-tda-pilot/README.md)
+# -- NOT the full Thiel-set benchmark. Lowest singlet is the n->pi* (1A2,
+# symmetry-forbidden, f~0) transition -- a useful contrast to water/ethylene's
+# bright lowest states, exercising the oscillator-strength formula on a
+# near-zero case against a real molecule (not just water's own near-zero
+# state 2).
+[molecule]
+xyz = "testdata/molecules/h2co.xyz"
+
+[basis]
+name = "cc-pvdz"
+
+[method]
+kind = "bse-tda"
+
+[rpa]
+auxbasis = "cc-pvdz-ri"
+n_quad = 16
+quadrature = "gauss-legendre"
+trunc_thresh = 0.0
+eigensolver_conv_thresh = 1e-7
+
+[gw]
+frozen_core = 0

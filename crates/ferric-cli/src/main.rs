@@ -1848,11 +1848,15 @@ fn main() {
             println!("  nbasis     = {}", prep.nbasis());
             println!("  RHF energy = {:.10} Hartree", result.energy);
             println!("  nocc = {}  nvir = {}  ({} singlet states)", bse.nocc, bse.nvir, bse.omega.len());
-            println!("  {:>4} {:>12}", "n", "Omega (eV)");
-            for (n, &om) in bse.omega.iter().enumerate() {
-                println!("  {:>4} {:>12.4}", n + 1, om * ha_to_ev);
+            println!("  {:>4} {:>12} {:>10}", "n", "Omega (eV)", "f_osc");
+            for (n, (&om, &f)) in bse.omega.iter().zip(bse.oscillator_strength.iter()).enumerate() {
+                println!("  {:>4} {:>12.4} {:>10.5}", n + 1, om * ha_to_ev, f);
             }
-            println!("  lowest singlet excitation = {:.4} eV", bse.lowest_ev());
+            println!(
+                "  lowest singlet excitation = {:.4} eV  (f = {:.5})",
+                bse.lowest_ev(),
+                bse.lowest_oscillator_strength()
+            );
         }
         "tdhf-static-polarizability" => {
             // RPAx@KS static (omega=0) polarizability only. SCOPE: this method
