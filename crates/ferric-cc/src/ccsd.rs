@@ -23,28 +23,9 @@ use ferric_scf::ScfResult;
 use ferric_tensors::{einsum, Axis, Tensor};
 use ndarray::{ArrayD, IxDyn};
 
-// --- Permutation antisymmetrizers (operate on the i,j,a,b axes) ---
-fn swap_ij(x: &ArrayD<f64>) -> ArrayD<f64> {
-    x.view().permuted_axes(IxDyn(&[1, 0, 2, 3])).as_standard_layout().into_owned()
-}
-fn swap_ab(x: &ArrayD<f64>) -> ArrayD<f64> {
-    x.view().permuted_axes(IxDyn(&[0, 1, 3, 2])).as_standard_layout().into_owned()
-}
-/// P(ij) x = x - x.swap(0,1)
-fn p_ij(x: &ArrayD<f64>) -> ArrayD<f64> {
-    x - &swap_ij(x)
-}
-/// P(ab) x = x - x.swap(2,3)
-fn p_ab(x: &ArrayD<f64>) -> ArrayD<f64> {
-    x - &swap_ab(x)
-}
-/// P(ij)P(ab) x = x - swap_ij - swap_ab + swap_both
-fn p_ij_ab(x: &ArrayD<f64>) -> ArrayD<f64> {
-    let sij = swap_ij(x);
-    let sab = swap_ab(x);
-    let sijab = swap_ab(&sij);
-    x - &sij - &sab + &sijab
-}
+// Permutation antisymmetrizers P(ij)/P(ab)/P(ij)P(ab) on the i,j,a,b axes are
+// shared with the CCD residual builder — see `helpers.rs`.
+use super::helpers::{p_ab, p_ij, p_ij_ab};
 
 /// Wrap a `<pq||rs>` ArrayD with axis labels (purely descriptive; einsum! only
 /// uses labels for a debug-mode consistency check).
@@ -279,7 +260,7 @@ pub fn ccsd(
         // Wmnij = oooo + P(ij)[ einsum('je,mnie->mnij', t1, ooov) ] + 0.25 einsum('ijef,mnef->mnij', tau, oovv)
         // numpy: +einsum('je,mnie->mnij',t1,ooov) - einsum('ie,mnje->mnij',t1,ooov)
         let wmnij: ArrayD<f64> = {
-            let mut w = g_oooo_ref(&oooo);
+            let mut w = owned_arr4(&oooo);
             // term: einsum('je,mnie->mnij', t1, ooov): contract e ; left-free j ;
             // right-free m,n,i -> 'jmni'; want 'mnij' = permute [1,2,3,0].
             let jmni: ArrayD<f64> = einsum!("je,mnie->jmni", &t1_t, &ooov);
@@ -300,7 +281,7 @@ pub fn ccsd(
         // Wabef = vvvv - einsum('mb,amef->abef', t1, vovv) + einsum('ma,bmef->abef', t1, vovv)
         //              + 0.25 einsum('mnab,mnef->abef', tau, oovv)
         let wabef: ArrayD<f64> = {
-            let mut w = g_oooo_ref(&vvvv);
+            let mut w = owned_arr4(&vvvv);
             // einsum('mb,amef->abef', t1, vovv): contract m ; left-free b ;
             // right-free a,e,f -> 'baef'; want 'abef' = permute [1,0,2,3].
             let baef: ArrayD<f64> = einsum!("mb,amef->baef", &t1_t, &vovv);
@@ -321,7 +302,7 @@ pub fn ccsd(
         // Wmbej = ovvo + einsum('jf,mbef->mbej', t1, ovvv) - einsum('nb,mnej->mbej', t1, oovo)
         //              - einsum('jnfb,mnef->mbej', 0.5 t2 + t1 outer t1, oovv)
         let wmbej: ArrayD<f64> = {
-            let mut w = g_oooo_ref(&ovvo);
+            let mut w = owned_arr4(&ovvo);
             // einsum('jf,mbef->mbej', t1, ovvv): contract f ; left-free j ;
             // right-free m,b,e -> 'jmbe'; want 'mbej' = permute [1,2,3,0].
             let jmbe: ArrayD<f64> = einsum!("jf,mbef->jmbe", &t1_t, &ovvv);
@@ -518,8 +499,9 @@ pub fn ccsd(
     Err(FerricError::Convergence("spin-orbital CCSD did not converge".into()))
 }
 
-/// Helper: clone the underlying ArrayD out of a labeled Tensor<4>.
-fn g_oooo_ref(t: &Tensor<4>) -> ArrayD<f64> {
+/// Clone the underlying `ArrayD` out of a labeled `Tensor<4>` (used to seed a
+/// mutable `W` intermediate from a loop-invariant integral block).
+fn owned_arr4(t: &Tensor<4>) -> ArrayD<f64> {
     t.view().to_owned()
 }
 
