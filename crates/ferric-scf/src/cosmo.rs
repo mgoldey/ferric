@@ -15,9 +15,12 @@
 //!    (default 1.17, the original COSMO scale factor -- distinct from the
 //!    1.2 "Q-Chem convention" used by some PCM variants). Each sphere is
 //!    discretized with a fixed Lebedev angular grid (reusing
-//!    [`ferric_dft::lebedev`]); grid points buried inside a neighboring
-//!    atom's sphere are discarded (simple visibility trim, no GEPOL
-//!    re-tessellation of partially-buried segments).
+//!    [`ferric_dft::lebedev`]); each grid point's area is down-weighted by a
+//!    smooth switching function of its distance into any neighboring atom's
+//!    sphere (SWIG-style, Lange & Herbert, J. Chem. Phys. 133, 244111
+//!    (2010), eq. 3.19 -- the same scheme PySCF's `pcm.py` uses), rather than
+//!    a hard binary keep/discard cut. See `switch_h`/`switching_weight`
+//!    below.
 //! 2. **Segment interaction matrix** `S` (called `A` in some papers): for
 //!    two distinct segments k != l, `S_kl = 1 / |s_k - s_l|` (bare Coulomb
 //!    interaction between point charges at the segment centers). The
@@ -62,6 +65,22 @@
 //!   Lebedev "tile" straddles a burial boundary). This is a well-known
 //!   simplification relative to production GEPOL cavities but converges to
 //!   the same physics as the angular grid is refined.
+//! * **Point-charge segment representation**: even with the SWIG switching
+//!   weight above, each surviving segment is still treated as a bare point
+//!   charge (`1/|r|` off-diagonal `S`, closed-form disk self-term). PySCF's
+//!   `pcm.py` SWIG implementation additionally replaces the point charge
+//!   with a *Gaussian-smeared* charge distribution (`S_ij = erf(xi_ij r_ij)
+//!   / r_ij`, with a per-segment width `xi` derived from the local grid
+//!   density) and a correspondingly different diagonal self-term. Measured
+//!   2026-07-19 (see `docs/vol-free-verification.md`-style investigation
+//!   note in `docs/VALIDATION.md`'s COSMO row): swapping ONLY the S-matrix
+//!   construction (bare-point-charge-with-xi=3.8-diagonal vs PySCF's
+//!   Gaussian-smeared S), on the *identical* SWIG cavity/potential, shifts
+//!   the water/water solvation energy by ~40% (-6.35 vs -10.6 kcal/mol) —
+//!   i.e. the point-charge-vs-Gaussian-smearing choice is a bigger lever on
+//!   this benchmark than the hard-cut-vs-SWIG cavity discretization was.
+//!   Not implemented here; left as a documented, quantified gap for a future
+//!   pass rather than folded in speculatively.
 
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
@@ -75,6 +94,21 @@ use ndarray_linalg::Solve;
 /// sqrt(4*pi / a_k)`. This is the standard constant quoted throughout the
 /// COSMO literature for a segment modeled as a small circular disk.
 const COSMO_XI: f64 = 3.8;
+
+/// SWIG (switching/Gaussian) transition-zone shape parameter (Lange &
+/// Herbert, JCP 133, 244111 (2010), eq. 3.19): the quintic smoothstep
+/// `h(x) = x^3 (10 - 15x + 6x^2)`, `h(x)=0` for `x<=0`, `h(x)=1` for `x>=1`.
+/// This is a faithful port of PySCF's `pcm.py::switch_h` (same functional
+/// form; see the `switch_h_*` unit tests below for direct value checks).
+fn switch_h(x: f64) -> f64 {
+    if x <= 0.0 {
+        0.0
+    } else if x >= 1.0 {
+        1.0
+    } else {
+        x * x * x * (10.0 - 15.0 * x + 6.0 * x * x)
+    }
+}
 
 /// Default COSMO cavity radius scale factor (Klamt & Schuurmann 1993).
 pub const DEFAULT_RADIUS_SCALE: f64 = 1.17;
@@ -235,11 +269,20 @@ impl CosmoCavity {
     }
 
     /// Build a cavity from atom-centered Lebedev-discretized spheres,
-    /// scaled-Bondi radii, with a simple point-visibility trim: a grid point
-    /// on atom A's sphere is discarded if it falls strictly inside another
-    /// atom B's sphere (`|point - R_B| < R_B`). Ghost atoms (basis-only,
-    /// zero nuclear charge) are excluded from the cavity — they carry no
-    /// physical volume to screen.
+    /// scaled-Bondi radii, using a SWIG-style smooth switching function
+    /// (Lange & Herbert, JCP 133, 244111 (2010), eq. 3.19 — the same scheme
+    /// PySCF's `pcm.py` uses for `method="COSMO"`) instead of a hard
+    /// point-in-sphere visibility trim: a grid point on atom A's sphere gets
+    /// its area scaled by `prod_{B != A} h(d_AB)`, where `d_AB` measures how
+    /// far the point sits into (or out of) atom B's switching zone
+    /// (`h`=[`switch_h`]). A point that is far outside every other sphere
+    /// keeps its full area (`h -> 1`); a point deep inside another sphere is
+    /// smoothly suppressed to zero area (`h -> 0`) rather than discarded in
+    /// one hard step. Points whose total switching weight underflows
+    /// (`< 1e-16`, matching PySCF's own cutoff) are dropped as an
+    /// optimization only — this is a numerical floor, not a physics cutoff.
+    /// Ghost atoms (basis-only, zero nuclear charge) are excluded from the
+    /// cavity — they carry no physical volume to screen.
     ///
     /// Returns `Err` if any real atom's element has no tabulated Bondi
     /// radius, or if the resulting cavity has zero segments (e.g. every atom
@@ -265,9 +308,29 @@ impl CosmoCavity {
         }
 
         let (unit_pts, weights) = ferric_dft::lebedev::lebedev(config.lebedev_order);
+        let n_grid = unit_pts.len() as f64;
+
+        // Per-atom switching-zone geometry (PySCF gen_surface / Lange &
+        // Herbert eq. 3.19-3.21): the transition band width R_sw scales with
+        // the LOCAL Lebedev point density (sqrt(14/N)) so a finer angular
+        // grid gets a narrower (more resolved) switching zone, and R_in is
+        // the radius at which the switching function starts to turn on.
+        let r_sw: Vec<f64> = real_atoms
+            .iter()
+            .map(|&(_, _, r)| r * (14.0 / n_grid).sqrt())
+            .collect();
+        let r_in: Vec<f64> = real_atoms
+            .iter()
+            .zip(r_sw.iter())
+            .map(|(&(_, _, r), &rsw)| {
+                let ratio = r / rsw;
+                let alpha = 0.5 + ratio - (ratio * ratio - 1.0 / 28.0).sqrt();
+                r - alpha * rsw
+            })
+            .collect();
 
         let mut segments = Vec::new();
-        for &(ia, center_a, r_a) in &real_atoms {
+        for &(ia, center_a, r_a) in real_atoms.iter() {
             let sphere_area = 4.0 * std::f64::consts::PI * r_a * r_a;
             for (pt, w) in unit_pts.iter().zip(weights.iter()) {
                 let p = [
@@ -275,30 +338,40 @@ impl CosmoCavity {
                     center_a[1] + r_a * pt[1],
                     center_a[2] + r_a * pt[2],
                 ];
-                // Visibility trim: discard if buried inside any OTHER real
-                // atom's scaled sphere.
-                let mut buried = false;
-                for &(ib, center_b, r_b) in &real_atoms {
+                // Smooth switching weight: product of h(d) over every OTHER
+                // real atom's sphere (own-atom factor is exactly 1, matching
+                // PySCF's diJ[:, ia] = 1.0).
+                let mut swf = 1.0_f64;
+                for (ib_idx, &(ib, center_b, _)) in real_atoms.iter().enumerate() {
                     if ib == ia {
                         continue;
                     }
                     let dx = p[0] - center_b[0];
                     let dy = p[1] - center_b[1];
                     let dz = p[2] - center_b[2];
-                    let d2 = dx * dx + dy * dy + dz * dz;
-                    if d2 < r_b * r_b {
-                        buried = true;
+                    let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+                    let d = (dist - r_in[ib_idx]) / r_sw[ib_idx];
+                    // PySCF clamps sub-1e-8 differences to exactly 0 before
+                    // calling switch_h — a numerical tidiness step, not part
+                    // of the physical switching shape.
+                    let d = if d.abs() < 1e-8 { 0.0 } else { d };
+                    swf *= switch_h(d);
+                    if swf == 0.0 {
                         break;
                     }
                 }
-                if buried {
+                // Numerical floor matching PySCF's `w*swf > 1e-16` keep
+                // criterion — points below this contribute negligible area
+                // and would otherwise bloat the segment count for free.
+                if w * swf <= 1e-16 {
                     continue;
                 }
                 segments.push(Segment {
                     pos: p,
                     // Lebedev weights sum to 1 over the sphere, so w*sphere_area
-                    // is exactly the area subtended by this node.
-                    area: w * sphere_area,
+                    // is exactly the area subtended by this node; swf smoothly
+                    // down-scales it near a neighboring sphere's boundary.
+                    area: w * sphere_area * swf,
                 });
             }
         }
@@ -538,6 +611,29 @@ mod tests {
 
     fn water() -> Molecule {
         Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap()
+    }
+
+    #[test]
+    fn switch_h_boundary_values() {
+        assert_eq!(switch_h(-0.5), 0.0);
+        assert_eq!(switch_h(0.0), 0.0);
+        assert_eq!(switch_h(1.0), 1.0);
+        assert_eq!(switch_h(1.5), 1.0);
+    }
+
+    #[test]
+    fn switch_h_midpoint_and_monotonic() {
+        // h(0.5) = 0.5^3 * (10 - 7.5 + 1.5) = 0.125 * 4.0 = 0.5 (symmetric
+        // quintic smoothstep is centered at x=0.5).
+        assert!((switch_h(0.5) - 0.5).abs() < 1e-12);
+        // Monotonically non-decreasing on [0,1].
+        let mut prev = switch_h(0.0);
+        for i in 1..=20 {
+            let x = i as f64 / 20.0;
+            let cur = switch_h(x);
+            assert!(cur >= prev - 1e-12, "switch_h not monotonic at x={x}");
+            prev = cur;
+        }
     }
 
     #[test]

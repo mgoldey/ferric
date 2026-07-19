@@ -8,24 +8,47 @@
 //!
 //! ```text
 //! E_vacuum   = -76.0267679974 Ha
-//! E_solvated = -76.0362794591 Ha (PySCF SWIG-discretized COSMO, total-energy route)
-//! E_cosmo (E_solvated - E_vacuum) = -0.0095114617 Ha = -5.97 kcal/mol
-//! PySCF's own internally-decomposed e_solvent term = -0.0104690 Ha = -6.57 kcal/mol
+//! E_solvated = -76.0416829680 Ha (PySCF SWIG-COSMO, SAME radii/scale/eps as ferric)
+//! E_cosmo (E_solvated - E_vacuum) = -0.0148298 Ha = -9.30 kcal/mol
 //! ```
 //!
-//! The two PySCF numbers differ because PySCF's `pcm.py` uses a more
-//! sophisticated switching/Gaussian (SWIG) segment discretization (smoothly
-//! weighted, erf-damped segment interactions) than this module's simpler
-//! fixed-Lebedev-point-charge-with-visibility-trim cavity -- see
-//! `ferric_scf::cosmo` module docs for what is simplified. A tight match to
-//! either PySCF number is not expected; the correctness bar for this test is:
+//! NOTE (2026-07-19 investigation): the ORIGINAL version of this doc-comment
+//! quoted PySCF's *own default* conventions (`vdw_scale=1.2` + PySCF's
+//! `modified_Bondi` table, which overrides H to 1.1 Angstrom) as the
+//! cross-check target: -5.97 to -6.57 kcal/mol. That was an apples-to-oranges
+//! comparison -- ferric uses `radius_scale=1.17` with the *unmodified* Bondi
+//! table (H=1.20 Angstrom). Re-running PySCF's COSMO with ferric's actual
+//! radii/scale gives -9.30 kcal/mol (confirmed insensitive to Lebedev grid
+//! density: 110 vs 302 points/atom changes it by <1%), which is the correct
+//! apples-to-apples target.
+//!
+//! A SWIG-style smooth switching function (Lange & Herbert 2010, matching
+//! PySCF's `pcm.py`) was added to `ferric_scf::cosmo::CosmoCavity::build` to
+//! replace the previous hard point-in-sphere visibility trim, on the
+//! hypothesis (from the pre-existing VALIDATION.md caveat) that this
+//! discretization difference was the dominant source of the gap. Measured
+//! result: it is NOT. With the switching function, ferric's solvation energy
+//! moved from -3.38 to -3.39 kcal/mol (<0.5% change) -- essentially no
+//! effect, still ~2.7x off from the corrected -9.30 kcal/mol PySCF target.
+//!
+//! Follow-up isolation (same SWIG cavity points/potential fed through both
+//! ferric's bare-point-charge `S`-matrix formula and PySCF's Gaussian-smeared
+//! `S`-matrix formula) shows the point-charge-vs-Gaussian-smearing choice is
+//! a bigger lever than the switching function: -6.35 vs -10.6 kcal/mol on
+//! that isolated comparison, a ~40% swing. This does not fully close ferric's
+//! gap either (there is a further factor still unaccounted for between the
+//! isolated -6.35 kcal/mol and ferric's actual pipeline result of -3.39
+//! kcal/mol), so the remaining discrepancy is NOT attributed to any single
+//! fixed cause here -- see `ferric_scf::cosmo` module docs for the full,
+//! itemized list of simplifications still in place. The correctness bar for
+//! this test remains order-of-magnitude, not a tight match:
 //!
 //! 1. The solvation energy is negative (stabilizing) -- required by physics
 //!    for a polar solute in a polar solvent, not an assumption.
 //! 2. Its magnitude is the right ORDER of magnitude for a small polar
-//!    molecule (textbook range, and PySCF's own two numbers above): roughly
-//!    1-15 kcal/mol, generously bracketing the simplified cavity's expected
-//!    deviation from the SWIG reference.
+//!    molecule (textbook range): roughly 1-15 kcal/mol, generously
+//!    bracketing the simplified model's expected deviation from the
+//!    corrected -9.30 kcal/mol PySCF reference.
 //! 3. `cosmo: None` is exactly byte-identical to a build with no COSMO
 //!    support at all (regression-guards the "None is a true no-op"
 //!    convention used throughout this codebase for optional physics terms).
@@ -97,7 +120,7 @@ fn cosmo_water_in_water_solvation_energy_is_negative_and_right_order_of_magnitud
     eprintln!(
         "COSMO water/water: E_vacuum={:.10} Ha, E_solvated={:.10} Ha, \
          E_solvation={:.6} Ha = {:.4} kcal/mol \
-         (PySCF SWIG-COSMO cross-check: -0.0095 to -0.0105 Ha = -5.97 to -6.57 kcal/mol)",
+         (PySCF SWIG-COSMO cross-check with MATCHED radii/scale: -0.0148 Ha = -9.30 kcal/mol)",
         vacuum.energy, solvated.energy, e_solvation_ha, e_solvation_kcal
     );
 
@@ -108,16 +131,20 @@ fn cosmo_water_in_water_solvation_energy_is_negative_and_right_order_of_magnitud
          solute in a polar solvent, got {e_solvation_ha:.6} Ha"
     );
 
-    // 2. Right order of magnitude vs the PySCF cross-check (-5.97 / -6.57
-    // kcal/mol under matching radii/scale/eps conventions). Bracket
-    // generously (1-15 kcal/mol) since this module's cavity discretization
-    // (fixed Lebedev + hard visibility trim, no SWIG smoothing, no outlying
-    // charge correction) is deliberately simpler than PySCF's.
+    // 2. Right order of magnitude vs the PySCF cross-check (-9.30 kcal/mol
+    // under MATCHED radii/scale/eps conventions -- see module doc-comment
+    // above for how this differs from the original, radii-mismatched
+    // -5.97/-6.57 figures). Bracket generously (1-15 kcal/mol): a SWIG
+    // switching function was added to the cavity construction (2026-07-19)
+    // but measured to have negligible effect (<0.5%) on this gap; the
+    // dominant remaining difference is the point-charge (ferric) vs
+    // Gaussian-smeared-charge (PySCF) segment representation, not yet
+    // implemented here -- see `ferric_scf::cosmo` module docs.
     assert!(
         e_solvation_kcal.abs() > 1.0 && e_solvation_kcal.abs() < 15.0,
         "COSMO solvation energy magnitude {e_solvation_kcal:.4} kcal/mol is \
          outside the expected textbook range for water/water (PySCF \
-         cross-check: -5.97 to -6.57 kcal/mol)"
+         cross-check, matched conventions: -9.30 kcal/mol)"
     );
 }
 
