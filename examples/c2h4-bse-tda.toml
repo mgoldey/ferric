@@ -1,0 +1,24 @@
+# BSE-TDA[G0W0@HF] / cc-pVDZ on ethylene (C2H4). Phase-1 oscillator-strength
+# pilot (see docs/bse-tda-benchmark-plan.md, benchmarks/bse-tda-pilot/README.md)
+# -- NOT the full Thiel-set benchmark. Pi->pi* (1B1u) is the lowest bright
+# singlet, well documented in the TDDFT/BSE excited-state literature
+# (Schreiber/Silva-Junior/Sauer/Thiel JCP 2008; Jacquemin/Duchemin/Blase
+# JCTC 2015 BSE benchmark family).
+[molecule]
+xyz = "testdata/molecules/c2h4.xyz"
+
+[basis]
+name = "cc-pvdz"
+
+[method]
+kind = "bse-tda"
+
+[rpa]
+auxbasis = "cc-pvdz-ri"
+n_quad = 16
+quadrature = "gauss-legendre"
+trunc_thresh = 0.0
+eigensolver_conv_thresh = 1e-7
+
+[gw]
+frozen_core = 0
