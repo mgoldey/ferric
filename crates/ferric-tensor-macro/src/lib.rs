@@ -12,6 +12,69 @@
 //!
 //! An optional trailing argument (after the two operands) is a scale factor
 //! applied to the whole result: `einsum!("ai,ai->", &mu, &u, -4.0)`.
+//!
+//! ## Panic-on-shape-mismatch is deliberate, not an oversight
+//!
+//! The emitted call to `einsum_binary_batched` (and the scalar-result unwrap)
+//! `.expect()`s the `Result<_, TensorError>` rather than propagating it. This
+//! was evaluated against this codebase's general "never panic on
+//! data-dependent conditions, propagate `Result`" convention (see
+//! `docs/guide/dev/03-reliability-conventions.md`) and judged a deliberate,
+//! narrower exception — analogous to Rust's own array-index-out-of-bounds
+//! panic:
+//!
+//! - `TensorError::ContractedDimMismatch` / `OutputReshape` fire only when
+//!   the two operands of *one* contraction disagree on a dimension the macro
+//!   itself computed should match (from the spec string's shared index
+//!   letters). Every audited call site (RI-MP2, MP3, CCD, CCSD,
+//!   CCSD(T) — `crates/ferric-mp2/src/{rimp2,mp3,canonical}.rs`,
+//!   `crates/ferric-cc/src/{ccd,ccsd,ccsd_closed_shell,ccsd_t}.rs`, ~200
+//!   call sites total) computes its occupied/virtual/aux dimensions ONCE per
+//!   function from validated inputs (`nocc_total`,
+//!   `ferric_mp2::rimp2::active_occ`-checked `frozen_core`, `nbas`) and
+//!   threads those same dimensions into every `Tensor`/`ArrayD` built
+//!   downstream in that function — so a genuine runtime shape mismatch
+//!   inside one `einsum!` call can only happen via an internal
+//!   contraction-spec bug (wrong axis order, a copy-pasted spec string, an
+//!   intermediate built from the wrong variable), never from a user varying
+//!   molecule size, basis set, or `frozen_core`: every legal value of those
+//!   inputs scales all operands in a given function consistently.
+//! - The *labeling* variant of this same bug class (contracting the wrong
+//!   semantic axis, e.g. an occupied index against a virtual one that
+//!   happens to share a dimension size) is already caught earlier and more
+//!   precisely by the `debug_assert_eq!` axis-label check emitted above
+//!   (compares `Tensor` axis labels, not just raw dimension sizes) — that
+//!   check gives a clearer message and fires in every debug build. The
+//!   release-only `.expect()` on `TensorError` is the backstop for the rarer
+//!   case of two *different* semantic axes that happen to share a dimension
+//!   size, or a bare unlabeled `ArrayD` operand (which skips the label check
+//!   entirely).
+//! - Cross-call contract violations (e.g. calling `ccsd_t` with a `CcConfig`
+//!   whose `frozen_core` differs from the one used to produce the `CcResult`
+//!   it's fed) are a different, pre-existing sharp edge in those functions'
+//!   *call contracts*, not something `einsum!`'s error handling reaches: any
+//!   two operands inside one `einsum!` call there are still built from the
+//!   SAME (possibly wrong) dimensions within that one function body, so
+//!   there is nothing for `TensorError` to observe — the mismatch would
+//!   surface, if at all, as a plain out-of-bounds `ndarray` index panic (or
+//!   worse, a silent short read) at the point the stale tensor is sliced,
+//!   entirely outside `einsum!`. Propagating `TensorError` would not close
+//!   that gap; it is out of scope for this macro.
+//!
+//! This is therefore treated the same as an out-of-bounds slice index: a
+//! crash that can only indicate a programming bug in the contraction being
+//! assembled, not a legitimate-but-unusual runtime state a caller could hit
+//! by varying input data. It does NOT fall under the "solver honesty" /
+//! "TS/MBD hard-error" family of conventions, which exist specifically for
+//! conditions a valid user input CAN trigger (non-convergence, an element
+//! outside a physical model's validity domain, a singular dielectric).
+//!
+//! If you add a new `einsum!` call site whose two operands are NOT both
+//! derived from the same in-scope dimension variables within one function
+//! (e.g. a helper that receives two tensors built by different,
+//! independently configured callers), reconsider this reasoning for that
+//! call site specifically — the safe default above assumes
+//! single-function-scoped dimension provenance, which may not hold there.
 
 use proc_macro::TokenStream;
 use quote::quote;
