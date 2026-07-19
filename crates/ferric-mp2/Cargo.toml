@@ -21,7 +21,20 @@ mpi = { version = "0.7", optional = true }
 
 [features]
 default = []
-mpi = ["dep:mpi"]
+# ferric-scf/mpi is required, not just ferric-core/mpi: RHF's DF-J/DF-K
+# builders (ferric_scf::df_j::DfJ / df_k::DfK) gate their cross-rank
+# Allreduce behind `#[cfg(feature = "mpi")]` INSIDE ferric-scf itself. Without
+# enabling ferric-scf's own mpi feature, ferric-core/mpi alone still makes
+# ParallelContext report a real multi-rank world (so DfJ/DfK stripe the aux
+# band via new_banded(Some(ctx))), but the Allreduce that sums the per-rank
+# partial J/K back into the full matrix never compiles in — each rank then
+# silently converges "successfully" to a different, wrong energy built from
+# only its own band. (Found empirically while building T9: -np 2 water RHF
+# converged to two different garbage energies, ~+108111 Ha and ~+108176 Ha,
+# with `cargo build -p ferric-mp2 --features mpi`; the same RHF call via
+# `cargo build -p ferric-scf --features mpi` was correct, which is what
+# traced this to the missing feature edge.)
+mpi = ["dep:mpi", "ferric-core/mpi", "ferric-scf/mpi"]
 
 [dev-dependencies]
 serde = { workspace = true }
