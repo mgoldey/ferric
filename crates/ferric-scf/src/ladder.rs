@@ -97,14 +97,32 @@ pub fn solve_rhf_ladder(
 /// rung, level-shift escalation, density carried forward. Tuned from CCuN/aTZ
 /// measurements (2026-07-08): rung 1 alone banks CCuN in <1 min.
 pub fn default_ladder() -> Vec<Rung> {
-    let base = |level_shift: f64, max_iter: usize| RhfConfig {
-        df_j_aux: Some("def2-universal-jkfit".to_string()),
-        df_k_aux: Some("def2-universal-jkfit".to_string()),
-        level_shift,
-        max_iter,
-        stall_window: Some(15),
-        divergence_tol: Some(0.5),
-        ..Default::default()
+    default_ladder_from(&RhfConfig::default())
+}
+
+/// Same efficacy-ordered escalation as `default_ladder`, but every rung
+/// starts from a caller-supplied `base` (e.g. a `RhfConfig` carrying a
+/// user's flat `[scf]` TOML settings) instead of `RhfConfig::default()`.
+/// `max_iter`/DF-JK-aux/level-shift/DIIS-flavor/newton-trigger/smearing are
+/// still escalated per rung exactly as in `default_ladder`; any other field
+/// already set on `base` (mom_after_iter, xc, energy_conv, ...) is carried
+/// through unchanged on every rung. Keeps `ferric-cli`'s empty-`[[scf.ladder]]`
+/// fallback (`ScfCfg::build_ladder`) from silently drifting out of sync with
+/// this ladder's shape.
+pub fn default_ladder_from(base: &RhfConfig) -> Vec<Rung> {
+    let rung = |level_shift: f64, max_iter: usize| {
+        let mut c = base.clone();
+        if c.df_j_aux.is_none() {
+            c.df_j_aux = Some("def2-universal-jkfit".to_string());
+        }
+        if c.df_k_aux.is_none() {
+            c.df_k_aux = Some("def2-universal-jkfit".to_string());
+        }
+        c.level_shift = level_shift;
+        c.max_iter = max_iter;
+        c.stall_window = Some(15);
+        c.divergence_tol = Some(0.5);
+        c
     };
     // Efficacy-ordered escalation: cheapest+most-effective first, adding a
     // convergence accelerator per rung only when the previous one didn't
@@ -127,11 +145,11 @@ pub fn default_ladder() -> Vec<Rung> {
     };
     use crate::diis::DiisFlavor::{Adiis, Pulay};
     vec![
-        Rung { config: base(0.0, 60), restart: false },
-        Rung { config: with(base(0.0, 60), Adiis, 0.0, None), restart: false },
-        Rung { config: with(base(0.5, 60), Adiis, 0.0, None), restart: false },
-        Rung { config: with(base(1.0, 80), Adiis, 1e-3, None), restart: false },
-        Rung { config: with(base(0.5, 100), Pulay, 1e-3, Some(0.01)), restart: false },
+        Rung { config: rung(0.0, 60), restart: false },
+        Rung { config: with(rung(0.0, 60), Adiis, 0.0, None), restart: false },
+        Rung { config: with(rung(0.5, 60), Adiis, 0.0, None), restart: false },
+        Rung { config: with(rung(1.0, 80), Adiis, 1e-3, None), restart: false },
+        Rung { config: with(rung(0.5, 100), Pulay, 1e-3, Some(0.01)), restart: false },
     ]
 }
 
@@ -260,12 +278,13 @@ mod tests {
     #[test]
     fn default_ladder_has_dfjk_first_rung() {
         let l = default_ladder();
-        assert!(l.len() >= 2);
-        assert!(l[0].config.df_j_aux.is_some(), "rung 1 must use DF-J");
-        assert!(l[0].config.df_k_aux.is_some(), "rung 1 must use DF-K");
+        assert!(l.len() >= 3);
+        assert!(l[0].config.df_j_aux.is_some(), "rung 0 must use DF-J");
+        assert!(l[0].config.df_k_aux.is_some(), "rung 0 must use DF-K");
         assert_eq!(l[0].config.level_shift, 0.0);
-        assert!(l[1].config.level_shift > 0.0, "rung 2 must add level shift");
-        assert!(!l[1].restart, "rung 2 must inherit density");
+        assert_eq!(l[1].config.level_shift, 0.0, "rung 1 adds ADIIS, not level shift yet");
+        assert!(l[2].config.level_shift > 0.0, "rung 2 must add level shift");
+        assert!(!l[2].restart, "rung 2 must inherit density");
     }
 
     /// KS-DFT (B3LYP) via the level-shift ladder: benzene/def2-SVP, the

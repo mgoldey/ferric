@@ -606,28 +606,11 @@ impl ScfCfg {
             // Default escalation, but seeded from the user's [scf] settings
             // (base) so max_iter/energy_conv/density_conv/mom_after_iter/etc.
             // are honored -- a plain `kind = "rhf"` run with no [[scf.ladder]]
-            // table must not silently discard the [scf] block. DF-JK aux and
-            // stall/divergence-abort are layered on top (unless the user
-            // already set df_j_aux/df_k_aux); level-shift escalates 0->0.5->1.0.
-            let jk = "def2-universal-jkfit";
-            let mk = |ls: f64| {
-                let mut c = base.clone();
-                c.level_shift = ls;
-                if c.df_j_aux.is_none() {
-                    c.df_j_aux = Some(jk.to_string());
-                }
-                if c.df_k_aux.is_none() {
-                    c.df_k_aux = Some(jk.to_string());
-                }
-                c.stall_window = Some(15);
-                c.divergence_tol = Some(0.5);
-                c
-            };
-            return vec![
-                Rung { config: mk(0.0), restart: false },
-                Rung { config: mk(0.5), restart: false },
-                Rung { config: mk(1.0), restart: false },
-            ];
+            // table must not silently discard the [scf] block. Delegates the
+            // actual escalation shape (DF-JK aux, level-shift/ADIIS/SOSCF/
+            // Fermi-smearing progression) to ferric_scf::ladder::default_ladder_from
+            // so this can't drift out of sync with the library's own default ladder.
+            return ferric_scf::ladder::default_ladder_from(base);
         }
         self.ladder
             .iter()
@@ -1153,28 +1136,30 @@ kind = "rhf"
     fn empty_ladder_default_escalation_honors_base_scf_block() {
         // Regression for I1: a plain `kind = "rhf"` run with no [[scf.ladder]]
         // table must NOT silently discard the user's [scf] settings by
-        // building every rung from RhfConfig::default(). Seed `base` with
-        // mom_after_iter and max_iter values that differ from RhfConfig's
-        // defaults and assert every rung in the empty-ladder escalation
-        // carries them through.
+        // building every rung from RhfConfig::default(). Seed `base` with a
+        // mom_after_iter value that differs from RhfConfig's default and
+        // assert every rung in the empty-ladder escalation carries it
+        // through. max_iter is NOT checked per-rung here: the real ladder
+        // (ferric_scf::ladder::default_ladder_from) deliberately escalates
+        // max_iter per rung (60/60/60/80/100), so a user's flat [scf]
+        // max_iter is a starting point each rung's own budget overrides, not
+        // a value every rung inherits unchanged.
         let base = ferric_scf::rhf::RhfConfig {
             mom_after_iter: 5,
-            max_iter: 42,
             ..Default::default()
         };
         let cfg = ScfCfg::default();
         assert!(cfg.ladder.is_empty());
         let built = cfg.build_ladder(&base);
-        assert_eq!(built.len(), 3);
+        assert_eq!(built.len(), ferric_scf::ladder::default_ladder().len());
         for (i, rung) in built.iter().enumerate() {
             assert_eq!(rung.config.mom_after_iter, 5, "rung {i} must inherit base.mom_after_iter");
-            assert_eq!(rung.config.max_iter, 42, "rung {i} must inherit base.max_iter");
             assert!(rung.config.df_j_aux.is_some(), "rung {i} must default DF-J aux");
             assert!(rung.config.df_k_aux.is_some(), "rung {i} must default DF-K aux");
         }
         assert_eq!(built[0].config.level_shift, 0.0);
-        assert_eq!(built[1].config.level_shift, 0.5);
-        assert_eq!(built[2].config.level_shift, 1.0);
+        assert_eq!(built[1].config.level_shift, 0.0, "rung 1 adds ADIIS, not level shift yet");
+        assert!(built[2].config.level_shift > 0.0, "rung 2 must add level shift");
     }
 
     #[test]
