@@ -576,6 +576,7 @@ dependencies = [
  "ferric-mp2",
  "ferric-quadrature",
  "ferric-scf",
+ "mpi",
  "ndarray",
  "ndarray-linalg",
  "openblas-src",

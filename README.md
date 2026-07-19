@@ -381,7 +381,7 @@ ferric/
 - [x] Rayon-parallel LinK exchange
 - [x] CFMM (continuous fast multipole) for linear-scaling Coulomb
 - [x] AO-Laplace-Transform MP2 (linear scaling via sparse tensors)
-- [x] MPI distributed parallelization (SCF / gradients / MP2)
+- [x] MPI distributed parallelization (SCF DF-J/K, RI-MP2, RPA frequency quadrature; GW QP loop not yet distributed — see `docs/superpowers/mpi.md`)
 - [x] Geometry optimization via analytical gradients (RHF, RI-MP2, SCS-MP2)
 - [x] Sparse tensor support (ferric-tensors) for linear correlation
 - [x] KS-DFT (LDA/GGA/hybrid/RSH) via libxc + Becke-Lebedev quadrature; VV10 nonlocal
