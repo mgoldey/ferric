@@ -1,5 +1,33 @@
 use ferric_tensors::{einsum, Axis, Tensor};
-use ndarray::{Array4, IxDyn};
+use ndarray::{Array4, ArrayD, IxDyn};
+
+// --- Permutation antisymmetrizers on the i,j,a,b axes of X[i,j,a,b] ---
+// Shared by the spin-orbital CCD and CCSD residual builders (ccd.rs, ccsd.rs),
+// which apply the same P(ij)/P(ab) projectors to their `[O,O,V,V]` tensors.
+
+/// Swap the i,j axes (0,1) of an `[i,j,a,b]` tensor.
+fn swap_ij(x: &ArrayD<f64>) -> ArrayD<f64> {
+    x.view().permuted_axes(IxDyn(&[1, 0, 2, 3])).as_standard_layout().into_owned()
+}
+/// Swap the a,b axes (2,3) of an `[i,j,a,b]` tensor.
+fn swap_ab(x: &ArrayD<f64>) -> ArrayD<f64> {
+    x.view().permuted_axes(IxDyn(&[0, 1, 3, 2])).as_standard_layout().into_owned()
+}
+/// P(ij) x = x - swap_ij(x)
+pub fn p_ij(x: &ArrayD<f64>) -> ArrayD<f64> {
+    x - &swap_ij(x)
+}
+/// P(ab) x = x - swap_ab(x)
+pub fn p_ab(x: &ArrayD<f64>) -> ArrayD<f64> {
+    x - &swap_ab(x)
+}
+/// P(ij)P(ab) x = x - swap_ij(x) - swap_ab(x) + swap_ab(swap_ij(x))
+pub fn p_ij_ab(x: &ArrayD<f64>) -> ArrayD<f64> {
+    let sij = swap_ij(x);
+    let sab = swap_ab(x);
+    let sijab = swap_ab(&sij);
+    x - &sij - &sab + &sijab
+}
 
 /// Compute the Particle-Particle ladder term: L_iajb = sum_P B^P_ab * (sum_cd B^P_cd * t_icjd)
 /// RI complexity: O(N^5). All contractions routed through `einsum!` (BLAS3 GEMM).

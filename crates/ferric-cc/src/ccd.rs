@@ -10,28 +10,9 @@ use ferric_mp2::spinorbital::{asym_oovv, asym_ovvo, asym_same, build_b, transpos
 use ferric_tensors::{einsum, Axis, Tensor};
 use ndarray::{ArrayD, IxDyn};
 
-// --- Permutation antisymmetrizers on X[i,j,a,b] ---
-fn swap_ij(x: &ArrayD<f64>) -> ArrayD<f64> {
-    x.view().permuted_axes(IxDyn(&[1, 0, 2, 3])).as_standard_layout().into_owned()
-}
-fn swap_ab(x: &ArrayD<f64>) -> ArrayD<f64> {
-    x.view().permuted_axes(IxDyn(&[0, 1, 3, 2])).as_standard_layout().into_owned()
-}
-/// P(ij) x = x - x.swap_ij
-fn p_ij(x: &ArrayD<f64>) -> ArrayD<f64> {
-    x - &swap_ij(x)
-}
-/// P(ab) x = x - x.swap_ab
-fn p_ab(x: &ArrayD<f64>) -> ArrayD<f64> {
-    x - &swap_ab(x)
-}
-/// P(ij)P(ab) x = x - x.swap_ij - x.swap_ab + x.swap_ij_ab
-fn p_ij_ab(x: &ArrayD<f64>) -> ArrayD<f64> {
-    let sij = swap_ij(x);
-    let sab = swap_ab(x);
-    let sijab = swap_ab(&sij);
-    x - &sij - &sab + &sijab
-}
+// Permutation antisymmetrizers P(ij)/P(ab)/P(ij)P(ab) on the i,j,a,b axes are
+// shared with the CCSD residual builder — see `helpers.rs`.
+use super::helpers::{p_ab, p_ij, p_ij_ab};
 
 /// Compute the CCD correlation energy.
 ///
