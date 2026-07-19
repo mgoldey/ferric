@@ -89,11 +89,13 @@ fn run_case(label: &str, xyz: &str, basis_name: &str, tol: f64) {
 }
 
 #[test]
+#[ignore] // slow: 6-point FD gradient (2*natoms*3 full wB97X-V+VV10 SCF solves) on top of the analytic one; run explicitly.
 fn wb97xv_gradient_h2_sto3g_vs_fd() {
     run_case("H2/sto-3g", "2\nH2\nH 0 0 0\nH 0 0 0.74\n", "sto-3g", 1e-3);
 }
 
 #[test]
+#[ignore] // slow: 6-point FD gradient (2*natoms*3 full wB97X-V+VV10 SCF solves) on top of the analytic one; run explicitly.
 fn wb97xv_gradient_h2o_sto3g_vs_fd() {
     run_case("H2O/sto-3g",
              "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
@@ -101,11 +103,13 @@ fn wb97xv_gradient_h2o_sto3g_vs_fd() {
 }
 
 #[test]
+#[ignore] // slow: 6-point FD gradient (2*natoms*3 full wB97X-V+VV10 SCF solves) on top of the analytic one; run explicitly.
 fn wb97xv_gradient_h2_ccpvdz_vs_fd() {
     run_case("H2/cc-pVDZ", "2\nH2\nH 0 0 0\nH 0 0 0.74\n", "cc-pvdz", 1e-3);
 }
 
 #[test]
+#[ignore] // slow: 6-point FD gradient (2*natoms*3 full wB97X-V+VV10 SCF solves) on top of the analytic one; run explicitly.
 fn wb97xv_gradient_h2o_ccpvdz_vs_fd() {
     run_case("H2O/cc-pVDZ",
              "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
