@@ -112,6 +112,20 @@ fn rhf_config(k_builder: Option<&str>) -> RhfConfig {
     RhfConfig { k_builder: k_builder.map(|s| s.to_string()), ..Default::default() }
 }
 
+/// Parse the `diis` kwarg into a `DiisFlavor` (strict — unknown values error).
+/// None = Pulay (plain DIIS, the default).
+fn parse_diis_flavor(diis: Option<&str>) -> PyResult<ferric_scf::diis::DiisFlavor> {
+    use ferric_scf::diis::DiisFlavor;
+    match diis {
+        None | Some("pulay") => Ok(DiisFlavor::Pulay),
+        Some("adiis") => Ok(DiisFlavor::Adiis),
+        Some("ediis") => Ok(DiisFlavor::Ediis),
+        Some(other) => Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "diis = '{other}' not recognized (use 'pulay', 'adiis', or 'ediis')"
+        ))),
+    }
+}
+
 /// Convert the Python `point_charges` / `external_field` kwargs into an
 /// `ExternalPotential`. Returns `None` when both are unset (no perturbation),
 /// matching `RhfConfig`'s "None = no external potential" convention.
@@ -191,6 +205,7 @@ impl PyRhfResult {
     max_iter=None, energy_conv=None, density_conv=None, diis_size=None,
     integral_thresh=None, k_builder=None, df_j_aux=None, df_k_aux=None,
     level_shift=None, mom_after_iter=None,
+    guess=None, diis=None, smearing_sigma=None, soscf=None,
     point_charges=None, external_field=None,
 ))]
 #[allow(clippy::too_many_arguments)]
@@ -207,6 +222,10 @@ fn run_rhf(
     df_k_aux: Option<&str>,
     level_shift: Option<f64>,
     mom_after_iter: Option<usize>,
+    guess: Option<&str>,
+    diis: Option<&str>,
+    smearing_sigma: Option<f64>,
+    soscf: Option<bool>,
     point_charges: Option<Vec<(f64, f64, f64, f64)>>,
     external_field: Option<(f64, f64, f64)>,
 ) -> PyResult<PyRhfResult> {
@@ -230,6 +249,10 @@ fn run_rhf(
         df_k_aux: df_k_aux.map(|s| s.to_string()),
         level_shift: level_shift.unwrap_or(0.0),
         mom_after_iter: mom_after_iter.unwrap_or(0),
+        diis_flavor: parse_diis_flavor(diis)?,
+        smearing_sigma,
+        newton_trigger: if soscf.unwrap_or(false) { 1e-3 } else { 0.0 },
+        use_sad_guess: !matches!(guess, Some("hcore")),
         external_potential: build_external_potential(point_charges, external_field),
         ..Default::default()
     };

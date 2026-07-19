@@ -491,6 +491,273 @@ fn project_smallbasis_density(
     Ok(p_target)
 }
 
+/// Number of electrons to occupy for a neutral free atom, split into the
+/// "doubly-occupied core+valence pair count" plus the number of singly-occupied
+/// (open-shell) spatial orbitals. `(n_doubly, n_singly)` where
+/// `2*n_doubly + n_singly == z - n_core_ecp` (the ECP-adjusted valence count).
+///
+/// This is a *density-shape* helper, not a term-symbol solver: we only need a
+/// physically-sane radial occupation to seed the SCF, so the open-shell electrons
+/// are spread as `n_singly` singly-occupied orbitals via `atom_ground_state_mult`
+/// (which already encodes the neutral-atom ground multiplicity). The remaining
+/// electrons pair up. For a closed-shell atom `n_singly == 0`.
+fn aufbau_occupation(nvalence: usize, mult: usize) -> (usize, usize) {
+    // mult = 2S+1 ⇒ number of unpaired electrons = mult - 1.
+    let n_unpaired = mult.saturating_sub(1).min(nvalence);
+    let n_paired_elec = nvalence - n_unpaired;
+    (n_paired_elec / 2, n_unpaired)
+}
+
+/// Build a free-atom density block for element `z` in basis `bs` **without any
+/// SCF** — the no-per-element-SCF core of the MINAO-style guess.
+///
+/// Builds the single-atom effective Fock via the Generalized Wolfsberg–Helmholtz
+/// (GWH) recipe from the *atomic* core Hamiltonian `H = T + V` (single atom at the
+/// origin, ECP-adjusted point charge and, when present, the ECP projector) —
+/// diagonal `H_ii`, off-diagonals `F_ij = ½·1.75·S_ij·(H_ii+H_jj)` — diagonalizes
+/// it in the canonically-orthogonalized atomic basis, and fills the lowest
+/// orbitals by aufbau to the neutral-atom valence electron count:
+///   * the lowest `n_doubly` spatial orbitals doubly (occupation 2),
+///   * the open-shell electrons spread EQUALLY over the (near-)degenerate frontier,
+/// returning `D = Σ_i f_i c_i c_iᵀ` (spin-summed), shape `(nao, nao)`.
+///
+/// A single-atom hcore eigensolve is O(nao³) on a ~15-40-function block — a few
+/// microseconds — versus the seconds-to-minutes of a full free-atom UHF/MOM SCF
+/// (and with none of its wrong-spin-basin risk). The nuclear-attraction well of
+/// a *single* atom, filled by aufbau, gives the correct radial ordering and node
+/// structure; unlike the *molecular* hcore guess (whose multi-center potential
+/// over-contracts heavy atoms and diverges), the per-atom aufbau density is a
+/// sound MINAO source. The exchange-correlation refinement is left to the
+/// molecular SCF this density seeds.
+fn atomic_hcore_density(
+    z: i32,
+    bs: &ferric_core::basis::BasisSet,
+) -> Result<Array2<f64>, FerricError> {
+    use ferric_core::mol::Molecule;
+    use ferric_integrals::basis_bridge::PreparedBasis;
+    use ferric_integrals::oneelectron;
+
+    let sym = ferric_core::elements::z_to_symbol(z)
+        .ok_or_else(|| FerricError::General(format!("unknown Z={z}")))?;
+    let axyz = format!("1\n{sym}\n{sym} 0 0 0\n");
+    let mult = atom_ground_state_mult(z);
+    // Neutral atom (charge 0). apply_ecp both trims the point charge to the
+    // valence Z and records the core count so the valence electron count matches
+    // the molecular (ECP) solve. No-op for all-electron bases.
+    let mut amol = Molecule::parse_xyz(&axyz, 0, mult)?;
+    amol.apply_ecp(bs);
+    let aprep = PreparedBasis::new(&amol, bs)?;
+
+    let s = oneelectron::overlap(&aprep);
+    // ECP-aware core Hamiltonian: adds V_ECP when bs carries ECPs, else plain T+V.
+    let h = oneelectron::hcore_ecp(&aprep, &amol, bs);
+
+    // Valence electron count after ECP: nelec() already accounts for the ECP core.
+    let nvalence = usize::try_from(amol.nelec()).map_err(|_| {
+        FerricError::General(format!("atomic_hcore_density: negative nelec for Z={z}"))
+    })?;
+    let (n_doubly, n_singly) = aufbau_occupation(nvalence, mult);
+
+    // Build the effective one-electron matrix to diagonalize. Bare atomic hcore
+    // over-contracts the orbitals (no electron–electron repulsion), which seeds a
+    // density that DIIS can limit-cycle around at ultra-tight thresholds
+    // (water/STO-3G/PBE stalled at density_conv=1e-8). The Generalized
+    // Wolfsberg–Helmholtz (GWH) recipe gives a markedly better SCF-free seed at
+    // essentially no cost: keep the diagonal H_ii but replace the off-diagonals
+    // with F_ij = ½·K·S_ij·(H_ii + H_jj), K = 1.75 (Pople's standard value). This
+    // is the same guess many production codes expose as "gwh" and converges
+    // water/STO-3G/PBE cleanly to 1e-8 in a handful of iterations.
+    const GWH_K: f64 = 1.75;
+    let nao_h = h.nrows();
+    let mut f_eff = Array2::<f64>::zeros((nao_h, nao_h));
+    for i in 0..nao_h {
+        f_eff[(i, i)] = h[(i, i)];
+        for j in (i + 1)..nao_h {
+            let fij = 0.5 * GWH_K * s[(i, j)] * (h[(i, i)] + h[(j, j)]);
+            f_eff[(i, j)] = fij;
+            f_eff[(j, i)] = fij;
+        }
+    }
+
+    // Diagonalize F_eff in the canonically-orthogonalized basis (lindep-filtered,
+    // same path as hcore_guess), so a near-singular atomic overlap can't seed a
+    // non-finite density.
+    let x = crate::rhf::canonical_orthogonalizer(&s)?; // (n, m), m ≤ n
+    let m = x.ncols();
+    let n_occ_orb = n_doubly + n_singly;
+    if n_occ_orb > m {
+        return Err(FerricError::General(format!(
+            "atomic_hcore_density: {sym} (Z={z}) needs {n_occ_orb} occupied orbitals but orthogonalized atomic basis has only {m}"
+        )));
+    }
+    let h_prime = x.t().dot(&f_eff).dot(&x);
+    let (eps, c_prime) = h_prime
+        .eigh(ndarray_linalg::UPLO::Upper)
+        .map_err(|e| FerricError::Lapack(format!("atomic H' diag for Z={z}: {e}")))?;
+    let c = x.dot(&c_prime); // (nao, m), columns ascending in energy
+
+    // Per-orbital occupation numbers (spin-summed): the lowest `n_doubly`
+    // orbitals get 2.0. The `n_singly` open-shell electrons are spread EQUALLY
+    // over all orbitals (near-)degenerate with the frontier, not dumped onto an
+    // arbitrary subset — a bare-hcore atomic problem has exactly-degenerate p/d
+    // shells, so picking specific SOMOs would break the atom's spherical
+    // symmetry and seed a lopsided molecular density that DIIS then has to
+    // laboriously un-tilt (observed: water/STO-3G PBE limit-cycled to MaxIter
+    // when O's 2p SOMOs were placed on two of the three 2p orbitals). Equal
+    // fractional occupation over the degenerate frontier restores a spherical
+    // atomic density and converges cleanly.
+    let mut occ = vec![0.0_f64; m];
+    for o in occ.iter_mut().take(n_doubly) {
+        *o = 2.0;
+    }
+    if n_singly > 0 {
+        // Frontier group = all orbitals within EPS_DEGEN of the first partially
+        // occupied level eps[n_doubly], starting from n_doubly. Spread the
+        // n_singly electrons equally over that whole group.
+        const EPS_DEGEN: f64 = 1e-4;
+        let e_front = eps[n_doubly];
+        let mut group_end = n_doubly;
+        while group_end < m && (eps[group_end] - e_front).abs() <= EPS_DEGEN {
+            group_end += 1;
+        }
+        let group = group_end - n_doubly;
+        let frac = n_singly as f64 / group as f64; // ≤ 1.0
+        for o in occ.iter_mut().take(group_end).skip(n_doubly) {
+            *o = frac;
+        }
+    }
+
+    let nao = s.nrows();
+    let mut d = Array2::<f64>::zeros((nao, nao));
+    // D = Σ_i occ_i · c_i c_iᵀ (spin-summed AO density).
+    for (i, &f) in occ.iter().enumerate() {
+        if f == 0.0 { continue; }
+        let ci = c.slice(ndarray::s![.., i]);
+        // rank-1 update scaled by the occupation number
+        let outer = ci.to_owned().insert_axis(ndarray::Axis(1));
+        d = d + outer.dot(&outer.t()) * f;
+    }
+    if d.iter().any(|v| !v.is_finite()) {
+        return Err(FerricError::General(format!(
+            "atomic_hcore_density: non-finite atomic density for Z={z}"
+        )));
+    }
+    Ok(d)
+}
+
+/// Default SCF initial-density guess: a superposition of per-atom densities,
+/// built so that NO expensive per-element SCF ever runs.
+///
+/// The atomic block for each element is built by one of two routes, chosen by the
+/// element so the ~20-minute free-atom-SCF pathology can never occur:
+///
+///  * **Heavy atoms** — transition metals and heavier (`Z ≥ 21`) or any element
+///    whose target shells include high angular momentum (`l ≥ 4`, g functions):
+///    a **no-SCF** GWH atomic block from [`atomic_hcore_density`] built directly
+///    in the target basis (one small eigensolve; ONE-electron integrals only, so
+///    even Cu/aug-cc-pVTZ g functions cost nothing). This is exactly the class the
+///    guess exists to fix: a free-atom SCF on Cu/aug-cc-pVDZ (no g, but a heavy
+///    d-block UHF) took minutes and could land in the wrong spin basin; GWH sidesteps
+///    both. Cu2/aug-cc-pVDZ RKS-PBE from this guess converges in ~26 iters to the
+///    physical −3280.641 Ha / HOMO −0.174 Ha / 1.70 eV-gap state (matches PySCF).
+///
+///  * **Light main-group atoms** (`Z ≤ 20`, no g functions): a proper free-atom
+///    SCF block via [`free_atom_density`]. These solves are milliseconds (they were
+///    never the pathology), and their self-consistent blocks are a higher-quality
+///    seed than GWH — enough that tight-gate light-molecule DFT SCFs (methane/water
+///    cc-pVDZ PBE at energy_conv 1e-10) still converge cleanly, matching the prior
+///    SAD default.
+///
+/// Off-diagonal atom-atom blocks stay zero (standard SAD/MINAO structure); the
+/// block diagonal is trace-exact (`tr(D·S) == nelec`). If a per-element build
+/// fails, that atom's block is left zero and the molecular SCF fills it in from
+/// the other (seeded) atoms — still far better than a bare molecular-hcore guess.
+pub fn minao_projection_guess(
+    mol: &ferric_core::mol::Molecule,
+    prep: &ferric_integrals::basis_bridge::PreparedBasis,
+    bs: &ferric_core::basis::BasisSet,
+) -> Result<Array2<f64>, FerricError> {
+    use std::collections::HashMap;
+
+    let n = prep.nbasis();
+    let mut d = Array2::<f64>::zeros((n, n));
+
+    let shell_to_atom = prep.shell_to_atom();
+    let shell_offsets = prep.shell_offsets();
+    let shell_dims = prep.shell_dims();
+    let natoms = mol.atoms.len();
+
+    let mut atom_ao_start = vec![0usize; natoms];
+    let mut atom_ao_count = vec![0usize; natoms];
+    for sh in 0..prep.nshells() {
+        let a = shell_to_atom[sh];
+        if atom_ao_count[a] == 0 {
+            atom_ao_start[a] = shell_offsets[sh];
+        }
+        atom_ao_count[a] += shell_dims[sh];
+    }
+
+    // Cache the target-AO density block by Z.
+    let mut atom_density_cache: HashMap<i32, Array2<f64>> = HashMap::new();
+
+    for (ai, atom) in mol.atoms.iter().enumerate() {
+        if atom.ghost { continue; }
+        let z = atom.z;
+        let nao = atom_ao_count[ai];
+        if nao == 0 { continue; }
+
+        let atom_d = if let Some(cached) = atom_density_cache.get(&z) {
+            cached.clone()
+        } else {
+            // Choose the no-SCF (GWH) route for the atoms whose free-atom SCF is
+            // the pathology this guess exists to eliminate — transition metals and
+            // heavier (Z ≥ 21), or any element carrying g (l ≥ 4) shells in the
+            // target basis. Light main-group atoms (Z ≤ 20, no g) keep the cheap,
+            // higher-quality free-atom SCF block.
+            let has_high_l = bs
+                .for_element(z)
+                .map(|shells| shells.iter().any(|sh| sh.l >= 4))
+                .unwrap_or(false);
+            let use_no_scf = z >= 21 || has_high_l;
+
+            let built = if use_no_scf {
+                // No-SCF GWH block directly in the target basis (g-safe: 1e ints only).
+                atomic_hcore_density(z, bs)
+            } else {
+                // Cheap, high-quality light-atom free-atom SCF block.
+                free_atom_density(z, bs)
+            };
+
+            let block = match built {
+                Ok(full) => full.slice(ndarray::s![..nao, ..nao]).to_owned(),
+                Err(e) => {
+                    if crate::rhf::scf_trace() {
+                        let sym = ferric_core::elements::z_to_symbol(z).unwrap_or("?");
+                        let route = if use_no_scf { "GWH no-SCF" } else { "free-atom SCF" };
+                        eprintln!("MINAO: {route} atomic density failed for {sym} (Z={z}): {e:?}; block left zero");
+                    }
+                    Array2::zeros((nao, nao))
+                }
+            };
+            atom_density_cache.insert(z, block.clone());
+            block
+        };
+
+        let off = atom_ao_start[ai];
+        let blk_n = atom_ao_count[ai];
+        if atom_d.nrows() != blk_n || atom_d.ncols() != blk_n {
+            return Err(FerricError::General(format!(
+                "minao_projection_guess: atom {ai} (Z={z}) block shape {:?} ≠ expected ({blk_n},{blk_n})",
+                atom_d.dim()
+            )));
+        }
+        let mut block = d.slice_mut(ndarray::s![off..off + blk_n, off..off + blk_n]);
+        block.assign(&atom_d);
+    }
+
+    Ok(d)
+}
+
 /// Run a closure on a freshly spawned 1-thread rayon pool.
 ///
 /// Free-atom SCFs are tiny (~10-30 basis functions) but the global rayon pool's
@@ -608,6 +875,177 @@ mod tests {
             .map(|i| (0..n).map(|j| d[(i, j)] * s[(i, j)]).sum::<f64>())
             .sum();
         assert!((tr - 10.0).abs() < 0.1, "SAD tr(DS) = {tr}, expected ≈10");
+    }
+
+    /// MINAO no-SCF guess for water/STO-3G: density must be symmetric and
+    /// tr(DS) ≈ 10. The atomic-hcore aufbau density is not exact (no XC), so the
+    /// trace is looser than the SCF-based SAD test, but must be in the right
+    /// ballpark (correct electron count to within projection/hcore error).
+    #[test]
+    fn minao_guess_water_sto3g_trace() {
+        let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+        let bs = basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let s = oneelectron::overlap(&prep);
+        let d = minao_projection_guess(&mol, &prep, &bs).unwrap();
+        let n = prep.nbasis();
+        for i in 0..n {
+            for j in 0..n {
+                assert!(
+                    (d[(i, j)] - d[(j, i)]).abs() < 1e-10,
+                    "MINAO D not symmetric at ({i},{j})"
+                );
+            }
+        }
+        assert!(d.iter().all(|v| v.is_finite()), "MINAO D has non-finite entries");
+        let tr: f64 = (0..n)
+            .map(|i| (0..n).map(|j| d[(i, j)] * s[(i, j)]).sum::<f64>())
+            .sum();
+        // Same-basis aufbau-hcore density is trace-exact by construction
+        // (tr(2 C_occ C_occᵀ S) = 2·n_occ for orthonormal C), so this is tight.
+        assert!((tr - 10.0).abs() < 1e-6, "MINAO tr(DS) = {tr}, expected 10");
+    }
+
+    /// The no-SCF atomic-hcore density for a heavy transition metal (Cu, Z=29)
+    /// in aug-cc-pVDZ must be finite, symmetric, and trace-exact (29 electrons)
+    /// — with NO free-atom SCF. This is the element whose free-atom SCF was the
+    /// ~minutes-and-wrong-spin pathology the MINAO guess exists to eliminate.
+    #[test]
+    fn atomic_hcore_density_cu_aug_cc_pvdz_no_scf() {
+        let bs = basis::bundled("aug-cc-pvdz").unwrap();
+        // Cu in aug-cc-pVDZ is all-electron, maxL=3 (no g), so the density is
+        // built directly in this basis (no small-basis projection).
+        let d = atomic_hcore_density(29, &bs).unwrap();
+        assert!(d.iter().all(|v| v.is_finite()), "Cu atomic density non-finite");
+        let n = d.nrows();
+        for i in 0..n {
+            for j in 0..n {
+                assert!(
+                    (d[(i, j)] - d[(j, i)]).abs() < 1e-8,
+                    "Cu atomic D not symmetric at ({i},{j})"
+                );
+            }
+        }
+        // Trace against the atomic overlap must equal Cu's 29 electrons.
+        let mol = Molecule::parse_xyz("1\nCu\nCu 0 0 0\n", 0, 2).unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let s = oneelectron::overlap(&prep);
+        let tr: f64 = (0..n).map(|i| (0..n).map(|j| d[(i, j)] * s[(i, j)]).sum::<f64>()).sum();
+        assert!((tr - 29.0).abs() < 1e-6, "Cu atomic tr(DS) = {tr}, expected 29");
+    }
+
+    /// MINAO for Cu/aug-cc-pVTZ (Cu has g functions, l=4). Because the guess
+    /// uses only ONE-electron integrals it builds the density directly in the
+    /// g-containing target basis — no small-basis projection — so it stays
+    /// trace-exact (29 electrons), nonzero, finite, symmetric, with NO free-atom SCF.
+    #[test]
+    fn minao_cu_aug_cc_pvtz_no_scf() {
+        let mol = Molecule::parse_xyz("1\nCu\nCu 0 0 0\n", 0, 2).unwrap();
+        let bs = basis::bundled("aug-cc-pvtz").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let s = oneelectron::overlap(&prep);
+        let d = minao_projection_guess(&mol, &prep, &bs).unwrap();
+        assert!(d.iter().any(|&v| v.abs() > 1e-6), "Cu MINAO block must be nonzero");
+        assert!(d.iter().all(|v| v.is_finite()), "Cu MINAO block non-finite");
+        let n = prep.nbasis();
+        for i in 0..n {
+            for j in 0..n {
+                assert!(
+                    (d[(i, j)] - d[(j, i)]).abs() < 1e-8,
+                    "MINAO D not symmetric at ({i},{j})"
+                );
+            }
+        }
+        let tr: f64 = (0..n).map(|i| (0..n).map(|j| d[(i, j)] * s[(i, j)]).sum::<f64>()).sum();
+        eprintln!("minao_cu_aug_cc_pvtz_no_scf: tr(D*S) = {tr}");
+        assert!((tr - 29.0).abs() < 1e-6, "Cu MINAO tr(DS)={tr}, expected 29 (trace-exact)");
+    }
+
+    /// End-to-end: Cu2 / aug-cc-pVDZ RKS-PBE from the default (MINAO) guess must
+    /// converge FAST to the physical state (E≈-3280.641 Ha, HOMO ε≈-0.174 Ha,
+    /// gap≈1.70 eV per PySCF), with no per-element free-atom SCF in setup.
+    /// Ignored by default (minutes in release even when fast).
+    #[test]
+    #[ignore]
+    fn minao_cu2_pbe_converges_fast_and_physical() {
+        // The DFT grid path stack-allocates large scratch; the cargo-test worker
+        // thread's default 2 MiB stack overflows, so run the body on a thread with
+        // a generous stack (the CLI already runs SCF on such a main thread).
+        std::thread::Builder::new()
+            .stack_size(256 * 1024 * 1024)
+            .spawn(cu2_pbe_minao_body)
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    fn cu2_pbe_minao_body() {
+        use crate::rhf::{RhfConfig, solve_rhf};
+        use crate::screening::SchwarzBounds;
+        use ferric_core::parallel::ParallelContext;
+        use ferric_integrals::operator::Operator;
+        use ferric_dft::grid::AtomicGridConfig;
+
+        // Cu2 at 2.2197 Å (task geometry).
+        let xyz = "2\nCu2\nCu 0.0 0.0 0.0\nCu 0.0 0.0 2.2197\n";
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let bs = basis::bundled("aug-cc-pvdz").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ParallelContext::default();
+
+        let t0 = std::time::Instant::now();
+        let cfg = RhfConfig {
+            max_iter: 200,
+            xc: Some("PBE".to_string()),
+            dft_grid: Some(AtomicGridConfig { n_radial: 75, n_angular: 110 }),
+            ..Default::default() // use_sad_guess defaults true ⇒ MINAO
+        };
+        let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).expect("Cu2 RKS-PBE");
+        let dt = t0.elapsed().as_secs_f64();
+        let eps = r.eps_r();
+        let nocc = (mol.nelec() / 2) as usize;
+        let homo = eps[nocc - 1];
+        let lumo = eps[nocc];
+        let gap_ev = (lumo - homo) * 27.211386;
+        eprintln!(
+            "Cu2 MINAO/PBE: E={:.6} iters={} conv={} HOMO={:.6} gap={:.4} eV wall={:.1}s",
+            r.energy, r.iterations, r.converged, homo, gap_ev, dt
+        );
+        assert!(r.converged, "Cu2 RKS-PBE did not converge from MINAO guess");
+        assert!((r.energy - (-3280.641)).abs() < 0.05, "Cu2 E={:.6}, expected ≈-3280.641", r.energy);
+    }
+
+    /// MINAO must converge a light closed-shell DFT case (water/STO-3G/PBE) at the
+    /// production density_conv (1e-6) to the PySCF energy, from the default guess.
+    /// Water's O/H are light (Z ≤ 20) so this exercises the free-atom-SCF block
+    /// route of the hybrid guess end-to-end. Ignored (~10s release: a DF-PBE SCF).
+    #[test]
+    #[ignore]
+    fn minao_water_pbe_converges() {
+        use crate::rhf::{RhfConfig, solve_rhf};
+        use crate::screening::SchwarzBounds;
+        use ferric_core::parallel::ParallelContext;
+        use ferric_integrals::operator::Operator;
+        std::thread::Builder::new().stack_size(256 * 1024 * 1024).spawn(|| {
+            let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+            let bs = basis::bundled("sto-3g").unwrap();
+            let prep = PreparedBasis::new(&mol, &bs).unwrap();
+            let op = Operator::coulomb();
+            let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+            let ctx = ParallelContext::default();
+            let cfg = RhfConfig {
+                xc: Some("PBE".into()),
+                df_j_aux: Some("def2-universal-jkfit".into()),
+                density_conv: 1e-6,
+                max_iter: 200,
+                ..Default::default() // MINAO (use_sad_guess defaults true)
+            };
+            let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
+            eprintln!("water MINAO/PBE: E={:.10} iters={} conv={}", r.energy, r.iterations, r.converged);
+            assert!(r.converged, "MINAO water/STO-3G PBE did not converge (exit={:?})", r.exit);
+        }).unwrap().join().unwrap();
     }
 
     /// SAD guess + RHF on C2H3Br / aug-cc-pVDZ with NO level shift must converge

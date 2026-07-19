@@ -258,6 +258,343 @@ fn dot(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
     (a * b).sum()
 }
 
+// ===========================================================================
+// Energy-based DIIS variants: ADIIS (Hu & Yang, JCP 132, 054109 (2010)) and
+// EDIIS (Kudin, Scuseria & Cancès, JCP 116, 8255 (2002)).
+//
+// Plain Pulay DIIS extrapolates the Fock matrix by minimizing the commutator
+// error norm ‖Σ c_i err_i‖² with the SINGLE linear constraint Σ c_i = 1 and no
+// sign constraint on c_i. That is cheap and quadratically convergent NEAR the
+// solution, but far from convergence (hard cases: transition-metal dimers with
+// near-degenerate d-manifolds) the unconstrained extrapolation can produce
+// coefficients of either sign that overshoot into a worse point, stalling or
+// limit-cycling.
+//
+// ADIIS/EDIIS instead minimize an *energy*-based functional over the density
+// history under the FULL simplex constraint (c_i ≥ 0 AND Σ c_i = 1). The
+// extrapolated density Σ c_i D_i is therefore a genuine convex combination of
+// previously-seen densities — it can never leave their hull — which is what
+// makes these variants robust in the early/far regime. The mature-code recipe
+// (PySCF `scf.ADIIS`/`EDIIS`, ORCA, Psi4) is: run ADIIS or EDIIS while the DIIS
+// error is large, then switch to (or blend with) plain DIIS once the error is
+// small enough that the quadratic model is trustworthy. `DiisDriver` below
+// implements exactly that switch.
+//
+// Both functionals are of the form  f(c) = gᵀc + ½ cᵀ H c  restricted to the
+// simplex, differing only in how g (linear) and H (quadratic) are assembled:
+//
+//   EDIIS:  g_i = E_i
+//           H_ij = − Tr[(D_i − D_j)·(F_i − F_j)]        (symmetric, H_ii = 0)
+//
+//   ADIIS:  reference = the newest pair (D_n, F_n).  With ΔD_i = D_i − D_n,
+//           ΔF_j = F_j − F_n:
+//           g_i = 2·Tr[ΔD_i · F_n]
+//           H_ij = 2·Tr[ΔD_i · ΔF_j]                    (NOT symmetric in general)
+//
+// Neither H is guaranteed positive-definite, so we do not solve a KKT linear
+// system (which can hand back an exterior point). Instead we minimize on the
+// simplex directly by the standard PySCF trick: parametrize c_i = t_i² / Σ t_k²,
+// which automatically enforces c_i ≥ 0 and Σ c_i = 1 for any real t, turning a
+// constrained problem into an unconstrained one in t. We then run a short
+// projected/backtracking gradient descent in t. The objective is smooth and the
+// simplex is tiny (subspace ≤ diis_size, typically ≤ 8), so a few dozen steps
+// converge to machine precision at negligible cost relative to a Fock build.
+// ===========================================================================
+
+/// Which family of DIIS coefficients to compute for a given step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiisFlavor {
+    /// Plain Pulay commutator-DIIS (least-squares error-norm, unconstrained sign).
+    Pulay,
+    /// ADIIS energy functional (Hu & Yang) referenced to the newest density.
+    Adiis,
+    /// EDIIS energy functional (Kudin–Scuseria–Cancès) over the SCF energies.
+    Ediis,
+}
+
+/// Minimize `f(c) = g·c + ½ cᵀ H c` over the probability simplex
+/// (`c_i ≥ 0`, `Σ c_i = 1`) via the `c_i = t_i²/Σt_k²` reparametrization plus
+/// backtracking gradient descent in `t`. `h` is row-major `m×m` (need not be
+/// symmetric — the ADIIS quadratic isn't). Returns the minimizing convex
+/// coefficients. `m` is assumed ≥ 1.
+fn minimize_on_simplex(g: &[f64], h: &[f64], m: usize) -> Vec<f64> {
+    debug_assert_eq!(g.len(), m);
+    debug_assert_eq!(h.len(), m * m);
+
+    // c_i = t_i² / S with S = Σ t_k². Start from the uniform point (all t equal),
+    // i.e. c_i = 1/m — an interior point so every coordinate can move.
+    let mut t = vec![1.0f64; m];
+
+    // Objective and gradient (w.r.t. t) evaluated at a given t.
+    // c = t∘t / S.  f(c) = g·c + ½ cᵀ H c.
+    // df/dc_k = g_k + ½ Σ_j (H_kj + H_jk) c_j   (symmetrized H acts on the quad).
+    // dc_i/dt_l = (2 t_i/S)(δ_il − c_i)   ⇒   df/dt_l = 2 t_l/S (df/dc_l − Σ_i c_i df/dc_i).
+    let eval = |t: &[f64]| -> (f64, Vec<f64>, Vec<f64>) {
+        let s: f64 = t.iter().map(|x| x * x).sum::<f64>().max(1e-300);
+        let c: Vec<f64> = t.iter().map(|x| x * x / s).collect();
+        // f value
+        let mut fval = 0.0;
+        for i in 0..m {
+            fval += g[i] * c[i];
+            for j in 0..m {
+                fval += 0.5 * h[i * m + j] * c[i] * c[j];
+            }
+        }
+        // df/dc
+        let mut dfdc = vec![0.0f64; m];
+        for k in 0..m {
+            let mut acc = g[k];
+            for j in 0..m {
+                // ½(H_kj + H_jk) c_j
+                acc += 0.5 * (h[k * m + j] + h[j * m + k]) * c[j];
+            }
+            dfdc[k] = acc;
+        }
+        // chain rule to t
+        let mean_grad: f64 = (0..m).map(|i| c[i] * dfdc[i]).sum();
+        let mut dfdt = vec![0.0f64; m];
+        for l in 0..m {
+            dfdt[l] = 2.0 * t[l] / s * (dfdc[l] - mean_grad);
+        }
+        (fval, dfdt, c)
+    };
+
+    let (mut fval, mut grad, mut c) = eval(&t);
+    for _ in 0..500 {
+        let gnorm: f64 = grad.iter().map(|x| x * x).sum::<f64>().sqrt();
+        if gnorm < 1e-12 {
+            break;
+        }
+        // Backtracking line search along −grad in t-space.
+        let mut step = 1.0;
+        let mut improved = false;
+        for _ in 0..40 {
+            let t_try: Vec<f64> = (0..m).map(|i| t[i] - step * grad[i]).collect();
+            let (f_try, grad_try, c_try) = eval(&t_try);
+            // Armijo-lite: accept any strict decrease (objective is smooth, cheap).
+            if f_try < fval - 1e-14 * step * gnorm * gnorm {
+                t = t_try;
+                fval = f_try;
+                grad = grad_try;
+                c = c_try;
+                improved = true;
+                break;
+            }
+            step *= 0.5;
+        }
+        if !improved {
+            break;
+        }
+    }
+    c
+}
+
+/// Energy-based DIIS accelerator holding the density/Fock (and, for EDIIS, the
+/// energy) history needed to assemble the ADIIS/EDIIS simplex objective.
+///
+/// Kept deliberately separate from [`Diis`] (which owns the commutator/Fock
+/// history and its incremental Gram-matrix bookkeeping): the energy-based
+/// variants need the *density* matrices, which plain DIIS never stores. A step
+/// returns the extrapolated **Fock** matrix `Σ c_i F_i` — a drop-in replacement
+/// for `Diis::step`'s return value, so the SCF loop diagonalizes it identically.
+pub struct EnergyDiis {
+    flavor: DiisFlavor,
+    fock_hist: RingHistory<Array2<f64>>,
+    dens_hist: RingHistory<Array2<f64>>,
+    energy_hist: RingHistory<f64>,
+}
+
+impl EnergyDiis {
+    /// Create an ADIIS or EDIIS accelerator with the given subspace capacity.
+    /// Passing `DiisFlavor::Pulay` is a programming error (energy-based history
+    /// is meaningless for plain DIIS) and panics — use [`Diis`] for Pulay.
+    pub fn new(flavor: DiisFlavor, max_subspace: usize) -> Self {
+        assert!(
+            flavor != DiisFlavor::Pulay,
+            "EnergyDiis is ADIIS/EDIIS only; use Diis for DiisFlavor::Pulay"
+        );
+        let cap = max_subspace.max(1);
+        EnergyDiis {
+            flavor,
+            fock_hist: RingHistory::new(cap),
+            dens_hist: RingHistory::new(cap),
+            energy_hist: RingHistory::new(cap),
+        }
+    }
+
+    /// Clear the history.
+    pub fn reset(&mut self) {
+        self.fock_hist.clear();
+        self.dens_hist.clear();
+        self.energy_hist.clear();
+    }
+
+    /// Number of live history entries.
+    pub fn len(&self) -> usize {
+        self.fock_hist.len()
+    }
+
+    /// True when no history has been pushed yet.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Push the current `(F, D, E)` and return the energy-DIIS-extrapolated
+    /// Fock matrix `Σ c_i F_i`, along with the convex coefficients `c` (for the
+    /// caller to blend with a Pulay step if desired). On the first call
+    /// (single entry) the coefficients are trivially `[1.0]` and the Fock is
+    /// returned unchanged.
+    pub fn step(
+        &mut self,
+        f: &Array2<f64>,
+        d: &Array2<f64>,
+        energy: f64,
+    ) -> (Array2<f64>, Vec<f64>) {
+        self.fock_hist.push(f.clone());
+        self.dens_hist.push(d.clone());
+        self.energy_hist.push(energy);
+
+        let live = self.fock_hist.logical_order();
+        let m = live.len();
+        if m < 2 {
+            return (f.clone(), vec![1.0]);
+        }
+
+        let c = self.coefficients(&live);
+
+        let mut out = Array2::zeros(f.dim());
+        for (i, &si) in live.iter().enumerate() {
+            out.scaled_add(c[i], self.fock_hist.get(si));
+        }
+        (out, c)
+    }
+
+    /// Assemble the ADIIS/EDIIS `(g, H)` objective over the live history slots
+    /// and minimize it on the simplex. Public-in-crate for direct unit testing.
+    fn coefficients(&self, live: &[usize]) -> Vec<f64> {
+        let m = live.len();
+        let mut g = vec![0.0f64; m];
+        let mut h = vec![0.0f64; m * m];
+
+        match self.flavor {
+            DiisFlavor::Ediis => {
+                // g_i = E_i ;  H_ij = −Tr[(D_i−D_j)(F_i−F_j)]
+                for (i, &si) in live.iter().enumerate() {
+                    g[i] = *self.energy_hist.get(si);
+                }
+                for (i, &si) in live.iter().enumerate() {
+                    let di = self.dens_hist.get(si);
+                    let fi = self.fock_hist.get(si);
+                    for (j, &sj) in live.iter().enumerate() {
+                        let dj = self.dens_hist.get(sj);
+                        let fj = self.fock_hist.get(sj);
+                        // Tr[(D_i−D_j)(F_i−F_j)] = <D_i−D_j, F_i−F_j> (both symmetric).
+                        let dd = di - dj;
+                        let df = fi - fj;
+                        h[i * m + j] = -dot(&dd, &df);
+                    }
+                }
+            }
+            DiisFlavor::Adiis => {
+                // Reference = newest entry (last in oldest→newest order).
+                let &s_n = live.last().unwrap();
+                let dn = self.dens_hist.get(s_n);
+                let fn_ = self.fock_hist.get(s_n);
+                // g_i = 2 Tr[(D_i−D_n) F_n] ;  H_ij = 2 Tr[(D_i−D_n)(F_j−F_n)]
+                for (i, &si) in live.iter().enumerate() {
+                    let ddi = self.dens_hist.get(si) - dn;
+                    g[i] = 2.0 * dot(&ddi, fn_);
+                    for (j, &sj) in live.iter().enumerate() {
+                        let dfj = self.fock_hist.get(sj) - fn_;
+                        h[i * m + j] = 2.0 * dot(&ddi, &dfj);
+                    }
+                }
+            }
+            DiisFlavor::Pulay => unreachable!("EnergyDiis never holds Pulay"),
+        }
+
+        minimize_on_simplex(&g, &h, m)
+    }
+}
+
+/// Combined DIIS driver implementing the mature-code recipe: run an energy-based
+/// variant (ADIIS or EDIIS) while the DIIS error is large, then switch to plain
+/// Pulay DIIS once the commutator error drops below `switch_thresh`.
+///
+/// The driver owns BOTH a [`Diis`] (for the late/Pulay regime) and an
+/// [`EnergyDiis`] (for the early regime), feeding history to both every step so
+/// neither has a cold start at the switch point. Each `step` returns the
+/// extrapolated Fock matrix the SCF loop should diagonalize — a drop-in for
+/// `Diis::step`'s return.
+///
+/// Set `switch_thresh = 0.0` to disable the energy-based phase entirely (pure
+/// Pulay — behaves exactly like calling `Diis::step` directly, so the default
+/// SCF path is unperturbed). Set it to `f64::INFINITY` for energy-DIIS-only.
+/// PySCF's default crossover is ~1e-1; ORCA switches around the same scale.
+pub struct DiisDriver {
+    pulay: Diis,
+    energy: EnergyDiis,
+    /// Commutator err_max below which the driver uses plain Pulay DIIS.
+    switch_thresh: f64,
+}
+
+impl DiisDriver {
+    /// Build a combined driver. `flavor` selects the early-regime variant
+    /// (ADIIS or EDIIS); `switch_thresh` is the err_max crossover to Pulay.
+    ///
+    /// `flavor == Pulay` (or `switch_thresh == 0.0`) yields a driver that is
+    /// pure Pulay DIIS — identical to using [`Diis`] directly.
+    pub fn new(flavor: DiisFlavor, max_subspace: usize, switch_thresh: f64) -> Self {
+        let energy_flavor = if flavor == DiisFlavor::Pulay {
+            // Placeholder history holder; never consulted when switch_thresh==0.
+            DiisFlavor::Adiis
+        } else {
+            flavor
+        };
+        DiisDriver {
+            pulay: Diis::new(max_subspace),
+            energy: EnergyDiis::new(energy_flavor, max_subspace),
+            switch_thresh: if flavor == DiisFlavor::Pulay { 0.0 } else { switch_thresh },
+        }
+    }
+
+    /// Clear all history.
+    pub fn reset(&mut self) {
+        self.pulay.reset();
+        self.energy.reset();
+    }
+
+    /// One combined step. `err_max` is the max-abs commutator error (the SCF
+    /// loop already computes it). When `err_max >= switch_thresh` the energy
+    /// variant drives; otherwise plain Pulay drives. History is pushed to BOTH
+    /// every call so the inactive one is warm at the crossover. Returns the
+    /// extrapolated Fock matrix to diagonalize.
+    pub fn step(
+        &mut self,
+        f: &Array2<f64>,
+        err: &Array2<f64>,
+        d: &Array2<f64>,
+        energy: f64,
+        err_max: f64,
+    ) -> Array2<f64> {
+        // Always feed Pulay so its Gram history is current at the crossover.
+        let f_pulay = self.pulay.step(f, err);
+
+        if self.switch_thresh <= 0.0 {
+            // Pure Pulay: don't even touch the energy history (keeps it cheap).
+            return f_pulay;
+        }
+
+        let (f_energy, _c) = self.energy.step(f, d, energy);
+
+        if err_max >= self.switch_thresh {
+            f_energy
+        } else {
+            f_pulay
+        }
+    }
+}
+
 fn solve_linear(mut a: Vec<f64>, mut x: Vec<f64>, n: usize) -> Option<Vec<f64>> {
     for col in 0..n {
         let mut pivot = col;
@@ -573,6 +910,168 @@ mod tests {
             let order = ring.logical_order();
             let ring_vals: Vec<i32> = order.iter().map(|&s| *ring.get(s)).collect();
             assert_eq!(ring_vals, naive, "mismatch after pushing {v}");
+        }
+    }
+
+    // ----- ADIIS / EDIIS ----------------------------------------------------
+
+    /// The simplex minimizer must always return a valid convex combination:
+    /// all coefficients ≥ 0 and summing to 1, for arbitrary (g, H).
+    #[test]
+    fn simplex_min_returns_valid_convex_combination() {
+        let m = 4;
+        // Non-symmetric H with mixed signs, arbitrary g.
+        let g = vec![0.3, -1.2, 0.7, 0.1];
+        let h = vec![
+            0.0, -0.5, 0.2, 0.1,
+            0.4, 0.0, -0.3, 0.6,
+            -0.1, 0.2, 0.0, -0.4,
+            0.3, -0.2, 0.5, 0.0,
+        ];
+        let c = minimize_on_simplex(&g, &h, m);
+        assert_eq!(c.len(), m);
+        let sum: f64 = c.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-10, "coeffs must sum to 1, got {sum}");
+        for (i, &ci) in c.iter().enumerate() {
+            assert!(ci >= -1e-12, "coeff {i} must be ≥ 0, got {ci}");
+        }
+    }
+
+    /// On a purely-linear objective (H = 0) over the simplex, the minimum is the
+    /// vertex at the smallest g_i — the minimizer should put ~all weight there.
+    #[test]
+    fn simplex_min_linear_picks_smallest_g_vertex() {
+        let m = 3;
+        let g = vec![1.0, -2.0, 0.5]; // smallest is index 1
+        let h = vec![0.0; m * m];
+        let c = minimize_on_simplex(&g, &h, m);
+        let sum: f64 = c.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-10);
+        assert!(c[1] > 0.99, "weight should collapse onto min-g vertex; c={c:?}");
+        assert!(c[0] < 1e-2 && c[2] < 1e-2, "other vertices ~0; c={c:?}");
+    }
+
+    /// EDIIS coefficients: build a synthetic history where one point has a much
+    /// lower energy and near-zero energy-difference coupling to itself; the
+    /// convex EDIIS solution must be a valid simplex point favoring the low-E
+    /// point.
+    #[test]
+    fn ediis_coefficients_favor_low_energy_and_are_convex() {
+        let n = 2;
+        let mut ed = EnergyDiis::new(DiisFlavor::Ediis, 8);
+        // Two distinct (F, D, E) with the SECOND much lower in energy.
+        let f0 = Array2::from_shape_fn((n, n), |(i, j)| (i + j) as f64 * 0.1);
+        let d0 = Array2::eye(n);
+        let f1 = &f0 + &Array2::from_elem((n, n), 0.05);
+        let d1 = &d0 * 1.2;
+        ed.step(&f0, &d0, -1.0);
+        let (_f, c) = ed.step(&f1, &d1, -5.0); // second is much lower
+        assert_eq!(c.len(), 2);
+        let sum: f64 = c.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-10, "EDIIS coeffs sum to 1, got {sum}");
+        assert!(c[0] >= -1e-12 && c[1] >= -1e-12, "EDIIS coeffs ≥ 0: {c:?}");
+        assert!(c[1] > c[0], "lower-energy point should carry more weight: {c:?}");
+    }
+
+    /// ADIIS coefficients over a synthetic history must also form a valid convex
+    /// combination, with the reference (newest) point receiving finite weight.
+    #[test]
+    fn adiis_coefficients_are_convex() {
+        let n = 3;
+        let mut ad = EnergyDiis::new(DiisFlavor::Adiis, 8);
+        let mut seed = 0x1234_5678u64;
+        for _ in 0..4 {
+            let f = synthetic_matrix(&mut seed, n);
+            let d = synthetic_matrix(&mut seed, n);
+            let e = synthetic(&mut seed);
+            let (_f, c) = ad.step(&f, &d, e);
+            let sum: f64 = c.iter().sum();
+            assert!((sum - 1.0).abs() < 1e-10, "ADIIS coeffs sum to 1, got {sum}");
+            for &ci in &c {
+                assert!(ci >= -1e-12, "ADIIS coeff ≥ 0: {c:?}");
+            }
+        }
+    }
+
+    /// The extrapolated Fock returned by EnergyDiis::step must equal Σ c_i F_i.
+    #[test]
+    fn energy_diis_fock_is_convex_combo_of_history() {
+        let n = 2;
+        let mut ad = EnergyDiis::new(DiisFlavor::Adiis, 8);
+        let f0 = Array2::from_elem((n, n), 1.0);
+        let f1 = Array2::from_elem((n, n), 3.0);
+        let d0 = Array2::eye(n);
+        let d1 = &d0 * 2.0;
+        ad.step(&f0, &d0, -1.0);
+        let (f_out, c) = ad.step(&f1, &d1, -1.5);
+        // Reconstruct expected Σ c_i F_i (history order: f0 then f1).
+        let expected = c[0] * &f0 + c[1] * &f1;
+        for (a, b) in f_out.iter().zip(expected.iter()) {
+            assert!((a - b).abs() < 1e-12, "Fock ≠ Σ c_i F_i: {a} vs {b}");
+        }
+    }
+
+    /// DiisDriver with switch_thresh = 0 must be byte-identical to plain Diis —
+    /// the default SCF path must be unperturbed by the new driver.
+    #[test]
+    fn driver_pure_pulay_matches_plain_diis() {
+        let max_subspace = 5;
+        let n_iters = 3 * max_subspace + 2;
+        let dim = 4;
+        let mut seed = 0xABCDEFu64;
+
+        let mut plain = Diis::new(max_subspace);
+        // flavor=Pulay forces switch_thresh internally to 0.
+        let mut driver = DiisDriver::new(DiisFlavor::Pulay, max_subspace, 1e-1);
+
+        for _ in 0..n_iters {
+            let f = synthetic_matrix(&mut seed, dim);
+            let err = synthetic_matrix(&mut seed, dim);
+            let d = synthetic_matrix(&mut seed, dim);
+            let energy = synthetic(&mut seed);
+            let err_max = err.iter().map(|v| v.abs()).fold(0.0, f64::max);
+
+            let out_plain = plain.step(&f, &err);
+            let out_driver = driver.step(&f, &err, &d, energy, err_max);
+            for (a, b) in out_plain.iter().zip(out_driver.iter()) {
+                assert!((a - b).abs() < 1e-15, "driver(Pulay) ≠ plain DIIS: {a} vs {b}");
+            }
+        }
+    }
+
+    /// Above the switch threshold the driver returns the energy-DIIS Fock; below
+    /// it, the plain-Pulay Fock. Verify the crossover picks the right branch.
+    #[test]
+    fn driver_switches_at_threshold() {
+        let dim = 3;
+        let mut seed = 0x55AA_55AAu64;
+        let mut driver = DiisDriver::new(DiisFlavor::Ediis, 6, 1e-2);
+
+        // Independent references to compare each branch.
+        let mut ref_pulay = Diis::new(6);
+        let mut ref_energy = EnergyDiis::new(DiisFlavor::Ediis, 6);
+
+        for iter in 0..5 {
+            let f = synthetic_matrix(&mut seed, dim);
+            let err = synthetic_matrix(&mut seed, dim);
+            let d = synthetic_matrix(&mut seed, dim);
+            let energy = synthetic(&mut seed);
+            // Force above-threshold for first 3 iters, below for the rest.
+            let err_max = if iter < 3 { 1.0 } else { 1e-6 };
+
+            let out = driver.step(&f, &err, &d, energy, err_max);
+            let ref_p = ref_pulay.step(&f, &err);
+            let (ref_e, _c) = ref_energy.step(&f, &d, energy);
+
+            if iter < 2 {
+                // First iter both return f unchanged (single history entry);
+                // from iter 1 the energy branch is active above threshold.
+                continue;
+            }
+            let expect = if err_max >= 1e-2 { &ref_e } else { &ref_p };
+            for (a, b) in out.iter().zip(expect.iter()) {
+                assert!((a - b).abs() < 1e-12, "wrong branch at iter {iter}: {a} vs {b}");
+            }
         }
     }
 

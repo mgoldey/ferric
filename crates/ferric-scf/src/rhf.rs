@@ -5,7 +5,7 @@
 
 use crate::df_j::DfJ;
 use crate::df_k::DfK;
-use crate::diis::Diis;
+use crate::diis::DiisDriver;
 use crate::direct_j::DirectJ;
 use crate::direct_jk::DirectJK;
 use crate::direct_k::DirectK;
@@ -33,6 +33,18 @@ pub struct RhfConfig {
     pub energy_conv: f64,
     pub density_conv: f64,
     pub diis_size: usize,
+    /// DIIS family: `Pulay` (default, plain commutator DIIS — historical
+    /// byte-identical behavior) or `Adiis`/`Ediis` (energy-based variant in the
+    /// early SCF, switching to Pulay near convergence — for hard TM-dimer cases).
+    pub diis_flavor: crate::diis::DiisFlavor,
+    /// Commutator `err_max` crossover below which `diis_flavor` reverts to plain
+    /// Pulay. Ignored when `diis_flavor == Pulay`. Default 1e-1 (PySCF/ORCA).
+    pub diis_switch_thresh: f64,
+    /// Finite-temperature (Fermi-Dirac) occupation smearing width σ = k_B·T in
+    /// Hartree. `None` (default) = integer 0/2 aufbau occupation (unchanged).
+    /// `Some(σ)` smears the frontier — a convergence aid for near-degenerate
+    /// d-manifolds (TM dimers/metals). See `smearing.rs`.
+    pub smearing_sigma: Option<f64>,
     pub integral_thresh: f64,
     /// Choose K matrix builder: "direct" (default) or "link".
     pub k_builder: Option<String>,
@@ -166,6 +178,9 @@ impl Default for RhfConfig {
             energy_conv: 1e-3,
             density_conv: 1e-6,
             diis_size: 8,
+            diis_flavor: crate::diis::DiisFlavor::Pulay,
+            diis_switch_thresh: 1e-1,
+            smearing_sigma: None,
             integral_thresh: 1e-12,
             k_builder: None,
             df_j_aux: None,
@@ -379,8 +394,12 @@ pub fn solve_rhf(
     let mut d = if let Some(d0) = config.init_guess_density.as_ref() {
         d0.clone()
     } else if config.use_sad_guess {
-        match crate::guess::sad_guess(mol, prep, prep.basis_set()) {
-            Ok(d_sad) => d_sad,
+        // MINAO projection guess (no per-element free-atom SCF for heavy atoms;
+        // GWH atomic-hcore block for Z≥21/g-function elements). Falls back to
+        // hcore if it fails. The `use_sad_guess` field name is retained for
+        // API/config compatibility but now selects MINAO.
+        match crate::guess::minao_projection_guess(mol, prep, prep.basis_set()) {
+            Ok(d_minao) => d_minao,
             Err(_) => hcore_guess(&s, &h, nocc)?,
         }
     } else {
@@ -389,7 +408,10 @@ pub fn solve_rhf(
     let mut f = Array2::zeros((n, n));
     let mut j_buf = Array2::<f64>::zeros((n, n));
     let mut k_buf = Array2::<f64>::zeros((n, n));
-    let mut diis = Diis::new(config.diis_size);
+    // Combined DIIS driver. With the default `diis_flavor = Pulay` this is a
+    // pure-Pulay driver whose `step` is byte-identical to `Diis::step`;
+    // ADIIS/EDIIS activate only when a caller opts in.
+    let mut diis = DiisDriver::new(config.diis_flavor, config.diis_size, config.diis_switch_thresh);
     // MOM reference: last accepted occupied MO block (None until armed).
     let mut mom_ref: Option<Array2<f64>> = None;
     let mut prev_e = 0.0;
@@ -533,6 +555,10 @@ pub fn solve_rhf(
     // iterations so a max_iter exit can still report eps/MOs for the final density.
     let mut last_eps: Vec<f64> = Vec::new();
     let mut last_c: Array2<f64> = Array2::zeros((n, n));
+    // Fermi-Dirac smearing state (μ, occupations, entropy) from the most recent
+    // smeared density rebuild; `None` when smearing is off (default). Used only
+    // for optional free-energy trace reporting.
+    let mut last_smearing: Option<crate::smearing::Smearing> = None;
 
     // Stall/divergence early-abort state (opt-in via RhfConfig; both None by
     // default leaves existing behavior unchanged).
@@ -785,6 +811,18 @@ pub fn solve_rhf(
 
         if iter > 1 {
             if let Some(exit) = conv_exit {
+                // Report Fermi level / entropy / Mermin free energy when smearing
+                // is active (trace-gated; `energy` is the smeared internal energy,
+                // the free energy is E − σ·S).
+                if scf_trace() {
+                    if let (Some(sigma), Some(sm)) = (config.smearing_sigma, last_smearing.as_ref()) {
+                        eprintln!(
+                            "SCF converged with Fermi smearing σ={sigma:.3e} Ha: \
+                             μ={:.6} Ha, S={:.4e} k_B, E_free=E−σS={:.10} Ha",
+                            sm.mu, sm.entropy, energy - sigma * sm.entropy
+                        );
+                    }
+                }
                 let (orb_e, c) = diagonalize(&f, &x)?;
                 let density_alpha = 0.5 * &d;
                 return Ok(ScfResult {
@@ -808,7 +846,79 @@ pub fn solve_rhf(
         }
         prev_e = energy;
 
-        let mut f_new = diis.step(&f, &err);
+        // ── Second-order (Newton) update, RHF/RKS ────────────────────────────
+        // When enabled (newton_trigger > 0) and err_max has dropped below the
+        // trigger, take a damped-Newton step on the single occ→virt orbital
+        // rotation instead of DIIS — the closed-shell analogue of the UHF/ROKS
+        // Newton paths. `last_c` holds the MOs that produced the current density
+        // `d` (set at the tail of the previous iteration; zeros before iter 2),
+        // so the branch is gated to `iter > 3`, matching solve_uhf. For RKS this
+        // reuses the SAME LDA/GGA f_xc kernel (via FxcKernelStore) that the
+        // ROKS/UKS Newton paths use. Gated to the non-RSH case (ω = 0), since
+        // the Newton matvec's K comes from the plain Coulomb `build_jk`; RSH and
+        // meta-GGA (no τ f_xc) keep the DIIS path. Default newton_trigger = 0
+        // ⇒ this branch never fires and existing RHF/RKS results are unchanged.
+        let use_newton = config.newton_trigger > 0.0
+            && iter > 3
+            && err_max < config.newton_trigger
+            && k_mix.omega == 0.0
+            && !crate::rohf::xc_is_metagga(config.xc.as_deref());
+        if use_newton {
+            let c_cur = &last_c;
+            let f_mo = c_cur.t().dot(&f).dot(c_cur);
+
+            // Build the f_xc kernel (LDA or GGA) at the current restricted
+            // reference (d_α = d_β = ½·d) once per Newton step; None for pure HF.
+            let fxc_store = if xc_contrib.is_some() {
+                let main = config.dft_grid.clone().unwrap_or_default();
+                let name = config.xc.as_deref().expect("xc_contrib implies Some(xc)");
+                let d_half = 0.5 * &d;
+                Some(crate::rohf::FxcKernelStore::build(mol, prep, &main, name, &d_half, &d_half)?)
+            } else {
+                None
+            };
+            let fxc_storage = fxc_store.as_ref().map(|s| s.response());
+            let fxc_ref: Option<&crate::rohf_newton::FxcResponse<'_>> = fxc_storage.as_deref();
+
+            let inputs = crate::rhf_newton::RhfNewtonInputs {
+                prep,
+                bounds,
+                c: c_cur,
+                f_mo: &f_mo,
+                nocc,
+                k_mix_sr: if xc_contrib.is_some() { k_mix.sr } else { 1.0 },
+                fxc: fxc_ref,
+                thresh: config.integral_thresh,
+            };
+            let (c_new, _kmax) = crate::rhf_newton::rhf_newton_step(
+                ctx,
+                &inputs,
+                config.level_shift.max(1e-6),
+                0.2, // trust radius
+                20,
+                1e-7,
+            )?;
+
+            // Rebuild density D = 2·C_occ·C_occᵀ and record ΔP for convergence.
+            let c_occ = c_new.slice(ndarray::s![.., ..nocc]);
+            let d_new = with_blas_threads(opt_in_blas_threads(), || 2.0 * c_occ.dot(&c_occ.t()));
+            {
+                let diff = &d_new - &d;
+                let n2 = (diff.len() as f64).max(1.0);
+                dp_rms = (diff.iter().map(|v| v * v).sum::<f64>() / n2).sqrt();
+                dp_max = diff.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
+            }
+            d.assign(&d_new);
+            last_c = c_new;
+            if effective_level_shift > 0.0 {
+                c_prev = Some(last_c.clone());
+            }
+            continue;
+        }
+
+        // `d`/`energy`/`err_max` feed the energy-based branch (ADIIS/EDIIS);
+        // ignored when the driver is pure Pulay (default).
+        let mut f_new = diis.step(&f, &err, &d, energy, err_max);
 
         // Virtual-block level shift (config.level_shift > 0): add `shift` to the
         // diagonal of the virtual block in MO basis, i.e. F += shift · S·C_v·C_vᵀ·S
@@ -852,10 +962,30 @@ pub fn solve_rhf(
             mom_ref = Some(c.slice(ndarray::s![.., ..nocc]).to_owned());
         }
 
-        // Rebuild density: D = 2 * C_occ @ C_occ^T  (BLAS dgemm). Same opt-in
-        // raise + SAD/free-atom protection as the DIIS FDS/SDF pair above.
-        let c_occ = c.slice(ndarray::s![.., ..nocc]);
-        let d_new = with_blas_threads(opt_in_blas_threads(), || 2.0 * c_occ.dot(&c_occ.t()));
+        // Rebuild density. Default path (smearing off): D = 2 * C_occ @ C_occ^T
+        // over the lowest `nocc` MOs (BLAS dgemm). Fermi-Dirac smearing path
+        // (config.smearing_sigma = Some(σ>0)): solve μ so 2·Σ f_i = N_elec at
+        // width σ, then build D = Σ_i (2·f_i) c_i c_iᵀ = C · diag(2f) · Cᵀ.
+        // Exact-off: when smearing_sigma is None the `_` arm is the unchanged
+        // pre-smearing integer code.
+        let d_new = match config.smearing_sigma {
+            Some(sigma) if sigma > 0.0 => {
+                let sm = crate::smearing::solve_fermi_level(&last_eps, nelec as f64, sigma, 2.0)?;
+                last_smearing = Some(sm.clone());
+                with_blas_threads(opt_in_blas_threads(), || {
+                    let mut c_weighted = c.clone();
+                    for (i, &focc) in sm.occupations.iter().enumerate() {
+                        let mut col = c_weighted.column_mut(i);
+                        col *= 2.0 * focc;
+                    }
+                    c_weighted.dot(&c.t())
+                })
+            }
+            _ => {
+                let c_occ = c.slice(ndarray::s![.., ..nocc]);
+                with_blas_threads(opt_in_blas_threads(), || 2.0 * c_occ.dot(&c_occ.t()))
+            }
+        };
         // Density change ΔP = D_new − D_old — the primary convergence signal
         // (consumed at the top of the next iteration by scf_converged). Unlike
         // the DIIS commutator, ΔP drains to zero at the RI fixed point even when

@@ -106,10 +106,32 @@ pub fn default_ladder() -> Vec<Rung> {
         divergence_tol: Some(0.5),
         ..Default::default()
     };
+    // Efficacy-ordered escalation: cheapest+most-effective first, adding a
+    // convergence accelerator per rung only when the previous one didn't
+    // converge. The MINAO guess (now the default in `solve_rhf`) makes rung 0
+    // suffice for the large majority; the later rungs are for hard cases
+    // (heavy-atom / near-degenerate-d-manifold closed shells).
+    //   rung 0: MINAO guess + plain DIIS            (default; most molecules)
+    //   rung 1: + ADIIS-early → DIIS-late           (robust far from convergence)
+    //   rung 2: + virtual-block level shift 0.5     (damps overshooting rotation)
+    //   rung 3: + level shift 1.0 and SOSCF tail    (quadratic tail once err small)
+    //   rung 4: + Fermi smearing σ=0.01 Ha          (near-degenerate d-manifold)
+    let with = |mut c: RhfConfig,
+                flavor: crate::diis::DiisFlavor,
+                newton: f64,
+                smear: Option<f64>| {
+        c.diis_flavor = flavor;
+        c.newton_trigger = newton;
+        c.smearing_sigma = smear;
+        c
+    };
+    use crate::diis::DiisFlavor::{Adiis, Pulay};
     vec![
         Rung { config: base(0.0, 60), restart: false },
-        Rung { config: base(0.5, 60), restart: false },
-        Rung { config: base(1.0, 80), restart: false },
+        Rung { config: with(base(0.0, 60), Adiis, 0.0, None), restart: false },
+        Rung { config: with(base(0.5, 60), Adiis, 0.0, None), restart: false },
+        Rung { config: with(base(1.0, 80), Adiis, 1e-3, None), restart: false },
+        Rung { config: with(base(0.5, 100), Pulay, 1e-3, Some(0.01)), restart: false },
     ]
 }
 
@@ -147,15 +169,32 @@ pub fn ksdft_ladder(base: &RhfConfig) -> Vec<Rung> {
         }
         c
     };
-    // Rung 1 honors the caller's own level_shift (0 by default) and max_iter
-    // (respect a user budget). The escalation rungs raise the shift ABOVE
-    // whatever rung 1 used and get a fixed generous budget, since they only run
-    // if rung 1 stalled.
+    // Efficacy-ordered escalation, same shape as default_ladder() but carrying
+    // the KS functional/grid through every rung. Rung 0 honors the caller's own
+    // level_shift/max_iter; later rungs add a convergence accelerator each and
+    // only run if the previous rung stalled.
+    //   0: caller's shift + plain DIIS
+    //   1: + ADIIS-early → DIIS-late
+    //   2: + level shift ≥0.5
+    //   3: + level shift +0.5 and SOSCF tail (skipped internally for RSH/meta-GGA)
+    //   4: + Fermi smearing σ=0.01 Ha (near-degenerate d-manifold last resort)
     let ls0 = base.level_shift;
+    let acc = |mut c: RhfConfig,
+               flavor: crate::diis::DiisFlavor,
+               newton: f64,
+               smear: Option<f64>| {
+        c.diis_flavor = flavor;
+        c.newton_trigger = newton;
+        c.smearing_sigma = smear;
+        c
+    };
+    use crate::diis::DiisFlavor::{Adiis, Pulay};
     vec![
         Rung { config: mk(ls0, base.max_iter), restart: false },
-        Rung { config: mk(ls0.max(0.5), 60), restart: false },
-        Rung { config: mk(ls0.max(0.5) + 0.5, 80), restart: false },
+        Rung { config: acc(mk(ls0, 60), Adiis, 0.0, None), restart: false },
+        Rung { config: acc(mk(ls0.max(0.5), 60), Adiis, 0.0, None), restart: false },
+        Rung { config: acc(mk(ls0.max(0.5) + 0.5, 80), Adiis, 1e-3, None), restart: false },
+        Rung { config: acc(mk(ls0.max(0.5), 100), Pulay, 1e-3, Some(0.01)), restart: false },
     ]
 }
 
@@ -292,7 +331,9 @@ mod tests {
             ..Default::default()
         };
         let l = ksdft_ladder(&base);
-        assert_eq!(l.len(), 3);
+        // Efficacy-ordered: 5 rungs (guess+DIIS → +ADIIS → +shift → +shift+SOSCF
+        // → +smearing).
+        assert_eq!(l.len(), 5);
         // xc + custom grid survive into every rung.
         for r in &l {
             assert_eq!(r.config.xc.as_deref(), Some("PBE"));
@@ -302,11 +343,15 @@ mod tests {
             assert_eq!(r.config.divergence_tol, Some(0.5));
             assert!(!r.restart, "rungs inherit density");
         }
-        // Level-shift escalates; rung 1 respects the caller's max_iter.
+        // Rung 0 respects the caller's max_iter and no shift. The level shift is
+        // introduced from rung 2 onward (rung 1 adds ADIIS, not a shift).
         assert_eq!(l[0].config.level_shift, 0.0);
         assert_eq!(l[0].config.max_iter, 42);
-        assert!(l[1].config.level_shift > 0.0);
-        assert!(l[2].config.level_shift > l[1].config.level_shift);
+        assert_eq!(l[1].config.diis_flavor, crate::diis::DiisFlavor::Adiis);
+        assert!(l[2].config.level_shift > 0.0, "rung 2 adds the level shift");
+        assert!(l[3].config.level_shift > l[2].config.level_shift);
+        assert!(l[3].config.newton_trigger > 0.0, "rung 3 adds SOSCF");
+        assert!(l[4].config.smearing_sigma.is_some(), "rung 4 adds smearing");
         // Pure PBE (no exact exchange) still gets RI-J auto-defaulted for speed.
         assert!(l[0].config.df_j_aux.is_some(), "RI-J auto-defaulted when xc set");
     }

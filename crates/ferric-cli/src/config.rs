@@ -458,6 +458,24 @@ pub struct ScfCfg {
     pub density_conv: f64,
     #[serde(default = "default_diis_size")]
     pub diis_size: usize,
+    /// DIIS family: "pulay" (default), "adiis", or "ediis". ADIIS/EDIIS use an
+    /// energy-based extrapolation in the early SCF (switching to Pulay near
+    /// convergence) — a convergence aid for hard transition-metal cases.
+    pub diis: Option<String>,
+    /// Crossover `err_max` below which ADIIS/EDIIS revert to plain Pulay
+    /// (ignored for "pulay"). Default 1e-1.
+    pub diis_switch_thresh: Option<f64>,
+    /// Finite-temperature Fermi-Dirac occupation smearing width σ = k_B·T in
+    /// Hartree. Absent/None = integer occupation (default). A convergence aid
+    /// for near-degenerate frontier manifolds (metals / TM dimers).
+    pub smearing_sigma: Option<f64>,
+    /// SCF initial guess: "minao" (default, no per-element free-atom SCF for
+    /// heavy atoms), "sad" (legacy free-atom-SCF superposition), or "hcore".
+    pub guess: Option<String>,
+    /// Enable the closed-shell second-order (Newton/SOSCF) step in the SCF tail
+    /// (sets newton_trigger). Default false.
+    #[serde(default)]
+    pub soscf: bool,
     #[serde(default = "default_integral_thresh")]
     pub integral_thresh: f64,
     pub k_builder: Option<String>,
@@ -494,6 +512,11 @@ impl Default for ScfCfg {
             energy_conv: 1e-3,
             density_conv: 1e-6,
             diis_size: 8,
+            diis: None,
+            diis_switch_thresh: None,
+            smearing_sigma: None,
+            guess: None,
+            soscf: false,
             integral_thresh: 1e-12,
             k_builder: None,
             df_j_aux: None,
@@ -502,6 +525,28 @@ impl Default for ScfCfg {
             mom_after_iter: 0,
             ladder: Vec::new(),
         }
+    }
+}
+
+impl ScfCfg {
+    /// Parse the `diis` string into a `DiisFlavor` (strict — unknown values are a
+    /// hard error, per the config-honesty convention). Absent = Pulay.
+    pub fn diis_flavor(&self) -> ferric_scf::diis::DiisFlavor {
+        use ferric_scf::diis::DiisFlavor;
+        match self.diis.as_deref() {
+            None | Some("pulay") | Some("Pulay") => DiisFlavor::Pulay,
+            Some("adiis") | Some("ADIIS") => DiisFlavor::Adiis,
+            Some("ediis") | Some("EDIIS") => DiisFlavor::Ediis,
+            Some(other) => panic!(
+                "[scf] diis = \"{other}\" is not recognized (use \"pulay\", \"adiis\", or \"ediis\")"
+            ),
+        }
+    }
+    /// Whether the guess is "sad" (legacy free-atom-SCF) vs the default MINAO.
+    /// Returns `use_sad_guess`-style: true means run the density-superposition
+    /// guess (MINAO or SAD via use_sad_guess), false forces hcore.
+    pub fn use_density_guess(&self) -> bool {
+        !matches!(self.guess.as_deref(), Some("hcore") | Some("Hcore"))
     }
 }
 
