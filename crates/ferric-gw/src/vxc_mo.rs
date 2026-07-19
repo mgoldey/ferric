@@ -35,8 +35,17 @@ pub fn vxc_diagonal_mo(
         let ks_xc = KsXc::new(mol, bs, xc_name, &main_grid, &nlc_grid)
             .map_err(|e| FerricError::General(format!("KsXc::new: {e:?}")))?;
         let dens = eval_density_closed(&d_full, &ks_xc.chi, &ks_xc.dchi);
-        let (_e_xc, mut vxc_ao) =
-            semilocal_vxc_closed(&ks_xc.grid, &ks_xc.chi, &ks_xc.dchi, &dens, &ks_xc.xc);
+        // Meta-GGA needs τ; cheap and only computed when the functional is one.
+        let tau = if ks_xc.xc.funcs.iter().any(|f| {
+            matches!(f.family(), ferric_dft::libxc::FunctionalFamily::MetaGga)
+        }) {
+            Some(ferric_dft::density_on_grid::eval_tau_closed(&d_full, &ks_xc.dchi))
+        } else {
+            None
+        };
+        let (_e_xc, mut vxc_ao) = semilocal_vxc_closed(
+            &ks_xc.grid, &ks_xc.chi, &ks_xc.dchi, &dens, tau.as_ref(), &ks_xc.xc,
+        );
         // VV10 nonlocal piece is part of the KS Fock; subtract it too.
         if let (Some(g), Some(c), Some(dc), Some(params)) = (
             ks_xc.nlc_grid.as_ref(),
@@ -66,8 +75,16 @@ pub fn vxc_diagonal_mo(
         .map_err(|e| FerricError::General(format!("KsXcUks::new: {e:?}")))?;
 
     let dens = eval_density_uks(d_a, d_b, &ks_xc.chi, &ks_xc.dchi);
+    let tau = if ks_xc.xc.funcs.iter().any(|f| {
+        matches!(f.family(), ferric_dft::libxc::FunctionalFamily::MetaGga)
+    }) {
+        Some(ferric_dft::density_on_grid::eval_tau_uks(d_a, d_b, &ks_xc.dchi))
+    } else {
+        None
+    };
+    let tau_ref = tau.as_ref().map(|(a, b)| (a, b));
     let (_e_xc, vxc_a_ao, vxc_b_ao) =
-        semilocal_vxc_polarized(&ks_xc.grid, &ks_xc.chi, &ks_xc.dchi, &dens, &ks_xc.xc);
+        semilocal_vxc_polarized(&ks_xc.grid, &ks_xc.chi, &ks_xc.dchi, &dens, tau_ref, &ks_xc.xc);
 
     // For VV10 the v_nl piece is the same for both spins (matches KsXcUks).
     // It's part of the KS Fock so we must subtract it too for the Σ_x − v_xc

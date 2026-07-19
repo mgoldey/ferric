@@ -75,6 +75,23 @@ pub static GGA_FXC_KERNEL_BUILDS: std::sync::atomic::AtomicUsize =
 /// (which adds the σ = |∇ρ|² coupling terms). Building this once per Newton step
 /// and borrowing the closure from it keeps the (heavy) grid + AO evaluation out
 /// of the per-matvec inner loop.
+/// True when `xc_name` resolves to a meta-GGA functional (SCAN / r2SCAN / TPSS).
+/// Meta-GGA is energy-only in Phase A: it has no τ-dependent f_xc kernel, so the
+/// Newton/AH acceleration path must be skipped (fall back to DIIS). `None`
+/// (pure HF/ROHF) and any resolver error are treated as "not meta-GGA".
+pub(crate) fn xc_is_metagga(xc_name: Option<&str>) -> bool {
+    match xc_name {
+        Some(name) => match ferric_dft::libxc::xc_def_from_name(name) {
+            Ok(def) => def
+                .funcs
+                .iter()
+                .any(|f| f.family() == ferric_dft::libxc::FunctionalFamily::MetaGga),
+            Err(_) => false,
+        },
+        None => false,
+    }
+}
+
 pub(crate) enum FxcKernelStore {
     Lda {
         kernel: Box<ferric_dft::fxc::LdaFxcKernel>,
@@ -171,6 +188,19 @@ pub fn solve_rohf(
 
     let k_mix: KMix = xc_contrib.as_ref().map(|x| x.k_mix()).unwrap_or_default();
     let c_k: f64 = if xc_contrib.is_some() { k_mix.sr } else { 1.0 };
+
+    // Meta-GGA (SCAN / r2SCAN) ROKS is stiffer than LDA/GGA and limit-cycles
+    // under plain DIIS; apply the same modest default virtual-block level shift
+    // the closed-shell RKS path uses (see solve_rhf) when the user hasn't set
+    // one. Ramped to zero as the gradient converges. Meta-GGA falls back to DIIS
+    // (no fxc Newton kernel), so this shift is the relevant stabilizer.
+    let effective_level_shift = if config.level_shift == 0.0
+        && xc_is_metagga(config.xc.as_deref())
+    {
+        0.5
+    } else {
+        config.level_shift
+    };
 
     // RSH path (ω > 0): per-spin K from c_SR · K[erfc(ω)] + c_LR · K[erf(ω)]
     // via two DfK fitters (geometry-only — built once, contracted per spin
@@ -465,11 +495,12 @@ pub fn solve_rohf(
         //     Meta-GGA is still excluded (rejected upstream — no τ kernel).
         //
         // `xc_supports_newton_fxc` gates whether an f_xc-accelerated Newton/AH
-        // step is available for this functional at all. Any functional string
-        // that produced a live `xc_contrib` is LDA/GGA/hybrid/RSH (meta-GGA is
-        // rejected at KsXcUks::new), so all of them now support the fxc Newton
-        // step. Pure ROHF (xc=None) keeps the HF-only Hessian path.
-        let xc_supports_newton_fxc = xc_contrib.is_some();
+        // step is available for this functional at all. LDA/GGA/hybrid/RSH all
+        // have an f_xc kernel (LdaFxcKernel / GgaFxcKernel). Meta-GGA (SCAN /
+        // r2SCAN) is energy-only in Phase A — there is no τ-dependent f_xc
+        // kernel — so it falls back to plain DIIS here. Pure ROHF (xc=None)
+        // keeps the HF-only Hessian path.
+        let xc_supports_newton_fxc = xc_contrib.is_some() && !xc_is_metagga(config.xc.as_deref());
         // Augmented-Hessian Newton — used when err_max is below ah_trigger.
         // Handles vanishing Hessian eigenvalues (e.g., doublet OH at LDA with
         // near-degenerate SOMO/HOMO) that PCG can't resolve.
@@ -571,10 +602,10 @@ pub fn solve_rohf(
             // DIIS extrapolate effective Fock, then optionally level-shift the
             // virtual–virtual block in MO basis to damp open-shell oscillations.
             let mut f_new = diis.step(&f_eff, &err);
-            if config.level_shift > 0.0 && iter > 1 {
+            if effective_level_shift > 0.0 && iter > 1 {
                 const SHIFT_DAMP_ERR: f64 = 1e-3;
                 let damp = err_max / (err_max + SHIFT_DAMP_ERR);
-                let shift_eff = config.level_shift * damp;
+                let shift_eff = effective_level_shift * damp;
                 if shift_eff > 1e-10 {
                     let c_virt = c.slice(ndarray::s![.., nocc_a..]);
                     let p_virt: Array2<f64> = c_virt.dot(&c_virt.t());

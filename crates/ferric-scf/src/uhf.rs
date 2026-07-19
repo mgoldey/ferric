@@ -105,6 +105,20 @@ pub fn solve_uhf_fockmod(
     };
 
     let k_mix: KMix = xc_contrib.as_ref().map(|x| x.k_mix()).unwrap_or_default();
+
+    // Meta-GGA (SCAN / r2SCAN) UKS is stiffer than LDA/GGA and limit-cycles under
+    // plain DIIS; apply the same modest default virtual-block level shift the
+    // closed-shell RKS path uses (see solve_rhf) when the user hasn't set one.
+    // Ramped to zero as the gradient converges, so the final energy is
+    // unperturbed. LDA/GGA/hybrid keep the user's shift (default 0).
+    let effective_level_shift = if config.level_shift == 0.0
+        && crate::rohf::xc_is_metagga(config.xc.as_deref())
+    {
+        0.5
+    } else {
+        config.level_shift
+    };
+
     // K coefficient on the full Coulomb K, per-spin. For pure HF (no xc),
     // KMix::default() gives sr = 1.0, lr = 1.0 → c_k = 1.0 (original UHF behavior).
     let c_k: f64 = if xc_contrib.is_some() { k_mix.sr } else { 1.0 };
@@ -415,10 +429,13 @@ pub fn solve_uhf_fockmod(
         // non-RSH case (ω = 0): the Newton matvec's K comes from the plain
         // Coulomb `build_jk`, so range-separated K would be inconsistent — RSH
         // keeps the DIIS path.
+        // Meta-GGA (SCAN / r2SCAN) has no τ-dependent f_xc kernel in Phase A —
+        // exclude it from the Newton path so it falls back to DIIS (energy-only).
         let use_newton = config.newton_trigger > 0.0
             && iter > 3
             && err_max < config.newton_trigger
-            && k_mix.omega == 0.0;
+            && k_mix.omega == 0.0
+            && !crate::rohf::xc_is_metagga(config.xc.as_deref());
         if use_newton {
             let f_a_mo = c_a.t().dot(&f_a).dot(&c_a);
             let f_b_mo = c_b.t().dot(&f_b).dot(&c_b);
@@ -478,7 +495,7 @@ pub fn solve_uhf_fockmod(
         // anchored to the unshifted Fock. Rational-damped by err_max so the
         // converged Fock is the unshifted stationary point (see solve_rohf
         // for the same formula and rationale).
-        if config.level_shift > 0.0 && iter > 1 {
+        if effective_level_shift > 0.0 && iter > 1 {
             const SHIFT_DAMP_ERR: f64 = 1e-3;
             let err_max = err_a
                 .iter()
@@ -486,7 +503,7 @@ pub fn solve_uhf_fockmod(
                 .map(|v| v.abs())
                 .fold(0.0_f64, f64::max);
             let damp = err_max / (err_max + SHIFT_DAMP_ERR);
-            let shift_eff = config.level_shift * damp;
+            let shift_eff = effective_level_shift * damp;
             if shift_eff > 1e-10 {
                 let c_av = c_a.slice(ndarray::s![.., nocc_a..]);
                 let c_bv = c_b.slice(ndarray::s![.., nocc_b..]);

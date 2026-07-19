@@ -58,6 +58,33 @@ mod ffi {
             vsigma: *mut f64,
         );
 
+        /// Meta-GGA exc + first derivatives. Signature verified against libxc
+        /// 7.0.0 `src/xc.h`:
+        /// ```c
+        /// void xc_mgga_exc_vxc(const xc_func_type *p, size_t np,
+        ///      const double *rho, const double *sigma,
+        ///      const double *lapl, const double *tau,
+        ///      double *zk, double *vrho, double *vsigma,
+        ///      double *vlapl, double *vtau);
+        /// ```
+        /// `lapl` (density Laplacian) is passed but NEVER read for the
+        /// functionals ferric supports (SCAN / r2SCAN / TPSS do not set
+        /// `XC_FLAGS_NEEDS_LAPLACIAN`); the caller passes a zero buffer and
+        /// discards `vlapl`.
+        pub fn xc_mgga_exc_vxc(
+            p: *const XcFuncOpaque,
+            np: usize,
+            rho: *const f64,
+            sigma: *const f64,
+            lapl: *const f64,
+            tau: *const f64,
+            zk: *mut f64,
+            vrho: *mut f64,
+            vsigma: *mut f64,
+            vlapl: *mut f64,
+            vtau: *mut f64,
+        );
+
         /// Second functional derivative of LDA. For unpolarized (nspin=1)
         /// the layout is [v2rho2 per point]. For polarized (nspin=2) the
         /// layout is [v2rho2_αα, v2rho2_αβ, v2rho2_ββ] per point.
@@ -137,6 +164,9 @@ pub enum FunctionalFamily {
     Gga,
     HybridGga,
     RangeSepGga,
+    /// Semilocal meta-GGA (needs the kinetic-energy density τ). ferric supports
+    /// SCAN / r2SCAN / TPSS — none of which need the density Laplacian.
+    MetaGga,
 }
 
 // ---------------------------------------------------------------------------
@@ -411,6 +441,112 @@ impl XcFunctional {
         }
     }
 
+    /// Meta-GGA (unpolarized, nspin=1): feed ρ, σ = |∇ρ|², and τ = ½Σ_i|∇φ_i|².
+    ///
+    /// One value per grid point for every buffer:
+    ///   `rho[g]`, `sigma[g]`, `tau[g]` (inputs),
+    ///   `exc[g]`  = ε_xc(r_g)                 (per-particle energy density),
+    ///   `vrho[g]` = ∂E_xc/∂ρ(r_g),
+    ///   `vsigma[g]` = ∂E_xc/∂σ(r_g),
+    ///   `vtau[g]` = ∂E_xc/∂τ(r_g).
+    ///
+    /// The density Laplacian is not needed by any supported meta-GGA (SCAN /
+    /// r2SCAN / TPSS): a zero `lapl` buffer is passed and `vlapl` discarded.
+    #[allow(clippy::too_many_arguments)]
+    pub fn eval_mgga_unpolarized(
+        &self,
+        rho: &[f64],
+        sigma: &[f64],
+        tau: &[f64],
+        exc: &mut [f64],
+        vrho: &mut [f64],
+        vsigma: &mut [f64],
+        vtau: &mut [f64],
+    ) {
+        let n = rho.len();
+        assert_eq!(sigma.len(), n, "sigma buffer length must match rho.len()");
+        assert_eq!(tau.len(), n, "tau buffer length must match rho.len()");
+        assert_eq!(exc.len(), n, "exc buffer length must match rho.len()");
+        assert_eq!(vrho.len(), n, "vrho buffer length must match rho.len()");
+        assert_eq!(vsigma.len(), n, "vsigma buffer length must match rho.len()");
+        assert_eq!(vtau.len(), n, "vtau buffer length must match rho.len()");
+        // lapl input / vlapl output: unused for the supported functionals but
+        // the C ABI still dereferences them, so hand real zeroed buffers.
+        let lapl = vec![0.0_f64; n];
+        let mut vlapl = vec![0.0_f64; n];
+        // SAFETY: handle is non-null and fully initialised (constructed by new);
+        // all buffer lengths are verified above (lapl/vlapl are locally sized to
+        // n); libxc reads rho/sigma/lapl/tau and writes exc/vrho/vsigma/vlapl/vtau
+        // for exactly n grid points without retaining any pointers.
+        unsafe {
+            ffi::xc_mgga_exc_vxc(
+                self.ptr as *const _,
+                n,
+                rho.as_ptr(),
+                sigma.as_ptr(),
+                lapl.as_ptr(),
+                tau.as_ptr(),
+                exc.as_mut_ptr(),
+                vrho.as_mut_ptr(),
+                vsigma.as_mut_ptr(),
+                vlapl.as_mut_ptr(),
+                vtau.as_mut_ptr(),
+            );
+        }
+    }
+
+    /// Meta-GGA, polarized (nspin=2). Interleaved layouts (mirroring the GGA
+    /// polarized wrapper, with τ added):
+    ///   `rho[2g+0]   = ρ_α`,   `rho[2g+1]   = ρ_β`
+    ///   `sigma[3g+0] = σ_αα`,  `sigma[3g+1] = σ_αβ`, `sigma[3g+2] = σ_ββ`
+    ///   `tau[2g+0]   = τ_α`,   `tau[2g+1]   = τ_β`
+    ///   `vrho[2g+0]  = v_ρα`,  `vrho[2g+1]  = v_ρβ`
+    ///   `vsigma[3g+0]= v_σαα`, `vsigma[3g+1]= v_σαβ`, `vsigma[3g+2]= v_σββ`
+    ///   `vtau[2g+0]  = v_τα`,  `vtau[2g+1]  = v_τβ`
+    /// `exc[g]` is the per-particle energy density (one per point).
+    ///
+    /// As in the unpolarized case, `lapl`/`vlapl` are zeroed / discarded (no
+    /// supported meta-GGA needs the Laplacian). The polarized Laplacian buffers
+    /// carry 2 components per point (`lapl[2g+σ]`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn eval_mgga_polarized(
+        &self,
+        rho: &[f64],
+        sigma: &[f64],
+        tau: &[f64],
+        exc: &mut [f64],
+        vrho: &mut [f64],
+        vsigma: &mut [f64],
+        vtau: &mut [f64],
+    ) {
+        debug_assert!(self.nspin == 2, "eval_mgga_polarized requires nspin=2");
+        let n = exc.len();
+        assert_eq!(rho.len(), 2 * n, "polarized rho buffer must be 2 * npts");
+        assert_eq!(sigma.len(), 3 * n, "polarized sigma buffer must be 3 * npts");
+        assert_eq!(tau.len(), 2 * n, "polarized tau buffer must be 2 * npts");
+        assert_eq!(vrho.len(), 2 * n, "polarized vrho buffer must be 2 * npts");
+        assert_eq!(vsigma.len(), 3 * n, "polarized vsigma buffer must be 3 * npts");
+        assert_eq!(vtau.len(), 2 * n, "polarized vtau buffer must be 2 * npts");
+        let lapl = vec![0.0_f64; 2 * n];
+        let mut vlapl = vec![0.0_f64; 2 * n];
+        // SAFETY: handle is non-null + fully initialised; all lengths verified.
+        unsafe {
+            ffi::xc_mgga_exc_vxc(
+                self.ptr as *const _,
+                n,
+                rho.as_ptr(),
+                sigma.as_ptr(),
+                lapl.as_ptr(),
+                tau.as_ptr(),
+                exc.as_mut_ptr(),
+                vrho.as_mut_ptr(),
+                vsigma.as_mut_ptr(),
+                vlapl.as_mut_ptr(),
+                vtau.as_mut_ptr(),
+            );
+        }
+    }
+
     /// Returns CAM (range-separation) coefficients if this is an RSH functional.
     ///
     /// `omega` is the range-separation parameter; a zero value means no
@@ -553,6 +689,9 @@ fn friendly_to_libxc(name: &str) -> Option<&'static [&'static str]> {
         "PBESOL" => &["GGA_X_PBE_SOL", "GGA_C_PBE_SOL"],
         "BLYP" => &["GGA_X_B88", "GGA_C_LYP"],
         "BP86" => &["GGA_X_B88", "GGA_C_P86"],
+        // --- pure meta-GGA (exchange + correlation pair; need τ) ---
+        "SCAN" => &["MGGA_X_SCAN", "MGGA_C_SCAN"],
+        "R2SCAN" => &["MGGA_X_R2SCAN", "MGGA_C_R2SCAN"],
         // --- hybrid / RSH (single combined identifier) ---
         // PBE0 is libxc's HYB_GGA_XC_PBEH ("PBE hybrid") — HYB_GGA_XC_PBE0
         // does not exist in libxc.
@@ -577,17 +716,10 @@ pub fn xc_def_from_name(name: &str) -> Result<XcDef, LibxcError> {
 
 /// nspin-aware variant. Use 1 for closed-shell and 2 for UKS / ROKS.
 pub fn xc_def_from_name_nspin(name: &str, nspin: u32) -> Result<XcDef, LibxcError> {
-    // ferric can only evaluate LDA / GGA / hybrid-GGA / RSH-GGA kernels.
-    // Reject meta-GGA functionals up front with a clear message rather than
-    // mis-evaluating them as GGAs (they need the kinetic-energy density τ).
-    if name.to_uppercase().contains("MGGA") {
-        return Err(LibxcError::Unsupported(format!(
-            "{name}: meta-GGA functionals are not supported (no mGGA kernel)"
-        )));
-    }
+    let upper = name.to_uppercase();
 
     // Friendly-name alias layer: map common chemistry names to canonical libxc
-    // component identifiers. Composite (LDA/GGA) → X+C pair; hybrid/RSH → one.
+    // component identifiers. Composite (LDA/GGA/mGGA) → X+C pair; hybrid/RSH → one.
     if let Some(components) = friendly_to_libxc(name) {
         // Single combined identifier ⇒ hybrid or range-separated functional.
         if components.len() == 1 {
@@ -607,9 +739,9 @@ pub fn xc_def_from_name_nspin(name: &str, nspin: u32) -> Result<XcDef, LibxcErro
                 b3lyp_mix: if mix != 0.0 { Some(mix) } else { None },
             });
         }
-        // Exchange + correlation pair ⇒ pure LDA or GGA.
-        let is_lda = components[0].starts_with("LDA");
-        let fam = if is_lda { FunctionalFamily::Lda } else { FunctionalFamily::Gga };
+        // Exchange + correlation pair ⇒ pure LDA, GGA, or meta-GGA. Detect the
+        // family from the component identifier prefix (LDA_ / MGGA_ / else GGA).
+        let fam = family_from_component_id(components[0]);
         let mut funcs = Vec::with_capacity(components.len());
         for id in components {
             let mut f = XcFunctional::new(id, nspin)?;
@@ -617,6 +749,30 @@ pub fn xc_def_from_name_nspin(name: &str, nspin: u32) -> Result<XcDef, LibxcErro
             funcs.push(f);
         }
         return Ok(XcDef { funcs, cam: None, vv10: None, b3lyp_mix: None });
+    }
+
+    // Raw (non-friendly) meta-GGA identifiers: only the semilocal SCAN / r2SCAN
+    // / TPSS families ferric can evaluate (τ-only, no Laplacian) are allowed
+    // through as a single-component functional. Any other raw `MGGA_*` name is
+    // rejected up front rather than mis-evaluated — including hybrid/deorbitalized
+    // variants (HYB_MGGA_*, *SCANL, *_VV10, *_RVV10) which ferric has no path for.
+    if upper.contains("MGGA") {
+        let is_supported_raw_mgga = matches!(
+            upper.as_str(),
+            "MGGA_X_SCAN" | "MGGA_C_SCAN"
+                | "MGGA_X_R2SCAN" | "MGGA_C_R2SCAN"
+                | "MGGA_X_TPSS" | "MGGA_C_TPSS"
+        );
+        if !is_supported_raw_mgga {
+            return Err(LibxcError::Unsupported(format!(
+                "{name}: only SCAN / r2SCAN / TPSS meta-GGAs are supported \
+                 (τ-only kernels; no Laplacian, hybrid-mGGA, or deorbitalized \
+                 variants)"
+            )));
+        }
+        let mut f = XcFunctional::new(name, nspin)?;
+        f.set_family(FunctionalFamily::MetaGga);
+        return Ok(XcDef { funcs: vec![f], cam: None, vv10: None, b3lyp_mix: None });
     }
 
     // Unrecognized friendly name: treat as a raw libxc identifier.
@@ -645,6 +801,19 @@ pub fn xc_def_from_name_nspin(name: &str, nspin: u32) -> Result<XcDef, LibxcErro
                 Ok(XcDef { funcs: vec![f], cam: None, vv10, b3lyp_mix: None })
             }
         }
+    }
+}
+
+/// Family of a canonical libxc component identifier, from its prefix.
+/// `LDA_*` → Lda, `MGGA_*` → MetaGga, everything else → Gga (the pure-pair
+/// path never sees hybrid/RSH single identifiers).
+fn family_from_component_id(id: &str) -> FunctionalFamily {
+    if id.starts_with("LDA") {
+        FunctionalFamily::Lda
+    } else if id.starts_with("MGGA") {
+        FunctionalFamily::MetaGga
+    } else {
+        FunctionalFamily::Gga
     }
 }
 
@@ -678,14 +847,40 @@ mod tests {
         }
     }
 
-    /// A canonical meta-GGA libxc name must fail with the clear `Unsupported`
-    /// error rather than be silently mis-evaluated as a GGA (no mGGA kernel).
+    /// SCAN / r2SCAN friendly names resolve to a two-component meta-GGA pair,
+    /// both tagged `FunctionalFamily::MetaGga`, with no exact exchange.
     #[test]
-    fn meta_gga_is_rejected_clearly() {
-        let ok = matches!(
-            xc_def_from_name("MGGA_X_TPSS"),
-            Err(LibxcError::Unsupported(_))
-        );
-        assert!(ok, "canonical mGGA name should give LibxcError::Unsupported");
+    fn scan_and_r2scan_resolve_as_metagga() {
+        for name in ["SCAN", "r2SCAN", "R2SCAN"] {
+            let def = xc_def_from_name(name).unwrap_or_else(|e| {
+                panic!("{name} should resolve as meta-GGA, got {e:?}")
+            });
+            assert_eq!(def.funcs.len(), 2, "{name}: X + C pair");
+            for f in &def.funcs {
+                assert_eq!(
+                    f.family(),
+                    FunctionalFamily::MetaGga,
+                    "{name}: component must be MetaGga family"
+                );
+            }
+            assert!(def.b3lyp_mix.is_none(), "{name}: pure meta-GGA, no HF mix");
+            assert!(def.cam.is_none(), "{name}: not range-separated");
+        }
+    }
+
+    /// Supported raw meta-GGA identifiers resolve; UNsupported meta-GGA variants
+    /// (hybrid, deorbitalized, +VV10) must fail with a clear `Unsupported` error
+    /// rather than be silently mis-evaluated (ferric has no path for them).
+    #[test]
+    fn unsupported_metagga_variants_rejected_clearly() {
+        // Supported τ-only kernels resolve.
+        assert!(xc_def_from_name("MGGA_X_SCAN").is_ok());
+        assert!(xc_def_from_name("MGGA_X_TPSS").is_ok());
+        // Unsupported variants: deorbitalized (SCANL, needs Laplacian), +VV10,
+        // and hybrid-mGGA all reject.
+        for bad in ["MGGA_X_SCANL", "MGGA_C_SCAN_VV10", "HYB_MGGA_XC_R2SCAN"] {
+            let ok = matches!(xc_def_from_name(bad), Err(LibxcError::Unsupported(_)));
+            assert!(ok, "{bad} should give LibxcError::Unsupported");
+        }
     }
 }

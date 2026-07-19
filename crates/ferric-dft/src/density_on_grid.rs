@@ -227,6 +227,88 @@ pub fn eval_density_uks(
     UksDensityGrid { rho_a, rho_b, grad_a, grad_b, sigma }
 }
 
+/// Kinetic-energy density τ(r) on a grid, from a density matrix and ∇χ.
+///
+/// For a meta-GGA the semilocal functional needs
+///
+///   τ(r) = ½ Σ_i n_i |∇φ_i(r)|²   (sum over occupied MOs, occupations n_i)
+///
+/// Using D = Σ_i n_i C_i C_iᵀ this is exactly the density-matrix contraction
+///
+///   τ(r) = ½ Σ_axis Σ_μν D_μν ∂_axis χ_μ(r) ∂_axis χ_ν(r)
+///
+/// so τ needs only D and ∇χ — no explicit occupied MO coefficients. This is
+/// PySCF's `eval_rho` meta-GGA path (`dft/numint.py`: `c1 = ∂χ·D`, then
+/// `τ += Σ_μ ∂χ_μ · c1_μ`, finally `τ *= 0.5`), verified against libxc 7.0.0's
+/// unpolarized τ convention (total τ = τ_α + τ_β).
+///
+/// Passing the **total** D (tr D = N_e) yields the total τ for the unpolarized
+/// libxc kernel; passing a per-spin D_σ (tr D_σ = N_σ) yields τ_σ for the
+/// polarized kernel.
+///
+/// One GEMM per axis (`Ψ_axis = D · ∂_axis χ`), then a point-local Σ_μ
+/// ∂_axis χ_μ · Ψ_axis,μ reduction — mirroring `eval_density_closed`'s
+/// point-outer / μ-inner structure so the result is deterministic across thread
+/// counts (each point's Σ_μ runs in ascending-μ order, points are the disjoint
+/// parallel unit).
+pub fn eval_tau_closed(
+    d: &Array2<f64>,
+    dchi: &Array3<f64>, // (3, nbf, npts)
+) -> Array1<f64> {
+    let (_, nbf, npts) = dchi.dim();
+    debug_assert_eq!(d.dim(), (nbf, nbf));
+
+    // Ψ_axis[(μ, g)] = Σ_ν D_μν ∂_axis χ_νg — one GEMM per axis, all before the
+    // point-parallel region below.
+    let dchi_s = dchi.as_standard_layout();
+    let psi: Vec<Array2<f64>> = (0..3)
+        .map(|axis| {
+            let da = dchi_s.index_axis(ndarray::Axis(0), axis);
+            with_blas_threads(opt_in_blas_threads(), || d.dot(&da))
+        })
+        .collect();
+    let psi_s: Vec<_> = psi.iter().map(|p| p.as_standard_layout()).collect();
+
+    let compute_point = |g: usize| -> f64 {
+        let mut acc = 0.0_f64;
+        for axis in 0..3 {
+            let da = dchi_s.index_axis(ndarray::Axis(0), axis);
+            let pa = &psi_s[axis];
+            let mut a = 0.0_f64;
+            for mu in 0..nbf {
+                a += da[(mu, g)] * pa[(mu, g)];
+            }
+            acc += a;
+        }
+        0.5 * acc
+    };
+
+    let mut tau = Array1::<f64>::zeros(npts);
+    if npts >= PAR_MIN_PTS {
+        let vals: Vec<f64> = (0..npts).into_par_iter().map(compute_point).collect();
+        for (g, v) in vals.into_iter().enumerate() {
+            tau[g] = v;
+        }
+    } else {
+        for g in 0..npts {
+            tau[g] = compute_point(g);
+        }
+    }
+    tau
+}
+
+/// Per-spin kinetic-energy densities (τ_α, τ_β) from the two spin density
+/// matrices. Each `D_σ` should have `tr(D_σ) = N_σ`; each returned τ_σ is the
+/// spin-resolved kinetic-energy density for the polarized meta-GGA kernel. See
+/// [`eval_tau_closed`] for the τ = ½ Σ_axis Σ_μν D_μν ∂χ_μ ∂χ_ν identity.
+pub fn eval_tau_uks(
+    d_a: &Array2<f64>,
+    d_b: &Array2<f64>,
+    dchi: &Array3<f64>,
+) -> (Array1<f64>, Array1<f64>) {
+    (eval_tau_closed(d_a, dchi), eval_tau_closed(d_b, dchi))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -333,6 +415,66 @@ mod tests {
             refr.sigma.as_slice().unwrap(),
             "sigma vs ref",
         );
+    }
+
+    /// τ from the density matrix (`eval_tau_closed`) must equal the explicit
+    /// occupied-MO form τ = ½ Σ_i n_i |∇φ_i|² for D = Σ_i n_i C_i C_iᵀ. Build a
+    /// D from random "occupied" columns, then cross-check.
+    #[test]
+    fn tau_from_density_matrix_matches_explicit_mo_sum() {
+        let nbf = 14;
+        let npts = 600;
+        let nocc = 4;
+        // "Occupied MO coefficients" C (nbf, nocc), occupations n_i = 2 (closed).
+        let c = Array2::from_shape_vec((nbf, nocc), synth(nbf * nocc, 11)).unwrap();
+        let occ = 2.0_f64;
+        // D = occ · C Cᵀ  (tr D = occ · Σ_i |C_i|²).
+        let d = occ * c.dot(&c.t());
+        let dchi = Array3::from_shape_vec((3, nbf, npts), synth(3 * nbf * npts, 12)).unwrap();
+
+        let tau_dm = eval_tau_closed(&d, &dchi);
+
+        // Explicit: τ = ½ Σ_i n_i |∇φ_i|², φ_i = Σ_μ C_μi χ_μ ⇒ ∂φ_i = Σ_μ C_μi ∂χ_μ.
+        let mut tau_ref = Array1::<f64>::zeros(npts);
+        for g in 0..npts {
+            let mut acc = 0.0_f64;
+            for i in 0..nocc {
+                for axis in 0..3 {
+                    let mut dphi = 0.0_f64;
+                    for mu in 0..nbf {
+                        dphi += c[(mu, i)] * dchi[(axis, mu, g)];
+                    }
+                    acc += occ * dphi * dphi;
+                }
+            }
+            tau_ref[g] = 0.5 * acc;
+        }
+
+        for g in 0..npts {
+            let (a, b) = (tau_dm[g], tau_ref[g]);
+            assert!(
+                (a - b).abs() <= 1e-10 * b.abs().max(1.0),
+                "tau[{g}]: dm-form {a:e} vs explicit-MO {b:e}"
+            );
+        }
+    }
+
+    /// τ evaluation is bit-identical across thread counts (same determinism
+    /// argument as the ρ/∇ρ path — disjoint per-point outputs, ascending-μ
+    /// per-point accumulation).
+    #[test]
+    fn tau_bit_identical_across_thread_counts() {
+        let (d, _chi, dchi) = inputs(14, 600);
+        let run = |threads: usize| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap()
+                .install(|| eval_tau_closed(&d, &dchi))
+        };
+        let r1 = run(1);
+        let r4 = run(4);
+        assert_bits_eq(r1.as_slice().unwrap(), r4.as_slice().unwrap(), "tau 1v4");
     }
 
     #[test]

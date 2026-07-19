@@ -64,7 +64,7 @@ fn vxc_at(xc_name: &str) -> f64 {
     let dens = eval_density_closed(&rhf.density_total, &chi, &dchi);
 
     let xc = xc_def_from_name(xc_name).unwrap();
-    let (e_xc, vxc) = semilocal_vxc_closed(&grid, &chi, &dchi, &dens, &xc);
+    let (e_xc, vxc) = semilocal_vxc_closed(&grid, &chi, &dchi, &dens, None, &xc);
     eprintln!("{xc_name} E_xc(H2O, cc-pVDZ) = {e_xc:.6} Ha (semilocal piece only)");
     max_asym(&vxc)
 }

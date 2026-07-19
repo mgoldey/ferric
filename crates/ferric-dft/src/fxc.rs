@@ -155,7 +155,7 @@ impl LdaFxcKernel {
 
         let fac_a: Array1<f64> =
             (0..npts).map(|g| self.grid[g].weight * dv_a[g]).collect();
-        scale_columns_into(&self.chi, &fac_a, buf);
+        scale_columns_into(self.chi.view(), &fac_a, buf);
         // Digestion GEMM (nbf, npts)·(npts, nbf), outside any rayon region —
         // apply_with_ref is called once per matvec from the serial ROHF
         // AH-Newton solver (rohf_newton.rs/rohf_ah.rs; neither uses rayon).
@@ -165,7 +165,7 @@ impl LdaFxcKernel {
 
         let fac_b: Array1<f64> =
             (0..npts).map(|g| self.grid[g].weight * dv_b[g]).collect();
-        scale_columns_into(&self.chi, &fac_b, buf);
+        scale_columns_into(self.chi.view(), &fac_b, buf);
         // Same opt-in-raise digestion GEMM as the alpha-spin piece above.
         let dvxc_b: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || buf.dot(&self.chi.t()));
         (dvxc_a, dvxc_b)
@@ -202,15 +202,21 @@ pub struct GgaFxcKernel {
 
 impl GgaFxcKernel {
     /// Build the kernel. Accepts GGA-family functionals (GGA / hybrid-GGA /
-    /// RSH-GGA) and, transparently, pure LDA. Only meta-GGA (which needs τ)
-    /// is out of scope, and that is already rejected upstream at
-    /// `xc_def_from_name`, so any `XcDef` that reaches here is evaluable.
+    /// RSH-GGA) and, transparently, pure LDA. Meta-GGA (which needs the
+    /// τ-dependent second derivative) is out of scope for the f_xc Newton
+    /// kernel and is rejected here — the SCF Newton gate already skips meta-GGA
+    /// (falls back to DIIS), so this is a defensive belt-and-suspenders check.
     pub fn new(
         mol: &Molecule,
         bs: &BasisSet,
         xc: XcDef,
         cfg: &AtomicGridConfig,
     ) -> Result<Self, String> {
+        if xc.funcs.iter().any(|f| f.family() == FunctionalFamily::MetaGga) {
+            return Err("GgaFxcKernel: meta-GGA f_xc response (τ second derivative) \
+                 is not implemented — meta-GGA SCF must use the DIIS path"
+                .to_string());
+        }
         let grid = build_atomic_grid(mol, cfg);
         let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
         let (chi, dchi) =
@@ -319,6 +325,11 @@ impl GgaFxcKernel {
                         &mut t_rr, &mut t_rs, &mut t_ss,
                     );
                 }
+                // GgaFxcKernel::new rejects meta-GGA (no τ f_xc kernel), so a
+                // MetaGga sub-functional cannot reach this eval.
+                FunctionalFamily::MetaGga => unreachable!(
+                    "GgaFxcKernel built with a meta-GGA functional (rejected in ::new)"
+                ),
             }
             for (a, b) in v2rho2.iter_mut().zip(&t_rr) { *a += *b; }
             for (a, b) in v2rhosigma.iter_mut().zip(&t_rs) { *a += *b; }
@@ -432,6 +443,10 @@ impl GgaFxcKernel {
                             vsig_bb[g] += vsigma[3 * g + 2];
                         }
                     }
+                    // Unreachable: GgaFxcKernel::new rejects meta-GGA.
+                    FunctionalFamily::MetaGga => unreachable!(
+                        "GgaFxcKernel built with a meta-GGA functional (rejected in ::new)"
+                    ),
                 }
             }
         }
@@ -458,7 +473,7 @@ impl GgaFxcKernel {
             // Scalar (LDA-like) piece: Σ_g (w_g u_g) χ_μg χ_νg.
             let fac_u: Array1<f64> =
                 (0..npts).map(|g| self.grid[g].weight * u[g]).collect();
-            scale_columns_into(&self.chi, &fac_u, buf);
+            scale_columns_into(self.chi.view(), &fac_u, buf);
             let mut v: Array2<f64> =
                 with_blas_threads(opt_in_blas_threads(), || buf.dot(&self.chi.t()));
 
@@ -469,7 +484,7 @@ impl GgaFxcKernel {
                 let w_ax = w.index_axis(Axis(0), axis);
                 let fac_w: Array1<f64> =
                     (0..npts).map(|g| self.grid[g].weight * w_ax[g]).collect();
-                scale_columns_into(&self.chi, &fac_w, buf);
+                scale_columns_into(self.chi.view(), &fac_w, buf);
                 let m_axis: Array2<f64> =
                     with_blas_threads(opt_in_blas_threads(), || buf.dot(&dchi_axis.t()));
                 v = v + &m_axis + &m_axis.t();

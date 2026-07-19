@@ -33,7 +33,7 @@ fn vxc_lda_h2o_is_hermitian_and_energy_is_negative() {
     let dens = eval_density_closed(&rhf.density_total, &chi, &dchi);
 
     let xc = xc_def_from_name("LDA").unwrap();
-    let (e_xc, vxc) = semilocal_vxc_closed(&grid, &chi, &dchi, &dens, &xc);
+    let (e_xc, vxc) = semilocal_vxc_closed(&grid, &chi, &dchi, &dens, None, &xc);
 
     // V_xc must be Hermitian after symmetrization
     let n = vxc.nrows();
@@ -70,7 +70,7 @@ fn vxc_pbe_h2o_is_hermitian() {
     let dens = eval_density_closed(&rhf.density_total, &chi, &dchi);
 
     let xc = xc_def_from_name("PBE").unwrap();
-    let (e_xc, vxc) = semilocal_vxc_closed(&grid, &chi, &dchi, &dens, &xc);
+    let (e_xc, vxc) = semilocal_vxc_closed(&grid, &chi, &dchi, &dens, None, &xc);
 
     let n = vxc.nrows();
     let mut asym: f64 = 0.0;

@@ -10,7 +10,10 @@ use ferric_core::basis::BasisSet;
 use ferric_core::mol::Molecule;
 
 use crate::ao_grid::{eval_basis_and_grad_on_points, nbasis, GtoEvalError};
-use crate::density_on_grid::{eval_density_closed, eval_density_uks, DensityGrid};
+use crate::density_on_grid::{
+    eval_density_closed, eval_density_uks, eval_tau_closed, eval_tau_uks, DensityGrid,
+};
+use crate::libxc::FunctionalFamily;
 use crate::grid::{build_atomic_grid, AtomicGridConfig, GridPoint};
 use crate::libxc::{xc_def_from_name, xc_def_from_name_nspin, LibxcError, XcDef};
 use crate::vv10::add_vv10_scratch;
@@ -80,6 +83,9 @@ pub struct KsXc {
     pub nlc_grid: Option<Vec<GridPoint>>,
     pub nlc_chi: Option<Array2<f64>>,
     pub nlc_dchi: Option<Array3<f64>>,
+    /// True when any component functional is a meta-GGA (needs τ per iteration).
+    /// Cached so the per-Fock-build path skips the τ GEMMs for LDA/GGA/hybrid.
+    is_mgga: bool,
     /// Pre-scaled χ scratch reused across SCF iterations (`add_xc` takes
     /// `&self`, hence the Mutex; it is uncontended — one lock per Fock build).
     scratch: Mutex<VxcScratch>,
@@ -115,8 +121,9 @@ impl KsXc {
             (None, None, None)
         };
 
+        let is_mgga = xc.funcs.iter().any(|f| matches!(f.family(), FunctionalFamily::MetaGga));
         Ok(Self {
-            xc, grid, chi, dchi, nlc_grid, nlc_chi, nlc_dchi,
+            xc, grid, chi, dchi, nlc_grid, nlc_chi, nlc_dchi, is_mgga,
             scratch: Mutex::new(VxcScratch::new()),
             nlc_scratch: Mutex::new(VxcScratch::new()),
         })
@@ -128,8 +135,16 @@ impl XcContribution for KsXc {
         // Semilocal piece.
         let mut scratch = self.scratch.lock().expect("vxc scratch mutex poisoned");
         let dens = eval_density_closed(d, &self.chi, &self.dchi);
+        // τ (kinetic-energy density) is only needed by meta-GGA functionals.
+        // Compute it from D and ∇χ (no explicit occupied MOs required — see
+        // eval_tau_closed) only when a meta-GGA component is present.
+        let tau = if self.is_mgga {
+            Some(eval_tau_closed(d, &self.dchi))
+        } else {
+            None
+        };
         let (e_xc, vxc) = semilocal_vxc_closed_scratch(
-            &self.grid, &self.chi, &self.dchi, &dens, &self.xc, &mut scratch,
+            &self.grid, &self.chi, &self.dchi, &dens, tau.as_ref(), &self.xc, &mut scratch,
         );
         *f += &vxc;
 
@@ -182,6 +197,8 @@ pub struct KsXcUks {
     pub nlc_grid: Option<Vec<GridPoint>>,
     pub nlc_chi: Option<Array2<f64>>,
     pub nlc_dchi: Option<Array3<f64>>,
+    /// True when any component functional is a meta-GGA (needs per-spin τ).
+    is_mgga: bool,
     /// See `KsXc::scratch` — shared by both spin builds.
     scratch: Mutex<VxcScratch>,
     /// See `KsXc::nlc_scratch` — VV10-only, sized for the NLC grid.
@@ -213,8 +230,9 @@ impl KsXcUks {
             (None, None, None)
         };
 
+        let is_mgga = xc.funcs.iter().any(|f| matches!(f.family(), FunctionalFamily::MetaGga));
         Ok(Self {
-            xc, grid, chi, dchi, nlc_grid, nlc_chi, nlc_dchi,
+            xc, grid, chi, dchi, nlc_grid, nlc_chi, nlc_dchi, is_mgga,
             scratch: Mutex::new(VxcScratch::new()),
             nlc_scratch: Mutex::new(VxcScratch::new()),
         })
@@ -233,8 +251,15 @@ impl UksXcContribution for KsXcUks {
         // then call the polarized libxc path.
         let mut scratch = self.scratch.lock().expect("vxc scratch mutex poisoned");
         let dens = eval_density_uks(d_a, d_b, &self.chi, &self.dchi);
+        // Per-spin τ only for meta-GGA (from the two spin density matrices).
+        let tau = if self.is_mgga {
+            Some(eval_tau_uks(d_a, d_b, &self.dchi))
+        } else {
+            None
+        };
+        let tau_ref = tau.as_ref().map(|(a, b)| (a, b));
         let (e_xc, vxc_a, vxc_b) = semilocal_vxc_polarized_scratch(
-            &self.grid, &self.chi, &self.dchi, &dens, &self.xc, &mut scratch,
+            &self.grid, &self.chi, &self.dchi, &dens, tau_ref, &self.xc, &mut scratch,
         );
         *f_a += &vxc_a;
         *f_b += &vxc_b;

@@ -654,7 +654,7 @@ pub fn add_vv10_scratch(
     let s: Array1<f64> = (0..npts)
         .map(|g| if active[g] { grid[g].weight * vrho[g] } else { 0.0 })
         .collect();
-    scale_columns_into(chi, &s, buf);
+    scale_columns_into(chi.view(), &s, buf);
     // Digestion GEMM (nbf, npts)·(npts, nbf), outside any rayon region — this
     // whole function runs once per KS iteration at the top level (called from
     // ks.rs, never from inside map_rows' rayon fan-out above). Opt-in BLAS
@@ -673,7 +673,7 @@ pub fn add_vv10_scratch(
                 }
             })
             .collect();
-        scale_columns_into(chi, &f_ax, buf);
+        scale_columns_into(chi.view(), &f_ax, buf);
         // Same opt-in-raise digestion GEMM as the LDA-like piece above.
         let m_axis: Array2<f64> =
             with_blas_threads(opt_in_blas_threads(), || buf.dot(&dchi_axis.t()));
