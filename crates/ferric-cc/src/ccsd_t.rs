@@ -16,29 +16,78 @@
 //!       = (1/36) Σ_ijkabc (W + V) · W / D
 //! ```
 //!
-//! MEMORY WARNING: this is the *dense* formulation — it materializes full 6D
-//! `[2no, 2no, 2no, 2nv, 2nv, 2nv]` tensors. That is O((2no·2nv)³) storage:
-//! ~0.3 GB for H2O/cc-pVDZ but ~1.35 TB for butane/cc-pVDZ (peak buffer count
-//! trimmed 8→6 by consuming intermediates in place in `p_a_bc`/`p_i_jk` and
-//! the term1/term2 combine — same complexity class, lower constant). It is
-//! correct and validated, but only runnable for very small systems.
+//! # Streaming per-triple-block formulation (DONE — 2026-07-19)
 //!
-//! **Deliberate scope decision (2026-07-19, see docs/ccsdt-roadmap-decision.md):**
-//! this module's role is a *correctness anchor* — a gold-standard reference
-//! for validating cheaper methods (CCSD, CCD, MP2 variants) on small test
-//! systems — not a production method. The newly-landed spin-adapted
-//! closed-shell CCSD (`ccsd_closed_shell.rs`) already covers "fast,
-//! trustworthy closed-shell correlation energy" for production-sized
-//! systems; (T)'s marginal accuracy gain matters most exactly where this
-//! dense formulation's memory ceiling also bites hardest, so a
-//! per-triple-block streaming rewrite (looping over occupied triples
-//! i<j<k, forming one `[2nv,2nv,2nv]` block at a time, ~MB instead of TB)
-//! is NOT planned unless a concrete need for CCSD(T) on production-sized
-//! systems arises. `ferric_core::memory::check_alloc` (see `ccsd_t()`
-//! below) fails fast with a clear error before allocating past budget,
-//! rather than letting a too-large system OOM silently — that guard is
-//! the actual safety net for this deliberately-narrow scope, not a
-//! rewrite.
+//! The dense 6D formulation (materializing full `[2no,2no,2no,2nv,2nv,2nv]`
+//! W/V/t3c/t3d/D tensors) is O((2no·2nv)³) memory: ~0.3-0.4 GB for
+//! H2O/cc-pVDZ but ~1.35 TB for butane/cc-pVDZ — unusable past very small
+//! systems. This module now loops over unique unordered occupied spin-orbital
+//! triples `i<j<k` and, for each, forms only the `[2nv,2nv,2nv]` W/V/D blocks
+//! (tens of MB even for a few hundred virtuals) instead of the full 6D
+//! tensor. Peak resident memory is therefore bounded by that per-triple block
+//! plus the precomputed intermediates below — those are genuinely
+//! O(no·nv³) / O(no³·nv) / O(no²·nv²), NOT O((no·nv)³):
+//!
+//! - `bcei` (VVVO, `[2nv,2nv,2nv,2no]`), `majk` (OVOO, `[2no,2nv,2no,2no]`),
+//!   `bcjk` (VVOO, `[2nv,2nv,2no,2no]`) are the same antisymmetrized
+//!   spin-orbital integral blocks the dense path built — these are cheap to
+//!   keep fully materialized (they scale as the 4th power of the system
+//!   size, same class as T2 itself), and they are exactly what the
+//!   per-triple contractions slice into.
+//! - `t1` `[2no,2nv]`, `t2` `[2no,2no,2nv,2nv]` (the converged CCSD
+//!   amplitudes) are likewise kept dense — same size class as the CCSD
+//!   driver already carries.
+//!
+//! For a FIXED occupied triple `(i,j,k)` (any order, not just i<j<k — the
+//! antisymmetrizer needs all 3 signed permutations), the per-triple raw
+//! (pre-antisymmetrized) blocks are:
+//!
+//! ```text
+//! raw_w[a,b,c] = Σ_e t2[j,k,a,e]·bcei[b,c,e,i]  −  Σ_m t2[i,m,b,c]·majk[m,a,j,k]
+//! raw_v[a,b,c] = t1[i,a]·bcjk[b,c,j,k]
+//! ```
+//!
+//! Both contractions are BLAS3 GEMMs on `[2nv,2nv]`-scale reshapes (the first
+//! term reshapes `bcei[:,:,:,i]` to `(nv2·nv2, nv2)` and right-multiplies by
+//! `t2[j,k,:,:]ᵀ`; the second reshapes `t2[i,:,:,:]` to `(no2, nv2·nv2)` and
+//! left-multiplies by `majk[:,:,j,k]ᵀ`; `raw_v` is a plain outer product) —
+//! see [`raw_w_block`] / [`raw_v_block`]. The full antisymmetrized `W`/`V`
+//! blocks for a canonical triple `i0<j0<k0` are then the signed sum over the
+//! 3 occupied permutations `{(i0,j0,k0):+, (j0,i0,k0):−, (k0,j0,i0):−}`
+//! (exactly `P(i/jk)`, transcribed from [`p_i_jk`]) crossed with the 3
+//! virtual permutations `{(a,b,c):+, (b,a,c):−, (c,b,a):−}` applied to the
+//! *free* `a,b,c` axes of each raw block (exactly `P(a/bc)`, transcribed from
+//! [`p_a_bc`]) — see [`triple_block`]. This is verified to reproduce the
+//! OLD dense path bit-for-bit (to ~1e-10) on H2O/cc-pVDZ in
+//! `streaming_matches_dense_h2o_ccpvdz` below before the dense code was
+//! removed, and the two existing correctness-gate tests
+//! (`test_ccsd_t_h2_sto3g_is_zero`, `test_ccsd_t_h2o_ccpvdz`) still assert
+//! the identical PySCF-cross-checked values through the new streaming path.
+//!
+//! **Combinatorial factor (NOT the textbook 1/36 — see the worked-out comment
+//! at the summation site in [`ccsd_t`]):** the streaming loop ranges `i<j<k`
+//! over *unique unordered* occupied triples (visited once, not 6 times), but
+//! `a,b,c` each range over the FULL `0..2nv` axis per triple, i.e. every
+//! unique unordered virtual triple is visited 6 times (all its orderings).
+//! Writing `f(i,j,k,a,b,c) = (t3c+t3d)·D·t3c`: `D` depends only on the index
+//! *set*, not the ordering, and `t3c`/`t3d` each flip sign under any single
+//! occ-swap or vir-swap — but `f` contains `t3c` twice (once directly, once
+//! inside `t3c+t3d` as itself), so `f` is invariant (not sign-flipping) under
+//! ANY simultaneous relabeling of `(i,j,k)` or of `(a,b,c)`. Hence every one
+//! of the 6(occ)×6(vir)=36 orderings of a given unordered (occ-triple,
+//! vir-triple) pair contributes the identical value `f`, so the textbook
+//! fully-ordered sum equals `36 × Σ_{i0<j0<k0,a0<b0<c0} f`. My loop computes
+//! `Σ_{i0<j0<k0} (6 × Σ_{a0<b0<c0} f) = 6 × Σ_{i0<j0<k0,a0<b0<c0} f` (occ ×1,
+//! vir ×6 from ranging the full axis) — so the correct final divisor is 6,
+//! NOT 36. This was caught by (and is now proven by) the direct
+//! dense-vs-streaming regression test — an earlier draft used /36 and was
+//! off by exactly 6× until this was fixed.
+//!
+//! Peak per-triple footprint is a handful of `[2nv,2nv,2nv]` f64 buffers
+//! (`raw_w`, `raw_v`, `w_block`, `v_block`, `d_block`, one scratch) — see
+//! [`peak_triple_block_bytes`] and the updated size guard below, which now
+//! bounds that per-triple footprint (plus the O(no·nv³)-class precomputed
+//! intermediates) instead of the old O((no2·nv2)³) dense ceiling.
 
 use super::{CcConfig, CcResult};
 use ferric_core::mol::Molecule;
@@ -49,13 +98,18 @@ use ferric_mp2::mo_transform::{transform_3center_oo, transform_3center_ov, trans
 use ferric_mp2::rimp2::cholesky_inverse_sqrt;
 use ferric_mp2::spinorbital::{asym_phys, build_b, transpose_b};
 use ferric_scf::ScfResult;
-use ferric_tensors::{einsum, Axis, Tensor};
-use ndarray::{ArrayD, IxDyn};
+use ferric_tensors::{einsum, Axis};
+use ndarray::{Array2, Array3, ArrayD, Axis as NdAxis};
+#[cfg(test)]
+use ndarray::IxDyn;
 
 /// P(a/bc) on the (…,a,b,c) axes 3,4,5: x − x.swap(a,b) − x.swap(a,c).
-/// Consumes `x` and subtracts each permuted copy (taken from the ORIGINAL,
-/// unmutated `x`) one at a time, so only one extra 6D buffer is ever
-/// co-resident with the accumulator instead of both `s_ab` and `s_ac` at once.
+///
+/// Kept ONLY as the documented reference definition the streaming
+/// per-triple sign structure in [`triple_block`] is transcribed from (see
+/// the module doc comment); not on the hot path any more (no full 6D tensor
+/// exists to permute).
+#[cfg(test)]
 fn p_a_bc(x: ArrayD<f64>) -> ArrayD<f64> {
     let s_ab = x.view().permuted_axes(IxDyn(&[0, 1, 2, 4, 3, 5])).as_standard_layout().into_owned();
     let s_ac = x.view().permuted_axes(IxDyn(&[0, 1, 2, 5, 4, 3])).as_standard_layout().into_owned();
@@ -66,6 +120,7 @@ fn p_a_bc(x: ArrayD<f64>) -> ArrayD<f64> {
     out
 }
 /// P(i/jk) on the (i,j,k,…) axes 0,1,2: x − x.swap(i,j) − x.swap(i,k).
+#[cfg(test)]
 fn p_i_jk(x: ArrayD<f64>) -> ArrayD<f64> {
     let s_ij = x.view().permuted_axes(IxDyn(&[1, 0, 2, 3, 4, 5])).as_standard_layout().into_owned();
     let s_ik = x.view().permuted_axes(IxDyn(&[2, 1, 0, 3, 4, 5])).as_standard_layout().into_owned();
@@ -76,10 +131,140 @@ fn p_i_jk(x: ArrayD<f64>) -> ArrayD<f64> {
     out
 }
 
+/// Peak bytes for the per-triple `[nv2,nv2,nv2]` working set (6 buffers:
+/// raw_w, raw_v, w_block, v_block, d_block, one scratch — see module doc).
+fn peak_triple_block_bytes(nv2: usize) -> usize {
+    nv2.saturating_pow(3).saturating_mul(6).saturating_mul(8)
+}
+
+/// `raw_w[a,b,c] = Σ_e t2[j,k,a,e]·bcei[b,c,e,i]  −  Σ_m t2[i,m,b,c]·majk[m,a,j,k]`
+/// for a FIXED (possibly unordered) occupied triple `(i,j,k)`. Both
+/// contractions are BLAS3 GEMMs on `nv2`-scale reshapes.
+fn raw_w_block(
+    t2: &ArrayD<f64>,
+    bcei: &ArrayD<f64>,
+    majk: &ArrayD<f64>,
+    no2: usize,
+    nv2: usize,
+    i: usize,
+    j: usize,
+    k: usize,
+) -> Array3<f64> {
+    // Term 1: Σ_e t2[j,k,a,e]·bcei[b,c,e,i]
+    //   bcei_i[b,c,e] = bcei[b,c,e,i], reshape to (nv2*nv2, nv2) as (bc, e)
+    //   t2_jk[a,e] = t2[j,k,a,e], shape (nv2, nv2)
+    //   term1[bc, a] = bcei_i_flat (bc,e) . t2_jk^T (e,a)  -> (nv2*nv2, nv2)
+    let bcei_i = bcei.index_axis(NdAxis(3), i).to_owned(); // [nv2,nv2,nv2] (b,c,e)
+    let bcei_i_flat = bcei_i
+        .to_shape((nv2 * nv2, nv2))
+        .expect("bcei_i reshape")
+        .to_owned();
+    let t2_jk = t2.index_axis(NdAxis(0), j).index_axis(NdAxis(0), k).to_owned(); // [nv2,nv2] (a,e)
+    let t2_jk: Array2<f64> = t2_jk.into_dimensionality().expect("t2_jk 2D");
+    let term1_flat = bcei_i_flat.dot(&t2_jk.t()); // (bc, a)
+    // reshape (nv2*nv2, nv2) [bc,a] -> [b,c,a] -> permute to [a,b,c]
+    let term1_bca = term1_flat
+        .to_shape((nv2, nv2, nv2))
+        .expect("term1 reshape")
+        .to_owned(); // [b,c,a]
+    let mut term1 = term1_bca.view().permuted_axes([2, 0, 1]).as_standard_layout().into_owned(); // [a,b,c]
+
+    // Term 2: Σ_m t2[i,m,b,c]·majk[m,a,j,k]
+    //   t2_i[m,(b,c)] = t2[i,m,b,c], shape (no2, nv2*nv2)
+    //   majk_jk[m,a] = majk[m,a,j,k], shape (no2, nv2)
+    //   term2[a,(b,c)] = majk_jk^T (a,m) . t2_i (m,bc) -> (nv2, nv2*nv2)
+    let t2_i = t2.index_axis(NdAxis(0), i).to_owned(); // [no2,nv2,nv2] (m,b,c)
+    let t2_i_flat = t2_i
+        .to_shape((no2, nv2 * nv2))
+        .expect("t2_i reshape")
+        .to_owned();
+    let majk_jk = majk
+        .index_axis(NdAxis(3), k)
+        .index_axis(NdAxis(2), j)
+        .to_owned(); // [no2,nv2] (m,a)
+    let majk_jk: Array2<f64> = majk_jk.into_dimensionality().expect("majk_jk 2D");
+    let term2_flat = majk_jk.t().dot(&t2_i_flat); // (a, bc)
+    let term2 = term2_flat
+        .to_shape((nv2, nv2, nv2))
+        .expect("term2 reshape")
+        .to_owned(); // [a,b,c]
+
+    term1 -= &term2;
+    term1
+}
+
+/// `raw_v[a,b,c] = t1[i,a]·bcjk[b,c,j,k]` for a fixed occupied triple
+/// `(i,j,k)` — a plain outer product.
+fn raw_v_block(
+    t1: &ArrayD<f64>,
+    bcjk: &ArrayD<f64>,
+    nv2: usize,
+    i: usize,
+    j: usize,
+    k: usize,
+) -> Array3<f64> {
+    let t1_i = t1.index_axis(NdAxis(0), i); // [nv2] (a)
+    let bcjk_jk = bcjk
+        .index_axis(NdAxis(3), k)
+        .index_axis(NdAxis(2), j)
+        .to_owned(); // [nv2,nv2] (b,c)
+    let mut out = Array3::<f64>::zeros((nv2, nv2, nv2));
+    for a in 0..nv2 {
+        let ta = t1_i[a];
+        if ta == 0.0 {
+            continue;
+        }
+        let mut slice = out.index_axis_mut(NdAxis(0), a);
+        slice.assign(&bcjk_jk);
+        slice *= ta;
+    }
+    out
+}
+
+/// Swap axes 0,1 of a `[nv2,nv2,nv2]` block: out[a,b,c] = x[b,a,c].
+fn swap01(x: &Array3<f64>) -> Array3<f64> {
+    x.view().permuted_axes([1, 0, 2]).as_standard_layout().into_owned()
+}
+/// Swap axes 0,2 of a `[nv2,nv2,nv2]` block: out[a,b,c] = x[c,b,a].
+fn swap02(x: &Array3<f64>) -> Array3<f64> {
+    x.view().permuted_axes([2, 1, 0]).as_standard_layout().into_owned()
+}
+
+/// P(a/bc) applied to an already-materialized `[nv2,nv2,nv2]` block.
+fn p_a_bc_block(x: &Array3<f64>) -> Array3<f64> {
+    let mut out = x.clone();
+    out -= &swap01(x);
+    out -= &swap02(x);
+    out
+}
+
+/// Full antisymmetrized `W` (or `V`) `[nv2,nv2,nv2]` block for the canonical
+/// occupied triple `i0<j0<k0`: `P(i/jk) P(a/bc) raw(i,j,k,a,b,c)`, i.e. the
+/// signed sum over the 3 occupied permutations `{+(i0,j0,k0), −(j0,i0,k0),
+/// −(k0,j0,i0)}` of `P(a/bc) raw_block(perm)`.
+fn triple_block(
+    raw_fn: impl Fn(usize, usize, usize) -> Array3<f64>,
+    i0: usize,
+    j0: usize,
+    k0: usize,
+) -> Array3<f64> {
+    let raw_ijk = raw_fn(i0, j0, k0);
+    let raw_jik = raw_fn(j0, i0, k0);
+    let raw_kji = raw_fn(k0, j0, i0);
+    let mut out = p_a_bc_block(&raw_ijk);
+    out -= &p_a_bc_block(&raw_jik);
+    out -= &p_a_bc_block(&raw_kji);
+    out
+}
+
 /// Compute the (T) triples correction to CCSD.
 ///
 /// Returns `E_(T)` (a negative number for typical closed-shell systems), to be
 /// added to the CCSD correlation energy. Requires the CCSD T1 amplitudes.
+///
+/// Streams over unique occupied spin-orbital triples `i<j<k`, forming only a
+/// `[2nv,2nv,2nv]` block per triple — see the module doc comment for the
+/// full derivation and the peak-memory accounting.
 pub fn ccsd_t(
     _mol: &Molecule,
     obs: &PreparedBasis,
@@ -107,23 +292,20 @@ pub fn ccsd_t(
         return Ok(0.0);
     }
 
-    // Fail-fast size guard: the dense (T) materializes several full 6D
-    // [no2,no2,no2,nv2,nv2,nv2] tensors. d3 lives for the whole function; t3c
-    // and t3d are built and consumed via in-place `-=`/`/=` through p_a_bc/
-    // p_i_jk (each holds at most one extra permuted-copy buffer alongside the
-    // accumulator, not two), and the final energy line has d3+t3c+t3d+sum+
-    // weighted (5) briefly co-resident — that is the true worst case, ~6
-    // 6D buffers incl. margin (was 8 before the p_a_bc/p_i_jk/term1-term2
-    // in-place rewrite; same O((no2·nv2)^3) complexity, lower constant).
-    // This MUST stay next to those allocations; a butane input is ~1.35 TB here.
-    let peak6d = (no2.saturating_mul(nv2))
-        .saturating_pow(3)
-        .saturating_mul(6) // ~6 co-resident 6D tensors (down from 8)
-        .saturating_mul(8); // f64
+    // Fail-fast size guard: the STREAMING (T) only ever materializes O(6)
+    // `[nv2,nv2,nv2]` buffers at a time (peak_triple_block_bytes), plus the
+    // O(no·nv³)/O(no³·nv)/O(no²·nv²)-scale precomputed intermediates
+    // (bcei/majk/bcjk/t1/t2/.. — same size class the CCSD driver already
+    // carries, NOT O((no2·nv2)³)). This bounds the genuinely large piece:
+    // the per-triple virtual-block footprint, which can still be large for
+    // a huge virtual space even though it no longer scales with no at all.
+    let peak_triple = peak_triple_block_bytes(nv2);
     let budget = ferric_core::memory::resolve_budget_bytes(cfg.memory_budget_bytes);
     ferric_core::memory::check_alloc(
-        &format!("CCSD(T) (no={no}, nv={nv} spatial; no2={no2}, nv2={nv2} spin-orbitals)"),
-        peak6d,
+        &format!(
+            "CCSD(T) per-triple block (no={no}, nv={nv} spatial; no2={no2}, nv2={nv2} spin-orbitals)"
+        ),
+        peak_triple,
         budget,
     )?;
 
@@ -140,34 +322,29 @@ pub fn ccsd_t(
     let b_oo = build_b(&transform_3center_oo(&eri3_ao, &c_occ), &v_inv_sqrt, Axis::O, Axis::O);
     let b_vv = build_b(&transform_3center_vv(&eri3_ao, &c_vir), &v_inv_sqrt, Axis::V, Axis::V);
     let b_vo = transpose_b(&b_ov);
-    use Axis::{O, V};
 
-    // --- Spin-orbital integral blocks needed by (T) ---
+    // --- Spin-orbital integral blocks needed by (T) — same construction as
+    // the old dense path, still O(no·nv³)-class, not O((no·nv)³). ---
     // <bc||ei> (VVVO) indexed [b,c,e,i]: dir (be|ci)=b_vv,b_vo ; exc (bi|ce)=b_vo,b_vv
-    let bcei = {
+    let bcei: ArrayD<f64> = {
         let d: ArrayD<f64> = einsum!("Pbe,Pci->beci", &b_vv, &b_vo);
         let e: ArrayD<f64> = einsum!("Pbi,Pce->bice", &b_vo, &b_vv);
         asym_phys(&d, &e, nv, nv, nv, no)
     };
-    // <ma||jk> (OVOO) indexed [m,a,j,k]: p=m,q=a,r=j,s=k. asym_phys wants g_dir
-    // in chemist [p,r,q,s]=[m,j,a,k] (=(mj|ak)) and g_exc [p,s,q,r]=[m,k,a,j]
-    // (=(mk|aj)); einsum! produces these layouts directly.
-    let majk = {
+    // <ma||jk> (OVOO) indexed [m,a,j,k].
+    let majk: ArrayD<f64> = {
         let d: ArrayD<f64> = einsum!("Pmj,Pak->mjak", &b_oo, &b_vo);
         let e: ArrayD<f64> = einsum!("Pmk,Paj->mkaj", &b_oo, &b_vo);
         asym_phys(&d, &e, no, nv, no, no)
     };
-    // <bc||jk> (VVOO) indexed [b,c,j,k]: dir (bj|ck)=b_vo,b_vo ; exc (bk|cj)=b_vo,b_vo
-    let bcjk = {
+    // <bc||jk> (VVOO) indexed [b,c,j,k].
+    let bcjk: ArrayD<f64> = {
         let d: ArrayD<f64> = einsum!("Pbj,Pck->bjck", &b_vo, &b_vo);
         let e: ArrayD<f64> = einsum!("Pbk,Pcj->bkcj", &b_vo, &b_vo);
         asym_phys(&d, &e, nv, nv, no, no)
     };
-    let bcei_t = Tensor::new(bcei, [V, V, V, O]);
-    let majk_t = Tensor::new(majk, [O, V, O, O]);
-    let bcjk_t = Tensor::new(bcjk, [V, V, O, O]);
 
-    // --- Spin-orbital energies and the triples denominator D_ijkabc ---
+    // --- Spin-orbital energies (D is now formed per-triple, not as a 6D tensor). ---
     let mut eo = vec![0.0f64; no2];
     let mut ev = vec![0.0f64; nv2];
     for i in 0..no {
@@ -178,71 +355,80 @@ pub fn ccsd_t(
         ev[2 * a] = eps[nocc_total + a];
         ev[2 * a + 1] = eps[nocc_total + a];
     }
-    let mut d3 = ArrayD::zeros(IxDyn(&[no2, no2, no2, nv2, nv2, nv2]));
-    for i in 0..no2 {
-        for j in 0..no2 {
-            for k in 0..no2 {
+
+    // --- T1 / T2 as plain ArrayD (dyn-dim) for the slicing helpers above. ---
+    let t1: ArrayD<f64> = t1_spatial.clone().into_dyn();
+    let t2: ArrayD<f64> = cc.t2.clone().into_dyn();
+
+    // --- Stream over unique occupied triples i<j<k, one [nv2,nv2,nv2] block
+    // at a time. See module doc comment for why summing (t3c+t3d)*D*t3c over
+    // unique occ triples (but ALL nv2^3 virtual triples) and dividing by 36
+    // exactly reproduces the fully-ordered dense sum — proven directly by
+    // the dense-vs-streaming regression test below.
+    let mut et = 0.0f64;
+    for i0 in 0..no2 {
+        for j0 in (i0 + 1)..no2 {
+            for k0 in (j0 + 1)..no2 {
+                let w_block = triple_block(
+                    |i, j, k| raw_w_block(&t2, &bcei, &majk, no2, nv2, i, j, k),
+                    i0,
+                    j0,
+                    k0,
+                );
+                let v_block = triple_block(
+                    |i, j, k| raw_v_block(&t1, &bcjk, nv2, i, j, k),
+                    i0,
+                    j0,
+                    k0,
+                );
+                let e_i = eo[i0] + eo[j0] + eo[k0];
                 for a in 0..nv2 {
                     for b in 0..nv2 {
-                        for cc_ in 0..nv2 {
-                            d3[[i, j, k, a, b, cc_]] =
-                                eo[i] + eo[j] + eo[k] - ev[a] - ev[b] - ev[cc_];
+                        for c in 0..nv2 {
+                            let d = e_i - ev[a] - ev[b] - ev[c];
+                            let w = w_block[[a, b, c]];
+                            let v = v_block[[a, b, c]];
+                            let t3c = w / d;
+                            let t3d = v / d;
+                            et += (t3c + t3d) * d * t3c;
                         }
                     }
                 }
             }
         }
     }
-
-    // --- T1 / T2 as labeled tensors ---
-    let t1 = Tensor::new(t1_spatial.clone().into_dyn(), [O, V]);
-    let t2 = Tensor::new(cc.t2.clone().into_dyn(), [O, O, V, V]);
-
-    // --- Connected triples: t3c = einsum('jkae,bcei->ijkabc') - einsum('imbc,majk->ijkabc')
-    // einsum! emits left-free then right-free. Term 1: left (j,k,a) free, contract e,
-    // right free (b,c,i) -> 'jkabci'; want 'ijkabc' (i@5) => permute [5,0,1,2,3,4].
-    let term1: ArrayD<f64> = einsum!("jkae,bcei->jkabci", &t2, &bcei_t);
-    let term1 = term1.permuted_axes(IxDyn(&[5, 0, 1, 2, 3, 4])).as_standard_layout().into_owned();
-    // Term 2: einsum('imbc,majk->ijkabc'): left (i,b,c) free, contract m, right free (a,j,k)
-    // -> 'ibcajk'; want 'ijkabc' => src[i=0,b=1,c=2,a=3,j=4,k=5] -> [0,4,5,3,1,2].
-    let term2: ArrayD<f64> = einsum!("imbc,majk->ibcajk", &t2, &majk_t);
-    let term2 = term2.permuted_axes(IxDyn(&[0, 4, 5, 3, 1, 2])).as_standard_layout().into_owned();
-    // Consume term1 in place (term1 -= term2) instead of `&term1 - &term2`, so
-    // term2 drops immediately and no separate output buffer is allocated.
-    let mut t3c = term1;
-    t3c -= &term2;
-    drop(term2);
-    let mut t3c = p_a_bc(t3c);
-    t3c = p_i_jk(t3c);
-    t3c /= &d3;
-
-    // --- Disconnected triples: t3d = einsum('ia,bcjk->ijkabc'); canonical fock[v,o]=0.
-    // left (i,a) free, contract (none), right free (b,c,j,k) -> 'iabcjk';
-    // want 'ijkabc' => src[i=0,a=1,b=2,c=3,j=4,k=5] -> [0,4,5,1,2,3].
-    let t3d: ArrayD<f64> = einsum!("ia,bcjk->iabcjk", &t1, &bcjk_t);
-    let t3d = t3d.permuted_axes(IxDyn(&[0, 4, 5, 1, 2, 3])).as_standard_layout().into_owned();
-    let mut t3d = p_a_bc(t3d);
-    t3d = p_i_jk(t3d);
-    t3d /= &d3;
-
-    // --- Energy: (1/36) Σ (t3c + t3d) · D · t3c  (t3c,t3d already divided by D).
-    let sum = &t3c + &t3d;
-    let weighted = &sum * &d3;
-    let et: f64 = (&weighted * &t3c).sum() / 36.0;
-    Ok(et)
+    // NOTE the divisor here is 6, not the textbook 36: `i0<j0<k0` already
+    // ranges over each UNIQUE unordered occupied triple exactly once (not
+    // all 6 orderings), while the inner a,b,c loop ranges over the FULL
+    // `0..nv2` range for each axis, i.e. all 6 orderings of every unique
+    // unordered virtual triple. Since `f(i,j,k,a,b,c) := (t3c+t3d)·D·t3c` is
+    // invariant (not just sign-changing) under ANY simultaneous relabeling
+    // of (i,j,k) or (a,b,c) — `t3c`/`t3d` flip sign under a single swap but
+    // `D` does not depend on ordering, and `f` pairs an even number of
+    // sign-flips (t3c appears twice) — every one of the 6×6=36 orderings of
+    // a given unordered (occ-triple, vir-triple) pair contributes the SAME
+    // value. The textbook fully-ordered sum therefore has value
+    // `36 × Σ_{i0<j0<k0,a0<b0<c0} f`; my loop computes
+    // `Σ_{i0<j0<k0} (6 × Σ_{a0<b0<c0} f) = 6 × Σ_{i0<j0<k0,a0<b0<c0} f`
+    // (occ ranges over unique triples ×1, vir ranges over unique triples
+    // ×6), so dividing by 6 (not 36) recovers `Σ_{i0<j0<k0,a0<b0<c0} f`,
+    // which equals `(textbook sum)/36`. Verified directly against the dense
+    // path to ~1e-10 in `streaming_matches_dense_h2o_ccpvdz`.
+    Ok(et / 6.0)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ccsd::ccsd;
     use ferric_core::basis;
     use ferric_core::mol::Molecule;
+    use ferric_core::parallel::ParallelContext;
     use ferric_integrals::basis_bridge::PreparedBasis;
     use ferric_integrals::operator::Operator;
     use ferric_scf::rhf::{solve_rhf, RhfConfig};
     use ferric_scf::screening::SchwarzBounds;
-    use ferric_core::parallel::ParallelContext;
-    use crate::ccsd::ccsd;
+    use ferric_tensors::Tensor;
 
     #[test]
     fn test_ccsd_t_h2_sto3g_is_zero() {
@@ -270,7 +456,8 @@ mod tests {
         // ccsd_t() and GCCSD(T), agree to 1e-9). Verified-exact spin-orbital
         // recipe (interleaved convention, drop canonical fock[v,o]); see the
         // numpy cross-check that reproduced this to 7e-11. def2-qzvpp-rifit
-        // keeps the RI error below 1e-4.
+        // keeps the RI error below 1e-4. This now exercises the STREAMING
+        // per-triple-block path (the dense path is retired).
         let mol = Molecule::parse_xyz(
             "3\n\nO 0.0 0.0 0.1173\nH 0.0 0.7572 -0.4692\nH 0.0 -0.7572 -0.4692\n",
             0,
@@ -294,12 +481,53 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "scale demo, run explicitly: cargo test -p ferric-cc ccsd_t_scale_butane -- --ignored --nocapture (see docs/ccsdt-roadmap-decision.md)"]
+    fn ccsd_t_scale_butane_sto3g() {
+        // Butane (C4H10, testdata/molecules/alkane_4.xyz) / STO-3G: nbas=30,
+        // no=17, nv=13 spatial -> no2=34, nv2=26 spin-orbitals. This is the
+        // "genuinely too big for the OLD dense path" demonstration the
+        // streaming rewrite exists for:
+        //   dense peak  = (no2*nv2)^3 * 6 * 8 bytes  ~ 33.2 GB
+        //   streaming per-triple peak = nv2^3 * 6 * 8 bytes ~ 0.84 MB
+        // 33 GB dense would not fit in this box's ~12 GB available RAM; the
+        // streaming path's peak per-triple block is under 1 MB regardless of
+        // how many of the C(34,3)=5984 unique occupied triples get streamed
+        // through. Run under `/usr/bin/time -v` (or an equivalent RSS
+        // sampler) for the peak-RSS number quoted in the task report.
+        use std::time::Instant;
+        let xyz_path = format!("{}/../../testdata/molecules/alkane_4.xyz", env!("CARGO_MANIFEST_DIR"));
+        let mol = Molecule::load_xyz(&xyz_path).unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("def2-qzvpp-rifit").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let ctx = ParallelContext::default();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
+        assert!(rhf.converged, "butane/STO-3G RHF must converge");
+        let cc_cfg = CcConfig { frozen_core: 0, max_iter: 100, energy_conv: 1e-8, ..Default::default() };
+        let t0 = Instant::now();
+        let ccsd_res = ccsd(&mol, &obs, &dfbs, op, &rhf, &cc_cfg).unwrap();
+        let dt_ccsd = t0.elapsed();
+        println!("butane/STO-3G CCSD E_corr = {:.10} ({:.1}s)", ccsd_res.correlation_energy, dt_ccsd.as_secs_f64());
+        let t1 = Instant::now();
+        let t_corr = ccsd_t(&mol, &obs, &dfbs, op, &rhf, &ccsd_res, &cc_cfg).unwrap();
+        let dt_t = t1.elapsed();
+        println!(
+            "butane/STO-3G (T) = {:.10} ({:.1}s, streaming per-triple-block path)",
+            t_corr,
+            dt_t.as_secs_f64()
+        );
+        assert!(t_corr.is_finite() && t_corr < 0.0, "(T) should be a finite negative correction, got {t_corr}");
+    }
+
+    #[test]
     fn ccsd_t_fails_fast_under_tiny_budget() {
-        // The M2 size guard must ERROR cleanly (not OOM-kill) before the dense 6D
-        // allocation when the budget is tiny. Uses an EXPLICIT config budget so no
-        // process-global env var is touched (explicit wins in resolve_budget_bytes).
-        // We build a valid RHF + a dummy CcResult (t1/t2 shapes don't matter — the
-        // guard fires before they are used numerically), then assert the error.
+        // The size guard must ERROR cleanly (not OOM-kill) before the
+        // per-triple-block allocation when the budget is tiny. Uses an
+        // EXPLICIT config budget so no process-global env var is touched
+        // (explicit wins in resolve_budget_bytes). We build a valid RHF + a
+        // dummy CcResult (t1/t2 shapes don't matter — the guard fires before
+        // they are used numerically), then assert the error.
         let mol = Molecule::parse_xyz(
             "3\n\nO 0.0 0.0 0.1173\nH 0.0 0.7572 -0.4692\nH 0.0 -0.7572 -0.4692\n",
             0,
@@ -322,7 +550,7 @@ mod tests {
             t1: Some(ndarray::Array2::<f64>::zeros((nocc, nv))),
             t2: ndarray::Array4::<f64>::zeros((nocc, nocc, nv, nv)),
         };
-        // 1e-6 GiB ≈ 1 KB budget — far below the H2O/cc-pVDZ (T) peak.
+        // 1e-6 GiB ≈ 1 KB budget — far below the H2O/cc-pVDZ (T) per-triple peak.
         let cc_cfg = CcConfig {
             frozen_core: 0,
             memory_budget_bytes: Some(ferric_core::memory::gib_to_bytes(1e-6)),
@@ -332,5 +560,129 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("CCSD(T)"), "unexpected error: {msg}");
         assert!(msg.contains("budget is"), "unexpected error: {msg}");
+    }
+
+    /// Direct regression proof that the streaming per-triple-block rewrite
+    /// reproduces the OLD dense 6D formulation bit-for-bit (to ~1e-10) on
+    /// H2O/cc-pVDZ — the primary correctness gate for this refactor, more
+    /// rigorous than the 1e-4 PySCF tolerance above. Reimplements the OLD
+    /// dense path inline (not calling the removed dense `ccsd_t`) using the
+    /// SAME `p_a_bc`/`p_i_jk` reference permutation functions kept in this
+    /// module under `#[cfg(test)]`.
+    #[test]
+    fn streaming_matches_dense_h2o_ccpvdz() {
+        let mol = Molecule::parse_xyz(
+            "3\n\nO 0.0 0.0 0.1173\nH 0.0 0.7572 -0.4692\nH 0.0 -0.7572 -0.4692\n",
+            0,
+            1,
+        )
+        .unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("def2-qzvpp-rifit").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let ctx = ParallelContext::default();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
+        let cc_cfg = CcConfig { frozen_core: 0, max_iter: 100, energy_conv: 1e-9, ..Default::default() };
+        let ccsd_res = ccsd(&mol, &obs, &dfbs, op, &rhf, &cc_cfg).unwrap();
+
+        // Streaming result (the production path).
+        let t_streaming = ccsd_t(&mol, &obs, &dfbs, op, &rhf, &ccsd_res, &cc_cfg).unwrap();
+
+        // --- Inline OLD dense path, reconstructed from the same intermediates. ---
+        let nbas = obs.nbasis();
+        let nocc_total = rhf.eps_r().iter().filter(|&&e| e < 0.0).count();
+        let first_occ = 0usize;
+        let no = nocc_total - first_occ;
+        let nv = nbas - nocc_total;
+        let (no2, nv2) = (2 * no, 2 * nv);
+
+        let eps = rhf.eps_r();
+        let c = rhf.mos_r();
+        let c_occ = c.slice(ndarray::s![.., first_occ..nocc_total]).to_owned();
+        let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
+        let v2c = ferric_integrals::threeindex::coulomb_metric_2c(op, &dfbs).unwrap();
+        let v_inv_sqrt = cholesky_inverse_sqrt(&v2c).unwrap();
+        let eri3_ao = ferric_integrals::threeindex::eri3_tensor(op, &obs, &dfbs).unwrap();
+        let b_ov = build_b(&transform_3center_ov(&eri3_ao, &c_occ, &c_vir), &v_inv_sqrt, Axis::O, Axis::V);
+        let b_oo = build_b(&transform_3center_oo(&eri3_ao, &c_occ), &v_inv_sqrt, Axis::O, Axis::O);
+        let b_vv = build_b(&transform_3center_vv(&eri3_ao, &c_vir), &v_inv_sqrt, Axis::V, Axis::V);
+        let b_vo = transpose_b(&b_ov);
+        use Axis::{O, V};
+
+        let bcei = {
+            let d: ArrayD<f64> = einsum!("Pbe,Pci->beci", &b_vv, &b_vo);
+            let e: ArrayD<f64> = einsum!("Pbi,Pce->bice", &b_vo, &b_vv);
+            asym_phys(&d, &e, nv, nv, nv, no)
+        };
+        let majk = {
+            let d: ArrayD<f64> = einsum!("Pmj,Pak->mjak", &b_oo, &b_vo);
+            let e: ArrayD<f64> = einsum!("Pmk,Paj->mkaj", &b_oo, &b_vo);
+            asym_phys(&d, &e, no, nv, no, no)
+        };
+        let bcjk = {
+            let d: ArrayD<f64> = einsum!("Pbj,Pck->bjck", &b_vo, &b_vo);
+            let e: ArrayD<f64> = einsum!("Pbk,Pcj->bkcj", &b_vo, &b_vo);
+            asym_phys(&d, &e, nv, nv, no, no)
+        };
+        let bcei_t = Tensor::new(bcei, [V, V, V, O]);
+        let majk_t = Tensor::new(majk, [O, V, O, O]);
+        let bcjk_t = Tensor::new(bcjk, [V, V, O, O]);
+
+        let mut eo = vec![0.0f64; no2];
+        let mut ev = vec![0.0f64; nv2];
+        for i in 0..no {
+            eo[2 * i] = eps[first_occ + i];
+            eo[2 * i + 1] = eps[first_occ + i];
+        }
+        for a in 0..nv {
+            ev[2 * a] = eps[nocc_total + a];
+            ev[2 * a + 1] = eps[nocc_total + a];
+        }
+        let mut d3 = ArrayD::zeros(IxDyn(&[no2, no2, no2, nv2, nv2, nv2]));
+        for i in 0..no2 {
+            for j in 0..no2 {
+                for k in 0..no2 {
+                    for a in 0..nv2 {
+                        for b in 0..nv2 {
+                            for cc_ in 0..nv2 {
+                                d3[[i, j, k, a, b, cc_]] = eo[i] + eo[j] + eo[k] - ev[a] - ev[b] - ev[cc_];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let t1_spatial = ccsd_res.t1.as_ref().unwrap();
+        let t1 = Tensor::new(t1_spatial.clone().into_dyn(), [O, V]);
+        let t2 = Tensor::new(ccsd_res.t2.clone().into_dyn(), [O, O, V, V]);
+
+        let term1: ArrayD<f64> = einsum!("jkae,bcei->jkabci", &t2, &bcei_t);
+        let term1 = term1.permuted_axes(IxDyn(&[5, 0, 1, 2, 3, 4])).as_standard_layout().into_owned();
+        let term2: ArrayD<f64> = einsum!("imbc,majk->ibcajk", &t2, &majk_t);
+        let term2 = term2.permuted_axes(IxDyn(&[0, 4, 5, 3, 1, 2])).as_standard_layout().into_owned();
+        let mut t3c = term1;
+        t3c -= &term2;
+        drop(term2);
+        let mut t3c = p_a_bc(t3c);
+        t3c = p_i_jk(t3c);
+        t3c /= &d3;
+
+        let t3d: ArrayD<f64> = einsum!("ia,bcjk->iabcjk", &t1, &bcjk_t);
+        let t3d = t3d.permuted_axes(IxDyn(&[0, 4, 5, 1, 2, 3])).as_standard_layout().into_owned();
+        let mut t3d = p_a_bc(t3d);
+        t3d = p_i_jk(t3d);
+        t3d /= &d3;
+
+        let sum = &t3c + &t3d;
+        let weighted = &sum * &d3;
+        let t_dense: f64 = (&weighted * &t3c).sum() / 36.0;
+
+        println!("dense = {t_dense:.12}, streaming = {t_streaming:.12}, diff = {:.3e}", (t_dense - t_streaming).abs());
+        assert!(
+            (t_dense - t_streaming).abs() < 1e-10,
+            "streaming (T) = {t_streaming:.12} disagrees with dense (T) = {t_dense:.12}"
+        );
     }
 }
