@@ -8,6 +8,7 @@ use ndarray::{Array2, Array4};
 
 pub mod ccd;
 pub mod ccsd;
+pub mod ccsd_closed_shell;
 pub mod ccsd_t;
 pub mod helpers;
 
