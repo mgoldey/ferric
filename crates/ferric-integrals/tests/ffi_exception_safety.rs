@@ -115,7 +115,7 @@ fn over_max_am_shell_is_caught_not_ub() {
             // Path (b): construction succeeded; the throw must happen at compute
             // and be caught by the compute-path try/catch, surfacing as a panic.
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                eng.compute_1e_block(&prep, 0, 0)
+                let _ = eng.compute_1e_block(&prep, 0, 0);
             }));
             assert!(
                 result.is_err(),
