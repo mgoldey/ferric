@@ -60,6 +60,22 @@ struct RadicalRef {
     xyz: &'static str,
     ip_a_ref: f64,
     ip_b_ref: f64,
+    /// ferric's own ground-state UHF total energy (Ha, direct-K). Asserting the
+    /// SCF energy lands here guards against ferric converging to a different
+    /// (wrong-basin) doublet solution and then producing a spuriously
+    /// "converged" but physically wrong QP IP — which is exactly what NH₂ does
+    /// under plain DIIS from the default guess (lands −55.4834 Ha, an excited
+    /// SCF solution ~0.084 Ha / ~2.3 eV off, vs the −55.5671 Ha ground state).
+    /// These are ~1e-3 Ha below the PySCF density-fitted UHF energies used to
+    /// generate the QP references (the exact-K vs DF difference, uniform across
+    /// all three radicals) — the guard checks that ferric reaches ITS ground
+    /// state, which is the state the QP reference corresponds to.
+    e_uhf_ref: f64,
+    /// Virtual-block level shift + MOM-after-iter needed to steer the UHF into
+    /// the physical ground state. `(0.0, 0)` = plain DIIS suffices (OH, CH₃);
+    /// NH₂ needs `(0.5, 5)`.
+    level_shift: f64,
+    mom_after_iter: usize,
 }
 
 const TOL_EV: f64 = 0.20;
@@ -95,11 +111,26 @@ fn check_radical(r: &RadicalRef) {
     let bounds = SchwarzBounds::compute(op, &obs).expect("Schwarz");
     let ctx = ParallelContext::default();
     let cfg = RhfConfig {
-        max_iter: 200,
+        max_iter: 300,
+        level_shift: r.level_shift,
+        mom_after_iter: r.mom_after_iter,
         ..Default::default()
     };
     let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &cfg).expect("UHF");
     assert!(uhf.converged, "{}: UHF did not converge", r.name);
+    // Guard: ferric must reach the SAME UHF solution PySCF used for the QP
+    // reference, or the IP comparison is meaningless (see `e_uhf_ref` doc).
+    assert!(
+        (uhf.energy - r.e_uhf_ref).abs() < 5e-3,
+        "{}: UHF E {:.6} Ha vs ferric ground-state {:.6} Ha (Δ {:.6}) — ferric \
+         converged a different SCF solution; the QP IP below would be off the \
+         same wrong reference (the wrong-basin miss for NH₂ is ~0.084 Ha, far \
+         outside this 5e-3 band)",
+        r.name,
+        uhf.energy,
+        r.e_uhf_ref,
+        uhf.energy - r.e_uhf_ref
+    );
 
     let pdep = pdep_cfg();
     let two_s = (mol.multiplicity as i32) - 1;
@@ -166,6 +197,9 @@ fn oh_u_g0w0_matches_pyscf() {
         xyz: "2\nOH\nO 0.0 0.0 0.0\nH 0.0 0.0 0.9697\n",
         ip_a_ref: 13.5686,
         ip_b_ref: 12.5320,
+        e_uhf_ref: -75.393846,
+        level_shift: 0.0,
+        mom_after_iter: 0,
     });
 }
 
@@ -182,6 +216,9 @@ H  -0.539500   0.934441   0.000000\n\
 H  -0.539500  -0.934441   0.000000\n",
         ip_a_ref: 9.7541,
         ip_b_ref: 15.0065,
+        e_uhf_ref: -39.563807,
+        level_shift: 0.0,
+        mom_after_iter: 0,
     });
 }
 
@@ -189,6 +226,14 @@ H  -0.539500  -0.934441   0.000000\n",
 #[ignore = "slow: UHF + U-PDEP-RPA + U-G0W0; run with --release --ignored"]
 fn nh2_u_g0w0_matches_pyscf() {
     // Bent amino radical, N–H = 1.024 Å, ∠HNH = 103.4°.
+    //
+    // NH₂'s two highest α occupied MOs are near-degenerate (Koopmans −13.73 and
+    // −13.50 eV, 0.23 eV apart), so plain DIIS from the default guess lands an
+    // excited SCF solution (−55.4834 Ha, ~0.084 Ha above ground state), which
+    // then feeds a QP IP ~2.3 eV too small. A virtual-block level shift + MOM
+    // (0.5, 5) steers ferric into the physical ground state (−55.5671 Ha,
+    // matching PySCF's), where the QP IP agrees with the reference. The
+    // `e_uhf_ref` guard in `check_radical` fails loudly if this ever regresses.
     check_radical(&RadicalRef {
         name: "NH2",
         xyz: "3\nNH2\n\
@@ -197,5 +242,8 @@ H   0.803611   0.000000  -0.634654\n\
 H  -0.803611   0.000000  -0.634654\n",
         ip_a_ref: 12.7417,
         ip_b_ref: 11.7493,
+        e_uhf_ref: -55.567091,
+        level_shift: 0.5,
+        mom_after_iter: 5,
     });
 }
