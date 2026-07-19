@@ -3,6 +3,21 @@
 //! Energy SCF uses wB97X-V with VV10 active; analytical gradient now also
 //! includes the ∂E_nl/∂R contribution. The complement (wB97X, no VV10) is
 //! exercised in `dft_gradient_rsh.rs`.
+//!
+//! All four cases are `#[ignore]`d: each one does a brute-force central-FD
+//! gradient (2 full wB97X-V SCF solves per atom per Cartesian coordinate,
+//! e.g. 3 atoms × 3 coords × 2 = 18 extra solves for the H2O cases) on top
+//! of the analytical gradient, and wB97X-V is the most expensive functional
+//! in the codebase (RSH exchange = two RI-K builds per iteration, erf+erfc,
+//! plus an O(N^2) VV10 nonlocal-correlation pair sum on its own NLC grid).
+//! That makes this file alone dominate `cargo test -p ferric-scf` wall time
+//! (one debug-mode case observed running 40+ minutes). The analytical
+//! wB97X-V gradient is already checked against independent PySCF references
+//! in `dft_gradient_vs_pyscf.rs` (`wb97xv_h2_ccpvdz_vs_pyscf_grad`,
+//! `wb97xv_h2o_ccpvdz_vs_pyscf_grad`) at a fraction of the cost, so default
+//! `cargo test` coverage of "is the wB97X-V analytical gradient correct" is
+//! unaffected — this file remains available as a deeper, independent
+//! FD-vs-analytical cross-check to run manually/nightly in release mode.
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;

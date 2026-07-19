@@ -250,6 +250,11 @@ fn main() {
         divergence_tol: None,
         external_potential: cfg.external_potential.to_external_potential(),
         cosmo: cfg.cosmo.clone(),
+        // TODO(pcm-cli-wiring): no [pcm] TOML section yet -- PCM is only
+        // reachable via the ferric-scf/ferric-python APIs for now. Wiring a
+        // CLI-level PcmConfig (mirroring the [external_potential] section)
+        // is a natural follow-up, out of scope for the initial PCM landing.
+        pcm: None,
     };
 
     if task == "optimize" {

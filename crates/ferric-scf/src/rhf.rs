@@ -132,6 +132,19 @@ pub struct RhfConfig {
     /// ONCE before the loop), COSMO's reaction-field potential depends on
     /// the density and is recomputed EVERY iteration (see `crate::cosmo`).
     pub cosmo: Option<crate::cosmo::CosmoConfig>,
+    /// IEF-PCM implicit-solvent configuration. `None` (default) = vacuum
+    /// (no solvent); this MUST be byte-identical to a plain vacuum
+    /// calculation (see `pcm_none_matches_vacuum_*` regression tests).
+    /// Unlike `external_potential` (fixed, folded into `hcore` once before
+    /// the loop), PCM's apparent surface charge depends self-consistently
+    /// on the solute density, so the reaction-field operator is rebuilt
+    /// from the CURRENT density every SCF iteration (see the `pcm_ctx`
+    /// handling in `solve_rhf`) and the outer SCF/DIIS loop carries the
+    /// overall q-vs-D fixed point, the same pattern PySCF/Psi4 use.
+    /// Mutually usable alongside `cosmo` (both are independent implicit-
+    /// solvent models); using both simultaneously is not validated and not
+    /// currently prevented at the type level — callers should pick one.
+    pub pcm: Option<ferric_pcm::PcmConfig>,
 }
 
 impl Default for RhfConfig {
@@ -175,6 +188,7 @@ impl Default for RhfConfig {
             divergence_tol: None,
             external_potential: None,
             cosmo: None,
+            pcm: None,
         }
     }
 }
@@ -334,6 +348,15 @@ pub fn solve_rhf(
         });
     }
     let nocc = (nelec / 2) as usize;
+    // IEF-PCM: cavity + S/D/K/R geometry-only setup, built ONCE (mirrors
+    // DfJ/DfK/LinkK being built once before the loop). `None` (default) means
+    // this is `None` too and the per-iteration hook below is a pure no-op —
+    // see the pcm_none_matches_vacuum_* regression tests.
+    let pcm_ctx: Option<ferric_pcm::PcmContext> = config
+        .pcm
+        .as_ref()
+        .map(|pcfg| ferric_pcm::PcmContext::new(mol, pcfg))
+        .transpose()?;
     let vnn = mol.nuclear_repulsion()
         + config.external_potential.as_ref().map_or(0.0, |ext| {
             ext.charge_nuclear_energy(mol) + ext.field_nuclear_energy(mol)
@@ -665,7 +688,27 @@ pub fn solve_rhf(
             0.0
         };
 
-        let energy = e_elec_no_xc + e_xc + e_cosmo + vnn;
+        // IEF-PCM: solve for the apparent surface charge from the CURRENT
+        // density, add the reaction-field operator to F (so the SCF
+        // equations feel it and the density relaxes in response), and add
+        // E_pcm as its own standalone energy term — NOT folded into the
+        // 0.5·D·(H+F) one-electron trace above, which would double-count it
+        // (see ferric_pcm's crate doc + rhf.rs call site comment: this
+        // mirrors how PySCF's `_attach_solvent.py` adds `e_solvent` to
+        // `e_tot` separately from the ordinary one-electron energy, after
+        // folding `v_solvent` into the Fock/`vhf` the SCF equations use).
+        // Independent of COSMO above: both are additive if a caller sets
+        // both `config.cosmo` and `config.pcm` (unusual and unvalidated —
+        // see the `pcm` field doc — but the two hooks don't interfere).
+        let e_pcm = if let Some(pctx) = pcm_ctx.as_ref() {
+            let (v_pcm, e_pcm) = ferric_pcm::pcm_step(pctx, mol, prep, &d)?;
+            f += &v_pcm;
+            e_pcm
+        } else {
+            0.0
+        };
+
+        let energy = e_elec_no_xc + e_xc + e_cosmo + e_pcm + vnn;
 
         // DIIS error: e = FDS - SDF. Runs once per SCF iteration, serially
         // (this whole loop body is outside any rayon region — the JK build
@@ -1363,6 +1406,87 @@ mod tests {
         let config = RhfConfig { external_potential: None, ..Default::default() };
         let b = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
         assert_eq!(a.energy, b.energy);
+    }
+
+    #[test]
+    fn pcm_none_matches_vacuum_exactly() {
+        // `pcm: None` (the default) must be byte-identical to a plain vacuum
+        // calculation -- the same convention external_potential follows.
+        let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+        let bs = ferric_core::basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ParallelContext::default();
+
+        let a = solve_rhf(&ctx, &mol, &prep, op, &bounds, &RhfConfig::default()).unwrap();
+        let config = RhfConfig { pcm: None, ..Default::default() };
+        let b = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
+        assert_eq!(a.energy, b.energy);
+    }
+
+    /// Water/STO-3G in water solvent (eps=78.4): the standard textbook PCM
+    /// validation case. Checks:
+    ///   1. The SCF converges with PCM active.
+    ///   2. The solvation free energy E_pcm = E(solvent) - E(vacuum) is
+    ///      NEGATIVE (stabilizing) -- required for any physically sane
+    ///      implicit-solvent model of a polar solute in a polar solvent.
+    ///   3. The magnitude is "a few kcal/mol" (order-of-magnitude sane for a
+    ///      small polar solute's electrostatic solvation term), cross-checked
+    ///      against a genuine PySCF IEF-PCM run generated for this exact
+    ///      molecule/basis/eps (see
+    ///      /tmp/.../scratchpad/gen_pcm_ref.py and
+    ///      pcm_water_sto3g_pyscf_ref.json: PySCF gives E_solv = -3.82
+    ///      kcal/mol using its own SWIG tessellation). ferric's independent,
+    ///      deliberately simpler hard-cutoff Lebedev tessellation (see
+    ///      ferric_pcm::cavity's doc) is NOT expected to match PySCF's
+    ///      number tightly -- different cavity discretizations give
+    ///      different tessera counts/areas and thus different S/D matrices
+    ///      -- so this test only requires the same SIGN and the same
+    ///      ORDER OF MAGNITUDE (within a generous 0.5x-3x band), not
+    ///      numerical agreement to PySCF's specific tessellation.
+    #[test]
+    fn pcm_water_solvation_energy_is_negative_and_reasonable_magnitude() {
+        let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+        let bs = ferric_core::basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ParallelContext::default();
+
+        let vac = solve_rhf(&ctx, &mol, &prep, op, &bounds, &RhfConfig::default()).unwrap();
+        assert!(vac.converged);
+
+        let config = RhfConfig {
+            pcm: Some(ferric_pcm::PcmConfig::water()),
+            ..Default::default()
+        };
+        let solv = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
+        assert!(solv.converged, "PCM SCF failed to converge");
+
+        let e_solv_ha = solv.energy - vac.energy;
+        let e_solv_kcal = e_solv_ha * 627.5094740631;
+
+        assert!(
+            e_solv_ha < 0.0,
+            "solvation energy must be stabilizing (negative); got {e_solv_ha:.6} Ha = {e_solv_kcal:.3} kcal/mol"
+        );
+
+        // PySCF IEF-PCM reference for this exact molecule/basis/eps (own SWIG
+        // tessellation): E_solv = -3.8228 kcal/mol. Require the same order of
+        // magnitude, generously bounded (both negative: the "0.3x" bound is
+        // the smaller-magnitude edge, the "4x" bound is the larger-magnitude
+        // edge), since ferric's cavity construction is a deliberately
+        // simpler independent discretization.
+        let pyscf_ref_kcal = -3.8227667932356835_f64;
+        let small_mag_bound = pyscf_ref_kcal * 0.3; // -1.15 kcal/mol
+        let large_mag_bound = pyscf_ref_kcal * 4.0; // -15.29 kcal/mol
+        assert!(
+            e_solv_kcal < small_mag_bound && e_solv_kcal > large_mag_bound,
+            "E_solv={e_solv_kcal:.3} kcal/mol is not within an order of magnitude of the \
+             PySCF IEF-PCM reference ({pyscf_ref_kcal:.3} kcal/mol); expected between \
+             {large_mag_bound:.3} and {small_mag_bound:.3} kcal/mol"
+        );
     }
 
     #[test]

@@ -260,6 +260,14 @@ pub fn solve_rohf(
         Some(cfg) => Some(crate::cosmo::CosmoCavity::build(mol, cfg)?),
         None => None,
     };
+    // IEF-PCM: geometry-only cavity + K/R setup, built once (see rhf.rs's
+    // solve_rhf for the identical pattern/rationale). `None` (default) makes
+    // the per-iteration hook below a pure no-op.
+    let pcm_ctx: Option<ferric_pcm::PcmContext> = config
+        .pcm
+        .as_ref()
+        .map(|pcfg| ferric_pcm::PcmContext::new(mol, pcfg))
+        .transpose()?;
 
     // S^{-1/2}
     let (s_evals, s_evecs) = s
@@ -392,7 +400,23 @@ pub fn solve_rohf(
             0.0
         };
 
-        let energy = e_elec_no_xc + e_xc + e_cosmo + vnn;
+        // IEF-PCM: solve for the apparent surface charge from the CURRENT
+        // total density, add the reaction-field operator to BOTH spin Focks
+        // (before the Roothaan effective-Fock combination, so the coupled
+        // single-MO-set ROHF equations feel it), and add E_pcm as its own
+        // standalone energy term — see rhf.rs's solve_rhf for the full
+        // double-counting rationale. Independent of COSMO above, additive
+        // if both are configured (unusual/unvalidated).
+        let e_pcm = if let Some(pctx) = pcm_ctx.as_ref() {
+            let (v_pcm, e_pcm) = ferric_pcm::pcm_step(pctx, mol, prep, &d_total)?;
+            f_a += &v_pcm;
+            f_b += &v_pcm;
+            e_pcm
+        } else {
+            0.0
+        };
+
+        let energy = e_elec_no_xc + e_xc + e_cosmo + e_pcm + vnn;
 
         // Build Roothaan effective Fock (Guest-Saunders, via PySCF projector form).
         let f_eff = roothaan_fock(&f_a, &f_b, &d_a, &d_b, &s);

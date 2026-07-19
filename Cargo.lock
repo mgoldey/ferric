@@ -538,6 +538,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferric-pcm"
+version = "0.1.0"
+dependencies = [
+ "ferric-core",
+ "ferric-dft",
+ "ferric-integrals",
+ "ndarray",
+ "ndarray-linalg",
+ "openblas-src",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "toml",
+]
+
+[[package]]
 name = "ferric-python"
 version = "0.1.0"
 dependencies = [
@@ -593,6 +609,7 @@ dependencies = [
  "ferric-core",
  "ferric-dft",
  "ferric-integrals",
+ "ferric-pcm",
  "mpi",
  "ndarray",
  "ndarray-linalg",

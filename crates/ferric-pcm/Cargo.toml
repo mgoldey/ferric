@@ -1,5 +1,5 @@
 [package]
-name = "ferric-scf"
+name = "ferric-pcm"
 version = "0.1.0"
 edition = "2021"
 
@@ -8,21 +8,14 @@ workspace = true
 
 [dependencies]
 ferric-core = { path = "../ferric-core" }
-ferric-dft = { path = "../ferric-dft" }
 ferric-integrals = { path = "../ferric-integrals" }
-ferric-pcm = { path = "../ferric-pcm" }
+ferric-dft = { path = "../ferric-dft" }
 ndarray = { workspace = true }
 ndarray-linalg = { workspace = true }
 openblas-src = { workspace = true }
-rayon = { workspace = true }
+thiserror = { workspace = true }
 serde = { workspace = true }
-mpi = { version = "0.7", optional = true }
-
-[features]
-default = []
-mpi = ["dep:mpi", "ferric-core/mpi"]
 
 [dev-dependencies]
-ferric-dft = { path = "../ferric-dft" }
-serde = { workspace = true }
 serde_json = { workspace = true }
+toml = { workspace = true }

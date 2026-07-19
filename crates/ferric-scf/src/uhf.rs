@@ -183,6 +183,14 @@ pub fn solve_uhf_fockmod(
         Some(cfg) => Some(crate::cosmo::CosmoCavity::build(mol, cfg)?),
         None => None,
     };
+    // IEF-PCM: geometry-only cavity + K/R setup, built once (see rhf.rs's
+    // solve_rhf for the identical pattern/rationale). `None` (default) makes
+    // the per-iteration hook below a pure no-op.
+    let pcm_ctx: Option<ferric_pcm::PcmContext> = config
+        .pcm
+        .as_ref()
+        .map(|pcfg| ferric_pcm::PcmContext::new(mol, pcfg))
+        .transpose()?;
 
     // Canonical orthogonalizer X (n × m): drops eigenvectors of S below
     // LINDEP_THRESH to handle near-linear-dependent basis sets (Na clusters in
@@ -383,7 +391,23 @@ pub fn solve_uhf_fockmod(
             0.0
         };
 
-        let energy = e_elec_no_xc + e_xc + e_cosmo + vnn;
+        // IEF-PCM: solve for the apparent surface charge from the CURRENT
+        // total density, add the (spin-independent, classical-dielectric)
+        // reaction-field operator to BOTH spin Focks, and add E_pcm as its
+        // own standalone energy term (see rhf.rs's solve_rhf for the full
+        // double-counting rationale — same 0.5·D·(H+F) argument applies
+        // per-spin here). Independent of COSMO above, additive if both are
+        // configured (unusual/unvalidated — see the `pcm` field doc).
+        let e_pcm = if let Some(pctx) = pcm_ctx.as_ref() {
+            let (v_pcm, e_pcm) = ferric_pcm::pcm_step(pctx, mol, prep, &d_total)?;
+            f_a += &v_pcm;
+            f_b += &v_pcm;
+            e_pcm
+        } else {
+            0.0
+        };
+
+        let energy = e_elec_no_xc + e_xc + e_cosmo + e_pcm + vnn;
 
         // DIIS errors per spin: F_σ D_σ S − S D_σ F_σ
         let err_a = f_a.dot(&d_a).dot(&s) - s.dot(&d_a).dot(&f_a);
