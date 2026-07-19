@@ -239,7 +239,7 @@ mod tests {
     fn ghost_atom_does_not_get_a_sphere() {
         // Water + a far ghost O: the ghost must not add cavity surface.
         let xyz = "4\nwater + ghost\nO 0.0 0.0 0.117790\nH 0.0 0.755453 -0.471161\nH 0.0 -0.755453 -0.471161\n@O 0.0 0.0 100.0\n";
-        let mol = Molecule::parse_xyz(xyz, 0, 10).unwrap();
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
         let cfg = CavityConfig::default();
         let tess = build_cavity(&mol, &cfg).unwrap();
         assert!(tess.iter().all(|t| t.atom_index != 3), "ghost atom (index 3) must not own tesserae");
