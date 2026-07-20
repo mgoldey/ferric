@@ -301,6 +301,22 @@ mpirun -np 4 -x OPENBLAS_NUM_THREADS=1 -x RAYON_NUM_THREADS=4 \
     target/release/ferric input.toml
 ```
 
+**A user-local (non-system) OpenMPI install needs `LD_LIBRARY_PATH`**, or the
+built binary fails at launch with `error while loading shared libraries:
+libmpi.so.40: cannot open shared object file` even though it linked and
+compiled fine (the linker found `libmpi.so` via `mpicc`'s search path at
+build time; the dynamic loader does not use that same path at run time). If
+`mpirun`/`mpicc` resolve to a path under your home directory (e.g.
+`~/.local/bin/mpirun`, check with `which mpirun`) rather than
+`/usr/bin/mpirun`, set:
+```bash
+export LD_LIBRARY_PATH="$HOME/.local/lib:$LD_LIBRARY_PATH"
+```
+before running `mpirun` (both for `target/release/ferric` and for any
+`--features mpi`-gated test binary launched directly, e.g.
+`mpi_dfjk_banding`). Not needed for a distro-packaged
+`/usr/lib/.../libopenmpi` install, where the loader already knows the path.
+
 ### Python Bindings
 
 ```bash
