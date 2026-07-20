@@ -11,15 +11,25 @@
 //! `E_int = E(complex) - E(monA) - E(monB)`.
 //!
 //! Usage:
-//!   cargo run --release -p ferric-rpa --example c9_driver -- <tier> [--only <names>]
+//!   cargo run --release -p ferric-rpa --example c9_driver -- <tier> [--only <names>] [--cp]
 //! Examples:
 //!   c9_driver -- s66x8 --only s66_01_waterwater_1.00,s66_24_benzenebenzenepipi_1.00
+//!   c9_driver -- s66x8 --only s66_01_waterwater_1.00 --cp   (also reports CP-corrected E_int)
 //!   c9_driver -- l7
 //!   c9_driver -- danuglipron
+//!
+//! `--cp` (s66x8/l7-dimer rows only; not wired for L7's GGG/PHE 3-body rows)
+//! adds a Boys-Bernardi counterpoise-corrected `e_int_cp_kcalmol` CSV column
+//! alongside the existing uncorrected `e_int_kcalmol` -- both are reported,
+//! neither replaces the other. Each monomer is re-evaluated in the full
+//! dimer's AO basis via ghost atoms (`ferric_core::mol::Atom::ghost`,
+//! `@`-prefixed in XYZ) standing in for the other fragment's basis functions
+//! with zero nuclear charge/electrons.
 //!
 //! Environment:
 //!   FERRIC_C9_ONLY        comma-separated system names (alias of --only)
 //!   FERRIC_C9_OUTPUT_CSV  path to also append CSV lines to
+//!   FERRIC_C9_CP          set (any value) to enable --cp
 //!   OPENBLAS_NUM_THREADS  recommend =1 (see sparse_scaling.rs)
 //!
 //! THIS IS A SMOKE-TEST DRIVER. Don't run the full 528-system sweep in CI; use
@@ -78,11 +88,16 @@ struct Csv {
     e_int_kcalmol: Option<f64>,
     e_int_ref_kcalmol: Option<f64>,
     status: String,
+    /// Boys-Bernardi counterpoise-corrected interaction energy, kcal/mol.
+    /// `None` unless the driver was run with `--cp` (a NEW, additive column
+    /// -- see run_dimer's `cp` argument; the existing uncorrected `e_int_kcalmol` above is
+    /// untouched so already-reported/cited numbers elsewhere keep meaning).
+    e_int_cp_kcalmol: Option<f64>,
 }
 
 impl Csv {
     fn header() -> String {
-        "name,n_atoms,n_ao,n_aux,e_rhf,e_rpa,t_rhf_s,t_rpa_s,e_int_kcalmol,e_int_ref_kcalmol,delta_kcalmol,status".to_string()
+        "name,n_atoms,n_ao,n_aux,e_rhf,e_rpa,t_rhf_s,t_rpa_s,e_int_kcalmol,e_int_ref_kcalmol,delta_kcalmol,e_int_cp_kcalmol,delta_cp_kcalmol,status".to_string()
     }
     fn line(&self) -> String {
         let e_int = self.e_int_kcalmol.map(|v| format!("{v:.4}")).unwrap_or_default();
@@ -91,11 +106,16 @@ impl Csv {
             (Some(a), Some(b)) => format!("{:.4}", a - b),
             _ => String::new(),
         };
+        let e_int_cp = self.e_int_cp_kcalmol.map(|v| format!("{v:.4}")).unwrap_or_default();
+        let delta_cp = match (self.e_int_cp_kcalmol, self.e_int_ref_kcalmol) {
+            (Some(a), Some(b)) => format!("{:.4}", a - b),
+            _ => String::new(),
+        };
         format!(
-            "{},{},{},{},{:.10},{:.10},{:.3},{:.3},{},{},{},{}",
+            "{},{},{},{},{:.10},{:.10},{:.3},{:.3},{},{},{},{},{},{}",
             self.name, self.n_atoms, self.n_ao, self.n_aux,
             self.e_rhf, self.e_rpa, self.t_rhf_s, self.t_rpa_s,
-            e_int, e_int_ref, delta, self.status,
+            e_int, e_int_ref, delta, e_int_cp, delta_cp, self.status,
         )
     }
 }
@@ -111,7 +131,10 @@ struct CalcResult {
 
 fn frozen_core_for(mol: &Molecule) -> usize {
     // Frozen-core convention: 1 FC orbital per atom with Z >= 3 (Li and heavier).
-    mol.atoms.iter().filter(|a| a.z >= 3).count()
+    // Ghost atoms (counterpoise basis-only centers) contribute zero occupied
+    // orbitals -- they must NOT be counted here, or frozen_core would exceed
+    // the fragment's real nocc and active_occ() would underflow/error.
+    mol.atoms.iter().filter(|a| !a.ghost && a.z >= 3).count()
 }
 
 fn run_rhf_rpa(
@@ -183,12 +206,52 @@ fn split_dimer(mol: &Molecule, a_size: usize) -> (Molecule, Molecule) {
     (mol_a, mol_b)
 }
 
+/// Split a Molecule into three fragments given explicit 0-based atom index
+/// lists (one per fragment). Unlike `split_dimer`, fragments need not be
+/// contiguous ranges: L7's PHE trimer interleaves its three ~29-atom capped
+/// phenylalanine-residue fragments in the source XYZ (verified geometrically
+/// via covalent-bond connected components -- see l7_fraga_size doc comment),
+/// so a simple `[..n]`/`[n..]` slice cannot separate them. GGG's three
+/// guanine fragments ARE contiguous 16-atom blocks and work fine through
+/// this same index-list path (indices happen to be a contiguous range).
+/// Coordinates remain in Bohr; every index must appear in exactly one of the
+/// three lists and every atom of `mol` must be covered (checked by caller).
+fn split_trimer(mol: &Molecule, idx_a: &[usize], idx_b: &[usize], idx_c: &[usize]) -> (Molecule, Molecule, Molecule) {
+    let pick = |idxs: &[usize]| -> Molecule {
+        let atoms: Vec<Atom> = idxs.iter().map(|&i| mol.atoms[i].clone()).collect();
+        Molecule { atoms, charge: 0, multiplicity: 1 }
+    };
+    (pick(idx_a), pick(idx_b), pick(idx_c))
+}
+
+/// Build a Boys-Bernardi counterpoise fragment: atoms at `own_indices` stay
+/// real, every other atom of `mol` (the full complex) becomes a ghost --
+/// same element (so `for_element(z)` picks up its basis functions per the
+/// `Atom`/`ghost` doc comment in `ferric_core::mol`), same position, but
+/// `ghost: true` so it contributes zero nuclear charge and zero electrons
+/// (see `Atom::effective_z`, `Molecule::nelec`/`nuclear_repulsion`, and
+/// `basis_bridge.rs`'s `z_eff` handling -- all already ghost-aware, exercised
+/// by `crates/ferric-scf/tests/ghost_atoms.rs`). The result is fragment A (or
+/// B) evaluated in the FULL complex's AO basis at the FULL complex's
+/// geometry, per the standard CP prescription: E(A, basis=AB).
+fn make_cp_fragment(mol: &Molecule, own_indices: &[usize]) -> Molecule {
+    let own: HashSet<usize> = own_indices.iter().copied().collect();
+    let atoms: Vec<Atom> = mol.atoms.iter().enumerate().map(|(i, a)| {
+        if own.contains(&i) {
+            a.clone()
+        } else {
+            Atom { ghost: true, ..a.clone() }
+        }
+    }).collect();
+    Molecule { atoms, charge: 0, multiplicity: 1 }
+}
+
 fn parse_s66_dimer_index(name: &str) -> Option<usize> {
     // Expected name: s66_NN_<body>_<dist>
     name.strip_prefix("s66_")?.split('_').next()?.parse().ok()
 }
 
-fn run_s66x8(ctx: &ParallelContext, only: &Option<HashSet<String>>) -> Vec<Csv> {
+fn run_s66x8(ctx: &ParallelContext, only: &Option<HashSet<String>>, cp: bool) -> Vec<Csv> {
     let dir = "testdata/molecules/c9_systems/s66x8";
     let refs = load_refs("testdata/reference/c9_refs/s66x8_ccsdt_cbs.json");
     let mut rows = Vec::new();
@@ -225,7 +288,7 @@ fn run_s66x8(ctx: &ParallelContext, only: &Option<HashSet<String>>) -> Vec<Csv> 
                       mol.atoms.len());
             continue;
         }
-        rows.push(run_dimer(ctx, &stem, &mol, a_size, &refs));
+        rows.push(run_dimer(ctx, &stem, &mol, a_size, &refs, cp));
     }
     rows
 }
@@ -242,22 +305,64 @@ fn l7_fraga_size(name: &str) -> Option<usize> {
     //   C3GC:   circumcoronene + GC base pair -> 72 + 28 = 100 (heavy 21)
     //   CBH:    coronene(C24H12) + coronene(C24H12) -> 36 + 36 = 72
     //   GCGC:   GC + GC -> 29 + 29 = 58
-    //   PHE:    phe + phe + phe -> 23+23+23=69 (3 frags, not 2)
+    //   PHE:    capped-Phe-residue trimer -> 29+29+29=87 (3 frags, not 2;
+    //           see l7_trimer_indices doc comment -- the 23-atom free-amino-
+    //           acid count in an earlier version of this comment was WRONG,
+    //           verified by covalent-bond connected-component clustering)
     // The 3-fragment systems (GGG, PHE) cannot be split into two monomers
-    // for a 2-body interaction energy — they need a 3-body decomposition
-    // (E_int = E(ABC) - 3*E(A) for symmetric trimers). Driver returns None
-    // -> no interaction energy is reported; total energy still goes to CSV.
+    // for a 2-body interaction energy — they need l7_trimer_indices below.
     match name {
         "C2C2PD" => Some(56),
         "C3A"    => Some(72),  // circumcoronene fragment is first
         "C3GC"   => Some(72),
         "CBH"    => Some(36),
         "GCGC"   => Some(29),
-        _ => None, // GGG, PHE: 3-body — handled in run_dimer fallback
+        _ => None, // GGG, PHE: 3-body — handled by l7_trimer_indices
     }
 }
 
-fn run_l7(ctx: &ParallelContext, only: &Option<HashSet<String>>) -> Vec<Csv> {
+/// 0-based atom index lists for L7's two 3-fragment (trimer) systems, one
+/// `Vec<usize>` per fragment. Determined by covalent-bond connected-component
+/// clustering (Cordero covalent radii, 1.3x sum tolerance, union-find) on the
+/// actual downloaded XYZ files in `testdata/molecules/c9_systems/l7/` --- NOT
+/// by trusting the L7 paper's summary atom counts blindly:
+///
+///   GGG (48 atoms total): 3 components of 16 atoms each, EACH an exact
+///   contiguous range: [0..16), [16..32), [32..48). Formula per fragment
+///   C5H5N5O (guanine) confirms chemical sense. Nearest inter-fragment
+///   contact >= 3.2 Angstrom (vs ~1.0-1.5 Angstrom intra-fragment bonds), so
+///   the boundary is a clean non-bonded gap, matching split_dimer's existing
+///   "long separation" sanity convention.
+///
+///   PHE (87 atoms total): 3 components of 29 atoms each (NOT 23 -- the
+///   c9-benchmark-plan.md comment assuming free phenylalanine, C9H11NO2 x3
+///   = 69, was WRONG; each fragment is actually a capped Phe RESIDUE,
+///   C11H14N2O2, matching the source file's own comment
+///   "phenylalanineresiduestrimer"). Critically, only fragment 1 is a
+///   contiguous range ([0..29)); fragments 2 and 3 are INTERLEAVED in the
+///   file (their atoms are grouped by element/role across both residues,
+///   not by residue) -- confirmed by union-find clustering, not assumed.
+///   split_trimer's index-list signature (not split_dimer's `[..n]` slice)
+///   is required for PHE for exactly this reason.
+fn l7_trimer_indices(name: &str) -> Option<(Vec<usize>, Vec<usize>, Vec<usize>)> {
+    match name {
+        "GGG" => Some(((0..16).collect(), (16..32).collect(), (32..48).collect())),
+        "PHE" => Some((
+            (0..29).collect(),
+            vec![
+                29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 51, 52, 55, 56, 62, 63, 64, 76, 77,
+                78, 79, 80, 81, 82, 83, 84, 85, 86,
+            ],
+            vec![
+                40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 53, 54, 57, 58, 59, 60, 61, 65, 66,
+                67, 68, 69, 70, 71, 72, 73, 74, 75,
+            ],
+        )),
+        _ => None,
+    }
+}
+
+fn run_l7(ctx: &ParallelContext, only: &Option<HashSet<String>>, cp: bool) -> Vec<Csv> {
     let dir = "testdata/molecules/c9_systems/l7";
     let refs = load_refs("testdata/reference/c9_refs/l7_qcisdt_cbs.json");
     let mut rows = Vec::new();
@@ -281,15 +386,24 @@ fn run_l7(ctx: &ParallelContext, only: &Option<HashSet<String>>) -> Vec<Csv> {
             Ok(m) => m,
             Err(e) => { eprintln!("  load failed: {e}"); continue; }
         };
-        match l7_fraga_size(&stem) {
-            Some(a_size) if a_size < mol.atoms.len() => {
-                rows.push(run_dimer(ctx, &stem, &mol, a_size, &refs));
-            }
-            _ => {
-                eprintln!("  {stem} is a 3-body trimer; running complex only");
-                rows.push(run_complex_only(ctx, &stem, &mol, &refs));
+        if let Some(a_size) = l7_fraga_size(&stem) {
+            if a_size < mol.atoms.len() {
+                rows.push(run_dimer(ctx, &stem, &mol, a_size, &refs, cp));
+                continue;
             }
         }
+        if let Some((idx_a, idx_b, idx_c)) = l7_trimer_indices(&stem) {
+            // NOTE: trimer CP (3-fragment Boys-Bernardi, ghosting the OTHER
+            // TWO fragments per monomer evaluation) is not implemented in
+            // this pass -- run_trimer always reports uncorrected E_int. `cp`
+            // is intentionally unused here (not silently dropped: this is
+            // the documented scope boundary, see driver module doc).
+            let _ = cp;
+            rows.push(run_trimer(ctx, &stem, &mol, &idx_a, &idx_b, &idx_c, &refs));
+            continue;
+        }
+        eprintln!("  {stem}: no known fragment split; running complex only");
+        rows.push(run_complex_only(ctx, &stem, &mol, &refs));
     }
     rows
 }
@@ -334,6 +448,7 @@ fn run_complex_only(
             e_int_kcalmol: None,
             e_int_ref_kcalmol: refs.get(name).copied(),
             status: "OK".into(),
+        e_int_cp_kcalmol: None,
         },
         Err(e) => {
             eprintln!("  FAIL: {e}");
@@ -343,6 +458,7 @@ fn run_complex_only(
                 e_int_kcalmol: None,
                 e_int_ref_kcalmol: refs.get(name).copied(),
                 status: format!("FAIL:{e}"),
+                e_int_cp_kcalmol: None,
             }
         }
     }
@@ -350,7 +466,7 @@ fn run_complex_only(
 
 fn run_dimer(
     ctx: &ParallelContext, name: &str, mol: &Molecule, a_size: usize,
-    refs: &HashMap<String, f64>,
+    refs: &HashMap<String, f64>, cp: bool,
 ) -> Csv {
     let n = mol.atoms.len();
     let (mol_a, mol_b) = split_dimer(mol, a_size);
@@ -364,6 +480,7 @@ fn run_dimer(
                 name: name.into(), n_atoms: n, n_ao: 0, n_aux: 0,
                 e_rhf: 0.0, e_rpa: 0.0, t_rhf_s: 0.0, t_rpa_s: 0.0,
                 e_int_kcalmol: None, e_int_ref_kcalmol: refs.get(name).copied(),
+                e_int_cp_kcalmol: None,
                 status: format!("FAIL_complex:{e}"),
             };
         }
@@ -376,6 +493,7 @@ fn run_dimer(
                 name: name.into(), n_atoms: n, n_ao: c.n_ao, n_aux: c.n_aux,
                 e_rhf: c.e_rhf, e_rpa: c.e_rpa, t_rhf_s: c.t_rhf, t_rpa_s: c.t_rpa,
                 e_int_kcalmol: None, e_int_ref_kcalmol: refs.get(name).copied(),
+                e_int_cp_kcalmol: None,
                 status: format!("FAIL_monA:{e}"),
             };
         }
@@ -388,6 +506,7 @@ fn run_dimer(
                 name: name.into(), n_atoms: n, n_ao: c.n_ao, n_aux: c.n_aux,
                 e_rhf: c.e_rhf, e_rpa: c.e_rpa, t_rhf_s: c.t_rhf, t_rpa_s: c.t_rpa,
                 e_int_kcalmol: None, e_int_ref_kcalmol: refs.get(name).copied(),
+                e_int_cp_kcalmol: None,
                 status: format!("FAIL_monB:{e}"),
             };
         }
@@ -396,34 +515,153 @@ fn run_dimer(
     let e_int_kcal = e_int_ha * HA_TO_KCAL;
     eprintln!("  E_int = {:.4} kcal/mol", e_int_kcal);
 
+    let mut t_rhf_s = c.t_rhf + a.t_rhf + b.t_rhf;
+    let mut t_rpa_s = c.t_rpa + a.t_rpa + b.t_rpa;
+    let mut e_int_cp_kcalmol = None;
+    let mut status = "OK".to_string();
+
+    if cp {
+        // Boys-Bernardi CP: monomers re-evaluated in the FULL dimer basis
+        // (ghost atoms standing in for the other fragment). Complex energy
+        // `c` is unchanged (it already uses the full dimer basis natively).
+        let idx_a: Vec<usize> = (0..a_size).collect();
+        let idx_b: Vec<usize> = (a_size..n).collect();
+        let mol_a_gh = make_cp_fragment(mol, &idx_a);
+        let mol_b_gh = make_cp_fragment(mol, &idx_b);
+        match (run_rhf_rpa(ctx, &mol_a_gh, "monA+ghostB"), run_rhf_rpa(ctx, &mol_b_gh, "monB+ghostA")) {
+            (Ok(a_gh), Ok(b_gh)) => {
+                let e_int_cp_ha = c.e_rpa - a_gh.e_rpa - b_gh.e_rpa;
+                let e_int_cp_kcal = e_int_cp_ha * HA_TO_KCAL;
+                eprintln!("  E_int(CP) = {:.4} kcal/mol", e_int_cp_kcal);
+                t_rhf_s += a_gh.t_rhf + b_gh.t_rhf;
+                t_rpa_s += a_gh.t_rpa + b_gh.t_rpa;
+                e_int_cp_kcalmol = Some(e_int_cp_kcal);
+            }
+            (Err(e), _) => { eprintln!("  monA+ghostB FAIL: {e}"); status = format!("OK_FAIL_cpA:{e}"); }
+            (_, Err(e)) => { eprintln!("  monB+ghostA FAIL: {e}"); status = format!("OK_FAIL_cpB:{e}"); }
+        }
+    }
+
     Csv {
         name: name.into(), n_atoms: n, n_ao: c.n_ao, n_aux: c.n_aux,
         e_rhf: c.e_rhf, e_rpa: c.e_rpa,
-        t_rhf_s: c.t_rhf + a.t_rhf + b.t_rhf,
-        t_rpa_s: c.t_rpa + a.t_rpa + b.t_rpa,
+        t_rhf_s, t_rpa_s,
+        e_int_kcalmol: Some(e_int_kcal),
+        e_int_ref_kcalmol: refs.get(name).copied(),
+        e_int_cp_kcalmol,
+        status,
+    }
+}
+
+/// 3-body interaction energy for a trimer: E_int = E(ABC) - E(A) - E(B) - E(C).
+/// Runs 4 RHF+RPA evaluations (complex + fragA + fragB + fragC). Implements
+/// the GENERAL 3-fragment case (not a symmetric E(ABC)-3*E(A) shortcut) so
+/// it stays correct even if the fragments turn out not to be exactly
+/// identical (GGG/PHE are chemically identical by construction, but nothing
+/// here assumes it).
+fn run_trimer(
+    ctx: &ParallelContext, name: &str, mol: &Molecule,
+    idx_a: &[usize], idx_b: &[usize], idx_c: &[usize],
+    refs: &HashMap<String, f64>,
+) -> Csv {
+    let n = mol.atoms.len();
+    let (mol_a, mol_b, mol_c) = split_trimer(mol, idx_a, idx_b, idx_c);
+    eprintln!(
+        "  fragments: A={} atoms, B={} atoms, C={} atoms",
+        mol_a.atoms.len(), mol_b.atoms.len(), mol_c.atoms.len()
+    );
+
+    let c = match run_rhf_rpa(ctx, mol, "complex") {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("  complex FAIL: {e}");
+            return Csv {
+                name: name.into(), n_atoms: n, n_ao: 0, n_aux: 0,
+                e_rhf: 0.0, e_rpa: 0.0, t_rhf_s: 0.0, t_rpa_s: 0.0,
+                e_int_kcalmol: None, e_int_ref_kcalmol: refs.get(name).copied(),
+                status: format!("FAIL_complex:{e}"),
+                e_int_cp_kcalmol: None,
+            };
+        }
+    };
+    let a = match run_rhf_rpa(ctx, &mol_a, "fragA") {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("  fragA FAIL: {e}");
+            return Csv {
+                name: name.into(), n_atoms: n, n_ao: c.n_ao, n_aux: c.n_aux,
+                e_rhf: c.e_rhf, e_rpa: c.e_rpa, t_rhf_s: c.t_rhf, t_rpa_s: c.t_rpa,
+                e_int_kcalmol: None, e_int_ref_kcalmol: refs.get(name).copied(),
+                status: format!("FAIL_fragA:{e}"),
+                e_int_cp_kcalmol: None,
+            };
+        }
+    };
+    let b = match run_rhf_rpa(ctx, &mol_b, "fragB") {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("  fragB FAIL: {e}");
+            return Csv {
+                name: name.into(), n_atoms: n, n_ao: c.n_ao, n_aux: c.n_aux,
+                e_rhf: c.e_rhf, e_rpa: c.e_rpa, t_rhf_s: c.t_rhf, t_rpa_s: c.t_rpa,
+                e_int_kcalmol: None, e_int_ref_kcalmol: refs.get(name).copied(),
+                status: format!("FAIL_fragB:{e}"),
+                e_int_cp_kcalmol: None,
+            };
+        }
+    };
+    let cc = match run_rhf_rpa(ctx, &mol_c, "fragC") {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("  fragC FAIL: {e}");
+            return Csv {
+                name: name.into(), n_atoms: n, n_ao: c.n_ao, n_aux: c.n_aux,
+                e_rhf: c.e_rhf, e_rpa: c.e_rpa, t_rhf_s: c.t_rhf, t_rpa_s: c.t_rpa,
+                e_int_kcalmol: None, e_int_ref_kcalmol: refs.get(name).copied(),
+                status: format!("FAIL_fragC:{e}"),
+                e_int_cp_kcalmol: None,
+            };
+        }
+    };
+    let e_int_ha = c.e_rpa - a.e_rpa - b.e_rpa - cc.e_rpa;
+    let e_int_kcal = e_int_ha * HA_TO_KCAL;
+    eprintln!("  E_int (3-body) = {:.4} kcal/mol", e_int_kcal);
+
+    Csv {
+        name: name.into(), n_atoms: n, n_ao: c.n_ao, n_aux: c.n_aux,
+        e_rhf: c.e_rhf, e_rpa: c.e_rpa,
+        t_rhf_s: c.t_rhf + a.t_rhf + b.t_rhf + cc.t_rhf,
+        t_rpa_s: c.t_rpa + a.t_rpa + b.t_rpa + cc.t_rpa,
         e_int_kcalmol: Some(e_int_kcal),
         e_int_ref_kcalmol: refs.get(name).copied(),
         status: "OK".into(),
+    e_int_cp_kcalmol: None,
     }
 }
 
 fn main() {
-    // Args: <tier> [--only a,b,c]
+    // Args: <tier> [--only a,b,c] [--cp]
     let mut args = std::env::args().skip(1);
     let tier = args.next().unwrap_or_else(|| {
-        eprintln!("usage: c9_driver <tier> [--only NAME[,NAME...]]");
+        eprintln!("usage: c9_driver <tier> [--only NAME[,NAME...]] [--cp]");
         eprintln!("       tiers: s66x8 | l7 | danuglipron");
+        eprintln!("       --cp: also compute Boys-Bernardi counterpoise-corrected");
+        eprintln!("             E_int (dimers only) alongside the uncorrected value.");
         std::process::exit(2);
     });
     let mut only_arg: Option<String> = None;
+    let mut cp = false;
     while let Some(a) = args.next() {
         if a == "--only" {
             only_arg = args.next();
+        } else if a == "--cp" {
+            cp = true;
         }
     }
     let only: Option<HashSet<String>> = only_arg
         .or_else(|| std::env::var("FERRIC_C9_ONLY").ok())
         .map(|s| s.split(',').map(|x| x.trim().to_string()).collect());
+    let cp = cp || std::env::var("FERRIC_C9_CP").is_ok();
 
     let ctx = ParallelContext::default();
 
@@ -444,8 +682,8 @@ fn main() {
     emit(Csv::header());
 
     let rows = match tier.as_str() {
-        "s66x8" => run_s66x8(&ctx, &only),
-        "l7" => run_l7(&ctx, &only),
+        "s66x8" => run_s66x8(&ctx, &only, cp),
+        "l7" => run_l7(&ctx, &only, cp),
         "danuglipron" => run_danuglipron(&ctx, &only),
         other => {
             eprintln!("unknown tier: {other}");
