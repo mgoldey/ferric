@@ -458,10 +458,15 @@ fn main() {
     // `solve_rhf` with `cfg.xc` set), so both take the level-shift ladder. This
     // gives KS-DFT the same DIIS-oscillation fallback RHF already had: a hybrid
     // like B3LYP on a π-system that limit-cycles at level_shift=0 escalates the
-    // virtual-block shift instead of silently running to max_iter. The base
-    // config already carries `xc` / DFT grid / DF-JK aux, so `build_ladder`'s
-    // per-rung clone preserves the functional. See docs/profiles-2026-07-14.md
-    // finding (2) + the ksdft_ladder tests in ferric-scf/src/ladder.rs.
+    // virtual-block shift instead of silently running to max_iter. `build_ladder`
+    // (config.rs) dispatches on `base.xc` -- KS-DFT runs get `ksdft_ladder`
+    // (starts from the caller's own max_iter, carries the DFT grid), plain RHF
+    // gets `default_ladder_from` (hard-codes DF-JK, HF-tuned rung budgets). See
+    // docs/profiles-2026-07-14.md finding (2) + its 2026-07-19 correction note
+    // (the CLI's `ksdft` path previously fell through to the HF-tuned ladder,
+    // which starves rung 0 of iterations and walked the whole ladder to
+    // MaxIter instead of converging) + the ksdft_ladder tests in
+    // ferric-scf/src/ladder.rs.
     let result = if method == "rhf" || method == "ksdft" {
         let ladder = cfg.scf.build_ladder(&rhf_config);
         let lr = ferric_scf::ladder::solve_rhf_ladder(&ctx, &mol, &prep, op, &bounds, &ladder)

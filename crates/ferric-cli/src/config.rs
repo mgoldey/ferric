@@ -605,12 +605,30 @@ impl ScfCfg {
         if self.ladder.is_empty() {
             // Default escalation, but seeded from the user's [scf] settings
             // (base) so max_iter/energy_conv/density_conv/mom_after_iter/etc.
-            // are honored -- a plain `kind = "rhf"` run with no [[scf.ladder]]
-            // table must not silently discard the [scf] block. Delegates the
-            // actual escalation shape (DF-JK aux, level-shift/ADIIS/SOSCF/
-            // Fermi-smearing progression) to ferric_scf::ladder::default_ladder_from
-            // so this can't drift out of sync with the library's own default ladder.
-            return ferric_scf::ladder::default_ladder_from(base);
+            // are honored -- a plain `kind = "rhf"`/`kind = "ksdft"` run with
+            // no [[scf.ladder]] table must not silently discard the [scf]
+            // block.
+            //
+            // Dispatch on whether `base` carries a functional: `default_ladder_from`
+            // hard-codes DF-JK aux unconditionally and does not honor the
+            // caller's own `max_iter` on rung 0 (always 60) -- correct for
+            // pure-HF heavy-atom divergence, but it starves a hybrid/GGA
+            // KS-DFT run of its rung-0 iteration budget (measured: benzene/
+            // def2-SVP DF-B3LYP walks the whole 5-rung ladder to MaxIter
+            // instead of converging on rung 0 the way `ksdft_ladder` does in
+            // ~8s -- see docs/profiles-2026-07-14.md's 2026-07-19 correction
+            // note). `ksdft_ladder` is the KS-DFT-specific sibling: it starts
+            // rung 0 from the caller's own level_shift/max_iter, only
+            // auto-defaults DF-JK aux when `xc.is_some()`, and carries the
+            // DFT grid through every rung. `ferric-python`'s run_dft/run_ksdft
+            // paths already call `ksdft_ladder` directly (lib.rs) -- this
+            // brings the CLI's `ksdft` path in line with that, instead of
+            // silently falling through to the HF-tuned ladder.
+            return if base.xc.is_some() {
+                ferric_scf::ladder::ksdft_ladder(base)
+            } else {
+                ferric_scf::ladder::default_ladder_from(base)
+            };
         }
         self.ladder
             .iter()
@@ -1130,6 +1148,37 @@ kind = "rhf"
         assert!(cfg.scf.ladder.is_empty());
         let built = cfg.scf.build_ladder(&ferric_scf::rhf::RhfConfig::default());
         assert_eq!(built.len(), ferric_scf::ladder::default_ladder().len());
+    }
+
+    /// Regression: a plain `kind = "ksdft"` run with no `[[scf.ladder]]` table
+    /// must escalate via `ksdft_ladder`, NOT `default_ladder_from`. Before this
+    /// fix, `build_ladder`'s empty-ladder fallback always called
+    /// `default_ladder_from` regardless of whether `base.xc` was set --
+    /// `default_ladder_from` hard-codes rung 0's `max_iter` to 60 (ignoring the
+    /// caller's own budget) and starves a hybrid/GGA KS-DFT SCF of the
+    /// iterations `ksdft_ladder`'s rung 0 gets. Measured effect: benzene/
+    /// def2-SVP DF-B3LYP walked the whole 5-rung `default_ladder_from` escalation
+    /// to `MaxIter` instead of converging on rung 0 in ~10 iterations the way
+    /// `ksdft_ladder` does (docs/profiles-2026-07-14.md 2026-07-19 correction).
+    #[test]
+    fn empty_ladder_ksdft_base_dispatches_to_ksdft_ladder() {
+        let base = ferric_scf::rhf::RhfConfig {
+            xc: Some("B3LYP".to_string()),
+            max_iter: 100,
+            ..Default::default()
+        };
+        let cfg = ScfCfg::default();
+        assert!(cfg.ladder.is_empty());
+        let built = cfg.build_ladder(&base);
+        let expected = ferric_scf::ladder::ksdft_ladder(&base);
+        assert_eq!(built.len(), expected.len());
+        // ksdft_ladder's rung 0 honors the caller's own max_iter (100 here);
+        // default_ladder_from would clamp rung 0 to 60 regardless.
+        assert_eq!(built[0].config.max_iter, 100,
+            "ksdft rung 0 must honor the caller's own max_iter, not default_ladder_from's hardcoded 60");
+        for (i, rung) in built.iter().enumerate() {
+            assert_eq!(rung.config.xc.as_deref(), Some("B3LYP"), "rung {i} must carry xc");
+        }
     }
 
     #[test]
