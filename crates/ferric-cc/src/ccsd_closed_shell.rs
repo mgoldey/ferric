@@ -651,6 +651,28 @@ mod tests {
     }
 
     #[test]
+    fn closed_shell_ccsd_ch4_sto3g_vs_pyscf() {
+        // Third molecule (widens past H2/H2O): CH4/STO-3G, Td symmetry.
+        // PySCF cc.CCSD(RHF): RHF = -39.726715311543025,
+        // CCSD E_corr = -0.07904929458457828. Matches spin-orbital ccsd.rs's
+        // new ccsd_ch4_sto3g reference (same PySCF-generated value).
+        let (mol, obs, dfbs, op, rhf) = setup(
+            "5\nmethane Td\nC 0.0 0.0 0.0\nH 0.629118 0.629118 0.629118\n\
+             H -0.629118 -0.629118 0.629118\nH -0.629118 0.629118 -0.629118\n\
+             H 0.629118 -0.629118 -0.629118\n",
+            "sto-3g",
+            "def2-qzvpp-rifit",
+        );
+        let cfg = CcConfig { frozen_core: 0, max_iter: 100, energy_conv: 1e-10, ..Default::default() };
+        let r = ccsd_closed_shell(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
+        println!("closed-shell CCSD CH4/STO-3G E_corr = {:.10}", r.correlation_energy);
+        assert!(
+            (r.correlation_energy - (-0.07904929458457828)).abs() < 1e-4,
+            "got {:.10}", r.correlation_energy
+        );
+    }
+
+    #[test]
     #[ignore = "perf measurement, run explicitly: cargo test -p ferric-cc perf_ -- --ignored --nocapture"]
     fn perf_closed_shell_vs_spin_orbital_h2o_ccpvdz() {
         // Wall-time comparison on H2O/cc-pVDZ (no=5, nv=19). The spin-orbital path

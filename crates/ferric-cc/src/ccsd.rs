@@ -566,6 +566,34 @@ mod tests {
     }
 
     #[test]
+    fn ccsd_ch4_sto3g() {
+        // Third molecule (widens past H2/H2O): CH4/STO-3G, Td symmetry.
+        // ref CCSD(exact integrals, PySCF cc.CCSD) = -0.07904929458457828.
+        let mol = Molecule::parse_xyz(
+            "5\nmethane Td\nC 0.0 0.0 0.0\nH 0.629118 0.629118 0.629118\n\
+             H -0.629118 -0.629118 0.629118\nH -0.629118 0.629118 -0.629118\n\
+             H 0.629118 -0.629118 -0.629118\n",
+            0,
+            1,
+        )
+        .unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("def2-qzvpp-rifit").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let ctx = ParallelContext::default();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
+        let cfg = CcConfig { frozen_core: 0, max_iter: 100, energy_conv: 1e-9, ..Default::default() };
+        let r = ccsd(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
+        println!("CCSD CH4/STO-3G E_corr = {:.10}", r.correlation_energy);
+        assert!(
+            (r.correlation_energy - (-0.07904929458457828)).abs() < 1e-4,
+            "got {:.8}",
+            r.correlation_energy
+        );
+    }
+
+    #[test]
     fn ccsd_fails_fast_under_tiny_budget() {
         // M2 size guard: an explicit ~1 KB budget must ERROR before the VVVV /
         // eri3 allocations. Explicit config budget → no env var touched.

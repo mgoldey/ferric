@@ -392,4 +392,27 @@ mod tests {
         let r = ccd_spinorbital(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
         assert!((r.correlation_energy - (-0.21259542)).abs() < 1e-4, "got {:.8}", r.correlation_energy);
     }
+
+    #[test]
+    fn ccd_so_ch4_sto3g() {
+        // Third molecule (widens past H2/H2O): CH4/STO-3G, Td symmetry.
+        // ref: CCD(T1=0) = -0.07904596471422148, generated via PySCF
+        // cc.CCSD with update_amps monkey-patched to zero t1 every
+        // iteration (same T1=0 convention as the H2/H2O refs above).
+        let mol = Molecule::parse_xyz(
+            "5\nmethane Td\nC 0.0 0.0 0.0\nH 0.629118 0.629118 0.629118\n\
+             H -0.629118 -0.629118 0.629118\nH -0.629118 0.629118 -0.629118\n\
+             H 0.629118 -0.629118 -0.629118\n",
+            0, 1,
+        ).unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("def2-qzvpp-rifit").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let ctx = ParallelContext::default();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
+        let cfg = CcConfig { frozen_core: 0, max_iter: 100, energy_conv: 1e-8, ..Default::default() };
+        let r = ccd_spinorbital(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
+        assert!((r.correlation_energy - (-0.07904596471422148)).abs() < 1e-4, "got {:.8}", r.correlation_energy);
+    }
 }
