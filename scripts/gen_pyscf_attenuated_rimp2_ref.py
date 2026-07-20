@@ -67,6 +67,16 @@ H 0.000 0.755 -0.471
 H 0.000 -0.755 -0.471
 """
 
+# Second molecule (widens past water-only): CH4/STO-3G, Td symmetry,
+# same geometry ferric's testdata/molecules/methane.xyz uses.
+METHANE_XYZ = """
+C 0.000000 0.000000 0.000000
+H 0.629118 0.629118 0.629118
+H -0.629118 -0.629118 0.629118
+H -0.629118 0.629118 -0.629118
+H 0.629118 -0.629118 -0.629118
+"""
+
 
 def ri_mp2_spin_components(mol_geom, basis, auxbasis, omega_bohr_inv, frozen_core=0):
     """Replicates ferric's ri_mp2_spin_components exactly, under an
@@ -149,18 +159,22 @@ def ri_mp2_spin_components(mol_geom, basis, auxbasis, omega_bohr_inv, frozen_cor
     }
 
 
-if __name__ == "__main__":
-    result = ri_mp2_spin_components(
-        WATER_XYZ, "cc-pvdz", "cc-pvdz-ri", OMEGA_BOHR_INV
-    )
-    result["molecule"] = "h2o"
-    result["basis"] = "cc-pvdz"
-    result["auxbasis"] = "cc-pvdz-ri"
-    result["method"] = "attenuated_rimp2_erfc"
-    result["omega_ang_inv"] = OMEGA_ANG_INV
-    print(json.dumps(result, indent=2))
+CASES = [
+    ("h2o", WATER_XYZ, "cc-pvdz", "cc-pvdz-ri", "h2o_cc-pvdz_attenuated-rimp2-erfc0p420.json"),
+    ("ch4", METHANE_XYZ, "sto-3g", "cc-pvdz-ri", "ch4_sto-3g_attenuated-rimp2-erfc0p420.json"),
+]
 
-    out_path = os.path.join(OUT_DIR, "h2o_cc-pvdz_attenuated-rimp2-erfc0p420.json")
-    with open(out_path, "w") as f:
-        json.dump(result, f, indent=2)
-    print(f"\nWrote {out_path}")
+if __name__ == "__main__":
+    for name, xyz, basis, auxbasis, out_name in CASES:
+        result = ri_mp2_spin_components(xyz, basis, auxbasis, OMEGA_BOHR_INV)
+        result["molecule"] = name
+        result["basis"] = basis
+        result["auxbasis"] = auxbasis
+        result["method"] = "attenuated_rimp2_erfc"
+        result["omega_ang_inv"] = OMEGA_ANG_INV
+        print(json.dumps(result, indent=2))
+
+        out_path = os.path.join(OUT_DIR, out_name)
+        with open(out_path, "w") as f:
+            json.dump(result, f, indent=2)
+        print(f"\nWrote {out_path}")

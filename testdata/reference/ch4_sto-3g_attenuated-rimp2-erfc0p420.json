@@ -1,0 +1,16 @@
+{
+  "rhf_energy": -39.72671531154301,
+  "e_os": -0.05070186119590115,
+  "e_ss": -0.0032235642625689682,
+  "mp2_corr": -0.05392542545847012,
+  "total_energy": -39.780640737001484,
+  "nbasis": 9,
+  "naux": 112,
+  "nocc": 5,
+  "omega_bohr_inv": 0.2222544445775211,
+  "molecule": "ch4",
+  "basis": "sto-3g",
+  "auxbasis": "cc-pvdz-ri",
+  "method": "attenuated_rimp2_erfc",
+  "omega_ang_inv": 0.42
+}

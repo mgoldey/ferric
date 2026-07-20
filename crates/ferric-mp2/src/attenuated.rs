@@ -472,6 +472,55 @@ mod tests {
         assert!(d_ss < 1e-6, "e_ss diverges from PySCF: diff={d_ss:.2e}");
     }
 
+    fn setup_ch4() -> (Molecule, PreparedBasis, PreparedBasis, ScfResult) {
+        let xyz = "5\nmethane Td\nC 0.000000 0.000000 0.000000\nH 0.629118 0.629118 0.629118\n\
+                   H -0.629118 -0.629118 0.629118\nH -0.629118 0.629118 -0.629118\n\
+                   H 0.629118 -0.629118 -0.629118\n";
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let bs = basis::bundled("sto-3g").unwrap();
+        let obs = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol, &obs, op, &bounds,
+            &RhfConfig { energy_conv: 1e-10, ..Default::default() },
+        ).unwrap();
+        let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
+        (mol, obs, dfbs, rhf)
+    }
+
+    #[test]
+    fn test_attenuated_mp2_matches_pyscf_production_omega_ch4() {
+        // Second molecule (widens past water-only) at the SAME production
+        // omega=0.420 A^-1, same PySCF/libcint cross-check methodology as
+        // the water test above. See
+        // testdata/reference/ch4_sto-3g_attenuated-rimp2-erfc0p420.json
+        // (scripts/gen_pyscf_attenuated_rimp2_ref.py).
+        let (mol, obs, dfbs, rhf) = setup_ch4();
+        let config = AttenuatedMp2Config::default(); // omega = 0.420 A^-1 -> Bohr^-1
+        let att = attenuated_ri_mp2(&mol, &obs, &dfbs, &rhf, &config).unwrap();
+
+        let ref_rhf = -39.72671531154301;
+        let ref_mp2_corr = -0.05392542545847012;
+        let ref_e_os = -0.05070186119590115;
+        let ref_e_ss = -0.0032235642625689682;
+
+        let d_rhf = (rhf.energy - ref_rhf).abs();
+        let d_mp2 = (att.mp2_corr - ref_mp2_corr).abs();
+        let d_os = (att.spin_components.e_os - ref_e_os).abs();
+        let d_ss = (att.spin_components.e_ss - ref_e_ss).abs();
+        eprintln!(
+            "ferric mp2_corr={:.12}, pyscf ref={:.12}, diff={:.2e}",
+            att.mp2_corr, ref_mp2_corr, d_mp2
+        );
+        assert!(d_rhf < 1e-8, "RHF energy diverges from PySCF: diff={d_rhf:.2e}");
+        assert!(d_mp2 < 1e-6, "attenuated MP2 corr diverges from PySCF: diff={d_mp2:.2e}");
+        assert!(d_os < 1e-6, "e_os diverges from PySCF: diff={d_os:.2e}");
+        assert!(d_ss < 1e-6, "e_ss diverges from PySCF: diff={d_ss:.2e}");
+    }
+
     #[test]
     fn test_erfc_alias_matches_attenuated() {
         // The explicit erfc-named API must be bit-identical to attenuated_ri_mp2.
