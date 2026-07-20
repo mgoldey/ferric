@@ -551,6 +551,34 @@ fn mulliken_charges(mol: &PyMolecule, basis_set: &PyBasisSet, result: DensitySou
     ferric_rpa::properties::mulliken_charges(&mol.inner, &prep, result.density()).map_err(make_err)
 }
 
+/// CHELPG (CHarges from Electrostatic Potentials, Grid-based) partial
+/// charges (units of e). Structurally different from
+/// `hirshfeld_charges`/`lowdin_charges`/`mulliken_charges`: those split the
+/// electron density directly among atoms (population partition); CHELPG
+/// instead fits atom-centered point charges to best reproduce the molecular
+/// electrostatic potential on a grid around the molecule (Breneman & Wiberg,
+/// J. Comput. Chem. 11, 361 (1990)). Closed-shell only. `result` is an
+/// `RhfResult` or `DftResult` from a converged SCF.
+#[pyfunction]
+fn chelpg_charges(mol: &PyMolecule, basis_set: &PyBasisSet, result: DensitySource) -> PyResult<Vec<f64>> {
+    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    ferric_rpa::properties::chelpg_charges(&mol.inner, &prep, result.density()).map_err(make_err)
+}
+
+/// RESP (Restrained ElectroStatic Potential) partial charges (units of e).
+/// Same ESP grid-fitting as `chelpg_charges`, plus a hyperbolic restraint
+/// damping non-hydrogen atomic charges toward zero (Bayly, Cieplak,
+/// Cornell, Kollman, J. Phys. Chem. 97, 10269 (1993)). This is a
+/// single-stage restrained fit with the standard literature weight/
+/// tightness parameters — NOT the full multi-stage/multi-conformer RESP
+/// averaging procedure. Closed-shell only. `result` is an `RhfResult` or
+/// `DftResult` from a converged SCF.
+#[pyfunction]
+fn resp_charges(mol: &PyMolecule, basis_set: &PyBasisSet, result: DensitySource) -> PyResult<Vec<f64>> {
+    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    ferric_rpa::properties::resp_charges(&mol.inner, &prep, result.density()).map_err(make_err)
+}
+
 /// Per-atom Hirshfeld-partitioned static dipole polarizability tensors
 /// (Bohr^3), via true PDEP-RPA α(ω=0) on a real-space Becke/Hirshfeld grid.
 /// Closed-shell (Restricted) only — `result` must come from `run_rhf` or
@@ -2199,6 +2227,8 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(hirshfeld_charges, m)?)?;
     m.add_function(wrap_pyfunction!(lowdin_charges, m)?)?;
     m.add_function(wrap_pyfunction!(mulliken_charges, m)?)?;
+    m.add_function(wrap_pyfunction!(chelpg_charges, m)?)?;
+    m.add_function(wrap_pyfunction!(resp_charges, m)?)?;
     m.add_function(wrap_pyfunction!(hirshfeld_polarizability, m)?)?;
     m.add_function(wrap_pyfunction!(run_rimp2, m)?)?;
     m.add_function(wrap_pyfunction!(run_oo_rimp2, m)?)?;

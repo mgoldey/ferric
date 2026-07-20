@@ -1,0 +1,46 @@
+{
+  "molecule": "water",
+  "basis": "cc-pvdz",
+  "scf_energy": -76.02676799737648,
+  "points_bohr": [
+    [
+      0.0,
+      0.0,
+      4.0
+    ],
+    [
+      0.0,
+      3.0,
+      0.0
+    ],
+    [
+      3.0,
+      0.0,
+      0.0
+    ],
+    [
+      2.0,
+      2.0,
+      2.0
+    ],
+    [
+      -3.0,
+      -1.0,
+      1.5
+    ],
+    [
+      0.0,
+      0.0,
+      -4.0
+    ]
+  ],
+  "v_qm_hartree": [
+    -0.05019555267437292,
+    0.06493633816289979,
+    -0.04107830423792391,
+    -0.040407582360697525,
+    -0.04581698378040233,
+    0.03879871035761484
+  ],
+  "note": "V_QM(r) = Vnuc(r) - Vele(r) via PySCF's own primitives (gto.fakemol_for_charges + df.incore.aux_e2), the same formula pyscf.tools.cubegen.mep uses internally. No pyscf.esp/CHELPG/RESP module exists in this install (verified by import + filesystem search) so this cross-checks the underlying V_QM(r) grid evaluation shared by ferric's chelpg_charges/resp_charges, not the fitted charge values themselves. Basis loaded from ferric's OWN bundled JSON, not a PySCF string basis name."
+}
