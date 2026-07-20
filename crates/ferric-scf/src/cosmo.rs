@@ -21,13 +21,20 @@
 //!    (2010), eq. 3.19 -- the same scheme PySCF's `pcm.py` uses), rather than
 //!    a hard binary keep/discard cut. See `switch_h`/`switching_weight`
 //!    below.
-//! 2. **Segment interaction matrix** `S` (called `A` in some papers): for
-//!    two distinct segments k != l, `S_kl = 1 / |s_k - s_l|` (bare Coulomb
-//!    interaction between point charges at the segment centers). The
-//!    diagonal (self-interaction of a segment with itself) uses the
-//!    standard closed-form COSMO self-term
+//! 2. **Segment interaction matrix** `S` (called `A` in some papers), default
+//!    formulation [`SMatrixKind::GaussianSmeared`] (PySCF `pcm.py`
+//!    convention, Li/Scalmani/Frisch, J. Chem. Phys. 122, 194110 (2005)):
+//!    each segment is a Gaussian charge distribution of width `xi_k` set by
+//!    the LOCAL Lebedev grid density, giving off-diagonal `S_kl = erf(xi_kl *
+//!    r_kl) / r_kl` (`xi_kl` the harmonic-combined width of segments k,l) and
+//!    diagonal `S_kk = xi_k * sqrt(2/pi) / switch_fun_k`. The original
+//!    [`SMatrixKind::PointCharge`] formulation is still available (for two
+//!    distinct segments k != l, `S_kl = 1 / |s_k - s_l|`, bare Coulomb
+//!    interaction between point charges at the segment centers; diagonal
 //!    `S_kk = xi * sqrt(4*pi / a_k)`, `xi = 3.8`, derived by treating each
-//!    segment as a small disk of area `a_k` (Klamt & Schuurmann, eq. 7).
+//!    segment as a small disk of area `a_k`, Klamt & Schuurmann eq. 7) but is
+//!    no longer the default — see "Point-charge vs Gaussian-smeared segment
+//!    representation" below for the measured effect of this choice.
 //! 3. **Apparent surface charges**: given the solute's electrostatic
 //!    potential `v_k` at each segment (nuclear + electronic), solve the
 //!    linear system `S q = -f(eps) v` for the segment charges `q`, where
@@ -65,22 +72,35 @@
 //!   Lebedev "tile" straddles a burial boundary). This is a well-known
 //!   simplification relative to production GEPOL cavities but converges to
 //!   the same physics as the angular grid is refined.
-//! * **Point-charge segment representation**: even with the SWIG switching
-//!   weight above, each surviving segment is still treated as a bare point
-//!   charge (`1/|r|` off-diagonal `S`, closed-form disk self-term). PySCF's
-//!   `pcm.py` SWIG implementation additionally replaces the point charge
-//!   with a *Gaussian-smeared* charge distribution (`S_ij = erf(xi_ij r_ij)
-//!   / r_ij`, with a per-segment width `xi` derived from the local grid
-//!   density) and a correspondingly different diagonal self-term. Measured
-//!   2026-07-19 (see `docs/vol-free-verification.md`-style investigation
-//!   note in `docs/VALIDATION.md`'s COSMO row): swapping ONLY the S-matrix
-//!   construction (bare-point-charge-with-xi=3.8-diagonal vs PySCF's
-//!   Gaussian-smeared S), on the *identical* SWIG cavity/potential, shifts
-//!   the water/water solvation energy by ~40% (-6.35 vs -10.6 kcal/mol) —
-//!   i.e. the point-charge-vs-Gaussian-smearing choice is a bigger lever on
-//!   this benchmark than the hard-cut-vs-SWIG cavity discretization was.
-//!   Not implemented here; left as a documented, quantified gap for a future
-//!   pass rather than folded in speculatively.
+//! * **Point-charge vs Gaussian-smeared segment representation
+//!   (RESOLVED 2026-07-19)**: the `S`-matrix now defaults to
+//!   [`SMatrixKind::GaussianSmeared`] (PySCF `pcm.py` convention). This was
+//!   the single largest lever found across two investigation rounds on this
+//!   module: on water/cc-pVDZ/eps=78.39 it moved the self-consistent
+//!   solvation energy from -3.39 kcal/mol (old `PointCharge` default, ~43%
+//!   of a from-scratch-reproduced PySCF SWIG-COSMO target of -5.94 kcal/mol)
+//!   to -5.96 kcal/mol (~0.4% off that target) — bigger than the SWIG
+//!   switching-function change (<0.5% effect, see the cavity section above).
+//!   Two caveats worth recording precisely: (1) `V`/`V_reaction` (the
+//!   solute<->segment potential and reaction-field integrals below) still
+//!   use bare nuclear-attraction-type point-charge integrals, NOT PySCF's
+//!   Gaussian-smeared `int3c2e`-based potential — only the `S`-matrix
+//!   construction was ported, and that alone was already enough to close
+//!   the gap to <1%, so the V/V_reaction smearing was NOT pursued (would add
+//!   real complexity — a finite-exponent point-charge integral kernel ferric
+//!   does not currently have — for a lever that measured near-negligible
+//!   incremental value here). (2) An EARLIER same-day investigation
+//!   documented a different pair of reference numbers (-9.30 kcal/mol
+//!   target, -10.6 kcal/mol isolated-comparison result) that did NOT
+//!   reproduce when independently re-derived for this pass, via two
+//!   different methods (PySCF's own `PCM` class API, and a from-scratch
+//!   port of `pcm.py`'s `gen_surface`/`get_D_S`) that agree with each other
+//!   to <10% (-5.94 vs -5.41 kcal/mol, the latter being the closer bare-V/
+//!   smeared-S isolation point) — see `crates/ferric-scf/tests/cosmo_water.rs`
+//!   for the full methodology. The cavity itself (228 segments, 166.6819084
+//!   Bohr^2 total area) is confirmed bit-for-bit identical between ferric
+//!   and the re-derivation, ruling out a cavity mismatch as the source of
+//!   that earlier discrepancy.
 
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
@@ -92,8 +112,60 @@ use ndarray_linalg::Solve;
 
 /// COSMO self-term prefactor (Klamt & Schuurmann 1993, eq. 7): `S_kk = xi *
 /// sqrt(4*pi / a_k)`. This is the standard constant quoted throughout the
-/// COSMO literature for a segment modeled as a small circular disk.
+/// COSMO literature for a segment modeled as a small circular disk. Retained
+/// as the bare-point-charge `S`-matrix formula (see [`SMatrixKind::PointCharge`]);
+/// superseded by default with [`SMatrixKind::GaussianSmeared`] below.
 const COSMO_XI: f64 = 3.8;
+
+/// Per-Lebedev-order Gaussian-charge-width prefactor `XI[ng]` (Table II, Li &
+/// Frisch/Scalmani, "Continuous Surface Charge Polarizable Continuum Models",
+/// J. Chem. Phys. 122, 194110 (2005), as used by PySCF's `pcm.py`). Each
+/// segment's Gaussian width is `xi_k = XI[ng] / (r_vdw_k * sqrt(w_k))`, `w_k`
+/// the segment's *unnormalized* Lebedev weight (PySCF convention: sums to
+/// `4*pi` over a sphere, i.e. `4*pi * ferric's normalized weight`). Only the
+/// six Lebedev orders this module supports (see [`CosmoConfig::validate`])
+/// are tabulated; an order outside this set is rejected by config
+/// validation before this table is ever consulted.
+fn gaussian_xi_table(lebedev_order: usize) -> f64 {
+    match lebedev_order {
+        6 => 4.84566077868,
+        14 => 4.86458714334,
+        26 => 4.85478226219,
+        50 => 4.89250673295,
+        110 => 4.90101060987,
+        302 => 4.90498088169,
+        _ => unreachable!(
+            "gaussian_xi_table: lebedev_order {lebedev_order} not in the validated set \
+             {{6,14,26,50,110,302}} -- CosmoConfig::validate should have rejected this earlier"
+        ),
+    }
+}
+
+/// Which `S`-matrix (segment-interaction) formulation to use.
+///
+/// * [`SMatrixKind::PointCharge`] -- the original ferric formulation: each
+///   segment is a bare point charge (`S_kl = 1/|s_k - s_l|` off-diagonal,
+///   `S_kk = xi_COSMO * sqrt(4*pi/a_k)` diagonal, `xi_COSMO = 3.8` fixed).
+/// * [`SMatrixKind::GaussianSmeared`] -- PySCF `pcm.py`'s formulation: each
+///   segment is a Gaussian charge distribution of width `xi_k` set by the
+///   LOCAL grid density (`gaussian_xi_table`), giving `S_kl = erf(xi_kl *
+///   r_kl) / r_kl` off-diagonal (`xi_kl` the harmonic-sum combined width of
+///   segments k,l) and a density-dependent diagonal `S_kk = xi_k *
+///   sqrt(2/pi) / switch_fun_k`. This is the default (see
+///   [`CosmoConfig::default`]); `PointCharge` is kept only for the
+///   regression test that measures the isolated S-matrix effect and for any
+///   future need to reproduce the pre-2026-07-19 numbers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum SMatrixKind {
+    PointCharge,
+    GaussianSmeared,
+}
+
+impl Default for SMatrixKind {
+    fn default() -> Self {
+        SMatrixKind::GaussianSmeared
+    }
+}
 
 /// SWIG (switching/Gaussian) transition-zone shape parameter (Lange &
 /// Herbert, JCP 133, 244111 (2010), eq. 3.19): the quintic smoothstep
@@ -192,6 +264,14 @@ pub struct CosmoConfig {
     /// [`ferric_dft::lebedev::lebedev`] (6, 14, 26, 50, 110, 302).
     #[serde(default = "default_lebedev_order")]
     pub lebedev_order: usize,
+    /// Segment-interaction (`S`-matrix) formulation. Default
+    /// [`SMatrixKind::GaussianSmeared`] (PySCF `pcm.py` convention, added
+    /// 2026-07-19 -- see the module doc-comment's "Point-charge segment
+    /// representation" section for the measured effect of this choice).
+    /// [`SMatrixKind::PointCharge`] reproduces the original bare-point-charge
+    /// formula this module shipped with.
+    #[serde(default)]
+    pub s_matrix_kind: SMatrixKind,
 }
 
 fn default_radius_scale() -> f64 {
@@ -207,6 +287,7 @@ impl Default for CosmoConfig {
             epsilon: 78.39,
             radius_scale: DEFAULT_RADIUS_SCALE,
             lebedev_order: DEFAULT_LEBEDEV_ORDER,
+            s_matrix_kind: SMatrixKind::default(),
         }
     }
 }
@@ -248,6 +329,18 @@ impl CosmoConfig {
 struct Segment {
     pos: [f64; 3],
     area: f64,
+    /// Gaussian charge-distribution width `xi_k` for this segment (only
+    /// meaningful for [`SMatrixKind::GaussianSmeared`]; computed
+    /// unconditionally at build time since it's cheap and needed by the
+    /// diagonal self-term too). `xi_k = XI[ng] / (r_vdw * sqrt(w_k))`, PySCF
+    /// `gen_surface` convention (`w_k` = unnormalized Lebedev weight, sums to
+    /// `4*pi`).
+    charge_exp: f64,
+    /// Raw switching-function value at this segment's center (`swf` in
+    /// PySCF, `h`-product over all other spheres) BEFORE folding into area —
+    /// needed separately by the Gaussian-smeared diagonal self-term
+    /// (`S_kk = xi_k * sqrt(2/pi) / switch_fun_k`).
+    switch_fun: f64,
 }
 
 /// A constructed COSMO cavity: exposed surface segments over all atomic
@@ -329,6 +422,8 @@ impl CosmoCavity {
             })
             .collect();
 
+        let xi_prefactor = gaussian_xi_table(config.lebedev_order);
+
         let mut segments = Vec::new();
         for &(ia, center_a, r_a) in real_atoms.iter() {
             let sphere_area = 4.0 * std::f64::consts::PI * r_a * r_a;
@@ -338,6 +433,13 @@ impl CosmoCavity {
                     center_a[1] + r_a * pt[1],
                     center_a[2] + r_a * pt[2],
                 ];
+                // PySCF's `w` is the Lebedev weight in ITS convention, which
+                // sums to 4*pi over a sphere (ferric's `lebedev()` sums to 1
+                // -- see `ferric_dft::lebedev` doc-comment); convert once
+                // here so `xi_k = XI[ng] / (r_vdw * sqrt(w_pyscf))` matches
+                // `gen_surface`'s `xi = XI[ng] / (r_vdw * w**0.5)` exactly.
+                let w_pyscf = w * 4.0 * std::f64::consts::PI;
+                let charge_exp = xi_prefactor / (r_a * w_pyscf.sqrt());
                 // Smooth switching weight: product of h(d) over every OTHER
                 // real atom's sphere (own-atom factor is exactly 1, matching
                 // PySCF's diJ[:, ia] = 1.0).
@@ -372,6 +474,8 @@ impl CosmoCavity {
                     // is exactly the area subtended by this node; swf smoothly
                     // down-scales it near a neighboring sphere's boundary.
                     area: w * sphere_area * swf,
+                    charge_exp,
+                    switch_fun: swf,
                 });
             }
         }
@@ -387,27 +491,67 @@ impl CosmoCavity {
         Ok(Self { segments })
     }
 
-    /// Build the symmetric segment-interaction matrix `S` (n_seg x n_seg):
-    /// off-diagonal bare Coulomb `1/|s_k - s_l|`, diagonal COSMO self-term
-    /// `xi * sqrt(4*pi/a_k)`.
-    fn build_s_matrix(&self) -> Array2<f64> {
+    /// Build the symmetric segment-interaction matrix `S` (n_seg x n_seg),
+    /// per `kind`:
+    ///
+    /// * [`SMatrixKind::PointCharge`]: off-diagonal bare Coulomb
+    ///   `1/|s_k - s_l|`, diagonal COSMO self-term `COSMO_XI *
+    ///   sqrt(4*pi/a_k)` (the module's original formula).
+    /// * [`SMatrixKind::GaussianSmeared`]: off-diagonal `erf(xi_kl * r_kl) /
+    ///   r_kl` where `xi_kl = xi_k*xi_l / sqrt(xi_k^2 + xi_l^2)` is the
+    ///   harmonic-combined Gaussian width of the two segments, diagonal
+    ///   `xi_k * sqrt(2/pi) / switch_fun_k` -- both exactly PySCF
+    ///   `pcm.py::get_D_S`'s formula.
+    fn build_s_matrix(&self, kind: SMatrixKind) -> Array2<f64> {
         let n = self.segments.len();
         let mut s = Array2::<f64>::zeros((n, n));
-        for k in 0..n {
-            let ak = self.segments[k].area;
-            s[(k, k)] = COSMO_XI * (4.0 * std::f64::consts::PI / ak).sqrt();
-            for l in 0..k {
-                let dx = self.segments[k].pos[0] - self.segments[l].pos[0];
-                let dy = self.segments[k].pos[1] - self.segments[l].pos[1];
-                let dz = self.segments[k].pos[2] - self.segments[l].pos[2];
-                let r = (dx * dx + dy * dy + dz * dz).sqrt();
-                let v = 1.0 / r;
-                s[(k, l)] = v;
-                s[(l, k)] = v;
+        match kind {
+            SMatrixKind::PointCharge => {
+                for k in 0..n {
+                    let ak = self.segments[k].area;
+                    s[(k, k)] = COSMO_XI * (4.0 * std::f64::consts::PI / ak).sqrt();
+                    for l in 0..k {
+                        let dx = self.segments[k].pos[0] - self.segments[l].pos[0];
+                        let dy = self.segments[k].pos[1] - self.segments[l].pos[1];
+                        let dz = self.segments[k].pos[2] - self.segments[l].pos[2];
+                        let r = (dx * dx + dy * dy + dz * dz).sqrt();
+                        let v = 1.0 / r;
+                        s[(k, l)] = v;
+                        s[(l, k)] = v;
+                    }
+                }
+            }
+            SMatrixKind::GaussianSmeared => {
+                for k in 0..n {
+                    let xi_k = self.segments[k].charge_exp;
+                    let swf_k = self.segments[k].switch_fun;
+                    s[(k, k)] = xi_k * (2.0 / std::f64::consts::PI).sqrt() / swf_k;
+                    for l in 0..k {
+                        let xi_l = self.segments[l].charge_exp;
+                        let dx = self.segments[k].pos[0] - self.segments[l].pos[0];
+                        let dy = self.segments[k].pos[1] - self.segments[l].pos[1];
+                        let dz = self.segments[k].pos[2] - self.segments[l].pos[2];
+                        let r = (dx * dx + dy * dy + dz * dz).sqrt();
+                        let xi_kl = xi_k * xi_l / (xi_k * xi_k + xi_l * xi_l).sqrt();
+                        let v = unsafe { erf(xi_kl * r) } / r;
+                        s[(k, l)] = v;
+                        s[(l, k)] = v;
+                    }
+                }
             }
         }
         s
     }
+}
+
+// libm's `erf` (C99) is already transitively linked into every ferric binary
+// (libint2/OpenBLAS both pull in libm), so bind it directly instead of
+// adding a new crate dependency or a lower-precision hand-rolled
+// approximation -- full ~1e-16 double precision, exactly matching what
+// PySCF's `scipy.special.erf` (itself backed by the same C library family)
+// produces to numerical noise.
+extern "C" {
+    fn erf(x: f64) -> f64;
 }
 
 /// Result of a single COSMO reaction-field evaluation for a given density.
@@ -541,7 +685,7 @@ pub fn cosmo_reaction_field(
     }
 
     // Solve S q = -f(eps) v for the apparent surface charges.
-    let s_mat = cavity.build_s_matrix();
+    let s_mat = cavity.build_s_matrix(config.s_matrix_kind);
     let rhs = -config.f_epsilon() * &v;
     let charges = s_mat.solve(&rhs).map_err(|e| {
         FerricError::Lapack(format!(
@@ -712,11 +856,26 @@ mod tests {
     }
 
     #[test]
-    fn s_matrix_symmetric_and_diagonal_positive() {
+    fn s_matrix_symmetric_and_diagonal_positive_point_charge() {
         let mol = water();
         let cfg = CosmoConfig { lebedev_order: 26, ..Default::default() };
         let cavity = CosmoCavity::build(&mol, &cfg).unwrap();
-        let s = cavity.build_s_matrix();
+        let s = cavity.build_s_matrix(SMatrixKind::PointCharge);
+        let n = cavity.n_segments();
+        for k in 0..n {
+            assert!(s[(k, k)] > 0.0, "diagonal must be positive");
+            for l in 0..n {
+                assert!((s[(k, l)] - s[(l, k)]).abs() < 1e-12, "S not symmetric at ({k},{l})");
+            }
+        }
+    }
+
+    #[test]
+    fn s_matrix_symmetric_and_diagonal_positive_gaussian_smeared() {
+        let mol = water();
+        let cfg = CosmoConfig { lebedev_order: 26, ..Default::default() };
+        let cavity = CosmoCavity::build(&mol, &cfg).unwrap();
+        let s = cavity.build_s_matrix(SMatrixKind::GaussianSmeared);
         let n = cavity.n_segments();
         for k in 0..n {
             assert!(s[(k, k)] > 0.0, "diagonal must be positive");
