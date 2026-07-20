@@ -1542,6 +1542,11 @@ mod tests {
     fn pcm_none_matches_vacuum_exactly() {
         // `pcm: None` (the default) must be byte-identical to a plain vacuum
         // calculation -- the same convention external_potential follows.
+        // Holds ENV_LOCK (declared above) because solve_rhf reads the
+        // process-global FERRIC_MEM_BUDGET_GB/FERRIC_OOC_BUDGET_GB env vars
+        // internally via resolve_three_index_budget -- see the lock's doc
+        // comment.
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
         let bs = ferric_core::basis::bundled("sto-3g").unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
@@ -1574,6 +1579,11 @@ mod tests {
     /// picture.
     #[test]
     fn pcm_water_solvation_energy_is_negative_and_reasonable_magnitude() {
+        // Holds ENV_LOCK (declared above) because solve_rhf reads the
+        // process-global FERRIC_MEM_BUDGET_GB/FERRIC_OOC_BUDGET_GB env vars
+        // internally via resolve_three_index_budget -- see the lock's doc
+        // comment.
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
         let bs = ferric_core::basis::bundled("sto-3g").unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
@@ -1757,6 +1767,11 @@ mod tests {
     /// relative-error assertion at the eps=20.7 point.
     #[test]
     fn pcm_methanol_sto3g_matches_pyscf_within_10_percent() {
+        // Holds ENV_LOCK (declared above) because solve_rhf reads the
+        // process-global FERRIC_MEM_BUDGET_GB/FERRIC_OOC_BUDGET_GB env vars
+        // internally via resolve_three_index_budget -- see the lock's doc
+        // comment.
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mol = Molecule::load_xyz("../../testdata/molecules/ch3oh.xyz").unwrap();
         let bs = ferric_core::basis::bundled("sto-3g").unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
