@@ -97,8 +97,12 @@ fn davidson_blas_threads() -> usize {
 /// from `run_pdep_rpa`'s body (lib.rs:369,:408,:423) and `run_u_pdep_rpa`'s
 /// body (lib.rs:649) — both plain function bodies, never inside a
 /// `par_iter`. The `dielectric_fn` closures passed in from lib.rs
-/// (sternheimer/sternheimer_sparse/laplace_chi0) are BLAS-only with no rayon
-/// region, matching the same requirement Lanczos's `matvec` already carries.
+/// (sternheimer/laplace_chi0) are BLAS-only with no rayon region.
+/// `sternheimer_sparse::dielectric_matrix_screened` is the one exception
+/// (parallel over `i_loc` since the sternheimer-sparse-parallelize change) —
+/// it re-pins BLAS to 1 thread internally for the duration of its own rayon
+/// region, so it is still safe to call from this BLAS-raised outer scope; see
+/// its doc comment and `lanczos.rs`'s matching note on `matvec`.
 fn run_davidson_seeded_impl<F>(
     seed: Array2<f64>,
     dielectric_fn: F,

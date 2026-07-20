@@ -361,6 +361,7 @@ pub(crate) fn run_pdep_rpa_eigensolve(
             mol.atoms.len()
         );
     }
+    let _t_screen_build = crate::timing::Stage::start("pdep:boys_screen_build(localize+screened_3idx)");
     let screened_bov_opt: Option<ScreenedBov> = match resolved_sparsity {
         Chi0Sparsity::Dense => None,
         Chi0Sparsity::BoysScreened { thresh, dist_cutoff } => {
@@ -380,6 +381,7 @@ pub(crate) fn run_pdep_rpa_eigensolve(
         // match exhaustive without a catch-all that could hide a future variant.
         Chi0Sparsity::Auto { .. } => unreachable!("resolve() collapses Auto"),
     };
+    _t_screen_build.end();
 
     let _t_eig = crate::timing::Stage::start("pdep:eigensolve(Davidson/Lanczos)");
     let davidson_result = match (config.eigensolver, screened_bov_opt.as_ref()) {

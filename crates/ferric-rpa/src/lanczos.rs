@@ -307,12 +307,18 @@ pub(crate) fn solver_blas_threads_with(get: impl Fn(&str) -> Option<String> + Co
 /// pattern when subspace expansion is exhausted).
 ///
 /// The block matvec, full reorthogonalization (Qᵀ·W, Q·proj), QR, and Ritz
-/// assembly are all naux-wide GEMMs with no rayon region active anywhere on
-/// this call path (every dielectric_apply variant is BLAS-only), so this is
-/// the one place BLAS threads are temporarily raised; the scoped guard
-/// restores the prior count on exit. Because the raise covers the matvec
-/// closure too, `matvec` must NOT enter a rayon parallel region — if a future
-/// caller needs that, it must set `FERRIC_LANCZOS_BLAS_THREADS=1`.
+/// assembly are all naux-wide GEMMs with no *unguarded* rayon region active
+/// anywhere on this call path, so this is the one place BLAS threads are
+/// temporarily raised (via `lanczos_blas_threads()`, opt-in above 1); the
+/// scoped guard restores the prior count on exit. Because the raise covers
+/// the matvec closure too, any `matvec` implementation that internally opens
+/// a rayon region (e.g. `sternheimer_sparse::dielectric_apply_screened`,
+/// parallel over `i_loc` since the sternheimer-sparse-parallelize change)
+/// MUST re-pin BLAS to 1 thread for the duration of that region itself
+/// (`with_blas_threads(1, ...)`) — nesting rayon under a possibly-raised
+/// outer BLAS thread count is exactly the oversubscription/stack-overflow
+/// hazard `blas_threads.rs` warns about. A `matvec` that opens rayon without
+/// its own internal re-pin is unsound here.
 pub fn run_lanczos_seeded<F>(
     seed: Array2<f64>,
     matvec: F,

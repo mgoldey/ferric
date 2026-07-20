@@ -10,7 +10,7 @@ use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_rpa::config::{Chi0Sparsity, QuadratureConfig, QuadratureScheme};
+use ferric_rpa::config::{Chi0Sparsity, Eigensolver, QuadratureConfig, QuadratureScheme};
 use ferric_rpa::{run_pdep_rpa, screen, PdepRpaConfig};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::ScfResult;
@@ -83,6 +83,46 @@ fn h2o_cc_pvdz_screened_equivalence_thresh_zero() {
     assert!(
         diff < 5e-8,
         "screened-vs-dense diff at thresh=0 = {:.2e}; expected <5e-8",
+        diff
+    );
+}
+
+/// Same equivalence check as `h2o_cc_pvdz_screened_equivalence_thresh_zero`,
+/// but forcing `Eigensolver::Davidson` so the parallelized
+/// `sternheimer_sparse::dielectric_matrix_screened` (the projected-dielectric
+/// / Davidson matvec form) is exercised directly — the default eigensolver is
+/// Lanczos, which only exercises the sibling `dielectric_apply_screened`
+/// (block-Lanczos matvec form). Both functions were parallelized over `i_loc`
+/// via a rayon + `ferric_scf::reduce::grouped_deterministic_sum` region
+/// (sternheimer-sparse-parallelize); this test is the correctness gap-closer
+/// for the Davidson-specific accumulate path (`out += rhs_i @ rhs_i.T`),
+/// which the existing suite never independently covered.
+#[test]
+fn h2o_cc_pvdz_screened_davidson_equivalence_thresh_zero() {
+    let (mol, obs, dfbs, op, rhf) =
+        setup("../../testdata/molecules/water.xyz", "cc-pvdz", "cc-pvdz-ri");
+
+    let mut cfg_dense = base_cfg();
+    cfg_dense.eigensolver = Eigensolver::Davidson;
+    let r_dense = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg_dense).unwrap();
+
+    let mut cfg_screen = base_cfg();
+    cfg_screen.eigensolver = Eigensolver::Davidson;
+    cfg_screen.chi0_sparsity = Chi0Sparsity::BoysScreened { thresh: 0.0, dist_cutoff: f64::INFINITY };
+    let r_scr = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg_screen).unwrap();
+
+    let diff = (r_scr.e_rpa - r_dense.e_rpa).abs();
+    println!(
+        "H2O/cc-pVDZ Davidson thresh=0  dense={:.10}  screened={:.10}  diff={:.2e}",
+        r_dense.e_rpa, r_scr.e_rpa, diff
+    );
+    // Same rationale/tolerance as the Lanczos-path sibling test: algebraically
+    // equivalent at thresh=0, but different seed/accumulation order versus
+    // dense means the two are not bit-identical, only close to the ~1e-8
+    // finite-precision floor.
+    assert!(
+        diff < 5e-8,
+        "Davidson screened-vs-dense diff at thresh=0 = {:.2e}; expected <5e-8",
         diff
     );
 }
