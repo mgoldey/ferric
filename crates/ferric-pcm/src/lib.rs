@@ -80,7 +80,7 @@ impl PcmContext {
     /// an invalid `epsilon`.
     pub fn new(mol: &Molecule, cfg: &PcmConfig) -> Result<Self, FerricError> {
         let tess = build_cavity(mol, &cfg.cavity_config())?;
-        let (s, d) = matrices::build_s_d(&tess);
+        let (s, d) = matrices::build_s_d_kind(&tess, cfg.sd_kind);
         let (k, r, _f_eps) = matrices::build_k_r(&s, &d, &tess, cfg.epsilon)?;
         Ok(Self { tess, k, r })
     }

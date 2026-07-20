@@ -4,6 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::cavity::CavityConfig;
+use crate::matrices::SdKind;
 
 /// Configuration for an IEF-PCM implicit-solvent calculation.
 ///
@@ -35,6 +36,13 @@ pub struct PcmConfig {
     /// the current implementation (see `pcm.rs`'s per-iteration hook).
     #[serde(default = "default_inner_iters")]
     pub inner_iters: usize,
+    /// Boundary-element S/D matrix formulation. Default
+    /// [`SdKind::GaussianSmeared`] (PySCF `pcm.py` convention, added
+    /// 2026-07-19 -- see `matrices.rs`'s module doc). [`SdKind::PointCharge`]
+    /// reproduces the original bare-point-charge formula this crate shipped
+    /// with.
+    #[serde(default)]
+    pub sd_kind: SdKind,
 }
 
 fn default_vdw_scale() -> f64 {
@@ -55,6 +63,7 @@ impl PcmConfig {
             vdw_scale: default_vdw_scale(),
             lebedev_order: default_lebedev_order(),
             inner_iters: default_inner_iters(),
+            sd_kind: SdKind::default(),
         }
     }
 
