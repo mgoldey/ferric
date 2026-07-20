@@ -351,6 +351,50 @@ mod tests {
         );
     }
 
+    /// LiH / STO-3G, full active space (6 orbitals, 4 electrons) = FCI.
+    /// C(6,2)^2 = 225 determinants. Third system (widens past H2/H2O):
+    /// heteronuclear, one heavy atom (Li, unlike H2's two identical light
+    /// atoms or H2O's single O), full-space FCI so this is orbital-
+    /// rotation-invariant like the H2O full-FCI test above.
+    ///
+    /// PySCF reference:
+    ///   mol = gto.M(atom="Li 0 0 0; H 0 0 1.6", basis="sto-3g", unit="Angstrom")
+    ///   mf  = scf.RHF(mol); mf.kernel(conv_tol=1e-12)  # -7.861864769808649
+    ///   e_fci, _ = fci.FCI(mf).kernel()                 # -7.882324378883495
+    #[test]
+    fn lih_sto3g_full_fci() {
+        const PYSCF_RHF: f64 = -7.861864769808649;
+        const PYSCF_FCI: f64 = -7.882324378883495;
+        const PYSCF_CORR: f64 = PYSCF_FCI - PYSCF_RHF;
+        let xyz = "2\nLiH\nLi 0.0 0.0 0.0\nH 0.0 0.0 1.6\n";
+        let (mol, prep, rhf) = rhf_for(xyz);
+        let cfg = CasCiConfig {
+            n_active: 6,
+            n_elec_active: (2, 2),
+            active_start: 0,
+            ..Default::default()
+        };
+        let res = run_cas_ci(&mol, &prep, &rhf, cfg).unwrap();
+        let corr = res.e_total - rhf.energy;
+        eprintln!(
+            "LiH/STO-3G RHF={:.12}  CAS-CI(full FCI)={:.12}  corr={:.12}  ndet={}  (PySCF FCI {PYSCF_FCI:.12}, corr {PYSCF_CORR:.12})",
+            rhf.energy, res.e_total, corr, res.n_determinants
+        );
+        assert_eq!(res.n_determinants, 225);
+        assert!(res.converged, "Davidson did not converge");
+        assert!(
+            (corr - PYSCF_CORR).abs() < 1e-8,
+            "LiH full-FCI corr {corr} vs PySCF {PYSCF_CORR} (diff {:.2e})",
+            (corr - PYSCF_CORR).abs()
+        );
+        assert!(
+            (res.e_total - PYSCF_FCI).abs() < 1e-7,
+            "LiH full FCI {} vs PySCF FCI {PYSCF_FCI} (diff {:.2e})",
+            res.e_total,
+            (res.e_total - PYSCF_FCI).abs()
+        );
+    }
+
     /// H2O / STO-3G, frozen-core CASCI(6,8): freeze the lowest (O 1s) orbital,
     /// active = 6 orbitals / 8 electrons. Unlike full FCI, this DOES depend on
     /// the RHF orbitals, so it also confirms ferric's RHF matches PySCF's.
