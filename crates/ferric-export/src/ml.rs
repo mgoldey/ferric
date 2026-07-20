@@ -13,6 +13,13 @@ pub struct ChargeSchemes<'a> {
     pub hirshfeld: Option<&'a [f64]>,
     pub lowdin: Option<&'a [f64]>,
     pub mulliken: Option<&'a [f64]>,
+    /// CHELPG (ESP-fitted) atomic charges — structurally different from the
+    /// three population-partition schemes above (see
+    /// `ferric_rpa::properties::chelpg_charges`).
+    pub chelpg: Option<&'a [f64]>,
+    /// RESP (restrained ESP-fitted) atomic charges (see
+    /// `ferric_rpa::properties::resp_charges`).
+    pub resp: Option<&'a [f64]>,
 }
 
 /// Static and per-atom polarizability/field-response outputs.
@@ -164,6 +171,20 @@ pub fn export_npz(path: &str, bundle: &NpzBundle) -> Result<(), ExportError> {
         let q_arr = Array1::from_vec(q.to_vec());
         writer
             .add_array("mulliken_charges", &q_arr)
+            .map_err(|e| ExportError::Other(e.to_string()))?;
+    }
+
+    if let Some(q) = bundle.charges.chelpg {
+        let q_arr = Array1::from_vec(q.to_vec());
+        writer
+            .add_array("chelpg_charges", &q_arr)
+            .map_err(|e| ExportError::Other(e.to_string()))?;
+    }
+
+    if let Some(q) = bundle.charges.resp {
+        let q_arr = Array1::from_vec(q.to_vec());
+        writer
+            .add_array("resp_charges", &q_arr)
             .map_err(|e| ExportError::Other(e.to_string()))?;
     }
 

@@ -300,6 +300,20 @@ pub struct RpaCfg {
     /// package provides, not a recommended charge scheme.
     /// Default: true when `export_npz` is set.
     pub compute_mulliken_charges: Option<bool>,
+    /// Compute and include CHELPG atomic charges (units of e) in the NPZ
+    /// bundle as `chelpg_charges`, shape (natoms,), float64. Structurally
+    /// different from Hirshfeld/Löwdin/Mulliken: an ESP-FITTED scheme (atom-
+    /// centered point charges chosen to best reproduce the molecular
+    /// electrostatic potential on a grid around the molecule), not a
+    /// population partition. Standard scheme for force-field electrostatics.
+    /// Default: true when `export_npz` is set.
+    pub compute_chelpg_charges: Option<bool>,
+    /// Compute and include RESP atomic charges (units of e) in the NPZ
+    /// bundle as `resp_charges`, shape (natoms,), float64. Same ESP grid-fit
+    /// as CHELPG plus a hyperbolic restraint damping non-hydrogen charges
+    /// toward zero (single-stage restrained fit — not full multi-stage/
+    /// multi-conformer RESP averaging). Default: true when `export_npz` is set.
+    pub compute_resp_charges: Option<bool>,
     /// Compute per-atom anisotropic C6 dispersion coefficients and include them
     /// in the NPZ bundle (`c6_iso`, `c6_aniso`, `alpha_atomic_dynamic`,
     /// `c6_freqs`, `c6_weights`). Default: true when `export_npz` is set.

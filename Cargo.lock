@@ -591,6 +591,7 @@ dependencies = [
  "ferric-export",
  "ferric-integrals",
  "ferric-mp2",
+ "ferric-pcm",
  "ferric-quadrature",
  "ferric-scf",
  "mpi",

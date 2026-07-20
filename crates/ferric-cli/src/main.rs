@@ -1044,10 +1044,11 @@ fn main() {
                 use ferric_export::export_npz;
                 use ferric_export::ml::{ChargeSchemes, DispersionBundle, NpzBundle, PolarizabilityBundle};
                 use ferric_rpa::properties::{
-                    electric_field_at_atoms, esp_at_atoms, hirshfeld_charges, lowdin_charges,
-                    mulliken_charges,
+                    chelpg_charges, electric_field_at_atoms, esp_at_atoms, hirshfeld_charges,
+                    lowdin_charges, mulliken_charges,
                     pdep_polarizability_becke,
                     pdep_polarizability_static,
+                    resp_charges,
                 };
                 use ndarray::Array2;
 
@@ -1222,6 +1223,44 @@ fn main() {
                         }
                         Err(e) => {
                             eprintln!("warning: Mulliken charges failed: {e}");
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+
+                let compute_cq = cfg.rpa.compute_chelpg_charges.unwrap_or(true);
+                let cq_vec = if compute_cq {
+                    match chelpg_charges(&mol, &prep, result.density_total()) {
+                        Ok(q) => {
+                            println!(
+                                "CHELPG charges (e): {:?}",
+                                q.iter().map(|v| (v * 1e4).round() / 1e4).collect::<Vec<_>>()
+                            );
+                            Some(q)
+                        }
+                        Err(e) => {
+                            eprintln!("warning: CHELPG charges failed: {e}");
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+
+                let compute_rq = cfg.rpa.compute_resp_charges.unwrap_or(true);
+                let rq_vec = if compute_rq {
+                    match resp_charges(&mol, &prep, result.density_total()) {
+                        Ok(q) => {
+                            println!(
+                                "RESP charges (e): {:?}",
+                                q.iter().map(|v| (v * 1e4).round() / 1e4).collect::<Vec<_>>()
+                            );
+                            Some(q)
+                        }
+                        Err(e) => {
+                            eprintln!("warning: RESP charges failed: {e}");
                             None
                         }
                     }
@@ -1522,6 +1561,8 @@ fn main() {
                         hirshfeld: hq_vec.as_deref(),
                         lowdin: lq_vec.as_deref(),
                         mulliken: mq_vec.as_deref(),
+                        chelpg: cq_vec.as_deref(),
+                        resp: rq_vec.as_deref(),
                     },
                     polarizability: PolarizabilityBundle {
                         esp_atoms: esp_vec.as_deref(),

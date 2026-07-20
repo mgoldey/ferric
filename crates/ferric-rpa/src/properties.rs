@@ -9,6 +9,14 @@
 //! * [`pdep_polarizability_static`] — closed-shell static (ω=0) electronic
 //!   polarizability tensor α_ij(0) reconstructed from PDEP eigenpairs in the
 //!   RI auxiliary basis.
+//! * [`hirshfeld_charges`], [`lowdin_charges`], [`mulliken_charges`] —
+//!   population-partition atomic charges (split the electron density
+//!   directly among atoms).
+//! * [`chelpg_charges`], [`resp_charges`] — ESP-FITTED atomic charges
+//!   (structurally different from the population-partition schemes above:
+//!   point charges chosen to best reproduce the molecular electrostatic
+//!   potential on a grid of points around the molecule, in a
+//!   constrained-least-squares sense).
 //!
 //! Both routines are closed-shell only.  They return
 //! `FerricError::General(...)` if handed an Unrestricted / RestrictedOpen
@@ -3331,6 +3339,619 @@ pub fn mulliken_charges(
     Ok((0..natoms)
         .map(|a| mol.atoms[a].z as f64 - atom_pop[a])
         .collect())
+}
+
+/// One grid point surviving CHELPG's vdW-exclusion / outer-cutoff filter,
+/// paired with the molecular ESP `V_QM(r)` evaluated there.
+struct EspGridPoint {
+    r: [f64; 3],
+    v: f64,
+}
+
+/// Build the CHELPG grid: a cubic grid of `spacing` (Bohr) spanning the
+/// molecule's bounding box plus `margin` (Bohr) in every direction, then
+/// evaluate `V_QM(r) = Σ_B Z_B/|r−R_B| − Σ_μν D_μν ⟨μ|1/|r−r_g||ν⟩` at every
+/// surviving point.
+///
+/// A grid point survives iff:
+///   * it lies **outside** `vdw_scale × bondi_radius(Z_A)` of every atom A
+///     (excludes the region where the point-charge model of the ESP is least
+///     accurate — close to a nucleus the true multi-center ESP is dominated
+///     by the local cusp, not the far-field 1/r tail a fitted point charge
+///     reproduces); and
+///   * it lies **within** `outer_cutoff` (Bohr) of at least one atom (bounds
+///     the fit region to where the ESP is still chemically meaningful — far
+///     outside the molecule V_QM → 0 and contributes no information, only
+///     numerical noise, to the fit).
+///
+/// This is the standard CHELPG (Breneman & Wiberg 1990) grid definition,
+/// implemented directly in Bohr (this codebase's native length unit)
+/// rather than the paper's Å values — 0.3 Bohr spacing / 2.8 Bohr margin
+/// is a deliberate same-shape, tighter-in-absolute-terms grid, not a
+/// unit-conversion slip.
+///
+/// V(r) evaluation reuses the exact same libint nuclear-attraction
+/// probe-charge trick as [`esp_at_atoms`] (Z=+1 point charge, sign-flip
+/// convention) and [`ferric_pcm::potential::solute_potential_at_tesserae`]
+/// (which documents the same derivation for cavity tesserae) — this is the
+/// third call site of that pattern, now at freely-placed grid points rather
+/// than nuclei or cavity surface points. Grid points are independent probes,
+/// so they're processed in rayon like `esp_at_atoms`' per-atom loop (not
+/// serial like the tesserae version, since CHELPG grids run to thousands of
+/// points rather than a few hundred).
+fn chelpg_grid_esp(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    density: &Array2<f64>,
+    spacing: f64,
+    margin: f64,
+    vdw_scale: f64,
+    outer_cutoff: f64,
+) -> Result<Vec<EspGridPoint>, FerricError> {
+    use ferric_pcm::radii::bondi_radius_bohr;
+
+    let nbas = prep.nbasis();
+    if density.shape() != [nbas, nbas] {
+        return Err(FerricError::General(format!(
+            "chelpg_grid_esp: density shape {:?} != ({nbas},{nbas})",
+            density.shape()
+        )));
+    }
+    if !(spacing.is_finite() && spacing > 0.0) {
+        return Err(FerricError::General(format!(
+            "chelpg_grid_esp: spacing must be finite > 0, got {spacing}"
+        )));
+    }
+
+    let natoms = mol.atoms.len();
+    if natoms == 0 {
+        return Err(FerricError::General("chelpg_grid_esp: empty molecule".into()));
+    }
+
+    // Bounding box (Bohr) + margin, same convention as
+    // `ferric_export::cube::GridSpec::bounding_box`.
+    let mut lo = [f64::MAX; 3];
+    let mut hi = [f64::MIN; 3];
+    let atom_pos: Vec<[f64; 3]> = mol
+        .atoms
+        .iter()
+        .map(|a| [a.x, a.y, a.zpos])
+        .collect();
+    let atom_r_excl: Vec<f64> = mol
+        .atoms
+        .iter()
+        .map(|a| vdw_scale * bondi_radius_bohr(a.z))
+        .collect();
+    for p in &atom_pos {
+        for d in 0..3 {
+            lo[d] = lo[d].min(p[d]);
+            hi[d] = hi[d].max(p[d]);
+        }
+    }
+    // Grid is built symmetric about the bounding box's own CENTER (not
+    // anchored at `lo - margin` and stepped forward), so that a molecule
+    // with an exact point-group symmetry (e.g. water's C2v mirror plane)
+    // gets a grid that respects that symmetry too. An origin-anchored,
+    // ceil-rounded grid is generically NOT symmetric under the molecule's
+    // own symmetry operations (confirmed: water's C2v mirror maps its grid
+    // to a copy offset by a fraction of `spacing`), which silently breaks
+    // exact charge-symmetry between symmetry-equivalent atoms at the
+    // ~1e-4-e level — small numerically, but a real, avoidable artifact
+    // rather than physics. `half_pts` on each axis is the number of grid
+    // steps needed to cover the half-extent (bounding-box half-width +
+    // margin), so the full per-axis point count is always `2*half_pts + 1`
+    // (odd, with a point exactly at the center) — symmetric by construction
+    // for any bounding box, not just symmetric molecules.
+    let center = [
+        0.5 * (lo[0] + hi[0]),
+        0.5 * (lo[1] + hi[1]),
+        0.5 * (lo[2] + hi[2]),
+    ];
+    let half_pts = [
+        ((0.5 * (hi[0] - lo[0]) + margin) / spacing).ceil().max(1.0) as usize,
+        ((0.5 * (hi[1] - lo[1]) + margin) / spacing).ceil().max(1.0) as usize,
+        ((0.5 * (hi[2] - lo[2]) + margin) / spacing).ceil().max(1.0) as usize,
+    ];
+    let origin = [
+        center[0] - half_pts[0] as f64 * spacing,
+        center[1] - half_pts[1] as f64 * spacing,
+        center[2] - half_pts[2] as f64 * spacing,
+    ];
+    let n = [2 * half_pts[0] + 1, 2 * half_pts[1] + 1, 2 * half_pts[2] + 1];
+    let npts_total = n[0] * n[1] * n[2];
+
+    // Size guard, mirroring `eval_basis_on_grid`'s fail-fast convention:
+    // don't silently build an unbounded candidate-point list for a very
+    // fine spacing / large molecule.
+    let peak_bytes = npts_total.saturating_mul(std::mem::size_of::<[f64; 3]>());
+    ferric_core::memory::check_alloc(
+        &format!(
+            "chelpg candidate grid ({}×{}×{} = {npts_total} pts before vdW filtering)",
+            n[0], n[1], n[2]
+        ),
+        peak_bytes,
+        ferric_core::memory::resolve_budget_bytes(None),
+    )
+    .map_err(|e| FerricError::General(e.to_string()))?;
+
+    // Filter candidate points to the CHELPG shell (outside vdW, inside outer
+    // cutoff) BEFORE the expensive V(r) evaluation — most of a generous
+    // bounding-box grid is either buried inside an atom or wasted empty
+    // space far from the molecule.
+    let mut kept: Vec<[f64; 3]> = Vec::new();
+    for ix in 0..n[0] {
+        let x = origin[0] + ix as f64 * spacing;
+        for iy in 0..n[1] {
+            let y = origin[1] + iy as f64 * spacing;
+            for iz in 0..n[2] {
+                let z = origin[2] + iz as f64 * spacing;
+                let r = [x, y, z];
+
+                let mut inside_any_vdw = false;
+                let mut within_outer_cutoff = false;
+                for a in 0..natoms {
+                    let dx = r[0] - atom_pos[a][0];
+                    let dy = r[1] - atom_pos[a][1];
+                    let dz = r[2] - atom_pos[a][2];
+                    let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+                    if dist < atom_r_excl[a] {
+                        inside_any_vdw = true;
+                        break;
+                    }
+                    if dist <= atom_r_excl[a] + outer_cutoff {
+                        within_outer_cutoff = true;
+                    }
+                }
+                if !inside_any_vdw && within_outer_cutoff {
+                    kept.push(r);
+                }
+            }
+        }
+    }
+
+    if kept.is_empty() {
+        return Err(FerricError::General(
+            "chelpg_grid_esp: no grid points survived the vdW-exclusion/outer-cutoff filter \
+             (spacing too coarse, or vdw_scale/outer_cutoff too tight)"
+                .into(),
+        ));
+    }
+
+    let values = esp_at_points(mol, prep, density, &kept)?;
+
+    Ok(kept
+        .into_iter()
+        .zip(values)
+        .map(|(r, v)| EspGridPoint { r, v })
+        .collect())
+}
+
+/// Evaluate the molecular electrostatic potential `V_QM(r) = Σ_B Z_B/|r−R_B|
+/// − Σ_μν D_μν ⟨μ|1/|r−r||ν⟩` at an explicit, caller-supplied list of
+/// points (in Bohr).
+///
+/// The general-purpose primitive behind [`chelpg_grid_esp`] (which supplies
+/// the CHELPG/RESP vdW-filtered grid) — factored out so it can also be
+/// called directly against a fixed point list for a strict apples-to-apples
+/// cross-check against an external reference (see
+/// `crates/ferric-rpa/tests/properties_chelpg_resp.rs`'s PySCF cross-check,
+/// which asks PySCF for `V_QM` at the exact same points via its own
+/// `Vnuc − Vele` primitives). Same sign convention as [`esp_at_atoms`] and
+/// [`ferric_pcm::potential::solute_potential_at_tesserae`] — see
+/// `esp_at_atoms`'s doc comment for the libint probe-charge derivation.
+pub fn esp_at_points(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    density: &Array2<f64>,
+    points: &[[f64; 3]],
+) -> Result<Vec<f64>, FerricError> {
+    use ferric_integrals::blas_threads::with_blas_threads;
+    use rayon::prelude::*;
+
+    let nbas = prep.nbasis();
+    if density.shape() != [nbas, nbas] {
+        return Err(FerricError::General(format!(
+            "esp_at_points: density shape {:?} != ({nbas},{nbas})",
+            density.shape()
+        )));
+    }
+
+    let natoms = mol.atoms.len();
+    let dims = prep.shell_dims();
+    let offs = prep.shell_offsets();
+    let nsh = prep.nshells();
+
+    // Same per-worker stateful-engine pattern as `esp_at_atoms`: each point
+    // is an independent probe, engine is Send-not-Sync so map_init hands
+    // one engine per rayon worker rather than sharing/cloning.
+    with_blas_threads(1, || {
+        points
+            .par_iter()
+            .map_init(
+                || Engine::new_1e(ffi::OP_NUCLEAR, prep, 1e-14),
+                |eng, &r| -> Result<f64, FerricError> {
+                    let eng = eng.as_mut().map_err(|e| {
+                        FerricError::General(format!("esp_at_points: engine init failed: {e}"))
+                    })?;
+
+                    let probe = [CAtom { atomic_number: 1.0, x: r[0], y: r[1], z: r[2] }];
+                    let rc = unsafe {
+                        ffi::scf_engine_set_point_charges(
+                            eng.handle_mut(),
+                            probe.as_ptr(),
+                            probe.len() as c_int,
+                        )
+                    };
+                    if rc < 0 {
+                        return Err(FerricError::General(format!(
+                            "esp_at_points: set_point_charges failed (rc={rc})"
+                        )));
+                    }
+
+                    // V_elec(r) = + Σ_μν D_μν ⟨μ|−1/|r−r_g||ν⟩ (see
+                    // `esp_at_atoms`'s doc comment for the sign derivation;
+                    // identical here, just at an arbitrary point rather than
+                    // a nucleus).
+                    let mut v_elec = 0.0_f64;
+                    for s1 in 0..nsh {
+                        for s2 in 0..=s1 {
+                            let block = eng.compute_1e_block(prep, s1, s2);
+                            let n1 = dims[s1];
+                            let n2 = dims[s2];
+                            let o1 = offs[s1];
+                            let o2 = offs[s2];
+                            if s1 == s2 {
+                                for i in 0..n1 {
+                                    for j in 0..n2 {
+                                        v_elec += density[(o1 + i, o2 + j)] * block[i * n2 + j];
+                                    }
+                                }
+                            } else {
+                                for i in 0..n1 {
+                                    for j in 0..n2 {
+                                        v_elec +=
+                                            2.0 * density[(o1 + i, o2 + j)] * block[i * n2 + j];
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    let mut v_nuc = 0.0_f64;
+                    for b in 0..natoms {
+                        let atom_b = &mol.atoms[b];
+                        let dx = r[0] - atom_b.x;
+                        let dy = r[1] - atom_b.y;
+                        let dz = r[2] - atom_b.zpos;
+                        let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+                        v_nuc += atom_b.z as f64 / dist;
+                    }
+
+                    Ok(v_nuc + v_elec)
+                },
+            )
+            .collect::<Result<Vec<f64>, FerricError>>()
+    })
+}
+
+/// Solve the CHELPG-style constrained linear least-squares fit
+///
+/// ```text
+///     minimize   Σ_g (V_QM(r_g) − Σ_A q_A/|r_g−R_A|)²
+///     subject to Σ_A q_A = q_total
+/// ```
+///
+/// via the standard Lagrange-multiplier normal-equations system (Breneman &
+/// Wiberg, *J. Comput. Chem.* **11**, 361 (1990), Eq. 5-6): with
+/// `A_{AB} = Σ_g 1/(|r_g−R_A| |r_g−R_B|)` and `b_A = Σ_g V_QM(r_g)/|r_g−R_A|`,
+/// solve the `(natoms+1)×(natoms+1)` bordered system
+///
+/// ```text
+///     [ A   1 ] [ q ]   [ b       ]
+///     [ 1^T 0 ] [ λ ] = [ q_total ]
+/// ```
+///
+/// This is a single direct linear solve, not an iterative optimizer — exact
+/// up to the linear system's conditioning.
+fn solve_chelpg_normal_equations(
+    atom_pos: &[[f64; 3]],
+    grid: &[EspGridPoint],
+    q_total: f64,
+) -> Result<Vec<f64>, FerricError> {
+    use ndarray_linalg::Solve;
+
+    let natoms = atom_pos.len();
+    let n = natoms + 1;
+    let mut mat = Array2::<f64>::zeros((n, n));
+    let mut rhs = ndarray::Array1::<f64>::zeros(n);
+
+    // Per-point, per-atom inverse distances (reused for both A_AB and b_A).
+    let mut inv_r = vec![0.0_f64; natoms];
+    for pt in grid {
+        for a in 0..natoms {
+            let dx = pt.r[0] - atom_pos[a][0];
+            let dy = pt.r[1] - atom_pos[a][1];
+            let dz = pt.r[2] - atom_pos[a][2];
+            let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+            inv_r[a] = 1.0 / dist;
+        }
+        for a in 0..natoms {
+            rhs[a] += pt.v * inv_r[a];
+            for b in 0..=a {
+                let contrib = inv_r[a] * inv_r[b];
+                mat[(a, b)] += contrib;
+                if a != b {
+                    mat[(b, a)] += contrib;
+                }
+            }
+        }
+    }
+
+    // Border: Lagrange-multiplier row/column enforcing Σ q_A = q_total.
+    for a in 0..natoms {
+        mat[(a, natoms)] = 1.0;
+        mat[(natoms, a)] = 1.0;
+    }
+    rhs[natoms] = q_total;
+
+    let sol = mat.solve(&rhs).map_err(|e| {
+        FerricError::Lapack(format!(
+            "solve_chelpg_normal_equations: bordered normal-equations solve failed \
+             (grid too small/degenerate, or atoms nearly coincident): {e}"
+        ))
+    })?;
+
+    Ok(sol.iter().take(natoms).copied().collect())
+}
+
+/// CHELPG (CHarges from Electrostatic Potentials, Grid-based) atomic partial
+/// charges.
+///
+/// Breneman, C. M.; Wiberg, K. B. "Determining Atom-Centered Monopoles from
+/// Molecular Electrostatic Potentials." *J. Comput. Chem.* **1990**, *11*,
+/// 361–373.
+///
+/// Structurally different from [`hirshfeld_charges`]/[`lowdin_charges`]/
+/// [`mulliken_charges`]: those are **population-partition** schemes that
+/// split the electron density directly among atoms. CHELPG instead chooses
+/// atom-centered point charges `q_A` that best reproduce the *molecular
+/// electrostatic potential* `V_QM(r)` on a grid of points around the
+/// molecule, in a constrained least-squares sense — the standard charge
+/// scheme for downstream force-field electrostatics.
+///
+/// # Grid
+///
+/// Cubic grid, `spacing` (default 0.3 Bohr) inside the molecule's bounding
+/// box extended by `margin` (default 2.8 Bohr) in every direction, excluding
+/// points within `vdw_scale × bondi_radius(Z_A)` (default scale 1.0) of any
+/// atom A and points beyond `outer_cutoff` (default 2.8 Bohr) past the
+/// nearest atom's vdW-scaled radius. Uses the same Bondi radii table as
+/// `ferric_pcm`'s PCM/COSMO cavity construction
+/// (`ferric_pcm::radii::bondi_radius_bohr`) — not a second hand-rolled
+/// table.
+///
+/// # Fit
+///
+/// Solves the Lagrange-multiplier-constrained normal equations (a single
+/// `(natoms+1)×(natoms+1)` linear solve, not an iterative optimizer) — see
+/// [`solve_chelpg_normal_equations`].
+///
+/// Returns `Vec<f64>` of length `mol.atoms.len()`, units of e, summing to
+/// `mol.charge` (up to the linear solve's numerical precision — see the
+/// `sum_matches_total_charge` regression tests for the achieved tolerance).
+///
+/// Closed-shell only (uses the total density; open-shell references should
+/// pass `rhf.density_total()`, which is spin-summed and therefore already
+/// correct here — no open-shell-specific machinery is needed for a
+/// classical electrostatic-potential fit).
+#[allow(clippy::too_many_arguments)]
+pub fn chelpg_charges(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    density: &Array2<f64>,
+) -> Result<Vec<f64>, FerricError> {
+    let grid = chelpg_grid_esp(
+        mol,
+        prep,
+        density,
+        chelpg_spacing(),
+        chelpg_margin(),
+        chelpg_vdw_scale(),
+        chelpg_outer_cutoff(),
+    )?;
+    let atom_pos: Vec<[f64; 3]> = mol.atoms.iter().map(|a| [a.x, a.y, a.zpos]).collect();
+    solve_chelpg_normal_equations(&atom_pos, &grid, mol.charge as f64)
+}
+
+/// Grid spacing (Bohr) for CHELPG/RESP. `FERRIC_CHELPG_SPACING`.
+fn chelpg_spacing() -> f64 {
+    positive_f64("FERRIC_CHELPG_SPACING", 0.3)
+}
+
+/// Bounding-box margin (Bohr) for CHELPG/RESP. `FERRIC_CHELPG_MARGIN`.
+fn chelpg_margin() -> f64 {
+    positive_f64("FERRIC_CHELPG_MARGIN", 2.8)
+}
+
+/// vdW-radius exclusion scale for CHELPG/RESP (grid points inside
+/// `vdw_scale × bondi_radius` of any atom are dropped). `FERRIC_CHELPG_VDW_SCALE`.
+fn chelpg_vdw_scale() -> f64 {
+    positive_f64("FERRIC_CHELPG_VDW_SCALE", 1.0)
+}
+
+/// Outer cutoff (Bohr) past an atom's vdW-scaled radius beyond which grid
+/// points are dropped. `FERRIC_CHELPG_OUTER_CUTOFF`.
+fn chelpg_outer_cutoff() -> f64 {
+    positive_f64("FERRIC_CHELPG_OUTER_CUTOFF", 2.8)
+}
+
+/// RESP (Restrained ElectroStatic Potential) atomic partial charges.
+///
+/// Bayly, C. I.; Cieplak, P.; Cornell, W. D.; Kollman, P. A. "A Well-behaved
+/// Electrostatic Potential Based Method Using Charge Restraints for Deriving
+/// Atomic Charges: The RESP Model." *J. Phys. Chem.* **1993**, *97*,
+/// 10269–10280.
+///
+/// Same ESP grid ([`chelpg_grid_esp`]) and least-squares objective as
+/// [`chelpg_charges`], plus a hyperbolic restraint that damps charges on
+/// **non-hydrogen** atoms toward zero (mitigates overfitting/unphysically
+/// large charges on buried heavy atoms):
+///
+/// ```text
+///     minimize  Σ_g (V_QM(r_g) − V_fit(r_g))²
+///               + restraint_weight · Σ_{A: Z_A≠1} (√(q_A² + b²) − b)
+///     subject to Σ_A q_A = q_total
+/// ```
+///
+/// # Scope
+///
+/// This is a **single-stage** restrained fit with the standard literature
+/// weight/tightness parameters (`restraint_weight = 0.0005`, `b = 0.1 e`),
+/// applied uniformly to every non-hydrogen atom. The full published RESP
+/// recipe additionally runs a *second* stage that re-fits with a tighter
+/// restraint applied only to specific chemically-equivalenced atom groups
+/// (and, for force-field parameterization, averages over multiple
+/// conformers) — that multi-stage/multi-conformer averaging is explicitly
+/// OUT OF SCOPE here; this is a single-conformer, single-stage restrained
+/// fit, an honest subset of the full RESP procedure rather than a full
+/// reimplementation.
+///
+/// # Solving the nonlinear restraint
+///
+/// The restraint term `√(q_A²+b²) − b` is nonlinear in `q_A`, so the fit is
+/// not a single linear solve. Standard RESP practice (and the approach here)
+/// is a fixed-point/Newton iteration: at each iteration, linearize the
+/// restraint's contribution to the gradient by evaluating its second
+/// derivative at the *current* charge estimate,
+///
+/// ```text
+///     d/dq_A [ restraint_weight · (√(q_A²+b²) − b) ] = restraint_weight · q_A / √(q_A²+b²)
+///     ≈ restraint_weight / √(q_A²+b²) · q_A     (holding the denominator fixed within an iteration)
+/// ```
+///
+/// which just adds a diagonal term `restraint_weight / √(q_A^(k)²+b²)` to the
+/// CHELPG normal-equations matrix `A` (non-hydrogen rows only) at each
+/// iteration `k`, then re-solves the same bordered linear system with the
+/// updated diagonal — a short Newton/fixed-point loop over an otherwise
+/// unchanged linear solve, not a black-box nonlinear optimizer.
+///
+/// Returns `Vec<f64>` of length `mol.atoms.len()`, units of e.
+pub fn resp_charges(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    density: &Array2<f64>,
+) -> Result<Vec<f64>, FerricError> {
+    let grid = chelpg_grid_esp(
+        mol,
+        prep,
+        density,
+        chelpg_spacing(),
+        chelpg_margin(),
+        chelpg_vdw_scale(),
+        chelpg_outer_cutoff(),
+    )?;
+    let atom_pos: Vec<[f64; 3]> = mol.atoms.iter().map(|a| [a.x, a.y, a.zpos]).collect();
+    let restraint_weight = resp_restraint_weight();
+    let b = resp_restraint_b();
+    let is_heavy: Vec<bool> = mol.atoms.iter().map(|a| a.z != 1).collect();
+
+    solve_resp_restrained(&atom_pos, &grid, mol.charge as f64, &is_heavy, restraint_weight, b)
+}
+
+/// RESP hyperbolic restraint weight (e⁻¹, standard literature default
+/// 0.0005). `FERRIC_RESP_RESTRAINT_WEIGHT`.
+fn resp_restraint_weight() -> f64 {
+    positive_f64("FERRIC_RESP_RESTRAINT_WEIGHT", 0.0005)
+}
+
+/// RESP hyperbolic restraint tightness parameter `b` (e, standard literature
+/// default 0.1). `FERRIC_RESP_RESTRAINT_B`.
+fn resp_restraint_b() -> f64 {
+    positive_f64("FERRIC_RESP_RESTRAINT_B", 0.1)
+}
+
+/// Newton/fixed-point iteration solving the RESP-restrained bordered normal
+/// equations. See [`resp_charges`]'s doc comment for the derivation.
+///
+/// Starts from the unrestrained CHELPG solution (iteration 0's diagonal
+/// correction uses q_A=0 as the initial linearization point, which for the
+/// hyperbolic penalty is a finite, well-defined starting slope
+/// `restraint_weight / b` — no singularity at q=0 the way a bare `|q|`
+/// restraint would have).
+fn solve_resp_restrained(
+    atom_pos: &[[f64; 3]],
+    grid: &[EspGridPoint],
+    q_total: f64,
+    is_heavy: &[bool],
+    restraint_weight: f64,
+    b: f64,
+) -> Result<Vec<f64>, FerricError> {
+    use ndarray_linalg::Solve;
+
+    let natoms = atom_pos.len();
+    let n = natoms + 1;
+
+    // Build the unrestrained normal-equations matrix/rhs once (A, b are
+    // charge-independent; only the diagonal restraint correction changes
+    // per iteration).
+    let mut base_mat = Array2::<f64>::zeros((n, n));
+    let mut rhs = ndarray::Array1::<f64>::zeros(n);
+    let mut inv_r = vec![0.0_f64; natoms];
+    for pt in grid {
+        for a in 0..natoms {
+            let dx = pt.r[0] - atom_pos[a][0];
+            let dy = pt.r[1] - atom_pos[a][1];
+            let dz = pt.r[2] - atom_pos[a][2];
+            let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+            inv_r[a] = 1.0 / dist;
+        }
+        for a in 0..natoms {
+            rhs[a] += pt.v * inv_r[a];
+            for b_idx in 0..=a {
+                let contrib = inv_r[a] * inv_r[b_idx];
+                base_mat[(a, b_idx)] += contrib;
+                if a != b_idx {
+                    base_mat[(b_idx, a)] += contrib;
+                }
+            }
+        }
+    }
+    for a in 0..natoms {
+        base_mat[(a, natoms)] = 1.0;
+        base_mat[(natoms, a)] = 1.0;
+    }
+    rhs[natoms] = q_total;
+
+    // Fixed-point/Newton loop on the restraint diagonal.
+    let mut q = vec![0.0_f64; natoms];
+    const MAX_ITER: usize = 50;
+    const TOL: f64 = 1e-8;
+    for _iter in 0..MAX_ITER {
+        let mut mat = base_mat.clone();
+        for a in 0..natoms {
+            if is_heavy[a] {
+                mat[(a, a)] += restraint_weight / (q[a] * q[a] + b * b).sqrt();
+            }
+        }
+        let sol = mat.solve(&rhs).map_err(|e| {
+            FerricError::Lapack(format!(
+                "solve_resp_restrained: restrained normal-equations solve failed at \
+                 iteration {_iter}: {e}"
+            ))
+        })?;
+        let q_new: Vec<f64> = sol.iter().take(natoms).copied().collect();
+        let max_dq = q_new
+            .iter()
+            .zip(&q)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f64, f64::max);
+        q = q_new;
+        if max_dq < TOL {
+            break;
+        }
+    }
+
+    Ok(q)
 }
 
 /// Slater single-exponential proatom exponent ξ (Bohr⁻¹) for element Z.
