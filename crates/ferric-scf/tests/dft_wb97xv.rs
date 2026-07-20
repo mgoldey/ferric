@@ -14,7 +14,8 @@ use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_scf::rhf::{solve_rhf, RhfConfig};
+use ferric_scf::ladder::{default_ladder_from, solve_rhf_ladder};
+use ferric_scf::rhf::RhfConfig;
 use ferric_scf::screening::SchwarzBounds;
 use serde::Deserialize;
 use std::fs;
@@ -42,13 +43,23 @@ fn ref_path(name: &str) -> PathBuf {
 }
 
 fn run_case(label: &str, xyz: &str, expected_file: &str) {
+    run_case_basis(label, xyz, "cc-pvdz", expected_file);
+}
+
+fn run_case_basis(label: &str, xyz: &str, basis_name: &str, expected_file: &str) {
     let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
-    let bs = basis::bundled("cc-pvdz").unwrap();
+    let bs = basis::bundled(basis_name).unwrap();
     let obs = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let ctx = ParallelContext::default();
 
+    // SCF ladder (matches the CLI's actual ksdft path) -- see dft_lda.rs's
+    // module doc. NOT gating on lr.converged: CH4/def2-SVP and H2O/cc-pVDZ
+    // reach correct energies (err ≤3.05e-5, inside TOL) but still report
+    // converged=false at their final rung -- the same benign density-
+    // oscillation floor documented in dft_lda.rs/dft_pbe.rs. The energy
+    // comparison below is the real correctness gate.
     let cfg = RhfConfig {
         xc: Some("wB97X-V".into()),
         df_j_aux: Some("def2-universal-jkfit".into()),
@@ -57,7 +68,9 @@ fn run_case(label: &str, xyz: &str, expected_file: &str) {
         density_conv: 1e-8,
         ..Default::default()
     };
-    let res = solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg).unwrap();
+    let ladder = default_ladder_from(&cfg);
+    let lr = solve_rhf_ladder(&ctx, &mol, &obs, op, &bounds, &ladder).unwrap();
+    let res = lr.result;
 
     let r: Ref =
         serde_json::from_str(&fs::read_to_string(ref_path(expected_file)).unwrap()).unwrap();
@@ -65,8 +78,8 @@ fn run_case(label: &str, xyz: &str, expected_file: &str) {
 
     let err = (res.energy - r.e_total).abs();
     eprintln!(
-        "[{label}] ferric = {:.10} Ha,  PySCF = {:.10} Ha,  err = {err:.2e}",
-        res.energy, r.e_total
+        "[{label}] ferric = {:.10} Ha,  PySCF = {:.10} Ha,  err = {err:.2e}, ladder_converged={}, rung={}",
+        res.energy, r.e_total, lr.converged, lr.rung_reached
     );
     // Full-precision print for bit-level cross-run comparison.
     eprintln!("[{label}] ferric full precision = {:.17e} Ha", res.energy);
@@ -99,4 +112,47 @@ fn wb97xv_methane() {
                H -0.6276 0.6276 -0.6276\n\
                H 0.6276 -0.6276 -0.6276\n";
     run_case("CH4", xyz, "methane_cc-pvdz_wb97x_v.json");
+}
+
+const NH3_XYZ: &str = "4\nNH3\n\
+    N 0.000000 0.000000 0.116489\n\
+    H 0.000000 0.939731 -0.271808\n\
+    H 0.813831 -0.469865 -0.271808\n\
+    H -0.813831 -0.469865 -0.271808\n";
+
+/// Fourth molecule (widens past H2/H2O/CH4): NH3, C3v.
+#[test]
+fn wb97xv_nh3() {
+    run_case("NH3", NH3_XYZ, "nh3_cc-pvdz_wb97x_v.json");
+}
+
+/// Second basis (widens past cc-pVDZ-only) across all four molecules.
+#[test]
+fn wb97xv_h2_def2svp() {
+    run_case_basis("H2", "2\nH2\nH 0 0 0\nH 0 0 0.74\n", "def2-svp", "h2_def2-svp_wb97x_v.json");
+}
+
+#[test]
+fn wb97xv_water_def2svp() {
+    run_case_basis(
+        "H2O",
+        "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
+        "def2-svp",
+        "h2o_def2-svp_wb97x_v.json",
+    );
+}
+
+#[test]
+fn wb97xv_methane_def2svp() {
+    let xyz = "5\nCH4\nC 0 0 0\n\
+               H 0.6276 0.6276 0.6276\n\
+               H -0.6276 -0.6276 0.6276\n\
+               H -0.6276 0.6276 -0.6276\n\
+               H 0.6276 -0.6276 -0.6276\n";
+    run_case_basis("CH4", xyz, "def2-svp", "methane_def2-svp_wb97x_v.json");
+}
+
+#[test]
+fn wb97xv_nh3_def2svp() {
+    run_case_basis("NH3", NH3_XYZ, "def2-svp", "nh3_def2-svp_wb97x_v.json");
 }

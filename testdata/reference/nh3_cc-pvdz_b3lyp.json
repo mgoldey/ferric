@@ -1,5 +1,5 @@
 {
-  "label": "h2",
+  "label": "nh3",
   "basis": "cc-pvdz",
   "xc": "b3lyp",
   "main_grid": [
@@ -7,8 +7,8 @@
     110
   ],
   "nlc_grid": null,
-  "e_total": -1.173317100233269,
-  "e_nuc": 0.7151043390810812,
-  "n_e": 2,
+  "e_total": -56.553979993531335,
+  "e_nuc": 11.904528974062835,
+  "n_e": 10,
   "converged": true
 }

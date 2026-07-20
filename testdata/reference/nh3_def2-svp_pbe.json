@@ -1,14 +1,14 @@
 {
-  "label": "h2o",
-  "basis": "cc-pvdz",
+  "label": "nh3",
+  "basis": "def2-svp",
   "xc": "pbe",
   "main_grid": [
     75,
     110
   ],
   "nlc_grid": null,
-  "e_total": -76.33348584761013,
-  "e_nuc": 9.187838234078582,
+  "e_total": -56.43261041788721,
+  "e_nuc": 11.904528974062835,
   "n_e": 10,
   "converged": true
 }

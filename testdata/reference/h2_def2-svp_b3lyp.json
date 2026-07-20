@@ -1,13 +1,13 @@
 {
   "label": "h2",
-  "basis": "cc-pvdz",
-  "xc": "lda",
+  "basis": "def2-svp",
+  "xc": "b3lyp",
   "main_grid": [
     75,
     110
   ],
   "nlc_grid": null,
-  "e_total": -1.1314541051508271,
+  "e_total": -1.173533351916629,
   "e_nuc": 0.7151043390810812,
   "n_e": 2,
   "converged": true

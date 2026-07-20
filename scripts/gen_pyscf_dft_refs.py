@@ -28,7 +28,18 @@ MOLECULES = {
                 " H -0.6276 -0.6276 0.6276;"
                 " H -0.6276 0.6276 -0.6276;"
                 " H 0.6276 -0.6276 -0.6276",                            0, 1),
+    # Fourth molecule (widens past H2/H2O/CH4): NH3, C3v, same geometry as
+    # testdata/molecules/nh3.xyz / the RPA-gradient row's NH3 tests.
+    "nh3":     ("N 0.000000 0.000000 0.116489;"
+                " H 0.000000 0.939731 -0.271808;"
+                " H 0.813831 -0.469865 -0.271808;"
+                " H -0.813831 -0.469865 -0.271808",                     0, 1),
 }
+
+# Bases to generate refs for. cc-pvdz is the routine/default one already
+# exercised by dft_{lda,pbe,b3lyp,wb97xv}.rs; def2-svp widens past
+# single-basis coverage (already bundled, used elsewhere e.g. RHF+ECP row).
+BASES = ["cc-pvdz", "def2-svp"]
 
 # Ferric default main grid: (75, 110). Match exactly with no pruning.
 MAIN_GRID = (75, 110)
@@ -75,12 +86,12 @@ def main(only_xc=None):
     xcs = [only_xc] if only_xc else list(PYSCF_XC.keys())
     for xc in xcs:
         for label, (atom_spec, charge, spin) in MOLECULES.items():
-            basis = "cc-pvdz"
-            out = run_one(label, atom_spec, charge, spin, basis, xc)
-            fname = f"{label}_{basis}_{xc.replace('-', '_')}.json"
-            path = REFDIR / fname
-            path.write_text(json.dumps(out, indent=2))
-            print(f"wrote {path}  E_total = {out['e_total']:.10f}  converged={out['converged']}")
+            for basis in BASES:
+                out = run_one(label, atom_spec, charge, spin, basis, xc)
+                fname = f"{label}_{basis}_{xc.replace('-', '_')}.json"
+                path = REFDIR / fname
+                path.write_text(json.dumps(out, indent=2))
+                print(f"wrote {path}  E_total = {out['e_total']:.10f}  converged={out['converged']}")
 
 if __name__ == "__main__":
     main(sys.argv[1] if len(sys.argv) > 1 else None)
