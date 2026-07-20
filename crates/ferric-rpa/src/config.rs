@@ -45,9 +45,21 @@ pub enum Chi0Backend {
 /// (Boys localization + per-orbital tile overhead dominates the savings — see
 /// the `boys-screening-crossover` finding: Boys is ~4× SLOWER than Dense at
 /// benzene scale), and at/above the cutoff it resolves to `BoysScreened { thresh:
-/// boys_thresh, dist_cutoff }` where locality wins kick in. The default cutoff
-/// (30 atoms) is the conservative production line above the measured
-/// naphthalene-scale crossover.
+/// boys_thresh, dist_cutoff }` where locality wins kick in *on the topology the
+/// crossover was measured on* (naphthalene, a dense/compact aromatic).
+///
+/// CAVEAT (2026-07-19): atom count alone does not predict whether
+/// BoysScreened actually prunes anything — it is a proxy for locality, not
+/// locality itself. A re-check on an extended alkane chain (32 atoms, just
+/// above this cutoff) found the exact `|p_ii|` metric retains ~92% of aux
+/// rows per orbital at `thresh` in the 1e-4..1e-3 range — i.e. essentially no
+/// sparsity — so BoysScreened ran ~5x *slower* than Dense there despite being
+/// past the atom-count threshold (see `docs/quickstart.md`'s chi0_sparsity
+/// guidance section for the full writeup). `Auto` cannot detect this failure
+/// mode; it only counts atoms. This is why `Chi0Sparsity::default()` is
+/// `Dense`, not `Auto` — `Auto`/`BoysScreened` remain deliberately opt-in
+/// (`chi0_sparsity = "auto"`/`"boys"` in TOML, or the equivalent Python
+/// string), not something a caller falls into by omission.
 #[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub enum Chi0Sparsity {
     #[default]
