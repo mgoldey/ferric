@@ -1,6 +1,6 @@
 use ferric_core::mol::{Molecule, Atom};
 use ferric_export::cube::{export_cube, GridSpec};
-use ferric_export::ml::export_npz;
+use ferric_export::ml::{export_npz, NpzBundle};
 use ndarray::{Array1, Array2, Array3};
 use ndarray_npy::NpzReader;
 use std::fs;
@@ -39,25 +39,11 @@ fn test_export_npz() {
 
     export_npz(
         path,
-        Some(&mo_coeffs),
-        Some(&orbital_energies),
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
+        &NpzBundle {
+            mo_coeffs: Some(&mo_coeffs),
+            orbital_energies: Some(&orbital_energies),
+            ..Default::default()
+        },
     ).unwrap();
 
     assert!(std::path::Path::new(path).exists());
@@ -83,10 +69,11 @@ fn test_export_npz_round_trip_values() {
 
     export_npz(
         path,
-        Some(&mo_coeffs),
-        Some(&orbital_energies),
-        None, None, None, None, None, None, None, None, None, None, None,
-        None, None, None, None, None, None,
+        &NpzBundle {
+            mo_coeffs: Some(&mo_coeffs),
+            orbital_energies: Some(&orbital_energies),
+            ..Default::default()
+        },
     ).unwrap();
 
     let mut npz = NpzReader::new(fs::File::open(path).unwrap()).unwrap();

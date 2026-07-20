@@ -3,8 +3,28 @@ use ndarray_npy::NpzWriter;
 use std::fs::File;
 use crate::cube::ExportError;
 
-/// Exports key tensors and metadata for Machine Learning (e.g. Diffusion models)
-/// into a compressed NPZ archive.
+/// Atomic partial-charge schemes for the NPZ bundle. Grouping these (rather
+/// than flat positional `Option<&[f64]>` params) mirrors `PdepRpaConfig`'s
+/// nested-sub-struct precedent (`crates/ferric-rpa/src/config.rs`) and is
+/// the natural landing spot for any future charge scheme (CHELPG/RESP/NPA/
+/// ...) without growing `export_npz`'s own parameter count again.
+#[derive(Default, Clone, Copy)]
+pub struct ChargeSchemes<'a> {
+    pub hirshfeld: Option<&'a [f64]>,
+    pub lowdin: Option<&'a [f64]>,
+    pub mulliken: Option<&'a [f64]>,
+}
+
+/// Static and per-atom polarizability/field-response outputs.
+#[derive(Default, Clone, Copy)]
+pub struct PolarizabilityBundle<'a> {
+    pub esp_atoms: Option<&'a [f64]>,
+    pub alpha_tensor: Option<&'a [[f64; 3]; 3]>,
+    pub electric_field: Option<&'a [[f64; 3]]>,
+    pub alpha_atomic: Option<&'a [[[f64; 3]; 3]]>,
+}
+
+/// Dispersion (C6) outputs.
 ///
 /// CONSUMER WARNING — `c6_iso`/`c6_aniso` (open-work-triage item #9 / S9
 /// spike, 2026-07-17): these two arrays are the per-atom PAIR Casimir-Polder
@@ -25,74 +45,79 @@ use crate::cube::ExportError;
 /// `casimir_polder_c6` directly), not sum this array. See also
 /// `docs/dosd-c6-rpa-vs-ts.md`'s "Numerical notes" for the analogous H2 case
 /// (6.88 pair-sum vs 9.22 correct).
-#[allow(clippy::too_many_arguments)]
-pub fn export_npz(
-    path: &str,
-    mo_coeffs: Option<&Array2<f64>>,
-    orbital_energies: Option<&[f64]>,
-    pdep_eigenvectors: Option<&Array2<f64>>,
-    boys_coeffs: Option<&Array2<f64>>,
-    coords: Option<&Array2<f64>>,
-    atomic_numbers: Option<&[usize]>,
-    esp_atoms: Option<&[f64]>,
-    alpha_tensor: Option<&[[f64; 3]; 3]>,
-    electric_field: Option<&[[f64; 3]]>,
-    density_matrix: Option<&Array2<f64>>,
-    alpha_atomic: Option<&[[[f64; 3]; 3]]>,
-    hirshfeld_charges: Option<&[f64]>,
-    lowdin_charges: Option<&[f64]>,
-    c6_freqs: Option<&[f64]>,
-    c6_weights: Option<&[f64]>,
-    alpha_atomic_dynamic: Option<&[Vec<[[f64; 3]; 3]>]>,
-    // Per-atom PAIR Casimir-Polder tensors — NOT the molecular C6 total.
-    // `c6_iso.sum()` != the molecular C6; see the CONSUMER WARNING on this
-    // function's doc comment before using these to approximate a molecular
-    // total.
-    c6_iso: Option<&Array2<f64>>,
-    c6_aniso: Option<&[Vec<[[f64; 3]; 3]>]>,
-    dipole: Option<&[f64; 3]>,
-) -> Result<(), ExportError> {
+#[derive(Default, Clone, Copy)]
+pub struct DispersionBundle<'a> {
+    pub c6_freqs: Option<&'a [f64]>,
+    pub c6_weights: Option<&'a [f64]>,
+    pub alpha_atomic_dynamic: Option<&'a [Vec<[[f64; 3]; 3]>]>,
+    pub c6_iso: Option<&'a Array2<f64>>,
+    pub c6_aniso: Option<&'a [Vec<[[f64; 3]; 3]>]>,
+}
+
+/// Everything `export_npz` can write, grouped by category. See
+/// `ChargeSchemes`/`PolarizabilityBundle`/`DispersionBundle` for the
+/// per-category fields and their CONSUMER WARNINGs.
+#[derive(Default, Clone, Copy)]
+pub struct NpzBundle<'a> {
+    pub mo_coeffs: Option<&'a Array2<f64>>,
+    pub orbital_energies: Option<&'a [f64]>,
+    pub pdep_eigenvectors: Option<&'a Array2<f64>>,
+    pub boys_coeffs: Option<&'a Array2<f64>>,
+    pub coords: Option<&'a Array2<f64>>,
+    pub atomic_numbers: Option<&'a [usize]>,
+    pub density_matrix: Option<&'a Array2<f64>>,
+    pub dipole: Option<&'a [f64; 3]>,
+    pub charges: ChargeSchemes<'a>,
+    pub polarizability: PolarizabilityBundle<'a>,
+    pub dispersion: DispersionBundle<'a>,
+}
+
+/// Exports key tensors and metadata for Machine Learning (e.g. Diffusion models)
+/// into a compressed NPZ archive. See `NpzBundle` and its nested
+/// `ChargeSchemes`/`PolarizabilityBundle`/`DispersionBundle` sub-structs for
+/// what can be written and the CONSUMER WARNINGs on the C6 fields.
+pub fn export_npz(path: &str, bundle: &NpzBundle) -> Result<(), ExportError> {
     let file = File::create(path)?;
     let mut writer = NpzWriter::new(file);
 
-    if let Some(c) = mo_coeffs {
+    if let Some(c) = bundle.mo_coeffs {
         writer.add_array("mo_coeffs", c).map_err(|e| ExportError::Other(e.to_string()))?;
     }
-    
-    if let Some(e) = orbital_energies {
+
+    if let Some(e) = bundle.orbital_energies {
         let e_arr = Array1::from_vec(e.to_vec());
         writer.add_array("orbital_energies", &e_arr).map_err(|e| ExportError::Other(e.to_string()))?;
     }
 
-    if let Some(v) = pdep_eigenvectors {
+    if let Some(v) = bundle.pdep_eigenvectors {
         writer.add_array("pdep_eigenvectors", v).map_err(|e| ExportError::Other(e.to_string()))?;
     }
 
-    if let Some(bc) = boys_coeffs {
+    if let Some(bc) = bundle.boys_coeffs {
         writer.add_array("boys_coeffs", bc).map_err(|e| ExportError::Other(e.to_string()))?;
     }
 
-    if let Some(c) = coords {
+    if let Some(c) = bundle.coords {
         writer.add_array("coords", c).map_err(|e| ExportError::Other(e.to_string()))?;
     }
 
-    if let Some(z) = atomic_numbers {
+    if let Some(z) = bundle.atomic_numbers {
         let z_arr = Array1::from_vec(z.iter().map(|&x| x as i64).collect());
         writer.add_array("atomic_numbers", &z_arr).map_err(|e| ExportError::Other(e.to_string()))?;
     }
 
-    if let Some(v) = esp_atoms {
+    if let Some(v) = bundle.polarizability.esp_atoms {
         let v_arr = Array1::from_vec(v.to_vec());
         writer.add_array("esp_atoms", &v_arr).map_err(|e| ExportError::Other(e.to_string()))?;
     }
 
-    if let Some(a) = alpha_tensor {
+    if let Some(a) = bundle.polarizability.alpha_tensor {
         let flat: Vec<f64> = a.iter().flat_map(|row| row.iter().copied()).collect();
         let a_arr = Array2::from_shape_vec((3, 3), flat).unwrap();
         writer.add_array("alpha_tensor", &a_arr).map_err(|e| ExportError::Other(e.to_string()))?;
     }
 
-    if let Some(ef) = electric_field {
+    if let Some(ef) = bundle.polarizability.electric_field {
         let n = ef.len();
         let flat: Vec<f64> = ef.iter().flat_map(|row| row.iter().copied()).collect();
         let ef_arr = Array2::from_shape_vec((n, 3), flat).unwrap();
@@ -100,12 +125,12 @@ pub fn export_npz(
             .map_err(|e| ExportError::Other(e.to_string()))?;
     }
 
-    if let Some(dm) = density_matrix {
+    if let Some(dm) = bundle.density_matrix {
         writer.add_array("density_matrix", dm)
             .map_err(|e| ExportError::Other(e.to_string()))?;
     }
 
-    if let Some(aa) = alpha_atomic {
+    if let Some(aa) = bundle.polarizability.alpha_atomic {
         let n = aa.len();
         let mut flat: Vec<f64> = Vec::with_capacity(n * 9);
         for a in aa {
@@ -121,31 +146,38 @@ pub fn export_npz(
             .map_err(|e| ExportError::Other(e.to_string()))?;
     }
 
-    if let Some(q) = hirshfeld_charges {
+    if let Some(q) = bundle.charges.hirshfeld {
         let q_arr = Array1::from_vec(q.to_vec());
         writer
             .add_array("hirshfeld_charges", &q_arr)
             .map_err(|e| ExportError::Other(e.to_string()))?;
     }
 
-    if let Some(q) = lowdin_charges {
+    if let Some(q) = bundle.charges.lowdin {
         let q_arr = Array1::from_vec(q.to_vec());
         writer
             .add_array("lowdin_charges", &q_arr)
             .map_err(|e| ExportError::Other(e.to_string()))?;
     }
 
-    if let Some(f) = c6_freqs {
+    if let Some(q) = bundle.charges.mulliken {
+        let q_arr = Array1::from_vec(q.to_vec());
+        writer
+            .add_array("mulliken_charges", &q_arr)
+            .map_err(|e| ExportError::Other(e.to_string()))?;
+    }
+
+    if let Some(f) = bundle.dispersion.c6_freqs {
         let a = Array1::from_vec(f.to_vec());
         writer.add_array("c6_freqs", &a).map_err(|e| ExportError::Other(e.to_string()))?;
     }
 
-    if let Some(w) = c6_weights {
+    if let Some(w) = bundle.dispersion.c6_weights {
         let a = Array1::from_vec(w.to_vec());
         writer.add_array("c6_weights", &a).map_err(|e| ExportError::Other(e.to_string()))?;
     }
 
-    if let Some(ad) = alpha_atomic_dynamic {
+    if let Some(ad) = bundle.dispersion.alpha_atomic_dynamic {
         let natoms = ad.len();
         let nfreq = if natoms > 0 { ad[0].len() } else { 0 };
         let mut flat: Vec<f64> = Vec::with_capacity(natoms * nfreq * 9);
@@ -164,11 +196,11 @@ pub fn export_npz(
             .map_err(|e| ExportError::Other(e.to_string()))?;
     }
 
-    if let Some(c) = c6_iso {
+    if let Some(c) = bundle.dispersion.c6_iso {
         writer.add_array("c6_iso", c).map_err(|e| ExportError::Other(e.to_string()))?;
     }
 
-    if let Some(ca) = c6_aniso {
+    if let Some(ca) = bundle.dispersion.c6_aniso {
         let n = ca.len();
         let mut flat: Vec<f64> = Vec::with_capacity(n * n * 9);
         for row in ca {
@@ -184,7 +216,7 @@ pub fn export_npz(
         writer.add_array("c6_aniso", &arr).map_err(|e| ExportError::Other(e.to_string()))?;
     }
 
-    if let Some(mu) = dipole {
+    if let Some(mu) = bundle.dipole {
         let mu_arr = Array1::from_vec(mu.to_vec());
         writer.add_array("dipole", &mu_arr).map_err(|e| ExportError::Other(e.to_string()))?;
     }

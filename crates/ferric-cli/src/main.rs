@@ -1042,8 +1042,10 @@ fn main() {
             // NPZ feature bundle for diffusion-model export.
             if let Some(npz_path) = cfg.rpa.export_npz.as_deref() {
                 use ferric_export::export_npz;
+                use ferric_export::ml::{ChargeSchemes, DispersionBundle, NpzBundle, PolarizabilityBundle};
                 use ferric_rpa::properties::{
                     electric_field_at_atoms, esp_at_atoms, hirshfeld_charges, lowdin_charges,
+                    mulliken_charges,
                     pdep_polarizability_becke,
                     pdep_polarizability_static,
                 };
@@ -1201,6 +1203,25 @@ fn main() {
                         }
                         Err(e) => {
                             eprintln!("warning: Hirshfeld charges failed: {e}");
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+
+                let compute_mq = cfg.rpa.compute_mulliken_charges.unwrap_or(true);
+                let mq_vec = if compute_mq {
+                    match mulliken_charges(&mol, &prep, result.density_total()) {
+                        Ok(q) => {
+                            println!(
+                                "Mulliken charges (e): {:?}",
+                                q.iter().map(|v| (v * 1e4).round() / 1e4).collect::<Vec<_>>()
+                            );
+                            Some(q)
+                        }
+                        Err(e) => {
+                            eprintln!("warning: Mulliken charges failed: {e}");
                             None
                         }
                     }
@@ -1488,28 +1509,35 @@ fn main() {
                     }
                 }
 
-                if let Err(e) = export_npz(
-                    npz_path,
-                    if result.spin == ferric_scf::result::Spin::Restricted { Some(result.mos_r()) } else { None },
-                    if result.spin == ferric_scf::result::Spin::Restricted { Some(result.eps_r()) } else { None },
-                    Some(&rpa_result.eigenpotentials),
-                    None,
-                    Some(&coords_arr),
-                    Some(&znums),
-                    esp_vec.as_deref(),
-                    alpha_arr.as_ref(),
-                    ef_vec.as_deref(),
-                    dm_ref,
-                    alpha_atomic_vec.as_deref(),
-                    hq_vec.as_deref(),
-                    lq_vec.as_deref(),
-                    if c6_freqs_v.is_empty() { None } else { Some(c6_freqs_v.as_slice()) },
-                    if c6_weights_v.is_empty() { None } else { Some(c6_weights_v.as_slice()) },
-                    if alpha_dyn_v.is_empty() { None } else { Some(alpha_dyn_v.as_slice()) },
-                    c6_iso_opt.as_ref(),
-                    if c6_aniso_v.is_empty() { None } else { Some(c6_aniso_v.as_slice()) },
-                    dip_arr.as_ref(),
-                ) {
+                let npz_bundle = NpzBundle {
+                    mo_coeffs: if result.spin == ferric_scf::result::Spin::Restricted { Some(result.mos_r()) } else { None },
+                    orbital_energies: if result.spin == ferric_scf::result::Spin::Restricted { Some(result.eps_r()) } else { None },
+                    pdep_eigenvectors: Some(&rpa_result.eigenpotentials),
+                    boys_coeffs: None,
+                    coords: Some(&coords_arr),
+                    atomic_numbers: Some(&znums),
+                    density_matrix: dm_ref,
+                    dipole: dip_arr.as_ref(),
+                    charges: ChargeSchemes {
+                        hirshfeld: hq_vec.as_deref(),
+                        lowdin: lq_vec.as_deref(),
+                        mulliken: mq_vec.as_deref(),
+                    },
+                    polarizability: PolarizabilityBundle {
+                        esp_atoms: esp_vec.as_deref(),
+                        alpha_tensor: alpha_arr.as_ref(),
+                        electric_field: ef_vec.as_deref(),
+                        alpha_atomic: alpha_atomic_vec.as_deref(),
+                    },
+                    dispersion: DispersionBundle {
+                        c6_freqs: if c6_freqs_v.is_empty() { None } else { Some(c6_freqs_v.as_slice()) },
+                        c6_weights: if c6_weights_v.is_empty() { None } else { Some(c6_weights_v.as_slice()) },
+                        alpha_atomic_dynamic: if alpha_dyn_v.is_empty() { None } else { Some(alpha_dyn_v.as_slice()) },
+                        c6_iso: c6_iso_opt.as_ref(),
+                        c6_aniso: if c6_aniso_v.is_empty() { None } else { Some(c6_aniso_v.as_slice()) },
+                    },
+                };
+                if let Err(e) = export_npz(npz_path, &npz_bundle) {
                     eprintln!("warning: failed to write {}: {}", npz_path, e);
                 } else {
                     println!("Wrote NPZ feature bundle: {}", npz_path);

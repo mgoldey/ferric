@@ -540,6 +540,17 @@ fn lowdin_charges(mol: &PyMolecule, basis_set: &PyBasisSet, result: DensitySourc
     ferric_rpa::properties::lowdin_charges(&mol.inner, &prep, result.density()).map_err(make_err)
 }
 
+/// Mulliken partial charges (units of e), the standard textbook population
+/// analysis. Known to be more basis-set-sensitive than Löwdin (prefer
+/// `lowdin_charges` for a more basis-stable partition); included as the
+/// standard baseline every QC package provides. Closed-shell only. `result`
+/// is an `RhfResult` or `DftResult` from a converged SCF.
+#[pyfunction]
+fn mulliken_charges(mol: &PyMolecule, basis_set: &PyBasisSet, result: DensitySource) -> PyResult<Vec<f64>> {
+    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    ferric_rpa::properties::mulliken_charges(&mol.inner, &prep, result.density()).map_err(make_err)
+}
+
 /// Per-atom Hirshfeld-partitioned static dipole polarizability tensors
 /// (Bohr^3), via true PDEP-RPA α(ω=0) on a real-space Becke/Hirshfeld grid.
 /// Closed-shell (Restricted) only — `result` must come from `run_rhf` or
@@ -2187,6 +2198,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(esp_at_atoms, m)?)?;
     m.add_function(wrap_pyfunction!(hirshfeld_charges, m)?)?;
     m.add_function(wrap_pyfunction!(lowdin_charges, m)?)?;
+    m.add_function(wrap_pyfunction!(mulliken_charges, m)?)?;
     m.add_function(wrap_pyfunction!(hirshfeld_polarizability, m)?)?;
     m.add_function(wrap_pyfunction!(run_rimp2, m)?)?;
     m.add_function(wrap_pyfunction!(run_oo_rimp2, m)?)?;

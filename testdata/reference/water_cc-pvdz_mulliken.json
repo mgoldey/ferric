@@ -1,0 +1,17 @@
+{
+  "molecule": "water",
+  "basis": "cc-pvdz",
+  "scf_energy": -76.02676799737645,
+  "mulliken_charges": [
+    -0.30538662807075667,
+    0.15269331403537867,
+    0.15269331403537834
+  ],
+  "mulliken_charges_cross_check_pyscf": [
+    -0.30538662807075667,
+    0.15269331403537867,
+    0.15269331403537822
+  ],
+  "charge_sum": 3.3306690738754696e-16,
+  "note": "Standard Mulliken population charges (D @ S diagonal), the unambiguous textbook definition (no meta/orthogonalization variant, unlike Lowdin). Basis loaded from ferric's OWN bundled JSON (authentic Dunning general contraction), NOT PySCF's internal segmented cc-pvdz.dat -- see docs/basis-data-corrections.md. Two independent code paths (hand D@S vs pyscf.scf.hf.mulliken_pop) agree to 1.1e-16."
+}

@@ -3285,6 +3285,54 @@ pub fn lowdin_charges(
         .collect())
 }
 
+/// Mulliken partial charges (units of e), the standard population analysis:
+/// q_A = Z_A - Σ_{μ∈A} (D·S)_{μμ}.
+///
+/// Unlike Löwdin (which symmetrically orthogonalizes via S^{1/2}), Mulliken
+/// splits each off-diagonal (D·S) contribution evenly between its two AO
+/// centers with no basis-set-size correction — the textbook population
+/// analysis, well known to be basis-set-sensitive (can misbehave badly with
+/// diffuse/augmented functions) but included here as the standard baseline
+/// every QC package provides, not as a recommended charge scheme. Prefer
+/// `lowdin_charges` for a more basis-stable partition. Closed-shell only.
+pub fn mulliken_charges(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    density: &Array2<f64>,
+) -> Result<Vec<f64>, FerricError> {
+    let nbf = prep.nbasis();
+    if density.nrows() != nbf || density.ncols() != nbf {
+        return Err(FerricError::General(format!(
+            "mulliken_charges: density {:?} != nbf {}",
+            density.dim(),
+            nbf
+        )));
+    }
+
+    let s = oneelectron::overlap(prep);
+
+    // M = D · S; the Mulliken atomic population is the sum of M's diagonal
+    // over AOs centered on that atom (trace(D·S) = N_e exactly).
+    let m = density.dot(&s);
+
+    let shell_to_atom = prep.shell_to_atom();
+    let shell_offsets = prep.shell_offsets();
+    let natoms = mol.atoms.len();
+
+    let mut atom_pop = vec![0.0_f64; natoms];
+    for (sh_idx, &atom_idx) in shell_to_atom.iter().enumerate() {
+        let mu0 = shell_offsets[sh_idx];
+        let mu1 = shell_offsets[sh_idx + 1];
+        for mu in mu0..mu1 {
+            atom_pop[atom_idx] += m[(mu, mu)];
+        }
+    }
+
+    Ok((0..natoms)
+        .map(|a| mol.atoms[a].z as f64 - atom_pop[a])
+        .collect())
+}
+
 /// Slater single-exponential proatom exponent ξ (Bohr⁻¹) for element Z.
 ///
 /// Derived from Bragg-Slater empirical atomic radii R_BS:

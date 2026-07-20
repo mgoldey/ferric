@@ -293,6 +293,13 @@ pub struct RpaCfg {
     /// (no proatom approximation, basis-set-stable).
     /// Default: true when `export_npz` is set.
     pub compute_lowdin_charges: Option<bool>,
+    /// Compute and include Mulliken atomic charges (the standard textbook
+    /// population analysis, D@S diagonal) in the NPZ bundle as
+    /// `mulliken_charges`, shape (natoms,), float64, e. More basis-set-
+    /// sensitive than Löwdin — included as the standard baseline every QC
+    /// package provides, not a recommended charge scheme.
+    /// Default: true when `export_npz` is set.
+    pub compute_mulliken_charges: Option<bool>,
     /// Compute per-atom anisotropic C6 dispersion coefficients and include them
     /// in the NPZ bundle (`c6_iso`, `c6_aniso`, `alpha_atomic_dynamic`,
     /// `c6_freqs`, `c6_weights`). Default: true when `export_npz` is set.
