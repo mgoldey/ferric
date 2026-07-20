@@ -17,6 +17,8 @@
 pub mod result;
 pub use result::{ScfResult, Spin};
 
+pub mod properties;
+
 pub mod screening;
 pub mod qqr;
 pub mod pairs;
