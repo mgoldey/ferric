@@ -91,6 +91,18 @@ pub struct Tessera {
     pub sphere_radius: f64,
     /// Index of the parent atom (sphere center) in `Molecule::atoms`.
     pub atom_index: usize,
+    /// Gaussian charge-distribution width `xi_k` for this tessera (PySCF
+    /// `pcm.py::gen_surface`'s `charge_exp`), set by the LOCAL Lebedev grid
+    /// density: `xi_k = XI[ng] / (r_vdw * sqrt(w_k))`, `w_k` the tessera's
+    /// *unnormalized* Lebedev weight (PySCF convention: sums to `4*pi` over a
+    /// sphere). Used by [`crate::matrices::build_s_d`]'s Gaussian-smeared S/D
+    /// formulation; not meaningful for anything else.
+    pub charge_exp: f64,
+    /// Raw switching-function value at this tessera's center (`swf` in
+    /// PySCF) BEFORE folding into area — needed separately by the
+    /// Gaussian-smeared diagonal self-terms of both S and D
+    /// (`S_kk = xi_k * sqrt(2/pi) / switch_fun_k`).
+    pub switch_fun: f64,
 }
 
 /// Cavity construction knobs.
@@ -170,6 +182,8 @@ pub fn build_cavity(mol: &Molecule, cfg: &CavityConfig) -> Result<Vec<Tessera>, 
         })
         .collect();
 
+    let xi_prefactor = crate::matrices::gaussian_xi_table(cfg.lebedev_order)?;
+
     let mut tesserae = Vec::new();
 
     for (a_idx, atom) in mol.atoms.iter().enumerate() {
@@ -191,6 +205,12 @@ pub fn build_cavity(mol: &Molecule, cfg: &CavityConfig) -> Result<Vec<Tessera>, 
                 center[1] + r_a * dir[1],
                 center[2] + r_a * dir[2],
             ];
+            // PySCF's `w` is the Lebedev weight in ITS convention, which sums
+            // to 4*pi over a sphere (ferric's `lebedev()` sums to 1); convert
+            // once here so `xi_k = XI[ng] / (r_vdw * sqrt(w_pyscf))` matches
+            // `gen_surface`'s `xi = XI[ng] / (r_vdw * w**0.5)` exactly.
+            let w_pyscf = w * 4.0 * std::f64::consts::PI;
+            let charge_exp = xi_prefactor / (r_a * w_pyscf.sqrt());
 
             // Smooth switching weight: product of h(d) over every OTHER
             // real atom's sphere (own-atom factor is exactly 1).
@@ -230,6 +250,8 @@ pub fn build_cavity(mol: &Molecule, cfg: &CavityConfig) -> Result<Vec<Tessera>, 
                 area,
                 sphere_radius: r_a,
                 atom_index: a_idx,
+                charge_exp,
+                switch_fun: swf,
             });
         }
     }

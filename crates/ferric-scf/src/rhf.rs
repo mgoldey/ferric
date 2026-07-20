@@ -1556,34 +1556,22 @@ mod tests {
     }
 
     /// Water/STO-3G in water solvent (eps=78.4): the standard textbook PCM
-    /// validation case. Checks:
-    ///   1. The SCF converges with PCM active.
-    ///   2. The solvation free energy E_pcm = E(solvent) - E(vacuum) is
-    ///      NEGATIVE (stabilizing) -- required for any physically sane
-    ///      implicit-solvent model of a polar solute in a polar solvent.
-    ///   3. The magnitude is "a few kcal/mol" (order-of-magnitude sane for a
-    ///      small polar solute's electrostatic solvation term), cross-checked
-    ///      against a genuine PySCF IEF-PCM run generated for this exact
-    ///      molecule/basis/eps (see
-    ///      /tmp/.../scratchpad/gen_pcm_ref.py and
-    ///      pcm_water_sto3g_pyscf_ref.json: PySCF gives E_solv = -3.82
-    ///      kcal/mol using its own SWIG tessellation). ferric's independent
-    ///      Lebedev tessellation (SWIG switching function added 2026-07-19,
-    ///      see `ferric_pcm::cavity`'s doc) is NOT expected to match PySCF's
-    ///      number tightly -- different cavity discretizations give
-    ///      different tessera counts/areas and thus different S/D matrices
-    ///      -- so this test only requires the same SIGN and the same
-    ///      ORDER OF MAGNITUDE (within a generous 0.5x-3x band), not
-    ///      numerical agreement to PySCF's specific tessellation.
+    /// validation case, cross-checked against a genuine PySCF IEF-PCM run
+    /// for this exact molecule/basis/eps (own SWIG tessellation):
+    /// E_solv = -3.8228 kcal/mol.
     ///
-    /// **Post-SWIG measurement (2026-07-19)**: ferric now gives -3.475
-    /// kcal/mol (was -3.813 pre-switching-function), i.e. ~9.1% off PySCF
-    /// (was ~0.3%) -- a real accuracy regression on this specific tight
-    /// case, though still well inside this test's generous order-of-
-    /// magnitude band. See the PCM row in docs/VALIDATION.md for the full
-    /// before/after picture across all four systems: the switching function
-    /// helps methanol substantially but costs water/cc-pVDZ tight agreement
-    /// (see that test) and modestly loosens this one.
+    /// **Gaussian-smeared S/D measurement (2026-07-19)**: porting the
+    /// PySCF `pcm.py::get_D_S` Gaussian-smeared-charge S/D boundary-element
+    /// formulation (`ferric_pcm::matrices::SdKind::GaussianSmeared`, now the
+    /// crate default, on top of the SWIG cavity from the prior pass) gives
+    /// ferric = -3.5733 kcal/mol, 6.53% off PySCF -- tighter than the
+    /// SWIG-only-cavity number (-3.475 kcal/mol, 9.1% off) and closer to the
+    /// original pre-SWIG point-charge-cavity number (-3.813 kcal/mol, 0.3%
+    /// off, though that was a different, less physical cavity). Tightened
+    /// from the earlier order-of-magnitude 0.3x-4x bracket to a real 10%
+    /// relative-error assertion, matching this system's measured error with
+    /// headroom. See docs/VALIDATION.md's PCM row for the full four-system
+    /// picture.
     #[test]
     fn pcm_water_solvation_energy_is_negative_and_reasonable_magnitude() {
         let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
@@ -1612,19 +1600,18 @@ mod tests {
         );
 
         // PySCF IEF-PCM reference for this exact molecule/basis/eps (own SWIG
-        // tessellation): E_solv = -3.8228 kcal/mol. Require the same order of
-        // magnitude, generously bounded (both negative: the "0.3x" bound is
-        // the smaller-magnitude edge, the "4x" bound is the larger-magnitude
-        // edge), since ferric's cavity construction is a deliberately
-        // simpler independent discretization.
+        // tessellation): E_solv = -3.8228 kcal/mol. Measured ferric value
+        // (Gaussian-smeared S/D, 2026-07-19): -3.5733 kcal/mol, 6.53% off --
+        // tolerance set to 10% with headroom above the measured error.
         let pyscf_ref_kcal = -3.8227667932356835_f64;
-        let small_mag_bound = pyscf_ref_kcal * 0.3; // -1.15 kcal/mol
-        let large_mag_bound = pyscf_ref_kcal * 4.0; // -15.29 kcal/mol
+        let rel_tol = 0.10;
+        let rel_err = (e_solv_kcal - pyscf_ref_kcal).abs() / pyscf_ref_kcal.abs();
         assert!(
-            e_solv_kcal < small_mag_bound && e_solv_kcal > large_mag_bound,
-            "E_solv={e_solv_kcal:.3} kcal/mol is not within an order of magnitude of the \
-             PySCF IEF-PCM reference ({pyscf_ref_kcal:.3} kcal/mol); expected between \
-             {large_mag_bound:.3} and {small_mag_bound:.3} kcal/mol"
+            rel_err < rel_tol,
+            "E_solv={e_solv_kcal:.4} kcal/mol vs PySCF IEF-PCM reference {pyscf_ref_kcal:.4} \
+             kcal/mol -- relative error {:.2}% exceeds {:.2}% tolerance",
+            rel_err * 100.0,
+            rel_tol * 100.0
         );
     }
 
@@ -1694,19 +1681,14 @@ mod tests {
     /// cavity surface -> reaction field more sensitive to the cavity tessellation).
     /// PySCF IEF-PCM reference (own SWIG tessellation): E_solv = -6.2580 kcal/mol.
     ///
-    /// **Post-SWIG measurement (2026-07-19)**: adding ferric's own SWIG-style smooth
-    /// switching function (`ferric_pcm::cavity::build_cavity`, replacing the previous hard
-    /// keep/discard cut) moved this point from effectively 0% off (pre-switching:
-    /// -6.2580 kcal/mol, coincidentally exact) to -5.648 kcal/mol, ~9.75% off -- outside
-    /// the original 5% tolerance. This is a genuine, measured regression on this specific
-    /// tight case (not a bug): the switching function trades a hard cavity-shape
-    /// discontinuity for smoothly-varying (including many very-small-area) tesserae near
-    /// sphere-sphere boundaries, which changes the diagonal self-terms
-    /// (`S_ii = xi*sqrt(4*pi/area)`, divergent as area->0) enough to shift the water/cc-pVDZ
-    /// point by several percent even though total cavity area barely changes. Loosened to
-    /// 12% here to reflect the real post-switching number rather than silently reverting or
-    /// masking the regression; see docs/VALIDATION.md's PCM row for the full picture (this
-    /// tradeoff vs methanol's much larger improvement).
+    /// **Gaussian-smeared S/D measurement (2026-07-19)**: porting PySCF's
+    /// `pcm.py::get_D_S` Gaussian-smeared-charge S/D formulation
+    /// (`ferric_pcm::matrices::SdKind::GaussianSmeared`, on top of the SWIG cavity from the
+    /// prior pass) gives ferric = -5.7787 kcal/mol, 7.66% off PySCF -- an IMPROVEMENT over
+    /// the SWIG-only-cavity number (-5.648 kcal/mol, 9.75% off), though still not back to
+    /// the pre-SWIG-cavity coincidental near-exact match (-6.258 kcal/mol, ~0%, on the less
+    /// physical hard-cut cavity). Tolerance tightened from 12% to 10% to reflect the real
+    /// measured error with headroom; see docs/VALIDATION.md's PCM row for the full picture.
     #[test]
     fn pcm_water_ccpvdz_matches_pyscf_within_a_few_percent() {
         assert_pcm_solvation_matches_pyscf(
@@ -1714,7 +1696,7 @@ mod tests {
             "cc-pvdz",
             78.4,
             -6.2580,
-            0.12,
+            0.10,
             "water/cc-pVDZ/eps=78.4",
         );
     }
@@ -1726,11 +1708,16 @@ mod tests {
     /// genuinely generalizes to a different small polar molecule.
     ///
     /// PySCF IEF-PCM reference: E_solv = -3.9709 kcal/mol. Pre-SWIG-switching-function,
-    /// ferric measured -3.65 kcal/mol (~8% relative error). **Post-SWIG (2026-07-19)**:
-    /// ferric now measures -4.036 kcal/mol, ~1.7% off -- an IMPROVEMENT on this system
-    /// (unlike water/cc-pVDZ, which regressed). 15% remains a deliberately generous bound
-    /// (not tightened to match, since the point of this suite is tracking real behavior
-    /// across systems, not chasing each measurement).
+    /// ferric measured -3.65 kcal/mol (~8% relative error). Post-SWIG-cavity-only
+    /// (2026-07-19): ferric measured -4.036 kcal/mol, ~1.7% off.
+    ///
+    /// **Gaussian-smeared S/D measurement (2026-07-19)**: porting PySCF's
+    /// `pcm.py::get_D_S` formulation (`ferric_pcm::matrices::SdKind::GaussianSmeared`) gives
+    /// ferric = -3.9744 kcal/mol, 0.09% off PySCF -- essentially exact, and the tightest of
+    /// all four systems, consistent with the sibling `ferric_scf::cosmo` crate's experience
+    /// that Gaussian-smearing is the dominant lever for this class of boundary-element
+    /// method. Tolerance tightened from 15% to 5% (still generous headroom above the
+    /// measured 0.09%).
     #[test]
     fn pcm_nh3_sto3g_within_15_percent_of_pyscf() {
         assert_pcm_solvation_matches_pyscf(
@@ -1738,7 +1725,7 @@ mod tests {
             "sto-3g",
             78.4,
             -3.9709,
-            0.15,
+            0.05,
             "NH3/STO-3G/eps=78.4",
         );
     }
@@ -1751,32 +1738,25 @@ mod tests {
     /// PRE-SWIG FINDING (superseded 2026-07-19): with the old hard keep/discard cavity
     /// cut, agreement did NOT generalize here. PySCF IEF-PCM reference (own SWIG
     /// tessellation) is E_solv = -2.6219 kcal/mol at eps=20.7 (acetone); ferric gave
-    /// -10.55 kcal/mol -- over 4x too negative (302% relative error). Re-run at water's own
-    /// eps=78.4, PySCF gives -2.78 kcal/mol and ferric gave -8.25 kcal/mol (~3x too
-    /// negative). The leading hypothesis at the time was the hard keep/discard cut (no
-    /// SWIG switching function) distorting the S/D operators where many spheres mutually
-    /// overlap (all 15 atom pairs in methanol vs water's 3).
+    /// -10.55 kcal/mol -- over 4x too negative (302% relative error).
     ///
-    /// **POST-SWIG MEASUREMENT (2026-07-19)**: adding the SWIG switching function
-    /// (`ferric_pcm::cavity::build_cavity`, Lange & Herbert JCP 133, 244111 (2010) eq.
-    /// 3.19, ported from `ferric_scf::cosmo::CosmoCavity::build`'s existing implementation)
-    /// substantially changes this system -- and confirms the switching function WAS a real
-    /// lever here, unlike the cross-checked null result on `ferric_scf::cosmo`. The error
-    /// shrinks and the SIGN OF THE ERROR FLIPS: eps=20.7 now gives ferric -1.192 kcal/mol
-    /// vs PySCF -2.622 kcal/mol (54.6% too WEAK, was 302% too strong); eps=78.4 gives
-    /// ferric -0.990 vs PySCF -2.776 kcal/mol (64.4% too weak, was 197% too strong). The
-    /// gap shrank from ~3-4x to under 2x in absolute-ratio terms, but methanol still does
-    /// NOT reach tight agreement, and NOW UNDER-estimates screening (opposite failure mode)
-    /// rather than over-estimating it. Total cavity area for methanol also dropped slightly
-    /// post-switching (280 -> 267 Bohr^2 at eps=78.4), while water's grew slightly (171 ->
-    /// 174 Bohr^2) -- the effect is molecule/geometry-dependent, not a uniform shift. This
-    /// test intentionally asserts only sign + coarse order-of-magnitude (loosened on the
-    /// small-magnitude side to accommodate the new under-screening direction), NOT tight
-    /// agreement -- see docs/VALIDATION.md's PCM row for the full before/after picture
-    /// across all four systems (this improvement traded against a real regression on
-    /// water/cc-pVDZ, see that test).
+    /// POST-SWIG-CAVITY-ONLY (2026-07-19): adding the SWIG switching function
+    /// (`ferric_pcm::cavity::build_cavity`) flipped the sign of the error but did not close
+    /// it: eps=20.7 gave ferric -1.192 kcal/mol vs PySCF -2.622 kcal/mol (54.6% too weak).
+    ///
+    /// **Gaussian-smeared S/D measurement (2026-07-19)**: porting PySCF's `pcm.py::get_D_S`
+    /// formulation (`ferric_pcm::matrices::SdKind::GaussianSmeared`) on top of the SWIG
+    /// cavity closes most of the remaining gap: eps=20.7 gives ferric -2.4738 kcal/mol vs
+    /// PySCF -2.6219 kcal/mol (5.65% off, was 54.6% too weak); eps=78.4 gives ferric
+    /// -2.6218 kcal/mol vs PySCF -2.7760 kcal/mol (5.55% off, was 64.4% too weak). This is
+    /// methanol's best result across all three formulations tried this investigation
+    /// (302%-too-strong point-charge/hard-cut -> 54.6%-too-weak point-charge/SWIG ->
+    /// 5.65%-off Gaussian-smeared/SWIG), and lands in the same <10% band as the other three
+    /// systems -- see docs/VALIDATION.md's PCM row for the full four-system picture.
+    /// Test tightened from an order-of-magnitude sign-only check to a real 10%
+    /// relative-error assertion at the eps=20.7 point.
     #[test]
-    fn pcm_methanol_sto3g_lower_eps_is_negative_but_not_tight_vs_pyscf() {
+    fn pcm_methanol_sto3g_matches_pyscf_within_10_percent() {
         let mol = Molecule::load_xyz("../../testdata/molecules/ch3oh.xyz").unwrap();
         let bs = ferric_core::basis::bundled("sto-3g").unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
@@ -1806,20 +1786,18 @@ mod tests {
              {e_solv_kcal:.3} kcal/mol"
         );
 
-        // PySCF IEF-PCM reference: -2.6219 kcal/mol. Post-SWIG-switching-function, ferric
-        // now UNDER-estimates screening here (-1.19 kcal/mol, ~55% too weak) rather than
-        // over-estimating it (pre-switching: -10.55 kcal/mol, ~302% too strong) -- only
-        // assert sign + a generous order-of-magnitude band, widened on the small-magnitude
-        // side (0.15x, was 0.3x) to accommodate the new under-screening direction, not
-        // tight agreement.
+        // PySCF IEF-PCM reference: -2.6219 kcal/mol. Measured ferric value
+        // (Gaussian-smeared S/D, 2026-07-19): -2.4738 kcal/mol, 5.65% off -- tolerance set
+        // to 10% with headroom above the measured error.
         let pyscf_ref_kcal = -2.6219_f64;
-        let small_mag_bound = pyscf_ref_kcal * 0.15;
-        let large_mag_bound = pyscf_ref_kcal * 6.0;
+        let rel_tol = 0.10;
+        let rel_err = (e_solv_kcal - pyscf_ref_kcal).abs() / pyscf_ref_kcal.abs();
         assert!(
-            e_solv_kcal < small_mag_bound && e_solv_kcal > large_mag_bound,
-            "E_solv={e_solv_kcal:.3} kcal/mol is not within the generous order-of-magnitude \
-             band of the PySCF IEF-PCM reference ({pyscf_ref_kcal:.3} kcal/mol); expected \
-             between {large_mag_bound:.3} and {small_mag_bound:.3} kcal/mol"
+            rel_err < rel_tol,
+            "E_solv={e_solv_kcal:.4} kcal/mol vs PySCF IEF-PCM reference {pyscf_ref_kcal:.4} \
+             kcal/mol -- relative error {:.2}% exceeds {:.2}% tolerance",
+            rel_err * 100.0,
+            rel_tol * 100.0
         );
     }
 
