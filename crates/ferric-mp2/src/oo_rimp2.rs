@@ -589,28 +589,69 @@ pub fn build_mp2_density(
 
 /// Compute the full OO-MP2 orbital gradient g_{ai} for occupied-virtual rotations.
 ///
-/// This implements the Hylleraas functional derivative which includes:
-/// 1. The 1-PDM/Fock terms (response of Fock matrix to density change)
-/// 2. The 2-electron integral response terms (response of (ia|jb) to orbital rotation)
+/// This implements the Hylleraas-style functional derivative, which includes:
+/// 1. The 1-PDM/Fock (HF) term.
+/// 2. The 2-electron integral response terms (response of (ia|jb) and (ib|ja)
+///    to the orbital rotation, at FIXED t2 amplitudes).
+/// 3. The orbital-energy-DENOMINATOR response term (response of D_{ijab} in
+///    t_{ij,ab} = (ia|jb)/D_{ijab} to the orbital rotation).
 ///
-/// The formula is derived from the Hylleraas functional:
-///   L[t] = 2 * sum_{ijab} t_{ij,ab} * (2*(ia|jb) - (ib|ja)) - sum_{ijab} t_{ij,ab} * D_{ijab} * tau_{ijab}
+/// FOUND 2026-07-20 (see docs/VALIDATION.md "OO-RI-MP2" row): term 3 above was
+/// previously believed to vanish via "Brillouin's condition makes
+/// d(eps_p)/d(kappa_ck) = 0" — that claim is WRONG. d(eps_p)/d(kappa_ck) is
+/// generally nonzero (it comes entirely from the density-dependence of the
+/// Fock matrix under the rotated occupied space, not from any frozen-Fock
+/// rotation of F itself — the latter piece IS exactly zero at a converged HF
+/// reference since F_{ck}=0 there, which is presumably how the false belief
+/// arose). The MP2 integral-response contraction (below, "Term1..Term4",
+/// implementing term 2 above) was independently re-derived from scratch via
+/// multilinear MO-coefficient perturbation (verified against finite
+/// difference on random tensors AND on real PySCF integrals, including every
+/// simultaneous-delta-condition combination e.g. i=k AND a=c) and found to
+/// ALREADY be correct in the code below — no sign or structural change to it
+/// was needed. The single missing piece was term 3.
 ///
-/// At the stationary point L = E_MP2, and by the 2n+1 rule the gradient of the energy
-/// w.r.t. orbital rotation kappa_{ck} (c=virtual, k=occupied) at fixed amplitudes is:
+/// Full formula (c=virtual, k=occupied index of the rotation kappa_{ck}):
 ///
-///   dE_total/d kappa_{ck} = 4*F_{ck}  (HF part, = 0 at convergence)
-///     + 2 * sum_{ijab} t_{ij,ab} * [2*d(ia|jb)/dk - d(ib|ja)/dk]   (MP2 integral response)
+///   dE_total/d kappa_{ck} = -4*F_{ck}  (HF part, "Term0" below)
+///     + 2 * sum_{ijab} t_{ij,ab} * [2*d(ia|jb)/dk - d(ib|ja)/dk]   ("Term1..Term4")
+///     - sum_{ijab} t_{ij,ab} * [dD_{ijab}/dk] * s_{ij,ab}          ("denominator response")
 ///
-/// The orbital energy denominator terms vanish at the HF solution (dD/dk = 0 because
-/// Brillouin condition makes d eps_p/d kappa_{ck} = 0).
+/// where s_{ij,ab} = [2*(ia|jb) - (ib|ja)] / D_{ijab}, and the integral
+/// response (multilinearity in each of the 4 MO-coefficient slots of a
+/// Cayley/exponential single-parameter rotation, dC_p/dk_{ck} =
+/// -delta_{pk}*C_c + delta_{pc}*C_k) gives:
 ///
-/// The integral response d(ia|jb)/d kappa_{ck} = delta_{ik}*(ca|jb) + delta_{jk}*(ia|cb)
-///   - delta_{ac}*(ik|jb) - delta_{bc}*(ia|jk), computed using the full-MO B tensor.
+///   d(ia|jb)/d kappa_{ck} = delta_{ik}*(ca|jb) + delta_{jk}*(ia|cb)
+///     - delta_{ac}*(ik|jb) - delta_{bc}*(ia|jk)
+///
+/// The denominator response needs d(eps_p)/d kappa_{ck} for p in {i,j,a,b}.
+/// This is NOT a CPHF/Z-vector quantity — kappa_{ck} enters explicitly (not
+/// implicitly) in eps_p(kappa) = [C(kappa)^T F(kappa) C(kappa)]_{pp}, so a
+/// single closed-form density-response Fock build suffices:
+///
+///   d(eps_p)/d kappa_{ck} = -4*(pp|ck) + 2*(pc|pk)
+///
+/// (derived from dD_AO/dk_{ck} = -2*(C_c C_k^T + C_k C_c^T), i.e. the rank-2
+/// AO density increment from rotating occupied k into virtual c, contracted
+/// through the RHF veff operator 2J-K; verified against finite difference of
+/// the true SCF-density-dependent eps_p(kappa) to ~1e-6..1e-8 on H2/cc-pVDZ
+/// and H2O/{STO-3G,cc-pVDZ}). Then dD_{ijab}/dk = deps_i/dk + deps_j/dk -
+/// deps_a/dk - deps_b/dk.
+///
+/// End-to-end verification (Python/PySCF reference, independent of this Rust
+/// code, cross-validated against pyscf.mp.MP2 to ~1e-9 Ha before use): the
+/// full formula above matches central finite difference of the true
+/// (HF+MP2, t2-resolved-at-each-kappa) energy to max errors of 1.6e-11
+/// (H2/cc-pVDZ), 4.8e-8 (H2O/STO-3G), 4.1e-8 (H2O/cc-pVDZ), and 1.5e-9
+/// (NH3/STO-3G) — vs. the pre-fix formula's 3.4e-4 / 4.2e-3 / 2.2e-2 / 2.3e-3
+/// respectively. See docs/VALIDATION.md for the corresponding Rust-side
+/// numbers after porting.
 fn compute_orbital_gradient(
     f_mo: &Array2<f64>,
     t2: &[f64],
     b_full: &Array3<f64>,
+    eps: &[f64],
     nocc: usize,
     nvir: usize,
     first_occ: usize,
@@ -623,7 +664,7 @@ fn compute_orbital_gradient(
     let row_bytes = nvir.saturating_mul(nov).saturating_mul(8).max(1);
     let panel_c = (ferric_core::memory::resolve_budget_bytes(None) / row_bytes).max(1).min(nvir.max(1));
     compute_orbital_gradient_panelled(
-        f_mo, t2, b_full, nocc, nvir, first_occ, nocc_total, panel_c,
+        f_mo, t2, b_full, eps, nocc, nvir, first_occ, nocc_total, panel_c,
     )
 }
 
@@ -637,6 +678,7 @@ fn compute_orbital_gradient_panelled(
     f_mo: &Array2<f64>,
     t2: &[f64],
     b_full: &Array3<f64>,
+    eps: &[f64],
     nocc: usize,
     nvir: usize,
     first_occ: usize,
@@ -679,6 +721,39 @@ fn compute_orbital_gradient_panelled(
     // OOOV is small (nocc²·nov·8 ≈ 0.44 GB at the audit scale) — build once.
     //   OOOV[(i*nocc+k), (j*nvir+b)] = (ik|jb)
     let ooov = b_oo.t().dot(&b_ov); // (nocc², nocc·nvir)
+
+    // s_{ij,ab} = [2*(ia|jb) - (ib|ja)] / D_{ijab}, needed by the denominator-
+    // response term below. Built once (nov×nov, same shape/cost as t2) via the
+    // same wide GEMM the OV-OV block already needs.
+    //   OVOV[(i*nvir+a), (j*nvir+b)] = (ia|jb)
+    let ovov = b_ov.t().dot(&b_ov); // (nov, nov)
+    let nmo = nocc_total + nvir; // == b_full's MO dimension (frozen core excluded from nocc)
+    let mut s_mat = Array2::<f64>::zeros((nov, nov));
+    for i in 0..nocc {
+        for a in 0..nvir {
+            let ia = i * nvir + a;
+            for j in 0..nocc {
+                for b in 0..nvir {
+                    let jb = j * nvir + b;
+                    let iajb = ovov[(ia, jb)];
+                    let ibja = ovov[(i * nvir + b, j * nvir + a)];
+                    let denom = eps[first_occ + i] + eps[first_occ + j]
+                        - eps[nocc_total + a]
+                        - eps[nocc_total + b];
+                    s_mat[(ia, jb)] = (2.0 * iajb - ibja) / denom;
+                }
+            }
+        }
+    }
+
+    // b_diag[P, p] = b_full[P, p, p], needed for the (pp|ck)-type integrals in
+    // the denominator response's d(eps_p)/d kappa_{ck} = -4*(pp|ck) + 2*(pc|pk).
+    let mut b_diag = Array2::<f64>::zeros((naux, nmo));
+    for p in 0..naux {
+        for m in 0..nmo {
+            b_diag[(p, m)] = b_full[(p, m, m)];
+        }
+    }
 
     // VVOV[(c*nvir+a), (j*nvir+b)] = (ca|jb), shape (nvir², nocc·nvir), is the
     // single largest transient in the crate (~203 GB at the audit scale). Every
@@ -737,8 +812,28 @@ fn compute_orbital_gradient_panelled(
             .into_par_iter()
             .map(|c_idx| {
                 let cbase = (c_idx - c0) * nvir; // local vvov_panel row base for this c
+                let c_mo = nocc_total + c_idx;
+                // d(eps_p)/d kappa_{ck} = -4*(pp|ck) + 2*(pc|pk) for every p and
+                // every k in this occupied range, batched via one GEMM (the
+                // -4*(pp|ck) piece is Σ_P b_diag[P,p]·b_full[P,c_mo,k_mo], i.e.
+                // b_diag^T @ b_full[:, c_mo, occ_slice]) plus one elementwise
+                // pass per k (the (pc|pk) piece, which is NOT a plain GEMM since
+                // both operands vary with p).
+                let bc_col = b_full.slice(ndarray::s![.., c_mo, ..]); // (naux, nmo): (P, p) = B^P_{c,p}
+                let b_ck = {
+                    // b_full[:, c_mo, first_occ..first_occ+nocc] -> (naux, nocc)
+                    let mut m = Array2::<f64>::zeros((naux, nocc));
+                    for kk in 0..nocc {
+                        for p in 0..naux {
+                            m[(p, kk)] = b_full[(p, c_mo, first_occ + kk)];
+                        }
+                    }
+                    m
+                };
+                let pp_ck = b_diag.t().dot(&b_ck); // (nmo, nocc): (pp|c,k)
                 let mut row = vec![0.0_f64; nocc];
                 for (k, row_k) in row.iter_mut().enumerate() {
+                    let k_mo = first_occ + k;
                     let mut grad_ck = 0.0;
 
                     // Term 1: delta_{ik} -> i=k, sum over j,a,b
@@ -800,7 +895,40 @@ fn compute_orbital_gradient_panelled(
                         }
                     }
 
-                    *row_k = -2.0 * grad_ck;
+                    // Denominator-response term:
+                    //   - sum_{ijab} t_{ij,ab} * [dD_{ijab}/dk_{ck}] * s_{ij,ab}
+                    // dD_{ijab}/dk_{ck} = deps_i + deps_j - deps_a - deps_b, where
+                    // deps_p = d(eps_p)/d kappa_{ck} = -4*(pp|ck) + 2*(pc|pk).
+                    // (pc|pk) is computed here per-p (not a plain GEMM: both
+                    // operands vary with p), reusing the already-sliced bc_col.
+                    let mut deps = vec![0.0_f64; nmo];
+                    for (p, deps_p) in deps.iter_mut().enumerate() {
+                        let mut pc_pk = 0.0;
+                        for pidx in 0..naux {
+                            pc_pk += bc_col[(pidx, p)] * b_full[(pidx, p, k_mo)];
+                        }
+                        *deps_p = -4.0 * pp_ck[(p, k)] + 2.0 * pc_pk;
+                    }
+                    let mut denom_term = 0.0;
+                    for i in 0..nocc {
+                        let deps_i = deps[first_occ + i];
+                        for a in 0..nvir {
+                            let deps_a = deps[nocc_total + a];
+                            let ia = i * nvir + a;
+                            for j in 0..nocc {
+                                let deps_j = deps[first_occ + j];
+                                for b in 0..nvir {
+                                    let deps_b = deps[nocc_total + b];
+                                    let jb = j * nvir + b;
+                                    let d_dd = deps_i + deps_j - deps_a - deps_b;
+                                    let t_ijab = t2[ia * nov + jb];
+                                    denom_term -= t_ijab * d_dd * s_mat[(ia, jb)];
+                                }
+                            }
+                        }
+                    }
+
+                    *row_k = -2.0 * grad_ck + denom_term;
                 }
                 (c_idx, row)
             })
@@ -916,7 +1044,7 @@ pub fn oo_ri_mp2(
 
         // Orbital gradient g_{ai} with full 2e response terms
         let g = compute_orbital_gradient(
-            &f_mo, &t2, &b_full, nocc, nvir, first_occ, nocc_total,
+            &f_mo, &t2, &b_full, &eps, nocc, nvir, first_occ, nocc_total,
         );
 
         // Check gradient norm
@@ -1081,7 +1209,7 @@ pub fn oo_ri_mp2(
             );
             let f_mo2 = c.t().dot(&f_ao).dot(&c);
             let g2 = compute_orbital_gradient(
-                &f_mo2, &t2_2, &b_full2, nocc, nvir, first_occ, nocc_total,
+                &f_mo2, &t2_2, &b_full2, &eps, nocc, nvir, first_occ, nocc_total,
             );
             grad_norm = g2.iter().map(|x| x * x).sum::<f64>().sqrt();
 
@@ -1337,7 +1465,7 @@ mod tests {
 
         let f_mo = c.t().dot(&f_ao).dot(c);
         let g = compute_orbital_gradient(
-            &f_mo, &t2, &b_full, nocc, nvir, first_occ, nocc_total,
+            &f_mo, &t2, &b_full, &eps, nocc, nvir, first_occ, nocc_total,
         );
 
         // Finite difference check for each (a, i) component
@@ -1396,51 +1524,24 @@ mod tests {
     /// single, highly symmetric 2-electron system does not rule out a
     /// formula bug that happens to cancel for that particular shape.
     ///
-    /// NOTE on scope: an external reference was sought first (Psi4's own
-    /// regression-test corpus ships `tests/dfomp2-grad1/`, a genuine pinned
-    /// DF-OMP2/cc-pVDZ Cartesian nuclear gradient for water at the exact
-    /// geometry ferric's OO-RI-MP2 energy row already cross-checks) but
-    /// turned out not to be reachable without first building new machinery:
-    /// Psi4's dfomp2-grad1 reference is a full Cartesian NUCLEAR gradient
-    /// (Z-vector/CPHF orbital response + AO integral-derivative terms),
-    /// whereas the only gradient ferric currently tests/validates is the
-    /// internal MO ORBITAL-ROTATION gradient `compute_orbital_gradient`
-    /// (dE/dkappa_{ai} at fixed AO integrals) used by the Newton/DIIS solver
-    /// -- a different mathematical object. ferric does carry a Cartesian
-    /// OO-MP2 gradient function (`oo_rimp2_gradient::oo_ri_mp2_gradient`),
-    /// but its own doc comment calls it a "(stub)"/"(partial)" with an
-    /// explicitly "simplified" diagonal-approximation W-matrix and "no
-    /// Z-vector for OO case"; it is not wired into any CLI/Python entry
-    /// point and has no test at all, so there is no honest way to compare it
-    /// against Psi4's dfomp2-grad1 numbers today.
-    ///
-    /// RESULT: this test FAILS, and the failure is a REAL, delta-independent
-    /// discrepancy, not finite-difference truncation noise -- a manual
-    /// four-point delta scan (1e-5, 3e-6, 1e-6, 3e-7) reproduced the exact
-    /// same ~3e-4 to ~4e-3 Ha/rad errors at every step size (if this were FD
-    /// truncation, halving delta should quarter the error; it did not move
-    /// at all across a 30x range). `compute_orbital_gradient` computes only
-    /// the explicit dE_MP2/dkappa response through the ERI derivatives
-    /// (Terms 1-4 in the function body); it never reads `build_mp2_density`'s
-    /// `p_oo`/`p_vv` correlation-density corrections at all, even though
-    /// those are computed and used elsewhere in this module (energy/property
-    /// paths). For H2 (nocc=1), the occ-occ index sums in Terms 1-2 all
-    /// collapse to the single i=j=k=0 case and `p_oo` is a trivial 1x1
-    /// block, which plausibly hides a missing occ-occ (and/or vir-vir)
-    /// density-relaxation coupling term that a multi-occupied system like
-    /// water (nocc=5 at STO-3G) exposes. This was NOT root-caused or fixed
-    /// here (that is a nontrivial formula-derivation task, out of scope for
-    /// a validation-widening pass). `#[ignore]`d rather than deleted or
-    /// loosened, so `cargo test --workspace` (and the pre-push gate) stay
-    /// green while the gap remains discoverable and re-runnable on demand:
-    /// `cargo test -p ferric-mp2 --release --lib
-    /// oo_rimp2::tests::test_oo_rimp2_gradient_finite_difference_h2o_sto3g --
-    /// --ignored --nocapture`. See docs/VALIDATION.md's OO-RI-MP2 gradient
-    /// caveat, updated accordingly.
+    /// HISTORY: this test originally FAILED here (found 2026-07-19,
+    /// max_err~4.2e-3 Ha/rad, confirmed delta-independent via a four-point
+    /// 1e-5..3e-7 scan, so genuinely a formula bug and not FD truncation
+    /// noise). ROOT CAUSE (found 2026-07-20): `compute_orbital_gradient`'s
+    /// Term1-4 (the MP2 integral-response contraction) were themselves
+    /// correct all along; what was missing was an orbital-energy-denominator
+    /// response term (the doc comment's claim that this vanishes via
+    /// "Brillouin's condition" was simply wrong -- d(eps_p)/d(kappa_ck) is
+    /// generically nonzero, since it comes from the density-dependence of
+    /// the Fock matrix under the rotated occupied space, not from any
+    /// frozen-Fock rotation of F itself). H2/cc-pVDZ (nocc=1) happens not to
+    /// expose this because... see `compute_orbital_gradient`'s doc comment
+    /// for the full derivation and end-to-end Python/PySCF verification
+    /// numbers. Fixed by adding the closed-form denominator-response term
+    /// (one extra density-response Fock-like build per (c,k) via the
+    /// existing full-MO B tensor -- no CPHF/Z-vector solve needed, since
+    /// kappa_{ck} enters eps_p(kappa) explicitly, not implicitly).
     #[test]
-    #[ignore = "found 2026-07-19: compute_orbital_gradient does not match FD on \
-                water/STO-3G (nocc=5) -- real, delta-independent discrepancy, not \
-                yet root-caused; H2/cc-pVDZ (nocc=1) cannot detect this class of bug"]
     fn test_oo_rimp2_gradient_finite_difference_h2o_sto3g() {
         let xyz = "3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n";
         let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
@@ -1490,7 +1591,7 @@ mod tests {
 
         let f_mo = c.t().dot(&f_ao).dot(c);
         let g = compute_orbital_gradient(
-            &f_mo, &t2, &b_full, nocc, nvir, first_occ, nocc_total,
+            &f_mo, &t2, &b_full, &eps, nocc, nvir, first_occ, nocc_total,
         );
 
         // delta=1e-5 matches the sibling H2/cc-pVDZ test. A four-point delta
@@ -1534,20 +1635,12 @@ mod tests {
         }
 
         eprintln!("H2O/STO-3G max gradient error: {:.2e}", max_err);
-        // This assertion is EXPECTED TO FAIL as of 2026-07-19 -- see the doc
-        // comment above. Left as a real (not #[ignore]d, not loosened)
-        // assertion so the gap stays visible in `cargo test` output rather
-        // than silently passing; the sibling H2/cc-pVDZ test's 1e-3 tolerance
-        // is reused here (not loosened) specifically so this test's failure
-        // is legible as "the same bar H2 clears, water does not," not as an
-        // artifact of picking a stricter threshold for the new test.
+        // Fixed 2026-07-20 (missing denominator-response term, see
+        // compute_orbital_gradient's doc comment). Reuses the sibling
+        // H2/cc-pVDZ test's 1e-3 tolerance unchanged (not loosened).
         assert!(
             max_err < 1e-3,
-            "H2O/STO-3G gradient FD check failed: max_err={:.2e} -- this is a REAL, \
-             delta-independent discrepancy (confirmed via a 1e-5..3e-7 delta scan, not FD \
-             truncation), most likely a missing occ-occ/vir-vir correlation-density coupling \
-             term in compute_orbital_gradient that H2's nocc=1 cannot expose. See the test's \
-             doc comment and docs/VALIDATION.md's OO-RI-MP2 gradient caveat.",
+            "H2O/STO-3G gradient FD check failed: max_err={:.2e}",
             max_err
         );
     }
@@ -1624,7 +1717,7 @@ mod tests {
         let (t2, _) = compute_t2_and_integrals(&b_ov, &eps, nocc, nvir, nocc_total, first_occ, naux);
         let b_full = compute_b_full_mo_with(&ao, c).unwrap();
         let f_mo = c.t().dot(&f_ao).dot(c);
-        let g_analytic = compute_orbital_gradient(&f_mo, &t2, &b_full, nocc, nvir, first_occ, nocc_total);
+        let g_analytic = compute_orbital_gradient(&f_mo, &t2, &b_full, &eps, nocc, nvir, first_occ, nocc_total);
         let analytic_norm = g_analytic.iter().map(|x| x * x).sum::<f64>().sqrt();
         eprintln!("Independently recomputed analytic |g| at convergence: {:.2e}", analytic_norm);
 
@@ -1923,11 +2016,11 @@ mod tests {
         let f_mo = c.t().dot(&f_ao).dot(c);
 
         let g_full = compute_orbital_gradient_panelled(
-            &f_mo, &t2, &b_full, nocc, nvir, first_occ, nocc_total, nvir,
+            &f_mo, &t2, &b_full, &eps, nocc, nvir, first_occ, nocc_total, nvir,
         );
         for panel in [1usize, 2, 3] {
             let g_p = compute_orbital_gradient_panelled(
-                &f_mo, &t2, &b_full, nocc, nvir, first_occ, nocc_total, panel,
+                &f_mo, &t2, &b_full, &eps, nocc, nvir, first_occ, nocc_total, panel,
             );
             let maxdiff = (&g_full - &g_p).iter().map(|v| v.abs()).fold(0.0, f64::max);
             assert!(
@@ -2099,7 +2192,7 @@ mod tests {
             let pool = rayon::ThreadPoolBuilder::new().num_threads(n).build().unwrap();
             pool.install(|| {
                 compute_orbital_gradient_panelled(
-                    &f_mo, &t2, &b_full, nocc, nvir, first_occ, nocc_total, 3,
+                    &f_mo, &t2, &b_full, &eps, nocc, nvir, first_occ, nocc_total, 3,
                 )
             })
         };
