@@ -59,6 +59,30 @@ hit a timeout:
     whoever reviews) that the gate was bypassed, not silently passed. Never
     treat a `--no-verify` push as equivalent to a green gate.
 
+**Complexity regression check (Step 3)**: alongside tests/clippy, the gate
+also runs `complexity_gate.py`, which uses `rust-code-analysis-cli` (install
+via `cargo install rust-code-analysis-cli --locked`) to compute per-function
+cyclomatic complexity (CC) and maintainability index (MI) across `crates/`
+and compare them against a checked-in snapshot (`complexity_baseline.json`).
+This is deliberately a **regression tracker, not an absolute threshold** --
+this repo already tolerates high-CC numerical kernels that mirror the
+underlying physics (`solve_rhf` CC=134, etc. -- see the `too_many_arguments`
+allow-list rationale above), so an absolute ceiling would either catch
+nothing or immediately fail on already-accepted code. The gate instead fails
+only when a function gets *worse* than its baseline by more than a small
+noise tolerance, or when a brand-new function appears with complexity far
+above the codebase's own historical worst-case. If a regression is a
+deliberate, reviewed change (a genuine refactor or an intentionally-grown
+function), regenerate the baseline and commit it alongside the change so the
+shift is visible in review:
+
+```
+python3 scripts/complexity_gate.py --update-baseline
+```
+
+This step **soft-skips** (does not fail the gate) if `rust-code-analysis-cli`
+isn't installed, or if `CI_GATE_SKIP_COMPLEXITY=1` is set.
+
 ## What belongs in git
 
 - **Reference generators** (`gen_pyscf_*.py`, `cc/`, `cpks/`, `minimax/`): scripts
@@ -68,8 +92,9 @@ hit a timeout:
   scripts, input geometries/TOMLs, and the *final* results (JSON/CSV/MD) plus
   curated evidence files that docs cite. Each sweep dir must keep the scripts
   that regenerate it.
-- **The CI gate** (`ci-gate.sh`, `install-hooks.sh`): the only local
-  correctness-gate mechanism this repo has (see above). Always committed.
+- **The CI gate** (`ci-gate.sh`, `install-hooks.sh`, `complexity_gate.py`,
+  `complexity_baseline.json`): the only local correctness-gate mechanism this
+  repo has (see above). Always committed.
 
 ## What does NOT belong in git
 

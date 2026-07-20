@@ -34,6 +34,20 @@
 #                          leave headroom on a shared box).
 #   CI_GATE_SKIP_CLIPPY=1  skip the clippy step (test-only gate).
 #   CI_GATE_SKIP_TESTS=1   skip the test step (clippy-only gate).
+#   CI_GATE_SKIP_COMPLEXITY=1  skip the complexity-regression step.
+#
+# Step 3, complexity regression (scripts/complexity_gate.py): tracks
+# cyclomatic complexity (CC) and maintainability index (MI) per function via
+# `rust-code-analysis-cli` (install: `cargo install rust-code-analysis-cli`)
+# against a checked-in baseline (scripts/complexity_baseline.json). This is
+# NOT an absolute threshold -- several SCF/RPA numerical kernels are already
+# legitimately complex (CC 100-134) and explicitly out of scope for
+# splitting, same reasoning as the too_many_arguments allow-list above. The
+# gate only fails on a REGRESSION (a function getting worse vs. baseline, or
+# a brand-new function appearing above a generous ceiling) -- see the
+# script's own doc comment for the full rationale. Soft-skips (does not fail
+# the gate) if rust-code-analysis-cli isn't installed, since it's a
+# machine-local dev tool, not a workspace dependency.
 
 set -uo pipefail
 
@@ -205,6 +219,34 @@ for line in sys.stdin:
     rm -f "$CLIPPY_JSON"
 else
     echo "-- cargo clippy: SKIPPED (CI_GATE_SKIP_CLIPPY=1) --"
+fi
+echo
+
+# ---- 3. complexity regression (CC/MI vs. checked-in baseline) ----------
+# Soft-skip (does not set FAILED) if the tool isn't installed -- this is a
+# machine-local dev tool (`cargo install rust-code-analysis-cli`), not a
+# workspace dependency every contributor is required to have. A missing
+# baseline file also soft-skips (first run before anyone has generated one).
+if [[ "${CI_GATE_SKIP_COMPLEXITY:-0}" != "1" ]]; then
+    echo "-- complexity regression (scripts/complexity_gate.py) --"
+    if command -v rust-code-analysis-cli >/dev/null 2>&1; then
+        if python3 "$REPO_ROOT/scripts/complexity_gate.py"; then
+            echo "-- complexity regression: PASS --"
+        else
+            RC=$?
+            if [[ $RC -eq 2 ]]; then
+                echo "-- complexity regression: SKIPPED (see message above) --"
+            else
+                echo "-- complexity regression: FAIL --"
+                FAILED=1
+            fi
+        fi
+    else
+        echo "-- complexity regression: SKIPPED (rust-code-analysis-cli not installed;"
+        echo "   cargo install rust-code-analysis-cli to enable this check locally) --"
+    fi
+else
+    echo "-- complexity regression: SKIPPED (CI_GATE_SKIP_COMPLEXITY=1) --"
 fi
 echo
 
