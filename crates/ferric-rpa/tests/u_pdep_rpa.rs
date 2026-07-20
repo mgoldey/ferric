@@ -142,6 +142,38 @@ fn u_pdep_rpa_oh_matches_pyscf() {
 }
 
 #[test]
+fn u_pdep_rpa_ch3_matches_pyscf() {
+    // CH3 methyl radical (planar D3h, C-H=1.079 A) / cc-pVDZ, pinned to
+    // PySCF U-RI-RPA reference (testdata/reference/ch3_cc-pvdz_u-rpa.json,
+    // scripts/gen_pyscf_u_rpa_ref.py). Same geometry as the U-G0W0 row's
+    // PySCF cross-check (scripts/gw100/geom_radicals/ch3.xyz) -- widens
+    // U-PDEP-RPA past H-atom/OH to a multi-atom, heavier-center-atom system.
+    // PySCF: E_scf = -39.5638067649, E_c = -0.1732762583.
+    let ctx = ParallelContext::default();
+    let xyz = "4\nch3\nC 0 0 0\nH 1.079 0 0\nH -0.5395 0.934441 0\nH -0.5395 -0.934441 0\n";
+    let mol = Molecule::parse_xyz(xyz, 0, 2).unwrap();
+    let obs_bs = basis::bundled("cc-pvdz").unwrap();
+    let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
+    let op = Operator::coulomb();
+    let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+    let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
+    let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+    let uhf_cfg = UhfConfig {
+        energy_conv: 1e-10,
+        density_conv: 1e-8,
+        max_iter: 200,
+        ..Default::default()
+    };
+    let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &uhf_cfg).unwrap();
+    let cfg = cfg_full_basis();
+    let r = run_u_pdep_rpa(&mol, &obs, &dfbs, op, &uhf, &cfg).unwrap();
+    assert!((uhf.energy - (-39.5638067649)).abs() < 1e-4,
+            "UHF E disagree: ferric {}, pyscf -39.56381", uhf.energy);
+    assert!((r.e_rpa - (-0.1732762583)).abs() < 1e-4,
+            "U-RPA E_c disagree: ferric {}, pyscf -0.17328", r.e_rpa);
+}
+
+#[test]
 fn u_pdep_rpa_rohf_reference_runs() {
     // ROHF-RPA: same dispatch as U-RPA (per-spin α and β MO blocks), just
     // using the spin-pure Guest-Saunders ROHF reference instead of UHF.

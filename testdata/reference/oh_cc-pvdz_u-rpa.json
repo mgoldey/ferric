@@ -4,9 +4,9 @@
   "aux_basis": "cc-pvdz-ri",
   "mult": 2,
   "scf_method": "uhf",
-  "scf_energy": -75.39383892655532,
-  "e_rpa": -0.18451164407464068,
-  "total_energy": -75.57835057062996,
+  "scf_energy": -75.39383892655535,
+  "e_rpa": -0.18451164407464019,
+  "total_energy": -75.57835057063,
   "n_quad": 20,
   "u0": 0.5,
   "method": "u-pdep-rpa"

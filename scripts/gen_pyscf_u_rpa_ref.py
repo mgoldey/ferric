@@ -136,6 +136,15 @@ cases = [
     # (output stub, atom, basis, aux_basis, 2S, mult, charge)
     ("h_cc-pvdz_u-rpa",  "H 0 0 0",          "cc-pvdz", "cc-pvdz-ri", 1, 2, 0),
     ("oh_cc-pvdz_u-rpa", "O 0 0 0; H 0 0 0.97", "cc-pvdz", "cc-pvdz-ri", 1, 2, 0),
+    # CH3 methyl radical, planar D3h, C-H=1.079 A -- same geometry as the
+    # U-G0W0 row's PySCF cross-check (scripts/gw100/geom_radicals/ch3.xyz).
+    # Multi-atom (not diatomic), heavier center atom than H/OH.
+    ("ch3_cc-pvdz_u-rpa",
+     "C 0.000000 0.000000 0.000000; "
+     "H 1.079000 0.000000 0.000000; "
+     "H -0.539500 0.934441 0.000000; "
+     "H -0.539500 -0.934441 0.000000",
+     "cc-pvdz", "cc-pvdz-ri", 1, 2, 0),
     # Cation comparison vs ferric GW100 driver — same geometry (Bohr→Angstrom-equivalent
     # taken from the driver's literal angstrom values, since ferric parse_xyz treats the
     # XYZ block as angstroms by default).
