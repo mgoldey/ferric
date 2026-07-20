@@ -425,6 +425,14 @@ pub fn solve_uhf_fockmod(
             );
         }
 
+        // Live per-iteration progress (see solve_rhf's identical block for the
+        // full rationale). STDOUT, opt-in via `config.verbose`, rank-0-only.
+        if config.verbose && ctx.is_root() {
+            println!(
+                "UHF iter={iter:4}  E={energy:.10}  dE={de:.3e}  dp_rms={dp_rms:.3e}  err_max={err_max:.3e}"
+            );
+        }
+
         // Convergence: energy + total-density change (ΔP), the same
         // ORCA/PySCF gate as solve_rhf — NOT the DIIS commutator, which parks on
         // the naux-dependent RI noise floor and never drains. See

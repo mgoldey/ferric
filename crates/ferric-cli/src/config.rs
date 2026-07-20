@@ -520,6 +520,14 @@ pub struct ScfCfg {
     /// at `build_ladder` time.
     #[serde(default)]
     pub ladder: Vec<LadderRungCfg>,
+    /// Print one line per SCF iteration to stdout while the job runs (energy,
+    /// ΔE, density/DIIS error) — live progress for a long-running job. Default
+    /// `false` (unchanged, silent-until-done output). The CLI's `--verbose`/
+    /// `-v` flag ORs into this, so either the TOML key or the flag turns it on;
+    /// this key lets a queued/batch job opt in without changing the invocation
+    /// command. See `ferric_scf::rhf::RhfConfig::verbose`.
+    #[serde(default)]
+    pub verbose: bool,
 }
 
 impl Default for ScfCfg {
@@ -545,6 +553,7 @@ impl Default for ScfCfg {
             level_shift: None,
             mom_after_iter: 0,
             ladder: Vec::new(),
+            verbose: false,
         }
     }
 }

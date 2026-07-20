@@ -503,6 +503,17 @@ pub fn solve_rohf(
             );
         }
 
+        // Live per-iteration progress (see solve_rhf's identical block for the
+        // full rationale). STDOUT, opt-in via `config.verbose`, rank-0-only.
+        // Uses dp_rms/dp_max (same ΔP quantities `scf_converged` gates on
+        // above) rather than the ROHFTRACE-specific per-block gradients, for a
+        // format consistent with the RHF/UHF verbose line.
+        if config.verbose && ctx.is_root() {
+            println!(
+                "ROHF iter={iter:4}  E={energy:.10}  dE={de:.3e}  dp_rms={dp_rms:.3e}  err_max={err_max:.3e}"
+            );
+        }
+
         if iter > 1 && converged {
             let (eps, c_f) = diagonalize(&f_eff, &s_inv_sqrt)?;
             let (d_a_f, d_b_f) = build_rohf_densities(&c_f, nocc_double, nocc_open);

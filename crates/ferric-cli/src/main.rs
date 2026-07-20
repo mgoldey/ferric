@@ -44,10 +44,14 @@ where
 }
 
 fn print_usage() {
-    eprintln!("usage: ferric <input.toml>");
+    eprintln!("usage: ferric [--verbose|-v] <input.toml>");
     eprintln!();
     eprintln!("Run a ferric quantum-chemistry calculation from a TOML input file.");
     eprintln!("See examples/*.toml for sample inputs and docs/quickstart.md for a walkthrough.");
+    eprintln!();
+    eprintln!("  --verbose, -v   Print one line per SCF iteration to stdout (energy, dE,");
+    eprintln!("                  density/DIIS error) as the job runs. Same effect as setting");
+    eprintln!("                  `verbose = true` in the [scf] TOML section.");
 }
 
 /// Epistemic-status warnings for `method.kind` values that are graded Smoke
@@ -117,17 +121,35 @@ fn main() {
         print_usage();
         std::process::exit(if args.len() < 2 { 2 } else { 0 });
     }
-    if args.len() != 2 {
-        eprintln!("usage: ferric <input.toml>");
-        std::process::exit(2);
+    // Accept the positional TOML path plus an optional `--verbose`/`-v` flag,
+    // in either order (`ferric -v input.toml` or `ferric input.toml -v`).
+    // `-v`/`--verbose` sets RhfConfig.verbose (live per-iteration SCF
+    // progress on stdout) in addition to (not instead of) `[scf] verbose`
+    // in the TOML — either one turns it on.
+    let mut toml_path: Option<&str> = None;
+    let mut cli_verbose = false;
+    for arg in &args[1..] {
+        match arg.as_str() {
+            "--verbose" | "-v" => cli_verbose = true,
+            other if toml_path.is_none() => toml_path = Some(other),
+            _ => {
+                eprintln!("usage: ferric [--verbose|-v] <input.toml>");
+                std::process::exit(2);
+            }
+        }
     }
-    let cfg = match load_config(&args[1]) {
+    let Some(toml_path) = toml_path else {
+        eprintln!("usage: ferric [--verbose|-v] <input.toml>");
+        std::process::exit(2);
+    };
+    let mut cfg = match load_config(toml_path) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("error: {e}");
             std::process::exit(1);
         }
     };
+    cfg.scf.verbose = cfg.scf.verbose || cli_verbose;
     let method = cfg.method.kind.as_str();
     let task = cfg.method.task.as_str();
     if !matches!(method, "rhf" | "uhf" | "rohf" | "ksdft" | "rimp2" | "mp3" | "oo-rimp2" | "att-rimp2" | "scs-mp2" | "scs-mp2-2terfc" | "laplace-mp2" | "pdep-rpa" | "rs-mp2-rpa" | "gw" | "bse-tda" | "tdhf-static-polarizability" | "ccsd") {
@@ -258,6 +280,7 @@ fn main() {
         // CLI-level PcmConfig (mirroring the [external_potential] section)
         // is a natural follow-up, out of scope for the initial PCM landing.
         pcm: None,
+        verbose: cfg.scf.verbose,
     };
 
     if task == "optimize" {

@@ -157,6 +157,17 @@ pub struct RhfConfig {
     /// solvent models); using both simultaneously is not validated and not
     /// currently prevented at the type level — callers should pick one.
     pub pcm: Option<ferric_pcm::PcmConfig>,
+    /// When `true`, print one line per SCF iteration to stdout (iteration
+    /// number, energy, ΔE, and the same dp_rms/dp_max/err_max quantities
+    /// `scf_converged` already gates on) — live progress for a user watching
+    /// a long-running job (DF-B3LYP on a medium molecule, or under MPI).
+    /// Default `false`: byte-identical to today's silent-until-done output.
+    /// Distinct from the pre-existing `FERRIC_SCF_TRACE`/`FERRIC_ROHF_TRACE`
+    /// env-only debug toggles (`scf_trace()`/`rohf_trace()`), which print
+    /// additional internal diagnostics to stderr and are unaffected by this
+    /// field. Under MPI, only rank 0 prints (see `ctx.is_root()` at the print
+    /// site) so ranks > 0 never duplicate the trace.
+    pub verbose: bool,
 }
 
 impl Default for RhfConfig {
@@ -204,6 +215,7 @@ impl Default for RhfConfig {
             external_potential: None,
             cosmo: None,
             pcm: None,
+            verbose: false,
         }
     }
 }
@@ -762,6 +774,18 @@ pub fn solve_rhf(
                 "SCF iter={iter:4}  E={energy:.12}  dE={de:.3e}  \
                  dp_rms={dp_rms:.3e}  dp_max={dp_max:.3e}  \
                  |g|_rms={grad_rms:.3e}  err_max={err_max:.3e}"
+            );
+        }
+
+        // Live per-iteration progress for a user watching a long-running job
+        // (opt-in via `config.verbose` — RhfConfig field, CLI `--verbose`/`-v`,
+        // or TOML `[scf] verbose = true`). Printed to STDOUT (normal-operation
+        // progress, not a warning) unlike the FERRIC_SCF_TRACE debug channel
+        // above (stderr, separately gated, unaffected by this flag). Under MPI
+        // only rank 0 prints, so ranks > 0 never emit duplicate lines.
+        if config.verbose && ctx.is_root() {
+            println!(
+                "SCF iter={iter:4}  E={energy:.10}  dE={de:.3e}  dp_rms={dp_rms:.3e}  err_max={err_max:.3e}"
             );
         }
 
@@ -1536,6 +1560,53 @@ mod tests {
         let config = RhfConfig { external_potential: None, ..Default::default() };
         let b = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
         assert_eq!(a.energy, b.energy);
+    }
+
+    #[test]
+    fn verbose_false_matches_default_exactly() {
+        // `verbose: false` (the default) must be byte-identical to a plain
+        // run — the same convention external_potential/cosmo/pcm follow for
+        // their own None/off defaults. Confirms the new opt-in trace field
+        // does not perturb the SCF numerics or convergence path at all.
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+        let bs = ferric_core::basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ParallelContext::default();
+
+        let a = solve_rhf(&ctx, &mol, &prep, op, &bounds, &RhfConfig::default()).unwrap();
+        let config = RhfConfig { verbose: false, ..Default::default() };
+        let b = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
+        assert_eq!(a.energy, b.energy);
+        assert_eq!(a.iterations, b.iterations);
+        assert_eq!(a.converged, b.converged);
+    }
+
+    #[test]
+    fn verbose_true_does_not_change_energy_or_convergence() {
+        // `verbose: true` only adds a stdout print each iteration; it must
+        // not change the SCF trajectory (same iteration count, same final
+        // energy) relative to verbose: false. Also exercises the
+        // `config.verbose && ctx.is_root()` branch so it is covered by a
+        // normal `cargo test` run (no subprocess / stdout capture needed —
+        // the CLI-level `verbose_trace.rs` integration test covers the
+        // actual printed text end-to-end).
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+        let bs = ferric_core::basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ParallelContext::default();
+
+        let quiet = solve_rhf(&ctx, &mol, &prep, op, &bounds, &RhfConfig::default()).unwrap();
+        let config = RhfConfig { verbose: true, ..Default::default() };
+        let loud = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
+        assert_eq!(quiet.energy, loud.energy);
+        assert_eq!(quiet.iterations, loud.iterations);
+        assert_eq!(quiet.converged, loud.converged);
     }
 
     #[test]
