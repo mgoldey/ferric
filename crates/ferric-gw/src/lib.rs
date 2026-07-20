@@ -69,6 +69,13 @@ pub struct GwConfig {
     /// `PdepRpaConfig`/`RiMp2Config` transforms. `None` → resolved via
     /// [`ferric_core::memory::resolve_budget_bytes`].
     pub memory_budget_bytes: Option<usize>,
+    /// Print one line per evGW/evGW₀ outer (eigenvalue self-consistency)
+    /// iteration to stdout while the job runs (iteration number, max QP
+    /// energy change) — live progress for a long-running job, opt-in and
+    /// additive. Default `false` (unchanged, silent-until-done output).
+    /// Mirrors `ferric_scf::rhf::RhfConfig::verbose`. No-op for G0W0/COHSEX
+    /// (non-iterative — there is no outer loop to trace).
+    pub verbose: bool,
 }
 
 impl Default for GwConfig {
@@ -82,6 +89,7 @@ impl Default for GwConfig {
             qp_newton_damp: 1.0,
             frozen_core: 0,
             memory_budget_bytes: None,
+            verbose: false,
         }
     }
 }

@@ -99,6 +99,7 @@ fn pdep_cfg() -> PdepRpaConfig {
         sternheimer: SternheimerConfig::default(),
         memory_budget_bytes: None,
         need_inv_dielectric_freq: false, // run_gw/run_u_gw force this on
+        verbose: false,
     }
 }
 

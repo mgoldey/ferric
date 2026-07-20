@@ -71,7 +71,7 @@ fn main() {
             // Pre-T12 production path: full naux-wide identity seed.
             let seed = Array2::<f64>::eye(naux);
             let max_iter = 3 * naux / naux.max(1) + 8;
-            let res = run_lanczos_seeded(seed, &matvec, naux, max_iter, 1e-10).unwrap();
+            let res = run_lanczos_seeded(seed, &matvec, naux, max_iter, 1e-10, false).unwrap();
             (res.eigenvalues.len(), res.eigenvalues.first().copied().unwrap_or(0.0))
         }
         "new" => {

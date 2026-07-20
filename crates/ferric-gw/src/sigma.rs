@@ -497,6 +497,14 @@ pub fn run_evgw0(
             qp_converged[idx] = converged;
         }
         iter_done = it + 1;
+        // Live per-iteration progress (see RhfConfig.verbose's doc for the
+        // full rationale). STDOUT, opt-in via `gw_cfg.verbose`.
+        if gw_cfg.verbose {
+            println!(
+                "evGW0 iter={it:4}  max|d_eps_qp|={max_dev:.3e}  ev_conv_thresh={:.3e}",
+                gw_cfg.ev_conv_thresh
+            );
+        }
         if max_dev < gw_cfg.ev_conv_thresh {
             outer_converged = true;
             break;
@@ -657,6 +665,14 @@ pub fn run_evgw(
             qp_converged[idx] = converged;
         }
         iter_done = it + 1;
+        // Live per-iteration progress (see RhfConfig.verbose's doc for the
+        // full rationale). STDOUT, opt-in via `gw_cfg.verbose`.
+        if gw_cfg.verbose {
+            println!(
+                "evGW  iter={it:4}  max|d_eps_qp|={max_dev:.3e}  ev_conv_thresh={:.3e}",
+                gw_cfg.ev_conv_thresh
+            );
+        }
         if max_dev < gw_cfg.ev_conv_thresh && it > 0 {
             outer_converged = true;
             break;

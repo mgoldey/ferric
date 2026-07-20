@@ -40,6 +40,7 @@ fn pdep_cfg() -> PdepRpaConfig {
         sternheimer: SternheimerConfig::default(),
         memory_budget_bytes: None,
         need_inv_dielectric_freq: false,
+        verbose: false,
     }
 }
 
@@ -73,6 +74,7 @@ fn hf_gw_diagonal_is_stable_water() {
         qp_newton_damp: 1.0,
         frozen_core: 0,
         memory_budget_bytes: None,
+        verbose: false,
     };
     let gw = run_gw(&mol, &obs, &dfbs, op, &rhf, &pdep_cfg(), &gw_cfg, None).unwrap();
     let mut eps_qp = rhf.eps_r().to_vec();

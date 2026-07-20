@@ -422,6 +422,7 @@ pub(crate) fn run_pdep_rpa_eigensolve(
                 naux,
                 max_iter,
                 config.eigensolver_conv_thresh,
+                config.verbose,
             )?;
             if !lz.converged {
                 eprintln!(

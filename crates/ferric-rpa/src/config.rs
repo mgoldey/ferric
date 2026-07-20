@@ -221,6 +221,14 @@ pub struct PdepRpaConfig {
     /// Default `false` — set `true` at every call site that later reads
     /// `PdepRpaResult.inv_dielectric_freq`.
     pub need_inv_dielectric_freq: bool,
+    /// Print one line per Lanczos/Davidson outer iteration to stdout while
+    /// the static dielectric eigensolve runs (iteration number, block size,
+    /// worst Ritz residual) — live progress for a long-running job, opt-in
+    /// and additive. Default `false` (unchanged, silent-until-done output).
+    /// Mirrors `ferric_scf::rhf::RhfConfig::verbose`; only the Lanczos path
+    /// (the default `Eigensolver`) currently consumes this — see
+    /// `lanczos::run_lanczos_seeded`.
+    pub verbose: bool,
 }
 
 impl Default for PdepRpaConfig {
@@ -238,6 +246,7 @@ impl Default for PdepRpaConfig {
             chi0_sparsity: Chi0Sparsity::Dense,
             memory_budget_bytes: None,
             need_inv_dielectric_freq: false,
+            verbose: false,
         }
     }
 }

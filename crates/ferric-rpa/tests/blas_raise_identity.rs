@@ -63,7 +63,7 @@ fn lanczos_identical_across_blas_thread_counts_via_umbrella() {
     let matvec = |v: &Array2<f64>| a.dot(v);
     let seed = Array2::<f64>::eye(3);
 
-    let run = || run_lanczos_seeded(seed.clone(), matvec, 3, 50, 1e-10).unwrap();
+    let run = || run_lanczos_seeded(seed.clone(), matvec, 3, 50, 1e-10, false).unwrap();
 
     let baseline = run();
 

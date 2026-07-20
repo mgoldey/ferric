@@ -33,6 +33,7 @@ fn pdep_cfg() -> PdepRpaConfig {
         sternheimer: SternheimerConfig::default(),
         memory_budget_bytes: None,
         need_inv_dielectric_freq: false, // energy-only attenuated-RPA (M9 gate)
+        verbose: false,
     }
 }
 

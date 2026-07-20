@@ -552,6 +552,7 @@ fn run_oo_rimp2(
     let oo_config = OoRiMp2Config {
         frozen_core: cfg.mp2.frozen_core,
         memory_budget_bytes: budget_bytes,
+        verbose: cfg.scf.verbose,
         ..Default::default()
     };
     let oo_result = oo_ri_mp2(mol, prep, &dfbs, op, bounds, result, &oo_config)
@@ -948,6 +949,7 @@ fn run_pdep_rpa_arm(
             // consume the inverse-dielectric stack rebuild their own
             // dielectric, so energy-only here is correct (M9 gate).
             need_inv_dielectric_freq: false,
+            verbose: cfg.scf.verbose,
         };
         // For open-shell molecules (multiplicity > 1) re-run with UHF + MOM so
         // the reference is converged, then dispatch to the unrestricted RPA.
@@ -1637,6 +1639,7 @@ fn run_gw(
             // here (GW's Σ_c needs the inverse-dielectric stack), but set
             // it explicitly for clarity at the call site too.
             need_inv_dielectric_freq: true,
+            verbose: cfg.scf.verbose,
         };
         let gw_cfg = ferric_gw::GwConfig {
             method: gw_method,
@@ -1647,6 +1650,9 @@ fn run_gw(
             qp_newton_damp: cfg.gw.qp_newton_damp.unwrap_or(1.0),
             frozen_core: gw_frozen_core,
             memory_budget_bytes: budget_bytes,
+            // Reuse the single CLI-wide `--verbose`/`-v` flag / `[scf]
+            // verbose` TOML key rather than adding a parallel `[gw] verbose`.
+            verbose: cfg.scf.verbose,
         };
         let ha_to_ev = 27.211_386_245_988_f64;
         if mol.multiplicity > 1 {
@@ -1925,6 +1931,7 @@ fn run_bse_tda(
             // of what's set here; set it explicitly for clarity at the call
             // site too (matches the "gw" arm).
             need_inv_dielectric_freq: true,
+            verbose: cfg.scf.verbose,
         };
         let ha_to_ev = 27.211_386_245_988_f64;
         let bse = ferric_gw::bse::run_bse_tda(
@@ -2029,6 +2036,7 @@ fn run_tdhf_static_polarizability(
             // modes from run_pdep_rpa only) -- unlike "gw"/"bse-tda",
             // this does NOT need the inverse-dielectric frequency stack.
             need_inv_dielectric_freq: false,
+            verbose: cfg.scf.verbose,
         };
         let res = ferric_gw::bse::run_rpax_static_polarizability(
             mol, prep, &dfbs, op, result, &rpa_cfg, frozen_core, scissor,
@@ -2203,6 +2211,7 @@ fn run_optimize(
                 memory_budget_bytes: budget_bytes,
                 // CLI RPA optimize is energy/gradient only (M9 gate).
                 need_inv_dielectric_freq: false,
+                verbose: cfg.scf.verbose,
             };
             let h_fd = 5e-4;
             let opt_result =

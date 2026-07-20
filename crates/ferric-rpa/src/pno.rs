@@ -253,7 +253,7 @@ pub fn run_pdep_rpa_osv(
         crate::sternheimer::dielectric_apply(v, &b_ref, &eo, &ev, 0.0)
     };
     let lz = lanczos::run_lanczos_seeded(
-        seed, matvec, naux, max_iter, config.eigensolver_conv_thresh,
+        seed, matvec, naux, max_iter, config.eigensolver_conv_thresh, config.verbose,
     )?;
     if !lz.converged {
         eprintln!(

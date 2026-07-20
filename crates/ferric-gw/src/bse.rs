@@ -202,6 +202,7 @@ pub fn run_bse_tda(
         qp_newton_damp: 1.0,
         frozen_core,
         memory_budget_bytes: pdep_cfg.memory_budget_bytes,
+        verbose: pdep_cfg.verbose,
     };
     let gw = run_gw(mol, obs, dfbs, op, rhf, pdep_cfg, &gw_cfg, None)?;
 
@@ -534,6 +535,7 @@ pub fn run_bse_c6(
         qp_newton_damp: 1.0,
         frozen_core,
         memory_budget_bytes: pdep_cfg.memory_budget_bytes,
+        verbose: pdep_cfg.verbose,
     };
     let gw = run_gw(mol, obs, dfbs, op, rhf, pdep_cfg, &gw_cfg, None)?;
     let mut eps_qp = rhf.eps_r().to_vec();

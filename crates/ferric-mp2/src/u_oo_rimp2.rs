@@ -42,6 +42,12 @@ pub struct UOoRiMp2Config {
     pub use_diis: bool,
     /// Cap on |κ| per element (radians) to keep steps in the trust region.
     pub max_kappa: f64,
+    /// Print one line per orbital-optimization iteration to stdout while the
+    /// job runs (HF/MP2/total energy, per-spin gradient norms) — live progress
+    /// for a long-running job, opt-in and additive. Default `false`
+    /// (unchanged, silent-until-done output). Mirrors
+    /// `OoRiMp2Config::verbose` (the closed-shell counterpart).
+    pub verbose: bool,
 }
 
 impl Default for UOoRiMp2Config {
@@ -55,6 +61,7 @@ impl Default for UOoRiMp2Config {
             diis_size: 6,
             use_diis: true,
             max_kappa: 0.3,
+            verbose: false,
         }
     }
 }
@@ -329,10 +336,15 @@ pub fn u_oo_ri_mp2(
         let gn2_b: f64 = g_b_act.iter().map(|x| x * x).sum();
         grad_norm = (gn2_a + gn2_b).sqrt();
 
-        eprintln!(
-            "U-OO-RI-MP2 iter {:3}: E_HF={:.10} E_MP2={:.10} E_tot={:.10} |g|={:.2e} (|g_a|={:.2e} |g_b|={:.2e})",
-            iter, e_hf, e_mp2, total_energy, grad_norm, gn2_a.sqrt(), gn2_b.sqrt()
-        );
+        // Live per-iteration progress; STDOUT, opt-in via `config.verbose`.
+        // See `OoRiMp2Config::verbose` / `RhfConfig::verbose` for the
+        // convention this mirrors.
+        if config.verbose {
+            println!(
+                "U-OO-RI-MP2 iter {:3}: E_HF={:.10} E_MP2={:.10} E_tot={:.10} |g|={:.2e} (|g_a|={:.2e} |g_b|={:.2e})",
+                iter, e_hf, e_mp2, total_energy, grad_norm, gn2_a.sqrt(), gn2_b.sqrt()
+            );
+        }
 
         if grad_norm < config.grad_conv {
             return Ok(UOoRiMp2Result {

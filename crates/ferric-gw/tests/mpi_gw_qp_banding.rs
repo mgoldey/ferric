@@ -114,6 +114,7 @@ fn pdep_cfg() -> PdepRpaConfig {
         sternheimer: SternheimerConfig::default(),
         memory_budget_bytes: None,
         need_inv_dielectric_freq: true, // GW's Σ_c requires this
+        verbose: false,
     }
 }
 

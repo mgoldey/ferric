@@ -131,6 +131,7 @@ fn probe(case: &Case, obs_name: &str, dfbs_name: &str) {
         // run_gw forces this on internally (gw::with_inv_dielectric); standalone
         // RPA uses here are energy-only, so stay lean per M9.
         need_inv_dielectric_freq: false,
+        verbose: false,
     };
     let gcfg = GwConfig { method: GwMethod::G0W0, max_ev_iter: 8, ev_conv_thresh: 1e-4, ..Default::default() };
     say!("  G0W0@HF...");

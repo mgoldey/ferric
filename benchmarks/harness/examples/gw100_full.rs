@@ -376,6 +376,7 @@ fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, Cation
         // run_gw forces this on internally (gw::with_inv_dielectric); standalone
         // RPA uses here are energy-only, so stay lean per M9.
         need_inv_dielectric_freq: false,
+        verbose: false,
     };
     // Method-depth by molecule size. The full @HF stack (G0W0+COHSEX+evGW0+
     // evGW×8) plus a second full @PBE GW is ~13 PDEP solves/molecule — on big

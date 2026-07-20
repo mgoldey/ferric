@@ -48,6 +48,13 @@ pub struct OoRiMp2Config {
     /// Optional resident-bytes ceiling for the 3-index MO transform. `None` →
     /// resolved via [`ferric_core::memory::resolve_budget_bytes`].
     pub memory_budget_bytes: Option<usize>,
+    /// Print one line per orbital-optimization iteration to stdout while the
+    /// job runs (HF/MP2/total energy, gradient norm) — live progress for a
+    /// long-running job, opt-in and additive. Default `false` (unchanged,
+    /// silent-until-done output). Mirrors `ferric_scf::rhf::RhfConfig::verbose`;
+    /// the CLI's `--verbose`/`-v` flag ORs into this the same way it does for
+    /// `RhfConfig.verbose`.
+    pub verbose: bool,
 }
 
 impl Default for OoRiMp2Config {
@@ -62,6 +69,7 @@ impl Default for OoRiMp2Config {
             diis_size: 6,
             use_diis: true,
             memory_budget_bytes: None,
+            verbose: false,
         }
     }
 }
@@ -1050,10 +1058,16 @@ pub fn oo_ri_mp2(
         // Check gradient norm
         grad_norm = g.iter().map(|x| x * x).sum::<f64>().sqrt();
 
-        eprintln!(
-            "OO-RI-MP2 iter {:3}: E_HF={:.10} E_MP2={:.10} E_tot={:.10} |g|={:.2e}",
-            iter, e_hf, e_mp2, total_energy, grad_norm
-        );
+        // Live per-iteration progress (see RhfConfig.verbose's doc for the
+        // full rationale). STDOUT, opt-in via `config.verbose`, unlike this
+        // print used to be (unconditional, stderr) before the SCF-style
+        // verbose convention was extended to OO-RI-MP2.
+        if config.verbose {
+            println!(
+                "OO-RI-MP2 iter {:3}: E_HF={:.10} E_MP2={:.10} E_tot={:.10} |g|={:.2e}",
+                iter, e_hf, e_mp2, total_energy, grad_norm
+            );
+        }
 
         if grad_norm < config.grad_conv {
             return Ok(OoRiMp2Result {

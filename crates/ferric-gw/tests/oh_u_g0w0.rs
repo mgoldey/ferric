@@ -69,6 +69,7 @@ fn pdep_cfg() -> PdepRpaConfig {
         sternheimer: SternheimerConfig::default(),
         memory_budget_bytes: None,
         need_inv_dielectric_freq: false, // run_u_gw forces this on (M9 gate)
+        verbose: false,
     }
 }
 

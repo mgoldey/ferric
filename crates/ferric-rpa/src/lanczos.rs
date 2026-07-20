@@ -319,18 +319,24 @@ pub(crate) fn solver_blas_threads_with(get: impl Fn(&str) -> Option<String> + Co
 /// outer BLAS thread count is exactly the oversubscription/stack-overflow
 /// hazard `blas_threads.rs` warns about. A `matvec` that opens rayon without
 /// its own internal re-pin is unsound here.
+/// `verbose`: print one line per outer block iteration to stdout (iteration
+/// number, block size, worst Ritz residual, target threshold) — live
+/// progress for a long-running eigensolve, opt-in and additive. Default
+/// `false` at every call site (`PdepRpaConfig::verbose`, itself default
+/// `false`); mirrors `ferric_scf::rhf::RhfConfig::verbose`'s convention.
 pub fn run_lanczos_seeded<F>(
     seed: Array2<f64>,
     matvec: F,
     n_desired: usize,
     max_iter: usize,
     conv_thresh: f64,
+    verbose: bool,
 ) -> Result<LanczosResult, FerricError>
 where
     F: Fn(&Array2<f64>) -> Array2<f64>,
 {
     let result = with_blas_threads(lanczos_blas_threads(), || {
-        lanczos_iterations(seed, matvec, n_desired, max_iter, conv_thresh)
+        lanczos_iterations(seed, matvec, n_desired, max_iter, conv_thresh, verbose)
     })?;
     if !result.converged {
         eprintln!(
@@ -351,6 +357,7 @@ fn lanczos_iterations<F>(
     n_desired: usize,
     max_iter: usize,
     conv_thresh: f64,
+    verbose: bool,
 ) -> Result<LanczosResult, FerricError>
 where
     F: Fn(&Array2<f64>) -> Array2<f64>,
@@ -535,6 +542,18 @@ where
         let is_last_iter = k + 1 == outer_iters;
         let converged = no_more_expansion || residual_ok || !is_last_iter;
 
+        // Live per-iteration progress for a user watching a long-running PDEP
+        // eigensolve (opt-in via `verbose`, threaded from
+        // `PdepRpaConfig::verbose`). Printed to STDOUT (normal-operation
+        // progress, not a warning), one line per outer block iteration,
+        // mirroring the RHF/UHF/ROHF/OO-RI-MP2 verbose-trace convention.
+        if verbose {
+            println!(
+                "Lanczos iter={k:4}  block={block_size:4}  krylov_dim={tdim:5}  \
+                 max_resid={max_resid:.3e}  conv_thresh={conv_thresh:.3e}"
+            );
+        }
+
         let result = LanczosResult {
             eigenvalues,
             eigenvectors: ritz,
@@ -673,6 +692,7 @@ mod tests {
             4,
             100,
             1e-10,
+            false,
         ).unwrap();
 
         // Expected top 4 by |λ − 1| descending: 10.0, 5.0, 0.01, 2.0 (|9|, |4|, |0.99|, |1|)
@@ -763,6 +783,7 @@ mod tests {
             naux,
             naux + 4,
             1e-12,
+            false,
         )
         .unwrap();
 
@@ -827,6 +848,7 @@ mod tests {
             naux,
             naux + 4, // ample outer-iteration budget
             1e-10,
+            false,
         )
         .unwrap();
         assert!(res.converged, "expected convergence with a generous iteration budget");
@@ -864,6 +886,7 @@ mod tests {
             naux, // n_desired = full naux, unreachable from a 4-wide block in 1 step
             1,    // max_iter = 1
             1e-14,
+            false,
         )
         .unwrap();
         assert!(
