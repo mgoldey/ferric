@@ -232,6 +232,29 @@ cargo build --release
 cargo test --workspace
 ```
 
+### Debug vs. Release builds
+
+```bash
+# Debug build (fast to compile, slow to run) -- for iterating on Rust code
+# and catching debug_assert!/overflow bugs during development
+cargo build --workspace
+cargo run -- examples/water-rhf.toml
+
+# Release build (slow to compile, fast to run) -- for anything you'll
+# actually wait on: real molecules, benchmarks, RPA/GW/CC jobs
+cargo build --release --workspace
+cargo run --release -- examples/water-rhf.toml
+```
+
+A debug SCF/RPA/GW run can be one to two orders of magnitude slower than
+release (no LTO/opt, plus active overflow and `debug_assert!` checks) --
+debug builds are for compile-edit-test loops on small systems (H2/STO-3G,
+water), not for anything you'd want a real energy from. `cargo test
+--workspace` runs against debug builds by default; add `--release` if a slow
+test needs it. Always set `OPENBLAS_NUM_THREADS=1` for both build kinds when
+running tests or jobs (see [Testing](#testing) below) -- BLAS>1 under this
+crate's rayon parallelism is known to segfault or slow down significantly.
+
 ### Optional: distributed-memory MPI (`--features mpi`)
 
 MPI support (distributed DF-JK aux-band striping across ranks/nodes) is behind
@@ -321,14 +344,14 @@ Note: `uv run maturin develop --release` overwrites the symlink with a fresh cop
 ## Testing
 
 ```bash
-# All workspace tests
-cargo test --workspace
+# All workspace tests (OPENBLAS_NUM_THREADS=1 -- see note above)
+OPENBLAS_NUM_THREADS=1 cargo test --workspace
 
 # Specific crate
-cargo test -p ferric-scf
+OPENBLAS_NUM_THREADS=1 cargo test -p ferric-scf
 
 # With output (shows energies and convergence info)
-cargo test --workspace -- --nocapture
+OPENBLAS_NUM_THREADS=1 cargo test --workspace -- --nocapture
 ```
 
 Reference energies validated against PySCF to at least 1e-8 Hartree:
