@@ -295,7 +295,7 @@ fn mp2_relaxed_lagrangian_gradient(
 /// bit-identity test — with fixed precomputed intermediates, independent of the
 /// z-vector/JK pipeline upstream. Returns just the 3c+2c contribution as a
 /// `(natoms, 3)` array; the caller adds it onto the relaxed-density HF gradient.
-fn integral_response_gradient_3c2c(
+pub(crate) fn integral_response_gradient_3c2c(
     mol: &Molecule,
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
