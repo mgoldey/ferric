@@ -1,0 +1,6 @@
+4
+formaldehyde (H2CO) CC3(Full)/aug-cc-pVTZ ground-state geometry, C2v, source: QUESTDB (Loos et al.) geometries/xyz/formaldehyde_1.xyz, Angstrom
+C  0.00000000 0.00000000 -0.60298484
+O  0.00000000 0.00000000 0.60539374
+H  0.00000000 0.93467276 -1.18217429
+H  0.00000000 -0.93467276 -1.18217429

@@ -1,0 +1,23 @@
+# BSE-TDA[G0W0@HF] / aug-cc-pVDZ on acetaldehyde, geometry from the QUESTDB
+# Thiel-set-family subset (testdata/reference/thiel_set_subset.json).
+# See examples/formaldehyde-bse-tda-augdz.toml for the full rationale
+# (basis choice, comparison methodology) -- identical setup, different
+# molecule.
+[molecule]
+xyz = "testdata/molecules/thiel_set/acetaldehyde.xyz"
+
+[basis]
+name = "aug-cc-pvdz"
+
+[method]
+kind = "bse-tda"
+
+[rpa]
+auxbasis = "aug-cc-pvdz-rifit"
+n_quad = 16
+quadrature = "gauss-legendre"
+trunc_thresh = 0.0
+eigensolver_conv_thresh = 1e-7
+
+[gw]
+frozen_core = 0

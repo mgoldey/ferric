@@ -1,0 +1,28 @@
+# BSE-TDA[G0W0@HF] / aug-cc-pVDZ on formaldehyde, geometry from the QUESTDB
+# Thiel-set-family subset (testdata/reference/thiel_set_subset.json,
+# CC3(Full)/aug-cc-pVTZ ground-state geometry). Reference: lowest singlet
+# 1^1A2 (n->pi*, symmetry-forbidden) at 3.966 eV (QUESTDB TBE, cross-checked
+# against Chrayteh/Blondel/Loos/Jacquemin JCTC 2021 to an exact digit match
+# at aug-cc-pVTZ). Uses aug-cc-pVDZ (not cc-pVDZ) to match the literature
+# basis family per docs/bse-tda-benchmark-plan.md Phase 2 section 2.4 --
+# Phase 1's pilot found cc-pVDZ (no diffuse functions) gives apples-to-oranges
+# comparisons against diffuse-basis literature TBEs for Rydberg-sensitive
+# states.
+[molecule]
+xyz = "testdata/molecules/thiel_set/formaldehyde.xyz"
+
+[basis]
+name = "aug-cc-pvdz"
+
+[method]
+kind = "bse-tda"
+
+[rpa]
+auxbasis = "aug-cc-pvdz-rifit"
+n_quad = 16
+quadrature = "gauss-legendre"
+trunc_thresh = 0.0
+eigensolver_conv_thresh = 1e-7
+
+[gw]
+frozen_core = 0

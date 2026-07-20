@@ -1,0 +1,358 @@
+{
+  "_meta": {
+    "description": "Phase 2 (docs/bse-tda-benchmark-plan.md) reference data for a 10-molecule Thiel-set-family subset, spanning pi->pi*, n->pi*, and sigma->pi* chromophore classes, for BSE-TDA benchmarking follow-up work. This is DATA ONLY -- no ferric calculations were run to produce this file.",
+    "created": "2026-07-20",
+    "units": {
+      "geometry": "Angstrom (Cartesian, as given by the source; NOT Bohr)",
+      "excitation_energy": "eV (vertical, at the ground-state equilibrium geometry, i.e. TBE/TBE-2 'best theoretical estimate' convention -- NOT adiabatic/0-0)",
+      "oscillator_strength": "dimensionless, length-gauge (LR-CC3 linear-response, length representation)"
+    },
+    "important_caveat_geometry_source": "The plan doc (docs/bse-tda-benchmark-plan.md sec 2.1) asks specifically for 'the Thiel-set MP2/6-31G(d) geometries' -- i.e. the geometries used in the ORIGINAL Schreiber/Silva-Junior/Sauer/Thiel JCP 128, 134110 (2008) paper and its TBE-2 refinement (Silva-Junior/Schreiber/Sauer/Thiel, JCP 133, 174318 (2010)), which is also what the Jacquemin/Duchemin/Blase JCTC 2015 BSE benchmark paper (the primary comparison target named in the plan) used. Despite substantial search effort (see docs/bse-tda-phase2-sourcing.md), the original Thiel-set MP2/6-31G(d) Cartesian coordinates could NOT be retrieved from an accessible source within this task's time budget -- the JCP 2008 paper itself and its Supporting Information are paywalled/access-gated (AIP 403, PMC/HAL bot-walled), and no third-party mirror of the raw coordinates was found. INSTEAD, this file uses geometries and theoretical-best-estimate (TBE) excitation energies from QUESTDB (Loos, Boggio-Pasqua, Blondel, Lipparini, Jacquemin, J. Chem. Theory Comput. 21, 8010 (2025); github.com/pfloos/QUESTDB), a freely-available, actively-maintained, machine-readable successor/refinement of the same 28-molecule Thiel set, using the SAME molecules but geometries re-optimized at CC3(Full)/aug-cc-pVTZ (not MP2/6-31G(d)) and TBEs computed with more modern, typically higher-order coupled-cluster methods (CCSDTQP/CCSDTQ/CC4, often extrapolated to CBS) than Thiel's original CC3/TZVP TBE-2. This is a legitimate, rigorously-documented, higher-accuracy reference for the SAME molecule/chromophore-class coverage, but it is NOT literally 'the Thiel set' geometries/TBE-2 values the plan doc asked for -- see docs/bse-tda-phase2-sourcing.md for the full accounting of what was and was not found, and why this substitution is flagged (not silently blended in) per the task's explicit instruction not to substitute geometry levels without a clear label.",
+    "primary_source": {
+      "database": "QUESTDB",
+      "citation": "P.-F. Loos, M. Boggio-Pasqua, A. Blondel, F. Lipparini, D. Jacquemin, \"The QUEST database of highly-accurate excitation energies\", J. Chem. Theory Comput. 21, 8010 (2025). DOI: 10.1021/acs.jctc.5c00975. arXiv:2506.11590.",
+      "repository": "https://github.com/pfloos/QUESTDB (commit pulled 2026-07-20)",
+      "per_molecule_files": "geometries/xyz/<molecule>.xyz (Cartesian, Angstrom) and data/json/MAIN/<Molecule>.json (per-state TBE/AVTZ + f [LR-CC3/AVTZ] + method/safe-flag metadata)",
+      "geometry_level": "CC3(Full)/aug-cc-pVTZ, frozen-core NOT applied to the geometry optimization itself (per QUESTDB methodology paper sec on geometries: 'were optimized at high levels of theory, typically CC3')",
+      "tbe_level": "Molecule- and state-specific; typically CCSDTQP or CCSDTQ extrapolated toward CBS, occasionally exFCI for double-excitation character states (see per-state 'method' field below); all 'safe' flags in this file are Y (QUESTDB's own ~50 meV confidence flag) unless noted"
+    },
+    "comparison_target_paper_not_fully_extracted": {
+      "citation": "D. Jacquemin, I. Duchemin, X. Blase, \"Benchmarking the Bethe-Salpeter Formalism on a Standard Organic Molecular Set\", J. Chem. Theory Comput. 11, 3290 (2015). DOI: 10.1021/acs.jctc.5b00304.",
+      "status": "Full per-molecule/per-state BSE@G0W0 and BSE@evGW numeric table for the 28-molecule Thiel set is published ONLY in that paper's Supporting Information PDF (ct5b00304_si_001.pdf), which is behind a PMC proof-of-work JS gate and could not be fetched with available tools. The paper's main text (freely readable via PMC, PMC4504186) gives ONLY aggregate MAE/MSE statistics for the full Thiel set (Table 4: BSE/G0W0@PBE0 MAE=0.615 eV MSE=-0.595 eV; BSE/evGW@PBE0 MAE=0.253 eV MSE=-0.142 eV; TD-PBE0 MAE=0.232 eV) plus a partial 'multiple-character transitions' table (Table 2) that happens to list the SAME three ring-molecule pi->pi* states selected independently in this file (pyridine 1^1B2, pyrimidine 1^1B2, pyrazine 1^1B2u) with CC3 %T1 diagnostics matching QUESTDB's within 0.5-1 percentage point, and BSE-vs-TBE2 error deltas of +0.23 eV (pyridine), -0.03 eV (pyrimidine), -0.11 eV (pyrazine) at what the table labels a BSE column (starting-point ambiguous in the extracted fragment -- likely evGW@PBE0 given the MAE context). This is corroborating context that the paper tracked the same states, NOT a clean absolute-number cross-check (no absolute TBE-2 value could be extracted from this fragment). See docs/bse-tda-phase2-sourcing.md for full detail.",
+      "usable_for": "qualitative state selection confirmation (pyridine/pyrimidine/pyrazine ppi states) and directional BSE-error-sign context only -- NOT for a numeric TBE cross-check."
+    },
+    "molecule_count": 10,
+    "chromophore_class_coverage": {
+      "pi_to_pi_star": ["ethylene", "butadiene (1^1Bu)", "cyclopropene (1^1B2)", "pyrazine (1^1B2u)", "pyridine (1^1B2)", "pyrimidine (1^1B2)", "furan (1^1B2)"],
+      "n_to_pi_star": ["formaldehyde", "acetaldehyde", "glyoxal", "pyrazine (1^1B3u, lowest state)", "pyridine (1^1B1, lowest state)", "pyrimidine (1^1B1, lowest state)"],
+      "sigma_to_pi_star": ["cyclopropene (1^1B1, lowest state -- the canonical Thiel-set sigma->pi* example, named explicitly in docs/bse-tda-benchmark-plan.md)"]
+    },
+    "cross_check_summary": "See docs/bse-tda-phase2-sourcing.md for full detail. 4 of 10 molecules (formaldehyde, ethylene, acetaldehyde, cyclopropene) have an independent, freely-accessible second-source numeric cross-check (Chrayteh/Blondel/Loos/Jacquemin JCTC 2021 arXiv:2011.08509 for formaldehyde+ethylene; Loos et al. JCTC 2018 'Mountaineering' arXiv:1807.02045 for acetaldehyde+cyclopropene), agreeing with the QUESTDB values used here to within 0.01-0.05 eV. The remaining 6 (butadiene, pyrazine, pyridine, pyrimidine, furan, glyoxal) are QUESTDB-single-sourced in this file -- no second independent numeric source was found and verified within this task's time budget. Do not treat single-sourced numbers as equivalently reliable to the cross-checked four, even though QUESTDB's own internal methodology (CCSDTQ/CC4-level, 'safe' flagged) is high-confidence on its own terms."
+  },
+  "molecules": [
+    {
+      "name": "formaldehyde",
+      "formula": "H2CO",
+      "point_group": "C2v",
+      "geometry_file": "testdata/molecules/thiel_set/formaldehyde.xyz",
+      "geometry_source": "QUESTDB geometries/xyz/formaldehyde_1.xyz, CC3(Full)/aug-cc-pVTZ, Angstrom",
+      "states": [
+        {
+          "label": "1^1A2",
+          "character": "n -> pi*",
+          "excitation_energy_eV": 3.966,
+          "oscillator_strength": null,
+          "oscillator_strength_note": "symmetry-forbidden (dipole-forbidden A2 <- A1 in C2v); QUESTDB lists f as not applicable/None",
+          "tbe_method": "CCSDTQP/6-31+G(d) + [CCSDTQ/aug-cc-pVTZ - CCSDTQ/6-31+G(d)]",
+          "percent_T1": 91.5,
+          "safe_flag": "Y",
+          "source": "QUESTDB data/json/MAIN/Formaldehyde.json",
+          "cross_check": {
+            "status": "cross-checked",
+            "second_source": "Chrayteh, Blondel, Loos, Jacquemin, J. Chem. Theory Comput. 2021, Table 8 (arXiv:2011.08509)",
+            "second_source_value_eV": "3.966 (aug-cc-pVTZ TBE, exact digit match); 3.99 +/- 0.01 (CBS-extrapolated TBE)",
+            "agreement": "exact at aug-cc-pVTZ level (both papers report 3.966 eV); 0.024 eV from the CBS limit"
+          }
+        }
+      ]
+    },
+    {
+      "name": "ethylene",
+      "formula": "C2H4",
+      "point_group": "D2h",
+      "geometry_file": "testdata/molecules/thiel_set/ethylene.xyz",
+      "geometry_source": "QUESTDB geometries/xyz/ethylene.xyz, CC3(Full)/aug-cc-pVTZ, Angstrom",
+      "states": [
+        {
+          "label": "1^1B1u",
+          "character": "pi -> pi*",
+          "excitation_energy_eV": 7.897,
+          "oscillator_strength": 0.346,
+          "tbe_method": "CCSDTQP/6-31+G(d) + [CCSDTQ/aug-cc-pVTZ - CCSDTQ/6-31+G(d)]",
+          "percent_T1": 95.8,
+          "safe_flag": "Y",
+          "source": "QUESTDB data/json/MAIN/Ethylene.json",
+          "cross_check": {
+            "status": "cross-checked",
+            "second_source": "Chrayteh, Blondel, Loos, Jacquemin, J. Chem. Theory Comput. 2021, Table 7 (arXiv:2011.08509)",
+            "second_source_value_eV": "7.905 (aug-cc-pVTZ TBE, f=0.345); 7.90 +/- 0.01 eV, f=0.338 +/- 0.005 (CBS)",
+            "agreement": "0.008 eV / f within 0.3% at aug-cc-pVTZ level; 0.003 eV / f within 2.4% at CBS. Also cross-checked in ferric's own Phase-1 pilot (benchmarks/bse-tda-pilot/README.md), which independently cites the same CBS TBE from this paper."
+          }
+        },
+        {
+          "label": "1^1B3u",
+          "character": "pi -> 3s (Rydberg, included for completeness -- NOT one of the 3 priority pi/n/sigma valence states)",
+          "excitation_energy_eV": 7.367,
+          "oscillator_strength": 0.078,
+          "tbe_method": "CCSDTQP/6-31+G(d) + [CCSDTQ/aug-cc-pVTZ - CCSDTQ/6-31+G(d)]",
+          "percent_T1": 95.1,
+          "safe_flag": "Y",
+          "source": "QUESTDB data/json/MAIN/Ethylene.json",
+          "cross_check": {
+            "status": "cross-checked",
+            "second_source": "Chrayteh, Blondel, Loos, Jacquemin, J. Chem. Theory Comput. 2021, Table 7 (arXiv:2011.08509)",
+            "second_source_value_eV": "7.374 (aug-cc-pVTZ TBE, f=0.078); 7.42 +/- 0.02 eV, f=0.076 +/- 0.001 (CBS)",
+            "agreement": "0.007 eV / identical f at aug-cc-pVTZ; 0.05 eV at CBS"
+          }
+        }
+      ]
+    },
+    {
+      "name": "acetaldehyde",
+      "formula": "CH3CHO",
+      "point_group": "Cs",
+      "geometry_file": "testdata/molecules/thiel_set/acetaldehyde.xyz",
+      "geometry_source": "QUESTDB geometries/xyz/acetaldehyde.xyz, CC3(Full)/aug-cc-pVTZ, Angstrom",
+      "states": [
+        {
+          "label": "1^1A''",
+          "character": "n -> pi*",
+          "excitation_energy_eV": 4.304,
+          "oscillator_strength": 0.0,
+          "oscillator_strength_note": "formally allowed by symmetry (A'' <- A' in Cs) but computed as vanishingly small; QUESTDB reports f=0.0",
+          "tbe_method": "CCSDTQ/aug-cc-pVDZ + [CCSDT/aug-cc-pVTZ - CCSDT/aug-cc-pVDZ]",
+          "percent_T1": 91.3,
+          "safe_flag": "Y",
+          "source": "QUESTDB data/json/MAIN/Acetaldehyde.json",
+          "cross_check": {
+            "status": "cross-checked",
+            "second_source": "Loos, Boggio-Pasqua, Scemama, Caffarel, Jacquemin, J. Chem. Theory Comput. 2018 'Mountaineering Strategy...Medium Size Molecules', Table 5 (arXiv:1807.02045)",
+            "second_source_value_eV": "4.31 (CC3/aug-cc-pVTZ), 4.29 (CCSDT/aug-cc-pVTZ), 4.31 (exFCI/aug-cc-pVTZ); literature 4.27 (expt), 4.29 (theo)",
+            "agreement": "within 0.01-0.03 eV across all methods in the second source"
+          }
+        }
+      ]
+    },
+    {
+      "name": "butadiene",
+      "formula": "C4H6 (trans/s-trans-1,3-butadiene)",
+      "point_group": "C2h",
+      "geometry_file": "testdata/molecules/thiel_set/butadiene.xyz",
+      "geometry_source": "QUESTDB geometries/xyz/butadiene.xyz, CC3(Full)/aug-cc-pVTZ, Angstrom",
+      "states": [
+        {
+          "label": "1^1Bu",
+          "character": "pi -> pi*",
+          "excitation_energy_eV": 6.222,
+          "oscillator_strength": 0.664,
+          "tbe_method": "CCSDTQ/6-31+G(d) + [CC4/aug-cc-pVDZ - CC4/6-31+G(d)] + [CCSDT/aug-cc-pVTZ - CCSDT/aug-cc-pVDZ]",
+          "percent_T1": 93.3,
+          "safe_flag": "Y",
+          "source": "QUESTDB data/json/MAIN/Butadiene.json",
+          "cross_check": {
+            "status": "single-sourced",
+            "note": "No independent freely-accessible second source located within this task's time budget. Note this is the bright pi->pi* HOMO->LUMO state of a well-studied 4-pi-electron polyene, a textbook case, so the value is very unlikely to be an outlier, but it has not been independently re-verified here."
+          }
+        }
+      ]
+    },
+    {
+      "name": "cyclopropene",
+      "formula": "C3H4",
+      "point_group": "C2v",
+      "geometry_file": "testdata/molecules/thiel_set/cyclopropene.xyz",
+      "geometry_source": "QUESTDB geometries/xyz/cyclopropene.xyz, CC3(Full)/aug-cc-pVTZ, Angstrom",
+      "states": [
+        {
+          "label": "1^1B1",
+          "character": "sigma -> pi*",
+          "excitation_energy_eV": 6.671,
+          "oscillator_strength": 0.001,
+          "tbe_method": "CCSDTQ/aug-cc-pVDZ + [CC4/aug-cc-pVTZ - CC4/aug-cc-pVDZ]",
+          "percent_T1": 92.8,
+          "safe_flag": "Y",
+          "source": "QUESTDB data/json/MAIN/Cyclopropene.json",
+          "cross_check": {
+            "status": "cross-checked",
+            "second_source": "Loos, Boggio-Pasqua, Scemama, Caffarel, Jacquemin, J. Chem. Theory Comput. 2018 'Mountaineering Strategy...Medium Size Molecules', Table 5 (arXiv:1807.02045)",
+            "second_source_value_eV": "6.72 (CC3/aug-cc-pVDZ), 6.68 (CC3/aug-cc-pVTZ), 6.68 (CCSDT/aug-cc-pVTZ), 6.6 (exFCI/aug-cc-pVTZ); literature 6.45 (expt), 6.89 (theo)",
+            "agreement": "within 0.01-0.05 eV across the ab initio methods in the second source; second source explicitly confirms the sigma->pi* state sits slightly below the pi->pi* state, consistent with Thiel's own original CC3/TZVP finding (per that paper's text)"
+          }
+        },
+        {
+          "label": "1^1B2",
+          "character": "pi -> pi*",
+          "excitation_energy_eV": 6.729,
+          "oscillator_strength": 0.071,
+          "tbe_method": "CCSDTQ/aug-cc-pVDZ + [CC4/aug-cc-pVTZ - CC4/aug-cc-pVDZ]",
+          "percent_T1": 95.0,
+          "safe_flag": "Y",
+          "source": "QUESTDB data/json/MAIN/Cyclopropene.json",
+          "cross_check": {
+            "status": "cross-checked",
+            "second_source": "Loos, Boggio-Pasqua, Scemama, Caffarel, Jacquemin, J. Chem. Theory Comput. 2018 'Mountaineering Strategy...Medium Size Molecules', Table 5 (arXiv:1807.02045)",
+            "second_source_value_eV": "6.77 (CC3/aug-cc-pVDZ), 6.73 (CC3/aug-cc-pVTZ), 6.75 (CCSDT/aug-cc-pVTZ), 6.7 (exFCI/aug-cc-pVTZ); literature 7.00 (expt), 7.11 (theo)",
+            "agreement": "within 0.01-0.04 eV across the ab initio methods; note the larger gap to the (older/less certain) literature theo/expt values quoted in the second source's own table, which that paper does not fully reconcile either"
+          }
+        }
+      ]
+    },
+    {
+      "name": "pyrazine",
+      "formula": "C4H4N2",
+      "point_group": "D2h",
+      "geometry_file": "testdata/molecules/thiel_set/pyrazine.xyz",
+      "geometry_source": "QUESTDB geometries/xyz/pyrazine.xyz, CC3(Full)/aug-cc-pVTZ, Angstrom",
+      "states": [
+        {
+          "label": "1^1B3u",
+          "character": "n -> pi*",
+          "excitation_energy_eV": 4.144,
+          "oscillator_strength": 0.006,
+          "tbe_method": "CC4/6-31+G(d) + [CCSDT/aug-cc-pVTZ - CCSDT/6-31+G(d)]",
+          "percent_T1": 90.1,
+          "safe_flag": "Y",
+          "source": "QUESTDB data/json/MAIN/Pyrazine.json",
+          "cross_check": {"status": "single-sourced"}
+        },
+        {
+          "label": "1^1B2u",
+          "character": "pi -> pi*",
+          "excitation_energy_eV": 4.988,
+          "oscillator_strength": 0.078,
+          "tbe_method": "CC4/6-31+G(d) + [CCSDT/aug-cc-pVTZ - CCSDT/6-31+G(d)]",
+          "percent_T1": 86.9,
+          "safe_flag": "Y",
+          "source": "QUESTDB data/json/MAIN/Pyrazine.json",
+          "cross_check": {
+            "status": "qualitative-only",
+            "note": "This is the same state (1^1B2u) tabulated in Jacquemin/Duchemin/Blase JCTC 2015 Table 2 ('multiple-character transitions', CC3 %T1=86.2%, within 0.7pp of QUESTDB's 86.9%), confirming the JCTC 2015 paper tracked this exact state, and reporting a BSE-vs-TBE-2 error of -0.11 eV at whatever starting point that table's 'BSE' column used (ambiguous in the extracted fragment). No absolute TBE-2 number could be extracted from the accessible fragment, so this is NOT a numeric cross-check, only confirmation of state identity + an approximate error-sign/magnitude data point for later ferric-vs-literature framing."
+          }
+        }
+      ]
+    },
+    {
+      "name": "pyridine",
+      "formula": "C5H5N",
+      "point_group": "C2v",
+      "geometry_file": "testdata/molecules/thiel_set/pyridine.xyz",
+      "geometry_source": "QUESTDB geometries/xyz/pyridine.xyz, CC3(Full)/aug-cc-pVTZ, Angstrom",
+      "states": [
+        {
+          "label": "1^1B1",
+          "character": "n -> pi*",
+          "excitation_energy_eV": 4.959,
+          "oscillator_strength": 0.004,
+          "tbe_method": "CC4/6-31+G(d) + [CCSDT/aug-cc-pVTZ - CCSDT/6-31+G(d)]",
+          "percent_T1": 88.4,
+          "safe_flag": "Y",
+          "source": "QUESTDB data/json/MAIN/Pyridine.json",
+          "cross_check": {"status": "single-sourced"}
+        },
+        {
+          "label": "1^1B2",
+          "character": "pi -> pi*",
+          "excitation_energy_eV": 5.133,
+          "oscillator_strength": 0.028,
+          "tbe_method": "CC4/6-31+G(d) + [CCSDT/aug-cc-pVTZ - CCSDT/6-31+G(d)]",
+          "percent_T1": 86.5,
+          "safe_flag": "Y",
+          "source": "QUESTDB data/json/MAIN/Pyridine.json",
+          "cross_check": {
+            "status": "qualitative-only",
+            "note": "Same state (1^1B2) tabulated in Jacquemin/Duchemin/Blase JCTC 2015 Table 2, CC3 %T1=85.9% (within 0.6pp of QUESTDB's 86.5%), BSE-vs-TBE-2 error +0.23 eV at that table's 'BSE' column (starting point ambiguous). Confirms state identity, not an absolute-number cross-check -- see pyrazine entry above for the same caveat."
+          }
+        }
+      ]
+    },
+    {
+      "name": "pyrimidine",
+      "formula": "C4H4N2",
+      "point_group": "C2v",
+      "geometry_file": "testdata/molecules/thiel_set/pyrimidine.xyz",
+      "geometry_source": "QUESTDB geometries/xyz/pyrimidine.xyz, CC3(Full)/aug-cc-pVTZ, Angstrom",
+      "states": [
+        {
+          "label": "1^1B1",
+          "character": "n -> pi*",
+          "excitation_energy_eV": 4.451,
+          "oscillator_strength": 0.005,
+          "tbe_method": "CC4/6-31+G(d) + [CCSDT/aug-cc-pVTZ - CCSDT/6-31+G(d)]",
+          "percent_T1": 88.6,
+          "safe_flag": "Y",
+          "source": "QUESTDB data/json/MAIN/Pyrimidine.json",
+          "cross_check": {"status": "single-sourced"}
+        },
+        {
+          "label": "1^1B2",
+          "character": "pi -> pi*",
+          "excitation_energy_eV": 5.365,
+          "oscillator_strength": 0.028,
+          "tbe_method": "CC4/6-31+G(d) + [CCSDT/aug-cc-pVTZ - CCSDT/6-31+G(d)]",
+          "percent_T1": 86.3,
+          "safe_flag": "Y",
+          "source": "QUESTDB data/json/MAIN/Pyrimidine.json",
+          "cross_check": {
+            "status": "qualitative-only",
+            "note": "Same state (1^1B2) tabulated in Jacquemin/Duchemin/Blase JCTC 2015 Table 2, CC3 %T1=85.7% (within 0.6pp of QUESTDB's 86.3%), BSE-vs-TBE-2 error -0.03 eV at that table's 'BSE' column (starting point ambiguous). Confirms state identity, not an absolute-number cross-check -- see pyrazine entry above for the same caveat."
+          }
+        }
+      ]
+    },
+    {
+      "name": "furan",
+      "formula": "C4H4O",
+      "point_group": "C2v",
+      "geometry_file": "testdata/molecules/thiel_set/furan.xyz",
+      "geometry_source": "QUESTDB geometries/xyz/furan.xyz, CC3(Full)/aug-cc-pVTZ, Angstrom",
+      "states": [
+        {
+          "label": "1^1B2",
+          "character": "pi -> pi*",
+          "excitation_energy_eV": 6.346,
+          "oscillator_strength": 0.163,
+          "tbe_method": "CC4/aug-cc-pVDZ + [CCSDT/aug-cc-pVTZ - CCSDT/aug-cc-pVDZ]",
+          "percent_T1": 93.0,
+          "safe_flag": "Y",
+          "source": "QUESTDB data/json/MAIN/Furan.json",
+          "cross_check": {"status": "single-sourced"}
+        },
+        {
+          "label": "1^1A1",
+          "character": "pi -> pi*",
+          "excitation_energy_eV": 6.53,
+          "oscillator_strength": 0.0,
+          "oscillator_strength_note": "computed as vanishingly small at this level; a weak/near-forbidden bright-state partner to 1^1B2",
+          "tbe_method": "CC4/aug-cc-pVDZ + [CCSDT/aug-cc-pVTZ - CCSDT/aug-cc-pVDZ]",
+          "percent_T1": 92.4,
+          "safe_flag": "Y",
+          "source": "QUESTDB data/json/MAIN/Furan.json",
+          "cross_check": {"status": "single-sourced"}
+        }
+      ]
+    },
+    {
+      "name": "glyoxal",
+      "formula": "C2H2O2 (OHC-CHO, trans)",
+      "point_group": "C2h",
+      "geometry_file": "testdata/molecules/thiel_set/glyoxal.xyz",
+      "geometry_source": "QUESTDB geometries/xyz/glyoxal.xyz, CC3(Full)/aug-cc-pVTZ, Angstrom",
+      "states": [
+        {
+          "label": "1^1Au",
+          "character": "n -> pi*",
+          "excitation_energy_eV": 2.877,
+          "oscillator_strength": 0.0,
+          "oscillator_strength_note": "symmetry-forbidden (u<-g parity + orbital symmetry in C2h)",
+          "tbe_method": "CC4/aug-cc-pVDZ + [CCSDT/aug-cc-pVTZ - CCSDT/aug-cc-pVDZ]",
+          "percent_T1": 91.0,
+          "safe_flag": "Y",
+          "source": "QUESTDB data/json/MAIN/Glyoxal.json",
+          "cross_check": {"status": "single-sourced"}
+        },
+        {
+          "label": "1^1Bg",
+          "character": "n -> pi*",
+          "excitation_energy_eV": 4.245,
+          "oscillator_strength": null,
+          "oscillator_strength_note": "QUESTDB lists no f value for this state (likely also symmetry-forbidden or not computed)",
+          "tbe_method": "CC4/aug-cc-pVDZ + [CCSDT/aug-cc-pVTZ - CCSDT/aug-cc-pVDZ]",
+          "percent_T1": 88.3,
+          "safe_flag": "Y",
+          "source": "QUESTDB data/json/MAIN/Glyoxal.json",
+          "cross_check": {"status": "single-sourced"}
+        }
+      ]
+    }
+  ]
+}
