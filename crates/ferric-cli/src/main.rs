@@ -1,7 +1,8 @@
 mod config;
 
-use config::load_config;
+use config::{load_config, Config};
 use ferric_core::basis;
+use ferric_core::basis::BasisSet;
 use ferric_core::mol::Molecule;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
@@ -260,197 +261,17 @@ fn main() {
     };
 
     if task == "optimize" {
-        let opt_config = OptimizeConfig {
-            max_steps: cfg.optimize.max_steps.unwrap_or(100),
-            g_max_thresh: cfg.optimize.g_max_thresh.unwrap_or(4.5e-4),
-            g_rms_thresh: cfg.optimize.g_rms_thresh.unwrap_or(3.0e-4),
-            e_conv: cfg.optimize.e_conv.unwrap_or(1e-6),
-            trust_radius: cfg.optimize.trust_radius.unwrap_or(0.1),
-        };
-        match method {
-            "rhf" | "ksdft" => {
-                let opt_result = optimize_geometry(&ctx, &mol, &bs.name, op, &rhf_config, &opt_config)
-                    .unwrap_or_else(|e| {
-                        eprintln!("error during optimization: {e}");
-                        std::process::exit(1);
-                    });
-                println!("\nFinal Optimized Geometry (Bohr):");
-                for (i, atom) in opt_result.mol.atoms.iter().enumerate() {
-                    println!("  {:2} {:2} {:12.8} {:12.8} {:12.8}", i, atom.symbol, atom.x, atom.y, atom.zpos);
-                }
-                println!("\nOptimization Result:");
-                println!("  converged  = {}", opt_result.converged);
-                println!("  steps      = {}", opt_result.steps);
-                println!("  final E    = {:.10} Hartree", opt_result.energy);
-            }
-            "pdep-rpa" => {
-                let aux_name = cfg.rpa.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
-                let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
-                    eprintln!("error: {e}");
-                    std::process::exit(1);
-                });
-                let scheme = cfg.rpa.parse_quadrature().unwrap_or_else(|e| {
-                    eprintln!("config error: {e}");
-                    std::process::exit(1);
-                });
-                let rpa_cfg = PdepRpaConfig {
-                    frozen_core: cfg.rpa.frozen_core,
-                    trunc_thresh: cfg.rpa.trunc_thresh.unwrap_or(1e-4),
-                    eigensolver_max_vecs: 0,
-                    eigensolver_conv_thresh: cfg.rpa.eigensolver_conv_thresh.unwrap_or(1e-8),
-                    quadrature: QuadratureConfig {
-                        scheme,
-                        n_points: cfg.rpa.n_quad.unwrap_or(16),
-                        u0: cfg.rpa.u0.unwrap_or(0.5),
-                    },
-                    sternheimer: SternheimerConfig::default(),
-                    run_diagnostics: false,
-                    eigensolver: ferric_rpa::Eigensolver::default(),
-                    chi0_backend: ferric_rpa::config::Chi0Backend::default(),
-                    chi0_sparsity: cfg.rpa.parse_chi0_sparsity().unwrap_or_else(|e| {
-                        eprintln!("config error: {e}");
-                        std::process::exit(1);
-                    }),
-                    memory_budget_bytes: budget_bytes,
-                    // CLI RPA optimize is energy/gradient only (M9 gate).
-                    need_inv_dielectric_freq: false,
-                };
-                let h_fd = 5e-4;
-                let opt_result =
-                    ferric_rpa::optimize::optimize_geometry_rpa(&mol, &bs, &aux_bs, op, &rpa_cfg, &opt_config, h_fd)
-                        .unwrap_or_else(|e| {
-                            eprintln!("error during RPA optimization: {e}");
-                            std::process::exit(1);
-                        });
-                println!("\nFinal Optimized Geometry (Bohr):");
-                for (i, atom) in opt_result.mol.atoms.iter().enumerate() {
-                    println!("  {:2} {:2} {:12.8} {:12.8} {:12.8}", i, atom.symbol, atom.x, atom.y, atom.zpos);
-                }
-                println!("\nRPA Optimization Result:");
-                println!("  converged  = {}", opt_result.converged);
-                println!("  steps      = {}", opt_result.steps);
-                println!("  final E    = {:.10} Hartree (RHF + RPA)", opt_result.energy);
-            }
-            "rimp2" => {
-                let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
-                let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
-                    eprintln!("error: {e}");
-                    std::process::exit(1);
-                });
-                let mp2_config = RiMp2Config {
-                    frozen_core: cfg.mp2.frozen_core,
-                    memory_budget_bytes: budget_bytes,
-                };
-                let opt_result = ferric_mp2::optimize::optimize_geometry_rimp2(
-                    &mol, &bs, &aux_bs, op, &mp2_config, &opt_config,
-                )
-                .unwrap_or_else(|e| {
-                    eprintln!("error during RI-MP2 optimization: {e}");
-                    std::process::exit(1);
-                });
-                println!("\nFinal Optimized Geometry (Bohr):");
-                for (i, atom) in opt_result.mol.atoms.iter().enumerate() {
-                    println!("  {:2} {:2} {:12.8} {:12.8} {:12.8}", i, atom.symbol, atom.x, atom.y, atom.zpos);
-                }
-                println!("\nRI-MP2 Optimization Result:");
-                println!("  converged  = {}", opt_result.converged);
-                println!("  steps      = {}", opt_result.steps);
-                println!("  final E    = {:.10} Hartree (RHF + MP2)", opt_result.energy);
-            }
-            "uhf" => {
-                let opt_result = optimize_geometry_uhf(&ctx, &mol, &bs.name, op, &rhf_config, &opt_config)
-                    .unwrap_or_else(|e| {
-                        eprintln!("error during UHF optimization: {e}");
-                        std::process::exit(1);
-                    });
-                println!("\nFinal Optimized Geometry (Bohr):");
-                for (i, atom) in opt_result.mol.atoms.iter().enumerate() {
-                    println!("  {:2} {:2} {:12.8} {:12.8} {:12.8}", i, atom.symbol, atom.x, atom.y, atom.zpos);
-                }
-                println!("\nUHF Optimization Result:");
-                println!("  converged  = {}", opt_result.converged);
-                println!("  steps      = {}", opt_result.steps);
-                println!("  final E    = {:.10} Hartree", opt_result.energy);
-            }
-            "rohf" => {
-                let opt_result = optimize_geometry_rohf(&ctx, &mol, &bs.name, op, &rhf_config, &opt_config)
-                    .unwrap_or_else(|e| {
-                        eprintln!("error during ROHF optimization: {e}");
-                        std::process::exit(1);
-                    });
-                println!("\nFinal Optimized Geometry (Bohr):");
-                for (i, atom) in opt_result.mol.atoms.iter().enumerate() {
-                    println!("  {:2} {:2} {:12.8} {:12.8} {:12.8}", i, atom.symbol, atom.x, atom.y, atom.zpos);
-                }
-                println!("\nROHF Optimization Result:");
-                println!("  converged  = {}", opt_result.converged);
-                println!("  steps      = {}", opt_result.steps);
-                println!("  final E    = {:.10} Hartree", opt_result.energy);
-            }
-            _ => {
-                eprintln!("error: geometry optimization is currently only supported for method.kind = \"rhf\", \"ksdft\", \"uhf\", \"rohf\", \"pdep-rpa\", or \"rimp2\"");
-                std::process::exit(1);
-            }
-        }
+        run_optimize(method, &cfg, &ctx, &mol, &bs, op, &rhf_config, budget_bytes);
         return;
     }
 
     if method == "uhf" {
-        let result = solve_uhf(&ctx, &mol, &prep, &bounds, &rhf_config).unwrap_or_else(|e| {
-            eprintln!("error: {e}");
-            std::process::exit(1);
-        });
-        let s_ov = ferric_integrals::oneelectron::overlap(&prep);
-        let nelec = mol.nelec() as i64;
-        let two_s = mol.multiplicity as i64 - 1;
-        let nocc_a = ((nelec + two_s) / 2) as usize;
-        let nocc_b = ((nelec - two_s) / 2) as usize;
-        let s_true = 0.5 * (nocc_a as f64 - nocc_b as f64);
-        let s_ideal = s_true * (s_true + 1.0);
-        let c_a = result.mos_a();
-        let c_b = result.mos_b();
-        let overlap_ab = c_a
-            .slice(ndarray::s![.., ..nocc_a])
-            .t()
-            .dot(&s_ov)
-            .dot(&c_b.slice(ndarray::s![.., ..nocc_b]));
-        let sum_sq: f64 = overlap_ab.iter().map(|v| v * v).sum();
-        let s2 = s_ideal + (nocc_b as f64) - sum_sq;
-        println!("UHF/{} on {}", bs.name, cfg.molecule.xyz);
-        println!("  nbasis     = {}", prep.nbasis());
-        println!("  mult       = {} (nocc_a={}, nocc_b={})", mol.multiplicity, nocc_a, nocc_b);
-        println!("  iterations = {}", result.iterations);
-        println!("  converged  = {}", result.converged);
-        println!("  energy     = {:.10} Hartree", result.energy);
-        println!("  <S^2>      = {:.6} (ideal {:.6})", s2, s_ideal);
-        // task == "optimize" is handled by the top-level dispatch above
-        // (optimize_geometry_uhf), which returns before reaching here.
+        run_uhf(&cfg, &ctx, &mol, &bs, &prep, &bounds, &rhf_config);
         return;
     }
 
     if method == "rohf" {
-        let result = solve_rohf(&ctx, &mol, &prep, op, &bounds, &rhf_config).unwrap_or_else(|e| {
-            eprintln!("error: {e}");
-            std::process::exit(1);
-        });
-        let nelec = mol.nelec() as i64;
-        let two_s = mol.multiplicity as i64 - 1;
-        let nocc_open = two_s as usize;
-        let nocc_double = ((nelec - two_s) / 2) as usize;
-        let s_true = 0.5 * two_s as f64;
-        let s_ideal = s_true * (s_true + 1.0);
-        println!("ROHF/{} on {}", bs.name, cfg.molecule.xyz);
-        println!("  nbasis     = {}", prep.nbasis());
-        println!(
-            "  mult       = {} (nocc_double={}, nocc_open={})",
-            mol.multiplicity, nocc_double, nocc_open
-        );
-        println!("  iterations = {}", result.iterations);
-        println!("  converged  = {}", result.converged);
-        println!("  energy     = {:.10} Hartree", result.energy);
-        println!("  <S^2>      = {:.6} (exact by construction)", s_ideal);
-        // task == "optimize" is handled by the top-level dispatch above
-        // (optimize_geometry_rohf), which returns before reaching here.
+        run_rohf(&cfg, &ctx, &mol, &bs, op, &prep, &bounds, &rhf_config);
         return;
     }
 
@@ -559,382 +380,1737 @@ fn main() {
     };
 
     match method {
-        "rhf" => {
-            println!("RHF/{} on {}", bs.name, cfg.molecule.xyz);
-            println!("  nbasis     = {}", prep.nbasis());
-            println!("  iterations = {}", result.iterations);
-            println!("  converged  = {}", result.converged);
-            println!("  energy     = {:.10} Hartree", result.energy);
+        "rhf" => run_rhf(&cfg, &bs, &prep, &result),
+        "ksdft" => run_ksdft(&cfg, &bs, &prep, &result),
+        "rimp2" => run_rimp2(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
+        "mp3" => run_mp3(&cfg, &mol, &bs, &prep, op, &result),
+        "oo-rimp2" => run_oo_rimp2(&cfg, &mol, &bs, &prep, op, &bounds, &result, budget_bytes),
+        "att-rimp2" => run_att_rimp2(&cfg, &mol, &bs, &prep, &result, budget_bytes),
+        "rs-mp2-rpa" => run_rs_mp2_rpa(&cfg, &mol, &bs, &prep, &result, budget_bytes),
+        "scs-mp2" => run_scs_mp2(&cfg, &mol, &bs, &prep, &result, budget_bytes),
+        "scs-mp2-2terfc" => run_scs_mp2_2terfc(&cfg, &mol, &bs, &prep, &result, budget_bytes),
+        "ccsd" => run_ccsd(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
+        "laplace-mp2" => run_laplace_mp2(&cfg, &mol, &bs, &prep, op, &result),
+        "pdep-rpa" => run_pdep_rpa_arm(
+            &cfg, &ctx, &mol, &bs, &prep, op, &bounds, &rhf_config, result, budget_bytes,
+            &proatom_gs_mult, &proatom,
+        ),
+        "gw" => run_gw(&cfg, &ctx, &mol, &bs, &prep, op, &bounds, &rhf_config, &result, budget_bytes),
+        "bse-tda" => run_bse_tda(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
+        "tdhf-static-polarizability" => run_tdhf_static_polarizability(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
+        _ => unreachable!(),
+    }
+}
+
+/// `method.kind = "rhf"`. Extracted verbatim from the former `main()`
+/// `"rhf" => { ... }` match arm.
+fn run_rhf(cfg: &Config, bs: &BasisSet, prep: &PreparedBasis, result: &ferric_scf::result::ScfResult) {
+    println!("RHF/{} on {}", bs.name, cfg.molecule.xyz);
+    println!("  nbasis     = {}", prep.nbasis());
+    println!("  iterations = {}", result.iterations);
+    println!("  converged  = {}", result.converged);
+    println!("  energy     = {:.10} Hartree", result.energy);
+}
+
+/// `method.kind = "ksdft"`. Extracted verbatim from the former `main()`
+/// `"ksdft" => { ... }` match arm.
+fn run_ksdft(cfg: &Config, bs: &BasisSet, prep: &PreparedBasis, result: &ferric_scf::result::ScfResult) {
+    let functional = cfg.dft.functional.as_deref().unwrap_or("LDA");
+    println!("KS-DFT[{functional}]/{} on {}", bs.name, cfg.molecule.xyz);
+    println!("  nbasis     = {}", prep.nbasis());
+    println!("  iterations = {}", result.iterations);
+    println!("  converged  = {}", result.converged);
+    println!("  energy     = {:.10} Hartree", result.energy);
+}
+
+/// `method.kind = "rimp2"`. Extracted verbatim from the former `main()`
+/// `"rimp2" => { ... }` match arm.
+fn run_rimp2(
+    cfg: &Config,
+    mol: &Molecule,
+    bs: &BasisSet,
+    prep: &PreparedBasis,
+    op: Operator,
+    result: &ferric_scf::result::ScfResult,
+    budget_bytes: Option<usize>,
+) {
+    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+    let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let dfbs = PreparedBasis::new(mol, &aux_bs).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let mp2_result = ri_mp2(
+        mol,
+        prep,
+        &dfbs,
+        op,
+        result,
+        &RiMp2Config {
+            frozen_core: cfg.mp2.frozen_core,
+            memory_budget_bytes: budget_bytes,
+        },
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    println!(
+        "RI-MP2/{} (aux: {}) on {}",
+        bs.name, aux_name, cfg.molecule.xyz
+    );
+    println!("  nbasis     = {}", prep.nbasis());
+    println!("  RHF energy = {:.10} Hartree", result.energy);
+    println!("  MP2 corr   = {:.10} Hartree", mp2_result.mp2_corr);
+    println!("  Total      = {:.10} Hartree", mp2_result.total_energy);
+}
+
+/// `method.kind = "mp3"`. Extracted verbatim from the former `main()`
+/// `"mp3" => { ... }` match arm.
+fn run_mp3(
+    cfg: &Config,
+    mol: &Molecule,
+    bs: &BasisSet,
+    prep: &PreparedBasis,
+    op: Operator,
+    result: &ferric_scf::result::ScfResult,
+) {
+    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+    let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let dfbs = PreparedBasis::new(mol, &aux_bs).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let mp3_result = mp3_energy(mol, prep, &dfbs, op, result, cfg.mp2.frozen_core)
+        .unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
+    println!(
+        "MP3/{} (aux: {}) on {}",
+        bs.name, aux_name, cfg.molecule.xyz
+    );
+    println!("  nbasis     = {}", prep.nbasis());
+    println!("  RHF energy = {:.10} Hartree", mp3_result.e_hf);
+    println!("  MP2 corr   = {:.10} Hartree", mp3_result.e_mp2);
+    println!("  MP3 corr   = {:.10} Hartree", mp3_result.e_mp3);
+    println!("  Total corr = {:.10} Hartree", mp3_result.e_corr);
+    println!("  Total      = {:.10} Hartree", mp3_result.e_total);
+}
+
+/// `method.kind = "oo-rimp2"`. Extracted verbatim from the former `main()`
+/// `"oo-rimp2" => { ... }` match arm.
+#[allow(clippy::too_many_arguments)]
+fn run_oo_rimp2(
+    cfg: &Config,
+    mol: &Molecule,
+    bs: &BasisSet,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    result: &ferric_scf::result::ScfResult,
+    budget_bytes: Option<usize>,
+) {
+    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+    let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let dfbs = PreparedBasis::new(mol, &aux_bs).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let oo_config = OoRiMp2Config {
+        frozen_core: cfg.mp2.frozen_core,
+        memory_budget_bytes: budget_bytes,
+        ..Default::default()
+    };
+    let oo_result = oo_ri_mp2(mol, prep, &dfbs, op, bounds, result, &oo_config)
+        .unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
+    println!(
+        "OO-RI-MP2/{} (aux: {}) on {}",
+        bs.name, aux_name, cfg.molecule.xyz
+    );
+    println!("  nbasis     = {}", prep.nbasis());
+    println!("  converged  = {}", oo_result.converged);
+    println!("  iterations = {}", oo_result.iterations);
+    println!("  grad_norm  = {:.2e}", oo_result.grad_norm);
+    println!("  HF energy  = {:.10} Hartree", oo_result.hf_energy);
+    println!("  MP2 corr   = {:.10} Hartree", oo_result.mp2_corr);
+    println!("  Total      = {:.10} Hartree", oo_result.total_energy);
+}
+
+/// `method.kind = "att-rimp2"`. Extracted verbatim from the former `main()`
+/// `"att-rimp2" => { ... }` match arm.
+fn run_att_rimp2(
+    cfg: &Config,
+    mol: &Molecule,
+    bs: &BasisSet,
+    prep: &PreparedBasis,
+    result: &ferric_scf::result::ScfResult,
+    budget_bytes: Option<usize>,
+) {
+    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+    let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let dfbs = PreparedBasis::new(mol, &aux_bs).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let omega_ang_inv = cfg.mp2.omega.unwrap_or(0.420);
+    let att_config = AttenuatedMp2Config {
+        omega: omega_ang_inv * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV,
+        scaling: 1.0,
+        frozen_core: cfg.mp2.frozen_core,
+        screen_thresh: None,
+        memory_budget_bytes: budget_bytes,
+    };
+    let att_result = attenuated_ri_mp2(mol, prep, &dfbs, result, &att_config)
+        .unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
+    println!(
+        "Attenuated RI-MP2/{} (aux: {}, ω={:.3} Å⁻¹) on {}",
+        bs.name, aux_name, omega_ang_inv, cfg.molecule.xyz
+    );
+    println!("  nbasis     = {}", prep.nbasis());
+    println!("  RHF energy = {:.10} Hartree", result.energy);
+    println!("  MP2 corr   = {:.10} Hartree", att_result.mp2_corr);
+    println!("  E_OS       = {:.10} Hartree", att_result.spin_components.e_os);
+    println!("  E_SS       = {:.10} Hartree", att_result.spin_components.e_ss);
+    println!("  Total      = {:.10} Hartree", att_result.total_energy);
+}
+
+/// `method.kind = "rs-mp2-rpa"`. Extracted verbatim from the former `main()`
+/// `"rs-mp2-rpa" => { ... }` match arm.
+fn run_rs_mp2_rpa(
+    cfg: &Config,
+    mol: &Molecule,
+    bs: &BasisSet,
+    prep: &PreparedBasis,
+    result: &ferric_scf::result::ScfResult,
+    budget_bytes: Option<usize>,
+) {
+    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+    let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let dfbs = PreparedBasis::new(mol, &aux_bs).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let omega_ang_inv = cfg.mp2.omega.unwrap_or(0.420);
+    let formulation = match cfg.mp2.formulation.as_deref().unwrap_or("delta-lr") {
+        "delta-lr" => ferric_rpa::RsMp2RpaFormulation::DeltaLr,
+        "coupled-rings" => ferric_rpa::RsMp2RpaFormulation::CoupledRings,
+        other => {
+            eprintln!("error: unknown [mp2] formulation = \"{other}\"; expected \"delta-lr\" or \"coupled-rings\"");
+            std::process::exit(1);
         }
-        "ksdft" => {
-            let functional = cfg.dft.functional.as_deref().unwrap_or("LDA");
-            println!("KS-DFT[{functional}]/{} on {}", bs.name, cfg.molecule.xyz);
-            println!("  nbasis     = {}", prep.nbasis());
-            println!("  iterations = {}", result.iterations);
-            println!("  converged  = {}", result.converged);
-            println!("  energy     = {:.10} Hartree", result.energy);
+    };
+    let attenuator = match cfg.mp2.attenuator.as_deref().unwrap_or("erf") {
+        "erf" => ferric_rpa::rs_mp2_rpa::Attenuator::Erf,
+        "terf" => ferric_rpa::rs_mp2_rpa::Attenuator::Terf,
+        other => {
+            eprintln!("error: unknown [mp2] attenuator = \"{other}\"; expected \"erf\" or \"terf\"");
+            std::process::exit(1);
         }
-        "rimp2" => {
-            let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
-            let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
-                eprintln!("error: {e}");
+    };
+    // r0 in Bohr; only meaningful for terf. Default matches the erf
+    // operating point (r0=3.18 Bohr ⇒ ω≈0.42 Å⁻¹).
+    let r0 = cfg.mp2.r0.unwrap_or(3.18);
+    if matches!(attenuator, ferric_rpa::rs_mp2_rpa::Attenuator::Terf)
+        && cfg.mp2.omega.is_some()
+    {
+        eprintln!("warning: [mp2] omega is ignored when attenuator = \"terf\" (ω is derived from r0 = {r0} Bohr as ω = 1/(r0·√2))");
+    }
+    let mut rs_cfg = ferric_rpa::rs_mp2_rpa::RsMp2RpaConfig {
+        omega: omega_ang_inv * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV,
+        attenuator,
+        r0,
+        frozen_core: cfg.mp2.frozen_core,
+        formulation,
+        ..Default::default()
+    };
+    // [rpa] trunc_thresh opts into PDEP truncation for the dRPA solves
+    // (default 0.0 = full rank; production-size opt-in, validate vs
+    // full-rank per system class before trusting).
+    if let Some(t) = cfg.rpa.trunc_thresh {
+        rs_cfg.drpa.trunc_thresh = t;
+    }
+    rs_cfg.drpa.memory_budget_bytes = budget_bytes;
+    let r = ferric_rpa::rs_mp2_rpa::rs_mp2_lr_rpa(mol, prep, &dfbs, result, &rs_cfg)
+        .unwrap_or_else(|e| { eprintln!("error: {e}"); std::process::exit(1); });
+    println!(
+        "RS-MP2-RPA/{} (aux: {}, ω={:.3} Å⁻¹) on {}",
+        bs.name, aux_name, omega_ang_inv, cfg.molecule.xyz
+    );
+    println!("  nbasis     = {}", prep.nbasis());
+    match rs_cfg.attenuator {
+        ferric_rpa::rs_mp2_rpa::Attenuator::Erf => {
+            println!("RS-MP2-RPA [erf split] (ω = {omega_ang_inv:.3} Å⁻¹ = {:.4} Bohr⁻¹)", rs_cfg.omega);
+        }
+        ferric_rpa::rs_mp2_rpa::Attenuator::Terf => {
+            let w_derived = 1.0 / (rs_cfg.r0 * std::f64::consts::SQRT_2);
+            println!("RS-MP2-RPA [terf split] (r0 = {:.4} Bohr, ω = 1/(r0·√2) = {:.4} Bohr⁻¹)", rs_cfg.r0, w_derived);
+        }
+    }
+    // Common lines printed for all formulations.
+    println!("  E(MP2, Coulomb)      = {:>16.10} Hartree", r.e_mp2_full);
+    println!("  E(SR-MP2, erfc)      = {:>16.10} Hartree", r.e_sr_mp2);
+    println!("  E(LR-MP2, erf)       = {:>16.10} Hartree", r.e_lr_mp2);
+    println!("  E(dMP2, erf)         = {:>16.10} Hartree", r.e_dmp2_lr);
+    // Formulation-specific lines.
+    match rs_cfg.formulation {
+        ferric_rpa::RsMp2RpaFormulation::DeltaLr => {
+            println!("  E(dRPA, erf)         = {:>16.10} Hartree", r.e_drpa_lr.unwrap());
+            println!("  E_corr naive (A)     = {:>16.10} Hartree   [diagnostic: misses SR×LR cross terms]", r.e_corr_naive.unwrap());
+            println!("  E_corr Δ-form (B)    = {:>16.10} Hartree", r.e_corr);
+        }
+        ferric_rpa::RsMp2RpaFormulation::CoupledRings => {
+            println!("  E(ΔdRPA, Coulomb)    = {:>16.10} Hartree", r.e_delta_drpa_full.unwrap());
+            println!("  E(ΔdRPA, erfc)       = {:>16.10} Hartree", r.e_delta_drpa_sr.unwrap());
+            println!("  E_corr coupled (T)   = {:>16.10} Hartree", r.e_corr);
+        }
+    }
+    println!("  Total energy         = {:>16.10} Hartree", r.total_energy);
+}
+
+/// `method.kind = "scs-mp2"`. Extracted verbatim from the former `main()`
+/// `"scs-mp2" => { ... }` match arm.
+fn run_scs_mp2(
+    cfg: &Config,
+    mol: &Molecule,
+    bs: &BasisSet,
+    prep: &PreparedBasis,
+    result: &ferric_scf::result::ScfResult,
+    budget_bytes: Option<usize>,
+) {
+    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+    let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let dfbs = PreparedBasis::new(mol, &aux_bs).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let scs_config = ScsMp2Config {
+        c_os: cfg.mp2.c_os.unwrap_or(6.0 / 5.0),
+        c_ss: cfg.mp2.c_ss.unwrap_or(1.0 / 3.0),
+        frozen_core: cfg.mp2.frozen_core,
+        memory_budget_bytes: budget_bytes,
+    };
+    let scs_result = scs_mp2(mol, prep, &dfbs, result, &scs_config)
+        .unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
+    println!(
+        "SCS-MP2/{} (aux: {}, c_OS={:.3}, c_SS={:.3}) on {}",
+        bs.name, aux_name, scs_config.c_os, scs_config.c_ss, cfg.molecule.xyz
+    );
+    println!("  nbasis     = {}", prep.nbasis());
+    println!("  RHF energy = {:.10} Hartree", result.energy);
+    println!("  SCS corr   = {:.10} Hartree", scs_result.scs_corr);
+    println!("  E_OS       = {:.10} Hartree", scs_result.e_os);
+    println!("  E_SS       = {:.10} Hartree", scs_result.e_ss);
+    println!("  Total      = {:.10} Hartree", scs_result.total_energy);
+}
+
+/// `method.kind = "scs-mp2-2terfc"`. Extracted verbatim from the former
+/// `main()` `"scs-mp2-2terfc" => { ... }` match arm.
+fn run_scs_mp2_2terfc(
+    cfg: &Config,
+    mol: &Molecule,
+    bs: &BasisSet,
+    prep: &PreparedBasis,
+    result: &ferric_scf::result::ScfResult,
+    budget_bytes: Option<usize>,
+) {
+    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+    let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let dfbs = PreparedBasis::new(mol, &aux_bs).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    // r0(1)/r0(2) are given in Å in the TOML (matching the Python
+    // binding's convention); the library config wants Bohr.
+    const ANG2BOHR: f64 = 1.8897259886;
+    let r0_bonded_ang = cfg.mp2.r0_bonded.unwrap_or(0.75);
+    let r0_nonbonded_ang = cfg.mp2.r0_nonbonded.unwrap_or(1.05);
+    let scs_config = ScsMp2TerfcConfig {
+        r0_bonded: r0_bonded_ang * ANG2BOHR,
+        r0_nonbonded: r0_nonbonded_ang * ANG2BOHR,
+        c_os: cfg.mp2.c_os.unwrap_or(1.27),
+        c_ss: cfg.mp2.c_ss.unwrap_or(4.05),
+        frozen_core: cfg.mp2.frozen_core,
+        memory_budget_bytes: budget_bytes,
+    };
+    if scs_config.r0_nonbonded <= scs_config.r0_bonded {
+        eprintln!("error: [mp2] r0_nonbonded must be > r0_bonded");
+        std::process::exit(1);
+    }
+    let scs_result = scs_mp2_2terfc(mol, prep, &dfbs, result, &scs_config)
+        .unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
+    println!(
+        "SCS-MP2(2terfc)/{} (aux: {}, r0(1)={:.3} Å, r0(2)={:.3} Å, c_OS={:.3}, c_SS={:.3}) on {}",
+        bs.name, aux_name, r0_bonded_ang, r0_nonbonded_ang, scs_config.c_os, scs_config.c_ss, cfg.molecule.xyz
+    );
+    println!("  nbasis     = {}", prep.nbasis());
+    println!("  RHF energy = {:.10} Hartree", result.energy);
+    println!("  SCS corr   = {:.10} Hartree", scs_result.scs_corr);
+    println!("  E_OS       = {:.10} Hartree", scs_result.e_os);
+    println!("  E_SS       = {:.10} Hartree", scs_result.e_ss);
+    println!("  Total      = {:.10} Hartree", scs_result.total_energy);
+}
+
+/// `method.kind = "ccsd"`. Extracted verbatim from the former `main()`
+/// `"ccsd" => { ... }` match arm.
+fn run_ccsd(
+    cfg: &Config,
+    mol: &Molecule,
+    bs: &BasisSet,
+    prep: &PreparedBasis,
+    op: Operator,
+    result: &ferric_scf::result::ScfResult,
+    budget_bytes: Option<usize>,
+) {
+    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+    let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let dfbs = PreparedBasis::new(mol, &aux_bs).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let cc_config = CcConfig {
+        frozen_core: cfg.mp2.frozen_core,
+        memory_budget_bytes: budget_bytes,
+        ..Default::default()
+    };
+    let cc_result = ccsd(mol, prep, &dfbs, op, result, &cc_config)
+        .unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
+    println!(
+        "CCSD/{} (aux: {}) on {}",
+        bs.name, aux_name, cfg.molecule.xyz
+    );
+    println!("  nbasis     = {}", prep.nbasis());
+    println!("  RHF energy = {:.10} Hartree", result.energy);
+    println!("  CCSD corr  = {:.10} Hartree", cc_result.correlation_energy);
+    println!("  Total      = {:.10} Hartree", result.energy + cc_result.correlation_energy);
+}
+
+/// `method.kind = "laplace-mp2"`. Extracted verbatim from the former
+/// `main()` `"laplace-mp2" => { ... }` match arm.
+fn run_laplace_mp2(
+    cfg: &Config,
+    mol: &Molecule,
+    bs: &BasisSet,
+    prep: &PreparedBasis,
+    op: Operator,
+    result: &ferric_scf::result::ScfResult,
+) {
+    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+    let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let dfbs = PreparedBasis::new(mol, &aux_bs).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let n_quad = cfg.mp2.n_quad.unwrap_or(7);
+    let lap_result = laplace_ri_mp2(
+        mol,
+        prep,
+        &dfbs,
+        op,
+        result,
+        n_quad,
+        cfg.mp2.frozen_core,
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    println!(
+        "Laplace RI-MP2/{} (aux: {}, n_quad={}) on {}",
+        bs.name, aux_name, n_quad, cfg.molecule.xyz
+    );
+    println!("  nbasis     = {}", prep.nbasis());
+    println!("  RHF energy = {:.10} Hartree", result.energy);
+    println!("  MP2 corr   = {:.10} Hartree", lap_result.mp2_corr);
+    println!("  E_OS       = {:.10} Hartree", lap_result.e_os);
+    println!("  E_SS       = {:.10} Hartree", lap_result.e_ss);
+    println!("  Total      = {:.10} Hartree", lap_result.total_energy);
+}
+
+/// `method.kind = "pdep-rpa"`. Extracted verbatim from the former `main()`
+/// `"pdep-rpa" => { ... }` match arm (body unchanged; only the surrounding
+/// `&x` -> `x` reference-vs-value adjustments needed for the new parameter
+/// list, and `Some(&proatom)` -> `Some(proatom)` since `proatom` is now
+/// itself the `&dyn Fn` reference).
+#[allow(clippy::too_many_arguments)]
+fn run_pdep_rpa_arm(
+    cfg: &Config,
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    bs: &BasisSet,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    rhf_config: &RhfConfig,
+    result: ferric_scf::result::ScfResult,
+    budget_bytes: Option<usize>,
+    proatom_gs_mult: &dyn Fn(i32) -> usize,
+    proatom: &dyn Fn(i32, i32) -> Option<ferric_rpa::properties::RadialProatom>,
+) {
+        let aux_name = cfg.rpa.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+        let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
+        let dfbs = PreparedBasis::new(mol, &aux_bs).unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
+        let scheme = cfg.rpa.parse_quadrature().unwrap_or_else(|e| {
+            eprintln!("config error: {e}");
+            std::process::exit(1);
+        });
+        let rpa_cfg = PdepRpaConfig {
+            frozen_core: cfg.rpa.frozen_core,
+            trunc_thresh: cfg.rpa.trunc_thresh.unwrap_or(1e-4),
+            eigensolver_max_vecs: 0,
+            eigensolver_conv_thresh: cfg.rpa.eigensolver_conv_thresh.unwrap_or(1e-6),
+            quadrature: QuadratureConfig {
+                scheme,
+                n_points: cfg.rpa.n_quad.unwrap_or(20),
+                u0: cfg.rpa.u0.unwrap_or(0.5),
+            },
+            sternheimer: SternheimerConfig::default(),
+            run_diagnostics: cfg.rpa.run_diagnostics,
+            eigensolver: ferric_rpa::Eigensolver::default(),
+            chi0_backend: ferric_rpa::config::Chi0Backend::default(),
+            chi0_sparsity: cfg.rpa.parse_chi0_sparsity().unwrap_or_else(|e| {
+                eprintln!("config error: {e}");
                 std::process::exit(1);
-            });
-            let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            });
-            let mp2_result = ri_mp2(
-                &mol,
-                &prep,
-                &dfbs,
-                op,
-                &result,
-                &RiMp2Config {
-                    frozen_core: cfg.mp2.frozen_core,
-                    memory_budget_bytes: budget_bytes,
+            }),
+                memory_budget_bytes: budget_bytes,
+            // CLI RPA energy + NPZ property export; the property paths that
+            // consume the inverse-dielectric stack rebuild their own
+            // dielectric, so energy-only here is correct (M9 gate).
+            need_inv_dielectric_freq: false,
+        };
+        // For open-shell molecules (multiplicity > 1) re-run with UHF + MOM so
+        // the reference is converged, then dispatch to the unrestricted RPA.
+        // Shadow `result` so the rest of the arm (NPZ export, properties) uses
+        // the correct SCF density.
+        let (rpa_result, ref_label, result) = if mol.multiplicity > 1 {
+            let mut uhf_cfg = rhf_config.clone();
+            // MOM after 5 DIIS iters prevents orbital reordering on open-shell atoms.
+            uhf_cfg.mom_after_iter = 5;
+            let uhf_result = solve_uhf(ctx, mol, prep, bounds, &uhf_cfg)
+                .unwrap_or_else(|e| {
+                    eprintln!("error (UHF): {e}");
+                    std::process::exit(1);
+                });
+            let rr = ferric_rpa::run_u_pdep_rpa(mol, prep, &dfbs, op, &uhf_result, &rpa_cfg)
+                .unwrap_or_else(|e| {
+                    eprintln!("error (U-PDEP-RPA): {e}");
+                    std::process::exit(1);
+                });
+            (rr, "UHF", uhf_result)
+        } else {
+            let rr = run_pdep_rpa(mol, prep, &dfbs, op, &result, &rpa_cfg)
+                .unwrap_or_else(|e| {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                });
+            (rr, "RHF", result)
+        };
+        if !rpa_result.eigensolver_converged {
+            eprintln!(
+                "warning: PDEP-RPA eigensolver did not fully converge (best-effort Ritz pairs; \
+                 eigenvalues_static/eigenpotentials below are not verified to residual tolerance)"
+            );
+        }
+        println!(
+            "PDEP-RPA/{} (aux: {}) on {}",
+            bs.name, aux_name, cfg.molecule.xyz
+        );
+        println!("  nbasis     = {}", prep.nbasis());
+        println!("{ref_label} energy:            {:>20.10} Hartree", result.energy);
+        println!("RPA correlation:       {:>20.10} Hartree", rpa_result.e_rpa);
+        println!("Total ({ref_label}+RPA):       {:>20.10} Hartree", result.energy + rpa_result.e_rpa);
+        println!("Eigenpotentials kept:  {} / {}", rpa_result.n_eigenpotentials, rpa_result.eigenvalues_static.len());
+        if let Some(e_diag) = rpa_result.e_rpa_dft_diag {
+            println!("RI-dRPA check:         {:>20.10} Hartree", e_diag);
+        }
+        if let Some(prefix) = cfg.rpa.export_eigpot_prefix.as_deref() {
+            use ferric_export::cube::GridSpec;
+            use ferric_export::export_basis_function_cube;
+            let spacing = cfg.rpa.cube_spacing.unwrap_or(0.2);
+            let margin = cfg.rpa.cube_margin.unwrap_or(4.0);
+            let n_export = cfg.rpa.export_eigpot_count
+                .unwrap_or(10)
+                .min(rpa_result.n_eigenpotentials);
+            let grid = GridSpec::bounding_box(mol, margin, spacing);
+            println!(
+                "Exporting {} eigenpotential cubes (grid {}×{}×{}, spacing {} Bohr)…",
+                n_export, grid.n_x, grid.n_y, grid.n_z, spacing
+            );
+            for alpha in 0..n_export {
+                let coeffs: Vec<f64> = rpa_result.eigenpotentials
+                    .column(alpha).iter().copied().collect();
+                let lam = rpa_result.eigenvalues_static[alpha];
+                let path = format!("{prefix}_eigpot_{:03}.cube", alpha);
+                let comment = format!(
+                    "PDEP eigenpotential α={alpha} λ(0)={lam:.6} (basis {aux_name})"
+                );
+                if let Err(e) = export_basis_function_cube(&path, mol, &aux_bs, &grid, &coeffs, &comment) {
+                    eprintln!("  warning: failed to write {}: {}", path, e);
+                } else {
+                    println!("  wrote {} (λ(0)={:.6})", path, lam);
+                }
+            }
+        }
+        // NPZ feature bundle for diffusion-model export.
+        if let Some(npz_path) = cfg.rpa.export_npz.as_deref() {
+            use ferric_export::export_npz;
+            use ferric_export::ml::{ChargeSchemes, DispersionBundle, NpzBundle, PolarizabilityBundle};
+            use ferric_rpa::properties::{
+                electric_field_at_atoms, esp_at_atoms, hirshfeld_charges, lowdin_charges,
+                mulliken_charges,
+                pdep_polarizability_becke,
+                pdep_polarizability_static,
+            };
+            use ndarray::Array2;
+
+            let compute_esp = cfg.rpa.compute_esp.unwrap_or(true);
+            let compute_pol = cfg.rpa.compute_polarizability.unwrap_or(true);
+            let compute_ef = cfg.rpa.compute_electric_field.unwrap_or(true);
+            let compute_alpha_atomic = cfg.rpa.compute_alpha_atomic.unwrap_or(true);
+
+            let coords_arr = {
+                let mut a = Array2::<f64>::zeros((mol.atoms.len(), 3));
+                for (i, atom) in mol.atoms.iter().enumerate() {
+                    a[(i, 0)] = atom.x;
+                    a[(i, 1)] = atom.y;
+                    a[(i, 2)] = atom.zpos;
+                }
+                a
+            };
+            let znums: Vec<usize> =
+                mol.atoms.iter().map(|a| a.z as usize).collect();
+
+            let esp_vec = if compute_esp {
+                match esp_at_atoms(mol, prep, result.density_total()) {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        eprintln!("warning: esp_at_atoms failed: {e}");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+            let ef_vec = if compute_ef {
+                match electric_field_at_atoms(mol, prep, result.density_total()) {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        eprintln!("warning: electric_field_at_atoms failed: {e}");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+            let alpha_arr = if compute_pol {
+                match pdep_polarizability_static(
+                    mol, prep, &dfbs, &result, op, &rpa_cfg,
+                ) {
+                    Ok(p) => {
+                        println!(
+                            "Polarizability α (a.u.):  iso={:.4}, principal=[{:.4}, {:.4}, {:.4}]",
+                            p.iso, p.principal[0], p.principal[1], p.principal[2]
+                        );
+                        Some(p.tensor)
+                    }
+                    Err(e) => {
+                        eprintln!("warning: polarizability failed: {e}");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+            let alpha_atomic_vec = if compute_alpha_atomic {
+                match pdep_polarizability_becke(
+                    mol, prep, bs, &dfbs, &result, op, &rpa_cfg,
+                ) {
+                    Ok(v) => {
+                        println!(
+                            "Per-atom Becke α (iso, a.u.): {:?}",
+                            v.iter()
+                                .map(|t| (t[0][0] + t[1][1] + t[2][2]) / 3.0)
+                                .collect::<Vec<_>>()
+                        );
+                        Some(v)
+                    }
+                    Err(e) => {
+                        eprintln!("warning: per-atom α (Hirshfeld) failed: {e}");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+            let compute_dm = cfg.rpa.compute_density_matrix.unwrap_or(true);
+            let dm_ref = if compute_dm { Some(result.density_total()) } else { None };
+
+            // Molecular dipole μ = −Tr(P·D) + Σ_A Z_A R_A of the total density
+            // (QC ground truth vs partition-derived Löwdin/Hirshfeld dipoles).
+            // Origin [0,0,0]; neutral molecules → origin-independent. Mirrors
+            // ferric-mp2 ff_polar::mp2_dipole; P·D summed elementwise = Tr(P·D)
+            // since both AO matrices are symmetric.
+            let compute_dip = cfg.rpa.compute_dipole.unwrap_or(true);
+            let dip_arr: Option<[f64; 3]> = if compute_dip {
+                match ferric_integrals::oneelectron::dipole(prep, [0.0, 0.0, 0.0]) {
+                    Ok(dip_ao) => {
+                        let p = result.density_total();
+                        let mut mu = [0.0f64; 3];
+                        for d in 0..3 {
+                            let elec = (p * &dip_ao[d]).sum();
+                            let nuc: f64 = mol
+                                .atoms
+                                .iter()
+                                .map(|a| a.z as f64 * [a.x, a.y, a.zpos][d])
+                                .sum();
+                            mu[d] = nuc - elec;
+                        }
+                        println!(
+                            "dipole (e·a0): [{:.4}, {:.4}, {:.4}] |μ| = {:.4}",
+                            mu[0], mu[1], mu[2], (mu[0] * mu[0] + mu[1] * mu[1] + mu[2] * mu[2]).sqrt()
+                        );
+                        Some(mu)
+                    }
+                    Err(e) => {
+                        eprintln!("warning: dipole failed: {e}");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+            let compute_lq = cfg.rpa.compute_lowdin_charges.unwrap_or(true);
+            let lq_vec = if compute_lq {
+                match lowdin_charges(mol, prep, result.density_total()) {
+                    Ok(q) => {
+                        println!(
+                            "Löwdin charges (e): {:?}",
+                            q.iter().map(|v| (v * 1e4).round() / 1e4).collect::<Vec<_>>()
+                        );
+                        Some(q)
+                    }
+                    Err(e) => {
+                        eprintln!("warning: Löwdin charges failed: {e}");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+            let compute_hq = cfg.rpa.compute_hirshfeld_charges.unwrap_or(true);
+            let hq_vec = if compute_hq {
+                match hirshfeld_charges(mol, bs, result.density_total(), Some(proatom)) {
+                    Ok(q) => {
+                        println!(
+                            "Hirshfeld charges (e): {:?}",
+                            q.iter().map(|v| (v * 1e4).round() / 1e4).collect::<Vec<_>>()
+                        );
+                        Some(q)
+                    }
+                    Err(e) => {
+                        eprintln!("warning: Hirshfeld charges failed: {e}");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+            let compute_mq = cfg.rpa.compute_mulliken_charges.unwrap_or(true);
+            let mq_vec = if compute_mq {
+                match mulliken_charges(mol, prep, result.density_total()) {
+                    Ok(q) => {
+                        println!(
+                            "Mulliken charges (e): {:?}",
+                            q.iter().map(|v| (v * 1e4).round() / 1e4).collect::<Vec<_>>()
+                        );
+                        Some(q)
+                    }
+                    Err(e) => {
+                        eprintln!("warning: Mulliken charges failed: {e}");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+            // --- C6 dispersion (Phase 1: Tkatchenko-Scheffler model) ---
+            let compute_c6 = cfg.rpa.compute_c6.unwrap_or(true);
+            let mut c6_freqs_v: Vec<f64> = Vec::new();
+            let mut c6_weights_v: Vec<f64> = Vec::new();
+            let mut alpha_dyn_v: Vec<Vec<[[f64; 3]; 3]>> = Vec::new();
+            let mut c6_iso_opt: Option<ndarray::Array2<f64>> = None;
+            let mut c6_aniso_v: Vec<Vec<[[f64; 3]; 3]>> = Vec::new();
+            if compute_c6 {
+                use ferric_rpa::dispersion::{
+                    casimir_polder_c6, pdep_dynamic_polarizability,
+                    ts_dynamic_polarizability, C6Source, DispersionPartition,
+                };
+                use ferric_rpa::properties::{
+                    atomic_effective_volumes_hirshfeld,
+                    pdep_polarizability_hirshfeld,
+                };
+                use ferric_rpa::quadrature::build_quadrature;
+
+                // Strict parse: an unknown c6_source/c6_partition used to fall
+                // through to TS/Becke silently, producing different numbers than
+                // the user asked for.
+                let c6_source = C6Source::parse_config_str(cfg.rpa.c6_source.as_deref())
+                    .unwrap_or_else(|e| {
+                        eprintln!("config error: [rpa] {e}");
+                        std::process::exit(1);
+                    });
+                let partition =
+                    DispersionPartition::parse_config_str(cfg.rpa.c6_partition.as_deref())
+                        .unwrap_or_else(|e| {
+                            eprintln!("config error: [rpa] {e}");
+                            std::process::exit(1);
+                        })
+                        .unwrap_or_else(|| c6_source.default_partition());
+                let use_pdep = c6_source == C6Source::Pdep;
+
+                let res_opt = if use_pdep {
+                    // Phase 2: PDEP-RPA dynamic α(iω). Origin-independent for
+                    // the molecular total AND the per-atom intrinsic α^A
+                    // (atom-centred (r−R_A); bond-axis anisotropy is a
+                    // coupled/molecular property, not per-atom). Uses the
+                    // shared ad-hoc same-basis Hirshfeld proatom (built once
+                    // above) so the per-atom partition is basis-consistent.
+                    match pdep_dynamic_polarizability(
+                        mol, prep, bs, &dfbs, &result, op, &rpa_cfg, partition,
+                        Some(proatom),
+                    ) {
+                        Ok(dp) => {
+                            let res = casimir_polder_c6(&dp);
+                            println!(
+                                "Computed PDEP-RPA C6: {} atoms, {} freqs; molecular C6 = {:.3} a.u.",
+                                mol.atoms.len(), dp.freqs.len(), res.c6_molecular_iso
+                            );
+                            Some(res)
+                        }
+                        Err(e) => {
+                            eprintln!("warning: PDEP-RPA C6 failed: {e}");
+                            None
+                        }
+                    }
+                } else {
+                    // Phase 1: Tkatchenko-Scheffler single-pole model.
+                    // Any failure below warns and SKIPS C6 (None) — the old
+                    // fallbacks (zero α, unit volumes, unit ratios) exported
+                    // wrong numbers that looked like results.
+                    (|| -> Option<ferric_rpa::dispersion::C6Result> {
+                    let alpha_res = if partition == DispersionPartition::Hirshfeld {
+                        pdep_polarizability_hirshfeld(
+                            mol, prep, bs, &dfbs, &result, op, &rpa_cfg, Some(proatom),
+                        )
+                    } else {
+                        match alpha_atomic_vec.as_ref() {
+                            Some(v) => Ok(v.clone()),
+                            None => pdep_polarizability_becke(
+                                mol, prep, bs, &dfbs, &result, op, &rpa_cfg,
+                            ),
+                        }
+                    };
+                    let alpha_static: Vec<[[f64; 3]; 3]> = match alpha_res {
+                        Ok(v) => v,
+                        Err(e) => {
+                            eprintln!("warning: TS C6 skipped — per-atom static α failed: {e}");
+                            return None;
+                        }
+                    };
+                    // TS volumes must always use Hirshfeld partition — TS was
+                    // parameterized with Hirshfeld volumes (TS PRL 2009). Becke
+                    // volumes blow up for π-system H atoms (vol_ratio >> 1)
+                    // because Becke is atom-size-blind; Hirshfeld proatom weights
+                    // correctly compress H relative to C. The c6_partition setting
+                    // only governs the alpha_static shape tensor, not these volumes.
+                    let vols = match atomic_effective_volumes_hirshfeld(
+                        mol, bs, result.density_total(), Some(proatom),
+                    ) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            eprintln!("warning: TS C6 skipped — Hirshfeld effective volumes failed: {e}");
+                            return None;
+                        }
+                    };
+                    let z: Vec<usize> = mol.atoms.iter().map(|a| a.z as usize).collect();
+
+                    // Compute free-atom vol_free using Hirshfeld on isolated atoms.
+                    // For a single atom Hirshfeld weight = 1 everywhere (only one
+                    // proatom), so this gives ∫ ρ_free(r) |r|³ dr — same physics
+                    // as the molecular Hirshfeld integral, consistent denominator.
+                    let mut vol_free_computed: std::collections::HashMap<usize, f64> =
+                        std::collections::HashMap::new();
+                    for &zi in z.iter().collect::<std::collections::HashSet<_>>() {
+                        let sym = ferric_core::elements::z_to_symbol(zi as i32)
+                            .unwrap_or("X");
+                        let free_xyz = format!("1\n{sym}\n{sym} 0 0 0\n");
+                        // Correct atomic ground-state multiplicities (3P for
+                        // C/O/Si/S, etc.). Reuse the proatom map — the prior
+                        // ad-hoc match here gave C/O/S a singlet, which is
+                        // wrong physics and HANGS the restricted SCF for S.
+                        let mult = proatom_gs_mult(zi as i32);
+                        if let Ok(free_mol) = Molecule::parse_xyz(&free_xyz, 0, mult) {
+                            if let Ok(free_obs) = PreparedBasis::new(&free_mol, bs) {
+                                let free_bounds = SchwarzBounds::compute(op, &free_obs)
+                                    .unwrap_or_else(|_| SchwarzBounds::compute(op, prep).unwrap());
+                                let mut free_cfg = rhf_config.clone();
+                                free_cfg.mom_after_iter = if mult > 1 { 5 } else { 0 };
+                                // Give the tiny free-atom SCF a generous iteration
+                                // budget — this is now the ONLY source of vol_free
+                                // (the hardcoded-table fallback was removed), so a
+                                // near-converged atom that would previously have
+                                // silently degraded to a table value must instead
+                                // actually converge. Cheap: it's a single atom.
+                                free_cfg.max_iter = free_cfg.max_iter.max(200);
+                                // 1-thread pool for the tiny atom solve — see run_serial.
+                                //
+                                // The free-atom volume must be on the SAME scale (same xc) as
+                                // the molecular volume (vols[i]) or the ratio is meaningless.
+                                // Open-shell xc atoms (³P: O/S/Si) do NOT converge under a
+                                // plain UKS-GGA solve — their degenerate p-shell makes the GGA
+                                // potential orientation-dependent and the SCF oscillates
+                                // forever. Fractional/ensemble occupation (fractional_occ)
+                                // spreads the open-shell electrons equally over the degenerate
+                                // p orbitals, restoring spherical symmetry and converging the
+                                // UKS-PBE atom on the *consistent* scale. Pure HF/UHF free-atom
+                                // solves don't suffer this (K is orbital-invariant in the
+                                // degenerate subspace), so — matching the proatom builder above
+                                // — only enable fractional_occ when an xc functional is set.
+                                if mult > 1 && free_cfg.xc.is_some() {
+                                    free_cfg.fractional_occ = true;
+                                }
+                                let solve_free = |cfg: &RhfConfig| -> Option<ndarray::Array2<f64>> {
+                                    if mult > 1 {
+                                        solve_uhf(ctx, &free_mol, &free_obs, &free_bounds, cfg)
+                                            .ok().map(|r| r.density_total().to_owned())
+                                    } else {
+                                        solve_rhf(ctx, &free_mol, &free_obs, op, &free_bounds, cfg)
+                                            .ok().map(|r| r.density_r().to_owned())
+                                    }
+                                };
+                                // Live free-atom SCF is the ONLY source of the TS
+                                // vol_free denominator now. Try the reference-
+                                // consistent xc solve first (scale-matched to the
+                                // molecular volume); if it fails, retry pure HF/UHF
+                                // as a *scale-consistent* fallback (this changes the
+                                // xc convention slightly, but is still a real
+                                // free-atom integral, not a stale table number). If
+                                // both fail, vol_free_computed has no entry for this
+                                // Z and the loop below skips TS C6 with a clear
+                                // warning — no silent scale-mismatched fabrication.
+                                let free_density = run_serial(|| {
+                                    solve_free(&free_cfg).or_else(|| {
+                                        // xc solve failed — retry pure HF/UHF for a converged,
+                                        // scale-consistent density.
+                                        let mut hf_cfg = free_cfg.clone();
+                                        hf_cfg.xc = None;
+                                        hf_cfg.fractional_occ = false;
+                                        solve_free(&hf_cfg)
+                                    })
+                                });
+                                if let Some(d) = free_density {
+                                    // Single free atom: Hirshfeld weight = 1
+                                    // everywhere (one proatom), so the
+                                    // reference volume is partition-independent
+                                    // — None (legacy path) is exact here.
+                                    if let Ok(fv) = atomic_effective_volumes_hirshfeld(
+                                        &free_mol, bs, &d, None,
+                                    ) {
+                                        vol_free_computed.insert(zi, fv[0]);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // vol_free comes ONLY from the live free-atom SCF above,
+                    // computed on the SAME integration scale (same xc, same
+                    // Hirshfeld quadrature) as the molecular vols[i] — the only
+                    // number for which the ratio vols[i]/vf is physically
+                    // meaningful. There is deliberately NO table fallback: the
+                    // hardcoded ts_free_atom vol_free values were on a mismatched
+                    // integration scale and (for Z outside {H,He,C,N,O,F,Ne})
+                    // were never sourced — feeding one to this ratio silently
+                    // degraded the C6 to a wrong number that looked like a result
+                    // (verified 2026-07-17, docs/vol-free-verification.md; Si's
+                    // table 60.0 was 42% low vs the live-SCF value, inflating
+                    // every Si-containing molecule's TS C6). Per this repo's
+                    // established TS/MBD honesty convention (2026-07-09:
+                    // ts_atom_params / ts_dynamic_polarizability / mbd_screen all
+                    // hard-error rather than fabricate a Z>18 value), a genuine
+                    // live-SCF failure now SKIPS TS C6 with a clear warning —
+                    // matching the Z>18 "no honest value to return" behavior —
+                    // instead of substituting a scale-mismatched fallback.
+                    let mut ratio = Vec::with_capacity(z.len());
+                    for (i, &zi) in z.iter().enumerate() {
+                        let sym = ferric_core::elements::z_to_symbol(zi as i32).unwrap_or("?");
+                        let vf = match vol_free_computed.get(&zi).copied() {
+                            Some(v) => v,
+                            None => {
+                                eprintln!(
+                                    "warning: TS C6 skipped — live free-atom SCF failed for \
+                                     {sym} (Z={zi}) and no scale-consistent free-atom volume \
+                                     is available. The TS free-atom vol_free denominator MUST \
+                                     come from a live SCF on the same integration scale as the \
+                                     molecular volume; the old hardcoded-table fallback was \
+                                     removed because it is on a mismatched scale and was never \
+                                     sourced for most elements (docs/vol-free-verification.md). \
+                                     Refusing to fabricate a C6 from a mismatched denominator \
+                                     (same convention as the Z>18 hard-error path — see \
+                                     ts_atom_params / CLAUDE.md TS/MBD honesty). Use \
+                                     c6_source=\"pdep\" for a table-free dispersion source."
+                                );
+                                return None;
+                            }
+                        };
+                        if vf <= 1e-10 {
+                            eprintln!(
+                                "warning: TS C6 skipped — degenerate free-atom volume \
+                                 {vf:.3e} for {sym} (Z={zi})"
+                            );
+                            return None;
+                        }
+                        ratio.push(vols[i] / vf);
+                    }
+                    let (freqs, weights) = build_quadrature(&rpa_cfg.quadrature);
+                    let is_mbd = c6_source == C6Source::Mbd;
+                    let dp_res = if is_mbd {
+                        let positions: Vec<[f64; 3]> =
+                            mol.atoms.iter().map(|a| [a.x, a.y, a.zpos]).collect();
+                        ferric_rpa::dispersion::mbd_dynamic_polarizability(
+                            &positions, &z, &ratio, &alpha_static, &freqs, &weights,
+                        )
+                    } else {
+                        ts_dynamic_polarizability(&z, &ratio, &alpha_static, &freqs, &weights)
+                    };
+                    let dp = match dp_res {
+                        Ok(dp) => dp,
+                        Err(e) => {
+                            eprintln!(
+                                "warning: {} C6 skipped: {e}",
+                                if is_mbd { "MBD" } else { "TS" }
+                            );
+                            return None;
+                        }
+                    };
+                    let ts_res = casimir_polder_c6(&dp);
+                    println!(
+                        "Computed {} C6: {} atoms; molecular C6 = {:.3} a.u.",
+                        if is_mbd { "MBD" } else { "TS" },
+                        z.len(),
+                        ts_res.c6_molecular_iso
+                    );
+                    Some(ts_res)
+                    })()
+                };
+
+                if let Some(res) = res_opt {
+                    c6_freqs_v = res.per_atom_dynamic.freqs.clone();
+                    c6_weights_v = res.per_atom_dynamic.weights.clone();
+                    alpha_dyn_v = res.per_atom_dynamic.per_atom.clone();
+                    c6_iso_opt = Some(res.c6_iso_pair.clone());
+                    c6_aniso_v = res.c6_aniso_pair.clone();
+                }
+            }
+
+            let npz_bundle = NpzBundle {
+                mo_coeffs: if result.spin == ferric_scf::result::Spin::Restricted { Some(result.mos_r()) } else { None },
+                orbital_energies: if result.spin == ferric_scf::result::Spin::Restricted { Some(result.eps_r()) } else { None },
+                pdep_eigenvectors: Some(&rpa_result.eigenpotentials),
+                boys_coeffs: None,
+                coords: Some(&coords_arr),
+                atomic_numbers: Some(&znums),
+                density_matrix: dm_ref,
+                dipole: dip_arr.as_ref(),
+                charges: ChargeSchemes {
+                    hirshfeld: hq_vec.as_deref(),
+                    lowdin: lq_vec.as_deref(),
+                    mulliken: mq_vec.as_deref(),
                 },
+                polarizability: PolarizabilityBundle {
+                    esp_atoms: esp_vec.as_deref(),
+                    alpha_tensor: alpha_arr.as_ref(),
+                    electric_field: ef_vec.as_deref(),
+                    alpha_atomic: alpha_atomic_vec.as_deref(),
+                },
+                dispersion: DispersionBundle {
+                    c6_freqs: if c6_freqs_v.is_empty() { None } else { Some(c6_freqs_v.as_slice()) },
+                    c6_weights: if c6_weights_v.is_empty() { None } else { Some(c6_weights_v.as_slice()) },
+                    alpha_atomic_dynamic: if alpha_dyn_v.is_empty() { None } else { Some(alpha_dyn_v.as_slice()) },
+                    c6_iso: c6_iso_opt.as_ref(),
+                    c6_aniso: if c6_aniso_v.is_empty() { None } else { Some(c6_aniso_v.as_slice()) },
+                },
+            };
+            if let Err(e) = export_npz(npz_path, &npz_bundle) {
+                eprintln!("warning: failed to write {}: {}", npz_path, e);
+            } else {
+                println!("Wrote NPZ feature bundle: {}", npz_path);
+                if c6_iso_opt.is_some() {
+                    println!(
+                        "note: NPZ c6_iso/c6_aniso are per-atom PAIR tensors, not the \
+                         molecular C6 total — do not sum them to approximate it (can be \
+                         20-58% off; see the \"molecular C6 = ... a.u.\" line above for the \
+                         correct DOSD-comparable value, or docs/dosd-c6-rpa-vs-ts.md)."
+                    );
+                }
+            }
+        }
+}
+
+/// `method.kind = "gw"`. Extracted verbatim from the former `main()`
+/// `"gw" => { ... }` match arm.
+#[allow(clippy::too_many_arguments)]
+fn run_gw(
+    cfg: &Config,
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    bs: &BasisSet,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    rhf_config: &RhfConfig,
+    result: &ferric_scf::result::ScfResult,
+    budget_bytes: Option<usize>,
+) {
+        let aux_name = cfg.rpa.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+        let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
+        let dfbs = PreparedBasis::new(mol, &aux_bs).unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
+        let scheme = cfg.rpa.parse_quadrature().unwrap_or_else(|e| {
+            eprintln!("config error: {e}");
+            std::process::exit(1);
+        });
+        let gw_method = cfg.gw.parse_method().unwrap_or_else(|e| {
+            eprintln!("config error: {e}");
+            std::process::exit(1);
+        });
+        // frozen_core must match between the PDEP (W) build and the GW self-
+        // energy (Σ) build for self-consistency (see GwConfig::frozen_core
+        // doc). [gw].frozen_core is the source of truth when set; otherwise
+        // fall back to [rpa].frozen_core so a plain [rpa] block still works.
+        let gw_frozen_core = cfg.gw.frozen_core.unwrap_or(cfg.rpa.frozen_core);
+        let rpa_cfg = PdepRpaConfig {
+            frozen_core: gw_frozen_core,
+            trunc_thresh: cfg.rpa.trunc_thresh.unwrap_or(1e-4),
+            eigensolver_max_vecs: 0,
+            eigensolver_conv_thresh: cfg.rpa.eigensolver_conv_thresh.unwrap_or(1e-6),
+            quadrature: QuadratureConfig {
+                scheme,
+                n_points: cfg.rpa.n_quad.unwrap_or(20),
+                u0: cfg.rpa.u0.unwrap_or(0.5),
+            },
+            sternheimer: SternheimerConfig::default(),
+            run_diagnostics: cfg.rpa.run_diagnostics,
+            eigensolver: ferric_rpa::Eigensolver::default(),
+            chi0_backend: ferric_rpa::config::Chi0Backend::default(),
+            chi0_sparsity: cfg.rpa.parse_chi0_sparsity().unwrap_or_else(|e| {
+                eprintln!("config error: {e}");
+                std::process::exit(1);
+            }),
+            memory_budget_bytes: budget_bytes,
+            // run_gw forces this on internally regardless of what's set
+            // here (GW's Σ_c needs the inverse-dielectric stack), but set
+            // it explicitly for clarity at the call site too.
+            need_inv_dielectric_freq: true,
+        };
+        let gw_cfg = ferric_gw::GwConfig {
+            method: gw_method,
+            qp_mos: cfg.gw.qp_mos.map(|[lo, hi]| lo..hi),
+            max_ev_iter: cfg.gw.max_ev_iter.unwrap_or(20),
+            ev_conv_thresh: cfg.gw.ev_conv_thresh.unwrap_or(1e-4),
+            pade_npts: cfg.gw.pade_npts.unwrap_or(0),
+            qp_newton_damp: cfg.gw.qp_newton_damp.unwrap_or(1.0),
+            frozen_core: gw_frozen_core,
+            memory_budget_bytes: budget_bytes,
+        };
+        let ha_to_ev = 27.211_386_245_988_f64;
+        if mol.multiplicity > 1 {
+            // Open-shell path: re-run with UHF + MOM (same precedent as the
+            // "pdep-rpa" arm's open-shell dispatch) so the reference is
+            // converged, then dispatch to run_u_gw. Shadow `result` so it
+            // carries the correct (possibly UKS) SCF density.
+            let mut uhf_cfg = rhf_config.clone();
+            uhf_cfg.mom_after_iter = 5;
+            let result = solve_uhf(ctx, mol, prep, bounds, &uhf_cfg).unwrap_or_else(|e| {
+                eprintln!("error (UHF): {e}");
+                std::process::exit(1);
+            });
+            // KS reference (RPA@PBE0-style): [rpa].xc set ⇒ `result` above is
+            // already the UKS solve; build vxc_diag_a/b and apply the Σx−vxc
+            // shift post-hoc via UGwResult::apply_kohn_sham_correction (U-GW
+            // doesn't thread vxc_diag through run_u_gw itself — see its doc).
+            // None (HF reference) ⇒ no shift, matches run_u_gw's contract.
+            let vxc_diag = match cfg.rpa.xc.as_deref() {
+                Some(xc_name) => {
+                    let (diag_a, diag_b) =
+                        ferric_gw::vxc_mo::vxc_diagonal_mo(mol, bs, xc_name, &result)
+                            .unwrap_or_else(|e| {
+                                eprintln!("error: vxc_diagonal_mo failed: {e}");
+                                std::process::exit(1);
+                            });
+                    Some((diag_a, diag_b))
+                }
+                None => None,
+            };
+            let mut gw_result = ferric_gw::run_u_gw(
+                mol, prep, &dfbs, op, &result, &rpa_cfg, &gw_cfg,
             )
             .unwrap_or_else(|e| {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             });
-            println!(
-                "RI-MP2/{} (aux: {}) on {}",
-                bs.name, aux_name, cfg.molecule.xyz
-            );
-            println!("  nbasis     = {}", prep.nbasis());
-            println!("  RHF energy = {:.10} Hartree", result.energy);
-            println!("  MP2 corr   = {:.10} Hartree", mp2_result.mp2_corr);
-            println!("  Total      = {:.10} Hartree", mp2_result.total_energy);
-        }
-        "mp3" => {
-            let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
-            let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            });
-            let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            });
-            let mp3_result = mp3_energy(&mol, &prep, &dfbs, op, &result, cfg.mp2.frozen_core)
-                .unwrap_or_else(|e| {
-                    eprintln!("error: {e}");
-                    std::process::exit(1);
-                });
-            println!(
-                "MP3/{} (aux: {}) on {}",
-                bs.name, aux_name, cfg.molecule.xyz
-            );
-            println!("  nbasis     = {}", prep.nbasis());
-            println!("  RHF energy = {:.10} Hartree", mp3_result.e_hf);
-            println!("  MP2 corr   = {:.10} Hartree", mp3_result.e_mp2);
-            println!("  MP3 corr   = {:.10} Hartree", mp3_result.e_mp3);
-            println!("  Total corr = {:.10} Hartree", mp3_result.e_corr);
-            println!("  Total      = {:.10} Hartree", mp3_result.e_total);
-        }
-        "oo-rimp2" => {
-            let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
-            let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            });
-            let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            });
-            let oo_config = OoRiMp2Config {
-                frozen_core: cfg.mp2.frozen_core,
-                memory_budget_bytes: budget_bytes,
-                ..Default::default()
-            };
-            let oo_result = oo_ri_mp2(&mol, &prep, &dfbs, op, &bounds, &result, &oo_config)
-                .unwrap_or_else(|e| {
-                    eprintln!("error: {e}");
-                    std::process::exit(1);
-                });
-            println!(
-                "OO-RI-MP2/{} (aux: {}) on {}",
-                bs.name, aux_name, cfg.molecule.xyz
-            );
-            println!("  nbasis     = {}", prep.nbasis());
-            println!("  converged  = {}", oo_result.converged);
-            println!("  iterations = {}", oo_result.iterations);
-            println!("  grad_norm  = {:.2e}", oo_result.grad_norm);
-            println!("  HF energy  = {:.10} Hartree", oo_result.hf_energy);
-            println!("  MP2 corr   = {:.10} Hartree", oo_result.mp2_corr);
-            println!("  Total      = {:.10} Hartree", oo_result.total_energy);
-        }
-        "att-rimp2" => {
-            let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
-            let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            });
-            let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            });
-            let omega_ang_inv = cfg.mp2.omega.unwrap_or(0.420);
-            let att_config = AttenuatedMp2Config {
-                omega: omega_ang_inv * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV,
-                scaling: 1.0,
-                frozen_core: cfg.mp2.frozen_core,
-                screen_thresh: None,
-                memory_budget_bytes: budget_bytes,
-            };
-            let att_result = attenuated_ri_mp2(&mol, &prep, &dfbs, &result, &att_config)
-                .unwrap_or_else(|e| {
-                    eprintln!("error: {e}");
-                    std::process::exit(1);
-                });
-            println!(
-                "Attenuated RI-MP2/{} (aux: {}, ω={:.3} Å⁻¹) on {}",
-                bs.name, aux_name, omega_ang_inv, cfg.molecule.xyz
-            );
-            println!("  nbasis     = {}", prep.nbasis());
-            println!("  RHF energy = {:.10} Hartree", result.energy);
-            println!("  MP2 corr   = {:.10} Hartree", att_result.mp2_corr);
-            println!("  E_OS       = {:.10} Hartree", att_result.spin_components.e_os);
-            println!("  E_SS       = {:.10} Hartree", att_result.spin_components.e_ss);
-            println!("  Total      = {:.10} Hartree", att_result.total_energy);
-        }
-        "rs-mp2-rpa" => {
-            let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
-            let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            });
-            let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            });
-            let omega_ang_inv = cfg.mp2.omega.unwrap_or(0.420);
-            let formulation = match cfg.mp2.formulation.as_deref().unwrap_or("delta-lr") {
-                "delta-lr" => ferric_rpa::RsMp2RpaFormulation::DeltaLr,
-                "coupled-rings" => ferric_rpa::RsMp2RpaFormulation::CoupledRings,
-                other => {
-                    eprintln!("error: unknown [mp2] formulation = \"{other}\"; expected \"delta-lr\" or \"coupled-rings\"");
-                    std::process::exit(1);
-                }
-            };
-            let attenuator = match cfg.mp2.attenuator.as_deref().unwrap_or("erf") {
-                "erf" => ferric_rpa::rs_mp2_rpa::Attenuator::Erf,
-                "terf" => ferric_rpa::rs_mp2_rpa::Attenuator::Terf,
-                other => {
-                    eprintln!("error: unknown [mp2] attenuator = \"{other}\"; expected \"erf\" or \"terf\"");
-                    std::process::exit(1);
-                }
-            };
-            // r0 in Bohr; only meaningful for terf. Default matches the erf
-            // operating point (r0=3.18 Bohr ⇒ ω≈0.42 Å⁻¹).
-            let r0 = cfg.mp2.r0.unwrap_or(3.18);
-            if matches!(attenuator, ferric_rpa::rs_mp2_rpa::Attenuator::Terf)
-                && cfg.mp2.omega.is_some()
-            {
-                eprintln!("warning: [mp2] omega is ignored when attenuator = \"terf\" (ω is derived from r0 = {r0} Bohr as ω = 1/(r0·√2))");
+            if let Some((diag_a, diag_b)) = vxc_diag.as_ref() {
+                gw_result.apply_kohn_sham_correction(diag_a, diag_b);
             }
-            let mut rs_cfg = ferric_rpa::rs_mp2_rpa::RsMp2RpaConfig {
-                omega: omega_ang_inv * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV,
-                attenuator,
-                r0,
-                frozen_core: cfg.mp2.frozen_core,
-                formulation,
-                ..Default::default()
-            };
-            // [rpa] trunc_thresh opts into PDEP truncation for the dRPA solves
-            // (default 0.0 = full rank; production-size opt-in, validate vs
-            // full-rank per system class before trusting).
-            if let Some(t) = cfg.rpa.trunc_thresh {
-                rs_cfg.drpa.trunc_thresh = t;
-            }
-            rs_cfg.drpa.memory_budget_bytes = budget_bytes;
-            let r = ferric_rpa::rs_mp2_rpa::rs_mp2_lr_rpa(&mol, &prep, &dfbs, &result, &rs_cfg)
-                .unwrap_or_else(|e| { eprintln!("error: {e}"); std::process::exit(1); });
+            let ref_label = if cfg.rpa.xc.is_some() { "UKS" } else { "UHF" };
             println!(
-                "RS-MP2-RPA/{} (aux: {}, ω={:.3} Å⁻¹) on {}",
-                bs.name, aux_name, omega_ang_inv, cfg.molecule.xyz
+                "U-GW[{:?}]/{} (aux: {}, ref: {ref_label}) on {}",
+                gw_cfg.method, bs.name, aux_name, cfg.molecule.xyz
             );
             println!("  nbasis     = {}", prep.nbasis());
-            match rs_cfg.attenuator {
-                ferric_rpa::rs_mp2_rpa::Attenuator::Erf => {
-                    println!("RS-MP2-RPA [erf split] (ω = {omega_ang_inv:.3} Å⁻¹ = {:.4} Bohr⁻¹)", rs_cfg.omega);
+            println!("  {ref_label} energy: {:.10} Hartree", result.energy);
+            println!("  ev iterations = {}", gw_result.n_ev_iter);
+            println!("  outer converged = {}", gw_result.outer_converged);
+            let two_s = mol.multiplicity as i64 - 1;
+            let nocc_a = ((mol.nelec() as i64 + two_s) / 2) as usize;
+            let nocc_b = ((mol.nelec() as i64 - two_s) / 2) as usize;
+            for (spin_label, nocc, eps_mf, eps_qp, sigma_x, sigma_c, z_factor, qp_converged) in [
+                (
+                    "alpha", nocc_a,
+                    &gw_result.eps_mf_a, &gw_result.eps_qp_a, &gw_result.sigma_x_a,
+                    &gw_result.sigma_c_a, &gw_result.z_factor_a, &gw_result.qp_converged_a,
+                ),
+                (
+                    "beta", nocc_b,
+                    &gw_result.eps_mf_b, &gw_result.eps_qp_b, &gw_result.sigma_x_b,
+                    &gw_result.sigma_c_b, &gw_result.z_factor_b, &gw_result.qp_converged_b,
+                ),
+            ] {
+                println!("  -- {spin_label} spin channel --");
+                println!(
+                    "  {:>4} {:>14} {:>14} {:>10} {:>10} {:>10}  qp_converged",
+                    "MO", "eps_mf(eV)", "eps_qp(eV)", "Sigma_x", "Sigma_c", "Z"
+                );
+                for (idx, &mo) in gw_result.mo_indices.iter().enumerate() {
+                    let tag = if nocc >= 1 && mo == nocc - 1 {
+                        " (HOMO)"
+                    } else if mo == nocc {
+                        " (LUMO)"
+                    } else {
+                        ""
+                    };
+                    println!(
+                        "  {:>4} {:>14.4} {:>14.4} {:>10.4} {:>10.4} {:>10.4}  {}{}",
+                        mo,
+                        eps_mf[idx] * ha_to_ev,
+                        eps_qp[idx] * ha_to_ev,
+                        sigma_x[idx],
+                        sigma_c[idx],
+                        z_factor[idx],
+                        qp_converged[idx],
+                        tag,
+                    );
                 }
-                ferric_rpa::rs_mp2_rpa::Attenuator::Terf => {
-                    let w_derived = 1.0 / (rs_cfg.r0 * std::f64::consts::SQRT_2);
-                    println!("RS-MP2-RPA [terf split] (r0 = {:.4} Bohr, ω = 1/(r0·√2) = {:.4} Bohr⁻¹)", rs_cfg.r0, w_derived);
+                if nocc >= 1 {
+                    if let Some(loc) = gw_result.mo_indices.iter().position(|&m| m == nocc - 1) {
+                        println!("  {spin_label}-HOMO IP = {:.4} eV", -eps_qp[loc] * ha_to_ev);
+                    }
+                }
+                if let Some(loc) = gw_result.mo_indices.iter().position(|&m| m == nocc) {
+                    println!("  {spin_label}-LUMO EA = {:.4} eV", -eps_qp[loc] * ha_to_ev);
                 }
             }
-            // Common lines printed for all formulations.
-            println!("  E(MP2, Coulomb)      = {:>16.10} Hartree", r.e_mp2_full);
-            println!("  E(SR-MP2, erfc)      = {:>16.10} Hartree", r.e_sr_mp2);
-            println!("  E(LR-MP2, erf)       = {:>16.10} Hartree", r.e_lr_mp2);
-            println!("  E(dMP2, erf)         = {:>16.10} Hartree", r.e_dmp2_lr);
-            // Formulation-specific lines.
-            match rs_cfg.formulation {
-                ferric_rpa::RsMp2RpaFormulation::DeltaLr => {
-                    println!("  E(dRPA, erf)         = {:>16.10} Hartree", r.e_drpa_lr.unwrap());
-                    println!("  E_corr naive (A)     = {:>16.10} Hartree   [diagnostic: misses SR×LR cross terms]", r.e_corr_naive.unwrap());
-                    println!("  E_corr Δ-form (B)    = {:>16.10} Hartree", r.e_corr);
-                }
-                ferric_rpa::RsMp2RpaFormulation::CoupledRings => {
-                    println!("  E(ΔdRPA, Coulomb)    = {:>16.10} Hartree", r.e_delta_drpa_full.unwrap());
-                    println!("  E(ΔdRPA, erfc)       = {:>16.10} Hartree", r.e_delta_drpa_sr.unwrap());
-                    println!("  E_corr coupled (T)   = {:>16.10} Hartree", r.e_corr);
+            if !gw_result.outer_converged {
+                eprintln!(
+                    "warning: U-{:?} eigenvalue self-consistency did NOT converge in {} \
+                     iterations (thresh {:.1e}); QP energies above are the last sweep",
+                    gw_cfg.method, gw_result.n_ev_iter, gw_cfg.ev_conv_thresh
+                );
+            }
+            for (spin_label, flags) in [
+                ("alpha", &gw_result.qp_converged_a),
+                ("beta", &gw_result.qp_converged_b),
+            ] {
+                let unconverged_mos: Vec<usize> = gw_result
+                    .mo_indices
+                    .iter()
+                    .zip(flags.iter())
+                    .filter(|(_, &c)| !c)
+                    .map(|(&m, _)| m)
+                    .collect();
+                if !unconverged_mos.is_empty() {
+                    eprintln!(
+                        "warning: QP Newton solve did not converge for {spin_label} MO(s) \
+                         {unconverged_mos:?}; those QP energies are best-effort"
+                    );
                 }
             }
-            println!("  Total energy         = {:>16.10} Hartree", r.total_energy);
+            return;
         }
-        "scs-mp2" => {
-            let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
-            let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            });
-            let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            });
-            let scs_config = ScsMp2Config {
-                c_os: cfg.mp2.c_os.unwrap_or(6.0 / 5.0),
-                c_ss: cfg.mp2.c_ss.unwrap_or(1.0 / 3.0),
-                frozen_core: cfg.mp2.frozen_core,
-                memory_budget_bytes: budget_bytes,
+        // KS reference (RPA@PBE0-style): [rpa].xc set ⇒ `result` above is
+        // already the KS-DFT solve (via the xc/df_j_default/df_k_default
+        // block); build vxc_diag so Σx−vxc enters the QP self-consistency.
+        // None (HF reference) ⇒ no shift, matches run_gw's documented
+        // contract.
+        let vxc_diag = match cfg.rpa.xc.as_deref() {
+            Some(xc_name) => {
+                let (diag, _beta) = ferric_gw::vxc_mo::vxc_diagonal_mo(mol, bs, xc_name, result)
+                    .unwrap_or_else(|e| {
+                        eprintln!("error: vxc_diagonal_mo failed: {e}");
+                        std::process::exit(1);
+                    });
+                Some(diag)
+            }
+            None => None,
+        };
+        let gw_result = ferric_gw::run_gw(
+            mol, prep, &dfbs, op, result, &rpa_cfg, &gw_cfg, vxc_diag.as_ref(),
+        )
+        .unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
+        let ref_label = if cfg.rpa.xc.is_some() { "KS" } else { "HF" };
+        println!(
+            "GW[{:?}]/{} (aux: {}, ref: {ref_label}) on {}",
+            gw_cfg.method, bs.name, aux_name, cfg.molecule.xyz
+        );
+        println!("  nbasis     = {}", prep.nbasis());
+        println!("  {ref_label} energy: {:.10} Hartree", result.energy);
+        println!("  ev iterations = {}", gw_result.n_ev_iter);
+        println!("  outer converged = {}", gw_result.outer_converged);
+        println!(
+            "  {:>4} {:>14} {:>14} {:>10} {:>10} {:>10}  qp_converged",
+            "MO", "eps_mf(eV)", "eps_qp(eV)", "Sigma_x", "Sigma_c", "Z"
+        );
+        let nocc = (mol.nelec() as usize) / 2;
+        for (idx, &mo) in gw_result.mo_indices.iter().enumerate() {
+            let tag = if mo == nocc - 1 {
+                " (HOMO)"
+            } else if mo == nocc {
+                " (LUMO)"
+            } else {
+                ""
             };
-            let scs_result = scs_mp2(&mol, &prep, &dfbs, &result, &scs_config)
-                .unwrap_or_else(|e| {
-                    eprintln!("error: {e}");
-                    std::process::exit(1);
-                });
             println!(
-                "SCS-MP2/{} (aux: {}, c_OS={:.3}, c_SS={:.3}) on {}",
-                bs.name, aux_name, scs_config.c_os, scs_config.c_ss, cfg.molecule.xyz
+                "  {:>4} {:>14.4} {:>14.4} {:>10.4} {:>10.4} {:>10.4}  {}{}",
+                mo,
+                gw_result.eps_mf[idx] * ha_to_ev,
+                gw_result.eps_qp[idx] * ha_to_ev,
+                gw_result.sigma_x[idx],
+                gw_result.sigma_c[idx],
+                gw_result.z_factor[idx],
+                gw_result.qp_converged[idx],
+                tag,
             );
-            println!("  nbasis     = {}", prep.nbasis());
-            println!("  RHF energy = {:.10} Hartree", result.energy);
-            println!("  SCS corr   = {:.10} Hartree", scs_result.scs_corr);
-            println!("  E_OS       = {:.10} Hartree", scs_result.e_os);
-            println!("  E_SS       = {:.10} Hartree", scs_result.e_ss);
-            println!("  Total      = {:.10} Hartree", scs_result.total_energy);
         }
+        if nocc >= 1 {
+            if let Some(loc) = gw_result.mo_indices.iter().position(|&m| m == nocc - 1) {
+                println!("  HOMO IP = {:.4} eV", -gw_result.eps_qp[loc] * ha_to_ev);
+            }
+        }
+        if let Some(loc) = gw_result.mo_indices.iter().position(|&m| m == nocc) {
+            println!("  LUMO EA = {:.4} eV", -gw_result.eps_qp[loc] * ha_to_ev);
+        }
+        if !gw_result.outer_converged {
+            eprintln!(
+                "warning: {:?} eigenvalue self-consistency did NOT converge in {} \
+                 iterations (thresh {:.1e}); QP energies above are the last sweep",
+                gw_cfg.method, gw_result.n_ev_iter, gw_cfg.ev_conv_thresh
+            );
+        }
+        let unconverged_mos: Vec<usize> = gw_result
+            .mo_indices
+            .iter()
+            .zip(gw_result.qp_converged.iter())
+            .filter(|(_, &c)| !c)
+            .map(|(&m, _)| m)
+            .collect();
+        if !unconverged_mos.is_empty() {
+            eprintln!(
+                "warning: QP Newton solve did not converge for MO(s) {unconverged_mos:?}; \
+                 those QP energies are best-effort"
+            );
+        }
+}
 
-        "scs-mp2-2terfc" => {
-            let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
-            let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
-                eprintln!("error: {e}");
+/// `method.kind = "bse-tda"`. Extracted verbatim from the former `main()`
+/// `"bse-tda" => { ... }` match arm.
+#[allow(clippy::too_many_arguments)]
+fn run_bse_tda(
+    cfg: &Config,
+    mol: &Molecule,
+    bs: &BasisSet,
+    prep: &PreparedBasis,
+    op: Operator,
+    result: &ferric_scf::result::ScfResult,
+    budget_bytes: Option<usize>,
+) {
+        // Closed-shell (RHF) only — run_bse_tda itself hard-errors on a
+        // non-restricted reference; the top-level `result` above is always
+        // an RHF solve for method.kind = "bse-tda" (no UHF branch, unlike
+        // "gw"), so surface a clearer CLI-level message before the library
+        // guard would otherwise fire.
+        if mol.multiplicity > 1 {
+            eprintln!(
+                "error: method.kind = \"bse-tda\" is closed-shell (RHF) only; \
+                 mol.multiplicity = {} is unsupported (no open-shell BSE-TDA exists)",
+                mol.multiplicity
+            );
+            std::process::exit(1);
+        }
+        let aux_name = cfg.rpa.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+        let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
+        let dfbs = PreparedBasis::new(mol, &aux_bs).unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
+        let scheme = cfg.rpa.parse_quadrature().unwrap_or_else(|e| {
+            eprintln!("config error: {e}");
+            std::process::exit(1);
+        });
+        // frozen_core must match between the PDEP (W) build and the BSE/GW
+        // self-energy build for self-consistency, same as the "gw" arm.
+        // [gw].frozen_core is the source of truth when set; otherwise fall
+        // back to [rpa].frozen_core.
+        let bse_frozen_core = cfg.gw.frozen_core.unwrap_or(cfg.rpa.frozen_core);
+        let rpa_cfg = PdepRpaConfig {
+            frozen_core: bse_frozen_core,
+            trunc_thresh: cfg.rpa.trunc_thresh.unwrap_or(1e-4),
+            eigensolver_max_vecs: 0,
+            eigensolver_conv_thresh: cfg.rpa.eigensolver_conv_thresh.unwrap_or(1e-6),
+            quadrature: QuadratureConfig {
+                scheme,
+                n_points: cfg.rpa.n_quad.unwrap_or(20),
+                u0: cfg.rpa.u0.unwrap_or(0.5),
+            },
+            sternheimer: SternheimerConfig::default(),
+            run_diagnostics: cfg.rpa.run_diagnostics,
+            eigensolver: ferric_rpa::Eigensolver::default(),
+            chi0_backend: ferric_rpa::config::Chi0Backend::default(),
+            chi0_sparsity: cfg.rpa.parse_chi0_sparsity().unwrap_or_else(|e| {
+                eprintln!("config error: {e}");
                 std::process::exit(1);
-            });
-            let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap_or_else(|e| {
-                eprintln!("error: {e}");
+            }),
+            memory_budget_bytes: budget_bytes,
+            // run_bse_tda runs GW internally, which forces this on regardless
+            // of what's set here; set it explicitly for clarity at the call
+            // site too (matches the "gw" arm).
+            need_inv_dielectric_freq: true,
+        };
+        let ha_to_ev = 27.211_386_245_988_f64;
+        let bse = ferric_gw::bse::run_bse_tda(
+            mol, prep, &dfbs, op, result, &rpa_cfg, bse_frozen_core,
+        )
+        .unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
+        println!(
+            "BSE-TDA[G0W0@HF]/{} (aux: {}) on {}",
+            bs.name, aux_name, cfg.molecule.xyz
+        );
+        println!("  nbasis     = {}", prep.nbasis());
+        println!("  RHF energy = {:.10} Hartree", result.energy);
+        println!("  nocc = {}  nvir = {}  ({} singlet states)", bse.nocc, bse.nvir, bse.omega.len());
+        println!("  {:>4} {:>12} {:>10}", "n", "Omega (eV)", "f_osc");
+        for (n, (&om, &f)) in bse.omega.iter().zip(bse.oscillator_strength.iter()).enumerate() {
+            println!("  {:>4} {:>12.4} {:>10.5}", n + 1, om * ha_to_ev, f);
+        }
+        println!(
+            "  lowest singlet excitation = {:.4} eV  (f = {:.5})",
+            bse.lowest_ev(),
+            bse.lowest_oscillator_strength()
+        );
+}
+
+/// `method.kind = "tdhf-static-polarizability"`. Extracted verbatim from the
+/// former `main()` `"tdhf-static-polarizability" => { ... }` match arm.
+#[allow(clippy::too_many_arguments)]
+fn run_tdhf_static_polarizability(
+    cfg: &Config,
+    mol: &Molecule,
+    bs: &BasisSet,
+    prep: &PreparedBasis,
+    op: Operator,
+    result: &ferric_scf::result::ScfResult,
+    budget_bytes: Option<usize>,
+) {
+        // RPAx@KS static (omega=0) polarizability only. SCOPE: this method
+        // is deliberately narrow -- static alpha, nothing else. Do not
+        // extend this arm to surface C6/dynamic alpha(iw); docs/VALIDATION.md
+        // records a validated negative result for that extension of this
+        // exact kernel (C6 stays ~63% low regardless of gap, worse than
+        // ferric's production dRPA/PDEP C6 pipeline). See
+        // ferric_gw::bse::run_rpax_static_polarizability's doc comment.
+        if mol.multiplicity > 1 {
+            eprintln!(
+                "error: method.kind = \"tdhf-static-polarizability\" is closed-shell only; \
+                 mol.multiplicity = {} is unsupported",
+                mol.multiplicity
+            );
+            std::process::exit(1);
+        }
+        // This method's validated accuracy (static alpha ~= DOSD) is a
+        // KS-reference result; require [rpa].xc explicitly rather than
+        // silently falling back to an HF reference with a much worse
+        // static alpha (see the xc-routing block's comment above).
+        if cfg.rpa.xc.is_none() {
+            eprintln!(
+                "error: method.kind = \"tdhf-static-polarizability\" requires [rpa] xc \
+                 (e.g. xc = \"PBE\") -- this method's validated accuracy is a KS-reference \
+                 result; an HF reference gives a much worse static alpha"
+            );
+            std::process::exit(1);
+        }
+        let aux_name = cfg.rpa.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+        let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
+        let dfbs = PreparedBasis::new(mol, &aux_bs).unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
+        let scheme = cfg.rpa.parse_quadrature().unwrap_or_else(|e| {
+            eprintln!("config error: {e}");
+            std::process::exit(1);
+        });
+        let frozen_core = cfg.gw.frozen_core.unwrap_or(cfg.rpa.frozen_core);
+        let scissor = cfg.gw.scissor.unwrap_or(0.0);
+        let rpa_cfg = PdepRpaConfig {
+            frozen_core,
+            trunc_thresh: cfg.rpa.trunc_thresh.unwrap_or(1e-4),
+            eigensolver_max_vecs: 0,
+            eigensolver_conv_thresh: cfg.rpa.eigensolver_conv_thresh.unwrap_or(1e-6),
+            quadrature: QuadratureConfig {
+                scheme,
+                n_points: cfg.rpa.n_quad.unwrap_or(20),
+                u0: cfg.rpa.u0.unwrap_or(0.5),
+            },
+            sternheimer: SternheimerConfig::default(),
+            run_diagnostics: cfg.rpa.run_diagnostics,
+            eigensolver: ferric_rpa::Eigensolver::default(),
+            chi0_backend: ferric_rpa::config::Chi0Backend::default(),
+            chi0_sparsity: cfg.rpa.parse_chi0_sparsity().unwrap_or_else(|e| {
+                eprintln!("config error: {e}");
                 std::process::exit(1);
-            });
-            // r0(1)/r0(2) are given in Å in the TOML (matching the Python
-            // binding's convention); the library config wants Bohr.
-            const ANG2BOHR: f64 = 1.8897259886;
-            let r0_bonded_ang = cfg.mp2.r0_bonded.unwrap_or(0.75);
-            let r0_nonbonded_ang = cfg.mp2.r0_nonbonded.unwrap_or(1.05);
-            let scs_config = ScsMp2TerfcConfig {
-                r0_bonded: r0_bonded_ang * ANG2BOHR,
-                r0_nonbonded: r0_nonbonded_ang * ANG2BOHR,
-                c_os: cfg.mp2.c_os.unwrap_or(1.27),
-                c_ss: cfg.mp2.c_ss.unwrap_or(4.05),
-                frozen_core: cfg.mp2.frozen_core,
-                memory_budget_bytes: budget_bytes,
-            };
-            if scs_config.r0_nonbonded <= scs_config.r0_bonded {
-                eprintln!("error: [mp2] r0_nonbonded must be > r0_bonded");
-                std::process::exit(1);
+            }),
+            memory_budget_bytes: budget_bytes,
+            // No GW self-energy build in this path (static screening
+            // modes from run_pdep_rpa only) -- unlike "gw"/"bse-tda",
+            // this does NOT need the inverse-dielectric frequency stack.
+            need_inv_dielectric_freq: false,
+        };
+        let res = ferric_gw::bse::run_rpax_static_polarizability(
+            mol, prep, &dfbs, op, result, &rpa_cfg, frozen_core, scissor,
+        )
+        .unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
+        println!(
+            "RPAx@KS[{}] static polarizability /{} (aux: {}) on {}",
+            cfg.rpa.xc.as_deref().unwrap_or("?"), bs.name, aux_name, cfg.molecule.xyz
+        );
+        println!(
+            "  NOTE: static polarizability only -- do not use for C6/dispersion \
+             (known negative accuracy result, see docs/VALIDATION.md)"
+        );
+        println!("  nbasis     = {}", prep.nbasis());
+        println!("  KS energy  = {:.10} Hartree", result.energy);
+        println!("  nocc = {}  nvir = {}", res.nocc, res.nvir);
+        println!("  alpha tensor (a.u.):");
+        for row in &res.tensor {
+            println!("    {:>12.6} {:>12.6} {:>12.6}", row[0], row[1], row[2]);
+        }
+        println!("  alpha_iso (static) = {:.6} a.u.", res.iso);
+}
+
+/// `method.kind = "uhf"`, `task = "energy"`. Extracted verbatim from the
+/// former `main()` `if method == "uhf" { ... }` block.
+#[allow(clippy::too_many_arguments)]
+fn run_uhf(
+    cfg: &Config,
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    bs: &BasisSet,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    rhf_config: &RhfConfig,
+) {
+    let result = solve_uhf(ctx, mol, prep, bounds, rhf_config).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let s_ov = ferric_integrals::oneelectron::overlap(prep);
+    let nelec = mol.nelec() as i64;
+    let two_s = mol.multiplicity as i64 - 1;
+    let nocc_a = ((nelec + two_s) / 2) as usize;
+    let nocc_b = ((nelec - two_s) / 2) as usize;
+    let s_true = 0.5 * (nocc_a as f64 - nocc_b as f64);
+    let s_ideal = s_true * (s_true + 1.0);
+    let c_a = result.mos_a();
+    let c_b = result.mos_b();
+    let overlap_ab = c_a
+        .slice(ndarray::s![.., ..nocc_a])
+        .t()
+        .dot(&s_ov)
+        .dot(&c_b.slice(ndarray::s![.., ..nocc_b]));
+    let sum_sq: f64 = overlap_ab.iter().map(|v| v * v).sum();
+    let s2 = s_ideal + (nocc_b as f64) - sum_sq;
+    println!("UHF/{} on {}", bs.name, cfg.molecule.xyz);
+    println!("  nbasis     = {}", prep.nbasis());
+    println!("  mult       = {} (nocc_a={}, nocc_b={})", mol.multiplicity, nocc_a, nocc_b);
+    println!("  iterations = {}", result.iterations);
+    println!("  converged  = {}", result.converged);
+    println!("  energy     = {:.10} Hartree", result.energy);
+    println!("  <S^2>      = {:.6} (ideal {:.6})", s2, s_ideal);
+    // task == "optimize" is handled by the top-level dispatch above
+    // (optimize_geometry_uhf), which returns before reaching here.
+}
+
+/// `method.kind = "rohf"`, `task = "energy"`. Extracted verbatim from the
+/// former `main()` `if method == "rohf" { ... }` block.
+#[allow(clippy::too_many_arguments)]
+fn run_rohf(
+    cfg: &Config,
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    bs: &BasisSet,
+    op: Operator,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    rhf_config: &RhfConfig,
+) {
+    let result = solve_rohf(ctx, mol, prep, op, bounds, rhf_config).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let nelec = mol.nelec() as i64;
+    let two_s = mol.multiplicity as i64 - 1;
+    let nocc_open = two_s as usize;
+    let nocc_double = ((nelec - two_s) / 2) as usize;
+    let s_true = 0.5 * two_s as f64;
+    let s_ideal = s_true * (s_true + 1.0);
+    println!("ROHF/{} on {}", bs.name, cfg.molecule.xyz);
+    println!("  nbasis     = {}", prep.nbasis());
+    println!(
+        "  mult       = {} (nocc_double={}, nocc_open={})",
+        mol.multiplicity, nocc_double, nocc_open
+    );
+    println!("  iterations = {}", result.iterations);
+    println!("  converged  = {}", result.converged);
+    println!("  energy     = {:.10} Hartree", result.energy);
+    println!("  <S^2>      = {:.6} (exact by construction)", s_ideal);
+    // task == "optimize" is handled by the top-level dispatch above
+    // (optimize_geometry_rohf), which returns before reaching here.
+}
+
+/// `task.method = "optimize"` dispatch. Extracted verbatim from the former
+/// `main()` `if task == "optimize" { ... }` block; each `method` sub-arm below
+/// is byte-for-byte the original match-arm body.
+#[allow(clippy::too_many_arguments)]
+fn run_optimize(
+    method: &str,
+    cfg: &Config,
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    bs: &BasisSet,
+    op: Operator,
+    rhf_config: &RhfConfig,
+    budget_bytes: Option<usize>,
+) {
+    let opt_config = OptimizeConfig {
+        max_steps: cfg.optimize.max_steps.unwrap_or(100),
+        g_max_thresh: cfg.optimize.g_max_thresh.unwrap_or(4.5e-4),
+        g_rms_thresh: cfg.optimize.g_rms_thresh.unwrap_or(3.0e-4),
+        e_conv: cfg.optimize.e_conv.unwrap_or(1e-6),
+        trust_radius: cfg.optimize.trust_radius.unwrap_or(0.1),
+    };
+    match method {
+        "rhf" | "ksdft" => {
+            let opt_result = optimize_geometry(ctx, mol, &bs.name, op, rhf_config, &opt_config)
+                .unwrap_or_else(|e| {
+                    eprintln!("error during optimization: {e}");
+                    std::process::exit(1);
+                });
+            println!("\nFinal Optimized Geometry (Bohr):");
+            for (i, atom) in opt_result.mol.atoms.iter().enumerate() {
+                println!("  {:2} {:2} {:12.8} {:12.8} {:12.8}", i, atom.symbol, atom.x, atom.y, atom.zpos);
             }
-            let scs_result = scs_mp2_2terfc(&mol, &prep, &dfbs, &result, &scs_config)
-                .unwrap_or_else(|e| {
-                    eprintln!("error: {e}");
-                    std::process::exit(1);
-                });
-            println!(
-                "SCS-MP2(2terfc)/{} (aux: {}, r0(1)={:.3} Å, r0(2)={:.3} Å, c_OS={:.3}, c_SS={:.3}) on {}",
-                bs.name, aux_name, r0_bonded_ang, r0_nonbonded_ang, scs_config.c_os, scs_config.c_ss, cfg.molecule.xyz
-            );
-            println!("  nbasis     = {}", prep.nbasis());
-            println!("  RHF energy = {:.10} Hartree", result.energy);
-            println!("  SCS corr   = {:.10} Hartree", scs_result.scs_corr);
-            println!("  E_OS       = {:.10} Hartree", scs_result.e_os);
-            println!("  E_SS       = {:.10} Hartree", scs_result.e_ss);
-            println!("  Total      = {:.10} Hartree", scs_result.total_energy);
-        }
-
-        "ccsd" => {
-            let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
-            let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            });
-            let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            });
-            let cc_config = CcConfig {
-                frozen_core: cfg.mp2.frozen_core,
-                memory_budget_bytes: budget_bytes,
-                ..Default::default()
-            };
-            let cc_result = ccsd(&mol, &prep, &dfbs, op, &result, &cc_config)
-                .unwrap_or_else(|e| {
-                    eprintln!("error: {e}");
-                    std::process::exit(1);
-                });
-            println!(
-                "CCSD/{} (aux: {}) on {}",
-                bs.name, aux_name, cfg.molecule.xyz
-            );
-            println!("  nbasis     = {}", prep.nbasis());
-            println!("  RHF energy = {:.10} Hartree", result.energy);
-            println!("  CCSD corr  = {:.10} Hartree", cc_result.correlation_energy);
-            println!("  Total      = {:.10} Hartree", result.energy + cc_result.correlation_energy);
-        }
-
-        "laplace-mp2" => {
-            let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
-            let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            });
-            let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            });
-            let n_quad = cfg.mp2.n_quad.unwrap_or(7);
-            let lap_result = laplace_ri_mp2(
-                &mol,
-                &prep,
-                &dfbs,
-                op,
-                &result,
-                n_quad,
-                cfg.mp2.frozen_core,
-            )
-            .unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            });
-            println!(
-                "Laplace RI-MP2/{} (aux: {}, n_quad={}) on {}",
-                bs.name, aux_name, n_quad, cfg.molecule.xyz
-            );
-            println!("  nbasis     = {}", prep.nbasis());
-            println!("  RHF energy = {:.10} Hartree", result.energy);
-            println!("  MP2 corr   = {:.10} Hartree", lap_result.mp2_corr);
-            println!("  E_OS       = {:.10} Hartree", lap_result.e_os);
-            println!("  E_SS       = {:.10} Hartree", lap_result.e_ss);
-            println!("  Total      = {:.10} Hartree", lap_result.total_energy);
+            println!("\nOptimization Result:");
+            println!("  converged  = {}", opt_result.converged);
+            println!("  steps      = {}", opt_result.steps);
+            println!("  final E    = {:.10} Hartree", opt_result.energy);
         }
         "pdep-rpa" => {
             let aux_name = cfg.rpa.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
             let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            });
-            let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap_or_else(|e| {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             });
@@ -946,1051 +2122,99 @@ fn main() {
                 frozen_core: cfg.rpa.frozen_core,
                 trunc_thresh: cfg.rpa.trunc_thresh.unwrap_or(1e-4),
                 eigensolver_max_vecs: 0,
-                eigensolver_conv_thresh: cfg.rpa.eigensolver_conv_thresh.unwrap_or(1e-6),
+                eigensolver_conv_thresh: cfg.rpa.eigensolver_conv_thresh.unwrap_or(1e-8),
                 quadrature: QuadratureConfig {
                     scheme,
-                    n_points: cfg.rpa.n_quad.unwrap_or(20),
+                    n_points: cfg.rpa.n_quad.unwrap_or(16),
                     u0: cfg.rpa.u0.unwrap_or(0.5),
                 },
                 sternheimer: SternheimerConfig::default(),
-                run_diagnostics: cfg.rpa.run_diagnostics,
+                run_diagnostics: false,
                 eigensolver: ferric_rpa::Eigensolver::default(),
                 chi0_backend: ferric_rpa::config::Chi0Backend::default(),
                 chi0_sparsity: cfg.rpa.parse_chi0_sparsity().unwrap_or_else(|e| {
                     eprintln!("config error: {e}");
                     std::process::exit(1);
                 }),
-                    memory_budget_bytes: budget_bytes,
-                // CLI RPA energy + NPZ property export; the property paths that
-                // consume the inverse-dielectric stack rebuild their own
-                // dielectric, so energy-only here is correct (M9 gate).
+                memory_budget_bytes: budget_bytes,
+                // CLI RPA optimize is energy/gradient only (M9 gate).
                 need_inv_dielectric_freq: false,
             };
-            // For open-shell molecules (multiplicity > 1) re-run with UHF + MOM so
-            // the reference is converged, then dispatch to the unrestricted RPA.
-            // Shadow `result` so the rest of the arm (NPZ export, properties) uses
-            // the correct SCF density.
-            let (rpa_result, ref_label, result) = if mol.multiplicity > 1 {
-                let mut uhf_cfg = rhf_config.clone();
-                // MOM after 5 DIIS iters prevents orbital reordering on open-shell atoms.
-                uhf_cfg.mom_after_iter = 5;
-                let uhf_result = solve_uhf(&ctx, &mol, &prep, &bounds, &uhf_cfg)
+            let h_fd = 5e-4;
+            let opt_result =
+                ferric_rpa::optimize::optimize_geometry_rpa(mol, bs, &aux_bs, op, &rpa_cfg, &opt_config, h_fd)
                     .unwrap_or_else(|e| {
-                        eprintln!("error (UHF): {e}");
+                        eprintln!("error during RPA optimization: {e}");
                         std::process::exit(1);
                     });
-                let rr = ferric_rpa::run_u_pdep_rpa(&mol, &prep, &dfbs, op, &uhf_result, &rpa_cfg)
-                    .unwrap_or_else(|e| {
-                        eprintln!("error (U-PDEP-RPA): {e}");
-                        std::process::exit(1);
-                    });
-                (rr, "UHF", uhf_result)
-            } else {
-                let rr = run_pdep_rpa(&mol, &prep, &dfbs, op, &result, &rpa_cfg)
-                    .unwrap_or_else(|e| {
-                        eprintln!("error: {e}");
-                        std::process::exit(1);
-                    });
-                (rr, "RHF", result)
-            };
-            if !rpa_result.eigensolver_converged {
-                eprintln!(
-                    "warning: PDEP-RPA eigensolver did not fully converge (best-effort Ritz pairs; \
-                     eigenvalues_static/eigenpotentials below are not verified to residual tolerance)"
-                );
+            println!("\nFinal Optimized Geometry (Bohr):");
+            for (i, atom) in opt_result.mol.atoms.iter().enumerate() {
+                println!("  {:2} {:2} {:12.8} {:12.8} {:12.8}", i, atom.symbol, atom.x, atom.y, atom.zpos);
             }
-            println!(
-                "PDEP-RPA/{} (aux: {}) on {}",
-                bs.name, aux_name, cfg.molecule.xyz
-            );
-            println!("  nbasis     = {}", prep.nbasis());
-            println!("{ref_label} energy:            {:>20.10} Hartree", result.energy);
-            println!("RPA correlation:       {:>20.10} Hartree", rpa_result.e_rpa);
-            println!("Total ({ref_label}+RPA):       {:>20.10} Hartree", result.energy + rpa_result.e_rpa);
-            println!("Eigenpotentials kept:  {} / {}", rpa_result.n_eigenpotentials, rpa_result.eigenvalues_static.len());
-            if let Some(e_diag) = rpa_result.e_rpa_dft_diag {
-                println!("RI-dRPA check:         {:>20.10} Hartree", e_diag);
-            }
-            if let Some(prefix) = cfg.rpa.export_eigpot_prefix.as_deref() {
-                use ferric_export::cube::GridSpec;
-                use ferric_export::export_basis_function_cube;
-                let spacing = cfg.rpa.cube_spacing.unwrap_or(0.2);
-                let margin = cfg.rpa.cube_margin.unwrap_or(4.0);
-                let n_export = cfg.rpa.export_eigpot_count
-                    .unwrap_or(10)
-                    .min(rpa_result.n_eigenpotentials);
-                let grid = GridSpec::bounding_box(&mol, margin, spacing);
-                println!(
-                    "Exporting {} eigenpotential cubes (grid {}×{}×{}, spacing {} Bohr)…",
-                    n_export, grid.n_x, grid.n_y, grid.n_z, spacing
-                );
-                for alpha in 0..n_export {
-                    let coeffs: Vec<f64> = rpa_result.eigenpotentials
-                        .column(alpha).iter().copied().collect();
-                    let lam = rpa_result.eigenvalues_static[alpha];
-                    let path = format!("{prefix}_eigpot_{:03}.cube", alpha);
-                    let comment = format!(
-                        "PDEP eigenpotential α={alpha} λ(0)={lam:.6} (basis {aux_name})"
-                    );
-                    if let Err(e) = export_basis_function_cube(&path, &mol, &aux_bs, &grid, &coeffs, &comment) {
-                        eprintln!("  warning: failed to write {}: {}", path, e);
-                    } else {
-                        println!("  wrote {} (λ(0)={:.6})", path, lam);
-                    }
-                }
-            }
-            // NPZ feature bundle for diffusion-model export.
-            if let Some(npz_path) = cfg.rpa.export_npz.as_deref() {
-                use ferric_export::export_npz;
-                use ferric_export::ml::{ChargeSchemes, DispersionBundle, NpzBundle, PolarizabilityBundle};
-                use ferric_rpa::properties::{
-                    electric_field_at_atoms, esp_at_atoms, hirshfeld_charges, lowdin_charges,
-                    mulliken_charges,
-                    pdep_polarizability_becke,
-                    pdep_polarizability_static,
-                };
-                use ndarray::Array2;
-
-                let compute_esp = cfg.rpa.compute_esp.unwrap_or(true);
-                let compute_pol = cfg.rpa.compute_polarizability.unwrap_or(true);
-                let compute_ef = cfg.rpa.compute_electric_field.unwrap_or(true);
-                let compute_alpha_atomic = cfg.rpa.compute_alpha_atomic.unwrap_or(true);
-
-                let coords_arr = {
-                    let mut a = Array2::<f64>::zeros((mol.atoms.len(), 3));
-                    for (i, atom) in mol.atoms.iter().enumerate() {
-                        a[(i, 0)] = atom.x;
-                        a[(i, 1)] = atom.y;
-                        a[(i, 2)] = atom.zpos;
-                    }
-                    a
-                };
-                let znums: Vec<usize> =
-                    mol.atoms.iter().map(|a| a.z as usize).collect();
-
-                let esp_vec = if compute_esp {
-                    match esp_at_atoms(&mol, &prep, result.density_total()) {
-                        Ok(v) => Some(v),
-                        Err(e) => {
-                            eprintln!("warning: esp_at_atoms failed: {e}");
-                            None
-                        }
-                    }
-                } else {
-                    None
-                };
-
-                let ef_vec = if compute_ef {
-                    match electric_field_at_atoms(&mol, &prep, result.density_total()) {
-                        Ok(v) => Some(v),
-                        Err(e) => {
-                            eprintln!("warning: electric_field_at_atoms failed: {e}");
-                            None
-                        }
-                    }
-                } else {
-                    None
-                };
-
-                let alpha_arr = if compute_pol {
-                    match pdep_polarizability_static(
-                        &mol, &prep, &dfbs, &result, op, &rpa_cfg,
-                    ) {
-                        Ok(p) => {
-                            println!(
-                                "Polarizability α (a.u.):  iso={:.4}, principal=[{:.4}, {:.4}, {:.4}]",
-                                p.iso, p.principal[0], p.principal[1], p.principal[2]
-                            );
-                            Some(p.tensor)
-                        }
-                        Err(e) => {
-                            eprintln!("warning: polarizability failed: {e}");
-                            None
-                        }
-                    }
-                } else {
-                    None
-                };
-
-                let alpha_atomic_vec = if compute_alpha_atomic {
-                    match pdep_polarizability_becke(
-                        &mol, &prep, &bs, &dfbs, &result, op, &rpa_cfg,
-                    ) {
-                        Ok(v) => {
-                            println!(
-                                "Per-atom Becke α (iso, a.u.): {:?}",
-                                v.iter()
-                                    .map(|t| (t[0][0] + t[1][1] + t[2][2]) / 3.0)
-                                    .collect::<Vec<_>>()
-                            );
-                            Some(v)
-                        }
-                        Err(e) => {
-                            eprintln!("warning: per-atom α (Hirshfeld) failed: {e}");
-                            None
-                        }
-                    }
-                } else {
-                    None
-                };
-
-                let compute_dm = cfg.rpa.compute_density_matrix.unwrap_or(true);
-                let dm_ref = if compute_dm { Some(result.density_total()) } else { None };
-
-                // Molecular dipole μ = −Tr(P·D) + Σ_A Z_A R_A of the total density
-                // (QC ground truth vs partition-derived Löwdin/Hirshfeld dipoles).
-                // Origin [0,0,0]; neutral molecules → origin-independent. Mirrors
-                // ferric-mp2 ff_polar::mp2_dipole; P·D summed elementwise = Tr(P·D)
-                // since both AO matrices are symmetric.
-                let compute_dip = cfg.rpa.compute_dipole.unwrap_or(true);
-                let dip_arr: Option<[f64; 3]> = if compute_dip {
-                    match ferric_integrals::oneelectron::dipole(&prep, [0.0, 0.0, 0.0]) {
-                        Ok(dip_ao) => {
-                            let p = result.density_total();
-                            let mut mu = [0.0f64; 3];
-                            for d in 0..3 {
-                                let elec = (p * &dip_ao[d]).sum();
-                                let nuc: f64 = mol
-                                    .atoms
-                                    .iter()
-                                    .map(|a| a.z as f64 * [a.x, a.y, a.zpos][d])
-                                    .sum();
-                                mu[d] = nuc - elec;
-                            }
-                            println!(
-                                "dipole (e·a0): [{:.4}, {:.4}, {:.4}] |μ| = {:.4}",
-                                mu[0], mu[1], mu[2], (mu[0] * mu[0] + mu[1] * mu[1] + mu[2] * mu[2]).sqrt()
-                            );
-                            Some(mu)
-                        }
-                        Err(e) => {
-                            eprintln!("warning: dipole failed: {e}");
-                            None
-                        }
-                    }
-                } else {
-                    None
-                };
-
-                let compute_lq = cfg.rpa.compute_lowdin_charges.unwrap_or(true);
-                let lq_vec = if compute_lq {
-                    match lowdin_charges(&mol, &prep, result.density_total()) {
-                        Ok(q) => {
-                            println!(
-                                "Löwdin charges (e): {:?}",
-                                q.iter().map(|v| (v * 1e4).round() / 1e4).collect::<Vec<_>>()
-                            );
-                            Some(q)
-                        }
-                        Err(e) => {
-                            eprintln!("warning: Löwdin charges failed: {e}");
-                            None
-                        }
-                    }
-                } else {
-                    None
-                };
-
-                let compute_hq = cfg.rpa.compute_hirshfeld_charges.unwrap_or(true);
-                let hq_vec = if compute_hq {
-                    match hirshfeld_charges(&mol, &bs, result.density_total(), Some(&proatom)) {
-                        Ok(q) => {
-                            println!(
-                                "Hirshfeld charges (e): {:?}",
-                                q.iter().map(|v| (v * 1e4).round() / 1e4).collect::<Vec<_>>()
-                            );
-                            Some(q)
-                        }
-                        Err(e) => {
-                            eprintln!("warning: Hirshfeld charges failed: {e}");
-                            None
-                        }
-                    }
-                } else {
-                    None
-                };
-
-                let compute_mq = cfg.rpa.compute_mulliken_charges.unwrap_or(true);
-                let mq_vec = if compute_mq {
-                    match mulliken_charges(&mol, &prep, result.density_total()) {
-                        Ok(q) => {
-                            println!(
-                                "Mulliken charges (e): {:?}",
-                                q.iter().map(|v| (v * 1e4).round() / 1e4).collect::<Vec<_>>()
-                            );
-                            Some(q)
-                        }
-                        Err(e) => {
-                            eprintln!("warning: Mulliken charges failed: {e}");
-                            None
-                        }
-                    }
-                } else {
-                    None
-                };
-
-                // --- C6 dispersion (Phase 1: Tkatchenko-Scheffler model) ---
-                let compute_c6 = cfg.rpa.compute_c6.unwrap_or(true);
-                let mut c6_freqs_v: Vec<f64> = Vec::new();
-                let mut c6_weights_v: Vec<f64> = Vec::new();
-                let mut alpha_dyn_v: Vec<Vec<[[f64; 3]; 3]>> = Vec::new();
-                let mut c6_iso_opt: Option<ndarray::Array2<f64>> = None;
-                let mut c6_aniso_v: Vec<Vec<[[f64; 3]; 3]>> = Vec::new();
-                if compute_c6 {
-                    use ferric_rpa::dispersion::{
-                        casimir_polder_c6, pdep_dynamic_polarizability,
-                        ts_dynamic_polarizability, C6Source, DispersionPartition,
-                    };
-                    use ferric_rpa::properties::{
-                        atomic_effective_volumes_hirshfeld,
-                        pdep_polarizability_hirshfeld,
-                    };
-                    use ferric_rpa::quadrature::build_quadrature;
-
-                    // Strict parse: an unknown c6_source/c6_partition used to fall
-                    // through to TS/Becke silently, producing different numbers than
-                    // the user asked for.
-                    let c6_source = C6Source::parse_config_str(cfg.rpa.c6_source.as_deref())
-                        .unwrap_or_else(|e| {
-                            eprintln!("config error: [rpa] {e}");
-                            std::process::exit(1);
-                        });
-                    let partition =
-                        DispersionPartition::parse_config_str(cfg.rpa.c6_partition.as_deref())
-                            .unwrap_or_else(|e| {
-                                eprintln!("config error: [rpa] {e}");
-                                std::process::exit(1);
-                            })
-                            .unwrap_or_else(|| c6_source.default_partition());
-                    let use_pdep = c6_source == C6Source::Pdep;
-
-                    let res_opt = if use_pdep {
-                        // Phase 2: PDEP-RPA dynamic α(iω). Origin-independent for
-                        // the molecular total AND the per-atom intrinsic α^A
-                        // (atom-centred (r−R_A); bond-axis anisotropy is a
-                        // coupled/molecular property, not per-atom). Uses the
-                        // shared ad-hoc same-basis Hirshfeld proatom (built once
-                        // above) so the per-atom partition is basis-consistent.
-                        match pdep_dynamic_polarizability(
-                            &mol, &prep, &bs, &dfbs, &result, op, &rpa_cfg, partition,
-                            Some(&proatom),
-                        ) {
-                            Ok(dp) => {
-                                let res = casimir_polder_c6(&dp);
-                                println!(
-                                    "Computed PDEP-RPA C6: {} atoms, {} freqs; molecular C6 = {:.3} a.u.",
-                                    mol.atoms.len(), dp.freqs.len(), res.c6_molecular_iso
-                                );
-                                Some(res)
-                            }
-                            Err(e) => {
-                                eprintln!("warning: PDEP-RPA C6 failed: {e}");
-                                None
-                            }
-                        }
-                    } else {
-                        // Phase 1: Tkatchenko-Scheffler single-pole model.
-                        // Any failure below warns and SKIPS C6 (None) — the old
-                        // fallbacks (zero α, unit volumes, unit ratios) exported
-                        // wrong numbers that looked like results.
-                        (|| -> Option<ferric_rpa::dispersion::C6Result> {
-                        let alpha_res = if partition == DispersionPartition::Hirshfeld {
-                            pdep_polarizability_hirshfeld(
-                                &mol, &prep, &bs, &dfbs, &result, op, &rpa_cfg, Some(&proatom),
-                            )
-                        } else {
-                            match alpha_atomic_vec.as_ref() {
-                                Some(v) => Ok(v.clone()),
-                                None => pdep_polarizability_becke(
-                                    &mol, &prep, &bs, &dfbs, &result, op, &rpa_cfg,
-                                ),
-                            }
-                        };
-                        let alpha_static: Vec<[[f64; 3]; 3]> = match alpha_res {
-                            Ok(v) => v,
-                            Err(e) => {
-                                eprintln!("warning: TS C6 skipped — per-atom static α failed: {e}");
-                                return None;
-                            }
-                        };
-                        // TS volumes must always use Hirshfeld partition — TS was
-                        // parameterized with Hirshfeld volumes (TS PRL 2009). Becke
-                        // volumes blow up for π-system H atoms (vol_ratio >> 1)
-                        // because Becke is atom-size-blind; Hirshfeld proatom weights
-                        // correctly compress H relative to C. The c6_partition setting
-                        // only governs the alpha_static shape tensor, not these volumes.
-                        let vols = match atomic_effective_volumes_hirshfeld(
-                            &mol, &bs, result.density_total(), Some(&proatom),
-                        ) {
-                            Ok(v) => v,
-                            Err(e) => {
-                                eprintln!("warning: TS C6 skipped — Hirshfeld effective volumes failed: {e}");
-                                return None;
-                            }
-                        };
-                        let z: Vec<usize> = mol.atoms.iter().map(|a| a.z as usize).collect();
-
-                        // Compute free-atom vol_free using Hirshfeld on isolated atoms.
-                        // For a single atom Hirshfeld weight = 1 everywhere (only one
-                        // proatom), so this gives ∫ ρ_free(r) |r|³ dr — same physics
-                        // as the molecular Hirshfeld integral, consistent denominator.
-                        let mut vol_free_computed: std::collections::HashMap<usize, f64> =
-                            std::collections::HashMap::new();
-                        for &zi in z.iter().collect::<std::collections::HashSet<_>>() {
-                            let sym = ferric_core::elements::z_to_symbol(zi as i32)
-                                .unwrap_or("X");
-                            let free_xyz = format!("1\n{sym}\n{sym} 0 0 0\n");
-                            // Correct atomic ground-state multiplicities (3P for
-                            // C/O/Si/S, etc.). Reuse the proatom map — the prior
-                            // ad-hoc match here gave C/O/S a singlet, which is
-                            // wrong physics and HANGS the restricted SCF for S.
-                            let mult = proatom_gs_mult(zi as i32);
-                            if let Ok(free_mol) = Molecule::parse_xyz(&free_xyz, 0, mult) {
-                                if let Ok(free_obs) = PreparedBasis::new(&free_mol, &bs) {
-                                    let free_bounds = SchwarzBounds::compute(op, &free_obs)
-                                        .unwrap_or_else(|_| SchwarzBounds::compute(op, &prep).unwrap());
-                                    let mut free_cfg = rhf_config.clone();
-                                    free_cfg.mom_after_iter = if mult > 1 { 5 } else { 0 };
-                                    // Give the tiny free-atom SCF a generous iteration
-                                    // budget — this is now the ONLY source of vol_free
-                                    // (the hardcoded-table fallback was removed), so a
-                                    // near-converged atom that would previously have
-                                    // silently degraded to a table value must instead
-                                    // actually converge. Cheap: it's a single atom.
-                                    free_cfg.max_iter = free_cfg.max_iter.max(200);
-                                    // 1-thread pool for the tiny atom solve — see run_serial.
-                                    //
-                                    // The free-atom volume must be on the SAME scale (same xc) as
-                                    // the molecular volume (vols[i]) or the ratio is meaningless.
-                                    // Open-shell xc atoms (³P: O/S/Si) do NOT converge under a
-                                    // plain UKS-GGA solve — their degenerate p-shell makes the GGA
-                                    // potential orientation-dependent and the SCF oscillates
-                                    // forever. Fractional/ensemble occupation (fractional_occ)
-                                    // spreads the open-shell electrons equally over the degenerate
-                                    // p orbitals, restoring spherical symmetry and converging the
-                                    // UKS-PBE atom on the *consistent* scale. Pure HF/UHF free-atom
-                                    // solves don't suffer this (K is orbital-invariant in the
-                                    // degenerate subspace), so — matching the proatom builder above
-                                    // — only enable fractional_occ when an xc functional is set.
-                                    if mult > 1 && free_cfg.xc.is_some() {
-                                        free_cfg.fractional_occ = true;
-                                    }
-                                    let solve_free = |cfg: &RhfConfig| -> Option<ndarray::Array2<f64>> {
-                                        if mult > 1 {
-                                            solve_uhf(&ctx, &free_mol, &free_obs, &free_bounds, cfg)
-                                                .ok().map(|r| r.density_total().to_owned())
-                                        } else {
-                                            solve_rhf(&ctx, &free_mol, &free_obs, op, &free_bounds, cfg)
-                                                .ok().map(|r| r.density_r().to_owned())
-                                        }
-                                    };
-                                    // Live free-atom SCF is the ONLY source of the TS
-                                    // vol_free denominator now. Try the reference-
-                                    // consistent xc solve first (scale-matched to the
-                                    // molecular volume); if it fails, retry pure HF/UHF
-                                    // as a *scale-consistent* fallback (this changes the
-                                    // xc convention slightly, but is still a real
-                                    // free-atom integral, not a stale table number). If
-                                    // both fail, vol_free_computed has no entry for this
-                                    // Z and the loop below skips TS C6 with a clear
-                                    // warning — no silent scale-mismatched fabrication.
-                                    let free_density = run_serial(|| {
-                                        solve_free(&free_cfg).or_else(|| {
-                                            // xc solve failed — retry pure HF/UHF for a converged,
-                                            // scale-consistent density.
-                                            let mut hf_cfg = free_cfg.clone();
-                                            hf_cfg.xc = None;
-                                            hf_cfg.fractional_occ = false;
-                                            solve_free(&hf_cfg)
-                                        })
-                                    });
-                                    if let Some(d) = free_density {
-                                        // Single free atom: Hirshfeld weight = 1
-                                        // everywhere (one proatom), so the
-                                        // reference volume is partition-independent
-                                        // — None (legacy path) is exact here.
-                                        if let Ok(fv) = atomic_effective_volumes_hirshfeld(
-                                            &free_mol, &bs, &d, None,
-                                        ) {
-                                            vol_free_computed.insert(zi, fv[0]);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // vol_free comes ONLY from the live free-atom SCF above,
-                        // computed on the SAME integration scale (same xc, same
-                        // Hirshfeld quadrature) as the molecular vols[i] — the only
-                        // number for which the ratio vols[i]/vf is physically
-                        // meaningful. There is deliberately NO table fallback: the
-                        // hardcoded ts_free_atom vol_free values were on a mismatched
-                        // integration scale and (for Z outside {H,He,C,N,O,F,Ne})
-                        // were never sourced — feeding one to this ratio silently
-                        // degraded the C6 to a wrong number that looked like a result
-                        // (verified 2026-07-17, docs/vol-free-verification.md; Si's
-                        // table 60.0 was 42% low vs the live-SCF value, inflating
-                        // every Si-containing molecule's TS C6). Per this repo's
-                        // established TS/MBD honesty convention (2026-07-09:
-                        // ts_atom_params / ts_dynamic_polarizability / mbd_screen all
-                        // hard-error rather than fabricate a Z>18 value), a genuine
-                        // live-SCF failure now SKIPS TS C6 with a clear warning —
-                        // matching the Z>18 "no honest value to return" behavior —
-                        // instead of substituting a scale-mismatched fallback.
-                        let mut ratio = Vec::with_capacity(z.len());
-                        for (i, &zi) in z.iter().enumerate() {
-                            let sym = ferric_core::elements::z_to_symbol(zi as i32).unwrap_or("?");
-                            let vf = match vol_free_computed.get(&zi).copied() {
-                                Some(v) => v,
-                                None => {
-                                    eprintln!(
-                                        "warning: TS C6 skipped — live free-atom SCF failed for \
-                                         {sym} (Z={zi}) and no scale-consistent free-atom volume \
-                                         is available. The TS free-atom vol_free denominator MUST \
-                                         come from a live SCF on the same integration scale as the \
-                                         molecular volume; the old hardcoded-table fallback was \
-                                         removed because it is on a mismatched scale and was never \
-                                         sourced for most elements (docs/vol-free-verification.md). \
-                                         Refusing to fabricate a C6 from a mismatched denominator \
-                                         (same convention as the Z>18 hard-error path — see \
-                                         ts_atom_params / CLAUDE.md TS/MBD honesty). Use \
-                                         c6_source=\"pdep\" for a table-free dispersion source."
-                                    );
-                                    return None;
-                                }
-                            };
-                            if vf <= 1e-10 {
-                                eprintln!(
-                                    "warning: TS C6 skipped — degenerate free-atom volume \
-                                     {vf:.3e} for {sym} (Z={zi})"
-                                );
-                                return None;
-                            }
-                            ratio.push(vols[i] / vf);
-                        }
-                        let (freqs, weights) = build_quadrature(&rpa_cfg.quadrature);
-                        let is_mbd = c6_source == C6Source::Mbd;
-                        let dp_res = if is_mbd {
-                            let positions: Vec<[f64; 3]> =
-                                mol.atoms.iter().map(|a| [a.x, a.y, a.zpos]).collect();
-                            ferric_rpa::dispersion::mbd_dynamic_polarizability(
-                                &positions, &z, &ratio, &alpha_static, &freqs, &weights,
-                            )
-                        } else {
-                            ts_dynamic_polarizability(&z, &ratio, &alpha_static, &freqs, &weights)
-                        };
-                        let dp = match dp_res {
-                            Ok(dp) => dp,
-                            Err(e) => {
-                                eprintln!(
-                                    "warning: {} C6 skipped: {e}",
-                                    if is_mbd { "MBD" } else { "TS" }
-                                );
-                                return None;
-                            }
-                        };
-                        let ts_res = casimir_polder_c6(&dp);
-                        println!(
-                            "Computed {} C6: {} atoms; molecular C6 = {:.3} a.u.",
-                            if is_mbd { "MBD" } else { "TS" },
-                            z.len(),
-                            ts_res.c6_molecular_iso
-                        );
-                        Some(ts_res)
-                        })()
-                    };
-
-                    if let Some(res) = res_opt {
-                        c6_freqs_v = res.per_atom_dynamic.freqs.clone();
-                        c6_weights_v = res.per_atom_dynamic.weights.clone();
-                        alpha_dyn_v = res.per_atom_dynamic.per_atom.clone();
-                        c6_iso_opt = Some(res.c6_iso_pair.clone());
-                        c6_aniso_v = res.c6_aniso_pair.clone();
-                    }
-                }
-
-                let npz_bundle = NpzBundle {
-                    mo_coeffs: if result.spin == ferric_scf::result::Spin::Restricted { Some(result.mos_r()) } else { None },
-                    orbital_energies: if result.spin == ferric_scf::result::Spin::Restricted { Some(result.eps_r()) } else { None },
-                    pdep_eigenvectors: Some(&rpa_result.eigenpotentials),
-                    boys_coeffs: None,
-                    coords: Some(&coords_arr),
-                    atomic_numbers: Some(&znums),
-                    density_matrix: dm_ref,
-                    dipole: dip_arr.as_ref(),
-                    charges: ChargeSchemes {
-                        hirshfeld: hq_vec.as_deref(),
-                        lowdin: lq_vec.as_deref(),
-                        mulliken: mq_vec.as_deref(),
-                    },
-                    polarizability: PolarizabilityBundle {
-                        esp_atoms: esp_vec.as_deref(),
-                        alpha_tensor: alpha_arr.as_ref(),
-                        electric_field: ef_vec.as_deref(),
-                        alpha_atomic: alpha_atomic_vec.as_deref(),
-                    },
-                    dispersion: DispersionBundle {
-                        c6_freqs: if c6_freqs_v.is_empty() { None } else { Some(c6_freqs_v.as_slice()) },
-                        c6_weights: if c6_weights_v.is_empty() { None } else { Some(c6_weights_v.as_slice()) },
-                        alpha_atomic_dynamic: if alpha_dyn_v.is_empty() { None } else { Some(alpha_dyn_v.as_slice()) },
-                        c6_iso: c6_iso_opt.as_ref(),
-                        c6_aniso: if c6_aniso_v.is_empty() { None } else { Some(c6_aniso_v.as_slice()) },
-                    },
-                };
-                if let Err(e) = export_npz(npz_path, &npz_bundle) {
-                    eprintln!("warning: failed to write {}: {}", npz_path, e);
-                } else {
-                    println!("Wrote NPZ feature bundle: {}", npz_path);
-                    if c6_iso_opt.is_some() {
-                        println!(
-                            "note: NPZ c6_iso/c6_aniso are per-atom PAIR tensors, not the \
-                             molecular C6 total — do not sum them to approximate it (can be \
-                             20-58% off; see the \"molecular C6 = ... a.u.\" line above for the \
-                             correct DOSD-comparable value, or docs/dosd-c6-rpa-vs-ts.md)."
-                        );
-                    }
-                }
-            }
+            println!("\nRPA Optimization Result:");
+            println!("  converged  = {}", opt_result.converged);
+            println!("  steps      = {}", opt_result.steps);
+            println!("  final E    = {:.10} Hartree (RHF + RPA)", opt_result.energy);
         }
-        "gw" => {
-            let aux_name = cfg.rpa.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+        "rimp2" => {
+            let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
             let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             });
-            let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            });
-            let scheme = cfg.rpa.parse_quadrature().unwrap_or_else(|e| {
-                eprintln!("config error: {e}");
-                std::process::exit(1);
-            });
-            let gw_method = cfg.gw.parse_method().unwrap_or_else(|e| {
-                eprintln!("config error: {e}");
-                std::process::exit(1);
-            });
-            // frozen_core must match between the PDEP (W) build and the GW self-
-            // energy (Σ) build for self-consistency (see GwConfig::frozen_core
-            // doc). [gw].frozen_core is the source of truth when set; otherwise
-            // fall back to [rpa].frozen_core so a plain [rpa] block still works.
-            let gw_frozen_core = cfg.gw.frozen_core.unwrap_or(cfg.rpa.frozen_core);
-            let rpa_cfg = PdepRpaConfig {
-                frozen_core: gw_frozen_core,
-                trunc_thresh: cfg.rpa.trunc_thresh.unwrap_or(1e-4),
-                eigensolver_max_vecs: 0,
-                eigensolver_conv_thresh: cfg.rpa.eigensolver_conv_thresh.unwrap_or(1e-6),
-                quadrature: QuadratureConfig {
-                    scheme,
-                    n_points: cfg.rpa.n_quad.unwrap_or(20),
-                    u0: cfg.rpa.u0.unwrap_or(0.5),
-                },
-                sternheimer: SternheimerConfig::default(),
-                run_diagnostics: cfg.rpa.run_diagnostics,
-                eigensolver: ferric_rpa::Eigensolver::default(),
-                chi0_backend: ferric_rpa::config::Chi0Backend::default(),
-                chi0_sparsity: cfg.rpa.parse_chi0_sparsity().unwrap_or_else(|e| {
-                    eprintln!("config error: {e}");
-                    std::process::exit(1);
-                }),
-                memory_budget_bytes: budget_bytes,
-                // run_gw forces this on internally regardless of what's set
-                // here (GW's Σ_c needs the inverse-dielectric stack), but set
-                // it explicitly for clarity at the call site too.
-                need_inv_dielectric_freq: true,
-            };
-            let gw_cfg = ferric_gw::GwConfig {
-                method: gw_method,
-                qp_mos: cfg.gw.qp_mos.map(|[lo, hi]| lo..hi),
-                max_ev_iter: cfg.gw.max_ev_iter.unwrap_or(20),
-                ev_conv_thresh: cfg.gw.ev_conv_thresh.unwrap_or(1e-4),
-                pade_npts: cfg.gw.pade_npts.unwrap_or(0),
-                qp_newton_damp: cfg.gw.qp_newton_damp.unwrap_or(1.0),
-                frozen_core: gw_frozen_core,
+            let mp2_config = RiMp2Config {
+                frozen_core: cfg.mp2.frozen_core,
                 memory_budget_bytes: budget_bytes,
             };
-            let ha_to_ev = 27.211_386_245_988_f64;
-            if mol.multiplicity > 1 {
-                // Open-shell path: re-run with UHF + MOM (same precedent as the
-                // "pdep-rpa" arm's open-shell dispatch) so the reference is
-                // converged, then dispatch to run_u_gw. Shadow `result` so it
-                // carries the correct (possibly UKS) SCF density.
-                let mut uhf_cfg = rhf_config.clone();
-                uhf_cfg.mom_after_iter = 5;
-                let result = solve_uhf(&ctx, &mol, &prep, &bounds, &uhf_cfg).unwrap_or_else(|e| {
-                    eprintln!("error (UHF): {e}");
-                    std::process::exit(1);
-                });
-                // KS reference (RPA@PBE0-style): [rpa].xc set ⇒ `result` above is
-                // already the UKS solve; build vxc_diag_a/b and apply the Σx−vxc
-                // shift post-hoc via UGwResult::apply_kohn_sham_correction (U-GW
-                // doesn't thread vxc_diag through run_u_gw itself — see its doc).
-                // None (HF reference) ⇒ no shift, matches run_u_gw's contract.
-                let vxc_diag = match cfg.rpa.xc.as_deref() {
-                    Some(xc_name) => {
-                        let (diag_a, diag_b) =
-                            ferric_gw::vxc_mo::vxc_diagonal_mo(&mol, &bs, xc_name, &result)
-                                .unwrap_or_else(|e| {
-                                    eprintln!("error: vxc_diagonal_mo failed: {e}");
-                                    std::process::exit(1);
-                                });
-                        Some((diag_a, diag_b))
-                    }
-                    None => None,
-                };
-                let mut gw_result = ferric_gw::run_u_gw(
-                    &mol, &prep, &dfbs, op, &result, &rpa_cfg, &gw_cfg,
-                )
+            let opt_result = ferric_mp2::optimize::optimize_geometry_rimp2(
+                mol, bs, &aux_bs, op, &mp2_config, &opt_config,
+            )
+            .unwrap_or_else(|e| {
+                eprintln!("error during RI-MP2 optimization: {e}");
+                std::process::exit(1);
+            });
+            println!("\nFinal Optimized Geometry (Bohr):");
+            for (i, atom) in opt_result.mol.atoms.iter().enumerate() {
+                println!("  {:2} {:2} {:12.8} {:12.8} {:12.8}", i, atom.symbol, atom.x, atom.y, atom.zpos);
+            }
+            println!("\nRI-MP2 Optimization Result:");
+            println!("  converged  = {}", opt_result.converged);
+            println!("  steps      = {}", opt_result.steps);
+            println!("  final E    = {:.10} Hartree (RHF + MP2)", opt_result.energy);
+        }
+        "uhf" => {
+            let opt_result = optimize_geometry_uhf(ctx, mol, &bs.name, op, rhf_config, &opt_config)
                 .unwrap_or_else(|e| {
-                    eprintln!("error: {e}");
+                    eprintln!("error during UHF optimization: {e}");
                     std::process::exit(1);
                 });
-                if let Some((diag_a, diag_b)) = vxc_diag.as_ref() {
-                    gw_result.apply_kohn_sham_correction(diag_a, diag_b);
-                }
-                let ref_label = if cfg.rpa.xc.is_some() { "UKS" } else { "UHF" };
-                println!(
-                    "U-GW[{:?}]/{} (aux: {}, ref: {ref_label}) on {}",
-                    gw_cfg.method, bs.name, aux_name, cfg.molecule.xyz
-                );
-                println!("  nbasis     = {}", prep.nbasis());
-                println!("  {ref_label} energy: {:.10} Hartree", result.energy);
-                println!("  ev iterations = {}", gw_result.n_ev_iter);
-                println!("  outer converged = {}", gw_result.outer_converged);
-                let two_s = mol.multiplicity as i64 - 1;
-                let nocc_a = ((mol.nelec() as i64 + two_s) / 2) as usize;
-                let nocc_b = ((mol.nelec() as i64 - two_s) / 2) as usize;
-                for (spin_label, nocc, eps_mf, eps_qp, sigma_x, sigma_c, z_factor, qp_converged) in [
-                    (
-                        "alpha", nocc_a,
-                        &gw_result.eps_mf_a, &gw_result.eps_qp_a, &gw_result.sigma_x_a,
-                        &gw_result.sigma_c_a, &gw_result.z_factor_a, &gw_result.qp_converged_a,
-                    ),
-                    (
-                        "beta", nocc_b,
-                        &gw_result.eps_mf_b, &gw_result.eps_qp_b, &gw_result.sigma_x_b,
-                        &gw_result.sigma_c_b, &gw_result.z_factor_b, &gw_result.qp_converged_b,
-                    ),
-                ] {
-                    println!("  -- {spin_label} spin channel --");
-                    println!(
-                        "  {:>4} {:>14} {:>14} {:>10} {:>10} {:>10}  qp_converged",
-                        "MO", "eps_mf(eV)", "eps_qp(eV)", "Sigma_x", "Sigma_c", "Z"
-                    );
-                    for (idx, &mo) in gw_result.mo_indices.iter().enumerate() {
-                        let tag = if nocc >= 1 && mo == nocc - 1 {
-                            " (HOMO)"
-                        } else if mo == nocc {
-                            " (LUMO)"
-                        } else {
-                            ""
-                        };
-                        println!(
-                            "  {:>4} {:>14.4} {:>14.4} {:>10.4} {:>10.4} {:>10.4}  {}{}",
-                            mo,
-                            eps_mf[idx] * ha_to_ev,
-                            eps_qp[idx] * ha_to_ev,
-                            sigma_x[idx],
-                            sigma_c[idx],
-                            z_factor[idx],
-                            qp_converged[idx],
-                            tag,
-                        );
-                    }
-                    if nocc >= 1 {
-                        if let Some(loc) = gw_result.mo_indices.iter().position(|&m| m == nocc - 1) {
-                            println!("  {spin_label}-HOMO IP = {:.4} eV", -eps_qp[loc] * ha_to_ev);
-                        }
-                    }
-                    if let Some(loc) = gw_result.mo_indices.iter().position(|&m| m == nocc) {
-                        println!("  {spin_label}-LUMO EA = {:.4} eV", -eps_qp[loc] * ha_to_ev);
-                    }
-                }
-                if !gw_result.outer_converged {
-                    eprintln!(
-                        "warning: U-{:?} eigenvalue self-consistency did NOT converge in {} \
-                         iterations (thresh {:.1e}); QP energies above are the last sweep",
-                        gw_cfg.method, gw_result.n_ev_iter, gw_cfg.ev_conv_thresh
-                    );
-                }
-                for (spin_label, flags) in [
-                    ("alpha", &gw_result.qp_converged_a),
-                    ("beta", &gw_result.qp_converged_b),
-                ] {
-                    let unconverged_mos: Vec<usize> = gw_result
-                        .mo_indices
-                        .iter()
-                        .zip(flags.iter())
-                        .filter(|(_, &c)| !c)
-                        .map(|(&m, _)| m)
-                        .collect();
-                    if !unconverged_mos.is_empty() {
-                        eprintln!(
-                            "warning: QP Newton solve did not converge for {spin_label} MO(s) \
-                             {unconverged_mos:?}; those QP energies are best-effort"
-                        );
-                    }
-                }
-                return;
+            println!("\nFinal Optimized Geometry (Bohr):");
+            for (i, atom) in opt_result.mol.atoms.iter().enumerate() {
+                println!("  {:2} {:2} {:12.8} {:12.8} {:12.8}", i, atom.symbol, atom.x, atom.y, atom.zpos);
             }
-            // KS reference (RPA@PBE0-style): [rpa].xc set ⇒ `result` above is
-            // already the KS-DFT solve (via the xc/df_j_default/df_k_default
-            // block); build vxc_diag so Σx−vxc enters the QP self-consistency.
-            // None (HF reference) ⇒ no shift, matches run_gw's documented
-            // contract.
-            let vxc_diag = match cfg.rpa.xc.as_deref() {
-                Some(xc_name) => {
-                    let (diag, _beta) = ferric_gw::vxc_mo::vxc_diagonal_mo(&mol, &bs, xc_name, &result)
-                        .unwrap_or_else(|e| {
-                            eprintln!("error: vxc_diagonal_mo failed: {e}");
-                            std::process::exit(1);
-                        });
-                    Some(diag)
-                }
-                None => None,
-            };
-            let gw_result = ferric_gw::run_gw(
-                &mol, &prep, &dfbs, op, &result, &rpa_cfg, &gw_cfg, vxc_diag.as_ref(),
-            )
-            .unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            });
-            let ref_label = if cfg.rpa.xc.is_some() { "KS" } else { "HF" };
-            println!(
-                "GW[{:?}]/{} (aux: {}, ref: {ref_label}) on {}",
-                gw_cfg.method, bs.name, aux_name, cfg.molecule.xyz
-            );
-            println!("  nbasis     = {}", prep.nbasis());
-            println!("  {ref_label} energy: {:.10} Hartree", result.energy);
-            println!("  ev iterations = {}", gw_result.n_ev_iter);
-            println!("  outer converged = {}", gw_result.outer_converged);
-            println!(
-                "  {:>4} {:>14} {:>14} {:>10} {:>10} {:>10}  qp_converged",
-                "MO", "eps_mf(eV)", "eps_qp(eV)", "Sigma_x", "Sigma_c", "Z"
-            );
-            let nocc = (mol.nelec() as usize) / 2;
-            for (idx, &mo) in gw_result.mo_indices.iter().enumerate() {
-                let tag = if mo == nocc - 1 {
-                    " (HOMO)"
-                } else if mo == nocc {
-                    " (LUMO)"
-                } else {
-                    ""
-                };
-                println!(
-                    "  {:>4} {:>14.4} {:>14.4} {:>10.4} {:>10.4} {:>10.4}  {}{}",
-                    mo,
-                    gw_result.eps_mf[idx] * ha_to_ev,
-                    gw_result.eps_qp[idx] * ha_to_ev,
-                    gw_result.sigma_x[idx],
-                    gw_result.sigma_c[idx],
-                    gw_result.z_factor[idx],
-                    gw_result.qp_converged[idx],
-                    tag,
-                );
-            }
-            if nocc >= 1 {
-                if let Some(loc) = gw_result.mo_indices.iter().position(|&m| m == nocc - 1) {
-                    println!("  HOMO IP = {:.4} eV", -gw_result.eps_qp[loc] * ha_to_ev);
-                }
-            }
-            if let Some(loc) = gw_result.mo_indices.iter().position(|&m| m == nocc) {
-                println!("  LUMO EA = {:.4} eV", -gw_result.eps_qp[loc] * ha_to_ev);
-            }
-            if !gw_result.outer_converged {
-                eprintln!(
-                    "warning: {:?} eigenvalue self-consistency did NOT converge in {} \
-                     iterations (thresh {:.1e}); QP energies above are the last sweep",
-                    gw_cfg.method, gw_result.n_ev_iter, gw_cfg.ev_conv_thresh
-                );
-            }
-            let unconverged_mos: Vec<usize> = gw_result
-                .mo_indices
-                .iter()
-                .zip(gw_result.qp_converged.iter())
-                .filter(|(_, &c)| !c)
-                .map(|(&m, _)| m)
-                .collect();
-            if !unconverged_mos.is_empty() {
-                eprintln!(
-                    "warning: QP Newton solve did not converge for MO(s) {unconverged_mos:?}; \
-                     those QP energies are best-effort"
-                );
-            }
+            println!("\nUHF Optimization Result:");
+            println!("  converged  = {}", opt_result.converged);
+            println!("  steps      = {}", opt_result.steps);
+            println!("  final E    = {:.10} Hartree", opt_result.energy);
         }
-        "bse-tda" => {
-            // Closed-shell (RHF) only — run_bse_tda itself hard-errors on a
-            // non-restricted reference; the top-level `result` above is always
-            // an RHF solve for method.kind = "bse-tda" (no UHF branch, unlike
-            // "gw"), so surface a clearer CLI-level message before the library
-            // guard would otherwise fire.
-            if mol.multiplicity > 1 {
-                eprintln!(
-                    "error: method.kind = \"bse-tda\" is closed-shell (RHF) only; \
-                     mol.multiplicity = {} is unsupported (no open-shell BSE-TDA exists)",
-                    mol.multiplicity
-                );
-                std::process::exit(1);
-            }
-            let aux_name = cfg.rpa.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
-            let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            });
-            let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            });
-            let scheme = cfg.rpa.parse_quadrature().unwrap_or_else(|e| {
-                eprintln!("config error: {e}");
-                std::process::exit(1);
-            });
-            // frozen_core must match between the PDEP (W) build and the BSE/GW
-            // self-energy build for self-consistency, same as the "gw" arm.
-            // [gw].frozen_core is the source of truth when set; otherwise fall
-            // back to [rpa].frozen_core.
-            let bse_frozen_core = cfg.gw.frozen_core.unwrap_or(cfg.rpa.frozen_core);
-            let rpa_cfg = PdepRpaConfig {
-                frozen_core: bse_frozen_core,
-                trunc_thresh: cfg.rpa.trunc_thresh.unwrap_or(1e-4),
-                eigensolver_max_vecs: 0,
-                eigensolver_conv_thresh: cfg.rpa.eigensolver_conv_thresh.unwrap_or(1e-6),
-                quadrature: QuadratureConfig {
-                    scheme,
-                    n_points: cfg.rpa.n_quad.unwrap_or(20),
-                    u0: cfg.rpa.u0.unwrap_or(0.5),
-                },
-                sternheimer: SternheimerConfig::default(),
-                run_diagnostics: cfg.rpa.run_diagnostics,
-                eigensolver: ferric_rpa::Eigensolver::default(),
-                chi0_backend: ferric_rpa::config::Chi0Backend::default(),
-                chi0_sparsity: cfg.rpa.parse_chi0_sparsity().unwrap_or_else(|e| {
-                    eprintln!("config error: {e}");
+        "rohf" => {
+            let opt_result = optimize_geometry_rohf(ctx, mol, &bs.name, op, rhf_config, &opt_config)
+                .unwrap_or_else(|e| {
+                    eprintln!("error during ROHF optimization: {e}");
                     std::process::exit(1);
-                }),
-                memory_budget_bytes: budget_bytes,
-                // run_bse_tda runs GW internally, which forces this on regardless
-                // of what's set here; set it explicitly for clarity at the call
-                // site too (matches the "gw" arm).
-                need_inv_dielectric_freq: true,
-            };
-            let ha_to_ev = 27.211_386_245_988_f64;
-            let bse = ferric_gw::bse::run_bse_tda(
-                &mol, &prep, &dfbs, op, &result, &rpa_cfg, bse_frozen_core,
-            )
-            .unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            });
-            println!(
-                "BSE-TDA[G0W0@HF]/{} (aux: {}) on {}",
-                bs.name, aux_name, cfg.molecule.xyz
-            );
-            println!("  nbasis     = {}", prep.nbasis());
-            println!("  RHF energy = {:.10} Hartree", result.energy);
-            println!("  nocc = {}  nvir = {}  ({} singlet states)", bse.nocc, bse.nvir, bse.omega.len());
-            println!("  {:>4} {:>12} {:>10}", "n", "Omega (eV)", "f_osc");
-            for (n, (&om, &f)) in bse.omega.iter().zip(bse.oscillator_strength.iter()).enumerate() {
-                println!("  {:>4} {:>12.4} {:>10.5}", n + 1, om * ha_to_ev, f);
+                });
+            println!("\nFinal Optimized Geometry (Bohr):");
+            for (i, atom) in opt_result.mol.atoms.iter().enumerate() {
+                println!("  {:2} {:2} {:12.8} {:12.8} {:12.8}", i, atom.symbol, atom.x, atom.y, atom.zpos);
             }
-            println!(
-                "  lowest singlet excitation = {:.4} eV  (f = {:.5})",
-                bse.lowest_ev(),
-                bse.lowest_oscillator_strength()
-            );
+            println!("\nROHF Optimization Result:");
+            println!("  converged  = {}", opt_result.converged);
+            println!("  steps      = {}", opt_result.steps);
+            println!("  final E    = {:.10} Hartree", opt_result.energy);
         }
-        "tdhf-static-polarizability" => {
-            // RPAx@KS static (omega=0) polarizability only. SCOPE: this method
-            // is deliberately narrow -- static alpha, nothing else. Do not
-            // extend this arm to surface C6/dynamic alpha(iw); docs/VALIDATION.md
-            // records a validated negative result for that extension of this
-            // exact kernel (C6 stays ~63% low regardless of gap, worse than
-            // ferric's production dRPA/PDEP C6 pipeline). See
-            // ferric_gw::bse::run_rpax_static_polarizability's doc comment.
-            if mol.multiplicity > 1 {
-                eprintln!(
-                    "error: method.kind = \"tdhf-static-polarizability\" is closed-shell only; \
-                     mol.multiplicity = {} is unsupported",
-                    mol.multiplicity
-                );
-                std::process::exit(1);
-            }
-            // This method's validated accuracy (static alpha ~= DOSD) is a
-            // KS-reference result; require [rpa].xc explicitly rather than
-            // silently falling back to an HF reference with a much worse
-            // static alpha (see the xc-routing block's comment above).
-            if cfg.rpa.xc.is_none() {
-                eprintln!(
-                    "error: method.kind = \"tdhf-static-polarizability\" requires [rpa] xc \
-                     (e.g. xc = \"PBE\") -- this method's validated accuracy is a KS-reference \
-                     result; an HF reference gives a much worse static alpha"
-                );
-                std::process::exit(1);
-            }
-            let aux_name = cfg.rpa.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
-            let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            });
-            let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            });
-            let scheme = cfg.rpa.parse_quadrature().unwrap_or_else(|e| {
-                eprintln!("config error: {e}");
-                std::process::exit(1);
-            });
-            let frozen_core = cfg.gw.frozen_core.unwrap_or(cfg.rpa.frozen_core);
-            let scissor = cfg.gw.scissor.unwrap_or(0.0);
-            let rpa_cfg = PdepRpaConfig {
-                frozen_core,
-                trunc_thresh: cfg.rpa.trunc_thresh.unwrap_or(1e-4),
-                eigensolver_max_vecs: 0,
-                eigensolver_conv_thresh: cfg.rpa.eigensolver_conv_thresh.unwrap_or(1e-6),
-                quadrature: QuadratureConfig {
-                    scheme,
-                    n_points: cfg.rpa.n_quad.unwrap_or(20),
-                    u0: cfg.rpa.u0.unwrap_or(0.5),
-                },
-                sternheimer: SternheimerConfig::default(),
-                run_diagnostics: cfg.rpa.run_diagnostics,
-                eigensolver: ferric_rpa::Eigensolver::default(),
-                chi0_backend: ferric_rpa::config::Chi0Backend::default(),
-                chi0_sparsity: cfg.rpa.parse_chi0_sparsity().unwrap_or_else(|e| {
-                    eprintln!("config error: {e}");
-                    std::process::exit(1);
-                }),
-                memory_budget_bytes: budget_bytes,
-                // No GW self-energy build in this path (static screening
-                // modes from run_pdep_rpa only) -- unlike "gw"/"bse-tda",
-                // this does NOT need the inverse-dielectric frequency stack.
-                need_inv_dielectric_freq: false,
-            };
-            let res = ferric_gw::bse::run_rpax_static_polarizability(
-                &mol, &prep, &dfbs, op, &result, &rpa_cfg, frozen_core, scissor,
-            )
-            .unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            });
-            println!(
-                "RPAx@KS[{}] static polarizability /{} (aux: {}) on {}",
-                cfg.rpa.xc.as_deref().unwrap_or("?"), bs.name, aux_name, cfg.molecule.xyz
-            );
-            println!(
-                "  NOTE: static polarizability only -- do not use for C6/dispersion \
-                 (known negative accuracy result, see docs/VALIDATION.md)"
-            );
-            println!("  nbasis     = {}", prep.nbasis());
-            println!("  KS energy  = {:.10} Hartree", result.energy);
-            println!("  nocc = {}  nvir = {}", res.nocc, res.nvir);
-            println!("  alpha tensor (a.u.):");
-            for row in &res.tensor {
-                println!("    {:>12.6} {:>12.6} {:>12.6}", row[0], row[1], row[2]);
-            }
-            println!("  alpha_iso (static) = {:.6} a.u.", res.iso);
+        _ => {
+            eprintln!("error: geometry optimization is currently only supported for method.kind = \"rhf\", \"ksdft\", \"uhf\", \"rohf\", \"pdep-rpa\", or \"rimp2\"");
+            std::process::exit(1);
         }
-        _ => unreachable!(),
     }
 }
