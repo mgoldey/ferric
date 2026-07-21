@@ -22,6 +22,15 @@ fn setup() -> (Molecule, basis::BasisSet, PreparedBasis, Operator, SchwarzBounds
     (mol, bs, prep, op, bounds)
 }
 
+fn setup_hf() -> (Molecule, basis::BasisSet, PreparedBasis, Operator, SchwarzBounds) {
+    let mol = Molecule::parse_xyz("2\nHF\nH 0 0 0\nF 0 0 0.917\n", 0, 1).unwrap();
+    let bs = basis::bundled("def2-svp").unwrap();
+    let prep = PreparedBasis::new(&mol, &bs).unwrap();
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+    (mol, bs, prep, op, bounds)
+}
+
 /// The fragment residual c(λ) = N_C(λ) − target is monotonic in λ — the
 /// correct saddle-point sign. Sample three λ values via single inner solves
 /// (Total channel adds +λW to both spins) and check N_C is monotonic in λ.
@@ -96,6 +105,37 @@ fn charge_constraint_is_satisfied() {
     assert!(
         (res.populations[0] - target).abs() < 1e-5,
         "Li pop {} vs target {target}",
+        res.populations[0]
+    );
+    assert!(res.scf.converged, "inner SCF not converged");
+}
+
+/// Third system for the charge constraint (widens past LiH-family): HF
+/// molecule, closed-shell singlet, def2-SVP. Different chemistry from LiH
+/// (a strongly polar, closed-shell diatomic with a genuinely electronegative
+/// heavy atom rather than an electropositive one) exercising the SAME
+/// `SpinChannel::Total` charge-constraint code path.
+#[test]
+fn charge_constraint_is_satisfied_hf_molecule() {
+    let (mol, bs, prep, _op, bounds) = setup_hf();
+    let ctx = ParallelContext::default();
+    // F is atom index 1; pull extra charge onto F (already electronegative,
+    // so a modest increase over the unconstrained baseline is physical).
+    let target = 9.3;
+    let cfg = RhfConfig {
+        constraints: vec![Constraint {
+            fragment: vec![1],
+            spin: SpinChannel::Total,
+            target,
+        }],
+        cdft_lambda_tol: 1e-5,
+        fractional_occ: false,
+        ..Default::default()
+    };
+    let res = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &cfg).unwrap();
+    assert!(
+        (res.populations[0] - target).abs() < 1e-5,
+        "F pop {} vs target {target}",
         res.populations[0]
     );
     assert!(res.scf.converged, "inner SCF not converged");
