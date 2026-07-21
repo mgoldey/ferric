@@ -447,6 +447,23 @@ mod tests {
             (dist_ang - 0.9697).abs() < 0.2,
             "dist = {dist_ang} Ang, expected within 0.2 Ang of experimental 0.9697"
         );
+        // Independent PySCF ROHF/STO-3G geomeTRIC-optimizer reference
+        // (2026-07-21): dist = 1.913998 Bohr, E = -74.3636983636 Ha. This
+        // confirms the ~1 Ang overbinding above is genuine minimal-basis
+        // ROHF physics (PySCF lands at the SAME stationary point ferric
+        // does), not a ferric bug -- a real, tight computational
+        // cross-check alongside the deliberately loose experimental band.
+        const PYSCF_DIST_BOHR: f64 = 1.913998;
+        const PYSCF_E: f64 = -74.3636983636;
+        assert!(
+            (dist_bohr - PYSCF_DIST_BOHR).abs() < 1e-3,
+            "dist = {dist_bohr} Bohr, expected {PYSCF_DIST_BOHR} (PySCF)"
+        );
+        assert!(
+            (result.energy - PYSCF_E).abs() < 1e-5,
+            "energy = {}, expected {PYSCF_E} (PySCF)",
+            result.energy
+        );
 
         let (_, grad_arr) =
             compute_energy_and_gradient_rohf(&ctx, &result.mol, "sto-3g", op, &rohf_config).unwrap();
