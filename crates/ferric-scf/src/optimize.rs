@@ -380,10 +380,18 @@ mod tests {
 
         let dist = (result.mol.atoms[0].zpos - result.mol.atoms[1].zpos).abs();
         eprintln!("H2+/UHF/STO-3G optimized distance: {:.6} Bohr, energy: {:.10} Ha", dist, result.energy);
-        // H2+/STO-3G equilibrium bond length is ~2.0 Bohr (literature/HF
-        // minimal-basis value); loose tolerance since this is a sanity
-        // check, not a basis-set-accuracy claim.
-        assert!((dist - 2.0).abs() < 0.3, "dist = {dist}, expected ~2.0 Bohr");
+        // Independent PySCF UHF/STO-3G geomeTRIC-optimizer reference (2026-07-21):
+        //   dist = 2.004215 Bohr, E = -0.5826966474 Ha
+        // ferric matches to ~1e-9 Ha / <1e-6 Bohr -- tightened from the old
+        // loose +-0.3 Bohr sanity band now that a real reference exists.
+        const PYSCF_DIST: f64 = 2.004215;
+        const PYSCF_E: f64 = -0.5826966474;
+        assert!((dist - PYSCF_DIST).abs() < 1e-3, "dist = {dist}, expected {PYSCF_DIST} (PySCF)");
+        assert!(
+            (result.energy - PYSCF_E).abs() < 1e-5,
+            "energy = {}, expected {PYSCF_E} (PySCF)",
+            result.energy
+        );
 
         // Final gradient norm must be below the configured convergence
         // thresholds -- re-derive it directly rather than trusting the
