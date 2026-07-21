@@ -5,10 +5,14 @@
 This repo has no hosted CI: no `.github/workflows/`, no `.gitlab-ci.yml`, and
 **no git remote at all**. `scripts/ci-gate.sh` is the local stand-in --
 a script that runs `cargo test --workspace` (the default, non-`--ignored`
-set -- ~706/800 tests; the 94 `#[ignore]`d tests are deliberately-slow
-dispersion/CPKS/BSE benchmarks, excluded from routine runs on purpose) plus
+set -- ~910/1065 tests as of 2026-07-21, counted via
+`grep -rc '#\[ignore' crates/*/tests/*.rs crates/*/src/*.rs`
+(155 `#[ignore]`d, deliberately-slow dispersion/CPKS/BSE/RPA benchmarks
+excluded from routine runs on purpose) plus
 `cargo clippy --workspace --all-targets` checked against the numerical-lint
-allow-list in root `Cargo.toml`'s `[workspace.lints]` block.
+allow-list in root `Cargo.toml`'s `[workspace.lints]` block. These counts
+drift as tests get added -- re-run the grep above rather than trusting this
+number if it matters to what you're doing.
 
 **Install it once per checkout** (git hooks aren't tracked/auto-installed):
 
