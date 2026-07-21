@@ -196,3 +196,40 @@ fn nh3_esp_matches_pyscf() {
         );
     }
 }
+
+#[test]
+fn nh3_polarizability_matches_pyscf() {
+    // Third molecule (widens past H2/H2O) for static polarizability: NH3's
+    // alpha_tensor/alpha_iso are already in the same reference JSON
+    // nh3_esp_matches_pyscf uses (scripts/gen_pyscf_rpa_props.py), just not
+    // asserted on until now. Same tolerance/pattern as
+    // h2o_polarizability_and_esp_match_pyscf.
+    let r = load_ref("../../testdata/reference/nh3_cc-pvdz_rpa_props.json");
+    let (mol, obs, dfbs, op, rhf) = setup_nh3_ccpvdz();
+
+    let cfg = PdepRpaConfig {
+        frozen_core: 0,
+        trunc_thresh: 0.0,
+        eigensolver_conv_thresh: 1e-10,
+        ..Default::default()
+    };
+    let pol = pdep_polarizability_static(&mol, &obs, &dfbs, &rhf, op, &cfg).unwrap();
+    for i in 0..3 {
+        for j in 0..3 {
+            let got = pol.tensor[i][j];
+            let exp = r.alpha_tensor[i][j];
+            let abs = (got - exp).abs();
+            let rel = abs / exp.abs().max(1e-8);
+            assert!(
+                abs < 5e-3 || rel < 0.02,
+                "α[{i},{j}]: ferric={got:.6}, pyscf={exp:.6} (Δ={abs:.2e}, rel={rel:.2e})"
+            );
+        }
+    }
+    let abs_iso = (pol.iso - r.alpha_iso).abs();
+    assert!(
+        abs_iso < 5e-3 || abs_iso / r.alpha_iso < 0.02,
+        "α_iso: ferric={:.6}, pyscf={:.6} (Δ={:.2e})",
+        pol.iso, r.alpha_iso, abs_iso
+    );
+}
