@@ -314,6 +314,38 @@ mod tests {
     }
 
     #[test]
+    fn test_optimize_h2o_sto3g() {
+        // Second molecule (widens past H2-only): H2O/STO-3G, started from a
+        // distorted geometry (O-H 0.9/0.92 A-ish, non-equilibrium angle).
+        // Reference: PySCF RHF/STO-3G geometric-optimizer result --
+        //   O-H bond lengths (Bohr): 1.869732, 1.869731
+        //   H-O-H angle (deg): 100.0258
+        //   E_final = -74.9659011921 Ha
+        let mol = Molecule::parse_xyz(
+            "3\nH2O\nO 0 0 0\nH 0 0.9 0\nH 0 -0.3 0.85\n", 0, 1,
+        ).unwrap();
+        let op = Operator::coulomb();
+        let rhf_config = RhfConfig { energy_conv: 1e-10, ..Default::default() };
+        let opt_config = OptimizeConfig {
+            trust_radius: 0.1,
+            ..Default::default()
+        };
+
+        let ctx = ParallelContext::default();
+        let result = optimize_geometry(&ctx, &mol, "sto-3g", op, &rhf_config, &opt_config).unwrap();
+
+        assert!(result.converged);
+        let o = &result.mol.atoms[0];
+        let h1 = &result.mol.atoms[1];
+        let h2 = &result.mol.atoms[2];
+        let r1 = ((o.x - h1.x).powi(2) + (o.y - h1.y).powi(2) + (o.zpos - h1.zpos).powi(2)).sqrt();
+        let r2 = ((o.x - h2.x).powi(2) + (o.y - h2.y).powi(2) + (o.zpos - h2.zpos).powi(2)).sqrt();
+        eprintln!("H2O/STO-3G optimized O-H distances: {r1:.6}, {r2:.6} Bohr (ref 1.869732)");
+        assert!((r1 - 1.869732).abs() < 1e-2, "r1 = {r1}, expected ~1.869732");
+        assert!((r2 - 1.869732).abs() < 1e-2, "r2 = {r2}, expected ~1.869732");
+    }
+
+    #[test]
     fn test_optimize_h2plus_uhf_sto3g() {
         // H2+ (one electron, doublet), started stretched at 1.5 Angstrom
         // (2.835 Bohr) -- well beyond the equilibrium bond -- and optimized
