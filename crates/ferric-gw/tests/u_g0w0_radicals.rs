@@ -103,9 +103,13 @@ fn pdep_cfg() -> PdepRpaConfig {
 }
 
 fn check_radical(r: &RadicalRef) {
+    check_radical_basis(r, "cc-pvdz", "cc-pvdz-ri");
+}
+
+fn check_radical_basis(r: &RadicalRef, obs_name: &str, aux_name: &str) {
     let mol = Molecule::parse_xyz(r.xyz, 0, 2).expect("parse doublet xyz");
-    let obs_bs = basis::bundled("cc-pvdz").expect("cc-pvdz");
-    let aux_bs = basis::bundled("cc-pvdz-ri").expect("cc-pvdz-ri");
+    let obs_bs = basis::bundled(obs_name).expect("obs basis");
+    let aux_bs = basis::bundled(aux_name).expect("aux basis");
     let obs = PreparedBasis::new(&mol, &obs_bs).expect("obs");
     let dfbs = PreparedBasis::new(&mol, &aux_bs).expect("aux");
     let op = Operator::coulomb();
@@ -161,7 +165,7 @@ fn check_radical(r: &RadicalRef) {
     let ip_b = -res.eps_qp_b[idx_b] * HA_TO_EV;
 
     println!(
-        "{} U-G0W0@UHF/cc-pVDZ:\n  α-HOMO IP {ip_a:.3} eV (PySCF {:.3}, Δ {:+.3})\n  β-HOMO IP {ip_b:.3} eV (PySCF {:.3}, Δ {:+.3})",
+        "{} U-G0W0@UHF/{obs_name}:\n  α-HOMO IP {ip_a:.3} eV (PySCF {:.3}, Δ {:+.3})\n  β-HOMO IP {ip_b:.3} eV (PySCF {:.3}, Δ {:+.3})",
         r.name,
         r.ip_a_ref,
         ip_a - r.ip_a_ref,
@@ -247,4 +251,80 @@ H  -0.803611   0.000000  -0.634654\n",
         level_shift: 0.5,
         mom_after_iter: 5,
     });
+}
+
+// --- Second basis (widens past cc-pVDZ-only): aug-cc-pVTZ, same 3 radicals,
+// same PySCF ugw_ac methodology (scripts/gw100/pyscf_u_g0w0.py fed the
+// bundled aug-cc-pvtz.json/aug-cc-pvtz-rifit.json orbital+aux JSONs).
+
+#[test]
+#[ignore = "slow: UHF + U-PDEP-RPA + U-G0W0 at aTZ; run with --release --ignored"]
+fn oh_u_g0w0_matches_pyscf_augccpvtz() {
+    // Unlike cc-pVDZ, plain DIIS from the default guess lands OH/aug-cc-pVTZ
+    // in a WRONG SCF solution (measured: E=-75.266604 Ha vs the true ground
+    // state -75.421646 Ha, a 0.155 Ha miss) -- the larger, more diffuse aTZ
+    // virtual space apparently opens a near-degenerate trap that cc-pVDZ
+    // doesn't have. The SAME level-shift+MOM steering NH2/cc-pVDZ already
+    // needed (see nh2_u_g0w0_matches_pyscf's comment above) fixes it here
+    // too: verified directly via the CLI (level_shift=0.5, mom_after_iter=5)
+    // reaches -75.4216436711 Ha, matching PySCF to <1e-9 Ha. CH3/aTZ (below)
+    // does NOT need steering -- verified separately, converges cleanly.
+    check_radical_basis(
+        &RadicalRef {
+            name: "OH",
+            xyz: "2\nOH\nO 0.0 0.0 0.0\nH 0.0 0.0 0.9697\n",
+            ip_a_ref: 14.1926,
+            ip_b_ref: 13.1796,
+            e_uhf_ref: -75.421646,
+            level_shift: 0.5,
+            mom_after_iter: 5,
+        },
+        "aug-cc-pvtz",
+        "aug-cc-pvtz-rifit",
+    );
+}
+
+#[test]
+#[ignore = "slow: UHF + U-PDEP-RPA + U-G0W0 at aTZ; run with --release --ignored"]
+fn ch3_u_g0w0_matches_pyscf_augccpvtz() {
+    check_radical_basis(
+        &RadicalRef {
+            name: "CH3",
+            xyz: "4\nCH3\n\
+C   0.000000   0.000000   0.000000\n\
+H   1.079000   0.000000   0.000000\n\
+H  -0.539500   0.934441   0.000000\n\
+H  -0.539500  -0.934441   0.000000\n",
+            ip_a_ref: 10.1013,
+            ip_b_ref: 15.3715,
+            e_uhf_ref: -39.577993,
+            level_shift: 0.0,
+            mom_after_iter: 0,
+        },
+        "aug-cc-pvtz",
+        "aug-cc-pvtz-rifit",
+    );
+}
+
+#[test]
+#[ignore = "slow: UHF + U-PDEP-RPA + U-G0W0 at aTZ; run with --release --ignored"]
+fn nh2_u_g0w0_matches_pyscf_augccpvtz() {
+    // Same near-degenerate-orbital wrong-basin hazard as the cc-pVDZ case
+    // (see that test's comment); same level-shift+MOM steering needed.
+    check_radical_basis(
+        &RadicalRef {
+            name: "NH2",
+            xyz: "3\nNH2\n\
+N   0.000000   0.000000   0.000000\n\
+H   0.803611   0.000000  -0.634654\n\
+H  -0.803611   0.000000  -0.634654\n",
+            ip_a_ref: 13.2748,
+            ip_b_ref: 12.3083,
+            e_uhf_ref: -55.588066,
+            level_shift: 0.5,
+            mom_after_iter: 5,
+        },
+        "aug-cc-pvtz",
+        "aug-cc-pvtz-rifit",
+    );
 }
