@@ -261,7 +261,7 @@
     "method": "mbd",
     "mol": "sih4",
     "ok": true,
-    "seconds": 23.9
+    "seconds": 20.4
   },
   "augccpvdz/sih4/rpa_hf": {
     "basis": "augccpvdz",
@@ -269,7 +269,7 @@
     "method": "rpa_hf",
     "mol": "sih4",
     "ok": true,
-    "seconds": 20.1
+    "seconds": 20.4
   },
   "augccpvdz/sih4/rpa_pbe": {
     "basis": "augccpvdz",
@@ -277,7 +277,7 @@
     "method": "rpa_pbe",
     "mol": "sih4",
     "ok": true,
-    "seconds": 19.9
+    "seconds": 23.1
   },
   "augccpvdz/sih4/ts": {
     "basis": "augccpvdz",
@@ -285,7 +285,7 @@
     "method": "ts",
     "mol": "sih4",
     "ok": true,
-    "seconds": 21.1
+    "seconds": 20.0
   },
   "augccpvdz/so2/mbd": {
     "basis": "augccpvdz",
@@ -341,7 +341,7 @@
     "method": "rpa_pbe",
     "mol": "ccl4",
     "ok": true,
-    "seconds": 159.3
+    "seconds": 153.9
   },
   "augccpvtz/ccl4/ts": {
     "basis": "augccpvtz",
@@ -577,10 +577,11 @@
   },
   "augccpvtz/sih4/mbd": {
     "basis": "augccpvtz",
-    "c6": 778.609,
+    "c6": 427.53,
     "method": "mbd",
     "mol": "sih4",
-    "ok": true
+    "ok": true,
+    "seconds": 60.0
   },
   "augccpvtz/sih4/rpa_hf": {
     "basis": "augccpvtz",
@@ -600,11 +601,11 @@
   },
   "augccpvtz/sih4/ts": {
     "basis": "augccpvtz",
-    "c6": 823.927,
+    "c6": 442.635,
     "method": "ts",
     "mol": "sih4",
     "ok": true,
-    "seconds": 223.4
+    "seconds": 61.3
   },
   "augccpvtz/so2/mbd": {
     "c6": 310.909,
