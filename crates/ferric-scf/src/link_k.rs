@@ -385,6 +385,32 @@ mod tests {
     }
 
     #[test]
+    fn test_link_k_matches_direct_k_ch4_ccpvdz() {
+        // Second genuinely different molecule (the two existing tests above
+        // are both water, just at different bases): CH4/cc-pVDZ, Td symmetry.
+        let ch4_xyz = "5\nmethane Td\nC 0.000000 0.000000 0.000000\n\
+                       H 0.629118 0.629118 0.629118\nH -0.629118 -0.629118 0.629118\n\
+                       H -0.629118 0.629118 -0.629118\nH 0.629118 -0.629118 -0.629118\n";
+        let (d, mol) = converged_density(ch4_xyz, "cc-pvdz");
+
+        let k_direct = direct_k(&mol, "cc-pvdz", &d);
+        let k_link = link_k(&mol, "cc-pvdz", &d);
+
+        let n = k_direct.nrows();
+        let mut max_diff = 0.0f64;
+        for i in 0..n {
+            for j in 0..n {
+                let diff = (k_direct[(i, j)] - k_link[(i, j)]).abs();
+                max_diff = max_diff.max(diff);
+            }
+        }
+        assert!(
+            max_diff < 1e-10,
+            "LinK K vs direct K max diff = {max_diff:.2e} (CH4/cc-pVDZ)"
+        );
+    }
+
+    #[test]
     fn test_link_k_parallel_consistency() {
         let water_xyz = "3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n";
         let (d, mol) = converged_density(water_xyz, "sto-3g");
