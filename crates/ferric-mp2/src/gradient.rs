@@ -977,6 +977,43 @@ mod tests {
     }
 
     #[test]
+    fn test_analytical_vs_fd_ch4() {
+        // Third molecule (widens past H2/H2O): CH4/cc-pVDZ, Td symmetry,
+        // nocc=5. Self-consistent check (analytic vs FD, both computed
+        // internally -- no external reference needed), same pattern as the
+        // H2/H2O tests above.
+        let xyz = "5\nmethane Td\nC 0.000000 0.000000 0.000000\n\
+                   H 0.629118 0.629118 0.629118\nH -0.629118 -0.629118 0.629118\n\
+                   H -0.629118 0.629118 -0.629118\nH 0.629118 -0.629118 -0.629118\n";
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let obs_bs = basis::bundled("cc-pvdz").unwrap();
+        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+        let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &obs, op, &bounds, &RhfConfig { energy_conv: 1e-10, ..Default::default() }).unwrap();
+        let config = RiMp2Config::default();
+
+        let analytical = rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config).unwrap();
+        let fd = rimp2_gradient_fd(&mol, &obs_bs, &aux_bs, op, &config, 1e-4).unwrap();
+
+        eprintln!("=== CH4/cc-pVDZ Analytical vs FD RI-MP2 gradient ===");
+        let mut max_diff = 0.0f64;
+        for atom in 0..5 {
+            for c in 0..3 {
+                let diff = (analytical[(atom, c)] - fd[(atom, c)]).abs();
+                max_diff = max_diff.max(diff);
+                eprintln!("  atom={} coord={}: analytical={:+.8} fd={:+.8} diff={:.2e}",
+                    atom, c, analytical[(atom, c)], fd[(atom, c)], diff);
+            }
+        }
+        eprintln!("  max diff = {:.2e}", max_diff);
+        assert!(max_diff < 1e-6,
+            "CH4 analytical vs FD max diff = {:.2e} (expected < 1e-6)", max_diff);
+    }
+
+    #[test]
     fn test_3c2c_assembly_bit_identical_across_thread_counts() {
         // Scope: ONLY the P7-parallelized region (x_ov par-i build, aux-shell
         // 3c-derivative assembly, aux-pair 2c-derivative assembly), fed the
