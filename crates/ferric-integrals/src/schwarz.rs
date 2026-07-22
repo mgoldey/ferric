@@ -2,59 +2,96 @@
 
 use crate::basis_bridge::PreparedBasis;
 use crate::engine::Engine;
-use crate::ffi;
 use crate::operator::{Operator, OperatorKind};
 use ferric_core::FerricError;
 use ndarray::Array2;
-use std::os::raw::c_void;
 
-/// RAII guard around a raw `scf_engine_create`/`scf_engine_destroy` handle
-/// pair, mirroring [`Engine`]'s own `Drop` impl (see `engine.rs`). Without
-/// this, a manual create/destroy pairing inside one `unsafe` block leaks the
-/// handle if anything in between panics or returns early (e.g. a libint2
-/// internal error surfacing as a Rust panic from `scf_compute_schwarz`) —
-/// the raw `ffi::scf_engine_destroy(handle)` call would simply never run.
-/// Wrapping the handle here guarantees cleanup runs on every exit path,
-/// panic included.
-struct RawEngineHandle(*mut c_void);
+/// Below this many shells, run the single-engine serial FFI loop — avoids
+/// rayon/engine-construction overhead for free-atom/tiny-basis jobs (same
+/// rationale as [`PAR_AUX_SHELL_THRESHOLD`] below and `oneelectron.rs`).
+const PAR_SCHWARZ_SHELL_THRESHOLD: usize = 64;
 
-impl Drop for RawEngineHandle {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            unsafe { ffi::scf_engine_destroy(self.0) };
+/// Q(i,j) = sqrt(max_{a,b} |(ab|ab)|) over the functions of shell pair (i,j),
+/// from one computed (ij|ij) quartet block. `None` (engine screened the
+/// quartet to zero) maps to 0.0, matching the shim's null-result branch.
+fn schwarz_pair(eng: &mut Engine, prep: &PreparedBasis, i: usize, j: usize) -> f64 {
+    let dims = prep.shell_dims();
+    let (n1, n2) = (dims[i], dims[j]);
+    let maxv = match eng.compute_quartet(prep, i, j, i, j) {
+        Some(block) => {
+            // The (ab|ab) magnitudes live on the generalized diagonal of the
+            // (n1·n2)×(n1·n2) block: index ((a·n2+b)·n1+a)·n2+b.
+            let mut m = 0.0f64;
+            for a in 0..n1 {
+                for b in 0..n2 {
+                    let v = block[((a * n2 + b) * n1 + a) * n2 + b].abs();
+                    if v > m {
+                        m = v;
+                    }
+                }
+            }
+            m
         }
-    }
+        None => 0.0,
+    };
+    maxv.sqrt()
 }
 
 /// Compute the Schwarz screening matrix Q(i,j) = sqrt(|(ij|ij)|) for all shell pairs.
 ///
 /// Q(i,j) * Q(k,l) provides an upper bound on |(ij|kl)|, enabling integral screening.
+///
+/// Parallelized over upper-triangle shell pairs once `nsh` clears
+/// [`PAR_SCHWARZ_SHELL_THRESHOLD`] — the historical `scf_compute_schwarz` FFI
+/// call ran the whole O(nsh²) diagonal-quartet loop serially on one engine,
+/// which dominated setup on large direct jobs. Each rayon worker builds its own
+/// [`Engine`] via `map_init` (construction is serialized behind a global ctor
+/// mutex — never per-item), each pair writes two distinct matrix entries, and
+/// `into_par_iter().map().collect()` preserves index order, so the result is
+/// bit-identical to the serial loop (both go through the same
+/// `scf_compute_eri_quartet` kernel with unit coefficient).
 pub fn schwarz(op: Operator, prep: &PreparedBasis) -> Result<Array2<f64>, FerricError> {
-    let op_kind = match op.kind {
-        OperatorKind::Coulomb => ffi::OP_COULOMB,
-        OperatorKind::ErfCoulomb => ffi::OP_ERF_COULOMB,
-        OperatorKind::ErfcCoulomb => ffi::OP_ERFC_COULOMB,
-        _ => return Err(FerricError::Libint(format!(
-            "operator {:?} not implemented", op.kind
-        ))),
-    };
-    let raw = unsafe {
-        ffi::scf_engine_create(op_kind, op.omega, prep.max_nprim(), prep.max_l(), 1e-14)
-    };
-    if raw.is_null() {
-        return Err(FerricError::Libint("schwarz engine_create null".into()));
+    match op.kind {
+        OperatorKind::Coulomb | OperatorKind::ErfCoulomb | OperatorKind::ErfcCoulomb => {}
+        _ => {
+            return Err(FerricError::Libint(format!(
+                "operator {:?} not implemented",
+                op.kind
+            )))
+        }
     }
-    // Handle is now owned by the guard: destroyed on every exit path
-    // (normal return, `?`, or panic unwind), not just the happy path.
-    let handle = RawEngineHandle(raw);
     let nsh = prep.nshells();
     let mut qmat = Array2::zeros((nsh, nsh));
-    let status = unsafe { ffi::scf_compute_schwarz(handle.0, prep.handle(), qmat.as_mut_ptr()) };
-    drop(handle);
-    if status < 0 {
-        return Err(FerricError::Libint(format!(
-            "libint2 internal error computing Schwarz matrix: status {status}"
-        )));
+
+    if nsh < PAR_SCHWARZ_SHELL_THRESHOLD {
+        let mut eng = Engine::new_2e(op, prep, 1e-14)?;
+        for i in 0..nsh {
+            for j in 0..=i {
+                let q = schwarz_pair(&mut eng, prep, i, j);
+                qmat[(i, j)] = q;
+                qmat[(j, i)] = q;
+            }
+        }
+        return Ok(qmat);
+    }
+
+    use rayon::prelude::*;
+    // Validate engine construction once up front so worker-side construction
+    // can't fail (mirrors schwarz3_aux below).
+    Engine::new_2e(op, prep, 1e-14)?;
+    let pairs: Vec<(usize, usize)> = (0..nsh)
+        .flat_map(|i| (0..=i).map(move |j| (i, j)))
+        .collect();
+    let qvals: Vec<f64> = pairs
+        .par_iter()
+        .map_init(
+            || Engine::new_2e(op, prep, 1e-14).expect("2e engine (pre-validated)"),
+            |eng, &(i, j)| schwarz_pair(eng, prep, i, j),
+        )
+        .collect();
+    for (&(i, j), &q) in pairs.iter().zip(&qvals) {
+        qmat[(i, j)] = q;
+        qmat[(j, i)] = q;
     }
     Ok(qmat)
 }
@@ -192,6 +229,46 @@ mod tests {
             q3[p] = maxv.sqrt();
         }
         q3
+    }
+
+    /// Serial reference for `schwarz` (single engine, pair loop — the exact
+    /// small-system path), used to prove the parallel path is bit-identical.
+    fn schwarz_serial(op: Operator, prep: &PreparedBasis) -> Array2<f64> {
+        let nsh = prep.nshells();
+        let mut eng = Engine::new_2e(op, prep, 1e-14).unwrap();
+        let mut qmat = Array2::zeros((nsh, nsh));
+        for i in 0..nsh {
+            for j in 0..=i {
+                let q = super::schwarz_pair(&mut eng, prep, i, j);
+                qmat[(i, j)] = q;
+                qmat[(j, i)] = q;
+            }
+        }
+        qmat
+    }
+
+    #[test]
+    fn test_schwarz_parallel_bitidentical_to_serial() {
+        // alkane_6/cc-pVDZ clears PAR_SCHWARZ_SHELL_THRESHOLD (64 shells) so
+        // schwarz() takes the parallel path; compare bitwise vs the serial loop.
+        let mol = Molecule::load_xyz("../../testdata/molecules/alkane_6.xyz").unwrap();
+        let bs = basis::bundled("cc-pvdz").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        assert!(
+            prep.nshells() >= PAR_SCHWARZ_SHELL_THRESHOLD,
+            "test basis too small to exercise the parallel path: {} shells",
+            prep.nshells()
+        );
+        for op in [Operator::coulomb(), Operator::erfc(0.222)] {
+            let par = schwarz(op, &prep).unwrap();
+            let ser = schwarz_serial(op, &prep);
+            let n_diff = par
+                .iter()
+                .zip(ser.iter())
+                .filter(|(a, b)| a.to_bits() != b.to_bits())
+                .count();
+            assert_eq!(n_diff, 0, "schwarz: {n_diff} elements differ bitwise (op={op:?})");
+        }
     }
 
     #[test]
