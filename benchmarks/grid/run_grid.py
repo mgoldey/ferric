@@ -45,6 +45,17 @@ ROOT = Path(__file__).resolve().parent
 BIN = str((ROOT / "../../target/release/ferric-cli").resolve())
 BASIS_DIR = ROOT / "../../crates/ferric-core/src/basis/bundled"
 
+# terf/terfc (tempered attenuator) 2D interpolation tables, needed by the
+# terf042/terfcr0 methods (2026-07-21 addition). Same discovery convention as
+# scripts/run_ethylene_terfc_sweep.py / scripts/bisect_a24_aqz_terfc_r0.py --
+# without this, ferric-cli errors "terf 2-center engine not available".
+_TERF_DIR = os.environ.get("GRID_TERF_TABLE_DIR", "")
+if not _TERF_DIR or not os.path.exists(os.path.join(_TERF_DIR, "16_4_2.bin")):
+    for _cand in (str(ROOT / "../../terf-tables"), "/home/matt/qc/ferric/terf-tables"):
+        if os.path.exists(os.path.join(_cand, "16_4_2.bin")):
+            _TERF_DIR = _cand
+            break
+
 GB = 1e9
 NCORES = 12               # box has 12 cores
 MEM_BUDGET = 18 * GB      # sum of running estimates (concurrent jobs). Lowered
@@ -101,13 +112,30 @@ BUDGET = 2.0 * GB
 BASE = 0.5 * GB
 TIMEOUT = 6 * 3600
 POLL = 3.0
-TRUNC = 1e-4
+TRUNC = 1e-3      # 2026-07-21: raised from 1e-4 -- Matt decided PDEP truncation
+                  # now applies everywhere, including this validation grid, not
+                  # just production runs (supersedes the full-rank-only rule in
+                  # memory [[no-pdep-trunc-in-method-grid]]). Re-run
+                  # validate_trunc() and re-check headline numbers at this
+                  # tolerance before trusting existing 1e-4-era conclusions.
 TRUNC_TOL = 2e-5
 K = 627.509474
 
 BASES = {"adz": ("aug-cc-pvdz", "aug-cc-pvdz-rifit"),
-         "atz": ("aug-cc-pvtz", "aug-cc-pvtz-rifit")}
+         "atz": ("aug-cc-pvtz", "aug-cc-pvtz-rifit"),
+         "aqz": ("aug-cc-pvqz", "aug-cc-pvqz-rifit")}
 METHODS = ("scs", "dlr042", "cr02")
+# terf/terfc (tempered Dutoi/Goldey attenuator, r0 in Angstrom at the
+# user-facing config boundary -- Bohr internally, see config.rs's r0 doc)
+# is NOT a fixed-matrix method here: 2026-07-21, Matt corrected an earlier
+# single-point terf042/terfcr0 matrix entry (omega-matched r0=1.68/3.54 Å --
+# the latter already >95% Coulomb-saturated per rimp2.rs:1178's terfc
+# monotonicity test, i.e. past the physically interesting region) to an
+# ADAPTIVE r0 scan over the actual discriminating range (~0-2 Å): coarse
+# shape first, then 0.05 Å refinement near the minimum, then bisection to
+# 0.01 Å. This needs per-system adaptive control flow that this fixed
+# job-matrix scheduler doesn't have -- see
+# scripts/bisect_a24_aqz_terfc_r0.py (the adaptive companion script) instead.
 Z = {"H": 1, "B": 5, "C": 6, "N": 7, "O": 8, "F": 9, "Ar": 18}
 
 for d in ("geoms", "toml", "out"):
@@ -173,6 +201,19 @@ NBF = {b: basis_counts(obs) for b, (obs, _) in BASES.items()}
 NAUX = {b: basis_counts(aux) for b, (_, aux) in BASES.items()}
 
 
+AQZ_SAFETY_MULT = 1.5  # AO_MULT (2.9) was calibrated at aDZ/aTZ scale only
+                        # (nbf<=1127, 2026-06-14). aQZ jobs are new territory
+                        # (2026-07-21): a benzene-dimer aQZ probe (nbf=1512,
+                        # much bigger than any A24 system) peaked at ~16.95 GB
+                        # against a formula that predicted far less -- the gap
+                        # was several budget-blind allocations (per-worker
+                        # freq-quad scratch, retained intermediates) since
+                        # fixed in ferric-rpa, but unvalidated against a fresh
+                        # real aQZ measurement. Pad aQZ estimates 1.5x until a
+                        # live A24-aQZ peak-RSS measurement recalibrates this
+                        # the way AO_MULT itself was calibrated for aTZ.
+
+
 def estimate(atoms, basis):
     """All atoms (incl. ghosts) carry basis functions; only real atoms
     carry electrons."""
@@ -183,6 +224,8 @@ def estimate(atoms, basis):
     nia = nocc * nvir
     est = (BASE + AO_MULT * min(naux * nbf * nbf * 8, BUDGET)
            + 3 * naux * nia * 8 + nvir * nia * 8)
+    if basis == "aqz":
+        est *= AQZ_SAFETY_MULT
     return est, nbf, naux
 
 
@@ -223,8 +266,11 @@ def toml_text(xyz, basis, method, trunc, scf_extra=""):
         t += f'[method]\nkind = "rs-mp2-rpa"\n\n'
         t += f'[mp2]\nauxbasis = "{aux}"\nomega = {omega}\nformulation = "{form}"\n'
         # Quadrature optimization: use 12 points instead of 20 (~40% speedup, <1% accuracy cost)
-        t += f'\n[rpa]\ntrunc_thresh = {TRUNC if trunc else 0.0}\n'
-        t += f'\n[quadrature]\nn_points = 12\n'
+        # n_quad lives under [rpa], not a separate [quadrature] section --
+        # [quadrature] is not a valid TOML key (deny_unknown_fields hard-errors
+        # it; fixed 2026-07-21, this stanza was previously silently never
+        # exercised because every job hit this parse error immediately).
+        t += f'\n[rpa]\ntrunc_thresh = {TRUNC if trunc else 0.0}\nn_quad = 12\n'
     return t
 
 
@@ -314,7 +360,8 @@ def launch(job, blas_threads=1, rayon_threads=1):
     limit = int(min(job["est"] * 2 + 3 * GB, RLIMIT_MAX))
     env = dict(os.environ,
                OPENBLAS_NUM_THREADS=str(blas_threads), OMP_NUM_THREADS=str(blas_threads),
-               RAYON_NUM_THREADS=str(rayon_threads), FERRIC_ERI3_BUDGET_GB=str(BUDGET / GB))
+               RAYON_NUM_THREADS=str(rayon_threads), FERRIC_ERI3_BUDGET_GB=str(BUDGET / GB),
+               FERRIC_TERF_TABLE_DIR=_TERF_DIR)
     part = open(ROOT / "out" / f"{key}.out.part", "w")
     err = open(ROOT / "out" / f"{key}.err", "w")
     proc = subprocess.Popen([BIN, str(ROOT / "toml" / f"{key}.toml")],
@@ -358,8 +405,9 @@ def finish(rec):
 # --------------------------------------------------------- trunc validation
 def run_sync(toml_path, out_path, est):
     env = dict(os.environ, OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1",
-               RAYON_NUM_THREADS=str(THREADS),
-               FERRIC_ERI3_BUDGET_GB=str(BUDGET / GB))
+               RAYON_NUM_THREADS=str(NCORES),
+               FERRIC_ERI3_BUDGET_GB=str(BUDGET / GB),
+               FERRIC_TERF_TABLE_DIR=_TERF_DIR)
     with open(out_path, "w") as f:
         subprocess.run([BIN, str(toml_path)], stdout=f, stderr=subprocess.STDOUT,
                        env=env,
@@ -409,6 +457,17 @@ def validate_trunc():
 # ------------------------------------------------------------------ runner
 def main():
     jobs, excluded = build_jobs()
+    # Optional scope filter (2026-07-21): GRID_KEY_PREFIXES restricts the run
+    # to jobs whose key starts with one of the given comma-separated prefixes
+    # -- e.g. "a24" + "aqz" together via GRID_KEY_SUBSTR, used to launch just
+    # the new A24-aqz jobs without also picking up S22/S66-aqz (much bigger
+    # dimers, closer to JOB_CAP, not requested/validated yet at this basis).
+    prefixes = [p for p in os.environ.get("GRID_KEY_PREFIXES", "").split(",") if p.strip()]
+    substrs = [s for s in os.environ.get("GRID_KEY_SUBSTR", "").split(",") if s.strip()]
+    if prefixes:
+        jobs = [j for j in jobs if j["key"].startswith(tuple(prefixes))]
+    if substrs:
+        jobs = [j for j in jobs if all(s in j["key"] for s in substrs)]
     for key, g in excluded:
         log(f"excluded (est {g:.0f}G > cap): {key}")
     todo = [j for j in jobs if not is_done(j)
@@ -507,7 +566,14 @@ def main():
         # big high-priority job (π-stack aTZ) needs, starving it to ~1-at-a-time.
         reserved = 0.0
         for job in list(pending):
-            big = job["est"] >= SOLO_GB
+            # aqz jobs always run solo at all 12 cores (Matt, 2026-07-21:
+            # "use 12 cores per job") regardless of SOLO_GB -- overrides the
+            # packed-concurrency default calibrated for aDZ/aTZ at this job
+            # size (~10GB, near but under SOLO_GB). Uses rayon_threads=NCORES
+            # with blas_threads=1 (parallelizes the RPA quad loop over
+            # frequencies), not OPENBLAS threading -- the crash-safe solo axis
+            # per the CRASH-SAFETY note below, same as any other solo job.
+            big = job["est"] >= SOLO_GB or job["basis"] == "aqz"
             if big_running:
                 break  # a solo-BLAS job owns the whole box; admit nothing else
             fits_mem = (mem_available() - reserved - job["est"] >= FLOOR + 1 * GB)
