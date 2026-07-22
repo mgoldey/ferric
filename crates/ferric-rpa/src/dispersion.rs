@@ -118,7 +118,10 @@ pub enum C6Source {
     /// True PDEP-RPA dynamic α(iω) evaluated on the RPA quadrature grid.
     Pdep,
     /// Many-body dispersion on top of the TS single-pole α (coupled-dipole).
-    /// Known-bad for soft atoms — see the `mbd-does-not-fix-silicon` finding.
+    /// Modestly improves TS's worst case (soft covalent atoms like Si) but
+    /// does not fully repair it — screening a still-imperfect free-atom
+    /// polarizability reference can only refine it, not replace it. See
+    /// `docs/VALIDATION.md`'s "MBD@TS screening" row for current numbers.
     Mbd,
 }
 
