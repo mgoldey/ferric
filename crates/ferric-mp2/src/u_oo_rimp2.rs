@@ -13,6 +13,7 @@
 use crate::rimp2::active_occ;
 use crate::u_rimp2::{compute_u_mp2_amplitudes, compute_u_mp2_orbital_gradient, URiMp2Components};
 use crate::oo_rimp2::{compute_b_full_mo_with, OoRiMp2AoTensors};
+use crate::orbital_rotation::cayley_rotation;
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_core::parallel::ParallelContext;
@@ -26,7 +27,6 @@ use ferric_scf::fock::{JBuilder, KBuilder};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::{ScfResult, Spin};
 use ndarray::Array2;
-use ndarray_linalg::Solve;
 
 /// Configuration for U-OO-RI-MP2.
 #[derive(Debug, Clone)]
@@ -194,22 +194,6 @@ fn make_scf_view(
         iterations: 0,
         computed_quartets: 0,
     }
-}
-
-/// Cayley transform `U = (I − κ/2)^{−1}(I + κ/2)` for antisymmetric κ.
-fn cayley_rotation(kappa: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
-    let n = kappa.nrows();
-    let eye = Array2::<f64>::eye(n);
-    let lhs = &eye - 0.5 * kappa;
-    let rhs = &eye + 0.5 * kappa;
-    let mut u = Array2::zeros((n, n));
-    for col in 0..n {
-        let rhs_col = rhs.column(col).to_owned();
-        let u_col = lhs.solve(&rhs_col)
-            .map_err(|e| FerricError::Lapack(format!("Cayley solve col {col}: {e}")))?;
-        u.column_mut(col).assign(&u_col);
-    }
-    Ok(u)
 }
 
 /// MO-basis orbital energies from diagonal of F_mo = C^T F C.

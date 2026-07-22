@@ -21,6 +21,7 @@ pub mod u_rimp2;
 pub mod u_oo_rimp2;
 pub mod canonical;
 pub mod gradient;
+pub mod orbital_rotation;
 pub mod oo_rimp2;
 pub mod attenuated;
 mod attenuated_timing;
