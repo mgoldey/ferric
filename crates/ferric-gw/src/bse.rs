@@ -214,7 +214,7 @@ pub fn run_bse_tda(
 
     // 2. Active particle–hole window (frozen-core aware).
     let first_act = frozen_core;
-    let nocc = nocc_total - frozen_core;
+    let nocc = ferric_mp2::rimp2::active_occ(nocc_total, frozen_core)?;
     let nvir = nmo - nocc_total;
     let n = nocc * nvir;
     if n == 0 {
@@ -397,7 +397,7 @@ pub fn run_cis_tda(
     let eps = rhf.eps_r().to_vec();
 
     let first_act = frozen_core;
-    let nocc = nocc_total - frozen_core;
+    let nocc = ferric_mp2::rimp2::active_occ(nocc_total, frozen_core)?;
     let nvir = nmo - nocc_total;
     let n = nocc * nvir;
     // Fail-fast on the dense TDA matrix a_mat (:243, one n×n f64 buffer). No
@@ -544,7 +544,7 @@ pub fn run_bse_c6(
     }
 
     let first_act = frozen_core;
-    let nocc = nocc_total - frozen_core;
+    let nocc = ferric_mp2::rimp2::active_occ(nocc_total, frozen_core)?;
     let nvir = nmo - nocc_total;
     let n = nocc * nvir;
     // Fail-fast on the dense (A±B) + per-frequency sysm buffers (:398-399, :437 —
@@ -754,7 +754,7 @@ pub fn run_bse_c6_ks(
     }
 
     let first_act = frozen_core;
-    let nocc = nocc_total - frozen_core;
+    let nocc = ferric_mp2::rimp2::active_occ(nocc_total, frozen_core)?;
     let nvir = nmo - nocc_total;
     let n = nocc * nvir;
     // Fail-fast on the dense (A±B) + per-frequency sysm buffers (:575-576, :614 —
@@ -996,7 +996,7 @@ pub fn run_rpax_static_polarizability(
     let pdep = ferric_rpa::run_pdep_rpa(mol, obs, dfbs, op, ks, pdep_cfg)?;
 
     let first_act = frozen_core;
-    let nocc = nocc_total - frozen_core;
+    let nocc = ferric_mp2::rimp2::active_occ(nocc_total, frozen_core)?;
     let nvir = nmo - nocc_total;
     let n = nocc * nvir;
     // Fail-fast on the dense (A±B) buffers: apb + amb + sysm co-resident, same

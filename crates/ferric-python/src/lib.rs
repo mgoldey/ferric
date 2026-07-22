@@ -1012,7 +1012,7 @@ fn run_rs_mp2_rpa(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSe
             "unknown formulation \"{other}\"; expected \"delta-lr\" or \"coupled-rings\""
         ))),
     };
-    // attenuator: "erf" (default, ω in Å⁻¹) or "terf" (r0 in Bohr, ω derived).
+    // attenuator: "erf" (default, ω in Å⁻¹) or "terf" (r0 in Å, ω derived).
     let atten = match attenuator.unwrap_or("erf") {
         "erf" => ferric_rpa::rs_mp2_rpa::Attenuator::Erf,
         "terf" => ferric_rpa::rs_mp2_rpa::Attenuator::Terf,
@@ -1020,11 +1020,15 @@ fn run_rs_mp2_rpa(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSe
             "unknown attenuator \"{other}\"; expected \"erf\" or \"terf\""
         ))),
     };
-    // omega is supplied in Å⁻¹; convert to Bohr⁻¹ for the operator. r0 is in Bohr.
+    // omega is supplied in Å⁻¹; convert to Bohr⁻¹ for the operator. r0 is
+    // supplied in Å (2026-07-21: fixed from Bohr, matching r0_bonded/
+    // r0_nonbonded's existing Å convention elsewhere in this file); convert
+    // to Bohr for RsMp2RpaConfig, which stays Bohr-native.
+    const ANG2BOHR_R0: f64 = 1.8897259886;
     let mut cfg = ferric_rpa::RsMp2RpaConfig {
         omega: omega.unwrap_or(0.420) * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV,
         attenuator: atten,
-        r0: r0.unwrap_or(3.18),
+        r0: r0.unwrap_or(3.18 / ANG2BOHR_R0) * ANG2BOHR_R0,
         frozen_core: frozen_core.unwrap_or(0),
         formulation: form,
         ..Default::default()
