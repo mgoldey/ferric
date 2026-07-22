@@ -322,7 +322,13 @@ pub struct RpaCfg {
     ///   "ts"   — Tkatchenko-Scheffler single-pole model (default)
     ///   "pdep" — true PDEP-RPA dynamic α(iω) on the RPA quadrature grid
     ///   "mbd"  — many-body dispersion (coupled-dipole) on top of the TS α.
-    ///            Known-bad for soft atoms; makes silicon worse, not better.
+    ///            Post-G8 (live free-atom SCF, no hardcoded vol_free table),
+    ///            MBD screening modestly improves TS's worst case (SiH4 at
+    ///            aug-cc-pVTZ: TS +28.7% vs DOSD, MBD +24.3%) rather than
+    ///            making it worse — see docs/VALIDATION.md's "MBD@TS
+    ///            screening" row for the full 10-molecule resweep. Residual
+    ///            error remains real: screening a still-imperfect free-atom
+    ///            reference for soft covalent atoms can't fully repair it.
     ///
     /// Unknown values are a hard error (they used to silently run "ts").
     pub c6_source: Option<String>,
