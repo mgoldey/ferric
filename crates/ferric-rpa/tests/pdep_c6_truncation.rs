@@ -147,6 +147,10 @@ fn run_system(sys: &System) {
 }
 
 #[test]
+#[ignore = "slow: 7-threshold sweep on 2 systems incl. methane/aug-cc-pVTZ \
+            (naux~249) PDEP-RPA + per-atom dispersion each -- this file's own \
+            module doc already labels it 'Spike:' and instructs running with \
+            --release, so it wasn't meant for the default cargo test pass"]
 fn pdep_truncation_sweep() {
     // System 1: water / cc-pVDZ-RI  (small naux, baseline)
     let water_xyz = include_str!("../../../testdata/molecules/water.xyz");

@@ -211,6 +211,9 @@ fn h2o_cc_pvdz_pdep_truncation_convergence() {
 }
 
 #[test]
+#[ignore = "slow: 5 full/truncated PDEP-RPA solves at aug-cc-pVTZ (naux=198), \
+            pure timing printout with no assertions -- see benzene_cc_pvdz_timing \
+            below for the same pattern already ignored at a smaller basis"]
 fn h2o_aug_cc_pvtz_timing_comparison() {
     use std::time::Instant;
     let (mol, obs, dfbs, op, rhf) = setup(

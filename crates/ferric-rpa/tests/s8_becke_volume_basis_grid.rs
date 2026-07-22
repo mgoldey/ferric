@@ -165,6 +165,11 @@ const LADDER: &[&str] = &["6-31g", "def2-svp", "aug-cc-pvdz", "def2-tzvp", "aug-
 
 /// H1 — basis sensitivity of the molecular Becke heavy-atom volume, production grid.
 #[test]
+#[ignore = "slow: 3 molecules x 5 bases (incl. aug-cc-pVTZ) SCF+Becke-volume \
+            solves, pure diagnostic printout with no assertions -- this file's \
+            own module doc labels it a completed 'S8 spike' investigation with \
+            the verdict already written at the top, and its header already \
+            says to run with --release"]
 fn s8_h1_basis_sensitivity() {
     let cases: &[(&str, fn() -> Molecule, usize)] = &[
         ("SiH4 (Si)", sih4, 0),
@@ -209,6 +214,9 @@ fn s8_h1_basis_sensitivity() {
 /// not grid, the volume is grid-converged already at 75×110 and both bases move
 /// by the same small % under grid refinement.
 #[test]
+#[ignore = "slow: 2 molecules x 2 bases (incl. aug-cc-pVTZ) x 3 grids, pure \
+            diagnostic printout with no assertions -- same completed-spike \
+            rationale as s8_h1_basis_sensitivity above"]
 fn s8_h2_grid_sensitivity() {
     let grids = [
         ("50x50", AtomicGridConfig { n_radial: 50, n_angular: 50 }),
