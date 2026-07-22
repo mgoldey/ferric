@@ -16,6 +16,44 @@ pub(crate) fn dielectric_lapack_err(what: &str, e: impl std::fmt::Display) -> Fe
     FerricError::Lapack(format!("{what} (NaN/Inf dielectric from near-degenerate reference?): {e}"))
 }
 
+/// Shared per-frequency parallel scaffold: evaluate `f` at every quadrature
+/// frequency (build ε̃(iω) → eigh or inv), order-preserving `par_iter` +
+/// `Result`-collect. BLAS is pinned to 1 inside the rayon region — the
+/// per-frequency eigh/inv/GEMM must not nest OpenBLAS threads under rayon
+/// workers (stack-overflow crash site). `f` returns `Result` so a NaN/Inf
+/// dielectric surfaces as `Err`, never a panic inside a worker.
+///
+/// `init` builds per-WORKER scratch reused across the frequencies that worker
+/// processes (`map_init`); scratch-free callers pass `|| ()`.
+/// `eval_eigenvalues_at_frequencies_budgeted` stays separate: its panel-width
+/// scratch sizing is chosen from the memory budget before the parallel region.
+fn per_frequency<S: Send, T: Send>(
+    quad_freqs: &[f64],
+    init: impl Fn() -> S + Sync + Send,
+    f: impl Fn(&mut S, f64) -> Result<T, FerricError> + Sync + Send,
+) -> Result<Vec<T>, FerricError> {
+    use ferric_integrals::blas_threads::with_blas_threads;
+    use rayon::prelude::*;
+    with_blas_threads(1, || {
+        quad_freqs
+            .par_iter()
+            .map_init(&init, |scratch, &omega| f(scratch, omega))
+            .collect::<Result<Vec<T>, FerricError>>()
+    })
+}
+
+/// Assemble per-frequency eigenvalue rows into the (N_quad, M) tensor consumed
+/// by [`rpa_correlation_energy`].
+fn rows_into_array(n_quad: usize, m: usize, rows: Vec<Vec<f64>>) -> Array2<f64> {
+    let mut out = Array2::zeros((n_quad, m));
+    for (k, row) in rows.into_iter().enumerate() {
+        for (alpha, val) in row.into_iter().enumerate() {
+            out[(k, alpha)] = val;
+        }
+    }
+    out
+}
+
 /// E_c^RPA = (1/2π) Σ_k w_k Σ_α [ln(λ_α(iω_k)) + (1 − λ_α(iω_k))].
 ///
 /// Computes RPA correlation energy from eigenvalues of the dielectric matrix
@@ -72,45 +110,29 @@ pub fn eval_eigenvalues_at_frequencies_laplace(
     laplace: &ferric_quadrature::LaplaceQuadrature,
 ) -> Result<Array2<f64>, FerricError> {
     use crate::laplace_chi0::dielectric_matrix_laplace_into;
-    use ferric_integrals::blas_threads::with_blas_threads;
-    use ndarray::Array2;
     use ndarray_linalg::{Eigh, UPLO};
-    use rayon::prelude::*;
 
     let n_quad = quad_freqs.len();
     let m = eigenvectors.ncols();
     let nov = eps_occ.len() * eps_vir.len();
 
-    // Each rayon worker keeps its own (rhs_scaled, out) scratch and reuses it
-    // across the frequencies it processes, instead of allocating an (m×nov) and
-    // (m×m) buffer per quadrature point.
-    // Pin BLAS to 1 inside the rayon region: the per-frequency eigh/GEMM must not
-    // nest OpenBLAS threads under rayon workers (stack-overflow crash site).
-    let rows: Vec<Vec<f64>> = with_blas_threads(1, || {
-        quad_freqs
-            .par_iter()
-            .map_init(
-                || (Array2::<f64>::zeros((m, nov)), Array2::<f64>::zeros((m, m))),
-                |(rhs_scaled, out), &omega| {
-                    dielectric_matrix_laplace_into(
-                        eigenvectors, b_ov, eps_occ, eps_vir, omega, laplace, rhs_scaled, out,
-                    );
-                    let (evals, _) = out
-                        .eigh(UPLO::Upper)
-                        .map_err(|e| dielectric_lapack_err("Laplace dielectric eigh failed", e))?;
-                    Ok(evals.to_vec())
-                },
-            )
-            .collect::<Result<Vec<Vec<f64>>, FerricError>>()
-    })?;
-
-    let mut eigenvalues_freq = Array2::zeros((n_quad, m));
-    for (k, row) in rows.into_iter().enumerate() {
-        for (alpha, val) in row.into_iter().enumerate() {
-            eigenvalues_freq[(k, alpha)] = val;
-        }
-    }
-    Ok(eigenvalues_freq)
+    // Per-worker (rhs_scaled, out) scratch reused across the frequencies that
+    // worker processes, instead of allocating an (m×nov) and (m×m) buffer per
+    // quadrature point.
+    let rows = per_frequency(
+        quad_freqs,
+        || (Array2::<f64>::zeros((m, nov)), Array2::<f64>::zeros((m, m))),
+        |(rhs_scaled, out), omega| {
+            dielectric_matrix_laplace_into(
+                eigenvectors, b_ov, eps_occ, eps_vir, omega, laplace, rhs_scaled, out,
+            );
+            let (evals, _) = out
+                .eigh(UPLO::Upper)
+                .map_err(|e| dielectric_lapack_err("Laplace dielectric eigh failed", e))?;
+            Ok(evals.to_vec())
+        },
+    )?;
+    Ok(rows_into_array(n_quad, m, rows))
 }
 
 /// Unrestricted variant: per-frequency eigenvalues of ε̃_U = I + Π_α + Π_β.
@@ -125,36 +147,19 @@ pub fn eval_eigenvalues_at_frequencies_unrestricted(
     quad_freqs: &[f64],
 ) -> Result<Array2<f64>, FerricError> {
     use crate::sternheimer::dielectric_matrix_unrestricted;
-    use ferric_integrals::blas_threads::with_blas_threads;
     use ndarray_linalg::{Eigh, UPLO};
-    use rayon::prelude::*;
 
     let n_quad = quad_freqs.len();
     let m = eigenvectors.ncols();
 
-    // Pin BLAS to 1 inside the rayon region (per-frequency eigh must not nest).
-    let rows: Vec<Vec<f64>> = with_blas_threads(1, || {
-        quad_freqs
-            .par_iter()
-            .map(|&omega| {
-                let eps_proj = dielectric_matrix_unrestricted(
-                    eigenvectors, chan_a, chan_b, omega,
-                );
-                let (evals, _) = eps_proj
-                    .eigh(UPLO::Upper)
-                    .map_err(|e| dielectric_lapack_err("unrestricted dielectric eigh failed", e))?;
-                Ok(evals.to_vec())
-            })
-            .collect::<Result<Vec<Vec<f64>>, FerricError>>()
+    let rows = per_frequency(quad_freqs, || (), |(), omega| {
+        let eps_proj = dielectric_matrix_unrestricted(eigenvectors, chan_a, chan_b, omega);
+        let (evals, _) = eps_proj
+            .eigh(UPLO::Upper)
+            .map_err(|e| dielectric_lapack_err("unrestricted dielectric eigh failed", e))?;
+        Ok(evals.to_vec())
     })?;
-
-    let mut out = Array2::zeros((n_quad, m));
-    for (k, row) in rows.into_iter().enumerate() {
-        for (alpha, val) in row.into_iter().enumerate() {
-            out[(k, alpha)] = val;
-        }
-    }
-    Ok(out)
+    Ok(rows_into_array(n_quad, m, rows))
 }
 
 /// Laplace + unrestricted variant of [`eval_eigenvalues_at_frequencies`].
@@ -170,39 +175,24 @@ pub fn eval_eigenvalues_at_frequencies_laplace_unrestricted(
     quad_freqs: &[f64],
 ) -> Result<Array2<f64>, FerricError> {
     use crate::laplace_chi0::dielectric_matrix_laplace_unrestricted;
-    use ferric_integrals::blas_threads::with_blas_threads;
     use ndarray_linalg::{Eigh, UPLO};
-    use rayon::prelude::*;
 
     let n_quad = quad_freqs.len();
     let m = eigenvectors.ncols();
 
-    // Pin BLAS to 1 inside the rayon region (per-frequency eigh must not nest).
-    let rows: Vec<Vec<f64>> = with_blas_threads(1, || {
-        quad_freqs
-            .par_iter()
-            .map(|&omega| {
-                let eps_proj = dielectric_matrix_laplace_unrestricted(
-                    eigenvectors,
-                    chan_a, laplace_a,
-                    chan_b, laplace_b,
-                    omega,
-                );
-                let (evals, _) = eps_proj
-                    .eigh(UPLO::Upper)
-                    .map_err(|e| dielectric_lapack_err("U-Laplace dielectric eigh failed", e))?;
-                Ok(evals.to_vec())
-            })
-            .collect::<Result<Vec<Vec<f64>>, FerricError>>()
+    let rows = per_frequency(quad_freqs, || (), |(), omega| {
+        let eps_proj = dielectric_matrix_laplace_unrestricted(
+            eigenvectors,
+            chan_a, laplace_a,
+            chan_b, laplace_b,
+            omega,
+        );
+        let (evals, _) = eps_proj
+            .eigh(UPLO::Upper)
+            .map_err(|e| dielectric_lapack_err("U-Laplace dielectric eigh failed", e))?;
+        Ok(evals.to_vec())
     })?;
-
-    let mut out = Array2::zeros((n_quad, m));
-    for (k, row) in rows.into_iter().enumerate() {
-        for (alpha, val) in row.into_iter().enumerate() {
-            out[(k, alpha)] = val;
-        }
-    }
-    Ok(out)
+    Ok(rows_into_array(n_quad, m, rows))
 }
 
 pub fn eval_eigenvalues_at_frequencies(
@@ -212,33 +202,131 @@ pub fn eval_eigenvalues_at_frequencies(
     eps_vir: &[f64],
     quad_freqs: &[f64],
 ) -> Result<Array2<f64>, FerricError> {
-    use crate::sternheimer::{build_scale_factors, dielectric_matrix_from_projection};
+    eval_eigenvalues_at_frequencies_budgeted(eigenvectors, b_ov, eps_occ, eps_vir, quad_freqs, None)
+}
+
+/// Choose the per-worker `(m, k)` scratch panel width `k` for the frequency-
+/// quadrature loop, given a resolved memory budget. `None` (no budget
+/// configured) or a budget that already comfortably covers the full-width
+/// `n_workers·(m·nov + m²)·8` footprint returns `nov` unchanged — the full-
+/// width fast path — so every existing bit-for-bit regression test
+/// (`eval_eigenvalues_at_frequencies_matches_manual_reference`,
+/// `dielectric_matrix_from_projection_into_matches_allocating_version`) is
+/// completely unaffected unless panelling is actually needed to fit budget.
+///
+/// "Comfortably covers": reserves the SAME per-worker footprint accounting
+/// `budget.rs::estimate_peak_bytes` uses for this term
+/// (`n_workers·(m·nov + m²)·8`), plus the shared frequency-independent
+/// projection `y` (`m·nov·8`, held once for the whole loop) and the eigh
+/// scratch LAPACK needs internally (folded into a small safety margin) —
+/// deliberately conservative so a job that already fits is never routed onto
+/// the (slower) panelled path.
+fn quad_panel_width(m: usize, nov: usize, n_workers: usize, memory_budget_bytes: Option<usize>) -> usize {
+    let Some(budget) = memory_budget_bytes else {
+        return nov.max(1);
+    };
+    if nov == 0 {
+        return 1;
+    }
+    let n_workers = n_workers.max(1);
+    let y_bytes = m.saturating_mul(nov).saturating_mul(8);
+    let full_width_scratch = n_workers
+        .saturating_mul(m.saturating_mul(nov).saturating_add(m.saturating_mul(m)))
+        .saturating_mul(8);
+    if y_bytes.saturating_add(full_width_scratch) <= budget {
+        return nov; // fast path: full width already fits
+    }
+    // Panelling needed: solve n_workers·(m·k + m²)·8 + y_bytes <= budget for k,
+    // per worker, leaving headroom for the always-resident y and the (m,m)
+    // `out` term (m² is independent of k, so it's subtracted off first).
+    let remaining = budget.saturating_sub(y_bytes);
+    let per_worker_budget = remaining / n_workers.max(1);
+    let out_bytes = m.saturating_mul(m).saturating_mul(8);
+    let scratch_for_k = per_worker_budget.saturating_sub(out_bytes);
+    let per_col_bytes = m.saturating_mul(8).max(1);
+    (scratch_for_k / per_col_bytes).clamp(1, nov)
+}
+
+/// Budget-aware sibling of [`eval_eigenvalues_at_frequencies`]. Identical
+/// result to the plain function (which is now a thin `None`-budget wrapper
+/// around this one); the only behavioral difference is which BLAS assembly
+/// path (`dielectric_matrix_from_projection_into` vs the nov-panelled
+/// `..._into_panelled`) each rayon worker's `map_init` closure calls, chosen
+/// once via [`quad_panel_width`] before the parallel region starts.
+///
+/// `memory_budget_bytes`: the caller's resolved `[memory] budget_gb` /
+/// `PdepRpaConfig::memory_budget_bytes` (already resolved via
+/// `ferric_core::memory::resolve_budget_bytes` by the caller — this function
+/// takes the final byte ceiling, not an `Option` needing further resolution,
+/// mirroring `lanczos::run_lanczos_full_rank_budgeted`'s convention of
+/// accepting the caller's own resolved value rather than re-resolving).
+pub fn eval_eigenvalues_at_frequencies_budgeted(
+    eigenvectors: &Array2<f64>,
+    b_ov: &Array2<f64>,
+    eps_occ: &[f64],
+    eps_vir: &[f64],
+    quad_freqs: &[f64],
+    memory_budget_bytes: Option<usize>,
+) -> Result<Array2<f64>, FerricError> {
+    use crate::sternheimer::{
+        build_scale_factors, dielectric_matrix_from_projection_into,
+        dielectric_matrix_from_projection_into_panelled,
+    };
     use ferric_integrals::blas_threads::with_blas_threads;
+    use ndarray::Array2;
     use ndarray_linalg::{Eigh, UPLO};
     use rayon::prelude::*;
 
     let n_quad = quad_freqs.len();
     let m = eigenvectors.ncols();
+    let nov = eps_occ.len() * eps_vir.len();
 
     // The projection y = Vᵀ·B_ov is frequency-independent — compute it ONCE
     // instead of recomputing the (m × nov) GEMM at every quadrature point. Each
     // ω then only does the cheap column scaling + DSYRK.
     let y = eigenvectors.t().dot(b_ov);
 
+    let n_workers = rayon::current_num_threads().max(1);
+    let panel_width = quad_panel_width(m, nov, n_workers, memory_budget_bytes);
+    let use_panelled = panel_width < nov;
+
     // Each quadrature point is fully independent — parallelize over frequencies.
     // Pin BLAS to 1 inside the rayon region (per-frequency eigh must not nest).
+    //
+    // map_init (not map): each rayon WORKER allocates its own (rhs_scaled, out)
+    // scratch ONCE and reuses it across every frequency that worker processes,
+    // instead of `dielectric_matrix_from_projection` cloning the full (m, nov)
+    // `y` on every single call. At benzene/aug-cc-pVQZ scale (naux=m≈2976,
+    // nov≈61740) that clone is ~1.4 GB; with the old `map` + per-call clone,
+    // up to min(n_quad, active_threads) copies were live simultaneously —
+    // multi-GB, unbounded by `[memory] budget_gb`, and scaling with core count
+    // (found 2026-07-21 tracing a benzene aQZ OOM). map_init caps this at one
+    // (rhs_scaled, out) pair per THREAD, not per frequency.
+    //
+    // When `use_panelled` is false (no budget configured, or the full-width
+    // footprint already fits — see `quad_panel_width`), this is the EXACT
+    // pre-existing full-width path (`rhs_scaled` sized (m, nov)), so every
+    // existing bit-for-bit regression test is unaffected. Only when panelling
+    // is actually needed does each worker's scratch narrow to (m, panel_width).
     let rows: Vec<Vec<f64>> = with_blas_threads(1, || {
         quad_freqs
             .par_iter()
-            .map(|&omega| {
-                let scale = build_scale_factors(eps_occ, eps_vir, omega);
-                let eps_proj = dielectric_matrix_from_projection(&y, &scale);
-                // Diagonalize at each frequency — eigenvectors at ω=0 don't diagonalize ε̃(iω)
-                let (evals, _) = eps_proj
-                    .eigh(UPLO::Upper)
-                    .map_err(|e| dielectric_lapack_err("dielectric eigh failed", e))?;
-                Ok(evals.to_vec())
-            })
+            .map_init(
+                || (Array2::<f64>::zeros((m, panel_width)), Array2::<f64>::zeros((m, m))),
+                |(rhs_scaled, out), &omega| {
+                    let scale = build_scale_factors(eps_occ, eps_vir, omega);
+                    if use_panelled {
+                        dielectric_matrix_from_projection_into_panelled(&y, &scale, rhs_scaled, out);
+                    } else {
+                        dielectric_matrix_from_projection_into(&y, &scale, rhs_scaled, out);
+                    }
+                    // Diagonalize at each frequency — eigenvectors at ω=0 don't diagonalize ε̃(iω)
+                    let (evals, _) = out
+                        .eigh(UPLO::Upper)
+                        .map_err(|e| dielectric_lapack_err("dielectric eigh failed", e))?;
+                    Ok(evals.to_vec())
+                },
+            )
             .collect::<Result<Vec<Vec<f64>>, FerricError>>()
     })?;
 
@@ -271,31 +359,22 @@ pub fn eval_inv_dielectric_matrices(
     quad_freqs: &[f64],
 ) -> Result<Vec<Array2<f64>>, FerricError> {
     use crate::sternheimer::{build_scale_factors, dielectric_matrix_from_projection};
-    use ferric_integrals::blas_threads::with_blas_threads;
     use ndarray_linalg::Inverse;
-    use rayon::prelude::*;
 
     let m = eigenvectors.ncols();
     let y = eigenvectors.t().dot(b_ov);
 
-    // Pin BLAS to 1 inside the rayon region: the per-frequency .inv() must not
-    // nest OpenBLAS threads under rayon workers (stack-overflow crash site).
-    with_blas_threads(1, || {
-        quad_freqs
-            .par_iter()
-            .map(|&omega| {
-                let scale = build_scale_factors(eps_occ, eps_vir, omega);
-                let eps_proj = dielectric_matrix_from_projection(&y, &scale);
-                let mut winv = eps_proj
-                    .inv()
-                    .map_err(|e| dielectric_lapack_err("PDEP-basis dielectric inversion failed", e))?;
-                // Subtract identity → dynamic part W̃_d = ε̃⁻¹ − I.
-                for d in 0..m {
-                    winv[(d, d)] -= 1.0;
-                }
-                Ok(winv)
-            })
-            .collect()
+    per_frequency(quad_freqs, || (), |(), omega| {
+        let scale = build_scale_factors(eps_occ, eps_vir, omega);
+        let eps_proj = dielectric_matrix_from_projection(&y, &scale);
+        let mut winv = eps_proj
+            .inv()
+            .map_err(|e| dielectric_lapack_err("PDEP-basis dielectric inversion failed", e))?;
+        // Subtract identity → dynamic part W̃_d = ε̃⁻¹ − I.
+        for d in 0..m {
+            winv[(d, d)] -= 1.0;
+        }
+        Ok(winv)
     })
 }
 
@@ -308,26 +387,18 @@ pub fn eval_inv_dielectric_matrices_unrestricted(
     quad_freqs: &[f64],
 ) -> Result<Vec<Array2<f64>>, FerricError> {
     use crate::sternheimer::dielectric_matrix_unrestricted;
-    use ferric_integrals::blas_threads::with_blas_threads;
     use ndarray_linalg::Inverse;
-    use rayon::prelude::*;
 
     let m = eigenvectors.ncols();
-    // Pin BLAS to 1 inside the rayon region (per-frequency .inv() must not nest).
-    with_blas_threads(1, || {
-        quad_freqs
-            .par_iter()
-            .map(|&omega| {
-                let eps_proj = dielectric_matrix_unrestricted(eigenvectors, chan_a, chan_b, omega);
-                let mut winv = eps_proj
-                    .inv()
-                    .map_err(|e| dielectric_lapack_err("U PDEP-basis dielectric inversion failed", e))?;
-                for d in 0..m {
-                    winv[(d, d)] -= 1.0;
-                }
-                Ok(winv)
-            })
-            .collect()
+    per_frequency(quad_freqs, || (), |(), omega| {
+        let eps_proj = dielectric_matrix_unrestricted(eigenvectors, chan_a, chan_b, omega);
+        let mut winv = eps_proj
+            .inv()
+            .map_err(|e| dielectric_lapack_err("U PDEP-basis dielectric inversion failed", e))?;
+        for d in 0..m {
+            winv[(d, d)] -= 1.0;
+        }
+        Ok(winv)
     })
 }
 
@@ -351,5 +422,144 @@ mod tests {
             e_c,
             expected
         );
+    }
+
+    /// Regression for the 2026-07-21 memory fix: `eval_eigenvalues_at_frequencies`
+    /// was rewritten from `par_iter().map(...)` (allocating a fresh `y.clone()`
+    /// per quadrature frequency via `dielectric_matrix_from_projection`) to
+    /// `par_iter().map_init(...)` with per-worker reusable scratch buffers via
+    /// `dielectric_matrix_from_projection_into`. This must produce numerically
+    /// identical eigenvalues to a hand-computed reference on a small,
+    /// non-trivial (m=2, nov=2, n_quad=3) case — not just unit-test the
+    /// scratch-reuse helper in isolation (sternheimer.rs already covers that),
+    /// but confirm the whole rayon fan-out + eigh pipeline in THIS function
+    /// still gives the right answer after the rewrite.
+    #[test]
+    fn eval_eigenvalues_at_frequencies_matches_manual_reference() {
+        use ndarray_linalg::{Eigh, UPLO};
+
+        // 2 aux "modes" (eigenvectors is naux x naux here, m=2), 1 occ x 2 vir
+        // (nov=2). Trivial eigenvectors = identity so y = b_ov directly.
+        let eigenvectors = ndarray::array![[1.0f64, 0.0], [0.0, 1.0]];
+        let b_ov = ndarray::array![[1.0f64, 0.5], [0.3, -0.8]];
+        let eps_occ = vec![-0.4f64];
+        let eps_vir = vec![0.3f64, 0.9f64];
+        let quad_freqs = vec![0.1f64, 0.5, 1.0];
+
+        let got =
+            eval_eigenvalues_at_frequencies(&eigenvectors, &b_ov, &eps_occ, &eps_vir, &quad_freqs)
+                .expect("eval_eigenvalues_at_frequencies failed");
+
+        // Manual reference: for each omega, build y = eigenvectors^T . b_ov
+        // (= b_ov here since eigenvectors is identity), scale, SYRK, +I, eigh.
+        let y = eigenvectors.t().dot(&b_ov);
+        for (k, &omega) in quad_freqs.iter().enumerate() {
+            let scale = crate::sternheimer::build_scale_factors(&eps_occ, &eps_vir, omega);
+            let eps_mat = crate::sternheimer::dielectric_matrix_from_projection(&y, &scale);
+            let (expected_evals, _) =
+                eps_mat.eigh(UPLO::Upper).expect("reference eigh failed");
+            for (alpha, &expected) in expected_evals.iter().enumerate() {
+                let g = got[(k, alpha)];
+                assert!(
+                    (g - expected).abs() < 1e-12,
+                    "quad point {k} (omega={omega}) eigenvalue {alpha}: got {g}, expected {expected}"
+                );
+            }
+        }
+    }
+
+    /// `quad_panel_width` must return the full `nov` (fast path) when no
+    /// budget is configured, or when the budget already comfortably covers
+    /// the full-width footprint — this is what guarantees the pre-existing
+    /// bit-for-bit tests above are unaffected by this change.
+    #[test]
+    fn quad_panel_width_fast_path_when_no_budget_or_ample_budget() {
+        // No budget at all.
+        assert_eq!(quad_panel_width(50, 1000, 4, None), 1000);
+        // A very generous budget (way more than the full-width footprint needs).
+        let ample = 64usize * 1024 * 1024 * 1024; // 64 GiB
+        assert_eq!(quad_panel_width(50, 1000, 4, Some(ample)), 1000);
+    }
+
+    /// A tiny forced budget must narrow the panel well below `nov`, proving
+    /// the budget-derived branch is actually reachable and shrinks the width.
+    #[test]
+    fn quad_panel_width_narrows_under_tiny_budget() {
+        let m = 200;
+        let nov = 50_000;
+        let n_workers = 8;
+        let tiny_budget = 8usize * 1024 * 1024; // 8 MiB — far too small for full width
+        let k = quad_panel_width(m, nov, n_workers, Some(tiny_budget));
+        assert!(k < nov, "expected a narrowed panel width, got {k} (nov={nov})");
+        assert!(k >= 1, "panel width must never be zero");
+    }
+
+    /// End-to-end: `eval_eigenvalues_at_frequencies_budgeted` with a small
+    /// FORCED budget (small enough that quad_panel_width must narrow the
+    /// panel well below nov) must produce the SAME eigenvalues as the manual
+    /// reference used by `eval_eigenvalues_at_frequencies_matches_manual_reference`
+    /// above — proving the panelled dielectric assembly path, exercised
+    /// through the full rayon fan-out + eigh pipeline (not just the isolated
+    /// sternheimer.rs helper), gives the right physics.
+    #[test]
+    fn eval_eigenvalues_at_frequencies_budgeted_forced_panel_matches_manual_reference() {
+        use ndarray_linalg::{Eigh, UPLO};
+
+        // Same small system as the manual-reference test above (m=2, nov=2),
+        // but with a budget so tiny quad_panel_width is forced to k=1 (the
+        // narrowest possible panel: nov=2, so any k<2 collapses to k=1).
+        let eigenvectors = ndarray::array![[1.0f64, 0.0], [0.0, 1.0]];
+        let b_ov = ndarray::array![[1.0f64, 0.5], [0.3, -0.8]];
+        let eps_occ = vec![-0.4f64];
+        let eps_vir = vec![0.3f64, 0.9f64];
+        let quad_freqs = vec![0.1f64, 0.5, 1.0];
+
+        // Sanity: confirm the tiny budget actually forces panelling for this
+        // shape before trusting the result below (m=2, nov=2, n_workers>=1).
+        let n_workers = rayon::current_num_threads().max(1);
+        let tiny_budget = 200usize; // bytes — absurdly small, forces k=1
+        let forced_k = quad_panel_width(2, 2, n_workers, Some(tiny_budget));
+        assert_eq!(forced_k, 1, "expected the tiny budget to force k=1 for this tiny shape");
+
+        let got = eval_eigenvalues_at_frequencies_budgeted(
+            &eigenvectors, &b_ov, &eps_occ, &eps_vir, &quad_freqs, Some(tiny_budget),
+        )
+        .expect("eval_eigenvalues_at_frequencies_budgeted failed");
+
+        // Manual reference: identical derivation to the non-budgeted test.
+        let y = eigenvectors.t().dot(&b_ov);
+        for (k, &omega) in quad_freqs.iter().enumerate() {
+            let scale = crate::sternheimer::build_scale_factors(&eps_occ, &eps_vir, omega);
+            let eps_mat = crate::sternheimer::dielectric_matrix_from_projection(&y, &scale);
+            let (expected_evals, _) =
+                eps_mat.eigh(UPLO::Upper).expect("reference eigh failed");
+            for (alpha, &expected) in expected_evals.iter().enumerate() {
+                let g = got[(k, alpha)];
+                assert!(
+                    (g - expected).abs() < 1e-12,
+                    "forced-panel quad point {k} (omega={omega}) eigenvalue {alpha}: got {g}, expected {expected}"
+                );
+            }
+        }
+    }
+
+    /// `eval_eigenvalues_at_frequencies` (the plain, `None`-budget entry
+    /// point) must be byte-for-byte the same as calling
+    /// `eval_eigenvalues_at_frequencies_budgeted` with `memory_budget_bytes:
+    /// None` explicitly — confirming the former really is a thin wrapper and
+    /// not an independent (potentially drifting) implementation.
+    #[test]
+    fn plain_entry_point_matches_budgeted_with_none() {
+        let eigenvectors = ndarray::array![[1.0f64, 0.0], [0.0, 1.0]];
+        let b_ov = ndarray::array![[1.0f64, 0.5], [0.3, -0.8]];
+        let eps_occ = vec![-0.4f64];
+        let eps_vir = vec![0.3f64, 0.9f64];
+        let quad_freqs = vec![0.1f64, 0.5, 1.0];
+
+        let a = eval_eigenvalues_at_frequencies(&eigenvectors, &b_ov, &eps_occ, &eps_vir, &quad_freqs).unwrap();
+        let b = eval_eigenvalues_at_frequencies_budgeted(
+            &eigenvectors, &b_ov, &eps_occ, &eps_vir, &quad_freqs, None,
+        ).unwrap();
+        assert_eq!(a, b);
     }
 }

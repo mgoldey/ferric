@@ -183,7 +183,44 @@ pub fn rs_mp2_lr_rpa(
     rhf: &ScfResult,
     cfg: &RsMp2RpaConfig,
 ) -> Result<RsMp2RpaResult, FerricError> {
+    // Pre-flight peak-memory gate (M2-style fail-fast, see budget.rs). Cheap
+    // shape values only (nelec/nbasis accessors, no ERI/GEMM work) so this
+    // runs before ANY large allocation. naux is known exactly; nocc/nvir use
+    // the same closed-shell formula `compute_rpa_intermediates` itself uses
+    // (rimp2.rs) so the estimate matches what's about to be allocated.
+    {
+        use ferric_mp2::rimp2::active_occ;
+        let naux = dfbs.nbasis();
+        let nbas = obs.nbasis();
+        let nocc_total = (mol.nelec() as usize) / 2;
+        let nocc = active_occ(nocc_total, cfg.frozen_core)?;
+        let nvir = nbas.saturating_sub(nocc_total);
+        let n_workers = rayon::current_num_threads().max(1);
+        let n_keep = naux; // trunc_thresh unknown pre-eigensolve; cfg.drpa default is 0.0 (keep-all)
+        let est = crate::budget::estimate_peak_bytes(crate::budget::PeakEstimateShape {
+            naux, nocc, nvir,
+            n_quad: cfg.drpa.quadrature.n_points,
+            n_workers,
+            n_keep,
+        });
+        let budget = ferric_core::memory::resolve_budget_bytes(cfg.drpa.memory_budget_bytes);
+        ferric_core::memory::check_alloc(
+            &format!(
+                "RS-MP2-RPA preflight (naux={naux}, nocc={nocc}, nvir={nvir}, \
+                 n_workers={n_workers}, formulation={:?})",
+                cfg.formulation
+            ),
+            est,
+            budget,
+        )?;
+    }
+
     let ri_cfg = RiMp2Config { frozen_core: cfg.frozen_core, memory_budget_bytes: cfg.drpa.memory_budget_bytes };
+    // Resolved once, reused by the stage-seam RSS observability checks below
+    // (Item 3) — same budget the preflight gate above just checked the
+    // ESTIMATE against; this is the actual-RSS follow-up in case reality
+    // diverges from the estimate at some later stage.
+    let resolved_budget_bytes = ferric_core::memory::resolve_budget_bytes(cfg.drpa.memory_budget_bytes);
 
     // SHARED-INTERMEDIATE FUSION. The MP2 spin components and the dRPA solves
     // both need the dressed b_ov = V^{-1/2}(P|op|ia) for the SAME operator, and
@@ -194,7 +231,22 @@ pub fn rs_mp2_lr_rpa(
     // that the old code ran (CoupledRings previously did 5 transforms — 3 MP2 +
     // 2 RPA — for only 3 distinct operators; now 3). Results are bit-identical.
     let eps = rhf.eps_r();
-    let inter_of = |op| compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &ri_cfg);
+    let inter_of = |op: Operator| -> Result<ferric_mp2::rimp2::RpaIntermediates, FerricError> {
+        let it = compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &ri_cfg)?;
+        // Stage-seam RSS safety net (Item 3): observability only, never a
+        // hard error — the preflight gate above already vetted the ESTIMATE;
+        // this checks whether the ACTUAL resident memory after this
+        // operator's RpaIntermediates build (the co-resident raw-AO-block +
+        // MO-tensor + dressed b_ov peak `budget.rs` estimates) stayed in the
+        // ballpark. A single stderr line, never more than 10% noisy above
+        // budget, never a panic/kill.
+        ferric_core::memory::warn_if_rss_over(
+            &format!("RS-MP2-RPA RpaIntermediates build (op={op:?})"),
+            resolved_budget_bytes,
+            1.1,
+        );
+        Ok(it)
+    };
     let sc_of = |it: &ferric_mp2::rimp2::RpaIntermediates| {
         spin_components_from_b_ov(
             &it.b_ov, eps, it.nocc, it.nvir, it.first_occ, it.nocc_total,
@@ -579,5 +631,24 @@ mod tests {
                 ..Default::default() }).unwrap();
         assert_eq!(a.e_corr.to_bits(), b.e_corr.to_bits(),
             "explicit Erf must be bit-identical to the default");
+    }
+
+    /// Item 3 smoke test: a normal small H2/cc-pVDZ run under a generous
+    /// (default auto-resolved) budget must complete successfully — i.e. the
+    /// new preflight gate (Item 1) does not reject it, and the stage-seam RSS
+    /// warnings (Item 3), which are pure stderr observability and never
+    /// affect control flow, do not disrupt the computation. This is the
+    /// "normal small run produces no disruption" contract; the "no warning
+    /// fires" half of that claim is unit-tested directly in
+    /// ferric-core::memory (`warn_if_rss_over_does_not_panic_and_is_a_pure_observer`)
+    /// since capturing this test binary's own stderr for a substring check
+    /// would be flaky under the parallel test harness.
+    #[test]
+    fn small_system_run_completes_under_default_budget_item3_smoke() {
+        let (mol, obs, dfbs, rhf) = setup_h2();
+        let cfg = RsMp2RpaConfig::default();
+        let r = rs_mp2_lr_rpa(&mol, &obs, &dfbs, &rhf, &cfg)
+            .expect("small H2/cc-pVDZ run must complete under the default auto-resolved budget");
+        assert!(r.total_energy.is_finite());
     }
 }

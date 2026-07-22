@@ -82,6 +82,94 @@ pub(crate) fn syrk_aat(a: &Array2<f64>) -> Array2<f64> {
     c
 }
 
+/// Same as [`syrk_aat`], writing into a caller-provided `(m, m)` buffer instead
+/// of allocating. Lets per-frequency callers reuse one output buffer across
+/// many calls (see `dielectric_matrix_from_projection_into`).
+pub(crate) fn syrk_aat_into(a: &Array2<f64>, c: &mut Array2<f64>) {
+    let m = a.nrows();
+    let kdim = a.ncols();
+    assert_eq!(c.shape(), &[m, m], "syrk_aat_into: output buffer shape mismatch");
+    if m == 0 || kdim == 0 {
+        c.fill(0.0);
+        return;
+    }
+    let a_slice = a
+        .as_slice()
+        .expect("syrk_aat_into: input must be contiguous (row-major)");
+    let alpha = 1.0f64;
+    let beta = 0.0f64;
+    let n_i32 = m as i32;
+    let k_i32 = kdim as i32;
+    let lda = kdim as i32;
+    let ldc = m as i32;
+    unsafe {
+        #[allow(clippy::manual_c_str_literals)]
+        dsyrk_(
+            b"L\0".as_ptr(),
+            b"T\0".as_ptr(),
+            &n_i32,
+            &k_i32,
+            &alpha,
+            a_slice.as_ptr(),
+            &lda,
+            &beta,
+            c.as_mut_ptr(),
+            &ldc,
+        );
+    }
+    for i in 0..m {
+        for j in 0..i {
+            c[(i, j)] = c[(j, i)];
+        }
+    }
+}
+
+/// Same as [`syrk_aat_into`], but accumulates (`beta=1`) into the caller's
+/// `(m, m)` buffer instead of overwriting it (`beta=0`). Used by the
+/// nov-panelled dielectric assembly ([`dielectric_matrix_from_projection_into_panelled`])
+/// to sum `Σ_panels rhs_scaled_panel · rhs_scaled_panelᵀ` across panels without
+/// ever materializing the full `(m, nov)` scaled projection at once. Caller is
+/// responsible for zeroing `c` (or pre-seeding it, e.g. with the identity
+/// diagonal) before the first panel.
+fn syrk_aat_accumulate_into(a: &Array2<f64>, c: &mut Array2<f64>) {
+    let m = a.nrows();
+    let kdim = a.ncols();
+    assert_eq!(c.shape(), &[m, m], "syrk_aat_accumulate_into: output buffer shape mismatch");
+    if m == 0 || kdim == 0 {
+        return;
+    }
+    let a_slice = a
+        .as_slice()
+        .expect("syrk_aat_accumulate_into: input must be contiguous (row-major)");
+    let alpha = 1.0f64;
+    let beta = 1.0f64; // accumulate, don't overwrite
+    let n_i32 = m as i32;
+    let k_i32 = kdim as i32;
+    let lda = kdim as i32;
+    let ldc = m as i32;
+    unsafe {
+        #[allow(clippy::manual_c_str_literals)]
+        dsyrk_(
+            b"L\0".as_ptr(),
+            b"T\0".as_ptr(),
+            &n_i32,
+            &k_i32,
+            &alpha,
+            a_slice.as_ptr(),
+            &lda,
+            &beta,
+            c.as_mut_ptr(),
+            &ldc,
+        );
+    }
+    // BLAS only accumulated into the triangle it was asked to write (lower,
+    // in the Fortran view = upper in row-major, same convention as
+    // syrk_aat/syrk_aat_into). Mirror after EVERY panel is wasteful (the
+    // off-triangle is stale from the previous panel's mirror); instead the
+    // caller mirrors ONCE after the last panel — see
+    // `dielectric_matrix_from_projection_into_panelled`.
+}
+
 /// Build the (nov,) array of per-(ia) scale factors s_ia = sqrt(4·e_ia / (ω²+e_ia²)).
 ///
 /// Hoisted out of `dielectric_matrix` so callers iterating over many frequencies
@@ -206,6 +294,122 @@ pub fn dielectric_matrix_from_projection(y: &Array2<f64>, scale: &Array1<f64>) -
         eps_mat[(alpha, alpha)] += 1.0;
     }
     eps_mat
+}
+
+/// Same as [`dielectric_matrix_from_projection`], writing into caller-provided
+/// `(m, nov)` and `(m, m)` scratch buffers instead of allocating a fresh
+/// `y.clone()` + output on every call.
+///
+/// Exists because the RPA quadrature loop (`energy.rs::eval_eigenvalues_at_frequencies`)
+/// calls this once per frequency inside a `rayon::par_iter` — allocating a full
+/// `(naux, nov)` clone per call means up to `min(n_quad, active_threads)`
+/// concurrent multi-GB clones, entirely unbounded by `[memory] budget_gb`
+/// (measured: ~1.4 GB per clone at naux=2976/nov=61740, i.e. benzene
+/// aug-cc-pVQZ). Reusing one `(rhs_scaled, out)` pair per rayon worker via
+/// `map_init` (already the pattern in `dielectric_matrix_laplace_into`) caps
+/// this at one buffer pair per THREAD instead of per FREQUENCY.
+pub fn dielectric_matrix_from_projection_into(
+    y: &Array2<f64>, scale: &Array1<f64>, rhs_scaled: &mut Array2<f64>, out: &mut Array2<f64>,
+) {
+    let m = y.shape()[0];
+    let nov = scale.len();
+    assert_eq!(y.shape()[1], nov);
+    assert_eq!(rhs_scaled.shape(), &[m, nov], "rhs_scaled scratch shape");
+    assert_eq!(out.shape(), &[m, m], "out shape");
+
+    rhs_scaled.assign(y);
+    let scale_row = scale.view().insert_axis(Axis(0));
+    Zip::from(&mut *rhs_scaled)
+        .and_broadcast(scale_row)
+        .for_each(|x, &s| *x *= s);
+
+    syrk_aat_into(rhs_scaled, out);
+    for alpha in 0..m {
+        out[(alpha, alpha)] += 1.0;
+    }
+}
+
+/// Budget-aware nov-panelled sibling of [`dielectric_matrix_from_projection_into`].
+///
+/// [`dielectric_matrix_from_projection_into`]'s `rhs_scaled` scratch is a full
+/// `(m, nov)` buffer PER RAYON WORKER (via `map_init` in
+/// `energy.rs::eval_eigenvalues_at_frequencies`) — the per-worker scratch
+/// scales with `n_workers·(m·nov + m²)·8` bytes, budget-blind (this is the
+/// term `budget.rs::estimate_peak_bytes` flags as the crux of the 2026-07-21
+/// incident: more rayon workers ⇒ more concurrent scratch, with no cap).
+///
+/// This function instead scales `y`'s `nov` columns in contiguous panels of
+/// width `panel_width`, SYRK-accumulating (`beta=1`) each panel's contribution
+/// into `out` rather than materializing the whole `(m, nov)` scaled `y` at
+/// once. Peak transient scratch per call becomes `O(m·panel_width)` instead of
+/// `O(m·nov)`. Mathematically identical to the non-panelled version: SYRK is
+/// linear in its accumulation (`Σ_panels A_panel·A_panelᵀ = A·Aᵀ` when the
+/// `A_panel`s partition `A`'s columns), so panelling changes nothing about the
+/// result, only the peak memory of computing it.
+///
+/// `rhs_scaled_panel` must have exactly `m` rows and at least 1 column; its
+/// column count is read as the (fixed) panel width (the last panel may use
+/// fewer columns via a sub-slice — see the loop body). `out` must be `(m, m)`.
+///
+/// Falls back to a single full-width "panel" (mathematically the same as
+/// [`dielectric_matrix_from_projection_into`], just routed through the
+/// panelled accumulation path) when `panel_width >= nov` — callers should
+/// prefer the plain function in that case; this one is exposed primarily for
+/// [`crate::energy::eval_eigenvalues_at_frequencies`] to dispatch on a
+/// resolved budget.
+pub fn dielectric_matrix_from_projection_into_panelled(
+    y: &Array2<f64>,
+    scale: &Array1<f64>,
+    rhs_scaled_panel: &mut Array2<f64>,
+    out: &mut Array2<f64>,
+) {
+    let m = y.shape()[0];
+    let nov = scale.len();
+    assert_eq!(y.shape()[1], nov);
+    assert_eq!(out.shape(), &[m, m], "out shape");
+    assert_eq!(rhs_scaled_panel.shape()[0], m, "rhs_scaled_panel row count must be m");
+    let panel_width = rhs_scaled_panel.shape()[1].max(1);
+
+    out.fill(0.0);
+    let mut col0 = 0usize;
+    while col0 < nov {
+        let col1 = (col0 + panel_width).min(nov);
+        let w = col1 - col0;
+
+        // View the panel's columns of y and scale, sub-slicing the scratch
+        // buffer down to the (possibly narrower) final panel width so
+        // syrk_aat_accumulate_into sees exactly (m, w).
+        let y_panel = y.slice(ndarray::s![.., col0..col1]);
+        let mut panel_view = rhs_scaled_panel.slice_mut(ndarray::s![.., ..w]);
+        panel_view.assign(&y_panel);
+        let scale_panel = scale.slice(ndarray::s![col0..col1]);
+        let scale_row = scale_panel.view().insert_axis(Axis(0));
+        Zip::from(&mut panel_view)
+            .and_broadcast(scale_row)
+            .for_each(|x, &s| *x *= s);
+
+        // syrk_aat_accumulate_into requires a contiguous row-major `Array2`;
+        // a `..w` column sub-slice of the (m, panel_width) scratch is NOT
+        // guaranteed contiguous when `w < panel_width` (the ragged last
+        // panel), so materialize an owned, right-sized copy unconditionally
+        // — `to_owned()` on an ArrayView always produces a fresh contiguous
+        // array regardless of the source's strides, so this is correct (if
+        // slightly wasteful on the non-ragged panels) either way.
+        let owned_panel = panel_view.to_owned();
+        syrk_aat_accumulate_into(&owned_panel, out);
+
+        col0 = col1;
+    }
+    for alpha in 0..m {
+        out[(alpha, alpha)] += 1.0;
+    }
+    // Mirror upper → lower ONCE, after all panels have accumulated (each
+    // panel's dsyrk_ call only wrote/accumulated into one triangle).
+    for i in 0..m {
+        for j in 0..i {
+            out[(i, j)] = out[(j, i)];
+        }
+    }
 }
 
 /// Apply the dielectric matrix to a block of trial vectors: returns ε̃ · V.
@@ -365,5 +569,179 @@ mod tests {
             "expected ε̃=5 (I + Π with RHF factor 4), got {}",
             evals[0]
         );
+    }
+
+    /// Regression for the 2026-07-21 per-frequency-clone memory fix: the
+    /// scratch-reusing `_into` variant (introduced so
+    /// `energy.rs::eval_eigenvalues_at_frequencies` can use `map_init` instead
+    /// of allocating a fresh `y.clone()` per quadrature frequency) must produce
+    /// bit-identical output to the original allocating version on a
+    /// non-trivial (m > 1, nov > 1) case.
+    #[test]
+    fn dielectric_matrix_from_projection_into_matches_allocating_version() {
+        let y = ndarray::array![
+            [1.0f64, 2.0, -0.5, 0.25],
+            [0.3, -1.2, 0.8, 1.1],
+            [-0.6, 0.4, 2.0, -0.9],
+        ];
+        let scale = ndarray::array![0.7f64, 1.3, 0.9, 2.1];
+
+        let expected = dielectric_matrix_from_projection(&y, &scale);
+
+        let m = y.shape()[0];
+        let nov = y.shape()[1];
+        let mut rhs_scaled = Array2::<f64>::zeros((m, nov));
+        let mut out = Array2::<f64>::zeros((m, m));
+        dielectric_matrix_from_projection_into(&y, &scale, &mut rhs_scaled, &mut out);
+
+        assert_eq!(expected.shape(), out.shape());
+        for ((i, j), &e) in expected.indexed_iter() {
+            assert!(
+                (out[(i, j)] - e).abs() < 1e-14,
+                "mismatch at ({i},{j}): into={:?} allocating={e:?}",
+                out[(i, j)]
+            );
+        }
+    }
+
+    /// The `_into` variant must be safely callable many times in a row with
+    /// the SAME scratch buffers (the whole point of `map_init` reuse) — each
+    /// call must fully overwrite its scratch, not accumulate stale data from a
+    /// previous frequency.
+    #[test]
+    fn dielectric_matrix_from_projection_into_reuses_scratch_correctly_across_calls() {
+        let y = ndarray::array![[1.0f64, -2.0], [0.5, 3.0]];
+        let scale_a = ndarray::array![1.0f64, 1.0];
+        let scale_b = ndarray::array![2.0f64, 0.5];
+
+        let mut rhs_scaled = Array2::<f64>::zeros((2, 2));
+        let mut out = Array2::<f64>::zeros((2, 2));
+
+        dielectric_matrix_from_projection_into(&y, &scale_a, &mut rhs_scaled, &mut out);
+        let first = out.clone();
+        dielectric_matrix_from_projection_into(&y, &scale_b, &mut rhs_scaled, &mut out);
+        let second = out.clone();
+
+        // Different scale factors must give different results (proves the
+        // second call actually recomputed rather than reusing stale `out`).
+        // Element (0,0) happens to coincide for these particular scale/y
+        // values (1²·1²+(-2)²·1² == 1²·2²+(-2)²·0.5² == 5, both +1 = 6) — use
+        // (1,1), which genuinely differs (10.25 vs 4.25), so this assertion
+        // can't pass by numerical coincidence.
+        assert!(
+            (first[(1, 1)] - second[(1, 1)]).abs() > 1e-10,
+            "second call with a different scale should not match the first"
+        );
+
+        // And the second call's result must match a fresh allocating call
+        // with the same inputs (proves reuse doesn't corrupt correctness).
+        let expected_b = dielectric_matrix_from_projection(&y, &scale_b);
+        for ((i, j), &e) in expected_b.indexed_iter() {
+            assert!(
+                (second[(i, j)] - e).abs() < 1e-14,
+                "reused-scratch call diverged from a fresh allocating call at ({i},{j})"
+            );
+        }
+    }
+
+    /// Item 2b regression: the nov-panelled dielectric assembly
+    /// (`dielectric_matrix_from_projection_into_panelled`) must reproduce the
+    /// non-panelled allocating reference (`dielectric_matrix_from_projection`)
+    /// to ~1e-12 at several panel widths spanning the full range: k=1 (every
+    /// column its own panel — the narrowest possible, worst case for the
+    /// accumulate-and-mirror-once bookkeeping), k=nov/2 (a ragged split when
+    /// nov is odd), and k=nov (a single "panel" covering everything, the
+    /// fallback-to-full-width case explicitly called out in the function's
+    /// doc comment).
+    #[test]
+    fn dielectric_matrix_from_projection_into_panelled_matches_allocating_at_several_widths() {
+        let y = ndarray::array![
+            [1.0f64, 2.0, -0.5, 0.25, 0.6, -1.1],
+            [0.3, -1.2, 0.8, 1.1, -0.4, 0.9],
+            [-0.6, 0.4, 2.0, -0.9, 1.3, 0.2],
+        ];
+        let scale = ndarray::array![0.7f64, 1.3, 0.9, 2.1, 1.5, 0.4];
+        let m = y.shape()[0];
+        let nov = y.shape()[1];
+
+        let expected = dielectric_matrix_from_projection(&y, &scale);
+
+        for panel_width in [1usize, nov / 2, nov] {
+            let panel_width = panel_width.max(1);
+            let mut rhs_scaled_panel = Array2::<f64>::zeros((m, panel_width));
+            let mut out = Array2::<f64>::zeros((m, m));
+            dielectric_matrix_from_projection_into_panelled(&y, &scale, &mut rhs_scaled_panel, &mut out);
+
+            for ((i, j), &e) in expected.indexed_iter() {
+                assert!(
+                    (out[(i, j)] - e).abs() < 1e-12,
+                    "panel_width={panel_width}: mismatch at ({i},{j}): panelled={:?} allocating={e:?}",
+                    out[(i, j)]
+                );
+            }
+        }
+    }
+
+    /// The panelled path must also match the scratch-reusing `_into` version
+    /// (not just the plain allocating one), since that's the direct
+    /// non-panelled sibling `eval_eigenvalues_at_frequencies` falls back to
+    /// when panelling isn't needed.
+    #[test]
+    fn dielectric_matrix_from_projection_into_panelled_matches_into_version() {
+        let y = ndarray::array![
+            [2.0f64, -0.3, 1.1, 0.4],
+            [0.5, 1.7, -0.9, 0.2],
+        ];
+        let scale = ndarray::array![1.1f64, 0.6, 2.3, 0.9];
+        let m = y.shape()[0];
+        let nov = y.shape()[1];
+
+        let mut rhs_scaled = Array2::<f64>::zeros((m, nov));
+        let mut expected = Array2::<f64>::zeros((m, m));
+        dielectric_matrix_from_projection_into(&y, &scale, &mut rhs_scaled, &mut expected);
+
+        for panel_width in [1usize, 2, nov] {
+            let mut rhs_scaled_panel = Array2::<f64>::zeros((m, panel_width));
+            let mut out = Array2::<f64>::zeros((m, m));
+            dielectric_matrix_from_projection_into_panelled(&y, &scale, &mut rhs_scaled_panel, &mut out);
+            for ((i, j), &e) in expected.indexed_iter() {
+                assert!(
+                    (out[(i, j)] - e).abs() < 1e-12,
+                    "panel_width={panel_width}: mismatch at ({i},{j}) vs _into version: {:?} vs {e:?}",
+                    out[(i, j)]
+                );
+            }
+        }
+    }
+
+    /// Repeated calls with the SAME scratch buffers (the `map_init` reuse
+    /// pattern) must not accumulate stale data across calls — `out.fill(0.0)`
+    /// at the top of the panelled function must genuinely reset state.
+    #[test]
+    fn dielectric_matrix_from_projection_into_panelled_reuses_scratch_correctly_across_calls() {
+        let y = ndarray::array![[1.0f64, -2.0, 0.5], [0.5, 3.0, -1.0]];
+        let scale_a = ndarray::array![1.0f64, 1.0, 1.0];
+        let scale_b = ndarray::array![2.0f64, 0.5, 1.5];
+
+        let mut rhs_scaled_panel = Array2::<f64>::zeros((2, 2)); // panel width 2 < nov=3
+        let mut out = Array2::<f64>::zeros((2, 2));
+
+        dielectric_matrix_from_projection_into_panelled(&y, &scale_a, &mut rhs_scaled_panel, &mut out);
+        let first = out.clone();
+        dielectric_matrix_from_projection_into_panelled(&y, &scale_b, &mut rhs_scaled_panel, &mut out);
+        let second = out.clone();
+
+        assert!(
+            (first[(0, 0)] - second[(0, 0)]).abs() > 1e-10,
+            "second call with a different scale should not match the first"
+        );
+
+        let expected_b = dielectric_matrix_from_projection(&y, &scale_b);
+        for ((i, j), &e) in expected_b.indexed_iter() {
+            assert!(
+                (second[(i, j)] - e).abs() < 1e-12,
+                "reused-scratch panelled call diverged from a fresh allocating call at ({i},{j})"
+            );
+        }
     }
 }

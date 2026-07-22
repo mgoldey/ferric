@@ -26,6 +26,7 @@
 
 pub mod ao_rpa;
 pub mod boys_localize;
+pub mod budget;
 pub mod channel;
 pub mod config;
 pub mod davidson;
@@ -239,6 +240,42 @@ pub struct PdepRpaResult {
     pub eigensolver_converged: bool,
 }
 
+/// Pre-flight peak-memory gate shared by [`run_pdep_rpa`] and the eigensolve
+/// entry points. Cheap shape values only (nelec/nbasis accessors, no
+/// ERI/GEMM work) so this runs before ANY large allocation. See `budget.rs`
+/// for what the estimate covers; this is the closed-shell (`compute_rpa_
+/// intermediates`) formula for nocc/nvir.
+fn preflight_check_closed_shell(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    config: &PdepRpaConfig,
+    label_prefix: &str,
+) -> Result<(), FerricError> {
+    use ferric_mp2::rimp2::active_occ;
+    let naux = dfbs.nbasis();
+    let nbas = obs.nbasis();
+    let nocc_total = (mol.nelec() as usize) / 2;
+    let nocc = active_occ(nocc_total, config.frozen_core)?;
+    let nvir = nbas.saturating_sub(nocc_total);
+    let n_workers = rayon::current_num_threads().max(1);
+    let n_keep = naux; // trunc_thresh unknown pre-eigensolve; conservative upper bound
+    let est = budget::estimate_peak_bytes(budget::PeakEstimateShape {
+        naux, nocc, nvir,
+        n_quad: config.quadrature.n_points,
+        n_workers,
+        n_keep,
+    });
+    let budget_bytes = ferric_core::memory::resolve_budget_bytes(config.memory_budget_bytes);
+    ferric_core::memory::check_alloc(
+        &format!(
+            "{label_prefix} preflight (naux={naux}, nocc={nocc}, nvir={nvir}, n_workers={n_workers})"
+        ),
+        est,
+        budget_bytes,
+    )
+}
+
 /// Top-level PDEP-RPA energy calculation.
 pub fn run_pdep_rpa(
     mol: &Molecule,
@@ -248,6 +285,7 @@ pub fn run_pdep_rpa(
     rhf: &ScfResult,
     config: &PdepRpaConfig,
 ) -> Result<PdepRpaResult, FerricError> {
+    preflight_check_closed_shell(mol, obs, dfbs, config, "PDEP-RPA")?;
     // Step 1: Build RI-MO B^P_ia tensor and V^{-1/2}. RPA only needs the
     // occ-vir block; skip the full-MP2 amplitudes/density that the gradient
     // path requires.
@@ -315,9 +353,22 @@ pub(crate) fn run_pdep_rpa_eigensolve(
         config.eigensolver_max_vecs
     };
 
-    let b_ov_clone = b_ov.clone();
-    let eps_occ_clone = eps_occ.clone();
-    let eps_vir_clone = eps_vir.clone();
+    // NOTE (2026-07-21 memory fix): these used to be `b_ov.clone()` /
+    // `eps_occ.clone()` / `eps_vir.clone()` so the Davidson/Lanczos matvec
+    // closures below could `move` owned copies into themselves. None of
+    // run_davidson_seeded/run_davidson_static/run_lanczos_full_rank_budgeted
+    // require `'static` (they call `matvec` synchronously within their own
+    // call frame, never spawning a thread or storing the closure past the
+    // call — confirmed by reading davidson.rs/lanczos.rs), and `inter` (the
+    // source of `b_ov`) is borrowed for this whole function's body (it's
+    // read again below at `inter.v_inv_sqrt.dot(...)`), so the closures can
+    // safely capture plain references instead. At benzene aug-cc-pVQZ scale
+    // (naux≈2976, nov≈61740) `b_ov.clone()` alone was ~1.4 GB — a pure
+    // aliasing change, zero numerical effect (see `dense_legacy_path_clone_
+    // elimination_is_bit_identical` regression test in this module).
+    let b_ov_ref = b_ov;
+    let eps_occ_ref = &eps_occ;
+    let eps_vir_ref = &eps_vir;
 
     // Build the Laplace quadrature once if the Laplace χ₀ backend was selected.
     // The same `(t_l, w_l)` are reused at every (ω, V) inside the Davidson loop
@@ -326,7 +377,7 @@ pub(crate) fn run_pdep_rpa_eigensolve(
         match config.chi0_backend {
             Chi0Backend::Dense => None,
             Chi0Backend::Laplace { n_quad } => Some(
-                laplace_chi0::build_laplace_for_gaps(&eps_occ_clone, &eps_vir_clone, n_quad)?,
+                laplace_chi0::build_laplace_for_gaps(eps_occ_ref, eps_vir_ref, n_quad)?,
             ),
         };
     let laplace_for_davidson = laplace_chi0_quad.clone();
@@ -442,13 +493,13 @@ pub(crate) fn run_pdep_rpa_eigensolve(
         (Eigensolver::Davidson, None) => {
             if use_atom_seed {
                 let seed = build_atom_seed(dfbs)?;
-                let laplace_q = laplace_for_davidson.clone();
+                let laplace_q = laplace_for_davidson.as_ref();
                 davidson::run_davidson_seeded(
                     seed,
-                    move |v_mat: &Array2<f64>, omega: f64| {
+                    |v_mat: &Array2<f64>, omega: f64| {
                         dielectric_apply(
-                            v_mat, &b_ov_clone, &eps_occ_clone, &eps_vir_clone, omega,
-                            laplace_q.as_ref(),
+                            v_mat, b_ov_ref, eps_occ_ref, eps_vir_ref, omega,
+                            laplace_q,
                         )
                     },
                     config.eigensolver_conv_thresh,
@@ -457,13 +508,13 @@ pub(crate) fn run_pdep_rpa_eigensolve(
                     false,
                 )?
             } else {
-                let laplace_q = laplace_for_davidson.clone();
+                let laplace_q = laplace_for_davidson.as_ref();
                 davidson::run_davidson_static(
                     naux,
-                    move |v_mat: &Array2<f64>, omega: f64| {
+                    |v_mat: &Array2<f64>, omega: f64| {
                         dielectric_apply(
-                            v_mat, &b_ov_clone, &eps_occ_clone, &eps_vir_clone, omega,
-                            laplace_q.as_ref(),
+                            v_mat, b_ov_ref, eps_occ_ref, eps_vir_ref, omega,
+                            laplace_q,
                         )
                     },
                     config.eigensolver_conv_thresh,
@@ -486,12 +537,14 @@ pub(crate) fn run_pdep_rpa_eigensolve(
             // from concurrency-1 to concurrency-N per box. Eigenpairs match the
             // identity-seed Lanczos (hence Davidson) to LAPACK precision.
             let nov = nocc * nvir;
-            let matvec = move |v: &Array2<f64>| -> Array2<f64> {
+            let matvec = |v: &Array2<f64>| -> Array2<f64> {
                 sternheimer::dielectric_apply(
-                    v, &b_ov_clone, &eps_occ_clone, &eps_vir_clone, 0.0,
+                    v, b_ov_ref, eps_occ_ref, eps_vir_ref, 0.0,
                 )
             };
-            let lz = lanczos::run_lanczos_full_rank(naux, nov, matvec, naux)?;
+            let lz = lanczos::run_lanczos_full_rank_budgeted(
+                naux, nov, matvec, naux, config.memory_budget_bytes,
+            )?;
             davidson::DavidsonResult {
                 eigenvalues: lz.eigenvalues,
                 eigenvectors: lz.eigenvectors,
@@ -500,6 +553,17 @@ pub(crate) fn run_pdep_rpa_eigensolve(
         }
     };
     _t_eig.end();
+    // Stage-seam RSS safety net (Item 3): observability only, never a hard
+    // error. The Davidson/Lanczos eigensolve is the other large co-resident
+    // allocation `budget.rs::estimate_peak_bytes` accounts for (the assembled
+    // naux×naux dielectric + its eigh output) — check actual RSS right after
+    // it fully drains, before the (usually much smaller) truncation/quadrature
+    // stages below.
+    ferric_core::memory::warn_if_rss_over(
+        "PDEP-RPA eigensolve stage complete",
+        ferric_core::memory::resolve_budget_bytes(config.memory_budget_bytes),
+        1.1,
+    );
 
     // Step 4: Truncate by departure from identity: keep eigenpotentials where
     // (λ_α(0) − 1) > trunc_thresh. The dielectric ε̃ = I + Π has eigenvalues ≥ 1,
@@ -570,8 +634,8 @@ pub fn run_pdep_rpa_from_intermediates(
     // when the user opted in via `chi0_backend`.
     let _t_quad = crate::timing::Stage::start("pdep:freq_quad(lambda+invdielectric)");
     let eigenvalues_freq = match stage.laplace_chi0_quad.as_ref() {
-        None => energy::eval_eigenvalues_at_frequencies(
-            &eigenvectors, b_ov, &eps_occ, &eps_vir, &quad_freqs,
+        None => energy::eval_eigenvalues_at_frequencies_budgeted(
+            &eigenvectors, b_ov, &eps_occ, &eps_vir, &quad_freqs, config.memory_budget_bytes,
         )?,
         Some(q) => energy::eval_eigenvalues_at_frequencies_laplace(
             &eigenvectors, b_ov, &eps_occ, &eps_vir, &quad_freqs, q,
@@ -591,6 +655,17 @@ pub fn run_pdep_rpa_from_intermediates(
     };
 
     _t_quad.end();
+    // Stage-seam RSS safety net (Item 3): observability only, never a hard
+    // error. This is the stage the memory incident's post-mortem flagged as
+    // budget-blind — the per-worker frequency-quadrature scratch scales with
+    // rayon thread count (see energy.rs/sternheimer.rs's panelled fix above),
+    // so this checks whether actual RSS stayed near the preflight estimate
+    // once that stage has fully drained.
+    ferric_core::memory::warn_if_rss_over(
+        "PDEP-RPA freq_quad stage complete",
+        ferric_core::memory::resolve_budget_bytes(config.memory_budget_bytes),
+        1.1,
+    );
 
     // Step 7: Integrate RPA correlation energy.
     let e_rpa = energy::rpa_correlation_energy(&quad_weights, &eigenvalues_freq);
@@ -646,6 +721,44 @@ pub fn run_u_pdep_rpa(
         return Err(FerricError::General(
             "run_u_pdep_rpa: use run_pdep_rpa for closed-shell results".into(),
         ));
+    }
+
+    // Pre-flight peak-memory gate (M2-style fail-fast, see budget.rs). Cheap
+    // shape values only. Open-shell replicates compute_rpa_intermediates_spin's
+    // internal nocc_total/nocc/nvir formula for BOTH spins and estimates each
+    // spin's RpaIntermediates build additively (they are NOT built
+    // concurrently below — inter_a then inter_b, sequentially — but both
+    // b_ov's are retained afterward for the spin-summed dielectric, so the
+    // conservative sum-of-both-spins estimate matches what stays resident).
+    {
+        let nbas = obs.nbasis();
+        let naux = dfbs.nbasis();
+        let nelec_total = mol.nelec() as usize;
+        let two_s = mol.multiplicity as i32 - 1;
+        let nocc_total_a = ((nelec_total as i32 + two_s) / 2) as usize;
+        let nocc_total_b = ((nelec_total as i32 - two_s) / 2) as usize;
+        let nocc_a = ferric_mp2::rimp2::active_occ(nocc_total_a, config.frozen_core)?;
+        let nocc_b = ferric_mp2::rimp2::active_occ(nocc_total_b, config.frozen_core)?;
+        let nvir_a = nbas.saturating_sub(nocc_total_a);
+        let nvir_b = nbas.saturating_sub(nocc_total_b);
+        let n_workers = rayon::current_num_threads().max(1);
+        let n_keep = naux;
+        let est_a = budget::estimate_peak_bytes(budget::PeakEstimateShape {
+            naux, nocc: nocc_a, nvir: nvir_a, n_quad: config.quadrature.n_points, n_workers, n_keep,
+        });
+        let est_b = budget::estimate_peak_bytes(budget::PeakEstimateShape {
+            naux, nocc: nocc_b, nvir: nvir_b, n_quad: config.quadrature.n_points, n_workers, n_keep,
+        });
+        let est = est_a.saturating_add(est_b);
+        let budget_bytes = ferric_core::memory::resolve_budget_bytes(config.memory_budget_bytes);
+        ferric_core::memory::check_alloc(
+            &format!(
+                "U-PDEP-RPA preflight (naux={naux}, nocc_a={nocc_a}, nvir_a={nvir_a}, \
+                 nocc_b={nocc_b}, nvir_b={nvir_b}, n_workers={n_workers})"
+            ),
+            est,
+            budget_bytes,
+        )?;
     }
 
     let mp2_cfg = RiMp2Config { frozen_core: config.frozen_core, memory_budget_bytes: config.memory_budget_bytes };
@@ -723,7 +836,9 @@ pub fn run_u_pdep_rpa(
                     ),
                 }
             };
-            let lz = lanczos::run_lanczos_full_rank(naux, nov, matvec, naux)?;
+            let lz = lanczos::run_lanczos_full_rank_budgeted(
+                naux, nov, matvec, naux, config.memory_budget_bytes,
+            )?;
             davidson::DavidsonResult {
                 eigenvalues: lz.eigenvalues,
                 eigenvectors: lz.eigenvectors,

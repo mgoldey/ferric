@@ -31,7 +31,7 @@ use ndarray_linalg::{Eigh, QR, UPLO};
 /// `(nov × k)` matvec scratch plus one `(naux × k)` output panel. An explicit
 /// `FERRIC_LANCZOS_PANEL=N` override wins (clamped ≥ 1). Unset budget ⇒ a
 /// conservative default panel so the win applies even without an explicit budget.
-fn lanczos_panel_width(naux: usize, nov: usize) -> usize {
+fn lanczos_panel_width(naux: usize, nov: usize, memory_budget_bytes: Option<usize>) -> usize {
     // Explicit override wins, clamped to [1, naux]. The clamp target depends on
     // naux (not a constant), so this reads the raw value via ConfigVar for
     // consistent parse/validate but applies the context clamp here rather than a
@@ -52,16 +52,24 @@ fn lanczos_panel_width(naux: usize, nov: usize) -> usize {
     // Budget-derived: reserve one (nov × k) matvec scratch + one (naux × k)
     // output panel per panel column. Bytes per panel column ≈ (nov + naux)·8.
     //
-    // Resolve via the unified budget. When no *explicit or env* budget is set
-    // (the resolver falls back to auto-detect or the 2 GiB fallback), keep the
-    // legacy behavior of a conservative fixed 256-column panel so concurrency on
-    // memory-tight boxes is preserved — the auto/fallback figure is an OOM guard
-    // for the big resident tensors, not a hint that this panel should widen.
+    // Resolve via the unified budget, now including the CALLER's own
+    // `memory_budget_bytes` (a TOML/kwarg `[memory] budget_gb`) as an explicit
+    // source — previously this always called `resolve_budget(None)`, so a
+    // TOML-set budget was invisible here even though it fully controls the
+    // 3-index AO tensor blocking elsewhere in the same run (found 2026-07-21).
+    // When no explicit-OR-env budget is set at all (the resolver falls back to
+    // auto-detect or the 2 GiB fallback), keep the legacy behavior of a
+    // conservative fixed 256-column panel so concurrency on memory-tight boxes
+    // is preserved — the auto/fallback figure is an OOM guard for the big
+    // resident tensors, not a hint that this panel should widen.
     use ferric_core::memory::{self, BudgetSource};
-    let resolution = memory::resolve_budget(None);
+    let resolution = memory::resolve_budget(memory_budget_bytes);
     let explicitly_budgeted = matches!(
         resolution.source,
-        BudgetSource::UnifiedEnv | BudgetSource::LegacyOocEnv | BudgetSource::LegacyEri3Env
+        BudgetSource::Explicit
+            | BudgetSource::UnifiedEnv
+            | BudgetSource::LegacyOocEnv
+            | BudgetSource::LegacyEri3Env
     );
     let budget = resolution.bytes;
     let per_col_bytes = (nov.saturating_add(naux)).saturating_mul(8).max(1);
@@ -111,8 +119,27 @@ pub fn run_lanczos_full_rank<F>(
 where
     F: Fn(&Array2<f64>) -> Array2<f64>,
 {
+    run_lanczos_full_rank_budgeted(naux, nov, matvec, n_desired, None)
+}
+
+/// Same as [`run_lanczos_full_rank`], but accepts the caller's own resolved
+/// `memory_budget_bytes` (e.g. `RsMp2RpaConfig`/`PdepRpaConfig.memory_budget_bytes`,
+/// i.e. a TOML/kwarg `[memory] budget_gb`) instead of always falling back to
+/// `lanczos_panel_width`'s internal `resolve_budget(None)` — which only
+/// recognizes an ENV-sourced budget as "explicit" and silently ignores any
+/// TOML-supplied one (found 2026-07-21 auditing a benzene aug-cc-pVQZ OOM).
+pub fn run_lanczos_full_rank_budgeted<F>(
+    naux: usize,
+    nov: usize,
+    matvec: F,
+    n_desired: usize,
+    memory_budget_bytes: Option<usize>,
+) -> Result<LanczosResult, FerricError>
+where
+    F: Fn(&Array2<f64>) -> Array2<f64>,
+{
     with_blas_threads(lanczos_blas_threads(), || {
-        full_rank_paneled(naux, nov, matvec, n_desired)
+        full_rank_paneled(naux, nov, matvec, n_desired, memory_budget_bytes)
     })
 }
 
@@ -122,6 +149,7 @@ fn full_rank_paneled<F>(
     nov: usize,
     matvec: F,
     n_desired: usize,
+    memory_budget_bytes: Option<usize>,
 ) -> Result<LanczosResult, FerricError>
 where
     F: Fn(&Array2<f64>) -> Array2<f64>,
@@ -135,7 +163,7 @@ where
         });
     }
 
-    let panel = lanczos_panel_width(naux, nov);
+    let panel = lanczos_panel_width(naux, nov, memory_budget_bytes);
 
     // Assemble A = ε̃(0) one column-panel at a time. `matvec(I_panel)` yields the
     // corresponding naux-row × k-col slab of A; scatter it into A. Only one
@@ -898,6 +926,59 @@ mod tests {
             "unconverged result should carry a residual above the (unreachable) tolerance, \
              got {}",
             res.max_resid
+        );
+    }
+
+    /// Regression for the 2026-07-21 fix: `lanczos_panel_width` used to call
+    /// `resolve_budget(None)` unconditionally, so a caller-supplied explicit
+    /// budget (e.g. a TOML `[memory] budget_gb`, threaded through
+    /// `run_lanczos_full_rank_budgeted`) was invisible — only an
+    /// environment-variable-sourced budget counted as "explicit," so the panel
+    /// always fell back to the fixed 256-column default regardless of what a
+    /// TOML/kwarg budget requested. This does not read/set any process env var
+    /// (would race with the other env-sensitive tests in this file) —  it
+    /// tests purely that passing `Some(explicit_bytes)` changes the resolved
+    /// panel width relative to `None`, at a big enough naux/nov that the
+    /// legacy 256-column default and a budget-derived width can actually
+    /// differ.
+    #[test]
+    fn lanczos_panel_width_honors_explicit_budget_argument() {
+        let naux = 4000;
+        let nov = 200_000;
+
+        // No explicit budget, no env var set: legacy fixed 256-column default.
+        let default_panel = lanczos_panel_width(naux, nov, None);
+        assert_eq!(
+            default_panel, 256,
+            "with no explicit-or-env budget, panel width must stay at the legacy 256 default"
+        );
+
+        // A tiny explicit budget must shrink the panel well below 256 (proves
+        // the explicit value is actually reaching the budget-derived branch,
+        // not silently falling through to the 256 default as it did before
+        // the fix).
+        let tiny_budget_bytes = 4 * 1024 * 1024; // 4 MiB
+        let tiny_panel = lanczos_panel_width(naux, nov, Some(tiny_budget_bytes));
+        assert!(
+            tiny_panel < default_panel,
+            "an explicit 4 MiB budget should yield a panel narrower than the 256-col default, \
+             got {tiny_panel} (default was {default_panel})"
+        );
+        assert!(tiny_panel >= 1, "panel width must never be zero");
+
+        // A generous explicit budget must widen the panel beyond 256 (proves
+        // the explicit path isn't just clamping down, it genuinely scales
+        // with the supplied budget in both directions).
+        let generous_budget_bytes = 8usize * 1024 * 1024 * 1024; // 8 GiB
+        let generous_panel = lanczos_panel_width(naux, nov, Some(generous_budget_bytes));
+        assert!(
+            generous_panel > default_panel,
+            "an explicit 8 GiB budget should yield a panel wider than the 256-col default, \
+             got {generous_panel} (default was {default_panel})"
+        );
+        assert!(
+            generous_panel <= naux,
+            "panel width must never exceed naux, got {generous_panel} for naux={naux}"
         );
     }
 }
