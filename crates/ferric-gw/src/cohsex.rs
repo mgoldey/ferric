@@ -126,6 +126,63 @@ pub fn project_b_into_pdep(mo_b: &MoB, v_dressed: &Array2<f64>) -> ndarray::Arra
         .expect("reshape M")
 }
 
+/// Per-MO static COHSEX pieces from a projected M tensor (one spin channel;
+/// closed-shell RHF and each U-COHSEX spin call this with their own `mo_b`
+/// and `m_proj`, sharing `w_static` — W is spin-independent):
+///
+///   ΔΣ_SEX(m) = −Σ_{i occ} Σ_α w_α M[(α,m,i)]²   (w_α = 1/λ_α(0) − 1)
+///   Σ_COH(m)  = +½ Σ_{p all} Σ_α w_α M[(α,m,p)]²
+///
+/// Independent per m_idx (each (delta_sex[m_idx], coh[m_idx]) pair is
+/// written exactly once) — parallelize over m_idx, order-preserving
+/// par_iter + collect (no reduction, bit-identical by construction). No
+/// BLAS inside. Serial below PAR_ROWS_THRESHOLD.
+pub(crate) fn cohsex_pieces(
+    mo_b: &MoB,
+    m_proj: &ndarray::Array3<f64>,
+    w_static: &[f64],
+) -> (Array1<f64>, Array1<f64>) {
+    let n_act = mo_b.n_act;
+    let n_occ = mo_b.n_occ_act;
+    let m_modes = w_static.len();
+    const PAR_ROWS_THRESHOLD: usize = 8;
+    let compute_one = |m_idx: usize| -> (f64, f64) {
+        let mut delta_sex = 0.0;
+        let mut coh = 0.0;
+        for alpha in 0..m_modes {
+            let w_a = w_static[alpha];
+            // SEX: sum over occupied i.
+            let mut sex_acc = 0.0;
+            for i in 0..n_occ {
+                let v = m_proj[(alpha, m_idx, i)];
+                sex_acc += v * v;
+            }
+            delta_sex -= w_a * sex_acc;
+            // COH: sum over ALL p (occ + vir).
+            let mut coh_acc = 0.0;
+            for p in 0..n_act {
+                let v = m_proj[(alpha, m_idx, p)];
+                coh_acc += v * v;
+            }
+            coh += 0.5 * w_a * coh_acc;
+        }
+        (delta_sex, coh)
+    };
+    let pieces: Vec<(f64, f64)> = if n_act >= PAR_ROWS_THRESHOLD {
+        use rayon::prelude::*;
+        (0..n_act).into_par_iter().map(compute_one).collect()
+    } else {
+        (0..n_act).map(compute_one).collect()
+    };
+    let mut delta_sex = Array1::<f64>::zeros(n_act);
+    let mut coh = Array1::<f64>::zeros(n_act);
+    for (m_idx, (ds, c)) in pieces.into_iter().enumerate() {
+        delta_sex[m_idx] = ds;
+        coh[m_idx] = c;
+    }
+    (delta_sex, coh)
+}
+
 /// Run COHSEX.
 pub fn run_cohsex(
     mol: &Molecule,
@@ -137,8 +194,6 @@ pub fn run_cohsex(
     gw_cfg: &GwConfig,
 ) -> Result<GwResult, FerricError> {
     let _ = (mol, gw_cfg, rhf);
-    let n_act = mo_b.n_act;
-    let n_occ = mo_b.n_occ_act;
     let first_act = mo_b.first_act;
     let m_modes = v_dressed.ncols();
 
@@ -152,77 +207,15 @@ pub fn run_cohsex(
     // Project B̃ → M[(α,m,n)].
     let m_proj = project_b_into_pdep(mo_b, v_dressed);
 
-    // Σ_SEX(m) = −Σ_i Σ_α [1/λ_α(0)] M[(α,m,i)]² = −Σ_i Σ_α (w_α + 1) M²
-    // Σ_COH(m) = +½ Σ_p Σ_α  w_α     M[(α,m,p)]²
+    // ΔΣ_SEX(m) = −Σ_i Σ_α [1/λ_α(0) − 1] M[(α,m,i)]² = −Σ_i Σ_α w_α M²
+    // Σ_COH(m)  = +½ Σ_p Σ_α  w_α                     M[(α,m,p)]²
     //
-    // Independent per m_idx (each (sigma_sex[m_idx], sigma_coh[m_idx]) pair
-    // is written exactly once) — parallelize over m_idx, order-preserving
-    // par_iter + collect (no reduction). No BLAS inside. Serial below
-    // PAR_ROWS_THRESHOLD.
-    const PAR_ROWS_THRESHOLD: usize = 8;
-    let compute_sex_coh = |m_idx: usize| -> (f64, f64) {
-        let mut sex = 0.0;
-        let mut coh = 0.0;
-        for alpha in 0..m_modes {
-            let inv_lam = w_static[alpha] + 1.0; // = 1/λ_α(0)
-            // SEX: sum over occupied i.
-            let mut sex_acc = 0.0;
-            for i in 0..n_occ {
-                let v = m_proj[(alpha, m_idx, i)];
-                sex_acc += v * v;
-            }
-            sex -= inv_lam * sex_acc;
-            // COH: sum over ALL p (occ + vir).
-            let mut coh_acc = 0.0;
-            for p in 0..n_act {
-                let v = m_proj[(alpha, m_idx, p)];
-                coh_acc += v * v;
-            }
-            coh += 0.5 * w_static[alpha] * coh_acc;
-        }
-        (sex, coh)
-    };
-    let sex_coh: Vec<(f64, f64)> = if n_act >= PAR_ROWS_THRESHOLD {
-        use rayon::prelude::*;
-        (0..n_act).into_par_iter().map(compute_sex_coh).collect()
-    } else {
-        (0..n_act).map(compute_sex_coh).collect()
-    };
-    let mut sigma_sex = Array1::<f64>::zeros(n_act);
-    let mut sigma_coh = Array1::<f64>::zeros(n_act);
-    for (m_idx, (sex, coh)) in sex_coh.into_iter().enumerate() {
-        sigma_sex[m_idx] = sex;
-        sigma_coh[m_idx] = coh;
-    }
-
     // Hedin convention reconciliation: Σ_x already equals the bare-exchange
-    // diagonal (=−Σ_i (mi|im) RI form). Σ_SEX as written above equals the
-    // *full* screened exchange (W = ε⁻¹·v); subtract the bare piece so that
-    // the total exchange counted in the QP equation is Σ_x + ΔΣ_SEX.
-    //
-    // ΔΣ_SEX(m) = −Σ_i Σ_α [1/λ_α(0) − 1] M_{mi}² = −Σ_i Σ_α w_α M_{mi}²
-    // and Σ_x + ΔΣ_SEX = Σ_SEX_full (by linearity), so we can either use
-    // (Σ_x + ΔΣ_SEX) OR (just Σ_SEX_full). Both equivalent; we keep the
-    // explicit decomposition for the report.
-    // Independent per m_idx — same par pattern as the sex_coh loop above.
-    let compute_dsex = |m_idx: usize| -> f64 {
-        let mut acc_total = 0.0;
-        for alpha in 0..m_modes {
-            let mut acc = 0.0;
-            for i in 0..n_occ {
-                let v = m_proj[(alpha, m_idx, i)];
-                acc += v * v;
-            }
-            acc_total -= w_static[alpha] * acc;
-        }
-        acc_total
-    };
-    let delta_sigma_sex: Array1<f64> = if n_act >= PAR_ROWS_THRESHOLD {
-        use rayon::prelude::*;
-        Array1::from_vec((0..n_act).into_par_iter().map(compute_dsex).collect())
-    } else {
-        Array1::from_vec((0..n_act).map(compute_dsex).collect())
-    };
+    // diagonal (=−Σ_i (mi|im) RI form). The *full* screened exchange
+    // Σ_SEX_full(m) = −Σ_i Σ_α [1/λ_α(0)] M_{mi}² satisfies
+    // Σ_x + ΔΣ_SEX = Σ_SEX_full (by linearity), so the QP equation only
+    // needs the reduced-weight ΔΣ_SEX; Σ_x is reported separately.
+    let (delta_sigma_sex, sigma_coh) = cohsex_pieces(mo_b, &m_proj, &w_static);
 
     // HF reference: Σ_x^GW − v_xc^HF = 0 exactly (the HF Fock already
     // contains Σ_x). So the QP correction is just the correlation piece
