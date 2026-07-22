@@ -653,13 +653,19 @@ fn run_rs_mp2_rpa(
             std::process::exit(1);
         }
     };
-    // r0 in Bohr; only meaningful for terf. Default matches the erf
-    // operating point (r0=3.18 Bohr ⇒ ω≈0.42 Å⁻¹).
-    let r0 = cfg.mp2.r0.unwrap_or(3.18);
+    // [mp2] r0 is Å at the CLI boundary (2026-07-21: fixed from Bohr, matching
+    // r0_bonded/r0_nonbonded's existing Å convention below); only meaningful
+    // for terf. Default matches the erf operating point (r0=1.6828 Å = 3.18
+    // Bohr ⇒ ω≈0.42 Å⁻¹). Converted to Bohr immediately for RsMp2RpaConfig,
+    // which stays Bohr-native (Operator::terf/terfc, the FFI shim, and the
+    // terf-tables interpolation grids are all hard-Bohr all the way down).
+    const ANG2BOHR_R0: f64 = 1.8897259886;
+    let r0_ang = cfg.mp2.r0.unwrap_or(3.18 / ANG2BOHR_R0);
+    let r0 = r0_ang * ANG2BOHR_R0;
     if matches!(attenuator, ferric_rpa::rs_mp2_rpa::Attenuator::Terf)
         && cfg.mp2.omega.is_some()
     {
-        eprintln!("warning: [mp2] omega is ignored when attenuator = \"terf\" (ω is derived from r0 = {r0} Bohr as ω = 1/(r0·√2))");
+        eprintln!("warning: [mp2] omega is ignored when attenuator = \"terf\" (ω is derived from r0 = {r0_ang} Å = {r0:.4} Bohr as ω = 1/(r0·√2))");
     }
     let mut rs_cfg = ferric_rpa::rs_mp2_rpa::RsMp2RpaConfig {
         omega: omega_ang_inv * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV,
@@ -689,7 +695,7 @@ fn run_rs_mp2_rpa(
         }
         ferric_rpa::rs_mp2_rpa::Attenuator::Terf => {
             let w_derived = 1.0 / (rs_cfg.r0 * std::f64::consts::SQRT_2);
-            println!("RS-MP2-RPA [terf split] (r0 = {:.4} Bohr, ω = 1/(r0·√2) = {:.4} Bohr⁻¹)", rs_cfg.r0, w_derived);
+            println!("RS-MP2-RPA [terf split] (r0 = {r0_ang:.4} Å = {:.4} Bohr, ω = 1/(r0·√2) = {:.4} Bohr⁻¹)", rs_cfg.r0, w_derived);
         }
     }
     // Common lines printed for all formulations.

@@ -9,7 +9,7 @@ use thiserror::Error;
 use ferric_core::basis::BasisSet;
 use ferric_core::mol::Molecule;
 
-use crate::ao_grid::{eval_basis_and_grad_on_points, nbasis, GtoEvalError};
+use crate::ao_grid::{eval_basis_and_grad_on_points, nbasis, AoGridKind, GtoEvalError};
 use crate::density_on_grid::{
     eval_density_closed, eval_density_uks, eval_tau_closed, eval_tau_uks, DensityGrid,
 };
@@ -45,17 +45,23 @@ impl From<LibxcError>  for KsXcError { fn from(e: LibxcError)  -> Self { Self::L
 
 /// Fail fast if the resident χ + ∇χ cache would exceed the memory budget.
 ///
-/// The cache is `chi (nbf·npts·8)` + `dchi (3·nbf·npts·8)` = `4·nbf·npts·8`;
-/// with VV10 a second (smaller) NLC grid's cache is resident too, so we bound
-/// by `2×` when `has_vv10`. This catches the 50-atom/aTZ case (~30 GB, doubling
-/// to ~60 GB with VV10) before the allocation aborts the process.
+/// The cache is `chi (nbf·npts·8)` + `dchi (3·nbf·npts·8)` =
+/// `AoGridKind::ValueAndGrad.planes() (4) · nbf·npts·8` — the same per-plane
+/// formula `ao_grid::check_ao_grid_budget` uses internally for its own callers
+/// (this function predates that shared helper and is kept as its own error
+/// variant for the richer `OverBudget` message fields, but shares the byte
+/// count so the two never silently diverge). With VV10 a second (smaller) NLC
+/// grid's cache is resident too, so we bound by `2×` when `has_vv10`. This
+/// catches the 50-atom/aTZ case (~30 GB, doubling to ~60 GB with VV10) before
+/// the allocation aborts the process.
 ///
 /// The budget comes from the unified M1 resolver
 /// [`ferric_core::memory::resolve_budget_bytes`] (no explicit config field on
 /// this path yet, so `None` → `FERRIC_MEM_BUDGET_GB` > legacy vars > 0.8×RAM).
 fn check_grid_budget(nbf: usize, npts: usize, has_vv10: bool) -> Result<(), KsXcError> {
     let budget = ferric_core::memory::resolve_budget_bytes(None);
-    let base = 4usize
+    let base = AoGridKind::ValueAndGrad
+        .planes()
         .saturating_mul(nbf)
         .saturating_mul(npts)
         .saturating_mul(8);

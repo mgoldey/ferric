@@ -21,6 +21,76 @@ pub enum GtoEvalError {
     OutOfBudget(String),
 }
 
+/// Number of resident `f64` "planes" of shape `(nbf, npts)` a dense AO-grid
+/// evaluation keeps alive at once.
+///
+/// - `chi` alone: 1 plane.
+/// - `chi` + `dchi` (value + 3-component gradient): 1 + 3 = 4 planes — this is
+///   the formula `ks.rs`'s `check_grid_budget` has used since the SCF energy
+///   path was first guarded.
+/// - `chi` + `dchi` + `ddchi` (value + gradient + full 3×3 Hessian): 1 + 3 + 9
+///   = 13 planes in principle, but `ddchi` is symmetric (∂²/∂a∂b = ∂²/∂b∂a) —
+///   [`eval_basis_grad_hess_on_points`] nonetheless *materializes* the full
+///   redundant 3×3 (9-plane) tensor (see its `Array4<f64>` return shape), so
+///   the resident allocation really is 1 + 3 + 9 = 13 planes at peak — NOT the
+///   10 a naive "value + grad + unique Hessian components" count would give.
+///   We size the guard for what is actually allocated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AoGridKind {
+    /// `chi` only.
+    ValueOnly,
+    /// `chi` + `dchi`.
+    ValueAndGrad,
+    /// `chi` + `dchi` + `ddchi` (full, non-deduplicated 3×3 Hessian).
+    ValueGradHess,
+}
+
+impl AoGridKind {
+    /// Number of `(nbf, npts)` `f64` planes resident at once for this kind.
+    pub fn planes(self) -> usize {
+        match self {
+            AoGridKind::ValueOnly => 1,
+            AoGridKind::ValueAndGrad => 4,
+            AoGridKind::ValueGradHess => 13,
+        }
+    }
+}
+
+/// Fail fast if a dense AO-grid evaluation of `kind` for `nbf` basis functions
+/// on `npts` grid points would exceed the resolved memory budget.
+///
+/// This is the single shared formula behind every dense AO/∇AO/∇∇AO buffer in
+/// the crate: `ks.rs`'s SCF-energy grid cache (`ValueAndGrad`, doubled by the
+/// caller when a VV10 NLC grid is also resident), and the DFT analytic-
+/// gradient (`gradient.rs`) and f_xc Newton-kernel (`fxc.rs`) paths, which
+/// this function itself now guards internally so every call site is covered
+/// without having to thread a budget parameter through `ks_gradient.rs` /
+/// `rohf.rs`.
+///
+/// The budget comes from the unified M1 resolver
+/// [`ferric_core::memory::resolve_budget_bytes`] (no explicit config field
+/// reaches these evaluators today, so `None` → `FERRIC_MEM_BUDGET_GB` >
+/// legacy env vars > 0.8×RAM, same precedence as every other unconfigured
+/// budget check in the workspace).
+pub fn check_ao_grid_budget(kind: AoGridKind, nbf: usize, npts: usize) -> Result<(), GtoEvalError> {
+    let budget = ferric_core::memory::resolve_budget_bytes(None);
+    let needed = kind
+        .planes()
+        .saturating_mul(nbf)
+        .saturating_mul(npts)
+        .saturating_mul(8);
+    if needed > budget {
+        return Err(GtoEvalError::OutOfBudget(format!(
+            "DFT AO-grid buffer ({kind:?}) needs {needed_gb:.2} GB (nbf={nbf}, npts={npts}) \
+             but the budget is {budget_gb:.2} GB — raise [memory] budget_gb / \
+             FERRIC_MEM_BUDGET_GB, use a smaller grid, or a smaller basis",
+            needed_gb = needed as f64 / 1e9,
+            budget_gb = budget as f64 / 1e9,
+        )));
+    }
+    Ok(())
+}
+
 /// One contracted GTO shell located in space (centered on its parent atom).
 #[derive(Debug, Clone)]
 pub struct LocatedShell<'a> {
@@ -613,6 +683,7 @@ pub fn eval_basis_and_grad_on_points(
     let shells = collect_shells(mol, bs)?;
     let nbf: usize = shells.iter().map(|s| num_functions(s.l, s.pure)).sum();
     let npts = points.len();
+    check_ao_grid_budget(AoGridKind::ValueAndGrad, nbf, npts)?;
 
     // Output arrays, allocated ONCE. chi is (nbf, npts) row-major, so
     // chi[(i, g)] lives at offset i*npts + g. dchi is (3, nbf, npts), so
@@ -1214,6 +1285,7 @@ pub fn eval_basis_grad_hess_on_points(
     let shells = collect_shells(mol, bs)?;
     let nbf: usize = shells.iter().map(|s| num_functions(s.l, s.pure)).sum();
     let npts = points.len();
+    check_ao_grid_budget(AoGridKind::ValueGradHess, nbf, npts)?;
 
     // Output arrays, allocated once; each grid point scatters into its own
     // column `g` of every plane, so writes of distinct points are disjoint —
@@ -1297,4 +1369,131 @@ pub fn eval_basis_grad_hess_on_points(
         }
     }
     Ok((chi, dchi, ddchi))
+}
+
+#[cfg(test)]
+mod budget_guard_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    // FERRIC_MEM_BUDGET_GB is process-global; the default test harness runs
+    // tests in parallel (same convention as ferric_core::memory's own tests).
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    const VAR: &str = ferric_core::memory::ENV_UNIFIED;
+
+    fn clear() {
+        std::env::remove_var(VAR);
+    }
+
+    #[test]
+    fn planes_formula_matches_documented_counts() {
+        assert_eq!(AoGridKind::ValueOnly.planes(), 1);
+        assert_eq!(AoGridKind::ValueAndGrad.planes(), 4);
+        assert_eq!(AoGridKind::ValueGradHess.planes(), 13);
+    }
+
+    /// A 50-heavy-atom / aTZ-scale / fine-grid job (nbf~1500, npts~412_500)
+    /// with the full value+grad+hess accounting must be rejected against a
+    /// small configured budget — this is the exact shape from the production
+    /// incident this guard exists to catch (gradient.rs's Hessian path).
+    #[test]
+    fn large_scale_hess_allocation_rejected_under_tiny_budget() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear();
+        std::env::set_var(VAR, "1"); // 1 GiB budget
+
+        let nbf = 1500usize;
+        let npts = 412_500usize;
+        // 13 planes * 1500 * 412500 * 8 bytes ≈ 64.4 GB — far over 1 GiB.
+        let err = check_ao_grid_budget(AoGridKind::ValueGradHess, nbf, npts).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("nbf=1500"), "message should cite nbf: {msg}");
+        assert!(msg.contains("npts=412500"), "message should cite npts: {msg}");
+        assert!(
+            msg.contains("GB"),
+            "message should state the estimated/budgeted sizes in GB: {msg}"
+        );
+        assert!(
+            msg.contains("FERRIC_MEM_BUDGET_GB"),
+            "message should point at the remediation knob: {msg}"
+        );
+
+        clear();
+    }
+
+    /// The same large-scale shape must also be rejected for the plainer
+    /// value+grad (4-plane) accounting used by `fxc.rs`'s Newton kernels and
+    /// `xc_gradient_closed_lda_from_density` — a smaller budget still catches
+    /// it since 4 planes at this scale is still ~19.8 GB.
+    #[test]
+    fn large_scale_grad_allocation_rejected_under_tiny_budget() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear();
+        std::env::set_var(VAR, "1"); // 1 GiB budget
+
+        let nbf = 1500usize;
+        let npts = 412_500usize;
+        let err = check_ao_grid_budget(AoGridKind::ValueAndGrad, nbf, npts).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("nbf=1500"));
+        assert!(msg.contains("npts=412500"));
+        assert!(msg.contains("GB"));
+
+        clear();
+    }
+
+    /// Small/typical systems (water/cc-pVDZ scale: nbf~25, npts~35_000, a
+    /// (75,110) atomic grid on 3 atoms) must NOT be rejected at a realistic
+    /// budget — a wrong/overly conservative formula must not break currently-
+    /// working DFT gradient / ROKS-Newton jobs. This is the critical
+    /// regression guard: the formula must undershoot real small jobs by a
+    /// wide margin, not just barely pass.
+    #[test]
+    fn small_scale_allocation_not_rejected_under_realistic_budget() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear();
+        std::env::set_var(VAR, "2"); // 2 GiB budget — a modest laptop-scale default
+
+        let nbf = 25usize; // water / cc-pVDZ
+        let npts = 35_000usize; // 3 atoms * (75 radial * 110 angular)-ish grid
+
+        // ValueGradHess (the largest, gradient.rs's Hessian path): 13*25*35000*8
+        // ≈ 91 MB — trivially under 2 GiB.
+        assert!(
+            check_ao_grid_budget(AoGridKind::ValueGradHess, nbf, npts).is_ok(),
+            "water/cc-pVDZ-scale Hessian AO grid must fit a 2 GiB budget"
+        );
+        // ValueAndGrad (fxc.rs / LDA gradient path): even smaller.
+        assert!(
+            check_ao_grid_budget(AoGridKind::ValueAndGrad, nbf, npts).is_ok(),
+            "water/cc-pVDZ-scale grad-only AO grid must fit a 2 GiB budget"
+        );
+
+        clear();
+    }
+
+    /// A somewhat larger but still very ordinary system (small organic
+    /// molecule, def2-SVP-scale nbf~150, a fine (99,590) grid npts~150_000)
+    /// must also pass comfortably under the auto-detected/fallback budget
+    /// (no explicit env override) — guards against the formula being so
+    /// conservative it rejects everyday jobs on a modest developer machine.
+    #[test]
+    fn moderate_scale_allocation_not_rejected_under_default_budget() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear(); // fall through to auto-detect/fallback (>= 2 GiB fallback floor)
+
+        let nbf = 150usize;
+        let npts = 150_000usize;
+        // 13*150*150000*8 ≈ 2.34 GB — comfortably under any real machine's
+        // auto-detected budget, and under the final 2 GiB fallback only in
+        // the ValueAndGrad case; assert the actually-relevant (smaller,
+        // fxc/LDA-path) formula here to avoid flaking on a sandboxed CI box
+        // with no /proc/meminfo (which lands on the 2 GiB fallback).
+        assert!(
+            check_ao_grid_budget(AoGridKind::ValueAndGrad, nbf, npts).is_ok(),
+            "moderate-scale grad-only AO grid must fit the default budget"
+        );
+
+        clear();
+    }
 }

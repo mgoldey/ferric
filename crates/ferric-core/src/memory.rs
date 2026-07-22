@@ -209,6 +209,63 @@ pub fn check_alloc(label: &str, bytes: usize, budget: usize) -> Result<(), crate
     Ok(())
 }
 
+/// Parse the current process's resident set size from a `/proc/self/status`-
+/// shaped string. Looks for the `VmRSS:` line (reported in kB, despite the
+/// "kB" label — Linux convention, same as `MemAvailable` in `/proc/meminfo`).
+/// Returns `None` on any parse failure (missing field, malformed number) —
+/// this is an observability helper, never a hard dependency, so a parse miss
+/// must silently degrade to "unknown" rather than propagate an error.
+pub fn parse_vm_rss_bytes(contents: &str) -> Option<usize> {
+    for line in contents.lines() {
+        if let Some(rest) = line.strip_prefix("VmRSS:") {
+            let kb = rest.split_whitespace().next()?.parse::<u64>().ok()?;
+            return Some(clamp_u64_to_usize(kb.saturating_mul(1024)));
+        }
+    }
+    None
+}
+
+/// Read the CURRENT process's resident set size (RSS) in bytes by parsing
+/// `/proc/self/status`'s `VmRSS:` line. `None` on any failure (non-Linux, the
+/// file is unreadable/sandboxed, or the field is missing/malformed) — this is
+/// a pure observability helper for the stage-seam RSS safety net
+/// ([`crate`]-external callers use it via `warn_if_rss_over`-style helpers in
+/// `ferric-rpa`), so it must NEVER panic mid-computation; a monitoring probe
+/// failing silently is fine, a monitoring probe crashing the job it's
+/// watching is not.
+pub fn read_own_rss_bytes() -> Option<usize> {
+    let contents = std::fs::read_to_string("/proc/self/status").ok()?;
+    parse_vm_rss_bytes(&contents)
+}
+
+/// Stage-seam RSS safety net: if the CURRENT process's RSS exceeds
+/// `over_factor × budget_bytes`, emit ONE stderr warning line naming the
+/// stage, the actual RSS, and the budget — purely observational, NEVER a hard
+/// error/kill (unlike [`check_alloc`], which is a pre-flight gate that
+/// refuses to start an over-budget job; this instead watches a job that
+/// already started and already passed its pre-flight checks, in case the
+/// pre-flight ESTIMATE undershot the actual allocation at some later stage
+/// boundary). Silently does nothing if RSS can't be read (see
+/// [`read_own_rss_bytes`]) — observability must never be allowed to disrupt
+/// the computation it's watching.
+///
+/// `over_factor` is typically ~1.1 (warn at 10% over budget) — see call sites
+/// in `ferric-rpa` for the production convention.
+pub fn warn_if_rss_over(label: &str, budget_bytes: usize, over_factor: f64) {
+    let Some(rss) = read_own_rss_bytes() else { return };
+    let threshold = (budget_bytes as f64 * over_factor) as usize;
+    if rss > threshold {
+        eprintln!(
+            "ferric WARNING [{label}]: resident memory {:.2} GB exceeds {:.0}% of the {:.2} GB \
+             budget (observability only — this stage already ran; if this recurs, raise \
+             [memory] budget_gb / FERRIC_MEM_BUDGET_GB or shrink the system)",
+            rss as f64 / 1e9,
+            over_factor * 100.0,
+            budget_bytes as f64 / 1e9,
+        );
+    }
+}
+
 /// Detect available memory in bytes: the minimum of any active cgroup memory
 /// limit and `/proc/meminfo`'s `MemAvailable`. Returns `None` if nothing can be
 /// read (non-Linux, sandboxed, or missing files) so the caller falls back.
@@ -460,5 +517,63 @@ mod tests {
         ));
         assert!(r.bytes > 0);
         clear_budget_env();
+    }
+
+    // ---- Item 3: stage-seam RSS safety net ----
+
+    #[test]
+    fn parse_vm_rss_bytes_fixture_string() {
+        let fixture = "Name:   ferric-cli\n\
+                       VmPeak:    123456 kB\n\
+                       VmRSS:     654321 kB\n\
+                       VmData:    111111 kB\n";
+        assert_eq!(parse_vm_rss_bytes(fixture), Some(654321 * 1024));
+        // Missing field → None.
+        assert_eq!(parse_vm_rss_bytes("VmPeak: 123456 kB\n"), None);
+        // Malformed value → None, never a panic.
+        assert_eq!(parse_vm_rss_bytes("VmRSS: notanumber kB\n"), None);
+        // Empty input → None.
+        assert_eq!(parse_vm_rss_bytes(""), None);
+    }
+
+    #[test]
+    fn read_own_rss_bytes_on_current_process_is_some_and_reasonable() {
+        // Reading the REAL /proc/self/status of the test process itself (not
+        // a fixture) — must return Some(reasonable_value), not None, on any
+        // live Linux test box. "Reasonable" here just means non-zero and
+        // under a generous 100 GiB ceiling (catches a unit-confusion bug,
+        // e.g. reporting bytes as if they were kB) without being flaky on
+        // slow/loaded CI machines.
+        match read_own_rss_bytes() {
+            Some(rss) => {
+                assert!(rss > 0, "expected a positive RSS reading, got 0");
+                assert!(
+                    rss < 100 * 1024 * 1024 * 1024,
+                    "RSS reading implausibly large ({rss} bytes) — possible unit bug"
+                );
+            }
+            None => {
+                // Only acceptable on a non-Linux or heavily sandboxed
+                // environment where /proc/self/status isn't readable; the
+                // function's contract is "None on any parse failure", not
+                // "always Some on Linux", so don't hard-fail here — but this
+                // branch should not be reached on the CI/dev Linux boxes this
+                // crate targets.
+                panic!("read_own_rss_bytes() returned None on what should be a live Linux test process");
+            }
+        }
+    }
+
+    #[test]
+    fn warn_if_rss_over_does_not_panic_and_is_a_pure_observer() {
+        // Smoke test: calling this with a budget so tiny that RSS will
+        // certainly exceed 1.1x it must NOT panic, must NOT return anything
+        // (it's fire-and-forget stderr-only), and must not affect subsequent
+        // computation — i.e. it's safe to call unconditionally at a stage
+        // boundary even on a system where /proc/self/status is unreadable.
+        warn_if_rss_over("test-stage-tiny-budget", 1, 1.1);
+        // And with a budget so enormous that RSS can never exceed it — the
+        // no-warning path must also just return cleanly.
+        warn_if_rss_over("test-stage-huge-budget", usize::MAX / 2, 1.1);
     }
 }

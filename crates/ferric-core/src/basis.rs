@@ -326,6 +326,14 @@ pub fn bundled(name: &str) -> Result<BasisSet, FerricError> {
         "aug-cc-pvtz" => include_str!("basis/bundled/aug-cc-pvtz.json"),
         "aug-cc-pvtz-pp" => include_str!("basis/bundled/aug-cc-pvtz-pp.json"),
         "aug-cc-pvtz-rifit" => include_str!("basis/bundled/aug-cc-pvtz-rifit.json"),
+        // BSE (ccRepo/Grant Hill, 2018-10-03), same source/date as aug-cc-pvtz.
+        // Elements 1-36 (H-Kr), matching aTZ's coverage. The RI-fit aux
+        // (Turbomole 7.3, 2019-01-08) is missing Li(3) and K(19), which aTZ's
+        // rifit has -- a real, minor gap in the upstream BSE data, not
+        // silently patched; RI-MP2/RPA on Li/K-containing systems at aQZ
+        // will error on missing-element lookup rather than mis-fit.
+        "aug-cc-pvqz" => include_str!("basis/bundled/aug-cc-pvqz.json"),
+        "aug-cc-pvqz-rifit" => include_str!("basis/bundled/aug-cc-pvqz-rifit.json"),
         "def2-universal-jkfit" => include_str!("basis/bundled/def2-universal-jkfit.json"),
         _ => return Err(FerricError::Basis(format!("unknown bundled basis: {name}"))),
     };
@@ -404,6 +412,37 @@ mod tests {
             assert!(tz.ecp_for_element(z).is_none(), "light Z={z} must not carry an ECP");
             let dz_n = dz.for_element(z).unwrap().len();
             assert!(tz_sh.len() > dz_n, "light Z={z} TZ shells ({}) should exceed DZ ({dz_n})", tz_sh.len());
+        }
+    }
+
+    #[test]
+    fn test_bundled_augccpvqz_loads_and_grows_over_tz() {
+        // aug-cc-pVQZ (BSE, ccRepo/Grant Hill, same source/date as aug-cc-pvtz)
+        // must load for benzene/A24's elements (H, C, N, O) and have strictly
+        // more orbital shells than aTZ (QZ > TZ), same pattern as the DZ->TZ
+        // ECP-carrying test above.
+        let tz = bundled("aug-cc-pvtz").unwrap();
+        let qz = bundled("aug-cc-pvqz").unwrap();
+        for &z in &[1, 6, 7, 8] {
+            let tz_sh = tz.for_element(z).unwrap_or_else(|| panic!("Z={z} missing from aTZ"));
+            let qz_sh = qz.for_element(z).unwrap_or_else(|| panic!("Z={z} missing from aQZ"));
+            assert!(
+                qz_sh.len() > tz_sh.len(),
+                "Z={z} aQZ shells ({}) should exceed aTZ ({})",
+                qz_sh.len(),
+                tz_sh.len()
+            );
+        }
+    }
+
+    #[test]
+    fn test_bundled_augccpvqz_rifit_loads() {
+        // RI-fit aux (BSE, Turbomole 7.3) is missing Li(3)/K(19) relative to
+        // aTZ's rifit -- a real upstream gap, not silently patched. Benzene
+        // and A24's elements (H, C, N, O) are all present.
+        let aux = bundled("aug-cc-pvqz-rifit").unwrap();
+        for &z in &[1, 6, 7, 8] {
+            assert!(aux.for_element(z).is_some(), "Z={z} missing from aQZ-rifit");
         }
     }
 

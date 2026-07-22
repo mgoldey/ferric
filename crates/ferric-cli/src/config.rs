@@ -168,15 +168,22 @@ pub struct Mp2Cfg {
     ///
     ///   "erf"  (default) — LR=erf(ωr)/r, SR=erfc(ωr)/r, parameterized by `omega` (Å⁻¹).
     ///   "terf"           — tempered Dutoi/Goldey split: LR=terf(r,r0)/r, SR=terfc(r,r0)/r
-    ///                      with terf+terfc=Coulomb exactly; parameterized by `r0` (Bohr).
+    ///                      with terf+terfc=Coulomb exactly; parameterized by `r0` (Å).
     ///                      When "terf", `omega` is IGNORED (ω=1/(r0·√2) is derived).
     ///
     /// Same split identity ⇒ same exact limits as erf; only the attenuator SHAPE
     /// differs. terf needs the interpolation tables (FERRIC_TERF_TABLE_DIR).
     pub attenuator: Option<String>,
-    /// Range-separation length r0 in **Bohr**, used ONLY when `attenuator = "terf"`.
-    /// The single tempered-split knob; ω is derived (ω = 1/(r0·√2)). Default 3.18
-    /// Bohr ⇒ ω ≈ 0.42 Å⁻¹ (the erf operating point). Ignored for erf.
+    /// Range-separation length r0 in **Å**, used ONLY when `attenuator = "terf"`.
+    /// The single tempered-split knob; ω is derived (ω = 1/(r0·√2), computed in
+    /// Bohr internally — this field is converted Å→Bohr at the CLI boundary,
+    /// same convention as `r0_bonded`/`r0_nonbonded` below). Default 1.6828 Å
+    /// (= 3.18 Bohr) ⇒ ω ≈ 0.42 Å⁻¹ (the erf operating point). Ignored for erf.
+    /// FIXED 2026-07-21: this field used to be Bohr, inconsistent with every
+    /// other r0-shaped field in this struct (`r0_bonded`/`r0_nonbonded` below
+    /// were always Å) — the mismatch directly caused a unit-conversion bug in
+    /// benchmarks/grid/run_grid.py (an Å value fed through a Bohr-assuming
+    /// formula, off by a factor of ~1.89).
     pub r0: Option<f64>,
     /// Bonded (shorter-range) terfc cutoff **r0(1)** in **Å**, used ONLY by
     /// `method.kind = "scs-mp2-2terfc"`. Default 0.75 Å (thesis value).
