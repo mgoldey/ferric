@@ -65,6 +65,9 @@ pub struct DfJ<'a> {
     /// (no reduction, full band).
     #[allow(dead_code)]
     ctx: Option<&'a ParallelContext>,
+    /// The memory budget this source was built under — also caps the pass-2
+    /// reduction band scratch via `resolve_band_bytes`.
+    budget_bytes: usize,
 }
 
 impl<'a> DfJ<'a> {
@@ -117,7 +120,7 @@ impl<'a> DfJ<'a> {
         // Store ctx only when it actually implies a reduction (>1 rank); a size-1
         // ctx behaves exactly like None (full band, no all_reduce).
         let ctx = ctx.filter(|c| c.size > 1);
-        Ok(DfJ { source, v_inv, ctx })
+        Ok(DfJ { source, v_inv, ctx, budget_bytes })
     }
 }
 
@@ -202,10 +205,12 @@ impl JBuilder for DfJ<'_> {
                 .map_err(|e| FerricError::General(format!("blk reshape: {e}")))?;
             let c_blk_full = c_p.slice(ndarray::s![blk.p0..blk.p0 + b]);
             let n_chunks = b.div_ceil(chunk);
+            let band_bytes = crate::reduce::resolve_band_bytes(self.budget_bytes);
             crate::reduce::grouped_deterministic_sum(
                 j,
                 n_chunks,
                 n,
+                band_bytes,
                 |ci| -> Result<Array2<f64>, FerricError> {
                     let q0 = ci * chunk;
                     let q1 = (q0 + chunk).min(b);
@@ -280,7 +285,7 @@ mod tests {
         let mut j_direct = Array2::zeros((n, n));
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let ctx = ParallelContext::default();
-        let mut dj = DirectJ::new(&ctx, &obs, &bounds, 1e-12);
+        let mut dj = DirectJ::new(&ctx, &obs, &bounds, 1e-12, usize::MAX);
         <DirectJ as JBuilder>::build(&mut dj, &d, &mut j_direct).unwrap();
 
         let mut j_df = Array2::zeros((n, n));

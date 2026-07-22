@@ -31,6 +31,9 @@ pub struct LinkK<'a, B: Bound> {
     dp: Option<DensityPairs>,
     op: Operator,
     thresh: f64,
+    /// Fully-resolved unified memory budget (TOML > env > auto), passed in by
+    /// the solver — caps the reduction band scratch via `resolve_band_bytes`.
+    mem_budget: usize,
     // Lazily built on first build() and reused for the builder's lifetime:
     // libint2 engine construction is serialized behind a global ctor mutex,
     // so constructing engines per fold-chunk (or per iteration) storms it.
@@ -49,6 +52,7 @@ impl<'a, B: Bound> LinkK<'a, B> {
         bound: &'a B,
         op: Operator,
         thresh: f64,
+        mem_budget: usize,
     ) -> Self {
         let nsh = prep.nshells();
         let sp = SignificantPairs::build(bound, nsh, thresh);
@@ -60,6 +64,7 @@ impl<'a, B: Bound> LinkK<'a, B> {
             dp: None,
             op,
             thresh,
+            mem_budget,
             pool: None,
         }
     }
@@ -122,10 +127,12 @@ impl<'a, B: Bound + Sync> KBuilder for LinkK<'a, B> {
         let count_acc = std::sync::atomic::AtomicUsize::new(0);
 
         let mut k_out = Array2::<f64>::zeros((nbf, nbf));
+        let band_bytes = crate::reduce::resolve_band_bytes(self.mem_budget);
         crate::reduce::grouped_deterministic_sum(
             &mut k_out,
             n_groups,
             nbf,
+            band_bytes,
             |g| -> Result<Array2<f64>, FerricError> {
                 let lo = g * group_size;
                 let hi = (lo + group_size).min(n_pairs);
@@ -296,7 +303,7 @@ mod tests {
         let qqr = QqrBounds::new(schwarz, mol, &bs, &prep, op);
         let n = prep.nbasis();
         let thresh = 1e-14;
-        let mut link = LinkK::new(ctx, &prep, &qqr, op, thresh);
+        let mut link = LinkK::new(ctx, &prep, &qqr, op, thresh, usize::MAX);
         link.update_density(d);
         let mut k = Array2::zeros((n, n));
         link.build(d, &mut k).unwrap();

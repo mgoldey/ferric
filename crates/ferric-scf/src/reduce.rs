@@ -48,17 +48,42 @@ use rayon::prelude::*;
 /// `FERRIC_REDUCE_BAND_BYTES` for tuning / testing.
 const DEFAULT_BAND_BYTES: usize = 512 * 1024 * 1024;
 
-fn band_bytes_budget() -> usize {
+/// Resolve the live-set byte budget for one band of reduction partials from a
+/// FULLY-RESOLVED memory budget (TOML > env > auto — the caller resolves it
+/// once, e.g. `rhf::resolve_three_index_budget`, and passes it down; this
+/// function never re-reads the budget env vars itself). Precedence:
+///
+/// 1. An explicit `FERRIC_REDUCE_BAND_BYTES` env override wins verbatim
+///    (tuning/testing knob — the reduce tests use it to force narrow bands).
+/// 2. Otherwise `min(512 MiB, mem_budget_bytes / 4)`: the band scratch is
+///    ADDITIVE to the allocations the memory budget already governs (the
+///    3-index tensor + the accumulator), so it gets a quarter, not the whole.
+///
+/// Band width affects ONLY the live set and the degree of parallelism, never
+/// the fold order (see [`band_width`]), so this cannot perturb any result.
+pub fn resolve_band_bytes(mem_budget_bytes: usize) -> usize {
     static BAND_BYTES: ferric_core::config::ConfigVar<usize> = ferric_core::config::ConfigVar {
         env_name: "FERRIC_REDUCE_BAND_BYTES",
         default: DEFAULT_BAND_BYTES,
         parse: |s| s.parse::<usize>().map_err(|e| e.to_string()),
         validate: |b| (*b > 0).then_some(()).ok_or_else(|| "must be > 0".to_string()),
     };
-    BAND_BYTES.get().map(|r| r.value).unwrap_or_else(|e| {
-        eprintln!("[config] FERRIC_REDUCE_BAND_BYTES: {e}; using default {DEFAULT_BAND_BYTES}");
-        DEFAULT_BAND_BYTES
-    })
+    match BAND_BYTES.get() {
+        Ok(r) if r.source == ferric_core::config::ConfigSource::Env => r.value,
+        Ok(r) => r.value.min((mem_budget_bytes / 4).max(1)),
+        Err(e) => {
+            eprintln!("[config] FERRIC_REDUCE_BAND_BYTES: {e}; using default {DEFAULT_BAND_BYTES}");
+            DEFAULT_BAND_BYTES
+        }
+    }
+}
+
+/// Band bytes for callers with NO plumbed memory budget (gradients, RPA
+/// helpers, `rhf::build_jk`'s Newton/test path): resolve the unified budget
+/// from env / auto-detect (TOML values can't reach here — plumb the resolved
+/// budget and use [`resolve_band_bytes`] directly where it matters).
+pub fn default_band_bytes() -> usize {
+    resolve_band_bytes(ferric_core::memory::resolve_budget_bytes(None))
 }
 
 /// Compute a band width (number of `nbf×nbf` partials held live at once) from the
@@ -96,18 +121,24 @@ pub fn deterministic_group_size(n_items: usize) -> usize {
 /// prior contents (equivalent to `*acc += total`, as the direct builders need).
 /// Live set ≤ one band of partials + `acc`.
 ///
-/// The fold order (0,1,…,n_groups-1) is independent of thread count, so the
-/// result is bit-identical across `RAYON_NUM_THREADS`.
+/// `band_bytes` is the live-set budget for one band of partials — pass
+/// [`resolve_band_bytes`]`(mem_budget)` when a resolved memory budget is in
+/// hand (the JK builders), or [`default_band_bytes`]`()` otherwise.
+///
+/// The fold order (0,1,…,n_groups-1) is independent of thread count AND of
+/// `band_bytes`, so the result is bit-identical across `RAYON_NUM_THREADS`
+/// and across band budgets.
 pub fn grouped_deterministic_sum<F>(
     acc: &mut Array2<f64>,
     n_groups: usize,
     nbf: usize,
+    band_bytes: usize,
     make: F,
 ) -> Result<(), FerricError>
 where
     F: Fn(usize) -> Result<Array2<f64>, FerricError> + Sync,
 {
-    let bw = band_width(nbf, band_bytes_budget());
+    let bw = band_width(nbf, band_bytes);
     let mut g0 = 0usize;
     while g0 < n_groups {
         let g1 = (g0 + bw).min(n_groups);
@@ -134,6 +165,7 @@ pub fn grouped_deterministic_sum_pair<F>(
     acc1: &mut Array2<f64>,
     n_groups: usize,
     nbf: usize,
+    band_bytes: usize,
     make: F,
 ) -> Result<(), FerricError>
 where
@@ -142,7 +174,7 @@ where
     // Two live matrices per group → halve the byte budget per band so the total
     // live set still respects it (the worker-count floor inside band_width is
     // kept so parallelism is never throttled).
-    let bw = band_width(nbf, band_bytes_budget() / 2);
+    let bw = band_width(nbf, band_bytes / 2);
     let mut g0 = 0usize;
     while g0 < n_groups {
         let g1 = (g0 + bw).min(n_groups);
@@ -213,11 +245,9 @@ mod tests {
             expected += &make(g).unwrap();
         }
 
-        // Force a tiny budget so bands are narrow (band width = worker-count
-        // floor) and the two-level path is actually exercised across several
-        // bands. Banding must not perturb the ascending-group fold order.
-        std::env::set_var("FERRIC_REDUCE_BAND_BYTES", "800");
-
+        // Tiny explicit band budget so bands are narrow (band width =
+        // worker-count floor) and the two-level path is actually exercised
+        // across several bands. Banding must not perturb the fold order.
         let run = |threads: usize| -> Array2<f64> {
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
@@ -225,7 +255,7 @@ mod tests {
                 .unwrap();
             pool.install(|| {
                 let mut acc = Array2::<f64>::zeros((n, n));
-                grouped_deterministic_sum(&mut acc, n_groups, n, make).unwrap();
+                grouped_deterministic_sum(&mut acc, n_groups, n, 800, make).unwrap();
                 acc
             })
         };
@@ -233,7 +263,6 @@ mod tests {
         let r1 = run(1);
         let r4 = run(4);
         let r8 = run(8);
-        std::env::remove_var("FERRIC_REDUCE_BAND_BYTES");
 
         // Bit-identical across thread counts AND equal to the flat serial fold.
         assert_eq!(r1, expected, "grouped sum must equal flat serial fold");
@@ -263,12 +292,30 @@ mod tests {
             ej += &j;
             ek += &k;
         }
-        std::env::set_var("FERRIC_REDUCE_BAND_BYTES", "400");
         let mut aj = Array2::<f64>::zeros((n, n));
         let mut ak = Array2::<f64>::zeros((n, n));
-        grouped_deterministic_sum_pair(&mut aj, &mut ak, n_groups, n, make).unwrap();
-        std::env::remove_var("FERRIC_REDUCE_BAND_BYTES");
+        grouped_deterministic_sum_pair(&mut aj, &mut ak, n_groups, n, 400, make).unwrap();
         assert_eq!(aj, ej);
         assert_eq!(ak, ek);
+    }
+
+    #[test]
+    fn resolve_band_bytes_caps_by_quarter_budget_env_wins() {
+        // No env override: min(512 MiB default, budget/4).
+        std::env::remove_var("FERRIC_REDUCE_BAND_BYTES");
+        let gib = 1024 * 1024 * 1024;
+        // Large budget → the 512 MiB default is the binding cap.
+        assert_eq!(resolve_band_bytes(4 * gib), DEFAULT_BAND_BYTES);
+        // Small budget → budget/4 binds.
+        assert_eq!(resolve_band_bytes(gib), gib / 4);
+        // Degenerate zero budget → floors at 1 (band_width still floors at the
+        // worker count, so this never serializes the reduction).
+        assert_eq!(resolve_band_bytes(0), 1);
+        // Explicit env override wins verbatim over both. (Env is process-global;
+        // a transient value here can only alter another test's band width, which
+        // never changes results — see the band_width doc.)
+        std::env::set_var("FERRIC_REDUCE_BAND_BYTES", "12345");
+        assert_eq!(resolve_band_bytes(gib), 12345);
+        std::env::remove_var("FERRIC_REDUCE_BAND_BYTES");
     }
 }

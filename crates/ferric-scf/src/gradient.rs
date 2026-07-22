@@ -156,7 +156,7 @@ where
     // Per-group partials are (natoms,3) — tiny — so the band budget in
     // grouped_deterministic_sum is effectively unbounded here; what we use it
     // for is the ascending-group-order fold (bit-identical across threads).
-    crate::reduce::grouped_deterministic_sum(&mut grad, n_groups, natoms.max(2), |g| {
+    crate::reduce::grouped_deterministic_sum(&mut grad, n_groups, natoms.max(2), crate::reduce::default_band_bytes(), |g| {
         let lo = g * group_size;
         let hi = (lo + group_size).min(n_quads);
         let mut local = Array2::<f64>::zeros((natoms, 3));
@@ -208,7 +208,7 @@ where
     let pool = GradEnginePool::new(&mk_engine)?;
     let group_size = crate::reduce::deterministic_group_size(n_pairs);
     let n_groups = n_pairs.div_ceil(group_size);
-    crate::reduce::grouped_deterministic_sum(&mut grad, n_groups, natoms.max(2), |g| {
+    crate::reduce::grouped_deterministic_sum(&mut grad, n_groups, natoms.max(2), crate::reduce::default_band_bytes(), |g| {
         let lo = g * group_size;
         let hi = (lo + group_size).min(n_pairs);
         let mut local = Array2::<f64>::zeros((natoms, 3));

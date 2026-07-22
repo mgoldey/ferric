@@ -6,17 +6,24 @@ use ndarray::Array2;
 
 /// Combined Coulomb (J) and exchange (K) matrix builder.
 ///
-/// Enumerates all screened canonical (s1,s2,s3,s4) quartets **once** and accumulates
+/// Iterates all screened canonical (s1,s2,s3,s4) quartets **once** and accumulates
 /// both J and K from the same computed integral, avoiding the 2× ERI evaluation cost
 /// of calling DirectJ and DirectK separately.
 ///
-/// The flat quartet pre-enumeration (same as DirectJ) gives balanced Rayon tasks
-/// versus the bra-pair-then-serial-ket structure used by the old DirectK.
+/// The work list is the screened bra-pair list (O(nsh²) memory); the ket loop and
+/// the Häser-Ahlrichs density screen run inside the parallel group workers, with
+/// ~n_pairs/1024 pairs per group amortizing load imbalance across rayon's
+/// dynamic scheduling (same structure as `rhf::build_jk`). The former flat
+/// quartet pre-enumeration was a serial O(nsh⁴) loop with an unbounded
+/// surviving-quartet Vec reallocated every SCF iteration.
 pub struct DirectJK<'a> {
     ctx: &'a ParallelContext,
     prep: &'a PreparedBasis,
     bounds: &'a SchwarzBounds,
     thresh: f64,
+    /// Fully-resolved unified memory budget (TOML > env > auto), passed in by
+    /// the solver — caps the reduction band scratch via `resolve_band_bytes`.
+    mem_budget: usize,
     // Lazily built on first build() and reused for the builder's lifetime:
     // libint2 engine construction is serialized behind a global ctor mutex,
     // so hoist the builder out of the SCF loop to pay it once, not per iteration.
@@ -29,8 +36,9 @@ impl<'a> DirectJK<'a> {
         prep: &'a PreparedBasis,
         bounds: &'a SchwarzBounds,
         thresh: f64,
+        mem_budget: usize,
     ) -> Self {
-        DirectJK { ctx, prep, bounds, thresh, pool: None }
+        DirectJK { ctx, prep, bounds, thresh, mem_budget, pool: None }
     }
 
     /// Build J and K matrices simultaneously from a single pass over shell quartets.
@@ -81,39 +89,32 @@ impl<'a> DirectJK<'a> {
         let size = self.ctx.size;
         let nbf = prep.nbasis();
 
-        // Enumerate all screened canonical quartets upfront for balanced parallel tasks.
-        // Pair-wise density screen: contribution upper bound is
-        //   sqrt(Q_{12}) * sqrt(Q_{34}) * D_max_pair, where
-        //   D_max_pair = max(d12, d34, d13, d14, d23, d24).
-        let dms = &d_max_shell;
-        let mut quads: Vec<(usize, usize, usize, usize)> = Vec::new();
+        // Work list = screened canonical bra pairs (s1,s2), O(nsh²) memory. The
+        // ket (s3,s4) loop and the pair-wise density screen —
+        //   sqrt(Q_{12}) * sqrt(Q_{34}) * D_max_pair, with
+        //   D_max_pair = max(d12, d34, d13, d14, d23, d24)
+        // — run inside the parallel group workers below. The previous flat
+        // quartet pre-enumeration was a serial O(nsh⁴) loop rebuilt (and its
+        // Vec reallocated) EVERY SCF iteration, with unbounded memory in the
+        // surviving-quartet count (32 B/entry — GB-scale on large direct
+        // jobs); the pair list is the same structure `rhf::build_jk` already
+        // uses with this reduction, and moves the screening work onto the
+        // rayon workers.
+        let mut shell_pairs: Vec<(usize, usize)> = Vec::new();
         for s1 in 0..nsh {
             for s2 in 0..=s1 {
-                if q_table[(s1, s2)] <= bra_thresh { continue; }
-                let b12 = q_table[(s1, s2)];
-                let d12 = dms[(s1, s2)];
-                for s3 in 0..=s1 {
-                    let s4max = if s3 == s1 { s2 } else { s3 };
-                    let d13 = dms[(s1, s3)];
-                    let d23 = dms[(s2, s3)];
-                    for s4 in 0..=s4max {
-                        let d34 = dms[(s3, s4)];
-                        let d14 = dms[(s1, s4)];
-                        let d24 = dms[(s2, s4)];
-                        let dmax = d12.max(d34).max(d13).max(d14).max(d23).max(d24);
-                        if b12 * q_table[(s3, s4)] * dmax >= thresh {
-                            quads.push((s1, s2, s3, s4));
-                        }
-                    }
+                if q_table[(s1, s2)] > bra_thresh {
+                    shell_pairs.push((s1, s2));
                 }
             }
         }
-        // MPI rank striping
-        let quads: Vec<(usize, usize, usize, usize)> = quads
+        // MPI rank striping (disjoint covering partition of the pair list,
+        // mirroring rhf::build_jk; size == 1 keeps the full list unchanged).
+        let shell_pairs: Vec<(usize, usize)> = shell_pairs
             .into_iter()
             .enumerate()
             .filter(|(idx, _)| idx % size == rank)
-            .map(|(_, q)| q)
+            .map(|(_, p)| p)
             .collect();
 
         // One engine per rayon thread (see engine_pool): constructing it in the
@@ -135,29 +136,46 @@ impl<'a> DirectJK<'a> {
         // thread count): group boundaries set the floating-point association of
         // the per-group folds, so a thread-dependent partition would break
         // bit-identity across RAYON_NUM_THREADS.
-        let n_quads = quads.len();
-        let group_size = crate::reduce::deterministic_group_size(n_quads);
-        let n_groups = n_quads.div_ceil(group_size);
+        let n_pairs = shell_pairs.len();
+        let group_size = crate::reduce::deterministic_group_size(n_pairs);
+        let n_groups = n_pairs.div_ceil(group_size.max(1)).max(1);
+        let dms = &d_max_shell;
 
         let mut total_j = Array2::<f64>::zeros((nbf, nbf));
         let mut total_k = Array2::<f64>::zeros((nbf, nbf));
+        let band_bytes = crate::reduce::resolve_band_bytes(self.mem_budget);
         crate::reduce::grouped_deterministic_sum_pair(
             &mut total_j,
             &mut total_k,
             n_groups,
             nbf,
+            band_bytes,
             |g| {
                 let lo = g * group_size;
-                let hi = (lo + group_size).min(n_quads);
+                let hi = (lo + group_size).min(n_pairs);
                 let mut local_j = Array2::<f64>::zeros((nbf, nbf));
                 let mut local_k = Array2::<f64>::zeros((nbf, nbf));
                 let mut local_count = 0usize;
-                for &(s1, s2, s3, s4) in &quads[lo..hi] {
+                for &(s1, s2) in &shell_pairs[lo..hi] {
+                    let b12 = q_table[(s1, s2)];
+                    let d12 = dms[(s1, s2)];
                     let (n1, n2) = (dims[s1], dims[s2]);
                     let (o1, o2) = (offs[s1], offs[s2]);
                     let sym12 = s1 != s2;
 
                     pool.with(|engine| {
+                        for s3 in 0..=s1 {
+                        let s4max = if s3 == s1 { s2 } else { s3 };
+                        let d13 = dms[(s1, s3)];
+                        let d23 = dms[(s2, s3)];
+                        for s4 in 0..=s4max {
+                        let d34 = dms[(s3, s4)];
+                        let d14 = dms[(s1, s4)];
+                        let d24 = dms[(s2, s4)];
+                        let dmax = d12.max(d34).max(d13).max(d14).max(d23).max(d24);
+                        if b12 * q_table[(s3, s4)] * dmax < thresh {
+                            continue;
+                        }
                         if let Some(q) = engine.compute_quartet(prep, s1, s2, s3, s4) {
                             local_count += 1;
                             let (n3, n4) = (dims[s3], dims[s4]);
@@ -214,6 +232,8 @@ impl<'a> DirectJK<'a> {
                                     }
                                 }
                             }
+                        }
+                        }
                         }
                     });
                 }
@@ -298,15 +318,15 @@ mod tests {
                 let ctx = ParallelContext::default();
                 let mut j_jk = Array2::zeros((n, n));
                 let mut k_jk = Array2::zeros((n, n));
-                let mut djk = DirectJK::new(&ctx, &prep, &bounds, 1e-14);
+                let mut djk = DirectJK::new(&ctx, &prep, &bounds, 1e-14, usize::MAX);
                 djk.build(&d, &mut j_jk, &mut k_jk).unwrap();
 
                 let mut j_only = Array2::zeros((n, n));
-                let mut dj = DirectJ::new(&ctx, &prep, &bounds, 1e-14);
+                let mut dj = DirectJ::new(&ctx, &prep, &bounds, 1e-14, usize::MAX);
                 <DirectJ as JBuilder>::build(&mut dj, &d, &mut j_only).unwrap();
 
                 let mut k_only = Array2::zeros((n, n));
-                let mut dk = DirectK::new(&ctx, &prep, &bounds, 1e-14);
+                let mut dk = DirectK::new(&ctx, &prep, &bounds, 1e-14, usize::MAX);
                 <DirectK as KBuilder>::build(&mut dk, &d, &mut k_only).unwrap();
 
                 (j_jk, k_jk, j_only, k_only)

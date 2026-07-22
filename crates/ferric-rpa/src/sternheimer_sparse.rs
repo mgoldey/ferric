@@ -129,7 +129,7 @@ pub fn dielectric_matrix_screened(
         // so a per-i_loc (msub × msub) partial is cheap and the byte-budgeted
         // banding in `grouped_deterministic_sum` still applies if msub is ever
         // large.
-        ferric_scf::reduce::grouped_deterministic_sum(&mut out, n_groups, msub, |i_loc| {
+        ferric_scf::reduce::grouped_deterministic_sum(&mut out, n_groups, msub, ferric_scf::reduce::default_band_bytes(), |i_loc| {
             Ok(dielectric_matrix_partial(v_mat, bov, eps_vir, omega, i_loc, msub))
         })
         .expect("dielectric_matrix_screened: partial builder is infallible");
@@ -234,7 +234,7 @@ pub fn dielectric_apply_screened(
         // approximates the true per-partial size instead of over/under-counting
         // by the naux/msub aspect ratio.
         let sq_equiv = ((naux as f64) * (msub as f64)).sqrt().ceil() as usize;
-        ferric_scf::reduce::grouped_deterministic_sum(&mut out, n_groups, sq_equiv, |i_loc| {
+        ferric_scf::reduce::grouped_deterministic_sum(&mut out, n_groups, sq_equiv, ferric_scf::reduce::default_band_bytes(), |i_loc| {
             Ok(dielectric_apply_partial(v_mat, bov, eps_vir, omega, i_loc, naux, msub))
         })
         .expect("dielectric_apply_screened: partial builder is infallible");

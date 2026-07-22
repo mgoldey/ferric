@@ -11,6 +11,9 @@ pub struct DirectK<'a> {
     prep: &'a PreparedBasis,
     bounds: &'a SchwarzBounds,
     thresh: f64,
+    /// Fully-resolved unified memory budget (TOML > env > auto), passed in by
+    /// the solver — caps the reduction band scratch via `resolve_band_bytes`.
+    mem_budget: usize,
     // Lazily built on first build() and reused for the builder's lifetime:
     // libint2 engine construction is serialized behind a global ctor mutex,
     // so hoist the builder out of the SCF loop to pay it once, not per iteration.
@@ -18,8 +21,14 @@ pub struct DirectK<'a> {
 }
 
 impl<'a> DirectK<'a> {
-    pub fn new(ctx: &'a ParallelContext, prep: &'a PreparedBasis, bounds: &'a SchwarzBounds, thresh: f64) -> Self {
-        DirectK { ctx, prep, bounds, thresh, pool: None }
+    pub fn new(
+        ctx: &'a ParallelContext,
+        prep: &'a PreparedBasis,
+        bounds: &'a SchwarzBounds,
+        thresh: f64,
+        mem_budget: usize,
+    ) -> Self {
+        DirectK { ctx, prep, bounds, thresh, mem_budget, pool: None }
     }
 }
 
@@ -72,7 +81,8 @@ impl<'a> KBuilder for DirectK<'a> {
         let n_groups = n_pairs.div_ceil(group_size);
         let nbf = self.prep.nbasis();
 
-        crate::reduce::grouped_deterministic_sum(k, n_groups, nbf, |g| {
+        let band_bytes = crate::reduce::resolve_band_bytes(self.mem_budget);
+        crate::reduce::grouped_deterministic_sum(k, n_groups, nbf, band_bytes, |g| {
             let lo = g * group_size;
             let hi = (lo + group_size).min(n_pairs);
             let mut local_k = Array2::<f64>::zeros((nbf, nbf));

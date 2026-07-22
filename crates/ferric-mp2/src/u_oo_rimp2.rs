@@ -48,6 +48,15 @@ pub struct UOoRiMp2Config {
     /// (unchanged, silent-until-done output). Mirrors
     /// `OoRiMp2Config::verbose` (the closed-shell counterpart).
     pub verbose: bool,
+    /// Optional resident-bytes ceiling for the AO-side 3-index tensor AND the
+    /// per-iteration fail-fast guards on the t_aa/t_bb/t_ab amplitude trio and
+    /// the b_full_a/b_full_b full-MO B tensors (all co-resident during the
+    /// gradient step — see the "MEMORY NOTE" on [`u_oo_ri_mp2`]). `None` →
+    /// resolved via [`ferric_core::memory::resolve_budget_bytes`]. Same
+    /// field name/doc convention as `OoRiMp2Config::memory_budget_bytes` and
+    /// `RiMp2Config::memory_budget_bytes` (ferric-rpa's `PdepRpaConfig` also
+    /// follows this convention).
+    pub memory_budget_bytes: Option<usize>,
 }
 
 impl Default for UOoRiMp2Config {
@@ -62,6 +71,7 @@ impl Default for UOoRiMp2Config {
             use_diis: true,
             max_kappa: 0.3,
             verbose: false,
+            memory_budget_bytes: None,
         }
     }
 }
@@ -118,15 +128,15 @@ fn compute_uhf_energy(
     let mut k_a = Array2::zeros((n, n));
     let mut k_b = Array2::zeros((n, n));
     {
-        let mut dj = DirectJ::new(ctx, prep, bounds, 1e-12);
+        let mut dj = DirectJ::new(ctx, prep, bounds, 1e-12, ferric_core::memory::resolve_budget_bytes(None));
         dj.build(&d_tot, &mut j_tot)?;
     }
     {
-        let mut dk = DirectK::new(ctx, prep, bounds, 1e-12);
+        let mut dk = DirectK::new(ctx, prep, bounds, 1e-12, ferric_core::memory::resolve_budget_bytes(None));
         <DirectK as KBuilder>::build(&mut dk, &d_a, &mut k_a)?;
     }
     if nocc_b > 0 {
-        let mut dk = DirectK::new(ctx, prep, bounds, 1e-12);
+        let mut dk = DirectK::new(ctx, prep, bounds, 1e-12, ferric_core::memory::resolve_budget_bytes(None));
         <DirectK as KBuilder>::build(&mut dk, &d_b, &mut k_b)?;
     }
 
@@ -208,6 +218,56 @@ fn orbital_energies_mo(c: &Array2<f64>, f: &Array2<f64>) -> Vec<f64> {
     (0..f_mo.nrows()).map(|i| f_mo[(i, i)]).collect()
 }
 
+/// Fail-fast pre-flight guard for the amplitude trio `t_aa`/`t_bb`/`t_ab` that
+/// [`compute_u_mp2_amplitudes`] builds and [`u_oo_ri_mp2`] keeps resident
+/// across the whole orbital-optimization loop (`amps`, see the "MEMORY NOTE"
+/// on that function) — tripled relative to the closed-shell `oo_rimp2.rs`
+/// guard since all three spin channels are co-resident simultaneously, not
+/// just one `nov²` buffer. Sizes:
+///   t_aa: nocc_a²·nvir_a², t_bb: nocc_b²·nvir_b², t_ab: nocc_a·nocc_b·nvir_a·nvir_b
+fn check_u_amplitude_alloc(
+    label: &str,
+    nocc_a: usize,
+    nvir_a: usize,
+    nocc_b: usize,
+    nvir_b: usize,
+    budget_bytes: usize,
+) -> Result<(), FerricError> {
+    let t_aa_elems = nocc_a.saturating_mul(nocc_a).saturating_mul(nvir_a).saturating_mul(nvir_a);
+    let t_bb_elems = nocc_b.saturating_mul(nocc_b).saturating_mul(nvir_b).saturating_mul(nvir_b);
+    let t_ab_elems = nocc_a.saturating_mul(nocc_b).saturating_mul(nvir_a).saturating_mul(nvir_b);
+    let peak = t_aa_elems
+        .saturating_add(t_bb_elems)
+        .saturating_add(t_ab_elems)
+        .saturating_mul(8);
+    ferric_core::memory::check_alloc(
+        &format!(
+            "{label} (nocc_a={nocc_a}, nvir_a={nvir_a}, nocc_b={nocc_b}, nvir_b={nvir_b}; \
+             co-resident t_aa+t_bb+t_ab amplitude trio)"
+        ),
+        peak,
+        budget_bytes,
+    )
+}
+
+/// Fail-fast pre-flight guard for the `b_full_a`/`b_full_b` full-MO B tensors
+/// held simultaneously every gradient step in [`u_oo_ri_mp2`]'s main loop
+/// (each `(naux, nmo, nmo)` f64 — see the "MEMORY NOTE" on that function).
+fn check_u_bfull_alloc(
+    label: &str,
+    naux: usize,
+    nmo: usize,
+    budget_bytes: usize,
+) -> Result<(), FerricError> {
+    let per_tensor = naux.saturating_mul(nmo).saturating_mul(nmo);
+    let peak = per_tensor.saturating_mul(2).saturating_mul(8);
+    ferric_core::memory::check_alloc(
+        &format!("{label} (naux={naux}, nmo={nmo}; co-resident b_full_a+b_full_b)"),
+        peak,
+        budget_bytes,
+    )
+}
+
 /// Apply Brillouin HF gradient term `+2·F^σ_{ai}` (MO basis) to the existing
 /// MP2 gradient block. Returns `g_total = g_mp2 + 2·F^σ_{a+nocc, i}`.
 ///
@@ -270,16 +330,28 @@ pub fn u_oo_ri_mp2(
 
     let h = oneelectron::hcore(obs);
 
+    // Resolved once per call (not per iteration) — gates the AO-tensor build,
+    // the RiMp2Config threaded into every compute_u_mp2_amplitudes call, and
+    // the amps/b_full guards below, all off the same configured ceiling.
+    let budget_bytes = ferric_core::memory::resolve_budget_bytes(config.memory_budget_bytes);
+    let mp2_cfg = crate::rimp2::RiMp2Config {
+        frozen_core: config.frozen_core,
+        memory_budget_bytes: config.memory_budget_bytes,
+    };
+
     // AO-side invariants for the full-MO B tensors: built once, reused every iter.
-    // Served through the budgeted ThreeIndexSource (FERRIC_ERI3_BUDGET_GB), so
-    // the raw (naux, nao, nao) AO tensor is no longer held resident across the
-    // whole orbital-optimization loop when it exceeds the budget.
+    // Served through the budgeted ThreeIndexSource (thread the config budget,
+    // M1 resolver, rather than the env-only default `build` used), so the raw
+    // (naux, nao, nao) AO tensor is no longer held resident across the whole
+    // orbital-optimization loop when it exceeds the budget.
     //
     // MEMORY NOTE (deliberately not restructured in the M3 lane): `amps` keeps
     // the t_aa/t_bb/t_ab amplitude trio (nocc²·nvir² each) resident across
     // iterations, and the gradient step below holds b_full_a AND b_full_b
     // (naux·nmo² each) simultaneously — the remaining O(N⁴) residents here.
-    let ao = OoRiMp2AoTensors::build(obs, dfbs, op)?;
+    // Both are now guarded by `check_u_amplitude_alloc`/`check_u_bfull_alloc`
+    // below rather than left as an unchecked O(N⁴) allocation.
+    let ao = OoRiMp2AoTensors::build_with_budget(obs, dfbs, op, budget_bytes)?;
 
     // Initial UHF energy + Fock
     let (mut e_hf, mut f_a, mut f_b) = compute_uhf_energy(
@@ -288,14 +360,17 @@ pub fn u_oo_ri_mp2(
     let mut eps_a = orbital_energies_mo(&c_a, &f_a);
     let mut eps_b = orbital_energies_mo(&c_b, &f_b);
 
-    // Initial U-MP2
+    // Initial U-MP2. Fail-fast guard before building the amplitude trio —
+    // see check_u_amplitude_alloc's doc comment for the co-residency this
+    // bounds (t_aa+t_bb+t_ab, all three spin channels at once).
+    check_u_amplitude_alloc(
+        "U-OO-RI-MP2 initial amplitude trio", nocc_a, nvir_a, nocc_b, nvir_b, budget_bytes,
+    )?;
     let scf_view = make_scf_view(
         &c_a, &c_b, &f_a, &f_b, eps_a.clone(), eps_b.clone(),
         nocc_total_a, nocc_total_b, e_hf,
     );
-    let mut amps = compute_u_mp2_amplitudes(
-        mol, obs, dfbs, op, &scf_view, &crate::rimp2::RiMp2Config { frozen_core: config.frozen_core, memory_budget_bytes: None },
-    )?;
+    let mut amps = compute_u_mp2_amplitudes(mol, obs, dfbs, op, &scf_view, &mp2_cfg)?;
     let mut e_mp2 = amps.components.e_total;
     let mut total_energy = e_hf + e_mp2;
     let mut grad_norm = f64::MAX;
@@ -309,7 +384,13 @@ pub fn u_oo_ri_mp2(
     const MU_MAX: f64 = 5.0;
 
     for iter in 1..=config.max_iter {
-        // Full-MO B tensors for gradient
+        // Full-MO B tensors for gradient. Fail-fast guard: b_full_a and
+        // b_full_b (each (naux, nmo, nmo)) are both resident simultaneously
+        // for the gradient contraction just below — see check_u_bfull_alloc's
+        // doc comment and the "MEMORY NOTE" above.
+        check_u_bfull_alloc(
+            &format!("U-OO-RI-MP2 b_full_a/b_full_b (iter {iter})"), ao.naux(), nbas, budget_bytes,
+        )?;
         let b_full_a = compute_b_full_mo_with(&ao, &c_a)?;
         let b_full_b = compute_b_full_mo_with(&ao, &c_b)?;
         let (g_mp2_a, g_mp2_b) = compute_u_mp2_orbital_gradient(&amps, &b_full_a, &b_full_b);
@@ -443,9 +524,11 @@ pub fn u_oo_ri_mp2(
             eps_a_new.clone(), eps_b_new.clone(),
             nocc_total_a, nocc_total_b, e_hf_new,
         );
-        let amps_new = compute_u_mp2_amplitudes(
-            mol, obs, dfbs, op, &scf_view_new, &crate::rimp2::RiMp2Config { frozen_core: config.frozen_core, memory_budget_bytes: None },
+        check_u_amplitude_alloc(
+            &format!("U-OO-RI-MP2 amplitude trio (iter {iter})"),
+            nocc_a, nvir_a, nocc_b, nvir_b, budget_bytes,
         )?;
+        let amps_new = compute_u_mp2_amplitudes(mol, obs, dfbs, op, &scf_view_new, &mp2_cfg)?;
         let total_new = e_hf_new + amps_new.components.e_total;
         let de = (total_new - total_energy).abs();
 
@@ -478,9 +561,11 @@ pub fn u_oo_ri_mp2(
                 let eb = orbital_energies_mo(&bt_c_b, &fb);
                 let sv = make_scf_view(&bt_c_a, &bt_c_b, &fa, &fb, ea.clone(), eb.clone(),
                     nocc_total_a, nocc_total_b, eh);
-                let am = compute_u_mp2_amplitudes(
-                    mol, obs, dfbs, op, &sv, &crate::rimp2::RiMp2Config { frozen_core: config.frozen_core, memory_budget_bytes: None },
+                check_u_amplitude_alloc(
+                    &format!("U-OO-RI-MP2 amplitude trio (iter {iter}, backtrack {_bt})"),
+                    nocc_a, nvir_a, nocc_b, nvir_b, budget_bytes,
                 )?;
+                let am = compute_u_mp2_amplitudes(mol, obs, dfbs, op, &sv, &mp2_cfg)?;
                 bt_total = eh + am.components.e_total;
                 bt_ehf = eh; bt_fa = fa; bt_fb = fb;
                 bt_eps_a = ea; bt_eps_b = eb; bt_amps = am;
@@ -568,6 +653,79 @@ mod tests {
     use ferric_scf::rhf::{solve_rhf, RhfConfig};
     use ferric_scf::screening::SchwarzBounds;
     use ferric_scf::uhf::{solve_uhf, solve_uhf_with_guess, UhfConfig};
+
+    /// M4 memory-guard regression: `check_u_amplitude_alloc` must fire (Err)
+    /// at a realistic large open-shell scale (comparable per-spin-channel
+    /// magnitude to the restricted-code incident: nocc≈60, nvir≈900 per spin)
+    /// against a small configured budget, with both the estimate and the
+    /// budget named in the error message.
+    #[test]
+    fn check_u_amplitude_alloc_rejects_realistic_large_scale() {
+        let nocc_a = 60;
+        let nvir_a = 900;
+        let nocc_b = 58;
+        let nvir_b = 902;
+        let budget_bytes = ferric_core::memory::gib_to_bytes(1.0);
+        let err = check_u_amplitude_alloc(
+            "test large U-OO-MP2", nocc_a, nvir_a, nocc_b, nvir_b, budget_bytes,
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("GB"), "expected a GB-shaped estimate in the error message, got: {msg}");
+        assert!(
+            msg.contains("budget is"),
+            "expected the configured budget named in the error message, got: {msg}"
+        );
+        // Sanity: this really is a huge co-resident trio (~ nocc²nvir² * 2 spins
+        // + cross term, all *8 bytes -- comparable/larger than the restricted
+        // t2 incident), so the rejection is not a trivially-tiny-input fluke.
+        let t_aa = nocc_a * nocc_a * nvir_a * nvir_a;
+        let t_bb = nocc_b * nocc_b * nvir_b * nvir_b;
+        let t_ab = nocc_a * nocc_b * nvir_a * nvir_b;
+        let total_gb = (t_aa + t_bb + t_ab) as f64 * 8.0 / 1e9;
+        assert!(total_gb > 40.0, "test fixture too small to exercise the large-scale guard: {total_gb:.1} GB");
+    }
+
+    /// Companion acceptance test: a small/typical open-shell system (OH/cc-pVDZ
+    /// scale, well within the existing U-OO-MP2 test fixtures below) must NOT
+    /// be rejected under a generous or auto-resolved budget.
+    #[test]
+    fn check_u_amplitude_alloc_accepts_small_system() {
+        // OH/cc-pVDZ-ish scale: nocc_a=5, nocc_b=4, nvir_a=nvir_b=19 (see
+        // u_oo_rimp2_lowers_energy_on_oh below for the real system this mirrors).
+        let nocc_a = 5;
+        let nocc_b = 4;
+        let nvir_a = 19;
+        let nvir_b = 19;
+        let budget_bytes = ferric_core::memory::gib_to_bytes(1.0);
+        assert!(check_u_amplitude_alloc(
+            "test small U-OO-MP2", nocc_a, nvir_a, nocc_b, nvir_b, budget_bytes,
+        )
+        .is_ok());
+        let auto_budget = ferric_core::memory::resolve_budget_bytes(None);
+        assert!(check_u_amplitude_alloc(
+            "test small U-OO-MP2 (auto budget)", nocc_a, nvir_a, nocc_b, nvir_b, auto_budget,
+        )
+        .is_ok());
+    }
+
+    /// `check_u_bfull_alloc` must likewise fire at a large (naux, nmo) scale
+    /// and pass at small scale, with both estimate and budget named.
+    #[test]
+    fn check_u_bfull_alloc_rejects_large_and_accepts_small_scale() {
+        // Large scale: naux~3000, nmo~1000 -> per tensor 3e9 elems * 8 B = 24 GB,
+        // *2 (a+b) = 48 GB -- clearly over a 1 GiB budget.
+        let budget_bytes = ferric_core::memory::gib_to_bytes(1.0);
+        let err = check_u_bfull_alloc("test large b_full", 3000, 1000, budget_bytes).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("GB"), "expected a GB-shaped estimate, got: {msg}");
+        assert!(msg.contains("budget is"), "expected the configured budget named, got: {msg}");
+
+        // Small scale (water/cc-pVDZ-ish: naux~116, nmo~24) must pass.
+        assert!(check_u_bfull_alloc("test small b_full", 116, 24, budget_bytes).is_ok());
+        let auto_budget = ferric_core::memory::resolve_budget_bytes(None);
+        assert!(check_u_bfull_alloc("test small b_full (auto budget)", 116, 24, auto_budget).is_ok());
+    }
 
     /// On a closed-shell singlet (H2 in cc-pVDZ), U-OO-RI-MP2 from a UHF
     /// reference must match closed-shell OO-RI-MP2 from an RHF reference

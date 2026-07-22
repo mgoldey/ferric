@@ -57,6 +57,9 @@ pub struct DfK<'a> {
     /// non-MPI (no reduction, full band).
     #[allow(dead_code)]
     ctx: Option<&'a ParallelContext>,
+    /// The memory budget this source was built under — also caps the K
+    /// reduction band scratch via `resolve_band_bytes`.
+    budget_bytes: usize,
 }
 
 /// V^{-1/2} via symmetric eigendecomposition with canonical orthogonalization.
@@ -152,7 +155,7 @@ impl<'a> DfK<'a> {
         drop(raw);
 
         let ctx = ctx.filter(|c| c.size > 1);
-        Ok(DfK { dressed, ctx })
+        Ok(DfK { dressed, ctx, budget_bytes })
     }
 }
 
@@ -183,10 +186,12 @@ impl KBuilder for DfK<'_> {
             // still bit-identical across thread counts), but the live set is one
             // band (≤512 MiB), not every chunk.
             let n_chunks = b.div_ceil(chunk);
+            let band_bytes = crate::reduce::resolve_band_bytes(self.budget_bytes);
             crate::reduce::grouped_deterministic_sum(
                 k,
                 n_chunks,
                 n,
+                band_bytes,
                 |ci| -> Result<Array2<f64>, FerricError> {
                     let q0 = ci * chunk;
                     let q1 = (q0 + chunk).min(b);
@@ -282,7 +287,7 @@ mod tests {
         let mut k_direct = Array2::zeros((n, n));
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let ctx = ParallelContext::default();
-        let mut dk = DirectK::new(&ctx, &obs, &bounds, 1e-12);
+        let mut dk = DirectK::new(&ctx, &obs, &bounds, 1e-12, usize::MAX);
         <DirectK as KBuilder>::build(&mut dk, &d, &mut k_direct).unwrap();
 
         let mut k_df = Array2::zeros((n, n));
