@@ -36,7 +36,6 @@ use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
-use ferric_integrals::oneelectron;
 use ferric_integrals::operator::Operator;
 use ndarray::Array2;
 use ndarray_linalg::Eigh;
@@ -194,38 +193,17 @@ pub fn solve_rohf(
     // the closed-shell RKS path uses (see solve_rhf) when the user hasn't set
     // one. Ramped to zero as the gradient converges. Meta-GGA falls back to DIIS
     // (no fxc Newton kernel), so this shift is the relevant stabilizer.
-    let effective_level_shift = if config.level_shift == 0.0
-        && xc_is_metagga(config.xc.as_deref())
-    {
-        0.5
-    } else {
-        config.level_shift
-    };
+    let effective_level_shift = crate::driver::effective_level_shift(config);
 
     // RSH path (ω > 0): per-spin K from c_SR · K[erfc(ω)] + c_LR · K[erf(ω)]
     // via two DfK fitters (geometry-only — built once, contracted per spin
     // per iter). Mirrors solve_uhf's RSH path.
-    let (mut dfk_sr, mut dfk_lr) = if k_mix.omega > 0.0 {
-        use ferric_integrals::basis_bridge::PreparedBasis as _PB;
-        let aux_name = config.df_k_aux.as_deref().unwrap_or("def2-universal-jkfit");
-        let dfbs_set = ferric_core::basis::bundled(aux_name)?;
-        let dfbs_prep = _PB::new(mol, &dfbs_set)?;
-        let ooc_budget = crate::rhf::resolve_three_index_budget(config.three_index_budget_bytes);
-        (
-            Some(crate::df_k::DfK::new_banded(
-                ferric_integrals::operator::Operator::erfc(k_mix.omega),
-                prep, &dfbs_prep, ooc_budget, Some(ctx),
-            )?),
-            Some(crate::df_k::DfK::new_banded(
-                ferric_integrals::operator::Operator::erf(k_mix.omega),
-                prep, &dfbs_prep, ooc_budget, Some(ctx),
-            )?),
-        )
-    } else {
-        (None, None)
-    };
-    let s = oneelectron::overlap(prep);
-    let h = oneelectron::hcore_with_external(prep, config.external_potential.as_ref())?;
+    // Shared geometry-only environment: S, hcore(+external+ECP — V_ECP folds
+    // into hcore once, byte-identical to plain hcore for all-electron bases),
+    // V_nn(+external), COSMO/PCM contexts, resolved memory budget, RSH
+    // fitters. One construction serving all six SCF variants (crate::driver).
+    let crate::driver::ScfEnv { s, h, vnn, ooc_budget, cosmo_cavity, pcm_ctx, mut dfk_sr, mut dfk_lr } =
+        crate::driver::prepare(ctx, mol, prep, config, &k_mix)?;
     let n = prep.nbasis();
     let nelec = mol.nelec() as i64;
     let mult = mol.multiplicity as i64;
@@ -249,26 +227,6 @@ pub fn solve_rohf(
             "ROHF: nocc_a + nocc_b != nelec".into(),
         ));
     }
-    let vnn = mol.nuclear_repulsion()
-        + config.external_potential.as_ref().map_or(0.0, |ext| {
-            ext.charge_nuclear_energy(mol) + ext.field_nuclear_energy(mol)
-        });
-
-    // COSMO cavity (geometry-only, built once). See rhf::solve_rhf for the
-    // full rationale.
-    let cosmo_cavity: Option<crate::cosmo::CosmoCavity> = match config.cosmo.as_ref() {
-        Some(cfg) => Some(crate::cosmo::CosmoCavity::build(mol, cfg)?),
-        None => None,
-    };
-    // IEF-PCM: geometry-only cavity + K/R setup, built once (see rhf.rs's
-    // solve_rhf for the identical pattern/rationale). `None` (default) makes
-    // the per-iteration hook below a pure no-op.
-    let pcm_ctx: Option<ferric_pcm::PcmContext> = config
-        .pcm
-        .as_ref()
-        .map(|pcfg| ferric_pcm::PcmContext::new(mol, pcfg))
-        .transpose()?;
-
     // S^{-1/2}
     let (s_evals, s_evecs) = s
         .eigh(ndarray_linalg::UPLO::Upper)
@@ -302,7 +260,9 @@ pub fn solve_rohf(
     let mut k_b_buf = Array2::<f64>::zeros((n, n));
 
     let mut diis = Diis::new(config.diis_size);
-    let mut prev_e = 0.0;
+    // Convergence bookkeeping (prev energy, ΔP signals, divergence streak,
+    // stall history) — shared driver::ScfMonitor.
+    let mut mon = crate::driver::ScfMonitor::new();
     // MOM reference: (closed-MO AO block, open-MO AO block) from the most
     // recently accepted iter. None until iter `config.mom_after_iter`.
     let mut mom_ref: Option<(Array2<f64>, Array2<f64>)> = None;
@@ -317,9 +277,9 @@ pub fn solve_rohf(
     // EnginePool on first use (ctors serialized behind a global mutex), so a
     // loop-local builder would pay that construction every iteration.
     let need_k = c_k != 0.0 || k_mix.omega > 0.0;
-    let mut direct_j = DirectJ::new(ctx, prep, bounds, config.integral_thresh);
+    let mut direct_j = DirectJ::new(ctx, prep, bounds, config.integral_thresh, ooc_budget);
     let mut direct_k: Option<DirectK> = if need_k && k_mix.omega == 0.0 {
-        Some(DirectK::new(ctx, prep, bounds, config.integral_thresh))
+        Some(DirectK::new(ctx, prep, bounds, config.integral_thresh, ooc_budget))
     } else {
         None
     };
@@ -331,51 +291,37 @@ pub fn solve_rohf(
         k_b_buf.fill(0.0);
         let d_total = &d_a + &d_b;
         // ΔP vs the previous iteration's total density — the primary convergence
-        // signal (see rhf::scf_converged). INFINITY on iter 1.
-        let (dp_rms, dp_max) = match prev_d_total.as_ref() {
-            Some(prev) => {
-                let diff = &d_total - prev;
-                let n2 = (diff.len() as f64).max(1.0);
-                (
-                    (diff.iter().map(|v| v * v).sum::<f64>() / n2).sqrt(),
-                    diff.iter().map(|v| v.abs()).fold(0.0f64, f64::max),
-                )
-            }
-            None => (f64::INFINITY, f64::INFINITY),
-        };
+        // signal (see rhf::scf_converged). The monitor stays at INFINITY until
+        // the first recorded change (iter 1).
+        if let Some(prev) = prev_d_total.as_ref() {
+            mon.record_density_change(&d_total, prev);
+        }
         prev_d_total = Some(d_total.clone());
 
         // J from D_total
         total_quartets += direct_j.build(&d_total, &mut j_buf)?;
-        let mut k_a_total = Array2::<f64>::zeros((n, n));
-        let mut k_b_total = Array2::<f64>::zeros((n, n));
+        // F_σ = H + J − K_σ_total  (then + V^σ_xc below for ROKS), assembled
+        // in place — no k_σ_total clones for HF/plain hybrids and no zeros
+        // allocations for pure DFT. `f_σ += (−c)·K` is bit-identical to the
+        // former `f_σ −= c·&K` clone path (sign flip is exact); the RSH branch
+        // keeps the explicit SR/LR combination for the same reason.
+        let mut f_a: Array2<f64> = &h + &j_buf;
+        let mut f_b: Array2<f64> = &h + &j_buf;
         if k_mix.omega > 0.0 {
             let dfk_sr = dfk_sr.as_mut().expect("dfk_sr built when omega>0");
             let dfk_lr = dfk_lr.as_mut().expect("dfk_lr built when omega>0");
-            let mut k_sr_a = Array2::<f64>::zeros((n, n));
-            let mut k_lr_a = Array2::<f64>::zeros((n, n));
-            let mut k_sr_b = Array2::<f64>::zeros((n, n));
-            let mut k_lr_b = Array2::<f64>::zeros((n, n));
-            dfk_sr.build(&d_a, &mut k_sr_a)?;
-            dfk_lr.build(&d_a, &mut k_lr_a)?;
-            dfk_sr.build(&d_b, &mut k_sr_b)?;
-            dfk_lr.build(&d_b, &mut k_lr_b)?;
-            k_a_total = k_mix.sr * &k_sr_a + k_mix.lr * &k_lr_a;
-            k_b_total = k_mix.sr * &k_sr_b + k_mix.lr * &k_lr_b;
+            crate::fock_assembly::subtract_rsh_exchange(
+                dfk_sr, dfk_lr, &d_a, &mut f_a, k_mix.sr, k_mix.lr, 1.0,
+            )?;
+            crate::fock_assembly::subtract_rsh_exchange(
+                dfk_sr, dfk_lr, &d_b, &mut f_b, k_mix.sr, k_mix.lr, 1.0,
+            )?;
         } else if need_k {
             let dk = direct_k.as_mut().expect("DirectK built before loop");
             total_quartets += <DirectK as KBuilder>::build(dk, &d_a, &mut k_a_buf)?;
             total_quartets += <DirectK as KBuilder>::build(dk, &d_b, &mut k_b_buf)?;
-            k_a_total = c_k * &k_a_buf;
-            k_b_total = c_k * &k_b_buf;
-        }
-
-        // F_σ = H + J − K_σ_total  (then + V^σ_xc below for ROKS)
-        let mut f_a: Array2<f64> = &h + &j_buf;
-        let mut f_b: Array2<f64> = &h + &j_buf;
-        if need_k {
-            f_a -= &k_a_total;
-            f_b -= &k_b_total;
+            f_a.scaled_add(-c_k, &k_a_buf);
+            f_b.scaled_add(-c_k, &k_b_buf);
         }
 
         // Pre-XC electronic energy.
@@ -387,34 +333,20 @@ pub fn solve_rohf(
             0.0
         };
 
-        // COSMO reaction field, built from the total density D_a + D_b (see
-        // rhf::solve_rhf / uhf::solve_uhf_fockmod / crate::cosmo for the full
-        // derivation); spin-independent, added identically to both Focks.
-        let e_cosmo = if let Some(cavity) = cosmo_cavity.as_ref() {
-            let cosmo_cfg = config.cosmo.as_ref().expect("cosmo_cavity implies config.cosmo");
-            let cr = crate::cosmo::cosmo_reaction_field(mol, prep, cavity, cosmo_cfg, &d_total)?;
-            f_a += &cr.v_reaction;
-            f_b += &cr.v_reaction;
-            cr.e_cosmo
-        } else {
-            0.0
-        };
-
-        // IEF-PCM: solve for the apparent surface charge from the CURRENT
-        // total density, add the reaction-field operator to BOTH spin Focks
-        // (before the Roothaan effective-Fock combination, so the coupled
-        // single-MO-set ROHF equations feel it), and add E_pcm as its own
-        // standalone energy term — see rhf.rs's solve_rhf for the full
-        // double-counting rationale. Independent of COSMO above, additive
-        // if both are configured (unusual/unvalidated).
-        let e_pcm = if let Some(pctx) = pcm_ctx.as_ref() {
-            let (v_pcm, e_pcm) = ferric_pcm::pcm_step(pctx, mol, prep, &d_total)?;
-            f_a += &v_pcm;
-            f_b += &v_pcm;
-            e_pcm
-        } else {
-            0.0
-        };
+        // COSMO + IEF-PCM reaction fields, built from the total density
+        // D_a + D_b and added identically to BOTH spin Focks (before the
+        // Roothaan effective-Fock combination, so the coupled single-MO-set
+        // ROHF equations feel them); energies are standalone terms — see
+        // driver::solvent_terms and rhf::solve_rhf for the derivation notes.
+        let (e_cosmo, e_pcm) = crate::driver::solvent_terms(
+            mol,
+            prep,
+            config,
+            cosmo_cavity.as_ref(),
+            pcm_ctx.as_ref(),
+            &d_total,
+            &mut [&mut f_a, &mut f_b],
+        )?;
 
         let energy = e_elec_no_xc + e_xc + e_cosmo + e_pcm + vnn;
 
@@ -456,18 +388,24 @@ pub fn solve_rohf(
         let g_mo_anti: Array2<f64> = &g_mo - &g_mo.t();
         let err: Array2<f64> = s.dot(&c).dot(&g_mo_anti).dot(&c.t()).dot(&s);
 
-        let de = (energy - prev_e).abs();
+        let sig = mon.signals(energy);
+        let de = sig.de;
         let err_max = err.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
         // Converge on ΔP + loose ΔE, the same gate as solve_rhf/solve_uhf — the
         // ROHF cation path (used as a gw100 fallback) hits the same RI energy/
         // gradient noise floor at aTZ, so the old `err_max < density_conv` gate
         // would grind to MaxIter there too. See rhf::scf_converged.
-        let conv_exit = crate::rhf::scf_converged(
-            crate::rhf::ConvergenceSignals { de, dp_rms, dp_max },
-            config.energy_conv,
-            config.density_conv,
-        );
+        let conv_exit = crate::rhf::scf_converged(sig, config.energy_conv, config.density_conv);
         let converged = conv_exit.is_some();
+
+        // Divergence / stall early exits (shared driver::ScfMonitor; both are
+        // no-ops at the None defaults — ROHF previously ignored these knobs).
+        if mon.diverging(energy, config.divergence_tol) || mon.stalled(err_max, config.stall_window) {
+            return Err(FerricError::ScfConvergence {
+                iterations: iter,
+                last_energy: mon.prev_e,
+            });
+        }
 
         // FERRIC_ROHF_TRACE=1: per-iter diagnostic of plateau dynamics.
         // Logs (iter, energy, ΔE, err_max, per-block gradient max,
@@ -510,7 +448,8 @@ pub fn solve_rohf(
         // format consistent with the RHF/UHF verbose line.
         if config.verbose && ctx.is_root() {
             println!(
-                "ROHF iter={iter:4}  E={energy:.10}  dE={de:.3e}  dp_rms={dp_rms:.3e}  err_max={err_max:.3e}"
+                "ROHF iter={iter:4}  E={energy:.10}  dE={de:.3e}  dp_rms={:.3e}  err_max={err_max:.3e}",
+                mon.dp_rms
             );
         }
 
@@ -536,7 +475,7 @@ pub fn solve_rohf(
                 computed_quartets: total_quartets,
             });
         }
-        prev_e = energy;
+        mon.note_energy(energy);
 
         // Pick update strategy. Newton step (if enabled and below trigger)
         // uses per-spin diagonal Fock entries to precondition a PCG solve of
@@ -700,7 +639,7 @@ pub fn solve_rohf(
     }
     Err(FerricError::ScfConvergence {
         iterations: config.max_iter,
-        last_energy: prev_e,
+        last_energy: mon.prev_e,
     })
 }
 

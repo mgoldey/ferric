@@ -23,6 +23,8 @@ pub mod screening;
 pub mod qqr;
 pub mod pairs;
 pub mod fock;
+pub(crate) mod fock_assembly;
+pub(crate) mod driver;
 pub mod cosmo;
 pub use cosmo::{CosmoCavity, CosmoConfig, CosmoResult};
 pub mod reduce;

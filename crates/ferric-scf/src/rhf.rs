@@ -20,7 +20,6 @@ use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
-use ferric_integrals::oneelectron;
 use ferric_integrals::operator::Operator;
 use ferric_core::parallel::ParallelContext;
 use ndarray::Array2;
@@ -254,7 +253,7 @@ pub fn resolve_three_index_budget(config_bytes: usize) -> usize {
 /// still above the 1e-4 plateau floor (below it, the separate plateau-acceptance
 /// path owns the regime). Returns `false` when `window == 0` (degenerate/no-op
 /// config) or when there isn't yet `2*window` entries of history.
-fn stall_detected(errmax_history: &[f64], window: usize, current_err: f64) -> bool {
+pub(crate) fn stall_detected(errmax_history: &[f64], window: usize, current_err: f64) -> bool {
     if window == 0 {
         return false;
     }
@@ -357,15 +356,30 @@ pub fn solve_rhf(
     bounds: &SchwarzBounds,
     config: &RhfConfig,
 ) -> Result<ScfResult, FerricError> {
-    let s = oneelectron::overlap(prep);
-    // hcore_ecp adds the ECP projector V_ECP when the basis carries ECPs;
-    // identical to hcore() (zero extra cost) for all-electron basis sets.
-    let h = oneelectron::hcore_ecp_with_external(
-        prep,
-        mol,
-        prep.basis_set(),
-        config.external_potential.as_ref(),
-    )?;
+    // Build the XC contribution once. None for pure HF. Built FIRST so the
+    // shared driver env can size the RSH fitter pair from k_mix, and so the
+    // JK-aux auto-defaults below can see hybrid/RSH-ness.
+    use ferric_dft::ks::KsXc;
+    use ferric_dft::xc_trait::{XcContribution, KMix};
+
+    let xc_contrib: Option<Box<dyn XcContribution>> = if let Some(name) = config.xc.as_deref() {
+        let main = config.dft_grid.clone().unwrap_or_default();
+        let nlc = config.nlc_grid.clone()
+            .unwrap_or(ferric_dft::grid::AtomicGridConfig { n_radial: 50, n_angular: 50 });
+        let ks = KsXc::new(mol, prep.basis_set(), name, &main, &nlc)
+            .map_err(|e| FerricError::General(format!("KsXc init for {name}: {e:?}")))?;
+        Some(Box::new(ks) as Box<dyn XcContribution>)
+    } else {
+        None
+    };
+    let k_mix: KMix = xc_contrib.as_ref().map(|x| x.k_mix()).unwrap_or_default();
+
+    // Shared geometry-only environment: S, hcore(+ECP, +external), V_nn
+    // (+external), COSMO/PCM contexts, resolved memory budget, RSH fitters.
+    // One construction serving all six SCF variants — see crate::driver.
+    let crate::driver::ScfEnv { s, h, vnn, ooc_budget, cosmo_cavity, pcm_ctx, mut dfk_sr, mut dfk_lr } =
+        crate::driver::prepare(ctx, mol, prep, config, &k_mix)?;
+
     let n = prep.nbasis();
     let nelec = mol.nelec();
     if nelec % 2 != 0 {
@@ -375,29 +389,6 @@ pub fn solve_rhf(
         });
     }
     let nocc = (nelec / 2) as usize;
-    // IEF-PCM: cavity + S/D/K/R geometry-only setup, built ONCE (mirrors
-    // DfJ/DfK/LinkK being built once before the loop). `None` (default) means
-    // this is `None` too and the per-iteration hook below is a pure no-op —
-    // see the pcm_none_matches_vacuum_* regression tests.
-    let pcm_ctx: Option<ferric_pcm::PcmContext> = config
-        .pcm
-        .as_ref()
-        .map(|pcfg| ferric_pcm::PcmContext::new(mol, pcfg))
-        .transpose()?;
-    let vnn = mol.nuclear_repulsion()
-        + config.external_potential.as_ref().map_or(0.0, |ext| {
-            ext.charge_nuclear_energy(mol) + ext.field_nuclear_energy(mol)
-        });
-
-    // COSMO cavity: geometry-only (independent of the density), so it is
-    // built once here, before the loop. `None` when `config.cosmo` is
-    // `None` — every downstream use is gated on this being `Some`, so the
-    // SCF loop below is byte-for-byte identical to a COSMO-less build when
-    // solvation is disabled.
-    let cosmo_cavity: Option<crate::cosmo::CosmoCavity> = match config.cosmo.as_ref() {
-        Some(cfg) => Some(crate::cosmo::CosmoCavity::build(mol, cfg)?),
-        None => None,
-    };
 
     // Initial density: explicit override > SAD (default) > hcore. SAD is the
     // default because the bare hcore guess diverges on heavy-atom closed shells
@@ -426,14 +417,11 @@ pub fn solve_rhf(
     let mut diis = DiisDriver::new(config.diis_flavor, config.diis_size, config.diis_switch_thresh);
     // MOM reference: last accepted occupied MO block (None until armed).
     let mut mom_ref: Option<Array2<f64>> = None;
-    let mut prev_e = 0.0;
-    // Density change from the PREVIOUS iteration's D update (ΔP = D_new − D_old),
-    // the ORCA/PySCF primary convergence signal. Carried into the next
-    // iteration's convergence check (ΔP for iter N is known only after iter N's
-    // density rebuild). INFINITY on iter 1 so the gate can never fire before a
-    // real ΔP exists. See scf_converged / the df-jk-noise-floor memory.
-    let mut dp_rms = f64::INFINITY;
-    let mut dp_max = f64::INFINITY;
+    // Convergence bookkeeping (prev energy, carried ΔP signals, divergence
+    // streak, stall history) — shared across all SCF variants, see
+    // driver::ScfMonitor. ΔP is INFINITY until the first density rebuild so
+    // the gate can never fire on iter 1 (scf_converged / df-jk-noise-floor).
+    let mut mon = crate::driver::ScfMonitor::new();
     let mut total_quartets = 0;
 
     if let Some(kb) = config.k_builder.as_deref() {
@@ -442,43 +430,8 @@ pub fn solve_rhf(
         }
     }
 
-    // Build the XC contribution once. None for pure HF. Done before df_j/df_k
-    // setup so we can read k_mix and apply auto JK-aux defaults for hybrid /
-    // RSH functionals without forcing the user to set them explicitly.
-    use ferric_dft::ks::KsXc;
-    use ferric_dft::xc_trait::{XcContribution, KMix};
-
-    let xc_contrib: Option<Box<dyn XcContribution>> = if let Some(name) = config.xc.as_deref() {
-        let main = config.dft_grid.clone().unwrap_or_default();
-        let nlc = config.nlc_grid.clone()
-            .unwrap_or(ferric_dft::grid::AtomicGridConfig { n_radial: 50, n_angular: 50 });
-        let ks = KsXc::new(mol, prep.basis_set(), name, &main, &nlc)
-            .map_err(|e| FerricError::General(format!("KsXc init for {name}: {e:?}")))?;
-        Some(Box::new(ks) as Box<dyn XcContribution>)
-    } else {
-        None
-    };
-
-    let k_mix: KMix = xc_contrib.as_ref().map(|x| x.k_mix()).unwrap_or_default();
-
-    // Meta-GGA (SCAN / r2SCAN) SCF is stiffer than LDA/GGA: with plain DIIS from
-    // a SAD guess it limit-cycles just above the tight density threshold (the
-    // τ-dependent Fock amplifies the grid-integration noise). A modest default
-    // virtual-block level shift (the same ramped shift used to cure heavy-atom
-    // closed-shell divergence) makes it converge cleanly — SCAN/H2O in ~13 iters
-    // vs. never at ls=0. Only applied when the user hasn't set their own shift,
-    // and ramped to zero as the gradient converges so the final energy is
-    // unperturbed. LDA/GGA/hybrid keep ls=0 (unchanged behavior).
-    let effective_level_shift = if config.level_shift == 0.0
-        && crate::rohf::xc_is_metagga(config.xc.as_deref())
-    {
-        0.5
-    } else {
-        config.level_shift
-    };
-
-    // Resolve the out-of-core 3-index memory budget once (env override wins).
-    let ooc_budget = resolve_three_index_budget(config.three_index_budget_bytes);
+    // Meta-GGA default virtual-block level shift (see driver::effective_level_shift).
+    let effective_level_shift = crate::driver::effective_level_shift(config);
 
     // Auto-default JK aux bases when the functional needs exact exchange but
     // the caller hasn't explicitly set df_j_aux / df_k_aux. This makes
@@ -495,7 +448,7 @@ pub fn solve_rhf(
     // `needs_k`; for HF it is true where `needs_k` is false, since `needs_k` is
     // DFT-specific.)
     let k_consumed = xc_contrib.is_none() || k_mix.sr > 0.0 || k_mix.omega > 0.0;
-    const DEFAULT_JK_AUX: &str = "def2-universal-jkfit";
+    use crate::fock_assembly::DEFAULT_JK_AUX;
     let df_j_aux_eff: Option<String> = config.df_j_aux.clone()
         .or_else(|| needs_j.then(|| DEFAULT_JK_AUX.into()));
     let df_k_aux_eff: Option<String> = config.df_k_aux.clone()
@@ -522,25 +475,6 @@ pub fn solve_rhf(
         None
     };
 
-    // RSH path: pre-build the SR/LR DfK fitters once. Their 3-center B[P,μ,ν]
-    // tensors are geometry-only — only the D-dependent contraction happens per
-    // SCF iteration. Building inside the loop was a major hot-spot for wB97X-V.
-    let (mut dfk_sr, mut dfk_lr) = if k_mix.omega > 0.0 {
-        let aux_name = df_k_aux_eff.as_deref().ok_or_else(|| {
-            FerricError::General(
-                "Range-separated hybrid requires RhfConfig.df_k_aux (e.g. \"def2-universal-jkfit\")".into()
-            )
-        })?;
-        let dfbs_set = ferric_core::basis::bundled(aux_name)?;
-        let dfbs_prep = PreparedBasis::new(mol, &dfbs_set)?;
-        (
-            Some(DfK::new_banded(Operator::erfc(k_mix.omega), prep, &dfbs_prep, ooc_budget, Some(ctx))?),
-            Some(DfK::new_banded(Operator::erf(k_mix.omega), prep, &dfbs_prep, ooc_budget, Some(ctx))?),
-        )
-    } else {
-        (None, None)
-    };
-
     // Build LinkK once — SignificantPairs is geometry-dependent and expensive per iteration.
     // When using the "link" builder, compute a fresh SchwarzBounds to own the lifetime.
     let link_schwarz_opt = if config.k_builder.as_deref() == Some("link") {
@@ -549,7 +483,7 @@ pub fn solve_rhf(
         None
     };
     let mut k_builder: Option<Box<dyn KBuilder>> = link_schwarz_opt.as_ref().map(|sb| {
-        let mut lk = LinkK::new(ctx, prep, sb, op, config.integral_thresh);
+        let mut lk = LinkK::new(ctx, prep, sb, op, config.integral_thresh, ooc_budget);
         lk.update_density(&d);
         Box::new(lk) as Box<dyn KBuilder>
     });
@@ -571,11 +505,6 @@ pub fn solve_rhf(
     // smeared density rebuild; `None` when smearing is off (default). Used only
     // for optional free-energy trace reporting.
     let mut last_smearing: Option<crate::smearing::Smearing> = None;
-
-    // Stall/divergence early-abort state (opt-in via RhfConfig; both None by
-    // default leaves existing behavior unchanged).
-    let mut errmax_history: Vec<f64> = Vec::new();
-    let mut divergence_streak = 0usize;
 
     // Shared constructor for every non-converged exit path (MaxIter / Stalled /
     // Diverged). The Converged path re-diagonalizes fresh and is NOT built from
@@ -614,7 +543,7 @@ pub fn solve_rhf(
     // every iteration. Which builders exist mirrors the branch structure below.
     let df_any = df_j.is_some() || df_k.is_some();
     let mut direct_j: Option<DirectJ> = if (df_any && df_j.is_none()) || (!df_any && k_builder.is_some()) {
-        Some(DirectJ::new(ctx, prep, bounds, config.integral_thresh))
+        Some(DirectJ::new(ctx, prep, bounds, config.integral_thresh, ooc_budget))
     } else {
         None
     };
@@ -624,12 +553,12 @@ pub fn solve_rhf(
     // (e.g. Cu2/aug-cc-pVDZ) dominated the iteration at ~99 s while the actual XC
     // grid work was ~0.4 s. HF and hybrids/RSH keep k_consumed = true, unaffected.
     let mut direct_k: Option<DirectK> = if df_any && df_k.is_none() && k_consumed {
-        Some(DirectK::new(ctx, prep, bounds, config.integral_thresh))
+        Some(DirectK::new(ctx, prep, bounds, config.integral_thresh, ooc_budget))
     } else {
         None
     };
     let mut direct_jk: Option<DirectJK> = if !df_any && k_builder.is_none() {
-        Some(DirectJK::new(ctx, prep, bounds, config.integral_thresh))
+        Some(DirectJK::new(ctx, prep, bounds, config.integral_thresh, ooc_budget))
     } else {
         None
     };
@@ -666,35 +595,29 @@ pub fn solve_rhf(
             total_quartets += djk.build(&d, &mut j_buf, &mut k_buf)?;
         }
 
-        // k_total accumulates the exact-exchange contribution to be subtracted from F
-        // as ½ · k_total. Convention:
-        //   pure HF (xc=None):    k_mix = {1, 1, 0}      → k_total = k_buf (existing)
-        //   pure DFT (LDA/PBE):   k_mix = {0, 0, 0}      → k_total = 0 (skip K)
-        //   plain hybrid (B3LYP): k_mix = {α, α, 0}      → k_total = α · k_buf
-        //   RSH (wB97X-V):        k_mix = {sr, lr, ω>0}  → k_total = sr·K_SR + lr·K_LR
-        let k_total: Array2<f64> = if k_mix.omega > 0.0 {
+        // F = H + J − ½ K_total  (V_xc, COSMO reaction field added below),
+        // assembled in place — no k_total clone for HF/plain hybrids and no
+        // zeros allocation for pure DFT. The exact-exchange mix convention:
+        //   pure HF (xc=None):    k_mix = {1, 1, 0}      → K_total = k_buf
+        //   pure DFT (LDA/PBE):   k_mix = {0, 0, 0}      → no exchange term
+        //   plain hybrid (B3LYP): k_mix = {α, α, 0}      → K_total = α · k_buf
+        //   RSH (wB97X-V):        k_mix = {sr, lr, ω>0}  → K_total = sr·K_SR + lr·K_LR
+        // Bit-identical to the former `f.assign(&(&h + &j_buf - &(0.5 * &k_total)))`:
+        // scaling by 0.5 is exact, so fl(0.5·α·k) = 0.5·fl(α·k) elementwise.
+        f.assign(&h);
+        f += &j_buf;
+        if k_mix.omega > 0.0 {
             // Range-separated: SR/LR DfK fitters were built once before the
             // loop (geometry-only). Only the D-dependent contraction runs here.
             let dfk_sr = dfk_sr.as_mut().expect("dfk_sr built when omega>0");
             let dfk_lr = dfk_lr.as_mut().expect("dfk_lr built when omega>0");
-
-            let mut k_sr = Array2::<f64>::zeros((n, n));
-            dfk_sr.build(&d, &mut k_sr)?;
-
-            let mut k_lr = Array2::<f64>::zeros((n, n));
-            dfk_lr.build(&d, &mut k_lr)?;
-
-            k_mix.sr * &k_sr + k_mix.lr * &k_lr
+            crate::fock_assembly::subtract_rsh_exchange(
+                dfk_sr, dfk_lr, &d, &mut f, k_mix.sr, k_mix.lr, 0.5,
+            )?;
         } else if k_mix.sr > 0.0 {
-            // Plain hybrid or pure HF: use the K already built by the existing builder path.
-            k_mix.sr * &k_buf
-        } else {
-            // Pure DFT: no exact exchange.
-            Array2::<f64>::zeros((n, n))
-        };
-
-        // F = H + J − ½ K_total  (V_xc, COSMO reaction field added below)
-        f.assign(&(&h + &j_buf - &(0.5 * &k_total)));
+            // Plain hybrid or pure HF: K already built by the builder path above.
+            f.scaled_add(-0.5 * k_mix.sr, &k_buf);
+        }
 
         // Electronic energy BEFORE adding V_xc (V_xc is one-body in F but
         // E_xc is its own integral) and BEFORE adding the COSMO reaction
@@ -710,41 +633,21 @@ pub fn solve_rhf(
             0.0
         };
 
-        // COSMO reaction field: depends on the CURRENT density, so it is
-        // recomputed every iteration (unlike `external_potential`, folded
-        // into `h` once before the loop). Added into F (so it enters the
-        // Fock matrix used for the next diagonalization/DIIS step, mirroring
-        // how PySCF's `get_fock` adds `v_solvent` on top of `vhf`), and its
-        // energy contribution is added directly to `energy` (not via the
-        // ½Tr[D·(h+F)] trace).
-        let e_cosmo = if let Some(cavity) = cosmo_cavity.as_ref() {
-            let cosmo_cfg = config.cosmo.as_ref().expect("cosmo_cavity implies config.cosmo");
-            let cr = crate::cosmo::cosmo_reaction_field(mol, prep, cavity, cosmo_cfg, &d)?;
-            f += &cr.v_reaction;
-            cr.e_cosmo
-        } else {
-            0.0
-        };
-
-        // IEF-PCM: solve for the apparent surface charge from the CURRENT
-        // density, add the reaction-field operator to F (so the SCF
-        // equations feel it and the density relaxes in response), and add
-        // E_pcm as its own standalone energy term — NOT folded into the
-        // 0.5·D·(H+F) one-electron trace above, which would double-count it
-        // (see ferric_pcm's crate doc + rhf.rs call site comment: this
-        // mirrors how PySCF's `_attach_solvent.py` adds `e_solvent` to
-        // `e_tot` separately from the ordinary one-electron energy, after
-        // folding `v_solvent` into the Fock/`vhf` the SCF equations use).
-        // Independent of COSMO above: both are additive if a caller sets
-        // both `config.cosmo` and `config.pcm` (unusual and unvalidated —
-        // see the `pcm` field doc — but the two hooks don't interfere).
-        let e_pcm = if let Some(pctx) = pcm_ctx.as_ref() {
-            let (v_pcm, e_pcm) = ferric_pcm::pcm_step(pctx, mol, prep, &d)?;
-            f += &v_pcm;
-            e_pcm
-        } else {
-            0.0
-        };
+        // COSMO + IEF-PCM reaction fields: density-dependent, recomputed every
+        // iteration and folded into F (unlike `external_potential`, folded into
+        // `h` once before the loop); their energies are standalone terms, NOT
+        // part of the ½Tr[D·(H+F)] trace (PySCF's e_solvent convention). See
+        // driver::solvent_terms for the full derivation notes; a vacuum run
+        // (both None) is byte-identical to a solvation-less build.
+        let (e_cosmo, e_pcm) = crate::driver::solvent_terms(
+            mol,
+            prep,
+            config,
+            cosmo_cavity.as_ref(),
+            pcm_ctx.as_ref(),
+            &d,
+            &mut [&mut f],
+        )?;
 
         let energy = e_elec_no_xc + e_xc + e_cosmo + e_pcm + vnn;
 
@@ -761,7 +664,8 @@ pub fn solve_rhf(
         });
         let err = &fds - &sdf;
 
-        let de = (energy - prev_e).abs();
+        let sig = mon.signals(energy);
+        let de = sig.de;
         let err_max = err.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
         // RMS commutator (‖FDS−SDF‖_F / sqrt(size)) — a diagnostic, NOT a gate.
         let grad_rms = {
@@ -772,8 +676,9 @@ pub fn solve_rhf(
         if scf_trace() {
             eprintln!(
                 "SCF iter={iter:4}  E={energy:.12}  dE={de:.3e}  \
-                 dp_rms={dp_rms:.3e}  dp_max={dp_max:.3e}  \
-                 |g|_rms={grad_rms:.3e}  err_max={err_max:.3e}"
+                 dp_rms={:.3e}  dp_max={:.3e}  \
+                 |g|_rms={grad_rms:.3e}  err_max={err_max:.3e}",
+                mon.dp_rms, mon.dp_max
             );
         }
 
@@ -785,52 +690,36 @@ pub fn solve_rhf(
         // only rank 0 prints, so ranks > 0 never emit duplicate lines.
         if config.verbose && ctx.is_root() {
             println!(
-                "SCF iter={iter:4}  E={energy:.10}  dE={de:.3e}  dp_rms={dp_rms:.3e}  err_max={err_max:.3e}"
+                "SCF iter={iter:4}  E={energy:.10}  dE={de:.3e}  dp_rms={:.3e}  err_max={err_max:.3e}",
+                mon.dp_rms
             );
         }
 
         // Convergence decision: energy + density change (ORCA ConvCheckMode-2 /
         // PySCF), NOT the DIIS commutator. Under RI-J/RI-JK the commutator parks
         // on a naux-dependent noise floor and never drains; ΔP does (MEASURED),
-        // so we gate on ΔP and treat the commutator as diagnostic only. This
-        // replaces the former tower of naux-chasing plateau hacks (df_noise_floor,
-        // near-degeneracy grad_stalled, oscillation noise-band) with one
-        // size-independent criterion. See scf_converged.
-        //
-        // dp_rms/dp_max are INFINITY until the first density rebuild (iter 1), so
-        // the `iter > 1` guard below is belt-and-suspenders on top of that.
-        let conv_exit = scf_converged(
-            ConvergenceSignals { de, dp_rms, dp_max },
-            config.energy_conv,
-            config.density_conv,
-        );
+        // so we gate on ΔP and treat the commutator as diagnostic only. See
+        // scf_converged. ΔP is INFINITY until the first density rebuild (iter
+        // 1), so the `iter > 1` guard below is belt-and-suspenders on top.
+        let conv_exit = scf_converged(sig, config.energy_conv, config.density_conv);
 
-        // Divergence: energy climbing for consecutive iters.
-        if let Some(tol) = config.divergence_tol {
-            if energy - prev_e > tol {
-                divergence_streak += 1;
-            } else {
-                divergence_streak = 0;
+        // Divergence: energy climbing for consecutive iters (see ScfMonitor).
+        if mon.diverging(energy, config.divergence_tol) {
+            if scf_trace() {
+                eprintln!("SCF diverged at iter={iter}: dE={:.3e} > tol for 3 iters", energy - mon.prev_e);
             }
-            if divergence_streak >= 3 {
-                if scf_trace() {
-                    eprintln!("SCF diverged at iter={iter}: dE={:.3e} > tol for 3 iters", energy - prev_e);
-                }
-                return Ok(build_nonconverged(ScfExit::Diverged, &d, &last_c, &last_eps, &f, energy, iter, total_quartets));
-            }
+            return Ok(build_nonconverged(ScfExit::Diverged, &d, &last_c, &last_eps, &f, energy, iter, total_quartets));
         }
 
         // Stall: running-min err_max over a window stopped falling. Robust to
         // oscillation (a wide-band limit cycle has net-zero running-min change).
         // Only fires above the 1e-4 floor — below it the plateau path accepts.
-        if let Some(w) = config.stall_window {
-            errmax_history.push(err_max);
-            if stall_detected(&errmax_history, w, err_max) {
-                if scf_trace() {
-                    eprintln!("SCF stalled at iter={iter}: err_max={err_max:.3e} (no progress over {w} iters)");
-                }
-                return Ok(build_nonconverged(ScfExit::Stalled, &d, &last_c, &last_eps, &f, energy, iter, total_quartets));
+        if mon.stalled(err_max, config.stall_window) {
+            if scf_trace() {
+                let w = config.stall_window.unwrap_or(0);
+                eprintln!("SCF stalled at iter={iter}: err_max={err_max:.3e} (no progress over {w} iters)");
             }
+            return Ok(build_nonconverged(ScfExit::Stalled, &d, &last_c, &last_eps, &f, energy, iter, total_quartets));
         }
 
         if iter > 1 {
@@ -868,7 +757,7 @@ pub fn solve_rhf(
                 });
             }
         }
-        prev_e = energy;
+        mon.note_energy(energy);
 
         // ── Second-order (Newton) update, RHF/RKS ────────────────────────────
         // When enabled (newton_trigger > 0) and err_max has dropped below the
@@ -926,12 +815,7 @@ pub fn solve_rhf(
             // Rebuild density D = 2·C_occ·C_occᵀ and record ΔP for convergence.
             let c_occ = c_new.slice(ndarray::s![.., ..nocc]);
             let d_new = with_blas_threads(opt_in_blas_threads(), || 2.0 * c_occ.dot(&c_occ.t()));
-            {
-                let diff = &d_new - &d;
-                let n2 = (diff.len() as f64).max(1.0);
-                dp_rms = (diff.iter().map(|v| v * v).sum::<f64>() / n2).sqrt();
-                dp_max = diff.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
-            }
+            mon.record_density_change(&d_new, &d);
             d.assign(&d_new);
             last_c = c_new;
             if effective_level_shift > 0.0 {
@@ -1014,12 +898,7 @@ pub fn solve_rhf(
         // (consumed at the top of the next iteration by scf_converged). Unlike
         // the DIIS commutator, ΔP drains to zero at the RI fixed point even when
         // the commutator parks on the naux-dependent noise floor.
-        {
-            let diff = &d_new - &d;
-            let n2 = (diff.len() as f64).max(1.0);
-            dp_rms = (diff.iter().map(|v| v * v).sum::<f64>() / n2).sqrt();
-            dp_max = diff.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
-        }
+        mon.record_density_change(&d_new, &d);
         d.assign(&d_new);
         last_c = c;
     }
@@ -1031,7 +910,7 @@ pub fn solve_rhf(
         &last_c,
         &last_eps,
         &f,
-        prev_e,
+        mon.prev_e,
         config.max_iter,
         total_quartets,
     ))
@@ -1120,7 +999,10 @@ pub fn build_jk(
 
     let mut total_j = Array2::<f64>::zeros((nbf, nbf));
     let mut total_k = Array2::<f64>::zeros((nbf, nbf));
-    crate::reduce::grouped_deterministic_sum_pair(&mut total_j, &mut total_k, n_groups, nbf, |g| {
+    // No solver-resolved budget is plumbed into this helper (Newton/test path);
+    // fall back to the env/auto-resolved unified budget.
+    let band_bytes = crate::reduce::default_band_bytes();
+    crate::reduce::grouped_deterministic_sum_pair(&mut total_j, &mut total_k, n_groups, nbf, band_bytes, |g| {
         let lo = g * group_size;
         let hi = (lo + group_size).min(n_pairs);
         let mut local_j = Array2::<f64>::zeros((nbf, nbf));
@@ -1369,28 +1251,7 @@ fn diagonalize(
     f: &Array2<f64>,
     x: &Array2<f64>,
 ) -> Result<(Vec<f64>, Array2<f64>), FerricError> {
-    let n = x.nrows();
-    let m = x.ncols();
-    // Runs once per SCF iteration, serially (called from the main loop body,
-    // outside any rayon region — the JK build is the only rayon-parallel step
-    // per iteration and has already returned by this point). Opt-in BLAS
-    // raise (default 1); SAD/free-atom protection per the DIIS comment above.
-    let (evals, c_kept) = with_blas_threads(opt_in_blas_threads(), || {
-        let f_prime = x.t().dot(f).dot(x);
-        let (evals, evecs) = f_prime.eigh(ndarray_linalg::UPLO::Upper)?;
-        let c_kept = x.dot(&evecs); // (n × m)
-        Ok::<_, ndarray_linalg::error::LinalgError>((evals, c_kept))
-    })
-    .map_err(|e| FerricError::Lapack(format!("F diag: {e}")))?;
-    if m == n {
-        return Ok((evals.to_vec(), c_kept));
-    }
-    // Pad to (n × n): zero MO columns + sentinel high energy for dropped modes.
-    let mut c = Array2::<f64>::zeros((n, n));
-    c.slice_mut(ndarray::s![.., ..m]).assign(&c_kept);
-    let mut eps = evals.to_vec();
-    eps.resize(n, 1e6);
-    Ok((eps, c))
+    crate::driver::diagonalize_rect(f, x)
 }
 
 #[cfg(test)]
