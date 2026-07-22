@@ -93,6 +93,7 @@ use super::{CcConfig, CcResult};
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
+use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::operator::Operator;
 use ferric_mp2::mo_transform::{transform_3center_oo, transform_3center_ov, transform_3center_vv};
 use ferric_mp2::rimp2::cholesky_inverse_sqrt;
@@ -102,6 +103,7 @@ use ferric_tensors::{einsum, Axis};
 use ndarray::{Array2, Array3, ArrayD, Axis as NdAxis};
 #[cfg(test)]
 use ndarray::IxDyn;
+use rayon::prelude::*;
 
 /// P(a/bc) on the (…,a,b,c) axes 3,4,5: x − x.swap(a,b) − x.swap(a,c).
 ///
@@ -135,6 +137,45 @@ fn p_i_jk(x: ArrayD<f64>) -> ArrayD<f64> {
 /// raw_w, raw_v, w_block, v_block, d_block, one scratch — see module doc).
 fn peak_triple_block_bytes(nv2: usize) -> usize {
     nv2.saturating_pow(3).saturating_mul(6).saturating_mul(8)
+}
+
+/// Enumerate every unique unordered occupied spin-orbital triple `i0<j0<k0` in
+/// `0..no2`, in ascending lexicographic order. This flattened list is what the
+/// parallel-triples loop below iterates over — building it once up front (a
+/// pure function of `no2` alone) means the chunk boundaries used for
+/// memory-bounded banding are a pure function of the triple list, never of the
+/// thread count, so the summation order (and hence the bit pattern of `et`)
+/// cannot depend on `RAYON_NUM_THREADS`.
+fn unique_occ_triples(no2: usize) -> Vec<(usize, usize, usize)> {
+    let mut triples = Vec::new();
+    for i0 in 0..no2 {
+        for j0 in (i0 + 1)..no2 {
+            for k0 in (j0 + 1)..no2 {
+                triples.push((i0, j0, k0));
+            }
+        }
+    }
+    triples
+}
+
+/// Thread-count-independent chunk width (number of triples processed in one
+/// parallel band) from a byte budget: `chunk_len * peak_triple_block_bytes(nv2)
+/// <= band_budget_bytes`, floored at 1 so an oversized single triple still
+/// makes progress (the existing `check_alloc` pre-flight guard in [`ccsd_t`]
+/// already rejects a job whose single-triple footprint alone exceeds the full
+/// resolved budget, so this floor is only ever exercised when one triple fits
+/// but many concurrent copies don't).
+///
+/// This mirrors the `ferric_scf::reduce` banding pattern (see that module's
+/// doc comment): partition a flattened work list into fixed-size bands sized
+/// from a byte budget, run one band in parallel, fold serially across bands in
+/// ascending order. The chunk width here is a pure function of `nv2` and the
+/// band budget — NOT of `rayon::current_num_threads()` — so chunk boundaries
+/// (and therefore the serial fold order across chunks) stay identical at any
+/// thread count.
+fn triple_chunk_len(nv2: usize, band_budget_bytes: usize) -> usize {
+    let per_triple = peak_triple_block_bytes(nv2).max(1);
+    (band_budget_bytes / per_triple).max(1)
 }
 
 /// `raw_w[a,b,c] = Σ_e t2[j,k,a,e]·bcei[b,c,e,i]  −  Σ_m t2[i,m,b,c]·majk[m,a,j,k]`
@@ -361,40 +402,98 @@ pub fn ccsd_t(
     let t2: ArrayD<f64> = cc.t2.clone().into_dyn();
 
     // --- Stream over unique occupied triples i<j<k, one [nv2,nv2,nv2] block
-    // at a time. See module doc comment for why summing (t3c+t3d)*D*t3c over
-    // unique occ triples (but ALL nv2^3 virtual triples) and dividing by 36
-    // exactly reproduces the fully-ordered dense sum — proven directly by
-    // the dense-vs-streaming regression test below.
+    // at a time, now PARALLEL over triples via rayon. See module doc comment
+    // for why summing (t3c+t3d)*D*t3c over unique occ triples (but ALL
+    // nv2^3 virtual triples) and dividing by 36 exactly reproduces the
+    // fully-ordered dense sum — proven directly by the dense-vs-streaming
+    // regression test below.
+    //
+    // Parallelization strategy (thread-count-independent reduction):
+    // each triple's contribution to `et` is fully independent of every other
+    // triple, so this is an embarrassingly-parallel map-then-sum. Floating
+    // point `+` is non-associative, so a rayon `reduce`/`sum` (whose binary
+    // tree shape depends on the worker count) would make `et` drift with
+    // `RAYON_NUM_THREADS` — forbidden here (bit-identity is asserted by
+    // `thread_count_bit_identical_h2o_ccpvdz` below). Instead: flatten the
+    // unique triples into a `Vec` (pure function of `no2`, see
+    // `unique_occ_triples`), split it into fixed-size CHUNKS (pure function of
+    // `nv2` and the byte budget, see `triple_chunk_len` — never of thread
+    // count), and for each chunk: `par_iter().map(..).collect::<Vec<f64>>()`
+    // (rayon's `collect` preserves index order regardless of worker count) to
+    // get one partial `et` contribution per triple in the chunk, then fold
+    // those chunk-local partials into `et` SERIALLY in ascending triple order.
+    // The total addition order across all chunks and triples is therefore
+    // exactly the same ascending (i0,j0,k0) lexicographic order the old
+    // serial loop used, so `et` is bit-identical to the pre-parallelization
+    // value and to any other thread count — this mirrors the
+    // `ferric_scf::reduce` grouped-deterministic-sum banding pattern.
+    //
+    // Memory: each triple concurrently "in flight" inside one chunk holds its
+    // own raw_w/raw_v/w_block/v_block (`peak_triple_block_bytes(nv2)` total,
+    // 6 buffers) — so a chunk of width `W` has a live set of up to
+    // `W * peak_triple_block_bytes(nv2)` (rayon may not run the full chunk
+    // concurrently if there are fewer workers than `W`, but the byte budget
+    // must assume the worst case). `triple_chunk_len` sizes `W` from
+    // `budget/2` (half of the resolved memory budget — the other half is
+    // headroom for the precomputed O(no·nv³)-class intermediates (bcei/majk/
+    // bcjk/t1/t2) already live at this point), so worst-case peak stays
+    // `<= budget/2`, on top of those intermediates. Chunk boundaries are
+    // purely a function of the triple list + nv2 + budget (never thread
+    // count), which is what keeps the fold order (and therefore `et`'s bit
+    // pattern) deterministic above.
+    //
+    // BLAS threading: `raw_w_block`'s two GEMMs (`.dot()`) run inside this
+    // rayon parallel region. `opt_in_blas_threads()` has a runtime rayon-
+    // worker self-guard (see ferric-core/src/blas_threads.rs
+    // `opt_in_blas_threads_with`: `rayon::current_thread_index().is_some()`
+    // forces a return of `1` regardless of any `FERRIC_BLAS_THREADS` env
+    // override) — so wrapping the per-triple work in
+    // `with_blas_threads(opt_in_blas_threads(), ..)` resolves to 1 BLAS
+    // thread per rayon worker automatically here, avoiding the
+    // rayon×OpenBLAS oversubscription / worker-stack-overflow hazard
+    // documented there, with no extra logic needed in this crate.
+    let triples = unique_occ_triples(no2);
+    let chunk_len = triple_chunk_len(nv2, budget / 2);
     let mut et = 0.0f64;
-    for i0 in 0..no2 {
-        for j0 in (i0 + 1)..no2 {
-            for k0 in (j0 + 1)..no2 {
-                let w_block = triple_block(
-                    |i, j, k| raw_w_block(&t2, &bcei, &majk, no2, nv2, i, j, k),
-                    i0,
-                    j0,
-                    k0,
-                );
-                let v_block = triple_block(
-                    |i, j, k| raw_v_block(&t1, &bcjk, nv2, i, j, k),
-                    i0,
-                    j0,
-                    k0,
-                );
-                let e_i = eo[i0] + eo[j0] + eo[k0];
-                for a in 0..nv2 {
-                    for b in 0..nv2 {
-                        for c in 0..nv2 {
-                            let d = e_i - ev[a] - ev[b] - ev[c];
-                            let w = w_block[[a, b, c]];
-                            let v = v_block[[a, b, c]];
-                            let t3c = w / d;
-                            let t3d = v / d;
-                            et += (t3c + t3d) * d * t3c;
+    for chunk in triples.chunks(chunk_len) {
+        let partials: Vec<f64> = with_blas_threads(opt_in_blas_threads(), || {
+            chunk
+                .par_iter()
+                .map(|&(i0, j0, k0)| {
+                    let w_block = triple_block(
+                        |i, j, k| raw_w_block(&t2, &bcei, &majk, no2, nv2, i, j, k),
+                        i0,
+                        j0,
+                        k0,
+                    );
+                    let v_block = triple_block(
+                        |i, j, k| raw_v_block(&t1, &bcjk, nv2, i, j, k),
+                        i0,
+                        j0,
+                        k0,
+                    );
+                    let e_i = eo[i0] + eo[j0] + eo[k0];
+                    let mut partial = 0.0f64;
+                    for a in 0..nv2 {
+                        for b in 0..nv2 {
+                            for c in 0..nv2 {
+                                let d = e_i - ev[a] - ev[b] - ev[c];
+                                let w = w_block[[a, b, c]];
+                                let v = v_block[[a, b, c]];
+                                let t3c = w / d;
+                                let t3d = v / d;
+                                partial += (t3c + t3d) * d * t3c;
+                            }
                         }
                     }
-                }
-            }
+                    partial
+                })
+                .collect()
+        });
+        // Serial fold in ascending triple order — the determinism anchor
+        // (see the comment block above).
+        for p in partials {
+            et += p;
         }
     }
     // NOTE the divisor here is 6, not the textbook 36: `i0<j0<k0` already
@@ -683,6 +782,48 @@ mod tests {
         assert!(
             (t_dense - t_streaming).abs() < 1e-10,
             "streaming (T) = {t_streaming:.12} disagrees with dense (T) = {t_dense:.12}"
+        );
+    }
+
+    /// The parallel-triples rewrite MUST produce a bit-identical `et` at any
+    /// `RAYON_NUM_THREADS` — this is the whole point of the collect-then-
+    /// serial-sum idiom (never a rayon reduce/sum) documented at the loop
+    /// site in [`ccsd_t`]. Runs the SAME (mol, basis, CCSD result) through
+    /// `ccsd_t` under two different rayon thread pools (1 and 4 workers,
+    /// installed via `ThreadPoolBuilder::install`) and asserts the two `f64`
+    /// results have identical bit patterns (`to_bits()`), not just "close".
+    #[test]
+    fn thread_count_bit_identical_h2o_ccpvdz() {
+        let mol = Molecule::parse_xyz(
+            "3\n\nO 0.0 0.0 0.1173\nH 0.0 0.7572 -0.4692\nH 0.0 -0.7572 -0.4692\n",
+            0,
+            1,
+        )
+        .unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("def2-qzvpp-rifit").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let ctx = ParallelContext::default();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
+        let cc_cfg = CcConfig { frozen_core: 0, max_iter: 100, energy_conv: 1e-9, ..Default::default() };
+        let ccsd_res = ccsd(&mol, &obs, &dfbs, op, &rhf, &cc_cfg).unwrap();
+
+        let run_with_pool = |n_threads: usize| -> f64 {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(n_threads)
+                .build()
+                .unwrap();
+            pool.install(|| ccsd_t(&mol, &obs, &dfbs, op, &rhf, &ccsd_res, &cc_cfg).unwrap())
+        };
+
+        let et_1 = run_with_pool(1);
+        let et_4 = run_with_pool(4);
+        println!("(T) 1-thread = {et_1:.15}, 4-thread = {et_4:.15}");
+        assert_eq!(
+            et_1.to_bits(),
+            et_4.to_bits(),
+            "(T) must be bit-identical across thread counts: 1-thread={et_1:.17e}, 4-thread={et_4:.17e}"
         );
     }
 }
