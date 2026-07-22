@@ -18,6 +18,7 @@ pub mod orbitals;
 pub mod parallel;
 pub mod memory;
 pub mod config;
+pub mod blas_threads;
 
 pub use error::FerricError;
 pub use orbitals::OrbitalSpace;

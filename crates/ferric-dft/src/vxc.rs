@@ -466,7 +466,15 @@ pub fn semilocal_vxc_polarized_scratch(
             .and(vrho_sigma)
             .map_collect(|&w, &r, &v| if r > DENSITY_FLOOR { w * v } else { 0.0 });
         scale_columns_into(chi.view(), &s, buf);
-        let mut v: Array2<f64> = buf.dot(&chi.t());
+        // Digestion GEMM, outside any rayon region — this whole function
+        // runs serially at the top level of one UKS SCF/grid-response
+        // iteration (the `build` closure below is called twice, sequentially,
+        // for α and β). Opt-in BLAS raise via FERRIC_BLAS_THREADS (default 1,
+        // unchanged behavior); opt_in_blas_threads()'s rayon-worker self-guard
+        // also protects any caller reached from inside a rayon pool (e.g.
+        // free-atom SAD grid builds under run_serial_pool).
+        let mut v: Array2<f64> =
+            with_blas_threads(opt_in_blas_threads(), || buf.dot(&chi.t()));
 
         if has_gga {
             // GGA piece for spin σ:
@@ -500,7 +508,9 @@ pub fn semilocal_vxc_polarized_scratch(
                         }
                     });
                 scale_columns_into(chi.view(), &f_ax, buf);
-                let m_axis: Array2<f64> = buf.dot(&dchi_axis.t());
+                // Same opt-in-raise digestion GEMM as the LDA piece above.
+                let m_axis: Array2<f64> =
+                    with_blas_threads(opt_in_blas_threads(), || buf.dot(&dchi_axis.t()));
                 v = v + &m_axis + &m_axis.t();
             }
         }
@@ -519,7 +529,9 @@ pub fn semilocal_vxc_polarized_scratch(
                         if r > DENSITY_FLOOR { 0.5 * w * vt } else { 0.0 }
                     });
                 scale_columns_into(dchi_axis, &f_ax, buf);
-                let m_axis: Array2<f64> = buf.dot(&dchi_axis.t());
+                // Same opt-in-raise digestion GEMM as the LDA piece above.
+                let m_axis: Array2<f64> =
+                    with_blas_threads(opt_in_blas_threads(), || buf.dot(&dchi_axis.t()));
                 v += &m_axis;
             }
         }

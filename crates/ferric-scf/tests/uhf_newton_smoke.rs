@@ -256,7 +256,8 @@ fn uhf_hessian_matvec_matches_finite_difference() {
         fxc: None,
         thresh: 1e-12,
     };
-    let (hk_a, hk_b) = ferric_scf::uhf_newton::hessian_matvec(&ctx, &inputs, &ka, &kb).unwrap();
+    let pool = ferric_scf::engine_pool::EnginePool::new(bounds.op, &prep, 1e-14).unwrap();
+    let (hk_a, hk_b) = ferric_scf::uhf_newton::hessian_matvec(&ctx, &inputs, &ka, &kb, &pool).unwrap();
 
     // Central-difference the orbital gradient along κ:  [g(εκ) − g(−εκ)]/(2ε)
     // → H·κ as ε → 0. Compare the analytic matvec against a small-ε ladder,

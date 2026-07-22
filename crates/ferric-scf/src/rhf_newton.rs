@@ -29,7 +29,8 @@
 //! Rotation is applied via the Cayley unitary U = (I − κ/2)^{−1}(I + κ/2), which
 //! exactly preserves orthonormality (identical to `uhf_newton.rs`).
 
-use crate::rhf::build_jk;
+use crate::engine_pool::EnginePool;
+use crate::rhf::build_jk_with_pool;
 use crate::rohf_newton::FxcResponse;
 use crate::screening::SchwarzBounds;
 use ferric_core::parallel::ParallelContext;
@@ -71,6 +72,13 @@ pub fn rhf_newton_step(
     let n = inp.c.nrows();
     let no = inp.nocc;
 
+    // EnginePool is geometry/basis-only (density-independent) — build ONCE
+    // here and reuse across every hessian_matvec call in the PCG loop below,
+    // instead of build_jk constructing a fresh pool per call. Reduction order
+    // (grouped_deterministic_sum, inside build_jk_with_pool) is unchanged, so
+    // results stay bit-identical across thread counts.
+    let pool = EnginePool::new(inp.bounds.op, inp.prep, 1e-14)?;
+
     // Gradient g_{ai} = F_{ai}  (rows = virt, cols = occ).
     let g = occ_virt_block(inp.f_mo, no, n);
 
@@ -86,7 +94,7 @@ pub fn rhf_newton_step(
     let cg_iters = if gmax < cg_conv { 0 } else { cg_max_iter };
 
     // Preconditioned conjugate-gradient solve for H·κ = −g.
-    let h0 = hessian_matvec(ctx, inp, &k)?;
+    let h0 = hessian_matvec(ctx, inp, &k, &pool)?;
     let mut r = &neg(&g) - &h0;
     let mut z = &r / &diag;
     let mut p = z.clone();
@@ -96,7 +104,7 @@ pub fn rhf_newton_step(
         if max_abs(&r) < cg_conv {
             break;
         }
-        let ap = hessian_matvec(ctx, inp, &p)?;
+        let ap = hessian_matvec(ctx, inp, &p, &pool)?;
         let p_ap = inner(&p, &ap);
         if p_ap.abs() < 1e-30 {
             break;
@@ -128,6 +136,7 @@ pub fn hessian_matvec(
     ctx: &ParallelContext,
     inp: &RhfNewtonInputs,
     k: &Array2<f64>,
+    pool: &EnginePool,
 ) -> Result<Array2<f64>, FerricError> {
     let n = inp.c.nrows();
     let no = inp.nocc;
@@ -142,7 +151,7 @@ pub fn hessian_matvec(
     // δJ and δK on the total restricted density perturbation.
     let mut dj = Array2::<f64>::zeros((n, n));
     let mut dk = Array2::<f64>::zeros((n, n));
-    build_jk(ctx, inp.prep, inp.bounds, inp.thresh, &dd_ao, &mut dj, &mut dk)?;
+    build_jk_with_pool(ctx, inp.prep, inp.bounds, inp.thresh, &dd_ao, &mut dj, &mut dk, pool)?;
 
     // F = H + J − ½·k_mix·K  ⇒  δF = δJ − ½·k_mix·δK.
     let c_k = inp.k_mix_sr;

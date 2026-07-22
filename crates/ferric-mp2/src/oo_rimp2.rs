@@ -13,6 +13,7 @@
 //! which includes both the 1-PDM/Fock terms and the 2-electron integral
 //! response terms from the MO integral derivatives.
 
+use crate::orbital_rotation::cayley_rotation;
 use crate::rimp2::{active_occ, cholesky_inverse_sqrt};
 use ferric_core::mol::Molecule;
 use ferric_core::orbitals::OrbitalSpace;
@@ -23,11 +24,11 @@ use ferric_integrals::operator::Operator;
 use ferric_integrals::three_index_source::ThreeIndexSource;
 use ferric_integrals::threeindex;
 use ferric_scf::diis::Diis;
-use ferric_scf::rhf::build_jk;
+use ferric_scf::engine_pool::EnginePool;
+use ferric_scf::rhf::build_jk_with_pool;
 use ferric_scf::ScfResult;
 use ferric_scf::screening::SchwarzBounds;
 use ndarray::{Array2, Array3};
-use ndarray_linalg::Solve;
 use std::cell::RefCell;
 
 /// Configuration for OO-RI-MP2.
@@ -330,6 +331,7 @@ fn compute_hf_energy(
     c: &Array2<f64>,
     nocc_total: usize,
     h: &Array2<f64>,
+    pool: &EnginePool,
 ) -> Result<(f64, Array2<f64>, Array2<f64>), FerricError> {
     let n = prep.nbasis();
 
@@ -349,7 +351,7 @@ fn compute_hf_energy(
     let mut j_mat = Array2::zeros((n, n));
     let mut k_mat = Array2::zeros((n, n));
     let ctx = ferric_core::parallel::ParallelContext::default();
-    build_jk(&ctx, prep, bounds, 1e-12, &d, &mut j_mat, &mut k_mat)?;
+    build_jk_with_pool(&ctx, prep, bounds, 1e-12, &d, &mut j_mat, &mut k_mat, pool)?;
 
     // F = H + J - 0.5*K
     let f = h + &j_mat - &(0.5 * &k_mat);
@@ -706,7 +708,19 @@ pub fn build_mp2_density(
 /// ALREADY be correct in the code below — no sign or structural change to it
 /// was needed. The single missing piece was term 3.
 ///
-/// Full formula (c=virtual, k=occupied index of the rotation kappa_{ck}):
+/// SIGN CONVENTION (unified 2026-07-22): this function returns g = +∂E/∂κ under
+/// the CANONICAL Cayley rotation `U = (I−κ/2)⁻¹(I+κ/2) ≈ exp(κ)` (shared
+/// `orbital_rotation::cayley_rotation`, same as `u_oo_rimp2`). The formula
+/// below is written in the PRE-UNIFICATION Cayley sense `U = (I+κ/2)⁻¹(I−κ/2) ≈
+/// exp(−κ)`; because those two rotations are inverses, the value this function
+/// actually returns is the NEGATIVE of the formula as written — the HF term is
+/// coded as `+4·F_{ck}` and the MP2 block as `+2·grad_ck − denom_term`. The
+/// finite-difference validation tests (which drive `energy_at_kappa` through
+/// the same shared Cayley) therefore compare against the returned +∂E/∂κ and
+/// pass unchanged.
+///
+/// Full formula in the PRE-UNIFICATION Cayley sense (c=virtual, k=occupied index
+/// of the rotation kappa_{ck}); NEGATE for what the code returns (see above):
 ///
 ///   dE_total/d kappa_{ck} = -4*F_{ck}  (HF part, "Term0" below)
 ///     + 2 * sum_{ijab} t_{ij,ab} * [2*d(ia|jb)/dk - d(ib|ja)/dk]   ("Term1..Term4")
@@ -885,13 +899,16 @@ fn compute_orbital_gradient_panelled(
     // g_{ai} has shape (nvir, nocc) -- virtual index a, occupied index i
     let mut g = Array2::zeros((nvir, nocc));
 
-    // HF contribution: -4 * F_{ai} (sign follows the Cayley rotation convention
-    // where kappa_{ai}>0 mixes occupied into virtual: C_new ≈ C(I-K))
+    // HF/Brillouin contribution: +4 * F_{ai}. Sign follows the CANONICAL Cayley
+    // convention (shared `orbital_rotation::cayley_rotation`,
+    // U = (I−κ/2)⁻¹(I+κ/2) ≈ exp(κ), g = +∂E/∂κ), where κ_{ai}>0 mixes virtual
+    // into occupied via C_new ≈ C(I+κ). This is the closed-shell analogue of
+    // u_oo_rimp2's `+2·F_ai` HF term (factor 4 vs 2 is the RHF density doubling).
     for a in 0..nvir {
         let a_mo = nocc_total + a;
         for i in 0..nocc {
             let i_mo = first_occ + i;
-            g[(a, i)] -= 4.0 * f_mo[(a_mo, i_mo)];
+            g[(a, i)] += 4.0 * f_mo[(a_mo, i_mo)];
         }
     }
 
@@ -1046,7 +1063,13 @@ fn compute_orbital_gradient_panelled(
                         }
                     }
 
-                    *row_k = -2.0 * grad_ck + denom_term;
+                    // Canonical convention (g = +∂E/∂κ, shared Cayley
+                    // U = (I−κ/2)⁻¹(I+κ/2)): the whole MP2 integral- +
+                    // denominator-response block carries the OPPOSITE overall
+                    // sign to the pre-unification `-2·grad_ck + denom_term`,
+                    // matched to the HF term's flip above so the full gradient
+                    // is consistently g = +∂E/∂κ.
+                    *row_k = 2.0 * grad_ck - denom_term;
                 }
                 (c_idx, row)
             })
@@ -1061,29 +1084,6 @@ fn compute_orbital_gradient_panelled(
     }
 
     g
-}
-
-/// Cayley transform for orbital rotation.
-///
-/// Given antisymmetric kappa (nmo x nmo), compute U = (I + kappa/2)^{-1} (I - kappa/2).
-/// U is exactly unitary for any antisymmetric kappa.
-fn cayley_rotation(kappa: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
-    let n = kappa.nrows();
-    let eye = Array2::eye(n);
-    let half_k = 0.5 * kappa;
-    let lhs = &eye + &half_k; // I + kappa/2
-    let rhs = &eye - &half_k; // I - kappa/2
-
-    // Solve (I + kappa/2) U = (I - kappa/2) for U, column by column
-    let mut u = Array2::zeros((n, n));
-    for col in 0..n {
-        let rhs_col = rhs.column(col).to_owned();
-        let u_col = lhs
-            .solve(&rhs_col)
-            .map_err(|e| FerricError::Lapack(format!("Cayley solve col {col}: {e}")))?;
-        u.column_mut(col).assign(&u_col);
-    }
-    Ok(u)
 }
 
 /// Run OO-RI-MP2.
@@ -1120,11 +1120,20 @@ pub fn oo_ri_mp2(
     // Thread the config budget (M1 resolver) rather than the env-only default.
     let ao = OoRiMp2AoTensors::build_with_budget(obs, dfbs, op, budget_bytes)?;
 
+    // EnginePool is geometry/basis-only (density-independent) — build ONCE
+    // here and reuse across every compute_hf_energy call in the outer
+    // iteration + backtracking loops below (this is the OO-MP2 orbital
+    // rotation loop: (mol, obs, bounds) never change across iterations, only
+    // the orbital coefficients C do), instead of build_jk constructing a
+    // fresh pool per call. Reduction order is unchanged, so results stay
+    // bit-identical across thread counts.
+    let pool = EnginePool::new(bounds.op, obs, 1e-14)?;
+
     // Start from converged RHF orbitals
     let mut c = rhf.mos_r().clone();
 
     // Initial energies
-    let (mut e_hf, mut f_ao, _d) = compute_hf_energy(mol, obs, bounds, &c, nocc_total, &h)?;
+    let (mut e_hf, mut f_ao, _d) = compute_hf_energy(mol, obs, bounds, &c, nocc_total, &h, &pool)?;
     let mut eps = orbital_energies(&c, &f_ao);
     let (mut e_mp2, mut b_ov) = compute_rimp2_with_orbitals(&ao, &c, &eps, &orb)?;
     let mut total_energy = e_hf + e_mp2;
@@ -1257,7 +1266,7 @@ pub fn oo_ri_mp2(
 
         // Evaluate energy at the new (possibly DIIS-extrapolated) orbitals
         let (ehf, fao, _d) =
-            compute_hf_energy(mol, obs, bounds, &c_new, nocc_total, &h)?;
+            compute_hf_energy(mol, obs, bounds, &c_new, nocc_total, &h, &pool)?;
         let epsnew = orbital_energies(&c_new, &fao);
         let (emp2, bov) = compute_rimp2_with_orbitals(&ao, &c_new, &epsnew, &orb)?;
         let total_new = ehf + emp2;
@@ -1290,7 +1299,7 @@ pub fn oo_ri_mp2(
                 let u2 = cayley_rotation(&k)?;
                 bt_c = c.dot(&u2);
                 let (eh, fa, _) =
-                    compute_hf_energy(mol, obs, bounds, &bt_c, nocc_total, &h)?;
+                    compute_hf_energy(mol, obs, bounds, &bt_c, nocc_total, &h, &pool)?;
                 let en = orbital_energies(&bt_c, &fa);
                 let (em, bo) = compute_rimp2_with_orbitals(&ao, &bt_c, &en, &orb)?;
                 bt_total = eh + em;
@@ -1403,7 +1412,8 @@ pub fn energy_at_kappa(
     let ao = OoRiMp2AoTensors::build(obs, dfbs, op)?;
     let u = cayley_rotation(kappa)?;
     let c_rot = c_init.dot(&u);
-    let (e_hf, f_ao, _) = compute_hf_energy(mol, obs, bounds, &c_rot, nocc_total, &h)?;
+    let pool = EnginePool::new(bounds.op, obs, 1e-14)?;
+    let (e_hf, f_ao, _) = compute_hf_energy(mol, obs, bounds, &c_rot, nocc_total, &h, &pool)?;
     let eps = orbital_energies(&c_rot, &f_ao);
     let (e_mp2, _) = compute_rimp2_with_orbitals(&ao, &c_rot, &eps, orb)?;
     Ok(e_hf + e_mp2)
@@ -1543,7 +1553,8 @@ mod tests {
         let orb = OrbitalSpace::new(nocc, nvir, nocc_total, first_occ);
         let h = oneelectron::hcore(&obs);
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let (_e_hf, f_ao, _) = compute_hf_energy(&_mol, &obs, &bounds, c, nocc_total, &h).unwrap();
+        let pool = EnginePool::new(op, &obs, 1e-14).unwrap();
+        let (_e_hf, f_ao, _) = compute_hf_energy(&_mol, &obs, &bounds, c, nocc_total, &h, &pool).unwrap();
         let eps = orbital_energies(c, &f_ao);
         let (_e, b_flat) = compute_rimp2_with_orbitals(&ao, c, &eps, &orb).unwrap();
 
@@ -1584,7 +1595,8 @@ mod tests {
         let c = rhf.mos_r();
         let h = oneelectron::hcore(&obs);
         let ao = OoRiMp2AoTensors::build(&obs, &dfbs, op).unwrap();
-        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h).unwrap();
+        let pool = EnginePool::new(op, &obs, 1e-14).unwrap();
+        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h, &pool).unwrap();
         let eps = orbital_energies(c, &f_ao);
         let (_e, b_flat) = compute_rimp2_with_orbitals(&ao, c, &eps, &orb).unwrap();
 
@@ -1715,7 +1727,8 @@ mod tests {
         let c = rhf.mos_r();
         let h = oneelectron::hcore(&obs);
         let ao = OoRiMp2AoTensors::build(&obs, &dfbs, op).unwrap();
-        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h).unwrap();
+        let pool = EnginePool::new(op, &obs, 1e-14).unwrap();
+        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h, &pool).unwrap();
         let eps = orbital_energies(c, &f_ao);
         let (_e_mp2, b_ov) = compute_rimp2_with_orbitals(&ao, c, &eps, &orb).unwrap();
 
@@ -1846,7 +1859,8 @@ mod tests {
         let c = rhf.mos_r();
         let h = oneelectron::hcore(&obs);
         let ao = OoRiMp2AoTensors::build(&obs, &dfbs, op).unwrap();
-        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h).unwrap();
+        let pool = EnginePool::new(op, &obs, 1e-14).unwrap();
+        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h, &pool).unwrap();
         let eps = orbital_energies(c, &f_ao);
         let (_e_mp2, b_ov) = compute_rimp2_with_orbitals(&ao, c, &eps, &orb).unwrap();
 
@@ -1980,7 +1994,8 @@ mod tests {
         // rather than trusting the solver's last internal value).
         let h = oneelectron::hcore(&obs);
         let ao = OoRiMp2AoTensors::build(&obs, &dfbs, op).unwrap();
-        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h).unwrap();
+        let pool = EnginePool::new(op, &obs, 1e-14).unwrap();
+        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h, &pool).unwrap();
         let eps = orbital_energies(c, &f_ao);
         let (_e_mp2, b_ov) = compute_rimp2_with_orbitals(&ao, c, &eps, &orb).unwrap();
         let naux = dfbs.nbasis();
@@ -2254,7 +2269,8 @@ mod tests {
         assert!(maxdiff < 1e-12, "b_full spill vs in-core maxdiff={maxdiff:.2e}");
 
         // MP2 energy + b_ov identical.
-        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h).unwrap();
+        let pool = EnginePool::new(op, &obs, 1e-14).unwrap();
+        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h, &pool).unwrap();
         let eps = orbital_energies(c, &f_ao);
         let (e_ref, bov_ref) = compute_rimp2_with_orbitals(&ao_ref, c, &eps, &orb).unwrap();
         let (e_spill, bov_spill) = compute_rimp2_with_orbitals(&ao_spill, c, &eps, &orb).unwrap();
@@ -2279,7 +2295,8 @@ mod tests {
         let c = rhf.mos_r();
         let h = oneelectron::hcore(&obs);
         let ao = OoRiMp2AoTensors::build(&obs, &dfbs, op).unwrap();
-        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h).unwrap();
+        let pool = EnginePool::new(op, &obs, 1e-14).unwrap();
+        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h, &pool).unwrap();
         let eps = orbital_energies(c, &f_ao);
         let (_e, b_ov) = compute_rimp2_with_orbitals(&ao, c, &eps, &orb).unwrap();
         let (t2, _) = compute_t2_and_integrals(&b_ov, &eps, nocc, nvir, nocc_total, first_occ, naux);
@@ -2449,7 +2466,8 @@ mod tests {
         let c = rhf.mos_r();
         let h = oneelectron::hcore(&obs);
         let ao = OoRiMp2AoTensors::build(&obs, &dfbs, op).unwrap();
-        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h).unwrap();
+        let pool = EnginePool::new(op, &obs, 1e-14).unwrap();
+        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h, &pool).unwrap();
         let eps = orbital_energies(c, &f_ao);
         let (_e, b_ov) = compute_rimp2_with_orbitals(&ao, c, &eps, &orb).unwrap();
         let (t2, _) = compute_t2_and_integrals(&b_ov, &eps, nocc, nvir, nocc_total, first_occ, naux);

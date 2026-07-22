@@ -361,12 +361,19 @@ fn solve_zvector_cg(
     use crate::zvector::compute_az_product;
     let ferric_core::orbitals::OrbitalSpace { nocc, nvir, nocc_total, first_occ } = *orb;
 
+    // EnginePool is geometry/basis-only (density-independent) — build ONCE
+    // here and reuse across every compute_az_product call in the CG loop
+    // below (up to max_iter=100 calls), instead of build_jk constructing a
+    // fresh pool per call. Reduction order is unchanged, so results stay
+    // bit-identical across thread counts.
+    let pool = ferric_scf::engine_pool::EnginePool::new(bounds.op, prep, 1e-14)?;
+
     // Δε_{ai} table (the SPD diagonal; also the Jacobi preconditioner).
     let de = |a: usize, i: usize| eps[nocc_total + a] - eps[first_occ + i];
 
     // Full operator M·z = Δε⊙z + A·z.
     let apply = |z: &Array2<f64>| -> Result<Array2<f64>, FerricError> {
-        let mut mz = compute_az_product(c, z, prep, bounds, orb)?;
+        let mut mz = compute_az_product(c, z, prep, bounds, orb, &pool)?;
         for a in 0..nvir {
             for i in 0..nocc {
                 mz[(a, i)] += de(a, i) * z[(a, i)];

@@ -919,6 +919,13 @@ pub fn solve_rhf(
 /// Build the Coulomb (J) and exchange (K) matrices from the density matrix.
 ///
 /// Uses Schwarz screening and 8-fold permutational symmetry of the ERIs.
+///
+/// Constructs a fresh [`crate::engine_pool::EnginePool`] every call. Fine for
+/// one-shot callers (a single SCF Fock build per density update), but hot
+/// repeat-callers (Newton/CPKS Hessian-vector products that call this dozens
+/// of times per outer iteration on the SAME geometry/basis) should instead
+/// build the pool ONCE and call [`build_jk_with_pool`] directly — see that
+/// function's doc.
 pub fn build_jk(
     ctx: &ParallelContext,
     prep: &PreparedBasis,
@@ -927,6 +934,31 @@ pub fn build_jk(
     d: &Array2<f64>,
     j: &mut Array2<f64>,
     k: &mut Array2<f64>,
+) -> Result<usize, FerricError> {
+    let pool = crate::engine_pool::EnginePool::new(bounds.op, prep, 1e-14)?;
+    build_jk_with_pool(ctx, prep, bounds, thresh, d, j, k, &pool)
+}
+
+/// Same as [`build_jk`], but takes a caller-supplied [`crate::engine_pool::EnginePool`]
+/// instead of constructing one internally.
+///
+/// `EnginePool` construction is geometry/basis-only (density-independent), so
+/// it is safe — and, for repeat callers, important for performance — to build
+/// it ONCE outside a Hessian-vector-product / CG loop and reuse it across
+/// calls on the same `(prep, bounds.op)`. Reduction order (grouped
+/// deterministic sum over shell-pair groups) is unchanged from `build_jk` and
+/// does not depend on the pool, so results stay bit-identical across thread
+/// counts either way.
+#[allow(clippy::too_many_arguments)]
+pub fn build_jk_with_pool(
+    ctx: &ParallelContext,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    thresh: f64,
+    d: &Array2<f64>,
+    j: &mut Array2<f64>,
+    k: &mut Array2<f64>,
+    pool: &crate::engine_pool::EnginePool,
 ) -> Result<usize, FerricError> {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -981,8 +1013,10 @@ pub fn build_jk(
 
     // One engine per rayon thread (see engine_pool) — constructing an engine in
     // the fold init fires once per work-chunk, not per thread, storming the
-    // global libint2 ctor mutex on heavy-element bases.
-    let pool = crate::engine_pool::EnginePool::new(bounds.op, prep, 1e-14)?;
+    // global libint2 ctor mutex on heavy-element bases. The pool is passed in
+    // by the caller (see `build_jk_with_pool` doc) rather than built here, so
+    // hot repeat-callers (Newton/CPKS) can construct it once outside their
+    // loop instead of once per call.
 
     // Deterministic, memory-bounded reduction (see direct_jk.rs / reduce.rs).
     // The old `fold(..).reduce(..)` tree combined per-chunk (J,K) partials in a

@@ -11,7 +11,8 @@ use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::diis::Diis;
-use ferric_scf::rhf::build_jk;
+use ferric_scf::engine_pool::EnginePool;
+use ferric_scf::rhf::{build_jk, build_jk_with_pool};
 use ferric_scf::ScfResult;
 use ferric_scf::screening::SchwarzBounds;
 use ndarray::{Array2, Array3};
@@ -128,6 +129,13 @@ pub fn solve_zvector(
     let mut diis = Diis::new(8);
     let max_iter = 50;
 
+    // EnginePool is geometry/basis-only (density-independent) — build ONCE
+    // here and reuse across every compute_az_product call in the DIIS loop
+    // below (up to max_iter calls), instead of build_jk constructing a fresh
+    // pool per call. Reduction order is unchanged, so results stay
+    // bit-identical across thread counts.
+    let pool = EnginePool::new(bounds.op, prep, 1e-14)?;
+
     for _iter in 0..max_iter {
         // A·z Hessian coupling. `compute_az_product` returns 4J−2K (built from the
         // symmetric response density D^z + D^z†), which is EXACTLY 2× PySCF's CPHF
@@ -135,7 +143,7 @@ pub fn solve_zvector(
         // 0.5). The MP2 Z-vector Hessian is `Δε·z + (2J−K)·z`, so the matvec must be
         // scaled by ½ here (mirrors cpks_polar.rs's `ascale=0.5` for the same
         // symmetric-density double-count).
-        let az = 0.5 * &compute_az_product(c, &z, prep, bounds, &orb)?;
+        let az = 0.5 * &compute_az_product(c, &z, prep, bounds, &orb, &pool)?;
 
         let mut residual = Array2::zeros((nvir, nocc));
         let mut max_resid = 0.0f64;
@@ -417,6 +425,7 @@ pub(crate) fn compute_az_product(
     prep: &PreparedBasis,
     bounds: &SchwarzBounds,
     orb: &OrbitalSpace,
+    pool: &EnginePool,
 ) -> Result<Array2<f64>, FerricError> {
     let OrbitalSpace { nocc, nvir, nocc_total, first_occ } = *orb;
     let n = c.nrows();
@@ -439,7 +448,7 @@ pub(crate) fn compute_az_product(
     let mut jz = Array2::zeros((n, n));
     let mut kz = Array2::zeros((n, n));
     let ctx = ferric_core::parallel::ParallelContext::default();
-    build_jk(&ctx, prep, bounds, 1e-12, &dz, &mut jz, &mut kz)?;
+    build_jk_with_pool(&ctx, prep, bounds, 1e-12, &dz, &mut jz, &mut kz, pool)?;
 
     // The A*z product in AO: A_AO = 4*J(D^z) - K(D^z) - K(D^z)^T
     let az_ao = 4.0 * &jz - &kz - &kz.t();

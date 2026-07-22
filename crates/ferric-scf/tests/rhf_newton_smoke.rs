@@ -225,7 +225,8 @@ fn rhf_hessian_matvec_matches_finite_difference() {
         fxc: None,
         thresh: 1e-12,
     };
-    let hk = ferric_scf::rhf_newton::hessian_matvec(&ctx, &inputs, &k_dir).unwrap();
+    let pool = ferric_scf::engine_pool::EnginePool::new(bounds.op, &prep, 1e-14).unwrap();
+    let hk = ferric_scf::rhf_newton::hessian_matvec(&ctx, &inputs, &k_dir, &pool).unwrap();
 
     // Central-difference the orbital gradient along κ:  [g(εκ) − g(−εκ)]/(2ε) → H·κ.
     let fd_hk = |eps: f64| -> Array2<f64> {

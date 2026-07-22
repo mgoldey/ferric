@@ -14,4 +14,5 @@ serde = { workspace = true }
 thiserror = { workspace = true }
 sprs = "0.11"
 log = "0.4"
+ferric-core = { path = "../ferric-core" }
 ferric-tensor-macro = { path = "../ferric-tensor-macro" }

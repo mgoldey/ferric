@@ -454,6 +454,7 @@ version = "0.1.0"
 dependencies = [
  "mpi",
  "ndarray",
+ "rayon",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -633,6 +634,7 @@ dependencies = [
 name = "ferric-tensors"
 version = "0.1.0"
 dependencies = [
+ "ferric-core",
  "ferric-tensor-macro",
  "log",
  "ndarray",

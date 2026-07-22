@@ -14,6 +14,7 @@
 //! problems (e.g., doublet OH at LDA where the SOMO/HOMO α-α gap vanishes).
 
 use crate::davidson_local::run_davidson_seeded;
+use crate::engine_pool::EnginePool;
 use crate::rohf_newton::{gradient_blocks, hessian_matvec, RohfNewtonInputs};
 use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
@@ -72,6 +73,12 @@ pub fn rohf_ah_step(
         return Ok((base.c.clone(), 0.0));
     }
 
+    // EnginePool is geometry/basis-only (density-independent) — build ONCE
+    // here and reuse across every hessian_matvec call inside the Davidson
+    // closure below (called repeatedly per column, per Davidson iteration),
+    // instead of each call constructing its own pool.
+    let pool = EnginePool::new(base.bounds.op, base.prep, 1e-14)?;
+
     // 2. Build the augmented matvec closure. Davidson expects the closure
     // to return V^T A V given V (the trial subspace).
     let nc_local = nc;
@@ -88,7 +95,7 @@ pub fn rohf_ah_step(
             unpack_three(v_col.slice(ndarray::s![1..]), &mut k_vc_local, &mut k_vo_local, &mut k_oc_local);
 
             let (h_vc, h_vo, h_oc) = hessian_matvec(
-                ctx, base, &k_vc_local, &k_vo_local, &k_oc_local,
+                ctx, base, &k_vc_local, &k_vo_local, &k_oc_local, &pool,
             ).expect("hessian_matvec failed inside Davidson closure");
 
             // av[0] = g · κ

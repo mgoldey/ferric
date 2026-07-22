@@ -25,7 +25,8 @@
 //! spin, which exactly preserves orthonormality. Sign convention matches
 //! `rohf_newton.rs` (κ = −g/(gap+μ); C ← C·U).
 
-use crate::rhf::build_jk;
+use crate::engine_pool::EnginePool;
+use crate::rhf::build_jk_with_pool;
 use crate::rohf_newton::FxcResponse;
 use crate::screening::SchwarzBounds;
 use ferric_core::parallel::ParallelContext;
@@ -73,6 +74,13 @@ pub fn uhf_newton_step(
     let na = inp.nocc_a;
     let nb = inp.nocc_b;
 
+    // EnginePool is geometry/basis-only (density-independent) — build ONCE
+    // here and reuse across every hessian_matvec call in the PCG loop below
+    // (3 build_jk calls per matvec), instead of each call constructing its
+    // own pool. Reduction order is unchanged, so results stay bit-identical
+    // across thread counts.
+    let pool = EnginePool::new(inp.bounds.op, inp.prep, 1e-14)?;
+
     // Gradient blocks g^σ_{ai} = F^σ_{ai}  (rows = virt, cols = occ).
     let g_a = occ_virt_block(inp.f_a_mo, na, n);
     let g_b = occ_virt_block(inp.f_b_mo, nb, n);
@@ -92,7 +100,7 @@ pub fn uhf_newton_step(
     let cg_iters = if gmax < cg_conv { 0 } else { cg_max_iter };
 
     // PCG on the coupled (κ_α, κ_β) system H·κ = −g.
-    let (h0_a, h0_b) = hessian_matvec(ctx, inp, &k_a, &k_b)?;
+    let (h0_a, h0_b) = hessian_matvec(ctx, inp, &k_a, &k_b, &pool)?;
     let mut r_a = &neg(&g_a) - &h0_a;
     let mut r_b = &neg(&g_b) - &h0_b;
     let mut z_a = &r_a / &diag_a;
@@ -106,7 +114,7 @@ pub fn uhf_newton_step(
         if max_resid < cg_conv {
             break;
         }
-        let (ap_a, ap_b) = hessian_matvec(ctx, inp, &p_a, &p_b)?;
+        let (ap_a, ap_b) = hessian_matvec(ctx, inp, &p_a, &p_b, &pool)?;
         let p_ap = inner(&p_a, &ap_a) + inner(&p_b, &ap_b);
         if p_ap.abs() < 1e-30 {
             break;
@@ -148,6 +156,7 @@ pub fn hessian_matvec(
     inp: &UhfNewtonInputs,
     k_a: &Array2<f64>,
     k_b: &Array2<f64>,
+    pool: &EnginePool,
 ) -> Result<(Array2<f64>, Array2<f64>), FerricError> {
     let n = inp.c_a.nrows();
     let na = inp.nocc_a;
@@ -163,14 +172,14 @@ pub fn hessian_matvec(
     let dd_tot = &dd_a_ao + &dd_b_ao;
     let mut dj = Array2::<f64>::zeros((n, n));
     let mut dk_dum = Array2::<f64>::zeros((n, n));
-    build_jk(ctx, inp.prep, inp.bounds, inp.thresh, &dd_tot, &mut dj, &mut dk_dum)?;
+    build_jk_with_pool(ctx, inp.prep, inp.bounds, inp.thresh, &dd_tot, &mut dj, &mut dk_dum, pool)?;
 
     let mut dk_a = Array2::<f64>::zeros((n, n));
     let mut dk_b = Array2::<f64>::zeros((n, n));
     let mut j_dum = Array2::<f64>::zeros((n, n));
-    build_jk(ctx, inp.prep, inp.bounds, inp.thresh, &dd_a_ao, &mut j_dum, &mut dk_a)?;
+    build_jk_with_pool(ctx, inp.prep, inp.bounds, inp.thresh, &dd_a_ao, &mut j_dum, &mut dk_a, pool)?;
     j_dum.fill(0.0);
-    build_jk(ctx, inp.prep, inp.bounds, inp.thresh, &dd_b_ao, &mut j_dum, &mut dk_b)?;
+    build_jk_with_pool(ctx, inp.prep, inp.bounds, inp.thresh, &dd_b_ao, &mut j_dum, &mut dk_b, pool)?;
 
     let c_k = inp.k_mix_sr;
     let mut df_a: Array2<f64> = &dj - &(c_k * &dk_a);

@@ -697,8 +697,83 @@ pub fn minao_projection_guess(
         atom_ao_count[a] += shell_dims[sh];
     }
 
-    // Cache the target-AO density block by Z.
-    let mut atom_density_cache: HashMap<i32, Array2<f64>> = HashMap::new();
+    // Collect the unique non-ghost (Z, nao) pairs needing a cache entry, in
+    // first-encountered order (BTreeMap/HashMap iteration order is not
+    // guaranteed, so we track order explicitly for determinism — though the
+    // final result does not depend on cache build order at all: each entry
+    // is an independent per-Z build, and placement below is a separate,
+    // strictly serial, ascending-atom-index loop, so this is bit-identical
+    // regardless of which order the unique Zs are computed in).
+    let mut seen: HashMap<i32, usize> = HashMap::new(); // z -> nao
+    let mut unique_zs: Vec<i32> = Vec::new();
+    for (ai, atom) in mol.atoms.iter().enumerate() {
+        if atom.ghost { continue; }
+        let nao = atom_ao_count[ai];
+        if nao == 0 { continue; }
+        seen.entry(atom.z).or_insert_with(|| {
+            unique_zs.push(atom.z);
+            nao
+        });
+    }
+
+    // Build each unique Z's target-AO density block. Density blocks are
+    // per-Z independent (each is a self-contained free-atom SCF or no-SCF
+    // GWH build, never touching another element's data), so this is safe to
+    // parallelize across elements — unlike the per-Z SCF ITSELF, which stays
+    // on `run_serial_pool`'s single-thread rayon pool internally (existing
+    // behavior, unchanged: see free_atom_density/atomic_hcore_density). The
+    // final per-atom placement loop below is untouched and still strictly
+    // serial in ascending atom order, so the result is bit-identical to the
+    // old fully-serial cache-build — only the WALL-CLOCK order of the
+    // independent per-Z builds changes, not the math or the placement.
+    let build_one = |z: i32| -> Array2<f64> {
+        let nao = seen[&z];
+        // Choose the no-SCF (GWH) route for the atoms whose free-atom SCF is
+        // the pathology this guess exists to eliminate — transition metals and
+        // heavier (Z ≥ 21), or any element carrying g (l ≥ 4) shells in the
+        // target basis. Light main-group atoms (Z ≤ 20, no g) keep the cheap,
+        // higher-quality free-atom SCF block.
+        let has_high_l = bs
+            .for_element(z)
+            .map(|shells| shells.iter().any(|sh| sh.l >= 4))
+            .unwrap_or(false);
+        let use_no_scf = z >= 21 || has_high_l;
+
+        let built = if use_no_scf {
+            // No-SCF GWH block directly in the target basis (g-safe: 1e ints only).
+            atomic_hcore_density(z, bs)
+        } else {
+            // Cheap, high-quality light-atom free-atom SCF block.
+            free_atom_density(z, bs)
+        };
+
+        match built {
+            Ok(full) => full.slice(ndarray::s![..nao, ..nao]).to_owned(),
+            Err(e) => {
+                if crate::rhf::scf_trace() {
+                    let sym = ferric_core::elements::z_to_symbol(z).unwrap_or("?");
+                    let route = if use_no_scf { "GWH no-SCF" } else { "free-atom SCF" };
+                    eprintln!("MINAO: {route} atomic density failed for {sym} (Z={z}): {e:?}; block left zero");
+                }
+                Array2::zeros((nao, nao))
+            }
+        }
+    };
+
+    // Guard: skip the parallel machinery entirely for the (very common)
+    // single-unique-Z case — nothing to parallelize, and it avoids spinning
+    // up rayon's fan-out for a single item.
+    let atom_density_cache: HashMap<i32, Array2<f64>> = if unique_zs.len() <= 1 {
+        unique_zs.iter().map(|&z| (z, build_one(z))).collect()
+    } else {
+        use rayon::prelude::*;
+        unique_zs
+            .par_iter()
+            .map(|&z| (z, build_one(z)))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .collect()
+    };
 
     for (ai, atom) in mol.atoms.iter().enumerate() {
         if atom.ghost { continue; }
@@ -706,42 +781,7 @@ pub fn minao_projection_guess(
         let nao = atom_ao_count[ai];
         if nao == 0 { continue; }
 
-        let atom_d = if let Some(cached) = atom_density_cache.get(&z) {
-            cached.clone()
-        } else {
-            // Choose the no-SCF (GWH) route for the atoms whose free-atom SCF is
-            // the pathology this guess exists to eliminate — transition metals and
-            // heavier (Z ≥ 21), or any element carrying g (l ≥ 4) shells in the
-            // target basis. Light main-group atoms (Z ≤ 20, no g) keep the cheap,
-            // higher-quality free-atom SCF block.
-            let has_high_l = bs
-                .for_element(z)
-                .map(|shells| shells.iter().any(|sh| sh.l >= 4))
-                .unwrap_or(false);
-            let use_no_scf = z >= 21 || has_high_l;
-
-            let built = if use_no_scf {
-                // No-SCF GWH block directly in the target basis (g-safe: 1e ints only).
-                atomic_hcore_density(z, bs)
-            } else {
-                // Cheap, high-quality light-atom free-atom SCF block.
-                free_atom_density(z, bs)
-            };
-
-            let block = match built {
-                Ok(full) => full.slice(ndarray::s![..nao, ..nao]).to_owned(),
-                Err(e) => {
-                    if crate::rhf::scf_trace() {
-                        let sym = ferric_core::elements::z_to_symbol(z).unwrap_or("?");
-                        let route = if use_no_scf { "GWH no-SCF" } else { "free-atom SCF" };
-                        eprintln!("MINAO: {route} atomic density failed for {sym} (Z={z}): {e:?}; block left zero");
-                    }
-                    Array2::zeros((nao, nao))
-                }
-            };
-            atom_density_cache.insert(z, block.clone());
-            block
-        };
+        let atom_d = &atom_density_cache[&z];
 
         let off = atom_ao_start[ai];
         let blk_n = atom_ao_count[ai];
@@ -752,7 +792,7 @@ pub fn minao_projection_guess(
             )));
         }
         let mut block = d.slice_mut(ndarray::s![off..off + blk_n, off..off + blk_n]);
-        block.assign(&atom_d);
+        block.assign(atom_d);
     }
 
     Ok(d)

@@ -14,7 +14,8 @@
 //! Rotation is applied via the Cayley unitary U = (I − κ/2)^{−1}(I + κ/2),
 //! which exactly preserves orthonormality.
 
-use crate::rhf::build_jk;
+use crate::engine_pool::EnginePool;
+use crate::rhf::build_jk_with_pool;
 use crate::screening::SchwarzBounds;
 use ferric_core::FerricError;
 use ferric_core::parallel::ParallelContext;
@@ -64,6 +65,13 @@ pub fn rohf_newton_step(
     let no = inp.nocc_open;
     let nocc_a = nc + no;
 
+    // EnginePool is geometry/basis-only (density-independent) — build ONCE
+    // here and reuse across every hessian_matvec call in the PCG loop below
+    // (3 build_jk calls per matvec), instead of each call constructing its
+    // own pool. Reduction order is unchanged, so results stay bit-identical
+    // across thread counts.
+    let pool = EnginePool::new(inp.bounds.op, inp.prep, 1e-14)?;
+
     // Pack RHS −g in MO basis from the three blocks.
     //   g[v,c] = f_α[v,c] + f_β[v,c]
     //   g[v,o] = f_α[v,o]
@@ -111,7 +119,7 @@ pub fn rohf_newton_step(
     //
     // Standard PCG (Saad, "Iterative Methods", Alg. 9.1) on the packed
     // (vc, vo, oc) triple.
-    let (h0_vc, h0_vo, h0_oc) = hessian_matvec(ctx, inp, &k_vc, &k_vo, &k_oc)?;
+    let (h0_vc, h0_vo, h0_oc) = hessian_matvec(ctx, inp, &k_vc, &k_vo, &k_oc, &pool)?;
     let mut r_vc = sub(&neg(&g_vc), &h0_vc);
     let mut r_vo = sub(&neg(&g_vo), &h0_vo);
     let mut r_oc = sub(&neg(&g_oc), &h0_oc);
@@ -134,7 +142,7 @@ pub fn rohf_newton_step(
             break;
         }
         // Ap = H · p
-        let (ap_vc, ap_vo, ap_oc) = hessian_matvec(ctx, inp, &p_vc, &p_vo, &p_oc)?;
+        let (ap_vc, ap_vo, ap_oc) = hessian_matvec(ctx, inp, &p_vc, &p_vo, &p_oc, &pool)?;
         let p_ap: f64 = inner(&p_vc, &ap_vc) + inner(&p_vo, &ap_vo) + inner(&p_oc, &ap_oc);
         if p_ap.abs() < 1e-30 {
             break;
@@ -244,6 +252,7 @@ pub(crate) fn hessian_matvec(
     k_vc: &Array2<f64>,
     k_vo: &Array2<f64>,
     k_oc: &Array2<f64>,
+    pool: &EnginePool,
 ) -> Result<(Array2<f64>, Array2<f64>, Array2<f64>), FerricError> {
     let n = inp.c.nrows();
     let nc = inp.nocc_double;
@@ -314,15 +323,15 @@ pub(crate) fn hessian_matvec(
     let mut dj = Array2::<f64>::zeros((n, n));
     let mut dk_dum = Array2::<f64>::zeros((n, n));  // discarded — we want J only here
     // Build J on δD_total. We re-use build_jk but only keep J; K is rebuilt per-spin below.
-    build_jk(ctx, inp.prep, inp.bounds, inp.thresh, &dd_tot, &mut dj, &mut dk_dum)?;
+    build_jk_with_pool(ctx, inp.prep, inp.bounds, inp.thresh, &dd_tot, &mut dj, &mut dk_dum, pool)?;
 
     // δK per spin.
     let mut dk_a = Array2::<f64>::zeros((n, n));
     let mut dk_b = Array2::<f64>::zeros((n, n));
     let mut j_dum = Array2::<f64>::zeros((n, n));
-    build_jk(ctx, inp.prep, inp.bounds, inp.thresh, &dd_a_ao, &mut j_dum, &mut dk_a)?;
+    build_jk_with_pool(ctx, inp.prep, inp.bounds, inp.thresh, &dd_a_ao, &mut j_dum, &mut dk_a, pool)?;
     j_dum.fill(0.0);
-    build_jk(ctx, inp.prep, inp.bounds, inp.thresh, &dd_b_ao, &mut j_dum, &mut dk_b)?;
+    build_jk_with_pool(ctx, inp.prep, inp.bounds, inp.thresh, &dd_b_ao, &mut j_dum, &mut dk_b, pool)?;
 
     let c_k = inp.k_mix_sr;
     let mut df_a: Array2<f64> = &dj - &(c_k * &dk_a);

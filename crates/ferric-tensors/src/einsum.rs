@@ -9,6 +9,7 @@
 //! requested output shape. Any required permutation copy is logged at debug
 //! level so hot transposes are discoverable.
 
+use ferric_core::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ndarray::linalg::general_mat_mul;
 use ndarray::{ArrayD, ArrayViewD, IxDyn};
 use thiserror::Error;
@@ -57,7 +58,15 @@ pub fn einsum_binary(
         let l2m = l2.view().into_dimensionality::<ndarray::Ix2>().unwrap();
         let r2m = r2.view().into_dimensionality::<ndarray::Ix2>().unwrap();
         let mut o2m = out2.view_mut().into_dimensionality::<ndarray::Ix2>().unwrap();
-        general_mat_mul(1.0, &l2m, &r2m, 0.0, &mut o2m);
+        // Opt-in multi-threaded BLAS for this GEMM (default resolves to 1 —
+        // a no-op — unless FERRIC_BLAS_THREADS is set; see blas_threads.rs's
+        // hazard-model doc). einsum_binary is called from both rayon and
+        // non-rayon contexts across the workspace; opt_in_blas_threads's
+        // runtime rayon-worker guard forces 1 automatically when this runs
+        // inside a parallel region, so wrapping here is safe either way.
+        with_blas_threads(opt_in_blas_threads(), || {
+            general_mat_mul(1.0, &l2m, &r2m, 0.0, &mut o2m);
+        });
     }
 
     let want: usize = out_shape.iter().product::<usize>().max(1);
@@ -129,12 +138,21 @@ pub fn einsum_binary_batched(
         let l3m = l3.view().into_dimensionality::<ndarray::Ix3>().unwrap();
         let r3m = r3.view().into_dimensionality::<ndarray::Ix3>().unwrap();
         let mut o3m = out3.view_mut().into_dimensionality::<ndarray::Ix3>().unwrap();
-        for b in 0..nb {
-            let lb = l3m.index_axis(ndarray::Axis(0), b);
-            let rb = r3m.index_axis(ndarray::Axis(0), b);
-            let mut ob = o3m.index_axis_mut(ndarray::Axis(0), b);
-            general_mat_mul(scale, &lb, &rb, 0.0, &mut ob);
-        }
+        // Opt-in multi-threaded BLAS for every batch-slice GEMM in this loop
+        // (default resolves to 1 — a no-op — unless FERRIC_BLAS_THREADS is
+        // set). This is a plain sequential `for`, not a par_iter; the
+        // runtime rayon-worker guard inside opt_in_blas_threads still forces
+        // 1 if a caller ever nests this inside a rayon region, so the wrap
+        // is safe either way. One resolve+set/restore for the whole loop
+        // rather than per-slice.
+        with_blas_threads(opt_in_blas_threads(), || {
+            for b in 0..nb {
+                let lb = l3m.index_axis(ndarray::Axis(0), b);
+                let rb = r3m.index_axis(ndarray::Axis(0), b);
+                let mut ob = o3m.index_axis_mut(ndarray::Axis(0), b);
+                general_mat_mul(scale, &lb, &rb, 0.0, &mut ob);
+            }
+        });
     }
 
     let want: usize = out_shape.iter().product::<usize>().max(1);
