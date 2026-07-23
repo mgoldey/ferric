@@ -11,15 +11,23 @@
 use ferric_core::basis::BasisSet;
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
-use ferric_dft::density_on_grid::{eval_density_closed, eval_density_uks};
 use ferric_dft::grid::AtomicGridConfig;
 use ferric_dft::ks::{KsXc, KsXcUks};
-use ferric_dft::vxc::{semilocal_vxc_closed, semilocal_vxc_polarized};
+use ferric_dft::xc_trait::{UksXcContribution, XcContribution};
 use ferric_scf::{ScfResult, Spin};
 use ndarray::Array1;
 
 /// Diagonal v_xc matrix elements in MO basis for UKS reference.
 /// Returns (vxc_diag_α, vxc_diag_β), each of length `nmo`.
+///
+/// Builds the AO-basis V_xc (+ V_nl/VV10) matrix via the same
+/// `XcContribution`/`UksXcContribution::add_xc[_uks]` entry point the SCF
+/// itself uses to build the KS Fock — this automatically stays consistent
+/// with whichever grid-cache strategy `KsXc`/`KsXcUks` picked internally
+/// (the full cached path, or the budget-triggered batched fallback), rather
+/// than reaching into the AO/χ tensors directly (which are a private
+/// implementation detail of `KsXc`/`KsXcUks`, not guaranteed to be
+/// eagerly-materialized).
 pub fn vxc_diagonal_mo(
     mol: &Molecule,
     bs: &BasisSet,
@@ -34,30 +42,8 @@ pub fn vxc_diagonal_mo(
         let nlc_grid = AtomicGridConfig { n_radial: 50, n_angular: 50 };
         let ks_xc = KsXc::new(mol, bs, xc_name, &main_grid, &nlc_grid)
             .map_err(|e| FerricError::General(format!("KsXc::new: {e:?}")))?;
-        let dens = eval_density_closed(&d_full, &ks_xc.chi, &ks_xc.dchi);
-        // Meta-GGA needs τ; cheap and only computed when the functional is one.
-        let tau = if ks_xc.xc.funcs.iter().any(|f| {
-            matches!(f.family(), ferric_dft::libxc::FunctionalFamily::MetaGga)
-        }) {
-            Some(ferric_dft::density_on_grid::eval_tau_closed(&d_full, &ks_xc.dchi))
-        } else {
-            None
-        };
-        let (_e_xc, mut vxc_ao) = semilocal_vxc_closed(
-            &ks_xc.grid, &ks_xc.chi, &ks_xc.dchi, &dens, tau.as_ref(), &ks_xc.xc,
-        );
-        // VV10 nonlocal piece is part of the KS Fock; subtract it too.
-        if let (Some(g), Some(c), Some(dc), Some(params)) = (
-            ks_xc.nlc_grid.as_ref(),
-            ks_xc.nlc_chi.as_ref(),
-            ks_xc.nlc_dchi.as_ref(),
-            ks_xc.xc.vv10.as_ref(),
-        ) {
-            let dens_t = eval_density_closed(&d_full, c, dc);
-            let mut v_nl = ndarray::Array2::<f64>::zeros(vxc_ao.dim());
-            let _e_nl = ferric_dft::vv10::add_vv10(g, c, dc, &dens_t, params, &mut v_nl);
-            vxc_ao += &v_nl;
-        }
+        let mut vxc_ao = ndarray::Array2::<f64>::zeros((d_full.nrows(), d_full.ncols()));
+        let _e_xc_plus_nl = ks_xc.add_xc(&d_full, &mut vxc_ao);
         let diag = mo_diagonal(&vxc_ao, scf.mos_r());
         return Ok((diag.clone(), diag));
     }
@@ -74,36 +60,9 @@ pub fn vxc_diagonal_mo(
     let ks_xc = KsXcUks::new(mol, bs, xc_name, &main_grid, &nlc_grid)
         .map_err(|e| FerricError::General(format!("KsXcUks::new: {e:?}")))?;
 
-    let dens = eval_density_uks(d_a, d_b, &ks_xc.chi, &ks_xc.dchi);
-    let tau = if ks_xc.xc.funcs.iter().any(|f| {
-        matches!(f.family(), ferric_dft::libxc::FunctionalFamily::MetaGga)
-    }) {
-        Some(ferric_dft::density_on_grid::eval_tau_uks(d_a, d_b, &ks_xc.dchi))
-    } else {
-        None
-    };
-    let tau_ref = tau.as_ref().map(|(a, b)| (a, b));
-    let (_e_xc, vxc_a_ao, vxc_b_ao) =
-        semilocal_vxc_polarized(&ks_xc.grid, &ks_xc.chi, &ks_xc.dchi, &dens, tau_ref, &ks_xc.xc);
-
-    // For VV10 the v_nl piece is the same for both spins (matches KsXcUks).
-    // It's part of the KS Fock so we must subtract it too for the Σ_x − v_xc
-    // correction to be consistent.
-    let mut vxc_a = vxc_a_ao;
-    let mut vxc_b = vxc_b_ao;
-    if let (Some(g), Some(c), Some(dc), Some(params)) = (
-        ks_xc.nlc_grid.as_ref(),
-        ks_xc.nlc_chi.as_ref(),
-        ks_xc.nlc_dchi.as_ref(),
-        ks_xc.xc.vv10.as_ref(),
-    ) {
-        let d_total = d_a + d_b;
-        let dens_total = ferric_dft::density_on_grid::eval_density_closed(&d_total, c, dc);
-        let mut v_nl = ndarray::Array2::<f64>::zeros(vxc_a.dim());
-        let _e_nl = ferric_dft::vv10::add_vv10(g, c, dc, &dens_total, params, &mut v_nl);
-        vxc_a += &v_nl;
-        vxc_b += &v_nl;
-    }
+    let mut vxc_a = ndarray::Array2::<f64>::zeros((d_a.nrows(), d_a.ncols()));
+    let mut vxc_b = ndarray::Array2::<f64>::zeros((d_b.nrows(), d_b.ncols()));
+    let _e_xc_plus_nl = ks_xc.add_xc_uks(d_a, d_b, &mut vxc_a, &mut vxc_b);
 
     // Transform to MO basis and take the diagonal: (vxc_σ)_pp = c_σ_p^T v_xc^AO c_σ_p.
     let (mos_a_arr, mos_b_arr) = (scf.mos_a(), scf.mos_b());

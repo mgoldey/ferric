@@ -47,7 +47,9 @@ pub enum AoGridKind {
 
 impl AoGridKind {
     /// Number of `(nbf, npts)` `f64` planes resident at once for this kind.
-    pub fn planes(self) -> usize {
+    /// `const fn` so callers (e.g. `ks.rs`'s batched-fallback sizing) can fold
+    /// it into a `const` at compile time.
+    pub const fn planes(self) -> usize {
         match self {
             AoGridKind::ValueOnly => 1,
             AoGridKind::ValueAndGrad => 4,

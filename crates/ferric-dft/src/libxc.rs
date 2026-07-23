@@ -12,6 +12,7 @@
 use std::ffi::CString;
 use std::os::raw::c_int;
 
+use rayon::prelude::*;
 use thiserror::Error;
 
 // ---------------------------------------------------------------------------
@@ -137,6 +138,35 @@ mod ffi {
 }
 
 // ---------------------------------------------------------------------------
+// Raw-pointer Send wrapper for the chunked-parallel eval path
+// ---------------------------------------------------------------------------
+
+/// Wraps a `*mut f64` so it can be captured by a `Sync` closure passed to
+/// `map_init`/`par_iter`. Each rayon chunk offsets this pointer into its own
+/// disjoint `[g0, g1)` sub-range before touching it (see `eval_chunked`
+/// callers), so distinct chunks never alias — the `Send` impl only asserts
+/// that moving the raw pointer value across threads is fine, not that
+/// concurrent access to the same address is (there never is any).
+#[derive(Clone, Copy)]
+struct SendPtr(*mut f64);
+// SAFETY: see doc comment above — every use offsets into a disjoint,
+// caller-verified sub-range per chunk, so no two chunks ever write (or read)
+// the same address concurrently.
+unsafe impl Send for SendPtr {}
+unsafe impl Sync for SendPtr {}
+
+impl SendPtr {
+    /// Offset accessor. Written as a method (not direct `.0` field access at
+    /// the call site) so Rust 2021's disjoint-closure-capture analysis
+    /// captures the whole `SendPtr` (which is `Sync`) rather than reaching
+    /// straight through to the bare `*mut f64` field (which is not).
+    #[inline(always)]
+    unsafe fn add(self, offset: usize) -> *mut f64 {
+        self.0.add(offset)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Public error type
 // ---------------------------------------------------------------------------
 
@@ -210,6 +240,11 @@ pub struct XcFunctional {
     ptr: *mut ffi::XcFuncOpaque,
     family: FunctionalFamily,
     pub nspin: u32,
+    /// libxc's internal functional ID (from `xc_functional_get_number`).
+    /// Kept so the chunked-parallel evaluation path (`par_chunks`, below) can
+    /// cheaply build one fresh handle per rayon worker via [`Self::from_id`]
+    /// without re-parsing / re-looking-up the name string each time.
+    libxc_id: c_int,
 }
 
 /// Global mutex serializing libxc's non-thread-safe init/destroy operations.
@@ -228,6 +263,11 @@ impl XcFunctional {
         // concurrent test threads cannot trample each other. Evaluation calls
         // (xc_lda_exc_vxc / xc_gga_exc_vxc) are not under this lock — libxc 5.x
         // documents those as thread-safe on initialized handles.
+        //
+        // NOTE: everything from the lookup through `alloc_and_init_unlocked`
+        // runs under this ONE guard — `std::sync::Mutex` is not reentrant, so
+        // `alloc_and_init_unlocked` must NEVER itself try to (re-)acquire
+        // `LIBXC_INIT_LOCK` (that shape self-deadlocked here once already).
         let _guard = LIBXC_INIT_LOCK.lock().unwrap_or_else(|p| p.into_inner());
 
         // SAFETY: c_name lives until the end of this statement; xc_functional_get_number
@@ -238,23 +278,57 @@ impl XcFunctional {
             return Err(LibxcError::UnknownName(name.to_string()));
         }
 
+        let ptr = Self::alloc_and_init_unlocked(id, nspin, &name.to_string())?;
+        let family = infer_family_from_name(name);
+        Ok(Self { ptr, family, nspin, libxc_id: id })
+    }
+
+    /// Allocate + init a raw handle for an already-resolved libxc `id`. Does
+    /// NOT itself take `LIBXC_INIT_LOCK` — every caller must hold that guard
+    /// for the duration of this call (`new` already does; `from_id` takes its
+    /// own guard around the call site below). Shared so the alloc/init/error
+    /// logic exists exactly once.
+    fn alloc_and_init_unlocked(
+        id: c_int,
+        nspin: u32,
+        name_for_err: &str,
+    ) -> Result<*mut ffi::XcFuncOpaque, LibxcError> {
         // SAFETY: xc_func_alloc allocates and zero-initialises a xc_func_type on the heap;
         // it returns null on allocation failure (checked immediately below).
         let ptr = unsafe { ffi::xc_func_alloc() };
         if ptr.is_null() {
             return Err(LibxcError::AllocFailed);
         }
-
         // SAFETY: ptr is non-null and freshly allocated; xc_func_init populates the struct.
         // On failure we call xc_func_free to release the allocation before returning.
         let rc = unsafe { ffi::xc_func_init(ptr, id, nspin as c_int) };
         if rc != 0 {
             unsafe { ffi::xc_func_free(ptr) };
-            return Err(LibxcError::InitFailed { name: name.to_string(), rc });
+            return Err(LibxcError::InitFailed { name: name_for_err.to_string(), rc });
         }
+        Ok(ptr)
+    }
 
-        let family = infer_family_from_name(name);
-        Ok(Self { ptr, family, nspin })
+    /// Build a fresh handle from an already-known libxc functional id, reusing
+    /// this handle's `family`/`nspin`. Used exclusively to give each rayon
+    /// worker its own non-shared `xc_func_type` in the chunked evaluation path
+    /// — libxc handles must never be evaluated from more than one thread
+    /// concurrently even though the docs call bare evaluation thread-safe on a
+    /// *single* handle (we simply avoid the question by never sharing one).
+    fn from_id(id: c_int, nspin: u32, family: FunctionalFamily) -> Self {
+        // Take LIBXC_INIT_LOCK ourselves for the alloc+init (mirrors `new`'s
+        // guard scope; `alloc_and_init_unlocked` takes no lock itself — see
+        // its doc comment).
+        let ptr = {
+            let _guard = LIBXC_INIT_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+            // Construction failure here would mean the id (harvested from an
+            // already-successfully-constructed handle) suddenly stopped being
+            // valid, which cannot happen — libxc's functional table is static
+            // for the process lifetime. expect() documents that invariant.
+            Self::alloc_and_init_unlocked(id, nspin, "<worker clone>")
+                .expect("re-initializing a previously-valid libxc functional id must succeed")
+        };
+        Self { ptr, family, nspin, libxc_id: id }
     }
 
     pub fn family(&self) -> FunctionalFamily {
@@ -265,23 +339,104 @@ impl XcFunctional {
         self.family = f;
     }
 
+    // -----------------------------------------------------------------------
+    // Chunked-parallel evaluation
+    // -----------------------------------------------------------------------
+    //
+    // libxc evaluation is point-local (no point reads/writes another point's
+    // data), so the point range can be split into contiguous chunks and each
+    // chunk evaluated independently. Below `PAR_MIN_PTS` a single serial FFI
+    // call is used — the same guard shape as `ao_grid.rs`'s
+    // `PAR_WORK_THRESHOLD` (rayon spawn/join/steal overhead would dwarf the
+    // work on small molecules / free-atom SCF grids). Above it, the range is
+    // divided into chunks and each chunk gets its OWN freshly-constructed
+    // `XcFunctional` handle (one per rayon worker via `map_init`) — libxc
+    // handles must never be evaluated concurrently from multiple threads on
+    // the SAME handle, so per-worker construction sidesteps that question
+    // entirely rather than relying on the "evaluation is thread-safe on an
+    // initialized handle" documentation.
+    //
+    // Each chunk writes into a *disjoint* slice of the caller's output
+    // buffers (chunk `c` owns points `[c*chunk_len, (c+1)*chunk_len)`, scaled
+    // by the per-point stride of each buffer), so the chunked result is
+    // bit-identical to the single serial call by construction: every point's
+    // output depends only on that point's own inputs, and every point is
+    // written by exactly one chunk, exactly once, with the same libxc
+    // parameters as the serial path (same functional id/nspin). There is no
+    // cross-chunk reduction here (unlike `deterministic_point_sum` in
+    // `vxc.rs`, which sums `exc·ρ`) — chunking a plain elementwise buffer
+    // fill can never introduce a reduction-order difference.
+
+    /// Below this many grid points, evaluate with a single serial FFI call —
+    /// rayon spawn/join/steal + per-chunk libxc handle construction overhead
+    /// would dwarf the work on small molecules / free-atom SCF grids. Mirrors
+    /// the `PAR_WORK_THRESHOLD` guard shape in `ao_grid.rs` (pure function of
+    /// point count only, never of thread count).
+    const PAR_MIN_PTS: usize = 50_000;
+
+    /// Target number of chunks to fan out across rayon workers. Chunk
+    /// boundaries are a pure function of `npts` (never of thread count), so
+    /// results stay thread-count independent — this only controls how many
+    /// pieces `npts` is divided into, not which rayon worker each lands on.
+    const CHUNKS: usize = 32;
+
+    /// Split `[0, npts)` into `Self::CHUNKS` contiguous, equal-ish, disjoint
+    /// ranges (a pure function of `npts`).
+    fn chunk_ranges(npts: usize) -> Vec<(usize, usize)> {
+        let chunk_len = npts.div_ceil(Self::CHUNKS).max(1);
+        let n_chunks = npts.div_ceil(chunk_len);
+        (0..n_chunks)
+            .map(|c| {
+                let g0 = c * chunk_len;
+                let g1 = (g0 + chunk_len).min(npts);
+                (g0, g1)
+            })
+            .collect()
+    }
+
+    /// Run `body` once per chunk of `npts` points, in parallel, each chunk
+    /// getting its own freshly-constructed `XcFunctional` handle (via
+    /// `map_init`, so construction is amortized per rayon *worker* rather
+    /// than per chunk). Falls back to a single call of `body` with the whole
+    /// range and `self` directly when `npts < PAR_MIN_PTS`.
+    ///
+    /// `body(functional, g0, g1)` must read/write only the point-range
+    /// `[g0, g1)` of every buffer it closes over.
+    fn eval_chunked<Body>(&self, npts: usize, body: Body)
+    where
+        Body: Fn(&XcFunctional, usize, usize) + Sync,
+    {
+        if npts < Self::PAR_MIN_PTS {
+            body(self, 0, npts);
+            return;
+        }
+        let ranges = Self::chunk_ranges(npts);
+        ranges.into_par_iter().for_each_init(
+            || XcFunctional::from_id(self.libxc_id, self.nspin, self.family),
+            |worker, (g0, g1)| body(worker, g0, g1),
+        );
+    }
+
     /// LDA: feed ρ, get ε_xc and v_ρ.
     pub fn eval_lda_unpolarized(&self, rho: &[f64], exc: &mut [f64], vrho: &mut [f64]) {
         let n = rho.len();
         assert_eq!(exc.len(), n, "exc buffer length must match rho.len()");
         assert_eq!(vrho.len(), n, "vrho buffer length must match rho.len()");
-        // SAFETY: handle is non-null and fully initialised (constructed by new);
-        // buffer lengths are verified above; libxc reads rho and writes exc/vrho
-        // for exactly n grid points without retaining any pointers.
-        unsafe {
+        // SAFETY (per chunk): each call operates on a disjoint sub-slice
+        // `[g0, g1)` of rho/exc/vrho (stride 1), using its own worker-local
+        // handle; buffer lengths are verified above.
+        let exc_ptr = SendPtr(exc.as_mut_ptr());
+        let vrho_ptr = SendPtr(vrho.as_mut_ptr());
+        self.eval_chunked(n, |func, g0, g1| unsafe {
+            let len = g1 - g0;
             ffi::xc_lda_exc_vxc(
-                self.ptr as *const _,
-                n,
-                rho.as_ptr(),
-                exc.as_mut_ptr(),
-                vrho.as_mut_ptr(),
+                func.ptr as *const _,
+                len,
+                rho.as_ptr().add(g0),
+                exc_ptr.add(g0),
+                vrho_ptr.add(g0),
             );
-        }
+        });
     }
 
     /// LDA, polarized (nspin=2). Interleaved layout:
@@ -293,15 +448,18 @@ impl XcFunctional {
         let n = exc.len();
         assert_eq!(rho.len(), 2 * n, "polarized rho buffer must be 2 * npts");
         assert_eq!(vrho.len(), 2 * n, "polarized vrho buffer must be 2 * npts");
-        unsafe {
+        let exc_ptr = SendPtr(exc.as_mut_ptr());
+        let vrho_ptr = SendPtr(vrho.as_mut_ptr());
+        self.eval_chunked(n, |func, g0, g1| unsafe {
+            let len = g1 - g0;
             ffi::xc_lda_exc_vxc(
-                self.ptr as *const _,
-                n,
-                rho.as_ptr(),
-                exc.as_mut_ptr(),
-                vrho.as_mut_ptr(),
+                func.ptr as *const _,
+                len,
+                rho.as_ptr().add(2 * g0),
+                exc_ptr.add(g0),
+                vrho_ptr.add(2 * g0),
             );
-        }
+        });
     }
 
     /// LDA second derivative, polarized (nspin=2). Layout:
@@ -398,17 +556,23 @@ impl XcFunctional {
         assert_eq!(sigma.len(), 3 * n, "polarized sigma buffer must be 3 * npts");
         assert_eq!(vrho.len(), 2 * n, "polarized vrho buffer must be 2 * npts");
         assert_eq!(vsigma.len(), 3 * n, "polarized vsigma buffer must be 3 * npts");
-        unsafe {
+        // SAFETY (per chunk): disjoint `[g0, g1)` sub-ranges (rho/vrho stride
+        // 2, sigma/vsigma stride 3, exc stride 1); own worker-local handle.
+        let exc_ptr = SendPtr(exc.as_mut_ptr());
+        let vrho_ptr = SendPtr(vrho.as_mut_ptr());
+        let vsigma_ptr = SendPtr(vsigma.as_mut_ptr());
+        self.eval_chunked(n, |func, g0, g1| unsafe {
+            let len = g1 - g0;
             ffi::xc_gga_exc_vxc(
-                self.ptr as *const _,
-                n,
-                rho.as_ptr(),
-                sigma.as_ptr(),
-                exc.as_mut_ptr(),
-                vrho.as_mut_ptr(),
-                vsigma.as_mut_ptr(),
+                func.ptr as *const _,
+                len,
+                rho.as_ptr().add(2 * g0),
+                sigma.as_ptr().add(3 * g0),
+                exc_ptr.add(g0),
+                vrho_ptr.add(2 * g0),
+                vsigma_ptr.add(3 * g0),
             );
-        }
+        });
     }
 
     /// GGA (including hybrid-GGA and RSH-GGA): feed ρ and σ = |∇ρ|².
@@ -425,20 +589,24 @@ impl XcFunctional {
         assert_eq!(exc.len(), n, "exc buffer length must match rho.len()");
         assert_eq!(vrho.len(), n, "vrho buffer length must match rho.len()");
         assert_eq!(vsigma.len(), n, "vsigma buffer length must match rho.len()");
-        // SAFETY: handle is non-null and fully initialised (constructed by new);
-        // buffer lengths are verified above; libxc reads rho/sigma and writes
-        // exc/vrho/vsigma for exactly n grid points without retaining any pointers.
-        unsafe {
+        // SAFETY (per chunk): each call operates on a disjoint sub-slice
+        // `[g0, g1)` of every buffer (stride 1 throughout, unpolarized), using
+        // its own worker-local handle; buffer lengths are verified above.
+        let exc_ptr = SendPtr(exc.as_mut_ptr());
+        let vrho_ptr = SendPtr(vrho.as_mut_ptr());
+        let vsigma_ptr = SendPtr(vsigma.as_mut_ptr());
+        self.eval_chunked(n, |func, g0, g1| unsafe {
+            let len = g1 - g0;
             ffi::xc_gga_exc_vxc(
-                self.ptr as *const _,
-                n,
-                rho.as_ptr(),
-                sigma.as_ptr(),
-                exc.as_mut_ptr(),
-                vrho.as_mut_ptr(),
-                vsigma.as_mut_ptr(),
+                func.ptr as *const _,
+                len,
+                rho.as_ptr().add(g0),
+                sigma.as_ptr().add(g0),
+                exc_ptr.add(g0),
+                vrho_ptr.add(g0),
+                vsigma_ptr.add(g0),
             );
-        }
+        });
     }
 
     /// Meta-GGA (unpolarized, nspin=1): feed ρ, σ = |∇ρ|², and τ = ½Σ_i|∇φ_i|².
@@ -470,29 +638,35 @@ impl XcFunctional {
         assert_eq!(vrho.len(), n, "vrho buffer length must match rho.len()");
         assert_eq!(vsigma.len(), n, "vsigma buffer length must match rho.len()");
         assert_eq!(vtau.len(), n, "vtau buffer length must match rho.len()");
-        // lapl input / vlapl output: unused for the supported functionals but
-        // the C ABI still dereferences them, so hand real zeroed buffers.
-        let lapl = vec![0.0_f64; n];
-        let mut vlapl = vec![0.0_f64; n];
-        // SAFETY: handle is non-null and fully initialised (constructed by new);
-        // all buffer lengths are verified above (lapl/vlapl are locally sized to
-        // n); libxc reads rho/sigma/lapl/tau and writes exc/vrho/vsigma/vlapl/vtau
-        // for exactly n grid points without retaining any pointers.
-        unsafe {
-            ffi::xc_mgga_exc_vxc(
-                self.ptr as *const _,
-                n,
-                rho.as_ptr(),
-                sigma.as_ptr(),
-                lapl.as_ptr(),
-                tau.as_ptr(),
-                exc.as_mut_ptr(),
-                vrho.as_mut_ptr(),
-                vsigma.as_mut_ptr(),
-                vlapl.as_mut_ptr(),
-                vtau.as_mut_ptr(),
-            );
-        }
+        // SAFETY (per chunk): each call operates on a disjoint sub-slice
+        // `[g0, g1)` of every buffer (stride 1, unpolarized), using its own
+        // worker-local handle. `lapl`/`vlapl` are unused by every supported
+        // meta-GGA but the C ABI still dereferences them, so each chunk hands
+        // a real zeroed buffer sized to its own `len` (not `n`).
+        let exc_ptr = SendPtr(exc.as_mut_ptr());
+        let vrho_ptr = SendPtr(vrho.as_mut_ptr());
+        let vsigma_ptr = SendPtr(vsigma.as_mut_ptr());
+        let vtau_ptr = SendPtr(vtau.as_mut_ptr());
+        self.eval_chunked(n, |func, g0, g1| {
+            let len = g1 - g0;
+            let lapl = vec![0.0_f64; len];
+            let mut vlapl = vec![0.0_f64; len];
+            unsafe {
+                ffi::xc_mgga_exc_vxc(
+                    func.ptr as *const _,
+                    len,
+                    rho.as_ptr().add(g0),
+                    sigma.as_ptr().add(g0),
+                    lapl.as_ptr(),
+                    tau.as_ptr().add(g0),
+                    exc_ptr.add(g0),
+                    vrho_ptr.add(g0),
+                    vsigma_ptr.add(g0),
+                    vlapl.as_mut_ptr(),
+                    vtau_ptr.add(g0),
+                );
+            }
+        });
     }
 
     /// Meta-GGA, polarized (nspin=2). Interleaved layouts (mirroring the GGA
@@ -527,24 +701,34 @@ impl XcFunctional {
         assert_eq!(vrho.len(), 2 * n, "polarized vrho buffer must be 2 * npts");
         assert_eq!(vsigma.len(), 3 * n, "polarized vsigma buffer must be 3 * npts");
         assert_eq!(vtau.len(), 2 * n, "polarized vtau buffer must be 2 * npts");
-        let lapl = vec![0.0_f64; 2 * n];
-        let mut vlapl = vec![0.0_f64; 2 * n];
-        // SAFETY: handle is non-null + fully initialised; all lengths verified.
-        unsafe {
-            ffi::xc_mgga_exc_vxc(
-                self.ptr as *const _,
-                n,
-                rho.as_ptr(),
-                sigma.as_ptr(),
-                lapl.as_ptr(),
-                tau.as_ptr(),
-                exc.as_mut_ptr(),
-                vrho.as_mut_ptr(),
-                vsigma.as_mut_ptr(),
-                vlapl.as_mut_ptr(),
-                vtau.as_mut_ptr(),
-            );
-        }
+        // SAFETY (per chunk): disjoint `[g0, g1)` sub-ranges (rho/vrho/tau/vtau
+        // stride 2, sigma/vsigma stride 3, exc stride 1); own worker-local
+        // handle. `lapl`/`vlapl` sized per-chunk (2*len), same reasoning as
+        // the unpolarized variant.
+        let exc_ptr = SendPtr(exc.as_mut_ptr());
+        let vrho_ptr = SendPtr(vrho.as_mut_ptr());
+        let vsigma_ptr = SendPtr(vsigma.as_mut_ptr());
+        let vtau_ptr = SendPtr(vtau.as_mut_ptr());
+        self.eval_chunked(n, |func, g0, g1| {
+            let len = g1 - g0;
+            let lapl = vec![0.0_f64; 2 * len];
+            let mut vlapl = vec![0.0_f64; 2 * len];
+            unsafe {
+                ffi::xc_mgga_exc_vxc(
+                    func.ptr as *const _,
+                    len,
+                    rho.as_ptr().add(2 * g0),
+                    sigma.as_ptr().add(3 * g0),
+                    lapl.as_ptr(),
+                    tau.as_ptr().add(2 * g0),
+                    exc_ptr.add(g0),
+                    vrho_ptr.add(2 * g0),
+                    vsigma_ptr.add(3 * g0),
+                    vlapl.as_mut_ptr(),
+                    vtau_ptr.add(2 * g0),
+                );
+            }
+        });
     }
 
     /// Returns CAM (range-separation) coefficients if this is an RSH functional.
