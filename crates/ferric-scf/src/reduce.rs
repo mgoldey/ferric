@@ -55,7 +55,8 @@ const DEFAULT_BAND_BYTES: usize = 512 * 1024 * 1024;
 ///
 /// 1. An explicit `FERRIC_REDUCE_BAND_BYTES` env override wins verbatim
 ///    (tuning/testing knob — the reduce tests use it to force narrow bands).
-/// 2. Otherwise `min(512 MiB, mem_budget_bytes / 4)`: the band scratch is
+/// 2. Otherwise `min(512 MiB, mem_budget_bytes / 4)` (see
+///    [`ferric_core::memory::Share::Quarter`]): the band scratch is
 ///    ADDITIVE to the allocations the memory budget already governs (the
 ///    3-index tensor + the accumulator), so it gets a quarter, not the whole.
 ///
@@ -70,7 +71,10 @@ pub fn resolve_band_bytes(mem_budget_bytes: usize) -> usize {
     };
     match BAND_BYTES.get() {
         Ok(r) if r.source == ferric_core::config::ConfigSource::Env => r.value,
-        Ok(r) => r.value.min((mem_budget_bytes / 4).max(1)),
+        Ok(r) => r.value.min(ferric_core::memory::transient_share(
+            mem_budget_bytes,
+            ferric_core::memory::Share::Quarter,
+        )),
         Err(e) => {
             eprintln!("[config] FERRIC_REDUCE_BAND_BYTES: {e}; using default {DEFAULT_BAND_BYTES}");
             DEFAULT_BAND_BYTES

@@ -85,11 +85,25 @@ fn rks_pbe_newton_engages_gga_fxc_and_matches_diis() {
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
 
+    // Root cause of the historical flake here: plain Pulay DIIS with NO
+    // level shift genuinely does not converge RKS/PBE water/cc-pVDZ within
+    // 200 iterations — it settles into a textbook oscillating limit cycle
+    // (traced via FERRIC_SCF_TRACE: dp_rms repeatedly drains to ~1e-10 then
+    // blows back up to ~1e-2 on a ~33-iteration period, deterministically,
+    // every run — not a race). This is the same class of DIIS oscillation
+    // `rhf_level_shift_converges_cose` regression-guards for RHF; a modest
+    // virtual-block level shift (ramped to 0 at convergence, see
+    // `RhfConfig::level_shift` doc) is the established cure and does not
+    // perturb the converged energy: DIIS-with-shift here reaches
+    // -76.3334866645, matching the Newton/GGA-fxc path (which does not use
+    // this config's `level_shift` for anything but its own damping) to
+    // 2.1e-8, and matching plain unassisted Newton's -76.3334866667 to 2e-9.
     let cfg_diis = RhfConfig {
         xc: Some("PBE".into()),
         energy_conv: 1e-9,
         density_conv: 1e-7,
         max_iter: 200,
+        level_shift: 0.2,
         ..Default::default()
     };
     let cfg_newton = RhfConfig { newton_trigger: 1e-2, ..cfg_diis.clone() };

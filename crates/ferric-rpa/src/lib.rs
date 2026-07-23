@@ -67,6 +67,20 @@ pub use dispersion::{
 };
 pub use screen::{build_screened_bov, build_screened_bov_boys, ScreenedBov};
 
+/// Crate-wide serialization for tests that SET or transitively READ the
+/// process-global `FERRIC_MEM_BUDGET_GB` / `FERRIC_LANCZOS_PANEL` / legacy
+/// budget env vars. `ao_rpa`, `lanczos`, and `rs_mp2_rpa` each independently
+/// mutate one of these (a private per-module lock cannot stop a cross-module
+/// race — e.g. `lanczos_panel_width_honors_explicit_budget_argument` asserts
+/// the NO-env-set default (256) via `lanczos::lanczos_panel_width`, which
+/// transitively calls `ferric_core::memory::resolve_budget`; a concurrently-
+/// running test elsewhere in this crate that `set_var`s `FERRIC_MEM_BUDGET_GB`
+/// mid-flight flips that assertion — observed twice under parallel test
+/// execution). Mirrors `ferric_dft::TEST_BUDGET_ENV_LOCK`'s exact pattern;
+/// poisoning is tolerated via `into_inner` at use sites.
+#[cfg(test)]
+pub(crate) static TEST_BUDGET_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Allocating wrapper that dispatches the χ₀ kernel (Dense vs Laplace) based on
 /// whether a `LaplaceQuadrature` is supplied.
 ///

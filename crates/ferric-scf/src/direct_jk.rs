@@ -50,6 +50,7 @@ impl<'a> DirectJK<'a> {
         k: &mut Array2<f64>,
     ) -> Result<usize, FerricError> {
         use std::sync::atomic::{AtomicUsize, Ordering};
+        use crate::quartet_scatter::{build_d_max_shell, scatter_bra_pair, DensityScreen, JkMode};
 
         self.ctx.check_interrupted()?;
 
@@ -63,21 +64,7 @@ impl<'a> DirectJK<'a> {
         // (μ ∈ shell si, ν ∈ shell sj). The Häser-Ahlrichs density-weighted screen
         // uses the max of all six pair maxima (12,34,13,14,23,24) because J contracts
         // D against (λ,σ),(μ,ν) and K against (μ,λ),(μ,σ),(ν,λ),(ν,σ).
-        let mut d_max_shell = Array2::<f64>::zeros((nsh, nsh));
-        for si in 0..nsh {
-            for sj in 0..nsh {
-                let (oi, ni) = (offs[si], dims[si]);
-                let (oj, nj) = (offs[sj], dims[sj]);
-                let mut m = 0.0f64;
-                for a in 0..ni {
-                    for b in 0..nj {
-                        let v = unsafe { d.uget((oi + a, oj + b)).abs() };
-                        if v > m { m = v; }
-                    }
-                }
-                d_max_shell[(si, sj)] = m;
-            }
-        }
+        let d_max_shell = build_d_max_shell(self.prep, d);
         let max_d = d_max_shell.iter().cloned().fold(0.0f64, f64::max);
 
         let max_q: f64 = self.bounds.q.iter().cloned().fold(0.0f64, f64::max);
@@ -85,8 +72,6 @@ impl<'a> DirectJK<'a> {
         let q_table = &self.bounds.q;
         let op = self.bounds.op;
         let prep = self.prep;
-        let rank = self.ctx.rank;
-        let size = self.ctx.size;
         let nbf = prep.nbasis();
 
         // Work list = screened canonical bra pairs (s1,s2), O(nsh²) memory. The
@@ -108,14 +93,9 @@ impl<'a> DirectJK<'a> {
                 }
             }
         }
-        // MPI rank striping (disjoint covering partition of the pair list,
-        // mirroring rhf::build_jk; size == 1 keeps the full list unchanged).
-        let shell_pairs: Vec<(usize, usize)> = shell_pairs
-            .into_iter()
-            .enumerate()
-            .filter(|(idx, _)| idx % size == rank)
-            .map(|(_, p)| p)
-            .collect();
+        // MPI rank striping (see `ParallelContext::stripe` doc; size == 1
+        // keeps the full list unchanged).
+        let shell_pairs: Vec<(usize, usize)> = self.ctx.stripe(shell_pairs);
 
         // One engine per rayon thread (see engine_pool): constructing it in the
         // fold init below would fire once per work-chunk and storm the global
@@ -139,7 +119,7 @@ impl<'a> DirectJK<'a> {
         let n_pairs = shell_pairs.len();
         let group_size = crate::reduce::deterministic_group_size(n_pairs);
         let n_groups = n_pairs.div_ceil(group_size.max(1)).max(1);
-        let dms = &d_max_shell;
+        let screen = DensityScreen::SixPair(&d_max_shell);
 
         let mut total_j = Array2::<f64>::zeros((nbf, nbf));
         let mut total_k = Array2::<f64>::zeros((nbf, nbf));
@@ -153,90 +133,23 @@ impl<'a> DirectJK<'a> {
             |g| {
                 let lo = g * group_size;
                 let hi = (lo + group_size).min(n_pairs);
-                let mut local_j = Array2::<f64>::zeros((nbf, nbf));
-                let mut local_k = Array2::<f64>::zeros((nbf, nbf));
+                let mut mode = JkMode::new_both(nbf);
                 let mut local_count = 0usize;
                 for &(s1, s2) in &shell_pairs[lo..hi] {
-                    let b12 = q_table[(s1, s2)];
-                    let d12 = dms[(s1, s2)];
-                    let (n1, n2) = (dims[s1], dims[s2]);
-                    let (o1, o2) = (offs[s1], offs[s2]);
-                    let sym12 = s1 != s2;
-
+                    if ferric_core::INTERRUPT.load(Ordering::Relaxed) {
+                        continue;
+                    }
                     pool.with(|engine| {
-                        for s3 in 0..=s1 {
-                        let s4max = if s3 == s1 { s2 } else { s3 };
-                        let d13 = dms[(s1, s3)];
-                        let d23 = dms[(s2, s3)];
-                        for s4 in 0..=s4max {
-                        let d34 = dms[(s3, s4)];
-                        let d14 = dms[(s1, s4)];
-                        let d24 = dms[(s2, s4)];
-                        let dmax = d12.max(d34).max(d13).max(d14).max(d23).max(d24);
-                        if b12 * q_table[(s3, s4)] * dmax < thresh {
-                            continue;
-                        }
-                        if let Some(q) = engine.compute_quartet(prep, s1, s2, s3, s4) {
-                            local_count += 1;
-                            let (n3, n4) = (dims[s3], dims[s4]);
-                            let (o3, o4) = (offs[s3], offs[s4]);
-                            let sym34 = s3 != s4;
-                            let sym1234 = (s1, s2) != (s3, s4);
-
-                            for a in 0..n1 {
-                                for b in 0..n2 {
-                                    for c in 0..n3 {
-                                        for dd in 0..n4 {
-                                            let v = unsafe {
-                                                *q.get_unchecked(((a * n2 + b) * n3 + c) * n4 + dd)
-                                            };
-                                            let mu = o1 + a;
-                                            let nu = o2 + b;
-                                            let la = o3 + c;
-                                            let sg = o4 + dd;
-
-                                            // J contributions
-                                            unsafe {
-                                                *local_j.uget_mut((mu, nu)) += d.uget((la, sg)) * v;
-                                                *local_k.uget_mut((mu, la)) += d.uget((nu, sg)) * v;
-                                                if sym12 {
-                                                    *local_j.uget_mut((nu, mu)) += d.uget((la, sg)) * v;
-                                                    *local_k.uget_mut((nu, la)) += d.uget((mu, sg)) * v;
-                                                }
-                                                if sym34 {
-                                                    *local_j.uget_mut((mu, nu)) += d.uget((sg, la)) * v;
-                                                    *local_k.uget_mut((mu, sg)) += d.uget((nu, la)) * v;
-                                                }
-                                                if sym12 && sym34 {
-                                                    *local_j.uget_mut((nu, mu)) += d.uget((sg, la)) * v;
-                                                    *local_k.uget_mut((nu, sg)) += d.uget((mu, la)) * v;
-                                                }
-                                                if sym1234 {
-                                                    *local_j.uget_mut((la, sg)) += d.uget((mu, nu)) * v;
-                                                    *local_k.uget_mut((la, mu)) += d.uget((sg, nu)) * v;
-                                                    if sym12 {
-                                                        *local_j.uget_mut((la, sg)) += d.uget((nu, mu)) * v;
-                                                        *local_k.uget_mut((la, nu)) += d.uget((sg, mu)) * v;
-                                                    }
-                                                    if sym34 {
-                                                        *local_j.uget_mut((sg, la)) += d.uget((mu, nu)) * v;
-                                                        *local_k.uget_mut((sg, mu)) += d.uget((la, nu)) * v;
-                                                    }
-                                                    if sym12 && sym34 {
-                                                        *local_j.uget_mut((sg, la)) += d.uget((nu, mu)) * v;
-                                                        *local_k.uget_mut((sg, nu)) += d.uget((la, mu)) * v;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        }
-                        }
+                        local_count += scatter_bra_pair(
+                            engine, prep, &dims, &offs, q_table, &screen, thresh, d, s1, s2,
+                            &mut mode, true,
+                        );
                     });
                 }
+                let (local_j, local_k) = match mode {
+                    JkMode::Both(j, k) => (j, k),
+                    _ => unreachable!("DirectJK::build always uses JkMode::Both"),
+                };
                 computed_quartets.fetch_add(local_count, Ordering::Relaxed);
                 Ok((local_j, local_k))
             },

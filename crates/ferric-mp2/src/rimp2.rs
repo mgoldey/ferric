@@ -541,12 +541,17 @@ pub fn compute_rpa_intermediates_spin(
     let c_occ = c_full.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
     let c_vir = c_full.slice(ndarray::s![.., nocc_total..]).to_owned();
 
-    let eri3_ov = eri3_mo_ov_blocked(op, obs, dfbs, &c_occ, &c_vir, eri3_budget_bytes(config.memory_budget_bytes))?;
-    // Dressing GEMM, outside any rayon region (top-level driver call). Opt-in
-    // BLAS raise via FERRIC_BLAS_THREADS (default 1, unchanged behavior).
-    let b_ov = with_blas_threads(opt_in_blas_threads(), || {
-        v_inv_sqrt.dot(&eri3_ov.into_shape_with_order((naux, nocc * nvir)).unwrap())
-    });
+    // Stream raw (P|mu nu) aux-blocks from a budgeted ThreeIndexSource and
+    // dress each block with V^{-1/2} on the fly via the canonical streamer —
+    // one resident (naux, nocc*nvir) tensor, not the old two-tensor peak
+    // (a full eri3_mo_ov_blocked MO tensor THEN a separately-allocated
+    // v_inv_sqrt.dot(..) dressed copy co-resident during the dot). Mirrors
+    // ri_mp2_spin_components's identical migration. Exactness: same
+    // contraction, reordered per aux-block, not approximated — see
+    // stream_dressed_mo_band's doc.
+    let budget_bytes = eri3_budget_bytes(config.memory_budget_bytes);
+    let mut src = ThreeIndexSource::build(op, obs, dfbs, budget_bytes)?;
+    let b_ov = stream_dressed_mo_band(&mut src, &v_inv_sqrt, &c_occ, &c_vir, None)?;
 
     Ok(RpaIntermediates {
         b_ov, v_inv_sqrt,
@@ -581,12 +586,11 @@ pub fn compute_rpa_intermediates(
     let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
     let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
 
-    let eri3_ov = eri3_mo_ov_blocked(op, obs, dfbs, &c_occ, &c_vir, eri3_budget_bytes(config.memory_budget_bytes))?;
-    // Dressing GEMM, outside any rayon region (top-level driver call). Opt-in
-    // BLAS raise via FERRIC_BLAS_THREADS (default 1, unchanged behavior).
-    let b_ov = with_blas_threads(opt_in_blas_threads(), || {
-        v_inv_sqrt.dot(&eri3_ov.into_shape_with_order((naux, nocc * nvir)).unwrap())
-    });
+    // Stream + dress on the fly (see compute_rpa_intermediates_spin's doc for
+    // why this replaces eri3_mo_ov_blocked + a separate dressing GEMM).
+    let budget_bytes = eri3_budget_bytes(config.memory_budget_bytes);
+    let mut src = ThreeIndexSource::build(op, obs, dfbs, budget_bytes)?;
+    let b_ov = stream_dressed_mo_band(&mut src, &v_inv_sqrt, &c_occ, &c_vir, None)?;
 
     Ok(RpaIntermediates {
         b_ov, v_inv_sqrt,

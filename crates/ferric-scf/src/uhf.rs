@@ -3,8 +3,6 @@
 //! Parallels `rhf.rs` but tracks independent α/β densities, Fock matrices, and
 //! DIIS streams. Uses J built from D_total = D_α + D_β and K built per spin.
 
-use crate::df_j::DfJ;
-use crate::df_k::DfK;
 use crate::diis::Diis;
 use crate::direct_j::DirectJ;
 use crate::direct_k::DirectK;
@@ -227,30 +225,19 @@ pub fn solve_uhf_fockmod(
     // loop-local builder would pay that construction every iteration.
     let need_k = c_k != 0.0 || k_mix.omega > 0.0;
     let coulomb_op = bounds.op;
-    let mut df_j: Option<DfJ> = if k_mix.omega == 0.0 {
-        if let Some(aux_name) = config.df_j_aux.as_deref() {
-            let dfbs_set = ferric_core::basis::bundled(aux_name)?;
-            let dfbs = PreparedBasis::new(mol, &dfbs_set)?;
-            Some(DfJ::new_banded(coulomb_op, prep, &dfbs, ooc_budget, Some(ctx))?)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+    // Effective aux names under the existing gates (ω=0 for both; DF-K
+    // additionally needs `need_k`) — `None` reproduces the prior "skip this
+    // builder entirely" branch exactly. `build_df_jk` shares one
+    // `PreparedBasis` when both names are set and identical (see its doc);
+    // it independently gates each output on its own `Option`, so this is
+    // byte-identical to the previous two-independent-`if` structure.
+    let j_aux_eff = if k_mix.omega == 0.0 { config.df_j_aux.as_deref() } else { None };
+    let k_aux_eff = if need_k && k_mix.omega == 0.0 { config.df_k_aux.as_deref() } else { None };
+    let (mut df_j, mut df_k) = crate::fock_assembly::build_df_jk(
+        ctx, mol, coulomb_op, prep, j_aux_eff, k_aux_eff, ooc_budget,
+    )?;
     let mut direct_j: Option<DirectJ> = if df_j.is_none() {
         Some(DirectJ::new(ctx, prep, bounds, config.integral_thresh, ooc_budget))
-    } else {
-        None
-    };
-    let mut df_k: Option<DfK> = if need_k && k_mix.omega == 0.0 {
-        if let Some(aux_name) = config.df_k_aux.as_deref() {
-            let dfbs_set = ferric_core::basis::bundled(aux_name)?;
-            let dfbs = PreparedBasis::new(mol, &dfbs_set)?;
-            Some(DfK::new_banded(coulomb_op, prep, &dfbs, ooc_budget, Some(ctx))?)
-        } else {
-            None
-        }
     } else {
         None
     };

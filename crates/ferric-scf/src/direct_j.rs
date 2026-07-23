@@ -39,6 +39,7 @@ impl<'a> DirectJ<'a> {
 impl<'a> JBuilder for DirectJ<'a> {
     fn build(&mut self, d: &Array2<f64>, j: &mut Array2<f64>) -> Result<usize, FerricError> {
         use std::sync::atomic::{AtomicUsize, Ordering};
+        use crate::quartet_scatter::{scatter_bra_pair, DensityScreen, JkMode};
 
         let nsh = self.prep.nshells();
         let dims = self.prep.shell_dims();
@@ -52,8 +53,6 @@ impl<'a> JBuilder for DirectJ<'a> {
         let q_table = &self.bounds.q;
         let op = self.bounds.op;
         let prep = self.prep;
-        let rank = self.ctx.rank;
-        let size = self.ctx.size;
 
         // Work list = screened canonical bra pairs (s1,s2), O(nsh²) memory; the
         // ket (s3,s4) loop + Schwarz/density screen run inside the parallel
@@ -71,13 +70,8 @@ impl<'a> JBuilder for DirectJ<'a> {
                 }
             }
         }
-        // MPI rank striping (disjoint covering partition; size == 1 is a no-op).
-        let shell_pairs: Vec<(usize, usize)> = shell_pairs
-            .into_iter()
-            .enumerate()
-            .filter(|(idx, _)| idx % size == rank)
-            .map(|(_, p)| p)
-            .collect();
+        // MPI rank striping (see `ParallelContext::stripe` doc; size == 1 is a no-op).
+        let shell_pairs: Vec<(usize, usize)> = self.ctx.stripe(shell_pairs);
 
         // One engine per rayon thread (see engine_pool) — avoids the per-chunk
         // libint2-ctor-mutex storm that made heavy-element bases 10×+ slower.
@@ -103,60 +97,27 @@ impl<'a> JBuilder for DirectJ<'a> {
         let nbf = prep.nbasis();
 
         let band_bytes = crate::reduce::resolve_band_bytes(self.mem_budget);
+        let screen = DensityScreen::Global(max_d);
         crate::reduce::grouped_deterministic_sum(j, n_groups, nbf, band_bytes, |g| {
             let lo = g * group_size;
             let hi = (lo + group_size).min(n_pairs);
-            let mut local_j = Array2::<f64>::zeros((nbf, nbf));
+            let mut mode = JkMode::new_j(nbf);
             let mut local_count = 0usize;
             for &(s1, s2) in &shell_pairs[lo..hi] {
-                let b12 = q_table[(s1, s2)];
-                let (n1, n2) = (dims[s1], dims[s2]);
-                let (o1, o2) = (offs[s1], offs[s2]);
-                let sym12 = s1 != s2;
-
+                if ferric_core::INTERRUPT.load(Ordering::Relaxed) {
+                    continue;
+                }
                 pool.with(|engine| {
-                    for s3 in 0..=s1 {
-                        let s4max = if s3 == s1 { s2 } else { s3 };
-                        for s4 in 0..=s4max {
-                            if b12 * q_table[(s3, s4)] * max_d < thresh {
-                                continue;
-                            }
-                            if let Some(q) = engine.compute_quartet(prep, s1, s2, s3, s4) {
-                                local_count += 1;
-                                let (n3, n4) = (dims[s3], dims[s4]);
-                                let (o3, o4) = (offs[s3], offs[s4]);
-                                let sym34 = s3 != s4;
-                                let sym1234 = (s1, s2) != (s3, s4);
-                                for a in 0..n1 {
-                                    for b in 0..n2 {
-                                        for c in 0..n3 {
-                                            for dd in 0..n4 {
-                                                let v = q[((a * n2 + b) * n3 + c) * n4 + dd];
-                                                let mu = o1 + a;
-                                                let nu = o2 + b;
-                                                let la = o3 + c;
-                                                let sg = o4 + dd;
-
-                                                local_j[(mu, nu)] += d[(la, sg)] * v;
-                                                if sym12 { local_j[(nu, mu)] += d[(la, sg)] * v; }
-                                                if sym34 { local_j[(mu, nu)] += d[(sg, la)] * v; }
-                                                if sym12 && sym34 { local_j[(nu, mu)] += d[(sg, la)] * v; }
-
-                                                if sym1234 {
-                                                    local_j[(la, sg)] += d[(mu, nu)] * v;
-                                                    if sym34 { local_j[(sg, la)] += d[(mu, nu)] * v; }
-                                                    if sym12 { local_j[(la, sg)] += d[(nu, mu)] * v; }
-                                                    if sym12 && sym34 { local_j[(sg, la)] += d[(nu, mu)] * v; }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    local_count += scatter_bra_pair(
+                        engine, prep, &dims, &offs, q_table, &screen, thresh, d, s1, s2,
+                        &mut mode, true,
+                    );
                 });
             }
+            let local_j = match mode {
+                JkMode::JOnly(j) => j,
+                _ => unreachable!("DirectJ::build always uses JkMode::JOnly"),
+            };
             computed_quartets.fetch_add(local_count, Ordering::Relaxed);
             Ok(local_j)
         })?;

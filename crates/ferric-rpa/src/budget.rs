@@ -107,11 +107,17 @@ pub fn estimate_peak_bytes(shape: PeakEstimateShape) -> usize {
     // (1) RpaIntermediates build:
     //   - metric_inverse_sqrt eigh branch: up to 3 co-resident naux×naux
     //     buffers (evecs, u_scaled, dot() result) — see eigh_inverse_sqrt.
-    //   - eri3_mo_ov_blocked output (naux·nocc·nvir) co-resident with the
-    //     b_ov dressing GEMM output of the SAME shape (rimp2.rs ~499-504):
-    //     two naux·nocc·nvir buffers, not one.
+    //   - b_ov (naux·nocc·nvir): ONE resident buffer, not two. Historically
+    //     this was eri3_mo_ov_blocked's raw MO output co-resident with a
+    //     SEPARATE dressing-GEMM output of the same shape (2×); since
+    //     compute_rpa_intermediates{,_spin} were migrated onto
+    //     stream_dressed_mo_band (mirroring ri_mp2_spin_components), each
+    //     aux-block chunk is dressed in place into the SAME output tensor as
+    //     it streams — only one naux·nocc·nvir buffer is ever resident (the
+    //     raw AO block scratch is chunk-sized, `MO_STREAM_CHUNK` aux rows
+    //     wide, not naux-wide, so it's negligible next to the full b_ov).
     let metric_bytes = naux.saturating_mul(naux).saturating_mul(3).saturating_mul(F64_BYTES);
-    let eri3_and_bov_bytes = naux.saturating_mul(nov).saturating_mul(2).saturating_mul(F64_BYTES);
+    let eri3_and_bov_bytes = naux.saturating_mul(nov).saturating_mul(F64_BYTES);
     let intermediates_peak = metric_bytes.saturating_add(eri3_and_bov_bytes);
 
     // (2) Lanczos full-rank eigensolve: assembled A (naux×naux, always fully

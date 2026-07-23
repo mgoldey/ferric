@@ -3,8 +3,6 @@
 //! Implements the Roothaan-Hall SCF procedure with DIIS convergence acceleration
 //! and Schwarz-screened two-electron integral evaluation.
 
-use crate::df_j::DfJ;
-use crate::df_k::DfK;
 use crate::diis::DiisDriver;
 use crate::direct_j::DirectJ;
 use crate::direct_jk::DirectJK;
@@ -455,26 +453,16 @@ pub fn solve_rhf(
     let df_k_aux_eff: Option<String> = config.df_k_aux.clone()
         .or_else(|| needs_k.then(|| DEFAULT_JK_AUX.into()));
 
-    // Density-fitted Coulomb (RI-J). Builds 3-center tensor + inverse metric once.
-    // Under MPI, `new_banded(Some(ctx))` stripes the aux band across ranks so
-    // each rank builds/holds only its band of B (memory scales with rank count);
+    // Density-fitted Coulomb (RI-J) / exchange (RI-K). Builds 3-center
+    // tensor(s) + metric(s) once, sharing one `PreparedBasis` when
+    // `df_j_aux_eff == df_k_aux_eff` (see `build_df_jk` doc) — the common
+    // case since both default to the same JK-fit basis. Under MPI,
+    // `new_banded(Some(ctx))` stripes the aux band across ranks so each rank
+    // builds/holds only its band of B (memory scales with rank count);
     // size-1 / non-MPI is byte-identical to the serial path.
-    let mut df_j: Option<DfJ> = if let Some(aux_name) = df_j_aux_eff.as_deref() {
-        let dfbs_set = ferric_core::basis::bundled(aux_name)?;
-        let dfbs = PreparedBasis::new(mol, &dfbs_set)?;
-        Some(DfJ::new_banded(op, prep, &dfbs, ooc_budget, Some(ctx))?)
-    } else {
-        None
-    };
-
-    // Density-fitted exchange (RI-K). Builds V^{-1/2}-dressed 3-center tensor once.
-    let mut df_k: Option<DfK> = if let Some(aux_name) = df_k_aux_eff.as_deref() {
-        let dfbs_set = ferric_core::basis::bundled(aux_name)?;
-        let dfbs = PreparedBasis::new(mol, &dfbs_set)?;
-        Some(DfK::new_banded(op, prep, &dfbs, ooc_budget, Some(ctx))?)
-    } else {
-        None
-    };
+    let (mut df_j, mut df_k) = crate::fock_assembly::build_df_jk(
+        ctx, mol, op, prep, df_j_aux_eff.as_deref(), df_k_aux_eff.as_deref(), ooc_budget,
+    )?;
 
     // Build LinkK once — SignificantPairs is geometry-dependent and expensive per iteration.
     // When using the "link" builder, compute a fresh SchwarzBounds to own the lifetime.
@@ -973,6 +961,7 @@ pub fn build_jk_with_pool(
     band_bytes: usize,
 ) -> Result<usize, FerricError> {
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use crate::quartet_scatter::{build_d_max_shell, canonical_bra_pairs, scatter_bra_pair, DensityScreen, JkMode};
 
     ctx.check_interrupted()?;
 
@@ -983,45 +972,20 @@ pub fn build_jk_with_pool(
     let computed_quartets = AtomicUsize::new(0);
 
     // Shell-blocked density-max table for Häser-Ahlrichs pair-wise screening.
-    let mut d_max_shell = Array2::<f64>::zeros((nsh, nsh));
-    for si in 0..nsh {
-        for sj in 0..nsh {
-            let (oi, ni) = (offs[si], dims[si]);
-            let (oj, nj) = (offs[sj], dims[sj]);
-            let mut m = 0.0f64;
-            for a in 0..ni {
-                for b in 0..nj {
-                    let v = unsafe { d.uget((oi + a, oj + b)).abs() };
-                    if v > m { m = v; }
-                }
-            }
-            d_max_shell[(si, sj)] = m;
-        }
-    }
+    let d_max_shell = build_d_max_shell(prep, d);
 
-    let shell_pairs: Vec<_> = (0..nsh)
-        .flat_map(|s1| (0..=s1).map(move |s2| (s1, s2)))
-        .collect();
+    let shell_pairs: Vec<_> = canonical_bra_pairs(nsh);
 
-    // MPI rank striping (round-robin over the flat work list, mirroring
-    // DirectJK::build in direct_jk.rs). Every rank builds the identical
-    // `shell_pairs` list above, then keeps only the entries whose flat index
-    // is congruent to its rank mod world size — a disjoint, covering
-    // partition of the (s1,s2) pair list. Without this, every rank computed
-    // the FULL J/K redundantly and the unconditional Allreduce below N-folded
-    // the result instead of summing a genuine partition (confirmed: -np 2
-    // water RHF converged to ≈-3958 Ha instead of -76.03 Ha). With
-    // ctx.size == 1 (feature off, or a single rank), `idx % 1 == 0` is
-    // trivially true for every idx, so this filter is a no-op and the list is
-    // byte-identical to before — preserving the thread-count bit-identity
-    // invariant this function is already relied on for (see
-    // build_jk_bit_identical_across_thread_counts below).
-    let shell_pairs: Vec<_> = shell_pairs
-        .into_iter()
-        .enumerate()
-        .filter(|(idx, _)| idx % ctx.size == ctx.rank)
-        .map(|(_, pair)| pair)
-        .collect();
+    // MPI rank striping: every rank builds the identical `shell_pairs` list
+    // above, then `ParallelContext::stripe` keeps only its own disjoint,
+    // covering partition (see its doc for why round-robin, and the
+    // bit-identity argument). Without this, every rank computed the FULL J/K
+    // redundantly and the unconditional Allreduce below N-folded the result
+    // instead of summing a genuine partition (confirmed: -np 2 water RHF
+    // converged to ≈-3958 Ha instead of -76.03 Ha). This preserves the
+    // thread-count bit-identity invariant this function is already relied on
+    // for (see build_jk_bit_identical_across_thread_counts below).
+    let shell_pairs: Vec<_> = ctx.stripe(shell_pairs);
 
     // One engine per rayon thread (see engine_pool) — constructing an engine in
     // the fold init fires once per work-chunk, not per thread, storming the
@@ -1050,139 +1014,28 @@ pub fn build_jk_with_pool(
     // the plain `build_jk` wrapper and other no-budget callers pass
     // `reduce::default_band_bytes()` (env/auto-resolved), preserving the old
     // behavior byte-for-byte.
+    let screen = DensityScreen::SixPair(&d_max_shell);
     crate::reduce::grouped_deterministic_sum_pair(&mut total_j, &mut total_k, n_groups, nbf, band_bytes, |g| {
         let lo = g * group_size;
         let hi = (lo + group_size).min(n_pairs);
-        let mut local_j = Array2::<f64>::zeros((nbf, nbf));
-        let mut local_k = Array2::<f64>::zeros((nbf, nbf));
+        let mut mode = JkMode::new_both(nbf);
         let mut local_count = 0usize;
         for &(s1, s2) in &shell_pairs[lo..hi] {
             if ferric_core::INTERRUPT.load(std::sync::atomic::Ordering::Relaxed) {
                 continue;
             }
-            let b12 = bounds.q[(s1, s2)];
-            let d12 = d_max_shell[(s1, s2)];
-            let (n1, n2) = (dims[s1], dims[s2]);
-            let (o1, o2) = (offs[s1], offs[s2]);
-            let sym12 = s1 != s2;
-
             pool.with(|engine| {
-            for s3 in 0..=s1 {
-                if s3 % 100 == 0 && ferric_core::INTERRUPT.load(Ordering::Relaxed) {
-                    return;
-                }
-                let s4max = if s3 == s1 { s2 } else { s3 };
-                let d13 = d_max_shell[(s1, s3)];
-                let d23 = d_max_shell[(s2, s3)];
-                for s4 in 0..=s4max {
-                    let b34 = bounds.q[(s3, s4)];
-                    let d34 = d_max_shell[(s3, s4)];
-                    let d14 = d_max_shell[(s1, s4)];
-                    let d24 = d_max_shell[(s2, s4)];
-                    let dmax = d12.max(d34).max(d13).max(d14).max(d23).max(d24);
-                    if b12 * b34 * dmax < thresh {
-                        continue;
-                    }
-
-                    if let Some(q) = engine.compute_quartet(prep, s1, s2, s3, s4) {
-                        local_count += 1;
-                        let (n3, n4) = (dims[s3], dims[s4]);
-                        let (o3, o4) = (offs[s3], offs[s4]);
-                        let sym34 = s3 != s4;
-                        let sym1234 = (s1, s2) != (s3, s4);
-
-                        // Fast-path for STO-3G / small shells (n=1)
-                        if n1 == 1 && n2 == 1 && n3 == 1 && n4 == 1 {
-                            let v = unsafe { *q.get_unchecked(0) };
-                            unsafe {
-                                *local_j.uget_mut((o1, o2)) += d.uget((o3, o4)) * v;
-                                *local_k.uget_mut((o1, o3)) += d.uget((o2, o4)) * v;
-                                if sym12 {
-                                    *local_j.uget_mut((o2, o1)) += d.uget((o3, o4)) * v;
-                                    *local_k.uget_mut((o2, o3)) += d.uget((o1, o4)) * v;
-                                }
-                                if sym34 {
-                                    *local_j.uget_mut((o1, o2)) += d.uget((o4, o3)) * v;
-                                    *local_k.uget_mut((o1, o4)) += d.uget((o2, o3)) * v;
-                                }
-                                if sym12 && sym34 {
-                                    *local_j.uget_mut((o2, o1)) += d.uget((o4, o3)) * v;
-                                    *local_k.uget_mut((o2, o4)) += d.uget((o1, o3)) * v;
-                                }
-                                if sym1234 {
-                                    *local_j.uget_mut((o3, o4)) += d.uget((o1, o2)) * v;
-                                    *local_k.uget_mut((o3, o1)) += d.uget((o4, o2)) * v;
-                                    if sym12 {
-                                        *local_j.uget_mut((o3, o4)) += d.uget((o2, o1)) * v;
-                                        *local_k.uget_mut((o3, o2)) += d.uget((o4, o1)) * v;
-                                    }
-                                    if sym34 {
-                                        *local_j.uget_mut((o4, o3)) += d.uget((o1, o2)) * v;
-                                        *local_k.uget_mut((o4, o1)) += d.uget((o3, o2)) * v;
-                                    }
-                                    if sym12 && sym34 {
-                                        *local_j.uget_mut((o4, o3)) += d.uget((o2, o1)) * v;
-                                        *local_k.uget_mut((o4, o2)) += d.uget((o3, o1)) * v;
-                                    }
-                                }
-                            }
-                            continue;
-                        }
-
-                        // General path for larger shells
-                        for a in 0..n1 {
-                            for b in 0..n2 {
-                                for c in 0..n3 {
-                                    for dd in 0..n4 {
-                                        let v = unsafe { *q.get_unchecked(((a * n2 + b) * n3 + c) * n4 + dd) };
-                                        let mu = o1 + a;
-                                        let nu = o2 + b;
-                                        let la = o3 + c;
-                                        let sg = o4 + dd;
-
-                                        unsafe {
-                                            *local_j.uget_mut((mu, nu)) += d.uget((la, sg)) * v;
-                                            *local_k.uget_mut((mu, la)) += d.uget((nu, sg)) * v;
-
-                                            if sym12 {
-                                                *local_j.uget_mut((nu, mu)) += d.uget((la, sg)) * v;
-                                                *local_k.uget_mut((nu, la)) += d.uget((mu, sg)) * v;
-                                            }
-                                            if sym34 {
-                                                *local_j.uget_mut((mu, nu)) += d.uget((sg, la)) * v;
-                                                *local_k.uget_mut((mu, sg)) += d.uget((nu, la)) * v;
-                                            }
-                                            if sym12 && sym34 {
-                                                *local_j.uget_mut((nu, mu)) += d.uget((sg, la)) * v;
-                                                *local_k.uget_mut((nu, sg)) += d.uget((mu, la)) * v;
-                                            }
-                                            if sym1234 {
-                                                *local_j.uget_mut((la, sg)) += d.uget((mu, nu)) * v;
-                                                *local_k.uget_mut((la, mu)) += d.uget((sg, nu)) * v;
-                                                if sym12 {
-                                                    *local_j.uget_mut((la, sg)) += d.uget((nu, mu)) * v;
-                                                    *local_k.uget_mut((la, nu)) += d.uget((sg, mu)) * v;
-                                                }
-                                                if sym34 {
-                                                    *local_j.uget_mut((sg, la)) += d.uget((mu, nu)) * v;
-                                                    *local_k.uget_mut((sg, mu)) += d.uget((la, nu)) * v;
-                                                }
-                                                if sym12 && sym34 {
-                                                    *local_j.uget_mut((sg, la)) += d.uget((nu, mu)) * v;
-                                                    *local_k.uget_mut((sg, nu)) += d.uget((la, mu)) * v;
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+                local_count += scatter_bra_pair(
+                    engine, prep, &dims, &offs, &bounds.q, &screen, thresh, d, s1, s2,
+                    &mut mode, true,
+                );
             });
         }
-        computed_quartets.fetch_add(local_count, Ordering::Relaxed);
+        let (local_j, local_k) = match mode {
+            JkMode::Both(j, k) => (j, k),
+            _ => unreachable!("build_jk_with_pool always uses JkMode::Both"),
+        };
+        computed_quartets.fetch_add(local_count, std::sync::atomic::Ordering::Relaxed);
         Ok((local_j, local_k))
     })?;
 

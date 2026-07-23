@@ -734,8 +734,9 @@ mod tests {
     use crate::sternheimer::dielectric_matrix;
 
     // FERRIC_MEM_BUDGET_GB is process-global; serialize env-mutating tests
-    // (blas_threads.rs / ferric-core memory.rs pattern).
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // via the crate-wide lock (a private per-module lock cannot stop a
+    // cross-module race — see TEST_BUDGET_ENV_LOCK's doc in lib.rs).
+    use crate::TEST_BUDGET_ENV_LOCK as ENV_LOCK;
 
     #[test]
     fn ao_rpa_minimax_fails_fast_under_tiny_env_budget() {

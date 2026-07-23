@@ -453,7 +453,10 @@ pub fn ccsd_t(
     // rayon×OpenBLAS oversubscription / worker-stack-overflow hazard
     // documented there, with no extra logic needed in this crate.
     let triples = unique_occ_triples(no2);
-    let chunk_len = triple_chunk_len(nv2, budget / 2);
+    let chunk_len = triple_chunk_len(
+        nv2,
+        ferric_core::memory::transient_share(budget, ferric_core::memory::Share::Half),
+    );
     let mut et = 0.0f64;
     for chunk in triples.chunks(chunk_len) {
         let partials: Vec<f64> = with_blas_threads(opt_in_blas_threads(), || {

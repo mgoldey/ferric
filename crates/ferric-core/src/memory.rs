@@ -177,6 +177,54 @@ pub fn resolve_budget_bytes(explicit: Option<usize>) -> usize {
     resolve_budget(explicit).bytes
 }
 
+/// Named vocabulary for "what fraction of the resolved budget may a
+/// transient scratch claim on top of whatever else is already resident".
+///
+/// Before this, the tree had ad-hoc, unnamed answers to that question
+/// scattered across crates: `ferric-scf::reduce::resolve_band_bytes` divided
+/// by a bare `4`, `ferric-cc::ccsd_t`'s triple-chunk sizing divided by a bare
+/// `2`, `ferric-mp2::u_rimp2`'s VVOV panel used the FULL budget (no share —
+/// its intermediates are already accounted for via a *reduced* input budget,
+/// not a further split), and `ferric-rpa::energy`'s quadrature panel
+/// subtracts already-resident bytes off the budget first (a genuinely
+/// different, non-divisor policy — see its `quad_panel_width` doc — so it is
+/// NOT expressed as a `Share` here; this enum only names the "budget / N"
+/// shape). [`transient_share`] gives those divisor-style call sites one named
+/// constant instead of a bare integer literal; it changes NO fraction, only
+/// the vocabulary for the fractions that already existed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Share {
+    /// A quarter of the budget: the direct J/K/JK reduction band scratch is
+    /// ADDITIVE to the 3-index tensor + accumulator the budget already
+    /// governs, so it claims a quarter rather than the whole
+    /// (`ferric_scf::reduce::resolve_band_bytes`).
+    Quarter,
+    /// Half the budget: CCSD(T)'s streaming per-triple-block chunk sizing —
+    /// the other half is left for the persistent W/V/D block intermediates
+    /// held alongside it (`ferric_cc::ccsd_t::triple_chunk_len` call site).
+    Half,
+}
+
+impl Share {
+    /// The divisor this share corresponds to (`budget / divisor()`).
+    pub const fn divisor(self) -> usize {
+        match self {
+            Share::Quarter => 4,
+            Share::Half => 2,
+        }
+    }
+}
+
+/// `budget_bytes / share.divisor()`, floored at 1 byte so a degenerate
+/// zero/tiny budget never divides down to 0 (a 0-byte transient ceiling would
+/// make even a single-item allocation look oversized). Pure vocabulary: the
+/// two current callers (`reduce::resolve_band_bytes` → [`Share::Quarter`],
+/// `ccsd_t`'s chunk sizing → [`Share::Half`]) get the exact same numeric
+/// result as their prior bare `/ 4` / `/ 2`.
+pub fn transient_share(budget_bytes: usize, share: Share) -> usize {
+    (budget_bytes / share.divisor()).max(1)
+}
+
 /// Fail-fast pre-flight allocation guard (M2).
 ///
 /// Returns `Err` when a method's projected peak resident allocation (`bytes`)

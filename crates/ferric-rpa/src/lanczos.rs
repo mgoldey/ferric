@@ -800,6 +800,10 @@ mod tests {
     /// the panel width (via FERRIC_LANCZOS_PANEL) does not change the answer.
     #[test]
     fn full_rank_matches_identity_seed_lanczos() {
+        // FERRIC_LANCZOS_PANEL is process-global; serialize against every
+        // other test in this crate that sets/reads a budget-family env var
+        // (see TEST_BUDGET_ENV_LOCK's doc in lib.rs).
+        let _env_guard = crate::TEST_BUDGET_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let naux = 60;
         let nov = 140;
         let (matvec, a) = make_dielectric_op(naux, nov, 7);
@@ -943,6 +947,16 @@ mod tests {
     /// differ.
     #[test]
     fn lanczos_panel_width_honors_explicit_budget_argument() {
+        // This test's "no explicit-or-env budget" branch asserts the
+        // default 256-column panel, which requires NO budget-family env var
+        // (FERRIC_MEM_BUDGET_GB / FERRIC_LANCZOS_PANEL / legacy vars) set
+        // anywhere in the process. Other tests in this crate (ao_rpa,
+        // full_rank_matches_identity_seed_lanczos, rs_mp2_rpa) mutate those
+        // process-global vars; without this lock this test intermittently
+        // saw a stale env value from a concurrently-running test and failed
+        // (observed twice under parallel `cargo test`). See
+        // TEST_BUDGET_ENV_LOCK's doc in lib.rs.
+        let _env_guard = crate::TEST_BUDGET_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let naux = 4000;
         let nov = 200_000;
 

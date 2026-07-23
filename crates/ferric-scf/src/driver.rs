@@ -134,12 +134,40 @@ pub(crate) fn effective_level_shift(config: &RhfConfig) -> f64 {
 
 /// ΔP signals: (rms, max) of `d_new − d_old` — the primary convergence signal
 /// every variant gates on (see `rhf::scf_converged`).
+///
+/// Zero-alloc: no `diff` temp. `d_new`/`d_old` are always standard (C-
+/// contiguous) layout here — every call site builds its density via `.dot()`
+/// on operands with row-stride > 1 (nocc > 1 in every SCF this runs on; the
+/// `.dot()` column-major edge case only bites at nocc/nvir == 1, see
+/// `ndarray-dot-forder-when-both-stride1` — not this density shape), so
+/// `as_slice()` never fails and its element order is exactly the order
+/// `(d_new - d_old).iter()` would have visited. `sum::<f64>()` on a plain
+/// iterator is `std`'s left-to-right fold (`0.0 + a[0] + a[1] + ...`), so
+/// summing `(a[i]-b[i])²` via a single left-to-right `fold` over the zipped
+/// slices reproduces that exact association — bit-identical to the old
+/// `(d_new - d_old).iter().map(|v| v*v).sum()`.
 pub(crate) fn density_change(d_new: &Array2<f64>, d_old: &Array2<f64>) -> (f64, f64) {
-    let diff = d_new - d_old;
-    let n2 = (diff.len() as f64).max(1.0);
-    let rms = (diff.iter().map(|v| v * v).sum::<f64>() / n2).sqrt();
-    let max = diff.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
-    (rms, max)
+    match (d_new.as_slice(), d_old.as_slice()) {
+        (Some(a), Some(b)) => {
+            let (sum_sq, max) = a.iter().zip(b.iter()).fold((0.0f64, 0.0f64), |(sum_sq, max), (&x, &y)| {
+                let diff = x - y;
+                (sum_sq + diff * diff, f64::max(max, diff.abs()))
+            });
+            let n2 = (a.len() as f64).max(1.0);
+            ((sum_sq / n2).sqrt(), max)
+        }
+        // Defensive fallback for a non-standard-layout input (never hit at
+        // current call sites, but correctness over performance if one ever
+        // is): identical formula via the temp, matching the pre-existing
+        // ndarray element order for a non-contiguous array.
+        _ => {
+            let diff = d_new - d_old;
+            let n2 = (diff.len() as f64).max(1.0);
+            let rms = (diff.iter().map(|v| v * v).sum::<f64>() / n2).sqrt();
+            let max = diff.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
+            (rms, max)
+        }
+    }
 }
 
 /// Observational-only warning for the DIIS-history memory footprint.

@@ -92,8 +92,6 @@ impl<'a, B: Bound + Sync> KBuilder for LinkK<'a, B> {
         let dims = self.prep.shell_dims();
         let offs = self.prep.shell_offsets();
         let thresh = self.thresh;
-        let rank = self.ctx.rank;
-        let size = self.ctx.size;
 
         // Find max |D| for screening.
         let max_d = d.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
@@ -101,13 +99,11 @@ impl<'a, B: Bound + Sync> KBuilder for LinkK<'a, B> {
         // Enumerate all significant (ish, jsh) pairs as parallel work units.
         // This gives O(N) tasks with roughly equal work each (each handles ksh/lsh loops),
         // vs O(1) tasks per ish where work grows as O(N²) causing severe imbalance.
-        // MPI: distribute by pair index; Rayon: all pairs on this rank run in parallel.
-        let ij_pairs: Vec<(usize, usize)> = (0..nsh)
+        // MPI rank striping (see `ParallelContext::stripe` doc).
+        let all_pairs: Vec<(usize, usize)> = (0..nsh)
             .flat_map(|ish| self.sp.partners(ish).iter().map(move |&jsh| (ish, jsh)))
-            .enumerate()
-            .filter(|(idx, _)| idx % size == rank)
-            .map(|(_, p)| p)
             .collect();
+        let ij_pairs: Vec<(usize, usize)> = self.ctx.stripe(all_pairs);
 
         // Deterministic, memory-bounded reduction (see direct_k / reduce.rs). The
         // old `fold(..).reduce(..)` tree held one nbf² K partial per work-chunk

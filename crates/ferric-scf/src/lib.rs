@@ -28,6 +28,7 @@ pub(crate) mod driver;
 pub mod cosmo;
 pub use cosmo::{CosmoCavity, CosmoConfig, CosmoResult};
 pub mod reduce;
+pub mod quartet_scatter;
 pub mod direct_j;
 pub mod direct_k;
 pub mod direct_jk;

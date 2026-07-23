@@ -129,6 +129,41 @@ impl ParallelContext {
     pub fn aux_band(&self, n: usize) -> (usize, usize) {
         aux_band_for(n, self.rank, self.size)
     }
+
+    /// Round-robin MPI rank striping of a flat work list: keep only the items
+    /// whose index is congruent to this rank mod world size.
+    ///
+    /// This is a DISJOINT, COVERING partition of `items` — every index `i`
+    /// lands on exactly one rank (`i % size == rank` for exactly one `rank` in
+    /// `0..size`), and concatenating every rank's kept items (in original
+    /// index order, which this preserves since `Vec::into_iter` is order-
+    /// preserving) reproduces `items` exactly. Summing each rank's
+    /// stripe-restricted partial therefore reproduces the full sum — the same
+    /// property `aux_band` provides for contiguous bands, just round-robin
+    /// instead of contiguous.
+    ///
+    /// Round-robin (not contiguous) striping is used here because the callers
+    /// (direct J/K/JK Fock builders, LinK) stripe a canonical shell-*pair*
+    /// list whose per-pair cost is wildly uneven (a pair's ket loop scales
+    /// with its own screened partner count) — round-robin spreads that
+    /// unevenness across ranks, where a contiguous band could hand one rank
+    /// an unlucky run of expensive pairs.
+    ///
+    /// With `size == 1` (feature off, or a single rank), `idx % 1 == 0` is
+    /// trivially true for every idx, so this is a no-op and the returned list
+    /// is byte-identical to `items` — preserving single-rank/non-MPI
+    /// behavior, and the thread-count/rank-count bit-identity invariant the
+    /// direct builders rely on (see their `*_bit_identical_across_thread_counts`
+    /// tests).
+    pub fn stripe<T>(&self, items: Vec<T>) -> Vec<T> {
+        let (rank, size) = (self.rank, self.size);
+        items
+            .into_iter()
+            .enumerate()
+            .filter(|(idx, _)| idx % size == rank)
+            .map(|(_, item)| item)
+            .collect()
+    }
 }
 
 /// Pure balanced contiguous partition: item range `[p0, p1)` for `rank` of
