@@ -139,6 +139,190 @@ pub fn compute_u_mp2_amplitudes(
     })
 }
 
+// ---------------------------------------------------------------------------
+// Shared GEMM+rayon spin-pair kernel.
+//
+// Ports `rimp2::spin_components_from_b_ov`'s i-blocked wide-GEMM restructure
+// to the unrestricted same-spin and opposite-spin pair terms. Each per-element
+// `eri_pqrs = Σ_P B^P_pq B^P_rs` closure used to cost an O(naux) strided dot,
+// called O(nocc²·nvir²) times. Instead we slice the dressed occ-vir B block
+// per occupied index `i` out of the (naux, nocc*nvir) tensor once and form
+//   G_i[a, j*nvir+b] = (ia|jb)   (or the two-B analogue for opposite-spin)
+// via a single wide GEMM `B_i^T · B` per `i` — same FLOPs at BLAS3 throughput.
+// The outer `i` loop is near-embarrassingly parallel (each i owns an
+// independent G_i transient and a private partial), so it is fanned across
+// rayon via `into_par_iter` and reduced with an ORDER-PRESERVING
+// collect-then-serial-sum (never a rayon tree `reduce`, which would make the
+// float accumulation order — and thus the last-bit energy — depend on
+// RAYON_NUM_THREADS; see spin_components_from_b_ov's doc comment for the same
+// idiom). Denominators are applied element-wise after the GEMM, exactly as in
+// the scalar loops this replaces.
+//
+// Two calling shapes are needed:
+//  - same-spin (αα or ββ): one B tensor, antisymmetrized kernel
+//      K_iajb = (ia|jb) − (ib|ja),  E = ¼ Σ t·K,  t = K/D
+//  - opposite-spin (αβ): two independent B tensors (different nocc/nvir per
+//    side), no antisymmetrization, single eri²/D.
+//
+// Both optionally materialize the amplitude tensor `t[i,j,a,b]` (same layout
+// as the pre-GEMM scalar loops) for the U-OO gradient path; when the caller
+// only wants the energy (same_spin_pair_energy /
+// opposite_spin_pair_energy), the write is skipped entirely.
+
+/// Same-spin (αα or ββ) pair kernel: builds the energy and, optionally, the
+/// antisymmetrized amplitude tensor `t[i,j,a,b] = [(ia|jb) − (ib|ja)] / D`.
+///
+/// `b`: dressed occ-vir tensor, shape `(naux, nocc*nvir)`.
+/// `eps`: full per-spin orbital-energy slice (denominators index
+/// `eps[first_occ+i]` / `eps[nocc_total+a]`, matching the original scalar
+/// loops' frozen-core convention).
+///
+/// Returns `(energy, Some(t))` when `want_amplitudes`, else `(energy, None)`.
+pub(crate) fn same_spin_pair_kernel(
+    b: &Array2<f64>,
+    eps: &[f64],
+    nocc: usize,
+    nvir: usize,
+    first_occ: usize,
+    nocc_total: usize,
+    want_amplitudes: bool,
+) -> (f64, Option<Array4<f64>>) {
+    use rayon::prelude::*;
+
+    // Per-i partial: (energy_i, Option<row-major slab of nocc*nvir*nvir t-values for this i>).
+    let partials: Vec<(f64, Option<Vec<f64>>)> = (0..nocc)
+        .into_par_iter()
+        .map(|i| {
+            let b_i = b.slice(ndarray::s![.., i * nvir..(i + 1) * nvir]);
+            let g_i = b_i.t().dot(b); // (nvir, nocc*nvir); g_i[a, j*nvir+b] = (ia|jb)
+            let eps_i = eps[first_occ + i];
+            let mut energy_i = 0.0;
+            let mut slab: Option<Vec<f64>> = if want_amplitudes {
+                Some(vec![0.0; nocc * nvir * nvir])
+            } else {
+                None
+            };
+            for j in 0..nocc {
+                let eps_j = eps[first_occ + j];
+                for a in 0..nvir {
+                    let eps_a = eps[nocc_total + a];
+                    for b_idx in 0..nvir {
+                        let eps_b = eps[nocc_total + b_idx];
+                        let g_ab = g_i[(a, j * nvir + b_idx)]; // (ia|jb)
+                        let g_ba = g_i[(b_idx, j * nvir + a)]; // (ib|ja)
+                        let k = g_ab - g_ba;
+                        let denom = eps_i + eps_j - eps_a - eps_b;
+                        let t_val = k / denom;
+                        energy_i += t_val * k;
+                        if let Some(s) = slab.as_mut() {
+                            s[(j * nvir + a) * nvir + b_idx] = t_val;
+                        }
+                    }
+                }
+            }
+            (0.25 * energy_i, slab)
+        })
+        .collect();
+
+    let mut energy = 0.0;
+    let mut t = if want_amplitudes {
+        Some(Array4::<f64>::zeros((nocc, nocc, nvir, nvir)))
+    } else {
+        None
+    };
+    for (i, (energy_i, slab)) in partials.into_iter().enumerate() {
+        energy += energy_i;
+        if let (Some(t), Some(slab)) = (t.as_mut(), slab) {
+            for j in 0..nocc {
+                for a in 0..nvir {
+                    for b_idx in 0..nvir {
+                        t[(i, j, a, b_idx)] = slab[(j * nvir + a) * nvir + b_idx];
+                    }
+                }
+            }
+        }
+    }
+    (energy, t)
+}
+
+/// Opposite-spin (αβ) pair kernel: builds the energy and, optionally, the
+/// (non-antisymmetrized) amplitude tensor `t[i,J,a,B] = (ia|JB) / D`.
+///
+/// `b_a`/`b_b`: dressed occ-vir tensors for each spin, independent
+/// `(nocc, nvir)` per side. No antisymmetrization — single `eri²/D` per
+/// caller.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn opposite_spin_pair_kernel(
+    b_a: &Array2<f64>,
+    b_b: &Array2<f64>,
+    eps_a: &[f64],
+    eps_b: &[f64],
+    nocc_a: usize,
+    nvir_a: usize,
+    first_occ_a: usize,
+    nocc_total_a: usize,
+    nocc_b: usize,
+    nvir_b: usize,
+    first_occ_b: usize,
+    nocc_total_b: usize,
+    want_amplitudes: bool,
+) -> (f64, Option<Array4<f64>>) {
+    use rayon::prelude::*;
+
+    // Per-i partial: (energy_i, Option<row-major slab of nocc_b*nvir_a*nvir_b t-values for this i>).
+    let partials: Vec<(f64, Option<Vec<f64>>)> = (0..nocc_a)
+        .into_par_iter()
+        .map(|i| {
+            let bi = b_a.slice(ndarray::s![.., i * nvir_a..(i + 1) * nvir_a]);
+            let g_i = bi.t().dot(b_b); // (nvir_a, nocc_b*nvir_b); g_i[a, J*nvir_b+B] = (ia|JB)
+            let eps_i = eps_a[first_occ_a + i];
+            let mut energy_i = 0.0;
+            let mut slab: Option<Vec<f64>> = if want_amplitudes {
+                Some(vec![0.0; nocc_b * nvir_a * nvir_b])
+            } else {
+                None
+            };
+            for a in 0..nvir_a {
+                let eps_av = eps_a[nocc_total_a + a];
+                for jj in 0..nocc_b {
+                    let eps_j = eps_b[first_occ_b + jj];
+                    for bb_idx in 0..nvir_b {
+                        let eps_bv = eps_b[nocc_total_b + bb_idx];
+                        let eri = g_i[(a, jj * nvir_b + bb_idx)];
+                        let denom = eps_i + eps_j - eps_av - eps_bv;
+                        let t_val = eri / denom;
+                        energy_i += t_val * eri;
+                        if let Some(s) = slab.as_mut() {
+                            s[(jj * nvir_a + a) * nvir_b + bb_idx] = t_val;
+                        }
+                    }
+                }
+            }
+            (energy_i, slab)
+        })
+        .collect();
+
+    let mut energy = 0.0;
+    let mut t = if want_amplitudes {
+        Some(Array4::<f64>::zeros((nocc_a, nocc_b, nvir_a, nvir_b)))
+    } else {
+        None
+    };
+    for (i, (energy_i, slab)) in partials.into_iter().enumerate() {
+        energy += energy_i;
+        if let (Some(t), Some(slab)) = (t.as_mut(), slab) {
+            for jj in 0..nocc_b {
+                for a in 0..nvir_a {
+                    for bb_idx in 0..nvir_b {
+                        t[(i, jj, a, bb_idx)] = slab[(jj * nvir_a + a) * nvir_b + bb_idx];
+                    }
+                }
+            }
+        }
+    }
+    (energy, t)
+}
+
 /// Build the same-spin amplitude tensor and accumulate its energy:
 ///   t[i,j,a,b] = K_iajb / D,   K_iajb = (ia|jb) - (ib|ja)
 ///   E = ¼ Σ t · K
@@ -146,42 +330,10 @@ fn build_same_spin_amplitudes(
     inter: &RpaIntermediates,
     eps: &[f64],
 ) -> (Array4<f64>, f64) {
-    let nocc = inter.nocc;
-    let nvir = inter.nvir;
-    let naux = inter.naux;
-    let first_occ = inter.first_occ;
-    let nocc_total = inter.nocc_total;
-    let b = &inter.b_ov;
-    let mut t = Array4::<f64>::zeros((nocc, nocc, nvir, nvir));
-    let mut energy = 0.0;
-    for i in 0..nocc {
-        let eps_i = eps[first_occ + i];
-        for j in 0..nocc {
-            let eps_j = eps[first_occ + j];
-            for a in 0..nvir {
-                let eps_a = eps[nocc_total + a];
-                let ia = i * nvir + a;
-                let ja = j * nvir + a;
-                for b_idx in 0..nvir {
-                    let eps_b = eps[nocc_total + b_idx];
-                    let jb = j * nvir + b_idx;
-                    let ib = i * nvir + b_idx;
-                    let mut eri_iajb = 0.0;
-                    let mut eri_ibja = 0.0;
-                    for p in 0..naux {
-                        eri_iajb += b[(p, ia)] * b[(p, jb)];
-                        eri_ibja += b[(p, ib)] * b[(p, ja)];
-                    }
-                    let k = eri_iajb - eri_ibja;
-                    let denom = eps_i + eps_j - eps_a - eps_b;
-                    let t_val = k / denom;
-                    t[(i, j, a, b_idx)] = t_val;
-                    energy += t_val * k;
-                }
-            }
-        }
-    }
-    (t, 0.25 * energy)
+    let (energy, t) = same_spin_pair_kernel(
+        &inter.b_ov, eps, inter.nocc, inter.nvir, inter.first_occ, inter.nocc_total, true,
+    );
+    (t.unwrap(), energy)
 }
 
 /// Build the opposite-spin amplitude tensor and its energy:
@@ -193,38 +345,14 @@ fn build_opposite_spin_amplitudes(
     eps_a: &[f64],
     eps_b: &[f64],
 ) -> (Array4<f64>, f64) {
-    let nocc_a = inter_a.nocc;
-    let nvir_a = inter_a.nvir;
-    let nocc_b = inter_b.nocc;
-    let nvir_b = inter_b.nvir;
-    let naux = inter_a.naux;
-    let ba = &inter_a.b_ov;
-    let bb = &inter_b.b_ov;
-    let mut t = Array4::<f64>::zeros((nocc_a, nocc_b, nvir_a, nvir_b));
-    let mut energy = 0.0;
-    for i in 0..nocc_a {
-        let eps_i = eps_a[inter_a.first_occ + i];
-        for a in 0..nvir_a {
-            let eps_av = eps_a[inter_a.nocc_total + a];
-            let ia = i * nvir_a + a;
-            for jj in 0..nocc_b {
-                let eps_j = eps_b[inter_b.first_occ + jj];
-                for bb_idx in 0..nvir_b {
-                    let eps_bv = eps_b[inter_b.nocc_total + bb_idx];
-                    let jb = jj * nvir_b + bb_idx;
-                    let mut eri = 0.0;
-                    for p in 0..naux {
-                        eri += ba[(p, ia)] * bb[(p, jb)];
-                    }
-                    let denom = eps_i + eps_j - eps_av - eps_bv;
-                    let t_val = eri / denom;
-                    t[(i, jj, a, bb_idx)] = t_val;
-                    energy += t_val * eri;
-                }
-            }
-        }
-    }
-    (t, energy)
+    let (energy, t) = opposite_spin_pair_kernel(
+        &inter_a.b_ov, &inter_b.b_ov,
+        eps_a, eps_b,
+        inter_a.nocc, inter_a.nvir, inter_a.first_occ, inter_a.nocc_total,
+        inter_b.nocc, inter_b.nvir, inter_b.first_occ, inter_b.nocc_total,
+        true,
+    );
+    (t.unwrap(), energy)
 }
 
 /// Unrelaxed MP2 1-particle density-matrix corrections in MO basis,
@@ -708,40 +836,10 @@ pub fn compute_u_mp2_orbital_gradient_blocks(
 /// Same-spin contribution:
 ///   ¼ Σ_{ij,ab} [(ia|jb) - (ib|ja)]² / (ε_i+ε_j-ε_a-ε_b)
 fn same_spin_pair_energy(inter: &RpaIntermediates, eps: &[f64]) -> f64 {
-    let nocc = inter.nocc;
-    let nvir = inter.nvir;
-    let naux = inter.naux;
-    let first_occ = inter.first_occ;
-    let nocc_total = inter.nocc_total;
-    let b = &inter.b_ov; // (naux, nocc*nvir)
-
-    let mut energy = 0.0;
-    for i in 0..nocc {
-        let eps_i = eps[first_occ + i];
-        for j in 0..nocc {
-            let eps_j = eps[first_occ + j];
-            for a in 0..nvir {
-                let eps_a = eps[nocc_total + a];
-                let ia = i * nvir + a;
-                let ja = j * nvir + a;
-                for b_idx in 0..nvir {
-                    let eps_b = eps[nocc_total + b_idx];
-                    let jb = j * nvir + b_idx;
-                    let ib = i * nvir + b_idx;
-                    let mut eri_iajb = 0.0;
-                    let mut eri_ibja = 0.0;
-                    for p in 0..naux {
-                        eri_iajb += b[(p, ia)] * b[(p, jb)];
-                        eri_ibja += b[(p, ib)] * b[(p, ja)];
-                    }
-                    let diff = eri_iajb - eri_ibja;
-                    let denom = eps_i + eps_j - eps_a - eps_b;
-                    energy += diff * diff / denom;
-                }
-            }
-        }
-    }
-    0.25 * energy
+    let (energy, _) = same_spin_pair_kernel(
+        &inter.b_ov, eps, inter.nocc, inter.nvir, inter.first_occ, inter.nocc_total, false,
+    );
+    energy
 }
 
 /// Opposite-spin contribution:
@@ -752,36 +850,14 @@ fn opposite_spin_pair_energy(
     eps_a: &[f64],
     eps_b: &[f64],
 ) -> f64 {
-    let nocc_a = inter_a.nocc;
-    let nvir_a = inter_a.nvir;
-    let nocc_b = inter_b.nocc;
-    let nvir_b = inter_b.nvir;
-    let naux = inter_a.naux;
-    assert_eq!(naux, inter_b.naux);
-    let ba = &inter_a.b_ov;
-    let bb = &inter_b.b_ov;
-
-    let mut energy = 0.0;
-    for i in 0..nocc_a {
-        let eps_i = eps_a[inter_a.first_occ + i];
-        for a in 0..nvir_a {
-            let eps_a_v = eps_a[inter_a.nocc_total + a];
-            let ia = i * nvir_a + a;
-            for jj in 0..nocc_b {
-                let eps_j = eps_b[inter_b.first_occ + jj];
-                for bb_idx in 0..nvir_b {
-                    let eps_b_v = eps_b[inter_b.nocc_total + bb_idx];
-                    let jb = jj * nvir_b + bb_idx;
-                    let mut eri = 0.0;
-                    for p in 0..naux {
-                        eri += ba[(p, ia)] * bb[(p, jb)];
-                    }
-                    let denom = eps_i + eps_j - eps_a_v - eps_b_v;
-                    energy += eri * eri / denom;
-                }
-            }
-        }
-    }
+    assert_eq!(inter_a.naux, inter_b.naux);
+    let (energy, _) = opposite_spin_pair_kernel(
+        &inter_a.b_ov, &inter_b.b_ov,
+        eps_a, eps_b,
+        inter_a.nocc, inter_a.nvir, inter_a.first_occ, inter_a.nocc_total,
+        inter_b.nocc, inter_b.nvir, inter_b.first_occ, inter_b.nocc_total,
+        false,
+    );
     energy
 }
 
@@ -836,83 +912,31 @@ pub(crate) fn u_mp2_energy_fixed_eps(
         &b_b_ov_raw.into_shape_with_order((naux, nocc_b * nvir_b)).unwrap(),
     );
 
-    let eo_a = &eps_a[..nocc_a];
-    let ev_a = &eps_a[nocc_a..];
-    let eo_b = &eps_b[..nocc_b];
-    let ev_b = &eps_b[nocc_b..];
-
+    // This FD helper has no frozen core: first_occ=0, nocc_total=nocc for
+    // each spin, so eps[first_occ+i] == eps[i] and eps[nocc_total+a] ==
+    // eps[nocc+a], matching the `eo_*`/`ev_*` slices the old scalar loops
+    // read from directly.
     let mut e_total = 0.0;
 
     if which == "aa" || which == "all" {
-        let mut e_aa = 0.0;
-        for i in 0..nocc_a {
-            for j in 0..nocc_a {
-                for a in 0..nvir_a {
-                    let ia = i * nvir_a + a;
-                    let ja = j * nvir_a + a;
-                    for b in 0..nvir_a {
-                        let ib = i * nvir_a + b;
-                        let jb = j * nvir_a + b;
-                        let mut eri_iajb = 0.0;
-                        let mut eri_ibja = 0.0;
-                        for p in 0..naux {
-                            eri_iajb += b_a_ov[(p, ia)] * b_a_ov[(p, jb)];
-                            eri_ibja += b_a_ov[(p, ib)] * b_a_ov[(p, ja)];
-                        }
-                        let k = eri_iajb - eri_ibja;
-                        let denom = eo_a[i] + eo_a[j] - ev_a[a] - ev_a[b];
-                        e_aa += k * k / denom;
-                    }
-                }
-            }
-        }
-        e_total += 0.25 * e_aa;
+        let (e_aa, _) =
+            same_spin_pair_kernel(&b_a_ov, eps_a, nocc_a, nvir_a, 0, nocc_a, false);
+        e_total += e_aa;
     }
 
     if which == "bb" || which == "all" {
-        let mut e_bb = 0.0;
-        for i in 0..nocc_b {
-            for j in 0..nocc_b {
-                for a in 0..nvir_b {
-                    let ia = i * nvir_b + a;
-                    let ja = j * nvir_b + a;
-                    for b in 0..nvir_b {
-                        let ib = i * nvir_b + b;
-                        let jb = j * nvir_b + b;
-                        let mut eri_iajb = 0.0;
-                        let mut eri_ibja = 0.0;
-                        for p in 0..naux {
-                            eri_iajb += b_b_ov[(p, ia)] * b_b_ov[(p, jb)];
-                            eri_ibja += b_b_ov[(p, ib)] * b_b_ov[(p, ja)];
-                        }
-                        let k = eri_iajb - eri_ibja;
-                        let denom = eo_b[i] + eo_b[j] - ev_b[a] - ev_b[b];
-                        e_bb += k * k / denom;
-                    }
-                }
-            }
-        }
-        e_total += 0.25 * e_bb;
+        let (e_bb, _) =
+            same_spin_pair_kernel(&b_b_ov, eps_b, nocc_b, nvir_b, 0, nocc_b, false);
+        e_total += e_bb;
     }
 
     if which == "ab" || which == "all" {
-        let mut e_ab = 0.0;
-        for i in 0..nocc_a {
-            for a in 0..nvir_a {
-                let ia = i * nvir_a + a;
-                for j in 0..nocc_b {
-                    for b in 0..nvir_b {
-                        let jb = j * nvir_b + b;
-                        let mut eri = 0.0;
-                        for p in 0..naux {
-                            eri += b_a_ov[(p, ia)] * b_b_ov[(p, jb)];
-                        }
-                        let denom = eo_a[i] + eo_b[j] - ev_a[a] - ev_b[b];
-                        e_ab += eri * eri / denom;
-                    }
-                }
-            }
-        }
+        let (e_ab, _) = opposite_spin_pair_kernel(
+            &b_a_ov, &b_b_ov, eps_a, eps_b,
+            nocc_a, nvir_a, 0, nocc_a,
+            nocc_b, nvir_b, 0, nocc_b,
+            false,
+        );
         e_total += e_ab;
     }
 
@@ -1283,5 +1307,189 @@ mod tests {
         let ok3 = report("ββ→g_b (same_b vs FD ββ-only β-rot)", &blocks.same_b, &fd_same_b);
         let ok4 = report("αβ→g_b (ab_b   vs FD αβ-only β-rot)", &blocks.ab_b,   &fd_ab_b);
         assert!(ok1 && ok2 && ok3 && ok4, "per-block gradient failed — see diagnostics above");
+    }
+
+    // -----------------------------------------------------------------------
+    // Regression: GEMM+rayon kernel vs the OLD serial scalar quintuple loops.
+    //
+    // Kept as a #[cfg(test)]-only reference implementation (never called by
+    // production code) so a future edit to `same_spin_pair_kernel` /
+    // `opposite_spin_pair_kernel` can be checked against the original,
+    // unoptimized per-element O(naux) strided-dot loops this task replaced.
+
+    /// Old scalar same-spin energy: ¼ Σ [(ia|jb)-(ib|ja)]² / D, unblocked.
+    fn old_scalar_same_spin_energy(
+        b: &Array2<f64>,
+        eps: &[f64],
+        nocc: usize,
+        nvir: usize,
+        first_occ: usize,
+        nocc_total: usize,
+    ) -> f64 {
+        let naux = b.nrows();
+        let mut energy = 0.0;
+        for i in 0..nocc {
+            let eps_i = eps[first_occ + i];
+            for j in 0..nocc {
+                let eps_j = eps[first_occ + j];
+                for a in 0..nvir {
+                    let eps_a = eps[nocc_total + a];
+                    let ia = i * nvir + a;
+                    let ja = j * nvir + a;
+                    for b_idx in 0..nvir {
+                        let eps_b = eps[nocc_total + b_idx];
+                        let jb = j * nvir + b_idx;
+                        let ib = i * nvir + b_idx;
+                        let mut eri_iajb = 0.0;
+                        let mut eri_ibja = 0.0;
+                        for p in 0..naux {
+                            eri_iajb += b[(p, ia)] * b[(p, jb)];
+                            eri_ibja += b[(p, ib)] * b[(p, ja)];
+                        }
+                        let diff = eri_iajb - eri_ibja;
+                        let denom = eps_i + eps_j - eps_a - eps_b;
+                        energy += diff * diff / denom;
+                    }
+                }
+            }
+        }
+        0.25 * energy
+    }
+
+    /// Old scalar opposite-spin energy: Σ (ia|JB)² / D, unblocked.
+    #[allow(clippy::too_many_arguments)]
+    fn old_scalar_opposite_spin_energy(
+        b_a: &Array2<f64>,
+        b_b: &Array2<f64>,
+        eps_a: &[f64],
+        eps_b: &[f64],
+        nocc_a: usize,
+        nvir_a: usize,
+        first_occ_a: usize,
+        nocc_total_a: usize,
+        nocc_b: usize,
+        nvir_b: usize,
+        first_occ_b: usize,
+        nocc_total_b: usize,
+    ) -> f64 {
+        let naux = b_a.nrows();
+        assert_eq!(naux, b_b.nrows());
+        let mut energy = 0.0;
+        for i in 0..nocc_a {
+            let eps_i = eps_a[first_occ_a + i];
+            for a in 0..nvir_a {
+                let eps_a_v = eps_a[nocc_total_a + a];
+                let ia = i * nvir_a + a;
+                for jj in 0..nocc_b {
+                    let eps_j = eps_b[first_occ_b + jj];
+                    for bb_idx in 0..nvir_b {
+                        let eps_b_v = eps_b[nocc_total_b + bb_idx];
+                        let jb = jj * nvir_b + bb_idx;
+                        let mut eri = 0.0;
+                        for p in 0..naux {
+                            eri += b_a[(p, ia)] * b_b[(p, jb)];
+                        }
+                        let denom = eps_i + eps_j - eps_a_v - eps_b_v;
+                        energy += eri * eri / denom;
+                    }
+                }
+            }
+        }
+        energy
+    }
+
+    /// Regression: on OH/cc-pVDZ, the new GEMM+rayon kernel's total U-MP2
+    /// energy (αα+ββ+αβ, as built by `compute_u_mp2_amplitudes` /
+    /// `u_ri_mp2`) must agree with the OLD serial scalar quintuple loops
+    /// (kept above as `old_scalar_*`) to ≤1e-12 Ha — the GEMM restructure only
+    /// changes the floating-point *reduction order*, not the algorithm, so
+    /// any residual beyond a few ULPs would indicate an indexing/formula bug
+    /// introduced by the port.
+    #[test]
+    fn u_mp2_kernel_matches_old_scalar_loops_on_oh() {
+        let ctx = ParallelContext::default();
+        let xyz = "2\nOH\nO 0.0 0.0 0.0\nH 0.0 0.0 0.97\n";
+        let mol = Molecule::parse_xyz(xyz, 0, 2).unwrap();
+        let obs_bs = basis::bundled("cc-pvdz").unwrap();
+        let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let uhf_cfg = UhfConfig {
+            max_iter: 200, energy_conv: 1e-10, density_conv: 1e-8, ..Default::default()
+        };
+        let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &uhf_cfg).unwrap();
+
+        let inter_a = compute_rpa_intermediates_spin(
+            &mol, &obs, &dfbs, op, &uhf, &RiMp2Config::default(), true,
+        ).unwrap();
+        let inter_b = compute_rpa_intermediates_spin(
+            &mol, &obs, &dfbs, op, &uhf, &RiMp2Config::default(), false,
+        ).unwrap();
+        let eps_a: &[f64] = &uhf.eps_alpha;
+        let eps_b: &[f64] = uhf.eps_beta.as_ref().map(|v| v.as_slice()).unwrap_or(&uhf.eps_alpha);
+
+        // New kernel path (same call as u_ri_mp2 / same_spin_pair_energy /
+        // opposite_spin_pair_energy).
+        let e_aa_new = same_spin_pair_energy(&inter_a, eps_a);
+        let e_bb_new = same_spin_pair_energy(&inter_b, eps_b);
+        let e_ab_new = opposite_spin_pair_energy(&inter_a, &inter_b, eps_a, eps_b);
+        let e_total_new = e_aa_new + e_bb_new + e_ab_new;
+
+        // Old scalar quintuple-loop path, same intermediates.
+        let e_aa_old = old_scalar_same_spin_energy(
+            &inter_a.b_ov, eps_a, inter_a.nocc, inter_a.nvir, inter_a.first_occ, inter_a.nocc_total,
+        );
+        let e_bb_old = old_scalar_same_spin_energy(
+            &inter_b.b_ov, eps_b, inter_b.nocc, inter_b.nvir, inter_b.first_occ, inter_b.nocc_total,
+        );
+        let e_ab_old = old_scalar_opposite_spin_energy(
+            &inter_a.b_ov, &inter_b.b_ov, eps_a, eps_b,
+            inter_a.nocc, inter_a.nvir, inter_a.first_occ, inter_a.nocc_total,
+            inter_b.nocc, inter_b.nvir, inter_b.first_occ, inter_b.nocc_total,
+        );
+        let e_total_old = e_aa_old + e_bb_old + e_ab_old;
+
+        let diff_aa = (e_aa_new - e_aa_old).abs();
+        let diff_bb = (e_bb_new - e_bb_old).abs();
+        let diff_ab = (e_ab_new - e_ab_old).abs();
+        let diff_total = (e_total_new - e_total_old).abs();
+        println!(
+            "OH kernel-vs-scalar: αα new={:.15e} old={:.15e} diff={:.3e}",
+            e_aa_new, e_aa_old, diff_aa
+        );
+        println!(
+            "OH kernel-vs-scalar: ββ new={:.15e} old={:.15e} diff={:.3e}",
+            e_bb_new, e_bb_old, diff_bb
+        );
+        println!(
+            "OH kernel-vs-scalar: αβ new={:.15e} old={:.15e} diff={:.3e}",
+            e_ab_new, e_ab_old, diff_ab
+        );
+        println!(
+            "OH kernel-vs-scalar: total new={:.15e} old={:.15e} diff={:.3e}",
+            e_total_new, e_total_old, diff_total
+        );
+        assert!(diff_aa < 1e-12, "αα kernel disagrees with old scalar loop: diff={diff_aa:e}");
+        assert!(diff_bb < 1e-12, "ββ kernel disagrees with old scalar loop: diff={diff_bb:e}");
+        assert!(diff_ab < 1e-12, "αβ kernel disagrees with old scalar loop: diff={diff_ab:e}");
+        assert!(diff_total < 1e-12, "total kernel disagrees with old scalar loop: diff={diff_total:e}");
+
+        // Also check the amplitude builders agree bit-for-bit in energy with
+        // the closed-form path (already covered by
+        // u_mp2_amplitudes_consistent_on_oh), and additionally cross-check
+        // against the old-scalar total here so both amplitude AND
+        // energy-only call sites are pinned by one test.
+        let amps = compute_u_mp2_amplitudes(&mol, &obs, &dfbs, op, &uhf, &RiMp2Config::default()).unwrap();
+        let diff_amp_total = (amps.components.e_total - e_total_old).abs();
+        println!(
+            "OH amplitude-path total = {:.15e} vs old scalar total = {:.15e}, diff={:.3e}",
+            amps.components.e_total, e_total_old, diff_amp_total
+        );
+        assert!(
+            diff_amp_total < 1e-12,
+            "amplitude-path total disagrees with old scalar loop: diff={diff_amp_total:e}"
+        );
     }
 }
