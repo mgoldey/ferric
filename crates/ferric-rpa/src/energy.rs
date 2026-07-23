@@ -25,8 +25,10 @@ pub(crate) fn dielectric_lapack_err(what: &str, e: impl std::fmt::Display) -> Fe
 ///
 /// `init` builds per-WORKER scratch reused across the frequencies that worker
 /// processes (`map_init`); scratch-free callers pass `|| ()`.
-/// `eval_eigenvalues_at_frequencies_budgeted` stays separate: its panel-width
-/// scratch sizing is chosen from the memory budget before the parallel region.
+/// `eval_eigenvalues_at_frequencies_budgeted` also builds on this: its
+/// panel-width scratch sizing happens from the memory budget BEFORE calling
+/// this function, then the resulting shape is what `init` allocates per
+/// worker — the sizing step doesn't need its own parallel scaffold.
 fn per_frequency<S: Send, T: Send>(
     quad_freqs: &[f64],
     init: impl Fn() -> S + Sync + Send,
@@ -221,6 +223,18 @@ pub fn eval_eigenvalues_at_frequencies(
 /// scratch LAPACK needs internally (folded into a small safety margin) —
 /// deliberately conservative so a job that already fits is never routed onto
 /// the (slower) panelled path.
+///
+/// k-term accounting (reconciled after `dielectric_matrix_from_projection_into_panelled`
+/// stopped copying every panel — see that function's doc comment): each
+/// worker's *persistent* live set is `(m·k + m²)·8` — the `rhs_scaled_panel`
+/// scratch plus the `(m,m)` `out` accumulator. A full-width panel (`w ==
+/// panel_width`, the common case for every panel but a possible ragged last
+/// one) is passed to `syrk_aat_accumulate_into` as a view with NO extra copy,
+/// so it never exceeds that persistent footprint. Only the ragged tail
+/// (`w < panel_width`) transiently owns one extra `(m, w)` buffer via
+/// `to_owned()`, and `w < panel_width` by construction, so that transient
+/// never exceeds the persistent `m·k` term either — sizing for a single
+/// (not doubled) `m·k` term is therefore exact, not an underestimate.
 fn quad_panel_width(m: usize, nov: usize, n_workers: usize, memory_budget_bytes: Option<usize>) -> usize {
     let Some(budget) = memory_budget_bytes else {
         return nov.max(1);
@@ -238,7 +252,9 @@ fn quad_panel_width(m: usize, nov: usize, n_workers: usize, memory_budget_bytes:
     }
     // Panelling needed: solve n_workers·(m·k + m²)·8 + y_bytes <= budget for k,
     // per worker, leaving headroom for the always-resident y and the (m,m)
-    // `out` term (m² is independent of k, so it's subtracted off first).
+    // `out` term (m² is independent of k, so it's subtracted off first). This
+    // single `m·k` term is exact (not an underestimate) — see the k-term
+    // accounting note above.
     let remaining = budget.saturating_sub(y_bytes);
     let per_worker_budget = remaining / n_workers.max(1);
     let out_bytes = m.saturating_mul(m).saturating_mul(8);
@@ -272,10 +288,8 @@ pub fn eval_eigenvalues_at_frequencies_budgeted(
         build_scale_factors, dielectric_matrix_from_projection_into,
         dielectric_matrix_from_projection_into_panelled,
     };
-    use ferric_integrals::blas_threads::with_blas_threads;
     use ndarray::Array2;
     use ndarray_linalg::{Eigh, UPLO};
-    use rayon::prelude::*;
 
     let n_quad = quad_freqs.len();
     let m = eigenvectors.ncols();
@@ -286,13 +300,15 @@ pub fn eval_eigenvalues_at_frequencies_budgeted(
     // ω then only does the cheap column scaling + DSYRK.
     let y = eigenvectors.t().dot(b_ov);
 
+    // Panel-width sizing happens BEFORE the parallel region (needs only
+    // n_workers, not any per-frequency state), so it can be computed here and
+    // captured by `per_frequency`'s `init` closure — the reason this function
+    // used to hand-roll its own with_blas_threads/par_iter/map_init scaffold
+    // (rather than sharing `per_frequency`) no longer holds.
     let n_workers = rayon::current_num_threads().max(1);
     let panel_width = quad_panel_width(m, nov, n_workers, memory_budget_bytes);
     let use_panelled = panel_width < nov;
 
-    // Each quadrature point is fully independent — parallelize over frequencies.
-    // Pin BLAS to 1 inside the rayon region (per-frequency eigh must not nest).
-    //
     // map_init (not map): each rayon WORKER allocates its own (rhs_scaled, out)
     // scratch ONCE and reuses it across every frequency that worker processes,
     // instead of `dielectric_matrix_from_projection` cloning the full (m, nov)
@@ -308,35 +324,25 @@ pub fn eval_eigenvalues_at_frequencies_budgeted(
     // pre-existing full-width path (`rhs_scaled` sized (m, nov)), so every
     // existing bit-for-bit regression test is unaffected. Only when panelling
     // is actually needed does each worker's scratch narrow to (m, panel_width).
-    let rows: Vec<Vec<f64>> = with_blas_threads(1, || {
-        quad_freqs
-            .par_iter()
-            .map_init(
-                || (Array2::<f64>::zeros((m, panel_width)), Array2::<f64>::zeros((m, m))),
-                |(rhs_scaled, out), &omega| {
-                    let scale = build_scale_factors(eps_occ, eps_vir, omega);
-                    if use_panelled {
-                        dielectric_matrix_from_projection_into_panelled(&y, &scale, rhs_scaled, out);
-                    } else {
-                        dielectric_matrix_from_projection_into(&y, &scale, rhs_scaled, out);
-                    }
-                    // Diagonalize at each frequency — eigenvectors at ω=0 don't diagonalize ε̃(iω)
-                    let (evals, _) = out
-                        .eigh(UPLO::Upper)
-                        .map_err(|e| dielectric_lapack_err("dielectric eigh failed", e))?;
-                    Ok(evals.to_vec())
-                },
-            )
-            .collect::<Result<Vec<Vec<f64>>, FerricError>>()
-    })?;
+    let rows = per_frequency(
+        quad_freqs,
+        || (Array2::<f64>::zeros((m, panel_width)), Array2::<f64>::zeros((m, m))),
+        |(rhs_scaled, out), omega| {
+            let scale = build_scale_factors(eps_occ, eps_vir, omega);
+            if use_panelled {
+                dielectric_matrix_from_projection_into_panelled(&y, &scale, rhs_scaled, out);
+            } else {
+                dielectric_matrix_from_projection_into(&y, &scale, rhs_scaled, out);
+            }
+            // Diagonalize at each frequency — eigenvectors at ω=0 don't diagonalize ε̃(iω)
+            let (evals, _) = out
+                .eigh(UPLO::Upper)
+                .map_err(|e| dielectric_lapack_err("dielectric eigh failed", e))?;
+            Ok(evals.to_vec())
+        },
+    )?;
 
-    let mut eigenvalues_freq = Array2::zeros((n_quad, m));
-    for (k, row) in rows.into_iter().enumerate() {
-        for (alpha, val) in row.into_iter().enumerate() {
-            eigenvalues_freq[(k, alpha)] = val;
-        }
-    }
-    Ok(eigenvalues_freq)
+    Ok(rows_into_array(n_quad, m, rows))
 }
 
 /// Per-frequency *dynamic inverse-dielectric* matrices in the PDEP basis.

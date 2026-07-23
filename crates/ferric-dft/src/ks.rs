@@ -16,7 +16,10 @@ use thiserror::Error;
 use ferric_core::basis::BasisSet;
 use ferric_core::mol::Molecule;
 
-use crate::ao_grid::{eval_basis_and_grad_on_points, nbasis, AoGridKind, GtoEvalError};
+use crate::ao_grid::{
+    collect_shells, eval_basis_and_grad_on_points, eval_basis_and_grad_on_points_unchecked,
+    nbasis, AoGridKind, GtoEvalError,
+};
 use crate::density_on_grid::{
     eval_density_closed, eval_density_uks, eval_tau_closed, eval_tau_uks, DensityGrid,
 };
@@ -81,9 +84,13 @@ fn full_cache_bytes(nbf: usize, npts: usize) -> usize {
 /// catches the 50-atom/aTZ case (~30 GB, doubling to ~60 GB with VV10) before
 /// the allocation aborts the process.
 ///
-/// The budget comes from the unified M1 resolver
-/// [`ferric_core::memory::resolve_budget_bytes`] (no explicit config field on
-/// this path yet, so `None` → `FERRIC_MEM_BUDGET_GB` > legacy vars > 0.8×RAM).
+/// `budget` is resolved ONCE by the caller (`KsXc::new`/`KsXcUks::new`, via
+/// [`ferric_core::memory::resolve_budget_bytes`]) and reused for both the
+/// Full-vs-Batched decision here AND `resolve_batch_size`'s sizing — NOT
+/// re-resolved per call. The auto-detect budget is a *live* 0.8× MemAvailable
+/// reading that shrinks as the SCF allocates, so resolving it more than once
+/// per `KsXc`/`KsXcUks` construction risks the decision and the sizing being
+/// made against two different numbers.
 ///
 /// Returns `Ok(true)` when the full cache fits (use it as-is), `Ok(false)`
 /// when it does not fit but the NLC (VV10) grid alone still fits (fall back
@@ -91,10 +98,9 @@ fn full_cache_bytes(nbf: usize, npts: usize) -> usize {
 /// VV10 NLC cache alone cannot fit (nothing left to fall back to — batching
 /// only ever shrinks the *main*-grid cache, so an over-budget NLC grid by
 /// itself is still a hard failure).
-fn check_grid_budget(nbf: usize, npts: usize, has_vv10: bool) -> Result<bool, KsXcError> {
+fn check_grid_budget(nbf: usize, npts: usize, has_vv10: bool, budget: usize) -> Result<bool, KsXcError> {
     let base = full_cache_bytes(nbf, npts);
     let needed = if has_vv10 { base.saturating_mul(2) } else { base };
-    let budget = ferric_core::memory::resolve_budget_bytes(None);
     if needed <= budget {
         return Ok(true);
     }
@@ -167,7 +173,12 @@ fn batched_add_xc_closed(
     is_mgga: bool,
     scratch: &mut VxcScratch,
     f: &mut Array2<f64>,
-) -> f64 {
+) -> Result<f64, KsXcError> {
+    // Shells depend only on (mol, bs), not on the batch — collect ONCE outside
+    // the loop instead of re-parsing them every batch.
+    let shells = collect_shells(mol, bs)?;
+    let nbf: usize = shells.iter().map(|s| ferric_core::basis::num_functions(s.l, s.pure)).sum();
+
     let npts = grid.len();
     let batch_pts = batch_pts.max(1);
     let mut e_xc_total = 0.0_f64;
@@ -182,8 +193,17 @@ fn batched_add_xc_closed(
         // Each batch's χ/∇χ live only for this loop iteration — the whole
         // point of batching is that the full-grid tensors are never
         // materialized at once.
-        let (chi, dchi) = eval_basis_and_grad_on_points(mol, bs, &pts)
-            .expect("batch AO evaluation must succeed: budget was already sized for one batch");
+        //
+        // `_unchecked`: the caller (`KsXc::new`) already resolved the memory
+        // budget ONCE and sized `batch_pts` against it — re-resolving and
+        // re-checking here (as `eval_basis_and_grad_on_points` would) reads a
+        // budget that may have drifted (shrunk) since `new()` ran, which
+        // protects nothing (the sizing already accounted for the real budget
+        // with better information) and was the mid-run panic site this
+        // function used to hit. The only error this can still return is a
+        // genuine per-shell `UnsupportedL`, propagated via `?` — never a
+        // budget failure.
+        let (chi, dchi) = eval_basis_and_grad_on_points_unchecked(&shells, nbf, &pts)?;
         let dens = eval_density_closed(d, &chi, &dchi);
         let tau: Option<Array1<f64>> = if is_mgga { Some(eval_tau_closed(d, &dchi)) } else { None };
         let (e_xc_batch, vxc_batch) = semilocal_vxc_closed_scratch(
@@ -193,7 +213,7 @@ fn batched_add_xc_closed(
         e_xc_total += e_xc_batch;
         g0 = g1;
     }
-    e_xc_total
+    Ok(e_xc_total)
 }
 
 /// Spin-polarized (UKS/ROKS) counterpart of [`batched_add_xc_closed`] — same
@@ -212,7 +232,10 @@ fn batched_add_xc_uks(
     scratch: &mut VxcScratch,
     f_a: &mut Array2<f64>,
     f_b: &mut Array2<f64>,
-) -> f64 {
+) -> Result<f64, KsXcError> {
+    let shells = collect_shells(mol, bs)?;
+    let nbf: usize = shells.iter().map(|s| ferric_core::basis::num_functions(s.l, s.pure)).sum();
+
     let npts = grid.len();
     let batch_pts = batch_pts.max(1);
     let mut e_xc_total = 0.0_f64;
@@ -224,8 +247,10 @@ fn batched_add_xc_uks(
         }
         let batch_grid = &grid[g0..g1];
         let pts: Vec<[f64; 3]> = batch_grid.iter().map(|g| g.xyz).collect();
-        let (chi, dchi) = eval_basis_and_grad_on_points(mol, bs, &pts)
-            .expect("batch AO evaluation must succeed: budget was already sized for one batch");
+        // See `batched_add_xc_closed`'s comment: `_unchecked` skips the
+        // per-batch budget re-check that used to be a mid-run panic site
+        // under a drifted (auto-detect) budget reading.
+        let (chi, dchi) = eval_basis_and_grad_on_points_unchecked(&shells, nbf, &pts)?;
         let dens = eval_density_uks(d_a, d_b, &chi, &dchi);
         let tau = if is_mgga { Some(eval_tau_uks(d_a, d_b, &dchi)) } else { None };
         let tau_ref = tau.as_ref().map(|(a, b)| (a, b));
@@ -237,7 +262,7 @@ fn batched_add_xc_uks(
         e_xc_total += e_xc_batch;
         g0 = g1;
     }
-    e_xc_total
+    Ok(e_xc_total)
 }
 
 /// How the main grid's χ/∇χ are made available to the per-iteration V_xc
@@ -310,13 +335,18 @@ impl KsXc {
 
         let grid = build_atomic_grid(mol, main);
         let nbf = nbasis(mol, bs)?;
-        let fits = check_grid_budget(nbf, grid.len(), xc.vv10.is_some())?;
+        // Resolve the memory budget ONCE here and reuse the same value for
+        // both the Full-vs-Batched decision and (if batching) sizing the
+        // batch — see `check_grid_budget`'s doc comment for why re-resolving
+        // (a live, SCF-allocation-shrinking reading in the auto-detect case)
+        // between these two steps would be unsound.
+        let budget = ferric_core::memory::resolve_budget_bytes(None);
+        let fits = check_grid_budget(nbf, grid.len(), xc.vv10.is_some(), budget)?;
         let cache = if fits {
             let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
             let (chi, dchi) = eval_basis_and_grad_on_points(mol, bs, &pts)?;
             GridCache::Full { chi, dchi }
         } else {
-            let budget = ferric_core::memory::resolve_budget_bytes(None);
             let batch_pts = resolve_batch_size(nbf, grid.len(), budget);
             GridCache::Batched { batch_pts }
         };
@@ -360,6 +390,12 @@ impl XcContribution for KsXc {
             GridCache::Batched { batch_pts } => batched_add_xc_closed(
                 &self.mol, &self.bs, &self.grid, *batch_pts, d, &self.xc, self.is_mgga,
                 &mut scratch, f,
+            )
+            .expect(
+                "batched AO evaluation failed for a basis already accepted by KsXc::new \
+                 (nbasis/full-grid eval succeeded there) — this can only be a genuine \
+                 per-shell error (e.g. UnsupportedL), never the memory-budget re-check \
+                 that used to panic here",
             ),
         };
 
@@ -434,13 +470,15 @@ impl KsXcUks {
 
         let grid = build_atomic_grid(mol, main);
         let nbf = nbasis(mol, bs)?;
-        let fits = check_grid_budget(nbf, grid.len(), xc.vv10.is_some())?;
+        // See `KsXc::new` — resolve the budget ONCE and reuse it for both the
+        // decision and the batch sizing.
+        let budget = ferric_core::memory::resolve_budget_bytes(None);
+        let fits = check_grid_budget(nbf, grid.len(), xc.vv10.is_some(), budget)?;
         let cache = if fits {
             let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
             let (chi, dchi) = eval_basis_and_grad_on_points(mol, bs, &pts)?;
             GridCache::Full { chi, dchi }
         } else {
-            let budget = ferric_core::memory::resolve_budget_bytes(None);
             let batch_pts = resolve_batch_size(nbf, grid.len(), budget);
             GridCache::Batched { batch_pts }
         };
@@ -491,6 +529,12 @@ impl UksXcContribution for KsXcUks {
             GridCache::Batched { batch_pts } => batched_add_xc_uks(
                 &self.mol, &self.bs, &self.grid, *batch_pts, d_a, d_b, &self.xc, self.is_mgga,
                 &mut scratch, f_a, f_b,
+            )
+            .expect(
+                "batched AO evaluation failed for a basis already accepted by KsXcUks::new \
+                 (nbasis/full-grid eval succeeded there) — this can only be a genuine \
+                 per-shell error (e.g. UnsupportedL), never the memory-budget re-check \
+                 that used to panic here",
             ),
         };
 
@@ -689,5 +733,101 @@ mod batching_tests {
         let fb_diff = (&fb_full - &fb_batched).iter().fold(0.0_f64, |m, &x| m.max(x.abs()));
         assert!(fa_diff <= 1e-10, "UKS batched V_alpha must match cached, diff={fa_diff:.3e}");
         assert!(fb_diff <= 1e-10, "UKS batched V_beta must match cached, diff={fb_diff:.3e}");
+    }
+
+    /// Regression for the mid-run panic this task fixes: the OLD batched path
+    /// called `eval_basis_and_grad_on_points` per batch, which re-resolved
+    /// `FERRIC_MEM_BUDGET_GB` (a LIVE reading in the auto-detect case) inside
+    /// `check_ao_grid_budget` on every single batch. If that budget had
+    /// shrunk since `KsXc::new` originally sized `batch_pts` against it, the
+    /// per-batch re-check could reject a batch the caller had already sized
+    /// correctly, and the `.expect(...)` at the `add_xc` call site would
+    /// panic a running SCF job.
+    ///
+    /// This test constructs `KsXc` under one tiny budget (forcing `Batched`
+    /// and sizing `batch_pts` against it), then — BEFORE calling `add_xc` —
+    /// shrinks the budget env var further still, simulating memory draining
+    /// mid-SCF. `add_xc` must still succeed: `KsXc::new` resolves the budget
+    /// ONCE and the batched path (`eval_basis_and_grad_on_points_unchecked`)
+    /// never re-resolves or re-checks it, so a shrinking live budget between
+    /// construction and use cannot make it panic.
+    #[test]
+    fn batched_add_xc_survives_budget_shrinking_after_construction() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_budget_env();
+
+        let mol = Molecule::parse_xyz("3\n\nO 0.0 0.0 0.0\nH 0.0 0.0 0.96\nH 0.93 0.0 -0.24\n", 0, 1)
+            .unwrap();
+        let bs = basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = ferric_scf::screening::SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ParallelContext::default();
+        let rhf = ferric_scf::rhf::solve_rhf(
+            &ctx, &mol, &prep, op, &bounds, &ferric_scf::rhf::RhfConfig::default(),
+        )
+        .unwrap();
+        let d = rhf.density_total;
+
+        let main = AtomicGridConfig { n_radial: 20, n_angular: 26 };
+        let nlc = AtomicGridConfig { n_radial: 10, n_angular: 26 };
+
+        // Construct under a tiny (but not absurdly tiny) budget: forces
+        // Batched, and sizes batch_pts against ~10.7 KB.
+        std::env::set_var(VAR, "0.00001");
+        let ks = KsXc::new(&mol, &bs, "PBE", &main, &nlc).unwrap();
+        assert!(matches!(ks.cache, GridCache::Batched { .. }), "expected Batched under a tiny budget");
+
+        // Simulate the budget draining further mid-SCF (e.g. another
+        // allocation elsewhere in the process shrinking 0.8×MemAvailable):
+        // set the env var to something even smaller than what `batch_pts`
+        // was sized against. A re-resolving per-batch check (the old bug)
+        // would now see a smaller ceiling than `new()` did and could reject
+        // the very batch size `new()` already committed to.
+        std::env::set_var(VAR, "0.000001"); // ~1 KB — smaller than the ~10.7 KB construction budget
+
+        let mut f = Array2::<f64>::zeros(d.dim());
+        // Must NOT panic: the batched path is immune to the budget having
+        // changed after construction.
+        let e_xc = ks.add_xc(&d, &mut f);
+
+        clear_budget_env();
+
+        assert!(e_xc.is_finite(), "batched add_xc must produce a finite E_xc despite budget shrinking mid-run");
+        assert!(f.iter().all(|x| x.is_finite()), "batched V_xc Fock contribution must be finite");
+    }
+
+    /// Directly exercises `eval_basis_and_grad_on_points_unchecked`: sized
+    /// for exactly one Batched-path batch, it must succeed even when a fresh
+    /// `check_ao_grid_budget` call for the SAME (nbf, npts) would fail under
+    /// an absurdly tiny budget — proving the unchecked evaluator really does
+    /// skip the re-check rather than just happening not to trip it.
+    #[test]
+    fn eval_basis_and_grad_on_points_unchecked_ignores_a_failing_live_budget() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_budget_env();
+
+        let mol = Molecule::parse_xyz("3\n\nO 0.0 0.0 0.0\nH 0.0 0.0 0.96\nH 0.93 0.0 -0.24\n", 0, 1)
+            .unwrap();
+        let bs = basis::bundled("sto-3g").unwrap();
+
+        let shells = crate::ao_grid::collect_shells(&mol, &bs).unwrap();
+        let nbf = crate::ao_grid::nbasis(&mol, &bs).unwrap();
+        let pts: Vec<[f64; 3]> = vec![[0.0, 0.0, 0.0]; 8];
+
+        // Confirm a tiny live budget really would make the CHECKED path fail
+        // for this (nbf, npts) — otherwise this test would prove nothing.
+        // nbf=7 (STO-3G water) * npts=8 * 4 planes * 8 bytes = 1792 bytes
+        // needed; ~1 KB is smaller than that but not gratuitously extreme
+        // (matches the magnitude the rest of this module's tests already use).
+        std::env::set_var(VAR, "0.000001"); // ~1 KB
+        let checked = eval_basis_and_grad_on_points(&mol, &bs, &pts);
+        assert!(checked.is_err(), "sanity: tiny budget must fail the checked path");
+
+        // The unchecked variant, called with the SAME tiny budget still set,
+        // must still succeed — it never resolves or checks the budget at all.
+        let unchecked = eval_basis_and_grad_on_points_unchecked(&shells, nbf, &pts);
+        clear_budget_env();
+        assert!(unchecked.is_ok(), "unchecked evaluator must succeed regardless of the live budget");
     }
 }

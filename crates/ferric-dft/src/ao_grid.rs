@@ -680,12 +680,41 @@ pub fn eval_basis_and_grad_on_points(
     bs: &BasisSet,
     points: &[[f64; 3]],
 ) -> Result<(Array2<f64>, Array3<f64>), GtoEvalError> {
-    use rayon::prelude::*;
-
     let shells = collect_shells(mol, bs)?;
     let nbf: usize = shells.iter().map(|s| num_functions(s.l, s.pure)).sum();
     let npts = points.len();
     check_ao_grid_budget(AoGridKind::ValueAndGrad, nbf, npts)?;
+    eval_basis_and_grad_on_points_unchecked(&shells, nbf, points)
+}
+
+/// Same evaluation as [`eval_basis_and_grad_on_points`], but WITHOUT its own
+/// `check_ao_grid_budget` re-resolution — the caller has already sized this
+/// exact call against a memory budget it resolved itself and must guarantee
+/// stays valid. Still returns `Result`: shell evaluation can still fail for a
+/// genuine reason (`UnsupportedL`), unrelated to the memory budget — only the
+/// budget re-check is skipped, not error propagation in general.
+///
+/// Exists for `ferric_dft::ks`'s batched V_xc fallback: `KsXc`/`KsXcUks`
+/// resolve the budget ONCE in `new()` and use it both to decide Full-vs-Batched
+/// AND to size `resolve_batch_size`'s `batch_pts` so that a batch of exactly
+/// `batch_pts` points is guaranteed to fit. `check_ao_grid_budget` resolves
+/// [`ferric_core::memory::resolve_budget_bytes`] itself — a *live* 0.8×
+/// MemAvailable reading in the auto-detect case — so calling it again from
+/// inside the per-batch loop re-reads a budget that has been shrinking as the
+/// SCF allocates, and can spuriously reject a batch the caller already sized
+/// correctly (this was the mid-run `.expect(...)` panic site before this
+/// function existed: `check_ao_grid_budget` firing on a drifted reading
+/// protects nothing once the caller has already accounted for the real
+/// budget with better information). Callers outside `ks.rs`'s batched path
+/// should use the checked [`eval_basis_and_grad_on_points`] instead.
+pub fn eval_basis_and_grad_on_points_unchecked(
+    shells: &[LocatedShell],
+    nbf: usize,
+    points: &[[f64; 3]],
+) -> Result<(Array2<f64>, Array3<f64>), GtoEvalError> {
+    use rayon::prelude::*;
+
+    let npts = points.len();
 
     // Output arrays, allocated ONCE. chi is (nbf, npts) row-major, so
     // chi[(i, g)] lives at offset i*npts + g. dchi is (3, nbf, npts), so
@@ -710,7 +739,7 @@ pub fn eval_basis_and_grad_on_points(
         let mut gradbuf: [[f64; 15]; 3] = [[0.0; 15]; 3];
 
         let mut row_offset = 0usize;
-        for sh in &shells {
+        for sh in shells {
             buf.fill(0.0);
             for row in gradbuf.iter_mut() { row.fill(0.0); }
 

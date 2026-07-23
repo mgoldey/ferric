@@ -7,7 +7,7 @@
 //! tensors — no AO-space Fock rebuild is needed at this level.
 
 use crate::channel::RpaChannel;
-use ndarray::{Array1, Array2, Axis, Zip};
+use ndarray::{Array1, Array2, ArrayView2, Axis, Zip};
 
 // Direct BLAS DSYRK binding — OpenBLAS is already linked via openblas-src.
 // Avoids adding a cblas/blas-sys dependency just for a symmetric rank-k update.
@@ -131,7 +131,12 @@ pub(crate) fn syrk_aat_into(a: &Array2<f64>, c: &mut Array2<f64>) {
 /// ever materializing the full `(m, nov)` scaled projection at once. Caller is
 /// responsible for zeroing `c` (or pre-seeding it, e.g. with the identity
 /// diagonal) before the first panel.
-fn syrk_aat_accumulate_into(a: &Array2<f64>, c: &mut Array2<f64>) {
+///
+/// Takes a view (not `&Array2`) so a full-width panel — which is already a
+/// contiguous row-major sub-slice of the caller's `(m, panel_width)` scratch —
+/// can be passed directly with no copy; only the caller's ragged final panel
+/// (`w < panel_width`) needs an owned, right-sized `to_owned()` first.
+fn syrk_aat_accumulate_into(a: ArrayView2<f64>, c: &mut Array2<f64>) {
     let m = a.nrows();
     let kdim = a.ncols();
     assert_eq!(c.shape(), &[m, m], "syrk_aat_accumulate_into: output buffer shape mismatch");
@@ -341,11 +346,17 @@ pub fn dielectric_matrix_from_projection_into(
 /// This function instead scales `y`'s `nov` columns in contiguous panels of
 /// width `panel_width`, SYRK-accumulating (`beta=1`) each panel's contribution
 /// into `out` rather than materializing the whole `(m, nov)` scaled `y` at
-/// once. Peak transient scratch per call becomes `O(m·panel_width)` instead of
-/// `O(m·nov)`. Mathematically identical to the non-panelled version: SYRK is
-/// linear in its accumulation (`Σ_panels A_panel·A_panelᵀ = A·Aᵀ` when the
-/// `A_panel`s partition `A`'s columns), so panelling changes nothing about the
-/// result, only the peak memory of computing it.
+/// once. Peak resident scratch per call is `O(m·panel_width)` instead of
+/// `O(m·nov)` — and, since every full-width panel is passed to
+/// `syrk_aat_accumulate_into` as a contiguous view with no extra copy (only a
+/// possible ragged *final* panel, `w < panel_width`, needs one small owned
+/// `to_owned()` copy strictly smaller than the persistent scratch), the
+/// steady-state live set never doubles the `(m, panel_width)` buffer the way
+/// an unconditional per-panel copy would. Mathematically identical to the
+/// non-panelled version: SYRK is linear in its accumulation
+/// (`Σ_panels A_panel·A_panelᵀ = A·Aᵀ` when the `A_panel`s partition `A`'s
+/// columns), so panelling changes nothing about the result, only the peak
+/// memory of computing it.
 ///
 /// `rhs_scaled_panel` must have exactly `m` rows and at least 1 column; its
 /// column count is read as the (fixed) panel width (the last panel may use
@@ -388,15 +399,21 @@ pub fn dielectric_matrix_from_projection_into_panelled(
             .and_broadcast(scale_row)
             .for_each(|x, &s| *x *= s);
 
-        // syrk_aat_accumulate_into requires a contiguous row-major `Array2`;
-        // a `..w` column sub-slice of the (m, panel_width) scratch is NOT
-        // guaranteed contiguous when `w < panel_width` (the ragged last
-        // panel), so materialize an owned, right-sized copy unconditionally
-        // — `to_owned()` on an ArrayView always produces a fresh contiguous
-        // array regardless of the source's strides, so this is correct (if
-        // slightly wasteful on the non-ragged panels) either way.
-        let owned_panel = panel_view.to_owned();
-        syrk_aat_accumulate_into(&owned_panel, out);
+        // syrk_aat_accumulate_into requires a contiguous row-major view. A
+        // `..w` column sub-slice of the (m, panel_width) scratch IS contiguous
+        // whenever w == panel_width (a full-column-range slice of a row-major
+        // array is the whole array, unchanged strides) — true for every panel
+        // except a ragged final one (w < panel_width), where the sub-slice's
+        // row stride (panel_width) no longer matches its row length (w), so
+        // `.as_slice()` would fail. Only that ragged tail needs an owned,
+        // right-sized copy; every full-width panel is passed straight through
+        // with no copy at all.
+        if w == panel_width {
+            syrk_aat_accumulate_into(panel_view.view(), out);
+        } else {
+            let owned_panel = panel_view.to_owned();
+            syrk_aat_accumulate_into(owned_panel.view(), out);
+        }
 
         col0 = col1;
     }
