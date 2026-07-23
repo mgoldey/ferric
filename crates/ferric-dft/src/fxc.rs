@@ -554,6 +554,12 @@ mod tests {
     /// ~1e-12 (summation-order differences only), on small random inputs.
     #[test]
     fn gemm_backprojection_matches_loop_reference() {
+        // Kernel construction transitively resolves FERRIC_MEM_BUDGET_GB
+        // (checked AO-grid eval); hold the crate-wide env lock so budget-
+        // mutating tests in ks/ao_grid can't race this read.
+        let _env_guard = crate::TEST_BUDGET_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let npts = 64;
         let nbf = 10;
         let mut rng = Xorshift64(0x243F6A8885A308D3);
@@ -751,6 +757,12 @@ mod tests {
     /// first-derivative builder, with a clean O(ε²) Richardson error trend.
     #[test]
     fn gga_fxc_matches_finite_difference_of_vxc() {
+        // Kernel construction transitively resolves FERRIC_MEM_BUDGET_GB
+        // (checked AO-grid eval); hold the crate-wide env lock so budget-
+        // mutating tests in ks/ao_grid can't race this read.
+        let _env_guard = crate::TEST_BUDGET_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // OH radical (doublet), 6-31G — small, converges fast, D_α ≠ D_β so all
         // spin channels (αα, αβ, ββ) of the kernel are exercised.
         let mol = Molecule::parse_xyz(
@@ -873,6 +885,12 @@ mod tests {
     /// the same reference + perturbation.
     #[test]
     fn gga_kernel_matches_lda_kernel_on_lda_functional() {
+        // Kernel construction transitively resolves FERRIC_MEM_BUDGET_GB
+        // (checked AO-grid eval); hold the crate-wide env lock so budget-
+        // mutating tests in ks/ao_grid can't race this read.
+        let _env_guard = crate::TEST_BUDGET_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let mol = Molecule::parse_xyz("2\n\nO 0.0 0.0 0.0\nH 0.0 0.0 0.97\n", 0, 2).unwrap();
         let bs = basis::bundled("6-31g").unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();

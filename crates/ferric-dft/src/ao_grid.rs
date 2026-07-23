@@ -1405,11 +1405,12 @@ pub fn eval_basis_grad_hess_on_points(
 #[cfg(test)]
 mod budget_guard_tests {
     use super::*;
-    use std::sync::Mutex;
 
     // FERRIC_MEM_BUDGET_GB is process-global; the default test harness runs
     // tests in parallel (same convention as ferric_core::memory's own tests).
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    // Shared crate-wide lock (see lib.rs) — a module-local lock cannot stop
+    // cross-module races on the process-global budget env var.
+    use crate::TEST_BUDGET_ENV_LOCK as ENV_LOCK;
     const VAR: &str = ferric_core::memory::ENV_UNIFIED;
 
     fn clear() {

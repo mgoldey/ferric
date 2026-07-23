@@ -43,3 +43,12 @@ pub mod vv10;
 pub mod vxc;
 pub mod fxc;
 pub mod xc_trait;
+
+/// Crate-wide serialization for tests that SET or transitively READ the
+/// process-global `FERRIC_MEM_BUDGET_GB` env var. `ks` and `ao_grid` each
+/// kept a private lock, which cannot stop a cross-module race against a
+/// test that resolves the budget mid-flight (fxc kernel construction runs
+/// the checked AO-grid budget resolve). One shared lock closes the race;
+/// poisoning is tolerated via `into_inner` at use sites.
+#[cfg(test)]
+pub(crate) static TEST_BUDGET_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

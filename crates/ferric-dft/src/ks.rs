@@ -582,11 +582,12 @@ mod batching_tests {
     use ferric_core::parallel::ParallelContext;
     use ferric_integrals::basis_bridge::PreparedBasis;
     use ferric_integrals::operator::Operator;
-    use std::sync::Mutex as StdMutex;
 
     // FERRIC_MEM_BUDGET_GB is process-global; serialize any test that sets it
     // (same convention as ao_grid.rs's budget_guard_tests).
-    static ENV_LOCK: StdMutex<()> = StdMutex::new(());
+    // Shared crate-wide lock (see lib.rs) — a module-local lock cannot stop
+    // cross-module races on the process-global budget env var.
+    use crate::TEST_BUDGET_ENV_LOCK as ENV_LOCK;
     const VAR: &str = ferric_core::memory::ENV_UNIFIED;
 
     fn clear_budget_env() {
