@@ -183,6 +183,13 @@ pub fn rs_mp2_lr_rpa(
     rhf: &ScfResult,
     cfg: &RsMp2RpaConfig,
 ) -> Result<RsMp2RpaResult, FerricError> {
+    // Resolved ONCE for the whole call: the preflight gate's budget check
+    // just below, AND the stage-seam RSS observability checks further down
+    // (Item 3) both compare against this same configured ceiling — previously
+    // re-resolved via two separate `resolve_budget_bytes(cfg.drpa.memory_budget_bytes)`
+    // calls ten lines apart.
+    let resolved_budget_bytes = ferric_core::memory::resolve_budget_bytes(cfg.drpa.memory_budget_bytes);
+
     // Pre-flight peak-memory gate (M2-style fail-fast, see budget.rs). Cheap
     // shape values only (nelec/nbasis accessors, no ERI/GEMM work) so this
     // runs before ANY large allocation. naux is known exactly; nocc/nvir use
@@ -203,7 +210,6 @@ pub fn rs_mp2_lr_rpa(
             n_workers,
             n_keep,
         });
-        let budget = ferric_core::memory::resolve_budget_bytes(cfg.drpa.memory_budget_bytes);
         ferric_core::memory::check_alloc(
             &format!(
                 "RS-MP2-RPA preflight (naux={naux}, nocc={nocc}, nvir={nvir}, \
@@ -211,16 +217,11 @@ pub fn rs_mp2_lr_rpa(
                 cfg.formulation
             ),
             est,
-            budget,
+            resolved_budget_bytes,
         )?;
     }
 
     let ri_cfg = RiMp2Config { frozen_core: cfg.frozen_core, memory_budget_bytes: cfg.drpa.memory_budget_bytes };
-    // Resolved once, reused by the stage-seam RSS observability checks below
-    // (Item 3) — same budget the preflight gate above just checked the
-    // ESTIMATE against; this is the actual-RSS follow-up in case reality
-    // diverges from the estimate at some later stage.
-    let resolved_budget_bytes = ferric_core::memory::resolve_budget_bytes(cfg.drpa.memory_budget_bytes);
 
     // SHARED-INTERMEDIATE FUSION. The MP2 spin components and the dRPA solves
     // both need the dressed b_ov = V^{-1/2}(P|op|ia) for the SAME operator, and

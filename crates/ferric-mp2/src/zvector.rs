@@ -48,6 +48,13 @@ pub(crate) fn zvec_trace() -> bool {
 /// which is exactly 2× PySCF's CPHF `fvind = 2·get_veff(D^z+D^z†)`, so it is halved
 /// here. Both the RHS sign and the ½ matvec scale were verified element-by-element
 /// against PySCF (H2/cc-pVDZ z matches to ~1e-5).
+///
+/// `budget_bytes` is the caller-resolved memory ceiling threaded into every
+/// `compute_az_product` call in the DIIS loop below (up to `max_iter` calls) —
+/// callers that hold a config with `memory_budget_bytes` in scope should pass
+/// `resolve_budget_bytes(config.memory_budget_bytes)`, resolved once at their
+/// own top; callers with no config in scope pass `resolve_budget_bytes(None)`,
+/// likewise resolved once, not re-resolved per DIIS iteration.
 pub fn solve_zvector(
     _mol: &Molecule,
     prep: &PreparedBasis,
@@ -56,6 +63,7 @@ pub fn solve_zvector(
     bounds: &SchwarzBounds,
     rhf: &ScfResult,
     inter: &Mp2Intermediates,
+    budget_bytes: usize,
 ) -> Result<(Array2<f64>, Array2<f64>), FerricError> {
     let orb = inter.orbital_space();
     let OrbitalSpace { nocc, nvir, nocc_total, first_occ } = orb;
@@ -143,7 +151,7 @@ pub fn solve_zvector(
         // 0.5). The MP2 Z-vector Hessian is `Δε·z + (2J−K)·z`, so the matvec must be
         // scaled by ½ here (mirrors cpks_polar.rs's `ascale=0.5` for the same
         // symmetric-density double-count).
-        let az = 0.5 * &compute_az_product(c, &z, prep, bounds, &orb, &pool, ferric_core::memory::resolve_budget_bytes(None))?;
+        let az = 0.5 * &compute_az_product(c, &z, prep, bounds, &orb, &pool, budget_bytes)?;
 
         let mut residual = Array2::zeros((nvir, nocc));
         let mut max_resid = 0.0f64;
@@ -749,7 +757,7 @@ mod tests {
         let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
         let inter = compute_mp2_intermediates(&mol, &obs, &dfbs, op, &rhf, &RiMp2Config::default()).unwrap();
 
-        let (z, _l) = solve_zvector(&mol, &obs, &dfbs, Operator::coulomb(), &bounds, &rhf, &inter).unwrap();
+        let (z, _l) = solve_zvector(&mol, &obs, &dfbs, Operator::coulomb(), &bounds, &rhf, &inter, ferric_core::memory::resolve_budget_bytes(None)).unwrap();
 
         // Z should be finite and small
         for a in 0..inter.nvir {
@@ -771,7 +779,7 @@ mod tests {
         let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
         let inter = compute_mp2_intermediates(&mol, &obs, &dfbs, op, &rhf, &RiMp2Config::default()).unwrap();
 
-        let (z, _l) = solve_zvector(&mol, &obs, &dfbs, Operator::coulomb(), &bounds, &rhf, &inter).unwrap();
+        let (z, _l) = solve_zvector(&mol, &obs, &dfbs, Operator::coulomb(), &bounds, &rhf, &inter, ferric_core::memory::resolve_budget_bytes(None)).unwrap();
         let p_ao = build_relaxed_density_ao(
             rhf.mos_r(), &inter.p_oo, &inter.p_vv, &z, &inter.orbital_space(),
         );
@@ -797,7 +805,7 @@ mod tests {
         let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
         let inter = compute_mp2_intermediates(&mol, &obs, &dfbs, op, &rhf, &RiMp2Config::default()).unwrap();
 
-        let (z, l) = solve_zvector(&mol, &obs, &dfbs, Operator::coulomb(), &bounds, &rhf, &inter).unwrap();
+        let (z, l) = solve_zvector(&mol, &obs, &dfbs, Operator::coulomb(), &bounds, &rhf, &inter, ferric_core::memory::resolve_budget_bytes(None)).unwrap();
 
         let nmo = rhf.mos_r().ncols();
         let f_mo = rhf.mos_r().t().dot(rhf.fock_r()).dot(rhf.mos_r());

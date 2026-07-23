@@ -86,6 +86,11 @@ pub fn mp2_polarizability_analytic(
 /// Solve (Δε + A) X = rhs by Jacobi-preconditioned CG. Reuses the production
 /// orbital-Hessian matvec `compute_az_product`. `rhs` and the return are shape
 /// (nvir, nocc). Returns (X, final_residual, iters, converged).
+///
+/// `budget_bytes` is the caller-resolved memory ceiling threaded into every
+/// `compute_az_product` call in the CG loop (up to `max_iter` calls) — see
+/// `solve_cphf_cg_scaled`'s doc.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn solve_cphf_cg(
     c: &Array2<f64>,
     rhs: &Array2<f64>,
@@ -93,15 +98,23 @@ pub(crate) fn solve_cphf_cg(
     bounds: &SchwarzBounds,
     orb: &OrbitalSpace,
     eps: &[f64],
+    budget_bytes: usize,
 ) -> Result<(Array2<f64>, f64, usize, bool), FerricError> {
     // Default operator (Δε + 0.5 A) — the dipole-CPHF (HF α) convention.
-    solve_cphf_cg_scaled(c, rhs, prep, bounds, orb, eps, 0.5)
+    solve_cphf_cg_scaled(c, rhs, prep, bounds, orb, eps, 0.5, budget_bytes)
 }
 
 /// As `solve_cphf_cg` but with an explicit A-coupling scale. Use 0.5 for the
 /// dipole-CPHF (HF α) path; use 1.0 to MATCH `solve_zvector`'s full-A operator
 /// when solving the PERTURBED Z-vector ∂z (so ∂z and the un-perturbed z0 from
 /// solve_zvector share the same operator — required for the relaxed-α response).
+///
+/// `budget_bytes` is the caller-resolved memory ceiling threaded into every
+/// `compute_az_product` call in the CG loop below (up to `max_iter=200`
+/// calls) — callers with a `RiMp2Config` (or similar `memory_budget_bytes`
+/// field) in scope should pass `resolve_budget_bytes(config.memory_budget_bytes)`,
+/// resolved once at their own top; callers with no config in scope pass
+/// `resolve_budget_bytes(None)`, likewise resolved once, not per CG iteration.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn solve_cphf_cg_scaled(
     c: &Array2<f64>,
@@ -111,6 +124,7 @@ pub(crate) fn solve_cphf_cg_scaled(
     orb: &OrbitalSpace,
     eps: &[f64],
     ascale: f64,
+    budget_bytes: usize,
 ) -> Result<(Array2<f64>, f64, usize, bool), FerricError> {
     use crate::zvector::compute_az_product;
     let OrbitalSpace {
@@ -132,7 +146,7 @@ pub(crate) fn solve_cphf_cg_scaled(
     // double-counts vs the CPHF-α Hessian — pinned vs FF-HF), 1.0 to match
     // solve_zvector's full-A Z-vector operator.
     let apply = |z: &Array2<f64>| -> Result<Array2<f64>, FerricError> {
-        let mut mz = compute_az_product(c, z, prep, bounds, orb, &pool, ferric_core::memory::resolve_budget_bytes(None))?;
+        let mut mz = compute_az_product(c, z, prep, bounds, orb, &pool, budget_bytes)?;
         for a in 0..nvir {
             for i in 0..nocc {
                 mz[(a, i)] = ascale * mz[(a, i)] + de(a, i) * z[(a, i)];
@@ -249,6 +263,10 @@ pub fn mp2_polarizability_analytic_hf(
     let nocc = (mol.nelec() / 2) as usize;
     let nvir = nbas - nocc;
     let orb = OrbitalSpace::new(nocc, nvir, nocc, 0);
+    // No RiMp2Config reachable on this pure-HF-α path — hoist ONE resolve
+    // here (not per CG iteration / per axis) rather than re-resolving inside
+    // solve_cphf_cg's CG loop.
+    let budget_bytes = ferric_core::memory::resolve_budget_bytes(None);
 
     // μ^d_ov as (nvir, nocc) (CG convention).
     let mu_oc = dipole_ov_mo(obs, c, &orb)?; // [d] = (nocc, nvir)
@@ -258,7 +276,7 @@ pub fn mp2_polarizability_analytic_hf(
     let mut u: Vec<Array2<f64>> = Vec::with_capacity(3);
     for x in 0..3 {
         let rhs = -&mu[x];
-        let (ux, resid, iters, conv) = solve_cphf_cg(c, &rhs, obs, bounds, &orb, eps)?;
+        let (ux, resid, iters, conv) = solve_cphf_cg(c, &rhs, obs, bounds, &orb, eps, budget_bytes)?;
         if !conv {
             return Err(FerricError::General(format!(
                 "cpks HF α: CPHF U^{x} did not converge (resid={resid:.2e}, iters={iters})"
@@ -359,11 +377,12 @@ pub fn analytic_dt2_full(
     let eps = rhf.eps_r();
     let c = rhf.mos_r();
     let orb = OrbitalSpace::new(nocc, nvir, nocc_total, first_occ);
+    let budget_bytes = ferric_core::memory::resolve_budget_bytes(mp2_config.memory_budget_bytes);
 
     // --- CPHF U^x: (Δε + 0.5 A) U = −μ^x_ov  (same operator/conventions as HF α) ---
     let mu_oc = dipole_ov_mo(obs, c, &orb)?; // (nocc,nvir)
     let mu_vo = mu_oc[axis].t().to_owned(); // (nvir,nocc)
-    let (u, resid, iters, conv) = solve_cphf_cg(c, &(-&mu_vo), obs, bounds, &orb, eps)?;
+    let (u, resid, iters, conv) = solve_cphf_cg(c, &(-&mu_vo), obs, bounds, &orb, eps, budget_bytes)?;
     if !conv {
         return Err(FerricError::General(format!(
             "analytic_dt2: CPHF U^{axis} not converged (resid={resid:.2e}, iters={iters})"
@@ -641,10 +660,14 @@ pub fn debug_dd_norms(
     let c = rhf.mos_r();
     let eps = rhf.eps_r();
     let orb = OrbitalSpace::new(nocc, nvir, nocc, 0);
+    // No RiMp2Config reachable on this diagnostic path — hoist ONE resolve
+    // (not per CG iteration) rather than re-resolving inside solve_cphf_cg's
+    // CG loop.
+    let budget_bytes = ferric_core::memory::resolve_budget_bytes(None);
     // analytic ∂D from U
     let mu_oc = dipole_ov_mo(obs, c, &orb)?;
     let mu_vo = mu_oc[axis].t().to_owned();
-    let (u, _r, _it, _cv) = solve_cphf_cg(c, &(-&mu_vo), obs, bounds, &orb, eps)?;
+    let (u, _r, _it, _cv) = solve_cphf_cg(c, &(-&mu_vo), obs, bounds, &orb, eps, budget_bytes)?;
     let c_occ = c.slice(ndarray::s![.., 0..nocc]).to_owned();
     let c_vir = c.slice(ndarray::s![.., nocc..]).to_owned();
     let mut dd = Array2::<f64>::zeros((nbas, nbas));
@@ -696,9 +719,13 @@ pub fn debug_dd_traces(
     let eps = rhf.eps_r();
     let orb = OrbitalSpace::new(nocc, nvir, nocc, 0);
     let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
+    // No RiMp2Config reachable on this diagnostic path — hoist ONE resolve
+    // (not per CG iteration) rather than re-resolving inside solve_cphf_cg's
+    // CG loop.
+    let budget_bytes = ferric_core::memory::resolve_budget_bytes(None);
     let mu_oc = dipole_ov_mo(obs, c, &orb)?;
     let mu_vo = mu_oc[axis].t().to_owned();
-    let (u, _r, _it, _cv) = solve_cphf_cg(c, &(-&mu_vo), obs, bounds, &orb, eps)?;
+    let (u, _r, _it, _cv) = solve_cphf_cg(c, &(-&mu_vo), obs, bounds, &orb, eps, budget_bytes)?;
     let c_occ = c.slice(ndarray::s![.., 0..nocc]).to_owned();
     let c_vir = c.slice(ndarray::s![.., nocc..]).to_owned();
     let mut dd = Array2::<f64>::zeros((nbas, nbas));
@@ -788,6 +815,7 @@ pub fn static_relaxed_density_ao(
     let eps = rhf.eps_r();
     let nmo = c.ncols();
     let orb = OrbitalSpace::new(nocc, nvir, nocc_total, first_occ);
+    let budget_bytes = ferric_core::memory::resolve_budget_bytes(mp2_config.memory_budget_bytes);
 
     // P-blocks (one-sided, = PySCF doo/dvv up to sign): inter.p_oo/p_vv.
     let p_oo = &inter.p_oo;
@@ -816,7 +844,7 @@ pub fn static_relaxed_density_ao(
     let xvo = &l + &veff;
 
     // (Δε + A) z = −Xvo  (full-A operator, ascale=1.0).
-    let (z, resid, iters, conv) = solve_cphf_cg_scaled(c, &(-&xvo), obs, bounds, &orb, eps, 1.0)?;
+    let (z, resid, iters, conv) = solve_cphf_cg_scaled(c, &(-&xvo), obs, bounds, &orb, eps, 1.0, budget_bytes)?;
     if !conv {
         return Err(FerricError::General(format!(
             "static_relaxed_density: z not converged (resid={resid:.2e}, iters={iters})"
@@ -1017,11 +1045,14 @@ pub fn analytic_alpha_relaxed(
     let nmo = c.ncols();
     let orb = OrbitalSpace::new(nocc, nvir, nocc_total, first_occ);
     let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
+    // Resolved once (not per solve_zvector/solve_cphf_cg_scaled call below) —
+    // this function's config-reachable memory ceiling for both CPHF solves.
+    let budget_bytes = ferric_core::memory::resolve_budget_bytes(mp2_config.memory_budget_bytes);
 
     // Un-perturbed pieces (field-independent): base Lagrangian inputs + z.
     let f_mo0 = c.t().dot(rhf.fock_r()).dot(c);
     let b_full = crate::oo_rimp2::compute_b_full_mo(obs, dfbs, op, c)?;
-    let (z0, _l0) = crate::zvector::solve_zvector(mol, obs, dfbs, op, bounds, rhf, &inter)?;
+    let (z0, _l0) = crate::zvector::solve_zvector(mol, obs, dfbs, op, bounds, rhf, &inter, budget_bytes)?;
     let de = |a: usize, i: usize| eps[nocc_total + a] - eps[first_occ + i];
 
     let mut tensor = [[0.0f64; 3]; 3];
@@ -1133,7 +1164,7 @@ pub fn analytic_alpha_relaxed(
             }
         }
         // Perturbed Z-vector: (Δε+A) ∂z = rhs  (full A to match z₀'s operator).
-        let (dz, dresid, _it, dconv) = solve_cphf_cg_scaled(c, &rhs, obs, bounds, &orb, eps, 1.0)?;
+        let (dz, dresid, _it, dconv) = solve_cphf_cg_scaled(c, &rhs, obs, bounds, &orb, eps, 1.0, budget_bytes)?;
         if !dconv {
             return Err(FerricError::General(format!(
                 "analytic_alpha_relaxed: ∂z axis {x} not converged (resid={dresid:.2e})"

@@ -295,7 +295,6 @@ pub fn ri_mp2_spin_components(
     let nocc = active_occ(nocc_total, config.frozen_core)?;
     let first_occ = config.frozen_core;
     let nvir = nbas - nocc_total;
-    let naux = dfbs.nbasis();
     let eps = rhf.eps_r();
     let c = rhf.mos_r();
 
@@ -306,17 +305,17 @@ pub fn ri_mp2_spin_components(
     let v2c = threeindex::coulomb_metric_2c(op, dfbs)?;
     let v2c_inv_sqrt = metric_inverse_sqrt(&v2c, op)?;
 
-    // (P|mu nu) -> (P|ia), aux-blocked under FERRIC_ERI3_BUDGET_GB
-    let eri3_mo = eri3_mo_ov_blocked(op, obs, dfbs, &c_occ, &c_vir, eri3_budget_bytes(config.memory_budget_bytes))?;
-
-    // B_ia^P = sum_Q (P|Q)^{-1/2} (Q|ia). One dressing GEMM per top-level
-    // call, outside any rayon region (the rayon fan-out in
-    // spin_components_from_b_ov below hasn't started yet). Opt-in BLAS raise
-    // via FERRIC_BLAS_THREADS (default 1, unchanged behavior).
-    let eri3_flat = eri3_mo
-        .into_shape_with_order((naux, nocc * nvir))
-        .unwrap();
-    let b_flat = with_blas_threads(opt_in_blas_threads(), || v2c_inv_sqrt.dot(&eri3_flat)); // (naux, nocc*nvir)
+    // Stream raw (P|mu nu) aux-blocks from a budgeted ThreeIndexSource and
+    // dress each block with V^{-1/2} on the fly via the canonical streamer
+    // (stream_dressed_mo_band, added for oo_rimp2::compute_b_full_mo_with) —
+    // so only ONE (naux, nocc*nvir) output tensor (`b_flat`) is ever resident,
+    // not the old two-tensor peak (a full eri3_mo_ov_blocked MO tensor THEN a
+    // separately-allocated v2c_inv_sqrt.dot(..) dressed copy, co-resident
+    // during the dot). Exactness: same contraction, reordered per aux-block,
+    // not approximated — see stream_dressed_mo_band's doc.
+    let budget_bytes = eri3_budget_bytes(config.memory_budget_bytes);
+    let mut src = ThreeIndexSource::build(op, obs, dfbs, budget_bytes)?;
+    let b_flat = stream_dressed_mo_band(&mut src, &v2c_inv_sqrt, &c_occ, &c_vir, None)?; // (naux, nocc*nvir)
 
     let sc = spin_components_from_b_ov(
         &b_flat, eps, nocc, nvir, first_occ, nocc_total,

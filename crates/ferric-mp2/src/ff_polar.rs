@@ -368,12 +368,17 @@ fn solve_zvector_cg(
     // bit-identical across thread counts.
     let pool = ferric_scf::engine_pool::EnginePool::new(bounds.op, prep, 1e-14)?;
 
+    // No config reachable on this finite-field path (no RiMp2Config in scope)
+    // — hoist ONE resolve here (not per CG iteration) rather than
+    // re-resolving inside the `apply` closure on every call.
+    let budget_bytes = ferric_core::memory::resolve_budget_bytes(None);
+
     // Δε_{ai} table (the SPD diagonal; also the Jacobi preconditioner).
     let de = |a: usize, i: usize| eps[nocc_total + a] - eps[first_occ + i];
 
     // Full operator M·z = Δε⊙z + A·z.
     let apply = |z: &Array2<f64>| -> Result<Array2<f64>, FerricError> {
-        let mut mz = compute_az_product(c, z, prep, bounds, orb, &pool, ferric_core::memory::resolve_budget_bytes(None))?;
+        let mut mz = compute_az_product(c, z, prep, bounds, orb, &pool, budget_bytes)?;
         for a in 0..nvir {
             for i in 0..nocc {
                 mz[(a, i)] += de(a, i) * z[(a, i)];

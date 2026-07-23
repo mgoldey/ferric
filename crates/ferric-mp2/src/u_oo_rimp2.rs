@@ -93,6 +93,13 @@ pub struct UOoRiMp2Result {
 }
 
 /// Compute UHF energy and α/β Fock matrices from MO coefficients.
+///
+/// `budget_bytes` is the caller-resolved memory ceiling for the DirectJ/DirectK
+/// builds below — threaded from [`u_oo_ri_mp2`]'s single per-call
+/// `resolve_budget_bytes(config.memory_budget_bytes)` rather than re-resolved
+/// here (this function is called up to 3× per orbital-optimization iteration,
+/// including backtracks — see the M-budget-plumbing-sweep note on
+/// [`u_oo_ri_mp2`]).
 // Spin-resolved UHF energy: alpha/beta coefficients and occupations are
 // irreducibly distinct quantities with no natural sub-bundle to group.
 #[allow(clippy::too_many_arguments)]
@@ -106,6 +113,7 @@ fn compute_uhf_energy(
     nocc_a: usize,
     nocc_b: usize,
     h: &Array2<f64>,
+    budget_bytes: usize,
 ) -> Result<(f64, Array2<f64>, Array2<f64>), FerricError> {
     let n = prep.nbasis();
     // Densities D_σ = C_occ_σ · C_occ_σ^T (unit occupancy, not 2× for spin).
@@ -128,15 +136,15 @@ fn compute_uhf_energy(
     let mut k_a = Array2::zeros((n, n));
     let mut k_b = Array2::zeros((n, n));
     {
-        let mut dj = DirectJ::new(ctx, prep, bounds, 1e-12, ferric_core::memory::resolve_budget_bytes(None));
+        let mut dj = DirectJ::new(ctx, prep, bounds, 1e-12, budget_bytes);
         dj.build(&d_tot, &mut j_tot)?;
     }
     {
-        let mut dk = DirectK::new(ctx, prep, bounds, 1e-12, ferric_core::memory::resolve_budget_bytes(None));
+        let mut dk = DirectK::new(ctx, prep, bounds, 1e-12, budget_bytes);
         <DirectK as KBuilder>::build(&mut dk, &d_a, &mut k_a)?;
     }
     if nocc_b > 0 {
-        let mut dk = DirectK::new(ctx, prep, bounds, 1e-12, ferric_core::memory::resolve_budget_bytes(None));
+        let mut dk = DirectK::new(ctx, prep, bounds, 1e-12, budget_bytes);
         <DirectK as KBuilder>::build(&mut dk, &d_b, &mut k_b)?;
     }
 
@@ -339,7 +347,7 @@ pub fn u_oo_ri_mp2(
 
     // Initial UHF energy + Fock
     let (mut e_hf, mut f_a, mut f_b) = compute_uhf_energy(
-        &ctx, mol, obs, bounds, &c_a, &c_b, nocc_total_a, nocc_total_b, &h,
+        &ctx, mol, obs, bounds, &c_a, &c_b, nocc_total_a, nocc_total_b, &h, budget_bytes,
     )?;
     let mut eps_a = orbital_energies_mo(&c_a, &f_a);
     let mut eps_b = orbital_energies_mo(&c_b, &f_b);
@@ -377,7 +385,7 @@ pub fn u_oo_ri_mp2(
         )?;
         let b_full_a = compute_b_full_mo_with(&ao, &c_a)?;
         let b_full_b = compute_b_full_mo_with(&ao, &c_b)?;
-        let (g_mp2_a, g_mp2_b) = compute_u_mp2_orbital_gradient(&amps, &b_full_a, &b_full_b);
+        let (g_mp2_a, g_mp2_b) = compute_u_mp2_orbital_gradient(&amps, &b_full_a, &b_full_b, budget_bytes);
 
         // Add HF Brillouin term: g_total = g_mp2 − 2·F^σ_{a+nocc, i}
         let f_mo_a = c_a.t().dot(&f_a).dot(&c_a);
@@ -499,7 +507,7 @@ pub fn u_oo_ri_mp2(
 
         // Evaluate at new orbitals
         let (e_hf_new, f_a_new, f_b_new) = compute_uhf_energy(
-            &ctx, mol, obs, bounds, &c_a_new, &c_b_new, nocc_total_a, nocc_total_b, &h,
+            &ctx, mol, obs, bounds, &c_a_new, &c_b_new, nocc_total_a, nocc_total_b, &h, budget_bytes,
         )?;
         let eps_a_new = orbital_energies_mo(&c_a_new, &f_a_new);
         let eps_b_new = orbital_energies_mo(&c_b_new, &f_b_new);
@@ -539,7 +547,7 @@ pub fn u_oo_ri_mp2(
                 bt_c_a = c_a.dot(&ua2);
                 bt_c_b = c_b.dot(&ub2);
                 let (eh, fa, fb) = compute_uhf_energy(
-                    &ctx, mol, obs, bounds, &bt_c_a, &bt_c_b, nocc_total_a, nocc_total_b, &h,
+                    &ctx, mol, obs, bounds, &bt_c_a, &bt_c_b, nocc_total_a, nocc_total_b, &h, budget_bytes,
                 )?;
                 let ea = orbital_energies_mo(&bt_c_a, &fa);
                 let eb = orbital_energies_mo(&bt_c_b, &fb);

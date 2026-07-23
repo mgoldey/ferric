@@ -163,6 +163,25 @@ pub fn compute_u_mp2_amplitudes(
 //      K_iajb = (ia|jb) − (ib|ja),  E = ¼ Σ t·K,  t = K/D
 //  - opposite-spin (αβ): two independent B tensors (different nocc/nvir per
 //    side), no antisymmetrization, single eri²/D.
+
+/// One spin channel's dressed occ-vir intermediates + orbital-space shape,
+/// bundled so [`same_spin_pair_kernel`]/[`opposite_spin_pair_kernel`] take one
+/// named argument per spin instead of 4-8 loose `usize`/slice parameters.
+/// Mirrors `ferric-rpa::budget::PeakEstimateShape`'s named-fields-over-tuple
+/// convention. `Copy` (all fields are references or plain `usize`), so callers
+/// may pass by value freely.
+#[derive(Clone, Copy)]
+pub(crate) struct SpinChannel<'a> {
+    /// Dressed occ-vir tensor, shape `(naux, nocc*nvir)`.
+    pub b: &'a Array2<f64>,
+    /// Full per-spin orbital-energy slice (denominators index
+    /// `eps[first_occ+i]` / `eps[nocc_total+a]`).
+    pub eps: &'a [f64],
+    pub nocc: usize,
+    pub nvir: usize,
+    pub first_occ: usize,
+    pub nocc_total: usize,
+}
 //
 // Both optionally materialize the amplitude tensor `t[i,j,a,b]` (same layout
 // as the pre-GEMM scalar loops) for the U-OO gradient path; when the caller
@@ -172,36 +191,76 @@ pub fn compute_u_mp2_amplitudes(
 /// Same-spin (αα or ββ) pair kernel: builds the energy and, optionally, the
 /// antisymmetrized amplitude tensor `t[i,j,a,b] = [(ia|jb) − (ib|ja)] / D`.
 ///
-/// `b`: dressed occ-vir tensor, shape `(naux, nocc*nvir)`.
-/// `eps`: full per-spin orbital-energy slice (denominators index
-/// `eps[first_occ+i]` / `eps[nocc_total+a]`, matching the original scalar
-/// loops' frozen-core convention).
+/// `ch`: this spin channel's dressed occ-vir tensor + orbital-space shape
+/// (see [`SpinChannel`]; `ch.eps` indexes as `eps[first_occ+i]` /
+/// `eps[nocc_total+a]`, matching the original scalar loops' frozen-core
+/// convention).
+///
+/// When `want_amplitudes`, `t` is allocated ONCE up front and each rayon
+/// worker writes its disjoint `t[i, .., .., ..]` slab directly in place via
+/// `axis_iter_mut(Axis(0)).into_par_iter()` — no intermediate per-`i` `Vec`
+/// slab is collected first and copied in afterward, so the peak transient is
+/// 1× the `t` tensor, not 2×. Only the per-`i` energies are collected and
+/// summed SEQUENTIALLY in ascending `i` (never a rayon tree `reduce`, which
+/// would make the float accumulation order — and thus the last-bit energy —
+/// depend on `RAYON_NUM_THREADS`); the per-element arithmetic that fills each
+/// slab is bit-for-bit identical to the previous two-pass version.
 ///
 /// Returns `(energy, Some(t))` when `want_amplitudes`, else `(energy, None)`.
 pub(crate) fn same_spin_pair_kernel(
-    b: &Array2<f64>,
-    eps: &[f64],
-    nocc: usize,
-    nvir: usize,
-    first_occ: usize,
-    nocc_total: usize,
+    ch: SpinChannel,
     want_amplitudes: bool,
 ) -> (f64, Option<Array4<f64>>) {
+    use ndarray::Axis;
     use rayon::prelude::*;
 
-    // Per-i partial: (energy_i, Option<row-major slab of nocc*nvir*nvir t-values for this i>).
-    let partials: Vec<(f64, Option<Vec<f64>>)> = (0..nocc)
+    let SpinChannel { b, eps, nocc, nvir, first_occ, nocc_total } = ch;
+
+    if !want_amplitudes {
+        // Energy-only: no t tensor to write, so the per-i partial is just a
+        // scalar — no allocation/collection of a Vec<Option<..>> needed at all.
+        let partials: Vec<f64> = (0..nocc)
+            .into_par_iter()
+            .map(|i| {
+                let b_i = b.slice(ndarray::s![.., i * nvir..(i + 1) * nvir]);
+                let g_i = b_i.t().dot(b); // (nvir, nocc*nvir); g_i[a, j*nvir+b] = (ia|jb)
+                let eps_i = eps[first_occ + i];
+                let mut energy_i = 0.0;
+                for j in 0..nocc {
+                    let eps_j = eps[first_occ + j];
+                    for a in 0..nvir {
+                        let eps_a = eps[nocc_total + a];
+                        for b_idx in 0..nvir {
+                            let eps_b = eps[nocc_total + b_idx];
+                            let g_ab = g_i[(a, j * nvir + b_idx)]; // (ia|jb)
+                            let g_ba = g_i[(b_idx, j * nvir + a)]; // (ib|ja)
+                            let k = g_ab - g_ba;
+                            let denom = eps_i + eps_j - eps_a - eps_b;
+                            let t_val = k / denom;
+                            energy_i += t_val * k;
+                        }
+                    }
+                }
+                0.25 * energy_i
+            })
+            .collect();
+        let energy = partials.into_iter().sum();
+        return (energy, None);
+    }
+
+    // want_amplitudes: allocate t ONCE, write each i-slab in place (1x peak,
+    // not 2x). Energies still collected in i-order and summed serially.
+    let mut t = Array4::<f64>::zeros((nocc, nocc, nvir, nvir));
+    let mut energies = vec![0.0f64; nocc];
+    t.axis_iter_mut(Axis(0))
         .into_par_iter()
-        .map(|i| {
+        .zip(energies.par_iter_mut())
+        .enumerate()
+        .for_each(|(i, (mut t_i, energy_i_slot))| {
             let b_i = b.slice(ndarray::s![.., i * nvir..(i + 1) * nvir]);
             let g_i = b_i.t().dot(b); // (nvir, nocc*nvir); g_i[a, j*nvir+b] = (ia|jb)
             let eps_i = eps[first_occ + i];
             let mut energy_i = 0.0;
-            let mut slab: Option<Vec<f64>> = if want_amplitudes {
-                Some(vec![0.0; nocc * nvir * nvir])
-            } else {
-                None
-            };
             for j in 0..nocc {
                 let eps_j = eps[first_occ + j];
                 for a in 0..nvir {
@@ -214,74 +273,80 @@ pub(crate) fn same_spin_pair_kernel(
                         let denom = eps_i + eps_j - eps_a - eps_b;
                         let t_val = k / denom;
                         energy_i += t_val * k;
-                        if let Some(s) = slab.as_mut() {
-                            s[(j * nvir + a) * nvir + b_idx] = t_val;
-                        }
+                        t_i[(j, a, b_idx)] = t_val;
                     }
                 }
             }
-            (0.25 * energy_i, slab)
-        })
-        .collect();
+            *energy_i_slot = 0.25 * energy_i;
+        });
 
-    let mut energy = 0.0;
-    let mut t = if want_amplitudes {
-        Some(Array4::<f64>::zeros((nocc, nocc, nvir, nvir)))
-    } else {
-        None
-    };
-    for (i, (energy_i, slab)) in partials.into_iter().enumerate() {
-        energy += energy_i;
-        if let (Some(t), Some(slab)) = (t.as_mut(), slab) {
-            for j in 0..nocc {
-                for a in 0..nvir {
-                    for b_idx in 0..nvir {
-                        t[(i, j, a, b_idx)] = slab[(j * nvir + a) * nvir + b_idx];
-                    }
-                }
-            }
-        }
-    }
-    (energy, t)
+    // Ascending-i serial sum — same accumulation order as the original
+    // collect-then-serial-sum (energies is already i-ordered by construction).
+    let energy: f64 = energies.into_iter().sum();
+    (energy, Some(t))
 }
 
 /// Opposite-spin (αβ) pair kernel: builds the energy and, optionally, the
 /// (non-antisymmetrized) amplitude tensor `t[i,J,a,B] = (ia|JB) / D`.
 ///
-/// `b_a`/`b_b`: dressed occ-vir tensors for each spin, independent
-/// `(nocc, nvir)` per side. No antisymmetrization — single `eri²/D` per
-/// caller.
-#[allow(clippy::too_many_arguments)]
+/// `ch_a`/`ch_b`: each spin's dressed occ-vir tensor + orbital-space shape
+/// (see [`SpinChannel`]), independent `(nocc, nvir)` per side. No
+/// antisymmetrization — single `eri²/D` per caller.
+///
+/// Same write-in-place amplitude discipline as [`same_spin_pair_kernel`]: `t`
+/// is allocated ONCE and each rayon worker writes its disjoint `t[i, .., ..,
+/// ..]` slab directly (peak transient 1× the `t` tensor, not 2×); per-`i`
+/// energies are collected in ascending `i` and summed serially.
 pub(crate) fn opposite_spin_pair_kernel(
-    b_a: &Array2<f64>,
-    b_b: &Array2<f64>,
-    eps_a: &[f64],
-    eps_b: &[f64],
-    nocc_a: usize,
-    nvir_a: usize,
-    first_occ_a: usize,
-    nocc_total_a: usize,
-    nocc_b: usize,
-    nvir_b: usize,
-    first_occ_b: usize,
-    nocc_total_b: usize,
+    ch_a: SpinChannel,
+    ch_b: SpinChannel,
     want_amplitudes: bool,
 ) -> (f64, Option<Array4<f64>>) {
+    use ndarray::Axis;
     use rayon::prelude::*;
 
-    // Per-i partial: (energy_i, Option<row-major slab of nocc_b*nvir_a*nvir_b t-values for this i>).
-    let partials: Vec<(f64, Option<Vec<f64>>)> = (0..nocc_a)
+    let SpinChannel { b: b_a, eps: eps_a, nocc: nocc_a, nvir: nvir_a, first_occ: first_occ_a, nocc_total: nocc_total_a } = ch_a;
+    let SpinChannel { b: b_b, eps: eps_b, nocc: nocc_b, nvir: nvir_b, first_occ: first_occ_b, nocc_total: nocc_total_b } = ch_b;
+
+    if !want_amplitudes {
+        let partials: Vec<f64> = (0..nocc_a)
+            .into_par_iter()
+            .map(|i| {
+                let bi = b_a.slice(ndarray::s![.., i * nvir_a..(i + 1) * nvir_a]);
+                let g_i = bi.t().dot(b_b); // (nvir_a, nocc_b*nvir_b); g_i[a, J*nvir_b+B] = (ia|JB)
+                let eps_i = eps_a[first_occ_a + i];
+                let mut energy_i = 0.0;
+                for a in 0..nvir_a {
+                    let eps_av = eps_a[nocc_total_a + a];
+                    for jj in 0..nocc_b {
+                        let eps_j = eps_b[first_occ_b + jj];
+                        for bb_idx in 0..nvir_b {
+                            let eps_bv = eps_b[nocc_total_b + bb_idx];
+                            let eri = g_i[(a, jj * nvir_b + bb_idx)];
+                            let denom = eps_i + eps_j - eps_av - eps_bv;
+                            let t_val = eri / denom;
+                            energy_i += t_val * eri;
+                        }
+                    }
+                }
+                energy_i
+            })
+            .collect();
+        let energy = partials.into_iter().sum();
+        return (energy, None);
+    }
+
+    let mut t = Array4::<f64>::zeros((nocc_a, nocc_b, nvir_a, nvir_b));
+    let mut energies = vec![0.0f64; nocc_a];
+    t.axis_iter_mut(Axis(0))
         .into_par_iter()
-        .map(|i| {
+        .zip(energies.par_iter_mut())
+        .enumerate()
+        .for_each(|(i, (mut t_i, energy_i_slot))| {
             let bi = b_a.slice(ndarray::s![.., i * nvir_a..(i + 1) * nvir_a]);
             let g_i = bi.t().dot(b_b); // (nvir_a, nocc_b*nvir_b); g_i[a, J*nvir_b+B] = (ia|JB)
             let eps_i = eps_a[first_occ_a + i];
             let mut energy_i = 0.0;
-            let mut slab: Option<Vec<f64>> = if want_amplitudes {
-                Some(vec![0.0; nocc_b * nvir_a * nvir_b])
-            } else {
-                None
-            };
             for a in 0..nvir_a {
                 let eps_av = eps_a[nocc_total_a + a];
                 for jj in 0..nocc_b {
@@ -292,35 +357,15 @@ pub(crate) fn opposite_spin_pair_kernel(
                         let denom = eps_i + eps_j - eps_av - eps_bv;
                         let t_val = eri / denom;
                         energy_i += t_val * eri;
-                        if let Some(s) = slab.as_mut() {
-                            s[(jj * nvir_a + a) * nvir_b + bb_idx] = t_val;
-                        }
+                        t_i[(jj, a, bb_idx)] = t_val;
                     }
                 }
             }
-            (energy_i, slab)
-        })
-        .collect();
+            *energy_i_slot = energy_i;
+        });
 
-    let mut energy = 0.0;
-    let mut t = if want_amplitudes {
-        Some(Array4::<f64>::zeros((nocc_a, nocc_b, nvir_a, nvir_b)))
-    } else {
-        None
-    };
-    for (i, (energy_i, slab)) in partials.into_iter().enumerate() {
-        energy += energy_i;
-        if let (Some(t), Some(slab)) = (t.as_mut(), slab) {
-            for jj in 0..nocc_b {
-                for a in 0..nvir_a {
-                    for bb_idx in 0..nvir_b {
-                        t[(i, jj, a, bb_idx)] = slab[(jj * nvir_a + a) * nvir_b + bb_idx];
-                    }
-                }
-            }
-        }
-    }
-    (energy, t)
+    let energy: f64 = energies.into_iter().sum();
+    (energy, Some(t))
 }
 
 /// Build the same-spin amplitude tensor and accumulate its energy:
@@ -330,9 +375,11 @@ fn build_same_spin_amplitudes(
     inter: &RpaIntermediates,
     eps: &[f64],
 ) -> (Array4<f64>, f64) {
-    let (energy, t) = same_spin_pair_kernel(
-        &inter.b_ov, eps, inter.nocc, inter.nvir, inter.first_occ, inter.nocc_total, true,
-    );
+    let ch = SpinChannel {
+        b: &inter.b_ov, eps, nocc: inter.nocc, nvir: inter.nvir,
+        first_occ: inter.first_occ, nocc_total: inter.nocc_total,
+    };
+    let (energy, t) = same_spin_pair_kernel(ch, true);
     (t.unwrap(), energy)
 }
 
@@ -345,13 +392,15 @@ fn build_opposite_spin_amplitudes(
     eps_a: &[f64],
     eps_b: &[f64],
 ) -> (Array4<f64>, f64) {
-    let (energy, t) = opposite_spin_pair_kernel(
-        &inter_a.b_ov, &inter_b.b_ov,
-        eps_a, eps_b,
-        inter_a.nocc, inter_a.nvir, inter_a.first_occ, inter_a.nocc_total,
-        inter_b.nocc, inter_b.nvir, inter_b.first_occ, inter_b.nocc_total,
-        true,
-    );
+    let ch_a = SpinChannel {
+        b: &inter_a.b_ov, eps: eps_a, nocc: inter_a.nocc, nvir: inter_a.nvir,
+        first_occ: inter_a.first_occ, nocc_total: inter_a.nocc_total,
+    };
+    let ch_b = SpinChannel {
+        b: &inter_b.b_ov, eps: eps_b, nocc: inter_b.nocc, nvir: inter_b.nvir,
+        first_occ: inter_b.first_occ, nocc_total: inter_b.nocc_total,
+    };
+    let (energy, t) = opposite_spin_pair_kernel(ch_a, ch_b, true);
     (t.unwrap(), energy)
 }
 
@@ -524,21 +573,31 @@ pub struct UMp2GradientBlocks {
     pub ab_b:   Array2<f64>,
 }
 
+/// `budget_bytes` is the caller-resolved memory ceiling for the VVOV panel
+/// width below (threaded from the caller's already-resolved
+/// `resolve_budget_bytes(config.memory_budget_bytes)` — see
+/// `u_oo_rimp2.rs::u_oo_ri_mp2`'s single per-call resolve — rather than
+/// re-resolving the live/unconfigured default here, which would size the
+/// panel against the FULL budget while `amps`'/`b_full_a`/`b_full_b` are
+/// already co-resident with it).
 pub fn compute_u_mp2_orbital_gradient(
     amps: &UMp2Amplitudes,
     b_full_a: &Array3<f64>,
     b_full_b: &Array3<f64>,
+    budget_bytes: usize,
 ) -> (Array2<f64>, Array2<f64>) {
-    let bl = compute_u_mp2_orbital_gradient_blocks(amps, b_full_a, b_full_b);
+    let bl = compute_u_mp2_orbital_gradient_blocks(amps, b_full_a, b_full_b, budget_bytes);
     let g_a = &bl.same_a + &bl.ab_a;
     let g_b = &bl.same_b + &bl.ab_b;
     (g_a, g_b)
 }
 
+/// See [`compute_u_mp2_orbital_gradient`]'s doc for `budget_bytes`.
 pub fn compute_u_mp2_orbital_gradient_blocks(
     amps: &UMp2Amplitudes,
     b_full_a: &Array3<f64>,
     b_full_b: &Array3<f64>,
+    budget_bytes: usize,
 ) -> UMp2GradientBlocks {
     let (nocc_a, _, nvir_a, _) = amps.t_aa.dim();
     let (nocc_b, _, nvir_b, _) = amps.t_bb.dim();
@@ -619,14 +678,16 @@ pub fn compute_u_mp2_orbital_gradient_blocks(
     let mut same_b = Array2::<f64>::zeros((nvir_b, nocc_b));
     let mut ab_b   = Array2::<f64>::zeros((nvir_b, nocc_b));
 
-    // VVOV panel width from the resident-bytes budget: one c-value of a VVOV
-    // panel costs nvir·nov·8 bytes. Unset budget = one full-width panel
-    // (bit-identical to an unblocked build). We panel over the outer virtual
-    // index `c` so only a `panel_c`-wide slice of the (nvir², nov) VVOV square
-    // is resident at a time, mirroring the CS gradient.
+    // VVOV panel width from the caller-resolved resident-bytes budget: one
+    // c-value of a VVOV panel costs nvir·nov·8 bytes. We panel over the outer
+    // virtual index `c` so only a `panel_c`-wide slice of the (nvir², nov)
+    // VVOV square is resident at a time, mirroring the CS gradient. Sized
+    // against `budget_bytes` (the caller's already-resolved ceiling), NOT a
+    // fresh `resolve_budget_bytes(None)` — the live/unconfigured full budget
+    // would ignore that `amps`/`b_full_a`/`b_full_b` already occupy most of it.
     let panel_width = |nvir: usize, nov: usize| -> usize {
         let row_bytes = nvir.saturating_mul(nov).saturating_mul(8).max(1);
-        (ferric_core::memory::resolve_budget_bytes(None) / row_bytes).max(1).min(nvir.max(1))
+        (budget_bytes / row_bytes).max(1).min(nvir.max(1))
     };
 
     let nov_a = nocc_a * nvir_a;
@@ -836,9 +897,11 @@ pub fn compute_u_mp2_orbital_gradient_blocks(
 /// Same-spin contribution:
 ///   ¼ Σ_{ij,ab} [(ia|jb) - (ib|ja)]² / (ε_i+ε_j-ε_a-ε_b)
 fn same_spin_pair_energy(inter: &RpaIntermediates, eps: &[f64]) -> f64 {
-    let (energy, _) = same_spin_pair_kernel(
-        &inter.b_ov, eps, inter.nocc, inter.nvir, inter.first_occ, inter.nocc_total, false,
-    );
+    let ch = SpinChannel {
+        b: &inter.b_ov, eps, nocc: inter.nocc, nvir: inter.nvir,
+        first_occ: inter.first_occ, nocc_total: inter.nocc_total,
+    };
+    let (energy, _) = same_spin_pair_kernel(ch, false);
     energy
 }
 
@@ -851,13 +914,15 @@ fn opposite_spin_pair_energy(
     eps_b: &[f64],
 ) -> f64 {
     assert_eq!(inter_a.naux, inter_b.naux);
-    let (energy, _) = opposite_spin_pair_kernel(
-        &inter_a.b_ov, &inter_b.b_ov,
-        eps_a, eps_b,
-        inter_a.nocc, inter_a.nvir, inter_a.first_occ, inter_a.nocc_total,
-        inter_b.nocc, inter_b.nvir, inter_b.first_occ, inter_b.nocc_total,
-        false,
-    );
+    let ch_a = SpinChannel {
+        b: &inter_a.b_ov, eps: eps_a, nocc: inter_a.nocc, nvir: inter_a.nvir,
+        first_occ: inter_a.first_occ, nocc_total: inter_a.nocc_total,
+    };
+    let ch_b = SpinChannel {
+        b: &inter_b.b_ov, eps: eps_b, nocc: inter_b.nocc, nvir: inter_b.nvir,
+        first_occ: inter_b.first_occ, nocc_total: inter_b.nocc_total,
+    };
+    let (energy, _) = opposite_spin_pair_kernel(ch_a, ch_b, false);
     energy
 }
 
@@ -919,24 +984,21 @@ pub(crate) fn u_mp2_energy_fixed_eps(
     let mut e_total = 0.0;
 
     if which == "aa" || which == "all" {
-        let (e_aa, _) =
-            same_spin_pair_kernel(&b_a_ov, eps_a, nocc_a, nvir_a, 0, nocc_a, false);
+        let ch = SpinChannel { b: &b_a_ov, eps: eps_a, nocc: nocc_a, nvir: nvir_a, first_occ: 0, nocc_total: nocc_a };
+        let (e_aa, _) = same_spin_pair_kernel(ch, false);
         e_total += e_aa;
     }
 
     if which == "bb" || which == "all" {
-        let (e_bb, _) =
-            same_spin_pair_kernel(&b_b_ov, eps_b, nocc_b, nvir_b, 0, nocc_b, false);
+        let ch = SpinChannel { b: &b_b_ov, eps: eps_b, nocc: nocc_b, nvir: nvir_b, first_occ: 0, nocc_total: nocc_b };
+        let (e_bb, _) = same_spin_pair_kernel(ch, false);
         e_total += e_bb;
     }
 
     if which == "ab" || which == "all" {
-        let (e_ab, _) = opposite_spin_pair_kernel(
-            &b_a_ov, &b_b_ov, eps_a, eps_b,
-            nocc_a, nvir_a, 0, nocc_a,
-            nocc_b, nvir_b, 0, nocc_b,
-            false,
-        );
+        let ch_a = SpinChannel { b: &b_a_ov, eps: eps_a, nocc: nocc_a, nvir: nvir_a, first_occ: 0, nocc_total: nocc_a };
+        let ch_b = SpinChannel { b: &b_b_ov, eps: eps_b, nocc: nocc_b, nvir: nvir_b, first_occ: 0, nocc_total: nocc_b };
+        let (e_ab, _) = opposite_spin_pair_kernel(ch_a, ch_b, false);
         e_total += e_ab;
     }
 
@@ -1280,7 +1342,9 @@ mod tests {
         // --- Analytic gradient blocks ---
         let b_full_a = crate::oo_rimp2::compute_b_full_mo(&obs, &dfbs, op, &c_a0).unwrap();
         let b_full_b = crate::oo_rimp2::compute_b_full_mo(&obs, &dfbs, op, &c_b0).unwrap();
-        let blocks = super::compute_u_mp2_orbital_gradient_blocks(&amps, &b_full_a, &b_full_b);
+        let blocks = super::compute_u_mp2_orbital_gradient_blocks(
+            &amps, &b_full_a, &b_full_b, ferric_core::memory::resolve_budget_bytes(None),
+        );
 
         let report = |label: &str, g: &Array2<f64>, g_fd: &Array2<f64>| -> bool {
             let nfd = g_fd.iter().fold(0.0_f64, |m, v| m.max(v.abs()));

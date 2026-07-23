@@ -137,7 +137,8 @@ pub fn rimp2_gradient_analytical(
     // ov-only intermediates: the gradient/zvector pipeline never reads
     // b_oo/b_vv, so the (naux, nvir²) block is never materialized here.
     let inter = compute_mp2_intermediates_ov_only(mol, obs, dfbs, op, rhf, config)?;
-    let (z, imat) = solve_zvector(mol, obs, dfbs, op, bounds, rhf, &inter)?;
+    let budget_bytes = ferric_core::memory::resolve_budget_bytes(config.memory_budget_bytes);
+    let (z, imat) = solve_zvector(mol, obs, dfbs, op, bounds, rhf, &inter, budget_bytes)?;
     let mut grad = mp2_relaxed_lagrangian_gradient(mol, obs, op, bounds, rhf, &inter, &z, &imat)?;
     grad += &integral_response_gradient_3c2c(mol, obs, dfbs, op, &inter, rhf.mos_r())?;
     Ok(grad)
@@ -593,7 +594,8 @@ pub fn scs_mp2_gradient_analytical(
 ) -> Result<Array2<f64>, FerricError> {
     let mp2_config = RiMp2Config { frozen_core: config.frozen_core, memory_budget_bytes: config.memory_budget_bytes };
     let inter = compute_mp2_intermediates_ov_only(mol, obs, dfbs, op, rhf, &mp2_config)?;
-    let (z, imat) = solve_zvector(mol, obs, dfbs, op, bounds, rhf, &inter)?;
+    let budget_bytes = ferric_core::memory::resolve_budget_bytes(mp2_config.memory_budget_bytes);
+    let (z, imat) = solve_zvector(mol, obs, dfbs, op, bounds, rhf, &inter, budget_bytes)?;
     // Full (unscaled) RI-MP2 relaxed-Lagrangian gradient + RI 3c/2c response.
     // NOTE: external_potential is not threaded into correlated gradients (see the
     // external-potentials design doc's non-goals).

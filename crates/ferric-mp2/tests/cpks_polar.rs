@@ -271,7 +271,7 @@ fn diag_ferric_static_relaxed_dipole() {
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
     let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
     let inter = compute_mp2_intermediates(&mol, &obs, &dfbs, op, &rhf, &mp2_cfg).unwrap();
-    let (z, _l) = solve_zvector(&mol, &obs, &dfbs, op, &bounds, &rhf, &inter).unwrap();
+    let (z, _l) = solve_zvector(&mol, &obs, &dfbs, op, &bounds, &rhf, &inter, ferric_core::memory::resolve_budget_bytes(mp2_cfg.memory_budget_bytes)).unwrap();
     let p_relax = build_relaxed_density_ao(rhf.mos_r(), &inter.p_oo, &inter.p_vv, &z, &inter.orbital_space());
     let dip_ao = oneelectron::dipole(&obs, [0.0,0.0,0.0]).unwrap();
     let mut mu = [0.0f64;3];
