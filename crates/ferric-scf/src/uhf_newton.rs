@@ -54,6 +54,11 @@ pub struct UhfNewtonInputs<'a> {
     /// Optional XC-kernel response closure (None for pure UHF).
     pub fxc: Option<&'a FxcResponse<'a>>,
     pub thresh: f64,
+    /// Solver-resolved memory budget (see `rhf::resolve_three_index_budget`),
+    /// used to size the `build_jk_with_pool` reduction band via
+    /// `reduce::resolve_band_bytes` — never affects results, only the
+    /// live-set/parallel width of the deterministic reduction.
+    pub ooc_budget: usize,
 }
 
 /// One damped-Newton step on UHF/UKS MO coefficients.
@@ -169,17 +174,18 @@ pub fn hessian_matvec(
     let dd_b_ao = ao_from_ov(inp.c_b, k_b, nb, n);
 
     // δJ on δD_total; δK per spin.
+    let band_bytes = crate::reduce::resolve_band_bytes(inp.ooc_budget);
     let dd_tot = &dd_a_ao + &dd_b_ao;
     let mut dj = Array2::<f64>::zeros((n, n));
     let mut dk_dum = Array2::<f64>::zeros((n, n));
-    build_jk_with_pool(ctx, inp.prep, inp.bounds, inp.thresh, &dd_tot, &mut dj, &mut dk_dum, pool)?;
+    build_jk_with_pool(ctx, inp.prep, inp.bounds, inp.thresh, &dd_tot, &mut dj, &mut dk_dum, pool, band_bytes)?;
 
     let mut dk_a = Array2::<f64>::zeros((n, n));
     let mut dk_b = Array2::<f64>::zeros((n, n));
     let mut j_dum = Array2::<f64>::zeros((n, n));
-    build_jk_with_pool(ctx, inp.prep, inp.bounds, inp.thresh, &dd_a_ao, &mut j_dum, &mut dk_a, pool)?;
+    build_jk_with_pool(ctx, inp.prep, inp.bounds, inp.thresh, &dd_a_ao, &mut j_dum, &mut dk_a, pool, band_bytes)?;
     j_dum.fill(0.0);
-    build_jk_with_pool(ctx, inp.prep, inp.bounds, inp.thresh, &dd_b_ao, &mut j_dum, &mut dk_b, pool)?;
+    build_jk_with_pool(ctx, inp.prep, inp.bounds, inp.thresh, &dd_b_ao, &mut j_dum, &mut dk_b, pool, band_bytes)?;
 
     let c_k = inp.k_mix_sr;
     let mut df_a: Array2<f64> = &dj - &(c_k * &dk_a);

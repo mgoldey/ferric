@@ -255,6 +255,7 @@ fn uhf_hessian_matvec_matches_finite_difference() {
         k_mix_sr: 1.0, // pure HF
         fxc: None,
         thresh: 1e-12,
+        ooc_budget: ferric_core::memory::resolve_budget_bytes(None),
     };
     let pool = ferric_scf::engine_pool::EnginePool::new(bounds.op, &prep, 1e-14).unwrap();
     let (hk_a, hk_b) = ferric_scf::uhf_newton::hessian_matvec(&ctx, &inputs, &ka, &kb, &pool).unwrap();

@@ -73,6 +73,7 @@ fn rohf_ah_step_at_stationary_point_is_noop() {
         k_mix_sr: 1.0,
         fxc: None,
         thresh: 1e-12,
+        ooc_budget: ferric_core::memory::resolve_budget_bytes(None),
     };
     let ah_inputs = RohfAhInputs { base: &inputs };
 

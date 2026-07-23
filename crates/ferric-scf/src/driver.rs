@@ -142,6 +142,56 @@ pub(crate) fn density_change(d_new: &Array2<f64>, d_old: &Array2<f64>) -> (f64, 
     (rms, max)
 }
 
+/// Observational-only warning for the DIIS-history memory footprint.
+///
+/// The DIIS drivers retain up to `diis_size` (Fock, error) matrix pairs, each
+/// `n × n` `f64` — `diis_size × 2 × n² × 8` bytes total (RHF/UHF/ROHF all
+/// share this shape; UHF's coupled driver keeps separate α/β histories but
+/// the *combined* error vector is still one logical DIIS slot per iteration,
+/// so the same projection is used uniformly across all three variants rather
+/// than chasing an exact per-variant byte count — this is an observability
+/// heads-up, not a precise accounting). At `nbf=2000, diis_size=8` this is
+/// ~0.5 GB, big enough to matter against a small `ooc_budget` but usually
+/// negligible against the 3-index tensor it sits alongside.
+///
+/// Emits ONE stderr warning when the projection exceeds `ooc_budget / 4` —
+/// mirroring `ferric_core::memory::warn_if_rss_over`'s philosophy: purely
+/// observational, NEVER an error. A working job must never start failing
+/// because of this check; it only ever prints a heads-up line.
+pub(crate) fn warn_if_diis_history_large(label: &str, n: usize, diis_size: usize, ooc_budget: usize) {
+    let projected = diis_size
+        .saturating_mul(2)
+        .saturating_mul(n)
+        .saturating_mul(n)
+        .saturating_mul(std::mem::size_of::<f64>());
+    let threshold = ooc_budget / 4;
+    if projected > threshold {
+        eprintln!(
+            "ferric WARNING [{label}]: projected DIIS history {:.2} GB (diis_size={diis_size}, \
+             nbf={n}) exceeds 25% of the {:.2} GB memory budget (observability only — DIIS will \
+             still run; if this recurs, lower [scf] diis_size or raise [memory] budget_gb / \
+             FERRIC_MEM_BUDGET_GB)",
+            projected as f64 / 1e9,
+            ooc_budget as f64 / 1e9,
+        );
+    }
+}
+
+/// Stage-seam RSS safety net (mirrors the `ferric-rpa` stage-seam convention:
+/// `ferric_core::memory::warn_if_rss_over(label, ooc_budget, 1.1)`).
+///
+/// Purely observational — never a hard error — this just names the SCF
+/// variant and stage in the warning line so a recurring over-budget RSS is
+/// traceable to a specific solver/point in the run. `variant` is e.g. "RHF",
+/// "UHF", "ROHF"; `stage` is e.g. "setup" or "converged".
+pub(crate) fn warn_if_rss_over_at_stage(variant: &str, stage: &str, ooc_budget: usize) {
+    ferric_core::memory::warn_if_rss_over(
+        &format!("{variant} {stage}"),
+        ooc_budget,
+        1.1,
+    );
+}
+
 /// Diagonalize a Fock matrix in the rectangular canonical-orthogonal basis
 /// (X from `rhf::canonical_orthogonalizer`, shape n×m with m ≤ n): Fʹ = XᵀFX,
 /// C = XVʹ, padded back to (n × n) with sentinel-energy (1e6) zero columns for

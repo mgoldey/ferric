@@ -460,6 +460,7 @@ pub fn solve_uhf_fockmod(
                 k_mix_sr: if xc_contrib.is_some() { c_k } else { 1.0 },
                 fxc: fxc_ref,
                 thresh: config.integral_thresh,
+                ooc_budget,
             };
             let (c_a_n, c_b_n, _kmax) = crate::uhf_newton::uhf_newton_step(
                 ctx,

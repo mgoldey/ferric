@@ -373,7 +373,7 @@ fn solve_zvector_cg(
 
     // Full operator M·z = Δε⊙z + A·z.
     let apply = |z: &Array2<f64>| -> Result<Array2<f64>, FerricError> {
-        let mut mz = compute_az_product(c, z, prep, bounds, orb, &pool)?;
+        let mut mz = compute_az_product(c, z, prep, bounds, orb, &pool, ferric_core::memory::resolve_budget_bytes(None))?;
         for a in 0..nvir {
             for i in 0..nocc {
                 mz[(a, i)] += de(a, i) * z[(a, i)];

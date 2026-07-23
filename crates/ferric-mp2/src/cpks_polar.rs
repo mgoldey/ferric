@@ -132,7 +132,7 @@ pub(crate) fn solve_cphf_cg_scaled(
     // double-counts vs the CPHF-α Hessian — pinned vs FF-HF), 1.0 to match
     // solve_zvector's full-A Z-vector operator.
     let apply = |z: &Array2<f64>| -> Result<Array2<f64>, FerricError> {
-        let mut mz = compute_az_product(c, z, prep, bounds, orb, &pool)?;
+        let mut mz = compute_az_product(c, z, prep, bounds, orb, &pool, ferric_core::memory::resolve_budget_bytes(None))?;
         for a in 0..nvir {
             for i in 0..nocc {
                 mz[(a, i)] = ascale * mz[(a, i)] + de(a, i) * z[(a, i)];

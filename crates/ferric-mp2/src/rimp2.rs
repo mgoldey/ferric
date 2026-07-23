@@ -150,6 +150,12 @@ fn eri3_mo_block_dressed(
 /// `build_dressed_band`: each rank calls this with its own
 /// `ctx.aux_band(naux)` so the **held** dressed `B^P_{ia}` is `(band) x
 /// nocc*nvir`, not the full `naux x nocc*nvir` tensor.
+///
+/// Delegates to [`stream_dressed_mo_band`] (the canonical chunked-streaming +
+/// rayon-parallel MO transform, promoted from `oo_rimp2.rs`) restricted to the
+/// caller's `[band_p0, band_p1)` output band — this function is now a thin
+/// `(c_left, c_right) = (c_occ, c_vir)`-shaped wrapper kept for its existing
+/// callers/name.
 pub(crate) fn eri3_mo_block_dressed_band(
     src: &mut ThreeIndexSource,
     v_inv_sqrt: &Array2<f64>,
@@ -158,27 +164,107 @@ pub(crate) fn eri3_mo_block_dressed_band(
     band_p0: usize,
     band_p1: usize,
 ) -> Result<Array2<f64>, FerricError> {
+    stream_dressed_mo_band(src, v_inv_sqrt, c_left, c_right, Some((band_p0, band_p1)))
+}
+
+/// Below this per-chunk work size (`qc * nleft * nright`, the number of scalar
+/// multiply-adds the per-q GEMM pair touches) the per-q MO-transform loop runs
+/// serially — rayon dispatch overhead swamps the win on small jobs. Measured
+/// (min-of-5, release, 12-core/loaded box, originally in `oo_rimp2.rs` before
+/// this streamer was promoted to a shared module): at qc=116, nao=nmo=24
+/// (water/cc-pVDZ scale, work=116*24²=66,816) serial 368µs vs rayon 283µs —
+/// a real but noisy ~1.3x win with a long rayon tail under contention. At
+/// qc=256, nao=nmo=80 (work=256*80²=1,638,400) serial 19.4ms vs rayon
+/// 7.2ms — a clean ~2.7x win. The threshold sits an order of magnitude above
+/// the small-noisy point and well below the large-clean-win point.
+pub(crate) const PAR_MO_TRANSFORM_WORK_THRESHOLD: usize = 200_000;
+
+/// Aux-row chunk for the streamed MO transform + metric dressing. Caps the
+/// MO-transformed transient at `MO_STREAM_CHUNK · width · 8` bytes regardless
+/// of the raw source's block size (the in-core backend serves one block
+/// spanning all of naux, which would otherwise reintroduce a full-size
+/// transient). 256 keeps the dressing GEMM's inner dimension wide (k = 256)
+/// while bounding the panel.
+pub(crate) const MO_STREAM_CHUNK: usize = 256;
+
+/// Canonical streamed + dressed MO 3-index tensor builder: `B^P_{pq} = Σ_Q
+/// V^{-1/2}[P,Q] · (c_left^T (Q|μν) c_right)[pq]`, generalizing
+/// `oo_rimp2.rs::compute_b_full_mo_with` (formerly hardcoded to `c_left ==
+/// c_right == c`, the full-MO square) to arbitrary `(c_left, c_right)` and an
+/// optional output aux-band restriction.
+///
+/// Streams raw AO aux-blocks from `src` (which may itself be budget-bounded /
+/// disk-spilled), MO-transforms each in chunks of at most [`MO_STREAM_CHUNK`]
+/// aux rows (BLAS3: `half = (B^Q_AO)·c_right`, then `c_left^T·half`, rayon-
+/// parallel across chunk rows above [`PAR_MO_TRANSFORM_WORK_THRESHOLD`]), and
+/// dresses each chunk into the output with `V^{-1/2}` on the fly (in place,
+/// `beta=1` — no second full-size copy). Exactness: the same contraction as
+/// `v_inv_sqrt.dot(transform_3center(eri3_tensor(..), c_left, c_right))`,
+/// reordered per aux-block, not approximated.
+///
+/// `output_band`: `Some((band_p0, band_p1))` restricts the returned tensor to
+/// those GLOBAL output aux rows (shape `(band_p1-band_p0, nleft*nright)`) —
+/// `src` must still stream the FULL raw `[0, naux)` range (the dressing sum
+/// runs over every raw aux index regardless of which output band is kept),
+/// but the caller (e.g. MPI RI-MP2, one rank per band) never holds more than
+/// its own band. `None` returns the full `(naux, nleft*nright)` tensor.
+///
+/// `pub` (not `pub(crate)`) so `ferric-gw::mo_b` can share this exact
+/// streaming+dressing implementation for its full-active-MO-square `MoB`
+/// build (see that module's `build_mo_b_from_source`) instead of maintaining
+/// a second copy of the same chunked-streaming logic.
+pub fn stream_dressed_mo_band(
+    src: &mut ThreeIndexSource,
+    v_inv_sqrt: &Array2<f64>,
+    c_left: &Array2<f64>,
+    c_right: &Array2<f64>,
+    output_band: Option<(usize, usize)>,
+) -> Result<Array2<f64>, FerricError> {
+    let naux = src.naux();
+    let (band_p0, band_p1) = output_band.unwrap_or((0, naux));
+    let band = band_p1 - band_p0;
     let nleft = c_left.ncols();
     let nright = c_right.ncols();
     let width = nleft * nright;
-    let band = band_p1 - band_p0;
+
     let mut b_flat = Array2::<f64>::zeros((band, width));
     src.for_each_block(|blk| {
         let qb = blk.data.shape()[0];
-        // MO-transform this raw aux-block: mo[q, pq] = c_left^T (Q|μν) c_right.
-        let mut mo_blk = Array2::<f64>::zeros((qb, width));
-        for q in 0..qb {
-            let bq_ao = blk.data.slice(ndarray::s![q, .., ..]);
-            let tmp = bq_ao.dot(c_right); // (nao, nright)
-            let bq_mo = c_left.t().dot(&tmp); // (nleft, nright)
-            mo_blk
-                .slice_mut(ndarray::s![q, ..])
-                .assign(&bq_mo.into_shape_with_order(width).unwrap());
+        let mut q0 = 0;
+        while q0 < qb {
+            let q1 = (q0 + MO_STREAM_CHUNK).min(qb);
+            let qc = q1 - q0;
+            // MO-transform this chunk: mo[q, pq] = c_left^T (Q|μν) c_right
+            // (BLAS3 per q). Each q owns a disjoint output row and reads only
+            // its own AO slab, so above the work threshold this fans out over
+            // rayon; BLAS stays at its ambient (serial, OPENBLAS_NUM_THREADS=1)
+            // count inside each closure — never raised under rayon.
+            let mut mo_blk = Array2::<f64>::zeros((qc, width));
+            let mo_transform_row = |q: usize, mut row: ndarray::ArrayViewMut1<f64>| {
+                let bq_ao = blk.data.slice(ndarray::s![q0 + q, .., ..]);
+                let half = bq_ao.dot(c_right); // (nao, nright)
+                let bq_mo = c_left.t().dot(&half); // (nleft, nright)
+                row.assign(&bq_mo.into_shape_with_order(width).unwrap());
+            };
+            if qc * width < PAR_MO_TRANSFORM_WORK_THRESHOLD {
+                for q in 0..qc {
+                    mo_transform_row(q, mo_blk.slice_mut(ndarray::s![q, ..]));
+                }
+            } else {
+                use rayon::prelude::*;
+                ndarray::Zip::indexed(mo_blk.axis_iter_mut(ndarray::Axis(0)))
+                    .into_par_iter()
+                    .for_each(|(q, row)| mo_transform_row(q, row));
+            }
+            // Dress into only the requested output band, accumulating in place
+            // (beta=1): b_flat[P-band_p0, pq] += V^{-1/2}[band, Qchunk] · mo_blk.
+            let msub = v_inv_sqrt.slice(ndarray::s![
+                band_p0..band_p1,
+                blk.p0 + q0..blk.p0 + q1
+            ]);
+            ndarray::linalg::general_mat_mul(1.0, &msub, &mo_blk, 1.0, &mut b_flat);
+            q0 = q1;
         }
-        // Dress into only the band's output aux rows, accumulating in place
-        // (beta=1): b_flat[P-band_p0, pq] += V^{-1/2}[band_p0..band_p1, Qblock] · mo_blk.
-        let msub = v_inv_sqrt.slice(ndarray::s![band_p0..band_p1, blk.p0..blk.p0 + qb]);
-        ndarray::linalg::general_mat_mul(1.0, &msub, &mo_blk, 1.0, &mut b_flat);
         Ok(())
     })?;
     Ok(b_flat)

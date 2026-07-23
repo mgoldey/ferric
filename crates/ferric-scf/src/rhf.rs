@@ -415,6 +415,7 @@ pub fn solve_rhf(
     // pure-Pulay driver whose `step` is byte-identical to `Diis::step`;
     // ADIIS/EDIIS activate only when a caller opts in.
     let mut diis = DiisDriver::new(config.diis_flavor, config.diis_size, config.diis_switch_thresh);
+    crate::driver::warn_if_diis_history_large("RHF", n, config.diis_size, ooc_budget);
     // MOM reference: last accepted occupied MO block (None until armed).
     let mut mom_ref: Option<Array2<f64>> = None;
     // Convergence bookkeeping (prev energy, carried ΔP signals, divergence
@@ -562,6 +563,8 @@ pub fn solve_rhf(
     } else {
         None
     };
+
+    crate::driver::warn_if_rss_over_at_stage("RHF", "setup", ooc_budget);
 
     for iter in 1..=config.max_iter {
         ctx.check_interrupted()?;
@@ -738,6 +741,7 @@ pub fn solve_rhf(
                 }
                 let (orb_e, c) = diagonalize(&f, &x)?;
                 let density_alpha = 0.5 * &d;
+                crate::driver::warn_if_rss_over_at_stage("RHF", "converged", ooc_budget);
                 return Ok(ScfResult {
                     spin: Spin::Restricted,
                     energy,
@@ -802,6 +806,7 @@ pub fn solve_rhf(
                 k_mix_sr: if xc_contrib.is_some() { k_mix.sr } else { 1.0 },
                 fxc: fxc_ref,
                 thresh: config.integral_thresh,
+                ooc_budget,
             };
             let (c_new, _kmax) = crate::rhf_newton::rhf_newton_step(
                 ctx,
@@ -936,19 +941,25 @@ pub fn build_jk(
     k: &mut Array2<f64>,
 ) -> Result<usize, FerricError> {
     let pool = crate::engine_pool::EnginePool::new(bounds.op, prep, 1e-14)?;
-    build_jk_with_pool(ctx, prep, bounds, thresh, d, j, k, &pool)
+    build_jk_with_pool(ctx, prep, bounds, thresh, d, j, k, &pool, crate::reduce::default_band_bytes())
 }
 
 /// Same as [`build_jk`], but takes a caller-supplied [`crate::engine_pool::EnginePool`]
-/// instead of constructing one internally.
+/// instead of constructing one internally, and an explicit `band_bytes` live-set
+/// budget for the deterministic reduction (see `reduce::resolve_band_bytes`).
 ///
 /// `EnginePool` construction is geometry/basis-only (density-independent), so
 /// it is safe — and, for repeat callers, important for performance — to build
 /// it ONCE outside a Hessian-vector-product / CG loop and reuse it across
 /// calls on the same `(prep, bounds.op)`. Reduction order (grouped
 /// deterministic sum over shell-pair groups) is unchanged from `build_jk` and
-/// does not depend on the pool, so results stay bit-identical across thread
-/// counts either way.
+/// does not depend on the pool OR on `band_bytes`, so results stay bit-identical
+/// across thread counts AND across any choice of `band_bytes` — this parameter
+/// affects ONLY the live-set/parallel width of the reduction, never the result
+/// (see `reduce.rs` module docs). Repeat-callers that have a solver-resolved
+/// `ooc_budget` in scope should pass `reduce::resolve_band_bytes(ooc_budget)`
+/// instead of the env/auto-resolved `reduce::default_band_bytes()`, so the
+/// TOML/config budget actually governs this scratch too.
 #[allow(clippy::too_many_arguments)]
 pub fn build_jk_with_pool(
     ctx: &ParallelContext,
@@ -959,6 +970,7 @@ pub fn build_jk_with_pool(
     j: &mut Array2<f64>,
     k: &mut Array2<f64>,
     pool: &crate::engine_pool::EnginePool,
+    band_bytes: usize,
 ) -> Result<usize, FerricError> {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1033,9 +1045,11 @@ pub fn build_jk_with_pool(
 
     let mut total_j = Array2::<f64>::zeros((nbf, nbf));
     let mut total_k = Array2::<f64>::zeros((nbf, nbf));
-    // No solver-resolved budget is plumbed into this helper (Newton/test path);
-    // fall back to the env/auto-resolved unified budget.
-    let band_bytes = crate::reduce::default_band_bytes();
+    // `band_bytes` is now an explicit parameter (see doc above): callers with
+    // a solver-resolved `ooc_budget` pass `reduce::resolve_band_bytes(ooc_budget)`;
+    // the plain `build_jk` wrapper and other no-budget callers pass
+    // `reduce::default_band_bytes()` (env/auto-resolved), preserving the old
+    // behavior byte-for-byte.
     crate::reduce::grouped_deterministic_sum_pair(&mut total_j, &mut total_k, n_groups, nbf, band_bytes, |g| {
         let lo = g * group_size;
         let hi = (lo + group_size).min(n_pairs);

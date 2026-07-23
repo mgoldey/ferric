@@ -173,33 +173,15 @@ pub fn compute_b_full_mo(
     compute_b_full_mo_with(&ao, c)
 }
 
-/// Aux-row chunk for the streamed MO transform + metric dressing. Caps the
-/// MO-transformed transient at `MO_CHUNK · width · 8` bytes regardless of the
-/// raw source's block size (the in-core backend serves one block spanning all
-/// of naux, which would otherwise reintroduce a full-size transient). 256 keeps
-/// the dressing GEMM's inner dimension wide (k = 256) while bounding the panel.
-const MO_CHUNK: usize = 256;
-
-/// Below this per-chunk work size (`qc * nmo²`, the number of scalar
-/// multiply-adds the per-q GEMM pair touches) the per-q MO-transform loop
-/// runs serially — rayon dispatch overhead swamps the win on small jobs.
-/// Measured (min-of-5, release, 12-core/loaded box): at qc=116, nao=nmo=24
-/// (water/cc-pVDZ scale, work=116*24²=66,816) serial 368µs vs rayon 283µs —
-/// a real but noisy ~1.3x win with a long rayon tail under contention. At
-/// qc=256, nao=nmo=80 (work=256*80²=1,638,400) serial 19.4ms vs rayon
-/// 7.2ms — a clean ~2.7x win. The threshold sits an order of magnitude above
-/// the small-noisy point and well below the large-clean-win point.
-const PAR_MO_TRANSFORM_WORK_THRESHOLD: usize = 200_000;
-
 /// Full-MO 3-center B tensor from pre-built AO invariants.
 ///
-/// Memory: streams raw AO aux-blocks from the budgeted [`ThreeIndexSource`],
-/// MO-transforms them in chunks of at most [`MO_CHUNK`] aux rows (BLAS3:
-/// half = (B^Q_AO)·C, then C^T·half), and dresses each chunk into the output
-/// with `V^{-1/2}` on the fly. The output `(naux, nmo, nmo)` tensor is
-/// allocated once; the transient is one `(≤MO_CHUNK, nmo²)` panel. This removes
-/// the former 2× peak (the resident full `eri3_mo` AND its `b_flat` copy held
-/// simultaneously during the metric GEMM).
+/// Delegates to the shared canonical streamer
+/// [`crate::rimp2::stream_dressed_mo_band`] with `c_left = c_right = c` (the
+/// full-MO square this function has always computed) and no output-band
+/// restriction. That function is the chunked-aux-streaming + rayon-parallel
+/// MO transform this function originated (see its doc for the memory/exactness
+/// contract: one `(naux, nmo, nmo)` output tensor, transient bounded to one
+/// `(≤256, nmo²)` panel, dressed in place with no second full-size copy).
 ///
 /// Exactness: `b_full[P,p,q] = Σ_Q V^{-1/2}[P,Q] · (C^T (Q|μν) C)[p,q]`, the
 /// same contraction as before — reordered, not approximated.
@@ -209,53 +191,16 @@ pub fn compute_b_full_mo_with(
 ) -> Result<Array3<f64>, FerricError> {
     let naux = ao.naux();
     let nmo = c.ncols();
-
-    let mut b_full = Array3::<f64>::zeros((naux, nmo, nmo));
-    let m = &ao.v2c_inv_sqrt;
-    ao.eri3_ao.borrow_mut().for_each_block(|blk| {
-        let qb = blk.data.shape()[0];
-        let mut q0 = 0;
-        while q0 < qb {
-            let q1 = (q0 + MO_CHUNK).min(qb);
-            let qc = q1 - q0;
-            // MO-transform this chunk: mo[q,p,r] = C^T (Q|μν) C  (BLAS3 per q).
-            // Each q owns a disjoint output row and reads only its own AO
-            // slab, so above the work threshold this fans out over rayon
-            // (mirrors mo_transform.rs::transform_3center's per-P pattern);
-            // BLAS stays at its ambient (serial, OPENBLAS_NUM_THREADS=1)
-            // count inside each closure — never raised under rayon.
-            let mut mo_blk = Array2::<f64>::zeros((qc, nmo * nmo));
-            let mo_transform_row = |q: usize, mut row: ndarray::ArrayViewMut1<f64>| {
-                let bq_ao = blk.data.slice(ndarray::s![q0 + q, .., ..]);
-                let half = bq_ao.dot(c); // (nao, nmo)
-                let bq_mo = c.t().dot(&half); // (nmo, nmo)
-                row.assign(&bq_mo.into_shape_with_order(nmo * nmo).unwrap());
-            };
-            if qc * nmo * nmo < PAR_MO_TRANSFORM_WORK_THRESHOLD {
-                for q in 0..qc {
-                    mo_transform_row(q, mo_blk.slice_mut(ndarray::s![q, ..]));
-                }
-            } else {
-                use rayon::prelude::*;
-                ndarray::Zip::indexed(mo_blk.axis_iter_mut(ndarray::Axis(0)))
-                    .into_par_iter()
-                    .for_each(|(q, row)| mo_transform_row(q, row));
-            }
-            // Dress into every output aux row, accumulating IN PLACE (beta=1):
-            //   b_full[:, p, q] += V^{-1/2}[:, Qchunk] · mo_blk.
-            // general_mat_mul writes straight into b_full — no (naux, nmo²)
-            // `contrib` allocation, which would itself be a second full copy.
-            let msub = m.slice(ndarray::s![.., blk.p0 + q0..blk.p0 + q1]);
-            let mut b_flat = b_full
-                .view_mut()
-                .into_shape_with_order((naux, nmo * nmo))
-                .unwrap();
-            ndarray::linalg::general_mat_mul(1.0, &msub, &mo_blk, 1.0, &mut b_flat);
-            q0 = q1;
-        }
-        Ok(())
-    })?;
-    Ok(b_full)
+    let b_flat = crate::rimp2::stream_dressed_mo_band(
+        &mut ao.eri3_ao.borrow_mut(),
+        &ao.v2c_inv_sqrt,
+        c,
+        c,
+        None,
+    )?;
+    Ok(b_flat
+        .into_shape_with_order((naux, nmo, nmo))
+        .map_err(|e| FerricError::General(format!("compute_b_full_mo_with reshape: {e}")))?)
 }
 
 /// Compute the RI-MP2 energy for a given set of MO coefficients.
@@ -270,51 +215,20 @@ fn compute_rimp2_with_orbitals(
     orb: &OrbitalSpace,
 ) -> Result<(f64, Array2<f64>), FerricError> {
     let OrbitalSpace { nocc, nocc_total, first_occ, nvir } = *orb;
-    let naux = ao.naux();
 
     let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
     let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
 
-    // MO transform (P|μν) -> (P|ia) and dress with V^{-1/2} on the fly, streaming
-    // raw AO aux-blocks in ≤MO_CHUNK-row chunks.
+    // MO transform (P|μν) -> (P|ia) and dress with V^{-1/2} on the fly, via the
+    // shared canonical streamer (see `compute_b_full_mo_with`'s doc):
     //   b_flat[P, ia] = Σ_Q V^{-1/2}[P,Q] (C_occ^T (Q|μν) C_vir)[ia]
-    // The dressing GEMM accumulates in place (beta=1); the peak transient is one
-    // (≤MO_CHUNK, nocc·nvir) MO panel, never a second full-size copy.
-    let nov = nocc * nvir;
-    let mut b_flat = Array2::<f64>::zeros((naux, nov));
-    let m = &ao.v2c_inv_sqrt;
-    ao.eri3_ao.borrow_mut().for_each_block(|blk| {
-        let qb = blk.data.shape()[0];
-        let mut q0 = 0;
-        while q0 < qb {
-            let q1 = (q0 + MO_CHUNK).min(qb);
-            let qc = q1 - q0;
-            let mut mo_blk = Array2::<f64>::zeros((qc, nov));
-            // Disjoint per-q rows; same rayon-above-threshold gate as
-            // compute_b_full_mo_with (mirrors mo_transform.rs::transform_3center).
-            let mo_transform_row = |q: usize, mut row: ndarray::ArrayViewMut1<f64>| {
-                let bq_ao = blk.data.slice(ndarray::s![q0 + q, .., ..]);
-                // (P|ia) = C_occ^T (Q|μν) C_vir
-                let tmp = bq_ao.dot(&c_vir); // (nao, nvir)
-                let bq_mo = c_occ.t().dot(&tmp); // (nocc, nvir)
-                row.assign(&bq_mo.into_shape_with_order(nov).unwrap());
-            };
-            if qc * nov < PAR_MO_TRANSFORM_WORK_THRESHOLD {
-                for q in 0..qc {
-                    mo_transform_row(q, mo_blk.slice_mut(ndarray::s![q, ..]));
-                }
-            } else {
-                use rayon::prelude::*;
-                ndarray::Zip::indexed(mo_blk.axis_iter_mut(ndarray::Axis(0)))
-                    .into_par_iter()
-                    .for_each(|(q, row)| mo_transform_row(q, row));
-            }
-            let msub = m.slice(ndarray::s![.., blk.p0 + q0..blk.p0 + q1]);
-            ndarray::linalg::general_mat_mul(1.0, &msub, &mo_blk, 1.0, &mut b_flat);
-            q0 = q1;
-        }
-        Ok(())
-    })?;
+    let b_flat = crate::rimp2::stream_dressed_mo_band(
+        &mut ao.eri3_ao.borrow_mut(),
+        &ao.v2c_inv_sqrt,
+        &c_occ,
+        &c_vir,
+        None,
+    )?;
 
     // MP2 energy via i-blocked wide GEMMs (same path as the main RI-MP2 lane).
     let sc = crate::rimp2::spin_components_from_b_ov(
@@ -324,6 +238,12 @@ fn compute_rimp2_with_orbitals(
 }
 
 /// Build the HF energy from MO coefficients + 1e integrals + J/K.
+///
+/// `ooc_budget` is the caller's solver-resolved memory budget (see
+/// `rhf::resolve_three_index_budget`) — used ONLY to size the
+/// `build_jk_with_pool` reduction band (`reduce::resolve_band_bytes`), never
+/// affecting the result.
+#[allow(clippy::too_many_arguments)]
 fn compute_hf_energy(
     mol: &Molecule,
     prep: &PreparedBasis,
@@ -332,6 +252,7 @@ fn compute_hf_energy(
     nocc_total: usize,
     h: &Array2<f64>,
     pool: &EnginePool,
+    ooc_budget: usize,
 ) -> Result<(f64, Array2<f64>, Array2<f64>), FerricError> {
     let n = prep.nbasis();
 
@@ -351,7 +272,8 @@ fn compute_hf_energy(
     let mut j_mat = Array2::zeros((n, n));
     let mut k_mat = Array2::zeros((n, n));
     let ctx = ferric_core::parallel::ParallelContext::default();
-    build_jk_with_pool(&ctx, prep, bounds, 1e-12, &d, &mut j_mat, &mut k_mat, pool)?;
+    let band_bytes = ferric_scf::reduce::resolve_band_bytes(ooc_budget);
+    build_jk_with_pool(&ctx, prep, bounds, 1e-12, &d, &mut j_mat, &mut k_mat, pool, band_bytes)?;
 
     // F = H + J - 0.5*K
     let f = h + &j_mat - &(0.5 * &k_mat);
@@ -1133,7 +1055,7 @@ pub fn oo_ri_mp2(
     let mut c = rhf.mos_r().clone();
 
     // Initial energies
-    let (mut e_hf, mut f_ao, _d) = compute_hf_energy(mol, obs, bounds, &c, nocc_total, &h, &pool)?;
+    let (mut e_hf, mut f_ao, _d) = compute_hf_energy(mol, obs, bounds, &c, nocc_total, &h, &pool, budget_bytes)?;
     let mut eps = orbital_energies(&c, &f_ao);
     let (mut e_mp2, mut b_ov) = compute_rimp2_with_orbitals(&ao, &c, &eps, &orb)?;
     let mut total_energy = e_hf + e_mp2;
@@ -1266,7 +1188,7 @@ pub fn oo_ri_mp2(
 
         // Evaluate energy at the new (possibly DIIS-extrapolated) orbitals
         let (ehf, fao, _d) =
-            compute_hf_energy(mol, obs, bounds, &c_new, nocc_total, &h, &pool)?;
+            compute_hf_energy(mol, obs, bounds, &c_new, nocc_total, &h, &pool, budget_bytes)?;
         let epsnew = orbital_energies(&c_new, &fao);
         let (emp2, bov) = compute_rimp2_with_orbitals(&ao, &c_new, &epsnew, &orb)?;
         let total_new = ehf + emp2;
@@ -1299,7 +1221,7 @@ pub fn oo_ri_mp2(
                 let u2 = cayley_rotation(&k)?;
                 bt_c = c.dot(&u2);
                 let (eh, fa, _) =
-                    compute_hf_energy(mol, obs, bounds, &bt_c, nocc_total, &h, &pool)?;
+                    compute_hf_energy(mol, obs, bounds, &bt_c, nocc_total, &h, &pool, budget_bytes)?;
                 let en = orbital_energies(&bt_c, &fa);
                 let (em, bo) = compute_rimp2_with_orbitals(&ao, &bt_c, &en, &orb)?;
                 bt_total = eh + em;
@@ -1413,7 +1335,7 @@ pub fn energy_at_kappa(
     let u = cayley_rotation(kappa)?;
     let c_rot = c_init.dot(&u);
     let pool = EnginePool::new(bounds.op, obs, 1e-14)?;
-    let (e_hf, f_ao, _) = compute_hf_energy(mol, obs, bounds, &c_rot, nocc_total, &h, &pool)?;
+    let (e_hf, f_ao, _) = compute_hf_energy(mol, obs, bounds, &c_rot, nocc_total, &h, &pool, ferric_core::memory::resolve_budget_bytes(None))?;
     let eps = orbital_energies(&c_rot, &f_ao);
     let (e_mp2, _) = compute_rimp2_with_orbitals(&ao, &c_rot, &eps, orb)?;
     Ok(e_hf + e_mp2)
@@ -1554,7 +1476,7 @@ mod tests {
         let h = oneelectron::hcore(&obs);
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let pool = EnginePool::new(op, &obs, 1e-14).unwrap();
-        let (_e_hf, f_ao, _) = compute_hf_energy(&_mol, &obs, &bounds, c, nocc_total, &h, &pool).unwrap();
+        let (_e_hf, f_ao, _) = compute_hf_energy(&_mol, &obs, &bounds, c, nocc_total, &h, &pool, ferric_core::memory::resolve_budget_bytes(None)).unwrap();
         let eps = orbital_energies(c, &f_ao);
         let (_e, b_flat) = compute_rimp2_with_orbitals(&ao, c, &eps, &orb).unwrap();
 
@@ -1596,7 +1518,7 @@ mod tests {
         let h = oneelectron::hcore(&obs);
         let ao = OoRiMp2AoTensors::build(&obs, &dfbs, op).unwrap();
         let pool = EnginePool::new(op, &obs, 1e-14).unwrap();
-        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h, &pool).unwrap();
+        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h, &pool, ferric_core::memory::resolve_budget_bytes(None)).unwrap();
         let eps = orbital_energies(c, &f_ao);
         let (_e, b_flat) = compute_rimp2_with_orbitals(&ao, c, &eps, &orb).unwrap();
 
@@ -1728,7 +1650,7 @@ mod tests {
         let h = oneelectron::hcore(&obs);
         let ao = OoRiMp2AoTensors::build(&obs, &dfbs, op).unwrap();
         let pool = EnginePool::new(op, &obs, 1e-14).unwrap();
-        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h, &pool).unwrap();
+        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h, &pool, ferric_core::memory::resolve_budget_bytes(None)).unwrap();
         let eps = orbital_energies(c, &f_ao);
         let (_e_mp2, b_ov) = compute_rimp2_with_orbitals(&ao, c, &eps, &orb).unwrap();
 
@@ -1860,7 +1782,7 @@ mod tests {
         let h = oneelectron::hcore(&obs);
         let ao = OoRiMp2AoTensors::build(&obs, &dfbs, op).unwrap();
         let pool = EnginePool::new(op, &obs, 1e-14).unwrap();
-        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h, &pool).unwrap();
+        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h, &pool, ferric_core::memory::resolve_budget_bytes(None)).unwrap();
         let eps = orbital_energies(c, &f_ao);
         let (_e_mp2, b_ov) = compute_rimp2_with_orbitals(&ao, c, &eps, &orb).unwrap();
 
@@ -1995,7 +1917,7 @@ mod tests {
         let h = oneelectron::hcore(&obs);
         let ao = OoRiMp2AoTensors::build(&obs, &dfbs, op).unwrap();
         let pool = EnginePool::new(op, &obs, 1e-14).unwrap();
-        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h, &pool).unwrap();
+        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h, &pool, ferric_core::memory::resolve_budget_bytes(None)).unwrap();
         let eps = orbital_energies(c, &f_ao);
         let (_e_mp2, b_ov) = compute_rimp2_with_orbitals(&ao, c, &eps, &orb).unwrap();
         let naux = dfbs.nbasis();
@@ -2270,7 +2192,7 @@ mod tests {
 
         // MP2 energy + b_ov identical.
         let pool = EnginePool::new(op, &obs, 1e-14).unwrap();
-        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h, &pool).unwrap();
+        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h, &pool, ferric_core::memory::resolve_budget_bytes(None)).unwrap();
         let eps = orbital_energies(c, &f_ao);
         let (e_ref, bov_ref) = compute_rimp2_with_orbitals(&ao_ref, c, &eps, &orb).unwrap();
         let (e_spill, bov_spill) = compute_rimp2_with_orbitals(&ao_spill, c, &eps, &orb).unwrap();
@@ -2296,7 +2218,7 @@ mod tests {
         let h = oneelectron::hcore(&obs);
         let ao = OoRiMp2AoTensors::build(&obs, &dfbs, op).unwrap();
         let pool = EnginePool::new(op, &obs, 1e-14).unwrap();
-        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h, &pool).unwrap();
+        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h, &pool, ferric_core::memory::resolve_budget_bytes(None)).unwrap();
         let eps = orbital_energies(c, &f_ao);
         let (_e, b_ov) = compute_rimp2_with_orbitals(&ao, c, &eps, &orb).unwrap();
         let (t2, _) = compute_t2_and_integrals(&b_ov, &eps, nocc, nvir, nocc_total, first_occ, naux);
@@ -2365,11 +2287,11 @@ mod tests {
         // at least one of the two loops, so the test is exercising the branch
         // it claims to.
         let naux = ao.naux();
-        let qc_full = naux.min(MO_CHUNK);
+        let qc_full = naux.min(crate::rimp2::MO_STREAM_CHUNK);
         let nov = nocc_total * nvir;
         assert!(
-            qc_full * nbas * nbas >= PAR_MO_TRANSFORM_WORK_THRESHOLD
-                || qc_full * nov >= PAR_MO_TRANSFORM_WORK_THRESHOLD,
+            qc_full * nbas * nbas >= crate::rimp2::PAR_MO_TRANSFORM_WORK_THRESHOLD
+                || qc_full * nov >= crate::rimp2::PAR_MO_TRANSFORM_WORK_THRESHOLD,
             "test fixture too small to exercise Region 2 rayon branch: \
              qc={qc_full} nbas={nbas} nov={nov}"
         );
@@ -2467,7 +2389,7 @@ mod tests {
         let h = oneelectron::hcore(&obs);
         let ao = OoRiMp2AoTensors::build(&obs, &dfbs, op).unwrap();
         let pool = EnginePool::new(op, &obs, 1e-14).unwrap();
-        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h, &pool).unwrap();
+        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h, &pool, ferric_core::memory::resolve_budget_bytes(None)).unwrap();
         let eps = orbital_energies(c, &f_ao);
         let (_e, b_ov) = compute_rimp2_with_orbitals(&ao, c, &eps, &orb).unwrap();
         let (t2, _) = compute_t2_and_integrals(&b_ov, &eps, nocc, nvir, nocc_total, first_occ, naux);

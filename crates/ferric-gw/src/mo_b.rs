@@ -170,16 +170,16 @@ fn build_full_b_with_mos(
 
 /// Build MoB from an aux-blocked AO source and V^{-1/2}.
 ///
-/// Peak resident footprint is a single dressed MO tensor `b_full`
-/// (naux, n_act, n_act) — the old path held both the raw MO tensor `eri3_mm`
-/// and the dressed `b_flat` simultaneously (2× peak) and sourced the AO tensor
-/// as a dense (naux, nbf, nbf) array (~37 GB at dimer/aTZ). Here:
-///   1. the MO tensor is accumulated aux-block by aux-block from the streamed AO
-///      source (each AO block ≤ budget; the block MO transform is a small GEMM),
-///   2. the V^{-1/2} dressing `b_full[:, mn] = V^{-1/2} · eri3_mm[:, mn]` mixes
-///      all aux rows but is independent per (m,n) pair-column, so it is applied
-///      IN PLACE over pair-column panels — the single MO buffer is dressed
-///      without a second full-size allocation.
+/// Delegates the streamed-transform-and-dress step to the shared canonical
+/// streamer [`ferric_mp2::rimp2::stream_dressed_mo_band`] (promoted from
+/// `oo_rimp2.rs::compute_b_full_mo_with`) with `c_left = c_right = c_act` (the
+/// full active-MO square this function has always computed) and no output-band
+/// restriction. That function's peak footprint is the SAME single dressed
+/// `(naux, n_act, n_act)` tensor `guard_b_full` guards (the transient row-chunk
+/// MO panel it streams through is `(≤256, n_act²)`, smaller than or comparable
+/// to this function's former `(naux, cblk)` column-panel temp at typical
+/// scales — in both cases dwarfed by the one big buffer the guard actually
+/// accounts for) — so the documented peak-memory bound is unchanged.
 fn build_mo_b_from_source(
     ao_src: &mut ThreeIndexSource,
     v_inv_sqrt: &Array2<f64>,
@@ -211,53 +211,12 @@ fn build_mo_b_from_source(
 
     let c_act = c.slice(s![.., frozen_core..nmo]).to_owned();
 
-    // 1. Accumulate the raw MO tensor eri3_mm[(P,m,n)] aux-block by aux-block.
-    //    For each AO panel (block_naux, nbf, nbf): B^P_mn = C_actᵀ B^P_AO C_act.
-    //    Call-path proof: `for_each_block` (three_index_source.rs) is a plain
-    //    serial iterator — no rayon anywhere inside it — and this function is
-    //    only reached from the top-level/serial callers cited above. Wrapping
-    //    the whole block loop (not each GEMM) in one with_blas_threads scope
-    //    avoids per-block set/restore overhead.
-    let mut eri3_mm = Array3::<f64>::zeros((naux, n_act, n_act));
-    with_blas_threads(opt_in_blas_threads(), || -> Result<(), FerricError> {
-        ao_src.for_each_block(|blk| {
-            let p0 = blk.p0;
-            let bnaux = blk.data.shape()[0];
-            for pl in 0..bnaux {
-                let bp_ao = blk.data.slice(s![pl, .., ..]);
-                let tmp = bp_ao.dot(&c_act); // (nbf, n_act)
-                let bp_mo = c_act.t().dot(&tmp); // (n_act, n_act)
-                eri3_mm.slice_mut(s![p0 + pl, .., ..]).assign(&bp_mo);
-            }
-            Ok(())
-        })
+    let b_flat = with_blas_threads(opt_in_blas_threads(), || {
+        ferric_mp2::rimp2::stream_dressed_mo_band(ao_src, v_inv_sqrt, &c_act, &c_act, None)
     })?;
-
-    // 2. Dress in place over pair-column panels: b_full[:, c] = V^{-1/2} · eri3_mm[:, c].
-    //    Output column `c` depends only on input column `c` (all aux rows), so we
-    //    compute a small (naux, cblk) temp and write it back into eri3_mm[:, c] —
-    //    no second full-size (naux, n_act²) allocation. The panel while-loop
-    //    itself is deliberately serial (M5 memory bound: only one (naux,cblk)
-    //    temp lives at a time) — BLAS threads on the wide (naux×naux)·(naux×cblk)
-    //    GEMM is the right lever here, not rayon over panels. Same call-path
-    //    proof as step 1 above (no enclosing rayon region on any caller).
-    let npair = n_act * n_act;
-    let mut mm_flat = eri3_mm
-        .view_mut()
-        .into_shape_with_order((naux, npair))
-        .map_err(|e| FerricError::General(format!("reshape failed: {e}")))?;
-    // Column-panel width: bound the temp (naux × cblk × 8) to ~256 MB, ≥1.
-    let cblk = (256_usize * 1024 * 1024 / (naux.max(1) * 8)).clamp(1, npair.max(1));
-    with_blas_threads(opt_in_blas_threads(), || {
-        let mut c0 = 0;
-        while c0 < npair {
-            let c1 = (c0 + cblk).min(npair);
-            let dressed = v_inv_sqrt.dot(&mm_flat.slice(s![.., c0..c1])); // (naux, c1-c0)
-            mm_flat.slice_mut(s![.., c0..c1]).assign(&dressed);
-            c0 = c1;
-        }
-    });
-    let b_full = eri3_mm; // now holds the dressed tensor
+    let b_full = b_flat
+        .into_shape_with_order((naux, n_act, n_act))
+        .map_err(|e| FerricError::General(format!("build_full_b reshape: {e}")))?;
 
     let eps_act = eps_full[frozen_core..nmo].to_vec();
 

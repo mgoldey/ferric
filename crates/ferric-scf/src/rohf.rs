@@ -532,6 +532,7 @@ pub fn solve_rohf(
                 k_mix_sr: if k_mix.omega > 0.0 { 0.0 } else { c_k },
                 fxc: fxc_ref,
                 thresh: config.integral_thresh,
+                ooc_budget,
             };
             let ah_inputs = crate::rohf_ah::RohfAhInputs { base: &inputs };
             let (c_new, _kmax) = crate::rohf_ah::rohf_ah_step(
@@ -581,6 +582,7 @@ pub fn solve_rohf(
                 k_mix_sr: if k_mix.omega > 0.0 { 0.0 } else { c_k },
                 fxc: fxc_ref,
                 thresh: config.integral_thresh,
+                ooc_budget,
             };
             let (c_new, _kmax) = crate::rohf_newton::rohf_newton_step(
                 ctx, &inputs,

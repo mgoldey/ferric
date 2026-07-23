@@ -143,7 +143,7 @@ pub fn solve_zvector(
         // 0.5). The MP2 Z-vector Hessian is `Δε·z + (2J−K)·z`, so the matvec must be
         // scaled by ½ here (mirrors cpks_polar.rs's `ascale=0.5` for the same
         // symmetric-density double-count).
-        let az = 0.5 * &compute_az_product(c, &z, prep, bounds, &orb, &pool)?;
+        let az = 0.5 * &compute_az_product(c, &z, prep, bounds, &orb, &pool, ferric_core::memory::resolve_budget_bytes(None))?;
 
         let mut residual = Array2::zeros((nvir, nocc));
         let mut max_resid = 0.0f64;
@@ -419,6 +419,12 @@ pub(crate) fn build_imat_ri(
 /// `pub(crate)` so the finite-field α driver (`ff_polar`) can reuse this exact
 /// matvec inside a CG solver — the production gradient's `solve_zvector` is
 /// unchanged (this is a visibility-only change, no behavioral effect).
+///
+/// `ooc_budget` sizes the `build_jk_with_pool` reduction band
+/// (`ferric_scf::reduce::resolve_band_bytes`) only — never affects the
+/// result. Callers with no solver-resolved budget in scope pass
+/// `ferric_core::memory::resolve_budget_bytes(None)`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn compute_az_product(
     c: &Array2<f64>,
     z: &Array2<f64>,
@@ -426,6 +432,7 @@ pub(crate) fn compute_az_product(
     bounds: &SchwarzBounds,
     orb: &OrbitalSpace,
     pool: &EnginePool,
+    ooc_budget: usize,
 ) -> Result<Array2<f64>, FerricError> {
     let OrbitalSpace { nocc, nvir, nocc_total, first_occ } = *orb;
     let n = c.nrows();
@@ -448,7 +455,8 @@ pub(crate) fn compute_az_product(
     let mut jz = Array2::zeros((n, n));
     let mut kz = Array2::zeros((n, n));
     let ctx = ferric_core::parallel::ParallelContext::default();
-    build_jk_with_pool(&ctx, prep, bounds, 1e-12, &dz, &mut jz, &mut kz, pool)?;
+    let band_bytes = ferric_scf::reduce::resolve_band_bytes(ooc_budget);
+    build_jk_with_pool(&ctx, prep, bounds, 1e-12, &dz, &mut jz, &mut kz, pool, band_bytes)?;
 
     // The A*z product in AO: A_AO = 4*J(D^z) - K(D^z) - K(D^z)^T
     let az_ao = 4.0 * &jz - &kz - &kz.t();
