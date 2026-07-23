@@ -15,7 +15,7 @@ path = "src/main.rs"
 
 [[bin]]
 name = "ferric"
-path = "src/main.rs"
+path = "src/bin/ferric.rs"
 
 [[bin]]
 name = "ferric-batch"

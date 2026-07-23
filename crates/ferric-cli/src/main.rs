@@ -110,7 +110,7 @@ fn warn_if_epistemically_unproven(method: &str) {
     }
 }
 
-fn main() {
+pub fn main() {
     // Safe-by-default threading: pin OpenBLAS to 1 thread (rayon owns ferric's
     // parallelism) unless the user explicitly set OPENBLAS_NUM_THREADS. Without
     // this, running the release binary directly oversubscribes rayon × BLAS.

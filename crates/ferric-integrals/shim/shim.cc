@@ -47,7 +47,10 @@ struct scf_engine {
     double                          omega = 0.0;
     double                          precision = 1e-14;
     int                             max_L = 0;
-    std::shared_ptr<TerfcTableSet>  terfc_tables;
+    // Explicit null default so aggregate-init sites (scf_engine{...}) that
+    // omit trailing members compile clean under -Wmissing-field-initializers
+    // (value-init already produced null; this only silences the warning).
+    std::shared_ptr<TerfcTableSet>  terfc_tables = nullptr;
 };
 
 static std::atomic<int> libint_init_count{0};
