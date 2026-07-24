@@ -490,6 +490,17 @@ pub fn solve_rhf(
     // iterations so a max_iter exit can still report eps/MOs for the final density.
     let mut last_eps: Vec<f64> = Vec::new();
     let mut last_c: Array2<f64> = Array2::zeros((n, n));
+    // Bare occupied MO coefficients (C_occ, the lowest `nocc` columns) that
+    // produced the CURRENT `d`, used to drive the O(naux·n²·nocc) DF-K
+    // half-transform instead of the O(naux·n³) density contraction. Since
+    // `D = 2·C_occ·C_occᵀ` and K is linear in D, `K(D) = 2·K(C_occ·C_occᵀ)`; the
+    // factor 2 is applied to the RETURNED K (exact power-of-2, no √2 rounding),
+    // so `build_from_occ(C_occ)` then `×2` reproduces K(D) up to the B-vs-D
+    // reassociation floor only. `None` when no MO-factored density is available:
+    // the initial guess (iter 1, `d` is a raw SAD/hcore density with no C_occ)
+    // and the Fermi-smearing path (`D = C·diag(2f)·Cᵀ` is not a plain rank-nocc
+    // `C·Cᵀ` product). Those iters fall back to the density-based `build`.
+    let mut d_occ: Option<Array2<f64>> = None;
     // Fermi-Dirac smearing state (μ, occupations, entropy) from the most recent
     // smeared density rebuild; `None` when smearing is off (default). Used only
     // for optional free-energy trace reporting.
@@ -569,7 +580,18 @@ pub fn solve_rhf(
                 total_quartets += dj.build(&d, &mut j_buf)?;
             }
             if let Some(dfk) = df_k.as_mut() {
-                dfk.build(&d, &mut k_buf)?;
+                // Prefer the O(naux·n²·nocc) C_occ half-transform when the
+                // current density factors as `D = 2·C_occ·C_occᵀ` (available
+                // from iter ≥ 2 in the default non-smearing path). K is linear in
+                // D, so build K(C_occ·C_occᵀ) and double it (exact ×2). The guess
+                // iteration and the smearing path fall back to the O(naux·n³)
+                // density contraction.
+                if let Some(c_occ) = d_occ.as_ref() {
+                    dfk.build_from_occ(c_occ, &mut k_buf)?;
+                    k_buf *= 2.0;
+                } else {
+                    dfk.build(&d, &mut k_buf)?;
+                }
             } else if let Some(dk) = direct_k.as_mut() {
                 // Only reached when exact exchange is consumed (k_consumed):
                 // for pure DFT `direct_k` is None and k_buf stays zero, since
@@ -603,7 +625,7 @@ pub fn solve_rhf(
             let dfk_sr = dfk_sr.as_mut().expect("dfk_sr built when omega>0");
             let dfk_lr = dfk_lr.as_mut().expect("dfk_lr built when omega>0");
             crate::fock_assembly::subtract_rsh_exchange(
-                dfk_sr, dfk_lr, &d, &mut f, k_mix.sr, k_mix.lr, 0.5,
+                dfk_sr, dfk_lr, &d, d_occ.as_ref(), 2.0, &mut f, k_mix.sr, k_mix.lr, 0.5,
             )?;
         } else if k_mix.sr > 0.0 {
             // Plain hybrid or pure HF: K already built by the builder path above.
@@ -807,6 +829,9 @@ pub fn solve_rhf(
 
             // Rebuild density D = 2·C_occ·C_occᵀ and record ΔP for convergence.
             let c_occ = c_new.slice(ndarray::s![.., ..nocc]);
+            // Cache bare C_occ for the next iteration's DF-K half-transform (the
+            // Newton path never smears, so D is always a plain rank-nocc C·Cᵀ).
+            d_occ = Some(c_occ.to_owned());
             let d_new = with_blas_threads(opt_in_blas_threads(), || 2.0 * c_occ.dot(&c_occ.t()));
             mon.record_density_change(&d_new, &d);
             d.assign(&d_new);
@@ -873,6 +898,9 @@ pub fn solve_rhf(
             Some(sigma) if sigma > 0.0 => {
                 let sm = crate::smearing::solve_fermi_level(&last_eps, nelec as f64, sigma, 2.0)?;
                 last_smearing = Some(sm.clone());
+                // Fractional occupations: D is not a plain rank-nocc C·Cᵀ, so the
+                // DF-K half-transform can't represent it — force the density path.
+                d_occ = None;
                 with_blas_threads(opt_in_blas_threads(), || {
                     let mut c_weighted = c.clone();
                     for (i, &focc) in sm.occupations.iter().enumerate() {
@@ -884,6 +912,9 @@ pub fn solve_rhf(
             }
             _ => {
                 let c_occ = c.slice(ndarray::s![.., ..nocc]);
+                // Cache bare C_occ so the next iteration's DF-K uses the cheap
+                // half-transform (K(D) = 2·K(C_occ·C_occᵀ), factor applied to K).
+                d_occ = Some(c_occ.to_owned());
                 with_blas_threads(opt_in_blas_threads(), || 2.0 * c_occ.dot(&c_occ.t()))
             }
         };

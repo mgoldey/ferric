@@ -130,10 +130,27 @@ pub(crate) fn build_rsh_dfk_pair<'a>(
 /// and by 0.5 an exact exponent shift, so no rounding is introduced. Only two
 /// K-sized scratch matrices are live (allocated here, dropped on return) —
 /// never a retained k_total clone.
+///
+/// `c_occ`: when `Some`, the BARE occupied MO coefficients with
+/// `D = occ_factor · c_occ·c_occᵀ`; both SR and LR exchange are then contracted
+/// via the O(naux·n²·nocc) DF-K half-transform ([`KBuilder::build_from_occ`])
+/// instead of the O(naux·n³) density path, and the linear factor `occ_factor` is
+/// folded into the Fock scale (`build_from_occ` returns K for `c_occ·c_occᵀ`;
+/// K is linear in D so K(D) = occ_factor·K(c_occ·c_occᵀ)). `occ_factor` is 2.0
+/// for the closed-shell restricted density (`D = 2·C_occ·C_occᵀ`) and 1.0 for a
+/// per-spin UHF/ROHF density (`D_σ = C_occ,σ·C_occ,σᵀ`). Applying the factor to
+/// the Fock scale (an exact power-of-2) rather than pre-scaling C avoids a √2
+/// rounding on the coefficients. `None` (guess iteration / smearing, where `D`
+/// is not a plain `C·Cᵀ`) uses the density-based [`KBuilder::build`] with the
+/// factor already baked into `d`. Both routes contract the same fitted B and
+/// agree to the DF-K reassociation floor.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn subtract_rsh_exchange(
     dfk_sr: &mut DfK,
     dfk_lr: &mut DfK,
     d: &Array2<f64>,
+    c_occ: Option<&Array2<f64>>,
+    occ_factor: f64,
     f: &mut Array2<f64>,
     c_sr: f64,
     c_lr: f64,
@@ -141,14 +158,25 @@ pub(crate) fn subtract_rsh_exchange(
 ) -> Result<(), FerricError> {
     let n = f.nrows();
     let mut k_sr = Array2::<f64>::zeros((n, n));
-    dfk_sr.build(d, &mut k_sr)?;
     let mut k_lr = Array2::<f64>::zeros((n, n));
-    dfk_lr.build(d, &mut k_lr)?;
-    // In-place: k_sr *= c_sr; k_sr += c_lr·k_lr; f −= scale·k_sr. Same
+    // Effective Fock scale: the density path bakes the occupation factor into
+    // `d`, so it uses `scale` directly; the occ path builds K for c_occ·c_occᵀ
+    // and folds `occ_factor` in here (scale·occ_factor is exact for the 0.5 / 1.0
+    // / 2.0 powers of two used by RHF/UHF/ROHF).
+    let eff_scale = if let Some(c) = c_occ {
+        dfk_sr.build_from_occ(c, &mut k_sr)?;
+        dfk_lr.build_from_occ(c, &mut k_lr)?;
+        scale * occ_factor
+    } else {
+        dfk_sr.build(d, &mut k_sr)?;
+        dfk_lr.build(d, &mut k_lr)?;
+        scale
+    };
+    // In-place: k_sr *= c_sr; k_sr += c_lr·k_lr; f −= eff_scale·k_sr. Same
     // element-wise association as `c_sr*&k_sr + c_lr*&k_lr` followed by
-    // `f.scaled_add(-scale, &k_total)` — bit-identical, no `k_total` temp.
+    // `f.scaled_add(-eff_scale, &k_total)` — no `k_total` temp.
     k_sr *= c_sr;
     k_sr.scaled_add(c_lr, &k_lr);
-    f.scaled_add(-scale, &k_sr);
+    f.scaled_add(-eff_scale, &k_sr);
     Ok(())
 }

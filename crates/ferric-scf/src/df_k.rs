@@ -159,8 +159,11 @@ impl<'a> DfK<'a> {
     }
 }
 
-impl KBuilder for DfK<'_> {
-    fn build(&mut self, d: &Array2<f64>, k: &mut Array2<f64>) -> Result<usize, FerricError> {
+impl DfK<'_> {
+    /// Density-based exchange contraction (O(naux·n³)); see [`KBuilder::build`].
+    /// Kept as an inherent method so both the trait `build` and the C_occ-based
+    /// `build_from_occ` share one struct-level definition.
+    fn build_impl(&mut self, d: &Array2<f64>, k: &mut Array2<f64>) -> Result<usize, FerricError> {
         let n = self.dressed.nao();
         k.fill(0.0);
         // Aux-chunk width: wide enough that the (n, c·n)×(c·n, n) contraction
@@ -231,6 +234,129 @@ impl KBuilder for DfK<'_> {
         // MPI: `build` accumulated only this rank's aux-band contribution to K
         // (K = Σ_P B_P D B_Pᵀ is a plain sum over P, and bands are disjoint).
         // Sum the per-rank partial K matrices → the full K on every rank.
+        self.reduce_k_across_ranks(k);
+
+        Ok(0)
+    }
+
+    /// Build K from occupied MO coefficients via an O(naux·n²·nocc)
+    /// half-transform, replacing the O(naux·n³) density contraction in [`build`].
+    ///
+    /// With `D = C_occ · C_occᵀ` the two-pass exchange
+    ///   K[μ,ν] = Σ_{P,λ,σ} B[P,μ,λ] D[λ,σ] B[P,ν,σ]
+    /// factorises through the half-transformed intermediate
+    ///   M[P,μ,i] = Σ_λ B[P,μ,λ] C[λ,i]   (the RI-MP2 AO→MO half-transform shape)
+    ///   K[μ,ν]  = Σ_{P,i} M[P,μ,i] M[P,ν,i].
+    /// Because `nocc ≪ n` at production basis sizes, both passes cost
+    /// O(naux·n²·nocc) instead of O(naux·n³) — the whole point of threading
+    /// `C_occ` through the API rather than the assembled density.
+    ///
+    /// Determinism, banding, and the MPI aux-band reduction are handled exactly
+    /// as in [`build`] (the grouped ascending-chunk fold pins the fold order
+    /// across thread counts; the outer-product `M Mᵀ` is symmetric by
+    /// construction).
+    fn build_from_occ_impl(
+        &mut self,
+        c_occ: &Array2<f64>,
+        k: &mut Array2<f64>,
+    ) -> Result<usize, FerricError> {
+        let n = self.dressed.nao();
+        if c_occ.nrows() != n {
+            return Err(FerricError::General(format!(
+                "DfK::build_from_occ: c_occ rows ({}) != nao ({})",
+                c_occ.nrows(),
+                n
+            )));
+        }
+        // Test-only escape hatch: force the O(naux·n³) density path even though
+        // C_occ was supplied, so a regression test can run the *identical* SCF
+        // both ways and assert the energies agree to the DF-K reassociation
+        // floor (see df_k_occ_path_matches_density_path_scf_energy). Never set in
+        // production; the fast path is the default whenever C_occ is available.
+        if std::env::var_os("FERRIC_DFK_FORCE_DENSITY").is_some() {
+            let d = c_occ.dot(&c_occ.t());
+            return self.build_impl(&d, k);
+        }
+        let nocc = c_occ.ncols();
+        k.fill(0.0);
+        // nocc == 0 (e.g. an empty β channel): K is identically zero. The GEMMs
+        // below are well-defined at nocc = 0 but do no work; short-circuit to
+        // avoid a zero-width reshape edge case.
+        if nocc == 0 {
+            self.reduce_k_across_ranks(k);
+            return Ok(0);
+        }
+
+        // Aux-chunk width: same BLAS3-efficiency vs per-task-scratch tradeoff as
+        // `build`, but the half-transform scratch scales with nocc, not n, so the
+        // trailing GEMM operand is (c·nocc) wide.
+        let chunk = (4096 / n.max(1)).clamp(4, 64);
+        self.dressed.for_each_block(|blk| {
+            let b = blk.data.shape()[0];
+            let n_chunks = b.div_ceil(chunk);
+            let band_bytes = crate::reduce::resolve_band_bytes(self.budget_bytes);
+            crate::reduce::grouped_deterministic_sum(
+                k,
+                n_chunks,
+                n,
+                band_bytes,
+                |ci| -> Result<Array2<f64>, FerricError> {
+                    let q0 = ci * chunk;
+                    let q1 = (q0 + chunk).min(b);
+                    let c = q1 - q0;
+                    let bchunk = blk.data.slice(ndarray::s![q0..q1, .., ..]);
+
+                    // M[μ,P,i] = Σ_λ B[P,μ,λ] · C[λ,i] as one (c·n, n)×(n, nocc)
+                    // GEMM on the (μ,P,λ)-repacked chunk, so (P,i) comes out as
+                    // the contiguous trailing axis pair. This is the O(naux·n²·nocc)
+                    // half-transform (nocc ≪ n), replacing the O(naux·n³) contraction
+                    // of B against the full (n,n) density in `build`.
+                    let mut bswap = Array3::<f64>::zeros((n, c, n));
+                    bswap.assign(&bchunk.permuted_axes([1, 0, 2]));
+                    let bswap_flat = bswap
+                        .into_shape_with_order((n * c, n))
+                        .map_err(|e| FerricError::General(format!("B repack reshape: {e}")))?;
+                    let mut m = Array2::<f64>::zeros((n * c, nocc));
+                    general_mat_mul(1.0, &bswap_flat, c_occ, 0.0, &mut m);
+                    // m is [μ,(c,nocc)] contiguous → view as [μ,(P,i)] wide, and
+                    // as [(μ,P),i] tall (for the transposed-side operand below).
+                    let m3 = m
+                        .into_shape_with_order((n, c, nocc))
+                        .map_err(|e| FerricError::General(format!("M reshape: {e}")))?;
+
+                    // K_chunk[μ,ν] = Σ_{P,i} M[μ,(P,i)] · Mᵀ[(P,i),ν].
+                    // Left operand: M as (n, c·nocc). Right operand: the same M
+                    // repacked to ((P,i), ν) = (c·nocc, n), i.e. Mᵀ over the μ↔ν
+                    // legs. One wide (n, c·nocc)×(c·nocc, n) GEMM, mirroring the
+                    // two-wide-GEMM shape of `build`.
+                    let m_wide = m3
+                        .view()
+                        .into_shape_with_order((n, c * nocc))
+                        .map_err(|e| FerricError::General(format!("M wide reshape: {e}")))?
+                        .to_owned();
+                    // Mt[(P,i),ν] = M[ν,(P,i)]: permute μ to the trailing axis.
+                    let mut mt = Array3::<f64>::zeros((c, nocc, n));
+                    mt.assign(&m3.permuted_axes([1, 2, 0]));
+                    let mt_flat = mt
+                        .into_shape_with_order((c * nocc, n))
+                        .map_err(|e| FerricError::General(format!("Mt reshape: {e}")))?;
+                    let mut kc = Array2::<f64>::zeros((n, n));
+                    general_mat_mul(1.0, &m_wide, &mt_flat, 0.0, &mut kc);
+                    Ok(kc)
+                },
+            )?;
+            Ok(())
+        })?;
+
+        self.reduce_k_across_ranks(k);
+        Ok(0)
+    }
+
+    /// MPI aux-band reduction shared by [`build`] and [`build_from_occ_impl`]:
+    /// each rank holds only its disjoint aux band, so the partial K matrices sum
+    /// to the full K on every rank. No-op without the `mpi` feature or a
+    /// single-rank context.
+    fn reduce_k_across_ranks(&self, k: &mut Array2<f64>) {
         #[cfg(feature = "mpi")]
         if let Some(ctx) = self.ctx {
             use mpi::traits::CommunicatorCollectives;
@@ -244,8 +370,22 @@ impl KBuilder for DfK<'_> {
                 *k = k_global;
             }
         }
+        #[cfg(not(feature = "mpi"))]
+        let _ = k;
+    }
+}
 
-        Ok(0)
+impl KBuilder for DfK<'_> {
+    fn build(&mut self, d: &Array2<f64>, k: &mut Array2<f64>) -> Result<usize, FerricError> {
+        self.build_impl(d, k)
+    }
+
+    fn build_from_occ(
+        &mut self,
+        c_occ: &Array2<f64>,
+        k: &mut Array2<f64>,
+    ) -> Result<usize, FerricError> {
+        self.build_from_occ_impl(c_occ, k)
     }
 
     fn update_density(&mut self, _d: &Array2<f64>) {}
@@ -488,6 +628,103 @@ mod tests {
             result.energy,
             result.energy.to_bits()
         );
+    }
+
+    #[test]
+    fn df_k_build_from_occ_matches_density_build() {
+        // Correctness gate for the C_occ half-transform: build_from_occ(C) must
+        // reproduce build(D) with D = C·Cᵀ to machine precision — they contract
+        // the SAME dressed B tensor, just in a different (mathematically
+        // identical) order, so the residual is pure floating-point reassociation.
+        let mol = Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n", 0, 1)
+            .unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let dfbs =
+            PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let n = obs.nbasis();
+        let nocc = 5; // water: 5 doubly-occupied MOs
+
+        // A deterministic (n, nocc) "C_occ" — need not be orthonormal for the
+        // algebraic equivalence K[C] == K[C·Cᵀ] to hold.
+        let mut c_occ = Array2::<f64>::zeros((n, nocc));
+        for mu in 0..n {
+            for i in 0..nocc {
+                c_occ[(mu, i)] = 0.1 * (((mu * 3 + i * 7) % 13) as f64 - 6.0);
+            }
+        }
+        let d = c_occ.dot(&c_occ.t());
+
+        let mut dfk = DfK::new(op, &obs, &dfbs, usize::MAX).unwrap();
+
+        let mut k_density = Array2::zeros((n, n));
+        dfk.build(&d, &mut k_density).unwrap();
+
+        let mut k_occ = Array2::zeros((n, n));
+        dfk.build_from_occ(&c_occ, &mut k_occ).unwrap();
+
+        let max_diff: f64 = (&k_occ - &k_density).iter().map(|v| v.abs()).fold(0.0, f64::max);
+        assert!(
+            max_diff < 1e-10,
+            "build_from_occ vs build(D=C·Cᵀ) max diff = {max_diff} too large"
+        );
+    }
+
+    #[test]
+    fn df_k_build_from_occ_bit_identical_across_thread_counts() {
+        // The C_occ path must inherit the same deterministic-fold guarantee as
+        // `build`: bit-identical K regardless of RAYON_NUM_THREADS.
+        let mol = Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n", 0, 1)
+            .unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let dfbs =
+            PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let n = obs.nbasis();
+        let nocc = 5;
+
+        let mut c_occ = Array2::<f64>::zeros((n, nocc));
+        for mu in 0..n {
+            for i in 0..nocc {
+                c_occ[(mu, i)] = 0.05 * (((mu * 5 + i * 3) % 17) as f64 - 8.0);
+            }
+        }
+
+        let build_k = |threads: usize| -> Array2<f64> {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            pool.install(|| {
+                let mut k = Array2::zeros((n, n));
+                let mut dfk = DfK::new(op, &obs, &dfbs, usize::MAX).unwrap();
+                dfk.build_from_occ(&c_occ, &mut k).unwrap();
+                k
+            })
+        };
+        let k1 = build_k(1);
+        let k4 = build_k(4);
+        assert_eq!(
+            k1, k4,
+            "build_from_occ must be bit-identical across thread counts"
+        );
+    }
+
+    #[test]
+    fn df_k_build_from_occ_zero_nocc_is_zero() {
+        // Empty channel (e.g. UHF β with zero β electrons): K must be exactly zero.
+        let mol = Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n", 0, 1)
+            .unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let dfbs =
+            PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let n = obs.nbasis();
+        let c_occ = Array2::<f64>::zeros((n, 0));
+        let mut dfk = DfK::new(op, &obs, &dfbs, usize::MAX).unwrap();
+        let mut k = Array2::from_elem((n, n), 1.0);
+        dfk.build_from_occ(&c_occ, &mut k).unwrap();
+        assert!(k.iter().all(|&v| v == 0.0), "K must be exactly zero for nocc=0");
     }
 
     #[test]
