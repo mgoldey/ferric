@@ -965,7 +965,13 @@ fn run_pdep_rpa_arm(
             // consume the inverse-dielectric stack rebuild their own
             // dielectric, so energy-only here is correct (M9 gate).
             need_inv_dielectric_freq: false,
-            need_eigenvalues_freq: true,
+            // Verified: this arm reads only `e_rpa`, `e_rpa_dft_diag`, and
+            // `eigenpotentials` off the RPA result — never `eigenvalues_freq`.
+            // The NPZ export calls properties::pdep_polarizability_*, which run
+            // their own PDEP-RPA with their own configs and so are unaffected.
+            // Opting out skips the per-frequency diagonalization and takes the
+            // LU log-det path for the correlation energy.
+            need_eigenvalues_freq: false,
             verbose: cfg.scf.verbose,
         };
         // For open-shell molecules (multiplicity > 1) re-run with UHF + MOM so
