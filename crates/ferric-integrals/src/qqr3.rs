@@ -212,8 +212,26 @@ impl QqrBounds3 {
         // integral is dominated by the penetration region where the 1/R decay
         // has not set in, so the factor falls back to 1 (Schwarz).
         let r_eff = (r - ext_sum).max(0.0);
+        // SAFETY_FACTOR: the bare `ext_sum/r_eff` monopole envelope is NOT a
+        // rigorous upper bound — it decays slightly faster than the true
+        // integral in the near-intermediate zone (r ≈ 2.4·ext_sum), where the
+        // dipole/quadrupole terms the monopole model omits are still
+        // appreciable. MEASURED on 797_568 shell triples across
+        // alkane_6/water/benzene at cc-pVDZ + cc-pVDZ-RI, erfc(0.222): the
+        // uncorrected form under-estimates by up to 5.9% (worst |true|/bound =
+        // 1.059, 16 violating triples on alkane_6 alone, all at r = 3.65 with
+        // decay ≈ 0.61–0.71 — neither the contact nor the asymptotic regime).
+        // A flat 1.10 multiplier restores validity with the least distortion of
+        // the envelope's shape: worst ratio falls to 0.9998 while bounds inflate
+        // only 4.9% on average. Alternatives scanned and rejected as more
+        // expensive for the same validity: exponent softening to 0.85 (+6.5%),
+        // mult 1.05 with exponent 0.95 (+4.7%, two tuned constants instead of
+        // one). Note 0.9998 is the floor for EVERY valid variant, so some triple
+        // is genuinely tight here — this is not over-conservative padding.
+        // Re-derive with benchmarks if the extent/center definitions change.
+        const SAFETY_FACTOR: f64 = 1.10;
         let decay = if r_eff > 0.0 {
-            (ext_sum / r_eff).min(1.0)
+            (SAFETY_FACTOR * ext_sum / r_eff).min(1.0)
         } else {
             1.0
         };
