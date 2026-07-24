@@ -237,6 +237,18 @@ pub(crate) fn diagonalize_rect(
     let m = x.ncols();
     let (evals, c_kept) = with_blas_threads(opt_in_blas_threads(), || {
         let f_prime = x.t().dot(f).dot(x);
+        // NOTE: this every-SCF-iteration Fock diagonalization deliberately keeps
+        // the QR-algorithm `.eigh()` (dsyev_) rather than the faster
+        // divide-and-conquer `ferric_core::linalg::eigh_dc` (dsyevd_). Both give
+        // identical eigenvalues, but they pick DIFFERENT (equally valid)
+        // eigenvectors inside degenerate subspaces (e.g. methane/Td triply-
+        // degenerate MOs). Those eigenvectors feed the density matrix, and the
+        // dsyevd choice pushes symmetric molecules into a fixed point where ΔP
+        // limit-cycles just above the 1e-8 density-convergence gate (B3LYP/CH4:
+        // energy still correct to 1.1e-8 Ha, but ladder_converged=false). The
+        // eigenvector-consuming SCF convergence path is therefore NOT a safe
+        // place to swap eigensolvers; eigenvalue-only consumers (RPA dielectric
+        // sweeps) are, and use eigh_dc/eigvalsh_dc. See the linalg module doc.
         let (evals, evecs) = f_prime.eigh(ndarray_linalg::UPLO::Upper)?;
         let c_kept = x.dot(&evecs); // (n × m)
         Ok::<_, ndarray_linalg::error::LinalgError>((evals, c_kept))

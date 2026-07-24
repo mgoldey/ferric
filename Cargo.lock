@@ -452,8 +452,11 @@ dependencies = [
 name = "ferric-core"
 version = "0.1.0"
 dependencies = [
+ "lapack-sys",
  "mpi",
  "ndarray",
+ "ndarray-linalg",
+ "openblas-src",
  "rayon",
  "serde",
  "serde_json",

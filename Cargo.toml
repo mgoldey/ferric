@@ -78,6 +78,7 @@ opt-level = 2
 ndarray = "0.16"
 ndarray-linalg = { version = "0.17", features = ["openblas-system"] }
 openblas-src = { version = "0.10", features = ["system", "rustls"] }
+lapack-sys = "0.14"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

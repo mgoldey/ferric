@@ -81,7 +81,7 @@ mod inner {
     use ferric_core::FerricError;
     use ferric_integrals::blas_threads::with_blas_threads;
     use ndarray::Array2;
-    use ndarray_linalg::{Eigh, Inverse, UPLO};
+    use ndarray_linalg::Inverse;
     use rayon::prelude::*;
 
     /// MPI-distributed variant of [`crate::energy::eval_eigenvalues_at_frequencies`].
@@ -127,10 +127,17 @@ mod inner {
                     let omega = quad_freqs[k];
                     let scale = build_scale_factors(eps_occ, eps_vir, omega);
                     let eps_proj = dielectric_matrix_from_projection(&y, &scale);
-                    let (evals, _) = eps_proj
-                        .eigh(UPLO::Upper)
-                        .map_err(|e| dielectric_lapack_err("dielectric eigh failed", e))?;
-                    Ok((k, evals.to_vec()))
+                    // Eigenvalue-only divide-and-conquer solver (dsyevd_): only the
+                    // spectrum is consumed (eigenvectors discarded), and eigenvalues
+                    // are identical to `.eigh()` — so this is a safe, faster swap
+                    // (validated in ferric_core::linalg tests). Runs once per
+                    // quadrature point per rank.
+                    let evals = ferric_core::linalg::eigvalsh_dc(
+                        &eps_proj,
+                        ferric_core::linalg::Uplo::Upper,
+                    )
+                    .map_err(|e| dielectric_lapack_err("dielectric eigh failed", e))?;
+                    Ok((k, evals))
                 })
                 .collect::<Result<Vec<(usize, Vec<f64>)>, FerricError>>()
         })?;
