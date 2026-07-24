@@ -279,3 +279,121 @@ pub fn eigvalsh_dc(a: &Array2<f64>, uplo: Uplo) -> Result<Vec<f64>, FerricError>
 
     Ok(evals)
 }
+
+/// `ln det(A)` for a real matrix with a **positive** determinant, via LU
+/// factorization (`dgetrf_`).
+///
+/// # Why this exists
+///
+/// The RPA correlation energy is a *trace* functional of the dielectric
+/// matrix: `Σ_α [ln λ_α + (1 − λ_α)]`. Both terms are basis-invariant, so the
+/// individual eigenvalues are never needed — `Σ_α ln λ_α ≡ ln det(ε)` and
+/// `Σ_α (1 − λ_α) ≡ tr(I − ε)` (the trace is available for free from the
+/// diagonal). LU is ~2/3·n³ flops versus ~4/3·n³ for the eigenvalue-only
+/// divide-and-conquer `dsyevd_`, so routing the energy through this function
+/// roughly halves the diagonalization slice of the quadrature loop. This is
+/// the same formulation PySCF uses (`pyscf/gw/rpa.py`: `np.log(np.linalg.det(
+/// ...))`).
+///
+/// # Layout note
+///
+/// Unlike [`eigh_dc`]/[`eigvalsh_dc`], `dgetrf_` reads the **whole** matrix,
+/// not one triangle — so the row-major/column-major distinction matters in
+/// general. It does not matter for the intended caller: `det(Aᵀ) = det(A)`,
+/// and reinterpreting a row-major buffer as column-major *is* transposition.
+/// So `ln det` is identical either way, for symmetric AND non-symmetric input,
+/// and this function copies the buffer straight across without transposing.
+/// (Pivoting differs between A and Aᵀ, but the signed determinant does not.)
+///
+/// # Sign handling
+///
+/// `det(A) = (−1)^(#row swaps) · Π_i U_ii`. A physically-sensible dielectric
+/// matrix at imaginary frequency is positive-definite, so every `U_ii > 0` and
+/// the determinant is positive. If the accumulated sign comes out negative, or
+/// any `U_ii` is exactly zero (`info > 0`, exactly singular), `ln det` is not a
+/// real number: this returns [`FerricError::Lapack`] rather than silently
+/// producing `NaN`/`-inf`. A non-finite result likewise errors — a NaN/Inf
+/// dielectric (e.g. from a near-degenerate reference poisoning χ₀) must surface
+/// as `Err`, per the repo's dielectric-solve reliability convention.
+pub fn logdet_lu(a: &Array2<f64>) -> Result<f64, FerricError> {
+    let (nrows, ncols) = a.dim();
+    if nrows != ncols {
+        return Err(FerricError::Lapack(format!(
+            "logdet_lu: matrix must be square, got {nrows}x{ncols}"
+        )));
+    }
+    let n = nrows;
+    if n == 0 {
+        // det(empty) = 1 by convention → ln det = 0.
+        return Ok(0.0);
+    }
+
+    // Straight buffer copy (no transpose): see the layout note above — LAPACK
+    // sees Aᵀ, and det(Aᵀ) = det(A).
+    let mut buf: Vec<f64> = Vec::with_capacity(n * n);
+    for row in a.rows() {
+        buf.extend(row.iter().copied());
+    }
+
+    let n_i = n as c_int;
+    let mut ipiv: Vec<c_int> = vec![0; n];
+    let mut info: c_int = 0;
+
+    unsafe {
+        lapack_sys::dgetrf_(
+            &n_i,
+            &n_i,
+            buf.as_mut_ptr(),
+            &n_i,
+            ipiv.as_mut_ptr(),
+            &mut info,
+        );
+    }
+    if info < 0 {
+        return Err(FerricError::Lapack(format!(
+            "logdet_lu: dgetrf_ bad argument (info={info})"
+        )));
+    }
+    if info > 0 {
+        return Err(FerricError::Lapack(format!(
+            "logdet_lu: matrix is exactly singular (U[{i},{i}] = 0, dgetrf_ info={info}); \
+             ln det is undefined",
+            i = info - 1
+        )));
+    }
+
+    // det = (−1)^(#swaps) · Π U_ii. `ipiv` is 1-based; entry j records a swap
+    // of row j with row ipiv[j], and only ipiv[j] != j+1 counts as a swap.
+    let mut negative = false;
+    for (j, &p) in ipiv.iter().enumerate() {
+        if p != (j as c_int) + 1 {
+            negative = !negative;
+        }
+    }
+
+    let mut log_abs_det = 0.0f64;
+    for i in 0..n {
+        // Column-major diagonal: U_ii lives at buf[i + i*n].
+        let u_ii = buf[i + i * n];
+        if u_ii < 0.0 {
+            negative = !negative;
+        }
+        log_abs_det += u_ii.abs().ln();
+    }
+
+    if negative {
+        return Err(FerricError::Lapack(
+            "logdet_lu: determinant is negative — ln det is undefined over the reals \
+             (a dielectric matrix at imaginary frequency must be positive-definite)"
+                .to_string(),
+        ));
+    }
+    if !log_abs_det.is_finite() {
+        return Err(FerricError::Lapack(format!(
+            "logdet_lu: non-finite ln det ({log_abs_det}) — NaN/Inf or numerically \
+             singular input matrix"
+        )));
+    }
+
+    Ok(log_abs_det)
+}

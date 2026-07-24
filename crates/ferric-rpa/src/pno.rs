@@ -269,10 +269,15 @@ pub fn run_pdep_rpa_osv(
     let v_kept = eigvecs.slice(s![.., ..n_keep]).to_owned();
 
     let (quad_freqs, quad_weights) = crate::quadrature::build_quadrature(&config.quadrature);
-    let eigenvalues_freq = crate::energy::eval_eigenvalues_at_frequencies(
-        &v_kept, &b_ov, &eps_occ, &eps_vir, &quad_freqs,
+    // Energy-only path: this function returns just `e_c` and never surfaces the
+    // per-frequency eigenvalues, so take the LU log-det route
+    // (ln det ε + tr(I − ε) ≡ Σ_α [ln λ_α + (1 − λ_α)]) and skip the
+    // eigendecomposition entirely. Equivalence to the eigenvalue path is gated
+    // by energy.rs::logdet_energy_matches_eigenvalue_energy.
+    let summands = crate::energy::eval_trace_log_summands_budgeted(
+        &v_kept, &b_ov, &eps_occ, &eps_vir, &quad_freqs, config.memory_budget_bytes,
     )?;
-    let e_c = crate::energy::rpa_correlation_energy(&quad_weights, &eigenvalues_freq);
+    let e_c = crate::energy::rpa_correlation_energy_from_summands(&quad_weights, &summands);
 
     let _ = n_vir_red; // returned below
     Ok((e_c, dnv.n_vir_reduced, naux))

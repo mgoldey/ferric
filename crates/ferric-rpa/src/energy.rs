@@ -339,6 +339,88 @@ pub fn eval_eigenvalues_at_frequencies_budgeted(
     Ok(rows_into_array(n_quad, m, rows))
 }
 
+/// Per-frequency RPA trace-log summand `S(iω) = ln det(ε̃) + tr(I − ε̃)`,
+/// computed WITHOUT diagonalizing — the LU-determinant route.
+///
+/// `S(iω) ≡ Σ_α [ln λ_α(iω) + (1 − λ_α(iω))]`, the exact quantity
+/// [`rpa_correlation_energy`] sums over α, because both terms are
+/// basis-invariant traces: `Σ_α ln λ_α = ln det(ε̃)` and
+/// `Σ_α (1 − λ_α) = M − tr(ε̃)`. This is the formulation PySCF uses
+/// (`pyscf/gw/rpa.py`).
+///
+/// Cheaper than the eigenvalue route: `dgetrf_` is a blocked BLAS3 LU
+/// (~2/3·M³) while eigenvalue-only `dsyevd_` pays a memory-bound BLAS2
+/// tridiagonal reduction (~4/3·M³) — measured 3.7–6.2× faster on the
+/// kernel alone at M = 64…1024 (`ferric-core`'s `logdet_vs_eigvals_bench`).
+///
+/// `ε̃` is symmetric, but that is irrelevant here: `logdet_lu` reads the whole
+/// matrix and is transpose-invariant, so the row-major buffer needs no
+/// transposition (see [`ferric_core::linalg::logdet_lu`]'s layout note).
+fn dielectric_trace_log_summand(eps_proj: &Array2<f64>, what: &str) -> Result<f64, FerricError> {
+    let m = eps_proj.nrows();
+    let log_det = ferric_core::linalg::logdet_lu(eps_proj)
+        .map_err(|e| dielectric_lapack_err(what, e))?;
+    let trace: f64 = (0..m).map(|i| eps_proj[(i, i)]).sum();
+    Ok(log_det + (m as f64 - trace))
+}
+
+/// Integrate the RPA correlation energy from per-frequency trace-log summands.
+///
+/// `E_c = (1/2π) Σ_k w_k S(iω_k)`. Companion to [`rpa_correlation_energy`],
+/// which takes the eigenvalue tensor instead; the two agree to round-off.
+pub fn rpa_correlation_energy_from_summands(quad_weights: &[f64], summands: &[f64]) -> f64 {
+    assert_eq!(quad_weights.len(), summands.len());
+    let e_c: f64 = quad_weights.iter().zip(summands).map(|(&w, &s)| w * s).sum();
+    e_c / (2.0 * std::f64::consts::PI)
+}
+
+/// Log-det sibling of [`eval_eigenvalues_at_frequencies_budgeted`]: returns the
+/// per-frequency trace-log summands `S(iω_k)` (length `N_quad`) directly,
+/// skipping the eigendecomposition entirely.
+///
+/// Use this when ONLY the correlation energy is wanted. It is NOT a drop-in
+/// replacement for the eigenvalue evaluator: `PdepRpaResult.eigenvalues_freq`
+/// is a public field (Python `eigenvalues_freq` getter, MPI banding regression
+/// test) and the GW paths shape-check it, so the eigenvalue route stays.
+/// Everything up to the diagonalization — the frequency-independent `y`
+/// projection, the panel-width sizing, the per-worker scratch reuse, the
+/// `with_blas_threads(1)` guard — is identical to that sibling by construction.
+pub fn eval_trace_log_summands_budgeted(
+    eigenvectors: &Array2<f64>,
+    b_ov: &Array2<f64>,
+    eps_occ: &[f64],
+    eps_vir: &[f64],
+    quad_freqs: &[f64],
+    memory_budget_bytes: Option<usize>,
+) -> Result<Vec<f64>, FerricError> {
+    use crate::sternheimer::{
+        build_scale_factors, dielectric_matrix_from_projection_into,
+        dielectric_matrix_from_projection_into_panelled,
+    };
+
+    let m = eigenvectors.ncols();
+    let nov = eps_occ.len() * eps_vir.len();
+    let y = eigenvectors.t().dot(b_ov);
+
+    let n_workers = rayon::current_num_threads().max(1);
+    let panel_width = quad_panel_width(m, nov, n_workers, memory_budget_bytes);
+    let use_panelled = panel_width < nov;
+
+    per_frequency(
+        quad_freqs,
+        || (Array2::<f64>::zeros((m, panel_width)), Array2::<f64>::zeros((m, m))),
+        |(rhs_scaled, out), omega| {
+            let scale = build_scale_factors(eps_occ, eps_vir, omega);
+            if use_panelled {
+                dielectric_matrix_from_projection_into_panelled(&y, &scale, rhs_scaled, out);
+            } else {
+                dielectric_matrix_from_projection_into(&y, &scale, rhs_scaled, out);
+            }
+            dielectric_trace_log_summand(out, "dielectric log-det failed")
+        },
+    )
+}
+
 /// Per-frequency *dynamic inverse-dielectric* matrices in the PDEP basis.
 ///
 /// Returns `W̃_d(iω_k) = ε̃_proj(iω_k)⁻¹ − I` (shape M×M) for each quadrature
@@ -561,5 +643,95 @@ mod tests {
             &eigenvectors, &b_ov, &eps_occ, &eps_vir, &quad_freqs, None,
         ).unwrap();
         assert_eq!(a, b);
+    }
+
+    // ────────────── log-det (LU) vs eigenvalue path equivalence ──────────────
+
+    /// The core identity the LU route rests on, at the level of a single
+    /// dielectric matrix: `ln det(ε) + tr(I − ε) ≡ Σ_α [ln λ_α + (1 − λ_α)]`.
+    #[test]
+    fn trace_log_summand_matches_eigenvalue_sum() {
+        // A small SPD matrix standing in for ε̃(iω).
+        let eps = ndarray::array![
+            [3.0f64, 0.4, -0.2],
+            [0.4, 2.5, 0.7],
+            [-0.2, 0.7, 4.0]
+        ];
+        let evals =
+            ferric_core::linalg::eigvalsh_dc(&eps, ferric_core::linalg::Uplo::Upper).unwrap();
+        let eig_way: f64 = evals.iter().map(|&l| l.ln() + (1.0 - l)).sum();
+        let lu_way = dielectric_trace_log_summand(&eps, "test").unwrap();
+        assert!(
+            (lu_way - eig_way).abs() < 1e-12,
+            "LU summand {lu_way} vs eigenvalue sum {eig_way}"
+        );
+    }
+
+    /// End-to-end equivalence on the same tiny system the eigenvalue-path
+    /// regression tests use: the RPA correlation ENERGY computed via the LU
+    /// log-det evaluator must match the energy computed from the eigenvalue
+    /// tensor to round-off. This is the gate that makes the substitution safe.
+    #[test]
+    fn logdet_energy_matches_eigenvalue_energy() {
+        let eigenvectors = ndarray::array![[1.0f64, 0.0], [0.0, 1.0]];
+        let b_ov = ndarray::array![[1.0f64, 0.5], [0.3, -0.8]];
+        let eps_occ = vec![-0.4f64];
+        let eps_vir = vec![0.3f64, 0.9f64];
+        let quad_freqs = vec![0.1f64, 0.5, 1.0];
+        let quad_weights = vec![0.25f64, 0.5, 0.25];
+
+        let evals =
+            eval_eigenvalues_at_frequencies(&eigenvectors, &b_ov, &eps_occ, &eps_vir, &quad_freqs)
+                .unwrap();
+        let e_eig = rpa_correlation_energy(&quad_weights, &evals);
+
+        let summands = eval_trace_log_summands_budgeted(
+            &eigenvectors, &b_ov, &eps_occ, &eps_vir, &quad_freqs, None,
+        )
+        .unwrap();
+        let e_lu = rpa_correlation_energy_from_summands(&quad_weights, &summands);
+
+        assert!(
+            (e_eig - e_lu).abs() < 1e-14,
+            "eigenvalue-path E_c = {e_eig:.18} vs log-det-path E_c = {e_lu:.18}"
+        );
+    }
+
+    /// Same equivalence, but with a budget tiny enough to force the PANELLED
+    /// dielectric assembly — the log-det evaluator must share that path
+    /// faithfully with its eigenvalue sibling, not just the full-width one.
+    #[test]
+    fn logdet_energy_matches_eigenvalue_energy_under_forced_panelling() {
+        let eigenvectors = ndarray::array![[1.0f64, 0.0], [0.0, 1.0]];
+        let b_ov = ndarray::array![[1.0f64, 0.5], [0.3, -0.8]];
+        let eps_occ = vec![-0.4f64];
+        let eps_vir = vec![0.3f64, 0.9f64];
+        let quad_freqs = vec![0.1f64, 0.5, 1.0];
+        let quad_weights = vec![0.25f64, 0.5, 0.25];
+        let tiny_budget = 200usize;
+
+        let n_workers = rayon::current_num_threads().max(1);
+        assert_eq!(
+            quad_panel_width(2, 2, n_workers, Some(tiny_budget)),
+            1,
+            "tiny budget must force panelling for this test to mean anything"
+        );
+
+        let evals = eval_eigenvalues_at_frequencies_budgeted(
+            &eigenvectors, &b_ov, &eps_occ, &eps_vir, &quad_freqs, Some(tiny_budget),
+        )
+        .unwrap();
+        let e_eig = rpa_correlation_energy(&quad_weights, &evals);
+
+        let summands = eval_trace_log_summands_budgeted(
+            &eigenvectors, &b_ov, &eps_occ, &eps_vir, &quad_freqs, Some(tiny_budget),
+        )
+        .unwrap();
+        let e_lu = rpa_correlation_energy_from_summands(&quad_weights, &summands);
+
+        assert!(
+            (e_eig - e_lu).abs() < 1e-14,
+            "panelled: eigenvalue E_c = {e_eig:.18} vs log-det E_c = {e_lu:.18}"
+        );
     }
 }
