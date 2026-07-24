@@ -338,44 +338,77 @@ pub fn spin_components_from_b_ov(
 ) -> SpinComponents {
     // (ia|jb) comes from i-blocked wide GEMMs G_i = B_i^T·B (nvir x nocc*nvir)
     // instead of per-element strided dots over P: same FLOPs at BLAS3
-    // throughput. The outer i-loop is near-embarrassingly parallel (each i owns
-    // an independent G_i transient of nvir*nocc*nvir*8 bytes and a private
-    // (e_os, e_ss) partial), so we fan it across rayon and tuple-reduce. BLAS
-    // stays serial inside each closure via OPENBLAS_NUM_THREADS=1 — nested
-    // BLAS threads under rayon is the documented dgetrf-crash footgun.
+    // throughput. G_i is computed ONCE per i (against the FULL b_ov, so it
+    // already carries every j), and reused across all j>=i for that i.
+    //
+    // MP2 SYMMETRY: both spin-component sums are invariant under i<->j. For OS,
+    //   sum_ab (ia|jb)^2/D_ij^ab -> sum_ab (jb|ia)^2/D_ji^ba
+    // and (ia|jb)=(jb|ia) with D symmetric under the joint (i,j)<->(j,i),
+    // (a,b)<->(b,a) swap, so the (j,i) block contributes exactly the same total
+    // as the (i,j) block. Same for SS: sum_ab (ia|jb)[(ia|jb)-(ib|ja)]/D is
+    // invariant under the joint swap (the a<->b relabel maps the (ib|ja) partner
+    // back onto itself). So we visit ONLY unique pairs j>=i, weight the strictly
+    // off-diagonal j>i pairs by 2 (they stand in for their j<i mirror) and the
+    // diagonal j==i by 1 — exactly PySCF's fac=2/fac=1 MP2_contract_d convention.
+    // This halves the accumulation work (nocc*(nocc+1)/2 pairs vs nocc^2).
+    //
+    // Parallelism is over the FLATTENED list of unique (i,j) pairs rather than
+    // the coarse 0..nocc outer loop: at nocc=15 that is 120 fine-grained tasks
+    // vs 15 coarse ones, so rayon load-balances across cores without the old
+    // tail latency where the last few i-tasks left cores idle. Each i's wide
+    // GEMM G_i is still done once (memoized below) and shared read-only across
+    // that i's pairs. BLAS stays serial inside each closure via
+    // OPENBLAS_NUM_THREADS=1 — nested BLAS threads under rayon is the documented
+    // dgetrf-crash footgun.
     use rayon::prelude::*;
-    // Compute each i's (e_os_i, e_ss_i) partial in parallel, then collect into an
-    // i-ordered Vec and sum SEQUENTIALLY. A rayon `reduce` combines partials in a
-    // tree whose shape depends on the worker count, so floating-point non-associativity
-    // makes the total vary with RAYON_NUM_THREADS (~µHa). Collect-then-serial-sum keeps
-    // the parallel per-i compute but fixes the accumulation order to be thread-independent.
-    let partials: Vec<(f64, f64)> = (0..nocc)
-        .into_par_iter()
+
+    // Precompute each i's wide GEMM G_i once (serial i-loop of BLAS3 GEMMs;
+    // the GEMM itself is the heavy per-i cost and there are only nocc of them).
+    // g_all[i] is (nvir, nocc*nvir) with g_all[i][a, jb] = (ia|jb).
+    let g_all: Vec<Array2<f64>> = (0..nocc)
         .map(|i| {
             let b_i = b_ov.slice(ndarray::s![.., i * nvir..(i + 1) * nvir]);
-            let g_i = b_i.t().dot(b_ov); // (nvir, nocc*nvir); g_i[a, jb] = (ia|jb)
-            let mut e_os_i = 0.0;
-            let mut e_ss_i = 0.0;
-            for j in 0..nocc {
-                let e_ij = eps[first_occ + i] + eps[first_occ + j];
-                for a in 0..nvir {
-                    for b in 0..nvir {
-                        let g_ab = g_i[(a, j * nvir + b)]; // (ia|jb)
-                        let g_ba = g_i[(b, j * nvir + a)]; // (ib|ja)
-                        let denom = e_ij - eps[nocc_total + a] - eps[nocc_total + b];
-                        e_os_i += g_ab * g_ab / denom;
-                        e_ss_i += g_ab * (g_ab - g_ba) / denom;
-                    }
+            b_i.t().dot(b_ov)
+        })
+        .collect();
+
+    // Unique upper-triangle (i, j) pairs, i <= j.
+    let pairs: Vec<(usize, usize)> = (0..nocc)
+        .flat_map(|i| (i..nocc).map(move |j| (i, j)))
+        .collect();
+
+    // Per-pair (e_os, e_ss) partial in parallel, then collect into a
+    // pair-ordered Vec and sum SEQUENTIALLY. A rayon `reduce` combines partials
+    // in a tree whose shape depends on the worker count, so floating-point
+    // non-associativity makes the total vary with RAYON_NUM_THREADS (~µHa).
+    // Collect-then-serial-sum keeps the parallel per-pair compute but fixes the
+    // accumulation order to be thread-independent.
+    let partials: Vec<(f64, f64)> = pairs
+        .par_iter()
+        .map(|&(i, j)| {
+            // Symmetry weight: off-diagonal pairs stand in for their mirror.
+            let fac = if i == j { 1.0 } else { 2.0 };
+            let g_i = &g_all[i]; // (ia|jb) for this i, all a and all (j,b)
+            let e_ij = eps[first_occ + i] + eps[first_occ + j];
+            let mut e_os_ij = 0.0;
+            let mut e_ss_ij = 0.0;
+            for a in 0..nvir {
+                for b in 0..nvir {
+                    let g_ab = g_i[(a, j * nvir + b)]; // (ia|jb)
+                    let g_ba = g_i[(b, j * nvir + a)]; // (ib|ja)
+                    let denom = e_ij - eps[nocc_total + a] - eps[nocc_total + b];
+                    e_os_ij += g_ab * g_ab / denom;
+                    e_ss_ij += g_ab * (g_ab - g_ba) / denom;
                 }
             }
-            (e_os_i, e_ss_i)
+            (fac * e_os_ij, fac * e_ss_ij)
         })
         .collect();
     let mut e_os = 0.0;
     let mut e_ss = 0.0;
-    for (e_os_i, e_ss_i) in partials {
-        e_os += e_os_i;
-        e_ss += e_ss_i;
+    for (e_os_ij, e_ss_ij) in partials {
+        e_os += e_os_ij;
+        e_ss += e_ss_ij;
     }
     SpinComponents { e_os, e_ss, e_total: e_os + e_ss }
 }
@@ -1108,6 +1141,75 @@ mod tests {
         // OS should be larger magnitude than SS for H2
         assert!(sc.e_os.abs() > sc.e_ss.abs(),
             "OS ({}) should dominate SS ({})", sc.e_os, sc.e_ss);
+    }
+
+    /// The symmetry-exploiting `spin_components_from_b_ov` (iterating only
+    /// unique i<=j pairs with a factor-2 for the off-diagonal) must reproduce
+    /// the naive full-(i,j) double-loop to machine precision. An off-by-a-
+    /// factor-of-2 error in the symmetry factor would silently halve or double
+    /// EVERY RI-MP2 correlation energy, so this pins e_os/e_ss/e_total against
+    /// an independent naive reference computed inline here (not the production
+    /// path). Uses H2O/cc-pVDZ (nocc=5) so both i==j diagonal and i<j
+    /// off-diagonal pairs are exercised.
+    #[test]
+    fn spin_components_symmetry_matches_naive_double_loop() {
+        let xyz = "3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n";
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let bs = basis::bundled("cc-pvdz").unwrap();
+        let obs = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol, &obs, op, &bounds,
+            &RhfConfig { energy_conv: 1e-10, ..Default::default() },
+        ).unwrap();
+        let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
+
+        // Build the dressed b_ov intermediate exactly as ri_mp2_spin_components does.
+        let cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
+        let inter = compute_mp2_intermediates(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
+        let b_ov = &inter.b_ov;
+        let nocc = inter.nocc;
+        let nvir = inter.nvir;
+        let first_occ = inter.first_occ;
+        let nocc_total = inter.nocc_total;
+        let eps = rhf.eps_r();
+
+        // Independent NAIVE reference: full (i,j) over 0..nocc, no symmetry.
+        let mut ref_os = 0.0f64;
+        let mut ref_ss = 0.0f64;
+        for i in 0..nocc {
+            let b_i = b_ov.slice(ndarray::s![.., i * nvir..(i + 1) * nvir]);
+            let g_i = b_i.t().dot(b_ov);
+            for j in 0..nocc {
+                let e_ij = eps[first_occ + i] + eps[first_occ + j];
+                for a in 0..nvir {
+                    for b in 0..nvir {
+                        let g_ab = g_i[(a, j * nvir + b)];
+                        let g_ba = g_i[(b, j * nvir + a)];
+                        let denom = e_ij - eps[nocc_total + a] - eps[nocc_total + b];
+                        ref_os += g_ab * g_ab / denom;
+                        ref_ss += g_ab * (g_ab - g_ba) / denom;
+                    }
+                }
+            }
+        }
+
+        let sc = spin_components_from_b_ov(b_ov, eps, nocc, nvir, first_occ, nocc_total);
+
+        let rel = |a: f64, b: f64| (a - b).abs() / a.abs().max(1e-30);
+        assert!(rel(ref_os, sc.e_os) < 1e-12,
+            "e_os mismatch: naive {ref_os:.14} vs prod {:.14} (rel {:e})", sc.e_os, rel(ref_os, sc.e_os));
+        assert!(rel(ref_ss, sc.e_ss) < 1e-12,
+            "e_ss mismatch: naive {ref_ss:.14} vs prod {:.14} (rel {:e})", sc.e_ss, rel(ref_ss, sc.e_ss));
+        assert!(rel(ref_os + ref_ss, sc.e_total) < 1e-12,
+            "e_total mismatch: naive {:.14} vs prod {:.14}", ref_os + ref_ss, sc.e_total);
+        eprintln!(
+            "symmetry check: e_os {:.12} e_ss {:.12} e_total {:.12} (naive-matched)",
+            sc.e_os, sc.e_ss, sc.e_total
+        );
     }
 
     #[test]
