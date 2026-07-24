@@ -2332,8 +2332,11 @@ mod tests {
         let mut mo_ov_raw = Array2::<f64>::zeros((naux, nov));
         for qidx in 0..naux {
             let bq_ao = eri3_raw.slice(ndarray::s![qidx, .., ..]);
-            let tmp = bq_ao.dot(&c_vir);
-            let bq_mo = c_occ.t().dot(&tmp);
+            // occ-first contraction, matching the production transform
+            // (stream_dressed_mo_band / transform_3center_ov) so this reference
+            // agrees with it bitwise rather than only to the reassociation floor.
+            let tmp = c_occ.t().dot(&bq_ao);
+            let bq_mo = tmp.dot(&c_vir);
             mo_ov_raw
                 .slice_mut(ndarray::s![qidx, ..])
                 .assign(&bq_mo.into_shape_with_order(nov).unwrap());

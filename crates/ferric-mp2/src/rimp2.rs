@@ -105,9 +105,12 @@ pub fn eri3_mo_ov_blocked(
         let blk = threeindex::eri3_block(op, obs, dfbs, p0, p1)?;
         for (off, p) in (p0..p1).enumerate() {
             let bp_ao = blk.slice(ndarray::s![off, .., ..]);
-            // same per-P GEMM order as transform_3center_ov (bitwise identical)
-            let tmp = bp_ao.dot(c_vir);
-            let bp_mo = c_occ.t().dot(&tmp);
+            // Same per-P GEMM order as transform_3center_ov (bitwise identical):
+            // contract the SMALLER occupied index first (nao²·nocc), then the
+            // virtual (nao·nocc·nvir). Contracting c_vir first would cost
+            // nao²·nvir on the dominant GEMM — ~nvir/nocc times more FLOPs.
+            let tmp = c_occ.t().dot(&bp_ao);
+            let bp_mo = tmp.dot(c_vir);
             mo.slice_mut(ndarray::s![p, .., ..]).assign(&bp_mo);
         }
         p0 = p1;
