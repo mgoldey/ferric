@@ -187,6 +187,23 @@ pub fn solve_uhf_fockmod(
     let mut d_a = density(&c_a, nocc_a);
     let mut d_b = density(&c_b, nocc_b);
 
+    // Occupied MO coefficients producing the CURRENT per-spin densities, used to
+    // drive the O(naux·n²·nocc) DF-K half-transform (D_σ = C_occ,σ·C_occ,σᵀ, so
+    // the per-spin C_occ maps directly to `KBuilder::build_from_occ` — no scaling
+    // unlike the closed-shell √2 factor). `None` when D_σ is not a plain
+    // rank-nocc C·Cᵀ: the `fractional_occ` degenerate-frontier ensemble path
+    // (`D = Σ_p f_p c_p c_pᵀ`). UHF's guess density is itself `density(c,nocc)`,
+    // so C_occ is available from iter 1 (unlike RHF's raw SAD guess).
+    let occ_or_none = |c: &Array2<f64>, nocc: usize| -> Option<Array2<f64>> {
+        if config.fractional_occ || nocc == 0 {
+            None
+        } else {
+            Some(c.slice(ndarray::s![.., ..nocc]).to_owned())
+        }
+    };
+    let mut d_occ_a: Option<Array2<f64>> = occ_or_none(&c_a, nocc_a);
+    let mut d_occ_b: Option<Array2<f64>> = occ_or_none(&c_b, nocc_b);
+
     let mut j_buf = Array2::<f64>::zeros((n, n));
     let mut k_a_buf = Array2::<f64>::zeros((n, n));
     let mut k_b_buf = Array2::<f64>::zeros((n, n));
@@ -272,15 +289,23 @@ pub fn solve_uhf_fockmod(
             let dfk_sr = dfk_sr.as_mut().expect("dfk_sr built when omega>0");
             let dfk_lr = dfk_lr.as_mut().expect("dfk_lr built when omega>0");
             crate::fock_assembly::subtract_rsh_exchange(
-                dfk_sr, dfk_lr, &d_a, &mut f_a, k_mix.sr, k_mix.lr, 1.0,
+                dfk_sr, dfk_lr, &d_a, d_occ_a.as_ref(), 1.0, &mut f_a, k_mix.sr, k_mix.lr, 1.0,
             )?;
             crate::fock_assembly::subtract_rsh_exchange(
-                dfk_sr, dfk_lr, &d_b, &mut f_b, k_mix.sr, k_mix.lr, 1.0,
+                dfk_sr, dfk_lr, &d_b, d_occ_b.as_ref(), 1.0, &mut f_b, k_mix.sr, k_mix.lr, 1.0,
             )?;
         } else if need_k {
             if let Some(dfk) = df_k.as_mut() {
-                dfk.build(&d_a, &mut k_a_buf)?;
-                dfk.build(&d_b, &mut k_b_buf)?;
+                // C_occ half-transform per spin when available (D_σ = C_occ,σ·C_occ,σᵀ);
+                // the fractional-occupation ensemble path falls back to build(D_σ).
+                match d_occ_a.as_ref() {
+                    Some(c) => dfk.build_from_occ(c, &mut k_a_buf)?,
+                    None => dfk.build(&d_a, &mut k_a_buf)?,
+                };
+                match d_occ_b.as_ref() {
+                    Some(c) => dfk.build_from_occ(c, &mut k_b_buf)?,
+                    None => dfk.build(&d_b, &mut k_b_buf)?,
+                };
             } else {
                 let dk = direct_k.as_mut().expect("DirectK built before loop");
                 total_quartets += <DirectK as KBuilder>::build(dk, &d_a, &mut k_a_buf)?;
@@ -527,6 +552,10 @@ pub fn solve_uhf_fockmod(
             d_a = density(&c_a, nocc_a);
             d_b = density(&c_b, nocc_b);
         }
+        // Refresh the cached occupied MO blocks for the next iteration's DF-K
+        // half-transform (kept None under fractional occupation — see occ_or_none).
+        d_occ_a = occ_or_none(&c_a, nocc_a);
+        d_occ_b = occ_or_none(&c_b, nocc_b);
         // ΔP over the total density (α+β) — consumed at the top of the next
         // iteration by rhf::scf_converged. Drains to zero at the RI fixed point
         // even when the DIIS commutator parks on the naux noise floor.
