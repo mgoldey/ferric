@@ -41,8 +41,44 @@ impl<'a> DirectJK<'a> {
         DirectJK { ctx, prep, bounds, thresh, mem_budget, pool: None }
     }
 
+    /// Incremental Fock build: given the DENSITY CHANGE `delta_d = D_new - D_last`,
+    /// ACCUMULATE `ΔJ = J(delta_d)` and `ΔK = K(delta_d)` onto the caller's
+    /// existing `j`/`k` buffers (which must already hold `J(D_last)`/`K(D_last)`),
+    /// yielding `J(D_new)`/`K(D_new)`. The caller must NOT zero `j`/`k` first.
+    ///
+    /// This is mathematically EXACT (not an approximation): J and K are linear in
+    /// D, so `J(D_last) + J(ΔD) == J(D_last + ΔD) == J(D_new)` in infinite
+    /// precision. In f64 it differs from a from-scratch `build(&D_new, ..)` only
+    /// by the reassociation floor of summing many small increments vs one full
+    /// contraction — kept small by a periodic full rebuild in the SCF loop (see
+    /// `solve_rhf`'s `incremental_full_rebuild_every` guard). The screen inside
+    /// `build_d_max_shell` is driven by `delta_d`, so as SCF converges (ΔD → 0)
+    /// almost every quartet is Häser-Ahlrichs-screened out and late iterations
+    /// become nearly free (the PySCF `pyscf/scf/hf.py` / Psi4 `CompositeJK.cc`
+    /// incremental-Fock scheme).
+    ///
+    /// Bit-identity across `RAYON_NUM_THREADS` is preserved: this shares the exact
+    /// same deterministic grouped reduction as `build` — only the input density
+    /// (a delta vs the full D) and the caller's zero-vs-accumulate choice differ.
+    pub fn build_incremental(
+        &mut self,
+        delta_d: &Array2<f64>,
+        j: &mut Array2<f64>,
+        k: &mut Array2<f64>,
+    ) -> Result<usize, FerricError> {
+        // `build` already accumulates `J(d)`/`K(d)` onto the caller's buffers via
+        // `*j += &total_j; *k += &total_k`, and screens with `build_d_max_shell(d)`.
+        // Passing `delta_d` (without the caller zeroing) is therefore exactly the
+        // incremental update — no separate kernel needed.
+        self.build(delta_d, j, k)
+    }
+
     /// Build J and K matrices simultaneously from a single pass over shell quartets.
     /// Returns the number of unique quartets computed.
+    ///
+    /// ACCUMULATES onto `j`/`k` (`*j += J(d)`, `*k += K(d)`) — callers doing a
+    /// full rebuild zero the buffers first; the incremental path
+    /// ([`build_incremental`](Self::build_incremental)) passes `ΔD` and does not.
     pub fn build(
         &mut self,
         d: &Array2<f64>,

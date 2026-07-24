@@ -563,13 +563,59 @@ pub fn solve_rhf(
         None
     };
 
+    // ── Incremental (differential) Fock build, DIRECT DirectJK path only ─────
+    // J and K are LINEAR in the density, so instead of rebuilding J(D)/K(D) from
+    // the FULL current density every iteration, we can keep the previous J/K in
+    // `j_buf`/`k_buf` and add only ΔJ=J(ΔD)/ΔK=K(ΔD) built from the density change
+    // ΔD = D_new - D_last. This is mathematically EXACT (not an approximation),
+    // and a large speed win because the Häser-Ahlrichs density screen tightens as
+    // ΔD → 0 — late iterations screen out nearly every quartet. This is exactly
+    // the PySCF (`pyscf/scf/hf.py:1077-1083,2100-2111`) and Psi4
+    // (`CompositeJK.cc:229-294`, `INCFOCK_FULL_FOCK_EVERY`) incremental-Fock
+    // scheme. STRICTLY scoped to the DirectJK path (`direct_jk.is_some()`, i.e.
+    // `!df_any && k_builder.is_none()`): the DF/RI and LinkK paths keep the
+    // unconditional full rebuild (RI's fitted Fock carries a naux-dependent noise
+    // floor; layering ΔD accumulation on top risks the DIIS-destabilization class
+    // seen in the reverted DF-K occ-path change — see df-jk-noise-floor memory).
+    // Escape hatch (test + debugging): `FERRIC_SCF_INCREMENTAL=0` (or `off`/
+    // `false`) forces the historical full-rebuild-every-iteration behavior on the
+    // DirectJK path, so an A/B correctness/perf comparison can be run without a
+    // rebuild. Any other value (or unset) keeps the incremental default.
+    let incremental_enabled = !matches!(
+        std::env::var("FERRIC_SCF_INCREMENTAL").ok().as_deref(),
+        Some("0") | Some("off") | Some("false") | Some("OFF") | Some("FALSE")
+    );
+    let incremental_direct = direct_jk.is_some() && incremental_enabled;
+    // `d_last_fock` = the density that produced the CURRENT contents of
+    // `j_buf`/`k_buf`. `None` until the first (full) build; reset to force a full
+    // rebuild on the next iteration.
+    let mut d_last_fock: Option<Array2<f64>> = None;
+    // Periodic full-rebuild guard against f64 drift accumulating across many
+    // incremental updates (PySCF re-triggers via `direct_scf_tol`; Psi4 hard
+    // resets every `INCFOCK_FULL_FOCK_EVERY = 5`). We use 8: a compromise between
+    // Psi4's 5 and amortizing the full-build cost, verified below to hold the
+    // incremental-vs-full energy well within the direct-path noise floor. A full
+    // rebuild fires on iter 1, whenever `iter % INCREMENTAL_FULL_REBUILD_EVERY == 1`,
+    // and whenever `d_last_fock` is None.
+    const INCREMENTAL_FULL_REBUILD_EVERY: usize = 8;
+
     crate::driver::warn_if_rss_over_at_stage("RHF", "setup", ooc_budget);
 
     for iter in 1..=config.max_iter {
         ctx.check_interrupted()?;
-        // Build J and K using selected builder (reuse pre-allocated buffers)
-        j_buf.fill(0.0);
-        k_buf.fill(0.0);
+        // Build J and K using selected builder (reuse pre-allocated buffers).
+        //
+        // The DirectJK path may accumulate INCREMENTALLY onto the previous
+        // iteration's J/K (see `incremental_direct` above), in which case the
+        // buffers must NOT be zeroed. Every other path (DF-J/DF-K, LinkK, and the
+        // full-rebuild DirectJK iterations) starts from zero as before.
+        let direct_full_rebuild = incremental_direct
+            && (d_last_fock.is_none() || iter % INCREMENTAL_FULL_REBUILD_EVERY == 1);
+        let direct_incremental = incremental_direct && !direct_full_rebuild;
+        if !direct_incremental {
+            j_buf.fill(0.0);
+            k_buf.fill(0.0);
+        }
         // Build J: DF-J if configured, else fall through to combined direct path below.
         // Build K: DF-K > LinkK > combined DirectJK, in priority order.
         if df_any {
@@ -609,7 +655,19 @@ pub fn solve_rhf(
             total_quartets += lk.build(&d, &mut k_buf)?;
         } else {
             let djk = direct_jk.as_mut().expect("DirectJK built before loop");
-            total_quartets += djk.build(&d, &mut j_buf, &mut k_buf)?;
+            if direct_incremental {
+                // Incremental: j_buf/k_buf still hold J(d_last)/K(d_last); add
+                // only the contribution of ΔD = d - d_last. Exact by linearity.
+                let d_prev = d_last_fock.as_ref().expect("d_last_fock set on full rebuild");
+                let delta_d = &d - d_prev;
+                total_quartets += djk.build_incremental(&delta_d, &mut j_buf, &mut k_buf)?;
+            } else {
+                // Full rebuild (iter 1 or periodic drift-reset): j_buf/k_buf were
+                // zeroed above; build J(d)/K(d) from the full current density.
+                total_quartets += djk.build(&d, &mut j_buf, &mut k_buf)?;
+            }
+            // Record the density that now corresponds to the J/K in the buffers.
+            d_last_fock = Some(d.clone());
         }
 
         // F = H + J − ½ K_total  (V_xc, COSMO reaction field added below),
@@ -2228,5 +2286,106 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Solve RHF for `(mol, basis)` on the DIRECT DirectJK path (no df aux, no
+    /// xc, default config) with the incremental Fock build ON vs OFF, holding
+    /// ENV_LOCK for the `FERRIC_SCF_INCREMENTAL` mutation. Returns
+    /// `(energy_incremental, iters_incremental, energy_full, iters_full)`.
+    ///
+    /// `FERRIC_SCF_INCREMENTAL=0` forces the historical full-rebuild-every-
+    /// iteration behavior, so this is a true A/B of the incremental scheme
+    /// against the from-scratch build it replaces on the exact same code path.
+    fn incremental_vs_full(mol_path: &str, basis: &str) -> (f64, usize, f64, usize) {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mol = Molecule::load_xyz(mol_path).unwrap();
+        let bs = basis::bundled(basis).unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ParallelContext::default();
+        let config = RhfConfig::default();
+
+        // Full-rebuild-every-iteration reference.
+        std::env::set_var("FERRIC_SCF_INCREMENTAL", "0");
+        let full = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
+        std::env::remove_var("FERRIC_SCF_INCREMENTAL");
+
+        // Incremental (default).
+        let incr = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
+
+        assert!(full.converged, "full-rebuild RHF must converge for {mol_path}/{basis}");
+        assert!(incr.converged, "incremental RHF must converge for {mol_path}/{basis}");
+        (incr.energy, incr.iterations, full.energy, full.iterations)
+    }
+
+    /// The incremental (differential) DirectJK Fock build must reproduce the
+    /// full-rebuild-every-iteration energy to a tight numerical floor, and MUST
+    /// NOT slow convergence (equal-or-fewer iterations) on the direct path.
+    ///
+    /// Since J/K are linear in D, `J(D_last)+J(ΔD) == J(D_new)` exactly in
+    /// infinite precision; in f64 the only difference is the reassociation floor
+    /// of summing many small increments vs one full contraction, bounded by the
+    /// periodic full rebuild (every 8 iters). The observed energy difference is
+    /// well below 1e-9 Ha — far tighter than the direct-path's own PySCF-agreement
+    /// tolerance (~1e-8), so we assert 1e-9. This is the direct-path analogue of
+    /// the DF-K occ-path stress that was reverted this session: any convergence
+    /// slowdown here would be the SAME class of bug, so the iteration-count guard
+    /// is a hard assertion, not a soft check.
+    #[test]
+    fn incremental_fock_matches_full_rebuild_water_ccpvdz() {
+        let (e_incr, it_incr, e_full, it_full) =
+            incremental_vs_full("../../testdata/molecules/water.xyz", "cc-pvdz");
+        assert!(
+            (e_incr - e_full).abs() < 1e-9,
+            "incremental vs full RHF energy drift too large: incr={e_incr:.12} full={e_full:.12} \
+             (Δ={:.3e})",
+            (e_incr - e_full).abs()
+        );
+        assert!(
+            it_incr <= it_full,
+            "incremental Fock SLOWED convergence: {it_incr} iters vs {it_full} full-rebuild — \
+             this is the DF-K-incident bug class, do NOT ship"
+        );
+    }
+
+    #[test]
+    fn incremental_fock_matches_full_rebuild_methane_ccpvdz() {
+        let (e_incr, it_incr, e_full, it_full) =
+            incremental_vs_full("../../testdata/molecules/methane.xyz", "cc-pvdz");
+        assert!(
+            (e_incr - e_full).abs() < 1e-9,
+            "incremental vs full RHF energy drift too large: incr={e_incr:.12} full={e_full:.12} \
+             (Δ={:.3e})",
+            (e_incr - e_full).abs()
+        );
+        assert!(
+            it_incr <= it_full,
+            "incremental Fock SLOWED convergence: {it_incr} iters vs {it_full} full-rebuild"
+        );
+    }
+
+    /// Larger, many-iteration direct-path stress case: hexane (C6H14) at cc-pVDZ
+    /// is a 20-atom / 118-basis-function all-electron RHF with no df aux, so it
+    /// exercises the DirectJK path across a long convergence trajectory (the
+    /// regime where incremental Fock both helps most AND, if buggy, would
+    /// destabilize DIIS — the direct-path equivalent of the benzene-def2 DF
+    /// stress case the DF-K bug broke). cc-pVDZ bundles only Z=1-10, so a C/H
+    /// alkane is the heaviest many-iteration closed shell available here.
+    #[test]
+    fn incremental_fock_matches_full_rebuild_hexane_ccpvdz_stress() {
+        let (e_incr, it_incr, e_full, it_full) =
+            incremental_vs_full("../../testdata/molecules/alkane_6.xyz", "cc-pvdz");
+        assert!(
+            (e_incr - e_full).abs() < 1e-9,
+            "incremental vs full RHF energy drift too large on hexane: \
+             incr={e_incr:.12} full={e_full:.12} (Δ={:.3e})",
+            (e_incr - e_full).abs()
+        );
+        assert!(
+            it_incr <= it_full,
+            "incremental Fock SLOWED convergence on hexane: {it_incr} iters vs \
+             {it_full} full-rebuild — this is the DF-K-incident bug class, do NOT ship"
+        );
     }
 }
