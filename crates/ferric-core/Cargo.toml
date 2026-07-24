@@ -12,6 +12,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 ndarray = { workspace = true }
 rayon = { workspace = true }
+lapack-sys = { workspace = true }
 mpi = { version = "0.7", optional = true }
 
 [features]
@@ -20,3 +21,9 @@ mpi = ["dep:mpi"]
 
 [dev-dependencies]
 serde_json = { workspace = true }
+# LAPACK backend so the standalone `cargo test -p ferric-core` binary resolves
+# the OpenBLAS symbols the `linalg::eigh_dc` FFI calls (dsyevd_). In workspace
+# builds the backend is already linked via the SCF/RPA crates; this dev-dep
+# only matters for isolated per-crate test runs.
+openblas-src = { workspace = true }
+ndarray-linalg = { workspace = true }

@@ -4,7 +4,6 @@
 //! eigenpotential truncation. Used as a sanity check against PDEP-RPA.
 
 use ndarray::{Array2, Axis, Zip};
-use ndarray_linalg::{Eigh, UPLO};
 use rayon::prelude::*;
 use ferric_core::FerricError;
 
@@ -110,11 +109,10 @@ pub fn ri_drpa_eigenvalues(
         chi0[(p, p)] += 1.0;
     }
 
-    let (evals, _) = chi0
-        .eigh(UPLO::Upper)
+    let evals = ferric_core::linalg::eigvalsh_dc(&chi0, ferric_core::linalg::Uplo::Upper)
         .map_err(|e| FerricError::General(format!("RI-dRPA diagonalization failed: {e}")))?;
 
-    let mut result: Vec<f64> = evals.to_vec();
+    let mut result: Vec<f64> = evals;
     result.sort_by(|a, b| b.total_cmp(a));
     Ok(result)
 }
@@ -162,7 +160,7 @@ pub fn u_ri_drpa_energy(
             let chi_sigma = syrk_aat(&bs);
             eps_mat += &chi_sigma;
         }
-        let (evals, _) = eps_mat.eigh(UPLO::Upper)
+        let evals = ferric_core::linalg::eigvalsh_dc(&eps_mat, ferric_core::linalg::Uplo::Upper)
             .map_err(|e| FerricError::General(format!("U-RI-dRPA eigh: {e}")))?;
         let contrib: f64 = evals.iter().map(|&lam| lam.ln() + (1.0 - lam)).sum();
         Ok(wk * contrib)

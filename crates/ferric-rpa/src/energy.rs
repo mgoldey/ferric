@@ -112,7 +112,6 @@ pub fn eval_eigenvalues_at_frequencies_laplace(
     laplace: &ferric_quadrature::LaplaceQuadrature,
 ) -> Result<Array2<f64>, FerricError> {
     use crate::laplace_chi0::dielectric_matrix_laplace_into;
-    use ndarray_linalg::{Eigh, UPLO};
 
     let n_quad = quad_freqs.len();
     let m = eigenvectors.ncols();
@@ -128,10 +127,9 @@ pub fn eval_eigenvalues_at_frequencies_laplace(
             dielectric_matrix_laplace_into(
                 eigenvectors, b_ov, eps_occ, eps_vir, omega, laplace, rhs_scaled, out,
             );
-            let (evals, _) = out
-                .eigh(UPLO::Upper)
+            let evals = ferric_core::linalg::eigvalsh_dc(out, ferric_core::linalg::Uplo::Upper)
                 .map_err(|e| dielectric_lapack_err("Laplace dielectric eigh failed", e))?;
-            Ok(evals.to_vec())
+            Ok(evals)
         },
     )?;
     Ok(rows_into_array(n_quad, m, rows))
@@ -149,17 +147,15 @@ pub fn eval_eigenvalues_at_frequencies_unrestricted(
     quad_freqs: &[f64],
 ) -> Result<Array2<f64>, FerricError> {
     use crate::sternheimer::dielectric_matrix_unrestricted;
-    use ndarray_linalg::{Eigh, UPLO};
 
     let n_quad = quad_freqs.len();
     let m = eigenvectors.ncols();
 
     let rows = per_frequency(quad_freqs, || (), |(), omega| {
         let eps_proj = dielectric_matrix_unrestricted(eigenvectors, chan_a, chan_b, omega);
-        let (evals, _) = eps_proj
-            .eigh(UPLO::Upper)
+        let evals = ferric_core::linalg::eigvalsh_dc(&eps_proj, ferric_core::linalg::Uplo::Upper)
             .map_err(|e| dielectric_lapack_err("unrestricted dielectric eigh failed", e))?;
-        Ok(evals.to_vec())
+        Ok(evals)
     })?;
     Ok(rows_into_array(n_quad, m, rows))
 }
@@ -177,7 +173,6 @@ pub fn eval_eigenvalues_at_frequencies_laplace_unrestricted(
     quad_freqs: &[f64],
 ) -> Result<Array2<f64>, FerricError> {
     use crate::laplace_chi0::dielectric_matrix_laplace_unrestricted;
-    use ndarray_linalg::{Eigh, UPLO};
 
     let n_quad = quad_freqs.len();
     let m = eigenvectors.ncols();
@@ -189,10 +184,9 @@ pub fn eval_eigenvalues_at_frequencies_laplace_unrestricted(
             chan_b, laplace_b,
             omega,
         );
-        let (evals, _) = eps_proj
-            .eigh(UPLO::Upper)
+        let evals = ferric_core::linalg::eigvalsh_dc(&eps_proj, ferric_core::linalg::Uplo::Upper)
             .map_err(|e| dielectric_lapack_err("U-Laplace dielectric eigh failed", e))?;
-        Ok(evals.to_vec())
+        Ok(evals)
     })?;
     Ok(rows_into_array(n_quad, m, rows))
 }
@@ -289,7 +283,6 @@ pub fn eval_eigenvalues_at_frequencies_budgeted(
         dielectric_matrix_from_projection_into_panelled,
     };
     use ndarray::Array2;
-    use ndarray_linalg::{Eigh, UPLO};
 
     let n_quad = quad_freqs.len();
     let m = eigenvectors.ncols();
@@ -334,11 +327,12 @@ pub fn eval_eigenvalues_at_frequencies_budgeted(
             } else {
                 dielectric_matrix_from_projection_into(&y, &scale, rhs_scaled, out);
             }
-            // Diagonalize at each frequency — eigenvectors at ω=0 don't diagonalize ε̃(iω)
-            let (evals, _) = out
-                .eigh(UPLO::Upper)
+            // Diagonalize at each frequency — eigenvectors at ω=0 don't diagonalize ε̃(iω).
+            // Divide-and-conquer eigenvalue-only solver (dsyevd_): same eigenvalues
+            // as `.eigh()` (validated bit-close in ferric_core::linalg tests), faster.
+            let evals = ferric_core::linalg::eigvalsh_dc(out, ferric_core::linalg::Uplo::Upper)
                 .map_err(|e| dielectric_lapack_err("dielectric eigh failed", e))?;
-            Ok(evals.to_vec())
+            Ok(evals)
         },
     )?;
 
