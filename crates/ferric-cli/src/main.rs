@@ -313,6 +313,16 @@ pub fn main() {
     // ferric-scf/src/ladder.rs.
     let result = if method == "rhf" || method == "ksdft" {
         let ladder = cfg.scf.build_ladder(&rhf_config);
+        // Report the J/K path actually in use. RI-JK is now opt-in (the ladder
+        // no longer substitutes it — see `ladder::default_ladder_from`), but
+        // KS-DFT still auto-selects an aux above, so state which one ran rather
+        // than leaving a CLI-vs-library energy comparison to guesswork.
+        if let Some(rung0) = ladder.first() {
+            match rung0.config.df_j_aux.as_deref() {
+                Some(aux) => eprintln!("[ferric] SCF J/K: RI-JK via {aux}"),
+                None => eprintln!("[ferric] SCF J/K: exact 4-index (set [scf] df_j_aux/df_k_aux for RI-JK)"),
+            }
+        }
         let lr = ferric_scf::ladder::solve_rhf_ladder(&ctx, &mol, &prep, op, &bounds, &ladder)
             .unwrap_or_else(|e| { eprintln!("error: SCF ladder failed: {e:?}"); std::process::exit(1); });
         if !lr.converged {

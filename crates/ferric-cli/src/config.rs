@@ -1246,8 +1246,12 @@ kind = "rhf"
         assert_eq!(built.len(), ferric_scf::ladder::default_ladder().len());
         for (i, rung) in built.iter().enumerate() {
             assert_eq!(rung.config.mom_after_iter, 5, "rung {i} must inherit base.mom_after_iter");
-            assert!(rung.config.df_j_aux.is_some(), "rung {i} must default DF-J aux");
-            assert!(rung.config.df_k_aux.is_some(), "rung {i} must default DF-K aux");
+            // RI-JK is opt-in: the ladder escalates convergence knobs only and
+            // must never silently swap exact 4-index J/K for density fitting
+            // (that changes the method, ~1e-4 Ha). The base here leaves the aux
+            // unset, so every rung must too.
+            assert!(rung.config.df_j_aux.is_none(), "rung {i} must not inject DF-J aux");
+            assert!(rung.config.df_k_aux.is_none(), "rung {i} must not inject DF-K aux");
         }
         assert_eq!(built[0].config.level_shift, 0.0);
         assert_eq!(built[1].config.level_shift, 0.0, "rung 1 adds ADIIS, not level shift yet");

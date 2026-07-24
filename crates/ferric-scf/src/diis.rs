@@ -569,6 +569,13 @@ impl DiisDriver {
     /// variant drives; otherwise plain Pulay drives. History is pushed to BOTH
     /// every call so the inactive one is warm at the crossover. Returns the
     /// extrapolated Fock matrix to diagonalize.
+    ///
+    /// `switch_thresh == f64::INFINITY` selects the energy variant
+    /// unconditionally ("energy-DIIS-only", as the struct doc promises). This
+    /// is special-cased because the natural `err_max >= switch_thresh` test is
+    /// vacuously FALSE against an infinite threshold — a finite `err_max` is
+    /// never `>= INFINITY` — which silently made the documented
+    /// energy-DIIS-only sentinel run pure Pulay instead.
     pub fn step(
         &mut self,
         f: &Array2<f64>,
@@ -587,7 +594,7 @@ impl DiisDriver {
 
         let (f_energy, _c) = self.energy.step(f, d, energy);
 
-        if err_max >= self.switch_thresh {
+        if self.switch_thresh.is_infinite() || err_max >= self.switch_thresh {
             f_energy
         } else {
             f_pulay
@@ -1073,6 +1080,52 @@ mod tests {
                 assert!((a - b).abs() < 1e-12, "wrong branch at iter {iter}: {a} vs {b}");
             }
         }
+    }
+
+    /// `switch_thresh = INFINITY` is documented on `DiisDriver` as selecting the
+    /// energy variant only. It previously ran pure Pulay instead: the dispatch
+    /// test was `err_max >= switch_thresh`, and no finite `err_max` is ever
+    /// `>= INFINITY`, so the energy branch was unreachable. The bug was
+    /// invisible to a same-flavor A/B (both arms returned the Pulay matrix and
+    /// so agreed bit-for-bit), which is exactly what made it survive.
+    #[test]
+    fn infinite_switch_thresh_selects_energy_variant_not_pulay() {
+        let n = 4;
+        let mk = |seed: f64| {
+            Array2::from_shape_fn((n, n), |(i, j)| ((i * n + j) as f64 * 0.37 + seed).sin())
+        };
+        let drive = |flavor: DiisFlavor, thresh: f64| -> Array2<f64> {
+            let mut drv = DiisDriver::new(flavor, 8, thresh);
+            let mut last = Array2::<f64>::zeros((n, n));
+            for it in 0..5 {
+                last = drv.step(
+                    &mk(it as f64),
+                    &mk(it as f64 + 10.0),
+                    &mk(it as f64 + 20.0),
+                    -100.0 - it as f64,
+                    // Well below any finite threshold used here, so only the
+                    // INFINITY special-case can route to the energy variant.
+                    1.0,
+                );
+            }
+            last
+        };
+
+        let pulay = drive(DiisFlavor::Pulay, 1e-1);
+        let adiis_inf = drive(DiisFlavor::Adiis, f64::INFINITY);
+        let ediis_inf = drive(DiisFlavor::Ediis, f64::INFINITY);
+
+        let maxdiff = |a: &Array2<f64>, b: &Array2<f64>| {
+            (a - b).iter().map(|v| v.abs()).fold(0.0f64, f64::max)
+        };
+        assert!(
+            maxdiff(&adiis_inf, &pulay) > 1e-8,
+            "ADIIS with switch_thresh=INFINITY must not fall back to Pulay"
+        );
+        assert!(
+            maxdiff(&ediis_inf, &pulay) > 1e-8,
+            "EDIIS with switch_thresh=INFINITY must not fall back to Pulay"
+        );
     }
 
     #[test]

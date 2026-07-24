@@ -2372,7 +2372,16 @@ mod tests {
     /// destabilize DIIS — the direct-path equivalent of the benzene-def2 DF
     /// stress case the DF-K bug broke). cc-pVDZ bundles only Z=1-10, so a C/H
     /// alkane is the heaviest many-iteration closed shell available here.
+    ///
+    /// `#[ignore]`d: it runs TWO full 118-basis-function SCF solves (incremental
+    /// vs full-rebuild A/B) and dominates the `ferric-scf` suite's runtime. The
+    /// water and methane A/B tests above already cover the correctness contract
+    /// (energy match + no iteration-count regression); this one exists for the
+    /// long-trajectory regime specifically. Run it explicitly when touching the
+    /// incremental Fock path:
+    ///   cargo test --release -p ferric-scf -- --ignored hexane_ccpvdz_stress
     #[test]
+    #[ignore]
     fn incremental_fock_matches_full_rebuild_hexane_ccpvdz_stress() {
         let (e_incr, it_incr, e_full, it_full) =
             incremental_vs_full("../../testdata/molecules/alkane_6.xyz", "cc-pvdz");
