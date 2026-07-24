@@ -13,6 +13,16 @@ use rayon::prelude::*;
 /// documented dgetrf-crash footgun. The result is bit-identical to a serial
 /// loop: each P's two GEMMs are computed independently and written to disjoint
 /// rows, so there is no cross-P accumulation whose order could shift.
+///
+/// Contracts `c_left` (the SMALLER MO index, e.g. nocc for the `ov` transform)
+/// first: `tmp = c_left^T · (P|μν)` costs `nao^2 * nleft`, then `tmp · c_right`
+/// costs `nao * nleft * nright`. Contracting the larger index (`c_right`)
+/// first instead — the old order — pays `nao^2 * nright` on the dominant first
+/// GEMM, ~`nright/nleft` times more FLOPs when `nright ≫ nleft` (e.g. ~14x at
+/// benzene/aug-cc-pVTZ, nocc=15 vs nvir=393). Matches PySCF's occupied-first
+/// `ao2mo` contraction, Psi4's DFMP2 `form_Aia`, NWChem's `XF3cI_Step12b`, and
+/// the same occupied-orbital-first pattern already applied to the SCF DF-K
+/// exchange build (see `crates/ferric-scf/src/df_k.rs`'s `build_from_occ_impl`).
 fn transform_3center(
     eri3_ao: &Array3<f64>,
     c_left: &Array2<f64>,
@@ -30,9 +40,9 @@ fn transform_3center(
         .and(eri3_ao.axis_iter(Axis(0)))
         .into_par_iter()
         .for_each(|(mut mo_p, bp_ao)| {
-            // B^P_pq = c_left^T * B^P_AO * c_right
-            let tmp = bp_ao.dot(c_right);
-            let bp_mo = c_left.t().dot(&tmp);
+            // B^P_pq = c_left^T * B^P_AO * c_right, left contraction first.
+            let tmp = c_left.t().dot(&bp_ao);
+            let bp_mo = tmp.dot(c_right);
             mo_p.assign(&bp_mo);
         });
     mo
@@ -98,8 +108,9 @@ mod tests {
         assert!((mo[(1, 0, 1)] - 2.0).abs() < 1e-12);
     }
 
-    /// Serial reference for the par-over-aux-P transform: exactly the old
-    /// per-P loop, kept here so the test proves the rayon version is bit-for-bit
+    /// Serial reference for the par-over-aux-P transform: the same per-P loop
+    /// (left-operand-first contraction, matching `transform_3center`'s current
+    /// order), kept here so the test proves the rayon version is bit-for-bit
     /// identical (f64::to_bits), not merely close.
     fn transform_serial(
         eri3_ao: &Array3<f64>,
@@ -110,8 +121,8 @@ mod tests {
         let mut mo = Array3::zeros((naux, c_left.ncols(), c_right.ncols()));
         for p in 0..naux {
             let bp_ao = eri3_ao.slice(ndarray::s![p, .., ..]);
-            let tmp = bp_ao.dot(c_right);
-            let bp_mo = c_left.t().dot(&tmp);
+            let tmp = c_left.t().dot(&bp_ao);
+            let bp_mo = tmp.dot(c_right);
             mo.slice_mut(ndarray::s![p, .., ..]).assign(&bp_mo);
         }
         mo

@@ -242,8 +242,22 @@ pub fn stream_dressed_mo_band(
             let mut mo_blk = Array2::<f64>::zeros((qc, width));
             let mo_transform_row = |q: usize, mut row: ndarray::ArrayViewMut1<f64>| {
                 let bq_ao = blk.data.slice(ndarray::s![q0 + q, .., ..]);
-                let half = bq_ao.dot(c_right); // (nao, nright)
-                let bq_mo = c_left.t().dot(&half); // (nleft, nright)
+                // Contract the SMALLER MO index (c_left, typically nocc) first:
+                // half = c_left^T (Q|μν) is (nleft, nao), costing nao^2*nleft;
+                // then half·c_right is (nleft, nright), costing nao*nleft*nright.
+                // The old order (c_right first) cost nao^2*nright then
+                // nao*nleft*nright -- since nright (nvir) >> nleft (nocc) at
+                // production scale, that was ~nright/nleft times more FLOPs on
+                // the dominant first GEMM (e.g. ~14x at benzene/aug-cc-pVTZ,
+                // nocc=15 vs nvir=393). Same contraction, reordered per the
+                // exactness note above -- not approximated. Matches PySCF's
+                // ao2mo (nr_ao2mo.c AO2MOmmm_nr_s2_iltj, occupied-first),
+                // Psi4's DFMP2 form_Aia (occupied N-dim first), and NWChem's
+                // XF3cI_Step12b (q->i before p->a); this is the same
+                // occupied-orbital-first pattern already applied to the SCF
+                // DF-K exchange build (see df_k.rs's build_from_occ_impl).
+                let half = c_left.t().dot(&bq_ao); // (nleft, nao)
+                let bq_mo = half.dot(c_right); // (nleft, nright)
                 row.assign(&bq_mo.into_shape_with_order(width).unwrap());
             };
             if qc * width < PAR_MO_TRANSFORM_WORK_THRESHOLD {
