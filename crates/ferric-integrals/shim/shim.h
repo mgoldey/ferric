@@ -48,10 +48,16 @@ void         scf_basis_shell_dims(const scf_basis *bs, int *out_nfunc_per_shell)
 void         scf_basis_max_dims(const scf_basis *bs, int *out_max_nprim, int *out_max_L);
 
 /* Engine creation. op_kind:
- *   0 = Coulomb            (1/r12)              -- v1
- *   1 = ErfCoulomb         (erf(omega r)/r)     -- v1
- *   2 = ErfcCoulomb                              -- post-v1, returns NULL
- *   3 = Yukawa                                   -- post-v1, returns NULL
+ *   0 = Coulomb            (1/r12)                 -- libint2 Operator::coulomb
+ *   1 = ErfCoulomb         (erf(omega r)/r)        -- libint2 Operator::erf_coulomb
+ *   2 = ErfcCoulomb        (erfc(omega r)/r)       -- libint2 Operator::erfc_coulomb
+ *   3 = Yukawa             (exp(-zeta r)/r)        -- libint2 Operator::stg_x_coulomb
+ *                                                     (aliased Operator::yukawa)
+ *   4 = SlaterGeminal      (exp(-zeta r))          -- libint2 Operator::stg
+ * For op_kinds 1-4 the scalar parameter (omega or zeta) is passed as `omega` and
+ * threaded to Engine::set_params (see op_needs_scalar_param in shim.cc). Yukawa
+ * and SlaterGeminal use libint2's TennoGmEval core -- exact kernels, not the
+ * Gaussian-fit geminal engine (scf_engine_create_geminal, op_kinds 200-202).
  * For one-electron integrals, op_kind is one of:
  *   100 = Overlap, 101 = Kinetic, 102 = Nuclear
  * (Two-electron and one-electron engines are constructed via the same factory.)

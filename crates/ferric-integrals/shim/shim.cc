@@ -149,11 +149,26 @@ static Operator op_for_kind(int kind, bool *ok) {
         case 0:   return Operator::coulomb;
         case 1:   return Operator::erf_coulomb;
         case 2:   return Operator::erfc_coulomb;
+        // Yukawa / screened Coulomb exp(-zeta r)/r. libint2 aliases this as
+        // Operator::yukawa == Operator::stg_x_coulomb (TennoGmEval core).
+        case 3:   return Operator::stg_x_coulomb;
+        // Exact (unfitted) Slater-type geminal exp(-zeta r) (TennoGmEval core).
+        case 4:   return Operator::stg;
         case 100: return Operator::overlap;
         case 101: return Operator::kinetic;
         case 102: return Operator::nuclear;
         default:  *ok = false; return Operator::coulomb;
     }
+}
+
+// True for op_kinds whose libint2 operator takes a single scalar attenuation/
+// decay parameter set post-construction via Engine::set_params(double):
+//   1 = erf_coulomb (omega), 2 = erfc_coulomb (omega),
+//   3 = stg_x_coulomb/yukawa (zeta), 4 = stg (zeta).
+// The geminal ops (200/202) instead pass a ContractedGaussianGeminal through the
+// constructor and are handled in scf_engine_create_geminal, not here.
+static bool op_needs_scalar_param(int kind) {
+    return kind == 1 || kind == 2 || kind == 3 || kind == 4;
 }
 
 /* Geminal engine: cgtg / cgtg_x_coulomb / delcgtg2. Requires libint2 built
@@ -205,8 +220,8 @@ scf_engine *scf_engine_create(int op_kind, double omega,
     std::lock_guard<std::mutex> lock(libint_ctor_mutex);
     try {
         Engine eng(op, max_nprim, max_L, 0, precision);
-        if (op_kind == 1 || op_kind == 2) {
-            // ErfCoulomb / ErfcCoulomb attenuation parameter.
+        if (op_needs_scalar_param(op_kind)) {
+            // Scalar attenuation/decay parameter: erf/erfc omega, or stg/yukawa zeta.
             eng.set_params(omega);
         }
         auto *out = new (std::nothrow) scf_engine{std::move(eng)};
@@ -225,7 +240,7 @@ scf_engine *scf_engine_create_deriv(int op_kind, double omega,
     std::lock_guard<std::mutex> lock(libint_ctor_mutex);
     try {
         Engine eng(op, max_nprim, max_L, 1, precision);
-        if (op_kind == 1 || op_kind == 2) {
+        if (op_needs_scalar_param(op_kind)) {
             eng.set_params(omega);
         }
         auto *out = new (std::nothrow) scf_engine{std::move(eng)};
@@ -461,7 +476,7 @@ scf_engine *scf_engine_create_3center(int op_kind, double omega,
     try {
         Engine eng(op, max_nprim, max_L, 0, precision);
         eng.set(libint2::BraKet::xs_xx);
-        if (op_kind == 1 || op_kind == 2) eng.set_params(omega);
+        if (op_needs_scalar_param(op_kind)) eng.set_params(omega);
         return new (std::nothrow) scf_engine{std::move(eng)};
     } catch (...) {
         return nullptr;
@@ -482,7 +497,7 @@ scf_engine *scf_engine_create_2center(int op_kind, double omega,
     try {
         Engine eng(op, max_nprim, max_L, 0, precision);
         eng.set(libint2::BraKet::xs_xs);
-        if (op_kind == 1 || op_kind == 2) eng.set_params(omega);
+        if (op_needs_scalar_param(op_kind)) eng.set_params(omega);
         return new (std::nothrow) scf_engine{std::move(eng)};
     } catch (...) {
         return nullptr;
@@ -552,7 +567,7 @@ scf_engine *scf_engine_create_3center_deriv(int op_kind, double omega,
     try {
         Engine eng(op, max_nprim, max_L, 1, precision);
         eng.set(libint2::BraKet::xs_xx);
-        if (op_kind == 1 || op_kind == 2) eng.set_params(omega);
+        if (op_needs_scalar_param(op_kind)) eng.set_params(omega);
         return new (std::nothrow) scf_engine{std::move(eng)};
     } catch (...) {
         return nullptr;
@@ -573,7 +588,7 @@ scf_engine *scf_engine_create_2center_deriv(int op_kind, double omega,
     try {
         Engine eng(op, max_nprim, max_L, 1, precision);
         eng.set(libint2::BraKet::xs_xs);
-        if (op_kind == 1 || op_kind == 2) eng.set_params(omega);
+        if (op_needs_scalar_param(op_kind)) eng.set_params(omega);
         return new (std::nothrow) scf_engine{std::move(eng)};
     } catch (...) {
         return nullptr;

@@ -57,6 +57,8 @@ impl Engine {
                 OperatorKind::Coulomb => ffi::OP_COULOMB,
                 OperatorKind::ErfCoulomb => ffi::OP_ERF_COULOMB,
                 OperatorKind::ErfcCoulomb => ffi::OP_ERFC_COULOMB,
+                OperatorKind::Yukawa => ffi::OP_YUKAWA,
+                OperatorKind::SlaterGeminal => ffi::OP_SLATER_GEMINAL,
                 _ => return Err(FerricError::Libint(format!("operator {:?} not implemented in v1", kind))),
             };
             let h = unsafe { ffi::scf_engine_create(op_kind, omega, prep.max_nprim(), prep.max_l(), precision) };
@@ -220,6 +222,8 @@ impl Engine {
                 OperatorKind::Coulomb => ffi::OP_COULOMB,
                 OperatorKind::ErfCoulomb => ffi::OP_ERF_COULOMB,
                 OperatorKind::ErfcCoulomb => ffi::OP_ERFC_COULOMB,
+                OperatorKind::Yukawa => ffi::OP_YUKAWA,
+                OperatorKind::SlaterGeminal => ffi::OP_SLATER_GEMINAL,
                 _ => return Err(FerricError::Libint(format!("operator {:?} not implemented", kind))),
             };
             let h = unsafe { ffi::scf_engine_create_deriv(op_kind, omega, prep.max_nprim(), prep.max_l(), precision) };
@@ -302,6 +306,8 @@ impl Engine {
                 OperatorKind::Coulomb => ffi::OP_COULOMB,
                 OperatorKind::ErfCoulomb => ffi::OP_ERF_COULOMB,
                 OperatorKind::ErfcCoulomb => ffi::OP_ERFC_COULOMB,
+                OperatorKind::Yukawa => ffi::OP_YUKAWA,
+                OperatorKind::SlaterGeminal => ffi::OP_SLATER_GEMINAL,
                 _ => return Err(FerricError::Libint(format!("operator {:?} not implemented", kind))),
             };
             let h = unsafe { ffi::scf_engine_create_3center(op_kind, omega, max_nprim, max_l, precision) };
@@ -349,6 +355,8 @@ impl Engine {
                 OperatorKind::Coulomb => ffi::OP_COULOMB,
                 OperatorKind::ErfCoulomb => ffi::OP_ERF_COULOMB,
                 OperatorKind::ErfcCoulomb => ffi::OP_ERFC_COULOMB,
+                OperatorKind::Yukawa => ffi::OP_YUKAWA,
+                OperatorKind::SlaterGeminal => ffi::OP_SLATER_GEMINAL,
                 _ => return Err(FerricError::Libint(format!("operator {:?} not implemented", kind))),
             };
             let h = unsafe { ffi::scf_engine_create_2center(op_kind, omega, dfbs.max_nprim(), dfbs.max_l(), precision) };
@@ -456,6 +464,8 @@ impl Engine {
                 OperatorKind::Coulomb => ffi::OP_COULOMB,
                 OperatorKind::ErfCoulomb => ffi::OP_ERF_COULOMB,
                 OperatorKind::ErfcCoulomb => ffi::OP_ERFC_COULOMB,
+                OperatorKind::Yukawa => ffi::OP_YUKAWA,
+                OperatorKind::SlaterGeminal => ffi::OP_SLATER_GEMINAL,
                 _ => return Err(FerricError::Libint(format!("operator {:?} not implemented", kind))),
             };
             let h = unsafe { ffi::scf_engine_create_3center_deriv(op_kind, omega, max_nprim, max_l, precision) };
@@ -477,6 +487,8 @@ impl Engine {
                 OperatorKind::Coulomb => ffi::OP_COULOMB,
                 OperatorKind::ErfCoulomb => ffi::OP_ERF_COULOMB,
                 OperatorKind::ErfcCoulomb => ffi::OP_ERFC_COULOMB,
+                OperatorKind::Yukawa => ffi::OP_YUKAWA,
+                OperatorKind::SlaterGeminal => ffi::OP_SLATER_GEMINAL,
                 _ => return Err(FerricError::Libint(format!("operator {:?} not implemented", kind))),
             };
             let h = unsafe { ffi::scf_engine_create_2center_deriv(op_kind, omega, dfbs.max_nprim(), dfbs.max_l(), precision) };
@@ -716,6 +728,279 @@ mod tests {
         let mut e_dc = Engine::new_2e_geminal(Operator::stg(gamma, OperatorKind::Delcgtg2), &prep, 1e-14).unwrap();
         let v_dc = e_dc.compute_quartet(&prep, 0, 0, 0, 0).unwrap()[0];
         assert!(v_dc >= 0.0, "⟨|∇f12|^2⟩ should be ≥ 0, got {v_dc}");
+    }
+
+    #[test]
+    fn test_yukawa_quartet_runs() {
+        // Honest proof that libint2's TennoGmEval Operator::stg_x_coulomb kernel
+        // is compiled in: a non-null engine + a finite computed integral.
+        let (_, prep) = h2_sto3g();
+        let op = Operator::yukawa(0.5);
+        let eng = Engine::new_2e(op, &prep, 1e-14);
+        assert!(eng.is_ok(), "Yukawa engine failed: {:?}", eng.err());
+        let mut eng = eng.unwrap();
+        let q = eng.compute_quartet(&prep, 0, 0, 0, 0);
+        assert!(q.is_some(), "Yukawa (00|00) screened/empty");
+        let v = q.unwrap()[0];
+        assert!(v.is_finite() && v > 0.0, "Yukawa (00|00) = {v} not finite/positive");
+    }
+
+    #[test]
+    fn test_yukawa_quartet_matches_independent_numerical_reference() {
+        // GOLD-STANDARD external cross-check. The H2/STO-3G (00|00) Yukawa ERI
+        // exp(-zeta r12)/r12 was computed by a fully independent Gaussian-blob
+        // quadrature (scripts/yukawa_numref.py-style; see the scratchpad script),
+        // whose zeta->0 limit reproduces PySCF's int2e Coulomb (00|00) =
+        // 0.774605943920 EXACTLY, validating the reference itself. libint2's own
+        // int2e_yp intor is absent from this libcgto build, so this quadrature is
+        // the independent oracle.
+        //
+        // Reference (00|00) values, both H at their bonded geometry (single-center
+        // density, so bond length is irrelevant for THIS matrix element):
+        //   zeta=0.5 -> 0.434346212255
+        //   zeta=1.0 -> 0.270538503934
+        //   zeta=2.0 -> 0.128952759357
+        let (_, prep) = h2_sto3g();
+        for (zeta, reference) in [
+            (0.5_f64, 0.434346212255_f64),
+            (1.0, 0.270538503934),
+            (2.0, 0.128952759357),
+        ] {
+            let mut eng = Engine::new_2e(Operator::yukawa(zeta), &prep, 1e-16).unwrap();
+            let v = eng.compute_quartet(&prep, 0, 0, 0, 0).unwrap()[0];
+            assert!(
+                (v - reference).abs() < 1e-9,
+                "Yukawa (00|00) zeta={zeta}: ferric={v:.12} vs independent quadrature \
+                 {reference:.12} (diff {:.3e})",
+                (v - reference).abs()
+            );
+        }
+    }
+
+    #[test]
+    fn test_yukawa_zeta_zero_trends_to_coulomb() {
+        // Anchor: as zeta shrinks (staying within libint2's TennoGmEval
+        // interpolation domain U = zeta^2/(4 rho) >= 1e-7), the Yukawa ERI
+        // monotonically approaches the Coulomb value from below. We do NOT probe
+        // zeta so small it exits the table domain (U < Umin) -- there libint2
+        // falls back to an unstable upward recursion that assert-aborts on the
+        // T=0 (same-center) blocks the RI paths always contain. This test proves
+        // the correct limiting TREND without leaving the supported regime.
+        let (_, prep) = h2_sto3g();
+        let v_coul = Engine::new_2e(Operator::coulomb(), &prep, 1e-14)
+            .unwrap()
+            .compute_quartet(&prep, 0, 0, 0, 0)
+            .unwrap()[0];
+        let mut prev = 0.0;
+        for zeta in [1.0, 0.3, 0.1, 0.03, 0.01] {
+            let v = Engine::new_2e(Operator::yukawa(zeta), &prep, 1e-16)
+                .unwrap()
+                .compute_quartet(&prep, 0, 0, 0, 0)
+                .unwrap()[0];
+            assert!(v < v_coul, "yukawa(zeta={zeta})={v} must be < coulomb {v_coul}");
+            assert!(v > prev, "yukawa should increase toward coulomb as zeta shrinks");
+            prev = v;
+        }
+        // At zeta=0.01, U = 1e-4/(4 rho) is still >= Umin for these compact H 1s
+        // exponents, so we're on the interpolation path; the value is within ~1%
+        // of Coulomb.
+        assert!(
+            (prev - v_coul).abs() / v_coul < 0.02,
+            "yukawa(0.01)={prev} should be within ~2% of coulomb {v_coul}"
+        );
+    }
+
+    #[test]
+    fn test_yukawa_attenuated_below_coulomb_quartet() {
+        // For finite zeta, exp(-zeta r)/r < 1/r pointwise, so the integral is
+        // strictly below (and monotonically decreasing in zeta).
+        let (_, prep) = h2_sto3g();
+        let v_coul = Engine::new_2e(Operator::coulomb(), &prep, 1e-14)
+            .unwrap()
+            .compute_quartet(&prep, 0, 0, 0, 0)
+            .unwrap()[0];
+        let v_small = Engine::new_2e(Operator::yukawa(0.3), &prep, 1e-14)
+            .unwrap()
+            .compute_quartet(&prep, 0, 0, 0, 0)
+            .unwrap()[0];
+        let v_large = Engine::new_2e(Operator::yukawa(2.0), &prep, 1e-14)
+            .unwrap()
+            .compute_quartet(&prep, 0, 0, 0, 0)
+            .unwrap()[0];
+        assert!(
+            0.0 < v_large && v_large < v_small && v_small < v_coul,
+            "expected 0 < yukawa(2.0)={v_large} < yukawa(0.3)={v_small} < coulomb={v_coul}"
+        );
+    }
+
+    #[test]
+    fn test_yukawa_ri_paths_run_and_are_attenuated() {
+        // The Yukawa operator must work on the RI 3-center (P|mu nu) and 2-center
+        // (P|Q) paths that F12/RI-MP2 consume -- INCLUDING the same-center
+        // (T=0) shell blocks those paths always contain (e.g. a diagonal aux
+        // (P|P), or (P|mu mu) with the aux and orbital shells on the same atom).
+        //
+        // This is a regression guard for the libint2 TennoGmEval abort: at a
+        // realistic zeta (U = zeta^2/(4 rho) stays within the [1e-7, 1e3]
+        // interpolation domain), the T=0 blocks route through interpolate_Gm
+        // (which permits T>=0), NOT the unstable eval_urr (which assert-aborts on
+        // T=0). A pathologically tiny zeta (U < Umin) would force eval_urr and
+        // SIGABRT -- see Operator::yukawa's doc on the supported zeta range.
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
+        let bs = basis::bundled("sto-3g").unwrap();
+        let obs = PreparedBasis::new(&mol, &bs).unwrap();
+        let aux = basis::bundled("cc-pvdz-ri").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &aux).unwrap();
+        let zeta = 0.5;
+
+        // 3-center: sweep ALL shell triplets so same-center (T=0) blocks are hit.
+        let mut c3 = Engine::new_3center(Operator::coulomb(), &obs, &dfbs, 1e-14).unwrap();
+        let mut y3 = Engine::new_3center(Operator::yukawa(zeta), &obs, &dfbs, 1e-14).unwrap();
+        let mut any_attenuated = false;
+        for p in 0..dfbs.nshells() {
+            for s1 in 0..obs.nshells() {
+                for s2 in 0..obs.nshells() {
+                    let vc = c3.compute_eri3(&obs, &dfbs, p, s1, s2).map(|s| s.to_vec());
+                    let vy = y3.compute_eri3(&obs, &dfbs, p, s1, s2).map(|s| s.to_vec());
+                    if let (Some(vc), Some(vy)) = (vc, vy) {
+                        for (a, b) in vc.iter().zip(vy.iter()) {
+                            assert!(b.is_finite(), "3c yukawa element not finite: {b}");
+                            // |yukawa| <= |coulomb| pointwise for like-signed blocks;
+                            // just require finiteness + detect real attenuation.
+                            if a.abs() > 1e-6 && b.abs() < a.abs() - 1e-9 {
+                                any_attenuated = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(any_attenuated, "expected the 3c Yukawa to be attenuated below Coulomb somewhere");
+
+        // 2-center: sweep all pairs, including the diagonal (P|P) T=0 blocks.
+        let mut c2 = Engine::new_2center(Operator::coulomb(), &dfbs, 1e-14).unwrap();
+        let mut y2 = Engine::new_2center(Operator::yukawa(zeta), &dfbs, 1e-14).unwrap();
+        for p in 0..dfbs.nshells() {
+            for q in 0..dfbs.nshells() {
+                let vc = c2.compute_eri2(&dfbs, p, q).to_vec();
+                let vy = y2.compute_eri2(&dfbs, p, q).to_vec();
+                assert_eq!(vc.len(), vy.len());
+                for b in &vy {
+                    assert!(b.is_finite(), "2c yukawa element not finite: {b}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_slater_geminal_exact_runs_and_positive() {
+        // Operator::stg returns +exp(-zeta r12), positive everywhere, so any
+        // diagonal integral is > 0. Proves the native (unfitted) stg kernel is in.
+        let (_, prep) = h2_sto3g();
+        let eng = Engine::new_2e(Operator::slater_geminal(1.0), &prep, 1e-14);
+        assert!(eng.is_ok(), "SlaterGeminal engine failed: {:?}", eng.err());
+        let mut eng = eng.unwrap();
+        let v = eng.compute_quartet(&prep, 0, 0, 0, 0).unwrap()[0];
+        assert!(v.is_finite() && v > 0.0, "exact stg (00|00) = {v} should be > 0");
+    }
+
+    #[test]
+    fn test_exact_slater_geminal_matches_gaussian_fit() {
+        // The exact stg kernel (+exp(-gamma r)) vs the 6-Gaussian Tew-Klopper fit
+        // carried by Operator::stg(...)/OperatorKind::Cgtg. The fitted geminal
+        // folds a -1/gamma prefactor into its coefficients (f12 = -(1/gamma)exp),
+        // so ⟨Cgtg⟩ = -(1/gamma) * ⟨fitted exp⟩.
+        //
+        // GOLD-STANDARD external cross-check (independent Gaussian-blob quadrature,
+        // scratchpad/stg_ref.py). For H2/STO-3G (00|00), gamma=1:
+        //   exact  <exp(-r12)>            = 0.233767753107   (true kernel)
+        //   6-term Tew-Klopper fit        = 0.221610670253   (the fit's own value)
+        //   => the fit is 5.20% BELOW exact at the INTEGRAL level (the r=0 point
+        //      error is only 1.15%, but the STO-3G density samples r12 out to ~1
+        //      Bohr where the 6-term fit is worse; 5.2% is the honest integrated
+        //      fit error, independently confirmed, NOT a wiring bug).
+        let (_, prep) = h2_sto3g();
+        let gamma = 1.0;
+        const REF_EXACT: f64 = 0.233767753107; // independent quadrature, true exp(-r)
+        const REF_FIT: f64 = 0.221610670253; // independent quadrature, 6-term fit
+
+        // Exact: +exp(-gamma r12), via native TennoGmEval stg.
+        let mut e_exact = Engine::new_2e(Operator::slater_geminal(gamma), &prep, 1e-14).unwrap();
+        let v_exact = e_exact.compute_quartet(&prep, 0, 0, 0, 0).unwrap()[0];
+        assert!(
+            (v_exact - REF_EXACT).abs() < 1e-9,
+            "native stg {v_exact:.12} vs independent quadrature exact {REF_EXACT:.12} \
+             (diff {:.2e}) -- the exact kernel must reproduce true exp(-r)",
+            (v_exact - REF_EXACT).abs()
+        );
+
+        // Fitted: -(1/gamma) exp(-gamma r12) as a 6-Gaussian composite geminal.
+        let mut e_fit =
+            Engine::new_2e_geminal(Operator::stg(gamma, OperatorKind::Cgtg), &prep, 1e-14).unwrap();
+        let v_fit = e_fit.compute_quartet(&prep, 0, 0, 0, 0).unwrap()[0];
+        let v_fit_as_exp = v_fit * (-gamma); // undo the -1/gamma prefactor
+        assert!(
+            (v_fit_as_exp - REF_FIT).abs() < 1e-9,
+            "fitted geminal-as-exp {v_fit_as_exp:.12} (from Cgtg {v_fit:.12}) vs independent \
+             quadrature fit {REF_FIT:.12} (diff {:.2e})",
+            (v_fit_as_exp - REF_FIT).abs()
+        );
+
+        // The exact and fitted MUST differ by the fit's genuine ~5.2% error --
+        // close enough to be the same physics, far from bit-identical.
+        let rel = (v_fit_as_exp - v_exact).abs() / v_exact.abs();
+        assert!(
+            (0.04..0.07).contains(&rel),
+            "exact-vs-fit rel err {rel:.3e} should be the ~5.2% Tew-Klopper integrated fit error; \
+             a value near 0 would mean both paths hit the same kernel, a large value a wiring bug"
+        );
+    }
+
+    #[test]
+    fn test_f12_squared_via_exact_stg_identity() {
+        // Item 3 (f12_squared) building block: the square of a Slater geminal is
+        // itself a Slater geminal with DOUBLED decay:  exp(-gamma r)^2 = exp(-2 gamma r).
+        // The exact native stg kernel gives us an independent oracle for the
+        // squared geminal WITHOUT the 21-term Gaussian product expansion (which
+        // would overflow MAX_COMPONENTS=8 and needs new struct/shim work).
+        //
+        // We verify the identity at the integral level on a spread-out H2 (so the
+        // (0,0|1,1) block samples r12 > 0, not just the on-top r12~0 region where
+        // exp(-gamma r) ~ exp(-2 gamma r) ~ 1 trivially).
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 1.60\n", 0, 1).unwrap();
+        let bs = basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let gamma = 1.1;
+
+        // <exp(-2 gamma r12)> directly, via the exact stg kernel at 2*gamma.
+        let mut e_sq = Engine::new_2e(Operator::slater_geminal(2.0 * gamma), &prep, 1e-14).unwrap();
+        let v_sq_direct = e_sq.compute_quartet(&prep, 0, 0, 1, 1).unwrap().to_vec();
+
+        // Sanity: the single-geminal value at gamma is strictly LARGER than at
+        // 2*gamma for every element that samples r12>0 (slower decay), and the
+        // "squared = doubled-decay" operator is the correct, smaller one.
+        let mut e_single = Engine::new_2e(Operator::slater_geminal(gamma), &prep, 1e-14).unwrap();
+        let v_single = e_single.compute_quartet(&prep, 0, 0, 1, 1).unwrap().to_vec();
+        assert_eq!(v_sq_direct.len(), v_single.len());
+
+        // Every squared-geminal (doubled-decay) matrix element must be positive,
+        // finite, and no larger than the single-geminal one (exp(-2gr) <= exp(-gr)).
+        let mut saw_strictly_smaller = false;
+        for (sq, si) in v_sq_direct.iter().zip(v_single.iter()) {
+            assert!(sq.is_finite() && *sq > 0.0, "squared geminal element {sq} not finite/positive");
+            assert!(
+                *sq <= *si + 1e-12,
+                "doubled-decay element {sq} should be <= single-decay {si}"
+            );
+            if *sq < *si - 1e-9 {
+                saw_strictly_smaller = true;
+            }
+        }
+        assert!(
+            saw_strictly_smaller,
+            "at r12>0 the squared (doubled-decay) geminal must be strictly smaller somewhere; \
+             sq={v_sq_direct:?} single={v_single:?}"
+        );
     }
 
     #[test]

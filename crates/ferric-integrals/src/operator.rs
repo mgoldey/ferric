@@ -21,8 +21,20 @@ pub enum OperatorKind {
     /// `distance`/`omega` (r0, curvature-constrained 1/(r0*sqrt2)) convention
     /// as Terfc. Handled by the standalone table engine, not libint2.
     Terf,
-    /// exp(-omega * r12) / r12 -- Yukawa / screened Coulomb.
+    /// exp(-omega * r12) / r12 -- Yukawa / screened Coulomb. `omega` carries the
+    /// decay parameter ζ (zeta). Evaluated natively by libint2's
+    /// `Operator::stg_x_coulomb` (aliased `yukawa` in libint2, TennoGmEval core),
+    /// NOT via a Gaussian fit -- this is the exact screened-Coulomb kernel.
     Yukawa,
+    /// exp(-zeta * r12) -- EXACT Slater-type geminal (STG), evaluated natively by
+    /// libint2's `Operator::stg` (TennoGmEval core). `omega` carries the decay
+    /// parameter ζ. This is the UNFITTED counterpart of the 6-Gaussian
+    /// [`OperatorKind::Cgtg`] fit: `Cgtg` approximates exp(-γr) by a sum of
+    /// Gaussians (Tew–Klopper), `SlaterGeminal` is the exact kernel. Note the
+    /// sign/prefactor convention: `SlaterGeminal` carries the bare +exp(-ζr)
+    /// (matching libint2's `stg`), whereas `Cgtg` folds the −1/γ prefactor of the
+    /// F12 geminal into its fit coefficients.
+    SlaterGeminal,
     /// Contracted Gaussian geminal f12 ≈ Slater geminal -exp(-gamma r12)/gamma.
     Cgtg,
     /// f12 / r12 (geminal times Coulomb).
@@ -91,6 +103,50 @@ impl Operator {
     /// Short-range attenuated Coulomb: erfc(omega * r12) / r12.
     pub fn erfc(omega: f64) -> Self {
         Self::primitive(OperatorKind::ErfcCoulomb, omega, 0.0)
+    }
+
+    /// Yukawa / screened Coulomb: exp(-zeta * r12) / r12.
+    ///
+    /// Evaluated by libint2's native `Operator::stg_x_coulomb` kernel (aliased
+    /// `yukawa` in libint2, TennoGmEval core) -- the EXACT screened Coulomb, not
+    /// a Gaussian fit. `zeta` is the decay constant (Bohr⁻¹), analogous to
+    /// erf/erfc's `omega`.
+    ///
+    /// Limit: zeta -> 0 gives exp(0)/r = 1/r = Coulomb (approached from below).
+    ///
+    /// SUPPORTED RANGE: `zeta > 0`. libint2's TennoGmEval interpolates only for
+    /// `U = zeta²/(4ρ) ∈ [1e-7, 1e3]` (ρ = reduced bra/ket exponent); outside it
+    /// falls back to an upward recursion that is undefined (and, in a
+    /// debug/`assert`-enabled libint2 build, ABORTS the process) on the
+    /// same-center `T = 0` shell blocks that RI/3-center paths always contain.
+    /// In practice a physically meaningful `zeta` (≈ 0.1 – a few Bohr⁻¹) stays in
+    /// domain for ordinary Gaussian exponents. Do NOT pass a near-zero `zeta`
+    /// (e.g. 1e-6) expecting a clean Coulomb limit on RI paths -- that regime is
+    /// out of the kernel's table domain.
+    pub fn yukawa(zeta: f64) -> Self {
+        debug_assert!(zeta > 0.0, "Yukawa decay parameter zeta must be > 0 (got {zeta})");
+        Self::primitive(OperatorKind::Yukawa, zeta, 0.0)
+    }
+
+    /// Exact (unfitted) Slater-type geminal: exp(-zeta * r12).
+    ///
+    /// Evaluated by libint2's native `Operator::stg` kernel (TennoGmEval core) --
+    /// NOT to be confused with ferric's own [`Operator::stg`] function, which
+    /// instead builds the 6-Gaussian Tew–Klopper FIT of exp(-γr) for the
+    /// `Cgtg`/`CgtgCoulomb`/`Delcgtg2` geminal-composite engines. This function
+    /// ([`Operator::slater_geminal`]) is the UNFITTED counterpart of that fit.
+    /// Use this when the fit error of the 6-term expansion is not acceptable.
+    ///
+    /// Sign convention: carries the bare +exp(-ζr) (as libint2's native `stg`
+    /// kernel returns), NOT the −(1/γ)exp(-γr) F12-geminal form that ferric's
+    /// [`Operator::stg`] folds into its fit coefficients.
+    ///
+    /// SUPPORTED RANGE: `zeta > 0` (strictly). libint2's `eval_slater` requires
+    /// `U = zeta²/(4ρ) > 0` (the integral factorizes into two overlaps at U = 0);
+    /// the same TennoGmEval table-domain caveat as [`Operator::yukawa`] applies.
+    pub fn slater_geminal(zeta: f64) -> Self {
+        debug_assert!(zeta > 0.0, "Slater geminal zeta must be > 0 (got {zeta})");
+        Self::primitive(OperatorKind::SlaterGeminal, zeta, 0.0)
     }
 
     /// Exact tempered short-range Coulomb terfc(r12, r0) / r12, evaluated via the
