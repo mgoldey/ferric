@@ -80,6 +80,10 @@ extern "C" {
 pub const OP_COULOMB: c_int = 0;
 pub const OP_ERF_COULOMB: c_int = 1;
 pub const OP_ERFC_COULOMB: c_int = 2;
+/// Yukawa / screened Coulomb exp(-zeta r)/r -- libint2 `Operator::stg_x_coulomb`.
+pub const OP_YUKAWA: c_int = 3;
+/// Exact Slater-type geminal exp(-zeta r) -- libint2 `Operator::stg`.
+pub const OP_SLATER_GEMINAL: c_int = 4;
 pub const OP_OVERLAP: c_int = 100;
 pub const OP_KINETIC: c_int = 101;
 pub const OP_NUCLEAR: c_int = 102;
