@@ -11,6 +11,7 @@ use ferric_scf::ks_gradient::ks_gradient_closed;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ndarray::Array2;
+use rayon::prelude::*;
 
 fn rhf_cfg(xc: &str, hybrid: bool) -> RhfConfig {
     RhfConfig {
@@ -63,8 +64,16 @@ fn fd_gradient(xyz: &str, basis_name: &str, xc: &str, hybrid: bool, delta: f64) 
         ..base_cfg
     };
 
-    for atom in 0..natoms {
-        for coord in 0..3 {
+    // Each (atom, coord) displacement pair is independent given the shared
+    // `cfg` (which embeds the common equilibrium-density seed established
+    // above) -- fan out over rayon. Each solve_rhf call still serializes its
+    // own BLAS internally, so nesting under this outer iterator is safe (the
+    // same pattern the production code uses, e.g. rimp2.rs's per-pair
+    // parallelism over per-i BLAS3 GEMMs).
+    let pairs: Vec<(usize, usize)> = (0..natoms).flat_map(|a| (0..3).map(move |c| (a, c))).collect();
+    let results: Vec<((usize, usize), f64)> = pairs
+        .par_iter()
+        .map(|&(atom, coord)| {
             let mut mol_p = mol.clone();
             let mut mol_m = mol.clone();
             match coord {
@@ -84,8 +93,11 @@ fn fd_gradient(xyz: &str, basis_name: &str, xc: &str, hybrid: bool, delta: f64) 
                 &ParallelContext::default(), &mol_m, &prep_m, Operator::coulomb(), &bounds_m, &cfg,
             ).unwrap();
             assert!(res_m.converged, "FD solve did not converge at atom={atom} coord={coord} (-): exit={:?}", res_m.exit);
-            grad[(atom, coord)] = (res_p.energy - res_m.energy) / (2.0 * delta);
-        }
+            ((atom, coord), (res_p.energy - res_m.energy) / (2.0 * delta))
+        })
+        .collect();
+    for ((atom, coord), g) in results {
+        grad[(atom, coord)] = g;
     }
     grad
 }

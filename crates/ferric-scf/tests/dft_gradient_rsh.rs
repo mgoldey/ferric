@@ -14,6 +14,7 @@ use ferric_scf::ks_gradient::ks_gradient_closed;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ndarray::Array2;
+use rayon::prelude::*;
 
 fn cfg() -> RhfConfig {
     RhfConfig {
@@ -32,8 +33,17 @@ fn fd_gradient(xyz: &str, basis_name: &str, delta: f64) -> Array2<f64> {
     let mut grad = Array2::<f64>::zeros((natoms, 3));
     let bs = basis::bundled(basis_name).unwrap();
     let cfg = cfg();
-    for atom in 0..natoms {
-        for coord in 0..3 {
+
+    // Each (atom, coord) displacement pair is fully independent (each solve
+    // clones the molecule and displaces its own copy -- no shared mutable
+    // state) -- fan out over rayon. Each solve_rhf call still serializes its
+    // own BLAS internally, so nesting under this outer iterator is safe (the
+    // same pattern the production code uses, e.g. rimp2.rs's per-pair
+    // parallelism over per-i BLAS3 GEMMs).
+    let pairs: Vec<(usize, usize)> = (0..natoms).flat_map(|a| (0..3).map(move |c| (a, c))).collect();
+    let results: Vec<((usize, usize), f64)> = pairs
+        .par_iter()
+        .map(|&(atom, coord)| {
             let mut mol_p = mol.clone();
             let mut mol_m = mol.clone();
             match coord {
@@ -51,8 +61,11 @@ fn fd_gradient(xyz: &str, basis_name: &str, delta: f64) -> Array2<f64> {
             let res_m = solve_rhf(
                 &ParallelContext::default(), &mol_m, &prep_m, Operator::coulomb(), &bounds_m, &cfg,
             ).unwrap();
-            grad[(atom, coord)] = (res_p.energy - res_m.energy) / (2.0 * delta);
-        }
+            ((atom, coord), (res_p.energy - res_m.energy) / (2.0 * delta))
+        })
+        .collect();
+    for ((atom, coord), g) in results {
+        grad[(atom, coord)] = g;
     }
     grad
 }

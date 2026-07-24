@@ -14,6 +14,7 @@ use ferric_scf::ks_gradient::ks_gradient_closed;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ndarray::Array2;
+use rayon::prelude::*;
 
 fn rhf_cfg() -> RhfConfig {
     RhfConfig {
@@ -25,36 +26,48 @@ fn rhf_cfg() -> RhfConfig {
     }
 }
 
+/// One-sided displacement's energy (a single independent RHF solve). Each
+/// (atom, coord, sign) triple is fully independent of the others -- no shared
+/// mutable state -- so the caller fans these out over rayon. Each individual
+/// `solve_rhf` call already serializes its own BLAS calls internally
+/// (opt_in_blas_threads' rayon-worker self-guard), so nesting this under an
+/// outer rayon iterator is the same safe pattern the production code already
+/// uses (e.g. rimp2.rs's per-pair parallelism over per-i BLAS3 GEMMs).
+fn displaced_energy(mol: &Molecule, bs: &ferric_core::basis::BasisSet, cfg: &RhfConfig, atom: usize, coord: usize, delta: f64) -> f64 {
+    let mut mol_d = mol.clone();
+    match coord {
+        0 => mol_d.atoms[atom].x += delta,
+        1 => mol_d.atoms[atom].y += delta,
+        _ => mol_d.atoms[atom].zpos += delta,
+    }
+    let prep = PreparedBasis::new(&mol_d, bs).unwrap();
+    let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
+    solve_rhf(&ParallelContext::default(), &mol_d, &prep, Operator::coulomb(), &bounds, cfg)
+        .unwrap()
+        .energy
+}
+
 fn fd_gradient(xyz: &str, basis_name: &str, delta: f64) -> Array2<f64> {
     let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
     let natoms = mol.atoms.len();
-    let mut grad = Array2::<f64>::zeros((natoms, 3));
     let cfg = rhf_cfg();
     let bs = basis::bundled(basis_name).unwrap();
 
-    for atom in 0..natoms {
-        for coord in 0..3 {
-            let mut mol_p = mol.clone();
-            let mut mol_m = mol.clone();
-            match coord {
-                0 => { mol_p.atoms[atom].x += delta; mol_m.atoms[atom].x -= delta; }
-                1 => { mol_p.atoms[atom].y += delta; mol_m.atoms[atom].y -= delta; }
-                _ => { mol_p.atoms[atom].zpos += delta; mol_m.atoms[atom].zpos -= delta; }
-            }
-            let prep_p = PreparedBasis::new(&mol_p, &bs).unwrap();
-            let bounds_p = SchwarzBounds::compute(Operator::coulomb(), &prep_p).unwrap();
-            let res_p = solve_rhf(
-                &ParallelContext::default(), &mol_p, &prep_p, Operator::coulomb(), &bounds_p, &cfg,
-            ).unwrap();
+    // Flatten to (atom, coord) pairs and run both displacements for each in
+    // parallel -- 2*natoms*3 independent RHF solves total, previously serial.
+    let pairs: Vec<(usize, usize)> = (0..natoms).flat_map(|a| (0..3).map(move |c| (a, c))).collect();
+    let results: Vec<((usize, usize), f64)> = pairs
+        .par_iter()
+        .map(|&(atom, coord)| {
+            let e_p = displaced_energy(&mol, &bs, &cfg, atom, coord, delta);
+            let e_m = displaced_energy(&mol, &bs, &cfg, atom, coord, -delta);
+            ((atom, coord), (e_p - e_m) / (2.0 * delta))
+        })
+        .collect();
 
-            let prep_m = PreparedBasis::new(&mol_m, &bs).unwrap();
-            let bounds_m = SchwarzBounds::compute(Operator::coulomb(), &prep_m).unwrap();
-            let res_m = solve_rhf(
-                &ParallelContext::default(), &mol_m, &prep_m, Operator::coulomb(), &bounds_m, &cfg,
-            ).unwrap();
-
-            grad[(atom, coord)] = (res_p.energy - res_m.energy) / (2.0 * delta);
-        }
+    let mut grad = Array2::<f64>::zeros((natoms, 3));
+    for ((atom, coord), g) in results {
+        grad[(atom, coord)] = g;
     }
     grad
 }
