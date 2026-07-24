@@ -647,13 +647,36 @@ pub fn run_pdep_rpa_from_intermediates(
     // Step 6: Evaluate λ_α(iω_k). Dispatch to the Laplace-separable kernel
     // when the user opted in via `chi0_backend`.
     let _t_quad = crate::timing::Stage::start("pdep:freq_quad(lambda+invdielectric)");
-    let eigenvalues_freq = match stage.laplace_chi0_quad.as_ref() {
-        None => energy::eval_eigenvalues_at_frequencies_budgeted(
+    // Energy-only fast path: the correlation energy needs only
+    // Σ_α [ln λ_α + (1 − λ_α)] = ln det(ε) + tr(I − ε), which LU (dgetrf)
+    // gives for ~half the FLOPs of the eigenvalues-only dsyevd. Taken when the
+    // caller opts out of `eigenvalues_freq` (see `need_eigenvalues_freq`) AND
+    // nothing else downstream needs a per-frequency diagonalization. The
+    // Laplace-χ₀ backend has no log-det sibling, so it keeps the eigen path.
+    let logdet_ok = !config.need_eigenvalues_freq
+        && !config.need_inv_dielectric_freq
+        && stage.laplace_chi0_quad.is_none();
+    let trace_log_summands = if logdet_ok {
+        Some(energy::eval_trace_log_summands_budgeted(
             &eigenvectors, b_ov, &eps_occ, &eps_vir, &quad_freqs, config.memory_budget_bytes,
-        )?,
-        Some(q) => energy::eval_eigenvalues_at_frequencies_laplace(
-            &eigenvectors, b_ov, &eps_occ, &eps_vir, &quad_freqs, q,
-        )?,
+        )?)
+    } else {
+        None
+    };
+    // Empty (0 × 0) when the log-det path ran: the field is then not meaningful
+    // and the caller asked not to have it. Every consumer of `eigenvalues_freq`
+    // must set `need_eigenvalues_freq: true` (the default).
+    let eigenvalues_freq = if logdet_ok {
+        Array2::<f64>::zeros((0, 0))
+    } else {
+        match stage.laplace_chi0_quad.as_ref() {
+            None => energy::eval_eigenvalues_at_frequencies_budgeted(
+                &eigenvectors, b_ov, &eps_occ, &eps_vir, &quad_freqs, config.memory_budget_bytes,
+            )?,
+            Some(q) => energy::eval_eigenvalues_at_frequencies_laplace(
+                &eigenvectors, b_ov, &eps_occ, &eps_vir, &quad_freqs, q,
+            )?,
+        }
     };
 
     // Step 6b: Per-frequency full inverse-dielectric matrices in the PDEP basis
@@ -681,8 +704,12 @@ pub fn run_pdep_rpa_from_intermediates(
         1.1,
     );
 
-    // Step 7: Integrate RPA correlation energy.
-    let e_rpa = energy::rpa_correlation_energy(&quad_weights, &eigenvalues_freq);
+    // Step 7: Integrate RPA correlation energy. Both branches evaluate the same
+    // quantity; the log-det one just never formed the eigenvalues.
+    let e_rpa = match trace_log_summands.as_ref() {
+        Some(s) => energy::rpa_correlation_energy_from_summands(&quad_weights, s),
+        None => energy::rpa_correlation_energy(&quad_weights, &eigenvalues_freq),
+    };
 
     // Step 8: Diagnostic RI-dRPA energy (optional — full naux²×N_quad cost).
     let e_rpa_dft_diag = if config.run_diagnostics {

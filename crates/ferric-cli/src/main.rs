@@ -965,6 +965,7 @@ fn run_pdep_rpa_arm(
             // consume the inverse-dielectric stack rebuild their own
             // dielectric, so energy-only here is correct (M9 gate).
             need_inv_dielectric_freq: false,
+            need_eigenvalues_freq: true,
             verbose: cfg.scf.verbose,
         };
         // For open-shell molecules (multiplicity > 1) re-run with UHF + MOM so
@@ -1655,6 +1656,7 @@ fn run_gw(
             // here (GW's Σ_c needs the inverse-dielectric stack), but set
             // it explicitly for clarity at the call site too.
             need_inv_dielectric_freq: true,
+            need_eigenvalues_freq: true,
             verbose: cfg.scf.verbose,
         };
         let gw_cfg = ferric_gw::GwConfig {
@@ -1947,6 +1949,7 @@ fn run_bse_tda(
             // of what's set here; set it explicitly for clarity at the call
             // site too (matches the "gw" arm).
             need_inv_dielectric_freq: true,
+            need_eigenvalues_freq: true,
             verbose: cfg.scf.verbose,
         };
         let ha_to_ev = 27.211_386_245_988_f64;
@@ -2052,6 +2055,7 @@ fn run_tdhf_static_polarizability(
             // modes from run_pdep_rpa only) -- unlike "gw"/"bse-tda",
             // this does NOT need the inverse-dielectric frequency stack.
             need_inv_dielectric_freq: false,
+            need_eigenvalues_freq: true,
             verbose: cfg.scf.verbose,
         };
         let res = ferric_gw::bse::run_rpax_static_polarizability(
@@ -2227,6 +2231,10 @@ fn run_optimize(
                 memory_budget_bytes: budget_bytes,
                 // CLI RPA optimize is energy/gradient only (M9 gate).
                 need_inv_dielectric_freq: false,
+                // Energy/gradient only: no consumer reads `eigenvalues_freq`
+                // here, so skip the per-frequency diagonalization and take the
+                // LU log-det path for the correlation energy.
+                need_eigenvalues_freq: false,
                 verbose: cfg.scf.verbose,
             };
             let h_fd = 5e-4;

@@ -2683,6 +2683,7 @@ mod tests {
             eigensolver_conv_thresh: 1e-9,
             // The PDEP dynamic-α property path reads inv_dielectric_freq (M9 gate).
             need_inv_dielectric_freq: true,
+            need_eigenvalues_freq: true,
             ..Default::default()
         };
         let rpa = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();

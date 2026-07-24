@@ -56,6 +56,7 @@ fn pdep_cfg() -> PdepRpaConfig {
         // The standalone run below mirrors what each run_gw call rebuilds, and
         // GW Σ_c consumes inv_dielectric_freq — keep the timing apples-to-apples.
         need_inv_dielectric_freq: true,
+        need_eigenvalues_freq: true,
         verbose: false,
     }
 }

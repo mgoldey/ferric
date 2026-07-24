@@ -83,6 +83,7 @@ fn inv_dielectric_freq_built_when_flag_set() {
     let (mol, obs, dfbs, op, rhf) = setup("../../testdata/molecules/h2.xyz", "sto-3g", "sto-3g");
     let cfg = PdepRpaConfig {
         need_inv_dielectric_freq: true,
+        need_eigenvalues_freq: true,
         ..PdepRpaConfig::default()
     };
     let result = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();

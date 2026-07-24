@@ -82,6 +82,7 @@ const TOL_EV: f64 = 0.20;
 
 fn pdep_cfg() -> PdepRpaConfig {
     PdepRpaConfig {
+        need_eigenvalues_freq: true, // GW reads eigenvalues_freq
         quadrature: QuadratureConfig {
             scheme: QuadratureScheme::GaussLegendre,
             n_points: 16,

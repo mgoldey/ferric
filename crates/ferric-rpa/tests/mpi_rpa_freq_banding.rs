@@ -105,6 +105,7 @@ fn df_rhf_config() -> RhfConfig {
 fn rpa_cfg() -> PdepRpaConfig {
     PdepRpaConfig {
         need_inv_dielectric_freq: true,
+        need_eigenvalues_freq: true,
         ..Default::default()
     }
 }

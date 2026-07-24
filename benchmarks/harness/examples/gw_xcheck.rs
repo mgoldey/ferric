@@ -69,6 +69,7 @@ fn main() {
         // run_gw forces this on internally (gw::with_inv_dielectric); standalone
         // RPA uses here are energy-only, so stay lean per M9.
         need_inv_dielectric_freq: false,
+        need_eigenvalues_freq: true,
         verbose: false,
     };
     let gcfg = GwConfig {

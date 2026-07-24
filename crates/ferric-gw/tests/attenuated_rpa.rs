@@ -17,6 +17,7 @@ use ferric_scf::screening::SchwarzBounds;
 
 fn pdep_cfg() -> PdepRpaConfig {
     PdepRpaConfig {
+        need_eigenvalues_freq: true, // GW reads eigenvalues_freq
         quadrature: QuadratureConfig {
             scheme: QuadratureScheme::GaussLegendre,
             n_points: 16,

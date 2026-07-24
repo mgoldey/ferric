@@ -1398,6 +1398,7 @@ fn run_pdep_rpa(
         // Python run_pdep_rpa is energy-only; the GW/property paths that consume
         // the inverse-dielectric stack have their own entry points (M9 gate).
         need_inv_dielectric_freq: false,
+        need_eigenvalues_freq: true,
         verbose: false,
     };
     let r = run_pdep_rpa_inner(&mol.inner, &prep, &dfbs, op, &rhf, &cfg).map_err(make_err)?;
@@ -1595,6 +1596,7 @@ fn run_gw(
         memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
         // run_gw forces this on internally; set explicitly for clarity too.
         need_inv_dielectric_freq: true,
+        need_eigenvalues_freq: true,
         verbose: false,
     };
     let gw_cfg = GwConfig {
@@ -1848,6 +1850,7 @@ fn run_u_gw(
         memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
         // run_u_gw forces this on internally; set explicitly for clarity too.
         need_inv_dielectric_freq: true,
+        need_eigenvalues_freq: true,
         verbose: false,
     };
     let gw_cfg = GwConfig {
@@ -2029,6 +2032,7 @@ fn run_bse_tda(
         // run_bse_tda's internal GW build forces this on regardless; set it
         // explicitly for clarity at the call site too (matches run_gw).
         need_inv_dielectric_freq: true,
+        need_eigenvalues_freq: true,
         verbose: false,
     };
 
@@ -2166,6 +2170,7 @@ fn run_tdhf_static_polarizability(
         // run_pdep_rpa only) — does not need the inverse-dielectric
         // frequency stack that run_bse_tda/run_gw force on.
         need_inv_dielectric_freq: false,
+        need_eigenvalues_freq: true,
         verbose: false,
     };
 

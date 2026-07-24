@@ -221,6 +221,29 @@ pub struct PdepRpaConfig {
     /// Default `false` — set `true` at every call site that later reads
     /// `PdepRpaResult.inv_dielectric_freq`.
     pub need_inv_dielectric_freq: bool,
+    /// If true, populate `PdepRpaResult.eigenvalues_freq` (the per-frequency
+    /// dielectric eigenvalues) by DIAGONALIZING at every quadrature point.
+    ///
+    /// The correlation energy itself does NOT need them: it needs only
+    /// `Σ_α [ln λ_α + (1 − λ_α)]`, which is identically
+    /// `ln det(ε) + tr(I − ε)` and is computed by LU (`dgetrf`, ~2/3 n³) for
+    /// about half the FLOPs of the eigenvalues-only divide-and-conquer
+    /// `dsyevd` (~4/3 n³) — measured 3.1–6.4x on the isolated kernel at
+    /// n = 64…1024, since dsyevd's tridiagonal reduction is memory-bound BLAS2
+    /// while dgetrf is blocked BLAS3. This is what PySCF does
+    /// (`pyscf/gw/rpa.py:83`).
+    ///
+    /// `true` keeps the historical eigenvalue path and output. Set `false` on
+    /// energy-only runs to take the log-det fast path. It must stay `true`
+    /// wherever `eigenvalues_freq` is actually read: `ferric-python` exports it,
+    /// `mpi_rpa_freq_banding.rs` asserts serial-vs-MPI agreement row-for-row to
+    /// 1e-11, and `ferric-gw` shape-checks it.
+    ///
+    /// Default `true` — preserves existing behavior for every caller that does
+    /// not opt out, exactly like `need_inv_dielectric_freq` above but inverted
+    /// (that one defaults off because its output is huge; this one defaults on
+    /// because its output is small and historically always present).
+    pub need_eigenvalues_freq: bool,
     /// Print one line per Lanczos/Davidson outer iteration to stdout while
     /// the static dielectric eigensolve runs (iteration number, block size,
     /// worst Ritz residual) — live progress for a long-running job, opt-in
@@ -246,6 +269,11 @@ impl Default for PdepRpaConfig {
             chi0_sparsity: Chi0Sparsity::Dense,
             memory_budget_bytes: None,
             need_inv_dielectric_freq: false,
+            // Default ON: `eigenvalues_freq` has historically always been
+            // populated, so this preserves behavior for every caller that does
+            // not explicitly opt out. Energy-only paths set it false to take
+            // the LU log-det fast path.
+            need_eigenvalues_freq: true,
             verbose: false,
         }
     }
