@@ -580,18 +580,22 @@ pub fn solve_rhf(
                 total_quartets += dj.build(&d, &mut j_buf)?;
             }
             if let Some(dfk) = df_k.as_mut() {
-                // Prefer the O(naux·n²·nocc) C_occ half-transform when the
-                // current density factors as `D = 2·C_occ·C_occᵀ` (available
-                // from iter ≥ 2 in the default non-smearing path). K is linear in
-                // D, so build K(C_occ·C_occᵀ) and double it (exact ×2). The guess
-                // iteration and the smearing path fall back to the O(naux·n³)
-                // density contraction.
-                if let Some(c_occ) = d_occ.as_ref() {
-                    dfk.build_from_occ(c_occ, &mut k_buf)?;
-                    k_buf *= 2.0;
-                } else {
-                    dfk.build(&d, &mut k_buf)?;
-                }
+                // NOTE: the O(naux·n²·nocc) C_occ half-transform
+                // (KBuilder::build_from_occ) is deliberately NOT used here.
+                // It is mathematically equivalent to the density path but
+                // reassociates the B-tensor contraction differently, which
+                // introduces an f64-floor-level per-iteration K perturbation.
+                // On benzene/def2-svp this measurably prevented RHF from
+                // settling (dp_rms plateaus ~1e-9 while dE keeps oscillating
+                // ~1e-5-2e-6 indefinitely — a genuine limit-cycle, not just a
+                // "needs 1-2 more iterations" margin issue; confirmed via
+                // FERRIC_SCF_TRACE and reproduced deterministically across
+                // repeat runs). Reverted to always using the exact density
+                // contraction until the occ-path numerics are revisited
+                // (existing dfk_occ_path.rs tests use water/cc-pVDZ at
+                // max_iter=200 with large margin and did not catch this).
+                let _ = &d_occ; // still cached for a future re-enable; unused for now
+                dfk.build(&d, &mut k_buf)?;
             } else if let Some(dk) = direct_k.as_mut() {
                 // Only reached when exact exchange is consumed (k_consumed):
                 // for pure DFT `direct_k` is None and k_buf stays zero, since
@@ -624,8 +628,9 @@ pub fn solve_rhf(
             // loop (geometry-only). Only the D-dependent contraction runs here.
             let dfk_sr = dfk_sr.as_mut().expect("dfk_sr built when omega>0");
             let dfk_lr = dfk_lr.as_mut().expect("dfk_lr built when omega>0");
+            // occ-path disabled here too (see the plain-HF K-build note above).
             crate::fock_assembly::subtract_rsh_exchange(
-                dfk_sr, dfk_lr, &d, d_occ.as_ref(), 2.0, &mut f, k_mix.sr, k_mix.lr, 0.5,
+                dfk_sr, dfk_lr, &d, None, 2.0, &mut f, k_mix.sr, k_mix.lr, 0.5,
             )?;
         } else if k_mix.sr > 0.0 {
             // Plain hybrid or pure HF: K already built by the builder path above.

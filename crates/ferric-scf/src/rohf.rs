@@ -310,22 +310,16 @@ pub fn solve_rohf(
         if k_mix.omega > 0.0 {
             let dfk_sr = dfk_sr.as_mut().expect("dfk_sr built when omega>0");
             let dfk_lr = dfk_lr.as_mut().expect("dfk_lr built when omega>0");
-            // ROHF densities are exact plain products of the current MO set:
-            //   d_b = C[..nocc_b]·C[..nocc_b]ᵀ   (nocc_b = nocc_double)
-            //   d_a = C[..nocc_a]·C[..nocc_a]ᵀ   (nocc_a = nocc_double + nocc_open)
-            // so the per-spin occupied blocks drive the DF-K half-transform with
-            // no scaling (see build_rohf_densities). Empty-block guard → None
-            // falls back to the density path (build_from_occ handles nocc=0 too,
-            // but None keeps the guard uniform with the RHF/UHF sites).
-            let c_occ_a =
-                if nocc_a > 0 { Some(c.slice(ndarray::s![.., ..nocc_a]).to_owned()) } else { None };
-            let c_occ_b =
-                if nocc_b > 0 { Some(c.slice(ndarray::s![.., ..nocc_b]).to_owned()) } else { None };
+            // occ-path DISABLED (always None) — see the matching note in
+            // rhf.rs: the DF-K half-transform's B-tensor reassociation differs
+            // from the density path at the f64 floor, which measurably
+            // prevented RHF from settling on benzene/def2-svp. Reverted to
+            // always using the exact density contraction here too.
             crate::fock_assembly::subtract_rsh_exchange(
-                dfk_sr, dfk_lr, &d_a, c_occ_a.as_ref(), 1.0, &mut f_a, k_mix.sr, k_mix.lr, 1.0,
+                dfk_sr, dfk_lr, &d_a, None, 1.0, &mut f_a, k_mix.sr, k_mix.lr, 1.0,
             )?;
             crate::fock_assembly::subtract_rsh_exchange(
-                dfk_sr, dfk_lr, &d_b, c_occ_b.as_ref(), 1.0, &mut f_b, k_mix.sr, k_mix.lr, 1.0,
+                dfk_sr, dfk_lr, &d_b, None, 1.0, &mut f_b, k_mix.sr, k_mix.lr, 1.0,
             )?;
         } else if need_k {
             let dk = direct_k.as_mut().expect("DirectK built before loop");

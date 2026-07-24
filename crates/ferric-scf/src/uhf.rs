@@ -187,20 +187,14 @@ pub fn solve_uhf_fockmod(
     let mut d_a = density(&c_a, nocc_a);
     let mut d_b = density(&c_b, nocc_b);
 
-    // Occupied MO coefficients producing the CURRENT per-spin densities, used to
-    // drive the O(naux·n²·nocc) DF-K half-transform (D_σ = C_occ,σ·C_occ,σᵀ, so
-    // the per-spin C_occ maps directly to `KBuilder::build_from_occ` — no scaling
-    // unlike the closed-shell √2 factor). `None` when D_σ is not a plain
-    // rank-nocc C·Cᵀ: the `fractional_occ` degenerate-frontier ensemble path
-    // (`D = Σ_p f_p c_p c_pᵀ`). UHF's guess density is itself `density(c,nocc)`,
-    // so C_occ is available from iter 1 (unlike RHF's raw SAD guess).
-    let occ_or_none = |c: &Array2<f64>, nocc: usize| -> Option<Array2<f64>> {
-        if config.fractional_occ || nocc == 0 {
-            None
-        } else {
-            Some(c.slice(ndarray::s![.., ..nocc]).to_owned())
-        }
-    };
+    // Occupied MO coefficients that would drive the O(naux·n²·nocc) DF-K
+    // half-transform (KBuilder::build_from_occ). DISABLED (always None) — see
+    // the matching note in rhf.rs: the occ-path's B-tensor reassociation
+    // differs from the density path at the f64 floor, which measurably
+    // prevented RHF from settling on benzene/def2-svp (a genuine dE
+    // limit-cycle, not just a slow-margin issue). Reverted to always using
+    // the exact density contraction until the occ-path numerics are revisited.
+    let occ_or_none = |_c: &Array2<f64>, _nocc: usize| -> Option<Array2<f64>> { None };
     let mut d_occ_a: Option<Array2<f64>> = occ_or_none(&c_a, nocc_a);
     let mut d_occ_b: Option<Array2<f64>> = occ_or_none(&c_b, nocc_b);
 
