@@ -92,7 +92,7 @@ pub fn solve_uhf_fockmod(
     let xc_contrib: Option<Box<dyn UksXcContribution>> = if let Some(name) = config.xc.as_deref() {
         let main = config.dft_grid.clone().unwrap_or_default();
         let nlc = config.nlc_grid.clone()
-            .unwrap_or(ferric_dft::grid::AtomicGridConfig { n_radial: 50, n_angular: 50 });
+            .unwrap_or(ferric_dft::grid::AtomicGridConfig { n_radial: 50, n_angular: 50, ..Default::default() });
         let ks = KsXcUks::new(mol, prep.basis_set(), name, &main, &nlc)
             .map_err(|e| FerricError::General(format!("KsXcUks init for {name}: {e:?}")))?;
         Some(Box::new(ks) as Box<dyn UksXcContribution>)

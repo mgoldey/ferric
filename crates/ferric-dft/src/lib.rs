@@ -38,6 +38,7 @@ pub mod gradient;
 pub mod grid;
 pub mod ks;
 pub mod lebedev;
+pub mod prune;
 pub mod radial;
 pub mod vv10;
 pub mod vxc;

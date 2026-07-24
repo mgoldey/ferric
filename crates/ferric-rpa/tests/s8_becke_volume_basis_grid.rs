@@ -219,9 +219,9 @@ fn s8_h1_basis_sensitivity() {
             rationale as s8_h1_basis_sensitivity above"]
 fn s8_h2_grid_sensitivity() {
     let grids = [
-        ("50x50", AtomicGridConfig { n_radial: 50, n_angular: 50 }),
-        ("75x110", AtomicGridConfig { n_radial: 75, n_angular: 110 }),
-        ("99x302", AtomicGridConfig { n_radial: 99, n_angular: 302 }),
+        ("50x50", AtomicGridConfig { n_radial: 50, n_angular: 50, ..Default::default() }),
+        ("75x110", AtomicGridConfig { n_radial: 75, n_angular: 110, ..Default::default() }),
+        ("99x302", AtomicGridConfig { n_radial: 99, n_angular: 302, ..Default::default() }),
     ];
     let cases: &[(&str, fn() -> Molecule, usize)] = &[
         ("SiH4 (Si)", sih4, 0),

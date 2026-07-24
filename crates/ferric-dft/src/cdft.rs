@@ -124,7 +124,7 @@ mod tests {
             charge: 0,
             multiplicity: 1,
         };
-        let grid = build_atomic_grid(&mol, &AtomicGridConfig { n_radial: 25, n_angular: 50 });
+        let grid = build_atomic_grid(&mol, &AtomicGridConfig { n_radial: 25, n_angular: 50, ..Default::default() });
         let npts = grid.len();
         assert!(npts >= 2_000, "test must exercise the parallel path (npts={npts})");
 

@@ -155,7 +155,7 @@ pub fn ks_gradient_closed(
 
     // VV10 nonlocal-correlation gradient (only if the functional advertises it).
     if let Some(vv10_params) = xc.vv10 {
-        let nlc_cfg = ferric_dft::grid::AtomicGridConfig { n_radial: 50, n_angular: 50 };
+        let nlc_cfg = ferric_dft::grid::AtomicGridConfig { n_radial: 50, n_angular: 50, ..Default::default() };
         let vv10_grad = ferric_dft::gradient::vv10_gradient_from_density(
             mol, bs, &d, &vv10_params, &nlc_cfg,
             prep.shell_to_atom(), prep.shell_offsets(), prep.shell_dims(),
@@ -291,7 +291,7 @@ pub fn ks_gradient_uks(
 
     // VV10: function of ρ_tot, identical to the closed-shell formula.
     if let Some(vv10_params) = xc.vv10 {
-        let nlc_cfg = ferric_dft::grid::AtomicGridConfig { n_radial: 50, n_angular: 50 };
+        let nlc_cfg = ferric_dft::grid::AtomicGridConfig { n_radial: 50, n_angular: 50, ..Default::default() };
         let vv10_grad = ferric_dft::gradient::vv10_gradient_from_density(
             mol, bs, &d_total, &vv10_params, &nlc_cfg,
             prep.shell_to_atom(), prep.shell_offsets(), prep.shell_dims(),
@@ -426,7 +426,7 @@ pub fn ks_gradient_roks(
 
     // VV10 (closed-shell-friendly, on total ρ).
     if let Some(vv10_params) = xc.vv10 {
-        let nlc_cfg = ferric_dft::grid::AtomicGridConfig { n_radial: 50, n_angular: 50 };
+        let nlc_cfg = ferric_dft::grid::AtomicGridConfig { n_radial: 50, n_angular: 50, ..Default::default() };
         let vv10_grad = ferric_dft::gradient::vv10_gradient_from_density(
             mol, bs, &d_total, &vv10_params, &nlc_cfg,
             prep.shell_to_atom(), prep.shell_offsets(), prep.shell_dims(),

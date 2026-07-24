@@ -23,7 +23,7 @@ use ferric_core::mol::Molecule;
 /// recommends a slight modification (Becke radii) but Bragg-Slater is the
 /// common default and equivalent at the chemical-accuracy level needed
 /// for atomic partitioning.
-fn bragg_slater_bohr(z: i32) -> f64 {
+pub(crate) fn bragg_slater_bohr(z: i32) -> f64 {
     let r_a: f64 = match z {
         1 => 0.35,  2 => 0.30,
         3 => 1.45,  4 => 1.05, 5 => 0.85,  6 => 0.70,  7 => 0.65,  8 => 0.60,

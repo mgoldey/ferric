@@ -1039,7 +1039,7 @@ mod tests {
         let cfg = RhfConfig {
             max_iter: 200,
             xc: Some("PBE".to_string()),
-            dft_grid: Some(AtomicGridConfig { n_radial: 75, n_angular: 110 }),
+            dft_grid: Some(AtomicGridConfig { n_radial: 75, n_angular: 110, ..Default::default() }),
             ..Default::default() // use_sad_guess defaults true ⇒ MINAO
         };
         let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).expect("Cu2 RKS-PBE");

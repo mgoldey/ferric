@@ -58,6 +58,7 @@ pub fn solve_cdft_uhf(
     let grid_cfg = config.dft_grid.clone().unwrap_or(AtomicGridConfig {
         n_radial: 99,
         n_angular: 302,
+        ..Default::default()
     });
     let grid = build_atomic_grid(mol, &grid_cfg);
     let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();

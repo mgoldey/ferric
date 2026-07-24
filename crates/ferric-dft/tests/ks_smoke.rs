@@ -19,7 +19,7 @@ fn ks_xc_lda_kmix_is_no_exact_exchange() {
     let mol = h2();
     let bs = basis::bundled("cc-pvdz").unwrap();
     let main = AtomicGridConfig::default();
-    let nlc = AtomicGridConfig { n_radial: 50, n_angular: 50 };
+    let nlc = AtomicGridConfig { n_radial: 50, n_angular: 50, ..Default::default() };
     let ks = KsXc::new(&mol, &bs, "LDA", &main, &nlc).unwrap();
     let mix = ks.k_mix();
     assert_eq!(mix.sr, 0.0,    "LDA has no exact exchange (sr)");
@@ -32,7 +32,7 @@ fn ks_xc_b3lyp_kmix_is_plain_hybrid() {
     let mol = h2();
     let bs = basis::bundled("cc-pvdz").unwrap();
     let main = AtomicGridConfig::default();
-    let nlc = AtomicGridConfig { n_radial: 50, n_angular: 50 };
+    let nlc = AtomicGridConfig { n_radial: 50, n_angular: 50, ..Default::default() };
     let ks = KsXc::new(&mol, &bs, "B3LYP", &main, &nlc).unwrap();
     let mix = ks.k_mix();
     assert_eq!(mix.omega, 0.0, "B3LYP is not range-separated");
@@ -47,7 +47,7 @@ fn ks_xc_wb97xv_kmix_is_range_separated() {
     let mol = h2();
     let bs = basis::bundled("cc-pvdz").unwrap();
     let main = AtomicGridConfig::default();
-    let nlc = AtomicGridConfig { n_radial: 50, n_angular: 50 };
+    let nlc = AtomicGridConfig { n_radial: 50, n_angular: 50, ..Default::default() };
     let ks = KsXc::new(&mol, &bs, "wB97X-V", &main, &nlc).unwrap();
     let mix = ks.k_mix();
     // libxc convention: at short range c_SR = α+β, at long range c_LR = α.
@@ -76,7 +76,7 @@ fn ks_xc_add_xc_produces_negative_energy_h2o_lda() {
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
 
     let main = AtomicGridConfig::default();
-    let nlc = AtomicGridConfig { n_radial: 50, n_angular: 50 };
+    let nlc = AtomicGridConfig { n_radial: 50, n_angular: 50, ..Default::default() };
     let ks = KsXc::new(&mol, &bs, "LDA", &main, &nlc).unwrap();
 
     let n = rhf.density_total.nrows();

@@ -149,7 +149,7 @@ fn he2_plus_hab(r_ang: f64) -> (f64, f64, f64, f64) {
     let s = overlap(&prep);
 
     // Weight matrices (rebuild on the driver's grid: 99×302).
-    let gcfg = AtomicGridConfig { n_radial: 99, n_angular: 302 };
+    let gcfg = AtomicGridConfig { n_radial: 99, n_angular: 302, ..Default::default() };
     let grid = build_atomic_grid(&mol, &gcfg);
     let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
     let chi = eval_basis_on_points(&mol, &bs, &pts).unwrap();

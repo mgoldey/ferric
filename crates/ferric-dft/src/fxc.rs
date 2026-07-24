@@ -791,7 +791,7 @@ mod tests {
         let d_b = res.density_beta.clone().unwrap();
 
         // PBE (pure GGA — exercises v2rho2 + v2rhosigma + v2sigma2).
-        let cfg = AtomicGridConfig { n_radial: 50, n_angular: 110 };
+        let cfg = AtomicGridConfig { n_radial: 50, n_angular: 110, ..Default::default() };
         let xc_def = crate::libxc::xc_def_from_name_nspin("PBE", 2).unwrap();
         let kernel = GgaFxcKernel::new(&mol, &bs, xc_def, &cfg).unwrap();
 
@@ -906,7 +906,7 @@ mod tests {
         let d_a = res.density_alpha.clone();
         let d_b = res.density_beta.clone().unwrap();
 
-        let cfg = AtomicGridConfig { n_radial: 50, n_angular: 110 };
+        let cfg = AtomicGridConfig { n_radial: 50, n_angular: 110, ..Default::default() };
         let lda_k = LdaFxcKernel::new(
             &mol, &bs, crate::libxc::xc_def_from_name_nspin("LDA", 2).unwrap(), &cfg,
         )

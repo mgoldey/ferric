@@ -741,6 +741,7 @@ mod cutoff_tests {
         let nlc_cfg = crate::grid::AtomicGridConfig {
             n_radial: 50,
             n_angular: 50,
+            ..Default::default()
         };
         let grid = crate::grid::build_atomic_grid(mol, &nlc_cfg);
         let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
@@ -769,6 +770,7 @@ mod cutoff_tests {
         let nlc_cfg = crate::grid::AtomicGridConfig {
             n_radial,
             n_angular,
+            ..Default::default()
         };
         let grid = crate::grid::build_atomic_grid(mol, &nlc_cfg);
         let npts = grid.len();

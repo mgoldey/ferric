@@ -360,7 +360,7 @@ mod tests {
     /// stall/divergence early-abort on top.
     #[test]
     fn ksdft_ladder_carries_xc_and_escalates() {
-        let grid = ferric_dft::grid::AtomicGridConfig { n_radial: 99, n_angular: 302 };
+        let grid = ferric_dft::grid::AtomicGridConfig { n_radial: 99, n_angular: 302, ..Default::default() };
         let base = RhfConfig {
             xc: Some("PBE".to_string()),
             dft_grid: Some(grid.clone()),

@@ -39,7 +39,7 @@ pub fn vxc_diagonal_mo(
         // so the physical density matrix is 2·density_alpha (rhf.rs).
         let d_full = 2.0 * &scf.density_alpha;
         let main_grid = AtomicGridConfig::default();
-        let nlc_grid = AtomicGridConfig { n_radial: 50, n_angular: 50 };
+        let nlc_grid = AtomicGridConfig { n_radial: 50, n_angular: 50, ..Default::default() };
         let ks_xc = KsXc::new(mol, bs, xc_name, &main_grid, &nlc_grid)
             .map_err(|e| FerricError::General(format!("KsXc::new: {e:?}")))?;
         let mut vxc_ao = ndarray::Array2::<f64>::zeros((d_full.nrows(), d_full.ncols()));
@@ -56,7 +56,7 @@ pub fn vxc_diagonal_mo(
     // Build the same grid + AO values KsXcUks uses for SCF — guarantees the
     // v_xc we subtract matches what entered the KS Fock.
     let main_grid = AtomicGridConfig::default();
-    let nlc_grid = AtomicGridConfig { n_radial: 50, n_angular: 50 };
+    let nlc_grid = AtomicGridConfig { n_radial: 50, n_angular: 50, ..Default::default() };
     let ks_xc = KsXcUks::new(mol, bs, xc_name, &main_grid, &nlc_grid)
         .map_err(|e| FerricError::General(format!("KsXcUks::new: {e:?}")))?;
 

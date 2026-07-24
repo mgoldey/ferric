@@ -35,6 +35,7 @@ fn sum_of_atom_weights_equals_overlap() {
         &AtomicGridConfig {
             n_radial: 99,
             n_angular: 302,
+            ..Default::default()
         },
     );
     let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
@@ -67,6 +68,7 @@ fn atom_populations_sum_to_electron_count() {
         &AtomicGridConfig {
             n_radial: 99,
             n_angular: 302,
+            ..Default::default()
         },
     );
     let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();

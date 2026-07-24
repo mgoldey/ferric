@@ -638,8 +638,8 @@ mod batching_tests {
         // Small, coarse grid so the `Full` cache is tiny (a handful of KB) —
         // this keeps the "over-budget" trigger firmly in the test's control
         // via a tiny FERRIC_MEM_BUDGET_GB rather than actually needing GBs.
-        let main = AtomicGridConfig { n_radial: 20, n_angular: 26 };
-        let nlc = AtomicGridConfig { n_radial: 10, n_angular: 26 };
+        let main = AtomicGridConfig { n_radial: 20, n_angular: 26, ..Default::default() };
+        let nlc = AtomicGridConfig { n_radial: 10, n_angular: 26, ..Default::default() };
 
         // 1) Full-cache path: plenty of budget.
         clear_budget_env();
@@ -706,8 +706,8 @@ mod batching_tests {
         let d_a: Array2<f64> = uhf.density_alpha;
         let d_b: Array2<f64> = uhf.density_beta.unwrap();
 
-        let main = AtomicGridConfig { n_radial: 20, n_angular: 26 };
-        let nlc = AtomicGridConfig { n_radial: 10, n_angular: 26 };
+        let main = AtomicGridConfig { n_radial: 20, n_angular: 26, ..Default::default() };
+        let nlc = AtomicGridConfig { n_radial: 10, n_angular: 26, ..Default::default() };
 
         clear_budget_env();
         std::env::set_var(VAR, "1000");
@@ -770,8 +770,8 @@ mod batching_tests {
         .unwrap();
         let d = rhf.density_total;
 
-        let main = AtomicGridConfig { n_radial: 20, n_angular: 26 };
-        let nlc = AtomicGridConfig { n_radial: 10, n_angular: 26 };
+        let main = AtomicGridConfig { n_radial: 20, n_angular: 26, ..Default::default() };
+        let nlc = AtomicGridConfig { n_radial: 10, n_angular: 26, ..Default::default() };
 
         // Construct under a tiny (but not absurdly tiny) budget: forces
         // Batched, and sizes batch_pts against ~10.7 KB.

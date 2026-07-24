@@ -50,6 +50,7 @@ fn residual_is_monotonic_in_lambda() {
         &AtomicGridConfig {
             n_radial: 99,
             n_angular: 302,
+            ..Default::default()
         },
     );
     let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();

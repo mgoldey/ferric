@@ -19,11 +19,13 @@
 //! (Becke partition is already baked into `w_g`; the home-atom restriction
 //! is what distinguishes per-atom from total.)
 
+use ferric_core::error::FerricError;
 use ferric_core::mol::Molecule;
 use rayon::prelude::*;
 
 use crate::becke::{becke_weights_all, becke_weights_and_grad};
 use crate::lebedev::lebedev;
+use crate::prune::{angular_orders_for_atom, PruneScheme};
 use crate::radial::treutler_ahlrichs_m4;
 
 /// Below this many points, run the Becke-weight pass serially. Rayon
@@ -46,6 +48,25 @@ pub struct GridPoint {
 pub struct AtomicGridConfig {
     pub n_radial: usize,
     pub n_angular: usize,
+    /// Angular-order pruning scheme, or `None` for the flat (unpruned) grid.
+    ///
+    /// `None` is the default and reproduces the historical grid exactly. Opting
+    /// into [`PruneScheme::NwchemLike`] cuts ~23% of grid points (measured on
+    /// H2O/CH4/benzene at 75x110; 33.5% at 99x302) for a ΔE_xc of ~1e-10 Ha —
+    /// roughly 10^5 inside the reference-test budget, i.e. effectively free.
+    ///
+    /// NOT yet the default: it must first be validated through a live KS SCF
+    /// (the accuracy numbers above come from re-evaluating E_xc on a
+    /// flat-grid-converged density, which isolates the grid's contribution but
+    /// is not the same as running the reference suites with pruning on).
+    ///
+    /// CAUTION: pruning ERRORS for `n_angular = 50` rather than silently
+    /// returning a flat grid (NWChem's middle regions want order 74, which
+    /// ferric would have to snap UP to 110, enlarging the grid — the
+    /// config-honesty convention forbids the silent fallback). The NLC/fallback
+    /// grids in `rhf.rs`/`uhf.rs`/`rohf.rs` use 50x50, so those must keep this
+    /// `None`.
+    pub prune: Option<crate::prune::PruneScheme>,
 }
 
 impl Default for AtomicGridConfig {
@@ -55,6 +76,10 @@ impl Default for AtomicGridConfig {
         Self {
             n_radial: 75,
             n_angular: 110,
+            // Flat grid: byte-identical to the historical behavior. See the
+            // field doc for why pruning is opt-in until it is validated
+            // through a live KS SCF against the reference suites.
+            prune: None,
         }
     }
 }
@@ -104,6 +129,76 @@ pub fn build_atomic_grid(mol: &Molecule, cfg: &AtomicGridConfig) -> Vec<GridPoin
     } else {
         pre.iter().map(build_point).collect()
     }
+}
+
+/// Build the molecular grid with **opt-in angular pruning**.
+///
+/// `prune = None` is exactly [`build_atomic_grid`] (bit-identical — it
+/// delegates), so this is a strict superset of the flat path and the flat grid
+/// remains the default everywhere. `prune = Some(scheme)` reduces the Lebedev
+/// order on inner-core and far-tail radial shells per
+/// [`crate::prune::angular_orders_for_atom`], keeping the full order only in
+/// the chemically-active middle regions.
+///
+/// Returns `Err` (never a silent fallback to the flat grid) if the requested
+/// angular order has no valid pruned region table — see
+/// [`crate::prune::region_orders`].
+///
+/// # Weight correctness
+///
+/// Lebedev weights are normalised to `Σ w = 1` at every order, so mixing
+/// orders across radial shells leaves `Σ_r Σ_Ω w_r w_Ω` unchanged shell by
+/// shell. No renormalisation is applied or needed.
+pub fn build_atomic_grid_pruned(
+    mol: &Molecule,
+    cfg: &AtomicGridConfig,
+    prune: Option<PruneScheme>,
+) -> std::result::Result<Vec<GridPoint>, FerricError> {
+    let Some(scheme) = prune else {
+        return Ok(build_atomic_grid(mol, cfg));
+    };
+
+    // Cache one Lebedev table per distinct order actually used, so a 75-shell
+    // atom does not regenerate the same rule 75 times.
+    let mut cache: Vec<(usize, Vec<[f64; 3]>, Vec<f64>)> = Vec::new();
+    let mut pre: Vec<(usize, [f64; 3], f64)> = Vec::new();
+
+    for (a_idx, atom) in mol.atoms.iter().enumerate() {
+        let (rs, ws) = treutler_ahlrichs_m4(atom.z, cfg.n_radial);
+        let orders = angular_orders_for_atom(atom.z, &rs, cfg.n_angular, scheme)?;
+        for ((r, w_r), &order) in rs.iter().zip(ws.iter()).zip(orders.iter()) {
+            if !cache.iter().any(|(o, _, _)| *o == order) {
+                let (p, w) = lebedev(order);
+                cache.push((order, p, w));
+            }
+            let (_, lebedev_pts, lebedev_w) =
+                cache.iter().find(|(o, _, _)| *o == order).expect("just inserted");
+            for (pt, w_l) in lebedev_pts.iter().zip(lebedev_w.iter()) {
+                let xyz = [
+                    atom.x + r * pt[0],
+                    atom.y + r * pt[1],
+                    atom.zpos + r * pt[2],
+                ];
+                pre.push((a_idx, xyz, w_r * w_l));
+            }
+        }
+    }
+
+    // Same order-preserving parallel map as build_atomic_grid.
+    let build_point = |&(a_idx, xyz, w_rl): &(usize, [f64; 3], f64)| -> GridPoint {
+        let becke = becke_weights_all(mol, xyz);
+        GridPoint {
+            xyz,
+            weight: w_rl * becke[a_idx],
+            home_atom: a_idx,
+        }
+    };
+
+    Ok(if pre.len() >= PAR_WORK_THRESHOLD {
+        pre.par_iter().map(build_point).collect()
+    } else {
+        pre.iter().map(build_point).collect()
+    })
 }
 
 /// Build the molecular grid AND the per-grid-point full quadrature-weight
@@ -223,6 +318,7 @@ mod tests {
         let grid = build_atomic_grid(&mol, &AtomicGridConfig {
             n_radial: 75,
             n_angular: 110,
+            ..Default::default()
         });
 
         // Total weight ≈ infinity for ∫ 1 dV (whole space), so check
@@ -370,6 +466,101 @@ mod tests {
     }
 
     #[test]
+    fn prune_none_is_bit_identical_to_flat_grid() {
+        // The whole opt-in guarantee: passing None must not perturb a single
+        // bit of the existing default path.
+        let mol = h2();
+        let cfg = AtomicGridConfig::default();
+        let flat = build_atomic_grid(&mol, &cfg);
+        let none = build_atomic_grid_pruned(&mol, &cfg, None).unwrap();
+        assert_eq!(flat.len(), none.len());
+        for (g, (a, b)) in flat.iter().zip(none.iter()).enumerate() {
+            assert_eq!(a.home_atom, b.home_atom, "home_atom at {g}");
+            assert_eq!(a.weight.to_bits(), b.weight.to_bits(), "weight at {g}");
+            for k in 0..3 {
+                assert_eq!(a.xyz[k].to_bits(), b.xyz[k].to_bits(), "xyz[{k}] at {g}");
+            }
+        }
+    }
+
+    #[test]
+    fn pruned_grid_is_smaller_and_still_integrates_a_gaussian() {
+        // Point-count reduction plus the integration invariant: pruning must
+        // shrink the grid without breaking the quadrature. A weight
+        // normalisation bug would blow this relerr up by orders of magnitude.
+        let mol = h2();
+        let cfg = AtomicGridConfig::default();
+        let flat = build_atomic_grid(&mol, &cfg);
+        let pruned =
+            build_atomic_grid_pruned(&mol, &cfg, Some(PruneScheme::NwchemLike)).unwrap();
+        let frac = 1.0 - pruned.len() as f64 / flat.len() as f64;
+        eprintln!(
+            "H2 75x110: flat {} pts -> pruned {} pts ({:.1}% fewer)",
+            flat.len(),
+            pruned.len(),
+            100.0 * frac
+        );
+        assert!(pruned.len() < flat.len(), "pruning did not remove any points");
+        assert!(frac > 0.15, "pruning saved only {:.1}%", 100.0 * frac);
+
+        let alpha = 1.0_f64;
+        let center = [0.0, 0.0, 0.7];
+        let integrate = |g: &[GridPoint]| -> f64 {
+            g.iter()
+                .map(|p| {
+                    let dx = p.xyz[0] - center[0];
+                    let dy = p.xyz[1] - center[1];
+                    let dz = p.xyz[2] - center[2];
+                    p.weight * (-alpha * (dx * dx + dy * dy + dz * dz)).exp()
+                })
+                .sum()
+        };
+        let exact = (std::f64::consts::PI / alpha).powf(1.5);
+        let err_flat = (integrate(&flat) - exact).abs() / exact;
+        let err_pruned = (integrate(&pruned) - exact).abs() / exact;
+        eprintln!("Gaussian relerr: flat {err_flat:.2e}, pruned {err_pruned:.2e}");
+        assert!(err_pruned < 1e-3, "pruned Gaussian relerr {err_pruned:.2e}");
+    }
+
+    #[test]
+    fn pruned_grid_partition_still_sums_to_full_space() {
+        // Becke partition exactness is independent of the angular order used
+        // at each shell -- confirm pruning does not disturb it.
+        let mol = h2();
+        let grid = build_atomic_grid_pruned(
+            &mol,
+            &AtomicGridConfig::default(),
+            Some(PruneScheme::NwchemLike),
+        )
+        .unwrap();
+        let f = |p: &GridPoint| {
+            let dz = p.xyz[2] - 0.7;
+            (-0.5 * (p.xyz[0].powi(2) + p.xyz[1].powi(2) + dz * dz)).exp()
+        };
+        let total: f64 = grid.iter().map(|p| p.weight * f(p)).sum();
+        let mut per_atom = [0.0_f64; 2];
+        for p in &grid {
+            per_atom[p.home_atom] += p.weight * f(p);
+        }
+        let sum_atoms: f64 = per_atom.iter().sum();
+        assert!(
+            (sum_atoms - total).abs() < 1e-12,
+            "pruned Becke partition mismatch: {sum_atoms} vs {total}"
+        );
+    }
+
+    #[test]
+    fn pruning_errors_instead_of_silently_falling_back() {
+        // n_angular = 50 has no useful pruned table on ferric's Lebedev set.
+        // It must Err, not quietly return the flat grid.
+        let mol = h2();
+        let cfg = AtomicGridConfig { n_radial: 50, n_angular: 50, ..Default::default() };
+        assert!(build_atomic_grid_pruned(&mol, &cfg, Some(PruneScheme::NwchemLike)).is_err());
+        // ... but with pruning off, the same config still works.
+        assert!(build_atomic_grid_pruned(&mol, &cfg, None).is_ok());
+    }
+
+    #[test]
     fn grid_partition_sums_to_full_space() {
         // Σ_A ∫_A f dV = ∫ f dV — the Becke partition is exact at every
         // grid point.
@@ -377,6 +568,7 @@ mod tests {
         let grid = build_atomic_grid(&mol, &AtomicGridConfig {
             n_radial: 50,
             n_angular: 50,
+            ..Default::default()
         });
         let alpha = 0.5_f64;
         let center = [0.0, 0.0, 0.7];

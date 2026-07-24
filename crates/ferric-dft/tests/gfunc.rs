@@ -23,7 +23,7 @@ fn grid_vs_analytic_overlap(mol: &Molecule, bs: &BasisSet, tol: f64) -> f64 {
     let s_analytic = overlap(&obs);
 
     // Dense grid: g functions are high angular frequency, need many angular pts.
-    let cfg = AtomicGridConfig { n_radial: 120, n_angular: 302 };
+    let cfg = AtomicGridConfig { n_radial: 120, n_angular: 302, ..Default::default() };
     let grid = build_atomic_grid(mol, &cfg);
     let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
     let chi = eval_basis_on_points(mol, bs, &pts).unwrap();

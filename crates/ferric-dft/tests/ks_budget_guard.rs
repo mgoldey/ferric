@@ -28,7 +28,7 @@ fn over_budget_batches_instead_of_failing_and_under_budget_uses_full_cache() {
     let mol = h2o();
     let bs = basis::bundled("cc-pvdz").unwrap();
     let main = AtomicGridConfig::default();
-    let nlc = AtomicGridConfig { n_radial: 50, n_angular: 50 };
+    let nlc = AtomicGridConfig { n_radial: 50, n_angular: 50, ..Default::default() };
 
     // Tiny budget: even H2O/cc-pVDZ's cache (a few MB) cannot fit 1e-6 GB.
     // A non-VV10 functional must NOT fail — it falls back to batching.
