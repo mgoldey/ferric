@@ -200,6 +200,7 @@ pub fn pdep_polarizability_static(
         // take ~14 GB on a 23 GB box. See
         // tests/mwe_explicit_budget_reaches_mp2.rs.
         memory_budget_bytes: cfg.memory_budget_bytes,
+        ..Default::default()
     };
     let inter =
         ferric_mp2::rimp2::compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
@@ -398,6 +399,7 @@ pub fn dielectric_spectrum_static(
         // take ~14 GB on a 23 GB box. See
         // tests/mwe_explicit_budget_reaches_mp2.rs.
         memory_budget_bytes,
+        ..Default::default()
     };
     let inter = ferric_mp2::rimp2::compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
     let b_ov = &inter.b_ov;
@@ -486,6 +488,7 @@ pub fn pdep_polarizability_static_unrestricted(
         // take ~14 GB on a 23 GB box. See
         // tests/mwe_explicit_budget_reaches_mp2.rs.
         memory_budget_bytes: cfg.memory_budget_bytes,
+        ..Default::default()
     };
 
     // Per-spin intermediates.
@@ -796,6 +799,26 @@ fn dipole_band_width_with_threads(
 /// into the running accumulator in ascending order before moving to the next
 /// band. At most one band of partials is ever live, not all chunks at once.
 #[allow(clippy::too_many_arguments)]
+/// Crate-visible alias so `dispersion.rs` can share this exact accumulation
+/// instead of maintaining a second, serial copy over a monolithic chi.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn accumulate_atom_centred_dipoles_pub(
+    npts: usize,
+    natoms: usize,
+    nbf: usize,
+    home_atom: &[usize],
+    weights: &[f64],
+    points: &[[f64; 3]],
+    atom_pos: &[[f64; 3]],
+    mol: &Molecule,
+    obs_bs: &ferric_core::basis::BasisSet,
+    budget_bytes: usize,
+) -> Result<Vec<[Array2<f64>; 3]>, FerricError> {
+    accumulate_atom_centred_dipoles(
+        npts, natoms, nbf, home_atom, weights, points, atom_pos, mol, obs_bs, budget_bytes,
+    )
+}
+
 fn accumulate_atom_centred_dipoles(
     npts: usize,
     natoms: usize,
@@ -933,6 +956,7 @@ pub fn pdep_polarizability_becke(
         // take ~14 GB on a 23 GB box. See
         // tests/mwe_explicit_budget_reaches_mp2.rs.
         memory_budget_bytes: cfg.memory_budget_bytes,
+        ..Default::default()
     };
     let inter =
         ferric_mp2::rimp2::compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
@@ -1128,6 +1152,7 @@ pub fn pdep_polarizability_becke_dynamic(
     let mp2_cfg = ferric_mp2::rimp2::RiMp2Config {
         frozen_core: cfg.frozen_core,
         memory_budget_bytes: cfg.memory_budget_bytes,
+        ..Default::default()
     };
 
     // Open-shell dispatch: build per-spin intermediates and MO slices.
@@ -1628,6 +1653,7 @@ pub fn pdep_polarizability_hirshfeld(
         // take ~14 GB on a 23 GB box. See
         // tests/mwe_explicit_budget_reaches_mp2.rs.
         memory_budget_bytes: cfg.memory_budget_bytes,
+        ..Default::default()
     };
     let inter =
         ferric_mp2::rimp2::compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
@@ -1926,6 +1952,7 @@ pub fn pdep_polarizability_hirshfeld_dynamic(
         // take ~14 GB on a 23 GB box. See
         // tests/mwe_explicit_budget_reaches_mp2.rs.
         memory_budget_bytes: cfg.memory_budget_bytes,
+        ..Default::default()
     };
     let inter = ferric_mp2::rimp2::compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
     let b_ov = &inter.b_ov;
@@ -2164,6 +2191,7 @@ pub fn molecular_dynamic_polarizability(
         // take ~14 GB on a 23 GB box. See
         // tests/mwe_explicit_budget_reaches_mp2.rs.
         memory_budget_bytes: cfg.memory_budget_bytes,
+        ..Default::default()
     };
         let inter_a = compute_rpa_intermediates_spin(mol, obs, dfbs, op, rhf, &mp2_cfg, true)?;
         let inter_b = compute_rpa_intermediates_spin(mol, obs, dfbs, op, rhf, &mp2_cfg, false)?;
@@ -2323,6 +2351,7 @@ pub fn molecular_dynamic_polarizability(
         // take ~14 GB on a 23 GB box. See
         // tests/mwe_explicit_budget_reaches_mp2.rs.
         memory_budget_bytes: cfg.memory_budget_bytes,
+        ..Default::default()
     };
     let inter = ferric_mp2::rimp2::compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
     let b_ov = &inter.b_ov;
@@ -2463,6 +2492,7 @@ pub fn molecular_dynamic_polarizability_pdep(
         // take ~14 GB on a 23 GB box. See
         // tests/mwe_explicit_budget_reaches_mp2.rs.
         memory_budget_bytes,
+        ..Default::default()
     };
     let inter = ferric_mp2::rimp2::compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
     let b_ov = &inter.b_ov; // V^{-1/2}-dressed occ-vir RI-MO tensor (naux × nov)

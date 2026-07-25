@@ -30,7 +30,7 @@ fn bench_one(name: &str, xyz: &str, obs_name: &str, dfbs_name: &str, reps: usize
     let ctx = ParallelContext::default();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
-    let cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
+    let cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() };
 
     // Warm up + correctness cross-check.
     let (sc_ref, _) = ri_mp2_spin_components(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();

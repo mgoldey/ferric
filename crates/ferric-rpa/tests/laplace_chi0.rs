@@ -50,7 +50,7 @@ fn h2o_ccpvdz_laplace_matches_dense_at_static() {
         "cc-pvdz-ri",
     );
 
-    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
+    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() };
     let inter = compute_rpa_intermediates(&mol, &obs, &dfbs, op, &rhf, &mp2_cfg).unwrap();
     let b_ov = &inter.b_ov;
     let eps_occ: Vec<f64> = rhf.eps_r()[inter.first_occ..inter.first_occ + inter.nocc].to_vec();

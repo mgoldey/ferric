@@ -222,7 +222,7 @@ pub fn rs_mp2_lr_rpa(
         )?;
     }
 
-    let ri_cfg = RiMp2Config { frozen_core: cfg.frozen_core, memory_budget_bytes: cfg.drpa.memory_budget_bytes };
+    let ri_cfg = RiMp2Config { frozen_core: cfg.frozen_core, memory_budget_bytes: cfg.drpa.memory_budget_bytes, ..Default::default() };
 
     // SHARED-INTERMEDIATE FUSION. The MP2 spin components and the dRPA solves
     // both need the dressed b_ov = V^{-1/2}(P|op|ia) for the SAME operator, and

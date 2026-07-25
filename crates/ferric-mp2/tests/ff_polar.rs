@@ -27,7 +27,7 @@ fn h2o() -> (Molecule, PreparedBasis, PreparedBasis, Operator, SchwarzBounds, Pa
 fn mp2_alpha_water_positive_and_sane() {
     let (mol, obs, dfbs, op, bounds, ctx) = h2o();
     let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
-    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
+    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() };
 
     let alpha = mp2_polarizability_static(
         &ctx, &mol, &obs, &dfbs, op, &bounds, &scf_cfg, &mp2_cfg, 1e-3, DensityMode::Relaxed,
@@ -63,7 +63,7 @@ fn mp2_alpha_water_positive_and_sane() {
 fn mp2_alpha_vs_rpa_alpha_water() {
     let (mol, obs, dfbs, op, bounds, ctx) = h2o();
     let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
-    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
+    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() };
 
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
 
@@ -88,7 +88,7 @@ fn mp2_alpha_vs_rpa_alpha_water() {
 fn mp2_alpha_attenuation_sweep_water() {
     let (mol, obs, dfbs, _op, bounds, ctx) = h2o();
     let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
-    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
+    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() };
 
     println!("\n=== water cc-pVDZ : attenuated MP2 (relaxed) static α ===");
     println!("  baseline RPA α_iso (cc-pVDZ) = 3.111 a.u.\n");
@@ -116,7 +116,7 @@ fn mp2_alpha_attenuation_sweep_water_augccpvdz() {
     let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
     let ctx = ParallelContext::default();
     let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
-    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
+    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() };
 
     println!("\n=== water aug-cc-pVDZ : attenuated MP2 (relaxed) static α ===");
     println!("  ref: CRC α_iso ≈ 9.8 a.u. ; RPA α_iso (aug, Coulomb) ≈ 5.15\n");
@@ -171,7 +171,7 @@ fn test_a_generalization() {
     let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
     let ctx = ParallelContext::default();
     let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
-    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
+    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() };
 
     println!("\n===================== TEST A: generalization =====================");
     println!("attenuated-MP2 α(ω) per molecule vs DOSD ref (aug-cc-pVDZ)\n");
@@ -260,7 +260,7 @@ fn diag_n2_field_scan() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
-    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
+    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() };
 
     // (1) HOMO-LUMO gap and lowest few orbital-energy denominators (degeneracy?)
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
@@ -297,7 +297,7 @@ fn diag_fieldscan_nh3_co2() {
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
     let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
-    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
+    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() };
     for (name,path,aref) in cases {
         let mol = Molecule::load_xyz(path).unwrap();
         let obs = PreparedBasis::new(&mol,&obs_bs).unwrap();
@@ -328,7 +328,7 @@ fn diag_nh3_zvec_trace() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op,&obs).unwrap();
     let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
-    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
+    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() };
     eprintln!("nh3 MP2-α at h=5e-3 with Z-vector trace (expect 6 zvec solves):");
     let a = mp2_polarizability_static(&ctx,&mol,&obs,&dfbs,op,&bounds,&scf_cfg,&mp2_cfg,5e-3,DensityMode::Unrelaxed).unwrap();
     eprintln!("  → α_iso = {:.4}", a.iso);
@@ -351,7 +351,7 @@ fn diag_nh3_tight_scf_scan() {
     let bounds = SchwarzBounds::compute(op,&obs).unwrap();
     // TIGHTENED field-SCF.
     let scf_cfg = RhfConfig { energy_conv: 1e-12, density_conv: 1e-10, ..Default::default() };
-    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
+    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() };
     eprintln!("nh3 tight-SCF (dconv 1e-10) field scan, ref 14.56:");
     eprintln!("  {:>10}  {:>12}","h","α_iso");
     for &h in &[2e-2_f64, 1e-2, 5e-3, 2e-3, 1e-3] {
@@ -379,7 +379,7 @@ fn diag_nh3_raw_dipoles() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op,&obs).unwrap();
     let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
-    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
+    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() };
     // nh3 C3v: z is the symmetry axis (the lone-pair direction). Probe field along z.
     eprintln!("nh3 raw μ_z(F_z) along the C3v axis:");
     eprintln!("  {:>10}  {:>16}  {:>16}", "F", "μz(+F)", "μz(-F)");
@@ -409,7 +409,7 @@ fn diag_relaxed_vs_unrelaxed_sweetspot() {
     let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
     let ctx = ParallelContext::default();
     let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
-    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
+    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() };
     let omegas = [0.0_f64, 0.3, 0.5, 0.7];
     for (name,path,aref) in cases {
         let mol = Molecule::load_xyz(path).unwrap();

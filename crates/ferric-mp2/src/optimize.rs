@@ -161,7 +161,7 @@ mod tests {
         let op = Operator::coulomb();
         let obs_basis = basis::bundled("sto-3g").unwrap();
         let aux_basis = basis::bundled("cc-pvdz-ri").unwrap();
-        let mp2_config = RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
+        let mp2_config = RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() };
         let opt_config = OptimizeConfig {
             trust_radius: 0.1,
             ..Default::default()

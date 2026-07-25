@@ -530,6 +530,7 @@ pub fn pdep_dynamic_polarizability_truncated(
     let mp2_cfg = RiMp2Config {
         frozen_core: cfg.frozen_core,
         memory_budget_bytes: cfg.memory_budget_bytes,
+        ..Default::default()
     };
     let inter = ferric_mp2::rimp2::compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
     let b_ov = &inter.b_ov;   // shape (naux, nov) — un-dressed raw RI
