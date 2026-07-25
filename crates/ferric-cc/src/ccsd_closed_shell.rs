@@ -587,6 +587,77 @@ fn diis_step_two(
     (t1_ext, t2_ext)
 }
 
+/// Expand this module's **spatial-orbital** CCSD amplitudes into the
+/// **interleaved spin-orbital** convention (`2k` = α, `2k+1` = β) that
+/// [`crate::ccsd_t::ccsd_t`] and the rest of the spin-orbital machinery use.
+///
+/// For a closed-shell (restricted) reference the spin-orbital amplitudes are
+/// not independent — they are fully determined by the spatial ones:
+///
+/// ```text
+///   t1[iσ, aτ]          = δ_στ · t1_spatial[i, a]
+///   t2[iσ, jτ, aσ', bτ'] = δ_σσ' δ_ττ' · t2_spatial[i, j, a, b]
+///                        − δ_στ' δ_τσ' · t2_spatial[i, j, b, a]
+/// ```
+///
+/// The `t2` relation is the antisymmetrization that turns this module's
+/// Coulomb-ordered `t2_spatial[i,j,a,b]` (paired as `i↔a`, `j↔b`, i.e.
+/// initialized from `(ia|jb)/D`) into the antisymmetrized `<ij||ab>`-ordered
+/// spin-orbital amplitude. Concretely, per spin case:
+///   - αα/ββ (same spin throughout): `t2[i,j,a,b] − t2[i,j,b,a]`
+///   - αβ with `a` on the α side: `+t2[i,j,a,b]` (the exchange term needs
+///     `σ = τ'`, which fails)
+///   - αβ with `a` on the β side: `−t2[i,j,b,a]` (the direct term fails
+///     instead)
+///
+/// Returned shapes are `(2·no, 2·nv)` and `(2·no, 2·no, 2·nv, 2·nv)`, matching
+/// [`crate::ccsd::ccsd`]'s output exactly, so a caller may substitute one for
+/// the other. This exists so CCSD(T) can take the ~12-22x faster spin-adapted
+/// CCSD (see `689b2e3`) and still feed the unchanged spin-orbital `(T)`.
+///
+/// Cost is O((2no·2nv)²) memory and time for `t2` — the same size class the
+/// spin-orbital CCSD driver already carries, and negligible beside the
+/// O(N^7) triples that consume it.
+pub fn expand_amplitudes_to_spin_orbital(
+    t1: &ArrayD<f64>,
+    t2: &ArrayD<f64>,
+) -> (ArrayD<f64>, ArrayD<f64>) {
+    let (no, nv) = (t1.shape()[0], t1.shape()[1]);
+    let (no2, nv2) = (2 * no, 2 * nv);
+    // spin(p) = p % 2 (0 = α), spat(p) = p / 2 — the convention in
+    // `ferric_mp2::spinorbital`.
+    let spin = |p: usize| p % 2;
+    let spat = |p: usize| p / 2;
+
+    let mut t1_so = ArrayD::<f64>::zeros(IxDyn(&[no2, nv2]));
+    for i in 0..no2 {
+        for a in 0..nv2 {
+            if spin(i) == spin(a) {
+                t1_so[[i, a]] = t1[[spat(i), spat(a)]];
+            }
+        }
+    }
+
+    let mut t2_so = ArrayD::<f64>::zeros(IxDyn(&[no2, no2, nv2, nv2]));
+    for i in 0..no2 {
+        for j in 0..no2 {
+            for a in 0..nv2 {
+                for b in 0..nv2 {
+                    let mut v = 0.0;
+                    if spin(i) == spin(a) && spin(j) == spin(b) {
+                        v += t2[[spat(i), spat(j), spat(a), spat(b)]];
+                    }
+                    if spin(i) == spin(b) && spin(j) == spin(a) {
+                        v -= t2[[spat(i), spat(j), spat(b), spat(a)]];
+                    }
+                    t2_so[[i, j, a, b]] = v;
+                }
+            }
+        }
+    }
+    (t1_so, t2_so)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -608,6 +679,229 @@ mod tests {
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig { energy_conv: 1e-11, ..Default::default() }).unwrap();
         (mol, obs, dfbs, op, rhf)
+    }
+
+    /// `expand_amplitudes_to_spin_orbital` must reproduce the SPIN-ORBITAL
+    /// solver's own converged amplitudes element-by-element.
+    ///
+    /// This is the load-bearing check for feeding the fast spin-adapted CCSD
+    /// into the unchanged spin-orbital `(T)`: a wrong spin case or a dropped
+    /// exchange term would not crash, it would silently produce a plausible
+    /// but wrong triples energy.
+    ///
+    /// H2/STO-3G with a large RI-fit basis is used deliberately — there the two
+    /// CCSD solvers agree to 3.5e-18 (see
+    /// `closed_shell_matches_spin_orbital_ccsd_h2_sto3g`), so their amplitudes
+    /// describe the *same* wavefunction and any elementwise difference is a
+    /// real conversion bug rather than an RI-fitting artifact.
+    #[test]
+    fn expanded_amplitudes_match_spin_orbital_solver() {
+        let (mol, obs, dfbs, op, rhf) =
+            setup("2\nH2\nH 0 0 0\nH 0 0 0.74\n", "sto-3g", "def2-qzvpp-rifit");
+        let cfg =
+            CcConfig { frozen_core: 0, max_iter: 100, energy_conv: 1e-10, ..Default::default() };
+
+        let r_cs = ccsd_closed_shell(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
+        let r_so = crate::ccsd::ccsd(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
+
+        let (t1_x, t2_x) = expand_amplitudes_to_spin_orbital(
+            &r_cs.t1.as_ref().unwrap().clone().into_dyn(),
+            &r_cs.t2.clone().into_dyn(),
+        );
+        let t1_ref = r_so.t1.as_ref().unwrap();
+        let t2_ref = &r_so.t2;
+
+        assert_eq!(t1_x.shape(), t1_ref.shape(), "expanded t1 shape must match spin-orbital");
+        assert_eq!(t2_x.shape(), t2_ref.shape(), "expanded t2 shape must match spin-orbital");
+
+        let d1 = t1_x
+            .iter()
+            .zip(t1_ref.iter())
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0f64, f64::max);
+        let d2 = t2_x
+            .iter()
+            .zip(t2_ref.iter())
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0f64, f64::max);
+        println!("expanded-vs-spin-orbital amplitudes: max|dt1|={d1:.3e} max|dt2|={d2:.3e}");
+        assert!(d1 < 1e-9, "expanded t1 differs from the spin-orbital solver by {d1:.3e}");
+        assert!(d2 < 1e-9, "expanded t2 differs from the spin-orbital solver by {d2:.3e}");
+
+        // Guard against a degenerate pass: t2 must actually carry signal, and
+        // both spin cases must be populated (an all-zero or αα-only expansion
+        // would sail through a pure difference check if the reference were
+        // also empty).
+        let nrm = t2_x.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
+        assert!(nrm > 1e-6, "expanded t2 is ~zero ({nrm:.3e}) — the check is vacuous");
+        let (no2, nv2) = (t2_x.shape()[0], t2_x.shape()[2]);
+        let mut have_same_spin = false;
+        let mut have_mixed_spin = false;
+        for i in 0..no2 {
+            for j in 0..no2 {
+                for a in 0..nv2 {
+                    for b in 0..nv2 {
+                        if t2_x[[i, j, a, b]].abs() > 1e-8 {
+                            if i % 2 == j % 2 {
+                                have_same_spin = true;
+                            } else {
+                                have_mixed_spin = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(have_mixed_spin, "expanded t2 has no αβ block — conversion dropped a spin case");
+        // NOTE: no αα/ββ assertion here. H2/STO-3G has a single occupied
+        // spatial orbital, so there is no same-spin occupied PAIR at all and
+        // that block is legitimately zero — asserting it would be a test bug,
+        // not a code bug. `triples_from_expanded_amplitudes_match_spin_orbital`
+        // runs on H2O (5 occupied), which does exercise the same-spin block.
+        let _ = have_same_spin;
+    }
+
+    /// Pin `expand_amplitudes_to_spin_orbital` against its defining identity on
+    /// SYNTHETIC amplitudes, with no solver involved.
+    ///
+    /// This exists because the solver-based check
+    /// (`expanded_amplitudes_match_spin_orbital_solver`) runs on H2, which has a
+    /// single occupied spatial orbital — so the `δ_στ' δ_τσ'` exchange term is
+    /// never exercised there. Mutation-verified: deleting that term entirely
+    /// PASSES the H2 test and fails this one. Any system with ≥2 occupied
+    /// orbitals would exercise it, but on those the two CCSD solvers no longer
+    /// converge to identical amplitudes (differing DF/RI accumulation), so they
+    /// cannot serve as an exact reference. Synthetic input sidesteps both
+    /// problems.
+    ///
+    /// Every element of the expected result is built from the documented
+    /// relation, independently of the implementation's loop structure:
+    /// ```text
+    ///   t1[iσ,aτ]           = δ_στ t1s[i,a]
+    ///   t2[iσ,jτ,aσ',bτ']   = δ_σσ' δ_ττ' t2s[i,j,a,b] − δ_στ' δ_τσ' t2s[i,j,b,a]
+    /// ```
+    #[test]
+    fn expand_amplitudes_matches_the_defining_identity() {
+        let (no, nv) = (3usize, 4usize); // ≥2 occupied: exercises αα/ββ AND αβ
+        let mut seed: u64 = 0x51ed_270b_1349_9d29;
+        let mut rnd = || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 11) as f64 / (1u64 << 53) as f64 - 0.5
+        };
+        let t1s = ArrayD::from_shape_fn(IxDyn(&[no, nv]), |_| rnd());
+        // Deliberately NOT symmetric under (i,j)<->(a,b): an implementation that
+        // confused t2[i,j,a,b] with t2[i,j,b,a] must be detectable.
+        let t2s = ArrayD::from_shape_fn(IxDyn(&[no, no, nv, nv]), |_| rnd());
+
+        let (t1_so, t2_so) = expand_amplitudes_to_spin_orbital(&t1s, &t2s);
+
+        let (no2, nv2) = (2 * no, 2 * nv);
+        assert_eq!(t1_so.shape(), &[no2, nv2]);
+        assert_eq!(t2_so.shape(), &[no2, no2, nv2, nv2]);
+
+        let sp = |p: usize| p % 2; // spin
+        let sa = |p: usize| p / 2; // spatial
+        let mut worst1 = 0.0f64;
+        for i in 0..no2 {
+            for a in 0..nv2 {
+                let want = if sp(i) == sp(a) { t1s[[sa(i), sa(a)]] } else { 0.0 };
+                worst1 = worst1.max((t1_so[[i, a]] - want).abs());
+            }
+        }
+        assert!(worst1 == 0.0, "t1 expansion deviates from the identity by {worst1:.3e}");
+
+        let mut worst2 = 0.0f64;
+        let mut n_direct = 0usize;
+        let mut n_exchange = 0usize;
+        for i in 0..no2 {
+            for j in 0..no2 {
+                for a in 0..nv2 {
+                    for b in 0..nv2 {
+                        let mut want = 0.0;
+                        if sp(i) == sp(a) && sp(j) == sp(b) {
+                            want += t2s[[sa(i), sa(j), sa(a), sa(b)]];
+                            n_direct += 1;
+                        }
+                        if sp(i) == sp(b) && sp(j) == sp(a) {
+                            want -= t2s[[sa(i), sa(j), sa(b), sa(a)]];
+                            n_exchange += 1;
+                        }
+                        worst2 = worst2.max((t2_so[[i, j, a, b]] - want).abs());
+                    }
+                }
+            }
+        }
+        assert!(worst2 == 0.0, "t2 expansion deviates from the identity by {worst2:.3e}");
+        // The reference itself must have exercised both branches, or the
+        // comparison above proves nothing about either.
+        assert!(n_direct > 0 && n_exchange > 0, "test data did not exercise both t2 branches");
+    }
+
+    /// End-to-end: `(T)` computed from the EXPANDED spin-adapted amplitudes vs
+    /// `(T)` from the spin-orbital solver's own. This is what `run_ccsd_t`
+    /// relies on, and it exercises the conversion through the full O(N^7)
+    /// triples rather than only comparing arrays.
+    ///
+    /// **The tolerance here is loose ON PURPOSE, and the reason matters.** On a
+    /// multi-electron system the two CCSD solvers do not converge to identical
+    /// amplitudes: they accumulate DF/RI error differently (11 antisymmetrized
+    /// `<pq||rs>` blocks vs 7 chemist blocks — see
+    /// `closed_shell_matches_spin_orbital_ccsd_h2o`), giving `max|Δt2|~1.4e-4`
+    /// and `ΔE_corr~1.1e-5` on H2O/STO-3G. Measured: that difference does NOT
+    /// shrink with a larger aux basis (identical to 4 digits from `cc-pvdz-ri`
+    /// through `aug-cc-pvqz-rifit`), so it is a property of the two
+    /// formulations, not a fitting artifact that a better aux would remove.
+    /// `(T)` inherits it: -6.7652e-5 vs -6.7409e-5, a 0.4% relative difference
+    /// on a 7e-5 Ha quantity.
+    ///
+    /// So this test asserts only that `(T)` tracks the amplitude difference —
+    /// i.e. that nothing is grossly wrong. **The exactness of the conversion
+    /// itself is pinned by `expanded_amplitudes_match_spin_orbital_solver`**,
+    /// which uses H2 where the two solvers provably describe the SAME
+    /// wavefunction (they agree to 3.5e-18) and the expansion therefore
+    /// reproduces the reference amplitudes to 1.4e-17.
+    #[test]
+    fn triples_from_expanded_amplitudes_match_spin_orbital() {
+        let (mol, obs, dfbs, op, rhf) = setup(
+            "3\n\nO 0.0 0.0 0.1173\nH 0.0 0.7572 -0.4692\nH 0.0 -0.7572 -0.4692\n",
+            "sto-3g",
+            "def2-qzvpp-rifit",
+        );
+        let cfg =
+            CcConfig { frozen_core: 0, max_iter: 100, energy_conv: 1e-10, ..Default::default() };
+
+        let r_so = crate::ccsd::ccsd(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
+        let e_t_so = crate::ccsd_t::ccsd_t(&mol, &obs, &dfbs, op, &rhf, &r_so, &cfg).unwrap();
+
+        let r_cs = ccsd_closed_shell(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
+        let (t1_x, t2_x) = expand_amplitudes_to_spin_orbital(
+            &r_cs.t1.as_ref().unwrap().clone().into_dyn(),
+            &r_cs.t2.clone().into_dyn(),
+        );
+        let r_conv = crate::CcResult {
+            correlation_energy: r_cs.correlation_energy,
+            t1: Some(t1_x.into_dimensionality::<ndarray::Ix2>().unwrap()),
+            t2: t2_x.into_dimensionality::<ndarray::Ix4>().unwrap(),
+        };
+        let e_t_conv = crate::ccsd_t::ccsd_t(&mol, &obs, &dfbs, op, &rhf, &r_conv, &cfg).unwrap();
+
+        println!("(T): spin-orbital = {e_t_so:.12}, from expanded = {e_t_conv:.12}");
+        assert!(
+            e_t_so.abs() > 1e-8,
+            "(T) is ~zero ({e_t_so:.3e}) — this system cannot validate the conversion"
+        );
+        // 2% relative: comfortably above the ~0.4% the differing converged
+        // amplitudes actually produce, and far below what any real conversion
+        // bug would cause (a dropped spin case or a sign error moves (T) by
+        // tens of percent or flips it — verified by mutation).
+        let rel = (e_t_so - e_t_conv).abs() / e_t_so.abs();
+        assert!(
+            rel < 0.02,
+            "(T) from expanded amplitudes ({e_t_conv:.12}) differs from the \
+             spin-orbital path ({e_t_so:.12}) by {:.2}% — far more than the \
+             ~0.4% the two solvers' differing converged amplitudes explain",
+            100.0 * rel,
+        );
     }
 
     #[test]
