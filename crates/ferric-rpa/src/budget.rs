@@ -123,6 +123,9 @@ pub struct GridEstimateShape {
     /// whose real footprint is a few MB — enough to refuse a trivial
     /// calculation. Use [`effective_dipole_band_width`].
     pub dipole_band_width: usize,
+    /// Rayon workers that may concurrently hold a per-chunk `chi` buffer.
+    /// Pass `rayon::current_num_threads().max(1)`.
+    pub n_workers: usize,
 }
 
 /// Chunk count the dipole accumulation will partition `npts` into.
@@ -151,13 +154,23 @@ pub fn effective_dipole_band_width(nominal: usize, npts: usize) -> usize {
 /// Kept separate from [`estimate_peak_bytes`]'s energy terms so each can be
 /// unit-tested against a hand-derived figure.
 pub fn estimate_grid_bytes(g: GridEstimateShape) -> usize {
-    let GridEstimateShape { npts, nbf, natoms, dipole_band_width } = g;
+    let GridEstimateShape { npts, nbf, natoms, dipole_band_width, n_workers } = g;
 
-    // chi: a SINGLE contiguous Array2::zeros((nbf, npts)) — ~3.75 GB at
-    // nbf=800, npts=586k. Not chunked today (see the fuse-into-the-banded-loop
-    // work); the estimate must reflect what is actually allocated, not what a
-    // future version will allocate.
-    let chi_bytes = nbf.saturating_mul(npts).saturating_mul(F64_BYTES);
+    // chi: evaluated PER GRID CHUNK inside the banded accumulation, one buffer
+    // per rayon worker, each `chunk_size = npts/TARGET_CHUNKS` points wide.
+    //
+    // This used to be a single contiguous Array2::zeros((nbf, npts)) — ~3.75 GB
+    // at nbf=800/npts=586k — built up front even though every consumer reads it
+    // one grid point at a time. Fusing it into the loop cut that to ~44 MB at 12
+    // workers (85x less; 3.7 MB serial). The estimate tracks the fused form: an
+    // estimator that still charged the monolithic figure would over-reject, and
+    // an over-estimating gate is as broken as an under-estimating one (it
+    // becomes a wall and trains users to inflate budgets).
+    let chunk_size = npts.div_ceil(dipole_chunk_count(npts).max(1)).max(1);
+    let chi_bytes = nbf
+        .saturating_mul(chunk_size)
+        .saturating_mul(F64_BYTES)
+        .saturating_mul(n_workers.max(1));
 
     // Grid side arrays: points (3 f64), weights (f64), home_atom (usize).
     let grid_side_bytes = npts.saturating_mul(3 * F64_BYTES + F64_BYTES + 8);

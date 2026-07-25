@@ -9,11 +9,18 @@
 //!   d_ai_ao  = natoms · 3 · nbf² · 8   ~1.1 GB at natoms=71, nbf=800
 //! ```
 //!
-//! Those, plus the banded partials, account for the 16-17 GB anon-RSS incidents
-//! of 2026-07-13 without needing anything else. A preflight gate built on the
-//! current estimator would pass such a job as comfortably fitting a 10 GB
-//! budget — which is why "wire in the existing gate" is NOT sufficient on its
-//! own, and why this MWE comes before that work.
+//! NOTE `chi` has since been FUSED into the banded accumulation — it is now
+//! evaluated per grid chunk (one `nbf · chunk_size` buffer per worker, ~44 MB at
+//! 12 workers vs 3.75 GB monolithic). The contracts below track the fused form:
+//! the estimate must still RESPOND to grid density, but it no longer needs to
+//! cover a full `nbf · npts` block, because none is allocated. Charging the old
+//! figure would over-reject, and an over-estimating gate is as broken as an
+//! under-estimating one.
+//!
+//! Those two, plus the banded partials, accounted for the 16-17 GB anon-RSS
+//! incidents of 2026-07-13. A preflight gate built on the pre-grid estimator
+//! would have passed such a job as comfortably fitting a 10 GB budget — which
+//! is why "wire in the existing gate" was never sufficient on its own.
 //!
 //! These contracts specified the missing terms before they existed; the
 //! `grid: Option<GridEstimateShape>` field and `estimate_grid_bytes` were added
@@ -29,7 +36,9 @@
 //! are processed per-worker via `map_init` and never retained, so `n_quad`
 //! drives wall time, not peak resident bytes. Do not "fix" it.
 
-use ferric_rpa::budget::{estimate_peak_bytes, GridEstimateShape, PeakEstimateShape};
+use ferric_rpa::budget::{
+    estimate_grid_bytes, estimate_peak_bytes, GridEstimateShape, PeakEstimateShape,
+};
 
 /// The 71-atom/def2-SVP shape from the incident, rounded to round numbers.
 /// npts = 71 atoms x 8250 points/atom (the default 75 radial x 110 angular
@@ -62,6 +71,8 @@ fn grid_shape(npts: usize) -> GridEstimateShape {
         // call site. 1 is the floor, so this is the most CONSERVATIVE (smallest)
         // grid estimate — if the contracts hold here they hold for wider bands.
         dipole_band_width: 1,
+        // Serial: the most conservative (smallest) per-chunk chi term.
+        n_workers: 1,
     }
 }
 
@@ -69,22 +80,42 @@ fn incident_shape() -> PeakEstimateShape {
     PeakEstimateShape { grid: Some(grid_shape(INCIDENT_NPTS)), ..energy_only_shape() }
 }
 
-/// CONTRACT 1: the estimate must cover the monolithic `chi` allocation.
+/// CONTRACT 1: the estimate must cover the per-chunk `chi` buffers.
 ///
-/// `chi` is a single `Array2::zeros((nbf, npts))` — one contiguous ~3.75 GB
-/// block at incident scale. An estimator that omits it cannot bound the grid
-/// path at all.
+/// `chi` is no longer one `Array2::zeros((nbf, npts))`; it is evaluated per grid
+/// chunk inside the banded loop, so the resident term is
+/// `nbf · chunk_size · 8 · n_workers`. The estimate must cover THAT — covering
+/// the (no-longer-allocated) monolithic figure would be a 85x over-estimate at
+/// incident scale.
 #[test]
-fn estimate_covers_the_chi_grid_matrix() {
-    let chi_bytes = INCIDENT_NBF * INCIDENT_NPTS * 8;
+fn estimate_covers_the_per_chunk_chi_buffers() {
+    use ferric_rpa::budget::dipole_chunk_count;
+    let n_chunks = dipole_chunk_count(INCIDENT_NPTS);
+    let chunk_size = INCIDENT_NPTS.div_ceil(n_chunks);
+    let chi_bytes = INCIDENT_NBF * chunk_size * 8; // n_workers = 1 in grid_shape
     let est = estimate_peak_bytes(incident_shape());
 
     assert!(
         est >= chi_bytes,
-        "estimate {:.2} GB must cover the chi grid matrix alone ({:.2} GB) — \
-         the estimator has no npts term, so it cannot predict the grid path",
+        "estimate {:.2} GB must cover the per-chunk chi buffers ({:.2} MB)",
         est as f64 / 1e9,
-        chi_bytes as f64 / 1e9,
+        chi_bytes as f64 / 1e6,
+    );
+
+    // And the GRID term must no longer charge the monolithic block. Compare
+    // grid-vs-grid: the full `est` also carries the energy-path terms (at this
+    // shape the per-worker quadrature scratch alone is ~28.7 GB at 12 workers),
+    // so comparing the TOTAL against one component would be meaningless — an
+    // earlier version of this assertion did exactly that and failed at 36.05 GB
+    // vs 3.75 GB, reporting a defect that was not there.
+    let grid_only = estimate_grid_bytes(grid_shape(INCIDENT_NPTS));
+    let monolithic = INCIDENT_NBF * INCIDENT_NPTS * 8;
+    assert!(
+        grid_only < monolithic,
+        "the grid term {:.2} GB must be below the old monolithic chi ({:.2} GB) \
+         — chi is chunked now, so charging the full block would over-reject",
+        grid_only as f64 / 1e9,
+        monolithic as f64 / 1e9,
     );
 }
 
@@ -106,13 +137,16 @@ fn estimate_responds_to_grid_density() {
         "doubling the grid must raise the estimate, got {dense} vs {sparse}"
     );
 
-    // And the increase must be at least the extra chi rows, not a token bump.
-    let extra_chi = INCIDENT_NBF * INCIDENT_NPTS * 8;
+    // The response now comes from the grid side arrays (npts-proportional) and
+    // the wider chunks, not from a monolithic block. Require a real increase
+    // proportional to the extra points, not a token bump.
+    let extra_side = INCIDENT_NPTS * (3 * 8 + 8 + 8);
     assert!(
-        dense - sparse >= extra_chi,
-        "doubling npts must add at least one more chi ({:.2} GB), added {:.2} GB",
-        extra_chi as f64 / 1e9,
-        (dense - sparse) as f64 / 1e9,
+        dense - sparse >= extra_side,
+        "doubling npts must add at least the extra grid side arrays ({:.2} MB), \
+         added {:.2} MB",
+        extra_side as f64 / 1e6,
+        (dense - sparse) as f64 / 1e6,
     );
 }
 
@@ -164,16 +198,28 @@ fn estimate_covers_per_atom_dipole_tensors() {
 /// 2026-07-13 runs, it had to predict >= what the process really took (16-17 GB
 /// anon-RSS), or the gate would have waved the job through. This is the single
 /// assertion that would have prevented the OOM kills.
+/// This asserts the estimate for the CODE AS IT WAS during the incident: a
+/// monolithic chi, and a dipole band width of 12 (what the old thread floor
+/// produced on that 12-core box). Both have since been fixed, so the same job
+/// now needs far less — but the estimator must still be able to describe the
+/// original conditions, or we have no evidence it would have caught them.
 #[test]
-fn estimate_exceeds_observed_incident_rss() {
+fn estimate_would_have_caught_the_incident_conditions() {
     const OBSERVED_RSS_BYTES: usize = 16 * 1_000_000_000; // 16 GB, the low end
-    let est = estimate_peak_bytes(incident_shape());
+    let incident_conditions = PeakEstimateShape {
+        grid: Some(GridEstimateShape {
+            dipole_band_width: 12, // the old thread floor on a 12-core box
+            ..grid_shape(INCIDENT_NPTS)
+        }),
+        ..energy_only_shape()
+    };
+    let est = estimate_peak_bytes(incident_conditions);
 
     assert!(
         est >= OBSERVED_RSS_BYTES,
-        "estimate {:.2} GB must be >= the {:.2} GB actually observed in the \
-         2026-07-13 incident, or a preflight gate built on it would have \
-         passed the job that OOM-killed the box",
+        "estimate {:.2} GB must be >= the {:.2} GB observed in the 2026-07-13 \
+         incident, or a preflight gate built on it would have passed the job \
+         that OOM-killed the box",
         est as f64 / 1e9,
         OBSERVED_RSS_BYTES as f64 / 1e9,
     );

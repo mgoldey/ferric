@@ -79,6 +79,20 @@ pub fn u_ri_mp2(
     let inter_a = compute_rpa_intermediates_spin(mol, obs, dfbs, op, scf, config, true)?;
     let inter_b = compute_rpa_intermediates_spin(mol, obs, dfbs, op, scf, config, false)?;
 
+    // Gate the MO side before the dense amplitude/energy work. Both spin
+    // intermediates are already resident here; this bounds what is built on
+    // top of them (u_rimp2.rs previously had NO check_alloc at all).
+    crate::rimp2::check_u_mo_side_alloc(
+        "U-RI-MP2",
+        inter_a.naux,
+        inter_a.nocc,
+        inter_a.nvir,
+        inter_b.nocc,
+        inter_b.nvir,
+        0,
+        crate::rimp2::eri3_budget_bytes(config.memory_budget_bytes),
+    )?;
+
     let eps_a: &[f64] = &scf.eps_alpha;
     // ROHF has no eps_beta — fall back to eps_alpha (ROHF MOs are shared).
     let eps_b: &[f64] = match scf.eps_beta.as_ref() {
@@ -119,6 +133,20 @@ pub fn compute_u_mp2_amplitudes(
 
     let inter_a = compute_rpa_intermediates_spin(mol, obs, dfbs, op, scf, config, true)?;
     let inter_b = compute_rpa_intermediates_spin(mol, obs, dfbs, op, scf, config, false)?;
+
+    // Gate the MO side before the dense amplitude/energy work. Both spin
+    // intermediates are already resident here; this bounds what is built on
+    // top of them (u_rimp2.rs previously had NO check_alloc at all).
+    crate::rimp2::check_u_mo_side_alloc(
+        "U-MP2 amplitudes",
+        inter_a.naux,
+        inter_a.nocc,
+        inter_a.nvir,
+        inter_b.nocc,
+        inter_b.nvir,
+        3,
+        crate::rimp2::eri3_budget_bytes(config.memory_budget_bytes),
+    )?;
 
     let eps_a_vec: Vec<f64> = scf.eps_alpha.clone();
     let eps_b_vec: Vec<f64> = match scf.eps_beta.as_ref() {

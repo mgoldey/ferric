@@ -717,6 +717,7 @@ fn preflight_grid_path(
             nbf,
             natoms,
             dipole_band_width: band,
+            n_workers: rayon::current_num_threads().max(1),
         }),
     });
     ferric_core::memory::check_alloc(label, est, budget)?;
@@ -803,9 +804,11 @@ fn accumulate_atom_centred_dipoles(
     weights: &[f64],
     points: &[[f64; 3]],
     atom_pos: &[[f64; 3]],
-    chi: &Array2<f64>,
+    mol: &Molecule,
+    obs_bs: &ferric_core::basis::BasisSet,
     budget_bytes: usize,
-) -> Vec<[Array2<f64>; 3]> {
+) -> Result<Vec<[Array2<f64>; 3]>, FerricError> {
+    use ferric_dft::ao_grid::eval_basis_on_points;
     use rayon::prelude::*;
 
     // Chunk size: same "≥1024 groups, floored at 1" convention as
@@ -835,12 +838,31 @@ fn accumulate_atom_centred_dipoles(
         let band_partials: Vec<Vec<[Array2<f64>; 3]>> = chunk_starts[band0..band1]
             .to_vec()
             .into_par_iter()
-            .map(|g0| {
+            .map(|g0| -> Result<Vec<[Array2<f64>; 3]>, FerricError> {
                 let g1 = (g0 + chunk_size).min(npts);
+                // Evaluate chi for THIS CHUNK's points only. The full
+                // (nbf, npts) matrix was previously built up front as one
+                // contiguous allocation -- ~3.75 GB at nbf=800/npts=586k -- even
+                // though every consumer reads it one grid point at a time. A
+                // chunk is `chunk_size` points wide (npts/1024, so ~573 at
+                // incident scale), reducing this to a few MB per worker.
+                //
+                // Numerically inert: chi is a materialized lookup table, not a
+                // reduction. Each point's value is a pure function of its
+                // coordinates, so evaluating it in chunks reproduces the same
+                // numbers; the fold order that DOES matter is the ascending
+                // chunk fold below, which is untouched.
+                let chunk_pts = &points[g0..g1];
+                let chi_c = eval_basis_on_points(mol, obs_bs, chunk_pts).map_err(|e| {
+                    FerricError::General(format!(
+                        "accumulate_atom_centred_dipoles: chi eval failed: {e}"
+                    ))
+                })?;
                 let mut local: Vec<[Array2<f64>; 3]> = (0..natoms)
                     .map(|_| std::array::from_fn(|_| Array2::<f64>::zeros((nbf, nbf))))
                     .collect();
                 for g in g0..g1 {
+                    let gc = g - g0; // chunk-local column index
                     let a = home_atom[g];
                     let w = weights[g];
                     let r = points[g];
@@ -848,20 +870,20 @@ fn accumulate_atom_centred_dipoles(
                     for d in 0..3 {
                         let factor = w * (r[d] - ra[d]);
                         for mu in 0..nbf {
-                            let chi_mu = chi[(mu, g)];
+                            let chi_mu = chi_c[(mu, gc)];
                             let weighted_chi_mu = factor * chi_mu;
                             if weighted_chi_mu.abs() < 1e-30 {
                                 continue;
                             }
                             for nu in 0..nbf {
-                                local[a][d][(mu, nu)] += weighted_chi_mu * chi[(nu, g)];
+                                local[a][d][(mu, nu)] += weighted_chi_mu * chi_c[(nu, gc)];
                             }
                         }
                     }
                 }
-                local
+                Ok(local)
             })
-            .collect();
+            .collect::<Result<Vec<_>, FerricError>>()?;
         // Serial fold in ascending chunk order — the determinism anchor.
         for chunk in &band_partials {
             for a in 0..natoms {
@@ -872,7 +894,7 @@ fn accumulate_atom_centred_dipoles(
         }
         band0 = band1;
     }
-    d_ai_ao
+    Ok(d_ai_ao)
 }
 
 /// Closed-shell only. Returns Vec<[[f64; 3]; 3]>, one (3×3) tensor per atom.
@@ -994,7 +1016,7 @@ pub fn pdep_polarizability_becke(
     // pose produced α^A up to hundreds of a.u. via this renormalization).
     let atom_pos: Vec<[f64; 3]> = mol.atoms.iter().map(|at| [at.x, at.y, at.zpos]).collect();
     let mut d_ai_ao: Vec<[Array2<f64>; 3]> =
-        accumulate_atom_centred_dipoles(npts, natoms, nbf, &home_atom, &weights, &points, &atom_pos, &chi, budget);
+        accumulate_atom_centred_dipoles(npts, natoms, nbf, &home_atom, &weights, &points, &atom_pos, mol, obs_bs, budget)?;
     // Symmetrize per-atom AO dipoles.
     for d in 0..3 {
         for a in 0..natoms {
@@ -1167,9 +1189,9 @@ pub fn pdep_polarizability_becke_dynamic(
 
         // Per-atom atom-centred AO dipole matrices (ω-independent).
         let mut d_ai_ao: Vec<[Array2<f64>; 3]> = accumulate_atom_centred_dipoles(
-            npts, natoms, nbf, &home_atom, &weights_g, &points, &atom_pos, &chi,
+            npts, natoms, nbf, &home_atom, &weights_g, &points, &atom_pos, mol, obs_bs,
             ferric_core::memory::resolve_budget_bytes(cfg.memory_budget_bytes),
-        );
+        )?;
         for a in 0..natoms {
             for d in 0..3 {
                 let m = &mut d_ai_ao[a][d];
@@ -1224,7 +1246,15 @@ pub fn pdep_polarizability_becke_dynamic(
             freqs
                 .par_iter()
                 .map_init(
-                    || (inter_a.b_ov.clone(), inter_b.b_ov.clone()),
+                    // Zeros, not `.clone()`: the closure overwrites this
+                    // buffer with `assign(b_ov)` before reading it, so cloning
+                    // copies naux*nov doubles per worker PER SPIN that are then
+                    // discarded (~23.5 GB at naux=2976/nov=61740 across 8
+                    // workers). Same resident footprint, without the copy.
+                    || (
+                        Array2::<f64>::zeros(inter_a.b_ov.raw_dim()),
+                        Array2::<f64>::zeros(inter_b.b_ov.raw_dim()),
+                    ),
                     |(b_scaled_a, b_scaled_b), &omega| -> Result<Vec<[[f64; 3]; 3]>, FerricError> {
                         let omega2 = omega * omega;
 
@@ -1372,7 +1402,7 @@ pub fn pdep_polarizability_becke_dynamic(
     // rather than band against the old hardcoded 512 MB const.
     let budget = ferric_core::memory::resolve_budget_bytes(cfg.memory_budget_bytes);
     let mut d_ai_ao: Vec<[Array2<f64>; 3]> =
-        accumulate_atom_centred_dipoles(npts, natoms, nbf, &home_atom, &weights, &points, &atom_pos, &chi, budget);
+        accumulate_atom_centred_dipoles(npts, natoms, nbf, &home_atom, &weights, &points, &atom_pos, mol, obs_bs, budget)?;
     for d in 0..3 {
         for a in 0..natoms {
             let m = &mut d_ai_ao[a][d];
@@ -1474,7 +1504,10 @@ pub fn pdep_polarizability_becke_dynamic(
         freqs
             .par_iter()
             .map_init(
-                || b_ov.clone(),
+                // Zeros, not `.clone()`: overwritten by `assign(b_ov)` before
+                // it is read, so the cloned contents are discarded (see the
+                // two-spin site and tests/mwe_per_worker_scratch.rs).
+                || Array2::<f64>::zeros(b_ov.raw_dim()),
                 |b_scaled, &omega| -> Result<Vec<[[f64; 3]; 3]>, FerricError> {
                     let omega2 = omega * omega;
                     let mut g = ndarray::Array1::<f64>::zeros(nov);
@@ -2011,7 +2044,10 @@ pub fn pdep_polarizability_hirshfeld_dynamic(
         freqs
             .par_iter()
             .map_init(
-                || b_ov.clone(),
+                // Zeros, not `.clone()`: overwritten by `assign(b_ov)` before
+                // it is read, so the cloned contents are discarded (see the
+                // two-spin site and tests/mwe_per_worker_scratch.rs).
+                || Array2::<f64>::zeros(b_ov.raw_dim()),
                 |b_scaled, &omega| -> Result<Vec<[[f64; 3]; 3]>, FerricError> {
                     let omega2 = omega * omega;
                     let mut g = ndarray::Array1::<f64>::zeros(nov);
@@ -2166,7 +2202,15 @@ pub fn molecular_dynamic_polarizability(
             freqs
                 .par_iter()
                 .map_init(
-                    || (inter_a.b_ov.clone(), inter_b.b_ov.clone()),
+                    // Zeros, not `.clone()`: the closure overwrites this
+                    // buffer with `assign(b_ov)` before reading it, so cloning
+                    // copies naux*nov doubles per worker PER SPIN that are then
+                    // discarded (~23.5 GB at naux=2976/nov=61740 across 8
+                    // workers). Same resident footprint, without the copy.
+                    || (
+                        Array2::<f64>::zeros(inter_a.b_ov.raw_dim()),
+                        Array2::<f64>::zeros(inter_b.b_ov.raw_dim()),
+                    ),
                     |(b_scaled_a, b_scaled_b), &omega| -> Result<[[f64; 3]; 3], FerricError> {
                         let omega2 = omega * omega;
                         let g_of = |e_ia: &ndarray::Array1<f64>| {
@@ -2293,7 +2337,10 @@ pub fn molecular_dynamic_polarizability(
         freqs
             .par_iter()
             .map_init(
-                || b_ov.clone(),
+                // Zeros, not `.clone()`: overwritten by `assign(b_ov)` before
+                // it is read, so the cloned contents are discarded (see the
+                // two-spin site and tests/mwe_per_worker_scratch.rs).
+                || Array2::<f64>::zeros(b_ov.raw_dim()),
                 |b_scaled, &omega| -> Result<[[f64; 3]; 3], FerricError> {
                     let omega2 = omega * omega;
                     let mut g = ndarray::Array1::<f64>::zeros(nov);

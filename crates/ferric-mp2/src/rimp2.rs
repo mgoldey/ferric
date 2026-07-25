@@ -124,6 +124,66 @@ pub(crate) fn check_mo_side_alloc(
     )
 }
 
+/// Pre-flight gate for the open-shell (UHF/ROHF) RI-MP2 lane.
+///
+/// `u_rimp2.rs` had no `check_alloc` sites at all. Both its entry points build
+/// TWO spin intermediates (`inter_a` and `inter_b`, each a full
+/// `(naux, nocc_σ·nvir_σ)` `b_ov`) that are retained simultaneously, and
+/// `compute_u_mp2_amplitudes` then holds `t_aa`, `t_bb` and `t_ab` live at once
+/// on top of them.
+///
+/// `n_amplitude_sets` selects which peak to charge: 0 for the energy-only lane
+/// (`u_ri_mp2`, which builds no dense `t`), 3 for `compute_u_mp2_amplitudes`.
+/// The per-worker `g_i` transient is charged for the larger spin, since the two
+/// spin loops run sequentially rather than concurrently.
+///
+/// See `tests/mwe_rimp2_has_no_guard.rs` for the closed-shell shapes this
+/// mirrors.
+pub(crate) fn check_u_mo_side_alloc(
+    label: &str,
+    naux: usize,
+    nocc_a: usize,
+    nvir_a: usize,
+    nocc_b: usize,
+    nvir_b: usize,
+    n_amplitude_sets: usize,
+    budget_bytes: usize,
+) -> Result<(), FerricError> {
+    let n_workers = rayon::current_num_threads().max(1);
+
+    // Both spins' b_ov are resident at the same time.
+    let b_ov = |no: usize, nv: usize| naux.saturating_mul(no).saturating_mul(nv).saturating_mul(8);
+    let b_both = b_ov(nocc_a, nvir_a).saturating_add(b_ov(nocc_b, nvir_b));
+
+    // Per-worker energy transient, charged for the larger spin (the spin loops
+    // are sequential, so both do not fan out concurrently).
+    let g_i = |no: usize, nv: usize| {
+        no.saturating_mul(nv).saturating_mul(nv).saturating_mul(8).saturating_mul(n_workers)
+    };
+    let g_peak = g_i(nocc_a, nvir_a).max(g_i(nocc_b, nvir_b));
+
+    // t_aa / t_bb / t_ab, all live simultaneously when amplitudes are built.
+    // Charge the largest single set times the count — t_ab (nocc_a·nocc_b·
+    // nvir_a·nvir_b) is the biggest of the three for an open-shell system.
+    let t_set = nocc_a
+        .max(nocc_b)
+        .saturating_mul(nocc_a.max(nocc_b))
+        .saturating_mul(nvir_a.max(nvir_b))
+        .saturating_mul(nvir_a.max(nvir_b))
+        .saturating_mul(8);
+    let t_total = t_set.saturating_mul(n_amplitude_sets);
+
+    ferric_core::memory::check_alloc(
+        &format!(
+            "{label} MO-side blocks (naux={naux}, alpha {nocc_a}o/{nvir_a}v, \
+             beta {nocc_b}o/{nvir_b}v, {n_amplitude_sets} amplitude sets, \
+             {n_workers} workers)"
+        ),
+        b_both.saturating_add(g_peak).saturating_add(t_total),
+        budget_bytes,
+    )
+}
+
 /// Build (P|ia) without materializing the full AO 3-index tensor: raw (P|μν)
 /// is generated in aux-row blocks sized to `budget_bytes` and transformed to
 /// MO immediately. Bit-identical to
@@ -251,6 +311,37 @@ pub(crate) const PAR_MO_TRANSFORM_WORK_THRESHOLD: usize = 200_000;
 /// spanning all of naux, which would otherwise reintroduce a full-size
 /// transient). 256 keeps the dressing GEMM's inner dimension wide (k = 256)
 /// while bounding the panel.
+///
+/// # Why this stays a COMPILE-TIME constant, unlike the other band widths
+///
+/// The memory-limits work (2026-07-25) converted ferric's hardcoded band
+/// constants to budget-derived widths — `DIPOLE_BAND_BYTES`, the Lanczos panel
+/// fallback, `max_vecs = 3·naux`. This one is deliberately NOT converted, and
+/// the reason is numerical, not effort.
+///
+/// The dressing step below is
+/// `general_mat_mul(1.0, &msub, &mo_blk, 1.0, &mut b_flat)` — **beta = 1**, i.e.
+/// each chunk accumulates a partial sum into the same output. `MO_STREAM_CHUNK`
+/// is therefore the k-blocking of that reduction, and k-blocking is an
+/// ACCURACY-and-DETERMINISM knob: summing the k axis in fixed-size blocks is a
+/// coarse pairwise summation, so changing the block size changes the rounding.
+/// `three_index_source.rs`'s `DRESS_ROW_BLOCK` documents the measured effect
+/// (every odd split perturbed a GEMM by ~7e-15; k-blocking there was 1.19-3.9x
+/// MORE accurate than full-k).
+///
+/// A budget-derived width here would make every RI-MP2 energy depend on the
+/// machine's free memory at launch — a silent, unreproducible perturbation of
+/// the last digits. The transient it bounds is only `256 · width · 8` bytes
+/// (a few MB at production width), so there is nothing meaningful to reclaim
+/// even if it were safe.
+///
+/// If this ever does need to shrink under memory pressure, the width must be
+/// pinned per-run and logged (like the resolved budget itself), never derived
+/// from ambient free memory — and it must be EVEN, per `DRESS_ROW_BLOCK`.
+///
+/// NOTE the MO-transform loop that fills `mo_blk` is order-INSENSITIVE (each
+/// `q` writes a disjoint output row, no accumulation), so only the dressing
+/// GEMM constrains this value.
 pub(crate) const MO_STREAM_CHUNK: usize = 256;
 
 /// Canonical streamed + dressed MO 3-index tensor builder: `B^P_{pq} = Σ_Q
