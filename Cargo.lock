@@ -644,6 +644,7 @@ dependencies = [
  "ndarray",
  "ndarray-linalg",
  "openblas-src",
+ "rayon",
  "serde",
  "sprs",
  "thiserror 2.0.18",

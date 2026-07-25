@@ -166,6 +166,73 @@ pub fn einsum_binary_batched(
     Ok(out)
 }
 
+/// Minimum element count before the permutation copy is worth fanning out over
+/// rayon. Below this the dispatch overhead dominates a copy that is only a few
+/// microseconds serially.
+///
+/// Calibrated on the measured copy rate (~2.5 GB/s single-threaded, i.e.
+/// ~3e8 f64/s): 1<<16 elements is ~0.2 ms of work, comfortably above rayon's
+/// few-µs dispatch cost while still catching every production-scale
+/// contraction. Small unit-test tensors stay on the serial path.
+const PAR_PERMUTE_MIN_ELEMS: usize = 1 << 16;
+
+/// Copy `permuted` into a fresh C-contiguous array, fanning the gather out over
+/// rayon when the operand is large enough to pay for the dispatch.
+///
+/// This is the hot part of `einsum!`. 83% of the workspace's ~130 einsum specs
+/// need at least one operand permuted before it can be viewed as a 2D matrix,
+/// and the copy is a strided gather that ndarray performs single-threaded via
+/// `as_standard_layout().into_owned()`. Measured on `ijcd,abcd->ijab` at
+/// no=10: the copy is 47% of the contraction at nv=40 and **70% at nv=80** —
+/// it is memory-bandwidth-bound and gets relatively WORSE with size, while the
+/// GEMM beside it holds ~38 GFLOP/s.
+///
+/// Parallelism is over the outermost axis of the *output* (post-permutation)
+/// array, so each worker writes a disjoint contiguous slab and reads a strided
+/// slice of the source. No accumulation happens here — this is a pure data
+/// movement — so unlike a reduction it is exactly bit-identical regardless of
+/// thread count: every output element is written exactly once, by one worker,
+/// with the same value. (Contrast the summation-order discipline that governs
+/// the GEMM paths.)
+///
+/// BLAS is untouched: this is rayon-only, so it composes with the
+/// `blas_threads` hazard model (rayon owns parallelism, OpenBLAS pinned to 1)
+/// without needing a thread-count decision.
+fn permute_to_owned(permuted: ndarray::ArrayViewD<f64>) -> ArrayD<f64> {
+    use rayon::prelude::*;
+
+    // Already contiguous in the requested order: ndarray hands back a view with
+    // no copy at all, so there is nothing to parallelize.
+    if permuted.is_standard_layout() {
+        return permuted.to_owned();
+    }
+    let shape = permuted.shape().to_vec();
+    let n: usize = shape.iter().product();
+    if n < PAR_PERMUTE_MIN_ELEMS || shape.is_empty() || shape[0] < 2 {
+        return permuted.as_standard_layout().into_owned();
+    }
+
+    // Fan out over the outermost axis by splitting the flat output buffer into
+    // equal per-slab chunks. `ndarray`'s own `rayon` feature is not enabled in
+    // this workspace, so rather than turn it on for every crate we drive rayon
+    // over the raw output slice and re-view each chunk — the output IS standard
+    // layout by construction, so slab `k` is exactly `chunk k` of the buffer.
+    let n0 = shape[0];
+    let slab: usize = shape[1..].iter().product::<usize>().max(1);
+    let mut out = ArrayD::<f64>::zeros(IxDyn(&shape));
+    let buf = out.as_slice_mut().expect("freshly allocated ArrayD is contiguous");
+    buf.par_chunks_mut(slab).enumerate().for_each(|(k, chunk)| {
+        let src = permuted.index_axis(ndarray::Axis(0), k);
+        // Each (n-1)-dim source slab is still strided; let ndarray's own
+        // optimized assign drive the inner gather into the contiguous chunk.
+        let mut dst = ndarray::ArrayViewMutD::from_shape(IxDyn(&shape[1..]), chunk)
+            .expect("chunk length matches slab shape by construction");
+        dst.assign(&src);
+    });
+    debug_assert_eq!(n0 * slab, permuted.len());
+    out
+}
+
 /// Permute `op` to (batch, second, third) axis order and reshape to the 3D
 /// shape (prod(batch), prod(second), prod(third)), copying to contiguous when
 /// the permutation is non-trivial.
@@ -186,9 +253,7 @@ fn to_3d(
     let d1: usize = second.iter().map(|&ax| op.shape()[ax]).product::<usize>().max(1);
     let d2: usize = third.iter().map(|&ax| op.shape()[ax]).product::<usize>().max(1);
     let permuted = op.permuted_axes(order);
-    permuted
-        .as_standard_layout()
-        .into_owned()
+    permute_to_owned(permuted.view())
         .into_shape_with_order(IxDyn(&[nb, d1, d2]))
         .expect("einsum: 3D reshape after permutation")
 }
@@ -205,11 +270,9 @@ fn to_2d(op: ArrayViewD<f64>, first: &[usize], second: &[usize], which: &str) ->
     let rows: usize = first.iter().map(|&ax| op.shape()[ax]).product::<usize>().max(1);
     let cols: usize = second.iter().map(|&ax| op.shape()[ax]).product::<usize>().max(1);
     let permuted = op.permuted_axes(order);
-    // `as_standard_layout` guarantees C-contiguous memory (copies when needed)
-    // so that `into_shape_with_order` (which requires standard layout) succeeds.
-    permuted
-        .as_standard_layout()
-        .into_owned()
+    // The result must be C-contiguous so `into_shape_with_order` (which requires
+    // standard layout) succeeds; `permute_to_owned` guarantees that.
+    permute_to_owned(permuted.view())
         .into_shape_with_order(IxDyn(&[rows, cols]))
         .expect("einsum: 2D reshape after permutation")
 }
@@ -233,6 +296,41 @@ mod tests {
             }
         }
         c
+    }
+
+    /// `permute_to_owned` fans the transpose gather out over rayon above
+    /// `PAR_PERMUTE_MIN_ELEMS`. It must produce EXACTLY what the serial
+    /// `as_standard_layout().into_owned()` produces — this is pure data
+    /// movement (every output element written once, by one worker), so unlike
+    /// a reduction it is bit-identical, not merely close.
+    ///
+    /// Shapes deliberately straddle the threshold and include a non-divisible
+    /// leading extent (so the last rayon chunk is short) and a leading extent
+    /// of 1 (which takes the serial short-circuit).
+    #[test]
+    fn parallel_permute_matches_serial_bitwise() {
+        // (shape, permutation) pairs; several exceed PAR_PERMUTE_MIN_ELEMS.
+        let cases: Vec<(Vec<usize>, Vec<usize>)> = vec![
+            (vec![7, 5, 3], vec![2, 0, 1]),          // small -> serial path
+            (vec![41, 13, 17, 3], vec![2, 3, 0, 1]), // large, non-divisible
+            (vec![64, 32, 32], vec![1, 2, 0]),       // large, power-of-two
+            (vec![1, 400, 400], vec![2, 1, 0]),      // leading extent 1
+            (vec![400, 400], vec![1, 0]),            // plain 2D transpose
+        ];
+        for (shape, order) in cases {
+            let n: usize = shape.iter().product();
+            let a =
+                Array::from_shape_vec(IxDyn(&shape), (0..n).map(|x| x as f64 * 0.5 - 3.0).collect())
+                    .unwrap();
+            let permuted = a.view().permuted_axes(order.clone());
+            let want = permuted.as_standard_layout().into_owned();
+            let got = permute_to_owned(permuted.view());
+            assert_eq!(got.shape(), want.shape(), "shape mismatch for {shape:?} / {order:?}");
+            assert!(
+                got.iter().zip(want.iter()).all(|(g, w)| g.to_bits() == w.to_bits()),
+                "parallel permute must be BIT-identical to serial for {shape:?} / {order:?}",
+            );
+        }
     }
 
     #[test]
