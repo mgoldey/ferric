@@ -195,6 +195,31 @@ fn peak_triple_block_bytes(nv: usize) -> usize {
     nv.saturating_pow(3).saturating_mul(6).saturating_mul(8)
 }
 
+/// Bytes held by the precomputed chemist-notation blocks ([`TripleIntegrals`])
+/// plus the amplitudes cloned alongside them, all live for the whole loop.
+///
+/// The spatial analogue of `ccsd_t::precomputed_block_bytes`, and it closes the
+/// same defect: the guard used to check only [`peak_triple_block_bytes`] — the
+/// per-triple working set — while `ovvv` is `no·nv³`, i.e. `no/6` times larger,
+/// so the shortfall GREW with system size. A job could pass pre-flight and OOM
+/// on the next allocation. See `tests/mwe_t_guard_covers_precomputed.rs`.
+///
+/// Counted: `ovvv` `no·nv³`, `ovoo` `no³·nv`, `ovov` `no²·nv²`, plus the cloned
+/// `t1` `no·nv` and `t2` `no²·nv²`.
+fn precomputed_block_bytes(no: usize, nv: usize) -> usize {
+    let ovvv = no.saturating_mul(nv.saturating_pow(3));
+    let ovoo = no.saturating_pow(3).saturating_mul(nv);
+    let ovov = no.saturating_pow(2).saturating_mul(nv.saturating_pow(2));
+    let t1 = no.saturating_mul(nv);
+    let t2 = no.saturating_pow(2).saturating_mul(nv.saturating_pow(2));
+
+    ovvv.saturating_add(ovoo)
+        .saturating_add(ovov)
+        .saturating_add(t1)
+        .saturating_add(t2)
+        .saturating_mul(8)
+}
+
 /// Thread-count-independent chunk width from a byte budget, floored at 1.
 /// Mirrors `ccsd_t::triple_chunk_len` exactly (see that function's doc and the
 /// `ferric_scf::reduce` banding pattern it cites).
@@ -387,10 +412,19 @@ pub fn ccsd_t_closed_shell(
     }
 
     let peak_triple = peak_triple_block_bytes(nv);
+    let precomputed = precomputed_block_bytes(no, nv);
     let budget = ferric_core::memory::resolve_budget_bytes(cfg.memory_budget_bytes);
+    // Precomputed blocks are allocated once and shared; the per-triple set is
+    // per rayon worker. Charge one per-triple set here -- the chunk width below
+    // is sized from the REMAINING budget, so concurrency is bounded separately
+    // and must not be double-counted into this floor.
+    let floor = precomputed.saturating_add(peak_triple);
     ferric_core::memory::check_alloc(
-        &format!("closed-shell CCSD(T) per-triple block (no={no}, nv={nv} spatial)"),
-        peak_triple,
+        &format!(
+            "closed-shell CCSD(T) precomputed blocks + one per-triple block \
+             (no={no}, nv={nv} spatial)"
+        ),
+        floor,
         budget,
     )?;
 
@@ -434,9 +468,12 @@ pub fn ccsd_t_closed_shell(
     // any RAYON_NUM_THREADS. See the module doc and the spin-orbital sibling's
     // matching comment block.
     let triples = occ_triples_with_repeats(no);
+    // Band from what is LEFT after the precomputed blocks, not the full budget
+    // (they are already resident here). Mirrors the spin-orbital sibling.
+    let remaining = budget.saturating_sub(precomputed);
     let chunk_len = triple_chunk_len(
         nv,
-        ferric_core::memory::transient_share(budget, ferric_core::memory::Share::Half),
+        ferric_core::memory::transient_share(remaining, ferric_core::memory::Share::Half),
     );
     let mut et = 0.0f64;
     for chunk in triples.chunks(chunk_len) {

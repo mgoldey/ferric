@@ -139,6 +139,51 @@ fn peak_triple_block_bytes(nv2: usize) -> usize {
     nv2.saturating_pow(3).saturating_mul(6).saturating_mul(8)
 }
 
+/// Bytes held by the PRECOMPUTED spin-orbital integral blocks that live for the
+/// whole triples loop, plus the largest transient live while they are built.
+///
+/// These are what the old guard missed. It checked only
+/// [`peak_triple_block_bytes`] — the per-triple working set — while `bcei` is
+/// allocated ~25 lines later at `(2nv)³·(2no)`, i.e.
+///
+/// ```text
+///     bcei / per_triple = 2·no / 6
+/// ```
+///
+/// so the shortfall GREW with system size, which is the opposite of what a
+/// safety margin should do (measured: 1.7x at H2O/cc-pVDZ, 3.0x at
+/// ethane/cc-pVDZ, 7.0x at benzene/cc-pVDZ). A job could pass pre-flight and
+/// then OOM on the very next allocation — the failure mode the guard exists to
+/// prevent. See `tests/mwe_t_guard_covers_precomputed.rs`.
+///
+/// Counted here:
+/// - `bcei` `(2nv)³(2no)`, `majk` `(2no)³(2nv)`, `bcjk` `(2nv)²(2no)²` — all
+///   three persist through the loop.
+/// - The `asym_phys` construction transient: each block's two spatial `einsum!`
+///   outputs (`d` and `e`) are still live while the doubled-dimension result is
+///   allocated. `bcei`'s is the largest at `2·nv³·no`.
+/// - `t1` `(2no)(2nv)` and `t2` `(2no)²(2nv)²`, cloned from the `CcResult` and
+///   held for the duration.
+fn precomputed_block_bytes(no2: usize, nv2: usize) -> usize {
+    let bcei = nv2.saturating_pow(3).saturating_mul(no2);
+    let majk = no2.saturating_pow(3).saturating_mul(nv2);
+    let bcjk = nv2.saturating_pow(2).saturating_mul(no2.saturating_pow(2));
+    // asym_phys holds both spatial inputs live while allocating its output; the
+    // spatial dims are half the spin-orbital ones, so 2·(nv2/2)³·(no2/2).
+    let asym_transient = 2usize
+        .saturating_mul((nv2 / 2).saturating_pow(3))
+        .saturating_mul(no2 / 2);
+    let t1 = no2.saturating_mul(nv2);
+    let t2 = no2.saturating_pow(2).saturating_mul(nv2.saturating_pow(2));
+
+    bcei.saturating_add(majk)
+        .saturating_add(bcjk)
+        .saturating_add(asym_transient)
+        .saturating_add(t1)
+        .saturating_add(t2)
+        .saturating_mul(8)
+}
+
 /// Enumerate every unique unordered occupied spin-orbital triple `i0<j0<k0` in
 /// `0..no2`, in ascending lexicographic order. This flattened list is what the
 /// parallel-triples loop below iterates over — building it once up front (a
@@ -341,12 +386,20 @@ pub fn ccsd_t(
     // the per-triple virtual-block footprint, which can still be large for
     // a huge virtual space even though it no longer scales with no at all.
     let peak_triple = peak_triple_block_bytes(nv2);
+    let precomputed = precomputed_block_bytes(no2, nv2);
     let budget = ferric_core::memory::resolve_budget_bytes(cfg.memory_budget_bytes);
+    // The precomputed blocks (bcei/majk/bcjk + t1/t2) are allocated ONCE and
+    // shared; the per-triple working set is per rayon worker. Charge one
+    // per-triple set here — the chunk width below is sized from the remaining
+    // budget, so concurrency is bounded separately and must not be
+    // double-counted into this floor.
+    let floor = precomputed.saturating_add(peak_triple);
     ferric_core::memory::check_alloc(
         &format!(
-            "CCSD(T) per-triple block (no={no}, nv={nv} spatial; no2={no2}, nv2={nv2} spin-orbitals)"
+            "CCSD(T) precomputed blocks + one per-triple block (no={no}, nv={nv} \
+             spatial; no2={no2}, nv2={nv2} spin-orbitals)"
         ),
-        peak_triple,
+        floor,
         budget,
     )?;
 
@@ -453,9 +506,16 @@ pub fn ccsd_t(
     // rayon×OpenBLAS oversubscription / worker-stack-overflow hazard
     // documented there, with no extra logic needed in this crate.
     let triples = unique_occ_triples(no2);
+    // Size the band from what is LEFT after the precomputed blocks, not from
+    // the full budget: bcei/majk/bcjk/t1/t2 are already resident by this point,
+    // so charging the band against the whole budget would let concurrency
+    // reclaim memory that is not actually free. The pre-flight above proved
+    // `precomputed + one per-triple set` fits, so the remainder is >= 0 and the
+    // chunk length still floors at 1 (slow, never stuck).
+    let remaining = budget.saturating_sub(precomputed);
     let chunk_len = triple_chunk_len(
         nv2,
-        ferric_core::memory::transient_share(budget, ferric_core::memory::Share::Half),
+        ferric_core::memory::transient_share(remaining, ferric_core::memory::Share::Half),
     );
     let mut et = 0.0f64;
     for chunk in triples.chunks(chunk_len) {
