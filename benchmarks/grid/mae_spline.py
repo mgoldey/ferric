@@ -65,15 +65,41 @@ def grab(text, label):
     return float(m.group(1)) if m else None
 
 
+def parse_multi_r0(path, label):
+    """{r0: E_total} from a `rs-mp2-rpa-sweep` output.
+
+    That method (`kind = "rs-mp2-rpa-sweep"`, `[mp2] r0_sweep = [...]`) solves
+    the SCF ONCE and reports several r0 points in one file — which is what makes
+    a sweep ~5x cheaper than the same points as separate jobs. A collector that
+    assumes one r0 per file silently sees only a fraction of the data (and, if
+    it takes the file's single `Total energy` match, the WRONG r0's energy).
+    """
+    out = {}
+    cur = None
+    for line in path.read_text().splitlines():
+        m = re.search(r"r0 = ([0-9.]+)\s*Å", line)
+        if m:
+            cur = float(m.group(1))
+        m2 = re.search(r"Total energy\s*=\s*(-?\d+\.\d+)", line)
+        if m2 and cur is not None:
+            out[cur] = float(m2.group(1))
+    return out
+
+
 def collect(basis, form):
-    """{r0: {sys_idx: {frag: E_total}}} for one basis/formulation."""
+    """{r0: {sys_idx: {frag: E_total}}} for one basis/formulation.
+
+    Reads BOTH layouts: single-r0 files (`..._terfr0_0p7000_B.out`) and
+    multi-r0 sweep files (`..._terfr0sweep_*.out`).
+    """
     label = FORM_LABEL[form]
     data = defaultdict(lambda: defaultdict(dict))
-    pat = re.compile(
+
+    single = re.compile(
         rf"^a24-(\d+)_(dimer|mA_cp|mB_cp)_{re.escape(basis)}_terfr0_(\d+p\d+)_{form}\.out$"
     )
     for p in sorted(OUT.glob(f"a24-*_{basis}_terfr0_*_{form}.out")):
-        m = pat.match(p.name)
+        m = single.match(p.name)
         if not m:
             continue
         idx, frag, r0s = int(m.group(1)), m.group(2), m.group(3)
@@ -82,6 +108,28 @@ def collect(basis, form):
         if tot is None or corr is None:
             continue  # failed / killed / still running
         data[float(r0s.replace("p", "."))][idx][frag] = tot
+
+    # Multi-r0 sweep files. The formulation lives in the TOML rather than the
+    # filename, so read it back from the sibling TOML to avoid mixing B and T.
+    multi = re.compile(
+        rf"^a24-(\d+)_(dimer|mA_cp|mB_cp)_{re.escape(basis)}_terfr0sweep_(.+)\.out$"
+    )
+    want_form = {"B": "delta-lr", "T": "coupled-rings"}[form]
+    for p in sorted(OUT.glob(f"a24-*_{basis}_terfr0sweep_*.out")):
+        m = multi.match(p.name)
+        if not m:
+            continue
+        idx, frag = int(m.group(1)), m.group(2)
+        toml = ROOT / "toml" / (p.stem + ".toml")
+        if toml.exists():
+            tt = toml.read_text()
+            fm = re.search(r'formulation\s*=\s*"([a-z-]+)"', tt)
+            if fm and fm.group(1) != want_form:
+                continue
+        elif form != "B":  # unlabelled legacy sweeps were the B production run
+            continue
+        for r0, tot in parse_multi_r0(p, label).items():
+            data[r0][idx][frag] = tot
     return data
 
 
