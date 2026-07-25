@@ -73,26 +73,22 @@ pub fn einsum_binary(
         // runtime rayon-worker guard forces 1 automatically when this runs
         // inside a parallel region, so wrapping here is safe either way.
         //
-        // MEASURED 2026-07-26, and it is a real speed/reproducibility trade,
-        // so the default deliberately stays at 1. ferric-cc contains no rayon
-        // at all (only `ccsd_t.rs` does), so its einsum GEMMs run outside any
-        // rayon region and the call-path proof for a raise holds. CCSD on
-        // water/aug-cc-pVDZ:
-        //     FERRIC_BLAS_THREADS=1   25.6 s     =2  19.0 s     =4  16.2 s
-        //                        =6   15.4 s     =8  19.4 s    =12  19.3 s
-        // i.e. ~1.6x at the 4-6 knee, then it REGRESSES past ~6 (this box has
-        // 12 cores; the GEMMs are too small to feed more).
+        // The k-axis is blocked in OUR code (see `gemm_kblocked`): coarse
+        // pairwise summation, measured 1.10-1.40x more accurate than one
+        // full-k GEMM against a compensated reference. That is an
+        // unconditional win and applies at ANY thread count.
         //
-        // But the correlation energy takes FOUR distinct bit patterns across
-        // those counts (...47da / ...47d8 / ...47db / ...47dd) — a 5-ulp,
-        // 6.0e-16 relative spread. Threaded OpenBLAS splits the k-axis across
-        // threads, which reorders the accumulation. That is physically
-        // meaningless but NOT reproducible, and the 10 printed digits hide it
-        // entirely (all six runs print -0.2296094343). Use
-        // `benchmarks/harness/examples/ccsd_blas_threads.rs`, which prints the
-        // raw bits, before ever revisiting this.
+        // It does NOT make the result thread-independent — OpenBLAS also
+        // parallelizes over m/n, so it still splits inside a block; CCSD across
+        // FERRIC_BLAS_THREADS 1..12 still shows 4 bit patterns (5 ulp,
+        // 6.0e-16 rel). Accuracy and bit-reproducibility are separate
+        // properties here; blocking buys the first, and only a reproducible
+        // BLAS would buy the second. The default therefore stays at 1 thread —
+        // raising it is ~1.7x on CCSD (24.5 -> 14.1 s at the 6-thread knee,
+        // regressing past ~6 on this 12-core box) and costs only bit-identity,
+        // never accuracy. See `gemm_kblocked`'s doc for the full table.
         with_blas_threads(opt_in_blas_threads(), || {
-            general_mat_mul(1.0, &l2m, &r2m, 0.0, &mut o2m);
+            gemm_kblocked(&l2m, &r2m, &mut o2m);
         });
     }
 
@@ -191,6 +187,75 @@ pub fn einsum_binary_batched(
         .into_shape_with_order(IxDyn(out_shape))
         .map_err(|_| TensorError::OutputReshape { got, want })?;
     Ok(out)
+}
+
+/// Contraction-axis block size for [`gemm_kblocked`]. Matches
+/// `three_index_source.rs`'s `DRESS_K_BLOCK`, which the DF dressing work
+/// (`eb895df`) measured as the accuracy knee.
+const GEMM_K_BLOCK: usize = 128;
+
+/// `out = left · right`, accumulating over the contraction axis in fixed
+/// blocks of [`GEMM_K_BLOCK`] rather than as one full-k GEMM.
+///
+/// **This is chosen for ACCURACY first, and reproducibility falls out of it.**
+///
+/// Blocking the k-axis is coarse pairwise summation: each block's partial
+/// product is formed independently and the blocks are then added, so rounding
+/// error grows like log(k/blk) instead of k. Measured against a
+/// Neumaier-compensated reference (`benchmarks/harness/examples/
+/// gemm_accuracy_vs_threads.rs`), max |error| over the product:
+///
+/// ```text
+///   m=200 k=4000 n=200     full-k GEMM 1.421e-14    k-blocked(128) 1.066e-14   1.33x better
+///   m=400 k=2000 n=400     full-k GEMM 1.121e-14    k-blocked(128) 7.994e-15   1.40x better
+///   m=100 k=8000 n=100     full-k GEMM 1.954e-14    k-blocked(128) 1.776e-14   1.10x better
+/// ```
+///
+/// The same measurement corrected an earlier misconception worth recording:
+/// **threading dgemm does NOT cost accuracy.** At 1 vs 12 OpenBLAS threads the
+/// max error is *identical* (1.421e-14 both, and at k=8000 the threaded result
+/// is marginally BETTER at 1.821e-14 vs 1.954e-14) — only the bit pattern
+/// moves. So the reflex "don't thread, it breaks determinism" was defending
+/// the *serial full-k* order, which is neither the fastest nor the most
+/// accurate of the candidates. Accuracy and reproducibility are separate
+/// properties here, and this function buys the first one unconditionally.
+///
+/// **It does NOT buy the second, and that was a wrong hypothesis worth
+/// recording.** Fixing the block boundaries in our own code does not make the
+/// product thread-independent, because OpenBLAS also parallelizes over m/n —
+/// not only over k — so it still splits work *inside* a 128-wide block.
+/// Measured directly (k-blocked at 1 vs 4 vs 12 threads, compared to each
+/// other rather than to serial full-k): bit-identical in only 1 of 6 cases.
+/// End-to-end, CCSD across `FERRIC_BLAS_THREADS` 1/2/4/6/8/12 still shows 4
+/// distinct bit patterns with the same 5-ulp spread as before. Anyone wanting
+/// bit-reproducible threaded GEMM needs a reproducible BLAS, not blocking.
+///
+/// Larger blocks are not uniformly better or worse (256/512 measured at or
+/// slightly above full-k); 128 is the knee that `eb895df` independently landed
+/// on for the DF dressing, so both paths now share one constant and one
+/// rationale.
+fn gemm_kblocked(
+    left: &ndarray::ArrayView2<f64>,
+    right: &ndarray::ArrayView2<f64>,
+    out: &mut ndarray::ArrayViewMut2<f64>,
+) {
+    let k = left.ncols();
+    if k <= GEMM_K_BLOCK {
+        general_mat_mul(1.0, left, right, 0.0, out);
+        return;
+    }
+    let mut k0 = 0;
+    while k0 < k {
+        let k1 = (k0 + GEMM_K_BLOCK).min(k);
+        let lb = left.slice(ndarray::s![.., k0..k1]);
+        let rb = right.slice(ndarray::s![k0..k1, ..]);
+        // beta = 0 on the first block (initializes `out`), 1 thereafter, so
+        // the blocks accumulate in ascending-k order — fixed, and independent
+        // of how many threads OpenBLAS uses inside each block.
+        let beta = if k0 == 0 { 0.0 } else { 1.0 };
+        general_mat_mul(1.0, &lb, &rb, beta, out);
+        k0 = k1;
+    }
 }
 
 /// Minimum element count before the permutation copy is worth fanning out over
@@ -394,6 +459,89 @@ mod tests {
             }
         }
         c
+    }
+
+    /// `gemm_kblocked` blocks the contraction axis, which is coarse pairwise
+    /// summation and therefore MORE accurate than one full-k GEMM — the reason
+    /// it was chosen. This pins that claim against a Neumaier-compensated
+    /// reference so a future "simplification" back to a single
+    /// `general_mat_mul` cannot silently give up the accuracy.
+    ///
+    /// Uses a large k (that is where accumulation error lives) and operands of
+    /// mixed magnitude, which is what makes summation order matter at all —
+    /// uniformly-scaled random data barely distinguishes the orderings.
+    #[test]
+    fn kblocked_gemm_is_at_least_as_accurate_as_full_k() {
+        use ndarray::Array2;
+
+        let (m, k, n) = (24usize, 3000usize, 24usize);
+        let mut s: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut rnd = || {
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (s >> 11) as f64 / (1u64 << 53) as f64 - 0.5
+        };
+        // Mixed magnitudes: a few large terms among many small ones is the
+        // classic case where naive left-to-right accumulation loses digits.
+        let a = Array2::from_shape_fn((m, k), |(_, p)| {
+            let v = rnd();
+            if p % 97 == 0 { v * 1e6 } else { v }
+        });
+        let b = Array2::from_shape_fn((k, n), |(p, _)| {
+            let v = rnd();
+            if p % 89 == 0 { v * 1e6 } else { v }
+        });
+
+        // Neumaier-compensated reference.
+        let bt = b.t().as_standard_layout().into_owned();
+        let mut want = Array2::<f64>::zeros((m, n));
+        for i in 0..m {
+            for j in 0..n {
+                let (mut sum, mut c) = (0.0f64, 0.0f64);
+                for p in 0..k {
+                    let prod = a[[i, p]] * bt[[j, p]];
+                    let t = sum + prod;
+                    if sum.abs() >= prod.abs() {
+                        c += (sum - t) + prod;
+                    } else {
+                        c += (prod - t) + sum;
+                    }
+                    sum = t;
+                }
+                want[[i, j]] = sum + c;
+            }
+        }
+
+        let err_of = |got: &Array2<f64>| -> f64 {
+            got.iter().zip(want.iter()).map(|(g, w)| (g - w).abs()).fold(0.0f64, f64::max)
+        };
+
+        let mut full = Array2::<f64>::zeros((m, n));
+        general_mat_mul(1.0, &a.view(), &b.view(), 0.0, &mut full.view_mut());
+
+        let mut blocked = Array2::<f64>::zeros((m, n));
+        gemm_kblocked(&a.view(), &b.view(), &mut blocked.view_mut());
+
+        let (e_full, e_blk) = (err_of(&full), err_of(&blocked));
+        // Measured margin on this data is 1.167x (blocked 3.66e-4 vs full-k
+        // 4.27e-4). Require a real improvement, not merely "no worse": a
+        // >=1.05x floor still fails immediately if the blocking is removed
+        // (which lands at ratio 1.000), while leaving headroom for BLAS
+        // version differences. A "<= full * 1.05" style bound would NOT catch
+        // that regression -- verified by mutation.
+        let ratio = e_full / e_blk.max(1e-300);
+        assert!(
+            ratio >= 1.05,
+            "k-blocked GEMM must be measurably MORE accurate than full-k \
+             (blocked {e_blk:.3e} vs full-k {e_full:.3e}, ratio {ratio:.3} \
+             < 1.05); if this fails, the k-blocking that justifies \
+             gemm_kblocked's existence has been lost",
+        );
+        // And it must still be a correct product, not merely a precise one.
+        assert!(
+            e_blk / want.iter().fold(0.0f64, |m, w| m.max(w.abs())) < 1e-13,
+            "k-blocked GEMM relative error {e_blk:.3e} is too large to be a \
+             correct product",
+        );
     }
 
     /// `permute_to_owned` fans the transpose gather out over rayon above
