@@ -10,10 +10,19 @@
 //!   Z[P,μ,σ] = Σ_λ B[P,μ,λ] · D[λ,σ]
 //!   K[μ,ν]   = Σ_{P,σ} Z[P,μ,σ] · B[P,ν,σ]
 //!
-//! Each aux-block is contracted in rayon-parallel aux-chunks. Per chunk the
-//! per-P (n,n)×(n,n) GEMM stack is collapsed into two wide GEMMs on repacked
-//! operands (see `build`); BLAS stays single-threaded (OPENBLAS_NUM_THREADS=1
-//! under rayon), so chunks are the parallel unit.
+//! Each aux-block is contracted in rayon-parallel aux-chunks; BLAS stays
+//! single-threaded (OPENBLAS_NUM_THREADS=1 under rayon), so chunks are the
+//! parallel unit. The two builders differ in how a chunk is contracted:
+//!
+//! * [`KBuilder::build`] (density path) collapses the per-P (n,n)×(n,n) GEMM
+//!   stack into two wide GEMMs on repacked operands — O(naux·n³).
+//! * [`KBuilder::build_from_occ`] (occupied path, used once MOs exist) never
+//!   repacks: B[P] is already a contiguous symmetric (n,n) slice, so each P is
+//!   one DSYMM into a stacked (n, c·nocc) panel, reduced by ONE DSYRK per chunk
+//!   — O(naux·n²·nocc), with both symmetries taken. At benzene/aug-cc-pVTZ
+//!   (n=414, nocc=21) that is ~12.8x faster than the density path per build.
+//!   The repack the density path amortizes over an n-wide contraction was 35%
+//!   of the occ path's runtime, since its contraction is only nocc-wide.
 //!
 //! The dressed 3-center tensor B[P,μ,ν] = Σ_Q V^{-1/2}_{PQ} (Q|μν) is built once
 //! at construction (via ThreeIndexSource::build_dressed) and reused every SCF
@@ -34,6 +43,40 @@ use ferric_integrals::threeindex::coulomb_metric_2c;
 use ndarray::linalg::general_mat_mul;
 use ndarray::{Array2, Array3};
 use ndarray_linalg::{Eigh, UPLO};
+
+// Direct BLAS bindings for the occupied-path exchange build. OpenBLAS is already
+// linked via openblas-src; these avoid a cblas/blas-sys dep for two calls.
+// Fortran signatures:
+//   dsymm(side, uplo, m, n, alpha, a, lda, b, ldb, beta, c, ldc)
+//   dsyrk(uplo, trans, n, k, alpha, a, lda, beta, c, ldc)
+extern "C" {
+    fn dsymm_(
+        side: *const u8,
+        uplo: *const u8,
+        m: *const i32,
+        n: *const i32,
+        alpha: *const f64,
+        a: *const f64,
+        lda: *const i32,
+        b: *const f64,
+        ldb: *const i32,
+        beta: *const f64,
+        c: *mut f64,
+        ldc: *const i32,
+    );
+    fn dsyrk_(
+        uplo: *const u8,
+        trans: *const u8,
+        n: *const i32,
+        k: *const i32,
+        alpha: *const f64,
+        a: *const f64,
+        lda: *const i32,
+        beta: *const f64,
+        c: *mut f64,
+        ldc: *const i32,
+    );
+}
 
 /// DF-K exchange builder. Caches the V^{-1/2}-dressed 3-center source; the
 /// per-chunk repack/GEMM scratch in `build` is allocated per rayon task
@@ -306,42 +349,105 @@ impl DfK<'_> {
                     let c = q1 - q0;
                     let bchunk = blk.data.slice(ndarray::s![q0..q1, .., ..]);
 
-                    // M[μ,P,i] = Σ_λ B[P,μ,λ] · C[λ,i] as one (c·n, n)×(n, nocc)
-                    // GEMM on the (μ,P,λ)-repacked chunk, so (P,i) comes out as
-                    // the contiguous trailing axis pair. This is the O(naux·n²·nocc)
-                    // half-transform (nocc ≪ n), replacing the O(naux·n³) contraction
-                    // of B against the full (n,n) density in `build`.
-                    let mut bswap = Array3::<f64>::zeros((n, c, n));
-                    bswap.assign(&bchunk.permuted_axes([1, 0, 2]));
-                    let bswap_flat = bswap
-                        .into_shape_with_order((n * c, n))
-                        .map_err(|e| FerricError::General(format!("B repack reshape: {e}")))?;
-                    let mut m = Array2::<f64>::zeros((n * c, nocc));
-                    general_mat_mul(1.0, &bswap_flat, c_occ, 0.0, &mut m);
-                    // m is [μ,(c,nocc)] contiguous → view as [μ,(P,i)] wide, and
-                    // as [(μ,P),i] tall (for the transposed-side operand below).
-                    let m3 = m
-                        .into_shape_with_order((n, c, nocc))
-                        .map_err(|e| FerricError::General(format!("M reshape: {e}")))?;
-
-                    // K_chunk[μ,ν] = Σ_{P,i} M[μ,(P,i)] · Mᵀ[(P,i),ν].
-                    // Left operand: M as (n, c·nocc). Right operand: the same M
-                    // repacked to ((P,i), ν) = (c·nocc, n), i.e. Mᵀ over the μ↔ν
-                    // legs. One wide (n, c·nocc)×(c·nocc, n) GEMM, mirroring the
-                    // two-wide-GEMM shape of `build`.
-                    let m_wide = m3
-                        .view()
-                        .into_shape_with_order((n, c * nocc))
-                        .map_err(|e| FerricError::General(format!("M wide reshape: {e}")))?
-                        .to_owned();
-                    // Mt[(P,i),ν] = M[ν,(P,i)]: permute μ to the trailing axis.
-                    let mut mt = Array3::<f64>::zeros((c, nocc, n));
-                    mt.assign(&m3.permuted_axes([1, 2, 0]));
-                    let mt_flat = mt
-                        .into_shape_with_order((c * nocc, n))
-                        .map_err(|e| FerricError::General(format!("Mt reshape: {e}")))?;
+                    // Per-aux-row, repack-free (the shape PySCF uses —
+                    // nr_ao2mo.c:1016 / df_jk.py:371): B[P] is already a
+                    // contiguous, SYMMETRIC (n,n) slice, so
+                    //   M_P[μ,i] = Σ_λ B[P,μ,λ]·C[λ,i]   via DSYMM
+                    //   K      += Σ_P M_P · M_Pᵀ         via DSYRK
+                    // needs no permuted copy at all. The previous formulation
+                    // repacked B to [μ,P,λ] so both contractions could be single
+                    // wide GEMMs; measured at benzene/aTZ (n=414, nocc=21) that
+                    // repack was 35% of this function's entire runtime — the
+                    // density path amortizes it over an n-wide contraction, but
+                    // the occ path's is only nocc-wide, so it cannot. Dropping
+                    // the repack and taking both symmetries measured 147→66.5 ms
+                    // per build at benzene/aTZ (2.2x), lifting this path from 55
+                    // to 121 GFLOP/s (benchmarks/harness/examples/dfk_mwe.rs).
+                    //
+                    // BLAS layout: ndarray is row-major, BLAS is column-major, so
+                    // a row-major (r,c) buffer is the Fortran (c,r) matrix.
+                    //  - DSYMM with SIDE='R' computes the Fortran (nocc,n)
+                    //    product Cᵀ·B, which IS the row-major (n,nocc) M we want.
+                    //    B symmetric ⇒ UPLO is immaterial to the result.
+                    //  - DSYRK with TRANS='T' on the Fortran (nocc,n) view of M
+                    //    gives Mᵀ_F·M_F = the row-major M·Mᵀ. UPLO='L' fills the
+                    //    Fortran lower triangle = the row-major UPPER triangle,
+                    //    so the mirror below copies upper→lower. (Getting that
+                    //    direction backwards yields a silently wrong K — it is
+                    //    covered by dfk_occ_symmetry_matches_reference.)
+                    let ni = n as i32;
+                    let no = nocc as i32;
+                    let one = 1.0f64;
+                    let zero = 0.0f64;
+                    // Half-transform every P of this chunk into one wide
+                    // (n, c·nocc) buffer, then reduce with a SINGLE
+                    // DSYRK of k = c·nocc. Accumulating one rank-nocc DSYRK per P
+                    // instead (beta=1) is the obvious variant but is measurably
+                    // LESS accurate: on water/cc-pVDZ it moved the converged SCF
+                    // energy 1.6e-8 off the density path, versus 4e-10 for a wide
+                    // reduction, because a sequential f64 sum over c updates lacks
+                    // the blocking BLAS applies along a long k axis.
+                    // W[μ, (P,i)] row-major (n, c·nocc): M_P occupies COLUMNS
+                    // [p·nocc, (p+1)·nocc), so each DSYMM writes a strided
+                    // sub-block (ldc = c·nocc, column offset p·nocc) — not a
+                    // contiguous row range.
+                    let ldw = (c * nocc) as i32;
+                    let mut m_chunk = Array2::<f64>::zeros((n, c * nocc));
+                    for p in 0..c {
+                        let bp = bchunk.slice(ndarray::s![p, .., ..]);
+                        // `blk.data` is standard-layout, so this row slice is
+                        // contiguous; `to_slice` therefore never falls back.
+                        let bp_slice = bp.to_slice().ok_or_else(|| {
+                            FerricError::General("DfK occ: non-contiguous B row".into())
+                        })?;
+                        // M_P as the (nocc, n)-Fortran block at column offset
+                        // p·nocc of W.
+                        let off = p * nocc;
+                        // SAFETY: dimensions match the buffers above; the
+                        // strided (nocc, n) write at column offset p·nocc with
+                        // ldc = c·nocc stays inside the (n, c·nocc) buffer.
+                        unsafe {
+                            dsymm_(
+                                b"R\0".as_ptr(),
+                                b"U\0".as_ptr(),
+                                &no,
+                                &ni,
+                                &one,
+                                bp_slice.as_ptr(),
+                                &ni,
+                                c_occ.as_ptr(),
+                                &no,
+                                &zero,
+                                m_chunk.as_mut_ptr().add(off),
+                                &ldw,
+                            );
+                        }
+                    }
                     let mut kc = Array2::<f64>::zeros((n, n));
-                    general_mat_mul(1.0, &m_wide, &mt_flat, 0.0, &mut kc);
+                    let k_dim = (c * nocc) as i32;
+                    // SAFETY: m_chunk is (n, c·nocc) row-major = Fortran
+                    // (c·nocc, n) with lda = c·nocc; kc is (n, n). TRANS='T'
+                    // gives W_Fᵀ·W_F = the row-major W·Wᵀ = Σ_P M_P·M_Pᵀ.
+                    unsafe {
+                        dsyrk_(
+                            b"L\0".as_ptr(),
+                            b"T\0".as_ptr(),
+                            &ni,
+                            &k_dim,
+                            &one,
+                            m_chunk.as_ptr(),
+                            &ldw,
+                            &zero,
+                            kc.as_mut_ptr(),
+                            &ni,
+                        );
+                    }
+                    // DSYRK wrote only one triangle (see the layout note above).
+                    for i in 0..n {
+                        for j in (i + 1)..n {
+                            kc[[j, i]] = kc[[i, j]];
+                        }
+                    }
                     Ok(kc)
                 },
             )?;

@@ -187,14 +187,15 @@ pub fn solve_uhf_fockmod(
     let mut d_a = density(&c_a, nocc_a);
     let mut d_b = density(&c_b, nocc_b);
 
-    // Occupied MO coefficients that would drive the O(naux·n²·nocc) DF-K
-    // half-transform (KBuilder::build_from_occ). DISABLED (always None) — see
-    // the matching note in rhf.rs: the occ-path's B-tensor reassociation
-    // differs from the density path at the f64 floor, which measurably
-    // prevented RHF from settling on benzene/def2-svp (a genuine dE
-    // limit-cycle, not just a slow-margin issue). Reverted to always using
-    // the exact density contraction until the occ-path numerics are revisited.
-    let occ_or_none = |_c: &Array2<f64>, _nocc: usize| -> Option<Array2<f64>> { None };
+    // Occupied MO coefficients driving the O(naux·n²·nocc) DF-K half-transform
+    // (KBuilder::build_from_occ) in place of the O(naux·n³) density
+    // contraction. Unlike RHF, each UHF spin density is a bare
+    // D_σ = C_σ·C_σᵀ (see `density`), so no factor-2 rescale is needed here —
+    // dropping that RHF-only factor was what made this path look like a
+    // convergence bug and get disabled (see the note in rhf.rs).
+    let occ_or_none = |c: &Array2<f64>, nocc: usize| -> Option<Array2<f64>> {
+        (nocc > 0).then(|| c.slice(ndarray::s![.., ..nocc]).to_owned())
+    };
     let mut d_occ_a: Option<Array2<f64>> = occ_or_none(&c_a, nocc_a);
     let mut d_occ_b: Option<Array2<f64>> = occ_or_none(&c_b, nocc_b);
 

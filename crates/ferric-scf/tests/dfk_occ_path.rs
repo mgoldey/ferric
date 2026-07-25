@@ -4,8 +4,15 @@
 //! occupied MO coefficients (O(naux·n²·nocc)) instead of the assembled density
 //! (O(naux·n³)). The K-matrix-level equivalence is proven in df_k.rs unit tests
 //! (`df_k_build_from_occ_matches_density_build`, <1e-10). These tests close the
-//! loop at the SCF-energy level for BOTH the closed-shell (RHF, √2·C_occ
-//! convention) and open-shell (UHF, two independent spin channels) drivers:
+//! loop at the SCF-energy level for BOTH the closed-shell (RHF) and open-shell
+//! (UHF, two independent spin channels) drivers.
+//!
+//! Scaling convention: `build_from_occ` applies NO occupation factor — it
+//! returns K(C_occ·C_occᵀ) for whatever coefficients it is handed, and the
+//! drivers cache BARE C_occ. So the RHF caller owes the factor 2 from
+//! D = 2·C_occ·C_occᵀ, while UHF/ROHF spin channels (D_σ = C_σ·C_σᵀ) owe 1.
+//! Tests 1-2 below cannot see that factor (see
+//! `dfk_occ_path_caller_scaling_matches_true_density_build`, which can):
 //!
 //!   1. Run the identical SCF twice — once via the default C_occ fast path, once
 //!      forcing the density path with FERRIC_DFK_FORCE_DENSITY — and assert the
@@ -95,6 +102,70 @@ fn uhf_dfjk_energy(mol: &Molecule, prep: &PreparedBasis, force_density: bool) ->
     let e = energy_or_plateau(solve_uhf(&ctx, mol, prep, &bounds, &cfg));
     std::env::remove_var("FERRIC_DFK_FORCE_DENSITY");
     e
+}
+
+/// Guards the CALLER-side scaling convention, which the
+/// `FERRIC_DFK_FORCE_DENSITY` toggle structurally cannot check.
+///
+/// `build_from_occ` applies no occupation factor: it returns
+/// K(C_occ·C_occᵀ). RHF's density is D = 2·C_occ·C_occᵀ, so the RHF caller owes
+/// a factor of 2 (either `k *= 2.0`, or `occ_factor = 2.0` on the RSH path);
+/// UHF/ROHF spin channels owe 1.0. Dropping the RHF factor is invisible to the
+/// sibling tests because `FERRIC_DFK_FORCE_DENSITY` rebuilds D from the same
+/// bare C_occ *inside* `build_from_occ_impl` — both branches then carry the
+/// identical half-scaling and their difference cancels exactly. That is how a
+/// 16.4 Ha error on benzene/def2-svp (-214.13 vs -230.54) survived a green
+/// suite and was misattributed to an "f64-floor limit-cycle" (636c26c).
+///
+/// This compares against the genuine density contraction `DfK::build(&D)` at a
+/// fixed converged C_occ — one Fock build, no SCF trajectory in the loop — so
+/// any caller-side factor shows up directly as a K-matrix mismatch.
+#[test]
+fn dfk_occ_path_caller_scaling_matches_true_density_build() {
+    use ferric_scf::fock::KBuilder;
+    use ndarray::Array2;
+
+    let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+    let prep = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+    let ctx = ParallelContext::default();
+    let cfg = RhfConfig {
+        df_j_aux: Some("def2-universal-jkfit".into()),
+        df_k_aux: Some("def2-universal-jkfit".into()),
+        ..Default::default()
+    };
+    let res = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
+
+    let nocc = (mol.nelec() / 2) as usize;
+    let c_occ = res.mos_r().slice(ndarray::s![.., ..nocc]).to_owned();
+    // The RHF convention this test exists to pin down.
+    let d = 2.0 * c_occ.dot(&c_occ.t());
+    let n = prep.nbasis();
+
+    let aux = PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
+    let mut dfk = ferric_scf::df_k::DfK::new(op, &prep, &aux, 0).unwrap();
+
+    let mut k_density = Array2::<f64>::zeros((n, n));
+    dfk.build(&d, &mut k_density).unwrap();
+
+    let mut k_occ = Array2::<f64>::zeros((n, n));
+    dfk.build_from_occ(&c_occ, &mut k_occ).unwrap();
+    k_occ *= 2.0; // caller-supplied RHF factor — the thing under test
+
+    let max_abs = k_density.iter().cloned().fold(0.0f64, |a, b| a.max(b.abs()));
+    let max_diff = (&k_density - &k_occ)
+        .iter()
+        .cloned()
+        .fold(0.0f64, |a, b| a.max(b.abs()));
+    // Same B tensor, different association order: a few ulp, nothing more. A
+    // missing/extra factor of 2 lands at rel ~1.0, twelve orders of magnitude up.
+    assert!(
+        max_diff / max_abs < 1e-12,
+        "DF-K occ path vs true density build: rel {:.3e} (max|diff| {max_diff:.3e}, \
+         max|K| {max_abs:.3e}) — check the caller's occupation factor",
+        max_diff / max_abs
+    );
 }
 
 #[test]

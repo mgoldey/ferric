@@ -626,22 +626,32 @@ pub fn solve_rhf(
                 total_quartets += dj.build(&d, &mut j_buf)?;
             }
             if let Some(dfk) = df_k.as_mut() {
-                // NOTE: the O(naux·n²·nocc) C_occ half-transform
-                // (KBuilder::build_from_occ) is deliberately NOT used here.
-                // It is mathematically equivalent to the density path but
-                // reassociates the B-tensor contraction differently, which
-                // introduces an f64-floor-level per-iteration K perturbation.
-                // On benzene/def2-svp this measurably prevented RHF from
-                // settling (dp_rms plateaus ~1e-9 while dE keeps oscillating
-                // ~1e-5-2e-6 indefinitely — a genuine limit-cycle, not just a
-                // "needs 1-2 more iterations" margin issue; confirmed via
-                // FERRIC_SCF_TRACE and reproduced deterministically across
-                // repeat runs). Reverted to always using the exact density
-                // contraction until the occ-path numerics are revisited
-                // (existing dfk_occ_path.rs tests use water/cc-pVDZ at
-                // max_iter=200 with large margin and did not catch this).
-                let _ = &d_occ; // still cached for a future re-enable; unused for now
-                dfk.build(&d, &mut k_buf)?;
+                // O(naux·n²·nocc) C_occ half-transform instead of the
+                // O(naux·n³) density contraction. `d_occ` is None on iteration 1
+                // (no diagonalization yet) and whenever fractional occupations
+                // make D non-idempotent (smearing), so those fall back to the
+                // density path.
+                //
+                // `d_occ` caches BARE C_occ while the RHF density is
+                // D = 2·C_occ·C_occᵀ, and `build_from_occ` applies no scaling —
+                // so K(D) = 2·K(C_occ·C_occᵀ) and the factor 2 is the caller's
+                // responsibility (see the contract note at the d_occ assignment
+                // sites). Omitting it was the cause of the "limit-cycle" this
+                // path was reverted for in 636c26c: K came out exactly half, and
+                // SCF converged to a self-consistent but badly wrong energy
+                // (benzene/def2-svp: -214.13 vs -230.54 Ha). With the factor
+                // applied, a single Fock build agrees with the density path to
+                // 2 ulp (rel 5e-16, dfk_occ_single harness) and full SCF matches
+                // in both energy and iteration count.
+                match d_occ.as_ref() {
+                    Some(c_occ) => {
+                        dfk.build_from_occ(c_occ, &mut k_buf)?;
+                        k_buf *= 2.0;
+                    }
+                    None => {
+                        dfk.build(&d, &mut k_buf)?;
+                    }
+                }
             } else if let Some(dk) = direct_k.as_mut() {
                 // Only reached when exact exchange is consumed (k_consumed):
                 // for pure DFT `direct_k` is None and k_buf stays zero, since
@@ -686,9 +696,12 @@ pub fn solve_rhf(
             // loop (geometry-only). Only the D-dependent contraction runs here.
             let dfk_sr = dfk_sr.as_mut().expect("dfk_sr built when omega>0");
             let dfk_lr = dfk_lr.as_mut().expect("dfk_lr built when omega>0");
-            // occ-path disabled here too (see the plain-HF K-build note above).
+            // occ path when available: `occ_factor = 2.0` supplies the RHF
+            // D = 2·C_occ·C_occᵀ factor that `build_from_occ` does not apply,
+            // so eff_scale = 0.5·2.0 = 1.0 matches the density path's
+            // scale = 0.5 against the already-doubled `d`.
             crate::fock_assembly::subtract_rsh_exchange(
-                dfk_sr, dfk_lr, &d, None, 2.0, &mut f, k_mix.sr, k_mix.lr, 0.5,
+                dfk_sr, dfk_lr, &d, d_occ.as_ref(), 2.0, &mut f, k_mix.sr, k_mix.lr, 0.5,
             )?;
         } else if k_mix.sr > 0.0 {
             // Plain hybrid or pure HF: K already built by the builder path above.
