@@ -486,6 +486,7 @@ fn run_rimp2(
         &RiMp2Config {
             frozen_core: cfg.mp2.frozen_core,
             memory_budget_bytes: budget_bytes,
+            ..Default::default()
         },
     )
     .unwrap_or_else(|e| {
@@ -678,6 +679,34 @@ fn run_rs_mp2_rpa(
     {
         eprintln!("warning: [mp2] omega is ignored when attenuator = \"terf\" (ω is derived from r0 = {r0_ang} Å = {r0:.4} Bohr as ω = 1/(r0·√2))");
     }
+
+    // [mp2] r0_sweep: evaluate several r0 in one job, reusing the SCF above.
+    // The SCF is already done by the time we get here, so each extra point
+    // costs only the correlation stage — that is the whole point (an N-point
+    // scan for ~1 SCF instead of N).
+    let r0_sweep: Option<Vec<f64>> = cfg.mp2.r0_sweep.as_ref().map(|v| {
+        let mut s: Vec<f64> = v.clone();
+        s.sort_by(|a, b| a.partial_cmp(b).expect("r0_sweep must not contain NaN"));
+        s.dedup();
+        s
+    });
+    if let Some(s) = &r0_sweep {
+        if s.is_empty() {
+            eprintln!("error: [mp2] r0_sweep is empty");
+            std::process::exit(1);
+        }
+        if s.iter().any(|&x| !(x > 0.0) || !x.is_finite()) {
+            eprintln!("error: [mp2] r0_sweep values must be finite and > 0 (got {s:?})");
+            std::process::exit(1);
+        }
+        if !matches!(attenuator, ferric_rpa::rs_mp2_rpa::Attenuator::Terf) {
+            eprintln!("error: [mp2] r0_sweep requires attenuator = \"terf\" (r0 is meaningless for erf)");
+            std::process::exit(1);
+        }
+        if cfg.mp2.r0.is_some() {
+            eprintln!("warning: [mp2] r0 is ignored when r0_sweep is set");
+        }
+    }
     let mut rs_cfg = ferric_rpa::rs_mp2_rpa::RsMp2RpaConfig {
         omega: omega_ang_inv * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV,
         attenuator,
@@ -693,7 +722,47 @@ fn run_rs_mp2_rpa(
         rs_cfg.drpa.trunc_thresh = t;
     }
     rs_cfg.drpa.memory_budget_bytes = budget_bytes;
-    let r = ferric_rpa::rs_mp2_rpa::rs_mp2_lr_rpa(mol, prep, &dfbs, result, &rs_cfg)
+
+    // One point per r0 in the sweep (or just the single configured r0). The
+    // SCF `result` is shared across all of them by construction.
+    let points: Vec<f64> = r0_sweep.clone().unwrap_or_else(|| vec![r0_ang]);
+    let n_points = points.len();
+    for (k, r0_ang_k) in points.into_iter().enumerate() {
+        rs_cfg.r0 = r0_ang_k * ANG2BOHR_R0;
+        if n_points > 1 {
+            println!(
+                "\n===== r0 sweep point {}/{}: r0 = {:.4} Å =====",
+                k + 1,
+                n_points,
+                r0_ang_k
+            );
+        }
+        emit_rs_mp2_rpa_point(
+            cfg, mol, bs, prep, &dfbs, aux_name, result, &rs_cfg, omega_ang_inv, r0_ang_k,
+        );
+    }
+}
+
+/// Solve and print ONE `rs-mp2-rpa` point at the r0 already set in `rs_cfg`.
+///
+/// Split out of [`run_rs_mp2_rpa`] so `[mp2] r0_sweep` can call it once per r0
+/// against a single converged SCF. The printed block is byte-identical to the
+/// single-point output, so existing parsers (`benchmarks/grid/*.py`) keep
+/// working on both layouts.
+#[allow(clippy::too_many_arguments)]
+fn emit_rs_mp2_rpa_point(
+    cfg: &Config,
+    mol: &Molecule,
+    bs: &BasisSet,
+    prep: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    aux_name: &str,
+    result: &ferric_scf::result::ScfResult,
+    rs_cfg: &ferric_rpa::rs_mp2_rpa::RsMp2RpaConfig,
+    omega_ang_inv: f64,
+    r0_ang: f64,
+) {
+    let r = ferric_rpa::rs_mp2_rpa::rs_mp2_lr_rpa(mol, prep, dfbs, result, rs_cfg)
         .unwrap_or_else(|e| { eprintln!("error: {e}"); std::process::exit(1); });
     println!(
         "RS-MP2-RPA/{} (aux: {}, ω={:.3} Å⁻¹) on {}",
@@ -2294,6 +2363,7 @@ fn run_optimize(
             let mp2_config = RiMp2Config {
                 frozen_core: cfg.mp2.frozen_core,
                 memory_budget_bytes: budget_bytes,
+                ..Default::default()
             };
             let opt_result = ferric_mp2::optimize::optimize_geometry_rimp2(
                 mol, bs, &aux_bs, op, &mp2_config, &opt_config,

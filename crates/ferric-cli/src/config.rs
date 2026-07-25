@@ -185,6 +185,22 @@ pub struct Mp2Cfg {
     /// benchmarks/grid/run_grid.py (an Å value fed through a Bohr-assuming
     /// formula, off by a factor of ~1.89).
     pub r0: Option<f64>,
+    /// Sweep several `r0` values (**Å**) in ONE job, reusing a single SCF.
+    ///
+    /// Only meaningful with `attenuator = "terf"`. When set, `r0` is ignored
+    /// and the correlation stage is evaluated once per listed r0, printing a
+    /// full result block per point. Values are sorted and de-duplicated.
+    ///
+    /// This exists because the SCF dominates a single-r0 job at aug-cc-pVQZ:
+    /// amortizing it across N points makes an N-point scan roughly N times
+    /// cheaper than N separate runs (measured ~5x for a 5-point scan, which is
+    /// the difference between a ~4 h and a ~20 h A24 sweep).
+    ///
+    /// HISTORY worth knowing: an equivalent field existed uncommitted during
+    /// the 2026-07-22/23 production sweeps and was lost, which left committed
+    /// output data that no committed code could regenerate. That is why this is
+    /// a real config field with a regression test rather than a local patch.
+    pub r0_sweep: Option<Vec<f64>>,
     /// Bonded (shorter-range) terfc cutoff **r0(1)** in **Å**, used ONLY by
     /// `method.kind = "scs-mp2-2terfc"`. Default 0.75 Å (thesis value).
     /// Requires the terfc interpolation tables (`FERRIC_TERF_TABLE_DIR`).
