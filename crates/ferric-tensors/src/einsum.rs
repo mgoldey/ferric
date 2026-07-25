@@ -44,11 +44,19 @@ pub fn einsum_binary(
     right_contr: &[usize],
     out_shape: &[usize],
 ) -> Result<ArrayD<f64>, TensorError> {
-    let l2 = to_2d(left, left_free, left_contr, "left");
-    let r2 = to_2d(right, right_contr, right_free, "right");
+    // `to_2d_or_transpose` returns the operand already viewable as a matrix
+    // whenever the required axis order is either the identity OR the exact
+    // swap of the two axis groups — in the latter case it hands back the
+    // TRANSPOSED view and ndarray's GEMM absorbs it into dgemm's transa/transb
+    // flag, so no permutation copy is materialized at all. 72 of the ~130
+    // workspace specs have at least one operand in that class (e.g. the CCSD
+    // VVVV term `ijcd,abcd->ijab`), which is 52% of all copies that survived
+    // the identity check. Only genuinely interleaved orders still copy.
+    let l2 = to_2d_or_transpose(left, left_free, left_contr, "left");
+    let r2 = to_2d_or_transpose(right, right_contr, right_free, "right");
 
-    let (lf, lc) = (l2.shape()[0], l2.shape()[1]);
-    let (rc, rf) = (r2.shape()[0], r2.shape()[1]);
+    let (lf, lc) = (l2.view().shape()[0], l2.view().shape()[1]);
+    let (rc, rf) = (r2.view().shape()[0], r2.view().shape()[1]);
     if lc != rc {
         return Err(TensorError::ContractedDimMismatch { left: lc, right: rc });
     }
@@ -277,6 +285,77 @@ fn to_3d(
         .expect("einsum: 3D reshape after permutation")
 }
 
+/// A 2D operand for GEMM: either a borrowed view onto the caller's data (no
+/// copy) or an owned permuted array. `view()` yields the matrix either way.
+enum Operand2d<'a> {
+    /// Zero-copy: the operand was already usable as a matrix, possibly only
+    /// after a transpose that `general_mat_mul` absorbs into dgemm's
+    /// `transa`/`transb` flag.
+    Borrowed(ndarray::ArrayView2<'a, f64>),
+    /// The axis order was genuinely interleaved, so a gather was unavoidable.
+    Owned(ArrayD<f64>),
+}
+
+impl Operand2d<'_> {
+    fn view(&self) -> ndarray::ArrayView2<'_, f64> {
+        match self {
+            Operand2d::Borrowed(v) => v.reborrow(),
+            Operand2d::Owned(a) => {
+                a.view().into_dimensionality::<ndarray::Ix2>().expect("2D by construction")
+            }
+        }
+    }
+}
+
+/// Like [`to_2d`], but avoids the permutation copy whenever the required axis
+/// order is reachable by a pure transpose.
+///
+/// Three cases, in order:
+///  1. The operand is already in `(first..., second...)` order → view it as
+///     `(prod(first), prod(second))`, no copy.
+///  2. It is in `(second..., first...)` order → view it as
+///     `(prod(second), prod(first))` and TRANSPOSE the view. ndarray's
+///     `general_mat_mul` maps a transposed view onto dgemm's `transa`/`transb`
+///     flag, so BLAS reads the original memory with a stride — still no copy.
+///  3. Anything else (genuinely interleaved axes) → fall back to [`to_2d`].
+///
+/// Case 2 is what pays: 72 of the workspace's ~130 specs have at least one
+/// operand there, including the O(N^6) CCSD VVVV term `ijcd,abcd->ijab`.
+///
+/// The reshape in cases 1 and 2 requires the underlying data to be contiguous
+/// in the grouped order, which is exactly `is_standard_layout()` on the
+/// correspondingly-permuted view; when that does not hold (a non-contiguous
+/// input slice) we fall back to the copy rather than reshape a strided view.
+fn to_2d_or_transpose<'a>(
+    op: ArrayViewD<'a, f64>,
+    first: &[usize],
+    second: &[usize],
+    which: &str,
+) -> Operand2d<'a> {
+    let rows: usize = first.iter().map(|&ax| op.shape()[ax]).product::<usize>().max(1);
+    let cols: usize = second.iter().map(|&ax| op.shape()[ax]).product::<usize>().max(1);
+
+    // `into_shape_with_order` consumes the view, so hand it a clone — an
+    // ArrayView clone is just a pointer + shape + strides, not the data.
+    let fwd: Vec<usize> = first.iter().chain(second.iter()).copied().collect();
+    if fwd.iter().enumerate().all(|(i, &p)| i == p) && op.is_standard_layout() {
+        if let Ok(v) = op.clone().into_shape_with_order(ndarray::Ix2(rows, cols)) {
+            return Operand2d::Borrowed(v);
+        }
+    }
+
+    // Transposed grouping: the operand is laid out as (second..., first...).
+    let rev: Vec<usize> = second.iter().chain(first.iter()).copied().collect();
+    if rev.iter().enumerate().all(|(i, &p)| i == p) && op.is_standard_layout() {
+        if let Ok(v) = op.clone().into_shape_with_order(ndarray::Ix2(cols, rows)) {
+            log::debug!("einsum: {which} operand consumed transposed (no copy)");
+            return Operand2d::Borrowed(v.reversed_axes());
+        }
+    }
+
+    Operand2d::Owned(to_2d(op, first, second, which))
+}
+
 /// Permute `op` so the axes in `first` come before the axes in `second`, then
 /// reshape to 2D (prod(first), prod(second)). Copies to contiguous when the
 /// permutation is non-trivial; logs the copy at debug level.
@@ -326,6 +405,109 @@ mod tests {
     /// Shapes deliberately straddle the threshold and include a non-divisible
     /// leading extent (so the last rayon chunk is short) and a leading extent
     /// of 1 (which takes the serial short-circuit).
+    /// `to_2d_or_transpose` lets `general_mat_mul` absorb a group-swap into
+    /// dgemm's transa/transb flag instead of materializing a permuted copy. A
+    /// wrong transpose here does not crash — it silently computes a DIFFERENT
+    /// contraction — so this checks the engine against a brute-force
+    /// index-by-index reference over real workspace specs.
+    ///
+    /// The specs are chosen to cover all three dispatch cases: an operand
+    /// already contiguous (`Pia,Pjb->iajb` left), an operand reachable by pure
+    /// transpose (`ijcd,abcd->ijab` right — the O(N^6) CCSD VVVV term), and a
+    /// genuinely interleaved one that must still copy (`akic,kjbc->aijb`).
+    /// Extents are deliberately distinct primes so a transposed-but-wrong
+    /// result cannot accidentally match by symmetry.
+    #[test]
+    fn transpose_dispatch_matches_naive_reference() {
+        // (spec, dims) with every index a distinct extent.
+        let dims: std::collections::HashMap<char, usize> =
+            [
+                ('P', 7),
+                ('i', 3),
+                ('j', 4),
+                ('a', 5),
+                ('b', 2),
+                ('c', 6),
+                ('d', 3),
+                ('k', 2),
+                ('l', 4),
+            ]
+            .into_iter()
+            .collect();
+        let specs = ["Pia,Pjb->iajb", "ijcd,abcd->ijab", "akic,kjbc->aijb", "ijcd,klcd->ijkl"];
+
+        for spec in specs {
+            let (lhs, out) = spec.split_once("->").unwrap();
+            let (ls, rs) = lhs.split_once(',').unwrap();
+            let (ls, rs, out) = (ls.as_bytes(), rs.as_bytes(), out.as_bytes());
+            let ext = |s: &[u8]| -> Vec<usize> { s.iter().map(|c| dims[&(*c as char)]).collect() };
+            let (lsh, rsh, osh) = (ext(ls), ext(rs), ext(out));
+
+            let mk = |shape: &[usize], seed: u64| {
+                let n: usize = shape.iter().product();
+                let mut s = seed;
+                let v: Vec<f64> = (0..n)
+                    .map(|_| {
+                        s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                        (s >> 11) as f64 / (1u64 << 53) as f64 - 0.5
+                    })
+                    .collect();
+                Array::from_shape_vec(IxDyn(shape), v).unwrap()
+            };
+            let l = mk(&lsh, 0xabcd);
+            let r = mk(&rsh, 0x1234);
+
+            // Axis roles, exactly as the macro computes them.
+            let contr: Vec<u8> =
+                ls.iter().copied().filter(|c| rs.contains(c) && !out.contains(c)).collect();
+            let pos = |s: &[u8], want: &[u8]| -> Vec<usize> {
+                want.iter().map(|c| s.iter().position(|x| x == c).unwrap()).collect()
+            };
+            let lfree: Vec<u8> = ls.iter().copied().filter(|c| out.contains(c)).collect();
+            let rfree: Vec<u8> = rs.iter().copied().filter(|c| out.contains(c)).collect();
+
+            let got = einsum_binary(
+                l.view(),
+                &pos(ls, &lfree),
+                &pos(ls, &contr),
+                r.view(),
+                &pos(rs, &rfree),
+                &pos(rs, &contr),
+                &osh,
+            )
+            .unwrap();
+
+            // Brute force: walk every output index and every contracted index.
+            let mut want = ArrayD::<f64>::zeros(IxDyn(&osh));
+            let letters: Vec<u8> = out.iter().chain(contr.iter()).copied().collect();
+            let extents: Vec<usize> = letters.iter().map(|c| dims[&(*c as char)]).collect();
+            let total: usize = extents.iter().product();
+            for flat in 0..total {
+                // Decode a mixed-radix index over (out..., contr...).
+                let mut rem = flat;
+                let mut idx = std::collections::HashMap::new();
+                for (k, &e) in letters.iter().zip(extents.iter()).rev() {
+                    idx.insert(*k, rem % e);
+                    rem /= e;
+                }
+                let pick = |s: &[u8]| -> Vec<usize> { s.iter().map(|c| idx[c]).collect() };
+                let contrib = l[IxDyn(&pick(ls))] * r[IxDyn(&pick(rs))];
+                want[IxDyn(&pick(out))] += contrib;
+            }
+
+            let max_dev = got
+                .iter()
+                .zip(want.iter())
+                .map(|(g, w)| (g - w).abs())
+                .fold(0.0f64, f64::max);
+            assert!(
+                max_dev < 1e-12,
+                "{spec}: transpose-dispatch result differs from the naive \
+                 reference by {max_dev:.3e}",
+            );
+        }
+    }
+
     #[test]
     fn parallel_permute_matches_serial_bitwise() {
         // (shape, permutation) pairs; several exceed PAR_PERMUTE_MIN_ELEMS.
