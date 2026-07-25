@@ -219,27 +219,53 @@ pub(crate) fn same_spin_pair_kernel(
     if !want_amplitudes {
         // Energy-only: no t tensor to write, so the per-i partial is just a
         // scalar — no allocation/collection of a Vec<Option<..>> needed at all.
+        //
+        // PAIR SYMMETRY (energy-only path only). The summand
+        //   K_iajb^2 / D_ijab,   K_iajb = (ia|jb) - (ib|ja)
+        // is invariant under the JOINT swap (i,j)<->(j,i), (a,b)<->(b,a): K is
+        // antisymmetric under it (K_jbia = (jb|ia) - (ja|ib) = -K_iajb, using
+        // the real-orbital 2-electron symmetry (ia|jb) = (jb|ia)), so K^2 is
+        // symmetric, and D_ijab = e_i + e_j - e_a - e_b is manifestly symmetric.
+        // The (j,i) block therefore contributes exactly what the (i,j) block
+        // does, so we visit only unique pairs j >= i and weight the strictly
+        // off-diagonal ones by 2 — the same argument and the same fac=2/fac=1
+        // convention as `rimp2::spin_components_from_b_ov`.
+        //
+        // That also lets `g_i` be formed over just the j >= i tail rather than
+        // full width, so the discarded lower-triangle GEMM flops
+        // ((nocc-1)/(2*nocc) of the total) are never computed. Both halve the
+        // work; together the stage does ~half the flops it used to.
+        //
+        // The `want_amplitudes` branch below CANNOT use this: it fills
+        // t[i,j,a,b] for every (i,j) for the U-OO gradient, so it needs the
+        // full j range and the full-width g_i.
         let partials: Vec<f64> = (0..nocc)
             .into_par_iter()
             .map(|i| {
                 let b_i = b.slice(ndarray::s![.., i * nvir..(i + 1) * nvir]);
-                let g_i = b_i.t().dot(b); // (nvir, nocc*nvir); g_i[a, j*nvir+b] = (ia|jb)
+                // (nvir, (nocc-i)*nvir); g_i[a, (j-i)*nvir+b] = (ia|jb), j >= i
+                let b_tail = b.slice(ndarray::s![.., i * nvir..]);
+                let g_i = b_i.t().dot(&b_tail);
                 let eps_i = eps[first_occ + i];
                 let mut energy_i = 0.0;
-                for j in 0..nocc {
+                for j in i..nocc {
+                    let fac = if i == j { 1.0 } else { 2.0 };
+                    let jcol = (j - i) * nvir; // column offset within the tail
                     let eps_j = eps[first_occ + j];
+                    let mut energy_ij = 0.0;
                     for a in 0..nvir {
                         let eps_a = eps[nocc_total + a];
                         for b_idx in 0..nvir {
                             let eps_b = eps[nocc_total + b_idx];
-                            let g_ab = g_i[(a, j * nvir + b_idx)]; // (ia|jb)
-                            let g_ba = g_i[(b_idx, j * nvir + a)]; // (ib|ja)
+                            let g_ab = g_i[(a, jcol + b_idx)]; // (ia|jb)
+                            let g_ba = g_i[(b_idx, jcol + a)]; // (ib|ja)
                             let k = g_ab - g_ba;
                             let denom = eps_i + eps_j - eps_a - eps_b;
                             let t_val = k / denom;
-                            energy_i += t_val * k;
+                            energy_ij += t_val * k;
                         }
                     }
+                    energy_i += fac * energy_ij;
                 }
                 0.25 * energy_i
             })
