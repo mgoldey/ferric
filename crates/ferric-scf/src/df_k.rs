@@ -188,14 +188,58 @@ impl<'a> DfK<'a> {
         // budget-bounded / spillable, so its full footprint need not be resident;
         // only this rank's dressed BAND is retained.
         let mut raw = ThreeIndexSource::build(op, obs, dfbs, budget_bytes)?;
+        Self::from_raw(&mut raw, dfbs, v_inv_sqrt, budget_bytes, ctx, p0, p1)
+    }
+
+    /// Same as [`DfK::new_banded`] but dresses an ALREADY-BUILT full raw
+    /// `(P|μν)` source instead of generating one.
+    ///
+    /// Exists so a DF-JK run computes the raw 3-index tensor ONCE: `DfJ` and
+    /// `DfK` are otherwise independent and each called `ThreeIndexSource::build`
+    /// on the identical `(op, obs, dfbs)`, generating ~95.6M integrals twice
+    /// (~600 ms each at benzene/aug-cc-pVTZ). `raw` is consumed — DfK only needs
+    /// it to produce the dressed tensor and drops it before the SCF loop —
+    /// so the caller must hand over a source it no longer needs, or clone.
+    ///
+    /// `raw` MUST span the full aux range `[0, naux)`: dressing any band sums
+    /// over all Q. `build_dressed_band` asserts this.
+    pub fn from_full_raw(
+        raw: &mut ThreeIndexSource,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        op: Operator,
+        budget_bytes: usize,
+        ctx: Option<&'a ParallelContext>,
+    ) -> Result<Self, FerricError> {
+        let _ = obs;
+        let v = coulomb_metric_2c(op, dfbs)?;
+        let v_inv_sqrt = v_inv_sqrt_lindep(&v)?;
+        let naux = dfbs.nbasis();
+        let (p0, p1) = match ctx {
+            Some(c) => c.aux_band(naux),
+            None => (0, naux),
+        };
+        Self::from_raw(raw, dfbs, v_inv_sqrt, budget_bytes, ctx, p0, p1)
+    }
+
+    /// Shared tail of both constructors: dress `raw` into this rank's band.
+    fn from_raw(
+        raw: &mut ThreeIndexSource,
+        dfbs: &PreparedBasis,
+        v_inv_sqrt: Array2<f64>,
+        budget_bytes: usize,
+        ctx: Option<&'a ParallelContext>,
+        p0: usize,
+        p1: usize,
+    ) -> Result<Self, FerricError> {
+        let naux = dfbs.nbasis();
         let dressed = if p0 == 0 && p1 == naux {
             // Full band: identical call to the serial path (byte-identical B).
-            ThreeIndexSource::build_dressed(&mut raw, &v_inv_sqrt, budget_bytes)?
+            ThreeIndexSource::build_dressed(raw, &v_inv_sqrt, budget_bytes)?
         } else {
-            ThreeIndexSource::build_dressed_band(&mut raw, &v_inv_sqrt, budget_bytes, p0, p1)?
+            ThreeIndexSource::build_dressed_band(raw, &v_inv_sqrt, budget_bytes, p0, p1)?
         };
-        // Drop the full raw source's resident footprint before the SCF loop.
-        drop(raw);
+        // The caller owns `raw`; DfK retains only the dressed tensor.
 
         let ctx = ctx.filter(|c| c.size > 1);
         Ok(DfK { dressed, ctx, budget_bytes })

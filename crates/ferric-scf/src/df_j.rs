@@ -102,6 +102,32 @@ impl<'a> DfJ<'a> {
             None => (0, naux),
         };
         let source = ThreeIndexSource::build_band(op, obs, dfbs, budget_bytes, p0, p1)?;
+        Self::from_source(source, op, dfbs, budget_bytes, ctx)
+    }
+
+    /// Same as [`DfJ::new_banded`] but adopts an ALREADY-BUILT raw `(P|μν)`
+    /// source instead of generating one.
+    ///
+    /// Exists so a DF-JK run generates the raw 3-index tensor ONCE. `DfJ` and
+    /// `DfK` were otherwise independent and each called into
+    /// `ThreeIndexSource`, computing the identical ~95.6M integrals twice
+    /// (~600 ms per build at benzene/aug-cc-pVTZ). `DfK` only needs the raw
+    /// tensor transiently (it keeps the V^{-1/2}-dressed copy), so the shared
+    /// flow is: build raw once, dress DfK from `&mut raw`, then move raw here.
+    ///
+    /// `source` MUST cover exactly this rank's aux band, i.e. what
+    /// `build_band(.., p0, p1)` would have produced — `build` reports GLOBAL aux
+    /// indices and slices `v_inv` with them, so a mismatched band would silently
+    /// contract the wrong rows. Single-rank (`ctx` None or size 1) is the only
+    /// case where DfJ's band and DfK's full range coincide; `build_df_jk` gates
+    /// the sharing on exactly that.
+    pub fn from_source(
+        source: ThreeIndexSource,
+        op: Operator,
+        dfbs: &PreparedBasis,
+        budget_bytes: usize,
+        ctx: Option<&'a ParallelContext>,
+    ) -> Result<Self, FerricError> {
         let v = coulomb_metric_2c(op, dfbs)?;
         // NOT wrapped in with_blas_threads, deliberately: `.inv()` is
         // LU-based (dgetrf/dgetri). Verified 2026-07-10 that OpenBLAS's

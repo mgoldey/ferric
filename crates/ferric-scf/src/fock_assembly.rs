@@ -77,6 +77,32 @@ pub(crate) fn build_df_jk<'a>(
         if ja == ka {
             let dfbs_set = ferric_core::basis::bundled(ja)?;
             let dfbs = PreparedBasis::new(mol, &dfbs_set)?;
+            // Same aux basis on both sides: build the raw (P|μν) tensor ONCE and
+            // let both consumers share it. DfJ and DfK were each calling into
+            // ThreeIndexSource independently, generating the identical ~95.6M
+            // integrals twice (~600 ms per build at benzene/aug-cc-pVTZ).
+            //
+            // Order matters: DfK dresses from `&mut raw` and keeps only the
+            // V^{-1/2}-dressed copy, so raw survives and is then MOVED into DfJ,
+            // which does retain it (it applies V^{-1} every iteration).
+            //
+            // Single-rank ONLY. Under MPI the two sides need different extents —
+            // DfJ holds just its own band `ctx.aux_band(naux)`, while DfK needs
+            // the FULL aux range because dressing any band sums over all Q — so
+            // a shared source would either over-allocate DfJ or under-feed DfK.
+            // Multi-rank keeps the independent builds below.
+            if ctx.size <= 1 {
+                let naux = dfbs.nbasis();
+                let mut raw =
+                    ferric_integrals::three_index_source::ThreeIndexSource::build_band(
+                        op, prep, &dfbs, ooc_budget, 0, naux,
+                    )?;
+                let df_k = Some(DfK::from_full_raw(
+                    &mut raw, prep, &dfbs, op, ooc_budget, Some(ctx),
+                )?);
+                let df_j = Some(DfJ::from_source(raw, op, &dfbs, ooc_budget, Some(ctx))?);
+                return Ok((df_j, df_k));
+            }
             let df_j = Some(DfJ::new_banded(op, prep, &dfbs, ooc_budget, Some(ctx))?);
             let df_k = Some(DfK::new_banded(op, prep, &dfbs, ooc_budget, Some(ctx))?);
             return Ok((df_j, df_k));
