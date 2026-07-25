@@ -191,7 +191,16 @@ pub fn pdep_polarizability_static(
     // Build B̃^P_ia = V^{-1/2} (P|ia) and orbital-energy slices via the same
     // path `run_pdep_rpa` uses.  No frozen-core for α (response on all
     // occupied is physical).
-    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
+    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config {
+        frozen_core: 0,
+        // Propagate the caller's explicit budget. This was hardcoded
+        // `None`, which silently discarded a user's `[memory] budget_gb`
+        // and let `resolve_budget` substitute an env/auto-detected value
+        // (~0.8x available RAM) instead -- so a run pinned to 4 GB could
+        // take ~14 GB on a 23 GB box. See
+        // tests/mwe_explicit_budget_reaches_mp2.rs.
+        memory_budget_bytes: cfg.memory_budget_bytes,
+    };
     let inter =
         ferric_mp2::rimp2::compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
     let b_ov = &inter.b_ov; // shape (naux, nov)
@@ -356,6 +365,13 @@ pub struct DielectricSpectrum {
 ///
 /// `thresh` is the same significance cutoff used for PDEP truncation elsewhere
 /// (e.g. 1e-4): a mode counts toward `rank` iff `λ_α − 1 > thresh`.
+///
+/// `memory_budget_bytes` is the caller's explicit memory ceiling, threaded into
+/// the RI-MP2 intermediates build. `None` does NOT mean unlimited: it falls
+/// through `resolve_budget`'s chain (`FERRIC_MEM_BUDGET_GB` -> legacy env vars
+/// -> 0.8x detected available RAM -> 2 GiB). Pass the caller's
+/// `PdepRpaConfig::memory_budget_bytes` so a user's `[memory] budget_gb` is
+/// honored rather than silently replaced by an auto-detected value.
 pub fn dielectric_spectrum_static(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -363,6 +379,7 @@ pub fn dielectric_spectrum_static(
     rhf: &ScfResult,
     op: Operator,
     thresh: f64,
+    memory_budget_bytes: Option<usize>,
 ) -> Result<DielectricSpectrum, FerricError> {
     use ndarray_linalg::{Eigh, UPLO};
 
@@ -372,7 +389,16 @@ pub fn dielectric_spectrum_static(
         ));
     }
 
-    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
+    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config {
+        frozen_core: 0,
+        // Propagate the caller's explicit budget. This was hardcoded
+        // `None`, which silently discarded a user's `[memory] budget_gb`
+        // and let `resolve_budget` substitute an env/auto-detected value
+        // (~0.8x available RAM) instead -- so a run pinned to 4 GB could
+        // take ~14 GB on a 23 GB box. See
+        // tests/mwe_explicit_budget_reaches_mp2.rs.
+        memory_budget_bytes,
+    };
     let inter = ferric_mp2::rimp2::compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
     let b_ov = &inter.b_ov;
     let nocc = inter.nocc;
@@ -447,11 +473,20 @@ pub fn pdep_polarizability_static_unrestricted(
     dfbs: &PreparedBasis,
     rhf: &ScfResult,
     op: Operator,
-    _cfg: &PdepRpaConfig,
+    cfg: &PdepRpaConfig,
 ) -> Result<PolarizabilityResult, FerricError> {
     use ferric_mp2::rimp2::{compute_rpa_intermediates_spin, RiMp2Config};
 
-    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
+    let mp2_cfg = RiMp2Config {
+        frozen_core: 0,
+        // Propagate the caller's explicit budget. This was hardcoded
+        // `None`, which silently discarded a user's `[memory] budget_gb`
+        // and let `resolve_budget` substitute an env/auto-detected value
+        // (~0.8x available RAM) instead -- so a run pinned to 4 GB could
+        // take ~14 GB on a 23 GB box. See
+        // tests/mwe_explicit_budget_reaches_mp2.rs.
+        memory_budget_bytes: cfg.memory_budget_bytes,
+    };
 
     // Per-spin intermediates.
     let inter_a = compute_rpa_intermediates_spin(mol, obs, dfbs, op, rhf, &mp2_cfg, true)?;
@@ -794,7 +829,7 @@ pub fn pdep_polarizability_becke(
     dfbs: &PreparedBasis,
     rhf: &ScfResult,
     op: Operator,
-    _cfg: &PdepRpaConfig,
+    cfg: &PdepRpaConfig,
 ) -> Result<Vec<[[f64; 3]; 3]>, FerricError> {
     use ferric_dft::grid::{build_atomic_grid, AtomicGridConfig};
     use ferric_dft::ao_grid::eval_basis_on_points;
@@ -804,7 +839,7 @@ pub fn pdep_polarizability_becke(
     // duplicate the per-spin static math (DRY).
     if !matches!(rhf.spin, Spin::Restricted) {
         let dyn0 = pdep_polarizability_becke_dynamic(
-            mol, obs, obs_bs, dfbs, rhf, op, _cfg, &[0.0],
+            mol, obs, obs_bs, dfbs, rhf, op, cfg, &[0.0],
         )?;
         // dyn0[atom][freq=0] → per-atom static tensor.
         return Ok(dyn0.into_iter().map(|per_freq| per_freq[0]).collect());
@@ -813,7 +848,16 @@ pub fn pdep_polarizability_becke(
     let natoms = mol.atoms.len();
 
     // RI intermediates (same as molecular static-α path).
-    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
+    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config {
+        frozen_core: 0,
+        // Propagate the caller's explicit budget. This was hardcoded
+        // `None`, which silently discarded a user's `[memory] budget_gb`
+        // and let `resolve_budget` substitute an env/auto-detected value
+        // (~0.8x available RAM) instead -- so a run pinned to 4 GB could
+        // take ~14 GB on a 23 GB box. See
+        // tests/mwe_explicit_budget_reaches_mp2.rs.
+        memory_budget_bytes: cfg.memory_budget_bytes,
+    };
     let inter =
         ferric_mp2::rimp2::compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
     let b_ov = &inter.b_ov;
@@ -1420,7 +1464,7 @@ pub fn pdep_polarizability_hirshfeld(
     dfbs: &PreparedBasis,
     rhf: &ScfResult,
     op: Operator,
-    _cfg: &PdepRpaConfig,
+    cfg: &PdepRpaConfig,
     proatom: Option<&ProatomProvider>,
 ) -> Result<Vec<[[f64; 3]; 3]>, FerricError> {
     use ferric_export::cube::GridSpec;
@@ -1438,7 +1482,16 @@ pub fn pdep_polarizability_hirshfeld(
     // 1. Reuse the same RI intermediates / dipole machinery as the
     //    molecular static-α path.
     // ---------------------------------------------------------------------
-    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
+    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config {
+        frozen_core: 0,
+        // Propagate the caller's explicit budget. This was hardcoded
+        // `None`, which silently discarded a user's `[memory] budget_gb`
+        // and let `resolve_budget` substitute an env/auto-detected value
+        // (~0.8x available RAM) instead -- so a run pinned to 4 GB could
+        // take ~14 GB on a 23 GB box. See
+        // tests/mwe_explicit_budget_reaches_mp2.rs.
+        memory_budget_bytes: cfg.memory_budget_bytes,
+    };
     let inter =
         ferric_mp2::rimp2::compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
     let b_ov = &inter.b_ov;
@@ -1708,7 +1761,7 @@ pub fn pdep_polarizability_hirshfeld_dynamic(
     dfbs: &PreparedBasis,
     rhf: &ScfResult,
     op: Operator,
-    _cfg: &PdepRpaConfig,
+    cfg: &PdepRpaConfig,
     freqs: &[f64],
     proatom: Option<&ProatomProvider>,
 ) -> Result<Vec<Vec<[[f64; 3]; 3]>>, FerricError> {
@@ -1727,7 +1780,16 @@ pub fn pdep_polarizability_hirshfeld_dynamic(
     let nfreq = freqs.len();
 
     // RI intermediates — same as static path.
-    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
+    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config {
+        frozen_core: 0,
+        // Propagate the caller's explicit budget. This was hardcoded
+        // `None`, which silently discarded a user's `[memory] budget_gb`
+        // and let `resolve_budget` substitute an env/auto-detected value
+        // (~0.8x available RAM) instead -- so a run pinned to 4 GB could
+        // take ~14 GB on a 23 GB box. See
+        // tests/mwe_explicit_budget_reaches_mp2.rs.
+        memory_budget_bytes: cfg.memory_budget_bytes,
+    };
     let inter = ferric_mp2::rimp2::compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
     let b_ov = &inter.b_ov;
     let nocc = inter.nocc;
@@ -1939,7 +2001,7 @@ pub fn molecular_dynamic_polarizability(
     dfbs: &PreparedBasis,
     rhf: &ScfResult,
     op: Operator,
-    _cfg: &PdepRpaConfig,
+    cfg: &PdepRpaConfig,
     freqs: &[f64],
 ) -> Result<Vec<[[f64; 3]; 3]>, FerricError> {
     use ferric_integrals::blas_threads::with_blas_threads;
@@ -1953,7 +2015,16 @@ pub fn molecular_dynamic_polarizability(
     // total. ω=0 reproduces the static open-shell molecular α.
     if !matches!(rhf.spin, Spin::Restricted) {
         use ferric_mp2::rimp2::compute_rpa_intermediates_spin;
-        let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
+        let mp2_cfg = ferric_mp2::rimp2::RiMp2Config {
+        frozen_core: 0,
+        // Propagate the caller's explicit budget. This was hardcoded
+        // `None`, which silently discarded a user's `[memory] budget_gb`
+        // and let `resolve_budget` substitute an env/auto-detected value
+        // (~0.8x available RAM) instead -- so a run pinned to 4 GB could
+        // take ~14 GB on a 23 GB box. See
+        // tests/mwe_explicit_budget_reaches_mp2.rs.
+        memory_budget_bytes: cfg.memory_budget_bytes,
+    };
         let inter_a = compute_rpa_intermediates_spin(mol, obs, dfbs, op, rhf, &mp2_cfg, true)?;
         let inter_b = compute_rpa_intermediates_spin(mol, obs, dfbs, op, rhf, &mp2_cfg, false)?;
         let naux = inter_a.naux;
@@ -2095,7 +2166,16 @@ pub fn molecular_dynamic_polarizability(
         return Ok(out);
     }
 
-    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
+    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config {
+        frozen_core: 0,
+        // Propagate the caller's explicit budget. This was hardcoded
+        // `None`, which silently discarded a user's `[memory] budget_gb`
+        // and let `resolve_budget` substitute an env/auto-detected value
+        // (~0.8x available RAM) instead -- so a run pinned to 4 GB could
+        // take ~14 GB on a 23 GB box. See
+        // tests/mwe_explicit_budget_reaches_mp2.rs.
+        memory_budget_bytes: cfg.memory_budget_bytes,
+    };
     let inter = ferric_mp2::rimp2::compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
     let b_ov = &inter.b_ov;
     let nocc = inter.nocc;
@@ -2195,6 +2275,10 @@ pub fn molecular_dynamic_polarizability(
 ///   p_d = y(μ_d⊙g),  y = Uᵀ B̃,  U = dressed_eigenvectors,
 ///   W̃_k = inv_dielectric_freq[k] = ε̃_proj⁻¹ − I.
 /// At M = naux (thresh 0) this equals the full-naux result to round-off.
+///
+/// `memory_budget_bytes` is the caller's explicit memory ceiling, threaded into
+/// the RI-MP2 intermediates build. `None` does NOT mean unlimited — it falls
+/// through `resolve_budget`'s chain (see [`dielectric_spectrum_static`]).
 pub fn molecular_dynamic_polarizability_pdep(
     rpa: &crate::PdepRpaResult,
     mol: &Molecule,
@@ -2202,6 +2286,7 @@ pub fn molecular_dynamic_polarizability_pdep(
     dfbs: &PreparedBasis,
     rhf: &ScfResult,
     op: Operator,
+    memory_budget_bytes: Option<usize>,
 ) -> Result<Vec<[[f64; 3]; 3]>, FerricError> {
     use ferric_integrals::blas_threads::with_blas_threads;
     use rayon::prelude::*;
@@ -2218,7 +2303,16 @@ pub fn molecular_dynamic_polarizability_pdep(
         )
     })?;
 
-    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
+    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config {
+        frozen_core: 0,
+        // Propagate the caller's explicit budget. This was hardcoded
+        // `None`, which silently discarded a user's `[memory] budget_gb`
+        // and let `resolve_budget` substitute an env/auto-detected value
+        // (~0.8x available RAM) instead -- so a run pinned to 4 GB could
+        // take ~14 GB on a 23 GB box. See
+        // tests/mwe_explicit_budget_reaches_mp2.rs.
+        memory_budget_bytes,
+    };
     let inter = ferric_mp2::rimp2::compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
     let b_ov = &inter.b_ov; // V^{-1/2}-dressed occ-vir RI-MO tensor (naux × nov)
     let nocc = inter.nocc;
@@ -2756,7 +2850,7 @@ mod tests {
             &mol, &obs, &dfbs, &rhf, op, &cfg, &rpa.quad_freqs,
         ).unwrap();
         let pdep = molecular_dynamic_polarizability_pdep(
-            &rpa, &mol, &obs, &dfbs, &rhf, op,
+            &rpa, &mol, &obs, &dfbs, &rhf, op, cfg.memory_budget_bytes,
         ).unwrap();
 
         assert_eq!(full.len(), pdep.len());

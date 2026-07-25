@@ -208,8 +208,10 @@ fn main() {
         // energy/GW columns (molecular_dynamic_polarizability_pdep). Static α = the
         // ω=0 (lowest node) iso = Tr/3. Molecular C6 = (3/π) Σ_k w_k ᾱ(iω_k)²
         // (the DOSD-comparable c6_molecular_iso definition).
-        let mol_alpha = molecular_dynamic_polarizability_pdep(&rpa_n, &neutral, &obs_n, &dfbs_n, &rhf_n, op)
-            .expect("molecular pdep alpha");
+        let mol_alpha = molecular_dynamic_polarizability_pdep(
+            &rpa_n, &neutral, &obs_n, &dfbs_n, &rhf_n, op, cfg.memory_budget_bytes,
+        )
+        .expect("molecular pdep alpha");
         let a0 = &mol_alpha[0];
         let alpha = (a0[0][0] + a0[1][1] + a0[2][2]) / 3.0;
         let c6 = {

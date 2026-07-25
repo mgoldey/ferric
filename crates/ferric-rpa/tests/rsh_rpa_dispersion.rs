@@ -538,7 +538,7 @@ fn dielectric_eigenvalue_descriptors() {
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
 
         // Static dielectric spectrum (full Coulomb). λ are screening eigenvalues (>1).
-        let spec = dielectric_spectrum_static(&mol, &obs, &dfbs, &rhf, Operator::coulomb(), 1e-6).unwrap();
+        let spec = dielectric_spectrum_static(&mol, &obs, &dfbs, &rhf, Operator::coulomb(), 1e-6, None).unwrap();
         let mut ev = spec.eigenvalues.clone();
         ev.sort_by(|a,b| b.partial_cmp(a).unwrap()); // descending
         let l1 = ev[0];
@@ -615,7 +615,7 @@ fn lambda_max_loo_c6() {
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
 
         // λ_max of the static Coulomb dielectric.
-        let spec = dielectric_spectrum_static(&mol, &obs, &dfbs, &rhf, Operator::coulomb(), 1e-6).unwrap();
+        let spec = dielectric_spectrum_static(&mol, &obs, &dfbs, &rhf, Operator::coulomb(), 1e-6, None).unwrap();
         let lmax = spec.eigenvalues.iter().cloned().fold(f64::MIN, f64::max);
 
         // ω_opt by bisection (erf-RPA C6 decreasing in ω).
@@ -698,7 +698,7 @@ fn parameter_free_lambda_omega_c6() {
             df_k_aux: Some("def2-universal-jkfit".to_string()), ..Default::default() };
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
 
-        let spec = dielectric_spectrum_static(&mol, &obs, &dfbs, &rhf, Operator::coulomb(), 1e-6).unwrap();
+        let spec = dielectric_spectrum_static(&mol, &obs, &dfbs, &rhf, Operator::coulomb(), 1e-6, None).unwrap();
         let lmax = spec.eigenvalues.iter().cloned().fold(f64::MIN, f64::max);
 
         // PARAMETER-FREE omega. Clamp to physical (>0) — CH4 with lmax 2.23 gives 0.078.
@@ -766,7 +766,7 @@ fn parameter_free_full_dosd() {
             Ok(r) if r.converged => r,
             _ => { eprintln!("  {label:>5}  (LC SCF not converged — skipped)"); continue; }
         };
-        let spec = match dielectric_spectrum_static(&mol, &obs, &dfbs, &rhf, Operator::coulomb(), 1e-6) {
+        let spec = match dielectric_spectrum_static(&mol, &obs, &dfbs, &rhf, Operator::coulomb(), 1e-6, None) {
             Ok(s) => s, Err(e) => { eprintln!("  {label:>5}  (spectrum err: {e})"); continue; }
         };
         let lmax = spec.eigenvalues.iter().cloned().fold(f64::MIN, f64::max);
@@ -825,7 +825,7 @@ fn full_dosd_calibration_dump() {
             df_j_aux: Some("def2-universal-jkfit".to_string()),
             df_k_aux: Some("def2-universal-jkfit".to_string()), ..Default::default() };
         let rhf = match solve_rhf(&ctx,&mol,&obs,op,&bounds,&scf_cfg) { Ok(r) if r.converged=>r, _=>{eprintln!("{label},SCF_FAIL");continue;} };
-        let spec = dielectric_spectrum_static(&mol,&obs,&dfbs,&rhf,Operator::coulomb(),1e-6).unwrap();
+        let spec = dielectric_spectrum_static(&mol,&obs,&dfbs,&rhf,Operator::coulomb(),1e-6, None).unwrap();
         let mut ev = spec.eigenvalues.clone(); ev.sort_by(|a,b| b.partial_cmp(a).unwrap());
         let lmax = ev[0]; let top3: f64 = ev.iter().take(3).sum();
         let at = pdep_polarizability_static(&mol,&obs,&dfbs,&rhf,Operator::coulomb(),&cfg).unwrap();
@@ -884,7 +884,7 @@ fn directional_descriptor_dump() {
         let rhf = match solve_rhf(&ctx,&mol,&obs,op,&bounds,&scf_cfg){Ok(r) if r.converged=>r,_=>{eprintln!("{label},SCF_FAIL");continue;}};
         let at = pdep_polarizability_static(&mol,&obs,&dfbs,&rhf,Operator::coulomb(),&cfg).unwrap();
         let mut pr = at.principal; pr.sort_by(|a,b| b.partial_cmp(a).unwrap()); // desc
-        let spec = dielectric_spectrum_static(&mol,&obs,&dfbs,&rhf,Operator::coulomb(),1e-6).unwrap();
+        let spec = dielectric_spectrum_static(&mol,&obs,&dfbs,&rhf,Operator::coulomb(),1e-6, None).unwrap();
         let lmax = spec.eigenvalues.iter().cloned().fold(f64::MIN,f64::max);
         let vol: f64 = atomic_effective_volumes_becke(&mol,&obs,&obs_bs,rhf.density_r()).unwrap().iter().sum();
         let c6 = |w: f64| { let dp=pdep_dynamic_polarizability(&mol,&obs,&obs_bs,&dfbs,&rhf,Operator::erf(w),&cfg,DispersionPartition::Becke,None).unwrap(); casimir_polder_c6(&dp).c6_molecular_iso };
@@ -1002,7 +1002,7 @@ fn dielectric_spectrum_validation_dump() {
             df_k_aux: Some("def2-universal-jkfit".to_string()), ..Default::default() };
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
 
-        let spec = dielectric_spectrum_static(&mol, &obs, &dfbs, &rhf, Operator::coulomb(), 1e-6).unwrap();
+        let spec = dielectric_spectrum_static(&mol, &obs, &dfbs, &rhf, Operator::coulomb(), 1e-6, None).unwrap();
         let mut ev = spec.eigenvalues.clone();
         ev.sort_by(|a,b| b.partial_cmp(a).unwrap()); // descending
 
@@ -1070,7 +1070,7 @@ fn screen_sum_loo_c6() {
             df_k_aux:Some("def2-universal-jkfit".to_string()),..Default::default()};
         let rhf=solve_rhf(&ctx,&mol,&obs,op,&bounds,&scf_cfg).unwrap();
         let _at=pdep_polarizability_static(&mol,&obs,&dfbs,&rhf,Operator::coulomb(),&cfg).unwrap();
-        let spec=dielectric_spectrum_static(&mol,&obs,&dfbs,&rhf,Operator::coulomb(),1e-6).unwrap();
+        let spec=dielectric_spectrum_static(&mol,&obs,&dfbs,&rhf,Operator::coulomb(),1e-6, None).unwrap();
         // mode-summed physical screening Σ(λ-1)/λ  (only λ>1 contribute meaningfully)
         let ssum:f64=spec.eigenvalues.iter().map(|&l| if l>1.0 {(l-1.0)/l} else {0.0}).sum();
         let nocc=(mol.nelec()/2) as f64;

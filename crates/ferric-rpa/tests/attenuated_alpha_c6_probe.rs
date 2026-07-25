@@ -214,7 +214,7 @@ fn pdep_rank_vs_attenuation_water() {
     );
     for &w in &[0.0_f64, 0.1, 0.2, 0.3, 0.5, 0.7, 1.0, 1.5] {
         let op = if w == 0.0 { Operator::coulomb() } else { Operator::erfc(w) };
-        let spec = dielectric_spectrum_static(&mol, &obs, &dfbs, &rhf, op, thresh).unwrap();
+        let spec = dielectric_spectrum_static(&mol, &obs, &dfbs, &rhf, op, thresh, None).unwrap();
         println!(
             "  {:>10.3}  {:>6}  {:>6}  {:>10.4}  {:>12.5}",
             w,
