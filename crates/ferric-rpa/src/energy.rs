@@ -229,6 +229,17 @@ pub fn eval_eigenvalues_at_frequencies(
 /// `to_owned()`, and `w < panel_width` by construction, so that transient
 /// never exceeds the persistent `m·k` term either — sizing for a single
 /// (not doubled) `m·k` term is therefore exact, not an underestimate.
+/// Test-only re-export of [`quad_panel_width`] for the budget-contract MWEs in
+/// `tests/mwe_panel_width_budget.rs`, which sweep worker counts explicitly
+/// rather than inheriting the ambient rayon pool. `#[doc(hidden)]`: an
+/// observation point for the memory-budget regression net, not public API.
+#[doc(hidden)]
+pub fn quad_panel_width_for_test(
+    m: usize, nov: usize, n_workers: usize, memory_budget_bytes: Option<usize>,
+) -> usize {
+    quad_panel_width(m, nov, n_workers, memory_budget_bytes)
+}
+
 fn quad_panel_width(m: usize, nov: usize, n_workers: usize, memory_budget_bytes: Option<usize>) -> usize {
     let Some(budget) = memory_budget_bytes else {
         return nov.max(1);
@@ -597,9 +608,25 @@ mod tests {
         let quad_freqs = vec![0.1f64, 0.5, 1.0];
 
         // Sanity: confirm the tiny budget actually forces panelling for this
-        // shape before trusting the result below (m=2, nov=2, n_workers>=1).
-        let n_workers = rayon::current_num_threads().max(1);
-        let tiny_budget = 200usize; // bytes — absurdly small, forces k=1
+        // shape before trusting the result below (m=2, nov=2).
+        //
+        // The budget must force k=1 at EVERY worker count, and the check must
+        // not consult the ambient pool. This assertion previously passed
+        // `rayon::current_num_threads()` with a 200-byte budget, which made it
+        // thread-count-dependent: `full_width_scratch = n_workers·(m·nov+m²)·8`
+        // = 64·n_workers, so 32 + 64·n_workers <= 200 holds for n_workers <= 2
+        // and quad_panel_width correctly takes its full-width fast path,
+        // returning 2 rather than 1. The test then failed on any box with <= 2
+        // rayon workers while passing on wider ones — a test defect, not a
+        // production bug (returning full width when full width genuinely fits
+        // is the desired behavior).
+        //
+        // 64 bytes forces k=1 for every worker count from 1 upward (measured:
+        // the y term alone is 32 bytes, leaving under one column's worth of
+        // per-worker scratch), so pin an explicit worker count AND a budget
+        // that cannot be satisfied at full width.
+        let n_workers = 4usize;
+        let tiny_budget = 64usize; // bytes — forces k=1 at any worker count
         let forced_k = quad_panel_width(2, 2, n_workers, Some(tiny_budget));
         assert_eq!(forced_k, 1, "expected the tiny budget to force k=1 for this tiny shape");
 
@@ -708,9 +735,16 @@ mod tests {
         let eps_vir = vec![0.3f64, 0.9f64];
         let quad_freqs = vec![0.1f64, 0.5, 1.0];
         let quad_weights = vec![0.25f64, 0.5, 0.25];
-        let tiny_budget = 200usize;
+        // 64 bytes, not 200: forces k=1 at EVERY worker count. At 200 the
+        // full-width fast path is taken for n_workers <= 2 (32 + 64·n_workers
+        // <= 200), so this guard failed on narrow boxes and the test silently
+        // exercised the unpanelled path on wide ones. See the companion note in
+        // `eval_eigenvalues_at_frequencies_budgeted_forced_panel_matches_manual_reference`.
+        let tiny_budget = 64usize;
 
-        let n_workers = rayon::current_num_threads().max(1);
+        // Pinned, not `rayon::current_num_threads()`: the assertion must mean
+        // the same thing on every box.
+        let n_workers = 4usize;
         assert_eq!(
             quad_panel_width(2, 2, n_workers, Some(tiny_budget)),
             1,
