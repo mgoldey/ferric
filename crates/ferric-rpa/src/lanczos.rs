@@ -256,20 +256,41 @@ fn qr_orthonormalize(mat: Array2<f64>) -> Result<Array2<f64>, FerricError> {
 
 /// BLAS thread count for the Lanczos solve.
 ///
-/// Defaults to **1** (deterministic, safe). Raising OpenBLAS above 1 thread for
-/// the Lanczos `eigh`/QR is opt-in via `FERRIC_LANCZOS_BLAS_THREADS`, for two
-/// reasons proven during the perf-integration verification:
+/// Defaults to **1**, opt-in via `FERRIC_LANCZOS_BLAS_THREADS`.
 ///
-///  1. **Stack overflow.** A multi-threaded OpenBLAS `eigh` on a large
-///     block-tridiagonal T (or QR of a naux-wide Krylov block) runs on worker
-///     stacks that overflow when the solve is large and/or `run_pdep_rpa` is
-///     itself invoked concurrently (the test harness runs tests in parallel;
-///     see the openblas-rayon-dgetrf-crash memory and blas_threads.rs). The
-///     aug-cc-pV{D,T}Z PDEP-RPA tests abort with `stack overflow` when this
-///     defaults to `available_parallelism()`; they pass at 1.
-///  2. **Reproducibility.** Multi-threaded OpenBLAS GEMM/eigh changes the
-///     reduction order run-to-run, which the crate's equivalence tests
-///     (screened-vs-dense at thresh=0) are built to hold at a tight tolerance.
+///  1. ~~**Stack overflow.**~~ **NO LONGER REPRODUCIBLE — re-verified
+///     2026-07-26.** `78bc70b` (2026-07-07) introduced this default because
+///     `available_parallelism()` made the aug-cc-pV{D,T}Z PDEP-RPA tests abort
+///     with `stack overflow`. That crash no longer occurs: the full ferric-rpa
+///     suite passes at `FERRIC_LANCZOS_BLAS_THREADS=12`, 8 concurrent CLI
+///     solves at 12 BLAS threads each (96 threads on a 12-core box) all
+///     complete with identical energies, and a direct probe
+///     (`benchmarks/harness/examples/lanczos_stack_probe.rs`) runs `eigh` at
+///     n=1200 — larger than benzene/aug-cc-pVTZ's naux=763 — on a 2 MB stack
+///     and inside a rayon worker without aborting.
+///
+///     Most likely cause of the fix: the eigensolve moved onto
+///     `ferric_core::linalg::eigh_dc`/`eigvalsh_dc` (`c284e48`), which follow
+///     the standard LAPACK workspace-query convention and **heap**-allocate
+///     the workspace, where the previous path put it on the caller's stack.
+///     Pinned by `tests/lanczos_blas_raise_no_crash.rs`, which runs the exact
+///     configuration `78bc70b` reported as aborting.
+///
+///     NOTE this does NOT generalize to the per-frequency loop in `energy.rs`,
+///     which genuinely runs inside a rayon region — BLAS must stay at 1 there,
+///     and that guard is still load-bearing (oversubscription, and the
+///     openblas-rayon-dgetrf-crash footgun).
+///  2. **Reproducibility — this is now the ONLY reason for the default.**
+///     Multi-threaded OpenBLAS GEMM/eigh changes the reduction order, which the
+///     crate's equivalence tests (screened-vs-dense at thresh=0) hold to a tight
+///     tolerance. It costs bit-identity, NOT accuracy (measured separately: a
+///     threaded dgemm's max error is identical to serial — see
+///     `ferric_tensors::einsum::gemm_kblocked`).
+///
+///     Measured benefit, benzene/aug-cc-pVTZ (naux=763), eigensolve stage:
+///     `=1` 1195 ms, `=4` 840 ms, **`=6` 628 ms (1.9x)**, `=12` 1175 ms
+///     (regresses past the knee). RPA correlation energy identical to all 10
+///     printed digits at every setting. Worth setting for a solo large job.
 ///
 /// An explicit `FERRIC_LANCZOS_BLAS_THREADS=N` override wins (clamped ≥ 1) for
 /// callers who want the wide-GEMM speedup and manage rayon/stack sizing
