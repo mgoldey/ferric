@@ -17,7 +17,7 @@ use ferric_integrals::operator::Operator;
 use ferric_integrals::three_index_source::ThreeIndexSource;
 use ferric_integrals::threeindex;
 use ferric_scf::ScfResult;
-use ndarray::{Array2, Array3};
+use ndarray::{Array2, Array3, Axis};
 use ndarray_linalg::{Cholesky, Eigh, UPLO};
 
 /// Configuration for RI-MP2.
@@ -103,16 +103,30 @@ pub fn eri3_mo_ov_blocked(
     while p0 < naux {
         let p1 = (p0 + block_naux).min(naux);
         let blk = threeindex::eri3_block(op, obs, dfbs, p0, p1)?;
-        for (off, p) in (p0..p1).enumerate() {
-            let bp_ao = blk.slice(ndarray::s![off, .., ..]);
-            // Same per-P GEMM order as transform_3center_ov (bitwise identical):
-            // contract the SMALLER occupied index first (nao²·nocc), then the
-            // virtual (nao·nocc·nvir). Contracting c_vir first would cost
-            // nao²·nvir on the dominant GEMM — ~nvir/nocc times more FLOPs.
-            let tmp = c_occ.t().dot(&bp_ao);
-            let bp_mo = tmp.dot(c_vir);
-            mo.slice_mut(ndarray::s![p, .., ..]).assign(&bp_mo);
-        }
+        // Parallel over aux P, exactly as the unblocked branch above does via
+        // `transform_3center_ov` (see mo_transform.rs): each P owns a disjoint
+        // output band and reads only its own AO slab, so this is a plain
+        // disjoint-write fan-out needing no reduction.
+        //
+        // This loop USED to be a serial `for (off, p)`, which made the blocked
+        // path single-threaded — and the blocked path is taken exactly when
+        // `block_naux < naux`, i.e. only once the memory budget forces blocking
+        // on LARGE jobs. Small benchmarks take the early return above and never
+        // exercise it, so the serial fallback was invisible to them.
+        //
+        // Per-P GEMM order is unchanged (occupied index first: nao²·nocc, then
+        // nao·nocc·nvir — contracting c_vir first would cost ~nvir/nocc times
+        // more), and each output element is written exactly once, so the result
+        // is bit-identical to the serial loop at any thread count.
+        use rayon::prelude::*;
+        ndarray::Zip::from(mo.slice_mut(ndarray::s![p0..p1, .., ..]).axis_iter_mut(Axis(0)))
+            .and(blk.axis_iter(Axis(0)))
+            .into_par_iter()
+            .for_each(|(mut mo_p, bp_ao)| {
+                let tmp = c_occ.t().dot(&bp_ao);
+                let bp_mo = tmp.dot(c_vir);
+                mo_p.assign(&bp_mo);
+            });
         p0 = p1;
     }
     Ok(mo)

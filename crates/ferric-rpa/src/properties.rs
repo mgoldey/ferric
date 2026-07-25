@@ -63,7 +63,8 @@ use ferric_scf::properties::{debug_toggle, eig3_sym, hirshfeld_margin, hirshfeld
 // `hirshfeld_i_charges`, `hirshfeld_charges`), which are reachable from
 // outside the crate.
 pub use ferric_scf::properties::{
-    atomic_effective_volumes_becke, becke_charges, chelpg_charges, esp_at_atoms, esp_at_points,
+    atomic_effective_volumes_becke, becke_charges, chelpg_and_resp_charges, chelpg_charges,
+    esp_at_atoms, esp_at_points,
     electric_field_at_atoms, lowdin_charges, mulliken_charges, resp_charges,
     spherically_averaged_proatom, ProatomProvider, RadialProatom,
 };

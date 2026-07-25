@@ -1052,7 +1052,8 @@ fn run_pdep_rpa_arm(
             use ferric_export::export_npz;
             use ferric_export::ml::{ChargeSchemes, DispersionBundle, NpzBundle, PolarizabilityBundle};
             use ferric_rpa::properties::{
-                chelpg_charges, electric_field_at_atoms, esp_at_atoms, hirshfeld_charges,
+                chelpg_and_resp_charges, chelpg_charges, electric_field_at_atoms, esp_at_atoms,
+                hirshfeld_charges,
                 lowdin_charges, mulliken_charges,
                 pdep_polarizability_becke,
                 pdep_polarizability_static,
@@ -1238,43 +1239,48 @@ fn run_pdep_rpa_arm(
                 None
             };
 
+            // CHELPG and RESP differ ONLY in the least-squares solve; both
+            // evaluate the same molecular ESP over the same grid. When both are
+            // requested (the default) share one grid — evaluating it twice cost
+            // ~2.2 s per duplicate at benzene/def2-SVP on 12 threads.
             let compute_cq = cfg.rpa.compute_chelpg_charges.unwrap_or(true);
-            let cq_vec = if compute_cq {
-                match chelpg_charges(mol, prep, result.density_total()) {
+            let compute_rq = cfg.rpa.compute_resp_charges.unwrap_or(true);
+            fn fmt_q(q: &[f64]) -> Vec<f64> { q.iter().map(|v| (v * 1e4).round() / 1e4).collect() }
+            let (cq_vec, rq_vec) = match (compute_cq, compute_rq) {
+                (true, true) => match chelpg_and_resp_charges(mol, prep, result.density_total()) {
+                    Ok((cq, rq)) => {
+                        println!("CHELPG charges (e): {:?}", fmt_q(&cq));
+                        println!("RESP charges (e): {:?}", fmt_q(&rq));
+                        (Some(cq), Some(rq))
+                    }
+                    Err(e) => {
+                        eprintln!("warning: CHELPG/RESP charges failed: {e}");
+                        (None, None)
+                    }
+                },
+                (true, false) => match chelpg_charges(mol, prep, result.density_total()) {
                     Ok(q) => {
-                        println!(
-                            "CHELPG charges (e): {:?}",
-                            q.iter().map(|v| (v * 1e4).round() / 1e4).collect::<Vec<_>>()
-                        );
-                        Some(q)
+                        println!("CHELPG charges (e): {:?}", fmt_q(&q));
+                        (Some(q), None)
                     }
                     Err(e) => {
                         eprintln!("warning: CHELPG charges failed: {e}");
-                        None
+                        (None, None)
                     }
-                }
-            } else {
-                None
-            };
-
-            let compute_rq = cfg.rpa.compute_resp_charges.unwrap_or(true);
-            let rq_vec = if compute_rq {
-                match resp_charges(mol, prep, result.density_total()) {
+                },
+                (false, true) => match resp_charges(mol, prep, result.density_total()) {
                     Ok(q) => {
-                        println!(
-                            "RESP charges (e): {:?}",
-                            q.iter().map(|v| (v * 1e4).round() / 1e4).collect::<Vec<_>>()
-                        );
-                        Some(q)
+                        println!("RESP charges (e): {:?}", fmt_q(&q));
+                        (None, Some(q))
                     }
                     Err(e) => {
                         eprintln!("warning: RESP charges failed: {e}");
-                        None
+                        (None, None)
                     }
-                }
-            } else {
-                None
+                },
+                (false, false) => (None, None),
             };
+
 
             // --- C6 dispersion (Phase 1: Tkatchenko-Scheffler model) ---
             let compute_c6 = cfg.rpa.compute_c6.unwrap_or(true);
