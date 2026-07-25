@@ -403,6 +403,7 @@ dependencies = [
  "ndarray",
  "ndarray-linalg",
  "openblas-src",
+ "rayon",
  "serde_json",
 ]
 

@@ -393,53 +393,76 @@ pub fn spin_components_from_b_ov(
     // dgetrf-crash footgun.
     use rayon::prelude::*;
 
-    // Precompute each i's wide GEMM G_i once (serial i-loop of BLAS3 GEMMs;
-    // the GEMM itself is the heavy per-i cost and there are only nocc of them).
-    // g_all[i] is (nvir, nocc*nvir) with g_all[i][a, jb] = (ia|jb).
-    let g_all: Vec<Array2<f64>> = (0..nocc)
+    // Parallelism is over i, with each i's wide GEMM done INSIDE its own task.
+    // Two things follow from that, and both were previously wrong:
+    //
+    //   1. The GEMM half used to be a serial `(0..nocc).map(...).collect()`
+    //      running ahead of the parallel pair loop. Measured on
+    //      benzene/aug-cc-pVTZ (naux=912, nocc=15, nvir=393) it was 1.400 s of
+    //      the 1.425 s stage — 98% — and identical at 1 and 12 threads, so the
+    //      pair loop's parallelism was very nearly decorative. The GEMMs are
+    //      mutually independent, so they belong in the parallel region.
+    //
+    //   2. G_i only ever needs its j >= i columns. The old full-width
+    //      `b_i.t().dot(b_ov)` also produced every j < i block, which no pair
+    //      consumes — the strictly-lower triangle, i.e. (nocc-1)/(2*nocc) of the
+    //      GEMM flops (47% at nocc=15). Slicing b_ov to the j >= i tail removes
+    //      that work outright rather than computing and discarding it.
+    //
+    // Memory drops with it: the old `g_all` held all nocc matrices live at once
+    // (nocc*nvir*nocc*nvir*8 bytes = 0.28 GB here, but it grows as nocc^2*nvir^2
+    // — 4.6 GB at nocc=30/nvir=800). Now at most one (nvir, (nocc-i)*nvir) block
+    // is live per worker.
+    //
+    // BLAS stays serial inside each closure via OPENBLAS_NUM_THREADS=1 — nested
+    // BLAS threads under rayon is the documented dgetrf-crash footgun.
+    //
+    // MP2 SYMMETRY (unchanged): visit only unique pairs j >= i, weighting the
+    // strictly off-diagonal ones by 2 — PySCF's fac=2/fac=1 convention.
+    //
+    // Per-i (e_os, e_ss) partials are collected into an i-ordered Vec and summed
+    // SEQUENTIALLY. A rayon `reduce` combines partials in a tree whose shape
+    // depends on the worker count, so floating-point non-associativity would
+    // make the total vary with RAYON_NUM_THREADS (~µHa). Collect-then-serial-sum
+    // keeps the parallel compute but fixes the accumulation order to be
+    // thread-independent. Within an i, the j/a/b loop order is unchanged, so
+    // this is bit-identical to the previous implementation.
+    let partials: Vec<(f64, f64)> = (0..nocc)
+        .into_par_iter()
         .map(|i| {
+            // G_i over the j >= i tail only: g_i[a, (j-i)*nvir + b] = (ia|jb).
             let b_i = b_ov.slice(ndarray::s![.., i * nvir..(i + 1) * nvir]);
-            b_i.t().dot(b_ov)
-        })
-        .collect();
+            let b_tail = b_ov.slice(ndarray::s![.., i * nvir..]);
+            let g_i = b_i.t().dot(&b_tail);
 
-    // Unique upper-triangle (i, j) pairs, i <= j.
-    let pairs: Vec<(usize, usize)> = (0..nocc)
-        .flat_map(|i| (i..nocc).map(move |j| (i, j)))
-        .collect();
-
-    // Per-pair (e_os, e_ss) partial in parallel, then collect into a
-    // pair-ordered Vec and sum SEQUENTIALLY. A rayon `reduce` combines partials
-    // in a tree whose shape depends on the worker count, so floating-point
-    // non-associativity makes the total vary with RAYON_NUM_THREADS (~µHa).
-    // Collect-then-serial-sum keeps the parallel per-pair compute but fixes the
-    // accumulation order to be thread-independent.
-    let partials: Vec<(f64, f64)> = pairs
-        .par_iter()
-        .map(|&(i, j)| {
-            // Symmetry weight: off-diagonal pairs stand in for their mirror.
-            let fac = if i == j { 1.0 } else { 2.0 };
-            let g_i = &g_all[i]; // (ia|jb) for this i, all a and all (j,b)
-            let e_ij = eps[first_occ + i] + eps[first_occ + j];
-            let mut e_os_ij = 0.0;
-            let mut e_ss_ij = 0.0;
-            for a in 0..nvir {
-                for b in 0..nvir {
-                    let g_ab = g_i[(a, j * nvir + b)]; // (ia|jb)
-                    let g_ba = g_i[(b, j * nvir + a)]; // (ib|ja)
-                    let denom = e_ij - eps[nocc_total + a] - eps[nocc_total + b];
-                    e_os_ij += g_ab * g_ab / denom;
-                    e_ss_ij += g_ab * (g_ab - g_ba) / denom;
+            let (mut e_os_i, mut e_ss_i) = (0.0, 0.0);
+            for j in i..nocc {
+                // Symmetry weight: off-diagonal pairs stand in for their mirror.
+                let fac = if i == j { 1.0 } else { 2.0 };
+                let jcol = (j - i) * nvir; // column offset within the tail
+                let e_ij = eps[first_occ + i] + eps[first_occ + j];
+                let mut e_os_ij = 0.0;
+                let mut e_ss_ij = 0.0;
+                for a in 0..nvir {
+                    for b in 0..nvir {
+                        let g_ab = g_i[(a, jcol + b)]; // (ia|jb)
+                        let g_ba = g_i[(b, jcol + a)]; // (ib|ja)
+                        let denom = e_ij - eps[nocc_total + a] - eps[nocc_total + b];
+                        e_os_ij += g_ab * g_ab / denom;
+                        e_ss_ij += g_ab * (g_ab - g_ba) / denom;
+                    }
                 }
+                e_os_i += fac * e_os_ij;
+                e_ss_i += fac * e_ss_ij;
             }
-            (fac * e_os_ij, fac * e_ss_ij)
+            (e_os_i, e_ss_i)
         })
         .collect();
     let mut e_os = 0.0;
     let mut e_ss = 0.0;
-    for (e_os_ij, e_ss_ij) in partials {
-        e_os += e_os_ij;
-        e_ss += e_ss_ij;
+    for (e_os_i, e_ss_i) in partials {
+        e_os += e_os_i;
+        e_ss += e_ss_i;
     }
     SpinComponents { e_os, e_ss, e_total: e_os + e_ss }
 }
@@ -1023,6 +1046,89 @@ mod tests {
     use ferric_integrals::basis_bridge::PreparedBasis;
     use ferric_scf::rhf::{solve_rhf, RhfConfig};
     use ferric_scf::screening::SchwarzBounds;
+
+    /// `spin_components_from_b_ov` computes each `i`'s wide GEMM over only the
+    /// `j >= i` tail of `b_ov`, because the pair loop consumes only `j >= i`.
+    /// The pre-2026-07-25 implementation used the FULL width (`b_i.t().dot(b_ov)`)
+    /// and discarded the strictly-lower triangle — 47% wasted GEMM flops at
+    /// nocc=15, in a stage that was also serial (measured 1.400 s of a 1.425 s
+    /// stage on benzene/aug-cc-pVTZ, unchanged from 1 to 12 threads).
+    ///
+    /// This pins the tail-slicing against a full-width reference computed
+    /// inline. An off-by-one in the `jcol = (j - i) * nvir` column offset — the
+    /// obvious way to break this — reads the wrong `(ia|jb)` block and moves
+    /// the energy far outside the tolerance below.
+    ///
+    /// Shapes deliberately include `nvir = 1`, where `b_i.t().dot(..)` returns
+    /// a COLUMN-major result (see the `ndarray dot layout` convention note);
+    /// indexing via `g_i[(a, col)]` is layout-safe, but a future rewrite that
+    /// flat-indexes would break here first.
+    #[test]
+    fn spin_components_tail_gemm_matches_full_width_reference() {
+        // Full-width reference: the pre-change formulation.
+        fn reference(
+            b_ov: &Array2<f64>,
+            eps: &[f64],
+            nocc: usize,
+            nvir: usize,
+            first_occ: usize,
+            nocc_total: usize,
+        ) -> f64 {
+            let mut e_total = 0.0;
+            for i in 0..nocc {
+                let b_i = b_ov.slice(ndarray::s![.., i * nvir..(i + 1) * nvir]);
+                let g_i = b_i.t().dot(b_ov);
+                for j in i..nocc {
+                    let fac = if i == j { 1.0 } else { 2.0 };
+                    let e_ij = eps[first_occ + i] + eps[first_occ + j];
+                    for a in 0..nvir {
+                        for b in 0..nvir {
+                            let g_ab = g_i[(a, j * nvir + b)];
+                            let g_ba = g_i[(b, j * nvir + a)];
+                            let denom = e_ij - eps[nocc_total + a] - eps[nocc_total + b];
+                            e_total += fac * (g_ab * g_ab + g_ab * (g_ab - g_ba)) / denom;
+                        }
+                    }
+                }
+            }
+            e_total
+        }
+
+        // (naux, nocc, nvir, first_occ)
+        let cases = [(60usize, 5usize, 12usize, 0usize), (120, 8, 40, 2), (40, 3, 1, 0)];
+        for (naux, nocc, nvir, first_occ) in cases {
+            let width = nocc * nvir;
+            let nocc_total = first_occ + nocc;
+            let mut b_ov = Array2::<f64>::zeros((naux, width));
+            let mut s: u64 = 0x243f_6a88_85a3_08d3;
+            for v in b_ov.iter_mut() {
+                s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                *v = ((s >> 11) as f64 / (1u64 << 53) as f64 - 0.5) * 0.05;
+            }
+            // Occupied below the gap, virtual above, so every denominator is
+            // safely nonzero.
+            let eps: Vec<f64> = (0..nocc_total + nvir)
+                .map(|i| {
+                    if i < nocc_total {
+                        -0.9 - 0.07 * i as f64
+                    } else {
+                        0.15 + 0.011 * i as f64
+                    }
+                })
+                .collect();
+
+            let want = reference(&b_ov, &eps, nocc, nvir, first_occ, nocc_total);
+            let got = spin_components_from_b_ov(&b_ov, &eps, nocc, nvir, first_occ, nocc_total);
+            let rel = (want - got.e_total).abs() / want.abs().max(1e-30);
+            assert!(
+                rel < 1e-13,
+                "tail-sliced GEMM must reproduce the full-width reference \
+                 (naux={naux} nocc={nocc} nvir={nvir} fc={first_occ}): \
+                 want={want:.17e} got={:.17e} rel={rel:.3e}",
+                got.e_total,
+            );
+        }
+    }
 
     /// A near-null-mode metric (one tiny eigenvalue, straddling zero under
     /// roundoff) is the EXPECTED shape for erf/terf's long-range RI metric —

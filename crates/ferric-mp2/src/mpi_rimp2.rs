@@ -44,13 +44,22 @@
 //! * **1 rank / feature off.** The aux band is `[0, naux)` (full) and the `i`
 //!   round-robin is trivially every `i` on the single rank, so every
 //!   Allreduce is a no-op and this reproduces
-//!   [`crate::rimp2::ri_mp2_spin_components`] byte-for-byte (same
+//!   [`crate::rimp2::ri_mp2_spin_components`] to ~machine precision (same
 //!   `eri3_mo_block_dressed_band` code path with a full band == the serial
-//!   `eri3_mo_block_dressed`, and the same per-`i` `g_i = b_i^T · b_ov`
-//!   contraction as [`crate::rimp2::spin_components_from_b_ov`], just walked
-//!   sequentially instead of via rayon — floating-point `+` reduction order
-//!   is preserved because both paths sum `i = 0, 1, ..., nocc-1` in ascending
-//!   order into a single running total).
+//!   `eri3_mo_block_dressed`, and the same per-`i` contraction structure as
+//!   [`crate::rimp2::spin_components_from_b_ov`], just walked sequentially
+//!   instead of via rayon; both sum `i = 0, 1, ..., nocc-1` in ascending order
+//!   into a single running total).
+//!
+//!   NOT bit-identical: this path forms the full-width `g_i = b_i^T · b_ov`
+//!   while the serial path now forms only the `j >= i` tail
+//!   `g_i = b_i^T · b_ov[:, i*nvir..]` (the `j < i` blocks it used to compute
+//!   were never read — see `spin_components_from_b_ov`). Same contraction, but
+//!   a different GEMM width means a different internal accumulation order.
+//!   Measured deviation over five shapes (naux 40-912, nocc 3-15, nvir 1-393,
+//!   with and without frozen core) is <= 4.3e-16 relative, i.e. ~2 ulp and
+//!   ~11 orders below the RI fitting error — hence the 1e-11 tolerances in
+//!   `tests/mpi_rimp2_banding.rs` rather than exact equality.
 //!
 //! `frozen_core` is handled by [`crate::rimp2::active_occ`] exactly as the
 //! serial path does — it restricts the occupied index RANGE, which is
@@ -86,7 +95,8 @@ mod inner {
     /// two-stage-reduction derivation). `ctx` selects the band via
     /// [`ParallelContext::aux_band`]; with `ctx.size == 1` (or the `mpi`
     /// feature simply unused at 1 rank) every reduction is a no-op and the
-    /// result is byte-identical to [`crate::rimp2::ri_mp2_spin_components`].
+    /// result matches [`crate::rimp2::ri_mp2_spin_components`] to ~machine
+    /// precision (~2 ulp; see the module docs for why it is not exact).
     pub fn run_mpi_ri_mp2(
         ctx: &ParallelContext,
         mol: &Molecule,
