@@ -460,7 +460,6 @@ pub fn pdep_dynamic_polarizability_truncated(
     cfg: &PdepRpaConfig,
     partition: DispersionPartition,
 ) -> Result<DynamicPolarizability, FerricError> {
-    use ferric_dft::ao_grid::eval_basis_on_points;
     use ferric_dft::grid::{build_atomic_grid, AtomicGridConfig};
     use ferric_integrals::blas_threads::with_blas_threads;
     use ferric_mp2::rimp2::RiMp2Config;
@@ -578,25 +577,35 @@ pub fn pdep_dynamic_polarizability_truncated(
         natoms,
     )?;
 
-    let chi = eval_basis_on_points(mol, obs_bs, &points).map_err(|e| {
-        FerricError::General(format!("pdep_dynamic_polarizability_truncated: chi: {e}"))
-    })?;
-    let nbf = chi.nrows();
+    // nbf from the prepared basis, not a materialized chi: the shared
+    // accumulator evaluates chi per grid chunk.
+    let nbf = obs.nbasis();
     let atom_pos: Vec<[f64; 3]> = mol.atoms.iter().map(|at| [at.x, at.y, at.zpos]).collect();
 
-    let mut d_ai_ao: Vec<[Array2<f64>; 3]> = (0..natoms)
-        .map(|_| std::array::from_fn(|_| Array2::<f64>::zeros((nbf, nbf)))).collect();
-    for g in 0..npts {
-        let a = home_atom[g]; let wg = wts[g]; let r = points[g]; let ra = atom_pos[a];
-        for d in 0..3 {
-            let factor = wg * (r[d] - ra[d]);
-            for mu in 0..nbf {
-                let wchi = factor * chi[(mu, g)];
-                if wchi.abs() < 1e-30 { continue; }
-                for nu in 0..nbf { d_ai_ao[a][d][(mu, nu)] += wchi * chi[(nu, g)]; }
-            }
-        }
-    }
+    // Was a duplicate serial `for g in 0..npts` sweep over a monolithic
+    // (nbf, npts) chi -- ~3.75 GB at incident scale. This is the SAME
+    // computation as properties.rs's accumulator, so call that instead of
+    // maintaining a second copy: chi is evaluated per grid chunk (a few MB per
+    // worker), and the banding is bounded by the resolved budget.
+    //
+    // NUMERICAL NOTE: the shared version folds chunk partials in ascending
+    // order rather than doing one serial sweep, so results here shift in the
+    // last digits. Blocked summation is a coarse pairwise sum, so this is if
+    // anything slightly MORE accurate (see DRESS_ROW_BLOCK's measurements) --
+    // but it is a real change, not a no-op, and it is thread-count-independent
+    // by construction (chunk_size is a pure function of npts).
+    let mut d_ai_ao = crate::properties::accumulate_atom_centred_dipoles_pub(
+        npts,
+        natoms,
+        nbf,
+        &home_atom,
+        &wts,
+        &points,
+        &atom_pos,
+        mol,
+        obs_bs,
+        ferric_core::memory::resolve_budget_bytes(cfg.memory_budget_bytes),
+    )?;
     for a in 0..natoms { for d in 0..3 {
         let m = &mut d_ai_ao[a][d];
         for i in 0..nbf { for j in (i+1)..nbf {

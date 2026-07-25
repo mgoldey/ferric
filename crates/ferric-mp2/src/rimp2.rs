@@ -360,6 +360,78 @@ pub(crate) const PAR_MO_TRANSFORM_WORK_THRESHOLD: usize = 200_000;
 /// GEMM constrains this value.
 pub(crate) const MO_STREAM_CHUNK: usize = 256;
 
+/// Smallest budget-derived chunk. Never go below this: the dressing GEMM's
+/// inner dimension is the chunk width, so a very small width both destroys
+/// BLAS3 efficiency and maximizes the number of partial sums accumulated into
+/// `b_flat` (more blocks = more rounding events).
+const MO_STREAM_CHUNK_MIN: usize = 32;
+
+/// `FERRIC_MO_STREAM_TRACE`: log the resolved MO-stream chunk width. Useful
+/// when reconciling last-digit differences between runs at different budgets.
+static MO_STREAM_TRACE: ferric_core::config::ConfigVar<bool> = ferric_core::config::ConfigVar {
+    env_name: "FERRIC_MO_STREAM_TRACE",
+    default: false,
+    parse: ferric_core::config::parse_toggle,
+    validate: ferric_core::config::accept_any,
+};
+
+/// Aux-row chunk for the streamed MO transform, derived from the resolved
+/// memory budget.
+///
+/// The transient this bounds is `chunk · width · 8` bytes (`width = nleft ·
+/// nright`), plus the same again for the raw AO slab the transform reads. A
+/// budget share of 1/8 is taken so this transient never crowds out the
+/// `b_flat` output it is filling, which is `naux · width · 8` and typically
+/// far larger.
+///
+/// # This width changes results — deliberately, and reproducibly
+///
+/// The dressing step is
+/// `general_mat_mul(1.0, &msub, &mo_blk, 1.0, &mut b_flat)` — **beta = 1** — so
+/// the chunk width is the k-blocking of a partial-sum accumulation, and
+/// k-blocking is an accuracy knob, not only a memory one. Changing it perturbs
+/// the last digits (`three_index_source.rs`'s `DRESS_ROW_BLOCK` measured ~7e-15
+/// from an odd-vs-even split; blocked summation is a coarse pairwise sum, so
+/// *more* blocks is usually slightly MORE accurate, not less).
+///
+/// Two properties keep that safe to depend on a budget:
+///
+/// 1. **Deterministic.** The width is a pure function of `(width, budget)` —
+///    never of `rayon::current_num_threads()`, free memory at call time, or
+///    anything else ambient. Pin `[memory] budget_gb` and the numerics are
+///    pinned with it. This is why the budget must be resolved once, up front,
+///    and passed down rather than re-resolved here.
+/// 2. **Even.** Rounded down to a multiple of 2, floored at
+///    [`MO_STREAM_CHUNK_MIN`]. Odd splits perturb a GEMM on this hardware via a
+///    2-wide SIMD accumulation effect (measured in `DRESS_ROW_BLOCK`'s doc:
+///    every odd block size differed, every even one was exact).
+///
+/// The consequence a user must understand: **two runs of the same system at
+/// different `budget_gb` may differ in the last digits.** That is the price of
+/// letting the budget bound this transient. Runs at the same budget are
+/// bit-identical, and the resolved width is logged under `FERRIC_OOC_TRACE`.
+/// Test-only re-export of [`mo_stream_chunk_for`] for the budget contracts in
+/// `tests/mwe_mo_stream_chunk_budget.rs`.
+#[doc(hidden)]
+pub fn mo_stream_chunk_for_test(width: usize, budget_bytes: usize) -> usize {
+    mo_stream_chunk_for(width, budget_bytes)
+}
+
+pub(crate) fn mo_stream_chunk_for(width: usize, budget_bytes: usize) -> usize {
+    // Two same-shaped transients are live per chunk: the MO block being filled
+    // and the raw AO slab feeding it.
+    let per_row_bytes = width.max(1).saturating_mul(8).saturating_mul(2);
+    let share = budget_bytes / 8;
+    let raw = (share / per_row_bytes.max(1)).max(MO_STREAM_CHUNK_MIN);
+    // Never exceed the historical default: a wider chunk buys no accuracy and
+    // only enlarges the transient. Keeping the ceiling at MO_STREAM_CHUNK also
+    // means an ample budget reproduces the pre-existing numerics EXACTLY, so
+    // only memory-constrained runs see any change at all.
+    let capped = raw.min(MO_STREAM_CHUNK);
+    // Round DOWN to even (see property 2 above); the floor keeps it >= 32.
+    (capped & !1).max(MO_STREAM_CHUNK_MIN)
+}
+
 /// Canonical streamed + dressed MO 3-index tensor builder: `B^P_{pq} = Σ_Q
 /// V^{-1/2}[P,Q] · (c_left^T (Q|μν) c_right)[pq]`, generalizing
 /// `oo_rimp2.rs::compute_b_full_mo_with` (formerly hardcoded to `c_left ==
@@ -393,6 +465,25 @@ pub fn stream_dressed_mo_band(
     c_right: &Array2<f64>,
     output_band: Option<(usize, usize)>,
 ) -> Result<Array2<f64>, FerricError> {
+    stream_dressed_mo_band_budgeted(src, v_inv_sqrt, c_left, c_right, output_band, None)
+}
+
+/// Budget-aware [`stream_dressed_mo_band`].
+///
+/// `memory_budget_bytes = None` keeps the historical fixed
+/// [`MO_STREAM_CHUNK`], so every existing caller is bit-identical. `Some(b)`
+/// derives the chunk width from `b` via [`mo_stream_chunk_for`] — which caps at
+/// `MO_STREAM_CHUNK`, so an ample budget is ALSO bit-identical and only
+/// memory-constrained runs narrow the chunk. See [`mo_stream_chunk_for`] for
+/// why narrowing changes the last digits and why that is safe to depend on.
+pub fn stream_dressed_mo_band_budgeted(
+    src: &mut ThreeIndexSource,
+    v_inv_sqrt: &Array2<f64>,
+    c_left: &Array2<f64>,
+    c_right: &Array2<f64>,
+    output_band: Option<(usize, usize)>,
+    memory_budget_bytes: Option<usize>,
+) -> Result<Array2<f64>, FerricError> {
     let naux = src.naux();
     let (band_p0, band_p1) = output_band.unwrap_or((0, naux));
     let band = band_p1 - band_p0;
@@ -400,12 +491,27 @@ pub fn stream_dressed_mo_band(
     let nright = c_right.ncols();
     let width = nleft * nright;
 
+    // Fixed 256 when no budget is supplied (bit-identical to the historical
+    // path); budget-derived, deterministic, and EVEN otherwise.
+    let chunk = match memory_budget_bytes {
+        Some(b) => mo_stream_chunk_for(width, b),
+        None => MO_STREAM_CHUNK,
+    };
+    if MO_STREAM_TRACE.toggle() {
+        eprintln!(
+            "[MO stream] width={width} chunk={chunk} budget={:?} GB -- the chunk \
+             k-blocks a beta=1 accumulation, so pin [memory] budget_gb to pin \
+             the last digits",
+            memory_budget_bytes.map(|b| b as f64 / 1e9),
+        );
+    }
+
     let mut b_flat = Array2::<f64>::zeros((band, width));
     src.for_each_block(|blk| {
         let qb = blk.data.shape()[0];
         let mut q0 = 0;
         while q0 < qb {
-            let q1 = (q0 + MO_STREAM_CHUNK).min(qb);
+            let q1 = (q0 + chunk).min(qb);
             let qc = q1 - q0;
             // MO-transform this chunk: mo[q, pq] = c_left^T (Q|μν) c_right
             // (BLAS3 per q). Each q owns a disjoint output row and reads only
@@ -725,7 +831,12 @@ pub fn ri_mp2_spin_components(
     // the peak always exceeded the budget by construction.
     check_mo_side_alloc("RI-MP2", dfbs.nbasis(), nocc, nvir, false, budget_bytes)?;
     let mut src = ThreeIndexSource::build(op, obs, dfbs, budget_bytes)?;
-    let b_flat = stream_dressed_mo_band(&mut src, &v2c_inv_sqrt, &c_occ, &c_vir, None)?; // (naux, nocc*nvir)
+    // Budgeted: on a tight budget this narrows the chunk (and, as documented
+    // on mo_stream_chunk_for, shifts the last digits); at an ample budget it
+    // resolves to the historical 256 and is bit-identical.
+    let b_flat = stream_dressed_mo_band_budgeted(
+        &mut src, &v2c_inv_sqrt, &c_occ, &c_vir, None, Some(budget_bytes),
+    )?; // (naux, nocc*nvir)
 
     let sc = spin_components_from_b_ov(
         &b_flat, eps, nocc, nvir, first_occ, nocc_total,
