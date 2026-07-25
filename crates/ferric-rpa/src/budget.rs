@@ -112,7 +112,37 @@ pub struct GridEstimateShape {
     /// Chunk-partials held live at once by the banded dipole accumulation
     /// (`dipole_band_width`). Each partial is a full `natoms · 3 · nbf²` set,
     /// so this multiplies the largest grid term.
+    ///
+    /// Callers must pass the width the accumulation will ACTUALLY use, which is
+    /// `min(dipole_band_width(..), n_chunks)` — the loop clamps each band with
+    /// `(band0 + band_width).min(n_chunks)`, so a nominally huge width cannot
+    /// materialize more partials than there are chunks. Passing the unclamped
+    /// value produces a wildly pessimistic estimate on small systems: at
+    /// water/STO-3G (nbf=7) a per-partial cost of ~1.2 kB against a 4 GiB budget
+    /// gives a nominal width of ~3.6 million, which estimated 4.30 GB for a job
+    /// whose real footprint is a few MB — enough to refuse a trivial
+    /// calculation. Use [`effective_dipole_band_width`].
     pub dipole_band_width: usize,
+}
+
+/// Chunk count the dipole accumulation will partition `npts` into.
+///
+/// Mirrors `properties::accumulate_atom_centred_dipoles`: `TARGET_CHUNKS`
+/// groups (a pure function of `npts`, never of the worker count, so the fold
+/// order cannot depend on `RAYON_NUM_THREADS`), floored at one chunk.
+pub fn dipole_chunk_count(npts: usize) -> usize {
+    const TARGET_CHUNKS: usize = 1024;
+    let chunk_size = npts.div_ceil(TARGET_CHUNKS).max(1);
+    npts.div_ceil(chunk_size).max(1)
+}
+
+/// The band width the accumulation will actually use: the budget-derived width
+/// clamped to the number of chunks that exist.
+///
+/// Keep estimator and accumulator agreed on this; a mismatch is how a
+/// pre-flight gate starts refusing jobs that would have run fine.
+pub fn effective_dipole_band_width(nominal: usize, npts: usize) -> usize {
+    nominal.max(1).min(dipole_chunk_count(npts))
 }
 
 /// Bytes the grid path holds resident: the `chi` AO-on-grid matrix, the

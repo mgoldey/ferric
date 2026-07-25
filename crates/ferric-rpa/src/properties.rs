@@ -657,18 +657,6 @@ pub fn pdep_polarizability_static_unrestricted(
 ///     μ^{A,i}_pq = ⟨p| w^A_Becke(r) · r_i |q⟩  (Becke-weighted AO dipole)
 ///     μ^i = Σ_A μ^{A,i}                       (sum-rule exact for Becke)
 /// ```
-///
-/// Live-set byte budget for one band of grid-point chunk partials (mirrors
-/// `ferric_scf::reduce`'s `DEFAULT_BAND_BYTES`). Each partial here is
-/// `natoms * 3 * nbf^2 * 8` bytes — far bigger than a DF-K `nbf^2` partial —
-/// so this budget bounds the SAME hazard `ferric_scf::reduce`'s doc comment
-/// warns about ("holding all partials at once... ~97 GB at 50-atom/aug-cc-pVTZ
-/// for DF-K"): naively `.collect()`-ing one partial per chunk over ~1024
-/// chunks at 71-atom/def2-svp size (natoms*3*nbf^2*8 ≈ 0.43 GB/chunk) would
-/// reach ~440 GB — a real, measured regression (mid-2026-07-13 dataset build:
-/// jobs still on their first conformer after 3.5 hours, one process pinned at
-/// its memory cgroup cap with 3M+ throttle events). Banding is not optional.
-const DIPOLE_BAND_BYTES: usize = 512 * 1024 * 1024;
 
 /// How many chunk-partials (each `natoms * 3 * nbf^2 * 8` bytes) may be live
 /// at once, given a byte budget. Floored at rayon's worker count so banding
@@ -676,6 +664,65 @@ const DIPOLE_BAND_BYTES: usize = 512 * 1024 * 1024;
 /// `ferric_scf::reduce::band_width`'s floor). A pure function of
 /// `(natoms, nbf, budget_bytes)` and the ambient rayon pool's worker count —
 /// never of chunk count or grid layout — so it cannot perturb the fold order.
+/// Pre-flight gate for the grid-based per-atom property paths.
+///
+/// Call this AFTER the grid is built (so `npts` is a live value, never a
+/// hardcoded 75x110) but BEFORE `chi` is allocated — that is the last point at
+/// which refusing is still cheap. `chi` alone is a single contiguous
+/// `nbf * npts * 8` block (~3.75 GB at 71-atom/def2-svp), so a gate placed after
+/// it has already lost.
+///
+/// These paths had NO gate at all before this: `grep` found zero
+/// `check_alloc`/`estimate_peak_bytes` call sites in `properties.rs` or
+/// `dispersion.rs`, while `compute_alpha_atomic` defaults to `true` in the CLI
+/// — so a stock run entered an ungoverned path without opting in. That is how
+/// 16-17 GB anon-RSS reached the systemwide OOM killer three times on
+/// 2026-07-13.
+///
+/// Returns the resolved budget so callers can reuse it for banding decisions
+/// rather than resolving twice (and possibly inconsistently).
+fn preflight_grid_path(
+    label: &str,
+    memory_budget_bytes: Option<usize>,
+    naux: usize,
+    nocc: usize,
+    nvir: usize,
+    npts: usize,
+    nbf: usize,
+    natoms: usize,
+) -> Result<usize, FerricError> {
+    let budget = ferric_core::memory::resolve_budget_bytes(memory_budget_bytes);
+    // Clamp to the chunk count: the accumulation caps each band at `n_chunks`,
+    // so a nominally huge width cannot materialize more partials than there are
+    // chunks. Estimating with the unclamped value refuses trivial jobs (see
+    // `effective_dipole_band_width`).
+    let band = crate::budget::effective_dipole_band_width(
+        dipole_band_width(natoms, nbf, budget),
+        npts,
+    );
+    let est = crate::budget::estimate_peak_bytes(crate::budget::PeakEstimateShape {
+        naux,
+        nocc,
+        nvir,
+        // The grid paths run their own frequency loops; n_quad drives wall time
+        // rather than peak resident bytes (see budget.rs's named no-op), so the
+        // value here is immaterial to the estimate.
+        n_quad: 1,
+        n_workers: rayon::current_num_threads().max(1),
+        // Pre-eigensolve, the retained-mode count is unknown; naux is the
+        // untruncated upper bound and the honest conservative choice.
+        n_keep: naux,
+        grid: Some(crate::budget::GridEstimateShape {
+            npts,
+            nbf,
+            natoms,
+            dipole_band_width: band,
+        }),
+    });
+    ferric_core::memory::check_alloc(label, est, budget)?;
+    Ok(budget)
+}
+
 /// Test-only re-export of [`dipole_band_width_with_threads`] so the
 /// budget-contract MWEs in `tests/mwe_budget_respected.rs` can exercise the
 /// band-width policy at an EXPLICIT worker count, without standing up an SCF
@@ -743,7 +790,8 @@ fn dipole_band_width_with_threads(
 /// thread-count-independent chunks (a pure function of `npts`, never of the
 /// worker count, so the fold order — and hence the exact floating-point
 /// result — cannot depend on `RAYON_NUM_THREADS`), process one BAND of chunks
-/// in parallel at a time (bounded by `DIPOLE_BAND_BYTES`), and fold each band
+/// in parallel at a time (bounded by the caller's resolved memory budget),
+/// and fold each band
 /// into the running accumulator in ascending order before moving to the next
 /// band. At most one band of partials is ever live, not all chunks at once.
 #[allow(clippy::too_many_arguments)]
@@ -756,6 +804,7 @@ fn accumulate_atom_centred_dipoles(
     points: &[[f64; 3]],
     atom_pos: &[[f64; 3]],
     chi: &Array2<f64>,
+    budget_bytes: usize,
 ) -> Vec<[Array2<f64>; 3]> {
     use rayon::prelude::*;
 
@@ -767,7 +816,12 @@ fn accumulate_atom_centred_dipoles(
     let chunk_starts: Vec<usize> = (0..npts).step_by(chunk_size).collect();
     let n_chunks = chunk_starts.len();
 
-    let band_width = dipole_band_width(natoms, nbf, DIPOLE_BAND_BYTES);
+    // The RESOLVED budget, not a hardcoded constant: the pre-flight gate
+    // estimated this path using the caller's budget, so the accumulation must
+    // band against the same number or the two disagree (below the old 512 MB
+    // const the accumulation would exceed what the gate approved; above it, it
+    // would band more tightly than necessary and cost wall time).
+    let band_width = dipole_band_width(natoms, nbf, budget_bytes);
 
     let mut d_ai_ao: Vec<[Array2<f64>; 3]> = (0..natoms)
         .map(|_| std::array::from_fn(|_| Array2::<f64>::zeros((nbf, nbf))))
@@ -904,6 +958,23 @@ pub fn pdep_polarizability_becke(
     let home_atom: Vec<usize> = grid.iter().map(|g| g.home_atom).collect();
     let npts = points.len();
 
+    // Pre-flight BEFORE chi allocates: chi is one contiguous nbf*npts*8 block,
+    // so a gate placed after it has already lost. npts comes from the grid we
+    // just built, never from an assumed 75x110.
+    let budget = preflight_grid_path(
+        &format!(
+            "pdep_polarizability_becke (natoms={natoms}, nbf={}, npts={npts}, naux={naux})",
+            obs.nbasis()
+        ),
+        cfg.memory_budget_bytes,
+        naux,
+        nocc,
+        nvir,
+        npts,
+        obs.nbasis(),
+        natoms,
+    )?;
+
     // Evaluate AO basis on the grid: χ has shape (nbf, npts).
     let chi = eval_basis_on_points(mol, obs_bs, &points).map_err(|e| {
         FerricError::General(format!("pdep_polarizability_becke: chi eval failed: {e}"))
@@ -923,7 +994,7 @@ pub fn pdep_polarizability_becke(
     // pose produced α^A up to hundreds of a.u. via this renormalization).
     let atom_pos: Vec<[f64; 3]> = mol.atoms.iter().map(|at| [at.x, at.y, at.zpos]).collect();
     let mut d_ai_ao: Vec<[Array2<f64>; 3]> =
-        accumulate_atom_centred_dipoles(npts, natoms, nbf, &home_atom, &weights, &points, &atom_pos, &chi);
+        accumulate_atom_centred_dipoles(npts, natoms, nbf, &home_atom, &weights, &points, &atom_pos, &chi, budget);
     // Symmetrize per-atom AO dipoles.
     for d in 0..3 {
         for a in 0..natoms {
@@ -1097,6 +1168,7 @@ pub fn pdep_polarizability_becke_dynamic(
         // Per-atom atom-centred AO dipole matrices (ω-independent).
         let mut d_ai_ao: Vec<[Array2<f64>; 3]> = accumulate_atom_centred_dipoles(
             npts, natoms, nbf, &home_atom, &weights_g, &points, &atom_pos, &chi,
+            ferric_core::memory::resolve_budget_bytes(cfg.memory_budget_bytes),
         );
         for a in 0..natoms {
             for d in 0..3 {
@@ -1296,8 +1368,11 @@ pub fn pdep_polarizability_becke_dynamic(
         .map(|at| [at.x, at.y, at.zpos])
         .collect();
 
+    // No pre-flight gate on this path yet (tracked), so resolve the budget here
+    // rather than band against the old hardcoded 512 MB const.
+    let budget = ferric_core::memory::resolve_budget_bytes(cfg.memory_budget_bytes);
     let mut d_ai_ao: Vec<[Array2<f64>; 3]> =
-        accumulate_atom_centred_dipoles(npts, natoms, nbf, &home_atom, &weights, &points, &atom_pos, &chi);
+        accumulate_atom_centred_dipoles(npts, natoms, nbf, &home_atom, &weights, &points, &atom_pos, &chi, budget);
     for d in 0..3 {
         for a in 0..natoms {
             let m = &mut d_ai_ao[a][d];
@@ -2763,16 +2838,20 @@ mod tests {
             // Danuglipron/def2-svp-scale: 71 atoms, nbf~500.
             let natoms = 71;
             let nbf = 500;
-            let bw = dipole_band_width(natoms, nbf, DIPOLE_BAND_BYTES);
+            // A representative budget; the band width is now a pure function
+            // of it (the hardcoded 512 MB const is gone).
+            let budget = 512 * 1024 * 1024usize;
+            let bw = dipole_band_width(natoms, nbf, budget);
             let per_partial_bytes = natoms * 3 * nbf * nbf * std::mem::size_of::<f64>();
             let live_bytes = bw * per_partial_bytes;
-            // The worker-count floor can push live memory above the raw byte
-            // budget (by design — banding must never starve parallelism
-            // below one chunk per worker), but it must stay a small, bounded
-            // multiple of the budget, nowhere near the ~440 GB unbanded
-            // worst case this test guards against.
+            // Tightened: this used to allow 10x the budget because the
+            // worker-count floor could push the live set above it "by design".
+            // That floor is gone — the byte cap wins and parallelism degrades
+            // instead — so the live set must now fit the budget outright,
+            // except for the floor-of-one case where a single partial is
+            // larger than the whole budget.
             assert!(
-                live_bytes < 10 * DIPOLE_BAND_BYTES,
+                live_bytes <= budget.max(per_partial_bytes),
                 "live memory {live_bytes} bytes ({:.2} GB) is not bounded by the band budget \
                  — band_width={bw}, per_partial_bytes={per_partial_bytes}",
                 live_bytes as f64 / 1e9
