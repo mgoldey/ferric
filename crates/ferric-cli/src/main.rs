@@ -15,6 +15,7 @@ use ferric_mp2::scs::{scs_mp2, scs_mp2_2terfc, ScsMp2Config, ScsMp2TerfcConfig};
 use ferric_rpa::config::{QuadratureConfig, SternheimerConfig};
 use ferric_rpa::{run_pdep_rpa, PdepRpaConfig};
 use ferric_cc::ccsd::ccsd;
+use ferric_cc::ccsd_closed_shell::ccsd_closed_shell;
 use ferric_cc::CcConfig;
 use ferric_core::parallel::ParallelContext;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
@@ -849,13 +850,32 @@ fn run_ccsd(
         memory_budget_bytes: budget_bytes,
         ..Default::default()
     };
-    let cc_result = ccsd(mol, prep, &dfbs, op, result, &cc_config)
-        .unwrap_or_else(|e| {
-            eprintln!("error: {e}");
-            std::process::exit(1);
-        });
+    // Dispatch on the reference's spin. Both solvers compute the SAME CCSD
+    // energy, but the spin-adapted one works in spatial orbitals (no/nv) rather
+    // than spin orbitals (2no/2nv), so its O(N^6) VVVV block is 16x smaller —
+    // measured ~8-10x faster at cc-pVDZ, and it is the algorithm PySCF's
+    // `cc.CCSD` uses. Routing every closed-shell job through the spin-orbital
+    // path was leaving that on the floor: water/aug-cc-pVDZ was 24.7 s here vs
+    // 1.1 s for PySCF RCCSD, and only ~2.5x of that was implementation.
+    //
+    // `ccsd_closed_shell` requires a restricted reference (it calls `eps_r()`/
+    // `mos_r()`, which assert on `Spin::Restricted`) — but so does the
+    // spin-orbital `ccsd`, so this is a strict upgrade, not a narrowing. The
+    // fallback exists so a future UHF/ROHF-fed CCSD keeps working rather than
+    // silently taking a path that assumes closed shells.
+    let is_closed_shell = matches!(result.spin, ferric_scf::result::Spin::Restricted);
+    let solver: &str = if is_closed_shell { "spin-adapted" } else { "spin-orbital" };
+    let cc_result = if is_closed_shell {
+        ccsd_closed_shell(mol, prep, &dfbs, op, result, &cc_config)
+    } else {
+        ccsd(mol, prep, &dfbs, op, result, &cc_config)
+    }
+    .unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
     println!(
-        "CCSD/{} (aux: {}) on {}",
+        "CCSD/{} (aux: {}, {solver}) on {}",
         bs.name, aux_name, cfg.molecule.xyz
     );
     println!("  nbasis     = {}", prep.nbasis());
