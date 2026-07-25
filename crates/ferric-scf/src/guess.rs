@@ -227,6 +227,16 @@ fn free_atom_density(
                 max_iter: 200,
                 density_conv: 1e-6,
                 use_sad_guess: false,
+                // RI-JK, not exact 4-index. This solve produces a GUESS
+                // ingredient, so the RI fitting error (~1e-5 Ha on an atom,
+                // measured O/cc-pVDZ: -74.79215329 vs -74.79216606) is
+                // irrelevant, while the exact build costs O(nbf^4) in the TARGET
+                // basis and runs SERIALLY (run_serial_pool, one element at a
+                // time). MEASURED on benzene/aug-cc-pVTZ: the single carbon atom
+                // took 1.85 s = 23% of the whole RHF run and 61% of all its
+                // serial time; with RI-JK the whole MINAO guess is 59 ms.
+                df_j_aux: Some(crate::fock_assembly::DEFAULT_JK_AUX.to_string()),
+                df_k_aux: Some(crate::fock_assembly::DEFAULT_JK_AUX.to_string()),
                 ..Default::default()
             };
             solve_rhf(&ctx, &amol, &aprep, op, &abounds, &acfg)
@@ -240,6 +250,9 @@ fn free_atom_density(
                 density_conv: 1e-6,
                 mom_after_iter: 5,
                 use_sad_guess: false,
+                // RI-JK for the same reason as the closed-shell branch above.
+                df_j_aux: Some(crate::fock_assembly::DEFAULT_JK_AUX.to_string()),
+                df_k_aux: Some(crate::fock_assembly::DEFAULT_JK_AUX.to_string()),
                 ..Default::default()
             };
             solve_uhf(&ctx, &amol, &aprep, &abounds, &acfg)

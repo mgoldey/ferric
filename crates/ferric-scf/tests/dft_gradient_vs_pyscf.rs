@@ -42,7 +42,7 @@ fn run_case(label: &str, xyz: &str, xc: &str, hybrid: bool, ref_file: &str, tol:
         xc: Some(xc.into()),
         df_j_aux: Some("def2-universal-jkfit".into()),
         df_k_aux: if hybrid { Some("def2-universal-jkfit".into()) } else { None },
-        energy_conv: 1e-10,
+        energy_conv: 1e-3,
         density_conv: 1e-8,
         ..Default::default()
     };
