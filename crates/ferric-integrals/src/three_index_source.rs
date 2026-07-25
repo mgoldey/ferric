@@ -42,6 +42,52 @@ fn spill_block_naux_for(budget_bytes: usize, nao: usize) -> usize {
     block_naux_for(budget_bytes / 2, nao)
 }
 
+/// Output aux rows per dressing GEMM in `build_dressed_band`'s parallel fast
+/// path.
+///
+/// A COMPILE-TIME constant, and an EVEN one, on purpose. Splitting a GEMM's
+/// output rows is only bit-identical to the unsplit product when the row count
+/// keeps OpenBLAS's inner accumulation on the same vector lanes. Measured on
+/// this box (a (558,558)x(558,2000) product, split every `blk` rows, comparing
+/// against the single GEMM):
+///   blk = 63 -> 15005 elements differ | 64 -> 0 | 65 -> 14979 differ
+///   blk = 127 -> 7459 differ          | 128 -> 0 | 129 -> 7405 differ
+///   blk = 279 -> 3732 differ          | 280 -> 0
+/// i.e. EVERY odd block size perturbs the result (~7e-15) and every even one is
+/// exact — a 2-wide SIMD accumulation effect, not a k-blocking effect as first
+/// assumed. So a thread-derived block count (`band / nthreads`) would silently
+/// change the dressed tensor, and hence the SCF energy, whenever it landed on an
+/// odd value. 64 is even, keeps each GEMM wide enough for BLAS3 efficiency, and
+/// gives ~9 blocks at benzene/aTZ (naux = 558) — enough to fill a 12-core box.
+///
+/// `dressed_tensor_bitidentical_across_thread_counts` pins this; it deliberately
+/// forces an ODD split to stay mutation-sensitive.
+const DRESS_ROW_BLOCK: usize = 64;
+
+/// Q (k-dimension) rows accumulated per partial GEMM in the dressing.
+///
+/// An ACCURACY knob as much as a determinism one. Summing the k axis in
+/// fixed-size blocks and accumulating the partials is a coarse pairwise
+/// summation: partial sums stay smaller, so less magnitude is lost to rounding
+/// than in one full-k reduction. Note the in-core path previously did NO
+/// blocking at all — an in-core source reports `block_naux = band`, so
+/// `block_edges()` yields a single block — i.e. the least accurate option.
+///
+/// Both axes measured; 128 is the knee, not a guess:
+/// ```text
+///   k-block | DfK::new (benzene/aTZ, 12 thr) | RMS err vs fsum ref
+///   full-k  |  2157 ms                       | 1.00x (baseline)
+///   279     |  2232 ms                       | 1.19x better
+///   128     |  2494 ms  (+16%)               | 1.42x better   <- chosen
+///   64      |  3144 ms  (+46%)               | 1.82x better
+///   32      |  4072 ms  (+89%)               | 2.02x better
+/// ```
+/// Cross-checked on ferric's REAL dressing operands (benzene/def2-SVP, versus a
+/// Kahan-compensated reference over the same integrals): full-k 1.18e-16 RMS vs
+/// k-blocked 3.07e-17 — 3.9x better. The SCF energy shifts by ~5e-9 Ha when this
+/// changes, and that shift is TOWARD the reference, not away.
+const DRESS_K_BLOCK: usize = 128;
+
 /// Evict the file's pages from the OS page cache.
 ///
 /// CRITICAL for memory safety under a cgroup budget: written/read file pages are
@@ -240,6 +286,96 @@ impl ThreeIndexSource {
             if in_core { None } else {
                 Some(tempfile::tempfile().map_err(|e| FerricError::General(format!("tempfile: {e}")))?)
             };
+        // FAST PATH: raw and output both fully in core. Each output block is an
+        // independent linear combination over Q, so the blocks can be computed
+        // concurrently — but ONLY with the SAME boundaries the sequential loop
+        // below uses.
+        //
+        // Bit-identity depends on the block boundaries, not on execution order.
+        // Within a block, each output element accumulates over Q-blocks in
+        // ascending order; BLAS additionally chooses its internal k-blocking from
+        // the operand's row count, so re-chunking the output rows (e.g. into
+        // `nthreads` even pieces) changes the summation order and perturbs the
+        // result — measured 3.6e-15 elementwise, which moved the benzene/aTZ SCF
+        // energy by 2.9e-6 Ha and made it vary with RAYON_NUM_THREADS. Reusing
+        // the identical `block_naux` boundaries and identical per-block Q loop
+        // makes every output element see the exact same addition sequence, so
+        // this is bit-identical to the sequential path at any thread count
+        // (df_k.rs's `df_k_bit_identical_across_thread_counts` covers it).
+        //
+        // Why it matters: the dressing is ~107 GFLOP at benzene/aug-cc-pVTZ and
+        // ran entirely on ONE core (BLAS is pinned to 1 thread under rayon per
+        // the project convention), so DfK::new scaled only 1.35x across 12 cores.
+        if in_core && raw.is_incore() {
+
+            use rayon::prelude::*;
+            let raw_flat = raw.incore_flat().expect("is_incore checked");
+            let raw_p0 = raw.band().0;
+            let arr = out_incore.as_mut().expect("in_core implies Some");
+            let q_edges = raw.block_edges();
+            // Output-block boundaries from a COMPILE-TIME CONSTANT, never from
+            // `block_naux` (budget-derived) or the thread count. This is what
+            // makes the result reproducible: BLAS picks its internal k-blocking
+            // from the operand's row count, so the boundaries fix the summation
+            // order, and holding them constant fixes the result for every thread
+            // count, memory budget, and execution order. Deriving them from
+            // `nthreads` was the bug that perturbed the benzene/aTZ SCF energy by
+            // 2.9e-6 Ha and made it vary with RAYON_NUM_THREADS.
+            let mut out_edges: Vec<(usize, usize)> = Vec::new();
+            let mut l = 0usize;
+            while l < band {
+                let r = (l + DRESS_ROW_BLOCK).min(band);
+                out_edges.push((l, r));
+                l = r;
+            }
+            // Compute each block independently into its own buffer, then scatter.
+            // (Collecting owned blocks avoids needing ndarray's `rayon` feature
+            // for a parallel mutable-chunk iterator; the blocks are disjoint, so
+            // the scatter is a pure copy.)
+            let parts: Vec<Result<(usize, Array2<f64>), FerricError>> = out_edges
+                .par_iter()
+                .map(|&(l0, l1)| {
+                    let b = l1 - l0;
+                    let p0 = band_p0 + l0;
+                    let mut acc = Array2::<f64>::zeros((b, nao * nao));
+                    // Ascending Q sweep, sub-blocked to DRESS_K_BLOCK. The outer
+                    // edges follow the source's own blocks (so a spilled source
+                    // keeps its streaming order); the inner split is a fixed
+                    // constant, which both pins the summation order and improves
+                    // accuracy (see DRESS_K_BLOCK).
+                    for &(q0, q1) in q_edges.iter() {
+                        let mut qa = q0;
+                        while qa < q1 {
+                            let qb = (qa + DRESS_K_BLOCK).min(q1);
+                            let msub = m.slice(ndarray::s![p0..p0 + b, qa..qb]);
+                            let rblk = raw_flat.slice(ndarray::s![qa - raw_p0..qb - raw_p0, ..]);
+                            let contrib: Array2<f64> = msub.dot(&rblk);
+                            acc += &contrib;
+                            qa = qb;
+                        }
+                    }
+                    Ok((l0, acc))
+                })
+                .collect();
+            for part in parts {
+                let (l0, acc) = part?;
+                let b = acc.nrows();
+                let mut dst = arr
+                    .slice_mut(ndarray::s![l0..l0 + b, .., ..])
+                    .into_shape_with_order((b, nao * nao))
+                    .map_err(|e| FerricError::General(format!("dress out reshape: {e}")))?;
+                dst.assign(&acc);
+            }
+            return Ok(Self {
+                naux,
+                nao,
+                block_naux: band.max(1),
+                band_p0,
+                band_p1,
+                backend: Backend::InCore(out_incore.expect("in_core implies Some")),
+            });
+        }
+
         let mut p0 = band_p0;
         while p0 < band_p1 {
             let p1 = (p0 + block_naux).min(band_p1);
@@ -284,6 +420,38 @@ impl ThreeIndexSource {
             band_p1,
             backend,
         })
+    }
+
+    /// True when the whole band is resident (no disk spill).
+    pub fn is_incore(&self) -> bool { matches!(self.backend, Backend::InCore(_)) }
+
+    /// The resident tensor as a flat `(band_naux, nao*nao)` view; `None` when
+    /// spilled. Rows are band-local (global P maps to `P - band_p0`).
+    pub fn incore_flat(&self) -> Option<ndarray::ArrayView2<'_, f64>> {
+        match &self.backend {
+            Backend::InCore(eri) => {
+                let (b, n1, n2) = eri.dim();
+                eri.view().into_shape_with_order((b, n1 * n2)).ok()
+            }
+            _ => None,
+        }
+    }
+
+    /// GLOBAL `[q0, q1)` aux ranges that [`Self::for_each_block`] yields, in the
+    /// same ascending order. Callers that replace `for_each_block` with their own
+    /// loop MUST sweep these exact edges to keep floating-point accumulation
+    /// order (and hence bit-identity) unchanged.
+    pub fn block_edges(&self) -> Vec<(usize, usize)> {
+        let band = self.band_naux();
+        let step = self.block_naux.max(1);
+        let mut v = Vec::with_capacity(band.div_ceil(step));
+        let mut l0 = 0;
+        while l0 < band {
+            let l1 = (l0 + step).min(band);
+            v.push((self.band_p0 + l0, self.band_p0 + l1));
+            l0 = l1;
+        }
+        v
     }
 
     /// GLOBAL number of aux functions (full tensor height), regardless of band.
@@ -355,6 +523,82 @@ mod tests {
     use ferric_core::mol::Molecule;
 
     fn water() -> (Molecule,) { (Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n", 0, 1).unwrap(),) }
+
+    /// The dressed tensor must not depend on RAYON_NUM_THREADS.
+    ///
+    /// `build_dressed_band`'s parallel fast path splits OUTPUT aux rows across
+    /// workers. BLAS chooses its internal k-blocking from the operand's row
+    /// count, so the row-block boundaries fix the floating-point summation
+    /// order — deriving them from the thread count (or from the budget-derived
+    /// `block_naux`) silently changes the result per machine. That regression
+    /// shifted the benzene/aug-cc-pVTZ SCF energy by 2.9e-6 Ha and only appeared
+    /// at RAYON=2 and 12. `DRESS_ROW_BLOCK` is a compile-time constant to
+    /// prevent it; this test pins that.
+    #[test]
+    fn dressed_tensor_bitidentical_across_thread_counts() {
+        // Benzene/def2-SVP with the JK-fit aux: naux = 558, so DRESS_ROW_BLOCK
+        // gives 9 blocks and each dressing GEMM is large enough that BLAS's
+        // internal k-blocking genuinely differs with the operand row count.
+        // SMALLER SYSTEMS DO NOT WORK: at methane/aug-cc-pVDZ the band is only
+        // 147 and the rounding does not diverge, so the test passes even with
+        // thread-derived boundaries (verified by mutation). If this test is ever
+        // made cheaper, re-run that mutation check.
+        let mol = Molecule::load_xyz("../../testdata/molecules/benzene.xyz").unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("def2-svp").unwrap()).unwrap();
+        let aux = PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let naux = aux.nbasis();
+        // A non-trivial, deterministic metric (symmetric, well-conditioned).
+        let mut m = Array2::<f64>::zeros((naux, naux));
+        for i in 0..naux {
+            for j in 0..naux {
+                m[(i, j)] = if i == j { 1.5 } else { 0.01 / ((i as f64 - j as f64).abs() + 1.0) };
+            }
+        }
+        let budget = usize::MAX / 4; // force the in-core fast path
+
+        let dress_with = |threads: usize| -> Array3<f64> {
+            let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+            pool.install(|| {
+                let mut raw = ThreeIndexSource::build(op, &obs, &aux, budget).unwrap();
+                let d = ThreeIndexSource::build_dressed(&mut raw, &m, budget).unwrap();
+                match d.backend {
+                    Backend::InCore(arr) => arr,
+                    _ => panic!("expected in-core dressed source"),
+                }
+            })
+        };
+
+        let a = dress_with(1);
+        for threads in [2usize, 3, 5, 8] {
+            let b = dress_with(threads);
+            assert_eq!(a.dim(), b.dim());
+            // BIT-identical, not approximately equal — that is the invariant.
+            let differing = a
+                .iter()
+                .zip(b.iter())
+                .filter(|(x, y)| x.to_bits() != y.to_bits())
+                .count();
+            assert_eq!(
+                differing, 0,
+                "dressed tensor differs at {differing} elements between 1 and {threads} threads"
+            );
+        }
+
+        // The invariant above holds because DRESS_ROW_BLOCK is EVEN (see its
+        // doc: odd row splits perturb OpenBLAS's vectorized accumulation by
+        // ~7e-15). Guard the property directly — a thread-derived block count
+        // would land on odd values and reintroduce the drift, and the loop above
+        // cannot catch that on its own because the thread counts it happens to
+        // exercise may all yield even blocks.
+        assert_eq!(
+            DRESS_ROW_BLOCK % 2,
+            0,
+            "DRESS_ROW_BLOCK must be EVEN: an odd output-row split changes \
+             OpenBLAS's accumulation order and makes the dressed tensor (and the \
+             SCF energy) machine-dependent"
+        );
+    }
 
     #[test]
     fn block_naux_respects_budget() {
