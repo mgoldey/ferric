@@ -29,6 +29,22 @@ pub struct RiMp2Config {
     /// it (env override > auto 0.8×RAM > 2 GiB). `Some(bytes)` forces the ceiling
     /// unless an env override wins.
     pub memory_budget_bytes: Option<usize>,
+    /// EXPERIMENTAL (attenuated-fitting-metric spike): operator for the 2-center
+    /// RI fitting metric `(P|w|Q)`, DECOUPLED from the physical operator used for
+    /// the 3-index integrals `(P|w_phys|μν)`.
+    ///
+    /// `None` (default) → the metric uses the same operator as the physical
+    /// integrals, i.e. exactly the standard RI factorization and a byte-identical
+    /// code path to before this field existed.
+    ///
+    /// `Some(w_met)` → the energy becomes
+    /// `Σ (ia|w_phys|P) [V_{w_met}^{-1}]_PQ (Q|w_phys|jb)`, which is NOT a
+    /// variational Coulomb fit: attenuating only the metric introduces a
+    /// controlled fitting bias (Ochsenfeld-style attenuated DF). The premise
+    /// under test is that a short-ranged `V` is sparse/banded while the bias
+    /// stays under the pre-existing RI error. Do not enable in production paths
+    /// until the error gate in `benchmarks/metric-attenuation/` passes.
+    pub metric_op: Option<Operator>,
 }
 
 /// Number of active (correlated) occupied orbitals after freezing
@@ -312,6 +328,215 @@ pub fn stream_dressed_mo_band(
 ///
 /// Note: `E_OS + E_SS = sum_{ijab} (ia|jb)[2(ia|jb)-(ib|ja)] / D_{ijab}` which is
 /// the standard MP2 expression.
+/// RI-MP2 with a ROBUST (Dunlap) fit under an ATTENUATED fitting metric.
+///
+/// EXPERIMENTAL — attenuated-fitting-metric spike. See
+/// `docs/superpowers/specs/2026-07-25-attenuated-ri-fitting-metric-design.md`.
+///
+/// # Why this exists (and why the naive version does not work)
+///
+/// Naively swapping the Coulomb metric for an attenuated one — i.e. evaluating
+/// `J^T V_w^{-1} J` with Coulomb `J` — DIVERGES: `V_w` is small, so `V_w^{-1}`
+/// blows up and nothing cancels it. Measured on 2 non-interacting waters
+/// (cc-pVDZ): the correlation energy grows monotonically to 95x the correct
+/// value at `omega_m = 2.0`, tracking a `1/lambda` model.
+///
+/// The robust fit fixes this. Fit the product density in the aux basis using
+/// the ATTENUATED metric and ATTENUATED 3-index integrals,
+/// ```text
+///     c^ia_P = sum_Q [V_w^{-1}]_PQ (Q|w|ia)
+/// ```
+/// then evaluate the Coulomb interaction in the symmetric Dunlap form
+/// ```text
+///     (ia|1/r|jb) ~ (rho~_ia|C|rho_jb) + (rho_ia|C|rho~_jb) - (rho~_ia|C|rho~_jb)
+///                 = c^ia . J^jb  +  J^ia . c^jb  -  c^ia . V_C . c^jb
+/// ```
+/// where `J^ia_P = (P|1/r|ia)` is the COULOMB 3-index tensor and `V_C` the
+/// COULOMB 2-center metric. The error is SECOND order in the fit residual
+/// `delta = rho - rho~` (the non-robust form is first order), and the
+/// `- c V_C c` term is precisely the compensation the naive substitution omits.
+///
+/// This is NOT free: the robust error still grows as the metric is attenuated
+/// (verified on a PSD toy model: bounded, but rising as `V_w` shrinks). Whether
+/// it stays under the pre-existing RI error is exactly what the gate measures.
+///
+/// # Cost
+///
+/// Builds BOTH the Coulomb and attenuated 3-index MO tensors and forms the
+/// `(nocc*nvir)^2` matrix `G` explicitly, so it is materially more expensive and
+/// more memory-hungry than the standard path. It is a MEASUREMENT vehicle for
+/// the error gate, not a production route — a production version would exploit
+/// the banded `V_w` that motivates the whole idea.
+pub fn ri_mp2_robust_attenuated_metric(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    metric_op: Operator,
+    rhf: &ScfResult,
+    config: &RiMp2Config,
+) -> Result<SpinComponents, FerricError> {
+    let nbas = obs.nbasis();
+    let nelec = mol.nelec() as usize;
+    let nocc_total = nelec / 2;
+    let nocc = active_occ(nocc_total, config.frozen_core)?;
+    let first_occ = config.frozen_core;
+    let nvir = nbas - nocc_total;
+    let eps = rhf.eps_r();
+    let c = rhf.mos_r();
+
+    let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
+    let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
+
+    let naux = dfbs.nbasis();
+    let identity = Array2::<f64>::eye(naux);
+    let budget_bytes = eri3_budget_bytes(config.memory_budget_bytes);
+
+    // Raw (undressed) MO 3-index tensors for BOTH kernels: J (Coulomb, the
+    // physical operator) and A (attenuated, matching the fitting metric).
+    // Identity dressing => stream_dressed_mo_band returns the raw transform.
+    //
+    // `J` and `V_C` do NOT depend on metric_op. A sweep over many omega_m should
+    // build them once and call
+    // [`ri_mp2_robust_attenuated_metric_with`] instead of paying for them per
+    // point (8x redundant on the gate's omega_m grid).
+    let mut src_c = ThreeIndexSource::build(op, obs, dfbs, budget_bytes)?;
+    let j_ov = stream_dressed_mo_band(&mut src_c, &identity, &c_occ, &c_vir, None)?;
+    let v_c = threeindex::coulomb_metric_2c(op, dfbs)?;
+
+    let mut src_a = ThreeIndexSource::build(metric_op, obs, dfbs, budget_bytes)?;
+    let a_ov = stream_dressed_mo_band(&mut src_a, &identity, &c_occ, &c_vir, None)?;
+
+    // Fit coefficients c = V_w^{-1} A.
+    //
+    // NOTE: do NOT build this from `metric_inverse_sqrt`. For positive-definite
+    // kernels that returns the CHOLESKY factor `L^{-1}` (lower-triangular), not a
+    // symmetric square root — see its doc. The standard B-tensor path only ever
+    // forms `B^T B = J^T (L^{-1})^T L^{-1} J = J^T V^{-1} J`, where the asymmetry
+    // cancels; applying it twice as if symmetric does NOT give `V^{-1}` and is
+    // wrong by orders of magnitude (caught by the robust@Coulomb self-consistency
+    // check: 8e2 Ha). The robust form needs `V_w^{-1}` explicitly, so solve.
+    //
+    // A factorization failure here is a REAL "this omega_m is unusable" signal
+    // (attenuated metric lost rank in a Coulomb-optimized aux basis) and
+    // propagates as an error rather than being silently regularized.
+    use ndarray_linalg::Inverse;
+    let v_w = threeindex::coulomb_metric_2c(metric_op, dfbs)?;
+    let v_w_inv = with_blas_threads(opt_in_blas_threads(), || v_w.inv())
+        .map_err(|e| FerricError::Lapack(format!("inverting attenuated metric V_w: {e}")))?;
+    let coef = v_w_inv.dot(&a_ov); // (naux, nov)
+
+    // G = c^T J + J^T c - c^T V_C c   (symmetric by construction)
+    let cj = coef.t().dot(&j_ov);
+    let cvc = coef.t().dot(&v_c.dot(&coef));
+    let mut g = &cj + &cj.t();
+    g -= &cvc;
+
+    Ok(spin_components_from_g(&g, eps, nocc, nvir, first_occ, nocc_total))
+}
+
+/// Sweep-friendly [`ri_mp2_robust_attenuated_metric`]: takes the
+/// `metric_op`-INDEPENDENT pieces (`j_ov`, `v_c`, MO slices) precomputed, so a
+/// scan over many `omega_m` builds the Coulomb 3-index MO tensor and Coulomb
+/// 2-center metric ONCE instead of once per point.
+///
+/// Same math and same failure semantics as the all-in-one entry point; see its
+/// doc for the robust-fit derivation and the `metric_inverse_sqrt` trap.
+#[allow(clippy::too_many_arguments)]
+pub fn ri_mp2_robust_attenuated_metric_with(
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    metric_op: Operator,
+    j_ov: &Array2<f64>,
+    v_c: &Array2<f64>,
+    c_occ: &Array2<f64>,
+    c_vir: &Array2<f64>,
+    eps: &[f64],
+    nocc: usize,
+    nvir: usize,
+    first_occ: usize,
+    nocc_total: usize,
+    config: &RiMp2Config,
+) -> Result<SpinComponents, FerricError> {
+    use ndarray_linalg::Inverse;
+
+    let naux = dfbs.nbasis();
+    let identity = Array2::<f64>::eye(naux);
+    let budget_bytes = eri3_budget_bytes(config.memory_budget_bytes);
+
+    let mut src_a = ThreeIndexSource::build(metric_op, obs, dfbs, budget_bytes)?;
+    let a_ov = stream_dressed_mo_band(&mut src_a, &identity, c_occ, c_vir, None)?;
+
+    let v_w = threeindex::coulomb_metric_2c(metric_op, dfbs)?;
+    let v_w_inv = with_blas_threads(opt_in_blas_threads(), || v_w.inv())
+        .map_err(|e| FerricError::Lapack(format!("inverting attenuated metric V_w: {e}")))?;
+    let coef = v_w_inv.dot(&a_ov);
+
+    let cj = coef.t().dot(j_ov);
+    let cvc = coef.t().dot(&v_c.dot(&coef));
+    let mut g = &cj + &cj.t();
+    g -= &cvc;
+
+    Ok(spin_components_from_g(&g, eps, nocc, nvir, first_occ, nocc_total))
+}
+
+/// The `metric_op`-independent inputs [`ri_mp2_robust_attenuated_metric_with`]
+/// needs: the Coulomb 3-index MO tensor and the Coulomb 2-center metric.
+pub fn robust_fit_coulomb_parts(
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    c_occ: &Array2<f64>,
+    c_vir: &Array2<f64>,
+    config: &RiMp2Config,
+) -> Result<(Array2<f64>, Array2<f64>), FerricError> {
+    let naux = dfbs.nbasis();
+    let identity = Array2::<f64>::eye(naux);
+    let budget_bytes = eri3_budget_bytes(config.memory_budget_bytes);
+    let mut src_c = ThreeIndexSource::build(op, obs, dfbs, budget_bytes)?;
+    let j_ov = stream_dressed_mo_band(&mut src_c, &identity, c_occ, c_vir, None)?;
+    let v_c = threeindex::coulomb_metric_2c(op, dfbs)?;
+    Ok((j_ov, v_c))
+}
+
+/// MP2 spin components from an explicit `(ia|jb)` matrix of shape
+/// `(nocc*nvir, nocc*nvir)`, rather than from a `B` tensor whose `B^T B` implies
+/// it. Needed by the robust-fit path, whose three-term `G` is not a Gram product.
+///
+/// Same energy expressions and same `i<=j` unique-pair weighting as
+/// [`spin_components_from_b_ov`]; only the source of `(ia|jb)` differs.
+pub fn spin_components_from_g(
+    g: &Array2<f64>,
+    eps: &[f64],
+    nocc: usize,
+    nvir: usize,
+    first_occ: usize,
+    nocc_total: usize,
+) -> SpinComponents {
+    let mut e_os = 0.0;
+    let mut e_ss = 0.0;
+    for i in 0..nocc {
+        let e_i = eps[first_occ + i];
+        for j in i..nocc {
+            let e_j = eps[first_occ + j];
+            // Off-diagonal (i,j) pairs stand in for their (j,i) mirror.
+            let fac = if i == j { 1.0 } else { 2.0 };
+            for a in 0..nvir {
+                let e_a = eps[nocc_total + a];
+                for b in 0..nvir {
+                    let e_b = eps[nocc_total + b];
+                    let d = e_i + e_j - e_a - e_b;
+                    let iajb = g[(i * nvir + a, j * nvir + b)];
+                    let ibja = g[(i * nvir + b, j * nvir + a)];
+                    e_os += fac * iajb * iajb / d;
+                    e_ss += fac * iajb * (iajb - ibja) / d;
+                }
+            }
+        }
+    }
+    SpinComponents { e_os, e_ss, e_total: e_os + e_ss }
+}
+
 pub fn ri_mp2_spin_components(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -332,9 +557,19 @@ pub fn ri_mp2_spin_components(
     let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
     let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
 
-    // (P|Q) metric and V^{-1/2}
-    let v2c = threeindex::coulomb_metric_2c(op, dfbs)?;
-    let v2c_inv_sqrt = metric_inverse_sqrt(&v2c, op)?;
+    // (P|Q) metric and V^{-1/2}.
+    //
+    // `metric_op` decouples the FITTING metric from the PHYSICAL operator (see
+    // RiMp2Config::metric_op). `None` → `op`, so this is the standard RI
+    // factorization and byte-identical to the pre-spike path. A Cholesky failure
+    // under an attenuated metric is a REAL "this ω_m is unusable" signal (the
+    // metric has lost rank in a Coulomb-optimized aux basis) and must stay loud —
+    // metric_inverse_sqrt only routes provably-indefinite kernels (erf/terf) to
+    // regularized eigh, so an erfc/Yukawa failure propagates as an error rather
+    // than being silently regularized into a quietly-wrong number.
+    let met_op = config.metric_op.unwrap_or(op);
+    let v2c = threeindex::coulomb_metric_2c(met_op, dfbs)?;
+    let v2c_inv_sqrt = metric_inverse_sqrt(&v2c, met_op)?;
 
     // Stream raw (P|mu nu) aux-blocks from a budgeted ThreeIndexSource and
     // dress each block with V^{-1/2} on the fly via the canonical streamer
@@ -1305,7 +1540,7 @@ mod tests {
         let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
 
         // Build the dressed b_ov intermediate exactly as ri_mp2_spin_components does.
-        let cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
+        let cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() };
         let inter = compute_mp2_intermediates(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
         let b_ov = &inter.b_ov;
         let nocc = inter.nocc;
@@ -1381,7 +1616,7 @@ mod tests {
         let ctx = ParallelContext::default();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
-        let cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
+        let cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() };
 
         let (sc_ref, _) = ri_mp2_spin_components(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
         let sc_ein = ri_mp2_einsum(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
@@ -1404,10 +1639,10 @@ mod tests {
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
         let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
 
-        let cfg = RiMp2Config { frozen_core: 2, memory_budget_bytes: None };
+        let cfg = RiMp2Config { frozen_core: 2, memory_budget_bytes: None, ..Default::default() };
         let res = ri_mp2(&mol, &obs, &dfbs, op, &rhf, &cfg);
         assert!(res.is_err(), "frozen_core > nocc must be an error, got {res:?}");
-        let cfg_all = RiMp2Config { frozen_core: 1, memory_budget_bytes: None };
+        let cfg_all = RiMp2Config { frozen_core: 1, memory_budget_bytes: None, ..Default::default() };
         let res_all = ri_mp2(&mol, &obs, &dfbs, op, &rhf, &cfg_all);
         assert!(res_all.is_err(), "freezing every occupied orbital must be an error, got {res_all:?}");
     }

@@ -274,6 +274,7 @@ mod inner {
         let mp2_cfg = RiMp2Config {
             frozen_core: config.frozen_core,
             memory_budget_bytes: config.memory_budget_bytes,
+            ..Default::default()
         };
         let inter = compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
         let b_ov = &inter.b_ov;

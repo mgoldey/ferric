@@ -229,7 +229,7 @@ pub fn run_pdep_rpa_osv(
     use crate::lanczos;
     use ferric_mp2::rimp2::{compute_rpa_intermediates, RiMp2Config};
 
-    let mp2_cfg = RiMp2Config { frozen_core: config.frozen_core, memory_budget_bytes: config.memory_budget_bytes };
+    let mp2_cfg = RiMp2Config { frozen_core: config.frozen_core, memory_budget_bytes: config.memory_budget_bytes, ..Default::default() };
     let inter = compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
 
     let dnv = build_dnv_transform(&inter, rhf.eps_r(), t_osv)?;
@@ -307,7 +307,7 @@ mod tests {
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
         let inter = compute_rpa_intermediates(
-            &mol, &obs, &dfbs, op, &rhf, &RiMp2Config { frozen_core: 0, memory_budget_bytes: None },
+            &mol, &obs, &dfbs, op, &rhf, &RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() },
         ).unwrap();
         (inter, rhf.eps_r().to_vec())
     }

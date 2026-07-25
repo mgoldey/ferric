@@ -675,7 +675,7 @@ fn run_rimp2(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
         return Err(make_err(ferric_core::FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy }));
     }
     let mp2 = ri_mp2(&mol.inner, &prep, &dfbs, op, &rhf,
-                      &RiMp2Config { frozen_core: frozen_core.unwrap_or(0), memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb) }).map_err(make_err)?;
+                      &RiMp2Config { frozen_core: frozen_core.unwrap_or(0), memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb), ..Default::default() }).map_err(make_err)?;
     Ok(PyRiMp2Result { total_energy: mp2.total_energy, rhf_energy: rhf.energy, mp2_corr: mp2.mp2_corr })
 }
 
@@ -876,7 +876,7 @@ fn run_terfc_rimp2(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisS
     // r0 supplied in Å; convert to Bohr for the operator.
     let r0_bohr = r0.unwrap_or(1.05) * 1.8897259886;
     let mp2 = ri_mp2(&mol.inner, &prep, &dfbs, Operator::terfc(r0_bohr), &rhf,
-                      &RiMp2Config { frozen_core: frozen_core.unwrap_or(0), memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb) }).map_err(make_err)?;
+                      &RiMp2Config { frozen_core: frozen_core.unwrap_or(0), memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb), ..Default::default() }).map_err(make_err)?;
     Ok(PyRiMp2Result { total_energy: mp2.total_energy, rhf_energy: rhf.energy, mp2_corr: mp2.mp2_corr })
 }
 

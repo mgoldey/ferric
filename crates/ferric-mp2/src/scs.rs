@@ -63,7 +63,7 @@ pub fn scs_mp2(
     rhf: &ScfResult,
     config: &ScsMp2Config,
 ) -> Result<ScsMp2Result, FerricError> {
-    let ri_config = RiMp2Config { frozen_core: config.frozen_core, memory_budget_bytes: config.memory_budget_bytes };
+    let ri_config = RiMp2Config { frozen_core: config.frozen_core, memory_budget_bytes: config.memory_budget_bytes, ..Default::default() };
     let (sc, _) = ri_mp2_spin_components(mol, obs, dfbs, Operator::coulomb(), rhf, &ri_config)?;
     let scs_corr = config.c_os * sc.e_os + config.c_ss * sc.e_ss;
     Ok(ScsMp2Result {
@@ -121,7 +121,7 @@ pub fn scs_mp2_2terfc(
     config: &ScsMp2TerfcConfig,
 ) -> Result<ScsMp2Result, FerricError> {
     assert!(config.r0_nonbonded > config.r0_bonded, "r0(2) must be > r0(1)");
-    let ri_config = RiMp2Config { frozen_core: config.frozen_core, memory_budget_bytes: config.memory_budget_bytes };
+    let ri_config = RiMp2Config { frozen_core: config.frozen_core, memory_budget_bytes: config.memory_budget_bytes, ..Default::default() };
 
     // Spin components at r0(1) (bonded, shorter range) via exact terfc.
     let (sc1, _) =
