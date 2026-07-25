@@ -34,12 +34,65 @@
 //! |---|---|---|
 //! | total | 4.48 s | 0.025 s |
 //!
-//! Profiling the rewritten path shows libint2 quartet evaluation is ~99% of
-//! the remaining wall time; the four quarter transforms are ~1% and the energy
-//! contraction ~0.03%. Further gains must come from the integral engine (or
-//! from screening), not from the MP2 algebra. PySCF's `mp.MP2` is still ~17x
-//! faster here (0.002 s) because its `ao2mo` never materialises `nbas^4` and
-//! runs a tuned C kernel with integral screening.
+//! ## Where the remaining time goes (measured 2026-07-25, ethane/cc-pVDZ)
+//!
+//! | stage | time | share |
+//! |---|---|---|
+//! | libint2 `compute_quartet` (raw FFI loop) | 0.37 s | ~71% |
+//! | 8-way scatter into the dense `nbas^4` buffer | ~0.06 s | ~12% |
+//! | four quarter transforms + energy | ~0.09 s | ~17% |
+//!
+//! An earlier note here claimed libint2 was ~99% of wall time; that measurement
+//! folded the scatter and the wrapper copy into the "ERI build" stage. libint2
+//! itself is ~71%, and the rest is memory traffic over the dense buffer.
+//!
+//! ### The `compute_quartet` wrapper copy is NOT worth removing (measured)
+//!
+//! `Engine::compute_quartet` zero-fills its buffer and then runs a scalar
+//! `buf[i] += coeff * scratch[i]` accumulate on every call, even for a single
+//! unit-coefficient Coulomb handle where it reduces to a plain copy. Removing
+//! both (shim writes straight into `buf`) was implemented and A/B'd against a
+//! one-component composite control that computes the SAME integrals through the
+//! general accumulate loop: **0.98x on water and ethane/cc-pVDZ** -- i.e. no
+//! effect outside run-to-run noise. libint2's quartet evaluation so dominates
+//! per-call cost that the fill+copy is invisible. Reverted rather than kept:
+//! it added a second unsafe FFI write path for zero measured gain. Do not
+//! re-propose without a profile showing the copy is material.
+//!
+//! ### Screening does NOT help at these sizes (measured, negative result)
+//!
+//! Schwarz bounds prune **0.0%** of the canonical quartet list for
+//! water/methane/ethane at cc-pVDZ, all the way up to a 1e-8 threshold (ethane
+//! loses 27 of 108345 quartets = 0.02% of AO-element cost at 1e-8, and nothing
+//! at 1e-9 or tighter). These molecules are small and compact enough that every
+//! shell pair overlaps every other, so no bound falls below threshold. Wiring
+//! `SchwarzBounds` in here would add per-quartet bound lookups and prune
+//! nothing. Screening only pays past the locality crossover (~naphthalene for
+//! this repo's other screened paths). This lane is closed for reference-sized
+//! systems.
+//!
+//! ### The PySCF comparison was warm-vs-cold, not a real gap
+//!
+//! `mp.MP2` appearing ~15x faster (0.033 s vs ferric 0.52 s on ethane) is an
+//! artefact: PySCF's `scf.RHF` **caches the full AO ERI tensor in `mf._eri`**
+//! during the SCF, and `mp.MP2` reuses it, so the timed region builds no
+//! integrals at all. `mol.intor("int2e")` alone costs 0.146 s on ethane --
+//! already 4x the "total MP2 time". Forcing PySCF to build its own integrals
+//! (`mf._eri = None`) gives the apples-to-apples number:
+//!
+//! | system | ferric | PySCF (cold, builds own ERIs) | PySCF (warm, reuses SCF's) |
+//! |---|---|---|---|
+//! | methane/cc-pVDZ | 0.067 s | 0.101 s | 0.004 s |
+//! | ethane/cc-pVDZ  | 0.522 s | 0.691 s | 0.033 s |
+//!
+//! So ferric is already **faster than PySCF** at the same task. The remaining
+//! structural difference is storage, not kernel speed: PySCF keeps the
+//! 8-fold-symmetry-packed `s8` form (1.46e6 doubles for ethane) while this path
+//! expands to a dense `nbas^4` buffer (1.13e7 doubles, 7.7x more) -- the same
+//! unique integrals, scattered wider. Adopting `s8` packing would cut the
+//! scatter and buffer traffic (~12% of wall time here) at the cost of packed
+//! indexing in the first quarter transform; it would not reduce libint2 work,
+//! which is the ~71% floor. Not attempted -- see the git history for this note.
 
 use crate::rimp2::active_occ;
 use ferric_core::mol::Molecule;

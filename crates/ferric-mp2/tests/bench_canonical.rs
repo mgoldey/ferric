@@ -25,6 +25,25 @@
 //! on the old path (the larger ones were impractically slow to run 3x).
 //! Correlation energies are unchanged to ~1e-10 (RHF-convergence-limited) and
 //! agree with PySCF on every system.
+//!
+//! ## The "PySCF" column above is NOT comparable (corrected 2026-07-25)
+//!
+//! Those PySCF times were `mp.MP2(mf).kernel()` on an `mf` whose SCF had
+//! already cached the full AO ERI tensor in `mf._eri`. `mp.MP2` reuses that
+//! cache, so the timed region builds **no integrals at all**, while
+//! `canonical_mp2` builds every one from scratch. Evidence: on ethane,
+//! `mol.intor("int2e")` alone is 0.146 s -- 4x the 0.035 s "total MP2 time".
+//!
+//! Forcing PySCF to build its own (`mf._eri = None`), same box, same
+//! OPENBLAS/OMP/MKL=1 pinning:
+//!
+//! | system | ferric | PySCF cold (builds ERIs) | PySCF warm (reuses SCF's) |
+//! |---|---|---|---|
+//! | methane/cc-pVDZ | 0.067 s | 0.101 s | 0.004 s |
+//! | ethane/cc-pVDZ  | 0.522 s | 0.691 s | 0.033 s |
+//!
+//! Like for like, ferric is already ahead. Keep the distinction in mind before
+//! quoting a "PySCF is Nx faster" number off this file.
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
