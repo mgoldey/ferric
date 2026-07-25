@@ -10,6 +10,7 @@ pub mod ccd;
 pub mod ccsd;
 pub mod ccsd_closed_shell;
 pub mod ccsd_t;
+pub mod ccsd_t_closed_shell;
 pub mod helpers;
 
 pub struct CcConfig {
