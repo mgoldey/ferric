@@ -533,7 +533,12 @@ mod tests {
     /// amplitudes, so any difference is the (T) formulation itself and not the
     /// two CCSD solvers' differing RI accumulation.
     fn both_t(s: &Setup) -> (f64, f64) {
-        let cfg = cc_cfg();
+        both_t_with(s, cc_cfg())
+    }
+
+    /// [`both_t`] with a caller-supplied config, so the frozen-core path can be
+    /// held against the same spin-orbital oracle.
+    fn both_t_with(s: &Setup, cfg: CcConfig) -> (f64, f64) {
         let r_cs = ccsd_closed_shell(&s.mol, &s.obs, &s.dfbs, s.op, &s.rhf, &cfg).unwrap();
         let t_new =
             ccsd_t_closed_shell(&s.mol, &s.obs, &s.dfbs, s.op, &s.rhf, &r_cs, &cfg).unwrap();
@@ -571,6 +576,46 @@ mod tests {
         assert!(
             diff < 1e-9,
             "closed-shell (T) = {t_new:.12} disagrees with spin-orbital (T) = {t_old:.12} by {diff:.3e}"
+        );
+    }
+
+    /// **Frozen core.** Production CCSD(T) almost always freezes core orbitals,
+    /// and `first_occ = cfg.frozen_core` shifts every occupied index AND the
+    /// multiplicity bookkeeping — an off-by-one there would be silent, since the
+    /// energy would still look like a plausible triples correction.
+    ///
+    /// Held against the same spin-orbital oracle as the all-electron gate. Note
+    /// the two implementations index the frozen window differently (spatial
+    /// `first_occ..nocc_total` vs spin-orbital `2*first_occ..`), so this is a
+    /// real cross-check, not a tautology.
+    ///
+    /// Added on review of the closed-shell (T) work: the original submission
+    /// noted frozen_core as compiled-but-untested.
+    #[test]
+    fn closed_shell_t_matches_spin_orbital_t_with_frozen_core() {
+        let s = setup(H2O, "cc-pvdz");
+        // Water has 5 occupied spatial orbitals; freeze the O 1s.
+        let cfg = CcConfig { frozen_core: 1, max_iter: 100, energy_conv: 1e-10, ..Default::default() };
+        let (t_old, t_new) = both_t_with(&s, cfg);
+        let diff = (t_old - t_new).abs();
+        println!(
+            "H2O/cc-pVDZ frozen_core=1 (T): spin-orbital = {t_old:.12}, \
+             closed-shell = {t_new:.12}, diff = {diff:.3e}"
+        );
+        assert!(t_new < -1e-4, "(T) = {t_new:.12} is not a plausible triples energy");
+        assert!(
+            diff < 1e-9,
+            "frozen-core closed-shell (T) = {t_new:.12} disagrees with spin-orbital \
+             (T) = {t_old:.12} by {diff:.3e}"
+        );
+
+        // Freezing a core orbital must actually CHANGE the answer — otherwise
+        // this test would pass even if frozen_core were silently ignored.
+        let (_, t_all) = both_t(&s);
+        assert!(
+            (t_all - t_new).abs() > 1e-6,
+            "frozen-core (T) ({t_new:.12}) is indistinguishable from all-electron \
+             ({t_all:.12}) — frozen_core may be ignored entirely"
         );
     }
 
