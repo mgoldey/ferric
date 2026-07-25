@@ -234,6 +234,49 @@ def analyze(basis, form, want, verbose=True):
     return pts, best_x, best_y, interior
 
 
+def suggest(pts, best_x, interior, n=5, halfwidth=0.10):
+    """Propose the next r0 points to run, informed by the current spline.
+
+    Two regimes, because they need opposite things:
+
+    * **Interior minimum** — the bracket is known, so refine INSIDE it: `n`
+      points spanning `best_x ± halfwidth`, clipped to stay strictly inside the
+      sampled range (extrapolating a cubic past its data is not evidence).
+      Points already within half a step of an existing sample are dropped —
+      re-running them buys nothing.
+    * **Boundary minimum** — the optimum is outside the sampled range, so
+      EXTEND in that direction by one grid step at a time rather than refining
+      a minimum we have not actually bracketed yet.
+    """
+    xs = sorted(p[0] for p in pts)
+    step = min(b - a for a, b in zip(xs, xs[1:])) if len(xs) > 1 else halfwidth
+
+    if not interior:
+        # Walk outward from whichever edge holds the minimum.
+        if best_x <= xs[0]:
+            out = [round(xs[0] - step * k, 3) for k in range(1, n + 1)]
+            return [x for x in out if x > 0]
+        return [round(xs[-1] + step * k, 3) for k in range(1, n + 1)]
+
+    lo, hi = max(xs[0], best_x - halfwidth), min(xs[-1], best_x + halfwidth)
+    if hi <= lo:
+        return []
+    cand = [lo + (hi - lo) * i / (n - 1) for i in range(n)] if n > 1 else [best_x]
+    # "Already sampled" must be judged against the REFINEMENT spacing, not the
+    # existing coarse spacing: with a 0.25 coarse grid and a +/-0.10 window,
+    # a step/2 = 0.125 exclusion radius rejects the entire window and returns
+    # nothing. Use half the new spacing instead, floored so we never dedupe
+    # away points that are genuinely new information.
+    fine = (hi - lo) / max(n - 1, 1)
+    tol = min(step, fine) / 2
+    keep = []
+    for c in cand:
+        c = round(c, 3)
+        if all(abs(c - x) > tol for x in xs) and all(abs(c - k) > 1e-9 for k in keep):
+            keep.append(c)
+    return keep
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -241,9 +284,27 @@ def main():
     ap.add_argument("--basis", default="aqz")
     ap.add_argument("--systems", default="",
                     help="comma A24 indices (default: all complete at some r0)")
+    ap.add_argument("--suggest", action="store_true",
+                    help="propose the next r0 points from the current spline")
+    ap.add_argument("--n-suggest", type=int, default=5)
+    ap.add_argument("--halfwidth", type=float, default=0.10,
+                    help="refinement window half-width in Angstrom (interior case)")
+    ap.add_argument("--toml", action="store_true",
+                    help="emit the suggestion as a [mp2] r0_sweep line")
     a = ap.parse_args()
     want = [int(x) for x in a.systems.split(",") if x.strip()] if a.systems else None
-    return 0 if analyze(a.basis, a.form, want) else 1
+    res = analyze(a.basis, a.form, want, verbose=not a.toml)
+    if not res:
+        return 1
+    pts, bx, _by, interior = res
+    if a.suggest or a.toml:
+        s = suggest(pts, bx, interior, a.n_suggest, a.halfwidth)
+        if a.toml:
+            print("r0_sweep = [" + ", ".join(f"{x:.4f}" for x in s) + "]")
+        else:
+            kind = "refine around" if interior else "EXTEND past"
+            print(f"\nsuggested next r0 ({kind} {bx:.4f} A): {s}")
+    return 0
 
 
 if __name__ == "__main__":
