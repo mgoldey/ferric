@@ -681,7 +681,7 @@ pub fn pdep_polarizability_static_unrestricted(
 ///
 /// Returns the resolved budget so callers can reuse it for banding decisions
 /// rather than resolving twice (and possibly inconsistently).
-fn preflight_grid_path(
+pub(crate) fn preflight_grid_path(
     label: &str,
     memory_budget_bytes: Option<usize>,
     naux: usize,
@@ -1119,7 +1119,6 @@ pub fn pdep_polarizability_becke_dynamic(
     cfg: &PdepRpaConfig,
     freqs: &[f64],
 ) -> Result<Vec<Vec<[[f64; 3]; 3]>>, FerricError> {
-    use ferric_dft::ao_grid::eval_basis_on_points;
     use ferric_dft::grid::{build_atomic_grid, AtomicGridConfig};
     use ferric_integrals::blas_threads::with_blas_threads;
     use rayon::prelude::*;
@@ -1180,11 +1179,30 @@ pub fn pdep_polarizability_becke_dynamic(
         let weights_g: Vec<f64> = grid.iter().map(|g| g.weight).collect();
         let home_atom: Vec<usize> = grid.iter().map(|g| g.home_atom).collect();
         let npts = points.len();
+        // Pre-flight before the grid work: npts comes from the grid just built,
+        // never an assumed 75x110.
+        preflight_grid_path(
+            &format!(
+                "pdep_polarizability_becke_dynamic (U) (natoms={natoms}, nbf={}, npts={npts}, naux={naux})",
+                obs.nbasis()
+            ),
+            cfg.memory_budget_bytes,
+            naux,
+            // Open-shell: charge the LARGER spin channel. Both intermediates
+            // are resident, but the per-worker frequency scratch is sized from
+            // one channel at a time.
+            inter_a.nocc.max(inter_b.nocc),
+            inter_a.nvir.max(inter_b.nvir),
+            npts,
+            obs.nbasis(),
+            natoms,
+        )?;
 
-        let chi = ferric_dft::ao_grid::eval_basis_on_points(mol, obs_bs, &points).map_err(|e| {
-            FerricError::General(format!("pdep_polarizability_becke_dynamic (U): chi failed: {e}"))
-        })?;
-        let nbf = chi.nrows();
+        // nbf from the prepared basis, NOT from a materialized chi: the
+        // accumulation evaluates chi per grid chunk now, so building the full
+        // (nbf, npts) block here just to read its row count would allocate
+        // multi-GB for a single integer.
+        let nbf = obs.nbasis();
         let atom_pos: Vec<[f64; 3]> = mol.atoms.iter().map(|at| [at.x, at.y, at.zpos]).collect();
 
         // Per-atom atom-centred AO dipole matrices (ω-independent).
@@ -1379,13 +1397,24 @@ pub fn pdep_polarizability_becke_dynamic(
     let weights: Vec<f64> = grid.iter().map(|g| g.weight).collect();
     let home_atom: Vec<usize> = grid.iter().map(|g| g.home_atom).collect();
     let npts = points.len();
+    // Pre-flight before the grid work: npts comes from the grid just built,
+    // never an assumed 75x110.
+    preflight_grid_path(
+        &format!(
+            "pdep_polarizability_becke_dynamic (natoms={natoms}, nbf={}, npts={npts}, naux={naux})",
+            obs.nbasis()
+        ),
+        cfg.memory_budget_bytes,
+        naux,
+        nocc,
+        nvir,
+        npts,
+        obs.nbasis(),
+        natoms,
+    )?;
 
-    let chi = eval_basis_on_points(mol, obs_bs, &points).map_err(|e| {
-        FerricError::General(format!(
-            "pdep_polarizability_becke_dynamic: chi eval failed: {e}"
-        ))
-    })?;
-    let nbf = chi.nrows();
+    // nbf from the prepared basis, not a materialized chi (see the U branch).
+    let nbf = obs.nbasis();
     debug_assert_eq!(nbf, obs.nbasis());
 
     // Atom positions (Bohr) — used to shift dipole to atom-centred coordinates.

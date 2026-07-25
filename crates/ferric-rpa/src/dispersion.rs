@@ -557,6 +557,26 @@ pub fn pdep_dynamic_polarizability_truncated(
     let wts: Vec<f64> = grid.iter().map(|g| g.weight).collect();
     let home_atom: Vec<usize> = grid.iter().map(|g| g.home_atom).collect();
     let npts = points.len();
+
+    // Pre-flight before chi allocates. This path still materializes the full
+    // (nbf, npts) block (its accumulation is a standalone serial loop, not the
+    // fused banded one in properties.rs), so the gate is the only thing
+    // standing between an over-budget job and the OOM killer here.
+    crate::properties::preflight_grid_path(
+        &format!(
+            "pdep_dynamic_polarizability_truncated (natoms={natoms}, nbf={}, npts={npts}, naux={})",
+            obs.nbasis(),
+            inter.naux
+        ),
+        cfg.memory_budget_bytes,
+        inter.naux,
+        nocc,
+        nvir,
+        npts,
+        obs.nbasis(),
+        natoms,
+    )?;
+
     let chi = eval_basis_on_points(mol, obs_bs, &points).map_err(|e| {
         FerricError::General(format!("pdep_dynamic_polarizability_truncated: chi: {e}"))
     })?;
