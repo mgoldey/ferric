@@ -641,11 +641,46 @@ const DIPOLE_BAND_BYTES: usize = 512 * 1024 * 1024;
 /// `ferric_scf::reduce::band_width`'s floor). A pure function of
 /// `(natoms, nbf, budget_bytes)` and the ambient rayon pool's worker count —
 /// never of chunk count or grid layout — so it cannot perturb the fold order.
+/// Test-only re-export of [`dipole_band_width_with_threads`] so the
+/// budget-contract MWEs in `tests/mwe_budget_respected.rs` can exercise the
+/// band-width policy at an EXPLICIT worker count, without standing up an SCF
+/// and without inheriting the ambient rayon pool size.
+///
+/// Taking `nthreads` as a parameter is load-bearing, not a convenience: the
+/// first version of this MWE called the ambient-pool variant under
+/// `RAYON_NUM_THREADS=2`, where the thread floor and the byte cap happen to
+/// coincide — so all three contracts passed against the *unfixed* tree and the
+/// bug hid. The overage is proportional to worker count (measured on the
+/// 3-atom/nbf=24 shape: 1.0x at 2 threads, 6.0x at 12, 32.0x at 64), so a test
+/// that cannot vary the worker count cannot see the defect at all.
+#[doc(hidden)]
+pub fn dipole_band_width_for_test(
+    natoms: usize, nbf: usize, budget_bytes: usize, nthreads: usize,
+) -> usize {
+    dipole_band_width_with_threads(natoms, nbf, budget_bytes, nthreads)
+}
+
 fn dipole_band_width(natoms: usize, nbf: usize, budget_bytes: usize) -> usize {
+    dipole_band_width_with_threads(natoms, nbf, budget_bytes, rayon::current_num_threads())
+}
+
+/// Worker-count-explicit core of [`dipole_band_width`].
+///
+/// NOTE the `.max(nthreads)` floor is a KNOWN BUDGET VIOLATION, retained here
+/// only until the budget-planner work lands (see
+/// `docs/superpowers/specs/2026-07-25-memory-limits-design.md`): it lets the
+/// resident partial set reach `nthreads * per_partial_bytes` regardless of how
+/// small `budget_bytes` is, which is the mechanism behind the 16-17 GB
+/// anon-RSS incidents. The fix is to let the byte cap win and degrade
+/// parallelism instead; the contracts in `tests/mwe_budget_respected.rs` pin
+/// the intended behavior.
+fn dipole_band_width_with_threads(
+    natoms: usize, nbf: usize, budget_bytes: usize, nthreads: usize,
+) -> usize {
     let per_partial_bytes =
         natoms.max(1) * 3 * nbf.max(1) * nbf.max(1) * std::mem::size_of::<f64>();
     (budget_bytes / per_partial_bytes.max(1))
-        .max(rayon::current_num_threads())
+        .max(nthreads)
         .max(1)
 }
 
