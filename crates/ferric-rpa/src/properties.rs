@@ -666,22 +666,33 @@ fn dipole_band_width(natoms: usize, nbf: usize, budget_bytes: usize) -> usize {
 
 /// Worker-count-explicit core of [`dipole_band_width`].
 ///
-/// NOTE the `.max(nthreads)` floor is a KNOWN BUDGET VIOLATION, retained here
-/// only until the budget-planner work lands (see
-/// `docs/superpowers/specs/2026-07-25-memory-limits-design.md`): it lets the
-/// resident partial set reach `nthreads * per_partial_bytes` regardless of how
-/// small `budget_bytes` is, which is the mechanism behind the 16-17 GB
-/// anon-RSS incidents. The fix is to let the byte cap win and degrade
-/// parallelism instead; the contracts in `tests/mwe_budget_respected.rs` pin
-/// the intended behavior.
+/// The byte cap WINS over parallelism. A band of `w` chunks holds
+/// `w * natoms * 3 * nbf^2 * 8` bytes of partials live at once, so `w` is
+/// `budget_bytes / per_partial_bytes`, floored at 1 so a starvation budget
+/// still makes progress (slow, never stuck).
+///
+/// This deliberately does NOT floor at the rayon worker count. That floor used
+/// to be here, on the reasoning that banding should never starve parallelism
+/// below one chunk per worker — but it silently overrode the byte cap, letting
+/// the resident set reach `nthreads * per_partial_bytes` no matter how small
+/// the budget was. Memory then scaled with core count rather than with the
+/// budget, which is the mechanism behind the 16-17 GB anon-RSS incidents of
+/// 2026-07-13 (measured on the MWE shape: 1.0x over at 2 workers, 6.0x at 12,
+/// 32.0x at 64). A budget that can be exceeded by adding cores is not a budget,
+/// so on a tight budget the correct trade is fewer chunks in flight, not more
+/// memory. `tests/mwe_budget_respected.rs` pins all three contracts.
+///
+/// Narrowing the band is numerically INERT: `chunk_size` in
+/// `accumulate_atom_centred_dipoles` is a pure function of `npts`, and each
+/// band's partials are folded in ascending chunk order via `collect()`, so the
+/// band width changes only how many chunks are in flight — never the fold
+/// order, and hence never the result.
 fn dipole_band_width_with_threads(
-    natoms: usize, nbf: usize, budget_bytes: usize, nthreads: usize,
+    natoms: usize, nbf: usize, budget_bytes: usize, _nthreads: usize,
 ) -> usize {
     let per_partial_bytes =
         natoms.max(1) * 3 * nbf.max(1) * nbf.max(1) * std::mem::size_of::<f64>();
-    (budget_bytes / per_partial_bytes.max(1))
-        .max(nthreads)
-        .max(1)
+    (budget_bytes / per_partial_bytes.max(1)).max(1)
 }
 
 /// Rayon-parallel, thread-count-independent, MEMORY-BOUNDED accumulation of
@@ -2686,9 +2697,26 @@ mod tests {
             // natoms=1, nbf=100: per_partial = 1*3*100*100*8 = 240_000 bytes;
             // 2_400_000 byte budget -> 10.
             assert_eq!(dipole_band_width(1, 100, 2_400_000), 10);
-            // Budget below one partial floors at the worker count.
-            assert_eq!(dipole_band_width(1, 100, 1), 2);
-            assert_eq!(dipole_band_width(0, 0, 1), 2);
+            // A budget below one partial floors at ONE, not at the worker count.
+            //
+            // This assertion used to expect 2 (= the pool's worker count),
+            // encoding the old `.max(current_num_threads())` floor as intended
+            // behavior. That floor overrode the byte cap and let resident memory
+            // scale with core count instead of with the budget — the mechanism
+            // behind the 16-17 GB anon-RSS incidents. The byte cap now wins and
+            // parallelism degrades instead, so a starvation budget yields a
+            // single chunk in flight: slow, never stuck, and never over budget.
+            assert_eq!(dipole_band_width(1, 100, 1), 1);
+            assert_eq!(dipole_band_width(0, 0, 1), 1);
+
+            // The floor must NOT depend on the ambient pool size: same budget,
+            // same answer, whatever the worker count. (Regression guard for the
+            // exact defect above — see tests/mwe_budget_respected.rs.)
+            let wide = rayon::ThreadPoolBuilder::new().num_threads(8).build().unwrap();
+            wide.install(|| {
+                assert_eq!(dipole_band_width(1, 100, 1), 1);
+                assert_eq!(dipole_band_width(1, 100, 2_400_000), 10);
+            });
         });
     }
 
