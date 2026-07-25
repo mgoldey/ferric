@@ -46,10 +46,11 @@ fn schwarz_pair(eng: &mut Engine, prep: &PreparedBasis, i: usize, j: usize) -> f
 /// call ran the whole O(nsh²) diagonal-quartet loop serially on one engine,
 /// which dominated setup on large direct jobs. Each rayon worker builds its own
 /// [`Engine`] via `map_init` (construction is serialized behind a global ctor
-/// mutex — never per-item), each pair writes two distinct matrix entries, and
-/// `into_par_iter().map().collect()` preserves index order, so the result is
-/// bit-identical to the serial loop (both go through the same
-/// `scf_compute_eri_quartet` kernel with unit coefficient).
+/// mutex — see the ROW_BLOCK note in the body for why granularity matters).
+/// Every pair is computed by the same
+/// `scf_compute_eri_quartet` kernel with unit coefficient as the serial loop,
+/// and each (i, j) is written exactly once, so the result is bit-identical to
+/// the serial loop regardless of thread count or block size.
 pub fn schwarz(op: Operator, prep: &PreparedBasis) -> Result<Array2<f64>, FerricError> {
     match op.kind {
         OperatorKind::Coulomb | OperatorKind::ErfCoulomb | OperatorKind::ErfcCoulomb => {}
@@ -76,22 +77,57 @@ pub fn schwarz(op: Operator, prep: &PreparedBasis) -> Result<Array2<f64>, Ferric
     }
 
     use rayon::prelude::*;
+
     // Validate engine construction once up front so worker-side construction
     // can't fail (mirrors schwarz3_aux below).
     Engine::new_2e(op, prep, 1e-14)?;
-    let pairs: Vec<(usize, usize)> = (0..nsh)
-        .flat_map(|i| (0..=i).map(move |j| (i, j)))
+
+    // Parallelize over ROW BLOCKS, not individual shell pairs. libint2 engine
+    // construction is expensive AND serialized behind a global ctor mutex in the
+    // shim, and rayon invokes a `map_init` closure once per work-CHUNK, not once
+    // per thread. The previous version made each of the nsh(nsh+1)/2 shell pairs
+    // (31,878 at benzene/aug-cc-pVTZ) its own work item, so dozens of engine
+    // constructions queued on that mutex: MEASURED 123 ms at RAYON=1 vs 3211 ms
+    // at RAYON=12 — parallelism made this function 26x SLOWER. Row blocks keep
+    // the item count at ceil(nsh/ROW_BLOCK) (8 here) so the init closure fires
+    // about once per thread, while each item still carries real integral work.
+    // Sweep at 252 shells / RAYON=12: block 8 -> 211 ms, 16 -> 144, 32 -> 75,
+    // 64 -> 86; serial baseline 124 ms.
+    //
+    // NOT an `EnginePool` (engine_pool.rs), despite that module existing for
+    // exactly this ctor-mutex pathology: it eagerly builds `nthreads + 1`
+    // engines, which costs MORE than this whole loop when there are fewer
+    // blocks than threads (measured: 125.7 ms of pool construction, 190 ms
+    // total, vs 75 ms here). The pool wins where engines are reused across many
+    // chunks and many SCF iterations (the direct Fock builders); a one-shot
+    // setup loop with ~nthreads items is the opposite regime.
+    const ROW_BLOCK: usize = 32;
+    let row_blocks: Vec<(usize, usize)> = (0..nsh)
+        .step_by(ROW_BLOCK)
+        .map(|i0| (i0, (i0 + ROW_BLOCK).min(nsh)))
         .collect();
-    let qvals: Vec<f64> = pairs
+    // Each block owns its rows exclusively, so the (i, j) writes never overlap;
+    // collect per-block triangles and scatter serially to keep `qmat` unshared.
+    let blocks: Vec<Vec<(usize, usize, f64)>> = row_blocks
         .par_iter()
         .map_init(
             || Engine::new_2e(op, prep, 1e-14).expect("2e engine (pre-validated)"),
-            |eng, &(i, j)| schwarz_pair(eng, prep, i, j),
+            |eng, &(i0, i1)| {
+                let mut out = Vec::with_capacity((i1 - i0) * (i1 + 1));
+                for i in i0..i1 {
+                    for j in 0..=i {
+                        out.push((i, j, schwarz_pair(eng, prep, i, j)));
+                    }
+                }
+                out
+            },
         )
         .collect();
-    for (&(i, j), &q) in pairs.iter().zip(&qvals) {
-        qmat[(i, j)] = q;
-        qmat[(j, i)] = q;
+    for block in &blocks {
+        for &(i, j, q) in block {
+            qmat[(i, j)] = q;
+            qmat[(j, i)] = q;
+        }
     }
     Ok(qmat)
 }

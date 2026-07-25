@@ -1,4 +1,12 @@
-//! Per-thread 2e integral-engine pool for the direct (exact-ERI) Fock builders.
+//! Per-thread 2e integral-engine pool.
+//!
+//! Lives in `ferric-integrals` (next to [`Engine`]) rather than `ferric-scf` so
+//! that lower-level integral code — Schwarz bounds, 3-index drivers — can use it
+//! too. `ferric_scf::engine_pool` re-exports it, so existing callers are
+//! unaffected. It was originally written for the direct (exact-ERI) Fock
+//! builders; `schwarz.rs` could not reuse it while it lived in the higher crate,
+//! and hand-rolled a per-chunk `map_init` that hit exactly the pathology
+//! described below (123 ms at RAYON=1 vs 3211 ms at RAYON=12).
 //!
 //! ## Why this exists
 //!
@@ -24,9 +32,9 @@
 //! thread's engine via a `Mutex`. Construction count drops from O(chunks) to
 //! O(threads), killing the contention while keeping full parallelism.
 
-use ferric_integrals::basis_bridge::PreparedBasis;
-use ferric_integrals::engine::Engine;
-use ferric_integrals::operator::Operator;
+use crate::basis_bridge::PreparedBasis;
+use crate::engine::Engine;
+use crate::operator::Operator;
 use ferric_core::FerricError;
 use std::sync::Mutex;
 

@@ -32,7 +32,10 @@ pub mod quartet_scatter;
 pub mod direct_j;
 pub mod direct_k;
 pub mod direct_jk;
-pub mod engine_pool;
+/// Re-export: [`EnginePool`](ferric_integrals::engine_pool::EnginePool) moved
+/// down to `ferric-integrals` so integral-level code (schwarz, 3-index) can use
+/// it too. Kept here so existing `ferric_scf::engine_pool::…` paths still work.
+pub use ferric_integrals::engine_pool;
 pub mod df_j;
 pub mod df_k;
 pub mod link_k;

@@ -18,6 +18,7 @@ pub mod ecp;
 pub mod operator;
 pub mod basis_bridge;
 pub mod engine;
+pub mod engine_pool;
 pub mod oneelectron;
 pub mod cabs;
 pub mod schwarz;
