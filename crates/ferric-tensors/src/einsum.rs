@@ -64,6 +64,25 @@ pub fn einsum_binary(
         // non-rayon contexts across the workspace; opt_in_blas_threads's
         // runtime rayon-worker guard forces 1 automatically when this runs
         // inside a parallel region, so wrapping here is safe either way.
+        //
+        // MEASURED 2026-07-26, and it is a real speed/reproducibility trade,
+        // so the default deliberately stays at 1. ferric-cc contains no rayon
+        // at all (only `ccsd_t.rs` does), so its einsum GEMMs run outside any
+        // rayon region and the call-path proof for a raise holds. CCSD on
+        // water/aug-cc-pVDZ:
+        //     FERRIC_BLAS_THREADS=1   25.6 s     =2  19.0 s     =4  16.2 s
+        //                        =6   15.4 s     =8  19.4 s    =12  19.3 s
+        // i.e. ~1.6x at the 4-6 knee, then it REGRESSES past ~6 (this box has
+        // 12 cores; the GEMMs are too small to feed more).
+        //
+        // But the correlation energy takes FOUR distinct bit patterns across
+        // those counts (...47da / ...47d8 / ...47db / ...47dd) — a 5-ulp,
+        // 6.0e-16 relative spread. Threaded OpenBLAS splits the k-axis across
+        // threads, which reorders the accumulation. That is physically
+        // meaningless but NOT reproducible, and the 10 printed digits hide it
+        // entirely (all six runs print -0.2296094343). Use
+        // `benchmarks/harness/examples/ccsd_blas_threads.rs`, which prints the
+        // raw bits, before ever revisiting this.
         with_blas_threads(opt_in_blas_threads(), || {
             general_mat_mul(1.0, &l2m, &r2m, 0.0, &mut o2m);
         });

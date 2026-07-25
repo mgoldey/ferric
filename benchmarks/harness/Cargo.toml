@@ -21,6 +21,7 @@ ferric-dft = { path = "../../crates/ferric-dft" }
 ferric-mp2 = { path = "../../crates/ferric-mp2" }
 ferric-rpa = { path = "../../crates/ferric-rpa" }
 ferric-gw = { path = "../../crates/ferric-gw" }
+ferric-cc = { path = "../../crates/ferric-cc" }
 ferric-tensors = { path = "../../crates/ferric-tensors" }
 ferric-quadrature = { path = "../../crates/ferric-quadrature" }
 ferric-export = { path = "../../crates/ferric-export" }
