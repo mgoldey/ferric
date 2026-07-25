@@ -209,6 +209,7 @@ pub fn rs_mp2_lr_rpa(
             n_quad: cfg.drpa.quadrature.n_points,
             n_workers,
             n_keep,
+            grid: None,
         });
         ferric_core::memory::check_alloc(
             &format!(

@@ -279,6 +279,7 @@ fn preflight_check_closed_shell(
         n_quad: config.quadrature.n_points,
         n_workers,
         n_keep,
+        grid: None,
     });
     let budget_bytes = ferric_core::memory::resolve_budget_bytes(config.memory_budget_bytes);
     ferric_core::memory::check_alloc(
@@ -786,9 +787,11 @@ pub fn run_u_pdep_rpa(
         let n_keep = naux;
         let est_a = budget::estimate_peak_bytes(budget::PeakEstimateShape {
             naux, nocc: nocc_a, nvir: nvir_a, n_quad: config.quadrature.n_points, n_workers, n_keep,
+            grid: None,
         });
         let est_b = budget::estimate_peak_bytes(budget::PeakEstimateShape {
             naux, nocc: nocc_b, nvir: nvir_b, n_quad: config.quadrature.n_points, n_workers, n_keep,
+            grid: None,
         });
         let est = est_a.saturating_add(est_b);
         let budget_bytes = ferric_core::memory::resolve_budget_bytes(config.memory_budget_bytes);

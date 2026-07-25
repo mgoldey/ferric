@@ -85,6 +85,71 @@ pub struct PeakEstimateShape {
     /// `RsMp2RpaConfig::default`, keep every mode anyway, so `naux` is not a
     /// pessimistic guess there but the literal value).
     pub n_keep: usize,
+    /// Grid-path allocations, when the caller is a per-atom property path
+    /// (`pdep_polarizability_becke{,_dynamic}`, the Hirshfeld variants,
+    /// `dispersion`). `None` for the pure energy path, which touches no grid —
+    /// and which then estimates byte-identically to before this field existed.
+    ///
+    /// This is the term the 2026-07-13 incident needed and did not have: the
+    /// estimator modelled only naux/nocc/nvir/n_workers, so it would have
+    /// passed a 16-17 GB job as fitting a 10 GB budget.
+    pub grid: Option<GridEstimateShape>,
+}
+
+/// Shapes for the grid-path allocations in `properties.rs` / `dispersion.rs`.
+///
+/// All fields are live values at the call site — `npts` from the built
+/// [`ferric_dft::grid::build_atomic_grid`] (never a hardcoded 75x110), `nbf`
+/// from the prepared basis, `natoms` from the molecule.
+#[derive(Debug, Clone, Copy)]
+pub struct GridEstimateShape {
+    /// Number of Becke-Lebedev grid points actually built.
+    pub npts: usize,
+    /// AO basis functions (rows of the `chi` matrix).
+    pub nbf: usize,
+    /// Atoms carrying per-atom dipole tensors.
+    pub natoms: usize,
+    /// Chunk-partials held live at once by the banded dipole accumulation
+    /// (`dipole_band_width`). Each partial is a full `natoms · 3 · nbf²` set,
+    /// so this multiplies the largest grid term.
+    pub dipole_band_width: usize,
+}
+
+/// Bytes the grid path holds resident: the `chi` AO-on-grid matrix, the
+/// persistent per-atom AO dipole tensors, and one band of same-sized partials.
+///
+/// Kept separate from [`estimate_peak_bytes`]'s energy terms so each can be
+/// unit-tested against a hand-derived figure.
+pub fn estimate_grid_bytes(g: GridEstimateShape) -> usize {
+    let GridEstimateShape { npts, nbf, natoms, dipole_band_width } = g;
+
+    // chi: a SINGLE contiguous Array2::zeros((nbf, npts)) — ~3.75 GB at
+    // nbf=800, npts=586k. Not chunked today (see the fuse-into-the-banded-loop
+    // work); the estimate must reflect what is actually allocated, not what a
+    // future version will allocate.
+    let chi_bytes = nbf.saturating_mul(npts).saturating_mul(F64_BYTES);
+
+    // Grid side arrays: points (3 f64), weights (f64), home_atom (usize).
+    let grid_side_bytes = npts.saturating_mul(3 * F64_BYTES + F64_BYTES + 8);
+
+    // d_ai_ao: natoms x 3 matrices of nbf x nbf, persistent for the whole
+    // accumulation.
+    let per_atom_dipole_bytes = natoms
+        .saturating_mul(3)
+        .saturating_mul(nbf)
+        .saturating_mul(nbf)
+        .saturating_mul(F64_BYTES);
+
+    // One band of chunk-partials, each a full d_ai_ao-sized set. This is the
+    // term that used to scale with rayon worker count via the thread floor in
+    // `dipole_band_width`; the byte cap now wins, but the partials are still
+    // genuinely co-resident with the accumulator, so they are additive here.
+    let band_partial_bytes = per_atom_dipole_bytes.saturating_mul(dipole_band_width.max(1));
+
+    chi_bytes
+        .saturating_add(grid_side_bytes)
+        .saturating_add(per_atom_dipole_bytes)
+        .saturating_add(band_partial_bytes)
 }
 
 /// Conservative upper bound (bytes) on peak resident memory for one
@@ -98,7 +163,7 @@ pub struct PeakEstimateShape {
 /// output instead, which dominates panel-transient savings anyway once the
 /// panel width itself is bounded.
 pub fn estimate_peak_bytes(shape: PeakEstimateShape) -> usize {
-    let PeakEstimateShape { naux, nocc, nvir, n_quad, n_workers, n_keep } = shape;
+    let PeakEstimateShape { naux, nocc, nvir, n_quad, n_workers, n_keep, grid } = shape;
     let nov = nocc.saturating_mul(nvir);
     let m = n_keep.min(naux).max(1);
     let n_workers = n_workers.max(1);
@@ -146,11 +211,19 @@ pub fn estimate_peak_bytes(shape: PeakEstimateShape) -> usize {
     let n_quad_unused_guard = n_quad; // n_quad only affects wall-time, not peak resident bytes here — kept as a named no-op so a future refinement that DOES need it has an obvious slot, and so the parameter isn't silently dead.
     let _ = n_quad_unused_guard;
 
+    // (4) Grid path, when the caller is a per-atom property path. Additive:
+    // chi/d_ai_ao/band-partials are live at the same time as b_ov and the
+    // eigensolve output, since the accumulation runs after the intermediates
+    // are built and both are still borrowed. `None` (the energy path) leaves
+    // the estimate byte-identical to before this term existed.
+    let grid_peak = grid.map_or(0, estimate_grid_bytes);
+
     intermediates_peak
         .saturating_add(lanczos_peak)
         .saturating_add(quad_scratch_peak)
         .saturating_add(y_projection_bytes)
         .saturating_add(output_arrays)
+        .saturating_add(grid_peak)
 }
 
 #[cfg(test)]
@@ -172,6 +245,7 @@ mod tests {
             n_quad: 20,
             n_workers: 8,
             n_keep: 2976, // trunc_thresh=0.0 production default: keep all modes
+            grid: None,
         };
         let est = estimate_peak_bytes(shape);
         let budget = 10_740_000_000usize;
@@ -207,6 +281,7 @@ mod tests {
             n_quad: 20,
             n_workers: 8,
             n_keep: 116,
+            grid: None,
         };
         let est = estimate_peak_bytes(shape);
         // A typical small/auto-resolved budget: 2 GiB (the DEFAULT_BUDGET_BYTES
@@ -227,6 +302,7 @@ mod tests {
     fn estimate_scales_with_worker_count() {
         let base = PeakEstimateShape {
             naux: 500, nocc: 10, nvir: 100, n_quad: 20, n_workers: 4, n_keep: 500,
+            grid: None,
         };
         let doubled = PeakEstimateShape { n_workers: 8, ..base };
         let est_base = estimate_peak_bytes(base);
@@ -241,6 +317,7 @@ mod tests {
     fn n_keep_above_naux_is_clamped_not_panicking() {
         let shape = PeakEstimateShape {
             naux: 50, nocc: 5, nvir: 20, n_quad: 10, n_workers: 2, n_keep: 999,
+            grid: None,
         };
         // Must not panic; must equal the naux-clamped estimate.
         let est = estimate_peak_bytes(shape);
