@@ -75,6 +75,55 @@ pub fn eri3_budget_bytes(explicit: Option<usize>) -> usize {
     ferric_core::memory::resolve_budget_bytes(explicit)
 }
 
+/// Pre-flight gate for the MO-side blocks of the RI-MP2 energy lane.
+///
+/// `ThreeIndexSource::build` checks the budget against the AO tensor
+/// (`naux·nao²`) ONLY, spilling to disk when it does not fit. Everything built
+/// on top — `b_flat` at `(naux, nocc·nvir)`, the per-worker `g_i` transients in
+/// the energy loop, and `b_vv` at `(naux, nvir²)` where that block is built —
+/// was then allocated unconditionally, so the peak was ALWAYS strictly greater
+/// than the budget by construction, with no check, no warning, and no log line.
+/// `rimp2.rs` and `u_rimp2.rs` had zero `check_alloc` sites; the guarded paths
+/// in this crate were the OO-optimized and reference ones, not the hot lanes.
+///
+/// `g_i` is allocated inside `into_par_iter()`, so it is charged PER WORKER —
+/// counting one copy would repeat the mistake that made the RPA dipole banding
+/// scale with core count. Its widest slice is `i = 0`, giving `nocc·nvir²` per
+/// worker.
+///
+/// Call immediately before the first MO-side allocation. See
+/// `tests/mwe_rimp2_has_no_guard.rs`.
+pub(crate) fn check_mo_side_alloc(
+    label: &str,
+    naux: usize,
+    nocc: usize,
+    nvir: usize,
+    include_b_vv: bool,
+    budget_bytes: usize,
+) -> Result<(), FerricError> {
+    let n_workers = rayon::current_num_threads().max(1);
+    let b_flat = naux.saturating_mul(nocc).saturating_mul(nvir).saturating_mul(8);
+    let g_i = nocc
+        .saturating_mul(nvir)
+        .saturating_mul(nvir)
+        .saturating_mul(8)
+        .saturating_mul(n_workers);
+    let b_vv = if include_b_vv {
+        naux.saturating_mul(nvir).saturating_mul(nvir).saturating_mul(8)
+    } else {
+        0
+    };
+
+    ferric_core::memory::check_alloc(
+        &format!(
+            "{label} MO-side blocks (naux={naux}, nocc={nocc}, nvir={nvir}, \
+             {n_workers} workers)"
+        ),
+        b_flat.saturating_add(g_i).saturating_add(b_vv),
+        budget_bytes,
+    )
+}
+
 /// Build (P|ia) without materializing the full AO 3-index tensor: raw (P|μν)
 /// is generated in aux-row blocks sized to `budget_bytes` and transformed to
 /// MO immediately. Bit-identical to
@@ -345,6 +394,10 @@ pub fn ri_mp2_spin_components(
     // during the dot). Exactness: same contraction, reordered per aux-block,
     // not approximated — see stream_dressed_mo_band's doc.
     let budget_bytes = eri3_budget_bytes(config.memory_budget_bytes);
+    // Gate the MO side BEFORE b_flat allocates: the AO-tensor budget check
+    // inside ThreeIndexSource::build covers naux*nao^2 only, so without this
+    // the peak always exceeded the budget by construction.
+    check_mo_side_alloc("RI-MP2", dfbs.nbasis(), nocc, nvir, false, budget_bytes)?;
     let mut src = ThreeIndexSource::build(op, obs, dfbs, budget_bytes)?;
     let b_flat = stream_dressed_mo_band(&mut src, &v2c_inv_sqrt, &c_occ, &c_vir, None)?; // (naux, nocc*nvir)
 
