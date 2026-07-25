@@ -35,7 +35,7 @@ fn main() {
     println!("coulomb_metric_2c        : {:8.1} ms  ({}x{})", t.elapsed().as_secs_f64()*1e3, v2c.nrows(), v2c.ncols());
 
     // Component: full stage
-    let mp2_cfg = RiMp2Config { frozen_core: 6, memory_budget_bytes: None };
+    let mp2_cfg = RiMp2Config { frozen_core: 6, memory_budget_bytes: None, ..Default::default() };
     let t = Instant::now();
     let inter = compute_rpa_intermediates(&mol, &obs, &dfbs, op, &rhf, &mp2_cfg).unwrap();
     let whole = t.elapsed().as_secs_f64()*1e3;

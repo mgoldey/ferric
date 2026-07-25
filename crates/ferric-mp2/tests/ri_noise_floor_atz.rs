@@ -81,6 +81,7 @@ fn run_probe(label: &str, xyz: &str) {
     let cfg = RiMp2Config {
         frozen_core: 0,
         memory_budget_bytes: None,
+        ..Default::default()
     };
 
     // Probe 1: canonical (exact, no RI) vs RI-MP2 with the aux basis the

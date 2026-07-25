@@ -592,7 +592,7 @@ pub fn scs_mp2_gradient_analytical(
     rhf: &ScfResult,
     config: &crate::scs::ScsMp2Config,
 ) -> Result<Array2<f64>, FerricError> {
-    let mp2_config = RiMp2Config { frozen_core: config.frozen_core, memory_budget_bytes: config.memory_budget_bytes };
+    let mp2_config = RiMp2Config { frozen_core: config.frozen_core, memory_budget_bytes: config.memory_budget_bytes, ..Default::default() };
     let inter = compute_mp2_intermediates_ov_only(mol, obs, dfbs, op, rhf, &mp2_config)?;
     let budget_bytes = ferric_core::memory::resolve_budget_bytes(mp2_config.memory_budget_bytes);
     let (z, imat) = solve_zvector(mol, obs, dfbs, op, bounds, rhf, &inter, budget_bytes)?;

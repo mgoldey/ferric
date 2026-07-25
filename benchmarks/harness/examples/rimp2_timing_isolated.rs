@@ -38,7 +38,7 @@ fn main() {
 
     let dfbs_set = basis::bundled("aug-cc-pvtz-rifit").unwrap();
     let dfbs = PreparedBasis::new(&mol, &dfbs_set).unwrap();
-    let mp2_cfg = RiMp2Config { frozen_core: 6, memory_budget_bytes: None };
+    let mp2_cfg = RiMp2Config { frozen_core: 6, memory_budget_bytes: None, ..Default::default() };
 
     eprintln!("Timing ri_mp2 (isolated, RHF excluded)...");
     let t_mp2 = Instant::now();

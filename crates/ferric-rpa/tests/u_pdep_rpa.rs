@@ -264,7 +264,7 @@ fn u_ri_drpa_diagnostic_h_atom_matches_pyscf() {
     let uhf = solve_uhf(&ctx, &mol, &obs, &bounds,
         &UhfConfig { max_iter: 200, ..Default::default() }).unwrap();
 
-    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
+    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() };
     let ia = compute_rpa_intermediates_spin(&mol, &obs, &dfbs, op, &uhf, &mp2_cfg, true).unwrap();
     let ib = compute_rpa_intermediates_spin(&mol, &obs, &dfbs, op, &uhf, &mp2_cfg, false).unwrap();
 
@@ -404,7 +404,7 @@ fn u_laplace_dielectric_matches_u_dense_at_omega_zero_oh() {
     let uhf = solve_uhf(&ctx, &mol, &obs, &bounds,
         &UhfConfig { max_iter: 200, ..Default::default() }).unwrap();
 
-    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
+    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() };
     let ia = compute_rpa_intermediates_spin(&mol, &obs, &dfbs, op, &uhf, &mp2_cfg, true).unwrap();
     let ib = compute_rpa_intermediates_spin(&mol, &obs, &dfbs, op, &uhf, &mp2_cfg, false).unwrap();
     let eo_a: Vec<f64> = uhf.eps_a()[..ia.nocc].to_vec();

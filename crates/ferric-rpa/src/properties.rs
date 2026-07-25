@@ -191,7 +191,7 @@ pub fn pdep_polarizability_static(
     // Build B̃^P_ia = V^{-1/2} (P|ia) and orbital-energy slices via the same
     // path `run_pdep_rpa` uses.  No frozen-core for α (response on all
     // occupied is physical).
-    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
+    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() };
     let inter =
         ferric_mp2::rimp2::compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
     let b_ov = &inter.b_ov; // shape (naux, nov)
@@ -372,7 +372,7 @@ pub fn dielectric_spectrum_static(
         ));
     }
 
-    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
+    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() };
     let inter = ferric_mp2::rimp2::compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
     let b_ov = &inter.b_ov;
     let nocc = inter.nocc;
@@ -451,7 +451,7 @@ pub fn pdep_polarizability_static_unrestricted(
 ) -> Result<PolarizabilityResult, FerricError> {
     use ferric_mp2::rimp2::{compute_rpa_intermediates_spin, RiMp2Config};
 
-    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
+    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() };
 
     // Per-spin intermediates.
     let inter_a = compute_rpa_intermediates_spin(mol, obs, dfbs, op, rhf, &mp2_cfg, true)?;
@@ -767,7 +767,7 @@ pub fn pdep_polarizability_becke(
     let natoms = mol.atoms.len();
 
     // RI intermediates (same as molecular static-α path).
-    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
+    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() };
     let inter =
         ferric_mp2::rimp2::compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
     let b_ov = &inter.b_ov;
@@ -946,6 +946,7 @@ pub fn pdep_polarizability_becke_dynamic(
     let mp2_cfg = ferric_mp2::rimp2::RiMp2Config {
         frozen_core: cfg.frozen_core,
         memory_budget_bytes: cfg.memory_budget_bytes,
+        ..Default::default()
     };
 
     // Open-shell dispatch: build per-spin intermediates and MO slices.
@@ -1392,7 +1393,7 @@ pub fn pdep_polarizability_hirshfeld(
     // 1. Reuse the same RI intermediates / dipole machinery as the
     //    molecular static-α path.
     // ---------------------------------------------------------------------
-    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
+    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() };
     let inter =
         ferric_mp2::rimp2::compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
     let b_ov = &inter.b_ov;
@@ -1681,7 +1682,7 @@ pub fn pdep_polarizability_hirshfeld_dynamic(
     let nfreq = freqs.len();
 
     // RI intermediates — same as static path.
-    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
+    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() };
     let inter = ferric_mp2::rimp2::compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
     let b_ov = &inter.b_ov;
     let nocc = inter.nocc;
@@ -1907,7 +1908,7 @@ pub fn molecular_dynamic_polarizability(
     // total. ω=0 reproduces the static open-shell molecular α.
     if !matches!(rhf.spin, Spin::Restricted) {
         use ferric_mp2::rimp2::compute_rpa_intermediates_spin;
-        let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
+        let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() };
         let inter_a = compute_rpa_intermediates_spin(mol, obs, dfbs, op, rhf, &mp2_cfg, true)?;
         let inter_b = compute_rpa_intermediates_spin(mol, obs, dfbs, op, rhf, &mp2_cfg, false)?;
         let naux = inter_a.naux;
@@ -2049,7 +2050,7 @@ pub fn molecular_dynamic_polarizability(
         return Ok(out);
     }
 
-    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
+    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() };
     let inter = ferric_mp2::rimp2::compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
     let b_ov = &inter.b_ov;
     let nocc = inter.nocc;
@@ -2172,7 +2173,7 @@ pub fn molecular_dynamic_polarizability_pdep(
         )
     })?;
 
-    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0, memory_budget_bytes: None };
+    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() };
     let inter = ferric_mp2::rimp2::compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
     let b_ov = &inter.b_ov; // V^{-1/2}-dressed occ-vir RI-MO tensor (naux × nov)
     let nocc = inter.nocc;

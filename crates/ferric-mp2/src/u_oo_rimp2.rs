@@ -329,6 +329,7 @@ pub fn u_oo_ri_mp2(
     let mp2_cfg = crate::rimp2::RiMp2Config {
         frozen_core: config.frozen_core,
         memory_budget_bytes: config.memory_budget_bytes,
+        ..Default::default()
     };
 
     // AO-side invariants for the full-MO B tensors: built once, reused every iter.

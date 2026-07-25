@@ -1823,6 +1823,7 @@ mod tests {
         let cfg = RiMp2Config {
             frozen_core: 0,
             memory_budget_bytes: Some(ferric_core::memory::gib_to_bytes(1e-6)),
+            ..Default::default()
         };
         let err = mp2_polarizability_analytic(&ctx, &mol, &obs, &dfbs, op, &bounds, &rhf, &cfg)
             .unwrap_err();
