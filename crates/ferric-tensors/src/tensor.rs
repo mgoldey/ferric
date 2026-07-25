@@ -96,8 +96,14 @@ mod tests {
         assert_eq!(t[[0, 1]], 2.0);
     }
 
+    /// The label-count guard is a `debug_assert`, so it is COMPILED OUT under
+    /// `--release` and this `should_panic` test fails there ("did not panic as
+    /// expected") through no fault of the code under test. Gate it to debug so
+    /// `cargo test --release` — which is how the perf work runs the suites —
+    /// stays clean instead of carrying a permanent known-failure.
     #[test]
-    #[should_panic(expected = "label count")]
+    #[cfg_attr(debug_assertions, should_panic(expected = "label count"))]
+    #[cfg(debug_assertions)]
     fn label_count_must_match_ndim() {
         let a = array![[1.0, 2.0]].into_dyn(); // 2D
         let _t = Tensor::new(a, [Axis::O]); // only 1 label -> panic in debug
