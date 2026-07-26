@@ -74,6 +74,17 @@ pub struct CasCiConfig {
     pub max_subspace: usize,
     /// Hard Davidson iteration cap.
     pub max_iter: usize,
+    /// Memory ceiling in bytes, resolved through
+    /// [`ferric_core::memory::resolve_budget_bytes`]. `None` does NOT mean
+    /// unlimited — it falls through to `FERRIC_MEM_BUDGET_GB`, then to
+    /// `0.8 x` detected available RAM, then to a 2 GiB floor.
+    ///
+    /// This bounds the Davidson subspace, which is the production peak:
+    /// `2 * max_subspace * N_det * 8` bytes (two bases, `v_basis` and
+    /// `hv_basis`). N_det grows combinatorially with the active space, so the
+    /// peak crosses this box between CAS(12,14) (7.2 GB) and CAS(14,16)
+    /// (105 GB). See `tests/mwe_casci_has_no_guard.rs`.
+    pub memory_budget_bytes: Option<usize>,
 }
 
 impl Default for CasCiConfig {
@@ -85,6 +96,7 @@ impl Default for CasCiConfig {
             conv_thresh: 1e-9,
             max_subspace: 50,
             max_iter: 200,
+            memory_budget_bytes: None,
         }
     }
 }
@@ -175,6 +187,30 @@ pub fn run_cas_ci(
         beta_strings,
     };
     let ndet = space.n_det();
+
+    // ---- Memory pre-flight --------------------------------------------
+    // Davidson holds TWO bases (v_basis + hv_basis), each up to max_subspace
+    // vectors of ndet doubles, plus the diagonal and a few ndet work vectors.
+    // ndet grows combinatorially with the active space, so this crosses a
+    // 23 GB box between CAS(12,14) (7.2 GB) and CAS(14,16) (105 GB) -- and
+    // before this gate nothing stopped it. max_subspace is read from config,
+    // not assumed: it is a user-settable memory knob whether or not it was
+    // designed as one.
+    let budget = ferric_core::memory::resolve_budget_bytes(config.memory_budget_bytes);
+    let subspace_bytes = ndet
+        .saturating_mul(config.max_subspace.max(1))
+        .saturating_mul(2)
+        .saturating_mul(8);
+    // diag + guess + x + hx + t: five ndet-sized vectors alongside the bases.
+    let work_bytes = ndet.saturating_mul(5).saturating_mul(8);
+    ferric_core::memory::check_alloc(
+        &format!(
+            "CAS-CI Davidson subspace (n_active={n_active}, n_elec=({n_alpha},{n_beta}),              N_det={ndet}, max_subspace={})",
+            config.max_subspace
+        ),
+        subspace_bytes.saturating_add(work_bytes),
+        budget,
+    )?;
 
     // ---- Diagonal + Davidson solve ------------------------------------
     let diag = hamiltonian::hamiltonian_diagonal(&ints, &space);
@@ -269,6 +305,54 @@ mod tests {
     ///   mol = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g", unit="Angstrom")
     ///   mf  = scf.RHF(mol); mf.kernel()         # -1.1167593073964255
     ///   e_fci, _ = fci.FCI(mf).kernel()          # -1.1372838344885023
+    /// The Davidson gate must REFUSE a starved budget rather than allocate.
+    ///
+    /// H2/STO-3G is the smallest possible CAS-CI (N_det = 4), so a 1-byte
+    /// budget is the only way to force a refusal at this scale -- but the point
+    /// is structural: before this gate nothing bounded
+    /// `2 * max_subspace * N_det * 8`, which reaches 105 GB at CAS(14,16) on a
+    /// 23 GB box. See tests/mwe_casci_has_no_guard.rs for the scaling.
+    #[test]
+    fn casci_refuses_a_starved_budget() {
+        let (mol, prep, rhf) = rhf_for("2\nH2\nH 0 0 0\nH 0 0 0.74\n");
+        let cfg = CasCiConfig {
+            n_active: 2,
+            n_elec_active: (1, 1),
+            active_start: 0,
+            memory_budget_bytes: Some(1),
+            ..Default::default()
+        };
+        // `match` rather than `expect_err`: CasCiResult does not implement Debug.
+        let msg = match run_cas_ci(&mol, &prep, &rhf, cfg) {
+            Ok(_) => panic!("a 1-byte budget must be refused before allocating"),
+            Err(e) => e.to_string(),
+        };
+        assert!(msg.contains("CAS-CI"), "message must name the method: {msg}");
+        assert!(msg.contains("N_det="), "message must name N_det: {msg}");
+        assert!(msg.contains("budget is"), "message must name the budget: {msg}");
+    }
+
+    /// The complement: an ample budget must still RUN. A gate that only ever
+    /// refuses is as broken as none at all -- it becomes a wall and trains
+    /// users to inflate budgets until it stops complaining.
+    #[test]
+    fn casci_runs_under_an_ample_budget() {
+        let (mol, prep, rhf) = rhf_for("2\nH2\nH 0 0 0\nH 0 0 0.74\n");
+        let cfg = CasCiConfig {
+            n_active: 2,
+            n_elec_active: (1, 1),
+            active_start: 0,
+            memory_budget_bytes: Some(4 * 1024 * 1024 * 1024),
+            ..Default::default()
+        };
+        let res = match run_cas_ci(&mol, &prep, &rhf, cfg) {
+            Ok(r) => r,
+            Err(e) => panic!("H2/STO-3G CAS-CI must fit a 4 GiB budget: {e}"),
+        };
+        assert!(res.e_total.is_finite(), "energy must be finite");
+        assert!(res.converged, "must converge");
+    }
+
     #[test]
     fn h2_sto3g_full_fci() {
         const PYSCF_RHF: f64 = -1.1167593073964255;
@@ -462,7 +546,7 @@ mod tests {
             alpha_strings: strings::enumerate_strings(6, 4),
             beta_strings: strings::enumerate_strings(6, 4),
         };
-        let hmat = hamiltonian::dense_hamiltonian(&ints, &space);
+        let hmat = hamiltonian::dense_hamiltonian(&ints, &space, None).unwrap();
         let (evals, _) = hmat.eigh(ndarray_linalg::UPLO::Upper).unwrap();
         let e_dense = evals[0];
 

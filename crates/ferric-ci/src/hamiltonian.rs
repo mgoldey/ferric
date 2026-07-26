@@ -291,9 +291,44 @@ fn double_phase_same_spin(ket: u64, i: usize, j: usize, a: usize, b: usize) -> f
     phase
 }
 
+/// Bytes the dense Hamiltonian would occupy: `N_det^2` f64.
+///
+/// Exposed so callers can size the request before making it — `N_det` itself
+/// grows combinatorially with the active space, so this matrix grows as the
+/// FOURTH power of the active-space binomial and the cliff is exactly one
+/// increment wide: CAS(8,10) is 15.6 GB, CAS(10,12) is 3,147 GB.
+pub fn dense_hamiltonian_bytes(n_det: usize) -> usize {
+    n_det.saturating_mul(n_det).saturating_mul(8)
+}
+
 /// Build the dense CI Hamiltonian matrix `H` (n_det x n_det), including
 /// `e_core` on the diagonal. O(N_det^2) — spike-scale only (see module doc).
+///
+/// # Memory
+///
+/// Fallible, and deliberately so. The production driver uses matrix-free
+/// Davidson and never calls this; it is reached today only from this crate's
+/// own tests. That makes it a footgun rather than a live exposure — but a
+/// `pub fn` with no bound is exactly how the next caller inherits a 3 TB
+/// allocation. Errors instead of allocating when the matrix exceeds the
+/// resolved budget; pass `Some(b)` to pin the ceiling, `None` to resolve from
+/// `FERRIC_MEM_BUDGET_GB` / detected RAM. See
+/// `tests/mwe_casci_has_no_guard.rs`.
 pub fn dense_hamiltonian(
+    ints: &ActiveSpaceIntegrals,
+    space: &DeterminantSpace,
+    memory_budget_bytes: Option<usize>,
+) -> Result<ndarray::Array2<f64>, ferric_core::FerricError> {
+    let n_det = space.n_det();
+    ferric_core::memory::check_alloc(
+        &format!("CAS-CI dense Hamiltonian (N_det={n_det}, N_det^2 matrix)"),
+        dense_hamiltonian_bytes(n_det),
+        ferric_core::memory::resolve_budget_bytes(memory_budget_bytes),
+    )?;
+    Ok(dense_hamiltonian_impl(ints, space))
+}
+
+fn dense_hamiltonian_impl(
     ints: &ActiveSpaceIntegrals,
     space: &DeterminantSpace,
 ) -> ndarray::Array2<f64> {
