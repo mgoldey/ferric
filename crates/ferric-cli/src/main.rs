@@ -634,8 +634,14 @@ fn run_att_rimp2(
             eprintln!("error: {e}");
             std::process::exit(1);
         });
+    // Name the operator explicitly. `attenuated_ri_mp2` is erfc-only
+    // (attenuated.rs: `Operator::erfc(config.omega)`), while `scs-mp2-2terfc`
+    // and `mp2-v` use terfc. An output that says only "Attenuated RI-MP2"
+    // cannot be told apart from a terfc run downstream -- and a hardcoded
+    // operator label in the rs-mp2-rpa arm caused exactly that confusion
+    // (fixed 2026-07-26).
     println!(
-        "Attenuated RI-MP2/{} (aux: {}, ω={:.3} Å⁻¹) on {}",
+        "Attenuated RI-MP2 (erfc)/{} (aux: {}, ω={:.3} Å⁻¹) on {}",
         bs.name, aux_name, omega_ang_inv, cfg.molecule.xyz
     );
     println!("  nbasis     = {}", prep.nbasis());
