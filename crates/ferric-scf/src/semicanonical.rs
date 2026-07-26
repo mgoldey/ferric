@@ -238,6 +238,51 @@ pub fn semicanonicalize(
     })
 }
 
+impl SemicanonicalOrbitals {
+    /// Repackage as an unrestricted [`ScfResult`], suitable for any consumer that
+    /// expects UHF-shaped input.
+    ///
+    /// This is the practical payoff of semi-canonicalization. ferric's open-shell
+    /// post-SCF code detects a ROHF result and falls back to α orbitals with the
+    /// *effective* Fock's eigenvalues for BOTH spins — see the comment at
+    /// `u_rimp2.rs:97` ("ROHF has no eps_beta — fall back to eps_alpha"). Feeding it
+    /// the result of this conversion instead supplies genuine, distinct per-spin
+    /// orbitals and orbital energies.
+    ///
+    /// `energy` is carried over from the ROHF reference unchanged: the block-diagonal
+    /// rotation preserves the occupied span, so the reference determinant — and hence
+    /// the SCF energy — is identical.
+    ///
+    /// The Fock matrices are NOT stored (`ScfResult` would need the AO-basis ones, which
+    /// callers can rebuild); `fock_alpha` carries the ROHF effective Fock unchanged.
+    /// Consumers of this conversion want the MOs and eigenvalues.
+    pub fn to_unrestricted_result(&self, rohf: &ScfResult) -> ScfResult {
+        let occ_dens = |c: &Array2<f64>, nocc: usize| -> Array2<f64> {
+            let occ = c.slice(ndarray::s![.., ..nocc]);
+            occ.dot(&occ.t())
+        };
+        let d_a = occ_dens(&self.mos_alpha, self.nocc_alpha);
+        let d_b = occ_dens(&self.mos_beta, self.nocc_beta);
+        ScfResult {
+            spin: Spin::Unrestricted,
+            energy: rohf.energy,
+            density_total: &d_a + &d_b,
+            density_alpha: d_a,
+            density_beta: Some(d_b),
+            mos_alpha: self.mos_alpha.clone(),
+            mos_beta: Some(self.mos_beta.clone()),
+            eps_alpha: self.eps_alpha.clone(),
+            eps_beta: Some(self.eps_beta.clone()),
+            fock_alpha: rohf.fock_alpha.clone(),
+            fock_beta: None,
+            converged: rohf.converged,
+            exit: rohf.exit,
+            iterations: rohf.iterations,
+            computed_quartets: rohf.computed_quartets,
+        }
+    }
+}
+
 /// Derive (nocc_α, nocc_β) from the molecule's electron count and multiplicity.
 ///
 /// Same derivation `solve_uhf` uses (`uhf.rs:161-168`), taken from the `Molecule` rather

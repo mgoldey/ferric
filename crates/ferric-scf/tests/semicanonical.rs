@@ -295,3 +295,49 @@ fn invalid_references_are_rejected() {
         "a ROKS reference must be rejected until the XC potential is threaded through"
     );
 }
+
+/// The conversion to a UHF-shaped result must carry genuine per-spin data.
+///
+/// This is the practical payoff: ferric's open-shell post-SCF code detects a ROHF
+/// result and falls back to alpha orbitals with the EFFECTIVE Fock's eigenvalues for
+/// both spins (`u_rimp2.rs:97`: "ROHF has no eps_beta -- fall back to eps_alpha").
+/// After conversion there is a real eps_beta, so that fallback no longer fires.
+#[test]
+fn converts_to_a_usable_unrestricted_result() {
+    let f = setup("sto-3g");
+    let sc = run(&f);
+    let u = sc.to_unrestricted_result(&f.rohf);
+
+    assert!(matches!(u.spin, ferric_scf::result::Spin::Unrestricted));
+    assert!(u.converged);
+    assert!(u.mos_beta.is_some(), "converted result must carry beta MOs");
+    let eps_b = u.eps_beta.as_ref().expect("converted result must carry beta eigenvalues");
+
+    // The whole point: eps_beta exists AND differs from eps_alpha.
+    let differ = u.eps_alpha.iter().zip(eps_b.iter()).any(|(a, b)| (a - b).abs() > 1e-6);
+    assert!(
+        differ,
+        "eps_alpha and eps_beta are identical -- the ROHF fallback this conversion \
+         exists to remove is still effectively in force"
+    );
+
+    // The reference determinant is unchanged, so the energy carries over exactly.
+    assert!(
+        (u.energy - f.rohf.energy).abs() < 1e-14,
+        "the block-diagonal rotation preserves the occupied span, so the SCF energy \
+         must be identical: {:.12} vs {:.12}",
+        u.energy,
+        f.rohf.energy
+    );
+
+    // Total electron count must be preserved: tr(D S) = nelec.
+    let n_elec: f64 = (0..u.density_total.nrows())
+        .map(|i| (0..u.density_total.ncols()).map(|j| u.density_total[[i, j]] * f.s[[j, i]]).sum::<f64>())
+        .sum();
+    let want = f.mol.nelec() as f64;
+    eprintln!("tr(D S) = {n_elec:.10}  (expected {want})");
+    assert!(
+        (n_elec - want).abs() < 1e-9,
+        "converted density has {n_elec:.6} electrons, expected {want}"
+    );
+}
