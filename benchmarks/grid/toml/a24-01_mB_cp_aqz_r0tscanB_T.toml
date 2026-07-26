@@ -1,0 +1,21 @@
+[molecule]
+xyz = "benchmarks/grid/geoms/a24-01_mB_cp.xyz"
+[basis]
+name = "aug-cc-pvqz"
+[scf]
+df_j_aux = "def2-universal-jkfit"
+df_k_aux = "def2-universal-jkfit"
+max_iter = 400
+[method]
+kind = "rs-mp2-rpa"
+[mp2]
+auxbasis = "aug-cc-pvqz-rifit"
+attenuator = "terf"
+r0_sweep = [0.7000, 0.8000, 0.9000, 1.0000, 1.1000, 1.2000, 1.3000]
+formulation = "coupled-rings"
+frozen_core = 1
+[rpa]
+trunc_thresh = 1e-3
+n_quad = 12
+[memory]
+budget_gb = 4.0
