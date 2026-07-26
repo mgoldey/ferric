@@ -286,6 +286,7 @@ pub fn run_bse_tda(
     // copies, no reduction — bit-identical by construction). The `bare`/
     // `screened` closures are scalar contractions (no BLAS), so no
     // with_blas_threads guard is needed. Serial below PAR_ROWS_THRESHOLD.
+    check_dense_response_alloc("BSE/TDA", n, 1, None)?;
     let mut a_mat = Array2::<f64>::zeros((n, n));
     let fill_row = |ia: usize, row: &mut [f64]| {
         let i = ia / nvir;
@@ -379,6 +380,35 @@ pub fn run_bse_tda(
 ///
 /// If this reproduces an independent CIS-TDA (e.g. PySCF), the (ia)-space layout,
 /// the 2v−exchange convention, and the integral contraction are all correct, and
+
+/// Pre-flight for the dense BSE/TDHF response matrices.
+///
+/// These paths build dense `(n, n)` matrices with `n = nocc · nvir` and then
+/// diagonalize them, so the resident peak is `n_mats` matrices plus the `eigh`
+/// output (eigenvectors, another `n²`). `bse.rs` had no guard at all: the
+/// matrices were allocated and the OOM killer decided.
+///
+/// Modest next to the other offenders in this crate family — 0.206 GB for the
+/// two-matrix path at benzene/aug-cc-pVDZ (n = 3591) — but it grows as
+/// `(nocc·nvir)²`, i.e. the fourth power of system size, so the headroom
+/// disappears quickly. `dense O(nmo⁴)` is exactly what the module docs already
+/// warn about; this makes the warning enforced.
+fn check_dense_response_alloc(
+    label: &str,
+    n: usize,
+    n_mats: usize,
+    memory_budget_bytes: Option<usize>,
+) -> Result<(), ferric_core::FerricError> {
+    let per_mat = n.saturating_mul(n).saturating_mul(8);
+    // +1 for the eigh eigenvector output, which is co-resident with the input.
+    let bytes = per_mat.saturating_mul(n_mats.saturating_add(1));
+    ferric_core::memory::check_alloc(
+        &format!("{label} dense response matrices (n = nocc*nvir = {n}, {n_mats} matrices + eigh output)"),
+        bytes,
+        ferric_core::memory::resolve_budget_bytes(memory_budget_bytes),
+    )
+}
+
 /// any `run_bse_tda` discrepancy is attributable to the screening / GW gap, not
 /// the assembly. No GW, no PDEP — pure HF integrals.
 pub fn run_cis_tda(
@@ -420,6 +450,7 @@ pub fn run_cis_tda(
     // over the flat `ia` axis with order-preserving `par_chunks_mut` into the
     // SAME preallocated matrix. No BLAS inside `bare`, so no
     // with_blas_threads guard needed. Serial below PAR_ROWS_THRESHOLD.
+    check_dense_response_alloc("BSE/TDA", n, 1, None)?;
     let mut a_mat = Array2::<f64>::zeros((n, n));
     let fill_row = |ia: usize, row: &mut [f64]| {
         let i = ia / nvir;
@@ -586,6 +617,7 @@ pub fn run_bse_c6(
     // matrices (order-preserving, no reduction, bit-identical by
     // construction). No BLAS inside `bare`/`screened`. Serial below
     // PAR_ROWS_THRESHOLD.
+    check_dense_response_alloc("BSE/TDHF", n, 2, None)?;
     let mut apb = Array2::<f64>::zeros((n, n));
     let mut amb = Array2::<f64>::zeros((n, n));
     let fill_row = |ia: usize, apb_row: &mut [f64], amb_row: &mut [f64]| {
@@ -816,6 +848,7 @@ pub fn run_bse_c6_ks(
 
     // Same row-independent structure as `run_bse_c6` (see the comment there):
     // row `ia` of both apb/amb written exactly once by a single (i,a) pair.
+    check_dense_response_alloc("BSE/TDHF", n, 2, None)?;
     let mut apb = Array2::<f64>::zeros((n, n));
     let mut amb = Array2::<f64>::zeros((n, n));
     let fill_row = |ia: usize, apb_row: &mut [f64], amb_row: &mut [f64]| {
@@ -1026,6 +1059,7 @@ pub fn run_rpax_static_polarizability(
         acc
     };
 
+    check_dense_response_alloc("BSE/TDHF", n, 2, None)?;
     let mut apb = Array2::<f64>::zeros((n, n));
     let mut amb = Array2::<f64>::zeros((n, n));
     let fill_row = |ia: usize, apb_row: &mut [f64], amb_row: &mut [f64]| {

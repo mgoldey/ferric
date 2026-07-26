@@ -291,6 +291,30 @@ fn preflight_check_closed_shell(
     )
 }
 
+/// Default Davidson subspace cap, derived from the memory budget.
+///
+/// The basis is `naux × max_vecs` doubles, and the expansion/Ritz/QR buffers
+/// bring roughly 4 co-resident copies, so a quarter of the budget is allotted
+/// and divided by `4 · naux · 8`.
+///
+/// Capped at the historical `3 · naux`, so an ample budget reproduces the
+/// previous behavior exactly and only memory-constrained runs shrink the
+/// subspace. Floored at a small multiple so Davidson always has room to build a
+/// meaningful subspace — a cap of 1 or 2 would converge nothing.
+///
+/// Shrinking the subspace does NOT change the converged eigenvalues (Davidson
+/// restarts from the current Ritz vectors when the basis fills), only the
+/// iteration count. That is the important difference from the MO-stream chunk,
+/// which k-blocks an accumulation and therefore does shift results.
+fn davidson_default_max_vecs(naux: usize, budget_bytes: usize) -> usize {
+    const MIN_VECS: usize = 8;
+    let per_vec_bytes = naux.max(1).saturating_mul(8).saturating_mul(4);
+    let share = budget_bytes / 4;
+    let derived = (share / per_vec_bytes.max(1)).max(MIN_VECS);
+    derived.min(3 * naux.max(1))
+}
+
+
 /// Top-level PDEP-RPA energy calculation.
 pub fn run_pdep_rpa(
     mol: &Molecule,
@@ -356,14 +380,21 @@ pub(crate) fn run_pdep_rpa_eigensolve(
     let eps_vir: Vec<f64> = rhf.eps_r()[nocc_total..nocc_total + nvir].to_vec();
 
     // Step 3: Run Davidson at ω=0.
-    // NOTE (M9 memory): the default subspace cap 3·naux bounds the Davidson
-    // basis at naux·(3·naux)·8 bytes (≈346 MB at dimer/aTZ naux≈3800). This is
-    // borderline but only pays on the Davidson path — Lanczos is the default
-    // solver (config.eigensolver) and never grows a 3·naux basis. If Davidson
-    // becomes the hot path at larger naux, gate this multiplier on
-    // memory_budget_bytes / (naux·8) instead of the fixed 3×.
+    // The default subspace cap was a fixed 3·naux, bounding the Davidson basis
+    // at naux·(3·naux)·8 bytes — 0.21 GB at naux=2976, 0.60 GB at naux=5000,
+    // and ~4x that with the co-resident expansion/Ritz/QR buffers. It grows as
+    // naux², and this file's own note asked for it to be gated on the budget
+    // "if Davidson becomes the hot path at larger naux". Doing that now rather
+    // than waiting: it is the same unguarded-subspace shape as CAS-CI's
+    // Davidson, which crossed a 23 GB box.
+    //
+    // An explicit `eigensolver_max_vecs` still wins outright — a user who names
+    // a subspace size gets it. Only the DEFAULT is budget-derived, and it is
+    // capped at the historical 3·naux so an ample budget is unchanged.
     let max_vecs = if config.eigensolver_max_vecs == 0 {
-        3 * naux
+        davidson_default_max_vecs(naux, ferric_core::memory::resolve_budget_bytes(
+            config.memory_budget_bytes,
+        ))
     } else {
         config.eigensolver_max_vecs
     };
@@ -828,7 +859,11 @@ pub fn run_u_pdep_rpa(
         eps_b_full[inter_b.nocc_total..inter_b.nocc_total + inter_b.nvir].to_vec();
 
     let max_vecs = if config.eigensolver_max_vecs == 0 {
-        3 * naux
+        // Budget-derived default, capped at the historical 3·naux (see the
+        // closed-shell path above).
+        davidson_default_max_vecs(naux, ferric_core::memory::resolve_budget_bytes(
+            config.memory_budget_bytes,
+        ))
     } else {
         config.eigensolver_max_vecs
     };

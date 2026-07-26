@@ -314,6 +314,15 @@ pub struct LaplaceMp2 {
     pub n_quad: usize,
     pub points: Vec<f64>,
     pub weights: Vec<f64>,
+    /// Caller's explicit memory ceiling, threaded into the 3-index budget and
+    /// the AO-path pre-flight. `None` resolves through
+    /// `FERRIC_MEM_BUDGET_GB` -> detected RAM -> 2 GiB, exactly as elsewhere.
+    ///
+    /// Carried on the struct rather than added to `compute_mo`/`compute_ao`'s
+    /// signatures so the several in-crate call sites stay unchanged. Before
+    /// this, both paths called `resolve_budget_bytes(None)`, silently
+    /// discarding a user's `[memory] budget_gb`.
+    pub memory_budget_bytes: Option<usize>,
 }
 
 use rayon::prelude::*;
@@ -327,7 +336,7 @@ impl LaplaceMp2 {
     /// via the Helmich-Paris laplace-minimax library.
     pub fn new(n_quad: usize) -> Self {
         // Default: will be reinitialized by compute() using actual orbital energies.
-        LaplaceMp2 { n_quad, points: vec![], weights: vec![] }
+        LaplaceMp2 { n_quad, points: vec![], weights: vec![], memory_budget_bytes: None }
     }
 
     /// Initialize quadrature for orbital energy range [ymin, ymax].
@@ -380,7 +389,8 @@ impl LaplaceMp2 {
         let v2c = ferric_integrals::threeindex::coulomb_metric_2c(op, dfbs)?;
         let v_inv_sqrt = crate::rimp2::cholesky_inverse_sqrt(&v2c)?;
         let eri3_mo = crate::rimp2::eri3_mo_ov_blocked(
-            op, obs, dfbs, &c_occ, &c_vir, crate::rimp2::eri3_budget_bytes(None),
+            op, obs, dfbs, &c_occ, &c_vir,
+            crate::rimp2::eri3_budget_bytes(self.memory_budget_bytes),
         )?;
         let b_flat = v_inv_sqrt.dot(&eri3_mo.into_shape_with_order((naux, nocc * nvir)).unwrap());
 
@@ -452,14 +462,26 @@ impl LaplaceMp2 {
         // per-point 28.5 GB J-term buffers are what the μ-panel blocking below
         // eliminates; this resident tensor is the irreducible O(naux·nbas²) cost.)
         {
+            // TWO tensors of this size are co-resident, not one: the dressing
+            // below is `v_inv_sqrt.dot(&eri3_flat)`, so the raw `eri3_flat`
+            // input is still live while the `b_flat_ao` output is allocated.
+            // Counting a single copy under-reported the peak by ~2x -- the same
+            // "guard checks less than the code allocates" defect fixed in the
+            // (T) drivers. The naux^2 metric and its inverse-sqrt ride along.
             let dense_bytes = naux.saturating_mul(nbas).saturating_mul(nbas).saturating_mul(8);
-            let budget = ferric_core::memory::resolve_budget_bytes(None);
-            if dense_bytes > budget {
+            let metric_bytes = naux.saturating_mul(naux).saturating_mul(2).saturating_mul(8);
+            let peak_bytes = dense_bytes.saturating_mul(2).saturating_add(metric_bytes);
+            // Honor the CALLER's budget. This resolved `None`, which silently
+            // discarded an explicit `[memory] budget_gb` in favour of an
+            // env/auto-detected value.
+            let budget = ferric_core::memory::resolve_budget_bytes(self.memory_budget_bytes);
+            if peak_bytes > budget {
                 return Err(FerricError::General(format!(
-                    "laplace-MP2 AO path needs a resident dressed 3-index tensor of \
-                     {:.2} GB (naux={naux}, nbas={nbas}) but FERRIC_ERI3_BUDGET_GB caps \
-                     it at {:.2} GB. Raise the budget or use compute_mo.",
-                    dense_bytes as f64 / 1e9, budget as f64 / 1e9,
+                    "laplace-MP2 AO path needs {:.2} GB resident (naux={naux}, nbas={nbas}: \
+                     two co-resident naux*nbas^2 tensors during the metric dressing, plus \
+                     the naux^2 metric) but the budget is {:.2} GB. Raise \
+                     [memory] budget_gb / FERRIC_MEM_BUDGET_GB, or use compute_mo.",
+                    peak_bytes as f64 / 1e9, budget as f64 / 1e9,
                 )));
             }
         }
