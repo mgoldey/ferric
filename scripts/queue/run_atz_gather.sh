@@ -40,7 +40,12 @@ run() {
     sleep 60
   done
   local st; st=$(date +%s)
-  scripts/ferric-limited -- ./target/release/ferric \
+  # Per-SLOT memory cap. ferric-limited's default is 12G per job, which is
+  # right for ONE job but lets NPROC=3 collectively reach 36G on a 23GB box --
+  # the cgroup bounds a single runaway job, not three cooperating ones.
+  # Measured RSS grows with system size (2.2G at 6-8 atoms, 3.1G at 10), so
+  # size the slot for the LARGEST system, not the smallest.
+  scripts/ferric-limited --max=5G --high=4G -- ./target/release/ferric \
     "benchmarks/grid/toml/${key}.toml" > "$out" 2> "${out}.err"
   local rc=$? el=$(( $(date +%s) - st ))
   if [ $rc -eq 0 ] && grep -q "Total" "$out"; then echo "[ok   ] ${el}s $key"
