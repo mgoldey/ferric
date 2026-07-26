@@ -30,6 +30,16 @@ run() {
     [ "$(free -g | awk '/^Mem:/{print $7}')" -ge 8 ] && break
     sleep 60
   done
+  # LOCK: refuse to run a job another process is already running.
+  # xargs -P re-dispatches from a static list, so if a stage is restarted (or
+  # an earlier run's xargs survives), two processes can open the SAME output
+  # file and truncate each other. Observed 2026-07-26: all three a24-21
+  # fragments had duplicate writers and their .out files were clobbered to
+  # 48 bytes with zero completed points. flock makes the second one skip.
+  exec 9>"${out}.lock"
+  if ! flock -n 9; then
+    echo "[lock ] $key already running elsewhere"; return
+  fi
   local st; st=$(date +%s)
   # Per-SLOT memory cap. ferric-limited's default is 12G per job, which is
   # right for ONE job but lets NPROC=3 collectively reach 36G on a 23GB box --

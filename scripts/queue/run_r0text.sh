@@ -29,6 +29,12 @@ run() {
     [ "$(free -g | awk '/^Mem:/{print $7}')" -ge 8 ] && break
     sleep 60
   done
+  # LOCK: see run_r0bmin.sh -- xargs -P can re-dispatch a job whose output is
+  # already being written, and the two writers truncate each other.
+  exec 9>"${out}.lock"
+  if ! flock -n 9; then
+    echo "[lock ] $key already running elsewhere"; return
+  fi
   local st; st=$(date +%s)
   # Per-SLOT memory cap. ferric-limited's default is 12G per job, which is
   # right for ONE job but lets NPROC=3 collectively reach 36G on a 23GB box --
