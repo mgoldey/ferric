@@ -43,6 +43,40 @@ def parse_out(key):
         rhf = tot - b
         return dict(rhf=rhf, mp2=grab(t, "E(MP2, Coulomb)"),
                     a=grab(t, "E_corr naive (A)"), b=b, tot_b=tot)
+    # --- aTZ comparison gather (2026-07-26) -------------------------------
+    # These four methods print `Total      =` (padded), NOT `Total energy =`,
+    # and had NO branch here at all: parse_out returned None even for a
+    # perfectly good output file, so all 288 gather jobs would have completed
+    # and produced nothing readable. The runner's own success test is
+    # `grep -q Total`, which passes for both spellings -- so the failure would
+    # have been silent on both sides. Verified against real CLI output.
+    if key.endswith("_mp2v"):
+        # MP2-V: RHF + attenuated MP2 correlation + VV10 nonlocal.
+        rhf, tot = grab(t, "RHF energy"), grab(t, "Total")
+        if rhf is None or tot is None:
+            return None
+        return dict(rhf=rhf, corr=grab(t, "attMP2corr"), e_os=grab(t, "E_OS"),
+                    e_ss=grab(t, "E_SS"), e_nl=grab(t, "VV10 E_nl"), tot=tot)
+    if key.endswith("_atterfc"):
+        rhf, tot = grab(t, "RHF energy"), grab(t, "Total")
+        if rhf is None or tot is None:
+            return None
+        return dict(rhf=rhf, corr=grab(t, "MP2 corr"), e_os=grab(t, "E_OS"),
+                    e_ss=grab(t, "E_SS"), tot=tot)
+    if key.endswith("_scs2terfc"):
+        rhf, tot = grab(t, "RHF energy"), grab(t, "Total")
+        if rhf is None or tot is None:
+            return None
+        return dict(rhf=rhf, corr=grab(t, "SCS corr"), e_os=grab(t, "E_OS"),
+                    e_ss=grab(t, "E_SS"), tot=tot)
+    if key.endswith("_mp2"):
+        # Must come AFTER _scs2terfc/_atterfc/_mp2v: plain "_mp2" is a suffix
+        # of none of them, but keep the ordering explicit so a future tag
+        # ending in "_mp2" cannot be swallowed by this branch.
+        rhf, tot = grab(t, "RHF energy"), grab(t, "Total")
+        if rhf is None or tot is None:
+            return None
+        return dict(rhf=rhf, corr=grab(t, "MP2 corr"), tot=tot)
     if key.endswith("_cr02"):
         tot, tc = grab(t, "Total energy"), grab(t, "E_corr coupled (T)")
         if tot is None or tc is None:
