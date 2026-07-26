@@ -653,6 +653,28 @@ pub(crate) fn run_pdep_rpa_eigensolve(
 /// through the MPI-distributed frequency evaluators — the two entry points
 /// cannot silently diverge on the (replicated) Davidson/Lanczos setup because
 /// they call the exact same function for it.
+///
+/// # `op` and `config.frozen_core` do NOT determine the energy here
+///
+/// Both are already baked into `inter` by the caller's
+/// `compute_rpa_intermediates` — the energy comes entirely from `inter.b_ov`,
+/// `inter.nocc`, `inter.nvir`, `inter.first_occ`. On the DEFAULT dense path
+/// (`Chi0Sparsity::Dense`) the `op` argument reaches exactly one place,
+/// `screen::build_screened_bov_boys` inside the `BoysScreened` arm, which never
+/// executes; `config.frozen_core` likewise only reaches that arm.
+///
+/// So passing a WRONG `op` here is silently inert rather than an error, and no
+/// test can catch it — there is nothing to catch. This was found 2026-07-26 by
+/// mutation testing: two seeded mutations (wrong `op`, zeroed `frozen_core`)
+/// escaped every test, while their harmful siblings — wrong *intermediates*,
+/// and `frozen_core` dropped from the `RiMp2Config` that BUILDS the
+/// intermediates — were caught immediately.
+///
+/// **Callers must keep `op` consistent with the operator used to build `inter`
+/// anyway.** [`crate::rs_mp2_rpa`] makes three calls here with different
+/// operators and is correct today, but by convention only: the argument is not
+/// protecting it. If the Boys-screened path is ever made the default, a
+/// mismatched `op` becomes a live wrong-answer bug rather than a no-op.
 #[allow(clippy::too_many_arguments)]
 pub fn run_pdep_rpa_from_intermediates(
     inter: &ferric_mp2::rimp2::RpaIntermediates,
