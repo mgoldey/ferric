@@ -109,14 +109,21 @@ def collect(basis, form):
             continue  # failed / killed / still running
         data[float(r0s.replace("p", "."))][idx][frag] = tot
 
-    # Multi-r0 sweep files. Several tag conventions exist for these
-    # (`terfr0sweep_`, `r0scan_`, `r0fine_`, `r0tscan_`, `r0coarse_`) — match any tag
-    # rather than one spelling, or a whole scan goes silently unread. The
-    # formulation lives in the TOML rather than the filename, so read it back
-    # from the sibling TOML to avoid mixing B and T into one curve.
+    # Multi-r0 sweep files. Many tag conventions exist for these
+    # (`terfr0sweep_`, `r0scan_`, `r0fine_`, `r0tscan_`, `r0coarse_`, `r0text_`, …).
+    # Match ANY tag via a wildcard rather than an allowlist: an allowlist has
+    # silently hidden a completed scan three times now (r0fine_, r0tscan_, and
+    # r0text_ each had to be added after the fact), and the failure mode is
+    # invisible — the curve just comes back short with no error. A new tag must
+    # never require editing this regex.
+    #
+    # Safety of the wildcard: the tag group cannot swallow a formulation because
+    # the formulation is read back from the sibling TOML below, not parsed from
+    # the filename, and non-sweep files are rejected by parse_multi_r0 returning
+    # nothing. Single-r0 files are handled by the separate `terfr0_` branch above.
     multi = re.compile(
         rf"^a24-(\d+)_(dimer|mA_cp|mB_cp)_{re.escape(basis)}"
-        rf"_(?:terfr0sweep|r0scan|r0fine|r0tscan|r0coarse)_(.+)\.out$"
+        rf"_([A-Za-z0-9]+)_(.+)\.out$"
     )
     want_form = {"B": "delta-lr", "T": "coupled-rings"}[form]
     for p in sorted(OUT.glob(f"a24-*_{basis}_*_*.out")):
