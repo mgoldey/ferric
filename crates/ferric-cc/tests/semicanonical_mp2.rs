@@ -52,7 +52,7 @@ fn semicanonicalization_measurably_corrects_open_shell_mp2() {
 
     let rohf = solve_rohf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &cfg).unwrap();
     assert!(rohf.converged);
-    let sc = semicanonicalize(&ctx, &mol, &obs, &bounds, &rohf, 1e-12, false).unwrap();
+    let sc = semicanonicalize(&ctx, &mol, &obs, &bounds, &rohf, 1e-12, None).unwrap();
     let semi = sc.to_unrestricted_result(&rohf);
 
     let mp2 = |s: &ferric_scf::result::ScfResult| {

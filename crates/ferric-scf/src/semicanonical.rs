@@ -25,11 +25,14 @@
 //! routine prior to inputting the Kohn–Sham orbitals into an unrestricted coupled-cluster
 //! code."*
 //!
-//! # What this does NOT do
+//! # Kohn–Sham references
 //!
-//! The Fock build here is Hartree–Fock: `F_σ = h + J[D_α+D_β] − K[D_σ]`. For a ROKS
-//! reference the exchange–correlation potential is missing, so the resulting orbital
-//! energies are **not** the KS ones. See [`semicanonicalize`] for the guard.
+//! Passing an [`XcSpec`] builds an unrestricted **Kohn–Sham** `F_σ`: semilocal `V^σ_xc`
+//! (plus VV10) from the named functional, with exact exchange following that
+//! functional's own `KMix` — full `K` for Hartree–Fock, scaled `K` for a plain hybrid,
+//! and the split `c_sr·K_SR + c_lr·K_LR` for a range-separated one such as ωB97X-L-V.
+//! Passing `None` gives the plain Hartree–Fock `F_σ = h + J[D] − K[D_σ]` appropriate to
+//! a ROHF reference.
 
 use crate::result::{ScfResult, Spin};
 use crate::screening::SchwarzBounds;
@@ -39,6 +42,45 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ndarray::{Array1, Array2};
 use ndarray_linalg::Eigh;
 use ndarray_linalg::UPLO;
+
+/// Which density functional to use when building the unrestricted Kohn–Sham `F_σ`.
+///
+/// Mirrors how `solve_uhf` constructs its own XC contribution (`uhf.rs:119-129`), so a
+/// semi-canonicalized ROKS reference sees the same potential the SCF converged against.
+#[derive(Debug, Clone)]
+pub struct XcSpec<'a> {
+    /// Functional name, e.g. `"wB97X-L-V"` — resolved by `ferric_dft::libxc`.
+    pub name: &'a str,
+    /// Main XC quadrature grid. `None` uses the same default as the SCF drivers.
+    pub grid: Option<ferric_dft::grid::AtomicGridConfig>,
+    /// Non-local (VV10) grid. `None` uses the drivers' `{n_radial: 50, n_angular: 50}`.
+    pub nlc_grid: Option<ferric_dft::grid::AtomicGridConfig>,
+}
+
+impl<'a> XcSpec<'a> {
+    /// Convenience constructor using the default grids.
+    pub fn new(name: &'a str) -> Self {
+        Self { name, grid: None, nlc_grid: None }
+    }
+
+    fn build(
+        &self,
+        mol: &ferric_core::mol::Molecule,
+        prep: &PreparedBasis,
+    ) -> Result<Box<dyn ferric_dft::xc_trait::UksXcContribution>, FerricError> {
+        let main = self.grid.clone().unwrap_or_default();
+        let nlc = self.nlc_grid.clone().unwrap_or(ferric_dft::grid::AtomicGridConfig {
+            n_radial: 50,
+            n_angular: 50,
+            ..Default::default()
+        });
+        let ks = ferric_dft::ks::KsXcUks::new(mol, prep.basis_set(), self.name, &main, &nlc)
+            .map_err(|e| {
+                FerricError::General(format!("KsXcUks init for {}: {e:?}", self.name))
+            })?;
+        Ok(Box::new(ks) as Box<dyn ferric_dft::xc_trait::UksXcContribution>)
+    }
+}
 
 /// A semi-canonical open-shell orbital set derived from a ROHF reference.
 #[derive(Debug, Clone)]
@@ -150,14 +192,17 @@ fn semicanonicalize_spin(
 /// * The reference did not converge. Semi-canonicalizing a garbage density produces
 ///   garbage orbital energies that look perfectly well-formed.
 ///
-/// # ROKS caveat
+/// # Kohn–Sham references (ROKS)
 ///
-/// The Fock build is Hartree–Fock (`F_σ = h + J[D] − K[D_σ]`), with no exchange–
-/// correlation potential. For a **ROKS** reference the resulting orbital energies are
-/// therefore HF-like, not Kohn–Sham. The paper specifies an unrestricted *Kohn–Sham*
-/// Fock build; matching that needs the XC potential threaded in here. Until then this is
-/// correct for ROHF references and an approximation for ROKS ones — so ROKS is rejected
-/// rather than silently approximated (see `xc_reference` below).
+/// Pass the functional name in `xc` to build an unrestricted **Kohn–Sham** `F_σ`:
+/// the semilocal `V^σ_xc` is added via [`ferric_dft::ks::KsXcUks`], and the exact-exchange
+/// fraction follows the functional's own `KMix` — full `K` for Hartree–Fock, a scaled
+/// `K` for a plain hybrid, and the split `c_sr·K_SR + c_lr·K_LR` for a range-separated
+/// one like ωB97X-L-V. Pass `None` for a plain ROHF reference.
+///
+/// Getting this wrong is silent: an HF `F_σ` built on a ROKS density yields orbital
+/// energies that look reasonable but are not the Kohn–Sham ones, which is why the
+/// functional must be named explicitly rather than guessed.
 pub fn semicanonicalize(
     ctx: &ParallelContext,
     mol: &ferric_core::mol::Molecule,
@@ -165,7 +210,7 @@ pub fn semicanonicalize(
     bounds: &SchwarzBounds,
     rohf: &ScfResult,
     integral_thresh: f64,
-    xc_reference: bool,
+    xc: Option<&XcSpec<'_>>,
 ) -> Result<SemicanonicalOrbitals, FerricError> {
     if !matches!(rohf.spin, Spin::RestrictedOpen) {
         return Err(FerricError::General(format!(
@@ -180,15 +225,6 @@ pub fn semicanonicalize(
             last_energy: rohf.energy,
         });
     }
-    if xc_reference {
-        return Err(FerricError::General(
-            "semicanonicalize: ROKS references are not supported — this builds a \
-             Hartree-Fock F_sigma (h + J - K) with no XC potential, so the orbital \
-             energies would be HF-like, not Kohn-Sham. Threading the XC potential \
-             through is required first."
-                .into(),
-        ));
-    }
 
     let d_a = &rohf.density_alpha;
     let d_b = rohf
@@ -200,24 +236,62 @@ pub fn semicanonicalize(
     let n = prep.nbasis();
     let h = ferric_integrals::oneelectron::hcore(prep);
 
-    // One unrestricted Fock build from the converged density:
-    //   F_sigma = h + J[D_a + D_b] - K[D_sigma]
-    // build_jk returns J and K for whatever density it is handed, so J comes from the
-    // total density and each K from its own spin density.
+    // Build the XC contribution first: its k_mix decides how exchange is assembled.
+    let xc_contrib = match xc {
+        Some(spec) => Some(spec.build(mol, prep)?),
+        None => None,
+    };
+    let k_mix = xc_contrib.as_ref().map(|c| c.k_mix()).unwrap_or_default();
+
+    // Coulomb from the TOTAL density (one build).
     let (mut j_tot, mut k_scratch) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
     crate::rhf::build_jk(ctx, prep, bounds, integral_thresh, &d_total, &mut j_tot, &mut k_scratch)?;
 
-    // Per-spin exchange. `build_jk` returns both J and K; only K is used here (J from
-    // the total density above already carries the full Coulomb term).
-    let (mut j_scratch, mut k_a) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
-    crate::rhf::build_jk(ctx, prep, bounds, integral_thresh, d_a, &mut j_scratch, &mut k_a)?;
+    let mut f_a = &h + &j_tot;
+    let mut f_b = &h + &j_tot;
 
-    let mut k_b = Array2::zeros((n, n));
-    j_scratch.fill(0.0);
-    crate::rhf::build_jk(ctx, prep, bounds, integral_thresh, d_b, &mut j_scratch, &mut k_b)?;
+    // Exact exchange, per spin, following the functional's k_mix:
+    //   HF / no XC  -> full K[D_sigma]
+    //   plain hybrid -> k_mix.sr * K[D_sigma]
+    //   RSH          -> c_sr*K_SR[D_sigma] + c_lr*K_LR[D_sigma]
+    if k_mix.omega > 0.0 {
+        let ooc_budget = ferric_core::memory::resolve_budget_bytes(None);
+        let (mut dfk_sr, mut dfk_lr) = crate::fock_assembly::build_rsh_dfk_pair(
+            ctx,
+            mol,
+            prep,
+            None,
+            k_mix.omega,
+            ooc_budget,
+        )?;
+        // occ_factor/scale = 1.0: these are per-spin Focks built from per-spin
+        // densities, matching how solve_uhf calls this (uhf.rs:314-319).
+        crate::fock_assembly::subtract_rsh_exchange(
+            &mut dfk_sr, &mut dfk_lr, d_a, None, 1.0, &mut f_a, k_mix.sr, k_mix.lr, 1.0,
+        )?;
+        crate::fock_assembly::subtract_rsh_exchange(
+            &mut dfk_sr, &mut dfk_lr, d_b, None, 1.0, &mut f_b, k_mix.sr, k_mix.lr, 1.0,
+        )?;
+    } else {
+        // Full K for a pure-HF reference; k_mix.sr for a plain hybrid. A pure
+        // (non-hybrid) functional has k_mix.sr == 0 and needs no exchange at all.
+        let c_k = if xc_contrib.is_some() { k_mix.sr } else { 1.0 };
+        if c_k != 0.0 {
+            let (mut j_scratch, mut k_a) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
+            crate::rhf::build_jk(ctx, prep, bounds, integral_thresh, d_a, &mut j_scratch, &mut k_a)?;
+            let mut k_b = Array2::zeros((n, n));
+            j_scratch.fill(0.0);
+            crate::rhf::build_jk(ctx, prep, bounds, integral_thresh, d_b, &mut j_scratch, &mut k_b)?;
+            f_a.scaled_add(-c_k, &k_a);
+            f_b.scaled_add(-c_k, &k_b);
+        }
+    }
 
-    let f_a = &h + &j_tot - &k_a;
-    let f_b = &h + &j_tot - &k_b;
+    // Semilocal V^sigma_xc (+ VV10), added in place. This is the piece whose absence
+    // made ROKS references wrong before.
+    if let Some(c) = xc_contrib.as_ref() {
+        c.add_xc_uks(d_a, d_b, &mut f_a, &mut f_b);
+    }
 
     // ROHF stores one spatial MO set in mos_alpha; both spins start from it.
     let c = &rohf.mos_alpha;

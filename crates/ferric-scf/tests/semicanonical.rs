@@ -61,7 +61,7 @@ fn run(f: &Fixture) -> ferric_scf::semicanonical::SemicanonicalOrbitals {
         &f.bounds,
         &f.rohf,
         1e-12,
-        false,
+        None,
     )
     .expect("semicanonicalization should succeed on a converged ROHF reference")
 }
@@ -285,14 +285,15 @@ fn invalid_references_are_rejected() {
     )
     .unwrap();
     assert!(
-        semicanonicalize(&ctx, &mol_h2o, &obs_h2o, &bounds_h2o, &rhf, 1e-12, false).is_err(),
+        semicanonicalize(&ctx, &mol_h2o, &obs_h2o, &bounds_h2o, &rhf, 1e-12, None).is_err(),
         "a restricted reference must be rejected"
     );
 
-    // ROKS is rejected rather than silently given HF orbital energies.
+    // An unknown functional name must error rather than silently fall back to HF.
+    let bad = ferric_scf::semicanonical::XcSpec::new("NOT_A_REAL_FUNCTIONAL");
     assert!(
-        semicanonicalize(&ctx, &f.mol, &f.obs, &f.bounds, &f.rohf, 1e-12, true).is_err(),
-        "a ROKS reference must be rejected until the XC potential is threaded through"
+        semicanonicalize(&ctx, &f.mol, &f.obs, &f.bounds, &f.rohf, 1e-12, Some(&bad)).is_err(),
+        "an unresolvable functional name must be an error, not a silent HF fallback"
     );
 }
 
@@ -339,5 +340,91 @@ fn converts_to_a_usable_unrestricted_result() {
     assert!(
         (n_elec - want).abs() < 1e-9,
         "converted density has {n_elec:.6} electrons, expected {want}"
+    );
+}
+
+/// THE XC-THREADING TEST — a Kohn-Sham F_sigma must differ from the HF one.
+///
+/// Before XC threading this routine always built a Hartree-Fock F_sigma, so a ROKS
+/// reference silently received HF-like orbital energies. Passing an `XcSpec` must
+/// visibly change the result; if HF and KS agreed, the XC potential would not be
+/// reaching the Fock build.
+#[test]
+fn kohn_sham_fock_differs_from_hartree_fock() {
+    use ferric_scf::semicanonical::XcSpec;
+    let f = setup("sto-3g");
+    let ctx = ParallelContext::default();
+
+    let hf = run(&f);
+    for name in ["PBE", "B3LYP", "wB97X-L-V"] {
+        let spec = XcSpec::new(name);
+        let ks = semicanonicalize(&ctx, &f.mol, &f.obs, &f.bounds, &f.rohf, 1e-12, Some(&spec))
+            .unwrap_or_else(|e| panic!("{name} semicanonicalization failed: {e}"));
+
+        let max_d = hf
+            .eps_alpha
+            .iter()
+            .zip(ks.eps_alpha.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f64::max);
+        eprintln!(
+            "{name:12} HOMO_a = {:>10.6}  (HF {:>10.6})   max |eps_KS - eps_HF| = {max_d:.3e}",
+            ks.eps_alpha[ks.nocc_alpha - 1],
+            hf.eps_alpha[hf.nocc_alpha - 1]
+        );
+
+        assert!(
+            max_d > 1e-4,
+            "{name}: KS and HF orbital energies agree to {max_d:.3e} -- the XC potential \
+             is not reaching the Fock build"
+        );
+        // All the defining properties must still hold under XC.
+        assert!(ks.eps_alpha.iter().all(|v| v.is_finite()), "{name}: non-finite eps");
+        assert!(
+            ks.max_ov_alpha > 1e-10,
+            "{name}: occ-virt block vanished -- wrong Fock operator"
+        );
+        let differ =
+            ks.eps_alpha.iter().zip(ks.eps_beta.iter()).any(|(a, b)| (a - b).abs() > 1e-6);
+        assert!(differ, "{name}: alpha and beta energies identical under XC");
+    }
+}
+
+/// A range-separated functional must take the SPLIT exchange path, not full K.
+///
+/// wB97X-L-V has omega = 0.1 with c_sr = 0.6, c_lr = 1.0, so its exchange is
+/// c_sr*K_SR + c_lr*K_LR -- materially different from both full K (HF) and from a
+/// plain hybrid's scaled K. Comparing against a plain hybrid confirms the RSH branch
+/// is distinct rather than silently collapsing to the hybrid one.
+#[test]
+fn range_separated_exchange_takes_its_own_path() {
+    use ferric_scf::semicanonical::XcSpec;
+    let f = setup("sto-3g");
+    let ctx = ParallelContext::default();
+
+    let run_xc = |name: &str| {
+        let spec = XcSpec::new(name);
+        semicanonicalize(&ctx, &f.mol, &f.obs, &f.bounds, &f.rohf, 1e-12, Some(&spec)).unwrap()
+    };
+
+    let rsh = run_xc("wB97X-L-V");
+    let hybrid = run_xc("B3LYP");
+    let pure = run_xc("PBE");
+
+    let spread = |a: &[f64], b: &[f64]| {
+        a.iter().zip(b.iter()).map(|(x, y)| (x - y).abs()).fold(0.0, f64::max)
+    };
+    eprintln!("|RSH - hybrid| = {:.3e}", spread(&rsh.eps_alpha, &hybrid.eps_alpha));
+    eprintln!("|RSH - pure|   = {:.3e}", spread(&rsh.eps_alpha, &pure.eps_alpha));
+
+    assert!(
+        spread(&rsh.eps_alpha, &hybrid.eps_alpha) > 1e-3,
+        "wB97X-L-V and B3LYP gave near-identical orbital energies -- the RSH exchange \
+         split (c_sr*K_SR + c_lr*K_LR) is probably collapsing to the plain-hybrid path"
+    );
+    assert!(
+        spread(&rsh.eps_alpha, &pure.eps_alpha) > 1e-3,
+        "wB97X-L-V and PBE gave near-identical orbital energies -- exact exchange is \
+         not being applied at all"
     );
 }
