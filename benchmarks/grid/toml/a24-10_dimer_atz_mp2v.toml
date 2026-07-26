@@ -1,0 +1,21 @@
+[molecule]
+xyz = "/home/matt/qc/ferric/benchmarks/grid/geoms/a24-10_dimer.xyz"
+
+[basis]
+name = "aug-cc-pvtz"
+
+[scf]
+df_j_aux = "def2-universal-jkfit"
+df_k_aux = "def2-universal-jkfit"
+max_iter = 400
+
+[method]
+kind = "mp2-v"
+
+[mp2]
+auxbasis = "aug-cc-pvtz-rifit"
+mp2v_r0 = 1.00
+mp2v_b = 11.0
+mp2v_c = 0.0089
+mp2v_attenuator = "terfc"
+mp2v_vv10_damping = "terfc"
