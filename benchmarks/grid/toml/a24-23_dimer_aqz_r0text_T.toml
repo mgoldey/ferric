@@ -1,0 +1,21 @@
+[molecule]
+xyz = "benchmarks/grid/geoms/a24-23_dimer.xyz"
+[basis]
+name = "aug-cc-pvqz"
+[scf]
+df_j_aux = "def2-universal-jkfit"
+df_k_aux = "def2-universal-jkfit"
+max_iter = 400
+[method]
+kind = "rs-mp2-rpa"
+[mp2]
+auxbasis = "aug-cc-pvqz-rifit"
+attenuator = "terf"
+r0_sweep = [1.4000, 1.5000, 1.6000, 1.7000, 1.8000]
+formulation = "coupled-rings"
+frozen_core = 4
+[rpa]
+trunc_thresh = 1e-3
+n_quad = 12
+[memory]
+budget_gb = 4.0
