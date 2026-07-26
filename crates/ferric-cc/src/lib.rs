@@ -14,6 +14,7 @@ pub mod ccsd_t_closed_shell;
 pub mod double_hybrid;
 pub mod helpers;
 pub mod linlccd;
+pub mod linlccd_exact;
 
 #[derive(Debug, Clone)]
 pub struct CcConfig {
