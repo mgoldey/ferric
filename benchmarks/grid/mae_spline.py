@@ -26,6 +26,7 @@ Two things this is careful about, because both silently corrupt the curve:
     quoted as an optimum.
 """
 import argparse
+import json
 import re
 import sys
 from collections import defaultdict
@@ -317,6 +318,61 @@ def suggest(pts, best_x, interior, n=5, halfwidth=0.10):
     return keep
 
 
+def dump_per_r0(basis, form, want, path):
+    """Persist per-r0, per-system results as structured JSON.
+
+    Until now the ONLY record of a scan was the raw .out files, re-parsed on
+    every invocation. That makes results invisible to anything that is not
+    this script, and means a finished scan can be silently mis-read by a
+    parsing change (which has happened three times -- see the tag-allowlist
+    comment in collect()). Writing the parsed numbers to disk gives a stable
+    artifact that can be diffed, archived, and read by other tools.
+
+    Layout: {basis, formulation, generated_from, systems, points: [
+        {r0, n_systems, mae, per_system: {idx: {e_int, ref, err}}} ]}
+    All energies kcal/mol. Only systems with all three CP fragments are
+    included -- a partial CP triple is a different quantity, not a noisier
+    one, so it is omitted rather than approximated.
+    """
+    bind = load_bind()
+    data = collect(basis, form)
+    complete = {r0: {s for s, f in per.items() if len(f) == 3}
+                for r0, per in data.items()}
+    sysset = set(want) if want else set().union(*complete.values()) if complete else set()
+
+    points = []
+    for r0 in sorted(data):
+        have = sorted(sysset & complete.get(r0, set()))
+        if not have:
+            continue
+        per_sys, errs = {}, []
+        for idx in have:
+            f = data[r0][idx]
+            e_int = (f["dimer"] - f["mA_cp"] - f["mB_cp"]) * K
+            err = e_int - bind[idx]
+            per_sys[str(idx)] = {"e_int": round(e_int, 6),
+                                 "ref": bind[idx],
+                                 "err": round(err, 6)}
+            errs.append(abs(err))
+        points.append({"r0": round(r0, 4),
+                       "n_systems": len(have),
+                       "systems": have,
+                       "mae": round(sum(errs) / len(errs), 6),
+                       "per_system": per_sys})
+
+    doc = {"basis": basis,
+           "formulation": form,
+           "formulation_label": FORM_LABEL[form],
+           "units": "kcal/mol",
+           "note": ("MAE is over the systems listed per point. Compare MAEs "
+                    "only at equal n_systems -- a method or r0 scored on a "
+                    "different subset is not comparable."),
+           "requested_systems": sorted(sysset),
+           "points": points}
+    Path(path).write_text(json.dumps(doc, indent=2) + "\n")
+    return doc
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -331,8 +387,17 @@ def main():
                     help="refinement window half-width in Angstrom (interior case)")
     ap.add_argument("--toml", action="store_true",
                     help="emit the suggestion as a [mp2] r0_sweep line")
+    ap.add_argument("--dump", metavar="PATH", default=None,
+                    help="write per-r0/per-system results to PATH as JSON "
+                         "(default name: r0_scan_<basis>_<form>.json)")
     a = ap.parse_args()
     want = [int(x) for x in a.systems.split(",") if x.strip()] if a.systems else None
+    if a.dump is not None:
+        path = a.dump or f"r0_scan_{a.basis}_{a.form}.json"
+        doc = dump_per_r0(a.basis, a.form, want, path)
+        if not a.toml:
+            print(f"wrote {path}: {len(doc['points'])} r0 points, "
+                  f"{len(doc['requested_systems'])} systems")
     res = analyze(a.basis, a.form, want, verbose=not a.toml)
     if not res:
         return 1
