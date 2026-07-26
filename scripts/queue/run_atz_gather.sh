@@ -24,7 +24,7 @@ run() {
     echo "[skip] $key"; return
   fi
   for _ in $(seq 1 90); do
-    [ "$(free -g | awk '/^Mem:/{print $7}')" -ge 5 ] && break
+    [ "$(free -g | awk '/^Mem:/{print $7}')" -ge 8 ] && break
     sleep 60
   done
   local st; st=$(date +%s)
