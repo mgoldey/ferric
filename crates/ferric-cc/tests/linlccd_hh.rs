@@ -194,7 +194,7 @@ fn h2_dissociation_stays_regular() {
     let op = Operator::coulomb();
     let cfg = CcConfig { energy_conv: 1e-10, max_iter: 300, ..Default::default() };
 
-    let mut prev = f64::NAN;
+    let mut prev = 0.0f64;
     for &r_ang in &[0.74_f64, 1.5, 3.0, 6.0, 9.0, 11.0] {
         let xyz = format!("2\n\nH 0.0 0.0 0.0\nH 0.0 0.0 {r_ang}\n");
         let mol = Molecule::parse_xyz(&xyz, 0, 1).unwrap();
@@ -229,9 +229,13 @@ fn h2_dissociation_stays_regular() {
             "correlation energy {e:.10} at R = {r_ang} A is unphysically large \
              (near-singular amplitudes)"
         );
+        // Monotonic: correlation grows in magnitude as the gap closes.
+        assert!(
+            e <= prev,
+            "E_corr not monotonic: {e:.10} at R = {r_ang} A vs {prev:.10} previously"
+        );
         prev = e;
     }
-    assert!(prev.is_finite());
 }
 
 /// RUNG 2b — the regularization actually bites.
@@ -283,4 +287,94 @@ fn hh_dressing_bounds_amplitudes_where_mp2_blows_up() {
             e_mp2.abs()
         );
     }
+}
+
+/// Regular hexagonal H6 ring; `r_ang` is both the circumradius and the
+/// nearest-neighbour distance. The paper's strong-correlation probe (Fig. 2c).
+fn h6_ring(r_ang: f64) -> String {
+    let mut s = String::from("6\n\n");
+    for k in 0..6 {
+        let th = std::f64::consts::PI / 3.0 * (k as f64);
+        s.push_str(&format!("H {:.10} {:.10} 0.0\n", r_ang * th.cos(), r_ang * th.sin()));
+    }
+    s
+}
+
+/// RUNG 5 — H6/cc-pVDZ, the LOAD-BEARING robustness test.
+///
+/// Unlike H2, H6 has multiple occupied orbitals, so the ring/crossed-ring exchange
+/// pathway the paper identifies as the cause of LinCCD's divergence is actually active.
+/// This is the system the paper calls "prototypical of strongly correlated systems in
+/// chemistry ... reminiscent of the Hubbard model".
+///
+/// Measured here across R = 1-6 A (all with a converged RHF reference):
+///   * MP2 runs away:      -0.111 -> -0.714 Ha as the gap closes (0.64 -> 0.074)
+///   * CCD FAILS: returns a POSITIVE correlation energy (+0.104) at R = 3.0 A, then
+///     stops converging entirely by R = 6.0 A
+///   * LinLCCD(hh)/full:   smooth, bounded, monotonic over the whole range
+///
+/// The CCD failure is what makes this discriminating: it is a qualitative breakdown that
+/// LinLCCD does not share, on the exact system the paper uses to make the claim.
+#[test]
+fn h6_ring_stays_robust_where_ccd_fails() {
+    let op = Operator::coulomb();
+    let cfg = CcConfig { energy_conv: 1e-10, max_iter: 200, ..Default::default() };
+
+    let mut prev_hh = 0.0f64;
+    let mut prev_mp2 = 0.0f64;
+    for &r in &[1.0_f64, 2.0, 3.0, 4.0, 6.0] {
+        let mol = Molecule::parse_xyz(&h6_ring(r), 0, 1).unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig { energy_conv: 1e-10, max_iter: 200, ..Default::default() },
+        )
+        .unwrap();
+        assert!(rhf.converged, "RHF reference did not converge for H6 at R = {r} A");
+
+        let e_mp2 = ri_mp2_spin_components(&mol, &obs, &dfbs, op, &rhf, &RiMp2Config::default())
+            .unwrap()
+            .0
+            .e_total;
+        let e_hh = linlccd(&mol, &obs, &dfbs, op, &rhf, &cfg, LadderVariant::Hh)
+            .unwrap()
+            .correlation_energy;
+
+        eprintln!("R = {r:4.1} A   E_MP2 = {e_mp2:12.8}   E_LinLCCD(hh) = {e_hh:12.8}");
+
+        // Physical: correlation energy is negative and bounded.
+        assert!(e_hh.is_finite(), "LinLCCD(hh) diverged on H6 at R = {r} A");
+        assert!(
+            e_hh < 0.0,
+            "LinLCCD(hh) gave a POSITIVE correlation energy {e_hh:.8} at R = {r} A -- \
+             this is the qualitative failure mode CCD exhibits here"
+        );
+        // Monotonic: correlation grows in magnitude as the ring expands.
+        assert!(
+            e_hh <= prev_hh,
+            "LinLCCD(hh) not monotonic: {e_hh:.8} at R = {r} A vs {prev_hh:.8} previously"
+        );
+        // Regular: bounded well inside MP2's runaway.
+        assert!(
+            e_hh.abs() < e_mp2.abs(),
+            "LinLCCD(hh) must stay bounded relative to MP2 at R = {r} A: \
+             |{e_hh:.8}| >= |{e_mp2:.8}|"
+        );
+        prev_hh = e_hh;
+        prev_mp2 = e_mp2;
+    }
+
+    // MP2 really does run away over this range -- documents WHY the bound above is
+    // meaningful rather than vacuous.
+    assert!(
+        prev_mp2 < -0.6,
+        "expected MP2 to run away on stretched H6 (got {prev_mp2:.6}); if it no longer \
+         does, the boundedness assertions above have lost their teeth"
+    );
 }
