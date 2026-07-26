@@ -16,11 +16,12 @@ use ferric_dft::vv10::Vv10Damping;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_mp2::att_vv10::{
-    att_mp2_vv10, vv10_energy_on_density, AttVv10Attenuator, AttVv10Config, BOHR_PER_ANG,
+    att_mp2_vv10, u_att_mp2_vv10, vv10_energy_on_density, AttVv10Attenuator, AttVv10Config,
+    AttVv10SpinComponents, BOHR_PER_ANG,
 };
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
-use ferric_scf::ScfResult;
+use ferric_scf::{ScfResult, Spin};
 
 struct Case {
     mol: Molecule,
@@ -62,6 +63,88 @@ fn build_case(xyz: &str, basis_name: &str) -> Case {
         dfbs,
         rhf,
     }
+}
+
+/// An open-shell case. Structurally identical to [`Case`]; separate only so the
+/// field name (`scf`, not `rhf`) does not lie about what it holds.
+struct OpenCase {
+    mol: Molecule,
+    bs: basis::BasisSet,
+    obs: PreparedBasis,
+    dfbs: PreparedBasis,
+    scf: ScfResult,
+}
+
+/// UHF open-shell case. `mult` is the spin multiplicity (2 for a doublet).
+fn build_uhf_case(xyz: &str, charge: i32, mult: usize, basis_name: &str) -> OpenCase {
+    let mol = Molecule::parse_xyz(xyz, charge, mult).unwrap();
+    let bs = basis::bundled(basis_name).unwrap();
+    let obs = PreparedBasis::new(&mol, &bs).unwrap();
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+    let scf = ferric_scf::uhf::solve_uhf(
+        &ferric_core::parallel::ParallelContext::default(),
+        &mol,
+        &obs,
+        &bounds,
+        &ferric_scf::uhf::UhfConfig {
+            energy_conv: 1e-10,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(scf.spin, Spin::Unrestricted);
+    let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
+    let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
+    OpenCase { mol, bs, obs, dfbs, scf }
+}
+
+/// ROHF open-shell case.
+fn build_rohf_case(xyz: &str, charge: i32, mult: usize, basis_name: &str) -> OpenCase {
+    let mol = Molecule::parse_xyz(xyz, charge, mult).unwrap();
+    let bs = basis::bundled(basis_name).unwrap();
+    let obs = PreparedBasis::new(&mol, &bs).unwrap();
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+    let scf = ferric_scf::rohf::solve_rohf(
+        &ferric_core::parallel::ParallelContext::default(),
+        &mol,
+        &obs,
+        op,
+        &bounds,
+        &ferric_scf::rohf::RohfConfig {
+            energy_conv: 1e-10,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(scf.spin, Spin::RestrictedOpen);
+    let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
+    let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
+    OpenCase { mol, bs, obs, dfbs, scf }
+}
+
+/// OH radical, STO-3G, UHF doublet. The standard small open-shell probe.
+/// OH radical in **cc-pVDZ, not STO-3G**, and the basis choice is load-bearing.
+///
+/// OH/STO-3G has nbf = 6 with nocc_α = 5, i.e. **nvir = 1**. Same-spin
+/// correlation is built from the antisymmetrized `K = (ia|jb) − (ib|ja)`; with a
+/// single virtual orbital `a = b` is forced, so `K ≡ 0` for every pair and
+/// `e_aa = e_bb = 0` **exactly** — by the Pauli principle, not by any defect.
+/// Two same-spin electrons cannot be antisymmetrized into one spatial virtual.
+///
+/// An earlier revision of this test used STO-3G and asserted `e_aa < 0`, which
+/// failed for exactly that reason: the system could not exercise the branch the
+/// assertion was about. cc-pVDZ gives nbf = 24, nvir = 19 — a real same-spin
+/// space. Do not shrink this basis back down.
+fn oh_radical_uhf() -> OpenCase {
+    build_uhf_case("2\nOH\nO 0 0 0\nH 0 0 0.97\n", 0, 2, "cc-pvdz")
+}
+
+/// The degenerate case above, kept deliberately so the nvir = 1 identity is
+/// pinned rather than rediscovered as a bug.
+fn oh_radical_uhf_sto3g() -> OpenCase {
+    build_uhf_case("2\nOH\nO 0 0 0\nH 0 0 0.97\n", 0, 2, "sto-3g")
 }
 
 /// Small grid for the tests: the pair sum is O(npts²) and the production
@@ -620,35 +703,39 @@ fn angstrom_to_bohr_conversion_and_damping_sync() {
 // 5. Honest rejection of unsupported references
 // ---------------------------------------------------------------------------
 
+/// The closed-shell entry point must still refuse an open-shell reference —
+/// it now redirects to `u_att_mp2_vv10` rather than claiming "not implemented",
+/// but it must NOT silently accept one (`ri_mp2_spin_components` would take the
+/// α orbitals as doubly occupied and return a meaningless number).
 #[test]
-fn open_shell_reference_is_rejected() {
-    // OH radical via UHF — must hard-error, never return a plausible number.
-    let mol = Molecule::parse_xyz("2\nOH\nO 0 0 0\nH 0 0 0.97\n", 0, 2).unwrap();
-    let bs = basis::bundled("sto-3g").unwrap();
-    let obs = PreparedBasis::new(&mol, &bs).unwrap();
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let uhf = ferric_scf::uhf::solve_uhf(
-        &ferric_core::parallel::ParallelContext::default(),
-        &mol,
-        &obs,
-        &bounds,
-        &ferric_scf::uhf::UhfConfig {
-            energy_conv: 1e-8,
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
-    let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
-
-    let err = att_mp2_vv10(&mol, &obs, &bs, &dfbs, &uhf, &erfc_test_config())
-        .expect_err("open-shell reference must be rejected");
+fn closed_shell_entry_point_rejects_open_shell_reference() {
+    let c = oh_radical_uhf();
+    let err = att_mp2_vv10(&c.mol, &c.obs, &c.bs, &c.dfbs, &c.scf, &erfc_test_config())
+        .expect_err("open-shell reference must be rejected by the restricted entry point");
     let msg = format!("{err}");
-    eprintln!("open-shell rejection: {msg}");
+    eprintln!("closed-shell entry point rejection: {msg}");
     assert!(
         msg.contains("closed-shell") || msg.contains("restricted"),
         "error should say why: {msg}"
+    );
+    assert!(
+        msg.contains("u_att_mp2_vv10"),
+        "error should point at the open-shell entry point: {msg}"
+    );
+}
+
+/// And the mirror image: the open-shell entry point must refuse a *restricted*
+/// reference rather than treating `mos_alpha` as an independent spin channel.
+#[test]
+fn open_shell_entry_point_rejects_restricted_reference() {
+    let c = water_ccpvdz();
+    let err = u_att_mp2_vv10(&c.mol, &c.obs, &c.bs, &c.dfbs, &c.rhf, &erfc_test_config())
+        .expect_err("restricted reference must be rejected by the unrestricted entry point");
+    let msg = format!("{err}");
+    eprintln!("open-shell entry point rejection: {msg}");
+    assert!(
+        msg.contains("att_mp2_vv10"),
+        "error should point at the closed-shell entry point: {msg}"
     );
 }
 
@@ -695,6 +782,532 @@ fn terfc_path_runs_when_tables_present() {
     eprintln!(
         "MP2-V(terfc) plumbing on water/cc-pVDZ (NOT the fitted basis): \
          E_HF = {:.10}, E_c = {:.10}, E_nl = {:.10}, total = {:.10}",
+        r.e_hf, r.e_c_att_mp2, r.e_nl_vv10, r.total
+    );
+    assert!(r.e_c_att_mp2.is_finite() && r.e_c_att_mp2 < 0.0);
+    assert!(r.e_nl_vv10.is_finite());
+    assert_eq!(r.components_sum_to_total(), 0.0);
+}
+
+// ---------------------------------------------------------------------------
+// 7. Open shell (Phase B)
+//
+// PARAMETER HONESTY: every number below is produced with the paper's
+// CLOSED-SHELL-fitted (r0, b, C). The paper's training set (S66) contains only
+// closed-shell dimers and it publishes no open-shell MP2-V parameterization, so
+// none of these tests validate the *parameters* for radicals — they validate
+// the SPIN BOOKKEEPING (that the three U-MP2 blocks and the spin-summed VV10
+// density are wired correctly), which is a separate and checkable claim.
+// ---------------------------------------------------------------------------
+
+/// **The regression pin for Phase A.** These are the committed Phase A values
+/// for the erfc control on water/cc-pVDZ (commit be4404c). Refactoring the
+/// entry point to share `assemble` with the open-shell path must not move the
+/// closed-shell number by a single bit.
+const PHASE_A_WATER_CCPVDZ_ERFC_E_HF: f64 = -76.0267833623;
+const PHASE_A_WATER_CCPVDZ_ERFC_E_C: f64 = -0.1806640950;
+const PHASE_A_WATER_CCPVDZ_ERFC_E_NL: f64 = 0.0186722266;
+
+#[test]
+fn closed_shell_path_is_unchanged_by_the_open_shell_refactor() {
+    let c = water_ccpvdz();
+    let r = att_mp2_vv10(&c.mol, &c.obs, &c.bs, &c.dfbs, &c.rhf, &erfc_test_config()).unwrap();
+    eprintln!(
+        "Phase A regression: E_HF = {:.10} (want {:.10}), E_c = {:.10} (want {:.10}), \
+         E_nl = {:.10} (want {:.10})",
+        r.e_hf,
+        PHASE_A_WATER_CCPVDZ_ERFC_E_HF,
+        r.e_c_att_mp2,
+        PHASE_A_WATER_CCPVDZ_ERFC_E_C,
+        r.e_nl_vv10,
+        PHASE_A_WATER_CCPVDZ_ERFC_E_NL
+    );
+    // Tolerance is the print precision of the committed constants (1e-10), not
+    // a physics tolerance — these are pinned digits, not a converged reference.
+    assert!(
+        (r.e_hf - PHASE_A_WATER_CCPVDZ_ERFC_E_HF).abs() < 5e-10,
+        "E_HF drifted: {} vs {}",
+        r.e_hf,
+        PHASE_A_WATER_CCPVDZ_ERFC_E_HF
+    );
+    assert!(
+        (r.e_c_att_mp2 - PHASE_A_WATER_CCPVDZ_ERFC_E_C).abs() < 5e-10,
+        "E_c^attMP2 drifted: {} vs {}",
+        r.e_c_att_mp2,
+        PHASE_A_WATER_CCPVDZ_ERFC_E_C
+    );
+    assert!(
+        (r.e_nl_vv10 - PHASE_A_WATER_CCPVDZ_ERFC_E_NL).abs() < 5e-10,
+        "E_nl^VV10 drifted: {} vs {}",
+        r.e_nl_vv10,
+        PHASE_A_WATER_CCPVDZ_ERFC_E_NL
+    );
+    assert_eq!(r.reference_spin, Spin::Restricted);
+    assert!(!r.is_open_shell_extrapolation());
+    match r.spin_components {
+        AttVv10SpinComponents::Restricted(_) => {}
+        other => panic!("restricted path must report restricted components, got {other:?}"),
+    }
+}
+
+/// **THE spin-limit test.** A closed-shell singlet driven through the OPEN-SHELL
+/// path must reproduce the closed-shell path's total energy. This is the
+/// open-shell analogue of the ω→0 limit: it isolates "is the α/β bookkeeping
+/// right" from every other question, because for a UHF solution that has
+/// collapsed onto the RHF one, α ≡ β and
+///
+///     E_αα + E_ββ + E_αβ  ≡  E_ss + E_os
+///
+/// must hold identically. If the same-spin blocks were dropped, double-counted,
+/// or the antisymmetrization factor were wrong, this test fails.
+///
+/// The guard: if UHF does NOT collapse to RHF (a symmetry-broken solution at a
+/// different energy), the comparison is meaningless and this test says so
+/// rather than loosening the tolerance to accommodate a different SCF solution.
+#[test]
+fn closed_shell_singlet_through_open_shell_path_matches_restricted() {
+    let r_case = water_ccpvdz();
+    // Same geometry/basis, but solved as a spin-unrestricted singlet.
+    let u_case = build_uhf_case(
+        "3\nwater\nO 0.000 0.000 0.118\nH 0.000 0.755 -0.471\nH 0.000 -0.755 -0.471\n",
+        0,
+        1,
+        "cc-pvdz",
+    );
+
+    let d_e_scf = (u_case.scf.energy - r_case.rhf.energy).abs();
+    eprintln!(
+        "spin-limit SCF check: E_RHF = {:.12}, E_UHF(singlet) = {:.12}, |diff| = {:.3e}",
+        r_case.rhf.energy, u_case.scf.energy, d_e_scf
+    );
+    assert!(
+        d_e_scf < 1e-8,
+        "UHF did NOT collapse to the RHF solution (|ΔE_SCF| = {d_e_scf:.3e} Ha). The \
+         spin-limit comparison is only meaningful when the two SCFs found the same \
+         state; this is a symmetry-broken UHF solution, not a tolerance problem. \
+         Refusing to compare rather than loosening the tolerance."
+    );
+
+    let cfg = erfc_test_config();
+    let r = att_mp2_vv10(
+        &r_case.mol,
+        &r_case.obs,
+        &r_case.bs,
+        &r_case.dfbs,
+        &r_case.rhf,
+        &cfg,
+    )
+    .unwrap();
+    let u = u_att_mp2_vv10(
+        &u_case.mol,
+        &u_case.obs,
+        &u_case.bs,
+        &u_case.dfbs,
+        &u_case.scf,
+        &cfg,
+    )
+    .unwrap();
+
+    let (e_aa, e_bb, e_ab) = match &u.spin_components {
+        AttVv10SpinComponents::Unrestricted(c) => (c.e_aa, c.e_bb, c.e_ab),
+        other => panic!("open-shell path must report unrestricted components, got {other:?}"),
+    };
+    let (e_os, e_ss) = match &r.spin_components {
+        AttVv10SpinComponents::Restricted(c) => (c.e_os, c.e_ss),
+        other => panic!("restricted path must report restricted components, got {other:?}"),
+    };
+    eprintln!(
+        "spin limit (water/cc-pVDZ, erfc control):\n  \
+         R: E_c = {:.12} (e_os = {:.12}, e_ss = {:.12}), E_nl = {:.12}, total = {:.12}\n  \
+         U: E_c = {:.12} (e_aa = {e_aa:.12}, e_bb = {e_bb:.12}, e_ab = {e_ab:.12}), \
+         E_nl = {:.12}, total = {:.12}",
+        r.e_c_att_mp2, e_os, e_ss, r.e_nl_vv10, r.total,
+        u.e_c_att_mp2, u.e_nl_vv10, u.total
+    );
+
+    // (a) the correlation halves must agree
+    let d_ec = (u.e_c_att_mp2 - r.e_c_att_mp2).abs();
+    eprintln!("  |ΔE_c| = {d_ec:.3e}, |ΔE_nl| = {:.3e}, |Δtotal| = {:.3e}",
+        (u.e_nl_vv10 - r.e_nl_vv10).abs(), (u.total - r.total).abs());
+    // TOLERANCES. These compare two INDEPENDENT SCF solutions (a restricted and
+    // an unrestricted one that collapsed onto it) fed through two INDEPENDENT
+    // RI-MP2 code paths (`ri_mp2_spin_components` vs `u_ri_mp2`'s per-spin
+    // `compute_rpa_intermediates_spin`). The two SCFs agree to 9.9e-13 Ha, and
+    // that residual propagates and amplifies through the MO transform and the
+    // correlation assembly — so the correct floor is set by SCF convergence and
+    // path divergence, NOT by machine epsilon.
+    //
+    // MEASURED on water/cc-pVDZ (erfc control): |ΔE_c| = 2.1e-9,
+    // |e_aa − e_bb| = 6.4e-9, |Δtotal| = 2.0e-9. Bounds set one decade above the
+    // measured values: tight enough that a genuine spin-bookkeeping error (which
+    // would show up at 1e-3 or larger — half the same-spin energy is 2.2e-2 here)
+    // is caught by orders of magnitude, loose enough not to be an SCF-noise
+    // change-detector. An earlier revision asserted 1e-9/1e-10 and failed on
+    // exactly this residual; the numbers were right and the bar was wrong.
+    assert!(
+        d_ec < 1e-8,
+        "U-attMP2 must reproduce R-attMP2 for a collapsed singlet: {} vs {} (|Δ| = {d_ec:.3e})",
+        u.e_c_att_mp2,
+        r.e_c_att_mp2
+    );
+    // (b) and the block-by-block identification must hold, not just the sum:
+    //     αα = ββ = ½ e_ss  and  αβ = e_os.
+    assert!(
+        (e_aa - e_bb).abs() < 1e-7,
+        "αα and ββ must be equal for a spin-symmetric singlet: {e_aa} vs {e_bb} \
+         (|Δ| = {:.3e})",
+        (e_aa - e_bb).abs()
+    );
+    assert!(
+        (e_aa + e_bb - e_ss).abs() < 1e-8,
+        "e_aa + e_bb must equal the restricted e_ss: {} vs {e_ss}",
+        e_aa + e_bb
+    );
+    assert!(
+        (e_ab - e_os).abs() < 1e-8,
+        "e_ab must equal the restricted e_os: {e_ab} vs {e_os}"
+    );
+    // Guard the loosened bounds against becoming vacuous: the same-spin blocks
+    // must be genuinely NONZERO and of the right scale, so "αα ≈ ββ" cannot be
+    // satisfied by both being ~0 (the OH/STO-3G nvir=1 trap, one basis away).
+    assert!(
+        e_aa < -1e-3 && e_bb < -1e-3,
+        "same-spin blocks must be real and negative here (water/cc-pVDZ has 19 \
+         virtuals), got e_aa={e_aa}, e_bb={e_bb}"
+    );
+    // (c) the total energies
+    assert!(
+        (u.total - r.total).abs() < 1e-8,
+        "MP2-V totals must agree in the spin limit: {} vs {}",
+        u.total,
+        r.total
+    );
+    assert!(u.is_open_shell_extrapolation());
+}
+
+/// VV10 is a functional of the TOTAL density only, so the same molecule's UHF
+/// and RHF densities (for a collapsed singlet) must give the same E_nl to the
+/// SCF convergence floor. Checked at the `vv10_energy_on_density` level, i.e.
+/// on the densities directly, so it isolates the VV10 half from the MP2 half.
+#[test]
+fn vv10_is_spin_agnostic_on_a_collapsed_singlet() {
+    let r_case = water_ccpvdz();
+    let u_case = build_uhf_case(
+        "3\nwater\nO 0.000 0.000 0.118\nH 0.000 0.755 -0.471\nH 0.000 -0.755 -0.471\n",
+        0,
+        1,
+        "cc-pvdz",
+    );
+    assert!(
+        (u_case.scf.energy - r_case.rhf.energy).abs() < 1e-8,
+        "UHF must have collapsed to RHF for this comparison to mean anything"
+    );
+
+    // The UHF total density really is the spin sum, not a copy of one channel.
+    let d_a = &u_case.scf.density_alpha;
+    let d_b = u_case.scf.density_beta.as_ref().expect("UHF must carry a beta density");
+    let d_sum = d_a + d_b;
+    let max_dev = (&d_sum - u_case.scf.density_total())
+        .iter()
+        .fold(0.0f64, |m, v| m.max(v.abs()));
+    assert!(
+        max_dev < 1e-12,
+        "density_total() must be D_alpha + D_beta, max deviation {max_dev:.3e}"
+    );
+
+    let params = Vv10Params { c: 0.0089, b: 11.0 };
+    let damping = Vv10Damping::Terfc { r0_bohr: 1.00 * BOHR_PER_ANG };
+    let (e_r, n_r) = vv10_energy_on_density(
+        &r_case.mol, &r_case.bs, r_case.rhf.density_total(), &params, damping, &test_grid(),
+    ).unwrap();
+    let (e_u, n_u) = vv10_energy_on_density(
+        &u_case.mol, &u_case.bs, u_case.scf.density_total(), &params, damping, &test_grid(),
+    ).unwrap();
+    eprintln!("VV10 spin agnosticism: E_nl[RHF rho] = {e_r:.14}, E_nl[UHF rho] = {e_u:.14}, \
+               diff = {:.3e} ({n_r} vs {n_u} pts)", (e_r - e_u).abs());
+    assert_eq!(n_r, n_u);
+    assert!(
+        (e_r - e_u).abs() < 1e-10,
+        "VV10 depends only on the total density; RHF and collapsed-UHF must agree: \
+         {e_r} vs {e_u}"
+    );
+}
+
+/// A genuine open-shell system end to end: finite, correctly signed components
+/// with exact additivity, and a spin decomposition that is actually asymmetric.
+/// Pins the `nvir = 1` same-spin identity that made an earlier revision of
+/// `oh_radical_uhf_components_are_physical_and_additive` look like a bug.
+///
+/// OH/STO-3G forces nvir = 1, so the antisymmetrized same-spin numerator
+/// `K = (ia|jb) − (ib|ja)` vanishes identically and `e_aa = e_bb = 0` EXACTLY.
+/// Opposite-spin has no antisymmetrization and survives. If a future change
+/// makes `e_aa` nonzero here, the same-spin kernel has stopped antisymmetrizing
+/// — which is a real bug this test will catch.
+#[test]
+fn same_spin_vanishes_exactly_when_only_one_virtual() {
+    let c = oh_radical_uhf_sto3g();
+    let r = u_att_mp2_vv10(&c.mol, &c.obs, &c.bs, &c.dfbs, &c.scf, &erfc_test_config()).unwrap();
+    let (e_aa, e_bb, e_ab) = match &r.spin_components {
+        AttVv10SpinComponents::Unrestricted(x) => (x.e_aa, x.e_bb, x.e_ab),
+        other => panic!("expected unrestricted components, got {other:?}"),
+    };
+    let nbf = c.obs.nbasis();
+    eprintln!(
+        "OH/STO-3G (nbf={nbf}, nvir=1): e_aa={e_aa:.12}, e_bb={e_bb:.12}, e_ab={e_ab:.12}"
+    );
+    assert_eq!(
+        nbf, 6,
+        "this test depends on OH/STO-3G having nbf=6 (nocc_alpha=5 => nvir=1)"
+    );
+    // Magnitude, not `== 0.0`: K = (ia|jb) - (ib|ja) is a difference of two
+    // floats that are equal only up to the RI fit, so the cancellation is to
+    // roundoff, not to the exact bit pattern (it also lands on -0.0 in the beta
+    // channel). What matters physically is that it is zero to many orders below
+    // any real correlation energy — the opposite-spin term below is ~1e-2.
+    assert!(
+        e_aa.abs() < 1e-14,
+        "with nvir=1, K=(ia|jb)-(ib|ja) vanishes identically => e_aa must be zero \
+         to roundoff, got {e_aa:.3e}"
+    );
+    assert!(
+        e_bb.abs() < 1e-14,
+        "same argument for the beta channel, got {e_bb:.3e}"
+    );
+    // Opposite-spin is NOT antisymmetrized, so it survives and must be real.
+    assert!(
+        e_ab < 0.0,
+        "opposite-spin correlation has no antisymmetrization and must remain \
+         negative even at nvir=1, got {e_ab}"
+    );
+}
+
+#[test]
+fn oh_radical_uhf_components_are_physical_and_additive() {
+    let c = oh_radical_uhf();
+    let r = u_att_mp2_vv10(&c.mol, &c.obs, &c.bs, &c.dfbs, &c.scf, &erfc_test_config()).unwrap();
+    let (e_aa, e_bb, e_ab) = match &r.spin_components {
+        AttVv10SpinComponents::Unrestricted(x) => (x.e_aa, x.e_bb, x.e_ab),
+        other => panic!("expected unrestricted components, got {other:?}"),
+    };
+    eprintln!(
+        "MP2-V(erfc control)/OH radical/STO-3G [UNPARAMETERIZED for open shell]:\n  \
+         E_UHF = {:.10}, E_c = {:.10} (aa {e_aa:.10}, bb {e_bb:.10}, ab {e_ab:.10}), \
+         E_nl = {:.10}, total = {:.10}",
+        r.e_hf, r.e_c_att_mp2, r.e_nl_vv10, r.total
+    );
+
+    assert_eq!(r.components_sum_to_total(), 0.0, "additivity must be exact");
+    assert_eq!(r.e_hf, c.scf.energy);
+    assert_eq!(r.reference_spin, Spin::Unrestricted);
+    assert!(r.is_open_shell_extrapolation());
+
+    assert!(r.e_hf < 0.0 && r.e_hf.is_finite());
+    assert!(e_aa < 0.0, "same-spin αα correlation must be negative, got {e_aa}");
+    assert!(e_bb < 0.0, "same-spin ββ correlation must be negative, got {e_bb}");
+    assert!(e_ab < 0.0, "opposite-spin correlation must be negative, got {e_ab}");
+    assert!(r.e_c_att_mp2 < 0.0);
+    // As for closed shell, E_nl as defined here is a small positive number.
+    assert!(r.e_nl_vv10 > 0.0 && r.e_nl_vv10.is_finite(), "got {}", r.e_nl_vv10);
+
+    // The α and β channels genuinely differ for a doublet — if they came out
+    // equal, the β channel is being fed the α orbitals (or vice versa).
+    assert!(
+        (e_aa - e_bb).abs() > 1e-6,
+        "OH is a doublet; αα ({e_aa}) and ββ ({e_bb}) must differ. Equality means the \
+         two spin channels were built from the same MOs."
+    );
+    // ORIENTATION, not just difference. "αα ≠ ββ" is symmetric: it still holds
+    // if the two channels are swapped, so on its own it cannot catch a spin
+    // transposition. (Found by mutation testing — M14 swapped the α/β orbital
+    // energies between the same-spin channels and survived every other
+    // assertion here.) OH is a doublet with nocc_α = 5 > nocc_β = 4: the α
+    // channel has strictly more occupied pairs to correlate, so its same-spin
+    // correlation must be the LARGER in magnitude. This pins which channel is
+    // which.
+    assert!(
+        e_aa.abs() > e_bb.abs(),
+        "OH has nocc_α=5 > nocc_β=4, so |e_aa| ({}) must exceed |e_bb| ({}) — if it \
+         does not, the α and β channels have been transposed",
+        e_aa.abs(),
+        e_bb.abs()
+    );
+    // Opposite-spin dominates in MP2, as at closed shell.
+    assert!(
+        e_ab.abs() > (e_aa + e_bb).abs(),
+        "opposite-spin ({e_ab}) should dominate same-spin ({})",
+        e_aa + e_bb
+    );
+}
+
+/// The open-shell path must be sensitive to the spin state: the same nuclei and
+/// electron count in a different multiplicity must give a different energy.
+/// Catches an occupation-count bug that ignores `mol.multiplicity`.
+#[test]
+fn multiplicity_changes_the_open_shell_result() {
+    // CH3 radical (doublet) vs the same geometry as a quartet.
+    let xyz = "4\nCH3\nC 0.000 0.000 0.000\nH 0.000 1.079 0.000\n\
+               H 0.934 -0.539 0.000\nH -0.934 -0.539 0.000\n";
+    let d = build_uhf_case(xyz, 0, 2, "sto-3g");
+    let q = build_uhf_case(xyz, 0, 4, "sto-3g");
+    let cfg = erfc_test_config();
+    let rd = u_att_mp2_vv10(&d.mol, &d.obs, &d.bs, &d.dfbs, &d.scf, &cfg).unwrap();
+    let rq = u_att_mp2_vv10(&q.mol, &q.obs, &q.bs, &q.dfbs, &q.scf, &cfg).unwrap();
+    eprintln!(
+        "CH3 doublet total = {:.10}, quartet total = {:.10}, E_c: {:.10} vs {:.10}",
+        rd.total, rq.total, rd.e_c_att_mp2, rq.e_c_att_mp2
+    );
+    assert_eq!(rd.components_sum_to_total(), 0.0);
+    assert_eq!(rq.components_sum_to_total(), 0.0);
+    assert!(
+        (rd.e_c_att_mp2 - rq.e_c_att_mp2).abs() > 1e-6,
+        "doublet and quartet correlation energies must differ: {} vs {}",
+        rd.e_c_att_mp2,
+        rq.e_c_att_mp2
+    );
+    assert!(
+        rd.total < rq.total,
+        "the doublet should lie below the quartet for CH3: {} vs {}",
+        rd.total,
+        rq.total
+    );
+}
+
+/// ROHF references are accepted (u_ri_mp2 supports them by sharing the single
+/// ROHF MO set across both spin channels). Asserted rather than assumed —
+/// if ROHF were silently mishandled this would produce a nonsense number, and
+/// if it were unsupported this test would catch the error instead of a caller.
+#[test]
+fn rohf_reference_is_accepted_and_finite() {
+    // cc-pVDZ, not STO-3G — see `oh_radical_uhf`: STO-3G forces nvir = 1, which
+    // makes same-spin correlation vanish identically and the `e_aa < 0`
+    // assertion below unsatisfiable for reasons that have nothing to do with ROHF.
+    let c = build_rohf_case("2\nOH\nO 0 0 0\nH 0 0 0.97\n", 0, 2, "cc-pvdz");
+    let r = u_att_mp2_vv10(&c.mol, &c.obs, &c.bs, &c.dfbs, &c.scf, &erfc_test_config()).unwrap();
+    let (e_aa, e_bb, e_ab) = match &r.spin_components {
+        AttVv10SpinComponents::Unrestricted(x) => (x.e_aa, x.e_bb, x.e_ab),
+        other => panic!("expected unrestricted components, got {other:?}"),
+    };
+    eprintln!(
+        "MP2-V(erfc control)/OH radical/STO-3G, ROHF reference [UNPARAMETERIZED]:\n  \
+         E_ROHF = {:.10}, E_c = {:.10} (aa {e_aa:.10}, bb {e_bb:.10}, ab {e_ab:.10}), \
+         E_nl = {:.10}, total = {:.10}",
+        r.e_hf, r.e_c_att_mp2, r.e_nl_vv10, r.total
+    );
+    assert_eq!(r.reference_spin, Spin::RestrictedOpen);
+    assert!(r.is_open_shell_extrapolation());
+    assert_eq!(r.components_sum_to_total(), 0.0);
+    assert!(r.e_hf.is_finite() && r.e_hf < 0.0);
+    assert!(r.e_c_att_mp2 < 0.0 && r.e_c_att_mp2.is_finite());
+    assert!(r.e_nl_vv10 > 0.0 && r.e_nl_vv10.is_finite());
+    assert!(e_aa < 0.0 && e_bb < 0.0 && e_ab < 0.0);
+    // ROHF and UHF are different references, so the energies must differ (and
+    // the variational UHF one must be lower) — a sanity check that the ROHF
+    // result is not silently the UHF one.
+    let uhf = oh_radical_uhf();
+    assert!(
+        r.e_hf > uhf.scf.energy,
+        "ROHF reference energy ({}) must lie above the variational UHF one ({})",
+        r.e_hf,
+        uhf.scf.energy
+    );
+}
+
+/// The open-shell path must use the SAME attenuated operator as the closed-shell
+/// one, not silently fall back to bare Coulomb. Same guard as
+/// `attenuated_half_is_smaller_than_full_mp2`, applied to U-MP2.
+#[test]
+fn open_shell_attenuated_half_is_smaller_than_full_u_mp2() {
+    let c = oh_radical_uhf();
+    let full = ferric_mp2::u_rimp2::u_ri_mp2(
+        &c.mol,
+        &c.obs,
+        &c.dfbs,
+        Operator::coulomb(),
+        &c.scf,
+        &ferric_mp2::rimp2::RiMp2Config::default(),
+    )
+    .unwrap();
+    let r = u_att_mp2_vv10(&c.mol, &c.obs, &c.bs, &c.dfbs, &c.scf, &erfc_test_config()).unwrap();
+    eprintln!(
+        "OH/STO-3G: full U-MP2 corr = {:.10}, attenuated half = {:.10}",
+        full.mp2_corr, r.e_c_att_mp2
+    );
+    assert!(
+        r.e_c_att_mp2.abs() < full.mp2_corr.abs(),
+        "attenuated U-MP2 |{}| must be < full |{}| — an unattenuated operator would \
+         make these equal",
+        r.e_c_att_mp2,
+        full.mp2_corr
+    );
+}
+
+/// `frozen_core` must be honoured on the open-shell path, and an out-of-range
+/// value must ERROR (via `rimp2::active_occ`) rather than underflow.
+#[test]
+fn open_shell_frozen_core_is_honoured_and_range_checked() {
+    let c = oh_radical_uhf();
+    let base = erfc_test_config();
+    let all_electron = u_att_mp2_vv10(&c.mol, &c.obs, &c.bs, &c.dfbs, &c.scf, &base).unwrap();
+
+    let fc1 = AttVv10Config { frozen_core: 1, ..base.clone() };
+    let frozen = u_att_mp2_vv10(&c.mol, &c.obs, &c.bs, &c.dfbs, &c.scf, &fc1).unwrap();
+    eprintln!(
+        "OH/STO-3G frozen core: all-electron E_c = {:.10}, frozen_core=1 E_c = {:.10}",
+        all_electron.e_c_att_mp2, frozen.e_c_att_mp2
+    );
+    assert!(
+        frozen.e_c_att_mp2 > all_electron.e_c_att_mp2,
+        "freezing the O 1s must REDUCE |E_c|: {} vs {}",
+        frozen.e_c_att_mp2,
+        all_electron.e_c_att_mp2
+    );
+    // E_nl does not depend on the correlation treatment at all.
+    assert_eq!(frozen.e_nl_vv10, all_electron.e_nl_vv10);
+
+    // Absurd frozen_core: must be a clean error, not a panic or a usize wrap.
+    let fc_huge = AttVv10Config { frozen_core: 1000, ..base.clone() };
+    let err = u_att_mp2_vv10(&c.mol, &c.obs, &c.bs, &c.dfbs, &c.scf, &fc_huge)
+        .expect_err("frozen_core beyond nocc must error");
+    eprintln!("frozen_core=1000 rejection: {err}");
+}
+
+/// The open-shell entry point must reject a bad r0 the same way the closed-shell
+/// one does — before doing any work.
+#[test]
+fn open_shell_nonpositive_r0_is_rejected() {
+    let c = oh_radical_uhf();
+    let mut cfg = erfc_test_config();
+    cfg.r0_bohr = -1.0;
+    let err = u_att_mp2_vv10(&c.mol, &c.obs, &c.bs, &c.dfbs, &c.scf, &cfg)
+        .expect_err("negative r0 must be rejected");
+    eprintln!("open-shell r0<0 rejection: {err}");
+    assert!(format!("{err}").contains("u_att_mp2_vv10"));
+}
+
+/// The published terfc operator through the open-shell path, when tables exist.
+/// Plumbing only: cc-pVDZ is not the fitted basis and OH is not a closed-shell
+/// dimer, so this asserts finiteness and ordering, never a parameterized value.
+#[test]
+fn open_shell_terfc_path_runs_when_tables_present() {
+    if std::env::var("FERRIC_TERF_TABLE_DIR").is_err() {
+        eprintln!("SKIP: FERRIC_TERF_TABLE_DIR not set; terfc interpolation tables unavailable");
+        return;
+    }
+    let c = oh_radical_uhf();
+    let cfg = AttVv10Config {
+        nlc_grid: test_grid(),
+        ..AttVv10Config::mp2_v_terfc_atz()
+    };
+    let r = match u_att_mp2_vv10(&c.mol, &c.obs, &c.bs, &c.dfbs, &c.scf, &cfg) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("SKIP: terfc path unavailable at runtime: {e}");
+            return;
+        }
+    };
+    eprintln!(
+        "MP2-V(terfc) open-shell plumbing on OH/STO-3G (NOT the fitted basis, NOT a \
+         parameterized spin case): E_HF = {:.10}, E_c = {:.10}, E_nl = {:.10}, total = {:.10}",
         r.e_hf, r.e_c_att_mp2, r.e_nl_vv10, r.total
     );
     assert!(r.e_c_att_mp2.is_finite() && r.e_c_att_mp2 < 0.0);

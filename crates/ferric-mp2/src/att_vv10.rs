@@ -129,11 +129,36 @@
 //!  * **Basis.** The parameters are aug-cc-pVTZ-only. Nothing stops you running
 //!    them in another basis; the result is unparameterized extrapolation.
 //!
-//! # Scope (Phase A)
+//! # Scope (Phase A + Phase B open-shell)
 //!
-//! Library-level energy only. Closed-shell RHF references only (hard error
-//! otherwise). No CLI, no Python bindings, no gradients, no self-consistent
-//! VV10-in-Fock. See the crate docs / VALIDATION.md for what is proven.
+//! Library-level energy only. No CLI, no Python bindings, no gradients, no
+//! self-consistent VV10-in-Fock. See the crate docs / VALIDATION.md for what is
+//! proven.
+//!
+//! [`att_mp2_vv10`] accepts **restricted (RHF)** references;
+//! [`u_att_mp2_vv10`] accepts **unrestricted (UHF) and restricted-open (ROHF)**
+//! references. Both share [`AttVv10Config`] and the identical VV10 evaluator.
+//!
+//! ## OPEN SHELL IS UNPARAMETERIZED — read this before quoting an open-shell number
+//!
+//! The paper fits (r₀ = 1.00 Å, b = 11.0, C = 0.0089) on **S66**, which is
+//! **entirely closed-shell dimers**, at aug-cc-pVTZ, no counterpoise, frozen
+//! core. There is **no open-shell MP2-V parameterization anywhere in that
+//! paper** — no open-shell training set, no re-fit, not even a spot check.
+//!
+//! [`u_att_mp2_vv10`] therefore runs the **closed-shell-fitted parameters on an
+//! open-shell reference**. That is unparameterized extrapolation, in the same
+//! sense (and for the same reason) as running the aTZ parameters in a different
+//! basis. This module will not adjust the parameters "for open shell" — there is
+//! nothing published to adjust them *to*, and inventing a spin-dependent tweak
+//! would be fabrication. The spin bookkeeping of the U-MP2 half is validated
+//! (see the tests); the *numerical value of (r₀, b, C) for radicals* is not, and
+//! cannot be from this paper.
+//!
+//! Note also that the paper reports only aggregate S66/G2 statistics (RMSD/MSE
+//! in kcal/mol), never a single total energy, so there is **no external
+//! reference total energy to match** for any spin case, closed or open. Both
+//! paths are graded *Smoke* in `docs/VALIDATION.md` for exactly that reason.
 //!
 //! The paper's own recommendation is worth carrying: MP2-V "cannot be
 //! recommended for evaluation of bonded interactions" (§4, G2/97 RMSD 9.69
@@ -150,6 +175,7 @@ use ferric_scf::result::Spin;
 use ferric_scf::ScfResult;
 
 use crate::rimp2::{ri_mp2_spin_components, RiMp2Config, SpinComponents};
+use crate::u_rimp2::{u_ri_mp2, URiMp2Components};
 
 /// Bohr per Ångström. The paper quotes r₀ in Å; every ferric internal length
 /// (grid coordinates, `Operator::terfc`'s `distance`) is in Bohr.
@@ -312,6 +338,26 @@ impl AttVv10Config {
             }
         }
     }
+
+    /// The RI-MP2 configuration both the closed- and open-shell halves run
+    /// under. Shared so `frozen_core` and the memory budget cannot diverge
+    /// between the two spin paths.
+    ///
+    /// `frozen_core` is forwarded verbatim; the downstream
+    /// `compute_rpa_intermediates_spin` / `ri_mp2_spin_components` resolve it
+    /// through `rimp2::active_occ`, which errors on `frozen_core > nocc`
+    /// instead of underflowing (never `nocc - frozen_core` — see the repo's
+    /// reliability conventions). For the unrestricted path the same
+    /// `frozen_core` is applied to **each** spin channel independently, which
+    /// is the standard convention (freeze the same core shells in α and β) but
+    /// means a value larger than `nocc_β` errors even when it fits in `nocc_α`.
+    fn ri_mp2_config(&self) -> RiMp2Config {
+        RiMp2Config {
+            frozen_core: self.frozen_core,
+            memory_budget_bytes: self.memory_budget_bytes,
+            ..Default::default()
+        }
+    }
 }
 
 /// ferric's NLC grid shape for VV10, matching what `ferric_scf`'s KS drivers
@@ -325,13 +371,45 @@ fn default_nlc_grid() -> AtomicGridConfig {
     }
 }
 
-/// Energy decomposition returned by [`att_mp2_vv10`].
+/// Spin decomposition of the attenuated-MP2 correlation half.
+///
+/// The two spin cases genuinely have different natural decompositions and
+/// forcing them into one struct would require inventing a mapping:
+///
+///  * Closed shell: opposite-/same-spin (`e_os`, `e_ss`) — the split SCS-MP2 and
+///    the attenuated-MP2 literature use.
+///  * Open shell: αα / ββ / αβ (`e_aa`, `e_bb`, `e_ab`) — the three genuinely
+///    distinct blocks of U-MP2, where αα ≠ ββ in general.
+///
+/// One could report `e_ss = e_aa + e_bb`, but that discards the α/β asymmetry
+/// that is the *entire* physical content of an open-shell calculation, so this
+/// enum keeps both shapes intact rather than lossily unifying them.
+#[derive(Debug, Clone)]
+pub enum AttVv10SpinComponents {
+    /// From a restricted reference, via [`ri_mp2_spin_components`].
+    Restricted(SpinComponents),
+    /// From an unrestricted or restricted-open reference, via [`u_ri_mp2`].
+    Unrestricted(URiMp2Components),
+}
+
+impl AttVv10SpinComponents {
+    /// Total correlation energy, whichever decomposition this is.
+    pub fn e_total(&self) -> f64 {
+        match self {
+            Self::Restricted(s) => s.e_total,
+            Self::Unrestricted(u) => u.e_total,
+        }
+    }
+}
+
+/// Energy decomposition returned by [`att_mp2_vv10`] and [`u_att_mp2_vv10`].
 ///
 /// `total` is exactly `e_hf + e_c_att_mp2 + e_nl_vv10` — asserted, not assumed
 /// (see [`AttVv10Result::components_sum_to_total`]).
 #[derive(Debug, Clone)]
 pub struct AttVv10Result {
     /// Reference Hartree–Fock total energy (from the supplied `ScfResult`).
+    /// For the open-shell entry point this is the UHF/ROHF total energy.
     pub e_hf: f64,
     /// Attenuated MP2 correlation energy under the configured attenuator.
     pub e_c_att_mp2: f64,
@@ -339,11 +417,16 @@ pub struct AttVv10Result {
     pub e_nl_vv10: f64,
     /// `e_hf + e_c_att_mp2 + e_nl_vv10`.
     pub total: f64,
-    /// Opposite-/same-spin split of `e_c_att_mp2`.
-    pub spin_components: SpinComponents,
+    /// Spin split of `e_c_att_mp2` — shape depends on the reference (see
+    /// [`AttVv10SpinComponents`]).
+    pub spin_components: AttVv10SpinComponents,
     /// Number of grid points in the VV10 nonlocal integration (reported so a
     /// caller can tell a suspiciously small E_nl from a suspiciously small grid).
     pub n_nlc_points: usize,
+    /// Spin type of the reference this result came from. Recorded because the
+    /// open-shell path runs closed-shell-fitted parameters (see the module
+    /// docs), so a consumer must be able to tell the two apart after the fact.
+    pub reference_spin: Spin,
 }
 
 impl AttVv10Result {
@@ -352,6 +435,16 @@ impl AttVv10Result {
     /// trust it.
     pub fn components_sum_to_total(&self) -> f64 {
         self.total - (self.e_hf + self.e_c_att_mp2 + self.e_nl_vv10)
+    }
+
+    /// `true` when the (r₀, b, C) in play were used outside what the paper
+    /// fitted *on the spin axis alone* — i.e. an open-shell reference.
+    ///
+    /// This does NOT cover the basis axis (the parameters are aug-cc-pVTZ-only)
+    /// or the attenuator axis (they are terfc-only); those mismatches are
+    /// documented on [`AttVv10Config`] and are the caller's to track.
+    pub fn is_open_shell_extrapolation(&self) -> bool {
+        !matches!(self.reference_spin, Spin::Restricted)
     }
 }
 
@@ -362,10 +455,9 @@ impl AttVv10Result {
 /// ```
 ///
 /// `rhf` must be a **closed-shell restricted** reference; anything else is a
-/// hard [`FerricError`] rather than a silently wrong number (the VV10 term is a
-/// functional of the total density and would evaluate happily on an open-shell
-/// density, while the RI-MP2 half assumes doubly-occupied spatial orbitals —
-/// the combination would produce a plausible, meaningless energy).
+/// hard [`FerricError`] pointing at [`u_att_mp2_vv10`], rather than a silently
+/// wrong number (the RI-MP2 half here assumes doubly-occupied spatial orbitals,
+/// so an unrestricted density would produce a plausible, meaningless energy).
 ///
 /// The VV10 term is evaluated on the converged HF density with no feedback into
 /// the Fock matrix (the paper's post-HF variant; see the module docs).
@@ -380,40 +472,145 @@ pub fn att_mp2_vv10(
     if !matches!(rhf.spin, Spin::Restricted) {
         return Err(FerricError::General(format!(
             "att_mp2_vv10 requires a closed-shell restricted (RHF) reference, got {:?}. \
-             Open-shell MP2-V is not implemented (Phase B): the RI-MP2 half assumes \
-             doubly-occupied spatial orbitals, so an unrestricted density would give a \
-             plausible but meaningless correlation energy.",
+             Use u_att_mp2_vv10 for UHF/ROHF references — but note that the published \
+             (r0, b, C) were fitted on closed-shell S66 only, so open-shell MP2-V is \
+             unparameterized extrapolation.",
             rhf.spin
         )));
     }
-    if config.r0_bohr <= 0.0 || !config.r0_bohr.is_finite() {
-        return Err(FerricError::General(format!(
-            "att_mp2_vv10: r0 must be finite and > 0 (got {} Bohr)",
-            config.r0_bohr
-        )));
-    }
+    validate_r0(config, "att_mp2_vv10")?;
 
     // ---- Half 1: attenuated MP2 correlation -------------------------------
-    let op = config.mp2_operator();
-    let ri_config = RiMp2Config {
-        frozen_core: config.frozen_core,
-        memory_budget_bytes: config.memory_budget_bytes,
-        ..Default::default()
-    };
-    let (spin_components, _) = ri_mp2_spin_components(mol, obs, dfbs, op, rhf, &ri_config)?;
-    let e_c_att_mp2 = spin_components.e_total;
+    let (spin_components, _) = ri_mp2_spin_components(
+        mol,
+        obs,
+        dfbs,
+        config.mp2_operator(),
+        rhf,
+        &config.ri_mp2_config(),
+    )?;
 
-    // ---- Half 2: (damped) VV10 nonlocal correlation on the HF density -----
+    assemble(
+        mol,
+        obs_bs,
+        rhf,
+        config,
+        AttVv10SpinComponents::Restricted(spin_components),
+    )
+}
+
+/// Attenuated MP2 + long-range VV10 dispersion (MP2-V) from an **open-shell**
+/// UHF or ROHF reference, post-HF.
+///
+/// ```text
+///     E = E_UHF + E_c^U-attMP2(r₀) + E_nl^VV10[ρ_α + ρ_β; b, C, r₀]
+/// ```
+///
+/// # ⚠ The parameters are not validated for this case
+///
+/// The paper's (r₀, b, C) were fitted on **S66, which contains only closed-shell
+/// dimers**, at aug-cc-pVTZ with no counterpoise and frozen core. There is no
+/// published open-shell MP2-V parameterization. This function runs the
+/// closed-shell-fitted values on an open-shell reference and does **not** adjust
+/// them; the result is unparameterized extrapolation, and the returned
+/// [`AttVv10Result::is_open_shell_extrapolation`] is `true` so a consumer cannot
+/// lose track of that. See the module docs.
+///
+/// # What is and is not spin-dependent here
+///
+/// * The **MP2 half is spin-dependent** and goes through [`u_ri_mp2`], which
+///   builds separate α and β `B^P_{ia}` tensors and sums the three genuinely
+///   distinct αα / ββ / αβ blocks. It is fed the *same* `config.mp2_operator()`
+///   (terfc or erfc at the same r₀) the closed-shell path uses — `u_ri_mp2`
+///   takes an arbitrary [`Operator`], so no new integral machinery was needed.
+/// * The **VV10 half is spin-agnostic**: VV10 is a functional of the *total*
+///   density ρ = ρ_α + ρ_β and |∇ρ|² alone. This calls the identical
+///   [`vv10_energy_on_density`] on `scf.density_total()`, exactly as
+///   `ferric_dft::ks::KsXcUks::add_xc` calls the closed-shell `add_vv10_scratch`
+///   on its own spin-summed density. No open-shell VV10 code exists or is
+///   needed; a per-spin VV10 would be a *different functional*, not a
+///   generalization of this one.
+///
+/// # ROHF
+///
+/// Accepted. [`u_ri_mp2`] supports ROHF by construction: ROHF stores a single
+/// MO set (`mos_alpha`) that both spin channels share, and
+/// `compute_rpa_intermediates_spin` falls back to it for the β request, with the
+/// α/β occupation split taken from `mol.multiplicity`. `eps_beta` is likewise
+/// absent for ROHF and falls back to `eps_alpha`. The resulting energy is
+/// therefore ROHF-MP2 in the "use the ROHF canonical orbitals as if they were
+/// UHF orbitals" (semicanonical-free) sense, which is what the rest of ferric's
+/// open-shell MP2 stack already does — not a Z-averaged or fully semicanonical
+/// ROHF-MP2.
+pub fn u_att_mp2_vv10(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    obs_bs: &ferric_core::basis::BasisSet,
+    dfbs: &PreparedBasis,
+    scf: &ScfResult,
+    config: &AttVv10Config,
+) -> Result<AttVv10Result, FerricError> {
+    match scf.spin {
+        Spin::Unrestricted | Spin::RestrictedOpen => {}
+        Spin::Restricted => {
+            return Err(FerricError::General(
+                "u_att_mp2_vv10 requires an open-shell (UHF or ROHF) reference, got \
+                 Restricted. Use att_mp2_vv10 for closed-shell references — routing a \
+                 restricted result through the unrestricted path would silently take the \
+                 alpha orbitals as if they were an independent spin channel."
+                    .into(),
+            ));
+        }
+    }
+    validate_r0(config, "u_att_mp2_vv10")?;
+
+    // ---- Half 1: unrestricted attenuated MP2 correlation ------------------
+    // Same operator as the closed-shell path: u_ri_mp2 takes an arbitrary
+    // Operator, so terfc/erfc attenuation needs nothing new here.
+    let u = u_ri_mp2(
+        mol,
+        obs,
+        dfbs,
+        config.mp2_operator(),
+        scf,
+        &config.ri_mp2_config(),
+    )?;
+
+    assemble(
+        mol,
+        obs_bs,
+        scf,
+        config,
+        AttVv10SpinComponents::Unrestricted(u.components),
+    )
+}
+
+/// Shared tail of both entry points: the (damped) VV10 half plus the
+/// three-way sum. Factored out so the VV10 evaluation is provably the *same
+/// call* for both spin cases — the closed-shell and open-shell paths cannot
+/// drift apart in the dispersion term.
+fn assemble(
+    mol: &Molecule,
+    obs_bs: &ferric_core::basis::BasisSet,
+    scf: &ScfResult,
+    config: &AttVv10Config,
+    spin_components: AttVv10SpinComponents,
+) -> Result<AttVv10Result, FerricError> {
+    let e_c_att_mp2 = spin_components.e_total();
+
+    // VV10 is a functional of the TOTAL density only. `density_total()` is
+    // D_α + D_β for U/RO and 2·D_α for R, i.e. the electron density in both
+    // cases — so this line is spin-agnostic by construction, not by coincidence.
     let (e_nl_vv10, n_nlc_points) = vv10_energy_on_density(
         mol,
         obs_bs,
-        rhf.density_total(),
+        scf.density_total(),
         &config.vv10,
         config.vv10_damping,
         &config.nlc_grid,
     )?;
 
-    let e_hf = rhf.energy;
+    let e_hf = scf.energy;
     Ok(AttVv10Result {
         e_hf,
         e_c_att_mp2,
@@ -421,7 +618,21 @@ pub fn att_mp2_vv10(
         total: e_hf + e_c_att_mp2 + e_nl_vv10,
         spin_components,
         n_nlc_points,
+        reference_spin: scf.spin,
     })
+}
+
+/// r₀ appears in a division (`1/(r₀√2)`) and as a length scale in the damping,
+/// so a non-finite or non-positive value must be rejected, not propagated as a
+/// NaN energy.
+fn validate_r0(config: &AttVv10Config, who: &str) -> Result<(), FerricError> {
+    if config.r0_bohr <= 0.0 || !config.r0_bohr.is_finite() {
+        return Err(FerricError::General(format!(
+            "{who}: r0 must be finite and > 0 (got {} Bohr)",
+            config.r0_bohr
+        )));
+    }
+    Ok(())
 }
 
 /// VV10 nonlocal correlation energy for a closed-shell total density matrix.
