@@ -24,6 +24,7 @@ pub mod gradient;
 pub mod orbital_rotation;
 pub mod oo_rimp2;
 pub mod attenuated;
+pub mod att_vv10;
 mod attenuated_timing;
 pub mod scs;
 pub mod zvector;

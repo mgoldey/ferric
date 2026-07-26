@@ -532,6 +532,7 @@ name = "ferric-mp2"
 version = "0.1.0"
 dependencies = [
  "ferric-core",
+ "ferric-dft",
  "ferric-integrals",
  "ferric-quadrature",
  "ferric-scf",

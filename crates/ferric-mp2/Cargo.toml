@@ -10,6 +10,13 @@ workspace = true
 ferric-core = { path = "../ferric-core" }
 ferric-integrals = { path = "../ferric-integrals" }
 ferric-scf = { path = "../ferric-scf" }
+# att_vv10.rs (attenuated MP2 + VV10, "MP2-V") needs the VV10 nonlocal
+# functional and the Becke-Lebedev grid it integrates on. NO CYCLE: ferric-dft
+# depends only on ferric-core + ferric-integrals (it takes ferric-scf as a
+# DEV-dependency only), so this edge points strictly down the graph. It also
+# adds NO new link-time cost: ferric-scf already depends on ferric-dft, so
+# every ferric-mp2 consumer was already pulling libxc in transitively.
+ferric-dft = { path = "../ferric-dft" }
 ferric-tensors = { path = "../ferric-tensors" }
 ferric-quadrature = { path = "../ferric-quadrature" }
 # `rayon` feature enables ndarray::Zip::into_par_iter for the par-over-aux-P
