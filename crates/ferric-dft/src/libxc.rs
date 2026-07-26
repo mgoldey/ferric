@@ -31,6 +31,13 @@ mod ffi {
         _private: [u8; 0],
     }
 
+    /// Opaque `xc_func_info_type`. Borrowed from a live `xc_func_type`; libxc
+    /// owns it statically for the process lifetime, so it is never freed here.
+    #[repr(C)]
+    pub struct XcFuncInfoOpaque {
+        _private: [u8; 0],
+    }
+
     extern "C" {
         pub fn xc_func_alloc() -> *mut XcFuncOpaque;
         pub fn xc_func_init(p: *mut XcFuncOpaque, functional: c_int, nspin: c_int) -> c_int;
@@ -38,6 +45,35 @@ mod ffi {
         pub fn xc_func_free(p: *mut XcFuncOpaque);
 
         pub fn xc_functional_get_number(name: *const c_char) -> c_int;
+
+        /// Override a functional's built-in external parameters. Signature from
+        /// libxc 5.2.3 `src/xc.h`:
+        /// ```c
+        /// void xc_func_set_ext_params(xc_func_type *p, const double *ext_params);
+        /// ```
+        /// `ext_params` must point to EXACTLY `xc_func_info_get_n_ext_params(info)`
+        /// doubles — libxc reads that many with no length argument and no bounds
+        /// check, so a short buffer is an out-of-bounds read. Callers must verify
+        /// the count first (see [`XcFunctional::set_ext_params`]).
+        pub fn xc_func_set_ext_params(p: *mut XcFuncOpaque, ext_params: *const f64);
+
+        /// Opaque handle to a functional's static info record.
+        pub fn xc_func_get_info(p: *const XcFuncOpaque) -> *const XcFuncInfoOpaque;
+
+        /// Number of external parameters this functional accepts.
+        pub fn xc_func_info_get_n_ext_params(info: *const XcFuncInfoOpaque) -> c_int;
+
+        /// Name of external parameter `number` (e.g. `"_cx0"`). Borrowed, static.
+        pub fn xc_func_info_get_ext_params_name(
+            info: *const XcFuncInfoOpaque,
+            number: c_int,
+        ) -> *const c_char;
+
+        /// libxc's built-in default for external parameter `number`.
+        pub fn xc_func_info_get_ext_params_default_value(
+            info: *const XcFuncInfoOpaque,
+            number: c_int,
+        ) -> f64;
 
         // `np` is `size_t` in the libxc 5.x C header; `usize` has identical
         // size and alignment on all supported targets (LP64 Linux x86_64 / aarch64).
@@ -182,6 +218,12 @@ pub enum LibxcError {
     AllocFailed,
     #[error("unsupported functional: {0}")]
     Unsupported(String),
+    #[error("this functional exposes no external parameters")]
+    NoExtParams,
+    #[error("external parameter count mismatch: functional expects {expected}, got {got}")]
+    ExtParamCount { expected: usize, got: usize },
+    #[error("external parameter {position} is named {actual:?}, expected {expected:?}")]
+    ExtParamName { position: usize, actual: String, expected: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -245,6 +287,15 @@ pub struct XcFunctional {
     /// cheaply build one fresh handle per rayon worker via [`Self::from_id`]
     /// without re-parsing / re-looking-up the name string each time.
     libxc_id: c_int,
+    /// External parameters applied via [`Self::set_ext_params`], retained so
+    /// [`Self::from_id`] can re-apply them to every per-worker clone.
+    ///
+    /// This is load-bearing, not bookkeeping: `par_chunks` builds a fresh handle
+    /// per rayon worker, and a fresh handle carries libxc's *built-in* defaults.
+    /// Without replaying the overrides here, a parallel run would silently
+    /// evaluate stock coefficients while a serial run used the custom ones —
+    /// producing a wrong energy with no error anywhere.
+    ext_params: Option<Vec<f64>>,
 }
 
 /// Global mutex serializing libxc's non-thread-safe init/destroy operations.
@@ -280,7 +331,93 @@ impl XcFunctional {
 
         let ptr = Self::alloc_and_init_unlocked(id, nspin, &name.to_string())?;
         let family = infer_family_from_name(name);
-        Ok(Self { ptr, family, nspin, libxc_id: id })
+        Ok(Self { ptr, family, nspin, libxc_id: id, ext_params: None })
+    }
+
+    /// Number of external parameters this functional exposes.
+    pub fn n_ext_params(&self) -> usize {
+        // SAFETY: self.ptr is a live, initialized handle; xc_func_get_info returns a
+        // borrowed pointer into libxc's static tables (never freed, never null for an
+        // initialized functional).
+        unsafe {
+            let info = ffi::xc_func_get_info(self.ptr);
+            if info.is_null() {
+                return 0;
+            }
+            ffi::xc_func_info_get_n_ext_params(info).max(0) as usize
+        }
+    }
+
+    /// Names of this functional's external parameters, in libxc's own order.
+    ///
+    /// The order is the contract for [`Self::set_ext_params`], so callers should
+    /// verify against these names rather than hardcoding positions.
+    pub fn ext_param_names(&self) -> Vec<String> {
+        // SAFETY: as in n_ext_params; each returned name is a static NUL-terminated
+        // C string owned by libxc.
+        unsafe {
+            let info = ffi::xc_func_get_info(self.ptr);
+            if info.is_null() {
+                return Vec::new();
+            }
+            let n = ffi::xc_func_info_get_n_ext_params(info).max(0);
+            (0..n)
+                .map(|i| {
+                    let p = ffi::xc_func_info_get_ext_params_name(info, i);
+                    if p.is_null() {
+                        String::new()
+                    } else {
+                        std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned()
+                    }
+                })
+                .collect()
+        }
+    }
+
+    /// libxc's built-in default values for the external parameters.
+    pub fn ext_param_defaults(&self) -> Vec<f64> {
+        // SAFETY: as in n_ext_params.
+        unsafe {
+            let info = ffi::xc_func_get_info(self.ptr);
+            if info.is_null() {
+                return Vec::new();
+            }
+            let n = ffi::xc_func_info_get_n_ext_params(info).max(0);
+            (0..n).map(|i| ffi::xc_func_info_get_ext_params_default_value(info, i)).collect()
+        }
+    }
+
+    /// Override this functional's external parameters.
+    ///
+    /// `params` must have exactly [`Self::n_ext_params`] entries, in libxc's order
+    /// (see [`Self::ext_param_names`]). The length is checked here because
+    /// `xc_func_set_ext_params` takes no length and performs no bounds check — a
+    /// short slice would be an out-of-bounds read inside libxc.
+    ///
+    /// The values are retained so per-worker clones made by the parallel
+    /// evaluation path reproduce them; see the `ext_params` field.
+    pub fn set_ext_params(&mut self, params: &[f64]) -> Result<(), LibxcError> {
+        let expected = self.n_ext_params();
+        if expected == 0 {
+            return Err(LibxcError::NoExtParams);
+        }
+        if params.len() != expected {
+            return Err(LibxcError::ExtParamCount { expected, got: params.len() });
+        }
+        // SAFETY: params.len() == expected == the count libxc reports for this handle,
+        // so libxc reads exactly within bounds. Serialized against concurrent
+        // init/destroy because it mutates handle state.
+        {
+            let _guard = LIBXC_INIT_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+            unsafe { ffi::xc_func_set_ext_params(self.ptr, params.as_ptr()) };
+        }
+        self.ext_params = Some(params.to_vec());
+        Ok(())
+    }
+
+    /// The external parameters applied via [`Self::set_ext_params`], if any.
+    pub fn applied_ext_params(&self) -> Option<&[f64]> {
+        self.ext_params.as_deref()
     }
 
     /// Allocate + init a raw handle for an already-resolved libxc `id`. Does
@@ -315,7 +452,18 @@ impl XcFunctional {
     /// — libxc handles must never be evaluated from more than one thread
     /// concurrently even though the docs call bare evaluation thread-safe on a
     /// *single* handle (we simply avoid the question by never sharing one).
-    fn from_id(id: c_int, nspin: u32, family: FunctionalFamily) -> Self {
+    /// Build a fresh handle for an already-resolved id, replaying any external
+    /// parameter overrides.
+    ///
+    /// `ext_params` MUST be threaded through: a fresh libxc handle carries the
+    /// functional's built-in defaults, so a worker clone that skipped this would
+    /// silently evaluate stock coefficients while the parent used custom ones.
+    fn from_id(
+        id: c_int,
+        nspin: u32,
+        family: FunctionalFamily,
+        ext_params: Option<&[f64]>,
+    ) -> Self {
         // Take LIBXC_INIT_LOCK ourselves for the alloc+init (mirrors `new`'s
         // guard scope; `alloc_and_init_unlocked` takes no lock itself — see
         // its doc comment).
@@ -325,10 +473,19 @@ impl XcFunctional {
             // already-successfully-constructed handle) suddenly stopped being
             // valid, which cannot happen — libxc's functional table is static
             // for the process lifetime. expect() documents that invariant.
-            Self::alloc_and_init_unlocked(id, nspin, "<worker clone>")
-                .expect("re-initializing a previously-valid libxc functional id must succeed")
+            let ptr = Self::alloc_and_init_unlocked(id, nspin, "<worker clone>")
+                .expect("re-initializing a previously-valid libxc functional id must succeed");
+            // Replay overrides under the SAME guard as the init that created the
+            // handle, so no other thread can observe it in a defaults-only state.
+            if let Some(p) = ext_params {
+                // SAFETY: the parent handle validated this slice's length against
+                // n_ext_params for this same libxc id, and the id determines the
+                // count, so it is still exact here.
+                unsafe { ffi::xc_func_set_ext_params(ptr, p.as_ptr()) };
+            }
+            ptr
         };
-        Self { ptr, family, nspin, libxc_id: id }
+        Self { ptr, family, nspin, libxc_id: id, ext_params: ext_params.map(|p| p.to_vec()) }
     }
 
     pub fn family(&self) -> FunctionalFamily {
@@ -412,7 +569,14 @@ impl XcFunctional {
         }
         let ranges = Self::chunk_ranges(npts);
         ranges.into_par_iter().for_each_init(
-            || XcFunctional::from_id(self.libxc_id, self.nspin, self.family),
+            || {
+                XcFunctional::from_id(
+                    self.libxc_id,
+                    self.nspin,
+                    self.family,
+                    self.ext_params.as_deref(),
+                )
+            },
             |worker, (g0, g1)| body(worker, g0, g1),
         );
     }
@@ -899,8 +1063,125 @@ pub fn xc_def_from_name(name: &str) -> Result<XcDef, LibxcError> {
 }
 
 /// nspin-aware variant. Use 1 for closed-shell and 2 for UKS / ROKS.
+/// ωB97X-L-V external parameters, in libxc's `HYB_GGA_XC_WB97X_V` order.
+///
+/// Source: Ransford & Carter-Fenk, *Phys. Chem. Chem. Phys.* **2026**, 28, 14428,
+/// Table 2 ("Final" column). `papers/wb97xlv.pdf`.
+///
+/// The functional is stock ωB97X-V's *form* with re-fitted coefficients, which is
+/// exactly what libxc's external-parameter interface exposes — so no hand-written
+/// B97 kernel is needed and libxc supplies the analytic vrho/vsigma derivatives.
+///
+/// Three of the fifteen linear coefficients are constrained rather than fitted, to
+/// satisfy the uniform-electron-gas limit at adiabatic-connection parameter λ = 0.6:
+///   * `_cx0  = 1 − λ  = 0.4`
+///   * `_css0 = _cos0 = 1 − λ² = 0.64`
+///
+/// Exchange mixing: eqn (27) takes full long-range HF exchange plus λ-scaled
+/// short-range HF exchange. Under libxc's CAM convention (`c_sr = α + β`,
+/// `c_lr = α`) that is `α = 1.0`, `β = −0.4` ⇒ `c_lr = 1.0`, `c_sr = 0.6 = λ`,
+/// with the complementary DFT exchange carrying `_cx0 = 1 − λ = 0.4`.
+///
+/// NOTE: `_omega = 0.1 a₀⁻¹` here, NOT ωB97X-V's 0.3 — the paper's scan found
+/// ω = 0.1 optimal, which it notes is "quite satisfying, as we employed the
+/// approximation that ω → 0" in deriving eqn (26).
+pub const WB97X_L_V_EXT_PARAMS: [(&str, f64); 18] = [
+    ("_cx0", 0.4),
+    ("_cx1", 0.154),
+    ("_cx2", -3.884),
+    ("_cx3", 11.300),
+    ("_cx4", -8.425),
+    ("_css0", 0.64),
+    ("_css1", -1.417),
+    ("_css2", 4.716),
+    ("_css3", -2.956),
+    ("_css4", 0.861),
+    ("_cos0", 0.64),
+    ("_cos1", -1.194),
+    ("_cos2", 1.348),
+    ("_cos3", -11.869),
+    ("_cos4", 9.571),
+    ("_alpha", 1.0),
+    ("_beta", -0.4),
+    ("_omega", 0.1),
+];
+
+/// The ωB97X-L-V adiabatic-connection parameter λ (paper Table 2).
+///
+/// Scales the wave-function correlation contribution in eqn (27). Also fixes the
+/// constrained coefficients above via `1 − λ` and `1 − λ²`.
+pub const WB97X_L_V_LAMBDA: f64 = 0.6;
+
+/// VV10 parameters for ωB97X-L-V (paper Table 2): b = 10.0, C = 0.01.
+///
+/// These differ from stock ωB97X-V's, so they must override whatever
+/// `xc_nlc_coef` reports for the underlying libxc functional.
+pub const WB97X_L_V_VV10: Vv10Params = Vv10Params { b: 10.0, c: 0.01 };
+
+/// Apply named external parameters, verifying each name against libxc's own
+/// ordering.
+///
+/// Positional application alone would silently scramble the coefficients if libxc
+/// ever reordered its parameter list; checking the names makes that a hard error
+/// instead of a wrong number.
+fn apply_named_ext_params(
+    f: &mut XcFunctional,
+    spec: &[(&str, f64)],
+) -> Result<(), LibxcError> {
+    let names = f.ext_param_names();
+    if names.len() != spec.len() {
+        return Err(LibxcError::ExtParamCount { expected: names.len(), got: spec.len() });
+    }
+    for (i, (want, _)) in spec.iter().enumerate() {
+        if names[i] != *want {
+            return Err(LibxcError::ExtParamName {
+                position: i,
+                actual: names[i].clone(),
+                expected: (*want).to_string(),
+            });
+        }
+    }
+    let values: Vec<f64> = spec.iter().map(|(_, v)| *v).collect();
+    f.set_ext_params(&values)
+}
+
+/// Build the ωB97X-L-V exchange–correlation definition.
+///
+/// This is the DFT half of the double hybrid only. The wave-function half —
+/// `λ · E_c,LinLCCD(hh)` evaluated with an erfc(ω)-attenuated operator on the
+/// converged Kohn–Sham orbitals — is added post-SCF by the double-hybrid driver.
+/// Using this `XcDef` on its own yields a range-separated hybrid, NOT ωB97X-L-V.
+pub fn wb97x_l_v_def(nspin: u32) -> Result<XcDef, LibxcError> {
+    let mut f = XcFunctional::new("HYB_GGA_XC_WB97X_V", nspin)?;
+    apply_named_ext_params(&mut f, &WB97X_L_V_EXT_PARAMS)?;
+    f.set_family(FunctionalFamily::RangeSepGga);
+
+    // Take CAM coefficients from our overrides rather than from libxc's cached
+    // hybrid struct: xc_func_set_ext_params updates the functional's internal
+    // parameters, but ferric reads CAM separately to build the SR/LR exchange
+    // operators, and those MUST agree with the ω/α/β we just set.
+    let cam = CamCoeffs { omega: 0.1, c_sr: 1.0 + (-0.4), c_lr: 1.0 };
+
+    Ok(XcDef {
+        funcs: vec![f],
+        cam: Some(cam),
+        vv10: Some(WB97X_L_V_VV10),
+        b3lyp_mix: None,
+    })
+}
+
 pub fn xc_def_from_name_nspin(name: &str, nspin: u32) -> Result<XcDef, LibxcError> {
     let upper = name.to_uppercase();
+
+    // ωB97X-L-V: stock ωB97X-V form with the paper's re-fitted coefficients.
+    // Checked before the friendly-name layer so it cannot collide with WB97XV.
+    {
+        let key: String =
+            upper.chars().filter(|c| *c != '-' && *c != '_').collect();
+        if key == "WB97XLV" {
+            return wb97x_l_v_def(nspin);
+        }
+    }
 
     // Friendly-name alias layer: map common chemistry names to canonical libxc
     // component identifiers. Composite (LDA/GGA/mGGA) → X+C pair; hybrid/RSH → one.
