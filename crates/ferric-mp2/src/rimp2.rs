@@ -1991,10 +1991,8 @@ mod tests {
     /// leaving full-Coulomb contamination in far-field (P|Q) and (P|ia)).
     ///
     /// terfc(r,r₀)/r is a tempered SHORT-range Coulomb: smaller r₀ screens more,
-    /// so |E_corr| must grow monotonically with r₀ and approach full-Coulomb
-    /// correlation as r₀ → ∞:
-    ///     |E(0.75Å)| < |E(1.05Å)| < |E(2.0Å)| < |E(Coulomb)|,
-    ///     E(2.0Å)/E(Coulomb) > 0.95.
+    /// so |E_corr| grows with r₀ and approaches full-Coulomb correlation as
+    /// r₀ → ∞.
     ///
     /// Before the fix this failed catastrophically (alkane_4 E(0.75Å) = −1.289 Ha
     /// vs Coulomb −0.733 Ha — |ratio| 1.76, wrong side of Coulomb), and no eigh
@@ -2002,6 +2000,48 @@ mod tests {
     /// too. A projector-idempotency check passes even with garbage physics; this
     /// energy-ordering test is the discriminating one. Runs on the plain Cholesky
     /// metric path. Requires FERRIC_TERF_TABLE_DIR.
+    ///
+    /// # Why there is no strict `|E(r₀)| < |E(Coulomb)|` assertion
+    ///
+    /// The test previously asserted `|E(2.0Å)| < |E(Coulomb)|` and FAILED by
+    /// +1.5e-4 Ha (ratio 1.000245). That assertion was wrong, not the code —
+    /// investigated 2026-07-26, four candidate integral defects ruled out with
+    /// measurements (all probes are in `tests/terfc_*.rs`):
+    ///
+    /// * far-field Poisson series and table interpolation are accurate to
+    ///   ≤2.6e-12 ABSOLUTE over the whole reachable (S,s) domain — far too
+    ///   small to move the energy by 1e-4 (`terfc_interp_sweep.rs`);
+    /// * the two-pass `coulomb − terf` subtraction is NOT losing digits: using
+    ///   the shim identity `terfc + terf ≡ MD-Coulomb`, the residual
+    ///   `(terfc + terf) − libint_Coulomb` is ≤1.4e-12 and **r₀-independent**
+    ///   (`terfc_probe.rs`), so catastrophic cancellation is excluded;
+    /// * the terfc RI metric is not the culprit: the discrepancy is unchanged
+    ///   (1.000246 → 1.000247) when the aux basis is tripled from cc-pVDZ-RI to
+    ///   aug-cc-pVTZ-RI (`terfc_ri_probe.rs`).
+    ///
+    /// The actual cause is that the comparison was against the **RI** Coulomb
+    /// energy. On this system the density-fitting error is +1.473e-4 Ha, i.e.
+    /// the SAME size as the alleged overshoot: RI-MP2 gives −0.5996452 where
+    /// exact 4-index MP2 gives −0.5997925 (`terfc_ri_error_size.rs`). Measured
+    /// against the exact reference, terfc at r₀ = 2.0 Å is −0.5997923, a ratio
+    /// of 0.99999956 — correctly BELOW Coulomb (`terfc_vs_exact.rs`).
+    ///
+    /// Two facts make a strict inequality unsound as a gate. First, `E_terfc`
+    /// and `E_coul` carry different density-fitting errors, so their difference
+    /// is only meaningful above the ~2e-4 RI floor. Second, and independently of
+    /// RI: |E_MP2| is **not** a monotone functional of the kernel even exactly.
+    /// MP2 pair densities ρ_ia = φ_i φ_a are net-neutral and sign-changing
+    /// (i ⊥ a), and for such densities a pointwise-smaller kernel can *increase*
+    /// |(ia|w|jb)|. The spin breakdown confirms this is what happens: at
+    /// r₀ = 2.0 Å the opposite-spin term (a pure sum of squares) stays below
+    /// Coulomb at 0.99977, while the same-spin term — which carries the
+    /// exchange-like difference (ia|w|jb) − (ib|w|ja) and obeys no sign theorem
+    /// — overshoots to 1.00189 (`terfc_spin_components.rs`).
+    ///
+    /// So the assertions below gate the two things that ARE invariants:
+    /// monotone growth where attenuation dominates the RI floor, and a tight
+    /// r₀ → ∞ limit; plus a loose upper bound that still fails hard on real
+    /// far-field contamination.
     #[test]
     fn terfc_ri_energy_monotone_in_r0_alkane4() {
         if std::env::var("FERRIC_TERF_TABLE_DIR").is_err() {
@@ -2038,13 +2078,19 @@ mod tests {
         let e_coul = e(opc);
         let e075 = e(Operator::terfc(0.75 * A2B));
         let e105 = e(Operator::terfc(1.05 * A2B));
+        let e150 = e(Operator::terfc(1.5 * A2B));
         let e20 = e(Operator::terfc(2.0 * A2B));
+        let e120 = e(Operator::terfc(12.0 * A2B));
 
         eprintln!(
-            "terfc alkane_4: E(0.75)={e075:.6} E(1.05)={e105:.6} E(2.0)={e20:.6} E(coul)={e_coul:.6}"
+            "terfc alkane_4: E(0.75)={e075:.6} E(1.05)={e105:.6} E(1.5)={e150:.6} \
+             E(2.0)={e20:.6} E(12)={e120:.6} E(coul)={e_coul:.6}"
         );
 
-        // Correlation energies are negative; compare magnitudes.
+        // (1) Attenuation-dominated region: |E| grows monotonically with r₀.
+        // These three steps are each ~5% and dwarf the ~2e-4 RI floor, so they
+        // are the discriminating signal. The 2026-07-09 far-field bug produced
+        // |E(0.75Å)| = 1.289 Ha vs Coulomb 0.733 (ratio 1.76) and is caught here.
         assert!(
             e075.abs() < e105.abs(),
             "|E(0.75)|={} should be < |E(1.05)|={}",
@@ -2052,21 +2098,57 @@ mod tests {
             e105.abs()
         );
         assert!(
-            e105.abs() < e20.abs(),
-            "|E(1.05)|={} should be < |E(2.0)|={}",
+            e105.abs() < e150.abs(),
+            "|E(1.05)|={} should be < |E(1.5)|={}",
             e105.abs(),
-            e20.abs()
+            e150.abs()
         );
+        // (2) Below Coulomb where attenuation still dominates the RI floor.
         assert!(
-            e20.abs() < e_coul.abs(),
-            "|E(2.0)|={} should be < |E(coulomb)|={}",
-            e20.abs(),
+            e150.abs() < e_coul.abs(),
+            "|E(1.5)|={} should be < |E(coulomb)|={}",
+            e150.abs(),
             e_coul.abs()
         );
+        // (3) r₀ → ∞ limit, AT THE SAME RI LEVEL — the assertion that actually
+        // pins terfc → Coulomb, and the one that replaces the old (wrong)
+        // strict inequality.
+        //
+        // Both sides carry the SAME density-fitting error (measured: terfc(12Å)
+        // and Coulomb sit +1.473e-4 above exact with cc-pVDZ-RI and +6.303e-5
+        // with def2-TZVPP-RI — the shared bias halves as the aux basis grows,
+        // while the two agree with EACH OTHER to 4.3e-7 and 4.5e-7 respectively;
+        // see tests/terfc_aux_convergence.rs). That common bias CANCELS in this
+        // difference, so what is left is the genuine terfc-vs-Coulomb integral
+        // agreement, not fitting noise. 1e-6 is ~2x the measured 4-7e-7 floor:
+        // tight enough to catch far-field contamination, loose enough to absorb
+        // the residual operator difference at finite r₀ and BLAS reassociation.
+        //
+        // Do NOT relax this to "within a few percent" — a loose bound here is
+        // what let the mis-specified version of this test look meaningful while
+        // gating nothing.
+        let rel_inf = (e120 - e_coul).abs() / e_coul.abs();
         assert!(
-            e20 / e_coul > 0.95,
-            "E(2.0)/E(coulomb)={} should exceed 0.95 (terfc→Coulomb as r0→∞)",
-            e20 / e_coul
+            rel_inf < 1e-6,
+            "E(12Å)={e120} should equal E(coulomb)={e_coul} to 1e-6 relative \
+             (terfc→Coulomb as r₀→∞, same RI level, shared fitting bias \
+             cancels); got rel {rel_inf:e}"
         );
+        // (4) The approach is bounded: no r₀ may exceed Coulomb by more than the
+        // density-fitting floor. NOTE the bound is NOT zero — see the doc comment
+        // above: |E_terfc| may legitimately exceed |E_coulomb| slightly at
+        // intermediate r₀ because both are RI-approximated and the same-spin
+        // term has no monotonicity theorem. Measured worst case here is +2.8e-4
+        // relative at r₀ ≈ 3 Å; 2e-3 leaves ~7x headroom while still failing hard
+        // on any real far-field contamination (the old bug was +76%).
+        for (label, ev) in [("1.5", e150), ("2.0", e20), ("12", e120)] {
+            let excess = (ev.abs() - e_coul.abs()) / e_coul.abs();
+            assert!(
+                excess < 2e-3,
+                "|E({label}Å)| exceeds |E(coulomb)| by {excess:e} relative, \
+                 beyond the density-fitting floor (>2e-3 means far-field \
+                 contamination, not RI noise)"
+            );
+        }
     }
 }
