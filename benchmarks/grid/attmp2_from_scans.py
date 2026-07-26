@@ -56,7 +56,16 @@ def att_totals(sysid, frag, basis):
                 m = re.search(pat + r"\s*=\s*(-?[\d.]+)", blk)
                 return float(m.group(1)) if m else None
 
-            tot, e_t, sr = g(r"Total energy"), g(r"E_corr coupled \(T\)"), g(r"E\(SR-MP2, erfc\)")
+            # Accept BOTH spellings. The CLI label was hardcoded "erfc" until
+            # 2026-07-26, when it was fixed to follow the attenuator (terf ->
+            # terfc). Outputs produced before and after that rebuild coexist in
+            # out/ and are the SAME quantity -- the fix changed only the name.
+            # Matching one spelling silently drops half the data: it made this
+            # tool report n=2 where the T curve had n=3, from identical scans.
+            tot, e_t = g(r"Total energy"), g(r"E_corr coupled \(T\)")
+            sr = g(r"E\(SR-MP2, terfc\)")
+            if sr is None:
+                sr = g(r"E\(SR-MP2, erfc\)")
             if None in (tot, e_t, sr):
                 continue
             out[round(r0, 4)] = (tot - e_t) + sr
