@@ -230,9 +230,19 @@ pub fn eval_eigenvalues_at_frequencies(
 /// never exceeds the persistent `m·k` term either — sizing for a single
 /// (not doubled) `m·k` term is therefore exact, not an underestimate.
 /// Test-only re-export of [`quad_panel_width`] for the budget-contract MWEs in
-/// `tests/mwe_panel_width_budget.rs`, which sweep worker counts explicitly
-/// rather than inheriting the ambient rayon pool. `#[doc(hidden)]`: an
-/// observation point for the memory-budget regression net, not public API.
+/// `tests/mwe_panel_width_budget.rs`, which sweep worker counts EXPLICITLY
+/// rather than inheriting the ambient rayon pool.
+///
+/// Note the deliberate contrast with the two in-tree tests in this file
+/// (`..._forced_panel_matches_manual_reference` and
+/// `logdet_energy_matches_eigenvalue_energy_under_forced_panelling`): those
+/// exercise the PRODUCTION path, which computes `n_workers` internally from
+/// `rayon::current_num_threads()`, so pinning a constant there would assert
+/// against a different `k` than the code actually uses — there the fix is the
+/// BUDGET, not the thread count. This accessor is for the direct-call contracts,
+/// where sweeping the worker count is the whole point: the defect it guards
+/// against is proportional to worker count, so a test that cannot vary it
+/// cannot see it.
 #[doc(hidden)]
 pub fn quad_panel_width_for_test(
     m: usize, nov: usize, n_workers: usize, memory_budget_bytes: Option<usize>,
@@ -608,27 +618,30 @@ mod tests {
         let quad_freqs = vec![0.1f64, 0.5, 1.0];
 
         // Sanity: confirm the tiny budget actually forces panelling for this
-        // shape before trusting the result below (m=2, nov=2).
+        // shape before trusting the result below (m=2, nov=2, n_workers>=1).
         //
-        // The budget must force k=1 at EVERY worker count, and the check must
-        // not consult the ambient pool. This assertion previously passed
-        // `rayon::current_num_threads()` with a 200-byte budget, which made it
-        // thread-count-dependent: `full_width_scratch = n_workers·(m·nov+m²)·8`
-        // = 64·n_workers, so 32 + 64·n_workers <= 200 holds for n_workers <= 2
-        // and quad_panel_width correctly takes its full-width fast path,
-        // returning 2 rather than 1. The test then failed on any box with <= 2
-        // rayon workers while passing on wider ones — a test defect, not a
-        // production bug (returning full width when full width genuinely fits
-        // is the desired behavior).
-        //
-        // 64 bytes forces k=1 for every worker count from 1 upward (measured:
-        // the y term alone is 32 bytes, leaving under one column's worth of
-        // per-worker scratch), so pin an explicit worker count AND a budget
-        // that cannot be satisfied at full width.
-        let n_workers = 4usize;
-        let tiny_budget = 64usize; // bytes — forces k=1 at any worker count
+        // The budget MUST be below the WORST-CASE (i.e. smallest) full-width
+        // footprint, which occurs at n_workers=1: `quad_panel_width`'s fast
+        // path triggers when y_bytes + n_workers·(m·nov + m²)·8 <= budget, and
+        // that sum GROWS with n_workers. For m=nov=2 it is 32 + 64·n_workers,
+        // so any budget >= 96 takes the fast path at n_workers=1 and returns
+        // nov=2, never exercising the panelled branch this test exists to
+        // cover. The old 200 did exactly that: it passed on a many-core box
+        // (n_workers>=3) and failed at RAYON_NUM_THREADS=1..2 — an
+        // ambient-thread-count dependency, not a physics bug. 64 < 96 forces
+        // k=1 at every worker count. n_workers is NOT pinned here on purpose:
+        // the production path computes it internally from
+        // rayon::current_num_threads(), so a hardcoded value would assert
+        // against a different k than the code under test actually uses.
+        let n_workers = rayon::current_num_threads().max(1);
+        let tiny_budget = 64usize; // bytes — below the n_workers=1 fast-path floor (96)
         let forced_k = quad_panel_width(2, 2, n_workers, Some(tiny_budget));
-        assert_eq!(forced_k, 1, "expected the tiny budget to force k=1 for this tiny shape");
+        assert_eq!(
+            forced_k, 1,
+            "expected the tiny budget to force k=1 for this tiny shape \
+             (n_workers={n_workers}); if this fires, re-derive the budget against \
+             quad_panel_width's fast-path condition"
+        );
 
         let got = eval_eigenvalues_at_frequencies_budgeted(
             &eigenvectors, &b_ov, &eps_occ, &eps_vir, &quad_freqs, Some(tiny_budget),
@@ -735,20 +748,19 @@ mod tests {
         let eps_vir = vec![0.3f64, 0.9f64];
         let quad_freqs = vec![0.1f64, 0.5, 1.0];
         let quad_weights = vec![0.25f64, 0.5, 0.25];
-        // 64 bytes, not 200: forces k=1 at EVERY worker count. At 200 the
-        // full-width fast path is taken for n_workers <= 2 (32 + 64·n_workers
-        // <= 200), so this guard failed on narrow boxes and the test silently
-        // exercised the unpanelled path on wide ones. See the companion note in
-        // `eval_eigenvalues_at_frequencies_budgeted_forced_panel_matches_manual_reference`.
+        // Must stay below the n_workers=1 fast-path floor (96 bytes for
+        // m=nov=2) so panelling is forced at EVERY ambient thread count — see
+        // the sibling test `eval_eigenvalues_at_frequencies_budgeted_forced_
+        // panel_matches_manual_reference` for the full derivation. The old 200
+        // silently took the full-width path at RAYON_NUM_THREADS=1..2.
         let tiny_budget = 64usize;
 
-        // Pinned, not `rayon::current_num_threads()`: the assertion must mean
-        // the same thing on every box.
-        let n_workers = 4usize;
+        let n_workers = rayon::current_num_threads().max(1);
         assert_eq!(
             quad_panel_width(2, 2, n_workers, Some(tiny_budget)),
             1,
-            "tiny budget must force panelling for this test to mean anything"
+            "tiny budget must force panelling for this test to mean anything \
+             (n_workers={n_workers})"
         );
 
         let evals = eval_eigenvalues_at_frequencies_budgeted(
