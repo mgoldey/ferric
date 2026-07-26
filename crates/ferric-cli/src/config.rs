@@ -210,6 +210,169 @@ pub struct Mp2Cfg {
     /// (thesis value). Requires the terfc interpolation tables
     /// (`FERRIC_TERF_TABLE_DIR`).
     pub r0_nonbonded: Option<f64>,
+
+    // ---- MP2-V (`method.kind = "mp2-v"`) -----------------------------------
+    // Attenuated MP2 + damped VV10, Goldey/Belzunces/Head-Gordon JCTC 11, 4159
+    // (2015). These knobs are deliberately NOT the generic `r0`/`attenuator`
+    // fields above: those two belong to `rs-mp2-rpa`, carry different defaults
+    // (r0 = 1.6828 Å, attenuator = "erf") and a different meaning for
+    // `attenuator` ("erf"/"terf", the *splitter*, vs MP2-V's "terfc"/"erfc",
+    // the *short-range operator*). Sharing them would make one TOML key mean
+    // two things depending on `method.kind`, which the config-honesty
+    // convention forbids.
+    /// MP2-V range-separation length r₀ in **Å**. Shared by BOTH halves of
+    /// MP2-V: it sets the MP2 attenuation operator AND the VV10 damping factor
+    /// `1 − terfc(R, r₀)²` (paper Eq. 11 + p. 4161, "the r0 parameter is shared
+    /// with the attenuated short-range MP2 part"). Default **1.00 Å**, the
+    /// published MP2-V(terfc, aTZ) value (Table 1 RMSD minimum).
+    ///
+    /// `b` is NOT independently tunable from this — Table 1's valley runs
+    /// (0.85, 8.0) → (1.10, 14.5). Move `mp2v_b` with it or you leave the
+    /// fitted valley silently.
+    pub mp2v_r0: Option<f64>,
+    /// VV10 damping parameter `b`. Default **11.0** (Table 1, the r₀ = 1.00 Å
+    /// row). See `mp2v_r0` — these two are correlated, not independent.
+    pub mp2v_b: Option<f64>,
+    /// VV10 long-range correlation parameter `C`. Default **0.0089** — the
+    /// paper FIXED this at the LC-VV10 value rather than fitting it (§3), so
+    /// changing it leaves the published parameterization entirely.
+    pub mp2v_c: Option<f64>,
+    /// Short-range attenuator on the MP2 correlation operator:
+    ///
+    ///   "terfc" (default) — the published operator (Dutoi/Goldey tempered
+    ///                       erfc). Requires the interpolation tables
+    ///                       (`FERRIC_TERF_TABLE_DIR`).
+    ///   "erfc"            — `erfc(ωr)/r` with ω = 1/(r₀√2). Table-free
+    ///                       CONTROL only; the fitted (r₀, b, C) do NOT
+    ///                       transfer to it (different tail at matched r₀).
+    ///
+    /// Unknown values are a hard error.
+    pub mp2v_attenuator: Option<String>,
+    /// VV10 short-range damping:
+    ///
+    ///   "terfc" (default) — `1 − terfc(R, r₀)²`, the published Eq. 11 form,
+    ///                       sharing `mp2v_r0`.
+    ///   "none"            — bare (ωB97X-V-style) VV10. **NOT the published
+    ///                       method**: it double-counts the short-range
+    ///                       correlation attenuated MP2 already carries.
+    ///                       Offered only so that double-counting is
+    ///                       measurable.
+    ///
+    /// Unknown values are a hard error.
+    pub mp2v_vv10_damping: Option<String>,
+    /// Radial points in the VV10 nonlocal-correlation grid. Default 50 (ferric's
+    /// own NLC grid shape, the same one `ferric_scf`'s KS drivers pass for
+    /// wB97X-V). The paper used SG-1, which ferric does not have — a documented
+    /// convention mismatch, not a silent one.
+    pub mp2v_nlc_n_radial: Option<usize>,
+    /// Angular points in the VV10 nonlocal-correlation grid. Default 50.
+    /// (Unpruned; `AtomicGridConfig::prune` is deliberately not exposed here
+    /// because pruning hard-errors at `n_angular = 50`.)
+    pub mp2v_nlc_n_angular: Option<usize>,
+}
+
+impl Mp2Cfg {
+    /// Build the MP2-V (`method.kind = "mp2-v"`) library config from the
+    /// `mp2v_*` keys, starting from the published MP2-V(terfc, aTZ)
+    /// parameterization and overriding only what the TOML actually set.
+    ///
+    /// Every string knob parses strictly (unknown values are a hard error, per
+    /// the config-honesty convention). `r0` is Å at the CLI boundary and
+    /// converted to Bohr here, the same way `r0_bonded`/`r0_nonbonded` are —
+    /// and when it is set, the VV10 damping's r₀ is moved with it via
+    /// `from_r0_angstrom`, so the two halves of Eq. 11 cannot silently diverge.
+    ///
+    /// `frozen_core` and `memory_budget_bytes` come from the shared `[mp2]
+    /// frozen_core` key and `[memory]`, matching every other MP2-family method.
+    pub fn build_att_vv10_config(
+        &self,
+        budget_bytes: Option<usize>,
+    ) -> Result<ferric_mp2::att_vv10::AttVv10Config, String> {
+        use ferric_dft::grid::AtomicGridConfig;
+        use ferric_dft::vv10::Vv10Damping;
+        use ferric_mp2::att_vv10::{AttVv10Attenuator, AttVv10Config};
+
+        // Start from the published parameterization: r0 = 1.00 A, b = 11.0,
+        // C = 0.0089, terfc attenuator, terfc-damped VV10.
+        let mut cfg = AttVv10Config::mp2_v_terfc_atz();
+
+        cfg.attenuator = match self
+            .mp2v_attenuator
+            .as_deref()
+            .map(|s| s.trim().to_ascii_lowercase())
+        {
+            None => cfg.attenuator,
+            Some(ref s) if s == "terfc" => AttVv10Attenuator::Terfc,
+            Some(ref s) if s == "erfc" => AttVv10Attenuator::Erfc,
+            Some(other) => {
+                return Err(format!(
+                    "[mp2] mp2v_attenuator: unknown value \"{other}\"; expected \"terfc\" (published) or \"erfc\" (control)"
+                ))
+            }
+        };
+
+        // Set the damping BEFORE r0, so `from_r0_angstrom` (which only syncs a
+        // Terfc damping) sees the final variant.
+        cfg.vv10_damping = match self
+            .mp2v_vv10_damping
+            .as_deref()
+            .map(|s| s.trim().to_ascii_lowercase())
+        {
+            None => cfg.vv10_damping,
+            Some(ref s) if s == "terfc" => Vv10Damping::Terfc {
+                r0_bohr: cfg.r0_bohr,
+            },
+            Some(ref s) if s == "none" => Vv10Damping::None,
+            Some(other) => {
+                return Err(format!(
+                    "[mp2] mp2v_vv10_damping: unknown value \"{other}\"; expected \"terfc\" (published, Eq. 11) or \"none\" (bare VV10, double-counts short range)"
+                ))
+            }
+        };
+
+        if let Some(r0_ang) = self.mp2v_r0 {
+            // `is_finite()` already rejects NaN/inf, so a plain `<= 0.0`
+            // suffices here and reads better than the negated comparison.
+            if !r0_ang.is_finite() || r0_ang <= 0.0 {
+                return Err(format!(
+                    "[mp2] mp2v_r0 must be finite and > 0 (got {r0_ang} A)"
+                ));
+            }
+            // Keeps the VV10 damping r0 in lockstep with the MP2 r0.
+            cfg = cfg.from_r0_angstrom(r0_ang);
+        }
+        if let Some(b) = self.mp2v_b {
+            if !b.is_finite() {
+                return Err(format!("[mp2] mp2v_b must be finite (got {b})"));
+            }
+            cfg.vv10.b = b;
+        }
+        if let Some(c) = self.mp2v_c {
+            if !c.is_finite() {
+                return Err(format!("[mp2] mp2v_c must be finite (got {c})"));
+            }
+            cfg.vv10.c = c;
+        }
+
+        let n_radial = self.mp2v_nlc_n_radial.unwrap_or(cfg.nlc_grid.n_radial);
+        let n_angular = self.mp2v_nlc_n_angular.unwrap_or(cfg.nlc_grid.n_angular);
+        if n_radial == 0 || n_angular == 0 {
+            return Err(format!(
+                "[mp2] mp2v_nlc_n_radial/mp2v_nlc_n_angular must be > 0 (got {n_radial}x{n_angular})"
+            ));
+        }
+        cfg.nlc_grid = AtomicGridConfig {
+            n_radial,
+            n_angular,
+            // Deliberately unpruned: `PruneScheme::NwchemLike` hard-errors at
+            // n_angular = 50, which is this grid's default.
+            prune: None,
+        };
+
+        cfg.frozen_core = self.frozen_core;
+        cfg.memory_budget_bytes = budget_bytes;
+        Ok(cfg)
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -834,6 +997,157 @@ omega = 0.420
         let cfg: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.method.kind, "att-rimp2");
         assert!((cfg.mp2.omega.unwrap() - 0.420).abs() < 1e-10);
+    }
+
+    /// `method.kind = "mp2-v"`: the `mp2v_*` keys parse and the builder starts
+    /// from the published MP2-V(terfc, aTZ) parameterization.
+    #[test]
+    fn test_parse_mp2_v_config() {
+        let toml_str = r#"
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+[basis]
+name = "aug-cc-pvtz"
+[method]
+kind = "mp2-v"
+[mp2]
+auxbasis = "aug-cc-pvtz-rifit"
+frozen_core = 1
+mp2v_r0 = 1.00
+mp2v_b = 11.0
+mp2v_c = 0.0089
+mp2v_attenuator = "terfc"
+mp2v_vv10_damping = "terfc"
+"#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.method.kind, "mp2-v");
+        assert_eq!(cfg.mp2.mp2v_r0, Some(1.00));
+        assert_eq!(cfg.mp2.mp2v_b, Some(11.0));
+        assert_eq!(cfg.mp2.mp2v_c, Some(0.0089));
+
+        let att = cfg.mp2.build_att_vv10_config(None).unwrap();
+        assert!((att.r0_angstrom() - 1.00).abs() < 1e-12);
+        // 1.00 A = 1.8897259886 Bohr; ~0.529 would mean the conversion inverted.
+        assert!((att.r0_bohr - 1.889_725_988_6).abs() < 1e-9, "got {}", att.r0_bohr);
+        assert_eq!(att.vv10.b, 11.0);
+        assert_eq!(att.vv10.c, 0.0089);
+        assert_eq!(att.frozen_core, 1, "[mp2] frozen_core must thread through");
+        assert_eq!(att.attenuator, ferric_mp2::att_vv10::AttVv10Attenuator::Terfc);
+        // Eq. 11: the VV10 damping r0 MUST be the same r0 the MP2 half uses.
+        match att.vv10_damping {
+            ferric_dft::vv10::Vv10Damping::Terfc { r0_bohr } => {
+                assert_eq!(r0_bohr, att.r0_bohr)
+            }
+            other => panic!("MP2-V must damp VV10, got {other:?}"),
+        }
+    }
+
+    /// An absent `[mp2]` section must give exactly the published parameters —
+    /// the CLI default IS `AttVv10Config::mp2_v_terfc_atz()`, not a re-typed
+    /// copy of it that could drift from the library.
+    #[test]
+    fn mp2_v_defaults_are_the_published_parameters() {
+        let published = ferric_mp2::att_vv10::AttVv10Config::mp2_v_terfc_atz();
+        let att = Mp2Cfg::default().build_att_vv10_config(None).unwrap();
+        assert_eq!(att.r0_bohr, published.r0_bohr);
+        assert_eq!(att.vv10.b, published.vv10.b);
+        assert_eq!(att.vv10.c, published.vv10.c);
+        assert_eq!(att.attenuator, published.attenuator);
+        assert_eq!(att.nlc_grid.n_radial, published.nlc_grid.n_radial);
+        assert_eq!(att.nlc_grid.n_angular, published.nlc_grid.n_angular);
+        assert!(matches!(
+            att.vv10_damping,
+            ferric_dft::vv10::Vv10Damping::Terfc { .. }
+        ));
+    }
+
+    /// Setting `mp2v_r0` alone must move the VV10 damping r0 with it. If these
+    /// desync, the two halves of Eq. 11 silently use different range
+    /// separations — a wrong number that still looks plausible.
+    #[test]
+    fn mp2_v_r0_override_syncs_the_vv10_damping() {
+        let mut mp2 = Mp2Cfg::default();
+        mp2.mp2v_r0 = Some(1.05);
+        mp2.mp2v_b = Some(12.5); // the Table 1 valley partner for r0 = 1.05
+        let att = mp2.build_att_vv10_config(None).unwrap();
+        assert!((att.r0_angstrom() - 1.05).abs() < 1e-12);
+        assert_eq!(att.vv10.b, 12.5);
+        match att.vv10_damping {
+            ferric_dft::vv10::Vv10Damping::Terfc { r0_bohr } => assert_eq!(
+                r0_bohr, att.r0_bohr,
+                "damping r0 must follow mp2v_r0 (paper Eq. 11)"
+            ),
+            other => panic!("expected terfc damping, got {other:?}"),
+        }
+    }
+
+    /// The two string knobs parse strictly and the `erfc`/`none` (control)
+    /// variants are reachable.
+    #[test]
+    fn mp2_v_string_knobs_parse_strictly() {
+        let mk = |att: Option<&str>, damp: Option<&str>| {
+            let mut m = Mp2Cfg::default();
+            m.mp2v_attenuator = att.map(|s| s.to_string());
+            m.mp2v_vv10_damping = damp.map(|s| s.to_string());
+            m.build_att_vv10_config(None)
+        };
+        use ferric_mp2::att_vv10::AttVv10Attenuator;
+        assert_eq!(
+            mk(Some("erfc"), None).unwrap().attenuator,
+            AttVv10Attenuator::Erfc
+        );
+        // Case-insensitive + whitespace-tolerant, like the other string knobs.
+        assert_eq!(
+            mk(Some("  TERFC "), None).unwrap().attenuator,
+            AttVv10Attenuator::Terfc
+        );
+        assert!(matches!(
+            mk(None, Some("none")).unwrap().vv10_damping,
+            ferric_dft::vv10::Vv10Damping::None
+        ));
+        // Unknown values are a hard error, never a silent default.
+        let e = mk(Some("terf"), None).unwrap_err();
+        assert!(e.contains("terf"), "error should name the bad value: {e}");
+        let e = mk(None, Some("vv10")).unwrap_err();
+        assert!(e.contains("vv10"), "error should name the bad value: {e}");
+    }
+
+    /// A nonpositive/non-finite r0 must be refused at the CLI boundary rather
+    /// than propagated into a 1/(r0*sqrt(2)) division.
+    #[test]
+    fn mp2_v_bad_r0_and_grid_are_rejected() {
+        for bad in [0.0_f64, -1.0, f64::NAN, f64::INFINITY] {
+            let mut m = Mp2Cfg::default();
+            m.mp2v_r0 = Some(bad);
+            assert!(
+                m.build_att_vv10_config(None).is_err(),
+                "mp2v_r0 = {bad} must be rejected"
+            );
+        }
+        let mut m = Mp2Cfg::default();
+        m.mp2v_nlc_n_radial = Some(0);
+        assert!(m.build_att_vv10_config(None).is_err());
+    }
+
+    /// Typo'd `mp2v_*` keys must hard-error (deny_unknown_fields), not silently
+    /// run at the published defaults while the user thinks they changed b.
+    #[test]
+    fn mp2_v_typod_key_is_rejected() {
+        let toml_str = r#"
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+[basis]
+name = "cc-pvdz"
+[method]
+kind = "mp2-v"
+[mp2]
+mp2v_bb = 11.0
+"#;
+        let err = match toml::from_str::<Config>(toml_str) {
+            Ok(_) => panic!("typo'd mp2v key parsed successfully"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("mp2v_bb"), "error should name the bad key: {err}");
     }
 
     #[test]

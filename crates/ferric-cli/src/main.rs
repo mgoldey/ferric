@@ -6,6 +6,9 @@ use ferric_core::basis::BasisSet;
 use ferric_core::mol::Molecule;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
+use ferric_mp2::att_vv10::{
+    att_mp2_vv10, u_att_mp2_vv10, AttVv10Attenuator, AttVv10SpinComponents,
+};
 use ferric_mp2::attenuated::{attenuated_ri_mp2, AttenuatedMp2Config};
 use ferric_mp2::laplace::laplace_ri_mp2;
 use ferric_mp2::mp3::mp3_energy;
@@ -94,6 +97,17 @@ const EPISTEMIC_WARNINGS: &[(&str, &str)] = &[
          new systems.",
     ),
     (
+        "mp2-v",
+        "method.kind = \"mp2-v\" is Smoke-grade (see docs/VALIDATION.md): the VV10 half is proven \
+         bit-identical to the wB97X-V code path and the damping is validated by limits, but there \
+         is NO comparison to any published MP2-V number (the paper reports only S66/G2 statistics, \
+         never a total energy). The defaults (r0 = 1.00 A, b = 11.0, C = 0.0089, terfc, post-HF) \
+         are fitted for aug-cc-pVTZ, no counterpoise, frozen core -- running another basis, or \
+         with [mp2] frozen_core = 0 (the default here), is unparameterized extrapolation. \
+         Open-shell (multiplicity > 1) is DOUBLY unvalidated: S66 is entirely closed-shell, so no \
+         open-shell parameterization exists at all.",
+    ),
+    (
         "oo-rimp2",
         "method.kind = \"oo-rimp2\" is Smoke-grade (see docs/VALIDATION.md): orbital \
          optimization is checked for internal self-consistency (converged stationary point, \
@@ -153,8 +167,8 @@ pub fn main() {
     cfg.scf.verbose = cfg.scf.verbose || cli_verbose;
     let method = cfg.method.kind.as_str();
     let task = cfg.method.task.as_str();
-    if !matches!(method, "rhf" | "uhf" | "rohf" | "ksdft" | "rimp2" | "mp3" | "oo-rimp2" | "att-rimp2" | "scs-mp2" | "scs-mp2-2terfc" | "laplace-mp2" | "pdep-rpa" | "rs-mp2-rpa" | "gw" | "bse-tda" | "tdhf-static-polarizability" | "ccsd") {
-        eprintln!("error: unsupported method.kind = \"{method}\"; expected rhf, uhf, rohf, ksdft, rimp2, mp3, oo-rimp2, att-rimp2, scs-mp2, scs-mp2-2terfc, laplace-mp2, pdep-rpa, rs-mp2-rpa, gw, bse-tda, tdhf-static-polarizability, or ccsd");
+    if !matches!(method, "rhf" | "uhf" | "rohf" | "ksdft" | "rimp2" | "mp3" | "oo-rimp2" | "att-rimp2" | "mp2-v" | "scs-mp2" | "scs-mp2-2terfc" | "laplace-mp2" | "pdep-rpa" | "rs-mp2-rpa" | "gw" | "bse-tda" | "tdhf-static-polarizability" | "ccsd") {
+        eprintln!("error: unsupported method.kind = \"{method}\"; expected rhf, uhf, rohf, ksdft, rimp2, mp3, oo-rimp2, att-rimp2, mp2-v, scs-mp2, scs-mp2-2terfc, laplace-mp2, pdep-rpa, rs-mp2-rpa, gw, bse-tda, tdhf-static-polarizability, or ccsd");
         std::process::exit(1);
     }
     warn_if_epistemically_unproven(method);
@@ -332,9 +346,11 @@ pub fn main() {
         lr.result
     } else {
         solve_rhf(&ctx, &mol, &prep, op, &bounds, &rhf_config).unwrap_or_else(|e| {
-        // For pdep-rpa/gw with open-shell molecules the UHF dispatch inside the
-        // arm handles convergence; the global RHF result is not used.
-        if (method == "pdep-rpa" || method == "gw") && mol.multiplicity > 1 {
+        // For pdep-rpa/gw/mp2-v with open-shell molecules the UHF dispatch inside
+        // the arm handles convergence; the global RHF result is not used.
+        // (mp2-v: `run_mp2_v` dispatches on `result.spin`, so the UHF result
+        // produced here IS what it consumes — it does not re-solve.)
+        if (method == "pdep-rpa" || method == "gw" || method == "mp2-v") && mol.multiplicity > 1 {
             // Return a dummy result — it will be shadowed immediately in the arm.
             // The SCF failure is expected here; suppress the exit.
             let _ = e;
@@ -420,6 +436,7 @@ pub fn main() {
         "mp3" => run_mp3(&cfg, &mol, &bs, &prep, op, &result),
         "oo-rimp2" => run_oo_rimp2(&cfg, &mol, &bs, &prep, op, &bounds, &result, budget_bytes),
         "att-rimp2" => run_att_rimp2(&cfg, &mol, &bs, &prep, &result, budget_bytes),
+        "mp2-v" => run_mp2_v(&cfg, &mol, &bs, &prep, &result, budget_bytes),
         "rs-mp2-rpa" => run_rs_mp2_rpa(&cfg, &mol, &bs, &prep, &result, budget_bytes),
         "scs-mp2" => run_scs_mp2(&cfg, &mol, &bs, &prep, &result, budget_bytes),
         "scs-mp2-2terfc" => run_scs_mp2_2terfc(&cfg, &mol, &bs, &prep, &result, budget_bytes),
@@ -892,6 +909,111 @@ fn run_scs_mp2_2terfc(
     println!("  E_OS       = {:.10} Hartree", scs_result.e_os);
     println!("  E_SS       = {:.10} Hartree", scs_result.e_ss);
     println!("  Total      = {:.10} Hartree", scs_result.total_energy);
+}
+
+/// `method.kind = "mp2-v"`: attenuated MP2 + long-range VV10 dispersion
+/// ("MP2-V", Goldey/Belzunces/Head-Gordon, JCTC 11, 4159 (2015)).
+///
+/// Structured after `run_att_rimp2`/`run_scs_mp2_2terfc` (same aux-basis
+/// resolution, same Å→Bohr boundary, same print block) with two additions the
+/// library API forces:
+///
+///  * MP2-V's VV10 half needs the **unprepared** `BasisSet` (`obs_bs`) on top
+///    of the `PreparedBasis`, because it evaluates AOs and their gradients on a
+///    real-space grid (`ferric_dft::ao_grid::eval_basis_and_grad_on_points`),
+///    which the shell-list form carries and `PreparedBasis` does not. `bs` was
+///    already threaded to every arm, so this costs nothing.
+///  * Spin dispatch, following the `run_ccsd` precedent exactly: branch on
+///    `result.spin` and call the matching library entry point. The open-shell
+///    reference itself comes from `main()`'s pre-arm SCF, whose UHF+MOM
+///    fallback `mp2-v` opts into alongside `pdep-rpa`/`gw` (the shared
+///    `solve_rhf` ignores multiplicity and fails outright on an odd-electron
+///    molecule). So `result` is already UHF here for `multiplicity > 1`; this
+///    function never re-solves.
+fn run_mp2_v(
+    cfg: &Config,
+    mol: &Molecule,
+    bs: &BasisSet,
+    prep: &PreparedBasis,
+    result: &ferric_scf::result::ScfResult,
+    budget_bytes: Option<usize>,
+) {
+    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+    let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let dfbs = PreparedBasis::new(mol, &aux_bs).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let att_cfg = cfg.mp2.build_att_vv10_config(budget_bytes).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+
+    // Dispatch on the reference's spin, exactly as `run_ccsd` does. The two
+    // library entry points reject the wrong spin (a restricted result routed
+    // through the unrestricted path would silently take the alpha orbitals as
+    // an independent spin channel), so this branch is a correctness gate, not
+    // an optimization.
+    let is_closed_shell = matches!(result.spin, ferric_scf::result::Spin::Restricted);
+    // Padded to the same width as the other row labels below ("attMP2corr").
+    let ref_label = if is_closed_shell { "RHF energy " } else { "SCF energy " };
+    let mp2v = if is_closed_shell {
+        att_mp2_vv10(mol, prep, bs, &dfbs, result, &att_cfg)
+    } else {
+        u_att_mp2_vv10(mol, prep, bs, &dfbs, result, &att_cfg)
+    }
+    .unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+
+    // The library flags this itself; surface it rather than let a user read an
+    // open-shell number as if the parameters had been fitted for it.
+    if mp2v.is_open_shell_extrapolation() {
+        eprintln!(
+            "[warning] MP2-V on an open-shell reference: (r0, b, C) were fitted on S66, which is \
+             entirely CLOSED-SHELL dimers. There is no published open-shell MP2-V \
+             parameterization -- this is unparameterized extrapolation."
+        );
+    }
+
+    let attenuator = match att_cfg.attenuator {
+        AttVv10Attenuator::Terfc => "terfc",
+        AttVv10Attenuator::Erfc => "erfc",
+    };
+    let damping = match att_cfg.vv10_damping {
+        ferric_dft::vv10::Vv10Damping::Terfc { .. } => "terfc",
+        ferric_dft::vv10::Vv10Damping::None => "none",
+    };
+    println!(
+        "MP2-V({attenuator})/{} (aux: {}, r0={:.3} Å, b={:.3}, C={:.4}, VV10 damping: {damping}) on {}",
+        bs.name,
+        aux_name,
+        att_cfg.r0_angstrom(),
+        att_cfg.vv10.b,
+        att_cfg.vv10.c,
+        cfg.molecule.xyz
+    );
+    println!("  nbasis     = {}", prep.nbasis());
+    println!("  {ref_label}= {:.10} Hartree", mp2v.e_hf);
+    println!("  attMP2corr = {:.10} Hartree", mp2v.e_c_att_mp2);
+    match &mp2v.spin_components {
+        AttVv10SpinComponents::Restricted(s) => {
+            println!("  E_OS       = {:.10} Hartree", s.e_os);
+            println!("  E_SS       = {:.10} Hartree", s.e_ss);
+        }
+        AttVv10SpinComponents::Unrestricted(u) => {
+            println!("  E_aa       = {:.10} Hartree", u.e_aa);
+            println!("  E_bb       = {:.10} Hartree", u.e_bb);
+            println!("  E_ab       = {:.10} Hartree", u.e_ab);
+        }
+    }
+    println!("  VV10 E_nl  = {:.10} Hartree", mp2v.e_nl_vv10);
+    println!("  NLC grid   = {} points", mp2v.n_nlc_points);
+    println!("  Total      = {:.10} Hartree", mp2v.total);
 }
 
 /// `method.kind = "ccsd"`. Extracted verbatim from the former `main()`

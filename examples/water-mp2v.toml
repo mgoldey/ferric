@@ -1,0 +1,53 @@
+# MP2-V: attenuated MP2 + long-range VV10 dispersion.
+# Goldey, Belzunces & Head-Gordon, J. Chem. Theory Comput. 11, 4159 (2015).
+#
+#     E = E_HF + E_c^attMP2(r0) + E_nl^VV10[rho_HF; b, C, r0]
+#
+# with the VV10 kernel damped by (1 - terfc(R, r0)^2) — Eq. 11 — so it does not
+# double-count the short-range correlation attenuated MP2 already carries. The
+# SAME r0 drives both halves (paper p. 4161).
+#
+# READ BEFORE QUOTING A NUMBER FROM THIS FILE:
+#  * The published parameters (r0 = 1.00 A, b = 11.0, C = 0.0089, terfc) are
+#    fitted for aug-cc-pVTZ, WITHOUT counterpoise, WITH frozen core, on S66.
+#    This example runs aug-cc-pVDZ so it finishes in seconds — that is already
+#    outside the fitted basis (the paper's aDZ entries are for *uncorrected*
+#    attenuated MP2, a different method, at r0 = 1.05 A). For the published
+#    method set `name = "aug-cc-pvtz"` / `auxbasis = "aug-cc-pvtz-rifit"` here.
+#  * `frozen_core` defaults to 0 (all-electron); the paper froze cores. Set
+#    `frozen_core = 1` for a first-row hydride like water to match.
+#  * ferric evaluates E_nl on the converged plain-HF density with no VV10 term
+#    in the Fock matrix. That is the paper-sanctioned post-HF variant (S66 RMSD
+#    0.202 vs the self-consistent 0.199 kcal/mol), not the self-consistent one.
+#  * The grid is ferric's 50x50 NLC grid; the paper used SG-1, which ferric does
+#    not have.
+#
+# The default `mp2v_attenuator = "terfc"` REQUIRES the Dutoi/Goldey
+# interpolation tables: set FERRIC_TERF_TABLE_DIR to the directory holding the
+# generated *.bin tables (see terf-tables/). Without them the run hard-errors
+# rather than silently substituting a different operator. Set
+# `mp2v_attenuator = "erfc"` for a table-free CONTROL run — but note the fitted
+# (r0, b, C) do NOT transfer to erfc, so that combination is unparameterized.
+
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "aug-cc-pvdz"
+
+[method]
+kind = "mp2-v"
+
+[mp2]
+auxbasis = "aug-cc-pvdz-rifit"
+# Published MP2-V(terfc, aTZ) parameters, stated explicitly rather than left to
+# the defaults so this file documents what it runs. r0 is in Angstroms.
+#
+# r0 and b are NOT independently tunable — Table 1's valley runs
+# (0.85, 8.0) -> (0.90, 9.0) -> (0.95, 9.5) -> (1.00, 11.0) -> (1.05, 12.5)
+# -> (1.10, 14.5). Move them together or you leave the fit.
+mp2v_r0 = 1.00
+mp2v_b = 11.0
+mp2v_c = 0.0089
+mp2v_attenuator = "terfc"
+mp2v_vv10_damping = "terfc"
