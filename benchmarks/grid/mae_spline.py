@@ -110,13 +110,13 @@ def collect(basis, form):
         data[float(r0s.replace("p", "."))][idx][frag] = tot
 
     # Multi-r0 sweep files. Several tag conventions exist for these
-    # (`terfr0sweep_<tag>`, `r0scan_<FORM>`, `r0fine_<FORM>`) — match any tag
+    # (`terfr0sweep_`, `r0scan_`, `r0fine_`, `r0tscan_`, `r0coarse_`) — match any tag
     # rather than one spelling, or a whole scan goes silently unread. The
     # formulation lives in the TOML rather than the filename, so read it back
     # from the sibling TOML to avoid mixing B and T into one curve.
     multi = re.compile(
         rf"^a24-(\d+)_(dimer|mA_cp|mB_cp)_{re.escape(basis)}"
-        rf"_(?:terfr0sweep|r0scan|r0fine)_(.+)\.out$"
+        rf"_(?:terfr0sweep|r0scan|r0fine|r0tscan|r0coarse)_(.+)\.out$"
     )
     want_form = {"B": "delta-lr", "T": "coupled-rings"}[form]
     for p in sorted(OUT.glob(f"a24-*_{basis}_*_*.out")):
