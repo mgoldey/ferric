@@ -8,11 +8,14 @@ no new compute.
 
 THREE CAVEATS, all of which change how the number may be quoted:
 
-1. **erfc, not terfc.** The T scans set `attenuator = "terf"`, so the
-   short-range MP2 reported is erfc-attenuated. Published attMP2 parameters
-   (r0 = 1.35 A no-CP / 1.75 A CP at aTZ; JCTC 11, 4159 (2015)) are for
-   *terfc*. Different operator, different optimal r0 -- these are NOT
-   directly comparable to the published values.
+1. **This is terfc, matching the published operator.** The T scans set
+   `attenuator = "terf"`, which selects terf/terfc -- so the short-range MP2
+   here IS terfc-attenuated, the same operator as published attMP2(terfc).
+   The CLI used to print the component as `E(SR-MP2, erfc)`, a hardcoded
+   label that was wrong for every terf-split run; fixed 2026-07-26.
+   What still differs from the literature: this is aQZ with CP, on this
+   scan's r0 grid, whereas the published parameters are r0 = 1.35 A (no-CP)
+   / 1.75 A (CP) at aTZ, and 1.50 A (no-CP) at aQZ.
 
 2. **The limits are HF and MP2.** As r0 -> 0 the kernel vanishes (HF); as
    r0 -> inf it becomes 1/r (full MP2). A minimum below BOTH endpoints is the
@@ -92,7 +95,8 @@ def main():
         if b[0] == max(r for r, _ in full):
             print("BOUNDARY — still falling at the edge; the minimum is beyond "
                   "the sampled range. Do NOT quote this as the optimum.")
-    print("\nNOTE: erfc, not terfc — not comparable to published terfc r0 values.")
+    print("\nNOTE: terfc (same operator as published attMP2), but aQZ/CP on this")
+    print("      scan's r0 grid — published aQZ r0 is 1.50 A and is NO-CP.")
 
 
 if __name__ == "__main__":

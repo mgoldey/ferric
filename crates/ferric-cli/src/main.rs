@@ -796,20 +796,31 @@ fn emit_rs_mp2_rpa_point(
         }
     }
     // Common lines printed for all formulations.
+    //
+    // The SR/LR operator names MUST follow the attenuator actually in use.
+    // These were hardcoded "erfc"/"erf" and so were WRONG for every terf-split
+    // run: with `attenuator = "terf"` the operators are terf/terfc (see
+    // rs_mp2_rpa.rs, `Attenuator::Terf => (Operator::terf, Operator::terfc)`).
+    // A mislabelled component is worse than an unlabelled one -- it was read
+    // downstream as erfc-attenuated MP2 when it is terfc-attenuated.
+    let (sr_name, lr_name) = match rs_cfg.attenuator {
+        ferric_rpa::rs_mp2_rpa::Attenuator::Erf => ("erfc", "erf"),
+        ferric_rpa::rs_mp2_rpa::Attenuator::Terf => ("terfc", "terf"),
+    };
     println!("  E(MP2, Coulomb)      = {:>16.10} Hartree", r.e_mp2_full);
-    println!("  E(SR-MP2, erfc)      = {:>16.10} Hartree", r.e_sr_mp2);
-    println!("  E(LR-MP2, erf)       = {:>16.10} Hartree", r.e_lr_mp2);
-    println!("  E(dMP2, erf)         = {:>16.10} Hartree", r.e_dmp2_lr);
+    println!("  {:<20} = {:>16.10} Hartree", format!("E(SR-MP2, {sr_name})"), r.e_sr_mp2);
+    println!("  {:<20} = {:>16.10} Hartree", format!("E(LR-MP2, {lr_name})"), r.e_lr_mp2);
+    println!("  {:<20} = {:>16.10} Hartree", format!("E(dMP2, {lr_name})"), r.e_dmp2_lr);
     // Formulation-specific lines.
     match rs_cfg.formulation {
         ferric_rpa::RsMp2RpaFormulation::DeltaLr => {
-            println!("  E(dRPA, erf)         = {:>16.10} Hartree", r.e_drpa_lr.unwrap());
+            println!("  {:<20} = {:>16.10} Hartree", format!("E(dRPA, {lr_name})"), r.e_drpa_lr.unwrap());
             println!("  E_corr naive (A)     = {:>16.10} Hartree   [diagnostic: misses SR×LR cross terms]", r.e_corr_naive.unwrap());
             println!("  E_corr Δ-form (B)    = {:>16.10} Hartree", r.e_corr);
         }
         ferric_rpa::RsMp2RpaFormulation::CoupledRings => {
             println!("  E(ΔdRPA, Coulomb)    = {:>16.10} Hartree", r.e_delta_drpa_full.unwrap());
-            println!("  E(ΔdRPA, erfc)       = {:>16.10} Hartree", r.e_delta_drpa_sr.unwrap());
+            println!("  {:<20} = {:>16.10} Hartree", format!("E(ΔdRPA, {sr_name})"), r.e_delta_drpa_sr.unwrap());
             println!("  E_corr coupled (T)   = {:>16.10} Hartree", r.e_corr);
         }
     }
