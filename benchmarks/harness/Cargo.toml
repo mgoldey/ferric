@@ -27,6 +27,7 @@ ferric-quadrature = { path = "../../crates/ferric-quadrature" }
 ferric-export = { path = "../../crates/ferric-export" }
 ndarray = { workspace = true }
 ndarray-linalg = { workspace = true }
+lapack-sys = { workspace = true }
 rayon = { workspace = true }
 openblas-src = { workspace = true }
 serde_json = { workspace = true }

@@ -401,6 +401,7 @@ dependencies = [
  "ferric-rpa",
  "ferric-scf",
  "ferric-tensors",
+ "lapack-sys",
  "ndarray",
  "ndarray-linalg",
  "openblas-src",
