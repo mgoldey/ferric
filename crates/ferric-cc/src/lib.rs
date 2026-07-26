@@ -12,6 +12,7 @@ pub mod ccsd_closed_shell;
 pub mod ccsd_t;
 pub mod ccsd_t_closed_shell;
 pub mod helpers;
+pub mod linlccd;
 
 pub struct CcConfig {
     pub frozen_core: usize,
