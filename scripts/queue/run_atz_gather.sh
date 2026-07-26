@@ -25,8 +25,8 @@ export OPENBLAS_NUM_THREADS=1 RAYON_NUM_THREADS=4
 NPROC=3
 LOG() { echo "[$(date +%H:%M)] $*"; }
 
-LOG "waiting for the T r0 scans (r0tscan + r0text) to drain"
-while pgrep -f 'run_r0tscan.sh|run_r0text.sh' > /dev/null; do sleep 120; done
+LOG "waiting for ALL T r0 scans (r0tscan, r0tpar, r0text, r0broad) to drain"
+while pgrep -f 'run_r0tscan.sh|run_r0tpar.sh|run_r0text.sh|run_r0broad.sh' > /dev/null; do sleep 120; done
 LOG "T scans drained; starting the aTZ gather"
 
 run() {
