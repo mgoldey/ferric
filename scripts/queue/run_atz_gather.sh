@@ -32,11 +32,11 @@ LOG "waiting for ALL T r0 scans (r0tscan, r0tpar, r0text, r0broad) to drain"
 # the gather would start alongside them -- 3+3 concurrent jobs on a box where
 # 3 already saturate the CPU, at double the memory the per-slot caps assume.
 r0_busy() {
-  pgrep -f 'run_r0tscan.sh|run_r0tpar.sh|run_r0text.sh|run_r0broad.sh' > /dev/null && return 0
+  pgrep -f 'run_r0tscan.sh|run_r0tpar.sh|run_r0text.sh|run_r0broad.sh|run_r0bmin.sh' > /dev/null && return 0
   local p c
   for p in $(pgrep -x ferric 2>/dev/null); do
     c=$(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null) || continue
-    case "$c" in *_r0t*_T.toml) return 0;; esac
+    case "$c" in *_r0t*_T.toml|*_r0Bmin_B.toml) return 0;; esac
   done
   return 1
 }
