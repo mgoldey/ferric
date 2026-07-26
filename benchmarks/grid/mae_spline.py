@@ -318,6 +318,37 @@ def suggest(pts, best_x, interior, n=5, halfwidth=0.10):
     return keep
 
 
+def aggregate_curve(basis, form, systems, verbose=True):
+    """MAE vs r0 over `systems`, EXCLUDING any r0 lacking full coverage.
+
+    Comparing MAEs computed over different system counts is the single most
+    repeated analysis error in this campaign: an r0 where one extra system has
+    landed looks artificially better or worse than its neighbours, and the
+    resulting "minimum" is an artifact of which jobs happened to finish. This
+    returns only r0 with all of `systems` present, and reports what it dropped.
+    """
+    bind = load_bind()
+    data = collect(basis, form)
+    want = set(systems)
+    rows, dropped = [], []
+    for r0 in sorted(data):
+        have = {s for s, f in data[r0].items() if len(f) == 3}
+        if not want <= have:
+            if want & have:
+                dropped.append((r0, sorted(want - have)))
+            continue
+        errs = []
+        for s in sorted(want):
+            f = data[r0][s]
+            errs.append(abs((f["dimer"] - f["mA_cp"] - f["mB_cp"]) * K - bind[s]))
+        rows.append((r0, sum(errs) / len(errs)))
+    if verbose and dropped:
+        print(f"  dropped {len(dropped)} r0 with partial coverage "
+              f"(never mix n): " +
+              ", ".join(f"{r:.2f}(missing {m})" for r, m in dropped[:6]))
+    return rows
+
+
 def dump_per_r0(basis, form, want, path):
     """Persist per-r0, per-system results as structured JSON.
 
