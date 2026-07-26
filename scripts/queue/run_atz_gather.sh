@@ -26,7 +26,23 @@ NPROC=3
 LOG() { echo "[$(date +%H:%M)] $*"; }
 
 LOG "waiting for ALL T r0 scans (r0tscan, r0tpar, r0text, r0broad) to drain"
-while pgrep -f 'run_r0tscan.sh|run_r0tpar.sh|run_r0text.sh|run_r0broad.sh' > /dev/null; do sleep 120; done
+# Gate on BOTH the driver scripts AND any running r0-scan ferric job. The
+# driver-only check has a hole: a driver can exit while its last job is still
+# finishing, and a killed driver leaves jobs orphaned but running. Either way
+# the gather would start alongside them -- 3+3 concurrent jobs on a box where
+# 3 already saturate the CPU, at double the memory the per-slot caps assume.
+r0_busy() {
+  pgrep -f 'run_r0tscan.sh|run_r0tpar.sh|run_r0text.sh|run_r0broad.sh' > /dev/null && return 0
+  local p c
+  for p in $(pgrep -x ferric 2>/dev/null); do
+    c=$(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null) || continue
+    case "$c" in *_r0t*_T.toml) return 0;; esac
+  done
+  return 1
+}
+while r0_busy; do sleep 120; done
+sleep 90          # settle, then re-check: quiet may be a gap between dispatches
+while r0_busy; do sleep 120; done
 LOG "T scans drained; starting the aTZ gather"
 
 run() {
