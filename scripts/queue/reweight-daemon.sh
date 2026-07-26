@@ -8,9 +8,15 @@
 #
 # This re-applies weights every 60 s. Classification is by TOML name, so it
 # follows the work rather than any PID:
-#   *_r0text_T.toml  -> extension, background      (weight 20)
-#   *_r0Bmin_B.toml  -> B-min sweep, background    (weight 20)
+#   *_r0text_T.toml  -> T extension               (weight 200)
+#   *_r0Bmin_B.toml  -> B-min sweep                (weight 100)
 #   everything else  -> critical path              (weight 400)
+#
+# The catch-all is deliberate: the broad set (*_r0tscanB_T.toml) falls through
+# to 400 and so automatically outranks both once it starts. That matches the
+# 2026-07-26 reprioritization -- breadth (n 7 -> 20) dominates r0 resolution,
+# because the optimum's uncertainty is set by system-to-system spread, not by
+# grid spacing.
 #
 # Note the effect is modest, not the nominal 20:1 -- RAYON_NUM_THREADS caps
 # each job near 400%, so a 2-job stage cannot exceed ~800% at any weight (see
