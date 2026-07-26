@@ -11,9 +11,11 @@ pub mod ccsd;
 pub mod ccsd_closed_shell;
 pub mod ccsd_t;
 pub mod ccsd_t_closed_shell;
+pub mod double_hybrid;
 pub mod helpers;
 pub mod linlccd;
 
+#[derive(Debug, Clone)]
 pub struct CcConfig {
     pub frozen_core: usize,
     pub max_iter: usize,
