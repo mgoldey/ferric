@@ -21,9 +21,15 @@ while :; do
     cg=$(head -1 "/proc/$p/cgroup" 2>/dev/null | cut -d: -f3) || continue
     u=$(basename "$cg")
     case "$u" in *.scope) ;; *) continue;; esac
+    # Priority follows what BLOCKS other work, and that changes as stages
+    # finish. The T scan is done (2026-07-26 17:36), so the extension and the
+    # B-min sweep are now peers -- neither gates the other, and weighting both
+    # down leaves nothing prioritized. The extension is the shorter job and
+    # completes the T story, so it leads.
     case "$c" in
-      *_r0text_T.toml*|*_r0Bmin_B.toml*) w=20;;
-      *)                                 w=400;;
+      *_r0text_T.toml*)  w=200;;   # T extension: finishes the T deliverable
+      *_r0Bmin_B.toml*)  w=100;;   # B-min: larger, no downstream dependents
+      *)                 w=400;;   # anything still gating (broad set, etc.)
     esac
     cur=$(cat "/sys/fs/cgroup${cg}/cpu.weight" 2>/dev/null)
     [ "$cur" = "$w" ] && continue
