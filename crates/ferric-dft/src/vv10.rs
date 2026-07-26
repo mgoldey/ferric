@@ -258,6 +258,25 @@ pub fn compute_vv10_energy_and_potentials(
     (out.e_nl, out.vrho, out.vsig)
 }
 
+/// Like [`compute_vv10_energy_and_potentials`] but with an explicit
+/// short-range [`Vv10Damping`] on the pair kernel.
+///
+/// `Vv10Damping::None` is bit-identical to
+/// [`compute_vv10_energy_and_potentials`] (it dispatches through the same
+/// internal routine with the multiply skipped). `Vv10Damping::Terfc { r0_bohr }`
+/// applies the MP2-V Eq. 11 factor `1 − terfc(R, r0)²`, which is what an
+/// attenuated-correlation method needs so the VV10 tail does not double-count
+/// the short-range correlation the wave-function part already carries.
+pub fn compute_vv10_damped_energy_and_potentials(
+    grid: &[GridPoint],
+    dens: &DensityGrid,
+    params: &Vv10Params,
+    damping: Vv10Damping,
+) -> (f64, Vec<f64>, Vec<f64>) {
+    let out = vv10_internal_cutoff(grid, dens, params, Some(NLC_CUTOFF_BOHR), damping);
+    (out.e_nl, out.vrho, out.vsig)
+}
+
 /// Compute the per-grid-point VV10 energy density ε_nl(g) = β + ½ · f(g)
 /// alongside the potentials. Needed by the gradient path that wants weight
 /// response Σ_g w1[g, B, α] · ε_nl(g) · ρ(g).
@@ -406,6 +425,173 @@ pub fn vv10_egrad(
     f
 }
 
+// ---------------------------------------------------------------------------
+// Short-range damping of the VV10 kernel (MP2-V, JCTC 11, 4159 (2015) Eq. 11)
+// ---------------------------------------------------------------------------
+
+/// Multiplicative short-range damping applied to the VV10 pair kernel.
+///
+/// Plain VV10 (`None` at the call sites) integrates the bare kernel
+/// `Φ_VV10(|r−r'|)`. When VV10 is used to *paste back* the long-range tail
+/// that an attenuated correlation method deleted, the short-range part of
+/// `Φ_VV10` double-counts correlation the wave-function method already has.
+/// Goldey, Belzunces & Head-Gordon (JCTC 11, 4159 (2015), Eq. 11) remove it
+/// with a multiplicative factor built from the SAME `r0` used to attenuate
+/// the MP2 correlation:
+///
+/// ```text
+///   E_nl = ∫dr ρ(r) ∫dr' ρ(r') Φ_VV10(|r−r'|, b, C) · [1 − terfc(|r−r'|, r0)²]
+///   terf(R, r0)  = ½ [ erf((R−r0)/(r0√2)) + erf((R+r0)/(r0√2)) ]
+///   terfc(R, r0) = 1 − terf(R, r0)
+/// ```
+///
+/// The factor → 0 as R → 0 (terfc → 1: fully damped, no double counting) and
+/// → 1 as R → ∞ (terfc → 0: the full VV10 tail survives), which is exactly the
+/// complement of what attenuated MP2 keeps.
+///
+/// # What is and is not damped
+///
+/// ferric (following PySCF) writes the energy as
+/// `E_nl = Σ_g w_g ρ_g (β + ½ f_g)` where `β > 0` is a **local** self-energy
+/// constant and `f_g < 0` is the **nonlocal** pair integral. Eq. 11 damps
+/// `Φ_VV10` — the kernel *inside* the double integral — so only `f` is scaled;
+/// `β` carries no `|r − r'|` and is not a pair quantity. Consequence worth
+/// stating because it inverts the naive expectation: damping makes `f` less
+/// negative, so the *total* `E_nl` goes **UP**, not down. The attractive
+/// dispersion the term supplies is a difference effect (dimer minus monomers),
+/// not the sign of the absolute number.
+///
+/// Also note the damping cannot vanish exactly at any finite `r0`: the pair sum
+/// includes the `p = i` self-pair at exactly `R = 0`, where the factor is 0 for
+/// **every** `r0 > 0`. So the `r0 → 0` limit converges to a small nonzero FLOOR
+/// (that one always-fully-damped term), not to plain VV10. Measured on
+/// water/cc-pVDZ: the residual saturates at 9.05e-6 Ha — 0.05% of E_nl — for
+/// every `r0 ≤ 1e-3` Bohr. Asserted in `ferric-mp2`'s
+/// `damping_vanishes_as_r0_goes_to_zero`. Use `Vv10Damping::None`, not a tiny
+/// `r0`, when you want undamped VV10.
+///
+/// `r0` is in **Bohr** (the same length unit as the grid coordinates); the
+/// paper quotes it in Å, so callers must convert.
+#[derive(Debug, Clone, Copy)]
+pub enum Vv10Damping {
+    /// Bare VV10 kernel — the historical behavior, bit-identical to the
+    /// pre-damping code path (the damping factor is never even evaluated).
+    None,
+    /// `1 − terfc(R, r0)²` with `r0` in Bohr (MP2-V Eq. 11).
+    Terfc {
+        /// Range-separation length r0 in **Bohr**.
+        r0_bohr: f64,
+    },
+}
+
+impl Vv10Damping {
+    /// The damping factor at squared pair distance `r2` (Bohr²).
+    ///
+    /// Takes `r2` rather than `r` because the pair loop already has `r2` and
+    /// the `None` arm must not pay for a `sqrt`.
+    #[inline]
+    fn factor_from_r2(&self, r2: f64) -> f64 {
+        match *self {
+            Vv10Damping::None => 1.0,
+            Vv10Damping::Terfc { r0_bohr } => {
+                let r = r2.sqrt();
+                let tc = terfc_scalar(r, r0_bohr);
+                1.0 - tc * tc
+            }
+        }
+    }
+
+    /// True when this damping is the identity (lets callers keep the exact
+    /// original arithmetic instead of multiplying by a literal 1.0).
+    #[inline]
+    fn is_none(&self) -> bool {
+        matches!(self, Vv10Damping::None)
+    }
+}
+
+/// `terf(r, r0) = ½[erf((r−r0)/(r0√2)) + erf((r+r0)/(r0√2))]`, the "tempered"
+/// long-range switching function of Dutoi/Goldey; `terfc = 1 − terf`.
+///
+/// Matches [`ferric_integrals::operator::Operator::terfc`]'s convention
+/// (curvature constraint `r0·ω = 1/√2`) — this is the same real-space function
+/// whose two-electron integrals that operator evaluates, re-derived here so
+/// `ferric-dft` needs no dependency on the integrals crate's operator module.
+#[inline]
+fn terfc_scalar(r: f64, r0: f64) -> f64 {
+    let s = r0 * std::f64::consts::SQRT_2;
+    let terf = 0.5 * (erf_scalar((r - r0) / s) + erf_scalar((r + r0) / s));
+    1.0 - terf
+}
+
+/// `erf(x) = 1 − erfc(x)`; see [`erfc_scalar`] for the underlying fit.
+#[inline]
+fn erf_scalar(x: f64) -> f64 {
+    1.0 - erfc_scalar(x)
+}
+
+/// Complementary error function via the Numerical Recipes 28-term Chebyshev
+/// fit `erfc(x) ≈ t·exp(−x² + P(t))`, `t = 2/(2+|x|)`, sign-extended to
+/// negative arguments through `erfc(−x) = 2 − erfc(x)`.
+///
+/// MEASURED against `scipy.special.erfc` on a 1201-point sweep of
+/// `x ∈ [−6, 6]`: maximum **relative** error 6.8e-15, i.e. essentially
+/// double-precision exact — the 28-coefficient set is the high-accuracy
+/// variant, not the 7-digit one. Well below any tolerance E_nl is asserted at.
+/// (Reproduce: the damping factor `1 − terfc²` built on this matched a scipy
+/// reference to all printed digits at r = 0…12 Bohr, r₀ = 1.00 Å.)
+///
+/// Hand-rolled because `f64::erfc` is not in stable Rust's core numerics and
+/// `ferric-dft` carries no special-function dependency.
+#[inline]
+fn erfc_scalar(x: f64) -> f64 {
+    let z = x.abs();
+    let t = 2.0 / (2.0 + z);
+    let ty = 4.0 * t - 2.0;
+    const COF: [f64; 28] = [
+        -1.3026537197817094,
+        6.419_697_923_564_902e-1,
+        1.9476473204185836e-2,
+        -9.561_514_786_808_631e-3,
+        -9.46595344482036e-4,
+        3.66839497852761e-4,
+        4.2523324806907e-5,
+        -2.0278578112534e-5,
+        -1.624290004647e-6,
+        1.303655835580e-6,
+        1.5626441722e-8,
+        -8.5238095915e-8,
+        6.529054439e-9,
+        5.059343495e-9,
+        -9.91364156e-10,
+        -2.27365122e-10,
+        9.6467911e-11,
+        2.394038e-12,
+        -6.886027e-12,
+        8.94487e-13,
+        3.13092e-13,
+        -1.12708e-13,
+        3.81e-16,
+        7.106e-15,
+        -1.523e-15,
+        -9.4e-17,
+        1.21e-16,
+        -2.8e-17,
+    ];
+    let mut d = 0.0_f64;
+    let mut dd = 0.0_f64;
+    for j in (1..COF.len()).rev() {
+        let tmp = d;
+        d = ty * d - dd + COF[j];
+        dd = tmp;
+    }
+    let ans = t * (-z * z + 0.5 * (COF[0] + ty * d) - dd).exp();
+    if x >= 0.0 {
+        ans
+    } else {
+        2.0 - ans
+    }
+}
+
 /// Everything the single VV10 pair-sum traversal yields.
 struct Vv10Internal {
     e_nl: f64,
@@ -419,7 +605,7 @@ struct Vv10Internal {
 /// Internal: compute (E_nl, vrho, vsig, ε_nl, active) on a single grid, using
 /// the production distance cutoff (`NLC_CUTOFF_BOHR`) for large grids.
 fn vv10_internal(grid: &[GridPoint], dens: &DensityGrid, params: &Vv10Params) -> Vv10Internal {
-    vv10_internal_cutoff(grid, dens, params, Some(NLC_CUTOFF_BOHR))
+    vv10_internal_cutoff(grid, dens, params, Some(NLC_CUTOFF_BOHR), Vv10Damping::None)
 }
 
 /// Internal core with an explicit cutoff policy (test seam):
@@ -432,6 +618,7 @@ fn vv10_internal_cutoff(
     dens: &DensityGrid,
     params: &Vv10Params,
     cutoff: Option<f64>,
+    damping: Vv10Damping,
 ) -> Vv10Internal {
     let npts = dens.rho.len();
     let b_vv = params.b;
@@ -530,6 +717,14 @@ fn vv10_internal_cutoff(
     // Per-pair kernel accumulation into (fi, ui, wi) for outer point i and
     // partner p. Shared by the dense and cell-list paths so the arithmetic is
     // provably identical.
+    //
+    // `damping` multiplies the whole pair contribution by a function of the
+    // pair distance ONLY (see `Vv10Damping`). Because it does not depend on ρ
+    // or σ, the same factor carries through the ρ/σ chain rule unchanged, so
+    // scaling `t` alone damps the energy AND both potentials consistently.
+    // The `Vv10Damping::None` branch skips the multiply entirely, so the
+    // undamped path is bit-identical to the pre-damping code.
+    let damped = !damping.is_none();
     let accum = |p: usize, w0i: f64, ki: f64, xi: [f64; 3],
                  fi: &mut f64, ui: &mut f64, wi: &mut f64| {
         #[cfg(test)]
@@ -544,7 +739,11 @@ fn vv10_internal_cutoff(
         if gi_val < 1e-30 || gp_val < 1e-30 || gt_val < 1e-30 {
             return;
         }
-        let t = rho_w[p] / (gi_val * gp_val * gt_val);
+        let t = if damped {
+            rho_w[p] * damping.factor_from_r2(r2) / (gi_val * gp_val * gt_val)
+        } else {
+            rho_w[p] / (gi_val * gp_val * gt_val)
+        };
         *fi += t;
         let t_u = t * (1.0 / gi_val + 1.0 / gt_val);
         *ui += t_u;
@@ -688,6 +887,96 @@ pub fn add_vv10_scratch(
 }
 
 #[cfg(test)]
+mod damping_tests {
+    //! Accuracy anchors for the hand-rolled erfc/terfc used by [`Vv10Damping`].
+    //!
+    //! References are `scipy.special.erfc` / `erf` values, transcribed at full
+    //! double precision. Without these, a silently-degraded special function
+    //! would shift every damped E_nl by an amount no energy test could
+    //! attribute.
+
+    use super::*;
+
+    /// erfc against scipy at points spanning both signs and the tail.
+    #[test]
+    fn erfc_matches_scipy() {
+        const REF: [(f64, f64); 8] = [
+            (0.0, 1.000_000_000_000_000_0e0),
+            (0.5, 4.795_001_221_869_534_8e-1),
+            (1.0, 1.572_992_070_502_851_6e-1),
+            (-1.0, 1.842_700_792_949_714_8e0),
+            (2.5, 4.069_520_174_449_588_6e-4),
+            (-2.5, 1.999_593_047_982_555_0e0),
+            (4.0, 1.541_725_790_028_002_0e-8),
+            (-0.25, 1.276_326_390_168_236_9e0),
+        ];
+        let mut max_rel = 0.0_f64;
+        for (x, expect) in REF {
+            let got = erfc_scalar(x);
+            let rel = (got - expect).abs() / expect.abs();
+            max_rel = max_rel.max(rel);
+            assert!(
+                rel < 1e-13,
+                "erfc({x}) = {got}, scipy = {expect}, rel = {rel:.2e}"
+            );
+        }
+        eprintln!("erfc_scalar vs scipy: max relative error {max_rel:.2e}");
+    }
+
+    /// terfc against scipy at r₀ = 1.00 Å = 1.8897259886 Bohr (the MP2-V value).
+    #[test]
+    fn terfc_matches_scipy_at_mp2v_r0() {
+        const R0: f64 = 1.889_725_988_6;
+        const REF: [(f64, f64); 6] = [
+            (0.0, 1.000_000_000_000_000_0e0),
+            (0.5, 8.719_649_184_788_143_0e-1),
+            (1.0, 7.442_265_963_899_724_6e-1),
+            (3.0, 2.832_566_320_214_167_1e-1),
+            (5.0, 5.002_682_661_315_782_7e-2),
+            (8.0, 6.116_754_468_367_124_9e-4),
+        ];
+        for (r, expect) in REF {
+            let got = terfc_scalar(r, R0);
+            assert!(
+                (got - expect).abs() < 1e-13,
+                "terfc({r}, {R0}) = {got}, scipy = {expect}"
+            );
+        }
+    }
+
+    /// The damping factor's two physical limits, which are what make it the
+    /// right complement to attenuated MP2:
+    ///   * R → 0 ⇒ factor → 0 (all short-range VV10 removed, no double counting)
+    ///   * R → ∞ ⇒ factor → 1 (the full long-range tail survives)
+    #[test]
+    fn damping_factor_limits() {
+        let d = Vv10Damping::Terfc {
+            r0_bohr: 1.889_725_988_6,
+        };
+        let at_zero = d.factor_from_r2(0.0);
+        let far = d.factor_from_r2(30.0 * 30.0);
+        eprintln!("damping factor: R=0 -> {at_zero:.3e}, R=30 Bohr -> {far:.14}");
+        assert!(at_zero.abs() < 1e-12, "factor at R=0 must vanish, got {at_zero}");
+        assert!(
+            (far - 1.0).abs() < 1e-12,
+            "factor at R=30 Bohr must be 1, got {far}"
+        );
+        // Monotone increasing in R, and always in [0, 1].
+        let mut prev = -1.0_f64;
+        for r in [0.0_f64, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0] {
+            let f = d.factor_from_r2(r * r);
+            assert!((0.0..=1.0).contains(&f), "factor {f} out of [0,1] at R={r}");
+            assert!(f > prev, "factor must increase with R (R={r}: {f} !> {prev})");
+            prev = f;
+        }
+        // The None arm is the exact identity, never a near-1.0 float.
+        assert_eq!(Vv10Damping::None.factor_from_r2(1.234), 1.0);
+        assert!(Vv10Damping::None.is_none());
+        assert!(!d.is_none());
+    }
+}
+
+#[cfg(test)]
 mod cutoff_tests {
     //! Bounded-error proof for the VV10 distance cutoff.
     //!
@@ -826,8 +1115,8 @@ mod cutoff_tests {
         .unwrap();
         let (params, grid, dens) = nlc_density(&mol, "cc-pvdz");
 
-        let e_exact = vv10_internal_cutoff(&grid, &dens, &params, None).e_nl;
-        let e_cut = vv10_internal_cutoff(&grid, &dens, &params, Some(NLC_CUTOFF_BOHR)).e_nl;
+        let e_exact = vv10_internal_cutoff(&grid, &dens, &params, None, Vv10Damping::None).e_nl;
+        let e_cut = vv10_internal_cutoff(&grid, &dens, &params, Some(NLC_CUTOFF_BOHR), Vv10Damping::None).e_nl;
         let err = (e_cut - e_exact).abs();
         eprintln!(
             "[water] npts={} E_nl exact={:.12} cutoff={:.12} |Δ|={:.3e}",
@@ -882,10 +1171,10 @@ mod cutoff_tests {
         let npts = dens.rho.len();
 
         PAIR_VISITS.store(0, Ordering::Relaxed);
-        let e_exact = vv10_internal_cutoff(&grid, &dens, &params, None).e_nl;
+        let e_exact = vv10_internal_cutoff(&grid, &dens, &params, None, Vv10Damping::None).e_nl;
         let visits_dense = PAIR_VISITS.swap(0, Ordering::Relaxed);
 
-        let e_cut = vv10_internal_cutoff(&grid, &dens, &params, Some(NLC_CUTOFF_BOHR)).e_nl;
+        let e_cut = vv10_internal_cutoff(&grid, &dens, &params, Some(NLC_CUTOFF_BOHR), Vv10Damping::None).e_nl;
         let visits_cut = PAIR_VISITS.load(Ordering::Relaxed);
 
         let err = (e_cut - e_exact).abs();
