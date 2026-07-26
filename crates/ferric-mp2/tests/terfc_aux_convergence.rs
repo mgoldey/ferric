@@ -44,24 +44,55 @@ fn probe_aux_convergence_absolute() {
     eprintln!("EXACT 4-index Coulomb MP2 = {e_exact:.10}");
     eprintln!();
     eprintln!("aux                 naux    E_coul(RI)     err_coul    E_terfc(12A)    err_terfc");
+    // Report-and-continue: the terfc (P|Q) metric is known to be poorly
+    // conditioned in Coulomb-optimized aux bases, so a Cholesky failure on ONE
+    // aux basis is expected data, not a reason to abort the sweep. (An earlier
+    // version unwrap()'d here and lost the third row to a
+    // `Lapack("Cholesky on (P|Q)")` error.)
     for auxname in ["cc-pvdz-ri", "def2-tzvpp-rifit", "aug-cc-pvtz-rifit"] {
-        let Ok(auxbs) = basis::bundled(auxname) else { continue };
-        let Ok(dfbs) = PreparedBasis::new(&mol, &auxbs) else { continue };
-        let ec = ri_mp2_spin_components(&mol, &obs, &dfbs, opc, &rhf, &cfg)
-            .unwrap()
-            .0
-            .e_total;
+        let Ok(auxbs) = basis::bundled(auxname) else {
+            eprintln!("{auxname:18}  SKIP (not a bundled basis)");
+            continue;
+        };
+        let dfbs = match PreparedBasis::new(&mol, &auxbs) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("{auxname:18}  SKIP (PreparedBasis: {e})");
+                continue;
+            }
+        };
+        let naux = dfbs.nbasis();
+        let ec = match ri_mp2_spin_components(&mol, &obs, &dfbs, opc, &rhf, &cfg) {
+            Ok(r) => r.0.e_total,
+            Err(e) => {
+                eprintln!("{auxname:18} {naux:5}  Coulomb FAILED: {e}");
+                continue;
+            }
+        };
         // r0 = 12 A: terfc is numerically indistinguishable from Coulomb as an
         // OPERATOR, so any residual gap here is pure RI-fit difference.
-        let et = ri_mp2_spin_components(&mol, &obs, &dfbs, Operator::terfc(12.0 * A2B), &rhf, &cfg)
-            .unwrap()
-            .0
-            .e_total;
+        let et = match ri_mp2_spin_components(
+            &mol,
+            &obs,
+            &dfbs,
+            Operator::terfc(12.0 * A2B),
+            &rhf,
+            &cfg,
+        ) {
+            Ok(r) => r.0.e_total,
+            Err(e) => {
+                eprintln!(
+                    "{auxname:18} {naux:5}  {ec:.10}  {:+.3e}  terfc FAILED: {e}",
+                    ec - e_exact
+                );
+                continue;
+            }
+        };
         eprintln!(
-            "{auxname:18} {:5}  {ec:.10}  {:+.3e}  {et:.10}  {:+.3e}",
-            dfbs.nbasis(),
+            "{auxname:18} {naux:5}  {ec:.10}  {:+.3e}  {et:.10}  {:+.3e}   |terfc-coul| {:.2e}",
             ec - e_exact,
-            et - e_exact
+            et - e_exact,
+            (et - ec).abs()
         );
     }
 }
