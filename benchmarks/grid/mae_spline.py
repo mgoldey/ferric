@@ -199,6 +199,35 @@ def analyze(basis, form, want, verbose=True):
             gaps = {f"{r:.3f}": sorted(want - complete[r]) for r in missing}
             print(f"r0 points EXCLUDED (missing systems) : {gaps}")
 
+            # Name the systems doing the blocking, and suggest the largest
+            # subset that would actually yield a spline. ONE absent system
+            # silently voids an r0 point entirely, so a nearly-complete grid
+            # can report "0 usable points" and look like no data exists.
+            # This is exactly how B's r0 optimum sat unqueried: a24-20 alone
+            # was missing from most r0, hiding a clean interior minimum on
+            # the other ten systems.
+            blockers = {}
+            for r in missing:
+                for sysid in want - complete[r]:
+                    blockers[sysid] = blockers.get(sysid, 0) + 1
+            if blockers:
+                ranked = sorted(blockers.items(), key=lambda kv: -kv[1])
+                top = ", ".join(f"a24-{k} (blocks {v})" for k, v in ranked[:4])
+                print(f"  systems blocking the most r0 points  : {top}")
+                # Greedily drop the worst blocker(s) until >=4 r0 survive.
+                trial = set(want)
+                dropped = []
+                for sysid, _ in ranked:
+                    if len([r for r in data if trial <= complete[r]]) >= 4:
+                        break
+                    trial.discard(sysid)
+                    dropped.append(sysid)
+                surv = sorted(r for r in data if trial and trial <= complete[r])
+                if dropped and len(surv) >= 4:
+                    print(f"  DROPPING {['a24-%d' % d for d in dropped]} would give "
+                          f"{len(surv)} usable r0 on {len(trial)} systems: "
+                          f"--systems {','.join(str(x) for x in sorted(trial))}")
+
     pts = []
     for r0 in usable:
         errs = []
