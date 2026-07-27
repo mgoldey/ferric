@@ -14,6 +14,7 @@
 # The 8G floor is per-slot AND checked before each dispatch, so a memory spike
 # stalls new work instead of stacking onto it (the box OOMed twice on 2026-07-25).
 cd /home/matt/qc/ferric
+. scripts/queue/memgate.sh
 export FERRIC_TERF_TABLE_DIR=/home/matt/qc/terf-tables-data
 export OPENBLAS_NUM_THREADS=1 RAYON_NUM_THREADS=4
 NPROC=3
@@ -25,10 +26,7 @@ run() {
     echo "[skip] $key"; return
   fi
   # Gate on AVAILABLE (not free) -- most of "used" is reclaimable page cache.
-  for _ in $(seq 1 90); do
-    [ "$(free -g | awk '/^Mem:/{print $7}')" -ge 8 ] && break
-    sleep 60
-  done
+  mem_wait "${SLOT_MB:-2600}" || echo "[mem  ] proceeding anyway for $key"
   # LOCK: see run_r0bmin.sh -- xargs -P can re-dispatch a job whose output is
   # already being written, and the two writers truncate each other.
   exec 9>"${out}.lock"
@@ -49,7 +47,7 @@ run() {
   if [ $rc -eq 0 ] && [ "$n" -ge 5 ]; then echo "[ok   ] ${el}s ${n}pts $key"
   else echo "[FAIL ] ${el}s ${n}pts $key rc=$rc"; fi
 }
-export -f run
+export -f run mem_wait mem_avail_mb mem_psi_some10
 
 # Cheapest first (by atom count: 6,7,8,8,10,11,12), so a partial run still
 # yields a usable curve. NOTE 22 (10 atoms) precedes 15 (11) -- run_r0tscan.sh

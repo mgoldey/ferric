@@ -20,6 +20,7 @@
 # collided with the extension.
 set -u
 cd /home/matt/qc/ferric
+. scripts/queue/memgate.sh
 export FERRIC_TERF_TABLE_DIR=/home/matt/qc/terf-tables-data
 export OPENBLAS_NUM_THREADS=1 RAYON_NUM_THREADS=4
 NPROC=3
@@ -51,10 +52,7 @@ run() {
     echo "[skip] $key"; return
   fi
   # Gate on AVAILABLE, not free -- most of "used" is reclaimable page cache.
-  for _ in $(seq 1 90); do
-    [ "$(free -g | awk '/^Mem:/{print $7}')" -ge 8 ] && break
-    sleep 60
-  done
+  mem_wait "${SLOT_MB:-2600}" || echo "[mem  ] proceeding anyway for $key"
   local st; st=$(date +%s)
   # Per-SLOT memory cap. ferric-limited's default is 12G per job, which is
   # right for ONE job but lets NPROC=3 collectively reach 36G on a 23GB box --
@@ -67,7 +65,7 @@ run() {
   if [ $rc -eq 0 ] && grep -q "Total" "$out"; then echo "[ok   ] ${el}s $key"
   else echo "[FAIL ] ${el}s $key rc=$rc"; fi
 }
-export -f run
+export -f run mem_wait mem_avail_mb mem_psi_some10
 
 # Cheapest systems first so a partial run still yields a usable subset.
 for meth in mp2 atterfc scs2terfc mp2v; do

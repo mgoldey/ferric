@@ -11,6 +11,7 @@
 # optimum is likely OUTSIDE it, toward larger r0.
 # One job per (system, fragment); each sweeps all 6 r0 on a single SCF.
 cd /home/matt/qc/ferric
+. scripts/queue/memgate.sh
 export FERRIC_TERF_TABLE_DIR=/home/matt/qc/terf-tables-data
 export OPENBLAS_NUM_THREADS=1 RAYON_NUM_THREADS=4
 NPROC=3
@@ -21,10 +22,7 @@ run() {
   if [ -s "$out" ] && [ "$(grep -c 'Total energy' "$out" 2>/dev/null | head -1)" -ge 7 ]; then
     echo "[skip] $key"; return
   fi
-  for _ in $(seq 1 90); do
-    [ "$(free -g | awk '/^Mem:/{print $7}')" -ge 8 ] && break
-    sleep 60
-  done
+  mem_wait "${SLOT_MB:-2600}" || echo "[mem  ] proceeding anyway for $key"
   # LOCK: see run_r0bmin.sh -- xargs -P can re-dispatch a job whose output is
   # already being written, and the two writers truncate each other.
   exec 9>"${out}.lock"
@@ -45,7 +43,7 @@ run() {
   else echo "[FAIL ] ${el}s ${n}pts $key rc=$rc"; fi
 }
 # Cheapest first, so a partial run still yields a usable curve.
-export -f run
+export -f run mem_wait mem_avail_mb mem_psi_some10
 # Cheapest first by ATOM COUNT (22 is 10 atoms, 15 is 11) -- run_r0tscan.sh
 # had these two transposed.
 # Cheapest first by atom count (4,6,7,7,8,8,9,9,9,10,10,13,13). Systems are

@@ -6,6 +6,7 @@
 # optimum is likely OUTSIDE it, toward larger r0.
 # One job per (system, fragment); each sweeps all 6 r0 on a single SCF.
 cd /home/matt/qc/ferric
+. scripts/queue/memgate.sh
 export FERRIC_TERF_TABLE_DIR=/home/matt/qc/terf-tables-data
 export OPENBLAS_NUM_THREADS=1 RAYON_NUM_THREADS=12
 FAIL=0; OK=0
@@ -15,10 +16,7 @@ run() {
   if [ -s "$out" ] && [ "$(grep -c 'Total energy' "$out")" -ge 7 ]; then
     echo "[skip] $key"; return
   fi
-  for _ in $(seq 1 90); do
-    [ "$(free -g | awk '/^Mem:/{print $7}')" -ge 8 ] && break
-    sleep 60
-  done
+  mem_wait "${SLOT_MB:-2600}" || echo "[mem  ] proceeding anyway for $key"
   local st; st=$(date +%s)
   scripts/ferric-limited -- ./target/release/ferric \
     "benchmarks/grid/toml/${key}.toml" > "$out" 2> "${out}.err"
