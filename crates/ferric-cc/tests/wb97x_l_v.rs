@@ -346,21 +346,15 @@ fn ladder_variant_is_honored() {
 ///
 /// REFERENCE CHOICE -- this uses a plain **ROHF** reference, not ROKS.
 ///
-/// ferric's KS-DFT convergence criterion cannot currently reach the default
-/// density_conv = 1e-6..1e-8 on this system: MEASURED on OH/STO-3G, plain ROHF
-/// converges in 8 iterations while EVERY ROKS functional stalls at max_iter --
-/// PBE, B3LYP, stock wB97X-V and wB97X-L-V alike -- with the energy stable to 8
-/// decimals (e.g. PBE -74.57191043 vs -74.57191030) but dP never crossing the
-/// threshold. Closed-shell PBE/RKS on water/STO-3G fails the same way at 1e-8. So this
-/// is a PRE-EXISTING ferric KS-convergence issue affecting stock functionals, NOT
-/// something wB97X-L-V or this branch introduced, and not something a convergence
-/// ladder fixes (all 5 ksdft_ladder rungs were tried).
+/// That is now a deliberate isolation choice, not a workaround. It exercises the
+/// semi-canonical bridge and the unrestricted correlation path against a reference with
+/// no XC in it at all, so a failure here localizes to the CC side rather than the
+/// functional. `open_shell_end_to_end_via_roks` below runs the paper's actual
+/// prescription (a converged ROKS/wB97X-L-V reference) and is the primary end-to-end test.
 ///
-/// Using ROHF keeps this test honest about what it demonstrates: the semi-canonical
-/// bridge and the unrestricted correlation path, on a reference that genuinely
-/// converged. The XC-threading path itself is covered directly by
-/// `kohn_sham_fock_differs_from_hartree_fock` and
-/// `range_separated_exchange_takes_its_own_path` in ferric-scf.
+/// (Historical note: this test originally used ROHF because ferric's KS SCF could not
+/// converge at all -- a DIIS B-matrix conditioning bug, since fixed. See
+/// `ferric-scf/tests/ks_diis_degenerate_subspace.rs`.)
 #[test]
 fn open_shell_end_to_end_via_semicanonicalization() {
     use ferric_cc::double_hybrid::u_solve_wb97x_l_v;
@@ -406,4 +400,76 @@ fn open_shell_end_to_end_via_semicanonicalization() {
     );
     // The semi-canonical reference is not a UHF stationary point -- expected.
     assert!(sc.max_ov_alpha > 1e-10 && sc.max_ov_beta > 1e-10);
+}
+
+/// THE PAPER'S ACTUAL OPEN-SHELL PRESCRIPTION, end to end:
+/// ROKS/wB97X-L-V -> semi-canonicalize against the **Kohn-Sham** Fock -> unrestricted
+/// short-range LinLCCD(hh).
+///
+/// This is the one that exercises everything at once, and it is what the XC threading in
+/// `semicanonicalize` exists for: passing `Some(&XcSpec)` means the per-spin orbital
+/// energies come from the KS Fock the functional is defined against, not from an HF Fock
+/// build that would hand back HF-like eigenvalues.
+///
+/// This test could not be written until the DIIS subspace bug was fixed -- ROKS simply
+/// never converged. MEASURED after the fix: 11 iterations, and the result is identical
+/// with and without MOM (`mom_after_iter` 0 vs 3), i.e. a single stable solution rather
+/// than the flip-flop that still afflicts ROKS/PBE (see
+/// `ferric-scf/tests/roks_occupation_flip.rs`).
+#[test]
+fn open_shell_end_to_end_via_roks() {
+    use ferric_cc::double_hybrid::{u_solve_wb97x_l_v, WB97X_L_V_NAME};
+    use ferric_scf::semicanonical::{semicanonicalize, XcSpec};
+
+    let mol = Molecule::parse_xyz("2\n\nO 0.0 0.0 0.0\nH 0.0 0.0 0.97\n", 0, 2).unwrap();
+    let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
+    let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+    let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
+    let ctx = ParallelContext::default();
+
+    // 1. Converge the open-shell KOHN-SHAM reference with the custom functional.
+    let mut scf = RhfConfig { density_conv: 1e-8, max_iter: 200, ..Default::default() };
+    scf.xc = Some(WB97X_L_V_NAME.to_string());
+    let roks = ferric_scf::rohf::solve_rohf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &scf)
+        .expect("ROKS/wB97X-L-V should solve");
+    eprintln!("ROKS/wB97X-L-V: converged={} iters={}", roks.converged, roks.iterations);
+    assert!(roks.converged, "ROKS reference must converge (took {})", roks.iterations);
+
+    // 2. Semi-canonicalize against the KS Fock -- Some(&XcSpec), not None.
+    let spec = XcSpec::new(WB97X_L_V_NAME);
+    let sc = semicanonicalize(&ctx, &mol, &obs, &bounds, &roks, 1e-12, Some(&spec)).unwrap();
+    let semi = sc.to_unrestricted_result(&roks);
+
+    // 3. Unrestricted short-range LinLCCD(hh) on the KS orbitals.
+    let dh = u_solve_wb97x_l_v(&mol, &obs, &dfbs, &semi, &DoubleHybridConfig::default())
+        .expect("open-shell ROKS double-hybrid should run end to end");
+
+    eprintln!("E_KS[wB97X-L-V]     = {:.10}", dh.e_ks);
+    eprintln!("E_c,LinLCCD(hh) SR  = {:.10}", dh.e_c_wft);
+    eprintln!("E_total             = {:.10}", dh.total_energy);
+
+    assert!(dh.total_energy.is_finite());
+    assert!(dh.e_c_wft < 0.0, "correlation must be negative, got {:.10}", dh.e_c_wft);
+    assert!(
+        (dh.total_energy - (dh.e_ks + dh.e_c_scaled)).abs() < 1e-12,
+        "reported components must sum to the reported total"
+    );
+    assert!(
+        (-76.5..-73.0).contains(&dh.total_energy),
+        "total energy {:.6} outside the plausible range for OH/STO-3G",
+        dh.total_energy
+    );
+
+    // The KS reference must differ from the HF-referenced sibling above: same molecule and
+    // basis, different Fock, so a coincidence here would mean the XcSpec was ignored.
+    let scf_hf = RhfConfig { density_conv: 1e-9, max_iter: 200, ..Default::default() };
+    let rohf =
+        ferric_scf::rohf::solve_rohf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &scf_hf)
+            .unwrap();
+    assert!(
+        (dh.e_ks - rohf.energy).abs() > 1e-4,
+        "ROKS energy {:.10} matches plain ROHF {:.10} -- the functional is not being applied",
+        dh.e_ks,
+        rohf.energy
+    );
 }
