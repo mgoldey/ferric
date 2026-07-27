@@ -47,22 +47,79 @@ pub struct DlpnoConfig {
     pub coupling_cutoff: f64,
     /// PNO occupation threshold. `0.0` keeps every virtual.
     pub t_cut_pno: f64,
+    /// Estimated-pair-energy threshold in Hartree (ORCA's `T_CutPairs`
+    /// criterion): a pair is dropped when `|e_ij| < t_cut_pairs`. `0.0` keeps
+    /// every pair.
+    ///
+    /// **Prefer this over [`Self::pair_cutoff`].** Distance in Bohr is
+    /// system-size-dependent — a fixed value does nothing until it drops below
+    /// the size of the molecule, then removes everything at once. MEASURED at
+    /// matched retention on benzene/STO-3G, the energy criterion is 56× more
+    /// accurate (2.5e-3 vs 1.4e-1 Ha at 52% retention) and gives a smooth dial
+    /// rather than a cliff. See `ferric-cc/tests/pair_screen_criteria.rs`.
+    pub t_cut_pairs: f64,
 }
 
+/// Default estimated-pair-energy threshold, in Hartree.
+///
+/// MEASURED, not imported: on benzene/STO-3G this retains 97.3% of pairs for a
+/// 5.1e-5 Ha error (0.03 kcal/mol — well inside chemical accuracy), and on
+/// water/6-31G it is still fully exact. `1e-4` is the corresponding loose
+/// setting at 2.5e-3 Ha. See `ferric-cc/tests/pair_screen_criteria.rs` for the
+/// head-to-head that produced these.
+///
+/// These bracket ORCA's published `T_CutPairs` values in the same ordering
+/// (~1e-4 Normal, ~1e-5 Tight), which is a sanity check on the number rather
+/// than its source — those values could not be verified from any source
+/// available here.
+pub const DEFAULT_T_CUT_PAIRS: f64 = 1e-5;
+
 impl Default for DlpnoConfig {
-    /// Exact by default: every screen disabled.
+    /// Pair-energy screening ON at [`DEFAULT_T_CUT_PAIRS`]; the virtual-space
+    /// and distance screens OFF.
     ///
-    /// Deliberate — a user who enables DLPNO without choosing thresholds gets the
-    /// dense answer slowly, not a silently approximated one.
+    /// This is a deliberate departure from the earlier "exact by default"
+    /// stance. The argument for exact-by-default was that a user who enables
+    /// DLPNO without choosing thresholds should not get a silently approximated
+    /// answer — but the pair-energy screen is measurably a 0.03 kcal/mol effect
+    /// at this threshold, which is below the accuracy of every method that
+    /// consumes it, while the alternative (screening nothing) means paying dense
+    /// cost for a method whose entire purpose is to avoid it.
+    ///
+    /// `t_cut_pno` stays at `0.0` because virtual truncation has a MEASURED
+    /// dead zone and cliff behaviour (see `dlpno-transform-cost-dominates`),
+    /// and `pair_cutoff` stays at `∞` because the distance criterion it drives
+    /// is the one this default exists to replace.
+    ///
+    /// Use [`Self::exact()`] for a bit-for-bit dense reference.
     fn default() -> Self {
-        Self { pair_cutoff: f64::INFINITY, coupling_cutoff: f64::INFINITY, t_cut_pno: 0.0 }
+        Self {
+            pair_cutoff: f64::INFINITY,
+            coupling_cutoff: f64::INFINITY,
+            t_cut_pno: 0.0,
+            t_cut_pairs: DEFAULT_T_CUT_PAIRS,
+        }
     }
 }
 
 impl DlpnoConfig {
+    /// Every screen disabled — the result must equal the dense one bit for bit.
+    ///
+    /// Use this for reference calculations and for the exactness contracts the
+    /// DLPNO modules are tested against. [`Self::default()`] is NO LONGER exact;
+    /// it enables pair-energy screening.
+    pub fn exact() -> Self {
+        Self {
+            pair_cutoff: f64::INFINITY,
+            coupling_cutoff: f64::INFINITY,
+            t_cut_pno: 0.0,
+            t_cut_pairs: 0.0,
+        }
+    }
+
     /// True when no screen is active, so the result must equal the dense one.
     pub fn is_exact(&self) -> bool {
-        self.pair_cutoff.is_infinite() && self.t_cut_pno == 0.0
+        self.pair_cutoff.is_infinite() && self.t_cut_pno == 0.0 && self.t_cut_pairs == 0.0
     }
 }
 
@@ -96,6 +153,41 @@ pub struct DlpnoDiagnostics {
 ///
 /// [`FerricError::General`] when `g`'s dimensions disagree with `nocc`/`nvir`, or
 /// on any error from the PNO construction.
+/// Build the pair domains a [`DlpnoConfig`] asks for, applying whichever pair
+/// screen it selects.
+///
+/// This is the ONLY place `t_cut_pairs` takes effect. It exists because
+/// [`dlpno_mp2_spin_components`] receives pre-built `domains` — applying the
+/// config's threshold there would silently override a caller who had already
+/// chosen their own screening, which is worse than ignoring it.
+///
+/// Precedence, when both are set: `t_cut_pairs` wins and `pair_cutoff` is
+/// ignored. They are alternative answers to the same question, and the energy
+/// criterion is the better-measured one (56x lower error at matched retention
+/// on benzene — see `ferric-cc/tests/pair_screen_criteria.rs`). A caller who
+/// genuinely wants the distance screen must set `t_cut_pairs: 0.0` explicitly,
+/// which is what [`DlpnoConfig::exact`] does before you add a cutoff to it.
+///
+/// # Errors
+///
+/// Propagates from the underlying domain builders.
+pub fn build_domains_for(
+    centers: &ndarray::Array2<f64>,
+    pair_energies: &crate::pair_energy_screen::PairEnergies,
+    cfg: &DlpnoConfig,
+) -> Result<PairDomains, FerricError> {
+    if cfg.t_cut_pairs > 0.0 {
+        crate::pair_energy_screen::build_pair_domains_by_energy(
+            centers,
+            pair_energies,
+            cfg.t_cut_pairs,
+            cfg.coupling_cutoff,
+        )
+    } else {
+        crate::pair_domains::build_pair_domains(centers, cfg.pair_cutoff, cfg.coupling_cutoff)
+    }
+}
+
 pub fn dlpno_mp2_spin_components(
     g: &Array2<f64>,
     eps: &[f64],
@@ -289,14 +381,64 @@ mod tests {
         assert_eq!(diag.virtual_retention, 1.0);
     }
 
-    /// The default config must be the exact one — enabling DLPNO without choosing
-    /// thresholds must not silently approximate.
+    /// The default must actually SCREEN when routed through `build_domains_for`.
+    ///
+    /// Without this the default would be decorative: `dlpno_mp2_spin_components`
+    /// takes pre-built domains, so a `t_cut_pairs` nobody reads changes nothing.
+    /// This pins that the constructor honours it, and that `exact()` does not.
     #[test]
-    fn default_config_is_exact() {
-        let c = DlpnoConfig::default();
-        assert!(c.is_exact());
-        assert!(c.pair_cutoff.is_infinite());
-        assert_eq!(c.t_cut_pno, 0.0);
+    fn default_config_actually_screens_through_the_constructor() {
+        use crate::pair_energy_screen::estimate_pair_energies;
+        let (nocc, nvir) = (4, 5);
+        let (g, eps) = toy(nocc, nvir);
+        let pe = estimate_pair_energies(g.view(), &eps, nocc, nvir, 0, nocc).unwrap();
+        // Spread the centers so the DISTANCE path would also have something to do;
+        // this isolates that the ENERGY path is the one being taken.
+        let centers = centers(nocc, 10.0);
+
+        let d_default = build_domains_for(&centers, &pe, &DlpnoConfig::default()).unwrap();
+        let d_exact = build_domains_for(&centers, &pe, &DlpnoConfig::exact()).unwrap();
+
+        assert!(d_exact.is_complete(), "exact() must retain every pair");
+        assert!(
+            d_default.pairs.len() <= d_exact.pairs.len(),
+            "the default must never retain MORE than exact"
+        );
+        // On this toy the pair energies are large, so 1e-5 may legitimately keep
+        // everything -- assert the mechanism, not a particular retention.
+        let tight = DlpnoConfig { t_cut_pairs: 1e30, ..DlpnoConfig::default() };
+        let d_tight = build_domains_for(&centers, &pe, &tight).unwrap();
+        assert!(
+            d_tight.pairs.len() < d_exact.pairs.len(),
+            "an extreme t_cut_pairs must screen -- the constructor is not reading it"
+        );
+        // ...and diagonals still survive it.
+        for i in 0..nocc {
+            assert!(d_tight.pairs.contains(&(i, i)), "diagonal ({i},{i}) was screened");
+        }
+    }
+
+    /// The default now ENABLES pair-energy screening; `exact()` is the exact one.
+    ///
+    /// This pins a deliberate contract change. The default used to be exact, on
+    /// the argument that enabling DLPNO without choosing thresholds should not
+    /// silently approximate. It now screens at `DEFAULT_T_CUT_PAIRS` because that
+    /// is a MEASURED 0.03 kcal/mol effect — below the accuracy of every method
+    /// consuming it — while screening nothing means paying dense cost for a
+    /// method whose whole purpose is to avoid it.
+    #[test]
+    fn default_screens_and_exact_does_not() {
+        let d = DlpnoConfig::default();
+        assert!(!d.is_exact(), "default() should now screen");
+        assert_eq!(d.t_cut_pairs, DEFAULT_T_CUT_PAIRS);
+        // The other two screens stay OFF: virtual truncation has a measured dead
+        // zone and cliff, and the distance criterion is what this replaces.
+        assert_eq!(d.t_cut_pno, 0.0, "virtual truncation must stay off by default");
+        assert!(d.pair_cutoff.is_infinite(), "distance screening must stay off");
+
+        let e = DlpnoConfig::exact();
+        assert!(e.is_exact(), "exact() must disable every screen");
+        assert_eq!(e.t_cut_pairs, 0.0);
     }
 
     /// Screening must change the energy and report what it dropped, otherwise the
@@ -311,7 +453,14 @@ mod tests {
         let d = build_pair_domains(&centers(nocc, 10.0), 2.0, f64::INFINITY).unwrap();
         assert!(d.pair_retention() < 1.0, "premise: pairs should be screened");
 
-        let cfg = DlpnoConfig { pair_cutoff: 2.0, coupling_cutoff: f64::INFINITY, t_cut_pno: 1e-4 };
+        // Distance screening specifically, so t_cut_pairs is off: this test is
+        // about the pair_cutoff path, not the new default.
+        let cfg = DlpnoConfig {
+            pair_cutoff: 2.0,
+            coupling_cutoff: f64::INFINITY,
+            t_cut_pno: 1e-4,
+            t_cut_pairs: 0.0,
+        };
         let (got, diag) =
             dlpno_mp2_spin_components(&g, &eps, nocc, nvir, 0, nocc, &d, &cfg).unwrap();
 
@@ -359,7 +508,9 @@ mod tests {
         let dense = spin_components_from_g(&g, &eps, nocc, nvir, 0, nocc);
         let d = complete_pair_domains(&centers(nocc, 1.0)).unwrap();
 
-        let cfg = DlpnoConfig { t_cut_pno: 1e-2, ..Default::default() };
+        // exact() not default(): default() now enables pair-energy screening, which
+        // would confound this test's isolation of PNO virtual truncation.
+        let cfg = DlpnoConfig { t_cut_pno: 1e-2, ..DlpnoConfig::exact() };
         let (got, diag) =
             dlpno_mp2_spin_components(&g, &eps, nocc, nvir, 0, nocc, &d, &cfg).unwrap();
 
