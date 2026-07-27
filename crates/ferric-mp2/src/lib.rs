@@ -13,6 +13,9 @@
 #![allow(clippy::needless_range_loop)]
 
 pub mod boys;
+pub mod dlpno_mp2;
+pub mod local_pno;
+pub mod pair_domains;
 pub mod mo_transform;
 pub mod rimp2;
 pub mod mp3;

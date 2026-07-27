@@ -16,8 +16,14 @@ pub mod helpers;
 pub mod linlccd;
 pub mod linlccd_exact;
 pub mod linlccd_u;
-pub mod pair_domains;
-pub mod pno;
+
+/// Local-correlation machinery, re-exported from `ferric-mp2`.
+///
+/// These live in `ferric-mp2` rather than here because MP2 and RPA need them too
+/// and `ferric-mp2` is UPSTREAM of this crate — a module here would be unreachable
+/// from either. Re-exported so `ferric_cc::pair_domains::…` keeps resolving.
+pub use ferric_mp2::pair_domains;
+pub use ferric_mp2::local_pno as pno;
 
 #[derive(Debug, Clone)]
 pub struct CcConfig {
