@@ -151,9 +151,22 @@ def main():
         stem = f"a24-{r['system']:02d}_{r['fragment']}"
         p = ROOT / "toml" / f"{stem}_aqz_{a.tag}_{a.form}.toml"
         if not r["r0_need"]:
-            if p.exists():
-                p.unlink()
-                removed += 1
+            # DO NOT delete a completed job's TOML.
+            #
+            # mae_spline.collect() reads each output's formulation from its
+            # SIBLING TOML, and skips any non-B sweep whose TOML is missing
+            # (unlabelled legacy sweeps were the B production run). So deleting
+            # a completed T TOML makes that job's data INVISIBLE to the
+            # collector -- which makes this planner then believe the points are
+            # missing, recreate the TOML, and re-run work that was already done.
+            #
+            # Observed 2026-07-27: a --write run deleted the r0Tfine TOMLs for
+            # a24-12/21 as "complete", and 1.45 vanished from the aggregate
+            # entirely even though both had valid energies on disk. Restoring
+            # the TOMLs brought the data straight back.
+            #
+            # Leaving the file costs nothing -- the runner's own idempotence
+            # check skips a job whose output already has all its points.
             continue
         sweep = "[" + ", ".join(f"{x:.4f}" for x in r["r0_need"]) + "]"
         t = re.sub(r'xyz = "[^"]+"', f'xyz = "benchmarks/grid/geoms/{stem}.xyz"', tpl)
@@ -176,8 +189,8 @@ def main():
             p.write_text(t)
             trimmed += 1 if existed else 0
             created += 0 if existed else 1
-    print(f"  TOMLs: {created} created, {trimmed} updated, {removed} removed "
-          f"(already complete)")
+    print(f"  TOMLs: {created} created, {trimmed} updated "
+          f"({removed} completed jobs left in place -- see the no-delete note)")
     return 0
 
 
