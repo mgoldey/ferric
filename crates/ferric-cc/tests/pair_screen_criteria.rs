@@ -236,3 +236,71 @@ fn distance_vs_pair_energy_screening() {
         }
     }
 }
+
+/// VALIDATE THE DEFAULT across a chemically diverse set.
+///
+/// The `t_cut_pairs = 1e-5` default was derived from two molecules. This checks
+/// it on nine spanning polar/nonpolar, single/double/triple bonds, first- and
+/// second-row heteroatoms, and a saturated chain — asking one question: at the
+/// default, is the error small enough to be a safe default?
+///
+/// "Safe" is taken as < 1 kcal/mol (1.594e-3 Ha) of the total correlation
+/// energy, an order of magnitude inside chemical accuracy. The per-molecule
+/// numbers are printed so a reader can judge for themselves rather than trust
+/// the threshold I picked.
+#[test]
+fn default_threshold_validated_across_molecules() {
+    const KCAL: f64 = 1.593_601e-3; // Ha per kcal/mol
+    let mols: [(&str, &str); 9] = [
+        ("water", "water.xyz"),
+        ("methanol", "ch3oh.xyz"),
+        ("formaldehyde", "h2co.xyz"),
+        ("CO2", "co2.xyz"),
+        ("ethylene", "c2h4.xyz"),
+        ("ethane", "c2h6.xyz"),
+        ("H2S", "h2s.xyz"),
+        ("dimethyl ether", "ch3och3.xyz"),
+        ("benzene", "benzene.xyz"),
+    ];
+
+    eprintln!("\n=== t_cut_pairs default validation (STO-3G), threshold = 1e-5 Eh");
+    eprintln!(
+        "{:16} {:>5} {:>14} {:>10} {:>12} {:>10}",
+        "molecule", "nocc", "E_corr", "retention", "|dE| (Ha)", "kcal/mol"
+    );
+
+    let mut worst = 0.0_f64;
+    let mut worst_name = String::new();
+    for (label, file) in mols {
+        let sys = prepare(label, &format!("../../testdata/molecules/{file}"), "sto-3g");
+        let e_full = total_energy(&sys);
+        let pe = estimate_pair_energies(
+            sys.g.view(), &sys.eps, sys.nocc, sys.nvir, sys.first_occ, sys.nocc_total,
+        )
+        .unwrap();
+        let d = build_pair_domains_by_energy(&sys.centers, &pe, 1e-5, f64::INFINITY).unwrap();
+        let ret = pair_mask_retention(&d);
+        let err = (energy_from_retained(&sys, &d) - e_full).abs();
+        eprintln!(
+            "{label:16} {:>5} {e_full:>14.8} {ret:>10.4} {err:>12.3e} {:>10.4}",
+            sys.nocc,
+            err / KCAL
+        );
+        if err > worst {
+            worst = err;
+            worst_name = label.to_string();
+        }
+    }
+
+    eprintln!(
+        "worst case: {worst_name} at {worst:.3e} Ha = {:.4} kcal/mol",
+        worst / KCAL
+    );
+    assert!(
+        worst < KCAL,
+        "the default t_cut_pairs = 1e-5 costs {:.4} kcal/mol on {worst_name}, \
+         which is too much for a DEFAULT -- either loosen the claim or tighten \
+         the threshold",
+        worst / KCAL
+    );
+}
