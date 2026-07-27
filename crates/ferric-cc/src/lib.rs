@@ -16,6 +16,7 @@ pub mod helpers;
 pub mod linlccd;
 pub mod linlccd_exact;
 pub mod linlccd_u;
+pub mod pair_domains;
 
 #[derive(Debug, Clone)]
 pub struct CcConfig {
