@@ -146,16 +146,18 @@ fn pair_resolved_correlation_vs_distance() {
     use ferric_mp2::rimp2::{compute_rpa_intermediates, RiMp2Config};
 
     let ctx = ParallelContext::default();
-    let mol = Molecule::load_xyz("../../testdata/molecules/benzene.xyz").unwrap();
+    for path in ["../../testdata/molecules/benzene.xyz", "../../testdata/molecules/alkane_8.xyz"] {
+    let mol = Molecule::load_xyz(path).unwrap();
     let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
     let scf = RhfConfig { density_conv: 1e-9, max_iter: 200, ..Default::default() };
     let rhf = solve_rhf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &scf).unwrap();
     let centers = boys_centers(&mol, &obs, &rhf);
+    eprintln!("\n=== {path}");
 
     let radii = [2.0_f64, 4.0, 6.0, 8.0, 12.0];
-    eprintln!("\nbenzene/STO-3G: cumulative fraction of |E_corr(MP2)| within a pair radius");
+    eprintln!("cumulative fraction of |E_corr(MP2)| within a pair radius");
     eprintln!("(normalized per operator; higher = more local)\n");
     eprintln!("{:12} {:>12} | {:>7} {:>7} {:>7} {:>7} {:>7}",
               "operator", "E_corr", "2 Bohr", "4 Bohr", "6 Bohr", "8 Bohr", "12 Bohr");
@@ -222,8 +224,14 @@ fn pair_resolved_correlation_vs_distance() {
         for k in 1..c.len() {
             assert!(c[k] >= c[k-1] - 1e-9, "{label}: cumulative fraction not monotone");
         }
-        assert!((c[c.len()-1] - 1.0).abs() < 1e-6,
-                "{label}: 12 Bohr should capture everything, got {:.6}", c[c.len()-1]);
+        // NOT asserted to reach 1.0: the largest radius only captures everything
+        // when it exceeds the molecule's own extent. C8 is longer than 12 Bohr, so
+        // its curve legitimately tops out around 0.88 -- asserting 1.0 here was a
+        // benzene-shaped assumption, not a property of the decomposition.
+        assert!(c[c.len()-1] > 0.5,
+                "{label}: largest radius should capture most correlation, got {:.6}",
+                c[c.len()-1]);
+    }
     }
 }
 
