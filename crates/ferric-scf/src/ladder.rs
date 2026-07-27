@@ -223,6 +223,65 @@ pub fn ksdft_ladder(base: &RhfConfig) -> Vec<Rung> {
     ]
 }
 
+/// Walk a convergence ladder using ROHF/ROKS, carrying each failed rung's density
+/// forward as the next rung's guess.
+///
+/// The open-shell counterpart of [`solve_rhf_ladder`]. ROHF/ROKS has no closed-shell
+/// fallback and is materially harder to converge — radicals and open-shell
+/// transition-metal complexes are exactly the systems that stall plain DIIS, and
+/// exactly what a robustness-oriented functional is for.
+///
+/// Returns the first converged rung, or the lowest-energy non-converged result with
+/// `converged: false`.
+pub fn solve_rohf_ladder(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    ladder: &[Rung],
+) -> Result<LadderResult, FerricError> {
+    let mut outcomes: Vec<RungOutcome> = Vec::new();
+    let mut best: Option<ScfResult> = None;
+    let mut carry: Option<ndarray::Array2<f64>> = None;
+
+    for (i, rung) in ladder.iter().enumerate() {
+        let mut cfg = rung.config.clone();
+        // Carry the previous rung's best-effort density in as this rung's guess.
+        if !rung.restart {
+            if let Some(d) = carry.as_ref() {
+                cfg.init_guess_density = Some(d.clone());
+            }
+        }
+        let r = crate::rohf::solve_rohf_best_effort(ctx, mol, prep, op, bounds, &cfg)?;
+        outcomes.push(RungOutcome {
+            iters: r.iterations,
+            exit: r.exit,
+            final_err_max: f64::NAN,
+            final_energy: r.energy,
+        });
+        if r.converged {
+            return Ok(LadderResult {
+                result: r,
+                converged: true,
+                rung_reached: i,
+                rung_outcomes: outcomes,
+            });
+        }
+        carry = Some(r.density_total.clone());
+        best = match best {
+            Some(b) if b.energy <= r.energy => Some(b),
+            _ => Some(r),
+        };
+    }
+
+    let result = best.ok_or_else(|| {
+        FerricError::General("solve_rohf_ladder: empty ladder".into())
+    })?;
+    let n = outcomes.len().saturating_sub(1);
+    Ok(LadderResult { result, converged: false, rung_reached: n, rung_outcomes: outcomes })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -152,6 +152,54 @@ pub fn solve_wb97x_l_v(
 /// The functional name that [`run_wb97x_l_v`] converges the density with.
 pub const WB97X_L_V_NAME: &str = "wB97X-L-V";
 
+/// Open-shell ωB97X-L-V on a converged ROKS or UKS reference.
+///
+/// Mirrors [`solve_wb97x_l_v`] but takes the unrestricted correlation path. For a
+/// **ROKS** reference, semi-canonicalize first — pass the result of
+/// `semicanonicalize(.., Some(&XcSpec::new(WB97X_L_V_NAME))).to_unrestricted_result(..)`
+/// — since a raw ROKS `ScfResult` carries no per-spin orbital energies. Using the XC
+/// spec there matters: an HF Fock build would give HF-like orbital energies rather than
+/// the Kohn–Sham ones this functional is defined against.
+pub fn u_solve_wb97x_l_v(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    ks: &ScfResult,
+    cfg: &DoubleHybridConfig,
+) -> Result<DoubleHybridResult, FerricError> {
+    if !ks.converged {
+        return Err(FerricError::ScfConvergence {
+            iterations: ks.iterations,
+            last_energy: ks.energy,
+        });
+    }
+    if !(0.0..=1.0).contains(&cfg.lambda) {
+        return Err(FerricError::General(format!(
+            "double-hybrid lambda must lie in [0, 1]; got {}",
+            cfg.lambda
+        )));
+    }
+    if cfg.omega <= 0.0 {
+        return Err(FerricError::General(format!(
+            "double-hybrid omega must be > 0 (short-range erfc attenuation); got {}",
+            cfg.omega
+        )));
+    }
+
+    let op = Operator::erfc(cfg.omega);
+    let cc = crate::linlccd_u::u_linlccd(mol, obs, dfbs, op, ks, &cfg.cc, cfg.variant)?;
+
+    let e_c_scaled = cfg.lambda * cc.correlation_energy;
+    Ok(DoubleHybridResult {
+        total_energy: ks.energy + e_c_scaled,
+        e_ks: ks.energy,
+        e_c_wft: cc.correlation_energy,
+        e_c_scaled,
+        lambda: cfg.lambda,
+        omega: cfg.omega,
+    })
+}
+
 /// End-to-end ωB97X-L-V: converge the Kohn–Sham density, then add the correlation.
 ///
 /// Uses [`ferric_scf::ladder::ksdft_ladder`] rather than a bare `solve_rhf`, so a

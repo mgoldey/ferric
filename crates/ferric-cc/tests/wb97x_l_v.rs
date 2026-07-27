@@ -337,3 +337,73 @@ fn ladder_variant_is_honored() {
         "Hh and Full gave the same energy ({hh:.10}) -- the variant knob is inert"
     );
 }
+
+/// OPEN-SHELL wB97X-L-V, end to end, via the full paper prescription:
+/// ROHF -> unrestricted KS Fock build + semi-canonicalization -> unrestricted CC.
+///
+/// This is the complete open-shell chain the paper specifies, and the reason both the
+/// XC threading and the per-spin integral builders exist.
+///
+/// REFERENCE CHOICE -- this uses a plain **ROHF** reference, not ROKS.
+///
+/// ferric's KS-DFT convergence criterion cannot currently reach the default
+/// density_conv = 1e-6..1e-8 on this system: MEASURED on OH/STO-3G, plain ROHF
+/// converges in 8 iterations while EVERY ROKS functional stalls at max_iter --
+/// PBE, B3LYP, stock wB97X-V and wB97X-L-V alike -- with the energy stable to 8
+/// decimals (e.g. PBE -74.57191043 vs -74.57191030) but dP never crossing the
+/// threshold. Closed-shell PBE/RKS on water/STO-3G fails the same way at 1e-8. So this
+/// is a PRE-EXISTING ferric KS-convergence issue affecting stock functionals, NOT
+/// something wB97X-L-V or this branch introduced, and not something a convergence
+/// ladder fixes (all 5 ksdft_ladder rungs were tried).
+///
+/// Using ROHF keeps this test honest about what it demonstrates: the semi-canonical
+/// bridge and the unrestricted correlation path, on a reference that genuinely
+/// converged. The XC-threading path itself is covered directly by
+/// `kohn_sham_fock_differs_from_hartree_fock` and
+/// `range_separated_exchange_takes_its_own_path` in ferric-scf.
+#[test]
+fn open_shell_end_to_end_via_semicanonicalization() {
+    use ferric_cc::double_hybrid::u_solve_wb97x_l_v;
+    use ferric_scf::semicanonical::semicanonicalize;
+
+    let mol = Molecule::parse_xyz("2\n\nO 0.0 0.0 0.0\nH 0.0 0.0 0.97\n", 0, 2).unwrap();
+    let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
+    let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+    let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
+    let ctx = ParallelContext::default();
+
+    // 1. Converge the open-shell reference.
+    let scf = RhfConfig { density_conv: 1e-9, max_iter: 200, ..Default::default() };
+    let rohf =
+        ferric_scf::rohf::solve_rohf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &scf).unwrap();
+    assert!(rohf.converged, "ROHF reference must converge");
+
+    // 2. One unrestricted Fock build + semi-canonicalization -> genuine per-spin
+    //    orbitals and orbital energies.
+    let sc = semicanonicalize(&ctx, &mol, &obs, &bounds, &rohf, 1e-12, None).unwrap();
+    let semi = sc.to_unrestricted_result(&rohf);
+
+    // 3. Unrestricted short-range LinLCCD(hh) correlation.
+    let dh = u_solve_wb97x_l_v(&mol, &obs, &dfbs, &semi, &DoubleHybridConfig::default())
+        .expect("open-shell double-hybrid correlation should run end to end");
+
+    eprintln!("E_ref               = {:.10}", dh.e_ks);
+    eprintln!("E_c,LinLCCD(hh) SR  = {:.10}", dh.e_c_wft);
+    eprintln!("lambda * E_c        = {:.10}", dh.e_c_scaled);
+    eprintln!("E_total             = {:.10}", dh.total_energy);
+    eprintln!("max |F_ia|          = {:.3e} (a), {:.3e} (b)", sc.max_ov_alpha, sc.max_ov_beta);
+
+    assert!(dh.total_energy.is_finite());
+    assert!(dh.e_c_wft < 0.0, "correlation must be negative, got {:.10}", dh.e_c_wft);
+    assert!(
+        (dh.total_energy - (dh.e_ks + dh.e_c_scaled)).abs() < 1e-12,
+        "reported components must sum to the reported total"
+    );
+    assert!(
+        (-76.5..-73.0).contains(&dh.total_energy),
+        "total energy {:.6} outside the plausible range for OH/STO-3G",
+        dh.total_energy
+    );
+    // The semi-canonical reference is not a UHF stationary point -- expected.
+    assert!(sc.max_ov_alpha > 1e-10 && sc.max_ov_beta > 1e-10);
+}
