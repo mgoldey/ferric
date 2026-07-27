@@ -57,16 +57,27 @@ pub fn boys_localize(
 
         for i in 0..nocc {
             for j in (i + 1)..nocc {
-                // For each coordinate alpha, compute:
-                //   d_alpha = d[alpha][i,i] - d[alpha][j,j]   (diagonal difference)
-                //   o_alpha = d[alpha][i,j]                   (off-diagonal)
-                // A = Σ_alpha (o_alpha^2 - d_alpha^2/4)
-                // B = Σ_alpha d_alpha * o_alpha / 2
-                // theta = atan2(B, -A) / 4
-                // PySCF Boys formula:
-                // A = Σ_α [ (q_ii - q_jj)²/4 - q_ij² ]
-                // B = Σ_α q_ij * (q_ii - q_jj)
-                // θ = atan2(B, -A) / 4  (maximizes Boys functional)
+                // Jacobi rotation of the (i, j) pair that MAXIMIZES the Boys
+                // functional Σ_i |⟨i|r|i⟩|² (equivalently, minimizes the orbital
+                // spread). With
+                //   A = Σ_α [ (q_ii − q_jj)²/4 − q_ij² ]
+                //   B = Σ_α q_ij (q_ii − q_jj)
+                // the stationary angles are θ = atan2(∓B, ±A)/4, and the two
+                // branches are the MAXIMUM and the MINIMUM of the same functional.
+                //
+                // The sign below is `atan2(-B, A)`. Getting it backwards does not
+                // fail loudly — it converges happily to the *minimum*, i.e. the
+                // maximally DELOCALIZED orbitals, with every Boys center collapsed
+                // onto the molecular centroid.
+                //
+                // MEASURED with the wrong branch (`atan2(B, -A)`, fixed 2026-07-26):
+                // water/cc-pVDZ reported `converged = true` in 11 sweeps while the
+                // functional FELL 0.2277 → 0.0620, all five centers sat at y = 0.000
+                // despite the H atoms being at y = ±1.428 Bohr, and three orbitals
+                // shared one center. Benzene/STO-3G collapsed all 21 centers onto
+                // (0,0,0) — max center-center separation 0.000 Bohr. A 2×2 brute-force
+                // scan confirms this branch: it reproduces the scan optimum exactly,
+                // while the old one scored below even the unrotated F(θ=0).
                 let mut big_a = 0.0_f64;
                 let mut big_b = 0.0_f64;
                 for alpha in 0..3 {
@@ -76,8 +87,7 @@ pub fn boys_localize(
                     big_b += oa * da;
                 }
 
-                // Optimal rotation angle maximizing Boys functional.
-                let theta = f64::atan2(big_b, -big_a) / 4.0;
+                let theta = f64::atan2(-big_b, big_a) / 4.0;
                 if theta.abs() > max_theta {
                     max_theta = theta.abs();
                 }
@@ -326,6 +336,64 @@ mod tests {
         // Water has 5 occupied orbitals in STO-3G: 1 O core, 2 O lone pairs, 2 O-H bonds.
         assert_eq!(result.centers.nrows(), nocc);
         assert_eq!(result.centers.ncols(), 3);
+
+        // THE LOAD-BEARING CHECK: the Boys functional Σ_i |⟨i|r|i⟩|² must INCREASE.
+        //
+        // Everything above (convergence, iteration count, shape, orthonormality) was
+        // ALSO satisfied by a version of this routine that rotated the wrong way and
+        // converged happily to the *minimum* — i.e. maximally delocalized orbitals
+        // with every center collapsed onto the molecular centroid. Nothing caught it
+        // for as long as those were the only assertions, so this is the one that
+        // matters. See the sign discussion at the θ computation.
+        let boys_functional = |c: &Array2<f64>| -> f64 {
+            let mut acc = 0.0;
+            for alpha in 0..3 {
+                let dc = dip[alpha].dot(c);
+                for i in 0..c.ncols() {
+                    let v = c.column(i).dot(&dc.column(i));
+                    acc += v * v;
+                }
+            }
+            acc
+        };
+        let f_before = boys_functional(&c_occ);
+        let f_after = boys_functional(&result.c_loc);
+        println!("Boys functional: {f_before:.8} -> {f_after:.8}");
+        assert!(
+            f_after > f_before,
+            "Boys localization must MAXIMIZE Σ|⟨i|r|i⟩|², but it fell {f_before:.8} \
+             -> {f_after:.8}; the rotation angle's sign branch is inverted"
+        );
+
+        // Physical placement: water's H atoms sit at y = ±1.428 Bohr, so the two O–H
+        // bond orbitals must be genuinely displaced along ±y. Collapsed (delocalized)
+        // centers all sit at y ≈ 0, which is precisely the failure the sign bug
+        // produced — so this pins the geometry, not just the functional value.
+        let max_abs_y =
+            (0..nocc).map(|i| result.centers[(i, 1)].abs()).fold(0.0_f64, f64::max);
+        assert!(
+            max_abs_y > 0.3,
+            "no orbital is displaced along y (max |y| = {max_abs_y:.4} Bohr); the O–H \
+             bond orbitals have collapsed onto the molecular axis"
+        );
+
+        // Distinct orbitals must have distinct centers. The broken version put three
+        // orbitals on one center and two on another.
+        let mut max_sep = 0.0_f64;
+        for i in 0..nocc {
+            for j in 0..nocc {
+                let d: f64 = (0..3)
+                    .map(|a| (result.centers[(i, a)] - result.centers[(j, a)]).powi(2))
+                    .sum::<f64>()
+                    .sqrt();
+                max_sep = max_sep.max(d);
+            }
+        }
+        assert!(
+            max_sep > 1.0,
+            "all Boys centers are within {max_sep:.4} Bohr of each other — the \
+             orbitals are not localized"
+        );
 
         // Check that the localized orbitals are still orthonormal via C^T S C = I
         use ferric_integrals::oneelectron::overlap;
