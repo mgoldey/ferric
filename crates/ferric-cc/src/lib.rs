@@ -30,6 +30,7 @@ pub mod linlccd_u;
 /// and `ferric-mp2` is UPSTREAM of this crate — a module here would be unreachable
 /// from either. Re-exported so `ferric_cc::pair_domains::…` keeps resolving.
 pub use ferric_mp2::pair_domains;
+pub use ferric_mp2::pair_energy_screen;
 pub use ferric_mp2::local_pno as pno;
 
 #[derive(Debug, Clone)]
