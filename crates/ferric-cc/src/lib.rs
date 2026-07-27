@@ -17,6 +17,7 @@ pub mod dlpno_ccsd_t;
 pub mod dlpno_ccsd_t_kernel;
 pub mod dlpno_ccsd_t_virtual;
 pub mod dlpno_ccsd_virtual;
+pub mod dlpno_linlccd;
 pub mod double_hybrid;
 pub mod helpers;
 pub mod linlccd;
