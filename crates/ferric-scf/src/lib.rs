@@ -63,6 +63,10 @@ pub use gradient::{rhf_gradient, rohf_gradient, uhf_gradient};
 pub mod ks_gradient;
 pub use ks_gradient::ks_gradient_closed;
 pub mod optimize;
+pub mod frequencies;
+pub use frequencies::{
+    harmonic_frequencies, FrequencyConfig, FrequencyReference, FrequencyResult,
+};
 pub mod cfmm;
 pub mod ladder;
 pub use ladder::{solve_rhf_ladder, default_ladder, ksdft_ladder, Rung, LadderResult, RungOutcome};
