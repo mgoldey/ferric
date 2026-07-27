@@ -27,7 +27,22 @@ cd /home/matt/qc/ferric
 . scripts/queue/memgate.sh
 export FERRIC_TERF_TABLE_DIR=/home/matt/qc/terf-tables-data
 export OPENBLAS_NUM_THREADS=1 RAYON_NUM_THREADS=4
-NPROC=3
+# NPROC=2, not 3, and SLOT_MB=3400, not 2600.
+#
+# MEASURED 2026-07-26 the hard way: with this sweep at NPROC=3 alongside the
+# broad and B-min drivers, a24-22's aQZ T jobs took **3.2 GB each** -- not the
+# 2.6 GB the gate assumed. Nine concurrent jobs reached 16.1 GB of a 23.4 GB
+# box, swap hit 96%, and vmstat showed si/so ~2500-3000 sustained with wa=68%.
+# The CPUs sat idle two-thirds of the time waiting on disk: a24-22 wrote NOTHING
+# to its output for 55 minutes while holding 9.7 GB. Killing those three took
+# the box from wa=68%/us=1% to wa=0%/us=100% instantly.
+#
+# The lesson is that a per-job cgroup cap (--max=5G) bounds ONE runaway job but
+# does nothing about N cooperating jobs across INDEPENDENT drivers -- each
+# driver sizes its own slots in ignorance of the others. Until the queue has a
+# global admission budget, a sweep that runs alongside others must size for the
+# shared box, not for itself.
+NPROC=2
 
 run() {
   local key="$1" out="benchmarks/grid/out/$1.out"
@@ -44,7 +59,7 @@ run() {
   if [ -s "$out" ] && [ "$(grep -c 'Total energy' "$out" 2>/dev/null)" -ge "$want" ]; then
     echo "[skip ] $key (has $want pts)"; return
   fi
-  mem_wait "${SLOT_MB:-2600}" || echo "[mem  ] proceeding anyway for $key"
+  mem_wait "${SLOT_MB:-3400}" || echo "[mem  ] proceeding anyway for $key"
   exec 9>"${out}.lock"
   if ! flock -n 9; then echo "[lock ] $key running elsewhere"; return; fi
   local st; st=$(date +%s)
