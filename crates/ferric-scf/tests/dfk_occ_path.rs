@@ -54,6 +54,25 @@ fn energy_or_plateau(r: Result<ferric_scf::ScfResult, FerricError>) -> f64 {
     }
 }
 
+/// Agreement tolerance between the C_occ and density DF-K routes' converged
+/// SCF energies.
+///
+/// The two routes are algebraically identical and differ only in floating-point
+/// association order, so the gap is bounded by how precisely the SCF pins the
+/// energy at all — NOT by anything tighter. Under DF-JK the per-iteration `dE`
+/// at convergence is ~1.1e-8 (MEASURED, water/cc-pVDZ, at the iteration the ΔP
+/// gate fires), i.e. the fitted Fock's own noise floor. Asserting agreement
+/// below that floor is asking two independent trajectories to land inside a
+/// window neither one resolves: it passes or fails on luck, and it did flip
+/// direction (RHF ok / UHF fail, then the reverse) under trajectory changes
+/// that left both energies correct.
+///
+/// 1e-7 is ~10× the measured floor: loose enough to be trajectory-independent,
+/// still four orders below the RI fitting error the absolute anchors allow
+/// (3e-3) and twelve orders below the rel ~1.0 a dropped occupation factor
+/// would produce — which is what this test exists to catch.
+const DFJK_ENERGY_TOL: f64 = 1e-7;
+
 /// Serializes the two runs that toggle FERRIC_DFK_FORCE_DENSITY so a parallel
 /// test (or the two calls here) never observe each other's env state.
 static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -62,7 +81,12 @@ fn rhf_dfjk_energy(mol: &Molecule, prep: &PreparedBasis, force_density: bool) ->
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, prep).unwrap();
     let cfg = RhfConfig {
-        energy_conv: 1e-11,
+        // `energy_conv` is a LOOSE "not still descending" sanity bound, not a
+        // target — see `rhf::scf_converged`. Under DF-JK the energy jitters on a
+        // ~1e-8 fitting-noise floor, so the old 1e-11 here was unreachable: BOTH
+        // runs burned their full iteration cap and compared two noise-floor
+        // plateaus that agreed only by luck. ΔP (density_conv) is the real gate.
+        energy_conv: 1e-3,
         density_conv: 1e-8,
         max_iter: 200,
         df_j_aux: Some("def2-universal-jkfit".into()),
@@ -85,7 +109,12 @@ fn uhf_dfjk_energy(mol: &Molecule, prep: &PreparedBasis, force_density: bool) ->
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, prep).unwrap();
     let cfg = UhfConfig {
-        energy_conv: 1e-11,
+        // `energy_conv` is a LOOSE "not still descending" sanity bound, not a
+        // target — see `rhf::scf_converged`. Under DF-JK the energy jitters on a
+        // ~1e-8 fitting-noise floor, so the old 1e-11 here was unreachable: BOTH
+        // runs burned their full iteration cap and compared two noise-floor
+        // plateaus that agreed only by luck. ΔP (density_conv) is the real gate.
+        energy_conv: 1e-3,
         density_conv: 1e-8,
         max_iter: 300,
         df_j_aux: Some("def2-universal-jkfit".into()),
@@ -178,7 +207,7 @@ fn rhf_dfk_occ_path_matches_density_path() {
     let e_den = rhf_dfjk_energy(&mol, &prep, true);
     eprintln!("RHF DF-JK water/cc-pVDZ: occ={e_occ:.12}  density={e_den:.12}  diff={:.2e}", (e_occ - e_den).abs());
     assert!(
-        (e_occ - e_den).abs() < 1e-8,
+        (e_occ - e_den).abs() < DFJK_ENERGY_TOL,
         "DF-K C_occ path vs density path SCF energy diff = {:.3e} (occ={e_occ}, density={e_den})",
         (e_occ - e_den).abs()
     );
@@ -205,7 +234,7 @@ fn uhf_dfk_occ_path_matches_density_path() {
     let e_den = uhf_dfjk_energy(&mol, &prep, true);
     eprintln!("UHF DF-JK OH/cc-pVDZ: occ={e_occ:.12}  density={e_den:.12}  diff={:.2e}", (e_occ - e_den).abs());
     assert!(
-        (e_occ - e_den).abs() < 1e-8,
+        (e_occ - e_den).abs() < DFJK_ENERGY_TOL,
         "UHF DF-K C_occ path vs density path SCF energy diff = {:.3e} (occ={e_occ}, density={e_den})",
         (e_occ - e_den).abs()
     );
