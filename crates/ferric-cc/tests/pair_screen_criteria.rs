@@ -50,14 +50,27 @@ struct System {
 /// criteria are then measured against the SAME orbitals and integrals, so any
 /// difference is the screening rule and nothing else.
 fn prepare(label: &str, path: &str, bas: &str) -> System {
+    try_prepare(label, path, bas)
+        .unwrap_or_else(|e| panic!("{label}/{bas}: {e}"))
+}
+
+/// Fallible variant: returns `Err` when the basis lacks an element, so a sweep
+/// can report the gap instead of dying. ferric's bundled cc-pVDZ covers only
+/// Z = 1..10, so second-row systems legitimately cannot run there.
+fn try_prepare(label: &str, path: &str, bas: &str) -> Result<System, String> {
     let ctx = ParallelContext::default();
-    let mol = Molecule::load_xyz(path).unwrap();
-    let obs = PreparedBasis::new(&mol, &basis::bundled(bas).unwrap()).unwrap();
-    let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
-    let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
+    let mol = Molecule::load_xyz(path).map_err(|e| format!("{e:?}"))?;
+    let bset = basis::bundled(bas).map_err(|e| format!("{e:?}"))?;
+    let obs = PreparedBasis::new(&mol, &bset).map_err(|e| format!("{e:?}"))?;
+    let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").map_err(|e| format!("{e:?}"))?)
+        .map_err(|e| format!("{e:?}"))?;
+    let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).map_err(|e| format!("{e:?}"))?;
     let scf = RhfConfig { density_conv: 1e-9, max_iter: 200, ..Default::default() };
-    let rhf = solve_rhf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &scf).unwrap();
-    assert!(rhf.converged, "{label}: SCF must converge");
+    let rhf = solve_rhf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &scf)
+        .map_err(|e| format!("{e:?}"))?;
+    if !rhf.converged {
+        return Err(format!("{label}: SCF did not converge"));
+    }
 
     let inter = compute_rpa_intermediates(
         &mol,
@@ -67,7 +80,7 @@ fn prepare(label: &str, path: &str, bas: &str) -> System {
         &rhf,
         &RiMp2Config::default(),
     )
-    .unwrap();
+    .map_err(|e| format!("{e:?}"))?;
     let (nocc, nvir, naux) = (inter.nocc, inter.nvir, inter.naux);
     let b = &inter.b_ov;
     let n = nocc * nvir;
@@ -76,14 +89,15 @@ fn prepare(label: &str, path: &str, bas: &str) -> System {
     });
 
     let c_occ = rhf.mos_r().slice(ndarray::s![.., ..nocc + inter.first_occ]).to_owned();
-    let dip = ferric_integrals::oneelectron::dipole(&obs, [0.0, 0.0, 0.0]).unwrap();
+    let dip = ferric_integrals::oneelectron::dipole(&obs, [0.0, 0.0, 0.0])
+        .map_err(|e| format!("{e:?}"))?;
     let all_centers = boys_localize(&c_occ, &dip, 200).centers;
     // Boys ran over all occupied; the domains are built over the ACTIVE window.
     let centers = all_centers
         .slice(ndarray::s![inter.first_occ..inter.first_occ + nocc, ..])
         .to_owned();
 
-    System {
+    Ok(System {
         label: label.to_string(),
         centers,
         g,
@@ -92,7 +106,7 @@ fn prepare(label: &str, path: &str, bas: &str) -> System {
         nvir,
         first_occ: inter.first_occ,
         nocc_total: inter.nocc_total,
-    }
+    })
 }
 
 /// Correlation energy from only the retained pairs — the quantity screening
@@ -263,7 +277,11 @@ fn default_threshold_validated_across_molecules() {
         ("benzene", "benzene.xyz"),
     ];
 
-    eprintln!("\n=== t_cut_pairs default validation (STO-3G), threshold = 1e-5 Eh");
+    // Both bases: STO-3G is minimal, cc-pVDZ has ~3x the virtuals per pair and
+    // could shift the pair-energy distribution -- which is exactly the untested
+    // dimension this sweep closes.
+    for basis_name in ["sto-3g", "cc-pvdz"] {
+    eprintln!("\n=== t_cut_pairs default validation ({basis_name}), threshold = 1e-5 Eh");
     eprintln!(
         "{:16} {:>5} {:>14} {:>10} {:>12} {:>10}",
         "molecule", "nocc", "E_corr", "retention", "|dE| (Ha)", "kcal/mol"
@@ -272,7 +290,13 @@ fn default_threshold_validated_across_molecules() {
     let mut worst = 0.0_f64;
     let mut worst_name = String::new();
     for (label, file) in mols {
-        let sys = prepare(label, &format!("../../testdata/molecules/{file}"), "sto-3g");
+        let sys = match try_prepare(label, &format!("../../testdata/molecules/{file}"), basis_name) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("{label:16} SKIPPED ({e})");
+                continue;
+            }
+        };
         let e_full = total_energy(&sys);
         let pe = estimate_pair_energies(
             sys.g.view(), &sys.eps, sys.nocc, sys.nvir, sys.first_occ, sys.nocc_total,
@@ -293,14 +317,15 @@ fn default_threshold_validated_across_molecules() {
     }
 
     eprintln!(
-        "worst case: {worst_name} at {worst:.3e} Ha = {:.4} kcal/mol",
+        "worst case ({basis_name}): {worst_name} at {worst:.3e} Ha = {:.4} kcal/mol",
         worst / KCAL
     );
     assert!(
         worst < KCAL,
-        "the default t_cut_pairs = 1e-5 costs {:.4} kcal/mol on {worst_name}, \
-         which is too much for a DEFAULT -- either loosen the claim or tighten \
-         the threshold",
+        "the default t_cut_pairs = 1e-5 costs {:.4} kcal/mol on {worst_name} \
+         in {basis_name}, which is too much for a DEFAULT -- either loosen the \
+         claim or tighten the threshold",
         worst / KCAL
     );
+    }
 }
