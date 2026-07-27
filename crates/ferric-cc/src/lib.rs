@@ -15,6 +15,7 @@ pub mod double_hybrid;
 pub mod helpers;
 pub mod linlccd;
 pub mod linlccd_exact;
+pub mod linlccd_u;
 
 #[derive(Debug, Clone)]
 pub struct CcConfig {
