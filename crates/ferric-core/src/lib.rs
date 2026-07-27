@@ -6,11 +6,14 @@
 //! - [`basis::BasisSet`] and [`basis::Shell`] -- Gaussian basis sets (BSE-JSON, G94, bundled)
 //! - [`elements`] -- element symbol/atomic-number lookup tables
 //! - [`orbitals::OrbitalSpace`] -- active occupied/virtual partition for post-HF methods
+//! - [`conformers::ConformerEnsemble`] -- multi-geometry ensembles and Boltzmann-weighted
+//!   property averaging (conformer *generation* is out of scope; RDKit does that)
 //! - [`FerricError`] -- unified error type for the workspace
 
 pub mod error;
 pub mod elements;
 pub mod mol;
+pub mod conformers;
 pub mod basis;
 pub mod ecp;
 pub mod external_potential;
