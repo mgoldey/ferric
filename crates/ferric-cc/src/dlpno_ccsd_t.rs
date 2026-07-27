@@ -90,9 +90,11 @@
 //! [`TripleDomains::weighted_retention`] when the question is how much physics
 //! was dropped. Whether
 //! a retention below 1 is affordable at a target accuracy is an empirical
-//! question this module deliberately leaves to measurement — ferric's history
-//! with sparsity methods (see `ferric_mp2::pair_domains`' module doc and the
-//! OSV finding) is that small molecules have no exploitable locality.
+//! question this module deliberately leaves to measurement. Small molecules do
+//! have SOME exploitable locality — the first TNOs discarded are measurably free
+//! (H2O/STO-3G at `t_cut_tno = 1e-4`: retention 0.986 for a 1.4e-20 Ha change) —
+//! it is just MILD, and so far too mild to pay for its own overhead at these
+//! sizes. See `ferric_mp2::pair_domains`' module doc.
 
 use ferric_core::FerricError;
 use ndarray::Array2;

@@ -30,12 +30,18 @@
 //! # Honesty about what this does and does not buy
 //!
 //! This module implements the *screening structure* and measures it. It does NOT yet
-//! claim a production speedup: ferric's measured history with sparsity methods is
-//! that small molecules have no exploitable locality
-//! (`docs/reliability` + the OSV finding: 100% retention at accurate thresholds, or
-//! 48–76 mHa error at loose ones). The screening below is therefore built to be
-//! **exact at `cutoff = ∞`** and to report its own retained-pair fraction, so the
-//! accuracy/cost curve can be measured rather than assumed.
+//! claim a production speedup. Small molecules do have SOME exploitable locality —
+//! measured, the first PNOs/TNOs discarded are genuinely free (H2O/STO-3G at
+//! `t_cut_tno = 1e-4`: 1.4% of virtuals dropped for a 1.4e-20 Ha energy change) and
+//! pair densities compress 15× at the pair level. What has NOT been demonstrated is
+//! that the *available* compression is large enough to pay for its own overhead at
+//! these sizes: the OSV path gives 100% retention at accurate thresholds or 48–76 mHa
+//! error at loose ones, and the (T) basis transform costs more FLOPs than the kernel
+//! it saves. "Mild but real" is the accurate summary, not "none".
+//!
+//! The screening below is therefore built to be **exact at `cutoff = ∞`** and to
+//! report its own retained-pair fraction, so the accuracy/cost curve can be measured
+//! on a given system rather than assumed from either optimism or this caveat.
 
 use ferric_core::FerricError;
 use ndarray::Array2;
