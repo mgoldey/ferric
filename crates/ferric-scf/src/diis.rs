@@ -170,28 +170,15 @@ impl Diis {
         let live = self.err_hist.logical_order();
         self.gram.update_slot(new_slot, &live, &self.err_hist, dot);
 
-        let m = live.len();
-        if m < 2 {
+        if live.len() < 2 {
             return f.clone();
         }
-        let dim = m + 1;
-        let mut a = vec![0.0f64; dim * dim];
-        let mut rhs = vec![0.0f64; dim];
-        for (i, &si) in live.iter().enumerate() {
-            for (j, &sj) in live.iter().enumerate() {
-                a[i * dim + j] = self.gram.get(si, sj);
-            }
-            a[i * dim + m] = 1.0;
-            a[m * dim + i] = 1.0;
-        }
-        rhs[m] = 1.0;
-        let c = match solve_linear(a, rhs, dim) {
-            Some(c) => c,
-            None => return self.fock_hist.last().clone(),
+        let Some((c, kept)) = solve_diis_coeffs(&live, |si, sj| self.gram.get(si, sj)) else {
+            return self.fock_hist.last().clone();
         };
         let shape = f.dim();
         let mut out = Array2::zeros(shape);
-        for (i, &si) in live.iter().enumerate() {
+        for (i, &si) in kept.iter().enumerate() {
             out.scaled_add(c[i], self.fock_hist.get(si));
         }
         out
@@ -221,32 +208,20 @@ impl Diis {
         self.gram.update_slot(new_slot, &live, &self.err_hist, dot);
         self.gram_b.update_slot(new_slot_b, &live, &self.err_hist_b, dot);
 
-        let m = live.len();
-        if m < 2 {
+        if live.len() < 2 {
             return (f_a.clone(), f_b.clone());
         }
-        let dim = m + 1;
-        let mut a = vec![0.0f64; dim * dim];
-        let mut rhs = vec![0.0f64; dim];
-        for (i, &si) in live.iter().enumerate() {
-            for (j, &sj) in live.iter().enumerate() {
-                // Joint inner product = α-block + β-block (block-diagonal err).
-                a[i * dim + j] = self.gram.get(si, sj) + self.gram_b.get(si, sj);
-            }
-            a[i * dim + m] = 1.0;
-            a[m * dim + i] = 1.0;
-        }
-        rhs[m] = 1.0;
-        let c = match solve_linear(a, rhs, dim) {
-            Some(c) => c,
-            None => return (
-                self.fock_hist.last().clone(),
-                self.fock_hist_b.last().clone(),
-            ),
+        // Joint inner product = α-block + β-block (block-diagonal err vector).
+        // Same oldest-first shrink-and-retry as `step` — see `solve_diis_coeffs`.
+        let solved = solve_diis_coeffs(&live, |si, sj| {
+            self.gram.get(si, sj) + self.gram_b.get(si, sj)
+        });
+        let Some((c, kept)) = solved else {
+            return (self.fock_hist.last().clone(), self.fock_hist_b.last().clone());
         };
         let mut out_a = Array2::zeros(f_a.dim());
         let mut out_b = Array2::zeros(f_b.dim());
-        for (i, &si) in live.iter().enumerate() {
+        for (i, &si) in kept.iter().enumerate() {
             out_a.scaled_add(c[i], self.fock_hist.get(si));
             out_b.scaled_add(c[i], self.fock_hist_b.get(si));
         }
@@ -602,7 +577,140 @@ impl DiisDriver {
     }
 }
 
+/// Solve the bordered DIIS equations for `live` (oldest→newest slots), shrinking
+/// the subspace from the OLDEST end until the system is non-singular.
+///
+/// Returns the coefficients together with the slots they correspond to (a
+/// suffix of `live`), or `None` if even the two most recent vectors are
+/// linearly dependent — the one case where refusing to extrapolate is right.
+///
+/// # Why retry instead of giving up
+///
+/// As an SCF converges its error vectors become genuinely linearly dependent:
+/// each is nearly a scalar multiple of the last, so the Gram matrix goes
+/// singular no matter how the pivot test is written. The previous code treated
+/// that as terminal — one failed solve and `step` returned the un-extrapolated
+/// Fock, permanently, because every later iteration pushed another dependent
+/// vector onto an already-degenerate history that could never recover.
+///
+/// MEASURED on water / STO-3G / PBE: the solve first failed at subspace size 7
+/// and then failed on all 73 remaining iterations, leaving the SCF running bare
+/// Roothaan steps with DIIS dead. `dp_rms` bottomed at 1.8e-8 and drifted
+/// *upward* 10× instead of draining past the 1e-8 gate.
+///
+/// Dropping the oldest vectors is the standard remedy (and is exactly why a
+/// small `diis_size` accidentally "fixed" the same run — eviction kept the
+/// stale directions out). The newest vectors carry the current search
+/// direction, so a suffix is the right thing to keep.
+fn solve_diis_coeffs<F>(live: &[usize], gram: F) -> Option<(Vec<f64>, Vec<usize>)>
+where
+    F: Fn(usize, usize) -> f64,
+{
+    // Shrink from the oldest end: keep the newest `m` vectors, m = len … 2.
+    for m in (2..=live.len()).rev() {
+        let kept = &live[live.len() - m..];
+        let dim = m + 1;
+        let mut a = vec![0.0f64; dim * dim];
+        let mut rhs = vec![0.0f64; dim];
+        for (i, &si) in kept.iter().enumerate() {
+            for (j, &sj) in kept.iter().enumerate() {
+                a[i * dim + j] = gram(si, sj);
+            }
+            a[i * dim + m] = 1.0;
+            a[m * dim + i] = 1.0;
+        }
+        // Constraint row: Σ c_i = 1.
+        rhs[m] = 1.0;
+        // Normalize the Gram BLOCK ONLY (not the border of 1.0s) to unit scale.
+        //
+        // Scaling the whole assembled matrix would let the border set the scale:
+        // the Gram entries shrink as ‖err‖² on a converging SCF, so against a
+        // border fixed at 1.0 they get crushed to relative zero and EVERY
+        // subspace looks singular — the same failure this fix exists to remove,
+        // just relocated. Normalizing the block alone keeps the two parts of the
+        // bordered system commensurate.
+        //
+        // Dividing the Gram by `g_scale` measures the error vectors in units of
+        // the largest one, which leaves the DIIS coefficients unchanged: they
+        // are invariant to a common rescaling of all error vectors (the
+        // minimizer of ‖Σ c_i err_i‖² under Σ c_i = 1 does not depend on a
+        // uniform scale factor).
+        let mut g_scale = 0.0f64;
+        for i in 0..m {
+            for j in 0..m {
+                g_scale = g_scale.max(a[i * dim + j].abs());
+            }
+        }
+        if !(g_scale > 0.0) || !g_scale.is_finite() {
+            continue;
+        }
+        let inv = 1.0 / g_scale;
+        for i in 0..m {
+            for j in 0..m {
+                a[i * dim + j] *= inv;
+            }
+        }
+        if let Some(c) = solve_linear(a, rhs, dim) {
+            return Some((c, kept.to_vec()));
+        }
+    }
+    None
+}
+
+/// Relative pivot tolerance for the DIIS linear solve.
+///
+/// Applied to a B-matrix pre-scaled so its largest entry is 1 (see
+/// [`solve_linear`]), so this is a genuine conditioning test: it rejects a
+/// system whose pivots have collapsed *relative to the matrix's own scale*,
+/// which is the only scale-free statement of "singular". Sized well above
+/// f64 epsilon (2.2e-16) to leave headroom for the elimination's own
+/// round-off growth.
+const DIIS_PIVOT_RTOL: f64 = 1e-13;
+
+/// Solve `A x = b` by Gaussian elimination with partial pivoting, returning
+/// `None` when `A` is numerically singular.
+///
+/// # Why the pivot test is relative, not absolute
+///
+/// `A` here is the bordered DIIS B-matrix, whose interior entries are
+/// `⟨err_i, err_j⟩` — they scale as ‖err‖². A *converging* SCF therefore drives
+/// the whole matrix toward zero: at ‖err‖ ~ 1e-8 the entries are ~1e-16.
+///
+/// An ABSOLUTE pivot floor (this function previously used `< 1e-14`) turns that
+/// benign rescaling into a spurious singularity report. MEASURED on water /
+/// STO-3G / PBE: from iteration 7 onward every solve tripped the absolute
+/// floor, `step` silently fell back to the un-extrapolated Fock, and the SCF
+/// ran 74 further iterations with DIIS effectively dead — `dp_rms` bottomed at
+/// 1.8e-8, then drifted *upward* by 10× and never met the 1e-8 gate. Plain HF
+/// was unaffected only because its errors stay large enough to clear 1e-14.
+///
+/// Scaling `A` by its largest-magnitude entry before elimination makes the test
+/// scale-free, so it fires on genuine linear dependence among the error vectors
+/// (which SHOULD stop extrapolation) and not on mere convergence. Scaling both
+/// sides leaves the solution exactly invariant — `(A/s)x = b/s` has the same
+/// `x` as `Ax = b` for any `s > 0` — so this changes only which systems are
+/// *rejected*, never the coefficients of an accepted one.
+///
+/// Note that [`solve_diis_coeffs`] additionally normalizes the Gram block on its
+/// own — excluding the border of 1.0s, which would otherwise set the scale and
+/// crush the Gram entries to relative zero. The normalization here is a
+/// general-purpose safeguard for any other caller, and is a no-op on a system
+/// that already arrives scaled.
 fn solve_linear(mut a: Vec<f64>, mut x: Vec<f64>, n: usize) -> Option<Vec<f64>> {
+    // Scale-free conditioning: normalize by the largest entry so the pivot
+    // test below measures conditioning rather than absolute magnitude.
+    let scale = a.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
+    if !(scale > 0.0) || !scale.is_finite() {
+        return None;
+    }
+    let inv = 1.0 / scale;
+    for v in a.iter_mut() {
+        *v *= inv;
+    }
+    for v in x.iter_mut() {
+        *v *= inv;
+    }
+
     for col in 0..n {
         let mut pivot = col;
         let mut max_val = a[col * n + col].abs();
@@ -613,7 +721,7 @@ fn solve_linear(mut a: Vec<f64>, mut x: Vec<f64>, n: usize) -> Option<Vec<f64>> 
                 pivot = r;
             }
         }
-        if max_val < 1e-14 {
+        if max_val < DIIS_PIVOT_RTOL {
             return None;
         }
         if pivot != col {
@@ -643,6 +751,92 @@ fn solve_linear(mut a: Vec<f64>, mut x: Vec<f64>, n: usize) -> Option<Vec<f64>> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `solve_linear` must be invariant to a uniform rescaling of the system.
+    ///
+    /// This is the property the old absolute pivot floor violated: `A x = b`
+    /// and `(sA) x = (sb)` have the same solution for any `s > 0`, so the
+    /// solver must accept or reject them together. Scaling by 1e-10 puts a
+    /// well-conditioned system's entries under the old `1e-14` floor, which is
+    /// exactly how a converging SCF's B-matrix was mistaken for singular.
+    #[test]
+    fn solve_linear_is_scale_invariant() {
+        let n = 3;
+        // Well-conditioned, symmetric-positive-definite-ish system.
+        let a = vec![
+            4.0, 1.0, 0.5,
+            1.0, 3.0, 0.25,
+            0.5, 0.25, 2.0,
+        ];
+        let b = vec![1.0, 2.0, 3.0];
+
+        let base = solve_linear(a.clone(), b.clone(), n).expect("well-conditioned solve");
+
+        for scale in [1e-4, 1e-10, 1e-16, 1e6] {
+            let a_s: Vec<f64> = a.iter().map(|v| v * scale).collect();
+            let b_s: Vec<f64> = b.iter().map(|v| v * scale).collect();
+            let got = solve_linear(a_s, b_s, n)
+                .unwrap_or_else(|| panic!("scale {scale:e} spuriously reported singular"));
+            for (i, (g, r)) in got.iter().zip(&base).enumerate() {
+                assert!(
+                    (g - r).abs() <= 1e-9 * r.abs().max(1.0),
+                    "scale {scale:e}: x[{i}] = {g} vs unscaled {r}"
+                );
+            }
+        }
+    }
+
+    /// A genuinely singular system must still be rejected — the relative test
+    /// must not be so permissive that it accepts a rank-deficient B-matrix.
+    #[test]
+    fn solve_linear_still_rejects_singular() {
+        // Row 2 is exactly 2× row 0: rank-deficient at any scale.
+        let n = 3;
+        let a = vec![
+            1.0, 2.0, 3.0,
+            0.0, 1.0, 1.0,
+            2.0, 4.0, 6.0,
+        ];
+        let b = vec![1.0, 1.0, 2.0];
+        assert!(solve_linear(a.clone(), b.clone(), n).is_none(), "singular system accepted");
+
+        // ...and the same holds after rescaling, in both directions.
+        for scale in [1e-12, 1e8] {
+            let a_s: Vec<f64> = a.iter().map(|v| v * scale).collect();
+            let b_s: Vec<f64> = b.iter().map(|v| v * scale).collect();
+            assert!(
+                solve_linear(a_s, b_s, n).is_none(),
+                "singular system accepted at scale {scale:e}"
+            );
+        }
+    }
+
+    /// When the full subspace is degenerate, `solve_diis_coeffs` must fall back
+    /// to a smaller (newest-first) subspace rather than refusing outright.
+    ///
+    /// Models the converged-SCF situation directly: three "error vectors" whose
+    /// Gram matrix is rank-1 in the two oldest directions but informative in the
+    /// newest. The old code returned nothing here and killed DIIS permanently.
+    #[test]
+    fn degenerate_subspace_shrinks_instead_of_failing() {
+        // Slots 0,1 carry identical directions (perfectly dependent); slot 2 is
+        // independent. Gram entries: <i,j> = v_i · v_j with v_0 = v_1 = (1,0),
+        // v_2 = (0,1) — scaled tiny to mimic a converged SCF.
+        let s = 1e-9;
+        let v = [[s, 0.0], [s, 0.0], [0.0, s]];
+        let gram = |i: usize, j: usize| v[i][0] * v[j][0] + v[i][1] * v[j][1];
+
+        let (c, kept) = solve_diis_coeffs(&[0, 1, 2], gram)
+            .expect("must fall back to a smaller subspace, not give up");
+
+        assert!(kept.len() >= 2, "kept subspace too small: {kept:?}");
+        assert!(kept.len() < 3, "full degenerate subspace should not have solved: {kept:?}");
+        // DIIS coefficients over the kept vectors always sum to 1.
+        let sum: f64 = c[..kept.len()].iter().sum();
+        assert!((sum - 1.0).abs() < 1e-8, "coefficients sum to {sum}, expected 1");
+        // The retained slots must be the NEWEST ones (a suffix of the input).
+        assert_eq!(kept, vec![1, 2], "must keep the newest vectors");
+    }
 
     #[test]
     fn test_diis_one_iteration() {
