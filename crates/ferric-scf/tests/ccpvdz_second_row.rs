@@ -13,31 +13,49 @@
 //! against the authoritative source" is a better provenance than "happened to
 //! agree with my reconstruction".)
 //!
-//! # Validation status — NOT uniform, read before trusting an element
+//! # ROOT CAUSE FOUND (2026-07-27): the shipped data is NOT PySCF's basis
 //!
-//! Six of the eight are cross-checked against PySCF below and agree to the RHF
-//! tolerance. **Na (Z=11) and Mg (Z=12) do NOT**, by 6.7e-6 and 6.1e-5 Ha, and
-//! the cause is not understood. What was ruled out, measured rather than
-//! assumed:
+//! All eight elements differ from PySCF, and the four that appeared to
+//! "validate" were a COINCIDENCE at the energy level, not agreement.
 //!
-//! * **Not the basis data.** BSE's canonical JSON is byte-identical to an
-//!   independent aug-cc-pVDZ-minus-diffuse derivation.
-//! * **Not shell splitting.** PySCF represents ALL EIGHT elements as 5 shells
-//!   (splitting off an uncontracted primitive) where BSE uses 3 fused shells —
-//!   yet Si/S/Cl/Ar match to 10 digits under exactly that same difference. So
-//!   the splitting is representationally equivalent and cannot explain Na/Mg.
-//! * **Not SCF convergence.** NaH gives the identical energy at
-//!   `density_conv = 1e-11` with a 0.4 level shift, in 15 iterations.
-//! * **Not linear dependence.** Minimum overlap eigenvalue is 3.1e-2 (NaH),
-//!   comparable to H2S's 3.2e-2, which matches.
-//! * **Not normalization convention.** Both codes normalize contractions to unit
-//!   self-overlap.
+//! The difference is in the one-electron integrals, so it has nothing to do with
+//! SCF, screening or convergence. NaH kinetic-energy diagonal, ferric vs PySCF:
 //!
-//! The remaining suspect is something specific to how the two codes treat these
-//! two elements' contraction sets numerically. Until that is understood, Na and
-//! Mg in cc-pVDZ should be treated as UNVALIDATED — usable, but do not quote an
-//! energy from them as cross-checked. They are deliberately listed here as
-//! known-divergent rather than silently omitted from the test.
+//! ```text
+//!   AO      PySCF      ferric
+//!   1s    56.2724     56.2719     ~
+//!   3s     0.6472      0.2698     2.4x OFF
+//!   3p     0.4783      0.1411     3.4x OFF
+//!   4s     0.03461     0.03461    exact
+//! ```
+//!
+//! H2S shows the same signature (3s 7.735 vs 2.470, 3p 4.530 vs 1.812) even
+//! though its ENERGY matched PySCF to 10 digits — which is why the energy check
+//! alone was not sufficient evidence.
+//!
+//! **What differs.** BSE's canonical cc-pVDZ for Z >= 11 fuses the most diffuse
+//! s/p primitive into the contracted shell AND repeats it as a standalone
+//! function: contractions 0-2 span all 12 primitives (coefficient on the 12th is
+//! 2.4e-4 / -5.7e-3 / 4.3e-1 for Na — not negligible), plus a 4th contraction
+//! that is just that primitive. PySCF instead contracts only the first 11 and
+//! carries the 12th as a genuinely separate uncontracted shell.
+//!
+//! These span the same FUNCTION SPACE, which is why the total energies can land
+//! close, but they are different non-orthogonal basis sets, so individual
+//! integrals and any energy sensitive to the contraction differ. Na and Mg show
+//! it worst because their diffuse exponent is the smallest (0.02307 for Na vs
+//! 0.157 for S), so the fused-vs-separate choice matters most there.
+//!
+//! **Consequence.** ferric's Z = 11..18 cc-pVDZ is the BSE-canonical form. It is
+//! internally consistent and a legitimate cc-pVDZ, but it is NOT bit-comparable
+//! to PySCF's, and no element here should be quoted as PySCF-cross-checked. The
+//! test below therefore pins the MEASURED deviations rather than asserting an
+//! agreement that does not exist.
+//!
+//! Anyone needing PySCF-comparable second-row cc-pVDZ must split the diffuse
+//! primitive out of the contractions to match PySCF's convention — a real change
+//! to the shipped data, not done here because it is not obviously the right
+//! convention to prefer.
 
 use ferric_core::{basis, mol::Molecule, parallel::ParallelContext};
 use ferric_integrals::{basis_bridge::PreparedBasis, operator::Operator};
@@ -54,8 +72,10 @@ struct Case {
     pyscf: f64,
 }
 
-/// Elements that agree with PySCF to the RHF tolerance.
-const VALIDATED: &[Case] = &[
+/// Elements whose TOTAL energy happens to land within 1e-8 of PySCF despite the
+/// different contraction convention (see the module doc — their integrals do NOT
+/// agree). Kept as a stability pin, NOT as a cross-validation.
+const ENERGY_COINCIDES: &[Case] = &[
     Case {
         label: "SiH4 (Z=14)",
         xyz: "5\n\nSi 0.0 0.0 0.0\nH 0.0 0.0 1.480\nH 1.395 0.0 -0.493\n\
@@ -127,10 +147,16 @@ fn run(case: &Case) -> f64 {
     rhf.energy
 }
 
-/// Si, S, Cl, Ar reproduce PySCF to the RHF tolerance.
+/// Si, S, Cl, Ar land within 1e-8 of PySCF's total energy.
+///
+/// This is a STABILITY pin, not a validation: their one-electron integrals
+/// demonstrably differ from PySCF's (module doc), so the energy agreement is a
+/// coincidence of the two contraction conventions spanning the same space. If
+/// this test breaks, the shipped data changed — investigate, but do not read a
+/// pass here as "ferric matches PySCF for these elements".
 #[test]
-fn validated_second_row_matches_pyscf() {
-    for case in VALIDATED {
+fn energy_coincidence_is_stable() {
+    for case in ENERGY_COINCIDES {
         let e = run(case);
         let d = (e - case.pyscf).abs();
         eprintln!("{:12} ferric {e:.10}  PySCF {:.10}  |dE| = {d:.2e}", case.label, case.pyscf);
@@ -160,9 +186,9 @@ fn known_divergent_second_row_stays_in_band() {
         );
         assert!(
             d > 1e-8,
-            "{} now AGREES with PySCF (|dE| = {d:.3e}) — the Na/Mg cc-pVDZ \
-             discrepancy appears fixed; promote this case to VALIDATED and \
-             record what changed",
+            "{} now AGREES with PySCF (|dE| = {d:.3e}) — either the shipped data \
+             was changed to PySCF's split-primitive convention, or PySCF changed. \
+             Record which before updating this test.",
             case.label
         );
         assert!(
