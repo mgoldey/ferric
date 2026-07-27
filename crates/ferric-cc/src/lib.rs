@@ -13,6 +13,7 @@ pub mod ccsd_t;
 pub mod ccsd_t_closed_shell;
 pub mod dlpno_ccsd;
 pub mod dlpno_ccsd_t;
+pub mod dlpno_ccsd_t_virtual;
 pub mod dlpno_ccsd_virtual;
 pub mod double_hybrid;
 pub mod helpers;
