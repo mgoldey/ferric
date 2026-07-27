@@ -21,7 +21,7 @@ use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ndarray::{Array2, Array3, ArrayView1, ArrayView2, Axis, Zip};
 use rayon::prelude::*;
 
-use crate::density_on_grid::{eval_density_closed, eval_density_uks};
+use crate::density_on_grid::{eval_density_closed, eval_density_uks, eval_tau_closed};
 use crate::grid::{build_atomic_grid, build_atomic_grid_with_response, AtomicGridConfig};
 use crate::libxc::{xc_def_from_name, xc_def_from_name_nspin, FunctionalFamily, LibxcError, XcDef};
 
@@ -178,6 +178,112 @@ fn gga_weight_columns(t_sig: &[f64], grad_rho: &Array2<f64>) -> Array2<f64> {
             .for_each(|o, &t, &gr| *o = t * gr);
     }
     c
+}
+
+/// Meta-GGA τ contribution to the per-μ, per-axis AO-derivative partial sums.
+///
+/// Derivation (closed shell; one spin channel behaves identically with D → D_σ
+/// and τ → τ_σ). The kinetic-energy density is
+///
+/// ```text
+///   τ(r) = ½ Σ_b Σ_{μν} D_μν ∂_b χ_μ(r) ∂_b χ_ν(r)
+/// ```
+///
+/// Translating nucleus A moves only the AOs centred on A, and for those
+/// `∂χ_μ/∂R_{A,α} = −∂_α χ_μ` (χ_μ depends on r − R_A). Differentiating τ at
+/// fixed D and fixed grid therefore hits **one** of the two ∂_b χ factors per
+/// term:
+///
+/// ```text
+///   ∂τ/∂R_{A,α} = ½ Σ_b Σ_{μν} D_μν [ (−∂²_{αb} χ_μ)·∂_b χ_ν  (μ ∈ A)
+///                                    + ∂_b χ_μ·(−∂²_{αb} χ_ν) (ν ∈ A) ]
+/// ```
+///
+/// D is symmetric and the two bracket terms map onto each other under μ↔ν, so
+/// they are equal and the ½ cancels:
+///
+/// ```text
+///   ∂τ/∂R_{A,α} = − Σ_b Σ_{μ∈A, ν} D_μν ∂²_{αb} χ_μ ∂_b χ_ν
+///               = − Σ_b Σ_{μ∈A} ∂²_{αb} χ_μ · (D ∂_b χ)_μ
+/// ```
+///
+/// and the energy contribution is `Σ_g w_g v_τ(g) ∂τ/∂R_{A,α}`.
+///
+/// [`scatter_partials`] applies `grad[atom(μ), axis] -= 2 · partial[axis][μ]`,
+/// so this routine returns **half** the μ-resolved sum:
+///
+/// ```text
+///   partial[α][μ] = ½ Σ_g (w_g v_τ(g)) Σ_b ∂²_{αb} χ_μ(g) · (D ∂_b χ)_μ(g)
+/// ```
+///
+/// Cross-check against the Fock-matrix analogue in `vxc.rs`
+/// (`V^τ_μν = ½ Σ_g w_g v_τ Σ_b ∂_b χ_μ ∂_b χ_ν`): contracting `V^τ` with the
+/// AO-derivative of D reproduces exactly the expression above, including the
+/// cancelled ½ — the factor lives in the μ↔ν doubling, not in the τ definition.
+fn mgga_tau_partials(
+    mdchi: &Array3<f64>,          // (3, nbf, npts): (D ∂_b χ)_μ
+    ddchi: &ndarray::Array4<f64>, // (3, 3, nbf, npts)
+    t_tau: &[f64],                // w_g · v_τ(g)
+) -> [ndarray::Array1<f64>; 3] {
+    let t_tau_v = ArrayView1::from(t_tau);
+    std::array::from_fn(|axis| {
+        let ddchi_a = ddchi.index_axis(Axis(0), axis);
+        let mut partial: Option<ndarray::Array1<f64>> = None;
+        for b in 0..3 {
+            let mdchi_b_scaled = scale_cols(&mdchi.index_axis(Axis(0), b), &t_tau_v);
+            let ddchi_ab = ddchi_a.index_axis(Axis(0), b);
+            let term = row_dot(&ddchi_ab, &mdchi_b_scaled.view());
+            partial = Some(match partial {
+                None => term,
+                Some(p) => p + term,
+            });
+        }
+        let mut p = partial.expect("3 axes");
+        p.mapv_inplace(|v| 0.5 * v);
+        p
+    })
+}
+
+/// Electron-coordinate gradient of τ on the grid: `∂_α τ(r_g)` for each axis.
+///
+/// ```text
+///   ∂_α τ = ½ Σ_b Σ_{μν} D_μν [∂²_{αb} χ_μ ∂_b χ_ν + ∂_b χ_μ ∂²_{αb} χ_ν]
+///         = Σ_b Σ_μ ∂²_{αb} χ_μ · (D ∂_b χ)_μ
+/// ```
+///
+/// (Same μ↔ν doubling as [`mgga_tau_partials`], hence no residual ½.) Needed by
+/// the grid-response "home-translation" correction, which differentiates the
+/// integrand with respect to the grid point itself.
+fn tau_spatial_grad(
+    mdchi: &Array3<f64>,
+    ddchi: &ndarray::Array4<f64>,
+) -> [ndarray::Array1<f64>; 3] {
+    std::array::from_fn(|axis| {
+        let ddchi_a = ddchi.index_axis(Axis(0), axis);
+        let mut acc: Option<ndarray::Array1<f64>> = None;
+        for b in 0..3 {
+            let mdchi_b = mdchi.index_axis(Axis(0), b);
+            let ddchi_ab = ddchi_a.index_axis(Axis(0), b);
+            let term = col_dot(&ddchi_ab, &mdchi_b);
+            acc = Some(match acc {
+                None => term,
+                Some(a) => a + term,
+            });
+        }
+        acc.expect("3 axes")
+    })
+}
+
+/// `Mdχ[b, μ, g] = Σ_ν D_μν ∂_b χ_ν(r_g)` — one GEMM per Cartesian direction.
+fn build_mdchi(d: &Array2<f64>, dchi: &Array3<f64>) -> Array3<f64> {
+    let (_, nbf, npts) = dchi.dim();
+    let mut mdchi = Array3::<f64>::zeros((3, nbf, npts));
+    for b in 0..3 {
+        let slice = dchi.index_axis(Axis(0), b);
+        let prod: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d.dot(&slice));
+        mdchi.index_axis_mut(Axis(0), b).assign(&prod);
+    }
+    mdchi
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -663,6 +769,165 @@ pub fn xc_gradient_closed_gga_from_density(
     Ok(grad)
 }
 
+/// Meta-GGA gradient (closed shell). SCAN / r2SCAN / TPSS — τ-dependent, no
+/// density Laplacian (matching the SCF energy path, which passes a zero `lapl`
+/// buffer and discards `vlapl`).
+///
+/// Extends [`xc_gradient_closed_gga_from_density`] with the two τ terms:
+///
+/// ```text
+///   AO-derivative:   ∂E/∂R_{A,α} += −Σ_g w_g v_τ Σ_b Σ_{μ∈A} ∂²_{αb} χ_μ (D ∂_b χ)_μ
+///   grid response:   ∂E/∂R_{A,α} += Σ_{g: home=A} w_g v_τ ∂_α τ(r_g)
+/// ```
+///
+/// See [`mgga_tau_partials`] for the derivation of the first (including why the
+/// ½ in τ's definition cancels against the μ↔ν doubling) and
+/// [`tau_spatial_grad`] for the second.
+#[allow(clippy::too_many_arguments)]
+pub fn xc_gradient_closed_mgga_from_density(
+    mol: &Molecule,
+    bs: &ferric_core::basis::BasisSet,
+    d_total: &Array2<f64>,
+    xc_name: &str,
+    grid_cfg: &AtomicGridConfig,
+    shell_to_atom: &[usize],
+    shell_offsets: &[usize],
+    shell_dims: &[usize],
+) -> Result<Array2<f64>, KsGradError> {
+    let xc: XcDef = xc_def_from_name(xc_name)?;
+
+    let nbf = d_total.nrows();
+    let (grid, weight1) = build_atomic_grid_with_response(mol, grid_cfg);
+    let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
+    let (chi, dchi, ddchi) = crate::ao_grid::eval_basis_grad_hess_on_points(mol, bs, &pts)?;
+    let weights: Vec<f64> = grid.iter().map(|g| g.weight).collect();
+    let map = bf_to_atom(shell_to_atom, shell_offsets, shell_dims, nbf);
+
+    let npts = chi.ncols();
+    debug_assert_eq!(dchi.dim(), (3, nbf, npts));
+    debug_assert_eq!(ddchi.dim(), (3, 3, nbf, npts));
+
+    // ρ, ∇ρ, σ and τ on the grid. `eval_tau_closed` fed the TOTAL D returns the
+    // total τ, which is the unpolarized libxc convention (τ = τ_α + τ_β) — the
+    // same call the SCF energy path makes.
+    let dens = eval_density_closed(d_total, &chi, &dchi);
+    let tau = eval_tau_closed(d_total, &dchi);
+    let rho_slice = dens.rho.as_slice().expect("rho is contiguous");
+    let sigma_slice = dens.sigma.as_slice().expect("sigma is contiguous");
+    let tau_slice = tau.as_slice().expect("tau is contiguous");
+
+    let mut eps_total = vec![0.0_f64; npts];
+    let mut vrho_total = vec![0.0_f64; npts];
+    let mut vsigma_total = vec![0.0_f64; npts];
+    let mut vtau_total = vec![0.0_f64; npts];
+    for func in &xc.funcs {
+        let mut exc = vec![0.0_f64; npts];
+        let mut vrho = vec![0.0_f64; npts];
+        match func.family() {
+            FunctionalFamily::Lda => {
+                func.eval_lda_unpolarized(rho_slice, &mut exc, &mut vrho);
+            }
+            FunctionalFamily::MetaGga => {
+                let mut vsigma = vec![0.0_f64; npts];
+                let mut vtau = vec![0.0_f64; npts];
+                func.eval_mgga_unpolarized(
+                    rho_slice, sigma_slice, tau_slice,
+                    &mut exc, &mut vrho, &mut vsigma, &mut vtau,
+                );
+                for g in 0..npts {
+                    vsigma_total[g] += vsigma[g];
+                    vtau_total[g] += vtau[g];
+                }
+            }
+            _ => {
+                let mut vsigma = vec![0.0_f64; npts];
+                func.eval_gga_unpolarized(rho_slice, sigma_slice, &mut exc, &mut vrho, &mut vsigma);
+                for g in 0..npts {
+                    vsigma_total[g] += vsigma[g];
+                }
+            }
+        }
+        for g in 0..npts {
+            eps_total[g] += exc[g];
+            vrho_total[g] += vrho[g];
+        }
+    }
+
+    const RHO_FLOOR: f64 = 1e-10;
+    let mut t_rho = vec![0.0_f64; npts];
+    let mut t_sig = vec![0.0_f64; npts];
+    let mut t_tau = vec![0.0_f64; npts];
+    for g in 0..npts {
+        if dens.rho[g] > RHO_FLOOR {
+            t_rho[g] = weights[g] * vrho_total[g];
+            t_sig[g] = weights[g] * 2.0 * vsigma_total[g];
+            t_tau[g] = weights[g] * vtau_total[g];
+        }
+    }
+
+    let m: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d_total.dot(&chi));
+    let mdchi = build_mdchi(d_total, &dchi);
+
+    let natoms = mol.atoms.len();
+    let mut grad = Array2::<f64>::zeros((natoms, 3));
+
+    // ρ + σ AO-derivative terms (identical to the GGA path).
+    let c = gga_weight_columns(&t_sig, &dens.grad);
+    let partials = gga_ao_partials(&m, &mdchi, &dchi, &ddchi, &c, &t_rho);
+    scatter_partials(&partials, &map, &mut grad);
+    // τ AO-derivative term.
+    let tau_partials = mgga_tau_partials(&mdchi, &ddchi, &t_tau);
+    scatter_partials(&tau_partials, &map, &mut grad);
+
+    // ── Grid-response correction (same convention as the GGA path) ──
+    // (1) weight response.
+    for g in 0..npts {
+        let f = eps_total[g] * rho_slice[g];
+        for b in 0..natoms {
+            grad[(b, 0)] += weight1[g][b][0] * f;
+            grad[(b, 1)] += weight1[g][b][1] * f;
+            grad[(b, 2)] += weight1[g][b][2] * f;
+        }
+    }
+    // (2) home-translation of the integrand: ρ, σ and τ pieces.
+    let hess_col: [[ndarray::Array1<f64>; 3]; 3] = std::array::from_fn(|axis| {
+        let dchi_axis = dchi.index_axis(Axis(0), axis);
+        let ddchi_a = ddchi.index_axis(Axis(0), axis);
+        std::array::from_fn(|b| {
+            let mdchi_b = mdchi.index_axis(Axis(0), b);
+            let ddchi_ab = ddchi_a.index_axis(Axis(0), b);
+            let mut hb = col_dot(&dchi_axis, &mdchi_b);
+            hb += &col_dot(&m.view(), &ddchi_ab);
+            hb.mapv_inplace(|v| 2.0 * v);
+            hb
+        })
+    });
+    let dtau = tau_spatial_grad(&mdchi, &ddchi);
+    for (gi, gp) in grid.iter().enumerate() {
+        if dens.rho[gi] <= RHO_FLOOR {
+            continue;
+        }
+        let a = gp.home_atom;
+        let w = gp.weight;
+        let vr = vrho_total[gi];
+        let vs = vsigma_total[gi];
+        let vt = vtau_total[gi];
+        for k in 0..3 {
+            grad[(a, k)] += w * vr * dens.grad[(k, gi)];
+        }
+        for axis in 0..3 {
+            let mut sum_b = 0.0_f64;
+            for b in 0..3 {
+                sum_b += dens.grad[(b, gi)] * hess_col[axis][b][gi];
+            }
+            grad[(a, axis)] += w * 2.0 * vs * sum_b;
+            grad[(a, axis)] += w * vt * dtau[axis][gi];
+        }
+    }
+
+    Ok(grad)
+}
+
 /// Spin-polarized (UKS) analytic XC gradient.
 ///
 /// Per-spin gradient (AO-derivative term only — no grid response):
@@ -897,6 +1162,223 @@ pub fn xc_gradient_uks_from_density(
                     + vsab * (gba * h_bb + gbb * h_aa);
             }
             grad[(a, axis)] += w * (rho_piece + sig_piece);
+        }
+    }
+
+    Ok(grad)
+}
+
+/// Spin-polarized (UKS / ROKS) meta-GGA analytic XC gradient.
+///
+/// Extends [`xc_gradient_uks_from_density`] with the per-spin τ terms. Each spin
+/// channel contributes independently — the polarized meta-GGA kernel returns a
+/// separate `v_τσ`, and τ_σ depends only on `D_σ`, so there is no cross-spin τ
+/// coupling to worry about (unlike σ, which carries the αβ cross term):
+///
+/// ```text
+///   AO-derivative:  ∂E/∂R_{A,α} += −Σ_σ Σ_g w_g v_τσ Σ_b Σ_{μ∈A} ∂²_{αb} χ_μ (D_σ ∂_b χ)_μ
+///   grid response:  ∂E/∂R_{A,α} += Σ_σ Σ_{g: home=A} w_g v_τσ ∂_α τ_σ(r_g)
+/// ```
+///
+/// See [`mgga_tau_partials`] for the derivation (with D → D_σ, τ → τ_σ).
+#[allow(clippy::too_many_arguments)]
+pub fn xc_gradient_uks_mgga_from_density(
+    mol: &Molecule,
+    bs: &ferric_core::basis::BasisSet,
+    d_a: &Array2<f64>,
+    d_b: &Array2<f64>,
+    xc_name: &str,
+    grid_cfg: &AtomicGridConfig,
+    shell_to_atom: &[usize],
+    shell_offsets: &[usize],
+    shell_dims: &[usize],
+) -> Result<Array2<f64>, KsGradError> {
+    let xc: XcDef = xc_def_from_name_nspin(xc_name, 2)?;
+
+    let nbf = d_a.nrows();
+    let (grid, weight1) = build_atomic_grid_with_response(mol, grid_cfg);
+    let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
+    let (chi, dchi, ddchi) = crate::ao_grid::eval_basis_grad_hess_on_points(mol, bs, &pts)?;
+    let weights: Vec<f64> = grid.iter().map(|g| g.weight).collect();
+    let map = bf_to_atom(shell_to_atom, shell_offsets, shell_dims, nbf);
+    let npts = chi.ncols();
+
+    let dens = eval_density_uks(d_a, d_b, &chi, &dchi);
+    let (tau_a, tau_b) = crate::density_on_grid::eval_tau_uks(d_a, d_b, &dchi);
+
+    // Interleaved libxc input (per-spin components adjacent per point).
+    let mut rho_in = vec![0.0_f64; 2 * npts];
+    let mut sigma_in = vec![0.0_f64; 3 * npts];
+    let mut tau_in = vec![0.0_f64; 2 * npts];
+    for g in 0..npts {
+        rho_in[2 * g] = dens.rho_a[g];
+        rho_in[2 * g + 1] = dens.rho_b[g];
+        sigma_in[3 * g] = dens.sigma[(0, g)];
+        sigma_in[3 * g + 1] = dens.sigma[(1, g)];
+        sigma_in[3 * g + 2] = dens.sigma[(2, g)];
+        tau_in[2 * g] = tau_a[g];
+        tau_in[2 * g + 1] = tau_b[g];
+    }
+
+    let mut eps_total = vec![0.0_f64; npts];
+    let mut vrho_a = vec![0.0_f64; npts];
+    let mut vrho_b = vec![0.0_f64; npts];
+    let mut vsig_aa = vec![0.0_f64; npts];
+    let mut vsig_ab = vec![0.0_f64; npts];
+    let mut vsig_bb = vec![0.0_f64; npts];
+    let mut vtau_a = vec![0.0_f64; npts];
+    let mut vtau_b = vec![0.0_f64; npts];
+
+    for func in &xc.funcs {
+        let mut exc = vec![0.0_f64; npts];
+        let mut vrho = vec![0.0_f64; 2 * npts];
+        match func.family() {
+            FunctionalFamily::Lda => {
+                func.eval_lda_polarized(&rho_in, &mut exc, &mut vrho);
+            }
+            FunctionalFamily::MetaGga => {
+                let mut vsig = vec![0.0_f64; 3 * npts];
+                let mut vtau = vec![0.0_f64; 2 * npts];
+                func.eval_mgga_polarized(
+                    &rho_in, &sigma_in, &tau_in,
+                    &mut exc, &mut vrho, &mut vsig, &mut vtau,
+                );
+                for g in 0..npts {
+                    vsig_aa[g] += vsig[3 * g];
+                    vsig_ab[g] += vsig[3 * g + 1];
+                    vsig_bb[g] += vsig[3 * g + 2];
+                    vtau_a[g] += vtau[2 * g];
+                    vtau_b[g] += vtau[2 * g + 1];
+                }
+            }
+            _ => {
+                let mut vsig = vec![0.0_f64; 3 * npts];
+                func.eval_gga_polarized(&rho_in, &sigma_in, &mut exc, &mut vrho, &mut vsig);
+                for g in 0..npts {
+                    vsig_aa[g] += vsig[3 * g];
+                    vsig_ab[g] += vsig[3 * g + 1];
+                    vsig_bb[g] += vsig[3 * g + 2];
+                }
+            }
+        }
+        for g in 0..npts {
+            eps_total[g] += exc[g];
+            vrho_a[g] += vrho[2 * g];
+            vrho_b[g] += vrho[2 * g + 1];
+        }
+    }
+
+    const RHO_FLOOR: f64 = 1e-10;
+    let natoms = mol.atoms.len();
+    let mut grad = Array2::<f64>::zeros((natoms, 3));
+
+    // Per-spin (D_σ χ) and (D_σ ∂_b χ), reused by both the AO-derivative sum and
+    // the grid-response second-derivative columns below.
+    let m_a: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d_a.dot(&chi));
+    let m_b: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d_b.dot(&chi));
+    let mdchi_a = build_mdchi(d_a, &dchi);
+    let mdchi_b = build_mdchi(d_b, &dchi);
+
+    // ── AO-derivative term, per spin ──
+    let add_spin = |m_s: &Array2<f64>,
+                        mdchi_s: &Array3<f64>,
+                        vrho_sigma: &[f64],
+                        vsig_same: &[f64],
+                        vsig_cross: &[f64],
+                        vtau_sigma: &[f64],
+                        grad_same: &Array2<f64>,
+                        grad_cross: &Array2<f64>,
+                        rho_sigma: &ndarray::Array1<f64>,
+                        grad_out: &mut Array2<f64>| {
+        let mut t_rho = vec![0.0_f64; npts];
+        let mut t_tau = vec![0.0_f64; npts];
+        let mut c = Array2::<f64>::zeros((3, npts));
+        for g in 0..npts {
+            if rho_sigma[g] > RHO_FLOOR {
+                let w = weights[g];
+                t_rho[g] = w * vrho_sigma[g];
+                t_tau[g] = w * vtau_sigma[g];
+                for b in 0..3 {
+                    c[(b, g)] = w
+                        * (2.0 * vsig_same[g] * grad_same[(b, g)]
+                            + vsig_cross[g] * grad_cross[(b, g)]);
+                }
+            }
+        }
+        let partials = gga_ao_partials(m_s, mdchi_s, &dchi, &ddchi, &c, &t_rho);
+        scatter_partials(&partials, &map, grad_out);
+        let tau_partials = mgga_tau_partials(mdchi_s, &ddchi, &t_tau);
+        scatter_partials(&tau_partials, &map, grad_out);
+    };
+
+    add_spin(
+        &m_a, &mdchi_a, &vrho_a, &vsig_aa, &vsig_ab, &vtau_a,
+        &dens.grad_a, &dens.grad_b, &dens.rho_a, &mut grad,
+    );
+    add_spin(
+        &m_b, &mdchi_b, &vrho_b, &vsig_bb, &vsig_ab, &vtau_b,
+        &dens.grad_b, &dens.grad_a, &dens.rho_b, &mut grad,
+    );
+
+    // ── Grid-response correction ──
+    // (1) weight response.
+    for g in 0..npts {
+        let f = eps_total[g] * (dens.rho_a[g] + dens.rho_b[g]);
+        for b in 0..natoms {
+            grad[(b, 0)] += weight1[g][b][0] * f;
+            grad[(b, 1)] += weight1[g][b][1] * f;
+            grad[(b, 2)] += weight1[g][b][2] * f;
+        }
+    }
+
+    // ∂²_{αb} ρ_σ columns, and ∂_α τ_σ columns.
+    let hess_cols = |m_s: &Array2<f64>, mdchi_s: &Array3<f64>| -> [[ndarray::Array1<f64>; 3]; 3] {
+        std::array::from_fn(|axis| {
+            let dchi_axis = dchi.index_axis(Axis(0), axis);
+            let ddchi_a = ddchi.index_axis(Axis(0), axis);
+            std::array::from_fn(|b| {
+                let mdchi_sb = mdchi_s.index_axis(Axis(0), b);
+                let ddchi_ab = ddchi_a.index_axis(Axis(0), b);
+                let mut hb = col_dot(&dchi_axis, &mdchi_sb);
+                hb += &col_dot(&m_s.view(), &ddchi_ab);
+                hb.mapv_inplace(|v| 2.0 * v);
+                hb
+            })
+        })
+    };
+    let hess_a = hess_cols(&m_a, &mdchi_a);
+    let hess_b = hess_cols(&m_b, &mdchi_b);
+    let dtau_a = tau_spatial_grad(&mdchi_a, &ddchi);
+    let dtau_b = tau_spatial_grad(&mdchi_b, &ddchi);
+
+    // (2) home-translation of the integrand.
+    for (gi, gp) in grid.iter().enumerate() {
+        if dens.rho_a[gi] + dens.rho_b[gi] <= RHO_FLOOR {
+            continue;
+        }
+        let a = gp.home_atom;
+        let w = gp.weight;
+        let vra = vrho_a[gi];
+        let vrb = vrho_b[gi];
+        let vsaa = vsig_aa[gi];
+        let vsbb = vsig_bb[gi];
+        let vsab = vsig_ab[gi];
+        let vta = vtau_a[gi];
+        let vtb = vtau_b[gi];
+        for axis in 0..3 {
+            let rho_piece = vra * dens.grad_a[(axis, gi)] + vrb * dens.grad_b[(axis, gi)];
+            let mut sig_piece = 0.0_f64;
+            for b in 0..3 {
+                let gba = dens.grad_a[(b, gi)];
+                let gbb = dens.grad_b[(b, gi)];
+                let h_aa = hess_a[axis][b][gi];
+                let h_bb = hess_b[axis][b][gi];
+                sig_piece += 2.0 * vsaa * gba * h_aa
+                    + 2.0 * vsbb * gbb * h_bb
+                    + vsab * (gba * h_bb + gbb * h_aa);
+            }
+            let tau_piece = vta * dtau_a[axis][gi] + vtb * dtau_b[axis][gi];
+            grad[(a, axis)] += w * (rho_piece + sig_piece + tau_piece);
         }
     }
 

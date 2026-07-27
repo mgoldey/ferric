@@ -19,13 +19,24 @@
 //!   error of ~1e-5 Ha/Bohr at (75, 110) grids, suitable for geometry
 //!   optimization but not high-accuracy gradient calculations.
 //!
-//! Supports LDA, GGA, plain hybrid-GGA (B3LYP), and range-separated hybrid-GGA
-//! (wB97X-family) — semilocal piece + scaled exact-exchange piece + (when
-//! the functional carries VV10, e.g. wB97X-V) the VV10 nonlocal-correlation
-//! gradient via `ferric_dft::gradient::vv10_gradient_from_density`.
+//! Supports LDA, GGA, plain hybrid-GGA (B3LYP), range-separated hybrid-GGA
+//! (wB97X-family), and meta-GGA (SCAN / r2SCAN) — semilocal piece + scaled
+//! exact-exchange piece + (when the functional carries VV10, e.g. wB97X-V) the
+//! VV10 nonlocal-correlation gradient via
+//! `ferric_dft::gradient::vv10_gradient_from_density`.
 //!
-//! GGA / hybrid-GGA require AO
-//! Hessians for the v_σ-coupled term in ∇E_xc.
+//! GGA / hybrid-GGA require AO Hessians for the v_σ-coupled term in ∇E_xc.
+//! Meta-GGA additionally needs them for the τ term
+//! (`ferric_dft::gradient::mgga_tau_partials`), since ∂τ/∂R hits one of τ's two
+//! ∂χ factors and turns it into ∂²χ.
+//!
+//! Meta-GGA status (2026-07-27): closed shell is validated against both finite
+//! difference of ferric's own energy and PySCF (≤1.6e-5 / ≤6.6e-6 Ha/Bohr at
+//! STO-3G and 6-31G; see `tests/dft_gradient_mgga.rs`). The open-shell path is
+//! implemented and wired, but a **pre-existing spin-polarized SCAN SCF energy
+//! defect** (~2e-4 Ha on OH/STO-3G, while OH/PBE matches PySCF to 3e-8 and
+//! closed-shell SCAN matches to ~1e-8) limits the open-shell gradient to ~5e-4
+//! agreement with PySCF. That defect is in the energy path, not here.
 
 use crate::gradient::{
     build_energy_weighted_density, build_energy_weighted_density_uhf,
@@ -37,7 +48,8 @@ use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_dft::gradient::{
     xc_gradient_closed_gga_from_density, xc_gradient_closed_lda_from_density,
-    xc_gradient_uks_from_density,
+    xc_gradient_closed_mgga_from_density, xc_gradient_uks_from_density,
+    xc_gradient_uks_mgga_from_density,
 };
 use ferric_dft::grid::AtomicGridConfig;
 use ferric_dft::libxc::{xc_def_from_name, FunctionalFamily};
@@ -50,13 +62,17 @@ use ndarray::Array2;
 ///
 /// Returns a `(natoms, 3)` array of dE/dR in atomic units.
 ///
-/// Limitations (this round):
-/// - LDA only (pure functionals: LDA, S+VWN). PBE / B3LYP / wB97X-V are
-///   rejected with `UnsupportedFamily`.
-/// - No grid response: Becke partition + radial weight derivatives are
-///   neglected, giving ~1e-5 Ha/Bohr error.
-/// - Range-separated hybrids not supported (would need erfc/erf 2e derivative
-///   integrals contributing to ∇E_2e_scaled).
+/// Families: LDA, GGA, plain hybrid-GGA, range-separated hybrid-GGA, and
+/// meta-GGA (SCAN / r2SCAN) all dispatch to the matching
+/// `ferric_dft::gradient` driver; the exact-exchange fraction is contributed
+/// separately via the `twoelectron_*` helpers below.
+///
+/// Known error sources (all measured against PySCF, see
+/// `tests/dft_gradient_vs_pyscf.rs` and `tests/dft_gradient_mgga.rs`):
+/// - Grid integration: ~1e-5 Ha/Bohr at the default (75, 110) grid for s/p
+///   bases; ~6e-5 once d shells are present (the same residual for GGA and
+///   meta-GGA — it is an AO-Hessian/grid limit, not functional-specific).
+/// - VV10 nonlocal correlation IS included when the functional carries it.
 #[allow(clippy::too_many_arguments)]
 pub fn ks_gradient_closed(
     mol: &Molecule,
@@ -84,20 +100,17 @@ pub fn ks_gradient_closed(
     // therefore have an extra ~mHa/Bohr error vs the full PySCF gradient.
     let xc = xc_def_from_name(xc_name).map_err(|e| FerricError::General(format!("libxc: {e:?}")))?;
     let mut needs_gga = false;
+    let mut needs_mgga = false;
     for f in &xc.funcs {
         match f.family() {
             FunctionalFamily::Lda => {}
             FunctionalFamily::Gga | FunctionalFamily::HybridGga
             | FunctionalFamily::RangeSepGga => needs_gga = true,
-            // Meta-GGA gradients (the τ Pulay + response terms) are Phase B —
-            // not implemented. Reject cleanly rather than silently drop the τ
-            // contribution and return a wrong-answer gradient.
+            // Meta-GGA: the τ-dependent AO-derivative + grid-response terms are
+            // handled by `xc_gradient_closed_mgga_from_density`.
             FunctionalFamily::MetaGga => {
-                return Err(FerricError::General(format!(
-                    "meta-GGA gradients are not implemented ({xc_name}): SCAN / \
-                     r2SCAN support energy (single-point) only; the τ-dependent \
-                     nuclear gradient is future work"
-                )));
+                needs_gga = true;
+                needs_mgga = true;
             }
         }
     }
@@ -139,7 +152,12 @@ pub fn ks_gradient_closed(
 
     // XC gradient: dispatch on functional family (LDA fast path, GGA needs Hessians).
     let grid_cfg = AtomicGridConfig::default();
-    let xc_grad = if needs_gga {
+    let xc_grad = if needs_mgga {
+        xc_gradient_closed_mgga_from_density(
+            mol, bs, &d, xc_name, &grid_cfg,
+            prep.shell_to_atom(), prep.shell_offsets(), prep.shell_dims(),
+        )
+    } else if needs_gga {
         xc_gradient_closed_gga_from_density(
             mol, bs, &d, xc_name, &grid_cfg,
             prep.shell_to_atom(), prep.shell_offsets(), prep.shell_dims(),
@@ -231,15 +249,12 @@ pub fn ks_gradient_uks(
 
     let xc = ferric_dft::libxc::xc_def_from_name(xc_name)
         .map_err(|e| FerricError::General(format!("libxc: {e:?}")))?;
-    // Reject meta-GGA gradients cleanly (same as ks_gradient_closed): the
-    // τ-dependent nuclear gradient is Phase B, energy-only for now.
-    if xc.funcs.iter().any(|f| matches!(f.family(), FunctionalFamily::MetaGga)) {
-        return Err(FerricError::General(format!(
-            "meta-GGA gradients are not implemented ({xc_name}): SCAN / r2SCAN \
-             support energy (single-point) only; the τ-dependent nuclear \
-             gradient is future work"
-        )));
-    }
+    // Meta-GGA: the τ-dependent AO-derivative + grid-response terms are handled
+    // by `xc_gradient_uks_mgga_from_density`.
+    let needs_mgga = xc
+        .funcs
+        .iter()
+        .any(|f| matches!(f.family(), FunctionalFamily::MetaGga));
     let k_mix: KMix = if let Some(cam) = xc.cam {
         KMix { sr: cam.c_sr, lr: cam.c_lr, omega: cam.omega }
     } else if let Some(mix) = xc.b3lyp_mix {
@@ -282,10 +297,17 @@ pub fn ks_gradient_uks(
 
     // XC gradient (polarized).
     let grid_cfg = AtomicGridConfig::default();
-    let xc_grad = xc_gradient_uks_from_density(
-        mol, bs, d_a, d_b, xc_name, &grid_cfg,
-        prep.shell_to_atom(), prep.shell_offsets(), prep.shell_dims(),
-    )
+    let xc_grad = if needs_mgga {
+        xc_gradient_uks_mgga_from_density(
+            mol, bs, d_a, d_b, xc_name, &grid_cfg,
+            prep.shell_to_atom(), prep.shell_offsets(), prep.shell_dims(),
+        )
+    } else {
+        xc_gradient_uks_from_density(
+            mol, bs, d_a, d_b, xc_name, &grid_cfg,
+            prep.shell_to_atom(), prep.shell_offsets(), prep.shell_dims(),
+        )
+    }
     .map_err(|e| FerricError::General(format!("uks xc gradient: {e:?}")))?;
     grad += &xc_grad;
 
@@ -349,15 +371,11 @@ pub fn ks_gradient_roks(
 
     let xc = ferric_dft::libxc::xc_def_from_name(xc_name)
         .map_err(|e| FerricError::General(format!("libxc: {e:?}")))?;
-    // Reject meta-GGA gradients cleanly (same as ks_gradient_closed): the
-    // τ-dependent nuclear gradient is Phase B, energy-only for now.
-    if xc.funcs.iter().any(|f| matches!(f.family(), FunctionalFamily::MetaGga)) {
-        return Err(FerricError::General(format!(
-            "meta-GGA gradients are not implemented ({xc_name}): SCAN / r2SCAN \
-             support energy (single-point) only; the τ-dependent nuclear \
-             gradient is future work"
-        )));
-    }
+    // Meta-GGA: handled by the polarized τ-aware driver, same as UKS.
+    let needs_mgga = xc
+        .funcs
+        .iter()
+        .any(|f| matches!(f.family(), FunctionalFamily::MetaGga));
     let k_mix: KMix = if let Some(cam) = xc.cam {
         KMix { sr: cam.c_sr, lr: cam.c_lr, omega: cam.omega }
     } else if let Some(mix) = xc.b3lyp_mix {
@@ -417,10 +435,17 @@ pub fn ks_gradient_roks(
     // XC piece via the polarized driver (ROKS densities already satisfy the
     // structure; UKS XC machinery applies as-is).
     let grid_cfg = AtomicGridConfig::default();
-    let xc_grad = xc_gradient_uks_from_density(
-        mol, bs, d_a, d_b, xc_name, &grid_cfg,
-        prep.shell_to_atom(), prep.shell_offsets(), prep.shell_dims(),
-    )
+    let xc_grad = if needs_mgga {
+        xc_gradient_uks_mgga_from_density(
+            mol, bs, d_a, d_b, xc_name, &grid_cfg,
+            prep.shell_to_atom(), prep.shell_offsets(), prep.shell_dims(),
+        )
+    } else {
+        xc_gradient_uks_from_density(
+            mol, bs, d_a, d_b, xc_name, &grid_cfg,
+            prep.shell_to_atom(), prep.shell_offsets(), prep.shell_dims(),
+        )
+    }
     .map_err(|e| FerricError::General(format!("roks xc gradient: {e:?}")))?;
     grad += &xc_grad;
 

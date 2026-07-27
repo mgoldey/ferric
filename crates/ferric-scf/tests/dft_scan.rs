@@ -123,11 +123,29 @@ fn r2scan_methane() {
     run_case("CH4", CH4, "r2SCAN", "methane_cc-pvdz_r2scan.json");
 }
 
-/// Phase A is energy-only: a meta-GGA nuclear gradient must be a CLEAN error
-/// (not a panic and not a silently-wrong number that drops the τ term). The
-/// τ-dependent gradient is Phase B.
+/// Meta-GGA nuclear gradients ARE implemented (the τ-dependent AO-derivative and
+/// grid-response terms landed in `ferric_dft::gradient`); this test used to
+/// assert the old clean rejection and now asserts the gradient is returned and
+/// is right.
+///
+/// The physics validation lives in `dft_gradient_mgga.rs` (finite difference of
+/// ferric's own energy, plus PySCF cross-checks, at STO-3G / 6-31G). This case
+/// is the cc-pVDZ **d-shell** guard: the meta-GGA gradient needs AO Hessians for
+/// d functions too, and a broken d Hessian would show up here and nowhere else
+/// in the meta-GGA suite.
+///
+/// Reference: PySCF RKS/SCAN, grid_response=True, (75,110) unpruned Becke-1988
+/// grid, RI-J def2-universal-jkfit, conv_tol 1e-10 → ∂E/∂z(atom 0)
+/// = +1.4084639922e-2 Ha/Bohr, so ∂E/∂z(atom 1) = −1.4084639922e-2.
+///
+/// The 1e-4 bar is NOT meta-GGA slack: PBE at the same geometry/basis/settings
+/// misses PySCF by the SAME 6.4e-5 (ferric −2.11346e-2 vs PySCF −2.11988e-2 on
+/// atom 1), while both PBE and SCAN land within 2.1e-5 at 6-31G. That residual is a
+/// pre-existing d-shell AO-Hessian / grid-integration limit shared with the GGA
+/// path — the τ term contributes nothing to it. Do not loosen this to hide a
+/// regression; if it grows, the τ term or the d Hessian has changed.
 #[test]
-fn scan_gradient_is_rejected_cleanly() {
+fn scan_gradient_ccpvdz_d_shell_vs_pyscf() {
     use ferric_scf::ks_gradient::ks_gradient_closed;
 
     let mol = Molecule::parse_xyz(H2, 0, 1).unwrap();
@@ -146,11 +164,19 @@ fn scan_gradient_is_rejected_cleanly() {
     };
     let res = solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg).unwrap();
 
-    let grad = ks_gradient_closed(&mol, &obs, &bs, op, &bounds, "SCAN", &res, None);
-    let err = grad.expect_err("meta-GGA gradient must be rejected, not returned");
-    let msg = format!("{err:?}");
-    assert!(
-        msg.contains("meta-GGA") && msg.to_lowercase().contains("gradient"),
-        "unexpected error message for rejected meta-GGA gradient: {msg}"
+    let grad = ks_gradient_closed(&mol, &obs, &bs, op, &bounds, "SCAN", &res, None)
+        .expect("meta-GGA gradients are implemented; this must return a gradient");
+
+    // PySCF reports +1.4084639922e-2 on atom 0; atom 1 is its negative.
+    const PYSCF_GZ_ATOM1: f64 = -1.4084639922e-2;
+    let diff = (grad[(1, 2)] - PYSCF_GZ_ATOM1).abs();
+    eprintln!(
+        "H2/cc-pVDZ SCAN: ferric ∂E/∂z(H1) = {:+.8e}, PySCF = {PYSCF_GZ_ATOM1:+.8e}, \
+         diff = {diff:.2e}",
+        grad[(1, 2)]
     );
+    // Translational invariance: the two H forces must be equal and opposite.
+    let ti = (grad[(0, 2)] + grad[(1, 2)]).abs();
+    assert!(ti < 1e-8, "H2 SCAN gradient violates translational invariance by {ti:.3e}");
+    assert!(diff < 1e-4, "H2/cc-pVDZ SCAN gradient vs PySCF: {diff:.3e}");
 }
