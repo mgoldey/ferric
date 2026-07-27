@@ -765,6 +765,79 @@ mod tests {
         assert!(tr.n_vir_reduced <= tr.nvir);
     }
 
+    /// WHERE the compression is lost — the diagnostic that decides the verdict.
+    ///
+    /// Three retention numbers, measured at each threshold on the same build:
+    ///
+    /// 1. **per-pair** — the DLPNO literature's headline number. True PNOs compress
+    ///    this hard, exactly as advertised.
+    /// 2. **per-orbital union** — after taking, for each occupied `i`, the union of the
+    ///    PNO spaces of all pairs containing `i`. This is what a method with only ONE
+    ///    occupied index per term (RPA) actually gets to use.
+    /// 3. **shared** — after unioning across orbitals into the single basis the
+    ///    dielectric matvec consumes.
+    ///
+    /// The gap between (1) and (2)/(3) is the whole story: different pairs select
+    /// *different* virtuals, so their union re-inflates. Printing all three makes the
+    /// mechanism visible rather than leaving "PNOs did not help" unexplained.
+    #[test]
+    fn where_pno_compression_is_lost() {
+        let r = benzene();
+        let inter = intermediates(&r);
+        let eps = r.rhf.eps_r();
+        let centers = Array2::<f64>::zeros((inter.nocc, 3));
+        let domains = complete_pair_domains(&centers).unwrap();
+        let nvir = inter.nvir;
+
+        eprintln!(
+            "\n=== where true-PNO compression is lost — benzene/STO-3G (nocc={}, nvir={nvir}, {} pairs) ===",
+            inter.nocc,
+            inter.nocc * (inter.nocc + 1) / 2
+        );
+        eprintln!(
+            "{:>9}  {:>13}  {:>16}  {:>12}",
+            "t_cut_pno", "per-pair ret", "per-orbital union", "shared ret"
+        );
+        for &t in &[1e-8_f64, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1] {
+            let pnos = build_pair_pnos(&inter, eps, &domains, t).unwrap();
+            let unions: Vec<usize> = (0..inter.nocc)
+                .map(|i| union_subspace_for_orbital(&pnos, i, nvir).unwrap().ncols())
+                .collect();
+            let mean_union =
+                unions.iter().sum::<usize>() as f64 / (unions.len() * nvir) as f64;
+            let tr = build_dlpno_rpa_transform(&inter, eps, &domains, t).unwrap();
+            eprintln!(
+                "{:>9.0e}  {:>13.3}  {:>16.3}  {:>12.3}",
+                t,
+                pnos.virtual_retention(),
+                mean_union,
+                tr.shared_retention()
+            );
+        }
+
+        // The mechanism claim, asserted rather than merely printed: at a threshold
+        // where per-pair retention has collapsed, the per-orbital union is still far
+        // larger than the per-pair average. If this ever fails, the "unions re-inflate"
+        // explanation is wrong and the verdict must be re-derived.
+        let pnos = build_pair_pnos(&inter, eps, &domains, 1e-3).unwrap();
+        let unions: Vec<usize> = (0..inter.nocc)
+            .map(|i| union_subspace_for_orbital(&pnos, i, nvir).unwrap().ncols())
+            .collect();
+        let mean_union = unions.iter().sum::<usize>() as f64 / (unions.len() * nvir) as f64;
+        assert!(
+            pnos.virtual_retention() < 0.25,
+            "premise: per-pair retention at t=1e-3 should be small, got {:.3}",
+            pnos.virtual_retention()
+        );
+        assert!(
+            mean_union > 3.0 * pnos.virtual_retention(),
+            "the per-orbital union ({mean_union:.3}) should re-inflate well above the \
+             per-pair retention ({:.3}); if it does not, RPA's single-occupied-index \
+             structure is NOT what is destroying the compression",
+            pnos.virtual_retention()
+        );
+    }
+
     /// Bad inputs error rather than producing a plausible wrong number.
     #[test]
     fn mismatched_domains_are_rejected() {
@@ -804,7 +877,7 @@ mod tests {
         let (e_canonical, rows) =
             compare_osv_vs_pno(&r.mol, &r.obs, &r.dfbs, r.op, &r.rhf, &c, &thresholds).unwrap();
 
-        eprintln!("\n=== OSV vs TRUE PNO — H2O/STO-3G + cc-pvdz-ri ===");
+        eprintln!("\n=== OSV vs TRUE PNO — benzene/STO-3G + cc-pvdz-ri ===");
         eprintln!("canonical PDEP-RPA E_c = {e_canonical:.10} Ha, nvir = {}", rows[0].nvir);
         eprintln!(
             "{:>9}  {:>11}  {:>11}  {:>13}  {:>12}  {:>12}",
