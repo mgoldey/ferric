@@ -68,5 +68,7 @@ pub use frequencies::{
     harmonic_frequencies, FrequencyConfig, FrequencyReference, FrequencyResult,
 };
 pub mod cfmm;
+pub mod qmmm;
+pub use qmmm::{QmSelection, QmmmAtom, QmmmSystem};
 pub mod ladder;
 pub use ladder::{solve_rhf_ladder, default_ladder, ksdft_ladder, Rung, LadderResult, RungOutcome};
