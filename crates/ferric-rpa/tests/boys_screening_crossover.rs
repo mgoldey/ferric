@@ -8,6 +8,19 @@
 //! Small basis (STO-3G) throughout to keep RAM low: this measures the SCALING
 //! TREND of screened-vs-dense, which is a property of the pair topology, not of
 //! the basis. Absolute timings are not comparable to the cc-pVDZ originals.
+//!
+//! # RUN THIS ON A QUIET BOX
+//!
+//! It is `#[ignore]`d and reports wall clocks, so it is only meaningful with
+//! nothing else competing for CPU. The 2026-07-26 run was taken at load average
+//! 25-35 against 6 competing jobs; its timings were recorded as UNTRUSTWORTHY and
+//! the crossover point is currently UNKNOWN. Before quoting any ratio from this
+//! harness, confirm the box is idle (`uptime`, `ps aux | grep ferric`).
+//!
+//! The NON-timing observations from that run are still good, because counts and
+//! energies do not care about load: the screen's energy error grows smoothly and
+//! monotonically with size, and `dist_cutoff` prunes essentially nothing even with
+//! correct Boys centroids.
 
 use ferric_core::{basis, mol::Molecule, parallel::ParallelContext};
 use ferric_integrals::{basis_bridge::PreparedBasis, operator::Operator};
