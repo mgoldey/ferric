@@ -63,5 +63,10 @@ export -f run mem_wait mem_avail_mb mem_psi_some10
   for s in 17 18; do
     for f in dimer mA_cp mB_cp; do echo "a24-${s}_${f}_aqz_r0Tpm_T"; done
   done
+  # B's full-A24 minimum turned out to be ABOVE 0.90 (see run_r0bup.sh), so
+  # these two large systems need the upward extension too.
+  for s in 17 18; do
+    for f in dimer mA_cp mB_cp; do echo "a24-${s}_${f}_aqz_r0Bup_B"; done
+  done
 } | xargs -P "$NPROC" -I{} bash -c 'run "$@"' _ {}
 echo "=== DONE $(date +%H:%M) ==="
