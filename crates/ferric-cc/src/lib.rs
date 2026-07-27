@@ -12,6 +12,7 @@ pub mod ccsd_closed_shell;
 pub mod ccsd_t;
 pub mod ccsd_t_closed_shell;
 pub mod dlpno_ccsd;
+pub mod dlpno_ccsd_t;
 pub mod double_hybrid;
 pub mod helpers;
 pub mod linlccd;
