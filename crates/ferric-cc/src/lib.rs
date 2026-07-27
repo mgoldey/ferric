@@ -11,8 +11,28 @@ pub mod ccsd;
 pub mod ccsd_closed_shell;
 pub mod ccsd_t;
 pub mod ccsd_t_closed_shell;
+pub mod dlpno_ccsd;
+pub mod dlpno_ccsd_kernel;
+pub mod dlpno_ccsd_t;
+pub mod dlpno_ccsd_t_kernel;
+pub mod dlpno_ccsd_t_virtual;
+pub mod dlpno_ccsd_virtual;
+pub mod dlpno_linlccd;
+pub mod double_hybrid;
 pub mod helpers;
+pub mod linlccd;
+pub mod linlccd_exact;
+pub mod linlccd_u;
 
+/// Local-correlation machinery, re-exported from `ferric-mp2`.
+///
+/// These live in `ferric-mp2` rather than here because MP2 and RPA need them too
+/// and `ferric-mp2` is UPSTREAM of this crate — a module here would be unreachable
+/// from either. Re-exported so `ferric_cc::pair_domains::…` keeps resolving.
+pub use ferric_mp2::pair_domains;
+pub use ferric_mp2::local_pno as pno;
+
+#[derive(Debug, Clone)]
 pub struct CcConfig {
     pub frozen_core: usize,
     pub max_iter: usize,

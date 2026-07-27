@@ -104,6 +104,86 @@ use ferric_scf::ScfResult;
 use ndarray::{Array2, ArrayView2};
 use rayon::prelude::*;
 
+/// Build the dense AO ERI tensor `(μν|λσ)` exactly, with no density fitting.
+///
+/// Returns a flat `nbas⁴` buffer indexed `((μ·n + ν)·n + λ)·n + σ`, in chemist
+/// notation. Uses 8-fold permutational symmetry, so only ~1/8 of the shell quartets
+/// are evaluated and each is scattered to its distinct images.
+///
+/// This is O(nbas⁴) memory and is intended for reference / cross-check work on small
+/// systems — it is what lets an RI-based method be compared against exact integrals
+/// to quantify its RI error floor. Callers must apply their own memory guard; this
+/// function does not (the caller knows what else it holds co-resident).
+///
+/// `op` is honored, so attenuated operators (`Operator::erfc(ω)`) work here too.
+pub fn dense_ao_eri(prep: &PreparedBasis, op: Operator) -> Result<Vec<f64>, FerricError> {
+    let nbas = prep.nbasis();
+    let nsh = prep.nshells();
+    let dims = prep.shell_dims();
+    let offs = prep.shell_offsets();
+    let nb2 = nbas * nbas;
+
+    let pool = EnginePool::new(op, prep, 1e-14)?;
+    let mut ao = vec![0.0f64; nb2 * nb2];
+
+    let pairs: Vec<(usize, usize)> =
+        (0..nsh).flat_map(|s1| (0..=s1).map(move |s2| (s1, s2))).collect();
+
+    struct AoPtr(*mut f64);
+    // SAFETY: tasks write disjoint element sets (each AO element is produced by
+    // exactly one canonical quartet, owned by exactly one task); no aliasing.
+    unsafe impl Send for AoPtr {}
+    unsafe impl Sync for AoPtr {}
+    let ao_ptr = AoPtr(ao.as_mut_ptr());
+
+    let ao_ptr = &ao_ptr;
+    let pair_list = &pairs;
+    pair_list.par_iter().enumerate().for_each(move |(p12, &(s1, s2))| {
+        let ao_base = ao_ptr.0;
+        pool.with(|eng| {
+            for (p34, &(s3, s4)) in pair_list.iter().enumerate() {
+                if p34 > p12 {
+                    break;
+                }
+                let Some(q) = eng.compute_quartet(prep, s1, s2, s3, s4) else {
+                    continue;
+                };
+                let (n1, n2, n3, n4) = (dims[s1], dims[s2], dims[s3], dims[s4]);
+                let (o1, o2, o3, o4) = (offs[s1], offs[s2], offs[s3], offs[s4]);
+                for a in 0..n1 {
+                    let mu = o1 + a;
+                    for b in 0..n2 {
+                        let nu = o2 + b;
+                        for cc in 0..n3 {
+                            let la = o3 + cc;
+                            for dd in 0..n4 {
+                                let sg = o4 + dd;
+                                let val = q[((a * n2 + b) * n3 + cc) * n4 + dd];
+                                let idx = [
+                                    ((mu * nbas + nu) * nbas + la) * nbas + sg,
+                                    ((nu * nbas + mu) * nbas + la) * nbas + sg,
+                                    ((mu * nbas + nu) * nbas + sg) * nbas + la,
+                                    ((nu * nbas + mu) * nbas + sg) * nbas + la,
+                                    ((la * nbas + sg) * nbas + mu) * nbas + nu,
+                                    ((sg * nbas + la) * nbas + mu) * nbas + nu,
+                                    ((la * nbas + sg) * nbas + nu) * nbas + mu,
+                                    ((sg * nbas + la) * nbas + nu) * nbas + mu,
+                                ];
+                                for &k in &idx {
+                                    // SAFETY: k < nb2*nb2 by construction; this task's
+                                    // write set is disjoint from every other task's.
+                                    unsafe { *ao_base.add(k) = val };
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    });
+    Ok(ao)
+}
+
 /// Compute the canonical MP2 correlation energy using full 4-center ERIs.
 ///
 /// This is an O(N^5) reference implementation for cross-validating RI-MP2.
@@ -123,9 +203,6 @@ pub fn canonical_mp2(
     let nvir = nbas - nocc_total;
     let eps = rhf.eps_r();
     let c = rhf.mos_r();
-    let nsh = prep.nshells();
-    let dims = prep.shell_dims();
-    let offs = prep.shell_offsets();
 
     let nov = nocc * nvir;
     let nb2 = nbas * nbas;
@@ -147,86 +224,13 @@ pub fn canonical_mp2(
         ferric_core::memory::resolve_budget_bytes(None),
     )?;
 
-    // ---- Step 1: dense AO ERI (mu nu|la sg) using 8-fold permutational
-    // symmetry, parallel over the canonical shell-pair list. ----------------
-    //
-    // (mu nu|la sg) is invariant under mu<->nu, la<->sg, and (mu nu)<->(la sg),
-    // so only shell quartets with s1>=s2, s3>=s4, and pair(s1,s2)>=pair(s3,s4)
-    // need to be computed from libint2 -- ~1/8 of nsh^4. Each computed quartet
-    // is then scattered to all of its distinct symmetry images.
+    // ---- Step 1: dense AO ERI (mu nu|la sg), 8-fold permutational symmetry. ----
+    // Shared with the exact-integral reference paths via `dense_ao_eri` so there is
+    // exactly one implementation of the quartet loop + symmetry scatter.
     //
     // libint2 quartet evaluation is ~99% of this function's wall time (the four
-    // quarter transforms are ~1%), so this factor-8 is the dominant remaining
-    // lever on the AO side.
-    let pool = EnginePool::new(op, prep, 1e-14)?;
-    let mut ao = vec![0.0f64; nb2 * nb2];
-
-    // Canonical shell pairs (s1 >= s2), ordered so pair index is comparable.
-    let pairs: Vec<(usize, usize)> = (0..nsh)
-        .flat_map(|s1| (0..=s1).map(move |s2| (s1, s2)))
-        .collect();
-
-    // Each AO element (mu,nu,la,sg) is produced by exactly one canonical
-    // quartet, and each canonical quartet is owned by exactly one task, so the
-    // scatter below writes every slot at most once: the writes are disjoint and
-    // need no synchronisation. Rayon cannot prove this, hence the raw-pointer
-    // wrapper (the same disjoint-write pattern the SCF direct builders use).
-    struct AoPtr(*mut f64);
-    // SAFETY: tasks write disjoint element sets (see above); no aliasing.
-    unsafe impl Send for AoPtr {}
-    unsafe impl Sync for AoPtr {}
-    let ao_ptr = AoPtr(ao.as_mut_ptr());
-
-    let ao_ptr = &ao_ptr;
-    let pair_list = &pairs;
-    pair_list.par_iter().enumerate().for_each(move |(p12, &(s1, s2))| {
-        let ao_base = ao_ptr.0;
-        pool.with(|eng| {
-            for (p34, &(s3, s4)) in pair_list.iter().enumerate() {
-                // Bra-ket symmetry: only the p12 >= p34 triangle.
-                if p34 > p12 {
-                    break;
-                }
-                let Some(q) = eng.compute_quartet(prep, s1, s2, s3, s4) else {
-                    continue;
-                };
-                let (n1, n2, n3, n4) = (dims[s1], dims[s2], dims[s3], dims[s4]);
-                let (o1, o2, o3, o4) = (offs[s1], offs[s2], offs[s3], offs[s4]);
-                for a in 0..n1 {
-                    let mu = o1 + a;
-                    for b in 0..n2 {
-                        let nu = o2 + b;
-                        for cc in 0..n3 {
-                            let la = o3 + cc;
-                            for dd in 0..n4 {
-                                let sg = o4 + dd;
-                                let val = q[((a * n2 + b) * n3 + cc) * n4 + dd];
-                                // Scatter to the 8 images; duplicates (when
-                                // indices coincide) resolve to the same slot and
-                                // the same value, so repeated stores are benign.
-                                let idx = [
-                                    ((mu * nbas + nu) * nbas + la) * nbas + sg,
-                                    ((nu * nbas + mu) * nbas + la) * nbas + sg,
-                                    ((mu * nbas + nu) * nbas + sg) * nbas + la,
-                                    ((nu * nbas + mu) * nbas + sg) * nbas + la,
-                                    ((la * nbas + sg) * nbas + mu) * nbas + nu,
-                                    ((sg * nbas + la) * nbas + mu) * nbas + nu,
-                                    ((la * nbas + sg) * nbas + nu) * nbas + mu,
-                                    ((sg * nbas + la) * nbas + nu) * nbas + mu,
-                                ];
-                                for &k in &idx {
-                                    // SAFETY: k < nb2*nb2 by construction; the
-                                    // set of k written by this task is disjoint
-                                    // from every other task's.
-                                    unsafe { *ao_base.add(k) = val };
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        });
-    });
+    // quarter transforms are ~1%).
+    let ao = dense_ao_eri(prep, op)?;
 
     // ---- Steps 2-5: four quarter transforms, one GEMM each. ----------------
     // C_occ is columns [first_occ, first_occ+nocc); C_vir is [nocc_total, nbas).

@@ -59,6 +59,34 @@ pub fn solve_uhf_with_guess(
     config: &UhfConfig,
     initial_mos: Option<(&Array2<f64>, &Array2<f64>)>,
 ) -> Result<ScfResult, FerricError> {
+    err_if_unconverged(solve_uhf_best_effort(ctx, mol, prep, bounds, config, initial_mos)?)
+}
+
+/// Convert a non-converged best-effort result into the historical hard error.
+fn err_if_unconverged(r: ScfResult) -> Result<ScfResult, FerricError> {
+    if r.converged {
+        Ok(r)
+    } else {
+        Err(FerricError::ScfConvergence { iterations: r.iterations, last_energy: r.energy })
+    }
+}
+
+/// UHF that returns its best-effort state instead of erroring when it fails.
+///
+/// Returns `Ok` with `converged: false` (and `exit` describing why) when the SCF does
+/// not converge, keeping the final density and MOs. This is what an open-shell
+/// convergence ladder needs: a failed rung's density becomes the next rung's guess.
+///
+/// **Callers must check `converged`.** Prefer [`solve_uhf`] unless you are
+/// specifically implementing restart/escalation logic.
+pub fn solve_uhf_best_effort(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    config: &UhfConfig,
+    initial_mos: Option<(&Array2<f64>, &Array2<f64>)>,
+) -> Result<ScfResult, FerricError> {
     solve_uhf_fockmod(ctx, mol, prep, bounds, config, initial_mos, None)
 }
 
@@ -557,9 +585,43 @@ pub fn solve_uhf_fockmod(
         let d_tot_new = &d_a + &d_b;
         mon.record_density_change(&d_tot_new, &d_tot_old);
     }
-    Err(FerricError::ScfConvergence {
+    // Max iterations reached.
+    //
+    // Historically this discarded everything and returned a bare Err, which made an
+    // open-shell convergence LADDER impossible: a ladder works by carrying the
+    // best-effort density of a failed rung forward as the next rung's guess (exactly
+    // what `solve_rhf_ladder` does via RHF's `build_nonconverged`).
+    //
+    // So the best-effort state is now BUILT here, and the caller decides what to do
+    // with it. `solve_uhf` / `solve_uhf_with_guess` keep their historical Err contract
+    // -- every existing caller unwraps or `?`s them, and silently handing those an
+    // unconverged result would be a regression. `solve_uhf_best_effort` returns it.
+    //
+    // Orbital energies and Fock matrices are not retained across the loop (they are
+    // rebuilt each iteration), so the core-Hamiltonian eigenvalues stand in. The
+    // density and MOs -- the parts a ladder restart actually consumes -- are the
+    // genuine converged-so-far values.
+    let (eps_a_last, eps_b_last) = match diagonalize(&h, &x) {
+        Ok((e, _)) => (e.clone(), e),
+        Err(_) => (vec![0.0; c_a.ncols()], vec![0.0; c_a.ncols()]),
+    };
+    let density_total = &d_a + &d_b;
+    Ok(ScfResult {
+        spin: Spin::Unrestricted,
+        energy: mon.prev_e,
+        density_total,
+        density_alpha: d_a,
+        density_beta: Some(d_b),
+        mos_alpha: c_a,
+        mos_beta: Some(c_b),
+        eps_alpha: eps_a_last,
+        eps_beta: Some(eps_b_last),
+        fock_alpha: h.clone(),
+        fock_beta: Some(h.clone()),
+        converged: false,
+        exit: ScfExit::MaxIter,
         iterations: config.max_iter,
-        last_energy: mon.prev_e,
+        computed_quartets: total_quartets,
     })
 }
 

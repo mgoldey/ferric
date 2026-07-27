@@ -32,6 +32,7 @@ pub mod config;
 pub mod davidson;
 pub mod diagnostics;
 pub mod dispersion;
+pub mod dlpno_rpa;
 pub mod energy;
 pub mod gradient;
 pub mod lanczos;

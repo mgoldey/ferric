@@ -20,6 +20,7 @@ pub use result::{ScfResult, Spin};
 pub mod properties;
 
 pub mod screening;
+pub mod semicanonical;
 pub mod qqr;
 pub mod pairs;
 pub mod fock;

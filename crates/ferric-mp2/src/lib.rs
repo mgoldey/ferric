@@ -13,10 +13,14 @@
 #![allow(clippy::needless_range_loop)]
 
 pub mod boys;
+pub mod dlpno_mp2;
+pub mod local_pno;
+pub mod pair_domains;
 pub mod mo_transform;
 pub mod rimp2;
 pub mod mp3;
 pub mod spinorbital;
+pub mod spinorbital_u;
 pub mod u_rimp2;
 pub mod u_oo_rimp2;
 pub mod canonical;

@@ -166,6 +166,28 @@ pub fn solve_rohf(
     ctx: &ParallelContext,
     mol: &Molecule,
     prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    config: &RohfConfig,
+) -> Result<ScfResult, FerricError> {
+    let r = solve_rohf_best_effort(ctx, mol, prep, op, bounds, config)?;
+    if r.converged {
+        Ok(r)
+    } else {
+        Err(FerricError::ScfConvergence { iterations: r.iterations, last_energy: r.energy })
+    }
+}
+
+/// ROHF/ROKS that returns its best-effort state instead of erroring on failure.
+///
+/// Returns `Ok` with `converged: false` when the SCF does not converge, keeping the
+/// final density and MOs so a convergence ladder can restart from them.
+/// **Callers must check `converged`.** Prefer [`solve_rohf`] unless implementing
+/// restart/escalation logic.
+pub fn solve_rohf_best_effort(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
     _op: Operator,
     bounds: &SchwarzBounds,
     config: &RohfConfig,
@@ -267,6 +289,9 @@ pub fn solve_rohf(
     // recently accepted iter. None until iter `config.mom_after_iter`.
     let mut mom_ref: Option<(Array2<f64>, Array2<f64>)> = None;
     let mut total_quartets = 0usize;
+    // Last effective Fock, retained so the non-converged exit can report a
+    // well-formed ScfResult (see solve_rohf_best_effort's tail).
+    let mut f_eff_last = Array2::<f64>::zeros((n, n));
     // Previous iteration's total density, for the ΔP convergence signal (shared
     // with solve_rhf via rhf::scf_converged). None on iter 1 → dp = INFINITY, so
     // the gate can't fire before a real density change exists.
@@ -357,6 +382,7 @@ pub fn solve_rohf(
 
         // Build Roothaan effective Fock (Guest-Saunders, via PySCF projector form).
         let f_eff = roothaan_fock(&f_a, &f_b, &d_a, &d_b, &s);
+        f_eff_last = f_eff.clone();
 
         // DIIS error: the proper ROHF orbital-rotation gradient (PySCF
         // `get_grad`). In MO basis the gradient has only three nonzero
@@ -644,9 +670,31 @@ pub fn solve_rohf(
             d_b = db_n;
         }
     }
-    Err(FerricError::ScfConvergence {
+    // Max iterations reached. Build the best-effort state and let the caller decide.
+    //
+    // Same split as solve_uhf/solve_uhf_best_effort: `solve_rohf` keeps its historical
+    // Err contract (existing callers unwrap or `?` it), while
+    // `solve_rohf_best_effort` returns the converged-so-far density and MOs so a
+    // convergence LADDER can carry them into the next rung.
+    let (eps_last, c_last) = diagonalize(&f_eff_last, &s_inv_sqrt)
+        .unwrap_or_else(|_| (vec![0.0; c.ncols()], c.clone()));
+    let density_total = &d_a + &d_b;
+    Ok(ScfResult {
+        spin: Spin::RestrictedOpen,
+        energy: mon.prev_e,
+        density_total,
+        density_alpha: d_a,
+        density_beta: Some(d_b),
+        mos_alpha: c_last,
+        mos_beta: None,
+        eps_alpha: eps_last,
+        eps_beta: None,
+        fock_alpha: f_eff_last,
+        fock_beta: None,
+        converged: false,
+        exit: crate::result::ScfExit::MaxIter,
         iterations: config.max_iter,
-        last_energy: mon.prev_e,
+        computed_quartets: total_quartets,
     })
 }
 
