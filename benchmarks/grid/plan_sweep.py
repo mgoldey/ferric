@@ -31,6 +31,9 @@ sys.path.insert(0, str(ROOT))
 import mae_spline as M  # noqa: E402
 
 FRAGS = ("dimer", "mA_cp", "mB_cp")
+# CLI `formulation` value per --form. B = delta-lr, T = coupled-rings.
+# See the rewrite in main(): the template is a B file, so this is load-bearing.
+FORMULATION = {"B": "delta-lr", "T": "coupled-rings"}
 # Core orbitals of REAL atoms. Ghosts (@X) carry no electrons and must be
 # EXCLUDED -- counting them mismatched 14 of 21 existing TOMLs, all CP monomers.
 CORE = {"H": 0, "HE": 0, "LI": 1, "BE": 1, "B": 1, "C": 1, "N": 1, "O": 1,
@@ -156,6 +159,17 @@ def main():
         t = re.sub(r'xyz = "[^"]+"', f'xyz = "benchmarks/grid/geoms/{stem}.xyz"', tpl)
         t = re.sub(r"r0_sweep = \[[^\]]*\]", f"r0_sweep = {sweep}", t)
         t = re.sub(r"frozen_core = \d+", f"frozen_core = {r['frozen_core']}", t)
+        # The template is a B ("delta-lr") file, so --form T MUST rewrite this.
+        # Omitting it silently produced 12 T-tagged jobs that were really B runs
+        # (caught 2026-07-26 before they ran): the filename said `_T`, the
+        # physics said otherwise, and mae_spline collects by FILENAME. That is a
+        # silent-wrong-data bug, not a cosmetic one.
+        t = re.sub(r'formulation = "[^"]*"', f'formulation = "{FORMULATION[a.form]}"', t)
+        if f'formulation = "{FORMULATION[a.form]}"' not in t:
+            raise SystemExit(
+                f"{p}: template has no `formulation = \"...\"` line to rewrite — "
+                f"refusing to emit a job whose formulation is unverified"
+            )
         existed = p.exists()
         old = p.read_text() if existed else None
         if old != t:
