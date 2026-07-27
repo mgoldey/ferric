@@ -77,6 +77,15 @@ impl MemoryCfg {
 pub struct DftCfg {
     /// XC functional name: "LDA", "PBE", "B3LYP", "wB97X-V", or any libxc name.
     pub functional: Option<String>,
+    /// Double-hybrid adiabatic-connection parameter λ scaling the WFT
+    /// correlation (ωB97X-L-V, paper eqn 27). `None` → the published value
+    /// carried by `DoubleHybridConfig::default()` (0.6). Only read by
+    /// `method.kind = "wb97x-l-v"`.
+    pub lambda: Option<f64>,
+    /// Double-hybrid range-separation parameter ω in Bohr⁻¹. `None` → the
+    /// published value carried by `DoubleHybridConfig::default()` (0.1).
+    /// Only read by `method.kind = "wb97x-l-v"`.
+    pub omega: Option<f64>,
 }
 
 /// One `[[external_potential.point_charges]]` entry: a fixed point charge

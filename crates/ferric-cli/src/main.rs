@@ -19,6 +19,8 @@ use ferric_rpa::config::{QuadratureConfig, SternheimerConfig};
 use ferric_rpa::{run_pdep_rpa, PdepRpaConfig};
 use ferric_cc::ccsd::ccsd;
 use ferric_cc::ccsd_closed_shell::ccsd_closed_shell;
+use ferric_cc::double_hybrid::{run_wb97x_l_v, DoubleHybridConfig};
+use ferric_cc::linlccd::{linlccd, LadderVariant};
 use ferric_cc::CcConfig;
 use ferric_core::parallel::ParallelContext;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
@@ -66,8 +68,8 @@ fn print_usage() {
 /// method's grade in VALIDATION.md changes (promoted to Proven, demoted to
 /// Stub, caveat text edited), update BOTH this table and the doc. Proven /
 /// Proven (narrow) methods (rhf, uhf, rohf, ksdft, rimp2, mp3, att-rimp2,
-/// scs-mp2, scs-mp2-2terfc, laplace-mp2, pdep-rpa, ccsd) do not appear here
-/// and never print a warning.
+/// scs-mp2, scs-mp2-2terfc, laplace-mp2, pdep-rpa, ccsd, linlccd) do not
+/// appear here and never print a warning.
 const EPISTEMIC_WARNINGS: &[(&str, &str)] = &[
     (
         "gw",
@@ -113,6 +115,14 @@ const EPISTEMIC_WARNINGS: &[(&str, &str)] = &[
          optimization is checked for internal self-consistency (converged stationary point, \
          analytic gradient vanishes) but there is NO external absolute-energy reference -- \
          PySCF/psi4/forte all lack a directly comparable OO-MP2 implementation.",
+    ),
+    (
+        "wb97x-l-v",
+        "method.kind = \"wb97x-l-v\" is Smoke-grade (see docs/VALIDATION.md): the functional runs \
+         end to end and its pieces (E_KS, E_c, the lambda scaling, the omega range separation) are \
+         separately checked against the paper's structure and limits, but NO reference value for \
+         the TOTAL energy exists in ferric -- nothing compares it to the paper or to another code. \
+         Do not quote a wB97X-L-V total energy as validated.",
     ),
 ];
 
@@ -167,8 +177,8 @@ pub fn main() {
     cfg.scf.verbose = cfg.scf.verbose || cli_verbose;
     let method = cfg.method.kind.as_str();
     let task = cfg.method.task.as_str();
-    if !matches!(method, "rhf" | "uhf" | "rohf" | "ksdft" | "rimp2" | "mp3" | "oo-rimp2" | "att-rimp2" | "mp2-v" | "scs-mp2" | "scs-mp2-2terfc" | "laplace-mp2" | "pdep-rpa" | "rs-mp2-rpa" | "gw" | "bse-tda" | "tdhf-static-polarizability" | "ccsd") {
-        eprintln!("error: unsupported method.kind = \"{method}\"; expected rhf, uhf, rohf, ksdft, rimp2, mp3, oo-rimp2, att-rimp2, mp2-v, scs-mp2, scs-mp2-2terfc, laplace-mp2, pdep-rpa, rs-mp2-rpa, gw, bse-tda, tdhf-static-polarizability, or ccsd");
+    if !matches!(method, "rhf" | "uhf" | "rohf" | "ksdft" | "rimp2" | "mp3" | "oo-rimp2" | "att-rimp2" | "mp2-v" | "scs-mp2" | "scs-mp2-2terfc" | "laplace-mp2" | "pdep-rpa" | "rs-mp2-rpa" | "gw" | "bse-tda" | "tdhf-static-polarizability" | "ccsd" | "linlccd" | "wb97x-l-v") {
+        eprintln!("error: unsupported method.kind = \"{method}\"; expected rhf, uhf, rohf, ksdft, rimp2, mp3, oo-rimp2, att-rimp2, mp2-v, scs-mp2, scs-mp2-2terfc, laplace-mp2, pdep-rpa, rs-mp2-rpa, gw, bse-tda, tdhf-static-polarizability, ccsd, linlccd, or wb97x-l-v");
         std::process::exit(1);
     }
     warn_if_epistemically_unproven(method);
@@ -313,6 +323,32 @@ pub fn main() {
         return;
     }
 
+    // Both new correlated methods are closed-shell (RHF-reference) only: they
+    // reach `eps_r()`/`mos_r()`, which assert on `Spin::Restricted`. Reject an
+    // open-shell request HERE, before the shared `solve_rhf` below, because that
+    // solve fails first on an odd electron count and reports the misleading
+    // "SCF did not converge after 0 iterations" rather than the real reason.
+    if matches!(method, "linlccd" | "wb97x-l-v") && mol.multiplicity > 1 {
+        eprintln!(
+            "error: method.kind = \"{method}\" requires a closed-shell (restricted) reference; \
+             open-shell LinLCCD(hh) / wB97X-L-V are library-only \
+             (ferric_cc::linlccd_u::u_linlccd, \
+             ferric_cc::double_hybrid::u_solve_wb97x_l_v)"
+        );
+        std::process::exit(1);
+    }
+
+    // The wB97X-L-V double hybrid converges its OWN Kohn-Sham reference inside
+    // `run_wb97x_l_v` (it forces `xc = "wB97X-L-V"` and runs `ksdft_ladder`), so
+    // it returns early here rather than falling through to the unconditional
+    // `solve_rhf` below. Letting it fall through would run a full plain-HF SCF
+    // whose result is then thrown away, and — worse — the reference actually
+    // consumed would silently be the wrong one.
+    if method == "wb97x-l-v" {
+        run_wb97x_l_v_arm(&cfg, &ctx, &mol, &bs, &prep, &bounds, &rhf_config, budget_bytes);
+        return;
+    }
+
     // RHF and closed-shell KS-DFT both run through `solve_rhf` (KS-DFT is
     // `solve_rhf` with `cfg.xc` set), so both take the level-shift ladder. This
     // gives KS-DFT the same DIIS-oscillation fallback RHF already had: a hybrid
@@ -441,6 +477,7 @@ pub fn main() {
         "scs-mp2" => run_scs_mp2(&cfg, &mol, &bs, &prep, &result, budget_bytes),
         "scs-mp2-2terfc" => run_scs_mp2_2terfc(&cfg, &mol, &bs, &prep, &result, budget_bytes),
         "ccsd" => run_ccsd(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
+        "linlccd" => run_linlccd(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
         "laplace-mp2" => run_laplace_mp2(&cfg, &mol, &bs, &prep, op, &result),
         "pdep-rpa" => run_pdep_rpa_arm(
             &cfg, &ctx, &mol, &bs, &prep, op, &bounds, &rhf_config, result, budget_bytes,
@@ -1090,6 +1127,142 @@ fn run_ccsd(
     println!("  RHF energy = {:.10} Hartree", result.energy);
     println!("  CCSD corr  = {:.10} Hartree", cc_result.correlation_energy);
     println!("  Total      = {:.10} Hartree", result.energy + cc_result.correlation_energy);
+}
+
+/// `method.kind = "linlccd"`. Linearized hole-hole ladder CCD on the converged
+/// closed-shell reference.
+///
+/// Mirrors [`run_ccsd`]'s aux-basis resolution (`[mp2] auxbasis`, default
+/// `cc-pvdz-ri`) because LinLCCD is RI-based in exactly the same way. The
+/// published [`LadderVariant::Hh`] is what is exposed: `DriversOnly` reproduces
+/// RI-MP2 (already reachable via `method.kind = "rimp2"`) and `Full` carries
+/// CCD-like VVVV memory, so neither earns a CLI knob here.
+fn run_linlccd(
+    cfg: &Config,
+    mol: &Molecule,
+    bs: &BasisSet,
+    prep: &PreparedBasis,
+    op: Operator,
+    result: &ferric_scf::result::ScfResult,
+    budget_bytes: Option<usize>,
+) {
+    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+    let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let dfbs = PreparedBasis::new(mol, &aux_bs).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let cc_config = CcConfig {
+        frozen_core: cfg.mp2.frozen_core,
+        memory_budget_bytes: budget_bytes,
+        ..Default::default()
+    };
+    // `linlccd` is closed-shell (RHF-reference) only — it calls `eps_r()`/`mos_r()`,
+    // which assert on `Spin::Restricted`. Reject an open-shell reference here with a
+    // clear message instead of letting that assert fire as a panic.
+    if !matches!(result.spin, ferric_scf::result::Spin::Restricted) {
+        eprintln!(
+            "error: method.kind = \"linlccd\" requires a closed-shell (RHF) reference; \
+             open-shell LinLCCD is library-only (ferric_cc::linlccd_u)"
+        );
+        std::process::exit(1);
+    }
+    let cc_result = linlccd(mol, prep, &dfbs, op, result, &cc_config, LadderVariant::Hh)
+        .unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
+    println!(
+        "LinLCCD(hh)/{} (aux: {}) on {}",
+        bs.name, aux_name, cfg.molecule.xyz
+    );
+    println!("  nbasis     = {}", prep.nbasis());
+    println!("  RHF energy = {:.10} Hartree", result.energy);
+    println!("  LinLCCD corr = {:.10} Hartree", cc_result.correlation_energy);
+    println!("  Total      = {:.10} Hartree", result.energy + cc_result.correlation_energy);
+}
+
+/// `method.kind = "wb97x-l-v"`. The ωB97X-L-V double hybrid.
+///
+/// Unlike every other correlated arm, this one converges its own Kohn-Sham
+/// reference: [`run_wb97x_l_v`] forces `xc = "wB97X-L-V"` and drives
+/// `ksdft_ladder` itself, then computes the SR-LinLCCD(hh) correction on those
+/// frozen orbitals. It hard-errors on an unconverged reference — that guard is
+/// deliberate (an unconverged KS density yields a plausible-looking but
+/// meaningless correlation energy), so it is surfaced as a fatal error here
+/// rather than downgraded to a warning.
+///
+/// λ and ω default to the published values (0.6 and 0.1 Bohr⁻¹) carried by
+/// `DoubleHybridConfig::default()`; `[dft] lambda` / `[dft] omega` override
+/// them individually, so an omitted key always yields the published parameter.
+#[allow(clippy::too_many_arguments)]
+fn run_wb97x_l_v_arm(
+    cfg: &Config,
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    bs: &BasisSet,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    rhf_config: &RhfConfig,
+    budget_bytes: Option<usize>,
+) {
+    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+    let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let dfbs = PreparedBasis::new(mol, &aux_bs).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    // Start from the published defaults and OVERRIDE only what the user set, so
+    // an omitted `[dft] lambda`/`omega` gives the paper's parameter rather than
+    // a zero from a `..Default::default()`-less struct literal.
+    let mut dh_cfg = DoubleHybridConfig {
+        cc: CcConfig {
+            frozen_core: cfg.mp2.frozen_core,
+            memory_budget_bytes: budget_bytes,
+            ..DoubleHybridConfig::default().cc
+        },
+        ..Default::default()
+    };
+    if let Some(lambda) = cfg.dft.lambda {
+        dh_cfg.lambda = lambda;
+    }
+    if let Some(omega) = cfg.dft.omega {
+        dh_cfg.omega = omega;
+    }
+    if let Some(f) = cfg.dft.functional.as_deref() {
+        // `run_wb97x_l_v` overwrites `xc` unconditionally. Say so rather than
+        // letting a user believe `[dft] functional = "PBE"` did anything.
+        if !f.eq_ignore_ascii_case("wB97X-L-V") {
+            eprintln!(
+                "warning: [dft] functional = \"{f}\" is ignored for method.kind = \"wb97x-l-v\"; \
+                 the double hybrid always converges its own wB97X-L-V reference"
+            );
+        }
+    }
+    let (dh, ks) = run_wb97x_l_v(ctx, mol, prep, &dfbs, bounds, rhf_config, &dh_cfg)
+        .unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
+    println!(
+        "wB97X-L-V/{} (aux: {}, lambda={:.4}, omega={:.4} Bohr^-1) on {}",
+        bs.name, aux_name, dh.lambda, dh.omega, cfg.molecule.xyz
+    );
+    println!("  nbasis       = {}", prep.nbasis());
+    println!("  SCF iters    = {}", ks.iterations);
+    // Components are printed separately on purpose: the DFT and WFT halves have
+    // very different reliability characteristics, and one collapsed number makes
+    // a bad SCF indistinguishable from a bad amplitude solve.
+    println!("  E_KS         = {:.10} Hartree", dh.e_ks);
+    println!("  E_c LinLCCD  = {:.10} Hartree", dh.e_c_wft);
+    println!("  lambda*E_c   = {:.10} Hartree", dh.e_c_scaled);
+    println!("  Total        = {:.10} Hartree", dh.total_energy);
 }
 
 /// `method.kind = "laplace-mp2"`. Extracted verbatim from the former

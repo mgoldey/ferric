@@ -1,0 +1,28 @@
+# wB97X-L-V — a double-hybrid density functional built on LinLCCD(hh)
+# correlation instead of MP2 (Ransford & Carter-Fenk, PCCP 2026, 28, 14428).
+#
+#   E = E_KS[wB97X-L] + E_c,VV10 + lambda * E_c,LinLCCD(hh)^{sr,omega}
+#
+# This method converges its OWN Kohn-Sham reference (the functional name is
+# forced to wB97X-L-V), then computes the short-range LinLCCD(hh) correction on
+# those frozen orbitals. An unconverged reference is a hard error, not a warning.
+#
+# [dft] lambda and [dft] omega are optional: omitting them gives the published
+# parameters lambda = 0.6 and omega = 0.1 Bohr^-1. They are shown here
+# explicitly only to document where the knobs live.
+
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "6-31g"
+
+[method]
+kind = "wb97x-l-v"
+
+[dft]
+lambda = 0.6
+omega = 0.1
+
+[mp2]
+auxbasis = "cc-pvdz-ri"

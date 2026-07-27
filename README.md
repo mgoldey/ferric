@@ -106,6 +106,15 @@ cargo run --release -- examples/water-scs-mp2-2terfc.toml
 
 # CCSD (H2/STO-3G; CCD and CCSD(T) are not yet CLI-wired, use Python)
 cargo run --release -- examples/water-ccsd.toml
+
+# LinLCCD(hh) -- linearized hole-hole ladder CCD (closed-shell only)
+cargo run --release -- examples/water-linlccd.toml
+
+# wB97X-L-V -- double hybrid built on LinLCCD(hh) instead of MP2.
+# Converges its own wB97X-L-V KS reference, then adds the short-range
+# LinLCCD(hh) correction. [dft] lambda/omega override the published
+# 0.6 / 0.1 Bohr^-1; omitting them gives the published values.
+cargo run --release -- examples/water-wb97xlv.toml
 ```
 
 ### Python

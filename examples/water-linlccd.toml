@@ -1,0 +1,19 @@
+# LinLCCD(hh) — linearized hole-hole ladder CCD.
+#
+# The ladder resummation is what makes this robust where MP2 diverges: the
+# hole-hole ladder is retained to all orders, so the correlation energy stays
+# finite as the HOMO-LUMO gap closes. Closed-shell (RHF reference) only.
+#
+# Small basis so this runs in seconds; use cc-pvdz for a real number.
+
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "6-31g"
+
+[method]
+kind = "linlccd"
+
+[mp2]
+auxbasis = "cc-pvdz-ri"
