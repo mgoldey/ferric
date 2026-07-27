@@ -1,0 +1,20 @@
+[package]
+name = "ferric-xtb"
+version = "0.1.0"
+edition = "2021"
+description = "Optional GFN-xTB semiempirical binding (conformer screening front-end for ferric)"
+build = "build.rs"
+
+[lints]
+workspace = true
+
+[features]
+# OFF by default: ferric must build on machines without libxtb installed.
+# Enable with `--features xtb` (requires libxtb on the linker search path,
+# e.g. built into $HOME/.local -- see build.rs).
+default = []
+xtb = []
+
+[dependencies]
+ferric-core = { path = "../ferric-core" }
+ndarray = { workspace = true }

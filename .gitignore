@@ -80,3 +80,6 @@ scripts/**/*.log
 # Experimental parking lot: salvaged drivers/probes kept out of the build and
 # out of version control (e.g. c9_driver.rs). Promote deliberately with add -f.
 experimental/
+
+# GFN-FF writes this topology cache into the CWD at runtime.
+gfnff_topo
