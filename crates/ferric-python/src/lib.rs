@@ -21,7 +21,7 @@ use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_mp2::attenuated::{attenuated_ri_mp2, AttenuatedMp2Config};
-use ferric_mp2::laplace::laplace_ri_mp2;
+use ferric_mp2::laplace::{laplace_ri_mp2, laplace_sos_mp2, SosFormulation, SosMp2Config};
 use ferric_mp2::mp3::mp3_energy;
 use ferric_mp2::oo_rimp2::{oo_ri_mp2, OoRiMp2Config};
 use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
@@ -1510,11 +1510,95 @@ fn run_laplace_mp2(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisS
     }
     let r = laplace_ri_mp2(&mol.inner, &prep, &dfbs, op, &rhf,
                            n_quad.unwrap_or(7), frozen_core.unwrap_or(0)).map_err(make_err)?;
-    Ok(PyLaplaceMp2Result { 
-        total_energy: r.total_energy, 
+    Ok(PyLaplaceMp2Result {
+        total_energy: r.total_energy,
         mp2_corr: r.mp2_corr,
         e_os: r.e_os,
         e_ss: r.e_ss,
+    })
+}
+
+// ── Laplace SOS-MP2 ──
+
+#[pyclass]
+#[pyo3(name = "SosMp2Result")]
+struct PySosMp2Result {
+    #[pyo3(get)] total_energy: f64,
+    #[pyo3(get)] rhf_energy: f64,
+    /// The SCALED correlation energy, `c_os * e_os`.
+    #[pyo3(get)] sos_corr: f64,
+    /// The UNSCALED opposite-spin correlation energy. Directly comparable
+    /// against `run_rimp2(..)`'s opposite-spin component.
+    #[pyo3(get)] e_os: f64,
+    /// The `c_os` actually applied, echoed for provenance.
+    #[pyo3(get)] c_os: f64,
+    /// Quadrature points actually used.
+    #[pyo3(get)] n_quad: usize,
+    /// `"mo"` or `"ao"`, echoed so a caller can record which algebra ran.
+    #[pyo3(get)] formulation: String,
+}
+
+/// Laplace-transform SOS-MP2: `E = c_os * E_OS`.
+///
+/// `formulation` selects the algebra:
+///   - `"mo"` (default) — τ-weighted `(P|ia)` amplitudes.
+///   - `"ao"` — occupied/virtual pseudo-densities. EXACT: same quantity as
+///     `"mo"`, agreeing to round-off. Dense here, so not a scaling win.
+///   - `"ao-sparse"` — Boys-localized, domain-restricted AO. The one
+///     APPROXIMATE variant: it discards AO pairs outside every orbital domain,
+///     converging to `"ao"` as `domain_cutoff_bohr` grows. Requires that
+///     argument; passing it with `"mo"`/`"ao"` raises rather than being ignored.
+///
+/// An unrecognized value raises rather than silently running the default.
+///
+/// There is deliberately no `c_ss`: SOS-MP2 *is* the `c_ss = 0` limit, which is
+/// exactly what lets the Laplace denominator factorize. `c_os = 1.0` recovers
+/// the bare opposite-spin MP2 energy (the tests' hard internal reference).
+///
+/// `memory_budget_gb` caps the resident 3-index tensors, same meaning as
+/// elsewhere in this module; the AO path fails fast with a clear error rather
+/// than overshooting it.
+#[pyfunction]
+#[pyo3(signature = (mol, basis_set, auxbasis, c_os=None, n_quad=None, frozen_core=None,
+                    formulation=None, domain_cutoff_bohr=None, k_builder=None,
+                    memory_budget_gb=None))]
+#[allow(clippy::too_many_arguments)]
+fn run_laplace_sos_mp2(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
+                       c_os: Option<f64>, n_quad: Option<usize>, frozen_core: Option<usize>,
+                       formulation: Option<&str>, domain_cutoff_bohr: Option<f64>,
+                       k_builder: Option<&str>,
+                       memory_budget_gb: Option<f64>) -> PyResult<PySosMp2Result> {
+    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
+    let ctx = ParallelContext::default();
+    let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &rhf_config(k_builder)).map_err(make_err)?;
+    if !rhf.converged {
+        return Err(make_err(ferric_core::FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy }));
+    }
+    let form = SosFormulation::parse_config_str(formulation, domain_cutoff_bohr)
+        .map_err(make_err)?;
+    let cfg = SosMp2Config {
+        c_os: c_os.unwrap_or(1.3),
+        frozen_core: frozen_core.unwrap_or(0),
+        n_quad: n_quad.unwrap_or(7),
+        memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
+        domain_cutoff_bohr,
+    };
+    let r = laplace_sos_mp2(&mol.inner, &prep, &dfbs, op, &rhf, &cfg, form).map_err(make_err)?;
+    Ok(PySosMp2Result {
+        total_energy: r.total_energy,
+        rhf_energy: rhf.energy,
+        sos_corr: r.sos_corr,
+        e_os: r.e_os,
+        c_os: r.c_os,
+        n_quad: r.n_quad,
+        formulation: match form {
+            SosFormulation::Mo => "mo".to_string(),
+            SosFormulation::Ao => "ao".to_string(),
+            SosFormulation::AoSparse(_) => "ao-sparse".to_string(),
+        },
     })
 }
 
@@ -2967,6 +3051,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyAttenuatedMp2Result>()?;
     m.add_class::<PyScsMp2Result>()?;
     m.add_class::<PyLaplaceMp2Result>()?;
+    m.add_class::<PySosMp2Result>()?;
     m.add_class::<PyDftResult>()?;
     m.add_class::<PyCcResult>()?;
     m.add_class::<PyPdepRpaResult>()?;
@@ -3006,6 +3091,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_scs_mp2_2terfc, m)?)?;
 
     m.add_function(wrap_pyfunction!(run_laplace_mp2, m)?)?;
+    m.add_function(wrap_pyfunction!(run_laplace_sos_mp2, m)?)?;
     m.add_function(wrap_pyfunction!(run_dft, m)?)?;
     m.add_function(wrap_pyfunction!(run_ksdft, m)?)?;
     m.add_function(wrap_pyfunction!(run_ccd, m)?)?;

@@ -166,13 +166,26 @@ pub struct SosMp2Config {
     /// exactly as [`LaplaceMp2::memory_budget_bytes`]. `None` resolves via
     /// [`ferric_core::memory::resolve_budget_bytes`].
     pub memory_budget_bytes: Option<usize>,
+    /// Domain radius (Bohr) for [`SosFormulation::AoSparse`]; ignored otherwise.
+    ///
+    /// Carried here so the CLI/Python surfaces can accept it as a plain scalar
+    /// knob, but the FORMULATION is what selects sparse-vs-dense — the enum
+    /// variant carries the cutoff, so an inconsistent pair is rejected at
+    /// [`SosFormulation::parse_config_str`] rather than resolved by precedence.
+    pub domain_cutoff_bohr: Option<f64>,
 }
 
 impl Default for SosMp2Config {
     /// Jung/Head-Gordon SOS-MP2: c_os = 1.3, all electrons correlated,
     /// 7-point minimax quadrature (the tightest supported grid).
     fn default() -> Self {
-        Self { c_os: 1.3, frozen_core: 0, n_quad: 7, memory_budget_bytes: None }
+        Self {
+            c_os: 1.3,
+            frozen_core: 0,
+            n_quad: 7,
+            memory_budget_bytes: None,
+            domain_cutoff_bohr: None,
+        }
     }
 }
 
@@ -939,13 +952,83 @@ impl LaplaceMp2 {
 }
 
 /// Which Laplace SOS-MP2 formulation to evaluate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Not `Eq`: the `AoSparse` payload is an `f64` cutoff. `PartialEq` is enough
+/// for the tests, which compare against explicit variants.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SosFormulation {
     /// MO basis: τ-weighted `(P|ia)` amplitudes, `J = B(t)B(t)ᵀ`.
     Mo,
     /// AO basis via occupied/virtual pseudo-densities. No MO transform inside
     /// the quadrature loop; the path that can exploit AO sparsity.
     Ao,
+    /// AO basis with Boys-localized, domain-RESTRICTED pseudo-densities.
+    ///
+    /// The cutoff (Bohr) is the radius around each Boys center defining that
+    /// orbital's AO domain. This is the only variant that is not exact: it
+    /// DISCARDS contributions from AO pairs outside every domain, so it is a
+    /// controlled approximation converging to [`Self::Ao`] as the cutoff grows.
+    ///
+    /// See [`SosMp2Config::domain_cutoff_bohr`] for why this is exposed as a
+    /// separate variant rather than an option on `Ao`.
+    AoSparse(f64),
+}
+
+impl SosFormulation {
+    /// Parse a user-facing config string, STRICTLY.
+    ///
+    /// `None` resolves to the default (`Mo`). An unrecognized value is a hard
+    /// error rather than a silent fallback — same convention as
+    /// `QuadratureScheme`/`C6Source`/`Chi0Sparsity::parse_config_str`, and the
+    /// reason CLI TOML uses `deny_unknown_fields`: a typo must never quietly
+    /// give the user a different method than the one they asked for.
+    /// `cutoff` supplies the domain radius for `"ao-sparse"`, which is
+    /// meaningless for the other two — passing it with `"mo"`/`"ao"` is an
+    /// error rather than a silently-ignored knob.
+    pub fn parse_config_str(
+        s: Option<&str>,
+        cutoff: Option<f64>,
+    ) -> Result<Self, FerricError> {
+        let form = match s {
+            None | Some("mo") => Self::Mo,
+            Some("ao") => Self::Ao,
+            Some("ao-sparse") => {
+                let r = cutoff.ok_or_else(|| {
+                    FerricError::General(
+                        "SOS-MP2 formulation \"ao-sparse\" requires a domain cutoff \
+                         (CLI: [mp2] domain_cutoff_bohr; Python: domain_cutoff_bohr=). \
+                         There is no safe default: the right radius depends on the \
+                         system and basis, and a wrong one silently changes the energy."
+                            .to_string(),
+                    )
+                })?;
+                if !(r.is_finite() && r > 0.0) {
+                    return Err(FerricError::General(format!(
+                        "SOS-MP2 domain_cutoff_bohr must be finite and > 0 (got {r})"
+                    )));
+                }
+                Self::AoSparse(r)
+            }
+            Some(other) => {
+                return Err(FerricError::General(format!(
+                    "unknown SOS-MP2 formulation \"{other}\"; expected \"mo\" (default, \
+                     tau-weighted (P|ia) amplitudes), \"ao\" (occupied/virtual \
+                     pseudo-densities) or \"ao-sparse\" (domain-restricted AO, \
+                     APPROXIMATE — needs domain_cutoff_bohr)"
+                )));
+            }
+        };
+        if cutoff.is_some() && !matches!(form, Self::AoSparse(_)) {
+            return Err(FerricError::General(format!(
+                "domain_cutoff_bohr is only meaningful with formulation \
+                 \"ao-sparse\" (got formulation {:?}). Set formulation = \
+                 \"ao-sparse\" or drop the cutoff — silently ignoring it would \
+                 hand back a different (exact) method than the one configured.",
+                s.unwrap_or("mo")
+            )));
+        }
+        Ok(form)
+    }
 }
 
 /// Laplace SOS-MP2: `E = c_os · E_OS`, with `E_OS` from the Laplace-transformed
@@ -980,6 +1063,15 @@ pub fn laplace_sos_mp2(
         SosFormulation::Ao => {
             laplace.compute_sos_ao(mol, obs, dfbs, op, rhf, config.frozen_core, None)?
         }
+        SosFormulation::AoSparse(cutoff) => laplace.compute_sos_ao(
+            mol,
+            obs,
+            dfbs,
+            op,
+            rhf,
+            config.frozen_core,
+            Some(cutoff),
+        )?,
     };
     let sos_corr = config.c_os * e_os;
     Ok(SosMp2Result {
@@ -1504,6 +1596,225 @@ mod tests {
             (e_laplace - ri.mp2_corr).abs() < 1e-5,
             "Laplace-MP2 must match RI-MP2 on a single-virtual system: {e_laplace} vs {}",
             ri.mp2_corr
+        );
+    }
+
+    /// The SOS formulation selector must be STRICT.
+    ///
+    /// Both the CLI (`[mp2] sos_formulation`) and the Python binding
+    /// (`formulation=`) route through this, so a silent fallback here would
+    /// hand a user a different algebra than the one they asked for. `"MO"` is
+    /// the realistic typo: right word, wrong case.
+    #[test]
+    fn sos_formulation_parses_strictly() {
+        let p = |s, c| SosFormulation::parse_config_str(s, c);
+        assert_eq!(p(None, None).unwrap(), SosFormulation::Mo);
+        assert_eq!(p(Some("mo"), None).unwrap(), SosFormulation::Mo);
+        assert_eq!(p(Some("ao"), None).unwrap(), SosFormulation::Ao);
+        assert_eq!(
+            p(Some("ao-sparse"), Some(8.0)).unwrap(),
+            SosFormulation::AoSparse(8.0)
+        );
+
+        for bad in ["MO", "AO", "Mo", "mo ", "", "molecular-orbital", "sos", "aosparse"] {
+            let msg = p(Some(bad), None).unwrap_err().to_string();
+            assert!(
+                msg.contains("unknown SOS-MP2 formulation") && msg.contains(bad),
+                "{bad:?} must be rejected by name, got: {msg}"
+            );
+        }
+
+        // "ao-sparse" without a cutoff must ERROR, not pick a default radius:
+        // the right radius is system- and basis-dependent, and a wrong one
+        // silently changes the energy.
+        let msg = p(Some("ao-sparse"), None).unwrap_err().to_string();
+        assert!(msg.contains("requires a domain cutoff"), "got: {msg}");
+
+        for bad_cut in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let msg = p(Some("ao-sparse"), Some(bad_cut)).unwrap_err().to_string();
+            assert!(msg.contains("must be finite and > 0"), "{bad_cut}: {msg}");
+        }
+
+        // A cutoff on an EXACT formulation is a configuration error, not a
+        // no-op — silently ignoring it would run a different method than the
+        // one the user configured.
+        for exact in [None, Some("mo"), Some("ao")] {
+            let msg = p(exact, Some(8.0)).unwrap_err().to_string();
+            assert!(
+                msg.contains("only meaningful with formulation"),
+                "{exact:?} + cutoff must be rejected, got: {msg}"
+            );
+        }
+    }
+
+    /// The sparse AO path converges to the exact AO path as the domain radius
+    /// grows, and reproduces it EXACTLY once the cutoff spans the molecule.
+    ///
+    /// Uses butane, not water: water's diameter is 2.9 Bohr, so every cutoff
+    /// >= 3 already covers the whole molecule and the test would pass
+    /// vacuously (measured: |d| = 0.0 at EVERY radius >= 3). Butane is 10.5
+    /// Bohr across, so the small radii here genuinely truncate.
+    ///
+    /// The `r = 4` deviation is asserted to be LARGE on purpose. Domain
+    /// truncation is not a mild perturbation at these radii — see
+    /// `sos_ao_sparse_truncation_radius_tracks_molecular_diameter` for why
+    /// that matters.
+    #[test]
+    fn sos_ao_sparse_converges_to_dense_as_cutoff_grows() {
+        let mol = Molecule::load_xyz(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../testdata/molecules/alkane_4.xyz"
+        ))
+        .unwrap();
+        let bs = basis::bundled("sto-3g").unwrap();
+        let aux = basis::bundled("cc-pvdz-ri").unwrap();
+        let obs = PreparedBasis::new(&mol, &bs).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &aux).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig { energy_conv: 1e-10, ..Default::default() },
+        )
+        .unwrap();
+
+        let sos = |form| {
+            laplace_sos_mp2(
+                &mol,
+                &obs,
+                &dfbs,
+                op,
+                &rhf,
+                &SosMp2Config { c_os: 1.0, ..Default::default() },
+                form,
+            )
+            .unwrap()
+            .e_os
+        };
+
+        let dense = sos(SosFormulation::Ao);
+        let radii = [4.0, 6.0, 8.0, 12.0];
+        let devs: Vec<f64> =
+            radii.iter().map(|&r| (sos(SosFormulation::AoSparse(r)) - dense).abs()).collect();
+        eprintln!("butane/STO-3G dense e_os = {dense:.12}");
+        for (r, d) in radii.iter().zip(&devs) {
+            eprintln!("  cutoff {r:5.1} Bohr -> |d| = {d:.3e}  ({:.1}%)", 100.0 * d / dense.abs());
+        }
+
+        // Monotone: a larger domain can only ADD terms back.
+        for w in devs.windows(2) {
+            assert!(
+                w[1] <= w[0] * 1.001,
+                "sparse must approach dense as the cutoff grows, got {devs:?}"
+            );
+        }
+        // Past the molecular diameter (10.5 Bohr) the restriction is vacuous.
+        assert!(
+            devs[3] < 1e-10,
+            "a cutoff spanning the molecule must reproduce the dense AO path \
+             exactly, got |d| = {:.3e}",
+            devs[3]
+        );
+        // ...and the test must actually be truncating at the small radii, or
+        // it proves nothing. This is what water silently failed to do.
+        assert!(
+            devs[0] > 0.1 * dense.abs(),
+            "cutoff 4 Bohr must genuinely truncate butane (expected a LARGE \
+             deviation); got only {:.3e} of {dense:.6} — is the test vacuous?",
+            devs[0]
+        );
+    }
+
+    /// MEASURED NEGATIVE RESULT, pinned so it cannot be quietly forgotten.
+    ///
+    /// The domain radius needed for even 1% accuracy TRACKS THE MOLECULAR
+    /// DIAMETER instead of saturating at some transferable length scale:
+    ///
+    /// ```text
+    ///   system     natom  diameter(Bohr)  r(1% error)
+    ///   water          3       2.9              3
+    ///   alkane_2       8       5.8              6
+    ///   alkane_4      14      10.5             10
+    ///   alkane_6      20      15.2             14
+    ///   alkane_8      26      19.9             20
+    /// ```
+    ///
+    /// At every size, r(1%) == r(exact): the cutoff either spans the whole
+    /// molecule (discarding nothing, so no saving) or loses percent-scale
+    /// energy. There is no intermediate regime that is both accurate and
+    /// profitable, which is precisely what a locality approximation needs.
+    ///
+    /// So `AoSparse` is exposed as a correctness-preserving, USER-DRIVEN knob
+    /// and explicitly NOT as a recommended production path. Extrapolated to a
+    /// drug-sized molecule (danuglipron, 73 atoms, ~23-34 Bohr extent) the
+    /// required radius covers the entire molecule; separately, the AO path's
+    /// two co-resident naux*nbas^2 tensors are ~132 GB at cc-pVDZ there, so it
+    /// would hit the memory pre-flight long before sparsity could help. Use
+    /// `Mo` at that scale.
+    ///
+    /// This test pins the ratio on the two ends of the measured range. If a
+    /// future change makes truncation genuinely local, this test FAILS and the
+    /// conclusion above should be revisited — that is the intent.
+    #[test]
+    fn sos_ao_sparse_truncation_radius_tracks_molecular_diameter() {
+        let run = |name: &str, cutoff: f64| -> (f64, f64) {
+            let mol = Molecule::load_xyz(&format!(
+                "{}/../../testdata/molecules/{name}.xyz",
+                env!("CARGO_MANIFEST_DIR")
+            ))
+            .unwrap();
+            let bs = basis::bundled("sto-3g").unwrap();
+            let aux = basis::bundled("cc-pvdz-ri").unwrap();
+            let obs = PreparedBasis::new(&mol, &bs).unwrap();
+            let dfbs = PreparedBasis::new(&mol, &aux).unwrap();
+            let op = Operator::coulomb();
+            let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+            let rhf = solve_rhf(
+                &ferric_core::parallel::ParallelContext::default(),
+                &mol,
+                &obs,
+                op,
+                &bounds,
+                &RhfConfig { energy_conv: 1e-10, ..Default::default() },
+            )
+            .unwrap();
+            let cfg = SosMp2Config { c_os: 1.0, ..Default::default() };
+            let dense =
+                laplace_sos_mp2(&mol, &obs, &dfbs, op, &rhf, &cfg, SosFormulation::Ao)
+                    .unwrap()
+                    .e_os;
+            let sparse = laplace_sos_mp2(
+                &mol,
+                &obs,
+                &dfbs,
+                op,
+                &rhf,
+                &cfg,
+                SosFormulation::AoSparse(cutoff),
+            )
+            .unwrap()
+            .e_os;
+            (dense, (sparse - dense).abs() / dense.abs())
+        };
+
+        // A radius that is EXACT for butane (10.5 Bohr across) must still be
+        // badly wrong for octane (19.9 Bohr across). That is the whole point:
+        // the usable radius is not transferable between system sizes.
+        let (_, rel_butane) = run("alkane_4", 12.0);
+        let (_, rel_octane) = run("alkane_8", 12.0);
+        eprintln!(
+            "cutoff 12 Bohr: butane rel err {rel_butane:.3e}, octane rel err {rel_octane:.3e}"
+        );
+        assert!(rel_butane < 1e-9, "12 Bohr spans butane, expected exact: {rel_butane:.3e}");
+        assert!(
+            rel_octane > 0.1,
+            "the SAME 12 Bohr radius should still lose >10% on octane — if this \
+             now passes, domain truncation became transferable and the negative \
+             result recorded on this test needs revisiting (got {rel_octane:.3e})"
         );
     }
 }

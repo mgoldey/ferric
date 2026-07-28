@@ -10,7 +10,7 @@ use ferric_mp2::att_vv10::{
     att_mp2_vv10, u_att_mp2_vv10, AttVv10Attenuator, AttVv10SpinComponents,
 };
 use ferric_mp2::attenuated::{attenuated_ri_mp2, AttenuatedMp2Config};
-use ferric_mp2::laplace::laplace_ri_mp2;
+use ferric_mp2::laplace::{laplace_ri_mp2, laplace_sos_mp2, SosFormulation, SosMp2Config};
 use ferric_mp2::mp3::mp3_energy;
 use ferric_mp2::oo_rimp2::{oo_ri_mp2, OoRiMp2Config};
 use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
@@ -177,8 +177,8 @@ pub fn main() {
     cfg.scf.verbose = cfg.scf.verbose || cli_verbose;
     let method = cfg.method.kind.as_str();
     let task = cfg.method.task.as_str();
-    if !matches!(method, "rhf" | "uhf" | "rohf" | "ksdft" | "rimp2" | "mp3" | "oo-rimp2" | "att-rimp2" | "mp2-v" | "scs-mp2" | "scs-mp2-2terfc" | "laplace-mp2" | "pdep-rpa" | "rs-mp2-rpa" | "gw" | "bse-tda" | "tdhf-static-polarizability" | "ccsd" | "linlccd" | "wb97x-l-v") {
-        eprintln!("error: unsupported method.kind = \"{method}\"; expected rhf, uhf, rohf, ksdft, rimp2, mp3, oo-rimp2, att-rimp2, mp2-v, scs-mp2, scs-mp2-2terfc, laplace-mp2, pdep-rpa, rs-mp2-rpa, gw, bse-tda, tdhf-static-polarizability, ccsd, linlccd, or wb97x-l-v");
+    if !matches!(method, "rhf" | "uhf" | "rohf" | "ksdft" | "rimp2" | "mp3" | "oo-rimp2" | "att-rimp2" | "mp2-v" | "scs-mp2" | "scs-mp2-2terfc" | "laplace-mp2" | "laplace-sos-mp2" | "pdep-rpa" | "rs-mp2-rpa" | "gw" | "bse-tda" | "tdhf-static-polarizability" | "ccsd" | "linlccd" | "wb97x-l-v") {
+        eprintln!("error: unsupported method.kind = \"{method}\"; expected rhf, uhf, rohf, ksdft, rimp2, mp3, oo-rimp2, att-rimp2, mp2-v, scs-mp2, scs-mp2-2terfc, laplace-mp2, laplace-sos-mp2, pdep-rpa, rs-mp2-rpa, gw, bse-tda, tdhf-static-polarizability, ccsd, linlccd, or wb97x-l-v");
         std::process::exit(1);
     }
     warn_if_epistemically_unproven(method);
@@ -479,6 +479,9 @@ pub fn main() {
         "ccsd" => run_ccsd(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
         "linlccd" => run_linlccd(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
         "laplace-mp2" => run_laplace_mp2(&cfg, &mol, &bs, &prep, op, &result),
+        "laplace-sos-mp2" => {
+            run_laplace_sos_mp2(&cfg, &mol, &bs, &prep, op, &result, budget_bytes)
+        }
         "pdep-rpa" => run_pdep_rpa_arm(
             &cfg, &ctx, &mol, &bs, &prep, op, &bounds, &rhf_config, result, budget_bytes,
             &proatom_gs_mult, &proatom,
@@ -1308,6 +1311,89 @@ fn run_laplace_mp2(
     println!("  E_OS       = {:.10} Hartree", lap_result.e_os);
     println!("  E_SS       = {:.10} Hartree", lap_result.e_ss);
     println!("  Total      = {:.10} Hartree", lap_result.total_energy);
+}
+
+/// `method.kind = "laplace-sos-mp2"`.
+///
+/// Scaled-opposite-spin MP2 via the Laplace transform. `[mp2] c_os` selects the
+/// scaling (default 1.3, Jung/Head-Gordon); `c_os = 1.0` recovers the bare
+/// opposite-spin energy, which is the hard internal reference the tests use.
+/// `[mp2] sos_formulation` picks the MO or AO algebra — same quantity either
+/// way, so it is an implementation choice, not a physics one.
+fn run_laplace_sos_mp2(
+    cfg: &Config,
+    mol: &Molecule,
+    bs: &BasisSet,
+    prep: &PreparedBasis,
+    op: Operator,
+    result: &ferric_scf::result::ScfResult,
+    budget_bytes: Option<usize>,
+) {
+    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+    let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let dfbs = PreparedBasis::new(mol, &aux_bs).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    // Strict parse: an unrecognized value errors rather than silently running
+    // the default formulation.
+    let formulation = SosFormulation::parse_config_str(
+        cfg.mp2.sos_formulation.as_deref(),
+        cfg.mp2.domain_cutoff_bohr,
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    // NOTE: `c_ss` is deliberately NOT read here. SOS-MP2 *is* the c_ss = 0
+    // limit — that is what makes the Laplace denominator factorize — so a
+    // `c_ss` in the TOML would be silently ignored. Warn instead of lying.
+    if cfg.mp2.c_ss.is_some() {
+        eprintln!(
+            "warning: [mp2] c_ss is ignored for laplace-sos-mp2 — SOS-MP2 is the \
+             c_ss = 0 limit by construction (that is what makes the Laplace form \
+             factorize). Use method.kind = \"scs-mp2\" if you want a same-spin term."
+        );
+    }
+    let sos_cfg = SosMp2Config {
+        c_os: cfg.mp2.c_os.unwrap_or(1.3),
+        frozen_core: cfg.mp2.frozen_core,
+        n_quad: cfg.mp2.n_quad.unwrap_or(7),
+        memory_budget_bytes: budget_bytes,
+        domain_cutoff_bohr: cfg.mp2.domain_cutoff_bohr,
+    };
+    let sos = laplace_sos_mp2(mol, prep, &dfbs, op, result, &sos_cfg, formulation)
+        .unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
+    let formulation_label = match formulation {
+        SosFormulation::Mo => "MO".to_string(),
+        SosFormulation::Ao => "AO (pseudo-density)".to_string(),
+        SosFormulation::AoSparse(r) => {
+            format!("AO sparse, domain cutoff {r} Bohr — APPROXIMATE")
+        }
+    };
+    println!(
+        "Laplace SOS-MP2/{} (aux: {}, n_quad={}, {}) on {}",
+        bs.name, aux_name, sos.n_quad, formulation_label, cfg.molecule.xyz
+    );
+    println!("  nbasis     = {}", prep.nbasis());
+    println!("  RHF energy = {:.10} Hartree", result.energy);
+    if let SosFormulation::AoSparse(r) = formulation {
+        println!(
+            "  NOTE: domain-restricted AO path (cutoff {r} Bohr) — this is an \
+             APPROXIMATION to the exact AO/MO result, converging to it as the \
+             cutoff grows. Cross-check against sos_formulation = \"ao\"."
+        );
+    }
+    println!("  E_OS       = {:.10} Hartree  (unscaled)", sos.e_os);
+    println!("  c_os       = {:.4}", sos.c_os);
+    println!("  SOS corr   = {:.10} Hartree", sos.sos_corr);
+    println!("  Total      = {:.10} Hartree", sos.total_energy);
 }
 
 /// `method.kind = "pdep-rpa"`. Extracted verbatim from the former `main()`

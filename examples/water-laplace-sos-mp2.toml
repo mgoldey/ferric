@@ -1,0 +1,45 @@
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "cc-pvdz"
+
+[method]
+kind = "laplace-sos-mp2"
+
+[mp2]
+auxbasis = "cc-pvdz-ri"
+# Jung/Head-Gordon SOS-MP2 (JCP 121, 9793 (2004)). c_os = 1.3 is the default.
+# c_os = 1.0 recovers the bare opposite-spin MP2 energy, which is the hard
+# internal reference the ferric-mp2 tests assert against.
+c_os = 1.3
+# Minimax Laplace grid. Must be 3, 5 or 7 — anything else is a hard error
+# rather than a silent cap. 7 is the tightest supported.
+n_quad = 7
+# "mo" (default), "ao", or "ao-sparse".
+#
+# "mo" and "ao" are both EXACT and agree to round-off, so choosing between them
+# is an implementation choice, not a physics one. The AO pseudo-density path is
+# dense here and is the correctness reference for that limit — selecting it is
+# not a scaling win.
+#
+# "ao-sparse" restricts the pseudo-densities to Boys-orbital AO domains and
+# requires `domain_cutoff_bohr`. It is the one APPROXIMATE variant, and it was
+# MEASURED not to pay: the radius needed for 1% accuracy tracks the molecular
+# diameter rather than saturating (water/ethane/butane/hexane/octane need
+# 3/6/10/14/20 Bohr for diameters 2.9/5.8/10.5/15.2/19.9), so the domain either
+# spans the whole molecule and discards nothing, or loses percent-scale energy.
+# A 12 Bohr cutoff is exact for butane and still loses 32% on octane. Kept as a
+# user-driven knob, not a recommended production path — see
+# docs/guide/tutorials/02-mp2-family.md.
+sos_formulation = "mo"
+# domain_cutoff_bohr = 12.0   # required by (and ONLY valid with) "ao-sparse"
+
+# There is deliberately no c_ss: SOS-MP2 IS the c_ss = 0 limit, and that is
+# exactly what makes the Laplace denominator factorize. Setting c_ss here warns
+# and is ignored; use kind = "scs-mp2" if you want a same-spin term.
+
+[memory]
+# Caps the resident 3-index tensors. The AO path fails fast with a clear error
+# if the dense naux*nbas^2 tensors would exceed it, rather than overshooting.
+budget_gb = 4.0

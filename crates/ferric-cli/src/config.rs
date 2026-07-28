@@ -160,8 +160,34 @@ pub struct Mp2Cfg {
     pub c_os: Option<f64>,
     /// SCS same-spin scaling coefficient.
     pub c_ss: Option<f64>,
-    /// Number of Laplace quadrature points (for laplace-mp2).
+    /// Number of Laplace quadrature points (for laplace-mp2 and laplace-sos-mp2).
+    /// Must be one of {3, 5, 7} — `LaplaceQuadrature::new` hard-errors otherwise
+    /// rather than silently capping.
     pub n_quad: Option<usize>,
+    /// Laplace SOS-MP2 algebra (for `method.kind = "laplace-sos-mp2"`):
+    ///
+    ///   "mo" (default) — τ-weighted `(P|ia)` amplitudes, `J = B(t)B(t)ᵀ`.
+    ///   "ao"           — occupied/virtual pseudo-densities; no MO transform
+    ///                    inside the quadrature loop.
+    ///
+    /// Both compute the SAME quantity and agree to round-off (asserted in
+    /// `ferric-mp2`'s tests). The AO path is the correctness reference for the
+    /// pseudo-density limit — it is dense here, so selecting it is NOT a
+    /// scaling win; see `docs/notebooks/11-laplace-sos-mp2.ipynb`.
+    ///
+    /// Distinct from `formulation`, which selects the rs-mp2-rpa Δ-form.
+    pub sos_formulation: Option<String>,
+    /// Domain radius in **Bohr** for `sos_formulation = "ao-sparse"`.
+    ///
+    /// Required by that formulation and REJECTED by the other two — there is no
+    /// safe default (the right radius is system- and basis-dependent) and
+    /// silently ignoring it on an exact path would run a different method than
+    /// the one configured.
+    ///
+    /// This is the one SOS variant that is APPROXIMATE: it discards AO pairs
+    /// lying outside every Boys-orbital domain. It converges to `"ao"` as the
+    /// radius grows.
+    pub domain_cutoff_bohr: Option<f64>,
     /// SR-MP2 + LR-RPA formulation (for rs-mp2-rpa):
     ///
     ///   "delta-lr"      (default) — Δ-form B: E_MP2[Coulomb] + (E_dRPA[erf] − 2·E_OS[erf]).
