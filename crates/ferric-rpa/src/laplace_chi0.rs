@@ -34,7 +34,39 @@ use ndarray::{Array1, Array2, Axis, Zip};
 
 /// Build the per-(ia) energy-gap array `e_ia = ε_a − ε_i` (length `nocc·nvir`,
 /// stored as `ia = i·nvir + a`).
+/// # INVARIANT: `eps_occ`/`eps_vir` MUST be CANONICAL orbital energies
+///
+/// `e_ia = eps_a − eps_i` is a per-pair SCALAR, valid only when the orbitals
+/// are Fock EIGENVECTORS. In a rotated basis (localized, PNO, or
+/// semicanonical-pending) the Fock matrix is not diagonal and this silently
+/// discards the off-diagonal coupling.
+///
+/// Currently every caller passes canonical `rhf.eps_r()`-derived values, so
+/// this is a LATENT trap, not a live bug. It is guarded rather than merely
+/// documented because the identical pattern WAS a live bug in `screen.rs`
+/// (`diag(C_locᵀ F C_loc)` from Boys-localized orbitals; discarded coupling
+/// 1.3–2.9% of the diagonal spread; fixed 2026-07-28 in commit 17e994e) and
+/// produced an entirely bogus locality result in the AO-Laplace path
+/// (commit 3693d5d).
+///
+/// Note this module's own docs (see the header) describe an AO pseudo-density
+/// route as future work — that is precisely the change that would feed rotated
+/// orbitals in here, so the guard is aimed at a plausible future edit, not a
+/// hypothetical one.
+///
+/// If you need a rotated basis: SEMICANONICALIZE first (re-diagonalize the occ
+/// and vir Fock blocks and rotate the coefficients to match), as
+/// `dlpno_rpa.rs` and `screen.rs` do.
 fn build_e_ia(eps_occ: &[f64], eps_vir: &[f64]) -> Array1<f64> {
+    debug_assert!(
+        eps_occ.windows(2).all(|w| w[0] <= w[1] + 1e-12)
+            && eps_vir.windows(2).all(|w| w[0] <= w[1] + 1e-12),
+        "build_e_ia: eps_occ/eps_vir are not sorted ascending, so they are \
+         almost certainly NOT canonical Fock eigenvalues. The per-pair scalar \
+         e_ia = eps_a - eps_i is only valid in a Fock-DIAGONAL basis; in a \
+         rotated basis it silently drops the off-diagonal coupling. \
+         Semicanonicalize before calling (see this function's docs)."
+    );
     let nocc = eps_occ.len();
     let nvir = eps_vir.len();
     let mut e = Array1::<f64>::zeros(nocc * nvir);

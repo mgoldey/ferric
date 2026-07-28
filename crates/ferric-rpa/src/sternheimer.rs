@@ -188,14 +188,57 @@ pub fn build_scale_factors(eps_occ: &[f64], eps_vir: &[f64], omega: f64) -> Arra
     build_scale_factors_with_prefactor(eps_occ, eps_vir, omega, 4.0)
 }
 
+/// Ascending-order check used by the canonical-eigenvalue guards.
+///
+/// A diagonalization returns eigenvalues sorted; a rotated/localized basis
+/// generally does not. This is a cheap NECESSARY condition for "these are
+/// canonical eigenvalues" — not sufficient (a rotation can coincidentally
+/// preserve order), which is why the guards are debug-grade tripwires rather
+/// than correctness proofs.
+#[inline]
+fn is_nondecreasing(v: &[f64]) -> bool {
+    v.windows(2).all(|w| w[0] <= w[1] + 1e-12)
+}
+
 /// Build scale factors s_ia = sqrt(prefactor·e_ia / (ω²+e_ia²)).
 ///
 /// Use `prefactor=4` for closed-shell (single B_ov), `prefactor=2` per spin
 /// channel for open-shell (two B_ov tensors summed).
+///
+/// # INVARIANT: `eps_occ`/`eps_vir` MUST be CANONICAL orbital energies
+///
+/// `e_ia = eps_a − eps_i` is a per-pair SCALAR denominator. That form is valid
+/// only when the orbitals are Fock EIGENVECTORS — for a rotated (localized,
+/// PNO, semicanonical-pending) basis the Fock matrix is not diagonal and the
+/// scalar silently discards the off-diagonal coupling.
+///
+/// This is not hypothetical. `screen.rs` fed exactly this function per-orbital
+/// energies taken as `diag(C_locᵀ F C_loc)` from Boys-localized orbitals; the
+/// discarded coupling was 1.3–2.9% of the diagonal spread (fixed 2026-07-28,
+/// commit 17e994e, by semicanonicalizing). The same defect class also produced
+/// a fully bogus locality result in the AO-Laplace path (commit 3693d5d).
+///
+/// Every current caller passes canonical `rhf.eps_r()`-derived values, so this
+/// is a LATENT trap rather than a live bug — hence a `debug_assert`-grade guard
+/// rather than a hard error: it costs nothing in release, and it fires in tests
+/// the moment someone wires a rotated basis in here.
+///
+/// If you legitimately need a rotated basis, SEMICANONICALIZE first
+/// (re-diagonalize the occ and vir Fock blocks and rotate the coefficients to
+/// match) exactly as `dlpno_rpa.rs` and `screen.rs` now do.
 #[inline]
 pub fn build_scale_factors_with_prefactor(
     eps_occ: &[f64], eps_vir: &[f64], omega: f64, prefactor: f64,
 ) -> Array1<f64> {
+    debug_assert!(
+        is_nondecreasing(eps_occ) && is_nondecreasing(eps_vir),
+        "build_scale_factors: eps_occ/eps_vir are not sorted ascending, which \
+         means they are almost certainly NOT canonical Fock eigenvalues. The \
+         per-pair scalar denominator e_ia = eps_a - eps_i is only valid in a \
+         Fock-DIAGONAL basis; for a rotated basis it silently drops the \
+         off-diagonal coupling (see this function's docs, and screen.rs's \
+         semicanonicalization). Semicanonicalize before calling."
+    );
     let nocc = eps_occ.len();
     let nvir = eps_vir.len();
     let omega2 = omega * omega;
@@ -760,5 +803,54 @@ mod tests {
                 "reused-scratch panelled call diverged from a fresh allocating call at ({i},{j})"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod canonical_guard_tests {
+    use super::*;
+
+    /// The canonical-eigenvalue guard must actually FIRE on a rotated basis.
+    ///
+    /// A tripwire nobody has seen trip is an assumption, not a check. This is
+    /// the lesson from the union-rank gate, whose GO condition turned out to be
+    /// unreachable, and from the AO-Laplace tripwire that only fired after the
+    /// bug was fixed.
+    #[test]
+    #[should_panic(expected = "not sorted ascending")]
+    fn scale_factor_guard_fires_on_unsorted_occupied_energies() {
+        // Descending order is what a Boys/PNO-rotated set typically looks like:
+        // the values are still real Fock expectation values, just not sorted,
+        // because they are no longer eigenvalues.
+        let eps_occ = [-0.5, -0.9];
+        let eps_vir = [0.2, 0.7];
+        let _ = build_scale_factors(&eps_occ, &eps_vir, 0.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "not sorted ascending")]
+    fn scale_factor_guard_fires_on_unsorted_virtual_energies() {
+        let eps_occ = [-0.9, -0.5];
+        let eps_vir = [0.7, 0.2];
+        let _ = build_scale_factors(&eps_occ, &eps_vir, 0.0);
+    }
+
+    /// ...and must NOT fire on genuine canonical input, or it is useless.
+    #[test]
+    fn scale_factor_guard_accepts_canonical_energies() {
+        let eps_occ = [-0.9, -0.5];
+        let eps_vir = [0.2, 0.7];
+        let s = build_scale_factors(&eps_occ, &eps_vir, 0.0);
+        assert_eq!(s.len(), 4);
+        assert!(s.iter().all(|v| v.is_finite() && *v > 0.0));
+    }
+
+    /// Degenerate eigenvalues (equal, within tolerance) are legitimate and must
+    /// pass — symmetry-equivalent orbitals are common and are still canonical.
+    #[test]
+    fn scale_factor_guard_accepts_degenerate_energies() {
+        let eps_occ = [-0.5, -0.5];
+        let eps_vir = [0.3, 0.3];
+        let _ = build_scale_factors(&eps_occ, &eps_vir, 0.0);
     }
 }
