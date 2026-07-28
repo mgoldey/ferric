@@ -229,19 +229,36 @@ def analyze(basis, form, want, verbose=True):
                           f"{len(surv)} usable r0 on {len(trial)} systems: "
                           f"--systems {','.join(str(x) for x in sorted(trial))}")
 
+    # Keep SIGNED errors: RMSD, max error and the signed bias all need them,
+    # and only the mean of |err| needs the absolute value. RMSD is the statistic
+    # the A24 literature reports (e.g. Loipersberger/Bertels/Lee/Head-Gordon
+    # 2021 tabulate RMSD only), and it weights the worst systems more heavily --
+    # which is where B's effect actually lives, so MAE alone understates it.
     pts = []
+    stats = {}
     for r0 in usable:
-        errs = []
+        signed = []
         for s in sorted(want):
             f = data[r0][s]
             e_int = (f["dimer"] - f["mA_cp"] - f["mB_cp"]) * K
-            errs.append(abs(e_int - bind[s]))
-        pts.append((r0, sum(errs) / len(errs)))
+            signed.append(e_int - bind[s])
+        n = len(signed)
+        mae = sum(abs(e) for e in signed) / n
+        rmsd = (sum(e * e for e in signed) / n) ** 0.5
+        stats[r0] = {
+            "mae": mae,
+            "rmsd": rmsd,
+            "max_abs": max(abs(e) for e in signed),
+            "bias": sum(signed) / n,
+        }
+        pts.append((r0, mae))
 
     if verbose and pts:
-        print(f"\n{'r0 (A)':>8}  {'MAE (kcal/mol)':>15}")
-        for r0, m in pts:
-            print(f"{r0:8.4f}  {m:15.4f}")
+        print(f"\n{'r0 (A)':>8}  {'MAE':>8}  {'RMSD':>8}  {'max|e|':>8}  {'bias':>8}   (kcal/mol)")
+        for r0, _m in pts:
+            st = stats[r0]
+            print(f"{r0:8.4f}  {st['mae']:8.4f}  {st['rmsd']:8.4f}  "
+                  f"{st['max_abs']:8.4f}  {st['bias']:+8.4f}")
 
     if len(pts) < 4:
         if verbose:
