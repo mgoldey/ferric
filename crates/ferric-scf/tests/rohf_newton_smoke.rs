@@ -79,7 +79,6 @@ fn rohf_newton_step_at_stationary_point_is_noop() {
         prep: &prep,
         bounds: &bounds,
         c,
-        eps: &res.eps_alpha,
         f_a_mo: &f_a_mo,
         f_b_mo: &f_b_mo,
         nocc_double,

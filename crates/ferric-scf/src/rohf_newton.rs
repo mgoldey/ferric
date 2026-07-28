@@ -37,7 +37,6 @@ pub struct RohfNewtonInputs<'a> {
     pub prep: &'a PreparedBasis,
     pub bounds: &'a SchwarzBounds,
     pub c: &'a Array2<f64>,          // MO coeffs (n × n), columns ordered closed | open | virt
-    pub eps: &'a [f64],              // MO eigenvalues (semicanonical, from diagonalising F_eff)
     pub f_a_mo: &'a Array2<f64>,     // α Fock in MO basis (current iter)
     pub f_b_mo: &'a Array2<f64>,     // β Fock in MO basis
     pub nocc_double: usize,

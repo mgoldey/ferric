@@ -539,7 +539,6 @@ pub fn solve_rohf_best_effort(
             let (_, c_now) = diagonalize(&f_eff, &s_inv_sqrt)?;
             let f_a_mo = c_now.t().dot(&f_a).dot(&c_now);
             let f_b_mo = c_now.t().dot(&f_b).dot(&c_now);
-            let eps_dummy: Vec<f64> = (0..n).map(|i| f_a_mo[(i, i)] + f_b_mo[(i, i)]).collect();
 
             let fxc_store = if xc_supports_newton_fxc {
                 let main = config.dft_grid.clone().unwrap_or_default();
@@ -555,7 +554,6 @@ pub fn solve_rohf_best_effort(
                 prep,
                 bounds,
                 c: &c_now,
-                eps: &eps_dummy,
                 f_a_mo: &f_a_mo,
                 f_b_mo: &f_b_mo,
                 nocc_double,
@@ -586,7 +584,6 @@ pub fn solve_rohf_best_effort(
             let (_, c_now) = diagonalize(&f_eff, &s_inv_sqrt)?;
             let f_a_mo = c_now.t().dot(&f_a).dot(&c_now);
             let f_b_mo = c_now.t().dot(&f_b).dot(&c_now);
-            let eps_dummy: Vec<f64> = (0..n).map(|i| f_a_mo[(i, i)] + f_b_mo[(i, i)]).collect();
 
             // Build the f_xc kernel (LDA or GGA) + reference density (closure
             // target). Kept here so the response closure borrows it; the heavy
@@ -605,7 +602,6 @@ pub fn solve_rohf_best_effort(
                 prep,
                 bounds,
                 c: &c_now,
-                eps: &eps_dummy,
                 f_a_mo: &f_a_mo,
                 f_b_mo: &f_b_mo,
                 nocc_double,
