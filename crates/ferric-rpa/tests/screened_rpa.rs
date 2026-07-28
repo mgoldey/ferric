@@ -502,3 +502,56 @@ fn benzene_cc_pvdz_thresh_sweep() {
         );
     }
 }
+
+/// REGRESSION for the 2026-07-28 `eps_loc` fix.
+///
+/// `screen.rs` used to return `diag(C_loc^T F C_loc)` as per-orbital "orbital
+/// energies", which `sternheimer_sparse.rs` then consumed as `e_ia = eps_a -
+/// eps_loc[i]` as if they were eigenvalues. Localized orbitals are not Fock
+/// eigenvectors, so that silently discarded the off-diagonal coupling
+/// (measured 1.3-2.9% of the diagonal spread).
+///
+/// The fix semicanonicalizes: `F_loc` is diagonalized and the orbitals are
+/// rotated into its eigenbasis, so the returned `eps_loc` ARE eigenvalues of
+/// F restricted to the occupied space.
+///
+/// This test asserts that property directly: the returned energies must be a
+/// permutation of the CANONICAL occupied eigenvalues, because a rotation
+/// confined to the occupied block cannot change the spectrum of F restricted
+/// to that block.
+#[test]
+fn screened_eps_loc_are_genuine_eigenvalues_not_a_diagonal() {
+    let (mol, obs, dfbs, op, rhf) =
+        setup("../../testdata/molecules/water.xyz", "cc-pvdz", "cc-pvdz-ri");
+    let nocc = mol.nelec() as usize / 2;
+
+    let (sb, _boys) = ferric_rpa::build_screened_bov_boys(
+        &mol, &obs, &dfbs, op, &rhf, 0, 0.0, f64::INFINITY,
+    )
+    .unwrap();
+
+    let mut got: Vec<f64> = sb.eps_loc.clone();
+    got.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let mut want: Vec<f64> = rhf.eps_r()[..nocc].to_vec();
+    want.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+    let maxdev = got
+        .iter()
+        .zip(&want)
+        .map(|(g, w)| (g - w).abs())
+        .fold(0.0_f64, f64::max);
+    println!("eps_loc vs canonical occupied spectrum: max dev = {maxdev:.3e}");
+    for (g, w) in got.iter().zip(&want) {
+        println!("   {g:14.10}   {w:14.10}");
+    }
+
+    // TEETH: this is the whole claim. The PRE-FIX code returned diag(F_loc),
+    // which for water/cc-pVDZ deviates from the spectrum at the 1e-1 scale --
+    // so a regression fails this by ~9 orders of magnitude, not marginally.
+    assert!(
+        maxdev < 1e-9,
+        "eps_loc must be the occupied eigenvalue spectrum (a rotation within \
+         the occupied block cannot change it); max deviation {maxdev:.3e}. \
+         A large value means screen.rs went back to taking diag(F_loc)."
+    );
+}

@@ -32,8 +32,12 @@
 //! by re-running the same screened shell-pair loop with the additional
 //! `c_vir` contraction over the virtual index. V^{-1/2} dressing is applied
 //! by slicing both axes to `p_list` (so dropped aux rows are also dropped
-//! from the V^{-1/2} mixing). At `thresh = 0` no aux shells are dropped
-//! and the result is bit-identical to the dense path.
+//! from the V^{-1/2} mixing). At `thresh = 0` no aux shells are dropped and the
+//! result is algebraically equivalent to the dense path — NOT bit-identical.
+//! (This used to claim bit-identity, which was false: the Boys rotation and the
+//! per-orbital accumulation order differ from dense, so the RPA energy agrees
+//! only to a finite-precision floor. Measured 2.6e-10 on H2O/cc-pVDZ after the
+//! 2026-07-28 semicanonicalization fix, improved from 8.2e-9 before it.)
 //!
 //! The (P|μν) integrals are computed only for retained P shells × density-
 //! significant OBS shell pairs, then contracted with `c_loc[:,i] ⊗ c_vir` to
@@ -51,6 +55,7 @@
 //!     B-tensor values. m_i = p_lists[i_loc].len().
 
 use crate::boys_localize::boys_localize_occupied;
+use ferric_core::linalg::{eigh_dc, Uplo};
 use ferric_core::FerricError;
 use ferric_core::mol::Molecule;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -164,7 +169,10 @@ pub fn build_screened_bov(
     nocc_active: usize,
     nocc_total: usize,
     c_occ_loc: &Array2<f64>,
-    centroids: Vec<[f64; 3]>,
+    // IGNORED since 2026-07-28: centroids are recomputed in-function from the
+    // SEMICANONICALIZED orbitals, because the caller's values are stale after
+    // that rotation. Kept in the signature for source compatibility.
+    _centroids_ignored: Vec<[f64; 3]>,
     thresh: f64,
     dist_cutoff: f64,
 ) -> Result<ScreenedBov, FerricError> {
@@ -186,11 +194,61 @@ pub fn build_screened_bov(
     let c = rhf.mos_r();
     let c_vir = c.slice(s![.., nocc_total..]).to_owned();
 
-    // Localized orbital energies: diagonal of C_loc^T F C_loc.
+    // SEMICANONICALIZE the localized occupied block (FIXED 2026-07-28).
+    //
+    // Boys-localized orbitals are NOT Fock eigenvectors, so F_loc = C_loc^T F
+    // C_loc is not diagonal. This code used to take `diag(F_loc)` as per-orbital
+    // "orbital energies" and hand them to `sternheimer_sparse`, which consumes
+    // them as `e_ia = eps_a - eps_loc[i]` — i.e. as if they WERE eigenvalues.
+    // That silently discards the off-diagonal coupling; measured
+    // max|offdiag F_loc| was 2.3e-1..3.1e-1 against a diagonal spread of ~1.0e1
+    // (1.3-2.9%) on water/alkane_4/alkane_8/benzene at STO-3G.
+    //
+    // It is exactly the trap `dlpno_rpa.rs` warns about for PNOs ("RPA
+    // denominators are only valid in a Fock-diagonal basis... Taking the
+    // diagonal alone is silently wrong"), and the same defect class as the
+    // AO-Laplace pseudo-density bug (canonical eps against a rotated basis).
+    //
+    // The fix mirrors `dlpno_rpa.rs`: diagonalize F_loc and rotate the orbitals
+    // into ITS eigenbasis. The result is still localized in the sense that
+    // matters here — the rotation is confined to the occupied block, so it
+    // preserves the occupied SPACE exactly, and the resulting eps ARE genuine
+    // eigenvalues of F restricted to that space.
+    //
+    // NOTE the rotation must be applied to the COEFFICIENTS as well (and hence
+    // to the centroids computed from them below). Rotating the energies alone
+    // would just relocate the same inconsistency.
     let f = rhf.fock_r();
     let fc = f.dot(c_occ_loc);
     let f_loc = c_occ_loc.t().dot(&fc);
-    let eps_loc: Vec<f64> = (0..nocc_loc).map(|i| f_loc[(i, i)]).collect();
+    let (eps_semi, u_semi) = eigh_dc(&f_loc, Uplo::Upper).map_err(|e| {
+        FerricError::General(format!(
+            "Boys-screened RPA semicanonicalization eigh failed \
+             (nocc_loc = {nocc_loc}): {e}"
+        ))
+    })?;
+    let c_occ_semi = c_occ_loc.dot(&u_semi);
+    let c_occ_loc = &c_occ_semi;
+    let eps_loc: Vec<f64> = eps_semi.to_vec();
+
+    // The caller's `centroids` were computed from the PRE-rotation orbitals, so
+    // they are stale now. Recompute them here — in-function, so they cannot go
+    // stale again regardless of what a caller passes — as ⟨i|r|i⟩ over the
+    // semicanonicalized set. The G6 distance pre-filter below screens on these,
+    // so a mismatch would silently screen the wrong orbitals.
+    let centroids: Vec<[f64; 3]> = {
+        let dip = ferric_integrals::oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
+        (0..nocc_loc)
+            .map(|i| {
+                let ci = c_occ_loc.slice(s![.., i]);
+                let mut r = [0.0f64; 3];
+                for (axis, d) in dip.iter().enumerate() {
+                    r[axis] = ci.dot(&d.dot(&ci));
+                }
+                r
+            })
+            .collect()
+    };
 
     // OBS shell info.
     let nsh_obs = obs.nshells();
