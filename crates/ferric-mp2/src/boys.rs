@@ -223,35 +223,101 @@ pub fn build_domains(
 
 /// Build a sparse occupied pseudo-density restricted to the LMP2 domains.
 ///
-/// `P(t)_{μν} = Σ_i C_{μi}^can exp(+t ε_i) C_{νi}^can`
+/// `P(t)_{μν} = Σ_{ij} C^loc_{μi} [exp(+t F_loc)]_{ij} C^loc_{νj}`, masked to
+/// the domain-allowed (μ,ν) elements.
 ///
-/// Uses canonical MO coefficients and orbital energies.  The Boys domain
-/// structure determines *which* (μ,ν) pairs to compute: element (μ,ν) is
-/// included if both μ and ν lie in the domain of at least one orbital i.
+/// # The index-mismatch bug this replaces (FIXED 2026-07-27)
 ///
-/// `c_can`: canonical occupied MOs (nbas × nocc).
-/// `eps_occ`: canonical occupied orbital energies, length nocc.
-/// `domains`: orbital domains from Boys localization (for sparsity only).
+/// The previous implementation took **canonical** coefficients `C^can` with the
+/// canonical scalar `exp(t·ε_i)`, but restricted orbital `i`'s contribution to
+/// the domain of **Boys-localized** orbital `i`. After a Jacobi localization
+/// those two index sets have no correspondence — orbital `i` in one set is not
+/// orbital `i` in the other — so the routine did not truncate `P(t)`, it built
+/// a *different, wrong* matrix. Retained elements were incorrect, not merely
+/// incomplete.
+///
+/// It also forced exactness to require every domain ball to cover every AO,
+/// which **predicts `r(exact) ≈ molecular diameter` a priori, with no physics
+/// involved**. That artifact was previously mistaken for a locality finding
+/// (see the `ao-laplace-domain-radius-tracks-diameter` write-up).
+///
+/// # Why the matrix exponential is required
+///
+/// Localized orbitals are NOT Fock eigenvectors, so the scalar `exp(t·ε_i)`
+/// does not apply to them: the occupied-block Fock `F_loc = C_locᵀ F C_loc` is
+/// no longer diagonal and the correct weight is the matrix exponential
+/// `exp(+t F_loc)`. Pairing localized coefficients with the canonical scalar is
+/// exactly the inconsistency above.
+///
+/// # Correctness anchor
+///
+/// With domains covering every AO this reproduces the canonical
+/// [`crate::laplace::build_pseudo_density_occ`] to round-off, because
+/// `C_loc exp(t F_loc) C_locᵀ = C_can exp(t ε) C_canᵀ` — the same operator in
+/// two bases. Asserted by `localized_pseudo_density_matches_canonical_when_full`.
+///
+/// `c_loc`: **localized** occupied MOs (nbas × nocc), from [`boys_localize`].
+/// `f_loc`: occupied-block Fock in that SAME localized basis (nocc × nocc).
+/// `domains`: orbital domains, indexed consistently with `c_loc`'s columns.
 pub fn build_pseudo_density_occ_sparse(
-    c_can: &Array2<f64>,
-    eps_occ: &[f64],
+    c_loc: &Array2<f64>,
+    f_loc: &Array2<f64>,
     t: f64,
     domains: &LmpDomains,
 ) -> Array2<f64> {
-    let nbas = c_can.nrows();
-    let nocc = c_can.ncols();
-    assert_eq!(eps_occ.len(), nocc);
+    let nbas = c_loc.nrows();
+    let nocc = c_loc.ncols();
+    debug_assert_eq!(f_loc.dim(), (nocc, nocc));
+    debug_assert_eq!(domains.orbital_domains.len(), nocc);
+
+    // exp(+t F_loc): the localized-basis generalization of the canonical
+    // scalar exp(t·ε_i). Done once per quadrature point on the small
+    // (nocc × nocc) block.
+    let expf = sym_matrix_exp(f_loc, t);
+
+    // Element mask, as the doc has always promised: keep (μ,ν) iff μ and ν lie
+    // in a COMMON orbital domain. This masks the FINAL matrix, not per-orbital
+    // contributions — the distinction the old code got wrong. Every retained
+    // element is therefore exact.
+    let mut keep = vec![false; nbas * nbas];
+    for dom in &domains.orbital_domains {
+        for &mu in dom {
+            for &nu in dom {
+                keep[mu * nbas + nu] = true;
+            }
+        }
+    }
+
+    let cw = c_loc.dot(&expf); // (nbas, nocc)
     let mut p = Array2::zeros((nbas, nbas));
-    for i in 0..nocc {
-        let factor = (t * eps_occ[i]).exp();
-        for &mu in &domains.orbital_domains[i] {
-            let c_mu_i = c_can[(mu, i)] * factor;
-            for &nu in &domains.orbital_domains[i] {
-                p[(mu, nu)] += c_mu_i * c_can[(nu, i)];
+    for mu in 0..nbas {
+        for nu in 0..nbas {
+            if keep[mu * nbas + nu] {
+                p[(mu, nu)] = cw.row(mu).dot(&c_loc.row(nu));
             }
         }
     }
     p
+}
+
+/// `exp(scale · A)` for symmetric `A`, via eigendecomposition.
+fn sym_matrix_exp(a: &Array2<f64>, scale: f64) -> Array2<f64> {
+    use ndarray_linalg::{Eigh, UPLO};
+    let n = a.nrows();
+    // Symmetric eigensolve on the small occupied block. A failure here means
+    // the caller passed a non-symmetric Fock block — a caller bug that must
+    // not silently feed garbage into an energy expression.
+    let (vals, vecs) = a
+        .eigh(UPLO::Lower)
+        .expect("occupied-block Fock must be symmetric and diagonalizable");
+    let mut scaled = Array2::zeros((n, n));
+    for k in 0..n {
+        let w = (scale * vals[k]).exp();
+        for i in 0..n {
+            scaled[(i, k)] = vecs[(i, k)] * w;
+        }
+    }
+    scaled.dot(&vecs.t())
 }
 
 /// Build a sparse virtual pseudo-density restricted to the active AO union.
@@ -410,6 +476,90 @@ mod tests {
                     diff
                 );
             }
+        }
+    }
+
+    /// CORRECTNESS ANCHOR for the 2026-07-27 index-mismatch fix.
+    ///
+    /// With every domain covering every AO, the domain mask is vacuous, so the
+    /// localized construction `C_loc exp(t F_loc) C_locᵀ` must reproduce the
+    /// canonical `C_can exp(t ε) C_canᵀ` to round-off — they are the same
+    /// operator expressed in two bases.
+    ///
+    /// This test FAILS against the old code, which is the point: the old path
+    /// paired canonical coefficients with localized-orbital domains, so even
+    /// with a full mask it only agreed by accident of the mask, and its whole
+    /// premise (scalar exp(t·ε_i) on non-eigenvectors) was wrong.
+    #[test]
+    fn localized_pseudo_density_matches_canonical_when_full() {
+        let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+        let bs = basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ParallelContext::default();
+        let rhf = solve_rhf(
+            &ctx, &mol, &prep, op, &bounds,
+            &RhfConfig { density_conv: 1e-10, ..Default::default() },
+        )
+        .unwrap();
+
+        let nocc = mol.nelec() as usize / 2;
+        let c = rhf.mos_r();
+        let c_occ = c.slice(s![.., ..nocc]).to_owned();
+        let eps = rhf.eps_r();
+        let nbas = prep.nbasis();
+
+        let dip = dipole(&prep, [0.0, 0.0, 0.0]).unwrap();
+        let boys = boys_localize(&c_occ, &dip, 200);
+        let f_loc = boys.c_loc.t().dot(rhf.fock_r()).dot(&boys.c_loc);
+
+        // TEETH: the localizer must actually have rotated, or "agreement" is
+        // trivially true and this test proves nothing.
+        let dcoef = (&boys.c_loc - &c_occ).iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
+        assert!(dcoef > 0.05, "localizer barely moved the orbitals (max d = {dcoef:.3e})");
+        // TEETH: F_loc must be genuinely NON-diagonal, else exp(tF) degenerates
+        // to the canonical scalar and the matrix exponential is untested.
+        let offdiag = (0..nocc)
+            .flat_map(|i| (0..nocc).filter(move |&j| i != j).map(move |j| (i, j)))
+            .map(|(i, j)| f_loc[(i, j)].abs())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            offdiag > 1e-3,
+            "F_loc is essentially diagonal (max offdiag {offdiag:.3e}); the matrix \
+             exponential path is not actually exercised"
+        );
+
+        // A domain set covering every AO for every orbital => vacuous mask.
+        let full = LmpDomains {
+            orbital_domains: vec![(0..nbas).collect(); nocc],
+            ao_mask: vec![true; nbas],
+            active_aos: (0..nbas).collect(),
+        };
+
+        for &t in &[0.05_f64, 0.3, 1.0, 3.0] {
+            let p_loc = build_pseudo_density_occ_sparse(&boys.c_loc, &f_loc, t, &full);
+            // Canonical reference, built inline so this test does not depend on
+            // the laplace module's blocking/frozen-core plumbing.
+            let mut p_can: Array2<f64> = Array2::zeros((nbas, nbas));
+            for i in 0..nocc {
+                let w = (t * eps[i]).exp();
+                for mu in 0..nbas {
+                    let cmu = c_occ[(mu, i)] * w;
+                    for nu in 0..nbas {
+                        p_can[(mu, nu)] += cmu * c_occ[(nu, i)];
+                    }
+                }
+            }
+            let maxerr = (&p_loc - &p_can).iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
+            let scale = p_can.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
+            eprintln!("t={t:.3}: |dP|max = {maxerr:.3e} (rel {:.3e})", maxerr / scale);
+            assert!(
+                maxerr / scale < 1e-10,
+                "localized exp(tF) form must reproduce the canonical pseudo-density \
+                 when the mask is vacuous: t={t}, rel err {:.3e}",
+                maxerr / scale
+            );
         }
     }
 }

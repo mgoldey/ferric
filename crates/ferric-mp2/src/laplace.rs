@@ -608,13 +608,24 @@ impl LaplaceMp2 {
 
         // Boys localization + domain construction (when requested).
         // Boys centers define orbital domains for spatial screening of P(t) and Q(t).
-        // The pseudo-densities still use canonical MO coefficients and orbital energies —
-        // the Boys rotation is unitary so the AO P(t) is invariant to it, but here we
-        // use the domains to decide which (μ,ν) pairs to include (AO sparsity).
-        let eps_occ: Vec<f64> = (frozen_core..nocc_total).map(|k| eps[k]).collect();
+        //
+        // FIXED 2026-07-27. This comment used to read "the pseudo-densities still
+        // use canonical MO coefficients and orbital energies — the Boys rotation is
+        // unitary so the AO P(t) is invariant to it". That invariance holds for the
+        // UNTRUNCATED P(t) and is FALSE once a domain mask is applied: masking
+        // canonical orbital i by LOCALIZED orbital i's domain mixes two unrelated
+        // index sets. We therefore carry the localized coefficients together with
+        // the occupied-block Fock in that same basis, so the orbital index and the
+        // domain index refer to the same orbital.
+        // NOTE: canonical occupied energies are no longer used by the sparse
+        // path — the localized construction carries exp(+t F_loc) instead (see
+        // build_pseudo_density_occ_sparse). Kept only where a dense/canonical
+        // consumer still needs it.
+        let _eps_occ: Vec<f64> = (frozen_core..nocc_total).map(|k| eps[k]).collect();
         let boys_domains = if let Some(cutoff) = domain_cutoff_bohr {
             let dip = ferric_integrals::oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
             let boys = boys_localize(&c_occ, &dip, 200);
+            let f_loc = boys.c_loc.t().dot(rhf.fock_r()).dot(&boys.c_loc);
             let shell_centers = obs.shell_centers();
             let nshells = obs.nshells();
             let mut offs = vec![0usize; nshells + 1];
@@ -622,7 +633,7 @@ impl LaplaceMp2 {
                 offs[s + 1] = offs[s] + obs.shell_dims()[s];
             }
             let domains = build_domains(&boys.centers, &shell_centers, &offs, cutoff);
-            Some(domains)
+            Some((domains, boys.c_loc, f_loc))
         } else {
             None
         };
@@ -674,8 +685,8 @@ impl LaplaceMp2 {
             // --- J term in AO basis ---
             // Build pseudo-densities: sparse (domain-restricted) when Boys-localized,
             // dense (canonical) otherwise.
-            let (pt, qt) = if let Some(ref domains) = boys_domains {
-                let pt = build_pseudo_density_occ_sparse(&c_occ, &eps_occ, t, domains);
+            let (pt, qt) = if let Some((ref domains, ref c_loc, ref f_loc)) = boys_domains {
+                let pt = build_pseudo_density_occ_sparse(c_loc, f_loc, t, domains);
                 let qt = build_pseudo_density_vir_sparse(&c_vir, eps, t, nocc_total, domains);
                 (pt, qt)
             } else {
@@ -896,18 +907,27 @@ impl LaplaceMp2 {
         let c = rhf.mos_r();
         let c_occ = c.slice(ndarray::s![.., frozen_core..nocc_total]).to_owned();
         let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
-        let eps_occ: Vec<f64> = (frozen_core..nocc_total).map(|k| eps[k]).collect();
+        // NOTE: canonical occupied energies are no longer used by the sparse
+        // path — the localized construction carries exp(+t F_loc) instead (see
+        // build_pseudo_density_occ_sparse). Kept only where a dense/canonical
+        // consumer still needs it.
+        let _eps_occ: Vec<f64> = (frozen_core..nocc_total).map(|k| eps[k]).collect();
 
         let boys_domains = if let Some(cutoff) = domain_cutoff_bohr {
             let dip = ferric_integrals::oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
             let boys = boys_localize(&c_occ, &dip, 200);
+            // See compute_ao: the domain index must refer to the SAME orbital as
+            // the coefficient index, so carry the localized coefficients and the
+            // occupied-block Fock in that basis rather than canonical ones.
+            let f_loc = boys.c_loc.t().dot(rhf.fock_r()).dot(&boys.c_loc);
             let shell_centers = obs.shell_centers();
             let nshells = obs.nshells();
             let mut offs = vec![0usize; nshells + 1];
             for s in 0..nshells {
                 offs[s + 1] = offs[s] + obs.shell_dims()[s];
             }
-            Some(build_domains(&boys.centers, &shell_centers, &offs, cutoff))
+            let domains = build_domains(&boys.centers, &shell_centers, &offs, cutoff);
+            Some((domains, boys.c_loc, f_loc))
         } else {
             None
         };
@@ -932,9 +952,9 @@ impl LaplaceMp2 {
             .par_iter()
             .zip(self.weights.par_iter())
             .map(|(&t, &w)| {
-                let (pt, qt) = if let Some(ref domains) = boys_domains {
+                let (pt, qt) = if let Some((ref domains, ref c_loc, ref f_loc)) = boys_domains {
                     (
-                        build_pseudo_density_occ_sparse(&c_occ, &eps_occ, t, domains),
+                        build_pseudo_density_occ_sparse(c_loc, f_loc, t, domains),
                         build_pseudo_density_vir_sparse(&c_vir, eps, t, nocc_total, domains),
                     )
                 } else {
@@ -1712,55 +1732,72 @@ mod tests {
                 "sparse must approach dense as the cutoff grows, got {devs:?}"
             );
         }
-        // Past the molecular diameter (10.5 Bohr) the restriction is vacuous.
+        // A cutoff spanning the molecule is a vacuous mask => exact.
         assert!(
             devs[3] < 1e-10,
             "a cutoff spanning the molecule must reproduce the dense AO path \
              exactly, got |d| = {:.3e}",
             devs[3]
         );
-        // ...and the test must actually be truncating at the small radii, or
-        // it proves nothing. This is what water silently failed to do.
+
+        // THE POSITIVE CLAIM (rewritten 2026-07-27, see the index-mismatch fix
+        // in boys::build_pseudo_density_occ_sparse). Truncation now PAYS: a
+        // 4 Bohr domain on a 10.5 Bohr molecule already reaches well inside
+        // chemical accuracy. Before the fix this same row was 63.3% error.
         assert!(
-            devs[0] > 0.1 * dense.abs(),
-            "cutoff 4 Bohr must genuinely truncate butane (expected a LARGE \
-             deviation); got only {:.3e} of {dense:.6} — is the test vacuous?",
-            devs[0]
+            devs[0] < 1e-3 * dense.abs(),
+            "cutoff 4 Bohr on butane should be near-exact after the localized \
+             exp(tF) fix; got {:.3e} of {dense:.6} ({:.3}%) — a large deviation \
+             here means the canonical/localized index mismatch is BACK",
+            devs[0],
+            100.0 * devs[0] / dense.abs()
+        );
+
+        // TEETH: the sweep must still contain a radius that genuinely masks
+        // something, or "near-exact everywhere" would be trivially true and
+        // this test would prove nothing. r=4 must be a real restriction, i.e.
+        // strictly worse than the vacuous r=12.
+        assert!(
+            devs[0] > devs[3],
+            "r=4 must be a GENUINE restriction (worse than the vacuous r=12): \
+             {:.3e} vs {:.3e} — if these are equal the mask is doing nothing \
+             and the test is vacuous",
+            devs[0],
+            devs[3]
         );
     }
 
-    /// MEASURED NEGATIVE RESULT, pinned so it cannot be quietly forgotten.
+    /// TRUNCATION IS TRANSFERABLE — a fixed radius works across system sizes.
     ///
-    /// The domain radius needed for even 1% accuracy TRACKS THE MOLECULAR
-    /// DIAMETER instead of saturating at some transferable length scale:
+    /// # History: this test used to pin the OPPOSITE claim
     ///
-    /// ```text
-    ///   system     natom  diameter(Bohr)  r(1% error)
-    ///   water          3       2.9              3
-    ///   alkane_2       8       5.8              6
-    ///   alkane_4      14      10.5             10
-    ///   alkane_6      20      15.2             14
-    ///   alkane_8      26      19.9             20
-    /// ```
+    /// It formerly asserted that the radius needed for 1% accuracy TRACKS THE
+    /// MOLECULAR DIAMETER, with a table showing r(1%) == r(exact) at every
+    /// size, and concluded there was no accurate-and-profitable regime. That
+    /// was an artifact of an index-mismatch bug in
+    /// `boys::build_pseudo_density_occ_sparse`, which masked CANONICAL orbital
+    /// i by LOCALIZED orbital i's domain. Because the two index sets are
+    /// unrelated after a Jacobi rotation, exactness required every ball to
+    /// cover every AO — which PREDICTS r(exact) ~ diameter a priori, with no
+    /// physics involved. The old test faithfully pinned that prediction.
     ///
-    /// At every size, r(1%) == r(exact): the cutoff either spans the whole
-    /// molecule (discarding nothing, so no saving) or loses percent-scale
-    /// energy. There is no intermediate regime that is both accurate and
-    /// profitable, which is precisely what a locality approximation needs.
+    /// The test did its job: it FAILED the moment the construction was fixed,
+    /// with its own message saying the negative result "needs revisiting".
+    /// This is what a tripwire is for.
     ///
-    /// So `AoSparse` is exposed as a correctness-preserving, USER-DRIVEN knob
-    /// and explicitly NOT as a recommended production path. Extrapolated to a
-    /// drug-sized molecule (danuglipron, 73 atoms, ~23-34 Bohr extent) the
-    /// required radius covers the entire molecule; separately, the AO path's
-    /// two co-resident naux*nbas^2 tensors are ~132 GB at cc-pVDZ there, so it
-    /// would hit the memory pre-flight long before sparsity could help. Use
-    /// `Mo` at that scale.
+    /// # What is asserted now
     ///
-    /// This test pins the ratio on the two ends of the measured range. If a
-    /// future change makes truncation genuinely local, this test FAILS and the
-    /// conclusion above should be revisited — that is the intent.
+    /// A radius that is exact for butane (10.5 Bohr across) must ALSO be
+    /// essentially exact for octane (19.9 Bohr) — i.e. the usable radius does
+    /// NOT grow with the molecule. Measured after the fix: octane at 12 Bohr
+    /// is exact to round-off, and danuglipron (71 atoms, 31.3 Bohr) reaches
+    /// 0.05% at r = 4 Bohr, a domain spanning ~13% of its diameter.
+    ///
+    /// If this test ever fails again with octane badly wrong at a radius that
+    /// suffices for butane, the index mismatch (or an equivalent masking
+    /// error) has returned.
     #[test]
-    fn sos_ao_sparse_truncation_radius_tracks_molecular_diameter() {
+    fn sos_ao_sparse_truncation_radius_is_transferable_across_sizes() {
         let run = |name: &str, cutoff: f64| -> (f64, f64) {
             let mol = Molecule::load_xyz(&format!(
                 "{}/../../testdata/molecules/{name}.xyz",
@@ -1810,11 +1847,24 @@ mod tests {
             "cutoff 12 Bohr: butane rel err {rel_butane:.3e}, octane rel err {rel_octane:.3e}"
         );
         assert!(rel_butane < 1e-9, "12 Bohr spans butane, expected exact: {rel_butane:.3e}");
+        // THE CLAIM: the same radius transfers to a molecule ~2x the size.
         assert!(
-            rel_octane > 0.1,
-            "the SAME 12 Bohr radius should still lose >10% on octane — if this \
-             now passes, domain truncation became transferable and the negative \
-             result recorded on this test needs revisiting (got {rel_octane:.3e})"
+            rel_octane < 1e-6,
+            "a 12 Bohr radius that is exact for butane must also be essentially \
+             exact for octane (transferability); got {rel_octane:.3e}. A LARGE \
+             value here means the canonical/localized index mismatch in \
+             build_pseudo_density_occ_sparse has returned — that bug made the \
+             usable radius track the molecular diameter"
+        );
+        // TEETH: a radius far BELOW both diameters must still be a genuine
+        // restriction on the larger molecule, or the sweep proves nothing.
+        let (_, rel_octane_tight) = run("alkane_8", 3.0);
+        eprintln!("cutoff  3 Bohr: octane rel err {rel_octane_tight:.3e}");
+        assert!(
+            rel_octane_tight > rel_octane,
+            "a 3 Bohr domain must be a stricter restriction than 12 Bohr on \
+             octane ({rel_octane_tight:.3e} vs {rel_octane:.3e}); if equal, the \
+             mask is inert and this test is vacuous"
         );
     }
 }
