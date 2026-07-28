@@ -63,4 +63,11 @@ log "--- stage 2/2: S22 for B at r0=0.90, smallest first ---"
 bash scripts/queue/run_s22b.sh
 log "S22 driver exited"
 
+log "--- stage 3/3: T extension (r0 1.60/1.70) ---"
+# Added 2026-07-28: the overnight run showed T's full-A24 optimum is ABOVE
+# 1.50 (both the n=24 and n=17 views give BOUNDARY minima there), so 1.433 was
+# a subset artifact. These points bracket the real turn from above.
+bash scripts/queue/run_r0tup.sh
+log "T extension driver exited"
+
 log "=== overnight chain done ==="

@@ -19,7 +19,7 @@ if pgrep -f 'run_overnight\.sh' >/dev/null 2>&1; then
 fi
 
 # Do not fight a driver that is still going on its own.
-if pgrep -f 'run_r0tpm\.sh|run_s22b\.sh' >/dev/null 2>&1; then
+if pgrep -f 'run_r0tpm\.sh|run_s22b\.sh|run_r0tup\.sh' >/dev/null 2>&1; then
   exit 0
 fi
 
@@ -30,7 +30,7 @@ from pathlib import Path
 import re
 t=Path("benchmarks/grid/toml"); o=Path("benchmarks/grid/out")
 n=0
-for tag in ("r0Tpm","s22b"):
+for tag in ("r0Tpm","s22b","r0Tup"):
     for f in t.glob(f"*{tag}*.toml"):
         m=re.search(r'r0_sweep = \[[^\]]*\]', f.read_text())
         if not m: continue
