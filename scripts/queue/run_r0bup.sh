@@ -55,13 +55,26 @@ run() {
 }
 export -f run mem_wait mem_avail_mb mem_psi_some10
 
-# Systems that already have 1.00 need only 1.10 (1 point each, cheap) -- run
-# them FIRST so the n=24 curve gains a fourth point as early as possible.
+# ORDER: the systems that GATE the answer run first.
+#
+# The n=24 B curve gains its fourth point only when r0=1.00 reaches all 24
+# systems. Ten systems already have 1.00 and need only 1.10 -- those jobs are
+# cheap (mean 642 s) but they do NOT advance r0=1.00 at all. Running them first
+# (the original order) front-loaded ~7 h of work that left the gating number
+# pinned at 10/24 for hours. Reordered 2026-07-27 at Matt's request.
+#
+# Note on why the 1.00/1.10 pair is NOT split into separate jobs: an r0_sweep
+# runs every point on ONE SCF. Trimming these TOMLs to 1.00 alone would save
+# well under half the wall time and then force a full SCF redo for 1.10 later.
+# Reordering systems has no such penalty, so that is the lever used here.
 {
-  for s in 02 05 12 14 15 19 21 22 23 24; do
+  # GATING: these 12 lack r0=1.00 entirely. (a24-17/18 are the other two, on
+  # run_r0big.sh -- they need the 10 GB slot.) Cheapest first by atom count.
+  for s in 20 16 01 03 04 06 07 08 09 10 11 13; do
     for f in dimer mA_cp mB_cp; do echo "a24-${s}_${f}_aqz_r0Bup_B"; done
   done
-  for s in 20 23 16 01 03 04 06 07 08 09 10 11 13; do
+  # NON-GATING: already have 1.00, need only 1.10 for the upper bracket.
+  for s in 02 05 12 14 15 19 21 22 23 24; do
     for f in dimer mA_cp mB_cp; do echo "a24-${s}_${f}_aqz_r0Bup_B"; done
   done
 } | xargs -P "$NPROC" -I{} bash -c 'run "$@"' _ {}
