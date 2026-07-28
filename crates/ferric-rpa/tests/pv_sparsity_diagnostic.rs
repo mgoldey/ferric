@@ -470,6 +470,98 @@ fn pv_sparsity_and_decay_sweep() {
     println!("Bohr value while diameter grows, truncation CAN be made transferable.");
 }
 
+/// THE SAME SWEEP AT A REAL BASIS.
+///
+/// # Why this test exists separately
+///
+/// Everything above is STO-3G, which is MINIMAL: `nbas ≈ nocc`, so the virtual
+/// space is tiny and structurally atypical. Any locality conclusion drawn there
+/// may be a small-basis artifact — with barely any virtuals to select among,
+/// both "P_v is local" and "P_v is delocalized" are weakly determined. The
+/// saturation verdict is only trustworthy if it survives a basis with a genuine
+/// virtual space.
+///
+/// This is deliberately a SEPARATE `#[test]` rather than extra rows in the
+/// sweep above: cc-pVDZ is materially heavier, and on a loaded box it should be
+/// possible to run the cheap minimal-basis sweep without dragging this in.
+/// Run it explicitly:
+///
+/// ```text
+/// OPENBLAS_NUM_THREADS=1 cargo test -p ferric-rpa --test pv_sparsity_diagnostic \
+///     pv_decay_at_a_real_basis -- --ignored --nocapture
+/// ```
+///
+/// `#[ignore]` is NOT a judgement that this matters less — it is the opposite.
+/// It is here because it must not silently run inside a workspace test sweep on
+/// a contested machine.
+///
+/// # What to look for
+///
+/// `n_vir` is printed for every row precisely so the STO-3G rows above are
+/// interpretable. If the r/diam verdict DIFFERS between minimal and real basis,
+/// **that difference is the headline finding**, not something to average away:
+/// it would mean the earlier saturation-failure conclusion was a basis artifact
+/// and the memory `ao-laplace-domain-radius-tracks-diameter` needs revising.
+#[test]
+#[ignore = "cc-pVDZ is heavy; run explicitly with --ignored (see doc comment)"]
+fn pv_decay_at_a_real_basis() {
+    // Ordered cheapest-first so a run that has to be cut short still yields the
+    // most informative rows. Per Matt: basis quality beats system size, so
+    // alkane_4/cc-pVDZ matters more than alkane_8/STO-3G.
+    let systems: Vec<(&str, &str, &str)> = vec![
+        ("../../testdata/molecules/water.xyz", "cc-pvdz", "water/cc-pVDZ"),
+        ("../../testdata/molecules/alkane_2.xyz", "cc-pvdz", "alkane_2/cc-pVDZ"),
+        ("../../testdata/molecules/alkane_4.xyz", "cc-pvdz", "alkane_4/cc-pVDZ"),
+        ("../../testdata/molecules/benzene.xyz", "cc-pvdz", "benzene/cc-pVDZ"),
+        ("../../testdata/molecules/alkane_8.xyz", "cc-pvdz", "alkane_8/cc-pVDZ"),
+    ];
+
+    let mut summary: Vec<(String, usize, usize, String, f64, f64)> = Vec::new();
+    for (path, bas, label) in systems {
+        let sys = run_scf(path, bas, label);
+        let (nocc, nvir) = (sys.c_occ.ncols(), sys.c_vir.ncols());
+        println!("  [{label}] nocc = {nocc}, n_vir = {nvir}");
+        let radii = analyze(&sys);
+        for (name, r, diam) in radii {
+            summary.push((label.to_string(), nocc, nvir, name, r, diam));
+        }
+    }
+
+    println!("\n\n========= SATURATION SUMMARY @ cc-pVDZ (real basis) =========");
+    println!(
+        "{:<20} {:>5} {:>6} {:<34} {:>8} {:>10} {:>8}",
+        "system", "nocc", "n_vir", "quantity", "r(1e-4)", "diameter", "r/diam"
+    );
+    for (sysname, nocc, nvir, q, r, d) in &summary {
+        println!(
+            "{:<20} {:>5} {:>6} {:<34} {:>8.1} {:>10.2} {:>8.2}",
+            sysname, nocc, nvir, q, r, d, r / d
+        );
+    }
+    println!(
+        "\nCompare r/diam against the STO-3G sweep. At STO-3G it was ~1.0 at every\n\
+         size (profile stretches with the molecule => truncation NOT transferable).\n\
+         If r/diam FALLS with a real virtual space, the STO-3G verdict was a\n\
+         minimal-basis artifact and the recorded conclusion must be revised."
+    );
+
+    // TEETH: the whole point is that this basis has a virtual space worth
+    // truncating. If n_vir is not substantially larger than nocc, the run says
+    // nothing that STO-3G did not already say, and a passing test would be
+    // meaningless.
+    let (worst_label, worst_nocc, worst_nvir) = summary
+        .iter()
+        .map(|(l, no, nv, ..)| (l.clone(), *no, *nv))
+        .min_by_key(|(_, no, nv)| (nv * 10) / no.max(&1))
+        .expect("summary must be non-empty");
+    assert!(
+        worst_nvir > 2 * worst_nocc,
+        "{worst_label}: n_vir = {worst_nvir} vs nocc = {worst_nocc} — this basis does \
+         not have a substantially larger virtual space than a minimal one, so it \
+         cannot test whether the STO-3G locality verdict was a small-basis artifact"
+    );
+}
+
 /// METRIC VALIDATION: at STO-3G on ≤20 Bohr molecules, the element-COUNT
 /// sparsity fraction is uninformative (nothing is exactly zero yet). The
 /// decay-profile metric must still be able to distinguish a genuinely local
