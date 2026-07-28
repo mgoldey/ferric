@@ -36,8 +36,20 @@ export FERRIC_TERF_TABLE_DIR=/home/matt/qc/terf-tables-data
 # threads per job. 6 slots x ~190% saturates 12 cores, and every REMAINING T
 # system is 4-12 atoms (0.5-2.3 GB measured), so 5 slots fit RAM with headroom
 # alongside the one S22 job.
-export OPENBLAS_NUM_THREADS=1 RAYON_NUM_THREADS=2
-NPROC=5
+# RAYON=12 / NPROC=1: ONE job at a time using ALL 12 cores.
+#
+# Set 2026-07-27 after the second box crash of the day, on Matt's call to "lock
+# in results". The trade is deliberate: with NPROC=1 there is exactly one job
+# resident, so the memory oversubscription that caused both crashes cannot
+# recur, and every completed job is banked permanently (outputs are per-job and
+# idempotent). Throughput per job is worse -- ferric's intra-job scaling is poor
+# (measured: ~190% CPU at RAYON=4, ~60% at RAYON=2, so 12 threads will NOT give
+# 1200%) -- but a job that finishes is worth more than three that die.
+#
+# RUN THESE DRIVERS ONE AT A TIME. Two drivers at RAYON=12 would put 24 threads
+# on 12 cores; that is the oversubscription this setting exists to avoid.
+export OPENBLAS_NUM_THREADS=1 RAYON_NUM_THREADS=12
+NPROC=1
 
 run() {
   local key="$1" out="benchmarks/grid/out/$1.out"
