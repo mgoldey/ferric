@@ -335,17 +335,104 @@ pub fn detect_available_bytes() -> Option<usize> {
     }
 }
 
-/// Read the active cgroup memory limit (v2 preferred, then v1). `None` if no
-/// file readable or the limit is "unlimited".
+/// Read the memory limit of **this process's own cgroup**, v2 preferred then
+/// v1. `None` if nothing readable or every limit is "unlimited".
+///
+/// # Why this walks `/proc/self/cgroup` instead of reading the root
+///
+/// This used to read `/sys/fs/cgroup/memory.max` directly — the **root**
+/// cgroup, which on a normal systemd host is `max` (unlimited). A process
+/// placed in its own scope by `systemd-run --scope -p MemoryMax=...` (which is
+/// exactly what `scripts/ferric-limited` does) therefore never saw its own
+/// limit, and `resolve_budget` fell through to `0.8 × MemAvailable` — a
+/// *system-wide* number.
+///
+/// The consequence was not a crash but a silent, expensive stall. Measured
+/// 2026-07-27: a24-17/18 (13-atom A24 dimers, aQZ) ran under
+/// `ferric-limited --max=5G`, budgeted themselves from ~18 GB of visible
+/// system RAM, and then sat in `mem_cgroup_handle_over_high` for **46 minutes
+/// producing zero r0 points** while the kernel reclaimed inside their 5 GB
+/// scope. The box as a whole had 5+ GB free the whole time, so it looked like
+/// system thrash and was mis-diagnosed as such — two unrelated drivers were
+/// stopped chasing it. The same jobs finished in ~20 minutes each once given a
+/// 10 GB scope.
+///
+/// The v2 limit is per-cgroup and the *effective* limit is the minimum over the
+/// whole ancestry (a child cannot exceed its parent), so this walks from the
+/// process's own cgroup up to the root and takes the smallest real limit found.
 fn detect_cgroup_limit_bytes() -> Option<usize> {
-    if let Ok(s) = std::fs::read_to_string("/sys/fs/cgroup/memory.max") {
-        if let Some(b) = parse_cgroup_v2_max(&s) {
-            return Some(b);
+    if let Some(b) = detect_cgroup_v2_limit_bytes() {
+        return Some(b);
+    }
+    // v1 fallback: the controller mount is flat and the path from
+    // /proc/self/cgroup is relative to the memory controller root.
+    if let Some(rel) = read_proc_self_cgroup_v1_memory_path() {
+        let p = format!("/sys/fs/cgroup/memory{rel}/memory.limit_in_bytes");
+        if let Ok(s) = std::fs::read_to_string(&p) {
+            if let Some(b) = parse_cgroup_v1_limit(&s) {
+                return Some(b);
+            }
         }
     }
     if let Ok(s) = std::fs::read_to_string("/sys/fs/cgroup/memory/memory.limit_in_bytes") {
         if let Some(b) = parse_cgroup_v1_limit(&s) {
             return Some(b);
+        }
+    }
+    None
+}
+
+/// cgroup v2: the effective limit is the MINIMUM `memory.max` over this
+/// process's cgroup and all its ancestors, since a child can never exceed its
+/// parent's limit. Returns `None` when every level is unlimited.
+fn detect_cgroup_v2_limit_bytes() -> Option<usize> {
+    let rel = read_proc_self_cgroup_v2_path()?;
+    let mut best: Option<usize> = None;
+    // Walk from the leaf up to the root, e.g.
+    //   /user.slice/user-1000.slice/.../run-r<id>.scope
+    //   /user.slice/user-1000.slice/...
+    //   ...
+    //   ""   (the root itself)
+    let mut cur: &str = rel.trim_end_matches('/');
+    loop {
+        let path = format!("/sys/fs/cgroup{cur}/memory.max");
+        if let Ok(s) = std::fs::read_to_string(&path) {
+            if let Some(b) = parse_cgroup_v2_max(&s) {
+                best = Some(best.map_or(b, |cur_best: usize| cur_best.min(b)));
+            }
+        }
+        match cur.rfind('/') {
+            Some(0) | None => break,
+            Some(i) => cur = &cur[..i],
+        }
+    }
+    best
+}
+
+/// The cgroup-v2 path from `/proc/self/cgroup` (the `0::<path>` line), e.g.
+/// `/user.slice/user-1000.slice/app.slice/run-r<id>.scope`.
+fn read_proc_self_cgroup_v2_path() -> Option<String> {
+    let s = std::fs::read_to_string("/proc/self/cgroup").ok()?;
+    for line in s.lines() {
+        // v2 unified hierarchy is always hierarchy-id 0 with an empty controller list.
+        if let Some(rest) = line.strip_prefix("0::") {
+            return Some(rest.trim().to_string());
+        }
+    }
+    None
+}
+
+/// The path for the v1 `memory` controller from `/proc/self/cgroup`, i.e. the
+/// third field of the line whose controller list contains `memory`.
+fn read_proc_self_cgroup_v1_memory_path() -> Option<String> {
+    let s = std::fs::read_to_string("/proc/self/cgroup").ok()?;
+    for line in s.lines() {
+        let mut it = line.splitn(3, ':');
+        let _id = it.next()?;
+        let controllers = it.next()?;
+        let path = it.next()?;
+        if controllers.split(',').any(|c| c == "memory") {
+            return Some(path.trim().to_string());
         }
     }
     None
@@ -623,5 +710,72 @@ mod tests {
         // And with a budget so enormous that RSS can never exceed it — the
         // no-warning path must also just return cleanly.
         warn_if_rss_over("test-stage-huge-budget", usize::MAX / 2, 1.1);
+    }
+
+    /// The cgroup-v2 path parser must pick the `0::` line out of a real
+    /// `/proc/self/cgroup`, not the first line or a v1 controller line.
+    #[test]
+    fn cgroup_v2_path_is_the_unified_line() {
+        // Hybrid host: v1 controller lines first, unified last.
+        let sample = "12:memory:/user.slice\n\
+                      3:cpu,cpuacct:/user.slice\n\
+                      0::/user.slice/user-1000.slice/run-rABC.scope\n";
+        let got = sample
+            .lines()
+            .find_map(|l| l.strip_prefix("0::"))
+            .map(|r| r.trim().to_string());
+        assert_eq!(got.as_deref(), Some("/user.slice/user-1000.slice/run-rABC.scope"));
+    }
+
+    /// REGRESSION: the effective v2 limit is the MINIMUM over the ancestry.
+    ///
+    /// This pins the arithmetic that `detect_cgroup_v2_limit_bytes` performs
+    /// while walking up. Before the 2026-07-27 fix the code read only the ROOT
+    /// `/sys/fs/cgroup/memory.max` (usually "max"), so a job confined to a 5 GB
+    /// scope by `systemd-run` budgeted itself from total system RAM and then
+    /// stalled for 46 minutes inside its own cgroup, producing nothing.
+    #[test]
+    fn ancestry_minimum_is_the_effective_limit() {
+        // leaf 5 GiB inside a 12 GiB parent inside an unlimited root.
+        let levels = [Some(5 * (1024usize * 1024 * 1024)), Some(12 * (1024usize * 1024 * 1024)), None];
+        let mut best: Option<usize> = None;
+        for lvl in levels {
+            if let Some(b) = lvl {
+                best = Some(best.map_or(b, |c: usize| c.min(b)));
+            }
+        }
+        assert_eq!(best, Some(5 * (1024usize * 1024 * 1024)), "the tightest ancestor must win");
+
+        // An unlimited leaf under a limited parent still inherits the parent.
+        let levels = [None, Some(8 * (1024usize * 1024 * 1024)), None];
+        let mut best: Option<usize> = None;
+        for lvl in levels {
+            if let Some(b) = lvl {
+                best = Some(best.map_or(b, |c: usize| c.min(b)));
+            }
+        }
+        assert_eq!(best, Some(8 * (1024usize * 1024 * 1024)));
+    }
+
+    /// On THIS machine, whatever cgroup the test runs in, the detector must not
+    /// report a limit larger than physical RAM -- the failure mode that let a
+    /// 5 GB-capped job plan for 18 GB.
+    #[test]
+    fn detected_limit_is_never_absurd() {
+        if let Some(b) = detect_cgroup_limit_bytes() {
+            let meminfo = std::fs::read_to_string("/proc/meminfo").unwrap_or_default();
+            if let Some(total) = meminfo.lines().find_map(|l| {
+                l.strip_prefix("MemTotal:")
+                    .and_then(|r| r.split_whitespace().next())
+                    .and_then(|k| k.parse::<usize>().ok())
+                    .map(|kb| kb * 1024)
+            }) {
+                assert!(
+                    b <= total,
+                    "cgroup limit {b} exceeds MemTotal {total} -- detector is reading \
+                     the wrong cgroup"
+                );
+            }
+        }
     }
 }
