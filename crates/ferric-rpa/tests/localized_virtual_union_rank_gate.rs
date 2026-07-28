@@ -702,3 +702,45 @@ fn rank_metric_is_not_just_column_count() {
          rank_of_block is not measuring rank"
     );
 }
+
+// ===========================================================================
+// RETRACTION (2026-07-27, same day) — THIS GATE IS A TAUTOLOGY
+// ===========================================================================
+//
+// The NO-GO verdict this file reports is NOT a measurement. The gate could not
+// have returned GO for any molecule, basis, radius, or assignment rule.
+//
+// Every domain subspace V_d here is a SUBSET OF ONE ORTHONORMAL SET (teeth #4
+// asserts CᵀSC = I at full rank). Subsets of an orthonormal set are mutually
+// orthogonal unless they share identical members, so
+//
+//     rank(U V_d)  ==  n_vir - n_uncovered      (identically, always)
+//
+// Verified against every row this file printed: 89-39=50, 89-4=85, 89-0=89,
+// 75-57=18, 75-0=75. The SVD machinery rigorously re-measures a counting fact.
+//
+// The decision rule (see `real` at the GO/NO-GO classification below) requires
+// BOTH `ratio <= 0.9` AND `n_uncovered == 0`. By the identity, n_uncovered == 0
+// forces ratio == 1.000, which fails ratio <= 0.9. THE TWO CONDITIONS ARE
+// MUTUALLY EXCLUSIVE BY CONSTRUCTION.
+//
+// The "exact orthogonal equality" (rank(U) == sum_d rank(V_d)) reported as
+// reproducing the RPA obstruction "on the nose" is likewise forced: at r = 1.0
+// Bohr the min interatomic distance in alkane_4/alkane_8 is 2.067 Bohr > 2r, so
+// no centroid can lie within the radius of two atoms. Bond geometry, not
+// physics. At r = 2.0 the equality already breaks (85 vs 130).
+//
+// DEEPER SCOPE ERROR: subsets of one orthonormal basis can only "overlap" by
+// sharing identical members, so this construction removed the very degree of
+// freedom the PNO-union question is about -- pair-specific NON-ORTHOGONAL bases
+// whose ranges can genuinely nest. Requiring the union to compress at all is
+// the RPA-DIELECTRIC requirement; DLPNO-MP2/CC never need it, since they pay
+// per-pair costs in per-pair bases. And "union rank grows linearly with system
+// size" is the linear-scaling SUCCESS signature (N domains of O(1) size), not a
+// failure.
+//
+// KEPT, NOT DELETED, because the harness (orthonormality checks, SVD rank, the
+// duplicate-column negative control) is reusable and because a future reader
+// will otherwise re-derive the same tautology. To make this a real gate it must
+// use NON-ORTHOGONAL, PAIR-SPECIFIC bases, where rank(U) is genuinely not a
+// counting identity.
