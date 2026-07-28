@@ -142,6 +142,56 @@ pub struct LaplaceMp2Result {
     pub e_ss: f64,
 }
 
+/// Laplace-transform SOS-MP2 (scaled-opposite-spin MP2) configuration.
+///
+/// Follows [`crate::scs::ScsMp2Config`]'s style: an explicit scaling
+/// coefficient, a frozen-core count, and an optional resident-bytes ceiling.
+/// There is deliberately no `c_ss` — SOS-MP2 *is* the c_ss = 0 limit, and that
+/// is exactly what makes the Laplace denominator factorize (see the module-level
+/// derivation on [`LaplaceMp2::compute_sos_mo`]).
+#[derive(Debug, Clone)]
+pub struct SosMp2Config {
+    /// Opposite-spin scaling coefficient. Jung/Head-Gordon (JCP 121, 9793
+    /// (2004)) fitted c_os = 1.3 for SOS-MP2; c_os = 1.0 recovers the bare
+    /// opposite-spin MP2 energy `ri_mp2_spin_components(..).e_os` (up to the
+    /// Laplace quadrature error) and is what the validation tests use.
+    pub c_os: f64,
+    /// Number of frozen core orbitals.
+    pub frozen_core: usize,
+    /// Number of minimax Laplace quadrature points. Must be one of {3, 5, 7}:
+    /// [`ferric_quadrature::LaplaceQuadrature::new`] hard-errors otherwise
+    /// rather than silently capping (see `docs`/TD-QUAD).
+    pub n_quad: usize,
+    /// Optional resident-bytes ceiling, threaded into the 3-index budget
+    /// exactly as [`LaplaceMp2::memory_budget_bytes`]. `None` resolves via
+    /// [`ferric_core::memory::resolve_budget_bytes`].
+    pub memory_budget_bytes: Option<usize>,
+}
+
+impl Default for SosMp2Config {
+    /// Jung/Head-Gordon SOS-MP2: c_os = 1.3, all electrons correlated,
+    /// 7-point minimax quadrature (the tightest supported grid).
+    fn default() -> Self {
+        Self { c_os: 1.3, frozen_core: 0, n_quad: 7, memory_budget_bytes: None }
+    }
+}
+
+/// Result of a Laplace SOS-MP2 calculation.
+#[derive(Debug, Clone)]
+pub struct SosMp2Result {
+    /// `E_SCF + sos_corr`.
+    pub total_energy: f64,
+    /// The scaled correlation energy `c_os * e_os`.
+    pub sos_corr: f64,
+    /// The UNSCALED Laplace opposite-spin correlation energy. Comparable
+    /// directly against `ri_mp2_spin_components(..).e_os`.
+    pub e_os: f64,
+    /// The `c_os` that was applied, echoed for provenance.
+    pub c_os: f64,
+    /// Quadrature points actually used.
+    pub n_quad: usize,
+}
+
 /// Laplace-MP2 exchange (K) trace for one quadrature point.
 ///
 /// Given the τ-weighted RI amplitudes `b_t` in MO basis, shaped
@@ -225,6 +275,53 @@ fn laplace_exchange_energy(
             e_blk
         })
         .sum()
+}
+
+/// Laplace J-term (opposite-spin) energy contribution for ONE quadrature point,
+/// evaluated entirely in the AO basis from the pseudo-densities.
+///
+/// Returns `Σ_PQ J_PQ(t)²` with
+/// ```text
+/// J_PQ(t) = Σ_μν M^P_μν N^Q_νμ,   M^P = B^P·P(t),   N^Q = B^Q·Q(t).
+/// ```
+/// This is exactly the AO-basis form of the MO Coulomb trace
+/// `Σ_PQ (Σ_ia B^P_ia(t) B^Q_ia(t))²`: substituting the pseudo-densities
+/// `P(t)_μν = Σ_i C_μi e^{tε_i} C_νi` and `Q(t)_μν = Σ_a C_μa e^{-tε_a} C_νa`
+/// into `Tr(B^P P B^Q Q)` reproduces `Σ_ia B^P_ia e^{-t(ε_a-ε_i)} B^Q_ia`,
+/// which is `J_PQ` for the τ-weighted amplitudes. No MO transform is needed,
+/// which is the whole point of the AO path.
+///
+/// The μ axis is blocked to `block_mu` rows so the two panel buffers stay within
+/// the per-task budget; the P and Q (aux) axes stay full so the Gram
+/// accumulates exactly across panels.
+///
+/// Extracted verbatim from `compute_ao`'s per-point closure so the SOS AO path
+/// reuses the identical algebra rather than restating it.
+fn laplace_ao_coulomb_energy(
+    b_sparse: &[SparseBSlice],
+    pt: &Array2<f64>,
+    qt: &Array2<f64>,
+    naux: usize,
+    nbas: usize,
+    block_mu: usize,
+) -> f64 {
+    let mut j_mat = Array2::<f64>::zeros((naux, naux));
+    let mut m0 = 0;
+    while m0 < nbas {
+        let m1 = (m0 + block_mu).min(nbas);
+        let pw = m1 - m0; // panel width in μ rows
+        // Panel buffers sized exactly pw·nbas so each Array2 row is contiguous
+        // (needed for as_slice_mut in the sparse fill methods).
+        let mut m_panel = Array2::<f64>::zeros((naux, pw * nbas));
+        let mut n_panel = Array2::<f64>::zeros((naux, pw * nbas));
+        for p in 0..naux {
+            b_sparse[p].mat_mul_flat_rows(pt, m0, m1, m_panel.row_mut(p).as_slice_mut().unwrap());
+            b_sparse[p].mat_mul_t_rows(qt, m0, m1, n_panel.row_mut(p).as_slice_mut().unwrap());
+        }
+        j_mat += &m_panel.dot(&n_panel.t());
+        m0 = m1;
+    }
+    j_mat.iter().map(|&x| x * x).sum()
 }
 
 pub fn laplace_ri_mp2(
@@ -586,28 +683,8 @@ impl LaplaceMp2 {
             // block_mu·naux·nbas·8·2 instead of the old (naux, nbas²) full-width
             // buffers (naux·nbas²·8 each — ~14 GB at nbf=900/naux=2200, ×2 ×threads
             // inside the par_iter).
-            let mut j_mat = Array2::<f64>::zeros((naux, naux));
-            let mut m0 = 0;
-            while m0 < nbas {
-                let m1 = (m0 + block_mu).min(nbas);
-                let pw = m1 - m0; // panel width in μ rows
-                // Panel buffers sized exactly pw·nbas so each Array2 row is
-                // contiguous (needed for as_slice_mut in the sparse fill methods).
-                let mut m_panel = Array2::<f64>::zeros((naux, pw * nbas));
-                let mut n_panel = Array2::<f64>::zeros((naux, pw * nbas));
-                for p in 0..naux {
-                    // Sparse B^P times the dense pseudo-densities, restricted to the
-                    // μ rows in this panel (avoids materializing the full nbas² row).
-                    b_sparse[p].mat_mul_flat_rows(&pt, m0, m1,
-                        m_panel.row_mut(p).as_slice_mut().unwrap());
-                    b_sparse[p].mat_mul_t_rows(&qt, m0, m1,
-                        n_panel.row_mut(p).as_slice_mut().unwrap());
-                }
-                // j_mat += M_panel · N_panelᵀ: Σ_{μ∈panel,ν} M^P[μ,ν]·N^Q[ν,μ]
-                j_mat += &m_panel.dot(&n_panel.t());
-                m0 = m1;
-            }
-            let e_os_k: f64 = j_mat.iter().map(|&x| x * x).sum();
+            let e_os_k =
+                laplace_ao_coulomb_energy(&b_sparse, &pt, &qt, naux, nbas, block_mu);
 
             // --- K term in MO basis ---
             // Apply Laplace weights B_ia(t) = B_ia·exp(-t(ε_a-ε_i)/2) to the
@@ -623,6 +700,295 @@ impl LaplaceMp2 {
 
         Ok((e_os + e_ss, e_os, e_ss))
     }
+
+    /// Laplace SOS-MP2, MO formulation. Returns the UNSCALED opposite-spin
+    /// correlation energy `E_OS` (apply `c_os` at the caller).
+    ///
+    /// # Derivation
+    ///
+    /// For a closed-shell RHF reference the opposite-spin MP2 correlation energy
+    /// in spatial orbitals is
+    /// ```text
+    /// E_OS = Σ_ijab (ia|jb)² / D_ij^ab,     D_ij^ab = ε_i + ε_j - ε_a - ε_b < 0.
+    /// ```
+    /// (the same-spin partner carries the exchange-like `-(ib|ja)` numerator).
+    /// Substituting the Laplace identity for the POSITIVE denominator
+    /// `x = ε_a + ε_b - ε_i - ε_j = -D`,
+    /// ```text
+    /// 1/x = ∫₀^∞ e^{-x t} dt ≈ Σ_k w_k e^{-t_k x},
+    /// ```
+    /// and splitting the exponential over the (i,a) and (j,b) index pairs —
+    /// which is possible because `x` is a plain SUM of one-orbital energies:
+    /// ```text
+    /// e^{-t x} = e^{-t(ε_a-ε_i)} · e^{-t(ε_b-ε_j)}
+    ///          = [e^{-t(ε_a-ε_i)/2}]² · [e^{-t(ε_b-ε_j)/2}]²
+    /// ```
+    /// gives, with the RI amplitude `(ia|jb) = Σ_P B^P_ia B^P_jb` and the
+    /// τ-weighted amplitude `B^P_ia(t) = B^P_ia e^{-t(ε_a-ε_i)/2}`,
+    /// ```text
+    /// E_OS ≈ -Σ_k w_k Σ_PQ [ Σ_ia B^P_ia(t_k) B^Q_ia(t_k) ]²
+    ///      = -Σ_k w_k Σ_PQ J_PQ(t_k)².
+    /// ```
+    ///
+    /// **This is the whole reason SOS is the Laplace-friendly variant.** The
+    /// (i,a) and (j,b) sums have completely decoupled: `J_PQ(t)` is a single
+    /// contraction over one occupied-virtual pair, and the energy is the
+    /// Frobenius norm of that `naux × naux` matrix. The same-spin numerator
+    /// `(ia|jb)(ib|ja)` instead entangles the two pairs through the swapped
+    /// index pattern (the `laplace_exchange_energy` Gram above), and no
+    /// factorization of the denominator removes that coupling. Dropping SS is
+    /// what leaves a product of independent contractions.
+    ///
+    /// Cost, in tensor dimensions rather than time: the τ-weighting is
+    /// `naux·nocc·nvir` elements, `J = B(t)B(t)ᵀ` is one GEMM of shape
+    /// `(naux × nocc·nvir) × (nocc·nvir × naux)`, and the energy is a sum over
+    /// `naux²` entries. No `nocc²nvir²` object and no `naux²nocc²` Gram is ever
+    /// formed — those belong to the same-spin term this method omits.
+    pub fn compute_sos_mo(
+        &mut self,
+        mol: &Molecule,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        op: Operator,
+        rhf: &ScfResult,
+        frozen_core: usize,
+    ) -> Result<f64, FerricError> {
+        let nbas = obs.nbasis();
+        let nocc_total = mol.nelec() as usize / 2;
+        let nocc = active_occ(nocc_total, frozen_core)?;
+        let nvir = nbas - nocc_total;
+        let naux = dfbs.nbasis();
+
+        let eps = rhf.eps_r();
+        let nmo = eps.len();
+        let ymin = 2.0 * (eps[nocc_total] - eps[nocc_total - 1]);
+        let ymax = 2.0 * (eps[nmo - 1] - eps[0]);
+        self.init_quadrature(ymin, ymax)?;
+
+        let c = rhf.mos_r();
+        let c_occ = c.slice(ndarray::s![.., frozen_core..nocc_total]).to_owned();
+        let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
+
+        // (P|ia) RI amplitudes, dressed with V^{-1/2} — identical construction
+        // to `compute_mo` (blocked aux generation, never materializing the AO
+        // naux·nbas² tensor).
+        let v2c = ferric_integrals::threeindex::coulomb_metric_2c(op, dfbs)?;
+        let v_inv_sqrt = crate::rimp2::cholesky_inverse_sqrt(&v2c)?;
+        let eri3_mo = crate::rimp2::eri3_mo_ov_blocked(
+            op, obs, dfbs, &c_occ, &c_vir,
+            crate::rimp2::eri3_budget_bytes(self.memory_budget_bytes),
+        )?;
+        let b_flat = v_inv_sqrt.dot(&eri3_mo.into_shape_with_order((naux, nocc * nvir)).unwrap());
+
+        let occ_scale: Vec<f64> = (0..nocc).map(|i| eps[frozen_core + i]).collect();
+        let vir_scale: Vec<f64> = (0..nvir).map(|a| eps[nocc_total + a]).collect();
+
+        // Parallel over quadrature points. Only the J (Coulomb) trace survives —
+        // the `laplace_exchange_energy` call that `compute_mo` makes here is the
+        // same-spin piece and is deliberately absent.
+        let e_os: f64 = self
+            .points
+            .par_iter()
+            .zip(self.weights.par_iter())
+            .map(|(&t, &w)| {
+                let b_t = weighted_b_mo(&b_flat, &occ_scale, &vir_scale, nocc, nvir, t);
+                let j_mat = b_t.dot(&b_t.t());
+                -w * j_mat.iter().map(|&x| x * x).sum::<f64>()
+            })
+            .sum();
+
+        Ok(e_os)
+    }
+
+    /// Laplace SOS-MP2, AO formulation via pseudo-densities. Returns the
+    /// UNSCALED opposite-spin correlation energy `E_OS`.
+    ///
+    /// Same energy as [`Self::compute_sos_mo`], different algebra. Starting from
+    /// the point-wise MO trace `J_PQ(t) = Σ_ia B^P_ia(t) B^Q_ia(t)`, expand the
+    /// MO amplitudes back into AOs, `B^P_ia = Σ_μν C_μi B^P_μν C_νa`, and absorb
+    /// the τ weights into the coefficient products. The occupied and virtual
+    /// sums then close independently into the pseudo-densities
+    /// ```text
+    /// P(t)_μν = Σ_i C_μi e^{+t ε_i} C_νi        (build_pseudo_density_occ)
+    /// Q(t)_μν = Σ_a C_μa e^{-t ε_a} C_νa        (build_pseudo_density_vir)
+    /// ```
+    /// giving a pure-AO expression with NO occupied or virtual index left:
+    /// ```text
+    /// J_PQ(t) = Tr[ B^P P(t) B^Q Q(t) ] = Σ_μν (B^P P)_μν (B^Q Q)_νμ
+    /// E_OS ≈ -Σ_k w_k Σ_PQ J_PQ(t_k)².
+    /// ```
+    ///
+    /// This is the formulation that can in principle go sub-quintic: `P(t)` and
+    /// `Q(t)` become sparse for localized occupied orbitals and local basis
+    /// sets, and `B^P` is already stored row-sparse
+    /// ([`SparseBSlice`]) — so the `B^P·P(t)` products are O(nnz) rather than
+    /// O(nbas³), and no MO transform appears anywhere in the quadrature loop.
+    /// The dense-`P`/`Q` path implemented here is the correctness reference for
+    /// that sparse limit; `domain_cutoff_bohr` switches on the Boys-localized,
+    /// domain-restricted pseudo-densities the way `compute_ao` does.
+    ///
+    /// Note the AO path's irreducible resident cost is the dressed
+    /// `naux·nbas²` 3-index tensor (the quadrature points are the parallel axis
+    /// and each randomly accesses every `B^P`), gated below exactly as in
+    /// `compute_ao`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn compute_sos_ao(
+        &mut self,
+        mol: &Molecule,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        op: Operator,
+        rhf: &ScfResult,
+        frozen_core: usize,
+        domain_cutoff_bohr: Option<f64>,
+    ) -> Result<f64, FerricError> {
+        let nbas = obs.nbasis();
+        let nocc_total = mol.nelec() as usize / 2;
+        let nocc = active_occ(nocc_total, frozen_core)?;
+        let nvir = nbas - nocc_total;
+        let naux = dfbs.nbasis();
+
+        let eps = rhf.eps_r();
+        let nmo = eps.len();
+        let ymin = 2.0 * (eps[nocc_total] - eps[nocc_total - 1]);
+        let ymax = 2.0 * (eps[nmo - 1] - eps[0]);
+        self.init_quadrature(ymin, ymax)?;
+
+        // Same resident-tensor pre-flight as compute_ao: two co-resident
+        // naux·nbas² tensors during the metric dressing plus the naux² metric.
+        {
+            let dense_bytes = naux.saturating_mul(nbas).saturating_mul(nbas).saturating_mul(8);
+            let metric_bytes = naux.saturating_mul(naux).saturating_mul(2).saturating_mul(8);
+            let peak_bytes = dense_bytes.saturating_mul(2).saturating_add(metric_bytes);
+            let budget = ferric_core::memory::resolve_budget_bytes(self.memory_budget_bytes);
+            if peak_bytes > budget {
+                return Err(FerricError::General(format!(
+                    "laplace-SOS-MP2 AO path needs {:.2} GB resident (naux={naux}, nbas={nbas}: \
+                     two co-resident naux*nbas^2 tensors during the metric dressing, plus \
+                     the naux^2 metric) but the budget is {:.2} GB. Raise \
+                     [memory] budget_gb / FERRIC_MEM_BUDGET_GB, or use compute_sos_mo.",
+                    peak_bytes as f64 / 1e9,
+                    budget as f64 / 1e9,
+                )));
+            }
+        }
+
+        let v2c = ferric_integrals::threeindex::coulomb_metric_2c(op, dfbs)?;
+        let v_inv_sqrt = crate::rimp2::cholesky_inverse_sqrt(&v2c)?;
+        let eri3_ao = ferric_integrals::threeindex::eri3_tensor(op, obs, dfbs)?;
+        let eri3_flat = eri3_ao.into_shape_with_order((naux, nbas * nbas)).unwrap();
+        let b_flat_ao = v_inv_sqrt.dot(&eri3_flat);
+        let b_ao = b_flat_ao.into_shape_with_order((naux, nbas, nbas)).unwrap();
+
+        let c = rhf.mos_r();
+        let c_occ = c.slice(ndarray::s![.., frozen_core..nocc_total]).to_owned();
+        let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
+        let eps_occ: Vec<f64> = (frozen_core..nocc_total).map(|k| eps[k]).collect();
+
+        let boys_domains = if let Some(cutoff) = domain_cutoff_bohr {
+            let dip = ferric_integrals::oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
+            let boys = boys_localize(&c_occ, &dip, 200);
+            let shell_centers = obs.shell_centers();
+            let nshells = obs.nshells();
+            let mut offs = vec![0usize; nshells + 1];
+            for s in 0..nshells {
+                offs[s + 1] = offs[s] + obs.shell_dims()[s];
+            }
+            Some(build_domains(&boys.centers, &shell_centers, &offs, cutoff))
+        } else {
+            None
+        };
+
+        let b_sparse: Vec<SparseBSlice> = (0..naux)
+            .map(|p| SparseBSlice::from_dense(&b_ao.slice(ndarray::s![p, .., ..]).to_owned(), 1e-12))
+            .collect();
+        // b_ao's only consumer on this path is the sparse conversion above (the
+        // SOS energy needs no MO transform at all — unlike compute_ao, which
+        // still needs (P|ia) for its exchange term). Free the dense tensor
+        // before entering the quadrature loop.
+        drop(b_ao);
+
+        let task_budget = per_task_budget_bytes();
+        let mu_row_bytes = naux.max(1) * nbas.max(1) * 8 * 2;
+        let block_mu = (task_budget / mu_row_bytes.max(1)).clamp(1, nbas.max(1));
+
+        // Parallel over quadrature points. Same nested-BLAS-under-rayon caveat
+        // as compute_ao: run with OPENBLAS_NUM_THREADS=1.
+        let e_os: f64 = self
+            .points
+            .par_iter()
+            .zip(self.weights.par_iter())
+            .map(|(&t, &w)| {
+                let (pt, qt) = if let Some(ref domains) = boys_domains {
+                    (
+                        build_pseudo_density_occ_sparse(&c_occ, &eps_occ, t, domains),
+                        build_pseudo_density_vir_sparse(&c_vir, eps, t, nocc_total, domains),
+                    )
+                } else {
+                    (
+                        build_pseudo_density_occ(c, eps, t, nocc, frozen_core),
+                        build_pseudo_density_vir(c, eps, t, nvir, nocc_total),
+                    )
+                };
+                -w * laplace_ao_coulomb_energy(&b_sparse, &pt, &qt, naux, nbas, block_mu)
+            })
+            .sum();
+
+        Ok(e_os)
+    }
+}
+
+/// Which Laplace SOS-MP2 formulation to evaluate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SosFormulation {
+    /// MO basis: τ-weighted `(P|ia)` amplitudes, `J = B(t)B(t)ᵀ`.
+    Mo,
+    /// AO basis via occupied/virtual pseudo-densities. No MO transform inside
+    /// the quadrature loop; the path that can exploit AO sparsity.
+    Ao,
+}
+
+/// Laplace SOS-MP2: `E = c_os · E_OS`, with `E_OS` from the Laplace-transformed
+/// opposite-spin MP2 expression.
+///
+/// `formulation` selects the MO or AO algebra; both compute the same quantity
+/// and agree to quadrature/RI round-off (this is asserted in the module tests).
+/// With `c_os = 1.0` the returned `e_os` reproduces
+/// [`crate::rimp2::ri_mp2_spin_components`]'s `e_os` to the Laplace quadrature
+/// error, which is the hard internal reference for this method.
+pub fn laplace_sos_mp2(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &ScfResult,
+    config: &SosMp2Config,
+    formulation: SosFormulation,
+) -> Result<SosMp2Result, FerricError> {
+    if !config.c_os.is_finite() {
+        return Err(FerricError::General(format!(
+            "laplace_sos_mp2: c_os must be finite (got {})",
+            config.c_os
+        )));
+    }
+    let mut laplace = LaplaceMp2::new(config.n_quad);
+    laplace.memory_budget_bytes = config.memory_budget_bytes;
+    let e_os = match formulation {
+        SosFormulation::Mo => {
+            laplace.compute_sos_mo(mol, obs, dfbs, op, rhf, config.frozen_core)?
+        }
+        SosFormulation::Ao => {
+            laplace.compute_sos_ao(mol, obs, dfbs, op, rhf, config.frozen_core, None)?
+        }
+    };
+    let sos_corr = config.c_os * e_os;
+    Ok(SosMp2Result {
+        total_energy: rhf.energy + sos_corr,
+        sos_corr,
+        e_os,
+        c_os: config.c_os,
+        n_quad: config.n_quad,
+    })
 }
 
 /// Build the occupied pseudo-density P(t)_{μν} = Σ_i C_{μi} exp(t ε_i) C_{νi}.
@@ -902,6 +1268,206 @@ mod tests {
         assert!((e_mo - ri.mp2_corr).abs() < 1e-3,
             "Laplace RI-MP2 ({e_mo:.6}) should be within 1e-3 Ha of live RI-MP2 ({:.6}) on water/aug-cc-pVDZ",
             ri.mp2_corr);
+    }
+
+    // -----------------------------------------------------------------------
+    // Laplace SOS-MP2
+    //
+    // The hard reference is `ri_mp2_spin_components(..).e_os` — the SAME
+    // opposite-spin energy computed by an unrelated code path (canonical
+    // denominators, no Laplace transform). c_os = 1.0 must reproduce it to the
+    // quadrature error, and the MO and AO formulations must reproduce each
+    // other to round-off.
+    // -----------------------------------------------------------------------
+
+    /// Small closed-shell setups. water/STO-3G and water/6-31G only — the
+    /// algebra is what is under test, not scaling.
+    fn setup_sos(basis_name: &str) -> (Molecule, PreparedBasis, PreparedBasis, ScfResult) {
+        let xyz = "3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n";
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let bs = basis::bundled(basis_name).unwrap();
+        let obs = PreparedBasis::new(&mol, &bs).unwrap();
+        // cc-pVDZ-RI is the bundled aux set; the RI error is common to both the
+        // Laplace and the canonical reference, so it cancels in the comparison.
+        let dfbs_set = basis::bundled("cc-pvdz-ri").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &dfbs_set).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig { energy_conv: 1e-10, ..Default::default() },
+        )
+        .unwrap();
+        (mol, obs, dfbs, rhf)
+    }
+
+    /// c_os = 1.0 must reproduce `ri_mp2_spin_components(..).e_os`, and the
+    /// deviation must SHRINK as n_quad goes 3 -> 5 -> 7. Both formulations.
+    #[test]
+    fn sos_cos_one_reproduces_ri_mp2_e_os_and_converges_in_n_quad() {
+        for basis_name in ["sto-3g", "6-31g"] {
+            let (mol, obs, dfbs, rhf) = setup_sos(basis_name);
+            let op = Operator::coulomb();
+
+            // Reference: canonical-denominator opposite-spin MP2.
+            let (sc, _) = crate::rimp2::ri_mp2_spin_components(
+                &mol, &obs, &dfbs, op, &rhf, &crate::rimp2::RiMp2Config::default(),
+            )
+            .unwrap();
+            eprintln!("\n=== water/{basis_name}: reference E_OS = {:.12} ===", sc.e_os);
+            assert!(
+                sc.e_os.abs() > 1e-4,
+                "reference E_OS is ~0 — the comparison below would be vacuous"
+            );
+
+            let mut prev_mo = f64::INFINITY;
+            for &n_quad in &[3usize, 5, 7] {
+                let cfg = SosMp2Config { c_os: 1.0, n_quad, ..Default::default() };
+                let mo = laplace_sos_mp2(
+                    &mol, &obs, &dfbs, op, &rhf, &cfg, SosFormulation::Mo,
+                )
+                .unwrap();
+                let ao = laplace_sos_mp2(
+                    &mol, &obs, &dfbs, op, &rhf, &cfg, SosFormulation::Ao,
+                )
+                .unwrap();
+
+                let dev_mo = (mo.e_os - sc.e_os).abs();
+                let dev_ao = (ao.e_os - sc.e_os).abs();
+                eprintln!(
+                    "n_quad={n_quad}: MO E_OS={:.12} (dev {dev_mo:.3e})  \
+                     AO E_OS={:.12} (dev {dev_ao:.3e})  |MO-AO|={:.3e}",
+                    mo.e_os,
+                    ao.e_os,
+                    (mo.e_os - ao.e_os).abs()
+                );
+
+                // MO and AO are different algebra for the same quantity.
+                assert!(
+                    (mo.e_os - ao.e_os).abs() < 1e-9,
+                    "MO ({}) and AO ({}) SOS formulations must agree at n_quad={n_quad}",
+                    mo.e_os,
+                    ao.e_os
+                );
+                // c_os = 1 must be the bare OS energy, not a scaled one.
+                assert!((mo.sos_corr - mo.e_os).abs() < 1e-14);
+                assert!(
+                    dev_mo < 1e-3,
+                    "n_quad={n_quad}: Laplace SOS E_OS ({}) must match canonical \
+                     E_OS ({}) to the quadrature error",
+                    mo.e_os,
+                    sc.e_os
+                );
+                // Quadrature must actually converge, not just be close once.
+                assert!(
+                    dev_mo <= prev_mo,
+                    "increasing n_quad to {n_quad} made the deviation WORSE \
+                     ({dev_mo:.3e} vs {prev_mo:.3e})"
+                );
+                prev_mo = dev_mo;
+            }
+            // The tightest grid must be tight.
+            assert!(prev_mo < 1e-5, "n_quad=7 deviation {prev_mo:.3e} is too large");
+        }
+    }
+
+    /// The SOS energy must be the OPPOSITE-SPIN part alone — numerically
+    /// distinct from the full MP2 correlation energy and from the same-spin
+    /// part. Without this a mutation returning the total MP2 energy would still
+    /// pass a loose "close to reference" check.
+    #[test]
+    fn sos_is_the_opposite_spin_part_not_the_total() {
+        let (mol, obs, dfbs, rhf) = setup_sos("6-31g");
+        let op = Operator::coulomb();
+        let (sc, _) = crate::rimp2::ri_mp2_spin_components(
+            &mol, &obs, &dfbs, op, &rhf, &crate::rimp2::RiMp2Config::default(),
+        )
+        .unwrap();
+        let cfg = SosMp2Config { c_os: 1.0, ..Default::default() };
+        let got =
+            laplace_sos_mp2(&mol, &obs, &dfbs, op, &rhf, &cfg, SosFormulation::Mo).unwrap();
+
+        eprintln!(
+            "water/6-31G: E_OS={:.12}, E_SS={:.12}, E_total={:.12}, Laplace SOS={:.12}",
+            sc.e_os, sc.e_ss, sc.e_total, got.e_os
+        );
+        assert!(sc.e_ss.abs() > 1e-4, "E_SS must be nonzero for this test to discriminate");
+        assert!(
+            (got.e_os - sc.e_total).abs() > 1e-4,
+            "SOS E_OS ({}) must NOT be the total MP2 correlation energy ({})",
+            got.e_os,
+            sc.e_total
+        );
+        assert!(
+            (got.e_os - sc.e_ss).abs() > 1e-4,
+            "SOS E_OS ({}) must NOT be the same-spin energy ({})",
+            got.e_os,
+            sc.e_ss
+        );
+        // Opposite-spin correlation is negative and, for a closed shell, the
+        // dominant share of the total.
+        assert!(got.e_os < 0.0, "E_OS must be negative, got {}", got.e_os);
+    }
+
+    /// `c_os` must actually scale, the default must be Jung/Head-Gordon 1.3, and
+    /// the total energy must be `E_SCF + c_os·E_OS`.
+    #[test]
+    fn sos_config_scales_and_defaults_to_jung_head_gordon() {
+        let d = SosMp2Config::default();
+        assert_eq!(d.c_os, 1.3, "SOS-MP2 default c_os must be 1.3 (Jung/Head-Gordon)");
+        assert_eq!(d.frozen_core, 0);
+        assert_eq!(d.n_quad, 7);
+
+        let (mol, obs, dfbs, rhf) = setup_sos("sto-3g");
+        let op = Operator::coulomb();
+        let unit = laplace_sos_mp2(
+            &mol, &obs, &dfbs, op, &rhf,
+            &SosMp2Config { c_os: 1.0, ..Default::default() },
+            SosFormulation::Mo,
+        )
+        .unwrap();
+        let scaled =
+            laplace_sos_mp2(&mol, &obs, &dfbs, op, &rhf, &d, SosFormulation::Mo).unwrap();
+
+        eprintln!(
+            "water/STO-3G: E_OS={:.12}, c_os=1.3 -> sos_corr={:.12}",
+            unit.e_os, scaled.sos_corr
+        );
+        // The UNSCALED component is the same regardless of c_os.
+        assert!((scaled.e_os - unit.e_os).abs() < 1e-14, "e_os must be reported unscaled");
+        assert!(
+            (scaled.sos_corr - 1.3 * unit.e_os).abs() < 1e-12,
+            "sos_corr must be c_os * e_os"
+        );
+        // Discrimination: 1.3x must be numerically distinguishable from 1.0x.
+        assert!((scaled.sos_corr - unit.sos_corr).abs() > 1e-4);
+        assert!(
+            (scaled.total_energy - (rhf.energy + scaled.sos_corr)).abs() < 1e-12,
+            "total_energy must be E_SCF + sos_corr"
+        );
+        assert_eq!(scaled.c_os, 1.3);
+    }
+
+    /// `select_minimax_points` hard-errors outside {3,5,7} by design. The SOS
+    /// wrapper must propagate that as an error, not panic or silently coerce.
+    #[test]
+    fn sos_rejects_unsupported_n_quad() {
+        let (mol, obs, dfbs, rhf) = setup_sos("sto-3g");
+        let op = Operator::coulomb();
+        for bad in [0usize, 1, 4, 6, 9] {
+            let cfg = SosMp2Config { n_quad: bad, ..Default::default() };
+            let r = laplace_sos_mp2(&mol, &obs, &dfbs, op, &rhf, &cfg, SosFormulation::Mo);
+            assert!(r.is_err(), "n_quad={bad} must be rejected, not silently coerced");
+        }
+        // And a non-finite c_os is config, so it errors rather than producing NaN.
+        for bad in [f64::NAN, f64::INFINITY] {
+            let cfg = SosMp2Config { c_os: bad, ..Default::default() };
+            assert!(laplace_sos_mp2(&mol, &obs, &dfbs, op, &rhf, &cfg, SosFormulation::Mo).is_err());
+        }
     }
 
     /// nvir = 1 regression: with a single virtual orbital (H2/STO-3G) BOTH
