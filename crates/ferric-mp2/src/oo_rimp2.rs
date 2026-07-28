@@ -291,6 +291,31 @@ fn compute_hf_energy(
 }
 
 /// Compute orbital energies as diagonal of C^T F C.
+///
+/// # Why `diag` is legitimate HERE (audited 2026-07-28)
+///
+/// These values are used as MP2 DENOMINATORS, not merely as a Hessian
+/// preconditioner, and orbital optimization rotates away from the canonical
+/// basis by construction — so this is superficially the same shape as two real
+/// bugs found elsewhere in this workspace (the Boys-screened `eps_loc` defect in
+/// `ferric-rpa/src/screen.rs`, fixed 17e994e, and the AO-Laplace pseudo-density
+/// bug, fixed 3693d5d): a canonical-style eigenvalue read off a rotated basis.
+///
+/// It was therefore MEASURED rather than assumed. At convergence the OO basis is
+/// very nearly Fock-diagonal, so the discarded coupling is negligible —
+/// water/cc-pVDZ (nocc = 5): max|F_oo offdiag| / diag-spread = 4.5e-5,
+/// max|F_vv offdiag| / spread = 3.8e-5. Compare the Boys-localized case, where
+/// the same ratio was 1.3-2.9e-2 — roughly 650x larger, and a genuine defect.
+///
+/// The occ-VIR block is deliberately excluded from that comparison: it is the
+/// orbital gradient, which OO drives toward zero and which does not enter the
+/// denominators.
+///
+/// Pinned by `oo_converged_basis_offdiagonal_fock_is_measured_not_assumed`,
+/// which FAILS if either ratio exceeds 10% — i.e. if a future change makes the
+/// converged basis meaningfully non-diagonal, this becomes a real defect and the
+/// fix is semicanonicalization (re-diagonalize the occ and vir blocks), exactly
+/// as done in `screen.rs`.
 fn orbital_energies(c: &Array2<f64>, f: &Array2<f64>) -> Vec<f64> {
     let n = c.ncols();
     let f_mo = c.t().dot(f).dot(c);
@@ -1630,6 +1655,119 @@ mod tests {
             ri_result.total_energy
         );
         assert!(oo_result.converged, "OO-RI-MP2 should converge");
+    }
+
+    /// DIAGNOSTIC (2026-07-28): how non-canonical is the converged OO basis?
+    ///
+    /// `orbital_energies` takes `diag(C^T F C)` and those values are used as
+    /// MP2 DENOMINATORS (eps_a + eps_b - eps_i - eps_j), not merely as a
+    /// Hessian preconditioner. Orbital optimization rotates away from the
+    /// canonical basis by construction, so F_mo is NOT diagonal and the
+    /// off-diagonal coupling is silently dropped.
+    ///
+    /// This is the same defect class as the Boys-screened `eps_loc` bug
+    /// (screen.rs, fixed 17e994e) and the AO-Laplace pseudo-density bug.
+    /// Whether it MATTERS depends on how large the occ-occ / vir-vir
+    /// off-diagonal blocks actually are at convergence -- which nobody had
+    /// measured. This test measures it and pins the answer.
+    ///
+    /// NOTE the occ-VIR block is expected to be nonzero (that is the orbital
+    /// gradient, which OO drives toward zero); what matters for the MP2
+    /// denominators is the occ-OCC and vir-VIR blocks.
+    #[test]
+    fn oo_converged_basis_offdiagonal_fock_is_measured_not_assumed() {
+        // Water, NOT H2: H2 has nocc = 1, so max|F_oo offdiag| is trivially 0
+        // and the occ-occ half of this diagnostic would be vacuous.
+        let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+        let bs = basis::bundled("cc-pvdz").unwrap();
+        let obs = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol, &obs, op, &bounds,
+            &RhfConfig { energy_conv: 1e-10, ..Default::default() },
+        )
+        .unwrap();
+        let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
+        assert!(mol.nelec() as usize / 2 > 1, "need nocc > 1 or occ-occ is vacuous");
+
+        let oo = oo_ri_mp2(
+            &mol, &obs, &dfbs, op, &bounds, &rhf, &OoRiMp2Config::default(),
+        )
+        .unwrap();
+        assert!(oo.converged, "OO must converge for this diagnostic to mean anything");
+
+        let nocc = mol.nelec() as usize / 2;
+        let c = &oo.mos;
+        // Rebuild F in the OPTIMIZED MO basis. compute_hf_energy returns the AO
+        // Fock built from the given coefficients, which is exactly the matrix
+        // orbital_energies() takes its diagonal from.
+        let h = oneelectron::hcore(&obs);
+        let pool = EnginePool::new(bounds.op, &obs, 1e-14).unwrap();
+        let (_e, f_ao, _d) =
+            compute_hf_energy(&mol, &obs, &bounds, c, nocc, &h, &pool, 0).unwrap();
+        let f_mo = c.t().dot(&f_ao).dot(c);
+        let n = f_mo.nrows();
+
+        let block_max = |rs: std::ops::Range<usize>, cs: std::ops::Range<usize>| -> f64 {
+            let mut m = 0.0f64;
+            for i in rs.clone() {
+                for j in cs.clone() {
+                    if i != j {
+                        m = m.max(f_mo[(i, j)].abs());
+                    }
+                }
+            }
+            m
+        };
+        let oo_blk = block_max(0..nocc, 0..nocc);
+        let vv_blk = block_max(nocc..n, nocc..n);
+        let ov_blk = {
+            let mut m = 0.0f64;
+            for i in 0..nocc {
+                for a in nocc..n {
+                    m = m.max(f_mo[(i, a)].abs());
+                }
+            }
+            m
+        };
+        let diag: Vec<f64> = (0..n).map(|i| f_mo[(i, i)]).collect();
+        let spread = diag.iter().cloned().fold(f64::MIN, f64::max)
+            - diag.iter().cloned().fold(f64::MAX, f64::min);
+
+        eprintln!(
+            "H2O/cc-pVDZ OO-RI-MP2 converged basis: max|F_oo offdiag| = {oo_blk:.3e}, \
+             max|F_vv offdiag| = {vv_blk:.3e}, max|F_ov| = {ov_blk:.3e}, \
+             diag spread = {spread:.3e}"
+        );
+        eprintln!(
+            "  ratio to spread: occ-occ {:.2e}, vir-vir {:.2e}",
+            oo_blk / spread,
+            vv_blk / spread
+        );
+
+        // TEETH: this must actually be exercising a ROTATED basis, else the
+        // measurement is vacuous. A converged OO run that never moved off
+        // canonical would make every off-diagonal ~0 for trivial reasons.
+        assert!(
+            oo.iterations > 0,
+            "OO reported 0 iterations -- basis never rotated, diagnostic is vacuous"
+        );
+
+        // Pin the measured magnitude. This is NOT asserting the approximation
+        // is fine; it is recording the size so a regression (or a fix) is
+        // visible. If either blows up, the denominators are badly wrong.
+        assert!(
+            oo_blk / spread < 1e-1 && vv_blk / spread < 1e-1,
+            "occ-occ ({:.2e}) or vir-vir ({:.2e}) off-diagonal coupling exceeds \
+             10% of the diagonal spread -- the diag(F_mo) MP2 denominators in \
+             orbital_energies() are then a poor approximation and must be \
+             replaced by semicanonicalization (cf. screen.rs fix 17e994e)",
+            oo_blk / spread,
+            vv_blk / spread
+        );
     }
 
     #[test]
