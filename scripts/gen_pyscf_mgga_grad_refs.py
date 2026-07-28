@@ -35,12 +35,27 @@ CASES = [
     ("h2o", "sto-3g", "O 0 0 0; H 0 0.7572 0.5868; H 0 -0.7572 0.5868", 0, 1, "SCAN",   "scan"),
     ("h2o", "sto-3g", "O 0 0 0; H 0 0.7572 0.5868; H 0 -0.7572 0.5868", 0, 1, "R2SCAN", "r2scan"),
     ("h2o", "6-31g",  "O 0 0 0; H 0 0.7572 0.5868; H 0 -0.7572 0.5868", 0, 1, "SCAN",   "scan"),
-    # Open shell. NOTE (2026-07-27): ferric's spin-polarized SCAN SCF ENERGY
-    # disagrees with PySCF by ~2e-4 Ha on this system (closed-shell SCAN agrees
-    # to ~1e-8, and OH/PBE agrees to 3e-8), so the ferric-vs-PySCF gradient gap
-    # here is dominated by the density, not the gradient formula. Kept as a
-    # reference so the pre-existing energy defect stays measured.
+    # Open shell.
+    #
+    # NOTE (2026-07-27): OH is a POOR open-shell meta-GGA reference and is kept
+    # only as a historical marker. Its β-HOMO sits at ~-0.0004 Ha (essentially
+    # zero), so the SCF surface is near-flat and the two codes settle on
+    # slightly different points: ferric needs 443 (SCAN) / 692 (r2SCAN)
+    # iterations at conv 1e-11, and PySCF's OWN SCAN energy for OH moves by
+    # 1.9e-5 Ha for nothing but a conv_tol change 1e-11 -> 1e-12. PySCF is
+    # therefore not a 1e-7 reference for THIS system.
+    #
+    # The well-behaved polarized cases below are the real bar: NH2 (doublet),
+    # CH3 (doublet) and O2 (triplet) all agree ferric-vs-PySCF to ~1e-8 Ha for
+    # BOTH SCAN and r2SCAN at (99,302) — same code path, same buffers. Use
+    # those to validate the polarized meta-GGA gradient, not OH.
     ("oh",  "sto-3g", "O 0 0 0; H 0 0 0.97",                            0, 2, "SCAN",   "scan"),
+    ("nh2", "sto-3g", "N 0 0 0.1414; H 0 0.8067 -0.4950; H 0 -0.8067 -0.4950",
+                                                                        0, 2, "SCAN",   "scan"),
+    ("nh2", "sto-3g", "N 0 0 0.1414; H 0 0.8067 -0.4950; H 0 -0.8067 -0.4950",
+                                                                        0, 2, "R2SCAN", "r2scan"),
+    ("ch3", "sto-3g", "C 0 0 0; H 0 1.0790 0; H 0.9344 -0.5395 0; H -0.9344 -0.5395 0",
+                                                                        0, 2, "SCAN",   "scan"),
 ]
 
 

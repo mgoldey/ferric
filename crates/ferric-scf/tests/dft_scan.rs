@@ -17,6 +17,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
+use ferric_scf::uhf::solve_uhf;
 use serde::Deserialize;
 use std::fs;
 use std::path::PathBuf;
@@ -121,6 +122,95 @@ fn r2scan_water() {
 #[test]
 fn r2scan_methane() {
     run_case("CH4", CH4, "r2SCAN", "methane_cc-pvdz_r2scan.json");
+}
+
+// ── Open shell (UKS): the SPIN-POLARIZED meta-GGA energy ──────────────────
+//
+// Added 2026-07-27. The closed-shell cases above exercise
+// `eval_mgga_unpolarized` only; nothing above can catch a defect in the
+// ρ_α ≠ ρ_β / τ_α ≠ τ_β path (`eval_mgga_polarized`, `eval_tau_uks`, and the
+// per-spin V^τ assembly in `semilocal_vxc_polarized_scratch`). That gap is why
+// a misdiagnosed "polarized SCAN energy defect" was recorded in
+// `dft_gradient_mgga.rs` for a while — see the corrected history block there.
+//
+// The measured agreement for these three is ~1e-8 Ha, i.e. the SAME bar the
+// closed-shell cases hit, so they are asserted at `TOL` unchanged.
+//
+// OH is deliberately NOT here: its β-HOMO converges to ~-4e-4 Ha, so the SCF
+// surface is near-flat and neither code is reference-grade (PySCF's own OH/SCAN
+// energy moves 1.9e-5 Ha on a conv_tol change alone). Adding OH would encode
+// that instability as a "tolerance".
+
+const NH2: &str = "3\nNH2\nN 0 0 0.1414\nH 0 0.8067 -0.4950\nH 0 -0.8067 -0.4950\n";
+const CH3: &str = "4\nCH3\nC 0 0 0\nH 0 1.0790 0\n\
+                   H 0.9344 -0.5395 0\nH -0.9344 -0.5395 0\n";
+const O2: &str = "2\nO2\nO 0 0 0\nO 0 0 1.2075\n";
+
+fn run_uks_case(label: &str, xyz: &str, mult: usize, xc: &str, expected_file: &str) {
+    let mol = Molecule::parse_xyz(xyz, 0, mult).unwrap();
+    let bs = basis::bundled("cc-pvdz").unwrap();
+    let obs = PreparedBasis::new(&mol, &bs).unwrap();
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+    let ctx = ParallelContext::default();
+
+    let cfg = RhfConfig {
+        xc: Some(xc.into()),
+        df_j_aux: Some("def2-universal-jkfit".into()),
+        energy_conv: ENERGY_CONV,
+        density_conv: DENSITY_CONV,
+        max_iter: 500,
+        ..Default::default()
+    };
+    let res = solve_uhf(&ctx, &mol, &obs, &bounds, &cfg).unwrap();
+
+    let r: Ref =
+        serde_json::from_str(&fs::read_to_string(ref_path(expected_file)).unwrap()).unwrap();
+    assert!(r.converged, "PySCF reference {expected_file} not converged");
+    assert!(res.converged, "ferric {xc} UKS SCF for {label} did not converge");
+
+    let err = (res.energy - r.e_total).abs();
+    eprintln!(
+        "[{label}/{xc}/UKS] ferric = {:.10} Ha,  PySCF = {:.10} Ha,  err = {err:.2e}",
+        res.energy, r.e_total
+    );
+    assert!(
+        err < TOL,
+        "{xc} UKS E_total mismatch for {label}: err = {err:.2e} (ferric={:.10}, pyscf={:.10})",
+        res.energy, r.e_total
+    );
+}
+
+#[test]
+fn scan_nh2_uks() {
+    run_uks_case("NH2", NH2, 2, "SCAN", "nh2_cc-pvdz_scan.json");
+}
+
+#[test]
+fn scan_ch3_uks() {
+    run_uks_case("CH3", CH3, 2, "SCAN", "ch3_cc-pvdz_scan.json");
+}
+
+/// Triplet — the largest spin polarization in this set, and the case where a
+/// swapped or mis-strided τ_α/τ_β buffer would show up most strongly.
+#[test]
+fn scan_o2_triplet_uks() {
+    run_uks_case("O2", O2, 3, "SCAN", "o2_cc-pvdz_scan.json");
+}
+
+#[test]
+fn r2scan_nh2_uks() {
+    run_uks_case("NH2", NH2, 2, "r2SCAN", "nh2_cc-pvdz_r2scan.json");
+}
+
+#[test]
+fn r2scan_ch3_uks() {
+    run_uks_case("CH3", CH3, 2, "r2SCAN", "ch3_cc-pvdz_r2scan.json");
+}
+
+#[test]
+fn r2scan_o2_triplet_uks() {
+    run_uks_case("O2", O2, 3, "r2SCAN", "o2_cc-pvdz_r2scan.json");
 }
 
 /// Meta-GGA nuclear gradients ARE implemented (the τ-dependent AO-derivative and

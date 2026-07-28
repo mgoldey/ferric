@@ -1,16 +1,16 @@
 {
-  "label": "h2",
+  "label": "ch3",
   "basis": "cc-pvdz",
   "xc": "r2scan",
   "charge": 0,
-  "multiplicity": 1,
+  "multiplicity": 2,
   "main_grid": [
     75,
     110
   ],
   "nlc_grid": null,
-  "e_total": -1.1659014817119204,
-  "e_nuc": 0.7151043390810812,
-  "n_e": 2,
+  "e_total": -39.81133021906264,
+  "e_nuc": 9.677463379701551,
+  "n_e": 9,
   "converged": true
 }

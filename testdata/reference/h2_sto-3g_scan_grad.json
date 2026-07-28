@@ -8,9 +8,9 @@
     75,
     110
   ],
+  "grid_response": true,
   "e_total": -1.157514536157245,
   "converged": true,
-  "grid_response": true,
   "grad": [
     [
       -1.319772103037817e-18,

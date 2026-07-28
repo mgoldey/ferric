@@ -253,34 +253,57 @@ fn scan_gradient_h2o_631g_vs_pyscf() {
 
 // ── Open shell (UKS) ──────────────────────────────────────────────────────
 //
-// The UKS meta-GGA gradient path is implemented and wired
-// (`xc_gradient_uks_mgga_from_density`), but it CANNOT be validated to the same
-// bar as closed-shell, because of a **pre-existing defect in the spin-polarized
-// SCAN SCF ENERGY** that predates this gradient work:
+// HISTORY (corrected 2026-07-27). This block previously asserted a
+// "pre-existing defect in the spin-polarized SCAN SCF ENERGY", inferred from a
+// 2.2e-4 Ha ferric-vs-PySCF gap on OH/STO-3G SCAN plus a non-smooth E(R). That
+// diagnosis was WRONG. There is no polarized meta-GGA defect. What was actually
+// measured was OH being a pathological SCF system for meta-GGA, compounded by
+// SCAN's own grid pathology. The evidence that overturned it:
 //
-//   * OH/STO-3G PBE  (GGA, same system, same UKS code path):
-//       ferric E = -74.5726577634, PySCF = -74.5726577938  → 3.0e-8 Ha
-//       ferric ∂E/∂z(O) = +9.644043e-2, PySCF = +9.643770e-2 → 2.7e-6
-//   * H2O/STO-3G SCAN run as a singlet through the UKS path (ρ_α = ρ_β):
-//       RKS vs UKS agree to 5.9e-9 Ha
-//   * OH/STO-3G SCAN (genuinely spin-polarized):
-//       ferric E = -74.6467607, PySCF = -74.6469791 → 2.2e-4 Ha
+//  1. libxc packing/kernel is EXACT. Feeding hand-built polarized
+//     (ρ_α, ρ_β, σ_αα, σ_αβ, σ_ββ, τ_α, τ_β) with ρ_α≠ρ_β and τ_α≠τ_β through
+//     `eval_mgga_polarized` reproduces PySCF's `libxc.eval_xc(..., spin=1)`
+//     BIT-FOR-BIT (all of exc/vrho/vsigma/vtau, MGGA_{X,C}_{SCAN,R2SCAN}).
+//     A transposed or mis-strided τ buffer is therefore ruled out directly.
+//     The strided parallel-chunk path is bit-identical to the serial path too.
 //
-// So: the UKS driver is right (PBE), and the polarized SCAN kernel is right when
-// ρ_α = ρ_β. The error appears only for ρ_α ≠ ρ_β SCAN. Its downstream symptom
-// is that E(R) is not a smooth function of geometry — over 1e-3 Å steps the
-// SCAN OH energy difference flips sign (+9.1e-5, +4.6e-5 where the trend is
-// -1.6e-4), while PBE on the identical scan is monotone to 3 significant
-// figures. That makes an FD reference for open-shell SCAN meaningless: the
-// FD "gradient" comes out +0.214 where both ferric's analytic value (+0.0839)
-// and PySCF's (+0.0844) agree to 0.6%.
+//  2. E_xc on an IDENTICAL polarized density agrees. Evaluating ferric's
+//     polarized meta-GGA E_xc on PySCF's own converged OH/STO-3G UKS density:
+//       SCAN  : PySCF -9.008668117931  ferric -9.008668456727  → 3.4e-7
+//       r2SCAN: PySCF -8.997832541635  ferric -8.997832880573  → 3.4e-7
+//     The residual is the SAME constant 3.39e-7 for both functionals — a
+//     grid/Becke-partition difference. A wrong τ factor would scale with each
+//     functional's v_τ magnitude (which differ by ~10%), not stay constant.
 //
-// This test therefore records the CURRENT measured state rather than asserting
-// a physics bar it cannot meet. The 1e-3 bound is a regression guard on the
-// gradient assembly (a factor-2 or sign error in the τ term would blow past it
-// by ~2 orders of magnitude — see the FD counterfactual in the closed-shell
-// section). Tighten it to 1e-4, matching closed-shell, once the polarized SCAN
-// energy defect is fixed. Do NOT loosen it.
+//  3. Other genuinely polarized systems agree to ~1e-8, same code path.
+//     ferric − PySCF at (99,302), UKS, RI-J def2-universal-jkfit:
+//       NH2 doublet /sto-3g: PBE -2.4e-8  r2SCAN -2.9e-8  SCAN -2.7e-8
+//       O2  triplet /sto-3g: PBE -4.8e-8  r2SCAN -9.1e-8  SCAN -4.2e-8
+//       CH3 doublet /sto-3g: PBE +4.9e-9  r2SCAN -1.3e-8  SCAN -1.3e-9
+//       (6-31G likewise, all ≤ 6.5e-7). Only OH is an outlier.
+//
+//  4. OH is the pathology, not the kernel. Its β-HOMO converges to ~-0.0004 Ha,
+//     i.e. essentially zero gap, so the surface is near-flat: ferric needs 443
+//     (SCAN) / 692 (r2SCAN) iterations at conv 1e-11, and the two codes settle
+//     on marginally different points. PySCF is not a 1e-7 reference for this
+//     system — its OWN OH/SCAN energy moves 1.9e-5 Ha for nothing but a
+//     conv_tol change (1e-11 → 1e-12: -74.646861758 → -74.646843050).
+//
+//  5. The E(R) non-smoothness is SCAN-specific and grid-refinement-RESISTANT,
+//     which is a known SCAN trait (r2SCAN was designed to fix exactly it), not
+//     a spin bug. Over 1e-3 Å steps on OH/STO-3G:
+//       SCAN   (75,110) : sign flips (+1.16e-4, +1.06e-5 against a -1.5e-4 trend)
+//       SCAN   (150,302): STILL non-smooth (-2.35e-4, -1.04e-4, ..., -2.50e-4)
+//       r2SCAN (75,110) : already monotone (-1.54e-4 → -1.22e-4)
+//       r2SCAN (150,302): monotone, smooth to ~1e-6 (-1.587e-4 → -1.475e-4)
+//     Same buffers, same assembly, same driver — only the functional differs.
+//
+// The OH/SCAN case below therefore keeps a LOOSE 1e-3 bound, but for the honest
+// reason: OH is a near-degenerate SCF system and SCAN is grid-pathological, so
+// neither code's answer is reference-grade there. It stays as a regression guard
+// (a factor-2 or sign error in the τ term blows past it by ~2 orders of
+// magnitude). The well-behaved polarized cases (NH2, CH3) carry the real bar at
+// 1e-4 — the same tolerance as closed-shell.
 
 fn uhf_cfg(xc: &str) -> RhfConfig {
     RhfConfig {
@@ -350,8 +373,41 @@ fn pbe_gradient_oh_sto3g_uks_vs_pyscf() {
     assert!(g_diff < 1e-4, "OH/PBE UKS gradient vs PySCF: {g_diff:.3e}");
 }
 
+/// OH is a near-degenerate open-shell system (β-HOMO ≈ -4e-4 Ha) AND SCAN is
+/// grid-pathological, so neither ferric nor PySCF is reference-grade here — see
+/// the block comment above for the measurements. Kept as a coarse regression
+/// guard on the τ gradient assembly only. The real bar is `nh2_*` / `ch3_*`.
 #[test]
 fn scan_gradient_oh_sto3g_uks_vs_pyscf() {
     run_uks_vs_pyscf("OH/sto-3g", "2\nOH\nO 0 0 0\nH 0 0 0.97\n", 0, 2, "sto-3g",
                      "SCAN", "oh_sto-3g_scan_grad.json", 1e-3);
+}
+
+const NH2: &str = "3\nNH2\nN 0 0 0.1414\nH 0 0.8067 -0.4950\nH 0 -0.8067 -0.4950\n";
+const CH3: &str = "4\nCH3\nC 0 0 0\nH 0 1.0790 0\n\
+                   H 0.9344 -0.5395 0\nH -0.9344 -0.5395 0\n";
+
+/// Well-behaved polarized meta-GGA gradient: NH2 doublet. Its SCF energy agrees
+/// with PySCF to 2.7e-8 Ha (SCAN) — same UKS + polarized-meta-GGA code path OH
+/// uses — so this case CAN carry the closed-shell 1e-4 bar.
+#[test]
+fn scan_gradient_nh2_sto3g_uks_vs_pyscf() {
+    run_uks_vs_pyscf("NH2/sto-3g", NH2, 0, 2, "sto-3g",
+                     "SCAN", "nh2_sto-3g_scan_grad.json", 1e-4);
+}
+
+/// r2SCAN sibling of the NH2 case: exercises the same polarized τ assembly with
+/// a different v_τ magnitude, which is what would expose a τ scaling error.
+#[test]
+fn r2scan_gradient_nh2_sto3g_uks_vs_pyscf() {
+    run_uks_vs_pyscf("NH2/sto-3g", NH2, 0, 2, "sto-3g",
+                     "R2SCAN", "nh2_sto-3g_r2scan_grad.json", 1e-4);
+}
+
+/// CH3 doublet — a second well-behaved polarized system, with the spin density
+/// on carbon rather than on the electronegative centre.
+#[test]
+fn scan_gradient_ch3_sto3g_uks_vs_pyscf() {
+    run_uks_vs_pyscf("CH3/sto-3g", CH3, 0, 2, "sto-3g",
+                     "SCAN", "ch3_sto-3g_scan_grad.json", 1e-4);
 }
