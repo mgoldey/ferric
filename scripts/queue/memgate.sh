@@ -54,6 +54,21 @@ mem_psi_some10() {
        END {if (!found) print "0"}' /proc/pressure/memory 2>/dev/null || echo 0
 }
 
+# Are we ACTUALLY paging, right now? PSI alone is not enough: once swap has
+# filled during an earlier incident it stays full (the kernel has no reason to
+# fault pages back in), and the resulting refault accounting keeps `some avg10`
+# pinned near 15-20 indefinitely -- even with 14 GB free, si/so = 0 and wa = 0%.
+#
+# Measured 2026-07-27: that stale reading gated the whole T sweep down to ONE
+# running job on a 12-core box with no real pressure at all. Blocking on a
+# signal that cannot clear is worse than not gating.
+#
+# vmstat's si/so are the ground truth for "pages are moving". Sample over 2 s
+# and report KB/s in+out.
+mem_paging_kbps() {
+  vmstat 2 2 2>/dev/null | tail -1 | awk '{print $7 + $8}'
+}
+
 mem_wait() {
   local need_mb="${1:?mem_wait needs a size in MB}"
   local max_wait="${2:-5400}"
@@ -65,8 +80,17 @@ mem_wait() {
   while :; do
     avail=$(mem_avail_mb)
     psi=$(mem_psi_some10)
-    if [ "$avail" -ge "$want" ] && awk -v p="$psi" -v l="$psi_limit" \
-         'BEGIN{exit !(p < l)}'; then
+    # High PSI only counts as a reason to wait if pages are genuinely moving.
+    # Otherwise it is stale-swap residue and we admit on the availability test
+    # alone. See mem_paging_kbps above.
+    local paging=0
+    if ! awk -v p="$psi" -v l="$psi_limit" 'BEGIN{exit !(p < l)}'; then
+      paging=$(mem_paging_kbps)
+      [ -z "$paging" ] && paging=0
+    fi
+    if [ "$avail" -ge "$want" ] && \
+       { awk -v p="$psi" -v l="$psi_limit" 'BEGIN{exit !(p < l)}' || \
+         [ "$paging" -lt "${MEMGATE_PAGING_KBPS:-256}" ]; }; then
       [ -n "$MEMGATE_DEBUG" ] && \
         echo "[mem  ] admit: avail=${avail}MB want=${want}MB psi=${psi}"
       return 0
