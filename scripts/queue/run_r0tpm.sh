@@ -28,8 +28,16 @@
 cd /home/matt/qc/ferric
 . scripts/queue/memgate.sh
 export FERRIC_TERF_TABLE_DIR=/home/matt/qc/terf-tables-data
-export OPENBLAS_NUM_THREADS=1 RAYON_NUM_THREADS=4
-NPROC=3
+# RAYON=2, NPROC=5, not RAYON=4/NPROC=3. MEASURED 2026-07-27: with RAYON=4 the
+# three running jobs drew only ~190% CPU each (572% of 1200% total) while load
+# average sat at 14.5 -- i.e. threads were QUEUEING without adding throughput.
+# ferric's intra-job scaling is poor at this size (see the
+# ferric-single-job-threading-noop note); more concurrent JOBS beats more
+# threads per job. 6 slots x ~190% saturates 12 cores, and every REMAINING T
+# system is 4-12 atoms (0.5-2.3 GB measured), so 5 slots fit RAM with headroom
+# alongside the one S22 job.
+export OPENBLAS_NUM_THREADS=1 RAYON_NUM_THREADS=2
+NPROC=5
 
 run() {
   local key="$1" out="benchmarks/grid/out/$1.out"
@@ -40,7 +48,7 @@ run() {
   if [ -s "$out" ] && [ "$(grep -c 'Total energy' "$out" 2>/dev/null)" -ge "$want" ]; then
     echo "[skip ] $key (has $want pts)"; return
   fi
-  mem_wait "${SLOT_MB:-3400}" || echo "[mem  ] proceeding anyway for $key"
+  mem_wait "${SLOT_MB:-2500}" || echo "[mem  ] proceeding anyway for $key"
   exec 9>"${out}.lock"
   if ! flock -n 9; then echo "[lock ] $key running elsewhere"; return; fi
   local st; st=$(date +%s)
