@@ -175,8 +175,17 @@ def natural_cubic_spline(xs, ys):
     return f
 
 
-def analyze(basis, form, want, verbose=True):
-    """Returns (points, spline_min_r0, spline_min_mae, interior) or None."""
+def analyze(basis, form, want, verbose=True, metric="mae"):
+    """Returns (points, spline_min_r0, spline_min_value, interior) or None.
+
+    `metric` selects what the SPLINE is fitted to -- "mae" or "rmsd". Both are
+    always printed; only the curve being minimized changes. This matters
+    because the two need not agree: MAE weights every system alike, RMSD
+    weights the worst ones, and a method whose benefit is concentrated in a few
+    hard cases (as B's is, on the repulsive pi-stacks) can have its optimum sit
+    at a different r0 under each. If they DO agree, that is evidence the
+    optimum is a property of the method rather than of the error measure.
+    """
     bind = load_bind()
     data = collect(basis, form)
     if not data:
@@ -251,7 +260,7 @@ def analyze(basis, form, want, verbose=True):
             "max_abs": max(abs(e) for e in signed),
             "bias": sum(signed) / n,
         }
-        pts.append((r0, mae))
+        pts.append((r0, mae if metric == "mae" else rmsd))
 
     if verbose and pts:
         print(f"\n{'r0 (A)':>8}  {'MAE':>8}  {'RMSD':>8}  {'max|e|':>8}  {'bias':>8}   (kcal/mol)")
@@ -280,11 +289,12 @@ def analyze(basis, form, want, verbose=True):
     interior = xs[0] < best_x < xs[-1]
 
     if verbose:
-        print(f"\nspline minimum : r0 = {best_x:.4f} A   MAE = {best_y:.4f} kcal/mol")
+        print(f"\nspline minimum ({metric.upper()}) : r0 = {best_x:.4f} A   "
+              f"{metric.upper()} = {best_y:.4f} kcal/mol")
         if interior:
             gx, gy = min(pts, key=lambda p: p[1])
             print(f"INTERIOR minimum -- resolved. best sampled r0={gx:.3f} "
-                  f"(MAE {gy:.4f}); spline is {gy - best_y:.4f} lower.")
+                  f"({metric.upper()} {gy:.4f}); spline is {gy - best_y:.4f} lower.")
         else:
             print("BOUNDARY minimum -- the optimum lies OUTSIDE the sampled "
                   f"range [{lo:.2f}, {hi:.2f}]. Extend the scan; do NOT quote "
@@ -435,6 +445,11 @@ def main():
                     help="refinement window half-width in Angstrom (interior case)")
     ap.add_argument("--toml", action="store_true",
                     help="emit the suggestion as a [mp2] r0_sweep line")
+    ap.add_argument("--metric", choices=("mae", "rmsd"), default="mae",
+                    help="which error statistic the SPLINE is fitted to "
+                         "(both are always printed). RMSD is what the A24 "
+                         "literature reports and weights the worst systems "
+                         "more heavily.")
     ap.add_argument("--dump", metavar="PATH", default=None,
                     help="write per-r0/per-system results to PATH as JSON "
                          "(default name: r0_scan_<basis>_<form>.json)")
@@ -446,7 +461,7 @@ def main():
         if not a.toml:
             print(f"wrote {path}: {len(doc['points'])} r0 points, "
                   f"{len(doc['requested_systems'])} systems")
-    res = analyze(a.basis, a.form, want, verbose=not a.toml)
+    res = analyze(a.basis, a.form, want, verbose=not a.toml, metric=a.metric)
     if not res:
         return 1
     pts, bx, _by, interior = res
