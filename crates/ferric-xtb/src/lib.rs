@@ -38,7 +38,7 @@
 //!
 //! ```text
 //! pip install --user meson
-//! meson setup build --prefix=$HOME/.local --buildtype=release \
+//! meson setup build --prefix=$HOME/.local --buildtype=release -Doptimization=2 \
 //!   -Dlapack=openblas -Dtblite=disabled -Dcpcmx=disabled -Ddefault_library=shared
 //! meson compile -C build
 //! meson install -C build
@@ -46,6 +46,14 @@
 //!
 //! `tblite`/`cpcmx` are optional alternate-backend/solvation features that the
 //! GFN1/GFN2/GFN-FF C API does not need.
+//!
+//! ## `-Doptimization=2` is REQUIRED, not a preference
+//!
+//! Plain `--buildtype=release` compiles at `-O3`, and **gfortran 13.3
+//! miscompiles xtb 6.7.1's GFN1/GFN2 SCF gradient at `-O3`**: the analytic
+//! gradient comes out ~20x too large and points the wrong way, while the
+//! energy stays correct. `-Doptimization=2` overrides that back to `-O2`,
+//! which is verified correct. See the "Validation status" section below.
 //!
 //! # Units
 //!
@@ -59,19 +67,31 @@
 //! water reproduce the xtb CLI binary's own printed values to <1e-8 Ha. This is
 //! the conformer-screening use case, and it works.
 //!
-//! **Gradients: transferred faithfully, but DO NOT TRUST THE VALUES.** This
-//! binding reproduces the CLI's own `gradient` file to <1e-10, so the FFI
-//! transfer is correct -- but xtb 6.7.1 itself returns an analytic gradient that
-//! disagrees with a finite difference of its own energy (~20x too large on
-//! water), and **xtb's own `meson test` suite fails the same way**
-//! (`unit - xtb:gfn2`, `unit - xtb:gfn1`, `unit - xtb:hessian`). Reproduced in
-//! builds both with and without OpenMP. See the doc comment on
-//! `gfn2_gradient_disagrees_with_finite_difference` in
-//! `tests/xtb_singlepoint.rs` for the full evidence chain.
+//! **Gradients: validated** (against a libxtb built at `-O2`; see the build
+//! note above). The analytic gradient matches a central finite difference of
+//! xtb's own energy on every component to <1e-6 Ha/Bohr
+//! (`gfn2_gradient_matches_finite_difference`), and this binding reproduces the
+//! CLI's own `gradient` file to <1e-10, so both the value and the FFI transfer
+//! are correct. Forces and xTB geometry optimisation are supported.
 //!
-//! Consequently: use this crate for **energy-ranked conformer screening**, not
-//! for xTB geometry optimisation or forces, until the upstream defect is
-//! resolved.
+//! ## Previously-documented gradient defect: RESOLVED (was a `-O3` miscompile)
+//!
+//! Earlier revisions of this crate warned that gradients must not be trusted:
+//! xtb returned an analytic gradient ~20x too large that disagreed with FD,
+//! `xtb --opt` on H2 drove 0.75 -> 2.92 Ang while *raising* the energy, and
+//! xtb's own `meson test` failed `unit - xtb:gfn1`, `gfn2` and `hessian`.
+//!
+//! That was **a gfortran 13.3 miscompilation of xtb at `-O3`**, not an xtb
+//! source bug and not a binding bug. Rebuilding the same source at `-O2` fixes
+//! all of it: xtb's own gfn1/gfn2/hessian unit tests pass, FD agrees with the
+//! analytic gradient to ~7 significant figures, and H2 optimises to 0.776 Ang.
+//! Only GFN1/GFN2 were affected -- GFN0 uses a separate gradient path and was
+//! always correct. Explicitly ruled out by experiment: the bundled dftd4 and
+//! multicharge subprojects (correctly pinned to v3.5.0/v0.2.0, not `HEAD`),
+//! OpenBLAS threading, and the BLAS backend itself.
+//!
+//! Energies were never affected -- they were byte-identical between the `-O3`
+//! and `-O2` builds.
 //!
 //! # Threading
 //!

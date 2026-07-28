@@ -53,7 +53,7 @@ H   0.000000  -0.755453  -0.471161
 /// TOTAL ENERGY on the identical geometry.
 ///
 /// Reference (`xtb --gfn 2 --sp water.xyz`, xtb 6.7.1, this build):
-///   TOTAL ENERGY  -5.070325128562 Eh   (gradient norm 0.139602571206 Eh/a0)
+///   TOTAL ENERGY  -5.070325128562 Eh   (gradient norm 0.008098996263 Eh/a0)
 ///
 /// Tolerance 1e-8 Ha: the CLI prints 12 decimals, so any real discrepancy
 /// (units, geometry transfer, charge/uhf) would be orders of magnitude larger.
@@ -77,7 +77,7 @@ fn gfn2_water_energy_matches_xtb_cli() {
 
     // The CLI also prints the gradient norm, so this is a second independent
     // check -- and specifically one on the gradient's units (Hartree/Bohr).
-    const XTB_CLI_GFN2_WATER_GNORM: f64 = 0.139602571206;
+    const XTB_CLI_GFN2_WATER_GNORM: f64 = 0.008098996263;
     let gnorm = out.gradient.iter().map(|g| g * g).sum::<f64>().sqrt();
     let gdev = (gnorm - XTB_CLI_GFN2_WATER_GNORM).abs();
     assert!(
@@ -189,19 +189,21 @@ H   0.000000  -0.755453  -0.471161
 ///
 /// This is the transfer check that is actually meaningful here: it proves the
 /// `[natoms][3]` layout, the row/column ordering and the sign convention all
-/// survive the FFI boundary. See `gfn2_gradient_disagrees_with_finite_difference`
-/// for why this is NOT paired with a passing FD assertion.
+/// survive the FFI boundary. It is paired with
+/// `gfn2_gradient_matches_finite_difference`, which independently checks that
+/// the value xtb computes is the true derivative of its own energy.
 #[test]
 fn gfn2_gradient_matches_xtb_cli_gradient_file() {
     let _guard = xtb_lock();
-    // From the CLI's `gradient` file, xtb 6.7.1, this build:
-    //   -1.3570272628572E-17   4.7232145325676E-18  -8.6408120409245E-02
-    //    1.0797447332021E-17  -6.4379084252548E-02   4.3204060204623E-02
-    //    2.7728252965514E-18   6.4379084252548E-02   4.3204060204623E-02
+    // From the CLI's `gradient` file, xtb 6.7.1 built at -O2 (see the module
+    // doc for why the optimisation level matters):
+    //    9.2510791586002E-17  -2.3032361083061E-17   3.6377058406328E-03
+    //   -8.6487037493821E-17  -4.7824880967663E-03  -1.8188529203163E-03
+    //   -6.0237540921806E-18   4.7824880967663E-03  -1.8188529203164E-03
     const CLI_GRAD: [[f64; 3]; 3] = [
-        [-1.3570272628572E-17, 4.7232145325676E-18, -8.6408120409245E-02],
-        [1.0797447332021E-17, -6.4379084252548E-02, 4.3204060204623E-02],
-        [2.7728252965514E-18, 6.4379084252548E-02, 4.3204060204623E-02],
+        [9.2510791586002E-17, -2.3032361083061E-17, 3.6377058406328E-03],
+        [-8.6487037493821E-17, -4.7824880967663E-03, -1.8188529203163E-03],
+        [-6.0237540921806E-18, 4.7824880967663E-03, -1.8188529203164E-03],
     ];
 
     let mol = water();
@@ -221,43 +223,41 @@ fn gfn2_gradient_matches_xtb_cli_gradient_file() {
     }
 }
 
-/// KNOWN-BAD, DOCUMENTED: xtb 6.7.1's analytic gradient does not agree with a
-/// finite difference of its own energy, and the discrepancy is **xtb's, not this
-/// binding's**.
+/// The analytic gradient must be the true derivative of xtb's own energy:
+/// every component is checked against a central finite difference of the
+/// energies this same binding returns.
 ///
-/// Evidence gathered when this binding was written (2026-07-27, xtb 6.7.1
-/// commit a59bca3, gfortran 13.3, built from source both with and without
-/// OpenMP -- identical results):
+/// This is the check that makes gradients *usable* (forces, geometry
+/// optimisation) rather than merely faithfully transferred. It is the
+/// complement of `gfn2_gradient_matches_xtb_cli_gradient_file`: that test
+/// proves ferric reports what xtb computed, this one proves what xtb computed
+/// is right.
 ///
-/// 1. The energy is correct: this binding reproduces the xtb CLI's total energy
-///    to <1e-8 Ha for GFN1/GFN2/GFN-FF (the three tests above).
-/// 2. The gradient transfer is correct: this binding reproduces the CLI's own
-///    `gradient` file to <1e-10 (`gfn2_gradient_matches_xtb_cli_gradient_file`),
-///    and the gradient norm to 4e-11.
-/// 3. The CLI contradicts itself, with this binding uninvolved: finite
-///    differences of the CLI's *own* printed energies give +3.638e-3 Ha/Bohr for
-///    the water O-z component while the CLI's own analytic gradient says
-///    -8.641e-2 Ha/Bohr. The FD value is stable over three decades of step size
-///    (1e-2/1e-3/1e-4 Bohr), so it is not FD noise.
-/// 4. Running `xtb --opt` on H2 (0.75 Ang) drives the bond to 2.92 Ang and ends
-///    at a *higher* energy (-0.800 Ha) than it started (-0.982 Ha) -- an
-///    optimizer following a correct gradient cannot do that.
-/// 5. Decisively: **xtb's own unit tests fail the same way.** `meson test` on
-///    this source tree reports `unit - xtb:gfn2` "Floating point value
-///    missmatch, expected 0.6457E-2 but got 0.1348", plus the same class of
-///    failure in `unit - xtb:gfn1` and `unit - xtb:hessian`. Those tests never
-///    touch ferric.
+/// # History: this used to assert the opposite
 ///
-/// So: **energies from this binding are validated and usable for conformer
-/// screening; gradients must not be trusted until the upstream defect is
-/// resolved** (suspect the bundled dftd4/multicharge subproject versions that
-/// meson resolved to `HEAD` rather than a pinned tag).
+/// Until 2026-07-27 this test asserted a *known-broken* upstream state, because
+/// xtb's analytic gradient disagreed with FD by ~20x (water O-z: analytic
+/// -8.641e-2 vs FD +3.638e-3 Ha/Bohr), `xtb --opt` on H2 ran the bond from
+/// 0.75 to 2.92 Ang while raising the energy, and xtb's own `meson test` failed
+/// `unit - xtb:gfn1`, `gfn2` and `hessian` with "expected 0.6457E-2 but got
+/// 0.1348".
 ///
-/// This test asserts the *known* broken state so that it FAILS LOUDLY if a
-/// future xtb build fixes the gradient -- at which point delete this test and
-/// restore a real analytic-vs-FD check.
+/// **Root cause: a gfortran 13.3 miscompilation of xtb 6.7.1 at `-O3`**, not a
+/// bug in xtb's source, its dftd4/multicharge subprojects (both were correctly
+/// pinned to v3.5.0/v0.2.0), or this binding. `meson --buildtype=release`
+/// selects `-O3`; rebuilding the identical source at `-O0`, `-O1` or `-O2`
+/// gives a gradient that matches FD to ~7 significant figures and makes xtb's
+/// own gfn1/gfn2/hessian unit tests pass. Only GFN1/GFN2 were affected -- GFN0
+/// uses a different gradient path (`peeq_module.f90`) and was always correct.
+/// Ruled out by experiment: OpenBLAS threading (identical result at
+/// `OPENBLAS_NUM_THREADS=1`) and the BLAS backend itself (identical under
+/// `LD_PRELOAD` of reference netlib BLAS/LAPACK).
+///
+/// So libxtb **must be built at `-O2` or lower** with gfortran 13.x. If this
+/// test starts failing again, check the optimisation level of the installed
+/// libxtb before suspecting ferric.
 #[test]
-fn gfn2_gradient_disagrees_with_finite_difference() {
+fn gfn2_gradient_matches_finite_difference() {
     let _guard = xtb_lock();
     let mol = water();
 
@@ -279,23 +279,24 @@ fn gfn2_gradient_disagrees_with_finite_difference() {
         calc.energy().expect("displaced energy")
     };
 
-    // The O z-component: analytic -8.64e-2 vs FD +3.64e-3 in xtb 6.7.1.
-    let fd = (energy_at(0, 2, H) - energy_at(0, 2, -H)) / (2.0 * H);
-    let an = analytic[[0, 2]];
+    // 1e-6 Ha/Bohr comfortably covers central-difference truncation at
+    // h=1e-4 Bohr while still being ~3 orders tighter than the -O3 defect.
+    const TOL: f64 = 1e-6;
 
-    assert!(
-        (an - fd).abs() > 1e-3,
-        "xtb's analytic gradient now AGREES with finite difference \
-         (analytic {an:.10} vs FD {fd:.10}). The upstream gradient defect \
-         documented on this test appears to be FIXED -- delete this test and \
-         restore a real analytic-vs-FD validation, and re-enable gradients in \
-         the crate docs."
-    );
-
-    eprintln!(
-        "KNOWN xtb 6.7.1 gradient defect: analytic {an:.10} vs FD {fd:.10} Ha/Bohr \
-         (see this test's doc comment)"
-    );
+    for atom in 0..3 {
+        for axis in 0..3 {
+            let fd = (energy_at(atom, axis, H) - energy_at(atom, axis, -H)) / (2.0 * H);
+            let an = analytic[[atom, axis]];
+            let dev = (an - fd).abs();
+            assert!(
+                dev < TOL,
+                "gradient[{atom}][{axis}]: analytic {an:.10} vs finite difference \
+                 {fd:.10} Ha/Bohr (dev {dev:.3e} > {TOL:.0e}). If libxtb was built \
+                 at -O3 with gfortran 13.x, that is the known miscompilation -- \
+                 rebuild at -O2 (see this test's doc comment)."
+            );
+        }
+    }
 }
 
 /// Translating the whole molecule must leave the energy unchanged (xTB is
@@ -303,10 +304,12 @@ fn gfn2_gradient_disagrees_with_finite_difference() {
 /// (Newton's third law). Catches a coordinate-transfer bug that a single-point
 /// energy comparison alone could miss.
 ///
-/// Note this passes even under the gradient defect documented on
-/// `gfn2_gradient_disagrees_with_finite_difference`: xtb's analytic gradient is
-/// internally well-formed (correct symmetry, sums to zero) -- it just does not
-/// match the derivative of its own energy.
+/// Note this is a weaker check than it looks: it passed even under the `-O3`
+/// miscompilation described on `gfn2_gradient_matches_finite_difference`,
+/// because that defect left the gradient internally well-formed (correct
+/// symmetry, summing to zero) while still not being the derivative of the
+/// energy. Translational invariance alone cannot catch that -- the FD test is
+/// what does.
 #[test]
 fn translational_invariance_and_gradient_sum() {
     let _guard = xtb_lock();
