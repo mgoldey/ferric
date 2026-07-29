@@ -49,7 +49,13 @@ def test_prescreen_pose_score_matches_hand_calc_single_charge():
         charges=[(1.0, r_angstrom * ANGSTROM_TO_BOHR, 0.0, 0.0)],
         source_pdb=Path("fake.pdb"), ff="AMBER",
     )
-    embedded = embed_ligand_from_coords(["H"], [(0.0, 0.0, 0.0)], pocket=pocket, basis="sto-3g")
+    # H with a -1 formal charge = hydride, 2 electrons, singlet. The charge
+    # must be passed to the embedding too, not just to `atom_charges`: a
+    # neutral H is 1 electron and CANNOT be a singlet, so the SCF setup rejects
+    # it before the prescreen is ever reached.
+    embedded = embed_ligand_from_coords(
+        ["H"], [(0.0, 0.0, 0.0)], pocket=pocket, basis="sto-3g", charge=-1
+    )
     result = prescreen_pose(embedded, atom_charges=[-1.0])
     r_bohr = r_angstrom * ANGSTROM_TO_BOHR
     expected = -1.0 * (1.0 / r_bohr)
