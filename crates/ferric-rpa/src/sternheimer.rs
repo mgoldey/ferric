@@ -188,16 +188,59 @@ pub fn build_scale_factors(eps_occ: &[f64], eps_vir: &[f64], omega: f64) -> Arra
     build_scale_factors_with_prefactor(eps_occ, eps_vir, omega, 4.0)
 }
 
-/// Ascending-order check used by the canonical-eigenvalue guards.
+/// Number of descents (adjacent order violations) in `v`.
 ///
-/// A diagonalization returns eigenvalues sorted; a rotated/localized basis
-/// generally does not. This is a cheap NECESSARY condition for "these are
-/// canonical eigenvalues" — not sufficient (a rotation can coincidentally
-/// preserve order), which is why the guards are debug-grade tripwires rather
-/// than correctness proofs.
+/// Zero for a freshly diagonalized (sorted) set. A Boys/PNO-rotated set is
+/// effectively a random permutation of the energies, so it has ~n/2 descents.
 #[inline]
-fn is_nondecreasing(v: &[f64]) -> bool {
-    v.windows(2).all(|w| w[0] <= w[1] + 1e-12)
+fn descent_count(v: &[f64]) -> usize {
+    v.windows(2).filter(|w| w[0] > w[1] + 1e-12).count()
+}
+
+/// Heuristic used by the canonical-eigenvalue guard: are these energies
+/// plausibly the diagonal of a Fock-DIAGONAL basis?
+///
+/// # Why not "sorted ascending"
+///
+/// Strict sortedness was the original test, and it was WRONG — it conflated two
+/// different properties:
+///
+/// * "came from a diagonalization" (⇒ sorted), and
+/// * "the basis is Fock-diagonal" (⇒ the scalar `e_ia = eps_a − eps_i` is valid).
+///
+/// Only the second is what this function's callers actually require, and
+/// sortedness is *not* necessary for it. evGW is the counterexample that broke
+/// the strict check: `ferric_gw::sigma::run_evgw` overlays self-consistent
+/// quasiparticle energies onto the canonical set (`sigma.rs`, the single
+/// `shifted_rhf.eps_alpha[mo_abs] = eps_qp[idx]` assignment — the MO
+/// COEFFICIENTS are never touched, so the basis stays exactly canonical). A QP
+/// correction can legitimately push a level past its neighbour: for H2O/cc-pVDZ
+/// evGW@PBE the HOMO sinks from −0.3046 to −0.4293 Ha, crossing HOMO-1 at
+/// −0.4567. The basis is still perfectly diagonal and the scalar denominator is
+/// still exactly right — the set is simply no longer sorted.
+///
+/// # What this checks instead
+///
+/// The defect class the guard exists for (Boys/PNO-localized orbitals fed in as
+/// if canonical — `screen.rs`, commit 17e994e; AO-Laplace, commit 3693d5d) does
+/// not produce a *slightly* reordered set. A localizing rotation mixes orbitals
+/// freely, so the resulting `diag(Cᵀ F C)` is essentially a random permutation
+/// of the energy range, with ~n/2 descents. A physical level crossing displaces
+/// a handful of levels and leaves a small number.
+///
+/// So: allow a few descents, reject wholesale scrambling. The threshold is
+/// `max(1, n/4)` — comfortably above any realistic number of QP crossings
+/// (evGW's `qp_mos` block is a handful of states) and far below the ~n/2 a
+/// random permutation gives.
+///
+/// This remains a cheap, debug-grade tripwire, not a correctness proof: a
+/// rotation among near-degenerate orbitals can preserve order and slip through.
+/// Catching that would require checking the off-diagonal Fock norm directly,
+/// which this function does not have the matrix to do.
+#[inline]
+fn is_plausibly_diagonal(v: &[f64]) -> bool {
+    let allowed = std::cmp::max(1, v.len() / 4);
+    descent_count(v) <= allowed
 }
 
 /// Build scale factors s_ia = sqrt(prefactor·e_ia / (ω²+e_ia²)).
@@ -205,12 +248,18 @@ fn is_nondecreasing(v: &[f64]) -> bool {
 /// Use `prefactor=4` for closed-shell (single B_ov), `prefactor=2` per spin
 /// channel for open-shell (two B_ov tensors summed).
 ///
-/// # INVARIANT: `eps_occ`/`eps_vir` MUST be CANONICAL orbital energies
+/// # INVARIANT: `eps_occ`/`eps_vir` MUST come from a Fock-DIAGONAL basis
 ///
 /// `e_ia = eps_a − eps_i` is a per-pair SCALAR denominator. That form is valid
 /// only when the orbitals are Fock EIGENVECTORS — for a rotated (localized,
 /// PNO, semicanonical-pending) basis the Fock matrix is not diagonal and the
 /// scalar silently discards the off-diagonal coupling.
+///
+/// Note this requires the basis to be DIAGONAL, not the energies to be SORTED.
+/// Self-consistently updated quasiparticle energies (evGW) may cross and end up
+/// out of ascending order while the underlying basis is still exactly canonical;
+/// that is legitimate and the scalar denominator stays correct. See
+/// [`is_plausibly_diagonal`] for how the guard below draws that distinction.
 ///
 /// This is not hypothetical. `screen.rs` fed exactly this function per-orbital
 /// energies taken as `diag(C_locᵀ F C_loc)` from Boys-localized orbitals; the
@@ -231,13 +280,16 @@ pub fn build_scale_factors_with_prefactor(
     eps_occ: &[f64], eps_vir: &[f64], omega: f64, prefactor: f64,
 ) -> Array1<f64> {
     debug_assert!(
-        is_nondecreasing(eps_occ) && is_nondecreasing(eps_vir),
-        "build_scale_factors: eps_occ/eps_vir are not sorted ascending, which \
-         means they are almost certainly NOT canonical Fock eigenvalues. The \
-         per-pair scalar denominator e_ia = eps_a - eps_i is only valid in a \
-         Fock-DIAGONAL basis; for a rotated basis it silently drops the \
+        is_plausibly_diagonal(eps_occ) && is_plausibly_diagonal(eps_vir),
+        "build_scale_factors: eps_occ/eps_vir are heavily out of ascending \
+         order, which means they are almost certainly NOT the diagonal of a \
+         Fock-DIAGONAL basis but of a rotated (localized/PNO) one. The per-pair \
+         scalar denominator e_ia = eps_a - eps_i is only valid in a \
+         Fock-diagonal basis; for a rotated basis it silently drops the \
          off-diagonal coupling (see this function's docs, and screen.rs's \
-         semicanonicalization). Semicanonicalize before calling."
+         semicanonicalization). Semicanonicalize before calling. \
+         NOTE: a few descents are allowed and expected — self-consistent QP \
+         energies (evGW) legitimately cross while the basis stays canonical."
     );
     let nocc = eps_occ.len();
     let nvir = eps_vir.len();
@@ -816,23 +868,54 @@ mod canonical_guard_tests {
     /// the lesson from the union-rank gate, whose GO condition turned out to be
     /// unreachable, and from the AO-Laplace tripwire that only fired after the
     /// bug was fixed.
+    /// A Boys/PNO-localized occupied set: `diag(C_locᵀ F C_loc)` is a scrambled
+    /// permutation of the energy range, not a sorted eigenvalue list. This is
+    /// the shape of the REAL bug fixed in screen.rs (commit 17e994e).
+    ///
+    /// Built as an explicit shuffle of a canonical ladder so the values are all
+    /// physically plausible orbital energies — only their ORDER is wrong.
     #[test]
-    #[should_panic(expected = "not sorted ascending")]
-    fn scale_factor_guard_fires_on_unsorted_occupied_energies() {
-        // Descending order is what a Boys/PNO-rotated set typically looks like:
-        // the values are still real Fock expectation values, just not sorted,
-        // because they are no longer eigenvalues.
-        let eps_occ = [-0.5, -0.9];
-        let eps_vir = [0.2, 0.7];
+    #[should_panic(expected = "heavily out of ascending order")]
+    fn scale_factor_guard_fires_on_localized_occupied_energies() {
+        let eps_occ = [-0.5, -0.9, -0.6, -1.1, -0.7, -1.0, -0.8, -1.2];
+        assert!(descent_count(&eps_occ) > eps_occ.len() / 4, "test fixture must be scrambled");
+        let eps_vir = [0.2, 0.4, 0.6, 0.8];
         let _ = build_scale_factors(&eps_occ, &eps_vir, 0.0);
     }
 
     #[test]
-    #[should_panic(expected = "not sorted ascending")]
-    fn scale_factor_guard_fires_on_unsorted_virtual_energies() {
-        let eps_occ = [-0.9, -0.5];
-        let eps_vir = [0.7, 0.2];
+    #[should_panic(expected = "heavily out of ascending order")]
+    fn scale_factor_guard_fires_on_localized_virtual_energies() {
+        let eps_occ = [-1.2, -1.0, -0.8, -0.6];
+        let eps_vir = [0.7, 0.2, 0.8, 0.3, 0.9, 0.4, 1.0, 0.5];
+        assert!(descent_count(&eps_vir) > eps_vir.len() / 4, "test fixture must be scrambled");
         let _ = build_scale_factors(&eps_occ, &eps_vir, 0.0);
+    }
+
+    /// The relaxation must not swallow the real defect: a fully REVERSED set
+    /// (the maximally-unsorted case, n−1 descents) must still fire.
+    #[test]
+    #[should_panic(expected = "heavily out of ascending order")]
+    fn scale_factor_guard_fires_on_fully_reversed_energies() {
+        let eps_occ = [-0.5, -0.7, -0.9, -1.1, -1.3];
+        let eps_vir = [0.2, 0.4, 0.6, 0.8];
+        let _ = build_scale_factors(&eps_occ, &eps_vir, 0.0);
+    }
+
+    /// The evGW case that motivated the relaxation: canonical energies with a
+    /// single quasiparticle level pushed past its neighbour. The basis is still
+    /// exactly canonical (only ε is updated, never the coefficients — see
+    /// `ferric_gw::sigma::run_evgw`), so this MUST be accepted.
+    ///
+    /// Values are the real H2O/cc-pVDZ evGW@PBE occupied set observed at the
+    /// converged outer iteration: the HOMO has sunk from its KS −0.3046 Ha to
+    /// −0.4293 Ha, below HOMO−1 at −0.4567 Ha.
+    #[test]
+    fn scale_factor_guard_accepts_evgw_quasiparticle_crossing() {
+        let eps_occ = [-18.739_034, -0.903_088, -0.456_660, -0.304_597, -0.429_283];
+        let eps_vir = [0.034_073, 0.109_506, 0.518_296, 0.570_668, 0.854_162];
+        let s = build_scale_factors(&eps_occ, &eps_vir, 0.0);
+        assert!(s.iter().all(|v| v.is_finite() && *v > 0.0));
     }
 
     /// ...and must NOT fire on genuine canonical input, or it is useless.
