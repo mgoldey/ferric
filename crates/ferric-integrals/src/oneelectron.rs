@@ -1,7 +1,10 @@
 //! One-electron integral matrices: overlap (S), kinetic (T), nuclear (V), and core Hamiltonian (H).
 
 use crate::basis_bridge::PreparedBasis;
-use crate::ecp::{ecp_matrix_spherical, gto_norm, EcpCenter, EcpGaussianShell};
+use crate::ecp::{
+    ecp_deriv_atom_ids, ecp_matrix_deriv_spherical, ecp_matrix_spherical, gto_norm, EcpCenter,
+    EcpGaussianShell,
+};
 use crate::engine::Engine;
 use crate::ffi;
 use ferric_core::basis::BasisSet;
@@ -192,6 +195,23 @@ pub fn hcore_ecp_with_external(
 /// contraction coefficient is multiplied by `gto_norm(l, α)` before being handed
 /// to the shim.
 pub fn ecp_potential(mol: &Molecule, bs: &BasisSet) -> Option<Array2<f64>> {
+    let (shells, ecps) = build_ecp_inputs(mol, bs)?;
+    let n: usize = shells.iter().map(|s| (2 * s.l + 1) as usize).sum();
+    let flat = ecp_matrix_spherical(&shells, &ecps)
+        .expect("ecp_matrix_spherical failed building V_ECP");
+    Some(Array2::from_shape_vec((n, n), flat).expect("V_ECP shape"))
+}
+
+/// Build the (Gaussian shells, ECP centers) input pair that the libecpint
+/// wrapper consumes, in exactly the order [`PreparedBasis::new`] emits shells.
+///
+/// Returns `None` when the basis carries no ECPs or the molecule has no
+/// ECP-carrying atom. Shared by [`ecp_potential`] and [`ecp_potential_deriv`] so
+/// the energy and gradient can never disagree about the basis they describe.
+fn build_ecp_inputs(
+    mol: &Molecule,
+    bs: &BasisSet,
+) -> Option<(Vec<EcpGaussianShell>, Vec<EcpCenter>)> {
     if bs.ecps.is_empty() {
         return None;
     }
@@ -237,10 +257,71 @@ pub fn ecp_potential(mol: &Molecule, bs: &BasisSet) -> Option<Array2<f64>> {
     if ecps.is_empty() {
         return None;
     }
+    Some((shells, ecps))
+}
+
+/// First derivatives of the spherical ECP matrix with respect to each atomic
+/// coordinate: `dV_ECP/dR_{A,c}`.
+///
+/// Returns `Ok(None)` (zero work) when the basis carries no ECPs, mirroring
+/// [`ecp_potential`]. Otherwise returns a `(natoms, 3)`-shaped nesting: element
+/// `[a][c]` is the `(nbasis, nbasis)` derivative w.r.t. atom `a`'s coordinate
+/// `c`, indexed by **the molecule's** atom order. Atoms libecpint never sees
+/// (no basis shells and no ECP) correctly get zero matrices.
+///
+/// AO ordering matches [`ecp_potential`] and hence `hcore`, so the result can be
+/// contracted directly with a density matrix in the AO basis.
+#[allow(clippy::type_complexity)]
+pub fn ecp_potential_deriv(
+    mol: &Molecule,
+    bs: &BasisSet,
+) -> Result<Option<Vec<[Array2<f64>; 3]>>, FerricError> {
+    let Some((shells, ecps)) = build_ecp_inputs(mol, bs) else {
+        return Ok(None);
+    };
     let n: usize = shells.iter().map(|s| (2 * s.l + 1) as usize).sum();
-    let flat = ecp_matrix_spherical(&shells, &ecps)
-        .expect("ecp_matrix_spherical failed building V_ECP");
-    Some(Array2::from_shape_vec((n, n), flat).expect("V_ECP shape"))
+
+    let (flat_derivs, natoms_ecpint) = ecp_matrix_deriv_spherical(&shells, &ecps)?;
+
+    // libecpint indexes derivatives by ITS OWN inferred atom ids (deduplicated
+    // shell/ECP centers), which need not match mol.atoms 1:1. Map them back
+    // explicitly rather than assuming the orders coincide.
+    let centers: Vec<[f64; 3]> = mol.atoms.iter().map(|a| [a.x, a.y, a.zpos]).collect();
+    let ids = ecp_deriv_atom_ids(&shells, &ecps, &centers)?;
+    if ids.len() != natoms_ecpint {
+        return Err(FerricError::Libint(format!(
+            "ECP gradient: mapped {} atom ids but libecpint reported {natoms_ecpint}",
+            ids.len()
+        )));
+    }
+
+    let mut out: Vec<[Array2<f64>; 3]> = (0..mol.atoms.len())
+        .map(|_| {
+            [
+                Array2::zeros((n, n)),
+                Array2::zeros((n, n)),
+                Array2::zeros((n, n)),
+            ]
+        })
+        .collect();
+
+    for (ecpint_atom, &mol_atom) in ids.iter().enumerate() {
+        for c in 0..3 {
+            let flat = &flat_derivs[3 * ecpint_atom + c];
+            if flat.len() != n * n {
+                return Err(FerricError::Libint(format!(
+                    "ECP gradient: derivative block {} has {} elements, expected {}",
+                    3 * ecpint_atom + c,
+                    flat.len(),
+                    n * n
+                )));
+            }
+            out[mol_atom][c] = Array2::from_shape_vec((n, n), flat.clone())
+                .map_err(|e| FerricError::Libint(format!("dV_ECP shape: {e}")))?;
+        }
+    }
+
+    Ok(Some(out))
 }
 
 /// Core Hamiltonian including the ECP projector:

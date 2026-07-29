@@ -111,43 +111,132 @@ fn ecp_rhf_rb_cation_matches_pyscf() {
     run_ecp_rhf("rb_cation_def2svp_ecp_rhf");
 }
 
-/// ECP gradients must ERROR, not return a silently wrong answer.
+/// Total RHF energy at a given geometry, on the ECP path.
+fn ecp_rhf_energy(mol: &Molecule, bs: &ferric_core::basis::BasisSet) -> f64 {
+    let ctx = ParallelContext::default();
+    let prep = PreparedBasis::new(mol, bs).unwrap();
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+    let cfg = RhfConfig {
+        max_iter: 200,
+        // Tight convergence: the FD reference differences two total energies, so
+        // any SCF slop shows up divided by 2h and would swamp the comparison.
+        density_conv: 1e-10,
+        ..Default::default()
+    };
+    let res = solve_rhf(&ctx, mol, &prep, op, &bounds, &cfg).unwrap();
+    assert!(res.converged, "FD displaced-geometry SCF did not converge");
+    res.energy
+}
+
+/// END-TO-END ECP GRADIENT: analytic `rhf_gradient` vs central finite difference
+/// of the TOTAL ENERGY, on a system with a genuinely NONZERO gradient.
 ///
-/// Before 2026-07-28 `rhf_gradient` accepted ECP molecules and produced a
-/// gradient that was wrong two ways: the dV_ECP/dR term was missing entirely,
-/// and the nuclear-repulsion derivative used the bare `z` while the ENERGY it
-/// differentiates uses `effective_z()`. `ferric-cli` calls `mol.apply_ecp()`
-/// unconditionally, so `task = "optimize"` on any Z >= 37 element optimized on
-/// that wrong gradient with no error and no warning.
+/// This is the exactness anchor for the whole ECP gradient stack — it is the only
+/// check that exercises the two fixes together:
+///   1. the `dV_ECP/dR` term (libecpint first derivatives, bound 2026-07-28);
+///   2. the nuclear-repulsion derivative using `effective_z()` rather than the
+///      bare `z`.
+/// Each is individually capable of producing a plausible-looking but wrong
+/// gradient, and only differencing the real energy catches either.
 ///
-/// This is the coverage gap that let it survive: `ecp_rhf.rs` had zero gradient
-/// tests. Asserting the ERROR (rather than a gradient value) is the point — the
-/// repo convention is clean error over silent-wrong, and this pins the honest
-/// behaviour until the libecpint derivative API is bound.
+/// HI at 1.75 A is deliberately STRETCHED off equilibrium (~1.61 A) so dE/dR is
+/// large and unambiguous — a symmetric or equilibrium geometry would give ~0 and
+/// prove nothing, since a gradient that is wrong by a constant factor still
+/// reads as zero there. The test asserts the gradient is non-negligible before
+/// comparing, so it cannot silently degrade into a zero-vs-zero check.
+///
+/// H/I is also heteronuclear with only ONE ECP center, so the two atoms are
+/// distinguishable: an atom-id misattribution in the derivative (libecpint
+/// indexes by its own inferred centers, not ferric's atom order) shows up here
+/// but would cancel in a homonuclear I2.
 #[test]
-fn ecp_gradient_errors_rather_than_returning_a_wrong_answer() {
+fn ecp_rhf_gradient_matches_finite_difference_hi() {
     let ctx = ParallelContext::default();
     let bs = basis::bundled("def2-svp").unwrap();
-    let mut mol = Molecule::parse_xyz("1\n\nXe 0.0 0.0 0.0\n", 0, 1).unwrap();
+    // Stretched HI (equilibrium ~1.61 A) -> genuinely nonzero dE/dR.
+    let mut mol = Molecule::parse_xyz("2\n\nH 0.0 0.0 0.0\nI 0.0 0.0 1.75\n", 0, 1).unwrap();
     mol.apply_ecp(&bs);
 
-    // TEETH: the ECP must actually be active, or this test proves nothing about
-    // the ECP path — it would just be testing a plain all-electron Xe.
+    // TEETH: the ECP must actually be active, else this is an all-electron test.
+    assert!(mol.atoms[0].n_core_ecp == 0, "H must have no ECP");
     assert!(
-        mol.atoms.iter().any(|a| a.n_core_ecp > 0),
-        "def2-svp must carry an ECP for Xe; without one this test is vacuous"
+        mol.atoms[1].n_core_ecp > 0,
+        "def2-svp must carry an ECP for I; without one this test is vacuous"
     );
 
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let rhf = solve_rhf(&ctx, &mol, &prep, op, &bounds, &RhfConfig::default()).unwrap();
+    let cfg = RhfConfig {
+        max_iter: 200,
+        density_conv: 1e-10,
+        ..Default::default()
+    };
+    let rhf = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
+    assert!(rhf.converged, "HI reference SCF did not converge");
 
-    let err = ferric_scf::gradient::rhf_gradient(&mol, &prep, op, &bounds, &rhf, None)
-        .expect_err("ECP gradient must be rejected, not silently computed");
-    let msg = err.to_string();
+    let grad = ferric_scf::gradient::rhf_gradient(&mol, &prep, op, &bounds, &rhf, None)
+        .expect("ECP gradient must now be supported");
+
+    // Central FD of the total energy. h = 1e-3 Bohr: large enough that SCF
+    // noise (~1e-10 Ha) contributes only ~1e-7 Ha/Bohr after dividing by 2h,
+    // small enough that O(h^2) truncation stays ~1e-6.
+    let h = 1e-3;
+    let mut fd = vec![[0.0f64; 3]; mol.atoms.len()];
+    for a in 0..mol.atoms.len() {
+        for c in 0..3 {
+            let displaced = |sign: f64| {
+                let mut m = mol.clone();
+                match c {
+                    0 => m.atoms[a].x += sign * h,
+                    1 => m.atoms[a].y += sign * h,
+                    _ => m.atoms[a].zpos += sign * h,
+                }
+                ecp_rhf_energy(&m, &bs)
+            };
+            fd[a][c] = (displaced(1.0) - displaced(-1.0)) / (2.0 * h);
+        }
+    }
+
+    let mut worst = 0.0f64;
+    for a in 0..mol.atoms.len() {
+        for c in 0..3 {
+            eprintln!(
+                "HI grad atom {a} coord {c}: analytic {:+.9} FD {:+.9} diff {:+.2e}",
+                grad[(a, c)],
+                fd[a][c],
+                grad[(a, c)] - fd[a][c]
+            );
+            worst = worst.max((grad[(a, c)] - fd[a][c]).abs());
+        }
+    }
+    eprintln!("HI/def2-SVP ECP gradient: max |analytic - FD| = {worst:.3e} Ha/Bohr");
+
+    // The gradient must actually be NONZERO, or the FD agreement below is
+    // vacuous (0 == 0 tells us nothing about correctness).
+    let max_component = grad.iter().fold(0.0f64, |m, v| m.max(v.abs()));
     assert!(
-        msg.contains("ECP"),
-        "the error must name ECPs so the user knows why: got {msg}"
+        max_component > 1e-3,
+        "stretched HI must have a clearly nonzero gradient; got max |g| = \
+         {max_component:.3e}. A near-zero gradient makes this test vacuous."
     );
+
+    assert!(
+        worst < 1e-5,
+        "ECP gradient disagrees with finite difference by {worst:.3e} Ha/Bohr"
+    );
+
+    // Translational invariance: rigidly shifting the molecule cannot change the
+    // energy, so the gradient must sum to ~0 over atoms. Necessary but NOT
+    // sufficient (it is blind to an atom-swap), which is why it follows the FD
+    // check rather than replacing it.
+    for c in 0..3 {
+        let s: f64 = (0..mol.atoms.len()).map(|a| grad[(a, c)]).sum();
+        eprintln!("HI gradient sum over atoms, coord {c}: {s:+.3e}");
+        assert!(
+            s.abs() < 1e-6,
+            "translational invariance violated on coord {c}: sum = {s:.3e}"
+        );
+    }
 }

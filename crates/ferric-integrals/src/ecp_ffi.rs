@@ -47,6 +47,30 @@ extern "C" {
 
     /// Total number of Cartesian functions for the given shells.
     pub fn ferric_ecp_ncart(shells: *const CEcpGShell, nshell: c_int) -> c_int;
+
+    /// Number of distinct atomic centers libecpint infers from these shells +
+    /// ECPs (dedup by 1e-4 Bohr, shells first then ECP centers). Needed to size
+    /// the derivative buffer and to map libecpint atom ids back onto the
+    /// caller's own atom list. Negative on error.
+    pub fn ferric_ecp_natoms(
+        shells: *const CEcpGShell,
+        nshell: c_int,
+        ecps: *const CEcpCenter,
+        necp: c_int,
+    ) -> c_int;
+
+    /// Compute first derivatives of the Cartesian ECP matrix w.r.t. every atomic
+    /// coordinate into `out_derivs` (3*natoms*ncart*ncart, row-major, ordered
+    /// `{A_x, A_y, A_z, B_x, ...}` over libecpint's inferred atom ids).
+    /// `out_natoms` receives the inferred natoms. Returns 0 on success.
+    pub fn ferric_ecp_matrix_deriv(
+        shells: *const CEcpGShell,
+        nshell: c_int,
+        ecps: *const CEcpCenter,
+        necp: c_int,
+        out_derivs: *mut c_double,
+        out_natoms: *mut c_int,
+    ) -> c_int;
 }
 
 pub const FERRIC_ECP_OK: c_int = 0;

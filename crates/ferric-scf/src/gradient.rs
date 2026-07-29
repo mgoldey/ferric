@@ -296,6 +296,17 @@ pub fn build_energy_weighted_density(result: &ScfResult, nocc: usize) -> Array2<
 /// gradients with respect to ghost centers are not implemented (they involve a
 /// different 1e nuclear derivative structure and are out of scope for CP use-cases
 /// where only the real-atom geometry matters).
+///
+/// # ECPs
+///
+/// ECP molecules are supported: the `dV_ECP/dR` term is added via
+/// [`ecp_gradient`] (libecpint first derivatives), and the nuclear-repulsion
+/// derivative uses `effective_z()` to match the energy it differentiates. Both
+/// halves are required — before 2026-07-28 the term was missing *and* the
+/// nuclear derivative used the bare `z`, so ECP gradients were silently wrong
+/// and were temporarily rejected outright. Validated against central finite
+/// difference of the total energy on HI/def2-SVP (see
+/// `ferric-scf/tests/ecp_rhf.rs`).
 pub fn rhf_gradient(
     mol: &Molecule,
     prep: &PreparedBasis,
@@ -311,39 +322,63 @@ pub fn rhf_gradient(
                 .into(),
         ));
     }
-    // ECP gradients are NOT implemented, and were silently wrong before this
-    // guard (added 2026-07-28). Two independent defects:
-    //
-    //   1. The dV_ECP/dR term is entirely absent. `oneelectron_gradient` does
-    //      not even take a BasisSet, so it structurally cannot see the ECP;
-    //      `ferric-integrals/src/ecp.rs` has no derivative code at all.
-    //   2. The nuclear-repulsion derivative below uses the BARE `a.z`, while
-    //      the ENERGY (`mol.rs` nuclear_repulsion) uses `effective_z()`. So
-    //      even the classical term disagreed with the energy it differentiates.
-    //
-    // Because `ferric-cli` calls `mol.apply_ecp()` unconditionally, a
-    // `task = "optimize"` run on any ECP-carrying element (Z >= 37 with
-    // aug-cc-pvdz-pp / def2-ecp) previously optimized on a wrong gradient with
-    // no error and no warning. Erroring is required by this repo's
-    // config-honesty convention: clean error, never silent-wrong.
-    //
-    // Lifting this needs libecpint's `compute_shell_pair_derivative`
-    // (ecpint.hpp) bound through the shim, plus switching the line below to
-    // `effective_z()`. Do BOTH — fixing only the nuclear term would leave a
-    // subtler inconsistency than the one it replaces.
-    if mol.atoms.iter().any(|a| a.n_core_ecp > 0) {
-        return Err(FerricError::Libint(
-            "rhf_gradient is not implemented for molecules with ECPs (effective \
-             core potentials): the dV_ECP/dR term is missing and the \
-             nuclear-repulsion derivative uses the full Z rather than the \
-             effective Z, so the gradient would be silently wrong. Use \
-             task = \"energy\", or an all-electron basis."
-                .into(),
-        ));
-    }
     let nocc = (mol.nelec() / 2) as usize;
     let w = build_energy_weighted_density(result, nocc);
-    hf_gradient_with_density(mol, prep, op, bounds, result.density_r(), &w, ext)
+    let mut grad = hf_gradient_with_density(mol, prep, op, bounds, result.density_r(), &w, ext)?;
+    // ECP term: dE/dR gains Σ_μν D_μν dV_ECP_μν/dR whenever the basis carries
+    // ECPs. `ecp_gradient` is a no-op (zero work) otherwise, so the
+    // all-electron path is unchanged.
+    grad += &ecp_gradient(mol, prep, result.density_r())?;
+    Ok(grad)
+}
+
+/// ECP contribution to the nuclear gradient:
+/// `dE_ECP/dR_{A,c} = Σ_μν D_μν dV_ECP_μν/dR_{A,c}`.
+///
+/// Returns a zero `(natoms, 3)` array when the basis carries no ECPs, so callers
+/// can add it unconditionally without changing the all-electron result.
+///
+/// `V_ECP` enters the energy through `hcore_ecp` as a plain one-electron
+/// operator, so its gradient is the same simple density contraction as `dT/dR`
+/// and `dV_nuc/dR` — there is no Pulay-type term beyond the `−W·dS/dR` already
+/// carried by [`oneelectron_gradient`], because the AO basis derivative is
+/// already accounted for there. libecpint sums the bra-, ket-, and
+/// ECP-center contributions per atom internally.
+///
+/// The density passed must be the SPIN-SUMMED (total) AO density, matching the
+/// convention `oneelectron_gradient` uses for the other 1e terms.
+pub fn ecp_gradient(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    d: &Array2<f64>,
+) -> Result<Array2<f64>, FerricError> {
+    let natoms = mol.atoms.len();
+    let Some(derivs) =
+        ferric_integrals::oneelectron::ecp_potential_deriv(mol, prep.basis_set())?
+    else {
+        return Ok(Array2::zeros((natoms, 3)));
+    };
+    if derivs.len() != natoms {
+        return Err(FerricError::Libint(format!(
+            "ecp_gradient: got {} atom blocks, expected {natoms}",
+            derivs.len()
+        )));
+    }
+    let mut grad = Array2::zeros((natoms, 3));
+    for (a, block) in derivs.iter().enumerate() {
+        for (c, dv) in block.iter().enumerate() {
+            if dv.dim() != d.dim() {
+                return Err(FerricError::Libint(format!(
+                    "ecp_gradient: dV_ECP shape {:?} != density shape {:?}",
+                    dv.dim(),
+                    d.dim()
+                )));
+            }
+            // Σ_μν D_μν (dV_ECP/dR)_μν
+            grad[(a, c)] = d.iter().zip(dv.iter()).map(|(x, y)| x * y).sum::<f64>();
+        }
+    }
+    Ok(grad)
 }
 
 /// Compute nuclear gradient using provided density and energy-weighted density.
@@ -422,8 +457,14 @@ pub fn oneelectron_gradient(
             let dz = a.zpos - b.zpos;
             let r2 = dx * dx + dy * dy + dz * dz;
             let r = r2.sqrt();
-            let za = a.z as f64;
-            let zb = b.z as f64;
+            // MUST be effective_z(), not the bare z: the ENERGY being
+            // differentiated (`Molecule::nuclear_repulsion`) uses effective_z(),
+            // which is `z − n_core_ecp` for an ECP atom. Using the bare z here
+            // made the classical term disagree with its own energy on every ECP
+            // molecule. Identical to `z` for all-electron atoms, so the
+            // all-electron gradient is unchanged.
+            let za = a.effective_z() as f64;
+            let zb = b.effective_z() as f64;
             let f_over_r3 = za * zb / (r * r2);
             grad[(i, 0)] -= f_over_r3 * dx;
             grad[(i, 1)] -= f_over_r3 * dy;

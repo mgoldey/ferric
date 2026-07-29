@@ -58,6 +58,38 @@ int ferric_ecp_matrix(const ferric_ecp_gshell *shells, int nshell,
 /* Total number of Cartesian functions for the given shells. */
 int ferric_ecp_ncart(const ferric_ecp_gshell *shells, int nshell);
 
+/* Number of distinct atomic centers libecpint will infer from the given shells
+ * and ECPs. libecpint does NOT take an atom list: it derives atom ids by
+ * deduplicating shell/ECP centers with a 1e-4 Bohr tolerance (see
+ * ECPIntegrator::init in libecpint/src/lib/api.cpp), assigning ids in order of
+ * first appearance -- shells first, then any ECP center not already seen.
+ *
+ * The caller MUST use this to size the derivative buffer and to map libecpint's
+ * atom ids back onto its own atom list; assuming a 1:1 correspondence with the
+ * caller's atom ordering is wrong whenever an atom carries no basis shells.
+ * Returns a negative error code on invalid input. */
+int ferric_ecp_natoms(const ferric_ecp_gshell *shells, int nshell,
+                      const ferric_ecp_center *ecps, int necp);
+
+/* Compute the first derivatives of the Cartesian ECP matrix with respect to
+ * every atomic coordinate.
+ *
+ *   out_derivs : caller-allocated 3*natoms*ncart*ncart doubles, where natoms is
+ *                ferric_ecp_natoms(...) and ncart is ferric_ecp_ncart(...).
+ *                Layout is [3*natoms][ncart][ncart], row-major throughout, in
+ *                the order {A_x, A_y, A_z, B_x, B_y, B_z, ...} over libecpint's
+ *                inferred atom ids.
+ *   out_natoms : if non-NULL, receives the inferred natoms (cross-check).
+ *
+ * Each matrix is the full (symmetric) derivative of V_ECP with respect to that
+ * one coordinate; the A/B/C (bra center, ket center, ECP center) contributions
+ * are already summed per atom by libecpint.
+ *
+ * Returns FERRIC_ECP_OK on success, a negative error code otherwise. */
+int ferric_ecp_matrix_deriv(const ferric_ecp_gshell *shells, int nshell,
+                            const ferric_ecp_center *ecps, int necp,
+                            double *out_derivs, int *out_natoms);
+
 #ifdef __cplusplus
 }
 #endif

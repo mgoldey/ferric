@@ -16,7 +16,10 @@
 //! Verified: `c2sᵀ · (gto_norm-folded libecpint Cartesian) · c2s` reproduces
 //! PySCF's spherical `ECPscalar` to ~1e-9 (see `tests/ecp_matrix.rs`).
 
-use crate::ecp_ffi::{ferric_ecp_matrix, CEcpCenter, CEcpGShell, FERRIC_ECP_OK};
+use crate::ecp_ffi::{
+    ferric_ecp_matrix, ferric_ecp_matrix_deriv, ferric_ecp_natoms, CEcpCenter, CEcpGShell,
+    FERRIC_ECP_OK,
+};
 use ferric_core::FerricError;
 use std::os::raw::c_int;
 
@@ -155,7 +158,40 @@ pub fn ecp_matrix_spherical(
         }
     }
 
-    // --- Build the C-ABI shell + ECP arrays (keep backing vectors alive) ---
+    let (c_shells, c_ecps, _keep) = build_c_arrays(shells, ecps);
+
+    let ncart_total: usize = shells.iter().map(|s| ncart(s.l)).sum();
+    let mut v_cart = vec![0.0f64; ncart_total * ncart_total];
+    let status = unsafe {
+        ferric_ecp_matrix(
+            c_shells.as_ptr(),
+            c_shells.len() as c_int,
+            c_ecps.as_ptr(),
+            c_ecps.len() as c_int,
+            v_cart.as_mut_ptr(),
+        )
+    };
+    if status != FERRIC_ECP_OK {
+        return Err(FerricError::Libint(format!("ferric_ecp_matrix failed: {status}")));
+    }
+
+    Ok(cart_to_sph(shells, &v_cart))
+}
+
+/// Owns the `c_int` conversions and per-ECP vectors that the `CEcpCenter`
+/// pointers alias. Must outlive any FFI call using those pointers.
+struct CEcpBacking {
+    _ams: Vec<Vec<c_int>>,
+    _ns: Vec<Vec<c_int>>,
+}
+
+/// Build the C-ABI shell + ECP arrays. The returned [`CEcpBacking`] owns the
+/// storage the `CEcpCenter` pointers alias and must be kept alive across the
+/// FFI call (the `shells`/`ecps` slices themselves back the other pointers).
+fn build_c_arrays(
+    shells: &[EcpGaussianShell],
+    ecps: &[EcpCenter],
+) -> (Vec<CEcpGShell>, Vec<CEcpCenter>, CEcpBacking) {
     let c_shells: Vec<CEcpGShell> = shells
         .iter()
         .map(|s| CEcpGShell {
@@ -187,22 +223,14 @@ pub fn ecp_matrix_spherical(
         })
         .collect();
 
-    let ncart_total: usize = shells.iter().map(|s| ncart(s.l)).sum();
-    let mut v_cart = vec![0.0f64; ncart_total * ncart_total];
-    let status = unsafe {
-        ferric_ecp_matrix(
-            c_shells.as_ptr(),
-            c_shells.len() as c_int,
-            c_ecps.as_ptr(),
-            c_ecps.len() as c_int,
-            v_cart.as_mut_ptr(),
-        )
-    };
-    if status != FERRIC_ECP_OK {
-        return Err(FerricError::Libint(format!("ferric_ecp_matrix failed: {status}")));
-    }
+    (c_shells, c_ecps, CEcpBacking { _ams: ams_store, _ns: ns_store })
+}
 
-    // --- Cartesian -> spherical: V_sph = Cᵀ V_cart C, block-diagonal per shell ---
+/// Cartesian -> spherical for one dense `ncart x ncart` matrix:
+/// `V_sph = Cᵀ V_cart C`, applied block-diagonally per shell pair.
+/// Returns an `nsph x nsph` row-major matrix.
+fn cart_to_sph(shells: &[EcpGaussianShell], v_cart: &[f64]) -> Vec<f64> {
+    let ncart_total: usize = shells.iter().map(|s| ncart(s.l)).sum();
     let nsph_total: usize = shells.iter().map(|s| nsph(s.l)).sum();
     // Cartesian and spherical offsets per shell.
     let mut cart_off = Vec::with_capacity(shells.len());
@@ -254,7 +282,138 @@ pub fn ecp_matrix_spherical(
         }
     }
 
-    Ok(v_sph)
+    v_sph
+}
+
+/// First derivatives of the spherical ECP matrix with respect to every atomic
+/// coordinate: `dV_ECP/dR`.
+///
+/// Returns `(derivs, natoms)` where `derivs` has length `3 * natoms`, each entry
+/// an `nsph × nsph` row-major matrix, ordered `{A_x, A_y, A_z, B_x, ...}`.
+///
+/// **The atom ordering is libecpint's, not the caller's.** libecpint takes no
+/// atom list: it infers atom ids by deduplicating shell and ECP centers (1e-4
+/// Bohr tolerance, shells first then ECP centers, in order of first appearance —
+/// see `ECPIntegrator::init`). For a molecule where every atom carries at least
+/// one basis shell and shells are emitted atom-by-atom, this coincides with the
+/// caller's atom order; it does **not** in general. Callers must map ids back
+/// via [`ecp_deriv_atom_ids`] rather than assuming 1:1 — see
+/// [`crate::oneelectron::ecp_potential_deriv`], which does exactly that.
+///
+/// The A/B/C (bra, ket, ECP center) contributions are already summed per atom by
+/// libecpint, so each matrix is the total derivative w.r.t. that one coordinate.
+pub fn ecp_matrix_deriv_spherical(
+    shells: &[EcpGaussianShell],
+    ecps: &[EcpCenter],
+) -> Result<(Vec<Vec<f64>>, usize), FerricError> {
+    if shells.is_empty() || ecps.is_empty() {
+        return Err(FerricError::Libint(
+            "ecp_matrix_deriv_spherical: empty input".into(),
+        ));
+    }
+    for sh in shells {
+        if sh.l > 4 {
+            return Err(FerricError::Libint(format!(
+                "ECP gradient: angular momentum l={} > 4 not supported by cart2sph table",
+                sh.l
+            )));
+        }
+    }
+
+    let (c_shells, c_ecps, _keep) = build_c_arrays(shells, ecps);
+
+    let natoms = unsafe {
+        ferric_ecp_natoms(
+            c_shells.as_ptr(),
+            c_shells.len() as c_int,
+            c_ecps.as_ptr(),
+            c_ecps.len() as c_int,
+        )
+    };
+    if natoms <= 0 {
+        return Err(FerricError::Libint(format!(
+            "ferric_ecp_natoms failed: {natoms}"
+        )));
+    }
+    let natoms = natoms as usize;
+
+    let ncart_total: usize = shells.iter().map(|s| ncart(s.l)).sum();
+    let mut d_cart = vec![0.0f64; 3 * natoms * ncart_total * ncart_total];
+    let mut got_natoms: c_int = 0;
+    let status = unsafe {
+        ferric_ecp_matrix_deriv(
+            c_shells.as_ptr(),
+            c_shells.len() as c_int,
+            c_ecps.as_ptr(),
+            c_ecps.len() as c_int,
+            d_cart.as_mut_ptr(),
+            &mut got_natoms,
+        )
+    };
+    if status != FERRIC_ECP_OK {
+        return Err(FerricError::Libint(format!(
+            "ferric_ecp_matrix_deriv failed: {status}"
+        )));
+    }
+    if got_natoms as usize != natoms {
+        return Err(FerricError::Libint(format!(
+            "ECP gradient: natoms disagreement ({natoms} predicted, {got_natoms} computed)"
+        )));
+    }
+
+    let block = ncart_total * ncart_total;
+    let derivs = (0..3 * natoms)
+        .map(|c| cart_to_sph(shells, &d_cart[c * block..(c + 1) * block]))
+        .collect();
+    Ok((derivs, natoms))
+}
+
+/// Map each of libecpint's inferred atom ids back to an index into `centers`
+/// (the caller's own atom list, in Bohr).
+///
+/// Replicates `ECPIntegrator::init`'s dedup order — shell centers first in the
+/// order given, then any ECP center not already seen — using the same 1e-4 Bohr
+/// L1 tolerance. Returns a vector of length `natoms` whose `i`-th entry is the
+/// index into `centers` that libecpint atom `i` corresponds to.
+///
+/// Errors if any inferred center cannot be matched to a caller atom, which would
+/// mean the derivative rows could not be attributed and the gradient would be
+/// silently misassigned.
+pub fn ecp_deriv_atom_ids(
+    shells: &[EcpGaussianShell],
+    ecps: &[EcpCenter],
+    centers: &[[f64; 3]],
+) -> Result<Vec<usize>, FerricError> {
+    const TOL: f64 = 1e-4;
+    let close = |a: &[f64; 3], b: &[f64; 3]| {
+        (a[0] - b[0]).abs() + (a[1] - b[1]).abs() + (a[2] - b[2]).abs() < TOL
+    };
+
+    let mut inferred: Vec<[f64; 3]> = Vec::new();
+    let intern = |c: [f64; 3], inferred: &mut Vec<[f64; 3]>| {
+        if !inferred.iter().any(|e| close(e, &c)) {
+            inferred.push(c);
+        }
+    };
+    for s in shells {
+        intern(s.center, &mut inferred);
+    }
+    for e in ecps {
+        intern(e.center, &mut inferred);
+    }
+
+    inferred
+        .iter()
+        .map(|c| {
+            centers.iter().position(|a| close(a, c)).ok_or_else(|| {
+                FerricError::Libint(format!(
+                    "ECP gradient: libecpint center [{:.6}, {:.6}, {:.6}] matches no atom; \
+                     derivative rows cannot be attributed",
+                    c[0], c[1], c[2]
+                ))
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
