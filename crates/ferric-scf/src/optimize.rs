@@ -4,7 +4,7 @@
 //! minimizing the molecular energy with respect to nuclear coordinates.
 
 use crate::gradient::{rhf_gradient, rohf_gradient, uhf_gradient};
-use crate::ks_gradient::ks_gradient_closed;
+use crate::ks_gradient::{ks_gradient_closed, ks_gradient_roks, ks_gradient_uks};
 use crate::rhf::{solve_rhf, RhfConfig};
 use crate::rohf::solve_rohf;
 use crate::uhf::solve_uhf;
@@ -225,20 +225,21 @@ fn compute_energy_and_gradient_uhf(
     op: Operator,
     uhf_config: &RhfConfig,
 ) -> Result<(f64, Array2<f64>), FerricError> {
-    // uhf_gradient is HF-only (no XC term); UKS geometry optimization is not
-    // wired. Fail loudly rather than silently returning a gradient that
-    // ignores the XC potential the energy was computed with.
-    if uhf_config.xc.is_some() {
-        return Err(FerricError::General(
-            "UHF geometry optimization does not support method.kind = \"ksdft\"-style xc \
-             (uhf_gradient has no XC term; UKS analytical gradients are not yet wired)".into(),
-        ));
-    }
+    // `uhf_gradient` is HF-only (no XC term), so an `xc` run must route to
+    // `ks_gradient_uks` instead. That function IS implemented (LDA/GGA/hybrid/
+    // RSH/meta-GGA + VV10) and is FD- and PySCF-validated by
+    // tests/uks_gradient.rs, tests/uks_gradient_rsh.rs and
+    // tests/dft_gradient_mgga.rs.
     let bs = ferric_core::basis::bundled(basis_name)?;
     let prep = PreparedBasis::new(mol, &bs)?;
     let bounds = SchwarzBounds::compute(op, &prep)?;
     let res = solve_uhf(ctx, mol, &prep, &bounds, uhf_config)?;
-    let grad = uhf_gradient(mol, &prep, op, &bounds, &res, uhf_config.external_potential.as_ref())?;
+    let ext = uhf_config.external_potential.as_ref();
+    let grad = if let Some(xc_name) = uhf_config.xc.as_deref() {
+        ks_gradient_uks(mol, &prep, &bs, op, &bounds, xc_name, &res, ext)?
+    } else {
+        uhf_gradient(mol, &prep, op, &bounds, &res, ext)?
+    };
     Ok((res.energy, grad))
 }
 
@@ -249,19 +250,20 @@ fn compute_energy_and_gradient_rohf(
     op: Operator,
     rohf_config: &RhfConfig,
 ) -> Result<(f64, Array2<f64>), FerricError> {
-    // rohf_gradient is HF-only (no XC term); ROKS geometry optimization is not
-    // wired. Same guard as the UHF path above.
-    if rohf_config.xc.is_some() {
-        return Err(FerricError::General(
-            "ROHF geometry optimization does not support method.kind = \"ksdft\"-style xc \
-             (rohf_gradient has no XC term; ROKS analytical gradients are not yet wired)".into(),
-        ));
-    }
+    // `rohf_gradient` is HF-only (no XC term); an `xc` run routes to
+    // `ks_gradient_roks`, which is implemented and FD-validated by
+    // tests/roks_gradient.rs (LDA/PBE/B3LYP/wB97X-V). Same shape as the UHF
+    // path above.
     let bs = ferric_core::basis::bundled(basis_name)?;
     let prep = PreparedBasis::new(mol, &bs)?;
     let bounds = SchwarzBounds::compute(op, &prep)?;
     let res = solve_rohf(ctx, mol, &prep, op, &bounds, rohf_config)?;
-    let grad = rohf_gradient(mol, &prep, op, &bounds, &res, rohf_config.external_potential.as_ref())?;
+    let ext = rohf_config.external_potential.as_ref();
+    let grad = if let Some(xc_name) = rohf_config.xc.as_deref() {
+        ks_gradient_roks(mol, &prep, &bs, op, &bounds, xc_name, &res, ext)?
+    } else {
+        rohf_gradient(mol, &prep, op, &bounds, &res, ext)?
+    };
     Ok((res.energy, grad))
 }
 

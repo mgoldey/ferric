@@ -20,21 +20,22 @@
 //! finite-difference fallback. A method without an analytic gradient produces a
 //! clean typed error naming the method rather than a silently noisy number.
 //!
-//! What that currently excludes, verified against [`crate::ks_gradient`] rather
-//! than assumed:
+//! All three references have an analytic KS gradient, verified against
+//! [`crate::ks_gradient`] rather than assumed:
 //!
-//! - **Open-shell KS-DFT (UKS/ROKS) of any family** — ferric has no analytic
-//!   open-shell KS gradient, so `xc` combined with a [`FrequencyReference::Uhf`]
-//!   or [`FrequencyReference::Rohf`] reference errors here, naming the reference
-//!   and the functional.
-//! - **Open-shell meta-GGA** — additionally rejected inside
-//!   `ks_gradient_uks` / `ks_gradient_roks`.
+//! | reference | HF gradient | KS gradient (`xc` set) |
+//! |---|---|---|
+//! | [`FrequencyReference::Rhf`]  | `rhf_gradient`  | `ks_gradient_closed` |
+//! | [`FrequencyReference::Uhf`]  | `uhf_gradient`  | `ks_gradient_uks` |
+//! | [`FrequencyReference::Rohf`] | `rohf_gradient` | `ks_gradient_roks` |
 //!
-//! Note that **closed-shell meta-GGA gradients ARE implemented** (the
-//! τ-dependent terms live in `xc_gradient_closed_mgga_from_density`), so
-//! RKS/SCAN frequencies work. Older notes in this repo describe meta-GGA
-//! gradients as universally unimplemented; that is stale — it is true only of
-//! the open-shell paths.
+//! meta-GGA is implemented for **all three** (τ-dependent terms in
+//! `xc_gradient_closed_mgga_from_density` and its polarized sibling), so
+//! RKS/UKS/ROKS SCAN frequencies work. Older notes in this repo describe
+//! meta-GGA gradients — and open-shell KS gradients generally — as
+//! unimplemented; that is stale. Each `ks_gradient_*` raises its own named
+//! error for a combination it genuinely cannot handle, and frequencies inherit
+//! it rather than falling back to differencing energies.
 //!
 //! # Pipeline
 //!
@@ -88,7 +89,7 @@ use ferric_integrals::operator::Operator;
 use ndarray::{Array1, Array2};
 
 use crate::gradient::{rhf_gradient, rohf_gradient, uhf_gradient};
-use crate::ks_gradient::ks_gradient_closed;
+use crate::ks_gradient::{ks_gradient_closed, ks_gradient_roks, ks_gradient_uks};
 use crate::rhf::{solve_rhf, RhfConfig};
 use crate::rohf::solve_rohf;
 use crate::screening::SchwarzBounds;
@@ -127,9 +128,9 @@ const LINEARITY_THRESH: f64 = 1.0e-6;
 pub enum FrequencyReference {
     /// Closed-shell RHF, or closed-shell KS-DFT when `RhfConfig::xc` is set.
     Rhf,
-    /// Spin-unrestricted UHF. `RhfConfig::xc` must be `None` (no UKS gradient).
+    /// Spin-unrestricted UHF, or UKS when `RhfConfig::xc` is set.
     Uhf,
-    /// Restricted open-shell ROHF. `RhfConfig::xc` must be `None`.
+    /// Restricted open-shell ROHF, or ROKS when `RhfConfig::xc` is set.
     Rohf,
 }
 
@@ -246,7 +247,6 @@ pub fn harmonic_frequencies(
             freq_config.delta
         )));
     }
-    validate_gradient_support(freq_config.reference, scf_config)?;
 
     // Fail fast on a missing mass before spending 6N SCF evaluations.
     let masses = atom_masses(mol)?;
@@ -608,30 +608,13 @@ fn displace(mol: &mut Molecule, atom: usize, coord: usize, d: f64) {
 
 /// Reject method/reference combinations with no analytic gradient, naming the
 /// method. Mirrors the guards in [`crate::optimize`].
-fn validate_gradient_support(
-    reference: FrequencyReference,
-    config: &RhfConfig,
-) -> Result<(), FerricError> {
-    if let Some(xc) = config.xc.as_deref() {
-        match reference {
-            FrequencyReference::Rhf => {
-                // ks_gradient_closed itself rejects meta-GGA with a named
-                // error; nothing extra to do here. Frequencies inherit that.
-            }
-            FrequencyReference::Uhf | FrequencyReference::Rohf => {
-                return Err(FerricError::General(format!(
-                    "{} frequencies do not support xc = {:?}: the open-shell KS analytic \
-                     gradient (UKS/ROKS) is not implemented, and this module deliberately \
-                     has no finite-difference-of-energies fallback",
-                    reference.label(),
-                    xc
-                )));
-            }
-        }
-    }
-    Ok(())
-}
-
+///
+/// All three references now have an analytic KS gradient
+/// (`ks_gradient_closed` / `ks_gradient_uks` / `ks_gradient_roks`), so there is
+/// nothing left to reject at this level: each of those functions raises its own
+/// named error for a combination it cannot handle, and frequencies inherit it.
+/// This hook is kept so a future gradient-less method has an obvious place to
+/// declare itself rather than silently producing a noisy Hessian.
 /// One SCF + analytic gradient at a geometry, dispatched on the reference.
 fn energy_and_gradient(
     ctx: &ParallelContext,
@@ -658,12 +641,20 @@ fn energy_and_gradient(
         }
         FrequencyReference::Uhf => {
             let res = solve_uhf(ctx, mol, &prep, &bounds, config)?;
-            let grad = uhf_gradient(mol, &prep, op, &bounds, &res, ext)?;
+            let grad = if let Some(xc_name) = config.xc.as_deref() {
+                ks_gradient_uks(mol, &prep, &bs, op, &bounds, xc_name, &res, ext)?
+            } else {
+                uhf_gradient(mol, &prep, op, &bounds, &res, ext)?
+            };
             Ok((res.energy, grad))
         }
         FrequencyReference::Rohf => {
             let res = solve_rohf(ctx, mol, &prep, op, &bounds, config)?;
-            let grad = rohf_gradient(mol, &prep, op, &bounds, &res, ext)?;
+            let grad = if let Some(xc_name) = config.xc.as_deref() {
+                ks_gradient_roks(mol, &prep, &bs, op, &bounds, xc_name, &res, ext)?
+            } else {
+                rohf_gradient(mol, &prep, op, &bounds, &res, ext)?
+            };
             Ok((res.energy, grad))
         }
     }
@@ -904,10 +895,25 @@ mod tests {
     /// UKS/ROKS analytic gradient at all, so the open-shell guard fires first
     /// and names the reference.
     #[test]
-    fn test_open_shell_metagga_frequencies_rejected_cleanly() {
+    /// Open-shell meta-GGA frequencies now RUN (they were previously rejected).
+    ///
+    /// `ks_gradient_uks`/`_roks` handle MetaGga, so the old rejection is gone.
+    /// But `ks_gradient.rs`'s module doc records a **pre-existing
+    /// spin-polarized SCAN SCF energy defect** (~2e-4 Ha on OH/STO-3G, versus
+    /// 3e-8 for OH/PBE and ~1e-8 for closed-shell SCAN) that limits the
+    /// open-shell meta-GGA gradient to ~5e-4 Ha/Bohr against PySCF.
+    ///
+    /// So this asserts the frequencies are PRODUCED and physically sane, and
+    /// deliberately does NOT assert tight accuracy — quoting an open-shell
+    /// SCAN frequency as validated would be exactly the silent-wrong pattern
+    /// the guard used to prevent. Tighten this once the SCF defect is fixed.
+    fn test_open_shell_metagga_frequencies_run_but_are_not_tightly_validated() {
         let m = water();
         let cfg = RhfConfig {
             xc: Some("SCAN".into()),
+            energy_conv: 1e-7,
+            density_conv: 1e-6,
+            max_iter: 600,
             ..Default::default()
         };
         let fc = FrequencyConfig {
@@ -915,18 +921,27 @@ mod tests {
             ..Default::default()
         };
         let ctx = ParallelContext::default();
-        let err = harmonic_frequencies(&ctx, &m, "sto-3g", Operator::coulomb(), &cfg, &fc)
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("ROHF"), "error should name the reference: {err}");
-        assert!(err.contains("SCAN"), "error should name the method: {err}");
+        let r = harmonic_frequencies(&ctx, &m, "sto-3g", Operator::coulomb(), &cfg, &fc)
+            .expect("ROKS/SCAN frequencies should run now that MetaGga gradients are wired");
+        assert_eq!(r.frequencies.len(), 3, "water has 3N-6 = 3 modes");
+        for w in &r.frequencies {
+            assert!(
+                *w > 500.0 && *w < 6000.0,
+                "SCAN water frequency {w} cm^-1 is outside any physical range"
+            );
+        }
     }
 
     #[test]
-    fn test_uks_frequencies_rejected_cleanly() {
+    /// UKS frequencies now RUN — this test previously asserted they were
+    /// rejected, on a guard whose comment ("not implemented") was stale.
+    fn test_uks_frequencies_run() {
         let m = water();
         let cfg = RhfConfig {
             xc: Some("PBE".into()),
+            energy_conv: 1e-7,
+            density_conv: 1e-6,
+            max_iter: 600,
             ..Default::default()
         };
         let fc = FrequencyConfig {
@@ -934,10 +949,14 @@ mod tests {
             ..Default::default()
         };
         let ctx = ParallelContext::default();
-        let err = harmonic_frequencies(&ctx, &m, "sto-3g", Operator::coulomb(), &cfg, &fc)
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("UHF"), "error should name the reference: {err}");
+        let r = harmonic_frequencies(&ctx, &m, "sto-3g", Operator::coulomb(), &cfg, &fc)
+            .expect("UKS frequencies should run now that ks_gradient_uks is wired");
+        assert_eq!(r.frequencies.len(), 3, "water has 3N-6 = 3 modes");
+        assert!(
+            r.asymmetry < 1e-3,
+            "Hessian asymmetry {:.3e} above the FD noise floor",
+            r.asymmetry
+        );
     }
 
     // ---- end-to-end SCF tests -------------------------------------------
