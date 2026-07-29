@@ -1573,3 +1573,165 @@ mod tests {
         assert!((v[0] - v[1]).abs() / v[0] < 1e-6, "asymmetric: {v:?}");
     }
 }
+
+/// Electric dipole moment, in atomic units (e·a₀).
+///
+/// `mu = Σ_A Z_A^eff R_A − Σ_μν D_μν ⟨μ|r|ν⟩`, with the electronic part from
+/// the AO dipole integrals and the nuclear part from the EFFECTIVE nuclear
+/// charges.
+///
+/// # Why `effective_z()` and not `z`
+///
+/// The dipole must be consistent with the density it is computed from. Under an
+/// ECP the density only carries the VALENCE electrons, so pairing it with the
+/// full `Z` double-counts the core and gives a dipole that is wrong by a large
+/// amount on any heavy-element system. This mirrors the fix applied to the
+/// nuclear-repulsion gradient (`gradient.rs`), where the same `z`-vs-
+/// `effective_z()` inconsistency was a live bug. `effective_z()` equals `z` for
+/// an all-electron atom, so ordinary systems are unaffected.
+///
+/// Note the origin dependence: for a NEUTRAL system the dipole is
+/// origin-independent, but for a charged one it is not, and this uses the input
+/// coordinate origin. Callers reporting a dipole for an ion must say which
+/// origin they used.
+pub fn dipole_moment(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    density_total: &Array2<f64>,
+) -> Result<[f64; 3], FerricError> {
+    let nbas = prep.nbasis();
+    if density_total.shape() != [nbas, nbas] {
+        return Err(FerricError::General(format!(
+            "dipole_moment: density shape {:?} != ({nbas},{nbas})",
+            density_total.shape()
+        )));
+    }
+    let dip_ao = oneelectron::dipole(prep, [0.0, 0.0, 0.0])?;
+    let mut mu = [0.0f64; 3];
+    for (d, mu_d) in mu.iter_mut().enumerate() {
+        let elec = (density_total * &dip_ao[d]).sum();
+        let nuc: f64 = mol
+            .atoms
+            .iter()
+            .map(|a| a.effective_z() as f64 * [a.x, a.y, a.zpos][d])
+            .sum();
+        *mu_d = nuc - elec;
+    }
+    Ok(mu)
+}
+
+/// `|mu|` in atomic units.
+pub fn dipole_magnitude(mu: &[f64; 3]) -> f64 {
+    (mu[0] * mu[0] + mu[1] * mu[1] + mu[2] * mu[2]).sqrt()
+}
+
+/// Conversion factor from atomic units (e·a₀) to Debye.
+///
+/// CODATA: 1 e·a₀ = 8.4783536255e-30 C·m, and 1 D = 3.33564e-30 C·m.
+pub const DEBYE_PER_AU: f64 = 2.541_746_473_1;
+
+#[cfg(test)]
+mod dipole_tests {
+    use super::*;
+    use ferric_core::basis;
+    use ferric_core::parallel::ParallelContext;
+    use ferric_integrals::operator::Operator;
+
+    /// Water's RHF dipole, against PySCF.
+    ///
+    /// MEASURED reference, not recalled: PySCF 2.x
+    /// `scf.RHF(mol).run(conv_tol=1e-12).dip_moment(unit='Debye')` on this
+    /// exact geometry/basis gives
+    ///
+    ///     Dipole moment(X, Y, Z, Debye):  0.00000, 0.00000, -1.72748
+    ///
+    /// i.e. |mu| = 1.7274787296 D = 0.6796424222 a.u. ferric returns
+    /// -0.6796424654 a.u., agreeing to 4.3e-8.
+    ///
+    /// (An earlier version of this test asserted ~1.53 D from memory and
+    /// failed. The lesson is the obvious one: generate the reference, do not
+    /// recall it.)
+    ///
+    /// An EXTERNAL reference is the point — a sign error, a missing nuclear
+    /// term, or an origin mistake all break it, whereas comparing against
+    /// ferric's own numbers would not.
+    #[test]
+    fn water_sto3g_dipole_matches_reference() {
+        let ctx = ParallelContext::default();
+        let mol = Molecule::load_xyz(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../testdata/molecules/water.xyz"
+        ))
+        .unwrap();
+        let bs = basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = crate::screening::SchwarzBounds::compute(op, &prep).unwrap();
+        let rhf = crate::rhf::solve_rhf(
+            &ctx,
+            &mol,
+            &prep,
+            op,
+            &bounds,
+            &crate::rhf::RhfConfig { density_conv: 1e-10, ..Default::default() },
+        )
+        .unwrap();
+
+        let mu = dipole_moment(&mol, &prep, rhf.density_total()).unwrap();
+        let mag_au = dipole_magnitude(&mu);
+        let mag_d = mag_au * DEBYE_PER_AU;
+        eprintln!("water/STO-3G dipole: {mu:?} a.u.  |mu| = {mag_au:.6} a.u. = {mag_d:.4} D");
+
+        // Water's C2v axis is z in this geometry, so x/y must vanish by symmetry.
+        // That is a structural check a wrong-axis bug fails immediately.
+        assert!(mu[0].abs() < 1e-8, "x component must vanish by symmetry: {}", mu[0]);
+        assert!(mu[1].abs() < 1e-8, "y component must vanish by symmetry: {}", mu[1]);
+        // PySCF: 0.6796424222 a.u. Tolerance is 1e-6, ~20x the observed
+        // 4.3e-8 residual, which is SCF-convergence noise rather than a
+        // method difference (both are plain RHF on the same geometry/basis).
+        const PYSCF_AU: f64 = 0.679_642_422_194_317;
+        assert!(
+            (mag_au - PYSCF_AU).abs() < 1e-6,
+            "water/STO-3G RHF dipole {mag_au:.10} a.u. vs PySCF {PYSCF_AU:.10}"
+        );
+    }
+
+    /// `effective_z()`, not `z`: under an ECP the density carries only valence
+    /// electrons, so pairing it with the full nuclear charge double-counts the
+    /// core. This pins that the ECP path uses the consistent charge.
+    #[test]
+    fn ecp_dipole_uses_the_effective_nuclear_charge() {
+        let ctx = ParallelContext::default();
+        let bs = basis::bundled("def2-svp").unwrap();
+        let mut mol =
+            Molecule::parse_xyz("2\n\nI 0.0 0.0 0.0\nH 0.0 0.0 1.61\n", 0, 1).unwrap();
+        mol.apply_ecp(&bs);
+        // TEETH: without an active ECP this test says nothing about ECPs.
+        assert!(
+            mol.atoms.iter().any(|a| a.n_core_ecp > 0),
+            "def2-svp must carry an ECP for I"
+        );
+
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = crate::screening::SchwarzBounds::compute(op, &prep).unwrap();
+        let rhf = crate::rhf::solve_rhf(
+            &ctx, &mol, &prep, op, &bounds, &crate::rhf::RhfConfig::default(),
+        )
+        .unwrap();
+
+        let mu = dipole_moment(&mol, &prep, rhf.density_total()).unwrap();
+        let mag_d = dipole_magnitude(&mu) * DEBYE_PER_AU;
+        eprintln!("HI/def2-SVP(ECP) dipole = {mag_d:.4} D");
+
+        // HI's experimental dipole is ~0.45 D; any small-basis RHF value is in
+        // the same ballpark. Using the BARE z instead of effective_z() would
+        // add 46 e * 1.61 A of spurious nuclear charge-separation and give a
+        // dipole of order 100 D, so a loose physical bound is a decisive test.
+        assert!(
+            mag_d < 10.0,
+            "HI dipole {mag_d:.4} D is far too large — the nuclear term is \
+             almost certainly using the bare Z instead of effective_z()"
+        );
+    }
+}
