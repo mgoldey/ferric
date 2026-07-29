@@ -17,6 +17,7 @@ dependencies = [
     "scipy>=1.11",
     "h5py>=3.9",
     "pyscf>=2.10",
+    "sympy>=1.14.0",
 ]
 
 [tool.maturin]
