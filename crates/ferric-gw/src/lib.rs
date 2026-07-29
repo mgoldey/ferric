@@ -20,6 +20,7 @@ pub mod pade;
 pub mod sigma;
 pub mod cohsex;
 pub mod bse;
+pub mod tddft;
 pub mod qp;
 pub mod u_sigma;
 pub mod u_cohsex;
