@@ -13,6 +13,8 @@ pub struct Config {
     #[serde(default)]
     pub optimize: OptimizeCfg,
     #[serde(default)]
+    pub frequencies: FrequenciesCfg,
+    #[serde(default)]
     pub rpa: RpaCfg,
     #[serde(default)]
     pub gw: GwCfg,
@@ -140,6 +142,21 @@ pub struct OptimizeCfg {
     pub g_rms_thresh: Option<f64>,
     pub e_conv: Option<f64>,
     pub trust_radius: Option<f64>,
+}
+
+/// `[frequencies]` — harmonic vibrational frequencies via finite difference of
+/// the ANALYTIC gradient (`method.task = "frequencies"`).
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct FrequenciesCfg {
+    /// Central-difference displacement in Bohr. Default `5e-4`.
+    ///
+    /// This is a genuine accuracy knob and the wrong value degrades silently:
+    /// too large adds truncation error, too small amplifies SCF noise. The
+    /// printed `Hessian asymmetry` is the diagnostic — it is zero in exact
+    /// arithmetic, so a large value means `delta` or the SCF thresholds are
+    /// badly chosen for the system.
+    pub delta: Option<f64>,
 }
 
 #[derive(Deserialize, Default)]

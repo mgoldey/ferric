@@ -485,6 +485,97 @@ fn run_optimize(mol: &PyMolecule, basis_name: &str,
     Ok(PyOptimizeResult { energy: r.energy, converged: r.converged, steps: r.steps, mol_data: r.mol })
 }
 
+#[pyclass]
+#[pyo3(name = "FrequencyResult")]
+struct PyFrequencyResult {
+    /// Vibrational wavenumbers in cm^-1, ascending. `3N-6` entries (`3N-5` if
+    /// linear). A NEGATIVE entry is an imaginary frequency, by the usual
+    /// convention -- it means a mode with a negative force constant, i.e. the
+    /// geometry is not a minimum.
+    #[pyo3(get)] frequencies: Vec<f64>,
+    /// The projected-out translation/rotation modes, cm^-1. Should be ~0;
+    /// retained as a diagnostic.
+    #[pyo3(get)] trans_rot_frequencies: Vec<f64>,
+    #[pyo3(get)] is_linear: bool,
+    /// Largest |H_ij - H_ji| in the raw Cartesian Hessian, Hartree/Bohr^2.
+    /// Zero in exact arithmetic, so this is a direct read on whether `delta`
+    /// and the SCF thresholds suit the system. A large value invalidates the
+    /// frequencies.
+    #[pyo3(get)] asymmetry: f64,
+    #[pyo3(get)] n_gradient_evaluations: usize,
+    /// Electronic energy at the undisplaced geometry.
+    #[pyo3(get)] energy: f64,
+}
+
+/// Harmonic vibrational frequencies, by finite difference of the ANALYTIC
+/// gradient (6N gradient evaluations), mass-weighted with translations and
+/// rotations projected out.
+///
+/// `reference` selects the SCF: "rhf" (default), "uhf", or "rohf". Setting
+/// `xc` promotes it to the matching KS variant (RKS/UKS/ROKS).
+///
+/// `delta` is the central-difference displacement in Bohr (default 5e-4). It is
+/// a real accuracy knob that degrades silently -- too large adds truncation
+/// error, too small amplifies SCF noise. Check `.asymmetry` rather than
+/// assuming.
+#[pyfunction]
+#[pyo3(signature = (mol, basis_name, reference=None, xc=None, delta=None, multiplicity=None))]
+fn run_frequencies(
+    mol: &PyMolecule,
+    basis_name: &str,
+    reference: Option<&str>,
+    xc: Option<&str>,
+    delta: Option<f64>,
+    multiplicity: Option<u32>,
+) -> PyResult<PyFrequencyResult> {
+    use ferric_scf::frequencies::{harmonic_frequencies, FrequencyConfig, FrequencyReference};
+
+    // Strict, like the CLI: an unrecognized reference must ERROR rather than
+    // silently running RHF and handing back frequencies for the wrong system.
+    let refr = match reference {
+        None | Some("rhf") => FrequencyReference::Rhf,
+        Some("uhf") => FrequencyReference::Uhf,
+        Some("rohf") => FrequencyReference::Rohf,
+        Some(other) => {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "unknown reference \"{other}\"; expected \"rhf\", \"uhf\" or \"rohf\""
+            )))
+        }
+    };
+    if let Some(d) = delta {
+        if !(d.is_finite() && d > 0.0) {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "delta must be finite and > 0 (got {d})"
+            )));
+        }
+    }
+
+    let mut m = mol.inner.clone();
+    if let Some(mult) = multiplicity {
+        m.multiplicity = mult as usize;
+    }
+    let scf_cfg = RhfConfig {
+        xc: xc.map(|s| s.to_string()),
+        ..Default::default()
+    };
+    let mut fcfg = FrequencyConfig { reference: refr, ..Default::default() };
+    if let Some(d) = delta {
+        fcfg.delta = d;
+    }
+
+    let ctx = ParallelContext::default();
+    let r = harmonic_frequencies(&ctx, &m, basis_name, Operator::coulomb(), &scf_cfg, &fcfg)
+        .map_err(make_err)?;
+    Ok(PyFrequencyResult {
+        frequencies: r.frequencies,
+        trans_rot_frequencies: r.trans_rot_frequencies,
+        is_linear: r.is_linear,
+        asymmetry: r.asymmetry,
+        n_gradient_evaluations: r.n_gradient_evaluations,
+        energy: r.energy,
+    })
+}
+
 // ── Conformer ensembles (Boltzmann-weighted property averaging) ──
 //
 // Thin wrapper over `ferric_core::conformers`. Nothing is reimplemented here:
@@ -3079,6 +3170,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRhfResult>()?;
     m.add_class::<PyUhfResult>()?;
     m.add_class::<PyOptimizeResult>()?;
+    m.add_class::<PyFrequencyResult>()?;
     m.add_class::<PyRiMp2Result>()?;
     m.add_class::<PyOoRiMp2Result>()?;
     m.add_class::<PyMp3Result>()?;
@@ -3109,6 +3201,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_uhf, m)?)?;
     m.add_function(wrap_pyfunction!(run_rohf, m)?)?;
     m.add_function(wrap_pyfunction!(run_optimize, m)?)?;
+    m.add_function(wrap_pyfunction!(run_frequencies, m)?)?;
     m.add_function(wrap_pyfunction!(esp_at_atoms, m)?)?;
     m.add_function(wrap_pyfunction!(esp_at_points, m)?)?;
     m.add_function(wrap_pyfunction!(hirshfeld_charges, m)?)?;

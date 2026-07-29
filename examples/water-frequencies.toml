@@ -1,0 +1,19 @@
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "sto-3g"
+
+[method]
+kind = "rhf"
+task = "frequencies"
+
+[frequencies]
+# Central-difference displacement in Bohr. The printed "Hessian asymmetry" is
+# the diagnostic for whether this is well chosen: it is zero in exact
+# arithmetic, so a large value means delta or the SCF thresholds are wrong for
+# the system.
+delta = 5.0e-4
+
+[scf]
+density_conv = 1.0e-9

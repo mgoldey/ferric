@@ -349,3 +349,47 @@ def test_esp_at_points_rejects_bad_shape():
     with pytest.raises(Exception, match=r"shape \(N, 3\)"):
         ferric.esp_at_points(mol, bs, r, np.zeros((3, 2)))
 
+
+
+def test_run_frequencies_water_matches_pyscf():
+    """Harmonic frequencies through the Python surface, vs PySCF.
+
+    PySCF `hessian.rhf` on water/STO-3G gives [2043.11, 4488.05, 4790.30] cm^-1.
+    ferric uses FD of the ANALYTIC gradient, so a few cm^-1 of displacement
+    error is expected and is not a method difference -- the library test asserts
+    the same reference with the same tolerance.
+    """
+    mol = ferric.Molecule.from_xyz(os.path.join(TESTDATA, "molecules", "water.xyz"))
+    r = ferric.run_frequencies(mol, "sto-3g")
+
+    assert not r.is_linear
+    assert len(r.frequencies) == 3, "water has 3N-6 = 3 modes"
+    assert r.n_gradient_evaluations == 18, "6N analytic gradients"
+
+    pyscf = [2043.1061, 4488.0531, 4790.2952]
+    dev = max(abs(a - b) for a, b in zip(r.frequencies, pyscf))
+    assert dev < 15.0, f"max deviation {dev:.2f} cm^-1 vs PySCF {pyscf}: {r.frequencies}"
+
+    # The asymmetry is zero in exact arithmetic; a large value would mean the
+    # displacement or SCF thresholds are wrong and would invalidate the
+    # frequencies above, so assert it directly rather than trusting them.
+    assert r.asymmetry < 1e-3, f"Hessian asymmetry {r.asymmetry:.3e} too large"
+    assert all(abs(t) < 1.0 for t in r.trans_rot_frequencies), (
+        f"projected trans/rot should be ~0: {r.trans_rot_frequencies}"
+    )
+
+
+def test_run_frequencies_rejects_bad_arguments():
+    """A typo'd reference must RAISE, not silently run RHF.
+
+    Silently defaulting would hand back frequencies for a different electronic
+    state than the caller asked for -- the same class of silent-wrong the CLI's
+    strict config parsing exists to prevent.
+    """
+    mol = ferric.Molecule.from_xyz(os.path.join(TESTDATA, "molecules", "water.xyz"))
+    for bad in ("RHF", "dft", "uks", ""):
+        with pytest.raises(Exception, match="unknown reference"):
+            ferric.run_frequencies(mol, "sto-3g", reference=bad)
+    for bad_delta in (0.0, -1.0):
+        with pytest.raises(Exception, match="finite and > 0"):
+            ferric.run_frequencies(mol, "sto-3g", delta=bad_delta)

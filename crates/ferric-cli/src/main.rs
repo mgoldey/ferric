@@ -182,8 +182,8 @@ pub fn main() {
         std::process::exit(1);
     }
     warn_if_epistemically_unproven(method);
-    if !matches!(task, "energy" | "optimize") {
-        eprintln!("error: unsupported method.task = \"{task}\"; expected energy or optimize");
+    if !matches!(task, "energy" | "optimize" | "frequencies") {
+        eprintln!("error: unsupported method.task = \"{task}\"; expected energy, optimize, or frequencies");
         std::process::exit(1);
     }
     let mut mol = Molecule::load_xyz_with_charge(&cfg.molecule.xyz, cfg.molecule.charge, cfg.molecule.multiplicity).unwrap_or_else(|e| {
@@ -310,6 +310,11 @@ pub fn main() {
 
     if task == "optimize" {
         run_optimize(method, &cfg, &ctx, &mol, &bs, op, &rhf_config, budget_bytes);
+        return;
+    }
+
+    if task == "frequencies" {
+        run_frequencies(method, &cfg, &ctx, &mol, &bs, op, &rhf_config);
         return;
     }
 
@@ -2660,6 +2665,70 @@ fn run_rohf(
     println!("  <S^2>      = {:.6} (exact by construction)", s_ideal);
     // task == "optimize" is handled by the top-level dispatch above
     // (optimize_geometry_rohf), which returns before reaching here.
+}
+
+/// `method.task = "frequencies"` — harmonic vibrational frequencies.
+///
+/// FD of the ANALYTIC gradient (6N gradient evaluations), mass-weighted, with
+/// translations/rotations projected out. The reference is chosen from
+/// `method.kind` the same way `run_optimize` does; `[dft] xc` promotes RHF/UHF/
+/// ROHF to the corresponding KS variant automatically.
+fn run_frequencies(
+    method: &str,
+    cfg: &Config,
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    bs: &BasisSet,
+    op: Operator,
+    rhf_config: &RhfConfig,
+) {
+    use ferric_scf::frequencies::{harmonic_frequencies, FrequencyConfig, FrequencyReference};
+
+    let reference = match method {
+        "rhf" | "ksdft" => FrequencyReference::Rhf,
+        "uhf" => FrequencyReference::Uhf,
+        "rohf" => FrequencyReference::Rohf,
+        other => {
+            eprintln!(
+                "error: method.task = \"frequencies\" supports method.kind = rhf, uhf, \
+                 rohf or ksdft (got \"{other}\"). Correlated methods have no analytic \
+                 gradient, and a frequency run needs 6N of them."
+            );
+            std::process::exit(1);
+        }
+    };
+
+    let mut fcfg = FrequencyConfig { reference, ..Default::default() };
+    if let Some(d) = cfg.frequencies.delta {
+        if !(d.is_finite() && d > 0.0) {
+            eprintln!("error: [frequencies] delta must be finite and > 0 (got {d})");
+            std::process::exit(1);
+        }
+        fcfg.delta = d;
+    }
+
+    let res = harmonic_frequencies(ctx, mol, &bs.name, op, rhf_config, &fcfg)
+        .unwrap_or_else(|e| {
+            eprintln!("error computing frequencies: {e}");
+            std::process::exit(1);
+        });
+
+    println!("Harmonic frequencies/{} on {}", bs.name, cfg.molecule.xyz);
+    println!("  energy            = {:.10} Hartree", res.energy);
+    println!("  gradient evals    = {}", res.n_gradient_evaluations);
+    println!("  linear molecule   = {}", res.is_linear);
+    // The asymmetry is zero in exact arithmetic, so it is a direct read on
+    // whether `delta` and the SCF thresholds are sane for this system. Print it
+    // unconditionally rather than burying it -- a large value invalidates every
+    // number above it.
+    println!("  Hessian asymmetry = {:.3e} Hartree/Bohr^2", res.asymmetry);
+    println!("\n  mode   frequency (cm^-1)");
+    for (k, w) in res.frequencies.iter().enumerate() {
+        let tag = if *w < 0.0 { "  (imaginary)" } else { "" };
+        println!("  {:>4}   {:>16.2}{}", k + 1, w, tag);
+    }
+    println!("\n  projected trans/rot (should be ~0): {:?}",
+        res.trans_rot_frequencies.iter().map(|v| (v * 100.0).round() / 100.0).collect::<Vec<_>>());
 }
 
 /// `task.method = "optimize"` dispatch. Extracted verbatim from the former
