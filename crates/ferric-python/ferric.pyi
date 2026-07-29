@@ -3451,8 +3451,16 @@ def run_ccsd(
     frozen_core: int | None = None,
     k_builder: str | None = None,
     memory_budget_gb: float | None = None,
+    ladder: str = "auto",
 ) -> CcResult:
-    """Coupled-cluster singles and doubles (CCSD), spin-adapted."""
+    """Coupled-cluster singles and doubles (CCSD), spin-adapted.
+
+    ``ladder`` picks how the particle-particle ladder is evaluated:
+    ``"auto"`` (default: dense when its memory plan fits the budget, RI
+    otherwise), ``"dense"`` (in-core nv^4) or ``"ri"`` (integral-direct, no
+    nv^4 tensor; exact, slower per iteration). Any other value raises
+    ValueError.
+    """
     ...
 
 def run_ccsd_t(
@@ -3462,8 +3470,16 @@ def run_ccsd_t(
     frozen_core: int | None = None,
     k_builder: str | None = None,
     memory_budget_gb: float | None = None,
+    ladder: str = "auto",
 ) -> CcResult:
-    """CCSD(T): CCSD plus perturbative triples correction, spin-adapted."""
+    """CCSD(T): CCSD plus perturbative triples correction, spin-adapted.
+
+    ``ladder`` picks how the particle-particle ladder is evaluated:
+    ``"auto"`` (default: dense when its memory plan fits the budget, RI
+    otherwise), ``"dense"`` (in-core nv^4) or ``"ri"`` (integral-direct, no
+    nv^4 tensor; exact, slower per iteration). Any other value raises
+    ValueError.
+    """
     ...
 
 def run_pdep_rpa(

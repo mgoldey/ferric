@@ -184,6 +184,15 @@ read nothing else from it (plus `linlccd_variant` for `linlccd`); any other
 | `oo_level_shift` | float | `0.1` | Hartree, ≥ 0 | `oo-rimp2` only. Level shift on the approximate diagonal orbital Hessian. |
 | `oo_diis_size` | integer | `6` | ≥ 1 | `oo-rimp2` only. DIIS subspace for the orbital rotations. The four `oo_*` keys match Python `run_oo_rimp2(max_iter=, grad_conv=, level_shift=, diis_size=)`; on any other kind they are an error. |
 
+## `[cc]`
+
+Closed-shell CCSD knobs, read by `ccsd` and `ccsd(t)` only; on any other kind
+the section is an error. The aux basis and frozen core stay in `[mp2]`.
+
+| Key | Type | Default | Allowed values | Notes |
+|---|---|---|---|---|
+| `ladder` | string | `"auto"` | `auto` `dense` `ri` (lower case only) | How the particle–particle ladder is evaluated. `dense` holds the n<sub>v</sub>⁴ `(ab\|cd)` block; `ri` rebuilds it from the RI 3-index tensors every iteration and never forms an n<sub>v</sub>⁴ tensor (same energy to round-off, less memory, slower per iteration); `auto` takes `dense` when its memory plan fits the budget and `ri` otherwise. The run prints the route taken (`ladder = dense (auto)`). Python `run_ccsd(ladder=)`, `run_ccsd_t(ladder=)`. See [Coupled cluster](../methods/cc.md#particle-particle-ladder-dense-or-ri). |
+
 ## `[local]`
 
 The local approximation of a correlated method. `method.kind` names the

@@ -3315,6 +3315,36 @@ fn run_mp2_v(
     }
 }
 
+/// The `CcConfig` for the closed-shell CCSD kinds (`ccsd`, `ccsd(t)`):
+/// `[mp2] frozen_core`, the memory budget, and `[cc] ladder`.
+fn closed_shell_cc_config(cfg: &Config, mol: &Molecule, budget_bytes: Option<usize>) -> CcConfig {
+    CcConfig {
+        frozen_core: cfg.mp2.frozen_core.resolve(mol),
+        memory_budget_bytes: budget_bytes,
+        ladder: or_exit(cfg.cc_ladder()),
+        ..Default::default()
+    }
+}
+
+/// The particle-particle ladder route closed-shell CCSD will take, as printed:
+/// `"dense (auto)"`, `"ri, block 19 (ri)"`, ... — the configured setting in
+/// parentheses, so an `auto` run says which way it went.
+fn ladder_label(
+    prep: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    result: &ferric_scf::result::ScfResult,
+    cc_config: &CcConfig,
+) -> String {
+    use ferric_cc::ccsd_closed_shell::{closed_shell_ladder_route, LadderRoute};
+    let setting = cc_config.ladder.as_str();
+    match or_exit(
+        closed_shell_ladder_route(prep, dfbs, result, cc_config).map_err(|e| e.to_string()),
+    ) {
+        LadderRoute::Dense => format!("dense ({setting})"),
+        LadderRoute::Ri { block } => format!("ri, block {block} ({setting})"),
+    }
+}
+
 /// `method.kind = "ccsd"`. Extracted verbatim from the former `main()`
 /// `"ccsd" => { ... }` match arm.
 fn run_ccsd(
@@ -3339,11 +3369,7 @@ fn run_ccsd(
         eprintln!("error: {e}");
         std::process::exit(1);
     });
-    let cc_config = CcConfig {
-        frozen_core: cfg.mp2.frozen_core.resolve(mol),
-        memory_budget_bytes: budget_bytes,
-        ..Default::default()
-    };
+    let cc_config = closed_shell_cc_config(cfg, mol, budget_bytes);
     // Dispatch on the reference's spin. Both solvers compute the SAME CCSD
     // energy, but the spin-adapted one works in spatial orbitals (no/nv) rather
     // than spin orbitals (2no/2nv), so its O(N^6) VVVV block is 16x smaller —
@@ -3363,6 +3389,7 @@ fn run_ccsd(
     } else {
         "spin-orbital"
     };
+    let ladder = is_closed_shell.then(|| ladder_label(prep, &dfbs, result, &cc_config));
     let cc_result = if is_closed_shell {
         ccsd_closed_shell(mol, prep, &dfbs, op, result, &cc_config)
     } else {
@@ -3377,6 +3404,9 @@ fn run_ccsd(
         bs.name, aux_name, cfg.molecule.xyz
     );
     println!("  nbasis     = {}", prep.nbasis());
+    if let Some(l) = &ladder {
+        println!("  ladder     = {l}");
+    }
     println!("  RHF energy = {:.10} Hartree", result.energy);
     println!(
         "  CCSD corr  = {:.10} Hartree",
@@ -3392,6 +3422,7 @@ fn run_ccsd(
             result.energy + cc_result.correlation_energy,
             serde_json::json!({
                 "e_corr": cc_result.correlation_energy,
+                "ladder": ladder,
                 "e_scf_reference": result.energy,
                 "scf_converged": result.converged,
             }),
@@ -3651,11 +3682,8 @@ fn run_ccsd_t(
 ) {
     require_restricted(result, "ccsd(t)");
     let (aux_name, dfbs) = correlation_aux(cfg, mol);
-    let cc_config = CcConfig {
-        frozen_core: cfg.mp2.frozen_core.resolve(mol),
-        memory_budget_bytes: budget_bytes,
-        ..Default::default()
-    };
+    let cc_config = closed_shell_cc_config(cfg, mol, budget_bytes);
+    let ladder = ladder_label(prep, &dfbs, result, &cc_config);
     let cc_result =
         ccsd_closed_shell(mol, prep, &dfbs, op, result, &cc_config).unwrap_or_else(|e| {
             eprintln!("error: {e}");
@@ -3673,6 +3701,7 @@ fn run_ccsd_t(
         bs.name, aux_name, cfg.molecule.xyz
     );
     println!("  nbasis     = {}", prep.nbasis());
+    println!("  ladder     = {ladder}");
     println!("  RHF energy = {:.10} Hartree", result.energy);
     println!("  CCSD corr  = {e_ccsd:.10} Hartree");
     println!("  (T) corr   = {e_t:.10} Hartree");

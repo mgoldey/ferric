@@ -8723,7 +8723,8 @@ fn run_ccd(
 }
 
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, ladder="auto"))]
+#[allow(clippy::too_many_arguments)]
 fn run_ccsd(
     py: Python<'_>,
     mol: &PyMolecule,
@@ -8732,6 +8733,7 @@ fn run_ccsd(
     frozen_core: Option<usize>,
     k_builder: Option<&str>,
     memory_budget_gb: Option<f64>,
+    ladder: &str,
 ) -> PyResult<PyCcResult> {
     let emol = mol.inner.clone();
     let ebasis = basis_set.inner.clone();
@@ -8740,6 +8742,9 @@ fn run_ccsd(
     let cfg = CcConfig {
         frozen_core: frozen_core.unwrap_or(0),
         memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
+        // Strict: an unknown route is a ValueError before any SCF runs.
+        ladder: ferric_cc::CcsdLadder::parse_config_str(ladder)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?,
         ..Default::default()
     };
     // Release the GIL for the SCF + CCSD compute. All captured values are
@@ -8777,7 +8782,8 @@ fn run_ccsd(
 }
 
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, ladder="auto"))]
+#[allow(clippy::too_many_arguments)]
 fn run_ccsd_t(
     py: Python<'_>,
     mol: &PyMolecule,
@@ -8786,6 +8792,7 @@ fn run_ccsd_t(
     frozen_core: Option<usize>,
     k_builder: Option<&str>,
     memory_budget_gb: Option<f64>,
+    ladder: &str,
 ) -> PyResult<PyCcResult> {
     let emol = mol.inner.clone();
     let ebasis = basis_set.inner.clone();
@@ -8794,6 +8801,9 @@ fn run_ccsd_t(
     let cfg = CcConfig {
         frozen_core: frozen_core.unwrap_or(0),
         memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
+        // Strict: an unknown route is a ValueError before any SCF runs.
+        ladder: ferric_cc::CcsdLadder::parse_config_str(ladder)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?,
         ..Default::default()
     };
     // Release the GIL for the SCF + CCSD + (T) compute. All captured values

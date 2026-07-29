@@ -52,6 +52,43 @@ cc-pVDZ with `cc-pvdz-ri`, RI-CCSD differs from exact-integral CCSD by about
 spin-adapted (T) rejects spin-orbital amplitudes with a typed error rather
 than mixing conventions.
 
+## Particle-particle ladder: dense or RI
+
+The particle–particle ladder Σ<sub>cd</sub> W<sub>abcd</sub> τ<sub>ij</sub><sup>cd</sup>
+of closed-shell CCSD can be evaluated two ways, chosen by `[cc] ladder`
+(Python `run_ccsd(ladder=)` / `run_ccsd_t(ladder=)`):
+
+- **`dense`** holds the chemist (ab|cd) block in core and builds W<sub>abcd</sub>
+  every iteration: n<sub>v</sub>⁴ memory, a few times over.
+- **`ri`** never forms an n<sub>v</sub>⁴ tensor. It rebuilds the (ac|bd)
+  entries from the RI 3-index tensors in a<sub>blk</sub>·n<sub>v</sub>³ panels
+  every iteration, with the panel width set by the memory budget. It is the
+  same algebra over the same tensors, not an approximation: on water/cc-pVDZ
+  ΔE = 0 and max|Δt2| = 1.4e-17, and the alkane energies below agree to
+  all 10 printed digits.
+- **`auto`** (the default) runs `dense` when its memory plan fits the budget
+  and `ri` otherwise. It is never refused where `ri` would run, and never
+  slower where `dense` fits. The run prints the route taken
+  (`ladder = dense (auto)`).
+
+Measured 2026-10-26, alkane/cc-pVDZ (cc-pvdz-ri), `OPENBLAS_NUM_THREADS=1`,
+`RAYON_NUM_THREADS=4`, routes interleaved one per process, load average 3–6
+from other jobs (`benchmarks/harness/examples/ri_ccsd_memory.rs`):
+
+| System | n<sub>v</sub> | Per iteration, dense | Per iteration, RI | RI / dense | Peak RSS, dense | Peak RSS, RI |
+|---|---|---|---|---|---|---|
+| water | 19 | 7.8 ms | 8.3 ms | 1.06 | — | — |
+| C3H8 | 69 | 1.27 s | 1.64 s | 1.30 | 1.50 GB | 0.70 GB |
+| C4H10 | 89 | 3.2–3.7 s | 5.2–5.3 s | 1.50 | 3.79 GB | 1.67 GB |
+| C5H12 | 109 | 8.8–10.8 s | 14.5–14.6 s | 1.48 | 7.90 GB | 3.40 GB |
+
+Per-iteration time is (time for k iterations − setup time) / k; ratios are of
+the medians. RI is 1.3–1.5× slower per iteration from n<sub>v</sub> ≈ 70 up
+and uses 2.1–2.3× less memory, which is why `auto` takes it only when `dense`
+does not fit. The RI route still holds the n<sub>o</sub>·n<sub>v</sub>³
+`(ia|bc)` block in core, so it removes the n<sub>v</sub>⁴ ceiling but not
+every large tensor.
+
 ## LinLCCD and ωB97X-L-V
 
 **LinLCCD(hh)** is linearized coupled-cluster doubles with the hole–hole ladder

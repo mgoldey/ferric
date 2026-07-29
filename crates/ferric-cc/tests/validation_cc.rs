@@ -543,6 +543,29 @@ fn ccsd_spin_adapted_matches_df_reference() {
         let c = load_case(system, basis_name, &mut ck);
         let res = run_ccsd_sa(&c, 0);
         check_ccsd(&mut ck, &c, "spin-adapted", res.correlation_energy);
+        // The RI particle-particle ladder is the same algebra over the same B
+        // tensors, so it must meet the same reference (default `Auto` takes
+        // the dense route at every size here).
+        let ri = ccsd_closed_shell(
+            &c.mol,
+            &c.obs,
+            &c.dfbs,
+            Operator::coulomb(),
+            &c.rhf,
+            &CcConfig {
+                ladder: ferric_cc::CcsdLadder::Ri,
+                ..cc_cfg(0)
+            },
+        )
+        .unwrap_or_else(|e| panic!("{}: RI-ladder CCSD failed: {e:?}", c.ctx));
+        check_ccsd(&mut ck, &c, "spin-adapted RI ladder", ri.correlation_energy);
+        ck.close(
+            &c.ctx,
+            "CCSD RI vs dense ladder",
+            ri.correlation_energy,
+            res.correlation_energy,
+            1e-10,
+        );
         if (system, basis_name) == ("h2o", "cc-pvdz") {
             let rf = run_ccsd_sa(&c, c.n_frozen);
             ck.close(
