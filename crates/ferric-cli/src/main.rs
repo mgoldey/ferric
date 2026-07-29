@@ -2067,6 +2067,12 @@ fn run_pdep_rpa_arm(
                 },
                 polarizability: PolarizabilityBundle {
                     esp_atoms: esp_vec.as_deref(),
+                    // Surface ESP is a library/Python capability
+                    // (`ferric_scf::properties::esp_at_points`,
+                    // `ferric.esp_at_points`); the CLI has no TOML knob for
+                    // supplying the point set yet, so nothing to export here.
+                    esp_surface: None,
+                    esp_points: None,
                     alpha_tensor: alpha_arr.as_ref(),
                     electric_field: ef_vec.as_deref(),
                     alpha_atomic: alpha_atomic_vec.as_deref(),

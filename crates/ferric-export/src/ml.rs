@@ -26,6 +26,19 @@ pub struct ChargeSchemes<'a> {
 #[derive(Default, Clone, Copy)]
 pub struct PolarizabilityBundle<'a> {
     pub esp_atoms: Option<&'a [f64]>,
+    /// ESP evaluated at ARBITRARY points (a vdW/solvent-accessible surface,
+    /// say), in Hartree atomic units. Must be exported together with
+    /// [`Self::esp_points`] — values without their coordinates are unusable,
+    /// so the writer rejects one without the other rather than emitting a
+    /// half-specified array.
+    ///
+    /// NOTE this is a DIFFERENT quantity from `esp_atoms`: it includes the
+    /// nuclear Z/r term and so diverges at a nucleus, whereas `esp_atoms`
+    /// excludes the self-term. See `ferric_scf::properties::esp_at_points`.
+    pub esp_surface: Option<&'a [f64]>,
+    /// The (N, 3) Cartesian points, in **Bohr**, at which `esp_surface` was
+    /// evaluated.
+    pub esp_points: Option<&'a Array2<f64>>,
     pub alpha_tensor: Option<&'a [[f64; 3]; 3]>,
     pub electric_field: Option<&'a [[f64; 3]]>,
     pub alpha_atomic: Option<&'a [[[f64; 3]; 3]]>,
@@ -116,6 +129,37 @@ pub fn export_npz(path: &str, bundle: &NpzBundle) -> Result<(), ExportError> {
     if let Some(v) = bundle.polarizability.esp_atoms {
         let v_arr = Array1::from_vec(v.to_vec());
         writer.add_array("esp_atoms", &v_arr).map_err(|e| ExportError::Other(e.to_string()))?;
+    }
+
+    // Surface ESP: values and coordinates travel together or not at all.
+    match (bundle.polarizability.esp_surface, bundle.polarizability.esp_points) {
+        (Some(v), Some(pts)) => {
+            if pts.ncols() != 3 || pts.nrows() != v.len() {
+                return Err(ExportError::Other(format!(
+                    "esp_surface has {} values but esp_points has shape {:?}; \
+                     expected ({}, 3)",
+                    v.len(),
+                    pts.shape(),
+                    v.len()
+                )));
+            }
+            let v_arr = Array1::from_vec(v.to_vec());
+            writer.add_array("esp_surface", &v_arr).map_err(|e| ExportError::Other(e.to_string()))?;
+            writer.add_array("esp_points", pts).map_err(|e| ExportError::Other(e.to_string()))?;
+        }
+        (Some(_), None) => {
+            return Err(ExportError::Other(
+                "esp_surface was supplied without esp_points; the values are \
+                 meaningless without the coordinates they were evaluated at"
+                    .into(),
+            ))
+        }
+        (None, Some(_)) => {
+            return Err(ExportError::Other(
+                "esp_points was supplied without esp_surface".into(),
+            ))
+        }
+        (None, None) => {}
     }
 
     if let Some(a) = bundle.polarizability.alpha_tensor {
