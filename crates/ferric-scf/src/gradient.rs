@@ -311,6 +311,36 @@ pub fn rhf_gradient(
                 .into(),
         ));
     }
+    // ECP gradients are NOT implemented, and were silently wrong before this
+    // guard (added 2026-07-28). Two independent defects:
+    //
+    //   1. The dV_ECP/dR term is entirely absent. `oneelectron_gradient` does
+    //      not even take a BasisSet, so it structurally cannot see the ECP;
+    //      `ferric-integrals/src/ecp.rs` has no derivative code at all.
+    //   2. The nuclear-repulsion derivative below uses the BARE `a.z`, while
+    //      the ENERGY (`mol.rs` nuclear_repulsion) uses `effective_z()`. So
+    //      even the classical term disagreed with the energy it differentiates.
+    //
+    // Because `ferric-cli` calls `mol.apply_ecp()` unconditionally, a
+    // `task = "optimize"` run on any ECP-carrying element (Z >= 37 with
+    // aug-cc-pvdz-pp / def2-ecp) previously optimized on a wrong gradient with
+    // no error and no warning. Erroring is required by this repo's
+    // config-honesty convention: clean error, never silent-wrong.
+    //
+    // Lifting this needs libecpint's `compute_shell_pair_derivative`
+    // (ecpint.hpp) bound through the shim, plus switching the line below to
+    // `effective_z()`. Do BOTH — fixing only the nuclear term would leave a
+    // subtler inconsistency than the one it replaces.
+    if mol.atoms.iter().any(|a| a.n_core_ecp > 0) {
+        return Err(FerricError::Libint(
+            "rhf_gradient is not implemented for molecules with ECPs (effective \
+             core potentials): the dV_ECP/dR term is missing and the \
+             nuclear-repulsion derivative uses the full Z rather than the \
+             effective Z, so the gradient would be silently wrong. Use \
+             task = \"energy\", or an all-electron basis."
+                .into(),
+        ));
+    }
     let nocc = (mol.nelec() / 2) as usize;
     let w = build_energy_weighted_density(result, nocc);
     hf_gradient_with_density(mol, prep, op, bounds, result.density_r(), &w, ext)

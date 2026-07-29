@@ -110,3 +110,44 @@ fn ecp_rhf_i2_matches_pyscf() {
 fn ecp_rhf_rb_cation_matches_pyscf() {
     run_ecp_rhf("rb_cation_def2svp_ecp_rhf");
 }
+
+/// ECP gradients must ERROR, not return a silently wrong answer.
+///
+/// Before 2026-07-28 `rhf_gradient` accepted ECP molecules and produced a
+/// gradient that was wrong two ways: the dV_ECP/dR term was missing entirely,
+/// and the nuclear-repulsion derivative used the bare `z` while the ENERGY it
+/// differentiates uses `effective_z()`. `ferric-cli` calls `mol.apply_ecp()`
+/// unconditionally, so `task = "optimize"` on any Z >= 37 element optimized on
+/// that wrong gradient with no error and no warning.
+///
+/// This is the coverage gap that let it survive: `ecp_rhf.rs` had zero gradient
+/// tests. Asserting the ERROR (rather than a gradient value) is the point — the
+/// repo convention is clean error over silent-wrong, and this pins the honest
+/// behaviour until the libecpint derivative API is bound.
+#[test]
+fn ecp_gradient_errors_rather_than_returning_a_wrong_answer() {
+    let ctx = ParallelContext::default();
+    let bs = basis::bundled("def2-svp").unwrap();
+    let mut mol = Molecule::parse_xyz("1\n\nXe 0.0 0.0 0.0\n", 0, 1).unwrap();
+    mol.apply_ecp(&bs);
+
+    // TEETH: the ECP must actually be active, or this test proves nothing about
+    // the ECP path — it would just be testing a plain all-electron Xe.
+    assert!(
+        mol.atoms.iter().any(|a| a.n_core_ecp > 0),
+        "def2-svp must carry an ECP for Xe; without one this test is vacuous"
+    );
+
+    let prep = PreparedBasis::new(&mol, &bs).unwrap();
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+    let rhf = solve_rhf(&ctx, &mol, &prep, op, &bounds, &RhfConfig::default()).unwrap();
+
+    let err = ferric_scf::gradient::rhf_gradient(&mol, &prep, op, &bounds, &rhf, None)
+        .expect_err("ECP gradient must be rejected, not silently computed");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("ECP"),
+        "the error must name ECPs so the user knows why: got {msg}"
+    );
+}
