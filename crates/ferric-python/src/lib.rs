@@ -1234,6 +1234,40 @@ fn esp_at_atoms(mol: &PyMolecule, basis_set: &PyBasisSet, result: DensitySource)
     ferric_rpa::properties::esp_at_atoms(&mol.inner, &prep, result.density()).map_err(make_err)
 }
 
+/// Electrostatic potential at ARBITRARY points, in Hartree atomic units
+/// (e/Bohr). `points` is an (N, 3) array of Cartesian positions in **Bohr**.
+///
+/// This is the primitive behind CHELPG/RESP and is what you want for an ESP on
+/// a molecular surface (vdW shell, solvent-accessible grid, ...). Prefer it
+/// over reconstructing the surface potential from partial charges plus induced
+/// dipoles: that is a point-multipole approximation to a quantity computed
+/// here exactly from the density.
+///
+/// `result` is an `RhfResult` or `DftResult` from a converged SCF.
+#[pyfunction]
+fn esp_at_points(
+    mol: &PyMolecule,
+    basis_set: &PyBasisSet,
+    result: DensitySource,
+    points: numpy::PyReadonlyArray2<f64>,
+) -> PyResult<Vec<f64>> {
+    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    let arr = points.as_array();
+    if arr.ncols() != 3 {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "points must have shape (N, 3); got (_, {})",
+            arr.ncols()
+        )));
+    }
+    let pts: Vec<[f64; 3]> = arr
+        .rows()
+        .into_iter()
+        .map(|r| [r[0], r[1], r[2]])
+        .collect();
+    ferric_scf::properties::esp_at_points(&mol.inner, &prep, result.density(), &pts)
+        .map_err(make_err)
+}
+
 /// Hirshfeld partial charges (units of e), using the default free-atom
 /// (single-exponential Slater) proatom reference. `result` is an `RhfResult`
 /// or `DftResult` from a converged SCF.
@@ -3076,6 +3110,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_rohf, m)?)?;
     m.add_function(wrap_pyfunction!(run_optimize, m)?)?;
     m.add_function(wrap_pyfunction!(esp_at_atoms, m)?)?;
+    m.add_function(wrap_pyfunction!(esp_at_points, m)?)?;
     m.add_function(wrap_pyfunction!(hirshfeld_charges, m)?)?;
     m.add_function(wrap_pyfunction!(lowdin_charges, m)?)?;
     m.add_function(wrap_pyfunction!(mulliken_charges, m)?)?;

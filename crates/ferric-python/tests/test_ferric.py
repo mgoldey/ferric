@@ -2,6 +2,7 @@ import ferric
 import json
 import os
 
+import numpy as np
 import pytest
 
 TESTDATA = os.path.join(os.path.dirname(__file__), "..", "..", "..", "testdata")
@@ -306,3 +307,45 @@ def test_oversized_ccsd_t_raises_not_oom():
         assert "CCSD" in msg, msg
         return
     raise AssertionError("run_ccsd_t did not raise under a tiny memory budget")
+
+BOHR_PER_ANG = 1.0 / 0.52917721092
+
+
+def test_esp_at_points_far_field_is_dipolar():
+    """`esp_at_points` must reproduce the classical far field.
+
+    This is the physics anchor for the binding: at large r a NEUTRAL molecule's
+    potential is dipole-dominated and decays as 1/r^2, so doubling r must
+    quarter V. A wrong sign, a missing nuclear term, or a units error all break
+    this immediately -- unlike a self-consistency check against ferric's own
+    numbers, which would pass for all three.
+
+    Note `esp_at_points` includes the nuclear Z/r contribution and therefore
+    DIVERGES at a nucleus; it is not interchangeable with `esp_at_atoms`, which
+    excludes the self-term.
+    """
+    mol = ferric.Molecule.from_xyz(os.path.join(TESTDATA, "molecules", "water.xyz"))
+    bs = ferric.BasisSet.bundled("sto-3g")
+    r = ferric.run_rhf(mol, bs)
+
+    pts = np.array([[0.0, 0.0, z] for z in (10.0, 20.0, 40.0, 80.0)])
+    v = np.array(ferric.esp_at_points(mol, bs, r, pts))
+    assert np.all(np.isfinite(v)), f"non-finite ESP: {v}"
+
+    ratios = [v[i] / v[i + 1] for i in range(len(v) - 1)]
+    for k, ratio in enumerate(ratios):
+        assert 3.0 < ratio < 5.0, (
+            f"far-field decay is not 1/r^2 at step {k}: ratio {ratio:.3f}, "
+            f"values {v}. ~2 would mean a net charge (wrong nuclear term); "
+            f"~8 would mean quadrupole-dominated."
+        )
+
+
+def test_esp_at_points_rejects_bad_shape():
+    """(N, 3) is required; anything else must raise, not silently reinterpret."""
+    mol = ferric.Molecule.from_xyz(os.path.join(TESTDATA, "molecules", "water.xyz"))
+    bs = ferric.BasisSet.bundled("sto-3g")
+    r = ferric.run_rhf(mol, bs)
+    with pytest.raises(Exception, match=r"shape \(N, 3\)"):
+        ferric.esp_at_points(mol, bs, r, np.zeros((3, 2)))
+
