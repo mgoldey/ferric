@@ -63,10 +63,6 @@ benchmarks/omega_diag/toml/
 benchmarks/omega_diag/derisk/toml/
 benchmarks/omega_diag/validate/*.toml
 # latex build products
-docs/papers/*.aux
-docs/papers/*.fdb_latexmk
-docs/papers/*.fls
-docs/papers/*.log
 
 # Python bytecode — everywhere
 __pycache__/
@@ -83,3 +79,6 @@ experimental/
 
 # GFN-FF writes this topology cache into the CWD at runtime.
 gfnff_topo
+
+# local docs (moved out of git 2026-08-07; shared via wiki instead)
+/wiki/
