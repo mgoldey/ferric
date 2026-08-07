@@ -82,3 +82,6 @@ gfnff_topo
 
 # local docs (moved out of git 2026-08-07; shared via wiki instead)
 /wiki/
+
+# local Claude Code project instructions (internal, not shared)
+/CLAUDE.md

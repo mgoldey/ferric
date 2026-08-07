@@ -14,7 +14,7 @@ Single-thread (OPENBLAS=1, RAYON=1) so it coexists with the production grid.
 """
 import os, sys, time, subprocess, re, json, glob
 
-ROOT="/home/matt/qc/ferric/.claude/worktrees/sr-mp2-lr-rpa"
+ROOT="/home/matt/qc/ferric"
 os.chdir(ROOT)
 OUT="benchmarks/omega_diag/derisk"
 GEO="benchmarks/grid/geoms"

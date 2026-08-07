@@ -9,7 +9,7 @@ nothing, never touches aTZ.
 """
 import os, re, json, subprocess
 
-ROOT="/home/matt/qc/ferric/.claude/worktrees/sr-mp2-lr-rpa"
+ROOT="/home/matt/qc/ferric"
 os.chdir(ROOT)
 OUT="benchmarks/omega_diag/derisk"; GEO="benchmarks/grid/geoms"; BIN="target/release/ferric-cli"
 env=dict(os.environ, OPENBLAS_NUM_THREADS="1", RAYON_NUM_THREADS="1")

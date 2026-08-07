@@ -6,7 +6,7 @@ For each system x omega: dimer, monoA, monoB, monoA+ghostB, monoB+ghostA via fer
 """
 import re, subprocess, os, sys, json
 
-BIN = "/home/matt/qc/ferric/.claude/worktrees/agent-a94c2737da671ca75/target/release/ferric-cli"
+BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "target", "release", "ferric-cli")
 SRC = open("/tmp/a24/A24.py").read() if os.path.exists("/tmp/a24/A24.py") else open("/tmp/wd/A24.py").read()
 REFS = {2: -5.014, 5: -3.157, 14: -1.110, 19: -0.538}
 NAMES = {2: "H2O-H2O", 5: "NH3-NH3", 14: "C2H4-C2H4", 19: "CH4-CH4"}

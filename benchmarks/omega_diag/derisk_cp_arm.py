@@ -13,7 +13,7 @@ Both reuse the identical dimer output key  {label}_{sid}_{btag}_w{omega}_{ftag}_
 """
 import os, subprocess
 
-ROOT="/home/matt/qc/ferric/.claude/worktrees/sr-mp2-lr-rpa"
+ROOT="/home/matt/qc/ferric"
 os.chdir(ROOT)
 OUT="benchmarks/omega_diag/derisk"; os.makedirs(OUT+"/toml",exist_ok=True); os.makedirs(OUT+"/out",exist_ok=True)
 GEO="benchmarks/grid/geoms"

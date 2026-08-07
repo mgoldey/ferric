@@ -10,7 +10,7 @@ per the de-risk verdict B/T must be CP-corrected; non-CP is the error).
 """
 import os, re, json
 
-ROOT = "/home/matt/qc/ferric/.claude/worktrees/sr-mp2-lr-rpa"
+ROOT = "/home/matt/qc/ferric"
 os.chdir(ROOT)
 OUT = "benchmarks/omega_diag/derisk"
 KCAL = 627.509474

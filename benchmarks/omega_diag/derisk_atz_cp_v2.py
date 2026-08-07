@@ -34,7 +34,7 @@ to include 0.20/0.42-T rows if it filters them).
 import os, subprocess, threading, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-ROOT = "/home/matt/qc/ferric/.claude/worktrees/sr-mp2-lr-rpa"
+ROOT = "/home/matt/qc/ferric"
 os.chdir(ROOT)
 OUT = "benchmarks/omega_diag/derisk"
 GEO = "benchmarks/grid/geoms"

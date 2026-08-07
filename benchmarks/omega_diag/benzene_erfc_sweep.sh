@@ -4,7 +4,7 @@
 # computes SR-MP2 correlation binding, finds where it crosses the ref.
 # Single-thread; isolated from the production grid.
 set -e
-cd /home/matt/qc/ferric/.claude/worktrees/sr-mp2-lr-rpa
+cd /home/matt/qc/ferric
 export OPENBLAS_NUM_THREADS=1 RAYON_NUM_THREADS=1
 BIN=target/release/ferric-cli
 OUT=benchmarks/omega_diag

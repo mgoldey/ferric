@@ -44,7 +44,7 @@ pseudo-densities. Get the physics right, and the cheap method follows from its s
 **Coupled cluster**
 - **RI-CCD, RI-CCSD, and the perturbative triples (T)** correction — all
   validated against exact-integral / PySCF references (H2O/cc-pVDZ (T) matches
-  PySCF to ~1e-6). See [docs/VALIDATION.md](docs/VALIDATION.md).
+  PySCF to ~1e-6). See `VALIDATION.md` in the project wiki.
 - CLI: only `method.kind = "ccsd"` is currently wired (see
   `examples/water-ccsd.toml`). **CCD and CCSD(T) are library/Python-only, not
   yet CLI-wired** — use `ferric.run_ccd` / `ferric.run_ccsd_t` from Python (see
@@ -152,21 +152,21 @@ print(f"CCSD(T) total:    {cc.correlation_energy + cc.t_correction:.10f} Ha")
 ## Tutorials
 
 Step-by-step, runnable walkthroughs (CLI + Python, with verified output and
-per-method maturity badges) live in [`docs/guide/tutorials/`](docs/guide/tutorials/00-index.md):
+per-method maturity badges) live in the project wiki's tutorials section:
 
-1. [Your first calculation: RHF on water](docs/guide/tutorials/01-first-calculation.md)
-2. [Energies you can trust: the MP2 family](docs/guide/tutorials/02-mp2-family.md)
-3. [DFT calculations](docs/guide/tutorials/03-dft.md)
-4. [Open-shell systems](docs/guide/tutorials/04-open-shell.md)
-5. [Geometry optimization](docs/guide/tutorials/05-geometry-optimization.md)
-6. [Dispersion C6 and polarizabilities](docs/guide/tutorials/06-dispersion-c6.md)
-7. [Exporting ML features (NPZ)](docs/guide/tutorials/07-ml-feature-export.md)
-8. [Batches and scaling](docs/guide/tutorials/08-batches-and-scaling.md)
+1. Your first calculation: RHF on water
+2. Energies you can trust: the MP2 family
+3. DFT calculations
+4. Open-shell systems
+5. Geometry optimization
+6. Dispersion C6 and polarizabilities
+7. Exporting ML features (NPZ)
+8. Batches and scaling
 
 For the **theory behind the methods** — Hartree–Fock, MP2/RI, why MP2 fails for
 non-covalent interactions, attenuated MP2 and the terfc operator,
 SCS-MP2(2terfc), and the DFT/RPA/GW response methods (drawing on the developer's
-dissertation) — see the [methods guide](docs/guide/methods/00-index.md).
+dissertation) — see the methods guide in the project wiki.
 
 ## Architecture
 
@@ -302,7 +302,7 @@ To build `--features mpi` you need **two** things:
    ```
 
 Then build and run under `mpirun` (keep OpenBLAS single-threaded; see
-`docs/superpowers/mpi.md` for thread-layout guidance):
+the MPI notes (`mpi.md`) in the project wiki for thread-layout guidance):
 
 ```bash
 OPENBLAS_NUM_THREADS=1 cargo build --release --workspace --features mpi
@@ -417,19 +417,18 @@ ferric/
     molecules/                  # XYZ files (water, methane, ...)
     reference/                  # PySCF/MOLGW reference values (JSON)
   examples/                     # TOML input files
-  docs/superpowers/             # design specs + implementation plans
 ```
 
 ## Roadmap
 
 > **Implemented ≠ validated.** A checked box means the code exists and runs. For
 > how strongly each capability's *numbers* are checked against ground truth —
-> and where they are known to fail — see [docs/VALIDATION.md](docs/VALIDATION.md).
+> and where they are known to fail — see `VALIDATION.md` in the project wiki.
 
 - [x] Rayon-parallel LinK exchange
 - [x] CFMM (continuous fast multipole) for linear-scaling Coulomb
 - [x] AO-Laplace-Transform MP2 (linear scaling via sparse tensors)
-- [x] MPI distributed parallelization (SCF DF-J/K, RI-MP2, RPA frequency quadrature; GW QP loop not yet distributed — see `docs/superpowers/mpi.md`)
+- [x] MPI distributed parallelization (SCF DF-J/K, RI-MP2, RPA frequency quadrature; GW QP loop not yet distributed — see the wiki's `mpi.md`)
 - [x] Geometry optimization via analytical gradients (RHF, RI-MP2, SCS-MP2)
 - [x] Sparse tensor support (ferric-tensors) for linear correlation
 - [x] KS-DFT (LDA/GGA/hybrid/RSH) via libxc + Becke-Lebedev quadrature; VV10 nonlocal

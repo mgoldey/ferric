@@ -29,8 +29,8 @@
 //!
 //! ## Verification (Python/PySCF, independent of this Rust code)
 //!
-//! Hypothesis and fix were checked numerically before porting:
-//! `/home/matt/.claude/jobs/f56fe3ad/tmp/oomp2_converge.py` builds a
+//! Hypothesis and fix were checked numerically before porting: a scratch
+//! PySCF script (`oomp2_converge.py`, session scratch, not in-repo) built a
 //! from-scratch OO-MP2 orbital optimizer (reusing the already-verified
 //! [`crate::oo_rimp2::compute_orbital_gradient`] formula) and cross-checks
 //! against `ferric-mp2`'s own `oo_ri_mp2`, which independently agrees with

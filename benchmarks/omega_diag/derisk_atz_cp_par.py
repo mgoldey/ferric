@@ -24,7 +24,7 @@ Each child: OPENBLAS_NUM_THREADS=1 RAYON_NUM_THREADS=1.
 import os, re, subprocess, sys, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-ROOT = "/home/matt/qc/ferric/.claude/worktrees/sr-mp2-lr-rpa"
+ROOT = "/home/matt/qc/ferric"
 os.chdir(ROOT)
 OUT = "benchmarks/omega_diag/derisk"
 GEO = "benchmarks/grid/geoms"

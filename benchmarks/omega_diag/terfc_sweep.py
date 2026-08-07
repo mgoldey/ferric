@@ -44,7 +44,7 @@ import subprocess
 import threading
 import time
 
-ROOT = "/home/matt/qc/ferric/.claude/worktrees/sr-mp2-lr-rpa"
+ROOT = "/home/matt/qc/ferric"
 os.chdir(ROOT)
 
 OUT = "benchmarks/omega_diag/terfc_out"
