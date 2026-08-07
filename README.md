@@ -475,3 +475,20 @@ Apache-2.0
 - Bartlett & Musiał, Rev. Mod. Phys. 79, 291 (2007) -- Coupled-cluster theory
 - Scuseria, Janssen, Schaefer, J. Chem. Phys. 89, 7382 (1988) -- CCSD methods
 - Raghavachari et al., Chem. Phys. Lett. 157, 479 (1989) -- CCSD(T) triples correction
+
+## License
+
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT license ([LICENSE-MIT](LICENSE-MIT))
+
+at your option.
+
+ferric links against external libraries with their own licenses — notably
+libint2, libxc (MPL-2.0), OpenBLAS/LAPACK (BSD), and optionally xtb (LGPL-3.0)
+— which govern redistribution of binaries built against them.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in the work by you, as defined in the Apache-2.0 license, shall
+be dual licensed as above, without any additional terms or conditions.

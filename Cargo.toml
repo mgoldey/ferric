@@ -2,6 +2,11 @@
 members = ["crates/*", "benchmarks/harness"]
 resolver = "2"
 
+[workspace.package]
+authors = ["Matthew Goldey <matthew.goldey@gmail.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/mgoldey/ferric"
+
 # G1 correctness gate (docs/perf-tasks/G1-correctness-ci-gate.md): allow-list
 # derived empirically from `cargo clippy --workspace --all-targets` on current,
 # accepted main (2026-07-16) -- every entry below is a lint that already fires
