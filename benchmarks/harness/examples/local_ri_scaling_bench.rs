@@ -8,7 +8,16 @@
 //! Key Metrics Tracked:
 //!   - Average local domain size |P_i| vs molecule size (Alkane series C1..C8)
 //!   - FLOP ratio for dressing: Local Domain Dressing vs Global Dense Dressing
-//!   - Domain-dressing tensor norm error ||B_local - B_global|| / ||B_global||
+//!   - Fit-coefficient norm error ||c_local - c_global|| / ||c_global||
+//!   - Assembled-integral error ||G_x - G_exact||_F / ||G_exact||_F for the
+//!     (ia|jb) matrix, two assemblies from the SAME truncated coefficients:
+//!     naive one-sided G_1 = A^T c_local (FIRST order in dc) and robust
+//!     (Dunlap) G_rob = G_1 + G_1^T - c^T V c (SECOND order in dc)
+//!
+//! Artifact hypothesis (stated before measuring): if the robust assembly is
+//! implemented correctly, g_err_robust should sit at ~(g_err_naive)^2 scale
+//! and both must be exactly 0 at 100% domain retention; a broken construction
+//! would make robust track naive (still first order) or exceed it.
 //!
 //! Run:
 //!   OPENBLAS_NUM_THREADS=1 cargo run --release -p ferric-benchmarks \
@@ -32,6 +41,22 @@ const AUX_NAME: &str = "cc-pvdz-ri";
 
 /// Distance cutoffs (in Bohr) tested for local auxiliary domain construction.
 const R_CUTOFFS_BOHR: &[f64] = &[6.0, 8.0, 10.0, 12.0, 15.0, 20.0];
+
+/// Frobenius norm. ndarray's .iter() walks logical order regardless of memory
+/// layout, so these are safe on mixed-layout GEMM outputs (see the ndarray
+/// dot-layout convention in CLAUDE.md).
+fn frob(m: &Array2<f64>) -> f64 {
+    m.iter().map(|v| v * v).sum::<f64>().sqrt()
+}
+
+fn frob_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
+    assert_eq!(a.dim(), b.dim());
+    a.iter()
+        .zip(b.iter())
+        .map(|(x, y)| (x - y) * (x - y))
+        .sum::<f64>()
+        .sqrt()
+}
 
 /// Represents an auxiliary domain for localized occupied orbital `i`.
 struct LocalDomainSpec {
@@ -118,26 +143,23 @@ fn main() {
             }
         }
 
-        // Global dense dressing: B_global(P, i, a) = sum_Q [V^{-1/2}]_{PQ} (Q | i a)
-        // For baseline comparison, compute using V_global^{-1}:
-        let mut b_global = Array3::<f64>::zeros((naux, nocc, nvir));
-        for i in 0..nocc {
-            for a in 0..nvir {
-                let col_3c = eri3_loc.slice(s![.., i, a]);
-                let col_b = v_global_inv.dot(&col_3c);
-                for p in 0..naux {
-                    b_global[(p, i, a)] = col_b[p];
-                }
-            }
-        }
-        let b_global_norm = b_global.iter().map(|v| v * v).sum::<f64>().sqrt();
+        // Reshape (P, i, a) -> (P, ia) once; every fit below is a GEMM on this.
+        let nov = nocc * nvir;
+        let a2 = eri3_loc.to_shape((naux, nov)).unwrap().to_owned();
 
-        let global_gemm_flops = 2.0 * (naux as f64) * (naux as f64) * (nocc * nvir) as f64;
+        // Global fit coefficients c_global = V^{-1} A and the RI-exact
+        // assembled integral matrix G_exact[ia,jb] = A^T V^{-1} A.
+        let c_global = v_global_inv.dot(&a2);
+        let g_exact = a2.t().dot(&c_global);
+        let c_global_norm = frob(&c_global);
+        let g_exact_norm = frob(&g_exact);
 
-        println!("### alkane_{n_c}  (C_{n_c}H_{})  nocc={nocc}  nvir={nvir}  naux={naux}  global_norm={b_global_norm:.4}", 2 * n_c + 2);
+        let global_gemm_flops = 2.0 * (naux as f64) * (naux as f64) * nov as f64;
+
+        println!("### alkane_{n_c}  (C_{n_c}H_{})  nocc={nocc}  nvir={nvir}  naux={naux}  |G_exact|={g_exact_norm:.4}", 2 * n_c + 2);
         println!(
-            "{:>8}  {:>10}  {:>10}  {:>14}  {:>10}  {:>12}",
-            "R_cut(B)", "avg|P_i|", "retention", "Local FLOPs", "FLOP ratio", "b_tensor_err"
+            "{:>8}  {:>10}  {:>10}  {:>14}  {:>10}  {:>10}  {:>12}  {:>12}",
+            "R_cut(B)", "avg|P_i|", "retention", "Local FLOPs", "FLOP ratio", "c_err", "g_err_naive", "g_err_robust"
         );
 
         let aux_shell_centers = dfbs.shell_centers();
@@ -194,8 +216,8 @@ fn main() {
             let avg_domain_size = total_aux_fns_kept as f64 / nocc as f64;
             let aux_retention_pct = 100.0 * avg_domain_size / naux as f64;
 
-            // Perform Local Domain Dressing and compute local B_local tensor
-            let mut b_local = Array3::<f64>::zeros((naux, nocc, nvir));
+            // Domain-local fit coefficients: zero outside each orbital's domain.
+            let mut c_local = Array2::<f64>::zeros((naux, nov));
             let mut local_flops = 0.0f64;
 
             for dom in &local_domains {
@@ -208,36 +230,37 @@ fn main() {
                 local_flops += 2.0 * (m_i as f64) * (m_i as f64) * (nvir as f64);
 
                 for a in 0..nvir {
-                    // Extract local 3c vector
+                    let col = i * nvir + a;
                     let mut vec_3c_local = ndarray::Array1::<f64>::zeros(m_i);
                     for (p_loc, &p_glob) in dom.aux_fn_indices.iter().enumerate() {
-                        vec_3c_local[p_loc] = eri3_loc[(p_glob, i, a)];
+                        vec_3c_local[p_loc] = a2[(p_glob, col)];
                     }
 
-                    // Local inverse solve: b_vec_local = V_local^{-1} * vec_3c_local
-                    let b_vec_local = dom.v_inv_local.dot(&vec_3c_local);
+                    // Local inverse solve: c_vec = V_domain^{-1} * vec_3c_local
+                    let c_vec = dom.v_inv_local.dot(&vec_3c_local);
 
                     for (p_loc, &p_glob) in dom.aux_fn_indices.iter().enumerate() {
-                        b_local[(p_glob, i, a)] = b_vec_local[p_loc];
+                        c_local[(p_glob, col)] = c_vec[p_loc];
                     }
                 }
             }
 
-            // Calculate tensor error ||B_local - B_global|| / ||B_global||
-            let mut diff_sq = 0.0f64;
-            for p in 0..naux {
-                for i in 0..nocc {
-                    for a in 0..nvir {
-                        let d = b_local[(p, i, a)] - b_global[(p, i, a)];
-                        diff_sq += d * d;
-                    }
-                }
-            }
-            let b_err = diff_sq.sqrt() / b_global_norm;
+            let c_err = frob_diff(&c_local, &c_global) / c_global_norm;
+
+            // Assembled (ia|jb) from the SAME truncated coefficients:
+            //   naive one-sided G_1 = A^T c_local          (first order in dc)
+            //   robust (Dunlap) G_rob = G_1 + G_1^T - c^T V c  (second order)
+            let g_1 = a2.t().dot(&c_local);
+            let w = v_global.dot(&c_local);
+            let g_sym = c_local.t().dot(&w);
+            let g_rob = &g_1 + &g_1.t() - &g_sym;
+            let g_err_naive = frob_diff(&g_1, &g_exact) / g_exact_norm;
+            let g_err_robust = frob_diff(&g_rob, &g_exact) / g_exact_norm;
+
             let flop_ratio = global_gemm_flops / local_flops.max(1.0);
 
             println!(
-                "{r_cut:>8.1}  {avg_domain_size:>10.1}  {aux_retention_pct:>9.1}%  {local_flops:>14.3e}  {flop_ratio:>9.2}x  {b_err:>12.3e}"
+                "{r_cut:>8.1}  {avg_domain_size:>10.1}  {aux_retention_pct:>9.1}%  {local_flops:>14.3e}  {flop_ratio:>9.2}x  {c_err:>10.3e}  {g_err_naive:>12.3e}  {g_err_robust:>12.3e}"
             );
         }
         println!();
