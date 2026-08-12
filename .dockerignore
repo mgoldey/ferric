@@ -17,8 +17,7 @@ target
 *.swp
 *.swo
 *~
-docs/superpowers/plans
-docs/superpowers/specs
+wiki/
 main.py
 pyproject.toml
 uv.lock
