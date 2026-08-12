@@ -168,6 +168,11 @@ non-covalent interactions, attenuated MP2 and the terfc operator,
 SCS-MP2(2terfc), and the DFT/RPA/GW response methods (drawing on the developer's
 dissertation) — see the methods guide in the project wiki.
 
+> **Note:** comments in the source tree cite design notes and validation
+> reports by `docs/<name>.md` paths. Those documents live in the project wiki
+> (the `docs/` directory was moved out of the repo); look up the same filename
+> there.
+
 ## Architecture
 
 ```
