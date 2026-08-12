@@ -42,11 +42,23 @@ const AUX_NAME: &str = "cc-pvdz-ri";
 /// Distance cutoffs (in Bohr) tested for local auxiliary domain construction.
 const R_CUTOFFS_BOHR: &[f64] = &[6.0, 8.0, 10.0, 12.0, 15.0, 20.0];
 
+/// Above this nov = nocc*nvir the dense (ia|jb) matrices are skipped (nov^2
+/// doubles each — ~3.7 GB at C16) and only the trace-based errors are
+/// reported. Below it, BOTH are computed and cross-checked, so the trace
+/// construction is validated by an independent construction on every system
+/// where the dense path is affordable (through octane, nov = 5577).
+const DENSE_XCHECK_MAX_NOV: usize = 6000;
+
 /// Frobenius norm. ndarray's .iter() walks logical order regardless of memory
 /// layout, so these are safe on mixed-layout GEMM outputs (see the ndarray
 /// dot-layout convention in CLAUDE.md).
 fn frob(m: &Array2<f64>) -> f64 {
     m.iter().map(|v| v * v).sum::<f64>().sqrt()
+}
+
+/// tr(a . b) = sum_PQ a[P,Q] b[Q,P] without forming the product matrix.
+fn tr_prod(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
+    (a * &b.t()).sum()
 }
 
 fn frob_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
@@ -71,7 +83,7 @@ fn main() {
     println!("# Basis: {OBS_NAME} / Aux: {AUX_NAME}");
     println!("# ==========================================================================\n");
 
-    for n_c in [1usize, 2, 3, 4, 6, 8] {
+    for n_c in [1usize, 2, 3, 4, 6, 8, 12, 16] {
         let path = format!("testdata/molecules/alkane_{n_c}.xyz");
         let Ok(mol) = Molecule::load_xyz(&path) else {
             println!("alkane_{n_c}: SKIPPED (file missing)\n");
@@ -147,12 +159,28 @@ fn main() {
         let nov = nocc * nvir;
         let a2 = eri3_loc.to_shape((naux, nov)).unwrap().to_owned();
 
-        // Global fit coefficients c_global = V^{-1} A and the RI-exact
-        // assembled integral matrix G_exact[ia,jb] = A^T V^{-1} A.
+        // Global fit coefficients c_global = V^{-1} A.
         let c_global = v_global_inv.dot(&a2);
-        let g_exact = a2.t().dot(&c_global);
         let c_global_norm = frob(&c_global);
-        let g_exact_norm = frob(&g_exact);
+
+        // Every Frobenius error below reduces EXACTLY to naux x naux traces
+        // (A = V c_global, S_X = X X^T):
+        //   G_exact = c^T V c            =>  |G_exact|^2      = tr(S_A S_c)
+        //   G_1   - G_exact = A^T dc     =>  |G_1 - G_ex|^2   = tr(S_A S_dc)
+        //   G_rob - G_exact = -dc^T V dc =>  |G_rob - G_ex|^2 = tr((V S_dc)^2)
+        // so the nov^2 integral matrices are never materialized. The dense-G
+        // path is kept below DENSE_XCHECK_MAX_NOV as an independent
+        // construction cross-check of these identities.
+        let s_a = a2.dot(&a2.t());
+        let s_c = c_global.dot(&c_global.t());
+        let g_exact_norm = tr_prod(&s_a, &s_c).max(0.0).sqrt();
+
+        let g_exact_dense = if nov <= DENSE_XCHECK_MAX_NOV {
+            Some(a2.t().dot(&c_global))
+        } else {
+            None
+        };
+        let mut xcheck_max_rel_dev = 0.0f64;
 
         let global_gemm_flops = 2.0 * (naux as f64) * (naux as f64) * nov as f64;
 
@@ -245,23 +273,42 @@ fn main() {
                 }
             }
 
-            let c_err = frob_diff(&c_local, &c_global) / c_global_norm;
+            let dc = &c_local - &c_global;
+            let c_err = frob(&dc) / c_global_norm;
 
-            // Assembled (ia|jb) from the SAME truncated coefficients:
+            // Assembled-(ia|jb) errors via the aux-space trace identities:
             //   naive one-sided G_1 = A^T c_local          (first order in dc)
             //   robust (Dunlap) G_rob = G_1 + G_1^T - c^T V c  (second order)
-            let g_1 = a2.t().dot(&c_local);
-            let w = v_global.dot(&c_local);
-            let g_sym = c_local.t().dot(&w);
-            let g_rob = &g_1 + &g_1.t() - &g_sym;
-            let g_err_naive = frob_diff(&g_1, &g_exact) / g_exact_norm;
-            let g_err_robust = frob_diff(&g_rob, &g_exact) / g_exact_norm;
+            let s_dc = dc.dot(&dc.t());
+            let g_err_naive = tr_prod(&s_a, &s_dc).max(0.0).sqrt() / g_exact_norm;
+            let m = v_global.dot(&s_dc);
+            let g_err_robust = tr_prod(&m, &m).max(0.0).sqrt() / g_exact_norm;
+
+            // Independent-construction cross-check: dense G matrices.
+            if let Some(g_exact) = &g_exact_dense {
+                let g_1 = a2.t().dot(&c_local);
+                let w = v_global.dot(&c_local);
+                let g_sym = c_local.t().dot(&w);
+                let g_rob = &g_1 + &g_1.t() - &g_sym;
+                let dense_naive = frob_diff(&g_1, g_exact) / g_exact_norm;
+                let dense_robust = frob_diff(&g_rob, g_exact) / g_exact_norm;
+                for (trace_v, dense_v) in [(g_err_naive, dense_naive), (g_err_robust, dense_robust)] {
+                    if dense_v > 1e-8 {
+                        xcheck_max_rel_dev = xcheck_max_rel_dev.max((trace_v - dense_v).abs() / dense_v);
+                    }
+                }
+            }
 
             let flop_ratio = global_gemm_flops / local_flops.max(1.0);
 
             println!(
                 "{r_cut:>8.1}  {avg_domain_size:>10.1}  {aux_retention_pct:>9.1}%  {local_flops:>14.3e}  {flop_ratio:>9.2}x  {c_err:>10.3e}  {g_err_naive:>12.3e}  {g_err_robust:>12.3e}"
             );
+        }
+        if g_exact_dense.is_some() {
+            println!("# xcheck trace-vs-dense (rows with dense err > 1e-8): max rel dev {xcheck_max_rel_dev:.3e}");
+        } else {
+            println!("# dense xcheck skipped (nov = {nov} > {DENSE_XCHECK_MAX_NOV}); trace-path errors only");
         }
         println!();
     }
