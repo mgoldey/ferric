@@ -188,6 +188,11 @@ impl PyRhfResult {
     fn orbital_energies<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
         PyArray1::from_vec(py, self.orbital_energies_data.clone())
     }
+    /// MO coefficient matrix C (n_bf × n_mo), column k = MO k in ascending
+    /// energy order — the same matrix the Rust post-HF drivers consume.
+    fn mo_coefficients<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        PyArray2::from_array(py, &self.scf_data.mos_alpha)
+    }
 }
 
 /// Closed-shell RHF (also UHF/ROHF convergence aids apply to the open-shell
@@ -3128,6 +3133,44 @@ fn run_tdhf_static_polarizability(
     })
 }
 
+// ── Raw integral access (for Python-side method prototyping) ──
+
+/// Raw 3-center Coulomb integrals (P|μν) as a numpy array of shape
+/// (naux, n_bf, n_bf). Undressed — pair with `compute_metric_2c` and a
+/// V^{-1/2} (or Cholesky L^{-1}) factor on the Python side to form RI
+/// B-tensors. ECPs are applied to the molecule first, matching `run_rhf`.
+#[pyfunction]
+fn compute_eri3<'py>(
+    py: Python<'py>,
+    mol: &PyMolecule,
+    basis_set: &PyBasisSet,
+    aux_basis_set: &PyBasisSet,
+) -> PyResult<Bound<'py, PyArray3<f64>>> {
+    let mut emol = mol.inner.clone();
+    emol.apply_ecp(&basis_set.inner);
+    let obs = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
+    let dfbs = PreparedBasis::new(&emol, &aux_basis_set.inner).map_err(make_err)?;
+    let eri3 = ferric_integrals::threeindex::eri3_tensor(Operator::coulomb(), &obs, &dfbs)
+        .map_err(make_err)?;
+    Ok(PyArray3::from_array(py, &eri3))
+}
+
+/// 2-center Coulomb metric (P|Q) over the auxiliary basis, shape (naux, naux).
+#[pyfunction]
+fn compute_metric_2c<'py>(
+    py: Python<'py>,
+    mol: &PyMolecule,
+    basis_set: &PyBasisSet,
+    aux_basis_set: &PyBasisSet,
+) -> PyResult<Bound<'py, PyArray2<f64>>> {
+    let mut emol = mol.inner.clone();
+    emol.apply_ecp(&basis_set.inner);
+    let dfbs = PreparedBasis::new(&emol, &aux_basis_set.inner).map_err(make_err)?;
+    let v2c = ferric_integrals::threeindex::coulomb_metric_2c(Operator::coulomb(), &dfbs)
+        .map_err(make_err)?;
+    Ok(PyArray2::from_array(py, &v2c))
+}
+
 // ── Module ──
 
 /// Python bindings for ferric (pyo3).
@@ -3231,5 +3274,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_u_gw, m)?)?;
     m.add_function(wrap_pyfunction!(run_bse_tda, m)?)?;
     m.add_function(wrap_pyfunction!(run_tdhf_static_polarizability, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_eri3, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_metric_2c, m)?)?;
     Ok(())
 }
