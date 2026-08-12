@@ -19,6 +19,17 @@
 //! and both must be exactly 0 at 100% domain retention; a broken construction
 //! would make robust track naive (still first order) or exceed it.
 //!
+//! MP2 ENERGY error (all-electron, closed-shell): the domain fit lives in the
+//! Boys-localized occupied basis, but localization is a unitary rotation
+//! within the occupied space, so the fitted coefficients back-transform
+//! exactly to the canonical basis (U = C_can^T S C_loc) where the standard
+//! denominator applies. Energy hypothesis (pre-registered): E is linear in
+//! the integral error at leading order, so dE_naive should scale like c_err
+//! and dE_robust like c_err^2; dE_robust tracking c_err FIRST order would
+//! mean the tensor-level second-order property does not transfer to E, which
+//! would itself be a reportable (negative) finding. Anchor: both dE must be
+//! ~0 at 100% retention, and E_exact must match ferric's ri_mp2.
+//!
 //! Run:
 //!   OPENBLAS_NUM_THREADS=1 cargo run --release -p ferric-benchmarks \
 //!     --example local_ri_scaling_bench
@@ -27,7 +38,7 @@ use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
-use ferric_integrals::oneelectron::dipole;
+use ferric_integrals::oneelectron::{dipole, overlap};
 use ferric_integrals::operator::Operator;
 use ferric_integrals::threeindex;
 use ferric_mp2::boys::boys_localize;
@@ -70,6 +81,83 @@ fn frob_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
         .sqrt()
 }
 
+/// Rotate the occupied index of a (naux, nocc*nvir) fitted-coefficient array
+/// from the localized to the canonical basis: Y[P,i,a] = sum_i' U[i,i'] X[P,i',a].
+fn occ_rotate(
+    x: &Array2<f64>,
+    u_rot: &Array2<f64>,
+    naux: usize,
+    nocc: usize,
+    nvir: usize,
+) -> Array2<f64> {
+    let x3 = x.to_shape((naux, nocc, nvir)).unwrap();
+    // (i', P, a) standard layout, then one (nocc x nocc) x (nocc x naux*nvir) GEMM.
+    let xp = x3
+        .permuted_axes([1, 0, 2])
+        .as_standard_layout()
+        .to_owned()
+        .to_shape((nocc, naux * nvir))
+        .unwrap()
+        .to_owned();
+    let y = u_rot.dot(&xp);
+    y.to_shape((nocc, naux, nvir))
+        .unwrap()
+        .permuted_axes([1, 0, 2])
+        .as_standard_layout()
+        .to_owned()
+        .to_shape((naux, nocc * nvir))
+        .unwrap()
+        .to_owned()
+}
+
+/// Closed-shell MP2 energy from a fitted (ia|jb), assembled per occupied i:
+/// G_i = A_i^T c_fit (one-sided). When `z_robust = Some(Z)` with
+/// Z = A - V c_fit, ALSO returns the robust-Dunlap energy from
+/// G_i^rob = G_i + c_i^T Z. Exact reference: c_fit = V^{-1} A, z None.
+/// rayon over i; GEMMs are matrixmultiply (no OpenBLAS), safe under rayon.
+fn mp2_energies(
+    a_can: &Array2<f64>,
+    c_fit: &Array2<f64>,
+    z_robust: Option<&Array2<f64>>,
+    eps: &[f64],
+    nocc: usize,
+    nvir: usize,
+) -> (f64, Option<f64>) {
+    use rayon::prelude::*;
+    let sums: Vec<(f64, f64)> = (0..nocc)
+        .into_par_iter()
+        .map(|i| {
+            let a_i = a_can.slice(s![.., i * nvir..(i + 1) * nvir]);
+            let g_base = a_i.t().dot(c_fit); // (nvir, nov)
+            let g_rob = z_robust.map(|z| {
+                let c_i = c_fit.slice(s![.., i * nvir..(i + 1) * nvir]);
+                &g_base + &c_i.t().dot(z)
+            });
+            let mut e_b = 0.0;
+            let mut e_r = 0.0;
+            for j in 0..nocc {
+                for a in 0..nvir {
+                    for b in 0..nvir {
+                        let d = eps[i] + eps[j] - eps[nocc + a] - eps[nocc + b];
+                        let dir = g_base[(a, j * nvir + b)];
+                        let exc = g_base[(b, j * nvir + a)];
+                        e_b += dir * (2.0 * dir - exc) / d;
+                        if let Some(g) = &g_rob {
+                            let dirr = g[(a, j * nvir + b)];
+                            let excr = g[(b, j * nvir + a)];
+                            e_r += dirr * (2.0 * dirr - excr) / d;
+                        }
+                    }
+                }
+            }
+            (e_b, e_r)
+        })
+        .collect();
+    let e_base: f64 = sums.iter().map(|s| s.0).sum();
+    let e_rob: f64 = sums.iter().map(|s| s.1).sum();
+    (e_base, z_robust.map(|_| e_rob))
+}
+
 /// Represents an auxiliary domain for localized occupied orbital `i`.
 struct LocalDomainSpec {
     occ_idx: usize,
@@ -83,7 +171,7 @@ fn main() {
     println!("# Basis: {OBS_NAME} / Aux: {AUX_NAME}");
     println!("# ==========================================================================\n");
 
-    for n_c in [1usize, 2, 3, 4, 6, 8, 12, 16] {
+    for n_c in [1usize, 2, 3, 4, 6, 8, 12, 16, 20] {
         let path = format!("testdata/molecules/alkane_{n_c}.xyz");
         let Ok(mol) = Molecule::load_xyz(&path) else {
             println!("alkane_{n_c}: SKIPPED (file missing)\n");
@@ -129,6 +217,17 @@ fn main() {
         let c_occ_loc = boys.c_loc;
         let centers = boys.centers; // (nocc x 3)
 
+        // Occ-space rotation c_loc = C_can U  =>  U = C_can^T S c_loc. Guard
+        // orthogonality so a wrong-direction U fails loudly, not silently.
+        let s_ao = overlap(&obs);
+        let u_rot = c_occ_can.t().dot(&s_ao).dot(&c_occ_loc);
+        let ortho_dev = frob_diff(&u_rot.t().dot(&u_rot), &Array2::eye(nocc));
+        if ortho_dev > 1e-8 {
+            println!("alkane_{n_c}: U not orthogonal (dev {ortho_dev:.3e}) — skipping\n");
+            continue;
+        }
+        let eps: Vec<f64> = rhf.eps_r().to_vec();
+
         // 3. Compute Global 2-center metric V_global and its inverse V_global^{-1}
         let v_global = threeindex::coulomb_metric_2c(op, &dfbs).unwrap();
         let v_global_inv = v_global.inv().unwrap();
@@ -143,21 +242,32 @@ fn main() {
             }
         };
 
-        // Transform 3c integral bra from AO to (i_loc, a_can)
+        // Transform 3c integrals to (i_loc, a_can) for the domain fits AND to
+        // (i_can, a_can) for the MP2 energy, sharing the virtual half-transform.
         let mut eri3_loc = Array3::<f64>::zeros((naux, nocc, nvir));
+        let mut eri3_can = Array3::<f64>::zeros((naux, nocc, nvir));
         for p in 0..naux {
-            let mat_ao = g_3c.slice(s![p, .., ..]).to_owned();
-            let mat_loc = c_occ_loc.t().dot(&mat_ao).dot(&c_vir_can);
-            for i in 0..nocc {
-                for a in 0..nvir {
-                    eri3_loc[(p, i, a)] = mat_loc[(i, a)];
-                }
-            }
+            let mat_v = g_3c.slice(s![p, .., ..]).dot(&c_vir_can); // (nbas, nvir)
+            eri3_loc
+                .slice_mut(s![p, .., ..])
+                .assign(&c_occ_loc.t().dot(&mat_v));
+            eri3_can
+                .slice_mut(s![p, .., ..])
+                .assign(&c_occ_can.t().dot(&mat_v));
         }
+        drop(g_3c);
 
         // Reshape (P, i, a) -> (P, ia) once; every fit below is a GEMM on this.
         let nov = nocc * nvir;
         let a2 = eri3_loc.to_shape((naux, nov)).unwrap().to_owned();
+        let a2_can = eri3_can.to_shape((naux, nov)).unwrap().to_owned();
+        drop(eri3_loc);
+        drop(eri3_can);
+
+        // Canonical exact RI-MP2 energy (all-electron) — the reference every
+        // truncated-fit energy below is measured against.
+        let c_glob_can = v_global_inv.dot(&a2_can);
+        let (e_exact, _) = mp2_energies(&a2_can, &c_glob_can, None, &eps, nocc, nvir);
 
         // Global fit coefficients c_global = V^{-1} A.
         let c_global = v_global_inv.dot(&a2);
@@ -184,10 +294,10 @@ fn main() {
 
         let global_gemm_flops = 2.0 * (naux as f64) * (naux as f64) * nov as f64;
 
-        println!("### alkane_{n_c}  (C_{n_c}H_{})  nocc={nocc}  nvir={nvir}  naux={naux}  |G_exact|={g_exact_norm:.4}", 2 * n_c + 2);
+        println!("### alkane_{n_c}  (C_{n_c}H_{})  nocc={nocc}  nvir={nvir}  naux={naux}  |G_exact|={g_exact_norm:.4}  E_corr={e_exact:.9}", 2 * n_c + 2);
         println!(
-            "{:>8}  {:>10}  {:>10}  {:>14}  {:>10}  {:>10}  {:>12}  {:>12}",
-            "R_cut(B)", "avg|P_i|", "retention", "Local FLOPs", "FLOP ratio", "c_err", "g_err_naive", "g_err_robust"
+            "{:>8}  {:>10}  {:>10}  {:>14}  {:>10}  {:>10}  {:>12}  {:>12}  {:>12}  {:>12}",
+            "R_cut(B)", "avg|P_i|", "retention", "Local FLOPs", "FLOP ratio", "c_err", "g_err_naive", "g_err_robust", "dE_naive(Ha)", "dE_rob(Ha)"
         );
 
         let aux_shell_centers = dfbs.shell_centers();
@@ -301,8 +411,16 @@ fn main() {
 
             let flop_ratio = global_gemm_flops / local_flops.max(1.0);
 
+            // MP2 energies from the truncated fit, back-rotated to canonical.
+            let c_local_can = occ_rotate(&c_local, &u_rot, naux, nocc, nvir);
+            let z_rob = &a2_can - &v_global.dot(&c_local_can);
+            let (e_naive, e_robust) =
+                mp2_energies(&a2_can, &c_local_can, Some(&z_rob), &eps, nocc, nvir);
+            let de_naive = e_naive - e_exact;
+            let de_robust = e_robust.unwrap() - e_exact;
+
             println!(
-                "{r_cut:>8.1}  {avg_domain_size:>10.1}  {aux_retention_pct:>9.1}%  {local_flops:>14.3e}  {flop_ratio:>9.2}x  {c_err:>10.3e}  {g_err_naive:>12.3e}  {g_err_robust:>12.3e}"
+                "{r_cut:>8.1}  {avg_domain_size:>10.1}  {aux_retention_pct:>9.1}%  {local_flops:>14.3e}  {flop_ratio:>9.2}x  {c_err:>10.3e}  {g_err_naive:>12.3e}  {g_err_robust:>12.3e}  {de_naive:>12.3e}  {de_robust:>12.3e}"
             );
         }
         if g_exact_dense.is_some() {
