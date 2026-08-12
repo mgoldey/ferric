@@ -1,6 +1,7 @@
 [package]
 name = "ferric-xtb"
 version = "0.1.0"
+license.workspace = true
 edition = "2021"
 description = "Optional GFN-xTB semiempirical binding (conformer screening front-end for ferric)"
 build = "build.rs"
