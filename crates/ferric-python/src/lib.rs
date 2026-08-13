@@ -3168,8 +3168,37 @@ fn compute_eri3<'py>(
 /// dense path). This is what makes C32+/cc-pVDZ domain prototyping possible
 /// from Python — the dense AO tensor is ~13 GB there. ECPs applied first,
 /// matching `run_rhf`.
+/// Resolve a low-level operator spec: name + RAW Bohr-native parameters
+/// (unlike the run_* wrappers, which take Angstrom units). omega in Bohr^-1,
+/// r0 in Bohr. "terfc"/"terf" with omega=None use the Dutoi-linked
+/// omega = 1/(r0*sqrt2); an explicit omega decouples them (tables cover
+/// (omega*r0)^2 <= 80; needs FERRIC_TERF_TABLE_DIR).
+fn resolve_operator(name: &str, omega: Option<f64>, r0: Option<f64>) -> PyResult<Operator> {
+    let need = |o: Option<f64>, what: &str| {
+        o.ok_or_else(|| pyo3::exceptions::PyValueError::new_err(format!("operator '{name}' requires {what}")))
+    };
+    Ok(match name {
+        "coulomb" => Operator::coulomb(),
+        "erf" => Operator::erf(need(omega, "omega (Bohr^-1)")?),
+        "erfc" => Operator::erfc(need(omega, "omega (Bohr^-1)")?),
+        "terfc" => match omega {
+            Some(w) => Operator::terfc_with_omega(need(r0, "r0 (Bohr)")?, w),
+            None => Operator::terfc(need(r0, "r0 (Bohr)")?),
+        },
+        "terf" => match omega {
+            Some(w) => Operator::terf_with_omega(need(r0, "r0 (Bohr)")?, w),
+            None => Operator::terf(need(r0, "r0 (Bohr)")?),
+        },
+        other => {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "unknown operator '{other}'; expected coulomb|erf|erfc|terf|terfc"
+            )))
+        }
+    })
+}
+
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, aux_basis_set, c_left, c_right, memory_budget_gb=2.0))]
+#[pyo3(signature = (mol, basis_set, aux_basis_set, c_left, c_right, memory_budget_gb=2.0, operator="coulomb", omega=None, r0=None))]
 fn compute_eri3_mo<'py>(
     py: Python<'py>,
     mol: &PyMolecule,
@@ -3178,6 +3207,9 @@ fn compute_eri3_mo<'py>(
     c_left: numpy::PyReadonlyArray2<f64>,
     c_right: numpy::PyReadonlyArray2<f64>,
     memory_budget_gb: f64,
+    operator: &str,
+    omega: Option<f64>,
+    r0: Option<f64>,
 ) -> PyResult<Bound<'py, PyArray3<f64>>> {
     let mut emol = mol.inner.clone();
     emol.apply_ecp(&basis_set.inner);
@@ -3196,7 +3228,8 @@ fn compute_eri3_mo<'py>(
         )));
     }
     let budget = (memory_budget_gb.max(0.1) * (1u64 << 30) as f64) as usize;
-    let mo = ferric_mp2::rimp2::eri3_mo_ov_blocked(Operator::coulomb(), &obs, &dfbs, &cl, &cr, budget)
+    let op = resolve_operator(operator, omega, r0)?;
+    let mo = ferric_mp2::rimp2::eri3_mo_ov_blocked(op, &obs, &dfbs, &cl, &cr, budget)
         .map_err(make_err)?;
     Ok(PyArray3::from_owned_array(py, mo))
 }
@@ -3291,18 +3324,25 @@ fn shell_info<'py>(
     ))
 }
 
-/// 2-center Coulomb metric (P|Q) over the auxiliary basis, shape (naux, naux).
+/// 2-center metric (P|w|Q) over the auxiliary basis, shape (naux, naux).
+/// Default w = Coulomb; `operator`/`omega`/`r0` follow the same RAW
+/// Bohr-native conventions as `compute_eri3_mo`.
 #[pyfunction]
+#[pyo3(signature = (mol, basis_set, aux_basis_set, operator="coulomb", omega=None, r0=None))]
 fn compute_metric_2c<'py>(
     py: Python<'py>,
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
     aux_basis_set: &PyBasisSet,
+    operator: &str,
+    omega: Option<f64>,
+    r0: Option<f64>,
 ) -> PyResult<Bound<'py, PyArray2<f64>>> {
     let mut emol = mol.inner.clone();
     emol.apply_ecp(&basis_set.inner);
     let dfbs = PreparedBasis::new(&emol, &aux_basis_set.inner).map_err(make_err)?;
-    let v2c = ferric_integrals::threeindex::coulomb_metric_2c(Operator::coulomb(), &dfbs)
+    let op = resolve_operator(operator, omega, r0)?;
+    let v2c = ferric_integrals::threeindex::coulomb_metric_2c(op, &dfbs)
         .map_err(make_err)?;
     Ok(PyArray2::from_array(py, &v2c))
 }
