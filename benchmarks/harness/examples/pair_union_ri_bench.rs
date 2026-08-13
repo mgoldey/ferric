@@ -213,7 +213,12 @@ fn main() {
     println!("# Basis: {OBS_NAME} / Aux: {AUX_NAME}");
     println!("# ==========================================================================\n");
 
-    for n_c in [4usize, 8, 12, 16, 20, 32] {
+    // Optional CLI args select the chain lengths (e.g. `pair_union_ri_bench
+    // 20 32` to add only the new points to an existing series); default runs
+    // the full list.
+    let args: Vec<usize> = std::env::args().skip(1).filter_map(|a| a.parse().ok()).collect();
+    let systems: Vec<usize> = if args.is_empty() { vec![4, 8, 12, 16, 20, 32] } else { args };
+    for n_c in systems {
         let path = format!("testdata/molecules/alkane_{n_c}.xyz");
         let Ok(mol) = Molecule::load_xyz(&path) else {
             println!("alkane_{n_c}: SKIPPED (file missing)\n");

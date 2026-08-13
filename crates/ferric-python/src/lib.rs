@@ -3197,6 +3197,96 @@ fn compute_eri3_mo<'py>(
     Ok(PyArray3::from_owned_array(py, mo))
 }
 
+/// Result of Boys localization: localized coefficients, orbital centers,
+/// and convergence info.
+#[pyclass(name = "BoysResult")]
+struct PyBoysResult {
+    c_loc_data: ndarray::Array2<f64>,
+    centers_data: ndarray::Array2<f64>,
+    #[pyo3(get)]
+    converged: bool,
+    #[pyo3(get)]
+    iterations: usize,
+}
+
+#[pymethods]
+impl PyBoysResult {
+    /// Localized MO coefficients, shape (n_bf, n_orb). Orthonormal (a unitary
+    /// rotation of the input orbitals).
+    fn c_loc<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        PyArray2::from_array(py, &self.c_loc_data)
+    }
+    /// Boys centers <i|r|i>, shape (n_orb, 3), in Bohr.
+    fn centers<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        PyArray2::from_array(py, &self.centers_data)
+    }
+}
+
+/// Boys (Foster-Boys) localization of the given orbitals (columns of
+/// `c_orbs`, shape (n_bf, n_orb) — typically the occupied block of
+/// `mo_coefficients()`). Same Jacobi-sweep implementation the Rust probes
+/// use. Returns BoysResult{c_loc(), centers(), converged, iterations}.
+#[pyfunction]
+#[pyo3(signature = (mol, basis_set, c_orbs, max_iter=200))]
+fn boys_localize(
+    mol: &PyMolecule,
+    basis_set: &PyBasisSet,
+    c_orbs: numpy::PyReadonlyArray2<f64>,
+    max_iter: usize,
+) -> PyResult<PyBoysResult> {
+    let mut emol = mol.inner.clone();
+    emol.apply_ecp(&basis_set.inner);
+    let obs = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
+    let c = c_orbs.as_array().to_owned();
+    if c.nrows() != obs.nbasis() {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "c_orbs rows must equal n_bf={} (got {})",
+            obs.nbasis(),
+            c.nrows()
+        )));
+    }
+    let dip = ferric_integrals::oneelectron::dipole(&obs, [0.0, 0.0, 0.0]).map_err(make_err)?;
+    let res = ferric_mp2::boys::boys_localize(&c, &dip, max_iter);
+    Ok(PyBoysResult {
+        c_loc_data: res.c_loc,
+        centers_data: res.centers,
+        converged: res.converged,
+        iterations: res.iterations,
+    })
+}
+
+/// Shell geometry of `basis_set` on `mol` (works for orbital AND auxiliary
+/// sets): returns (centers, first_function_offsets, n_functions) with shapes
+/// ((n_shells, 3) in Bohr, (n_shells,), (n_shells,)). Enough to build
+/// geometric fitting domains from Python (aux functions within r_cut of an
+/// orbital center).
+#[pyfunction]
+fn shell_info<'py>(
+    py: Python<'py>,
+    mol: &PyMolecule,
+    basis_set: &PyBasisSet,
+) -> PyResult<(
+    Bound<'py, PyArray2<f64>>,
+    Bound<'py, PyArray1<i64>>,
+    Bound<'py, PyArray1<i64>>,
+)> {
+    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    let centers = prep.shell_centers();
+    let mut c = ndarray::Array2::<f64>::zeros((centers.len(), 3));
+    for (i, xyz) in centers.iter().enumerate() {
+        c[(i, 0)] = xyz[0];
+        c[(i, 1)] = xyz[1];
+        c[(i, 2)] = xyz[2];
+    }
+    let offs: Vec<i64> = prep.shell_offsets().iter().map(|&x| x as i64).collect();
+    let dims: Vec<i64> = prep.shell_dims().iter().map(|&x| x as i64).collect();
+    Ok((
+        PyArray2::from_owned_array(py, c),
+        PyArray1::from_vec(py, offs),
+        PyArray1::from_vec(py, dims),
+    ))
+}
+
 /// 2-center Coulomb metric (P|Q) over the auxiliary basis, shape (naux, naux).
 #[pyfunction]
 fn compute_metric_2c<'py>(
@@ -3319,5 +3409,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(compute_eri3, m)?)?;
     m.add_function(wrap_pyfunction!(compute_eri3_mo, m)?)?;
     m.add_function(wrap_pyfunction!(compute_metric_2c, m)?)?;
+    m.add_function(wrap_pyfunction!(boys_localize, m)?)?;
+    m.add_function(wrap_pyfunction!(shell_info, m)?)?;
     Ok(())
 }
