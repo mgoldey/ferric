@@ -48,6 +48,11 @@ use ferric_scf::screening::SchwarzBounds;
 use ndarray::{s, Array2};
 use ndarray_linalg::Inverse;
 
+/// Defaults; override with FERRIC_OBS_BASIS / FERRIC_AUX_BASIS (e.g. the
+/// 6-31G tail sweep keeps the SAME cc-pVDZ-RI aux so the domain/aux-space
+/// structure is unchanged and only the fitted densities get smoother — the
+/// fitting-error measurement is internally consistent for any orbital basis
+/// because the reference is the global fit in the same aux set).
 const OBS_NAME: &str = "cc-pvdz";
 const AUX_NAME: &str = "cc-pvdz-ri";
 
@@ -210,7 +215,9 @@ fn bin_label(k: usize) -> String {
 fn main() {
     println!("# ==========================================================================");
     println!("# Pair-union RI fitting-domain probe (P_ij = P_i U P_j, robust Dunlap)");
-    println!("# Basis: {OBS_NAME} / Aux: {AUX_NAME}");
+    let obs_name = std::env::var("FERRIC_OBS_BASIS").unwrap_or_else(|_| OBS_NAME.to_string());
+    let aux_name = std::env::var("FERRIC_AUX_BASIS").unwrap_or_else(|_| AUX_NAME.to_string());
+    println!("# Basis: {obs_name} / Aux: {aux_name}");
     println!("# ==========================================================================\n");
 
     // Optional CLI args select the chain lengths (e.g. `pair_union_ri_bench
@@ -225,8 +232,8 @@ fn main() {
             continue;
         };
 
-        let obs_bs = basis::bundled(OBS_NAME).unwrap();
-        let aux_bs = basis::bundled(AUX_NAME).unwrap();
+        let obs_bs = basis::bundled(&obs_name).unwrap();
+        let aux_bs = basis::bundled(&aux_name).unwrap();
         let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
         let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
 
