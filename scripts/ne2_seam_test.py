@@ -38,7 +38,8 @@ import ferric
 
 R_LIST = [2.6, 2.8, 3.0, 3.1, 3.3, 3.6, 4.0, 4.5, 5.0, 5.5, 6.0, 7.0, 8.0]  # Angstrom
 ERF_OMEGAS = [0.42, 1.0, 2.0, 4.0]  # Angstrom^-1, production -> sharp
-TERF_R0 = 3.18  # Angstrom (production aTZ point; omega derived = linked)
+TERF_R0 = 3.18  # Angstrom (production aTZ point)
+TERF_FREE_R0W = [2.0, 4.0]  # decoupled r0*omega, straddling Dutoi's 2.07 bound
 ATT_OMEGAS = [0.42, 1.0]  # erfc attenuated-MP2 controls (complement discarded)
 
 HA_TO_UHA = 1e6
@@ -64,18 +65,25 @@ def energies(mol, obs, aux):
         r = ferric.run_rs_mp2_rpa(mol, basis_set=obs, auxbasis=aux,
                                   omega=w, formulation="delta-lr", attenuator="erf")
         out[f"B_erf_w{w}"] = r.total_energy
-    # terf-linked baseline is optional: the standalone table engine needs
-    # regenerated .bin tables (terf-tables/ holds only generators right now).
+    # terf arm: linked baseline (r0*omega = 1/sqrt2, curvature-preserving) plus
+    # DECOUPLED sharpness straddling Dutoi's hard bound r0*omega <= 2.07 —
+    # the direct test the erf probe cannot express (erf locks radius to
+    # sharpness). Requires FERRIC_TERF_TABLE_DIR (tables cover s <= 80).
     try:
         r = ferric.run_rs_mp2_rpa(mol, basis_set=obs, auxbasis=aux,
                                   formulation="delta-lr", attenuator="terf", r0=TERF_R0)
-        out[f"B_terf_r{TERF_R0}"] = r.total_energy
+        out[f"B_terf_linked"] = r.total_energy
+        for r0w in TERF_FREE_R0W:
+            w_ang = r0w / TERF_R0  # dimensionless r0*omega with both in Angstrom units
+            r = ferric.run_rs_mp2_rpa(mol, basis_set=obs, auxbasis=aux,
+                                      formulation="delta-lr", attenuator="terf",
+                                      r0=TERF_R0, terf_omega=w_ang)
+            out[f"B_terf_r0w{r0w}"] = r.total_energy
     except RuntimeError as e:
         if "terf" not in str(e):
             raise
-        # skip silently after first warning
         if not getattr(energies, "_terf_warned", False):
-            print(f"# NOTE: terf baseline skipped ({e})", flush=True)
+            print(f"# NOTE: terf arm skipped ({e})", flush=True)
             energies._terf_warned = True
     for w in ATT_OMEGAS:
         r = ferric.run_attenuated_rimp2(mol, basis_set=obs, auxbasis=aux, omega=w)

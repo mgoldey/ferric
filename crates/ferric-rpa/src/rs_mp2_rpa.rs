@@ -97,10 +97,19 @@ pub struct RsMp2RpaConfig {
     /// ω = 1/(r0·√2). Use [`RsMp2RpaConfig::r0`] as the single knob then.
     pub attenuator: Attenuator,
     /// Range-separation length r0 in Bohr, used ONLY when `attenuator == Terf`.
-    /// The single tempered-split knob; ω is derived (ω = 1/(r0·√2)). Ignored for
-    /// `Erf`. Default 3.18 Bohr ⇒ ω ≈ 0.222 Bohr⁻¹ = 0.42 Å⁻¹ (the erf operating
-    /// point), so the terf and erf arms are directly comparable at the default.
+    /// By default ω is derived (ω = 1/(r0·√2), the Dutoi curvature link);
+    /// see `terf_omega` to decouple. Ignored for `Erf`. Default 3.18 Bohr ⇒
+    /// ω ≈ 0.222 Bohr⁻¹ = 0.42 Å⁻¹ (the erf operating point), so the terf and
+    /// erf arms are directly comparable at the default.
     pub r0: f64,
+    /// Terf-only: OVERRIDE the curvature-linked sharpness with an independent
+    /// ω (Bohr⁻¹). `None` (default) keeps the Dutoi link ω = 1/(r0·√2).
+    /// Basis for decoupling: with the complement computed by LR-RPA the
+    /// curvature constraint does not bind (Ne2 measured, ne2_seam_test.py /
+    /// curvature-constraint-relaxed memory); the split identity terf + terfc
+    /// = Coulomb holds for every (r0, ω) (anchor-tested). Tables cover
+    /// s = (ωr0)² ≤ 80. Ignored for `Erf`.
+    pub terf_omega: Option<f64>,
     pub frozen_core: usize,
     /// dRPA solver knobs. Default forces trunc_thresh = 0.0 (full rank):
     /// this is an energy method; PDEP truncation is a production-size opt-in.
@@ -119,6 +128,7 @@ impl Default for RsMp2RpaConfig {
             omega: 0.420 * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV,
             attenuator: Attenuator::Erf,
             r0: 3.18,
+            terf_omega: None,
             frozen_core: 0,
             drpa: PdepRpaConfig { trunc_thresh: 0.0, ..Default::default() },
             formulation: RsMp2RpaFormulation::DeltaLr,
@@ -264,7 +274,13 @@ pub fn rs_mp2_lr_rpa(
     // Terf knob; ω is not consulted for Terf. The Coulomb pieces are unchanged.
     let (op_lr, op_sr) = match cfg.attenuator {
         Attenuator::Erf => (Operator::erf(cfg.omega), Operator::erfc(cfg.omega)),
-        Attenuator::Terf => (Operator::terf(cfg.r0), Operator::terfc(cfg.r0)),
+        Attenuator::Terf => match cfg.terf_omega {
+            Some(w) => (
+                Operator::terf_with_omega(cfg.r0, w),
+                Operator::terfc_with_omega(cfg.r0, w),
+            ),
+            None => (Operator::terf(cfg.r0), Operator::terfc(cfg.r0)),
+        },
     };
 
     // LR/SR intermediates: needed for sc_lr (always, for e_dmp2_lr) and for the

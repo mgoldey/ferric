@@ -855,3 +855,46 @@ fn limit_terfc_approaches_coulomb_as_r0_grows() {
     // At r0=100 the residual should be small (O(1/r0)); loose bound.
     assert!(prev < 5e-2, "terfc(r0=100) too far from Coulomb: {prev:.3e}");
 }
+
+/// Free-(r0, omega) exactness anchor: terf + terfc = Coulomb holds for EVERY
+/// parameter pair (the split identity is parameter-independent), so the
+/// decoupled constructors must reproduce the Coulomb 2-center metric at any
+/// r0*omega — including far past the curvature-linked 1/sqrt(2) and the
+/// Dutoi hard bound 2.07. Also pins terfc(r0) == terfc_with_omega(r0, linked)
+/// bit-identically. Requires FERRIC_TERF_TABLE_DIR.
+#[test]
+fn free_omega_terf_plus_terfc_is_coulomb() {
+    use ferric_core::basis;
+    use ferric_core::mol::Molecule;
+    use ferric_integrals::basis_bridge::PreparedBasis;
+    use ferric_integrals::operator::Operator;
+    use ferric_integrals::threeindex::coulomb_metric_2c;
+
+    let mol = Molecule::parse_xyz("2\nNe2\nNe 0.0 0.0 0.0\nNe 0.0 0.0 3.1\n", 0, 1).unwrap();
+    let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+    let v_c = coulomb_metric_2c(Operator::coulomb(), &dfbs).unwrap();
+
+    let r0 = 5.85; // ~3.1 A in Bohr
+    for r0w in [0.35f64, 1.0 / std::f64::consts::SQRT_2, 2.0, 5.0] {
+        let omega = r0w / r0;
+        let v_sr = coulomb_metric_2c(Operator::terfc_with_omega(r0, omega), &dfbs).unwrap();
+        let v_lr = coulomb_metric_2c(Operator::terf_with_omega(r0, omega), &dfbs).unwrap();
+        let mut worst = 0.0f64;
+        let mut scale = 0.0f64;
+        for (s, c) in v_sr.iter().zip(v_lr.iter()).map(|(a, b)| (a + b, ())).zip(v_c.iter()).map(|((s, _), c)| (s, c)) {
+            worst = worst.max((s - c).abs());
+            scale = scale.max(c.abs());
+        }
+        eprintln!("r0*omega = {r0w:.3}: max |terf+terfc-coulomb| = {worst:.3e} (scale {scale:.3e})");
+        assert!(worst / scale < 1e-9, "split identity broken at r0*omega={r0w}: {worst:.3e}");
+    }
+
+    // Linked constructor == free constructor at the linked omega, bit-identical.
+    let linked = coulomb_metric_2c(Operator::terfc(r0), &dfbs).unwrap();
+    let free = coulomb_metric_2c(
+        Operator::terfc_with_omega(r0, 1.0 / (r0 * std::f64::consts::SQRT_2)),
+        &dfbs,
+    )
+    .unwrap();
+    assert_eq!(linked, free, "linked vs free-at-linked-omega not bit-identical");
+}
