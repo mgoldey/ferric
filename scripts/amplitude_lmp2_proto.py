@@ -223,7 +223,10 @@ def domain_stats(mask):
 def run(xyz, basis, eps_list, anchor_only=False, mutate=False, out=None):
     t0 = time.time()
     atom = load_xyz(xyz)
-    mol = gto.M(atom=atom, basis=basis, verbose=0, max_memory=900)
+    # NOTE: max_memory is PySCF's WORKING budget on top of already-resident
+    # arrays; inside a 1500M cgroup, 900 throttle-stalled both C12 and C10
+    # (worker RSS pinned at the cap, ~0 CPU ticks). Keep it small.
+    mol = gto.M(atom=atom, basis=basis, verbose=0, max_memory=300)
     ncore = elements.chemcore(mol)
     log(f"== {xyz} basis={basis} nao={mol.nao} ncore={ncore}")
     mf = scf.RHF(mol)
