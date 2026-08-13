@@ -44,7 +44,7 @@ use ferric_integrals::threeindex;
 use ferric_mp2::boys::boys_localize;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
-use ndarray::{s, Array2, Array3};
+use ndarray::{s, Array2};
 use ndarray_linalg::{Eigh, Inverse, UPLO};
 
 const OBS_NAME: &str = "cc-pvdz";
@@ -179,13 +179,11 @@ fn main() {
 
         let v_global = threeindex::coulomb_metric_2c(op, &dfbs).unwrap();
         let v_global_inv = v_global.inv().unwrap();
-        let g_3c = threeindex::eri3_tensor(op, &obs, &dfbs).unwrap();
-        let mut eri3_loc = Array3::<f64>::zeros((naux, nocc, nvir));
-        for p in 0..naux {
-            let mat_v = g_3c.slice(s![p, .., ..]).dot(&c_vir_can);
-            eri3_loc.slice_mut(s![p, .., ..]).assign(&c_occ_loc.t().dot(&mat_v));
-        }
-        drop(g_3c);
+        // eri3-limit fix: blocked AO->MO transform (never materializes the
+        // naux*nbas^2 AO tensor — ~13 GB at C32/cc-pVDZ); bit-identical to
+        // the dense path, which small systems still take under the budget.
+        let eri3_loc =
+            ferric_mp2::rimp2::eri3_mo_ov_blocked(op, &obs, &dfbs, &c_occ_loc, &c_vir_can, 2 << 30).unwrap();
         let a2 = eri3_loc.to_shape((naux, nov)).unwrap().to_owned();
         drop(eri3_loc);
         let c_glob = v_global_inv.dot(&a2);

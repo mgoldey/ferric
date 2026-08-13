@@ -44,7 +44,7 @@ use ferric_integrals::threeindex;
 use ferric_mp2::boys::boys_localize;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
-use ndarray::{s, Array2, Array3};
+use ndarray::{s, Array2};
 use ndarray_linalg::Inverse;
 
 const OBS_NAME: &str = "cc-pvdz";
@@ -232,30 +232,14 @@ fn main() {
         let v_global = threeindex::coulomb_metric_2c(op, &dfbs).unwrap();
         let v_global_inv = v_global.inv().unwrap();
 
-        // Compute 3-center integrals in localized occupied basis: (P | i_loc a_can)
-        // (naux, nocc, nvir) ERI tensor
-        let g_3c = match threeindex::eri3_tensor(op, &obs, &dfbs) {
-            Ok(tensor) => tensor,
-            Err(e) => {
-                println!("alkane_{n_c}: 3c integral failed: {e}\n");
-                continue;
-            }
-        };
-
         // Transform 3c integrals to (i_loc, a_can) for the domain fits AND to
-        // (i_can, a_can) for the MP2 energy, sharing the virtual half-transform.
-        let mut eri3_loc = Array3::<f64>::zeros((naux, nocc, nvir));
-        let mut eri3_can = Array3::<f64>::zeros((naux, nocc, nvir));
-        for p in 0..naux {
-            let mat_v = g_3c.slice(s![p, .., ..]).dot(&c_vir_can); // (nbas, nvir)
-            eri3_loc
-                .slice_mut(s![p, .., ..])
-                .assign(&c_occ_loc.t().dot(&mat_v));
-            eri3_can
-                .slice_mut(s![p, .., ..])
-                .assign(&c_occ_can.t().dot(&mat_v));
-        }
-        drop(g_3c);
+        // (i_can, a_can) for the MP2 energy. eri3-limit fix: blocked AO->MO
+        // transforms (bit-identical to the dense path; never materialize the
+        // naux*nbas^2 AO tensor, ~13 GB at C32/cc-pVDZ).
+        let eri3_loc =
+            ferric_mp2::rimp2::eri3_mo_ov_blocked(op, &obs, &dfbs, &c_occ_loc, &c_vir_can, 2 << 30).unwrap();
+        let eri3_can =
+            ferric_mp2::rimp2::eri3_mo_ov_blocked(op, &obs, &dfbs, &c_occ_can, &c_vir_can, 2 << 30).unwrap();
 
         // Reshape (P, i, a) -> (P, ia) once; every fit below is a GEMM on this.
         let nov = nocc * nvir;

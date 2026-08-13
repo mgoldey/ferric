@@ -42,16 +42,24 @@ use ferric_integrals::oneelectron::{dipole, overlap};
 use ferric_integrals::operator::Operator;
 use ferric_integrals::threeindex;
 use ferric_mp2::boys::boys_localize;
+use ferric_mp2::rimp2::eri3_mo_ov_blocked;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
-use ndarray::{s, Array2, Array3};
+use ndarray::{s, Array2};
 use ndarray_linalg::Inverse;
 
 const OBS_NAME: &str = "cc-pvdz";
 const AUX_NAME: &str = "cc-pvdz-ri";
 
 /// Pair-separation bin edges in Bohr. First bin is diagonal pairs (R = 0).
-const BIN_EDGES: &[f64] = &[1e-6, 2.0, 4.0, 6.0, 9.0, 12.0, 18.0, 30.0];
+const BIN_EDGES: &[f64] = &[1e-6, 2.0, 4.0, 6.0, 9.0, 12.0, 18.0, 30.0, 45.0, 60.0];
+
+/// Transient budget for the blocked AO->MO 3-index transform. The dense AO
+/// tensor is naux*nbas^2 (~13 GB at C32/cc-pVDZ, over the ferric-limited
+/// cap); eri3_mo_ov_blocked streams aux-row blocks under this budget instead
+/// and is bit-identical (its own regression test). Small systems where the
+/// dense tensor fits the budget take the dense early-return path unchanged.
+const ERI3_BUDGET_BYTES: usize = 2 << 30;
 
 /// Above this nov = nocc*nvir the (nov x nov) energy assembly is skipped
 /// (block-error statistics only). C12 (nov = 12201) is the largest included.
@@ -205,7 +213,7 @@ fn main() {
     println!("# Basis: {OBS_NAME} / Aux: {AUX_NAME}");
     println!("# ==========================================================================\n");
 
-    for n_c in [4usize, 8, 12, 16] {
+    for n_c in [4usize, 8, 12, 16, 20, 32] {
         let path = format!("testdata/molecules/alkane_{n_c}.xyz");
         let Ok(mol) = Molecule::load_xyz(&path) else {
             println!("alkane_{n_c}: SKIPPED (file missing)\n");
@@ -256,37 +264,38 @@ fn main() {
         let v_global = threeindex::coulomb_metric_2c(op, &dfbs).unwrap();
         let v_global_inv = v_global.inv().unwrap();
 
-        let g_3c = match threeindex::eri3_tensor(op, &obs, &dfbs) {
-            Ok(tensor) => tensor,
+        // eri3-limit fix: blocked AO->MO transform, never materializing the
+        // naux*nbas^2 AO tensor. The canonical-occ side (exact-energy
+        // reference + energy assembly) is gated with the energy assembly —
+        // at C32 its per-thread (nvir x nov) GEMM scratch alone is ~5 GB.
+        let energy_on = nov <= ENERGY_MAX_NOV;
+        let eri3_loc = match eri3_mo_ov_blocked(op, &obs, &dfbs, &c_occ_loc, &c_vir_can, ERI3_BUDGET_BYTES) {
+            Ok(t) => t,
             Err(e) => {
-                println!("alkane_{n_c}: 3c integral failed: {e}\n");
+                println!("alkane_{n_c}: 3c transform failed: {e}\n");
                 continue;
             }
         };
-        let mut eri3_loc = Array3::<f64>::zeros((naux, nocc, nvir));
-        let mut eri3_can = Array3::<f64>::zeros((naux, nocc, nvir));
-        for p in 0..naux {
-            let mat_v = g_3c.slice(s![p, .., ..]).dot(&c_vir_can);
-            eri3_loc.slice_mut(s![p, .., ..]).assign(&c_occ_loc.t().dot(&mat_v));
-            eri3_can.slice_mut(s![p, .., ..]).assign(&c_occ_can.t().dot(&mat_v));
-        }
-        drop(g_3c);
         let a2 = eri3_loc.to_shape((naux, nov)).unwrap().to_owned();
-        let a2_can = eri3_can.to_shape((naux, nov)).unwrap().to_owned();
         drop(eri3_loc);
-        drop(eri3_can);
-
         let c_glob_loc = v_global_inv.dot(&a2);
-        let c_glob_can = v_global_inv.dot(&a2_can);
-        let e_exact = mp2_energy_exact(&a2_can, &c_glob_can, &eps, nocc, nvir);
+
+        let e_exact = if energy_on {
+            let eri3_can = eri3_mo_ov_blocked(op, &obs, &dfbs, &c_occ_can, &c_vir_can, ERI3_BUDGET_BYTES).unwrap();
+            let a2_can = eri3_can.to_shape((naux, nov)).unwrap().to_owned();
+            let c_glob_can = v_global_inv.dot(&a2_can);
+            Some(mp2_energy_exact(&a2_can, &c_glob_can, &eps, nocc, nvir))
+        } else {
+            None
+        };
 
         let aux_shell_centers = dfbs.shell_centers();
         let aux_shell_offsets = dfbs.shell_offsets();
         let aux_shell_dims = dfbs.shell_dims();
 
-        let energy_on = nov <= ENERGY_MAX_NOV;
+        let e_corr_str = e_exact.map_or("skipped (nov too large)".to_string(), |e| format!("{e:.9}"));
         println!(
-            "### alkane_{n_c}  nocc={nocc}  nvir={nvir}  naux={naux}  E_corr={e_exact:.9}  energy_assembly={}",
+            "### alkane_{n_c}  nocc={nocc}  nvir={nvir}  naux={naux}  E_corr={e_corr_str}  energy_assembly={}",
             if energy_on { "yes" } else { "no (nov too large)" }
         );
 
@@ -436,7 +445,7 @@ fn main() {
                     let g_can = rotate_occ_axis(&g1, &u_rot, nocc, nvir, 1);
                     drop(g1);
                     let e_fit = mp2_energy_from_g(&g_can, &eps, nocc, nvir);
-                    println!("   dE_{label} = {:.3e} Ha  (E_fit {:.9})", e_fit - e_exact, e_fit);
+                    println!("   dE_{label} = {:.3e} Ha  (E_fit {:.9})", e_fit - e_exact.unwrap(), e_fit);
                 }
             }
         }

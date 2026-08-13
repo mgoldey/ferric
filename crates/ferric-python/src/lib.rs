@@ -3155,6 +3155,48 @@ fn compute_eri3<'py>(
     Ok(PyArray3::from_array(py, &eri3))
 }
 
+/// Blocked MO-basis 3-center Coulomb integrals (P|pq), shape
+/// (naux, n_left, n_right), for arbitrary coefficient matrices `c_left` /
+/// `c_right` of shape (n_bf, n_*) — e.g. localized occupieds × canonical
+/// virtuals. Unlike `compute_eri3`, the naux·n_bf² AO tensor is NEVER
+/// materialized: raw aux-row blocks are generated under `memory_budget_gb`
+/// and transformed immediately (`eri3_mo_ov_blocked`, bit-identical to the
+/// dense path). This is what makes C32+/cc-pVDZ domain prototyping possible
+/// from Python — the dense AO tensor is ~13 GB there. ECPs applied first,
+/// matching `run_rhf`.
+#[pyfunction]
+#[pyo3(signature = (mol, basis_set, aux_basis_set, c_left, c_right, memory_budget_gb=2.0))]
+fn compute_eri3_mo<'py>(
+    py: Python<'py>,
+    mol: &PyMolecule,
+    basis_set: &PyBasisSet,
+    aux_basis_set: &PyBasisSet,
+    c_left: numpy::PyReadonlyArray2<f64>,
+    c_right: numpy::PyReadonlyArray2<f64>,
+    memory_budget_gb: f64,
+) -> PyResult<Bound<'py, PyArray3<f64>>> {
+    let mut emol = mol.inner.clone();
+    emol.apply_ecp(&basis_set.inner);
+    let obs = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
+    let dfbs = PreparedBasis::new(&emol, &aux_basis_set.inner).map_err(make_err)?;
+    let n_bf = obs.nbasis();
+    let cl = c_left.as_array().to_owned();
+    let cr = c_right.as_array().to_owned();
+    if cl.nrows() != n_bf || cr.nrows() != n_bf {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "coefficient rows must equal n_bf={n_bf} (got c_left {}x{}, c_right {}x{})",
+            cl.nrows(),
+            cl.ncols(),
+            cr.nrows(),
+            cr.ncols()
+        )));
+    }
+    let budget = (memory_budget_gb.max(0.1) * (1u64 << 30) as f64) as usize;
+    let mo = ferric_mp2::rimp2::eri3_mo_ov_blocked(Operator::coulomb(), &obs, &dfbs, &cl, &cr, budget)
+        .map_err(make_err)?;
+    Ok(PyArray3::from_owned_array(py, mo))
+}
+
 /// 2-center Coulomb metric (P|Q) over the auxiliary basis, shape (naux, naux).
 #[pyfunction]
 fn compute_metric_2c<'py>(
@@ -3275,6 +3317,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_bse_tda, m)?)?;
     m.add_function(wrap_pyfunction!(run_tdhf_static_polarizability, m)?)?;
     m.add_function(wrap_pyfunction!(compute_eri3, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_eri3_mo, m)?)?;
     m.add_function(wrap_pyfunction!(compute_metric_2c, m)?)?;
     Ok(())
 }
