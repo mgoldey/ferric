@@ -1050,8 +1050,18 @@ fn run_mp2_v(
         ferric_dft::vv10::Vv10Damping::Terfc { .. } => "terfc",
         ferric_dft::vv10::Vv10Damping::None => "none",
     };
+    // Decoupled seam sharpness (2026-08): echo it in the boundary unit (Å⁻¹)
+    // so a sweep's output is self-describing; the linked default prints
+    // nothing extra (byte-identical behavior, no new label to misread).
+    let omega_note = match att_cfg.omega {
+        Some(w_bohr_inv) => format!(
+            ", omega={:.4} Å⁻¹ (decoupled; UNPARAMETERIZED — b was fitted at the linked width)",
+            w_bohr_inv / ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV
+        ),
+        None => String::new(),
+    };
     println!(
-        "MP2-V({attenuator})/{} (aux: {}, r0={:.3} Å, b={:.3}, C={:.4}, VV10 damping: {damping}) on {}",
+        "MP2-V({attenuator})/{} (aux: {}, r0={:.3} Å{omega_note}, b={:.3}, C={:.4}, VV10 damping: {damping}) on {}",
         bs.name,
         aux_name,
         att_cfg.r0_angstrom(),

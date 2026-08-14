@@ -131,9 +131,10 @@
 //!
 //! # Scope (Phase A + Phase B open-shell)
 //!
-//! Library-level energy only. No CLI, no Python bindings, no gradients, no
-//! self-consistent VV10-in-Fock. See the crate docs / VALIDATION.md for what is
-//! proven.
+//! Energy only — no gradients, no self-consistent VV10-in-Fock. Exposed via
+//! the CLI (`method.kind = "mp2-v"`, `[mp2] mp2v_*` keys incl. `mp2v_omega`)
+//! and Python (`run_mp2_v`, closed-shell). See the crate docs / VALIDATION.md
+//! for what is proven.
 //!
 //! [`att_mp2_vv10`] accepts **restricted (RHF)** references;
 //! [`u_att_mp2_vv10`] accepts **unrestricted (UHF) and restricted-open (ROHF)**
@@ -216,6 +217,25 @@ pub struct AttVv10Config {
     pub vv10_damping: Vv10Damping,
     /// Which attenuator multiplies the MP2 correlation operator.
     pub attenuator: AttVv10Attenuator,
+    /// Decoupled terfc seam sharpness ω in **Bohr⁻¹** (2026-08 modernization;
+    /// `Operator::terfc_with_omega`). `None` (the default, and the published
+    /// method) keeps the Dutoi curvature link ω = 1/(r₀√2) — byte-identical to
+    /// the pre-decoupling behavior in BOTH halves.
+    ///
+    /// `Some(ω)` applies the SAME (r₀, ω) to both halves of Eq. 11 in
+    /// lockstep: the MP2 attenuator becomes `terfc(r; r₀, ω)/r` and the VV10
+    /// damping becomes `1 − terfc(R; r₀, ω)²` (derived at evaluation time via
+    /// [`AttVv10Config::effective_vv10_damping`], so the two cannot silently
+    /// diverge — a divergence would double-count correlation in the seam
+    /// region). Terfc-attenuator only: combining it with the erfc control is
+    /// a hard error (erfc's width IS 1/(r₀√2) by that arm's definition), and
+    /// an ω set directly on [`Self::vv10_damping`] that contradicts this field
+    /// is a hard error too, never silently overwritten.
+    ///
+    /// The published (r₀, b, C) were fitted at the LINKED width; any
+    /// `Some(ω)` run is unparameterized until b is refit (Table 1's valley
+    /// belongs to linked terfc).
+    pub omega: Option<f64>,
     /// Frozen-core orbitals.
     ///
     /// **Convention mismatch to be aware of:** the paper used the frozen-core
@@ -250,8 +270,12 @@ impl AttVv10Config {
         Self {
             r0_bohr,
             vv10: Vv10Params { c: 0.0089, b: 11.0 },
-            vv10_damping: Vv10Damping::Terfc { r0_bohr },
+            vv10_damping: Vv10Damping::Terfc {
+                r0_bohr,
+                omega_bohr_inv: None,
+            },
             attenuator: AttVv10Attenuator::Terfc,
+            omega: None,
             frozen_core: 0,
             nlc_grid: default_nlc_grid(),
             memory_budget_bytes: None,
@@ -289,7 +313,10 @@ impl AttVv10Config {
         Some(Self {
             r0_bohr,
             vv10: Vv10Params { c: 0.0089, b: *b },
-            vv10_damping: Vv10Damping::Terfc { r0_bohr },
+            vv10_damping: Vv10Damping::Terfc {
+                r0_bohr,
+                omega_bohr_inv: None,
+            },
             ..Self::mp2_v_terfc_atz()
         })
     }
@@ -314,8 +341,11 @@ impl AttVv10Config {
     pub fn from_r0_angstrom(mut self, r0_ang: f64) -> Self {
         let r0_bohr = r0_ang * BOHR_PER_ANG;
         self.r0_bohr = r0_bohr;
-        if let Vv10Damping::Terfc { .. } = self.vv10_damping {
-            self.vv10_damping = Vv10Damping::Terfc { r0_bohr };
+        if let Vv10Damping::Terfc { omega_bohr_inv, .. } = self.vv10_damping {
+            self.vv10_damping = Vv10Damping::Terfc {
+                r0_bohr,
+                omega_bohr_inv,
+            };
         }
         self
     }
@@ -327,15 +357,51 @@ impl AttVv10Config {
 
     /// The two-electron operator this configuration attenuates MP2 with.
     ///
-    /// Both branches derive ω from r₀ through the same curvature constraint
-    /// `r₀ · ω = 1/√2` that [`Operator::terfc`] uses, so the two attenuators
-    /// are compared at matched r₀ rather than at matched-but-unrelated ω.
+    /// With [`Self::omega`] `None`, both branches derive ω from r₀ through the
+    /// same curvature constraint `r₀ · ω = 1/√2` that [`Operator::terfc`]
+    /// uses, so the two attenuators are compared at matched r₀ rather than at
+    /// matched-but-unrelated ω. `Some(ω)` decouples the terfc seam sharpness
+    /// ([`Operator::terfc_with_omega`]); [`validate_config`] has already
+    /// rejected `Some(ω)` for the erfc control by the time this is called.
     fn mp2_operator(&self) -> Operator {
         match self.attenuator {
-            AttVv10Attenuator::Terfc => Operator::terfc(self.r0_bohr),
+            AttVv10Attenuator::Terfc => match self.omega {
+                None => Operator::terfc(self.r0_bohr),
+                Some(omega) => Operator::terfc_with_omega(self.r0_bohr, omega),
+            },
             AttVv10Attenuator::Erfc => {
                 Operator::erfc(1.0 / (self.r0_bohr * std::f64::consts::SQRT_2))
             }
+        }
+    }
+
+    /// The VV10 damping [`att_mp2_vv10`]/[`u_att_mp2_vv10`] actually evaluate:
+    /// [`Self::vv10_damping`] with its seam sharpness forced into lockstep
+    /// with [`Self::omega`] (Eq. 11 requires the SAME (r₀, ω) in both halves —
+    /// diverging halves silently double-count seam-region correlation).
+    ///
+    /// An ω already set on the damping is accepted only if it agrees exactly
+    /// with [`Self::omega`]; any contradiction is a hard error rather than a
+    /// silent overwrite (config honesty). `Vv10Damping::None` passes through —
+    /// that switch deliberately exists to measure the double-counting.
+    pub fn effective_vv10_damping(&self) -> Result<Vv10Damping, FerricError> {
+        match self.vv10_damping {
+            Vv10Damping::None => Ok(Vv10Damping::None),
+            Vv10Damping::Terfc {
+                r0_bohr,
+                omega_bohr_inv,
+            } => match (omega_bohr_inv, self.omega) {
+                (Some(wd), wc) if wc != Some(wd) => Err(FerricError::General(format!(
+                    "AttVv10Config: vv10_damping carries omega_bohr_inv = Some({wd}) but \
+                     config.omega = {wc:?}. Eq. 11 requires the SAME (r0, omega) in the MP2 \
+                     attenuator and the VV10 damping — set AttVv10Config.omega (the damping \
+                     follows in lockstep) instead of setting the damping's omega directly."
+                ))),
+                _ => Ok(Vv10Damping::Terfc {
+                    r0_bohr,
+                    omega_bohr_inv: self.omega,
+                }),
+            },
         }
     }
 
@@ -478,7 +544,7 @@ pub fn att_mp2_vv10(
             rhf.spin
         )));
     }
-    validate_r0(config, "att_mp2_vv10")?;
+    validate_config(config, "att_mp2_vv10")?;
 
     // ---- Half 1: attenuated MP2 correlation -------------------------------
     let (spin_components, _) = ri_mp2_spin_components(
@@ -562,7 +628,7 @@ pub fn u_att_mp2_vv10(
             ));
         }
     }
-    validate_r0(config, "u_att_mp2_vv10")?;
+    validate_config(config, "u_att_mp2_vv10")?;
 
     // ---- Half 1: unrestricted attenuated MP2 correlation ------------------
     // Same operator as the closed-shell path: u_ri_mp2 takes an arbitrary
@@ -606,7 +672,9 @@ fn assemble(
         obs_bs,
         scf.density_total(),
         &config.vv10,
-        config.vv10_damping,
+        // Lockstep: the damping's seam sharpness is derived from the same
+        // `config.omega` the MP2 operator used (hard error on contradiction).
+        config.effective_vv10_damping()?,
         &config.nlc_grid,
     )?;
 
@@ -624,13 +692,31 @@ fn assemble(
 
 /// r₀ appears in a division (`1/(r₀√2)`) and as a length scale in the damping,
 /// so a non-finite or non-positive value must be rejected, not propagated as a
-/// NaN energy.
-fn validate_r0(config: &AttVv10Config, who: &str) -> Result<(), FerricError> {
+/// NaN energy. Likewise a decoupled ω: it is a sharpness (inverse length) in
+/// both halves of Eq. 11, and it is only meaningful for the terfc attenuator —
+/// silently ignoring it on the erfc control would be a config-honesty
+/// violation (the erfc arm's width is 1/(r₀√2) by definition).
+fn validate_config(config: &AttVv10Config, who: &str) -> Result<(), FerricError> {
     if config.r0_bohr <= 0.0 || !config.r0_bohr.is_finite() {
         return Err(FerricError::General(format!(
             "{who}: r0 must be finite and > 0 (got {} Bohr)",
             config.r0_bohr
         )));
+    }
+    if let Some(omega) = config.omega {
+        if omega <= 0.0 || !omega.is_finite() {
+            return Err(FerricError::General(format!(
+                "{who}: omega must be finite and > 0 (got {omega} Bohr^-1); use None for \
+                 the curvature-linked width 1/(r0*sqrt(2))"
+            )));
+        }
+        if config.attenuator == AttVv10Attenuator::Erfc {
+            return Err(FerricError::General(format!(
+                "{who}: a decoupled omega applies to the terfc attenuator only; the erfc \
+                 control's width is 1/(r0*sqrt(2)) by definition. Drop omega or switch \
+                 the attenuator to terfc."
+            )));
+        }
     }
     Ok(())
 }

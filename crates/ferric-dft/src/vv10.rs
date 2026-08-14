@@ -477,10 +477,24 @@ pub enum Vv10Damping {
     /// Bare VV10 kernel — the historical behavior, bit-identical to the
     /// pre-damping code path (the damping factor is never even evaluated).
     None,
-    /// `1 − terfc(R, r0)²` with `r0` in Bohr (MP2-V Eq. 11).
+    /// `1 − terfc(R; r0, ω)²` with `r0` in Bohr (MP2-V Eq. 11).
     Terfc {
         /// Range-separation length r0 in **Bohr**.
         r0_bohr: f64,
+        /// Seam sharpness ω in **Bohr⁻¹**, decoupled from r0 (2026-08:
+        /// `terf(R; r0, ω) = ½[erf(ω(R−r0)) + erf(ω(R+r0))]`, matching
+        /// `Operator::terfc_with_omega`). `None` keeps the Dutoi curvature
+        /// link ω = 1/(r0√2) — the published MP2-V form — and is evaluated
+        /// through the exact pre-decoupling arithmetic (byte-identical to
+        /// the historical `Terfc { r0_bohr }` behavior).
+        ///
+        /// When VV10 pastes the tail back for a decoupled-sharpness
+        /// attenuated MP2, this MUST carry the same ω as the MP2 operator —
+        /// the two halves of Eq. 11 diverging silently double-counts the
+        /// correlation in the seam region. `AttVv10Config` derives it in
+        /// lockstep; set it by hand only if you are building the damping
+        /// directly.
+        omega_bohr_inv: Option<f64>,
     },
 }
 
@@ -493,9 +507,21 @@ impl Vv10Damping {
     fn factor_from_r2(&self, r2: f64) -> f64 {
         match *self {
             Vv10Damping::None => 1.0,
-            Vv10Damping::Terfc { r0_bohr } => {
+            Vv10Damping::Terfc {
+                r0_bohr,
+                omega_bohr_inv,
+            } => {
                 let r = r2.sqrt();
-                let tc = terfc_scalar(r, r0_bohr);
+                // The `None` arm goes through the original linked-width
+                // arithmetic untouched (byte-identical to the pre-decoupling
+                // code path), not through `terfc_scalar_decoupled` with a
+                // derived ω — multiply-by-reciprocal vs divide differ in the
+                // last ulp and "None means exactly the old behavior" is a
+                // regression-tested promise.
+                let tc = match omega_bohr_inv {
+                    None => terfc_scalar(r, r0_bohr),
+                    Some(omega) => terfc_scalar_decoupled(r, r0_bohr, omega),
+                };
                 1.0 - tc * tc
             }
         }
@@ -520,6 +546,17 @@ impl Vv10Damping {
 fn terfc_scalar(r: f64, r0: f64) -> f64 {
     let s = r0 * std::f64::consts::SQRT_2;
     let terf = 0.5 * (erf_scalar((r - r0) / s) + erf_scalar((r + r0) / s));
+    1.0 - terf
+}
+
+/// `terf(r; r0, ω) = ½[erf(ω(r−r0)) + erf(ω(r+r0))]` with the sharpness ω
+/// DECOUPLED from r0 (no curvature link); `terfc = 1 − terf`. At the linked
+/// ω = 1/(r0√2) this reproduces [`terfc_scalar`] to the last ulp or two
+/// (multiply-by-reciprocal vs divide), which is why the linked path keeps its
+/// own arithmetic. Matches `Operator::terfc_with_omega`'s convention.
+#[inline]
+fn terfc_scalar_decoupled(r: f64, r0: f64, omega: f64) -> f64 {
+    let terf = 0.5 * (erf_scalar(omega * (r - r0)) + erf_scalar(omega * (r + r0)));
     1.0 - terf
 }
 
@@ -952,6 +989,7 @@ mod damping_tests {
     fn damping_factor_limits() {
         let d = Vv10Damping::Terfc {
             r0_bohr: 1.889_725_988_6,
+            omega_bohr_inv: None,
         };
         let at_zero = d.factor_from_r2(0.0);
         let far = d.factor_from_r2(30.0 * 30.0);
@@ -973,6 +1011,47 @@ mod damping_tests {
         assert_eq!(Vv10Damping::None.factor_from_r2(1.234), 1.0);
         assert!(Vv10Damping::None.is_none());
         assert!(!d.is_none());
+    }
+
+    /// EXACTNESS ANCHOR for the decoupled width: at the linked ω = 1/(r0√2)
+    /// the decoupled arm must reproduce the linked arm to float noise (they
+    /// share the math but not the arithmetic — multiply vs divide), and a
+    /// sharper ω must damp LESS outside r0 / MORE inside r0 (the seam
+    /// tightens toward a step at r0).
+    #[test]
+    fn decoupled_damping_matches_linked_at_the_linked_omega() {
+        const R0: f64 = 1.889_725_988_6;
+        let linked = Vv10Damping::Terfc {
+            r0_bohr: R0,
+            omega_bohr_inv: None,
+        };
+        let decoupled_linked = Vv10Damping::Terfc {
+            r0_bohr: R0,
+            omega_bohr_inv: Some(1.0 / (R0 * std::f64::consts::SQRT_2)),
+        };
+        for r in [0.0_f64, 0.3, 1.0, R0, 2.5, 4.0, 8.0, 15.0] {
+            let a = linked.factor_from_r2(r * r);
+            let b = decoupled_linked.factor_from_r2(r * r);
+            assert!(
+                (a - b).abs() < 1e-14,
+                "linked vs decoupled-at-linked-omega factor at R={r}: {a} vs {b}"
+            );
+        }
+        // Sharpness: at 4x the linked omega the seam is tighter on both sides.
+        let sharp = Vv10Damping::Terfc {
+            r0_bohr: R0,
+            omega_bohr_inv: Some(4.0 / (R0 * std::f64::consts::SQRT_2)),
+        };
+        let inside = 0.5 * R0;
+        let outside = 2.0 * R0;
+        assert!(
+            sharp.factor_from_r2(inside * inside) < linked.factor_from_r2(inside * inside),
+            "sharper omega must damp MORE inside r0"
+        );
+        assert!(
+            sharp.factor_from_r2(outside * outside) > linked.factor_from_r2(outside * outside),
+            "sharper omega must damp LESS outside r0"
+        );
     }
 }
 

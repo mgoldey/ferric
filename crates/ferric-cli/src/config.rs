@@ -300,6 +300,17 @@ pub struct Mp2Cfg {
     ///
     /// Unknown values are a hard error.
     pub mp2v_attenuator: Option<String>,
+    /// Decoupled terfc seam sharpness ω in **Å⁻¹** (2026-08 modernization;
+    /// `Operator::terfc_with_omega`). Omitted = the Dutoi curvature link
+    /// ω = 1/(r₀√2), which is the published method and byte-identical to the
+    /// pre-decoupling behavior. When set, the SAME (r₀, ω) reaches BOTH halves
+    /// of Eq. 11 in lockstep — the MP2 attenuator and the VV10 damping factor
+    /// (the library derives the damping's ω from this, so the halves cannot
+    /// silently diverge). Terfc-attenuator only: combining it with
+    /// `mp2v_attenuator = "erfc"` is a hard error. The published (r₀, b, C)
+    /// were fitted at the LINKED width, so any decoupled-ω run is
+    /// unparameterized extrapolation until b is refit.
+    pub mp2v_omega: Option<f64>,
     /// VV10 short-range damping:
     ///
     ///   "terfc" (default) — `1 − terfc(R, r₀)²`, the published Eq. 11 form,
@@ -373,6 +384,10 @@ impl Mp2Cfg {
             None => cfg.vv10_damping,
             Some(ref s) if s == "terfc" => Vv10Damping::Terfc {
                 r0_bohr: cfg.r0_bohr,
+                // The seam sharpness is derived from `cfg.omega` at evaluation
+                // time (`effective_vv10_damping`), so `mp2v_omega` need not —
+                // and must not — be duplicated here.
+                omega_bohr_inv: None,
             },
             Some(ref s) if s == "none" => Vv10Damping::None,
             Some(other) => {
@@ -404,6 +419,26 @@ impl Mp2Cfg {
                 return Err(format!("[mp2] mp2v_c must be finite (got {c})"));
             }
             cfg.vv10.c = c;
+        }
+
+        if let Some(w_ang) = self.mp2v_omega {
+            if !w_ang.is_finite() || w_ang <= 0.0 {
+                return Err(format!(
+                    "[mp2] mp2v_omega must be finite and > 0 (got {w_ang} A^-1); omit it for \
+                     the curvature-linked width 1/(r0*sqrt(2))"
+                ));
+            }
+            if cfg.attenuator == AttVv10Attenuator::Erfc {
+                return Err(
+                    "[mp2] mp2v_omega applies to the terfc attenuator only; the erfc \
+                     control's width is 1/(r0*sqrt(2)) by definition. Drop mp2v_omega or set \
+                     mp2v_attenuator = \"terfc\"."
+                        .to_string(),
+                );
+            }
+            // Å⁻¹ at the TOML boundary (like `omega`/`terf_omega` elsewhere),
+            // Bohr⁻¹ internally.
+            cfg.omega = Some(w_ang * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV);
         }
 
         let n_radial = self.mp2v_nlc_n_radial.unwrap_or(cfg.nlc_grid.n_radial);
@@ -1087,7 +1122,7 @@ mp2v_vv10_damping = "terfc"
         assert_eq!(att.attenuator, ferric_mp2::att_vv10::AttVv10Attenuator::Terfc);
         // Eq. 11: the VV10 damping r0 MUST be the same r0 the MP2 half uses.
         match att.vv10_damping {
-            ferric_dft::vv10::Vv10Damping::Terfc { r0_bohr } => {
+            ferric_dft::vv10::Vv10Damping::Terfc { r0_bohr, .. } => {
                 assert_eq!(r0_bohr, att.r0_bohr)
             }
             other => panic!("MP2-V must damp VV10, got {other:?}"),
@@ -1125,11 +1160,78 @@ mp2v_vv10_damping = "terfc"
         assert!((att.r0_angstrom() - 1.05).abs() < 1e-12);
         assert_eq!(att.vv10.b, 12.5);
         match att.vv10_damping {
-            ferric_dft::vv10::Vv10Damping::Terfc { r0_bohr } => assert_eq!(
+            ferric_dft::vv10::Vv10Damping::Terfc { r0_bohr, .. } => assert_eq!(
                 r0_bohr, att.r0_bohr,
                 "damping r0 must follow mp2v_r0 (paper Eq. 11)"
             ),
             other => panic!("expected terfc damping, got {other:?}"),
+        }
+    }
+
+    /// `mp2v_omega` is Å⁻¹ at the TOML boundary and Bohr⁻¹ internally, and it
+    /// reaches BOTH halves of Eq. 11: the config's `omega` (MP2 attenuator)
+    /// and, via `effective_vv10_damping`, the VV10 damping's seam sharpness.
+    #[test]
+    fn mp2_v_omega_converts_and_reaches_both_halves() {
+        let mp2 = Mp2Cfg {
+            mp2v_omega: Some(4.0),
+            ..Mp2Cfg::default()
+        };
+        let att = mp2.build_att_vv10_config(None).unwrap();
+        let expect_bohr_inv = 4.0 * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV;
+        assert_eq!(att.omega, Some(expect_bohr_inv));
+        // ~2.117 Bohr⁻¹; 7.56 would mean the conversion inverted.
+        assert!(
+            (expect_bohr_inv - 2.116_708_3).abs() < 1e-6,
+            "got {expect_bohr_inv}"
+        );
+        match att.effective_vv10_damping().unwrap() {
+            ferric_dft::vv10::Vv10Damping::Terfc {
+                r0_bohr,
+                omega_bohr_inv,
+            } => {
+                assert_eq!(r0_bohr, att.r0_bohr);
+                assert_eq!(
+                    omega_bohr_inv,
+                    Some(expect_bohr_inv),
+                    "the VV10 damping must carry the SAME omega as the MP2 attenuator"
+                );
+            }
+            other => panic!("expected terfc damping, got {other:?}"),
+        }
+        // Omitted omega = the linked width, in both halves (byte-identical
+        // pre-decoupling behavior).
+        let linked = Mp2Cfg::default().build_att_vv10_config(None).unwrap();
+        assert_eq!(linked.omega, None);
+        assert!(matches!(
+            linked.effective_vv10_damping().unwrap(),
+            ferric_dft::vv10::Vv10Damping::Terfc {
+                omega_bohr_inv: None,
+                ..
+            }
+        ));
+    }
+
+    /// A decoupled omega on the erfc control arm is a hard error, not a silent
+    /// no-op (the erfc arm's width is 1/(r0*sqrt(2)) by definition), and
+    /// non-positive/non-finite omegas are rejected.
+    #[test]
+    fn mp2_v_omega_rejects_erfc_and_nonpositive() {
+        let mp2 = Mp2Cfg {
+            mp2v_omega: Some(2.0),
+            mp2v_attenuator: Some("erfc".to_string()),
+            ..Mp2Cfg::default()
+        };
+        let err = mp2.build_att_vv10_config(None).unwrap_err();
+        assert!(err.contains("terfc attenuator only"), "got: {err}");
+
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let mp2 = Mp2Cfg {
+                mp2v_omega: Some(bad),
+                ..Mp2Cfg::default()
+            };
+            let err = mp2.build_att_vv10_config(None).unwrap_err();
+            assert!(err.contains("mp2v_omega"), "omega={bad}: {err}");
         }
     }
 

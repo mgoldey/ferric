@@ -292,7 +292,10 @@ fn damping_actually_changes_the_energy() {
         &c.bs,
         c.rhf.density_total(),
         &params,
-        Vv10Damping::Terfc { r0_bohr },
+        Vv10Damping::Terfc {
+            r0_bohr,
+            omega_bohr_inv: None,
+        },
         &grid_cfg,
     )
     .unwrap();
@@ -348,6 +351,7 @@ fn damping_is_monotone_in_r0() {
             &params,
             Vv10Damping::Terfc {
                 r0_bohr: r0_ang * BOHR_PER_ANG,
+                omega_bohr_inv: None,
             },
             &grid_cfg,
         )
@@ -405,7 +409,10 @@ fn damping_vanishes_as_r0_goes_to_zero() {
             &c.bs,
             c.rhf.density_total(),
             &params,
-            Vv10Damping::Terfc { r0_bohr },
+            Vv10Damping::Terfc {
+                r0_bohr,
+                omega_bohr_inv: None,
+            },
             &grid_cfg,
         )
         .unwrap();
@@ -625,7 +632,7 @@ fn published_parameters_are_the_paper_values() {
     assert_eq!(cfg.vv10.c, 0.0089, "C must be 0.0089 (LC-VV10 value, section 3)");
     assert_eq!(cfg.attenuator, AttVv10Attenuator::Terfc);
     match cfg.vv10_damping {
-        Vv10Damping::Terfc { r0_bohr } => assert_eq!(
+        Vv10Damping::Terfc { r0_bohr, .. } => assert_eq!(
             r0_bohr, cfg.r0_bohr,
             "the VV10 damping r0 must be the SAME r0 the MP2 half uses (paper Eq. 11)"
         ),
@@ -660,7 +667,7 @@ fn table1_r0_b_valley_pairs() {
         assert_eq!(cfg.vv10.c, 0.0089, "C is fixed across the whole valley");
         assert!((cfg.r0_angstrom() - r0).abs() < 1e-12);
         match cfg.vv10_damping {
-            Vv10Damping::Terfc { r0_bohr } => assert_eq!(r0_bohr, cfg.r0_bohr),
+            Vv10Damping::Terfc { r0_bohr, .. } => assert_eq!(r0_bohr, cfg.r0_bohr),
             other => panic!("valley configs must damp VV10, got {other:?}"),
         }
     }
@@ -693,7 +700,7 @@ fn angstrom_to_bohr_conversion_and_damping_sync() {
     );
     assert!(cfg.r0_bohr > 1.35, "Bohr value must exceed the Angstrom value");
     match cfg.vv10_damping {
-        Vv10Damping::Terfc { r0_bohr } => assert_eq!(r0_bohr, cfg.r0_bohr),
+        Vv10Damping::Terfc { r0_bohr, .. } => assert_eq!(r0_bohr, cfg.r0_bohr),
         other => panic!("damping should have stayed terfc, got {other:?}"),
     }
     assert!((cfg.r0_angstrom() - 1.35).abs() < 1e-12);
@@ -787,6 +794,195 @@ fn terfc_path_runs_when_tables_present() {
     assert!(r.e_c_att_mp2.is_finite() && r.e_c_att_mp2 < 0.0);
     assert!(r.e_nl_vv10.is_finite());
     assert_eq!(r.components_sum_to_total(), 0.0);
+}
+
+/// EXACTNESS ANCHOR for the decoupled (r₀, ω) plumbing: `omega = Some(w)` at
+/// the linked value w = 1/(r₀√2) must reproduce `omega = None` numerically —
+/// in the TOTAL and in the VV10 piece separately. The VV10 assertion is the
+/// one that checks the Eq. 11 damping lockstep: if the decoupled ω failed to
+/// reach the grid-side damping (or reached it with a wrong convention), the
+/// attMP2 halves would still agree (the operator bits are identical) while
+/// E_nl diverged — so asserting the split, not just the sum, is load-bearing.
+///
+/// Tolerance 1e-12 Ha, not bit-identity: the decoupled damping arm computes
+/// ω·(R±r₀) where the linked arm computes (R±r₀)/(r₀√2) — same math, last-ulp
+/// different arithmetic.
+#[test]
+fn decoupled_omega_at_linked_value_matches_linked() {
+    if std::env::var("FERRIC_TERF_TABLE_DIR").is_err() {
+        eprintln!("SKIP: FERRIC_TERF_TABLE_DIR not set; terfc interpolation tables unavailable");
+        return;
+    }
+    let c = water_ccpvdz();
+    let linked = AttVv10Config {
+        nlc_grid: test_grid(),
+        ..AttVv10Config::mp2_v_terfc_atz()
+    };
+    // The SAME expression `Operator::terfc` uses internally, so the MP2-half
+    // operator is bit-identical and any total-energy difference is the VV10
+    // damping path.
+    let w_linked = 1.0 / (linked.r0_bohr * std::f64::consts::SQRT_2);
+    let decoupled = AttVv10Config {
+        omega: Some(w_linked),
+        ..linked.clone()
+    };
+    let r_linked = match att_mp2_vv10(&c.mol, &c.obs, &c.bs, &c.dfbs, &c.rhf, &linked) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("SKIP: terfc path unavailable at runtime: {e}");
+            return;
+        }
+    };
+    let r_dec = att_mp2_vv10(&c.mol, &c.obs, &c.bs, &c.dfbs, &c.rhf, &decoupled).unwrap();
+    let d_total = (r_dec.total - r_linked.total).abs();
+    let d_vv10 = (r_dec.e_nl_vv10 - r_linked.e_nl_vv10).abs();
+    let d_att = (r_dec.e_c_att_mp2 - r_linked.e_c_att_mp2).abs();
+    eprintln!(
+        "linked vs decoupled-at-linked-omega: d_total = {d_total:.3e}, d_vv10 = {d_vv10:.3e}, \
+         d_attMP2 = {d_att:.3e}"
+    );
+    // The operator BITS are identical for the MP2 half (same primitive), so
+    // any d_att is pure summation-order noise; still asserted at the shared
+    // 1e-12 bar rather than == 0.0 to avoid pinning rayon reduction order.
+    assert!(d_att <= 1e-12, "attMP2 halves differ by {d_att:.3e} > 1e-12");
+    assert!(d_vv10 <= 1e-12, "VV10 halves differ by {d_vv10:.3e} > 1e-12");
+    assert!(d_total <= 1e-12, "totals differ by {d_total:.3e} > 1e-12");
+}
+
+/// Sharp-ω smoke + the Coulomb-limit EXACTNESS ANCHOR for decoupled ω.
+///
+/// This test originally asserted `|E_c(sharp)| ≤ |E_c(linked)|` on the total
+/// molecular correlation — and FAILED, which turned out to be MEASUREMENT,
+/// not bug. On water/cc-pVDZ at r₀ = 1.00 Å the attMP2 piece GROWS smoothly
+/// and monotonically with ω (Ha: −0.2030 linked, −0.2215 at r₀ω=1, −0.3200
+/// at 2, −0.3884 at 4, saturating −0.4083 at 8, vs full Coulomb −0.2040): a
+/// sharp seam INSIDE the density over-correlates. That is Dutoi's artifact
+/// mechanism itself (JPCA 112, 2110: the spurious attraction near r ≈ r₀ "can
+/// exceed the physical well") showing up in a molecular total. "Sharper
+/// deletes more" is true of the long-range/interaction TAIL, not of the total
+/// once the seam sits mid-density.
+///
+/// The implementation-vs-physics discriminator is the anchor asserted here:
+/// with the SAME sharpness but the seam moved outside the molecular density
+/// (r₀ = 8 Bohr ≫ water's extent, r₀ω = 4), terfc ≡ Coulomb over the density
+/// and attMP2 must reproduce full RI-MP2 (measured gap 1.4e-4 Ha — the
+/// genuine correlation tail beyond 8 Bohr; a broken sharp-ω table path shows
+/// seam-scale errors ~0.2 Ha here). The seam-inside-density GROWTH direction
+/// is also pinned so a future "fix" that silently flips it fails loudly.
+#[test]
+fn sharp_omega_completes_and_matches_coulomb_when_seam_is_outside_the_density() {
+    if std::env::var("FERRIC_TERF_TABLE_DIR").is_err() {
+        eprintln!("SKIP: FERRIC_TERF_TABLE_DIR not set; terfc interpolation tables unavailable");
+        return;
+    }
+    let c = water_ccpvdz();
+    let linked = AttVv10Config {
+        nlc_grid: test_grid(),
+        ..AttVv10Config::mp2_v_terfc_atz()
+    };
+    let sharp = AttVv10Config {
+        omega: Some(4.0 / linked.r0_bohr), // r0*omega = 4, seam at 1.89 Bohr
+        ..linked.clone()
+    };
+    let r_linked = match att_mp2_vv10(&c.mol, &c.obs, &c.bs, &c.dfbs, &c.rhf, &linked) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("SKIP: terfc path unavailable at runtime: {e}");
+            return;
+        }
+    };
+    let r_sharp = att_mp2_vv10(&c.mol, &c.obs, &c.bs, &c.dfbs, &c.rhf, &sharp).unwrap();
+    eprintln!(
+        "attMP2 piece: linked {:.10}, r0w=4 {:.10}; VV10: linked {:.10}, r0w=4 {:.10}",
+        r_linked.e_c_att_mp2, r_sharp.e_c_att_mp2, r_linked.e_nl_vv10, r_sharp.e_nl_vv10
+    );
+    assert!(r_sharp.total.is_finite());
+    assert!(r_sharp.e_c_att_mp2 < 0.0, "attMP2 correlation must stay negative");
+    assert_eq!(r_sharp.components_sum_to_total(), 0.0);
+    // Pin the MEASURED direction: seam inside the density over-correlates.
+    assert!(
+        r_sharp.e_c_att_mp2 < r_linked.e_c_att_mp2,
+        "seam-inside-density over-correlation direction flipped: sharp {:.10} vs linked {:.10}",
+        r_sharp.e_c_att_mp2,
+        r_linked.e_c_att_mp2
+    );
+
+    // ANCHOR: same sharpness, seam outside the density -> Coulomb MP2.
+    let full = ferric_mp2::rimp2::ri_mp2(
+        &c.mol,
+        &c.obs,
+        &c.dfbs,
+        Operator::coulomb(),
+        &c.rhf,
+        &ferric_mp2::rimp2::RiMp2Config::default(),
+    )
+    .unwrap();
+    let far = AttVv10Config {
+        r0_bohr: 8.0,
+        omega: Some(4.0 / 8.0), // r0*omega = 4, same sharpness product
+        vv10_damping: Vv10Damping::Terfc {
+            r0_bohr: 8.0,
+            omega_bohr_inv: None,
+        },
+        ..linked.clone()
+    };
+    let r_far = att_mp2_vv10(&c.mol, &c.obs, &c.bs, &c.dfbs, &c.rhf, &far).unwrap();
+    let gap = (r_far.e_c_att_mp2 - full.mp2_corr).abs();
+    eprintln!(
+        "Coulomb-limit anchor: attMP2(r0=8 Bohr, r0w=4) = {:.10}, full RI-MP2 = {:.10}, \
+         gap = {gap:.3e}",
+        r_far.e_c_att_mp2, full.mp2_corr
+    );
+    assert!(
+        gap < 1e-3,
+        "sharp-omega terfc with the seam outside the density must reproduce Coulomb MP2 \
+         (gap {gap:.3e} Ha; measured 1.4e-4 = the genuine >8 Bohr tail)"
+    );
+}
+
+/// Lockstep guards (table-free — both errors fire before any integral work):
+///  * a decoupled ω on the erfc control arm is a hard error, not a silent
+///    no-op (erfc's width IS 1/(r₀√2) by that arm's definition);
+///  * an ω set directly on the damping that contradicts `config.omega` is a
+///    hard error, never silently overwritten.
+#[test]
+fn decoupled_omega_lockstep_guards() {
+    let c = water_ccpvdz();
+    let mut cfg = erfc_test_config();
+    cfg.omega = Some(1.0);
+    let err = att_mp2_vv10(&c.mol, &c.obs, &c.bs, &c.dfbs, &c.rhf, &cfg)
+        .expect_err("erfc + decoupled omega must be rejected");
+    assert!(
+        err.to_string().contains("terfc attenuator only"),
+        "unexpected error text: {err}"
+    );
+
+    let mut cfg = AttVv10Config::mp2_v_terfc_atz();
+    cfg.vv10_damping = Vv10Damping::Terfc {
+        r0_bohr: cfg.r0_bohr,
+        omega_bohr_inv: Some(2.0),
+    };
+    cfg.omega = Some(1.0);
+    let err = cfg
+        .effective_vv10_damping()
+        .expect_err("contradictory damping omega must be rejected");
+    assert!(
+        err.to_string().contains("SAME (r0, omega)"),
+        "unexpected error text: {err}"
+    );
+    // Agreement passes, and the damping carries the config's omega.
+    cfg.omega = Some(2.0);
+    match cfg.effective_vv10_damping().unwrap() {
+        Vv10Damping::Terfc { omega_bohr_inv, .. } => assert_eq!(omega_bohr_inv, Some(2.0)),
+        other => panic!("expected terfc damping, got {other:?}"),
+    }
+    // And the normal path: omega on the config alone reaches the damping.
+    let mut cfg = AttVv10Config::mp2_v_terfc_atz();
+    cfg.omega = Some(1.5);
+    match cfg.effective_vv10_damping().unwrap() {
+        Vv10Damping::Terfc { omega_bohr_inv, .. } => assert_eq!(omega_bohr_inv, Some(1.5)),
+        other => panic!("expected terfc damping, got {other:?}"),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1016,7 +1212,10 @@ fn vv10_is_spin_agnostic_on_a_collapsed_singlet() {
     );
 
     let params = Vv10Params { c: 0.0089, b: 11.0 };
-    let damping = Vv10Damping::Terfc { r0_bohr: 1.00 * BOHR_PER_ANG };
+    let damping = Vv10Damping::Terfc {
+        r0_bohr: 1.00 * BOHR_PER_ANG,
+        omega_bohr_inv: None,
+    };
     let (e_r, n_r) = vv10_energy_on_density(
         &r_case.mol, &r_case.bs, r_case.rhf.density_total(), &params, damping, &test_grid(),
     ).unwrap();

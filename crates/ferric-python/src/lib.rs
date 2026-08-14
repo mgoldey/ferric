@@ -25,6 +25,7 @@ use ferric_mp2::laplace::{laplace_ri_mp2, laplace_sos_mp2, SosFormulation, SosMp
 use ferric_mp2::mp3::mp3_energy;
 use ferric_mp2::oo_rimp2::{oo_ri_mp2, OoRiMp2Config};
 use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
+use ferric_mp2::att_vv10::{att_mp2_vv10, AttVv10Attenuator, AttVv10Config, AttVv10SpinComponents};
 use ferric_mp2::scs::{scs_mp2, scs_mp2_2terfc, ScsMp2Config, ScsMp2TerfcConfig};
 use ferric_scf::ks_gradient::ks_gradient_closed;
 use ferric_scf::optimize::{optimize_geometry, OptimizeConfig};
@@ -1881,7 +1882,115 @@ fn run_scs_mp2_2terfc(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBas
     })
 }
 
+// ── MP2-V (attenuated MP2 + Eq.-11-damped VV10, JCTC 11, 4159 (2015)) ──
 
+#[pyclass]
+#[pyo3(name = "Mp2VResult")]
+struct PyMp2VResult {
+    /// E_HF + E_c^attMP2 + E_nl^VV10.
+    #[pyo3(get)] total_energy: f64,
+    #[pyo3(get)] rhf_energy: f64,
+    /// Attenuated MP2 correlation energy (terfc/erfc at r0, optionally
+    /// decoupled omega).
+    #[pyo3(get)] att_mp2_corr: f64,
+    /// VV10 nonlocal correlation, damped per `vv10_damping` (Eq. 11 by
+    /// default). NOTE: the damping makes this LESS negative, not more — the
+    /// dispersion it supplies is a difference effect (dimer minus monomers).
+    #[pyo3(get)] vv10_e_nl: f64,
+    #[pyo3(get)] e_os: f64,
+    #[pyo3(get)] e_ss: f64,
+    /// Grid points in the VV10 nonlocal integration (tells a suspiciously
+    /// small E_nl from a suspiciously small grid).
+    #[pyo3(get)] n_nlc_points: usize,
+}
+
+/// MP2-V (Goldey/Belzunces/Head-Gordon, JCTC 11, 4159 (2015)):
+/// E = E_HF + E_c^attMP2(r0[, omega]) + E_nl^VV10 damped by 1 − terfc(R; r0[, omega])².
+///
+/// Closed-shell RHF references only (the CLI `kind = "mp2-v"` also handles
+/// open shell). Units at this boundary: `r0` in Å (default 1.00, the published
+/// value), `omega` in Å⁻¹ (default None = the Dutoi curvature link
+/// ω = 1/(r0√2), the published method; setting it decouples the terfc seam
+/// sharpness and reaches BOTH halves of Eq. 11 in lockstep — unparameterized
+/// until b is refit). `attenuator`: "terfc" (published; needs
+/// FERRIC_TERF_TABLE_DIR) or "erfc" (table-free control; rejects `omega`).
+/// `vv10_damping`: "terfc" (published Eq. 11) or "none" (bare VV10 —
+/// double-counts short range, measurement-only). b defaults 11.0, c 0.0089.
+#[pyfunction]
+#[pyo3(signature = (mol, basis_set, auxbasis, r0=None, b=None, c=None, omega=None, attenuator=None, vv10_damping=None, frozen_core=None, k_builder=None, memory_budget_gb=None))]
+#[allow(clippy::too_many_arguments)]
+fn run_mp2_v(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
+             r0: Option<f64>, b: Option<f64>, c: Option<f64>, omega: Option<f64>,
+             attenuator: Option<&str>, vv10_damping: Option<&str>,
+             frozen_core: Option<usize>, k_builder: Option<&str>,
+             memory_budget_gb: Option<f64>) -> PyResult<PyMp2VResult> {
+    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
+    let coul = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(coul, &prep).map_err(make_err)?;
+    let ctx = ParallelContext::default();
+    let rhf = solve_rhf(&ctx, &mol.inner, &prep, coul, &bounds, &rhf_config(k_builder)).map_err(make_err)?;
+    if !rhf.converged {
+        return Err(make_err(ferric_core::FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy }));
+    }
+
+    // Start from the published MP2-V(terfc, aTZ) parameterization and override
+    // only what the caller set (same construction order as the CLI's
+    // build_att_vv10_config: damping BEFORE r0, so from_r0_angstrom sees the
+    // final damping variant and keeps Eq. 11's two halves in lockstep).
+    let mut cfg = AttVv10Config::mp2_v_terfc_atz();
+    cfg.attenuator = match attenuator.unwrap_or("terfc") {
+        "terfc" => AttVv10Attenuator::Terfc,
+        "erfc" => AttVv10Attenuator::Erfc,
+        other => return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "unknown attenuator \"{other}\"; expected \"terfc\" (published) or \"erfc\" (control)"
+        ))),
+    };
+    cfg.vv10_damping = match vv10_damping.unwrap_or("terfc") {
+        "terfc" => ferric_dft::vv10::Vv10Damping::Terfc {
+            r0_bohr: cfg.r0_bohr,
+            // Seam sharpness derives from `cfg.omega` at evaluation time
+            // (effective_vv10_damping) — never duplicated here.
+            omega_bohr_inv: None,
+        },
+        "none" => ferric_dft::vv10::Vv10Damping::None,
+        other => return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "unknown vv10_damping \"{other}\"; expected \"terfc\" (published, Eq. 11) or \"none\" (bare VV10, double-counts short range)"
+        ))),
+    };
+    if let Some(r0_ang) = r0 {
+        if !r0_ang.is_finite() || r0_ang <= 0.0 {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "r0 must be finite and > 0 (got {r0_ang} A)"
+            )));
+        }
+        cfg = cfg.from_r0_angstrom(r0_ang);
+    }
+    if let Some(b) = b { cfg.vv10.b = b; }
+    if let Some(c) = c { cfg.vv10.c = c; }
+    // omega is supplied in Å⁻¹ (same boundary convention as run_rs_mp2_rpa's
+    // terf_omega); Bohr⁻¹ internally. Validation (finite/positive, terfc-only)
+    // is the library's, so the error text cannot drift from the CLI's.
+    cfg.omega = omega.map(|w| w * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV);
+    cfg.frozen_core = frozen_core.unwrap_or(0);
+    cfg.memory_budget_bytes = budget_bytes_from_gb(memory_budget_gb);
+
+    let r = att_mp2_vv10(&mol.inner, &prep, &basis_set.inner, &dfbs, &rhf, &cfg)
+        .map_err(make_err)?;
+    let (e_os, e_ss) = match &r.spin_components {
+        AttVv10SpinComponents::Restricted(s) => (s.e_os, s.e_ss),
+        AttVv10SpinComponents::Unrestricted(_) => unreachable!("closed-shell entry point"),
+    };
+    Ok(PyMp2VResult {
+        total_energy: r.total,
+        rhf_energy: r.e_hf,
+        att_mp2_corr: r.e_c_att_mp2,
+        vv10_e_nl: r.e_nl_vv10,
+        e_os,
+        e_ss,
+        n_nlc_points: r.n_nlc_points,
+    })
+}
 
 // ── RS-MP2-RPA (SR-MP2 + LR-dRPA, Δ-form B or coupled-rings T) ──
 
@@ -3395,6 +3504,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMp3Result>()?;
     m.add_class::<PyAttenuatedMp2Result>()?;
     m.add_class::<PyScsMp2Result>()?;
+    m.add_class::<PyMp2VResult>()?;
     m.add_class::<PyLaplaceMp2Result>()?;
     m.add_class::<PySosMp2Result>()?;
     m.add_class::<PyDftResult>()?;
@@ -3436,6 +3546,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_terfc_rimp2, m)?)?;
     m.add_function(wrap_pyfunction!(run_scs_mp2, m)?)?;
     m.add_function(wrap_pyfunction!(run_scs_mp2_2terfc, m)?)?;
+    m.add_function(wrap_pyfunction!(run_mp2_v, m)?)?;
 
     m.add_function(wrap_pyfunction!(run_laplace_mp2, m)?)?;
     m.add_function(wrap_pyfunction!(run_laplace_sos_mp2, m)?)?;
