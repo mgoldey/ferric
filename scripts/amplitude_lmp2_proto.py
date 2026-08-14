@@ -220,7 +220,27 @@ def domain_stats(mask):
                 dom_min=int(dom.min()))
 
 
-def run(xyz, basis, eps_list, anchor_only=False, mutate=False, out=None):
+def canonical_sr_mp2(mol, mf, ncore, omega):
+    """Canonical-basis SR (erfc) MP2 — the independent reference for --omega.
+
+    Same physics convention as attenuated MP2 (Goldey/Head-Gordon): full-SCF
+    Fock/denominators, only the perturbation ERIs are attenuated.
+    """
+    nocc = np.count_nonzero(mf.mo_occ > 0)
+    Co, Cv = mf.mo_coeff[:, ncore:nocc], mf.mo_coeff[:, nocc:]
+    eo, ev = mf.mo_energy[ncore:nocc], mf.mo_energy[nocc:]
+    with mol.with_range_coulomb(-omega):
+        ovov = ao2mo.general(mol, (Co, Cv, Co, Cv), compact=False)
+    no, nv = Co.shape[1], Cv.shape[1]
+    ovov = ovov.reshape(no, nv, no, nv)
+    D = (eo[:, None, None, None] - ev[None, :, None, None]
+         + eo[None, None, :, None] - ev[None, None, None, :])
+    t = ovov / D
+    return 2.0 * np.vdot(t, ovov) - np.vdot(t.transpose(0, 3, 2, 1), ovov)
+
+
+def run(xyz, basis, eps_list, anchor_only=False, mutate=False, out=None,
+        omega=None):
     t0 = time.time()
     atom = load_xyz(xyz)
     # NOTE: max_memory is PySCF's WORKING budget on top of already-resident
@@ -237,8 +257,18 @@ def run(xyz, basis, eps_list, anchor_only=False, mutate=False, out=None):
 
     pt = mp.MP2(mf)
     pt.frozen = ncore if ncore > 0 else None
-    e_ref = pt.kernel()[0]
-    log(f"  E_corr(canonical MP2, frozen={ncore}) = {e_ref:.10f}")
+    e_full = pt.kernel()[0]
+    log(f"  E_corr(canonical MP2, frozen={ncore}) = {e_full:.10f}")
+    if omega is not None:
+        e_ref = canonical_sr_mp2(mol, mf, ncore, omega)
+        log(f"  E_corr(canonical SR-MP2, omega={omega} Bohr^-1) = {e_ref:.10f}")
+        # shared-bug guard: a silently no-op'd with_range_coulomb makes both
+        # paths full-Coulomb and the anchor passes vacuously
+        if not abs(e_ref) < abs(e_full) - 1e-10:
+            raise SystemExit("SR guard FAILED: |E_sr| >= |E_coulomb| — "
+                             "with_range_coulomb no-op or sign error")
+    else:
+        e_ref = e_full
 
     nocc_tot = np.count_nonzero(mf.mo_occ > 0)
     C_occ_all = mf.mo_coeff[:, :nocc_tot]
@@ -262,7 +292,12 @@ def run(xyz, basis, eps_list, anchor_only=False, mutate=False, out=None):
     Fvv = C_vloc.T @ F @ C_vloc
     log(f"  transforming (ia|jb): no={no} nv={nv} "
         f"tensor {8*(no*nv)**2/1e6:.0f} MB")
-    J = ao2mo.general(mol, (C_act, C_vloc, C_act, C_vloc), compact=False)
+    if omega is not None:
+        with mol.with_range_coulomb(-omega):
+            J = ao2mo.general(mol, (C_act, C_vloc, C_act, C_vloc),
+                              compact=False)
+    else:
+        J = ao2mo.general(mol, (C_act, C_vloc, C_act, C_vloc), compact=False)
     J = J.reshape(no, nv, no, nv)
     log(f"  integrals done ({time.time()-t0:.1f}s)")
 
@@ -280,7 +315,8 @@ def run(xyz, basis, eps_list, anchor_only=False, mutate=False, out=None):
         e = mp2_energy(t, J)
         de = e - e_ref
         tag = "ANCHOR" if eps == 0.0 else f"{eps:g}"
-        row = (f"{tag:>8s}  E_corr={e:.10f}  dE={de:+.3e}  "
+        wtag = "coulomb" if omega is None else f"w={omega:g}"
+        row = (f"{wtag:>8s} {tag:>8s}  E_corr={e:.10f}  dE={de:+.3e}  "
                f"keep={st['frac']:.4f} pairs={st['pair_frac']:.3f} "
                f"dom(mean/max)={st['dom_mean']:.1f}/{st['dom_max']} of {nv}  "
                f"cg={niter} ({time.time()-t1:.1f}s)")
@@ -314,9 +350,13 @@ def main():
     ap.add_argument("--mutate", action="store_true",
                     help="deliberately break the construction; anchor must FAIL")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--omega", type=float, default=None,
+                    help="SR erfc attenuation, Bohr^-1 (proxy for sharp terfc); "
+                         "reference becomes canonical SR-MP2 at the same omega")
     a = ap.parse_args()
     eps_list = [float(x) for x in a.eps.split(",") if x]
-    run(a.xyz, a.basis, eps_list, a.anchor_only, a.mutate, a.out)
+    run(a.xyz, a.basis, eps_list, a.anchor_only, a.mutate, a.out,
+        omega=a.omega)
 
 
 if __name__ == "__main__":
