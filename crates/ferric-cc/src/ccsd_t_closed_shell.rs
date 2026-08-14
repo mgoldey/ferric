@@ -139,7 +139,7 @@ use super::{CcConfig, CcResult};
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
-use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
+use ferric_integrals::blas_threads::with_blas_threads;
 use ferric_integrals::operator::Operator;
 use ferric_mp2::mo_transform::{transform_3center_oo, transform_3center_ov, transform_3center_vv};
 use ferric_mp2::rimp2::{active_occ, cholesky_inverse_sqrt};
@@ -477,7 +477,12 @@ pub fn ccsd_t_closed_shell(
     );
     let mut et = 0.0f64;
     for chunk in triples.chunks(chunk_len) {
-        let partials: Vec<f64> = with_blas_threads(opt_in_blas_threads(), || {
+        // BLAS pinned to 1 EXPLICITLY: `w_block`'s GEMMs run inside this rayon
+        // region, and `opt_in_blas_threads`'s self-guard only fires when called
+        // FROM a worker — this wrap runs on the caller thread, so it would pass
+        // the user's `FERRIC_BLAS_THREADS` straight through. Mirrors the
+        // spin-orbital sibling in ccsd_t.rs.
+        let partials: Vec<f64> = with_blas_threads(1, || {
             chunk
                 .par_iter()
                 .map(|&(i, j, k)| {

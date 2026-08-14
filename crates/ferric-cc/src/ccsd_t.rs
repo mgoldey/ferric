@@ -93,7 +93,7 @@ use super::{CcConfig, CcResult};
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
-use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
+use ferric_integrals::blas_threads::with_blas_threads;
 use ferric_integrals::operator::Operator;
 use ferric_mp2::mo_transform::{transform_3center_oo, transform_3center_ov, transform_3center_vv};
 use ferric_mp2::rimp2::cholesky_inverse_sqrt;
@@ -496,15 +496,13 @@ pub fn ccsd_t(
     // pattern) deterministic above.
     //
     // BLAS threading: `raw_w_block`'s two GEMMs (`.dot()`) run inside this
-    // rayon parallel region. `opt_in_blas_threads()` has a runtime rayon-
-    // worker self-guard (see ferric-core/src/blas_threads.rs
-    // `opt_in_blas_threads_with`: `rayon::current_thread_index().is_some()`
-    // forces a return of `1` regardless of any `FERRIC_BLAS_THREADS` env
-    // override) — so wrapping the per-triple work in
-    // `with_blas_threads(opt_in_blas_threads(), ..)` resolves to 1 BLAS
-    // thread per rayon worker automatically here, avoiding the
-    // rayon×OpenBLAS oversubscription / worker-stack-overflow hazard
-    // documented there, with no extra logic needed in this crate.
+    // rayon parallel region, so the count is pinned to 1 EXPLICITLY. The
+    // runtime self-guard in `opt_in_blas_threads` only fires when it is called
+    // FROM a rayon worker; the wrap below is evaluated on the caller thread, so
+    // `opt_in_blas_threads()` here would return the user's `FERRIC_BLAS_THREADS`
+    // and raise the global count for the whole `par_iter` — the rayon×OpenBLAS
+    // oversubscription / worker-stack-overflow hazard documented in
+    // ferric-core/src/blas_threads.rs.
     let triples = unique_occ_triples(no2);
     // Size the band from what is LEFT after the precomputed blocks, not from
     // the full budget: bcei/majk/bcjk/t1/t2 are already resident by this point,
@@ -519,7 +517,7 @@ pub fn ccsd_t(
     );
     let mut et = 0.0f64;
     for chunk in triples.chunks(chunk_len) {
-        let partials: Vec<f64> = with_blas_threads(opt_in_blas_threads(), || {
+        let partials: Vec<f64> = with_blas_threads(1, || {
             chunk
                 .par_iter()
                 .map(|&(i0, j0, k0)| {
