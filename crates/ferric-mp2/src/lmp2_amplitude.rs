@@ -458,8 +458,6 @@ struct Ragged {
     pairs: Vec<PairBlock>,
     by_i: HashMap<usize, Vec<usize>>,
     by_j: HashMap<usize, Vec<usize>>,
-    no: usize,
-    nv: usize,
 }
 
 fn build_ragged(
@@ -539,7 +537,8 @@ fn build_ragged(
         by_i.entry(pb.i).or_default().push(p);
         by_j.entry(pb.j).or_default().push(p);
     }
-    Ragged { pairs, by_i, by_j, no, nv }
+    let _ = (no, nv);
+    Ragged { pairs, by_i, by_j }
 }
 
 fn apply_pattern(x: &mut Array2<f64>, pat: &[bool], nb: usize) {
@@ -713,9 +712,22 @@ pub fn amplitude_lmp2(
     amplitude_lmp2_with_virtuals(mol, obs, dfbs, op, rhf, cfg, &vvhv)
 }
 
-/// Same, with a caller-supplied virtual space — the mutation-test entry
-/// point (a deliberately broken space must fail the ε=0 anchor).
-pub fn amplitude_lmp2_with_virtuals(
+/// The assembled localized-basis problem: everything the solver consumes.
+/// Public so tests can run an INDEPENDENT naive dense reference on the
+/// exact same inputs (the ragged-vs-dense cross-check).
+#[derive(Debug)]
+pub struct LocalizedProblem {
+    /// (no·nv, no·nv), row index i·nv+a — (ia|jb) in the localized basis.
+    pub j_dense: Array2<f64>,
+    pub foo: Array2<f64>,
+    pub fvv: Array2<f64>,
+    pub no: usize,
+    pub nv: usize,
+}
+
+/// Assemble the localized-basis problem (Boys occupieds, caller's virtuals,
+/// RI J via the same helpers the canonical reference uses).
+pub fn assemble_localized(
     mol: &Molecule,
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
@@ -723,7 +735,7 @@ pub fn amplitude_lmp2_with_virtuals(
     rhf: &ScfResult,
     cfg: &AmplitudeLmp2Config,
     vvhv: &VvHv,
-) -> Result<AmplitudeLmp2Result, FerricError> {
+) -> Result<LocalizedProblem, FerricError> {
     let nocc_total = (mol.nelec() as usize) / 2;
     let no = active_occ(nocc_total, cfg.frozen_core)?;
     let first_occ = cfg.frozen_core;
@@ -748,10 +760,28 @@ pub fn amplitude_lmp2_with_virtuals(
     let v = coulomb_metric_2c(op, dfbs)?;
     let vis = metric_inverse_sqrt(&v, op)?;
     let b_flat = b3
-        .into_shape((naux, no * nv))
+        .into_shape_with_order((naux, no * nv))
         .map_err(|e| FerricError::General(format!("lmp2_amplitude reshape: {e}")))?;
     let btilde = vis.dot(&b_flat); // (naux, no*nv)
     let j_dense = btilde.t().dot(&btilde); // (no*nv, no*nv)
+    Ok(LocalizedProblem { j_dense, foo, fvv, no, nv })
+}
+
+/// Same as [`amplitude_lmp2`], with a caller-supplied virtual space — the
+/// mutation-test entry point (a deliberately broken space must fail the
+/// ε=0 anchor).
+pub fn amplitude_lmp2_with_virtuals(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &ScfResult,
+    cfg: &AmplitudeLmp2Config,
+    vvhv: &VvHv,
+) -> Result<AmplitudeLmp2Result, FerricError> {
+    let lp = assemble_localized(mol, obs, dfbs, op, rhf, cfg, vvhv)?;
+    let LocalizedProblem { j_dense, foo, fvv, no, nv } = &lp;
+    let (j_dense, foo, fvv, no, nv) = (j_dense, foo, fvv, *no, *nv);
 
     // canonical reference on the same (mol, basis, aux, op, frozen core)
     let e_ref = ri_mp2(

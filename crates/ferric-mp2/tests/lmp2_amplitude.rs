@@ -132,3 +132,211 @@ fn eps_sweep_on_c4_is_one_sided_with_live_counters() {
     let nv = su.obs.nbasis() - (su.mol.nelec() as usize) / 2;
     assert!(r.dom_mean < nv as f64, "dom mean {:.1} not below nv={nv}", r.dom_mean);
 }
+
+/// Operator threading + frozen_core=0 edge: the ε=0 anchor must also hold
+/// for an ATTENUATED operator (erfc) with nothing frozen — same independent
+/// construction, different kernel, so an op-threading bug on either side
+/// breaks it.
+#[test]
+fn eps_zero_anchor_holds_for_erfc_with_no_frozen_core() {
+    let su = setup("water.xyz");
+    let op = Operator::erfc(1.0); // omega in Bohr^-1
+    let bounds = SchwarzBounds::compute(Operator::coulomb(), &su.obs).unwrap();
+    let _ = &bounds; // RHF reference is Coulomb-SCF (attenuated MP2 convention)
+    let cfg = AmplitudeLmp2Config { eps: 0.0, frozen_core: 0, ..Default::default() };
+    let r = amplitude_lmp2(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &cfg).unwrap();
+    let de = r.e_corr - r.e_corr_canonical_ri;
+    eprintln!(
+        "ANCHOR water/erfc(1.0)/fc=0: E_corr={:.10} canonical={:.10} dE={de:+.3e}",
+        r.e_corr, r.e_corr_canonical_ri
+    );
+    assert!(r.e_corr < 0.0, "SR correlation must be negative");
+    assert!(de.abs() < 1e-9, "erfc eps=0 anchor FAILED: dE={de:+.3e}");
+}
+
+/// Independent-algebra cross-check of the FINITE-ε masked solve: a naive
+/// dense masked PCG written here in the test (flat (no·nv)² matrices,
+/// explicit loops, no shared solver code) must agree with the ragged
+/// solver's energy to 1e-10 on the same assembled problem — and the
+/// comparison is proven non-vacuous by perturbing the naive path's Fvv,
+/// which must break it.
+#[test]
+fn ragged_masked_solve_matches_naive_dense_reference() {
+    use ferric_mp2::lmp2_amplitude::assemble_localized;
+    let su = setup("water.xyz");
+    let cfg = AmplitudeLmp2Config { eps: 1e-4, frozen_core: 1, ..Default::default() };
+    let vvhv = build_vvhv(&su.mol, &su.obs, &su.obs_bs, &su.rhf).unwrap();
+    let lp = assemble_localized(&su.mol, &su.obs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg, &vvhv)
+        .unwrap();
+    let r = amplitude_lmp2_with_virtuals(
+        &su.mol, &su.obs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg, &vvhv,
+    )
+    .unwrap();
+
+    let e_naive = naive_masked_mp2(&lp.j_dense, &lp.foo, &lp.fvv, lp.no, lp.nv, cfg.eps, 0.0);
+    let dx = (r.e_corr - e_naive).abs();
+    eprintln!("XCHECK ragged vs naive-dense (eps=1e-4): |dE|={dx:.3e}");
+    assert!(dx < 1e-10, "ragged/naive cross-check FAILED: |dE|={dx:.3e}");
+
+    // non-vacuousness: corrupt the naive path's Fvv; it must now disagree.
+    // Sized per the measured quadratic insensitivity of the Hylleraas energy
+    // (Python rig: 1e-3 moved E by only 1.8e-7).
+    let e_broken = naive_masked_mp2(&lp.j_dense, &lp.foo, &lp.fvv, lp.no, lp.nv, cfg.eps, 5e-2);
+    let dxb = (r.e_corr - e_broken).abs();
+    eprintln!("XCHECK mutation: |dE|={dxb:.3e} (must exceed 1e-10)");
+    assert!(dxb > 1e-10, "xcheck comparison is vacuous: mutation not detected");
+}
+
+/// Naive dense masked preconditioned CG — deliberately simple flat-matrix
+/// loops, sharing NOTHING with the ragged solver. `fvv_bump` perturbs
+/// Fvv[0,1]/[1,0] for the non-vacuousness arm.
+fn naive_masked_mp2(
+    j: &ndarray::Array2<f64>,
+    foo: &ndarray::Array2<f64>,
+    fvv: &ndarray::Array2<f64>,
+    no: usize,
+    nv: usize,
+    eps: f64,
+    fvv_bump: f64,
+) -> f64 {
+    let n = no * nv;
+    let mut fvv = fvv.clone();
+    fvv[(0, 1)] += fvv_bump;
+    fvv[(1, 0)] += fvv_bump;
+    let idx = |i: usize, a: usize| i * nv + a;
+    let mut mask = vec![false; n * n];
+    for i in 0..no {
+        for a in 0..nv {
+            for jj in 0..no {
+                for b in 0..nv {
+                    let jd = j[(idx(i, a), idx(jj, b))].abs();
+                    let kd = j[(idx(i, b), idx(jj, a))].abs();
+                    if eps == 0.0 || jd > eps || kd > eps {
+                        mask[idx(i, a) * n + idx(jj, b)] = true;
+                    }
+                }
+            }
+        }
+    }
+    let aop = |t: &Vec<f64>| -> Vec<f64> {
+        let mut r = vec![0.0; n * n];
+        for i in 0..no {
+            for a in 0..nv {
+                for jj in 0..no {
+                    for b in 0..nv {
+                        let row = idx(i, a) * n + idx(jj, b);
+                        if !mask[row] {
+                            continue;
+                        }
+                        let mut v = 0.0;
+                        for c in 0..nv {
+                            v += fvv[(a, c)] * t[idx(i, c) * n + idx(jj, b)];
+                            v += t[idx(i, a) * n + idx(jj, c)] * fvv[(c, b)];
+                        }
+                        for k in 0..no {
+                            v -= foo[(i, k)] * t[idx(k, a) * n + idx(jj, b)];
+                            v -= t[idx(i, a) * n + idx(k, b)] * foo[(k, jj)];
+                        }
+                        r[row] = v;
+                    }
+                }
+            }
+        }
+        r
+    };
+    let mut d = vec![0.0; n * n];
+    for i in 0..no {
+        for a in 0..nv {
+            for jj in 0..no {
+                for b in 0..nv {
+                    d[idx(i, a) * n + idx(jj, b)] =
+                        fvv[(a, a)] + fvv[(b, b)] - foo[(i, i)] - foo[(jj, jj)];
+                }
+            }
+        }
+    }
+    let mut rhs = vec![0.0; n * n];
+    for r_ in 0..n {
+        for c_ in 0..n {
+            if mask[r_ * n + c_] {
+                rhs[r_ * n + c_] = -j[(r_, c_)];
+            }
+        }
+    }
+    let dot = |x: &Vec<f64>, y: &Vec<f64>| -> f64 { x.iter().zip(y).map(|(a, b)| a * b).sum() };
+    let bnorm = dot(&rhs, &rhs).sqrt();
+    let mut t = vec![0.0; n * n];
+    let mut r = rhs.clone();
+    let mut z: Vec<f64> = r.iter().zip(&d).map(|(a, b)| a / b).collect();
+    let mut p = z.clone();
+    let mut rz = dot(&r, &z);
+    for _ in 0..400 {
+        let ap = aop(&p);
+        let alpha = rz / dot(&p, &ap);
+        for k in 0..n * n {
+            t[k] += alpha * p[k];
+            r[k] -= alpha * ap[k];
+        }
+        if dot(&r, &r).sqrt() / bnorm < 1e-11 {
+            break;
+        }
+        z = r.iter().zip(&d).map(|(a, b)| a / b).collect();
+        let rz_new = dot(&r, &z);
+        let beta = rz_new / rz;
+        for k in 0..n * n {
+            p[k] = z[k] + beta * p[k];
+        }
+        rz = rz_new;
+    }
+    // E = sum (2 t_iajb - t_ibja) J_iajb
+    let mut e = 0.0;
+    for i in 0..no {
+        for a in 0..nv {
+            for jj in 0..no {
+                for b in 0..nv {
+                    let jv = j[(idx(i, a), idx(jj, b))];
+                    e += (2.0 * t[idx(i, a) * n + idx(jj, b)] - t[idx(i, b) * n + idx(jj, a)]) * jv;
+                }
+            }
+        }
+    }
+    e
+}
+
+/// C8 counter cross-check vs the Python rig (loose band — different aux
+/// basis, zero shared code): eps=1e-3 keep 0.0133, dom max 65, cg 17.
+#[test]
+fn c8_counters_land_in_the_python_measured_band() {
+    let su = setup("alkane_8.xyz");
+    let cfg = AmplitudeLmp2Config { eps: 1e-3, frozen_core: 8, ..Default::default() };
+    let r = amplitude_lmp2(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg)
+        .unwrap();
+    eprintln!(
+        "C8 eps=1e-3: dE={:+.3e} keep={:.4} pairs={:.3} dom(mean/max)={:.1}/{} cg={} raggedx={}",
+        r.e_corr - r.e_corr_canonical_ri,
+        r.keep_fraction,
+        r.pair_fraction,
+        r.dom_mean,
+        r.dom_max,
+        r.cg_iterations,
+        r.dense_flops_per_matvec / r.ragged_flops_per_matvec.max(1),
+    );
+    assert!(r.cg_converged);
+    let de = r.e_corr - r.e_corr_canonical_ri;
+    assert!(de > 0.0 && de < 6e-2, "C8 eps=1e-3 dE out of band: {de:+.3e}");
+    assert!(
+        r.keep_fraction > 0.008 && r.keep_fraction < 0.022,
+        "keep {:.4} outside Python band (0.0133 ±aux)",
+        r.keep_fraction
+    );
+    assert!(
+        r.dom_max >= 55 && r.dom_max <= 75,
+        "dom max {} far from Python's 65",
+        r.dom_max
+    );
+    // the ragged work advantage must be substantial at this retention
+    assert!(
+        r.dense_flops_per_matvec / r.ragged_flops_per_matvec.max(1) > 20,
+        "ragged advantage collapsed"
+    );
+}
