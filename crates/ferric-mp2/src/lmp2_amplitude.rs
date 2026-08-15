@@ -21,12 +21,12 @@
 //!
 //! # Documented deviations from the paper (match the Python rig's wiki note)
 //!
-//! - Hard virtuals: plain (unweighted) pivoted-Cholesky selection of
-//!   projected-AO candidates + Löwdin, instead of the paper's weighted
-//!   symmetric orthogonalization (the Python rig used spread-weighted
-//!   pivots; ferric has no r² one-electron operator yet, and the anchors
-//!   are invariant to the selection weighting — only domain compactness
-//!   depends on it, which the counters measure rather than assume).
+//! - Hard virtuals: spread-weighted pivoted-Cholesky selection of
+//!   projected-AO candidates + Löwdin (same construction as the Python
+//!   rig, using the emultipole2 second-moment integrals), instead of the
+//!   paper's weighted symmetric orthogonalization of the full redundant
+//!   set. Anchors are invariant to the selection weighting (the selected
+//!   set spans the same space); only domain compactness depends on it.
 //! - J is assembled dense from global-metric RI B tensors. The measured
 //!   per-pair domain-local fit and the pre-assembly pair gate
 //!   (prototype steps 4–5) are NOT yet ported; nothing here is
@@ -39,7 +39,7 @@ use ferric_core::basis::BasisSet;
 use ferric_core::error::FerricError;
 use ferric_core::mol::Molecule;
 use ferric_integrals::basis_bridge::PreparedBasis;
-use ferric_integrals::oneelectron::{dipole, overlap};
+use ferric_integrals::oneelectron::{dipole, overlap, r2_moment};
 use ferric_integrals::operator::Operator;
 use ferric_scf::result::ScfResult;
 
@@ -340,7 +340,28 @@ pub fn build_vvhv(
             xn.column_mut(k).assign(&(x.column(c).mapv(|v| v / nrm)));
             parents.push(a2a[c]);
         }
-        let ov = xn.t().dot(&s.dot(&xn));
+        // spread-weighted pivots (matches the Python rig): compact candidates
+        // first, via w = 1/spread with spread = ⟨r²⟩ − |⟨r⟩|² per candidate
+        let r2 = r2_moment(obs, [0.0; 3])?;
+        let ncand = xn.ncols();
+        let mut w = vec![0.0f64; ncand];
+        for k in 0..ncand {
+            let col = xn.column(k);
+            let r2v = col.dot(&r2.dot(&col));
+            let mut c2 = 0.0;
+            for dm in dip.iter() {
+                let d = col.dot(&dm.dot(&col));
+                c2 += d * d;
+            }
+            w[k] = 1.0 / (r2v - c2).max(1e-6);
+        }
+        let wmax2 = w.iter().fold(0.0f64, |m, &x| m.max(x)).powi(2);
+        let mut ov = xn.t().dot(&s.dot(&xn));
+        for r in 0..ncand {
+            for c in 0..ncand {
+                ov[(r, c)] *= w[r] * w[c] / wmax2;
+            }
+        }
         let piv = pivoted_cholesky_order(&ov, n_h)?;
         let mut sel = Array2::<f64>::zeros((nao, n_h));
         let mut sel_parents = Vec::with_capacity(n_h);
