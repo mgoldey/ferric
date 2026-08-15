@@ -24,7 +24,7 @@ import sys
 import time
 
 import numpy as np
-from pyscf import gto, scf, mp, lo, ao2mo
+from pyscf import gto, scf, mp, lo, ao2mo, df
 from pyscf.data import elements
 
 LINDEP = 1e-8
@@ -343,6 +343,94 @@ def mp2_energy(t, J):
     return 2.0 * np.vdot(t, J) - np.vdot(t.transpose(0, 3, 2, 1), J)
 
 
+def build_ri(mol, C_act, C_vloc, omega=None):
+    """Same-kernel RI quantities: A_iaP = (ia|P) and V_PQ = (P|Q).
+
+    Both 3-center and metric use the SAME operator (Coulomb, or SR erfc at
+    -omega), so a fit restricted to one shared pair domain is automatically
+    robust (the Dunlap first-order correction cancels identically).
+    Returns (A, V, aux_centers_per_function, auxmol).
+    """
+    auxmol = df.addons.make_auxmol(mol, df.addons.make_auxbasis(mol,
+                                                                mp2fit=True))
+    if omega is not None:
+        with mol.with_range_coulomb(-omega):
+            ints3c = df.incore.aux_e2(mol, auxmol, intor="int3c2e")
+        with auxmol.with_range_coulomb(-omega):
+            V = auxmol.intor("int2c2e")
+    else:
+        ints3c = df.incore.aux_e2(mol, auxmol, intor="int3c2e")
+        V = auxmol.intor("int2c2e")
+    A = np.einsum("mnp,mi,na->iap", ints3c, C_act, C_vloc, optimize=True)
+    coords = auxmol.atom_coords()
+    aux_atom = np.array([lbl[0] for lbl in auxmol.ao_labels(fmt=None)])
+    aux_xyz = coords[aux_atom]
+    return A, V, aux_xyz, auxmol
+
+
+def ri_j_global(A, V):
+    """Global same-metric RI: J = A V^-1 A (dense reference for domains)."""
+    no, nv, naux = A.shape
+    w, u = np.linalg.eigh(V)
+    if w.min() <= 1e-10 * w.max():
+        raise RuntimeError(f"RI metric near-singular: {w.min():.2e}")
+    Vinv = (u / w) @ u.T
+    Af = A.reshape(no * nv, naux)
+    return (Af @ Vinv @ Af.T).reshape(no, nv, no, nv)
+
+
+def ri_j_domain(A, V, aux_xyz, occ_centers, fit_radius, mutate=False):
+    """Per-pair domain-local same-metric fit: for each occupied pair (i,j),
+    aux domain D_ij = functions within fit_radius Bohr of EITHER centroid;
+    J block = A_ia,D V_DD^-1 A_jb,D. fit_radius=inf must reproduce
+    ri_j_global to machine precision (trivial-limit anchor).
+    mutate=True drops the largest-|A| aux function from every domain —
+    the trivial-limit anchor must then FAIL.
+    """
+    no, nv, naux = A.shape
+    J = np.empty((no, nv, no, nv))
+    dist = np.linalg.norm(aux_xyz[None, :, :] - occ_centers[:, None, :],
+                          axis=2)                      # (no, naux)
+    in_r = dist <= fit_radius                          # (no, naux)
+    dom_sizes = []
+    for i in range(no):
+        for j in range(i, no):
+            d = np.nonzero(in_r[i] | in_r[j])[0]
+            if len(d) == 0:
+                raise RuntimeError(f"empty aux domain for pair ({i},{j})")
+            if mutate:
+                anorm = np.abs(A[i, :, d]).sum(axis=1)
+                d = np.delete(d, int(np.argmax(anorm)))
+            dom_sizes.append(len(d))
+            Vdd = V[np.ix_(d, d)]
+            c = np.linalg.solve(Vdd, A[i, :, d])       # (dom, nv)
+            blk = c.T @ A[j, :, d]                     # (nv, nv)
+            J[i, :, j, :] = blk
+            J[j, :, i, :] = blk.T
+    return J, dict(dom_mean=float(np.mean(dom_sizes)),
+                   dom_max=int(np.max(dom_sizes)), naux=naux)
+
+
+def boys_centroids(mol, C):
+    """Orbital centroids <i|r|i> for the columns of C, shape (n, 3)."""
+    rints = mol.intor("int1e_r")
+    return np.einsum("xmn,mi,ni->ix", rints, C, C)
+
+
+def canonical_ri_mp2(mol, mf, ncore, omega):
+    """Canonical-basis MP2 from the SAME global-RI integrals — the
+    independent-construction reference for the RI paths (shares only the
+    RI approximation with the localized CG path, nothing else)."""
+    nocc = np.count_nonzero(mf.mo_occ > 0)
+    Co, Cv = mf.mo_coeff[:, ncore:nocc], mf.mo_coeff[:, nocc:]
+    eo, ev = mf.mo_energy[ncore:nocc], mf.mo_energy[nocc:]
+    A, V, _, _ = build_ri(mol, Co, Cv, omega)
+    J = ri_j_global(A, V)
+    D = (eo[:, None, None, None] - ev[None, :, None, None]
+         + eo[None, None, :, None] - ev[None, None, None, :])
+    return mp2_energy(J / D, J)
+
+
 def pair_energies(t, J):
     """Exact per-pair energies e_ij (sum over a,b); sums to mp2_energy."""
     return (2.0 * np.einsum("iajb,iajb->ij", t, J, optimize=True)
@@ -428,7 +516,8 @@ def canonical_sr_mp2(mol, mf, ncore, omega):
 
 def run(xyz, basis, eps_list, anchor_only=False, mutate=False, out=None,
         omega=None, solver="dense", xcheck=False, mutate_ragged=False,
-        pair_stats=False):
+        pair_stats=False, integrals="exact", fit_radius=None,
+        mutate_ri=False):
     t0 = time.time()
     atom = load_xyz(xyz)
     # NOTE: max_memory is PySCF's WORKING budget on top of already-resident
@@ -480,13 +569,50 @@ def run(xyz, basis, eps_list, anchor_only=False, mutate=False, out=None,
     Fvv = C_vloc.T @ F @ C_vloc
     log(f"  transforming (ia|jb): no={no} nv={nv} "
         f"tensor {8*(no*nv)**2/1e6:.0f} MB")
-    if omega is not None:
-        with mol.with_range_coulomb(-omega):
+    if integrals == "exact":
+        if omega is not None:
+            with mol.with_range_coulomb(-omega):
+                J = ao2mo.general(mol, (C_act, C_vloc, C_act, C_vloc),
+                                  compact=False)
+        else:
             J = ao2mo.general(mol, (C_act, C_vloc, C_act, C_vloc),
                               compact=False)
+        J = J.reshape(no, nv, no, nv)
     else:
-        J = ao2mo.general(mol, (C_act, C_vloc, C_act, C_vloc), compact=False)
-    J = J.reshape(no, nv, no, nv)
+        # RI paths: e_ref becomes the canonical GLOBAL-RI MP2 so the eps=0
+        # anchor tests the localized/CG plumbing at the shared RI floor,
+        # not the RI approximation itself (that gap is logged once here).
+        e_ri_ref = canonical_ri_mp2(mol, mf, ncore, omega)
+        log(f"  RI floor: E_corr(canonical RI) - E_corr(canonical exact) = "
+            f"{e_ri_ref - e_ref:+.3e} Ha")
+        e_ref = e_ri_ref
+        Ari, Vri, aux_xyz, auxmol = build_ri(mol, C_act, C_vloc, omega)
+        Jg = ri_j_global(Ari, Vri)
+        if integrals == "ri":
+            J = Jg
+        else:  # ri-domain
+            assert fit_radius is not None, "--fit-radius required"
+            cen = boys_centroids(mol, C_act)
+            J, dstat = ri_j_domain(Ari, Vri, aux_xyz, cen, fit_radius,
+                                   mutate=mutate_ri)
+            dmax = np.abs(J - Jg).max()
+            log(f"  ri-domain: fit_radius={fit_radius} Bohr, aux dom "
+                f"mean/max={dstat['dom_mean']:.1f}/{dstat['dom_max']} of "
+                f"{dstat['naux']}, max|J_dom-J_glob|={dmax:.3e}")
+            if fit_radius >= 1e5:
+                if mutate_ri:
+                    verdict = ("MUTATION-OK (trivial-limit anchor FAILED as "
+                               "required)" if dmax > 1e-10 else
+                               "MUTATION-BROKEN: trivial limit still passes!")
+                    log(f"  {verdict}  max|dJ|={dmax:.3e}")
+                    return
+                if dmax > 1e-12:
+                    raise SystemExit(
+                        "ri-domain trivial-limit anchor FAILED: "
+                        f"max|J_dom-J_glob|={dmax:.3e} at infinite radius")
+                log(f"  ri-domain TRIVIAL-LIMIT ANCHOR PASSED "
+                    f"max|dJ|={dmax:.3e}")
+        del Ari, Jg
     log(f"  integrals done ({time.time()-t0:.1f}s)")
 
     rows = []
@@ -538,6 +664,16 @@ def run(xyz, basis, eps_list, anchor_only=False, mutate=False, out=None,
             with open(out, "a") as f:
                 f.write(f"{xyz} {basis} {row}\n")
         if eps == 0.0:
+            if integrals == "ri-domain" and fit_radius < 1e5:
+                # vs the GLOBAL-RI canonical reference this gap IS the domain
+                # truncation error — report it, don't gate on it (the hard
+                # anchors for this mode are the trivial-limit tensor check
+                # and the mutation test).
+                log(f"  eps=0 vs global-RI reference: domain truncation "
+                    f"dE={de:+.3e} Ha (not gated at finite radius)")
+                if anchor_only:
+                    return
+                continue
             ok = abs(de) < 1e-9
             if mutate:
                 verdict = ("MUTATION-OK (anchor FAILED as required)"
@@ -579,11 +715,24 @@ def main():
     ap.add_argument("--pair-stats", action="store_true",
                     help="after the anchor: exact pair energies vs the "
                          "integral-free R^-6 estimator (spearman + theta scan)")
+    ap.add_argument("--integrals", choices=["exact", "ri", "ri-domain"],
+                    default="exact",
+                    help="ri = global same-kernel RI; ri-domain = per-pair "
+                         "domain-local fit (needs --fit-radius; inf runs the "
+                         "trivial-limit anchor vs global RI)")
+    ap.add_argument("--fit-radius", type=float, default=None,
+                    help="aux domain radius in Bohr for --integrals "
+                         "ri-domain (use 1e6 for the trivial-limit anchor)")
+    ap.add_argument("--mutate-ri", action="store_true",
+                    help="drop the largest aux function from every pair "
+                         "domain; the trivial-limit anchor must then FAIL")
     a = ap.parse_args()
     eps_list = [float(x) for x in a.eps.split(",") if x]
     run(a.xyz, a.basis, eps_list, a.anchor_only, a.mutate, a.out,
         omega=a.omega, solver=a.solver, xcheck=a.xcheck or a.mutate_ragged,
-        mutate_ragged=a.mutate_ragged, pair_stats=a.pair_stats)
+        mutate_ragged=a.mutate_ragged, pair_stats=a.pair_stats,
+        integrals=a.integrals, fit_radius=a.fit_radius,
+        mutate_ri=a.mutate_ri)
 
 
 if __name__ == "__main__":
