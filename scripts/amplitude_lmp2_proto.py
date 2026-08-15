@@ -204,6 +204,140 @@ def solve_masked_mp2(J, Foo, Fvv, mask, rtol=1e-11, maxiter=400):
     return t, maxiter, relres
 
 
+def build_ragged(mask):
+    """Per-pair domain blocks from the boolean mask.
+
+    For each occupied pair (i,j) with any retained (a,b): the union virtual
+    domains Da = {a: any b kept}, Db = {b: any a kept}, and the retained
+    pattern restricted to the (Da x Db) block. Amplitudes live ONLY on these
+    blocks — this is the ragged-list layout whose matvec cost tracks retained
+    work instead of the dense tensor size.
+    """
+    no, nv = mask.shape[0], mask.shape[1]
+    pairs = []
+    for i in range(no):
+        for j in range(no):
+            m = mask[i, :, j, :]
+            if not m.any():
+                continue
+            da = np.nonzero(m.any(axis=1))[0]
+            db = np.nonzero(m.any(axis=0))[0]
+            pairs.append((i, j, da, db, m[np.ix_(da, db)]))
+    return pairs
+
+
+def solve_masked_mp2_ragged(J, Foo, Fvv, mask, rtol=1e-11, maxiter=400,
+                            mutate=False):
+    """Same fixed-sparsity problem as solve_masked_mp2, but on ragged per-pair
+    domain blocks: Fvv terms are (d_a x d_a)@(d_a x d_b) block GEMMs, Foo
+    terms are gathers between pairs sharing an occupied index. Independent
+    algebra path from the dense masked solver (cross-check target).
+
+    Returns (t_dense, niter, relres, work) where work has flops/matvec for
+    the ragged path and the dense-equivalent count.
+    """
+    no, nv = J.shape[0], J.shape[1]
+    fo, fv = np.diag(Foo).copy(), np.diag(Fvv).copy()
+    Fvv = Fvv.copy()
+    if mutate:
+        # ragged-path-only corruption; xcheck MUST fail. Sized large because
+        # the Hylleraas-type energy is QUADRATICALLY insensitive to operator
+        # perturbations (measured: 1e-3 here moved E by only 1.8e-7).
+        Fvv[0, 1] += 5e-2
+    pairs = build_ragged(mask)
+    npair = len(pairs)
+    # pair lookup and per-(i,*)/(*,j) partner lists for the Foo gathers
+    idx = {(i, j): p for p, (i, j, *_ ) in enumerate(pairs)}
+    by_j = {}
+    by_i = {}
+    for p, (i, j, *_ ) in enumerate(pairs):
+        by_j.setdefault(j, []).append(p)
+        by_i.setdefault(i, []).append(p)
+
+    def blocks_like():
+        return [np.zeros((len(da), len(db))) for (_, _, da, db, _) in pairs]
+
+    # rhs, denominators, pattern masks per block
+    rhs, denom, pat = [], [], []
+    for (i, j, da, db, m) in pairs:
+        rhs.append(np.where(m, -J[i, :, j, :][np.ix_(da, db)], 0.0))
+        denom.append(fv[da][:, None] + fv[db][None, :] - fo[i] - fo[j])
+        pat.append(m)
+    assert all(d.min() > 0 for d in denom), "non-positive denominator"
+
+    flops = 0
+
+    def matvec(t):
+        nonlocal flops
+        r = blocks_like()
+        for p, (i, j, da, db, m) in enumerate(pairs):
+            # + Fvv t + t Fvv (virtual couplings, block-local)
+            r[p] += Fvv[np.ix_(da, da)] @ t[p]
+            r[p] += t[p] @ Fvv[np.ix_(db, db)]
+            flops += len(da) * len(da) * len(db) + len(da) * len(db) * len(db)
+            # - Foo t (couples (k,j) into (i,j) on shared j)
+            for q in by_j[j]:
+                k, _, dak, dbk, _ = pairs[q]
+                f = Foo[i, k]
+                if f == 0.0:
+                    continue
+                ca, ia_, ka_ = np.intersect1d(da, dak, return_indices=True)
+                cb, ib_, kb_ = np.intersect1d(db, dbk, return_indices=True)
+                if len(ca) and len(cb):
+                    r[p][np.ix_(ia_, ib_)] -= f * t[q][np.ix_(ka_, kb_)]
+                    flops += len(ca) * len(cb)
+            # - t Foo (couples (i,k) into (i,j) on shared i)
+            for q in by_i[i]:
+                _, k, dak, dbk, _ = pairs[q]
+                f = Foo[k, j]
+                if f == 0.0:
+                    continue
+                ca, ia_, ka_ = np.intersect1d(da, dak, return_indices=True)
+                cb, ib_, kb_ = np.intersect1d(db, dbk, return_indices=True)
+                if len(ca) and len(cb):
+                    r[p][np.ix_(ia_, ib_)] -= f * t[q][np.ix_(ka_, kb_)]
+                    flops += len(ca) * len(cb)
+            np.multiply(r[p], pat[p], out=r[p])
+        return r
+
+    def dot(x, y):
+        return sum(np.vdot(a, b) for a, b in zip(x, y))
+
+    bnorm = np.sqrt(dot(rhs, rhs))
+    t = blocks_like()
+    if bnorm == 0.0:
+        return np.zeros_like(J), 0, 0.0, dict(flops_per_matvec=0)
+    r = [b.copy() for b in rhs]
+    z = [rb / d for rb, d in zip(r, denom)]
+    p_ = [zb.copy() for zb in z]
+    rz = dot(r, z)
+    it = 0
+    for it in range(1, maxiter + 1):
+        Ap = matvec(p_)
+        alpha = rz / dot(p_, Ap)
+        for k in range(npair):
+            t[k] += alpha * p_[k]
+            r[k] -= alpha * Ap[k]
+        relres = np.sqrt(dot(r, r)) / bnorm
+        if relres < rtol:
+            break
+        z = [rb / d for rb, d in zip(r, denom)]
+        rz_new = dot(r, z)
+        beta = rz_new / rz
+        p_ = [zb + beta * pb for zb, pb in zip(z, p_)]
+        rz = rz_new
+    else:
+        log(f"  WARNING: ragged CG hit maxiter={maxiter}, relres={relres:.2e}")
+
+    t_dense = np.zeros_like(J)
+    for pn, (i, j, da, db, _) in enumerate(pairs):
+        t_dense[i, :, j, :][np.ix_(da, db)] = t[pn]
+    dense_flops = 2 * (no * no * nv**3 + no**3 * nv**2)
+    work = dict(flops_per_matvec=flops // max(it, 1),
+                dense_flops_per_matvec=dense_flops, npair=npair)
+    return t_dense, it, relres, work
+
+
 def mp2_energy(t, J):
     """E = sum (2 t_iajb - t_ibja) J_iajb (spin-adapted closed shell)."""
     return 2.0 * np.vdot(t, J) - np.vdot(t.transpose(0, 3, 2, 1), J)
@@ -240,7 +374,7 @@ def canonical_sr_mp2(mol, mf, ncore, omega):
 
 
 def run(xyz, basis, eps_list, anchor_only=False, mutate=False, out=None,
-        omega=None):
+        omega=None, solver="dense", xcheck=False, mutate_ragged=False):
     t0 = time.time()
     atom = load_xyz(xyz)
     # NOTE: max_memory is PySCF's WORKING budget on top of already-resident
@@ -311,15 +445,39 @@ def run(xyz, basis, eps_list, anchor_only=False, mutate=False, out=None,
             mask = (np.abs(J) > eps) | (np.abs(K) > eps)   # Eq 8, swap-closed
         st = domain_stats(mask)
         t1 = time.time()
-        t, niter, relres = solve_masked_mp2(J, Foo, Fvv, mask)
+        extra = ""
+        if solver == "ragged" and eps > 0.0:
+            t, niter, relres, work = solve_masked_mp2_ragged(
+                J, Foo, Fvv, mask, mutate=mutate_ragged)
+            ratio = work["dense_flops_per_matvec"] / max(work["flops_per_matvec"], 1)
+            extra = (f" ragged[npair={work['npair']} "
+                     f"mflop/mv={work['flops_per_matvec']/1e6:.1f} "
+                     f"densex={ratio:.0f}]")
+        else:
+            t, niter, relres = solve_masked_mp2(J, Foo, Fvv, mask)
         e = mp2_energy(t, J)
+        if solver == "ragged" and eps > 0.0 and xcheck:
+            td, _, _ = solve_masked_mp2(J, Foo, Fvv, mask)
+            ed = mp2_energy(td, J)
+            dx = abs(e - ed)
+            if mutate_ragged:
+                # judged at the xcheck's own 1e-10 bar, not a separate one
+                verdict = ("MUTATION-OK (xcheck FAILED as required)"
+                           if dx > 1e-10 else
+                           "MUTATION-BROKEN: xcheck still passes!")
+                log(f"  {verdict}  |dE(ragged-dense)|={dx:.3e}")
+                return
+            log(f"  XCHECK ragged-vs-dense |dE|={dx:.3e} "
+                f"{'PASSED' if dx <= 1e-10 else 'FAILED'}")
+            if dx > 1e-10:
+                raise SystemExit("ragged/dense cross-check failed")
         de = e - e_ref
         tag = "ANCHOR" if eps == 0.0 else f"{eps:g}"
         wtag = "coulomb" if omega is None else f"w={omega:g}"
         row = (f"{wtag:>8s} {tag:>8s}  E_corr={e:.10f}  dE={de:+.3e}  "
                f"keep={st['frac']:.4f} pairs={st['pair_frac']:.3f} "
                f"dom(mean/max)={st['dom_mean']:.1f}/{st['dom_max']} of {nv}  "
-               f"cg={niter} ({time.time()-t1:.1f}s)")
+               f"cg={niter} ({time.time()-t1:.1f}s){extra}")
         log("  " + row)
         rows.append((eps, e, de, st, niter))
         if out:
@@ -353,10 +511,20 @@ def main():
     ap.add_argument("--omega", type=float, default=None,
                     help="SR erfc attenuation, Bohr^-1 (proxy for sharp terfc); "
                          "reference becomes canonical SR-MP2 at the same omega")
+    ap.add_argument("--solver", choices=["dense", "ragged"], default="dense",
+                    help="ragged = per-pair domain-block CG (cost tracks "
+                         "retained work); dense = masked dense einsum CG")
+    ap.add_argument("--xcheck", action="store_true",
+                    help="with --solver ragged: also run the dense solver on "
+                         "the same mask and require |dE| <= 1e-10")
+    ap.add_argument("--mutate-ragged", action="store_true",
+                    help="corrupt Fvv inside the ragged path only; "
+                         "--xcheck must then FAIL")
     a = ap.parse_args()
     eps_list = [float(x) for x in a.eps.split(",") if x]
     run(a.xyz, a.basis, eps_list, a.anchor_only, a.mutate, a.out,
-        omega=a.omega)
+        omega=a.omega, solver=a.solver, xcheck=a.xcheck or a.mutate_ragged,
+        mutate_ragged=a.mutate_ragged)
 
 
 if __name__ == "__main__":
