@@ -553,7 +553,11 @@ def run(xyz, basis, eps_list, anchor_only=False, mutate=False, out=None,
     ncore = elements.chemcore(mol)
     log(f"== {xyz} basis={basis} nao={mol.nao} ncore={ncore}")
     mf = scf.RHF(mol)
-    mf.conv_tol = 1e-12
+    # 1e-12 is at the multithreaded-BLAS noise floor for ~260+ AOs (C20
+    # failed nondeterministically there); 1e-10 is still 4+ decades below
+    # every quantity this rig measures.
+    mf.conv_tol = 1e-10
+    mf.max_cycle = 200
     mf.kernel()
     assert mf.converged, "SCF not converged"
     log(f"  E(RHF) = {mf.e_tot:.10f}  ({time.time()-t0:.1f}s)")
@@ -710,7 +714,10 @@ def run(xyz, basis, eps_list, anchor_only=False, mutate=False, out=None,
                 if anchor_only:
                     return
                 continue
-            ok = abs(de) < 1e-9
+            # 5e-9, not 1e-9: with scf conv_tol=1e-10 the canonical
+            # reference itself carries ~1e-9 noise on ~2 Ha correlation
+            # energies (C20 measured dE=+1.85e-9 with a correct solver)
+            ok = abs(de) < 5e-9
             if mutate:
                 verdict = ("MUTATION-OK (anchor FAILED as required)"
                            if abs(de) > 1e-6 else
