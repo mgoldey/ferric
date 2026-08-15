@@ -75,6 +75,12 @@ extern "C" {
         nbas: c_int,
         out: *mut c_double,
     ) -> c_int;
+    pub fn scf_compute_second_moment(
+        bs: *const c_void,
+        origin: *const c_double,
+        nbas: c_int,
+        out: *mut c_double,
+    ) -> c_int;
 }
 
 pub const OP_COULOMB: c_int = 0;

@@ -151,6 +151,15 @@ int scf_compute_eri2_deriv(scf_engine *eng, const scf_basis *dfbs,
 int scf_compute_dipole(const scf_basis *bs, const double *origin,
                          int nbas, double *out);
 
+/* --- Cartesian second-moment integrals via emultipole2 --- */
+
+/* Compute second-moment integrals ⟨μ|(r-origin)_p (r-origin)_q|ν⟩ for all
+ * shell pairs. Returns the 6 matrices (xx, xy, xz, yy, yz, zz), each
+ * nbas×nbas, packed consecutively in `out` in that order.
+ * origin[3] in Bohr. Returns 6*nbas*nbas on success, -1 on error. */
+int scf_compute_second_moment(const scf_basis *bs, const double *origin,
+                              int nbas, double *out);
+
 /* --- First derivative integrals (requires libint2 with LIBINT2_MAX_DERIV_ORDER >= 1) --- */
 
 /* Compute first derivative of a 1e shell-pair block. The engine must have been

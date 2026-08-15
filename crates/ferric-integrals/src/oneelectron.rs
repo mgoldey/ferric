@@ -373,6 +373,46 @@ pub fn dipole(prep: &PreparedBasis, origin: [f64; 3]) -> Result<[Array2<f64>; 3]
     Ok([make_mat(0), make_mat(nbas * nbas), make_mat(2 * nbas * nbas)])
 }
 
+/// Cartesian second-moment integrals ⟨μ|(r−O)_p (r−O)_q|ν⟩ about `origin`,
+/// returned in the order [xx, xy, xz, yy, yz, zz] (libint `emultipole2`).
+///
+/// Verified by the exact translational identity against [`dipole`] and
+/// [`overlap`] (see the tests): shifting the origin by d maps
+/// ⟨pq⟩_O' = ⟨pq⟩_O − d_p⟨q⟩_O − d_q⟨p⟩_O + d_p d_q S, which pins every
+/// component against two independent engines.
+pub fn second_moment(
+    prep: &PreparedBasis,
+    origin: [f64; 3],
+) -> Result<[Array2<f64>; 6], FerricError> {
+    let nbas = prep.nbasis();
+    let mut flat = vec![0.0f64; 6 * nbas * nbas];
+    let ret = unsafe {
+        ffi::scf_compute_second_moment(
+            prep.handle(),
+            origin.as_ptr(),
+            nbas as std::os::raw::c_int,
+            flat.as_mut_ptr(),
+        )
+    };
+    if ret < 0 {
+        return Err(FerricError::Libint(format!(
+            "scf_compute_second_moment failed: {ret}"
+        )));
+    }
+    let make_mat = |k: usize| {
+        let slice = &flat[k * nbas * nbas..(k + 1) * nbas * nbas];
+        Array2::from_shape_vec((nbas, nbas), slice.to_vec()).unwrap()
+    };
+    Ok([make_mat(0), make_mat(1), make_mat(2), make_mat(3), make_mat(4), make_mat(5)])
+}
+
+/// ⟨μ|(r−O)²|ν⟩ = xx + yy + zz about `origin` — the operator orbital
+/// spreads are built from (σ² = ⟨r²⟩ − ⟨r⟩²).
+pub fn r2_moment(prep: &PreparedBasis, origin: [f64; 3]) -> Result<Array2<f64>, FerricError> {
+    let m = second_moment(prep, origin)?;
+    Ok(&(&m[0] + &m[3]) + &m[5])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -384,6 +424,63 @@ mod tests {
         let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
         let bs = basis::bundled("sto-3g").unwrap();
         PreparedBasis::new(&mol, &bs).unwrap()
+    }
+
+    /// EXACT translational identity pinning all six second-moment
+    /// components against the independent dipole + overlap engines:
+    ///   ⟨pq⟩_{O+d} = ⟨pq⟩_O − d_p⟨q⟩_O − d_q⟨p⟩_O + d_p d_q S.
+    /// Mutation arm: with one term of the identity deliberately dropped the
+    /// residual must be LARGE (proves the check is not trivially satisfied).
+    #[test]
+    fn second_moment_translational_identity() {
+        let prep = water_sto3g();
+        let n = prep.nbasis();
+        let o1 = [0.0, 0.0, 0.0];
+        let d = [0.37, -0.81, 0.55]; // deliberately incommensurate shift
+        let o2 = [o1[0] + d[0], o1[1] + d[1], o1[2] + d[2]];
+        let s = overlap(&prep);
+        let dip1 = dipole(&prep, o1).unwrap();
+        let m1 = second_moment(&prep, o1).unwrap();
+        let m2 = second_moment(&prep, o2).unwrap();
+        // component order [xx, xy, xz, yy, yz, zz] -> (p,q) axis pairs
+        let pq: [(usize, usize); 6] = [(0, 0), (0, 1), (0, 2), (1, 1), (1, 2), (2, 2)];
+        let mut max_dev: f64 = 0.0;
+        let mut max_dropped: f64 = 0.0;
+        for (k, &(p, q)) in pq.iter().enumerate() {
+            for i in 0..n {
+                for j in 0..n {
+                    let expect = m1[k][(i, j)] - d[p] * dip1[q][(i, j)] - d[q] * dip1[p][(i, j)]
+                        + d[p] * d[q] * s[(i, j)];
+                    max_dev = max_dev.max((m2[k][(i, j)] - expect).abs());
+                    // mutation: drop the d_p⟨q⟩ term
+                    let broken = m1[k][(i, j)] - d[q] * dip1[p][(i, j)] + d[p] * d[q] * s[(i, j)];
+                    max_dropped = max_dropped.max((m2[k][(i, j)] - broken).abs());
+                }
+            }
+        }
+        assert!(max_dev < 1e-10, "translational identity dev {max_dev:.2e}");
+        assert!(
+            max_dropped > 1e-3,
+            "identity check vacuous: dropped-term residual only {max_dropped:.2e}"
+        );
+    }
+
+    /// r² diagonal must be strictly positive and symmetric, and the trace
+    /// wrapper must equal xx+yy+zz elementwise.
+    #[test]
+    fn r2_moment_is_positive_and_consistent() {
+        let prep = water_sto3g();
+        let n = prep.nbasis();
+        let m = second_moment(&prep, [0.0; 3]).unwrap();
+        let r2 = r2_moment(&prep, [0.0; 3]).unwrap();
+        for i in 0..n {
+            assert!(r2[(i, i)] > 0.0, "⟨{i}|r²|{i}⟩ = {} not positive", r2[(i, i)]);
+            for j in 0..n {
+                let expect = m[0][(i, j)] + m[3][(i, j)] + m[5][(i, j)];
+                assert!((r2[(i, j)] - expect).abs() < 1e-14);
+                assert!((r2[(i, j)] - r2[(j, i)]).abs() < 1e-12);
+            }
+        }
     }
 
     #[test]
