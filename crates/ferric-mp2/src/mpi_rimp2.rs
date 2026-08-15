@@ -61,6 +61,17 @@
 //!   ~11 orders below the RI fitting error — hence the 1e-11 tolerances in
 //!   `tests/mpi_rimp2_banding.rs` rather than exact equality.
 //!
+//! ## Hybrid rank x thread binding
+//!
+//! `run_mpi_ri_mp2` installs a rayon pool of
+//! [`ParallelContext::rayon_threads`] workers around its whole body, so N local
+//! ranks each take `floor(physical_cores / N)` threads instead of a full-width
+//! pool apiece. See `ferric_core::parallel::threads_per_rank` for the policy
+//! (floor, never oversubscribe, physical not logical cores) and why a
+//! full-width pool per rank was an N-fold oversubscription. This is a
+//! SCHEDULING change only — the aux-band split, the round-robin over `i`, and
+//! both Allreduces are untouched, so it moves no number.
+//!
 //! `frozen_core` is handled by [`crate::rimp2::active_occ`] exactly as the
 //! serial path does — it restricts the occupied index RANGE, which is
 //! orthogonal to (and applied before) the aux-P band split.
@@ -98,6 +109,44 @@ mod inner {
     /// result matches [`crate::rimp2::ri_mp2_spin_components`] to ~machine
     /// precision (~2 ulp; see the module docs for why it is not exact).
     pub fn run_mpi_ri_mp2(
+        ctx: &ParallelContext,
+        mol: &Molecule,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        op: Operator,
+        rhf: &ScfResult,
+        config: &RiMp2Config,
+    ) -> Result<MpiMp2Result, FerricError> {
+        // Rank-aware rayon width. Without this, `mpirun -np N` starts N
+        // processes that each build a FULL-width rayon pool on the SAME node,
+        // so N ranks x (all cores) threads contend for (all cores) — the
+        // oversubscription hazard `ferric_core::parallel::threads_per_rank`
+        // documents, which erases any hybrid win outright.
+        //
+        // Installed as a SCOPED pool around the whole body rather than by
+        // touching the global pool: every rayon region in the RI-MP2 call tree
+        // (`ThreeIndexSource::build`'s par_iter, `mo_transform`'s
+        // par-over-aux-P, `rimp2`'s per-i contraction) is nested inside this
+        // `install`, and rayon runs a nested `par_iter` on the pool of the
+        // worker that hit it — so one install at the top bounds them all,
+        // with no edit to shared code paths a serial run also uses.
+        //
+        // At 1 local rank this builds a pool of exactly `physical_cores()`
+        // threads, i.e. the same width the global pool would have used, so
+        // `-np 1` and non-MPI runs are unchanged. NOTE this must NOT resolve
+        // any BLAS thread count here: `opt_in_blas_threads()` on a caller
+        // thread outside a worker is the bug just fixed in ferric-cc. BLAS
+        // stays at the process-wide pin of 1 (`init_threading`), which is
+        // exactly right inside a rayon region.
+        let threads = ctx.rayon_threads();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .map_err(|e| FerricError::Libint(format!("rank-aware rayon pool build failed: {e}")))?;
+        pool.install(|| run_mpi_ri_mp2_inner(ctx, mol, obs, dfbs, op, rhf, config))
+    }
+
+    fn run_mpi_ri_mp2_inner(
         ctx: &ParallelContext,
         mol: &Molecule,
         obs: &PreparedBasis,

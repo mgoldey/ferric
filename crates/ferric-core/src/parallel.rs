@@ -179,6 +179,194 @@ impl ParallelContext {
             .map(|(_, item)| item)
             .collect()
     }
+
+    /// How many rayon worker threads THIS rank should use, given how many
+    /// sibling ranks share its node.
+    ///
+    /// See [`threads_per_rank`] for the policy and [`local_ranks_per_node`] for
+    /// how the local rank count is detected. This is the method form: it reads
+    /// the launcher's environment and this machine's physical core count.
+    ///
+    /// This is a RECOMMENDATION, not an enforcement — nothing here touches the
+    /// global rayon pool. The caller decides what to do with it (build a
+    /// bounded pool, pass it to `ThreadPoolBuilder::num_threads`, …). Keeping
+    /// it a pure query is what makes it testable without an MPI launcher and
+    /// what keeps a single-rank run byte-identical: at 1 local rank the answer
+    /// is simply "every physical core", which is what an unbounded rayon pool
+    /// would already have used on a 1-socket box.
+    pub fn rayon_threads(&self) -> usize {
+        threads_per_rank(local_ranks_per_node(), physical_cores())
+    }
+}
+
+/// Threads each rank should take when `local_ranks` ranks share a node with
+/// `physical_cores` physical cores.
+///
+/// ## Why this exists
+///
+/// Nothing previously derived the rayon pool width from the local rank count,
+/// so `mpirun -np 4` spawned FOUR full-width rayon pools on the SAME cores —
+/// 4× oversubscription. That is the same hazard class [`crate::blas_threads`]
+/// documents for rayon × OpenBLAS (a *product* of threads, 3–5× slowdown),
+/// just with MPI ranks as the outer factor instead of BLAS. A hybrid
+/// rank×thread decomposition only pays off if the product is bounded, so the
+/// pool width has to come from the local rank count.
+///
+/// ## Policy (stated, not an accident of integer division)
+///
+/// `threads = max(1, floor(physical_cores / local_ranks))`.
+///
+/// * **Floor, not round or ceil.** `ranks × threads <= physical_cores` is the
+///   invariant worth keeping; rounding up breaks it. On 6 cores with 4 ranks
+///   the answer is `floor(6/4) = 1`, so 4 ranks × 1 thread = 4 cores used and
+///   2 left IDLE. Deliberately: 4 ranks × 2 threads would be 8 threads on 6
+///   cores, and reintroducing oversubscription to chase 2 idle cores trades a
+///   bounded loss (33% idle) for an unbounded one (contention). A caller who
+///   wants the remainder must hand out uneven widths itself; this function
+///   returns ONE number that is correct for EVERY rank, which is what makes it
+///   safe to call independently on each rank with no collective agreement.
+/// * **Floored at 1.** More local ranks than cores (`local_ranks > cores`) is
+///   already oversubscribed at the RANK level — the launcher did that, not us —
+///   and returning 0 would build an empty/defaulted rayon pool, which rayon
+///   interprets as "use all cores" and would make the oversubscription
+///   dramatically worse. 1 is the least-bad answer.
+/// * **PHYSICAL cores, not logical.** See [`physical_cores`]. Sizing to
+///   SMT siblings hands each rank threads that share an execution unit, which
+///   for the GEMM-bound work in RI-MP2 is contention, not parallelism.
+/// * **`local_ranks == 0` is treated as 1** (defensive; a launcher reporting 0
+///   is nonsense, and the single-rank answer is the safe interpretation).
+///
+/// ## Single-rank invariant
+///
+/// `threads_per_rank(1, c) == c` for every `c >= 1`. A non-MPI run, a
+/// `-np 1` run, and a feature-off build therefore all get the full core count
+/// — exactly the unbounded-pool width they had before this function existed.
+/// Pinned by `threads_per_rank_single_rank_is_all_cores`.
+pub fn threads_per_rank(local_ranks: usize, physical_cores: usize) -> usize {
+    let local_ranks = local_ranks.max(1);
+    let physical_cores = physical_cores.max(1);
+    (physical_cores / local_ranks).max(1)
+}
+
+/// Number of MPI ranks sharing THIS node ("local size"), or 1 when not under a
+/// recognized launcher.
+///
+/// **Local, not world.** World size is the wrong number: 8 ranks spread over 4
+/// nodes is 2 ranks per node, and sizing the pool to 8 would leave 3/4 of each
+/// node idle. Only the ranks that actually contend for THIS node's cores
+/// matter. (On this project's single-node box the two happen to coincide, which
+/// is exactly why it would be easy to get wrong and never notice.)
+///
+/// Launcher variables, in precedence order:
+///
+/// * `OMPI_COMM_WORLD_LOCAL_SIZE` — Open MPI (what ferric uses; 4.1.6 here).
+/// * `MV2_COMM_WORLD_LOCAL_SIZE` — MVAPICH2.
+/// * `MPI_LOCALNRANKS` — MPICH / Hydra.
+/// * `SLURM_NTASKS_PER_NODE` — Slurm's `srun` when it launches ranks directly
+///   (no `mpirun` in between), so none of the above are set.
+///
+/// **Fallback is 1, deliberately.** An unrecognized launcher yields the
+/// single-rank answer, i.e. the full-width pool ferric used before — the
+/// pre-existing behavior, which is at worst as oversubscribed as today and
+/// never worse. The alternative (guessing from world size, or from the number
+/// of sibling processes) would silently NARROW the pool on a machine where the
+/// guess is wrong, turning a missing env var into a performance regression on
+/// runs that have nothing to do with MPI.
+pub fn local_ranks_per_node() -> usize {
+    local_ranks_per_node_with(|k| std::env::var(k).ok())
+}
+
+/// [`local_ranks_per_node`] with an injected env lookup — the testable core.
+///
+/// Same injection rationale as [`crate::blas_threads::opt_in_blas_threads_with`]:
+/// the process environment is global and the test harness is multi-threaded, so
+/// a `set_var`-based test races every other test in the binary.
+#[doc(hidden)]
+pub fn local_ranks_per_node_with(get: impl Fn(&str) -> Option<String>) -> usize {
+    const LOCAL_SIZE_VARS: [&str; 4] = [
+        "OMPI_COMM_WORLD_LOCAL_SIZE",
+        "MV2_COMM_WORLD_LOCAL_SIZE",
+        "MPI_LOCALNRANKS",
+        "SLURM_NTASKS_PER_NODE",
+    ];
+    for key in LOCAL_SIZE_VARS {
+        if let Some(v) = get(key) {
+            // Garbage parses to nothing and we fall through to the next var /
+            // the default. A thread count is a performance knob, not a
+            // result-affecting one, so a malformed value must degrade rather
+            // than abort a converged run (the same exception class
+            // `blas_threads::BLAS_THREADS` documents). Note SLURM_NTASKS_PER_NODE
+            // can carry a comma list ("4,2") on heterogeneous allocations; the
+            // parse fails on that and we fall back to 1 rather than guess.
+            if let Ok(n) = v.trim().parse::<usize>() {
+                if n >= 1 {
+                    return n;
+                }
+            }
+        }
+    }
+    1
+}
+
+/// Physical core count of this machine (SMT siblings collapsed), falling back
+/// to the logical count when topology is unreadable.
+///
+/// **Why physical.** On the 6-core / 12-thread box this was written for,
+/// `std::thread::available_parallelism()` reports 12. Sizing a rank×thread grid
+/// to 12 makes `2 ranks × 6 threads` look like "all cores" when it is really 2
+/// ranks × 6 HYPERTHREADS on 6 physical cores — the two threads in a pair share
+/// one set of execution units, so for the BLAS3-bound GEMMs in RI-MP2 the
+/// second thread mostly adds contention. Worse, it makes an SMT effect
+/// indistinguishable from a hybrid-decomposition effect in any measurement.
+///
+/// Derived from `/sys/devices/system/cpu/cpu*/topology/thread_siblings_list`:
+/// each online CPU reports the set of logical CPUs sharing its physical core,
+/// so the number of DISTINCT sibling sets is the physical core count. This is
+/// the same information `lscpu` computes "Core(s) per socket × Socket(s)" from.
+///
+/// Fallbacks, in order: sysfs topology → `available_parallelism()` (logical) →
+/// 1. The logical fallback is intentionally NOT halved: on a machine without
+/// SMT that would waste half the box, and we cannot tell the two cases apart
+/// without the topology we just failed to read.
+pub fn physical_cores() -> usize {
+    if let Some(n) = physical_cores_from_sysfs("/sys/devices/system/cpu") {
+        return n;
+    }
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+}
+
+/// [`physical_cores`] with an injected sysfs root — the testable core. Returns
+/// `None` when the topology is unreadable (non-Linux, container without sysfs,
+/// or a kernel that does not export `thread_siblings_list`), so the caller can
+/// apply its documented fallback chain.
+#[doc(hidden)]
+pub fn physical_cores_from_sysfs(cpu_root: &str) -> Option<usize> {
+    let entries = std::fs::read_dir(cpu_root).ok()?;
+    let mut sibling_sets: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        // Only cpuN directories; skip cpuidle/cpufreq/etc.
+        if !name.starts_with("cpu") || !name[3..].chars().all(|c| c.is_ascii_digit()) || name.len() == 3 {
+            continue;
+        }
+        let path = entry.path().join("topology/thread_siblings_list");
+        // An OFFLINE cpu has no topology/ dir — read failure just skips it,
+        // which is correct: an offline SMT sibling is not a core we can use.
+        if let Ok(list) = std::fs::read_to_string(&path) {
+            // e.g. "0,6" (SMT pair) or "3" (no SMT). The string is canonical
+            // per core — every sibling reports the SAME list — so counting
+            // distinct strings counts distinct physical cores.
+            sibling_sets.insert(list.trim().to_string());
+        }
+    }
+    if sibling_sets.is_empty() {
+        None
+    } else {
+        Some(sibling_sets.len())
+    }
 }
 
 /// Pure balanced contiguous partition: item range `[p0, p1)` for `rank` of
@@ -227,6 +415,7 @@ impl Default for ParallelContext {
 #[cfg(test)]
 mod tests {
     use super::aux_band_for;
+    use super::{local_ranks_per_node_with, physical_cores, physical_cores_from_sysfs, threads_per_rank};
 
     #[test]
     fn aux_band_single_rank_is_full_range() {
@@ -284,5 +473,198 @@ mod tests {
         for (r, &(p0, p1)) in bands.iter().enumerate() {
             assert!(p1 - p0 <= 1, "rank {r} band too wide");
         }
+    }
+
+    // ---- rank-aware thread-pool sizing -------------------------------------
+
+    /// THE regression guard: a single-rank (or non-MPI, or feature-off) run
+    /// must get the FULL core count — byte-identical pool width to before
+    /// rank-aware sizing existed. A binding bug that narrows the single-rank
+    /// pool is the one failure mode that would silently slow every ordinary
+    /// serial run in the project.
+    #[test]
+    fn threads_per_rank_single_rank_is_all_cores() {
+        for cores in 1..=64 {
+            assert_eq!(
+                threads_per_rank(1, cores),
+                cores,
+                "1 local rank must own every physical core (cores={cores})"
+            );
+        }
+        // 0 local ranks (nonsense launcher value) is treated as 1.
+        assert_eq!(threads_per_rank(0, 6), 6);
+    }
+
+    /// The invariant that makes hybrid worth doing at all: ranks × threads
+    /// never exceeds the physical core count. This is what FAILS if the
+    /// binding logic is broken to hand every rank the full core count (the
+    /// mutation this test is designed to catch).
+    #[test]
+    fn ranks_times_threads_never_oversubscribes_physical_cores() {
+        for cores in 1..=32 {
+            for ranks in 1..=cores {
+                let t = threads_per_rank(ranks, cores);
+                assert!(t >= 1, "must never hand out a zero-width pool");
+                assert!(
+                    ranks * t <= cores,
+                    "ranks({ranks}) x threads({t}) = {} exceeds physical cores ({cores})",
+                    ranks * t
+                );
+            }
+        }
+    }
+
+    /// The documented 6-core grid, spelled out. 1x6, 2x3, 3x2, 6x1 tile the box
+    /// exactly; 4 ranks is the non-divisible case where the floor policy
+    /// deliberately leaves 2 cores idle rather than oversubscribing to 8.
+    #[test]
+    fn threads_per_rank_six_core_grid() {
+        assert_eq!(threads_per_rank(1, 6), 6);
+        assert_eq!(threads_per_rank(2, 6), 3);
+        assert_eq!(threads_per_rank(3, 6), 2);
+        assert_eq!(threads_per_rank(6, 6), 1);
+        // Non-divisible: floor(6/4) = 1, so 4 ranks use 4 of 6 cores. NOT 2
+        // (which would be 8 threads on 6 cores).
+        assert_eq!(threads_per_rank(4, 6), 1);
+        assert_eq!(threads_per_rank(5, 6), 1);
+        // 12 cores, 5 ranks: floor(12/5) = 2 -> 10 of 12 used, 2 idle.
+        assert_eq!(threads_per_rank(5, 12), 2);
+    }
+
+    /// More local ranks than cores: already oversubscribed at the rank level by
+    /// the launcher; we return 1 rather than 0 (a 0-width rayon pool means
+    /// "all cores", which would make it far worse).
+    #[test]
+    fn threads_per_rank_floors_at_one_when_more_ranks_than_cores() {
+        assert_eq!(threads_per_rank(12, 6), 1);
+        assert_eq!(threads_per_rank(1000, 6), 1);
+        assert_eq!(threads_per_rank(2, 1), 1);
+    }
+
+    /// Local size comes from the launcher env, in the documented precedence
+    /// order, with a fallback of 1 (== today's full-width behavior) when
+    /// nothing is set or the value is unparseable.
+    #[test]
+    fn local_ranks_detection_precedence_and_fallback() {
+        // Nothing set -> 1 (unrecognized launcher / plain `cargo run`).
+        assert_eq!(local_ranks_per_node_with(|_| None), 1);
+
+        // Open MPI wins over every other var.
+        let get = |k: &str| match k {
+            "OMPI_COMM_WORLD_LOCAL_SIZE" => Some("3".to_string()),
+            "MPI_LOCALNRANKS" => Some("7".to_string()),
+            "SLURM_NTASKS_PER_NODE" => Some("9".to_string()),
+            _ => None,
+        };
+        assert_eq!(local_ranks_per_node_with(get), 3);
+
+        // MVAPICH2, then MPICH/Hydra, then Slurm, each when the ones above are
+        // absent.
+        assert_eq!(
+            local_ranks_per_node_with(|k| (k == "MV2_COMM_WORLD_LOCAL_SIZE").then(|| "4".into())),
+            4
+        );
+        assert_eq!(
+            local_ranks_per_node_with(|k| (k == "MPI_LOCALNRANKS").then(|| "5".into())),
+            5
+        );
+        assert_eq!(
+            local_ranks_per_node_with(|k| (k == "SLURM_NTASKS_PER_NODE").then(|| "2".into())),
+            2
+        );
+
+        // Garbage / zero degrade to the single-rank default rather than
+        // aborting a run over a performance knob. A comma list (heterogeneous
+        // Slurm allocation) is exactly this case.
+        assert_eq!(
+            local_ranks_per_node_with(|k| (k == "OMPI_COMM_WORLD_LOCAL_SIZE").then(|| "nope".into())),
+            1
+        );
+        assert_eq!(
+            local_ranks_per_node_with(|k| (k == "OMPI_COMM_WORLD_LOCAL_SIZE").then(|| "0".into())),
+            1
+        );
+        assert_eq!(
+            local_ranks_per_node_with(|k| (k == "SLURM_NTASKS_PER_NODE").then(|| "4,2".into())),
+            1
+        );
+
+        // Unset OMPI + set MPICH: the loop must not stop at the first MISSING
+        // var (a `for` that returned on the first key regardless would).
+        assert_eq!(
+            local_ranks_per_node_with(|k| (k == "MPI_LOCALNRANKS").then(|| "6".into())),
+            6
+        );
+    }
+
+    /// Physical-core detection must (a) return something usable and (b) never
+    /// exceed the logical count. On an SMT box it should be strictly less; on a
+    /// non-SMT box equal — this asserts the bound that holds either way.
+    #[test]
+    fn physical_cores_is_sane_and_at_most_logical() {
+        let phys = physical_cores();
+        let logical = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+        assert!(phys >= 1, "physical core count must be at least 1");
+        assert!(
+            phys <= logical,
+            "physical cores ({phys}) cannot exceed logical cores ({logical})"
+        );
+    }
+
+    /// The pool width a SINGLE-rank run installs must equal the physical core
+    /// count — i.e. the width an unbounded rayon pool would have used on this
+    /// single-socket box. This is the end-to-end form of the single-rank
+    /// invariant: it goes through the SAME `ParallelContext::rayon_threads`
+    /// call `run_mpi_ri_mp2` uses, rather than re-deriving it, so a future
+    /// refactor that changes the method (not just `threads_per_rank`) is still
+    /// caught.
+    ///
+    /// `ParallelContext::default()` is rank 0 of size 1 in a non-MPI test
+    /// binary, and no launcher env var is set, so `local_ranks_per_node()`
+    /// returns 1 — the exact configuration every ordinary serial ferric run
+    /// has.
+    #[test]
+    fn single_rank_context_installs_full_width_pool() {
+        let ctx = super::ParallelContext::default();
+        assert_eq!(ctx.size, 1, "a non-MPI test binary must report a single rank");
+        assert_eq!(
+            ctx.rayon_threads(),
+            physical_cores(),
+            "a single-rank run must get the FULL physical core count — narrowing it \
+             would silently slow every ordinary serial run"
+        );
+    }
+
+    /// The sysfs parser counts DISTINCT sibling sets, so an SMT pair collapses
+    /// to one core. Driven off a synthetic tree so it is deterministic on any
+    /// machine (the real-hardware read is covered by the test above).
+    #[test]
+    fn physical_cores_from_sysfs_collapses_smt_siblings() {
+        let root = std::env::temp_dir().join(format!(
+            "ferric-cpu-topo-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        // 4 logical CPUs, 2 physical cores: (0,2) and (1,3).
+        for (cpu, siblings) in [(0, "0,2"), (1, "1,3"), (2, "0,2"), (3, "1,3")] {
+            let d = root.join(format!("cpu{cpu}/topology"));
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("thread_siblings_list"), format!("{siblings}\n")).unwrap();
+        }
+        // Decoys that must be ignored: a non-cpuN dir, and the bare `cpu` dir.
+        std::fs::create_dir_all(root.join("cpuidle")).unwrap();
+        std::fs::create_dir_all(root.join("cpufreq")).unwrap();
+
+        assert_eq!(
+            physical_cores_from_sysfs(root.to_str().unwrap()),
+            Some(2),
+            "an SMT pair must count as ONE physical core"
+        );
+
+        // Unreadable root -> None, so the caller falls back to the logical count.
+        assert_eq!(physical_cores_from_sysfs("/definitely/not/a/sysfs/root"), None);
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
