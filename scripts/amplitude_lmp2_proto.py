@@ -343,6 +343,59 @@ def mp2_energy(t, J):
     return 2.0 * np.vdot(t, J) - np.vdot(t.transpose(0, 3, 2, 1), J)
 
 
+def pair_energies(t, J):
+    """Exact per-pair energies e_ij (sum over a,b); sums to mp2_energy."""
+    return (2.0 * np.einsum("iajb,iajb->ij", t, J, optimize=True)
+            - np.einsum("ibja,iajb->ij", t, J, optimize=True))
+
+
+def pair_gate_stats(mol, C_act, t, J, eps_list):
+    """How well does an integral-free R^-6 estimator rank occupied pairs?
+
+    Estimator: London-type e_est_ij = s_i^3 s_j^3 / R_ij^6 from Boys
+    centroids R and spreads s (dipole/r2 one-electron integrals only — the
+    quantities an integral-direct code has BEFORE any 4-index work).
+    Prints Spearman rank correlation on the off-diagonal pairs and, for each
+    theta = 1e-2*eps, the energy lost by dropping pairs below theta under
+    (a) oracle ranking by exact |e_ij| and (b) estimator ranking calibrated
+    so its scale matches exact |e_ij| at the median retained pair.
+    """
+    no = t.shape[0]
+    e_ex = pair_energies(t, J)
+    e_abs = np.abs(e_ex)
+    rints = mol.intor("int1e_r")
+    r2 = mol.intor("int1e_r2")
+    cen = np.einsum("xmn,mi,ni->ix", rints, C_act, C_act)
+    spread2 = np.einsum("mi,mn,ni->i", C_act, r2, C_act) - (cen**2).sum(axis=1)
+    s = np.sqrt(np.maximum(spread2, 1e-10))
+    R = np.linalg.norm(cen[:, None, :] - cen[None, :, :], axis=2)
+    off = ~np.eye(no, dtype=bool)
+    est = np.where(off, (s[:, None] * s[None, :])**3
+                   / np.maximum(R, 1e-6)**6, np.inf)  # diagonal never gated
+    # Spearman on off-diagonal upper triangle
+    iu = np.triu_indices(no, 1)
+    a, b = e_abs[iu], est[iu]
+    ra = np.argsort(np.argsort(a)).astype(float)
+    rb = np.argsort(np.argsort(b)).astype(float)
+    rho = np.corrcoef(ra, rb)[0, 1]
+    # CONSERVATIVE calibration: p95 of the exact/estimate ratio, so the
+    # scaled estimator over-predicts nearly every pair energy and
+    # est_cal < theta (almost) implies exact < theta. Median calibration
+    # was measured 6x worse than oracle at the same theta (over-drops).
+    finite = np.isfinite(est) & off & (e_abs > 0)
+    cal = np.percentile(e_abs[finite] / est[finite], 95)
+    est_cal = est * cal
+    log(f"  pair-gate: {no} occ, spearman(est,exact)={rho:.3f} "
+        f"cal(p95)={cal:.2e}")
+    for eps in eps_list:
+        theta = 1e-2 * eps
+        for name, score in (("oracle", e_abs), ("est   ", est_cal)):
+            drop = off & (score < theta)
+            elost = e_ex[drop].sum()
+            log(f"    theta=1e-2*{eps:g} {name}: dropped "
+                f"{drop.sum()}/{no*no} pairs, E_lost={elost:+.3e} Ha")
+
+
 def domain_stats(mask):
     """Retention + per-LMO domain sizes from the boolean mask."""
     frac = mask.mean()
@@ -374,7 +427,8 @@ def canonical_sr_mp2(mol, mf, ncore, omega):
 
 
 def run(xyz, basis, eps_list, anchor_only=False, mutate=False, out=None,
-        omega=None, solver="dense", xcheck=False, mutate_ragged=False):
+        omega=None, solver="dense", xcheck=False, mutate_ragged=False,
+        pair_stats=False):
     t0 = time.time()
     atom = load_xyz(xyz)
     # NOTE: max_memory is PySCF's WORKING budget on top of already-resident
@@ -494,6 +548,8 @@ def run(xyz, basis, eps_list, anchor_only=False, mutate=False, out=None,
             log(f"  ANCHOR {'PASSED' if ok else 'FAILED'} |dE|={abs(de):.3e}")
             if not ok:
                 raise SystemExit("exactness anchor failed; no sweep run")
+            if pair_stats:
+                pair_gate_stats(mol, C_act, t, J, eps_list)
             if anchor_only:
                 return
     log(f"  total {time.time()-t0:.1f}s")
@@ -520,11 +576,14 @@ def main():
     ap.add_argument("--mutate-ragged", action="store_true",
                     help="corrupt Fvv inside the ragged path only; "
                          "--xcheck must then FAIL")
+    ap.add_argument("--pair-stats", action="store_true",
+                    help="after the anchor: exact pair energies vs the "
+                         "integral-free R^-6 estimator (spearman + theta scan)")
     a = ap.parse_args()
     eps_list = [float(x) for x in a.eps.split(",") if x]
     run(a.xyz, a.basis, eps_list, a.anchor_only, a.mutate, a.out,
         omega=a.omega, solver=a.solver, xcheck=a.xcheck or a.mutate_ragged,
-        mutate_ragged=a.mutate_ragged)
+        mutate_ragged=a.mutate_ragged, pair_stats=a.pair_stats)
 
 
 if __name__ == "__main__":
