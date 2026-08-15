@@ -413,3 +413,60 @@ fn pair_gate_drops_pairs_with_bounded_cost_and_mutates_loudly() {
         wrecked.n_pairs_gated
     );
 }
+
+/// Wall-clock stage table over the alkane series vs canonical ri_mp2.
+/// #[ignore]d: run explicitly, RELEASE build, quiet box:
+///   OPENBLAS_NUM_THREADS=1 cargo test -p ferric-mp2 --release \
+///     --test lmp2_amplitude -- --ignored --nocapture bench_wall_clock
+///
+/// HONEST FRAMING (do not quote as a scaling win): J assembly here is
+/// dense-from-RI, so total LMP2 cost is expected to EXCEED ri_mp2 at these
+/// sizes — the meaningful numbers are the stage breakdown (does the solve
+/// stage stay cheap as N grows, as the FLOP counters promised?) and the
+/// counter parity with the Python rig. End-to-end wins require the
+/// integral-direct assembly this module does not yet have.
+#[test]
+#[ignore]
+fn bench_wall_clock_alkane_series() {
+    use std::time::Instant;
+    println!("mol      eps    op      E_corr        dE_vs_can  keep    dom(max)  t_asm(s) t_solve(s) t_ref(s) raggedx gated");
+    for xyz in ["alkane_4.xyz", "alkane_8.xyz", "alkane_12.xyz"] {
+        let su = setup(xyz);
+        let nc = su.mol.atoms.iter().filter(|a| a.z == 6).count();
+        for (opname, op, cal) in
+            [("coul", Operator::coulomb(), 0.7), ("erfc1", Operator::erfc(1.0), 0.02)]
+        {
+            for eps in [1e-3, 1e-4] {
+                let cfg = AmplitudeLmp2Config {
+                    eps,
+                    frozen_core: nc,
+                    pair_gate_cal: Some(cal),
+                    fit_radius_bohr: Some(10.0),
+                    ..Default::default()
+                };
+                let t0 = Instant::now();
+                let r = amplitude_lmp2(
+                    &su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &cfg,
+                )
+                .unwrap();
+                let _total = t0.elapsed().as_secs_f64();
+                println!(
+                    "{:8} {:6.0e} {:6} {:.8} {:+.3e} {:.4} {:4}/{:<4} {:8.2} {:9.2} {:7.2} {:6} {:5}",
+                    xyz.trim_end_matches(".xyz"),
+                    eps,
+                    opname,
+                    r.e_corr,
+                    r.e_corr - r.e_corr_canonical_ri,
+                    r.keep_fraction,
+                    r.dom_max,
+                    r.n_valence_virt + r.n_hard_virt,
+                    r.timings.t_assembly_s,
+                    r.timings.t_solve_s,
+                    r.timings.t_reference_s,
+                    r.dense_flops_per_matvec / r.ragged_flops_per_matvec.max(1),
+                    r.n_pairs_gated,
+                );
+            }
+        }
+    }
+}
