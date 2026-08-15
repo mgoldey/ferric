@@ -379,22 +379,29 @@ def ri_j_global(A, V):
     return (Af @ Vinv @ Af.T).reshape(no, nv, no, nv)
 
 
-def ri_j_domain(A, V, aux_xyz, occ_centers, fit_radius, mutate=False):
+def ri_j_domain(A, V, aux_xyz, occ_centers, fit_radius, mutate=False,
+                keep_pair=None):
     """Per-pair domain-local same-metric fit: for each occupied pair (i,j),
     aux domain D_ij = functions within fit_radius Bohr of EITHER centroid;
     J block = A_ia,D V_DD^-1 A_jb,D. fit_radius=inf must reproduce
     ri_j_global to machine precision (trivial-limit anchor).
     mutate=True drops the largest-|A| aux function from every domain —
     the trivial-limit anchor must then FAIL.
+    keep_pair (no,no) bool: gated-out pairs get NO fit at all (their J
+    block stays zero — the integral-direct composition with the pair gate).
     """
     no, nv, naux = A.shape
-    J = np.empty((no, nv, no, nv))
+    J = np.zeros((no, nv, no, nv))
     dist = np.linalg.norm(aux_xyz[None, :, :] - occ_centers[:, None, :],
                           axis=2)                      # (no, naux)
     in_r = dist <= fit_radius                          # (no, naux)
     dom_sizes = []
+    n_skipped = 0
     for i in range(no):
         for j in range(i, no):
+            if keep_pair is not None and not keep_pair[i, j]:
+                n_skipped += 1
+                continue
             d = np.nonzero(in_r[i] | in_r[j])[0]
             if len(d) == 0:
                 raise RuntimeError(f"empty aux domain for pair ({i},{j})")
@@ -408,13 +415,32 @@ def ri_j_domain(A, V, aux_xyz, occ_centers, fit_radius, mutate=False):
             J[i, :, j, :] = blk
             J[j, :, i, :] = blk.T
     return J, dict(dom_mean=float(np.mean(dom_sizes)),
-                   dom_max=int(np.max(dom_sizes)), naux=naux)
+                   dom_max=int(np.max(dom_sizes)), naux=naux,
+                   n_skipped=n_skipped)
 
 
 def boys_centroids(mol, C):
     """Orbital centroids <i|r|i> for the columns of C, shape (n, 3)."""
     rints = mol.intor("int1e_r")
     return np.einsum("xmn,mi,ni->ix", rints, C, C)
+
+
+def pair_gate_mask(mol, C_act, theta, cal):
+    """Integral-free keep/drop decision per occupied pair, BEFORE any
+    4-index work: keep (i,j) iff cal * (s_i s_j)^3 / R_ij^6 >= theta.
+    cal is the conservatively calibrated constant from --pair-stats
+    (measured p95: ~0.7 Coulomb, ~0.02 erfc w=1, stable C8->C10).
+    Diagonal pairs are never gated. Returns a symmetric bool (no,no)."""
+    cen = boys_centroids(mol, C_act)
+    r2 = mol.intor("int1e_r2")
+    spread2 = (np.einsum("mi,mn,ni->i", C_act, r2, C_act)
+               - (cen**2).sum(axis=1))
+    s = np.sqrt(np.maximum(spread2, 1e-10))
+    R = np.linalg.norm(cen[:, None, :] - cen[None, :, :], axis=2)
+    est = cal * (s[:, None] * s[None, :])**3 / np.maximum(R, 1e-6)**6
+    keep = est >= theta
+    np.fill_diagonal(keep, True)
+    return keep | keep.T
 
 
 def canonical_ri_mp2(mol, mf, ncore, omega):
@@ -517,7 +543,7 @@ def canonical_sr_mp2(mol, mf, ncore, omega):
 def run(xyz, basis, eps_list, anchor_only=False, mutate=False, out=None,
         omega=None, solver="dense", xcheck=False, mutate_ragged=False,
         pair_stats=False, integrals="exact", fit_radius=None,
-        mutate_ri=False):
+        mutate_ri=False, gate_cal=None):
     t0 = time.time()
     atom = load_xyz(xyz)
     # NOTE: max_memory is PySCF's WORKING budget on top of already-resident
@@ -592,9 +618,19 @@ def run(xyz, basis, eps_list, anchor_only=False, mutate=False, out=None,
             J = Jg
         else:  # ri-domain
             assert fit_radius is not None, "--fit-radius required"
+            keep_pair = None
+            if gate_cal is not None:
+                assert fit_radius < 1e5, \
+                    "run the trivial-limit anchor UNGATED (gate zeroes blocks)"
+                theta = 1e-2 * min(e for e in eps_list if e > 0)
+                keep_pair = pair_gate_mask(mol, C_act, theta, gate_cal)
+                ndrop = (~keep_pair).sum() // 2
+                log(f"  pair gate: theta={theta:g} cal={gate_cal:g} -> "
+                    f"dropped {ndrop} of {no*(no-1)//2} unique off-diag "
+                    f"pairs BEFORE assembly")
             cen = boys_centroids(mol, C_act)
             J, dstat = ri_j_domain(Ari, Vri, aux_xyz, cen, fit_radius,
-                                   mutate=mutate_ri)
+                                   mutate=mutate_ri, keep_pair=keep_pair)
             dmax = np.abs(J - Jg).max()
             log(f"  ri-domain: fit_radius={fit_radius} Bohr, aux dom "
                 f"mean/max={dstat['dom_mean']:.1f}/{dstat['dom_max']} of "
@@ -723,6 +759,11 @@ def main():
     ap.add_argument("--fit-radius", type=float, default=None,
                     help="aux domain radius in Bohr for --integrals "
                          "ri-domain (use 1e6 for the trivial-limit anchor)")
+    ap.add_argument("--gate-cal", type=float, default=None,
+                    help="enable the integral-free pair gate before"
+                         " ri-domain assembly at theta=1e-2*min(eps);"
+                         " pass the calibrated constant (measured p95:"
+                         " ~0.7 Coulomb, ~0.02 erfc w=1)")
     ap.add_argument("--mutate-ri", action="store_true",
                     help="drop the largest aux function from every pair "
                          "domain; the trivial-limit anchor must then FAIL")
@@ -732,7 +773,7 @@ def main():
         omega=a.omega, solver=a.solver, xcheck=a.xcheck or a.mutate_ragged,
         mutate_ragged=a.mutate_ragged, pair_stats=a.pair_stats,
         integrals=a.integrals, fit_radius=a.fit_radius,
-        mutate_ri=a.mutate_ri)
+        mutate_ri=a.mutate_ri, gate_cal=a.gate_cal)
 
 
 if __name__ == "__main__":
