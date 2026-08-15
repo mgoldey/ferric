@@ -462,14 +462,14 @@ struct Ragged {
 
 fn build_ragged(
     j_dense: &Array2<f64>, // (no*nv, no*nv), row index i*nv+a
-    foo: &Array2<f64>,
-    fvv: &Array2<f64>,
+    f_oo: &Array2<f64>,
+    f_vv: &Array2<f64>,
     no: usize,
     nv: usize,
     eps: f64,
 ) -> Ragged {
-    let fo: Vec<f64> = (0..no).map(|i| foo[(i, i)]).collect();
-    let fv: Vec<f64> = (0..nv).map(|a| fvv[(a, a)]).collect();
+    let fo: Vec<f64> = (0..no).map(|i| f_oo[(i, i)]).collect();
+    let fv: Vec<f64> = (0..nv).map(|a| f_vv[(a, a)]).collect();
     let mut pairs = Vec::new();
     for i in 0..no {
         for j in 0..no {
@@ -511,13 +511,13 @@ fn build_ragged(
             let mut fvv_aa = Array2::<f64>::zeros((na, na));
             for (r, &a) in da.iter().enumerate() {
                 for (c, &a2) in da.iter().enumerate() {
-                    fvv_aa[(r, c)] = fvv[(a, a2)];
+                    fvv_aa[(r, c)] = f_vv[(a, a2)];
                 }
             }
             let mut fvv_bb = Array2::<f64>::zeros((nb, nb));
             for (r, &b) in db.iter().enumerate() {
                 for (c, &b2) in db.iter().enumerate() {
-                    fvv_bb[(r, c)] = fvv[(b, b2)];
+                    fvv_bb[(r, c)] = f_vv[(b, b2)];
                 }
             }
             let mut pos_da = vec![usize::MAX; nv];
@@ -558,7 +558,7 @@ fn dot_blocks(x: &[Array2<f64>], y: &[Array2<f64>]) -> f64 {
 /// Ragged PCG on the fixed pattern: solve P A P t = −P J.
 fn solve_ragged(
     rg: &Ragged,
-    foo: &Array2<f64>,
+    f_oo: &Array2<f64>,
     rtol: f64,
     max_iter: usize,
 ) -> (Vec<Array2<f64>>, usize, f64, bool, u64) {
@@ -588,14 +588,14 @@ fn solve_ragged(
     let mut t = zeros.clone();
     let mut r = rhs.clone();
     let mut z = precond(&r);
-    let mut p: Vec<Array2<f64>> = z.iter().cloned().collect();
+    let mut p: Vec<Array2<f64>> = z.to_vec();
     let mut rz = dot_blocks(&r, &z);
     let mut it = 0;
     let mut relres = 1.0;
     let mut converged = false;
     while it < max_iter {
         it += 1;
-        let ap = matvec_indexed(rg, foo, &p, &mut flops_total);
+        let ap = matvec_indexed(rg, f_oo, &p, &mut flops_total);
         let alpha = rz / dot_blocks(&p, &ap);
         for k in 0..npair {
             t[k].scaled_add(alpha, &p[k]);
@@ -623,7 +623,7 @@ fn solve_ragged(
 /// Index-passing form of the ragged matvec (the one actually used).
 fn matvec_indexed(
     rg: &Ragged,
-    foo: &Array2<f64>,
+    f_oo: &Array2<f64>,
     t: &[Array2<f64>],
     flops: &mut u64,
 ) -> Vec<Array2<f64>> {
@@ -638,7 +638,7 @@ fn matvec_indexed(
     for (p_idx, pb) in rg.pairs.iter().enumerate() {
         for &q in &rg.by_j[&pb.j] {
             let qb = &rg.pairs[q];
-            let f = foo[(pb.i, qb.i)];
+            let f = f_oo[(pb.i, qb.i)];
             if f == 0.0 {
                 continue;
             }
@@ -646,7 +646,7 @@ fn matvec_indexed(
         }
         for &q in &rg.by_i[&pb.i] {
             let qb = &rg.pairs[q];
-            let f = foo[(qb.j, pb.j)];
+            let f = f_oo[(qb.j, pb.j)];
             if f == 0.0 {
                 continue;
             }
@@ -719,8 +719,8 @@ pub fn amplitude_lmp2(
 pub struct LocalizedProblem {
     /// (no·nv, no·nv), row index i·nv+a — (ia|jb) in the localized basis.
     pub j_dense: Array2<f64>,
-    pub foo: Array2<f64>,
-    pub fvv: Array2<f64>,
+    pub f_oo: Array2<f64>,
+    pub f_vv: Array2<f64>,
     pub no: usize,
     pub nv: usize,
 }
@@ -749,8 +749,8 @@ pub fn assemble_localized(
 
     // localized-basis Fock blocks
     let f_ao = rhf.fock_r();
-    let foo = c_locc.t().dot(&f_ao.dot(&c_locc));
-    let fvv = c_vloc.t().dot(&f_ao.dot(c_vloc));
+    let f_oo = c_locc.t().dot(&f_ao.dot(&c_locc));
+    let f_vv = c_vloc.t().dot(&f_ao.dot(c_vloc));
 
     // RI-assembled J in the localized basis: B̃ᵀB̃ with the same helpers the
     // canonical reference uses
@@ -764,7 +764,7 @@ pub fn assemble_localized(
         .map_err(|e| FerricError::General(format!("lmp2_amplitude reshape: {e}")))?;
     let btilde = vis.dot(&b_flat); // (naux, no*nv)
     let j_dense = btilde.t().dot(&btilde); // (no*nv, no*nv)
-    Ok(LocalizedProblem { j_dense, foo, fvv, no, nv })
+    Ok(LocalizedProblem { j_dense, f_oo, f_vv, no, nv })
 }
 
 /// Same as [`amplitude_lmp2`], with a caller-supplied virtual space — the
@@ -780,8 +780,8 @@ pub fn amplitude_lmp2_with_virtuals(
     vvhv: &VvHv,
 ) -> Result<AmplitudeLmp2Result, FerricError> {
     let lp = assemble_localized(mol, obs, dfbs, op, rhf, cfg, vvhv)?;
-    let LocalizedProblem { j_dense, foo, fvv, no, nv } = &lp;
-    let (j_dense, foo, fvv, no, nv) = (j_dense, foo, fvv, *no, *nv);
+    let LocalizedProblem { j_dense, f_oo, f_vv, no, nv } = &lp;
+    let (j_dense, f_oo, f_vv, no, nv) = (j_dense, f_oo, f_vv, *no, *nv);
 
     // canonical reference on the same (mol, basis, aux, op, frozen core)
     let e_ref = ri_mp2(
@@ -795,8 +795,8 @@ pub fn amplitude_lmp2_with_virtuals(
     .mp2_corr;
 
     // mask + ragged solve
-    let rg = build_ragged(&j_dense, &foo, &fvv, no, nv, cfg.eps);
-    let (t, iters, relres, converged, flops_mv) = solve_ragged(&rg, &foo, cfg.cg_rtol, cfg.cg_max_iter);
+    let rg = build_ragged(j_dense, f_oo, f_vv, no, nv, cfg.eps);
+    let (t, iters, relres, converged, flops_mv) = solve_ragged(&rg, f_oo, cfg.cg_rtol, cfg.cg_max_iter);
     if !converged {
         return Err(FerricError::General(format!(
             "lmp2_amplitude: ragged CG failed to converge (relres {relres:.2e} after {iters} iters)"

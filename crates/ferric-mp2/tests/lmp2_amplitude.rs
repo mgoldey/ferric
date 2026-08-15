@@ -173,7 +173,7 @@ fn ragged_masked_solve_matches_naive_dense_reference() {
     )
     .unwrap();
 
-    let e_naive = naive_masked_mp2(&lp.j_dense, &lp.foo, &lp.fvv, lp.no, lp.nv, cfg.eps, 0.0);
+    let e_naive = naive_masked_mp2(&lp.j_dense, &lp.f_oo, &lp.f_vv, lp.no, lp.nv, cfg.eps, 0.0);
     let dx = (r.e_corr - e_naive).abs();
     eprintln!("XCHECK ragged vs naive-dense (eps=1e-4): |dE|={dx:.3e}");
     assert!(dx < 1e-10, "ragged/naive cross-check FAILED: |dE|={dx:.3e}");
@@ -181,7 +181,7 @@ fn ragged_masked_solve_matches_naive_dense_reference() {
     // non-vacuousness: corrupt the naive path's Fvv; it must now disagree.
     // Sized per the measured quadratic insensitivity of the Hylleraas energy
     // (Python rig: 1e-3 moved E by only 1.8e-7).
-    let e_broken = naive_masked_mp2(&lp.j_dense, &lp.foo, &lp.fvv, lp.no, lp.nv, cfg.eps, 5e-2);
+    let e_broken = naive_masked_mp2(&lp.j_dense, &lp.f_oo, &lp.f_vv, lp.no, lp.nv, cfg.eps, 5e-2);
     let dxb = (r.e_corr - e_broken).abs();
     eprintln!("XCHECK mutation: |dE|={dxb:.3e} (must exceed 1e-10)");
     assert!(dxb > 1e-10, "xcheck comparison is vacuous: mutation not detected");
@@ -192,7 +192,7 @@ fn ragged_masked_solve_matches_naive_dense_reference() {
 /// Fvv[0,1]/[1,0] for the non-vacuousness arm.
 fn naive_masked_mp2(
     j: &ndarray::Array2<f64>,
-    foo: &ndarray::Array2<f64>,
+    f_oo: &ndarray::Array2<f64>,
     fvv: &ndarray::Array2<f64>,
     no: usize,
     nv: usize,
@@ -234,8 +234,8 @@ fn naive_masked_mp2(
                             v += t[idx(i, a) * n + idx(jj, c)] * fvv[(c, b)];
                         }
                         for k in 0..no {
-                            v -= foo[(i, k)] * t[idx(k, a) * n + idx(jj, b)];
-                            v -= t[idx(i, a) * n + idx(k, b)] * foo[(k, jj)];
+                            v -= f_oo[(i, k)] * t[idx(k, a) * n + idx(jj, b)];
+                            v -= t[idx(i, a) * n + idx(k, b)] * f_oo[(k, jj)];
                         }
                         r[row] = v;
                     }
@@ -250,7 +250,7 @@ fn naive_masked_mp2(
             for jj in 0..no {
                 for b in 0..nv {
                     d[idx(i, a) * n + idx(jj, b)] =
-                        fvv[(a, a)] + fvv[(b, b)] - foo[(i, i)] - foo[(jj, jj)];
+                        fvv[(a, a)] + fvv[(b, b)] - f_oo[(i, i)] - f_oo[(jj, jj)];
                 }
             }
         }
