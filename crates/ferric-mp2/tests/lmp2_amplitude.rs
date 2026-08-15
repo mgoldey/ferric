@@ -340,3 +340,76 @@ fn c8_counters_land_in_the_python_measured_band() {
         "ragged advantage collapsed"
     );
 }
+
+/// TRIVIAL-LIMIT ANCHOR for the per-pair domain-local fit: an infinite
+/// fit radius must reproduce the global-metric fit — algebraically
+/// A^T V^-1 A vs (V^-1/2 A)^T (V^-1/2 A), two different factorizations,
+/// so agreement is a real check, not an identity.
+#[test]
+fn domain_fit_trivial_limit_matches_global() {
+    let su = setup("water.xyz");
+    let base = AmplitudeLmp2Config { eps: 0.0, frozen_core: 1, ..Default::default() };
+    let glob = amplitude_lmp2(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &base)
+        .unwrap();
+    let cfg = AmplitudeLmp2Config { fit_radius_bohr: Some(1e6), ..base };
+    let dom = amplitude_lmp2(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg)
+        .unwrap();
+    let dd = (dom.e_corr - glob.e_corr).abs();
+    eprintln!("TRIVIAL LIMIT: |E(domain,inf) - E(global)| = {dd:.3e}");
+    assert!(dd < 1e-10, "trivial-limit anchor FAILED: {dd:.3e}");
+    // and the eps=0 canonical anchor must still hold through the domain path
+    let de = (dom.e_corr - dom.e_corr_canonical_ri).abs();
+    assert!(de < 1e-9, "canonical anchor through domain path FAILED: {de:.3e}");
+}
+
+/// Finite radius: µHa-class truncation, strictly nonzero (proves the domain
+/// path actually truncates — the non-vacuousness arm of the trivial limit).
+#[test]
+fn domain_fit_finite_radius_truncation_is_microhartree_class() {
+    let su = setup("alkane_4.xyz");
+    let base = AmplitudeLmp2Config { eps: 0.0, frozen_core: 4, ..Default::default() };
+    let glob = amplitude_lmp2(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &base)
+        .unwrap();
+    let cfg = AmplitudeLmp2Config { fit_radius_bohr: Some(8.0), ..base };
+    let dom = amplitude_lmp2(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg)
+        .unwrap();
+    let dd = (dom.e_corr - glob.e_corr).abs();
+    eprintln!("C4 r=8 Bohr domain truncation: |dE| = {dd:.3e} Ha");
+    assert!(dd > 1e-12, "domain path identical to global at r=8 — truncation vacuous?");
+    assert!(dd < 5e-5, "domain truncation not µHa-class: {dd:.3e}");
+}
+
+/// Integral-free pair gate on the attenuated operator: drops a substantial
+/// pair fraction at bounded energy cost; a deliberately absurd calibration
+/// (mutation arm) must gate nearly everything and wreck the energy —
+/// proving the gate genuinely removes blocks from the solve.
+#[test]
+fn pair_gate_drops_pairs_with_bounded_cost_and_mutates_loudly() {
+    let su = setup("alkane_8.xyz");
+    let op = Operator::erfc(1.0);
+    let base = AmplitudeLmp2Config { eps: 1e-3, frozen_core: 8, ..Default::default() };
+    let ungated = amplitude_lmp2(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &base).unwrap();
+    let cfg = AmplitudeLmp2Config { pair_gate_cal: Some(0.02), ..base.clone() };
+    let gated = amplitude_lmp2(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &cfg).unwrap();
+    let cost = (gated.e_corr - ungated.e_corr).abs();
+    eprintln!(
+        "C8/erfc gate: dropped {} unique pairs (of {}), |dE(gate)| = {cost:.3e} Ha",
+        gated.n_pairs_gated,
+        25 * 24 / 2
+    );
+    assert!(gated.n_pairs_gated > 50, "gate dropped only {} pairs", gated.n_pairs_gated);
+    assert!(cost < 1e-3, "gate cost too large: {cost:.3e}");
+    // mutation: absurd calibration must gate ~everything and move E a lot
+    let broken = AmplitudeLmp2Config { pair_gate_cal: Some(1e-12), ..base };
+    let wrecked = amplitude_lmp2(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &broken).unwrap();
+    let dwreck = (wrecked.e_corr - ungated.e_corr).abs();
+    eprintln!(
+        "gate MUTATION (cal=1e-12): dropped {} pairs, |dE| = {dwreck:.3e}",
+        wrecked.n_pairs_gated
+    );
+    assert!(
+        wrecked.n_pairs_gated > gated.n_pairs_gated && dwreck > 1e-3,
+        "gate mutation not loud: {} pairs, |dE|={dwreck:.3e}",
+        wrecked.n_pairs_gated
+    );
+}
