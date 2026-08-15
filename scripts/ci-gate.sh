@@ -142,6 +142,7 @@ ALLOWED_LINTS=(
     "clippy::type_complexity"
     "clippy::needless_borrows_for_generic_args"
     "clippy::if_same_then_else"
+    "clippy::neg_cmp_op_on_partial_ord"
     "unused_parens"
 )
 

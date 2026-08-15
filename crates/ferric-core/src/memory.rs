@@ -739,20 +739,16 @@ mod tests {
         // leaf 5 GiB inside a 12 GiB parent inside an unlimited root.
         let levels = [Some(5 * (1024usize * 1024 * 1024)), Some(12 * (1024usize * 1024 * 1024)), None];
         let mut best: Option<usize> = None;
-        for lvl in levels {
-            if let Some(b) = lvl {
-                best = Some(best.map_or(b, |c: usize| c.min(b)));
-            }
+        for b in levels.into_iter().flatten() {
+            best = Some(best.map_or(b, |c: usize| c.min(b)));
         }
         assert_eq!(best, Some(5 * (1024usize * 1024 * 1024)), "the tightest ancestor must win");
 
         // An unlimited leaf under a limited parent still inherits the parent.
         let levels = [None, Some(8 * (1024usize * 1024 * 1024)), None];
         let mut best: Option<usize> = None;
-        for lvl in levels {
-            if let Some(b) = lvl {
-                best = Some(best.map_or(b, |c: usize| c.min(b)));
-            }
+        for b in levels.into_iter().flatten() {
+            best = Some(best.map_or(b, |c: usize| c.min(b)));
         }
         assert_eq!(best, Some(8 * (1024usize * 1024 * 1024)));
     }

@@ -380,7 +380,7 @@ pub fn run_bse_tda(
 ///
 /// If this reproduces an independent CIS-TDA (e.g. PySCF), the (ia)-space layout,
 /// the 2v−exchange convention, and the integral contraction are all correct, and
-
+///
 /// Pre-flight for the dense BSE/TDHF response matrices.
 ///
 /// These paths build dense `(n, n)` matrices with `n = nocc · nvir` and then

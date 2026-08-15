@@ -275,6 +275,7 @@ impl PairOvov {
 /// swapped: `PairOvov` rotates `(kc|ld)` into pair `(k,l)`'s basis (the pair the
 /// *integral's* occupied labels name), which is the storage a production DLPNO
 /// code uses.
+#[allow(dead_code)] // kept: documents the production-DLPNO storage rotation this doc describes
 fn rotate_block(g: &Array2<f64>, q: &Array2<f64>) -> Array2<f64> {
     q.t().dot(g).dot(q)
 }

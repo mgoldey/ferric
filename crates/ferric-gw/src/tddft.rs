@@ -475,7 +475,7 @@ pub fn run_tda_dft(
                  tolerance 1e-8 — the AO→(ia) adapter is inconsistent"
             )));
         }
-        a_mat = a_mat + &k_fxc;
+        a_mat += &k_fxc;
     }
 
     // ── Diagonalize ─────────────────────────────────────────────────────────

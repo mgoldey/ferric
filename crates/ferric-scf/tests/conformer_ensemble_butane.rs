@@ -354,7 +354,7 @@ fn butane_single_conformer_ensemble_equals_the_single_point() {
             m.atoms.iter().map(|a| a.z as f64 * a.zpos).sum::<f64>() / zsum,
         ]
     };
-    let vstats = weighted_stats_vector(&[com.clone()], &w.weights).unwrap();
+    let vstats = weighted_stats_vector(std::slice::from_ref(&com), &w.weights).unwrap();
     for (k, s) in vstats.iter().enumerate() {
         assert_eq!(s.mean, com[k]);
         assert_eq!(s.std_dev, 0.0);

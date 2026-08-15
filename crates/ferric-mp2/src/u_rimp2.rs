@@ -1546,7 +1546,7 @@ mod tests {
             &mol, &obs, &dfbs, op, &uhf, &RiMp2Config::default(), false,
         ).unwrap();
         let eps_a: &[f64] = &uhf.eps_alpha;
-        let eps_b: &[f64] = uhf.eps_beta.as_ref().map(|v| v.as_slice()).unwrap_or(&uhf.eps_alpha);
+        let eps_b: &[f64] = uhf.eps_beta.as_deref().unwrap_or(&uhf.eps_alpha);
 
         // New kernel path (same call as u_ri_mp2 / same_spin_pair_energy /
         // opposite_spin_pair_energy).

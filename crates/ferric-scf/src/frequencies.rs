@@ -135,6 +135,7 @@ pub enum FrequencyReference {
 }
 
 impl FrequencyReference {
+    #[allow(dead_code)] // diagnostic name used by callers-to-be; harmless to keep
     fn label(&self) -> &'static str {
         match self {
             FrequencyReference::Rhf => "RHF/RKS",

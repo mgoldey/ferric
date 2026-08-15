@@ -145,6 +145,7 @@ pub fn scs_mp2_2terfc(
     // proceeds to a meaningless number). The ordering matters physically — the
     // same-spin term is the DIFFERENCE E_SS(r0_MR) - E_SS(r0_SR), which changes
     // sign if the two are swapped.
+    #[allow(clippy::nonminimal_bool)] // NaN-aware guard: !(x > 0 && finite) must REJECT NaN
     if !(config.r0_bonded > 0.0 && config.r0_bonded.is_finite())
         || !(config.r0_nonbonded > 0.0 && config.r0_nonbonded.is_finite())
     {

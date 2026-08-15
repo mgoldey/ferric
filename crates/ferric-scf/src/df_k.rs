@@ -342,6 +342,7 @@ impl DfK<'_> {
     /// as in [`build`] (the grouped ascending-chunk fold pins the fold order
     /// across thread counts; the outer-product `M Mᵀ` is symmetric by
     /// construction).
+#[allow(clippy::manual_c_str_literals)] // b"R\0" byte literals match dsymm_'s *const u8 args; c".." would be *const i8
     fn build_from_occ_impl(
         &mut self,
         c_occ: &Array2<f64>,

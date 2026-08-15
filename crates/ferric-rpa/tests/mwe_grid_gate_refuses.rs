@@ -68,7 +68,7 @@ fn grid_path_refuses_a_starvation_budget() {
         &mol, &obs, &obs_bs, &dfbs, &rhf, Operator::coulomb(), &cfg,
     );
 
-    let err = got.err().expect(
+    let err = got.expect_err(
         "a 1-byte budget must be REFUSED before allocating chi; Ok means the \
          grid path has no pre-flight gate",
     );
@@ -93,8 +93,7 @@ fn refusal_message_identifies_path_and_shape() {
     let msg = pdep_polarizability_becke(
         &mol, &obs, &obs_bs, &dfbs, &rhf, Operator::coulomb(), &cfg,
     )
-    .err()
-    .expect("must refuse")
+    .expect_err("must refuse")
     .to_string();
 
     for needle in ["pdep_polarizability_becke", "natoms=", "npts=", "nbf="] {

@@ -64,6 +64,11 @@ unnecessary_min_or_max = "allow"
 type_complexity = "allow"
 needless_borrows_for_generic_args = "allow"
 if_same_then_else = "allow"
+# NaN-aware comparison idiom: `!(a < b)` is deliberately NOT `a >= b` — a NaN
+# must take the guard branch (DIIS fallbacks, config validation). Rewriting per
+# the lint would silently change NaN behavior. Same policy class as
+# excessive_precision above (see the clippy-lint-policy note).
+neg_cmp_op_on_partial_ord = "allow"
 
 [workspace.lints.rust]
 unused_parens = "allow"

@@ -89,7 +89,7 @@ impl<'a> KBuilder for DirectK<'a> {
                 }
                 pool.with(|engine| {
                     local_count += scatter_bra_pair(
-                        engine, self.prep, &dims, &offs, &self.bounds.q, &screen, self.thresh, d,
+                        engine, self.prep, dims, offs, &self.bounds.q, &screen, self.thresh, d,
                         s1, s2, &mut mode, true,
                     );
                 });

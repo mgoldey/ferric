@@ -57,6 +57,7 @@ use ndarray::{s, Array2, Array3};
 // ---------------------------------------------------------------------------
 
 struct Sys {
+    #[allow(dead_code)] // names the system in debugging sessions
     label: String,
     prep: PreparedBasis,
     c_occ: Array2<f64>,

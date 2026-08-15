@@ -198,9 +198,9 @@ pub fn compute_b_full_mo_with(
         c,
         None,
     )?;
-    Ok(b_flat
+    b_flat
         .into_shape_with_order((naux, nmo, nmo))
-        .map_err(|e| FerricError::General(format!("compute_b_full_mo_with reshape: {e}")))?)
+        .map_err(|e| FerricError::General(format!("compute_b_full_mo_with reshape: {e}")))
 }
 
 /// Compute the RI-MP2 energy for a given set of MO coefficients.

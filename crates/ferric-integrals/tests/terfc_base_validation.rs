@@ -864,6 +864,18 @@ fn limit_terfc_approaches_coulomb_as_r0_grows() {
 /// bit-identically. Requires FERRIC_TERF_TABLE_DIR.
 #[test]
 fn free_omega_terf_plus_terfc_is_coulomb() {
+    // This test exercises the PRODUCTION engine path, which reads only the
+    // env var (no repo terf-tables/ fallback like this file's table_dir()
+    // helper) — so honour the file's documented contract and SKIP with a
+    // note instead of unwrap-aborting the whole workspace gate when the
+    // env is absent (it was the only test in the file that hard-failed).
+    if std::env::var("FERRIC_TERF_TABLE_DIR").is_err() {
+        eprintln!(
+            "skip: FERRIC_TERF_TABLE_DIR not set (repo terf-tables/ exists but \
+             the engine reads only the env var — export it to run this test)"
+        );
+        return;
+    }
     use ferric_core::basis;
     use ferric_core::mol::Molecule;
     use ferric_integrals::basis_bridge::PreparedBasis;

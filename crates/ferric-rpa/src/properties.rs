@@ -660,7 +660,7 @@ pub fn pdep_polarizability_static_unrestricted(
 ///     μ^{A,i}_pq = ⟨p| w^A_Becke(r) · r_i |q⟩  (Becke-weighted AO dipole)
 ///     μ^i = Σ_A μ^{A,i}                       (sum-rule exact for Becke)
 /// ```
-
+///
 /// How many chunk-partials (each `natoms * 3 * nbf^2 * 8` bytes) may be live
 /// at once, given a byte budget. Floored at rayon's worker count so banding
 /// never starves parallelism below one chunk per worker (mirrors
@@ -798,7 +798,7 @@ fn dipole_band_width_with_threads(
 /// and fold each band
 /// into the running accumulator in ascending order before moving to the next
 /// band. At most one band of partials is ever live, not all chunks at once.
-#[allow(clippy::too_many_arguments)]
+///
 /// Crate-visible alias so `dispersion.rs` can share this exact accumulation
 /// instead of maintaining a second, serial copy over a monolithic chi.
 #[allow(clippy::too_many_arguments)]

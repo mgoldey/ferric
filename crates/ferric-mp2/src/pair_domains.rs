@@ -95,7 +95,7 @@ impl PairDomains {
     pub fn is_complete(&self) -> bool {
         let total_pairs = self.nocc * (self.nocc + 1) / 2;
         self.pairs.len() == total_pairs
-            && self.coupled.iter().enumerate().all(|(_, c)| c.len() == self.pairs.len())
+            && self.coupled.iter().all(|c| c.len() == self.pairs.len())
     }
 }
 

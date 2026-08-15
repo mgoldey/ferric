@@ -177,7 +177,7 @@ impl<'a> DirectJK<'a> {
                     }
                     pool.with(|engine| {
                         local_count += scatter_bra_pair(
-                            engine, prep, &dims, &offs, q_table, &screen, thresh, d, s1, s2,
+                            engine, prep, dims, offs, q_table, &screen, thresh, d, s1, s2,
                             &mut mode, true,
                         );
                     });

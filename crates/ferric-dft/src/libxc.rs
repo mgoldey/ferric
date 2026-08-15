@@ -329,7 +329,7 @@ impl XcFunctional {
             return Err(LibxcError::UnknownName(name.to_string()));
         }
 
-        let ptr = Self::alloc_and_init_unlocked(id, nspin, &name.to_string())?;
+        let ptr = Self::alloc_and_init_unlocked(id, nspin, name)?;
         let family = infer_family_from_name(name);
         Ok(Self { ptr, family, nspin, libxc_id: id, ext_params: None })
     }
