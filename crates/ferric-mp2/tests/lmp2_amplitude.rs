@@ -428,6 +428,55 @@ fn pair_gate_drops_pairs_with_bounded_cost_and_mutates_loudly() {
 #[test]
 #[ignore]
 fn bench_wall_clock_alkane_series() {
+    println!("mol      eps    op      E_corr        dE_vs_can  keep    dom(max)  t_asm(s) t_solve(s) t_ref(s) raggedx gated");
+    // ---- part 2: WHITENED path (fit_radius None) — the rows where the
+    // Schwarz candidate screen actually acts; C16 added to show the
+    // (nv/|C|)^2 growth of its margin ----
+    println!();
+    println!("-- whitened path (Schwarz candidates active), fit_radius = None --");
+    for xyz in ["alkane_8.xyz", "alkane_12.xyz", "alkane_16.xyz"] {
+        let su = setup(xyz);
+        let nc = su.mol.atoms.iter().filter(|a| a.z == 6).count();
+        for (opname, op, cal) in
+            [("coul", Operator::coulomb(), 0.7), ("erfc1", Operator::erfc(1.0), 0.02)]
+        {
+            for eps in [1e-3, 1e-4] {
+                let cfg = AmplitudeLmp2Config {
+                    eps,
+                    frozen_core: nc,
+                    pair_gate_cal: Some(cal),
+                    fit_radius_bohr: None,
+                    ..Default::default()
+                };
+                let r = amplitude_lmp2(
+                    &su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &cfg,
+                )
+                .unwrap();
+                println!(
+                    "{:9} {:6.0e} {:6} {:.8} {:+.3e} {:.4} {:4}/{:<4} {:8.2} {:9.2} {:7.2} {:6} {:5}",
+                    xyz.trim_end_matches(".xyz"),
+                    eps,
+                    opname,
+                    r.e_corr,
+                    r.e_corr - r.e_corr_canonical_ri,
+                    r.keep_fraction,
+                    r.dom_max,
+                    r.n_valence_virt + r.n_hard_virt,
+                    r.timings.t_assembly_s,
+                    r.timings.t_solve_s,
+                    r.timings.t_reference_s,
+                    r.dense_flops_per_matvec / r.ragged_flops_per_matvec.max(1),
+                    r.n_pairs_gated,
+                );
+            }
+        }
+    }
+}
+
+/// Part-1 helper kept as the original entry (domain-fit rows).
+#[test]
+#[ignore]
+fn bench_wall_clock_alkane_series_domain_fit() {
     use std::time::Instant;
     println!("mol      eps    op      E_corr        dE_vs_can  keep    dom(max)  t_asm(s) t_solve(s) t_ref(s) raggedx gated");
     for xyz in ["alkane_4.xyz", "alkane_8.xyz", "alkane_12.xyz"] {

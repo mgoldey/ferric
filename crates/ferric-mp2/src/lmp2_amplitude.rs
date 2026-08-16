@@ -65,6 +65,10 @@ pub struct AmplitudeLmp2Config {
     /// ~0.7 Coulomb, ~0.02 erfc ω=1, stable C8→C10). Diagonal pairs are
     /// never gated; eps = 0 makes the gate inert (anchor limit).
     pub pair_gate_cal: Option<f64>,
+    /// Compute the canonical `ri_mp2` reference inside the driver (the
+    /// honesty printout). Default true; benches/production may disable —
+    /// `e_corr_canonical_ri` is then NaN and `t_reference_s` is 0.
+    pub compute_reference: bool,
     /// `Some(r)`: per-pair domain-local same-kernel RI fit — for pair
     /// (i,j) only aux functions within `r` Bohr of either Boys centroid
     /// enter the fit (J_ij = A_D V_DD⁻¹ A_D; with one shared domain and
@@ -84,6 +88,7 @@ impl Default for AmplitudeLmp2Config {
             cg_max_iter: 400,
             eri3_budget_bytes: None,
             pair_gate_cal: None,
+            compute_reference: true,
             fit_radius_bohr: None,
         }
     }
@@ -960,7 +965,7 @@ fn domain_fit_pair(
     r2: f64,
     radius: f64,
 ) -> Result<Array2<f64>, FerricError> {
-    use ndarray_linalg::Inverse;
+    use ndarray_linalg::InverseC;
     let naux = b_flat.nrows();
     let dist2 = |p: usize, k: usize| -> f64 {
         (0..3).map(|x| (aux_xyz[(p, x)] - occ_centers[(k, x)]).powi(2)).sum()
@@ -978,9 +983,10 @@ fn domain_fit_pair(
             vdd[(r_, c_)] = v[(pp, qq)];
         }
     }
+    // SPD same-kernel metric: Cholesky-based inverse (faster + tighter than LU)
     let vdd_inv = vdd
-        .inv()
-        .map_err(|e| FerricError::General(format!("lmp2_amplitude V_DD inverse: {e}")))?;
+        .invc()
+        .map_err(|e| FerricError::General(format!("lmp2_amplitude V_DD Cholesky inverse: {e}")))?;
     let mut a_i = Array2::<f64>::zeros((d, nv));
     let mut a_j = Array2::<f64>::zeros((d, nv));
     for (r_, &pp) in dom.iter().enumerate() {
@@ -1079,17 +1085,22 @@ pub fn amplitude_lmp2_with_virtuals(
             .collect();
         (qv, qmax)
     });
-    let mut pairs: Vec<PairBlock> = Vec::new();
-    for i in 0..no {
-        for j in i..no {
-            if let Some(kp) = &keep_pair {
-                if !kp[i * no + j] {
-                    continue;
-                }
-            }
+    // unique surviving pairs, then PARALLEL per-pair assembly. Results are
+    // collected per pair and flattened in (i, j) order, so the pairs vec —
+    // and hence every downstream accumulation — is deterministic and
+    // thread-count-independent (bit-identity discipline). BLAS stays at 1
+    // thread under rayon per the workspace convention.
+    let unique: Vec<(usize, usize)> = (0..no)
+        .flat_map(|i| (i..no).map(move |j| (i, j)))
+        .filter(|&(i, j)| keep_pair.as_ref().map_or(true, |kp| kp[i * no + j]))
+        .collect();
+    use rayon::prelude::*;
+    let per_pair: Vec<Result<Vec<PairBlock>, FerricError>> = unique
+        .par_iter()
+        .map(|&(i, j)| {
             // symmetric candidate set: a kept iff EITHER orientation's
             // Schwarz bound clears eps (covers the Eq-8 swap test — see
-            // the module tests' screen-exactness anchor)
+            // the tests' screen-exactness anchor)
             let cand: Vec<usize> = match (&q, cfg.eps > 0.0) {
                 (Some((qv, qmax)), true) => (0..nv)
                     .filter(|&a| {
@@ -1100,7 +1111,7 @@ pub fn amplitude_lmp2_with_virtuals(
                 _ => (0..nv).collect(),
             };
             if cand.is_empty() {
-                continue;
+                return Ok(Vec::new());
             }
             let g: Array2<f64> = match (&btilde, &aux_xyz, cfg.fit_radius_bohr) {
                 (Some(bt), _, _) => {
@@ -1133,29 +1144,31 @@ pub fn amplitude_lmp2_with_virtuals(
                 )?,
                 _ => unreachable!("btilde/aux_xyz exactly one is Some"),
             };
-            // domain-fit path returns a FULL (nv, nv) block; candidate
-            // subsets apply to the whitened Gram path only
-            let cand_used: Vec<usize> = if g.nrows() == nv && cand.len() != nv {
-                unreachable!("full block with reduced candidates")
-            } else if g.nrows() == nv {
+            let cand_used: Vec<usize> = if g.nrows() == nv {
                 (0..nv).collect()
             } else {
                 cand.clone()
             };
+            let mut out = Vec::with_capacity(2);
             if let Some(pb) =
                 pair_block_from_g_cand(i, j, &g, &cand_used, nv, f_vv, &fo, &fv, cfg.eps)
             {
-                pairs.push(pb);
+                out.push(pb);
             }
             if i != j {
                 let gt = g.t().to_owned();
                 if let Some(pb) =
                     pair_block_from_g_cand(j, i, &gt, &cand_used, nv, f_vv, &fo, &fv, cfg.eps)
                 {
-                    pairs.push(pb);
+                    out.push(pb);
                 }
             }
-        }
+            Ok(out)
+        })
+        .collect();
+    let mut pairs: Vec<PairBlock> = Vec::new();
+    for r in per_pair {
+        pairs.extend(r?);
     }
     let mut by_i: HashMap<usize, Vec<usize>> = HashMap::new();
     let mut by_j: HashMap<usize, Vec<usize>> = HashMap::new();
@@ -1166,18 +1179,23 @@ pub fn amplitude_lmp2_with_virtuals(
     let rg = Ragged { pairs, by_i, by_j };
     let t_assembly_s = t0.elapsed().as_secs_f64();
 
-    // canonical reference on the same (mol, basis, aux, op, frozen core)
+    // canonical reference on the same (mol, basis, aux, op, frozen core) —
+    // optional (the honesty printout; disable for pure method timing)
     let t0 = std::time::Instant::now();
-    let e_ref = ri_mp2(
-        mol,
-        obs,
-        dfbs,
-        op,
-        rhf,
-        &RiMp2Config { frozen_core: cfg.frozen_core, memory_budget_bytes: cfg.eri3_budget_bytes, ..Default::default() },
-    )?
-    .mp2_corr;
-    let t_reference_s = t0.elapsed().as_secs_f64();
+    let e_ref = if cfg.compute_reference {
+        ri_mp2(
+            mol,
+            obs,
+            dfbs,
+            op,
+            rhf,
+            &RiMp2Config { frozen_core: cfg.frozen_core, memory_budget_bytes: cfg.eri3_budget_bytes, ..Default::default() },
+        )?
+        .mp2_corr
+    } else {
+        f64::NAN
+    };
+    let t_reference_s = if cfg.compute_reference { t0.elapsed().as_secs_f64() } else { 0.0 };
 
     // ---- ragged solve ----
     let t0 = std::time::Instant::now();
