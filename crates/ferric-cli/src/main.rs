@@ -520,8 +520,6 @@ fn run_ksdft(cfg: &Config, bs: &BasisSet, prep: &PreparedBasis, result: &ferric_
     println!("  energy     = {:.10} Hartree", result.energy);
 }
 
-/// `method.kind = "rimp2"`. Extracted verbatim from the former `main()`
-
 /// `method.kind = "lmp2"`: amplitude-threshold local MP2
 /// (`ferric_mp2::lmp2_amplitude`, WSHG23 single-threshold; closed-shell).
 /// The ε=0 limit reproduces `rimp2` exactly (library anchor <=1e-9); the
@@ -2125,12 +2123,12 @@ fn run_pdep_rpa_arm(
             // second moments of orbitals + density: one-electron cost,
             // computed whenever the pieces are already in hand
             let orbital_moments_opt = if result.spin == ferric_scf::result::Spin::Restricted {
-                ferric_integrals::oneelectron::orbital_moments(&prep, result.mos_r()).ok()
+                ferric_integrals::oneelectron::orbital_moments(prep, result.mos_r()).ok()
             } else {
                 None
             };
             let density_m2_opt = dm_ref.and_then(|d| {
-                ferric_integrals::oneelectron::density_second_moment(&prep, d, [0.0; 3])
+                ferric_integrals::oneelectron::density_second_moment(prep, d, [0.0; 3])
                     .ok()
                     .map(|m| {
                         ndarray::Array2::from_shape_fn((3, 3), |(p, q)| m[p][q])

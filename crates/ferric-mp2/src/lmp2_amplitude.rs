@@ -525,27 +525,7 @@ struct Ragged {
     by_j: HashMap<usize, Vec<usize>>,
 }
 
-/// Build one pair's ragged block from its dense (nv, nv) J block `g`
-/// (g[a, b] = (ia|jb)). Returns None when the Eq-8 test retains nothing.
-/// The swap partner (ib|ja) is g[b, a] — in-block, so the symmetric test
-/// never needs any other pair's integrals.
-#[allow(clippy::too_many_arguments)]
-fn pair_block_from_g(
-    i: usize,
-    j: usize,
-    g: &Array2<f64>,
-    _f_oo: &Array2<f64>,
-    f_vv: &Array2<f64>,
-    fo: &[f64],
-    fv: &[f64],
-    eps: f64,
-) -> Option<PairBlock> {
-    let nv = g.nrows();
-    let cand: Vec<usize> = (0..nv).collect();
-    pair_block_from_g_cand(i, j, g, &cand, nv, f_vv, fo, fv, eps)
-}
-
-/// [`pair_block_from_g`] over a CANDIDATE index subset: `g` is
+/// Build one pair's ragged block over a CANDIDATE index subset: `g` is
 /// (cand.len(), cand.len()) with local indices mapping to the global
 /// virtual indices `cand[..]`. Every Eq-8-retained element is guaranteed
 /// inside the candidate square when `cand` comes from the Schwarz screen
