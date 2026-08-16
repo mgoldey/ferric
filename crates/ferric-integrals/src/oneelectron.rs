@@ -413,6 +413,61 @@ pub fn r2_moment(prep: &PreparedBasis, origin: [f64; 3]) -> Result<Array2<f64>, 
     Ok(&(&m[0] + &m[3]) + &m[5])
 }
 
+/// Per-orbital centroids ⟨p|r|p⟩ (rows of the returned (n, 3) array) and
+/// spatial spreads σ_p = sqrt(⟨p|r²|p⟩ − |⟨p|r|p⟩|²) for the columns of `c`.
+///
+/// The spread is origin-independent by construction; centroids are reported
+/// in the lab frame (origin at 0). Mirrors Q-Chem's "second moments of
+/// orbitals" property; useful as an ML descriptor and as the pair-gate
+/// input the amplitude-threshold family uses.
+pub fn orbital_moments(
+    prep: &PreparedBasis,
+    c: &Array2<f64>,
+) -> Result<(Array2<f64>, Vec<f64>), FerricError> {
+    let dip = dipole(prep, [0.0; 3])?;
+    let r2 = r2_moment(prep, [0.0; 3])?;
+    let n = c.ncols();
+    let mut centers = Array2::<f64>::zeros((n, 3));
+    let mut spreads = Vec::with_capacity(n);
+    for p in 0..n {
+        let col = c.column(p);
+        let mut c2 = 0.0;
+        for (x, dm) in dip.iter().enumerate() {
+            let v = col.dot(&dm.dot(&col));
+            centers[(p, x)] = v;
+            c2 += v * v;
+        }
+        let r2v = col.dot(&r2.dot(&col));
+        spreads.push((r2v - c2).max(0.0).sqrt());
+    }
+    Ok((centers, spreads))
+}
+
+/// Electronic-density second-moment tensor about `origin`:
+/// `M_xy = Σ_μν D_μν ⟨μ|(r−O)_x (r−O)_y|ν⟩` (symmetric 3×3; trace =
+/// ⟨r²⟩ of the density — the spatial-extent measure).
+///
+/// `d` is the total (spin-summed) AO density matrix. Verified by the exact
+/// density-level translational identity against [`dipole`]/[`overlap`]
+/// (see the tests): M(O+d) = M(O) − d⊗μ − μ⊗d + (d⊗d)·N with μ the
+/// electronic dipole-integral contraction and N = Tr(D S).
+pub fn density_second_moment(
+    prep: &PreparedBasis,
+    d: &Array2<f64>,
+    origin: [f64; 3],
+) -> Result<[[f64; 3]; 3], FerricError> {
+    let m = second_moment(prep, origin)?;
+    // component order [xx, xy, xz, yy, yz, zz] -> (p,q)
+    let pq: [(usize, usize); 6] = [(0, 0), (0, 1), (0, 2), (1, 1), (1, 2), (2, 2)];
+    let mut out = [[0.0f64; 3]; 3];
+    for (k, &(p, q)) in pq.iter().enumerate() {
+        let v = (d * &m[k]).sum();
+        out[p][q] = v;
+        out[q][p] = v;
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -463,6 +518,72 @@ mod tests {
             max_dropped > 1e-3,
             "identity check vacuous: dropped-term residual only {max_dropped:.2e}"
         );
+    }
+
+    /// Density-level translational identity for the second-moment tensor:
+    /// with N = Tr(D S) and electronic dipole μ_x = Σ D ∘ ⟨x⟩ about O,
+    ///   M(O+d)_pq = M(O)_pq − d_p μ_q − d_q μ_p + d_p d_q N — exact.
+    /// Uses a deliberately asymmetric D (outer product of two AO vectors,
+    /// symmetrized) so the check is not vacuous for off-diagonal components.
+    #[test]
+    fn density_second_moment_translational_identity() {
+        let prep = water_sto3g();
+        let nb = prep.nbasis();
+        // synthetic symmetric "density" with full off-diagonal structure
+        let mut d = Array2::<f64>::zeros((nb, nb));
+        for i in 0..nb {
+            for j in 0..nb {
+                d[(i, j)] = 0.3 + 0.1 * ((i * 7 + j * 3) % 5) as f64;
+            }
+        }
+        let d = &d + &d.t().to_owned();
+        let s = overlap(&prep);
+        let n_e = (&d * &s).sum();
+        let o1 = [0.0; 3];
+        let sh = [0.29, -0.63, 0.41];
+        let o2 = [sh[0], sh[1], sh[2]];
+        let dip = dipole(&prep, o1).unwrap();
+        let mu: Vec<f64> = (0..3).map(|x| (&d * &dip[x]).sum()).collect();
+        let m1 = density_second_moment(&prep, &d, o1).unwrap();
+        let m2 = density_second_moment(&prep, &d, o2).unwrap();
+        let mut max_dev: f64 = 0.0;
+        for p in 0..3 {
+            for q in 0..3 {
+                let expect = m1[p][q] - sh[p] * mu[q] - sh[q] * mu[p] + sh[p] * sh[q] * n_e;
+                max_dev = max_dev.max((m2[p][q] - expect).abs());
+            }
+        }
+        assert!(max_dev < 1e-10, "density translational identity dev {max_dev:.2e}");
+    }
+
+    /// Orbital moments: spreads strictly positive; centroid of a symmetric
+    /// (normalized-eigenvector) orbital set finite; and σ² must equal the
+    /// direct ⟨r²⟩ − |⟨r⟩|² evaluation elementwise.
+    #[test]
+    fn orbital_moments_match_direct_evaluation() {
+        let prep = water_sto3g();
+        let nb = prep.nbasis();
+        // normalized AO unit vectors (orbital_moments takes any columns)
+        let s = overlap(&prep);
+        let mut c = Array2::<f64>::zeros((nb, nb));
+        for k in 0..nb {
+            c[(k, k)] = 1.0 / s[(k, k)].sqrt();
+        }
+        let (centers, spreads) = orbital_moments(&prep, &c).unwrap();
+        let dipm = dipole(&prep, [0.0; 3]).unwrap();
+        let r2 = r2_moment(&prep, [0.0; 3]).unwrap();
+        for p in 0..nb {
+            assert!(spreads[p] > 0.0, "spread[{p}] not positive");
+            let col = c.column(p);
+            let mut c2 = 0.0;
+            for (xax, dm) in dipm.iter().enumerate() {
+                let v = col.dot(&dm.dot(&col));
+                assert!((centers[(p, xax)] - v).abs() < 1e-12);
+                c2 += v * v;
+            }
+            let sig = (col.dot(&r2.dot(&col)) - c2).max(0.0).sqrt();
+            assert!((spreads[p] - sig).abs() < 1e-12);
+        }
     }
 
     /// r² diagonal must be strictly positive and symmetric, and the trace

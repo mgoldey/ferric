@@ -548,6 +548,7 @@ fn run_rimp2(
         &RiMp2Config {
             frozen_core: cfg.mp2.frozen_core,
             memory_budget_bytes: budget_bytes,
+            kappa: cfg.mp2.kappa,
             ..Default::default()
         },
     )
@@ -2058,11 +2059,29 @@ fn run_pdep_rpa_arm(
                 }
             }
 
+            // second moments of orbitals + density: one-electron cost,
+            // computed whenever the pieces are already in hand
+            let orbital_moments_opt = if result.spin == ferric_scf::result::Spin::Restricted {
+                ferric_integrals::oneelectron::orbital_moments(&prep, result.mos_r()).ok()
+            } else {
+                None
+            };
+            let density_m2_opt = dm_ref.and_then(|d| {
+                ferric_integrals::oneelectron::density_second_moment(&prep, d, [0.0; 3])
+                    .ok()
+                    .map(|m| {
+                        ndarray::Array2::from_shape_fn((3, 3), |(p, q)| m[p][q])
+                    })
+            });
+
             let npz_bundle = NpzBundle {
                 mo_coeffs: if result.spin == ferric_scf::result::Spin::Restricted { Some(result.mos_r()) } else { None },
                 orbital_energies: if result.spin == ferric_scf::result::Spin::Restricted { Some(result.eps_r()) } else { None },
                 pdep_eigenvectors: Some(&rpa_result.eigenpotentials),
                 boys_coeffs: None,
+                orbital_centers: orbital_moments_opt.as_ref().map(|(c, _)| c),
+                orbital_spreads: orbital_moments_opt.as_ref().map(|(_, s)| s.as_slice()),
+                density_second_moment: density_m2_opt.as_ref(),
                 coords: Some(&coords_arr),
                 atomic_numbers: Some(&znums),
                 density_matrix: dm_ref,

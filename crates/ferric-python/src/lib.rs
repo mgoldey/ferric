@@ -1374,6 +1374,45 @@ fn hirshfeld_charges(mol: &PyMolecule, basis_set: &PyBasisSet, result: DensitySo
         .map_err(make_err)
 }
 
+
+/// Per-orbital centroids <p|r|p> (Bohr, list of [x,y,z]) and spatial spreads
+/// sigma_p = sqrt(<r^2> - |<r>|^2) (Bohr) for the converged restricted MOs.
+/// Mirrors Q-Chem 7's "second moments of orbitals" property; the spreads are
+/// the pair-gate inputs of the amplitude-threshold local-correlation family.
+#[pyfunction]
+fn orbital_moments(
+    mol: &PyMolecule,
+    basis_set: &PyBasisSet,
+    result: DensitySource,
+) -> PyResult<(Vec<[f64; 3]>, Vec<f64>)> {
+    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    let scf = result.scf();
+    if scf.spin != ferric_scf::result::Spin::Restricted {
+        return Err(make_err(ferric_core::FerricError::General(
+            "orbital_moments: restricted (RHF/RKS) results only".into(),
+        )));
+    }
+    let (centers, spreads) =
+        ferric_integrals::oneelectron::orbital_moments(&prep, scf.mos_r()).map_err(make_err)?;
+    let c: Vec<[f64; 3]> = (0..centers.nrows())
+        .map(|p| [centers[(p, 0)], centers[(p, 1)], centers[(p, 2)]])
+        .collect();
+    Ok((c, spreads))
+}
+
+/// Electronic-density second-moment tensor (3x3 nested list, Bohr^2) about
+/// the origin: M_xy = sum_uv D_uv <u|x y|v>; trace = <r^2> of the density.
+#[pyfunction]
+fn density_second_moment(
+    mol: &PyMolecule,
+    basis_set: &PyBasisSet,
+    result: DensitySource,
+) -> PyResult<[[f64; 3]; 3]> {
+    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    ferric_integrals::oneelectron::density_second_moment(&prep, result.density(), [0.0; 3])
+        .map_err(make_err)
+}
+
 /// Löwdin (symmetric-orthogonalization) partial charges (units of e).
 /// Closed-shell only. `result` is an `RhfResult` or `DftResult` from a
 /// converged SCF.
@@ -3535,6 +3574,8 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(esp_at_points, m)?)?;
     m.add_function(wrap_pyfunction!(hirshfeld_charges, m)?)?;
     m.add_function(wrap_pyfunction!(lowdin_charges, m)?)?;
+    m.add_function(wrap_pyfunction!(orbital_moments, m)?)?;
+    m.add_function(wrap_pyfunction!(density_second_moment, m)?)?;
     m.add_function(wrap_pyfunction!(mulliken_charges, m)?)?;
     m.add_function(wrap_pyfunction!(chelpg_charges, m)?)?;
     m.add_function(wrap_pyfunction!(resp_charges, m)?)?;

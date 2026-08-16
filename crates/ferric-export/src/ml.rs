@@ -86,6 +86,12 @@ pub struct NpzBundle<'a> {
     pub coords: Option<&'a Array2<f64>>,
     pub atomic_numbers: Option<&'a [usize]>,
     pub density_matrix: Option<&'a Array2<f64>>,
+    /// Per-MO centroids (n, 3) Bohr — pairs with `orbital_spreads`.
+    pub orbital_centers: Option<&'a Array2<f64>>,
+    /// Per-MO spatial spreads sigma = sqrt(<r^2> - |<r>|^2), Bohr.
+    pub orbital_spreads: Option<&'a [f64]>,
+    /// Electronic-density second-moment tensor (3, 3) about the origin.
+    pub density_second_moment: Option<&'a Array2<f64>>,
     pub dipole: Option<&'a [f64; 3]>,
     pub charges: ChargeSchemes<'a>,
     pub polarizability: PolarizabilityBundle<'a>,
@@ -115,6 +121,17 @@ pub fn export_npz(path: &str, bundle: &NpzBundle) -> Result<(), ExportError> {
 
     if let Some(bc) = bundle.boys_coeffs {
         writer.add_array("boys_coeffs", bc).map_err(|e| ExportError::Other(e.to_string()))?;
+    }
+
+    if let Some(oc) = bundle.orbital_centers {
+        writer.add_array("orbital_centers", oc).map_err(|e| ExportError::Other(e.to_string()))?;
+    }
+    if let Some(os) = bundle.orbital_spreads {
+        let a = Array1::from_vec(os.to_vec());
+        writer.add_array("orbital_spreads", &a).map_err(|e| ExportError::Other(e.to_string()))?;
+    }
+    if let Some(m2) = bundle.density_second_moment {
+        writer.add_array("density_second_moment", m2).map_err(|e| ExportError::Other(e.to_string()))?;
     }
 
     if let Some(c) = bundle.coords {

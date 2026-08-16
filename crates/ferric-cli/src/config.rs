@@ -173,6 +173,12 @@ pub struct Mp2Cfg {
     // stale key now errors instead of lying.
     /// Range-separation parameter ω in Å⁻¹ (for att-rimp2 and rs-mp2-rpa). Default 0.420.
     pub omega: Option<f64>,
+    /// κ-regularized MP2 (Lee/Head-Gordon JCTC 2018) for `kind = "rimp2"`:
+    /// damps every amplitude by (1 − e^{−κΔ})², κ in inverse Hartree
+    /// (κ→∞ recovers plain MP2; the paper's recommended value is ~1.45).
+    /// Omitted = plain MP2, byte-identical code path. Validated finite/>0
+    /// at the library boundary.
+    pub kappa: Option<f64>,
     /// SCS opposite-spin scaling coefficient.
     pub c_os: Option<f64>,
     /// SCS same-spin scaling coefficient.

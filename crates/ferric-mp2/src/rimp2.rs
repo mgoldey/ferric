@@ -45,6 +45,13 @@ pub struct RiMp2Config {
     /// stays under the pre-existing RI error. Do not enable in production paths
     /// until the error gate in `benchmarks/metric-attenuation/` passes.
     pub metric_op: Option<Operator>,
+    /// κ-regularized MP2 (Lee & Head-Gordon, JCTC 14, 5203 (2018)):
+    /// every amplitude is damped by `(1 − e^{−κΔ})²` with
+    /// `Δ = ε_a + ε_b − ε_i − ε_j > 0`. `None` (default, via derive) is plain
+    /// MP2 through the byte-identical original loop; `Some(κ)` requires κ
+    /// finite and > 0 (κ → ∞ recovers MP2, κ → 0 turns correlation off —
+    /// both are tested limits). Units: inverse Hartree.
+    pub kappa: Option<f64>,
 }
 
 /// Number of active (correlated) occupied orbitals after freezing
@@ -838,8 +845,15 @@ pub fn ri_mp2_spin_components(
         &mut src, &v2c_inv_sqrt, &c_occ, &c_vir, None, Some(budget_bytes),
     )?; // (naux, nocc*nvir)
 
-    let sc = spin_components_from_b_ov(
-        &b_flat, eps, nocc, nvir, first_occ, nocc_total,
+    if let Some(k) = config.kappa {
+        if !k.is_finite() || k <= 0.0 {
+            return Err(FerricError::General(format!(
+                "RiMp2Config.kappa must be finite and > 0 (got {k}); use None for plain MP2"
+            )));
+        }
+    }
+    let sc = spin_components_from_b_ov_kappa(
+        &b_flat, eps, nocc, nvir, first_occ, nocc_total, config.kappa,
     );
     Ok((sc, b_flat))
 }
@@ -856,6 +870,21 @@ pub fn spin_components_from_b_ov(
     nvir: usize,
     first_occ: usize,
     nocc_total: usize,
+) -> SpinComponents {
+    spin_components_from_b_ov_kappa(b_ov, eps, nocc, nvir, first_occ, nocc_total, None)
+}
+
+/// [`spin_components_from_b_ov`] with optional κ-regularization. `None`
+/// takes the ORIGINAL inner loop (byte-identical); `Some(κ)` damps every
+/// (i,a,j,b) term by `(1 − e^{−κΔ})²` (Δ = −denom > 0 for a gapped system).
+pub fn spin_components_from_b_ov_kappa(
+    b_ov: &Array2<f64>,
+    eps: &[f64],
+    nocc: usize,
+    nvir: usize,
+    first_occ: usize,
+    nocc_total: usize,
+    kappa: Option<f64>,
 ) -> SpinComponents {
     // (ia|jb) comes from i-blocked wide GEMMs G_i = B_i^T·B (nvir x nocc*nvir)
     // instead of per-element strided dots over P: same FLOPs at BLAS3
@@ -933,13 +962,31 @@ pub fn spin_components_from_b_ov(
                 let e_ij = eps[first_occ + i] + eps[first_occ + j];
                 let mut e_os_ij = 0.0;
                 let mut e_ss_ij = 0.0;
-                for a in 0..nvir {
-                    for b in 0..nvir {
-                        let g_ab = g_i[(a, jcol + b)]; // (ia|jb)
-                        let g_ba = g_i[(b, jcol + a)]; // (ib|ja)
-                        let denom = e_ij - eps[nocc_total + a] - eps[nocc_total + b];
-                        e_os_ij += g_ab * g_ab / denom;
-                        e_ss_ij += g_ab * (g_ab - g_ba) / denom;
+                match kappa {
+                    None => {
+                        for a in 0..nvir {
+                            for b in 0..nvir {
+                                let g_ab = g_i[(a, jcol + b)]; // (ia|jb)
+                                let g_ba = g_i[(b, jcol + a)]; // (ib|ja)
+                                let denom = e_ij - eps[nocc_total + a] - eps[nocc_total + b];
+                                e_os_ij += g_ab * g_ab / denom;
+                                e_ss_ij += g_ab * (g_ab - g_ba) / denom;
+                            }
+                        }
+                    }
+                    Some(k) => {
+                        for a in 0..nvir {
+                            for b in 0..nvir {
+                                let g_ab = g_i[(a, jcol + b)]; // (ia|jb)
+                                let g_ba = g_i[(b, jcol + a)]; // (ib|ja)
+                                let denom = e_ij - eps[nocc_total + a] - eps[nocc_total + b];
+                                // Δ = −denom > 0; damp = (1 − e^{−κΔ})²
+                                let d1 = 1.0 - (k * denom).exp();
+                                let damp = d1 * d1;
+                                e_os_ij += damp * g_ab * g_ab / denom;
+                                e_ss_ij += damp * g_ab * (g_ab - g_ba) / denom;
+                            }
+                        }
                     }
                 }
                 e_os_i += fac * e_os_ij;
