@@ -2355,59 +2355,31 @@
     "cc": 1.0,
     "mi": 153.0837736153568
   },
-  "home/matt/qc/ferric/crates/ferric-cc/src/linlccd_amplitude.rs::<anonymous>@150": {
+  "home/matt/qc/ferric/crates/ferric-cc/src/linlccd_amplitude.rs::<anonymous>@142": {
     "cc": 1.0,
     "mi": 153.0837736153568
   },
-  "home/matt/qc/ferric/crates/ferric-cc/src/linlccd_amplitude.rs::<anonymous>@189": {
+  "home/matt/qc/ferric/crates/ferric-cc/src/linlccd_amplitude.rs::<anonymous>@149": {
+    "cc": 16.0,
+    "mi": 61.71121683196449
+  },
+  "home/matt/qc/ferric/crates/ferric-cc/src/linlccd_amplitude.rs::<anonymous>@232": {
     "cc": 1.0,
     "mi": 159.05793486938265
   },
-  "home/matt/qc/ferric/crates/ferric-cc/src/linlccd_amplitude.rs::<anonymous>@190": {
-    "cc": 3.0,
-    "mi": 113.0691726231288
-  },
-  "home/matt/qc/ferric/crates/ferric-cc/src/linlccd_amplitude.rs::<anonymous>@200": {
-    "cc": 5.0,
-    "mi": 97.0312693682205
-  },
-  "home/matt/qc/ferric/crates/ferric-cc/src/linlccd_amplitude.rs::<anonymous>@213": {
-    "cc": 5.0,
-    "mi": 97.22744562865321
-  },
-  "home/matt/qc/ferric/crates/ferric-cc/src/linlccd_amplitude.rs::<anonymous>@226": {
-    "cc": 14.0,
-    "mi": 66.62381770630488
-  },
-  "home/matt/qc/ferric/crates/ferric-cc/src/linlccd_amplitude.rs::<anonymous>@287": {
-    "cc": 1.0,
-    "mi": 156.27079806218674
-  },
-  "home/matt/qc/ferric/crates/ferric-cc/src/linlccd_amplitude.rs::<anonymous>@292": {
-    "cc": 1.0,
-    "mi": 160.0060069647112
-  },
-  "home/matt/qc/ferric/crates/ferric-cc/src/linlccd_amplitude.rs::<anonymous>@294": {
-    "cc": 1.0,
-    "mi": 159.05793486938265
-  },
-  "home/matt/qc/ferric/crates/ferric-cc/src/linlccd_amplitude.rs::<anonymous>@295": {
-    "cc": 1.0,
-    "mi": 147.89263063482193
-  },
-  "home/matt/qc/ferric/crates/ferric-cc/src/linlccd_amplitude.rs::amplitude_linlccd@78": {
+  "home/matt/qc/ferric/crates/ferric-cc/src/linlccd_amplitude.rs::amplitude_linlccd@79": {
     "cc": 4.0,
     "mi": 88.29770886794886
   },
-  "home/matt/qc/ferric/crates/ferric-cc/src/linlccd_amplitude.rs::amplitude_linlccd_with_virtuals@101": {
-    "cc": 71.0,
-    "mi": 16.355813550835435
+  "home/matt/qc/ferric/crates/ferric-cc/src/linlccd_amplitude.rs::amplitude_linlccd_with_virtuals@102": {
+    "cc": 36.0,
+    "mi": 36.946047296325176
   },
-  "home/matt/qc/ferric/crates/ferric-cc/src/linlccd_amplitude.rs::default@62": {
+  "home/matt/qc/ferric/crates/ferric-cc/src/linlccd_amplitude.rs::default@63": {
     "cc": 1.0,
     "mi": 132.43687749961728
   },
-  "home/matt/qc/ferric/crates/ferric-cc/src/linlccd_amplitude.rs::needs_vvvv_pub@360": {
+  "home/matt/qc/ferric/crates/ferric-cc/src/linlccd_amplitude.rs::needs_vvvv_pub@247": {
     "cc": 1.0,
     "mi": 133.18100188654878
   },
@@ -10127,91 +10099,115 @@
     "cc": 5.0,
     "mi": 84.15344296585889
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::<anonymous>@169": {
-    "cc": 1.0,
-    "mi": 157.8484854211024
-  },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::<anonymous>@170": {
-    "cc": 2.0,
-    "mi": 150.21530305195446
-  },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::<anonymous>@171": {
-    "cc": 1.0,
-    "mi": 159.05793486938265
-  },
   "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::<anonymous>@185": {
     "cc": 1.0,
-    "mi": 156.27079806218674
+    "mi": 157.04690188600065
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::<anonymous>@191": {
-    "cc": 3.0,
-    "mi": 113.0691726231288
-  },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::<anonymous>@200": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::<anonymous>@186": {
     "cc": 1.0,
     "mi": 159.05793486938265
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::<anonymous>@218": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::<anonymous>@192": {
+    "cc": 1.0,
+    "mi": 149.74078562939675
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::<anonymous>@212": {
     "cc": 1.0,
     "mi": 159.05793486938265
-  },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::<anonymous>@231": {
-    "cc": 1.0,
-    "mi": 154.40593499075717
   },
   "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::<anonymous>@243": {
     "cc": 1.0,
     "mi": 159.05793486938265
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::<anonymous>@284": {
-    "cc": 3.0,
-    "mi": 108.45555571753616
-  },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::<anonymous>@288": {
-    "cc": 1.0,
-    "mi": 153.0837736153568
-  },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::<anonymous>@301": {
-    "cc": 1.0,
-    "mi": 153.0837736153568
-  },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::<anonymous>@303": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::<anonymous>@281": {
     "cc": 1.0,
     "mi": 157.8484854211024
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::<anonymous>@316": {
-    "cc": 1.0,
-    "mi": 153.0837736153568
+  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::<anonymous>@282": {
+    "cc": 2.0,
+    "mi": 150.21530305195446
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::<anonymous>@326": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::<anonymous>@283": {
+    "cc": 1.0,
+    "mi": 159.05793486938265
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::<anonymous>@297": {
+    "cc": 1.0,
+    "mi": 156.27079806218674
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::<anonymous>@303": {
+    "cc": 3.0,
+    "mi": 113.0691726231288
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::<anonymous>@312": {
+    "cc": 1.0,
+    "mi": 159.05793486938265
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::<anonymous>@330": {
+    "cc": 1.0,
+    "mi": 159.05793486938265
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::<anonymous>@343": {
     "cc": 1.0,
     "mi": 154.40593499075717
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::amplitude_drpa@128": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::<anonymous>@355": {
+    "cc": 1.0,
+    "mi": 159.05793486938265
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::<anonymous>@396": {
+    "cc": 3.0,
+    "mi": 108.45555571753616
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::<anonymous>@400": {
+    "cc": 1.0,
+    "mi": 153.0837736153568
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::<anonymous>@413": {
+    "cc": 1.0,
+    "mi": 153.0837736153568
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::<anonymous>@415": {
+    "cc": 1.0,
+    "mi": 157.8484854211024
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::<anonymous>@428": {
+    "cc": 1.0,
+    "mi": 153.0837736153568
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::<anonymous>@438": {
+    "cc": 1.0,
+    "mi": 154.40593499075717
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::amplitude_drpa@135": {
     "cc": 4.0,
     "mi": 89.35314139126142
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::amplitude_drpa_with_virtuals@150": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::amplitude_drpa_dense@262": {
     "cc": 25.0,
     "mi": 45.701563196858004
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::canonical_plasmon_drpa@266": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::amplitude_drpa_with_virtuals@157": {
+    "cc": 20.0,
+    "mi": 48.718710021222435
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::canonical_plasmon_drpa@378": {
     "cc": 21.0,
     "mi": 56.921326881485896
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::default@62": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::default@69": {
     "cc": 1.0,
-    "mi": 132.43687749961728
+    "mi": 131.78602915625646
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::fock_super@86": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::fock_super@93": {
     "cc": 8.0,
     "mi": 76.60381394222529
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::to2@122": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::to2@129": {
     "cc": 1.0,
     "mi": 121.14254231932887
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::to4@118": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/drpa_amplitude.rs::to4@125": {
     "cc": 1.0,
     "mi": 127.39841357345975
   },
@@ -10791,251 +10787,203 @@
     "cc": 6.0,
     "mi": 83.38676995040655
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@1004": {
-    "cc": 7.0,
-    "mi": 84.49777683629236
-  },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@1013": {
-    "cc": 1.0,
-    "mi": 148.24283686430894
-  },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@1033": {
-    "cc": 1.0,
-    "mi": 154.40593499075717
-  },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@1034": {
-    "cc": 1.0,
-    "mi": 154.40593499075717
-  },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@1058": {
-    "cc": 3.0,
-    "mi": 101.37035600961467
-  },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@1064": {
-    "cc": 1.0,
-    "mi": 146.94558828031344
-  },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@1074": {
-    "cc": 1.0,
-    "mi": 155.01840677617037
-  },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@1075": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@154": {
     "cc": 1.0,
     "mi": 153.0837736153568
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@1080": {
-    "cc": 16.0,
-    "mi": 57.89306074763057
-  },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@1086": {
-    "cc": 2.0,
-    "mi": 122.53622594403029
-  },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@1218": {
-    "cc": 1.0,
-    "mi": 159.05793486938265
-  },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@1228": {
-    "cc": 1.0,
-    "mi": 159.05793486938265
-  },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@153": {
-    "cc": 1.0,
-    "mi": 153.0837736153568
-  },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@170": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@171": {
     "cc": 1.0,
     "mi": 157.8484854211024
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@189": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@190": {
     "cc": 1.0,
     "mi": 156.27079806218674
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@200": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@201": {
     "cc": 1.0,
     "mi": 157.8484854211024
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@208": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@209": {
     "cc": 1.0,
     "mi": 154.40593499075717
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@215": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@216": {
     "cc": 1.0,
     "mi": 150.63975474327898
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@255": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@256": {
     "cc": 1.0,
     "mi": 153.0837736153568
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@265": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@266": {
     "cc": 1.0,
     "mi": 153.97676999581998
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@268": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@269": {
     "cc": 1.0,
     "mi": 153.97676999581998
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@348": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@349": {
     "cc": 1.0,
     "mi": 127.01087943392437
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@384": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@385": {
     "cc": 1.0,
     "mi": 157.8484854211024
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@402": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@403": {
     "cc": 1.0,
     "mi": 153.42889531439928
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@435": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@436": {
     "cc": 1.0,
     "mi": 153.85806030933648
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@462": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@463": {
     "cc": 1.0,
     "mi": 153.0837736153568
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@565": {
-    "cc": 1.0,
-    "mi": 156.27079806218674
-  },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@566": {
-    "cc": 1.0,
-    "mi": 156.27079806218674
-  },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@567": {
-    "cc": 1.0,
-    "mi": 156.27079806218674
-  },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@568": {
-    "cc": 1.0,
-    "mi": 156.27079806218674
-  },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@620": {
-    "cc": 1.0,
-    "mi": 152.48082321907071
-  },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@634": {
-    "cc": 1.0,
-    "mi": 149.74078562939675
-  },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@646": {
-    "cc": 2.0,
-    "mi": 115.38931789010485
-  },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@649": {
-    "cc": 1.0,
-    "mi": 152.5881606803743
-  },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@841": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@596": {
     "cc": 1.0,
     "mi": 151.8492041915592
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@855": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@610": {
     "cc": 1.0,
     "mi": 153.0837736153568
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@950": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@705": {
     "cc": 2.0,
     "mi": 126.40196303100603
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@951": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@706": {
     "cc": 1.0,
     "mi": 148.5531025049949
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@953": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@708": {
     "cc": 2.0,
     "mi": 148.77517493010666
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@969": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@724": {
     "cc": 1.0,
     "mi": 153.0837736153568
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::amplitude_lmp2@758": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@759": {
+    "cc": 7.0,
+    "mi": 84.53824396659107
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@768": {
+    "cc": 1.0,
+    "mi": 148.24283686430894
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@783": {
+    "cc": 1.0,
+    "mi": 154.40593499075717
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@784": {
+    "cc": 1.0,
+    "mi": 154.40593499075717
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@805": {
+    "cc": 3.0,
+    "mi": 101.20796028747263
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@811": {
+    "cc": 1.0,
+    "mi": 146.94558828031344
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@816": {
+    "cc": 1.0,
+    "mi": 155.01840677617037
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@817": {
+    "cc": 1.0,
+    "mi": 153.0837736153568
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@822": {
+    "cc": 18.0,
+    "mi": 58.48785987413322
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@825": {
+    "cc": 2.0,
+    "mi": 127.63439679864612
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@866": {
+    "cc": 1.0,
+    "mi": 157.8484854211024
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@985": {
+    "cc": 1.0,
+    "mi": 159.05793486938265
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::<anonymous>@995": {
+    "cc": 1.0,
+    "mi": 159.05793486938265
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::amplitude_lmp2@513": {
     "cc": 4.0,
     "mi": 87.68341692079426
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::amplitude_lmp2_with_virtuals@984": {
-    "cc": 58.0,
-    "mi": 18.010268442259814
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::amplitude_lmp2_with_virtuals@902": {
+    "cc": 20.0,
+    "mi": 45.583273777589554
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::ao_to_atom@315": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::ao_to_atom@316": {
     "cc": 3.0,
     "mi": 103.11059906135348
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::apply_pattern@609": {
-    "cc": 4.0,
-    "mi": 105.26295840060622
-  },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::assemble_basis@819": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::assemble_basis@574": {
     "cc": 10.0,
     "mi": 69.46571730034265
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::assemble_localized@861": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::assemble_localized@616": {
     "cc": 6.0,
     "mi": 79.78558633851603
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::build_vvhv@332": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::assemble_ragged_direct@746": {
+    "cc": 42.0,
+    "mi": 33.297894263249276
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::build_vvhv@333": {
     "cc": 30.0,
     "mi": 40.56892719521987
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::canonical_orth@177": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::canonical_orth@178": {
     "cc": 7.0,
     "mi": 78.97292866506686
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::check_vvhv@470": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::check_vvhv@471": {
     "cc": 8.0,
     "mi": 76.53949283290294
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::cross_overlap_with_minimal@249": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::cross_overlap_with_minimal@250": {
     "cc": 16.0,
     "mi": 58.8763954579254
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::default@83": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::default@84": {
     "cc": 1.0,
     "mi": 107.80200184344682
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::domain_fit_j@898": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::domain_fit_j@653": {
     "cc": 7.0,
     "mi": 74.20913535430226
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::domain_fit_pair@937": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::domain_fit_pair@692": {
     "cc": 12.0,
     "mi": 67.84257835766857
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::dot_blocks@619": {
-    "cc": 2.0,
-    "mi": 126.00683631472083
-  },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::eigh@149": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::eigh@150": {
     "cc": 3.0,
     "mi": 109.40062153178988
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::gather_into@727": {
-    "cc": 5.0,
-    "mi": 84.18852173019685
-  },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::lowdin@158": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::lowdin@159": {
     "cc": 5.0,
     "mi": 90.57837648276235
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::matvec_indexed@689": {
-    "cc": 8.0,
-    "mi": 72.42123008329321
-  },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::pair_block_from_g_cand@534": {
-    "cc": 22.0,
-    "mi": 53.69353475231519
-  },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::pivoted_cholesky_order@206": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::pivoted_cholesky_order@207": {
     "cc": 8.0,
     "mi": 74.52840131123686
   },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::solve_ragged@624": {
-    "cc": 11.0,
-    "mi": 60.20458759395173
-  },
-  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::solve_spd@455": {
+  "home/matt/qc/ferric/crates/ferric-mp2/src/lmp2_amplitude.rs::solve_spd@456": {
     "cc": 4.0,
     "mi": 97.71213236303126
   },
@@ -11774,6 +11722,94 @@
   "home/matt/qc/ferric/crates/ferric-mp2/src/pair_energy_screen.rs::zero_threshold_retains_every_pair@322": {
     "cc": 1.0,
     "mi": 101.15104126167655
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/ragged.rs::<anonymous>@124": {
+    "cc": 1.0,
+    "mi": 152.48082321907071
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/ragged.rs::<anonymous>@134": {
+    "cc": 1.0,
+    "mi": 151.3341179849265
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/ragged.rs::<anonymous>@154": {
+    "cc": 1.0,
+    "mi": 149.74078562939675
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/ragged.rs::<anonymous>@166": {
+    "cc": 2.0,
+    "mi": 115.38931789010485
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/ragged.rs::<anonymous>@169": {
+    "cc": 1.0,
+    "mi": 152.5881606803743
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/ragged.rs::<anonymous>@295": {
+    "cc": 1.0,
+    "mi": 151.74964174717402
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/ragged.rs::<anonymous>@298": {
+    "cc": 15.0,
+    "mi": 57.397776219260535
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/ragged.rs::<anonymous>@314": {
+    "cc": 1.0,
+    "mi": 123.85247253078177
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/ragged.rs::<anonymous>@327": {
+    "cc": 1.0,
+    "mi": 123.85247253078177
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/ragged.rs::<anonymous>@336": {
+    "cc": 1.0,
+    "mi": 123.85247253078177
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/ragged.rs::<anonymous>@69": {
+    "cc": 1.0,
+    "mi": 156.27079806218674
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/ragged.rs::<anonymous>@70": {
+    "cc": 1.0,
+    "mi": 156.27079806218674
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/ragged.rs::<anonymous>@71": {
+    "cc": 1.0,
+    "mi": 156.27079806218674
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/ragged.rs::<anonymous>@72": {
+    "cc": 1.0,
+    "mi": 156.27079806218674
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/ragged.rs::apply_pattern@113": {
+    "cc": 4.0,
+    "mi": 105.26295840060622
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/ragged.rs::dot_blocks@123": {
+    "cc": 2.0,
+    "mi": 126.00683631472083
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/ragged.rs::gather_into@247": {
+    "cc": 5.0,
+    "mi": 84.18852173019685
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/ragged.rs::matvec_indexed@209": {
+    "cc": 8.0,
+    "mi": 72.42123008329321
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/ragged.rs::pair_block_from_g_cand@38": {
+    "cc": 22.0,
+    "mi": 53.69353475231519
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/ragged.rs::ring_product@288": {
+    "cc": 17.0,
+    "mi": 53.45317113113808
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/ragged.rs::solve_ragged@128": {
+    "cc": 2.0,
+    "mi": 108.39977588842439
+  },
+  "home/matt/qc/ferric/crates/ferric-mp2/src/ragged.rs::solve_ragged_with@141": {
+    "cc": 11.0,
+    "mi": 59.344913864579595
   },
   "home/matt/qc/ferric/crates/ferric-mp2/src/rimp2.rs::<anonymous>@1333": {
     "cc": 1.0,
