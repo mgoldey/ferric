@@ -433,7 +433,7 @@ fn bench_wall_clock_alkane_series() {
     // Schwarz candidate screen actually acts; C16 added to show the
     // (nv/|C|)^2 growth of its margin ----
     println!();
-    println!("-- whitened path (Schwarz candidates active), fit_radius = None --");
+    println!("-- whitened path (Schwarz + aux_tail_frac=0.1), fit_radius = None --");
     for xyz in ["alkane_8.xyz", "alkane_12.xyz", "alkane_16.xyz"] {
         let su = setup(xyz);
         let nc = su.mol.atoms.iter().filter(|a| a.z == 6).count();
@@ -446,6 +446,7 @@ fn bench_wall_clock_alkane_series() {
                     frozen_core: nc,
                     pair_gate_cal: Some(cal),
                     fit_radius_bohr: None,
+                    aux_tail_frac: Some(0.1),
                     ..Default::default()
                 };
                 let r = amplitude_lmp2(
@@ -453,7 +454,7 @@ fn bench_wall_clock_alkane_series() {
                 )
                 .unwrap();
                 println!(
-                    "{:9} {:6.0e} {:6} {:.8} {:+.3e} {:.4} {:4}/{:<4} {:8.2} {:9.2} {:7.2} {:6} {:5}",
+                    "{:9} {:6.0e} {:6} {:.8} {:+.3e} {:.4} {:4}/{:<4} {:8.2} {:9.2} {:7.2} {:6} {:5} aux {:.0}/{}",
                     xyz.trim_end_matches(".xyz"),
                     eps,
                     opname,
@@ -467,6 +468,8 @@ fn bench_wall_clock_alkane_series() {
                     r.timings.t_reference_s,
                     r.dense_flops_per_matvec / r.ragged_flops_per_matvec.max(1),
                     r.n_pairs_gated,
+                    r.aux_dom_mean,
+                    r.aux_dom_max,
                 );
             }
         }
@@ -602,4 +605,48 @@ fn schwarz_candidates_cover_every_retained_element() {
     assert!(n_retained > 1000, "test too small to be meaningful");
     assert!(crit > 0.0 && crit <= 1.0, "crit out of range: {crit}");
     assert!(n_lost_mutated > 0, "mutation arm vacuous: shrunken bound loses nothing");
+}
+
+/// AUX-TRUNCATION ANCHORS: (a) trivial limit — a zero tail budget keeps
+/// every aux function and must be BIT-IDENTICAL to no truncation;
+/// (b) sub-dominance — at aux_tail_frac = 0.1 the aux error must stay
+/// below the ε-threshold truncation itself (the family's port-fidelity
+/// bar); (c) mutation — an absurd budget must gut the aux domains and
+/// wreck the energy, proving the selection actually drops rows.
+#[test]
+fn aux_truncation_trivial_limit_subdominance_and_mutation() {
+    let su = setup("alkane_8.xyz");
+    let op = Operator::erfc(1.0);
+    let base = AmplitudeLmp2Config { eps: 1e-3, frozen_core: 8, ..Default::default() };
+    let r_full = amplitude_lmp2(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf,
+        &AmplitudeLmp2Config { eps: 0.0, frozen_core: 8, ..Default::default() }).unwrap();
+    let r_off = amplitude_lmp2(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &base).unwrap();
+    // (a) trivial limit: frac = 0.0 (empty budget -> keep all)
+    let r_zero = amplitude_lmp2(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf,
+        &AmplitudeLmp2Config { aux_tail_frac: Some(0.0), ..base.clone() }).unwrap();
+    assert_eq!(r_zero.e_corr.to_bits(), r_off.e_corr.to_bits(), "trivial limit not bit-identical");
+    assert_eq!(r_zero.aux_dom_max, r_off.aux_dom_max);
+    // (b) sub-dominance at frac = 0.1
+    let r_tr = amplitude_lmp2(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf,
+        &AmplitudeLmp2Config { aux_tail_frac: Some(0.1), ..base.clone() }).unwrap();
+    let trunc_err = (r_off.e_corr - r_full.e_corr).abs();
+    let aux_err = (r_tr.e_corr - r_off.e_corr).abs();
+    eprintln!(
+        "aux truncation: dom mean/max {:.1}/{} of {} | eps-trunc {trunc_err:.3e} aux-err {aux_err:.3e}",
+        r_tr.aux_dom_mean, r_tr.aux_dom_max, r_off.aux_dom_max
+    );
+    assert!(r_tr.aux_dom_max < r_off.aux_dom_max, "aux truncation did not drop any function");
+    assert!(aux_err > 0.0, "aux error vanished with rows dropped — vacuous?");
+    assert!(
+        aux_err < trunc_err,
+        "aux error ({aux_err:.3e}) dominates the eps truncation ({trunc_err:.3e})"
+    );
+    // (c) mutation: absurd budget guts the domains and the energy
+    let r_mut = amplitude_lmp2(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf,
+        &AmplitudeLmp2Config { aux_tail_frac: Some(1e6), ..base }).unwrap();
+    let wreck = (r_mut.e_corr - r_off.e_corr).abs();
+    eprintln!("mutation (frac=1e6): dom max {} -> {}, |dE| = {wreck:.3e}",
+        r_off.aux_dom_max, r_mut.aux_dom_max);
+    assert!(r_mut.aux_dom_max < r_off.aux_dom_max / 2 && wreck > 1e-3,
+        "mutation not loud: dom {} |dE| {wreck:.3e}", r_mut.aux_dom_max);
 }

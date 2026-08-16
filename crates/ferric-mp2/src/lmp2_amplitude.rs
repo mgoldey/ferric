@@ -66,6 +66,14 @@ pub struct AmplitudeLmp2Config {
     /// ~0.7 Coulomb, ~0.02 erfc ω=1, stable C8→C10). Diagonal pairs are
     /// never gated; eps = 0 makes the gate inert (anchor limit).
     pub pair_gate_cal: Option<f64>,
+    /// ε-linked per-pair aux (naux) truncation for the whitened path:
+    /// `Some(f)` drops, per pair, the aux functions whose L1 tail bound
+    /// Σ_dropped max_a|B̃_Pia|·max_b|B̃_Pjb| stays ≤ f·ε — an EXACT
+    /// elementwise bound on the Gram perturbation, so the aux error is
+    /// rigorously ≤ f·ε per element. `Some(0.0)` and `None` keep every
+    /// aux function (byte-identical trivial limit). Inactive at ε = 0 and
+    /// on the domain-fit path (which has its own aux domains).
+    pub aux_tail_frac: Option<f64>,
     /// Compute the canonical `ri_mp2` reference inside the driver (the
     /// honesty printout). Default true; benches/production may disable —
     /// `e_corr_canonical_ri` is then NaN and `t_reference_s` is 0.
@@ -89,6 +97,7 @@ impl Default for AmplitudeLmp2Config {
             cg_max_iter: 400,
             eri3_budget_bytes: None,
             pair_gate_cal: None,
+            aux_tail_frac: None,
             compute_reference: true,
             fit_radius_bohr: None,
         }
@@ -120,6 +129,10 @@ pub struct AmplitudeLmp2Result {
     /// Unique off-diagonal pairs removed by the integral-free gate
     /// (0 when the gate is off or eps = 0).
     pub n_pairs_gated: usize,
+    /// Mean/max per-pair aux contraction length (== naux when the
+    /// ε-linked aux truncation is off).
+    pub aux_dom_mean: f64,
+    pub aux_dom_max: usize,
     pub timings: StageTimings,
 }
 
@@ -753,6 +766,26 @@ pub fn assemble_ragged_direct(
     pair_gate_cal: Option<f64>,
     fit_radius_bohr: Option<f64>,
 ) -> Result<(Ragged, usize), FerricError> {
+    assemble_ragged_direct_aux(mol, dfbs, op, lb, eps, scale, pair_gate_cal, fit_radius_bohr, None)
+        .map(|(rg, g, _, _)| (rg, g))
+}
+
+/// [`assemble_ragged_direct`] with the ε-linked per-pair AUX truncation
+/// (see `AmplitudeLmp2Config::aux_tail_frac`). Returns
+/// `(ragged, gated_pairs, aux_dom_mean, aux_dom_max)` — the last two are
+/// (naux, naux) when truncation is off.
+#[allow(clippy::too_many_arguments)]
+pub fn assemble_ragged_direct_aux(
+    mol: &Molecule,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    lb: &LocalizedBasis,
+    eps: f64,
+    scale: f64,
+    pair_gate_cal: Option<f64>,
+    fit_radius_bohr: Option<f64>,
+    aux_tail_frac: Option<f64>,
+) -> Result<(Ragged, usize, f64, usize), FerricError> {
     let (no, nv) = (lb.no, lb.nv);
     let (f_oo, f_vv) = (&lb.f_oo, &lb.f_vv);
     let mut n_pairs_gated = 0usize;
@@ -812,12 +845,32 @@ pub fn assemble_ragged_direct(
             .collect();
         (qv, qmax)
     });
+    // per-(P, i) row weights for the aux tail bound: n[P, i] = max_a |B̃_Pia|
+    let n_block: Option<Array2<f64>> = match (&btilde, aux_tail_frac, eps > 0.0) {
+        (Some(bt), Some(f), true) if f > 0.0 => {
+            let naux = bt.nrows();
+            let mut nb = Array2::<f64>::zeros((naux, no));
+            for pp in 0..naux {
+                for i in 0..no {
+                    let mut m = 0.0f64;
+                    for a in 0..nv {
+                        m = m.max(bt[(pp, i * nv + a)].abs());
+                    }
+                    nb[(pp, i)] = m;
+                }
+            }
+            Some(nb)
+        }
+        _ => None,
+    };
+    let tail_budget = aux_tail_frac.map(|f| f * eps);
     let unique: Vec<(usize, usize)> = (0..no)
         .flat_map(|i| (i..no).map(move |j| (i, j)))
         .filter(|&(i, j)| keep_pair.as_ref().map_or(true, |kp| kp[i * no + j]))
         .collect();
     use rayon::prelude::*;
-    let per_pair: Vec<Result<Vec<PairBlock>, FerricError>> = unique
+    type PairOut = (Vec<PairBlock>, usize);
+    let per_pair: Vec<Result<PairOut, FerricError>> = unique
         .par_iter()
         .map(|&(i, j)| {
             let cand: Vec<usize> = match (&q, eps > 0.0) {
@@ -829,24 +882,66 @@ pub fn assemble_ragged_direct(
                 _ => (0..nv).collect(),
             };
             if cand.is_empty() {
-                return Ok(Vec::new());
+                return Ok((Vec::new(), 0));
             }
+            let mut aux_used = 0usize;
             let mut g: Array2<f64> = match (&btilde, &aux_xyz, fit_radius_bohr) {
                 (Some(bt), _, _) => {
                     let naux = bt.nrows();
-                    let nc = cand.len();
-                    if nc == nv {
-                        let bi = bt.slice(s![.., i * nv..(i + 1) * nv]);
-                        let bj = bt.slice(s![.., j * nv..(j + 1) * nv]);
-                        bi.t().dot(&bj)
-                    } else {
-                        let mut bi = Array2::<f64>::zeros((naux, nc));
-                        let mut bj = Array2::<f64>::zeros((naux, nc));
-                        for (k, &a) in cand.iter().enumerate() {
-                            bi.column_mut(k).assign(&bt.column(i * nv + a));
-                            bj.column_mut(k).assign(&bt.column(j * nv + a));
+                    // ε-linked aux selection: smallest prefix (by n_i·n_j)
+                    // whose dropped tail-sum ≤ f·ε — exact elementwise bound
+                    let aux_sel: Option<Vec<usize>> = match (&n_block, tail_budget) {
+                        (Some(nb), Some(budget)) => {
+                            let mut scored: Vec<(f64, usize)> = (0..naux)
+                                .map(|pp| (nb[(pp, i)] * nb[(pp, j)], pp))
+                                .collect();
+                            scored.sort_by(|a, b| b.0.partial_cmp(&a.0).expect("NaN aux score"));
+                            let total: f64 = scored.iter().map(|x| x.0).sum();
+                            let mut kept = Vec::with_capacity(naux);
+                            let mut acc = 0.0;
+                            for &(sc, pp) in &scored {
+                                if total - acc <= budget {
+                                    break;
+                                }
+                                kept.push(pp);
+                                acc += sc;
+                            }
+                            kept.sort_unstable();
+                            Some(kept)
                         }
-                        bi.t().dot(&bj)
+                        _ => None,
+                    };
+                    let nc = cand.len();
+                    match aux_sel {
+                        None => {
+                            aux_used = naux;
+                            if nc == nv {
+                                let bi = bt.slice(s![.., i * nv..(i + 1) * nv]);
+                                let bj = bt.slice(s![.., j * nv..(j + 1) * nv]);
+                                bi.t().dot(&bj)
+                            } else {
+                                let mut bi = Array2::<f64>::zeros((naux, nc));
+                                let mut bj = Array2::<f64>::zeros((naux, nc));
+                                for (k, &a) in cand.iter().enumerate() {
+                                    bi.column_mut(k).assign(&bt.column(i * nv + a));
+                                    bj.column_mut(k).assign(&bt.column(j * nv + a));
+                                }
+                                bi.t().dot(&bj)
+                            }
+                        }
+                        Some(sel) => {
+                            aux_used = sel.len();
+                            let nd = sel.len();
+                            let mut bi = Array2::<f64>::zeros((nd, nc));
+                            let mut bj = Array2::<f64>::zeros((nd, nc));
+                            for (r_, &pp) in sel.iter().enumerate() {
+                                for (k, &a) in cand.iter().enumerate() {
+                                    bi[(r_, k)] = bt[(pp, i * nv + a)];
+                                    bj[(r_, k)] = bt[(pp, j * nv + a)];
+                                }
+                            }
+                            bi.t().dot(&bj)
+                        }
                     }
                 }
                 (_, Some(xyz), Some(radius)) => domain_fit_pair(
@@ -880,12 +975,17 @@ pub fn assemble_ragged_direct(
                     out.push(pb);
                 }
             }
-            Ok(out)
+            Ok((out, aux_used))
         })
         .collect();
     let mut pairs: Vec<PairBlock> = Vec::new();
+    let mut aux_sizes: Vec<usize> = Vec::new();
     for r in per_pair {
-        pairs.extend(r?);
+        let (blocks, aux_used) = r?;
+        if !blocks.is_empty() {
+            aux_sizes.push(aux_used);
+        }
+        pairs.extend(blocks);
     }
     let mut by_i: HashMap<usize, Vec<usize>> = HashMap::new();
     let mut by_j: HashMap<usize, Vec<usize>> = HashMap::new();
@@ -893,7 +993,13 @@ pub fn assemble_ragged_direct(
         by_i.entry(pb.i).or_default().push(pidx);
         by_j.entry(pb.j).or_default().push(pidx);
     }
-    Ok((Ragged { pairs, by_i, by_j }, n_pairs_gated))
+    let aux_dom_mean = if aux_sizes.is_empty() {
+        0.0
+    } else {
+        aux_sizes.iter().sum::<usize>() as f64 / aux_sizes.len() as f64
+    };
+    let aux_dom_max = aux_sizes.iter().copied().max().unwrap_or(0);
+    Ok((Ragged { pairs, by_i, by_j }, n_pairs_gated, aux_dom_mean, aux_dom_max))
 }
 
 /// Same as [`amplitude_lmp2`], with a caller-supplied virtual space — the
@@ -914,7 +1020,7 @@ pub fn amplitude_lmp2_with_virtuals(
     let (no, nv) = (lb.no, lb.nv);
     let f_oo = &lb.f_oo;
 
-    let (rg, n_pairs_gated) = assemble_ragged_direct(
+    let (rg, n_pairs_gated, aux_dom_mean, aux_dom_max) = assemble_ragged_direct_aux(
         mol,
         dfbs,
         op,
@@ -923,6 +1029,7 @@ pub fn amplitude_lmp2_with_virtuals(
         1.0,
         cfg.pair_gate_cal,
         cfg.fit_radius_bohr,
+        cfg.aux_tail_frac,
     )?;
     let t_assembly_s = t0.elapsed().as_secs_f64();
 
@@ -1015,6 +1122,8 @@ pub fn amplitude_lmp2_with_virtuals(
         ragged_flops_per_matvec: flops_mv,
         dense_flops_per_matvec: dense_flops,
         n_pairs_gated,
+        aux_dom_mean,
+        aux_dom_max,
         timings: StageTimings { t_spaces_s: 0.0, t_assembly_s, t_solve_s, t_reference_s },
     })
 }
