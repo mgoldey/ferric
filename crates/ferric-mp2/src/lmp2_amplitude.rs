@@ -789,6 +789,10 @@ pub struct LocalizedProblem {
     pub f_vv: Array2<f64>,
     pub no: usize,
     pub nv: usize,
+    /// Boys-localized active occupied coefficients, (nao, no) — exposed so
+    /// downstream methods (LinLCCD ladders) can transform additional blocks
+    /// in the SAME localized basis.
+    pub c_locc: Array2<f64>,
     /// Boys centroids of the active localized occupieds, (no, 3) Bohr.
     pub occ_centers: Array2<f64>,
     /// Orbital spreads σᵢ = sqrt(⟨r²⟩ − |⟨r⟩|²), Bohr.
@@ -850,7 +854,7 @@ pub fn assemble_localized(
         }
         Some(r) => domain_fit_j(&b_flat, &v, mol, dfbs, &occ_centers, no, nv, r)?,
     };
-    Ok(LocalizedProblem { j_dense, f_oo, f_vv, no, nv, occ_centers, occ_spreads })
+    Ok(LocalizedProblem { j_dense, f_oo, f_vv, no, nv, c_locc: c_locc.clone(), occ_centers, occ_spreads })
 }
 
 /// Per-pair domain-local same-kernel RI fit: J_ij = A_{i,D} V_DD⁻¹ A_{j,D}
@@ -939,7 +943,7 @@ pub fn amplitude_lmp2_with_virtuals(
     let t0 = std::time::Instant::now();
     let lp = assemble_localized(mol, obs, dfbs, op, rhf, cfg, vvhv)?;
     let t_assembly_s = t0.elapsed().as_secs_f64();
-    let LocalizedProblem { j_dense, f_oo, f_vv, no, nv, occ_centers, occ_spreads } = &lp;
+    let LocalizedProblem { j_dense, f_oo, f_vv, no, nv, occ_centers, occ_spreads, .. } = &lp;
     let (j_dense, f_oo, f_vv, no, nv) = (j_dense, f_oo, f_vv, *no, *nv);
 
     // canonical reference on the same (mol, basis, aux, op, frozen core)

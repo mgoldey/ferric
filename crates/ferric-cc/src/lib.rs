@@ -21,6 +21,7 @@ pub mod dlpno_linlccd;
 pub mod double_hybrid;
 pub mod helpers;
 pub mod linlccd;
+pub mod linlccd_amplitude;
 pub mod linlccd_exact;
 pub mod linlccd_u;
 
