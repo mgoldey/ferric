@@ -78,3 +78,50 @@ def test_run_lmp2_rejects_open_shell():
     # H2 closed shell works; the open-shell rejection is enforced in the
     # library (CLI hard-rejects) — here just pin the tiny-system identity
     assert abs(r["e_corr"] - r["e_corr_canonical_ri"]) < 1e-10
+
+
+def test_run_drpa_eps_zero_matches_plasmon():
+    mol = ferric.Molecule.from_xyz("testdata/molecules/h2.xyz")
+    obs = ferric.BasisSet.bundled("sto-3g")
+    d = ferric.run_drpa(mol, obs, obs, eps=0.0)
+    assert abs(d["e_corr"] - d["e_corr_plasmon_canonical"]) < 1e-9
+    # the proof-notebook H2 value (notebook 12, live cell)
+    assert abs(d["e_corr"] - (-0.0126072623)) < 1e-8
+
+
+def test_run_linlccd_amplitude_variants_ordered():
+    mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+    obs = ferric.BasisSet.bundled("6-31g")
+    aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+    e = {
+        v: ferric.run_linlccd_amplitude(mol, obs, aux, variant=v, eps=0.0, frozen_core=1)["e_corr"]
+        for v in ("drivers", "hh", "full")
+    }
+    # drivers == RI-MP2; hh regularizes (|E| shrinks); full restores pp
+    ri = ferric.run_rimp2(mol, obs, aux, frozen_core=1)
+    assert abs(e["drivers"] - ri.mp2_corr) < 1e-8
+    assert abs(e["hh"]) < abs(e["drivers"])
+    assert e["full"] != e["hh"]
+    with pytest.raises(Exception):
+        ferric.run_linlccd_amplitude(mol, obs, aux, variant="bogus")
+
+
+def test_run_rimp2_kappa_limits():
+    mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+    obs = ferric.BasisSet.bundled("6-31g")
+    aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+    plain = ferric.run_rimp2(mol, obs, aux, frozen_core=1).mp2_corr
+    inf = ferric.run_rimp2(mol, obs, aux, frozen_core=1, kappa=1e6).mp2_corr
+    weak = ferric.run_rimp2(mol, obs, aux, frozen_core=1, kappa=1e-6).mp2_corr
+    assert abs(inf - plain) < 1e-12
+    assert abs(weak) < 1e-9
+
+
+def test_tune_omega_h2_smoke():
+    mol = ferric.Molecule.from_xyz("testdata/molecules/h2.xyz")
+    obs = ferric.BasisSet.bundled("6-31g")
+    t = ferric.tune_omega(mol, obs, "wB97X-V", omega_lo=0.3, omega_hi=1.2,
+                          omega_tol=0.1, max_evals=10)
+    assert 0.3 < t["omega"] < 1.2
+    assert abs(t["j"]) < 5e-3  # Koopmans residual driven down from ~1e-2
+    assert len(t["evals"]) >= 2

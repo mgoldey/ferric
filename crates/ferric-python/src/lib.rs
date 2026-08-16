@@ -1538,10 +1538,10 @@ struct PyRiMp2Result {
 /// correlation), `rhf_energy` (the reference energy), and `mp2_corr` (the
 /// correlation energy alone, always negative).
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, kappa=None))]
 fn run_rimp2(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
              frozen_core: Option<usize>, k_builder: Option<&str>,
-             memory_budget_gb: Option<f64>) -> PyResult<PyRiMp2Result> {
+             memory_budget_gb: Option<f64>, kappa: Option<f64>) -> PyResult<PyRiMp2Result> {
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
     let op = Operator::coulomb();
@@ -1552,7 +1552,7 @@ fn run_rimp2(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
         return Err(make_err(ferric_core::FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy }));
     }
     let mp2 = ri_mp2(&mol.inner, &prep, &dfbs, op, &rhf,
-                      &RiMp2Config { frozen_core: frozen_core.unwrap_or(0), memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb), ..Default::default() }).map_err(make_err)?;
+                      &RiMp2Config { frozen_core: frozen_core.unwrap_or(0), memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb), kappa, ..Default::default() }).map_err(make_err)?;
     Ok(PyRiMp2Result { total_energy: mp2.total_energy, rhf_energy: rhf.energy, mp2_corr: mp2.mp2_corr })
 }
 
@@ -1594,6 +1594,122 @@ fn run_lmp2(py: Python<'_>, mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: 
     d.set_item("dom_mean", r.dom_mean)?;
     d.set_item("dom_max", r.dom_max)?;
     d.set_item("cg_iterations", r.cg_iterations)?;
+    Ok(d.into())
+}
+
+
+/// Amplitude-threshold direct RPA (drCCD Riccati, ragged direct-assembly
+/// path; proof notebook 12). eps = 0 anchors on the canonical
+/// semicanonicalized plasmon formula; finite eps carries a ~linear
+/// one-sided threshold error (dRPA is non-variational). Closed-shell.
+#[pyfunction]
+#[pyo3(signature = (mol, basis_set, auxbasis, eps=None, frozen_core=None, k_builder=None, memory_budget_gb=None))]
+fn run_drpa(py: Python<'_>, mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
+            eps: Option<f64>, frozen_core: Option<usize>, k_builder: Option<&str>,
+            memory_budget_gb: Option<f64>) -> PyResult<Py<pyo3::types::PyDict>> {
+    use ferric_mp2::drpa_amplitude::{amplitude_drpa, AmplitudeDrpaConfig};
+    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
+    let ctx = ParallelContext::default();
+    let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &rhf_config(k_builder)).map_err(make_err)?;
+    if !rhf.converged {
+        return Err(make_err(ferric_core::FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy }));
+    }
+    let r = amplitude_drpa(&mol.inner, &prep, &basis_set.inner, &dfbs, op, &rhf,
+        &AmplitudeDrpaConfig {
+            eps: eps.unwrap_or(1e-4),
+            frozen_core: frozen_core.unwrap_or(0),
+            eri3_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
+            ..Default::default()
+        }).map_err(make_err)?;
+    let d = pyo3::types::PyDict::new(py);
+    d.set_item("e_corr", r.e_corr)?;
+    d.set_item("e_corr_plasmon_canonical", r.e_corr_plasmon_canonical)?;
+    d.set_item("total_energy", r.e_total)?;
+    d.set_item("rhf_energy", rhf.energy)?;
+    d.set_item("keep_fraction", r.keep_fraction)?;
+    d.set_item("pair_fraction", r.pair_fraction)?;
+    d.set_item("iterations", r.iterations)?;
+    Ok(d.into())
+}
+
+/// Amplitude-threshold LinLCCD (ragged path, proof notebook 13).
+/// `variant`: "drivers" (== RI-MP2), "hh" (LinLCCD(hh)), "full".
+/// eps = 0 anchors on the canonical spin-orbital linlccd. Closed-shell.
+#[pyfunction]
+#[pyo3(signature = (mol, basis_set, auxbasis, variant=None, eps=None, frozen_core=None, k_builder=None, memory_budget_gb=None))]
+fn run_linlccd_amplitude(py: Python<'_>, mol: &PyMolecule, basis_set: &PyBasisSet,
+                         auxbasis: &PyBasisSet, variant: Option<&str>, eps: Option<f64>,
+                         frozen_core: Option<usize>, k_builder: Option<&str>,
+                         memory_budget_gb: Option<f64>) -> PyResult<Py<pyo3::types::PyDict>> {
+    use ferric_cc::linlccd::LadderVariant;
+    use ferric_cc::linlccd_amplitude::{amplitude_linlccd, AmplitudeLinLccdConfig};
+    let var = match variant.unwrap_or("hh") {
+        "drivers" => LadderVariant::DriversOnly,
+        "hh" => LadderVariant::Hh,
+        "full" => LadderVariant::Full,
+        other => {
+            return Err(make_err(ferric_core::FerricError::General(format!(
+                "unknown LinLCCD variant {other:?}; expected \"drivers\", \"hh\", or \"full\""
+            ))))
+        }
+    };
+    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
+    let ctx = ParallelContext::default();
+    let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &rhf_config(k_builder)).map_err(make_err)?;
+    if !rhf.converged {
+        return Err(make_err(ferric_core::FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy }));
+    }
+    let r = amplitude_linlccd(&mol.inner, &prep, &basis_set.inner, &dfbs, op, &rhf,
+        &AmplitudeLinLccdConfig {
+            eps: eps.unwrap_or(1e-4),
+            frozen_core: frozen_core.unwrap_or(0),
+            eri3_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
+            ..Default::default()
+        }, var).map_err(make_err)?;
+    let d = pyo3::types::PyDict::new(py);
+    d.set_item("e_corr", r.e_corr)?;
+    d.set_item("total_energy", r.e_total)?;
+    d.set_item("rhf_energy", rhf.energy)?;
+    d.set_item("keep_fraction", r.keep_fraction)?;
+    d.set_item("cg_iterations", r.cg_iterations)?;
+    Ok(d.into())
+}
+
+/// Optimal (Baer/Kronik IP-based) tuning of the range-separation omega for
+/// an RSH functional. Returns {omega, j, converged, evals: [(omega,
+/// eps_homo, ip, j), ...]}. Closed-shell neutral + doublet cation.
+#[pyfunction]
+#[pyo3(signature = (mol, basis_set, functional, omega_lo=None, omega_hi=None, omega_tol=None, max_evals=None))]
+fn tune_omega(py: Python<'_>, mol: &PyMolecule, basis_set: &PyBasisSet, functional: &str,
+              omega_lo: Option<f64>, omega_hi: Option<f64>, omega_tol: Option<f64>,
+              max_evals: Option<usize>) -> PyResult<Py<pyo3::types::PyDict>> {
+    use ferric_scf::omega_tuning::{tune_omega as tune, OmegaTuneConfig};
+    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
+    let ctx = ParallelContext::default();
+    let cfg = OmegaTuneConfig {
+        functional: functional.to_string(),
+        omega_lo: omega_lo.unwrap_or(0.1),
+        omega_hi: omega_hi.unwrap_or(1.0),
+        omega_tol: omega_tol.unwrap_or(5e-3),
+        max_evals: max_evals.unwrap_or(24),
+        ..Default::default()
+    };
+    let r = tune(&ctx, &mol.inner, &prep, &bounds, &cfg).map_err(make_err)?;
+    let d = pyo3::types::PyDict::new(py);
+    d.set_item("omega", r.omega)?;
+    d.set_item("j", r.j)?;
+    d.set_item("converged", r.converged)?;
+    let evals: Vec<(f64, f64, f64, f64)> =
+        r.evals.iter().map(|e| (e.omega, e.eps_homo, e.ip_delta_scf, e.j)).collect();
+    d.set_item("evals", evals)?;
     Ok(d.into())
 }
 
@@ -3616,6 +3732,9 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(hirshfeld_charges, m)?)?;
     m.add_function(wrap_pyfunction!(lowdin_charges, m)?)?;
     m.add_function(wrap_pyfunction!(run_lmp2, m)?)?;
+    m.add_function(wrap_pyfunction!(run_drpa, m)?)?;
+    m.add_function(wrap_pyfunction!(run_linlccd_amplitude, m)?)?;
+    m.add_function(wrap_pyfunction!(tune_omega, m)?)?;
     m.add_function(wrap_pyfunction!(orbital_moments, m)?)?;
     m.add_function(wrap_pyfunction!(density_second_moment, m)?)?;
     m.add_function(wrap_pyfunction!(mulliken_charges, m)?)?;
