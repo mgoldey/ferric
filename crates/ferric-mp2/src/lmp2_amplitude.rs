@@ -520,92 +520,106 @@ struct Ragged {
     by_j: HashMap<usize, Vec<usize>>,
 }
 
-fn build_ragged(
-    j_dense: &Array2<f64>, // (no*nv, no*nv), row index i*nv+a
-    f_oo: &Array2<f64>,
+/// Build one pair's ragged block from its dense (nv, nv) J block `g`
+/// (g[a, b] = (ia|jb)). Returns None when the Eq-8 test retains nothing.
+/// The swap partner (ib|ja) is g[b, a] — in-block, so the symmetric test
+/// never needs any other pair's integrals.
+#[allow(clippy::too_many_arguments)]
+fn pair_block_from_g(
+    i: usize,
+    j: usize,
+    g: &Array2<f64>,
+    _f_oo: &Array2<f64>,
     f_vv: &Array2<f64>,
-    no: usize,
-    nv: usize,
+    fo: &[f64],
+    fv: &[f64],
     eps: f64,
-    keep_pair: Option<&[bool]>, // (no*no) row-major; None = keep all
-) -> Ragged {
-    let fo: Vec<f64> = (0..no).map(|i| f_oo[(i, i)]).collect();
-    let fv: Vec<f64> = (0..nv).map(|a| f_vv[(a, a)]).collect();
-    let mut pairs = Vec::new();
-    for i in 0..no {
-        for j in 0..no {
-            if let Some(kp) = keep_pair {
-                if !kp[i * no + j] {
-                    continue;
-                }
+) -> Option<PairBlock> {
+    let nv = g.nrows();
+    let cand: Vec<usize> = (0..nv).collect();
+    pair_block_from_g_cand(i, j, g, &cand, nv, f_vv, fo, fv, eps)
+}
+
+/// [`pair_block_from_g`] over a CANDIDATE index subset: `g` is
+/// (cand.len(), cand.len()) with local indices mapping to the global
+/// virtual indices `cand[..]`. Every Eq-8-retained element is guaranteed
+/// inside the candidate square when `cand` comes from the Schwarz screen
+/// (the bound never underestimates), so this is exact, not approximate.
+#[allow(clippy::too_many_arguments)]
+fn pair_block_from_g_cand(
+    i: usize,
+    j: usize,
+    g: &Array2<f64>,
+    cand: &[usize],
+    nv_full: usize,
+    f_vv: &Array2<f64>,
+    fo: &[f64],
+    fv: &[f64],
+    eps: f64,
+) -> Option<PairBlock> {
+    let nv = cand.len();
+    let _ = nv_full;
+    let mut any_a = vec![false; nv];
+    let mut any_b = vec![false; nv];
+    let mut any = false;
+    for a in 0..nv {
+        for b in 0..nv {
+            let jd = g[(a, b)].abs();
+            let kd = g[(b, a)].abs();
+            if eps == 0.0 || jd > eps || kd > eps {
+                any_a[a] = true;
+                any_b[b] = true;
+                any = true;
             }
-            // Eq-8 symmetric test on this pair's (a,b) block
-            let mut any_a = vec![false; nv];
-            let mut any_b = vec![false; nv];
-            let mut any = false;
-            for a in 0..nv {
-                for b in 0..nv {
-                    let jd = j_dense[(i * nv + a, j * nv + b)].abs();
-                    let kd = j_dense[(i * nv + b, j * nv + a)].abs();
-                    if eps == 0.0 || jd > eps || kd > eps {
-                        any_a[a] = true;
-                        any_b[b] = true;
-                        any = true;
-                    }
-                }
-            }
-            if !any {
-                continue;
-            }
-            let da: Vec<usize> = (0..nv).filter(|&a| any_a[a]).collect();
-            let db: Vec<usize> = (0..nv).filter(|&b| any_b[b]).collect();
-            let (na, nb) = (da.len(), db.len());
-            let mut pat = vec![false; na * nb];
-            let mut j_blk = Array2::<f64>::zeros((na, nb));
-            let mut denom = Array2::<f64>::zeros((na, nb));
-            for (r, &a) in da.iter().enumerate() {
-                for (c, &b) in db.iter().enumerate() {
-                    let jd = j_dense[(i * nv + a, j * nv + b)];
-                    let kd = j_dense[(i * nv + b, j * nv + a)];
-                    if eps == 0.0 || jd.abs() > eps || kd.abs() > eps {
-                        pat[r * nb + c] = true;
-                        j_blk[(r, c)] = jd;
-                    }
-                    denom[(r, c)] = fv[a] + fv[b] - fo[i] - fo[j];
-                }
-            }
-            let mut fvv_aa = Array2::<f64>::zeros((na, na));
-            for (r, &a) in da.iter().enumerate() {
-                for (c, &a2) in da.iter().enumerate() {
-                    fvv_aa[(r, c)] = f_vv[(a, a2)];
-                }
-            }
-            let mut fvv_bb = Array2::<f64>::zeros((nb, nb));
-            for (r, &b) in db.iter().enumerate() {
-                for (c, &b2) in db.iter().enumerate() {
-                    fvv_bb[(r, c)] = f_vv[(b, b2)];
-                }
-            }
-            let mut pos_da = vec![usize::MAX; nv];
-            for (k, &a) in da.iter().enumerate() {
-                pos_da[a] = k;
-            }
-            let mut pos_db = vec![usize::MAX; nv];
-            for (k, &b) in db.iter().enumerate() {
-                pos_db[b] = k;
-            }
-            pairs.push(PairBlock { i, j, da, db, pat, fvv_aa, fvv_bb, j_blk, denom, pos_da, pos_db });
         }
     }
-    let mut by_i: HashMap<usize, Vec<usize>> = HashMap::new();
-    let mut by_j: HashMap<usize, Vec<usize>> = HashMap::new();
-    for (p, pb) in pairs.iter().enumerate() {
-        by_i.entry(pb.i).or_default().push(p);
-        by_j.entry(pb.j).or_default().push(p);
+    if !any {
+        return None;
     }
-    let _ = (no, nv);
-    Ragged { pairs, by_i, by_j }
+    // local (candidate-space) retained axes -> GLOBAL virtual indices
+    let da_loc: Vec<usize> = (0..nv).filter(|&a| any_a[a]).collect();
+    let db_loc: Vec<usize> = (0..nv).filter(|&b| any_b[b]).collect();
+    let da: Vec<usize> = da_loc.iter().map(|&a| cand[a]).collect();
+    let db: Vec<usize> = db_loc.iter().map(|&b| cand[b]).collect();
+    let (na, nb) = (da.len(), db.len());
+    let mut pat = vec![false; na * nb];
+    let mut j_blk = Array2::<f64>::zeros((na, nb));
+    let mut denom = Array2::<f64>::zeros((na, nb));
+    for (r, &al) in da_loc.iter().enumerate() {
+        for (c, &bl) in db_loc.iter().enumerate() {
+            let jd = g[(al, bl)];
+            let kd = g[(bl, al)];
+            if eps == 0.0 || jd.abs() > eps || kd.abs() > eps {
+                pat[r * nb + c] = true;
+                j_blk[(r, c)] = jd;
+            }
+            denom[(r, c)] = fv[da[r]] + fv[db[c]] - fo[i] - fo[j];
+        }
+    }
+    let mut fvv_aa = Array2::<f64>::zeros((na, na));
+    for (r, &a) in da.iter().enumerate() {
+        for (c, &a2) in da.iter().enumerate() {
+            fvv_aa[(r, c)] = f_vv[(a, a2)];
+        }
+    }
+    let mut fvv_bb = Array2::<f64>::zeros((nb, nb));
+    for (r, &b) in db.iter().enumerate() {
+        for (c, &b2) in db.iter().enumerate() {
+            fvv_bb[(r, c)] = f_vv[(b, b2)];
+        }
+    }
+    let nv_glob = fv.len();
+    let mut pos_da = vec![usize::MAX; nv_glob];
+    for (k, &a) in da.iter().enumerate() {
+        pos_da[a] = k;
+    }
+    let mut pos_db = vec![usize::MAX; nv_glob];
+    for (k, &b) in db.iter().enumerate() {
+        pos_db[b] = k;
+    }
+    Some(PairBlock { i, j, da, db, pat, fvv_aa, fvv_bb, j_blk, denom, pos_da, pos_db })
 }
+
 
 fn apply_pattern(x: &mut Array2<f64>, pat: &[bool], nb: usize) {
     for (r, mut row) in x.rows_mut().into_iter().enumerate() {
@@ -799,9 +813,25 @@ pub struct LocalizedProblem {
     pub occ_spreads: Vec<f64>,
 }
 
-/// Assemble the localized-basis problem (Boys occupieds, caller's virtuals,
-/// RI J via the same helpers the canonical reference uses).
-pub fn assemble_localized(
+/// The basis-stage products (everything BEFORE any 4-index work): localized
+/// coefficients, Fock blocks, centroids/spreads (the pair gate's inputs),
+/// and the raw + whitening RI pieces.
+pub struct LocalizedBasis {
+    pub c_locc: Array2<f64>,
+    pub f_oo: Array2<f64>,
+    pub f_vv: Array2<f64>,
+    pub occ_centers: Array2<f64>,
+    pub occ_spreads: Vec<f64>,
+    pub no: usize,
+    pub nv: usize,
+    /// UNWHITENED (P|ia), (naux, no·nv).
+    pub b_flat: Array2<f64>,
+    /// 2-center metric (P|Q).
+    pub v2c: Array2<f64>,
+}
+
+/// Basis stage of the assembly — no (no·nv)² object is ever formed here.
+pub fn assemble_basis(
     mol: &Molecule,
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
@@ -809,13 +839,10 @@ pub fn assemble_localized(
     rhf: &ScfResult,
     cfg: &AmplitudeLmp2Config,
     vvhv: &VvHv,
-) -> Result<LocalizedProblem, FerricError> {
+) -> Result<LocalizedBasis, FerricError> {
     let nocc_total = (mol.nelec() as usize) / 2;
     let no = active_occ(nocc_total, cfg.frozen_core)?;
     let first_occ = cfg.frozen_core;
-
-    // Boys-localized active occupieds (+ centroids and spreads for the
-    // pair gate and the aux domains)
     let c_occ_can = rhf.mos_r().slice(s![.., first_occ..nocc_total]).to_owned();
     let dip = dipole(obs, [0.0, 0.0, 0.0])?;
     let boys = boys_localize(&c_occ_can, &dip, 200);
@@ -831,30 +858,50 @@ pub fn assemble_localized(
     }
     let c_vloc = &vvhv.c_vloc;
     let nv = c_vloc.ncols();
-
-    // localized-basis Fock blocks
     let f_ao = rhf.fock_r();
     let f_oo = c_locc.t().dot(&f_ao.dot(&c_locc));
     let f_vv = c_vloc.t().dot(&f_ao.dot(c_vloc));
-
-    // RI-assembled J in the localized basis: B̃ᵀB̃ with the same helpers the
-    // canonical reference uses
     let budget = eri3_budget_bytes(cfg.eri3_budget_bytes);
-    let b3 = eri3_mo_ov_blocked(op, obs, dfbs, &c_locc, c_vloc, budget)?; // (naux,no,nv)
+    let b3 = eri3_mo_ov_blocked(op, obs, dfbs, &c_locc, c_vloc, budget)?;
     let naux = b3.shape()[0];
-    let v = coulomb_metric_2c(op, dfbs)?;
-    let vis = metric_inverse_sqrt(&v, op)?;
+    let v2c = coulomb_metric_2c(op, dfbs)?;
     let b_flat = b3
         .into_shape_with_order((naux, no * nv))
         .map_err(|e| FerricError::General(format!("lmp2_amplitude reshape: {e}")))?;
+    Ok(LocalizedBasis { c_locc, f_oo, f_vv, occ_centers, occ_spreads, no, nv, b_flat, v2c })
+}
+
+/// Assemble the localized-basis problem (Boys occupieds, caller's virtuals,
+/// RI J via the same helpers the canonical reference uses).
+pub fn assemble_localized(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &ScfResult,
+    cfg: &AmplitudeLmp2Config,
+    vvhv: &VvHv,
+) -> Result<LocalizedProblem, FerricError> {
+    let lb = assemble_basis(mol, obs, dfbs, op, rhf, cfg, vvhv)?;
+    let (no, nv) = (lb.no, lb.nv);
     let j_dense = match cfg.fit_radius_bohr {
         None => {
-            let btilde = vis.dot(&b_flat); // (naux, no*nv)
+            let vis = metric_inverse_sqrt(&lb.v2c, op)?;
+            let btilde = vis.dot(&lb.b_flat); // (naux, no*nv)
             btilde.t().dot(&btilde) // (no*nv, no*nv)
         }
-        Some(r) => domain_fit_j(&b_flat, &v, mol, dfbs, &occ_centers, no, nv, r)?,
+        Some(r) => domain_fit_j(&lb.b_flat, &lb.v2c, mol, dfbs, &lb.occ_centers, no, nv, r)?,
     };
-    Ok(LocalizedProblem { j_dense, f_oo, f_vv, no, nv, c_locc: c_locc.clone(), occ_centers, occ_spreads })
+    Ok(LocalizedProblem {
+        j_dense,
+        f_oo: lb.f_oo,
+        f_vv: lb.f_vv,
+        no,
+        nv,
+        c_locc: lb.c_locc,
+        occ_centers: lb.occ_centers,
+        occ_spreads: lb.occ_spreads,
+    })
 }
 
 /// Per-pair domain-local same-kernel RI fit: J_ij = A_{i,D} V_DD⁻¹ A_{j,D}
@@ -873,7 +920,6 @@ fn domain_fit_j(
     nv: usize,
     radius: f64,
 ) -> Result<Array2<f64>, FerricError> {
-    use ndarray_linalg::Inverse;
     let naux = b_flat.nrows();
     // aux function -> parent atom position
     let aux_atom = ao_to_atom(dfbs);
@@ -884,39 +930,11 @@ fn domain_fit_j(
         aux_xyz[(p, 1)] = at.y;
         aux_xyz[(p, 2)] = at.zpos;
     }
-    let dist2 = |p: usize, i: usize| -> f64 {
-        (0..3).map(|x| (aux_xyz[(p, x)] - occ_centers[(i, x)]).powi(2)).sum()
-    };
     let r2 = radius * radius;
     let mut j_dense = Array2::<f64>::zeros((no * nv, no * nv));
     for i in 0..no {
         for j in i..no {
-            let dom: Vec<usize> =
-                (0..naux).filter(|&p| dist2(p, i) <= r2 || dist2(p, j) <= r2).collect();
-            if dom.is_empty() {
-                return Err(FerricError::General(format!(
-                    "lmp2_amplitude: empty aux domain for pair ({i},{j}) at radius {radius} Bohr"
-                )));
-            }
-            let d = dom.len();
-            let mut vdd = Array2::<f64>::zeros((d, d));
-            for (r_, &pp) in dom.iter().enumerate() {
-                for (c_, &qq) in dom.iter().enumerate() {
-                    vdd[(r_, c_)] = v[(pp, qq)];
-                }
-            }
-            let vdd_inv = vdd
-                .inv()
-                .map_err(|e| FerricError::General(format!("lmp2_amplitude V_DD inverse: {e}")))?;
-            let mut a_i = Array2::<f64>::zeros((d, nv));
-            let mut a_j = Array2::<f64>::zeros((d, nv));
-            for (r_, &pp) in dom.iter().enumerate() {
-                for a in 0..nv {
-                    a_i[(r_, a)] = b_flat[(pp, i * nv + a)];
-                    a_j[(r_, a)] = b_flat[(pp, j * nv + a)];
-                }
-            }
-            let blk = a_i.t().dot(&vdd_inv.dot(&a_j)); // (nv, nv)
+            let blk = domain_fit_pair(b_flat, v, &aux_xyz, occ_centers, i, j, nv, r2, radius)?;
             for a in 0..nv {
                 for b in 0..nv {
                     j_dense[(i * nv + a, j * nv + b)] = blk[(a, b)];
@@ -926,6 +944,52 @@ fn domain_fit_j(
         }
     }
     Ok(j_dense)
+}
+
+/// One pair's domain-local same-kernel fit block J_ij (nv, nv) — see
+/// [`domain_fit_j`] for the formulation notes.
+#[allow(clippy::too_many_arguments)]
+fn domain_fit_pair(
+    b_flat: &Array2<f64>,
+    v: &Array2<f64>,
+    aux_xyz: &Array2<f64>,
+    occ_centers: &Array2<f64>,
+    i: usize,
+    j: usize,
+    nv: usize,
+    r2: f64,
+    radius: f64,
+) -> Result<Array2<f64>, FerricError> {
+    use ndarray_linalg::Inverse;
+    let naux = b_flat.nrows();
+    let dist2 = |p: usize, k: usize| -> f64 {
+        (0..3).map(|x| (aux_xyz[(p, x)] - occ_centers[(k, x)]).powi(2)).sum()
+    };
+    let dom: Vec<usize> = (0..naux).filter(|&p| dist2(p, i) <= r2 || dist2(p, j) <= r2).collect();
+    if dom.is_empty() {
+        return Err(FerricError::General(format!(
+            "lmp2_amplitude: empty aux domain for pair ({i},{j}) at radius {radius} Bohr"
+        )));
+    }
+    let d = dom.len();
+    let mut vdd = Array2::<f64>::zeros((d, d));
+    for (r_, &pp) in dom.iter().enumerate() {
+        for (c_, &qq) in dom.iter().enumerate() {
+            vdd[(r_, c_)] = v[(pp, qq)];
+        }
+    }
+    let vdd_inv = vdd
+        .inv()
+        .map_err(|e| FerricError::General(format!("lmp2_amplitude V_DD inverse: {e}")))?;
+    let mut a_i = Array2::<f64>::zeros((d, nv));
+    let mut a_j = Array2::<f64>::zeros((d, nv));
+    for (r_, &pp) in dom.iter().enumerate() {
+        for a in 0..nv {
+            a_i[(r_, a)] = b_flat[(pp, i * nv + a)];
+            a_j[(r_, a)] = b_flat[(pp, j * nv + a)];
+        }
+    }
+    Ok(a_i.t().dot(&vdd_inv.dot(&a_j)))
 }
 
 /// Same as [`amplitude_lmp2`], with a caller-supplied virtual space — the
@@ -940,11 +1004,167 @@ pub fn amplitude_lmp2_with_virtuals(
     cfg: &AmplitudeLmp2Config,
     vvhv: &VvHv,
 ) -> Result<AmplitudeLmp2Result, FerricError> {
+    // ---- basis stage: NO 4-index object is formed here ----
     let t0 = std::time::Instant::now();
-    let lp = assemble_localized(mol, obs, dfbs, op, rhf, cfg, vvhv)?;
+    let lb = assemble_basis(mol, obs, dfbs, op, rhf, cfg, vvhv)?;
+    let (no, nv) = (lb.no, lb.nv);
+    let (f_oo, f_vv) = (&lb.f_oo, &lb.f_vv);
+
+    // ---- integral-free pair gate BEFORE any pair-block assembly ----
+    // (theta = 1e-2*eps, the paper's linked gate; gated pairs get no GEMM,
+    // no fit, no block — the "gate before assembly" structure the Python
+    // rig measured, now real in Rust)
+    let mut n_pairs_gated = 0usize;
+    let keep_pair: Option<Vec<bool>> = cfg.pair_gate_cal.map(|cal| {
+        let theta = 1e-2 * cfg.eps;
+        let mut keep = vec![true; no * no];
+        for i in 0..no {
+            for j in 0..no {
+                if i == j {
+                    continue;
+                }
+                let rij2: f64 = (0..3)
+                    .map(|x| (lb.occ_centers[(i, x)] - lb.occ_centers[(j, x)]).powi(2))
+                    .sum();
+                let est = cal * (lb.occ_spreads[i] * lb.occ_spreads[j]).powi(3)
+                    / rij2.powi(3).max(1e-12);
+                if est < theta {
+                    keep[i * no + j] = false;
+                    if i < j {
+                        n_pairs_gated += 1;
+                    }
+                }
+            }
+        }
+        keep
+    });
+
+    // ---- per-pair block assembly: the dense (no·nv)² J tensor is NEVER
+    // formed. For each surviving unique pair (i<=j) one (nv, naux)x(naux, nv)
+    // GEMM (or one domain-local fit) produces the block; its transpose is
+    // the (j,i) block (J_jbia = J_iajb). Assembly cost therefore scales
+    // with SURVIVING pairs, not no². ----
+    let fo: Vec<f64> = (0..no).map(|i| f_oo[(i, i)]).collect();
+    let fv: Vec<f64> = (0..nv).map(|a| f_vv[(a, a)]).collect();
+    let (btilde, aux_xyz) = match cfg.fit_radius_bohr {
+        None => {
+            let vis = metric_inverse_sqrt(&lb.v2c, op)?;
+            (Some(vis.dot(&lb.b_flat)), None)
+        }
+        Some(_) => {
+            let aux_atom = ao_to_atom(dfbs);
+            let naux = lb.b_flat.nrows();
+            let mut xyz = Array2::<f64>::zeros((naux, 3));
+            for (pp, &ai) in aux_atom.iter().enumerate() {
+                let at = &mol.atoms[ai];
+                xyz[(pp, 0)] = at.x;
+                xyz[(pp, 1)] = at.y;
+                xyz[(pp, 2)] = at.zpos;
+            }
+            (None, Some(xyz))
+        }
+    };
+    // Schwarz column norms q[i·nv+a] = ||B̃_ia|| (whitened path): the exact
+    // bound |J_iajb| <= q_ia q_jb lets each pair's GEMM run over a CANDIDATE
+    // virtual subset that provably contains every Eq-8-retained element —
+    // per-pair assembly cost becomes ~|C_ij|²·naux, tracking the saturated
+    // domains instead of nv². eps = 0 keeps the full set (anchor path).
+    let q: Option<(Vec<f64>, Vec<f64>)> = btilde.as_ref().map(|bt| {
+        let mut qv = vec![0.0f64; no * nv];
+        for (col, qslot) in qv.iter_mut().enumerate() {
+            *qslot = bt.column(col).dot(&bt.column(col)).sqrt();
+        }
+        let qmax: Vec<f64> = (0..no)
+            .map(|i| qv[i * nv..(i + 1) * nv].iter().cloned().fold(0.0f64, f64::max))
+            .collect();
+        (qv, qmax)
+    });
+    let mut pairs: Vec<PairBlock> = Vec::new();
+    for i in 0..no {
+        for j in i..no {
+            if let Some(kp) = &keep_pair {
+                if !kp[i * no + j] {
+                    continue;
+                }
+            }
+            // symmetric candidate set: a kept iff EITHER orientation's
+            // Schwarz bound clears eps (covers the Eq-8 swap test — see
+            // the module tests' screen-exactness anchor)
+            let cand: Vec<usize> = match (&q, cfg.eps > 0.0) {
+                (Some((qv, qmax)), true) => (0..nv)
+                    .filter(|&a| {
+                        qv[i * nv + a] * qmax[j] >= cfg.eps
+                            || qv[j * nv + a] * qmax[i] >= cfg.eps
+                    })
+                    .collect(),
+                _ => (0..nv).collect(),
+            };
+            if cand.is_empty() {
+                continue;
+            }
+            let g: Array2<f64> = match (&btilde, &aux_xyz, cfg.fit_radius_bohr) {
+                (Some(bt), _, _) => {
+                    let naux = bt.nrows();
+                    let nc = cand.len();
+                    if nc == nv {
+                        let bi = bt.slice(s![.., i * nv..(i + 1) * nv]);
+                        let bj = bt.slice(s![.., j * nv..(j + 1) * nv]);
+                        bi.t().dot(&bj)
+                    } else {
+                        let mut bi = Array2::<f64>::zeros((naux, nc));
+                        let mut bj = Array2::<f64>::zeros((naux, nc));
+                        for (k, &a) in cand.iter().enumerate() {
+                            bi.column_mut(k).assign(&bt.column(i * nv + a));
+                            bj.column_mut(k).assign(&bt.column(j * nv + a));
+                        }
+                        bi.t().dot(&bj)
+                    }
+                }
+                (_, Some(xyz), Some(radius)) => domain_fit_pair(
+                    &lb.b_flat,
+                    &lb.v2c,
+                    xyz,
+                    &lb.occ_centers,
+                    i,
+                    j,
+                    nv,
+                    radius * radius,
+                    radius,
+                )?,
+                _ => unreachable!("btilde/aux_xyz exactly one is Some"),
+            };
+            // domain-fit path returns a FULL (nv, nv) block; candidate
+            // subsets apply to the whitened Gram path only
+            let cand_used: Vec<usize> = if g.nrows() == nv && cand.len() != nv {
+                unreachable!("full block with reduced candidates")
+            } else if g.nrows() == nv {
+                (0..nv).collect()
+            } else {
+                cand.clone()
+            };
+            if let Some(pb) =
+                pair_block_from_g_cand(i, j, &g, &cand_used, nv, f_vv, &fo, &fv, cfg.eps)
+            {
+                pairs.push(pb);
+            }
+            if i != j {
+                let gt = g.t().to_owned();
+                if let Some(pb) =
+                    pair_block_from_g_cand(j, i, &gt, &cand_used, nv, f_vv, &fo, &fv, cfg.eps)
+                {
+                    pairs.push(pb);
+                }
+            }
+        }
+    }
+    let mut by_i: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut by_j: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (pidx, pb) in pairs.iter().enumerate() {
+        by_i.entry(pb.i).or_default().push(pidx);
+        by_j.entry(pb.j).or_default().push(pidx);
+    }
+    let rg = Ragged { pairs, by_i, by_j };
     let t_assembly_s = t0.elapsed().as_secs_f64();
-    let LocalizedProblem { j_dense, f_oo, f_vv, no, nv, occ_centers, occ_spreads, .. } = &lp;
-    let (j_dense, f_oo, f_vv, no, nv) = (j_dense, f_oo, f_vv, *no, *nv);
 
     // canonical reference on the same (mol, basis, aux, op, frozen core)
     let t0 = std::time::Instant::now();
@@ -959,34 +1179,8 @@ pub fn amplitude_lmp2_with_virtuals(
     .mp2_corr;
     let t_reference_s = t0.elapsed().as_secs_f64();
 
-    // integral-free pair gate (theta = 1e-2*eps, the paper's linked gate)
-    let mut n_pairs_gated = 0usize;
-    let keep_pair: Option<Vec<bool>> = cfg.pair_gate_cal.map(|cal| {
-        let theta = 1e-2 * cfg.eps;
-        let mut keep = vec![true; no * no];
-        for i in 0..no {
-            for j in 0..no {
-                if i == j {
-                    continue;
-                }
-                let rij2: f64 =
-                    (0..3).map(|x| (occ_centers[(i, x)] - occ_centers[(j, x)]).powi(2)).sum();
-                let est = cal * (occ_spreads[i] * occ_spreads[j]).powi(3)
-                    / rij2.powi(3).max(1e-12);
-                if est < theta {
-                    keep[i * no + j] = false;
-                    if i < j {
-                        n_pairs_gated += 1;
-                    }
-                }
-            }
-        }
-        keep
-    });
-
-    // mask + ragged solve
+    // ---- ragged solve ----
     let t0 = std::time::Instant::now();
-    let rg = build_ragged(j_dense, f_oo, f_vv, no, nv, cfg.eps, keep_pair.as_deref());
     let (t, iters, relres, converged, flops_mv) = solve_ragged(&rg, f_oo, cfg.cg_rtol, cfg.cg_max_iter);
     if !converged {
         return Err(FerricError::General(format!(

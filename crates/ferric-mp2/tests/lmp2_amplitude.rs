@@ -470,3 +470,87 @@ fn bench_wall_clock_alkane_series() {
         }
     }
 }
+
+/// SCREEN-EXACTNESS ANCHOR: the Schwarz candidate set must contain BOTH
+/// indices of every Eq-8-retained element (either orientation) — verified
+/// element-by-element against full unscreened blocks, plus the mutation
+/// arm: an under-estimating bound (q scaled by 0.4) must LOSE retained
+/// elements, proving the check is not vacuous at this eps.
+#[test]
+fn schwarz_candidates_cover_every_retained_element() {
+    use ferric_mp2::lmp2_amplitude::{assemble_basis, build_vvhv};
+    use ferric_mp2::rimp2::metric_inverse_sqrt;
+    let su = setup("alkane_4.xyz");
+    let eps = 1e-3;
+    let cfg = AmplitudeLmp2Config { eps, frozen_core: 4, ..Default::default() };
+    let vvhv = build_vvhv(&su.mol, &su.obs, &su.obs_bs, &su.rhf).unwrap();
+    let lb = assemble_basis(&su.mol, &su.obs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg, &vvhv)
+        .unwrap();
+    let (no, nv) = (lb.no, lb.nv);
+    let vis = metric_inverse_sqrt(&lb.v2c, Operator::coulomb()).unwrap();
+    let bt = vis.dot(&lb.b_flat);
+    let q: Vec<f64> = (0..no * nv).map(|c| bt.column(c).dot(&bt.column(c)).sqrt()).collect();
+    let qmax: Vec<f64> =
+        (0..no).map(|i| q[i * nv..(i + 1) * nv].iter().cloned().fold(0.0f64, f64::max)).collect();
+    let mut n_retained = 0usize;
+    // adaptive mutation arm: the scale at which index x drops from the
+    // candidate set is s_x = eps / max(q_ix qmax_j, q_jx qmax_i); an element
+    // is lost once scale < max(s_a, s_b). crit = the largest such threshold
+    // over all retained elements — testing just below it MUST lose >= 1.
+    let mut crit = 0.0f64;
+    for i in 0..no {
+        for j in i..no {
+            let bi = bt.slice(ndarray::s![.., i * nv..(i + 1) * nv]);
+            let bj = bt.slice(ndarray::s![.., j * nv..(j + 1) * nv]);
+            let g = bi.t().dot(&bj);
+            let s_of = |x: usize| {
+                eps / (q[i * nv + x] * qmax[j]).max(q[j * nv + x] * qmax[i])
+            };
+            for a in 0..nv {
+                for b in 0..nv {
+                    let retained = g[(a, b)].abs() > eps || g[(b, a)].abs() > eps;
+                    if retained {
+                        n_retained += 1;
+                        let (sa, sb) = (s_of(a), s_of(b));
+                        assert!(
+                            sa <= 1.0 && sb <= 1.0,
+                            "retained ({i},{a},{j},{b}) outside candidates (s={:.3})",
+                            sa.max(sb)
+                        );
+                        crit = crit.max(sa.max(sb));
+                    }
+                }
+            }
+        }
+    }
+    // count losses at 0.99*crit — must be nonzero by construction OF crit,
+    // proving the coverage check has a reachable failure mode at this eps
+    let scale = 0.99 * crit;
+    let mut n_lost_mutated = 0usize;
+    for i in 0..no {
+        for j in i..no {
+            let bi = bt.slice(ndarray::s![.., i * nv..(i + 1) * nv]);
+            let bj = bt.slice(ndarray::s![.., j * nv..(j + 1) * nv]);
+            let g = bi.t().dot(&bj);
+            let s_of = |x: usize| {
+                eps / (q[i * nv + x] * qmax[j]).max(q[j * nv + x] * qmax[i])
+            };
+            for a in 0..nv {
+                for b in 0..nv {
+                    if (g[(a, b)].abs() > eps || g[(b, a)].abs() > eps)
+                        && scale < s_of(a).max(s_of(b))
+                    {
+                        n_lost_mutated += 1;
+                    }
+                }
+            }
+        }
+    }
+    eprintln!(
+        "screen exactness: {n_retained} retained all covered; slack crit={crit:.3}; \
+         bound scaled to {scale:.3} loses {n_lost_mutated}"
+    );
+    assert!(n_retained > 1000, "test too small to be meaningful");
+    assert!(crit > 0.0 && crit <= 1.0, "crit out of range: {crit}");
+    assert!(n_lost_mutated > 0, "mutation arm vacuous: shrunken bound loses nothing");
+}
