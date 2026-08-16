@@ -173,6 +173,11 @@ pub struct Mp2Cfg {
     // stale key now errors instead of lying.
     /// Range-separation parameter ω in Å⁻¹ (for att-rimp2 and rs-mp2-rpa). Default 0.420.
     pub omega: Option<f64>,
+    /// Amplitude-threshold LMP2 (`kind = "lmp2"`): the single threshold ε on
+    /// localized |(ia|jb)| (WSHG23 Eq. 8). Default 1e-4. The finite-ε energy
+    /// is a controlled approximation — error one-sided and ~linear in ε (see
+    /// wiki/amplitude-threshold-lmp2.md for the measured map).
+    pub lmp2_eps: Option<f64>,
     /// κ-regularized MP2 (Lee/Head-Gordon JCTC 2018) for `kind = "rimp2"`:
     /// damps every amplitude by (1 − e^{−κΔ})², κ in inverse Hartree
     /// (κ→∞ recovers plain MP2; the paper's recommended value is ~1.45).

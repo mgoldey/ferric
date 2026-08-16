@@ -1556,6 +1556,47 @@ fn run_rimp2(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
     Ok(PyRiMp2Result { total_energy: mp2.total_energy, rhf_energy: rhf.energy, mp2_corr: mp2.mp2_corr })
 }
 
+
+/// Amplitude-threshold local MP2 (WSHG23 single-threshold; closed-shell).
+/// `eps = 0` reproduces `run_rimp2` exactly (library anchor <= 1e-9); the
+/// default `eps = 1e-4` carries a one-sided ~linear-in-eps truncation error.
+/// Returns a dict with e_corr, e_corr_canonical_ri, total_energy and the
+/// sparsity counters (keep/pair fractions, domain sizes, CG iterations).
+#[pyfunction]
+#[pyo3(signature = (mol, basis_set, auxbasis, eps=None, frozen_core=None, k_builder=None, memory_budget_gb=None))]
+fn run_lmp2(py: Python<'_>, mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
+            eps: Option<f64>, frozen_core: Option<usize>, k_builder: Option<&str>,
+            memory_budget_gb: Option<f64>) -> PyResult<Py<pyo3::types::PyDict>> {
+    use ferric_mp2::lmp2_amplitude::{amplitude_lmp2, AmplitudeLmp2Config};
+    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
+    let ctx = ParallelContext::default();
+    let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &rhf_config(k_builder)).map_err(make_err)?;
+    if !rhf.converged {
+        return Err(make_err(ferric_core::FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy }));
+    }
+    let r = amplitude_lmp2(&mol.inner, &prep, &basis_set.inner, &dfbs, op, &rhf,
+        &AmplitudeLmp2Config {
+            eps: eps.unwrap_or(1e-4),
+            frozen_core: frozen_core.unwrap_or(0),
+            eri3_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
+            ..Default::default()
+        }).map_err(make_err)?;
+    let d = pyo3::types::PyDict::new(py);
+    d.set_item("e_corr", r.e_corr)?;
+    d.set_item("e_corr_canonical_ri", r.e_corr_canonical_ri)?;
+    d.set_item("total_energy", r.e_total)?;
+    d.set_item("rhf_energy", rhf.energy)?;
+    d.set_item("keep_fraction", r.keep_fraction)?;
+    d.set_item("pair_fraction", r.pair_fraction)?;
+    d.set_item("dom_mean", r.dom_mean)?;
+    d.set_item("dom_max", r.dom_max)?;
+    d.set_item("cg_iterations", r.cg_iterations)?;
+    Ok(d.into())
+}
+
 // ── OO-RI-MP2 (orbital-optimized) ──
 
 #[pyclass]
@@ -3574,6 +3615,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(esp_at_points, m)?)?;
     m.add_function(wrap_pyfunction!(hirshfeld_charges, m)?)?;
     m.add_function(wrap_pyfunction!(lowdin_charges, m)?)?;
+    m.add_function(wrap_pyfunction!(run_lmp2, m)?)?;
     m.add_function(wrap_pyfunction!(orbital_moments, m)?)?;
     m.add_function(wrap_pyfunction!(density_second_moment, m)?)?;
     m.add_function(wrap_pyfunction!(mulliken_charges, m)?)?;

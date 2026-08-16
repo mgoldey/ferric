@@ -177,7 +177,7 @@ pub fn main() {
     cfg.scf.verbose = cfg.scf.verbose || cli_verbose;
     let method = cfg.method.kind.as_str();
     let task = cfg.method.task.as_str();
-    if !matches!(method, "rhf" | "uhf" | "rohf" | "ksdft" | "rimp2" | "mp3" | "oo-rimp2" | "att-rimp2" | "mp2-v" | "scs-mp2" | "scs-mp2-2terfc" | "laplace-mp2" | "laplace-sos-mp2" | "pdep-rpa" | "rs-mp2-rpa" | "gw" | "bse-tda" | "tdhf-static-polarizability" | "ccsd" | "linlccd" | "wb97x-l-v") {
+    if !matches!(method, "rhf" | "uhf" | "rohf" | "ksdft" | "rimp2" | "lmp2" | "mp3" | "oo-rimp2" | "att-rimp2" | "mp2-v" | "scs-mp2" | "scs-mp2-2terfc" | "laplace-mp2" | "laplace-sos-mp2" | "pdep-rpa" | "rs-mp2-rpa" | "gw" | "bse-tda" | "tdhf-static-polarizability" | "ccsd" | "linlccd" | "wb97x-l-v") {
         eprintln!("error: unsupported method.kind = \"{method}\"; expected rhf, uhf, rohf, ksdft, rimp2, mp3, oo-rimp2, att-rimp2, mp2-v, scs-mp2, scs-mp2-2terfc, laplace-mp2, laplace-sos-mp2, pdep-rpa, rs-mp2-rpa, gw, bse-tda, tdhf-static-polarizability, ccsd, linlccd, or wb97x-l-v");
         std::process::exit(1);
     }
@@ -474,6 +474,7 @@ pub fn main() {
         "rhf" => run_rhf(&cfg, &bs, &prep, &result),
         "ksdft" => run_ksdft(&cfg, &bs, &prep, &result),
         "rimp2" => run_rimp2(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
+        "lmp2" => run_lmp2(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
         "mp3" => run_mp3(&cfg, &mol, &bs, &prep, op, &result),
         "oo-rimp2" => run_oo_rimp2(&cfg, &mol, &bs, &prep, op, &bounds, &result, budget_bytes),
         "att-rimp2" => run_att_rimp2(&cfg, &mol, &bs, &prep, &result, budget_bytes),
@@ -520,6 +521,68 @@ fn run_ksdft(cfg: &Config, bs: &BasisSet, prep: &PreparedBasis, result: &ferric_
 }
 
 /// `method.kind = "rimp2"`. Extracted verbatim from the former `main()`
+
+/// `method.kind = "lmp2"`: amplitude-threshold local MP2
+/// (`ferric_mp2::lmp2_amplitude`, WSHG23 single-threshold; closed-shell).
+/// The ε=0 limit reproduces `rimp2` exactly (library anchor <=1e-9); the
+/// default ε=1e-4 carries a one-sided ~linear-in-ε truncation error, printed
+/// alongside the canonical reference so nothing is silently approximate.
+fn run_lmp2(
+    cfg: &Config,
+    mol: &Molecule,
+    bs: &BasisSet,
+    prep: &PreparedBasis,
+    op: Operator,
+    result: &ferric_scf::result::ScfResult,
+    budget_bytes: Option<usize>,
+) {
+    use ferric_mp2::lmp2_amplitude::{amplitude_lmp2, AmplitudeLmp2Config};
+    if result.spin != ferric_scf::result::Spin::Restricted {
+        eprintln!("error: lmp2 is closed-shell (RHF/RKS reference) only");
+        std::process::exit(1);
+    }
+    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+    let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let dfbs = PreparedBasis::new(mol, &aux_bs).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let eps = cfg.mp2.lmp2_eps.unwrap_or(1e-4);
+    let r = amplitude_lmp2(
+        mol,
+        prep,
+        bs,
+        &dfbs,
+        op,
+        result,
+        &AmplitudeLmp2Config {
+            eps,
+            frozen_core: cfg.mp2.frozen_core,
+            eri3_budget_bytes: budget_bytes,
+            ..Default::default()
+        },
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    println!("Amplitude-threshold LMP2 (aux: {aux_name}, eps = {eps:.1e})");
+    println!("  E_corr(LMP2)          = {:.10} Ha", r.e_corr);
+    println!("  E_corr(canonical RI)  = {:.10} Ha", r.e_corr_canonical_ri);
+    println!(
+        "  threshold error       = {:+.3e} Ha (one-sided; ~linear in eps)",
+        r.e_corr - r.e_corr_canonical_ri
+    );
+    println!("  total energy          = {:.10} Ha", r.e_total);
+    println!(
+        "  keep {:.4}  pairs {:.3}  dom(mean/max) {:.1}/{}  cg {}",
+        r.keep_fraction, r.pair_fraction, r.dom_mean, r.dom_max, r.cg_iterations
+    );
+}
+
 /// `"rimp2" => { ... }` match arm.
 fn run_rimp2(
     cfg: &Config,

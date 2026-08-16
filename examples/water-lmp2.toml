@@ -1,0 +1,17 @@
+# Amplitude-threshold local MP2 (WSHG23 single-threshold, closed-shell).
+# eps = 0 reproduces rimp2 exactly; the default 1e-4 carries a one-sided,
+# ~linear-in-eps truncation error which the output prints against the
+# canonical RI reference. See wiki/amplitude-threshold-lmp2.md.
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "6-31g"
+
+[method]
+kind = "lmp2"
+
+[mp2]
+auxbasis = "cc-pvdz-ri"
+frozen_core = 1
+lmp2_eps = 1e-4
