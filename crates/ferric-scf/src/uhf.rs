@@ -121,7 +121,7 @@ pub fn solve_uhf_fockmod(
         let main = config.dft_grid.clone().unwrap_or_default();
         let nlc = config.nlc_grid.clone()
             .unwrap_or(ferric_dft::grid::AtomicGridConfig { n_radial: 50, n_angular: 50, ..Default::default() });
-        let ks = KsXcUks::new(mol, prep.basis_set(), name, &main, &nlc)
+        let ks = KsXcUks::new_with_omega(mol, prep.basis_set(), name, &main, &nlc, config.xc_omega)
             .map_err(|e| FerricError::General(format!("KsXcUks init for {name}: {e:?}")))?;
         Some(Box::new(ks) as Box<dyn UksXcContribution>)
     } else {

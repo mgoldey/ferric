@@ -1062,6 +1062,64 @@ pub fn xc_def_from_name(name: &str) -> Result<XcDef, LibxcError> {
     xc_def_from_name_nspin(name, 1)
 }
 
+
+/// [`xc_def_from_name_nspin`] with the range-separation parameter ω
+/// OVERRIDDEN (Bohr⁻¹): every component functional carrying an `_omega`
+/// external parameter gets it replaced (all other parameters keep their
+/// libxc defaults), and the definition's CAM ω follows in lockstep so the
+/// SR/LR exchange operators ferric builds agree with the semilocal kernel.
+///
+/// Errors if NO component has an `_omega` parameter — silently ignoring an
+/// ω override on a non-range-separated functional is exactly the
+/// config-honesty violation this hard error prevents. α/β (the CAM mixing
+/// coefficients) are deliberately NOT touched: standard optimal tuning
+/// varies ω at fixed mixing.
+pub fn xc_def_from_name_nspin_omega(
+    name: &str,
+    nspin: u32,
+    omega: f64,
+) -> Result<XcDef, LibxcError> {
+    if !(omega.is_finite() && omega > 0.0) {
+        return Err(LibxcError::ExtParamName {
+            position: 0,
+            actual: format!("omega = {omega}"),
+            expected: "a finite, positive range-separation parameter".to_string(),
+        });
+    }
+    let mut def = xc_def_from_name_nspin(name, nspin)?;
+    let mut applied = false;
+    for f in &mut def.funcs {
+        let names = f.ext_param_names();
+        if let Some(pos) = names.iter().position(|n| n == "_omega") {
+            let mut values = f.ext_param_defaults();
+            if values.len() != names.len() {
+                return Err(LibxcError::ExtParamCount { expected: names.len(), got: values.len() });
+            }
+            values[pos] = omega;
+            f.set_ext_params(&values)?;
+            applied = true;
+        }
+    }
+    if !applied {
+        return Err(LibxcError::ExtParamName {
+            position: 0,
+            actual: name.to_string(),
+            expected: "a range-separated functional with an _omega parameter".to_string(),
+        });
+    }
+    match &mut def.cam {
+        Some(cam) => cam.omega = omega,
+        None => {
+            return Err(LibxcError::ExtParamName {
+                position: 0,
+                actual: name.to_string(),
+                expected: "a functional with CAM coefficients (RSH)".to_string(),
+            })
+        }
+    }
+    Ok(def)
+}
+
 /// nspin-aware variant. Use 1 for closed-shell and 2 for UKS / ROKS.
 /// ωB97X-L-V external parameters, in libxc's `HYB_GGA_XC_WB97X_V` order.
 ///

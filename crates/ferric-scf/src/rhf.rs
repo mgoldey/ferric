@@ -56,6 +56,11 @@ pub struct RhfConfig {
     pub df_k_aux: Option<String>,
     /// XC functional name (None = pure HF; e.g. "LDA", "PBE", "B3LYP", "wB97X-V").
     pub xc: Option<String>,
+    /// Range-separation ω override (Bohr⁻¹) for a range-separated `xc` —
+    /// the optimal-tuning knob. `None` = the functional's published ω
+    /// (byte-identical path). Hard error via libxc if `xc` has no `_omega`
+    /// parameter (never silently ignored).
+    pub xc_omega: Option<f64>,
     /// Main DFT grid spec. Default (75, 110) when xc.is_some().
     pub dft_grid: Option<ferric_dft::grid::AtomicGridConfig>,
     /// NLC (VV10) grid spec. Default (50, 50) when XC requires VV10.
@@ -194,6 +199,7 @@ impl Default for RhfConfig {
             df_j_aux: None,
             df_k_aux: None,
             xc: None,
+            xc_omega: None,
             dft_grid: None,
             nlc_grid: None,
             level_shift: 0.0,
@@ -364,7 +370,7 @@ pub fn solve_rhf(
         let main = config.dft_grid.clone().unwrap_or_default();
         let nlc = config.nlc_grid.clone()
             .unwrap_or(ferric_dft::grid::AtomicGridConfig { n_radial: 50, n_angular: 50, ..Default::default() });
-        let ks = KsXc::new(mol, prep.basis_set(), name, &main, &nlc)
+        let ks = KsXc::new_with_omega(mol, prep.basis_set(), name, &main, &nlc, config.xc_omega)
             .map_err(|e| FerricError::General(format!("KsXc init for {name}: {e:?}")))?;
         Some(Box::new(ks) as Box<dyn XcContribution>)
     } else {

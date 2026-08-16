@@ -331,7 +331,24 @@ impl KsXc {
         main: &AtomicGridConfig,
         nlc: &AtomicGridConfig,
     ) -> Result<Self, KsXcError> {
-        let xc = xc_def_from_name(xc_name)?;
+        Self::new_with_omega(mol, bs, xc_name, main, nlc, None)
+    }
+
+    /// [`Self::new`] with an optional range-separation ω override (Bohr⁻¹) —
+    /// hard-errors for functionals without an `_omega` parameter (see
+    /// `xc_def_from_name_nspin_omega`). `None` is byte-identical to `new`.
+    pub fn new_with_omega(
+        mol: &Molecule,
+        bs: &BasisSet,
+        xc_name: &str,
+        main: &AtomicGridConfig,
+        nlc: &AtomicGridConfig,
+        omega: Option<f64>,
+    ) -> Result<Self, KsXcError> {
+        let xc = match omega {
+            None => xc_def_from_name(xc_name)?,
+            Some(w) => crate::libxc::xc_def_from_name_nspin_omega(xc_name, 1, w)?,
+        };
 
         let grid = build_atomic_grid(mol, main);
         let nbf = nbasis(mol, bs)?;
@@ -466,7 +483,22 @@ impl KsXcUks {
         main: &AtomicGridConfig,
         nlc: &AtomicGridConfig,
     ) -> Result<Self, KsXcError> {
-        let xc = xc_def_from_name_nspin(xc_name, 2)?;
+        Self::new_with_omega(mol, bs, xc_name, main, nlc, None)
+    }
+
+    /// UKS twin of `KsXc::new_with_omega`.
+    pub fn new_with_omega(
+        mol: &Molecule,
+        bs: &BasisSet,
+        xc_name: &str,
+        main: &AtomicGridConfig,
+        nlc: &AtomicGridConfig,
+        omega: Option<f64>,
+    ) -> Result<Self, KsXcError> {
+        let xc = match omega {
+            None => xc_def_from_name_nspin(xc_name, 2)?,
+            Some(w) => crate::libxc::xc_def_from_name_nspin_omega(xc_name, 2, w)?,
+        };
 
         let grid = build_atomic_grid(mol, main);
         let nbf = nbasis(mol, bs)?;

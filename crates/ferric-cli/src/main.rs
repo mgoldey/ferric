@@ -270,6 +270,7 @@ pub fn main() {
         eprintln!("[ferric] {}", resolution.audit_line());
     }
     let rhf_config = RhfConfig {
+        xc_omega: None,
         max_iter: cfg.scf.max_iter,
         energy_conv: cfg.scf.energy_conv,
         density_conv: cfg.scf.density_conv,
