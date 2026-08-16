@@ -41,7 +41,11 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::result::ScfResult;
 
-use crate::lmp2_amplitude::{assemble_localized, build_vvhv, check_vvhv, AmplitudeLmp2Config, VvHv};
+use crate::lmp2_amplitude::{
+    assemble_basis, assemble_localized, assemble_ragged_direct, build_vvhv, check_vvhv,
+    AmplitudeLmp2Config, VvHv,
+};
+use crate::ragged::{apply_pattern, matvec_indexed, ring_product};
 use crate::rimp2::{
     active_occ, eri3_budget_bytes, eri3_mo_ov_blocked, metric_inverse_sqrt,
 };
@@ -56,11 +60,14 @@ pub struct AmplitudeDrpaConfig {
     pub fp_rtol: f64,
     pub fp_max_iter: usize,
     pub eri3_budget_bytes: Option<usize>,
+    /// Integral-free pair gate (see `lmp2_amplitude`); gated pairs are
+    /// never assembled in the ragged path.
+    pub pair_gate_cal: Option<f64>,
 }
 
 impl Default for AmplitudeDrpaConfig {
     fn default() -> Self {
-        Self { eps: 1e-4, frozen_core: 0, fp_rtol: 1e-12, fp_max_iter: 500, eri3_budget_bytes: None }
+        Self { eps: 1e-4, frozen_core: 0, fp_rtol: 1e-12, fp_max_iter: 500, eri3_budget_bytes: None, pair_gate_cal: None }
     }
 }
 
@@ -145,9 +152,114 @@ pub fn amplitude_drpa(
     amplitude_drpa_with_virtuals(mol, obs, dfbs, op, rhf, cfg, &vvhv)
 }
 
-/// Mutation-test entry point (a deliberately broken virtual space must fail
-/// the ε=0 anchor).
+/// Mutation-test / caller-supplied-virtuals entry point — RAGGED path
+/// (direct assembly, no dense (no·nv)² object).
 pub fn amplitude_drpa_with_virtuals(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &ScfResult,
+    cfg: &AmplitudeDrpaConfig,
+    vvhv: &VvHv,
+) -> Result<AmplitudeDrpaResult, FerricError> {
+    let lcfg = AmplitudeLmp2Config {
+        eps: cfg.eps,
+        frozen_core: cfg.frozen_core,
+        eri3_budget_bytes: cfg.eri3_budget_bytes,
+        ..Default::default()
+    };
+    let lb = assemble_basis(mol, obs, dfbs, op, rhf, &lcfg, vvhv)?;
+    // B = 2 (ia|jb), assembled directly onto ragged blocks (scale = 2.0;
+    // the eps mask therefore acts on |B| exactly as the dense V1 did)
+    let (rg, _gated) = assemble_ragged_direct(
+        mol,
+        dfbs,
+        op,
+        &lb,
+        cfg.eps,
+        2.0,
+        cfg.pair_gate_cal,
+        None,
+    )?;
+    let b_blocks: Vec<Array2<f64>> = rg.pairs.iter().map(|pb| pb.j_blk.clone()).collect();
+    let bnorm = b_blocks.iter().map(|b| b.iter().map(|x| x * x).sum::<f64>()).sum::<f64>().sqrt();
+
+    // damped fixed point T <- T - R(T)/D on the pattern, all ragged
+    let mut t: Vec<Array2<f64>> = rg
+        .pairs
+        .iter()
+        .map(|pb| Array2::<f64>::zeros((pb.da.len(), pb.db.len())))
+        .collect();
+    let mut relres = 1.0;
+    let mut it = 0;
+    let mut converged = bnorm == 0.0;
+    let mut flops = 0u64;
+    while it < cfg.fp_max_iter && !converged {
+        it += 1;
+        let f_t = matvec_indexed(&rg, &lb.f_oo, &t, &mut flops); // pattern-projected
+        let bt = ring_product(&rg, &b_blocks, &t);
+        let tb = ring_product(&rg, &t, &b_blocks);
+        let tbt = ring_product(&rg, &t, &bt);
+        let mut r2 = 0.0f64;
+        let mut new_t = Vec::with_capacity(rg.pairs.len());
+        for (p, pb) in rg.pairs.iter().enumerate() {
+            let mut r = &b_blocks[p] + &f_t[p];
+            r += &bt[p];
+            r += &tb[p];
+            r += &tbt[p];
+            apply_pattern(&mut r, &pb.pat, pb.db.len());
+            r2 += r.iter().map(|x| x * x).sum::<f64>();
+            let mut tn = t[p].clone();
+            tn -= &(&r / &pb.denom);
+            apply_pattern(&mut tn, &pb.pat, pb.db.len());
+            new_t.push(tn);
+        }
+        t = new_t;
+        relres = r2.sqrt() / bnorm.max(1e-300);
+        if relres < cfg.fp_rtol {
+            converged = true;
+        }
+    }
+    if !converged {
+        return Err(FerricError::General(format!(
+            "drpa_amplitude(ragged): Riccati fixed point failed to converge (relres {relres:.2e} after {it} iters)"
+        )));
+    }
+    // E = 1/2 Σ B ∘ T on the pattern
+    let mut e_corr = 0.0;
+    for (p, pb) in rg.pairs.iter().enumerate() {
+        let nbb = pb.db.len();
+        for r in 0..pb.da.len() {
+            for c in 0..nbb {
+                if pb.pat[r * nbb + c] {
+                    e_corr += 0.5 * b_blocks[p][(r, c)] * t[p][(r, c)];
+                }
+            }
+        }
+    }
+    let e_ref = canonical_plasmon_drpa(mol, obs, dfbs, op, rhf, cfg)?;
+    let n = lb.no * lb.nv;
+    let kept: usize = rg.pairs.iter().map(|pb| pb.pat.iter().filter(|&&x| x).count()).sum();
+    Ok(AmplitudeDrpaResult {
+        e_corr,
+        e_total: rhf.energy + e_corr,
+        e_corr_plasmon_canonical: e_ref,
+        keep_fraction: kept as f64 / (n * n) as f64,
+        pair_fraction: rg.pairs.len() as f64 / (lb.no * lb.no) as f64,
+        iterations: it,
+        relres,
+        converged,
+    })
+}
+
+/// DENSE V1 solver (compound-matrix fixed point with FULL intermediates) —
+/// retained as the independent cross-check for the ragged path below. The
+/// two differ at finite ε: the ragged variant projects the ring
+/// INTERMEDIATES onto the pattern as well (a slightly stronger truncation,
+/// measured sub-dominant to the threshold error itself — see the tests);
+/// at ε = 0 they are identical by construction.
+pub fn amplitude_drpa_dense(
     mol: &Molecule,
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,

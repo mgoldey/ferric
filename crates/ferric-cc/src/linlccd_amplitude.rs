@@ -42,8 +42,9 @@ use ferric_scf::ScfResult;
 
 use crate::linlccd::LadderVariant;
 use ferric_mp2::lmp2_amplitude::{
-    assemble_localized, build_vvhv, check_vvhv, AmplitudeLmp2Config, VvHv,
+    assemble_basis, assemble_ragged_direct, build_vvhv, check_vvhv, AmplitudeLmp2Config, VvHv,
 };
+use ferric_mp2::ragged::{apply_pattern, gather_into, matvec_indexed, solve_ragged_with};
 use ferric_mp2::mo_transform::{transform_3center_oo, transform_3center_vv};
 use ferric_mp2::rimp2::metric_inverse_sqrt;
 
@@ -114,235 +115,121 @@ pub fn amplitude_linlccd_with_virtuals(
         eri3_budget_bytes: cfg.eri3_budget_bytes,
         ..Default::default()
     };
-    let lp = assemble_localized(mol, obs, dfbs, op, rhf, &lcfg, vvhv)?;
-    let (no, nv) = (lp.no, lp.nv);
-    let n = no * nv;
-    let j2 = &lp.j_dense; // (ia|jb) over (i·nv+a, j·nv+b)
+    let lb = assemble_basis(mol, obs, dfbs, op, rhf, &lcfg, vvhv)?;
+    let (no, nv) = (lb.no, lb.nv);
+    // (ia|jb) directly onto ragged blocks — the dense (no·nv)² tensor is
+    // never formed (the lmp2 direct-assembly path, scale 1.0)
+    let (rg, _gated) = assemble_ragged_direct(mol, dfbs, op, &lb, cfg.eps, 1.0, None, None)?;
 
-    // ladder blocks in the SAME localized basis (whitened RI Gram products)
-    let (oo_mat, vv_mat) = {
+    // hh ladder coefficients (ik|jl): the OOOO block is no⁴ — tiny — via
+    // the same whitened RI Gram as the canonical implementation
+    let vis = metric_inverse_sqrt(&lb.v2c, op)?;
+    let naux = lb.b_flat.nrows();
+    let oo_g = {
         let eri3_ao = ferric_integrals::threeindex::eri3_tensor(op, obs, dfbs)?;
-        let v2c = ferric_integrals::threeindex::coulomb_metric_2c(op, dfbs)?;
-        let vis = metric_inverse_sqrt(&v2c, op)?;
-        let naux = eri3_ao.shape()[0];
-        // hh: (ik|jl) as a (no², no²) matrix over row (i·no+j), col (k·no+l)
-        let boo = transform_3center_oo(&eri3_ao, &lp.c_locc); // (naux, no, no)
-        let boo = boo
+        let boo = transform_3center_oo(&eri3_ao, &lb.c_locc)
             .into_shape_with_order((naux, no * no))
             .map_err(|e| FerricError::General(format!("linlccd_amplitude oo reshape: {e}")))?;
-        let boo_t = vis.dot(&boo); // whitened, columns indexed (i,k)
-        // (ik|jl) = Σ_P boo_t[P,(i,k)] boo_t[P,(j,l)]; we need row (i,j), col (k,l):
-        let gram_oo = boo_t.t().dot(&boo_t); // rows (i,k), cols (j,l)
-        let mut oo_mat = Array2::<f64>::zeros((no * no, no * no));
-        for i in 0..no {
-            for j in 0..no {
-                for k in 0..no {
-                    for l in 0..no {
-                        oo_mat[(i * no + j, k * no + l)] = gram_oo[(i * no + k, j * no + l)];
-                    }
-                }
-            }
-        }
-        let vv_mat = if variant.needs_vvvv_pub() {
-            let bvv = transform_3center_vv(&eri3_ao, &vvhv.c_vloc); // (naux, nv, nv)
-            let bvv = bvv
-                .into_shape_with_order((naux, nv * nv))
-                .map_err(|e| FerricError::General(format!("linlccd_amplitude vv reshape: {e}")))?;
-            let bvv_t = vis.dot(&bvv);
-            let gram_vv = bvv_t.t().dot(&bvv_t); // rows (a,c), cols (b,d)
-            let mut m = Array2::<f64>::zeros((nv * nv, nv * nv));
-            for a in 0..nv {
-                for b in 0..nv {
-                    for c in 0..nv {
-                        for d in 0..nv {
-                            // (ac|bd) at row (a·nv+b), col (c·nv+d)
-                            m[(a * nv + b, c * nv + d)] = gram_vv[(a * nv + c, b * nv + d)];
-                        }
-                    }
-                }
-            }
-            Some(m)
-        } else {
-            None
-        };
-        (oo_mat, vv_mat)
+        let boo_t = vis.dot(&boo);
+        boo_t.t().dot(&boo_t) // rows (i,k), cols (j,l): (ik|jl)
+    };
+    // pp ladder: whitened B over VV pairs, gathered per pair on demand —
+    // the (nv²)² VVVV tensor is never formed
+    let bvv_t: Option<Array2<f64>> = if variant.needs_vvvv_pub() {
+        let eri3_ao = ferric_integrals::threeindex::eri3_tensor(op, obs, dfbs)?;
+        let bvv = transform_3center_vv(&eri3_ao, &vvhv.c_vloc)
+            .into_shape_with_order((naux, nv * nv))
+            .map_err(|e| FerricError::General(format!("linlccd_amplitude vv reshape: {e}")))?;
+        Some(vis.dot(&bvv))
+    } else {
+        None
     };
 
-    // Eq-8 swap-closed mask on (ia|jb)
-    let mask: Vec<bool> = {
-        let mut m = vec![false; n * n];
-        for i in 0..no {
-            for a in 0..nv {
-                for j in 0..no {
-                    for b in 0..nv {
-                        let jd = j2[(i * nv + a, j * nv + b)].abs();
-                        let kd = j2[(i * nv + b, j * nv + a)].abs();
-                        if cfg.eps == 0.0 || jd > cfg.eps || kd > cfg.eps {
-                            m[(i * nv + a) * n + (j * nv + b)] = true;
-                        }
+    let apply_hh = !matches!(variant, LadderVariant::DriversOnly);
+    let matvec = |t: &[Array2<f64>], flops: &mut u64| -> Vec<Array2<f64>> {
+        let mut r = matvec_indexed(&rg, &lb.f_oo, t, flops); // F(t), pattern-projected
+        if apply_hh {
+            // hh: out_ij += Σ_(k,l) (ik|jl) · gather(T_kl)
+            for (p_out, pb_out) in rg.pairs.iter().enumerate() {
+                for (p_src, pb_src) in rg.pairs.iter().enumerate() {
+                    let coeff = oo_g[(pb_out.i * no + pb_src.i, pb_out.j * no + pb_src.j)];
+                    if coeff == 0.0 {
+                        continue;
                     }
+                    gather_into(&mut r[p_out], pb_src, pb_out, coeff, &t[p_src], flops);
                 }
             }
         }
-        m
-    };
-    let kept = mask.iter().filter(|&&x| x).count();
-    let apply_mask = |m: &mut Array2<f64>| {
-        for (v, &keep) in m.iter_mut().zip(&mask) {
-            if !keep {
-                *v = 0.0;
-            }
-        }
-    };
-
-    // A(t) = F(t) + hh(t) [+ pp(t)], pattern-projected. All terms use the
-    // (i·no+j, a·nv+b) "pair-matrix" layout for the ladder GEMMs.
-    let to_pair = |t: &Array2<f64>| -> Array2<f64> {
-        let mut p = Array2::<f64>::zeros((no * no, nv * nv));
-        for i in 0..no {
-            for a in 0..nv {
-                for j in 0..no {
-                    for b in 0..nv {
-                        p[(i * no + j, a * nv + b)] = t[(i * nv + a, j * nv + b)];
+        if let Some(bvv) = &bvv_t {
+            // pp (block-local): out_ij[a,b] += Σ_cd (ac|bd) T_ij[c,d], with
+            // (ac|bd) = Σ_P bvv[P,(a,c)] bvv[P,(b,d)] gathered on the pair's
+            // union domains — never a global VVVV
+            for (p, pb) in rg.pairs.iter().enumerate() {
+                let (da, db) = (&pb.da, &pb.db);
+                let (nda, ndb) = (da.len(), db.len());
+                // rows (a, c): a ∈ Da (output row), c ∈ Da (contraction)
+                let mut ba = Array2::<f64>::zeros((naux, nda * nda));
+                for (ra, &a) in da.iter().enumerate() {
+                    for (rc, &c) in da.iter().enumerate() {
+                        ba.column_mut(ra * nda + rc).assign(&bvv.column(a * nv + c));
                     }
                 }
-            }
-        }
-        p
-    };
-    let from_pair = |p: &Array2<f64>| -> Array2<f64> {
-        let mut t = Array2::<f64>::zeros((n, n));
-        for i in 0..no {
-            for a in 0..nv {
-                for j in 0..no {
-                    for b in 0..nv {
-                        t[(i * nv + a, j * nv + b)] = p[(i * no + j, a * nv + b)];
+                let mut bb = Array2::<f64>::zeros((naux, ndb * ndb));
+                for (cb, &b) in db.iter().enumerate() {
+                    for (cd, &d) in db.iter().enumerate() {
+                        bb.column_mut(cb * ndb + cd).assign(&bvv.column(b * nv + d));
                     }
                 }
-            }
-        }
-        t
-    };
-    let aop = |t: &Array2<f64>| -> Array2<f64> {
-        // Fock superoperator (same convention the notebook verified)
-        let mut r = Array2::<f64>::zeros((n, n));
-        for i in 0..no {
-            for j in 0..no {
-                let mut blk = Array2::<f64>::zeros((nv, nv));
-                for a in 0..nv {
-                    for b in 0..nv {
-                        blk[(a, b)] = t[(i * nv + a, j * nv + b)];
-                    }
-                }
-                let mut acc = lp.f_vv.dot(&blk);
-                acc += &blk.dot(&lp.f_vv);
-                for k in 0..no {
-                    let fik = lp.f_oo[(i, k)];
-                    let fkj = lp.f_oo[(k, j)];
-                    for a in 0..nv {
-                        for b in 0..nv {
-                            if fik != 0.0 {
-                                acc[(a, b)] -= fik * t[(k * nv + a, j * nv + b)];
-                            }
-                            if fkj != 0.0 {
-                                acc[(a, b)] -= fkj * t[(i * nv + a, k * nv + b)];
+                let m = ba.t().dot(&bb); // rows (a,c), cols (b,d)
+                *flops += (nda * nda * ndb * ndb * naux) as u64;
+                let tp = &t[p];
+                for ra in 0..nda {
+                    for cb in 0..ndb {
+                        let mut acc = 0.0;
+                        for rc in 0..nda {
+                            for cd in 0..ndb {
+                                acc += m[(ra * nda + rc, cb * ndb + cd)] * tp[(rc, cd)];
                             }
                         }
-                    }
-                }
-                for a in 0..nv {
-                    for b in 0..nv {
-                        r[(i * nv + a, j * nv + b)] = acc[(a, b)];
+                        r[p][(ra, cb)] += acc;
                     }
                 }
             }
         }
-        // ladders via pair-matrix GEMMs (gated per variant: DriversOnly
-        // applies NEITHER — it must reproduce RI-MP2 exactly)
-        if !matches!(variant, LadderVariant::DriversOnly) {
-            let tp = to_pair(t);
-            let mut lad = oo_mat.dot(&tp); // hh: Σ_kl (ik|jl) T_kalb
-            if let Some(vv) = &vv_mat {
-                lad += &tp.dot(&vv.t()); // pp: Σ_cd (ac|bd) T_icjd
-            }
-            r += &from_pair(&lad);
+        for (p, pb) in rg.pairs.iter().enumerate() {
+            apply_pattern(&mut r[p], &pb.pat, pb.db.len());
         }
-        apply_mask(&mut r);
         r
     };
 
-    // masked preconditioned CG on A t = −J
-    let mut d2 = Array2::<f64>::zeros((n, n));
-    for i in 0..no {
-        for a in 0..nv {
-            for j in 0..no {
-                for b in 0..nv {
-                    d2[(i * nv + a, j * nv + b)] = lp.f_vv[(a, a)] + lp.f_vv[(b, b)]
-                        - lp.f_oo[(i, i)]
-                        - lp.f_oo[(j, j)];
-                }
-            }
-        }
-    }
-    if d2.iter().any(|&x| x <= 0.0) {
-        return Err(FerricError::General(
-            "linlccd_amplitude: non-positive denominator (not a gapped system?)".into(),
-        ));
-    }
-    let mut rhs = j2.mapv(|x| -x);
-    apply_mask(&mut rhs);
-    let bnorm = rhs.iter().map(|x| x * x).sum::<f64>().sqrt();
-    let dot = |x: &Array2<f64>, y: &Array2<f64>| -> f64 { (x * y).sum() };
-    let mut t = Array2::<f64>::zeros((n, n));
-    let mut r = rhs.clone();
-    let mut z = &r / &d2;
-    apply_mask(&mut z);
-    let mut p = z.clone();
-    let mut rz = dot(&r, &z);
-    let mut it = 0;
-    let mut relres = 1.0;
-    let mut converged = bnorm == 0.0;
-    while it < cfg.cg_max_iter && !converged {
-        it += 1;
-        let ap = aop(&p);
-        let alpha = rz / dot(&p, &ap);
-        t.scaled_add(alpha, &p);
-        r.scaled_add(-alpha, &ap);
-        relres = dot(&r, &r).sqrt() / bnorm;
-        if relres < cfg.cg_rtol {
-            converged = true;
-            break;
-        }
-        z = &r / &d2;
-        apply_mask(&mut z);
-        let rz_new = dot(&r, &z);
-        let beta = rz_new / rz;
-        p = &z + &(&p * beta);
-        rz = rz_new;
-    }
+    let (t, it, relres, converged, _flops) =
+        solve_ragged_with(&rg, cfg.cg_rtol, cfg.cg_max_iter, matvec);
     if !converged {
         return Err(FerricError::General(format!(
-            "linlccd_amplitude: CG failed to converge (relres {relres:.2e} after {it} iters)"
+            "linlccd_amplitude(ragged): CG failed to converge (relres {relres:.2e} after {it} iters)"
         )));
     }
 
     // E = Σ (ia|jb)(2 T_iajb − T_ibja) over the pattern (proof notebook §1)
     let mut e_corr = 0.0;
-    for i in 0..no {
-        for a in 0..nv {
-            for j in 0..no {
-                for b in 0..nv {
-                    if !mask[(i * nv + a) * n + (j * nv + b)] {
-                        continue;
-                    }
-                    let jv = j2[(i * nv + a, j * nv + b)];
-                    e_corr += jv
-                        * (2.0 * t[(i * nv + a, j * nv + b)] - t[(i * nv + b, j * nv + a)]);
+    for (p, pb) in rg.pairs.iter().enumerate() {
+        let nbb = pb.db.len();
+        for (r_, &a) in pb.da.iter().enumerate() {
+            for (c_, &b) in pb.db.iter().enumerate() {
+                if !pb.pat[r_ * nbb + c_] {
+                    continue;
                 }
+                let jv = pb.j_blk[(r_, c_)];
+                let sr = pb.pos_da[b];
+                let sc = pb.pos_db[a];
+                let t_swap = if sr != usize::MAX && sc != usize::MAX { t[p][(sr, sc)] } else { 0.0 };
+                e_corr += jv * (2.0 * t[p][(r_, c_)] - t_swap);
             }
         }
     }
 
+    let n = no * nv;
+    let kept: usize = rg.pairs.iter().map(|pb| pb.pat.iter().filter(|&&x| x).count()).sum();
     Ok(AmplitudeLinLccdResult {
         e_corr,
         e_total: rhf.energy + e_corr,

@@ -16,6 +16,7 @@ pub mod boys;
 pub mod dlpno_mp2;
 pub mod drpa_amplitude;
 pub mod lmp2_amplitude;
+pub mod ragged;
 pub mod local_pno;
 pub mod pair_domains;
 pub mod pair_energy_screen;

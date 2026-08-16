@@ -141,3 +141,35 @@ fn masked_sweep_is_one_sided_and_iterations_shrink() {
         r0.iterations
     );
 }
+
+/// VARIANT-CONSISTENCY bar for the ragged port: at finite ε the ragged
+/// path differs from the dense V1 in two DOCUMENTED ways (swap-closed
+/// Eq-8 pattern instead of plain |B|>ε, and pattern-projected ring
+/// intermediates). The requirement is that this variant difference stays
+/// SUB-DOMINANT to the threshold truncation error itself — otherwise the
+/// port changed the method, not the data structure. At ε=0 both are
+/// exactly the full equations (covered by the anchors above).
+#[test]
+fn ragged_variant_difference_is_subdominant_to_truncation() {
+    use ferric_mp2::drpa_amplitude::amplitude_drpa_dense;
+    let su = setup("water.xyz", "6-31g", "cc-pvdz-ri");
+    let full = AmplitudeDrpaConfig { eps: 0.0, frozen_core: 1, ..Default::default() };
+    let r_full = amplitude_drpa(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &full)
+        .unwrap();
+    let cfg = AmplitudeDrpaConfig { eps: 1e-3, frozen_core: 1, ..Default::default() };
+    let vvhv = ferric_mp2::lmp2_amplitude::build_vvhv(&su.mol, &su.obs, &su.obs_bs, &su.rhf).unwrap();
+    let r_ragged = amplitude_drpa(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg)
+        .unwrap();
+    let r_dense = amplitude_drpa_dense(&su.mol, &su.obs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg, &vvhv)
+        .unwrap();
+    let trunc = (r_dense.e_corr - r_full.e_corr).abs();
+    let variant = (r_ragged.e_corr - r_dense.e_corr).abs();
+    eprintln!(
+        "eps=1e-3: truncation={trunc:.3e}, ragged-vs-dense variant diff={variant:.3e}"
+    );
+    assert!(variant > 0.0, "variant difference vanished — patterns identical? check the swap closure");
+    assert!(
+        variant < trunc,
+        "variant difference ({variant:.3e}) DOMINATES truncation ({trunc:.3e}) — the port changed the method"
+    );
+}
