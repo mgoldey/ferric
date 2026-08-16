@@ -130,7 +130,7 @@ pub fn tune_omega(
         )));
     }
     let mut evals: Vec<OmegaEval> = Vec::new();
-    let mut f = |w: f64, evals: &mut Vec<OmegaEval>| -> Result<f64, FerricError> {
+    let f = |w: f64, evals: &mut Vec<OmegaEval>| -> Result<f64, FerricError> {
         let e = eval_j(ctx, mol, prep, bounds, cfg, w)?;
         evals.push(e);
         Ok(e.j.abs())
