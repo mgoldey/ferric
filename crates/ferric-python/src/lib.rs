@@ -1563,10 +1563,10 @@ fn run_rimp2(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
 /// Returns a dict with e_corr, e_corr_canonical_ri, total_energy and the
 /// sparsity counters (keep/pair fractions, domain sizes, CG iterations).
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, eps=None, frozen_core=None, k_builder=None, memory_budget_gb=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, eps=None, frozen_core=None, k_builder=None, memory_budget_gb=None, compute_reference=None))]
 fn run_lmp2(py: Python<'_>, mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
             eps: Option<f64>, frozen_core: Option<usize>, k_builder: Option<&str>,
-            memory_budget_gb: Option<f64>) -> PyResult<Py<pyo3::types::PyDict>> {
+            memory_budget_gb: Option<f64>, compute_reference: Option<bool>) -> PyResult<Py<pyo3::types::PyDict>> {
     use ferric_mp2::lmp2_amplitude::{amplitude_lmp2, AmplitudeLmp2Config};
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
@@ -1582,6 +1582,7 @@ fn run_lmp2(py: Python<'_>, mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: 
             eps: eps.unwrap_or(1e-4),
             frozen_core: frozen_core.unwrap_or(0),
             eri3_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
+            compute_reference: compute_reference.unwrap_or(true),
             ..Default::default()
         }).map_err(make_err)?;
     let d = pyo3::types::PyDict::new(py);
@@ -1603,10 +1604,10 @@ fn run_lmp2(py: Python<'_>, mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: 
 /// semicanonicalized plasmon formula; finite eps carries a ~linear
 /// one-sided threshold error (dRPA is non-variational). Closed-shell.
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, eps=None, frozen_core=None, k_builder=None, memory_budget_gb=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, eps=None, frozen_core=None, k_builder=None, memory_budget_gb=None, compute_reference=None))]
 fn run_drpa(py: Python<'_>, mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
             eps: Option<f64>, frozen_core: Option<usize>, k_builder: Option<&str>,
-            memory_budget_gb: Option<f64>) -> PyResult<Py<pyo3::types::PyDict>> {
+            memory_budget_gb: Option<f64>, compute_reference: Option<bool>) -> PyResult<Py<pyo3::types::PyDict>> {
     use ferric_mp2::drpa_amplitude::{amplitude_drpa, AmplitudeDrpaConfig};
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
@@ -1622,6 +1623,7 @@ fn run_drpa(py: Python<'_>, mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: 
             eps: eps.unwrap_or(1e-4),
             frozen_core: frozen_core.unwrap_or(0),
             eri3_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
+            compute_reference: compute_reference.unwrap_or(true),
             ..Default::default()
         }).map_err(make_err)?;
     let d = pyo3::types::PyDict::new(py);

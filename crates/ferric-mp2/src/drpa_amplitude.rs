@@ -63,11 +63,24 @@ pub struct AmplitudeDrpaConfig {
     /// Integral-free pair gate (see `lmp2_amplitude`); gated pairs are
     /// never assembled in the ragged path.
     pub pair_gate_cal: Option<f64>,
+    /// Also compute the canonical plasmon-formula reference (a dense
+    /// (no·nv)-dimensional eigensolve — the honesty printout). Disable for
+    /// pure method timing; `e_corr_plasmon_canonical` is then NaN.
+    /// Mirrors `AmplitudeLmp2Config::compute_reference`.
+    pub compute_reference: bool,
 }
 
 impl Default for AmplitudeDrpaConfig {
     fn default() -> Self {
-        Self { eps: 1e-4, frozen_core: 0, fp_rtol: 1e-12, fp_max_iter: 500, eri3_budget_bytes: None, pair_gate_cal: None }
+        Self {
+            eps: 1e-4,
+            frozen_core: 0,
+            fp_rtol: 1e-12,
+            fp_max_iter: 500,
+            eri3_budget_bytes: None,
+            pair_gate_cal: None,
+            compute_reference: true,
+        }
     }
 }
 
@@ -238,7 +251,11 @@ pub fn amplitude_drpa_with_virtuals(
             }
         }
     }
-    let e_ref = canonical_plasmon_drpa(mol, obs, dfbs, op, rhf, cfg)?;
+    let e_ref = if cfg.compute_reference {
+        canonical_plasmon_drpa(mol, obs, dfbs, op, rhf, cfg)?
+    } else {
+        f64::NAN
+    };
     let n = lb.no * lb.nv;
     let kept: usize = rg.pairs.iter().map(|pb| pb.pat.iter().filter(|&&x| x).count()).sum();
     Ok(AmplitudeDrpaResult {
@@ -342,7 +359,11 @@ pub fn amplitude_drpa_dense(
     }
     let e_corr = 0.5 * b_masked.iter().zip(t2.iter()).map(|(b, t)| b * t).sum::<f64>();
 
-    let e_ref = canonical_plasmon_drpa(mol, obs, dfbs, op, rhf, cfg)?;
+    let e_ref = if cfg.compute_reference {
+        canonical_plasmon_drpa(mol, obs, dfbs, op, rhf, cfg)?
+    } else {
+        f64::NAN
+    };
 
     let pair_any = {
         let mut any = vec![false; no * no];
