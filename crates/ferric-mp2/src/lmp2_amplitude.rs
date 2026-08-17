@@ -4,11 +4,15 @@
 //! `wiki/amplitude-threshold-lmp2.md` §1–§18).
 //!
 //! Pipeline: Boys-localized active occupieds + VV-HV orthogonal localized
-//! virtuals → RI-assembled (ia|jb) in the localized basis → single threshold
-//! ε gating integral magnitudes (keep (i,a,j,b) iff |(ia|jb)|>ε or
-//! |(ib|ja)|>ε — the symmetric Eq-8 test, closed under the exchange swap so
-//! the Hylleraas energy retains full same-spin exchange) → ragged per-pair
+//! virtuals → integral-free R⁻⁶ pair gate → per-unique-pair direct RI
+//! assembly of (ia|jb) in the localized basis (Schwarz candidate subsets,
+//! optional domain-local fit / aux truncation) → single threshold ε gating
+//! integral magnitudes (keep (i,a,j,b) iff |(ia|jb)|>ε or |(ib|ja)|>ε —
+//! the symmetric Eq-8 test, closed under the exchange swap so the
+//! Hylleraas energy retains full same-spin exchange) → ragged per-pair
 //! domain-block preconditioned-CG solve → Hylleraas energy.
+//! Derivation: `wiki/sympy_derivations.md` §14 + notebook 14 (Hylleraas
+//! stationarity, swap-closure ⇒ one-sided error, gate/fit/aux bounds).
 //!
 //! # Exactness anchor
 //!
@@ -27,10 +31,17 @@
 //!   paper's weighted symmetric orthogonalization of the full redundant
 //!   set. Anchors are invariant to the selection weighting (the selected
 //!   set spans the same space); only domain compactness depends on it.
-//! - J is assembled dense from global-metric RI B tensors. The measured
-//!   per-pair domain-local fit and the pre-assembly pair gate
-//!   (prototype steps 4–5) are NOT yet ported; nothing here is
-//!   integral-direct and no scaling claim attaches to this module yet.
+//! - The dense global-metric J (`assemble_localized`) survives only as the
+//!   test/cross-check path. Production assembly is
+//!   [`assemble_ragged_direct_aux`]: integral-free R⁻⁶ pair gate before any
+//!   GEMM (`pair_gate_cal`), per-unique-pair whitened Gram GEMMs over
+//!   exact-Schwarz candidate subsets, optional per-pair domain-local
+//!   same-kernel fits (`fit_radius_bohr`) and ε-linked aux truncation
+//!   (`aux_tail_frac`) — no no·nv × no·nv object is ever formed. The
+//!   3-index B tensor is still built globally (`eri3_mo_ov_blocked`), so
+//!   the assembly is NOT integral-direct and no asymptotic scaling claim
+//!   attaches; the measured record (C16/erfc/ε=1e-3 crossover, aux-domain
+//!   saturation) is in `wiki/amplitude-threshold-lmp2.md` §§23–26.
 
 use ndarray::{s, Array2};
 use std::collections::HashMap;
