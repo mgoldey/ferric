@@ -14,6 +14,31 @@
 // explicit indices than with iterator/enumerate chains.
 #![allow(clippy::needless_range_loop)]
 
+// Compile-time guard against the one MPI feature combination that is silently
+// WRONG rather than merely unsupported: `ferric-core/mpi` ON while this crate's
+// own `mpi` is OFF.
+//
+// In that state `ParallelContext` reports a real multi-rank world, so `DfJ`/`DfK`
+// stripe the aux band per rank (`new_banded(Some(ctx))`) — but the cross-rank
+// Allreduce that sums the per-rank partial J/K back into the full matrix is
+// gated on THIS crate's `mpi` feature and never compiles in. Each rank then
+// converges "successfully" to a different, wrong energy built from only its own
+// band (measured: -np 2 water RHF gave ~+108111 and ~+108176 Ha on two ranks).
+//
+// No crate's own `mpi` feature can reach this state — ferric-scf/mp2/rpa/gw all
+// chain `ferric-scf/mpi` — so this only fires for a hand-rolled
+// `--features ferric-core/mpi`. Failing at compile time turns a wrong number
+// into a build error.
+const _: () = assert!(
+    !(ferric_core::parallel::MPI_ENABLED && !cfg!(feature = "mpi")),
+    "ferric-core/mpi is enabled but ferric-scf/mpi is not. This combination \
+     silently produces WRONG energies: ParallelContext reports a multi-rank \
+     world so DF-J/DF-K stripe the aux band, but ferric-scf's cross-rank \
+     Allreduce is cfg'd out, leaving each rank with only its own band. \
+     Enable ferric-scf/mpi (or a downstream crate's mpi feature, which chains \
+     it) instead of ferric-core/mpi alone."
+);
+
 pub mod result;
 pub use result::{ScfResult, Spin};
 

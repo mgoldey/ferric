@@ -36,6 +36,21 @@ unsafe impl Send for MpiUniverseHolder {}
 #[cfg(feature = "mpi")]
 unsafe impl Sync for MpiUniverseHolder {}
 
+/// Whether this build of `ferric-core` has the `mpi` feature compiled in.
+///
+/// Exported so DOWNSTREAM crates can statically assert that their own `mpi`
+/// feature was enabled alongside core's. Enabling `ferric-core/mpi` *bare* is a
+/// silent-wrong-answer configuration: [`ParallelContext`] then reports a real
+/// multi-rank world (so e.g. `ferric_scf::df_j::DfJ` stripes the aux band), but
+/// the matching `#[cfg(feature = "mpi")]` Allreduce lives in the DOWNSTREAM
+/// crate and never compiles in — each rank converges "successfully" to a
+/// different wrong energy built from only its own band. See the comment on
+/// `ferric-mp2`'s `mpi` feature for the empirical trace of that failure.
+///
+/// Every crate's own `mpi` feature already chains `ferric-scf/mpi`, so this
+/// only fires for a hand-rolled `--features ferric-core/mpi`.
+pub const MPI_ENABLED: bool = cfg!(feature = "mpi");
+
 /// A context representing the parallel execution environment.
 ///
 /// Handles both single-node (Rayon) and multi-node (MPI) parallelization.
