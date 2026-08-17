@@ -206,40 +206,53 @@ where
 }
 
 /// Index-passing form of the ragged matvec (the one actually used).
+///
+/// Rayon-parallel over output pairs (2026-08-17: the serial version was
+/// the measured dominant solver cost — 62 of 108 s on alkane_12/eps=1e-4
+/// while the rayon ring product took 29 s). Each block is computed wholly
+/// inside one task with the SAME per-block arithmetic order as the serial
+/// version (fvv GEMMs, by_j edges, by_i edges, pattern projection), so
+/// the output is bit-identical and deterministic under any schedule.
 pub fn matvec_indexed(
     rg: &Ragged,
     f_oo: &Array2<f64>,
     t: &[Array2<f64>],
     flops: &mut u64,
 ) -> Vec<Array2<f64>> {
-    let mut out: Vec<Array2<f64>> = Vec::with_capacity(rg.pairs.len());
-    for (p, pb) in rg.pairs.iter().enumerate() {
-        let (na, nb) = (pb.da.len(), pb.db.len());
-        let mut r = pb.fvv_aa.dot(&t[p]);
-        r += &t[p].dot(&pb.fvv_bb);
-        *flops += (na * na * nb + na * nb * nb) as u64;
+    use rayon::prelude::*;
+    let results: Vec<(Array2<f64>, u64)> = rg
+        .pairs
+        .par_iter()
+        .enumerate()
+        .map(|(p_idx, pb)| {
+            let (na, nb) = (pb.da.len(), pb.db.len());
+            let mut fl = (na * na * nb + na * nb * nb) as u64;
+            let mut r = pb.fvv_aa.dot(&t[p_idx]);
+            r += &t[p_idx].dot(&pb.fvv_bb);
+            for &q in &rg.by_j[&pb.j] {
+                let qb = &rg.pairs[q];
+                let f = f_oo[(pb.i, qb.i)];
+                if f == 0.0 {
+                    continue;
+                }
+                gather_into(&mut r, qb, pb, -f, &t[q], &mut fl);
+            }
+            for &q in &rg.by_i[&pb.i] {
+                let qb = &rg.pairs[q];
+                let f = f_oo[(qb.j, pb.j)];
+                if f == 0.0 {
+                    continue;
+                }
+                gather_into(&mut r, qb, pb, -f, &t[q], &mut fl);
+            }
+            apply_pattern(&mut r, &pb.pat, nb);
+            (r, fl)
+        })
+        .collect();
+    let mut out = Vec::with_capacity(results.len());
+    for (r, fl) in results {
+        *flops += fl;
         out.push(r);
-    }
-    for (p_idx, pb) in rg.pairs.iter().enumerate() {
-        for &q in &rg.by_j[&pb.j] {
-            let qb = &rg.pairs[q];
-            let f = f_oo[(pb.i, qb.i)];
-            if f == 0.0 {
-                continue;
-            }
-            gather_into(&mut out[p_idx], qb, pb, -f, &t[q], flops);
-        }
-        for &q in &rg.by_i[&pb.i] {
-            let qb = &rg.pairs[q];
-            let f = f_oo[(qb.j, pb.j)];
-            if f == 0.0 {
-                continue;
-            }
-            gather_into(&mut out[p_idx], qb, pb, -f, &t[q], flops);
-        }
-    }
-    for (p_idx, pb) in rg.pairs.iter().enumerate() {
-        apply_pattern(&mut out[p_idx], &pb.pat, pb.db.len());
     }
     out
 }

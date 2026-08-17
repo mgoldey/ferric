@@ -211,16 +211,17 @@ pub fn amplitude_drpa_with_virtuals(
     while it < cfg.fp_max_iter && !converged {
         it += 1;
         let f_t = matvec_indexed(&rg, &lb.f_oo, &t, &mut flops); // pattern-projected
+        // BT + TB + TBT = BT + T*(B + BT): two ring products per iteration
+        // instead of three (exact by linearity of the contraction in its
+        // second operand; fp summation order shifts within anchor bars)
         let bt = ring_product(&rg, &b_blocks, &t);
-        let tb = ring_product(&rg, &t, &b_blocks);
-        let tbt = ring_product(&rg, &t, &bt);
+        let u: Vec<Array2<f64>> = b_blocks.iter().zip(&bt).map(|(b, c)| b + c).collect();
+        let tu = ring_product(&rg, &t, &u);
         let mut r2 = 0.0f64;
         let mut new_t = Vec::with_capacity(rg.pairs.len());
         for (p, pb) in rg.pairs.iter().enumerate() {
-            let mut r = &b_blocks[p] + &f_t[p];
-            r += &bt[p];
-            r += &tb[p];
-            r += &tbt[p];
+            let mut r = &f_t[p] + &u[p];
+            r += &tu[p];
             apply_pattern(&mut r, &pb.pat, pb.db.len());
             r2 += r.iter().map(|x| x * x).sum::<f64>();
             let mut tn = t[p].clone();
