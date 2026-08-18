@@ -1,0 +1,4 @@
+2
+H2 stretched to 4.0 A: CEPA(0) breakdown regression case (see crates/ferric-mp2/tests/lccd_cepa0.rs)
+H  0.0  0.0  0.0
+H  0.0  0.0  4.0000
