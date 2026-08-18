@@ -91,54 +91,14 @@ FAILED=0
 STEP_TIMED_OUT=0
 
 # ---- stale sccache lock holder ----------------------------------------
-# The sccache server that cargo auto-spawns INHERITS this script's flock file
-# descriptor, then gets reparented to systemd when the cargo run that spawned
-# it exits. The daemon holds the lock for its whole lifetime, so the NEXT gate
-# queues behind a process that will never release -- a silent `flock -w 14400`
-# dead wait (4h) that looks exactly like "the gate is slow."
-#
-# The tell is an idle box with the lock held and no rustc running. sccache is a
-# CACHE: its on-disk store survives a restart and cargo respawns the server on
-# next use, so clearing the daemon costs nothing but a cold in-memory state.
-#
-# Observed 3x on 2026-08-17. See the sccache-daemon-holds-cargo-lock note.
-clear_stale_sccache_lock() {
-    [[ -e "$LOCK_FILE" ]] || return 0
-    command -v fuser >/dev/null 2>&1 || return 0
+# Logic lives in scripts/cargo-lock-lib.sh so ad-hoc scripts (scripts/queue/*)
+# get the same protection -- the trap was hit repeatedly by scripts calling
+# `flock` directly while only this gate carried the fix. See that file for the
+# discriminator and why parentage is NOT it.
+# shellcheck source=scripts/cargo-lock-lib.sh
+source "$REPO_ROOT/scripts/cargo-lock-lib.sh"
 
-    # NOTE: parentage is NOT the discriminator. sccache is a daemon and is
-    # ALWAYS reparented to systemd -- including while actively serving a live
-    # build -- so a "PPID 1 means stale" heuristic kills running compiles.
-    # (Verified 2026-08-17: a live sccache mid-build showed ppid=systemd.)
-    #
-    # The real signal is whether a genuine consumer also holds the lock. If any
-    # cargo/rustc/flock process is on it, a build is in flight and we touch
-    # nothing. Only sccache ALONE on the lock means the build that spawned it
-    # has exited and the daemon is squatting.
-    local holders pid comm killed=0
-    local sccache_pids=() has_real_consumer=0
-    holders="$(fuser "$LOCK_FILE" 2>/dev/null || true)"
-    for pid in $holders; do
-        comm="$(ps -o comm= -p "$pid" 2>/dev/null || true)"
-        case "$comm" in
-            sccache)             sccache_pids+=("$pid") ;;
-            cargo|rustc|flock)   has_real_consumer=1 ;;
-        esac
-    done
-
-    if [[ $has_real_consumer -eq 1 ]]; then
-        return 0   # a real build owns the lock -- leave it alone
-    fi
-    for pid in "${sccache_pids[@]:-}"; do
-        [[ -n "$pid" ]] || continue
-        echo "   note: releasing stale sccache lock holder (pid $pid, no build in flight)"
-        kill "$pid" 2>/dev/null && killed=1
-    done
-    [[ $killed -eq 1 ]] && sleep 2
-    return 0
-}
-
-clear_stale_sccache_lock
+ferric_clear_stale_sccache_lock "$LOCK_FILE"
 
 run_step() {
     local name="$1"
