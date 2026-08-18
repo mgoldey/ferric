@@ -46,7 +46,7 @@ use crate::lmp2_amplitude::{
     assemble_basis, assemble_localized, assemble_ragged_direct, build_vvhv, check_vvhv,
     AmplitudeLmp2Config, VvHv,
 };
-use crate::ragged::{apply_pattern, matvec_indexed, ring_product};
+use crate::ragged::{apply_pattern, matvec_indexed, ring_product, ring_product_planned, RingPlan};
 use crate::rimp2::{
     active_occ, eri3_budget_bytes, eri3_mo_ov_blocked, metric_inverse_sqrt,
 };
@@ -266,6 +266,13 @@ pub fn amplitude_drpa_with_virtuals(
     )?;
     let b_blocks: Vec<Array2<f64>> = rg.pairs.iter().map(|pb| pb.j_blk.clone()).collect();
     let bnorm = b_blocks.iter().map(|b| b.iter().map(|x| x * x).sum::<f64>()).sum::<f64>().sqrt();
+    // B is the CONSTANT first operand of `ring_product(rg, b_blocks, ·)`
+    // across every fixed-point iteration (it's the integral block, never
+    // reassigned below) — build the plan once so its sub-block gathers
+    // and intersection bookkeeping are paid a single time per solve
+    // instead of every iteration (see RingPlan's doc for the measured
+    // breakdown this amortizes).
+    let b_ring_plan = RingPlan::new(&rg, &b_blocks);
 
     // damped fixed point T <- T - R(T)/D on the pattern, all ragged
     let shapes: Vec<(usize, usize)> = rg.pairs.iter().map(|pb| (pb.da.len(), pb.db.len())).collect();
@@ -286,7 +293,7 @@ pub fn amplitude_drpa_with_virtuals(
         // BT + TB + TBT = BT + T*(B + BT): two ring products per iteration
         // instead of three (exact by linearity of the contraction in its
         // second operand; fp summation order shifts within anchor bars)
-        let bt = ring_product(&rg, &b_blocks, &t);
+        let bt = ring_product_planned(&b_ring_plan, &t);
         let u: Vec<Array2<f64>> = b_blocks.iter().zip(&bt).map(|(b, c)| b + c).collect();
         let tu = ring_product(&rg, &t, &u);
         let mut r2 = 0.0f64;
@@ -333,7 +340,7 @@ pub fn amplitude_drpa_with_virtuals(
         // the convergence claim is honest about what's returned, not what
         // was about to be replaced.
         let f_t = matvec_indexed(&rg, &lb.f_oo, &t, &mut flops);
-        let bt = ring_product(&rg, &b_blocks, &t);
+        let bt = ring_product_planned(&b_ring_plan, &t);
         let u: Vec<Array2<f64>> = b_blocks.iter().zip(&bt).map(|(b, c)| b + c).collect();
         let tu = ring_product(&rg, &t, &u);
         let mut r2 = 0.0f64;

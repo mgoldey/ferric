@@ -283,6 +283,160 @@ pub fn gather_into(
     *flops += n;
 }
 
+/// One (i,k,j) contributing triple to an output pair's ring-product sum,
+/// pre-resolved from the pattern alone (no operand data): the contraction
+/// set `Db_ik ∩ Da_kj` and the output row/col intersections, each stored as
+/// `(destination_index, source_index)` pairs exactly like the per-call
+/// computation in [`ring_product`] — see that function's doc for the
+/// definitions. `panel_x` is `x`'s `(rows.len(), cset.len())` sub-block,
+/// GATHERED ONCE here because the caller promises `x` is constant across
+/// the whole solve (see [`RingPlan::new`]).
+struct RingTriple {
+    p_kj: usize,
+    cset: Vec<(usize, usize)>,
+    rows: Vec<(usize, usize)>,
+    cols: Vec<(usize, usize)>,
+    panel_x: Array2<f64>,
+}
+
+/// Pre-resolved ring-product plan for a FIXED pattern (`rg`) and a FIXED
+/// first operand `x` — built once per solve, reused every fixed-point
+/// iteration. Amortizes two things that [`ring_product`] recomputes on
+/// every call even though neither depends on the varying operand `y`:
+///
+/// 1. the plan/intersection bookkeeping (rows/cset/cols index pairs) —
+///    measured 8.4% of ring_product's serial wall (2026-08-17 profile);
+/// 2. `x`'s sub-block gathers (the `xa` panel in [`ring_product`]) — valid
+///    to cache ONLY because the dRPA fixed point's `ring_product(B, T)`
+///    call uses the same `B` (the integral blocks) as `x` on every
+///    iteration; `T` (the `y` operand) changes every iteration and is
+///    still gathered fresh in [`ring_product_planned`].
+///
+/// Per-iteration work with a plan is therefore: gather `y`'s sub-block +
+/// one GEMM + scatter-add, per triple — the gather-39%/gemm-41% panel
+/// batching attempt (2026-08-17, feat/drpa-ragged-blas3) that zero-padded
+/// BOTH operands into one big GEMM measured 24% SLOWER (FLOP inflation
+/// from padding beat the plan-hoist saving); this does NOT repeat that:
+/// no padding, one GEMM per triple exactly as before, only the constant
+/// side's gather and the index bookkeeping are hoisted out of the loop.
+pub struct RingPlan {
+    /// same length/order as `rg.pairs`; `dims[out_p]` is that output
+    /// pair's `(na, nb)` block shape (needed to emit the right-shaped
+    /// zero block even when `triples[out_p]` is empty).
+    dims: Vec<(usize, usize)>,
+    /// `triples[out_p]` are the (i,k,j) contributions to output pair
+    /// `out_p`.
+    triples: Vec<Vec<RingTriple>>,
+}
+
+impl RingPlan {
+    /// Build the plan for ring products with a CONSTANT first operand `x`
+    /// (caller's responsibility: `x` must not change for the lifetime of
+    /// this plan — the dRPA solver holds `x = b_blocks`, assembled once
+    /// before the fixed-point loop starts).
+    pub fn new(rg: &Ragged, x: &[Array2<f64>]) -> RingPlan {
+        let pair_index: HashMap<(usize, usize), usize> =
+            rg.pairs.iter().enumerate().map(|(p, pb)| ((pb.i, pb.j), p)).collect();
+        let dims: Vec<(usize, usize)> =
+            rg.pairs.iter().map(|pb| (pb.da.len(), pb.db.len())).collect();
+        let triples: Vec<Vec<RingTriple>> = rg
+            .pairs
+            .iter()
+            .map(|out_pb| {
+                let (i, j) = (out_pb.i, out_pb.j);
+                let mut out = Vec::new();
+                let Some(iks) = rg.by_i.get(&i) else { return out };
+                for &p_ik in iks {
+                    let ik = &rg.pairs[p_ik];
+                    let k = ik.j;
+                    let Some(&p_kj) = pair_index.get(&(k, j)) else { continue };
+                    let kj = &rg.pairs[p_kj];
+                    let cset: Vec<(usize, usize)> = ik
+                        .db
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(cx, &c)| {
+                            let ry = kj.pos_da[c];
+                            (ry != usize::MAX).then_some((cx, ry))
+                        })
+                        .collect();
+                    if cset.is_empty() {
+                        continue;
+                    }
+                    let rows: Vec<(usize, usize)> = out_pb
+                        .da
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(r, &a)| {
+                            let rx = ik.pos_da[a];
+                            (rx != usize::MAX).then_some((r, rx))
+                        })
+                        .collect();
+                    let cols: Vec<(usize, usize)> = out_pb
+                        .db
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(c, &b)| {
+                            let cy = kj.pos_db[b];
+                            (cy != usize::MAX).then_some((c, cy))
+                        })
+                        .collect();
+                    if rows.is_empty() || cols.is_empty() {
+                        continue;
+                    }
+                    let xs = &x[p_ik];
+                    let mut panel_x = Array2::<f64>::zeros((rows.len(), cset.len()));
+                    for (rr, &(_, rx)) in rows.iter().enumerate() {
+                        for (cc, &(cx, _)) in cset.iter().enumerate() {
+                            panel_x[(rr, cc)] = xs[(rx, cx)];
+                        }
+                    }
+                    out.push(RingTriple { p_kj, cset, rows, cols, panel_x });
+                }
+                out
+            })
+            .collect();
+        RingPlan { dims, triples }
+    }
+}
+
+/// [`ring_product`] using a pre-built [`RingPlan`]: skips the plan
+/// bookkeeping and the constant operand's gathers, both hoisted into the
+/// plan at construction. `y` is the varying operand (gathered fresh here
+/// every call) and must be indexed identically to the `rg` the plan was
+/// built from (same pair order/count) — same contract as [`ring_product`].
+pub fn ring_product_planned(plan: &RingPlan, y: &[Array2<f64>]) -> Vec<Array2<f64>> {
+    use rayon::prelude::*;
+    plan.triples
+        .par_iter()
+        .zip(&plan.dims)
+        .map(|(triples, &(na, nb))| {
+            let mut acc = Array2::<f64>::zeros((na, nb));
+            for t in triples {
+                accumulate_triple(&mut acc, t, y);
+            }
+            acc
+        })
+        .collect()
+}
+
+#[inline]
+fn accumulate_triple(acc: &mut Array2<f64>, t: &RingTriple, y: &[Array2<f64>]) {
+    let ys = &y[t.p_kj];
+    let mut yb = Array2::<f64>::zeros((t.cset.len(), t.cols.len()));
+    for (rr, &(_, ry)) in t.cset.iter().enumerate() {
+        for (cc, &(_, cy)) in t.cols.iter().enumerate() {
+            yb[(rr, cc)] = ys[(ry, cy)];
+        }
+    }
+    let prod = t.panel_x.dot(&yb);
+    for (rr, &(r, _)) in t.rows.iter().enumerate() {
+        for (cc, &(c, _)) in t.cols.iter().enumerate() {
+            acc[(r, c)] += prod[(rr, cc)];
+        }
+    }
+}
+
 /// Ragged pair-space ring product: `(X·Y)_ij = Σ_k X_ik Y_kj`, projected
 /// onto the OUTPUT pair's pattern — the contraction the drCCD ring terms
 /// (BT, TB, TBT) need, with every factor living on the SAME ragged
