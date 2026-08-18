@@ -173,3 +173,112 @@ fn ragged_variant_difference_is_subdominant_to_truncation() {
         "variant difference ({variant:.3e}) DOMINATES truncation ({trunc:.3e}) — the port changed the method"
     );
 }
+
+/// DIIS acceleration must land on the SAME fixed point as the plain damped
+/// iteration: at eps=0 both solve the exact Riccati equation, so the DIIS
+/// coefficients (which only reweight iterates spanning one linear subspace)
+/// cannot change the root — agreement should be at the 1e-12 fp_rtol floor.
+/// At finite eps the ragged variant/pattern-projection noise (see the
+/// subdominance test above) sets the bar instead, so this checks DIIS-on vs
+/// DIIS-off agree to well inside the ~1e-3 truncation error at eps=1e-3.
+#[test]
+fn diis_matches_plain_fixed_point() {
+    let su = setup("water.xyz", "6-31g", "cc-pvdz-ri");
+
+    // eps = 0: identical root, tight bound.
+    let cfg0 = AmplitudeDrpaConfig { eps: 0.0, frozen_core: 1, ..Default::default() };
+    let r0_plain = amplitude_drpa(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg0)
+        .unwrap();
+    let cfg0_diis = AmplitudeDrpaConfig { diis: Some(6), ..cfg0.clone() };
+    let r0_diis = amplitude_drpa(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg0_diis)
+        .unwrap();
+    let de0 = (r0_diis.e_corr - r0_plain.e_corr).abs();
+    eprintln!(
+        "eps=0: plain iters={} E={:.12} | DIIS iters={} E={:.12} dE={de0:.3e}",
+        r0_plain.iterations, r0_plain.e_corr, r0_diis.iterations, r0_diis.e_corr
+    );
+    assert!(r0_diis.converged);
+    assert!(de0 < 1e-11, "DIIS root disagrees with the plain fixed point at eps=0: dE={de0:.3e}");
+    assert!(
+        r0_diis.iterations <= r0_plain.iterations,
+        "DIIS should not need MORE iterations than the plain damped fixed point ({} > {})",
+        r0_diis.iterations,
+        r0_plain.iterations
+    );
+
+    // finite eps: subdominant to the eps=1e-3 truncation error itself
+    // (measured ~1e-3 scale on this system; require well inside it).
+    let cfg = AmplitudeDrpaConfig { eps: 1e-3, frozen_core: 1, ..Default::default() };
+    let r_plain = amplitude_drpa(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg)
+        .unwrap();
+    let cfg_diis = AmplitudeDrpaConfig { diis: Some(6), ..cfg.clone() };
+    let r_diis = amplitude_drpa(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg_diis)
+        .unwrap();
+    let de = (r_diis.e_corr - r_plain.e_corr).abs();
+    eprintln!(
+        "eps=1e-3: plain iters={} E={:.12} | DIIS iters={} E={:.12} dE={de:.3e}",
+        r_plain.iterations, r_plain.e_corr, r_diis.iterations, r_diis.e_corr
+    );
+    assert!(r_diis.converged);
+    assert!(de < 1e-9, "DIIS disagrees with the plain fixed point beyond fp_rtol noise: dE={de:.3e}");
+
+    // dense path: same convention, same bound, independent construction.
+    use ferric_mp2::drpa_amplitude::amplitude_drpa_dense;
+    let vvhv = ferric_mp2::lmp2_amplitude::build_vvhv(&su.mol, &su.obs, &su.obs_bs, &su.rhf).unwrap();
+    let rd_plain = amplitude_drpa_dense(&su.mol, &su.obs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg, &vvhv)
+        .unwrap();
+    let rd_diis = amplitude_drpa_dense(&su.mol, &su.obs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg_diis, &vvhv)
+        .unwrap();
+    let de_dense = (rd_diis.e_corr - rd_plain.e_corr).abs();
+    eprintln!(
+        "dense eps=1e-3: plain iters={} E={:.12} | DIIS iters={} E={:.12} dE={de_dense:.3e}",
+        rd_plain.iterations, rd_plain.e_corr, rd_diis.iterations, rd_diis.e_corr
+    );
+    assert!(rd_diis.converged);
+    assert!(de_dense < 1e-9, "dense DIIS disagrees with the plain fixed point: dE={de_dense:.3e}");
+}
+
+/// ε-linked stopping tolerance: loosening the fixed-point rtol down to
+/// ~ε must stay sub-dominant to the eps truncation error itself — the
+/// REQUIRED measurement before eps_rtol_factor gets a non-None default.
+/// Calibration table + the c value chosen are in
+/// wiki/amplitude-threshold-drpa.md (dated section).
+#[test]
+fn eps_linked_rtol_is_subdominant_to_truncation() {
+    let su = setup("water.xyz", "6-31g", "cc-pvdz-ri");
+    let tight = AmplitudeDrpaConfig { eps: 1e-3, frozen_core: 1, fp_rtol: 1e-12, ..Default::default() };
+    let r_tight = amplitude_drpa(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &tight)
+        .unwrap();
+    // reference: canonical plasmon carries the "true" answer at this eps
+    // (r_tight.e_corr_plasmon_canonical is the eps=0-class continuum
+    // limit); the truncation error is what tightening rtol can never fix.
+    let trunc = (r_tight.e_corr - r_tight.e_corr_plasmon_canonical).abs();
+    // calibrated c: see wiki/amplitude-threshold-drpa.md. c=1.0 looked
+    // safe on alkane_8/alkane_12 (1.5-2.5% of truncation) but FAILS on
+    // water at eps=1e-3 (86% of a much smaller truncation error, 4.2e-5
+    // vs the alkanes' ~1e-2) — a genuine per-system truncation-scale
+    // effect (per the reliability conventions: measure per-system, don't
+    // trust a single-molecule sweep). c=0.1 stays under the 10% bar on
+    // ALL three systems measured (water/alkane_8/alkane_12), worst case
+    // 8.2% on water/eps=1e-3.
+    let c = 0.1;
+    let loose = AmplitudeDrpaConfig { eps_rtol_factor: Some(c), ..tight.clone() };
+    let r_loose = amplitude_drpa(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &loose)
+        .unwrap();
+    let diff = (r_loose.e_corr - r_tight.e_corr).abs();
+    eprintln!(
+        "eps=1e-3 c={c:.0e}: tight iters={} loose iters={} diff={diff:.3e} trunc={trunc:.3e} frac={:.4}",
+        r_tight.iterations, r_loose.iterations, diff / trunc
+    );
+    assert!(r_loose.converged);
+    assert!(
+        r_loose.iterations <= r_tight.iterations,
+        "eps-linked rtol should not need MORE iterations ({} > {})",
+        r_loose.iterations,
+        r_tight.iterations
+    );
+    assert!(
+        diff <= 0.10 * trunc,
+        "eps-linked rtol diff ({diff:.3e}) exceeds 10% of the truncation error ({trunc:.3e})"
+    );
+}

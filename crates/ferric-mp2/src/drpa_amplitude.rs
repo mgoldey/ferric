@@ -39,6 +39,7 @@ use ferric_core::error::FerricError;
 use ferric_core::mol::Molecule;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
+use ferric_scf::diis::Diis;
 use ferric_scf::result::ScfResult;
 
 use crate::lmp2_amplitude::{
@@ -68,6 +69,26 @@ pub struct AmplitudeDrpaConfig {
     /// pure method timing; `e_corr_plasmon_canonical` is then NaN.
     /// Mirrors `AmplitudeLmp2Config::compute_reference`.
     pub compute_reference: bool,
+    /// Pulay/DIIS acceleration of the damped fixed point. `None` (default)
+    /// keeps the plain damped iteration byte-identical to the pre-DIIS
+    /// code path (needed by `masked_sweep_is_one_sided_and_iterations_shrink`,
+    /// a behavioral claim about the UNACCELERATED solver). `Some(subspace)`
+    /// turns DIIS on with the given max subspace size (CCSD/CCD/LinLCCD in
+    /// this repo all default to 6). Error vector = the iterate increment
+    /// `T_new - T_prev` (matches `ferric-cc`'s ccsd.rs/ccd.rs/linlccd*.rs
+    /// convention exactly) — cheaper than re-deriving the projected
+    /// residual R as a second error-vector choice, and DIIS is agnostic to
+    /// the two being proportional near convergence (both -> 0 with the
+    /// fixed point).
+    pub diis: Option<usize>,
+    /// ε-linked stopping tolerance: effective rtol = max(fp_rtol,
+    /// eps_rtol_factor * eps). `None` (default) preserves the current
+    /// behavior EXACTLY (always fp_rtol, independent of eps — including at
+    /// eps = 0, where eps_rtol_factor * eps = 0 regardless of the factor,
+    /// so the eps=0 exactness anchors are unaffected either way). `Some(c)`
+    /// activates the link; calibrated value and subdominance evidence are
+    /// in wiki/amplitude-threshold-drpa.md.
+    pub eps_rtol_factor: Option<f64>,
 }
 
 impl Default for AmplitudeDrpaConfig {
@@ -80,7 +101,20 @@ impl Default for AmplitudeDrpaConfig {
             eri3_budget_bytes: None,
             pair_gate_cal: None,
             compute_reference: true,
+            diis: None,
+            eps_rtol_factor: None,
         }
+    }
+}
+
+/// Effective fixed-point rtol: `max(fp_rtol, eps_rtol_factor * eps)` when
+/// `eps_rtol_factor` is set, else exactly `fp_rtol` (no behavioral change).
+/// `eps = 0` always reduces to `fp_rtol` regardless of the factor, so the
+/// eps=0 exactness anchors stay meaningful under either setting.
+fn effective_fp_rtol(cfg: &AmplitudeDrpaConfig) -> f64 {
+    match cfg.eps_rtol_factor {
+        Some(c) => cfg.fp_rtol.max(c * cfg.eps),
+        None => cfg.fp_rtol,
     }
 }
 
@@ -144,6 +178,41 @@ fn to2(m: &Array4<f64>) -> Array2<f64> {
     m.clone().into_shape_with_order((no * nv, no * nv)).expect("compound reshape")
 }
 
+/// Flatten a ragged block collection into one row vector (shape (1, total)),
+/// in the SAME deterministic pair order every call — required for DIIS,
+/// which needs a fixed-length iterate/error representation. Block shapes
+/// are fixed by the pattern (constant across fixed-point iterations), so
+/// the total length and layout never change within one solve.
+fn flatten_blocks(t: &[Array2<f64>]) -> Array2<f64> {
+    let total: usize = t.iter().map(|b| b.len()).sum();
+    let mut out = Array2::<f64>::zeros((1, total));
+    let mut off = 0;
+    for b in t {
+        for (k, &v) in b.iter().enumerate() {
+            out[(0, off + k)] = v;
+        }
+        off += b.len();
+    }
+    out
+}
+
+/// Inverse of [`flatten_blocks`]: unpack a flat row vector back into ragged
+/// blocks whose shapes are taken from `shapes` (must match the layout used
+/// to produce `flat`).
+fn unflatten_blocks(flat: &Array2<f64>, shapes: &[(usize, usize)]) -> Vec<Array2<f64>> {
+    let mut out = Vec::with_capacity(shapes.len());
+    let mut off = 0;
+    for &(na, nb) in shapes {
+        let mut b = Array2::<f64>::zeros((na, nb));
+        for k in 0..na * nb {
+            b[(k / nb, k % nb)] = flat[(0, off + k)];
+        }
+        off += na * nb;
+        out.push(b);
+    }
+    out
+}
+
 /// Amplitude-threshold dRPA with the VV-HV space built internally.
 pub fn amplitude_drpa(
     mol: &Molecule,
@@ -199,6 +268,7 @@ pub fn amplitude_drpa_with_virtuals(
     let bnorm = b_blocks.iter().map(|b| b.iter().map(|x| x * x).sum::<f64>()).sum::<f64>().sqrt();
 
     // damped fixed point T <- T - R(T)/D on the pattern, all ragged
+    let shapes: Vec<(usize, usize)> = rg.pairs.iter().map(|pb| (pb.da.len(), pb.db.len())).collect();
     let mut t: Vec<Array2<f64>> = rg
         .pairs
         .iter()
@@ -208,6 +278,8 @@ pub fn amplitude_drpa_with_virtuals(
     let mut it = 0;
     let mut converged = bnorm == 0.0;
     let mut flops = 0u64;
+    let fp_rtol_eff = effective_fp_rtol(cfg);
+    let mut diis = cfg.diis.map(Diis::new);
     while it < cfg.fp_max_iter && !converged {
         it += 1;
         let f_t = matvec_indexed(&rg, &lb.f_oo, &t, &mut flops); // pattern-projected
@@ -229,9 +301,22 @@ pub fn amplitude_drpa_with_virtuals(
             apply_pattern(&mut tn, &pb.pat, pb.db.len());
             new_t.push(tn);
         }
-        t = new_t;
         relres = r2.sqrt() / bnorm.max(1e-300);
-        if relres < cfg.fp_rtol {
+        if let Some(d) = diis.as_mut() {
+            // error vector = iterate increment (ferric-cc convention:
+            // ccsd.rs/ccd.rs/linlccd*.rs all DIIS on (amplitude, increment)
+            // pairs, not the raw residual R)
+            let flat_new = flatten_blocks(&new_t);
+            let flat_prev = flatten_blocks(&t);
+            let err = &flat_new - &flat_prev;
+            let flat_ext = d.step(&flat_new, &err);
+            new_t = unflatten_blocks(&flat_ext, &shapes);
+            for (tn, pb) in new_t.iter_mut().zip(&rg.pairs) {
+                apply_pattern(tn, &pb.pat, pb.db.len());
+            }
+        }
+        t = new_t;
+        if relres < fp_rtol_eff {
             converged = true;
         }
     }
@@ -239,6 +324,31 @@ pub fn amplitude_drpa_with_virtuals(
         return Err(FerricError::General(format!(
             "drpa_amplitude(ragged): Riccati fixed point failed to converge (relres {relres:.2e} after {it} iters)"
         )));
+    }
+    if diis.is_some() {
+        // `relres` above was measured at the PRE-mix iterate (the DIIS
+        // extrapolation happens after the residual check each loop pass,
+        // so the returned `t` is one linear-combination step past the
+        // point relres describes). Re-measure the actual returned `t` so
+        // the convergence claim is honest about what's returned, not what
+        // was about to be replaced.
+        let f_t = matvec_indexed(&rg, &lb.f_oo, &t, &mut flops);
+        let bt = ring_product(&rg, &b_blocks, &t);
+        let u: Vec<Array2<f64>> = b_blocks.iter().zip(&bt).map(|(b, c)| b + c).collect();
+        let tu = ring_product(&rg, &t, &u);
+        let mut r2 = 0.0f64;
+        for (p, pb) in rg.pairs.iter().enumerate() {
+            let mut r = &f_t[p] + &u[p];
+            r += &tu[p];
+            apply_pattern(&mut r, &pb.pat, pb.db.len());
+            r2 += r.iter().map(|x| x * x).sum::<f64>();
+        }
+        relres = r2.sqrt() / bnorm.max(1e-300);
+        if relres >= fp_rtol_eff {
+            return Err(FerricError::General(format!(
+                "drpa_amplitude(ragged): DIIS-extrapolated iterate failed the post-hoc residual check (relres {relres:.2e} after {it} iters) — the pre-mix iterate converged but the DIIS point did not"
+            )));
+        }
     }
     // E = 1/2 Σ B ∘ T on the pattern
     let mut e_corr = 0.0;
@@ -334,6 +444,8 @@ pub fn amplitude_drpa_dense(
     let mut relres = 1.0;
     let mut it = 0;
     let mut converged = false;
+    let fp_rtol_eff = effective_fp_rtol(cfg);
+    let mut diis = cfg.diis.map(Diis::new);
     while it < cfg.fp_max_iter {
         it += 1;
         let t4 = to4(&t2, no, nv);
@@ -346,12 +458,19 @@ pub fn amplitude_drpa_dense(
         r += &tbt;
         apply_mask(&mut r);
         relres = r.iter().map(|x| x * x).sum::<f64>().sqrt() / bnorm.max(1e-300);
-        if relres < cfg.fp_rtol {
+        if relres < fp_rtol_eff {
             converged = true;
             break;
         }
-        t2 -= &(&r / &d2);
-        apply_mask(&mut t2);
+        let mut t2_new = &t2 - &(&r / &d2);
+        apply_mask(&mut t2_new);
+        if let Some(d) = diis.as_mut() {
+            // same convention as the ragged path above: error = increment
+            let err = &t2_new - &t2;
+            t2_new = d.step(&t2_new, &err);
+            apply_mask(&mut t2_new);
+        }
+        t2 = t2_new;
     }
     if !converged {
         return Err(FerricError::General(format!(
