@@ -15,6 +15,7 @@
 pub mod boys;
 pub mod dlpno_mp2;
 pub mod drpa_amplitude;
+pub mod rccd_family;
 pub mod lmp2_amplitude;
 pub mod ragged;
 pub mod local_pno;
