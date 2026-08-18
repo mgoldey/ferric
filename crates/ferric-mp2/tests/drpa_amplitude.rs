@@ -8,7 +8,7 @@ use ferric_core::mol::Molecule;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_mp2::drpa_amplitude::{
-    amplitude_drpa, amplitude_drpa_with_virtuals, AmplitudeDrpaConfig,
+    amplitude_drpa, amplitude_drpa_scan, amplitude_drpa_with_virtuals, AmplitudeDrpaConfig,
 };
 use ferric_mp2::lmp2_amplitude::{build_vvhv, VvHv};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
@@ -281,4 +281,34 @@ fn eps_linked_rtol_is_subdominant_to_truncation() {
         diff <= 0.10 * trunc,
         "eps-linked rtol diff ({diff:.3e}) exceeds 10% of the truncation error ({trunc:.3e})"
     );
+}
+
+/// PREFIX-AMORTIZATION ANCHOR: `amplitude_drpa_scan` over a list of eps
+/// must reproduce, per point, exactly what `amplitude_drpa` returns for
+/// that same eps called separately — the scan only reuses the
+/// eps-INDEPENDENT prefix (RHF is shared by construction; localization +
+/// VV-HV + assemble_basis are rebuilt identically inside `amplitude_drpa`
+/// itself each time). Water/6-31G, three eps values including the eps=0
+/// exactness limit.
+#[test]
+fn scan_matches_per_eps_single_calls() {
+    let su = setup("water.xyz", "6-31g", "cc-pvdz-ri");
+    let base = AmplitudeDrpaConfig { frozen_core: 1, diis: Some(8), eps_rtol_factor: Some(0.1), ..Default::default() };
+    let eps_list = [0.0, 1e-3, 1e-4];
+    let scanned = amplitude_drpa_scan(
+        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &base, &eps_list,
+    )
+    .unwrap();
+    assert_eq!(scanned.len(), eps_list.len());
+    for (&eps, r_scan) in eps_list.iter().zip(&scanned) {
+        let cfg = AmplitudeDrpaConfig { eps, ..base.clone() };
+        let r_single =
+            amplitude_drpa(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg)
+                .unwrap();
+        let de = (r_scan.e_corr - r_single.e_corr).abs();
+        eprintln!("scan vs single eps={eps:.0e}: dE={de:.3e}");
+        assert!(de < 1e-12, "scan/single mismatch at eps={eps:.0e}: dE={de:.3e}");
+        assert_eq!(r_scan.iterations, r_single.iterations);
+        assert_eq!(r_scan.converged, r_single.converged);
+    }
 }

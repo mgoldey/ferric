@@ -252,13 +252,122 @@ pub fn amplitude_drpa_with_virtuals(
         ..Default::default()
     };
     let lb = assemble_basis(mol, obs, dfbs, op, rhf, &lcfg, vvhv)?;
+    amplitude_drpa_from_basis(mol, obs, dfbs, op, rhf, cfg, &lb)
+}
+
+/// Amplitude-threshold dRPA over a LIST of eps values, reusing ONE
+/// `LocalizedBasis` (RHF + Boys localization + VV-HV + Fock blocks +
+/// unwhitened RI B — everything eps-INDEPENDENT) across every point. The
+/// eps-dependent ragged assembly + fixed-point solve still run once per
+/// eps. Byte-identical per-point results vs calling
+/// [`amplitude_drpa_with_virtuals`] at each eps separately (both funnel
+/// through [`amplitude_drpa_from_basis`] on the same `LocalizedBasis`);
+/// the only difference is the prefix (RHF/localization/VV-HV/assemble_basis)
+/// is paid once instead of once per eps.
+pub fn amplitude_drpa_scan(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    obs_bs: &BasisSet,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &ScfResult,
+    base_cfg: &AmplitudeDrpaConfig,
+    eps_list: &[f64],
+) -> Result<Vec<AmplitudeDrpaResult>, FerricError> {
+    let vvhv = build_vvhv(mol, obs, obs_bs, rhf)?;
+    let nocc_total = (mol.nelec() as usize) / 2;
+    let (dev_orth, dev_span) = check_vvhv(obs, rhf, nocc_total, &vvhv.c_vloc);
+    if dev_orth > 1e-8 || dev_span > 1e-8 {
+        return Err(FerricError::General(format!(
+            "drpa_amplitude: VV-HV construction check failed (orth {dev_orth:.2e}, span {dev_span:.2e})"
+        )));
+    }
+    // assemble_basis takes no `eps` — it is exactly the eps-independent
+    // prefix (RHF is already solved by the caller; this pays localization +
+    // Fock blocks + unwhitened RI B once). Built with eps=0 in the local
+    // AmplitudeLmp2Config since that struct's `eps` field is unused by
+    // assemble_basis itself (see its body: eps never appears).
+    let lcfg = AmplitudeLmp2Config {
+        eps: 0.0,
+        frozen_core: base_cfg.frozen_core,
+        eri3_budget_bytes: base_cfg.eri3_budget_bytes,
+        ..Default::default()
+    };
+    let lb = assemble_basis(mol, obs, dfbs, op, rhf, &lcfg, &vvhv)?;
+    let mut out = Vec::with_capacity(eps_list.len());
+    for &eps in eps_list {
+        let cfg = AmplitudeDrpaConfig { eps, ..base_cfg.clone() };
+        out.push(amplitude_drpa_from_basis(mol, obs, dfbs, op, rhf, &cfg, &lb)?);
+    }
+    Ok(out)
+}
+
+/// [`amplitude_drpa_scan`] with wall-clock instrumentation: also returns
+/// the shared eps-INDEPENDENT prefix wall time (VV-HV + `assemble_basis`;
+/// NOT including the caller's own RHF solve, which happens before this
+/// function is called) and one wall time per eps point (ragged assembly +
+/// solve only). Same per-point `AmplitudeDrpaResult`s as
+/// `amplitude_drpa_scan` — this wrapper adds timing, nothing else.
+pub fn amplitude_drpa_scan_timed(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    obs_bs: &BasisSet,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &ScfResult,
+    base_cfg: &AmplitudeDrpaConfig,
+    eps_list: &[f64],
+) -> Result<(Vec<AmplitudeDrpaResult>, f64, Vec<f64>), FerricError> {
+    use std::time::Instant;
+    let t_prefix = Instant::now();
+    let vvhv = build_vvhv(mol, obs, obs_bs, rhf)?;
+    let nocc_total = (mol.nelec() as usize) / 2;
+    let (dev_orth, dev_span) = check_vvhv(obs, rhf, nocc_total, &vvhv.c_vloc);
+    if dev_orth > 1e-8 || dev_span > 1e-8 {
+        return Err(FerricError::General(format!(
+            "drpa_amplitude: VV-HV construction check failed (orth {dev_orth:.2e}, span {dev_span:.2e})"
+        )));
+    }
+    let lcfg = AmplitudeLmp2Config {
+        eps: 0.0,
+        frozen_core: base_cfg.frozen_core,
+        eri3_budget_bytes: base_cfg.eri3_budget_bytes,
+        ..Default::default()
+    };
+    let lb = assemble_basis(mol, obs, dfbs, op, rhf, &lcfg, &vvhv)?;
+    let prefix_wall_s = t_prefix.elapsed().as_secs_f64();
+    let mut out = Vec::with_capacity(eps_list.len());
+    let mut walls = Vec::with_capacity(eps_list.len());
+    for &eps in eps_list {
+        let cfg = AmplitudeDrpaConfig { eps, ..base_cfg.clone() };
+        let t0 = Instant::now();
+        let r = amplitude_drpa_from_basis(mol, obs, dfbs, op, rhf, &cfg, &lb)?;
+        walls.push(t0.elapsed().as_secs_f64());
+        out.push(r);
+    }
+    Ok((out, prefix_wall_s, walls))
+}
+
+/// Eps-dependent stage shared by [`amplitude_drpa_with_virtuals`] and
+/// [`amplitude_drpa_scan`]: ragged assembly of B = 2(ia|jb) at `cfg.eps` +
+/// the (possibly DIIS/eps-rtol-accelerated) Riccati fixed-point solve, from
+/// an already-assembled [`LocalizedBasis`].
+fn amplitude_drpa_from_basis(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &ScfResult,
+    cfg: &AmplitudeDrpaConfig,
+    lb: &crate::lmp2_amplitude::LocalizedBasis,
+) -> Result<AmplitudeDrpaResult, FerricError> {
     // B = 2 (ia|jb), assembled directly onto ragged blocks (scale = 2.0;
     // the eps mask therefore acts on |B| exactly as the dense V1 did)
     let (rg, _gated) = assemble_ragged_direct(
         mol,
         dfbs,
         op,
-        &lb,
+        lb,
         cfg.eps,
         2.0,
         cfg.pair_gate_cal,

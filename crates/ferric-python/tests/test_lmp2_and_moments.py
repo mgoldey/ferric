@@ -89,6 +89,42 @@ def test_run_drpa_eps_zero_matches_plasmon():
     assert abs(d["e_corr"] - (-0.0126072623)) < 1e-8
 
 
+def test_run_drpa_diis_defaults_on_and_disableable(water_631g):
+    """diis/eps_rtol_factor default ON at the binding level (diis=8,
+    eps_rtol_factor=0.1); diis=0 / eps_rtol_factor=0.0 must map back to the
+    legacy unaccelerated solve. All three land on the same root."""
+    mol, obs, aux = water_631g
+    d_default = ferric.run_drpa(mol, obs, aux, eps=1e-3, frozen_core=1, compute_reference=False)
+    d_legacy = ferric.run_drpa(
+        mol, obs, aux, eps=1e-3, frozen_core=1, compute_reference=False, diis=0, eps_rtol_factor=0.0
+    )
+    assert d_default["converged"] and d_legacy["converged"]
+    # defaults reach convergence in fewer iterations than the legacy path
+    assert d_default["iterations"] < d_legacy["iterations"]
+    # same root: within the calibrated subdominance bound (10% of a typical
+    # water/eps=1e-3 truncation error, ~1e-4 scale per the wiki table)
+    assert abs(d_default["e_corr"] - d_legacy["e_corr"]) < 1e-5
+
+
+def test_run_drpa_scan_matches_per_eps_calls(water_631g):
+    mol, obs, aux = water_631g
+    eps_list = [1e-3, 1e-4]
+    scanned = ferric.run_drpa_scan(
+        mol, obs, aux, eps_list, frozen_core=1, compute_reference=False
+    )
+    assert len(scanned) == len(eps_list)
+    prefix_walls = {r["prefix_wall_s"] for r in scanned}
+    assert len(prefix_walls) == 1  # one SHARED prefix time across all points
+    for eps, r_scan in zip(eps_list, scanned):
+        assert r_scan["eps"] == eps
+        r_single = ferric.run_drpa(
+            mol, obs, aux, eps=eps, frozen_core=1, compute_reference=False
+        )
+        assert abs(r_scan["e_corr"] - r_single["e_corr"]) < 1e-12
+        assert r_scan["iterations"] == r_single["iterations"]
+        assert r_scan["wall_s"] >= 0.0
+
+
 def test_run_linlccd_amplitude_variants_ordered():
     mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
     obs = ferric.BasisSet.bundled("6-31g")

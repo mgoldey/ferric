@@ -1599,16 +1599,84 @@ fn run_lmp2(py: Python<'_>, mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: 
 }
 
 
+/// Build an `AmplitudeDrpaConfig` from the shared `run_drpa`/`run_drpa_scan`
+/// kwargs. `diis`/`eps_rtol_factor` default ON at the BINDING level
+/// (diis=8, eps_rtol_factor=0.1) — the Rust library default stays
+/// None/off; these are the calibrated values from
+/// wiki/amplitude-threshold-drpa.md's 2026-08-17 DIIS+eps-link session
+/// (70-79 -> 8-11 iterations, energies within the measured subdominance
+/// bound, ~10% of truncation error). `diis=0` maps to `None` (disables
+/// DIIS); `eps_rtol_factor=0.0` maps to `None` (disables the eps-link,
+/// which is also the eps=0 behavior regardless — see the Rust doc).
+#[allow(clippy::too_many_arguments)]
+fn drpa_config(
+    eps: Option<f64>,
+    frozen_core: Option<usize>,
+    memory_budget_gb: Option<f64>,
+    compute_reference: Option<bool>,
+    diis: Option<usize>,
+    eps_rtol_factor: Option<f64>,
+) -> ferric_mp2::drpa_amplitude::AmplitudeDrpaConfig {
+    use ferric_mp2::drpa_amplitude::AmplitudeDrpaConfig;
+    let diis_subspace = diis.unwrap_or(8);
+    let eps_rtol = eps_rtol_factor.unwrap_or(0.1);
+    AmplitudeDrpaConfig {
+        eps: eps.unwrap_or(1e-4),
+        frozen_core: frozen_core.unwrap_or(0),
+        eri3_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
+        compute_reference: compute_reference.unwrap_or(true),
+        diis: if diis_subspace == 0 { None } else { Some(diis_subspace) },
+        eps_rtol_factor: if eps_rtol == 0.0 { None } else { Some(eps_rtol) },
+        ..Default::default()
+    }
+}
+
+fn drpa_result_to_dict(
+    py: Python<'_>,
+    r: &ferric_mp2::drpa_amplitude::AmplitudeDrpaResult,
+    rhf_energy: f64,
+) -> PyResult<Py<pyo3::types::PyDict>> {
+    let d = pyo3::types::PyDict::new(py);
+    d.set_item("e_corr", r.e_corr)?;
+    d.set_item("e_corr_plasmon_canonical", r.e_corr_plasmon_canonical)?;
+    d.set_item("total_energy", r.e_total)?;
+    d.set_item("rhf_energy", rhf_energy)?;
+    d.set_item("keep_fraction", r.keep_fraction)?;
+    d.set_item("pair_fraction", r.pair_fraction)?;
+    d.set_item("iterations", r.iterations)?;
+    d.set_item("relres", r.relres)?;
+    d.set_item("converged", r.converged)?;
+    Ok(d.into())
+}
+
 /// Amplitude-threshold direct RPA (drCCD Riccati, ragged direct-assembly
 /// path; proof notebook 12). eps = 0 anchors on the canonical
 /// semicanonicalized plasmon formula; finite eps carries a ~linear
 /// one-sided threshold error (dRPA is non-variational). Closed-shell.
+///
+/// `diis` (default 8): Pulay/DIIS subspace size accelerating the Riccati
+/// fixed point (measured 70-79 -> 25-28 iterations); pass `diis=0` to
+/// disable and recover the legacy unaccelerated solve.
+/// `eps_rtol_factor` (default 0.1): links the fixed-point stopping
+/// tolerance to eps (effective rtol = max(fp_rtol, eps_rtol_factor*eps));
+/// combined with DIIS this reaches 8-11 iterations. Pass
+/// `eps_rtol_factor=0.0` to disable and use the tight fp_rtol=1e-12
+/// always. At `eps=0` this is a no-op regardless of the factor, so the
+/// eps=0 exactness anchor is unaffected either way.
+///
+/// Both knobs change WHICH POINT on the same truncated-equation solution
+/// manifold is returned, not which equation is solved: energies at finite
+/// eps can shift versus the legacy tight-rtol/no-DIIS solve, but the shift
+/// is calibrated to stay within ~10% of eps's own truncation error (see
+/// wiki/amplitude-threshold-drpa.md, "Subdominance calibration").
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, eps=None, frozen_core=None, k_builder=None, memory_budget_gb=None, compute_reference=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, eps=None, frozen_core=None, k_builder=None, memory_budget_gb=None, compute_reference=None, diis=None, eps_rtol_factor=None))]
+#[allow(clippy::too_many_arguments)]
 fn run_drpa(py: Python<'_>, mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
             eps: Option<f64>, frozen_core: Option<usize>, k_builder: Option<&str>,
-            memory_budget_gb: Option<f64>, compute_reference: Option<bool>) -> PyResult<Py<pyo3::types::PyDict>> {
-    use ferric_mp2::drpa_amplitude::{amplitude_drpa, AmplitudeDrpaConfig};
+            memory_budget_gb: Option<f64>, compute_reference: Option<bool>,
+            diis: Option<usize>, eps_rtol_factor: Option<f64>) -> PyResult<Py<pyo3::types::PyDict>> {
+    use ferric_mp2::drpa_amplitude::amplitude_drpa;
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
     let op = Operator::coulomb();
@@ -1618,23 +1686,52 @@ fn run_drpa(py: Python<'_>, mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: 
     if !rhf.converged {
         return Err(make_err(ferric_core::FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy }));
     }
-    let r = amplitude_drpa(&mol.inner, &prep, &basis_set.inner, &dfbs, op, &rhf,
-        &AmplitudeDrpaConfig {
-            eps: eps.unwrap_or(1e-4),
-            frozen_core: frozen_core.unwrap_or(0),
-            eri3_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
-            compute_reference: compute_reference.unwrap_or(true),
-            ..Default::default()
-        }).map_err(make_err)?;
-    let d = pyo3::types::PyDict::new(py);
-    d.set_item("e_corr", r.e_corr)?;
-    d.set_item("e_corr_plasmon_canonical", r.e_corr_plasmon_canonical)?;
-    d.set_item("total_energy", r.e_total)?;
-    d.set_item("rhf_energy", rhf.energy)?;
-    d.set_item("keep_fraction", r.keep_fraction)?;
-    d.set_item("pair_fraction", r.pair_fraction)?;
-    d.set_item("iterations", r.iterations)?;
-    Ok(d.into())
+    let cfg = drpa_config(eps, frozen_core, memory_budget_gb, compute_reference, diis, eps_rtol_factor);
+    let r = amplitude_drpa(&mol.inner, &prep, &basis_set.inner, &dfbs, op, &rhf, &cfg).map_err(make_err)?;
+    drpa_result_to_dict(py, &r, rhf.energy)
+}
+
+/// Amplitude-threshold direct RPA over a LIST of eps values, reusing ONE
+/// RHF solve + ONE localized-basis assembly (RHF, Boys localization,
+/// VV-HV, Fock blocks, unwhitened RI B — everything eps-INDEPENDENT)
+/// across every point; only the eps-dependent ragged assembly + Riccati
+/// solve reruns per eps. Returns a list of dicts, each with the SAME keys
+/// as `run_drpa`, plus `wall_s` (that point's ragged-assembly+solve wall
+/// time) and `prefix_wall_s` (the ONE shared RHF+localization+assembly
+/// wall time, repeated on every dict for convenience — it is not
+/// re-paid per point). Per-point energies are byte-identical (<1e-12) to
+/// calling `run_drpa` separately at each eps with the same kwargs.
+#[pyfunction]
+#[pyo3(signature = (mol, basis_set, auxbasis, eps_list, frozen_core=None, k_builder=None, memory_budget_gb=None, compute_reference=None, diis=None, eps_rtol_factor=None))]
+#[allow(clippy::too_many_arguments)]
+fn run_drpa_scan(py: Python<'_>, mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
+                  eps_list: Vec<f64>, frozen_core: Option<usize>, k_builder: Option<&str>,
+                  memory_budget_gb: Option<f64>, compute_reference: Option<bool>,
+                  diis: Option<usize>, eps_rtol_factor: Option<f64>) -> PyResult<Py<pyo3::types::PyList>> {
+    use ferric_mp2::drpa_amplitude::amplitude_drpa_scan_timed;
+    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
+    let ctx = ParallelContext::default();
+    let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &rhf_config(k_builder)).map_err(make_err)?;
+    if !rhf.converged {
+        return Err(make_err(ferric_core::FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy }));
+    }
+    let base_cfg = drpa_config(None, frozen_core, memory_budget_gb, compute_reference, diis, eps_rtol_factor);
+    let (results, prefix_wall_s, per_point_walls) = amplitude_drpa_scan_timed(
+        &mol.inner, &prep, &basis_set.inner, &dfbs, op, &rhf, &base_cfg, &eps_list,
+    ).map_err(make_err)?;
+    let out = pyo3::types::PyList::empty(py);
+    for ((r, eps), wall_s) in results.iter().zip(&eps_list).zip(&per_point_walls) {
+        let d = drpa_result_to_dict(py, r, rhf.energy)?;
+        let d_ref = d.bind(py);
+        d_ref.set_item("eps", *eps)?;
+        d_ref.set_item("wall_s", *wall_s)?;
+        d_ref.set_item("prefix_wall_s", prefix_wall_s)?;
+        out.append(d_ref)?;
+    }
+    Ok(out.into())
 }
 
 /// Amplitude-threshold LinLCCD (ragged path, proof notebook 13).
@@ -3735,6 +3832,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(lowdin_charges, m)?)?;
     m.add_function(wrap_pyfunction!(run_lmp2, m)?)?;
     m.add_function(wrap_pyfunction!(run_drpa, m)?)?;
+    m.add_function(wrap_pyfunction!(run_drpa_scan, m)?)?;
     m.add_function(wrap_pyfunction!(run_linlccd_amplitude, m)?)?;
     m.add_function(wrap_pyfunction!(tune_omega, m)?)?;
     m.add_function(wrap_pyfunction!(orbital_moments, m)?)?;
