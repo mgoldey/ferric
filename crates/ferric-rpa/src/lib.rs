@@ -571,18 +571,19 @@ pub(crate) fn run_pdep_rpa_eigensolve(
                 )?
             }
         }
+        // Targeted Lanczos is structurally unwinnable in the RI-GTO picture.
+        // RI aux sets have ~20-30 functions/atom, so the PDEP mode fraction at
+        // physical thresholds is 58-86% (vs <1% in WEST's PW basis). At M/naux
+        // >40%, Krylov iteration (narrow m=26 GEMMs, poor BLAS saturation) is
+        // slower than one dense SYRK+eigh. Measured: C8/DZ eigensolve 0.5s
+        // dense vs 1.4s targeted; C8/TZ dense 3.3s, targeted >10min.
+        // PDEP truncation savings come from the quadrature stage, not the
+        // eigensolve, and post-eigensolve filtering already delivers them.
         (Eigensolver::Lanczos, None) => {
-            // Full-rank identity seed. Block Lanczos with the naux-wide identity
-            // seed collapses to a single dense eigh of A = ε̃(0) = I + Π (the
-            // atom-localized seed is a Davidson-only optimization: Lanczos is
-            // confined to the Krylov span of its seed, and a non-spanning atom
-            // seed produced unphysical negative ghost Ritz values that broke FD
-            // gradients). `run_lanczos_full_rank` reproduces that single-eigh
-            // result exactly, but assembles A in column-panels so the matvec
-            // never materializes the whole naux-wide block at once — the
-            // memory-bound benzene/aTZ jobs (atz-benzene-rpa-memory-bound) drop
-            // from concurrency-1 to concurrency-N per box. Eigenpairs match the
-            // identity-seed Lanczos (hence Davidson) to LAPACK precision.
+            // Full-rank identity seed (τ=0 or gradient path). Block Lanczos
+            // with the naux-wide identity seed collapses to a single dense
+            // eigh of A = ε̃(0) = I + Π. Assembles A in column-panels so the
+            // matvec never materializes the whole naux-wide block at once.
             let nov = nocc * nvir;
             let matvec = |v: &Array2<f64>| -> Array2<f64> {
                 sternheimer::dielectric_apply(

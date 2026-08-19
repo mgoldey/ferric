@@ -268,3 +268,156 @@ fn benzene_cc_pvdz_timing() {
     println!("  trunc=1e-4 frozen_core=6: M={} E_c={:.10} t={:.2}s",
         r.n_eigenpotentials, r.e_rpa, dt.as_secs_f64());
 }
+
+/// Lanczos-vs-Davidson agreement under PDEP truncation: both eigensolvers
+/// do a full-rank eigensolve then post-filter by |λ−1| > thresh. The
+/// energies must agree at every truncation threshold.
+#[test]
+fn lanczos_matches_davidson_under_truncation() {
+    use ferric_rpa::config::Eigensolver;
+
+    let (mol, obs, dfbs, op, rhf) = setup(
+        "../../testdata/molecules/water.xyz",
+        "aug-cc-pvtz",
+        "aug-cc-pvtz-rifit",
+    );
+
+    // Full-rank reference at τ=0 for the vacuousness check.
+    let mut cfg_full = pyscf_compat_config(40);
+    cfg_full.trunc_thresh = 0.0;
+    cfg_full.eigensolver = Eigensolver::Davidson;
+    let r_full = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg_full).unwrap();
+
+    for &thresh in &[1e-2, 1e-3, 1e-4] {
+        // Davidson reference: full eigensolve + post-filter.
+        let mut cfg_ref = pyscf_compat_config(40);
+        cfg_ref.trunc_thresh = thresh;
+        cfg_ref.eigensolver = Eigensolver::Davidson;
+        let r_ref = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg_ref).unwrap();
+
+        // Targeted Lanczos (test subject).
+        let mut cfg_targeted = pyscf_compat_config(40);
+        cfg_targeted.trunc_thresh = thresh;
+        cfg_targeted.eigensolver = Eigensolver::Lanczos;
+        let r_targeted = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg_targeted).unwrap();
+
+        let d = (r_targeted.e_rpa - r_ref.e_rpa).abs();
+        eprintln!(
+            "thresh={thresh:.0e}: Lanczos M={} E={:.10} vs Davidson M={} E={:.10} d={d:.2e}",
+            r_targeted.n_eigenpotentials,
+            r_targeted.e_rpa,
+            r_ref.n_eigenpotentials,
+            r_ref.e_rpa,
+        );
+        assert_eq!(
+            r_targeted.n_eigenpotentials, r_ref.n_eigenpotentials,
+            "Lanczos kept a different number of modes than Davidson \
+             at thresh={thresh:.0e}: {} vs {}",
+            r_targeted.n_eigenpotentials, r_ref.n_eigenpotentials,
+        );
+        assert!(
+            d < 1e-7,
+            "Lanczos energy disagrees with Davidson at \
+             thresh={thresh:.0e}: {d:.2e} (> 1e-7)",
+        );
+    }
+
+    // Sanity: truncation must actually discard modes.
+    let mut cfg_trunc = pyscf_compat_config(40);
+    cfg_trunc.trunc_thresh = 1e-2;
+    cfg_trunc.eigensolver = Eigensolver::Lanczos;
+    let r_trunc = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg_trunc).unwrap();
+    assert!(
+        r_trunc.n_eigenpotentials < r_full.n_eigenpotentials,
+        "truncation at 1e-2 kept all modes — test is vacuous"
+    );
+}
+
+fn run_lanczos_eigensolve_benchmark(label: &str, xyz: &str, obs_name: &str, dfbs_name: &str) {
+    use ferric_mp2::rimp2::{compute_rpa_intermediates, RiMp2Config};
+    use ferric_rpa::lanczos;
+    use ferric_rpa::sternheimer;
+    use ndarray::Array2;
+    use ndarray_linalg::QR;
+    use std::time::Instant;
+
+    let (mol, obs, dfbs, op, rhf) = setup(xyz, obs_name, dfbs_name);
+
+    let mp2_cfg = RiMp2Config { frozen_core: 8, ..Default::default() };
+    let inter = compute_rpa_intermediates(&mol, &obs, &dfbs, op, &rhf, &mp2_cfg).unwrap();
+    let naux = inter.naux;
+    let nocc = inter.nocc;
+    let nvir = inter.nvir;
+    let b_ov = &inter.b_ov;
+    let nocc_total = inter.nocc_total;
+    let first_occ = inter.first_occ;
+    let eps_occ: Vec<f64> = rhf.eps_r()[first_occ..first_occ + nocc].to_vec();
+    let eps_vir: Vec<f64> = rhf.eps_r()[nocc_total..nocc_total + nvir].to_vec();
+
+    eprintln!("{label}: naux={naux} nocc={nocc} nvir={nvir} nov={}", nocc * nvir);
+
+    let thresh = 1e-2;
+
+    let t0 = Instant::now();
+    let dense = lanczos::run_lanczos_full_rank_budgeted(
+        naux, nocc * nvir,
+        |v: &Array2<f64>| sternheimer::dielectric_apply(v, b_ov, &eps_occ, &eps_vir, 0.0),
+        naux, None,
+    ).unwrap();
+    let dt_dense = t0.elapsed();
+
+    let dense_kept: Vec<f64> = dense.eigenvalues.iter()
+        .copied()
+        .filter(|&lam| (lam - 1.0).abs() > thresh)
+        .collect();
+    eprintln!("dense: {naux} modes, {} above thresh={thresh:.0e}, {:.1}ms",
+        dense_kept.len(), dt_dense.as_secs_f64() * 1e3);
+
+    let dense_sum: f64 = dense_kept.iter().map(|&l| l - 1.0 - l.ln()).sum();
+
+    for block_size in [256, 128, 64] {
+        if block_size >= naux { continue; }
+        let mut raw = Array2::<f64>::zeros((naux, block_size));
+        let mut state: u64 = 0xDEAD_BEEF_CAFE_BABEu64;
+        for x in raw.iter_mut() {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            *x = (state >> 33) as f64 / (1u64 << 31) as f64 - 1.0;
+        }
+        let (seed, _) = raw.qr().unwrap();
+
+        let max_iter = naux / block_size + 1;
+        let t0 = Instant::now();
+        let lz = lanczos::run_lanczos_targeted(
+            seed,
+            |v: &Array2<f64>| sternheimer::dielectric_apply(v, b_ov, &eps_occ, &eps_vir, 0.0),
+            thresh, max_iter, 1e-6, false,
+        ).unwrap();
+        let dt_lz = t0.elapsed();
+
+        let speedup = dt_dense.as_secs_f64() / dt_lz.as_secs_f64();
+        let lz_sum: f64 = lz.eigenvalues.iter().map(|&l| l - 1.0 - l.ln()).sum();
+        let d = (lz_sum - dense_sum).abs();
+        eprintln!(
+            "targeted m={block_size:3}: {} modes, conv={}, resid={:.1e}, \
+             {:.1}ms ({:.2}x vs dense), energy_d={d:.2e}",
+            lz.eigenvalues.len(), lz.converged, lz.max_resid,
+            dt_lz.as_secs_f64() * 1e3, speedup,
+        );
+    }
+}
+
+#[test]
+#[ignore]
+fn targeted_lanczos_benchmark_dz() {
+    run_lanczos_eigensolve_benchmark(
+        "C8/DZ", "../../testdata/molecules/alkane_8.xyz", "cc-pvdz", "cc-pvdz-ri",
+    );
+}
+
+#[test]
+#[ignore]
+fn targeted_lanczos_benchmark_tz() {
+    run_lanczos_eigensolve_benchmark(
+        "C8/TZ", "../../testdata/molecules/alkane_8.xyz", "cc-pvtz", "cc-pvtz-rifit",
+    );
+}

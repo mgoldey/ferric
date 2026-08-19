@@ -110,6 +110,7 @@ use crate::rimp2::{
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
+use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::operator::Operator;
 use ferric_integrals::qqr3::QqrBounds3;
 use ferric_integrals::threeindex;
@@ -276,7 +277,14 @@ fn attenuated_spin_components_screened(
     let eri3_flat = eri3_mo
         .into_shape_with_order((naux, nocc * nvir))
         .unwrap();
-    let b_flat = v2c_inv_sqrt.dot(&eri3_flat);
+    // Match the canonical path (rimp2.rs, `b_flat = v_inv_sqrt.dot(&flat)`),
+    // which wraps this exact dressing GEMM. NOTE this is a CONSISTENCY fix,
+    // not a bug fix: `attenuated_ri_mp2` is only ever called from serial
+    // top-level sites (CLI, Python binding), never from inside a rayon
+    // region, and `opt_in_blas_threads()` self-guards to 1 when called ON a
+    // rayon worker anyway. Wrapped so the two sibling paths read the same and
+    // so this stays correct if a caller ever does parallelize over molecules.
+    let b_flat = with_blas_threads(opt_in_blas_threads(), || v2c_inv_sqrt.dot(&eri3_flat));
 
     // b_flat is exactly the dressed (naux, nocc*nvir) B_ov tensor that
     // ri_mp2_spin_components hands to spin_components_from_b_ov — same shape,

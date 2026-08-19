@@ -152,10 +152,16 @@ pub(crate) fn sigma_c_at_z(
 
     // w_nk[(n, k)] = screened element W_{mn}(iω_k), real.
     let mut w_nk = Array2::<f64>::zeros((n_act, n_quad));
+    // `v` is loop-invariant, so materialize the owned copy ONCE rather than
+    // re-allocating an (m_modes × n_act) array on every quadrature node.
+    // `sigma_c_at_z` is called ~n_quad times per QP state, so the old
+    // in-loop `v.to_owned()` was pure allocation churn. Elementwise product
+    // and summation order are unchanged, so this is bit-identical.
+    let v_owned = v.to_owned();
     for k in 0..n_quad {
         let wv = with_blas_threads(opt_in_blas_threads(), || inv_diel_freq[k].dot(&v)); // (m_modes, n_act)
         // Column-wise dot: W_{n,k} = Σ_α V[α,n]·WV[α,n].
-        let col = (&v.to_owned() * &wv).sum_axis(ndarray::Axis(0)); // (n_act,)
+        let col = (&v_owned * &wv).sum_axis(ndarray::Axis(0)); // (n_act,)
         w_nk.column_mut(k).assign(&col);
     }
 

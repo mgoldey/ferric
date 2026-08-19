@@ -644,6 +644,215 @@ where
     last_result.ok_or_else(|| FerricError::General("Lanczos produced no result".into()))
 }
 
+/// Targeted Lanczos: find only the eigenpotentials with |λ−1| > `depart_thresh`.
+///
+/// Identical to [`run_lanczos_seeded`] except the convergence check considers
+/// only Ritz pairs whose eigenvalue departs from the identity by more than
+/// `depart_thresh`. Tail modes (|λ−1| ≤ thresh) are NOT required to converge
+/// and are NOT returned. This avoids growing the Krylov basis to full rank
+/// when only the significant modes are needed — the dominant speedup path for
+/// PDEP truncation.
+///
+/// Returns all converged Ritz pairs with |λ−1| > `depart_thresh`, ordered by
+/// |λ−1| descending. If the iteration budget is exhausted before all
+/// significant modes converge, falls back to returning whatever was found
+/// (with `converged = false`).
+pub fn run_lanczos_targeted<F>(
+    seed: Array2<f64>,
+    matvec: F,
+    depart_thresh: f64,
+    max_iter: usize,
+    conv_thresh: f64,
+    verbose: bool,
+) -> Result<LanczosResult, FerricError>
+where
+    F: Fn(&Array2<f64>) -> Array2<f64>,
+{
+    with_blas_threads(lanczos_blas_threads(), || {
+        lanczos_targeted_iterations(seed, matvec, depart_thresh, max_iter, conv_thresh, verbose)
+    })
+}
+
+fn lanczos_targeted_iterations<F>(
+    seed: Array2<f64>,
+    matvec: F,
+    depart_thresh: f64,
+    max_iter: usize,
+    conv_thresh: f64,
+    verbose: bool,
+) -> Result<LanczosResult, FerricError>
+where
+    F: Fn(&Array2<f64>) -> Array2<f64>,
+{
+    let naux = seed.nrows();
+
+    let v0 = qr_orthonormalize(seed)?;
+    let block_size = v0.ncols();
+    if block_size == 0 {
+        return Ok(LanczosResult {
+            eigenvalues: Vec::new(),
+            eigenvectors: Array2::zeros((naux, 0)),
+            converged: true,
+            max_resid: 0.0,
+        });
+    }
+
+    let mut q_basis: Array2<f64> = v0.clone();
+    let mut alphas: Vec<Array2<f64>> = Vec::new();
+    let mut betas: Vec<Array2<f64>> = Vec::new();
+    let mut v_curr: Array2<f64> = v0;
+    let mut v_prev: Option<Array2<f64>> = None;
+    let mut beta_prev: Option<Array2<f64>> = None;
+
+    let max_krylov = (max_iter + 1).saturating_mul(block_size).min(naux);
+    let outer_iters = (max_krylov / block_size).max(1);
+    let mut last_result: Option<LanczosResult> = None;
+    let mut last_y_pick: Option<Array2<f64>> = None;
+
+    for k in 0..outer_iters {
+        let mut w: Array2<f64> = matvec(&v_curr);
+        let alpha_k: Array2<f64> = v_curr.t().dot(&w);
+        let alpha_k_sym: Array2<f64> = 0.5 * (&alpha_k + &alpha_k.t());
+
+        w = &w - &v_curr.dot(&alpha_k);
+        if let (Some(vp), Some(bp)) = (v_prev.as_ref(), beta_prev.as_ref()) {
+            w = &w - &vp.dot(&bp.t());
+        }
+
+        for _pass in 0..2 {
+            let proj: Array2<f64> = q_basis.t().dot(&w);
+            w = &w - &q_basis.dot(&proj);
+        }
+
+        alphas.push(alpha_k_sym);
+
+        let space_left = naux.saturating_sub(q_basis.ncols());
+        let next_block_size = block_size.min(space_left);
+        let v_next_opt: Option<Array2<f64>> = if next_block_size == 0 {
+            None
+        } else {
+            let (q_new, r_new) = w
+                .qr()
+                .map_err(|e| FerricError::General(format!("Lanczos QR failed: {e}")))?;
+            let r_norm_sq: f64 = r_new.iter().map(|x| x * x).sum();
+            if r_norm_sq.sqrt() < 1e-14 {
+                None
+            } else {
+                betas.push(r_new);
+                Some(q_new)
+            }
+        };
+
+        let nb = alphas.len();
+        let tdim = nb * block_size;
+        let mut t = Array2::<f64>::zeros((tdim, tdim));
+        for (j, a) in alphas.iter().enumerate() {
+            let r0 = j * block_size;
+            t.slice_mut(s![r0..r0 + block_size, r0..r0 + block_size])
+                .assign(a);
+        }
+        for (j, b) in betas.iter().enumerate() {
+            if j + 1 >= nb {
+                break;
+            }
+            let r0 = j * block_size;
+            let c0 = (j + 1) * block_size;
+            let bt = b.t().to_owned();
+            t.slice_mut(s![r0..r0 + block_size, c0..c0 + block_size])
+                .assign(&bt);
+            t.slice_mut(s![c0..c0 + block_size, r0..r0 + block_size])
+                .assign(b);
+        }
+        let t_sym: Array2<f64> = 0.5 * (&t + &t.t());
+
+        let (theta, y) = t_sym
+            .eigh(UPLO::Upper)
+            .map_err(|e| FerricError::General(format!("Lanczos T-diag failed: {e}")))?;
+
+        // Pick only modes with |λ−1| > depart_thresh, ordered by |λ−1| descending.
+        let mut order: Vec<usize> = (0..theta.len())
+            .filter(|&i| (theta[i] - 1.0).abs() > depart_thresh)
+            .collect();
+        order.sort_by(|&i, &j| {
+            (theta[j] - 1.0)
+                .abs()
+                .partial_cmp(&(theta[i] - 1.0).abs())
+                .unwrap()
+        });
+        let n_keep = order.len();
+
+        let mut y_pick = Array2::<f64>::zeros((tdim, n_keep.max(1)));
+        let mut eigenvalues = Vec::with_capacity(n_keep);
+        for (slot, &col) in order.iter().enumerate() {
+            y_pick.slice_mut(s![.., slot]).assign(&y.slice(s![.., col]));
+            eigenvalues.push(theta[col]);
+        }
+
+        // Residual from the T-eigenvector tail — no full Ritz vectors needed.
+        let mut max_resid = 0.0f64;
+        if let Some(beta_k) = betas.last() {
+            if v_next_opt.is_some() && n_keep > 0 {
+                let last_block_start = tdim - block_size;
+                for slot in 0..n_keep {
+                    let y_tail = y_pick.slice(s![last_block_start.., slot]).to_owned();
+                    let r_vec = beta_k.dot(&y_tail);
+                    let nrm = r_vec.dot(&r_vec).sqrt();
+                    max_resid = max_resid.max(nrm);
+                }
+            }
+        }
+
+        let no_more_expansion = v_next_opt.is_none();
+        let krylov_wide_enough = tdim >= (3 * n_keep / 2).max(2 * block_size);
+        let residual_ok = n_keep > 0 && max_resid < conv_thresh && krylov_wide_enough;
+        let converged = no_more_expansion || residual_ok;
+
+        if verbose {
+            println!(
+                "targeted Lanczos iter={k:4}  block={block_size:4}  krylov_dim={tdim:5}  \
+                 n_above_thresh={n_keep:4}  max_resid={max_resid:.3e}  \
+                 conv_thresh={conv_thresh:.3e}"
+            );
+        }
+
+        last_y_pick = Some(y_pick.slice(s![.., ..n_keep]).to_owned());
+        last_result = Some(LanczosResult {
+            eigenvalues,
+            eigenvectors: Array2::zeros((naux, 0)),
+            converged,
+            max_resid,
+        });
+
+        if no_more_expansion || residual_ok {
+            break;
+        }
+
+        let v_next = v_next_opt.unwrap();
+        v_prev = Some(v_curr);
+        v_curr = v_next.clone();
+        beta_prev = betas.last().cloned();
+
+        let old_cols = q_basis.ncols();
+        let new_cols = old_cols + v_next.ncols();
+        let mut q_new = Array2::<f64>::zeros((naux, new_cols));
+        q_new.slice_mut(s![.., ..old_cols]).assign(&q_basis);
+        q_new.slice_mut(s![.., old_cols..]).assign(&v_next);
+        q_basis = q_new;
+    }
+
+    // Compute Ritz vectors once after the loop (deferred from per-iteration).
+    let mut result = last_result
+        .ok_or_else(|| FerricError::General("targeted Lanczos produced no result".into()))?;
+    if let Some(yp) = last_y_pick {
+        let tdim = yp.nrows();
+        if yp.ncols() > 0 && tdim > 0 {
+            let qb = q_basis.slice(s![.., ..tdim]);
+            result.eigenvectors = qb.dot(&yp);
+        }
+    }
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

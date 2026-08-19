@@ -515,6 +515,20 @@ pub fn ccsd_t(
         nv2,
         ferric_core::memory::transient_share(remaining, ferric_core::memory::Share::Half),
     );
+    // A floored chunk (width 1) means the memory budget could not fund even a
+    // two-triple band: correct but effectively serial across triples, so the
+    // (T) step will be slow for a reason the user can act on (raise
+    // [memory] budget_gb). Say so once rather than letting it look like a hang.
+    if chunk_len == 1 && triples.len() > 1 {
+        eprintln!(
+            "ccsd_t: memory budget floors the triple band at 1 (nv2={nv2}, \
+             {} triples, {:.2} GiB remaining after precomputed blocks) — the \
+             (T) triples loop will run effectively serially. Raise the memory \
+             budget to widen the band.",
+            triples.len(),
+            remaining as f64 / (1024.0 * 1024.0 * 1024.0),
+        );
+    }
     let mut et = 0.0f64;
     for chunk in triples.chunks(chunk_len) {
         let partials: Vec<f64> = with_blas_threads(1, || {

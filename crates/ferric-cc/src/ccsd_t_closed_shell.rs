@@ -475,6 +475,19 @@ pub fn ccsd_t_closed_shell(
         nv,
         ferric_core::memory::transient_share(remaining, ferric_core::memory::Share::Half),
     );
+    // Same floored-band warning as the spin-orbital sibling: width 1 means the
+    // budget could not fund a two-triple band, so the loop is effectively
+    // serial — actionable (raise [memory] budget_gb), not a hang.
+    if chunk_len == 1 && triples.len() > 1 {
+        eprintln!(
+            "ccsd_t_closed_shell: memory budget floors the triple band at 1 \
+             (nv={nv}, {} triples, {:.2} GiB remaining after precomputed \
+             blocks) — the (T) triples loop will run effectively serially. \
+             Raise the memory budget to widen the band.",
+            triples.len(),
+            remaining as f64 / (1024.0 * 1024.0 * 1024.0),
+        );
+    }
     let mut et = 0.0f64;
     for chunk in triples.chunks(chunk_len) {
         // BLAS pinned to 1 EXPLICITLY: `w_block`'s GEMMs run inside this rayon
