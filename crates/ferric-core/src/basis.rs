@@ -326,6 +326,17 @@ pub fn bundled(name: &str) -> Result<BasisSet, FerricError> {
         "aug-cc-pvtz" => include_str!("basis/bundled/aug-cc-pvtz.json"),
         "aug-cc-pvtz-pp" => include_str!("basis/bundled/aug-cc-pvtz-pp.json"),
         "aug-cc-pvtz-rifit" => include_str!("basis/bundled/aug-cc-pvtz-rifit.json"),
+        // Unaugmented cc-pVTZ + its RI-fit aux. The JSON has shipped in
+        // basis/bundled/ for some time but was never wired into this table,
+        // so `bundled("cc-pvtz")` errored despite the data being present.
+        // Registered for the DZ/TZ two-point X^-3 correlation extrapolation,
+        // which wants the plain cc-pVXZ sequence (aug-cc-pVTZ is a different
+        // sequence, and pairing it with plain cc-pVDZ is not the calibrated
+        // pair). Coverage: cc-pvtz has elements 1-36 EXCEPT K(19); the rifit
+        // is missing K(19) and Ca(20). Not silently patched -- an RI run on a
+        // K/Ca system errors on missing-element lookup rather than mis-fitting.
+        "cc-pvtz" => include_str!("basis/bundled/cc-pvtz.json"),
+        "cc-pvtz-rifit" => include_str!("basis/bundled/cc-pvtz-rifit.json"),
         // BSE (ccRepo/Grant Hill, 2018-10-03), same source/date as aug-cc-pvtz.
         // Elements 1-36 (H-Kr), matching aTZ's coverage. The RI-fit aux
         // (Turbomole 7.3, 2019-01-08) is missing Li(3) and K(19), which aTZ's
@@ -413,6 +424,39 @@ mod tests {
             let dz_n = dz.for_element(z).unwrap().len();
             assert!(tz_sh.len() > dz_n, "light Z={z} TZ shells ({}) should exceed DZ ({dz_n})", tz_sh.len());
         }
+    }
+
+    #[test]
+    fn test_bundled_ccpvtz_loads_and_grows_over_dz() {
+        // cc-pVTZ and its RI-fit aux were present as JSON but unregistered,
+        // so bundled() errored on them. This pins the registration: both must
+        // load, and TZ must have strictly more shells than DZ for the light
+        // elements the DZ/TZ extrapolation actually runs on (H, C, N, O).
+        let dz = bundled("cc-pvdz").unwrap();
+        let tz = bundled("cc-pvtz").unwrap();
+        let tz_ri = bundled("cc-pvtz-rifit").unwrap();
+        for &z in &[1, 6, 7, 8] {
+            let dz_sh = dz.for_element(z).unwrap_or_else(|| panic!("Z={z} missing from cc-pVDZ"));
+            let tz_sh = tz.for_element(z).unwrap_or_else(|| panic!("Z={z} missing from cc-pVTZ"));
+            assert!(
+                tz_sh.len() > dz_sh.len(),
+                "Z={z} cc-pVTZ shells ({}) should exceed cc-pVDZ ({})",
+                tz_sh.len(),
+                dz_sh.len()
+            );
+            // The RI aux must cover every element the orbital basis does, or
+            // an RI run would fail mid-calculation instead of at setup.
+            assert!(
+                tz_ri.for_element(z).is_some(),
+                "Z={z} missing from cc-pvtz-rifit"
+            );
+        }
+        // Documented upstream gaps, asserted so the doc comment cannot drift
+        // from the data: K(19) is absent from cc-pVTZ, and K(19)+Ca(20) from
+        // the rifit. If upstream data is ever refreshed this fails loudly.
+        assert!(tz.for_element(19).is_none(), "cc-pVTZ unexpectedly has K(19)");
+        assert!(tz_ri.for_element(19).is_none(), "cc-pvtz-rifit unexpectedly has K(19)");
+        assert!(tz_ri.for_element(20).is_none(), "cc-pvtz-rifit unexpectedly has Ca(20)");
     }
 
     #[test]
