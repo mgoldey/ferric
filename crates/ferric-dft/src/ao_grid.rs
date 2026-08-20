@@ -8,7 +8,9 @@ use ferric_core::mol::Molecule;
 use ndarray::{Array2, Array3};
 use thiserror::Error;
 
+/// Errors from GTO evaluation on a real-space grid.
 #[derive(Error, Debug)]
+#[non_exhaustive]
 pub enum GtoEvalError {
     #[error("no basis shells for Z={z} in basis set")]
     MissingElement { z: i32 },
@@ -19,6 +21,10 @@ pub enum GtoEvalError {
     /// `ferric_core::memory::check_alloc`.
     #[error("{0}")]
     OutOfBudget(String),
+}
+
+impl From<GtoEvalError> for ferric_core::error::FerricError {
+    fn from(e: GtoEvalError) -> Self { Self::General(e.to_string()) }
 }
 
 /// Number of resident `f64` "planes" of shape `(nbf, npts)` a dense AO-grid

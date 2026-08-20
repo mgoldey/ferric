@@ -26,6 +26,7 @@ use ndarray::Array2;
 use std::collections::HashMap;
 
 /// Result of the merged-basis cross-overlap construction.
+#[derive(Debug)]
 pub struct CrossOverlap {
     /// S_OR, shape (nobs, nri): ⟨OBS function i | RIBS function j⟩.
     pub s_or: Array2<f64>,

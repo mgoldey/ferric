@@ -54,6 +54,24 @@ pub struct RiMp2Config {
     pub kappa: Option<f64>,
 }
 
+impl RiMp2Config {
+    /// Set the number of frozen core orbitals.
+    pub fn with_frozen_core(mut self, n: usize) -> Self {
+        self.frozen_core = n;
+        self
+    }
+    /// Set the memory budget in bytes for the 3-index MO transform.
+    pub fn with_memory_budget_bytes(mut self, bytes: usize) -> Self {
+        self.memory_budget_bytes = Some(bytes);
+        self
+    }
+    /// Set the κ-regularization parameter (inverse Hartree).
+    pub fn with_kappa(mut self, kappa: f64) -> Self {
+        self.kappa = Some(kappa);
+        self
+    }
+}
+
 /// Number of active (correlated) occupied orbitals after freezing
 /// `frozen_core`. Errors instead of underflowing when the freeze covers the
 /// whole occupied space — `frozen_core` comes straight from user config.
@@ -69,12 +87,20 @@ pub fn active_occ(nocc_total: usize, frozen_core: usize) -> Result<usize, Ferric
 }
 
 /// Results from an RI-MP2 calculation.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+#[must_use]
 pub struct RiMp2Result {
     /// MP2 correlation energy (always negative).
     pub mp2_corr: f64,
     /// Total energy: E_RHF + E_MP2.
     pub total_energy: f64,
+}
+
+impl std::fmt::Display for RiMp2Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "RI-MP2 total: {:.10} Ha (corr: {:.10})",
+            self.total_energy, self.mp2_corr)
+    }
 }
 
 /// Spin-component resolved MP2 correlation energy.
@@ -790,6 +816,8 @@ pub fn spin_components_from_g(
     SpinComponents { e_os, e_ss, e_total: e_os + e_ss }
 }
 
+/// Compute RI-MP2 opposite-spin and same-spin correlation energies separately, returning `(SpinComponents, B_ov)`.
+#[must_use]
 pub fn ri_mp2_spin_components(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -1009,6 +1037,7 @@ pub fn spin_components_from_b_ov_kappa(
 /// Requires converged RHF orbitals, an orbital basis (`obs`), and a density-fitting
 /// auxiliary basis (`dfbs`). The auxiliary basis should be matched to the orbital
 /// basis (e.g., cc-pVDZ with cc-pVDZ-RI).
+#[must_use]
 pub fn ri_mp2(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -1025,7 +1054,7 @@ pub fn ri_mp2(
 }
 
 /// All intermediates needed by the analytical RI-MP2 gradient.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Mp2Intermediates {
     pub t2: Vec<f64>,
     /// B^P_{ia}, shape (naux, nocc*nvir), occ-vir block
@@ -1089,7 +1118,7 @@ impl Mp2Intermediates {
 /// amplitudes, occ-occ / vir-vir B blocks, and quadruple-loop MP2 energy
 /// that `compute_mp2_intermediates` produces. For benzene/cc-pVDZ this
 /// drops the setup cost from ~5 s to ~0.5 s.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RpaIntermediates {
     pub b_ov: Array2<f64>,
     pub v_inv_sqrt: Array2<f64>,

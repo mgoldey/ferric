@@ -36,7 +36,7 @@ use crate::radial::treutler_ahlrichs_m4;
 const PAR_WORK_THRESHOLD: usize = 2_000;
 
 /// One grid point.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GridPoint {
     pub xyz: [f64; 3],
     pub weight: f64,

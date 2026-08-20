@@ -13,18 +13,31 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::type_complexity)]
 
+/// GW method variants: G0W0, evGW0, evGW, COHSEX, sc-COHSEX.
 pub mod method;
+/// Full MO-basis B-tensor (B^P_{mn}) construction for GW self-energy.
 pub mod mo_b;
+/// PDEP-as-W: screened Coulomb from dielectric eigenpotentials.
 pub mod w_pdep;
+/// Pade continued-fraction analytic continuation from imaginary to real axis.
 pub mod pade;
+/// Closed-shell GW self-energy: Sigma_c, QP solver, G0W0/evGW0/evGW dispatch.
 pub mod sigma;
+/// Closed-shell COHSEX (static screened exchange + Coulomb hole).
 pub mod cohsex;
+/// Bethe-Salpeter equation (BSE-TDA) for optical excitations.
 pub mod bse;
+/// TDHF/RPAx static polarizability (dense A/B formulation).
 pub mod tddft;
+/// Quasiparticle Newton solver: find QP pole of Dyson equation.
 pub mod qp;
+/// Spin-unrestricted GW self-energy (U-G0W0, U-evGW0, U-evGW).
 pub mod u_sigma;
+/// Spin-unrestricted COHSEX.
 pub mod u_cohsex;
+/// V_xc diagonal in MO basis (for GW@KS correction).
 pub mod vxc_mo;
+/// MPI-distributed GW self-energy evaluation.
 pub mod mpi_gw;
 
 pub use method::GwMethod;
@@ -49,7 +62,7 @@ fn with_inv_dielectric(cfg: &PdepRpaConfig) -> PdepRpaConfig {
 }
 
 /// Top-level GW configuration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct GwConfig {
     pub method: GwMethod,
     /// Range of MOs (absolute indices into the full MO set) for which to
@@ -95,8 +108,37 @@ impl Default for GwConfig {
     }
 }
 
+impl GwConfig {
+    /// Set the GW method variant (G0W0, evGW0, evGW, COHSEX, etc.).
+    pub fn with_method(mut self, method: GwMethod) -> Self {
+        self.method = method;
+        self
+    }
+    /// Set the MO range for quasiparticle calculations.
+    pub fn with_qp_mos(mut self, range: std::ops::Range<usize>) -> Self {
+        self.qp_mos = Some(range);
+        self
+    }
+    /// Set the maximum number of evGW outer iterations.
+    pub fn with_max_ev_iter(mut self, n: usize) -> Self {
+        self.max_ev_iter = n;
+        self
+    }
+    /// Set the number of frozen core orbitals.
+    pub fn with_frozen_core(mut self, n: usize) -> Self {
+        self.frozen_core = n;
+        self
+    }
+    /// Enable verbose per-iteration output.
+    pub fn with_verbose(mut self, verbose: bool) -> Self {
+        self.verbose = verbose;
+        self
+    }
+}
+
 /// Per-MO quasiparticle result.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+#[must_use]
 pub struct GwResult {
     /// MO indices for which QP energies were computed (absolute).
     pub mo_indices: Vec<usize>,
@@ -127,6 +169,15 @@ pub struct GwResult {
     pub pdep: PdepRpaResult,
 }
 
+impl std::fmt::Display for GwResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let n_conv = self.qp_converged.iter().filter(|&&c| c).count();
+        let n_total = self.qp_converged.len();
+        write!(f, "GW: {}/{} QP converged, {} ev-iters, outer converged: {}",
+            n_conv, n_total, self.n_ev_iter, self.outer_converged)
+    }
+}
+
 impl GwResult {
     /// **Deprecated for G0W0 — pass `vxc_diag` to `run_gw` instead.** This applies
     /// Σ_x − v_xc to the QP energies *after* the QP solve, which is WRONG for a KS
@@ -147,7 +198,8 @@ impl GwResult {
 /// refers to the i-th α MO and i-th β MO, which for UHF/UKS are different
 /// orbitals — caller should be aware when interpreting). For HOMO-α vs
 /// HOMO-β identification, use `eps_qp_a[idx]` vs `eps_qp_b[idx]` separately.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+#[must_use]
 pub struct UGwResult {
     pub mo_indices: Vec<usize>,
     pub eps_mf_a: Array1<f64>,
@@ -170,6 +222,16 @@ pub struct UGwResult {
     /// `max_ev_iter`. Always `true` for non-iterative methods.
     pub outer_converged: bool,
     pub pdep: PdepRpaResult,
+}
+
+impl std::fmt::Display for UGwResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let na = self.qp_converged_a.iter().filter(|&&c| c).count();
+        let nb = self.qp_converged_b.iter().filter(|&&c| c).count();
+        let n = self.qp_converged_a.len();
+        write!(f, "U-GW: α {}/{} β {}/{} QP converged, {} ev-iters",
+            na, n, nb, n, self.n_ev_iter)
+    }
 }
 
 impl UGwResult {
@@ -198,6 +260,7 @@ impl UGwResult {
 /// For UKS, the caller must apply the Σ_x − v_xc correction via
 /// `UGwResult::apply_kohn_sham_correction` using `vxc_mo::vxc_diagonal_mo`
 /// (we don't auto-apply since we don't carry the xc_name through).
+#[must_use]
 pub fn run_u_gw(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -297,6 +360,7 @@ fn default_u_qp_range(mol: &Molecule, scf: &ScfResult) -> std::ops::Range<usize>
 /// self-consistency loop — it is a property of the KS reference, not
 /// something that evolves with QP self-consistency (see the doc comments on
 /// `sigma::run_evgw0`/`sigma::run_evgw`).
+#[must_use]
 pub fn run_gw(
     mol: &Molecule,
     obs: &PreparedBasis,

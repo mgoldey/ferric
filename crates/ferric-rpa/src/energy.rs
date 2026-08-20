@@ -191,6 +191,7 @@ pub fn eval_eigenvalues_at_frequencies_laplace_unrestricted(
     Ok(rows_into_array(n_quad, m, rows))
 }
 
+/// Evaluate PDEP eigenvalues at each quadrature frequency by projecting onto eigenvectors.
 pub fn eval_eigenvalues_at_frequencies(
     eigenvectors: &Array2<f64>,
     b_ov: &Array2<f64>,

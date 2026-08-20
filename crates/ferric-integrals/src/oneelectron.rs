@@ -79,6 +79,11 @@ fn build_symmetric(prep: &PreparedBasis, make_eng: impl Fn() -> Engine + Sync) -
                         let v = block[i * n2 + j];
                         let r = o1 + i;
                         let c = o2 + j;
+                        // SAFETY: rayon work items write to disjoint
+                        // (s1,s2) shell-pair blocks in `out`; the symmetric
+                        // write (r,c)/(c,r) is within the same block's
+                        // triangle. out_ptr is an AtomicPtr shared across
+                        // workers; no two workers touch the same (r,c) pair.
                         unsafe {
                             let base = out_ptr as *mut f64;
                             *base.add(r * stride + c) = v;
@@ -355,6 +360,8 @@ pub fn hcore_ecp(prep: &PreparedBasis, mol: &Molecule, bs: &BasisSet) -> Array2<
 pub fn dipole(prep: &PreparedBasis, origin: [f64; 3]) -> Result<[Array2<f64>; 3], FerricError> {
     let nbas = prep.nbasis();
     let mut flat = vec![0.0f64; 3 * nbas * nbas];
+    // SAFETY: prep.handle() is a valid basis handle; origin and flat are
+    // stack/heap arrays with correct sizes. Status checked below.
     let ret = unsafe {
         ffi::scf_compute_dipole(
             prep.handle(),
@@ -386,6 +393,7 @@ pub fn second_moment(
 ) -> Result<[Array2<f64>; 6], FerricError> {
     let nbas = prep.nbasis();
     let mut flat = vec![0.0f64; 6 * nbas * nbas];
+    // SAFETY: same contract as dipole — valid handle, correctly-sized buffers.
     let ret = unsafe {
         ffi::scf_compute_second_moment(
             prep.handle(),

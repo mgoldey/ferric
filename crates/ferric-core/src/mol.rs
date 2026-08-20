@@ -4,6 +4,7 @@ use crate::basis::BasisSet;
 use crate::elements::symbol_to_z;
 use crate::FerricError;
 use std::fs;
+use std::str::FromStr;
 
 const ANGSTROM_TO_BOHR: f64 = 1.0 / 0.529_177_210_92;
 
@@ -17,7 +18,7 @@ const ANGSTROM_TO_BOHR: f64 = 1.0 / 0.529_177_210_92;
 /// ghosts), so basis lookup via `for_element(z)` works unchanged.  The `ghost`
 /// flag suppresses contributions to `nelec()`, `nuclear_repulsion()`, and the
 /// nuclear-attraction one-electron integrals.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Atom {
     pub symbol: String,
     pub z: i32,
@@ -84,7 +85,21 @@ fn validate_electron_multiplicity_parity(nelec: i32, multiplicity: usize) -> Res
 /// A collection of atoms forming a molecule.
 ///
 /// Coordinates are stored internally in Bohr. The XYZ parser converts from Angstroms.
-#[derive(Debug, Clone)]
+///
+/// # Examples
+///
+/// ```
+/// use ferric_core::mol::Molecule;
+///
+/// // Parse from an XYZ string (assumes neutral singlet):
+/// let mol: Molecule = "2\nH2\nH 0 0 0\nH 0 0 0.74\n".parse().unwrap();
+/// assert_eq!(mol.atoms.len(), 2);
+///
+/// // With explicit charge and multiplicity:
+/// let mol = Molecule::parse_xyz("1\nH\nH 0 0 0\n", 0, 2).unwrap();
+/// assert_eq!(mol.multiplicity, 2);
+/// ```
+#[derive(Debug, Clone, PartialEq)]
 pub struct Molecule {
     pub atoms: Vec<Atom>,
     pub charge: i32,
@@ -216,6 +231,22 @@ impl Molecule {
                 atom.n_core_ecp = def.n_core;
             }
         }
+    }
+}
+
+/// Parse XYZ-format text into a neutral singlet [`Molecule`].
+///
+/// ```
+/// use ferric_core::mol::Molecule;
+///
+/// let mol: Molecule = "2\nH2\nH 0 0 0\nH 0 0 0.74\n".parse().unwrap();
+/// assert_eq!(mol.atoms.len(), 2);
+/// ```
+impl FromStr for Molecule {
+    type Err = FerricError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse_xyz(s, 0, 1)
     }
 }
 

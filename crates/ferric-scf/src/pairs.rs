@@ -13,6 +13,7 @@ use ndarray::Array2;
 /// `pairs[i]` is a sorted list of shell indices `j` such that
 /// `bound.estimate(i, j, i, j) > threshold`. Built once per geometry from
 /// any type implementing [`Bound`].
+#[derive(Debug, Clone)]
 pub struct SignificantPairs {
     /// `pairs[i]` = sorted Vec of shells j significant with shell i.
     pairs: Vec<Vec<usize>>,
@@ -71,6 +72,7 @@ const PAR_DENSITY_PAIRS_THRESHOLD: usize = 64;
 /// `pairs[j]` is a sorted list of shell indices `sigma` where the maximum
 /// absolute density element in the `(j, sigma)` shell block times the
 /// Schwarz-like bound Q(j, sigma) exceeds the threshold.
+#[derive(Debug, Clone)]
 pub struct DensityPairs {
     pairs: Vec<Vec<usize>>,
 }

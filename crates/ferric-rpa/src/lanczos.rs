@@ -196,8 +196,7 @@ where
     order.sort_by(|&i, &j| {
         (theta[j] - 1.0)
             .abs()
-            .partial_cmp(&(theta[i] - 1.0).abs())
-            .unwrap()
+            .total_cmp(&(theta[i] - 1.0).abs())
     });
     let n_keep = n_desired.min(order.len());
     let picks = &order[..n_keep];
@@ -221,6 +220,8 @@ where
 }
 
 /// Result of a block-Lanczos run.
+#[derive(Debug, Clone)]
+#[must_use]
 pub struct LanczosResult {
     /// Converged eigenvalues, sorted by `|λ − 1|` descending (most significant
     /// PDEP modes first), matching the convention used downstream of Davidson.
@@ -540,8 +541,7 @@ where
         order.sort_by(|&i, &j| {
             (theta[j] - 1.0)
                 .abs()
-                .partial_cmp(&(theta[i] - 1.0).abs())
-                .unwrap()
+                .total_cmp(&(theta[i] - 1.0).abs())
         });
         let n_keep = n_desired.min(order.len());
         let picks = &order[..n_keep];
@@ -776,8 +776,7 @@ where
         order.sort_by(|&i, &j| {
             (theta[j] - 1.0)
                 .abs()
-                .partial_cmp(&(theta[i] - 1.0).abs())
-                .unwrap()
+                .total_cmp(&(theta[i] - 1.0).abs())
         });
         let n_keep = order.len();
 
@@ -956,9 +955,9 @@ mod tests {
         // Expected top 4 by |λ − 1| descending: 10.0, 5.0, 0.01, 2.0 (|9|, |4|, |0.99|, |1|)
         // Sort recovered for stable comparison by |λ − 1| descending.
         let mut got = result.eigenvalues.clone();
-        got.sort_by(|a, b| (b - 1.0).abs().partial_cmp(&(a - 1.0).abs()).unwrap());
+        got.sort_by(|a, b| (b - 1.0).abs().total_cmp(&(a - 1.0).abs()));
         let mut want: Vec<f64> = vec![10.0, 5.0, 2.0, 0.01];
-        want.sort_by(|a, b| (b - 1.0f64).abs().partial_cmp(&(a - 1.0f64).abs()).unwrap());
+        want.sort_by(|a, b| (b - 1.0f64).abs().total_cmp(&(a - 1.0f64).abs()));
         for (g, w) in got.iter().zip(want.iter()) {
             assert!((g - w).abs() < 1e-8, "Lanczos eigenvalue mismatch: got {g}, want {w}");
         }
@@ -1052,7 +1051,7 @@ mod tests {
         // Sanity: identity-seed Lanczos itself ≡ dense eigh of A.
         let (theta_dense, _) = a.eigh(UPLO::Upper).unwrap();
         let mut dense_sorted = theta_dense.to_vec();
-        dense_sorted.sort_by(|x, y| x.partial_cmp(y).unwrap());
+        dense_sorted.sort_by(|x, y| x.total_cmp(y));
 
         for panel in [7usize, 16, 60, 200] {
             std::env::set_var("FERRIC_LANCZOS_PANEL", panel.to_string());
@@ -1072,7 +1071,7 @@ mod tests {
 
             // And match the dense reference spectrum (sorted ascending).
             let mut got_sorted = new_res.eigenvalues.clone();
-            got_sorted.sort_by(|x, y| x.partial_cmp(y).unwrap());
+            got_sorted.sort_by(|x, y| x.total_cmp(y));
             for (g, d) in got_sorted.iter().zip(dense_sorted.iter()) {
                 assert!(
                     (g - d).abs() < 1e-10,

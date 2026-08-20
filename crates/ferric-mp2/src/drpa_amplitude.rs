@@ -52,6 +52,7 @@ use crate::rimp2::{
 };
 use ferric_integrals::threeindex::coulomb_metric_2c;
 
+/// Configuration for amplitude-threshold dRPA via localized Riccati fixed-point iteration.
 #[derive(Debug, Clone)]
 pub struct AmplitudeDrpaConfig {
     /// Threshold ε on |B_iajb| = |2(ia|jb)| in the localized basis; 0 keeps
@@ -118,7 +119,9 @@ fn effective_fp_rtol(cfg: &AmplitudeDrpaConfig) -> f64 {
     }
 }
 
-#[derive(Debug)]
+/// Result of an amplitude-threshold dRPA calculation.
+#[derive(Debug, Clone)]
+#[must_use]
 pub struct AmplitudeDrpaResult {
     pub e_corr: f64,
     pub e_total: f64,
@@ -132,6 +135,13 @@ pub struct AmplitudeDrpaResult {
     pub iterations: usize,
     pub relres: f64,
     pub converged: bool,
+}
+
+impl std::fmt::Display for AmplitudeDrpaResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Amplitude-dRPA total: {:.10} Ha (corr: {:.10}, keep: {:.1}%, {} iters)",
+            self.e_total, self.e_corr, self.keep_fraction * 100.0, self.iterations)
+    }
 }
 
 /// Fock superoperator F(T) in the compound (ia),(jb) representation:

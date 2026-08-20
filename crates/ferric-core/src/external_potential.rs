@@ -7,7 +7,7 @@ use ndarray::Array2;
 /// A fixed classical point charge in Bohr / atomic units. Not a physical
 /// atom: no basis shells, and `q` may be fractional (e.g. QM/MM partial
 /// charges).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PointCharge {
     pub q: f64,
     pub x: f64,
@@ -19,13 +19,14 @@ pub struct PointCharge {
 /// uniform electric field (atomic units, lab frame). `Default` is the empty
 /// potential (no point charges, no field) — every consumer must treat this
 /// as a true no-op.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ExternalPotential {
     pub point_charges: Vec<PointCharge>,
     pub field: Option<[f64; 3]>,
 }
 
 impl ExternalPotential {
+    /// Returns `true` if there are no point charges and no external field.
     pub fn is_empty(&self) -> bool {
         self.point_charges.is_empty() && self.field.is_none()
     }

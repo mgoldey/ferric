@@ -48,11 +48,17 @@
 //! other agent named their crate something COSMO-specific, no rename
 //! collision is expected.
 
+/// Molecular cavity construction (atom-sphere + Lebedev tessellation).
 pub mod cavity;
+/// PCM configuration struct.
 pub mod config;
+/// S/D boundary-element matrices and IEF-PCM K/R operators.
 pub mod matrices;
+/// Solute ESP at tesserae and the reaction-field AO operator.
 pub mod potential;
+/// Bondi van der Waals radii table.
 pub mod radii;
+/// IEF-PCM linear solve for apparent surface charges.
 pub mod solver;
 
 use ferric_core::mol::Molecule;
@@ -68,6 +74,7 @@ pub use solver::PcmChargeResult;
 /// matrices depend only on the molecular geometry and `epsilon`, never on
 /// the density) — mirrors how `DfJ`/`DfK`/`LinkK` are built once in
 /// `solve_rhf` and only their `.build(&d, ...)` step runs per iteration.
+#[derive(Debug, Clone)]
 pub struct PcmContext {
     tess: Vec<Tessera>,
     k: Array2<f64>,
@@ -85,10 +92,12 @@ impl PcmContext {
         Ok(Self { tess, k, r })
     }
 
+    /// Number of tesserae (surface integration points) in the cavity.
     pub fn n_tesserae(&self) -> usize {
         self.tess.len()
     }
 
+    /// The cavity tessera array (positions, areas, normals, charge exponents).
     pub fn tesserae(&self) -> &[Tessera] {
         &self.tess
     }

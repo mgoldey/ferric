@@ -14,7 +14,7 @@ thiserror = { workspace = true }
 ndarray = { workspace = true }
 rayon = { workspace = true }
 lapack-sys = { workspace = true }
-mpi = { version = "0.7", optional = true }
+mpi = { workspace = true, optional = true }
 
 [features]
 default = []

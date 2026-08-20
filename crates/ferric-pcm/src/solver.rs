@@ -7,6 +7,7 @@ use ndarray_linalg::Solve;
 
 /// Result of one IEF-PCM charge solve.
 #[derive(Debug, Clone)]
+#[must_use]
 pub struct PcmChargeResult {
     /// Apparent surface charge at each tessera, in a.u. (symmetrized — see
     /// below).

@@ -30,6 +30,7 @@ use ndarray_linalg::{Eigh, UPLO};
 const CABS_NULL_THRESH: f64 = 1e-8;
 
 /// The complementary auxiliary basis, expressed in the RIBS AO basis.
+#[derive(Debug, Clone)]
 pub struct Cabs {
     /// C_cabs, shape (nri, ncabs): RIBS-AO coefficients of each CABS function.
     pub coeffs: Array2<f64>,

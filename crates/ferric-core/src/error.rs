@@ -1,5 +1,6 @@
 /// Unified error type for the ferric workspace.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum FerricError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),

@@ -116,6 +116,7 @@ pub(crate) fn solve_dielectric_3(
 
 /// Static (ω=0) closed-shell polarizability tensor in atomic units.
 #[derive(Debug, Clone)]
+#[must_use]
 pub struct PolarizabilityResult {
     /// Cartesian α_ij(0) tensor, i,j ∈ {x,y,z}, in a.u. (e²·a₀²/E_h).
     pub tensor: [[f64; 3]; 3],
@@ -1616,6 +1617,7 @@ pub fn pdep_polarizability_becke_dynamic(
     Ok(out)
 }
 
+/// Compute per-atom static polarizability tensors via PDEP-RPA with Hirshfeld partitioning.
 // Distinct inputs (system, two bases, reference, operator, config, proatom
 // provider); no natural sub-bundle.
 #[allow(clippy::too_many_arguments)]

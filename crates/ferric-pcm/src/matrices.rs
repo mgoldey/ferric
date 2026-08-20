@@ -184,6 +184,7 @@ pub fn build_s_d_kind(tess: &[Tessera], kind: SdKind) -> (Array2<f64>, Array2<f6
                     let r = r2.sqrt();
                     let xi_ij = xi_i * xi_j / (xi_i * xi_i + xi_j * xi_j).sqrt();
                     let xi_r = xi_ij * r;
+                    // SAFETY: erf is the C standard math library function; xi_r is a finite f64.
                     let s_ij = unsafe { erf(xi_r) } / r;
                     s[(i, j)] = s_ij;
                     s[(j, i)] = s_ij; // S is symmetric.
@@ -315,6 +316,7 @@ mod tests {
             let xi_i = ti.charge_exp;
             let xi_j = tj.charge_exp;
             let xi_ij = xi_i * xi_j / (xi_i * xi_i + xi_j * xi_j).sqrt();
+            // SAFETY: erf is the C standard math library function; argument is finite.
             let expected = unsafe { erf(xi_ij * r) } / r;
             assert!((s[(0, 1)] - expected).abs() < 1e-12);
             // NOTE: for THIS specific well-separated tessera pair,

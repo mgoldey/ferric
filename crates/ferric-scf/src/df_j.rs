@@ -70,6 +70,14 @@ pub struct DfJ<'a> {
     budget_bytes: usize,
 }
 
+impl<'a> std::fmt::Debug for DfJ<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DfJ")
+            .field("budget_bytes", &self.budget_bytes)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<'a> DfJ<'a> {
     /// Build the DF-J cache from orbital and auxiliary bases (FULL aux range,
     /// serial / single-rank — byte-identical to the pre-MPI path).

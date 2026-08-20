@@ -64,6 +64,7 @@ pub struct DynamicPolarizability {
 /// H2 case. If you want the DOSD-comparable molecular total, use
 /// `c6_molecular_iso`, not `c6_iso_pair.sum()`.
 #[derive(Debug, Clone)]
+#[must_use]
 pub struct C6Result {
     pub per_atom_dynamic: DynamicPolarizability,
     /// Isotropic C6^{AB}, shape (N, N), a.u. Per-atom PAIR tensor — see the

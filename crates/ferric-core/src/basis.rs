@@ -8,6 +8,7 @@ use crate::elements::symbol_to_z;
 use crate::FerricError;
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::str::FromStr;
 use std::fs;
 
 /// A single contracted Gaussian shell.
@@ -15,7 +16,7 @@ use std::fs;
 /// `l` is the angular momentum quantum number (0=s, 1=p, 2=d, ...).
 /// When `pure` is true, spherical harmonics are used (2l+1 functions);
 /// otherwise Cartesian Gaussians are used ((l+1)(l+2)/2 functions).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Shell {
     pub l: i32,
     pub pure: bool,
@@ -24,7 +25,20 @@ pub struct Shell {
 }
 
 /// A named basis set mapping atomic numbers to their shells.
-#[derive(Debug, Clone)]
+///
+/// # Examples
+///
+/// ```
+/// use ferric_core::basis::BasisSet;
+///
+/// // Look up a bundled basis set by name:
+/// let bs: BasisSet = "cc-pvdz".parse().unwrap();
+/// assert!(bs.for_element(1).is_some()); // hydrogen
+///
+/// // Or via the explicit function:
+/// let bs = ferric_core::basis::bundled("sto-3g").unwrap();
+/// ```
+#[derive(Debug, Clone, PartialEq)]
 pub struct BasisSet {
     pub name: String,
     /// Map from atomic number Z to the list of shells for that element.
@@ -351,6 +365,22 @@ pub fn bundled(name: &str) -> Result<BasisSet, FerricError> {
     let mut bs = parse_bse_json(json, &cn)?;
     bs.name = cn;
     Ok(bs)
+}
+
+/// Look up a bundled basis set by name.
+///
+/// ```
+/// use ferric_core::basis::BasisSet;
+///
+/// let bs: BasisSet = "cc-pvdz".parse().unwrap();
+/// assert!(bs.for_element(1).is_some());
+/// ```
+impl FromStr for BasisSet {
+    type Err = FerricError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        bundled(s)
+    }
 }
 
 #[cfg(test)]

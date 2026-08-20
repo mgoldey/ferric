@@ -94,6 +94,7 @@ use crate::mo_b;
 
 /// Result of a TDA-DFT singlet excitation calculation.
 #[derive(Debug, Clone)]
+#[must_use]
 pub struct TdaDftResult {
     /// Singlet excitation energies Ω_n (Hartree), ascending.
     pub omega: Vec<f64>,

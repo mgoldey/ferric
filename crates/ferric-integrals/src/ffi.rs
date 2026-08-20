@@ -16,13 +16,24 @@ pub struct CShell {
     pub coefficients: *const c_double,
 }
 
+impl std::fmt::Debug for CShell {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CShell")
+            .field("l", &self.l)
+            .field("nprim", &self.nprim)
+            .field("atom_index", &self.atom_index)
+            .field("pure", &self.pure)
+            .finish_non_exhaustive()
+    }
+}
+
 /// C-compatible atom descriptor (atomic number + Cartesian position in Bohr).
 ///
 /// `atomic_number` is `f64` (not an integer type) so that external point
 /// charges (e.g. QM/MM partial charges) can carry a fractional charge;
 /// libint2's own `Engine::set_params` already takes `double` internally.
 #[repr(C)]
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct CAtom {
     pub atomic_number: c_double,
     pub x: c_double,
@@ -83,18 +94,27 @@ extern "C" {
     ) -> c_int;
 }
 
+/// Standard 1/r Coulomb operator.
 pub const OP_COULOMB: c_int = 0;
+/// Long-range attenuated Coulomb: erf(omega * r) / r.
 pub const OP_ERF_COULOMB: c_int = 1;
+/// Short-range attenuated Coulomb: erfc(omega * r) / r.
 pub const OP_ERFC_COULOMB: c_int = 2;
 /// Yukawa / screened Coulomb exp(-zeta r)/r -- libint2 `Operator::stg_x_coulomb`.
 pub const OP_YUKAWA: c_int = 3;
 /// Exact Slater-type geminal exp(-zeta r) -- libint2 `Operator::stg`.
 pub const OP_SLATER_GEMINAL: c_int = 4;
+/// Overlap operator S = ⟨μ|ν⟩.
 pub const OP_OVERLAP: c_int = 100;
+/// Kinetic energy operator T = -½⟨μ|∇²|ν⟩.
 pub const OP_KINETIC: c_int = 101;
+/// Nuclear attraction operator V = -Σ_A Z_A/|r-R_A|.
 pub const OP_NUCLEAR: c_int = 102;
+/// Electric multipole operator (dipole): ⟨μ|(r-O)|ν⟩.
 pub const OP_EMULTIPOLE1: c_int = 103;
-// Geminal (F12) two-electron operators — see scf_engine_create_geminal.
+/// Contracted Gaussian geminal f12 (Cgtg) -- see `scf_engine_create_geminal`.
 pub const OP_CGTG: c_int = 200;
+/// f12/r12 (geminal times Coulomb) -- see `scf_engine_create_geminal`.
 pub const OP_CGTG_X_COULOMB: c_int = 201;
+/// |∇f12|² kinetic commutator integrand -- see `scf_engine_create_geminal`.
 pub const OP_DELCGTG2: c_int = 202;

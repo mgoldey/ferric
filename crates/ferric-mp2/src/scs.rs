@@ -40,7 +40,8 @@ impl Default for ScsMp2Config {
 
 
 /// Result from SCS-MP2 or SCS-MP2(2terfc).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+#[must_use]
 pub struct ScsMp2Result {
     /// Total energy: E_RHF + scs_corr.
     pub total_energy: f64,
@@ -50,6 +51,13 @@ pub struct ScsMp2Result {
     pub e_os: f64,
     /// Same-spin component (possibly scaled/attenuated).
     pub e_ss: f64,
+}
+
+impl std::fmt::Display for ScsMp2Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SCS-MP2 total: {:.10} Ha (OS: {:.10}, SS: {:.10})",
+            self.total_energy, self.e_os, self.e_ss)
+    }
 }
 
 /// Standard SCS-MP2: E = c_OS * E_OS + c_SS * E_SS.

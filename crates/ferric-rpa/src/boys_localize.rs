@@ -14,6 +14,7 @@ use ferric_scf::ScfResult;
 use ndarray::{s, Array2};
 
 /// Result of localizing the active occupied block.
+#[derive(Debug, Clone)]
 pub struct BoysOccupied {
     /// Localized occupied MO coefficients, shape (nbas, nocc_active).
     pub c_loc: Array2<f64>,

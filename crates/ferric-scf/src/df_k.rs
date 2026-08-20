@@ -105,6 +105,14 @@ pub struct DfK<'a> {
     budget_bytes: usize,
 }
 
+impl<'a> std::fmt::Debug for DfK<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DfK")
+            .field("budget_bytes", &self.budget_bytes)
+            .finish_non_exhaustive()
+    }
+}
+
 /// V^{-1/2} via symmetric eigendecomposition with canonical orthogonalization.
 /// The 2-center metric `(P|w(r12)|Q)` is positive-definite analytically, but
 /// for range-separated operators (erf, erfc) with JK-fit aux on heavy atoms,

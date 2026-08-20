@@ -65,6 +65,8 @@ pub fn solute_potential_at_tesserae(
             y: t.position[1],
             z: t.position[2],
         }];
+        // SAFETY: probe is a stack-local [CAtom; 1] that outlives the FFI call;
+        // eng is a valid Engine handle; len=1 matches the array.
         let rc = unsafe {
             ffi::scf_engine_set_point_charges(eng.handle_mut(), probe.as_ptr(), probe.len() as c_int)
         };
@@ -182,6 +184,8 @@ pub fn build_reaction_field_operator(
         y: pc.y,
         z: pc.z,
     }));
+    // SAFETY: all_atoms is a Vec<CAtom> that outlives the FFI call;
+    // eng is a valid Engine handle; len matches the vec length.
     let rc = unsafe {
         ffi::scf_engine_set_point_charges(eng.handle_mut(), all_atoms.as_ptr(), all_atoms.len() as c_int)
     };

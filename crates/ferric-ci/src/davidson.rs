@@ -14,6 +14,7 @@ use ndarray::{Array1, Array2};
 use ndarray_linalg::{Eigh, UPLO};
 
 /// Result of the CI Davidson solve for the lowest root.
+#[derive(Debug, Clone, PartialEq)]
 pub struct CiDavidsonResult {
     /// Lowest eigenvalue (total active-space energy incl. e_core, since e_core
     /// is folded into the Hamiltonian diagonal).

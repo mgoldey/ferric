@@ -279,6 +279,39 @@ impl Default for PdepRpaConfig {
     }
 }
 
+impl PdepRpaConfig {
+    /// Set the number of frozen core orbitals.
+    pub fn with_frozen_core(mut self, n: usize) -> Self {
+        self.frozen_core = n;
+        self
+    }
+    /// Set the eigenpotential truncation threshold.
+    pub fn with_trunc_thresh(mut self, thresh: f64) -> Self {
+        self.trunc_thresh = thresh;
+        self
+    }
+    /// Set the eigensolver convergence threshold.
+    pub fn with_eigensolver_conv_thresh(mut self, thresh: f64) -> Self {
+        self.eigensolver_conv_thresh = thresh;
+        self
+    }
+    /// Set the eigensolver backend (Davidson or Lanczos).
+    pub fn with_eigensolver(mut self, solver: Eigensolver) -> Self {
+        self.eigensolver = solver;
+        self
+    }
+    /// Set the memory budget in bytes.
+    pub fn with_memory_budget_bytes(mut self, bytes: usize) -> Self {
+        self.memory_budget_bytes = Some(bytes);
+        self
+    }
+    /// Enable verbose per-iteration eigensolver output.
+    pub fn with_verbose(mut self, verbose: bool) -> Self {
+        self.verbose = verbose;
+        self
+    }
+}
+
 /// Imaginary-frequency quadrature configuration.
 #[derive(Debug, Clone)]
 pub struct QuadratureConfig {

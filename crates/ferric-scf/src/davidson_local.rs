@@ -10,6 +10,8 @@ use ferric_core::FerricError;
 use ndarray::{Array1, Array2};
 use ndarray_linalg::{Eigh, QR, UPLO};
 
+/// Converged eigenpairs from a Davidson diagonalization.
+#[derive(Debug, Clone)]
 pub struct DavidsonResult {
     /// Converged eigenvalues λ_α, sorted descending (most significant first).
     pub eigenvalues: Vec<f64>,

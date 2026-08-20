@@ -70,6 +70,7 @@ use ferric_scf::result::ScfResult;
 use crate::mo_transform::{transform_3center_oo, transform_3center_ov, transform_3center_vv};
 use crate::rimp2::{active_occ, cholesky_inverse_sqrt};
 
+/// Configuration for linearized CCD (LCCD / CEPA(0)) via GMRES.
 #[derive(Debug, Clone)]
 pub struct LccdConfig {
     pub frozen_core: usize,
@@ -103,7 +104,9 @@ impl Default for LccdConfig {
     }
 }
 
-#[derive(Debug)]
+/// Result of an LCCD / CEPA(0) calculation.
+#[derive(Debug, Clone)]
+#[must_use]
 pub struct LccdResult {
     pub e_corr: f64,
     pub e_total: f64,
@@ -113,6 +116,13 @@ pub struct LccdResult {
     pub iterations: usize,
     pub relres: f64,
     pub converged: bool,
+}
+
+impl std::fmt::Display for LccdResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "LCCD total: {:.10} Ha (corr: {:.10}, {} iters, converged: {})",
+            self.e_total, self.e_corr, self.iterations, self.converged)
+    }
 }
 
 /// The four MO integral blocks the residual needs, in chemist notation,

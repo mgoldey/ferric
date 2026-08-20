@@ -25,12 +25,12 @@ fn workspace_root() -> PathBuf {
 /// terf needs the interpolation tables; skip cleanly when they are absent
 /// rather than failing on an unrelated machine.
 fn terf_dir() -> Option<String> {
-    [
-        std::env::var("FERRIC_TERF_TABLE_DIR").unwrap_or_default(),
-        "/home/matt/qc/terf-tables-data".into(),
-    ]
-    .into_iter()
-    .find(|c| !c.is_empty() && PathBuf::from(&c).join("16_4_2.bin").exists())
+    let d = std::env::var("FERRIC_TERF_TABLE_DIR").ok()?;
+    if !d.is_empty() && PathBuf::from(&d).join("16_4_2.bin").exists() {
+        Some(d)
+    } else {
+        None
+    }
 }
 
 

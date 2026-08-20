@@ -15,6 +15,7 @@
 #![allow(clippy::excessive_precision)]
 #![allow(clippy::needless_range_loop)]
 
+/// Minimax-Laplace quadrature for `1/x` on `[1, R]` (Takatsuka/Ten-no/Hackbusch tables).
 pub mod minimax;
 
 pub use minimax::{select_minimax_points, LaplaceQuadrature};

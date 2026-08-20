@@ -23,6 +23,7 @@ use ndarray::Array2;
 use ferric_scf::ScfResult;
 
 /// Active-space integrals in the MO basis, plus the closed-shell core energy.
+#[derive(Debug, Clone)]
 pub struct ActiveSpaceIntegrals {
     /// Number of active spatial orbitals.
     pub n_active: usize,

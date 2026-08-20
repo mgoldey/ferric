@@ -18,6 +18,7 @@ use ferric_integrals::operator::{Operator, OperatorKind};
 /// The bound is: `schwarz(i,j,k,l) * min(1, extent_ij * extent_kl / R_ij_kl) * op_decay(R)`
 /// where `R_ij_kl` is the distance between pair centers and `op_decay` provides
 /// operator-specific exponential decay (e.g., `exp(-omega^2 * R^2)` for ErfcCoulomb).
+#[derive(Debug, Clone)]
 pub struct QqrBounds {
     schwarz: SchwarzBounds,
     /// Pair centers, indexed as `pair_centers[i * nshells + j]`.

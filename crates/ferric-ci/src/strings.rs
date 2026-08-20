@@ -43,7 +43,7 @@ pub fn enumerate_strings(n_orb: usize, k: usize) -> Vec<u64> {
     out
 }
 
-/// The number of occupied orbitals (electrons) in a string.
+/// Population count: number of set bits (occupied orbitals) in a string.
 #[inline]
 pub fn popcount(s: u64) -> u32 {
     s.count_ones()

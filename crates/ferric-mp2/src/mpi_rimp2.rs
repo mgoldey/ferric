@@ -93,7 +93,8 @@ mod inner {
 
     /// Result of an MPI-distributed RI-MP2 run. Every rank returns the same
     /// (post-Allreduce) totals.
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
+    #[must_use]
     pub struct MpiMp2Result {
         pub mp2_corr: f64,
         pub e_os: f64,

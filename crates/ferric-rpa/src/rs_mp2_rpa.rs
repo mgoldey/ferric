@@ -156,7 +156,8 @@ impl Default for RsMp2RpaConfig {
 /// - `e_delta_drpa_sr` (`Some` for `CoupledRings`, `None` for `DeltaLr`):
 ///   ΔdRPA[erfc] = E_dRPA[erfc] − 2·E_OS[erfc] (the short-range ring contribution
 ///   that is subtracted to avoid double-counting pure-SR rings).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+#[must_use]
 pub struct RsMp2RpaResult {
     pub e_mp2_full: f64,
     pub e_sr_mp2: f64,
@@ -176,6 +177,13 @@ pub struct RsMp2RpaResult {
     /// Correlation energy of the selected formulation.
     pub e_corr: f64,
     pub total_energy: f64,
+}
+
+impl std::fmt::Display for RsMp2RpaResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "RS-MP2+RPA total: {:.10} Ha (corr: {:.10})",
+            self.total_energy, self.e_corr)
+    }
 }
 
 /// SR-MP2 + LR-RPA, Δ-form (B) or coupled-rings (T).
@@ -549,19 +557,6 @@ mod tests {
     fn terf_tables_available() -> bool {
         if let Ok(d) = std::env::var("FERRIC_TERF_TABLE_DIR") {
             if std::path::Path::new(&d).join("16_4_2.bin").exists() {
-                return true;
-            }
-        }
-        // Fallback: the main checkout's terf-tables/ (uncommitted .bin live there).
-        for cand in [
-            "/home/matt/qc/ferric/terf-tables/16_4_2.bin",
-        ] {
-            if std::path::Path::new(cand).exists() {
-                // Point the shim at that dir for this process.
-                std::env::set_var(
-                    "FERRIC_TERF_TABLE_DIR",
-                    std::path::Path::new(cand).parent().unwrap(),
-                );
                 return true;
             }
         }

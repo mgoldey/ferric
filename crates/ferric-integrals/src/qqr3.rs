@@ -82,6 +82,16 @@ pub struct QqrBounds3 {
     nsh_aux: usize,
 }
 
+impl std::fmt::Debug for QqrBounds3 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QqrBounds3")
+            .field("nsh_obs", &self.nsh_obs)
+            .field("nsh_aux", &self.nsh_aux)
+            .field("op", &self.op)
+            .finish_non_exhaustive()
+    }
+}
+
 impl QqrBounds3 {
     /// Build the QQR-3 bounds for an obs/aux basis pair under operator `op`.
     pub fn new(
@@ -154,8 +164,11 @@ impl QqrBounds3 {
         })
     }
 
+    /// Number of obs-basis shells.
     pub fn nsh_obs(&self) -> usize { self.nsh_obs }
+    /// Number of aux-basis shells.
     pub fn nsh_aux(&self) -> usize { self.nsh_aux }
+    /// Operator this bound was built for.
     pub fn op(&self) -> Operator { self.op }
 
     #[doc(hidden)]
@@ -474,6 +487,8 @@ fn q_obs_tight(op: Operator, obs: &PreparedBasis) -> Result<Array2<f64>, FerricE
                     }
                 }
                 let val = maxv.sqrt();
+                // SAFETY: rayon workers write to disjoint (s1, s2) shell-pair
+                // entries; the symmetric write stays within the same pair.
                 unsafe {
                     let base = q_ptr as *mut f64;
                     *base.add(s1 * stride + s2) = val;

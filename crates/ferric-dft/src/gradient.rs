@@ -286,7 +286,9 @@ fn build_mdchi(d: &Array2<f64>, dchi: &Array3<f64>) -> Array3<f64> {
     mdchi
 }
 
+/// Errors from the KS-DFT nuclear gradient path.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum KsGradError {
     #[error("XC family {0:?} not supported in this gradient path")]
     UnsupportedFamily(FunctionalFamily),
@@ -299,6 +301,10 @@ pub enum KsGradError {
 impl From<LibxcError> for KsGradError { fn from(e: LibxcError) -> Self { Self::Libxc(e) } }
 impl From<crate::ao_grid::GtoEvalError> for KsGradError {
     fn from(e: crate::ao_grid::GtoEvalError) -> Self { Self::AoEval(e) }
+}
+
+impl From<KsGradError> for ferric_core::error::FerricError {
+    fn from(e: KsGradError) -> Self { Self::General(e.to_string()) }
 }
 
 /// Compute the AO-basis index → atom index map.

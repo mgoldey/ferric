@@ -139,6 +139,14 @@ pub struct Diis {
     gram_b: GramCache,
 }
 
+impl std::fmt::Debug for Diis {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Diis")
+            .field("subspace_len", &self.fock_hist.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl Diis {
     /// Create a DIIS accelerator with the given maximum subspace size.
     pub fn new(max_subspace: usize) -> Self {
@@ -372,11 +380,20 @@ fn minimize_on_simplex(g: &[f64], h: &[f64], m: usize) -> Vec<f64> {
 /// variants need the *density* matrices, which plain DIIS never stores. A step
 /// returns the extrapolated **Fock** matrix `Σ c_i F_i` — a drop-in replacement
 /// for `Diis::step`'s return value, so the SCF loop diagonalizes it identically.
-pub struct EnergyDiis {
+pub(crate) struct EnergyDiis {
     flavor: DiisFlavor,
     fock_hist: RingHistory<Array2<f64>>,
     dens_hist: RingHistory<Array2<f64>>,
     energy_hist: RingHistory<f64>,
+}
+
+impl std::fmt::Debug for EnergyDiis {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EnergyDiis")
+            .field("flavor", &self.flavor)
+            .field("subspace_len", &self.fock_hist.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl EnergyDiis {
@@ -506,11 +523,21 @@ impl EnergyDiis {
 /// Pulay — behaves exactly like calling `Diis::step` directly, so the default
 /// SCF path is unperturbed). Set it to `f64::INFINITY` for energy-DIIS-only.
 /// PySCF's default crossover is ~1e-1; ORCA switches around the same scale.
-pub struct DiisDriver {
+pub(crate) struct DiisDriver {
     pulay: Diis,
     energy: EnergyDiis,
     /// Commutator err_max below which the driver uses plain Pulay DIIS.
     switch_thresh: f64,
+}
+
+impl std::fmt::Debug for DiisDriver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DiisDriver")
+            .field("switch_thresh", &self.switch_thresh)
+            .field("pulay", &self.pulay)
+            .field("energy", &self.energy)
+            .finish()
+    }
 }
 
 impl DiisDriver {

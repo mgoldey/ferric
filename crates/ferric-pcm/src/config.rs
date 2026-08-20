@@ -55,6 +55,13 @@ fn default_inner_iters() -> usize {
     1
 }
 
+impl Default for PcmConfig {
+    /// Defaults to water (ε = 78.4) — the most common PCM solvent.
+    fn default() -> Self {
+        Self::water()
+    }
+}
+
 impl PcmConfig {
     /// Water at room temperature — the standard PCM validation solvent.
     pub fn water() -> Self {

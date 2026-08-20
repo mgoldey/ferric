@@ -365,6 +365,7 @@ pub fn dense_hh_ladder(oooo: &ArrayD<f64>, t: &Array4<f64>) -> Result<Array4<f64
 
 /// What a converged DLPNO-LinLCCD(hh) run reports, beyond the energy.
 #[derive(Debug, Clone)]
+#[must_use]
 pub struct DlpnoLinlccdResult {
     /// Converged correlation energy, evaluated from PNO-basis amplitudes.
     pub correlation_energy: f64,

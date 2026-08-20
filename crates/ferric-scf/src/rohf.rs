@@ -162,6 +162,7 @@ impl FxcKernelStore {
 /// occupied orbital counts:
 ///   - nocc_open   = mult − 1                (singly α-occupied)
 ///   - nocc_double = (nelec − nocc_open) / 2 (doubly occupied)
+#[must_use]
 pub fn solve_rohf(
     ctx: &ParallelContext,
     mol: &Molecule,

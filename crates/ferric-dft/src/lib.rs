@@ -29,20 +29,35 @@
 #![allow(clippy::identity_op)]
 #![allow(clippy::op_ref)]
 
+/// AO basis function values and derivatives on grid points.
 pub mod ao_grid;
+/// Grid-Becke weight operator for constrained DFT fragment populations.
 pub mod cdft;
+/// libxc bindings: functional evaluation (exc, vxc, fxc) for LDA/GGA/mGGA/hybrid.
 pub mod libxc;
+/// Becke fuzzy-cell atomic partitioning and its nuclear gradient.
 pub mod becke;
+/// Electron density ρ, gradient ∇ρ, and kinetic-energy density τ on grid points.
 pub mod density_on_grid;
+/// Analytical XC nuclear gradients with grid response terms.
 pub mod gradient;
+/// Grid point storage and atom-to-grid-point mapping.
 pub mod grid;
+/// High-level Kohn-Sham driver: grid+χ cache, V_xc accumulation into Fock matrix.
 pub mod ks;
+/// Lebedev angular quadrature nodes and weights (up to order 131).
 pub mod lebedev;
+/// Grid pruning strategies for reducing angular quadrature near nuclei.
 pub mod prune;
+/// Radial quadrature: Treutler-Ahlrichs M4 and Mura-Knowles log grids.
 pub mod radial;
+/// VV10 nonlocal correlation functional.
 pub mod vv10;
+/// V_xc Fock-matrix contribution from the XC potential on the grid.
 pub mod vxc;
+/// XC kernel (f_xc) for Newton-step SCF solvers (LDA and GGA).
 pub mod fxc;
+/// [`XcFunctional`](xc_trait::XcFunctional) trait: abstract interface to XC evaluators.
 pub mod xc_trait;
 
 /// Crate-wide serialization for tests that SET or transitively READ the

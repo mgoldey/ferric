@@ -9,17 +9,25 @@ description = "Python bindings for ferric, a Rust-native quantum chemistry engin
 readme = "README.md"
 license = { text = "MIT OR Apache-2.0" }
 authors = [{ name = "Matthew Goldey", email = "matthew.goldey@gmail.com" }]
-requires-python = ">=3.11"
+requires-python = ">=3.9"
 dependencies = [
-    "ipython>=9.13.0",
-    "maturin[patchelf]>=1.13.3",
-    "matplotlib>=3.8",
-    "requests>=2.34.0",
     "numpy>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ipython>=9.13.0",
+    "matplotlib>=3.8",
     "scipy>=1.11",
     "h5py>=3.9",
-    "pyscf>=2.10",
     "sympy>=1.14.0",
+    "pytest>=9.1.1",
+]
+reference = [
+    "pyscf>=2.10",
+]
+build = [
+    "maturin[patchelf]>=1.13.3",
 ]
 
 [tool.maturin]
@@ -31,7 +39,3 @@ features = ["pyo3/extension-module"]
 # The maturin editable install in .venv is the source of truth; cargo is invoked explicitly.
 no-build-isolation-package = ["ferric"]
 
-[dependency-groups]
-dev = [
-    "pytest>=9.1.1",
-]

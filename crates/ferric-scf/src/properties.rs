@@ -152,6 +152,8 @@ pub fn esp_at_atoms(
                         y: atom_a.y,
                         z: atom_a.zpos,
                     }];
+                    // SAFETY: probe is a stack-local CAtom slice; handle_mut() is the live engine
+                    // pointer; probe.len() fits in c_int. Shim catches C++ exceptions → negative rc.
                     let rc = unsafe {
                         ffi::scf_engine_set_point_charges(
                             eng.handle_mut(),
@@ -340,6 +342,8 @@ pub fn electric_field_at_atoms(
                         y: atom_a.y,
                         z: atom_a.zpos,
                     }];
+                    // SAFETY: probe is a stack-local CAtom slice; handle_mut() is the live engine
+                    // pointer; probe.len() fits in c_int. Shim catches C++ exceptions → negative rc.
                     let rc = unsafe {
                         ffi::scf_engine_set_point_charges(
                             eng.handle_mut(),
@@ -364,6 +368,8 @@ pub fn electric_field_at_atoms(
                             if buf.len() < total {
                                 buf.resize(total, 0.0);
                             }
+                            // SAFETY: buf is pre-sized to nderiv * block_sz; handle_mut()/handle()
+                            // are live pointers; shell indices are in range. Shim returns written >= 0.
                             let written = unsafe {
                                 ffi::scf_compute_1e_deriv_block(
                                     eng.handle_mut(),
@@ -521,6 +527,7 @@ pub fn atomic_effective_volumes_becke(
     Ok(vol)
 }
 
+/// Compute Becke-partitioned atomic charges from the density matrix.
 pub fn becke_charges(
     mol: &Molecule,
     _prep: &PreparedBasis,
@@ -599,7 +606,8 @@ pub fn becke_charges(
 /// A spherically-averaged free-atom radial density ρ_free(r), tabulated on a
 /// shared radial grid, for use as a Hirshfeld proatom. Built from an atomic SCF
 /// density in the *molecule's own basis* (basis-consistent Hirshfeld weights).
-#[derive(Clone)]
+/// Tabulated free-atom radial density for Hirshfeld partitioning.
+#[derive(Debug, Clone)]
 pub struct RadialProatom {
     /// Radii (Bohr), ascending. Shared across all atoms.
     pub radii: Vec<f64>,
@@ -1050,6 +1058,8 @@ pub fn esp_at_points(
                     })?;
 
                     let probe = [CAtom { atomic_number: 1.0, x: r[0], y: r[1], z: r[2] }];
+                    // SAFETY: probe is a stack-local CAtom slice; handle_mut() is the live engine
+                    // pointer; probe.len() fits in c_int. Shim catches C++ exceptions → negative rc.
                     let rc = unsafe {
                         ffi::scf_engine_set_point_charges(
                             eng.handle_mut(),

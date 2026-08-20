@@ -77,7 +77,8 @@ impl Default for UOoRiMp2Config {
 }
 
 /// Result of an unrestricted OO-RI-MP2 calculation.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+#[must_use]
 pub struct UOoRiMp2Result {
     pub total_energy: f64,
     pub hf_energy: f64,
@@ -90,6 +91,13 @@ pub struct UOoRiMp2Result {
     pub mos_beta: Array2<f64>,
     pub eps_alpha: Vec<f64>,
     pub eps_beta: Vec<f64>,
+}
+
+impl std::fmt::Display for UOoRiMp2Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "U-OO-RI-MP2 total: {:.10} Ha (corr: {:.10}, {} iters, converged: {})",
+            self.total_energy, self.mp2_corr, self.iterations, self.converged)
+    }
 }
 
 /// Compute UHF energy and α/β Fock matrices from MO coefficients.

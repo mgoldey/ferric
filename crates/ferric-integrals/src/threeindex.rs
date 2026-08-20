@@ -74,6 +74,9 @@ pub fn coulomb_metric_2c(op: Operator, dfbs: &PreparedBasis) -> Result<Array2<f6
                         let val = block[p * nq + q];
                         let r = o_p + p;
                         let c = o_q + q;
+                        // SAFETY: rayon workers write to disjoint (sp, sq)
+                        // shell-pair blocks; the symmetric (r,c)/(c,r) write
+                        // stays within the same block's triangle.
                         unsafe {
                             let base = v_ptr as *mut f64;
                             *base.add(r * stride + c) = val;
@@ -143,6 +146,9 @@ pub fn eri3_tensor(op: Operator, obs: &PreparedBasis, dfbs: &PreparedBasis) -> R
                                     let pp = p0 + p;
                                     let mm = m0 + i;
                                     let nn = n0 + j;
+                                    // SAFETY: rayon workers write to disjoint
+                                    // (P, s1, s2) shell-triple blocks; the μ↔ν
+                                    // symmetry write stays within the same block.
                                     unsafe {
                                         let base = eri_ptr as *mut f64;
                                         *base.add(pp * stride0 + mm * stride1 + nn) = val;
@@ -219,6 +225,9 @@ pub fn eri3_block(
                                     let val = block[(p * n1 + i) * n2 + j];
                                     let mm = m0 + i;
                                     let nn = n0 + j;
+                                    // SAFETY: same disjoint-write argument as
+                                    // the full-tensor path; pl is the chunk-local
+                                    // aux index within the current P-block.
                                     unsafe {
                                         let base = eri_ptr as *mut f64;
                                         *base.add(pl * stride0 + mm * stride1 + nn) = val;
@@ -311,6 +320,9 @@ pub fn eri3_tensor_screened(
                                     let pp = p0 + p;
                                     let mm = m0 + i;
                                     let nn = n0 + j;
+                                    // SAFETY: rayon workers write to disjoint
+                                    // (P, s1, s2) shell-triple blocks; the μ↔ν
+                                    // symmetry write stays within the same block.
                                     unsafe {
                                         let base = eri_ptr as *mut f64;
                                         *base.add(pp * stride0 + mm * stride1 + nn) = val;
@@ -401,6 +413,9 @@ pub fn eri3_tensor_screened_qqr(
                                     let pp = p0 + p;
                                     let mm = m0 + i;
                                     let nn = n0 + j;
+                                    // SAFETY: rayon workers write to disjoint
+                                    // (P, s1, s2) shell-triple blocks; the μ↔ν
+                                    // symmetry write stays within the same block.
                                     unsafe {
                                         let base = eri_ptr as *mut f64;
                                         *base.add(pp * stride0 + mm * stride1 + nn) = val;

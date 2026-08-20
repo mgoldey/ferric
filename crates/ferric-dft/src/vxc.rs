@@ -78,7 +78,7 @@ where
 /// it with a single fused pass (`scale_columns_into`), replacing the previous
 /// per-call `chi.clone()` + strided in-place scaling. Hold this across SCF
 /// iterations (e.g. inside `KsXc`) to also amortize the allocation.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct VxcScratch {
     buf: Array2<f64>,
 }
@@ -90,6 +90,7 @@ impl Default for VxcScratch {
 }
 
 impl VxcScratch {
+    /// Create an empty scratch buffer (allocates on first use).
     pub fn new() -> Self {
         Self { buf: Array2::zeros((0, 0)) }
     }

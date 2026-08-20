@@ -170,6 +170,7 @@ pub fn u_ri_drpa_energy(
     Ok(e_c / (2.0 * std::f64::consts::PI))
 }
 
+/// Compute the RI-dRPA correlation energy via frequency integration over the dielectric.
 pub fn ri_drpa_energy(
     b_ov: &Array2<f64>,
     eps_occ: &[f64],

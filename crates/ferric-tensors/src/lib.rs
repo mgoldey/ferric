@@ -43,11 +43,14 @@ pub use ferric_tensor_macro::einsum;
 /// A rank-4 tensor typically used for T2 amplitudes or 2-electron integrals.
 ///
 /// Storage layout is [dim1, dim2, dim3, dim4].
+#[derive(Debug, Clone)]
 pub struct Tensor4 {
+    /// The underlying dense rank-4 array.
     pub data: Array4<f64>,
 }
 
 impl Tensor4 {
+    /// Create a zero-initialized rank-4 tensor with dimensions `[d1, d2, d3, d4]`.
     pub fn new(d1: usize, d2: usize, d3: usize, d4: usize) -> Self {
         Self {
             data: Array4::zeros((d1, d2, d3, d4)),
@@ -74,7 +77,9 @@ impl Tensor4 {
 
 /// A rank-2 sparse tensor (matrix) in CSR format.
 /// Used by CC routines that need sprs interop.
+#[derive(Debug, Clone)]
 pub struct SparseTensor2 {
+    /// The underlying CSR sparse matrix.
     pub data: CsMat<f64>,
 }
 
@@ -109,8 +114,11 @@ impl SparseTensor2 {
 
 /// A rank-3 tensor stored as a collection of sparse slices.
 /// Typically used for B^P_mu_nu 3-center integrals.
+#[derive(Debug, Clone)]
 pub struct SparseTensor3 {
+    /// Per-slice sparse matrices, indexed by the first axis.
     pub slices: Vec<SparseTensor2>,
+    /// `(n1, n2, n3)` dimensions of the original dense tensor.
     pub shape: (usize, usize, usize),
 }
 
@@ -126,6 +134,7 @@ impl SparseTensor3 {
         Self { slices, shape: (n1, n2, n3) }
     }
 
+    /// Contract slice `p_idx` with two sparse matrices: `result = p_mat · B[p_idx] · q_mat`.
     pub fn contract_pqp(&self, p_idx: usize, p_mat: &SparseTensor2, q_mat: &SparseTensor2) -> SparseTensor2 {
         let bp = &self.slices[p_idx];
         let tmp = &p_mat.data * &bp.data;
@@ -139,13 +148,16 @@ impl SparseTensor3 {
 /// Entries are stored as `(flat_index: u32, value: f64)` sorted by flat_index.
 /// Flat index = μ * ncols + ν.  All operations (hadamard, trace_dot) use
 /// two-pointer merge: O(nnz_A + nnz_B) with no allocations beyond the output.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct FlatSparse {
+    /// Flat (row-major) indices of stored entries, sorted ascending.
     pub indices: Vec<u32>,
+    /// Values corresponding to each index in `indices`.
     pub values: Vec<f64>,
 }
 
 impl FlatSparse {
+    /// Build from a flat dense slice, keeping entries with `|v| > threshold`.
     pub fn from_dense_flat(data: &[f64], threshold: f64) -> Self {
         let mut indices = Vec::new();
         let mut values = Vec::new();
@@ -158,6 +170,7 @@ impl FlatSparse {
         Self { indices, values }
     }
 
+    /// Number of stored (non-zero) entries.
     pub fn nnz(&self) -> usize { self.indices.len() }
 
     /// Element-wise product of two flat-sparse vectors; output sorted by index.
@@ -206,11 +219,14 @@ impl FlatSparse {
 }
 
 /// Collection of FlatSparse slices for the B^P_μν 3-center integrals.
+#[derive(Debug, Clone)]
 pub struct FlatSparse3 {
+    /// Per-auxiliary-index flat-sparse slices.
     pub slices: Vec<FlatSparse>,
 }
 
 impl FlatSparse3 {
+    /// Build from a dense 3D array, sparsifying each `[P, :, :]` slice by `threshold`.
     pub fn from_dense(dense: &Array3<f64>, threshold: f64) -> Self {
         let (naux, _, _) = dense.dim();
         let slices = (0..naux).map(|p| {

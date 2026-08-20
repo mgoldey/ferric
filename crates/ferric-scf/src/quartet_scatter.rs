@@ -38,20 +38,21 @@ use ndarray::Array2;
 /// What a single quartet-scatter pass accumulates. Each variant carries a
 /// zeroed `nbf×nbf` local partial for exactly the matrices this mode needs —
 /// no wasted allocation for J-only/K-only callers.
-pub enum JkMode {
+#[derive(Debug)]
+pub(crate) enum JkMode {
     JOnly(Array2<f64>),
     KOnly(Array2<f64>),
     Both(Array2<f64>, Array2<f64>),
 }
 
 impl JkMode {
-    pub fn new_j(nbf: usize) -> Self {
+    pub(crate) fn new_j(nbf: usize) -> Self {
         JkMode::JOnly(Array2::zeros((nbf, nbf)))
     }
-    pub fn new_k(nbf: usize) -> Self {
+    pub(crate) fn new_k(nbf: usize) -> Self {
         JkMode::KOnly(Array2::zeros((nbf, nbf)))
     }
-    pub fn new_both(nbf: usize) -> Self {
+    pub(crate) fn new_both(nbf: usize) -> Self {
         JkMode::Both(Array2::zeros((nbf, nbf)), Array2::zeros((nbf, nbf)))
     }
 
@@ -59,6 +60,8 @@ impl JkMode {
     #[inline(always)]
     fn add_j(&mut self, row: usize, col: usize, d: &Array2<f64>, la: usize, sg: usize, v: f64) {
         match self {
+            // SAFETY: indices are in [0, nbf) — guaranteed by the
+            // shell offset/dim loop in scatter_quartet.
             JkMode::JOnly(j) | JkMode::Both(j, _) => unsafe {
                 *j.uget_mut((row, col)) += d.uget((la, sg)) * v;
             },
@@ -70,6 +73,8 @@ impl JkMode {
     #[inline(always)]
     fn add_k(&mut self, row: usize, col: usize, d: &Array2<f64>, la: usize, sg: usize, v: f64) {
         match self {
+            // SAFETY: indices are in [0, nbf) — guaranteed by the
+            // shell offset/dim loop in scatter_quartet.
             JkMode::KOnly(k) | JkMode::Both(_, k) => unsafe {
                 *k.uget_mut((row, col)) += d.uget((la, sg)) * v;
             },
@@ -82,7 +87,8 @@ impl JkMode {
 /// `build_jk`/`DirectJK` (six-pairwise `d_max_shell` table) and
 /// `DirectJ`/`DirectK` (single global `max_d` scalar) keep their existing,
 /// distinct screening semantics exactly.
-pub enum DensityScreen<'a> {
+#[derive(Debug)]
+pub(crate) enum DensityScreen<'a> {
     /// `dmax = max(d12, d34, d13, d14, d23, d24)` from the shell-blocked
     /// `d_max_shell` table (build_jk / DirectJK).
     SixPair(&'a Array2<f64>),
@@ -112,7 +118,7 @@ impl<'a> DensityScreen<'a> {
 
 /// Build the `d_max_shell[(si,sj)] = max|D_μν|` table over shell blocks
 /// (μ ∈ si, ν ∈ sj), shared by every caller of [`DensityScreen::SixPair`].
-pub fn build_d_max_shell(prep: &PreparedBasis, d: &Array2<f64>) -> Array2<f64> {
+pub(crate) fn build_d_max_shell(prep: &PreparedBasis, d: &Array2<f64>) -> Array2<f64> {
     let nsh = prep.nshells();
     let dims = prep.shell_dims();
     let offs = prep.shell_offsets();
@@ -124,6 +130,7 @@ pub fn build_d_max_shell(prep: &PreparedBasis, d: &Array2<f64>) -> Array2<f64> {
             let mut m = 0.0f64;
             for a in 0..ni {
                 for b in 0..nj {
+                    // SAFETY: oi+a < nbf and oj+b < nbf by shell offset/dim construction.
                     let v = unsafe { d.uget((oi + a, oj + b)).abs() };
                     if v > m {
                         m = v;
@@ -139,7 +146,7 @@ pub fn build_d_max_shell(prep: &PreparedBasis, d: &Array2<f64>) -> Array2<f64> {
 /// The canonical (s1,s2) bra-pair work list `{(s1,s2) : 0<=s2<=s1<nsh}`,
 /// shared by every caller (before any caller-specific bra-thresh
 /// pre-filter or MPI striping is applied).
-pub fn canonical_bra_pairs(nsh: usize) -> Vec<(usize, usize)> {
+pub(crate) fn canonical_bra_pairs(nsh: usize) -> Vec<(usize, usize)> {
     (0..nsh)
         .flat_map(|s1| (0..=s1).map(move |s2| (s1, s2)))
         .collect()
@@ -154,7 +161,7 @@ pub fn canonical_bra_pairs(nsh: usize) -> Vec<(usize, usize)> {
 /// passed the screen and were computed (non-degenerate) by libint2, matching
 /// each caller's existing `computed_quartets` bookkeeping.
 #[allow(clippy::too_many_arguments)]
-pub fn scatter_bra_pair(
+pub(crate) fn scatter_bra_pair(
     engine: &mut Engine,
     prep: &PreparedBasis,
     dims: &[usize],
@@ -203,6 +210,7 @@ pub fn scatter_bra_pair(
                 // with no inner loop. Ported from `build_jk_with_pool` to all
                 // three callers.
                 if n1 == 1 && n2 == 1 && n3 == 1 && n4 == 1 {
+                    // SAFETY: q has at least n1*n2*n3*n4 >= 1 element from the engine.
                     let v = unsafe { *q.get_unchecked(0) };
                     mode.add_j(o1, o2, d, o3, o4, v);
                     mode.add_k(o1, o3, d, o2, o4, v);
@@ -242,6 +250,7 @@ pub fn scatter_bra_pair(
                     for b in 0..n2 {
                         for c in 0..n3 {
                             for dd in 0..n4 {
+                                // SAFETY: flat index < n1*n2*n3*n4 by loop bounds; q has that many elements from the engine.
                                 let v = unsafe {
                                     *q.get_unchecked(((a * n2 + b) * n3 + c) * n4 + dd)
                                 };

@@ -13,6 +13,7 @@ use ferric_core::FerricError;
 use ferric_rpa::PdepRpaResult;
 use ndarray::{Array1, Array2};
 
+/// Unrestricted COHSEX (Coulomb-hole + screened-exchange) quasiparticle energies.
 pub fn run_u_cohsex(
     mo_b_a: &MoB,
     mo_b_b: &MoB,

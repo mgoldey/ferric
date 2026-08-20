@@ -318,6 +318,7 @@ pub(crate) struct ScfMonitor {
 }
 
 impl ScfMonitor {
+    /// Create a new SCF convergence monitor with default initial state.
     pub fn new() -> Self {
         ScfMonitor {
             prev_e: 0.0,

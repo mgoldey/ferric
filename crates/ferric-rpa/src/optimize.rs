@@ -19,7 +19,8 @@ use ferric_scf::optimize::OptimizeConfig;
 use ndarray::{Array1, Array2};
 
 /// Result of an RPA geometry optimization.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+#[must_use]
 pub struct RpaOptimizeResult {
     pub mol: Molecule,
     pub energy: f64,

@@ -27,7 +27,7 @@ use ferric_core::FerricError;
 ///
 /// After construction, `1/x ≈ Σ_k w_k exp(-t_k x)` holds with minimax error on
 /// `[ymin, ymax]`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LaplaceQuadrature {
     /// Requested number of quadrature points (equals `points.len()` — the
     /// table for an unsupported size is now a hard error, not a fallback).
@@ -62,6 +62,7 @@ impl LaplaceQuadrature {
         self.points.len()
     }
 
+    /// Returns `true` if the quadrature has zero points (never the case after a successful construction).
     pub fn is_empty(&self) -> bool {
         self.points.is_empty()
     }

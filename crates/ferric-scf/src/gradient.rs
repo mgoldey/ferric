@@ -278,6 +278,7 @@ pub fn overlap_deriv_contract(
     )
 }
 
+/// Build the energy-weighted density matrix W = 2 C_occ diag(ε_occ) C_occ^T for gradient evaluation.
 pub fn build_energy_weighted_density(result: &ScfResult, nocc: usize) -> Array2<f64> {
     let c = result.mos_r();
     let eps = result.eps_r();
@@ -1268,6 +1269,8 @@ mod tests {
                     let block_sz = n1 * n2;
                     let total = nderiv_nuclear * block_sz;
                     if nbuf.len() < total { nbuf.resize(total, 0.0); }
+                    // SAFETY: nbuf is pre-sized to nderiv_nuclear * block_sz; handle_mut()/handle()
+                    // are live pointers; shell indices are in range. Shim returns written >= 0.
                     let written = unsafe {
                         ffi::scf_compute_1e_deriv_block(
                             eng.handle_mut(), prep.handle(),

@@ -17,6 +17,7 @@ use ndarray::{s, Array2, Array3};
 use ndarray_linalg::{Cholesky, Diag, SolveTriangular, UPLO};
 
 /// Dressed RI integrals over the full active-MO square.
+#[derive(Debug, Clone)]
 pub struct MoB {
     /// Shape (naux, n_act, n_act). `b_full[(P, m, n)] = Σ_Q V^{-1/2}_{PQ} (Q|mn)`.
     pub b_full: Array3<f64>,

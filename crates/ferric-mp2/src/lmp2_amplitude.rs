@@ -59,6 +59,7 @@ use crate::ragged::{pair_block_from_g_cand, solve_ragged, PairBlock, Ragged};
 use crate::rimp2::{active_occ, eri3_mo_ov_blocked, eri3_budget_bytes, metric_inverse_sqrt, ri_mp2, RiMp2Config};
 use ferric_integrals::threeindex::coulomb_metric_2c;
 
+/// Configuration for amplitude-threshold local MP2 (WSHG23 single-threshold scheme).
 #[derive(Debug, Clone)]
 pub struct AmplitudeLmp2Config {
     /// The single threshold ε on |(ia|jb)| in the localized basis (Eq. 8).
@@ -115,7 +116,9 @@ impl Default for AmplitudeLmp2Config {
     }
 }
 
-#[derive(Debug)]
+/// Result of an amplitude-threshold local MP2 calculation.
+#[derive(Debug, Clone)]
+#[must_use]
 pub struct AmplitudeLmp2Result {
     pub e_corr: f64,
     pub e_total: f64,
@@ -145,6 +148,13 @@ pub struct AmplitudeLmp2Result {
     pub aux_dom_mean: f64,
     pub aux_dom_max: usize,
     pub timings: StageTimings,
+}
+
+impl std::fmt::Display for AmplitudeLmp2Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Amplitude-LMP2 total: {:.10} Ha (corr: {:.10}, keep: {:.1}%, {} CG iters)",
+            self.e_total, self.e_corr, self.keep_fraction * 100.0, self.cg_iterations)
+    }
 }
 
 /// Wall-clock per pipeline stage, seconds. `t_reference_s` is the canonical
@@ -580,6 +590,7 @@ pub struct LocalizedProblem {
 /// The basis-stage products (everything BEFORE any 4-index work): localized
 /// coefficients, Fock blocks, centroids/spreads (the pair gate's inputs),
 /// and the raw + whitening RI pieces.
+#[derive(Debug, Clone)]
 pub struct LocalizedBasis {
     pub c_locc: Array2<f64>,
     pub f_oo: Array2<f64>,

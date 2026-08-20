@@ -165,6 +165,7 @@ impl Default for FrequencyConfig {
 
 /// Result of a harmonic frequency calculation.
 #[derive(Debug, Clone)]
+#[must_use]
 pub struct FrequencyResult {
     /// Vibrational wavenumbers in cm^-1, ascending. Length `3N - 6`
     /// (`3N - 5` if linear). A negative entry denotes an **imaginary**

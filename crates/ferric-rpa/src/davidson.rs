@@ -5,6 +5,9 @@ use ferric_integrals::blas_threads::with_blas_threads;
 use ndarray::{Array1, Array2};
 use ndarray_linalg::{Eigh, QR, UPLO};
 
+/// Result of a Davidson eigensolver run for PDEP dielectric eigenpotentials.
+#[derive(Debug, Clone)]
+#[must_use]
 pub struct DavidsonResult {
     /// Converged eigenvalues λ_α, sorted descending (most significant first).
     pub eigenvalues: Vec<f64>,

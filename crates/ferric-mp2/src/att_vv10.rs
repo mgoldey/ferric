@@ -255,6 +255,13 @@ pub struct AttVv10Config {
     pub memory_budget_bytes: Option<usize>,
 }
 
+impl Default for AttVv10Config {
+    /// Defaults to the published MP2-V(terfc, aTZ) parameterization.
+    fn default() -> Self {
+        Self::mp2_v_terfc_atz()
+    }
+}
+
 impl AttVv10Config {
     /// The published **MP2-V(terfc, aTZ)** parameterization.
     ///
@@ -473,6 +480,7 @@ impl AttVv10SpinComponents {
 /// `total` is exactly `e_hf + e_c_att_mp2 + e_nl_vv10` — asserted, not assumed
 /// (see [`AttVv10Result::components_sum_to_total`]).
 #[derive(Debug, Clone)]
+#[must_use]
 pub struct AttVv10Result {
     /// Reference Hartree–Fock total energy (from the supplied `ScfResult`).
     /// For the open-shell entry point this is the UHF/ROHF total energy.

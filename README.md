@@ -458,10 +458,6 @@ The script benchmarks the scaling of **computed quartets vs system size** for th
 
 For correlation methods (like AO-Laplace-MP2), `ferric` leverages **attenuated Coulomb operators** to reduce systematic model errors (e.g., dispersion overestimation and BSSE) and to enable aggressive AO-based sparsity, which is the key to achieving $O(N)$ correlation scaling.
 
-## License
-
-Apache-2.0
-
 ## References
 
 - [libint2](https://github.com/evaleev/libint) -- Obara-Saika integral engine

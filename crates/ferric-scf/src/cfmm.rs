@@ -8,21 +8,18 @@
 
 /// A box in the CFMM octree.
 #[derive(Debug, Clone)]
-pub struct CfmmBox {
-    pub center: [f64; 3],
-    pub width: f64,
-    pub level: usize,
-    pub children: Option<Box<[CfmmBox; 8]>>,
-    /// Indices of shells contained within this box.
-    pub shell_indices: Vec<usize>,
-    /// Multipole expansion coefficients (e.g., up to order L).
-    pub multipoles: Vec<f64>,
-    /// Local expansion coefficients (from far-field multipoles).
-    pub local_exp: Vec<f64>,
+pub(crate) struct CfmmBox {
+    pub(crate) center: [f64; 3],
+    pub(crate) width: f64,
+    pub(crate) level: usize,
+    pub(crate) children: Option<Box<[CfmmBox; 8]>>,
+    pub(crate) shell_indices: Vec<usize>,
+    pub(crate) multipoles: Vec<f64>,
+    pub(crate) local_exp: Vec<f64>,
 }
 
 impl CfmmBox {
-    pub fn new(center: [f64; 3], width: f64, level: usize) -> Self {
+    pub(crate) fn new(center: [f64; 3], width: f64, level: usize) -> Self {
         CfmmBox {
             center,
             width,
@@ -35,7 +32,7 @@ impl CfmmBox {
     }
 
     /// Recursively build the octree by inserting shells.
-    pub fn insert_shell(&mut self, shell_idx: usize, shell_center: [f64; 3], max_level: usize) {
+    pub(crate) fn insert_shell(&mut self, shell_idx: usize, shell_center: [f64; 3], max_level: usize) {
         if self.level == max_level {
             self.shell_indices.push(shell_idx);
             return;
@@ -71,15 +68,24 @@ impl CfmmBox {
 }
 
 /// CFMM Coulomb matrix builder.
-pub struct CfmmJ {
-    pub prep: PreparedBasis,
-    pub root: CfmmBox,
-    pub l_max: usize,
-    pub max_level: usize,
+pub(crate) struct CfmmJ {
+    pub(crate) prep: PreparedBasis,
+    pub(crate) root: CfmmBox,
+    pub(crate) l_max: usize,
+    pub(crate) max_level: usize,
+}
+
+impl std::fmt::Debug for CfmmJ {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CfmmJ")
+            .field("l_max", &self.l_max)
+            .field("max_level", &self.max_level)
+            .finish_non_exhaustive()
+    }
 }
 
 impl CfmmJ {
-    pub fn new(prep: PreparedBasis, _bs: BasisSet, l_max: usize, max_level: usize) -> Self {
+    pub(crate) fn new(prep: PreparedBasis, _bs: BasisSet, l_max: usize, max_level: usize) -> Self {
         // Find bounding box for all shells
         let mut min = [f64::INFINITY; 3];
         let mut max = [f64::NEG_INFINITY; 3];
@@ -106,19 +112,19 @@ impl CfmmJ {
     }
 
     /// Step 1: Upward Pass. Compute multipole expansions for all boxes.
-    pub fn upward_pass(&mut self, d: &Array2<f64>) {
+    pub(crate) fn upward_pass(&mut self, d: &Array2<f64>) {
         self.root.compute_multipoles(d, &self.prep, self.l_max);
     }
 
     /// Step 2: Downward Pass. Translate multipoles to local expansions (M2L)
     /// and propagate local expansions (L2L).
-    pub fn downward_pass(&mut self) {
+    pub(crate) fn downward_pass(&mut self) {
         let root_clone = self.root.clone();
         self.root.compute_local_expansions(None, None, &root_clone, self.l_max);
     }
 
     /// Step 3: Evaluate J. Sum far-field (local exp) and near-field contributions.
-    pub fn evaluate_j(&self, d: &Array2<f64>, j: &mut Array2<f64>) {
+    pub(crate) fn evaluate_j(&self, d: &Array2<f64>, j: &mut Array2<f64>) {
         // 1. Far-field evaluation from leaf boxes
         self.root.evaluate_far_field(j, &self.prep, self.l_max);
         
@@ -135,7 +141,7 @@ impl CfmmJ {
 
 impl CfmmBox {
     /// Recursively compute multipole expansions (Upward Pass).
-    pub fn compute_multipoles(&mut self, d: &Array2<f64>, prep: &PreparedBasis, l_max: usize) {
+    pub(crate) fn compute_multipoles(&mut self, d: &Array2<f64>, prep: &PreparedBasis, l_max: usize) {
         let n_moments = (l_max + 1) * (l_max + 2) * (l_max + 3) / 6;
         self.multipoles = vec![0.0; n_moments];
 
@@ -162,7 +168,7 @@ impl CfmmBox {
     }
 
     /// Downward Pass: M2L and L2L.
-    pub fn compute_local_expansions(&mut self, parent_exp: Option<&[f64]>, parent_center: Option<[f64; 3]>, root: &CfmmBox, l_max: usize) {
+    pub(crate) fn compute_local_expansions(&mut self, parent_exp: Option<&[f64]>, parent_center: Option<[f64; 3]>, root: &CfmmBox, l_max: usize) {
         let n_moments = (l_max + 1) * (l_max + 2) * (l_max + 3) / 6;
         if self.local_exp.is_empty() {
             self.local_exp = vec![0.0; n_moments];
@@ -280,7 +286,7 @@ impl CfmmBox {
         }
     }
 
-    pub fn evaluate_far_field(&self, j: &mut Array2<f64>, prep: &PreparedBasis, l_max: usize) {
+    pub(crate) fn evaluate_far_field(&self, j: &mut Array2<f64>, prep: &PreparedBasis, l_max: usize) {
         if let Some(children) = &self.children {
             for child in children.iter() {
                 child.evaluate_far_field(j, prep, l_max);

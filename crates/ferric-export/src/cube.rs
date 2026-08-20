@@ -5,12 +5,23 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use thiserror::Error;
 
+/// Errors from cube-file or NPZ export.
 #[derive(Error, Debug)]
+#[non_exhaustive]
 pub enum ExportError {
     #[error("IO Error: {0}")]
     Io(#[from] std::io::Error),
     #[error("Export error: {0}")]
     Other(String),
+}
+
+impl From<ExportError> for ferric_core::error::FerricError {
+    fn from(e: ExportError) -> Self {
+        match e {
+            ExportError::Io(io) => Self::Io(io),
+            ExportError::Other(s) => Self::General(s),
+        }
+    }
 }
 
 /// A 3D Cartesian grid specification for volumetric data.

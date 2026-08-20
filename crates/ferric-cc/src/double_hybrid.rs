@@ -76,6 +76,7 @@ impl Default for DoubleHybridConfig {
 /// different reliability characteristics, and because collapsing them into a single
 /// number makes it impossible to tell a bad SCF from a bad amplitude solve.
 #[derive(Debug, Clone)]
+#[must_use]
 pub struct DoubleHybridResult {
     /// Total double-hybrid energy: `e_ks + lambda * e_c_wft`.
     pub total_energy: f64,
@@ -89,6 +90,13 @@ pub struct DoubleHybridResult {
     pub lambda: f64,
     /// ω used, in Bohr⁻¹.
     pub omega: f64,
+}
+
+impl std::fmt::Display for DoubleHybridResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Double hybrid total: {:.10} Ha (KS: {:.10}, λ·E_c: {:.10})",
+            self.total_energy, self.e_ks, self.e_c_scaled)
+    }
 }
 
 /// Compute the ωB97X-L-V double-hybrid energy on a converged Kohn–Sham reference.

@@ -13,7 +13,7 @@ use ndarray::Array2;
 ///
 /// Borrows its data; construct one per spin and pass `&RpaChannel` into the
 /// response kernels.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct RpaChannel<'a> {
     /// RI three-index occupied-virtual block `B^P_{ia}`, shape `(naux, nocc*nvir)`.
     pub b_ov: &'a Array2<f64>,

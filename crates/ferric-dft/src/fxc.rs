@@ -35,6 +35,7 @@ use std::sync::Mutex;
 
 /// Precomputed grid + AO data + libxc handle for an LDA f_xc response.
 /// Build once at SCF setup; reuse the closure across Newton iterations.
+#[derive(Debug)]
 pub struct LdaFxcKernel {
     pub xc: XcDef,
     pub grid: Vec<GridPoint>,
@@ -46,6 +47,7 @@ pub struct LdaFxcKernel {
 }
 
 impl LdaFxcKernel {
+    /// Build the LDA f_xc kernel from a molecular grid and functional definition.
     pub fn new(
         mol: &Molecule,
         bs: &BasisSet,
@@ -191,6 +193,7 @@ impl LdaFxcKernel {
 /// semilocal kernels; pure-LDA sub-functionals are also accepted and evaluate
 /// correctly (their σ-derivatives are identically zero, and `xc_gga_fxc`
 /// returns them as such, so the σ-coupling terms vanish).
+#[derive(Debug)]
 pub struct GgaFxcKernel {
     pub xc: XcDef,
     pub grid: Vec<GridPoint>,

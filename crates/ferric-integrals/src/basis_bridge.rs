@@ -13,6 +13,8 @@ use std::sync::Once;
 static LIBINT_INIT: Once = Once::new();
 
 fn ensure_init() {
+    // SAFETY: Called exactly once via std::sync::Once. scf_libint_init
+    // initializes libint2's global state (no arguments, no preconditions).
     LIBINT_INIT.call_once(|| unsafe { ffi::scf_libint_init() });
 }
 
@@ -20,6 +22,7 @@ fn ensure_init() {
 ///
 /// Owns the opaque libint2 `BasisSet` handle and precomputed shell metadata
 /// (dimensions, offsets, atom mapping). Thread-safe (`Send + Sync`).
+#[must_use = "PreparedBasis is expensive to construct; dropping it wastes work"]
 pub struct PreparedBasis {
     handle: *mut c_void,
     basis_set: BasisSet,
@@ -33,6 +36,11 @@ pub struct PreparedBasis {
     max_l: i32,
 }
 
+// SAFETY: PreparedBasis owns its libint2 handle exclusively and all fields
+// are immutable after construction. The C++ BasisSet is a read-only data
+// structure (shell metadata, no mutable scratch), so concurrent &-access
+// from multiple threads is sound. The handle is destroyed in Drop
+// (single-owner, no aliasing).
 unsafe impl Send for PreparedBasis {}
 unsafe impl Sync for PreparedBasis {}
 
@@ -91,6 +99,10 @@ impl PreparedBasis {
             }
         }
 
+        // SAFETY: c_shells and c_atoms are valid slices with matching lengths.
+        // keep_exps/keep_coefs keep the pointed-to exponent/coefficient arrays
+        // alive until scf_basis_create returns (the C++ side copies the data).
+        // Null-checked below.
         let handle = unsafe {
             ffi::scf_basis_create(
                 c_shells.as_ptr(),
@@ -99,17 +111,19 @@ impl PreparedBasis {
                 c_atoms.len() as c_int,
             )
         };
-        // keep_exps and keep_coefs must stay alive until after scf_basis_create returns
-        // (the C++ side copies the data)
         drop(keep_exps);
         drop(keep_coefs);
 
         if handle.is_null() {
             return Err(FerricError::Libint("scf_basis_create returned null".into()));
         }
+        // SAFETY: handle is a valid (non-null, just-created) basis handle.
+        // These accessors read immutable metadata from the C++ BasisSet object.
         let nbasis = unsafe { ffi::scf_basis_nbasis(handle) } as usize;
         let nshells = unsafe { ffi::scf_basis_nshells(handle) } as usize;
         let mut dims_raw = vec![0i32; nshells];
+        // SAFETY: `dims_raw` has exactly `nshells` elements, matching the
+        // number of shells in the C++ basis. The shim writes exactly that many.
         unsafe { ffi::scf_basis_shell_dims(handle, dims_raw.as_mut_ptr()) };
         let shell_dims: Vec<usize> = dims_raw.iter().map(|&d| d as usize).collect();
         let mut shell_offsets = vec![0usize; nshells + 1];
@@ -118,6 +132,7 @@ impl PreparedBasis {
         }
         let mut mp: c_int = 0;
         let mut ml: c_int = 0;
+        // SAFETY: Valid handle; writes two c_int values into stack locals.
         unsafe { ffi::scf_basis_max_dims(handle, &mut mp, &mut ml) };
         Ok(PreparedBasis {
             handle,
@@ -164,9 +179,21 @@ impl PreparedBasis {
     }
 }
 
+impl std::fmt::Debug for PreparedBasis {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparedBasis")
+            .field("nbasis", &self.nbasis)
+            .field("nshells", &self.nshells)
+            .field("basis_set", &self.basis_set.name)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Drop for PreparedBasis {
     fn drop(&mut self) {
         if !self.handle.is_null() {
+            // SAFETY: handle is non-null and was created by scf_basis_create;
+            // Drop runs exactly once per PreparedBasis.
             unsafe { ffi::scf_basis_destroy(self.handle) };
         }
     }

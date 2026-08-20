@@ -69,6 +69,7 @@ use ndarray_linalg::{Cholesky, UPLO};
 
 /// Sparse representation of (P | i_loc, a) integrals on Boys-localized
 /// occupied orbitals.
+#[derive(Debug, Clone)]
 pub struct ScreenedBov {
     pub n_occ_loc: usize,
     pub nvir: usize,

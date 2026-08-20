@@ -12,6 +12,7 @@ use crate::config::{QuadratureConfig, QuadratureScheme};
 
 /// Joint Minimax Quadrature arrays (Kaltak, Klimes, Kresse JCTC 2014)
 /// that pre-bake the Fourier transform into the weights.
+#[derive(Debug, Clone)]
 pub struct MinimaxJointQuadrature {
     pub tau_points: Vec<f64>,
     pub omega_points: Vec<f64>,

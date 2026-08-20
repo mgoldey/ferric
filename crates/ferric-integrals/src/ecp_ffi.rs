@@ -21,6 +21,18 @@ pub struct CEcpGShell {
     pub coefficients: *const c_double,
 }
 
+impl std::fmt::Debug for CEcpGShell {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CEcpGShell")
+            .field("l", &self.l)
+            .field("nprim", &self.nprim)
+            .field("x", &self.x)
+            .field("y", &self.y)
+            .field("z", &self.z)
+            .finish_non_exhaustive()
+    }
+}
+
 /// One ECP center: a flat list of `nterm` semilocal primitives.
 #[repr(C)]
 pub struct CEcpCenter {
@@ -32,6 +44,17 @@ pub struct CEcpCenter {
     pub ns: *const c_int,
     pub exponents: *const c_double,
     pub coefficients: *const c_double,
+}
+
+impl std::fmt::Debug for CEcpCenter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CEcpCenter")
+            .field("x", &self.x)
+            .field("y", &self.y)
+            .field("z", &self.z)
+            .field("nterm", &self.nterm)
+            .finish_non_exhaustive()
+    }
 }
 
 extern "C" {
@@ -73,4 +96,5 @@ extern "C" {
     ) -> c_int;
 }
 
+/// Success status code from the ECP C shim.
 pub const FERRIC_ECP_OK: c_int = 0;

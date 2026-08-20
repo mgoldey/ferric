@@ -25,12 +25,16 @@ use crate::strings::phase_below;
 /// The determinant list is the outer product `alpha_strings x beta_strings`,
 /// laid out row-major: determinant `d = ia * n_beta + ib`, where `ia` indexes
 /// the α-string and `ib` the β-string.
+#[derive(Debug, Clone)]
 pub struct DeterminantSpace {
+    /// α-spin occupation strings (bitmask per string, ascending).
     pub alpha_strings: Vec<u64>,
+    /// β-spin occupation strings (bitmask per string, ascending).
     pub beta_strings: Vec<u64>,
 }
 
 impl DeterminantSpace {
+    /// Total number of determinants (product of alpha and beta string counts).
     pub fn n_det(&self) -> usize {
         self.alpha_strings.len() * self.beta_strings.len()
     }

@@ -188,6 +188,7 @@ pub fn build_domains_for(
     }
 }
 
+/// Compute DLPNO-MP2 spin-component energies from dressed MO integrals.
 pub fn dlpno_mp2_spin_components(
     g: &Array2<f64>,
     eps: &[f64],

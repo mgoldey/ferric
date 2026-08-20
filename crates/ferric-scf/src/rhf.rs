@@ -223,6 +223,49 @@ impl Default for RhfConfig {
     }
 }
 
+impl RhfConfig {
+    /// Set the maximum number of SCF iterations.
+    pub fn with_max_iter(mut self, max_iter: usize) -> Self {
+        self.max_iter = max_iter;
+        self
+    }
+    /// Set the density convergence threshold (dp_rms).
+    pub fn with_density_conv(mut self, thresh: f64) -> Self {
+        self.density_conv = thresh;
+        self
+    }
+    /// Set the XC functional (e.g. "PBE", "B3LYP", "wB97X-V").
+    pub fn with_xc(mut self, xc: impl Into<String>) -> Self {
+        self.xc = Some(xc.into());
+        self
+    }
+    /// Set the virtual-block level shift (Ha) for convergence damping.
+    pub fn with_level_shift(mut self, shift: f64) -> Self {
+        self.level_shift = shift;
+        self
+    }
+    /// Set the K-matrix builder strategy ("direct" or "link").
+    pub fn with_k_builder(mut self, builder: impl Into<String>) -> Self {
+        self.k_builder = Some(builder.into());
+        self
+    }
+    /// Set the auxiliary basis for density-fitted Coulomb (RI-J).
+    pub fn with_df_j_aux(mut self, aux: impl Into<String>) -> Self {
+        self.df_j_aux = Some(aux.into());
+        self
+    }
+    /// Set the auxiliary basis for density-fitted exchange (RI-K).
+    pub fn with_df_k_aux(mut self, aux: impl Into<String>) -> Self {
+        self.df_k_aux = Some(aux.into());
+        self
+    }
+    /// Enable verbose per-iteration SCF output.
+    pub fn with_verbose(mut self, verbose: bool) -> Self {
+        self.verbose = verbose;
+        self
+    }
+}
+
 /// Resolve the 3-index memory budget in bytes by delegating to the single
 /// unified resolver [`ferric_core::memory::resolve_budget_bytes`], so every
 /// memory setting shares ONE precedence chain (TOML/config > env > auto):
@@ -352,6 +395,24 @@ pub(crate) fn scf_converged(
 /// `result.converged` / `result.exit` (`ScfExit::MaxIter` carries the
 /// best-effort density/MOs from the final iteration). Only returns
 /// [`FerricError::ScfConvergence`] for the odd-electron-count input error.
+///
+/// # Examples
+///
+/// ```no_run
+/// use ferric_core::{mol::Molecule, basis, parallel::ParallelContext};
+/// use ferric_integrals::{basis_bridge::PreparedBasis, operator::Operator};
+/// use ferric_scf::{rhf::{solve_rhf, RhfConfig}, screening::SchwarzBounds};
+///
+/// let mol = Molecule::parse_xyz("3\nwater\nO 0 0 0.117790\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n", 0, 1).unwrap();
+/// let bs = basis::bundled("cc-pvdz").unwrap();
+/// let prep = PreparedBasis::new(&mol, &bs).unwrap();
+/// let op = Operator::coulomb();
+/// let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+/// let ctx = ParallelContext::default();
+/// let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &RhfConfig::default()).unwrap();
+/// println!("{}", result); // prints energy, iterations, convergence
+/// ```
+#[must_use]
 pub fn solve_rhf(
     ctx: &ParallelContext,
     mol: &Molecule,

@@ -155,11 +155,19 @@ impl Default for AttenuatedMp2Config {
 }
 
 /// Result from attenuated MP2.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+#[must_use]
 pub struct AttenuatedMp2Result {
     pub mp2_corr: f64,
     pub total_energy: f64,
     pub spin_components: SpinComponents,
+}
+
+impl std::fmt::Display for AttenuatedMp2Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "att-MP2 total: {:.10} Ha (corr: {:.10})",
+            self.total_energy, self.mp2_corr)
+    }
 }
 
 /// Explicit erfc-attenuated alias of [`attenuated_ri_mp2`].

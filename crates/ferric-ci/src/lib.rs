@@ -47,9 +47,13 @@
 //! O(N_det²) loop is fast and unambiguously correct, which is what Phase A is
 //! meant to prove.
 
+/// CI-native Davidson eigensolver for the lowest root.
 pub mod davidson;
+/// Slater-Condon matrix elements and sigma-vector build.
 pub mod hamiltonian;
+/// Active-space MO integral transform.
 pub mod integrals;
+/// Determinant-string enumeration (bitmask α/β strings).
 pub mod strings;
 
 use ferric_core::mol::Molecule;
@@ -58,7 +62,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_scf::ScfResult;
 
 /// Configuration for a CAS-CI calculation.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CasCiConfig {
     /// Number of active spatial orbitals.
     pub n_active: usize,
@@ -102,6 +106,8 @@ impl Default for CasCiConfig {
 }
 
 /// Result of a CAS-CI calculation.
+#[derive(Debug, Clone)]
+#[must_use]
 pub struct CasCiResult {
     /// Total CAS-CI energy: `e_core + e_active`.
     pub e_total: f64,
@@ -121,11 +127,19 @@ pub struct CasCiResult {
     pub iterations: usize,
 }
 
+impl std::fmt::Display for CasCiResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "CAS-CI energy: {:.10} Ha ({} dets, {} iters, converged: {})",
+            self.e_total, self.n_determinants, self.iterations, self.converged)
+    }
+}
+
 /// Run a plain CAS-CI calculation from a converged restricted RHF reference.
 ///
 /// Validates the active-space configuration against the molecule/basis up front
 /// (electron count, orbital window) and returns a clean [`FerricError`] on any
 /// inconsistency — it never panics deep inside the transform or matvec.
+#[must_use]
 pub fn run_cas_ci(
     mol: &Molecule,
     prep: &PreparedBasis,

@@ -135,11 +135,21 @@ impl SparseBSlice {
     }
 }
 
+/// Result of a Laplace-transform MP2 energy calculation.
+#[derive(Debug, Clone)]
+#[must_use]
 pub struct LaplaceMp2Result {
     pub total_energy: f64,
     pub mp2_corr: f64,
     pub e_os: f64,
     pub e_ss: f64,
+}
+
+impl std::fmt::Display for LaplaceMp2Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Laplace-MP2 total: {:.10} Ha (corr: {:.10})",
+            self.total_energy, self.mp2_corr)
+    }
 }
 
 /// Laplace-transform SOS-MP2 (scaled-opposite-spin MP2) configuration.
@@ -191,6 +201,7 @@ impl Default for SosMp2Config {
 
 /// Result of a Laplace SOS-MP2 calculation.
 #[derive(Debug, Clone)]
+#[must_use]
 pub struct SosMp2Result {
     /// `E_SCF + sos_corr`.
     pub total_energy: f64,
@@ -203,6 +214,13 @@ pub struct SosMp2Result {
     pub c_os: f64,
     /// Quadrature points actually used.
     pub n_quad: usize,
+}
+
+impl std::fmt::Display for SosMp2Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SOS-MP2 total: {:.10} Ha (c_os={:.2}, n_quad={})",
+            self.total_energy, self.c_os, self.n_quad)
+    }
 }
 
 /// Laplace-MP2 exchange (K) trace for one quadrature point.
@@ -337,6 +355,7 @@ fn laplace_ao_coulomb_energy(
     j_mat.iter().map(|&x| x * x).sum()
 }
 
+/// AO-Laplace RI-MP2 via pseudo-density factorization of the denominator.
 pub fn laplace_ri_mp2(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -420,6 +439,7 @@ fn weighted_b_mo(
 }
 
 /// Laplace-transform MP2 energy builder.
+#[derive(Debug, Clone)]
 pub struct LaplaceMp2 {
     pub n_quad: usize,
     pub points: Vec<f64>,

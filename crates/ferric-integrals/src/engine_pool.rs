@@ -44,6 +44,14 @@ pub struct EnginePool {
     engines: Vec<Mutex<Engine>>,
 }
 
+impl std::fmt::Debug for EnginePool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EnginePool")
+            .field("n_engines", &self.engines.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl EnginePool {
     /// Construct `num_threads + 1` engines (serialized, but bounded). The `+1`
     /// covers `current_thread_index() == None` (work run on a non-pool thread).

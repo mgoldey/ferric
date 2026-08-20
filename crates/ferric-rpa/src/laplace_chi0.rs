@@ -129,6 +129,7 @@ pub fn build_laplace_for_gaps(
 // Laplace grid, and two caller-owned scratch/output buffers for allocation
 // reuse — all distinct, nothing further to bundle.
 #[allow(clippy::too_many_arguments)]
+/// Build the dielectric matrix ε(iω) = I − v^½ χ₀(iω) v^½ via Laplace transform of χ₀, writing into `out`.
 pub fn dielectric_matrix_laplace_into(
     v_mat: &Array2<f64>,
     b_ov: &Array2<f64>,

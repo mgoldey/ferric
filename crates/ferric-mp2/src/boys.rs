@@ -11,6 +11,8 @@
 use ndarray::Array2;
 
 /// Result of Boys localization.
+#[derive(Debug, Clone)]
+#[must_use]
 pub struct BoysResult {
     /// Localized MO coefficients, shape (nbas, nocc).
     pub c_loc: Array2<f64>,
@@ -157,6 +159,7 @@ pub fn boys_localize(
 ///
 /// `ao_mask[μ]` is true if basis function μ belongs to at least one orbital's domain.
 /// `orbital_domains[i]` is the sorted list of AO indices in orbital i's domain.
+#[derive(Debug, Clone)]
 pub struct LmpDomains {
     /// For each orbital i: sorted AO indices within cutoff_bohr of its Boys center.
     pub orbital_domains: Vec<Vec<usize>>,

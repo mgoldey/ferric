@@ -1,3 +1,5 @@
+//! Combined direct Coulomb + exchange (J+K) matrix construction from a single quartet pass.
+
 use crate::screening::SchwarzBounds;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -30,7 +32,17 @@ pub struct DirectJK<'a> {
     pool: Option<crate::engine_pool::EnginePool>,
 }
 
+impl<'a> std::fmt::Debug for DirectJK<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DirectJK")
+            .field("thresh", &self.thresh)
+            .field("mem_budget", &self.mem_budget)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<'a> DirectJK<'a> {
+    /// Create a combined screened J+K builder.
     pub fn new(
         ctx: &'a ParallelContext,
         prep: &'a PreparedBasis,

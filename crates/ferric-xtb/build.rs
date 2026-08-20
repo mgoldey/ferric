@@ -17,7 +17,8 @@ fn main() {
         return;
     }
 
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/home/matt".to_string());
+    let home = std::env::var("HOME")
+        .expect("$HOME must be set to locate system libraries; set XTB_PREFIX to override");
     let prefix = std::env::var("XTB_PREFIX").unwrap_or_else(|_| format!("{home}/.local"));
 
     println!("cargo:rustc-link-search=native={prefix}/lib");

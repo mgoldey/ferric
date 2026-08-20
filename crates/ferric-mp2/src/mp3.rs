@@ -21,6 +21,7 @@ use ndarray::{ArrayD, IxDyn};
 
 /// Results from a spin-orbital MP3 calculation.
 #[derive(Debug, Clone)]
+#[must_use]
 pub struct Mp3Result {
     /// Reference (RHF) total energy.
     pub e_hf: f64,
@@ -32,6 +33,13 @@ pub struct Mp3Result {
     pub e_corr: f64,
     /// Total energy: e_hf + e_corr.
     pub e_total: f64,
+}
+
+impl std::fmt::Display for Mp3Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "MP3 total: {:.10} Ha (MP2: {:.10}, MP3: {:.10})",
+            self.e_total, self.e_mp2, self.e_mp3)
+    }
 }
 
 /// Compute the spin-orbital MP3 correlation energy via RI integrals.

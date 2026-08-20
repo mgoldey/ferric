@@ -7,25 +7,41 @@
 use ndarray::Array2;
 use std::collections::HashMap;
 
+/// One pair's ragged domain block: indices, sparsity pattern, and local integrals.
+#[derive(Debug, Clone)]
 pub struct PairBlock {
+    /// Occupied index i.
     pub i: usize,
+    /// Occupied index j.
     pub j: usize,
+    /// Domain-A virtual indices (global, sorted).
     pub da: Vec<usize>,
+    /// Domain-B virtual indices (global, sorted).
     pub db: Vec<usize>,
     /// row-major (da.len() × db.len()) pattern
     pub pat: Vec<bool>,
+    /// Virtual-virtual Fock block for domain A (da × da).
     pub fvv_aa: Array2<f64>,
+    /// Virtual-virtual Fock block for domain B (db × db).
     pub fvv_bb: Array2<f64>,
+    /// Domain-local exchange integrals (da × db).
     pub j_blk: Array2<f64>,
+    /// Orbital-energy denominators (da × db).
     pub denom: Array2<f64>,
-    /// inverse maps: pos_da[v] = column of v in da, usize::MAX if absent
+    /// Positions of da entries within the full virtual space.
     pub pos_da: Vec<usize>,
+    /// Positions of db entries within the full virtual space.
     pub pos_db: Vec<usize>,
 }
 
+/// Collection of ragged pair blocks with bidirectional index maps.
+#[derive(Debug, Clone)]
 pub struct Ragged {
+    /// All pair blocks, in construction order.
     pub pairs: Vec<PairBlock>,
+    /// Pairs that share occupied index i → indices into `pairs`.
     pub by_i: HashMap<usize, Vec<usize>>,
+    /// Pairs that share occupied index j → indices into `pairs`.
     pub by_j: HashMap<usize, Vec<usize>>,
 }
 
@@ -110,6 +126,7 @@ pub fn pair_block_from_g_cand(
 }
 
 
+/// Zero out elements of `x` that lie outside the sparsity pattern `pat`.
 pub fn apply_pattern(x: &mut Array2<f64>, pat: &[bool], nb: usize) {
     for (r, mut row) in x.rows_mut().into_iter().enumerate() {
         for (c, v) in row.iter_mut().enumerate() {
@@ -120,6 +137,7 @@ pub fn apply_pattern(x: &mut Array2<f64>, pat: &[bool], nb: usize) {
     }
 }
 
+/// Element-wise dot product summed over a slice of block matrices.
 pub fn dot_blocks(x: &[Array2<f64>], y: &[Array2<f64>]) -> f64 {
     x.iter().zip(y).map(|(a, b)| (a * b).sum()).sum()
 }
@@ -257,6 +275,7 @@ pub fn matvec_indexed(
     out
 }
 
+/// Gather and accumulate a sub-block of the ring product into `out`.
 pub fn gather_into(
     out: &mut Array2<f64>,
     src: &PairBlock,
@@ -291,6 +310,7 @@ pub fn gather_into(
 /// definitions. `panel_x` is `x`'s `(rows.len(), cset.len())` sub-block,
 /// GATHERED ONCE here because the caller promises `x` is constant across
 /// the whole solve (see [`RingPlan::new`]).
+#[derive(Debug)]
 struct RingTriple {
     p_kj: usize,
     cset: Vec<(usize, usize)>,
@@ -319,6 +339,7 @@ struct RingTriple {
 /// from padding beat the plan-hoist saving); this does NOT repeat that:
 /// no padding, one GEMM per triple exactly as before, only the constant
 /// side's gather and the index bookkeeping are hoisted out of the loop.
+#[derive(Debug)]
 pub struct RingPlan {
     /// same length/order as `rg.pairs`; `dims[out_p]` is that output
     /// pair's `(na, nb)` block shape (needed to emit the right-shaped

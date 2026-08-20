@@ -104,12 +104,15 @@ fn drop_page_cache(file: &File) {
     let _ = file.sync_data();
     let fd = file.as_raw_fd();
     // offset 0, len 0 == "to end of file".
+    // SAFETY: fd is a valid open file descriptor (from as_raw_fd on a live
+    // File). posix_fadvise with DONTNEED is advisory and cannot corrupt data.
     unsafe {
         libc::posix_fadvise(fd, 0, 0, libc::POSIX_FADV_DONTNEED);
     }
 }
 
 /// One aux-block of raw (P|μν), rows [p0, p0+data.shape()[0]).
+#[derive(Debug)]
 pub struct AuxBlock<'a> {
     pub p0: usize,
     pub data: ArrayView3<'a, f64>,
@@ -120,6 +123,18 @@ enum Backend {
     DiskSpill { file: File, scratch: Array3<f64> },
 }
 
+impl std::fmt::Debug for ThreeIndexSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ThreeIndexSource")
+            .field("naux", &self.naux)
+            .field("nao", &self.nao)
+            .field("block_naux", &self.block_naux)
+            .field("band", &(self.band_p0..self.band_p1))
+            .finish_non_exhaustive()
+    }
+}
+
+/// Memory-managed source for 3-index integrals (P|μν), supporting blocked I/O.
 pub struct ThreeIndexSource {
     /// GLOBAL number of aux functions (full tensor height), NOT the band height.
     /// Consumers slice a (naux, naux) metric / (naux,) coefficient vector with the
@@ -456,15 +471,18 @@ impl ThreeIndexSource {
 
     /// GLOBAL number of aux functions (full tensor height), regardless of band.
     pub fn naux(&self) -> usize { self.naux }
+    /// Number of AO basis functions.
     pub fn nao(&self) -> usize { self.nao }
     /// The GLOBAL aux range `[p0, p1)` this source actually holds. `0..naux` for
     /// a full (non-banded) source.
     pub fn band(&self) -> (usize, usize) { (self.band_p0, self.band_p1) }
     /// Number of aux rows resident in THIS source's band (`band_p1 - band_p0`).
     pub fn band_naux(&self) -> usize { self.band_p1 - self.band_p0 }
+    /// Number of aux-blocks in this source's band.
     pub fn n_blocks(&self) -> usize {
         self.band_naux().div_ceil(self.block_naux.max(1))
     }
+    /// Aux rows per block (last block may be smaller).
     pub fn block_naux(&self) -> usize { self.block_naux }
 
     /// Primary iteration API. Calls `f` once per aux-block, in order, over the

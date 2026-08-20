@@ -19,7 +19,7 @@ use ferric_scf::{ScfResult, Spin};
 use ndarray::{Array2, Array3, Array4};
 
 /// Components of the U-RI-MP2 correlation energy.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct URiMp2Components {
     pub e_aa: f64,
     pub e_bb: f64,
@@ -29,10 +29,18 @@ pub struct URiMp2Components {
 
 /// Result of an unrestricted RI-MP2 calculation.
 #[derive(Debug, Clone)]
+#[must_use]
 pub struct URiMp2Result {
     pub components: URiMp2Components,
     pub mp2_corr: f64,
     pub total_energy: f64,
+}
+
+impl std::fmt::Display for URiMp2Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "U-RI-MP2 total: {:.10} Ha (corr: {:.10})",
+            self.total_energy, self.mp2_corr)
+    }
 }
 
 /// All U-MP2 amplitudes + per-spin intermediates, for downstream
@@ -46,7 +54,7 @@ pub struct URiMp2Result {
 /// Index conventions: `i,j` ∈ occ_α, `I,J` ∈ occ_β, `a,b` ∈ vir_α,
 /// `A,B` ∈ vir_β. The αβ tensor's first two axes are α-occ × β-occ, last
 /// two are α-vir × β-vir.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct UMp2Amplitudes {
     pub inter_a: RpaIntermediates,
     pub inter_b: RpaIntermediates,
@@ -482,6 +490,8 @@ pub struct UMp2Density {
     pub p_vv_b: Array2<f64>,
 }
 
+/// Build the UMP2 relaxed density matrices (occ-occ and vir-vir blocks, both spins) from converged amplitudes.
+/// Build the unrelaxed MP2 one-particle density matrices from UHF amplitudes.
 pub fn build_u_mp2_density(amps: &UMp2Amplitudes) -> UMp2Density {
     let t_aa = &amps.t_aa;
     let t_bb = &amps.t_bb;

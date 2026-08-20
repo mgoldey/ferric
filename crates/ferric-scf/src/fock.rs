@@ -59,7 +59,16 @@ pub struct FockBuilder {
     pub k: Box<dyn KBuilder>,
 }
 
+impl std::fmt::Debug for FockBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FockBuilder")
+            .field("hcore", &self.hcore.dim())
+            .finish_non_exhaustive()
+    }
+}
+
 impl FockBuilder {
+    /// Assemble the Fock matrix F = H_core + J − ½K from the density `d`, writing into `f`. Returns the total shell-quartet count.
     pub fn build(&mut self, d: &Array2<f64>, f: &mut Array2<f64>) -> Result<usize, FerricError> {
         let n = d.nrows();
         let mut j = Array2::zeros((n, n));

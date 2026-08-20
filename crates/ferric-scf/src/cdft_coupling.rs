@@ -17,6 +17,7 @@ use ndarray_linalg::SVD;
 const S_TOL: f64 = 1e-8;
 
 /// Löwdin pairing of two occupied MO sets for one spin channel.
+#[derive(Debug, Clone)]
 pub struct Pairing {
     /// det(M) = Π singular values (non-negative; sign handled via the SVD
     /// rotations folded into c_tilde).
@@ -116,6 +117,7 @@ pub fn cross_one_body(
 }
 
 /// A converged constrained UHF diabatic state, viewed for coupling.
+#[derive(Debug)]
 pub struct DiabaticState<'a> {
     /// α MO coefficients (nbf, nbf); occupied = first `nocc_a` columns.
     pub c_a: &'a Array2<f64>,
@@ -132,6 +134,8 @@ pub struct DiabaticState<'a> {
 }
 
 /// Result of a coupling evaluation.
+#[derive(Debug, Clone, Copy)]
+#[must_use]
 pub struct HabResult {
     pub h_ab: f64,
     pub s_ab: f64,

@@ -162,6 +162,8 @@ pub fn ecp_matrix_spherical(
 
     let ncart_total: usize = shells.iter().map(|s| ncart(s.l)).sum();
     let mut v_cart = vec![0.0f64; ncart_total * ncart_total];
+    // SAFETY: c_shells/c_ecps are valid C-repr arrays built by build_c_arrays
+    // (backed by _keep). v_cart is pre-sized to ncart_total². Status checked.
     let status = unsafe {
         ferric_ecp_matrix(
             c_shells.as_ptr(),
@@ -322,6 +324,8 @@ pub fn ecp_matrix_deriv_spherical(
 
     let (c_shells, c_ecps, _keep) = build_c_arrays(shells, ecps);
 
+    // SAFETY: c_shells/c_ecps are valid C-repr arrays (backed by _keep).
+    // Returns the number of atoms or a negative error code.
     let natoms = unsafe {
         ferric_ecp_natoms(
             c_shells.as_ptr(),
@@ -340,6 +344,7 @@ pub fn ecp_matrix_deriv_spherical(
     let ncart_total: usize = shells.iter().map(|s| ncart(s.l)).sum();
     let mut d_cart = vec![0.0f64; 3 * natoms * ncart_total * ncart_total];
     let mut got_natoms: c_int = 0;
+    // SAFETY: same arrays as above; d_cart sized for 3*natoms*ncart² doubles.
     let status = unsafe {
         ferric_ecp_matrix_deriv(
             c_shells.as_ptr(),

@@ -36,6 +36,7 @@ use ndarray_linalg::Eigh;
 
 /// Domain-natural-virtual transform: single shared reduced virtual basis
 /// built by concatenating + QR'ing per-orbital OSV eigenvectors.
+#[derive(Debug, Clone)]
 pub struct DnvTransform {
     /// Per-orbital number of retained OSVs (before concatenation).
     pub n_osv_per_orbital: Vec<usize>,

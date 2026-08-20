@@ -97,6 +97,7 @@ pub struct QmmmAtom {
 }
 
 impl QmmmAtom {
+    /// Create a QM/MM atom with element, nuclear charge, Bohr coordinates, and MM partial charge.
     pub fn new(symbol: impl Into<String>, z: i32, x: f64, y: f64, z_pos: f64, charge: f64) -> Self {
         Self { symbol: symbol.into(), z, x, y, z_pos, charge }
     }
@@ -576,6 +577,8 @@ pub fn electric_field_at_points(
 
                     // Unit positive probe charge at r.
                     let probe = [CAtom { atomic_number: 1.0, x: r[0], y: r[1], z: r[2] }];
+                    // SAFETY: probe is a stack-local CAtom slice; handle_mut() is the live engine
+                    // pointer; probe.len() fits in c_int. Shim catches C++ exceptions → negative rc.
                     let rc = unsafe {
                         ffi::scf_engine_set_point_charges(
                             eng.handle_mut(),
@@ -604,6 +607,8 @@ pub fn electric_field_at_points(
                             if buf.len() < total {
                                 buf.resize(total, 0.0);
                             }
+                            // SAFETY: buf is pre-sized to nderiv * block_sz; handle_mut()/handle()
+                            // are live pointers; shell indices are in range. Shim returns written >= 0.
                             let written = unsafe {
                                 ffi::scf_compute_1e_deriv_block(
                                     eng.handle_mut(),

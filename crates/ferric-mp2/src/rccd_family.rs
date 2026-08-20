@@ -83,6 +83,7 @@ pub enum RccdChannel {
     Triplet,
 }
 
+/// Configuration for ring-CCD (singlet/triplet channel decomposition).
 #[derive(Debug, Clone)]
 pub struct RccdConfig {
     pub frozen_core: usize,
@@ -114,7 +115,9 @@ impl Default for RccdConfig {
     }
 }
 
-#[derive(Debug)]
+/// Result of a SOSEX (second-order screened exchange) calculation built on drCCD amplitudes.
+#[derive(Debug, Clone)]
+#[must_use]
 pub struct SosexResult {
     /// `½ Σ B T` on the converged drCCD amplitude — the drCCD ring energy,
     /// reported alongside so the SOSEX correction is readable.
@@ -127,7 +130,9 @@ pub struct SosexResult {
     pub converged: bool,
 }
 
-#[derive(Debug)]
+/// Result for a single rCCD channel (singlet or triplet).
+#[derive(Debug, Clone)]
+#[must_use]
 pub struct RccdChannelResult {
     pub channel: RccdChannel,
     pub e_corr: f64,
@@ -140,7 +145,9 @@ pub struct RccdChannelResult {
     pub min_omega_sq: Option<f64>,
 }
 
-#[derive(Debug)]
+/// Combined singlet + triplet rCCD result.
+#[derive(Debug, Clone)]
+#[must_use]
 pub struct RccdResult {
     pub singlet: RccdChannelResult,
     pub triplet: RccdChannelResult,

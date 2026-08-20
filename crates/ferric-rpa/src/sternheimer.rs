@@ -56,6 +56,10 @@ pub(crate) fn syrk_aat(a: &Array2<f64>) -> Array2<f64> {
     // Compute LOWER triangle (Fortran 'L') of A^T·A in Fortran view.
     // In row-major terms this populates the UPPER triangle of C — symmetric in
     // either reading, so we mirror to fill both halves.
+    // SAFETY: a_slice is a contiguous row-major &[f64] (checked by as_slice above),
+    // c is a freshly-zeroed (m, m) array. Dimensions are cast from usize to i32
+    // above and are consistent (n=m, k=kdim, lda=kdim, ldc=m). dsyrk_ reads
+    // a_slice and writes only the lower triangle of c; no aliasing.
     unsafe {
         // dsyrk_ takes *const u8 (Fortran char args); b"..\0" matches directly,
         // whereas a c"" literal is *const c_char and would need a cast.
@@ -102,6 +106,8 @@ pub(crate) fn syrk_aat_into(a: &Array2<f64>, c: &mut Array2<f64>) {
     let k_i32 = kdim as i32;
     let lda = kdim as i32;
     let ldc = m as i32;
+    // SAFETY: same contract as syrk_aat — contiguous input, correctly-sized
+    // output buffer (asserted above), consistent BLAS dimensions.
     unsafe {
         #[allow(clippy::manual_c_str_literals)]
         dsyrk_(
@@ -152,6 +158,9 @@ fn syrk_aat_accumulate_into(a: ArrayView2<f64>, c: &mut Array2<f64>) {
     let k_i32 = kdim as i32;
     let lda = kdim as i32;
     let ldc = m as i32;
+    // SAFETY: same contract as syrk_aat — contiguous input (as_slice above),
+    // correctly-sized output buffer (asserted above), consistent BLAS
+    // dimensions. beta=1 accumulates into c rather than overwriting.
     unsafe {
         #[allow(clippy::manual_c_str_literals)]
         dsyrk_(

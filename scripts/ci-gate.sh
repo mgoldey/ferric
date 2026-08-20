@@ -261,6 +261,29 @@ else
 fi
 echo
 
+# ---- 4. Python binding tests (soft gate) ---------------------------------
+# The ferric-python crate is a cdylib -- cargo test cannot exercise it, so
+# Python-side regressions slip through steps 1-3. This step runs pytest if the
+# compiled extension is available; if not, it prints a note and moves on
+# without setting FAILED (soft gate -- does not block the push).
+echo "-- pytest (Python bindings, soft gate) --"
+SO_PATH="$(find .venv -name '*.so' -path '*/ferric/*' 2>/dev/null | head -1)"
+if [[ -z "$SO_PATH" ]]; then
+    SO_PATH="target/release/libferric.so"
+fi
+if [[ -f "$SO_PATH" ]]; then
+    echo "   extension: $SO_PATH"
+    if OPENBLAS_NUM_THREADS=1 uv run --no-sync pytest crates/ferric-python/tests/ -q 2>&1; then
+        echo "-- pytest: PASS --"
+    else
+        echo "-- pytest: FAIL (soft gate -- not blocking push) --"
+    fi
+else
+    echo "-- pytest: SKIPPED (extension not built;"
+    echo "   cargo build --release -p ferric-python to enable) --"
+fi
+echo
+
 # ---- summary ------------------------------------------------------------
 echo "== gate summary =="
 echo "   load avg(1m) at start: $LOAD1 (nproc/2 = $HALF_NPROC, contended=$CONTENDED)"

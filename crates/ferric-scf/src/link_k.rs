@@ -40,6 +40,16 @@ pub struct LinkK<'a, B: Bound> {
     pool: Option<crate::engine_pool::EnginePool>,
 }
 
+impl<'a, B: Bound> std::fmt::Debug for LinkK<'a, B> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LinkK")
+            .field("op", &self.op)
+            .field("thresh", &self.thresh)
+            .field("mem_budget", &self.mem_budget)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<'a, B: Bound> LinkK<'a, B> {
     /// Create a new LinK exchange builder.
     ///

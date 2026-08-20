@@ -83,6 +83,9 @@ gfnff_topo
 # local docs (moved out of git 2026-08-07; shared via wiki instead)
 /wiki/
 
+# Unpublished research — publish paper independently before making repo public
+/whitepaper/
+
 # local Claude Code project instructions (internal, not shared)
 /CLAUDE.md
 terf-tables/*.bin

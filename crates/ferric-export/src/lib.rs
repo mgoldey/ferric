@@ -9,8 +9,11 @@
 //!   tensors, Hirshfeld/Löwdin charges, density matrix) for conditioning generative
 //!   models on quantum-chemical features.
 
+/// Gaussian cube file writer for volumetric data (densities, MOs).
 pub mod cube;
+/// GTO basis-function evaluation on arbitrary real-space grids.
 pub mod gto_eval;
+/// NPZ export of ML-ready arrays (MOs, ESP, polarizability, charges).
 pub mod ml;
 
 pub use cube::{export_cube, export_mo_cubes, GridSpec};

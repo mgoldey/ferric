@@ -74,6 +74,7 @@ pub const DEFAULT_TEMPERATURE_K: f64 = 298.15;
 // `PartialEq` only, not `Eq`: `BadTemperature` carries an `f64` (which may be
 // NaN — a NaN temperature is one of the inputs this variant reports).
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum ConformerError {
     /// Fewer than one conformer supplied.
     Empty,
@@ -166,7 +167,7 @@ impl From<ConformerError> for FerricError {
 /// The energy is `Option` because the ensemble is usefully constructible before
 /// the SCF runs (geometry in, energy filled later). Every weighting operation
 /// requires all energies to be present and errors clearly otherwise.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Conformer {
     /// The geometry. Coordinates in Bohr, as everywhere else in ferric.
     pub molecule: Molecule,
@@ -218,7 +219,7 @@ fn atom_identity(a: &crate::mol::Atom) -> String {
 /// a per-atom property (charges, per-atom C6, ESP grids referenced to atom
 /// centers) across differently-ordered geometries produces a plausible-looking
 /// number that is simply wrong, with no runtime symptom.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ConformerEnsemble {
     conformers: Vec<Conformer>,
 }
@@ -386,7 +387,7 @@ fn check_compatible(
 
 /// Boltzmann populations of an ensemble at a given temperature, plus the
 /// diagnostics needed to judge whether the ensemble mattered.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BoltzmannWeights {
     /// Normalized populations, in ensemble order. Sum to 1.
     pub weights: Vec<f64>,
@@ -499,7 +500,7 @@ pub fn boltzmann_weights(
 /// * **No conformer dominates** (`max_weight` small, many conformers within
 ///   `kT`) — single-conformer results are wrong, and the reported spread on any
 ///   averaged property is the honest uncertainty.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct EnsembleDiagnostics {
     pub n_conformers: usize,
     /// Conformers with `E_i - E_min <= kT`. Always >= 1 (the minimum itself).

@@ -3,10 +3,14 @@
 use ndarray::Array2;
 use serde::{Deserialize, Serialize};
 
+/// Spin treatment of the SCF wavefunction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Spin {
+    /// Closed-shell: α and β share one set of MOs.
     Restricted,
+    /// Open-shell: α and β have independent MOs.
     Unrestricted,
+    /// Roothaan open-shell: α and β share spatial MOs with constrained occupations.
     RestrictedOpen,
 }
 
@@ -27,7 +31,9 @@ pub enum ScfExit {
     MaxIter,
 }
 
+/// Converged self-consistent field solution: total energy, MO coefficients, orbital energies, and density matrices.
 #[derive(Debug, Clone)]
+#[must_use = "SCF result contains computed energies and orbitals"]
 pub struct ScfResult {
     pub spin: Spin,
     pub energy: f64,
@@ -39,14 +45,23 @@ pub struct ScfResult {
     pub density_beta: Option<Array2<f64>>,
     /// α MO coefficients (or restricted MOs).
     pub mos_alpha: Array2<f64>,
+    /// β MO coefficients. `None` for Restricted.
     pub mos_beta: Option<Array2<f64>>,
+    /// α orbital energies (eigenvalues of the Fock matrix in the MO basis).
     pub eps_alpha: Vec<f64>,
+    /// β orbital energies. `None` for Restricted.
     pub eps_beta: Option<Vec<f64>>,
+    /// α AO Fock matrix at convergence.
     pub fock_alpha: Array2<f64>,
+    /// β AO Fock matrix. `None` for Restricted.
     pub fock_beta: Option<Array2<f64>>,
+    /// Whether the SCF loop converged within the requested thresholds.
     pub converged: bool,
+    /// Detailed exit reason (converged, plateau, stalled, diverged, max_iter).
     pub exit: ScfExit,
+    /// Number of SCF iterations performed.
     pub iterations: usize,
+    /// Total number of 2-electron integral quartets evaluated.
     pub computed_quartets: usize,
 }
 
@@ -56,14 +71,17 @@ impl ScfResult {
         assert!(matches!(self.spin, Spin::Restricted), "mos_r() called on non-restricted result");
         &self.mos_alpha
     }
+    /// Restricted orbital energies. Panics if spin != Restricted.
     pub fn eps_r(&self) -> &[f64] {
         assert!(matches!(self.spin, Spin::Restricted), "eps_r() called on non-restricted result");
         &self.eps_alpha
     }
+    /// Restricted Fock matrix. Panics if spin != Restricted.
     pub fn fock_r(&self) -> &Array2<f64> {
         assert!(matches!(self.spin, Spin::Restricted), "fock_r() called on non-restricted result");
         &self.fock_alpha
     }
+    /// Restricted density matrix (2·D_α). Panics if spin != Restricted.
     pub fn density_r(&self) -> &Array2<f64> {
         assert!(matches!(self.spin, Spin::Restricted), "density_r() called on non-restricted result");
         &self.density_total
@@ -76,13 +94,24 @@ impl ScfResult {
         &self.density_total
     }
     /// Unrestricted/ROHF accessors. Panic if called on a Restricted result.
+    /// α MO coefficients. Available for all spin types.
     pub fn mos_a(&self) -> &Array2<f64> { &self.mos_alpha }
+    /// β MO coefficients. Panics if spin == Restricted.
     pub fn mos_b(&self) -> &Array2<f64> {
         self.mos_beta.as_ref().expect("mos_b() called on Restricted result")
     }
+    /// α orbital energies. Available for all spin types.
     pub fn eps_a(&self) -> &[f64] { &self.eps_alpha }
+    /// β orbital energies. Panics if spin == Restricted.
     pub fn eps_b(&self) -> &[f64] {
         self.eps_beta.as_deref().expect("eps_b() called on Restricted result")
+    }
+}
+
+impl std::fmt::Display for ScfResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?} energy: {:.10} Ha ({} iters, {:?})",
+            self.spin, self.energy, self.iterations, self.exit)
     }
 }
 

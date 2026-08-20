@@ -31,6 +31,7 @@ pub type UhfFockMod<'a> = &'a dyn Fn(&mut Array2<f64>, &mut Array2<f64>);
 /// The initial guess is built from a single hcore diagonalization; symmetry is
 /// broken by occupying fewer β orbitals than α (or by a small HOMO/LUMO mixing
 /// when nocc_a == nocc_b).
+#[must_use]
 pub fn solve_uhf(
     ctx: &ParallelContext,
     mol: &Molecule,

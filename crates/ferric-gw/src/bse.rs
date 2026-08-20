@@ -69,6 +69,7 @@ fn check_bse_dense_alloc(
 
 /// Result of a BSE-TDA singlet excitation calculation.
 #[derive(Debug, Clone)]
+#[must_use]
 pub struct BseResult {
     /// Singlet excitation energies Ω_n (Hartree), ascending.
     pub omega: Vec<f64>,
@@ -92,6 +93,13 @@ impl BseResult {
     /// Oscillator strength of the lowest singlet.
     pub fn lowest_oscillator_strength(&self) -> f64 {
         self.oscillator_strength[0]
+    }
+}
+
+impl std::fmt::Display for BseResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "BSE-TDA: {} excitations, lowest {:.4} eV (f = {:.6})",
+            self.omega.len(), self.lowest_ev(), self.lowest_oscillator_strength())
     }
 }
 
@@ -509,6 +517,7 @@ pub fn run_cis_tda(
 
 /// Result of a BSE dynamic-polarizability / C6 calculation (gate 2).
 #[derive(Debug, Clone)]
+#[must_use]
 pub struct BseC6Result {
     /// Molecular isotropic C6 (a.u.).
     pub c6: f64,
@@ -957,6 +966,7 @@ pub fn run_bse_c6_ks(
 /// for why the dynamic α(iω)/C6 variant (`run_bse_c6_ks`) is NOT exposed as a
 /// production capability alongside this one.
 #[derive(Debug, Clone)]
+#[must_use]
 pub struct RpaxStaticPolarizabilityResult {
     /// Cartesian α_ij(0) tensor, i,j ∈ {x,y,z}, in a.u. (e²·a₀²/E_h).
     pub tensor: [[f64; 3]; 3],

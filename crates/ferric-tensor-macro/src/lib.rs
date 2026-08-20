@@ -80,6 +80,7 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{parse::Parser, punctuated::Punctuated, Expr, Token};
 
+/// Compile-time einsum: `einsum!("ij,jk->ik", &a, &b)` lowers to BLAS3 GEMM.
 #[proc_macro]
 pub fn einsum(input: TokenStream) -> TokenStream {
     let parser = Punctuated::<Expr, Token![,]>::parse_terminated;

@@ -19,6 +19,8 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ndarray::Array2;
 
 /// Result of a constrained SCF.
+#[derive(Debug, Clone)]
+#[must_use]
 pub struct CdftResult {
     /// Inner SCF result at the converged λ (energy is the ordinary KS energy at
     /// the constrained density — the constraint term is already excluded).

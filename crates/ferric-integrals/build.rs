@@ -2,8 +2,14 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/home/matt".to_string());
-    let local_prefix = format!("{home}/.local");
+    let local_prefix = match std::env::var("LIBINT2_PREFIX") {
+        Ok(p) => p,
+        Err(_) => {
+            let home = std::env::var("HOME")
+                .expect("$HOME must be set to locate libint2; set LIBINT2_PREFIX to override");
+            format!("{home}/.local")
+        }
+    };
 
     // --- libecpint: configure + build the vendored static library via CMake ---
     let (ecpint_lib_dir, ecpint_include_dirs) = build_libecpint();
@@ -49,6 +55,7 @@ fn main() {
     println!("cargo:rustc-link-lib=static=ecpint");
     println!("cargo:rustc-link-lib=static=Faddeeva");
 
+    println!("cargo:rerun-if-env-changed=LIBINT2_PREFIX");
     println!("cargo:rerun-if-changed=shim/shim.h");
     println!("cargo:rerun-if-changed=shim/shim.cc");
     println!("cargo:rerun-if-changed=shim/ecp_shim.h");

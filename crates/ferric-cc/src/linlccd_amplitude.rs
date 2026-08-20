@@ -48,6 +48,7 @@ use ferric_mp2::ragged::{apply_pattern, gather_into, matvec_indexed, solve_ragge
 use ferric_mp2::mo_transform::{transform_3center_oo, transform_3center_vv};
 use ferric_mp2::rimp2::metric_inverse_sqrt;
 
+/// Configuration for amplitude-threshold LinLCCD.
 #[derive(Debug, Clone)]
 pub struct AmplitudeLinLccdConfig {
     /// Threshold ε on |(ia|jb)| (Eq-8 symmetric test, swap-closed); 0 keeps
@@ -65,7 +66,9 @@ impl Default for AmplitudeLinLccdConfig {
     }
 }
 
-#[derive(Debug)]
+/// Result of an amplitude-threshold LinLCCD calculation.
+#[derive(Debug, Clone)]
+#[must_use]
 pub struct AmplitudeLinLccdResult {
     pub e_corr: f64,
     pub e_total: f64,

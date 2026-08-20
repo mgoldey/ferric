@@ -1,3 +1,5 @@
+//! Direct integral-driven exchange (K) matrix construction.
+
 use crate::fock::KBuilder;
 use crate::screening::SchwarzBounds;
 use ferric_core::FerricError;
@@ -20,7 +22,17 @@ pub struct DirectK<'a> {
     pool: Option<crate::engine_pool::EnginePool>,
 }
 
+impl<'a> std::fmt::Debug for DirectK<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DirectK")
+            .field("thresh", &self.thresh)
+            .field("mem_budget", &self.mem_budget)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<'a> DirectK<'a> {
+    /// Create a screened direct exchange (K) builder.
     pub fn new(
         ctx: &'a ParallelContext,
         prep: &'a PreparedBasis,

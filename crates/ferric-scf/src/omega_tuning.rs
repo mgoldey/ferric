@@ -26,6 +26,7 @@ use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 
+/// Configuration for IP-based optimal tuning of the range-separation parameter ω.
 #[derive(Debug, Clone)]
 pub struct OmegaTuneConfig {
     /// RSH functional name (must carry a libxc `_omega` parameter).
@@ -55,6 +56,7 @@ impl Default for OmegaTuneConfig {
     }
 }
 
+/// A single ω evaluation: HOMO eigenvalue, ΔSCF ionization potential, and the Koopmans residual J.
 #[derive(Debug, Clone, Copy)]
 pub struct OmegaEval {
     pub omega: f64,
@@ -63,13 +65,22 @@ pub struct OmegaEval {
     pub j: f64,
 }
 
-#[derive(Debug)]
+/// Result of an ω-tuning run: optimal ω, residual J, and the full evaluation trace.
+#[derive(Debug, Clone)]
+#[must_use]
 pub struct OmegaTuneResult {
     pub omega: f64,
     /// J(ω*) — the residual Koopmans violation at the tuned ω.
     pub j: f64,
     pub evals: Vec<OmegaEval>,
     pub converged: bool,
+}
+
+impl std::fmt::Display for OmegaTuneResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ω-tuning: ω* = {:.6} Bohr⁻¹ (J = {:.6}, {} evals, converged: {})",
+            self.omega, self.j, self.evals.len(), self.converged)
+    }
 }
 
 fn eval_j(

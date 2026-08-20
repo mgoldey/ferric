@@ -8,7 +8,7 @@ use crate::cube::ExportError;
 /// nested-sub-struct precedent (`crates/ferric-rpa/src/config.rs`) and is
 /// the natural landing spot for any future charge scheme (CHELPG/RESP/NPA/
 /// ...) without growing `export_npz`'s own parameter count again.
-#[derive(Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct ChargeSchemes<'a> {
     pub hirshfeld: Option<&'a [f64]>,
     pub lowdin: Option<&'a [f64]>,
@@ -23,7 +23,7 @@ pub struct ChargeSchemes<'a> {
 }
 
 /// Static and per-atom polarizability/field-response outputs.
-#[derive(Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct PolarizabilityBundle<'a> {
     pub esp_atoms: Option<&'a [f64]>,
     /// ESP evaluated at ARBITRARY points (a vdW/solvent-accessible surface,
@@ -65,7 +65,7 @@ pub struct PolarizabilityBundle<'a> {
 /// `casimir_polder_c6` directly), not sum this array. See also
 /// `docs/dosd-c6-rpa-vs-ts.md`'s "Numerical notes" for the analogous H2 case
 /// (6.88 pair-sum vs 9.22 correct).
-#[derive(Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct DispersionBundle<'a> {
     pub c6_freqs: Option<&'a [f64]>,
     pub c6_weights: Option<&'a [f64]>,
@@ -77,7 +77,7 @@ pub struct DispersionBundle<'a> {
 /// Everything `export_npz` can write, grouped by category. See
 /// `ChargeSchemes`/`PolarizabilityBundle`/`DispersionBundle` for the
 /// per-category fields and their CONSUMER WARNINGs.
-#[derive(Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct NpzBundle<'a> {
     pub mo_coeffs: Option<&'a Array2<f64>>,
     pub orbital_energies: Option<&'a [f64]>,

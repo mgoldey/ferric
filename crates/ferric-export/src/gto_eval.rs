@@ -2,6 +2,7 @@
 //! `ferric_dft::ao_grid`; this module re-exports it and adds the
 //! `GridSpec`-aware `eval_basis_on_grid` wrapper.
 
+/// Re-exports of the core AO evaluator from `ferric_dft::ao_grid`.
 pub use ferric_dft::ao_grid::{eval_basis_on_points, nbasis, GtoEvalError};
 use ferric_dft::ao_grid::{collect_shells, eval_shell, LocatedShell};
 

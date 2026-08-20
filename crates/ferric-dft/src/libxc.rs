@@ -39,11 +39,16 @@ mod ffi {
     }
 
     extern "C" {
+        /// Allocate an uninitialized libxc functional handle.
         pub fn xc_func_alloc() -> *mut XcFuncOpaque;
+        /// Initialize a functional by numeric ID and spin count (1=unpolarized, 2=polarized).
         pub fn xc_func_init(p: *mut XcFuncOpaque, functional: c_int, nspin: c_int) -> c_int;
+        /// Release internal data of an initialized functional (does not free the handle).
         pub fn xc_func_end(p: *mut XcFuncOpaque);
+        /// Free the handle allocated by [`xc_func_alloc`].
         pub fn xc_func_free(p: *mut XcFuncOpaque);
 
+        /// Look up a functional's numeric ID by its string name (e.g. `"gga_x_pbe"`).
         pub fn xc_functional_get_number(name: *const c_char) -> c_int;
 
         /// Override a functional's built-in external parameters. Signature from
@@ -77,6 +82,7 @@ mod ffi {
 
         // `np` is `size_t` in the libxc 5.x C header; `usize` has identical
         // size and alignment on all supported targets (LP64 Linux x86_64 / aarch64).
+        /// LDA energy density and first derivative (exc, vrho) at `np` grid points.
         pub fn xc_lda_exc_vxc(
             p: *const XcFuncOpaque,
             np: usize,
@@ -85,6 +91,7 @@ mod ffi {
             vrho: *mut f64,
         );
 
+        /// GGA energy density and first derivatives (exc, vrho, vsigma) at `np` grid points.
         pub fn xc_gga_exc_vxc(
             p: *const XcFuncOpaque,
             np: usize,
@@ -152,6 +159,7 @@ mod ffi {
             v2sigma2: *mut f64,
         );
 
+        /// Retrieve CAM (range-separated) parameters: ω, α (long-range), β (short-range).
         pub fn xc_hyb_cam_coef(
             p: *const XcFuncOpaque,
             omega: *mut f64,
@@ -159,6 +167,7 @@ mod ffi {
             beta: *mut f64,
         );
 
+        /// Fraction of exact (HF) exchange for global hybrids.
         pub fn xc_hyb_exx_coef(p: *const XcFuncOpaque) -> f64;
 
         /// Returns the (b, C) VV10 nonlocal correlation parameters for a
@@ -207,6 +216,7 @@ impl SendPtr {
 // ---------------------------------------------------------------------------
 
 #[derive(Error, Debug)]
+#[non_exhaustive]
 pub enum LibxcError {
     #[error("unknown libxc functional name: {0}")]
     UnknownName(String),
@@ -224,6 +234,10 @@ pub enum LibxcError {
     ExtParamCount { expected: usize, got: usize },
     #[error("external parameter {position} is named {actual:?}, expected {expected:?}")]
     ExtParamName { position: usize, actual: String, expected: String },
+}
+
+impl From<LibxcError> for ferric_core::error::FerricError {
+    fn from(e: LibxcError) -> Self { Self::General(e.to_string()) }
 }
 
 // ---------------------------------------------------------------------------
@@ -296,6 +310,16 @@ pub struct XcFunctional {
     /// evaluate stock coefficients while a serial run used the custom ones —
     /// producing a wrong energy with no error anywhere.
     ext_params: Option<Vec<f64>>,
+}
+
+impl std::fmt::Debug for XcFunctional {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("XcFunctional")
+            .field("family", &self.family)
+            .field("nspin", &self.nspin)
+            .field("libxc_id", &self.libxc_id)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Global mutex serializing libxc's non-thread-safe init/destroy operations.
@@ -409,6 +433,8 @@ impl XcFunctional {
         // init/destroy because it mutates handle state.
         {
             let _guard = LIBXC_INIT_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+            // SAFETY: self.ptr is a valid xc_func_type handle (created in new,
+            // guarded by LIBXC_INIT_LOCK). params.len() == n_ext_params (checked above).
             unsafe { ffi::xc_func_set_ext_params(self.ptr, params.as_ptr()) };
         }
         self.ext_params = Some(params.to_vec());
@@ -488,6 +514,7 @@ impl XcFunctional {
         Self { ptr, family, nspin, libxc_id: id, ext_params: ext_params.map(|p| p.to_vec()) }
     }
 
+    /// The functional family (LDA, GGA, hybrid, meta-GGA, etc.).
     pub fn family(&self) -> FunctionalFamily {
         self.family
     }
@@ -612,6 +639,8 @@ impl XcFunctional {
         let n = exc.len();
         assert_eq!(rho.len(), 2 * n, "polarized rho buffer must be 2 * npts");
         assert_eq!(vrho.len(), 2 * n, "polarized vrho buffer must be 2 * npts");
+        // SAFETY (per chunk): disjoint `[g0, g1)` sub-ranges (rho/vrho stride
+        // 2, exc stride 1); own worker-local handle; buffer lengths verified above.
         let exc_ptr = SendPtr(exc.as_mut_ptr());
         let vrho_ptr = SendPtr(vrho.as_mut_ptr());
         self.eval_chunked(n, |func, g0, g1| unsafe {
@@ -1003,6 +1032,7 @@ fn infer_family_from_name(name: &str) -> FunctionalFamily {
 /// High-level functional definition: aggregates one or more `XcFunctional`
 /// handles, optional CAM coefficients, optional VV10 parameters, and an
 /// optional plain-hybrid exact-exchange mixing fraction.
+#[derive(Debug)]
 pub struct XcDef {
     pub funcs: Vec<XcFunctional>,
     pub cam: Option<CamCoeffs>,
@@ -1228,6 +1258,7 @@ pub fn wb97x_l_v_def(nspin: u32) -> Result<XcDef, LibxcError> {
     })
 }
 
+/// Build an XC definition from a functional name and spin count, using default ω.
 pub fn xc_def_from_name_nspin(name: &str, nspin: u32) -> Result<XcDef, LibxcError> {
     let upper = name.to_uppercase();
 

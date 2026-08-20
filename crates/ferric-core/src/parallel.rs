@@ -124,6 +124,7 @@ impl ParallelContext {
         }
     }
 
+    /// Returns `true` if this is rank 0 (the root process).
     pub fn is_root(&self) -> bool {
         self.rank == 0
     }

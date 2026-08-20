@@ -38,6 +38,21 @@ pub struct Engine {
     is_terf: bool,
 }
 
+impl std::fmt::Debug for Engine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Engine")
+            .field("n_components", &self.handles.len())
+            .field("buf_len", &self.buf.len())
+            .field("is_terfc", &self.is_terfc)
+            .field("is_terf", &self.is_terf)
+            .finish_non_exhaustive()
+    }
+}
+
+// SAFETY: Engine owns its libint2 handle(s) exclusively (no shared mutable
+// state across instances). The underlying C++ engine has no thread affinity,
+// so transferring ownership to another thread is sound. NOT Sync because the
+// mutable scratch state cannot be shared across threads.
 unsafe impl Send for Engine {}
 
 impl Engine {
@@ -61,11 +76,15 @@ impl Engine {
                 OperatorKind::SlaterGeminal => ffi::OP_SLATER_GEMINAL,
                 _ => return Err(FerricError::Libint(format!("operator {:?} not implemented in v1", kind))),
             };
+            // SAFETY: FFI call to the libint2 shim. Arguments are valid ints/floats
+            // from the PreparedBasis. The shim catches C++ exceptions and returns
+            // null on failure (checked below). The returned handle is owned by this
+            // Engine and destroyed in Drop.
             let h = unsafe { ffi::scf_engine_create(op_kind, omega, prep.max_nprim(), prep.max_l(), precision) };
             if h.is_null() { return Err(FerricError::Libint("engine_create returned null".into())); }
             handles.push((coeff, h));
         }
-        
+
         Ok(Engine { handles, buf: vec![0.0; max_fn * max_fn * max_fn * max_fn], scratch: vec![0.0; max_fn * max_fn * max_fn * max_fn] , is_terfc: false, is_terf: false })
     }
 
@@ -89,6 +108,9 @@ impl Engine {
         let ng = op.num_components;
         let exps: Vec<f64> = op.c_omegas[..ng].to_vec();
         let coefs: Vec<f64> = op.c_coeffs[..ng].to_vec();
+        // SAFETY: FFI call. `exps` and `coefs` are valid slices of length `ng`,
+        // alive for the duration of this call. The shim copies the data and
+        // returns null on failure (checked below).
         let handle = unsafe {
             ffi::scf_engine_create_geminal(
                 op_kind, ng as c_int, exps.as_ptr(), coefs.as_ptr(),
@@ -112,6 +134,7 @@ impl Engine {
 
     /// Create a one-electron integral engine (overlap, kinetic, or nuclear).
     pub fn new_1e(op_kind: c_int, prep: &PreparedBasis, precision: f64) -> Result<Self, FerricError> {
+        // SAFETY: FFI call with valid PreparedBasis metadata. Null-checked below.
         let handle = unsafe { ffi::scf_engine_create(op_kind, 0.0, prep.max_nprim(), prep.max_l(), precision) };
         if handle.is_null() { return Err(FerricError::Libint("engine_create returned null".into())); }
         let max_fn = prep.shell_dims().iter().copied().max().unwrap_or(1);
@@ -131,6 +154,9 @@ impl Engine {
     /// `scf_*` shim call returns a status code that must be checked).
     pub fn set_point_charges(&mut self, prep: &PreparedBasis) -> Result<(), FerricError> {
         for &(_, h) in &self.handles {
+            // SAFETY: `h` is a valid engine handle (non-null, created by a
+            // scf_engine_create variant). `prep.atoms()` is a valid CAtom slice
+            // alive for the duration of this call. The shim copies the data.
             let ret = unsafe {
                 ffi::scf_engine_set_point_charges(h, prep.atoms().as_ptr(), prep.atoms().len() as c_int)
             };
@@ -158,6 +184,8 @@ impl Engine {
             z: pc.z,
         }));
         for &(_, h) in &self.handles {
+            // SAFETY: `h` is a valid engine handle. `atoms` is a valid CAtom
+            // Vec alive for the duration of this call. The shim copies the data.
             let ret = unsafe {
                 ffi::scf_engine_set_point_charges(h, atoms.as_ptr(), atoms.len() as c_int)
             };
@@ -182,6 +210,9 @@ impl Engine {
         self.buf[..n].fill(0.0);
 
         for &(coeff, h) in &self.handles {
+            // SAFETY: `h` and `prep.handle()` are valid libint2 handles. Shell
+            // indices are in bounds (PreparedBasis owns them). `self.scratch` is
+            // sized to hold max_fn^4 doubles. Status checked via assert.
             let written = unsafe { ffi::scf_compute_eri_quartet(h, prep.handle(), sh1 as c_int, sh2 as c_int, sh3 as c_int, sh4 as c_int, self.scratch.as_mut_ptr()) };
             assert!(written >= 0, "libint2 internal error in eri quartet ({sh1},{sh2},{sh3},{sh4}): status {written}");
             if written > 0 {
@@ -198,6 +229,8 @@ impl Engine {
     pub fn compute_1e_block(&mut self, prep: &PreparedBasis, sh1: usize, sh2: usize) -> &[f64] {
         let n = prep.shell_dims()[sh1] * prep.shell_dims()[sh2];
         if self.buf.len() < n { self.buf.resize(n, 0.0); }
+        // SAFETY: Valid engine/basis handles and in-bounds shell indices.
+        // `self.buf` is sized to hold max_fn^2 doubles. Status checked via assert.
         let written = unsafe { ffi::scf_compute_1e_block(self.handles[0].1, prep.handle(), sh1 as c_int, sh2 as c_int, self.buf.as_mut_ptr()) };
         assert!(written >= 0, "libint2 internal error in 1e block ({sh1},{sh2}): status {written}");
         &self.buf[..written as usize]
@@ -205,6 +238,7 @@ impl Engine {
 
     /// Create a first-derivative one-electron integral engine.
     pub fn new_1e_deriv(op_kind: c_int, prep: &PreparedBasis, precision: f64) -> Result<Self, FerricError> {
+        // SAFETY: FFI call with valid PreparedBasis metadata. Null-checked below.
         let handle = unsafe { ffi::scf_engine_create_deriv(op_kind, 0.0, prep.max_nprim(), prep.max_l(), precision) };
         if handle.is_null() { return Err(FerricError::Libint("derivative engine not available".into())); }
         let max_fn = prep.shell_dims().iter().copied().max().unwrap_or(1);
@@ -226,6 +260,7 @@ impl Engine {
                 OperatorKind::SlaterGeminal => ffi::OP_SLATER_GEMINAL,
                 _ => return Err(FerricError::Libint(format!("operator {:?} not implemented", kind))),
             };
+            // SAFETY: FFI call with valid metadata. Null-checked below.
             let h = unsafe { ffi::scf_engine_create_deriv(op_kind, omega, prep.max_nprim(), prep.max_l(), precision) };
             if h.is_null() { return Err(FerricError::Libint("derivative engine not available".into())); }
             handles.push((coeff, h));
@@ -245,6 +280,8 @@ impl Engine {
         // bounds for every 1e engine kind.
         let total = 3 * (2 + prep.atoms().len()) * n;
         if self.buf.len() < total { self.buf.resize(total, 0.0); }
+        // SAFETY: Valid handles and in-bounds shell indices. `self.buf` is
+        // sized to 3*(2+natoms)*n doubles (worst-case nuclear deriv).
         let written = unsafe { ffi::scf_compute_1e_deriv_block(self.handles[0].1, prep.handle(), sh1 as c_int, sh2 as c_int, self.buf.as_mut_ptr()) };
         assert!(written >= 0, "libint2 internal error in 1e deriv block ({sh1},{sh2}): status {written}");
         if written == 0 { None } else { Some(&self.buf[..written as usize]) }
@@ -260,6 +297,8 @@ impl Engine {
         let n = prep.shell_dims()[sh1] * prep.shell_dims()[sh2];
         let total = 3 * (2 + n_charges) * n;
         if self.buf.len() < total { self.buf.resize(total, 0.0); }
+        // SAFETY: Valid handles and in-bounds shell indices. `self.buf` is
+        // sized to 3*(2+n_charges)*n doubles to accommodate extra charges.
         let written = unsafe { ffi::scf_compute_1e_deriv_block(self.handles[0].1, prep.handle(), sh1 as c_int, sh2 as c_int, self.buf.as_mut_ptr()) };
         assert!(written >= 0, "libint2 internal error in 1e deriv block ({sh1},{sh2}): status {written}");
         if written == 0 { None } else { Some(&self.buf[..written as usize]) }
@@ -275,6 +314,8 @@ impl Engine {
         // Exact terfc/terf go through the standalone table engine, not libint2.
         if matches!(op.kind, OperatorKind::Terfc | OperatorKind::Terf) {
             let is_terf = matches!(op.kind, OperatorKind::Terf);
+            // SAFETY: FFI call to create a terfc/terf table engine. `std::ptr::null()`
+            // for table_dir falls back to FERRIC_TERF_TABLE_DIR. Null-checked below.
             let h = unsafe {
                 if is_terf {
                     ffi::scf_engine_create_terf_3center(op.distance, op.omega, max_nprim, max_l, precision, std::ptr::null())
@@ -310,6 +351,7 @@ impl Engine {
                 OperatorKind::SlaterGeminal => ffi::OP_SLATER_GEMINAL,
                 _ => return Err(FerricError::Libint(format!("operator {:?} not implemented", kind))),
             };
+            // SAFETY: FFI call with valid metadata. Null-checked below.
             let h = unsafe { ffi::scf_engine_create_3center(op_kind, omega, max_nprim, max_l, precision) };
             if h.is_null() { return Err(FerricError::Libint("3-center engine not available".into())); }
             handles.push((coeff, h));
@@ -324,6 +366,8 @@ impl Engine {
         // Exact terfc/terf go through the standalone table engine, not libint2.
         if matches!(op.kind, OperatorKind::Terfc | OperatorKind::Terf) {
             let is_terf = matches!(op.kind, OperatorKind::Terf);
+            // SAFETY: FFI call to create a terfc/terf 2-center table engine.
+            // Null-checked below.
             let h = unsafe {
                 if is_terf {
                     ffi::scf_engine_create_terf_2center(op.distance, op.omega, dfbs.max_nprim(), dfbs.max_l(), precision, std::ptr::null())
@@ -359,6 +403,7 @@ impl Engine {
                 OperatorKind::SlaterGeminal => ffi::OP_SLATER_GEMINAL,
                 _ => return Err(FerricError::Libint(format!("operator {:?} not implemented", kind))),
             };
+            // SAFETY: FFI call with valid metadata. Null-checked below.
             let h = unsafe { ffi::scf_engine_create_2center(op_kind, omega, dfbs.max_nprim(), dfbs.max_l(), precision) };
             if h.is_null() { return Err(FerricError::Libint("2-center engine not available".into())); }
             handles.push((coeff, h));
@@ -376,6 +421,9 @@ impl Engine {
         self.buf[..n].fill(0.0);
         
         for &(coeff, h) in &self.handles {
+            // SAFETY: `h`, `obs.handle()`, `dfbs.handle()` are valid libint2
+            // handles. Shell indices are in bounds. `self.scratch` is sized to
+            // hold max_fn_df * max_fn_obs^2 doubles. Status checked via assert.
             let written = unsafe {
                 if self.is_terf {
                     ffi::scf_compute_terf_eri3(h, obs.handle(), dfbs.handle(), sh_p as c_int, sh1 as c_int, sh2 as c_int, self.scratch.as_mut_ptr())
@@ -405,6 +453,8 @@ impl Engine {
         self.buf[..n].fill(0.0);
         
         for &(coeff, h) in &self.handles {
+            // SAFETY: `h` and `dfbs.handle()` are valid handles. Shell indices
+            // in bounds. `self.scratch` sized for max_fn^2. Status checked.
             let written = unsafe {
                 if self.is_terf {
                     ffi::scf_compute_terf_eri2(h, dfbs.handle(), sh_p as c_int, sh_q as c_int, self.scratch.as_mut_ptr())
@@ -438,6 +488,8 @@ impl Engine {
         self.buf[..total].fill(0.0);
         
         for &(coeff, h) in &self.handles {
+            // SAFETY: Valid handles and in-bounds shell indices. Buffer sized
+            // for 12 * max_fn^4 doubles. Status checked via assert.
             let written = unsafe { ffi::scf_compute_eri_deriv_quartet(h, prep.handle(), sh1 as c_int, sh2 as c_int, sh3 as c_int, sh4 as c_int, self.scratch.as_mut_ptr()) };
             assert!(written >= 0, "libint2 internal error in eri deriv quartet ({sh1},{sh2},{sh3},{sh4}): status {written}");
             if written > 0 {
@@ -468,6 +520,7 @@ impl Engine {
                 OperatorKind::SlaterGeminal => ffi::OP_SLATER_GEMINAL,
                 _ => return Err(FerricError::Libint(format!("operator {:?} not implemented", kind))),
             };
+            // SAFETY: FFI call with valid metadata. Null-checked below.
             let h = unsafe { ffi::scf_engine_create_3center_deriv(op_kind, omega, max_nprim, max_l, precision) };
             if h.is_null() { return Err(FerricError::Libint("3-center derivative engine not available".into())); }
             handles.push((coeff, h));
@@ -491,6 +544,7 @@ impl Engine {
                 OperatorKind::SlaterGeminal => ffi::OP_SLATER_GEMINAL,
                 _ => return Err(FerricError::Libint(format!("operator {:?} not implemented", kind))),
             };
+            // SAFETY: FFI call with valid metadata. Null-checked below.
             let h = unsafe { ffi::scf_engine_create_2center_deriv(op_kind, omega, dfbs.max_nprim(), dfbs.max_l(), precision) };
             if h.is_null() { return Err(FerricError::Libint("2-center derivative engine not available".into())); }
             handles.push((coeff, h));
@@ -509,6 +563,8 @@ impl Engine {
         self.buf[..total].fill(0.0);
         
         for &(coeff, h) in &self.handles {
+            // SAFETY: Valid handles, in-bounds shell indices, buffer sized for
+            // 9 * max_fn_df * max_fn_obs^2. Status checked via assert.
             let written = unsafe { ffi::scf_compute_eri3_deriv(h, obs.handle(), dfbs.handle(), sh_p as c_int, sh1 as c_int, sh2 as c_int, self.scratch.as_mut_ptr()) };
             assert!(written >= 0, "libint2 internal error in eri3 deriv ({sh_p}|{sh1},{sh2}): status {written}");
             if written > 0 {
@@ -531,6 +587,8 @@ impl Engine {
         self.buf[..total].fill(0.0);
         
         for &(coeff, h) in &self.handles {
+            // SAFETY: Valid handles, in-bounds shell indices, buffer sized for
+            // 6 * max_fn^2. Status checked via assert.
             let written = unsafe { ffi::scf_compute_eri2_deriv(h, dfbs.handle(), sh_p as c_int, sh_q as c_int, self.scratch.as_mut_ptr()) };
             assert!(written >= 0, "libint2 internal error in eri2 deriv ({sh_p}|{sh_q}): status {written}");
             if written > 0 {
@@ -547,6 +605,9 @@ impl Drop for Engine {
     fn drop(&mut self) {
         for &(_, h) in &self.handles {
             if !h.is_null() {
+                // SAFETY: `h` is a valid engine handle created by one of the
+                // scf_engine_create variants. Each handle is destroyed exactly
+                // once (owned by this Engine, consumed here).
                 unsafe { ffi::scf_engine_destroy(h) };
             }
         }

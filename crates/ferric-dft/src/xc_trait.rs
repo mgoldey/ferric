@@ -19,7 +19,7 @@ use ndarray::Array2;
 ///
 /// For pure HF (no DFT), `KMix { sr: 1.0, lr: 1.0, omega: 0.0 }` reduces to the
 /// existing `F = h + 2J − K` path with a single full-Coulomb K.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct KMix {
     pub sr: f64,
     pub lr: f64,

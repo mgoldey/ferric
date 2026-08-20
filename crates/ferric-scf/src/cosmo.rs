@@ -533,6 +533,7 @@ impl CosmoCavity {
                         let dz = self.segments[k].pos[2] - self.segments[l].pos[2];
                         let r = (dx * dx + dy * dy + dz * dz).sqrt();
                         let xi_kl = xi_k * xi_l / (xi_k * xi_k + xi_l * xi_l).sqrt();
+                        // SAFETY: erf is the C standard library error function; f64 input is always valid.
                         let v = unsafe { erf(xi_kl * r) } / r;
                         s[(k, l)] = v;
                         s[(l, k)] = v;
@@ -556,6 +557,7 @@ extern "C" {
 
 /// Result of a single COSMO reaction-field evaluation for a given density.
 #[derive(Debug, Clone)]
+#[must_use]
 pub struct CosmoResult {
     /// Reaction-field addition to the one-electron Hamiltonian (hcore/Fock),
     /// shape (nbasis, nbasis). Symmetric.
@@ -629,6 +631,8 @@ pub fn cosmo_reaction_field(
             y: seg.pos[1],
             z: seg.pos[2],
         }];
+        // SAFETY: probe is a valid CAtom slice; handle_mut() returns the live engine pointer;
+        // probe.len() fits in c_int. The shim catches C++ exceptions and returns a negative rc.
         let rc = unsafe {
             ffi::scf_engine_set_point_charges(engine.handle_mut(), probe.as_ptr(), probe.len() as std::os::raw::c_int)
         };
@@ -713,6 +717,7 @@ pub fn cosmo_reaction_field(
             y: seg.pos[1],
             z: seg.pos[2],
         }];
+        // SAFETY: same contract as pass 1 — valid CAtom slice, live engine pointer, rc checked.
         let rc = unsafe {
             ffi::scf_engine_set_point_charges(engine.handle_mut(), probe.as_ptr(), probe.len() as std::os::raw::c_int)
         };

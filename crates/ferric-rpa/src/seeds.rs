@@ -30,7 +30,7 @@ use ndarray::{s, Array1, Array2};
 use ndarray_linalg::QR;
 
 /// Strategy selector matching the seed builders below.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BoysSeedMode {
     /// One seed per Boys orbital, summed over all virtuals.
     OccupiedOnly,

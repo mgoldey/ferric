@@ -1,3 +1,5 @@
+//! Direct integral-driven Coulomb (J) matrix construction.
+
 use crate::fock::JBuilder;
 use crate::screening::SchwarzBounds;
 use ferric_core::FerricError;
@@ -24,7 +26,17 @@ pub struct DirectJ<'a> {
     pool: Option<crate::engine_pool::EnginePool>,
 }
 
+impl<'a> std::fmt::Debug for DirectJ<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DirectJ")
+            .field("thresh", &self.thresh)
+            .field("mem_budget", &self.mem_budget)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<'a> DirectJ<'a> {
+    /// Create a screened direct Coulomb (J) builder.
     pub fn new(
         ctx: &'a ParallelContext,
         prep: &'a PreparedBasis,

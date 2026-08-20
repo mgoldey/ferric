@@ -105,7 +105,7 @@ pub struct Tessera {
     pub switch_fun: f64,
 }
 
-/// Cavity construction knobs.
+/// Cavity construction parameters (sphere radii scaling, grid resolution).
 #[derive(Debug, Clone)]
 pub struct CavityConfig {
     /// Multiplicative scale factor applied to each atom's Bondi radius

@@ -24,30 +24,54 @@
 #![allow(clippy::needless_range_loop)] // tensor/MO-index loops read clearer with explicit indices
 #![allow(clippy::excessive_precision)] // reference tables transcribed at full source precision
 
+/// AO-basis RPA correlation energy (Laplace-transform formulation).
 pub mod ao_rpa;
+/// Boys orbital localization for RPA seed construction.
 pub mod boys_localize;
+/// Memory budget estimation for PDEP-RPA stages.
 pub mod budget;
+/// Per-spin RPA channel (B_ov, orbital energies) for unrestricted dispatch.
 pub mod channel;
+/// PDEP-RPA configuration: eigensolver, quadrature, chi0 backend, sparsity.
 pub mod config;
+/// Davidson eigensolver for the static dielectric matrix.
 pub mod davidson;
+/// Diagnostic RI-dRPA energy for cross-validation.
 pub mod diagnostics;
+/// Dispersion coefficients: isotropic/anisotropic C6 via Casimir-Polder integration.
 pub mod dispersion;
+/// DLPNO-RPA (domain-based local pair natural orbital RPA).
 pub mod dlpno_rpa;
+/// Imaginary-frequency quadrature evaluation and RPA correlation energy.
 pub mod energy;
+/// RPA nuclear gradient via finite-difference.
 pub mod gradient;
+/// Block Lanczos eigensolver for the static dielectric matrix.
 pub mod lanczos;
+/// Geometry optimization using RPA gradients.
 pub mod optimize;
+/// Laplace-separable chi0 kernel for the PDEP dielectric matvec.
 pub mod laplace_chi0;
+/// MPI-distributed PDEP-RPA frequency quadrature.
 #[cfg(feature = "mpi")]
 pub mod mpi_rpa;
+/// PNO truncation for local RPA.
 pub mod pno;
+/// Post-RPA properties: polarizability, Hirshfeld/Lowdin charges, ESP, electric field.
 pub mod properties;
+/// Minimax imaginary-frequency quadrature construction.
 pub mod quadrature;
+/// Short-range MP2 + long-range RPA composite method.
 pub mod rs_mp2_rpa;
+/// Boys-screened B-tile construction for sparse chi0.
 pub mod screen;
+/// Seed vector construction for Davidson/Lanczos eigensolvers.
 pub mod seeds;
+/// Dense Sternheimer (Adler-Wiser) chi0 and dielectric matrix evaluation.
 pub mod sternheimer;
+/// Sparse Sternheimer chi0 via Boys-screened B-tiles.
 pub mod sternheimer_sparse;
+/// Stage timing instrumentation for PDEP-RPA.
 pub mod timing;
 
 pub use lanczos::{run_lanczos_full_rank, run_lanczos_seeded, LanczosResult};
@@ -210,7 +234,8 @@ fn build_boys_screened_seed(sb: &ScreenedBov) -> Result<Array2<f64>, FerricError
 }
 
 /// Results from a PDEP-RPA calculation.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+#[must_use]
 pub struct PdepRpaResult {
     /// RPA correlation energy in Hartree.
     pub e_rpa: f64,
@@ -253,6 +278,13 @@ pub struct PdepRpaResult {
     /// this `false`. Callers that need a hard guarantee should check this
     /// explicitly; the CLI and Python bindings only warn.
     pub eigensolver_converged: bool,
+}
+
+impl std::fmt::Display for PdepRpaResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "PDEP-RPA correlation: {:.10} Ha ({} eigenpotentials, converged: {})",
+            self.e_rpa, self.n_eigenpotentials, self.eigensolver_converged)
+    }
 }
 
 /// Pre-flight peak-memory gate shared by [`run_pdep_rpa`] and the eigensolve
@@ -317,6 +349,7 @@ fn davidson_default_max_vecs(naux: usize, budget_bytes: usize) -> usize {
 
 
 /// Top-level PDEP-RPA energy calculation.
+#[must_use]
 pub fn run_pdep_rpa(
     mol: &Molecule,
     obs: &PreparedBasis,

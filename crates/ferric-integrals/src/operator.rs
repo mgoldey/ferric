@@ -43,10 +43,11 @@ pub enum OperatorKind {
     Delcgtg2,
 }
 
+/// Maximum number of integral components per shell quartet (rank-2 multipoles: 1+3+6 = 10, but only 8 used for derivatives of up to second order).
 pub const MAX_COMPONENTS: usize = 8;
 
 /// A two-electron operator with its parameters.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Operator {
     pub kind: OperatorKind,
     pub omega: f64,

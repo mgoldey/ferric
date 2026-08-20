@@ -15,6 +15,7 @@ use rayon::prelude::*;
 /// results (both paths must produce identical output).
 const PAR_MIN_PTS: usize = 512;
 
+/// Electron density ρ, its gradient ∇ρ, and the gradient invariant σ = |∇ρ|² evaluated on a real-space grid.
 #[derive(Debug, Clone)]
 pub struct DensityGrid {
     /// ρ(r_g), shape (npts,)

@@ -20,7 +20,7 @@ ndarray-linalg = { workspace = true }
 num-complex = "0.4"
 openblas-src = { workspace = true }
 rayon = { workspace = true }
-mpi = { version = "0.7", optional = true }
+mpi = { workspace = true, optional = true }
 
 [features]
 default = []

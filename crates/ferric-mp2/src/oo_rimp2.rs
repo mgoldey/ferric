@@ -76,7 +76,8 @@ impl Default for OoRiMp2Config {
 }
 
 /// Result from OO-RI-MP2.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+#[must_use]
 pub struct OoRiMp2Result {
     /// Total energy: E_HF(optimized) + E_MP2(optimized).
     pub total_energy: f64,
@@ -94,6 +95,13 @@ pub struct OoRiMp2Result {
     pub mos: Array2<f64>,
     /// Orbital energies from the optimized Fock matrix.
     pub orbital_energies: Vec<f64>,
+}
+
+impl std::fmt::Display for OoRiMp2Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "OO-RI-MP2 total: {:.10} Ha ({} iters, converged: {})",
+            self.total_energy, self.iterations, self.converged)
+    }
 }
 
 /// AO-side invariants for OO-RI-MP2, built once and reused across every
@@ -119,6 +127,15 @@ pub struct OoRiMp2AoTensors {
     pub eri3_ao: RefCell<ThreeIndexSource>,
     naux: usize,
     nao: usize,
+}
+
+impl std::fmt::Debug for OoRiMp2AoTensors {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OoRiMp2AoTensors")
+            .field("naux", &self.naux)
+            .field("nao", &self.nao)
+            .finish_non_exhaustive()
+    }
 }
 
 impl OoRiMp2AoTensors {
@@ -1344,6 +1361,7 @@ pub fn oo_ri_mp2(
 // System context (mol, two bases, operator, bounds) plus the rotation inputs
 // (c_init, kappa) and orbital partition — all distinct, nothing left to bundle.
 #[allow(clippy::too_many_arguments)]
+/// Evaluate the OO-RI-MP2 energy for a given orbital-rotation matrix κ (Hylleraas functional).
 pub fn energy_at_kappa(
     mol: &Molecule,
     obs: &PreparedBasis,

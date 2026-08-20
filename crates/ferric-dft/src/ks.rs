@@ -30,7 +30,9 @@ use crate::vv10::add_vv10_scratch;
 use crate::vxc::{semilocal_vxc_closed_scratch, semilocal_vxc_polarized_scratch, VxcScratch};
 use crate::xc_trait::{KMix, UksXcContribution, XcContribution};
 
+/// Errors from the Kohn-Sham exchange-correlation integration path.
 #[derive(Error, Debug)]
+#[non_exhaustive]
 pub enum KsXcError {
     #[error("AO evaluation failed: {0:?}")]
     Eval(GtoEvalError),
@@ -52,6 +54,10 @@ pub enum KsXcError {
 
 impl From<GtoEvalError> for KsXcError { fn from(e: GtoEvalError) -> Self { Self::Eval(e) } }
 impl From<LibxcError>  for KsXcError { fn from(e: LibxcError)  -> Self { Self::Libxc(e) } }
+
+impl From<KsXcError> for ferric_core::error::FerricError {
+    fn from(e: KsXcError) -> Self { Self::General(e.to_string()) }
+}
 
 /// Number of resident `(nbf, batch_pts)` `f64` planes a batched semilocal
 /// V_xc pass keeps alive at once: `chi` + `dchi` (4, same as
@@ -281,6 +287,7 @@ fn batched_add_xc_uks(
 /// — never of thread count — so which points land in which batch is fixed
 /// for a given system/budget, independent of how rayon happens to schedule
 /// the intra-batch parallel work.
+#[derive(Debug)]
 enum GridCache {
     Full { chi: Array2<f64>, dchi: Array3<f64> },
     Batched { batch_pts: usize },
@@ -292,6 +299,8 @@ enum GridCache {
 /// If the XC definition includes VV10, also caches a smaller NLC grid + AO
 /// (VV10's O(npts²) pair sum needs its own grid fully resident regardless —
 /// see `check_grid_budget` — so the NLC cache is never batched).
+/// Closed-shell Kohn-Sham XC evaluator with cached grid and AO data.
+#[derive(Debug)]
 pub struct KsXc {
     pub xc: XcDef,
     pub grid: Vec<GridPoint>,
@@ -324,6 +333,7 @@ pub struct KsXc {
 }
 
 impl KsXc {
+    /// Build a closed-shell XC evaluator: resolve the functional, construct the Becke-Lebedev grid, and cache AO values.
     pub fn new(
         mol: &Molecule,
         bs: &BasisSet,
@@ -457,6 +467,8 @@ impl XcContribution for KsXc {
 /// `XcDef` is built with `nspin=2` so libxc returns spin-resolved
 /// v_ρ / v_σ. VV10 is closed-shell-friendly (function of total ρ and |∇ρ|²);
 /// the V_nl piece is added equally to V_α and V_β.
+/// Open-shell (UKS) Kohn-Sham XC evaluator with cached grid and AO data.
+#[derive(Debug)]
 pub struct KsXcUks {
     pub xc: XcDef,
     pub grid: Vec<GridPoint>,
@@ -476,6 +488,7 @@ pub struct KsXcUks {
 }
 
 impl KsXcUks {
+    /// Build an open-shell (UKS) XC evaluator with spin-resolved libxc response.
     pub fn new(
         mol: &Molecule,
         bs: &BasisSet,

@@ -26,6 +26,7 @@ use ndarray::{ArrayD, IxDyn};
 /// `aa`/`bb` are the same-spin blocks; `ab` is the mixed block with the FIRST pair α and
 /// the SECOND pair β. The `βα` block is obtained by transposing `ab`'s pairs, exploiting
 /// `(pq|rs) = (rs|pq)`.
+#[derive(Debug)]
 pub struct SpinBlocks<'a> {
     /// `(pq|rs)` with all four indices α.
     pub aa: &'a ArrayD<f64>,

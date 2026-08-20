@@ -28,6 +28,7 @@ fn enabled() -> bool {
 /// A scoped stage timer. Construct with `start`, call `end` when the stage
 /// finishes. No-op (and no allocation of the label cost beyond the &'static str)
 /// when `FERRIC_TIMING` is unset.
+#[derive(Debug)]
 pub struct Stage {
     label: &'static str,
     t0: Option<Instant>,

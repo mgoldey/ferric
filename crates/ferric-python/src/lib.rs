@@ -57,12 +57,11 @@ struct PyMolecule { inner: Molecule }
 
 #[pymethods]
 impl PyMolecule {
-    /// Load a molecule from an XYZ file on disk, assuming neutral singlet
-    /// (charge 0, multiplicity 1). For open-shell/charged molecules use
-    /// `from_xyz_string` instead.
+    /// Load a molecule from an XYZ file on disk.
     #[staticmethod]
-    fn from_xyz(path: &str) -> PyResult<Self> {
-        let mol = Molecule::load_xyz(path)
+    #[pyo3(signature = (path, charge=0, multiplicity=1))]
+    fn from_xyz(path: &str, charge: i32, multiplicity: usize) -> PyResult<Self> {
+        let mol = Molecule::load_xyz_with_charge(path, charge, multiplicity)
             .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("{e}")))?;
         Ok(PyMolecule { inner: mol })
     }
@@ -194,6 +193,12 @@ impl PyRhfResult {
     fn mo_coefficients<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
         PyArray2::from_array(py, &self.scf_data.mos_alpha)
     }
+    fn __repr__(&self) -> String {
+        format!("RhfResult(energy={:.10}, converged={})", self.energy, self.converged)
+    }
+    fn __str__(&self) -> String {
+        format!("RHF Energy: {:.10} Ha (converged: {}, {} iterations)", self.energy, self.converged, self.iterations)
+    }
 }
 
 /// Closed-shell RHF (also UHF/ROHF convergence aids apply to the open-shell
@@ -312,6 +317,12 @@ impl PyUhfResult {
     }
     fn orbital_energies_beta<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
         PyArray1::from_vec(py, self.eps_beta_data.clone())
+    }
+    fn __repr__(&self) -> String {
+        format!("UhfResult(energy={:.10}, converged={})", self.energy, self.converged)
+    }
+    fn __str__(&self) -> String {
+        format!("UHF Energy: {:.10} Ha (converged: {}, {} iterations)", self.energy, self.converged, self.iterations)
     }
 }
 
@@ -468,6 +479,12 @@ impl PyOptimizeResult {
     fn mol(&self) -> PyMolecule {
         PyMolecule { inner: self.mol_data.clone() }
     }
+    fn __repr__(&self) -> String {
+        format!("OptimizeResult(energy={:.10}, converged={}, steps={})", self.energy, self.converged, self.steps)
+    }
+    fn __str__(&self) -> String {
+        format!("Optimized Energy: {:.10} Ha (converged: {}, {} steps)", self.energy, self.converged, self.steps)
+    }
 }
 
 #[pyfunction]
@@ -511,6 +528,23 @@ struct PyFrequencyResult {
     #[pyo3(get)] n_gradient_evaluations: usize,
     /// Electronic energy at the undisplaced geometry.
     #[pyo3(get)] energy: f64,
+}
+
+#[pymethods]
+impl PyFrequencyResult {
+    fn __repr__(&self) -> String {
+        format!(
+            "FrequencyResult(energy={:.10}, n_modes={}, is_linear={})",
+            self.energy, self.frequencies.len(), self.is_linear,
+        )
+    }
+    fn __str__(&self) -> String {
+        let n_imag = self.frequencies.iter().filter(|&&f| f < 0.0).count();
+        format!(
+            "Vibrational Frequencies: {} modes, {} imaginary, energy={:.10} Ha, asymmetry={:.2e}",
+            self.frequencies.len(), n_imag, self.energy, self.asymmetry,
+        )
+    }
 }
 
 /// Harmonic vibrational frequencies, by finite difference of the ANALYTIC
@@ -1519,6 +1553,19 @@ struct PyRiMp2Result {
     #[pyo3(get)] mp2_corr: f64,
 }
 
+#[pymethods]
+impl PyRiMp2Result {
+    fn __repr__(&self) -> String {
+        format!("RiMp2Result(total_energy={:.10}, mp2_corr={:.10})", self.total_energy, self.mp2_corr)
+    }
+    fn __str__(&self) -> String {
+        format!(
+            "RI-MP2 Total Energy: {:.10} Ha (RHF: {:.10}, corr: {:.10})",
+            self.total_energy, self.rhf_energy, self.mp2_corr,
+        )
+    }
+}
+
 /// Resolution-of-identity (density-fitted) MP2 on a closed-shell RHF
 /// reference. Runs its own internal RHF first (via `k_builder`, same
 /// convention as `run_rhf`'s `k_builder` kwarg), then the RI-MP2 correlation
@@ -1825,6 +1872,22 @@ struct PyOoRiMp2Result {
     #[pyo3(get)] grad_norm: f64,
 }
 
+#[pymethods]
+impl PyOoRiMp2Result {
+    fn __repr__(&self) -> String {
+        format!(
+            "OoRiMp2Result(total_energy={:.10}, converged={}, iterations={})",
+            self.total_energy, self.converged, self.iterations,
+        )
+    }
+    fn __str__(&self) -> String {
+        format!(
+            "OO-RI-MP2 Total Energy: {:.10} Ha (HF: {:.10}, corr: {:.10}, converged: {}, {} iterations, grad_norm: {:.2e})",
+            self.total_energy, self.hf_energy, self.mp2_corr, self.converged, self.iterations, self.grad_norm,
+        )
+    }
+}
+
 /// Orbital-optimized RI-MP2: jointly minimizes E_HF + E_MP2 over orbital
 /// rotations (level-shifted approximate Newton + DIIS + Cayley rotation).
 /// Starts from a converged RHF reference (same convention as `run_rimp2`).
@@ -1889,6 +1952,19 @@ struct PyMp3Result {
     #[pyo3(get)] e_total: f64,
 }
 
+#[pymethods]
+impl PyMp3Result {
+    fn __repr__(&self) -> String {
+        format!("Mp3Result(e_total={:.10}, e_corr={:.10})", self.e_total, self.e_corr)
+    }
+    fn __str__(&self) -> String {
+        format!(
+            "MP3 Total Energy: {:.10} Ha (HF: {:.10}, MP2: {:.10}, MP3: {:.10})",
+            self.e_total, self.e_hf, self.e_mp2, self.e_mp3,
+        )
+    }
+}
+
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None))]
 fn run_mp3(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
@@ -1918,6 +1994,19 @@ struct PyLaplaceMp2Result {
     #[pyo3(get)] mp2_corr: f64,
     #[pyo3(get)] e_os: f64,
     #[pyo3(get)] e_ss: f64,
+}
+
+#[pymethods]
+impl PyLaplaceMp2Result {
+    fn __repr__(&self) -> String {
+        format!("LaplaceMp2Result(total_energy={:.10}, mp2_corr={:.10})", self.total_energy, self.mp2_corr)
+    }
+    fn __str__(&self) -> String {
+        format!(
+            "Laplace RI-MP2 Total Energy: {:.10} Ha (corr: {:.10}, OS: {:.10}, SS: {:.10})",
+            self.total_energy, self.mp2_corr, self.e_os, self.e_ss,
+        )
+    }
 }
 
 #[pyfunction]
@@ -1962,6 +2051,22 @@ struct PySosMp2Result {
     #[pyo3(get)] n_quad: usize,
     /// `"mo"` or `"ao"`, echoed so a caller can record which algebra ran.
     #[pyo3(get)] formulation: String,
+}
+
+#[pymethods]
+impl PySosMp2Result {
+    fn __repr__(&self) -> String {
+        format!(
+            "SosMp2Result(total_energy={:.10}, sos_corr={:.10}, formulation=\"{}\")",
+            self.total_energy, self.sos_corr, self.formulation,
+        )
+    }
+    fn __str__(&self) -> String {
+        format!(
+            "SOS-MP2 Total Energy: {:.10} Ha (RHF: {:.10}, SOS corr: {:.10}, c_os={}, n_quad={}, formulation={})",
+            self.total_energy, self.rhf_energy, self.sos_corr, self.c_os, self.n_quad, self.formulation,
+        )
+    }
 }
 
 /// Laplace-transform SOS-MP2: `E = c_os * E_OS`.
@@ -2040,6 +2145,19 @@ struct PyAttenuatedMp2Result {
     #[pyo3(get)] e_ss: f64,
 }
 
+#[pymethods]
+impl PyAttenuatedMp2Result {
+    fn __repr__(&self) -> String {
+        format!("AttenuatedMp2Result(total_energy={:.10}, mp2_corr={:.10})", self.total_energy, self.mp2_corr)
+    }
+    fn __str__(&self) -> String {
+        format!(
+            "Attenuated RI-MP2 Total Energy: {:.10} Ha (RHF: {:.10}, corr: {:.10}, OS: {:.10}, SS: {:.10})",
+            self.total_energy, self.rhf_energy, self.mp2_corr, self.e_os, self.e_ss,
+        )
+    }
+}
+
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, omega=None, frozen_core=None, k_builder=None, memory_budget_gb=None))]
 fn run_attenuated_rimp2(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
@@ -2107,6 +2225,19 @@ struct PyScsMp2Result {
     #[pyo3(get)] scs_corr: f64,
     #[pyo3(get)] e_os: f64,
     #[pyo3(get)] e_ss: f64,
+}
+
+#[pymethods]
+impl PyScsMp2Result {
+    fn __repr__(&self) -> String {
+        format!("ScsMp2Result(total_energy={:.10}, scs_corr={:.10})", self.total_energy, self.scs_corr)
+    }
+    fn __str__(&self) -> String {
+        format!(
+            "SCS-MP2 Total Energy: {:.10} Ha (RHF: {:.10}, SCS corr: {:.10}, OS: {:.10}, SS: {:.10})",
+            self.total_energy, self.rhf_energy, self.scs_corr, self.e_os, self.e_ss,
+        )
+    }
 }
 
 #[pyfunction]
@@ -2197,6 +2328,22 @@ struct PyMp2VResult {
     /// Grid points in the VV10 nonlocal integration (tells a suspiciously
     /// small E_nl from a suspiciously small grid).
     #[pyo3(get)] n_nlc_points: usize,
+}
+
+#[pymethods]
+impl PyMp2VResult {
+    fn __repr__(&self) -> String {
+        format!(
+            "Mp2VResult(total_energy={:.10}, att_mp2_corr={:.10}, vv10_e_nl={:.10})",
+            self.total_energy, self.att_mp2_corr, self.vv10_e_nl,
+        )
+    }
+    fn __str__(&self) -> String {
+        format!(
+            "MP2-V Total Energy: {:.10} Ha (RHF: {:.10}, att-MP2 corr: {:.10}, VV10 E_nl: {:.10})",
+            self.total_energy, self.rhf_energy, self.att_mp2_corr, self.vv10_e_nl,
+        )
+    }
 }
 
 /// MP2-V (Goldey/Belzunces/Head-Gordon, JCTC 11, 4159 (2015)):
@@ -2310,6 +2457,22 @@ struct PyRsMp2RpaResult {
     #[pyo3(get)] e_delta_drpa_sr: Option<f64>,
 }
 
+#[pymethods]
+impl PyRsMp2RpaResult {
+    fn __repr__(&self) -> String {
+        format!(
+            "RsMp2RpaResult(total_energy={:.10}, e_corr={:.10})",
+            self.total_energy, self.e_corr,
+        )
+    }
+    fn __str__(&self) -> String {
+        format!(
+            "RS-MP2-RPA Total Energy: {:.10} Ha (RHF: {:.10}, corr: {:.10}, SR-MP2: {:.10}, LR-MP2: {:.10})",
+            self.total_energy, self.rhf_energy, self.e_corr, self.e_sr_mp2, self.e_lr_mp2,
+        )
+    }
+}
+
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, omega=None, frozen_core=None, k_builder=None, formulation=None, attenuator=None, r0=None, terf_omega=None, memory_budget_gb=None))]
 #[allow(clippy::too_many_arguments)]
@@ -2416,6 +2579,12 @@ impl PyDftResult {
     fn gradient<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
         self.gradient_data.as_ref().map(|g| PyArray2::from_array(py, g))
     }
+    fn __repr__(&self) -> String {
+        format!("DftResult(total_energy={:.10}, converged={})", self.total_energy, self.converged)
+    }
+    fn __str__(&self) -> String {
+        format!("KS-DFT Energy: {:.10} Ha (converged: {})", self.total_energy, self.converged)
+    }
 }
 
 /// Kohn-Sham DFT (closed-shell). `functional` is an XC name (LDA/PBE/B3LYP/
@@ -2514,6 +2683,34 @@ fn run_ksdft(mol: &PyMolecule, basis_set: &PyBasisSet,
 struct PyCcResult {
     #[pyo3(get)] correlation_energy: f64,
     #[pyo3(get)] t_correction: Option<f64>,
+}
+
+#[pymethods]
+impl PyCcResult {
+    fn __repr__(&self) -> String {
+        match self.t_correction {
+            Some(t) => format!(
+                "CcResult(correlation_energy={:.10}, t_correction={:.10})",
+                self.correlation_energy, t,
+            ),
+            None => format!(
+                "CcResult(correlation_energy={:.10})",
+                self.correlation_energy,
+            ),
+        }
+    }
+    fn __str__(&self) -> String {
+        match self.t_correction {
+            Some(t) => format!(
+                "CC Correlation Energy: {:.10} Ha, (T) correction: {:.10} Ha, total corr+T: {:.10} Ha",
+                self.correlation_energy, t, self.correlation_energy + t,
+            ),
+            None => format!(
+                "CC Correlation Energy: {:.10} Ha",
+                self.correlation_energy,
+            ),
+        }
+    }
 }
 
 #[pyfunction]
@@ -2684,6 +2881,18 @@ impl PyPdepRpaResult {
         plt.call_method0("close")?;
         Ok(())
     }
+    fn __repr__(&self) -> String {
+        format!(
+            "PdepRpaResult(total_energy={:.10}, e_rpa={:.10}, n_eigenpotentials={})",
+            self.total_energy, self.e_rpa, self.n_eigenpotentials,
+        )
+    }
+    fn __str__(&self) -> String {
+        format!(
+            "PDEP-RPA Total Energy: {:.10} Ha (RHF: {:.10}, E_RPA: {:.10}, {} eigenpotentials, converged: {})",
+            self.total_energy, self.rhf_energy, self.e_rpa, self.n_eigenpotentials, self.eigensolver_converged,
+        )
+    }
 }
 
 #[pyfunction]
@@ -2834,6 +3043,19 @@ impl PyGwResult {
     #[getter]
     fn z_factor<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
         PyArray1::from_slice(py, &self.z_factor)
+    }
+    fn __repr__(&self) -> String {
+        format!(
+            "GwResult(ref_energy={:.10}, n_qp={}, outer_converged={})",
+            self.ref_energy, self.mo_indices.len(), self.outer_converged,
+        )
+    }
+    fn __str__(&self) -> String {
+        let n_unconverged = self.qp_converged.iter().filter(|&&c| !c).count();
+        format!(
+            "GW: ref_energy={:.10} Ha, {} QP states, {} unconverged QP, outer_converged={}, {} ev iterations",
+            self.ref_energy, self.mo_indices.len(), n_unconverged, self.outer_converged, self.n_ev_iter,
+        )
     }
 }
 
@@ -3074,6 +3296,20 @@ impl PyUGwResult {
     fn z_factor_b<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
         PyArray1::from_slice(py, &self.z_factor_b)
     }
+    fn __repr__(&self) -> String {
+        format!(
+            "UGwResult(ref_energy={:.10}, n_qp={}, outer_converged={})",
+            self.ref_energy, self.mo_indices.len(), self.outer_converged,
+        )
+    }
+    fn __str__(&self) -> String {
+        let n_unconverged_a = self.qp_converged_a.iter().filter(|&&c| !c).count();
+        let n_unconverged_b = self.qp_converged_b.iter().filter(|&&c| !c).count();
+        format!(
+            "U-GW: ref_energy={:.10} Ha, {} QP states, unconverged QP: {} alpha/{} beta, outer_converged={}, {} ev iterations",
+            self.ref_energy, self.mo_indices.len(), n_unconverged_a, n_unconverged_b, self.outer_converged, self.n_ev_iter,
+        )
+    }
 }
 
 /// Open-shell U-G0W0/U-COHSEX/U-evGW0/U-evGW on a UHF/UKS or ROHF reference.
@@ -3310,6 +3546,23 @@ impl PyBseResult {
     fn lowest_oscillator_strength(&self) -> f64 {
         self.oscillator_strength[0]
     }
+    fn __repr__(&self) -> String {
+        format!(
+            "BseResult(nocc={}, nvir={}, n_excitations={})",
+            self.nocc, self.nvir, self.omega.len(),
+        )
+    }
+    fn __str__(&self) -> String {
+        let lowest_ev = if self.omega.is_empty() {
+            "N/A".to_string()
+        } else {
+            format!("{:.4}", self.omega[0] * 27.211_386_245_988)
+        };
+        format!(
+            "BSE-TDA: {} excitations, lowest={} eV, nocc={}, nvir={}",
+            self.omega.len(), lowest_ev, self.nocc, self.nvir,
+        )
+    }
 }
 
 /// BSE-TDA singlet excitation energies on a closed-shell (RHF) reference.
@@ -3429,6 +3682,18 @@ impl PyTdhfStaticPolarizabilityResult {
         let flat: Vec<f64> = self.tensor.iter().flat_map(|row| row.iter().copied()).collect();
         let arr = Array2::from_shape_vec((3, 3), flat).expect("3x3 tensor is always well-shaped");
         PyArray2::from_array(py, &arr)
+    }
+    fn __repr__(&self) -> String {
+        format!(
+            "TdhfStaticPolarizabilityResult(iso={:.6}, nocc={}, nvir={})",
+            self.iso, self.nocc, self.nvir,
+        )
+    }
+    fn __str__(&self) -> String {
+        format!(
+            "TDHF Static Polarizability: iso={:.6} a.u., nocc={}, nvir={}",
+            self.iso, self.nocc, self.nvir,
+        )
     }
 }
 
@@ -3660,6 +3925,18 @@ impl PyBoysResult {
     /// Boys centers <i|r|i>, shape (n_orb, 3), in Bohr.
     fn centers<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
         PyArray2::from_array(py, &self.centers_data)
+    }
+    fn __repr__(&self) -> String {
+        format!(
+            "BoysResult(converged={}, iterations={})",
+            self.converged, self.iterations,
+        )
+    }
+    fn __str__(&self) -> String {
+        format!(
+            "Boys Localization: {} orbitals, converged={}, {} iterations",
+            self.c_loc_data.ncols(), self.converged, self.iterations,
+        )
     }
 }
 

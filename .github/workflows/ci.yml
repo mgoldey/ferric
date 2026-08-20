@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  OPENBLAS_NUM_THREADS: "1"
+  LIBINT_VERSION: "2.7.2"
+  LIBINT2_PREFIX: /home/runner/libint2
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake g++ gfortran \
+            libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
+            libxc-dev
+
+      - name: Cache libint2
+        id: cache-libint
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.LIBINT2_PREFIX }}
+          key: libint-${{ env.LIBINT_VERSION }}-ubuntu2204-v1
+
+      - name: Build libint2
+        if: steps.cache-libint.outputs.cache-hit != 'true'
+        run: |
+          cd /tmp
+          wget -q https://github.com/evaleev/libint/releases/download/v${LIBINT_VERSION}/libint-${LIBINT_VERSION}-mpqc4.tgz
+          tar xzf libint-${LIBINT_VERSION}-mpqc4.tgz
+          cd libint-${LIBINT_VERSION}
+          mkdir build && cd build
+          cmake .. \
+            -DCMAKE_INSTALL_PREFIX=$LIBINT2_PREFIX \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCMAKE_BUILD_TYPE=Release
+          make -j$(nproc)
+          make install
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: Check (all targets)
+        run: cargo check --workspace --all-targets
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings

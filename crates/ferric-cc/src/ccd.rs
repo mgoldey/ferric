@@ -20,6 +20,7 @@ use super::helpers::{p_ab, p_ij, p_ij_ab};
 /// terms, `einsum!` + DIIS). The previous closed-shell implementation was
 /// incomplete (pp+hh ladders only) and converged only for H2; this is the
 /// validated full residual that converges on real molecules.
+#[must_use]
 pub fn ccd(
     mol: &Molecule,
     obs: &PreparedBasis,

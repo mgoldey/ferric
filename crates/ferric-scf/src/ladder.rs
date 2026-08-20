@@ -10,7 +10,8 @@ use crate::rhf::{solve_rhf, RhfConfig};
 use crate::result::{ScfExit, ScfResult};
 use crate::screening::SchwarzBounds;
 
-#[derive(Clone)]
+/// One rung of an SCF convergence ladder.
+#[derive(Debug, Clone)]
 pub struct Rung {
     /// Partial RHF config for this rung.
     pub config: RhfConfig,
@@ -19,7 +20,7 @@ pub struct Rung {
     pub restart: bool,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RungOutcome {
     pub iters: usize,
     pub exit: ScfExit,
@@ -27,6 +28,9 @@ pub struct RungOutcome {
     pub final_energy: f64,
 }
 
+/// Result of running a multi-rung SCF convergence ladder.
+#[derive(Debug, Clone)]
+#[must_use]
 pub struct LadderResult {
     pub result: ScfResult,
     pub converged: bool,

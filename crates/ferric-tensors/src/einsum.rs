@@ -16,6 +16,7 @@ use thiserror::Error;
 
 /// Errors from a contraction.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum TensorError {
     /// A contracted axis had different lengths in the two operands.
     #[error("contracted-dimension mismatch: left {left} vs right {right}")]
@@ -23,6 +24,10 @@ pub enum TensorError {
     /// The computed 2D product shape could not be reshaped to the output shape.
     #[error("output reshape failed: product has {got} elements, output shape needs {want}")]
     OutputReshape { got: usize, want: usize },
+}
+
+impl From<TensorError> for ferric_core::error::FerricError {
+    fn from(e: TensorError) -> Self { Self::General(e.to_string()) }
 }
 
 /// Contract two operands over their contracted axes into one GEMM.

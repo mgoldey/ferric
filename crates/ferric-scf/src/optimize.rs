@@ -44,12 +44,20 @@ impl Default for OptimizeConfig {
 }
 
 /// Result of a geometry optimization.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+#[must_use = "optimization result contains the relaxed geometry and energy"]
 pub struct OptimizeResult {
     pub mol: Molecule,
     pub energy: f64,
     pub steps: usize,
     pub converged: bool,
+}
+
+impl std::fmt::Display for OptimizeResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Optimized energy: {:.10} Ha ({} steps, converged: {})",
+            self.energy, self.steps, self.converged)
+    }
 }
 
 /// Optimize the molecular geometry using RHF (or closed-shell KS-DFT, via

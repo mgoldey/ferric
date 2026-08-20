@@ -23,6 +23,8 @@ pub trait Bound: Sync + Send {
 ///
 /// Used to skip negligible shell quartets during Fock matrix construction:
 /// if Q(s1,s2) * Q(s3,s4) * max|D| < threshold, the quartet is skipped.
+#[derive(Debug, Clone)]
+#[must_use = "Schwarz bounds are expensive to compute; dropping them wastes work"]
 pub struct SchwarzBounds {
     pub q: Array2<f64>,
     pub q_shell: Vec<f64>,
