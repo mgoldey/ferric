@@ -486,9 +486,19 @@ Licensed under either of
 
 at your option.
 
+### Third-party code
+
+`crates/ferric-integrals/shim/libecpint/` vendors [libecpint](https://github.com/robashaw/libecpint)
+(MIT, Copyright (c) 2021 Robert A. Shaw); its license is retained at
+`crates/ferric-integrals/shim/libecpint/LICENSE`.
+
 ferric links against external libraries with their own licenses — notably
-libint2, libxc (MPL-2.0), OpenBLAS/LAPACK (BSD), and optionally xtb (LGPL-3.0)
-— which govern redistribution of binaries built against them.
+libint2 (LGPL-3.0-or-later), libxc (MPL-2.0), OpenBLAS/LAPACK (BSD), and
+optionally xtb (LGPL-3.0) — which govern redistribution of binaries built
+against them. Note that libint2 is a required dependency, not an optional one:
+distributing a compiled ferric binary means distributing LGPL-linked code, which
+carries obligations (relinking, source availability) beyond ferric's own MIT/
+Apache-2.0 terms. Building from source for your own use is unaffected.
 
 Unless you explicitly state otherwise, any contribution intentionally submitted
 for inclusion in the work by you, as defined in the Apache-2.0 license, shall
