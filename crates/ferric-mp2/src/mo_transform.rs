@@ -73,6 +73,20 @@ pub fn transform_3center_vv(
     transform_3center(eri3_ao, c_vir, c_vir)
 }
 
+/// Dress a 3-index MO block with the RI metric: `B^P_pq = (V^{-1/2})_{PQ} (Q|pq)`.
+///
+/// `eri3_mo` is `(naux, d1, d2)` already MO-transformed; `v_inv_sqrt` is `(naux, naux)`.
+pub fn dress_3index(eri3_mo: &Array3<f64>, v_inv_sqrt: &Array2<f64>) -> Array3<f64> {
+    let naux = eri3_mo.shape()[0];
+    let d1 = eri3_mo.shape()[1];
+    let d2 = eri3_mo.shape()[2];
+    let flat = eri3_mo.view().into_shape_with_order((naux, d1 * d2)).unwrap();
+    v_inv_sqrt
+        .dot(&flat)
+        .into_shape_with_order((naux, d1, d2))
+        .unwrap()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

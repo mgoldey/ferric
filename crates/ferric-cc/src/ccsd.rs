@@ -17,7 +17,7 @@ use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_mp2::mo_transform::{transform_3center_oo, transform_3center_ov, transform_3center_vv};
-use ferric_mp2::rimp2::cholesky_inverse_sqrt;
+use ferric_mp2::rimp2::{active_occ, cholesky_inverse_sqrt};
 use ferric_mp2::spinorbital::{asym_phys, build_b, transpose_b};
 use ferric_scf::ScfResult;
 use ferric_tensors::{einsum, Axis, Tensor};
@@ -49,7 +49,7 @@ pub fn ccsd(
     let nbas = obs.nbasis();
     let nocc_total = rhf.eps_r().iter().filter(|&&e| e < 0.0).count();
     let first_occ = cfg.frozen_core;
-    let no = nocc_total - first_occ; // spatial active occ
+    let no = active_occ(nocc_total, first_occ)?;
     let nv = nbas - nocc_total; // spatial virtual
 
     let eps = rhf.eps_r();

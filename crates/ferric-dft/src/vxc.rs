@@ -189,7 +189,8 @@ pub fn semilocal_vxc_closed_scratch(
     // libxc eval call that fills `exc`/`vrho`/`vsigma`; `xc.funcs` itself is
     // typically 1-3 iterations, so there's no compute here worth fanning out
     // (rayon collect/join overhead would exceed the work).
-    for func in &xc.funcs {
+    for (i, func) in xc.funcs.iter().enumerate() {
+        let w_i = xc.weights.as_ref().map_or(1.0, |ws| ws[i]);
         let mut exc  = vec![0.0_f64; npts];
         let mut vrho = vec![0.0_f64; npts];
         match func.family() {
@@ -207,7 +208,7 @@ pub fn semilocal_vxc_closed_scratch(
                 vsigma_total
                     .iter_mut()
                     .zip(&vsigma)
-                    .for_each(|(t, &v)| *t += v);
+                    .for_each(|(t, &v)| *t += w_i * v);
             }
             FunctionalFamily::MetaGga => {
                 let mut vsigma = vec![0.0_f64; npts];
@@ -219,15 +220,15 @@ pub fn semilocal_vxc_closed_scratch(
                 vsigma_total
                     .iter_mut()
                     .zip(&vsigma)
-                    .for_each(|(t, &v)| *t += v);
+                    .for_each(|(t, &v)| *t += w_i * v);
                 vtau_total
                     .iter_mut()
                     .zip(&vtau)
-                    .for_each(|(t, &v)| *t += v);
+                    .for_each(|(t, &v)| *t += w_i * v);
             }
         }
-        exc_total.iter_mut().zip(&exc).for_each(|(t, &v)| *t += v);
-        vrho_total.iter_mut().zip(&vrho).for_each(|(t, &v)| *t += v);
+        exc_total.iter_mut().zip(&exc).for_each(|(t, &v)| *t += w_i * v);
+        vrho_total.iter_mut().zip(&vrho).for_each(|(t, &v)| *t += w_i * v);
     }
 
     // E_xc = Σ_g w_g · ρ(r_g) · ε_xc(r_g). Deterministic grouped reduction —
@@ -399,7 +400,8 @@ pub fn semilocal_vxc_polarized_scratch(
 
     // Left serial: same reasoning as the closed-shell accumulation above —
     // the O(npts) merges are trivial next to the libxc eval call itself.
-    for func in &xc.funcs {
+    for (i, func) in xc.funcs.iter().enumerate() {
+        let w_i = xc.weights.as_ref().map_or(1.0, |ws| ws[i]);
         let mut exc = vec![0.0_f64; npts];
         let mut vrho = vec![0.0_f64; 2 * npts];
         match func.family() {
@@ -415,9 +417,9 @@ pub fn semilocal_vxc_polarized_scratch(
                     &mut exc, &mut vrho, &mut vsigma,
                 );
                 for g in 0..npts {
-                    vsigma_aa_total[g] += vsigma[3 * g + 0];
-                    vsigma_ab_total[g] += vsigma[3 * g + 1];
-                    vsigma_bb_total[g] += vsigma[3 * g + 2];
+                    vsigma_aa_total[g] += w_i * vsigma[3 * g + 0];
+                    vsigma_ab_total[g] += w_i * vsigma[3 * g + 1];
+                    vsigma_bb_total[g] += w_i * vsigma[3 * g + 2];
                 }
             }
             FunctionalFamily::MetaGga => {
@@ -428,18 +430,18 @@ pub fn semilocal_vxc_polarized_scratch(
                     &mut exc, &mut vrho, &mut vsigma, &mut vtau,
                 );
                 for g in 0..npts {
-                    vsigma_aa_total[g] += vsigma[3 * g + 0];
-                    vsigma_ab_total[g] += vsigma[3 * g + 1];
-                    vsigma_bb_total[g] += vsigma[3 * g + 2];
-                    vtau_a_total[g] += vtau[2 * g + 0];
-                    vtau_b_total[g] += vtau[2 * g + 1];
+                    vsigma_aa_total[g] += w_i * vsigma[3 * g + 0];
+                    vsigma_ab_total[g] += w_i * vsigma[3 * g + 1];
+                    vsigma_bb_total[g] += w_i * vsigma[3 * g + 2];
+                    vtau_a_total[g] += w_i * vtau[2 * g + 0];
+                    vtau_b_total[g] += w_i * vtau[2 * g + 1];
                 }
             }
         }
         for g in 0..npts {
-            exc_total[g]    += exc[g];
-            vrho_a_total[g] += vrho[2 * g + 0];
-            vrho_b_total[g] += vrho[2 * g + 1];
+            exc_total[g]    += w_i * exc[g];
+            vrho_a_total[g] += w_i * vrho[2 * g + 0];
+            vrho_b_total[g] += w_i * vrho[2 * g + 1];
         }
     }
 

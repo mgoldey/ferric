@@ -5,7 +5,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::ScfResult;
 use ferric_mp2::mo_transform::{transform_3center_oo, transform_3center_ov, transform_3center_vv};
-use ferric_mp2::rimp2::cholesky_inverse_sqrt;
+use ferric_mp2::rimp2::{active_occ, cholesky_inverse_sqrt};
 use ferric_mp2::spinorbital::{asym_oovv, asym_ovvo, asym_same, build_b, transpose_b};
 use ferric_tensors::{einsum, Axis, Tensor};
 use ndarray::{ArrayD, IxDyn};
@@ -59,7 +59,7 @@ pub fn ccd_spinorbital(
     let nbas = obs.nbasis();
     let nelec = mol.nelec() as usize;
     let nocc_total = nelec / 2;
-    let no = nocc_total - cfg.frozen_core; // spatial active occ
+    let no = active_occ(nocc_total, cfg.frozen_core)?;
     let first_occ = cfg.frozen_core;
     let nv = nbas - nocc_total; // spatial virtual
 

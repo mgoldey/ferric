@@ -201,7 +201,7 @@ pub fn solve_rohf_best_effort(
         let main = config.dft_grid.clone().unwrap_or_default();
         let nlc = config.nlc_grid.clone()
             .unwrap_or(ferric_dft::grid::AtomicGridConfig { n_radial: 50, n_angular: 50, ..Default::default() });
-        let ks = KsXcUks::new(mol, prep.basis_set(), name, &main, &nlc)
+        let ks = KsXcUks::new_with_omega(mol, prep.basis_set(), name, &main, &nlc, config.xc_omega)
             .map_err(|e| FerricError::General(format!("KsXcUks init for {name}: {e:?}")))?;
         Some(Box::new(ks) as Box<dyn UksXcContribution>)
     } else {
@@ -303,8 +303,18 @@ pub fn solve_rohf_best_effort(
     // EnginePool on first use (ctors serialized behind a global mutex), so a
     // loop-local builder would pay that construction every iteration.
     let need_k = c_k != 0.0 || k_mix.omega > 0.0;
-    let mut direct_j = DirectJ::new(ctx, prep, bounds, config.integral_thresh, ooc_budget);
-    let mut direct_k: Option<DirectK> = if need_k && k_mix.omega == 0.0 {
+    let coulomb_op = bounds.op;
+    let j_aux_eff = if k_mix.omega == 0.0 { config.df_j_aux.as_deref() } else { None };
+    let k_aux_eff = if need_k && k_mix.omega == 0.0 { config.df_k_aux.as_deref() } else { None };
+    let (mut df_j, mut df_k) = crate::fock_assembly::build_df_jk(
+        ctx, mol, coulomb_op, prep, j_aux_eff, k_aux_eff, ooc_budget,
+    )?;
+    let mut direct_j: Option<DirectJ> = if df_j.is_none() {
+        Some(DirectJ::new(ctx, prep, bounds, config.integral_thresh, ooc_budget))
+    } else {
+        None
+    };
+    let mut direct_k: Option<DirectK> = if need_k && k_mix.omega == 0.0 && df_k.is_none() {
         Some(DirectK::new(ctx, prep, bounds, config.integral_thresh, ooc_budget))
     } else {
         None
@@ -324,8 +334,13 @@ pub fn solve_rohf_best_effort(
         }
         prev_d_total = Some(d_total.clone());
 
-        // J from D_total
-        total_quartets += direct_j.build(&d_total, &mut j_buf)?;
+        // J from D_total — DF-J if configured, else direct.
+        if let Some(dfj) = df_j.as_mut() {
+            dfj.build(&d_total, &mut j_buf)?;
+        } else {
+            let dj = direct_j.as_mut().expect("DirectJ built before loop");
+            total_quartets += dj.build(&d_total, &mut j_buf)?;
+        }
         // F_σ = H + J − K_σ_total  (then + V^σ_xc below for ROKS), assembled
         // in place — no k_σ_total clones for HF/plain hybrids and no zeros
         // allocations for pure DFT. `f_σ += (−c)·K` is bit-identical to the
@@ -348,9 +363,14 @@ pub fn solve_rohf_best_effort(
                 dfk_sr, dfk_lr, &d_b, None, 1.0, &mut f_b, k_mix.sr, k_mix.lr, 1.0,
             )?;
         } else if need_k {
-            let dk = direct_k.as_mut().expect("DirectK built before loop");
-            total_quartets += <DirectK as KBuilder>::build(dk, &d_a, &mut k_a_buf)?;
-            total_quartets += <DirectK as KBuilder>::build(dk, &d_b, &mut k_b_buf)?;
+            if let Some(dfk) = df_k.as_mut() {
+                dfk.build(&d_a, &mut k_a_buf)?;
+                dfk.build(&d_b, &mut k_b_buf)?;
+            } else {
+                let dk = direct_k.as_mut().expect("DirectK built before loop");
+                total_quartets += <DirectK as KBuilder>::build(dk, &d_a, &mut k_a_buf)?;
+                total_quartets += <DirectK as KBuilder>::build(dk, &d_b, &mut k_b_buf)?;
+            }
             f_a.scaled_add(-c_k, &k_a_buf);
             f_b.scaled_add(-c_k, &k_b_buf);
         }

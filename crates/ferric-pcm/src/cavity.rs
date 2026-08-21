@@ -18,7 +18,7 @@
 //!
 //! 1. Each atom gets a sphere of radius `vdw_scale * bondi_radius(Z)`.
 //! 2. Each sphere is covered with a fixed-order Lebedev point set (reused
-//!    directly from `ferric_dft::lebedev`, which is already validated for
+//!    directly from `ferric_quadrature::lebedev`, which is already validated for
 //!    DFT quadrature).
 //! 3. A point's area is scaled by `prod_{B != A} h(d_AB)`, a smooth quintic
 //!    switching weight (`h`=[`switch_h`]) that is 1 far outside every other
@@ -58,7 +58,7 @@
 
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
-use ferric_dft::lebedev;
+use ferric_quadrature::lebedev;
 
 /// SWIG (switching/Gaussian) transition-zone shape parameter (Lange &
 /// Herbert, JCP 133, 244111 (2010), eq. 3.19): the quintic smoothstep
@@ -115,7 +115,7 @@ pub struct CavityConfig {
     /// default (Q-Chem, PySCF's `pcm.py` default `vdw_scale`).
     pub vdw_scale: f64,
     /// Lebedev order used to tessellate each atomic sphere. Must be one of
-    /// the orders supported by `ferric_dft::lebedev` (6, 14, 26, 50, 110,
+    /// the orders supported by `ferric_quadrature::lebedev` (6, 14, 26, 50, 110,
     /// 302). 110 is a reasonable default resolution for a first correct
     /// implementation (302 for higher accuracy, at higher cost).
     pub lebedev_order: usize,

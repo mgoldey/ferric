@@ -66,6 +66,7 @@ use ferric_integrals::threeindex;
 use ferric_scf::ScfResult;
 use ndarray::{s, Array2};
 use ndarray_linalg::{Cholesky, UPLO};
+use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 
 /// Sparse representation of (P | i_loc, a) integrals on Boys-localized
 /// occupied orbitals.
@@ -92,14 +93,16 @@ pub struct ScreenedBov {
 fn cholesky_inverse_sqrt(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
     use ndarray_linalg::SolveTriangular;
     let n = v.nrows();
-    let l = v
-        .cholesky(UPLO::Lower)
-        .map_err(|e| FerricError::General(format!("V cholesky failed: {e}")))?;
-    let eye = Array2::<f64>::eye(n);
-    let v_inv_sqrt = l
-        .solve_triangular(UPLO::Lower, ndarray_linalg::Diag::NonUnit, &eye)
-        .map_err(|e| FerricError::General(format!("triangular solve failed: {e}")))?;
-    Ok(v_inv_sqrt)
+    with_blas_threads(opt_in_blas_threads(), || {
+        let l = v
+            .cholesky(UPLO::Lower)
+            .map_err(|e| FerricError::General(format!("V cholesky failed: {e}")))?;
+        let eye = Array2::<f64>::eye(n);
+        let v_inv_sqrt = l
+            .solve_triangular(UPLO::Lower, ndarray_linalg::Diag::NonUnit, &eye)
+            .map_err(|e| FerricError::General(format!("triangular solve failed: {e}")))?;
+        Ok(v_inv_sqrt)
+    })
 }
 
 /// Build the screened, per-orbital B tile representation from a localized

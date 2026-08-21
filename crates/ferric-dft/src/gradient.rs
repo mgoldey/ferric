@@ -374,12 +374,13 @@ pub fn xc_gradient_closed_lda(
 
     // Accumulate v_ρ across all component functionals.
     let mut vrho_total = vec![0.0_f64; npts];
-    for func in &xc.funcs {
+    for (i, func) in xc.funcs.iter().enumerate() {
+        let w_i = xc.weights.as_ref().map_or(1.0, |ws| ws[i]);
         let mut exc = vec![0.0_f64; npts];
         let mut vrho = vec![0.0_f64; npts];
         func.eval_lda_unpolarized(rho_slice, &mut exc, &mut vrho);
         for g in 0..npts {
-            vrho_total[g] += vrho[g];
+            vrho_total[g] += w_i * vrho[g];
         }
     }
 
@@ -466,13 +467,14 @@ pub fn xc_gradient_closed_lda_from_density(
     let npts = rho_slice.len();
     let mut eps_total = vec![0.0_f64; npts];
     let mut vrho_total = vec![0.0_f64; npts];
-    for func in &xc.funcs {
+    for (i, func) in xc.funcs.iter().enumerate() {
+        let w_i = xc.weights.as_ref().map_or(1.0, |ws| ws[i]);
         let mut exc = vec![0.0_f64; npts];
         let mut vrho = vec![0.0_f64; npts];
         func.eval_lda_unpolarized(rho_slice, &mut exc, &mut vrho);
         for g in 0..npts {
-            eps_total[g] += exc[g];
-            vrho_total[g] += vrho[g];
+            eps_total[g] += w_i * exc[g];
+            vrho_total[g] += w_i * vrho[g];
         }
     }
     let natoms = mol.atoms.len();
@@ -661,7 +663,8 @@ pub fn xc_gradient_closed_gga_from_density(
     let mut eps_total = vec![0.0_f64; npts];
     let mut vrho_total = vec![0.0_f64; npts];
     let mut vsigma_total = vec![0.0_f64; npts];
-    for func in &xc.funcs {
+    for (i, func) in xc.funcs.iter().enumerate() {
+        let w_i = xc.weights.as_ref().map_or(1.0, |ws| ws[i]);
         let mut exc = vec![0.0_f64; npts];
         let mut vrho = vec![0.0_f64; npts];
         match func.family() {
@@ -672,13 +675,13 @@ pub fn xc_gradient_closed_gga_from_density(
                 let mut vsigma = vec![0.0_f64; npts];
                 func.eval_gga_unpolarized(rho_slice, sigma_slice, &mut exc, &mut vrho, &mut vsigma);
                 for g in 0..npts {
-                    vsigma_total[g] += vsigma[g];
+                    vsigma_total[g] += w_i * vsigma[g];
                 }
             }
         }
         for g in 0..npts {
-            eps_total[g] += exc[g];
-            vrho_total[g] += vrho[g];
+            eps_total[g] += w_i * exc[g];
+            vrho_total[g] += w_i * vrho[g];
         }
     }
 
@@ -826,7 +829,8 @@ pub fn xc_gradient_closed_mgga_from_density(
     let mut vrho_total = vec![0.0_f64; npts];
     let mut vsigma_total = vec![0.0_f64; npts];
     let mut vtau_total = vec![0.0_f64; npts];
-    for func in &xc.funcs {
+    for (i, func) in xc.funcs.iter().enumerate() {
+        let w_i = xc.weights.as_ref().map_or(1.0, |ws| ws[i]);
         let mut exc = vec![0.0_f64; npts];
         let mut vrho = vec![0.0_f64; npts];
         match func.family() {
@@ -841,21 +845,21 @@ pub fn xc_gradient_closed_mgga_from_density(
                     &mut exc, &mut vrho, &mut vsigma, &mut vtau,
                 );
                 for g in 0..npts {
-                    vsigma_total[g] += vsigma[g];
-                    vtau_total[g] += vtau[g];
+                    vsigma_total[g] += w_i * vsigma[g];
+                    vtau_total[g] += w_i * vtau[g];
                 }
             }
             _ => {
                 let mut vsigma = vec![0.0_f64; npts];
                 func.eval_gga_unpolarized(rho_slice, sigma_slice, &mut exc, &mut vrho, &mut vsigma);
                 for g in 0..npts {
-                    vsigma_total[g] += vsigma[g];
+                    vsigma_total[g] += w_i * vsigma[g];
                 }
             }
         }
         for g in 0..npts {
-            eps_total[g] += exc[g];
-            vrho_total[g] += vrho[g];
+            eps_total[g] += w_i * exc[g];
+            vrho_total[g] += w_i * vrho[g];
         }
     }
 
@@ -989,7 +993,8 @@ pub fn xc_gradient_uks_from_density(
     let mut vsig_ab = vec![0.0_f64; npts];
     let mut vsig_bb = vec![0.0_f64; npts];
 
-    for func in &xc.funcs {
+    for (i, func) in xc.funcs.iter().enumerate() {
+        let w_i = xc.weights.as_ref().map_or(1.0, |ws| ws[i]);
         let mut exc = vec![0.0_f64; npts];
         let mut vrho = vec![0.0_f64; 2 * npts];
         match func.family() {
@@ -1003,16 +1008,16 @@ pub fn xc_gradient_uks_from_density(
                     &mut exc, &mut vrho, &mut vsig,
                 );
                 for g in 0..npts {
-                    vsig_aa[g] += vsig[3 * g + 0];
-                    vsig_ab[g] += vsig[3 * g + 1];
-                    vsig_bb[g] += vsig[3 * g + 2];
+                    vsig_aa[g] += w_i * vsig[3 * g + 0];
+                    vsig_ab[g] += w_i * vsig[3 * g + 1];
+                    vsig_bb[g] += w_i * vsig[3 * g + 2];
                 }
             }
         }
         for g in 0..npts {
-            eps_total[g] += exc[g];
-            vrho_a[g] += vrho[2 * g + 0];
-            vrho_b[g] += vrho[2 * g + 1];
+            eps_total[g] += w_i * exc[g];
+            vrho_a[g] += w_i * vrho[2 * g + 0];
+            vrho_b[g] += w_i * vrho[2 * g + 1];
         }
     }
 
@@ -1235,7 +1240,8 @@ pub fn xc_gradient_uks_mgga_from_density(
     let mut vtau_a = vec![0.0_f64; npts];
     let mut vtau_b = vec![0.0_f64; npts];
 
-    for func in &xc.funcs {
+    for (i, func) in xc.funcs.iter().enumerate() {
+        let w_i = xc.weights.as_ref().map_or(1.0, |ws| ws[i]);
         let mut exc = vec![0.0_f64; npts];
         let mut vrho = vec![0.0_f64; 2 * npts];
         match func.family() {
@@ -1250,27 +1256,27 @@ pub fn xc_gradient_uks_mgga_from_density(
                     &mut exc, &mut vrho, &mut vsig, &mut vtau,
                 );
                 for g in 0..npts {
-                    vsig_aa[g] += vsig[3 * g];
-                    vsig_ab[g] += vsig[3 * g + 1];
-                    vsig_bb[g] += vsig[3 * g + 2];
-                    vtau_a[g] += vtau[2 * g];
-                    vtau_b[g] += vtau[2 * g + 1];
+                    vsig_aa[g] += w_i * vsig[3 * g];
+                    vsig_ab[g] += w_i * vsig[3 * g + 1];
+                    vsig_bb[g] += w_i * vsig[3 * g + 2];
+                    vtau_a[g] += w_i * vtau[2 * g];
+                    vtau_b[g] += w_i * vtau[2 * g + 1];
                 }
             }
             _ => {
                 let mut vsig = vec![0.0_f64; 3 * npts];
                 func.eval_gga_polarized(&rho_in, &sigma_in, &mut exc, &mut vrho, &mut vsig);
                 for g in 0..npts {
-                    vsig_aa[g] += vsig[3 * g];
-                    vsig_ab[g] += vsig[3 * g + 1];
-                    vsig_bb[g] += vsig[3 * g + 2];
+                    vsig_aa[g] += w_i * vsig[3 * g];
+                    vsig_ab[g] += w_i * vsig[3 * g + 1];
+                    vsig_bb[g] += w_i * vsig[3 * g + 2];
                 }
             }
         }
         for g in 0..npts {
-            eps_total[g] += exc[g];
-            vrho_a[g] += vrho[2 * g];
-            vrho_b[g] += vrho[2 * g + 1];
+            eps_total[g] += w_i * exc[g];
+            vrho_a[g] += w_i * vrho[2 * g];
+            vrho_b[g] += w_i * vrho[2 * g + 1];
         }
     }
 

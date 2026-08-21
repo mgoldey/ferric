@@ -1,0 +1,12 @@
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "cc-pvdz"
+
+[method]
+kind = "tddft"
+
+[tddft]
+n_roots = 5
+xc = "PBE"

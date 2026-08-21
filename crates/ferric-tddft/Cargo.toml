@@ -1,5 +1,5 @@
 [package]
-name = "ferric-ci"
+name = "ferric-tddft"
 version = "0.1.0"
 license.workspace = true
 edition = "2021"
@@ -11,7 +11,11 @@ workspace = true
 ferric-core = { path = "../ferric-core" }
 ferric-integrals = { path = "../ferric-integrals" }
 ferric-scf = { path = "../ferric-scf" }
+ferric-dft = { path = "../ferric-dft" }
+ferric-mp2 = { path = "../ferric-mp2" }
 ndarray = { workspace = true }
 ndarray-linalg = { workspace = true }
 
 [dev-dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

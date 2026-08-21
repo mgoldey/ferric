@@ -17,6 +17,7 @@
 //! per-channel `angular_momentum` tag so the integral shim can map them to
 //! libecpint without re-deriving which channel is local.
 
+use crate::basis_util::{parse_float_list, canonical_name};
 use crate::FerricError;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -161,20 +162,7 @@ pub fn parse_ecp_json(text: &str, name: &str) -> Result<EcpSet, FerricError> {
     Ok(EcpSet { name: set_name, defs })
 }
 
-fn parse_float_list(ss: &[String]) -> Result<Vec<f64>, FerricError> {
-    ss.iter()
-        .map(|s| {
-            s.parse::<f64>()
-                .map_err(|e| FerricError::Basis(format!("bad float {s:?}: {e}")))
-        })
-        .collect()
-}
-
 // --- Bundled ECP sets ---
-
-fn canonical_name(name: &str) -> String {
-    name.to_ascii_lowercase()
-}
 
 /// Load a bundled ECP set by name (case-insensitive).
 ///

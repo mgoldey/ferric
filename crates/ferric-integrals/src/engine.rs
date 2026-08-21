@@ -12,6 +12,17 @@ use ferric_core::external_potential::PointCharge;
 use ferric_core::FerricError;
 use std::os::raw::{c_int, c_void};
 
+fn operator_kind_to_ffi(kind: OperatorKind) -> Result<c_int, FerricError> {
+    match kind {
+        OperatorKind::Coulomb => Ok(ffi::OP_COULOMB),
+        OperatorKind::ErfCoulomb => Ok(ffi::OP_ERF_COULOMB),
+        OperatorKind::ErfcCoulomb => Ok(ffi::OP_ERFC_COULOMB),
+        OperatorKind::Yukawa => Ok(ffi::OP_YUKAWA),
+        OperatorKind::SlaterGeminal => Ok(ffi::OP_SLATER_GEMINAL),
+        _ => Err(FerricError::Libint(format!("operator {:?} not supported for libint2 engines", kind))),
+    }
+}
+
 /// An integral evaluation engine backed by a libint2 engine handle.
 ///
 /// `Send` but NOT `Sync`: the underlying libint2 engine handle owns mutable
@@ -68,14 +79,7 @@ impl Engine {
             } else {
                 (1.0, op.kind, op.omega)
             };
-            let op_kind = match kind {
-                OperatorKind::Coulomb => ffi::OP_COULOMB,
-                OperatorKind::ErfCoulomb => ffi::OP_ERF_COULOMB,
-                OperatorKind::ErfcCoulomb => ffi::OP_ERFC_COULOMB,
-                OperatorKind::Yukawa => ffi::OP_YUKAWA,
-                OperatorKind::SlaterGeminal => ffi::OP_SLATER_GEMINAL,
-                _ => return Err(FerricError::Libint(format!("operator {:?} not implemented in v1", kind))),
-            };
+            let op_kind = operator_kind_to_ffi(kind)?;
             // SAFETY: FFI call to the libint2 shim. Arguments are valid ints/floats
             // from the PreparedBasis. The shim catches C++ exceptions and returns
             // null on failure (checked below). The returned handle is owned by this
@@ -252,14 +256,7 @@ impl Engine {
         let n_comp = if op.is_composite { op.num_components } else { 1 };
         for i in 0..n_comp {
             let (coeff, kind, omega) = if op.is_composite { (op.c_coeffs[i], op.c_kinds[i], op.c_omegas[i]) } else { (1.0, op.kind, op.omega) };
-            let op_kind = match kind {
-                OperatorKind::Coulomb => ffi::OP_COULOMB,
-                OperatorKind::ErfCoulomb => ffi::OP_ERF_COULOMB,
-                OperatorKind::ErfcCoulomb => ffi::OP_ERFC_COULOMB,
-                OperatorKind::Yukawa => ffi::OP_YUKAWA,
-                OperatorKind::SlaterGeminal => ffi::OP_SLATER_GEMINAL,
-                _ => return Err(FerricError::Libint(format!("operator {:?} not implemented", kind))),
-            };
+            let op_kind = operator_kind_to_ffi(kind)?;
             // SAFETY: FFI call with valid metadata. Null-checked below.
             let h = unsafe { ffi::scf_engine_create_deriv(op_kind, omega, prep.max_nprim(), prep.max_l(), precision) };
             if h.is_null() { return Err(FerricError::Libint("derivative engine not available".into())); }
@@ -343,14 +340,7 @@ impl Engine {
         let n_comp = if op.is_composite { op.num_components } else { 1 };
         for i in 0..n_comp {
             let (coeff, kind, omega) = if op.is_composite { (op.c_coeffs[i], op.c_kinds[i], op.c_omegas[i]) } else { (1.0, op.kind, op.omega) };
-            let op_kind = match kind {
-                OperatorKind::Coulomb => ffi::OP_COULOMB,
-                OperatorKind::ErfCoulomb => ffi::OP_ERF_COULOMB,
-                OperatorKind::ErfcCoulomb => ffi::OP_ERFC_COULOMB,
-                OperatorKind::Yukawa => ffi::OP_YUKAWA,
-                OperatorKind::SlaterGeminal => ffi::OP_SLATER_GEMINAL,
-                _ => return Err(FerricError::Libint(format!("operator {:?} not implemented", kind))),
-            };
+            let op_kind = operator_kind_to_ffi(kind)?;
             // SAFETY: FFI call with valid metadata. Null-checked below.
             let h = unsafe { ffi::scf_engine_create_3center(op_kind, omega, max_nprim, max_l, precision) };
             if h.is_null() { return Err(FerricError::Libint("3-center engine not available".into())); }
@@ -395,14 +385,7 @@ impl Engine {
         let n_comp = if op.is_composite { op.num_components } else { 1 };
         for i in 0..n_comp {
             let (coeff, kind, omega) = if op.is_composite { (op.c_coeffs[i], op.c_kinds[i], op.c_omegas[i]) } else { (1.0, op.kind, op.omega) };
-            let op_kind = match kind {
-                OperatorKind::Coulomb => ffi::OP_COULOMB,
-                OperatorKind::ErfCoulomb => ffi::OP_ERF_COULOMB,
-                OperatorKind::ErfcCoulomb => ffi::OP_ERFC_COULOMB,
-                OperatorKind::Yukawa => ffi::OP_YUKAWA,
-                OperatorKind::SlaterGeminal => ffi::OP_SLATER_GEMINAL,
-                _ => return Err(FerricError::Libint(format!("operator {:?} not implemented", kind))),
-            };
+            let op_kind = operator_kind_to_ffi(kind)?;
             // SAFETY: FFI call with valid metadata. Null-checked below.
             let h = unsafe { ffi::scf_engine_create_2center(op_kind, omega, dfbs.max_nprim(), dfbs.max_l(), precision) };
             if h.is_null() { return Err(FerricError::Libint("2-center engine not available".into())); }
@@ -512,14 +495,7 @@ impl Engine {
         let n_comp = if op.is_composite { op.num_components } else { 1 };
         for i in 0..n_comp {
             let (coeff, kind, omega) = if op.is_composite { (op.c_coeffs[i], op.c_kinds[i], op.c_omegas[i]) } else { (1.0, op.kind, op.omega) };
-            let op_kind = match kind {
-                OperatorKind::Coulomb => ffi::OP_COULOMB,
-                OperatorKind::ErfCoulomb => ffi::OP_ERF_COULOMB,
-                OperatorKind::ErfcCoulomb => ffi::OP_ERFC_COULOMB,
-                OperatorKind::Yukawa => ffi::OP_YUKAWA,
-                OperatorKind::SlaterGeminal => ffi::OP_SLATER_GEMINAL,
-                _ => return Err(FerricError::Libint(format!("operator {:?} not implemented", kind))),
-            };
+            let op_kind = operator_kind_to_ffi(kind)?;
             // SAFETY: FFI call with valid metadata. Null-checked below.
             let h = unsafe { ffi::scf_engine_create_3center_deriv(op_kind, omega, max_nprim, max_l, precision) };
             if h.is_null() { return Err(FerricError::Libint("3-center derivative engine not available".into())); }
@@ -536,14 +512,7 @@ impl Engine {
         let n_comp = if op.is_composite { op.num_components } else { 1 };
         for i in 0..n_comp {
             let (coeff, kind, omega) = if op.is_composite { (op.c_coeffs[i], op.c_kinds[i], op.c_omegas[i]) } else { (1.0, op.kind, op.omega) };
-            let op_kind = match kind {
-                OperatorKind::Coulomb => ffi::OP_COULOMB,
-                OperatorKind::ErfCoulomb => ffi::OP_ERF_COULOMB,
-                OperatorKind::ErfcCoulomb => ffi::OP_ERFC_COULOMB,
-                OperatorKind::Yukawa => ffi::OP_YUKAWA,
-                OperatorKind::SlaterGeminal => ffi::OP_SLATER_GEMINAL,
-                _ => return Err(FerricError::Libint(format!("operator {:?} not implemented", kind))),
-            };
+            let op_kind = operator_kind_to_ffi(kind)?;
             // SAFETY: FFI call with valid metadata. Null-checked below.
             let h = unsafe { ffi::scf_engine_create_2center_deriv(op_kind, omega, dfbs.max_nprim(), dfbs.max_l(), precision) };
             if h.is_null() { return Err(FerricError::Libint("2-center derivative engine not available".into())); }

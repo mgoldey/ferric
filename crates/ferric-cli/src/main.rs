@@ -15,6 +15,7 @@ use ferric_mp2::mp3::mp3_energy;
 use ferric_mp2::oo_rimp2::{oo_ri_mp2, OoRiMp2Config};
 use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
 use ferric_mp2::scs::{scs_mp2, scs_mp2_2terfc, ScsMp2Config, ScsMp2TerfcConfig};
+use ferric_mp2::double_hybrid::{mp2_double_hybrid, DoubleHybridKind};
 use ferric_rpa::config::{QuadratureConfig, SternheimerConfig};
 use ferric_rpa::{run_pdep_rpa, PdepRpaConfig};
 use ferric_cc::ccsd::ccsd;
@@ -124,6 +125,28 @@ const EPISTEMIC_WARNINGS: &[(&str, &str)] = &[
          the TOTAL energy exists in ferric -- nothing compares it to the paper or to another code. \
          Do not quote a wB97X-L-V total energy as validated.",
     ),
+    (
+        "b2plyp",
+        "method.kind = \"b2plyp\" is Spike-grade: the KS reference uses weighted B88+LYP via \
+         per-component XC weights (new infrastructure), and the MP2 correlation reuses the proven \
+         RI-MP2 spin-component path, but NO comparison to a reference code exists yet.",
+    ),
+    (
+        "dsd-pbep86",
+        "method.kind = \"dsd-pbep86\" is Spike-grade: the KS reference uses weighted PBE+P86 via \
+         per-component XC weights (new infrastructure), and the SCS-MP2 correlation reuses the \
+         proven RI-MP2 spin-component path, but NO comparison to a reference code exists yet.",
+    ),
+    (
+        "tda",
+        "method.kind = \"tda\" is Spike-grade: CIS (HF reference) is exact; DFT references \
+         are missing the f_xc kernel term (excitation energies will be approximate).",
+    ),
+    (
+        "tddft",
+        "method.kind = \"tddft\" is Spike-grade: full Casida equations without the f_xc kernel \
+         for DFT references. HF reference gives TDHF (exact within the method).",
+    ),
 ];
 
 /// Print a one-line epistemic-status warning to stderr if `method` is a
@@ -177,8 +200,8 @@ pub fn main() {
     cfg.scf.verbose = cfg.scf.verbose || cli_verbose;
     let method = cfg.method.kind.as_str();
     let task = cfg.method.task.as_str();
-    if !matches!(method, "rhf" | "uhf" | "rohf" | "ksdft" | "rimp2" | "lmp2" | "mp3" | "oo-rimp2" | "att-rimp2" | "mp2-v" | "scs-mp2" | "scs-mp2-2terfc" | "laplace-mp2" | "laplace-sos-mp2" | "pdep-rpa" | "rs-mp2-rpa" | "gw" | "bse-tda" | "tdhf-static-polarizability" | "ccsd" | "linlccd" | "wb97x-l-v") {
-        eprintln!("error: unsupported method.kind = \"{method}\"; expected rhf, uhf, rohf, ksdft, rimp2, mp3, oo-rimp2, att-rimp2, mp2-v, scs-mp2, scs-mp2-2terfc, laplace-mp2, laplace-sos-mp2, pdep-rpa, rs-mp2-rpa, gw, bse-tda, tdhf-static-polarizability, ccsd, linlccd, or wb97x-l-v");
+    if !matches!(method, "rhf" | "uhf" | "rohf" | "ksdft" | "rimp2" | "lmp2" | "mp3" | "oo-rimp2" | "att-rimp2" | "mp2-v" | "scs-mp2" | "scs-mp2-2terfc" | "laplace-mp2" | "laplace-sos-mp2" | "pdep-rpa" | "rs-mp2-rpa" | "gw" | "bse-tda" | "tdhf-static-polarizability" | "ccsd" | "linlccd" | "wb97x-l-v" | "b2plyp" | "dsd-pbep86" | "tda" | "tddft") {
+        eprintln!("error: unsupported method.kind = \"{method}\"; expected rhf, uhf, rohf, ksdft, rimp2, mp3, oo-rimp2, att-rimp2, mp2-v, scs-mp2, scs-mp2-2terfc, laplace-mp2, laplace-sos-mp2, pdep-rpa, rs-mp2-rpa, gw, bse-tda, tdhf-static-polarizability, ccsd, linlccd, wb97x-l-v, b2plyp, dsd-pbep86, tda, or tddft");
         std::process::exit(1);
     }
     warn_if_epistemically_unproven(method);
@@ -253,6 +276,18 @@ pub fn main() {
         // is far below the C6 differences we study. Keep SCF aux separate from
         // the RPA correlation aux / SR-MP2+LR-RPA correlation aux
         // (see ferric-jk-aux-convention).
+        (
+            None,
+            Some("def2-universal-jkfit".to_string()),
+            Some("def2-universal-jkfit".to_string()),
+        )
+    } else if matches!(method, "tda" | "tddft") && cfg.tddft.xc.is_some() {
+        (
+            cfg.tddft.xc.clone(),
+            Some("def2-universal-jkfit".to_string()),
+            Some("def2-universal-jkfit".to_string()),
+        )
+    } else if matches!(method, "tda" | "tddft") {
         (
             None,
             Some("def2-universal-jkfit".to_string()),
@@ -334,7 +369,7 @@ pub fn main() {
     // open-shell request HERE, before the shared `solve_rhf` below, because that
     // solve fails first on an odd electron count and reports the misleading
     // "SCF did not converge after 0 iterations" rather than the real reason.
-    if matches!(method, "linlccd" | "wb97x-l-v") && mol.multiplicity > 1 {
+    if matches!(method, "linlccd" | "wb97x-l-v" | "b2plyp" | "dsd-pbep86" | "tda" | "tddft") && mol.multiplicity > 1 {
         eprintln!(
             "error: method.kind = \"{method}\" requires a closed-shell (restricted) reference; \
              open-shell LinLCCD(hh) / wB97X-L-V are library-only \
@@ -352,6 +387,10 @@ pub fn main() {
     // consumed would silently be the wrong one.
     if method == "wb97x-l-v" {
         run_wb97x_l_v_arm(&cfg, &ctx, &mol, &bs, &prep, &bounds, &rhf_config, budget_bytes);
+        return;
+    }
+    if matches!(method, "b2plyp" | "dsd-pbep86") {
+        run_mp2_double_hybrid_arm(&cfg, &ctx, &mol, &bs, &prep, &bounds, &rhf_config, budget_bytes, method);
         return;
     }
 
@@ -496,6 +535,7 @@ pub fn main() {
         "gw" => run_gw(&cfg, &ctx, &mol, &bs, &prep, op, &bounds, &rhf_config, &result, budget_bytes),
         "bse-tda" => run_bse_tda(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
         "tdhf-static-polarizability" => run_tdhf_static_polarizability(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
+        "tda" | "tddft" => run_tddft_arm(&cfg, &mol, &bs, &prep, &result, budget_bytes, method),
         _ => unreachable!(),
     }
 }
@@ -1344,6 +1384,77 @@ fn run_wb97x_l_v_arm(
     println!("  E_c LinLCCD  = {:.10} Hartree", dh.e_c_wft);
     println!("  lambda*E_c   = {:.10} Hartree", dh.e_c_scaled);
     println!("  Total        = {:.10} Hartree", dh.total_energy);
+}
+
+/// `method.kind = "b2plyp"` or `"dsd-pbep86"`. MP2-based double hybrids.
+///
+/// Like wB97X-L-V, these converge their own KS reference (the SCF functional
+/// is baked into the double-hybrid definition), then add scaled RI-MP2
+/// correlation. Returns early — must not fall through to the generic SCF path.
+#[allow(clippy::too_many_arguments)]
+fn run_mp2_double_hybrid_arm(
+    cfg: &Config,
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    bs: &BasisSet,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    rhf_config: &RhfConfig,
+    budget_bytes: Option<usize>,
+    method: &str,
+) {
+    let dh_kind = match method {
+        "b2plyp" => DoubleHybridKind::B2plyp,
+        "dsd-pbep86" => DoubleHybridKind::DsdPbep86,
+        _ => unreachable!(),
+    };
+    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+    let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let dfbs = PreparedBasis::new(mol, &aux_bs).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+
+    let mut ks_cfg = rhf_config.clone();
+    ks_cfg.xc = Some(dh_kind.xc_name().to_string());
+    ks_cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
+    ks_cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
+
+    let ladder = ferric_scf::ladder::ksdft_ladder(&ks_cfg);
+    let lr = ferric_scf::ladder::solve_rhf_ladder(ctx, mol, prep, Operator::coulomb(), bounds, &ladder)
+        .unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
+    let ks = lr.result;
+    if !ks.converged {
+        eprintln!("error: {} SCF did not converge after {} iterations", method, ks.iterations);
+        std::process::exit(1);
+    }
+
+    let mut mp2_cfg = dh_kind.mp2_config();
+    mp2_cfg.frozen_core = cfg.mp2.frozen_core;
+    mp2_cfg.memory_budget_bytes = budget_bytes;
+
+    let r = mp2_double_hybrid(mol, prep, &dfbs, &ks, &mp2_cfg)
+        .unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
+    println!(
+        "{}/{} (aux: {}) on {}",
+        method.to_uppercase(), bs.name, aux_name, cfg.molecule.xyz
+    );
+    println!("  nbasis       = {}", prep.nbasis());
+    println!("  SCF iters    = {}", ks.iterations);
+    println!("  E_KS         = {:.10} Hartree", r.e_ks);
+    println!("  E_OS (raw)   = {:.10} Hartree", r.spin_components.e_os);
+    println!("  E_SS (raw)   = {:.10} Hartree", r.spin_components.e_ss);
+    println!("  scaled corr  = {:.10} Hartree (c_os={}, c_ss={})", r.e_corr_scaled, r.c_os, r.c_ss);
+    println!("  Total        = {:.10} Hartree", r.total_energy);
 }
 
 /// `method.kind = "laplace-mp2"`. Extracted verbatim from the former
@@ -2973,5 +3084,64 @@ fn run_optimize(
             eprintln!("error: geometry optimization is currently only supported for method.kind = \"rhf\", \"ksdft\", \"uhf\", \"rohf\", \"pdep-rpa\", or \"rimp2\"");
             std::process::exit(1);
         }
+    }
+}
+
+fn run_tddft_arm(
+    cfg: &Config,
+    mol: &Molecule,
+    _bs: &BasisSet,
+    prep: &PreparedBasis,
+    result: &ferric_scf::result::ScfResult,
+    _budget_bytes: Option<usize>,
+    method: &str,
+) {
+    use ferric_tddft::{TddftConfig, TddftMethod};
+
+    let auxbasis_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-rifit");
+    let dfbs_basis = basis::bundled(auxbasis_name).unwrap_or_else(|_| {
+        eprintln!("error: auxiliary basis '{auxbasis_name}' not found");
+        std::process::exit(1);
+    });
+    let dfbs = PreparedBasis::new(mol, &dfbs_basis).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+
+    let tddft_method = match method {
+        "tda" => TddftMethod::Tda,
+        "tddft" => TddftMethod::Casida,
+        _ => unreachable!(),
+    };
+
+    let c_hf = cfg.tddft.c_hf.unwrap_or_else(|| {
+        if let Some(ref xc_name) = cfg.tddft.xc {
+            let xc_def = ferric_dft::libxc::xc_def_from_name(xc_name)
+                .unwrap_or_else(|e| {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                });
+            ferric_dft::libxc::k_mix_from_xc_def(&xc_def).sr
+        } else {
+            1.0
+        }
+    });
+
+    let config = TddftConfig {
+        n_roots: cfg.tddft.n_roots,
+        method: tddft_method,
+    };
+
+    let r = ferric_tddft::run_tddft(mol, prep, &dfbs, result, &config, c_hf)
+        .unwrap_or_else(|e| {
+            eprintln!("error: TDDFT failed: {e}");
+            std::process::exit(1);
+        });
+
+    let ha_to_ev = 27.211_386_245_988;
+    println!("{:?} — {} roots (c_HF = {:.2}):", tddft_method, config.n_roots, c_hf);
+    println!("  {:>5}  {:>12}  {:>10}  {:>10}", "Root", "Energy (Ha)", "eV", "f");
+    for (i, (&e, &f)) in r.excitation_energies.iter().zip(&r.oscillator_strengths).enumerate() {
+        println!("  {:>5}  {:>12.6}  {:>10.4}  {:>10.6}", i + 1, e, e * ha_to_ev, f);
     }
 }

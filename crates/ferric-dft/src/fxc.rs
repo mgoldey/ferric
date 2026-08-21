@@ -124,10 +124,11 @@ impl LdaFxcKernel {
         // Sum f_xc over all sub-functionals (e.g., LDA_X + LDA_C_VWN).
         let mut v2 = vec![0.0f64; 3 * npts];
         let mut v2_tmp = vec![0.0f64; 3 * npts];
-        for f in &self.xc.funcs {
+        for (i, f) in self.xc.funcs.iter().enumerate() {
+            let w_i = self.xc.weights.as_ref().map_or(1.0, |ws| ws[i]);
             for x in v2_tmp.iter_mut() { *x = 0.0; }
             f.eval_lda_fxc_polarized(&rho_packed, &mut v2_tmp);
-            for (a, b) in v2.iter_mut().zip(v2_tmp.iter()) { *a += *b; }
+            for (a, b) in v2.iter_mut().zip(v2_tmp.iter()) { *a += w_i * *b; }
         }
 
         // δV(r_g) per spin (LDA):
@@ -309,15 +310,13 @@ impl GgaFxcKernel {
         let mut t_rr = vec![0.0f64; 3 * npts];
         let mut t_rs = vec![0.0f64; 6 * npts];
         let mut t_ss = vec![0.0f64; 6 * npts];
-        for f in &self.xc.funcs {
+        for (i, f) in self.xc.funcs.iter().enumerate() {
+            let w_i = self.xc.weights.as_ref().map_or(1.0, |ws| ws[i]);
             for x in t_rr.iter_mut() { *x = 0.0; }
             for x in t_rs.iter_mut() { *x = 0.0; }
             for x in t_ss.iter_mut() { *x = 0.0; }
             match f.family() {
                 FunctionalFamily::Lda => {
-                    // Pure-LDA sub-functional: only ρρ second derivatives are
-                    // nonzero; ρσ / σσ blocks stay zero. Use the LDA fxc call
-                    // (xc_gga_fxc on a genuine LDA handle is undefined).
                     f.eval_lda_fxc_polarized(&rho_packed, &mut t_rr);
                 }
                 FunctionalFamily::Gga
@@ -328,15 +327,13 @@ impl GgaFxcKernel {
                         &mut t_rr, &mut t_rs, &mut t_ss,
                     );
                 }
-                // GgaFxcKernel::new rejects meta-GGA (no τ f_xc kernel), so a
-                // MetaGga sub-functional cannot reach this eval.
                 FunctionalFamily::MetaGga => unreachable!(
                     "GgaFxcKernel built with a meta-GGA functional (rejected in ::new)"
                 ),
             }
-            for (a, b) in v2rho2.iter_mut().zip(&t_rr) { *a += *b; }
-            for (a, b) in v2rhosigma.iter_mut().zip(&t_rs) { *a += *b; }
-            for (a, b) in v2sigma2.iter_mut().zip(&t_ss) { *a += *b; }
+            for (a, b) in v2rho2.iter_mut().zip(&t_rr) { *a += w_i * *b; }
+            for (a, b) in v2rhosigma.iter_mut().zip(&t_rs) { *a += w_i * *b; }
+            for (a, b) in v2sigma2.iter_mut().zip(&t_ss) { *a += w_i * *b; }
         }
 
         // Reference and perturbation gradients as (3, npts) views.
@@ -427,7 +424,8 @@ impl GgaFxcKernel {
             let mut exc = vec![0.0f64; npts];
             let mut vrho = vec![0.0f64; 2 * npts];
             let mut vsigma = vec![0.0f64; 3 * npts];
-            for f in &self.xc.funcs {
+            for (i, f) in self.xc.funcs.iter().enumerate() {
+                let w_i = self.xc.weights.as_ref().map_or(1.0, |ws| ws[i]);
                 match f.family() {
                     FunctionalFamily::Lda => { /* no σ contribution */ }
                     FunctionalFamily::Gga
@@ -441,12 +439,11 @@ impl GgaFxcKernel {
                             &mut exc, &mut vrho, &mut vsigma,
                         );
                         for g in 0..npts {
-                            vsig_aa[g] += vsigma[3 * g];
-                            vsig_ab[g] += vsigma[3 * g + 1];
-                            vsig_bb[g] += vsigma[3 * g + 2];
+                            vsig_aa[g] += w_i * vsigma[3 * g];
+                            vsig_ab[g] += w_i * vsigma[3 * g + 1];
+                            vsig_bb[g] += w_i * vsigma[3 * g + 2];
                         }
                     }
-                    // Unreachable: GgaFxcKernel::new rejects meta-GGA.
                     FunctionalFamily::MetaGga => unreachable!(
                         "GgaFxcKernel built with a meta-GGA functional (rejected in ::new)"
                     ),
@@ -656,7 +653,8 @@ mod tests {
         let mut vs_aa = vec![0.0f64; npts];
         let mut vs_ab = vec![0.0f64; npts];
         let mut vs_bb = vec![0.0f64; npts];
-        for f in &xc.funcs {
+        for (i, f) in xc.funcs.iter().enumerate() {
+            let w_i = xc.weights.as_ref().map_or(1.0, |ws| ws[i]);
             let mut exc = vec![0.0f64; npts];
             let mut vrho = vec![0.0f64; 2 * npts];
             match f.family() {
@@ -667,15 +665,15 @@ mod tests {
                     let mut vsigma = vec![0.0f64; 3 * npts];
                     f.eval_gga_polarized(&rho_in, &sigma_in, &mut exc, &mut vrho, &mut vsigma);
                     for g in 0..npts {
-                        vs_aa[g] += vsigma[3 * g];
-                        vs_ab[g] += vsigma[3 * g + 1];
-                        vs_bb[g] += vsigma[3 * g + 2];
+                        vs_aa[g] += w_i * vsigma[3 * g];
+                        vs_ab[g] += w_i * vsigma[3 * g + 1];
+                        vs_bb[g] += w_i * vsigma[3 * g + 2];
                     }
                 }
             }
             for g in 0..npts {
-                vrho_a[g] += vrho[2 * g];
-                vrho_b[g] += vrho[2 * g + 1];
+                vrho_a[g] += w_i * vrho[2 * g];
+                vrho_b[g] += w_i * vrho[2 * g + 1];
             }
         }
 

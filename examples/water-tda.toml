@@ -1,0 +1,11 @@
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "cc-pvdz"
+
+[method]
+kind = "tda"
+
+[tddft]
+n_roots = 5

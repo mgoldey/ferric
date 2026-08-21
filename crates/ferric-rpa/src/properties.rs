@@ -28,10 +28,8 @@
 //!
 //! Three siblings — `atomic_effective_volumes_hirshfeld`, `hirshfeld_i_charges`,
 //! and `hirshfeld_charges` — are equally RPA-independent but could NOT move:
-//! they depend on `ferric_export::cube::GridSpec` /
-//! `ferric_export::gto_eval::eval_basis_on_grid`, and `ferric-export` itself
-//! depends on `ferric-scf`, so moving them would create a Cargo dependency
-//! cycle (`ferric-scf` → `ferric-export` → `ferric-scf`). They remain defined
+//! they depend on `ferric_integrals::ao_grid::GridSpec` /
+//! `ferric_integrals::ao_grid::eval_basis_on_grid`. They remain defined
 //! here.
 //!
 //! Both routines are closed-shell only.  They return
@@ -832,7 +830,7 @@ fn accumulate_atom_centred_dipoles(
     obs_bs: &ferric_core::basis::BasisSet,
     budget_bytes: usize,
 ) -> Result<Vec<[Array2<f64>; 3]>, FerricError> {
-    use ferric_dft::ao_grid::eval_basis_on_points;
+    use ferric_integrals::ao_grid::eval_basis_on_points;
     use rayon::prelude::*;
 
     // Chunk size: same "≥1024 groups, floored at 1" convention as
@@ -932,7 +930,7 @@ pub fn pdep_polarizability_becke(
     cfg: &PdepRpaConfig,
 ) -> Result<Vec<[[f64; 3]; 3]>, FerricError> {
     use ferric_dft::grid::{build_atomic_grid, AtomicGridConfig};
-    use ferric_dft::ao_grid::eval_basis_on_points;
+    use ferric_integrals::ao_grid::eval_basis_on_points;
 
     // Open-shell: the dynamic Becke path has a complete per-spin (U) branch, and
     // ω=0 reproduces the static per-atom α exactly. Delegate to it rather than
@@ -1631,8 +1629,8 @@ pub fn pdep_polarizability_hirshfeld(
     cfg: &PdepRpaConfig,
     proatom: Option<&ProatomProvider>,
 ) -> Result<Vec<[[f64; 3]; 3]>, FerricError> {
-    use ferric_export::cube::GridSpec;
-    use ferric_export::gto_eval::eval_basis_on_grid;
+    use ferric_integrals::ao_grid::GridSpec;
+    use ferric_integrals::ao_grid::eval_basis_on_grid;
 
     if !matches!(rhf.spin, Spin::Restricted) {
         return Err(FerricError::General(
@@ -1930,8 +1928,8 @@ pub fn pdep_polarizability_hirshfeld_dynamic(
     freqs: &[f64],
     proatom: Option<&ProatomProvider>,
 ) -> Result<Vec<Vec<[[f64; 3]; 3]>>, FerricError> {
-    use ferric_export::cube::GridSpec;
-    use ferric_export::gto_eval::eval_basis_on_grid;
+    use ferric_integrals::ao_grid::GridSpec;
+    use ferric_integrals::ao_grid::eval_basis_on_grid;
     use ferric_integrals::blas_threads::with_blas_threads;
     use rayon::prelude::*;
 
@@ -2599,8 +2597,8 @@ pub fn atomic_effective_volumes_hirshfeld(
     density: &Array2<f64>,
     proatom: Option<&ProatomProvider>,
 ) -> Result<Vec<f64>, FerricError> {
-    use ferric_export::cube::GridSpec;
-    use ferric_export::gto_eval::eval_basis_on_grid;
+    use ferric_integrals::ao_grid::GridSpec;
+    use ferric_integrals::ao_grid::eval_basis_on_grid;
 
     let natoms = mol.atoms.len();
     let spacing = hirshfeld_spacing();
@@ -2699,8 +2697,8 @@ pub fn hirshfeld_i_charges(
     density: &Array2<f64>,
     proatom: &dyn Fn(i32, i32) -> Option<RadialProatom>,
 ) -> Result<Vec<f64>, FerricError> {
-    use ferric_export::cube::GridSpec;
-    use ferric_export::gto_eval::eval_basis_on_grid;
+    use ferric_integrals::ao_grid::GridSpec;
+    use ferric_integrals::ao_grid::eval_basis_on_grid;
 
     let natoms = mol.atoms.len();
     let spacing = hirshfeld_spacing();
@@ -2825,8 +2823,8 @@ pub fn hirshfeld_charges(
     density: &Array2<f64>,
     proatom: Option<&ProatomProvider>,
 ) -> Result<Vec<f64>, FerricError> {
-    use ferric_export::cube::GridSpec;
-    use ferric_export::gto_eval::eval_basis_on_grid;
+    use ferric_integrals::ao_grid::GridSpec;
+    use ferric_integrals::ao_grid::eval_basis_on_grid;
 
     let natoms = mol.atoms.len();
     let spacing = hirshfeld_spacing();

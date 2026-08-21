@@ -36,6 +36,7 @@ ferric-rpa = { path = "../ferric-rpa" }
 ferric-gw = { path = "../ferric-gw" }
 ferric-export = { path = "../ferric-export" }
 ferric-cc = { path = "../ferric-cc" }
+ferric-tddft = { path = "../ferric-tddft" }
 toml = { workspace = true }
 serde = { workspace = true }
 ndarray = { workspace = true }

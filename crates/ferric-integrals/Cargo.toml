@@ -11,6 +11,7 @@ workspace = true
 ferric-core = { path = "../ferric-core" }
 ndarray = { workspace = true }
 rayon = { workspace = true }
+thiserror = { workspace = true }
 tempfile = "3"
 bytemuck = "1"
 libc = "0.2"

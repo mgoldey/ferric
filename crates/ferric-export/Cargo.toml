@@ -10,9 +10,11 @@ workspace = true
 [dependencies]
 ferric-core = { path = "../ferric-core" }
 ferric-dft = { path = "../ferric-dft" }
-ferric-scf = { path = "../ferric-scf" }
 ferric-integrals = { path = "../ferric-integrals" }
 ndarray = { workspace = true }
 ndarray-npy = "0.9"
 thiserror = { workspace = true }
 rayon = { workspace = true }
+
+[dev-dependencies]
+ferric-scf = { path = "../ferric-scf" }

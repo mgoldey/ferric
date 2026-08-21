@@ -75,5 +75,7 @@ pub mod laplace;
 pub mod oo_rimp2_gradient;
 /// MPI-distributed RI-MP2 (aux-band striping across ranks).
 pub mod mpi_rimp2;
+/// Generic MP2-based double-hybrid DFT (B2PLYP, DSD-PBEP86).
+pub mod double_hybrid;
 /// Geometry optimization using MP2 gradients.
 pub mod optimize;

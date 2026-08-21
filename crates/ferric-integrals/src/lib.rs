@@ -40,3 +40,5 @@ pub mod blas_threads;
 pub mod threeindex;
 /// [`ThreeIndexSource`](three_index_source::ThreeIndexSource) trait: abstract 3-index tensor provider.
 pub mod three_index_source;
+/// GTO basis-function evaluation on real-space grids (Cartesian, Becke-Lebedev, etc.).
+pub mod ao_grid;

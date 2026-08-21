@@ -27,6 +27,7 @@ use ferric_mp2::oo_rimp2::{oo_ri_mp2, OoRiMp2Config};
 use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
 use ferric_mp2::att_vv10::{att_mp2_vv10, AttVv10Attenuator, AttVv10Config, AttVv10SpinComponents};
 use ferric_mp2::scs::{scs_mp2, scs_mp2_2terfc, ScsMp2Config, ScsMp2TerfcConfig};
+use ferric_mp2::double_hybrid::{mp2_double_hybrid, DoubleHybridKind};
 use ferric_scf::ks_gradient::ks_gradient_closed;
 use ferric_scf::optimize::{optimize_geometry, OptimizeConfig};
 use ferric_scf::result::ScfResult;
@@ -2587,6 +2588,88 @@ impl PyDftResult {
     }
 }
 
+// ---------------------------------------------------------------------------
+// MP2-based double hybrids (B2PLYP, DSD-PBEP86)
+// ---------------------------------------------------------------------------
+
+#[pyclass]
+struct PyDoubleHybridResult {
+    #[pyo3(get)] total_energy: f64,
+    #[pyo3(get)] e_ks: f64,
+    #[pyo3(get)] e_corr_scaled: f64,
+    #[pyo3(get)] e_os: f64,
+    #[pyo3(get)] e_ss: f64,
+    #[pyo3(get)] c_os: f64,
+    #[pyo3(get)] c_ss: f64,
+}
+
+#[pymethods]
+impl PyDoubleHybridResult {
+    fn __repr__(&self) -> String {
+        format!("DoubleHybridResult(total_energy={:.10}, e_ks={:.10}, e_corr={:.10})",
+            self.total_energy, self.e_ks, self.e_corr_scaled)
+    }
+    fn __str__(&self) -> String {
+        format!("Double Hybrid Energy: {:.10} Ha (KS: {:.10}, scaled MP2: {:.10})",
+            self.total_energy, self.e_ks, self.e_corr_scaled)
+    }
+}
+
+/// Run an MP2-based double hybrid (B2PLYP or DSD-PBEP86).
+///
+/// `kind`: "b2plyp" or "dsd-pbep86".
+/// Converges the appropriate DFT reference, then adds scaled MP2 correlation.
+#[pyfunction]
+#[pyo3(signature = (mol, basis_set, auxbasis, kind="b2plyp", frozen_core=None, k_builder=None, memory_budget_gb=None))]
+fn run_double_hybrid(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
+                     kind: &str, frozen_core: Option<usize>,
+                     k_builder: Option<&str>, memory_budget_gb: Option<f64>) -> PyResult<PyDoubleHybridResult> {
+    let dh_kind = match kind.to_lowercase().replace('-', "").replace('_', "").as_str() {
+        "b2plyp" => DoubleHybridKind::B2plyp,
+        "dsdpbep86" => DoubleHybridKind::DsdPbep86,
+        _ => return Err(pyo3::exceptions::PyValueError::new_err(
+            format!("unknown double hybrid kind '{kind}'; expected 'b2plyp' or 'dsd-pbep86'")
+        )),
+    };
+
+    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
+    let ctx = ParallelContext::default();
+
+    let mut cfg = rhf_config(k_builder);
+    cfg.xc = Some(dh_kind.xc_name().to_string());
+    cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
+    cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
+
+    let ladder = ferric_scf::ladder::ksdft_ladder(&cfg);
+    let lr = ferric_scf::ladder::solve_rhf_ladder(&ctx, &mol.inner, &prep, op, &bounds, &ladder)
+        .map_err(make_err)?;
+    let ks = lr.result;
+    if !ks.converged {
+        return Err(make_err(ferric_core::FerricError::ScfConvergence {
+            iterations: ks.iterations, last_energy: ks.energy,
+        }));
+    }
+
+    let mut mp2_cfg = dh_kind.mp2_config();
+    if let Some(fc) = frozen_core { mp2_cfg.frozen_core = fc; }
+    mp2_cfg.memory_budget_bytes = budget_bytes_from_gb(memory_budget_gb);
+
+    let r = mp2_double_hybrid(&mol.inner, &prep, &dfbs, &ks, &mp2_cfg).map_err(make_err)?;
+
+    Ok(PyDoubleHybridResult {
+        total_energy: r.total_energy,
+        e_ks: r.e_ks,
+        e_corr_scaled: r.e_corr_scaled,
+        e_os: r.spin_components.e_os,
+        e_ss: r.spin_components.e_ss,
+        c_os: r.c_os,
+        c_ss: r.c_ss,
+    })
+}
+
 /// Kohn-Sham DFT (closed-shell). `functional` is an XC name (LDA/PBE/B3LYP/
 /// wB97X-V/…). Convergence aids match the CLI `[scf]` section: `level_shift`
 /// (Ha) and `mom_after_iter` help difficult DFT SCFs converge.
@@ -3806,6 +3889,113 @@ fn run_tdhf_static_polarizability(
     })
 }
 
+// ── TDDFT (closed-shell linear response) ──
+
+#[pyclass]
+#[pyo3(name = "TddftResult")]
+struct PyTddftResult {
+    #[pyo3(get)] n_roots: usize,
+    #[pyo3(get)] method: String,
+    excitation_energies: Vec<f64>,
+    oscillator_strengths: Vec<f64>,
+}
+
+#[pymethods]
+impl PyTddftResult {
+    #[getter]
+    fn excitation_energies<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        PyArray1::from_slice(py, &self.excitation_energies)
+    }
+    #[getter]
+    fn oscillator_strengths<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        PyArray1::from_slice(py, &self.oscillator_strengths)
+    }
+    fn lowest_ev(&self) -> f64 {
+        if self.excitation_energies.is_empty() { 0.0 }
+        else { self.excitation_energies[0] * 27.211_386_245_988 }
+    }
+    fn __repr__(&self) -> String {
+        format!(
+            "TddftResult(method={}, n_roots={}, lowest={:.4} eV)",
+            self.method, self.n_roots, self.lowest_ev(),
+        )
+    }
+    fn __str__(&self) -> String {
+        let ha_to_ev = 27.211_386_245_988;
+        let mut s = format!("TDDFT {} — {} roots:\n", self.method, self.n_roots);
+        for (i, (&e, &f)) in self.excitation_energies.iter()
+            .zip(&self.oscillator_strengths).enumerate()
+        {
+            s += &format!("  {}: {:.6} Ha ({:.4} eV)  f = {:.6}\n", i + 1, e, e * ha_to_ev, f);
+        }
+        s
+    }
+}
+
+#[pyfunction]
+#[pyo3(signature = (mol, basis_set, auxbasis, functional=None, n_roots=3, method="tda"))]
+fn run_tddft(
+    mol: &PyMolecule,
+    basis_set: &PyBasisSet,
+    auxbasis: &PyBasisSet,
+    functional: Option<&str>,
+    n_roots: usize,
+    method: &str,
+) -> PyResult<PyTddftResult> {
+    use ferric_tddft::{TddftConfig, TddftMethod};
+
+    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
+    let ctx = ParallelContext::default();
+
+    let tddft_method = match method.to_lowercase().as_str() {
+        "tda" | "cis" => TddftMethod::Tda,
+        "casida" | "rpa" | "tddft" | "tdhf" => TddftMethod::Casida,
+        _ => return Err(pyo3::exceptions::PyValueError::new_err(
+            format!("Unknown TDDFT method '{method}'; expected 'tda' or 'casida'"),
+        )),
+    };
+
+    let c_hf;
+    let scf = if let Some(xc_name) = functional {
+        let mut cfg = rhf_config(None);
+        cfg.xc = Some(xc_name.to_string());
+        cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
+        cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
+        let ladder = ferric_scf::ladder::ksdft_ladder(&cfg);
+        let lr = ferric_scf::ladder::solve_rhf_ladder(&ctx, &mol.inner, &prep, op, &bounds, &ladder)
+            .map_err(make_err)?;
+        let xc_def = ferric_dft::libxc::xc_def_from_name(xc_name)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{e}")))?;
+        let k_mix = ferric_dft::libxc::k_mix_from_xc_def(&xc_def);
+        c_hf = k_mix.sr;
+        lr.result
+    } else {
+        let cfg = rhf_config(None);
+        let scf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &cfg).map_err(make_err)?;
+        c_hf = 1.0;
+        scf
+    };
+    if !scf.converged {
+        return Err(make_err(ferric_core::FerricError::ScfConvergence {
+            iterations: scf.iterations, last_energy: scf.energy,
+        }));
+    }
+
+    let config = TddftConfig { n_roots, method: tddft_method };
+    let r = ferric_tddft::run_tddft(&mol.inner, &prep, &dfbs, &scf, &config, c_hf)
+        .map_err(make_err)?;
+
+    Ok(PyTddftResult {
+        n_roots: r.excitation_energies.len(),
+        method: format!("{:?}", r.method),
+        excitation_energies: r.excitation_energies,
+        oscillator_strengths: r.oscillator_strengths,
+    })
+}
+
 // ── Raw integral access (for Python-side method prototyping) ──
 
 /// Raw 3-center Coulomb integrals (P|μν) as a numpy array of shape
@@ -4087,6 +4277,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyUGwResult>()?;
     m.add_class::<PyBseResult>()?;
     m.add_class::<PyTdhfStaticPolarizabilityResult>()?;
+    m.add_class::<PyTddftResult>()?;
     m.add_class::<PyConformerEnsemble>()?;
     m.add_class::<PyBoltzmannWeights>()?;
     m.add_class::<PyWeightedStats>()?;
@@ -4126,6 +4317,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_scs_mp2, m)?)?;
     m.add_function(wrap_pyfunction!(run_scs_mp2_2terfc, m)?)?;
     m.add_function(wrap_pyfunction!(run_mp2_v, m)?)?;
+    m.add_function(wrap_pyfunction!(run_double_hybrid, m)?)?;
 
     m.add_function(wrap_pyfunction!(run_laplace_mp2, m)?)?;
     m.add_function(wrap_pyfunction!(run_laplace_sos_mp2, m)?)?;
@@ -4140,6 +4332,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_u_gw, m)?)?;
     m.add_function(wrap_pyfunction!(run_bse_tda, m)?)?;
     m.add_function(wrap_pyfunction!(run_tdhf_static_polarizability, m)?)?;
+    m.add_function(wrap_pyfunction!(run_tddft, m)?)?;
     m.add_function(wrap_pyfunction!(compute_eri3, m)?)?;
     m.add_function(wrap_pyfunction!(compute_eri3_mo, m)?)?;
     m.add_function(wrap_pyfunction!(compute_metric_2c, m)?)?;

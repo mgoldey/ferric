@@ -1039,6 +1039,26 @@ pub struct XcDef {
     pub vv10: Option<Vv10Params>,
     /// For plain hybrids (ω=0), the exact-exchange fraction.
     pub b3lyp_mix: Option<f64>,
+    /// Per-component weights for scaled composite functionals (e.g. double
+    /// hybrids where 0.47*B88 + 0.73*LYP). `None` means all weights are 1.0.
+    /// When `Some`, length must equal `funcs.len()`.
+    pub weights: Option<Vec<f64>>,
+}
+
+/// Derive the exact-exchange mixing coefficients from an XC definition.
+///
+/// For CAM/RSH functionals: uses the short-range/long-range/omega split.
+/// For global hybrids (B3LYP, PBE0): uniform mixing for both SR and LR.
+/// For pure DFT (LDA, GGA): no exact exchange (sr=lr=0).
+pub fn k_mix_from_xc_def(xc: &XcDef) -> crate::xc_trait::KMix {
+    use crate::xc_trait::KMix;
+    if let Some(cam) = xc.cam {
+        KMix { sr: cam.c_sr, lr: cam.c_lr, omega: cam.omega }
+    } else if let Some(mix) = xc.b3lyp_mix {
+        KMix { sr: mix, lr: mix, omega: 0.0 }
+    } else {
+        KMix { sr: 0.0, lr: 0.0, omega: 0.0 }
+    }
 }
 
 /// Map a friendly functional name to its libxc component identifier(s).
@@ -1235,6 +1255,42 @@ fn apply_named_ext_params(
 
 /// Build the ωB97X-L-V exchange–correlation definition.
 ///
+/// B2PLYP SCF functional: 0.53 HF + 0.47 B88 exchange + 0.73 LYP correlation.
+///
+/// This is the DFT half only. The post-SCF MP2 correlation (0.27 * E_MP2)
+/// is added by the double-hybrid driver.
+pub fn b2plyp_def(nspin: u32) -> Result<XcDef, LibxcError> {
+    let mut fx = XcFunctional::new("GGA_X_B88", nspin)?;
+    fx.set_family(FunctionalFamily::HybridGga);
+    let mut fc = XcFunctional::new("GGA_C_LYP", nspin)?;
+    fc.set_family(FunctionalFamily::HybridGga);
+    Ok(XcDef {
+        funcs: vec![fx, fc],
+        cam: None,
+        vv10: None,
+        b3lyp_mix: Some(0.53),
+        weights: Some(vec![0.47, 0.73]),
+    })
+}
+
+/// DSD-PBEP86 SCF functional: 0.69 HF + 0.31 PBE exchange + 0.44 P86 correlation.
+///
+/// This is the DFT half only. The post-SCF SCS-MP2 correlation
+/// (0.56 * E_OS + 0.29 * E_SS) is added by the double-hybrid driver.
+pub fn dsd_pbep86_def(nspin: u32) -> Result<XcDef, LibxcError> {
+    let mut fx = XcFunctional::new("GGA_X_PBE", nspin)?;
+    fx.set_family(FunctionalFamily::HybridGga);
+    let mut fc = XcFunctional::new("GGA_C_P86", nspin)?;
+    fc.set_family(FunctionalFamily::HybridGga);
+    Ok(XcDef {
+        funcs: vec![fx, fc],
+        cam: None,
+        vv10: None,
+        b3lyp_mix: Some(0.69),
+        weights: Some(vec![0.31, 0.44]),
+    })
+}
+
 /// This is the DFT half of the double hybrid only. The wave-function half —
 /// `λ · E_c,LinLCCD(hh)` evaluated with an erfc(ω)-attenuated operator on the
 /// converged Kohn–Sham orbitals — is added post-SCF by the double-hybrid driver.
@@ -1255,6 +1311,7 @@ pub fn wb97x_l_v_def(nspin: u32) -> Result<XcDef, LibxcError> {
         cam: Some(cam),
         vv10: Some(WB97X_L_V_VV10),
         b3lyp_mix: None,
+        weights: None,
     })
 }
 
@@ -1270,6 +1327,12 @@ pub fn xc_def_from_name_nspin(name: &str, nspin: u32) -> Result<XcDef, LibxcErro
         if key == "WB97XLV" {
             return wb97x_l_v_def(nspin);
         }
+        if key == "DSDPBEP86" {
+            return dsd_pbep86_def(nspin);
+        }
+        if key == "B2PLYP" {
+            return b2plyp_def(nspin);
+        }
     }
 
     // Friendly-name alias layer: map common chemistry names to canonical libxc
@@ -1282,7 +1345,7 @@ pub fn xc_def_from_name_nspin(name: &str, nspin: u32) -> Result<XcDef, LibxcErro
             let vv10 = f.vv10_coeffs();
             if cam.is_some() {
                 f.set_family(FunctionalFamily::RangeSepGga);
-                return Ok(XcDef { funcs: vec![f], cam, vv10, b3lyp_mix: None });
+                return Ok(XcDef { funcs: vec![f], cam, vv10, b3lyp_mix: None, weights: None });
             }
             let mix = f.exact_exchange_mix();
             f.set_family(FunctionalFamily::HybridGga);
@@ -1291,6 +1354,7 @@ pub fn xc_def_from_name_nspin(name: &str, nspin: u32) -> Result<XcDef, LibxcErro
                 cam: None,
                 vv10,
                 b3lyp_mix: if mix != 0.0 { Some(mix) } else { None },
+                weights: None,
             });
         }
         // Exchange + correlation pair ⇒ pure LDA, GGA, or meta-GGA. Detect the
@@ -1302,7 +1366,7 @@ pub fn xc_def_from_name_nspin(name: &str, nspin: u32) -> Result<XcDef, LibxcErro
             f.set_family(fam);
             funcs.push(f);
         }
-        return Ok(XcDef { funcs, cam: None, vv10: None, b3lyp_mix: None });
+        return Ok(XcDef { funcs, cam: None, vv10: None, b3lyp_mix: None, weights: None });
     }
 
     // Raw (non-friendly) meta-GGA identifiers: only the semilocal SCAN / r2SCAN
@@ -1326,7 +1390,7 @@ pub fn xc_def_from_name_nspin(name: &str, nspin: u32) -> Result<XcDef, LibxcErro
         }
         let mut f = XcFunctional::new(name, nspin)?;
         f.set_family(FunctionalFamily::MetaGga);
-        return Ok(XcDef { funcs: vec![f], cam: None, vv10: None, b3lyp_mix: None });
+        return Ok(XcDef { funcs: vec![f], cam: None, vv10: None, b3lyp_mix: None, weights: None });
     }
 
     // Unrecognized friendly name: treat as a raw libxc identifier.
@@ -1336,7 +1400,7 @@ pub fn xc_def_from_name_nspin(name: &str, nspin: u32) -> Result<XcDef, LibxcErro
         let vv10 = f.vv10_coeffs();
         if cam.is_some() {
             f.set_family(FunctionalFamily::RangeSepGga);
-            Ok(XcDef { funcs: vec![f], cam, vv10, b3lyp_mix: None })
+            Ok(XcDef { funcs: vec![f], cam, vv10, b3lyp_mix: None, weights: None })
         } else {
             let mix = f.exact_exchange_mix();
             if mix != 0.0 {
@@ -1346,13 +1410,14 @@ pub fn xc_def_from_name_nspin(name: &str, nspin: u32) -> Result<XcDef, LibxcErro
                     cam: None,
                     vv10,
                     b3lyp_mix: Some(mix),
+                    weights: None,
                 })
             } else if name.to_uppercase().contains("LDA") {
                 f.set_family(FunctionalFamily::Lda);
-                Ok(XcDef { funcs: vec![f], cam: None, vv10, b3lyp_mix: None })
+                Ok(XcDef { funcs: vec![f], cam: None, vv10, b3lyp_mix: None, weights: None })
             } else {
                 f.set_family(FunctionalFamily::Gga);
-                Ok(XcDef { funcs: vec![f], cam: None, vv10, b3lyp_mix: None })
+                Ok(XcDef { funcs: vec![f], cam: None, vv10, b3lyp_mix: None, weights: None })
             }
         }
     }

@@ -24,59 +24,7 @@ impl From<ExportError> for ferric_core::error::FerricError {
     }
 }
 
-/// A 3D Cartesian grid specification for volumetric data.
-#[derive(Debug, Clone)]
-pub struct GridSpec {
-    pub origin: [f64; 3],
-    pub n_x: usize,
-    pub n_y: usize,
-    pub n_z: usize,
-    pub step_x: [f64; 3],
-    pub step_y: [f64; 3],
-    pub step_z: [f64; 3],
-}
-
-impl GridSpec {
-    /// Constructs a uniform orthogonal grid tightly bounding the molecule plus a margin.
-    pub fn bounding_box(mol: &Molecule, margin_bohr: f64, spacing_bohr: f64) -> Self {
-        let mut min = [f64::MAX; 3];
-        let mut max = [f64::MIN; 3];
-
-        for atom in &mol.atoms {
-            let coords = [atom.x, atom.y, atom.zpos];
-            for i in 0..3 {
-                if coords[i] < min[i] { min[i] = coords[i]; }
-                if coords[i] > max[i] { max[i] = coords[i]; }
-            }
-        }
-
-        let origin = [
-            min[0] - margin_bohr,
-            min[1] - margin_bohr,
-            min[2] - margin_bohr,
-        ];
-
-        let lengths = [
-            (max[0] - min[0]) + 2.0 * margin_bohr,
-            (max[1] - min[1]) + 2.0 * margin_bohr,
-            (max[2] - min[2]) + 2.0 * margin_bohr,
-        ];
-
-        let n_x = (lengths[0] / spacing_bohr).ceil() as usize;
-        let n_y = (lengths[1] / spacing_bohr).ceil() as usize;
-        let n_z = (lengths[2] / spacing_bohr).ceil() as usize;
-
-        GridSpec {
-            origin,
-            n_x,
-            n_y,
-            n_z,
-            step_x: [spacing_bohr, 0.0, 0.0],
-            step_y: [0.0, spacing_bohr, 0.0],
-            step_z: [0.0, 0.0, spacing_bohr],
-        }
-    }
-}
+pub use ferric_integrals::ao_grid::GridSpec;
 
 /// Writes a 3D array of values to a standard Gaussian Cube file.
 pub fn export_cube(

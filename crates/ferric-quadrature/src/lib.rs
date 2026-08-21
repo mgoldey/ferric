@@ -18,4 +18,7 @@
 /// Minimax-Laplace quadrature for `1/x` on `[1, R]` (Takatsuka/Ten-no/Hackbusch tables).
 pub mod minimax;
 
+/// Lebedev angular quadrature on the unit sphere.
+pub mod lebedev;
+
 pub use minimax::{select_minimax_points, LaplaceQuadrature};

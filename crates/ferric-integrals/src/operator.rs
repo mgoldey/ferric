@@ -52,15 +52,27 @@ pub struct Operator {
     pub kind: OperatorKind,
     pub omega: f64,
     pub distance: f64,
-    // Composite fields
-    pub is_composite: bool,
-    pub num_components: usize,
-    pub c_coeffs: [f64; MAX_COMPONENTS],
-    pub c_omegas: [f64; MAX_COMPONENTS],
-    pub c_kinds: [OperatorKind; MAX_COMPONENTS],
+    // Composite fields — crate-internal; use `components()` for external access.
+    pub(crate) is_composite: bool,
+    pub(crate) num_components: usize,
+    pub(crate) c_coeffs: [f64; MAX_COMPONENTS],
+    pub(crate) c_omegas: [f64; MAX_COMPONENTS],
+    pub(crate) c_kinds: [OperatorKind; MAX_COMPONENTS],
 }
 
 impl Operator {
+    /// Whether this operator is a linear combination of primitives.
+    pub fn is_composite(&self) -> bool {
+        self.is_composite
+    }
+
+    /// Iterate over the (coefficient, kind, omega) triples of a composite operator.
+    /// Returns an empty iterator for primitive operators.
+    pub fn components(&self) -> impl Iterator<Item = (f64, OperatorKind, f64)> + '_ {
+        let n = if self.is_composite { self.num_components } else { 0 };
+        (0..n).map(move |i| (self.c_coeffs[i], self.c_kinds[i], self.c_omegas[i]))
+    }
+
     /// Create a primitive operator.
     pub fn primitive(kind: OperatorKind, omega: f64, distance: f64) -> Self {
         Self {

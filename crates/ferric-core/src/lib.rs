@@ -34,6 +34,7 @@ pub mod memory;
 pub mod config;
 /// BLAS thread-count guard for safe OpenBLAS usage under rayon.
 pub mod blas_threads;
+mod basis_util;
 /// Dense linear algebra helpers (Cholesky, eigenvalue, matrix utilities).
 pub mod linalg;
 

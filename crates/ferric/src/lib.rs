@@ -6,7 +6,7 @@
 //! use ferric::prelude::*;
 //!
 //! let mol: Molecule = "3\nwater\nO 0 0 0.117790\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n".parse().unwrap();
-//! let bs = BasisSet::bundled("sto-3g").unwrap();
+//! let bs = basis::bundled("sto-3g").unwrap();
 //! let prep = PreparedBasis::new(&mol, &bs).unwrap();
 //! let op = Operator::coulomb();
 //! let bounds = SchwarzBounds::compute(op, &prep).unwrap();

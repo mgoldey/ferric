@@ -34,6 +34,8 @@ pub struct Config {
     /// missing `Option` field as `None` automatically without it).
     #[serde(default)]
     pub cosmo: Option<ferric_scf::cosmo::CosmoConfig>,
+    #[serde(default)]
+    pub tddft: TddftCfg,
 }
 
 #[derive(Deserialize, Default)]
@@ -757,6 +759,27 @@ pub struct MethodCfg {
 }
 
 fn default_task() -> String { "energy".into() }
+
+fn default_n_roots() -> usize { 3 }
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TddftCfg {
+    #[serde(default = "default_n_roots")]
+    pub n_roots: usize,
+    pub xc: Option<String>,
+    pub c_hf: Option<f64>,
+}
+
+impl Default for TddftCfg {
+    fn default() -> Self {
+        Self {
+            n_roots: default_n_roots(),
+            xc: None,
+            c_hf: None,
+        }
+    }
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

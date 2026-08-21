@@ -53,7 +53,6 @@ use ferric_dft::gradient::{
 };
 use ferric_dft::grid::AtomicGridConfig;
 use ferric_dft::libxc::{xc_def_from_name, FunctionalFamily};
-use ferric_dft::xc_trait::KMix;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ndarray::Array2;
@@ -114,15 +113,7 @@ pub fn ks_gradient_closed(
             }
         }
     }
-    // Pure DFT (LDA, PBE): no exact exchange, so sr=lr=0. KMix::default()
-    // is HF (sr=lr=1) which would be wrong here.
-    let k_mix: KMix = if let Some(cam) = xc.cam {
-        KMix { sr: cam.c_sr, lr: cam.c_lr, omega: cam.omega }
-    } else if let Some(mix) = xc.b3lyp_mix {
-        KMix { sr: mix, lr: mix, omega: 0.0 }
-    } else {
-        KMix { sr: 0.0, lr: 0.0, omega: 0.0 }
-    };
+    let k_mix = ferric_dft::libxc::k_mix_from_xc_def(&xc);
     let nocc = (mol.nelec() / 2) as usize;
     let w = build_energy_weighted_density(result, nocc);
     let d = result.density_r().clone();
@@ -255,13 +246,7 @@ pub fn ks_gradient_uks(
         .funcs
         .iter()
         .any(|f| matches!(f.family(), FunctionalFamily::MetaGga));
-    let k_mix: KMix = if let Some(cam) = xc.cam {
-        KMix { sr: cam.c_sr, lr: cam.c_lr, omega: cam.omega }
-    } else if let Some(mix) = xc.b3lyp_mix {
-        KMix { sr: mix, lr: mix, omega: 0.0 }
-    } else {
-        KMix { sr: 0.0, lr: 0.0, omega: 0.0 }
-    };
+    let k_mix = ferric_dft::libxc::k_mix_from_xc_def(&xc);
     let c_k: f64 = k_mix.sr;
 
     let nelec = mol.nelec() as i64;
@@ -376,13 +361,7 @@ pub fn ks_gradient_roks(
         .funcs
         .iter()
         .any(|f| matches!(f.family(), FunctionalFamily::MetaGga));
-    let k_mix: KMix = if let Some(cam) = xc.cam {
-        KMix { sr: cam.c_sr, lr: cam.c_lr, omega: cam.omega }
-    } else if let Some(mix) = xc.b3lyp_mix {
-        KMix { sr: mix, lr: mix, omega: 0.0 }
-    } else {
-        KMix { sr: 0.0, lr: 0.0, omega: 0.0 }
-    };
+    let k_mix = ferric_dft::libxc::k_mix_from_xc_def(&xc);
     let c_k: f64 = k_mix.sr;
 
     let nelec = mol.nelec() as i64;

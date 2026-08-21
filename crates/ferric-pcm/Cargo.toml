@@ -10,7 +10,7 @@ workspace = true
 [dependencies]
 ferric-core = { path = "../ferric-core" }
 ferric-integrals = { path = "../ferric-integrals" }
-ferric-dft = { path = "../ferric-dft" }
+ferric-quadrature = { path = "../ferric-quadrature" }
 ndarray = { workspace = true }
 ndarray-linalg = { workspace = true }
 openblas-src = { workspace = true }

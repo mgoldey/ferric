@@ -3,6 +3,7 @@
 //! Supports BSE-JSON and Gaussian-94 input formats, plus a set of bundled
 //! basis sets compiled into the binary via `include_str!`.
 
+use crate::basis_util::{parse_float_list, canonical_name};
 use crate::ecp::{EcpDef, EcpShell, EcpTerm};
 use crate::elements::symbol_to_z;
 use crate::FerricError;
@@ -231,10 +232,6 @@ fn renormalize_contraction(exps: &[f64], coefs: &mut [f64], l: i32) {
     }
 }
 
-fn parse_float_list(ss: &[String]) -> Result<Vec<f64>, FerricError> {
-    ss.iter().map(|s| s.parse::<f64>().map_err(|e| FerricError::Basis(format!("bad float {s:?}: {e}")))).collect()
-}
-
 // --- Gaussian-94 parser ---
 
 /// Load a basis set from a Gaussian-94 format file.
@@ -302,8 +299,6 @@ fn parse_g94(text: &str, name: &str) -> Result<BasisSet, FerricError> {
 }
 
 // --- Bundled basis sets ---
-
-fn canonical_name(name: &str) -> String { name.to_ascii_lowercase() }
 
 /// Load a bundled basis set by name (case-insensitive).
 ///

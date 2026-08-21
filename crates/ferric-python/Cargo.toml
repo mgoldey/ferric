@@ -20,6 +20,7 @@ ferric-rpa = { path = "../ferric-rpa" }
 ferric-gw = { path = "../ferric-gw" }
 ferric-dft = { path = "../ferric-dft" }
 ferric-cc = { path = "../ferric-cc" }
+ferric-tddft = { path = "../ferric-tddft" }
 pyo3 = { workspace = true }
 numpy = { workspace = true }
 ndarray = { workspace = true }

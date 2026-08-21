@@ -80,7 +80,7 @@ const XI_SELF: f64 = 1.0694;
 
 /// Per-Lebedev-order Gaussian-charge-width prefactor `XI[ng]` (Table II, Li &
 /// Frisch/Scalmani, J. Chem. Phys. 122, 194110 (2005), as used by PySCF's
-/// `pcm.py`). Only the six Lebedev orders `ferric_dft::lebedev` (and hence
+/// `pcm.py`). Only the six Lebedev orders `ferric_quadrature::lebedev` (and hence
 /// this crate's cavity construction) supports are tabulated — matches
 /// `ferric_scf::cosmo::gaussian_xi_table` exactly. Returns `Err` for any
 /// other order rather than silently guessing a value.

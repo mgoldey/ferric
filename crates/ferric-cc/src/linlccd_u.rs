@@ -27,23 +27,13 @@ use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_mp2::mo_transform::transform_3center_ov;
+use ferric_mp2::mo_transform::{dress_3index, transform_3center_ov};
 use ferric_mp2::rimp2::cholesky_inverse_sqrt;
 use ferric_mp2::spinorbital_u::{interleaved_dims, u_asym_oovv, u_asym_same, SpinBlocks};
 use ferric_scf::result::Spin;
 use ferric_scf::ScfResult;
 use ferric_tensors::{einsum, Axis, Tensor};
-use ndarray::{Array2, Array3, ArrayD, IxDyn};
-
-/// Dress a 3-index MO block with the RI metric root: `B^P_pq = (V^-1/2)_PQ (Q|pq)`.
-fn dress(eri3_mo: &Array3<f64>, v_inv_sqrt: &Array2<f64>) -> Array3<f64> {
-    let (naux, d1, d2) = (eri3_mo.shape()[0], eri3_mo.shape()[1], eri3_mo.shape()[2]);
-    let flat = eri3_mo.view().into_shape_with_order((naux, d1 * d2)).unwrap();
-    v_inv_sqrt
-        .dot(&flat)
-        .into_shape_with_order((naux, d1, d2))
-        .unwrap()
-}
+use ndarray::{Array3, ArrayD, IxDyn};
 
 /// Contract two dressed 3-index blocks into a spatial chemist 4-index block:
 /// `(pq|rs) = Σ_P B^P_pq B^P_rs`.
@@ -130,8 +120,8 @@ pub fn u_linlccd(
     let eri3_ao = ferric_integrals::threeindex::eri3_tensor(op, obs, dfbs)?;
 
     // Per-spin dressed 3-index blocks.
-    let b_ov_a = dress(&transform_3center_ov(&eri3_ao, &occ_a, &vir_a), &v_inv_sqrt);
-    let b_ov_b = dress(&transform_3center_ov(&eri3_ao, &occ_b, &vir_b), &v_inv_sqrt);
+    let b_ov_a = dress_3index(&transform_3center_ov(&eri3_ao, &occ_a, &vir_a), &v_inv_sqrt);
+    let b_ov_b = dress_3index(&transform_3center_ov(&eri3_ao, &occ_b, &vir_b), &v_inv_sqrt);
 
     // oovv: three distinct spin combinations of (ia|jb).
     let g_ovov_aa = chemist(&b_ov_a, &b_ov_a);
@@ -146,8 +136,8 @@ pub fn u_linlccd(
     );
 
     let oooo_t = if matches!(variant, LadderVariant::Hh | LadderVariant::Full) {
-        let b_oo_a = dress(&transform_3center_ov(&eri3_ao, &occ_a, &occ_a), &v_inv_sqrt);
-        let b_oo_b = dress(&transform_3center_ov(&eri3_ao, &occ_b, &occ_b), &v_inv_sqrt);
+        let b_oo_a = dress_3index(&transform_3center_ov(&eri3_ao, &occ_a, &occ_a), &v_inv_sqrt);
+        let b_oo_b = dress_3index(&transform_3center_ov(&eri3_ao, &occ_b, &occ_b), &v_inv_sqrt);
         let g_aa = chemist(&b_oo_a, &b_oo_a);
         let g_ab = chemist(&b_oo_a, &b_oo_b);
         let g_bb = chemist(&b_oo_b, &b_oo_b);
@@ -158,8 +148,8 @@ pub fn u_linlccd(
     };
 
     let vvvv_t = if matches!(variant, LadderVariant::Full) {
-        let b_vv_a = dress(&transform_3center_ov(&eri3_ao, &vir_a, &vir_a), &v_inv_sqrt);
-        let b_vv_b = dress(&transform_3center_ov(&eri3_ao, &vir_b, &vir_b), &v_inv_sqrt);
+        let b_vv_a = dress_3index(&transform_3center_ov(&eri3_ao, &vir_a, &vir_a), &v_inv_sqrt);
+        let b_vv_b = dress_3index(&transform_3center_ov(&eri3_ao, &vir_b, &vir_b), &v_inv_sqrt);
         let g_aa = chemist(&b_vv_a, &b_vv_a);
         let g_ab = chemist(&b_vv_a, &b_vv_b);
         let g_bb = chemist(&b_vv_b, &b_vv_b);

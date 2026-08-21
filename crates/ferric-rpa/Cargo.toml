@@ -13,9 +13,7 @@ ferric-integrals = { path = "../ferric-integrals" }
 ferric-scf = { path = "../ferric-scf" }
 ferric-mp2 = { path = "../ferric-mp2" }
 ferric-quadrature = { path = "../ferric-quadrature" }
-ferric-export = { path = "../ferric-export" }
 ferric-dft = { path = "../ferric-dft" }
-ferric-pcm = { path = "../ferric-pcm" }
 serde = { workspace = true }
 ndarray = { workspace = true }
 ndarray-linalg = { workspace = true }
@@ -36,5 +34,6 @@ default = []
 mpi = ["dep:mpi", "ferric-core/mpi", "ferric-scf/mpi", "ferric-mp2/mpi"]
 
 [dev-dependencies]
+ferric-pcm = { path = "../ferric-pcm" }
 serde = { workspace = true }
 serde_json = { workspace = true }

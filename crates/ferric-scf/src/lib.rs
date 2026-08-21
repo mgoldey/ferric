@@ -125,6 +125,9 @@ pub use ks_gradient::ks_gradient_closed;
 pub mod optimize;
 /// Harmonic vibrational frequencies from finite-difference Hessian.
 pub mod frequencies;
+/// Analytic RHF second derivatives (Hessian) — nuclear term implemented,
+/// electronic terms stubbed pending LIBINT2_MAX_DERIV_ORDER >= 2.
+pub mod hessian;
 pub use frequencies::{
     harmonic_frequencies, FrequencyConfig, FrequencyReference, FrequencyResult,
 };
