@@ -17,11 +17,12 @@ to PySCF's analytic Hessian.
 Usage:
     OPENBLAS_NUM_THREADS=1 uv run --no-sync python scripts/proto_hessian.py
 """
+import os
 import sys
 import numpy as np
 from functools import reduce
 
-sys.path.insert(0, "/home/matt/pyscf-local")
+sys.path.insert(0, os.environ.get("PYSCF_PATH", os.path.expanduser("~/qc/pyscf")))
 from pyscf import gto, scf, lib
 from pyscf.scf import cphf
 from pyscf.hessian import rhf as pyscf_hess_rhf

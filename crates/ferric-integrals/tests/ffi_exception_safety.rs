@@ -14,7 +14,7 @@
 //! process abort.
 //!
 //! Trigger: this libint2 build is compiled with `LIBINT_MAX_AM 6` (i functions;
-//! see /home/matt/.local/include/libint2/config.h). Asking an engine to compute
+//! see $LIBINT2_PREFIX/include/libint2/config.h). Asking an engine to compute
 //! integrals over a shell with angular momentum L > 6 (here L = 7, a "k" shell)
 //! makes libint2 throw `Engine::lmax_exceeded` (a `std::logic_error` subclass;
 //! see engine.h:849 and the `throw Engine::lmax_exceeded(...)` in

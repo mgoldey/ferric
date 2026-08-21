@@ -25,9 +25,9 @@
 #
 # So: 10 GB cap, and NPROC=1. One 13-atom job at a time, with room to breathe.
 # Run this ALONE; it is sized to use most of the box.
-cd /home/matt/qc/ferric
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 . scripts/queue/memgate.sh
-export FERRIC_TERF_TABLE_DIR=/home/matt/qc/terf-tables-data
+export FERRIC_TERF_TABLE_DIR="${FERRIC_TERF_TABLE_DIR:-$HOME/qc/terf-tables-data}"
 export OPENBLAS_NUM_THREADS=1 RAYON_NUM_THREADS=8
 NPROC=1
 

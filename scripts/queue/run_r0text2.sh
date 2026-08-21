@@ -35,9 +35,9 @@
 #     coverage in a naive filename/header scan but are not data.
 #   - EXCLUDED: 11,13,17,18 (0.7-1.3 still in flight under run_r0broad.sh).
 #     Adding them here would race that driver for the same outputs.
-cd /home/matt/qc/ferric
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 . scripts/queue/memgate.sh
-export FERRIC_TERF_TABLE_DIR=/home/matt/qc/terf-tables-data
+export FERRIC_TERF_TABLE_DIR="${FERRIC_TERF_TABLE_DIR:-$HOME/qc/terf-tables-data}"
 export OPENBLAS_NUM_THREADS=1 RAYON_NUM_THREADS=4
 # NPROC=2 and a 3.4 GB slot: sized for a SHARED box. run_r0broad.sh and
 # run_r0bmin.sh are still running at NPROC=3 each, and on 2026-07-26 a third

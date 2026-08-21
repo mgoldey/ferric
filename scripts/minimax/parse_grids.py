@@ -1,3 +1,5 @@
+from pathlib import Path
+_ROOT = Path(__file__).resolve().parents[2]
 import json
 import re
 
@@ -73,6 +75,6 @@ def parse_init_para_freq(filepath, outpath):
     print(f"Saved to {outpath}")
 
 if __name__ == '__main__':
-    in_file = '/home/matt/qc/ferric/init_para_freq.txt'
-    out_file = '/home/matt/qc/ferric/minimax_freq_grids.json'
+    in_file = str(_ROOT / 'init_para_freq.txt')
+    out_file = str(_ROOT / 'minimax_freq_grids.json')
     parse_init_para_freq(in_file, out_file)

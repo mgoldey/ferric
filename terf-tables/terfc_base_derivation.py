@@ -4,7 +4,7 @@ PROVEN closed-form derivation of the terfc (s|s|s) two-electron base integral an
 its angular-momentum (m-raised) auxiliaries, with self-contained high-precision
 verification against direct radial quadrature.
 
-Run:  python3 terfc_base_derivation.py     (from /home/matt/qc/ferric, mpmath venv)
+Run:  python3 terfc_base_derivation.py     (from the repo root, mpmath venv)
 
 --------------------------------------------------------------------------------
 SUMMARY OF WHAT IS PROVEN (numerics at bottom, all to <=1e-12, most ~1e-37..1e-60)

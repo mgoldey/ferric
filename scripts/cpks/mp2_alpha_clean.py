@@ -12,7 +12,7 @@ CONVENTIONS (fixed, audited):
   • MO index order: occ [0:nocc], vir [nocc:nmo]. t2 stored t[i,a,j,b].
   • CPHF/Z-vector operator A (full): M_{ai,bj} = (εa-εi)δ + 4(ai|bj)-(ab|ij)-(aj|bi).
 
-Run: PYTHONPATH=/home/matt/qc/pyscf python3 scripts/cpks/mp2_alpha_clean.py
+Run: PYTHONPATH=$PYSCF_PATH python3 scripts/cpks/mp2_alpha_clean.py
 """
 import numpy as np
 from pyscf import gto, scf, mp, ao2mo

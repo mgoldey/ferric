@@ -29,9 +29,9 @@
 # though the pre-launch snapshot showed 10.7 GB free and PSI 0.00 -- because
 # the RESIDENT jobs were still growing. A snapshot of current RSS does not
 # bound future RSS. Run this only when at most two other drivers are active.
-cd /home/matt/qc/ferric
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 . scripts/queue/memgate.sh
-export FERRIC_TERF_TABLE_DIR=/home/matt/qc/terf-tables-data
+export FERRIC_TERF_TABLE_DIR="${FERRIC_TERF_TABLE_DIR:-$HOME/qc/terf-tables-data}"
 export OPENBLAS_NUM_THREADS=1 RAYON_NUM_THREADS=4
 NPROC=2
 

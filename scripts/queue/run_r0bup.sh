@@ -27,9 +27,9 @@
 #
 # CONCURRENCY: NPROC=2 at a 3.4 GB slot. Do not raise without re-measuring;
 # capacity on this box has changed hour to hour as job sizes grew.
-cd /home/matt/qc/ferric
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 . scripts/queue/memgate.sh
-export FERRIC_TERF_TABLE_DIR=/home/matt/qc/terf-tables-data
+export FERRIC_TERF_TABLE_DIR="${FERRIC_TERF_TABLE_DIR:-$HOME/qc/terf-tables-data}"
 export OPENBLAS_NUM_THREADS=1 RAYON_NUM_THREADS=4
 NPROC=2
 

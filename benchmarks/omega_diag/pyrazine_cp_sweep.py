@@ -24,12 +24,13 @@ Concurrency: memory-gated, at most 2 concurrent jobs; before each dispatch,
 require /proc/meminfo MemAvailable >= 6 GB, else sleep 60s and retry (the box
 is shared with other sessions' jobs). Per-job timeout 7200s.
 """
+from pathlib import Path
 import os
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-ROOT = "/home/matt/qc/ferric"
+ROOT = str(Path(__file__).resolve().parents[2])
 os.chdir(ROOT)
 OUT = "benchmarks/omega_diag/derisk"
 GEO = "benchmarks/grid/geoms"

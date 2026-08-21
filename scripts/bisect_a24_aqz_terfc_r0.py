@@ -41,6 +41,7 @@ Env tunables: same convention as bisect_a24_aqz_crossing.py
    BIS_WAIT_S, BIS_TIMEOUT, BIS_R0_TOL, BIS_KCAL_TOL, BIS_MAX_ITERS)
   plus BIS_TABLE_DIR (terf-tables override, same as ET_TABLE_DIR).
 """
+from pathlib import Path
 import math
 import os
 import re
@@ -48,7 +49,7 @@ import subprocess
 import sys
 import time
 
-ROOT = "/home/matt/qc/ferric"
+ROOT = str(Path(__file__).resolve().parents[1])
 os.chdir(ROOT)
 
 OUT = "benchmarks/a24-subset/out"
@@ -58,11 +59,11 @@ K = 627.509474
 
 RAYON_NUM_THREADS = os.environ.get("BIS_RAYON_THREADS", "8")
 _LD_LIBRARY_PATH = os.pathsep.join(
-    p for p in ["/home/matt/.local/lib", os.environ.get("LD_LIBRARY_PATH", "")] if p)
+    p for p in [os.path.expanduser("~/.local/lib"), os.environ.get("LD_LIBRARY_PATH", "")] if p)
 
 _TERF_DIR = os.environ.get("BIS_TABLE_DIR", "")
 if not _TERF_DIR or not os.path.exists(os.path.join(_TERF_DIR, "16_4_2.bin")):
-    for cand in ("/home/matt/qc/ferric/terf-tables", f"{ROOT}/terf-tables"):
+    for cand in (f"{ROOT}/terf-tables"):
         if os.path.exists(os.path.join(cand, "16_4_2.bin")):
             _TERF_DIR = cand
             break

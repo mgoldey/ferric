@@ -28,7 +28,7 @@
 #
 # This script is itself restartable: re-running it re-runs both drivers, which
 # skip completed work. Safe to launch again after any crash.
-cd /home/matt/qc/ferric
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 log() { echo "[chain $(date +%H:%M:%S)] $*"; }
 

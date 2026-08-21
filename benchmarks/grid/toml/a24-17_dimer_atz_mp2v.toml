@@ -1,5 +1,5 @@
 [molecule]
-xyz = "/home/matt/qc/ferric/benchmarks/grid/geoms/a24-17_dimer.xyz"
+xyz = "benchmarks/grid/geoms/a24-17_dimer.xyz"
 
 [basis]
 name = "aug-cc-pvtz"

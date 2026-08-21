@@ -49,7 +49,7 @@ import sys
 import numpy as np
 from scipy.linalg import cholesky
 
-sys.path.insert(0, "/home/matt/qc/pyscf")
+sys.path.insert(0, os.environ.get("PYSCF_PATH", os.path.expanduser("~/qc/pyscf")))
 from pyscf import df, gto, scf  # noqa: E402
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))

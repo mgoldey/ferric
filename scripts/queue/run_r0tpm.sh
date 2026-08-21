@@ -25,9 +25,9 @@
 #
 # a24-17/18 are absent BY DESIGN: they are the 13-atom systems, they already
 # have both points, and they need the 10 GB slot in run_r0big.sh.
-cd /home/matt/qc/ferric
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 . scripts/queue/memgate.sh
-export FERRIC_TERF_TABLE_DIR=/home/matt/qc/terf-tables-data
+export FERRIC_TERF_TABLE_DIR="${FERRIC_TERF_TABLE_DIR:-$HOME/qc/terf-tables-data}"
 # RAYON=2, NPROC=5, not RAYON=4/NPROC=3. MEASURED 2026-07-27: with RAYON=4 the
 # three running jobs drew only ~190% CPU each (572% of 1200% total) while load
 # average sat at 14.5 -- i.e. threads were QUEUEING without adding throughput.

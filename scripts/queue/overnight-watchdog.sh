@@ -9,7 +9,7 @@
 #
 # It deliberately does NOT restart if the chain is already up, and it takes a
 # lock so two cron ticks cannot both launch one.
-cd /home/matt/qc/ferric || exit 0
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)" || exit 0
 
 exec 9>/tmp/ferric-overnight-watchdog.lock
 flock -n 9 || exit 0

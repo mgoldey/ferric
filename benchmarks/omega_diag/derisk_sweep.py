@@ -4,8 +4,9 @@ both aDZ and aTZ, in the CORRECT convention (NON-CP + frozen core).
 Naive-A and SR-MP2 come free in every delta-lr (B) run's output; T is a 2nd run.
 MP2(full) is the E(MP2,Coulomb) line, also free. So per (system,basis,ω) we run
 2 ferric jobs per fragment (B=delta-lr, T=coupled-rings) × 3 fragments = 6 jobs."""
+from pathlib import Path
 import os, subprocess, itertools, re, json
-ROOT="/home/matt/qc/ferric"
+ROOT = str(Path(__file__).resolve().parents[2])
 os.chdir(ROOT)
 OUT="benchmarks/omega_diag/derisk"; os.makedirs(OUT+"/toml",exist_ok=True); os.makedirs(OUT+"/out",exist_ok=True)
 GEO="benchmarks/grid/geoms"

@@ -10,6 +10,7 @@ computed once and added to any DFT energy.
 Validated against PySCF PBE/cc-pVDZ + standalone D3(BJ) on the same geometry.
 """
 
+import os
 import sys
 import numpy as np
 
@@ -80,7 +81,7 @@ def main():
     print(f"PBE-D3(BJ)/cc-pVDZ total:    {e_total:.10f} Ha")
 
     # ── PySCF reference ──
-    sys.path.insert(0, "/home/matt/pyscf-local")
+    sys.path.insert(0, os.environ.get("PYSCF_PATH", os.path.expanduser("~/qc/pyscf")))
     from pyscf import gto, dft
 
     mol_pyscf = gto.M(

@@ -21,10 +21,11 @@ find every job already complete and just write DERISK_ATZ_CP.md).
 
 Each child: OPENBLAS_NUM_THREADS=1 RAYON_NUM_THREADS=1.
 """
+from pathlib import Path
 import os, re, subprocess, sys, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-ROOT = "/home/matt/qc/ferric"
+ROOT = str(Path(__file__).resolve().parents[2])
 os.chdir(ROOT)
 OUT = "benchmarks/omega_diag/derisk"
 GEO = "benchmarks/grid/geoms"

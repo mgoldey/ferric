@@ -1,8 +1,8 @@
 #!/bin/bash
 # Spline-informed aQZ r0 scans over the 7-dimer subset, B then T.
 # One job per (system, fragment, formulation); each job sweeps all r0 internally.
-cd /home/matt/qc/ferric
-export FERRIC_TERF_TABLE_DIR=/home/matt/qc/terf-tables-data
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+export FERRIC_TERF_TABLE_DIR="${FERRIC_TERF_TABLE_DIR:-$HOME/qc/terf-tables-data}"
 export OPENBLAS_NUM_THREADS=1 RAYON_NUM_THREADS=12
 FAIL=0
 run() {

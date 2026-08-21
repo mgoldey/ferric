@@ -13,7 +13,7 @@ set -u
 BIN="$1"
 TEST="$2"
 export OPENBLAS_NUM_THREADS=1
-MPIRUN=/home/matt/.local/bin/mpirun
+MPIRUN="${MPIRUN:-$(command -v mpirun || echo "$HOME/.local/bin/mpirun")}"
 
 run_cfg() {
   local ranks="$1" pe="$2" tag="$3"

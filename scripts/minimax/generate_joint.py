@@ -1,3 +1,5 @@
+from pathlib import Path
+_ROOT = Path(__file__).resolve().parents[2]
 import json
 import numpy as np
 
@@ -61,7 +63,7 @@ def main():
     e_max = 100.0
     n_points = 12
     
-    with open('/home/matt/qc/ferric/minimax_freq_grids.json', 'r') as f:
+    with open(str(_ROOT / 'minimax_freq_grids.json'), 'r') as f:
         freq_grids = json.load(f)
         
     grid_data = freq_grids[str(n_points)][0]
@@ -79,7 +81,7 @@ def main():
         "w_transform": W.flatten().tolist()
     }
     
-    with open('/home/matt/qc/ferric/joint_minimax_N12.json', 'w') as f:
+    with open(str(_ROOT / 'joint_minimax_N12.json'), 'w') as f:
         json.dump(joint, f, indent=2)
         
     print("Generated joint_minimax_N12.json")

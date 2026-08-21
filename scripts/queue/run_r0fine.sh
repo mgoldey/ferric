@@ -2,8 +2,8 @@
 # B-formulation fine scan, r0 = 0.76..0.81 step 0.01, aQZ CP, 7-dimer subset.
 # Refines the r0 = 0.790 minimum located by mae_spline.py on the coarse grid.
 # One job per (system, fragment); each sweeps all 6 r0 on a single SCF.
-cd /home/matt/qc/ferric
-export FERRIC_TERF_TABLE_DIR=/home/matt/qc/terf-tables-data
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+export FERRIC_TERF_TABLE_DIR="${FERRIC_TERF_TABLE_DIR:-$HOME/qc/terf-tables-data}"
 export OPENBLAS_NUM_THREADS=1 RAYON_NUM_THREADS=12
 FAIL=0; OK=0
 run() {

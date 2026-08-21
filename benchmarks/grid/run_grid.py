@@ -51,7 +51,7 @@ BASIS_DIR = ROOT / "../../crates/ferric-core/src/basis/bundled"
 # without this, ferric-cli errors "terf 2-center engine not available".
 _TERF_DIR = os.environ.get("GRID_TERF_TABLE_DIR", "")
 if not _TERF_DIR or not os.path.exists(os.path.join(_TERF_DIR, "16_4_2.bin")):
-    for _cand in (str(ROOT / "../../terf-tables"), "/home/matt/qc/ferric/terf-tables"):
+    for _cand in (str(ROOT / "../../terf-tables")):
         if os.path.exists(os.path.join(_cand, "16_4_2.bin")):
             _TERF_DIR = _cand
             break

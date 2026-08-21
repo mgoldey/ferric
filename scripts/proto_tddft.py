@@ -14,7 +14,7 @@ import os
 import numpy as np
 from numpy import linalg as la
 
-sys.path.insert(0, "/home/matt/pyscf-local")
+sys.path.insert(0, os.environ.get("PYSCF_PATH", os.path.expanduser("~/qc/pyscf")))
 from pyscf import gto, dft, scf, tdscf
 
 os.environ["OPENBLAS_NUM_THREADS"] = "1"

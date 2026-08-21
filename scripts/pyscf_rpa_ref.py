@@ -13,7 +13,7 @@ import json
 import os
 import sys
 
-sys.path.insert(0, "/home/matt/qc/pyscf")  # local checkout
+sys.path.insert(0, os.environ.get("PYSCF_PATH", os.path.expanduser("~/qc/pyscf")))  # local checkout
 
 from pyscf import df, gto, scf
 from pyscf.gw.rpa import RPA

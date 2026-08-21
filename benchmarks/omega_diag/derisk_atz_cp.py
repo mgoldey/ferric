@@ -7,9 +7,10 @@ never overwrites, never touches non-CP or aDZ. aTZ benzene dimers are expensive 
 mostly absent — analysis uses whatever dimers ARE present (n reported per ω).
 Single-thread (OPENBLAS=1, RAYON=1).
 """
+from pathlib import Path
 import os, re, json, subprocess
 
-ROOT="/home/matt/qc/ferric"
+ROOT = str(Path(__file__).resolve().parents[2])
 os.chdir(ROOT)
 OUT="benchmarks/omega_diag/derisk"; GEO="benchmarks/grid/geoms"; BIN="target/release/ferric-cli"
 env=dict(os.environ, OPENBLAS_NUM_THREADS="1", RAYON_NUM_THREADS="1")

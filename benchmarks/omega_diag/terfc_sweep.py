@@ -38,13 +38,14 @@ Tunables (env): TERFC_CONC (1), TERFC_R0_LIST (comma Bohr), TERFC_SYSTEMS
   (comma keys from SYSTEMS), TERFC_HEARTBEAT_S (120), TERFC_TIMEOUT (7200),
   TERFC_PER_JOB_GB (2.0).
 """
+from pathlib import Path
 import math
 import os
 import subprocess
 import threading
 import time
 
-ROOT = "/home/matt/qc/ferric"
+ROOT = str(Path(__file__).resolve().parents[2])
 os.chdir(ROOT)
 
 OUT = "benchmarks/omega_diag/terfc_out"
@@ -56,7 +57,7 @@ BIN = "target/release/ferric-cli"
 # it, so `terf` runs don't silently fail engine creation.
 _TERF_DIR = os.environ.get("FERRIC_TERF_TABLE_DIR", "")
 if not _TERF_DIR or not os.path.exists(os.path.join(_TERF_DIR, "16_4_2.bin")):
-    for cand in ("/home/matt/qc/ferric/terf-tables",
+    for cand in (
                  f"{ROOT}/terf-tables"):
         if os.path.exists(os.path.join(cand, "16_4_2.bin")):
             _TERF_DIR = cand

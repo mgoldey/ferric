@@ -31,10 +31,11 @@ child oom_score_adj=1000 so the OOM killer never takes Claude/other sessions.
 After completion run derisk_atz_cp.py for the analysis stage (extend its OMEGAS
 to include 0.20/0.42-T rows if it filters them).
 """
+from pathlib import Path
 import os, subprocess, threading, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-ROOT = "/home/matt/qc/ferric"
+ROOT = str(Path(__file__).resolve().parents[2])
 os.chdir(ROOT)
 OUT = "benchmarks/omega_diag/derisk"
 GEO = "benchmarks/grid/geoms"

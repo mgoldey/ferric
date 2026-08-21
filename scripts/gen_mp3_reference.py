@@ -1,5 +1,6 @@
+import os
 import sys, json
-sys.path.insert(0, "/home/matt/qc/pyscf")
+sys.path.insert(0, os.environ.get("PYSCF_PATH", os.path.expanduser("~/qc/pyscf")))
 import numpy as np
 from pyscf import gto, scf, ao2mo
 

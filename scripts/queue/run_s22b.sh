@@ -37,9 +37,9 @@
 # whole box and then silently throttled inside its own cap. So the --max below
 # is now genuinely the number ferric plans against, and is deliberately
 # generous: this driver owns the machine.
-cd /home/matt/qc/ferric
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 . scripts/queue/memgate.sh
-export FERRIC_TERF_TABLE_DIR=/home/matt/qc/terf-tables-data
+export FERRIC_TERF_TABLE_DIR="${FERRIC_TERF_TABLE_DIR:-$HOME/qc/terf-tables-data}"
 # RAYON=12 / NPROC=1: ONE job at a time using ALL 12 cores.
 #
 # Set 2026-07-27 after the second box crash of the day, on Matt's call to "lock

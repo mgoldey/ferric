@@ -67,6 +67,7 @@ Env tunables:
   SCAN_RAYON_THREADS       (12)          -- solo 12-core-per-job
   SCAN_SYSTEMS             (all 24)      -- comma A24 indices to restrict to
 """
+from pathlib import Path
 import math
 import os
 import re
@@ -74,7 +75,7 @@ import subprocess
 import sys
 import time
 
-ROOT = "/home/matt/qc/ferric"
+ROOT = str(Path(__file__).resolve().parents[1])
 os.chdir(ROOT)
 
 GEOM_DIR = "benchmarks/grid/geoms"
@@ -86,7 +87,7 @@ K = 627.509474
 
 RAYON_NUM_THREADS = os.environ.get("SCAN_RAYON_THREADS", "12")
 _LD_LIBRARY_PATH = os.pathsep.join(
-    p for p in ["/home/matt/.local/lib", os.environ.get("LD_LIBRARY_PATH", "")] if p)
+    p for p in [os.path.expanduser("~/.local/lib"), os.environ.get("LD_LIBRARY_PATH", "")] if p)
 
 ENV = dict(os.environ, OPENBLAS_NUM_THREADS="1", RAYON_NUM_THREADS=RAYON_NUM_THREADS,
            OMP_NUM_THREADS="1", MKL_NUM_THREADS="1", LD_LIBRARY_PATH=_LD_LIBRARY_PATH)

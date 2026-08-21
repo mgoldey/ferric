@@ -12,9 +12,10 @@ Stages:
 DELETES NOTHING. All runs idempotent (skip on existing complete output).
 Single-thread (OPENBLAS=1, RAYON=1) so it coexists with the production grid.
 """
+from pathlib import Path
 import os, sys, time, subprocess, re, json, glob
 
-ROOT="/home/matt/qc/ferric"
+ROOT = str(Path(__file__).resolve().parents[2])
 os.chdir(ROOT)
 OUT="benchmarks/omega_diag/derisk"
 GEO="benchmarks/grid/geoms"

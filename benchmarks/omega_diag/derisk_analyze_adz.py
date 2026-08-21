@@ -7,9 +7,10 @@ ADDITIVE: reads existing derisk/out/*.out, runs missing per-fragment RHF (scs-mp
 only if absent, writes derisk_results_adz.json + DERISK_REPORT_adz.md. Deletes
 nothing, never touches aTZ.
 """
+from pathlib import Path
 import os, re, json, subprocess
 
-ROOT="/home/matt/qc/ferric"
+ROOT = str(Path(__file__).resolve().parents[2])
 os.chdir(ROOT)
 OUT="benchmarks/omega_diag/derisk"; GEO="benchmarks/grid/geoms"; BIN="target/release/ferric-cli"
 env=dict(os.environ, OPENBLAS_NUM_THREADS="1", RAYON_NUM_THREADS="1")

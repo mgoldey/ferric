@@ -13,9 +13,9 @@
 #
 # The 8G floor is per-slot AND checked before each dispatch, so a memory spike
 # stalls new work instead of stacking onto it (the box OOMed twice on 2026-07-25).
-cd /home/matt/qc/ferric
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 . scripts/queue/memgate.sh
-export FERRIC_TERF_TABLE_DIR=/home/matt/qc/terf-tables-data
+export FERRIC_TERF_TABLE_DIR="${FERRIC_TERF_TABLE_DIR:-$HOME/qc/terf-tables-data}"
 export OPENBLAS_NUM_THREADS=1 RAYON_NUM_THREADS=4
 NPROC=3
 

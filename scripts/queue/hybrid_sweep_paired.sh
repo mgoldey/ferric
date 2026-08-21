@@ -22,7 +22,7 @@ BIN="$1"
 TEST="$2"
 ROUNDS="${3:-5}"
 export OPENBLAS_NUM_THREADS=1
-MPIRUN=/home/matt/.local/bin/mpirun
+MPIRUN="${MPIRUN:-$(command -v mpirun || echo "$HOME/.local/bin/mpirun")}"
 OUT=$(mktemp)
 
 for r in $(seq 1 "$ROUNDS"); do

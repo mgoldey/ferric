@@ -13,10 +13,11 @@ DSD-PBEP86 (Kozuch & Martin, PCCP 13, 20104, 2011):
     Post-SCF: SCS-MP2 with c_os=0.56, c_ss=0.29
 """
 
+import os
 import sys
 import numpy as np
 
-sys.path.insert(0, "/home/matt/pyscf-local")
+sys.path.insert(0, os.environ.get("PYSCF_PATH", os.path.expanduser("~/qc/pyscf")))
 from pyscf import gto, dft, mp as pyscf_mp, ao2mo
 
 

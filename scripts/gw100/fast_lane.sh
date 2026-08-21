@@ -23,7 +23,7 @@
 #
 # Usage: fast_lane.sh <basis> <nworkers>
 set -u
-cd /home/matt/qc/ferric
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BASIS="${1:-aug-cc-pvdz}"
 NW="${2:-3}"
 BIN=./target/release/examples/gw100_full

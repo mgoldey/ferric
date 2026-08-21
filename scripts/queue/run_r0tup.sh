@@ -25,9 +25,9 @@
 # RAYON=12 / NPROC=1: one job, all 12 cores. Run this ALONE -- two drivers at
 # RAYON=12 put 24 threads on 12 cores, the oversubscription behind both crashes
 # on 2026-07-27.
-cd /home/matt/qc/ferric
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 . scripts/queue/memgate.sh
-export FERRIC_TERF_TABLE_DIR=/home/matt/qc/terf-tables-data
+export FERRIC_TERF_TABLE_DIR="${FERRIC_TERF_TABLE_DIR:-$HOME/qc/terf-tables-data}"
 export OPENBLAS_NUM_THREADS=1 RAYON_NUM_THREADS=12
 NPROC=1
 

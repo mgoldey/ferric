@@ -5,7 +5,7 @@
 #   2) the big-tail worker's rows from its raw driver logs (merge_driver_log.py)
 # This sidesteps the shared-results-file write race: out-of-band workers write to
 # their own logs, and we merge once nothing is mutating results_*.json anymore.
-cd /home/matt/qc/ferric
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 while systemctl --user list-units --type=scope --no-legend 2>/dev/null | grep -qE 'gw93d-(adz|atz)-|gwbig-'; do
   sleep 60

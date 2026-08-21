@@ -22,7 +22,7 @@ import sys
 
 import numpy as np
 
-sys.path.insert(0, "/home/matt/qc/pyscf")
+sys.path.insert(0, os.environ.get("PYSCF_PATH", os.path.expanduser("~/qc/pyscf")))
 from pyscf import df, gto, scf
 from scipy.linalg import eigh
 

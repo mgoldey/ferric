@@ -19,9 +19,9 @@
 # oversubscribed -- the old version waited only on r0tscan and would have
 # collided with the extension.
 set -u
-cd /home/matt/qc/ferric
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 . scripts/queue/memgate.sh
-export FERRIC_TERF_TABLE_DIR=/home/matt/qc/terf-tables-data
+export FERRIC_TERF_TABLE_DIR="${FERRIC_TERF_TABLE_DIR:-$HOME/qc/terf-tables-data}"
 export OPENBLAS_NUM_THREADS=1 RAYON_NUM_THREADS=4
 NPROC=3
 LOG() { echo "[$(date +%H:%M)] $*"; }

@@ -13,7 +13,7 @@ Validation ladder (each rung must pass before the next):
   R3  MP2 relaxed α (analytic response) == FF of the relaxed dipole.
 Then decompose ∂z term-by-term to find/fix the Rust bug.
 
-Run: PYTHONPATH=/home/matt/qc/pyscf python3 scripts/cpks/mp2_alpha_pyscf.py
+Run: PYTHONPATH=$PYSCF_PATH python3 scripts/cpks/mp2_alpha_pyscf.py
 """
 import numpy as np
 from pyscf import gto, scf, mp, ao2mo

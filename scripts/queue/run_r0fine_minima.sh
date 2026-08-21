@@ -23,9 +23,9 @@
 #
 # TOMLs come from plan_sweep.py, which trims each job to only its MISSING r0
 # points, so re-running this is safe and converges.
-cd /home/matt/qc/ferric
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 . scripts/queue/memgate.sh
-export FERRIC_TERF_TABLE_DIR=/home/matt/qc/terf-tables-data
+export FERRIC_TERF_TABLE_DIR="${FERRIC_TERF_TABLE_DIR:-$HOME/qc/terf-tables-data}"
 export OPENBLAS_NUM_THREADS=1 RAYON_NUM_THREADS=4
 # NPROC=2, not 3, and SLOT_MB=3400, not 2600.
 #

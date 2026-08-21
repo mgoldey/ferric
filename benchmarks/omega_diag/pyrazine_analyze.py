@@ -8,9 +8,10 @@ derisk/PYRAZINE_CP.md + derisk/pyrazine_results.json. ADDITIVE: reads only,
 runs nothing, deletes nothing. CP arm only (no plain monomers were computed —
 per the de-risk verdict B/T must be CP-corrected; non-CP is the error).
 """
+from pathlib import Path
 import os, re, json
 
-ROOT = "/home/matt/qc/ferric"
+ROOT = str(Path(__file__).resolve().parents[2])
 os.chdir(ROOT)
 OUT = "benchmarks/omega_diag/derisk"
 KCAL = 627.509474

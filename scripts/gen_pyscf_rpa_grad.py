@@ -26,7 +26,7 @@ import os
 import sys
 import time
 
-sys.path.insert(0, "/home/matt/qc/pyscf")  # local checkout
+sys.path.insert(0, os.environ.get("PYSCF_PATH", os.path.expanduser("~/qc/pyscf")))  # local checkout
 
 import numpy as np
 from pyscf import df, gto, scf

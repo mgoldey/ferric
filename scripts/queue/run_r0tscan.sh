@@ -5,9 +5,9 @@
 # This 0.7-1.3 window is user-specified; if the curve comes back monotonic the
 # optimum is likely OUTSIDE it, toward larger r0.
 # One job per (system, fragment); each sweeps all 6 r0 on a single SCF.
-cd /home/matt/qc/ferric
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 . scripts/queue/memgate.sh
-export FERRIC_TERF_TABLE_DIR=/home/matt/qc/terf-tables-data
+export FERRIC_TERF_TABLE_DIR="${FERRIC_TERF_TABLE_DIR:-$HOME/qc/terf-tables-data}"
 export OPENBLAS_NUM_THREADS=1 RAYON_NUM_THREADS=12
 FAIL=0; OK=0
 run() {

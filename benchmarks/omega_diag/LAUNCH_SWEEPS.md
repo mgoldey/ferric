@@ -3,7 +3,7 @@
 ## TL;DR — copy/paste relaunch (both are idempotent; safe to re-run anytime)
 
 ```bash
-cd /home/matt/qc/ferric
+cd "$(git rev-parse --show-toplevel)"
 
 # 1. terfc/terf small-case r0 sweep (serial, ~0.1-1.5 GB/job, coexists with anything)
 TERFC_CONC=1 TERFC_PER_JOB_GB=2 \
@@ -80,7 +80,7 @@ full-rank (trunc_thresh=0). Idempotent/additive over `derisk/out/`.
 Launch (detached, 2-concurrent = safe alongside a build; 3 only if nothing else
 is building):
 
-    cd /home/matt/qc/ferric
+    cd "$(git rev-parse --show-toplevel)"
     BZ_CONC=2 BZ_PER_JOB_GB=7 BZ_YIELD_TO= \
       setsid nohup python3 benchmarks/omega_diag/finish_benzene_atz_par.py \
       >> benchmarks/omega_diag/finish_benzene.log 2>&1 & disown
@@ -110,7 +110,7 @@ same exact limits as erf/erfc. Tables: set `FERRIC_TERF_TABLE_DIR` if not defaul
 Preflight FIRST (proves the binary understands the stanza; the driver also runs
 this and ABORTS if it doesn't — it will NOT silently record erf-as-terf):
 
-    cd /home/matt/qc/ferric
+    cd "$(git rev-parse --show-toplevel)"
     TERFC_PREFLIGHT_ONLY=1 python3 benchmarks/omega_diag/terfc_sweep.py
 
 When preflight passes, launch (serial, memory-safe):

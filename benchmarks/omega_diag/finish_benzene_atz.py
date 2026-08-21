@@ -29,12 +29,13 @@ Launch (detached):
 Tunables (env): BZ_GATE_GB (18), BZ_HEARTBEAT_S (300), BZ_YIELD_TO
   (comma pgrep patterns to wait out; default "run_aconf_cli"), BZ_TIMEOUT (21600).
 """
+from pathlib import Path
 import os
 import subprocess
 import threading
 import time
 
-ROOT = "/home/matt/qc/ferric"
+ROOT = str(Path(__file__).resolve().parents[2])
 os.chdir(ROOT)
 OUT = "benchmarks/omega_diag/derisk"
 GEO = "benchmarks/grid/geoms"

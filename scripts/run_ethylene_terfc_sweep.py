@@ -63,12 +63,13 @@ Env tunables:
   ET_TIMEOUT         (7200) -- per-job subprocess timeout (seconds)
   ET_TABLE_DIR       (auto) -- FERRIC_TERF_TABLE_DIR override
 """
+from pathlib import Path
 import math
 import os
 import subprocess
 import time
 
-ROOT = "/home/matt/qc/ferric"
+ROOT = str(Path(__file__).resolve().parents[1])
 os.chdir(ROOT)
 
 OUT = "benchmarks/omega_diag/terfc_out"
@@ -79,13 +80,13 @@ RAYON_NUM_THREADS = os.environ.get("ET_RAYON_THREADS", "8")
 
 _TERF_DIR = os.environ.get("ET_TABLE_DIR", "")
 if not _TERF_DIR or not os.path.exists(os.path.join(_TERF_DIR, "16_4_2.bin")):
-    for cand in ("/home/matt/qc/ferric/terf-tables", f"{ROOT}/terf-tables"):
+    for cand in (f"{ROOT}/terf-tables",):
         if os.path.exists(os.path.join(cand, "16_4_2.bin")):
             _TERF_DIR = cand
             break
 
 _LD_LIBRARY_PATH = os.pathsep.join(
-    p for p in ["/home/matt/.local/lib", os.environ.get("LD_LIBRARY_PATH", "")] if p)
+    p for p in [os.path.expanduser("~/.local/lib"), os.environ.get("LD_LIBRARY_PATH", "")] if p)
 
 ENV = dict(os.environ, OPENBLAS_NUM_THREADS="1", RAYON_NUM_THREADS=RAYON_NUM_THREADS,
            OMP_NUM_THREADS="1", MKL_NUM_THREADS="1",
@@ -228,7 +229,7 @@ def preflight():
         return False
     if not _TERF_DIR:
         log("PREFLIGHT FAIL: terf-tables directory not found (looked in "
-            "/home/matt/qc/ferric/terf-tables). Set ET_TABLE_DIR explicitly.")
+            "<repo>/terf-tables). Set ET_TABLE_DIR explicitly.")
         return False
     xyz, basis, aux, fc = SYSTEMS["monomer"]
     tp = f"{OUT}/toml/_preflight_terf_ethylene.toml"
