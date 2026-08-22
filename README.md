@@ -44,6 +44,16 @@ measured result (see the wiki's `VALIDATION.md` and the local-correlation notes)
 - **RI-Laplace MP2** — AO-Laplace formulation via pseudo-density matrices. The
   implementation is dense; it serves as the correctness reference for that
   formulation, not as a reduced-scaling path (no O(N) has been measured)
+- **Laplace SOS-MP2** — opposite-spin-only MP2 with a Laplace-factorized
+  denominator (`c_os` scaling, minimax quadrature). MO and AO formulations agree
+  to machine precision; the AO-sparse variant is implemented but **measured
+  negative** — its truncation radius tracks the molecular diameter instead of
+  saturating, so it is not a reduced-scaling path
+- **MP3** — spin-orbital third-order Møller–Plesset via the `einsum!` framework
+- **Local MP2 (amplitude-threshold)** — WSHG23 single-threshold LMP2 with
+  localized virtuals and per-pair domain-local RI fits. Counters only: the J
+  build is still dense-from-RI, so **no scaling claim is made**
+- **MP2-V** — attenuated MP2 combined with VV10 nonlocal correlation
 
 **Coupled cluster**
 - **RI-CCD, RI-CCSD, and the perturbative triples (T)** correction — all
@@ -58,6 +68,15 @@ measured result (see the wiki's `VALIDATION.md` and the local-correlation notes)
 - **PDEP-RPA** — RPA correlation via projective dielectric-eigenpotentials (a low-rank W basis in Gaussians), closed- and open-shell (U-PDEP-RPA over a spin-summed dielectric)
 - **GW quasiparticle energies** — G0W0, COHSEX, evGW0, evGW (and unrestricted U-GW); G0W0@HF matches MOLGW to ~5 meV
 - **Attenuated RPA** (short-range correlation via erfc)
+
+**Excited states & double hybrids**
+- **TDDFT** — linear response in both the Tamm–Dancoff approximation (TDA/CIS)
+  and the full Casida equations, closed-shell references
+- **TDHF / RPAx static polarizability** — dense A/B response with HF exchange in
+  the kernel. Static α is reasonable, but the C6 it yields stays ~60% low
+  regardless of gap, so it is a polarizability tool, not a dispersion one
+- **Double hybrids** — B2PLYP and DSD-PBEP86, and **wB97X-L-V**, which converges
+  its own KS reference and adds a short-range LinLCCD(hh) correction
 
 **Constrained DFT (electron transfer)**
 - **cDFT** — fragment charge/spin constraints via a grid-Becke weight operator and a nested Lagrange-multiplier solve (Wu–Van Voorhis)
