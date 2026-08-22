@@ -15,12 +15,12 @@ env:
 jobs:
   build-and-test:
     runs-on: ubuntu-22.04
-    # A wedged run is worse than a failing one: run 32582084400 sat "in_progress"
-    # for 70 minutes with updatedAt frozen 3s after start, burning a runner and
-    # blocking any verdict, while an earlier run of the SAME build step reached
-    # the test phase inside 1h16m total. Without a cap that stalls to the 6h
-    # default. 75 min is ~3x the observed healthy path.
-    timeout-minutes: 75
+    # 75 min was TOO TIGHT and killed run 32585659903 mid-build: the libint2
+    # source build alone exceeds it on a 4-vCPU runner (earlier runs spent
+    # 1h16m and 1h55m largely there). 170 min covers a cold build plus the
+    # full suite while still failing fast rather than stalling to the 6h
+    # default. Once the cache below populates, runs skip the build entirely.
+    timeout-minutes: 170
     steps:
       - uses: actions/checkout@v4
 
@@ -74,6 +74,32 @@ jobs:
         with:
           path: ${{ env.LIBINT2_PREFIX }}
           key: libint-${{ env.LIBINT_VERSION }}-ubuntu2204-v1
+
+      # Assert the capabilities ferric actually depends on. Learned the hard
+      # way: the Ubuntu libint2-dev package has INCLUDE_ERI 1 but
+      # INCLUDE_ONEBODY 0, so it COMPILES and then SIGABRTs inside
+      # engine.impl.h when a gradient run asks for a one-electron derivative
+      # engine. Checking only INCLUDE_ERI let that through. Both matter:
+      # ERI for 2e derivatives, ONEBODY for the kinetic/nuclear-attraction
+      # terms. Verified by controlled comparison -- dft_gradient_lda is 3/3
+      # against a build with ONEBODY 1 and SIGABRT against one with 0.
+      - name: Verify libint2 capabilities
+        run: |
+          set -euo pipefail
+          CFG="$LIBINT2_PREFIX/include/libint2/config.h"
+          echo "--- libint2 config ---"
+          grep -E 'INCLUDE_ERI|INCLUDE_ONEBODY|INCLUDE_G12|LIBINT_MAX_AM' "$CFG" || true
+          fail=0
+          for macro in INCLUDE_ERI INCLUDE_ONEBODY; do
+            v=$(sed -n "s/^#define $macro \([0-9]*\)$/\1/p" "$CFG")
+            if [ -z "$v" ] || [ "$v" -lt 1 ]; then
+              echo "::error::libint2 lacks $macro >= 1 (got '${v:-unset}'); ferric gradients would SIGABRT at run time"
+              fail=1
+            else
+              echo "$macro=$v OK"
+            fi
+          done
+          exit $fail
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
