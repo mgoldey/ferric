@@ -28,6 +28,7 @@ fn table_dir() -> Option<PathBuf> {
 }
 
 #[test]
+#[ignore = "benchmark: terfc interpolation sweep; --release --ignored --nocapture"]
 fn sweep_interp_vs_series_full_domain() {
     let Some(dir) = table_dir() else {
         eprintln!("skip: no tables");

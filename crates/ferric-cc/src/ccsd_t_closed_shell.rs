@@ -369,7 +369,6 @@ fn add_v_singles(
 /// Closed-shell RHF references only; open-shell needs the spin-orbital
 /// [`crate::ccsd_t::ccsd_t`], which remains the reference oracle and is
 /// untouched.
-#[must_use]
 pub fn ccsd_t_closed_shell(
     _mol: &Molecule,
     obs: &PreparedBasis,

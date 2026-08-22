@@ -132,6 +132,13 @@ pub use frequencies::{
     harmonic_frequencies, FrequencyConfig, FrequencyReference, FrequencyResult,
 };
 /// Continuous Fast Multipole Method (CFMM) for long-range Coulomb.
+///
+/// INCOMPLETE — gated behind the off-by-default `cfmm-incomplete` feature.
+/// `CfmmJ::build` returns an identically-zero J: the three functions bridging
+/// the octree to actual integrals are stubs (wiki/cfmm-m2l-investigation.md).
+/// Because `CfmmJ` implements the public `JBuilder` trait, compiling it in by
+/// default makes a silently-wrong Coulomb matrix reachable from user code.
+#[cfg(feature = "cfmm-incomplete")]
 pub mod cfmm;
 /// QM/MM system setup: atom selection, link atoms, embedding charges.
 pub mod qmmm;

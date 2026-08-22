@@ -2624,7 +2624,7 @@ impl PyDoubleHybridResult {
 fn run_double_hybrid(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
                      kind: &str, frozen_core: Option<usize>,
                      k_builder: Option<&str>, memory_budget_gb: Option<f64>) -> PyResult<PyDoubleHybridResult> {
-    let dh_kind = match kind.to_lowercase().replace('-', "").replace('_', "").as_str() {
+    let dh_kind = match kind.to_lowercase().replace(['-', '_'], "").as_str() {
         "b2plyp" => DoubleHybridKind::B2plyp,
         "dsdpbep86" => DoubleHybridKind::DsdPbep86,
         _ => return Err(pyo3::exceptions::PyValueError::new_err(

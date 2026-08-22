@@ -164,7 +164,7 @@ pub fn hess_nuclear_repulsion(mol: &Molecule) -> Array2<f64> {
 /// - `compute_1e_hessian_block` for kinetic integrals (∂²T/∂R_A∂R_B)
 /// - Per-nucleus `compute_1e_hessian_rinv_block` for nuclear attraction
 ///   (decompose V_ne as sum over nuclei C: V = Σ_C -Z_C/|r-R_C|,
-///    then d²/dR_A dR_B has shell-center and nuclear-center contributions)
+///   then d²/dR_A dR_B has shell-center and nuclear-center contributions)
 ///
 /// The shim needs a `scf_engine_create_deriv2` function wrapping libint2's
 /// `Engine(op, max_nprim, max_l, 2, precision)` (deriv_order=2), which

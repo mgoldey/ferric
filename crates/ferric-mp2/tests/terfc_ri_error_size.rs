@@ -12,6 +12,7 @@ use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 
 #[test]
+#[ignore = "benchmark: terfc RI error vs system size; --release --ignored --nocapture"]
 fn probe_ri_error_magnitude_on_coulomb() {
     let mol = Molecule::load_xyz(concat!(
         env!("CARGO_MANIFEST_DIR"),

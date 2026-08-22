@@ -54,6 +54,7 @@ fn vol_for_atom(spec: &AtomSpec, obs_name: &str) -> f64 {
 }
 
 #[test]
+#[ignore = "benchmark: free-atom Becke volumes (TS vol_free); --release --ignored --nocapture"]
 fn free_atom_becke_volumes() {
     let atoms = [
         AtomSpec { symbol: "H",  z: 1,  mult: 2, xyz: "1\nH\nH 0 0 0\n" },

@@ -84,7 +84,6 @@ fn perm(x: &ArrayD<f64>, ax: &[usize]) -> ArrayD<f64> {
 ///
 /// `rhf` must be a closed-shell RHF result (uses `eps_r`/`mos_r`). Returns the
 /// correlation energy plus the converged spatial `t1`/`t2`.
-#[must_use]
 pub fn ccsd_closed_shell(
     _mol: &Molecule,
     obs: &PreparedBasis,

@@ -123,8 +123,16 @@ run_step() {
 
 # ---- 1. cargo test --workspace (default set, no --ignored) ------------
 if [[ "${CI_GATE_SKIP_TESTS:-0}" != "1" ]]; then
+    # Hard cgroup ceiling (MemoryMax=8G, MemorySwapMax=0). `cargo test`
+    # fans out across rayon workers, each holding its own tensors, and the
+    # [memory] budget_gb knob bounds 3-index blocking only -- NOT total RSS.
+    # On 2026-08-21 the att_vv10 test binary hit 3.4GB anon-rss and tripped a
+    # global (CONSTRAINT_NONE) OOM: the kernel killed the test, then systemd
+    # tore down the whole enclosing tmux scope (14.5G peak), taking the
+    # session and this gate's own logs with it. Capping here turns that into
+    # a clean single-step failure instead of a box-wide event.
     run_step "cargo test --workspace" \
-        "OPENBLAS_NUM_THREADS=1 cargo test --workspace -j $JOBS"
+        "OPENBLAS_NUM_THREADS=1 $REPO_ROOT/scripts/ferric-limited --max=8G --high=7G -- cargo test --workspace -j $JOBS"
 else
     echo "-- cargo test --workspace: SKIPPED (CI_GATE_SKIP_TESTS=1) --"
 fi

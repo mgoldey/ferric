@@ -412,7 +412,6 @@ pub(crate) fn scf_converged(
 /// let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &RhfConfig::default()).unwrap();
 /// println!("{}", result); // prints energy, iterations, convergence
 /// ```
-#[must_use]
 pub fn solve_rhf(
     ctx: &ParallelContext,
     mol: &Molecule,

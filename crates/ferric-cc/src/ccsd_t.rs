@@ -351,7 +351,6 @@ fn triple_block(
 /// Streams over unique occupied spin-orbital triples `i<j<k`, forming only a
 /// `[2nv,2nv,2nv]` block per triple — see the module doc comment for the
 /// full derivation and the peak-memory accounting.
-#[must_use]
 pub fn ccsd_t(
     _mol: &Molecule,
     obs: &PreparedBasis,

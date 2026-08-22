@@ -139,7 +139,6 @@ impl std::fmt::Display for CasCiResult {
 /// Validates the active-space configuration against the molecule/basis up front
 /// (electron count, orbital window) and returns a clean [`FerricError`] on any
 /// inconsistency — it never panics deep inside the transform or matvec.
-#[must_use]
 pub fn run_cas_ci(
     mol: &Molecule,
     prep: &PreparedBasis,

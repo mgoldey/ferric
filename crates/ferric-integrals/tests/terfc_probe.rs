@@ -16,6 +16,7 @@ fn have_tables() -> bool {
 /// below pointwise, every element deviation should shrink with r0 and the
 /// terfc value should never exceed Coulomb where Coulomb > 0.
 #[test]
+#[ignore = "benchmark: terfc table probe; --release --ignored --nocapture"]
 fn probe_terfc_vs_coulomb_elementwise() {
     if !have_tables() {
         eprintln!("skip: no tables");
@@ -73,6 +74,7 @@ fn probe_terfc_vs_coulomb_elementwise() {
 /// A residue here at the size of the energy discrepancy implicates the MD
 /// Coulomb pass, not the terf tables/series and not catastrophic cancellation.
 #[test]
+#[ignore = "benchmark: terfc table probe; --release --ignored --nocapture"]
 fn probe_terfc_plus_terf_equals_coulomb() {
     if !have_tables() {
         eprintln!("skip: no tables");

@@ -16,6 +16,7 @@ use ferric_scf::screening::SchwarzBounds;
 const A2B: f64 = 1.889_725_988_6;
 
 #[test]
+#[ignore = "benchmark: terfc aux-basis convergence probe; --release --ignored --nocapture"]
 fn probe_aux_convergence_absolute() {
     if std::env::var("FERRIC_TERF_TABLE_DIR").is_err() {
         eprintln!("skip: no tables");

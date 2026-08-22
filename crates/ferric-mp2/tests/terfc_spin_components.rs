@@ -13,6 +13,7 @@ use ferric_scf::screening::SchwarzBounds;
 const A2B: f64 = 1.889_725_988_6;
 
 #[test]
+#[ignore = "benchmark: terfc spin-component probe; --release --ignored --nocapture"]
 fn probe_terfc_spin_components() {
     if std::env::var("FERRIC_TERF_TABLE_DIR").is_err() {
         eprintln!("skip: no tables");

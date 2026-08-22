@@ -12,6 +12,7 @@ use ferric_scf::screening::SchwarzBounds;
 const A2B: f64 = 1.889_725_988_6;
 
 #[test]
+#[ignore = "benchmark: terfc r0 scan (metric vs tensor error); --release --ignored --nocapture"]
 fn probe_terfc_r0_scan_wide() {
     if std::env::var("FERRIC_TERF_TABLE_DIR").is_err() {
         eprintln!("skip: no tables");

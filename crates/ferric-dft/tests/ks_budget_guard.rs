@@ -45,8 +45,7 @@ fn over_budget_batches_instead_of_failing_and_under_budget_uses_full_cache() {
     // O(npts²) pair sum) must still fit in the budget on its own, or this is
     // a hard failure with the message flagging VV10.
     let err = KsXc::new(&mol, &bs, "wB97X-V", &main, &nlc)
-        .err()
-        .expect("VV10 KsXc::new must still fail under a 1 kB budget (NLC grid isn't batchable)");
+        .expect_err("VV10 KsXc::new must still fail under a 1 kB budget (NLC grid isn't batchable)");
     match &err {
         KsXcError::OverBudget { needed_gb, budget_gb, nbf, npts, .. } => {
             assert!(*needed_gb > *budget_gb);

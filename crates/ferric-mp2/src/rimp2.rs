@@ -817,7 +817,6 @@ pub fn spin_components_from_g(
 }
 
 /// Compute RI-MP2 opposite-spin and same-spin correlation energies separately, returning `(SpinComponents, B_ov)`.
-#[must_use]
 pub fn ri_mp2_spin_components(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -1037,7 +1036,6 @@ pub fn spin_components_from_b_ov_kappa(
 /// Requires converged RHF orbitals, an orbital basis (`obs`), and a density-fitting
 /// auxiliary basis (`dfbs`). The auxiliary basis should be matched to the orbital
 /// basis (e.g., cc-pVDZ with cc-pVDZ-RI).
-#[must_use]
 pub fn ri_mp2(
     mol: &Molecule,
     obs: &PreparedBasis,

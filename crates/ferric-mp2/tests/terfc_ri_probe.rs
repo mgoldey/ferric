@@ -11,6 +11,7 @@ use ferric_scf::rhf::{solve_rhf, RhfConfig};
 const A2B: f64 = 1.889_725_988_6;
 
 #[test]
+#[ignore = "benchmark: terfc RI probe; --release --ignored --nocapture"]
 fn probe_terfc_overshoot_vs_aux_basis() {
     if std::env::var("FERRIC_TERF_TABLE_DIR").is_err() {
         eprintln!("skip: no tables");

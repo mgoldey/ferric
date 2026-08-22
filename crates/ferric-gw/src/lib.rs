@@ -260,7 +260,6 @@ impl UGwResult {
 /// For UKS, the caller must apply the Σ_x − v_xc correction via
 /// `UGwResult::apply_kohn_sham_correction` using `vxc_mo::vxc_diagonal_mo`
 /// (we don't auto-apply since we don't carry the xc_name through).
-#[must_use]
 pub fn run_u_gw(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -360,7 +359,6 @@ fn default_u_qp_range(mol: &Molecule, scf: &ScfResult) -> std::ops::Range<usize>
 /// self-consistency loop — it is a property of the KS reference, not
 /// something that evolves with QP self-consistency (see the doc comments on
 /// `sigma::run_evgw0`/`sigma::run_evgw`).
-#[must_use]
 pub fn run_gw(
     mol: &Molecule,
     obs: &PreparedBasis,

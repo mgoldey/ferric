@@ -37,7 +37,6 @@ fn lbl2(a: ArrayD<f64>, l: [Axis; 2]) -> Tensor<2> {
 }
 
 /// Complete spin-orbital CCSD via `einsum!` + optional DIIS on T2.
-#[must_use]
 pub fn ccsd(
     _mol: &Molecule,
     obs: &PreparedBasis,

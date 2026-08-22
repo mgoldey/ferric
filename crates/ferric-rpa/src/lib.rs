@@ -349,7 +349,6 @@ fn davidson_default_max_vecs(naux: usize, budget_bytes: usize) -> usize {
 
 
 /// Top-level PDEP-RPA energy calculation.
-#[must_use]
 pub fn run_pdep_rpa(
     mol: &Molecule,
     obs: &PreparedBasis,
