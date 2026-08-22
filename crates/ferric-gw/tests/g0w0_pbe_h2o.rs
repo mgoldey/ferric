@@ -1,6 +1,6 @@
 //! ferric closed-shell G0W0@PBE HOMO IP for H2O/cc-pVDZ must match PySCF gw_ac
 //! @PBE to <0.1 eV, and must differ from the @HF starting point (proves the
-//! Σx−vxc correction is applied). Reference: scripts/queue/out/pyscf_g0w0_pbe_h2o_dz.py.
+//! Σx−vxc correction is applied). Reference: scripts/pyscf_g0w0_pbe_h2o_dz.py.
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
