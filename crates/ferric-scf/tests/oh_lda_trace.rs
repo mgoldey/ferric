@@ -13,6 +13,7 @@ use ferric_scf::rohf::solve_rohf;
 use ferric_scf::screening::SchwarzBounds;
 
 #[test]
+#[ignore = "diagnostic: OH/LDA SCF iteration trace, no assertions (FERRIC_ROHF_TRACE=1); --ignored --nocapture"]
 fn trace_oh_lda_plateau() {
     if std::env::var("FERRIC_ROHF_TRACE").is_err() {
         eprintln!("Set FERRIC_ROHF_TRACE=1 to see the trace; test skipped silently.");

@@ -14,6 +14,7 @@ use ferric_scf::screening::SchwarzBounds;
 const A2B: f64 = 1.889_725_988_6;
 
 #[test]
+#[ignore = "diagnostic: SCRATCH terfc-vs-exact-Coulomb reference probe, no assertions; --release --ignored --nocapture"]
 fn probe_terfc_vs_exact_coulomb() {
     if std::env::var("FERRIC_TERF_TABLE_DIR").is_err() {
         eprintln!("skip: no tables");
