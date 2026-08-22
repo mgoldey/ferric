@@ -15,6 +15,12 @@ env:
 jobs:
   build-and-test:
     runs-on: ubuntu-22.04
+    # A wedged run is worse than a failing one: run 32582084400 sat "in_progress"
+    # for 70 minutes with updatedAt frozen 3s after start, burning a runner and
+    # blocking any verdict, while an earlier run of the SAME build step reached
+    # the test phase inside 1h16m total. Without a cap that stalls to the 6h
+    # default. 75 min is ~3x the observed healthy path.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
 
@@ -57,7 +63,13 @@ jobs:
         # if: always() -- libint2 is an EXTERNAL dependency; whether ferric's
         # own tests pass has no bearing on whether this build artifact is
         # reusable. Saving here is what lets a red run stop costing an hour.
-        if: always() && steps.cache-libint.outputs.cache-hit != 'true'
+        # NOT always(). The point is to save when ferric's own TESTS fail
+        # (libint2 is external -- a red test says nothing about whether that
+        # artifact is reusable), but NOT when the run was cancelled mid-build.
+        # always() saved a TRUNCATED tree on a cancelled run: the step
+        # reported success and wrote an unusable entry, which is worse than
+        # no cache because it poisons every later restore.
+        if: success() && steps.cache-libint.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: ${{ env.LIBINT2_PREFIX }}
@@ -92,7 +104,10 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Save cargo cache
-        if: always()
+        # Same reasoning as the libint2 save: !cancelled() keeps the save on a
+        # RED test run (the whole point) but drops it when cancelled, which
+        # previously wrote a 208-BYTE entry later runs would have restored.
+        if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
         with:
           path: |
