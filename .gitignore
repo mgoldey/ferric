@@ -81,7 +81,10 @@ experimental/
 gfnff_topo
 
 # local docs (moved out of git 2026-08-07; shared via wiki instead)
+# /docs/ is the pre-rename path — kept so a recreated docs/ is not silently
+# tracked. Both were purged from all history 2026-08-21.
 /wiki/
+/docs/
 
 # Unpublished research — publish paper independently before making repo public
 /whitepaper/

@@ -8,3 +8,11 @@ out/*.err
 out/*.time
 grid.log
 status.json
+
+# SR-MP2+LR-RPA manuscript results — held back until the paper is revised
+# and published (2026-08-21). Scripts and refs.json (literature CCSD(T)/CBS)
+# stay tracked; only OUR measured numbers and manuscript tables are excluded.
+matrix.csv
+matrix.md
+tex_tables/
+scans/
