@@ -21,10 +21,12 @@ object right where standard methods get it wrong:
   (∂N/∂λ is a susceptibility), building charge-localized diabatic states and their
   electron-transfer couplings.
 
-The computational payoff falls out of the physics: **response is local in real space and
-low-rank in its eigenspectrum, so organizing around it makes the computation sparse** —
-attenuate the operator, keep the dominant dielectric modes, exploit sparse Laplace
-pseudo-densities. Get the physics right, and the cheap method follows from its structure.
+The motivating claim is that response is local in real space and low-rank in its
+eigenspectrum, so organizing around it should make the computation cheaper —
+attenuate the operator, keep the dominant dielectric modes. PDEP's low-rank
+compression of the dielectric matrix is the part of that which is actually
+demonstrated here; the real-space locality half remains a design premise, not a
+measured result (see the wiki's `VALIDATION.md` and the local-correlation notes).
 
 ## Features
 
@@ -39,7 +41,9 @@ pseudo-densities. Get the physics right, and the cheap method follows from its s
 - **OO-RI-MP2** (orbital-optimized) with level-shifted Newton, orbital DIIS, Cayley rotations, backtracking
 - **Attenuated RI-MP2** with erfc(ωr)/r and terfc operators (Goldey & Head-Gordon, JPCL 2012)
 - **SCS-MP2** (Grimme, JCP 2003) and **SCS-MP2(2terfc)** dual-attenuated (Goldey, Dutoi, Head-Gordon, PCCP 2013)
-- **RI-Laplace MP2** — O(N) AO-Laplace formulation via sparse pseudo-density tensors
+- **RI-Laplace MP2** — AO-Laplace formulation via pseudo-density matrices. The
+  implementation is dense; it serves as the correctness reference for that
+  formulation, not as a reduced-scaling path (no O(N) has been measured)
 
 **Coupled cluster**
 - **RI-CCD, RI-CCSD, and the perturbative triples (T)** correction — all
@@ -64,25 +68,9 @@ pseudo-densities. Get the physics right, and the cheap method follows from its s
 - **NPZ export** of ML-ready features (MO coefficients, orbital energies, PDEP eigenvectors, ESP, polarizability tensors, charges) for downstream generative-model conditioning
 
 **Infrastructure**
-- **QQR screening** (Maurer/Lambrecht/Ochsenfeld 2012) and **LinK exchange** (Ochsenfeld/White/Head-Gordon 1998) for linear-scaling Fock builds; CFMM Coulomb
+- **QQR screening** (Maurer/Lambrecht/Ochsenfeld 2012) and **LinK exchange** (Ochsenfeld/White/Head-Gordon 1998) for the Fock build
 - **Spherical and Cartesian** basis support (BSE-JSON and Gaussian-94 parsers); bundled orbital bases (STO-3G, 6-31G, cc-pVDZ, def2-SVP) + RI/JK auxiliary bases (cc-pVDZ-RI, def2-\*-RIFIT, def2-universal-jkfit)
 - **Python bindings** (pyo3) and a **TOML-driven CLI** for all methods
-
-## Mathematical Principles
-
-### RI-Laplace MP2
-The canonical MP2 correlation energy is given by:
-$$E_{corr} = -\sum_{iajb} \frac{(ia|jb)[2(ia|jb) - (ib|ja)]}{\epsilon_a + \epsilon_b - \epsilon_i - \epsilon_j}$$
-
-Using the **Laplace transform** identity:
-$$\frac{1}{x} = \int_0^\infty e^{-tx} dt \approx \sum_k w_k e^{-t_k x}$$
-
-We can express the energy as a sum over quadrature points $t_k$. In the AO basis, we define **pseudo-density matrices** $P(t)$ and $Q(t)$:
-$$P(t)_{\mu\nu} = \sum_{i \in occ} C_{\mu i} e^{t \epsilon_i} C_{\nu i}, \quad Q(t)_{\mu\nu} = \sum_{a \in vir} C_{\mu a} e^{-t \epsilon_a} C_{\nu a}$$
-
-The energy is then computed via trace contractions of the 3-center RI integrals $B^P_{\mu\nu}$:
-$$E_{corr} \approx -\sum_k w_k \sum_{PQ} \left[ 2 \text{Tr}(M^P N^Q) \text{Tr}(M^Q N^P) - \text{Tr}(M^P N^Q M^Q N^P) \right]$$
-where $M^P = B^P P(t)$ and $N^P = B^P Q(t)$. This formulation enables **linear scaling** $O(N)$ when combined with sparse matrix algebra.
 
 ## Quick Example
 
@@ -213,7 +201,24 @@ dissertation) — see the methods guide in the project wiki.
 ### Prerequisites
 
 - Rust 1.75+ (install via [rustup](https://rustup.rs/))
-- libint2 2.7+ built from the [mpqc4 tarball](https://github.com/evaleev/libint/releases/download/v2.7.2/libint-2.7.2-mpqc4.tgz) (includes derivative and RI support)
+- libint2 2.7+ built from the [mpqc4 tarball](https://github.com/evaleev/libint/releases/download/v2.7.2/libint-2.7.2-mpqc4.tgz).
+
+  Note what that prebuilt export does and does not carry — these are fixed when
+  the tarball is *generated*, so no `cmake` flag changes them (`compiler.config`
+  in the tarball records the exact settings):
+
+  | Capability | mpqc4 export | Needed for |
+  |---|---|---|
+  | 1st derivatives (`--enable-eri=1`, `--enable-1body=1`) | yes | analytical **gradients**, geometry optimization |
+  | RI / 3- and 2-center ERI (`--enable-eri3=1`, `--enable-eri2=1`) | yes | RI-MP2, RPA, GW |
+  | 2nd derivatives (`--enable-eri=2`) | **no** | analytical **Hessians** / frequencies |
+  | G12 geminal (`INCLUDE_G12`) | **no** | F12 / geminal integrals |
+
+  Building against this tarball is correct for everything ferric currently
+  validates. The G12-dependent tests detect its absence at run time and skip
+  with an explicit message rather than failing. To get either missing
+  capability you must re-generate libint2 from the upstream source repo with
+  the corresponding `--enable-*` flags, which is a substantially longer build.
 - OpenBLAS and LAPACK
 - Eigen3 headers
 - Python 3.10+ and maturin (for Python bindings, optional)
@@ -413,7 +418,7 @@ ferric/
     ferric-rpa/                 # PDEP-RPA (closed/open-shell), response properties,
                                 #   ESP / Hirshfeld / Löwdin / polarizability
     ferric-gw/                  # G0W0, COHSEX, evGW0, evGW, U-GW (PDEP-as-W)
-    ferric-tensors/             # Sparse tensor support (linear-scaling correlation)
+    ferric-tensors/             # Sparse tensor + einsum! support
     ferric-quadrature/          # Laplace / grid quadrature roots and weights
     ferric-export/              # Cube files, NPZ ML-feature export, GTO grid eval
     ferric-cli/                 # TOML-driven command-line driver
@@ -424,39 +429,22 @@ ferric/
   examples/                     # TOML input files
 ```
 
-## Roadmap
+## Status
 
-> **Implemented ≠ validated.** A checked box means the code exists and runs. For
-> how strongly each capability's *numbers* are checked against ground truth —
-> and where they are known to fail — see `VALIDATION.md` in the project wiki.
+> **Implemented ≠ validated.** Working code is not a checked number. For how
+> strongly each capability's *numbers* are checked against ground truth — and
+> where they are known to fail — see `VALIDATION.md` in the project wiki. That
+> document, not this one, is the authority on what you can trust.
 
-- [x] Rayon-parallel LinK exchange
-- [x] CFMM (continuous fast multipole) for linear-scaling Coulomb
-- [x] AO-Laplace-Transform MP2 (linear scaling via sparse tensors)
-- [x] MPI distributed parallelization (SCF DF-J/K, RI-MP2, RPA frequency quadrature; GW QP loop not yet distributed — see the wiki's `mpi.md`)
-- [x] Geometry optimization via analytical gradients (RHF, RI-MP2, SCS-MP2)
-- [x] Sparse tensor support (ferric-tensors) for linear correlation
-- [x] KS-DFT (LDA/GGA/hybrid/RSH) via libxc + Becke-Lebedev quadrature; VV10 nonlocal
-- [x] Coupled Cluster: RI-CCD, RI-CCSD, CCSD(T) (validated vs exact-integral / PySCF refs)
-- [x] Open-shell SCF: UHF, ROHF, UKS, ROKS (with MOM + augmented-Hessian Newton)
-- [x] Open-shell analytical gradients (UHF/ROHF/KS-DFT, incl. grid response)
-- [x] PDEP-RPA correlation (closed- and open-shell) + attenuated RPA
-- [x] GW quasiparticle energies (G0W0, COHSEX, evGW0, evGW, U-GW)
-- [x] Constrained DFT + electron-transfer couplings (Wu-Van Voorhis H_ab)
-- [x] Response properties + NPZ ML-feature export (ESP, polarizability, charges, PDEP)
+Broadly, `ferric` covers ground-state SCF (RHF/UHF/ROHF and KS-DFT via libxc),
+the MP2 family (RI, attenuated, SCS, orbital-optimized, Laplace), coupled
+cluster (CCD/CCSD/CCSD(T)), RPA and GW, constrained DFT, and analytical
+gradients for much of the above. Python bindings and a TOML-driven CLI expose
+most of it; `CLAUDE.md` carries a per-module index.
 
-### Performance & Scaling Verification
-
-`ferric` is designed for linear scaling ($O(N)$) for large systems using the LinK exchange builder and the CFMM Coulomb builder. You can verify these scaling properties using the provided benchmarking script:
-
-```bash
-# Run the alkane scaling benchmark (C10 to C50)
-.venv/bin/python scripts/scaling_bench.py
-```
-
-The script benchmarks the scaling of **computed quartets vs system size** for the standard Coulomb operator, demonstrating how physical screening (Schwarz/QQR) reduces the computational effort from $O(N^4)$ toward $O(N)$ for large systems.
-
-For correlation methods (like AO-Laplace-MP2), `ferric` leverages **attenuated Coulomb operators** to reduce systematic model errors (e.g., dispersion overestimation and BSSE) and to enable aggressive AO-based sparsity, which is the key to achieving $O(N)$ correlation scaling.
+Capability maturity varies a lot between those, and the wiki's `VALIDATION.md`
+grades each one (proven / smoke / stub) rather than presenting them as a flat
+list of equals.
 
 ## References
 

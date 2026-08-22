@@ -29,8 +29,8 @@ use ndarray::{s, Array2};
 ///
 /// Returns a (3N, 3N) Cartesian Hessian in Hartree/Bohr².
 pub fn rhf_hessian(
-    mol: &Molecule,
-    prep: &PreparedBasis,
+    _mol: &Molecule,
+    _prep: &PreparedBasis,
     _op: Operator,
     rhf: &ScfResult,
 ) -> Result<Array2<f64>, FerricError> {
@@ -41,55 +41,23 @@ pub fn rhf_hessian(
         });
     }
 
-    let natoms = mol.atoms.len();
-    let n3 = 3 * natoms;
-    let d = rhf.density_r();
-    let nocc = (mol.nelec() / 2) as usize;
-
-    // Energy-weighted density: W = 2 C_occ diag(ε_occ) C_occ^T
-    let w = super::gradient::build_energy_weighted_density(rhf, nocc);
-
-    // Term 1: Nuclear repulsion Hessian (fully implemented — pure geometry)
-    let h_nuc = hess_nuclear_repulsion(mol);
-
-    // Term 2: Skeleton 1e Hessian
-    let h_1e = skeleton_hess_1e(mol, prep, d)?;
-
-    // Term 3: Overlap Hessian × energy-weighted density
-    let h_ovlp = skeleton_hess_overlap(mol, prep, &w)?;
-
-    // Term 4: Skeleton 2e Hessian (J and K)
-    let h_2e = skeleton_hess_2e(mol, prep, d)?;
-
-    // Combine skeleton (partial) electronic Hessian
-    let mut h_partial = Array2::<f64>::zeros((n3, n3));
-    for i in 0..n3 {
-        for j in 0..n3 {
-            h_partial[(i, j)] = h_1e[(i, j)] + h_ovlp[(i, j)] + h_2e[(i, j)];
-        }
-    }
-
-    // Term 5: CPKS orbital response
-    let h_total_elec = cpks_response(mol, prep, rhf, &h_partial)?;
-
-    // Total = electronic + nuclear
-    let mut hessian = Array2::<f64>::zeros((n3, n3));
-    for i in 0..n3 {
-        for j in 0..n3 {
-            hessian[(i, j)] = h_total_elec[(i, j)] + h_nuc[(i, j)];
-        }
-    }
-
-    // Symmetrize
-    for i in 0..n3 {
-        for j in (i + 1)..n3 {
-            let v = 0.5 * (hessian[(i, j)] + hessian[(j, i)]);
-            hessian[(i, j)] = v;
-            hessian[(j, i)] = v;
-        }
-    }
-
-    Ok(hessian)
+    // Terms 2-5 (1e/overlap/2e skeleton + CPKS response) are unimplemented and
+    // each return a ZERO block. Assembling them would hand back a
+    // nuclear-repulsion-only matrix that LOOKS like a Hessian -- right shape,
+    // plausible magnitudes, silently missing every electronic contribution.
+    // Refusing is the honest behaviour; see `hess_nuclear_repulsion` below,
+    // which is complete and callable on its own if you genuinely want term 1.
+    //
+    // Lift this only when terms 2-5 are implemented AND validated against
+    // finite differences of `rhf_gradient` (an independent construction).
+    Err(FerricError::General(
+        "analytic RHF Hessian is not implemented: terms 2-5 need libint2 \
+         deriv_order=2, which the mpqc4 export does not provide (it is fixed at \
+         export time; see README prerequisites). Use \
+         ferric_scf::frequencies::harmonic_frequencies, which differentiates \
+         analytic gradients numerically and is the validated path."
+            .to_string(),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -170,6 +138,8 @@ pub fn hess_nuclear_repulsion(mol: &Molecule) -> Array2<f64> {
 /// `Engine(op, max_nprim, max_l, 2, precision)` (deriv_order=2), which
 /// requires `LIBINT2_MAX_DERIV_ORDER >= 2` at libint2 compile time.
 /// Current installation has `LIBINT2_MAX_DERIV_ORDER = 1`.
+#[allow(dead_code)] // scaffold: kept as the implementation roadmap for the
+// deriv_order=2 work; unreachable until rhf_hessian's guard is lifted.
 fn skeleton_hess_1e(
     _mol: &Molecule,
     prep: &PreparedBasis,
@@ -214,6 +184,8 @@ fn skeleton_hess_1e(
 /// - `int1e_ipovlpip` (cross-center: dS/dR_Ax · dS/dR_By)
 ///
 /// Same libint2 `deriv_order=2` requirement as the 1e skeleton.
+#[allow(dead_code)] // scaffold: kept as the implementation roadmap for the
+// deriv_order=2 work; unreachable until rhf_hessian's guard is lifted.
 fn skeleton_hess_overlap(
     _mol: &Molecule,
     prep: &PreparedBasis,
@@ -251,6 +223,8 @@ fn skeleton_hess_overlap(
 ///
 /// For 4 shell centers, the second-derivative ERI has
 /// (4×3 + 4×3 choose 2) / 2 = 78 unique derivative blocks.
+#[allow(dead_code)] // scaffold: kept as the implementation roadmap for the
+// deriv_order=2 work; unreachable until rhf_hessian's guard is lifted.
 fn skeleton_hess_2e(
     _mol: &Molecule,
     prep: &PreparedBasis,
@@ -307,6 +281,8 @@ fn skeleton_hess_2e(
 /// only first derivatives and the converged MO coefficients/energies. However,
 /// the response terms it produces are contracted with the skeleton Hessian from
 /// terms 2–4, so the full analytic Hessian needs all components to be nonzero.
+#[allow(dead_code)] // scaffold: kept as the implementation roadmap for the
+// deriv_order=2 work; unreachable until rhf_hessian's guard is lifted.
 fn cpks_response(
     mol: &Molecule,
     prep: &PreparedBasis,
