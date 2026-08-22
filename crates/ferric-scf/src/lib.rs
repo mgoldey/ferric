@@ -133,11 +133,27 @@ pub use frequencies::{
 };
 /// Continuous Fast Multipole Method (CFMM) for long-range Coulomb.
 ///
-/// INCOMPLETE — gated behind the off-by-default `cfmm-incomplete` feature.
-/// `CfmmJ::build` returns an identically-zero J: the three functions bridging
-/// the octree to actual integrals are stubs (wiki/cfmm-m2l-investigation.md).
-/// Because `CfmmJ` implements the public `JBuilder` trait, compiling it in by
-/// default makes a silently-wrong Coulomb matrix reachable from user code.
+/// CORRECT BUT NOT PRODUCTION — still gated behind the off-by-default
+/// `cfmm-incomplete` feature.
+///
+/// The integral kernels that used to be unimplemented stubs (returning an
+/// identically-zero J) are now implemented and cross-checked against
+/// independent constructions: in the trivial all-near-field limit `CfmmJ`
+/// reproduces the direct/dense J to ~1e-14, and with the far field engaged
+/// on alkane_10/STO-3G it agrees to 8.2e-5 against max|J| = 24.5.
+///
+/// The gate REMAINS because correctness is not the only bar for a public
+/// `JBuilder`:
+///
+/// * it is currently far SLOWER than [`direct_j::DirectJ`] (the near field is
+///   an unscreened, unsymmetrized ordered-pair loop) — there is no measured
+///   scaling benefit, so nothing should select it for performance;
+/// * the well-separatedness test, while now extent-aware, has only been
+///   validated on compact bases (STO-3G / cc-pVDZ);
+/// * the far field is flat (leaf-to-leaf M2L), with no hierarchical
+///   M2M/L2L pass, so it does not yet have FMM's asymptotic behaviour.
+///
+/// See the `cfmm` module docs for the full status list.
 #[cfg(feature = "cfmm-incomplete")]
 pub mod cfmm;
 /// QM/MM system setup: atom selection, link atoms, embedding charges.

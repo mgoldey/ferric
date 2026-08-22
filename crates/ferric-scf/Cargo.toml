@@ -22,12 +22,18 @@ mpi = { workspace = true, optional = true }
 [features]
 default = []
 mpi = ["dep:mpi", "ferric-core/mpi"]
-# Incomplete CFMM J-builder. OFF by default: CfmmJ::build returns an
-# identically-zero Coulomb matrix because add_shell_multipoles /
-# add_far_field_to_j / direct_interaction are unimplemented stubs (see
-# wiki/cfmm-m2l-investigation.md). It implements the public JBuilder trait,
-# so leaving it compiled-in makes a silently-wrong J reachable. Enable only
-# to work ON the CFMM implementation.
+# CFMM J-builder. OFF by default.
+#
+# The former all-zero-J stubs are implemented and validated (trivial-limit
+# J matches the direct builder to ~1e-14; far field engaged agrees to 8.2e-5
+# on alkane_10/STO-3G), but this is a CORRECTNESS REFERENCE, not a production
+# Coulomb builder: the near field is an unscreened, unsymmetrized ordered-pair
+# loop and is far SLOWER than DirectJ, the far field is flat leaf-to-leaf M2L
+# with no hierarchical M2M/L2L, and the extent-aware separation criterion has
+# only been checked on compact bases. It implements the public JBuilder trait,
+# so leaving it compiled-in by default would let callers select a Coulomb
+# builder with no speed benefit and unvalidated behaviour on diffuse bases.
+# Enable to work ON or test the CFMM implementation.
 cfmm-incomplete = []
 
 [dev-dependencies]
