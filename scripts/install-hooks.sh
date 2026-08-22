@@ -59,7 +59,13 @@ if [[ ! -x "$GATE_SCRIPT" ]]; then
     exit 0
 fi
 
-echo "pre-push: running correctness gate ($GATE_SCRIPT)..." >&2
+# Fast tier: the pre-push hook defers the 4 slowest integration binaries
+# (~160s of ~407s). A push should not block on the full suite; running
+# scripts/ci-gate.sh by hand still runs EVERYTHING. The gate prints exactly
+# which binaries it deferred, and its PASS line says "FAST TIER" so a fast
+# run can never be misread as full coverage.
+export CI_GATE_FAST=1
+echo "pre-push: running correctness gate ($GATE_SCRIPT, fast tier)..." >&2
 echo "          (skip once with: git push --no-verify -- only if you mean it)" >&2
 "$GATE_SCRIPT"
 exit $?

@@ -35,6 +35,12 @@
 #   CI_GATE_SKIP_CLIPPY=1  skip the clippy step (test-only gate).
 #   CI_GATE_SKIP_TESTS=1   skip the test step (clippy-only gate).
 #   CI_GATE_SKIP_COMPLEXITY=1  skip the complexity-regression step.
+#   CI_GATE_FAST=1         defer the 4 slowest integration test binaries
+#                          (~160s of ~407s). Set by the pre-push hook so a
+#                          push is not blocked on the full suite; running
+#                          scripts/ci-gate.sh by hand still runs EVERYTHING.
+#                          The deferred binaries are listed on every fast run
+#                          along with the command to run them.
 #
 # Step 3, complexity regression (scripts/complexity_gate.py): tracks
 # cyclomatic complexity (CC) and maintainability index (MI) per function via
@@ -60,6 +66,66 @@ DEFAULT_JOBS=$(( NPROC < 8 ? NPROC : 8 ))
 JOBS="${CI_GATE_JOBS:-$DEFAULT_JOBS}"
 LOCK_FILE="/tmp/ferric-cargo.lock"
 LOCK_WAIT_SECS=14400
+
+# ---- fast tier --------------------------------------------------------
+# The four slowest INTEGRATION binaries, measured on the 2026-08-22 full
+# run: 49.0s + 39.4s + 36.0s + 35.5s = ~160s of a ~407s test step (~40%).
+# These are real, assertion-heavy correctness tests (lmp2_amplitude alone
+# has 38 asserts over 14 tests) -- NOT probes, so they are deliberately not
+# #[ignore]d. Deferring them is a GATE-tier decision, reversed by one env
+# var, and the gate prints exactly what it skipped on every fast run.
+# Unit tests are never deferred: they are the broad correctness net.
+# Measured on the full 2026-08-22 gate run (complete log; total test time
+# 1300s). These six are 494s -- 38% of the suite -- and every one is a real
+# assertion-carrying test, NOT a probe, so they are deferred at the GATE tier
+# rather than #[ignore]d. Times are per-binary wall clock.
+CI_GATE_SLOW_TESTS=(
+    dft_wb97xv                # ferric-scf, 211.2s
+    mpi_dfjk_banding          # ferric-scf, 169.2s  (single-proc banding path)
+    dft_pbe                   # ferric-scf,  78.5s
+    pair_screen_criteria      # ferric-cc,   49.0s
+    attenuation_plus_dlpno    # ferric-cc,   39.4s
+    lmp2_amplitude            # ferric-mp2,  36.0s
+)
+# NOTE: terfc_vs_exact (35.5s) was formerly listed here; it is now #[ignore]d
+# at source (it has NO assertions -- an earlier audit miscounted the word
+# "assertion" in its doc comment as a real one), so the gate tier no longer
+# needs to defer it.
+CI_GATE_FAST="${CI_GATE_FAST:-0}"
+
+# Fast-tier target selection is DERIVED, not hand-listed: for each crate that
+# owns a deferred binary, run --lib plus every tests/*.rs target EXCEPT the
+# deferred ones. Hand-listing 47 of ferric-scf's 50 targets would silently drop
+# any newly-added test from the gate, so the list is computed at run time from
+# what is actually on disk.
+ci_gate_fast_targets() {
+    # NB: assign `crate` on its own line -- a single `local a="$1" b="$a"`
+    # statement expands $a BEFORE the assignment lands, yielding an empty
+    # `-p ` and a cargo SPEC error.
+    local crate="$1"
+    local f base spec="-p $crate --lib"
+    for f in "$REPO_ROOT/crates/$crate/tests/"*.rs; do
+        [[ -e "$f" ]] || continue
+        base="$(basename "$f" .rs)"
+        local skip=0 t
+        for t in "${CI_GATE_SLOW_TESTS[@]}"; do
+            [[ "$base" == "$t" ]] && { skip=1; break; }
+        done
+        (( skip )) || spec="$spec --test $base"
+    done
+    printf '%s' "$spec"
+}
+
+# Crates owning at least one deferred binary (derived from CI_GATE_SLOW_TESTS
+# by locating each name under crates/*/tests/).
+ci_gate_fast_crates() {
+    local t f
+    for t in "${CI_GATE_SLOW_TESTS[@]}"; do
+        for f in "$REPO_ROOT"/crates/*/tests/"$t".rs; do
+            [[ -e "$f" ]] && basename "$(dirname "$(dirname "$f")")"
+        done
+    done | sort -u
+}
 
 # ---- load awareness ---------------------------------------------------
 # Per the brief: a correctness failure (test/clippy) is load-INDEPENDENT --
@@ -131,8 +197,32 @@ if [[ "${CI_GATE_SKIP_TESTS:-0}" != "1" ]]; then
     # tore down the whole enclosing tmux scope (14.5G peak), taking the
     # session and this gate's own logs with it. Capping here turns that into
     # a clean single-step failure instead of a box-wide event.
-    run_step "cargo test --workspace" \
-        "OPENBLAS_NUM_THREADS=1 $REPO_ROOT/scripts/ferric-limited --max=8G --high=7G -- cargo test --workspace -j $JOBS"
+    TEST_LABEL="cargo test --workspace"
+    TEST_CMD="cargo test --workspace -j $JOBS"
+    if [[ "$CI_GATE_FAST" == "1" ]]; then
+        # NOTE: `--skip` filters TEST FUNCTION names, not binary names, so it
+        # does NOT work for deferring a whole integration binary (verified:
+        # `--skip lmp2_amplitude` left all 14 of its tests running). Deferring
+        # a binary means NOT BUILDING it as a target, which is what the
+        # per-crate --exclude + explicit-target form below does.
+        TEST_LABEL="cargo test --workspace (fast tier)"
+        echo "   FAST TIER: deferring ${#CI_GATE_SLOW_TESTS[@]} slow integration binaries:"
+        printf '     - %s\n' "${CI_GATE_SLOW_TESTS[@]}"
+        echo "   These are REAL correctness tests, not probes. Run them with:"
+        echo "     CI_GATE_FAST=0 scripts/ci-gate.sh"
+        # Everything except the crates that own a deferred binary...
+        mapfile -t FAST_CRATES < <(ci_gate_fast_crates)
+        TEST_CMD="cargo test --workspace -j $JOBS"
+        for c in "${FAST_CRATES[@]}"; do
+            TEST_CMD="$TEST_CMD --exclude $c"
+        done
+        # ...then those crates with --lib + every NON-deferred test target.
+        for c in "${FAST_CRATES[@]}"; do
+            TEST_CMD="$TEST_CMD && cargo test -j $JOBS $(ci_gate_fast_targets "$c")"
+        done
+    fi
+    run_step "$TEST_LABEL" \
+        "OPENBLAS_NUM_THREADS=1 $REPO_ROOT/scripts/ferric-limited --max=8G --high=7G -- bash -c '$TEST_CMD'"
 else
     echo "-- cargo test --workspace: SKIPPED (CI_GATE_SKIP_TESTS=1) --"
 fi
@@ -310,6 +400,12 @@ if [[ "$FAILED" == "1" ]]; then
     fi
     exit 1
 else
-    echo "   RESULT: PASS"
+    if [[ "$CI_GATE_FAST" == "1" && "${CI_GATE_SKIP_TESTS:-0}" != "1" ]]; then
+        echo "   RESULT: PASS (FAST TIER -- ${#CI_GATE_SLOW_TESTS[@]} slow integration"
+        echo "           binaries were NOT run: ${CI_GATE_SLOW_TESTS[*]})"
+        echo "           This is not full coverage. Full suite: CI_GATE_FAST=0 scripts/ci-gate.sh"
+    else
+        echo "   RESULT: PASS"
+    fi
     exit 0
 fi
