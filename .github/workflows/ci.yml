@@ -26,9 +26,14 @@ jobs:
             libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
             libxc-dev
 
-      - name: Cache libint2
+      # RESTORE-only. actions/cache saves in a post-step that runs ONLY when the
+      # job succeeds, so while any test was failing libint2 never got cached and
+      # every run paid a ~1h rebuild before reaching the tests -- a loop that
+      # could not break itself. The matching save step runs right after the
+      # build with if: always(), so the cache populates even on a red run.
+      - name: Restore libint2 cache
         id: cache-libint
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ${{ env.LIBINT2_PREFIX }}
           key: libint-${{ env.LIBINT_VERSION }}-ubuntu2204-v1
@@ -48,13 +53,27 @@ jobs:
           make -j$(nproc)
           make install
 
+      - name: Save libint2 cache
+        # if: always() -- libint2 is an EXTERNAL dependency; whether ferric's
+        # own tests pass has no bearing on whether this build artifact is
+        # reusable. Saving here is what lets a red run stop costing an hour.
+        if: always() && steps.cache-libint.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.LIBINT2_PREFIX }}
+          key: libint-${{ env.LIBINT_VERSION }}-ubuntu2204-v1
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
 
-      - name: Cache cargo registry and build
-        uses: actions/cache@v4
+      # Same restore/save split as libint2 above: a red test step must not cost
+      # the next run a full cold rebuild. Keyed on Cargo.lock so a dependency
+      # change still invalidates it.
+      - name: Restore cargo cache
+        id: cache-cargo
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cargo/registry
@@ -71,3 +90,13 @@ jobs:
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Save cargo cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
