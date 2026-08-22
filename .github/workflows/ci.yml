@@ -10,15 +10,17 @@ env:
   CARGO_TERM_COLOR: always
   OPENBLAS_NUM_THREADS: "1"
   LIBINT_VERSION: "2.7.2"
-  LIBINT2_PREFIX: /usr
+  LIBINT2_PREFIX: /home/runner/libint2
 
 jobs:
   build-and-test:
     runs-on: ubuntu-22.04
-    # With libint2 from the distro package the job is build+test only, which
-    # ran ~20 min of test time locally. 45 min leaves ample headroom while
-    # still failing fast instead of stalling to GitHub's 6h default.
-    timeout-minutes: 45
+    # A wedged run is worse than a failing one: run 32582084400 sat "in_progress"
+    # for 70 minutes with updatedAt frozen 3s after start, burning a runner and
+    # blocking any verdict, while an earlier run of the SAME build step reached
+    # the test phase inside 1h16m total. Without a cap that stalls to the 6h
+    # default. 75 min is ~3x the observed healthy path.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
 
@@ -28,48 +30,50 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake g++ gfortran \
             libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
-            libxc-dev libint2-dev
+            libxc-dev
 
-      # libint2 comes from the DISTRO PACKAGE, not a source build.
-      #
-      # Building the mpqc4 tarball on a 4-vCPU runner takes >75 minutes: it blew
-      # a 75-minute job cap on run 32585659903 having done nothing else, and the
-      # two runs before it spent 1h16m and 1h55m mostly here. Nothing else in
-      # this workflow is slow -- the whole rest of the job is minutes. Caching
-      # could not rescue it either, because the cache only populates after a
-      # green run, which the timeout prevented.
-      #
-      # jammy ships libint2-dev 2.7.1 (ferric requires 2.7+) with headers in
-      # /usr/include/libint2, libint2.a/.so in /usr/lib/x86_64-linux-gnu, and
-      # config.h -- so LIBINT2_PREFIX=/usr just works and the step is seconds.
-      #
-      # The capability check below is NOT decoration. G12 and 2nd derivatives
-      # are fixed when a libint2 export is GENERATED, so a distro build can
-      # silently lack them. ferric's gradients need INCLUDE_ERI >= 1; the
-      # G12-dependent tests already detect absence at run time and skip. Assert
-      # the one we actually depend on rather than discovering it in a test.
-      - name: Verify libint2 capabilities
+      # RESTORE-only. actions/cache saves in a post-step that runs ONLY when the
+      # job succeeds, so while any test was failing libint2 never got cached and
+      # every run paid a ~1h rebuild before reaching the tests -- a loop that
+      # could not break itself. The matching save step runs right after the
+      # build with if: always(), so the cache populates even on a red run.
+      - name: Restore libint2 cache
+        id: cache-libint
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.LIBINT2_PREFIX }}
+          key: libint-${{ env.LIBINT_VERSION }}-ubuntu2204-v1
+
+      - name: Build libint2
+        if: steps.cache-libint.outputs.cache-hit != 'true'
         run: |
-          set -euo pipefail
-          CFG=/usr/include/libint2/config.h
-          echo "--- libint2 config ---"
-          grep -E 'INCLUDE_ERI|INCLUDE_ONEBODY|INCLUDE_G12|LIBINT_MAX_AM' "$CFG" || true
-          eri=$(sed -n 's/^#define INCLUDE_ERI \([0-9]*\)$/\1/p' "$CFG")
-          if [ -z "$eri" ] || [ "$eri" -lt 1 ]; then
-            echo "::error::libint2 lacks 1st-derivative ERI (INCLUDE_ERI=${eri:-unset}); ferric gradients cannot work"
-            exit 1
-          fi
-          echo "INCLUDE_ERI=$eri (>=1 required) OK"
+          cd /tmp
+          wget -q https://github.com/evaleev/libint/releases/download/v${LIBINT_VERSION}/libint-${LIBINT_VERSION}-mpqc4.tgz
+          tar xzf libint-${LIBINT_VERSION}-mpqc4.tgz
+          cd libint-${LIBINT_VERSION}
+          mkdir build && cd build
+          cmake .. \
+            -DCMAKE_INSTALL_PREFIX=$LIBINT2_PREFIX \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCMAKE_BUILD_TYPE=Release
+          make -j$(nproc)
+          make install
 
-          # build.rs links with -L{LIBINT2_PREFIX}/lib, but the Debian package
-          # installs to the MULTIARCH dir /usr/lib/x86_64-linux-gnu. Without a
-          # bridge the linker silently fails to find libint2.a. Symlink rather
-          # than patch build.rs, so the local /home/$USER/.local layout (which
-          # does use {prefix}/lib) keeps working unchanged.
-          test -f /usr/lib/x86_64-linux-gnu/libint2.a
-          sudo ln -sf /usr/lib/x86_64-linux-gnu/libint2.a /usr/lib/libint2.a
-          echo "linked /usr/lib/libint2.a -> multiarch"
-          ls -la /usr/lib/libint2.a
+      - name: Save libint2 cache
+        # if: always() -- libint2 is an EXTERNAL dependency; whether ferric's
+        # own tests pass has no bearing on whether this build artifact is
+        # reusable. Saving here is what lets a red run stop costing an hour.
+        # NOT always(). The point is to save when ferric's own TESTS fail
+        # (libint2 is external -- a red test says nothing about whether that
+        # artifact is reusable), but NOT when the run was cancelled mid-build.
+        # always() saved a TRUNCATED tree on a cancelled run: the step
+        # reported success and wrote an unusable entry, which is worse than
+        # no cache because it poisons every later restore.
+        if: success() && steps.cache-libint.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.LIBINT2_PREFIX }}
+          key: libint-${{ env.LIBINT_VERSION }}-ubuntu2204-v1
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
