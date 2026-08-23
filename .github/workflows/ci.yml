@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    # 04:17 UTC daily -- runs the tests the push job defers, so deferring is a
+    # latency tradeoff and not a coverage loss. Off-the-hour on purpose.
+    - cron: '17 4 * * *'
+  workflow_dispatch: {}
 
 env:
   CARGO_TERM_COLOR: always
@@ -123,8 +128,38 @@ jobs:
       - name: Check (all targets)
         run: cargo check --workspace --all-targets
 
-      - name: Test
-        run: cargo test --workspace
+      # FAST TIER, mirroring scripts/ci-gate.sh's CI_GATE_SLOW_TESTS. The six
+      # slowest integration binaries are 583s of ~1300s of test time (45%), and
+      # on a 4-vCPU runner that was ~37 min of a ~38 min job. They are deferred,
+      # not deleted -- see "Slow tests (deferred)" below, which runs them on a
+      # schedule and on demand.
+      #
+      # NOT invoking scripts/ci-gate.sh directly: it wraps cargo in
+      # scripts/ferric-limited, which needs systemd --user scopes that do not
+      # exist on a GitHub runner. The deferral list is duplicated here instead;
+      # keep the two in sync.
+      #
+      # Deferring means NOT BUILDING the target. `cargo test -- --skip NAME`
+      # filters TEST FUNCTION names, not binary names, and does not work for
+      # this (verified: --skip lmp2_amplitude left all 14 of its tests running).
+      - name: Test (fast tier)
+        run: |
+          set -euo pipefail
+          SLOW="dft_wb97xv mpi_dfjk_banding dft_pbe pair_screen_criteria attenuation_plus_dlpno lmp2_amplitude"
+          # Everything except the three crates owning a deferred binary...
+          cargo test --workspace --exclude ferric-scf --exclude ferric-cc --exclude ferric-mp2
+          # ...then those three with --lib plus every NON-deferred test target,
+          # derived from what is on disk so a new test cannot silently drop out.
+          for crate in ferric-scf ferric-cc ferric-mp2; do
+            args="-p $crate --lib"
+            for f in crates/$crate/tests/*.rs; do
+              base="$(basename "$f" .rs)"
+              case " $SLOW " in *" $base "*) continue ;; esac
+              args="$args --test $base"
+            done
+            echo "== $crate: $(echo "$args" | grep -o -- '--test' | wc -l) test targets =="
+            cargo test $args
+          done
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
@@ -141,3 +176,69 @@ jobs:
             ~/.cargo/git
             target
           key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+
+  # The six binaries the push job defers. Nothing else -- this exists purely so
+  # "deferred" means "runs later", not "stops running". Triggered on the daily
+  # schedule and via workflow_dispatch; skipped on push/PR, where the fast tier
+  # is the point.
+  slow-tests:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 170
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake g++ gfortran \
+            libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
+            libxc-dev libint2-dev
+
+      - name: Restore libint2 cache
+        id: cache-libint
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.LIBINT2_PREFIX }}
+          key: libint-${{ env.LIBINT_VERSION }}-ubuntu2204-v1
+
+      - name: Build libint2
+        if: steps.cache-libint.outputs.cache-hit != 'true'
+        run: |
+          cd /tmp
+          wget -q https://github.com/evaleev/libint/releases/download/v${LIBINT_VERSION}/libint-${LIBINT_VERSION}-mpqc4.tgz
+          tar xzf libint-${LIBINT_VERSION}-mpqc4.tgz
+          cd libint-${LIBINT_VERSION}
+          mkdir build && cd build
+          cmake .. \
+            -DCMAKE_INSTALL_PREFIX=$LIBINT2_PREFIX \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCMAKE_BUILD_TYPE=Release
+          make -j$(nproc)
+          make install
+
+      - name: Save libint2 cache
+        if: success() && steps.cache-libint.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.LIBINT2_PREFIX }}
+          key: libint-${{ env.LIBINT_VERSION }}-ubuntu2204-v1
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore cargo cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: Test (the deferred six)
+        run: |
+          cargo test -p ferric-scf --test dft_wb97xv --test mpi_dfjk_banding --test dft_pbe
+          cargo test -p ferric-cc --test pair_screen_criteria --test attenuation_plus_dlpno
+          cargo test -p ferric-mp2 --test lmp2_amplitude
