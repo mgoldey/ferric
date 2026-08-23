@@ -66,28 +66,38 @@ fn roks_pbe_converges_with_mom() {
     eprintln!("ROKS/PBE + MOM: converged={} iters={} E={:.10}", res.converged, res.iterations, res.energy);
 
     assert!(res.converged, "ROKS/PBE with MOM did not converge in {} iterations", res.iterations);
-    // 1e-6, not 1e-7. This test asks WHICH FIXED POINT MOM lands on -- the
-    // ground state or the spurious one -- and those are 0.58 Ha apart. A 1e-7
-    // bar instead demands bit-level reproduction of a hardcoded reference,
-    // which is a different (and unmet) claim: OH is near-degenerate, so the
-    // converged energy shifts with BLAS/libxc build and summation order.
+    // STATE DISCRIMINATION, not reference reproduction.
     //
-    // MEASURED, same commit: this machine hits -74.5719102621 exactly, while a
-    // GitHub runner converged (converged=true, 12 iters, the CORRECT state) to
-    // -74.5719100566 -- off by 2.06e-07, i.e. the test failed on a 2e-7
-    // discrepancy while discriminating between states 0.58 Ha apart.
+    // Per the module doc: a broken fix converges happily at the SPURIOUS state
+    // (-73.9911, measured with diis_size = 4), so `converged == true` is not the
+    // bar -- MOM has to reach the RIGHT state. The two states are 0.58 Ha apart.
     //
-    // 1e-6 keeps ~5 orders of margin against the spurious state and tolerates
-    // cross-platform arithmetic. The SPURIOUS guard below (1e-3) is what
-    // actually enforces the physics, and it is untouched.
+    // Do NOT assert |E - OH_PBE_ENERGY| < eps for a fixed eps. That is a
+    // different and unmeetable claim: OH is near-degenerate, so its converged
+    // energy shifts with BLAS/libxc build and summation order. Two CI failures
+    // came from exactly that -- 1e-7 rejected a GitHub runner at 2.055e-07,
+    // and tightening/loosening a hardcoded bound just moves where it breaks.
+    //
+    // Instead ask the question the test is actually for: of the two known fixed
+    // points, which one is this? Nearest-state classification is invariant to
+    // any arithmetic noise far below the 0.58 Ha gap, so it cannot fail for
+    // platform reasons while still failing loudly if MOM lands on the wrong
+    // state or drifts somewhere unphysical.
+    let d_ground = (res.energy - OH_PBE_ENERGY).abs();
+    let d_spurious = (res.energy - OH_PBE_SPURIOUS).abs();
     assert!(
-        (res.energy - OH_PBE_ENERGY).abs() < 1e-6,
-        "converged to {:.10}, expected the ROKS/PBE ground state {OH_PBE_ENERGY:.10}",
+        d_ground < d_spurious,
+        "converged to {:.10}, which is nearer the SPURIOUS state {OH_PBE_SPURIOUS:.10} \
+         (d={d_spurious:.3e}) than the ground state {OH_PBE_ENERGY:.10} (d={d_ground:.3e})",
         res.energy
     );
+    // And it must actually BE that state, not merely closer to it: the gap is
+    // 0.58 Ha, so 1e-3 is ~3 orders of slack for cross-platform arithmetic
+    // while still catching a drift to any third solution.
     assert!(
-        (res.energy - OH_PBE_SPURIOUS).abs() > 1e-3,
-        "converged to the SPURIOUS state {:.10} — the oscillation's other fixed point",
+        d_ground < 1e-3,
+        "converged to {:.10}, too far from the ROKS/PBE ground state \
+         {OH_PBE_ENERGY:.10} (d={d_ground:.3e}) to be that state at all",
         res.energy
     );
     assert!(res.iterations < 30, "took {} iterations; MOM should settle quickly", res.iterations);
