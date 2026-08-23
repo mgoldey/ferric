@@ -33,6 +33,18 @@ pub fn enumerate_strings(n_orb: usize, k: usize) -> Vec<u64> {
     while x < limit {
         out.push(x);
         // Next bit permutation with the same popcount.
+        //
+        // clippy >= 1.98 suggests `x.isolate_lowest_one()` here. Do NOT take it:
+        // that method is still UNSTABLE on 1.95 (feature
+        // `isolate_most_least_significant_one`), and this crate advertises
+        // Rust 1.75+ in README.md/CLAUDE.md, so using it would break every
+        // toolchain older than its stabilization. `x & x.wrapping_neg()` is the
+        // portable idiom and compiles identically.
+        // `unknown_lints` first: 1.95 does not KNOW manual_isolate_lowest_one
+        // and errors on the allow itself under -D warnings, so the pair is
+        // required for the file to lint clean on both old and new toolchains.
+        #[allow(unknown_lints)]
+        #[allow(clippy::manual_isolate_lowest_one)]
         let c = x & x.wrapping_neg();
         let r = x + c;
         if c == 0 {

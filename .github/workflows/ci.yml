@@ -106,16 +106,16 @@ jobs:
           done
           exit $fail
 
-      # PINNED, not @stable. With @stable, CI silently tracks whatever Rust
-      # shipped most recently -- currently 1.98, while this box builds on 1.95
-      # and the README/CLAUDE.md both advertise "Rust 1.75+". Each release adds
-      # clippy lints, so `-D warnings` under a floating toolchain fails on code
-      # that is clean locally and cannot be reproduced here (verified: clippy
-      # --workspace --all-targets -D warnings exits 0 on 1.95 while CI's clippy
-      # step failed in 70s). Pinning makes the lint set reproducible; bump it
-      # deliberately and fix the new lints in that commit.
+      # Back to @stable, deliberately. Pinning to 1.95 (2c2a17ba) made clippy
+      # reproducible but LOST a passing test run: on stable/1.98 the whole
+      # fast-tier suite passed in 1265s, and on 1.95 -- with NO test code change,
+      # only the pin -- it failed at 25m. The single 1.98 clippy lint that
+      # motivated the pin is now fixed at the source (see
+      # crates/ferric-ci/src/strings.rs), and `clippy --workspace --all-targets
+      # -- -D warnings` exits 0 on BOTH 1.95 and 1.98 locally, so the pin no
+      # longer buys anything the fix does not.
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.95.0
+        uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
 
@@ -245,8 +245,7 @@ jobs:
           path: ${{ env.LIBINT2_PREFIX }}
           key: libint-${{ env.LIBINT_VERSION }}-ubuntu2204-v1
 
-      # Pinned for the same reason as the main job above.
-      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: dtolnay/rust-toolchain@stable
 
       - name: Restore cargo cache
         uses: actions/cache/restore@v4
