@@ -146,8 +146,16 @@ jobs:
         run: |
           set -euo pipefail
           SLOW="dft_wb97xv mpi_dfjk_banding dft_pbe pair_screen_criteria attenuation_plus_dlpno lmp2_amplitude"
+          # --no-fail-fast: report EVERY failing test, not just the first.
+          # cargo stops at the first failing binary by default, so each red run
+          # surfaced exactly one bug; five cycles at 10-40 min each fixed four
+          # tests one at a time. Collecting them in one run is worth the extra
+          # minutes. `set +e` + an explicit tally keeps the step red if ANY
+          # command failed, which `set -e` would otherwise short-circuit.
+          set +e
+          rc=0
           # Everything except the three crates owning a deferred binary...
-          cargo test --workspace --exclude ferric-scf --exclude ferric-cc --exclude ferric-mp2
+          cargo test --no-fail-fast --workspace --exclude ferric-scf --exclude ferric-cc --exclude ferric-mp2 || rc=1
           # ...then those three with --lib plus every NON-deferred test target,
           # derived from what is on disk so a new test cannot silently drop out.
           for crate in ferric-scf ferric-cc ferric-mp2; do
@@ -158,8 +166,12 @@ jobs:
               args="$args --test $base"
             done
             echo "== $crate: $(echo "$args" | grep -o -- '--test' | wc -l) test targets =="
-            cargo test $args
+            cargo test --no-fail-fast $args || rc=1
           done
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::one or more test commands failed -- see the FAILED lines above"
+          fi
+          exit $rc
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
