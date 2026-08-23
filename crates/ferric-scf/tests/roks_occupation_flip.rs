@@ -66,8 +66,22 @@ fn roks_pbe_converges_with_mom() {
     eprintln!("ROKS/PBE + MOM: converged={} iters={} E={:.10}", res.converged, res.iterations, res.energy);
 
     assert!(res.converged, "ROKS/PBE with MOM did not converge in {} iterations", res.iterations);
+    // 1e-6, not 1e-7. This test asks WHICH FIXED POINT MOM lands on -- the
+    // ground state or the spurious one -- and those are 0.58 Ha apart. A 1e-7
+    // bar instead demands bit-level reproduction of a hardcoded reference,
+    // which is a different (and unmet) claim: OH is near-degenerate, so the
+    // converged energy shifts with BLAS/libxc build and summation order.
+    //
+    // MEASURED, same commit: this machine hits -74.5719102621 exactly, while a
+    // GitHub runner converged (converged=true, 12 iters, the CORRECT state) to
+    // -74.5719100566 -- off by 2.06e-07, i.e. the test failed on a 2e-7
+    // discrepancy while discriminating between states 0.58 Ha apart.
+    //
+    // 1e-6 keeps ~5 orders of margin against the spurious state and tolerates
+    // cross-platform arithmetic. The SPURIOUS guard below (1e-3) is what
+    // actually enforces the physics, and it is untouched.
     assert!(
-        (res.energy - OH_PBE_ENERGY).abs() < 1e-7,
+        (res.energy - OH_PBE_ENERGY).abs() < 1e-6,
         "converged to {:.10}, expected the ROKS/PBE ground state {OH_PBE_ENERGY:.10}",
         res.energy
     );
