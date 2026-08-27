@@ -11,6 +11,7 @@ workspace = true
 ferric-core = { path = "../ferric-core" }
 ferric-dft = { path = "../ferric-dft" }
 ferric-integrals = { path = "../ferric-integrals" }
+ferric-mm = { path = "../ferric-mm" }
 ferric-pcm = { path = "../ferric-pcm" }
 ndarray = { workspace = true }
 ndarray-linalg = { workspace = true }

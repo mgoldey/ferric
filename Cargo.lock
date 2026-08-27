@@ -631,6 +631,7 @@ dependencies = [
  "ferric-core",
  "ferric-dft",
  "ferric-integrals",
+ "ferric-mm",
  "ferric-pcm",
  "mpi",
  "ndarray",
