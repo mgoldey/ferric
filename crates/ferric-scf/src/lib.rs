@@ -158,7 +158,7 @@ pub use frequencies::{
 pub mod cfmm;
 /// QM/MM system setup: atom selection, link atoms, embedding charges.
 pub mod qmmm;
-pub use qmmm::{QmSelection, QmmmAtom, QmmmSystem};
+pub use qmmm::{BoundaryChargeScheme, QmSelection, QmmmAtom, QmmmSystem};
 /// Jacob's ladder solver: run a sequence of methods (HF→DFT→MP2→…) reusing orbitals.
 pub mod ladder;
 pub use ladder::{solve_rhf_ladder, default_ladder, ksdft_ladder, Rung, LadderResult, RungOutcome};

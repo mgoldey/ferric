@@ -43,20 +43,24 @@
 //!   produce. Cut only nonpolar single bonds (the classic guidance: C-C, never
 //!   a C=O, an amide C-N, or anything conjugated/charged), and keep the cut at
 //!   least two or three bonds away from anything chemically interesting.
-//! - **Charge redistribution / deletion schemes are NOT implemented.** The
-//!   standard fixes for the "link atom sits on top of an MM point charge"
-//!   problem — deleting the host MM charge, redistributing it over the
-//!   neighbouring MM sites (RCD/RC), smearing it onto a Gaussian, or using a
-//!   double link atom — are all absent. [`QmmmSystem`] does automatically
-//!   **exclude MM charges on atoms that are themselves in the QM region** (they
-//!   would be double-counted), and [`LinkAtomSpec`] records which MM atom was
-//!   the bond partner so a caller can implement redistribution itself, but this
-//!   module applies none. If your link atom lands within a Bohr or so of a
-//!   nonzero MM charge, the result is unphysical and this module will not warn
-//!   you beyond [`QmmmSystem::min_link_to_charge_distance`].
+//! - **Boundary charge schemes** for the "link atom sits on top of an MM point
+//!   charge" problem are opt-in via [`QmmmSystem::with_boundary_charges`]:
+//!   [`BoundaryChargeScheme::DeleteHost`] (Z1), and the Lin–Truhlar
+//!   [`BoundaryChargeScheme::RedistributedCharge`] (RC) /
+//!   [`BoundaryChargeScheme::RedistributedChargeDipole`] (RCD) schemes that
+//!   move the host charge onto the midpoints of its bonds to the next MM shell
+//!   (RC conserves charge; RCD conserves charge and dipole). The default,
+//!   [`BoundaryChargeScheme::Keep`], is the untreated boundary. Gaussian
+//!   smearing and double link atoms are not implemented. [`QmmmSystem`] always
+//!   **excludes MM charges on atoms that are themselves in the QM region**
+//!   (they would be double-counted). If your link atom lands within a Bohr or
+//!   so of a nonzero MM charge under `Keep`, the result is unphysical and this
+//!   module will not warn you beyond [`QmmmSystem::min_link_to_charge_distance`].
 //! - **No boundary-atom force projection.** The chain-rule force that a link
 //!   atom's gradient should project back onto its two real host atoms is not
-//!   applied. [`mm_forces`] returns forces on the *MM point charges* only.
+//!   applied. [`mm_forces`] returns forces on the *MM point charges* only —
+//!   including the off-atom midpoint charges of RC/RCD, which are listed after
+//!   the atom-centred ones in [`QmmmSystem::mm_charge_positions`] order.
 //! - Everything is in **Bohr / atomic units**, consistent with
 //!   [`ExternalPotential`]. Note [`Molecule::parse_xyz`] converts Ångström to
 //!   Bohr on load, so coordinates taken off a [`Molecule`] are already Bohr and
@@ -149,6 +153,43 @@ pub struct LinkAtomSpec {
 /// (see the module docs), but if you do, set `scale` explicitly.
 pub const DEFAULT_LINK_SCALE: f64 = 1.09 / 1.53;
 
+/// What to do with the MM charge on the host atom (M1) of a cut bond.
+///
+/// M1 is the MM atom whose bond to the QM frontier atom was severed; M2 are
+/// the MM atoms bonded to M1 (the next shell out). Under the scaled-position
+/// link atom, the cap sits ~0.5 Å from M1, so M1's point charge over-polarizes
+/// the QM density unless it is removed or moved. Nomenclature follows
+/// Lin & Truhlar, J. Phys. Chem. A 109, 3991 (2005).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoundaryChargeScheme {
+    /// Leave every MM charge where it is (the untreated boundary; default).
+    Keep,
+    /// Z1: zero the M1 charge. Simple, but the MM region's total charge
+    /// changes by −q(M1).
+    DeleteHost,
+    /// RC: zero the M1 charge and place q(M1)/n on the midpoint of each of
+    /// the n M1–M2 bonds. Conserves total charge.
+    RedistributedCharge,
+    /// RCD: as RC but each midpoint carries 2·q(M1)/n and each M2 charge is
+    /// reduced by q(M1)/n. Conserves total charge AND the dipole of the
+    /// {M1, M2…} group, so the electrostatic potential seen by the QM region
+    /// is unchanged to dipole order.
+    RedistributedChargeDipole,
+}
+
+/// An off-atom point charge introduced by a redistribution scheme, sitting on
+/// the midpoint of an M1–M2 bond. Both host atom indices (into the full atom
+/// list) are recorded so a force on this charge can be projected back onto
+/// the two real atoms (half each, since the midpoint is their mean).
+#[derive(Debug, Clone, PartialEq)]
+pub struct BoundaryCharge {
+    pub q: f64,
+    /// Position in Bohr.
+    pub position: [f64; 3],
+    /// (M1, M2) indices into the full atom list.
+    pub hosts: (usize, usize),
+}
+
 /// How the QM region is selected out of the full structure.
 #[derive(Debug, Clone)]
 pub enum QmSelection {
@@ -204,6 +245,16 @@ pub struct QmmmSystem {
     pub qm_charge: i32,
     /// Spin multiplicity (2S+1) of the QM region.
     pub qm_multiplicity: usize,
+    /// The MM charge each atom of the full structure actually contributes,
+    /// after [`QmmmSystem::with_boundary_charges`]. Equals `atoms[i].charge`
+    /// until a scheme other than [`BoundaryChargeScheme::Keep`] is applied
+    /// (and for every atom a scheme does not touch). Only entries at
+    /// `mm_indices` are ever read.
+    pub effective_charges: Vec<f64>,
+    /// Off-atom charges introduced by RC/RCD redistribution. Empty otherwise.
+    pub boundary_charges: Vec<BoundaryCharge>,
+    /// The scheme currently applied.
+    pub boundary_scheme: BoundaryChargeScheme,
 }
 
 impl QmmmSystem {
@@ -299,6 +350,9 @@ impl QmmmSystem {
             qm_indices,
             mm_indices,
             link_atoms: Vec::new(),
+            effective_charges: atoms.iter().map(|a| a.charge).collect(),
+            boundary_charges: Vec::new(),
+            boundary_scheme: BoundaryChargeScheme::Keep,
             atoms: atoms.to_vec(),
             qm_charge,
             qm_multiplicity,
@@ -388,6 +442,149 @@ impl QmmmSystem {
         Ok(self)
     }
 
+    /// Apply a [`BoundaryChargeScheme`] to the MM host atoms of every cut bond.
+    ///
+    /// `bonds` is the covalent bond list of the **full** structure (the same
+    /// list [`QmmmSystem::with_link_atoms`] takes); it is needed here both to
+    /// find the cut bonds (hence the M1 hosts) and, for RC/RCD, the M2 shell
+    /// bonded to each M1. Link atoms are not required — the scheme acts on the
+    /// cut bonds themselves — but the two are meant to be used together.
+    ///
+    /// Calling this again replaces the previous scheme rather than stacking
+    /// on it. With no cut bond every scheme is an exact no-op.
+    ///
+    /// Errors for RC/RCD if some M1 has no MM neighbour to receive its charge
+    /// (silently falling back to deletion would change the total charge
+    /// behind the caller's back), or if an M2 is itself the host of another
+    /// cut bond (the two redistributions would interfere; cut further from
+    /// each other).
+    pub fn with_boundary_charges(
+        mut self,
+        bonds: &[(usize, usize)],
+        scheme: BoundaryChargeScheme,
+    ) -> Result<Self, FerricError> {
+        // Start from the raw charges so repeated calls are idempotent.
+        self.effective_charges = self.atoms.iter().map(|a| a.charge).collect();
+        self.boundary_charges.clear();
+        self.boundary_scheme = scheme;
+
+        let natoms = self.atoms.len();
+        let mut is_qm = vec![false; natoms];
+        for &i in &self.qm_indices {
+            is_qm[i] = true;
+        }
+        for &(a, b) in bonds {
+            if a >= natoms || b >= natoms {
+                return Err(FerricError::General(format!(
+                    "with_boundary_charges: bond ({a},{b}) out of range (structure has \
+                     {natoms} atoms)"
+                )));
+            }
+        }
+
+        // M1 hosts: the MM endpoint of every cut bond, deduplicated.
+        let mut is_m1 = vec![false; natoms];
+        let mut hosts: Vec<usize> = Vec::new();
+        for &(a, b) in bonds {
+            let m1 = match (is_qm[a], is_qm[b]) {
+                (true, false) => b,
+                (false, true) => a,
+                _ => continue,
+            };
+            if !is_m1[m1] {
+                is_m1[m1] = true;
+                hosts.push(m1);
+            }
+        }
+        if hosts.is_empty() || scheme == BoundaryChargeScheme::Keep {
+            return Ok(self);
+        }
+
+        for &m1 in &hosts {
+            let q_m1 = self.atoms[m1].charge;
+            match scheme {
+                BoundaryChargeScheme::Keep => unreachable!(),
+                BoundaryChargeScheme::DeleteHost => {
+                    self.effective_charges[m1] = 0.0;
+                }
+                BoundaryChargeScheme::RedistributedCharge
+                | BoundaryChargeScheme::RedistributedChargeDipole => {
+                    // M2 shell: MM neighbours of M1 that are not hosts themselves.
+                    let mut m2s: Vec<usize> = Vec::new();
+                    for &(a, b) in bonds {
+                        let other = if a == m1 {
+                            b
+                        } else if b == m1 {
+                            a
+                        } else {
+                            continue;
+                        };
+                        if is_qm[other] {
+                            continue;
+                        }
+                        if is_m1[other] {
+                            return Err(FerricError::General(format!(
+                                "with_boundary_charges: MM atoms {m1} and {other} are both \
+                                 hosts of cut bonds and bonded to each other — the \
+                                 redistributions would interfere; move one cut further out"
+                            )));
+                        }
+                        if !m2s.contains(&other) {
+                            m2s.push(other);
+                        }
+                    }
+                    if m2s.is_empty() {
+                        return Err(FerricError::General(format!(
+                            "with_boundary_charges: host MM atom {m1} has no MM neighbour in \
+                             `bonds` to receive its charge ({scheme:?}); pass the full bond \
+                             list, or use DeleteHost if losing q = {q_m1} is acceptable"
+                        )));
+                    }
+                    let q0 = q_m1 / m2s.len() as f64;
+                    self.effective_charges[m1] = 0.0;
+                    let p1 = &self.atoms[m1];
+                    for &m2 in &m2s {
+                        let p2 = &self.atoms[m2];
+                        let position = [
+                            0.5 * (p1.x + p2.x),
+                            0.5 * (p1.y + p2.y),
+                            0.5 * (p1.z_pos + p2.z_pos),
+                        ];
+                        let q = if scheme == BoundaryChargeScheme::RedistributedChargeDipole {
+                            // The M2 charge moves toward M1 by q0 to keep the
+                            // M1–M2 bond dipole: 2q0 at the midpoint, −q0 on M2.
+                            self.effective_charges[m2] -= q0;
+                            2.0 * q0
+                        } else {
+                            q0
+                        };
+                        self.boundary_charges.push(BoundaryCharge { q, position, hosts: (m1, m2) });
+                    }
+                }
+            }
+        }
+        Ok(self)
+    }
+
+    /// Every charge that enters the embedding potential, as `(q, position)`:
+    /// the MM atoms with a nonzero effective charge in ascending index order,
+    /// then the off-atom boundary charges. This single ordering is what
+    /// [`QmmmSystem::to_external_potential`], [`QmmmSystem::mm_charge_positions`]
+    /// and [`mm_forces`] all follow.
+    fn active_charges(&self) -> Vec<(f64, [f64; 3])> {
+        let mut out: Vec<(f64, [f64; 3])> = self
+            .mm_indices
+            .iter()
+            .filter(|&&i| self.effective_charges[i] != 0.0)
+            .map(|&i| {
+                let a = &self.atoms[i];
+                (self.effective_charges[i], [a.x, a.y, a.z_pos])
+            })
+            .collect();
+        out.extend(self.boundary_charges.iter().filter(|b| b.q != 0.0).map(|b| (b.q, b.position)));
+        out
+    }
+
     /// The QM region as a [`Molecule`] ready for `PreparedBasis::new` and any
     /// `solve_*` call. Coordinates are Bohr (already, no conversion).
     ///
@@ -440,13 +637,9 @@ impl QmmmSystem {
     /// the empty-MM no-op exact rather than merely small.
     pub fn to_external_potential(&self) -> Option<ExternalPotential> {
         let point_charges: Vec<PointCharge> = self
-            .mm_indices
-            .iter()
-            .filter(|&&i| self.atoms[i].charge != 0.0)
-            .map(|&i| {
-                let a = &self.atoms[i];
-                PointCharge { q: a.charge, x: a.x, y: a.y, z: a.z_pos }
-            })
+            .active_charges()
+            .into_iter()
+            .map(|(q, [x, y, z])| PointCharge { q, x, y, z })
             .collect();
 
         if point_charges.is_empty() {
@@ -465,17 +658,11 @@ impl QmmmSystem {
     /// Positions (Bohr) of the MM point charges that actually enter the
     /// embedding potential, in the same order as
     /// [`QmmmSystem::to_external_potential`]'s `point_charges` and as the rows
-    /// [`mm_forces`] returns. Zero-charge MM atoms are excluded, matching
-    /// `to_external_potential`.
+    /// [`mm_forces`] returns: atom-centred charges first (zero-charge MM atoms
+    /// excluded, matching `to_external_potential`), then any off-atom
+    /// boundary charges from RC/RCD.
     pub fn mm_charge_positions(&self) -> Vec<[f64; 3]> {
-        self.mm_indices
-            .iter()
-            .filter(|&&i| self.atoms[i].charge != 0.0)
-            .map(|&i| {
-                let a = &self.atoms[i];
-                [a.x, a.y, a.z_pos]
-            })
-            .collect()
+        self.active_charges().into_iter().map(|(_, p)| p).collect()
     }
 
     /// Shortest distance (Bohr) from any link hydrogen to any nonzero MM point
@@ -722,11 +909,9 @@ pub fn mm_forces(
         return Ok(Vec::new());
     }
     let charges: Vec<f64> = system
-        .mm_indices
-        .iter()
-        .filter(|&&i| system.atoms[i].charge != 0.0)
-        .map(|&i| system.atoms[i].charge)
-        .collect();
+        .to_external_potential()
+        .map(|ep| ep.point_charges.iter().map(|pc| pc.q).collect())
+        .unwrap_or_default();
 
     let field = electric_field_at_points(mol, prep, density, &positions)?;
     Ok(field
