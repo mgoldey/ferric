@@ -30,7 +30,7 @@ from pathlib import Path
 
 import numpy as np
 import pyscf
-from pyscf import gto, qmmm, scf
+from pyscf import gto, mp, qmmm, scf
 
 REFDIR = Path(__file__).resolve().parents[1] / "testdata" / "reference"
 ANG2BOHR = 1.0 / 0.52917721092
@@ -67,7 +67,7 @@ CASES = [
 ]
 
 
-def run_case(tag, atoms, charge, spin, mm):
+def run_case(tag, atoms, charge, spin, mm, with_mp2=False):
     mol = gto.M(
         atom=[(s, xyz) for s, xyz in atoms],
         basis="sto-3g",
@@ -107,7 +107,7 @@ def run_case(tag, atoms, charge, spin, mm):
     e0 = mf0.kernel()
     assert mf0.converged
 
-    return {
+    ref = {
         "molecule": tag.split("_")[0],
         "basis": "sto-3g",
         "method": "uhf" if spin else "rhf",
@@ -127,14 +127,38 @@ def run_case(tag, atoms, charge, spin, mm):
         "pyscf_version": pyscf.__version__,
     }
 
+    if with_mp2:
+        # Canonical (non-RI) MP2 on the SAME QMMM-wrapped SCF object — the
+        # gradient class propagates the QM/MM state automatically (it wraps
+        # the QMMM mean-field the same way the RHF/UHF gradient does), so no
+        # separate qmmm.mm_charge_grad() call is needed for the QM gradient.
+        # qmmm.mm_charge_grad() itself REJECTS an MP2 gradient object
+        # (AssertionError on the class check), and pyscf.grad.mp2.Gradients
+        # has no grad_hcore_mm/grad_nuc_mm — so no MM-side gradient is
+        # recorded here (energy + QM gradient only, per the F1-2 plan).
+        mpobj = mp.MP2(mf)
+        mpobj.conv_tol = 1e-10
+        mpobj.run()
+        mp2_g = mpobj.nuc_grad_method()
+        mp2_qm_grad = mp2_g.kernel()
+        ref["mp2_energy"] = float(mpobj.e_tot)
+        ref["mp2_corr"] = float(mpobj.e_corr)
+        ref["mp2_qm_gradient"] = mp2_qm_grad.tolist()
+
+    return ref
+
 
 def main():
+    mp2_tags = {"water_sto-3g_qmmm_plus_lonepair"}
     for tag, atoms, charge, spin, mm in CASES:
-        ref = run_case(tag, atoms, charge, spin, mm)
+        ref = run_case(tag, atoms, charge, spin, mm, with_mp2=tag in mp2_tags)
         out = REFDIR / f"{tag}.json"
         out.write_text(json.dumps(ref, indent=2, sort_keys=True) + "\n")
-        print(f"{out.name}: E = {ref['energy']:.10f}  (gas {ref['energy_gas_phase']:.10f})  "
-              f"mu = {np.round(ref['dipole'], 6)}  F_mm = {np.round(-np.array(ref['mm_gradient']), 6).tolist()}")
+        msg = (f"{out.name}: E = {ref['energy']:.10f}  (gas {ref['energy_gas_phase']:.10f})  "
+               f"mu = {np.round(ref['dipole'], 6)}  F_mm = {np.round(-np.array(ref['mm_gradient']), 6).tolist()}")
+        if "mp2_energy" in ref:
+            msg += f"  MP2 total = {ref['mp2_energy']:.10f} (corr {ref['mp2_corr']:.10f})"
+        print(msg)
 
 
 if __name__ == "__main__":
