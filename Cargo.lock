@@ -531,6 +531,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferric-mm"
+version = "0.1.0"
+dependencies = [
+ "ferric-core",
+ "ndarray",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "ferric-mp2"
 version = "0.1.0"
 dependencies = [
