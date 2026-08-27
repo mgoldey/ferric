@@ -305,3 +305,83 @@ def test_run_qmmm_full_gradient_covers_the_whole_structure_across_a_cut():
     assert np.all(np.isfinite(full))
     # The link row was projected: the frontier C0 and host C1 rows both carry it.
     assert abs(full[1, 2]) > 0
+
+
+# ── MmTopology / run_qmmm(mm_topology=) ──
+
+
+def test_mm_topology_from_amber_units_basic_energy():
+    # Two atoms, one bond, no angles/torsions: hand-computed harmonic bond
+    # energy, same AMBER (no leading 1/2) convention as the Rust crate.
+    top = ferric.MmTopology.from_amber_units(
+        charges=[0.0, 0.0],
+        sigmas_angstrom=[0.0, 0.0],
+        epsilons_kcal=[0.0, 0.0],
+        bonds=[(0, 1, 300.0, 1.5)],
+        angles=[],
+        torsions=[],
+    )
+    assert top.n_atoms() == 2
+
+
+def test_mm_topology_rejects_mismatched_lengths():
+    with pytest.raises(ValueError):
+        ferric.MmTopology.from_amber_units(
+            charges=[0.0, 0.0, 0.0],
+            sigmas_angstrom=[0.0, 0.0],
+            epsilons_kcal=[0.0, 0.0],
+            bonds=[],
+            angles=[],
+            torsions=[],
+        )
+
+
+def test_run_qmmm_with_full_ethane_topology_reports_mm_energy_and_full_gradient():
+    symbols, coords, charges, bonds = _ethane()
+    lj_sigma = [3.4, 3.4] + [2.6] * 6
+    lj_eps = [0.109, 0.109] + [0.0157] * 6
+    theta0 = math.degrees(math.radians(109.5))
+    angles = []
+    for h in (2, 4, 6):
+        angles.append((h, 0, 1, 50.0, theta0))
+    for h in (3, 5, 7):
+        angles.append((h, 1, 0, 50.0, theta0))
+    for a, b in [(2, 4), (2, 6), (4, 6)]:
+        angles.append((a, 0, b, 35.0, theta0))
+    for a, b in [(3, 5), (3, 7), (5, 7)]:
+        angles.append((a, 1, b, 35.0, theta0))
+    torsions = []
+    for hi in (2, 4, 6):
+        for hj in (3, 5, 7):
+            torsions.append((hi, 0, 1, hj, 3, 0.16, 0.0))
+
+    top = ferric.MmTopology.from_amber_units(
+        charges=charges,
+        sigmas_angstrom=lj_sigma,
+        epsilons_kcal=lj_eps,
+        bonds=[(0, 1, 310.0, 1.53)] + [(0, h, 340.0, 1.09) for h in (2, 4, 6)] + [(1, h, 340.0, 1.09) for h in (3, 5, 7)],
+        angles=angles,
+        torsions=torsions,
+    )
+
+    sys = ferric.QmmmSystem(symbols, coords, charges, qm_indices=[0, 2, 4, 6]).with_link_atoms(bonds)
+    r = ferric.run_qmmm(sys, "sto-3g", mm_topology=top)
+    assert r.converged
+    e = r.mm_energy
+    for key in ("bond", "angle", "torsion", "lj", "coulomb", "total"):
+        assert key in e
+        assert np.isfinite(e[key])
+    full = r.full_gradient()
+    assert full.shape == (8, 3)
+    assert np.all(np.isfinite(full))
+
+
+def test_run_qmmm_without_mm_topology_has_zero_mm_energy():
+    # Exactness anchor on the Python side: omitting mm_topology must be
+    # indistinguishable from passing an all-zero one, and the reported
+    # mm_energy must be all zero (not merely absent).
+    symbols, coords, charges, bonds = _ethane()
+    sys = ferric.QmmmSystem(symbols, coords, charges, qm_indices=[0, 2, 4, 6]).with_link_atoms(bonds)
+    r = ferric.run_qmmm(sys, "sto-3g")
+    e = r.mm_energy
+    assert e == {"bond": 0.0, "angle": 0.0, "torsion": 0.0, "lj": 0.0, "coulomb": 0.0, "total": 0.0}

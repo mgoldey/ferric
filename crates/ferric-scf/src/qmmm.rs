@@ -82,6 +82,7 @@ use ferric_core::external_potential::{ExternalPotential, PointCharge};
 use ferric_core::mol::{Atom, Molecule};
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
+use ferric_mm::{MmEnergy, MmTopology};
 use ndarray::Array2;
 
 /// One atom of the full (QM + MM) structure, with the MM partial charge it
@@ -1110,6 +1111,205 @@ pub fn full_gradient(
         }
     }
 
+    Ok(full)
+}
+
+/// The MM-force-field contribution to a QM/MM total energy and its gradient
+/// over the **full** structure, under the additive-embedding convention
+/// (spec §6):
+///
+/// - **MM-MM bonded terms** (bond/angle/torsion) are kept if the term
+///   involves **at least one** MM atom, and dropped if every atom in the
+///   term is QM (the QM density/wavefunction already describes that
+///   interaction; keeping it too would double-count). This is the standard
+///   "additive" QM/MM scheme: a bond, angle, or torsion straddling the
+///   QM/MM boundary is treated classically in full.
+/// - **MM-MM nonbonded** (LJ + Coulomb) is summed only between pairs of MM
+///   atoms, using [`MmTopology`]'s own derived exclusions/1-4 scaling.
+/// - **QM-MM Lennard-Jones**: every QM real atom (link atoms and boundary
+///   midpoint charges carry no LJ) paired with every MM atom, using each
+///   atom's own `top.lj` entry (Lorentz-Berthelot mixed), no cutoff, no
+///   exclusions (a QM/MM boundary link atom sitting between them is not an
+///   MM-topology bond, so there is nothing to exclude by construction —
+///   the two regions were never bonded IN THE TOPOLOGY, only in reality,
+///   which is exactly why this is an approximation like any additive
+///   scheme).
+/// - **No QM-MM Coulomb term**: the electrostatic embedding already lets
+///   the QM density see every MM point charge (`to_external_potential`);
+///   adding a classical Coulomb term between QM atoms' `top.charges` entry
+///   and MM charges would double count that interaction. `top.charges` for
+///   QM atoms is therefore only consulted for possible QM-QM terms, which
+///   this function never computes (those are also already inside the QM
+///   Hamiltonian).
+/// - Link atoms and any RC/RCD boundary midpoint charges carry no MM terms
+///   at all (they are not entries in `top`, which is indexed by full
+///   structure atoms only).
+///
+/// `top.n_atoms()` must equal the number of atoms in the full structure
+/// (`system.atoms.len()`), and `coords_full` must be `(n_atoms, 3)` in
+/// Bohr and in the SAME ordering as `system.atoms`.
+///
+/// **Exactness anchor**: an empty topology (see [`MmTopology::new`] with
+/// empty charges/lj/bonds/angles/torsions and `n_atoms() == 0`... actually
+/// use one with `n_atoms() == system.atoms.len()` but zero LJ epsilon/zero
+/// charges/no bonded terms) gives exactly zero energy and gradient — see
+/// `qmmm_mm_terms_with_empty_topology_is_zero` in `tests/qmmm_mm.rs`.
+pub fn qmmm_mm_terms(
+    system: &QmmmSystem,
+    top: &MmTopology,
+    coords_full: &Array2<f64>,
+) -> Result<(MmEnergy, Array2<f64>), FerricError> {
+    let natoms = system.atoms.len();
+    if top.n_atoms() != natoms {
+        return Err(FerricError::General(format!(
+            "qmmm_mm_terms: topology has {} atoms but the QM/MM system has {natoms}",
+            top.n_atoms()
+        )));
+    }
+    if coords_full.dim() != (natoms, 3) {
+        return Err(FerricError::General(format!(
+            "qmmm_mm_terms: coords_full shape {:?} != ({natoms}, 3)",
+            coords_full.dim()
+        )));
+    }
+
+    let mut is_qm = vec![false; natoms];
+    for &i in &system.qm_indices {
+        is_qm[i] = true;
+    }
+
+    // 1. Bonded terms: keep any term with >=1 MM atom, drop all-QM terms.
+    //    Build a filtered sub-topology (bonds/angles/torsions only; charges
+    //    and lj pass through unchanged since the MM-MM nonbonded and
+    //    QM-MM LJ passes below need them for every atom).
+    let bonds: Vec<_> = top.bonds.iter().filter(|b| !is_qm[b.i] || !is_qm[b.j]).cloned().collect();
+    let angles: Vec<_> =
+        top.angles.iter().filter(|a| !is_qm[a.i] || !is_qm[a.j] || !is_qm[a.k]).cloned().collect();
+    let torsions: Vec<_> = top
+        .torsions
+        .iter()
+        .filter(|t| !is_qm[t.i] || !is_qm[t.j] || !is_qm[t.k] || !is_qm[t.l])
+        .cloned()
+        .collect();
+
+    // Bonded energy/gradient: a topology with the surviving (>=1 MM atom)
+    // bonds/angles/torsions but ZERO charges/LJ, so ferric_mm::gradient's
+    // own nonbonded pass (which would otherwise run over every pair not
+    // excluded by THIS filtered bond graph — including QM-QM pairs no
+    // longer excluded once their QM-QM bonds were dropped) contributes
+    // nothing. Nonbonded terms are computed separately below, scoped
+    // correctly (MM-MM only, and QM-MM LJ only).
+    let zero_lj: Vec<ferric_mm::LjParams> =
+        vec![ferric_mm::LjParams { sigma: 0.0, epsilon: 0.0 }; natoms];
+    let bonded_only_top = MmTopology::new(vec![0.0; natoms], zero_lj, bonds, angles, torsions)
+        .map_err(|e| FerricError::General(format!("qmmm_mm_terms: {e}")))?;
+    let (e_bonded, mut g) = ferric_mm::gradient(&bonded_only_top, coords_full)
+        .map_err(|e| FerricError::General(format!("qmmm_mm_terms: {e}")))?;
+
+    // 2. MM-MM nonbonded: charges/lj zeroed on QM atoms so only MM-MM pairs
+    //    contribute, using the ORIGINAL (unfiltered) bond graph for
+    //    exclusions/1-4 (an MM-MM pair that is 1-2/1-3/1-4 through a path
+    //    that crosses the QM region is still a real bonded relationship in
+    //    the topology and must still be excluded/scaled the same way).
+    let mm_only_charges: Vec<f64> =
+        (0..natoms).map(|i| if is_qm[i] { 0.0 } else { top.charges[i] }).collect();
+    let mm_only_lj: Vec<ferric_mm::LjParams> = (0..natoms)
+        .map(|i| if is_qm[i] { ferric_mm::LjParams { sigma: 0.0, epsilon: 0.0 } } else { top.lj[i] })
+        .collect();
+    // The bond list here feeds ONLY MmTopology::new's exclusion/1-4 BFS
+    // (over the ORIGINAL, unfiltered graph — see the doc comment above); it
+    // must NOT also contribute a real harmonic bond energy/gradient a
+    // second time (that would double the bond term the first pass already
+    // counted, and at a geometry sitting almost exactly at r0 it would
+    // instead surface as a machine-epsilon-scale bond GRADIENT residual
+    // from `r - r0` not being exactly representable — found and fixed
+    // during TDD via an all-QM anchor test that expected an exact 0.0
+    // gradient and got ~3e-16 instead). Force k=0 on every bond so the
+    // BFS-derived graph shape is preserved but the harmonic term itself is
+    // identically zero (0.0 * anything = 0.0 exactly in IEEE754,
+    // regardless of r0 or floating-point noise in r).
+    let graph_only_bonds: Vec<ferric_mm::Bond> =
+        top.bonds.iter().map(|b| ferric_mm::Bond { k: 0.0, ..*b }).collect();
+    let mm_only_top = MmTopology::new(mm_only_charges, mm_only_lj, graph_only_bonds, vec![], vec![])
+        .map_err(|e| FerricError::General(format!("qmmm_mm_terms: {e}")))?
+        .with_scales(top.scale_lj_14, top.scale_coul_14);
+    let (e_mm_nb, g_mm_nb) = ferric_mm::gradient(&mm_only_top, coords_full)
+        .map_err(|e| FerricError::General(format!("qmmm_mm_terms: {e}")))?;
+
+    let mut e = MmEnergy {
+        bond: e_bonded.bond,
+        angle: e_bonded.angle,
+        torsion: e_bonded.torsion,
+        lj: e_mm_nb.lj,
+        coulomb: e_mm_nb.coulomb,
+        total: 0.0,
+    };
+    for i in 0..natoms {
+        for c in 0..3 {
+            g[(i, c)] += g_mm_nb[(i, c)];
+        }
+    }
+
+    // 3. QM-MM Lennard-Jones: every real QM atom (link atoms/boundary
+    //    charges excluded by construction — they are not `system.atoms`
+    //    indices) paired with every MM atom, using top.lj on both sides.
+    let qm_lj: Vec<ferric_mm::LjParams> = system.qm_indices.iter().map(|&i| top.lj[i]).collect();
+    let mm_lj: Vec<ferric_mm::LjParams> = system.mm_indices.iter().map(|&i| top.lj[i]).collect();
+    if !qm_lj.is_empty() && !mm_lj.is_empty() {
+        let mut coords_qm = Array2::<f64>::zeros((system.qm_indices.len(), 3));
+        for (row, &i) in system.qm_indices.iter().enumerate() {
+            for c in 0..3 {
+                coords_qm[(row, c)] = coords_full[(i, c)];
+            }
+        }
+        let mut coords_mm = Array2::<f64>::zeros((system.mm_indices.len(), 3));
+        for (row, &i) in system.mm_indices.iter().enumerate() {
+            for c in 0..3 {
+                coords_mm[(row, c)] = coords_full[(i, c)];
+            }
+        }
+        let (e_qm_mm_lj, g_qm, g_mm) =
+            ferric_mm::qm_mm_lj_energy_gradient(&qm_lj, &coords_qm, &mm_lj, &coords_mm);
+        e.lj += e_qm_mm_lj;
+        for (row, &i) in system.qm_indices.iter().enumerate() {
+            for c in 0..3 {
+                g[(i, c)] += g_qm[(row, c)];
+            }
+        }
+        for (row, &i) in system.mm_indices.iter().enumerate() {
+            for c in 0..3 {
+                g[(i, c)] += g_mm[(row, c)];
+            }
+        }
+    }
+
+    e.total = e.bond + e.angle + e.torsion + e.lj + e.coulomb;
+    Ok((e, g))
+}
+
+/// [`full_gradient`] plus the MM force-field contribution from
+/// [`qmmm_mm_terms`], summed row-wise over the full structure. `mm_gradient`
+/// is `qmmm_mm_terms(...).1` (dE/dR, NOT a force) evaluated at the same
+/// `coords_full` the [`QmmmSystem`] was built from.
+pub fn full_gradient_with_mm(
+    system: &QmmmSystem,
+    qm_gradient: &Array2<f64>,
+    mm_forces_vec: &[[f64; 3]],
+    mm_gradient: &Array2<f64>,
+) -> Result<Array2<f64>, FerricError> {
+    let mut full = full_gradient(system, qm_gradient, mm_forces_vec)?;
+    let natoms = system.atoms.len();
+    if mm_gradient.dim() != (natoms, 3) {
+        return Err(FerricError::General(format!(
+            "full_gradient_with_mm: mm_gradient shape {:?} != ({natoms}, 3)",
+            mm_gradient.dim()
+        )));
+    }
+    for i in 0..natoms {
+        for c in 0..3 {
+            full[(i, c)] += mm_gradient[(i, c)];
+        }
+    }
     Ok(full)
 }
 
