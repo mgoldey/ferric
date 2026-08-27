@@ -3,6 +3,7 @@
 use crate::rimp2::{ri_mp2, compute_mp2_intermediates_ov_only, RiMp2Config};
 use crate::zvector::solve_zvector;
 use ferric_core::basis::BasisSet;
+use ferric_core::external_potential::ExternalPotential;
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -133,13 +134,14 @@ pub fn rimp2_gradient_analytical(
     bounds: &SchwarzBounds,
     rhf: &ScfResult,
     config: &RiMp2Config,
+    ext: Option<&ExternalPotential>,
 ) -> Result<Array2<f64>, FerricError> {
     // ov-only intermediates: the gradient/zvector pipeline never reads
     // b_oo/b_vv, so the (naux, nvir²) block is never materialized here.
     let inter = compute_mp2_intermediates_ov_only(mol, obs, dfbs, op, rhf, config)?;
     let budget_bytes = ferric_core::memory::resolve_budget_bytes(config.memory_budget_bytes);
     let (z, imat) = solve_zvector(mol, obs, dfbs, op, bounds, rhf, &inter, budget_bytes)?;
-    let mut grad = mp2_relaxed_lagrangian_gradient(mol, obs, op, bounds, rhf, &inter, &z, &imat)?;
+    let mut grad = mp2_relaxed_lagrangian_gradient(mol, obs, op, bounds, rhf, &inter, &z, &imat, ext)?;
     grad += &integral_response_gradient_3c2c(mol, obs, dfbs, op, &inter, rhf.mos_r())?;
     Ok(grad)
 }
@@ -161,6 +163,7 @@ fn mp2_relaxed_lagrangian_gradient(
     inter: &crate::rimp2::Mp2Intermediates,
     z: &Array2<f64>,
     imat: &Array2<f64>,
+    ext: Option<&ExternalPotential>,
 ) -> Result<Array2<f64>, FerricError> {
     use ferric_scf::gradient::{
         build_energy_weighted_density, oneelectron_gradient, overlap_deriv_contract,
@@ -266,8 +269,17 @@ fn mp2_relaxed_lagrangian_gradient(
     // hcore-deriv (+ nuclear-repulsion, once) with dm1_total; pass W=0 so the
     // overlap/Pulay terms are added explicitly below with the correct per-block
     // signs (im1/zeta/vhf are asymmetric or differently-signed).
+    //
+    // `ext`, when Some, adds exactly the two terms an external potential
+    // contributes to a correlated gradient: the charge-electron
+    // Hellmann-Feynman term with the RELAXED total density (dm1_total_ao,
+    // built above) and the classical charge-nuclear/field-nuclear gradient
+    // (added ONCE, here — see oneelectron_gradient's doc comment. The
+    // z-vector/imat/zeta pipeline above never needs `ext` itself: it is built
+    // from `rhf`'s Fock/orbital energies, which already carry the potential
+    // via `hcore_with_external` at the SCF stage).
     let zero_w = Array2::<f64>::zeros((c.nrows(), c.nrows()));
-    let mut grad = oneelectron_gradient(mol, obs, &dm1_total_ao, &zero_w, None)?;
+    let mut grad = oneelectron_gradient(mol, obs, &dm1_total_ao, &zero_w, ext)?;
 
     // Overlap (Pulay) contributions:
     //   + s1·im1 + s1^T·im1^T       →  + overlap_deriv_contract(im1)        (174-175)
@@ -591,19 +603,18 @@ pub fn scs_mp2_gradient_analytical(
     bounds: &SchwarzBounds,
     rhf: &ScfResult,
     config: &crate::scs::ScsMp2Config,
+    ext: Option<&ExternalPotential>,
 ) -> Result<Array2<f64>, FerricError> {
     let mp2_config = RiMp2Config { frozen_core: config.frozen_core, memory_budget_bytes: config.memory_budget_bytes, ..Default::default() };
     let inter = compute_mp2_intermediates_ov_only(mol, obs, dfbs, op, rhf, &mp2_config)?;
     let budget_bytes = ferric_core::memory::resolve_budget_bytes(mp2_config.memory_budget_bytes);
     let (z, imat) = solve_zvector(mol, obs, dfbs, op, bounds, rhf, &inter, budget_bytes)?;
     // Full (unscaled) RI-MP2 relaxed-Lagrangian gradient + RI 3c/2c response.
-    // NOTE: external_potential is not threaded into correlated gradients (see the
-    // external-potentials design doc's non-goals).
-    let mut grad = mp2_relaxed_lagrangian_gradient(mol, obs, op, bounds, rhf, &inter, &z, &imat)?;
+    let mut grad = mp2_relaxed_lagrangian_gradient(mol, obs, op, bounds, rhf, &inter, &z, &imat, ext)?;
     grad += &integral_response_gradient_3c2c(mol, obs, dfbs, op, &inter, rhf.mos_r())?;
     // Approximate scaling: multiply MP2 part by average SCS scaling
     let scale = (config.c_os + config.c_ss) / 2.0;
-    let rhf_grad = ferric_scf::gradient::rhf_gradient(mol, obs, op, bounds, rhf, None)?;
+    let rhf_grad = ferric_scf::gradient::rhf_gradient(mol, obs, op, bounds, rhf, ext)?;
     for i in 0..mol.atoms.len() {
         for c in 0..3 {
             let mp2_part = grad[(i, c)] - rhf_grad[(i, c)];
@@ -627,6 +638,7 @@ pub fn total_rimp2_gradient(
     aux_basis: &BasisSet,
     op: Operator,
     mp2_config: &RiMp2Config,
+    ext: Option<&ExternalPotential>,
 ) -> Result<(f64, Array2<f64>), FerricError> {
     let ctx = ferric_core::parallel::ParallelContext::default();
     let obs = PreparedBasis::new(mol, obs_basis)?;
@@ -636,6 +648,7 @@ pub fn total_rimp2_gradient(
     // at the loose default — a tight 1e-10 would hang at MaxIter. See total_energy above.
     let rhf_cfg = RhfConfig {
         density_conv: 1e-9,
+        external_potential: ext.cloned(),
         ..Default::default()
     };
     let rhf = solve_rhf(&ctx, mol, &obs, op, &bounds, &rhf_cfg)?;
@@ -643,7 +656,7 @@ pub fn total_rimp2_gradient(
         return Err(FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy });
     }
     let mp2 = ri_mp2(mol, &obs, &dfbs, op, &rhf, mp2_config)?;
-    let grad = rimp2_gradient_analytical(mol, &obs, &dfbs, op, &bounds, &rhf, mp2_config)?;
+    let grad = rimp2_gradient_analytical(mol, &obs, &dfbs, op, &bounds, &rhf, mp2_config, ext)?;
     Ok((mp2.total_energy, grad))
 }
 
@@ -776,7 +789,7 @@ mod tests {
         let rhf = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &obs, op, &bounds, &RhfConfig { energy_conv: 1e-10, ..Default::default() }).unwrap();
         let config = RiMp2Config::default();
 
-        let analytical = rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config).unwrap();
+        let analytical = rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config, None).unwrap();
         let fd = rimp2_gradient_fd(&mol, &obs_bs, &aux_bs, op, &config, 1e-4).unwrap();
 
         eprintln!("=== H2/cc-pVDZ Analytical vs FD RI-MP2 gradient ===");
@@ -811,7 +824,7 @@ mod tests {
         let rhf = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &obs, op, &bounds, &RhfConfig { energy_conv: 1e-10, ..Default::default() }).unwrap();
         let config = RiMp2Config::default();
 
-        let grad = rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config).unwrap();
+        let grad = rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config, None).unwrap();
 
         for c in 0..3 {
             let sum: f64 = (0..2).map(|a| grad[(a, c)]).sum();
@@ -950,7 +963,7 @@ mod tests {
         let rhf = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &obs, op, &bounds, &RhfConfig { energy_conv: 1e-10, ..Default::default() }).unwrap();
         let config = RiMp2Config::default();
 
-        let analytical = rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config).unwrap();
+        let analytical = rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config, None).unwrap();
         let fd = rimp2_gradient_fd(&mol, &obs_bs, &aux_bs, op, &config, 1e-4).unwrap();
 
         eprintln!("=== H2O/STO-3G Analytical vs FD RI-MP2 gradient ===");
@@ -997,7 +1010,7 @@ mod tests {
         let rhf = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &obs, op, &bounds, &RhfConfig { energy_conv: 1e-10, ..Default::default() }).unwrap();
         let config = RiMp2Config::default();
 
-        let analytical = rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config).unwrap();
+        let analytical = rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config, None).unwrap();
         let fd = rimp2_gradient_fd(&mol, &obs_bs, &aux_bs, op, &config, 1e-4).unwrap();
 
         eprintln!("=== CH4/cc-pVDZ Analytical vs FD RI-MP2 gradient ===");
@@ -1077,7 +1090,7 @@ mod tests {
         let rhf = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &obs, op, &bounds, &RhfConfig { energy_conv: 1e-10, ..Default::default() }).unwrap();
         let config = RiMp2Config::default();
 
-        let grad = rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config).unwrap();
+        let grad = rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config, None).unwrap();
 
         // x,y components should be zero for H2 along z-axis
         for atom in 0..2 {
@@ -1106,7 +1119,7 @@ mod tests {
         let rhf = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &obs, op, &bounds, &RhfConfig { energy_conv: 1e-10, ..Default::default() }).unwrap();
         let config = RiMp2Config::default();
 
-        let grad = rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config).unwrap();
+        let grad = rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config, None).unwrap();
 
         for c in 0..3 {
             let sum: f64 = (0..3).map(|a| grad[(a, c)]).sum();
