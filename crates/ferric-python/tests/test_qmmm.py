@@ -231,3 +231,107 @@ def test_run_qmmm_full_gradient_covers_the_whole_structure_across_a_cut():
     assert np.all(np.isfinite(full))
     # The link row was projected: the frontier C0 and host C1 rows both carry it.
     assert abs(full[1, 2]) > 0
+
+
+# ── Gaussian-smeared MM charges (Lane A) ──
+
+
+def _water_ref_system_smeared(ref):
+    """Full structure = the reference QM atoms, then its MM charges (with
+    per-charge Gaussian widths, in Bohr in the ref -> Angstrom for the
+    constructor) as atoms."""
+    symbols = [a["symbol"] for a in ref["atoms"]] + ["X"] * len(ref["mm_charges"])
+    coords_bohr = [a["xyz_bohr"] for a in ref["atoms"]] + [c["xyz_bohr"] for c in ref["mm_charges"]]
+    coords_ang = [[v / BOHR_PER_ANGSTROM for v in xyz] for xyz in coords_bohr]
+    charges = [99.0] * len(ref["atoms"]) + [c["q"] for c in ref["mm_charges"]]
+    widths_ang = [0.0] * len(ref["atoms"]) + [w / BOHR_PER_ANGSTROM for w in ref["radii"]]
+    return ferric.QmmmSystem(
+        symbols, coords_ang, charges,
+        qm_indices=list(range(len(ref["atoms"]))),
+        charge=ref["charge"], multiplicity=ref["multiplicity"],
+        widths_angstrom=widths_ang,
+    )
+
+
+def test_qmmm_system_exposes_smeared_charges_separately_from_point_charges():
+    ref = _load("water_sto-3g_qmmm_smeared_offaxis.json")
+    sys = _water_ref_system_smeared(ref)
+    assert sys.point_charges() == []
+    scs = sys.smeared_charges()
+    assert len(scs) == len(ref["mm_charges"])
+    for (q, x, y, z, width), c, r_bohr in zip(scs, ref["mm_charges"], ref["radii"]):
+        assert q == c["q"]
+        assert np.allclose([x, y, z], c["xyz_bohr"], atol=1e-12, rtol=0)
+        assert width == pytest.approx(r_bohr, abs=1e-12)
+
+
+def test_run_qmmm_smeared_single_site_matches_pyscf():
+    ref = _load("water_sto-3g_qmmm_smeared_r1.json")
+    sys = _water_ref_system_smeared(ref)
+    r = ferric.run_qmmm(sys, "sto-3g", density_conv=1e-10)
+    assert r.converged
+    assert r.energy == pytest.approx(ref["energy"], abs=5e-8)
+
+    qm_grad = r.qm_gradient()
+    assert qm_grad.shape == (3, 3)
+    assert np.allclose(qm_grad, np.array(ref["qm_gradient"]), atol=1e-6, rtol=0)
+
+    mm_f = r.mm_forces()
+    assert mm_f.shape == (1, 3)
+    assert np.allclose(mm_f, -np.array(ref["mm_gradient"]), atol=1e-6, rtol=0)
+
+
+def test_run_qmmm_smeared_offaxis_distinct_widths_matches_pyscf():
+    ref = _load("water_sto-3g_qmmm_smeared_offaxis.json")
+    sys = _water_ref_system_smeared(ref)
+    r = ferric.run_qmmm(sys, "sto-3g", density_conv=1e-10)
+    assert r.converged
+    assert r.energy == pytest.approx(ref["energy"], abs=5e-8)
+
+    qm_grad = r.qm_gradient()
+    assert np.allclose(qm_grad, np.array(ref["qm_gradient"]), atol=1e-6, rtol=0)
+
+    mm_f = r.mm_forces()
+    assert mm_f.shape == (3, 3)
+    assert np.allclose(mm_f, -np.array(ref["mm_gradient"]), atol=1e-6, rtol=0)
+
+
+def test_run_rhf_smeared_charges_kwarg_matches_pyscf():
+    ref = _load("water_sto-3g_qmmm_smeared_r1.json")
+    mol = ferric.Molecule.from_xyz_string(
+        "3\nwater\n" + "\n".join(
+            f"{a['symbol']} {a['xyz_bohr'][0] / BOHR_PER_ANGSTROM} "
+            f"{a['xyz_bohr'][1] / BOHR_PER_ANGSTROM} {a['xyz_bohr'][2] / BOHR_PER_ANGSTROM}"
+            for a in ref["atoms"]
+        ) + "\n"
+    )
+    bs = ferric.BasisSet.bundled("sto-3g")
+    smeared = [
+        (c["q"], c["xyz_bohr"][0], c["xyz_bohr"][1], c["xyz_bohr"][2], w)
+        for c, w in zip(ref["mm_charges"], ref["radii"])
+    ]
+    r = ferric.run_rhf(mol, bs, smeared_charges=smeared, density_conv=1e-10)
+    assert r.converged
+    assert r.energy == pytest.approx(ref["energy"], abs=5e-8)
+
+
+def test_tiny_width_smeared_charge_scf_matches_point_charge_scf():
+    # Exactness anchor at the Python layer: width -> 0 must reproduce the
+    # point-charge run to high precision, mirroring the Rust-level
+    # tiny_width_scf_matches_point_charge_scf test.
+    ref = _load("water_sto-3g_qmmm_plus_lonepair.json")
+    mol = ferric.Molecule.from_xyz_string(
+        "3\nwater\n" + "\n".join(
+            f"{a['symbol']} {a['xyz_bohr'][0] / BOHR_PER_ANGSTROM} "
+            f"{a['xyz_bohr'][1] / BOHR_PER_ANGSTROM} {a['xyz_bohr'][2] / BOHR_PER_ANGSTROM}"
+            for a in ref["atoms"]
+        ) + "\n"
+    )
+    bs = ferric.BasisSet.bundled("sto-3g")
+    c = ref["mm_charges"][0]
+    r_point = ferric.run_rhf(mol, bs, point_charges=[(c["q"], *c["xyz_bohr"])], density_conv=1e-11)
+    r_smeared = ferric.run_rhf(
+        mol, bs, smeared_charges=[(c["q"], *c["xyz_bohr"], 1e-3)], density_conv=1e-11
+    )
+    assert r_point.converged and r_smeared.converged
+    assert r_point.energy == pytest.approx(r_smeared.energy, abs=1e-9)

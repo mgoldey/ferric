@@ -69,7 +69,11 @@ class QmmmSystem:
         qm_radius_angstrom: float | None = None,
         charge: int = 0,
         multiplicity: int = 1,
-    ) -> None: ...
+        widths_angstrom: list[float] | None = None,
+    ) -> None:
+        """widths_angstrom: one Gaussian-smearing width per atom (0.0 = point charge).
+        Ignored for atoms in the QM region, like charges."""
+        ...
 
     def with_link_atoms(self, bonds: list[tuple[int, int]], scale: float | None = None) -> QmmmSystem:
         """Cap each cut bond with a scaled-position link H (default scale 1.09/1.53). Returns a new system."""
@@ -84,7 +88,12 @@ class QmmmSystem:
         ...
 
     def point_charges(self) -> list[tuple[float, float, float, float]]:
-        """Every embedding charge as (q, x, y, z) in Bohr; atom-centred first, then RC/RCD midpoints."""
+        """Every POINT embedding charge as (q, x, y, z) in Bohr. Gaussian-smeared
+        charges (width > 0) are excluded here -- see smeared_charges()."""
+        ...
+
+    def smeared_charges(self) -> list[tuple[float, float, float, float, float]]:
+        """Every Gaussian-smeared embedding charge as (q, x, y, z, width_bohr)."""
         ...
 
     def qm_indices(self) -> list[int]: ...
@@ -989,8 +998,13 @@ def run_rhf(
     soscf: bool | None = None,
     point_charges: list[tuple[float, float, float, float]] | None = None,
     external_field: tuple[float, float, float] | None = None,
+    smeared_charges: list[tuple[float, float, float, float, float]] | None = None,
 ) -> RhfResult:
-    """Closed-shell Restricted Hartree-Fock."""
+    """Closed-shell Restricted Hartree-Fock.
+
+    smeared_charges: list of (q, x, y, z, width) Gaussian-smeared classical
+    charges (Bohr / Hartree atomic units).
+    """
     ...
 
 

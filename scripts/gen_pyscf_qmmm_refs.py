@@ -128,9 +128,87 @@ def run_case(tag, atoms, charge, spin, mm):
     }
 
 
+# Lane A: Gaussian-smeared MM charges. (tag, atoms, charge, spin, MM charges
+# as [(q, x, y, z)] in Bohr, radii as [width] in Bohr, one per MM charge).
+# PySCF's `mm_charge(radii=)` uses zeta = 1/radius**2 -- the same convention
+# as ferric's `SmearedCharge.width` / `QmmmAtom.width`.
+SMEARED_CASES = [
+    ("water_sto-3g_qmmm_smeared_r1", water_bohr(), 0, 0,
+     [(1.0, 0.0, 0.0, -6.0)], [1.0]),
+    # Off-axis, three distinct widths: breaks C2v symmetry (every gradient
+    # component live) and exercises SiteBasis's distinct-zeta grouping
+    # end-to-end (three different pseudo-elements, not one).
+    ("water_sto-3g_qmmm_smeared_offaxis", water_bohr(), 0, 0,
+     [(-0.834, 3.1, -2.2, 4.0), (0.417, -2.5, 3.3, -3.7), (0.417, 1.7, 2.9, -5.1)],
+     [0.5, 1.0, 2.0]),
+]
+
+
+def run_smeared_case(tag, atoms, charge, spin, mm, radii):
+    mol = gto.M(
+        atom=[(s, xyz) for s, xyz in atoms],
+        basis="sto-3g",
+        unit="Bohr",
+        charge=charge,
+        spin=spin,
+        verbose=0,
+    )
+    coords = np.array([[x, y, z] for _, x, y, z in mm])
+    charges = np.array([q for q, _, _, _ in mm])
+    radii_arr = np.array(radii)
+    mf = scf.UHF(mol) if spin else scf.RHF(mol)
+    mf.conv_tol = 1e-12
+    mf = qmmm.mm_charge(mf, coords, charges, radii=radii_arr, unit="Bohr")
+    e = mf.kernel()
+    assert mf.converged, tag
+    dm = mf.make_rdm1()
+    dm_tot = dm[0] + dm[1] if spin else dm
+    ao_dip = mol.intor_symmetric("int1e_r", comp=3)
+    el = -np.einsum("xij,ji->x", ao_dip, dm_tot)
+    nuc = np.einsum("i,ix->x", mol.atom_charges(), mol.atom_coords())
+    dip = el + nuc
+
+    g = mf.nuc_grad_method()
+    qm_grad = g.kernel()
+    mm_grad = g.grad_hcore_mm(dm_tot) + g.grad_nuc_mm()
+
+    mf0 = scf.UHF(mol) if spin else scf.RHF(mol)
+    mf0.conv_tol = 1e-12
+    e0 = mf0.kernel()
+    assert mf0.converged
+
+    return {
+        "molecule": tag.split("_")[0],
+        "basis": "sto-3g",
+        "method": "uhf" if spin else "rhf",
+        "model": "electrostatic embedding, Gaussian-smeared point charges (pyscf.qmmm.mm_charge, radii=)",
+        "units": "Bohr / Hartree / a.u.; gradients are dE/dR (ferric mm_forces = -mm_gradient)",
+        "atoms": [{"symbol": s, "xyz_bohr": list(xyz)} for s, xyz in atoms],
+        "charge": charge,
+        "multiplicity": spin + 1,
+        "mm_charges": [{"q": q, "xyz_bohr": [x, y, z]} for q, x, y, z in mm],
+        "radii": [float(r) for r in radii],
+        "energy": float(e),
+        "energy_gas_phase": float(e0),
+        "dipole": [float(v) for v in dip],
+        "qm_gradient": qm_grad.tolist(),
+        "mm_gradient": mm_grad.tolist(),
+        "converged": bool(mf.converged),
+        "conv_tol": 1e-12,
+        "pyscf_version": pyscf.__version__,
+    }
+
+
 def main():
     for tag, atoms, charge, spin, mm in CASES:
         ref = run_case(tag, atoms, charge, spin, mm)
+        out = REFDIR / f"{tag}.json"
+        out.write_text(json.dumps(ref, indent=2, sort_keys=True) + "\n")
+        print(f"{out.name}: E = {ref['energy']:.10f}  (gas {ref['energy_gas_phase']:.10f})  "
+              f"mu = {np.round(ref['dipole'], 6)}  F_mm = {np.round(-np.array(ref['mm_gradient']), 6).tolist()}")
+
+    for tag, atoms, charge, spin, mm, radii in SMEARED_CASES:
+        ref = run_smeared_case(tag, atoms, charge, spin, mm, radii)
         out = REFDIR / f"{tag}.json"
         out.write_text(json.dumps(ref, indent=2, sort_keys=True) + "\n")
         print(f"{out.name}: E = {ref['energy']:.10f}  (gas {ref['energy_gas_phase']:.10f})  "

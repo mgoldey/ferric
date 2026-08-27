@@ -78,7 +78,7 @@
 //! `pcm`, `verbose`) and it is regression-tested first, in
 //! `crates/ferric-scf/tests/qmmm.rs`.
 
-use ferric_core::external_potential::{ExternalPotential, PointCharge};
+use ferric_core::external_potential::{ExternalPotential, PointCharge, SmearedCharge};
 use ferric_core::mol::{Atom, Molecule};
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -100,12 +100,36 @@ pub struct QmmmAtom {
     /// MM partial charge in units of e. Typically fractional (a force-field
     /// charge). Only used if this atom lands in the MM region.
     pub charge: f64,
+    /// Gaussian-smearing width in Bohr for this atom's MM charge (PySCF
+    /// `mm_charge(radii=)` convention: `ζ = 1/width²`). `0.0` (the default
+    /// via [`QmmmAtom::new`]) means a point charge — the untouched, exact
+    /// original behaviour. Only used if this atom lands in the MM region.
+    pub width: f64,
 }
 
 impl QmmmAtom {
-    /// Create a QM/MM atom with element, nuclear charge, Bohr coordinates, and MM partial charge.
+    /// Create a QM/MM atom with element, nuclear charge, Bohr coordinates, and MM partial
+    /// (point) charge. `width` is `0.0` (point charge) — use
+    /// [`QmmmAtom::new_smeared`] for a Gaussian-smeared MM charge.
     pub fn new(symbol: impl Into<String>, z: i32, x: f64, y: f64, z_pos: f64, charge: f64) -> Self {
-        Self { symbol: symbol.into(), z, x, y, z_pos, charge }
+        Self { symbol: symbol.into(), z, x, y, z_pos, charge, width: 0.0 }
+    }
+
+    /// Create a QM/MM atom whose MM charge is Gaussian-smeared with the given
+    /// `width` (Bohr, `> 0`). Validated at [`QmmmSystem::new`] / used at
+    /// [`QmmmSystem::to_external_potential`] time, not here (this is a plain
+    /// data constructor).
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_smeared(
+        symbol: impl Into<String>,
+        z: i32,
+        x: f64,
+        y: f64,
+        z_pos: f64,
+        charge: f64,
+        width: f64,
+    ) -> Self {
+        Self { symbol: symbol.into(), z, x, y, z_pos, charge, width }
     }
 
     #[inline]
@@ -596,22 +620,29 @@ impl QmmmSystem {
         Ok(self)
     }
 
-    /// Every charge that enters the embedding potential, as `(q, position)`:
-    /// the MM atoms with a nonzero effective charge in ascending index order,
-    /// then the off-atom boundary charges. This single ordering is what
-    /// [`QmmmSystem::to_external_potential`], [`QmmmSystem::mm_charge_positions`]
-    /// and [`mm_forces`] all follow.
-    fn active_charges(&self) -> Vec<(f64, [f64; 3])> {
-        let mut out: Vec<(f64, [f64; 3])> = self
+    /// Every charge that enters the embedding potential, as `(q, position,
+    /// width)`: the MM atoms with a nonzero effective charge in ascending
+    /// index order, then the off-atom boundary charges (always point charges,
+    /// `width = 0.0` — RC/RCD midpoints have no smearing model). This single
+    /// ordering is what [`QmmmSystem::to_external_potential`],
+    /// [`QmmmSystem::mm_charge_positions`] and [`mm_forces`] all follow.
+    /// `width == 0.0` means a point charge; `width > 0.0` means Gaussian-smeared.
+    fn active_charges(&self) -> Vec<(f64, [f64; 3], f64)> {
+        let mut out: Vec<(f64, [f64; 3], f64)> = self
             .mm_indices
             .iter()
             .filter(|&&i| self.effective_charges[i] != 0.0)
             .map(|&i| {
                 let a = &self.atoms[i];
-                (self.effective_charges[i], [a.x, a.y, a.z_pos])
+                (self.effective_charges[i], [a.x, a.y, a.z_pos], a.width)
             })
             .collect();
-        out.extend(self.boundary_charges.iter().filter(|b| b.q != 0.0).map(|b| (b.q, b.position)));
+        out.extend(
+            self.boundary_charges
+                .iter()
+                .filter(|b| b.q != 0.0)
+                .map(|b| (b.q, b.position, 0.0)),
+        );
         out
     }
 
@@ -658,24 +689,37 @@ impl QmmmSystem {
         }
     }
 
-    /// The MM region as an [`ExternalPotential`] of point charges, ready for
+    /// The MM region as an [`ExternalPotential`] of point and/or
+    /// Gaussian-smeared charges (per [`QmmmAtom::width`]), ready for
     /// `RhfConfig::external_potential`.
     ///
     /// Returns `None` when the MM region contributes nothing — either there are
     /// no MM atoms at all, or every MM charge is exactly zero. `None` is the
     /// literal gas-phase code path in every SCF variant, which is what makes
     /// the empty-MM no-op exact rather than merely small.
+    ///
+    /// Point charges (`width == 0.0`) go into `point_charges`, smeared
+    /// charges (`width > 0.0`) into `smeared_charges` — the RELATIVE order
+    /// within each list matches [`QmmmSystem::active_charges`]'s single
+    /// ordering (atom-centred ascending, then boundary charges), but the two
+    /// lists are separate, so [`QmmmSystem::mm_charge_positions`] (which
+    /// walks `active_charges` directly, unsplit) is the ordering
+    /// [`mm_forces`] must be read against, not either sub-list alone.
     pub fn to_external_potential(&self) -> Option<ExternalPotential> {
-        let point_charges: Vec<PointCharge> = self
-            .active_charges()
-            .into_iter()
-            .map(|(q, [x, y, z])| PointCharge { q, x, y, z })
-            .collect();
-
-        if point_charges.is_empty() {
+        let charges = self.active_charges();
+        if charges.is_empty() {
             return None;
         }
-        Some(ExternalPotential { point_charges, field: None })
+        let mut point_charges = Vec::new();
+        let mut smeared_charges = Vec::new();
+        for (q, [x, y, z], width) in charges {
+            if width > 0.0 {
+                smeared_charges.push(SmearedCharge { q, x, y, z, width });
+            } else {
+                point_charges.push(PointCharge { q, x, y, z });
+            }
+        }
+        Some(ExternalPotential { point_charges, smeared_charges, field: None })
     }
 
     /// Number of real QM atoms, excluding link hydrogens. Link atoms occupy
@@ -685,14 +729,15 @@ impl QmmmSystem {
         self.qm_indices.len()
     }
 
-    /// Positions (Bohr) of the MM point charges that actually enter the
-    /// embedding potential, in the same order as
-    /// [`QmmmSystem::to_external_potential`]'s `point_charges` and as the rows
-    /// [`mm_forces`] returns: atom-centred charges first (zero-charge MM atoms
-    /// excluded, matching `to_external_potential`), then any off-atom
-    /// boundary charges from RC/RCD.
+    /// Positions (Bohr) of the MM charges (point AND Gaussian-smeared) that
+    /// actually enter the embedding potential, in
+    /// [`QmmmSystem::active_charges`]'s single order (atom-centred ascending,
+    /// then boundary charges) — this is the canonical ordering [`mm_forces`]
+    /// and [`full_gradient`] use; it is NOT the same as concatenating
+    /// `to_external_potential()`'s `point_charges` then `smeared_charges`
+    /// unless every charge in this system happens to be one kind.
     pub fn mm_charge_positions(&self) -> Vec<[f64; 3]> {
-        self.active_charges().into_iter().map(|(_, p)| p).collect()
+        self.active_charges().into_iter().map(|(_, p, _)| p).collect()
     }
 
     /// Shortest distance (Bohr) from any link hydrogen to any nonzero MM point
@@ -913,9 +958,8 @@ pub fn electric_field_at_points(
 /// QM region — electrons and nuclei both.
 ///
 /// `F_i = q_i · E(r_i)`, where `E` is the total QM field from
-/// [`electric_field_at_points`]. Rows are in the same order as
-/// [`QmmmSystem::mm_charge_positions`] and as `to_external_potential`'s
-/// `point_charges` — i.e. zero-charge MM atoms are excluded, not zero-filled.
+/// [`electric_field_at_points`]. Rows are in [`QmmmSystem::mm_charge_positions`]
+/// order — i.e. zero-charge MM atoms are excluded, not zero-filled.
 ///
 /// Note the sign convention differs from the rest of this codebase's gradient
 /// routines, which return `dE/dR`: this returns the **force** `-dE/dR`, because
@@ -928,26 +972,65 @@ pub fn electric_field_at_points(
 /// Only the electrostatic QM→MM force is included. There is no QM-MM van der
 /// Waals term and no MM-MM force here (no force field in this module), and the
 /// link-atom chain-rule projection onto host atoms is not applied.
+///
+/// **Gaussian-smeared sites** use a different formula from point charges: for
+/// a point charge `q·E(r)` (electric field of the QM region AT the point) is
+/// exactly the force, because a point probe sits entirely outside the
+/// smearing Gaussian of every OTHER charge but has no width of its own to
+/// integrate over. For a SMEARED site the force is `−∫ ρ_i(r) ∇V_QM(r) dr`
+/// over the site's own charge cloud, which is NOT `q_i·E(r_i)` at the site
+/// center — it requires the derivative of the 3-centre `(μν|g_i)` integral
+/// against the site's own exponent, via
+/// [`crate::gradient::smeared_site_forces`] (negated: that function returns
+/// `dE/dR`, this function returns the force `-dE/dR`). Point and smeared
+/// sites are each computed by their own correct formula and merged back into
+/// [`QmmmSystem::active_charges`]'s single canonical order.
 pub fn mm_forces(
     system: &QmmmSystem,
     mol: &Molecule,
     prep: &PreparedBasis,
     density: &Array2<f64>,
 ) -> Result<Vec<[f64; 3]>, FerricError> {
-    let positions = system.mm_charge_positions();
-    if positions.is_empty() {
+    let charges = system.active_charges();
+    if charges.is_empty() {
         return Ok(Vec::new());
     }
-    let charges: Vec<f64> = system
-        .to_external_potential()
-        .map(|ep| ep.point_charges.iter().map(|pc| pc.q).collect())
-        .unwrap_or_default();
 
-    let field = electric_field_at_points(mol, prep, density, &positions)?;
-    Ok(field
+    let point_positions: Vec<[f64; 3]> =
+        charges.iter().filter(|&&(_, _, w)| w <= 0.0).map(|&(_, p, _)| p).collect();
+    let point_qs: Vec<f64> =
+        charges.iter().filter(|&&(_, _, w)| w <= 0.0).map(|&(q, _, _)| q).collect();
+    let point_forces: Vec<[f64; 3]> = if point_positions.is_empty() {
+        Vec::new()
+    } else {
+        let field = electric_field_at_points(mol, prep, density, &point_positions)?;
+        field
+            .iter()
+            .zip(point_qs.iter())
+            .map(|(e, &q)| [q * e[0], q * e[1], q * e[2]])
+            .collect()
+    };
+
+    let smeared: Vec<ferric_core::external_potential::SmearedCharge> = charges
         .iter()
-        .zip(charges.iter())
-        .map(|(e, &q)| [q * e[0], q * e[1], q * e[2]])
+        .filter(|&&(_, _, w)| w > 0.0)
+        .map(|&(q, [x, y, z], width)| ferric_core::external_potential::SmearedCharge { q, x, y, z, width })
+        .collect();
+    let smeared_forces: Vec<[f64; 3]> = if smeared.is_empty() {
+        Vec::new()
+    } else {
+        crate::gradient::smeared_site_forces(mol, prep, density, &smeared)?
+            .into_iter()
+            .map(|g| [-g[0], -g[1], -g[2]])
+            .collect()
+    };
+
+    // Re-merge in `active_charges()`'s original order.
+    let mut point_it = point_forces.into_iter();
+    let mut smeared_it = smeared_forces.into_iter();
+    Ok(charges
+        .iter()
+        .map(|&(_, _, w)| if w > 0.0 { smeared_it.next().unwrap() } else { point_it.next().unwrap() })
         .collect())
 }
 

@@ -1464,6 +1464,7 @@ mod tests {
         // energy by a small, nonzero, well-defined amount and not break convergence).
         let ext = ExternalPotential {
             point_charges: vec![PointCharge { q: 1.0, x: 0.0, y: 0.0, z: 20.0 }],
+            smeared_charges: Vec::new(),
             field: None,
         };
         let config = RhfConfig { external_potential: Some(ext.clone()), ..Default::default() };
@@ -1841,6 +1842,7 @@ mod tests {
 
         let ext = ExternalPotential {
             point_charges: vec![PointCharge { q: 1.0, x: 0.0, y: 0.0, z: 20.0 }],
+            smeared_charges: Vec::new(),
             field: None,
         };
         let config = RhfConfig {

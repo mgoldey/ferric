@@ -217,6 +217,47 @@ impl ExternalPotential {
         grad
     }
 
+    /// dE/dR_site for the charge-nuclear term, ONE ROW PER SMEARED CHARGE
+    /// (in `self.smeared_charges` order) — the site-position analogue of
+    /// [`ExternalPotential::charge_nuclear_gradient`]'s atom rows.
+    ///
+    /// `E = Σ_A Z_A q_i erf(√ζ_i R_Ai)/R_Ai` depends on the site position
+    /// `R_i` through `R_Ai = |R_A − R_i|` exactly as it depends on `R_A`, so
+    /// `dE/dR_i = −dE/dR_A` for each atom pair (chain rule: `dR/dR_i =
+    /// −(R_A−R_i)/R = −dR/dR_A`). This is what
+    /// [`crate::gradient`]'s (ferric-scf) `smeared_site_forces` needs to add
+    /// to the ELECTRONIC Hellmann–Feynman site derivative — omitting it
+    /// silently drops the (usually dominant, since Z_A ≥ 1 vs the fractional
+    /// AO density) classical nuclear-charge/site-charge term from the site's
+    /// total force.
+    pub fn smeared_charge_nuclear_site_gradient(&self, mol: &Molecule) -> Vec<[f64; 3]> {
+        let mut out = vec![[0.0_f64; 3]; self.smeared_charges.len()];
+        for (k, sc) in self.smeared_charges.iter().enumerate() {
+            for atom in &mol.atoms {
+                if atom.ghost {
+                    continue;
+                }
+                let za = atom.effective_z() as f64;
+                let dx = atom.x - sc.x;
+                let dy = atom.y - sc.y;
+                let dz = atom.zpos - sc.z;
+                let r2 = dx * dx + dy * dy + dz * dz;
+                let r = r2.sqrt();
+                let sqrt_zeta = 1.0 / sc.width;
+                let sz_r = sqrt_zeta * r;
+                let dpot_dr = (2.0 / (std::f64::consts::PI.sqrt() * sc.width)) * (-sz_r * sz_r).exp() / r
+                    - erf(sz_r) / r2;
+                // dE/dR_A = za*q*dpot_dr/r * (dx,dy,dz); dE/dR_site = -that
+                // (dR/dR_site = -(dx,dy,dz)/r).
+                let coeff = -za * sc.q * dpot_dr / r;
+                out[k][0] += coeff * dx;
+                out[k][1] += coeff * dy;
+                out[k][2] += coeff * dz;
+            }
+        }
+        out
+    }
+
     /// dE/dR for the field-nuclear term: constant -Z_A·E per real atom A
     /// (QM-atom rows only).
     pub fn field_nuclear_gradient(&self, mol: &Molecule) -> Array2<f64> {
@@ -450,6 +491,48 @@ mod tests {
             assert!(
                 (analytic - fd).abs() < 1e-7,
                 "smeared charge_nuclear_gradient[{coord}]: analytic {analytic:.10e} vs FD {fd:.10e}"
+            );
+        }
+    }
+
+    /// `smeared_charge_nuclear_site_gradient` (dE/dR_SITE, not dE/dR_atom)
+    /// against a central finite difference of `charge_nuclear_energy` under
+    /// a SITE displacement. This is the classical term that
+    /// `gradient::smeared_site_forces` (ferric-scf) must add to its
+    /// electronic Hellmann-Feynman piece — a bug here silently drops the
+    /// dominant (Z_A >= 1) part of the force on a smeared MM site, which is
+    /// exactly the discrepancy `smeared_site_force_matches_finite_difference`
+    /// (ferric-scf tests/qmmm_smeared.rs) caught end-to-end.
+    #[test]
+    fn smeared_charge_nuclear_site_gradient_matches_numeric_derivative() {
+        let mol = Molecule::parse_xyz("2\nH2\nH 0.3 -0.2 0.5\nH -0.4 0.6 -0.3\n", 0, 1).unwrap();
+        let base = super::SmearedCharge { q: 1.7, x: 1.1, y: -0.6, z: 2.3, width: 0.8 };
+        let ep = super::ExternalPotential {
+            point_charges: vec![],
+            smeared_charges: vec![base],
+            field: None,
+        };
+        let g = ep.smeared_charge_nuclear_site_gradient(&mol);
+        assert_eq!(g.len(), 1);
+
+        let h = 1e-5;
+        for (axis, coord) in [(0, "x"), (1, "y"), (2, "z")] {
+            let mut site_p = base;
+            let mut site_m = base;
+            match axis {
+                0 => { site_p.x += h; site_m.x -= h; }
+                1 => { site_p.y += h; site_m.y -= h; }
+                _ => { site_p.z += h; site_m.z -= h; }
+            }
+            let ep_p = super::ExternalPotential { point_charges: vec![], smeared_charges: vec![site_p], field: None };
+            let ep_m = super::ExternalPotential { point_charges: vec![], smeared_charges: vec![site_m], field: None };
+            let e_p = ep_p.charge_nuclear_energy(&mol);
+            let e_m = ep_m.charge_nuclear_energy(&mol);
+            let fd = (e_p - e_m) / (2.0 * h);
+            let analytic = g[0][axis];
+            assert!(
+                (analytic - fd).abs() < 1e-7,
+                "smeared_charge_nuclear_site_gradient[{coord}]: analytic {analytic:.10e} vs FD {fd:.10e}"
             );
         }
     }

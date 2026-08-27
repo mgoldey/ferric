@@ -169,16 +169,36 @@ fn build_external_potential(
     point_charges: Option<Vec<(f64, f64, f64, f64)>>,
     external_field: Option<(f64, f64, f64)>,
 ) -> Option<ferric_core::external_potential::ExternalPotential> {
+    build_external_potential_with_smeared(point_charges, None, external_field)
+}
+
+/// Like [`build_external_potential`], plus an optional `smeared_charges`
+/// list of `(q, x, y, z, width)` tuples (Bohr / Bohr). Returns `None` only
+/// when point charges, smeared charges, AND field are all unset.
+fn build_external_potential_with_smeared(
+    point_charges: Option<Vec<(f64, f64, f64, f64)>>,
+    smeared_charges: Option<Vec<(f64, f64, f64, f64, f64)>>,
+    external_field: Option<(f64, f64, f64)>,
+) -> Option<ferric_core::external_potential::ExternalPotential> {
     let pcs: Vec<ferric_core::external_potential::PointCharge> = point_charges
         .unwrap_or_default()
         .into_iter()
         .map(|(q, x, y, z)| ferric_core::external_potential::PointCharge { q, x, y, z })
         .collect();
+    let scs: Vec<ferric_core::external_potential::SmearedCharge> = smeared_charges
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(q, x, y, z, width)| ferric_core::external_potential::SmearedCharge { q, x, y, z, width })
+        .collect();
     let field = external_field.map(|(ex, ey, ez)| [ex, ey, ez]);
-    if pcs.is_empty() && field.is_none() {
+    if pcs.is_empty() && scs.is_empty() && field.is_none() {
         None
     } else {
-        Some(ferric_core::external_potential::ExternalPotential { point_charges: pcs, field })
+        Some(ferric_core::external_potential::ExternalPotential {
+            point_charges: pcs,
+            smeared_charges: scs,
+            field,
+        })
     }
 }
 
@@ -244,6 +264,11 @@ impl PyRhfResult {
 ///   point_charges   list of (q, x, y, z) classical point charges (Hartree
 ///                   atomic units; coordinates in Bohr) added to the one-electron
 ///                   Hamiltonian and nuclear repulsion. None/empty = no charges.
+///   smeared_charges list of (q, x, y, z, width) Gaussian-smeared classical
+///                   charges (Hartree atomic units; coordinates and width in
+///                   Bohr; width = 0 is a point charge, but use
+///                   `point_charges=` for those instead). None/empty = no
+///                   smeared charges.
 ///   external_field  uniform (Ex, Ey, Ez) electric field in Hartree atomic units.
 ///                   None = no field.
 #[pyfunction]
@@ -253,7 +278,7 @@ impl PyRhfResult {
     integral_thresh=None, k_builder=None, df_j_aux=None, df_k_aux=None,
     level_shift=None, mom_after_iter=None,
     guess=None, diis=None, smearing_sigma=None, soscf=None,
-    point_charges=None, external_field=None,
+    point_charges=None, external_field=None, smeared_charges=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_rhf(
@@ -275,6 +300,7 @@ fn run_rhf(
     soscf: Option<bool>,
     point_charges: Option<Vec<(f64, f64, f64, f64)>>,
     external_field: Option<(f64, f64, f64)>,
+    smeared_charges: Option<Vec<(f64, f64, f64, f64, f64)>>,
 ) -> PyResult<PyRhfResult> {
     // Apply ECP core-electron counts (no-op without an ECP basis) so nelec()
     // gives the valence count; the effective nuclear charge is set inside
@@ -300,7 +326,7 @@ fn run_rhf(
         smearing_sigma,
         newton_trigger: if soscf.unwrap_or(false) { 1e-3 } else { 0.0 },
         use_sad_guess: !matches!(guess, Some("hcore")),
-        external_potential: build_external_potential(point_charges, external_field),
+        external_potential: build_external_potential_with_smeared(point_charges, smeared_charges, external_field),
         ..Default::default()
     };
     let ctx = ParallelContext::default();
@@ -342,8 +368,11 @@ impl PyQmmmSystem {
     /// `qm_radius_angstrom` (every atom within that distance of any seed,
     /// plus the seeds — the "ligand plus everything within R" pocket case;
     /// selection is by atom, with no residue completion).
+    /// `widths_angstrom`, when given, must have one entry per atom (0.0 =
+    /// point charge, matching [`ferric_scf::qmmm::QmmmAtom`]'s default).
+    /// Ignored for atoms that end up in the QM region, exactly like `charges`.
     #[new]
-    #[pyo3(signature = (symbols, coords_angstrom, charges, qm_indices=None, qm_seeds=None, qm_radius_angstrom=None, charge=0, multiplicity=1))]
+    #[pyo3(signature = (symbols, coords_angstrom, charges, qm_indices=None, qm_seeds=None, qm_radius_angstrom=None, charge=0, multiplicity=1, widths_angstrom=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         symbols: Vec<String>,
@@ -354,6 +383,7 @@ impl PyQmmmSystem {
         qm_radius_angstrom: Option<f64>,
         charge: i32,
         multiplicity: usize,
+        widths_angstrom: Option<Vec<f64>>,
     ) -> PyResult<Self> {
         use ferric_scf::qmmm::{QmSelection, QmmmAtom, QmmmSystem};
         if symbols.len() != coords_angstrom.len() || symbols.len() != charges.len() {
@@ -361,6 +391,14 @@ impl PyQmmmSystem {
                 "symbols ({}), coords_angstrom ({}) and charges ({}) must have the same length",
                 symbols.len(), coords_angstrom.len(), charges.len()
             )));
+        }
+        if let Some(w) = &widths_angstrom {
+            if w.len() != symbols.len() {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "widths_angstrom ({}) must have one entry per atom ({})",
+                    w.len(), symbols.len()
+                )));
+            }
         }
         if let Some((i, bad)) = coords_angstrom.iter().enumerate().find(|(_, c)| c.len() != 3) {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -371,9 +409,18 @@ impl PyQmmmSystem {
             .iter()
             .zip(coords_angstrom.iter())
             .zip(charges.iter())
-            .map(|((sym, c), &q)| {
+            .enumerate()
+            .map(|(i, ((sym, c), &q))| {
                 let zn = ferric_core::elements::symbol_to_z(sym).unwrap_or(0);
-                QmmmAtom::new(sym.clone(), zn, c[0] * ANGSTROM_TO_BOHR, c[1] * ANGSTROM_TO_BOHR, c[2] * ANGSTROM_TO_BOHR, q)
+                let width_bohr = widths_angstrom
+                    .as_ref()
+                    .map(|w| w[i] * ANGSTROM_TO_BOHR)
+                    .unwrap_or(0.0);
+                QmmmAtom::new_smeared(
+                    sym.clone(), zn,
+                    c[0] * ANGSTROM_TO_BOHR, c[1] * ANGSTROM_TO_BOHR, c[2] * ANGSTROM_TO_BOHR,
+                    q, width_bohr,
+                )
             })
             .collect();
         let selection = match (qm_indices, qm_seeds, qm_radius_angstrom) {
@@ -417,13 +464,24 @@ impl PyQmmmSystem {
 
     /// The QM region (plus link hydrogens, appended last) as a `Molecule`.
     fn qm_molecule(&self) -> PyMolecule { PyMolecule { inner: self.inner.to_qm_molecule() } }
-    /// Every embedding charge as `(q, x, y, z)` in **Bohr** — directly
+    /// Every POINT embedding charge as `(q, x, y, z)` in **Bohr** — directly
     /// usable as `point_charges=` for `run_rhf`/`run_uhf`/`run_optimize`.
-    /// Atom-centred charges first, then any RC/RCD midpoint charges.
+    /// Gaussian-smeared charges (`width > 0`) are NOT included here — see
+    /// `smeared_charges()`.
     fn point_charges(&self) -> Vec<(f64, f64, f64, f64)> {
         self.inner
             .to_external_potential()
             .map(|ep| ep.point_charges.iter().map(|pc| (pc.q, pc.x, pc.y, pc.z)).collect())
+            .unwrap_or_default()
+    }
+    /// Every Gaussian-smeared embedding charge as `(q, x, y, z, width_bohr)`
+    /// — directly usable as `smeared_charges=` for `run_rhf`/`run_uhf`.
+    /// Point charges (`width == 0`) are NOT included here — see
+    /// `point_charges()`.
+    fn smeared_charges(&self) -> Vec<(f64, f64, f64, f64, f64)> {
+        self.inner
+            .to_external_potential()
+            .map(|ep| ep.smeared_charges.iter().map(|sc| (sc.q, sc.x, sc.y, sc.z, sc.width)).collect())
             .unwrap_or_default()
     }
     /// Full-structure indices of the QM atoms (ascending; link atoms excluded).
