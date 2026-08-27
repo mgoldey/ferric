@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .pdb2pqr_runner import run_pdb2pqr
-from .pqr_parser import ANGSTROM_TO_BOHR, parse_pqr
+from .pqr_parser import ANGSTROM_TO_BOHR, parse_pqr, parse_pqr_atoms
 
 PointCharge = tuple[float, float, float, float]
 
@@ -16,10 +16,19 @@ class PocketCharges:
     """A pocket's classical point charges, derived once and reusable across
     many ligand evaluations — cheap to construct, plain-data (picklable),
     safe to pass into multiprocessing/BoTorch-style optimization workers.
+
+    `residue_ids`/`atom_names`/`res_names`, when present, are parallel to
+    `charges` (same length, same order) and default to `None` — the old
+    construction path (charges/source_pdb/ff only) is unchanged, and only
+    `derive_pocket_charges` populates them (needed by lane C for OpenMM
+    parametrisation and by `QmmmSystem`'s whole-residue selection).
     """
     charges: list[PointCharge]
     source_pdb: Path
     ff: str
+    residue_ids: list[int] | None = None
+    atom_names: list[str] | None = None
+    res_names: list[str] | None = None
     n_charges: int = field(init=False)
 
     def __post_init__(self):
@@ -81,6 +90,48 @@ def derive_pocket_charges(
 
     Call this once per pocket, then reuse the result across many ligand
     evaluations (`embed_ligand`) instead of re-running PDB2PQR per candidate.
+
+    Unlike `pocket_point_charges`, this also runs PDB2PQR through
+    `parse_pqr_atoms` to populate `residue_ids`/`atom_names`/`res_names` —
+    residue ids are assigned by first-appearance order of the PQR's
+    `(chain-less) res_seq`, not the raw `res_seq` value itself (which need
+    not be 0-based or contiguous), so they are ready to feed straight into
+    `QmSelection::WithinRadiusWholeResidues`.
     """
-    charges = pocket_point_charges(pocket_pdb, ff, ligand_coords_angstrom, overlap_cutoff_angstrom)
-    return PocketCharges(charges=charges, source_pdb=Path(pocket_pdb), ff=ff)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        pqr_path = Path(tmpdir) / "pocket.pqr"
+        run_pdb2pqr(pocket_pdb, pqr_path, ff=ff)
+        pqr_atoms = parse_pqr_atoms(pqr_path)
+
+    if not pqr_atoms:
+        raise RuntimeError(f"PDB2PQR produced no ATOM/HETATM charges for {pocket_pdb}")
+
+    if ligand_coords_angstrom:
+        ligand_bohr = [(x * ANGSTROM_TO_BOHR, y * ANGSTROM_TO_BOHR, z * ANGSTROM_TO_BOHR)
+                        for x, y, z in ligand_coords_angstrom]
+        cutoff_bohr = overlap_cutoff_angstrom * ANGSTROM_TO_BOHR
+        pqr_atoms = [a for a in pqr_atoms if not _too_close(a.x, a.y, a.z, ligand_bohr, cutoff_bohr)]
+        if not pqr_atoms:
+            raise RuntimeError(
+                "All pocket charges were filtered out as ligand-overlapping — "
+                "check ligand_coords_angstrom/overlap_cutoff_angstrom."
+            )
+
+    # Residue ids by first-appearance order of res_seq (stable, 0-based,
+    # contiguous — independent of whatever numbering the source PDB used).
+    seen: dict[int, int] = {}
+    residue_ids: list[int] = []
+    for a in pqr_atoms:
+        if a.res_seq not in seen:
+            seen[a.res_seq] = len(seen)
+        residue_ids.append(seen[a.res_seq])
+
+    charges = [(a.q, a.x, a.y, a.z) for a in pqr_atoms]
+    return PocketCharges(
+        charges=charges,
+        source_pdb=Path(pocket_pdb),
+        ff=ff,
+        residue_ids=residue_ids,
+        atom_names=[a.name for a in pqr_atoms],
+        res_names=[a.res_name for a in pqr_atoms],
+    )

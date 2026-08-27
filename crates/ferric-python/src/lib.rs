@@ -341,9 +341,14 @@ impl PyQmmmSystem {
     /// Select the QM region with EITHER `qm_indices` OR `qm_seeds` +
     /// `qm_radius_angstrom` (every atom within that distance of any seed,
     /// plus the seeds — the "ligand plus everything within R" pocket case;
-    /// selection is by atom, with no residue completion).
+    /// selection is by atom, with no residue completion by default). Add
+    /// `residue_ids` (one entry per atom, `PocketCharges.residue_ids` shape)
+    /// alongside `qm_seeds`/`qm_radius_angstrom` to pull in whole residues
+    /// instead — a residue joins if ANY of its atoms is within radius.
+    /// `residue_ids` together with `qm_indices` is an error (an explicit
+    /// index list has no notion of "whole residue" to complete).
     #[new]
-    #[pyo3(signature = (symbols, coords_angstrom, charges, qm_indices=None, qm_seeds=None, qm_radius_angstrom=None, charge=0, multiplicity=1))]
+    #[pyo3(signature = (symbols, coords_angstrom, charges, qm_indices=None, qm_seeds=None, qm_radius_angstrom=None, residue_ids=None, charge=0, multiplicity=1))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         symbols: Vec<String>,
@@ -352,6 +357,7 @@ impl PyQmmmSystem {
         qm_indices: Option<Vec<usize>>,
         qm_seeds: Option<Vec<usize>>,
         qm_radius_angstrom: Option<f64>,
+        residue_ids: Option<Vec<usize>>,
         charge: i32,
         multiplicity: usize,
     ) -> PyResult<Self> {
@@ -376,12 +382,18 @@ impl PyQmmmSystem {
                 QmmmAtom::new(sym.clone(), zn, c[0] * ANGSTROM_TO_BOHR, c[1] * ANGSTROM_TO_BOHR, c[2] * ANGSTROM_TO_BOHR, q)
             })
             .collect();
-        let selection = match (qm_indices, qm_seeds, qm_radius_angstrom) {
-            (Some(idx), None, None) => QmSelection::Indices(idx),
-            (None, Some(seeds), Some(r)) => QmSelection::WithinRadius { seeds, radius: r * ANGSTROM_TO_BOHR },
+        let selection = match (qm_indices, qm_seeds, qm_radius_angstrom, residue_ids) {
+            (Some(idx), None, None, None) => QmSelection::Indices(idx),
+            (None, Some(seeds), Some(r), None) => {
+                QmSelection::WithinRadius { seeds, radius: r * ANGSTROM_TO_BOHR }
+            }
+            (None, Some(seeds), Some(r), Some(residue_ids)) => {
+                QmSelection::WithinRadiusWholeResidues { seeds, radius: r * ANGSTROM_TO_BOHR, residue_ids }
+            }
             _ => {
                 return Err(pyo3::exceptions::PyValueError::new_err(
-                    "select the QM region with EITHER qm_indices OR qm_seeds + qm_radius_angstrom",
+                    "select the QM region with EITHER qm_indices OR qm_seeds + \
+                     qm_radius_angstrom (+ optional residue_ids)",
                 ))
             }
         };

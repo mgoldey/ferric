@@ -56,7 +56,8 @@ class QmmmSystem:
     """A QM/MM partition: full structure split into a QM region and fixed MM point charges.
 
     Constructor takes Angstrom; point_charges() returns Bohr (the units run_rhf/run_optimize
-    take for point_charges=). Select the QM region with qm_indices OR qm_seeds + qm_radius_angstrom.
+    take for point_charges=). Select the QM region with qm_indices OR qm_seeds + qm_radius_angstrom
+    (+ optional residue_ids to pull in whole residues instead of individual atoms).
     """
 
     def __init__(
@@ -67,6 +68,7 @@ class QmmmSystem:
         qm_indices: list[int] | None = None,
         qm_seeds: list[int] | None = None,
         qm_radius_angstrom: float | None = None,
+        residue_ids: list[int] | None = None,
         charge: int = 0,
         multiplicity: int = 1,
     ) -> None: ...

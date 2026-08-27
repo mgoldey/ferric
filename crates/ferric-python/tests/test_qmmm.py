@@ -114,6 +114,35 @@ def test_qmmm_system_by_radius_selects_neighbours():
     assert sys.mm_indices() == [3, 4]
 
 
+def test_qmmm_system_residue_ids_selects_whole_residues():
+    ref = _load("water_sto-3g_qmmm_two_charges.json")
+    symbols = [a["symbol"] for a in ref["atoms"]] + ["X", "X"]
+    coords_bohr = [a["xyz_bohr"] for a in ref["atoms"]] + [c["xyz_bohr"] for c in ref["mm_charges"]]
+    coords_ang = [[v / BOHR_PER_ANGSTROM for v in xyz] for xyz in coords_bohr]
+    charges = [0, 0, 0, 1.0, -1.0]
+    # residue_ids = one atom per residue must reproduce the by-atom result
+    # (the exactness anchor): same seeds/radius, same split.
+    sys = ferric.QmmmSystem(
+        symbols, coords_ang, charges, qm_seeds=[0], qm_radius_angstrom=1.2,
+        residue_ids=[0, 1, 2, 3, 4],
+    )
+    assert sys.qm_indices() == [0, 1, 2]
+    assert sys.mm_indices() == [3, 4]
+
+
+def test_qmmm_system_residue_ids_and_qm_indices_conflict():
+    ref = _load("water_sto-3g_qmmm_two_charges.json")
+    symbols = [a["symbol"] for a in ref["atoms"]] + ["X", "X"]
+    coords_bohr = [a["xyz_bohr"] for a in ref["atoms"]] + [c["xyz_bohr"] for c in ref["mm_charges"]]
+    coords_ang = [[v / BOHR_PER_ANGSTROM for v in xyz] for xyz in coords_bohr]
+    charges = [0, 0, 0, 1.0, -1.0]
+    with pytest.raises(ValueError):
+        ferric.QmmmSystem(
+            symbols, coords_ang, charges, qm_indices=[0, 1, 2],
+            residue_ids=[0, 1, 2, 3, 4],
+        )
+
+
 def test_qmmm_system_point_charges_feed_run_rhf_to_the_pyscf_reference():
     ref = _load("water_sto-3g_qmmm_plus_lonepair.json")
     sys = _water_ref_system(ref)
