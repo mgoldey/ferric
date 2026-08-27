@@ -231,8 +231,22 @@ fn dihedral_and_gradient(coords: &Array2<f64>, i: usize, j: usize, k: usize, l: 
     let n_sq = dot(n, n);
     let kj_norm = norm(r_kj);
 
-    let cos_phi = (dot(m, n) / (m_sq.sqrt() * n_sq.sqrt())).clamp(-1.0, 1.0);
-    let mut phi = cos_phi.acos();
+    // A collinear i-j-k (or j-k-l) valence angle makes r_ij parallel to
+    // r_kj (or r_kl to r_kj), so m (or n) vanishes -- the dihedral plane,
+    // and so phi itself, is undefined there (the true derivative is
+    // singular). Without this guard, dividing by m_sq.sqrt()*n_sq.sqrt()
+    // ~ 0 produces a NaN cos_phi that poisons BOTH the energy (via
+    // arg.cos() below) and the gradient, even though the gradient's own
+    // fallback guard further down looks defensive -- phi itself must be
+    // made finite first. phi = 0 is an arbitrary but well-defined choice
+    // (same convention as the zero-gradient fallback: the term contributes
+    // a finite, if physically meaningless, energy rather than NaN).
+    let mut phi = if m_sq > 1e-20 && n_sq > 1e-20 {
+        let cos_phi = (dot(m, n) / (m_sq.sqrt() * n_sq.sqrt())).clamp(-1.0, 1.0);
+        cos_phi.acos()
+    } else {
+        0.0
+    };
     if dot(r_ij, n) < 0.0 {
         phi = -phi;
     }
@@ -242,6 +256,12 @@ fn dihedral_and_gradient(coords: &Array2<f64>, i: usize, j: usize, k: usize, l: 
     let mut grad_k = [0.0; 3];
     let mut grad_l = [0.0; 3];
 
+    // m/n vanish only when i-j-k (resp. j-k-l) is LINEAR (r_ij parallel to
+    // r_kj), not when phi itself is 0 or 180 deg -- a linear valence angle
+    // makes the dihedral plane, and so phi, undefined; the true derivative
+    // is singular there, and returning a zero gradient is the intentional
+    // fallback (see collinear_valence_angle_torsion_gradient_is_finite_and_zero
+    // in tests/terms_fd.rs).
     if m_sq > 1e-20 && n_sq > 1e-20 && kj_norm > 1e-20 {
         for c in 0..3 {
             grad_i[c] = (kj_norm / m_sq) * m[c];

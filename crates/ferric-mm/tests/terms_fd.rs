@@ -138,13 +138,51 @@ fn torsion_energy_hand_computed_and_gradient_vs_fd() {
 
     assert_gradient_matches_fd(&top, &coords, "torsion (generic, phi=60deg)");
 
-    // Near-degenerate dihedral geometries: 0 and 180 degrees, where the
-    // Blondel-Karplus formula must stay well-conditioned.
+    // phi = 0 and phi = 180 deg: NOT a coordinate singularity of the
+    // Bekker form (m = r_ij x r_kj and n = r_kj x r_kl vanish only when
+    // i-j-k, resp. j-k-l, is LINEAR -- a collinear VALENCE angle, not a
+    // particular dihedral value). These two geometries exercise the
+    // formula's well-conditioning through cos(phi) = +-1 (the acos branch
+    // point the atan2-free form was chosen to avoid singularities near),
+    // not the m_sq/n_sq/kj_norm fallback guard in dihedral_and_gradient --
+    // see collinear_valence_angle_torsion_gradient_is_finite_and_zero below
+    // for a test that actually triggers that guard.
     let coords_0 = array![[1.0, 0.0, -1.0], [0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 2.0]];
     assert_gradient_matches_fd(&top, &coords_0, "torsion (phi ~ 0 deg)");
 
     let coords_180 = array![[1.0, 0.0, -1.0], [0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [-1.0, 0.0, 2.0]];
     assert_gradient_matches_fd(&top, &coords_180, "torsion (phi ~ 180 deg)");
+}
+
+/// Genuinely degenerate case: i, j, k EXACTLY collinear, so r_ij is
+/// parallel to r_kj and m = r_ij x r_kj = 0 -- the dihedral plane through
+/// i-j-k is undefined, and so is phi itself (the true derivative is
+/// singular). This is the case that actually reaches
+/// dihedral_and_gradient's `m_sq > 1e-20 && n_sq > 1e-20 && kj_norm > 1e-20`
+/// guard and takes the zero-gradient fallback branch -- unlike the
+/// phi=0/180deg cases above, which stay well clear of it (m and n are both
+/// clearly nonzero there; only the ACOS argument is at a branch point).
+#[test]
+fn collinear_valence_angle_torsion_gradient_is_finite_and_zero() {
+    let torsions = vec![Torsion { i: 0, j: 1, k: 2, l: 3, periodicity: 2, k_phi: 0.05, phase: 0.0 }];
+    let top = MmTopology::new(vec![0.0; 4], lj_zero(4), vec![], vec![], torsions).unwrap();
+    // i=(0,0,-1), j=(0,0,0), k=(0,0,1): exactly collinear on the z axis.
+    let coords = array![[0.0, 0.0, -1.0], [0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 2.0]];
+
+    let e = energy(&top, &coords).unwrap();
+    assert!(e.total.is_finite(), "energy must not be NaN/inf at a linear i-j-k valence angle");
+
+    let (e2, g) = gradient(&top, &coords).unwrap();
+    assert_eq!(e2.total, e.total);
+    for row in 0..4 {
+        for c in 0..3 {
+            let v = g[(row, c)];
+            assert!(v.is_finite(), "gradient[{row},{c}] = {v} is not finite");
+            // Documented fallback: the guard leaves grad_i/j/k/l at their
+            // zero-initialized values when m_sq/n_sq/kj_norm underflow.
+            assert_eq!(v, 0.0, "gradient[{row},{c}] should be exactly the zero fallback, got {v}");
+        }
+    }
 }
 
 // ---------------------------------------------------------------------
