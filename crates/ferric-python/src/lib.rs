@@ -2214,7 +2214,12 @@ fn run_oo_rimp2(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
         memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
         ..default_cfg
     };
-    let r = oo_ri_mp2(&mol.inner, &prep, &dfbs, op, &bounds, &rhf, &cfg).map_err(make_err)?;
+    // `run_oo_rimp2` has no point_charges/external_field kwargs today (unlike
+    // run_rhf/run_uhf/run_optimize) — this Python entry point never builds an
+    // ExternalPotential, so `ext` is always None here. Adding QM/MM support to
+    // this binding is out of Lane F1's scope; this just keeps behavior
+    // unchanged after `oo_ri_mp2`'s hcore-bug fix.
+    let r = oo_ri_mp2(&mol.inner, &prep, &dfbs, op, &bounds, &rhf, &cfg, None).map_err(make_err)?;
     Ok(PyOoRiMp2Result {
         total_energy: r.total_energy,
         hf_energy: r.hf_energy,

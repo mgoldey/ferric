@@ -750,7 +750,7 @@ mod tests {
             ..Default::default()
         };
         let cs_oo = crate::oo_rimp2::oo_ri_mp2(
-            &mol, &obs, &dfbs, op, &bounds, &rhf, &oo_cfg,
+            &mol, &obs, &dfbs, op, &bounds, &rhf, &oo_cfg, None,
         ).unwrap();
 
         // UHF reference seeded from RHF MOs to land at the same singlet solution

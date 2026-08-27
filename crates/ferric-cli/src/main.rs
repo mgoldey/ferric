@@ -516,7 +516,7 @@ pub fn main() {
         "rimp2" => run_rimp2(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
         "lmp2" => run_lmp2(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
         "mp3" => run_mp3(&cfg, &mol, &bs, &prep, op, &result),
-        "oo-rimp2" => run_oo_rimp2(&cfg, &mol, &bs, &prep, op, &bounds, &result, budget_bytes),
+        "oo-rimp2" => run_oo_rimp2(&cfg, &mol, &bs, &prep, op, &bounds, &result, budget_bytes, rhf_config.external_potential.as_ref()),
         "att-rimp2" => run_att_rimp2(&cfg, &mol, &bs, &prep, &result, budget_bytes),
         "mp2-v" => run_mp2_v(&cfg, &mol, &bs, &prep, &result, budget_bytes),
         "rs-mp2-rpa" => run_rs_mp2_rpa(&cfg, &mol, &bs, &prep, &result, budget_bytes),
@@ -716,6 +716,7 @@ fn run_oo_rimp2(
     bounds: &SchwarzBounds,
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
 ) {
     let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
@@ -732,7 +733,7 @@ fn run_oo_rimp2(
         verbose: cfg.scf.verbose,
         ..Default::default()
     };
-    let oo_result = oo_ri_mp2(mol, prep, &dfbs, op, bounds, result, &oo_config)
+    let oo_result = oo_ri_mp2(mol, prep, &dfbs, op, bounds, result, &oo_config, ext)
         .unwrap_or_else(|e| {
             eprintln!("error: {e}");
             std::process::exit(1);
@@ -3035,7 +3036,7 @@ fn run_optimize(
                 ..Default::default()
             };
             let opt_result = ferric_mp2::optimize::optimize_geometry_rimp2(
-                mol, bs, &aux_bs, op, &mp2_config, &opt_config,
+                mol, bs, &aux_bs, op, &mp2_config, &opt_config, rhf_config.external_potential.as_ref(),
             )
             .unwrap_or_else(|e| {
                 eprintln!("error during RI-MP2 optimization: {e}");
