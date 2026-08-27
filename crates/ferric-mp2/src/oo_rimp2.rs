@@ -15,6 +15,7 @@
 
 use crate::orbital_rotation::cayley_rotation;
 use crate::rimp2::{active_occ, cholesky_inverse_sqrt};
+use ferric_core::external_potential::ExternalPotential;
 use ferric_core::mol::Molecule;
 use ferric_core::orbitals::OrbitalSpace;
 use ferric_core::FerricError;
@@ -260,14 +261,33 @@ fn compute_rimp2_with_orbitals(
 /// `rhf::resolve_three_index_budget`) — used ONLY to size the
 /// `build_jk_with_pool` reduction band (`reduce::resolve_band_bytes`), never
 /// affecting the result.
+///
+/// `vnn` is the FULL classical nuclear-repulsion-like constant: plain
+/// `mol.nuclear_repulsion()` in vacuum, or (when an external potential is
+/// present) that PLUS `ext.charge_nuclear_energy(mol) +
+/// ext.field_nuclear_energy(mol)` — the same three-term sum
+/// `ferric_scf::driver::prepare_scf_env` folds into its own `vnn` once before
+/// the SCF loop (see that module). Passing plain `mol.nuclear_repulsion()`
+/// here when `ext` is Some silently drops the classical charge-nuclear/
+/// field-nuclear terms — this was a bug (found together with the hcore-only
+/// bug this function's caller, `oo_ri_mp2`, fixes): the ~1.6 Ha spurious
+/// energy lowering it produced is NOT a small missing correction, because an
+/// UNCONSTRAINED Cayley orbital rotation can otherwise "discover" that
+/// increasing the (uncompensated, missing) attractive charge-electron
+/// one-electron term without the offsetting classical repulsion is
+/// variationally favorable, collapsing well past any physical stationary
+/// point. `vnn` must be computed ONCE by the caller (it does not depend on
+/// the orbitals `c`) and threaded into every `compute_hf_energy` call for a
+/// given `oo_ri_mp2`/`energy_at_kappa` run — never recomputed per call from
+/// `mol` alone once `ext` is `Some`.
 #[allow(clippy::too_many_arguments)]
 fn compute_hf_energy(
-    mol: &Molecule,
     prep: &PreparedBasis,
     bounds: &SchwarzBounds,
     c: &Array2<f64>,
     nocc_total: usize,
     h: &Array2<f64>,
+    vnn: f64,
     pool: &EnginePool,
     ooc_budget: usize,
 ) -> Result<(f64, Array2<f64>, Array2<f64>), FerricError> {
@@ -301,7 +321,6 @@ fn compute_hf_energy(
         .flat_map(|i| (0..n).map(move |j| (i, j)))
         .map(|(i, j)| 0.5 * d[(i, j)] * hpf[(i, j)])
         .sum();
-    let vnn = mol.nuclear_repulsion();
     let e_hf = e_elec + vnn;
 
     Ok((e_hf, f, d))
@@ -1062,6 +1081,7 @@ pub fn oo_ri_mp2(
     bounds: &SchwarzBounds,
     rhf: &ScfResult,
     config: &OoRiMp2Config,
+    ext: Option<&ExternalPotential>,
 ) -> Result<OoRiMp2Result, FerricError> {
     let nbas = obs.nbasis();
     let nelec = mol.nelec() as usize;
@@ -1077,8 +1097,24 @@ pub fn oo_ri_mp2(
     // env/auto-detect work for an answer that cannot change mid-run.
     let budget_bytes = ferric_core::memory::resolve_budget_bytes(config.memory_budget_bytes);
 
-    // One-electron integrals (fixed)
-    let h = oneelectron::hcore(obs);
+    // One-electron integrals (fixed). `ext = None` is byte-for-byte identical
+    // to the pre-fix `oneelectron::hcore(obs)` call (see
+    // `hcore_with_external`'s doc comment) — this was a bug, not a design
+    // choice: OO-MP2 rebuilt the bare hcore here and at `energy_at_kappa`,
+    // silently dropping any external potential the caller's `RhfConfig` set,
+    // even though `rhf` (the starting-orbital SCF result passed in) was
+    // itself solved WITH the potential. Every downstream `compute_hf_energy`
+    // call in this function reuses this one `h`.
+    let h = oneelectron::hcore_with_external(obs, ext)?;
+    // Classical constant: plain nuclear repulsion in vacuum, or (with `ext`)
+    // PLUS the charge-nuclear/field-nuclear terms — see `compute_hf_energy`'s
+    // doc comment for why this must be threaded explicitly rather than
+    // recomputed from `mol` alone (a second, independent bug from the hcore
+    // one: an uncompensated one-electron attraction with no offsetting
+    // classical repulsion let the unconstrained Cayley rotation collapse to a
+    // spuriously low, unphysical stationary point).
+    let vnn = mol.nuclear_repulsion()
+        + ext.map(|e| e.charge_nuclear_energy(mol) + e.field_nuclear_energy(mol)).unwrap_or(0.0);
 
     // AO-side invariants: built once, reused every iteration + backtrack.
     // Thread the config budget (M1 resolver) rather than the env-only default.
@@ -1097,7 +1133,7 @@ pub fn oo_ri_mp2(
     let mut c = rhf.mos_r().clone();
 
     // Initial energies
-    let (mut e_hf, mut f_ao, _d) = compute_hf_energy(mol, obs, bounds, &c, nocc_total, &h, &pool, budget_bytes)?;
+    let (mut e_hf, mut f_ao, _d) = compute_hf_energy(obs, bounds, &c, nocc_total, &h, vnn, &pool, budget_bytes)?;
     let mut eps = orbital_energies(&c, &f_ao);
     let (mut e_mp2, mut b_ov) = compute_rimp2_with_orbitals(&ao, &c, &eps, &orb)?;
     let mut total_energy = e_hf + e_mp2;
@@ -1230,7 +1266,7 @@ pub fn oo_ri_mp2(
 
         // Evaluate energy at the new (possibly DIIS-extrapolated) orbitals
         let (ehf, fao, _d) =
-            compute_hf_energy(mol, obs, bounds, &c_new, nocc_total, &h, &pool, budget_bytes)?;
+            compute_hf_energy(obs, bounds, &c_new, nocc_total, &h, vnn, &pool, budget_bytes)?;
         let epsnew = orbital_energies(&c_new, &fao);
         let (emp2, bov) = compute_rimp2_with_orbitals(&ao, &c_new, &epsnew, &orb)?;
         let total_new = ehf + emp2;
@@ -1263,7 +1299,7 @@ pub fn oo_ri_mp2(
                 let u2 = cayley_rotation(&k)?;
                 bt_c = c.dot(&u2);
                 let (eh, fa, _) =
-                    compute_hf_energy(mol, obs, bounds, &bt_c, nocc_total, &h, &pool, budget_bytes)?;
+                    compute_hf_energy(obs, bounds, &bt_c, nocc_total, &h, vnn, &pool, budget_bytes)?;
                 let en = orbital_energies(&bt_c, &fa);
                 let (em, bo) = compute_rimp2_with_orbitals(&ao, &bt_c, &en, &orb)?;
                 bt_total = eh + em;
@@ -1374,11 +1410,12 @@ pub fn energy_at_kappa(
 ) -> Result<f64, FerricError> {
     let nocc_total = orb.nocc_total;
     let h = oneelectron::hcore(obs);
+    let vnn = mol.nuclear_repulsion();
     let ao = OoRiMp2AoTensors::build(obs, dfbs, op)?;
     let u = cayley_rotation(kappa)?;
     let c_rot = c_init.dot(&u);
     let pool = EnginePool::new(bounds.op, obs, 1e-14)?;
-    let (e_hf, f_ao, _) = compute_hf_energy(mol, obs, bounds, &c_rot, nocc_total, &h, &pool, ferric_core::memory::resolve_budget_bytes(None))?;
+    let (e_hf, f_ao, _) = compute_hf_energy(obs, bounds, &c_rot, nocc_total, &h, vnn, &pool, ferric_core::memory::resolve_budget_bytes(None))?;
     let eps = orbital_energies(&c_rot, &f_ao);
     let (e_mp2, _) = compute_rimp2_with_orbitals(&ao, &c_rot, &eps, orb)?;
     Ok(e_hf + e_mp2)
@@ -1519,7 +1556,7 @@ mod tests {
         let h = oneelectron::hcore(&obs);
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let pool = EnginePool::new(op, &obs, 1e-14).unwrap();
-        let (_e_hf, f_ao, _) = compute_hf_energy(&_mol, &obs, &bounds, c, nocc_total, &h, &pool, ferric_core::memory::resolve_budget_bytes(None)).unwrap();
+        let (_e_hf, f_ao, _) = compute_hf_energy(&obs, &bounds, c, nocc_total, &h, _mol.nuclear_repulsion(), &pool, ferric_core::memory::resolve_budget_bytes(None)).unwrap();
         let eps = orbital_energies(c, &f_ao);
         let (_e, b_flat) = compute_rimp2_with_orbitals(&ao, c, &eps, &orb).unwrap();
 
@@ -1561,7 +1598,7 @@ mod tests {
         let h = oneelectron::hcore(&obs);
         let ao = OoRiMp2AoTensors::build(&obs, &dfbs, op).unwrap();
         let pool = EnginePool::new(op, &obs, 1e-14).unwrap();
-        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h, &pool, ferric_core::memory::resolve_budget_bytes(None)).unwrap();
+        let (_e_hf, f_ao, _) = compute_hf_energy(&obs, &bounds, c, nocc_total, &h, mol.nuclear_repulsion(), &pool, ferric_core::memory::resolve_budget_bytes(None)).unwrap();
         let eps = orbital_energies(c, &f_ao);
         let (_e, b_flat) = compute_rimp2_with_orbitals(&ao, c, &eps, &orb).unwrap();
 
@@ -1647,6 +1684,7 @@ mod tests {
             &bounds,
             &rhf,
             &OoRiMp2Config::default(),
+            None,
         )
         .unwrap();
 
@@ -1712,7 +1750,7 @@ mod tests {
         assert!(mol.nelec() as usize / 2 > 1, "need nocc > 1 or occ-occ is vacuous");
 
         let oo = oo_ri_mp2(
-            &mol, &obs, &dfbs, op, &bounds, &rhf, &OoRiMp2Config::default(),
+            &mol, &obs, &dfbs, op, &bounds, &rhf, &OoRiMp2Config::default(), None,
         )
         .unwrap();
         assert!(oo.converged, "OO must converge for this diagnostic to mean anything");
@@ -1725,7 +1763,7 @@ mod tests {
         let h = oneelectron::hcore(&obs);
         let pool = EnginePool::new(bounds.op, &obs, 1e-14).unwrap();
         let (_e, f_ao, _d) =
-            compute_hf_energy(&mol, &obs, &bounds, c, nocc, &h, &pool, 0).unwrap();
+            compute_hf_energy(&obs, &bounds, c, nocc, &h, mol.nuclear_repulsion(), &pool, 0).unwrap();
         let f_mo = c.t().dot(&f_ao).dot(c);
         let n = f_mo.nrows();
 
@@ -1806,7 +1844,7 @@ mod tests {
         let h = oneelectron::hcore(&obs);
         let ao = OoRiMp2AoTensors::build(&obs, &dfbs, op).unwrap();
         let pool = EnginePool::new(op, &obs, 1e-14).unwrap();
-        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h, &pool, ferric_core::memory::resolve_budget_bytes(None)).unwrap();
+        let (_e_hf, f_ao, _) = compute_hf_energy(&obs, &bounds, c, nocc_total, &h, mol.nuclear_repulsion(), &pool, ferric_core::memory::resolve_budget_bytes(None)).unwrap();
         let eps = orbital_energies(c, &f_ao);
         let (_e_mp2, b_ov) = compute_rimp2_with_orbitals(&ao, c, &eps, &orb).unwrap();
 
@@ -1938,7 +1976,7 @@ mod tests {
         let h = oneelectron::hcore(&obs);
         let ao = OoRiMp2AoTensors::build(&obs, &dfbs, op).unwrap();
         let pool = EnginePool::new(op, &obs, 1e-14).unwrap();
-        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h, &pool, ferric_core::memory::resolve_budget_bytes(None)).unwrap();
+        let (_e_hf, f_ao, _) = compute_hf_energy(&obs, &bounds, c, nocc_total, &h, mol.nuclear_repulsion(), &pool, ferric_core::memory::resolve_budget_bytes(None)).unwrap();
         let eps = orbital_energies(c, &f_ao);
         let (_e_mp2, b_ov) = compute_rimp2_with_orbitals(&ao, c, &eps, &orb).unwrap();
 
@@ -2048,7 +2086,7 @@ mod tests {
             energy_conv: 1e-10,
             ..Default::default()
         };
-        let oo = oo_ri_mp2(&mol, &obs, &dfbs, op, &bounds, &rhf, &config).unwrap();
+        let oo = oo_ri_mp2(&mol, &obs, &dfbs, op, &bounds, &rhf, &config, None).unwrap();
         assert!(
             oo.converged,
             "OO-RI-MP2 H2/cc-pVDZ did not converge: {} iters, |g|={:.2e}",
@@ -2073,7 +2111,7 @@ mod tests {
         let h = oneelectron::hcore(&obs);
         let ao = OoRiMp2AoTensors::build(&obs, &dfbs, op).unwrap();
         let pool = EnginePool::new(op, &obs, 1e-14).unwrap();
-        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h, &pool, ferric_core::memory::resolve_budget_bytes(None)).unwrap();
+        let (_e_hf, f_ao, _) = compute_hf_energy(&obs, &bounds, c, nocc_total, &h, mol.nuclear_repulsion(), &pool, ferric_core::memory::resolve_budget_bytes(None)).unwrap();
         let eps = orbital_energies(c, &f_ao);
         let (_e_mp2, b_ov) = compute_rimp2_with_orbitals(&ao, c, &eps, &orb).unwrap();
         let naux = dfbs.nbasis();
@@ -2179,7 +2217,7 @@ mod tests {
         .unwrap();
 
         let config = OoRiMp2Config::default();
-        let oo = oo_ri_mp2(&mol, &obs, &dfbs, op, &bounds, &rhf, &config).unwrap();
+        let oo = oo_ri_mp2(&mol, &obs, &dfbs, op, &bounds, &rhf, &config, None).unwrap();
 
         eprintln!("H2O RI-MP2 total:    {:.10}", ri.total_energy);
         eprintln!(
@@ -2289,7 +2327,7 @@ mod tests {
         let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
 
         let config = OoRiMp2Config::default();
-        let oo = oo_ri_mp2(&mol, &obs, &dfbs, op, &bounds, &rhf, &config).unwrap();
+        let oo = oo_ri_mp2(&mol, &obs, &dfbs, op, &bounds, &rhf, &config, None).unwrap();
         assert!(
             oo.converged,
             "OO-RI-MP2 H2O (psi4 geometry) did not converge: {} iters, |g|={:.2e}",
@@ -2348,7 +2386,7 @@ mod tests {
 
         // MP2 energy + b_ov identical.
         let pool = EnginePool::new(op, &obs, 1e-14).unwrap();
-        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h, &pool, ferric_core::memory::resolve_budget_bytes(None)).unwrap();
+        let (_e_hf, f_ao, _) = compute_hf_energy(&obs, &bounds, c, nocc_total, &h, mol.nuclear_repulsion(), &pool, ferric_core::memory::resolve_budget_bytes(None)).unwrap();
         let eps = orbital_energies(c, &f_ao);
         let (e_ref, bov_ref) = compute_rimp2_with_orbitals(&ao_ref, c, &eps, &orb).unwrap();
         let (e_spill, bov_spill) = compute_rimp2_with_orbitals(&ao_spill, c, &eps, &orb).unwrap();
@@ -2374,7 +2412,7 @@ mod tests {
         let h = oneelectron::hcore(&obs);
         let ao = OoRiMp2AoTensors::build(&obs, &dfbs, op).unwrap();
         let pool = EnginePool::new(op, &obs, 1e-14).unwrap();
-        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h, &pool, ferric_core::memory::resolve_budget_bytes(None)).unwrap();
+        let (_e_hf, f_ao, _) = compute_hf_energy(&obs, &bounds, c, nocc_total, &h, mol.nuclear_repulsion(), &pool, ferric_core::memory::resolve_budget_bytes(None)).unwrap();
         let eps = orbital_energies(c, &f_ao);
         let (_e, b_ov) = compute_rimp2_with_orbitals(&ao, c, &eps, &orb).unwrap();
         let (t2, _) = compute_t2_and_integrals(&b_ov, &eps, nocc, nvir, nocc_total, first_occ, naux);
@@ -2548,7 +2586,7 @@ mod tests {
         let h = oneelectron::hcore(&obs);
         let ao = OoRiMp2AoTensors::build(&obs, &dfbs, op).unwrap();
         let pool = EnginePool::new(op, &obs, 1e-14).unwrap();
-        let (_e_hf, f_ao, _) = compute_hf_energy(&mol, &obs, &bounds, c, nocc_total, &h, &pool, ferric_core::memory::resolve_budget_bytes(None)).unwrap();
+        let (_e_hf, f_ao, _) = compute_hf_energy(&obs, &bounds, c, nocc_total, &h, mol.nuclear_repulsion(), &pool, ferric_core::memory::resolve_budget_bytes(None)).unwrap();
         let eps = orbital_energies(c, &f_ao);
         let (_e, b_ov) = compute_rimp2_with_orbitals(&ao, c, &eps, &orb).unwrap();
         let (t2, _) = compute_t2_and_integrals(&b_ov, &eps, nocc, nvir, nocc_total, first_occ, naux);

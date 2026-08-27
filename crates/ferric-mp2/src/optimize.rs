@@ -16,6 +16,7 @@
 use crate::gradient::total_rimp2_gradient;
 use crate::rimp2::RiMp2Config;
 use ferric_core::basis::BasisSet;
+use ferric_core::external_potential::ExternalPotential;
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::operator::Operator;
@@ -42,13 +43,14 @@ pub fn optimize_geometry_rimp2(
     op: Operator,
     mp2_config: &RiMp2Config,
     opt_config: &OptimizeConfig,
+    ext: Option<&ExternalPotential>,
 ) -> Result<RiMp2OptimizeResult, FerricError> {
     let mut current_mol = mol.clone();
     let natoms = current_mol.atoms.len();
     let n_coord = natoms * 3;
 
     let (mut energy, mut grad_arr) =
-        total_rimp2_gradient(&current_mol, obs_basis, aux_basis, op, mp2_config)?;
+        total_rimp2_gradient(&current_mol, obs_basis, aux_basis, op, mp2_config, ext)?;
     let mut grad = flatten(&grad_arr);
 
     let mut h_inv = Array2::<f64>::eye(n_coord);
@@ -93,7 +95,7 @@ pub fn optimize_geometry_rimp2(
         prev_energy = energy;
 
         let (e_new, g_new) =
-            total_rimp2_gradient(&current_mol, obs_basis, aux_basis, op, mp2_config)?;
+            total_rimp2_gradient(&current_mol, obs_basis, aux_basis, op, mp2_config, ext)?;
         energy = e_new;
         grad_arr = g_new;
         grad = flatten(&grad_arr);
@@ -169,7 +171,7 @@ mod tests {
         };
 
         let result =
-            optimize_geometry_rimp2(&mol, &obs_basis, &aux_basis, op, &mp2_config, &opt_config)
+            optimize_geometry_rimp2(&mol, &obs_basis, &aux_basis, op, &mp2_config, &opt_config, None)
                 .unwrap();
 
         assert!(result.converged);

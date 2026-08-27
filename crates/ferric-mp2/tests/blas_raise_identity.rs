@@ -163,7 +163,7 @@ fn rimp2_gradient_analytical_consistent_across_blas_thread_counts() {
     .unwrap();
     let config = RiMp2Config::default();
 
-    let run = || rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config).unwrap();
+    let run = || rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config, None).unwrap();
 
     let baseline = run();
 

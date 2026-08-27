@@ -64,6 +64,7 @@ use crate::oo_rimp2::{
 };
 use crate::rimp2::{active_occ, cholesky_inverse_sqrt, Mp2Intermediates};
 use crate::zvector::{build_imat_ri, build_x_ov};
+use ferric_core::external_potential::ExternalPotential;
 use ferric_core::mol::Molecule;
 use ferric_core::orbitals::OrbitalSpace;
 use ferric_core::FerricError;
@@ -90,6 +91,7 @@ pub fn oo_ri_mp2_gradient(
     bounds: &SchwarzBounds,
     result: &OoRiMp2Result,
     frozen_core: usize,
+    ext: Option<&ExternalPotential>,
 ) -> Result<Array2<f64>, FerricError> {
     let nbas = obs.nbasis();
     let nocc_total = (mol.nelec() / 2) as usize;
@@ -156,7 +158,10 @@ pub fn oo_ri_mp2_gradient(
     // crate::zvector::build_relaxed_w_ao's W_ij/W_ab pattern), not plain
     // MP2's diagonal-eps shortcut `0.5*(eps_p+eps_q)*dm1mo[p,q]` (which is
     // only valid when F is exactly diagonal, i.e. canonical HF orbitals).
-    let h = oneelectron::hcore(obs);
+    // `ext = None` is byte-for-byte identical to the pre-fix bare
+    // `oneelectron::hcore(obs)` call (same bug class as `oo_ri_mp2`'s hcore
+    // build — see that function's doc comment).
+    let h = oneelectron::hcore_with_external(obs, ext)?;
     let (mut jv0, mut kv0) = (Array2::zeros((nmo, nmo)), Array2::zeros((nmo, nmo)));
     let ctx = ferric_core::parallel::ParallelContext::default();
     build_jk(&ctx, obs, bounds, 1e-12, &hf_dm1, &mut jv0, &mut kv0)?;
@@ -213,7 +218,7 @@ pub fn oo_ri_mp2_gradient(
     // --- Assemble. NO vhf_s1occ term (that term exists only to cancel a
     // CPHF-response contribution that does not exist here -- see module doc).
     let zero_w = Array2::<f64>::zeros((nmo, nmo));
-    let mut grad = oneelectron_gradient(mol, obs, &dm1_total_ao, &zero_w, None)?;
+    let mut grad = oneelectron_gradient(mol, obs, &dm1_total_ao, &zero_w, ext)?;
 
     let w_overlap = &im1 - &zeta_ao;
     grad += &overlap_deriv_contract(obs, &w_overlap)?;
@@ -286,7 +291,7 @@ mod tests {
         )
         .unwrap();
         assert!(rhf.converged);
-        let oo = oo_ri_mp2(mol, &obs, &dfbs, op, &bounds, &rhf, oo_config).unwrap();
+        let oo = oo_ri_mp2(mol, &obs, &dfbs, op, &bounds, &rhf, oo_config, None).unwrap();
         assert!(
             oo.converged,
             "OO-RI-MP2 did not converge: |g|={:.2e}",
@@ -368,10 +373,10 @@ mod tests {
             },
         )
         .unwrap();
-        let oo = oo_ri_mp2(&mol, &obs, &dfbs, op, &bounds, &rhf, &oo_config).unwrap();
+        let oo = oo_ri_mp2(&mol, &obs, &dfbs, op, &bounds, &rhf, &oo_config, None).unwrap();
         assert!(oo.converged);
 
-        let analytic = oo_ri_mp2_gradient(&mol, &obs, &dfbs, op, &bounds, &oo, 0).unwrap();
+        let analytic = oo_ri_mp2_gradient(&mol, &obs, &dfbs, op, &bounds, &oo, 0, None).unwrap();
         let fd = oo_rimp2_gradient_fd(&mol, &obs_bs, &aux_bs, op, &oo_config, 1e-4);
 
         eprintln!("=== H2/cc-pVDZ OO-RI-MP2 analytic vs FD gradient ===");
@@ -437,10 +442,10 @@ mod tests {
             },
         )
         .unwrap();
-        let oo = oo_ri_mp2(&mol, &obs, &dfbs, op, &bounds, &rhf, &oo_config).unwrap();
+        let oo = oo_ri_mp2(&mol, &obs, &dfbs, op, &bounds, &rhf, &oo_config, None).unwrap();
         assert!(oo.converged);
 
-        let analytic = oo_ri_mp2_gradient(&mol, &obs, &dfbs, op, &bounds, &oo, 0).unwrap();
+        let analytic = oo_ri_mp2_gradient(&mol, &obs, &dfbs, op, &bounds, &oo, 0, None).unwrap();
         let fd = oo_rimp2_gradient_fd(&mol, &obs_bs, &aux_bs, op, &oo_config, 1e-4);
 
         eprintln!("=== H2O/STO-3G OO-RI-MP2 analytic vs FD gradient ===");
