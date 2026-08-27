@@ -103,6 +103,32 @@ class QmmmSystem:
     def boundary_scheme(self) -> str: ...
 
 
+class MmTopology:
+    """Explicit-parameter AMBER-form MM force field topology (ferric-mm). Assigns no
+    parameters of its own -- every number is caller-supplied data (see
+    tools/active_site/mm_topology.py::topology_from_openmm for one source of that data).
+    """
+
+    @staticmethod
+    def from_amber_units(
+        charges: list[float],
+        sigmas_angstrom: list[float],
+        epsilons_kcal: list[float],
+        bonds: list[tuple[int, int, float, float]],
+        angles: list[tuple[int, int, int, float, float]],
+        torsions: list[tuple[int, int, int, int, int, float, float]],
+    ) -> MmTopology:
+        """AMBER-convention units (kcal/mol, Angstrom, degrees), converted once to a.u.
+
+        bonds: (i, j, k_kcal_per_mol_per_ang2, r0_angstrom).
+        angles: (i, j, k, k_theta_kcal_per_mol_per_rad2, theta0_degrees).
+        torsions: (i, j, k, l, periodicity, k_phi_kcal_per_mol, phase_degrees).
+        """
+        ...
+
+    def n_atoms(self) -> int: ...
+
+
 class QmmmResult:
     """Result of run_qmmm. Gradients are dE/dR (Hartree/Bohr); mm_forces() is the FORCE on each charge."""
 
@@ -112,6 +138,12 @@ class QmmmResult:
     def converged(self) -> bool: ...
     @property
     def iterations(self) -> int: ...
+    @property
+    def mm_energy(self) -> dict[str, float]:
+        """MM force-field energy components (Hartree): bond/angle/torsion/lj/coulomb/total.
+        All-zero when run_qmmm was not given mm_topology=.
+        """
+        ...
 
     def qm_gradient(self) -> np.ndarray:
         """(n_qm + n_link, 3) dE/dR on the QM molecule as solved."""
@@ -122,7 +154,9 @@ class QmmmResult:
         ...
 
     def full_gradient(self) -> np.ndarray:
-        """(natoms_full, 3) dE/dR on every real atom: link rows projected onto hosts, MM forces mapped to atoms."""
+        """(natoms_full, 3) dE/dR on every real atom: link rows projected onto hosts, MM forces
+        mapped to atoms, PLUS the MM force-field gradient when mm_topology= was given.
+        """
         ...
 
 
@@ -136,8 +170,15 @@ def run_qmmm(
     level_shift: float | None = None,
     mom_after_iter: int | None = None,
     guess: str | None = None,
+    mm_topology: MmTopology | None = None,
 ) -> QmmmResult:
-    """Embedded SCF ("rhf" default or "uhf") energy + QM gradient + MM forces + full gradient."""
+    """Embedded SCF ("rhf" default or "uhf") energy + QM gradient + MM forces + full gradient.
+
+    mm_topology, if given, adds ferric-mm's AMBER-form force field under the additive QM/MM
+    convention (MM-MM bonded/nonbonded + QM-MM Lennard-Jones; no QM-MM Coulomb, already inside
+    the embedding). Omitting it is bit-identical to a topology with zero energy/gradient
+    everywhere (QmmmResult.mm_energy reports all-zero, not absent).
+    """
     ...
 
 

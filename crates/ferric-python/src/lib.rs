@@ -315,6 +315,64 @@ fn run_rhf(
 
 // ── QM/MM ──
 
+/// An explicit-parameter AMBER-form MM force field topology. Thin wrapper
+/// over `ferric_mm::MmTopology`; this class assigns no parameters of its
+/// own (see `ferric-mm`'s crate docs) — every number here is caller-supplied
+/// data, typically produced by `tools/active_site/mm_topology.py::topology_from_openmm`
+/// or a hand-built toy system.
+///
+/// Units: constructor takes AMBER-convention units (kcal/mol, Angstrom,
+/// degrees), matching most published force fields; internally converted
+/// once to Hartree/Bohr/radians.
+#[pyclass]
+#[pyo3(name = "MmTopology")]
+#[derive(Clone)]
+struct PyMmTopology { inner: ferric_mm::MmTopology }
+
+#[pymethods]
+impl PyMmTopology {
+    /// `bonds`: list of `(i, j, k_kcal_per_mol_per_ang2, r0_angstrom)`.
+    /// `angles`: list of `(i, j, k, k_theta_kcal_per_mol_per_rad2, theta0_degrees)`.
+    /// `torsions`: list of `(i, j, k, l, periodicity, k_phi_kcal_per_mol, phase_degrees)`.
+    /// `sigmas_angstrom`/`epsilons_kcal` are per-atom Lennard-Jones parameters
+    /// (Lorentz-Berthelot mixed at evaluation time).
+    #[staticmethod]
+    #[pyo3(signature = (charges, sigmas_angstrom, epsilons_kcal, bonds, angles, torsions))]
+    #[allow(clippy::too_many_arguments)]
+    fn from_amber_units(
+        charges: Vec<f64>,
+        sigmas_angstrom: Vec<f64>,
+        epsilons_kcal: Vec<f64>,
+        bonds: Vec<(usize, usize, f64, f64)>,
+        angles: Vec<(usize, usize, usize, f64, f64)>,
+        torsions: Vec<(usize, usize, usize, usize, u32, f64, f64)>,
+    ) -> PyResult<Self> {
+        if sigmas_angstrom.len() != charges.len() || epsilons_kcal.len() != charges.len() {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "MmTopology.from_amber_units: charges ({}), sigmas_angstrom ({}) and \
+                 epsilons_kcal ({}) must have the same length",
+                charges.len(),
+                sigmas_angstrom.len(),
+                epsilons_kcal.len()
+            )));
+        }
+        let lj_angstrom_kcal: Vec<(f64, f64)> =
+            sigmas_angstrom.into_iter().zip(epsilons_kcal).collect();
+        let inner = ferric_mm::MmTopology::from_amber_units(charges, lj_angstrom_kcal, bonds, angles, torsions)
+            .map_err(make_err)?;
+        Ok(Self { inner })
+    }
+
+    fn n_atoms(&self) -> usize { self.inner.n_atoms() }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "MmTopology(n_atoms={}, n_bonds={}, n_angles={}, n_torsions={})",
+            self.inner.n_atoms(), self.inner.bonds.len(), self.inner.angles.len(), self.inner.torsions.len()
+        )
+    }
+}
+
 /// A QM/MM partition: a full structure (ligand + pocket, say) split into a
 /// quantum region and fixed MM point charges, with optional link-atom capping
 /// of cut bonds and a boundary-charge scheme. Thin wrapper over
@@ -473,6 +531,7 @@ struct PyQmmmResult {
     qm_gradient_data: Array2<f64>,
     mm_forces_data: Vec<[f64; 3]>,
     full_gradient_data: Array2<f64>,
+    mm_energy_data: ferric_mm::MmEnergy,
 }
 
 #[pymethods]
@@ -498,6 +557,22 @@ impl PyQmmmResult {
     fn full_gradient<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
         PyArray2::from_array(py, &self.full_gradient_data)
     }
+    /// The MM force-field energy components (Hartree), as a dict with keys
+    /// `bond`/`angle`/`torsion`/`lj`/`coulomb`/`total`. All-zero when
+    /// `run_qmmm` was not given `mm_topology=` (no MM force field at all —
+    /// the exactness contract: omitting it and passing an all-zero
+    /// topology are indistinguishable here).
+    #[getter]
+    fn mm_energy(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
+        let d = pyo3::types::PyDict::new(py);
+        d.set_item("bond", self.mm_energy_data.bond)?;
+        d.set_item("angle", self.mm_energy_data.angle)?;
+        d.set_item("torsion", self.mm_energy_data.torsion)?;
+        d.set_item("lj", self.mm_energy_data.lj)?;
+        d.set_item("coulomb", self.mm_energy_data.coulomb)?;
+        d.set_item("total", self.mm_energy_data.total)?;
+        Ok(d.into())
+    }
     fn __repr__(&self) -> String {
         format!("QmmmResult(energy={:.10}, converged={}, n_full={})", self.energy, self.converged, self.full_gradient_data.nrows())
     }
@@ -510,7 +585,7 @@ impl PyQmmmResult {
 /// field of the fixed charges (plus the classical charge–nuclear term), and
 /// the gradients are its exact derivatives.
 #[pyfunction]
-#[pyo3(signature = (system, basis_name, method=None, max_iter=None, energy_conv=None, density_conv=None, level_shift=None, mom_after_iter=None, guess=None))]
+#[pyo3(signature = (system, basis_name, method=None, max_iter=None, energy_conv=None, density_conv=None, level_shift=None, mom_after_iter=None, guess=None, mm_topology=None))]
 #[allow(clippy::too_many_arguments)]
 fn run_qmmm(
     system: &PyQmmmSystem,
@@ -522,9 +597,10 @@ fn run_qmmm(
     level_shift: Option<f64>,
     mom_after_iter: Option<usize>,
     guess: Option<&str>,
+    mm_topology: Option<&PyMmTopology>,
 ) -> PyResult<PyQmmmResult> {
     use ferric_scf::gradient::{rhf_gradient, uhf_gradient};
-    use ferric_scf::qmmm::{full_gradient, mm_forces};
+    use ferric_scf::qmmm::{full_gradient_with_mm, mm_forces, qmmm_mm_terms};
 
     let sys = &system.inner;
     let bs = basis::bundled(basis_name).map_err(make_err)?;
@@ -563,7 +639,26 @@ fn run_qmmm(
         }
     };
     let forces = mm_forces(sys, &mol, &prep, r.density_total()).map_err(make_err)?;
-    let full = full_gradient(sys, &qm_grad, &forces).map_err(make_err)?;
+
+    let (mm_energy, full) = match mm_topology {
+        Some(top) => {
+            let n = sys.atoms.len();
+            let mut coords_full = Array2::<f64>::zeros((n, 3));
+            for (i, a) in sys.atoms.iter().enumerate() {
+                coords_full[(i, 0)] = a.x;
+                coords_full[(i, 1)] = a.y;
+                coords_full[(i, 2)] = a.z_pos;
+            }
+            let (e_mm, g_mm) = qmmm_mm_terms(sys, &top.inner, &coords_full).map_err(make_err)?;
+            let full = full_gradient_with_mm(sys, &qm_grad, &forces, &g_mm).map_err(make_err)?;
+            (e_mm, full)
+        }
+        None => {
+            let full = ferric_scf::qmmm::full_gradient(sys, &qm_grad, &forces).map_err(make_err)?;
+            (ferric_mm::MmEnergy::default(), full)
+        }
+    };
+
     Ok(PyQmmmResult {
         energy: r.energy,
         converged: r.converged,
@@ -571,6 +666,7 @@ fn run_qmmm(
         qm_gradient_data: qm_grad,
         mm_forces_data: forces,
         full_gradient_data: full,
+        mm_energy_data: mm_energy,
     })
 }
 
@@ -4546,6 +4642,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyOptimizeResult>()?;
     m.add_class::<PyQmmmSystem>()?;
     m.add_class::<PyQmmmResult>()?;
+    m.add_class::<PyMmTopology>()?;
     m.add_class::<PyFrequencyResult>()?;
     m.add_class::<PyRiMp2Result>()?;
     m.add_class::<PyOoRiMp2Result>()?;
