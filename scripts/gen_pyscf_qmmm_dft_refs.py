@@ -59,7 +59,6 @@ PYSCF_XC = {
     "pbe": "PBE,PBE",
     "b3lyp": "B3LYP",
 }
-HYBRID = {"svwn": False, "pbe": False, "b3lyp": True}
 
 
 def water_bohr():
@@ -98,7 +97,7 @@ CASES = [
 ]
 
 
-def _build_mf(mol, xc, hybrid):
+def _build_mf(mol, xc):
     mf = dft.UKS(mol) if mol.spin else dft.RKS(mol)
     mf.xc = PYSCF_XC[xc]
     mf = mf.density_fit(auxbasis="def2-universal-jkfit")
@@ -121,7 +120,7 @@ def run_case(tag, atoms, charge, spin, basis, xc, mm):
     coords = np.array([[x, y, z] for _, x, y, z in mm])
     charges = np.array([q for q, _, _, _ in mm])
 
-    mf = _build_mf(mol, xc, HYBRID[xc])
+    mf = _build_mf(mol, xc)
     mf = qmmm.mm_charge(mf, coords, charges, unit="Bohr")
     e = mf.kernel()
     assert mf.converged, tag
@@ -143,7 +142,7 @@ def run_case(tag, atoms, charge, spin, basis, xc, mm):
         atom=[(s, xyz) for s, xyz in atoms],
         basis=basis, unit="Bohr", charge=charge, spin=spin, verbose=0,
     )
-    mf0 = _build_mf(mol0, xc, HYBRID[xc])
+    mf0 = _build_mf(mol0, xc)
     e0 = mf0.kernel()
     assert mf0.converged, f"{tag}: gas phase"
 

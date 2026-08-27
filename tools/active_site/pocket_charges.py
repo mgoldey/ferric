@@ -93,10 +93,21 @@ def derive_pocket_charges(
 
     Unlike `pocket_point_charges`, this also runs PDB2PQR through
     `parse_pqr_atoms` to populate `residue_ids`/`atom_names`/`res_names` —
-    residue ids are assigned by first-appearance order of the PQR's
-    `(chain-less) res_seq`, not the raw `res_seq` value itself (which need
-    not be 0-based or contiguous), so they are ready to feed straight into
-    `QmSelection::WithinRadiusWholeResidues`.
+    ready to feed straight into `QmSelection::WithinRadiusWholeResidues`.
+
+    PQR (as PDB2PQR emits it) has no chain column, and `res_seq` restarts
+    per chain — so residue ids are assigned **by contiguous run of
+    `(res_name, res_seq)`**, never by `res_seq` (or `(res_name, res_seq)`)
+    value alone: a new residue id starts the instant this atom's
+    `(res_name, res_seq)` differs from the file's immediately preceding
+    atom, for any reason (a genuinely new residue, a `res_seq` decrease —
+    PDB2PQR's chain-break signal — or the SAME `(res_name, res_seq)` pair
+    recurring later once other residues have intervened, e.g. chain B
+    restarting at residue 1 with the same residue names as chain A).
+    Because ids only ever increment forward as the file is walked, a pair
+    seen earlier is NEVER merged back into its old run: chain A's residue
+    12 and chain B's residue 12 always get distinct ids, even though both
+    carry the same raw `res_seq`.
     """
     with tempfile.TemporaryDirectory() as tmpdir:
         pqr_path = Path(tmpdir) / "pocket.pqr"
@@ -117,14 +128,23 @@ def derive_pocket_charges(
                 "check ligand_coords_angstrom/overlap_cutoff_angstrom."
             )
 
-    # Residue ids by first-appearance order of res_seq (stable, 0-based,
-    # contiguous — independent of whatever numbering the source PDB used).
-    seen: dict[int, int] = {}
     residue_ids: list[int] = []
+    next_id = -1
+    prev_key: tuple[str, int] | None = None
     for a in pqr_atoms:
-        if a.res_seq not in seen:
-            seen[a.res_seq] = len(seen)
-        residue_ids.append(seen[a.res_seq])
+        # A residue's atoms are contiguous in the file and share the exact
+        # same (res_name, res_seq) — so a new run starts the instant this
+        # atom's (res_name, res_seq) differs from the atom immediately
+        # before it, for ANY reason (a genuinely new residue, a res_seq
+        # decrease/chain break, or a res_seq repeated under a different
+        # res_name). Ids only ever increment, so a (res_name, res_seq) pair
+        # that recurs later in the file (chain B restarting at residue 1)
+        # gets a brand-new id — it can never merge back into an earlier run.
+        key = (a.res_name, a.res_seq)
+        if key != prev_key:
+            next_id += 1
+        residue_ids.append(next_id)
+        prev_key = key
 
     charges = [(a.q, a.x, a.y, a.z) for a in pqr_atoms]
     return PocketCharges(
