@@ -132,6 +132,7 @@ def run_qmmm(
     system: QmmmSystem,
     basis_name: str,
     method: str | None = None,
+    xc: str | None = None,
     max_iter: int | None = None,
     energy_conv: float | None = None,
     density_conv: float | None = None,
@@ -139,7 +140,10 @@ def run_qmmm(
     mom_after_iter: int | None = None,
     guess: str | None = None,
 ) -> QmmmResult:
-    """Embedded SCF ("rhf" default or "uhf") energy + QM gradient + MM forces + full gradient."""
+    """Embedded SCF ("rhf" default, "uhf", "rks" or "uks") energy + QM gradient + MM forces + full gradient.
+
+    xc is required for "rks"/"uks" and rejected for "rhf"/"uhf".
+    """
     ...
 
 
