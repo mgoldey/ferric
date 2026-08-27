@@ -1,0 +1,66 @@
+{
+  "atoms": [
+    {
+      "symbol": "O",
+      "xyz_bohr": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "symbol": "H",
+      "xyz_bohr": [
+        0.0,
+        0.0,
+        1.83303434082811
+      ]
+    }
+  ],
+  "basis": "sto-3g",
+  "charge": 0,
+  "conv_tol": 1e-12,
+  "converged": true,
+  "dipole": [
+    -9.095202750941405e-16,
+    -1.0790161712382064e-15,
+    0.5837617193107338
+  ],
+  "energy": -74.37493750242146,
+  "energy_gas_phase": -74.36266919476728,
+  "method": "uhf",
+  "mm_charges": [
+    {
+      "q": 1.0,
+      "xyz_bohr": [
+        0.0,
+        0.0,
+        -6.0
+      ]
+    }
+  ],
+  "mm_gradient": [
+    [
+      -7.422805528876404e-18,
+      -7.091348405964374e-18,
+      -0.003994197750653933
+    ]
+  ],
+  "model": "electrostatic embedding, fixed point charges (pyscf.qmmm.mm_charge)",
+  "molecule": "oh",
+  "multiplicity": 2,
+  "pyscf_version": "2.13.1",
+  "qm_gradient": [
+    [
+      -3.662674310753949e-16,
+      -1.0847285353216044e-16,
+      0.05289217781997868
+    ],
+    [
+      3.7369023660426537e-16,
+      1.1556420193811497e-16,
+      -0.04889798006932233
+    ]
+  ],
+  "units": "Bohr / Hartree / a.u.; gradients are dE/dR (ferric mm_forces = -mm_gradient)"
+}
