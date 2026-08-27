@@ -56,11 +56,13 @@
 //!   (they would be double-counted). If your link atom lands within a Bohr or
 //!   so of a nonzero MM charge under `Keep`, the result is unphysical and this
 //!   module will not warn you beyond [`QmmmSystem::min_link_to_charge_distance`].
-//! - **No boundary-atom force projection.** The chain-rule force that a link
-//!   atom's gradient should project back onto its two real host atoms is not
-//!   applied. [`mm_forces`] returns forces on the *MM point charges* only —
-//!   including the off-atom midpoint charges of RC/RCD, which are listed after
-//!   the atom-centred ones in [`QmmmSystem::mm_charge_positions`] order.
+//! - **Force projection** onto real atoms is done by [`full_gradient`]: the
+//!   link-atom row of the QM gradient is chain-ruled onto its two hosts, and
+//!   the [`mm_forces`] on every embedding charge — including the off-atom
+//!   midpoint charges of RC/RCD, listed after the atom-centred ones in
+//!   [`QmmmSystem::mm_charge_positions`] order — are mapped onto the atoms
+//!   that carry them. The result is `dE/dR` over the full structure with no
+//!   MM force-field terms (none exist here).
 //! - Everything is in **Bohr / atomic units**, consistent with
 //!   [`ExternalPotential`]. Note [`Molecule::parse_xyz`] converts Ångström to
 //!   Bohr on load, so coordinates taken off a [`Molecule`] are already Bohr and
@@ -919,6 +921,105 @@ pub fn mm_forces(
         .zip(charges.iter())
         .map(|(e, &q)| [q * e[0], q * e[1], q * e[2]])
         .collect())
+}
+
+/// Gradient `dE/dR` of the QM/MM energy with respect to every **real** atom
+/// of the full structure, `(natoms_full, 3)`, assembled from the two pieces
+/// the solvers already produce:
+///
+/// - `qm_gradient`: the gradient on the QM molecule as actually solved
+///   (real QM atoms then link hydrogens, i.e. `rhf_gradient`/`uhf_gradient`/
+///   `ks_gradient_*` on [`QmmmSystem::to_qm_molecule`] with the embedding
+///   potential passed as `ext`);
+/// - `mm_forces`: the **force** on each embedding charge from [`mm_forces`],
+///   in [`QmmmSystem::mm_charge_positions`] order.
+///
+/// Three chain rules are applied:
+///
+/// 1. **Link atoms.** `R_L = (1−g)·R_Q + g·R_M`, so the link row projects
+///    as `(1−g)·∂E/∂R_L` onto the QM frontier atom and `g·∂E/∂R_L` onto the
+///    MM host. The column sums of the result equal those of the inputs (a
+///    rigid translation moves the cap rigidly).
+/// 2. **Atom-centred MM charges.** `∂E/∂R = −F` on that atom.
+/// 3. **Boundary (midpoint) charges** from RC/RCD sit at `(R_M1 + R_M2)/2`,
+///    so `−F` is split half onto each host.
+///
+/// What this does NOT contain: any MM–MM or QM–MM van der Waals term (no
+/// force field here), and any dependence of the MM *charges themselves* on
+/// geometry (fixed by construction). Rows of MM atoms with zero effective
+/// charge and no boundary role are exactly zero.
+///
+/// Verified against central finite differences of the total SCF energy with
+/// the partition rebuilt at every displaced geometry, on the RCD-treated
+/// ethane cut (`tests/qmmm.rs`).
+pub fn full_gradient(
+    system: &QmmmSystem,
+    qm_gradient: &Array2<f64>,
+    mm_forces: &[[f64; 3]],
+) -> Result<Array2<f64>, FerricError> {
+    let n_qm = system.qm_atom_count();
+    let n_link = system.link_atoms.len();
+    if qm_gradient.dim() != (n_qm + n_link, 3) {
+        return Err(FerricError::General(format!(
+            "full_gradient: qm_gradient has shape {:?}, expected ({}, 3) = {n_qm} QM atoms + \
+             {n_link} link atoms",
+            qm_gradient.dim(),
+            n_qm + n_link
+        )));
+    }
+    let charges = system.active_charges();
+    if mm_forces.len() != charges.len() {
+        return Err(FerricError::General(format!(
+            "full_gradient: {} MM force rows for {} embedding charges (use mm_forces() on \
+             the same QmmmSystem)",
+            mm_forces.len(),
+            charges.len()
+        )));
+    }
+
+    let natoms = system.atoms.len();
+    let mut full = Array2::<f64>::zeros((natoms, 3));
+
+    // 1. Real QM rows straight through; link rows onto their two hosts.
+    for (row, &full_idx) in system.qm_indices.iter().enumerate() {
+        for k in 0..3 {
+            full[(full_idx, k)] += qm_gradient[(row, k)];
+        }
+    }
+    for (l, link) in system.link_atoms.iter().enumerate() {
+        let row = n_qm + l;
+        let q_full = system.qm_indices[link.qm_atom];
+        let g = link.scale;
+        for k in 0..3 {
+            let d = qm_gradient[(row, k)];
+            full[(q_full, k)] += (1.0 - g) * d;
+            full[(link.mm_atom_full_index, k)] += g * d;
+        }
+    }
+
+    // 2./3. MM forces: atom-centred rows first, then boundary charges — the
+    // same order active_charges() produces.
+    let n_atom_centred = system
+        .mm_indices
+        .iter()
+        .filter(|&&i| system.effective_charges[i] != 0.0)
+        .count();
+    let atom_rows = system.mm_indices.iter().copied().filter(|&i| system.effective_charges[i] != 0.0);
+    for (i, f) in atom_rows.zip(mm_forces.iter()) {
+        for k in 0..3 {
+            full[(i, k)] -= f[k];
+        }
+    }
+    let boundary_rows = system.boundary_charges.iter().filter(|b| b.q != 0.0);
+    for (b, f) in boundary_rows.zip(mm_forces[n_atom_centred..].iter()) {
+        let (m1, m2) = b.hosts;
+        for k in 0..3 {
+            full[(m1, k)] -= 0.5 * f[k];
+            full[(m2, k)] -= 0.5 * f[k];
+        }
+    }
+
+    Ok(full)
 }
 
 #[cfg(test)]

@@ -19,8 +19,8 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::oneelectron;
 use ferric_integrals::operator::Operator;
 use ferric_scf::qmmm::{
-    electric_field_at_points, mm_forces, BoundaryChargeScheme, QmSelection, QmmmAtom, QmmmSystem,
-    DEFAULT_LINK_SCALE,
+    electric_field_at_points, full_gradient, mm_forces, BoundaryChargeScheme, QmSelection, QmmmAtom,
+    QmmmSystem, DEFAULT_LINK_SCALE,
 };
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
@@ -838,4 +838,185 @@ fn redistribution_errors_when_the_host_has_no_mm_neighbours() {
     assert!(sys.clone().with_boundary_charges(&[(0, 1)], BoundaryChargeScheme::RedistributedChargeDipole).is_err());
     // Deletion needs no neighbours and still works.
     assert!(sys.with_boundary_charges(&[(0, 1)], BoundaryChargeScheme::DeleteHost).is_ok());
+}
+
+// ---------------------------------------------------------------------------
+// 6. FULL GRADIENT: link-atom and boundary-charge chain rule onto real atoms.
+// ---------------------------------------------------------------------------
+
+/// Pure bookkeeping check with synthetic inputs: the link-atom row of the QM
+/// gradient must land on its two hosts as (1−g)·row on the QM frontier atom
+/// and g·row on the MM host, since R_link = (1−g)R_qm + g·R_mm.
+#[test]
+fn full_gradient_projects_the_link_atom_row_onto_its_two_hosts() {
+    let sys = capped_ethane();
+    let n_qm = sys.qm_atom_count();
+    let n_mm_charges = sys.mm_charge_positions().len();
+    let g = sys.link_atoms[0].scale;
+
+    let mut qm_grad = Array2::<f64>::zeros((n_qm + 1, 3));
+    qm_grad[(n_qm, 0)] = 1.0;
+    qm_grad[(n_qm, 1)] = 2.0;
+    qm_grad[(n_qm, 2)] = 3.0;
+    let mm_f = vec![[0.0; 3]; n_mm_charges];
+
+    let full = full_gradient(&sys, &qm_grad, &mm_f).unwrap();
+    assert_eq!(full.dim(), (8, 3));
+    // Frontier C0 is full index 0; M1 host C1 is full index 1.
+    for k in 0..3 {
+        let v = (k + 1) as f64;
+        assert!((full[(0, k)] - (1.0 - g) * v).abs() < 1e-15, "frontier row axis {k}");
+        assert!((full[(1, k)] - g * v).abs() < 1e-15, "host row axis {k}");
+    }
+    // Nothing anywhere else, and the column sums are preserved (a rigid
+    // translation of the whole system moves the link atom rigidly too).
+    for a in 2..8 {
+        for k in 0..3 {
+            assert_eq!(full[(a, k)], 0.0);
+        }
+    }
+    for k in 0..3 {
+        let s: f64 = full.column(k).sum();
+        assert!((s - (k + 1) as f64).abs() < 1e-15);
+    }
+}
+
+/// Real QM rows pass through untouched to their full-structure index, and an
+/// atom-centred MM force lands on its atom as −F (gradient convention).
+#[test]
+fn full_gradient_maps_qm_rows_and_atom_centred_mm_forces() {
+    let sys = capped_ethane();
+    let n_qm = sys.qm_atom_count();
+    let mut qm_grad = Array2::<f64>::zeros((n_qm + 1, 3));
+    // QM atom 2 (full index 4, the second H on C0).
+    qm_grad[(2, 1)] = 0.7;
+    // MM charges in mm_charge_positions order: C1, H3, H5, H7 under Keep.
+    let mut mm_f = vec![[0.0; 3]; 4];
+    mm_f[1] = [0.1, 0.2, 0.3]; // force on H3
+
+    let full = full_gradient(&sys, &qm_grad, &mm_f).unwrap();
+    assert_eq!(full[(4, 1)], 0.7);
+    assert_eq!(full[(3, 0)], -0.1);
+    assert_eq!(full[(3, 1)], -0.2);
+    assert_eq!(full[(3, 2)], -0.3);
+    assert_eq!(full.sum(), 0.7 - 0.6);
+}
+
+/// Under RC/RCD the midpoint charges are not atoms: a force on one is split
+/// half/half onto its two hosts (the midpoint is their mean).
+#[test]
+fn full_gradient_splits_midpoint_charge_forces_between_hosts() {
+    let sys = capped_ethane()
+        .with_boundary_charges(&ethane_bonds(), BoundaryChargeScheme::RedistributedChargeDipole)
+        .unwrap();
+    let n_qm = sys.qm_atom_count();
+    let qm_grad = Array2::<f64>::zeros((n_qm + 1, 3));
+    // Order: atom-centred (H3, H5, H7 — C1 is zeroed) then midpoints (C1-H3, C1-H5, C1-H7).
+    let n = sys.mm_charge_positions().len();
+    assert_eq!(n, 6);
+    let mut mm_f = vec![[0.0; 3]; n];
+    mm_f[3] = [2.0, 0.0, 0.0]; // midpoint of C1–H3
+
+    let full = full_gradient(&sys, &qm_grad, &mm_f).unwrap();
+    assert_eq!(full[(1, 0)], -1.0, "half of −F onto C1");
+    assert_eq!(full[(3, 0)], -1.0, "half of −F onto H3");
+    assert_eq!(full.sum(), -2.0);
+}
+
+/// Shape mismatches must error, not index out of bounds.
+#[test]
+fn full_gradient_rejects_mismatched_inputs() {
+    let sys = capped_ethane();
+    let n_qm = sys.qm_atom_count();
+    let ok_qm = Array2::<f64>::zeros((n_qm + 1, 3));
+    let ok_mm = vec![[0.0; 3]; sys.mm_charge_positions().len()];
+    assert!(full_gradient(&sys, &Array2::<f64>::zeros((n_qm, 3)), &ok_mm).is_err(), "missing link row");
+    assert!(full_gradient(&sys, &ok_qm, &ok_mm[..2]).is_err(), "wrong MM row count");
+}
+
+/// THE correctness check: the projected full gradient must match a central
+/// finite difference of the total QM/MM energy with respect to REAL atom
+/// positions, where every displaced geometry rebuilds the partition from
+/// scratch (link atom re-placed, RCD charges re-derived, basis re-prepared).
+/// Covers the three distinct chain-rule paths: the QM frontier atom (moves
+/// the link H by 1−g), the MM host M1 (moves the link H by g and every
+/// midpoint by ½, its own charge is zeroed), and an M2 hydrogen (moves one
+/// midpoint by ½ and carries its own shifted charge).
+#[test]
+fn full_gradient_matches_finite_difference_across_the_boundary() {
+    use ferric_scf::gradient::rhf_gradient;
+
+    let ctx = ParallelContext::default();
+    let bonds = ethane_bonds();
+    let build = |atoms: &[QmmmAtom]| -> QmmmSystem {
+        QmmmSystem::new(atoms, QmSelection::Indices(vec![0, 2, 4, 6]), 0, 1)
+            .unwrap()
+            .with_link_atoms(&bonds, DEFAULT_LINK_SCALE)
+            .unwrap()
+            .with_boundary_charges(&bonds, BoundaryChargeScheme::RedistributedChargeDipole)
+            .unwrap()
+    };
+    let energy = |atoms: &[QmmmAtom]| -> f64 {
+        let sys = build(atoms);
+        let mol = sys.to_qm_molecule();
+        let (_bs, prep, op, bounds) = setup(&mol);
+        let cfg = RhfConfig {
+            external_potential: sys.to_external_potential(),
+            density_conv: 1e-10,
+            ..Default::default()
+        };
+        let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
+        assert!(r.converged);
+        r.energy
+    };
+
+    let atoms0 = ethane_atoms();
+    let sys = build(&atoms0);
+    let mol = sys.to_qm_molecule();
+    let (_bs, prep, op, bounds) = setup(&mol);
+    let cfg = RhfConfig {
+        external_potential: sys.to_external_potential(),
+        density_conv: 1e-10,
+        ..Default::default()
+    };
+    let scf = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
+    let qm_grad = rhf_gradient(&mol, &prep, op, &bounds, &scf, cfg.external_potential.as_ref()).unwrap();
+    let mm_f = mm_forces(&sys, &mol, &prep, scf.density_total()).unwrap();
+    let full = full_gradient(&sys, &qm_grad, &mm_f).unwrap();
+
+    let h = 1e-3;
+    // (full index, axis, label)
+    for &(a, k, label) in &[
+        (0usize, 2usize, "QM frontier C0, z"),
+        (0, 0, "QM frontier C0, x"),
+        (1, 2, "MM host C1 (M1), z"),
+        (1, 1, "MM host C1 (M1), y"),
+        (3, 0, "MM hydrogen H3 (M2), x"),
+        (3, 2, "MM hydrogen H3 (M2), z"),
+    ] {
+        let mut plus = atoms0.clone();
+        let mut minus = atoms0.clone();
+        match k {
+            0 => {
+                plus[a].x += h;
+                minus[a].x -= h;
+            }
+            1 => {
+                plus[a].y += h;
+                minus[a].y -= h;
+            }
+            _ => {
+                plus[a].z_pos += h;
+                minus[a].z_pos -= h;
+            }
+        }
+        let fd = (energy(&plus) - energy(&minus)) / (2.0 * h);
+        let an = full[(a, k)];
+        let err = (an - fd).abs();
+        eprintln!("[qmmm] full gradient {label}: analytic {an:+.8e}, FD {fd:+.8e}, |Δ| {err:.2e}");
+        assert!(
+            err < 2e-6,
+            "{label}: analytic {an:+.8e} vs finite difference {fd:+.8e} (|Δ| {err:.2e})"
+        );
+    }
 }
