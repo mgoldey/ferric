@@ -385,3 +385,129 @@ def test_run_qmmm_without_mm_topology_has_zero_mm_energy():
     r = ferric.run_qmmm(sys, "sto-3g")
     e = r.mm_energy
     assert e == {"bond": 0.0, "angle": 0.0, "torsion": 0.0, "lj": 0.0, "coulomb": 0.0, "total": 0.0}
+
+
+# ── run_optimize_qmmm ──
+
+
+def test_run_optimize_qmmm_h2_in_a_field_matches_run_optimize():
+    # EXACTNESS ANCHOR: an all-QM QmmmSystem (no MM atoms) + move_mm="none"
+    # must reproduce ferric.run_optimize's energy exactly, since
+    # to_external_potential() is None either way (the literal gas-phase
+    # SCF path) and optimize_qmmm's Rust core is the SAME
+    # optimize_coordinates BFGS run_bfgs/optimize_geometry use.
+    mol = ferric.Molecule.from_xyz_string("2\nH2\nH 0 0 0\nH 0 0 1.0\n")
+    plain = ferric.run_optimize(mol, "sto-3g")
+    assert plain.converged
+
+    symbols = ["H", "H"]
+    coords = [(0.0, 0.0, 0.0), (0.0, 0.0, 1.0)]
+    charges = [0.0, 0.0]
+    sys = ferric.QmmmSystem(symbols, coords, charges, qm_indices=[0, 1])
+    assert sys.mm_indices() == []
+
+    result = ferric.run_optimize_qmmm(sys, "sto-3g", move_mm="none")
+    assert result.converged
+    assert result.steps == plain.steps
+    assert result.energy == pytest.approx(plain.energy, abs=1e-10)
+    assert len(result.energies()) == result.steps + 1
+
+
+def test_run_optimize_qmmm_capped_ethane_relaxes_the_frontier_bond():
+    symbols, coords, charges, bonds = _ethane()
+    sys = (ferric.QmmmSystem(symbols, coords, charges, qm_indices=[0, 2, 4, 6])
+           .with_link_atoms(bonds)
+           .with_boundary_charges(bonds, "rcd"))
+
+    result = ferric.run_optimize_qmmm(sys, "sto-3g", move_mm="none", max_steps=60)
+    assert result.converged
+    relaxed = result.system()
+    assert relaxed.qm_indices() == sys.qm_indices()
+    assert relaxed.mm_indices() == sys.mm_indices()
+    # The frontier C0-link-H distance should differ from the starting
+    # (exact 1.09 A scaled-position) placement once the geometry relaxes.
+    mol0 = sys.qm_molecule()
+    mol1 = relaxed.qm_molecule()
+    c0_0 = np.array(mol0.coords()[0])
+    h_0 = np.array(mol0.coords()[-1])
+    c0_1 = np.array(mol1.coords()[0])
+    h_1 = np.array(mol1.coords()[-1])
+    d0 = np.linalg.norm(h_0 - c0_0)
+    d1 = np.linalg.norm(h_1 - c0_1)
+    assert d0 != pytest.approx(d1, abs=1e-6)
+    energies = result.energies()
+    assert len(energies) == result.steps + 1
+    for a, b in zip(energies, energies[1:]):
+        assert b <= a + 1e-8
+
+
+def test_run_optimize_qmmm_full_topology_move_all_converges():
+    symbols, coords, charges, bonds = _ethane()
+    # Deliberately small LJ sigma (see the Rust vs FD comment in
+    # tests/qmmm_mm.rs / tests/qmmm_optimize.rs): ethane's nonbonded pairs
+    # sit at bonded-range separations, so a realistic 3.4/2.6 A sigma puts
+    # every pair deep in the repulsive wall and the optimizer never settles.
+    lj_sigma = [0.6, 0.6] + [0.5] * 6
+    lj_eps = [0.109, 0.109] + [0.0157] * 6
+    theta0 = math.degrees(math.radians(109.5))
+    angles = []
+    for h in (2, 4, 6):
+        angles.append((h, 0, 1, 0.06 * 627.509474, theta0))
+    for h in (3, 5, 7):
+        angles.append((h, 1, 0, 0.06 * 627.509474, theta0))
+    for a, b in [(2, 4), (2, 6), (4, 6)]:
+        angles.append((a, 0, b, 0.04 * 627.509474, theta0))
+    for a, b in [(3, 5), (3, 7), (5, 7)]:
+        angles.append((a, 1, b, 0.04 * 627.509474, theta0))
+    torsions = []
+    for hi in (2, 4, 6):
+        for hj in (3, 5, 7):
+            torsions.append((hi, 0, 1, hj, 3, 0.02 * 627.509474, 0.0))
+
+    # Bond force constants in kcal/mol/A^2, matching the Rust
+    # tests/qmmm_optimize.rs full_ethane_topology() k=0.35/0.4 Hartree/Bohr^2
+    # (converted: k_kcal = k_ha * 627.509474 / ANGSTROM_TO_BOHR^2).
+    k_cc_kcal = 61.502
+    k_ch_kcal = 70.288
+    top = ferric.MmTopology.from_amber_units(
+        charges=charges,
+        sigmas_angstrom=lj_sigma,
+        epsilons_kcal=lj_eps,
+        bonds=[(0, 1, k_cc_kcal, 1.53)]
+        + [(0, h, k_ch_kcal, 1.09) for h in (2, 4, 6)]
+        + [(1, h, k_ch_kcal, 1.09) for h in (3, 5, 7)],
+        angles=angles,
+        torsions=torsions,
+    )
+
+    sys = (ferric.QmmmSystem(symbols, coords, charges, qm_indices=[0, 2, 4, 6])
+           .with_link_atoms(bonds)
+           .with_boundary_charges(bonds, "rcd"))
+
+    result = ferric.run_optimize_qmmm(
+        sys, "sto-3g", move_mm="all", mm_topology=top, max_steps=80,
+    )
+    assert result.converged
+    energies = result.energies()
+    for a, b in zip(energies, energies[1:]):
+        assert b <= a + 1e-6
+
+
+def test_run_optimize_qmmm_move_mm_without_topology_raises():
+    # This typed error originates in the Rust qmmm::optimize_qmmm core
+    # (FerricError::General), which every other run_* binding maps through
+    # make_err() to RuntimeError -- same convention as e.g. a bad k_builder
+    # string or an unconverged-SCF report elsewhere in this module.
+    symbols, coords, charges, bonds = _ethane()
+    sys = ferric.QmmmSystem(symbols, coords, charges, qm_indices=[0, 2, 4, 6]).with_link_atoms(bonds)
+    with pytest.raises(RuntimeError, match="mm_topology"):
+        ferric.run_optimize_qmmm(sys, "sto-3g", move_mm="all")
+    with pytest.raises(RuntimeError, match="mm_topology"):
+        ferric.run_optimize_qmmm(sys, "sto-3g", move_mm=("within", 3.0))
+
+
+def test_run_optimize_qmmm_bad_move_mm_string_raises():
+    symbols, coords, charges, bonds = _ethane()
+    sys = ferric.QmmmSystem(symbols, coords, charges, qm_indices=[0, 2, 4, 6]).with_link_atoms(bonds)
+    with pytest.raises(ValueError):
+        ferric.run_optimize_qmmm(sys, "sto-3g", move_mm="everything")

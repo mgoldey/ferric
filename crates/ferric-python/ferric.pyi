@@ -187,6 +187,49 @@ def run_qmmm(
     ...
 
 
+class QmmmOptimizeResult:
+    """Result of run_optimize_qmmm."""
+
+    @property
+    def energy(self) -> float: ...
+    @property
+    def converged(self) -> bool: ...
+    @property
+    def steps(self) -> int: ...
+
+    def system(self) -> QmmmSystem:
+        """The partition at the final (optimized) geometry."""
+        ...
+
+    def energies(self) -> list[float]:
+        """Total energy (Hartree) at every step, in order (length steps + 1)."""
+        ...
+
+
+def run_optimize_qmmm(
+    system: QmmmSystem,
+    basis_name: str,
+    method: str | None = None,
+    xc: str | None = None,
+    move_mm: str | tuple[str, float] | tuple[str, list[int]] | None = None,
+    mm_topology: MmTopology | None = None,
+    max_steps: int | None = None,
+    e_conv: float | None = None,
+) -> QmmmOptimizeResult:
+    """Optimize a QmmmSystem's geometry. Real QM atoms always move; MM atoms move per move_mm.
+
+    move_mm: "none" (default, only QM atoms move), "all" (every MM atom moves too),
+    ("within", radius_angstrom) (MM atoms within that distance of any QM atom, measured once
+    at the starting geometry), or ("residues", [residue_id, ...]) (requires the system to have
+    been built with residue_ids=; ValueError otherwise). Any value other than "none"/None
+    requires mm_topology (ValueError otherwise).
+
+    method/xc follow run_qmmm's convention: "rhf" (default), "uhf", "rks", "uks"; xc is
+    required for the KS variants and rejected otherwise.
+    """
+    ...
+
+
 class BasisSet:
     """A Gaussian basis set (orbital or auxiliary/RI-fitting)."""
 
