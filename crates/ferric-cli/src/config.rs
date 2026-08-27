@@ -131,6 +131,7 @@ impl ExternalPotentialCfg {
                     z: pc.z,
                 })
                 .collect(),
+            smeared_charges: Vec::new(),
             field: self.field,
         })
     }
