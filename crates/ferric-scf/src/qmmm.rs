@@ -233,8 +233,20 @@ pub enum QmSelection {
     /// sidechain straddles the cutoff it will be cut mid-residue, which is
     /// exactly the situation link atoms exist for. A production pocket setup
     /// would normally expand the selection to whole residues first; that is
-    /// the caller's job (build the index list and use [`QmSelection::Indices`]).
+    /// the caller's job (build the index list and use [`QmSelection::Indices`]),
+    /// or use [`QmSelection::WithinRadiusWholeResidues`].
     WithinRadius { seeds: Vec<usize>, radius: f64 },
+    /// Like [`QmSelection::WithinRadius`], but a residue joins the QM region
+    /// **in full** if any of its atoms lands within `radius` of any seed —
+    /// no sidechain is cut mid-residue.
+    ///
+    /// `residue_ids[i]` is the residue index of atom `i` (`residue_ids.len()
+    /// == atoms.len()`); atoms with the same id are treated as one residue,
+    /// regardless of numeric value or contiguity. Passing `residue_ids = 0
+    /// .. natoms` (every atom its own residue) makes this variant an exact
+    /// no-op on top of [`QmSelection::WithinRadius`] — the same seeds/radius
+    /// select the same QM/MM split, byte for byte.
+    WithinRadiusWholeResidues { seeds: Vec<usize>, radius: f64, residue_ids: Vec<usize> },
 }
 
 /// A partition of a full structure into a QM region (wavefunction) and an MM
@@ -285,6 +297,10 @@ pub struct QmmmSystem {
     pub boundary_charges: Vec<BoundaryCharge>,
     /// The scheme currently applied.
     pub boundary_scheme: BoundaryChargeScheme,
+    /// The `residue_ids` passed to [`QmSelection::WithinRadiusWholeResidues`],
+    /// kept for diagnostics/downstream residue-aware logic. `None` for every
+    /// other selection variant.
+    pub residue_ids: Option<Vec<usize>>,
 }
 
 impl QmmmSystem {
@@ -314,6 +330,7 @@ impl QmmmSystem {
 
         let natoms = atoms.len();
         let mut is_qm = vec![false; natoms];
+        let mut residue_ids_out: Option<Vec<usize>> = None;
 
         match selection {
             QmSelection::Indices(idx) => {
@@ -328,42 +345,32 @@ impl QmmmSystem {
                 }
             }
             QmSelection::WithinRadius { seeds, radius } => {
-                if seeds.is_empty() {
-                    return Err(FerricError::General(
-                        "QmmmSystem::new: WithinRadius selection needs at least one seed atom"
-                            .to_string(),
-                    ));
-                }
-                // `is_finite` first, then a plain `<` — this rejects NaN via
-                // the finiteness check rather than via a negated comparison
-                // (`!(radius >= 0.0)` would also catch NaN, but reads as a
-                // typo; see clippy::neg_cmp_op_on_partial_ord).
-                if !radius.is_finite() || radius < 0.0 {
+                Self::validate_radius_selection(&seeds, radius, natoms)?;
+                Self::apply_within_radius(atoms, &seeds, radius, &mut is_qm);
+            }
+            QmSelection::WithinRadiusWholeResidues { seeds, radius, residue_ids } => {
+                Self::validate_radius_selection(&seeds, radius, natoms)?;
+                if residue_ids.len() != natoms {
                     return Err(FerricError::General(format!(
-                        "QmmmSystem::new: radius must be finite and >= 0, got {radius}"
+                        "QmmmSystem::new: residue_ids has {} entries, expected {natoms} \
+                         (one per atom)",
+                        residue_ids.len()
                     )));
                 }
-                for &s in &seeds {
-                    if s >= natoms {
-                        return Err(FerricError::General(format!(
-                            "QmmmSystem::new: seed index {s} out of range (structure has \
-                             {natoms} atoms)"
-                        )));
-                    }
-                    is_qm[s] = true;
-                }
-                let r2 = radius * radius;
+                Self::apply_within_radius(atoms, &seeds, radius, &mut is_qm);
+                // Second pass: any residue with at least one QM atom joins
+                // whole. `hit` collects the residue ids touched by the
+                // by-atom pass above.
+                let hit: std::collections::HashSet<usize> = (0..natoms)
+                    .filter(|&i| is_qm[i])
+                    .map(|i| residue_ids[i])
+                    .collect();
                 for i in 0..natoms {
-                    if is_qm[i] {
-                        continue;
-                    }
-                    for &s in &seeds {
-                        if atoms[i].distance2(&atoms[s]) <= r2 {
-                            is_qm[i] = true;
-                            break;
-                        }
+                    if hit.contains(&residue_ids[i]) {
+                        is_qm[i] = true;
                     }
                 }
+                residue_ids_out = Some(residue_ids);
             }
         }
 
@@ -383,10 +390,66 @@ impl QmmmSystem {
             effective_charges: atoms.iter().map(|a| a.charge).collect(),
             boundary_charges: Vec::new(),
             boundary_scheme: BoundaryChargeScheme::Keep,
+            residue_ids: residue_ids_out,
             atoms: atoms.to_vec(),
             qm_charge,
             qm_multiplicity,
         })
+    }
+
+    /// Shared seed/radius validation for [`QmSelection::WithinRadius`] and
+    /// [`QmSelection::WithinRadiusWholeResidues`]: nonempty seeds, seeds in
+    /// range, and a finite non-negative radius.
+    fn validate_radius_selection(
+        seeds: &[usize],
+        radius: f64,
+        natoms: usize,
+    ) -> Result<(), FerricError> {
+        if seeds.is_empty() {
+            return Err(FerricError::General(
+                "QmmmSystem::new: WithinRadius selection needs at least one seed atom"
+                    .to_string(),
+            ));
+        }
+        // `is_finite` first, then a plain `<` — this rejects NaN via the
+        // finiteness check rather than via a negated comparison
+        // (`!(radius >= 0.0)` would also catch NaN, but reads as a typo; see
+        // clippy::neg_cmp_op_on_partial_ord).
+        if !radius.is_finite() || radius < 0.0 {
+            return Err(FerricError::General(format!(
+                "QmmmSystem::new: radius must be finite and >= 0, got {radius}"
+            )));
+        }
+        for &s in seeds {
+            if s >= natoms {
+                return Err(FerricError::General(format!(
+                    "QmmmSystem::new: seed index {s} out of range (structure has {natoms} atoms)"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// By-atom radius selection: `is_qm[i] = true` for every seed and every
+    /// atom within `radius` of any seed. Shared by [`QmSelection::WithinRadius`]
+    /// and the by-atom first pass of [`QmSelection::WithinRadiusWholeResidues`].
+    fn apply_within_radius(atoms: &[QmmmAtom], seeds: &[usize], radius: f64, is_qm: &mut [bool]) {
+        for &s in seeds {
+            is_qm[s] = true;
+        }
+        let r2 = radius * radius;
+        let natoms = atoms.len();
+        for i in 0..natoms {
+            if is_qm[i] {
+                continue;
+            }
+            for &s in seeds {
+                if atoms[i].distance2(&atoms[s]) <= r2 {
+                    is_qm[i] = true;
+                    break;
+                }
+            }
+        }
     }
 
     /// Cap covalently cut bonds with scaled-position link hydrogens.
@@ -1274,6 +1337,37 @@ mod tests {
         let atoms = three_atoms();
         let sys = QmmmSystem::new(&atoms, QmSelection::Indices(vec![0, 1]), 0, 1).unwrap();
         assert!(sys.min_link_to_charge_distance().is_none());
+    }
+
+    #[test]
+    fn whole_residue_selection_with_one_atom_per_residue_equals_by_atom() {
+        // Exactness anchor: residue_ids = 0..n makes the new variant identical to WithinRadius.
+        let atoms = three_atoms();
+        let by_atom = QmmmSystem::new(&atoms, QmSelection::WithinRadius { seeds: vec![0], radius: 3.0 }, 0, 1).unwrap();
+        let whole = QmmmSystem::new(&atoms, QmSelection::WithinRadiusWholeResidues { seeds: vec![0], radius: 3.0, residue_ids: vec![0, 1, 2] }, 0, 1).unwrap();
+        assert_eq!(by_atom.qm_indices, whole.qm_indices);
+        assert_eq!(by_atom.mm_indices, whole.mm_indices);
+        assert_eq!(whole.residue_ids, Some(vec![0, 1, 2]));
+        assert_eq!(by_atom.residue_ids, None);
+    }
+
+    #[test]
+    fn whole_residue_selection_pulls_the_entire_residue_in() {
+        // atoms 0,1 = residue 0 (2 Bohr apart); atom 2 = residue 1 at z=10, atom 3 = residue 1 at z=2.5.
+        let mut atoms = three_atoms();
+        atoms.push(QmmmAtom::new("N", 7, 0.0, 0.0, 2.5, 0.2));
+        let sys = QmmmSystem::new(&atoms, QmSelection::WithinRadiusWholeResidues { seeds: vec![0], radius: 3.0, residue_ids: vec![0, 0, 1, 1] }, 0, 1).unwrap();
+        // atom 3 is within 3 Bohr of the seed, so ALL of residue 1 (atoms 2 and 3) joins.
+        assert_eq!(sys.qm_indices, vec![0, 1, 2, 3]);
+        assert!(sys.mm_indices.is_empty());
+    }
+
+    #[test]
+    fn whole_residue_selection_rejects_bad_residue_ids() {
+        let atoms = three_atoms();
+        assert!(QmmmSystem::new(&atoms, QmSelection::WithinRadiusWholeResidues { seeds: vec![0], radius: 1.0, residue_ids: vec![0, 0] }, 0, 1).is_err()); // length mismatch
+        assert!(QmmmSystem::new(&atoms, QmSelection::WithinRadiusWholeResidues { seeds: vec![], radius: 1.0, residue_ids: vec![0, 0, 0] }, 0, 1).is_err());
+        assert!(QmmmSystem::new(&atoms, QmSelection::WithinRadiusWholeResidues { seeds: vec![0], radius: f64::NAN, residue_ids: vec![0, 0, 0] }, 0, 1).is_err());
     }
 
     #[test]

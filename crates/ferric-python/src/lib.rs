@@ -341,9 +341,14 @@ impl PyQmmmSystem {
     /// Select the QM region with EITHER `qm_indices` OR `qm_seeds` +
     /// `qm_radius_angstrom` (every atom within that distance of any seed,
     /// plus the seeds — the "ligand plus everything within R" pocket case;
-    /// selection is by atom, with no residue completion).
+    /// selection is by atom, with no residue completion by default). Add
+    /// `residue_ids` (one entry per atom, `PocketCharges.residue_ids` shape)
+    /// alongside `qm_seeds`/`qm_radius_angstrom` to pull in whole residues
+    /// instead — a residue joins if ANY of its atoms is within radius.
+    /// `residue_ids` together with `qm_indices` is an error (an explicit
+    /// index list has no notion of "whole residue" to complete).
     #[new]
-    #[pyo3(signature = (symbols, coords_angstrom, charges, qm_indices=None, qm_seeds=None, qm_radius_angstrom=None, charge=0, multiplicity=1))]
+    #[pyo3(signature = (symbols, coords_angstrom, charges, qm_indices=None, qm_seeds=None, qm_radius_angstrom=None, residue_ids=None, charge=0, multiplicity=1))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         symbols: Vec<String>,
@@ -352,6 +357,7 @@ impl PyQmmmSystem {
         qm_indices: Option<Vec<usize>>,
         qm_seeds: Option<Vec<usize>>,
         qm_radius_angstrom: Option<f64>,
+        residue_ids: Option<Vec<usize>>,
         charge: i32,
         multiplicity: usize,
     ) -> PyResult<Self> {
@@ -376,12 +382,18 @@ impl PyQmmmSystem {
                 QmmmAtom::new(sym.clone(), zn, c[0] * ANGSTROM_TO_BOHR, c[1] * ANGSTROM_TO_BOHR, c[2] * ANGSTROM_TO_BOHR, q)
             })
             .collect();
-        let selection = match (qm_indices, qm_seeds, qm_radius_angstrom) {
-            (Some(idx), None, None) => QmSelection::Indices(idx),
-            (None, Some(seeds), Some(r)) => QmSelection::WithinRadius { seeds, radius: r * ANGSTROM_TO_BOHR },
+        let selection = match (qm_indices, qm_seeds, qm_radius_angstrom, residue_ids) {
+            (Some(idx), None, None, None) => QmSelection::Indices(idx),
+            (None, Some(seeds), Some(r), None) => {
+                QmSelection::WithinRadius { seeds, radius: r * ANGSTROM_TO_BOHR }
+            }
+            (None, Some(seeds), Some(r), Some(residue_ids)) => {
+                QmSelection::WithinRadiusWholeResidues { seeds, radius: r * ANGSTROM_TO_BOHR, residue_ids }
+            }
             _ => {
                 return Err(pyo3::exceptions::PyValueError::new_err(
-                    "select the QM region with EITHER qm_indices OR qm_seeds + qm_radius_angstrom",
+                    "select the QM region with EITHER qm_indices OR qm_seeds + \
+                     qm_radius_angstrom (+ optional residue_ids)",
                 ))
             }
         };
@@ -505,17 +517,23 @@ impl PyQmmmResult {
 
 /// Embedded SCF energy plus gradients for a `QmmmSystem` in one call.
 ///
-/// `method` is `"rhf"` (default) or `"uhf"`. The SCF knobs mirror
-/// `run_rhf`. No MM force field is involved: the energy is `E_QM` in the
-/// field of the fixed charges (plus the classical charge–nuclear term), and
-/// the gradients are its exact derivatives.
+/// `method` is `"rhf"` (default), `"uhf"`, `"rks"` or `"uks"`. The SCF knobs
+/// mirror `run_rhf`/`run_ksdft`: `xc` selects the functional for `"rks"`/
+/// `"uks"` (required for those methods; RI-J/RI-K aux is set to
+/// `def2-universal-jkfit` automatically, matching `run_ksdft`) and is
+/// rejected for `"rhf"`/`"uhf"` (passing a functional to a method that
+/// ignores it would silently produce a plain-HF result). No MM force field
+/// is involved: the energy is `E_QM` in the field of the fixed charges (plus
+/// the classical charge–nuclear term), and the gradients are its exact
+/// derivatives.
 #[pyfunction]
-#[pyo3(signature = (system, basis_name, method=None, max_iter=None, energy_conv=None, density_conv=None, level_shift=None, mom_after_iter=None, guess=None))]
+#[pyo3(signature = (system, basis_name, method=None, xc=None, max_iter=None, energy_conv=None, density_conv=None, level_shift=None, mom_after_iter=None, guess=None))]
 #[allow(clippy::too_many_arguments)]
 fn run_qmmm(
     system: &PyQmmmSystem,
     basis_name: &str,
     method: Option<&str>,
+    xc: Option<&str>,
     max_iter: Option<usize>,
     energy_conv: Option<f64>,
     density_conv: Option<f64>,
@@ -524,7 +542,21 @@ fn run_qmmm(
     guess: Option<&str>,
 ) -> PyResult<PyQmmmResult> {
     use ferric_scf::gradient::{rhf_gradient, uhf_gradient};
+    use ferric_scf::ks_gradient::ks_gradient_uks;
     use ferric_scf::qmmm::{full_gradient, mm_forces};
+
+    let method = method.unwrap_or("rhf");
+    let is_ks = matches!(method, "rks" | "uks");
+    if xc.is_some() && !is_ks {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "run_qmmm: xc is only valid for method=\"rks\"/\"uks\", got method={method:?}"
+        )));
+    }
+    if is_ks && xc.is_none() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "run_qmmm: method=\"rks\"/\"uks\" requires xc",
+        ));
+    }
 
     let sys = &system.inner;
     let bs = basis::bundled(basis_name).map_err(make_err)?;
@@ -533,7 +565,7 @@ fn run_qmmm(
     let prep = PreparedBasis::new(&mol, &bs).map_err(make_err)?;
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let config = RhfConfig {
+    let mut config = RhfConfig {
         max_iter: max_iter.unwrap_or(100),
         energy_conv: energy_conv.unwrap_or(1e-3),
         density_conv: density_conv.unwrap_or(1e-6),
@@ -543,9 +575,17 @@ fn run_qmmm(
         external_potential: sys.to_external_potential(),
         ..Default::default()
     };
+    if is_ks {
+        config.xc = xc.map(|s| s.to_string());
+        // RI-J always on for KS-DFT (matches run_ksdft's density_fit
+        // convention); RI-K only matters for hybrids but is harmless
+        // otherwise (bypassed when k_mix.sr == 0 and k_mix.omega == 0).
+        config.df_j_aux = Some("def2-universal-jkfit".to_string());
+        config.df_k_aux = Some("def2-universal-jkfit".to_string());
+    }
     let ctx = ParallelContext::default();
     let ext = config.external_potential.as_ref();
-    let (r, qm_grad) = match method.unwrap_or("rhf") {
+    let (r, qm_grad) = match method {
         "rhf" => {
             let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).map_err(make_err)?;
             let g = rhf_gradient(&mol, &prep, op, &bounds, &r, ext).map_err(make_err)?;
@@ -556,9 +596,21 @@ fn run_qmmm(
             let g = uhf_gradient(&mol, &prep, op, &bounds, &r, ext).map_err(make_err)?;
             (r, g)
         }
+        "rks" => {
+            let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).map_err(make_err)?;
+            let g = ks_gradient_closed(&mol, &prep, &bs, op, &bounds, xc.unwrap(), &r, ext)
+                .map_err(make_err)?;
+            (r, g)
+        }
+        "uks" => {
+            let r = solve_uhf(&ctx, &mol, &prep, &bounds, &config).map_err(make_err)?;
+            let g = ks_gradient_uks(&mol, &prep, &bs, op, &bounds, xc.unwrap(), &r, ext)
+                .map_err(make_err)?;
+            (r, g)
+        }
         m => {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "run_qmmm: method must be \"rhf\" or \"uhf\", got {m:?}"
+                "run_qmmm: method must be \"rhf\", \"uhf\", \"rks\" or \"uks\", got {m:?}"
             )))
         }
     };
