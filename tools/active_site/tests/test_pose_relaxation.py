@@ -4,7 +4,7 @@ import pytest
 
 from tools.active_site.ligand_embedding import embed_ligand_from_coords
 from tools.active_site.pocket_charges import ANGSTROM_TO_BOHR, PocketCharges
-from tools.active_site.pose_relaxation import relax_pose_in_pocket_field
+from tools.active_site.pose_relaxation import relax_pose_in_pocket, relax_pose_in_pocket_field
 
 H2_SYMBOLS = ["H", "H"]
 H2_COORDS = [(0.0, 0.0, 0.0), (0.0, 0.0, 0.8)]  # slightly off equilibrium (~0.74 A)
@@ -82,6 +82,74 @@ def test_relax_pose_energy_lower_than_unrelaxed_start():
 
     unrelaxed = compute_energy(embedded, method="rhf", use_field=True)
     relaxed = relax_pose_in_pocket_field(embedded, max_steps=50)
+
+    assert relaxed.converged is True
+    assert relaxed.energy < unrelaxed.energy
+
+
+# ── relax_pose_in_pocket (QmmmSystem-based optimizer) ──
+
+
+def test_relax_pose_in_pocket_no_pocket_raises():
+    embedded = embed_ligand_from_coords(H2_SYMBOLS, H2_COORDS, basis="sto-3g")
+    with pytest.raises(ValueError, match="point_charges"):
+        relax_pose_in_pocket(embedded)
+
+
+def test_relax_pose_in_pocket_no_surviving_charges_raises():
+    pocket = PocketCharges(
+        charges=[(1.0, 0.0, 0.0, 0.0)], source_pdb=Path("fake.pdb"), ff="AMBER",
+    )
+    embedded = embed_ligand_from_coords(
+        H2_SYMBOLS, H2_COORDS, pocket=pocket, basis="sto-3g", overlap_cutoff_angstrom=5.0,
+    )
+    assert embedded.point_charges == []
+    with pytest.raises(ValueError, match="point_charges"):
+        relax_pose_in_pocket(embedded)
+
+
+def test_relax_pose_in_pocket_h2_matches_the_fixed_field_optimizer():
+    # move_mm="none" (the default) is a QmmmSystem-based relaxation with the
+    # pocket charges fixed -- physically the same optimization
+    # relax_pose_in_pocket_field does (same field, same ligand DOFs), even
+    # though the two go through different ferric entry points
+    # (run_optimize_qmmm vs run_optimize). Cross-check them against each
+    # other, not just against a hardcoded energy.
+    r_angstrom = 6.0
+    pocket = PocketCharges(
+        charges=[(1.0, r_angstrom * ANGSTROM_TO_BOHR, 0.0, 0.0)],
+        source_pdb=Path("fake.pdb"), ff="AMBER",
+    )
+    embedded = embed_ligand_from_coords(H2_SYMBOLS, H2_COORDS, pocket=pocket, basis="sto-3g")
+
+    via_field = relax_pose_in_pocket_field(embedded, max_steps=50)
+    via_qmmm = relax_pose_in_pocket(embedded, max_steps=50)
+
+    assert via_qmmm.converged is True
+    assert via_qmmm.symbols == H2_SYMBOLS
+    assert via_qmmm.n_pocket_charges == 1
+    assert len(via_qmmm.coords_angstrom) == 2
+    assert via_qmmm.energy == pytest.approx(via_field.energy, abs=1e-8)
+
+    import math
+
+    d_field = math.dist(via_field.coords_angstrom[0], via_field.coords_angstrom[1])
+    d_qmmm = math.dist(via_qmmm.coords_angstrom[0], via_qmmm.coords_angstrom[1])
+    assert d_qmmm == pytest.approx(d_field, abs=1e-6)
+    assert 0.70 < d_qmmm < 0.75, d_qmmm
+
+
+def test_relax_pose_in_pocket_energy_lower_than_unrelaxed_start():
+    from tools.active_site.energy import compute_energy
+
+    pocket = PocketCharges(
+        charges=[(1.0, 6.0 * ANGSTROM_TO_BOHR, 0.0, 0.0)],
+        source_pdb=Path("fake.pdb"), ff="AMBER",
+    )
+    embedded = embed_ligand_from_coords(H2_SYMBOLS, H2_COORDS, pocket=pocket, basis="sto-3g")
+
+    unrelaxed = compute_energy(embedded, method="rhf", use_field=True)
+    relaxed = relax_pose_in_pocket(embedded, max_steps=50)
 
     assert relaxed.converged is True
     assert relaxed.energy < unrelaxed.energy
