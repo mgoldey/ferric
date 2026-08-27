@@ -179,6 +179,34 @@ pub enum BoundaryChargeScheme {
     RedistributedChargeDipole,
 }
 
+impl BoundaryChargeScheme {
+    /// Strict config-string parser (`"keep"`, `"delete-host"`, `"rc"`,
+    /// `"rcd"`). Unknown values — including different casing — are an error,
+    /// never a silent default, per the repo's config-honesty convention.
+    pub fn parse_config_str(s: &str) -> Result<Self, FerricError> {
+        match s {
+            "keep" => Ok(Self::Keep),
+            "delete-host" => Ok(Self::DeleteHost),
+            "rc" => Ok(Self::RedistributedCharge),
+            "rcd" => Ok(Self::RedistributedChargeDipole),
+            other => Err(FerricError::General(format!(
+                "unknown boundary charge scheme {other:?}; expected one of \
+                 \"keep\", \"delete-host\", \"rc\", \"rcd\""
+            ))),
+        }
+    }
+
+    /// The config string [`Self::parse_config_str`] accepts for this scheme.
+    pub fn config_str(self) -> &'static str {
+        match self {
+            Self::Keep => "keep",
+            Self::DeleteHost => "delete-host",
+            Self::RedistributedCharge => "rc",
+            Self::RedistributedChargeDipole => "rcd",
+        }
+    }
+}
+
 /// An off-atom point charge introduced by a redistribution scheme, sitting on
 /// the midpoint of an M1–M2 bond. Both host atom indices (into the full atom
 /// list) are recorded so a force on this charge can be projected back onto
@@ -1033,6 +1061,23 @@ mod tests {
             QmmmAtom::new("C", 6, 0.0, 0.0, 2.0, 0.1),
             QmmmAtom::new("O", 8, 0.0, 0.0, 10.0, -0.5),
         ]
+    }
+
+    #[test]
+    fn boundary_scheme_parse_is_strict() {
+        use BoundaryChargeScheme::*;
+        assert_eq!(BoundaryChargeScheme::parse_config_str("keep").unwrap(), Keep);
+        assert_eq!(BoundaryChargeScheme::parse_config_str("delete-host").unwrap(), DeleteHost);
+        assert_eq!(BoundaryChargeScheme::parse_config_str("rc").unwrap(), RedistributedCharge);
+        assert_eq!(BoundaryChargeScheme::parse_config_str("rcd").unwrap(), RedistributedChargeDipole);
+        // Config honesty: unknown or differently-cased values error, never
+        // silently default.
+        for bad in ["Keep", "z1", "RCD", "", "redistributed"] {
+            assert!(BoundaryChargeScheme::parse_config_str(bad).is_err(), "{bad:?}");
+        }
+        for s in [Keep, DeleteHost, RedistributedCharge, RedistributedChargeDipole] {
+            assert_eq!(BoundaryChargeScheme::parse_config_str(s.config_str()).unwrap(), s);
+        }
     }
 
     #[test]

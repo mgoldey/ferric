@@ -81,6 +81,29 @@ impl PyMolecule {
     fn natoms(&self) -> usize { self.inner.atoms.len() }
     /// Total electron count (accounts for `charge` and any ECP core electrons).
     fn nelec(&self) -> i32 { self.inner.nelec() }
+    /// Cartesian coordinates of every atom in **Ångström**, one `(x, y, z)`
+    /// tuple per atom in `symbols()` order. Internally ferric stores Bohr;
+    /// this divides by the same Å→Bohr constant the XYZ parser multiplied
+    /// by (see `ConformerEnsemble.coordinates()` for why divide, not
+    /// multiply by the reciprocal), so a round trip is accurate to ~1 ulp.
+    fn coords(&self) -> Vec<(f64, f64, f64)> {
+        self.inner
+            .atoms
+            .iter()
+            .map(|a| (a.x / ANGSTROM_TO_BOHR, a.y / ANGSTROM_TO_BOHR, a.zpos / ANGSTROM_TO_BOHR))
+            .collect()
+    }
+    /// Cartesian coordinates in **Bohr** — the internal values, untouched.
+    /// These are the units `run_rhf(..., point_charges=...)` and
+    /// `QmmmSystem.point_charges()` use.
+    fn coords_bohr(&self) -> Vec<(f64, f64, f64)> {
+        self.inner.atoms.iter().map(|a| (a.x, a.y, a.zpos)).collect()
+    }
+    /// Element symbols in atom order (ghost atoms keep their plain symbol;
+    /// the `@` marker is not round-tripped).
+    fn symbols(&self) -> Vec<String> {
+        self.inner.atoms.iter().map(|a| a.symbol.clone()).collect()
+    }
 }
 
 // ── BasisSet ──
@@ -287,6 +310,267 @@ fn run_rhf(
         computed_quartets: r.computed_quartets,
         density_data: r.density_total.clone(), orbital_energies_data: r.eps_alpha.clone(),
         scf_data: r,
+    })
+}
+
+// ── QM/MM ──
+
+/// A QM/MM partition: a full structure (ligand + pocket, say) split into a
+/// quantum region and fixed MM point charges, with optional link-atom capping
+/// of cut bonds and a boundary-charge scheme. Thin wrapper over
+/// `ferric_scf::qmmm::QmmmSystem`; no new physics.
+///
+/// Units: this constructor takes **Ångström** (like every other geometry
+/// entry point on the Python side); `point_charges()` and `run_rhf`'s
+/// `point_charges=` kwarg are in **Bohr**. `qm_molecule()` /
+/// `point_charges()` feed the existing `run_rhf` / `run_uhf` / `run_optimize`
+/// unchanged, or use `run_qmmm` for energy + gradients in one call.
+#[pyclass]
+#[pyo3(name = "QmmmSystem")]
+#[derive(Clone)]
+struct PyQmmmSystem { inner: ferric_scf::qmmm::QmmmSystem }
+
+#[pymethods]
+impl PyQmmmSystem {
+    /// `symbols`/`coords_angstrom`/`charges` describe the FULL structure, one
+    /// entry per atom. `charges` are the MM partial charges (e); an atom's
+    /// charge is ignored if it lands in the QM region. Symbols that are not
+    /// elements (e.g. `"X"` for a bare charge site) are allowed in the MM
+    /// region only.
+    ///
+    /// Select the QM region with EITHER `qm_indices` OR `qm_seeds` +
+    /// `qm_radius_angstrom` (every atom within that distance of any seed,
+    /// plus the seeds — the "ligand plus everything within R" pocket case;
+    /// selection is by atom, with no residue completion).
+    #[new]
+    #[pyo3(signature = (symbols, coords_angstrom, charges, qm_indices=None, qm_seeds=None, qm_radius_angstrom=None, charge=0, multiplicity=1))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        symbols: Vec<String>,
+        coords_angstrom: Vec<Vec<f64>>,
+        charges: Vec<f64>,
+        qm_indices: Option<Vec<usize>>,
+        qm_seeds: Option<Vec<usize>>,
+        qm_radius_angstrom: Option<f64>,
+        charge: i32,
+        multiplicity: usize,
+    ) -> PyResult<Self> {
+        use ferric_scf::qmmm::{QmSelection, QmmmAtom, QmmmSystem};
+        if symbols.len() != coords_angstrom.len() || symbols.len() != charges.len() {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "symbols ({}), coords_angstrom ({}) and charges ({}) must have the same length",
+                symbols.len(), coords_angstrom.len(), charges.len()
+            )));
+        }
+        if let Some((i, bad)) = coords_angstrom.iter().enumerate().find(|(_, c)| c.len() != 3) {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "coords_angstrom[{i}] has {} components, expected 3", bad.len()
+            )));
+        }
+        let atoms: Vec<QmmmAtom> = symbols
+            .iter()
+            .zip(coords_angstrom.iter())
+            .zip(charges.iter())
+            .map(|((sym, c), &q)| {
+                let zn = ferric_core::elements::symbol_to_z(sym).unwrap_or(0);
+                QmmmAtom::new(sym.clone(), zn, c[0] * ANGSTROM_TO_BOHR, c[1] * ANGSTROM_TO_BOHR, c[2] * ANGSTROM_TO_BOHR, q)
+            })
+            .collect();
+        let selection = match (qm_indices, qm_seeds, qm_radius_angstrom) {
+            (Some(idx), None, None) => QmSelection::Indices(idx),
+            (None, Some(seeds), Some(r)) => QmSelection::WithinRadius { seeds, radius: r * ANGSTROM_TO_BOHR },
+            _ => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "select the QM region with EITHER qm_indices OR qm_seeds + qm_radius_angstrom",
+                ))
+            }
+        };
+        let inner = QmmmSystem::new(&atoms, selection, charge, multiplicity).map_err(make_err)?;
+        if let Some(&bad) = inner.qm_indices.iter().find(|&&i| atoms[i].z == 0) {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "QM atom {bad} has symbol {:?}, which is not an element", atoms[bad].symbol
+            )));
+        }
+        Ok(Self { inner })
+    }
+
+    /// Cap every bond in `bonds` (index pairs into the full structure) that
+    /// the partition cuts with a scaled-position link hydrogen at `scale` of
+    /// the bond length from the QM atom (default 1.09/1.53, the C–C case).
+    /// Returns a new system; `self` is unchanged.
+    #[pyo3(signature = (bonds, scale=None))]
+    fn with_link_atoms(&self, bonds: Vec<(usize, usize)>, scale: Option<f64>) -> PyResult<Self> {
+        let scale = scale.unwrap_or(ferric_scf::qmmm::DEFAULT_LINK_SCALE);
+        Ok(Self { inner: self.inner.clone().with_link_atoms(&bonds, scale).map_err(make_err)? })
+    }
+
+    /// Apply a boundary-charge scheme to the MM host atom of each cut bond:
+    /// `"keep"` (untreated, default), `"delete-host"` (Z1), `"rc"`
+    /// (redistributed charge onto M1–M2 bond midpoints; conserves charge) or
+    /// `"rcd"` (also conserves the M1–M2 dipole). Needs the full bond list to
+    /// find the M2 shell. Returns a new system.
+    fn with_boundary_charges(&self, bonds: Vec<(usize, usize)>, scheme: &str) -> PyResult<Self> {
+        let scheme = ferric_scf::qmmm::BoundaryChargeScheme::parse_config_str(scheme)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        Ok(Self { inner: self.inner.clone().with_boundary_charges(&bonds, scheme).map_err(make_err)? })
+    }
+
+    /// The QM region (plus link hydrogens, appended last) as a `Molecule`.
+    fn qm_molecule(&self) -> PyMolecule { PyMolecule { inner: self.inner.to_qm_molecule() } }
+    /// Every embedding charge as `(q, x, y, z)` in **Bohr** — directly
+    /// usable as `point_charges=` for `run_rhf`/`run_uhf`/`run_optimize`.
+    /// Atom-centred charges first, then any RC/RCD midpoint charges.
+    fn point_charges(&self) -> Vec<(f64, f64, f64, f64)> {
+        self.inner
+            .to_external_potential()
+            .map(|ep| ep.point_charges.iter().map(|pc| (pc.q, pc.x, pc.y, pc.z)).collect())
+            .unwrap_or_default()
+    }
+    /// Full-structure indices of the QM atoms (ascending; link atoms excluded).
+    fn qm_indices(&self) -> Vec<usize> { self.inner.qm_indices.clone() }
+    /// Full-structure indices of the MM atoms (ascending).
+    fn mm_indices(&self) -> Vec<usize> { self.inner.mm_indices.clone() }
+    /// Number of real QM atoms (link hydrogens occupy `qm_molecule()` indices
+    /// `qm_atom_count()..`).
+    fn qm_atom_count(&self) -> usize { self.inner.qm_atom_count() }
+    /// Number of atoms in the full structure.
+    fn natoms(&self) -> usize { self.inner.atoms.len() }
+    /// Link hydrogen positions in **Ångström**, in `qm_molecule()` order.
+    fn link_atom_positions(&self) -> Vec<(f64, f64, f64)> {
+        self.inner
+            .link_atoms
+            .iter()
+            .map(|l| (l.position[0] / ANGSTROM_TO_BOHR, l.position[1] / ANGSTROM_TO_BOHR, l.position[2] / ANGSTROM_TO_BOHR))
+            .collect()
+    }
+    /// Shortest link-hydrogen-to-MM-charge distance in **Ångström**, or
+    /// `None` without link atoms / charges. A diagnostic: under ~0.5–1 Å you
+    /// want `with_boundary_charges("rcd")`.
+    fn min_link_to_charge_distance(&self) -> Option<f64> {
+        self.inner.min_link_to_charge_distance().map(|d| d / ANGSTROM_TO_BOHR)
+    }
+    /// The boundary scheme currently applied, as its config string.
+    fn boundary_scheme(&self) -> &'static str { self.inner.boundary_scheme.config_str() }
+    fn __repr__(&self) -> String {
+        format!(
+            "QmmmSystem(n_qm={}, n_mm={}, n_link={}, scheme={:?})",
+            self.inner.qm_atom_count(), self.inner.mm_indices.len(), self.inner.link_atoms.len(),
+            self.inner.boundary_scheme.config_str()
+        )
+    }
+}
+
+/// Result of `run_qmmm`: the embedded SCF energy and the three gradient
+/// views. All gradients are `dE/dR` in Hartree/Bohr except `mm_forces()`,
+/// which is the FORCE (`−dE/dR`) on each embedding charge, because that is
+/// what an MM integrator consumes.
+#[pyclass]
+#[pyo3(name = "QmmmResult")]
+struct PyQmmmResult {
+    #[pyo3(get)] energy: f64,
+    #[pyo3(get)] converged: bool,
+    #[pyo3(get)] iterations: usize,
+    qm_gradient_data: Array2<f64>,
+    mm_forces_data: Vec<[f64; 3]>,
+    full_gradient_data: Array2<f64>,
+}
+
+#[pymethods]
+impl PyQmmmResult {
+    /// `dE/dR` on the QM molecule as solved: real QM atoms then link
+    /// hydrogens, `(n_qm + n_link, 3)`.
+    fn qm_gradient<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        PyArray2::from_array(py, &self.qm_gradient_data)
+    }
+    /// Force on each embedding charge, `(n_charges, 3)`, in
+    /// `QmmmSystem.point_charges()` order.
+    fn mm_forces<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        let n = self.mm_forces_data.len();
+        let mut a = Array2::<f64>::zeros((n, 3));
+        for (i, f) in self.mm_forces_data.iter().enumerate() {
+            for k in 0..3 { a[(i, k)] = f[k]; }
+        }
+        PyArray2::from_array(py, &a)
+    }
+    /// `dE/dR` over every REAL atom of the full structure, `(natoms, 3)`:
+    /// link-atom rows chain-ruled onto their hosts, MM forces mapped onto the
+    /// atoms carrying the charges (midpoint charges split half/half).
+    fn full_gradient<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        PyArray2::from_array(py, &self.full_gradient_data)
+    }
+    fn __repr__(&self) -> String {
+        format!("QmmmResult(energy={:.10}, converged={}, n_full={})", self.energy, self.converged, self.full_gradient_data.nrows())
+    }
+}
+
+/// Embedded SCF energy plus gradients for a `QmmmSystem` in one call.
+///
+/// `method` is `"rhf"` (default) or `"uhf"`. The SCF knobs mirror
+/// `run_rhf`. No MM force field is involved: the energy is `E_QM` in the
+/// field of the fixed charges (plus the classical charge–nuclear term), and
+/// the gradients are its exact derivatives.
+#[pyfunction]
+#[pyo3(signature = (system, basis_name, method=None, max_iter=None, energy_conv=None, density_conv=None, level_shift=None, mom_after_iter=None, guess=None))]
+#[allow(clippy::too_many_arguments)]
+fn run_qmmm(
+    system: &PyQmmmSystem,
+    basis_name: &str,
+    method: Option<&str>,
+    max_iter: Option<usize>,
+    energy_conv: Option<f64>,
+    density_conv: Option<f64>,
+    level_shift: Option<f64>,
+    mom_after_iter: Option<usize>,
+    guess: Option<&str>,
+) -> PyResult<PyQmmmResult> {
+    use ferric_scf::gradient::{rhf_gradient, uhf_gradient};
+    use ferric_scf::qmmm::{full_gradient, mm_forces};
+
+    let sys = &system.inner;
+    let bs = basis::bundled(basis_name).map_err(make_err)?;
+    let mut mol = sys.to_qm_molecule();
+    mol.apply_ecp(&bs);
+    let prep = PreparedBasis::new(&mol, &bs).map_err(make_err)?;
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
+    let config = RhfConfig {
+        max_iter: max_iter.unwrap_or(100),
+        energy_conv: energy_conv.unwrap_or(1e-3),
+        density_conv: density_conv.unwrap_or(1e-6),
+        level_shift: level_shift.unwrap_or(0.0),
+        mom_after_iter: mom_after_iter.unwrap_or(0),
+        use_sad_guess: !matches!(guess, Some("hcore")),
+        external_potential: sys.to_external_potential(),
+        ..Default::default()
+    };
+    let ctx = ParallelContext::default();
+    let ext = config.external_potential.as_ref();
+    let (r, qm_grad) = match method.unwrap_or("rhf") {
+        "rhf" => {
+            let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).map_err(make_err)?;
+            let g = rhf_gradient(&mol, &prep, op, &bounds, &r, ext).map_err(make_err)?;
+            (r, g)
+        }
+        "uhf" => {
+            let r = solve_uhf(&ctx, &mol, &prep, &bounds, &config).map_err(make_err)?;
+            let g = uhf_gradient(&mol, &prep, op, &bounds, &r, ext).map_err(make_err)?;
+            (r, g)
+        }
+        m => {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "run_qmmm: method must be \"rhf\" or \"uhf\", got {m:?}"
+            )))
+        }
+    };
+    let forces = mm_forces(sys, &mol, &prep, r.density_total()).map_err(make_err)?;
+    let full = full_gradient(sys, &qm_grad, &forces).map_err(make_err)?;
+    Ok(PyQmmmResult {
+        energy: r.energy,
+        converged: r.converged,
+        iterations: r.iterations,
+        qm_gradient_data: qm_grad,
+        mm_forces_data: forces,
+        full_gradient_data: full,
     })
 }
 
@@ -4260,6 +4544,8 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRhfResult>()?;
     m.add_class::<PyUhfResult>()?;
     m.add_class::<PyOptimizeResult>()?;
+    m.add_class::<PyQmmmSystem>()?;
+    m.add_class::<PyQmmmResult>()?;
     m.add_class::<PyFrequencyResult>()?;
     m.add_class::<PyRiMp2Result>()?;
     m.add_class::<PyOoRiMp2Result>()?;
@@ -4293,6 +4579,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_uhf, m)?)?;
     m.add_function(wrap_pyfunction!(run_rohf, m)?)?;
     m.add_function(wrap_pyfunction!(run_optimize, m)?)?;
+    m.add_function(wrap_pyfunction!(run_qmmm, m)?)?;
     m.add_function(wrap_pyfunction!(run_frequencies, m)?)?;
     m.add_function(wrap_pyfunction!(esp_at_atoms, m)?)?;
     m.add_function(wrap_pyfunction!(esp_at_points, m)?)?;

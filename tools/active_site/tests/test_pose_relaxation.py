@@ -53,9 +53,13 @@ def test_relax_pose_h2_in_synthetic_pocket_field_real_optimization():
     assert relaxed.steps >= 1
     assert relaxed.symbols == H2_SYMBOLS
     assert relaxed.n_pocket_charges == 1
-    # The known binding-gap: ferric.Molecule has no Python-side coordinate
-    # getter, so the optimized geometry cannot be retrieved yet.
-    assert relaxed.coords_angstrom is None
+    # The relaxed geometry comes back in Angstrom: the deliberately stretched
+    # 0.8 A bond must have shortened toward the STO-3G equilibrium (~0.71 A).
+    assert len(relaxed.coords_angstrom) == 2
+    import math
+
+    d = math.dist(relaxed.coords_angstrom[0], relaxed.coords_angstrom[1])
+    assert 0.70 < d < 0.75, d
     # Sanity: the in-field relaxed H2 energy should land close to isolated
     # H2/sto-3g's equilibrium energy (~-1.1175 Ha) -- the point charge here
     # is a weak, distant perturbation, not a dissociating one.

@@ -39,6 +39,107 @@ class Molecule:
         """Total electron count (accounts for charge and any ECP core electrons)."""
         ...
 
+    def coords(self) -> list[tuple[float, float, float]]:
+        """Cartesian coordinates in Angstrom, one (x, y, z) per atom in symbols() order."""
+        ...
+
+    def coords_bohr(self) -> list[tuple[float, float, float]]:
+        """Cartesian coordinates in Bohr (the internal values)."""
+        ...
+
+    def symbols(self) -> list[str]:
+        """Element symbols in atom order."""
+        ...
+
+
+class QmmmSystem:
+    """A QM/MM partition: full structure split into a QM region and fixed MM point charges.
+
+    Constructor takes Angstrom; point_charges() returns Bohr (the units run_rhf/run_optimize
+    take for point_charges=). Select the QM region with qm_indices OR qm_seeds + qm_radius_angstrom.
+    """
+
+    def __init__(
+        self,
+        symbols: list[str],
+        coords_angstrom: list[tuple[float, float, float]],
+        charges: list[float],
+        qm_indices: list[int] | None = None,
+        qm_seeds: list[int] | None = None,
+        qm_radius_angstrom: float | None = None,
+        charge: int = 0,
+        multiplicity: int = 1,
+    ) -> None: ...
+
+    def with_link_atoms(self, bonds: list[tuple[int, int]], scale: float | None = None) -> QmmmSystem:
+        """Cap each cut bond with a scaled-position link H (default scale 1.09/1.53). Returns a new system."""
+        ...
+
+    def with_boundary_charges(self, bonds: list[tuple[int, int]], scheme: str) -> QmmmSystem:
+        """Boundary charge scheme for the MM host of each cut bond: "keep", "delete-host", "rc" or "rcd"."""
+        ...
+
+    def qm_molecule(self) -> Molecule:
+        """The QM region (link hydrogens appended last) as a Molecule."""
+        ...
+
+    def point_charges(self) -> list[tuple[float, float, float, float]]:
+        """Every embedding charge as (q, x, y, z) in Bohr; atom-centred first, then RC/RCD midpoints."""
+        ...
+
+    def qm_indices(self) -> list[int]: ...
+    def mm_indices(self) -> list[int]: ...
+    def qm_atom_count(self) -> int: ...
+    def natoms(self) -> int: ...
+
+    def link_atom_positions(self) -> list[tuple[float, float, float]]:
+        """Link hydrogen positions in Angstrom."""
+        ...
+
+    def min_link_to_charge_distance(self) -> float | None:
+        """Shortest link-H-to-MM-charge distance in Angstrom (diagnostic), or None."""
+        ...
+
+    def boundary_scheme(self) -> str: ...
+
+
+class QmmmResult:
+    """Result of run_qmmm. Gradients are dE/dR (Hartree/Bohr); mm_forces() is the FORCE on each charge."""
+
+    @property
+    def energy(self) -> float: ...
+    @property
+    def converged(self) -> bool: ...
+    @property
+    def iterations(self) -> int: ...
+
+    def qm_gradient(self) -> np.ndarray:
+        """(n_qm + n_link, 3) dE/dR on the QM molecule as solved."""
+        ...
+
+    def mm_forces(self) -> np.ndarray:
+        """(n_charges, 3) force on each embedding charge, in point_charges() order."""
+        ...
+
+    def full_gradient(self) -> np.ndarray:
+        """(natoms_full, 3) dE/dR on every real atom: link rows projected onto hosts, MM forces mapped to atoms."""
+        ...
+
+
+def run_qmmm(
+    system: QmmmSystem,
+    basis_name: str,
+    method: str | None = None,
+    max_iter: int | None = None,
+    energy_conv: float | None = None,
+    density_conv: float | None = None,
+    level_shift: float | None = None,
+    mom_after_iter: int | None = None,
+    guess: str | None = None,
+) -> QmmmResult:
+    """Embedded SCF ("rhf" default or "uhf") energy + QM gradient + MM forces + full gradient."""
+    ...
+
 
 class BasisSet:
     """A Gaussian basis set (orbital or auxiliary/RI-fitting)."""
