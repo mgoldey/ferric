@@ -728,6 +728,42 @@ pub fn qm_gradient_contribution(
     Ok(grad)
 }
 
+/// Shared QM-atom-centre polarizable gradient term for ANY SCF variant
+/// (RHF/UHF/ROHF/RKS/UKS/ROKS alike): builds the same p-shell `SiteBasis`
+/// [`qm_gradient_contribution`] needs and forwards to it. This exists so
+/// every `*_gradient_with_polarizable` wrapper (see `crate::gradient` and
+/// `crate::ks_gradient`) shares ONE construction of `site_basis_p` instead
+/// of duplicating it per SCF variant — [`rhf_gradient_with_polarizable`]
+/// used to build it inline; this function factors that out byte-for-byte
+/// (same `SiteBasis::new(&site_xyz, 1)` call, same field order), pinned by
+/// `polarizable_gradient_term_matches_old_inline_construction` in
+/// `crates/ferric-scf/tests/qmmm_polarizable_multivariant.rs`.
+///
+/// [`qm_gradient_contribution`]'s doc establishes this is a fixed-mu
+/// Hellmann-Feynman contraction depending only on the TOTAL (spin-summed)
+/// AO density `d_total` — nothing here is RHF-specific, so passing
+/// `result.density_total()` (which returns the same array as `density_r()`
+/// for a `Spin::Restricted` result, and `density_alpha + density_beta` for
+/// `Unrestricted`/`RestrictedOpen`) is correct for every SCF variant.
+///
+/// Returns a zero `(natoms, 3)` array when `sites.sites` is empty (mirrors
+/// [`qm_gradient_contribution`]'s own empty-sites short-circuit).
+pub fn polarizable_gradient_term(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    sites: &PolarizableSites,
+    dipoles: &Array2<f64>,
+    d_total: &Array2<f64>,
+) -> Result<Array2<f64>, FerricError> {
+    let natoms = prep.shell_to_atom().iter().copied().max().map(|m| m + 1).unwrap_or(0);
+    if sites.sites.is_empty() {
+        return Ok(Array2::zeros((natoms, 3)));
+    }
+    let site_xyz: Vec<[f64; 4]> = sites.sites.iter().map(|s| [s.x, s.y, s.z, sites.dipole_zeta]).collect();
+    let site_basis_p = SiteBasis::new(&site_xyz, 1)?;
+    qm_gradient_contribution(mol, prep, sites, &site_basis_p, dipoles, d_total)
+}
+
 /// Full `dE/dR_site` for each polarizable site, at FIXED (converged) `mu` —
 /// see the module-level note above [`qm_gradient_contribution`] for why
 /// this uses the `W`-derived formula, not a naive `E_pol` differentiation.

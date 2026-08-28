@@ -735,3 +735,99 @@ def test_qmmm_system_polarizabilities_angstrom3_length_mismatch_raises():
             qm_indices=[0, 1, 2],
             polarizabilities_angstrom3=[0.0, 0.0],
         )
+
+
+# ── Lane B4: polarizable-embedding gradient for uhf/rks/uks ──
+#
+# run_qmmm's QM gradient used to include the polarizable Fock-term
+# contribution ONLY for method="rhf" (the Rust side's Task B3 wrapper). Lane
+# B4 closed that gap with uhf_gradient_with_polarizable /
+# ks_gradient_closed_with_polarizable / ks_gradient_uks_with_polarizable and
+# wired them into run_qmmm for "uhf"/"rks"/"uks". This test is the
+# end-to-end Python check for the "uhf" case: it builds an OH-doublet
+# QmmmSystem with ONE polarizable site (same OH-doublet geometry
+# `oh_sto-3g_uqmmm_plus_lonepair.json` uses elsewhere in this file, at
+# charge=0/multiplicity=2) and central-FD's `run_qmmm(...).energy` along
+# one QM-atom coordinate against `run_qmmm(...).qm_gradient()` -- an
+# independent check of the SAME claim the Rust FD tests
+# (qmmm_polarizable_multivariant.rs) make, but through the actual Python
+# binding surface end users call.
+
+_OH_SYMBOLS = ["O", "H"]
+_OH_ANGSTROM = [[0.0, 0.0, 0.0], [0.0, 0.0, 0.98]]
+
+
+def _oh_polarizable_system(extra_angstrom):
+    """OH doublet QM region + one polarizable MM site (charge 0.5, alpha
+    ~8 Bohr^3 -- large/close, same non-triviality rationale as the Rust
+    multivariant tests' `close_polarizable_sites`) at a fixed lab-frame
+    position offset from the OH atoms by `extra_angstrom` -- used to
+    displace the SITE together with the rest of the world when an OH atom
+    is displaced would defeat the point, so this only ever displaces QM
+    atoms; the site itself is fixed across all FD points here."""
+    site_bohr = [4.0, -1.0, 2.0]
+    site_angstrom = [c / ANG2BOHR for c in site_bohr]
+    symbols = list(_OH_SYMBOLS) + ["X"]
+    coords = [list(c) for c in _OH_ANGSTROM] + [site_angstrom]
+    coords[0] = [a + b for a, b in zip(coords[0], extra_angstrom)]
+    charges = [0.0, 0.0, 0.5]
+    polarizabilities_angstrom3 = [0.0, 0.0, 8.0 / (ANG2BOHR**3)]
+    return ferric.QmmmSystem(
+        symbols,
+        coords,
+        charges,
+        qm_indices=[0, 1],
+        charge=0,
+        multiplicity=2,
+        polarizabilities_angstrom3=polarizabilities_angstrom3,
+    )
+
+
+def test_run_qmmm_uhf_polarizable_gradient_matches_finite_difference():
+    h = 5e-4  # Angstrom
+    sys0 = _oh_polarizable_system([0.0, 0.0, 0.0])
+    result = ferric.run_qmmm(sys0, "sto-3g", method="uhf", density_conv=1e-10)
+    assert result.converged
+    assert result.e_pol != 0.0, "polarizable site must actually be inducing a dipole"
+
+    analytic = result.qm_gradient()  # (2, 3): O then H
+    assert analytic.shape == (2, 3)
+
+    # FD only the O atom's x coordinate (index 0, coord 0) -- one component
+    # is enough to validate the wiring is present and correctly signed;
+    # the Rust multivariant tests already cover the full (natoms, 3) grid
+    # analytically-vs-FD.
+    sys_p = _oh_polarizable_system([h, 0.0, 0.0])
+    sys_m = _oh_polarizable_system([-h, 0.0, 0.0])
+    r_p = ferric.run_qmmm(sys_p, "sto-3g", method="uhf", density_conv=1e-10)
+    r_m = ferric.run_qmmm(sys_m, "sto-3g", method="uhf", density_conv=1e-10)
+    assert r_p.converged and r_m.converged
+    h_bohr = h * ANG2BOHR
+    fd = (r_p.energy - r_m.energy) / (2.0 * h_bohr)
+
+    assert analytic[0, 0] == pytest.approx(fd, abs=1e-5), (
+        f"analytic {analytic[0, 0]} vs FD {fd}"
+    )
+
+
+def test_run_qmmm_uhf_polarizable_gradient_differs_from_non_polarizable():
+    # Non-triviality: the polarizable contribution must materially change
+    # the QM gradient -- otherwise the FD test above could pass merely
+    # because the term is negligible (or because run_qmmm silently fell
+    # back to the SCF-only gradient again).
+    sys_pol = _oh_polarizable_system([0.0, 0.0, 0.0])
+    r_pol = ferric.run_qmmm(sys_pol, "sto-3g", method="uhf", density_conv=1e-10)
+    assert r_pol.converged
+
+    symbols = list(_OH_SYMBOLS) + ["X"]
+    coords = [list(c) for c in _OH_ANGSTROM] + [
+        [c / ANG2BOHR for c in [4.0, -1.0, 2.0]]
+    ]
+    sys_plain = ferric.QmmmSystem(
+        symbols, coords, [0.0, 0.0, 0.5], qm_indices=[0, 1], charge=0, multiplicity=2,
+    )
+    r_plain = ferric.run_qmmm(sys_plain, "sto-3g", method="uhf", density_conv=1e-10)
+    assert r_plain.converged
+
+    delta = np.max(np.abs(r_pol.qm_gradient() - r_plain.qm_gradient()))
+    assert delta > 1e-4, f"polarizable gradient contribution suspiciously small: {delta:.3e}"

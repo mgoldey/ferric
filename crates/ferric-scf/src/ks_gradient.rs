@@ -176,6 +176,41 @@ pub fn ks_gradient_closed(
     Ok(grad)
 }
 
+/// [`ks_gradient_closed`] plus the QM-atom-centre Fock-term contribution of
+/// Thole-damped polarizable embedding — the closed-shell-KS sibling of
+/// [`crate::gradient::rhf_gradient_with_polarizable`]. `sites`/`dipoles`
+/// are typically `config.polarizable.as_ref()` and
+/// `result.induced_dipoles.as_ref()`; when either is `None`, or
+/// `sites.sites` is empty, this is EXACTLY `ks_gradient_closed`
+/// (`polarizable_gradient_term` returns an all-zero array in that case,
+/// added unconditionally — same pattern as the UHF wrapper). Uses
+/// `result.density_total()`, which equals `density_r()` for a
+/// `Spin::Restricted` result, matching
+/// [`crate::polarizable::qm_gradient_contribution`]'s documented
+/// total-density-only dependence (the term is a fixed-mu Hellmann-Feynman
+/// contraction of the SAME `V_ind` Fock term added in the closed-shell RHF
+/// case, orthogonal to the XC/VV10 pieces this function adds on top of the
+/// HF-shaped part of the gradient).
+#[allow(clippy::too_many_arguments)]
+pub fn ks_gradient_closed_with_polarizable(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bs: &ferric_core::basis::BasisSet,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    xc_name: &str,
+    result: &ScfResult,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
+    sites: Option<&crate::polarizable::PolarizableSites>,
+    dipoles: Option<&Array2<f64>>,
+) -> Result<Array2<f64>, FerricError> {
+    let mut grad = ks_gradient_closed(mol, prep, bs, op, bounds, xc_name, result, ext)?;
+    if let (Some(sites), Some(dipoles)) = (sites, dipoles) {
+        grad += &crate::polarizable::polarizable_gradient_term(mol, prep, sites, dipoles, result.density_total())?;
+    }
+    Ok(grad)
+}
+
 /// 2e K-only gradient with a chosen Coulomb-like operator (Coulomb, erfc, erf).
 ///
 /// Used by the RSH gradient path: builds `Σ Γ_K · d(μν|λσ)/dR` with
@@ -307,6 +342,32 @@ pub fn ks_gradient_uks(
         grad += &vv10_grad;
     }
 
+    Ok(grad)
+}
+
+/// [`ks_gradient_uks`] plus the QM-atom-centre Fock-term contribution of
+/// Thole-damped polarizable embedding — the UKS sibling of
+/// [`ks_gradient_closed_with_polarizable`] /
+/// [`crate::gradient::uhf_gradient_with_polarizable`]. Same None/empty ⇒
+/// bit-identical-to-plain-`ks_gradient_uks` contract, via
+/// `result.density_total()` (`= density_alpha + density_beta` for UKS).
+#[allow(clippy::too_many_arguments)]
+pub fn ks_gradient_uks_with_polarizable(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bs: &ferric_core::basis::BasisSet,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    xc_name: &str,
+    result: &ScfResult,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
+    sites: Option<&crate::polarizable::PolarizableSites>,
+    dipoles: Option<&Array2<f64>>,
+) -> Result<Array2<f64>, FerricError> {
+    let mut grad = ks_gradient_uks(mol, prep, bs, op, bounds, xc_name, result, ext)?;
+    if let (Some(sites), Some(dipoles)) = (sites, dipoles) {
+        grad += &crate::polarizable::polarizable_gradient_term(mol, prep, sites, dipoles, result.density_total())?;
+    }
     Ok(grad)
 }
 
