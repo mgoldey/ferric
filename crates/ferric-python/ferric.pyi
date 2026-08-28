@@ -113,6 +113,12 @@ class QmmmSystem:
     def qm_atom_count(self) -> int: ...
     def natoms(self) -> int: ...
 
+    def atom_coords_angstrom(self) -> list[tuple[float, float, float]]:
+        """Every atom's current position in Angstrom, in full-structure index order
+        (the same ordering qm_indices()/mm_indices() index into), regardless of QM/MM role.
+        """
+        ...
+
     def link_atom_positions(self) -> list[tuple[float, float, float]]:
         """Link hydrogen positions in Angstrom."""
         ...
@@ -211,6 +217,49 @@ def run_qmmm(
     convention (MM-MM bonded/nonbonded + QM-MM Lennard-Jones; no QM-MM Coulomb, already inside
     the embedding). Omitting it is bit-identical to a topology with zero energy/gradient
     everywhere (QmmmResult.mm_energy reports all-zero, not absent).
+    """
+    ...
+
+
+class QmmmOptimizeResult:
+    """Result of run_optimize_qmmm."""
+
+    @property
+    def energy(self) -> float: ...
+    @property
+    def converged(self) -> bool: ...
+    @property
+    def steps(self) -> int: ...
+
+    def system(self) -> QmmmSystem:
+        """The partition at the final (optimized) geometry."""
+        ...
+
+    def energies(self) -> list[float]:
+        """Total energy (Hartree) at every step, in order (length steps + 1)."""
+        ...
+
+
+def run_optimize_qmmm(
+    system: QmmmSystem,
+    basis_name: str,
+    method: str | None = None,
+    xc: str | None = None,
+    move_mm: str | tuple[str, float] | tuple[str, list[int]] | None = None,
+    mm_topology: MmTopology | None = None,
+    max_steps: int | None = None,
+    e_conv: float | None = None,
+) -> QmmmOptimizeResult:
+    """Optimize a QmmmSystem's geometry. Real QM atoms always move; MM atoms move per move_mm.
+
+    move_mm: "none" (default, only QM atoms move), "all" (every MM atom moves too),
+    ("within", radius_angstrom) (MM atoms within that distance of any QM atom, measured once
+    at the starting geometry), or ("residues", [residue_id, ...]) (requires the system to have
+    been built with residue_ids=; ValueError otherwise). Any value other than "none"/None
+    requires mm_topology (ValueError otherwise).
+
+    method/xc follow run_qmmm's convention: "rhf" (default), "uhf", "rks", "uks"; xc is
+    required for the KS variants and rejected otherwise.
     """
     ...
 

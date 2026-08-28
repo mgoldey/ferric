@@ -115,3 +115,106 @@ def relax_pose_in_pocket_field(
 # constant rather than a second hardcoded literal). `ferric.Molecule.coords()`
 # already returns Angstrom; this is for callers holding `coords_bohr()` values.
 BOHR_TO_ANGSTROM = 1.0 / ANGSTROM_TO_BOHR
+
+
+@dataclass
+class RelaxedPoseQmmm:
+    """Outcome of relaxing one `EmbeddedLigand`'s geometry via
+    `ferric.run_optimize_qmmm` (the `QmmmSystem`-based optimizer, as opposed
+    to `RelaxedPose`'s plain fixed-field `ferric.run_optimize`).
+
+    `coords_angstrom` is the ligand's optimized geometry (pocket atoms are
+    never QM here, so only the ligand's positions are reported, same shape
+    as `EmbeddedLigand.coords_angstrom`) whether or not the optimizer
+    converged -- check `converged` before treating it as settled, same
+    contract as `RelaxedPose`.
+    """
+    energy: float  # Hartree, at the (attempted) relaxed geometry
+    converged: bool
+    steps: int
+    coords_angstrom: list[tuple[float, float, float]]
+    symbols: list[str]
+    n_pocket_charges: int
+
+
+def relax_pose_in_pocket(
+    embedded: EmbeddedLigand,
+    move_mm: str | tuple[str, float] | tuple[str, list[int]] = "none",
+    mm_topology=None,
+    max_steps: int = 100,
+    e_conv: float = 1e-6,
+) -> RelaxedPoseQmmm:
+    """Optimize `embedded`'s ligand geometry via `ferric.run_optimize_qmmm`,
+    the `QmmmSystem`-based optimizer.
+
+    Unlike `relax_pose_in_pocket_field` (which threads a FIXED point-charge
+    field straight into `ferric.run_optimize` — the pocket never moves, no
+    matter what), this builds a `QmmmSystem` with the ligand atoms as the QM
+    region and the (already ligand-overlap-filtered) pocket charges as the
+    MM region, so `move_mm` can let some or all of the pocket relax too —
+    the whole point of going through `optimize_qmmm` instead of the plain
+    fixed-field path. `move_mm="none"` (the default) reproduces the
+    fixed-pocket behavior of `relax_pose_in_pocket_field`, modulo the two
+    functions' different underlying entry points.
+
+    Pocket point charges carry no element symbol (`PointCharge` is
+    `(q, x, y, z)`), so they enter the `QmmmSystem` as MM-only bare-charge
+    sites with symbol `"X"` — allowed in the MM region (see
+    `ferric.QmmmSystem`'s docs), never QM.
+
+    Requires the same precondition as `relax_pose_in_pocket_field`: a pocket
+    attached with at least one surviving (overlap-filtered) point charge.
+    Raises `ValueError` for the same reason (nothing to relax the ligand
+    geometry against, and a silent vacuum fallback would make "in pocket"
+    a lie), UNLESS `move_mm != "none"`, since then MM atoms are meant to
+    move independent of any QM electrostatic coupling and `mm_topology` is
+    required anyway (`ferric.run_optimize_qmmm` raises for that itself).
+
+    `mm_topology`, if given, is a `ferric.MmTopology` over the SAME atom
+    ordering as the QmmmSystem this function builds (ligand atoms first,
+    then pocket charges) — required whenever `move_mm != "none"`.
+    """
+    if move_mm == "none" and (embedded.pocket is None or not embedded.point_charges):
+        raise ValueError(
+            "relax_pose_in_pocket requires embedded.point_charges "
+            "(embed_ligand must be called with a pocket, and at least one "
+            "pocket charge must survive overlap filtering) -- nothing to "
+            "relax the ligand geometry against."
+        )
+
+    pocket_charges = embedded.point_charges or []
+    n_ligand = len(embedded.symbols)
+
+    all_symbols = list(embedded.symbols) + ["X"] * len(pocket_charges)
+    all_coords_angstrom = list(embedded.coords_angstrom) + [
+        (x * BOHR_TO_ANGSTROM, y * BOHR_TO_ANGSTROM, z * BOHR_TO_ANGSTROM)
+        for _q, x, y, z in pocket_charges
+    ]
+    all_charges = [0.0] * n_ligand + [q for q, *_ in pocket_charges]
+
+    # EmbeddedLigand does not carry charge/multiplicity separately from
+    # `mol` (and `Molecule` exposes no accessor for them), so this assumes
+    # the common neutral-singlet ligand case -- same assumption
+    # `relax_pose_in_pocket_field`'s ferric.run_optimize call makes
+    # implicitly via embedded.mol.
+    system = ferric.QmmmSystem(
+        all_symbols, all_coords_angstrom, all_charges,
+        qm_indices=list(range(n_ligand)),
+    )
+
+    result = ferric.run_optimize_qmmm(
+        system, embedded.basis_name,
+        move_mm=move_mm, mm_topology=mm_topology,
+        max_steps=max_steps, e_conv=e_conv,
+    )
+    relaxed_system = result.system()
+    relaxed_coords = relaxed_system.qm_molecule().coords()[:n_ligand]
+
+    return RelaxedPoseQmmm(
+        energy=result.energy,
+        converged=result.converged,
+        steps=result.steps,
+        coords_angstrom=[tuple(c) for c in relaxed_coords],
+        symbols=list(embedded.symbols),
+        n_pocket_charges=len(pocket_charges),
+    )

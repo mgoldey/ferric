@@ -574,6 +574,18 @@ impl PyQmmmSystem {
     fn qm_atom_count(&self) -> usize { self.inner.qm_atom_count() }
     /// Number of atoms in the full structure.
     fn natoms(&self) -> usize { self.inner.atoms.len() }
+    /// Every atom's current position in **Ångström**, in full-structure
+    /// index order (the same ordering `qm_indices()`/`mm_indices()` index
+    /// into) — regardless of QM/MM role. Useful for comparing a system
+    /// before/after `run_optimize_qmmm` (e.g. to check whether a
+    /// particular MM atom actually moved).
+    fn atom_coords_angstrom(&self) -> Vec<(f64, f64, f64)> {
+        self.inner
+            .atoms
+            .iter()
+            .map(|a| (a.x / ANGSTROM_TO_BOHR, a.y / ANGSTROM_TO_BOHR, a.z_pos / ANGSTROM_TO_BOHR))
+            .collect()
+    }
     /// Link hydrogen positions in **Ångström**, in `qm_molecule()` order.
     fn link_atom_positions(&self) -> Vec<(f64, f64, f64)> {
         self.inner
@@ -798,6 +810,177 @@ fn run_qmmm(
         full_gradient_data: full,
         mm_energy_data: mm_energy,
     })
+}
+
+/// Result of `run_optimize_qmmm`: the relaxed partition plus its energy
+/// trajectory.
+#[pyclass]
+#[pyo3(name = "QmmmOptimizeResult")]
+struct PyQmmmOptimizeResult {
+    #[pyo3(get)] energy: f64,
+    #[pyo3(get)] converged: bool,
+    #[pyo3(get)] steps: usize,
+    system_data: ferric_scf::qmmm::QmmmSystem,
+    energies_data: Vec<f64>,
+}
+
+#[pymethods]
+impl PyQmmmOptimizeResult {
+    /// The partition at the final (optimized) geometry.
+    fn system(&self) -> PyQmmmSystem {
+        PyQmmmSystem { inner: self.system_data.clone() }
+    }
+    /// Total energy (Hartree) at every step, in order (length `steps + 1`,
+    /// the first entry being the starting geometry).
+    fn energies(&self) -> Vec<f64> {
+        self.energies_data.clone()
+    }
+    fn __repr__(&self) -> String {
+        format!(
+            "QmmmOptimizeResult(energy={:.10}, converged={}, steps={})",
+            self.energy, self.converged, self.steps
+        )
+    }
+    fn __str__(&self) -> String {
+        format!(
+            "Optimized QM/MM Energy: {:.10} Ha (converged: {}, {} steps)",
+            self.energy, self.converged, self.steps
+        )
+    }
+}
+
+/// Optimize a `QmmmSystem`'s geometry: real QM atoms always move; MM atoms
+/// move per `move_mm`.
+///
+/// `move_mm`: `"none"` (default — only QM atoms move), `"all"` (every MM
+/// atom moves too), `("within", radius_angstrom)` (MM atoms within that
+/// distance of any QM atom, measured once at the starting geometry), or
+/// `("residues", [residue_id, ...])` (requires the system to have been built
+/// with `residue_ids=`, i.e. whole-residue QM selection — `ValueError`
+/// otherwise). Any `move_mm` other than `"none"` requires `mm_topology`
+/// (moving MM atoms with no force field holding their own geometry together
+/// is meaningless).
+///
+/// `method`/`xc` follow `run_qmmm`'s convention: `"rhf"` (default), `"uhf"`,
+/// `"rks"`, `"uks"`; `xc` required for the KS variants, rejected otherwise.
+#[pyfunction]
+#[pyo3(signature = (system, basis_name, method=None, xc=None, move_mm=None, mm_topology=None, max_steps=None, e_conv=None))]
+#[allow(clippy::too_many_arguments)]
+fn run_optimize_qmmm(
+    py: Python<'_>,
+    system: &PyQmmmSystem,
+    basis_name: &str,
+    method: Option<&str>,
+    xc: Option<&str>,
+    move_mm: Option<Bound<'_, PyAny>>,
+    mm_topology: Option<&PyMmTopology>,
+    max_steps: Option<usize>,
+    e_conv: Option<f64>,
+) -> PyResult<PyQmmmOptimizeResult> {
+    use ferric_scf::qmmm::{optimize_qmmm, QmmmMethod, QmmmOptimizeConfig};
+
+    let method_name = method.unwrap_or("rhf");
+    let is_ks = matches!(method_name, "rks" | "uks");
+    if xc.is_some() && !is_ks {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "run_optimize_qmmm: xc is only valid for method=\"rks\"/\"uks\", got method={method_name:?}"
+        )));
+    }
+    if is_ks && xc.is_none() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "run_optimize_qmmm: method=\"rks\"/\"uks\" requires xc",
+        ));
+    }
+    let qmmm_method = match method_name {
+        "rhf" => QmmmMethod::Rhf,
+        "uhf" => QmmmMethod::Uhf,
+        "rks" => QmmmMethod::Rks(xc.unwrap().to_string()),
+        "uks" => QmmmMethod::Uks(xc.unwrap().to_string()),
+        m => {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "run_optimize_qmmm: method must be \"rhf\", \"uhf\", \"rks\" or \"uks\", got {m:?}"
+            )))
+        }
+    };
+
+    let move_mm = parse_move_mm(py, move_mm)?;
+
+    let scf = RhfConfig::default();
+    let opt = OptimizeConfig {
+        max_steps: max_steps.unwrap_or(100),
+        e_conv: e_conv.unwrap_or(1e-6),
+        ..Default::default()
+    };
+    let cfg = QmmmOptimizeConfig {
+        method: qmmm_method,
+        move_mm,
+        opt,
+        mm_topology: mm_topology.map(|t| t.inner.clone()),
+        scf,
+    };
+
+    let ctx = ParallelContext::default();
+    let r = optimize_qmmm(&ctx, &system.inner, basis_name, &cfg).map_err(make_err)?;
+    Ok(PyQmmmOptimizeResult {
+        energy: r.energy,
+        converged: r.converged,
+        steps: r.steps,
+        system_data: r.system,
+        energies_data: r.energies,
+    })
+}
+
+/// Parse the `move_mm=` argument: `None`/`"none"` -> `MoveMm::None`, `"all"`
+/// -> `MoveMm::All`, `("within", radius_angstrom)` -> `MoveMm::WithinRadius`
+/// (converted to Bohr), `("residues", [ids])` -> `MoveMm::Residues`. Any
+/// other value is a `ValueError`, per the repo's config-honesty convention
+/// (never silently default to `"none"` on a typo).
+fn parse_move_mm(
+    py: Python<'_>,
+    move_mm: Option<Bound<'_, PyAny>>,
+) -> PyResult<ferric_scf::qmmm::MoveMm> {
+    use ferric_scf::qmmm::MoveMm;
+    let Some(obj) = move_mm else { return Ok(MoveMm::None) };
+    if let Ok(s) = obj.extract::<String>() {
+        return match s.as_str() {
+            "none" => Ok(MoveMm::None),
+            "all" => Ok(MoveMm::All),
+            other => Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "run_optimize_qmmm: unknown move_mm string {other:?}; expected \"none\", \"all\", \
+                 (\"within\", radius_angstrom), or (\"residues\", [ids])"
+            ))),
+        };
+    }
+    if let Ok((tag, arg)) = obj.extract::<(String, Bound<'_, PyAny>)>() {
+        match tag.as_str() {
+            "within" => {
+                let r: f64 = arg.extract().map_err(|_| {
+                    pyo3::exceptions::PyValueError::new_err(
+                        "run_optimize_qmmm: (\"within\", radius_angstrom) needs a float radius",
+                    )
+                })?;
+                return Ok(MoveMm::WithinRadius(r * ANGSTROM_TO_BOHR));
+            }
+            "residues" => {
+                let ids: Vec<usize> = arg.extract().map_err(|_| {
+                    pyo3::exceptions::PyValueError::new_err(
+                        "run_optimize_qmmm: (\"residues\", [ids]) needs a list of int residue ids",
+                    )
+                })?;
+                return Ok(MoveMm::Residues(ids));
+            }
+            other => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "run_optimize_qmmm: unknown move_mm tag {other:?}; expected \"within\" or \"residues\""
+                )))
+            }
+        }
+    }
+    let _ = py;
+    Err(pyo3::exceptions::PyValueError::new_err(
+        "run_optimize_qmmm: move_mm must be \"none\", \"all\", (\"within\", radius_angstrom), \
+         or (\"residues\", [ids])",
+    ))
 }
 
 // ── UHF (open-shell) ──
@@ -4777,6 +4960,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyOptimizeResult>()?;
     m.add_class::<PyQmmmSystem>()?;
     m.add_class::<PyQmmmResult>()?;
+    m.add_class::<PyQmmmOptimizeResult>()?;
     m.add_class::<PyMmTopology>()?;
     m.add_class::<PyFrequencyResult>()?;
     m.add_class::<PyRiMp2Result>()?;
@@ -4812,6 +4996,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_rohf, m)?)?;
     m.add_function(wrap_pyfunction!(run_optimize, m)?)?;
     m.add_function(wrap_pyfunction!(run_qmmm, m)?)?;
+    m.add_function(wrap_pyfunction!(run_optimize_qmmm, m)?)?;
     m.add_function(wrap_pyfunction!(run_frequencies, m)?)?;
     m.add_function(wrap_pyfunction!(esp_at_atoms, m)?)?;
     m.add_function(wrap_pyfunction!(esp_at_points, m)?)?;

@@ -80,10 +80,15 @@
 
 use ferric_core::external_potential::{ExternalPotential, PointCharge, SmearedCharge};
 use ferric_core::mol::{Atom, Molecule};
+use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
+use ferric_integrals::operator::Operator;
 use ferric_mm::{MmEnergy, MmTopology};
 use ndarray::Array2;
+
+use crate::rhf::RhfConfig;
+use crate::screening::SchwarzBounds;
 
 /// One atom of the full (QM + MM) structure, with the MM partial charge it
 /// carries if it ends up in the MM region.
@@ -326,6 +331,18 @@ pub struct QmmmSystem {
     /// kept for diagnostics/downstream residue-aware logic. `None` for every
     /// other selection variant.
     pub residue_ids: Option<Vec<usize>>,
+    /// The bond list and scale factor last passed to
+    /// [`QmmmSystem::with_link_atoms`], kept so [`QmmmSystem::with_coordinates`]
+    /// can re-run link placement at a new geometry. `None` if link atoms were
+    /// never requested.
+    link_atom_setup: Option<(Vec<(usize, usize)>, f64)>,
+    /// The bond list and scheme last passed to
+    /// [`QmmmSystem::with_boundary_charges`], kept so
+    /// [`QmmmSystem::with_coordinates`] can re-derive boundary charges at a
+    /// new geometry. `None` if no scheme was ever applied (equivalent to
+    /// `Keep` with an empty bond list, but recorded separately so
+    /// `with_coordinates` skips re-deriving it when it was never asked for).
+    boundary_charge_setup: Option<(Vec<(usize, usize)>, BoundaryChargeScheme)>,
 }
 
 impl QmmmSystem {
@@ -419,6 +436,8 @@ impl QmmmSystem {
             atoms: atoms.to_vec(),
             qm_charge,
             qm_multiplicity,
+            link_atom_setup: None,
+            boundary_charge_setup: None,
         })
     }
 
@@ -557,6 +576,7 @@ impl QmmmSystem {
         }
 
         self.link_atoms = links;
+        self.link_atom_setup = Some((bonds.to_vec(), scale));
         Ok(self)
     }
 
@@ -599,6 +619,7 @@ impl QmmmSystem {
                 )));
             }
         }
+        self.boundary_charge_setup = Some((bonds.to_vec(), scheme));
 
         // M1 hosts: the MM endpoint of every cut bond, deduplicated.
         let mut is_m1 = vec![false; natoms];
@@ -802,6 +823,72 @@ impl QmmmSystem {
     /// unless every charge in this system happens to be one kind.
     pub fn mm_charge_positions(&self) -> Vec<[f64; 3]> {
         self.active_charges().into_iter().map(|(_, p, _)| p).collect()
+    }
+
+    /// Rebuild this partition at a new geometry: same QM/MM selection, same
+    /// link-atom bond list/scale and boundary-charge scheme (if any were
+    /// configured), but atom positions taken from `coords_full` and link
+    /// atoms / boundary charges re-derived from those new positions.
+    ///
+    /// `coords_full` is `(natoms, 3)` in Bohr, in the SAME atom ordering as
+    /// [`QmmmSystem::atoms`] (i.e. the ordering the system was originally
+    /// built from — this does not re-run [`QmSelection`], so it cannot
+    /// change which atoms are QM vs MM).
+    ///
+    /// This exists so a geometry optimizer can re-evaluate the QM/MM energy
+    /// and gradient at a new geometry with the partition — link positions,
+    /// boundary midpoint charges — kept the EXACT derivative of what gets
+    /// evaluated, rather than reusing stale link/boundary geometry from the
+    /// old coordinates (which would make the analytic gradient wrong at any
+    /// step that actually moved a frontier or boundary atom).
+    pub fn with_coordinates(&self, coords_full: &Array2<f64>) -> Result<QmmmSystem, FerricError> {
+        let natoms = self.atoms.len();
+        if coords_full.dim() != (natoms, 3) {
+            return Err(FerricError::General(format!(
+                "with_coordinates: coords_full shape {:?} != ({natoms}, 3)",
+                coords_full.dim()
+            )));
+        }
+
+        let mut new_atoms = self.atoms.clone();
+        for (i, a) in new_atoms.iter_mut().enumerate() {
+            a.x = coords_full[(i, 0)];
+            a.y = coords_full[(i, 1)];
+            a.z_pos = coords_full[(i, 2)];
+        }
+
+        // Rebuild from scratch with the SAME selection outcome (qm_indices/
+        // mm_indices/residue_ids are geometry-independent — QmSelection was
+        // already resolved once at construction — so we reconstruct the
+        // struct directly rather than re-running QmSelection, which would
+        // need the original seeds/radius we don't keep around).
+        let mut out = QmmmSystem {
+            qm_indices: self.qm_indices.clone(),
+            mm_indices: self.mm_indices.clone(),
+            link_atoms: Vec::new(),
+            atoms: new_atoms,
+            qm_charge: self.qm_charge,
+            qm_multiplicity: self.qm_multiplicity,
+            effective_charges: Vec::new(), // set below
+            boundary_charges: Vec::new(),
+            boundary_scheme: BoundaryChargeScheme::Keep,
+            residue_ids: self.residue_ids.clone(),
+            link_atom_setup: self.link_atom_setup.clone(),
+            boundary_charge_setup: self.boundary_charge_setup.clone(),
+        };
+        // effective_charges defaults to the raw per-atom charges until
+        // with_boundary_charges (if configured) recomputes them below —
+        // mirrors QmmmSystem::new's initialization.
+        out.effective_charges = out.atoms.iter().map(|a| a.charge).collect();
+
+        if let Some((bonds, scale)) = self.link_atom_setup.clone() {
+            out = out.with_link_atoms(&bonds, scale)?;
+        }
+        if let Some((bonds, scheme)) = self.boundary_charge_setup.clone() {
+            out = out.with_boundary_charges(&bonds, scheme)?;
+        }
+
+        Ok(out)
     }
 
     /// Shortest distance (Bohr) from any link hydrogen to any nonzero MM point
@@ -1396,6 +1483,288 @@ pub fn full_gradient_with_mm(
     Ok(full)
 }
 
+// ── F2-2: optimize_qmmm ──
+
+/// Which MM atoms, in addition to the QM real atoms (always free), the
+/// optimizer is allowed to move.
+///
+/// A [`QmmmOptimizeConfig::mm_topology`] is required whenever this is
+/// anything other than `None`: moving MM atoms with no MM–MM force field to
+/// resist that motion (bond/angle/torsion/LJ/Coulomb) is meaningless — they
+/// would be free-falling into the QM region's electrostatic embedding with
+/// nothing holding their own geometry together.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MoveMm {
+    /// Only QM real atoms move; every MM atom (and any boundary/link
+    /// machinery) stays fixed at its input geometry. The only variant valid
+    /// without `mm_topology`.
+    None,
+    /// MM atoms within `r` Bohr of any QM real atom, measured **once, at the
+    /// starting geometry** (not re-evaluated as atoms move — a moving
+    /// "free" set would make the coordinate vector's length change
+    /// mid-optimization).
+    WithinRadius(f64),
+    /// MM atoms belonging to any of these residue ids. Requires
+    /// `system.residue_ids` to be `Some(...)` (i.e. the system was built
+    /// with [`QmSelection::WithinRadiusWholeResidues`]) — a typed error
+    /// otherwise.
+    Residues(Vec<usize>),
+    /// Every MM atom moves.
+    All,
+}
+
+/// Which SCF reference to optimize with. Mirrors `RhfConfig.xc`: `Rhf`/`Uhf`
+/// run plain HF; `Rks`/`Uks` set `RhfConfig.xc` to the given functional name
+/// (df_j_aux/df_k_aux auto-set to `def2-universal-jkfit`, matching
+/// `run_qmmm`'s KS setup).
+#[derive(Debug, Clone, PartialEq)]
+pub enum QmmmMethod {
+    Rhf,
+    Uhf,
+    Rks(String),
+    Uks(String),
+}
+
+/// Configuration for [`optimize_qmmm`].
+#[derive(Debug, Clone)]
+pub struct QmmmOptimizeConfig {
+    pub method: QmmmMethod,
+    pub move_mm: MoveMm,
+    pub opt: crate::optimize::OptimizeConfig,
+    /// The MM force field. `None` means no MM energy/gradient terms at all —
+    /// the same "all-zero" contract [`qmmm_mm_terms`] documents. Required
+    /// (an error otherwise) whenever `move_mm != MoveMm::None`.
+    pub mm_topology: Option<MmTopology>,
+    /// SCF configuration. `external_potential` is OVERWRITTEN with the
+    /// system's embedding potential at every step (any value set here is
+    /// ignored, since it must track the moving partition); every other
+    /// field (xc aux basis choices excepted — those are set by `method`)
+    /// passes through unchanged.
+    pub scf: RhfConfig,
+}
+
+/// Result of [`optimize_qmmm`].
+#[derive(Debug, Clone)]
+pub struct QmmmOptimizeResult {
+    /// The partition at the final geometry (same QM/MM selection as the
+    /// input `system`, atoms moved to the optimized positions).
+    pub system: QmmmSystem,
+    /// Total energy (SCF + MM force-field terms) at the final geometry.
+    pub energy: f64,
+    pub converged: bool,
+    pub steps: usize,
+    /// Total energy at every step, in order (length `steps + 1`).
+    pub energies: Vec<f64>,
+}
+
+/// Which atoms (by full-structure index) are free to move, given `move_mm`.
+/// QM real atoms are always free; link atoms and boundary midpoint charges
+/// are never independent coordinates (they are derived, via
+/// [`QmmmSystem::with_coordinates`], from the real atoms that host them).
+fn free_atom_indices(system: &QmmmSystem, move_mm: &MoveMm) -> Result<Vec<usize>, FerricError> {
+    let mut free: Vec<usize> = system.qm_indices.clone();
+    match move_mm {
+        MoveMm::None => {}
+        MoveMm::All => {
+            free.extend(system.mm_indices.iter().copied());
+        }
+        MoveMm::WithinRadius(r) => {
+            if !(r.is_finite() && *r >= 0.0) {
+                return Err(FerricError::General(format!(
+                    "optimize_qmmm: MoveMm::WithinRadius radius must be finite and >= 0, got {r}"
+                )));
+            }
+            let r2 = r * r;
+            for &m in &system.mm_indices {
+                let hit = system
+                    .qm_indices
+                    .iter()
+                    .any(|&q| system.atoms[m].distance2(&system.atoms[q]) <= r2);
+                if hit {
+                    free.push(m);
+                }
+            }
+        }
+        MoveMm::Residues(ids) => {
+            let Some(residue_ids) = &system.residue_ids else {
+                return Err(FerricError::General(
+                    "optimize_qmmm: MoveMm::Residues requires system.residue_ids (build the \
+                     QmmmSystem with QmSelection::WithinRadiusWholeResidues)"
+                        .to_string(),
+                ));
+            };
+            let wanted: std::collections::HashSet<usize> = ids.iter().copied().collect();
+            for &m in &system.mm_indices {
+                if wanted.contains(&residue_ids[m]) {
+                    free.push(m);
+                }
+            }
+        }
+    }
+    free.sort_unstable();
+    Ok(free)
+}
+
+/// Optimize a QM/MM system's geometry: real QM atoms always move, MM atoms
+/// move per `cfg.move_mm`. Every energy/gradient evaluation rebuilds the
+/// partition at the current geometry via [`QmmmSystem::with_coordinates`] (so
+/// link atoms and boundary charges are the exact derivative of what gets
+/// evaluated), runs the configured SCF in the resulting embedding potential,
+/// adds any [`qmmm_mm_terms`] contribution, and projects the gradient down to
+/// only the FREE atoms' rows before the BFGS line search sees them (so it
+/// never tries to move an atom `move_mm` excluded).
+///
+/// Requires `cfg.mm_topology` whenever `cfg.move_mm != MoveMm::None`
+/// (typed error otherwise — moving MM atoms with no force field holding
+/// their own geometry together is meaningless). `MoveMm::Residues` requires
+/// `system.residue_ids` (typed error otherwise).
+///
+/// **Exactness anchor**: `move_mm = MoveMm::None` with no MM atoms in
+/// `system` reproduces [`crate::optimize::optimize_geometry`]'s per-step
+/// energies exactly (same BFGS core, same gradient) — see
+/// `optimize_qmmm_with_no_mm_matches_optimize_geometry` in
+/// `tests/qmmm_optimize.rs`.
+pub fn optimize_qmmm(
+    ctx: &ParallelContext,
+    system: &QmmmSystem,
+    basis_name: &str,
+    cfg: &QmmmOptimizeConfig,
+) -> Result<QmmmOptimizeResult, FerricError> {
+    if cfg.move_mm != MoveMm::None && cfg.mm_topology.is_none() {
+        return Err(FerricError::General(
+            "optimize_qmmm: move_mm != MoveMm::None requires mm_topology (moving MM atoms \
+             with no MM force field to hold their own geometry together is meaningless)"
+                .to_string(),
+        ));
+    }
+
+    let free = free_atom_indices(system, &cfg.move_mm)?;
+    let natoms = system.atoms.len();
+
+    let coords0 = {
+        let mut c = Array2::<f64>::zeros((natoms, 3));
+        for (i, a) in system.atoms.iter().enumerate() {
+            c[(i, 0)] = a.x;
+            c[(i, 1)] = a.y;
+            c[(i, 2)] = a.z_pos;
+        }
+        c
+    };
+
+    // Flatten only the FREE atoms' coordinates into the BFGS vector.
+    let flatten_free = |coords: &Array2<f64>| -> Vec<f64> {
+        let mut x = Vec::with_capacity(free.len() * 3);
+        for &i in &free {
+            x.push(coords[(i, 0)]);
+            x.push(coords[(i, 1)]);
+            x.push(coords[(i, 2)]);
+        }
+        x
+    };
+    let unflatten_free = |x: &[f64], coords: &mut Array2<f64>| {
+        for (k, &i) in free.iter().enumerate() {
+            coords[(i, 0)] = x[3 * k];
+            coords[(i, 1)] = x[3 * k + 1];
+            coords[(i, 2)] = x[3 * k + 2];
+        }
+    };
+
+    let x0 = flatten_free(&coords0);
+    let bs = ferric_core::basis::bundled(basis_name)?;
+    let op = Operator::coulomb();
+
+    let mut energies: Vec<f64> = Vec::new();
+
+    let (x_final, _energy_final, steps, converged) =
+        crate::optimize::optimize_coordinates(&x0, &cfg.opt, |x| {
+            let mut coords = coords0.clone();
+            unflatten_free(x, &mut coords);
+            let step_sys = system.with_coordinates(&coords)?;
+
+            let mol = step_sys.to_qm_molecule();
+            let prep = PreparedBasis::new(&mol, &bs)?;
+            let bounds = SchwarzBounds::compute(op, &prep)?;
+            let mut scf_cfg = cfg.scf.clone();
+            scf_cfg.external_potential = step_sys.to_external_potential();
+            let ext = scf_cfg.external_potential.clone();
+
+            let (scf_energy, qm_grad, density_total) = match &cfg.method {
+                QmmmMethod::Rhf => {
+                    let r = crate::rhf::solve_rhf(ctx, &mol, &prep, op, &bounds, &scf_cfg)?;
+                    let g = crate::gradient::rhf_gradient(&mol, &prep, op, &bounds, &r, ext.as_ref())?;
+                    (r.energy, g, r.density_total().clone())
+                }
+                QmmmMethod::Uhf => {
+                    let r = crate::uhf::solve_uhf(ctx, &mol, &prep, &bounds, &scf_cfg)?;
+                    let g = crate::gradient::uhf_gradient(&mol, &prep, op, &bounds, &r, ext.as_ref())?;
+                    (r.energy, g, r.density_total().clone())
+                }
+                QmmmMethod::Rks(xc) => {
+                    scf_cfg.xc = Some(xc.clone());
+                    scf_cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
+                    scf_cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
+                    let r = crate::rhf::solve_rhf(ctx, &mol, &prep, op, &bounds, &scf_cfg)?;
+                    let g = crate::ks_gradient::ks_gradient_closed(
+                        &mol, &prep, &bs, op, &bounds, xc, &r, ext.as_ref(),
+                    )?;
+                    (r.energy, g, r.density_total().clone())
+                }
+                QmmmMethod::Uks(xc) => {
+                    scf_cfg.xc = Some(xc.clone());
+                    scf_cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
+                    scf_cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
+                    let r = crate::uhf::solve_uhf(ctx, &mol, &prep, &bounds, &scf_cfg)?;
+                    let g = crate::ks_gradient::ks_gradient_uks(
+                        &mol, &prep, &bs, op, &bounds, xc, &r, ext.as_ref(),
+                    )?;
+                    (r.energy, g, r.density_total().clone())
+                }
+            };
+
+            let forces = mm_forces(&step_sys, &mol, &prep, &density_total)?;
+
+            let (total_energy, full_grad) = match &cfg.mm_topology {
+                Some(top) => {
+                    let (mm_e, mm_g) = qmmm_mm_terms(&step_sys, top, &coords)?;
+                    let full = full_gradient_with_mm(&step_sys, &qm_grad, &forces, &mm_g)?;
+                    (scf_energy + mm_e.total, full)
+                }
+                None => {
+                    let full = full_gradient(&step_sys, &qm_grad, &forces)?;
+                    (scf_energy, full)
+                }
+            };
+
+            energies.push(total_energy);
+
+            // Project: extract only the FREE atoms' gradient rows into the
+            // flat vector the optimizer core operates on -- this is what
+            // keeps every frozen atom's row out of the BFGS line search
+            // (there is no explicit zeroing step; frozen rows are simply
+            // never copied into grad_free).
+            let mut grad_free = Vec::with_capacity(free.len() * 3);
+            for &i in &free {
+                for c in 0..3 {
+                    grad_free.push(full_grad[(i, c)]);
+                }
+            }
+            Ok((total_energy, grad_free))
+        })?;
+
+    let mut coords_final = coords0;
+    unflatten_free(&x_final, &mut coords_final);
+    let final_system = system.with_coordinates(&coords_final)?;
+    let final_energy = *energies.last().expect("at least one energy evaluation always occurs");
+
+    Ok(QmmmOptimizeResult {
+        system: final_system,
+        energy: final_energy,
+        converged,
+        steps,
+        energies,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1707,5 +2076,136 @@ mod tests {
         assert!(sys.clone().with_link_atoms(&[(0, 1)], 0.0).is_err());
         assert!(sys.clone().with_link_atoms(&[(0, 1)], 1.0).is_err());
         assert!(sys.clone().with_link_atoms(&[(0, 9)], 0.5).is_err());
+    }
+
+    // ── F2-1: QmmmSystem::with_coordinates ──
+
+    const ANG2BOHR_TEST: f64 = 1.0 / 0.529_177_210_92;
+    const ETHANE_CC_TEST: f64 = 1.53 * ANG2BOHR_TEST;
+
+    /// Mirrors `crates/ferric-scf/tests/qmmm.rs::ethane_atoms` /
+    /// `tests/qmmm_mm.rs::ethane_atoms` exactly.
+    fn ethane_atoms_test() -> Vec<QmmmAtom> {
+        let cc = ETHANE_CC_TEST;
+        let ch = 1.09 * ANG2BOHR_TEST;
+        let theta = 109.5_f64.to_radians();
+        let (s, c) = (theta.sin(), theta.cos());
+        let mut atoms = vec![
+            QmmmAtom::new("C", 6, 0.0, 0.0, 0.0, -0.1),
+            QmmmAtom::new("C", 6, 0.0, 0.0, cc, -0.1),
+        ];
+        for k in 0..3 {
+            let phi = 2.0 * std::f64::consts::PI * (k as f64) / 3.0;
+            atoms.push(QmmmAtom::new("H", 1, ch * s * phi.cos(), ch * s * phi.sin(), ch * c, 0.033));
+            atoms.push(QmmmAtom::new("H", 1, ch * s * phi.cos(), ch * s * phi.sin(), cc - ch * c, 0.033));
+        }
+        atoms
+    }
+
+    fn ethane_bonds_test() -> Vec<(usize, usize)> {
+        vec![(0, 1), (0, 2), (0, 4), (0, 6), (1, 3), (1, 5), (1, 7)]
+    }
+
+    fn atoms_to_coords(atoms: &[QmmmAtom]) -> Array2<f64> {
+        let mut c = Array2::<f64>::zeros((atoms.len(), 3));
+        for (i, a) in atoms.iter().enumerate() {
+            c[(i, 0)] = a.x;
+            c[(i, 1)] = a.y;
+            c[(i, 2)] = a.z_pos;
+        }
+        c
+    }
+
+    fn capped_rcd_ethane_test() -> QmmmSystem {
+        let bonds = ethane_bonds_test();
+        QmmmSystem::new(&ethane_atoms_test(), QmSelection::Indices(vec![0, 2, 4, 6]), 0, 1)
+            .unwrap()
+            .with_link_atoms(&bonds, DEFAULT_LINK_SCALE)
+            .unwrap()
+            .with_boundary_charges(&bonds, BoundaryChargeScheme::RedistributedChargeDipole)
+            .unwrap()
+    }
+
+    /// EXACTNESS ANCHOR: `with_coordinates` given the SAME coordinates the
+    /// system was already built from must reproduce it bit-for-bit — same
+    /// external potential (charges + positions), same link positions, same
+    /// boundary charges.
+    #[test]
+    fn with_coordinates_at_the_same_geometry_is_bit_identical() {
+        let sys = capped_rcd_ethane_test();
+        let coords = atoms_to_coords(&ethane_atoms_test());
+        let sys2 = sys.with_coordinates(&coords).unwrap();
+
+        assert_eq!(sys.qm_indices, sys2.qm_indices);
+        assert_eq!(sys.mm_indices, sys2.mm_indices);
+        assert_eq!(sys.to_external_potential(), sys2.to_external_potential());
+        assert_eq!(sys.link_atoms.len(), sys2.link_atoms.len());
+        for (a, b) in sys.link_atoms.iter().zip(sys2.link_atoms.iter()) {
+            assert_eq!(a.position, b.position);
+            assert_eq!(a.qm_atom, b.qm_atom);
+            assert_eq!(a.mm_atom_full_index, b.mm_atom_full_index);
+        }
+        assert_eq!(sys.boundary_charges, sys2.boundary_charges);
+        assert_eq!(sys.boundary_scheme, sys2.boundary_scheme);
+    }
+
+    /// Moving the QM frontier atom (C0, full index 0) must move the link
+    /// atom along the (recomputed) bond vector by the SAME scale factor `g`
+    /// used to build the system — i.e. `with_coordinates` genuinely re-runs
+    /// link placement rather than just copying stale positions forward.
+    #[test]
+    fn with_coordinates_moves_the_link_atom_with_its_qm_host() {
+        let sys = capped_rcd_ethane_test();
+        let mut atoms = ethane_atoms_test();
+        // Displace C0 (full index 0) by a Bohr along x.
+        atoms[0].x += 1.0;
+        let coords = atoms_to_coords(&atoms);
+        let sys2 = sys.with_coordinates(&coords).unwrap();
+
+        assert_eq!(sys2.link_atoms.len(), 1);
+        let link = &sys2.link_atoms[0];
+        let g = link.scale;
+        let qm = &atoms[0];
+        let mm = &atoms[1]; // C1, the MM host of the cut C0-C1 bond
+        let expect = [
+            qm.x + g * (mm.x - qm.x),
+            qm.y + g * (mm.y - qm.y),
+            qm.z_pos + g * (mm.z_pos - qm.z_pos),
+        ];
+        for k in 0..3 {
+            assert!(
+                (link.position[k] - expect[k]).abs() < 1e-12,
+                "axis {k}: got {}, expected {}",
+                link.position[k],
+                expect[k]
+            );
+        }
+        // And it must actually have moved from the original position.
+        let orig = &capped_rcd_ethane_test().link_atoms[0];
+        assert!((link.position[0] - orig.position[0]).abs() > 1e-3);
+    }
+
+    /// `with_coordinates` on a system with no link atoms / no boundary
+    /// scheme (the common case) is a plain coordinate swap: same partition,
+    /// new atom positions, no link/boundary machinery re-run.
+    #[test]
+    fn with_coordinates_without_link_atoms_or_boundary_scheme_just_moves_atoms() {
+        let atoms = three_atoms();
+        let sys = QmmmSystem::new(&atoms, QmSelection::Indices(vec![0, 1]), 0, 1).unwrap();
+        let mut moved = atoms.clone();
+        moved[2].z_pos += 5.0;
+        let coords = atoms_to_coords(&moved);
+        let sys2 = sys.with_coordinates(&coords).unwrap();
+        assert_eq!(sys2.qm_indices, sys.qm_indices);
+        assert_eq!(sys2.mm_indices, sys.mm_indices);
+        assert_eq!(sys2.atoms[2].z_pos, moved[2].z_pos);
+        assert!(sys2.link_atoms.is_empty());
+    }
+
+    #[test]
+    fn with_coordinates_rejects_wrong_shape() {
+        let sys = capped_rcd_ethane_test();
+        let bad = Array2::<f64>::zeros((3, 3));
+        assert!(sys.with_coordinates(&bad).is_err());
     }
 }
