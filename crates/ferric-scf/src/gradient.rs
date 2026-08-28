@@ -355,12 +355,38 @@ pub fn rhf_gradient_with_polarizable(
 ) -> Result<Array2<f64>, FerricError> {
     let mut grad = rhf_gradient(mol, prep, op, bounds, result, ext)?;
     if let (Some(sites), Some(dipoles)) = (sites, dipoles) {
-        if !sites.sites.is_empty() {
-            let site_xyz: Vec<[f64; 4]> =
-                sites.sites.iter().map(|s| [s.x, s.y, s.z, sites.dipole_zeta]).collect();
-            let site_basis_p = ferric_integrals::site_basis::SiteBasis::new(&site_xyz, 1)?;
-            grad += &crate::polarizable::qm_gradient_contribution(mol, prep, sites, &site_basis_p, dipoles, result.density_r())?;
-        }
+        grad += &crate::polarizable::polarizable_gradient_term(mol, prep, sites, dipoles, result.density_r())?;
+    }
+    Ok(grad)
+}
+
+/// [`uhf_gradient`] plus the QM-atom-centre Fock-term contribution of
+/// Thole-damped polarizable embedding — the UHF sibling of
+/// [`rhf_gradient_with_polarizable`]. `sites`/`dipoles` are typically
+/// `config.polarizable.as_ref()` and `result.induced_dipoles.as_ref()`;
+/// when either is `None`, or `sites.sites` is empty, this is EXACTLY
+/// `uhf_gradient` (`polarizable_gradient_term` returns an all-zero array
+/// in that case, added unconditionally so both branches share one code
+/// path rather than an `if`/`else` that could silently diverge — pinned
+/// by `uhf_gradient_with_polarizable_none_matches_plain_uhf_gradient`).
+/// The added term uses `result.density_total()` (`= density_alpha +
+/// density_beta` for UHF), matching
+/// [`crate::polarizable::qm_gradient_contribution`]'s documented
+/// total-density-only dependence — see that function's doc for why this
+/// term needs no UHF-specific derivation.
+pub fn uhf_gradient_with_polarizable(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    result: &ScfResult,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
+    sites: Option<&crate::polarizable::PolarizableSites>,
+    dipoles: Option<&Array2<f64>>,
+) -> Result<Array2<f64>, FerricError> {
+    let mut grad = uhf_gradient(mol, prep, op, bounds, result, ext)?;
+    if let (Some(sites), Some(dipoles)) = (sites, dipoles) {
+        grad += &crate::polarizable::polarizable_gradient_term(mol, prep, sites, dipoles, result.density_total())?;
     }
     Ok(grad)
 }

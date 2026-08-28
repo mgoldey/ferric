@@ -731,22 +731,22 @@ impl PyQmmmResult {
 /// standard default `2.1304`; pass `0.0` to disable damping entirely — the
 /// bare point-dipole tensor). `QmmmResult.e_pol`/`.induced_dipoles()`
 /// report the polarisation energy and converged dipoles. The QM gradient
-/// correctly includes the polarizable Fock-term contribution ONLY for
-/// `method="rhf"` (via `rhf_gradient_with_polarizable` — see
-/// `ferric_scf::polarizable`'s Task B3 gradients); `"uhf"`/`"rks"`/`"uks"`
-/// with a polarizable system report the SCF-only gradient (energy/dipoles
-/// are still correct for all four methods, since those are method-agnostic
-/// through `RhfConfig.polarizable`/`ScfResult.induced_dipoles` — only the
-/// GRADIENT'S polarizable term is `rhf`-only today, an explicit, documented
-/// gap rather than a silent omission). `mm_forces()`/`full_gradient()` do
-/// NOT yet include any force from a polarizable site on ITSELF (the site
-/// force from Task B3's `site_gradient` is not wired into this function) —
-/// a system with polarizable sites therefore gets a correct QM gradient
-/// (rhf) and a correct MM-charge electrostatic force, but the polarizable
-/// site's OWN additional force term is missing from `mm_forces()`/
-/// `full_gradient()`; this is a real, currently-unclosed gap, not merely
-/// an omission for a case nobody hits — flagged here rather than silently
-/// wired in with an unvalidated shortcut.
+/// correctly includes the polarizable Fock-term contribution for ALL FOUR
+/// methods (`"rhf"`/`"uhf"`/`"rks"`/`"uks"`, via `rhf_gradient_with_polarizable`/
+/// `uhf_gradient_with_polarizable`/`ks_gradient_closed_with_polarizable`/
+/// `ks_gradient_uks_with_polarizable` — see `ferric_scf::polarizable`'s Task
+/// B3/B4 gradients; the term is a fixed-mu Hellmann-Feynman contraction
+/// depending only on the total spin-summed density, so it applies
+/// identically to every SCF variant, see `polarizable_gradient_term`'s
+/// doc). `mm_forces()`/`full_gradient()` do NOT yet include any force from
+/// a polarizable site on ITSELF (the site force from Task B3's
+/// `site_gradient` is not wired into this function) — a system with
+/// polarizable sites therefore gets a correct QM gradient and a correct
+/// MM-charge electrostatic force, but the polarizable site's OWN
+/// additional force term is missing from `mm_forces()`/`full_gradient()`;
+/// this is a real, currently-unclosed gap, not merely an omission for a
+/// case nobody hits — flagged here rather than silently wired in with an
+/// unvalidated shortcut.
 #[pyfunction]
 #[pyo3(signature = (system, basis_name, method=None, xc=None, max_iter=None, energy_conv=None, density_conv=None, level_shift=None, mom_after_iter=None, guess=None, mm_topology=None, thole_a=None))]
 #[allow(clippy::too_many_arguments)]
@@ -764,8 +764,12 @@ fn run_qmmm(
     mm_topology: Option<&PyMmTopology>,
     thole_a: Option<f64>,
 ) -> PyResult<PyQmmmResult> {
-    use ferric_scf::gradient::{rhf_gradient, rhf_gradient_with_polarizable, uhf_gradient};
-    use ferric_scf::ks_gradient::ks_gradient_uks;
+    use ferric_scf::gradient::{
+        rhf_gradient, rhf_gradient_with_polarizable, uhf_gradient, uhf_gradient_with_polarizable,
+    };
+    use ferric_scf::ks_gradient::{
+        ks_gradient_closed_with_polarizable, ks_gradient_uks, ks_gradient_uks_with_polarizable,
+    };
     use ferric_scf::polarizable::{induce, PolarizableSites, DEFAULT_THOLE_A};
     use ferric_scf::qmmm::{full_gradient_with_mm, mm_forces, qmmm_mm_terms};
 
@@ -842,19 +846,43 @@ fn run_qmmm(
         }
         "uhf" => {
             let r = solve_uhf(&ctx, &mol, &prep, &bounds, &config).map_err(make_err)?;
-            let g = uhf_gradient(&mol, &prep, op, &bounds, &r, ext).map_err(make_err)?;
+            let g = if config.polarizable.is_some() {
+                uhf_gradient_with_polarizable(
+                    &mol, &prep, op, &bounds, &r, ext,
+                    config.polarizable.as_ref(), r.induced_dipoles.as_ref(),
+                )
+                .map_err(make_err)?
+            } else {
+                uhf_gradient(&mol, &prep, op, &bounds, &r, ext).map_err(make_err)?
+            };
             (r, g)
         }
         "rks" => {
             let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).map_err(make_err)?;
-            let g = ks_gradient_closed(&mol, &prep, &bs, op, &bounds, xc.unwrap(), &r, ext)
-                .map_err(make_err)?;
+            let g = if config.polarizable.is_some() {
+                ks_gradient_closed_with_polarizable(
+                    &mol, &prep, &bs, op, &bounds, xc.unwrap(), &r, ext,
+                    config.polarizable.as_ref(), r.induced_dipoles.as_ref(),
+                )
+                .map_err(make_err)?
+            } else {
+                ks_gradient_closed(&mol, &prep, &bs, op, &bounds, xc.unwrap(), &r, ext)
+                    .map_err(make_err)?
+            };
             (r, g)
         }
         "uks" => {
             let r = solve_uhf(&ctx, &mol, &prep, &bounds, &config).map_err(make_err)?;
-            let g = ks_gradient_uks(&mol, &prep, &bs, op, &bounds, xc.unwrap(), &r, ext)
-                .map_err(make_err)?;
+            let g = if config.polarizable.is_some() {
+                ks_gradient_uks_with_polarizable(
+                    &mol, &prep, &bs, op, &bounds, xc.unwrap(), &r, ext,
+                    config.polarizable.as_ref(), r.induced_dipoles.as_ref(),
+                )
+                .map_err(make_err)?
+            } else {
+                ks_gradient_uks(&mol, &prep, &bs, op, &bounds, xc.unwrap(), &r, ext)
+                    .map_err(make_err)?
+            };
             (r, g)
         }
         m => {

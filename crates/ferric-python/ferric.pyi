@@ -237,11 +237,9 @@ def run_qmmm(
     polarizabilities_angstrom3=): None/omitted = the standard default 2.1304;
     0.0 disables damping (bare point-dipole tensor); ignored when no atom is
     polarizable. QmmmResult.e_pol/.induced_dipoles() report the result. The
-    QM gradient's polarizable Fock-term contribution is included only for
-    method="rhf" today -- "uhf"/"rks"/"uks" report the SCF-only gradient
-    when polarizable sites are present (energy/dipoles are still exact for
-    all four methods). mm_forces()/full_gradient() do not yet include a
-    polarizable site's own additional force term.
+    QM gradient's polarizable Fock-term contribution is included for all
+    four methods ("rhf"/"uhf"/"rks"/"uks"). mm_forces()/full_gradient() do
+    not yet include a polarizable site's own additional force term.
     """
     ...
 
