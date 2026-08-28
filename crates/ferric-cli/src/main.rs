@@ -341,6 +341,10 @@ pub fn main() {
         // CLI-level PcmConfig (mirroring the [external_potential] section)
         // is a natural follow-up, out of scope for the initial PCM landing.
         pcm: None,
+        // Polarizable (Thole) embedding has no TOML surface either -- it is
+        // reachable from Rust (RhfConfig.polarizable) and Python
+        // (QmmmSystem(polarizabilities_angstrom3=) + run_qmmm) only.
+        polarizable: None,
         verbose: cfg.scf.verbose,
     };
 
