@@ -240,8 +240,11 @@ def run_qmmm(
     QM gradient's polarizable Fock-term contribution is included only for
     method="rhf" today -- "uhf"/"rks"/"uks" report the SCF-only gradient
     when polarizable sites are present (energy/dipoles are still exact for
-    all four methods). mm_forces()/full_gradient() do not yet include a
-    polarizable site's own additional force term.
+    all four methods). full_gradient() DOES include every polarizable
+    force term (a site's own dE_pol/dR_site plus the reaction force every
+    embedding charge feels from the other sites' induced dipoles) for every
+    method, as of Lane B5 -- verified against finite differences on a
+    colocated charge+alpha MM atom and a two-site mutual-induction case.
     """
     ...
 

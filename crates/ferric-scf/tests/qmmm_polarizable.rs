@@ -851,7 +851,111 @@ fn qm_and_site_gradients_sum_to_zero_translational_invariance() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Lane B5: dE_pol/dR on the PERMANENT CHARGE itself (charge_gradient_contribution)
+// ---------------------------------------------------------------------------
 
+/// `charge_gradient_contribution`'s missing-until-now half of `site_gradient`'s
+/// term 3a: the reaction force on a permanent MM charge from being in the
+/// field of the OTHER sites' induced dipoles. Isolated with
+/// `two_site_setup_no_colocated_charge` (permanent charges off-centre from
+/// the sites) so only ONE permanent charge moves at a time, without also
+/// moving a site (which `site_gradient`'s FD test already covers).
+///
+/// **Important scoping note found via TDD**: `charge_gradient_contribution`
+/// computes ONLY `dE_pol/dR_charge` (the polarizable-embedding piece).
+/// `ExternalPotential::charge_nuclear_energy` (classical nuclear-charge
+/// Coulomb term) and the one-electron electron-charge attraction integral
+/// (folded into `hcore` once before the SCF loop) ALSO depend on a moving
+/// charge's position — that classical piece is exactly what
+/// `crate::qmmm::mm_forces`'s `F = q * E_QM(r)` already computes (the force
+/// on a point charge from the QM region's total field, both nuclear and
+/// electronic), just with the opposite sign convention (`mm_forces` returns
+/// a FORCE `-dE/dR`, not `dE/dR`). This test therefore FD-checks against
+/// the classical term (via `electric_field_at_points`, negated to
+/// `dE/dR = -q*E`) PLUS `charge_gradient_contribution`, against the total
+/// reconverged SCF energy — the same split `full_gradient_with_polarizable`
+/// performs in production. Comparing `charge_gradient_contribution` ALONE
+/// against the total SCF energy is a CATEGORY ERROR (caught the first time
+/// this test was written: it failed by ~30%, exactly the missing classical
+/// term's size) — see qmmm.rs's `mm_forces` doc comment for the classical
+/// term's own derivation.
+#[test]
+fn charge_gradient_contribution_matches_finite_difference() {
+    use ferric_scf::qmmm::electric_field_at_points;
 
+    let (mol, sites, ext) = two_site_setup_no_colocated_charge();
+    let prep = sto3g_prep(&mol);
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+    let ctx = ParallelContext::default();
+    let cfg = RhfConfig {
+        density_conv: 1e-12,
+        max_iter: 300,
+        external_potential: Some(ext.clone()),
+        polarizable: Some(sites.clone()),
+        ..Default::default()
+    };
+    let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
+    assert!(result.converged);
+    let mu = result.induced_dipoles.clone().unwrap();
 
+    let (point_rows, smeared_rows) =
+        ferric_scf::polarizable::charge_gradient_contribution(&ext, &sites, &mu);
+    assert!(smeared_rows.is_empty());
+    assert_eq!(point_rows.len(), ext.point_charges.len());
+
+    // Classical dE/dR_charge = -q * E_QM(r_charge) (negative of the force
+    // mm_forces computes), at the SAME converged density.
+    let charge_positions: Vec<[f64; 3]> =
+        ext.point_charges.iter().map(|pc| [pc.x, pc.y, pc.z]).collect();
+    let field = electric_field_at_points(&mol, &prep, result.density_total(), &charge_positions).unwrap();
+    let classical_dedr: Vec<[f64; 3]> = field
+        .iter()
+        .zip(ext.point_charges.iter())
+        .map(|(e, pc)| [-pc.q * e[0], -pc.q * e[1], -pc.q * e[2]])
+        .collect();
+
+    let h = 1e-3;
+    let mut max_err = 0.0_f64;
+    for k in 0..ext.point_charges.len() {
+        for c in 0..3 {
+            let mut ext_p = ext.clone();
+            let mut ext_m = ext.clone();
+            match c {
+                0 => { ext_p.point_charges[k].x += h; ext_m.point_charges[k].x -= h; }
+                1 => { ext_p.point_charges[k].y += h; ext_m.point_charges[k].y -= h; }
+                _ => { ext_p.point_charges[k].z += h; ext_m.point_charges[k].z -= h; }
+            }
+            let e_p = scf_energy_polarizable(&mol, &sites, &ext_p);
+            let e_m = scf_energy_polarizable(&mol, &sites, &ext_m);
+            let fd = (e_p - e_m) / (2.0 * h);
+            let an = point_rows[k][c] + classical_dedr[k][c];
+            let err = (an - fd).abs();
+            max_err = max_err.max(err);
+            assert!(
+                err < 1e-6,
+                "charge_gradient_contribution + classical point_rows[{k}][{c}]: analytic {an:.10e} vs FD {fd:.10e} (delta {err:.3e})"
+            );
+        }
+    }
+    eprintln!("[qmmm-polarizable] max|analytic - FD| on charge_gradient_contribution + classical = {max_err:.3e}");
+}
+
+/// Exactness anchor: no polarizable sites means `charge_gradient_contribution`
+/// returns all-zero rows, sized to `ext`, without touching `dipoles` at all
+/// (mirrors `induce`'s own empty-sites short-circuit).
+#[test]
+fn charge_gradient_contribution_zero_sites_is_zero() {
+    let (_mol, _sites, ext) = two_site_setup_no_colocated_charge();
+    let empty_sites = PolarizableSites { sites: vec![], ..Default::default() };
+    let dipoles = Array2::<f64>::zeros((0, 3));
+    let (point_rows, smeared_rows) =
+        ferric_scf::polarizable::charge_gradient_contribution(&ext, &empty_sites, &dipoles);
+    assert_eq!(point_rows.len(), ext.point_charges.len());
+    assert!(smeared_rows.is_empty());
+    for row in &point_rows {
+        assert_eq!(*row, [0.0, 0.0, 0.0]);
+    }
+}
 

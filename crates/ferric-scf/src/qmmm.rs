@@ -828,6 +828,15 @@ impl QmmmSystem {
         Some(ExternalPotential { point_charges, smeared_charges, field: None })
     }
 
+    /// Full-structure indices of every polarizable MM atom (`alpha > 0.0`),
+    /// in ascending order — the SAME order [`QmmmSystem::to_polarizable_sites`]
+    /// and [`polarizable_site_gradient`] use, factored into one place so the
+    /// two cannot drift (a `to_polarizable_sites()` row `i` always refers to
+    /// `polarizable_site_full_indices()[i]`).
+    fn polarizable_site_full_indices(&self) -> Vec<usize> {
+        self.mm_indices.iter().copied().filter(|&i| self.atoms[i].alpha > 0.0).collect()
+    }
+
     /// Every MM atom with a nonzero polarisability (`alpha > 0.0`), as
     /// [`crate::polarizable::PolarizableSite`]s ready for
     /// `RhfConfig.polarizable`, in ascending full-structure atom index
@@ -838,10 +847,9 @@ impl QmmmSystem {
     /// exactness anchor (see `crate::polarizable`'s module doc and
     /// `polarizable_empty_sites_is_bit_identical_to_plain_scf`).
     pub fn to_polarizable_sites(&self) -> Vec<crate::polarizable::PolarizableSite> {
-        self.mm_indices
-            .iter()
-            .filter(|&&i| self.atoms[i].alpha > 0.0)
-            .map(|&i| {
+        self.polarizable_site_full_indices()
+            .into_iter()
+            .map(|i| {
                 let a = &self.atoms[i];
                 crate::polarizable::PolarizableSite { x: a.x, y: a.y, z: a.z_pos, alpha: a.alpha }
             })
@@ -1165,6 +1173,16 @@ pub fn electric_field_at_points(
 /// Waals term and no MM-MM force here (no force field in this module), and the
 /// link-atom chain-rule projection onto host atoms is not applied.
 ///
+/// **Thole-damped polarizable embedding is NOT included here.** When an MM
+/// atom is ALSO a polarizable site (`alpha > 0.0`), the induced dipoles at
+/// every site exert an additional reaction force on this charge (`dE_pol/
+/// dR_charge`, from `crate::polarizable::charge_gradient_contribution`) that
+/// this function does not compute — `mm_forces` only ever sees the QM
+/// region's classical field, never the polarizable sites' own dipoles. Add
+/// `charge_gradient_contribution`'s rows (negated, to convert `dE/dR` to a
+/// force) yourself, or use [`full_gradient_with_polarizable`], which adds
+/// both this term AND [`polarizable_site_gradient`]'s site-row term for you.
+///
 /// **Gaussian-smeared sites** use a different formula from point charges: for
 /// a point charge `q·E(r)` (electric field of the QM region AT the point) is
 /// exactly the force, because a point probe sits entirely outside the
@@ -1252,6 +1270,16 @@ pub fn mm_forces(
 /// geometry (fixed by construction). Rows of MM atoms with zero effective
 /// charge and no boundary role are exactly zero.
 ///
+/// **Thole-damped polarizable embedding's own force terms are NOT included
+/// here either** — same gap as documented on [`mm_forces`]. A polarizable
+/// site's row (its own `dE_pol/dR_site`) and a polarizable-embedded charge's
+/// reaction-force row (`dE_pol/dR_charge` from the OTHER sites' dipoles) are
+/// both missing from this function's output when `system` has any
+/// `alpha > 0.0` MM atom. Use [`full_gradient_with_polarizable`] for a
+/// system with polarizable sites; this function's signature is kept
+/// unchanged (many non-polarizable callers depend on it) rather than adding
+/// an optional polarizable argument here.
+///
 /// Verified against central finite differences of the total SCF energy with
 /// the partition rebuilt at every displaced geometry, on the RCD-treated
 /// ethane cut (`tests/qmmm.rs`).
@@ -1319,6 +1347,188 @@ pub fn full_gradient(
         for k in 0..3 {
             full[(m1, k)] -= 0.5 * f[k];
             full[(m2, k)] -= 0.5 * f[k];
+        }
+    }
+
+    Ok(full)
+}
+
+/// `dE_pol/dR_site` for every polarizable MM atom of `system`, mapped from
+/// [`crate::polarizable::site_gradient`]'s site-indexed rows onto
+/// full-structure atom indices — via [`QmmmSystem::polarizable_site_full_indices`],
+/// the SAME helper [`QmmmSystem::to_polarizable_sites`] uses, so the two
+/// orderings cannot drift apart.
+///
+/// Returns an empty `Vec` (no error) when `sites.sites` is empty, matching
+/// `site_gradient`'s own trivially-zero contract for that case. `sites` must
+/// be built from `system.to_polarizable_sites()` (same order, same count) —
+/// use `system.to_polarizable_sites()` directly rather than reconstructing
+/// it, so a caller cannot pass a mismatched list.
+///
+/// `mol`/`prep` must be the QM molecule `system.to_qm_molecule()` produces
+/// (with its `PreparedBasis`), `d_total` the converged total density, and
+/// `dipoles` the converged induced dipoles (`ScfResult.induced_dipoles`) —
+/// exactly the inputs [`crate::polarizable::site_gradient`] itself takes.
+pub fn polarizable_site_gradient(
+    system: &QmmmSystem,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    d_total: &Array2<f64>,
+    ext: Option<&ExternalPotential>,
+    sites: &crate::polarizable::PolarizableSites,
+    dipoles: &Array2<f64>,
+) -> Result<Vec<(usize, [f64; 3])>, FerricError> {
+    if sites.sites.is_empty() {
+        return Ok(Vec::new());
+    }
+    let full_indices = system.polarizable_site_full_indices();
+    if full_indices.len() != sites.sites.len() {
+        return Err(FerricError::General(format!(
+            "polarizable_site_gradient: {} polarizable sites but {} full-structure indices — \
+             `sites` must come from system.to_polarizable_sites()",
+            sites.sites.len(),
+            full_indices.len()
+        )));
+    }
+    let grad = crate::polarizable::site_gradient(mol, prep, d_total, ext, sites, dipoles)?;
+    Ok(full_indices
+        .into_iter()
+        .enumerate()
+        .map(|(row, full_idx)| (full_idx, [grad[(row, 0)], grad[(row, 1)], grad[(row, 2)]]))
+        .collect())
+}
+
+/// `dE_pol/dR_charge` for every ACTIVE embedding charge of `system` (atom-
+/// centred, then boundary/midpoint charges — [`QmmmSystem::active_charges`]'s
+/// order, the same one [`mm_forces`]/[`full_gradient`] use), from
+/// [`crate::polarizable::charge_gradient_contribution`] — the reaction force
+/// a permanent charge feels from every OTHER polarizable site's induced
+/// dipole (see that function's doc for why this is a genuinely separate term
+/// from [`polarizable_site_gradient`]'s own site rows).
+///
+/// Returns full-structure `(index, dE/dR)` rows, ALREADY split for boundary
+/// midpoints: an atom-centred MM charge contributes one row at its own
+/// full-structure index; an RC/RCD midpoint charge contributes TWO rows, one
+/// per host, each carrying HALF the midpoint's `dE_pol/dR_charge` (matching
+/// [`full_gradient`]'s own boundary-charge convention) — so a caller can add
+/// every row returned here onto a `(natoms, 3)` gradient unconditionally,
+/// with no knowledge of which case it was. Multiple rows CAN share the same
+/// index (e.g. two different midpoints both hosted by the same atom); add
+/// them all, do not overwrite.
+///
+/// Returns an empty `Vec` when `sites.sites` is empty. `ext` must be
+/// `system.to_external_potential()` (the same potential the SCF/`induce`
+/// call used).
+pub fn polarizable_charge_gradient_rows(
+    system: &QmmmSystem,
+    ext: &ExternalPotential,
+    sites: &crate::polarizable::PolarizableSites,
+    dipoles: &Array2<f64>,
+) -> Vec<(usize, [f64; 3])> {
+    if sites.sites.is_empty() {
+        return Vec::new();
+    }
+    let (point_dedr, smeared_dedr) = crate::polarizable::charge_gradient_contribution(ext, sites, dipoles);
+
+    // Re-derive, in active_charges() order, which of point_charges/
+    // smeared_charges each active charge landed in (mirrors
+    // to_external_potential()'s own split) and its full-structure target —
+    // the SAME point/smeared re-merge pattern mm_forces() uses.
+    let charges = system.active_charges();
+    let atom_targets = system
+        .mm_indices
+        .iter()
+        .copied()
+        .filter(|&i| system.effective_charges[i] != 0.0)
+        .map(BoundaryTarget::Atom);
+    let boundary_targets =
+        system.boundary_charges.iter().filter(|b| b.q != 0.0).map(|b| BoundaryTarget::Midpoint(b.hosts));
+    let targets: Vec<BoundaryTarget> = atom_targets.chain(boundary_targets).collect();
+    debug_assert_eq!(targets.len(), charges.len());
+
+    let mut point_it = point_dedr.into_iter();
+    let mut smeared_it = smeared_dedr.into_iter();
+    let mut out = Vec::with_capacity(targets.len());
+    for (&(_, _, w), target) in charges.iter().zip(targets) {
+        let dedr = if w > 0.0 { smeared_it.next().unwrap() } else { point_it.next().unwrap() };
+        match target {
+            BoundaryTarget::Atom(i) => out.push((i, dedr)),
+            BoundaryTarget::Midpoint((m1, m2)) => {
+                let half = [0.5 * dedr[0], 0.5 * dedr[1], 0.5 * dedr[2]];
+                out.push((m1, half));
+                out.push((m2, half));
+            }
+        }
+    }
+    out
+}
+
+/// Where a row of [`polarizable_charge_gradient_rows`]'s internal accounting
+/// lands in the full structure before the boundary-midpoint split: a real
+/// atom, or an RC/RCD midpoint (split half onto each host).
+#[derive(Debug, Clone, Copy)]
+enum BoundaryTarget {
+    Atom(usize),
+    Midpoint((usize, usize)),
+}
+
+/// [`full_gradient`] plus BOTH Thole-damped polarizable-embedding force
+/// terms this module's non-polarizable functions do not include:
+///
+/// 1. `site_rows` — a polarizable site's OWN `dE_pol/dR_site`, from
+///    [`polarizable_site_gradient`], added directly onto that site's
+///    full-structure row.
+/// 2. `charge_rows` — the reaction force `dE_pol/dR_charge` every embedding
+///    charge feels from every OTHER site's induced dipole, from
+///    [`crate::polarizable::charge_gradient_contribution`] (internally, via
+///    [`polarizable_charge_gradient_rows`]), added onto the charge's atom
+///    row (or split half/half across an RC/RCD midpoint's two hosts, same
+///    convention [`full_gradient`] itself uses for `mm_forces`).
+///
+/// `site_rows` and `sites`/`ext`/`dipoles` for `charge_rows` all come from
+/// the SAME converged `(system, mol, prep, d_total, dipoles)` a caller
+/// already has after a polarizable-embedded SCF — see `run_qmmm`
+/// (`ferric-python`) for the end-to-end wiring this mirrors.
+///
+/// With no polarizable sites (`sites.sites.is_empty()`), both terms are
+/// empty and this is bit-identical to plain [`full_gradient`] — see
+/// `full_gradient_with_polarizable_matches_plain_full_gradient_when_not_polarizable`.
+pub fn full_gradient_with_polarizable(
+    system: &QmmmSystem,
+    qm_gradient: &Array2<f64>,
+    mm_forces: &[[f64; 3]],
+    ext: Option<&ExternalPotential>,
+    sites: &crate::polarizable::PolarizableSites,
+    dipoles: Option<&Array2<f64>>,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    d_total: &Array2<f64>,
+) -> Result<Array2<f64>, FerricError> {
+    let mut full = full_gradient(system, qm_gradient, mm_forces)?;
+    if sites.sites.is_empty() {
+        return Ok(full);
+    }
+    let Some(dipoles) = dipoles else {
+        return Err(FerricError::General(
+            "full_gradient_with_polarizable: sites.sites is non-empty but dipoles is None \
+             (pass ScfResult.induced_dipoles from the converged polarizable SCF)"
+                .to_string(),
+        ));
+    };
+
+    let site_rows = polarizable_site_gradient(system, mol, prep, d_total, ext, sites, dipoles)?;
+    for (full_idx, g) in site_rows {
+        for k in 0..3 {
+            full[(full_idx, k)] += g[k];
+        }
+    }
+
+    if let Some(ext) = ext {
+        let charge_rows = polarizable_charge_gradient_rows(system, ext, sites, dipoles);
+        for (full_idx, g) in charge_rows {
+            for k in 0..3 {
+                full[(full_idx, k)] += g[k];
+            }
         }
     }
 
@@ -1675,6 +1885,21 @@ pub fn optimize_qmmm(
         return Err(FerricError::General(
             "optimize_qmmm: move_mm != MoveMm::None requires mm_topology (moving MM atoms \
              with no MM force field to hold their own geometry together is meaningless)"
+                .to_string(),
+        ));
+    }
+    if cfg.scf.polarizable.is_some() {
+        return Err(FerricError::General(
+            "optimize_qmmm: cfg.scf.polarizable is not supported yet (Lane B5 scope). Every \
+             step here rebuilds external_potential from the current geometry via \
+             step_sys.to_external_potential(), but polarizable is copied UNCHANGED from \
+             cfg.scf on every iteration — it would go stale as soon as any polarizable site \
+             or embedding charge moved (site positions/permanent-charge positions both need \
+             to track step_sys, and the analytic gradient this optimizer's line search relies \
+             on would ALSO need the polarizable_site_gradient/polarizable_charge_gradient_rows \
+             terms folded in, which this function does not do). Set cfg.scf.polarizable = \
+             None and use a non-polarizable QM/MM optimization, or run single-point \
+             `full_gradient_with_polarizable` steps by hand."
                 .to_string(),
         ));
     }
