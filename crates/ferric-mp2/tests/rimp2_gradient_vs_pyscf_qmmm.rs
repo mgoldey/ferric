@@ -98,6 +98,7 @@ fn rimp2_gradient_in_field_matches_pyscf_canonical_mp2() {
             .map(|c| PointCharge { q: c.q, x: c.xyz_bohr[0], y: c.xyz_bohr[1], z: c.xyz_bohr[2] })
             .collect(),
         field: None,
+        smeared_charges: Vec::new(),
     };
 
     let obs_bs = basis::bundled("sto-3g").unwrap();

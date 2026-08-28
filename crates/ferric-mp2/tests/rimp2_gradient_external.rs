@@ -34,6 +34,7 @@ fn plus_charge_field() -> ExternalPotential {
     ExternalPotential {
         point_charges: vec![PointCharge { q: 1.0, x: 0.0, y: 0.0, z: -6.0 }],
         field: None,
+    smeared_charges: Vec::new(),
     }
 }
 
