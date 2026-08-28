@@ -243,10 +243,10 @@ fn run_case_diag(case: &Case) -> Option<(f64, f64, f64, f64, CationDiag)> {
 
     // Δ-OOMP2: closed-shell OO-MP2 on neutral, U-OO-MP2 on cation.
     let oo_n = oo_ri_mp2(
-        &neutral, &obs_n, &dfbs_n, op, &bounds_n, &rhf_n, &OoRiMp2Config::default(),
+        &neutral, &obs_n, &dfbs_n, op, &bounds_n, &rhf_n, &OoRiMp2Config::default(), None,
     ).ok();
     let oo_c = u_oo_ri_mp2(
-        &cation, &obs_c, &dfbs_c, op, &bounds_c, &uhf_c, &UOoRiMp2Config::default(),
+        &cation, &obs_c, &dfbs_c, op, &bounds_c, &uhf_c, &UOoRiMp2Config::default(), None,
     ).ok();
     let ip_doomp2_ev = match (oo_n.as_ref(), oo_c.as_ref()) {
         (Some(n), Some(c)) => (c.total_energy - n.total_energy) * HARTREE_TO_EV,
