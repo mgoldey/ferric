@@ -969,6 +969,101 @@ pub fn site_gradient(
     Ok(grad)
 }
 
+/// `dE_pol/dR` for every PERMANENT charge in `ext` (point and Gaussian-
+/// smeared, in `ext.point_charges`/`ext.smeared_charges` order respectively)
+/// — the "other half" of [`site_gradient`]'s term 3a that `site_gradient`
+/// itself never emits.
+///
+/// `W`'s `E_i^perm` term is `sum_i -mu_i . E_i^perm(R_i)`, and `E_i^perm`
+/// depends explicitly on every permanent charge's position (not just the
+/// site's), so by the SAME envelope-theorem argument [`site_gradient`]'s
+/// module note gives for the site side, `dE_pol/dR_charge = sum_i
+/// -mu_i . dE_i^perm/dR_charge` for every site `i` that sees this charge
+/// (i.e. not colocated with/excluded from it). This is exactly the
+/// `d/dR_charge` half of [`point_charge_field_grad_wrt_site`] that
+/// `site_gradient` computes but discards (`let (contrib, _) = ...`) —
+/// discarding it there was correct FOR THAT FUNCTION's contract (it only
+/// ever returns site-indexed rows), but it means the charge's own row was
+/// never populated anywhere in this crate before this function existed.
+///
+/// **This is a genuinely separate term from the classical charge-nuclear
+/// energy's derivative w.r.t. a moving MM charge** (`ExternalPotential`
+/// carries no such "moving charge" gradient at all, polarizable or not —
+/// see `two_site_setup_no_colocated_charge`'s doc comment in
+/// `tests/qmmm_polarizable.rs` for that separate, still-open gap). This
+/// function closes only the `mu`-charge coupling piece of `E_pol`; it says
+/// nothing about `Z_A q_c / |R_A - R_c|`.
+///
+/// Colocation/exclusion follows [`permanent_field_at_sites`]'s own
+/// convention exactly (a charge colocated with site `i` contributes no
+/// `E_i^perm`, hence no reaction force on that SAME charge from site `i`'s
+/// own dipole — but it still feels every OTHER site's dipole normally).
+/// Smeared charges use the same point-charge-field approximation
+/// `permanent_field_at_sites` already uses for them (documented there).
+///
+/// Returns `(point_rows, smeared_rows)`, each zero-filled when `sites.sites`
+/// is empty (so a caller can add this unconditionally without an `is_empty`
+/// branch of its own).
+pub fn charge_gradient_contribution(
+    ext: &ExternalPotential,
+    sites: &PolarizableSites,
+    dipoles: &Array2<f64>,
+) -> (Vec<[f64; 3]>, Vec<[f64; 3]>) {
+    let n = sites.sites.len();
+    let mut point_rows = vec![[0.0_f64; 3]; ext.point_charges.len()];
+    let mut smeared_rows = vec![[0.0_f64; 3]; ext.smeared_charges.len()];
+    if n == 0 {
+        return (point_rows, smeared_rows);
+    }
+
+    let colocated_site = |x: f64, y: f64, z: f64| -> Option<usize> {
+        sites.sites.iter().position(|s| {
+            let dx = s.x - x;
+            let dy = s.y - y;
+            let dz = s.z - z;
+            (dx * dx + dy * dy + dz * dz).sqrt() < COLOCATION_TOL
+        })
+    };
+
+    for (k, pc) in ext.point_charges.iter().enumerate() {
+        let rc = [pc.x, pc.y, pc.z];
+        let coloc = colocated_site(pc.x, pc.y, pc.z);
+        for i in 0..n {
+            if let Some(j) = coloc {
+                if j == i || sites.is_excluded(i, j) {
+                    continue;
+                }
+            }
+            let ri = [sites.sites[i].x, sites.sites[i].y, sites.sites[i].z];
+            let mu_i = [dipoles[(i, 0)], dipoles[(i, 1)], dipoles[(i, 2)]];
+            let (_, g_charge) = point_charge_field_grad_wrt_site(ri, rc, pc.q, mu_i);
+            point_rows[k][0] += g_charge[0];
+            point_rows[k][1] += g_charge[1];
+            point_rows[k][2] += g_charge[2];
+        }
+    }
+
+    for (k, sc) in ext.smeared_charges.iter().enumerate() {
+        let rc = [sc.x, sc.y, sc.z];
+        let coloc = colocated_site(sc.x, sc.y, sc.z);
+        for i in 0..n {
+            if let Some(j) = coloc {
+                if j == i || sites.is_excluded(i, j) {
+                    continue;
+                }
+            }
+            let ri = [sites.sites[i].x, sites.sites[i].y, sites.sites[i].z];
+            let mu_i = [dipoles[(i, 0)], dipoles[(i, 1)], dipoles[(i, 2)]];
+            let (_, g_charge) = point_charge_field_grad_wrt_site(ri, rc, sc.q, mu_i);
+            smeared_rows[k][0] += g_charge[0];
+            smeared_rows[k][1] += g_charge[1];
+            smeared_rows[k][2] += g_charge[2];
+        }
+    }
+
+    (point_rows, smeared_rows)
+}
+
 /// The two gradient contributions of `-mu . E_charge(R_site)`, where
 /// `E_charge(r) = q (r - R_charge)/|r-R_charge|^3` is the field of a fixed
 /// point charge `q` at the moving probe point `r`: `(d/dR_site, d/dR_charge)`.

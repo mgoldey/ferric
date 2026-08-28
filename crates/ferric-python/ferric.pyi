@@ -238,8 +238,13 @@ def run_qmmm(
     0.0 disables damping (bare point-dipole tensor); ignored when no atom is
     polarizable. QmmmResult.e_pol/.induced_dipoles() report the result. The
     QM gradient's polarizable Fock-term contribution is included for all
-    four methods ("rhf"/"uhf"/"rks"/"uks"). mm_forces()/full_gradient() do
-    not yet include a polarizable site's own additional force term.
+    four methods ("rhf"/"uhf"/"rks"/"uks"). full_gradient() DOES include
+    every polarizable force term (a site's own dE_pol/dR_site plus the
+    reaction force every embedding charge feels from the other sites'
+    induced dipoles) for every method -- verified against finite differences
+    on a colocated charge+alpha MM atom and a two-site mutual-induction case.
+    Boundary charges (RC/RCD) combined with a polarizable site have no FD
+    cross-check yet.
     """
     ...
 

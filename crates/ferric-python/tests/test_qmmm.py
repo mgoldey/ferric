@@ -831,3 +831,50 @@ def test_run_qmmm_uhf_polarizable_gradient_differs_from_non_polarizable():
 
     delta = np.max(np.abs(r_pol.qm_gradient() - r_plain.qm_gradient()))
     assert delta > 1e-4, f"polarizable gradient contribution suspiciously small: {delta:.3e}"
+
+
+# ── Lane B5: full_gradient() includes the polarizable force terms ──
+
+
+def _water_plus_one_polarizable_atom(cl_xyz_angstrom, cl_charge, cl_alpha_bohr3):
+    """Water QM atoms plus one MM atom carrying BOTH a permanent charge and
+    a polarisability at the SAME position -- the realistic force-field case
+    (every real atom has both roles at once)."""
+    symbols = WATER_SYMBOLS + ["Cl"]
+    coords_angstrom = [list(r) for r in WATER_ANGSTROM] + [list(cl_xyz_angstrom)]
+    charges = [0.0, 0.0, 0.0, cl_charge]
+    polarizabilities_angstrom3 = [0.0, 0.0, 0.0, cl_alpha_bohr3 / (ANG2BOHR**3)]
+    return ferric.QmmmSystem(
+        symbols, coords_angstrom, charges,
+        qm_indices=[0, 1, 2],
+        polarizabilities_angstrom3=polarizabilities_angstrom3,
+    )
+
+
+def test_run_qmmm_full_gradient_colocated_charge_and_alpha_matches_finite_difference():
+    cl_xyz = [3.0, -0.8, 1.1]
+    cl_charge = -0.4
+    cl_alpha = 3.0  # Bohr^3
+
+    def energy_at(xyz):
+        sys = _water_plus_one_polarizable_atom(xyz, cl_charge, cl_alpha)
+        r = ferric.run_qmmm(sys, "sto-3g", density_conv=1e-10)
+        assert r.converged
+        return r.energy
+
+    sys0 = _water_plus_one_polarizable_atom(cl_xyz, cl_charge, cl_alpha)
+    r0 = ferric.run_qmmm(sys0, "sto-3g", density_conv=1e-10)
+    assert r0.converged
+    assert r0.e_pol != 0.0
+    full = r0.full_gradient()
+    assert full.shape == (4, 3)
+
+    h_ang = 1e-3 / ANG2BOHR
+    for axis, label in enumerate(["x", "y", "z"]):
+        plus = list(cl_xyz)
+        minus = list(cl_xyz)
+        plus[axis] += h_ang
+        minus[axis] -= h_ang
+        fd = (energy_at(plus) - energy_at(minus)) / (2.0 * (h_ang * ANG2BOHR))
+        an = full[3, axis]
+        assert an == pytest.approx(fd, abs=1e-5), f"Cl row, {label}: analytic {an} vs FD {fd}"

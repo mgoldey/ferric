@@ -738,15 +738,23 @@ impl PyQmmmResult {
 /// B3/B4 gradients; the term is a fixed-mu Hellmann-Feynman contraction
 /// depending only on the total spin-summed density, so it applies
 /// identically to every SCF variant, see `polarizable_gradient_term`'s
-/// doc). `mm_forces()`/`full_gradient()` do NOT yet include any force from
-/// a polarizable site on ITSELF (the site force from Task B3's
-/// `site_gradient` is not wired into this function) — a system with
-/// polarizable sites therefore gets a correct QM gradient and a correct
-/// MM-charge electrostatic force, but the polarizable site's OWN
-/// additional force term is missing from `mm_forces()`/`full_gradient()`;
-/// this is a real, currently-unclosed gap, not merely an omission for a
-/// case nobody hits — flagged here rather than silently wired in with an
-/// unvalidated shortcut.
+/// doc). **`mm_forces()`/`full_gradient()` DO include every
+/// polarizable-embedding force term as of Lane B5**: a polarizable site's
+/// own `dE_pol/dR_site` (`ferric_scf::qmmm::polarizable_site_gradient`) AND
+/// the reaction force every embedding charge feels from the OTHER sites'
+/// induced dipoles (`ferric_scf::qmmm::polarizable_charge_gradient_rows`,
+/// wired via `ferric_scf::polarizable::charge_gradient_contribution` — see
+/// that function's doc for why this is a distinct term from the site's own
+/// row) are both added into `full_gradient()`'s output here, for every
+/// method. Verified against central finite differences of the fully
+/// reconverged total energy on a colocated charge+alpha MM atom (the
+/// realistic force-field case) and a two-site mutual-induction case — see
+/// `crates/ferric-scf/tests/qmmm_polarizable_forces.rs`. Boundary charges
+/// (RC/RCD) combined with a polarizable site are NOT covered by an FD test
+/// (documented gap in that same test file, not a silent one) — the
+/// arithmetic (half the reaction force onto each host) is implemented and
+/// follows the same convention `full_gradient` already uses for
+/// `mm_forces`, but is unverified in combination.
 #[pyfunction]
 #[pyo3(signature = (system, basis_name, method=None, xc=None, max_iter=None, energy_conv=None, density_conv=None, level_shift=None, mom_after_iter=None, guess=None, mm_topology=None, thole_a=None))]
 #[allow(clippy::too_many_arguments)]
@@ -909,7 +917,7 @@ fn run_qmmm(
 
     let forces = mm_forces(sys, &mol, &prep, r.density_total()).map_err(make_err)?;
 
-    let (mm_energy, full) = match mm_topology {
+    let (mm_energy, mut full) = match mm_topology {
         Some(top) => {
             let n = sys.atoms.len();
             let mut coords_full = Array2::<f64>::zeros((n, 3));
@@ -927,6 +935,36 @@ fn run_qmmm(
             (ferric_mm::MmEnergy::default(), full)
         }
     };
+
+    // Thole-damped polarizable embedding's own force terms — a polarizable
+    // site's OWN dE_pol/dR_site, plus the reaction force every embedding
+    // charge feels from the OTHER sites' induced dipoles
+    // (`charge_gradient_contribution`) — reusing the SAME dipoles `e_pol`
+    // above just computed (same converged density, same call pattern this
+    // module already documents). See `full_gradient_with_polarizable`'s doc
+    // in `ferric_scf::qmmm` for the full derivation of both terms; this
+    // closes the "mm_forces()/full_gradient() do NOT yet include a
+    // polarizable site's own force" gap this function's doc comment used to
+    // describe.
+    if let Some(pol) = config.polarizable.as_ref() {
+        let dipoles = induced_dipoles_data.as_ref().expect("polarizable config always produces dipoles");
+        let site_rows =
+            ferric_scf::qmmm::polarizable_site_gradient(sys, &mol, &prep, r.density_total(), ext, pol, dipoles)
+                .map_err(make_err)?;
+        for (full_idx, g) in site_rows {
+            for k in 0..3 {
+                full[(full_idx, k)] += g[k];
+            }
+        }
+        if let Some(ext) = ext {
+            let charge_rows = ferric_scf::qmmm::polarizable_charge_gradient_rows(sys, ext, pol, dipoles);
+            for (full_idx, g) in charge_rows {
+                for k in 0..3 {
+                    full[(full_idx, k)] += g[k];
+                }
+            }
+        }
+    }
 
     Ok(PyQmmmResult {
         energy: r.energy,

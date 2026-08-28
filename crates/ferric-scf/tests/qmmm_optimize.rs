@@ -288,3 +288,34 @@ fn move_mm_residues_without_residue_ids_is_a_typed_error() {
     assert!(system.residue_ids.is_none());
     assert!(optimize_qmmm(&ctx, &system, "sto-3g", &cfg).is_err());
 }
+
+/// Lane B5: `cfg.scf.polarizable` is not wired into `optimize_qmmm`'s
+/// per-step SCF config (it is copied UNCHANGED from `cfg.scf` on every
+/// iteration, never rebuilt from the moving geometry the way
+/// `external_potential` is) and its analytic gradient does not fold in
+/// `polarizable_site_gradient`/`polarizable_charge_gradient_rows` either —
+/// so a caller asking for it gets a typed error, not a silent optimization
+/// on a stale/incomplete gradient.
+#[test]
+fn move_with_polarizable_scf_config_is_a_typed_error() {
+    use ferric_scf::polarizable::{PolarizableSite, PolarizableSites};
+
+    let ctx = ParallelContext::default();
+    let system = capped_ethane();
+    let cfg = QmmmOptimizeConfig {
+        method: QmmmMethod::Rhf,
+        move_mm: MoveMm::None,
+        opt: OptimizeConfig::default(),
+        mm_topology: None,
+        scf: RhfConfig {
+            polarizable: Some(PolarizableSites {
+                sites: vec![PolarizableSite { x: 5.0, y: 0.0, z: 0.0, alpha: 1.0 }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    };
+    let err = optimize_qmmm(&ctx, &system, "sto-3g", &cfg).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("polarizable"), "error should mention polarizable: {msg}");
+}
