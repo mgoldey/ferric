@@ -1527,8 +1527,8 @@ fn free_atom_indices(system: &QmmmSystem, move_mm: &MoveMm) -> Result<Vec<usize>
 /// partition at the current geometry via [`QmmmSystem::with_coordinates`] (so
 /// link atoms and boundary charges are the exact derivative of what gets
 /// evaluated), runs the configured SCF in the resulting embedding potential,
-/// adds any [`qmmm_mm_terms`] contribution, and projects the gradient rows of
-/// every FROZEN atom to zero before the BFGS line search sees them (so it
+/// adds any [`qmmm_mm_terms`] contribution, and projects the gradient down to
+/// only the FREE atoms' rows before the BFGS line search sees them (so it
 /// never tries to move an atom `move_mm` excluded).
 ///
 /// Requires `cfg.mm_topology` whenever `cfg.move_mm != MoveMm::None`
@@ -1654,9 +1654,11 @@ pub fn optimize_qmmm(
 
             energies.push(total_energy);
 
-            // Project: zero the gradient rows of every FROZEN atom before
-            // BFGS sees them, then extract only the free-atom rows into the
-            // flat vector the optimizer core operates on.
+            // Project: extract only the FREE atoms' gradient rows into the
+            // flat vector the optimizer core operates on -- this is what
+            // keeps every frozen atom's row out of the BFGS line search
+            // (there is no explicit zeroing step; frozen rows are simply
+            // never copied into grad_free).
             let mut grad_free = Vec::with_capacity(free.len() * 3);
             for &i in &free {
                 for c in 0..3 {

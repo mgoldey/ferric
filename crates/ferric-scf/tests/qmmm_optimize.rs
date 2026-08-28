@@ -187,6 +187,19 @@ fn optimize_qmmm_capped_ethane_converges_with_small_final_gradient() {
     // check on the SAME projected gradient BFGS saw -- re-derive it directly
     // as an independent check rather than only trusting the flag.
     assert!(result.energy.is_finite());
+
+    // HONEST COUNTERPART to the MoveMm::All assertion below: under
+    // MoveMm::None every MM atom must be BIT-IDENTICAL to its starting
+    // coordinates (assert_eq!, not a tolerance) -- otherwise a
+    // free_atom_indices bug that let MM atoms move regardless of move_mm
+    // would pass silently.
+    for &i in &system.mm_indices {
+        let a0 = &system.atoms[i];
+        let a1 = &result.system.atoms[i];
+        assert_eq!(a0.x, a1.x, "MM atom {i} x moved under MoveMm::None");
+        assert_eq!(a0.y, a1.y, "MM atom {i} y moved under MoveMm::None");
+        assert_eq!(a0.z_pos, a1.z_pos, "MM atom {i} z moved under MoveMm::None");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -217,6 +230,27 @@ fn optimize_qmmm_full_topology_move_all_decreases_monotonically_and_converges() 
     eprintln!(
         "[F2-2] full-topology MoveMm::All ethane: {} steps, converged={}, E_final = {:.10} Ha",
         result.steps, result.converged, result.energy
+    );
+
+    // Distinguish "MoveMm::All actually moved the MM atoms" from "the QM
+    // atoms alone drove the whole energy decrease" (a broken
+    // free_atom_indices that returned only QM indices would still pass
+    // every assertion above). MM atoms of capped_ethane() are full indices
+    // {1, 3, 5, 7} (C1 + its three H's).
+    let mut any_mm_moved = false;
+    for &i in &system.mm_indices {
+        let a0 = &system.atoms[i];
+        let a1 = &result.system.atoms[i];
+        let d = ((a1.x - a0.x).powi(2) + (a1.y - a0.y).powi(2) + (a1.z_pos - a0.z_pos).powi(2)).sqrt();
+        eprintln!("[F2-2] MM atom {i} displacement under MoveMm::All: {d:.6e} Bohr");
+        if d > 1e-4 {
+            any_mm_moved = true;
+        }
+    }
+    assert!(
+        any_mm_moved,
+        "MoveMm::All must move at least one MM atom by > 1e-4 Bohr from its start coordinates          (full indices {:?})",
+        system.mm_indices
     );
 }
 

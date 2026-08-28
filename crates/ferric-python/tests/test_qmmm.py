@@ -440,6 +440,17 @@ def test_run_optimize_qmmm_capped_ethane_relaxes_the_frontier_bond():
     for a, b in zip(energies, energies[1:]):
         assert b <= a + 1e-8
 
+    # HONEST COUNTERPART to the MoveMm::All assertion in
+    # test_run_optimize_qmmm_full_topology_move_all_converges: under
+    # move_mm="none" every MM atom must be BIT-IDENTICAL to its starting
+    # coordinates (not merely close) -- otherwise a broken free-atom
+    # selection that moved MM atoms regardless of move_mm would pass
+    # silently.
+    coords0 = sys.atom_coords_angstrom()
+    coords1 = relaxed.atom_coords_angstrom()
+    for i in sys.mm_indices():
+        assert coords1[i] == coords0[i], f"MM atom {i} moved under move_mm='none'"
+
 
 def test_run_optimize_qmmm_full_topology_move_all_converges():
     symbols, coords, charges, bonds = _ethane()
@@ -491,6 +502,25 @@ def test_run_optimize_qmmm_full_topology_move_all_converges():
     energies = result.energies()
     for a, b in zip(energies, energies[1:]):
         assert b <= a + 1e-6
+
+    # Distinguish "move_mm='all' actually moved the MM atoms" from "the QM
+    # atoms alone drove the energy decrease" (a broken free-atom selection
+    # that only ever returned QM indices would still pass every assertion
+    # above). MM atoms here are full indices {1, 3, 5, 7} (C1 + its three
+    # H's) -- e.g. full index 1 or 3.
+    relaxed = result.system()
+    coords0 = np.array(sys.atom_coords_angstrom())
+    coords1 = np.array(relaxed.atom_coords_angstrom())
+    ang2bohr = 1.0 / 0.52917721092
+    any_mm_moved = False
+    for i in sys.mm_indices():
+        d_bohr = np.linalg.norm(coords1[i] - coords0[i]) * ang2bohr
+        if d_bohr > 1e-4:
+            any_mm_moved = True
+    assert any_mm_moved, (
+        "move_mm='all' must move at least one MM atom by > 1e-4 Bohr from its start "
+        f"coordinates (full indices {sys.mm_indices()})"
+    )
 
 
 def test_run_optimize_qmmm_move_mm_without_topology_raises():

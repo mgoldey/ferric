@@ -505,6 +505,18 @@ impl PyQmmmSystem {
     fn qm_atom_count(&self) -> usize { self.inner.qm_atom_count() }
     /// Number of atoms in the full structure.
     fn natoms(&self) -> usize { self.inner.atoms.len() }
+    /// Every atom's current position in **Ångström**, in full-structure
+    /// index order (the same ordering `qm_indices()`/`mm_indices()` index
+    /// into) — regardless of QM/MM role. Useful for comparing a system
+    /// before/after `run_optimize_qmmm` (e.g. to check whether a
+    /// particular MM atom actually moved).
+    fn atom_coords_angstrom(&self) -> Vec<(f64, f64, f64)> {
+        self.inner
+            .atoms
+            .iter()
+            .map(|a| (a.x / ANGSTROM_TO_BOHR, a.y / ANGSTROM_TO_BOHR, a.z_pos / ANGSTROM_TO_BOHR))
+            .collect()
+    }
     /// Link hydrogen positions in **Ångström**, in `qm_molecule()` order.
     fn link_atom_positions(&self) -> Vec<(f64, f64, f64)> {
         self.inner
