@@ -390,14 +390,23 @@ mod tests {
         // test, run once before touching optimize.rs):
         //   [F2-1 anchor] H2/STO-3G final energy bits = 0xbff1e14dd9dd63b7
         //   (-1.117505885156999), steps = 7
-        const ANCHOR_ENERGY_BITS: u64 = 0xbff1e14dd9dd63b7;
+        //
+        // Bit identity holds on the machine the anchor was captured on, but
+        // NOT across BLAS kernel sets: CI run 33216140352 (AMD EPYC 9V74,
+        // OpenBLAS 0.3.20 with OPENBLAS_CORETYPE=Haswell) reproduced this
+        // energy to 5 ulp (-1.117505885156998 vs ...999), which is GEMM
+        // reduction-order noise, not an optimizer change. The refactor
+        // invariant this test guards -- same minimum, same step count -- is
+        // therefore asserted at 1e-12 Ha (six orders below the optimizer's
+        // e_conv and ~1e4x above ulp noise), and exactly on `steps`.
+        const ANCHOR_ENERGY: f64 = -1.117505885156999;
         const ANCHOR_STEPS: usize = 7;
-        assert_eq!(
-            result.energy.to_bits(),
-            ANCHOR_ENERGY_BITS,
-            "post-refactor energy {:.15} != pre-refactor anchor {:.15}",
+        let de = (result.energy - ANCHOR_ENERGY).abs();
+        assert!(
+            de < 1e-12,
+            "post-refactor energy {:.15} != pre-refactor anchor {:.15} (|Δ| {de:.3e})",
             result.energy,
-            f64::from_bits(ANCHOR_ENERGY_BITS)
+            ANCHOR_ENERGY
         );
         assert_eq!(result.steps, ANCHOR_STEPS);
     }
