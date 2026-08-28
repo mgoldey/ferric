@@ -591,3 +591,267 @@ fn induce_rejects_more_sites_than_max_sites_dense() {
 
 
 
+
+// ---------------------------------------------------------------------------
+// Task B3: gradients
+// ---------------------------------------------------------------------------
+
+/// Two off-axis polarizable+charged sites near water/STO-3G (same style as
+/// the B2 physics-limit tests): analytic QM gradient (via `rhf_gradient`,
+/// which must fold in the fixed-mu polarizable terms) vs central FD of the
+/// fully-reconverged (SCF + induction) total energy.
+fn two_site_setup() -> (Molecule, PolarizableSites, ExternalPotential) {
+    let mol = water_bohr();
+    let sites = PolarizableSites {
+        sites: vec![
+            PolarizableSite { x: 3.0, y: -2.0, z: 4.0, alpha: 1.0 },
+            PolarizableSite { x: -2.5, y: 3.3, z: -3.7, alpha: 0.8 },
+        ],
+        thole_a: Some(2.1304),
+        exclusions: vec![],
+        dipole_zeta: 1e4,
+        max_sites_dense: 4000,
+    };
+    let ext = ExternalPotential {
+        point_charges: vec![
+            PointCharge { q: 0.5, x: 3.0, y: -2.0, z: 4.0 },
+            PointCharge { q: -0.3, x: -2.5, y: 3.3, z: -3.7 },
+        ],
+        smeared_charges: vec![],
+        field: None,
+    };
+    (mol, sites, ext)
+}
+
+/// Same water/QM setup, but the polarizable sites are OFF-CENTRE from the
+/// permanent MM charges (not colocated) — deliberately, so `site_gradient`'s
+/// FD test can move a site's position WITHOUT also moving a permanent
+/// charge. Colocated site+charge (the realistic QM/MM case, one atom
+/// carrying both a fixed partial charge and a polarizability at the SAME
+/// position) additionally needs the classical charge-nuclear energy's OWN
+/// derivative with respect to a MOVING MM CHARGE position — a general
+/// piece of `ExternalPotential`/QM-MM plumbing that exists for QM-atom
+/// rows (`ExternalPotential::charge_nuclear_gradient`) but has no
+/// "moving-charge-row" analogue today, and adding one is out of Lane B's
+/// polarizable-embedding-specific scope (it is a `Lane C`/`ferric-mm`-
+/// adjacent gap, not a polarizable-physics gap: it is exactly as absent
+/// for the NON-polarizable case). This setup sidesteps that gap entirely
+/// so the test isolates precisely what `site_gradient` claims to compute.
+fn two_site_setup_no_colocated_charge() -> (Molecule, PolarizableSites, ExternalPotential) {
+    let mol = water_bohr();
+    let sites = PolarizableSites {
+        sites: vec![
+            PolarizableSite { x: 3.0, y: -2.0, z: 4.0, alpha: 1.0 },
+            PolarizableSite { x: -2.5, y: 3.3, z: -3.7, alpha: 0.8 },
+        ],
+        thole_a: Some(2.1304),
+        exclusions: vec![],
+        dipole_zeta: 1e4,
+        max_sites_dense: 4000,
+    };
+    // Permanent charges sit at DIFFERENT points from the polarizable
+    // sites, off-axis, so E^perm at each site is nonzero and geometry-
+    // dependent (through the sites' OWN positions) without ever moving
+    // a colocated charge.
+    let ext = ExternalPotential {
+        point_charges: vec![
+            PointCharge { q: 0.5, x: 4.5, y: -3.0, z: 5.5 },
+            PointCharge { q: -0.3, x: -4.0, y: 4.5, z: -5.0 },
+        ],
+        smeared_charges: vec![],
+        field: None,
+    };
+    (mol, sites, ext)
+}
+
+fn scf_energy_polarizable(mol: &Molecule, sites: &PolarizableSites, ext: &ExternalPotential) -> f64 {
+    let prep = sto3g_prep(mol);
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+    let ctx = ParallelContext::default();
+    let cfg = RhfConfig {
+        density_conv: 1e-12,
+        max_iter: 300,
+        external_potential: Some(ext.clone()),
+        polarizable: Some(sites.clone()),
+        ..Default::default()
+    };
+    let r = solve_rhf(&ctx, mol, &prep, op, &bounds, &cfg).unwrap();
+    assert!(r.converged);
+    r.energy
+}
+
+#[test]
+fn qm_gradient_with_polarizable_sites_matches_finite_difference() {
+    let (mol, sites, ext) = two_site_setup();
+    let prep = sto3g_prep(&mol);
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+    let ctx = ParallelContext::default();
+    let cfg = RhfConfig {
+        density_conv: 1e-12,
+        max_iter: 300,
+        external_potential: Some(ext.clone()),
+        polarizable: Some(sites.clone()),
+        ..Default::default()
+    };
+    let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
+    assert!(result.converged);
+
+    let analytic = ferric_scf::gradient::rhf_gradient_with_polarizable(
+        &mol, &prep, op, &bounds, &result, Some(&ext), Some(&sites), result.induced_dipoles.as_ref(),
+    )
+    .unwrap();
+
+    let h = 1e-3;
+    let natoms = mol.atoms.len();
+    let mut max_err = 0.0_f64;
+    for a in 0..natoms {
+        for c in 0..3 {
+            let mut mol_p = mol.clone();
+            let mut mol_m = mol.clone();
+            match c {
+                0 => { mol_p.atoms[a].x += h; mol_m.atoms[a].x -= h; }
+                1 => { mol_p.atoms[a].y += h; mol_m.atoms[a].y -= h; }
+                _ => { mol_p.atoms[a].zpos += h; mol_m.atoms[a].zpos -= h; }
+            }
+            let e_p = scf_energy_polarizable(&mol_p, &sites, &ext);
+            let e_m = scf_energy_polarizable(&mol_m, &sites, &ext);
+            let fd = (e_p - e_m) / (2.0 * h);
+            let err = (analytic[(a, c)] - fd).abs();
+            max_err = max_err.max(err);
+            assert!(
+                err < 1e-6,
+                "QM gradient[{a}][{c}] with polarizable sites: analytic {:.10e} vs FD {:.10e} (delta {err:.3e})",
+                analytic[(a, c)], fd
+            );
+        }
+    }
+    eprintln!("[qmmm-polarizable] max|analytic - FD| on QM gradient (polarizable) = {max_err:.3e}");
+}
+
+#[test]
+fn site_force_with_polarizable_sites_matches_finite_difference() {
+    let (mol, sites, ext) = two_site_setup_no_colocated_charge();
+    let prep = sto3g_prep(&mol);
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+    let ctx = ParallelContext::default();
+    let cfg = RhfConfig {
+        density_conv: 1e-12,
+        max_iter: 300,
+        external_potential: Some(ext.clone()),
+        polarizable: Some(sites.clone()),
+        ..Default::default()
+    };
+    let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
+    assert!(result.converged);
+    let mu = result.induced_dipoles.clone().unwrap();
+
+    let dedr = ferric_scf::polarizable::site_gradient(
+        &mol,
+        &prep,
+        result.density_total(),
+        Some(&ext),
+        &sites,
+        &mu,
+    )
+    .unwrap();
+
+    let h = 1e-3;
+    let mut max_err = 0.0_f64;
+    for i in 0..sites.sites.len() {
+        for c in 0..3 {
+            let mut sites_p = sites.clone();
+            let mut sites_m = sites.clone();
+            match c {
+                0 => { sites_p.sites[i].x += h; sites_m.sites[i].x -= h; }
+                1 => { sites_p.sites[i].y += h; sites_m.sites[i].y -= h; }
+                _ => { sites_p.sites[i].z += h; sites_m.sites[i].z -= h; }
+            }
+            let e_p = scf_energy_polarizable(&mol, &sites_p, &ext);
+            let e_m = scf_energy_polarizable(&mol, &sites_m, &ext);
+            let fd = (e_p - e_m) / (2.0 * h);
+            let err = (dedr[(i, c)] - fd).abs();
+            max_err = max_err.max(err);
+            assert!(
+                err < 1e-6,
+                "site_gradient[{i}][{c}]: analytic {:.10e} vs FD {:.10e} (delta {err:.3e})",
+                dedr[(i, c)], fd
+            );
+        }
+    }
+    eprintln!("[qmmm-polarizable] max|analytic - FD| on site gradient = {max_err:.3e}");
+}
+
+/// Translational invariance: sum over ALL rows (QM atoms + polarizable
+/// sites, treated as one rigid structure) of the total dE/dR must vanish —
+/// a rigid translation cannot change the energy. This is a strong,
+/// sign-blind cross-check independent of the FD comparisons above.
+#[test]
+fn qm_and_site_gradients_sum_to_zero_translational_invariance() {
+    // NO independent permanent MM charges at all (ext = None / e_perm = 0
+    // everywhere): translational invariance of "sum over ALL rows = 0"
+    // requires the rigid body being translated to be the WHOLE system that
+    // determines the energy. With permanent MM charges present (fixed,
+    // external to the sum), translating only "QM atoms + polarizable
+    // sites" relative to those fixed charges is NOT a symmetry (distances
+    // to the fixed charges change) — that would need the MM-charge rows
+    // in the sum too, which needs a classical charge-nuclear-position
+    // gradient this lane does not implement (see
+    // `two_site_setup_no_colocated_charge`'s doc comment on that gap).
+    // Dropping the permanent charges entirely (E^perm = 0, only E^QM drives
+    // induction) makes "QM atoms + sites" the WHOLE energetically-relevant
+    // system, so this check is exactly right.
+    let mol = water_bohr();
+    let sites = PolarizableSites {
+        sites: vec![
+            PolarizableSite { x: 3.0, y: -2.0, z: 4.0, alpha: 1.0 },
+            PolarizableSite { x: -2.5, y: 3.3, z: -3.7, alpha: 0.8 },
+        ],
+        thole_a: Some(2.1304),
+        exclusions: vec![],
+        dipole_zeta: 1e4,
+        max_sites_dense: 4000,
+    };
+    let prep = sto3g_prep(&mol);
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+    let ctx = ParallelContext::default();
+    let cfg = RhfConfig {
+        density_conv: 1e-12,
+        max_iter: 300,
+        polarizable: Some(sites.clone()),
+        ..Default::default()
+    };
+    let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
+    assert!(result.converged);
+    let mu = result.induced_dipoles.clone().unwrap();
+
+    let qm_grad = ferric_scf::gradient::rhf_gradient_with_polarizable(
+        &mol, &prep, op, &bounds, &result, None, Some(&sites), Some(&mu),
+    )
+    .unwrap();
+    let site_grad = ferric_scf::polarizable::site_gradient(&mol, &prep, result.density_total(), None, &sites, &mu).unwrap();
+
+    let mut total = [0.0_f64; 3];
+    for a in 0..mol.atoms.len() {
+        for c in 0..3 {
+            total[c] += qm_grad[(a, c)];
+        }
+    }
+    for i in 0..sites.sites.len() {
+        for c in 0..3 {
+            total[c] += site_grad[(i, c)];
+        }
+    }
+    eprintln!("[qmmm-polarizable] translational invariance sum = {total:?}");
+    for c in 0..3 {
+        assert!(total[c].abs() < 1e-8, "translational invariance failed on axis {c}: {:.3e}", total[c]);
+    }
+}
+
+
+
+
+

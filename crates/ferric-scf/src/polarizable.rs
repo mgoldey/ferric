@@ -568,3 +568,388 @@ pub fn mm_only_polarization_energy(ext: Option<&ExternalPotential>, sites: &Pola
     }
     Ok(e_pol)
 }
+
+
+// ---------------------------------------------------------------------------
+// Task B3: gradients
+// ---------------------------------------------------------------------------
+//
+// Two DISTINCT gradient formulas are needed, and conflating them is the
+// classic bug here (caught by FD BEFORE any Rust was written — see the
+// numerical toy-model check in this task's development notes):
+//
+// 1. QM-ATOM rows (`qm_gradient_contribution`): the fixed-mu derivative of
+//    the FOCK TERM `V_ind` with respect to the QM basis-function centres.
+//    This is a plain Hellmann-Feynman contraction `dE/dR_A = sum_munu D_munu
+//    dV_ind_munu/dR_A` — no subtlety, because neither the Thole matrix `T`
+//    nor `E_perm` depends on the electron density, so the mu-fixed
+//    derivative of the FULL variational functional `W` reduces to exactly
+//    this term when differentiating wrt D (see `build_v_induced`'s
+//    validated Fock-term derivation).
+//
+// 2. SITE-position rows (`site_gradient`): geometric derivatives, where
+//    BOTH `E^perm`/`E^QM`'s integrals AND `T_ij` depend on the site
+//    position. Naively differentiating `E_pol = -1/2 mu.(E^QM+E^perm)` at
+//    FIXED mu is WRONG here — MEASURED by FD on a classical two-site Thole
+//    toy model (no QM at all): it disagreed with the true FD gradient in
+//    both magnitude and (for some components) SIGN. The correct formula
+//    comes from the variational functional actually stationary in mu,
+//    `W[mu] = -mu.E_ext + 1/2 mu.diag(1/alpha).mu - 1/2 mu.T.mu` (mu* solves
+//    `dW/dmu=0`, which is exactly the induction linear system, and `W[mu*]
+//    == E_pol` by the standard quadratic-form identity) — ITS fixed-mu
+//    derivative is
+//
+//    dE/dR = -sum_i mu_i . dE_i^total/dR  -  1/2 sum_{i!=j} mu_i . dT_ij/dR . mu_j
+//
+//    where `E_i^total = E_i^QM + E_i^perm`. The first term has a factor of 1
+//    (not 1/2!) unlike a naive reading of `E_pol`'s own formula, and there
+//    is a whole SECOND term (the T-derivative) that a naive `E_pol`-only
+//    differentiation misses entirely. MEASURED: on a 2-site classical Thole
+//    system, this formula reproduced central-FD gradients to 1e-8 absolute
+//    on every component (both magnitude AND sign), while the naive
+//    `-1/2 mu.dE_ext/dR` formula was off by roughly a factor of 2-20x and
+//    wrong in sign on 2 of 6 components tested. NOTE on the `1/2` above:
+//    it belongs to the SUM OVER BOTH ORDERINGS `i!=j` (i.e. `T_ij` in the
+//    `(i,j)` term AND `T_ji` in the `(j,i)` term both contribute to
+//    `dE/dR_i`); `site_gradient`'s implementation loops `j` ONCE per fixed
+//    `i` (not also separately as "the other site"), so by the symmetric-
+//    tensor identity `T_ji(Rj,Ri) = T_ij(Ri,Rj)^T` the two orderings'
+//    contributions to `dE/dR_i` are EQUAL, and the loop's per-iteration
+//    coefficient is `1`, not `1/2` — see the code comment at the actual
+//    loop in [`site_gradient`] for the full accounting. Getting this wrong
+//    (implementing literally `-1/2` inside that loop) was a real bug caught
+//    by `site_force_with_polarizable_sites_matches_finite_difference`,
+//    off by a clean factor of ~2.
+
+/// QM-atom-centre gradient contribution of the induced-dipole terms — TWO
+/// pieces, both at fixed (converged) `mu`:
+///
+/// 1. The Fock-term Hellmann-Feynman contraction `dE/dR_A = sum_munu D_munu
+///    dV_ind_munu/dR_A`, using `Engine::compute_eri3_deriv`'s 9-block layout
+///    (verified — see the module doc's p-shell section — P-major WITHIN
+///    each of the 9 blocks, `block[b][(p*n1+i)*n2+j]`, `b = center*3 +
+///    coord`, `center` in `{0=site, 1=sh1, 2=sh2}`). This one IS a plain
+///    fixed-mu contraction (no `W`-vs-naive subtlety, unlike
+///    [`site_gradient`]'s geometric terms), because the electron-density
+///    dependence carries no `T`-like R-dependent self-coupling.
+/// 2. The QM-NUCLEAR contribution to `E_i^QM`: nuclei are point charges
+///    from a polarizable site's point of view, so moving QM atom `A`
+///    changes `E_i^{QM,nuc}` exactly like moving any other point charge
+///    does (`E_i^{QM,nuc} = sum_A Z_A (R_i-R_A)/|R_i-R_A|^3`), contributing
+///    `-mu_i . dE_i^{QM,nuc}/dR_A` — via the SAME
+///    [`point_charge_field_grad_wrt_site`] formula [`site_gradient`] uses
+///    for the analogous MM-permanent-charge and site-nuclear terms (here
+///    read at "dR_charge" since atom A plays the role of the FIXED charge
+///    while the site is the fixed probe). MEASURED: omitting this term
+///    left a residual ~2.6e-5 in `qm_gradient_with_polarizable_sites_matches_finite_difference`
+///    even though piece (1) alone matched an isolated fixed-D/fixed-mu FD
+///    check to 6 significant figures — the isolated check does not
+///    exercise the nuclear term because it holds mu AND D fixed with no
+///    nuclear-position dependence in scope, so it cannot see a term that
+///    only shows up once nuclei are allowed to move.
+///
+/// Returns a `(natoms, 3)` array over the QM molecule described by `mol`/
+/// `prep` (same atom ordering), zero when `sites.sites` is empty.
+pub fn qm_gradient_contribution(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    sites: &PolarizableSites,
+    site_basis_p: &SiteBasis,
+    dipoles: &Array2<f64>,
+    d: &Array2<f64>,
+) -> Result<Array2<f64>, FerricError> {
+    let natoms = prep.shell_to_atom().iter().copied().max().map(|m| m + 1).unwrap_or(0);
+    let mut grad = Array2::<f64>::zeros((natoms, 3));
+    let n = sites.sites.len();
+    if n == 0 {
+        return Ok(grad);
+    }
+
+    // 2. QM-nuclear contribution: for each atom A and each site i,
+    // -mu_i . dE_i^{QM,nuc}/dR_A = the "dR_charge" half of
+    // point_charge_field_grad_wrt_site(site position, atom position, Z_A, mu_i).
+    for (a_idx, atom) in mol.atoms.iter().enumerate() {
+        let za = atom.effective_z() as f64;
+        if za == 0.0 {
+            continue;
+        }
+        let rc = [atom.x, atom.y, atom.zpos];
+        for i in 0..n {
+            let ri = [sites.sites[i].x, sites.sites[i].y, sites.sites[i].z];
+            let mu_i = [dipoles[(i, 0)], dipoles[(i, 1)], dipoles[(i, 2)]];
+            let (_, contrib_charge) = point_charge_field_grad_wrt_site(ri, rc, za, mu_i);
+            grad[(a_idx, 0)] += contrib_charge[0];
+            grad[(a_idx, 1)] += contrib_charge[1];
+            grad[(a_idx, 2)] += contrib_charge[2];
+        }
+    }
+
+    let norm_p = norm_int_p_shell(sites.dipole_zeta);
+    let mut eng = Engine::new_3center_deriv(Operator::coulomb(), prep, &site_basis_p.prep, 1e-14)?;
+    let offs = prep.shell_offsets();
+    let dims = prep.shell_dims();
+    let sh2at = prep.shell_to_atom();
+    let nsh = prep.nshells();
+
+    for i in 0..n {
+        let sh_p = site_basis_p.site_shell[i];
+        let mu = [dipoles[(i, 0)], dipoles[(i, 1)], dipoles[(i, 2)]];
+        for s1 in 0..nsh {
+            for s2 in 0..nsh {
+                let Some(deriv) = eng.compute_eri3_deriv(prep, &site_basis_p.prep, sh_p, s1, s2) else { continue };
+                let n1 = dims[s1];
+                let n2 = dims[s2];
+                let block_sz = 3 * n1 * n2; // nP=3 (p-shell) * n1 * n2
+                let a1 = sh2at[s1];
+                let a2 = sh2at[s2];
+                for c in 0..3 {
+                    let p_fn = p_axis_for_field_axis(c);
+                    // dV_ind/dR = -mu[c]*norm_p * d(mu nu|p_{p_fn})/dR
+                    let scale = -mu[c] * norm_p;
+                    for a in 0..n1 {
+                        for b in 0..n2 {
+                            let mu_idx = offs[s1] + a;
+                            let nu_idx = offs[s2] + b;
+                            let dval = d[(mu_idx, nu_idx)];
+                            let idx = (p_fn * n1 + a) * n2 + b;
+                            for coord in 0..3 {
+                                // block b = center*3 + coord; center 1 = sh1, center 2 = sh2.
+                                let d1 = deriv[(3 + coord) * block_sz + idx];
+                                let d2 = deriv[(6 + coord) * block_sz + idx];
+                                grad[(a1, coord)] += scale * dval * d1;
+                                grad[(a2, coord)] += scale * dval * d2;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(grad)
+}
+
+/// Full `dE/dR_site` for each polarizable site, at FIXED (converged) `mu` —
+/// see the module-level note above [`qm_gradient_contribution`] for why
+/// this uses the `W`-derived formula, not a naive `E_pol` differentiation.
+/// Three pieces, all evaluated at fixed `mu` (the converged dipoles):
+///
+/// 1. QM-centre part, via translational invariance of the p-shell 3-centre
+///    integral: `dE/dR_site = -(dE/dR_sh1 + dE/dR_sh2)` for the SAME
+///    contraction [`qm_gradient_contribution`] evaluates (the same trick
+///    lane A's `smeared_site_forces` uses) — this captures BOTH the QM
+///    electron-density part of `E_i^QM` (through the Fock-term integral)
+///    correctly, since it is exactly `-mu_i . dE_i^QM_elec/dR_i` in the `W`
+///    formula (electron-density-linear terms have no `T`-like R-dependent
+///    coupling to worry about).
+/// 2. `-mu_i . dE_i^{QM,nuc}/dR_i` — the QM NUCLEAR contribution to
+///    `E_i^QM` is a plain point-charge field (nuclei are point charges from
+///    a site's point of view), handled by [`point_charge_field_grad_wrt_site`].
+/// 3. `-mu_i . dE_i^perm/dR_i` for every OTHER permanent MM charge in `ext`
+///    (respecting colocation-based exclusions, same convention as
+///    [`permanent_field_at_sites`]), via the same point-charge-field
+///    formula, PLUS `-1/2 sum_{j!=i} mu_i . dT_ij/dR_i . mu_j` (the Thole
+///    tensor's OWN geometric derivative — this term has NO analogue in the
+///    Fock/QM path). `dT_ij/dR` is evaluated by central finite difference
+///    of the (cheap, closed-form) [`thole_tensor`] function itself — NOT a
+///    finite difference of any SCF energy — since deriving the analytic
+///    rank-3 tensor derivative by hand carries real sign/algebra risk (this
+///    module already found two independent sign bugs elsewhere) for a
+///    function that costs nanoseconds to evaluate; `h=1e-6` central FD on
+///    a smooth closed-form tensor is accurate to ~1e-10, far below this
+///    function's own 1e-6 FD-vs-SCF-energy validation bar.
+///
+/// `mol`/`prep`/`d` describe the QM region as solved; `d` must be the
+/// converged TOTAL density.
+pub fn site_gradient(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    d: &Array2<f64>,
+    ext: Option<&ExternalPotential>,
+    sites: &PolarizableSites,
+    dipoles: &Array2<f64>,
+) -> Result<Array2<f64>, FerricError> {
+    let n = sites.sites.len();
+    let mut grad = Array2::<f64>::zeros((n, 3));
+    if n == 0 {
+        return Ok(grad);
+    }
+
+    let norm_p = norm_int_p_shell(sites.dipole_zeta);
+    let site_xyz: Vec<[f64; 4]> = sites.sites.iter().map(|s| [s.x, s.y, s.z, sites.dipole_zeta]).collect();
+    let site_basis_p = SiteBasis::new(&site_xyz, 1)?;
+
+    // 1. QM-centre part via translational invariance (Fock-term derivative).
+    let mut eng = Engine::new_3center_deriv(Operator::coulomb(), prep, &site_basis_p.prep, 1e-14)?;
+    let offs = prep.shell_offsets();
+    let dims = prep.shell_dims();
+    let nsh = prep.nshells();
+    for i in 0..n {
+        let sh_p = site_basis_p.site_shell[i];
+        let mu = [dipoles[(i, 0)], dipoles[(i, 1)], dipoles[(i, 2)]];
+        let mut site_grad = [0.0_f64; 3];
+        for s1 in 0..nsh {
+            for s2 in 0..nsh {
+                let Some(deriv) = eng.compute_eri3_deriv(prep, &site_basis_p.prep, sh_p, s1, s2) else { continue };
+                let n1 = dims[s1];
+                let n2 = dims[s2];
+                let block_sz = 3 * n1 * n2;
+                for c in 0..3 {
+                    let p_fn = p_axis_for_field_axis(c);
+                    let scale = -mu[c] * norm_p;
+                    for a in 0..n1 {
+                        for b in 0..n2 {
+                            let mu_idx = offs[s1] + a;
+                            let nu_idx = offs[s2] + b;
+                            let dval = d[(mu_idx, nu_idx)];
+                            let idx = (p_fn * n1 + a) * n2 + b;
+                            for coord in 0..3 {
+                                let d1 = deriv[(3 + coord) * block_sz + idx];
+                                let d2 = deriv[(6 + coord) * block_sz + idx];
+                                // dE/dR_site = -(dE/dR_sh1 + dE/dR_sh2) (translational invariance).
+                                site_grad[coord] += -scale * dval * (d1 + d2);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        grad[(i, 0)] += site_grad[0];
+        grad[(i, 1)] += site_grad[1];
+        grad[(i, 2)] += site_grad[2];
+    }
+
+    // Colocation lookup for permanent-charge exclusions (same convention as
+    // `permanent_field_at_sites`).
+    let colocated_site = |x: f64, y: f64, z: f64| -> Option<usize> {
+        sites.sites.iter().position(|s| {
+            let dx = s.x - x;
+            let dy = s.y - y;
+            let dz = s.z - z;
+            (dx * dx + dy * dy + dz * dz).sqrt() < COLOCATION_TOL
+        })
+    };
+
+    for i in 0..n {
+        let ri = [sites.sites[i].x, sites.sites[i].y, sites.sites[i].z];
+        let mu_i = [dipoles[(i, 0)], dipoles[(i, 1)], dipoles[(i, 2)]];
+        let mut g = [0.0_f64; 3];
+
+        // 2. QM nuclear point-charge contribution to E_i^QM.
+        for atom in &mol.atoms {
+            let za = atom.effective_z() as f64;
+            if za == 0.0 {
+                continue;
+            }
+            let rc = [atom.x, atom.y, atom.zpos];
+            let (contrib, _) = point_charge_field_grad_wrt_site(ri, rc, za, mu_i);
+            g[0] += contrib[0];
+            g[1] += contrib[1];
+            g[2] += contrib[2];
+        }
+
+        // 3a. Permanent MM point/smeared charges (excluding colocated + excluded pairs).
+        if let Some(ext) = ext {
+            for pc in &ext.point_charges {
+                if let Some(j) = colocated_site(pc.x, pc.y, pc.z) {
+                    if j == i || sites.is_excluded(i, j) {
+                        continue;
+                    }
+                }
+                let rc = [pc.x, pc.y, pc.z];
+                let (contrib, _) = point_charge_field_grad_wrt_site(ri, rc, pc.q, mu_i);
+                g[0] += contrib[0];
+                g[1] += contrib[1];
+                g[2] += contrib[2];
+            }
+            for sc in &ext.smeared_charges {
+                if let Some(j) = colocated_site(sc.x, sc.y, sc.z) {
+                    if j == i || sites.is_excluded(i, j) {
+                        continue;
+                    }
+                }
+                // Point-charge approximation for the smeared-charge field
+                // gradient at the site (same simplification documented in
+                // `permanent_field_at_sites`).
+                let rc = [sc.x, sc.y, sc.z];
+                let (contrib, _) = point_charge_field_grad_wrt_site(ri, rc, sc.q, mu_i);
+                g[0] += contrib[0];
+                g[1] += contrib[1];
+                g[2] += contrib[2];
+            }
+        }
+
+        // 3b. Thole tensor geometric derivative. `W` contains BOTH
+        // `-1/2 mu_i.T_ij.mu_j` AND `-1/2 mu_j.T_ji.mu_i` for each
+        // UNORDERED pair {i,j} (the induction functional sums over ALL
+        // ordered pairs i!=j); by the symmetric-tensor identity
+        // `T_ji(Rj,Ri) = T_ij(Ri,Rj)^T`, `mu_j.T_ji.mu_i = mu_i.T_ij.mu_j`,
+        // so differentiating BOTH terms wrt R_i and collecting gives
+        // `-mu_i.dT_ij/dR_i.mu_j` with COEFFICIENT 1, not 1/2 — verified
+        // both analytically (sympy, scalar toy) and numerically (a
+        // classical 2-site Thole system's FD gradient matched only with
+        // coefficient 1; coefficient 1/2, the naive per-ordered-pair
+        // reading, was off by exactly a factor of 2). Looping `j` once
+        // per `i` here (not also visiting the "j as the outer site" case
+        // separately) is what makes coefficient 1 the correct one for
+        // THIS loop structure — do not "fix" this to 0.5 by analogy with
+        // the -1/2 in E_pol's own formula, they are different terms of
+        // different origin (see the module-level note preceding
+        // `qm_gradient_contribution` for the full derivation).
+        for j in 0..n {
+            if j == i || sites.is_excluded(i, j) {
+                continue;
+            }
+            let rj = [sites.sites[j].x, sites.sites[j].y, sites.sites[j].z];
+            let mu_j = [dipoles[(j, 0)], dipoles[(j, 1)], dipoles[(j, 2)]];
+            let ai = sites.sites[i].alpha;
+            let aj = sites.sites[j].alpha;
+            let h = 1e-6;
+            for k in 0..3 {
+                let mut ri_p = ri;
+                let mut ri_m = ri;
+                ri_p[k] += h;
+                ri_m[k] -= h;
+                let t_p = thole_tensor(ri_p, rj, ai, aj, sites.thole_a);
+                let t_m = thole_tensor(ri_m, rj, ai, aj, sites.thole_a);
+                // mu_i . dT_ij/dR_i[k] . mu_j
+                let mut dot_p = 0.0_f64;
+                let mut dot_m = 0.0_f64;
+                for a in 0..3 {
+                    for b in 0..3 {
+                        dot_p += mu_i[a] * t_p[a][b] * mu_j[b];
+                        dot_m += mu_i[a] * t_m[a][b] * mu_j[b];
+                    }
+                }
+                let d_dot_dr = (dot_p - dot_m) / (2.0 * h);
+                g[k] += -1.0 * d_dot_dr;
+            }
+        }
+
+        grad[(i, 0)] += g[0];
+        grad[(i, 1)] += g[1];
+        grad[(i, 2)] += g[2];
+    }
+
+    Ok(grad)
+}
+
+/// The two gradient contributions of `-mu . E_charge(R_site)`, where
+/// `E_charge(r) = q (r - R_charge)/|r-R_charge|^3` is the field of a fixed
+/// point charge `q` at the moving probe point `r`: `(d/dR_site, d/dR_charge)`.
+/// `dE_charge[c]/dR_site[k] = q*(delta_ck/r^3 - 3 d[c] d[k]/r^5)`,
+/// `d = r_site - r_charge`; `d/dR_charge = -d/dR_site` by translational
+/// invariance of this two-point kernel.
+fn point_charge_field_grad_wrt_site(r_site: [f64; 3], r_charge: [f64; 3], q: f64, mu: [f64; 3]) -> ([f64; 3], [f64; 3]) {
+    let d = [r_site[0] - r_charge[0], r_site[1] - r_charge[1], r_site[2] - r_charge[2]];
+    let r2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+    let r = r2.sqrt();
+    let r3 = r2 * r;
+    let r5 = r3 * r2;
+    let mu_dot_d = mu[0] * d[0] + mu[1] * d[1] + mu[2] * d[2];
+    let mut g_site = [0.0_f64; 3];
+    for k in 0..3 {
+        g_site[k] = -q * (mu[k] / r3 - 3.0 * mu_dot_d * d[k] / r5);
+    }
+    let g_charge = [-g_site[0], -g_site[1], -g_site[2]];
+    (g_site, g_charge)
+}
