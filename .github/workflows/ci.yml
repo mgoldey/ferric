@@ -134,6 +134,7 @@ jobs:
           restore-keys: cargo-${{ runner.os }}-
 
       - name: Check (all targets)
+        timeout-minutes: 60
         run: cargo check --workspace --all-targets
 
       # FAST TIER, mirroring scripts/ci-gate.sh's CI_GATE_SLOW_TESTS. The six
@@ -151,6 +152,14 @@ jobs:
       # filters TEST FUNCTION names, not binary names, and does not work for
       # this (verified: --skip lmp2_amplitude left all 14 of its tests running).
       - name: Test (fast tier)
+        # Step-level cap. Run 33189038313 (2026-08-28) sat in this step for
+        # 2h44m and was killed by the JOB timeout, which CANCELS the job: the
+        # log was purged (404 on the logs endpoint) and the cargo-cache save
+        # was skipped, so the failure left no evidence and the next run paid
+        # the rebuild again. The same script completes in 15 min locally on 4
+        # pinned CPUs, so 75 min is 5x headroom over a warm run and still
+        # leaves the job alive to save the cache and keep the log.
+        timeout-minutes: 75
         run: |
           set -euo pipefail
           SLOW="dft_wb97xv mpi_dfjk_banding dft_pbe pair_screen_criteria attenuation_plus_dlpno lmp2_amplitude"
