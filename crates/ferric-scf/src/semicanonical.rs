@@ -353,6 +353,7 @@ impl SemicanonicalOrbitals {
             exit: rohf.exit,
             iterations: rohf.iterations,
             computed_quartets: rohf.computed_quartets,
+            induced_dipoles: rohf.induced_dipoles.clone(),
         }
     }
 }

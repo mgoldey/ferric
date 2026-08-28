@@ -157,6 +157,7 @@ pub use frequencies::{
 #[cfg(feature = "cfmm-incomplete")]
 pub mod cfmm;
 /// QM/MM system setup: atom selection, link atoms, embedding charges.
+pub mod polarizable;
 pub mod qmmm;
 pub use qmmm::{BoundaryChargeScheme, QmSelection, QmmmAtom, QmmmSystem};
 /// Jacob's ladder solver: run a sequence of methods (HF→DFT→MP2→…) reusing orbitals.
