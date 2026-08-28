@@ -63,6 +63,12 @@ pub struct ScfResult {
     pub iterations: usize,
     /// Total number of 2-electron integral quartets evaluated.
     pub computed_quartets: usize,
+    /// Converged Thole-damped polarizable-embedding induced dipoles
+    /// (`(n_sites, 3)`, a.u.), when `RhfConfig.polarizable` was `Some`.
+    /// `None` whenever polarizable embedding was not configured — every
+    /// existing constructor of `ScfResult` must set this to `None` to stay
+    /// bit-identical (see `polarizable_none_is_bit_identical_to_plain_scf`).
+    pub induced_dipoles: Option<Array2<f64>>,
 }
 
 impl ScfResult {

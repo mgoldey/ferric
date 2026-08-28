@@ -191,6 +191,7 @@ pub(crate) fn solve_rhf_with_external(
                 exit: ferric_scf::result::ScfExit::Converged,
                 iterations: iter,
                 computed_quartets: total_quartets,
+                induced_dipoles: None,
             });
         }
         prev_e = energy;

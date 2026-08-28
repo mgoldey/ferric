@@ -14,6 +14,7 @@ use crate::rimp2::active_occ;
 use crate::u_rimp2::{compute_u_mp2_amplitudes, compute_u_mp2_orbital_gradient, URiMp2Components};
 use crate::oo_rimp2::{compute_b_full_mo_with, OoRiMp2AoTensors};
 use crate::orbital_rotation::cayley_rotation;
+use ferric_core::external_potential::ExternalPotential;
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_core::parallel::ParallelContext;
@@ -110,10 +111,22 @@ impl std::fmt::Display for UOoRiMp2Result {
 /// [`u_oo_ri_mp2`]).
 // Spin-resolved UHF energy: alpha/beta coefficients and occupations are
 // irreducibly distinct quantities with no natural sub-bundle to group.
+// `vnn` is the FULL classical nuclear-repulsion-like constant: plain
+/// `mol.nuclear_repulsion()` in vacuum, or (when an external potential is
+/// present) that PLUS `ext.charge_nuclear_energy(mol) +
+/// ext.field_nuclear_energy(mol)` -- the same convention
+/// `ferric_scf::driver::prepare_scf_env` uses and the same fix applied to
+/// closed-shell `oo_rimp2::compute_hf_energy`. Must be computed ONCE by the
+/// caller and threaded into every `compute_uhf_energy` call for a given
+/// `u_oo_ri_mp2` run -- never recomputed from `mol` alone once `ext` is
+/// `Some` (an uncompensated one-electron attraction with no offsetting
+/// classical repulsion lets the unconstrained Cayley rotation collapse to a
+/// spuriously low, unphysical stationary point; see `oo_rimp2.rs`'s
+/// `compute_hf_energy` doc comment for the measured ~1.6 Ha closed-shell
+/// counterpart of this same bug).
 #[allow(clippy::too_many_arguments)]
 fn compute_uhf_energy(
     ctx: &ParallelContext,
-    mol: &Molecule,
     prep: &PreparedBasis,
     bounds: &SchwarzBounds,
     c_a: &Array2<f64>,
@@ -121,6 +134,7 @@ fn compute_uhf_energy(
     nocc_a: usize,
     nocc_b: usize,
     h: &Array2<f64>,
+    vnn: f64,
     budget_bytes: usize,
 ) -> Result<(f64, Array2<f64>, Array2<f64>), FerricError> {
     let n = prep.nbasis();
@@ -167,7 +181,7 @@ fn compute_uhf_energy(
             e_elec += 0.5 * (h[(mu, nu)] + f_b[(mu, nu)]) * d_b[(mu, nu)];
         }
     }
-    let e_hf = e_elec + mol.nuclear_repulsion();
+    let e_hf = e_elec + vnn;
     Ok((e_hf, f_a, f_b))
 }
 
@@ -209,6 +223,7 @@ fn make_scf_view(
         exit: ferric_scf::result::ScfExit::Converged,
         iterations: 0,
         computed_quartets: 0,
+        induced_dipoles: None,
     }
 }
 
@@ -301,6 +316,7 @@ pub fn u_oo_ri_mp2(
     bounds: &SchwarzBounds,
     uhf: &ScfResult,
     config: &UOoRiMp2Config,
+    ext: Option<&ExternalPotential>,
 ) -> Result<UOoRiMp2Result, FerricError> {
     if matches!(uhf.spin, Spin::Restricted) {
         return Err(FerricError::General(
@@ -328,7 +344,18 @@ pub fn u_oo_ri_mp2(
         Spin::Restricted => unreachable!(),
     };
 
-    let h = oneelectron::hcore(obs);
+    // `ext = None` is byte-for-byte identical to the pre-fix bare
+    // `oneelectron::hcore(obs)` call -- this was the SAME hcore bug fixed in
+    // closed-shell `oo_rimp2::oo_ri_mp2`, present here too (open-shell was
+    // named in spec section 3 but not fixed in the first pass).
+    let h = oneelectron::hcore_with_external(obs, ext)?;
+    // Classical constant threaded into every compute_uhf_energy call below --
+    // see that function's doc comment for why this must be computed ONCE
+    // here rather than recomputed from `mol` alone (the second, independent
+    // bug from the closed-shell fix: a missing classical charge-nuclear/
+    // field-nuclear term lets the unconstrained orbital rotation collapse).
+    let vnn = mol.nuclear_repulsion()
+        + ext.map(|e| e.charge_nuclear_energy(mol) + e.field_nuclear_energy(mol)).unwrap_or(0.0);
 
     // Resolved once per call (not per iteration) — gates the AO-tensor build,
     // the RiMp2Config threaded into every compute_u_mp2_amplitudes call, and
@@ -356,7 +383,7 @@ pub fn u_oo_ri_mp2(
 
     // Initial UHF energy + Fock
     let (mut e_hf, mut f_a, mut f_b) = compute_uhf_energy(
-        &ctx, mol, obs, bounds, &c_a, &c_b, nocc_total_a, nocc_total_b, &h, budget_bytes,
+        &ctx, obs, bounds, &c_a, &c_b, nocc_total_a, nocc_total_b, &h, vnn, budget_bytes,
     )?;
     let mut eps_a = orbital_energies_mo(&c_a, &f_a);
     let mut eps_b = orbital_energies_mo(&c_b, &f_b);
@@ -516,7 +543,7 @@ pub fn u_oo_ri_mp2(
 
         // Evaluate at new orbitals
         let (e_hf_new, f_a_new, f_b_new) = compute_uhf_energy(
-            &ctx, mol, obs, bounds, &c_a_new, &c_b_new, nocc_total_a, nocc_total_b, &h, budget_bytes,
+            &ctx, obs, bounds, &c_a_new, &c_b_new, nocc_total_a, nocc_total_b, &h, vnn, budget_bytes,
         )?;
         let eps_a_new = orbital_energies_mo(&c_a_new, &f_a_new);
         let eps_b_new = orbital_energies_mo(&c_b_new, &f_b_new);
@@ -556,7 +583,7 @@ pub fn u_oo_ri_mp2(
                 bt_c_a = c_a.dot(&ua2);
                 bt_c_b = c_b.dot(&ub2);
                 let (eh, fa, fb) = compute_uhf_energy(
-                    &ctx, mol, obs, bounds, &bt_c_a, &bt_c_b, nocc_total_a, nocc_total_b, &h, budget_bytes,
+                    &ctx, obs, bounds, &bt_c_a, &bt_c_b, nocc_total_a, nocc_total_b, &h, vnn, budget_bytes,
                 )?;
                 let ea = orbital_energies_mo(&bt_c_a, &fa);
                 let eb = orbital_energies_mo(&bt_c_b, &fb);
@@ -750,7 +777,7 @@ mod tests {
             ..Default::default()
         };
         let cs_oo = crate::oo_rimp2::oo_ri_mp2(
-            &mol, &obs, &dfbs, op, &bounds, &rhf, &oo_cfg,
+            &mol, &obs, &dfbs, op, &bounds, &rhf, &oo_cfg, None,
         ).unwrap();
 
         // UHF reference seeded from RHF MOs to land at the same singlet solution
@@ -765,7 +792,7 @@ mod tests {
             grad_conv: 1e-7, energy_conv: 1e-10, max_iter: 50, ..Default::default()
         };
         let us_oo = u_oo_ri_mp2(
-            &mol, &obs, &dfbs, op, &bounds, &uhf, &uoo_cfg,
+            &mol, &obs, &dfbs, op, &bounds, &uhf, &uoo_cfg, None,
         ).unwrap();
 
         let de = (us_oo.total_energy - cs_oo.total_energy).abs();
@@ -802,7 +829,7 @@ mod tests {
         println!("Starting UHF+UMP2 = {:.10}", e_start);
 
         let oo = u_oo_ri_mp2(
-            &mol, &obs, &dfbs, op, &bounds, &uhf, &UOoRiMp2Config::default(),
+            &mol, &obs, &dfbs, op, &bounds, &uhf, &UOoRiMp2Config::default(), None,
         ).unwrap();
         println!(
             "U-OO-MP2: E_tot = {:.10}, iters = {}, |g|={:.2e}, converged={}",

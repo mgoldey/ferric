@@ -333,6 +333,64 @@ pub fn rhf_gradient(
     Ok(grad)
 }
 
+/// [`rhf_gradient`] plus the QM-atom-centre Fock-term contribution of
+/// Thole-damped polarizable embedding (Lane B, Task B3) — a thin wrapper
+/// rather than a new parameter on `rhf_gradient` itself, so the other
+/// (numerous) existing call sites of `rhf_gradient` are completely
+/// unaffected (zero risk of a signature-change regression outside this
+/// lane). `sites`/`dipoles` are typically `config.polarizable.as_ref()`
+/// and `result.induced_dipoles.as_ref()`; when either is `None` this is
+/// EXACTLY `rhf_gradient` (see [`crate::polarizable::qm_gradient_contribution`]
+/// for why the fixed-mu QM-centre term is a plain Hellmann-Feynman
+/// contraction, no `W`-vs-naive subtlety unlike [`crate::polarizable::site_gradient`]).
+pub fn rhf_gradient_with_polarizable(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    result: &ScfResult,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
+    sites: Option<&crate::polarizable::PolarizableSites>,
+    dipoles: Option<&Array2<f64>>,
+) -> Result<Array2<f64>, FerricError> {
+    let mut grad = rhf_gradient(mol, prep, op, bounds, result, ext)?;
+    if let (Some(sites), Some(dipoles)) = (sites, dipoles) {
+        grad += &crate::polarizable::polarizable_gradient_term(mol, prep, sites, dipoles, result.density_r())?;
+    }
+    Ok(grad)
+}
+
+/// [`uhf_gradient`] plus the QM-atom-centre Fock-term contribution of
+/// Thole-damped polarizable embedding — the UHF sibling of
+/// [`rhf_gradient_with_polarizable`]. `sites`/`dipoles` are typically
+/// `config.polarizable.as_ref()` and `result.induced_dipoles.as_ref()`;
+/// when either is `None`, or `sites.sites` is empty, this is EXACTLY
+/// `uhf_gradient` (`polarizable_gradient_term` returns an all-zero array
+/// in that case, added unconditionally so both branches share one code
+/// path rather than an `if`/`else` that could silently diverge — pinned
+/// by `uhf_gradient_with_polarizable_none_matches_plain_uhf_gradient`).
+/// The added term uses `result.density_total()` (`= density_alpha +
+/// density_beta` for UHF), matching
+/// [`crate::polarizable::qm_gradient_contribution`]'s documented
+/// total-density-only dependence — see that function's doc for why this
+/// term needs no UHF-specific derivation.
+pub fn uhf_gradient_with_polarizable(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    result: &ScfResult,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
+    sites: Option<&crate::polarizable::PolarizableSites>,
+    dipoles: Option<&Array2<f64>>,
+) -> Result<Array2<f64>, FerricError> {
+    let mut grad = uhf_gradient(mol, prep, op, bounds, result, ext)?;
+    if let (Some(sites), Some(dipoles)) = (sites, dipoles) {
+        grad += &crate::polarizable::polarizable_gradient_term(mol, prep, sites, dipoles, result.density_total())?;
+    }
+    Ok(grad)
+}
+
 /// ECP contribution to the nuclear gradient:
 /// `dE_ECP/dR_{A,c} = Σ_μν D_μν dV_ECP_μν/dR_{A,c}`.
 ///
@@ -636,9 +694,179 @@ pub fn oneelectron_gradient(
             let bs = prep.basis_set();
             grad += &field_density_gradient_fd(mol, bs, d, field)?;
         }
+        if !ext.smeared_charges.is_empty() {
+            grad += &smeared_charge_qm_gradient(prep, d, &ext.smeared_charges)?;
+        }
     }
 
     Ok(grad)
+}
+
+/// QM-atom-centre Hellmann-Feynman gradient contribution of the
+/// Gaussian-smeared MM charges' hcore term
+/// `V_μν = -Σ_i q_i (μν|g_i) / norm_i` (see
+/// `oneelectron::smeared_attraction`): `dE/dR_A = Σ_μν D_μν dV_μν/dR_A`.
+///
+/// Uses `Engine::compute_eri3_deriv`'s 9-block layout — `[d/d(site), d/d(sh1),
+/// d/d(sh2)] × [x, y, z]`, each block `np*n1*n2` doubles (`np = 1` here, one
+/// function per site s-shell) — and accumulates ONLY the `sh1`/`sh2` (blocks
+/// 1, 2) obs-centre derivatives into `grad`, which is `(natoms, 3)` over the
+/// QM molecule. The site-centre derivative (block 0) is NOT accumulated here
+/// (the sites are not QM atoms); [`smeared_site_forces`] uses translational
+/// invariance (block 0 = −(block 1 + block 2), proved by
+/// `engine.rs::test_eri3_deriv_translational_invariance`) to get the site's
+/// own force from the SAME two blocks this function reads, without a
+/// separate integral evaluation.
+fn smeared_charge_qm_gradient(
+    prep: &PreparedBasis,
+    d: &Array2<f64>,
+    smeared: &[ferric_core::external_potential::SmearedCharge],
+) -> Result<Array2<f64>, FerricError> {
+    use ferric_core::external_potential::SmearedCharge;
+    use ferric_integrals::operator::Operator;
+    use ferric_integrals::site_basis::SiteBasis;
+
+    let natoms = prep.shell_to_atom().iter().copied().max().map(|m| m + 1).unwrap_or(0);
+    let mut grad = Array2::<f64>::zeros((natoms, 3));
+    if smeared.is_empty() {
+        return Ok(grad);
+    }
+
+    let sites: Vec<[f64; 4]> = smeared
+        .iter()
+        .map(|s: &SmearedCharge| [s.x, s.y, s.z, 1.0 / (s.width * s.width)])
+        .collect();
+    let site_basis = SiteBasis::new(&sites, 0)?;
+
+    let mut eng = Engine::new_3center_deriv(Operator::coulomb(), prep, &site_basis.prep, 1e-14)?;
+    let offs = prep.shell_offsets();
+    let dims = prep.shell_dims();
+    let sh2at = prep.shell_to_atom();
+    let nsh = prep.nshells();
+
+    for (i, sc) in smeared.iter().enumerate() {
+        let sh_p = site_basis.site_shell[i];
+        let norm = site_basis.norm_int[i];
+        for s1 in 0..nsh {
+            for s2 in 0..nsh {
+                let Some(deriv) = eng.compute_eri3_deriv(prep, &site_basis.prep, sh_p, s1, s2) else { continue };
+                let n1 = dims[s1];
+                let n2 = dims[s2];
+                let block_sz = n1 * n2;
+                let a1 = sh2at[s1];
+                let a2 = sh2at[s2];
+                for a in 0..n1 {
+                    for b in 0..n2 {
+                        let mu = offs[s1] + a;
+                        let nu = offs[s2] + b;
+                        let idx = a * n2 + b;
+                        let dval = d[(mu, nu)];
+                        // dV_μν/dR = -q/norm * d(μν|g)/dR
+                        let coeff = -sc.q / norm * dval;
+                        for c in 0..3 {
+                            // block 1 = d/d(sh1 center), block 2 = d/d(sh2 center)
+                            let d1 = deriv[(3 + c) * block_sz + idx];
+                            let d2 = deriv[(6 + c) * block_sz + idx];
+                            grad[(a1, c)] += coeff * d1;
+                            grad[(a2, c)] += coeff * d2;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(grad)
+}
+
+/// dE/dR of the SCF energy with respect to each Gaussian-smeared MM site's
+/// OWN position (i.e. the force convention `mm_forces` needs is `-` this),
+/// from the same `V_μν = -Σ_i q_i (μν|g_i)/norm_i` term
+/// [`smeared_charge_qm_gradient`] differentiates.
+///
+/// By translational invariance of the 3-centre integral `(μν|g_i)` (site
+/// center + the two obs shell centers, three centers total — proved by
+/// `engine.rs::test_eri3_deriv_translational_invariance`, block 0 + block 1 +
+/// block 2 = 0 elementwise), `dE/dR_site = -(dE/dR_sh1 + dE/dR_sh2)` for
+/// every shell-pair contribution: the site derivative never needs to be
+/// evaluated on its own, it falls out of the SAME two obs-centre blocks
+/// `smeared_charge_qm_gradient` already reads.
+///
+/// Returns one `[f64; 3]` per site, in `smeared` order (this is `dE/dR`, NOT
+/// the force `qmmm::mm_forces` returns for point charges — negate it for a
+/// force, matching that function's documented sign convention).
+pub fn smeared_site_forces(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    density: &Array2<f64>,
+    smeared: &[ferric_core::external_potential::SmearedCharge],
+) -> Result<Vec<[f64; 3]>, FerricError> {
+    use ferric_core::external_potential::SmearedCharge;
+    use ferric_integrals::operator::Operator;
+    use ferric_integrals::site_basis::SiteBasis;
+
+    if smeared.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let sites: Vec<[f64; 4]> = smeared
+        .iter()
+        .map(|s: &SmearedCharge| [s.x, s.y, s.z, 1.0 / (s.width * s.width)])
+        .collect();
+    let site_basis = SiteBasis::new(&sites, 0)?;
+
+    let mut eng = Engine::new_3center_deriv(Operator::coulomb(), prep, &site_basis.prep, 1e-14)?;
+    let offs = prep.shell_offsets();
+    let dims = prep.shell_dims();
+    let nsh = prep.nshells();
+
+    let mut out = vec![[0.0_f64; 3]; smeared.len()];
+    for (i, sc) in smeared.iter().enumerate() {
+        let sh_p = site_basis.site_shell[i];
+        let norm = site_basis.norm_int[i];
+        let mut site_grad = [0.0_f64; 3];
+        for s1 in 0..nsh {
+            for s2 in 0..nsh {
+                let Some(deriv) = eng.compute_eri3_deriv(prep, &site_basis.prep, sh_p, s1, s2) else { continue };
+                let n1 = dims[s1];
+                let n2 = dims[s2];
+                let block_sz = n1 * n2;
+                for a in 0..n1 {
+                    for b in 0..n2 {
+                        let mu = offs[s1] + a;
+                        let nu = offs[s2] + b;
+                        let idx = a * n2 + b;
+                        let coeff = -sc.q / norm * density[(mu, nu)];
+                        for c in 0..3 {
+                            let d1 = deriv[(3 + c) * block_sz + idx];
+                            let d2 = deriv[(6 + c) * block_sz + idx];
+                            // dE/dR_site = -(dE/dR_sh1 + dE/dR_sh2) by
+                            // translational invariance (see doc comment).
+                            site_grad[c] += -coeff * (d1 + d2);
+                        }
+                    }
+                }
+            }
+        }
+        out[i] = site_grad;
+    }
+    // Classical nuclear-charge/site-charge term: E = sum_A Z_A q_i erf/R
+    // depends on the site position exactly as it does on each atom, so
+    // ferric_core::external_potential::ExternalPotential::smeared_charge_nuclear_site_gradient
+    // (dE/dR_site) must be added -- the electronic Hellmann-Feynman term
+    // above accounts only for the one-electron hcore contraction, not the
+    // classical Z_A*q_i term also present in ExternalPotential::charge_nuclear_energy.
+    let classical = ferric_core::external_potential::ExternalPotential {
+        point_charges: Vec::new(),
+        smeared_charges: smeared.to_vec(),
+        field: None,
+    }
+    .smeared_charge_nuclear_site_gradient(mol);
+    for (o, c) in out.iter_mut().zip(classical.iter()) {
+        o[0] += c[0];
+        o[1] += c[1];
+        o[2] += c[2];
+    }
+    Ok(out)
 }
 
 /// Field-density Hellmann-Feynman gradient via finite difference of the
@@ -1054,6 +1282,7 @@ mod tests {
         let ctx = ferric_core::parallel::ParallelContext::default();
         let ext = ExternalPotential {
             point_charges: vec![PointCharge { q: 1.0, x: 0.0, y: 0.0, z: 15.0 }],
+            smeared_charges: Vec::new(),
             field: None,
         };
         let config = RhfConfig { external_potential: Some(ext.clone()), ..Default::default() };
@@ -1106,6 +1335,7 @@ mod tests {
         let ctx = ferric_core::parallel::ParallelContext::default();
         let ext = ExternalPotential {
             point_charges: vec![],
+            smeared_charges: Vec::new(),
             field: Some([0.0, 0.0, 0.01]),
         };
         let config = RhfConfig { external_potential: Some(ext.clone()), ..Default::default() };

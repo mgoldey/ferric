@@ -1,0 +1,78 @@
+{
+  "atoms": [
+    {
+      "symbol": "O",
+      "xyz_bohr": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "symbol": "H",
+      "xyz_bohr": [
+        0.0,
+        1.4304288084282135,
+        1.107157044045246
+      ]
+    },
+    {
+      "symbol": "H",
+      "xyz_bohr": [
+        0.0,
+        -1.4304288084282135,
+        1.107157044045246
+      ]
+    }
+  ],
+  "basis": "sto-3g",
+  "e_field_perm_at_sites": [
+    [
+      0.0,
+      0.0,
+      0.0
+    ]
+  ],
+  "e_field_qm_at_sites": [
+    [
+      0.0059703227089688005,
+      -0.0017161201465339393,
+      0.00144476235887242
+    ]
+  ],
+  "e_pol": -2.9287555113731636e-05,
+  "energy": -74.95528978066075,
+  "energy_gas_phase": -74.96292824643285,
+  "field_sign_check_max_err": 2.6418950360707072e-11,
+  "induced_dipoles": [
+    [
+      0.008597264700915073,
+      -0.0024712130110088725,
+      0.002080457796776285
+    ]
+  ],
+  "iterations": 24,
+  "method": "rhf",
+  "model": "Thole-damped polarizable embedding (Applequist induced point dipoles), prototype",
+  "molecule": "water",
+  "pyscf_version": "2.13.1",
+  "sites": [
+    {
+      "alpha_bohr3": 1.44,
+      "q": 0.5,
+      "xyz_bohr": [
+        3.0,
+        -2.0,
+        4.0
+      ]
+    }
+  ],
+  "stationarity_check": {
+    "fd_central_h": 0.06268861507408019,
+    "fd_richardson": 0.06268859792394703,
+    "h": 0.001,
+    "rel_diff": 2.7357659492789e-07
+  },
+  "thole_a": 2.1304,
+  "units": "Bohr / Hartree / a.u."
+}

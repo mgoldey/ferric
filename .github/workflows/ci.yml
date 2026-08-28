@@ -14,6 +14,31 @@ on:
 env:
   CARGO_TERM_COLOR: always
   OPENBLAS_NUM_THREADS: "1"
+  # Disk, not CPU, is the binding constraint on a GitHub runner (~14 GB free).
+  # Each of the ~190 integration-test binaries is 200-335 MB; measured
+  # locally, a 236 MB ferric-scf test binary carries 82 MB of .debug_*
+  # sections, so line tables trim roughly a third per binary (and
+  # `target/debug/incremental` would add GBs more if enabled). A branch
+  # that touches ferric-core rebuilds EVERY binary on top of the restored
+  # cache, and run 33210162947 died with "No space left on device" (run
+  # 33189038313 stalled on the full disk until the job timeout). Line tables
+  # keep file:line in panics/backtraces, which is all a CI failure needs.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_DEV_INCREMENTAL: "false"
+  CARGO_INCREMENTAL: "0"
+  # Force OpenBLAS's runtime kernel choice to the mature AVX2 (Haswell) set.
+  # ferric links the DISTRO OpenBLAS (0.3.20 on ubuntu-22.04, via the
+  # `system` features of openblas-src / ndarray-linalg), whose DYNAMIC_ARCH
+  # dispatch predates the Zen 4 / Sapphire Rapids VMs GitHub now allocates.
+  # Run 33213558759 (2026-08-28) produced GARBAGE from that library on a cold
+  # rebuild -- 2.5 electrons integrated instead of 10, dsyevd eigenvectors
+  # off by O(1), `V cholesky failed: LAPACK return_code 22`, GEMM results
+  # changing by O(1) with the thread count -- while the identical binaries
+  # are correct locally and were correct on the runner that built the
+  # 2026-08-26 cache. Nothing in the tree touches BLAS; the hardware moved.
+  # The 'Runner hardware / BLAS' step below prints the CPU model and the
+  # active BLAS/LAPACK alternatives so the next such drift is diagnosable.
+  OPENBLAS_CORETYPE: Haswell
   LIBINT_VERSION: "2.7.2"
   LIBINT2_PREFIX: /home/runner/libint2
 
@@ -29,6 +54,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The ubuntu-22.04 image ships ~30 GB of toolchains this job never uses
+      # (.NET, Android SDK, GHC, CodeQL, Swift). Deleting them is the standard
+      # way to get a Rust workspace with a multi-GB target/ cache onto the
+      # ~14 GB the runner otherwise has free. `df` before/after so the next
+      # disk-space failure is visible in the log instead of a mystery.
+      - name: Free runner disk space
+        run: |
+          echo "--- before"; df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/share/swift /usr/local/share/boost \
+            "$AGENT_TOOLSDIRECTORY/CodeQL" 2>/dev/null || true
+          sudo docker image prune --all --force > /dev/null 2>&1 || true
+          echo "--- after"; df -h / | tail -1
+
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -36,6 +75,16 @@ jobs:
             build-essential cmake g++ gfortran \
             libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
             libxc-dev
+
+      - name: Runner hardware / BLAS
+        run: |
+          lscpu | grep -E 'Model name|Vendor ID|CPU\(s\)|Flags' | cut -c1-240
+          nproc; free -g | head -2
+          dpkg -l | awk '/^ii +lib(openblas|lapack|blas)/ {print $2, $3}'
+          for a in libblas.so.3-x86_64-linux-gnu liblapack.so.3-x86_64-linux-gnu; do
+            update-alternatives --display "$a" 2>/dev/null | grep -E "link currently|^/" | head -4
+          done
+          echo "OPENBLAS_CORETYPE=${OPENBLAS_CORETYPE:-unset}"
 
       # RESTORE-only. actions/cache saves in a post-step that runs ONLY when the
       # job succeeds, so while any test was failing libint2 never got cached and
@@ -130,10 +179,11 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: cargo-${{ runner.os }}-
+          key: cargo-v2-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-v2-${{ runner.os }}-
 
       - name: Check (all targets)
+        timeout-minutes: 60
         run: cargo check --workspace --all-targets
 
       # FAST TIER, mirroring scripts/ci-gate.sh's CI_GATE_SLOW_TESTS. The six
@@ -151,8 +201,18 @@ jobs:
       # filters TEST FUNCTION names, not binary names, and does not work for
       # this (verified: --skip lmp2_amplitude left all 14 of its tests running).
       - name: Test (fast tier)
+        # Step-level cap. Run 33189038313 (2026-08-28) sat in this step for
+        # 2h44m and was killed by the JOB timeout, which CANCELS the job: the
+        # log was purged (404 on the logs endpoint) and the cargo-cache save
+        # was skipped, so the failure left no evidence and the next run paid
+        # the rebuild again. The same script completes in 15 min locally on 4
+        # pinned CPUs; 100 min leaves room for the cold codegen build this
+        # step performs when the cache key changes, and still keeps the job
+        # alive to save the cache and the log.
+        timeout-minutes: 100
         run: |
           set -euo pipefail
+          df -h / | tail -1
           SLOW="dft_wb97xv mpi_dfjk_banding dft_pbe pair_screen_criteria attenuation_plus_dlpno lmp2_amplitude"
           # --no-fail-fast: report EVERY failing test, not just the first.
           # cargo stops at the first failing binary by default, so each red run
@@ -179,6 +239,7 @@ jobs:
           if [ "$rc" -ne 0 ]; then
             echo "::error::one or more test commands failed -- see the FAILED lines above"
           fi
+          echo "--- disk after tests"; df -h / | tail -1; du -sh target 2>/dev/null || true
           exit $rc
 
       - name: Clippy
@@ -195,7 +256,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          key: cargo-v2-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
 
   # The six binaries the push job defers. Nothing else -- this exists purely so
   # "deferred" means "runs later", not "stops running". Triggered on the daily
@@ -254,8 +315,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: cargo-${{ runner.os }}-
+          key: cargo-v2-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-v2-${{ runner.os }}-
 
       - name: Test (the deferred six)
         run: |

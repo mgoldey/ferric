@@ -224,7 +224,7 @@ pub fn solve_rohf_best_effort(
     // into hcore once, byte-identical to plain hcore for all-electron bases),
     // V_nn(+external), COSMO/PCM contexts, resolved memory budget, RSH
     // fitters. One construction serving all six SCF variants (crate::driver).
-    let crate::driver::ScfEnv { s, h, vnn, ooc_budget, cosmo_cavity, pcm_ctx, mut dfk_sr, mut dfk_lr } =
+    let crate::driver::ScfEnv { s, h, vnn, ooc_budget, cosmo_cavity, pcm_ctx, polarizable_site_basis, mut dfk_sr, mut dfk_lr } =
         crate::driver::prepare(ctx, mol, prep, config, &k_mix)?;
     let n = prep.nbasis();
     let nelec = mol.nelec() as i64;
@@ -284,6 +284,10 @@ pub fn solve_rohf_best_effort(
     let mut diis = Diis::new(config.diis_size);
     // Convergence bookkeeping (prev energy, ΔP signals, divergence streak,
     // stall history) — shared driver::ScfMonitor.
+    // Most recent Thole-damped polarizable-embedding dipoles (None when
+    // `config.polarizable` is off/empty) — threaded into both ScfResult
+    // constructors below (converged early-exit and MaxIter).
+    let mut last_induced_dipoles: Option<Array2<f64>> = None;
     let mut mon = crate::driver::ScfMonitor::new();
     // MOM reference: (closed-MO AO block, open-MO AO block) from the most
     // recently accepted iter. None until iter `config.mom_after_iter`.
@@ -388,17 +392,19 @@ pub fn solve_rohf_best_effort(
         // Roothaan effective-Fock combination, so the coupled single-MO-set
         // ROHF equations feel them); energies are standalone terms — see
         // driver::solvent_terms and rhf::solve_rhf for the derivation notes.
-        let (e_cosmo, e_pcm) = crate::driver::solvent_terms(
+        let (e_cosmo, e_pcm, e_pol, iter_induced_dipoles) = crate::driver::solvent_terms(
             mol,
             prep,
             config,
             cosmo_cavity.as_ref(),
             pcm_ctx.as_ref(),
+            polarizable_site_basis.as_ref(),
             &d_total,
             &mut [&mut f_a, &mut f_b],
         )?;
+        last_induced_dipoles = iter_induced_dipoles;
 
-        let energy = e_elec_no_xc + e_xc + e_cosmo + e_pcm + vnn;
+        let energy = e_elec_no_xc + e_xc + e_cosmo + e_pcm + e_pol + vnn;
 
         // Build Roothaan effective Fock (Guest-Saunders, via PySCF projector form).
         let f_eff = roothaan_fock(&f_a, &f_b, &d_a, &d_b, &s);
@@ -524,6 +530,7 @@ pub fn solve_rohf_best_effort(
                 exit: crate::result::ScfExit::Converged,
                 iterations: iter,
                 computed_quartets: total_quartets,
+                induced_dipoles: last_induced_dipoles,
             });
         }
         mon.note_energy(energy);
@@ -711,6 +718,7 @@ pub fn solve_rohf_best_effort(
         exit: crate::result::ScfExit::MaxIter,
         iterations: config.max_iter,
         computed_quartets: total_quartets,
+        induced_dipoles: last_induced_dipoles,
     })
 }
 

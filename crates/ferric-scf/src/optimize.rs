@@ -111,19 +111,52 @@ pub fn optimize_geometry_rohf(
 /// Shared BFGS driver: minimizes `energy_and_gradient(mol)` over nuclear
 /// coordinates starting from `mol`. Identical algorithm for every reference
 /// (RHF/RKS/UHF/ROHF) — only how energy+gradient are computed at a geometry
-/// differs, which is captured entirely in the closure.
+/// differs, which is captured entirely in the closure. A thin wrapper over
+/// [`optimize_coordinates`] that flattens/unflattens the `Molecule` into a
+/// coordinate vector at the boundary.
 fn run_bfgs(
     mol: &Molecule,
     opt_config: &OptimizeConfig,
     mut energy_and_gradient: impl FnMut(&Molecule) -> Result<(f64, Array2<f64>), FerricError>,
 ) -> Result<OptimizeResult, FerricError> {
-    let mut current_mol = mol.clone();
-    let natoms = current_mol.atoms.len();
-    let n_coord = natoms * 3;
+    let x0 = flatten_molecule_coords(mol);
+    let mol_template = mol.clone();
+
+    let (x_final, energy, steps, converged) =
+        optimize_coordinates(&x0, opt_config, |x| {
+            let mut m = mol_template.clone();
+            set_molecule_coords(&mut m, x);
+            let (e, grad_arr) = energy_and_gradient(&m)?;
+            Ok((e, flatten_gradient(&grad_arr).to_vec()))
+        })?;
+
+    let mut current_mol = mol_template;
+    set_molecule_coords(&mut current_mol, &x_final);
+
+    Ok(OptimizeResult { mol: current_mol, energy, steps, converged })
+}
+
+/// Coordinate-vector core of the BFGS driver: minimizes `f(x)` over a flat
+/// `Vec<f64>` of length `x0.len()` (any multiple-of-3 layout the caller's
+/// closure agrees with itself on — this function never interprets the
+/// coordinates as atoms). Returns `(x_final, energy, steps, converged)`.
+///
+/// This is the exact algorithm [`run_bfgs`] used before being rewritten on
+/// top of this function (same line search, same convergence tests, same
+/// Hessian update) — only the `Molecule`-specific flatten/unflatten at the
+/// boundary moved out. Pinned bit-for-bit by
+/// `test_optimize_h2_sto3g_step_energy_anchor`.
+pub fn optimize_coordinates(
+    x0: &[f64],
+    opt_config: &OptimizeConfig,
+    mut f: impl FnMut(&[f64]) -> Result<(f64, Vec<f64>), FerricError>,
+) -> Result<(Vec<f64>, f64, usize, bool), FerricError> {
+    let n_coord = x0.len();
+    let mut x = Array1::from_vec(x0.to_vec());
 
     // Initial energy and gradient
-    let (mut energy, mut grad_arr) = energy_and_gradient(&current_mol)?;
-    let mut grad = flatten_gradient(&grad_arr);
+    let (mut energy, grad0) = f(x.as_slice().expect("x is contiguous"))?;
+    let mut grad = Array1::from_vec(grad0);
 
     // Approximate inverse Hessian (initialized to identity)
     let mut h = Array2::<f64>::eye(n_coord);
@@ -155,24 +188,23 @@ fn run_bfgs(
         let p = -h.dot(&grad);
 
         // Simple trust-radius scaling
-        let p_norm = p.iter().map(|x| x * x).sum::<f64>().sqrt();
+        let p_norm = p.iter().map(|v| v * v).sum::<f64>().sqrt();
         let step = if p_norm > opt_config.trust_radius {
             &p * (opt_config.trust_radius / p_norm)
         } else {
             p
         };
 
-        // Update geometry
-        update_molecule_coords(&mut current_mol, &step);
+        // Update coordinates
+        x = &x + &step;
 
         let prev_grad = grad.clone();
         prev_energy = energy;
 
         // Compute new energy and gradient
-        let res = energy_and_gradient(&current_mol)?;
-        energy = res.0;
-        grad_arr = res.1;
-        grad = flatten_gradient(&grad_arr);
+        let (e_new, grad_new) = f(x.as_slice().expect("x is contiguous"))?;
+        energy = e_new;
+        grad = Array1::from_vec(grad_new);
 
         // BFGS update for H
         let s = step; // x_{k+1} - x_k
@@ -199,12 +231,7 @@ fn run_bfgs(
         step_idx += 1;
     }
 
-    Ok(OptimizeResult {
-        mol: current_mol,
-        energy,
-        steps: step_idx,
-        converged,
-    })
+    Ok((x.to_vec(), energy, step_idx, converged))
 }
 
 fn compute_energy_and_gradient(
@@ -287,12 +314,25 @@ fn flatten_gradient(grad: &Array2<f64>) -> Array1<f64> {
     flat
 }
 
-fn update_molecule_coords(mol: &mut Molecule, step: &Array1<f64>) {
+/// Flatten a [`Molecule`]'s Cartesian coordinates into `(x0,y0,z0,x1,y1,z1,...)`.
+fn flatten_molecule_coords(mol: &Molecule) -> Vec<f64> {
+    let mut out = Vec::with_capacity(mol.atoms.len() * 3);
+    for atom in &mol.atoms {
+        out.push(atom.x);
+        out.push(atom.y);
+        out.push(atom.zpos);
+    }
+    out
+}
+
+/// Overwrite a [`Molecule`]'s Cartesian coordinates from a flat
+/// `(x0,y0,z0,x1,y1,z1,...)` vector (the inverse of [`flatten_molecule_coords`]).
+fn set_molecule_coords(mol: &mut Molecule, x: &[f64]) {
     let mut idx = 0;
     for atom in mol.atoms.iter_mut() {
-        atom.x += step[idx];
-        atom.y += step[idx + 1];
-        atom.zpos += step[idx + 2];
+        atom.x = x[idx];
+        atom.y = x[idx + 1];
+        atom.zpos = x[idx + 2];
         idx += 3;
     }
 }
@@ -321,6 +361,54 @@ mod tests {
         eprintln!("H2/STO-3G optimized distance: {:.6} Bohr", dist);
         // STO-3G H2 bond length is ~1.346 Bohr
         assert!((dist - 1.346).abs() < 1e-2, "dist = {dist}, expected ~1.346");
+    }
+
+    /// F2-1 EXACTNESS ANCHOR. Pins the exact per-step energy trajectory
+    /// `run_bfgs` produces for H2/STO-3G BEFORE it is rewritten on top of
+    /// `optimize_coordinates` (the coordinate-vector core). The bit patterns
+    /// below were captured from the pre-refactor implementation; after the
+    /// refactor this test must still pass byte-for-byte (`to_bits()`
+    /// equality, not a tolerance) — any drift means the refactor changed the
+    /// algorithm, not just its shape.
+    #[test]
+    fn test_optimize_h2_sto3g_step_energy_anchor() {
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 1.0\n", 0, 1).unwrap();
+        let op = Operator::coulomb();
+        let rhf_config = RhfConfig { energy_conv: 1e-10, ..Default::default() };
+        let opt_config = OptimizeConfig { trust_radius: 0.1, ..Default::default() };
+        let ctx = ParallelContext::default();
+
+        let result = optimize_geometry(&ctx, &mol, "sto-3g", op, &rhf_config, &opt_config).unwrap();
+        assert!(result.converged);
+        eprintln!(
+            "[F2-1 anchor] H2/STO-3G final energy bits = {:#018x} ({:.15}), steps = {}",
+            result.energy.to_bits(),
+            result.energy,
+            result.steps,
+        );
+        // Captured 2026-08-27 from the pre-refactor `run_bfgs` (this exact
+        // test, run once before touching optimize.rs):
+        //   [F2-1 anchor] H2/STO-3G final energy bits = 0xbff1e14dd9dd63b7
+        //   (-1.117505885156999), steps = 7
+        //
+        // Bit identity holds on the machine the anchor was captured on, but
+        // NOT across BLAS kernel sets: CI run 33216140352 (AMD EPYC 9V74,
+        // OpenBLAS 0.3.20 with OPENBLAS_CORETYPE=Haswell) reproduced this
+        // energy to 5 ulp (-1.117505885156998 vs ...999), which is GEMM
+        // reduction-order noise, not an optimizer change. The refactor
+        // invariant this test guards -- same minimum, same step count -- is
+        // therefore asserted at 1e-12 Ha (six orders below the optimizer's
+        // e_conv and ~1e4x above ulp noise), and exactly on `steps`.
+        const ANCHOR_ENERGY: f64 = -1.117505885156999;
+        const ANCHOR_STEPS: usize = 7;
+        let de = (result.energy - ANCHOR_ENERGY).abs();
+        assert!(
+            de < 1e-12,
+            "post-refactor energy {:.15} != pre-refactor anchor {:.15} (|Δ| {de:.3e})",
+            result.energy,
+            ANCHOR_ENERGY
+        );
+        assert_eq!(result.steps, ANCHOR_STEPS);
     }
 
     #[test]

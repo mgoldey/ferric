@@ -139,6 +139,66 @@ pub fn nuclear_with_external(prep: &PreparedBasis, ext: &ExternalPotential) -> A
     })
 }
 
+/// Nuclear-attraction-like matrix for Gaussian-smeared charges:
+/// `V_μν = -Σ_i q_i (μν|g_i) / norm_int_i`, where `(μν|g_i)` is the 3-centre
+/// Coulomb integral against the site's normalised Gaussian and `norm_int_i`
+/// is `∫g_i` (see [`crate::site_basis::SiteBasis`]). This equals
+/// `-Σ_i q_i ⟨μ|erf(√ζ_i r)/r|ν⟩`, the erf-Coulomb potential integral of a
+/// Gaussian charge distribution — reducing to the point-charge nuclear
+/// attraction as ζ_i → ∞ (width → 0), which is exactly what
+/// `tight_site_gaussian_reproduces_point_charge_attraction` in
+/// `site_basis.rs` pins numerically.
+///
+/// Errors (via [`crate::site_basis::SiteBasis::new`]) only on a malformed
+/// site list (empty, or a non-positive width); never called when
+/// `smeared_charges` is empty.
+pub fn smeared_attraction(
+    prep: &PreparedBasis,
+    smeared: &[ferric_core::external_potential::SmearedCharge],
+) -> Result<Array2<f64>, FerricError> {
+    use crate::engine::Engine;
+    use crate::operator::Operator;
+    use crate::site_basis::SiteBasis;
+
+    let n = prep.nbasis();
+    let mut v = Array2::<f64>::zeros((n, n));
+    if smeared.is_empty() {
+        return Ok(v);
+    }
+
+    let sites: Vec<[f64; 4]> = smeared
+        .iter()
+        .map(|s| [s.x, s.y, s.z, 1.0 / (s.width * s.width)])
+        .collect();
+    let site_basis = SiteBasis::new(&sites, 0)?;
+
+    let mut eng = Engine::new_3center(Operator::coulomb(), prep, &site_basis.prep, 1e-14)?;
+    let offs = prep.shell_offsets();
+    let dims = prep.shell_dims();
+    let nsh = prep.nshells();
+
+    for (i, sc) in smeared.iter().enumerate() {
+        let sh_p = site_basis.site_shell[i];
+        let norm = site_basis.norm_int[i];
+        for s1 in 0..nsh {
+            for s2 in 0..nsh {
+                if let Some(block) = eng.compute_eri3(prep, &site_basis.prep, sh_p, s1, s2) {
+                    let n1 = dims[s1];
+                    let n2 = dims[s2];
+                    let o1 = offs[s1];
+                    let o2 = offs[s2];
+                    for a in 0..n1 {
+                        for b in 0..n2 {
+                            v[(o1 + a, o2 + b)] += -sc.q * block[a * n2 + b] / norm;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(v)
+}
+
 /// One-electron term for a uniform external field: H' = +E·r per electron
 /// (i.e. V = -E·mu), built from the dipole integrals about the origin.
 /// Returns the zero matrix when `field == [0,0,0]`.
@@ -166,6 +226,9 @@ pub fn hcore_with_external(prep: &PreparedBasis, ext: Option<&ExternalPotential>
         nuclear_with_external(prep, ext)
     };
     let mut h = t + v;
+    if !ext.smeared_charges.is_empty() {
+        h += &smeared_attraction(prep, &ext.smeared_charges)?;
+    }
     if let Some(field) = ext.field {
         h += &field_hcore_term(prep, field)?;
     }
@@ -765,12 +828,65 @@ mod tests {
         assert_eq!(h_orig, h_new);
     }
 
+    /// EXACTNESS ANCHOR (A2): a point-charges-only `ExternalPotential` with an
+    /// EMPTY `smeared_charges` vec must be bit-identical to the pre-A2 code
+    /// path — `smeared_charges.is_empty()` must skip the smeared branch
+    /// entirely in `hcore_with_external`, not evaluate a trivial/zero-width
+    /// case of it. If this ever regresses, the symptom would be either a
+    /// panic (SiteBasis::new rejects empty site lists) or a nonzero
+    /// perturbation on every QM/MM run that has never used Gaussian smearing
+    /// — this test exists so that shows up here, not downstream.
+    #[test]
+    fn hcore_with_external_empty_smeared_charges_matches_point_charge_only_path() {
+        let prep = water_sto3g();
+        let ext = ExternalPotential {
+            point_charges: vec![PointCharge { q: 1.0, x: 0.0, y: 0.0, z: 10.0 }],
+            smeared_charges: Vec::new(),
+            field: None,
+        };
+        let h_new = hcore_with_external(&prep, Some(&ext)).unwrap();
+        // Independently reconstruct the pre-A2 point-charge-only path.
+        let h_point_only = kinetic(&prep) + nuclear_with_external(&prep, &ext);
+        assert_eq!(h_point_only, h_new);
+    }
+
+    /// A single site with a very tight width (1e-3 Bohr, ζ = 1e6) must
+    /// reproduce the point-charge hcore to 1e-9 — see the artifact
+    /// hypothesis in `site_basis.rs`'s module doc: this is what pins the
+    /// `∫g` normalisation constant end-to-end through `hcore_with_external`
+    /// (not just inside `SiteBasis` in isolation).
+    #[test]
+    fn tiny_width_smeared_charge_reproduces_point_charge_hcore() {
+        use ferric_core::external_potential::SmearedCharge;
+        let prep = water_sto3g();
+        let q = 1.0;
+        let (x, y, z) = (0.0, 0.0, -6.0);
+
+        let ext_point = ExternalPotential {
+            point_charges: vec![PointCharge { q, x, y, z }],
+            smeared_charges: Vec::new(),
+            field: None,
+        };
+        let h_point = hcore_with_external(&prep, Some(&ext_point)).unwrap();
+
+        let ext_smeared = ExternalPotential {
+            point_charges: Vec::new(),
+            smeared_charges: vec![SmearedCharge { q, x, y, z, width: 1e-3 }],
+            field: None,
+        };
+        let h_smeared = hcore_with_external(&prep, Some(&ext_smeared)).unwrap();
+
+        let max_diff = (&h_point - &h_smeared).iter().fold(0.0_f64, |acc, &v| acc.max(v.abs()));
+        assert!(max_diff < 1e-9, "tiny-width smeared hcore vs point-charge hcore differ by {max_diff:.3e}");
+    }
+
     #[test]
     fn nuclear_with_external_adds_point_charge_attraction() {
         let prep = water_sto3g();
         let v_orig = nuclear(&prep);
         let ext = ExternalPotential {
             point_charges: vec![PointCharge { q: 1.0, x: 0.0, y: 0.0, z: 10.0 }],
+            smeared_charges: Vec::new(),
             field: None,
         };
         let v_new = nuclear_with_external(&prep, &ext);

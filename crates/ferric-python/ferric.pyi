@@ -39,6 +39,258 @@ class Molecule:
         """Total electron count (accounts for charge and any ECP core electrons)."""
         ...
 
+    def coords(self) -> list[tuple[float, float, float]]:
+        """Cartesian coordinates in Angstrom, one (x, y, z) per atom in symbols() order."""
+        ...
+
+    def coords_bohr(self) -> list[tuple[float, float, float]]:
+        """Cartesian coordinates in Bohr (the internal values)."""
+        ...
+
+    def symbols(self) -> list[str]:
+        """Element symbols in atom order."""
+        ...
+
+
+class QmmmSystem:
+    """A QM/MM partition: full structure split into a QM region and fixed MM point charges.
+
+    Constructor takes Angstrom; point_charges() returns Bohr (the units run_rhf/run_optimize
+    take for point_charges=). Select the QM region with qm_indices OR qm_seeds + qm_radius_angstrom
+    (+ optional residue_ids to pull in whole residues instead of individual atoms).
+    """
+
+    def __init__(
+        self,
+        symbols: list[str],
+        coords_angstrom: list[tuple[float, float, float]],
+        charges: list[float],
+        qm_indices: list[int] | None = None,
+        qm_seeds: list[int] | None = None,
+        qm_radius_angstrom: float | None = None,
+        residue_ids: list[int] | None = None,
+        charge: int = 0,
+        multiplicity: int = 1,
+        widths_angstrom: list[float] | None = None,
+        polarizabilities_angstrom3: list[float] | None = None,
+    ) -> None:
+        """widths_angstrom: one Gaussian-smearing width per atom (0.0 = point charge).
+        polarizabilities_angstrom3: one isotropic polarisability per atom (0.0 = not a
+        polarizable site) for Thole-damped induced-dipole embedding -- see run_qmmm's
+        thole_a. Both ignored for atoms in the QM region, like charges."""
+        ...
+
+    def with_link_atoms(self, bonds: list[tuple[int, int]], scale: float | None = None) -> QmmmSystem:
+        """Cap each cut bond with a scaled-position link H (default scale 1.09/1.53). Returns a new system."""
+        ...
+
+    def with_boundary_charges(self, bonds: list[tuple[int, int]], scheme: str) -> QmmmSystem:
+        """Boundary charge scheme for the MM host of each cut bond: "keep", "delete-host", "rc" or "rcd"."""
+        ...
+
+    def qm_molecule(self) -> Molecule:
+        """The QM region (link hydrogens appended last) as a Molecule."""
+        ...
+
+    def point_charges(self) -> list[tuple[float, float, float, float]]:
+        """Every POINT embedding charge as (q, x, y, z) in Bohr. Gaussian-smeared
+        charges (width > 0) are excluded here -- see smeared_charges()."""
+        ...
+
+    def smeared_charges(self) -> list[tuple[float, float, float, float, float]]:
+        """Every Gaussian-smeared embedding charge as (q, x, y, z, width_bohr)."""
+        ...
+
+    def mm_charge_positions(self) -> list[tuple[float, float, float]]:
+        """Positions (Bohr) of every embedding charge, in the SAME canonical
+        order as QmmmResult.mm_forces()'s rows: atom-centred charges (point
+        and Gaussian-smeared interleaved, ascending full-structure atom
+        index) first, then RC/RCD midpoints. NOT the concatenation of
+        point_charges() then smeared_charges() unless every charge is one
+        kind -- use this order, not those two lists', to interpret
+        mm_forces()."""
+        ...
+
+    def qm_indices(self) -> list[int]: ...
+    def mm_indices(self) -> list[int]: ...
+    def qm_atom_count(self) -> int: ...
+    def natoms(self) -> int: ...
+
+    def atom_coords_angstrom(self) -> list[tuple[float, float, float]]:
+        """Every atom's current position in Angstrom, in full-structure index order
+        (the same ordering qm_indices()/mm_indices() index into), regardless of QM/MM role.
+        """
+        ...
+
+    def link_atom_positions(self) -> list[tuple[float, float, float]]:
+        """Link hydrogen positions in Angstrom."""
+        ...
+
+    def min_link_to_charge_distance(self) -> float | None:
+        """Shortest link-H-to-MM-charge distance in Angstrom (diagnostic), or None."""
+        ...
+
+    def boundary_scheme(self) -> str: ...
+
+
+class MmTopology:
+    """Explicit-parameter AMBER-form MM force field topology (ferric-mm). Assigns no
+    parameters of its own -- every number is caller-supplied data (see
+    tools/active_site/mm_topology.py::topology_from_openmm for one source of that data).
+    """
+
+    @staticmethod
+    def from_amber_units(
+        charges: list[float],
+        sigmas_angstrom: list[float],
+        epsilons_kcal: list[float],
+        bonds: list[tuple[int, int, float, float]],
+        angles: list[tuple[int, int, int, float, float]],
+        torsions: list[tuple[int, int, int, int, int, float, float]],
+    ) -> MmTopology:
+        """AMBER-convention units (kcal/mol, Angstrom, degrees), converted once to a.u.
+
+        bonds: (i, j, k_kcal_per_mol_per_ang2, r0_angstrom).
+        angles: (i, j, k, k_theta_kcal_per_mol_per_rad2, theta0_degrees).
+        torsions: (i, j, k, l, periodicity, k_phi_kcal_per_mol, phase_degrees).
+        """
+        ...
+
+    def n_atoms(self) -> int: ...
+
+
+class QmmmResult:
+    """Result of run_qmmm. Gradients are dE/dR (Hartree/Bohr); mm_forces() is the FORCE on each charge."""
+
+    @property
+    def energy(self) -> float: ...
+    @property
+    def converged(self) -> bool: ...
+    @property
+    def iterations(self) -> int: ...
+    @property
+    def e_pol(self) -> float:
+        """Thole-damped polarizable-embedding polarisation energy (Hartree).
+        0.0 when no atom carries a nonzero polarisability."""
+        ...
+    @property
+    def mm_energy(self) -> dict[str, float]:
+        """MM force-field energy components (Hartree): bond/angle/torsion/lj/coulomb/total.
+        All-zero when run_qmmm was not given mm_topology=.
+        """
+        ...
+
+    def induced_dipoles(self) -> np.ndarray | None:
+        """(n_sites, 3) converged Thole-damped induced dipoles (a.u.), in
+        QmmmSystem.mm_indices() order filtered to alpha > 0. None when no
+        atom was polarizable."""
+        ...
+
+    def qm_gradient(self) -> np.ndarray:
+        """(n_qm + n_link, 3) dE/dR on the QM molecule as solved."""
+        ...
+
+    def mm_forces(self) -> np.ndarray:
+        """(n_charges, 3) force on each embedding charge, in
+        QmmmSystem.mm_charge_positions() order: atom-centred charges (point
+        and Gaussian-smeared interleaved, ascending full-structure atom
+        index), then RC/RCD midpoints. NOT QmmmSystem.point_charges() order
+        once any charge is Gaussian-smeared -- point_charges() only lists the
+        point subset, so zipping it with mm_forces() silently misaligns rows
+        whenever a smeared charge is present. Zipping point_charges() with
+        mm_forces() is only valid when smeared_charges() == [] (no smeared
+        charges at all); otherwise read mm_charge_positions() alongside this
+        array."""
+        ...
+
+    def full_gradient(self) -> np.ndarray:
+        """(natoms_full, 3) dE/dR on every real atom: link rows projected onto hosts, MM forces
+        mapped to atoms, PLUS the MM force-field gradient when mm_topology= was given.
+        """
+        ...
+
+
+def run_qmmm(
+    system: QmmmSystem,
+    basis_name: str,
+    method: str | None = None,
+    xc: str | None = None,
+    max_iter: int | None = None,
+    energy_conv: float | None = None,
+    density_conv: float | None = None,
+    level_shift: float | None = None,
+    mom_after_iter: int | None = None,
+    guess: str | None = None,
+    mm_topology: MmTopology | None = None,
+    thole_a: float | None = None,
+) -> QmmmResult:
+    """Embedded SCF ("rhf" default, "uhf", "rks" or "uks") energy + QM gradient + MM forces + full gradient.
+
+    xc is required for "rks"/"uks" and rejected for "rhf"/"uhf".
+
+    mm_topology, if given, adds ferric-mm's AMBER-form force field under the additive QM/MM
+    convention (MM-MM bonded/nonbonded + QM-MM Lennard-Jones; no QM-MM Coulomb, already inside
+    the embedding). Omitting it is bit-identical to a topology with zero energy/gradient
+    everywhere (QmmmResult.mm_energy reports all-zero, not absent).
+
+    thole_a controls Thole damping for polarizable sites (system built with
+    polarizabilities_angstrom3=): None/omitted = the standard default 2.1304;
+    0.0 disables damping (bare point-dipole tensor); ignored when no atom is
+    polarizable. QmmmResult.e_pol/.induced_dipoles() report the result. The
+    QM gradient's polarizable Fock-term contribution is included for all
+    four methods ("rhf"/"uhf"/"rks"/"uks"). full_gradient() DOES include
+    every polarizable force term (a site's own dE_pol/dR_site plus the
+    reaction force every embedding charge feels from the other sites'
+    induced dipoles) for every method -- verified against finite differences
+    on a colocated charge+alpha MM atom and a two-site mutual-induction case.
+    Boundary charges (RC/RCD) combined with a polarizable site have no FD
+    cross-check yet.
+    """
+    ...
+
+
+class QmmmOptimizeResult:
+    """Result of run_optimize_qmmm."""
+
+    @property
+    def energy(self) -> float: ...
+    @property
+    def converged(self) -> bool: ...
+    @property
+    def steps(self) -> int: ...
+
+    def system(self) -> QmmmSystem:
+        """The partition at the final (optimized) geometry."""
+        ...
+
+    def energies(self) -> list[float]:
+        """Total energy (Hartree) at every step, in order (length steps + 1)."""
+        ...
+
+
+def run_optimize_qmmm(
+    system: QmmmSystem,
+    basis_name: str,
+    method: str | None = None,
+    xc: str | None = None,
+    move_mm: str | tuple[str, float] | tuple[str, list[int]] | None = None,
+    mm_topology: MmTopology | None = None,
+    max_steps: int | None = None,
+    e_conv: float | None = None,
+) -> QmmmOptimizeResult:
+    """Optimize a QmmmSystem's geometry. Real QM atoms always move; MM atoms move per move_mm.
+
+    move_mm: "none" (default, only QM atoms move), "all" (every MM atom moves too),
+    ("within", radius_angstrom) (MM atoms within that distance of any QM atom, measured once
+    at the starting geometry), or ("residues", [residue_id, ...]) (requires the system to have
+    been built with residue_ids=; ValueError otherwise). Any value other than "none"/None
+    requires mm_topology (ValueError otherwise).
+
+    method/xc follow run_qmmm's convention: "rhf" (default), "uhf", "rks", "uks"; xc is
+    required for the KS variants and rejected otherwise.
+    """
+    ...
+
 
 class BasisSet:
     """A Gaussian basis set (orbital or auxiliary/RI-fitting)."""
@@ -888,8 +1140,13 @@ def run_rhf(
     soscf: bool | None = None,
     point_charges: list[tuple[float, float, float, float]] | None = None,
     external_field: tuple[float, float, float] | None = None,
+    smeared_charges: list[tuple[float, float, float, float, float]] | None = None,
 ) -> RhfResult:
-    """Closed-shell Restricted Hartree-Fock."""
+    """Closed-shell Restricted Hartree-Fock.
+
+    smeared_charges: list of (q, x, y, z, width) Gaussian-smeared classical
+    charges (Bohr / Hartree atomic units).
+    """
     ...
 
 

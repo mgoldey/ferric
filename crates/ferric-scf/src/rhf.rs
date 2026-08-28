@@ -159,6 +159,17 @@ pub struct RhfConfig {
     /// solvent models); using both simultaneously is not validated and not
     /// currently prevented at the type level — callers should pick one.
     pub pcm: Option<ferric_pcm::PcmConfig>,
+    /// Thole-damped polarizable-embedding sites (induced point dipoles).
+    /// `None` (default) = no polarizable sites; this MUST be byte-identical
+    /// to a build with no polarizable-embedding support at all (see
+    /// `polarizable_none_is_bit_identical_to_plain_scf` in
+    /// `tests/qmmm_polarizable.rs`). Like COSMO/PCM (and unlike
+    /// `external_potential`, folded into `hcore` once before the loop), the
+    /// induced dipoles depend self-consistently on the density and are
+    /// re-solved from the CURRENT density every SCF iteration inside
+    /// `crate::driver::solvent_terms` — see `crate::polarizable` for the
+    /// full model.
+    pub polarizable: Option<crate::polarizable::PolarizableSites>,
     /// When `true`, print one line per SCF iteration to stdout (iteration
     /// number, energy, ΔE, and the same dp_rms/dp_max/err_max quantities
     /// `scf_converged` already gates on) — live progress for a user watching
@@ -218,6 +229,7 @@ impl Default for RhfConfig {
             external_potential: None,
             cosmo: None,
             pcm: None,
+            polarizable: None,
             verbose: false,
         }
     }
@@ -441,7 +453,7 @@ pub fn solve_rhf(
     // Shared geometry-only environment: S, hcore(+ECP, +external), V_nn
     // (+external), COSMO/PCM contexts, resolved memory budget, RSH fitters.
     // One construction serving all six SCF variants — see crate::driver.
-    let crate::driver::ScfEnv { s, h, vnn, ooc_budget, cosmo_cavity, pcm_ctx, mut dfk_sr, mut dfk_lr } =
+    let crate::driver::ScfEnv { s, h, vnn, ooc_budget, cosmo_cavity, pcm_ctx, polarizable_site_basis, mut dfk_sr, mut dfk_lr } =
         crate::driver::prepare(ctx, mol, prep, config, &k_mix)?;
 
     let n = prep.nbasis();
@@ -582,7 +594,8 @@ pub fn solve_rhf(
                                f: &Array2<f64>,
                                energy: f64,
                                iter: usize,
-                               cq: usize|
+                               cq: usize,
+                               induced_dipoles: Option<Array2<f64>>|
      -> ScfResult {
         ScfResult {
             spin: Spin::Restricted,
@@ -600,6 +613,7 @@ pub fn solve_rhf(
             iterations: iter,
             exit,
             computed_quartets: cq,
+            induced_dipoles,
         }
     };
 
@@ -656,6 +670,10 @@ pub fn solve_rhf(
     // `j_buf`/`k_buf`. `None` until the first (full) build; reset to force a full
     // rebuild on the next iteration.
     let mut d_last_fock: Option<Array2<f64>> = None;
+    // Most recent Thole-damped polarizable-embedding dipoles (None when
+    // `config.polarizable` is off/empty) — threaded into every `ScfResult`
+    // constructor below (converged and non-converged exits alike).
+    let mut last_induced_dipoles: Option<Array2<f64>> = None;
     // Periodic full-rebuild guard against f64 drift accumulating across many
     // incremental updates (PySCF re-triggers via `direct_scf_tol`; Psi4 hard
     // resets every `INCFOCK_FULL_FOCK_EVERY = 5`). We use 8: a compromise between
@@ -794,17 +812,19 @@ pub fn solve_rhf(
         // part of the ½Tr[D·(H+F)] trace (PySCF's e_solvent convention). See
         // driver::solvent_terms for the full derivation notes; a vacuum run
         // (both None) is byte-identical to a solvation-less build.
-        let (e_cosmo, e_pcm) = crate::driver::solvent_terms(
+        let (e_cosmo, e_pcm, e_pol, iter_induced_dipoles) = crate::driver::solvent_terms(
             mol,
             prep,
             config,
             cosmo_cavity.as_ref(),
             pcm_ctx.as_ref(),
+            polarizable_site_basis.as_ref(),
             &d,
             &mut [&mut f],
         )?;
+        last_induced_dipoles = iter_induced_dipoles;
 
-        let energy = e_elec_no_xc + e_xc + e_cosmo + e_pcm + vnn;
+        let energy = e_elec_no_xc + e_xc + e_cosmo + e_pcm + e_pol + vnn;
 
         // DIIS error: e = FDS - SDF. Runs once per SCF iteration, serially
         // (this whole loop body is outside any rayon region — the JK build
@@ -863,7 +883,7 @@ pub fn solve_rhf(
             if scf_trace() {
                 eprintln!("SCF diverged at iter={iter}: dE={:.3e} > tol for 3 iters", energy - mon.prev_e);
             }
-            return Ok(build_nonconverged(ScfExit::Diverged, &d, &last_c, &last_eps, &f, energy, iter, total_quartets));
+            return Ok(build_nonconverged(ScfExit::Diverged, &d, &last_c, &last_eps, &f, energy, iter, total_quartets, last_induced_dipoles.clone()));
         }
 
         // Stall: running-min err_max over a window stopped falling. Robust to
@@ -874,7 +894,7 @@ pub fn solve_rhf(
                 let w = config.stall_window.unwrap_or(0);
                 eprintln!("SCF stalled at iter={iter}: err_max={err_max:.3e} (no progress over {w} iters)");
             }
-            return Ok(build_nonconverged(ScfExit::Stalled, &d, &last_c, &last_eps, &f, energy, iter, total_quartets));
+            return Ok(build_nonconverged(ScfExit::Stalled, &d, &last_c, &last_eps, &f, energy, iter, total_quartets, last_induced_dipoles.clone()));
         }
 
         if iter > 1 {
@@ -910,6 +930,7 @@ pub fn solve_rhf(
                     exit,
                     iterations: iter,
                     computed_quartets: total_quartets,
+                    induced_dipoles: last_induced_dipoles,
                 });
             }
         }
@@ -1079,6 +1100,7 @@ pub fn solve_rhf(
         mon.prev_e,
         config.max_iter,
         total_quartets,
+        last_induced_dipoles,
     ))
 }
 
@@ -1464,6 +1486,7 @@ mod tests {
         // energy by a small, nonzero, well-defined amount and not break convergence).
         let ext = ExternalPotential {
             point_charges: vec![PointCharge { q: 1.0, x: 0.0, y: 0.0, z: 20.0 }],
+            smeared_charges: Vec::new(),
             field: None,
         };
         let config = RhfConfig { external_potential: Some(ext.clone()), ..Default::default() };
@@ -1841,6 +1864,7 @@ mod tests {
 
         let ext = ExternalPotential {
             point_charges: vec![PointCharge { q: 1.0, x: 0.0, y: 0.0, z: 20.0 }],
+            smeared_charges: Vec::new(),
             field: None,
         };
         let config = RhfConfig {

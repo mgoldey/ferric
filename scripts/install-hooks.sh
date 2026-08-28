@@ -6,19 +6,25 @@
 #
 #   scripts/install-hooks.sh
 #
-# WHY per-worktree even though hooks are usually shared: `git rev-parse
-# --git-path hooks` resolves to the *common* .git/hooks dir even from inside
-# a linked worktree (verified 2026-07-16: this repo's worktrees, e.g.
-# .claude/worktrees/g1-ci-gate, all resolve to the same top-level
-# /path/to/ferric/.git/hooks -- hooks are shared across ALL worktrees of a
-# repo by default, unless core.hooksPath is set). So installing once from
-# any checkout wires the hook for every worktree that shares this .git.
-# This script still needs to be run explicitly because hooks are local,
-# untracked state -- there is no way to make git auto-install them.
+# Hooks are SHARED across worktrees: `git rev-parse --git-path hooks` resolves
+# to the *common* .git/hooks dir even from inside a linked worktree (verified
+# 2026-07-16), unless core.hooksPath is set. So installing once from any
+# checkout wires the hook for every worktree of this repo. This script still
+# has to be run explicitly because hooks are local, untracked state.
 #
-# What gets installed: a thin pre-push hook that execs scripts/ci-gate.sh
-# from the repo's main worktree (not the linked worktree that happened to
-# install it), so the gate always runs against a consistent path.
+# What gets installed: a thin pre-push hook that gates THE WORKTREE BEING
+# PUSHED. git runs pre-push with the current directory at the top of the
+# worktree `git push` was invoked in, so the hook resolves that tree with
+# `git rev-parse --show-toplevel` and execs ITS scripts/ci-gate.sh (which cds
+# to its own repo root). Nothing is baked in at install time.
+#
+# HISTORY (why this matters): until 2026-08-28 the hook hardcoded the
+# INSTALLER's scripts/ci-gate.sh "for a consistent path", and ci-gate.sh cds
+# to its own root -- so a push from ~/qc/ferric-<lane> ran the fast gate
+# against ~/qc/ferric, i.e. a tree that was not being pushed. A missing gate
+# script also `exit 0`'d silently (that rot was hit on 2026-07-18). Both are
+# gone: the hook now gates the pushing worktree and BLOCKS if it cannot find
+# the gate there (override once with PRE_PUSH_ALLOW_NO_GATE=1).
 
 set -euo pipefail
 
@@ -31,52 +37,68 @@ case "$HOOKS_DIR" in
 esac
 
 HOOK_PATH="$HOOKS_DIR/pre-push"
-GATE_SCRIPT="$REPO_ROOT/scripts/ci-gate.sh"
 
 mkdir -p "$HOOKS_DIR"
 
-if [[ -e "$HOOK_PATH" && ! -L "$HOOK_PATH" ]]; then
-    echo "error: $HOOK_PATH already exists and is not a symlink we manage." >&2
+# Overwrite only a hook this script installed (identified by its marker
+# line); refuse to clobber a hand-written one. (The previous guard refused
+# any existing non-symlink, i.e. its own earlier output -- so the hook could
+# never be re-installed to pick up a wrapper fix without rm'ing it first.)
+MARKER="Installed by scripts/install-hooks.sh"
+if [[ -e "$HOOK_PATH" ]] && ! grep -qF "$MARKER" "$HOOK_PATH"; then
+    echo "error: $HOOK_PATH already exists and was not installed by this script." >&2
     echo "       Move it aside first if you want install-hooks.sh to take over," >&2
-    echo "       or merge its contents with scripts/ci-gate.sh manually." >&2
+    echo "       or merge its contents with the gate script manually." >&2
     exit 1
 fi
 
 cat > "$HOOK_PATH.tmp" <<'HOOK_EOF'
 #!/usr/bin/env bash
-# Installed by scripts/install-hooks.sh -- DO NOT hand-edit, edit
-# scripts/ci-gate.sh instead and re-run install-hooks.sh if this wrapper
-# itself needs to change.
+# Installed by scripts/install-hooks.sh -- DO NOT hand-edit; edit
+# scripts/install-hooks.sh (this wrapper) or scripts/ci-gate.sh (the gate)
+# and re-run install-hooks.sh.
 #
 # git passes ref update info on stdin; we don't need it -- we always run the
-# full gate on the current working tree before allowing any push to proceed.
+# gate on the working tree of the worktree `git push` was invoked in.
 set -uo pipefail
-GATE_SCRIPT="__GATE_SCRIPT__"
+
+# git sets the cwd of a pre-push hook to the top of the worktree being pushed
+# (for linked worktrees too). Resolve it explicitly rather than trusting the
+# cwd, so the gate cannot silently run against a different checkout.
+TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+if [[ -z "$TOPLEVEL" ]]; then
+    echo "pre-push hook: cannot resolve the worktree top level -- refusing to push ungated." >&2
+    echo "               (git rev-parse --show-toplevel failed; PRE_PUSH_ALLOW_NO_GATE=1 to bypass once)" >&2
+    [[ "${PRE_PUSH_ALLOW_NO_GATE:-0}" == "1" ]] && exit 0
+    exit 1
+fi
+GATE_SCRIPT="$TOPLEVEL/scripts/ci-gate.sh"
 
 if [[ ! -x "$GATE_SCRIPT" ]]; then
-    echo "pre-push hook: $GATE_SCRIPT not found or not executable -- skipping gate." >&2
-    echo "                (repo layout changed? re-run scripts/install-hooks.sh)" >&2
-    exit 0
+    echo "pre-push hook: $GATE_SCRIPT not found or not executable in the worktree being pushed." >&2
+    echo "               Refusing to push ungated. (This tree predates the gate, or scripts/ moved.)" >&2
+    echo "               Bypass once with PRE_PUSH_ALLOW_NO_GATE=1 git push, or git push --no-verify." >&2
+    [[ "${PRE_PUSH_ALLOW_NO_GATE:-0}" == "1" ]] && exit 0
+    exit 1
 fi
 
-# Fast tier: the pre-push hook defers the 4 slowest integration binaries
-# (~160s of ~407s). A push should not block on the full suite; running
-# scripts/ci-gate.sh by hand still runs EVERYTHING. The gate prints exactly
-# which binaries it deferred, and its PASS line says "FAST TIER" so a fast
-# run can never be misread as full coverage.
+# Fast tier: the pre-push hook defers the slowest integration binaries so a
+# push is not blocked on the full suite; running scripts/ci-gate.sh by hand
+# still runs EVERYTHING. The gate prints exactly which binaries it deferred,
+# and its PASS line says "FAST TIER" so a fast run can never be misread as
+# full coverage.
 export CI_GATE_FAST=1
-echo "pre-push: running correctness gate ($GATE_SCRIPT, fast tier)..." >&2
+echo "pre-push: gating worktree $TOPLEVEL ($GATE_SCRIPT, fast tier)..." >&2
 echo "          (skip once with: git push --no-verify -- only if you mean it)" >&2
 "$GATE_SCRIPT"
 exit $?
 HOOK_EOF
 
-sed -i "s|__GATE_SCRIPT__|$GATE_SCRIPT|" "$HOOK_PATH.tmp"
 chmod +x "$HOOK_PATH.tmp"
 mv "$HOOK_PATH.tmp" "$HOOK_PATH"
 
 echo "Installed pre-push hook: $HOOK_PATH"
-echo "  -> runs: $GATE_SCRIPT"
+echo "  -> runs: <worktree being pushed>/scripts/ci-gate.sh (resolved at push time)"
 echo
 echo "This hook is shared across all worktrees of this repo (git hooks live in"
 echo "the common .git dir, not per-worktree). Every 'git push' from any"
