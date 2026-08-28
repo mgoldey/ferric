@@ -71,7 +71,11 @@ class QmmmSystem:
         residue_ids: list[int] | None = None,
         charge: int = 0,
         multiplicity: int = 1,
-    ) -> None: ...
+        widths_angstrom: list[float] | None = None,
+    ) -> None:
+        """widths_angstrom: one Gaussian-smearing width per atom (0.0 = point charge).
+        Ignored for atoms in the QM region, like charges."""
+        ...
 
     def with_link_atoms(self, bonds: list[tuple[int, int]], scale: float | None = None) -> QmmmSystem:
         """Cap each cut bond with a scaled-position link H (default scale 1.09/1.53). Returns a new system."""
@@ -86,7 +90,22 @@ class QmmmSystem:
         ...
 
     def point_charges(self) -> list[tuple[float, float, float, float]]:
-        """Every embedding charge as (q, x, y, z) in Bohr; atom-centred first, then RC/RCD midpoints."""
+        """Every POINT embedding charge as (q, x, y, z) in Bohr. Gaussian-smeared
+        charges (width > 0) are excluded here -- see smeared_charges()."""
+        ...
+
+    def smeared_charges(self) -> list[tuple[float, float, float, float, float]]:
+        """Every Gaussian-smeared embedding charge as (q, x, y, z, width_bohr)."""
+        ...
+
+    def mm_charge_positions(self) -> list[tuple[float, float, float]]:
+        """Positions (Bohr) of every embedding charge, in the SAME canonical
+        order as QmmmResult.mm_forces()'s rows: atom-centred charges (point
+        and Gaussian-smeared interleaved, ascending full-structure atom
+        index) first, then RC/RCD midpoints. NOT the concatenation of
+        point_charges() then smeared_charges() unless every charge is one
+        kind -- use this order, not those two lists', to interpret
+        mm_forces()."""
         ...
 
     def qm_indices(self) -> list[int]: ...
@@ -152,7 +171,16 @@ class QmmmResult:
         ...
 
     def mm_forces(self) -> np.ndarray:
-        """(n_charges, 3) force on each embedding charge, in point_charges() order."""
+        """(n_charges, 3) force on each embedding charge, in
+        QmmmSystem.mm_charge_positions() order: atom-centred charges (point
+        and Gaussian-smeared interleaved, ascending full-structure atom
+        index), then RC/RCD midpoints. NOT QmmmSystem.point_charges() order
+        once any charge is Gaussian-smeared -- point_charges() only lists the
+        point subset, so zipping it with mm_forces() silently misaligns rows
+        whenever a smeared charge is present. Zipping point_charges() with
+        mm_forces() is only valid when smeared_charges() == [] (no smeared
+        charges at all); otherwise read mm_charge_positions() alongside this
+        array."""
         ...
 
     def full_gradient(self) -> np.ndarray:
@@ -1035,8 +1063,13 @@ def run_rhf(
     soscf: bool | None = None,
     point_charges: list[tuple[float, float, float, float]] | None = None,
     external_field: tuple[float, float, float] | None = None,
+    smeared_charges: list[tuple[float, float, float, float, float]] | None = None,
 ) -> RhfResult:
-    """Closed-shell Restricted Hartree-Fock."""
+    """Closed-shell Restricted Hartree-Fock.
+
+    smeared_charges: list of (q, x, y, z, width) Gaussian-smeared classical
+    charges (Bohr / Hartree atomic units).
+    """
     ...
 
 

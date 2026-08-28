@@ -245,6 +245,7 @@ fn cdft_composes_with_external_point_charge() {
             y: 0.0,
             z: 20.0,
         }],
+        smeared_charges: Vec::new(),
         field: None,
     };
     let perturbed_cfg = RhfConfig {

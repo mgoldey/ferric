@@ -42,3 +42,6 @@ pub mod threeindex;
 pub mod three_index_source;
 /// GTO basis-function evaluation on real-space grids (Cartesian, Becke-Lebedev, etc.).
 pub mod ao_grid;
+/// [`SiteBasis`](site_basis::SiteBasis): one Gaussian per MM site as a fake auxiliary
+/// `PreparedBasis`, used for Gaussian-smeared QM/MM charge potentials and their gradients.
+pub mod site_basis;

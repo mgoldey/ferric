@@ -1,0 +1,82 @@
+{
+  "atoms": [
+    {
+      "symbol": "O",
+      "xyz_bohr": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "symbol": "H",
+      "xyz_bohr": [
+        0.0,
+        1.4304288084282135,
+        1.107157044045246
+      ]
+    },
+    {
+      "symbol": "H",
+      "xyz_bohr": [
+        0.0,
+        -1.4304288084282135,
+        1.107157044045246
+      ]
+    }
+  ],
+  "basis": "sto-3g",
+  "charge": 0,
+  "conv_tol": 1e-12,
+  "converged": true,
+  "dipole": [
+    1.0106158464581824e-17,
+    9.603429163007604e-15,
+    0.7332024954781087
+  ],
+  "energy": -74.98128612701689,
+  "energy_gas_phase": -74.96292824643288,
+  "method": "rhf",
+  "mm_charges": [
+    {
+      "q": 1.0,
+      "xyz_bohr": [
+        0.0,
+        0.0,
+        -6.0
+      ]
+    }
+  ],
+  "mm_gradient": [
+    [
+      -3.221536864769821e-19,
+      2.927345865710862e-17,
+      -0.00609852558396945
+    ]
+  ],
+  "model": "electrostatic embedding, Gaussian-smeared point charges (pyscf.qmmm.mm_charge, radii=)",
+  "molecule": "water",
+  "multiplicity": 1,
+  "pyscf_version": "2.13.1",
+  "qm_gradient": [
+    [
+      1.523179112677588e-16,
+      1.106753577673203e-15,
+      0.0634694464663661
+    ],
+    [
+      -1.5488575264512966e-16,
+      -0.02149929071443335,
+      -0.0286854604411928
+    ],
+    [
+      2.88999506385014e-18,
+      0.021499290714432906,
+      -0.028685460441194577
+    ]
+  ],
+  "radii": [
+    1.0
+  ],
+  "units": "Bohr / Hartree / a.u.; gradients are dE/dR (ferric mm_forces = -mm_gradient)"
+}

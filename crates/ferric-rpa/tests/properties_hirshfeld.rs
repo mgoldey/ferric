@@ -350,6 +350,7 @@ fn h2o_hirshfeld_with_external_point_charge_diagnostic() {
                 y: charge_pos[1],
                 z: charge_pos[2],
             }],
+            smeared_charges: Vec::new(),
             field: None,
         };
         let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
