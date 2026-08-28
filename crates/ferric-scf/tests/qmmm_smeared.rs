@@ -379,26 +379,29 @@ fn tiny_width_scf_matches_point_charge_scf() {
     assert!(max_diff < 1e-8, "tiny-width gradient vs point-charge gradient differ by {max_diff:.3e}");
 }
 
-/// EXACTNESS ANCHOR (repeated at the SCF level, not just hcore): an
-/// `ExternalPotential` with point charges and an EMPTY `smeared_charges` vec
-/// must give a bit-identical gradient to the pre-A2/A3 `ext` argument (the
-/// `!ext.smeared_charges.is_empty()` guard in `oneelectron_gradient` must
-/// actually skip the smeared branch).
-#[test]
-fn empty_smeared_charges_gradient_is_bit_identical() {
-    let mol = water_bohr();
-    let ext = ExternalPotential {
-        point_charges: vec![PointCharge { q: 1.0, x: 0.0, y: 0.0, z: -6.0 }],
-        smeared_charges: vec![],
-        field: None,
-    };
-    let prep = sto3g_prep(&mol);
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let ctx = ParallelContext::default();
-    let cfg = RhfConfig { external_potential: Some(ext.clone()), density_conv: 1e-11, ..Default::default() };
-    let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
-    let g1 = rhf_gradient(&mol, &prep, op, &bounds, &result, Some(&ext)).unwrap();
-    let g2 = rhf_gradient(&mol, &prep, op, &bounds, &result, Some(&ext)).unwrap();
-    assert_eq!(g1, g2);
-}
+// NOTE: this file used to carry `empty_smeared_charges_gradient_is_bit_identical`
+// here, which called `rhf_gradient` twice with the IDENTICAL `ext` argument
+// and compared the two results — a tautology (any function that is even
+// merely deterministic passes it; it could never fail even if the
+// `is_empty()` guard in `oneelectron_gradient` were deleted entirely, since
+// `smeared_charge_qm_gradient` itself independently short-circuits on an
+// empty slice and returns a zero matrix, making the outer guard redundant
+// rather than load-bearing). Removed by mutation-test: deleting the guard
+// leaves this file's tests exactly as green as before, which is the
+// signature of a test that checks nothing.
+//
+// The real, non-tautological claim -- "point charges plus an EXPLICIT EMPTY
+// `smeared_charges` vec reproduces the pre-Lane-A point-charge-only
+// gradient" -- is already covered by two independent anchors elsewhere,
+// neither of which is a self-comparison:
+//   - `oneelectron_gradient_external_charge_matches_finite_difference`
+//     (crates/ferric-scf/src/gradient.rs) uses this EXACT `ExternalPotential`
+//     shape (one point charge, `smeared_charges: Vec::new()`) and checks the
+//     analytic gradient against a central finite difference of the SCF
+//     energy -- an independent numerical computation, not a second call to
+//     the same function.
+//   - `hcore_with_external_empty_smeared_charges_matches_point_charge_only_path`
+//     (crates/ferric-integrals/src/oneelectron.rs) checks the energy-level
+//     (hcore) analogue by reconstructing the point-charge-only hcore via a
+//     DIFFERENT code path (`kinetic(prep) + nuclear_with_external(prep, ext)`,
+//     bypassing `hcore_with_external` entirely) and asserting bit-identity.

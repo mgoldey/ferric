@@ -484,6 +484,17 @@ impl PyQmmmSystem {
             .map(|ep| ep.smeared_charges.iter().map(|sc| (sc.q, sc.x, sc.y, sc.z, sc.width)).collect())
             .unwrap_or_default()
     }
+    /// Positions (Bohr) of every embedding charge that actually enters the
+    /// potential, in the SAME canonical order as `mm_forces()`'s rows:
+    /// atom-centred charges (point AND Gaussian-smeared interleaved, in
+    /// ascending full-structure atom index) first, then any RC/RCD midpoint
+    /// charges. This is NOT the concatenation of `point_charges()` then
+    /// `smeared_charges()` unless every charge in this system is one kind —
+    /// use this method's order, not those two lists', to interpret
+    /// `mm_forces()`.
+    fn mm_charge_positions(&self) -> Vec<(f64, f64, f64)> {
+        self.inner.mm_charge_positions().into_iter().map(|[x, y, z]| (x, y, z)).collect()
+    }
     /// Full-structure indices of the QM atoms (ascending; link atoms excluded).
     fn qm_indices(&self) -> Vec<usize> { self.inner.qm_indices.clone() }
     /// Full-structure indices of the MM atoms (ascending).
@@ -541,7 +552,16 @@ impl PyQmmmResult {
         PyArray2::from_array(py, &self.qm_gradient_data)
     }
     /// Force on each embedding charge, `(n_charges, 3)`, in
-    /// `QmmmSystem.point_charges()` order.
+    /// `QmmmSystem.mm_charge_positions()` order: atom-centred charges (point
+    /// AND Gaussian-smeared interleaved, ascending full-structure atom
+    /// index), then any RC/RCD midpoint charges. This is **NOT**
+    /// `QmmmSystem.point_charges()` order once any charge is Gaussian-smeared
+    /// (`widths_angstrom`/`smeared_charges()` nonzero) — `point_charges()`
+    /// only lists the point subset, so zipping it with `mm_forces()` silently
+    /// misaligns rows whenever a smeared charge is present. Zipping
+    /// `point_charges()` with `mm_forces()` is only valid when the system has
+    /// no smeared charges at all (`smeared_charges() == []`); otherwise read
+    /// `mm_charge_positions()` alongside this array.
     fn mm_forces<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
         let n = self.mm_forces_data.len();
         let mut a = Array2::<f64>::zeros((n, 3));
