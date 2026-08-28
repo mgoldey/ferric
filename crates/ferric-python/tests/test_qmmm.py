@@ -644,3 +644,94 @@ def test_run_optimize_qmmm_bad_move_mm_string_raises():
     sys = ferric.QmmmSystem(symbols, coords, charges, qm_indices=[0, 2, 4, 6]).with_link_atoms(bonds)
     with pytest.raises(ValueError):
         ferric.run_optimize_qmmm(sys, "sto-3g", move_mm="everything")
+
+
+# ── Thole-damped polarizable embedding (Lane B) ──
+
+ANG2BOHR = 1.0 / 0.52917721092
+
+
+def _pe_case(tag):
+    """Build a QmmmSystem for a Lane B reference case: the water QM atoms
+    plus one MM site per entry in `sites` (charge q, polarizability alpha,
+    both at the SAME position -- the realistic "one atom, one role" case)."""
+    ref = _load(f"{tag}.json")
+    symbols = [a["symbol"] for a in ref["atoms"]] + ["X"] * len(ref["sites"])
+    coords_bohr = [a["xyz_bohr"] for a in ref["atoms"]] + [s["xyz_bohr"] for s in ref["sites"]]
+    coords_angstrom = [[c / ANG2BOHR for c in xyz] for xyz in coords_bohr]
+    charges = [0.0] * len(ref["atoms"]) + [s["q"] for s in ref["sites"]]
+    polarizabilities_angstrom3 = [0.0] * len(ref["atoms"]) + [
+        s["alpha_bohr3"] / (ANG2BOHR**3) for s in ref["sites"]
+    ]
+    qm_indices = list(range(len(ref["atoms"])))
+    sys = ferric.QmmmSystem(
+        symbols,
+        coords_angstrom,
+        charges,
+        qm_indices=qm_indices,
+        polarizabilities_angstrom3=polarizabilities_angstrom3,
+    )
+    return sys, ref
+
+
+@pytest.mark.parametrize(
+    "tag",
+    ["water_sto-3g_pe_one_site", "water_sto-3g_pe_three_sites", "water_sto-3g_pe_three_sites_nodamp"],
+)
+def test_run_qmmm_polarizable_matches_pyscf_prototype(tag):
+    sys, ref = _pe_case(tag)
+    # ref["thole_a"] is JSON null (Python None) for the nodamp case, but
+    # run_qmmm's thole_a=None means "use the DEFAULT damping" (matching
+    # e.g. run_rhf's None-means-default convention elsewhere in this
+    # binding) -- 0.0 is the documented "disable damping entirely" value.
+    thole_a = 0.0 if ref["thole_a"] is None else ref["thole_a"]
+    result = ferric.run_qmmm(sys, "sto-3g", thole_a=thole_a)
+    assert result.converged
+    assert abs(result.energy - ref["energy"]) < 1e-7, (
+        f"{tag}: energy {result.energy} vs pyscf {ref['energy']}"
+    )
+    assert abs(result.e_pol - ref["e_pol"]) < 1e-7, f"{tag}: e_pol {result.e_pol} vs pyscf {ref['e_pol']}"
+    dipoles = result.induced_dipoles()
+    assert dipoles is not None
+    ref_dipoles = np.array(ref["induced_dipoles"])
+    assert np.max(np.abs(np.asarray(dipoles) - ref_dipoles)) < 1e-6, f"{tag}: dipole mismatch"
+
+
+def test_run_qmmm_polarizable_disabled_matches_plain_embedding():
+    # alpha=0 everywhere (no polarizabilities_angstrom3 passed at all) must
+    # be the EXACT non-polarizable code path: e_pol == 0.0 and
+    # induced_dipoles() is None -- the same anchor
+    # `polarizable_none_is_bit_identical_to_plain_scf` pins in Rust.
+    ref = _load("water_sto-3g_pe_one_site.json")
+    symbols = [a["symbol"] for a in ref["atoms"]] + ["X"]
+    coords_bohr = [a["xyz_bohr"] for a in ref["atoms"]] + [ref["sites"][0]["xyz_bohr"]]
+    coords_angstrom = [[c / ANG2BOHR for c in xyz] for xyz in coords_bohr]
+    charges = [0.0, 0.0, 0.0, ref["sites"][0]["q"]]
+    sys = ferric.QmmmSystem(symbols, coords_angstrom, charges, qm_indices=[0, 1, 2])
+    result = ferric.run_qmmm(sys, "sto-3g")
+    assert result.converged
+    assert result.e_pol == 0.0
+    assert result.induced_dipoles() is None
+
+
+def test_run_qmmm_polarizable_thole_a_zero_disables_damping():
+    # thole_a=0.0 must select the undamped Thole model (None internally),
+    # matching the nodamp reference -- a genuine end-to-end check of the
+    # thole_a=0.0 -> damping-disabled convention (see run_qmmm's Rust doc:
+    # "pass 0.0 to disable damping entirely").
+    sys, ref = _pe_case("water_sto-3g_pe_three_sites_nodamp")
+    result = ferric.run_qmmm(sys, "sto-3g", thole_a=0.0)
+    assert result.converged
+    assert abs(result.energy - ref["energy"]) < 1e-7
+    assert abs(result.e_pol - ref["e_pol"]) < 1e-7
+
+
+def test_qmmm_system_polarizabilities_angstrom3_length_mismatch_raises():
+    with pytest.raises(ValueError, match="polarizabilities_angstrom3"):
+        ferric.QmmmSystem(
+            WATER_SYMBOLS,
+            WATER_ANGSTROM,
+            [0.0, 0.0, 0.0],
+            qm_indices=[0, 1, 2],
+            polarizabilities_angstrom3=[0.0, 0.0],
+        )

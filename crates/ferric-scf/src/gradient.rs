@@ -333,6 +333,38 @@ pub fn rhf_gradient(
     Ok(grad)
 }
 
+/// [`rhf_gradient`] plus the QM-atom-centre Fock-term contribution of
+/// Thole-damped polarizable embedding (Lane B, Task B3) — a thin wrapper
+/// rather than a new parameter on `rhf_gradient` itself, so the other
+/// (numerous) existing call sites of `rhf_gradient` are completely
+/// unaffected (zero risk of a signature-change regression outside this
+/// lane). `sites`/`dipoles` are typically `config.polarizable.as_ref()`
+/// and `result.induced_dipoles.as_ref()`; when either is `None` this is
+/// EXACTLY `rhf_gradient` (see [`crate::polarizable::qm_gradient_contribution`]
+/// for why the fixed-mu QM-centre term is a plain Hellmann-Feynman
+/// contraction, no `W`-vs-naive subtlety unlike [`crate::polarizable::site_gradient`]).
+pub fn rhf_gradient_with_polarizable(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    result: &ScfResult,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
+    sites: Option<&crate::polarizable::PolarizableSites>,
+    dipoles: Option<&Array2<f64>>,
+) -> Result<Array2<f64>, FerricError> {
+    let mut grad = rhf_gradient(mol, prep, op, bounds, result, ext)?;
+    if let (Some(sites), Some(dipoles)) = (sites, dipoles) {
+        if !sites.sites.is_empty() {
+            let site_xyz: Vec<[f64; 4]> =
+                sites.sites.iter().map(|s| [s.x, s.y, s.z, sites.dipole_zeta]).collect();
+            let site_basis_p = ferric_integrals::site_basis::SiteBasis::new(&site_xyz, 1)?;
+            grad += &crate::polarizable::qm_gradient_contribution(mol, prep, sites, &site_basis_p, dipoles, result.density_r())?;
+        }
+    }
+    Ok(grad)
+}
+
 /// ECP contribution to the nuclear gradient:
 /// `dE_ECP/dR_{A,c} = Σ_μν D_μν dV_ECP_μν/dR_{A,c}`.
 ///

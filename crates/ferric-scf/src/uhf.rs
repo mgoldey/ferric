@@ -148,7 +148,7 @@ pub fn solve_uhf_fockmod(
     // into hcore once, byte-identical to plain hcore for all-electron bases),
     // V_nn(+external), COSMO/PCM contexts, resolved memory budget, RSH
     // fitters. One construction serving all six SCF variants (crate::driver).
-    let crate::driver::ScfEnv { s, h, vnn, ooc_budget, cosmo_cavity, pcm_ctx, mut dfk_sr, mut dfk_lr } =
+    let crate::driver::ScfEnv { s, h, vnn, ooc_budget, cosmo_cavity, pcm_ctx, polarizable_site_basis, mut dfk_sr, mut dfk_lr } =
         crate::driver::prepare(ctx, mol, prep, config, &k_mix)?;
     let n = prep.nbasis();
     let nelec = mol.nelec() as i64;
@@ -239,6 +239,10 @@ pub fn solve_uhf_fockmod(
     // Convergence bookkeeping (prev energy, ΔP over the TOTAL α+β density,
     // divergence streak, stall history) — shared driver::ScfMonitor; ΔP is
     // INFINITY until the first rebuild (see rhf::scf_converged).
+    // Most recent Thole-damped polarizable-embedding dipoles (None when
+    // `config.polarizable` is off/empty) — threaded into both ScfResult
+    // constructors below (converged early-exit and MaxIter).
+    let mut last_induced_dipoles: Option<Array2<f64>> = None;
     let mut mon = crate::driver::ScfMonitor::new();
     let mut total_quartets = 0usize;
 
@@ -362,17 +366,19 @@ pub fn solve_uhf_fockmod(
         // identically to both spin Focks. Its energy is added directly to
         // `energy`, not via the e_elec_no_xc trace (matches PySCF's
         // e_solvent-added-on-top convention).
-        let (e_cosmo, e_pcm) = crate::driver::solvent_terms(
+        let (e_cosmo, e_pcm, e_pol, iter_induced_dipoles) = crate::driver::solvent_terms(
             mol,
             prep,
             config,
             cosmo_cavity.as_ref(),
             pcm_ctx.as_ref(),
+            polarizable_site_basis.as_ref(),
             &d_total,
             &mut [&mut f_a, &mut f_b],
         )?;
+        last_induced_dipoles = iter_induced_dipoles;
 
-        let energy = e_elec_no_xc + e_xc + e_cosmo + e_pcm + vnn;
+        let energy = e_elec_no_xc + e_xc + e_cosmo + e_pcm + e_pol + vnn;
 
         // DIIS errors per spin: F_σ D_σ S − S D_σ F_σ
         let err_a = f_a.dot(&d_a).dot(&s) - s.dot(&d_a).dot(&f_a);
@@ -447,6 +453,7 @@ pub fn solve_uhf_fockmod(
                 exit: ScfExit::Converged,
                 iterations: iter,
                 computed_quartets: total_quartets,
+                induced_dipoles: last_induced_dipoles,
             });
         }
         mon.note_energy(energy);
@@ -622,6 +629,7 @@ pub fn solve_uhf_fockmod(
         exit: ScfExit::MaxIter,
         iterations: config.max_iter,
         computed_quartets: total_quartets,
+        induced_dipoles: last_induced_dipoles,
     })
 }
 

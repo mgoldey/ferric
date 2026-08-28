@@ -223,6 +223,7 @@ fn make_scf_view(
         exit: ferric_scf::result::ScfExit::Converged,
         iterations: 0,
         computed_quartets: 0,
+        induced_dipoles: None,
     }
 }
 

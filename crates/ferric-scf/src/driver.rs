@@ -64,6 +64,11 @@ pub(crate) struct ScfEnv<'a> {
     pub cosmo_cavity: Option<crate::cosmo::CosmoCavity>,
     /// IEF-PCM geometry setup; `None` when PCM is off.
     pub pcm_ctx: Option<ferric_pcm::PcmContext>,
+    /// Polarizable-embedding p-shell site basis (geometry-only; built once
+    /// from `config.polarizable.sites` at `config.polarizable.dipole_zeta`,
+    /// mirroring `cosmo_cavity`/`pcm_ctx`). `None` when polarizable
+    /// embedding is off OR configured with an empty site list.
+    pub polarizable_site_basis: Option<ferric_integrals::site_basis::SiteBasis>,
     /// RSH SR/LR exchange fitters (ω > 0 only) — see `fock_assembly`.
     pub dfk_sr: Option<DfK<'a>>,
     pub dfk_lr: Option<DfK<'a>>,
@@ -104,6 +109,17 @@ pub(crate) fn prepare<'a>(
         .as_ref()
         .map(|pcfg| ferric_pcm::PcmContext::new(mol, pcfg))
         .transpose()?;
+    let polarizable_site_basis = match config.polarizable.as_ref() {
+        Some(pol) if !pol.sites.is_empty() => {
+            let sites: Vec<[f64; 4]> = pol
+                .sites
+                .iter()
+                .map(|s| [s.x, s.y, s.z, pol.dipole_zeta])
+                .collect();
+            Some(ferric_integrals::site_basis::SiteBasis::new(&sites, 1)?)
+        }
+        _ => None,
+    };
     let ooc_budget = crate::rhf::resolve_three_index_budget(config.three_index_budget_bytes);
     let (dfk_sr, dfk_lr) = if k_mix.omega > 0.0 {
         let (sr, lr) = crate::fock_assembly::build_rsh_dfk_pair(
@@ -118,7 +134,7 @@ pub(crate) fn prepare<'a>(
     } else {
         (None, None)
     };
-    Ok(ScfEnv { s, h, vnn, ooc_budget, cosmo_cavity, pcm_ctx, dfk_sr, dfk_lr })
+    Ok(ScfEnv { s, h, vnn, ooc_budget, cosmo_cavity, pcm_ctx, polarizable_site_basis, dfk_sr, dfk_lr })
 }
 
 /// The default virtual-block level shift: the user's value, or 0.5 for
@@ -277,9 +293,10 @@ pub(crate) fn solvent_terms(
     config: &RhfConfig,
     cosmo_cavity: Option<&crate::cosmo::CosmoCavity>,
     pcm_ctx: Option<&ferric_pcm::PcmContext>,
+    polarizable_site_basis: Option<&ferric_integrals::site_basis::SiteBasis>,
     d_total: &Array2<f64>,
     focks: &mut [&mut Array2<f64>],
-) -> Result<(f64, f64), FerricError> {
+) -> Result<(f64, f64, f64, Option<Array2<f64>>), FerricError> {
     let e_cosmo = if let Some(cavity) = cosmo_cavity {
         let cosmo_cfg = config.cosmo.as_ref().expect("cosmo cavity implies config.cosmo");
         let cr = crate::cosmo::cosmo_reaction_field(mol, prep, cavity, cosmo_cfg, d_total)?;
@@ -299,7 +316,38 @@ pub(crate) fn solvent_terms(
     } else {
         0.0
     };
-    Ok((e_cosmo, e_pcm))
+    // Thole-damped polarizable embedding: re-solve the induced dipoles from
+    // the CURRENT total density every iteration (same pattern as COSMO/PCM
+    // above), fold the resulting Fock term into every spin Fock uniformly
+    // (the induced-dipole potential is a classical, spin-independent
+    // operator), and surface E_pol as a standalone energy term plus the
+    // converged dipoles for `ScfResult::induced_dipoles`. `None`/empty-sites
+    // (`polarizable_site_basis: None`) is a true no-op: (0.0, None) with the
+    // focks untouched, exactly as COSMO/PCM's `None` branches are — see
+    // `polarizable_none_is_bit_identical_to_plain_scf` and
+    // `polarizable_empty_sites_is_bit_identical_to_plain_scf` in
+    // `tests/qmmm_polarizable.rs`.
+    let (e_pol, induced_dipoles) = if let Some(site_basis_p) = polarizable_site_basis {
+        let pol_cfg = config
+            .polarizable
+            .as_ref()
+            .expect("polarizable_site_basis implies config.polarizable");
+        let ir = crate::polarizable::induce(
+            mol,
+            prep,
+            config.external_potential.as_ref(),
+            pol_cfg,
+            site_basis_p,
+            d_total,
+        )?;
+        for f in focks.iter_mut() {
+            **f += &ir.v_induced;
+        }
+        (ir.e_pol, Some(ir.dipoles))
+    } else {
+        (0.0, None)
+    };
+    Ok((e_cosmo, e_pcm, e_pol, induced_dipoles))
 }
 
 /// Convergence bookkeeping shared by every SCF variant: previous energy, the

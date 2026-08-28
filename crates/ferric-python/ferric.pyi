@@ -72,9 +72,12 @@ class QmmmSystem:
         charge: int = 0,
         multiplicity: int = 1,
         widths_angstrom: list[float] | None = None,
+        polarizabilities_angstrom3: list[float] | None = None,
     ) -> None:
         """widths_angstrom: one Gaussian-smearing width per atom (0.0 = point charge).
-        Ignored for atoms in the QM region, like charges."""
+        polarizabilities_angstrom3: one isotropic polarisability per atom (0.0 = not a
+        polarizable site) for Thole-damped induced-dipole embedding -- see run_qmmm's
+        thole_a. Both ignored for atoms in the QM region, like charges."""
         ...
 
     def with_link_atoms(self, bonds: list[tuple[int, int]], scale: float | None = None) -> QmmmSystem:
@@ -166,10 +169,21 @@ class QmmmResult:
     @property
     def iterations(self) -> int: ...
     @property
+    def e_pol(self) -> float:
+        """Thole-damped polarizable-embedding polarisation energy (Hartree).
+        0.0 when no atom carries a nonzero polarisability."""
+        ...
+    @property
     def mm_energy(self) -> dict[str, float]:
         """MM force-field energy components (Hartree): bond/angle/torsion/lj/coulomb/total.
         All-zero when run_qmmm was not given mm_topology=.
         """
+        ...
+
+    def induced_dipoles(self) -> np.ndarray | None:
+        """(n_sites, 3) converged Thole-damped induced dipoles (a.u.), in
+        QmmmSystem.mm_indices() order filtered to alpha > 0. None when no
+        atom was polarizable."""
         ...
 
     def qm_gradient(self) -> np.ndarray:
@@ -208,6 +222,7 @@ def run_qmmm(
     mom_after_iter: int | None = None,
     guess: str | None = None,
     mm_topology: MmTopology | None = None,
+    thole_a: float | None = None,
 ) -> QmmmResult:
     """Embedded SCF ("rhf" default, "uhf", "rks" or "uks") energy + QM gradient + MM forces + full gradient.
 
@@ -217,6 +232,16 @@ def run_qmmm(
     convention (MM-MM bonded/nonbonded + QM-MM Lennard-Jones; no QM-MM Coulomb, already inside
     the embedding). Omitting it is bit-identical to a topology with zero energy/gradient
     everywhere (QmmmResult.mm_energy reports all-zero, not absent).
+
+    thole_a controls Thole damping for polarizable sites (system built with
+    polarizabilities_angstrom3=): None/omitted = the standard default 2.1304;
+    0.0 disables damping (bare point-dipole tensor); ignored when no atom is
+    polarizable. QmmmResult.e_pol/.induced_dipoles() report the result. The
+    QM gradient's polarizable Fock-term contribution is included only for
+    method="rhf" today -- "uhf"/"rks"/"uks" report the SCF-only gradient
+    when polarizable sites are present (energy/dipoles are still exact for
+    all four methods). mm_forces()/full_gradient() do not yet include a
+    polarizable site's own additional force term.
     """
     ...
 
