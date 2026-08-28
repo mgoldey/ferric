@@ -434,8 +434,12 @@ impl PyQmmmSystem {
     /// `widths_angstrom`, when given, must have one entry per atom (0.0 =
     /// point charge, matching [`ferric_scf::qmmm::QmmmAtom`]'s default).
     /// Ignored for atoms that end up in the QM region, exactly like `charges`.
+    /// `polarizabilities_angstrom3`, when given, must have one entry per
+    /// atom (0.0 = not a polarizable site) — Thole-damped induced-dipole
+    /// polarizable embedding (see `run_qmmm`'s `thole_a` knob); ignored for
+    /// atoms in the QM region, exactly like `charges`/`widths_angstrom`.
     #[new]
-    #[pyo3(signature = (symbols, coords_angstrom, charges, qm_indices=None, qm_seeds=None, qm_radius_angstrom=None, residue_ids=None, charge=0, multiplicity=1, widths_angstrom=None))]
+    #[pyo3(signature = (symbols, coords_angstrom, charges, qm_indices=None, qm_seeds=None, qm_radius_angstrom=None, residue_ids=None, charge=0, multiplicity=1, widths_angstrom=None, polarizabilities_angstrom3=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         symbols: Vec<String>,
@@ -448,6 +452,7 @@ impl PyQmmmSystem {
         charge: i32,
         multiplicity: usize,
         widths_angstrom: Option<Vec<f64>>,
+        polarizabilities_angstrom3: Option<Vec<f64>>,
     ) -> PyResult<Self> {
         use ferric_scf::qmmm::{QmSelection, QmmmAtom, QmmmSystem};
         if symbols.len() != coords_angstrom.len() || symbols.len() != charges.len() {
@@ -461,6 +466,14 @@ impl PyQmmmSystem {
                 return Err(pyo3::exceptions::PyValueError::new_err(format!(
                     "widths_angstrom ({}) must have one entry per atom ({})",
                     w.len(), symbols.len()
+                )));
+            }
+        }
+        if let Some(a) = &polarizabilities_angstrom3 {
+            if a.len() != symbols.len() {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "polarizabilities_angstrom3 ({}) must have one entry per atom ({})",
+                    a.len(), symbols.len()
                 )));
             }
         }
@@ -480,11 +493,16 @@ impl PyQmmmSystem {
                     .as_ref()
                     .map(|w| w[i] * ANGSTROM_TO_BOHR)
                     .unwrap_or(0.0);
+                let alpha_bohr3 = polarizabilities_angstrom3
+                    .as_ref()
+                    .map(|a| a[i] * ANGSTROM_TO_BOHR.powi(3))
+                    .unwrap_or(0.0);
                 QmmmAtom::new_smeared(
                     sym.clone(), zn,
                     c[0] * ANGSTROM_TO_BOHR, c[1] * ANGSTROM_TO_BOHR, c[2] * ANGSTROM_TO_BOHR,
                     q, width_bohr,
                 )
+                .with_alpha(alpha_bohr3)
             })
             .collect();
         let selection = match (qm_indices, qm_seeds, qm_radius_angstrom, residue_ids) {
@@ -621,10 +639,17 @@ struct PyQmmmResult {
     #[pyo3(get)] energy: f64,
     #[pyo3(get)] converged: bool,
     #[pyo3(get)] iterations: usize,
+    /// Thole-damped polarizable-embedding polarisation energy (Hartree).
+    /// `0.0` when no atom in the system carries a nonzero polarisability
+    /// (`polarizabilities_angstrom3` was omitted or all-zero) — the exact
+    /// non-polarizable code path, matching
+    /// `PolarizableSites{sites: vec![], ..}`'s bit-identical-to-off anchor.
+    #[pyo3(get)] e_pol: f64,
     qm_gradient_data: Array2<f64>,
     mm_forces_data: Vec<[f64; 3]>,
     full_gradient_data: Array2<f64>,
     mm_energy_data: ferric_mm::MmEnergy,
+    induced_dipoles_data: Option<Array2<f64>>,
 }
 
 #[pymethods]
@@ -675,8 +700,16 @@ impl PyQmmmResult {
         d.set_item("total", self.mm_energy_data.total)?;
         Ok(d.into())
     }
+    /// Converged Thole-damped polarizable-embedding induced dipoles
+    /// (`(n_sites, 3)`, a.u.), in the SAME atom order
+    /// `QmmmSystem.mm_indices()` filtered to `alpha > 0` would produce
+    /// (ascending full-structure index) — `None` when no site was
+    /// polarizable (`e_pol == 0.0` in that case too).
+    fn induced_dipoles<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
+        self.induced_dipoles_data.as_ref().map(|d| PyArray2::from_array(py, d))
+    }
     fn __repr__(&self) -> String {
-        format!("QmmmResult(energy={:.10}, converged={}, n_full={})", self.energy, self.converged, self.full_gradient_data.nrows())
+        format!("QmmmResult(energy={:.10}, converged={}, e_pol={:.3e}, n_full={})", self.energy, self.converged, self.e_pol, self.full_gradient_data.nrows())
     }
 }
 
@@ -688,11 +721,34 @@ impl PyQmmmResult {
 /// `def2-universal-jkfit` automatically, matching `run_ksdft`) and is
 /// rejected for `"rhf"`/`"uhf"` (passing a functional to a method that
 /// ignores it would silently produce a plain-HF result). No MM force field
-/// is involved: the energy is `E_QM` in the field of the fixed charges (plus
-/// the classical charge–nuclear term), and the gradients are its exact
-/// derivatives.
+/// is involved (unless `mm_topology=` is given): the energy is `E_QM` in
+/// the field of the fixed charges (plus the classical charge-nuclear term),
+/// and the gradients are its exact derivatives.
+///
+/// **Thole-damped polarizable embedding**: if `system` was built with
+/// `polarizabilities_angstrom3=` (any nonzero entry among the MM atoms),
+/// `thole_a` sets the Thole damping parameter (`None`/omitted = the
+/// standard default `2.1304`; pass `0.0` to disable damping entirely — the
+/// bare point-dipole tensor). `QmmmResult.e_pol`/`.induced_dipoles()`
+/// report the polarisation energy and converged dipoles. The QM gradient
+/// correctly includes the polarizable Fock-term contribution ONLY for
+/// `method="rhf"` (via `rhf_gradient_with_polarizable` — see
+/// `ferric_scf::polarizable`'s Task B3 gradients); `"uhf"`/`"rks"`/`"uks"`
+/// with a polarizable system report the SCF-only gradient (energy/dipoles
+/// are still correct for all four methods, since those are method-agnostic
+/// through `RhfConfig.polarizable`/`ScfResult.induced_dipoles` — only the
+/// GRADIENT'S polarizable term is `rhf`-only today, an explicit, documented
+/// gap rather than a silent omission). `mm_forces()`/`full_gradient()` do
+/// NOT yet include any force from a polarizable site on ITSELF (the site
+/// force from Task B3's `site_gradient` is not wired into this function) —
+/// a system with polarizable sites therefore gets a correct QM gradient
+/// (rhf) and a correct MM-charge electrostatic force, but the polarizable
+/// site's OWN additional force term is missing from `mm_forces()`/
+/// `full_gradient()`; this is a real, currently-unclosed gap, not merely
+/// an omission for a case nobody hits — flagged here rather than silently
+/// wired in with an unvalidated shortcut.
 #[pyfunction]
-#[pyo3(signature = (system, basis_name, method=None, xc=None, max_iter=None, energy_conv=None, density_conv=None, level_shift=None, mom_after_iter=None, guess=None, mm_topology=None))]
+#[pyo3(signature = (system, basis_name, method=None, xc=None, max_iter=None, energy_conv=None, density_conv=None, level_shift=None, mom_after_iter=None, guess=None, mm_topology=None, thole_a=None))]
 #[allow(clippy::too_many_arguments)]
 fn run_qmmm(
     system: &PyQmmmSystem,
@@ -706,9 +762,11 @@ fn run_qmmm(
     mom_after_iter: Option<usize>,
     guess: Option<&str>,
     mm_topology: Option<&PyMmTopology>,
+    thole_a: Option<f64>,
 ) -> PyResult<PyQmmmResult> {
-    use ferric_scf::gradient::{rhf_gradient, uhf_gradient};
+    use ferric_scf::gradient::{rhf_gradient, rhf_gradient_with_polarizable, uhf_gradient};
     use ferric_scf::ks_gradient::ks_gradient_uks;
+    use ferric_scf::polarizable::{induce, PolarizableSites, DEFAULT_THOLE_A};
     use ferric_scf::qmmm::{full_gradient_with_mm, mm_forces, qmmm_mm_terms};
 
     let method = method.unwrap_or("rhf");
@@ -731,6 +789,22 @@ fn run_qmmm(
     let prep = PreparedBasis::new(&mol, &bs).map_err(make_err)?;
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
+    let pol_sites = sys.to_polarizable_sites();
+    let polarizable = if pol_sites.is_empty() {
+        None
+    } else {
+        Some(PolarizableSites {
+            sites: pol_sites,
+            thole_a: match thole_a {
+                None => Some(DEFAULT_THOLE_A),
+                Some(a) if a > 0.0 => Some(a),
+                Some(_) => None,
+            },
+            exclusions: Vec::new(),
+            dipole_zeta: 1e4,
+            max_sites_dense: 4000,
+        })
+    };
     let mut config = RhfConfig {
         max_iter: max_iter.unwrap_or(100),
         energy_conv: energy_conv.unwrap_or(1e-3),
@@ -739,6 +813,7 @@ fn run_qmmm(
         mom_after_iter: mom_after_iter.unwrap_or(0),
         use_sad_guess: !matches!(guess, Some("hcore")),
         external_potential: sys.to_external_potential(),
+        polarizable,
         ..Default::default()
     };
     if is_ks {
@@ -754,7 +829,15 @@ fn run_qmmm(
     let (r, qm_grad) = match method {
         "rhf" => {
             let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).map_err(make_err)?;
-            let g = rhf_gradient(&mol, &prep, op, &bounds, &r, ext).map_err(make_err)?;
+            let g = if config.polarizable.is_some() {
+                rhf_gradient_with_polarizable(
+                    &mol, &prep, op, &bounds, &r, ext,
+                    config.polarizable.as_ref(), r.induced_dipoles.as_ref(),
+                )
+                .map_err(make_err)?
+            } else {
+                rhf_gradient(&mol, &prep, op, &bounds, &r, ext).map_err(make_err)?
+            };
             (r, g)
         }
         "uhf" => {
@@ -780,6 +863,22 @@ fn run_qmmm(
             )))
         }
     };
+    // Recompute e_pol standalone (ScfResult does not carry it directly —
+    // only induced_dipoles) via a single induce() call at the now-converged
+    // density; this reproduces the SAME dipoles the SCF loop's internal
+    // call already used this iteration (see qmmm_polarizable.rs's
+    // matches_pyscf_prototype_* tests, which cross-check this exact
+    // pattern to 1e-7 Ha against the PySCF prototype).
+    let e_pol = if let Some(pol) = config.polarizable.as_ref() {
+        let site_xyz: Vec<[f64; 4]> = pol.sites.iter().map(|s| [s.x, s.y, s.z, pol.dipole_zeta]).collect();
+        let site_basis_p = ferric_integrals::site_basis::SiteBasis::new(&site_xyz, 1).map_err(make_err)?;
+        let ir = induce(&mol, &prep, ext, pol, &site_basis_p, r.density_total()).map_err(make_err)?;
+        (ir.e_pol, Some(ir.dipoles))
+    } else {
+        (0.0, None)
+    };
+    let (e_pol, induced_dipoles_data) = e_pol;
+
     let forces = mm_forces(sys, &mol, &prep, r.density_total()).map_err(make_err)?;
 
     let (mm_energy, full) = match mm_topology {
@@ -805,10 +904,12 @@ fn run_qmmm(
         energy: r.energy,
         converged: r.converged,
         iterations: r.iterations,
+        e_pol,
         qm_gradient_data: qm_grad,
         mm_forces_data: forces,
         full_gradient_data: full,
         mm_energy_data: mm_energy,
+        induced_dipoles_data,
     })
 }
 

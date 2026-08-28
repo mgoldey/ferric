@@ -111,20 +111,33 @@ pub struct QmmmAtom {
     /// via [`QmmmAtom::new`]) means a point charge — the untouched, exact
     /// original behaviour. Only used if this atom lands in the MM region.
     pub width: f64,
+    /// Isotropic polarisability (Bohr^3) for Thole-damped polarizable
+    /// embedding (see `crate::polarizable`). `0.0` (the default via
+    /// [`QmmmAtom::new`]/[`QmmmAtom::new_smeared`]) means this atom is NOT
+    /// a polarizable site — the untouched, exact original behaviour ([`
+    /// QmmmSystem::to_polarizable_sites`] omits it entirely, not "includes
+    /// it with alpha=0", so a system with every `alpha == 0.0` produces
+    /// `None`/an empty site list, bit-identical to a build with no
+    /// polarizable-embedding support at all). Only used if this atom lands
+    /// in the MM region.
+    pub alpha: f64,
 }
 
 impl QmmmAtom {
     /// Create a QM/MM atom with element, nuclear charge, Bohr coordinates, and MM partial
     /// (point) charge. `width` is `0.0` (point charge) — use
-    /// [`QmmmAtom::new_smeared`] for a Gaussian-smeared MM charge.
+    /// [`QmmmAtom::new_smeared`] for a Gaussian-smeared MM charge. `alpha`
+    /// (polarizability) is `0.0` (not polarizable) — use
+    /// [`QmmmAtom::with_alpha`] to add one.
     pub fn new(symbol: impl Into<String>, z: i32, x: f64, y: f64, z_pos: f64, charge: f64) -> Self {
-        Self { symbol: symbol.into(), z, x, y, z_pos, charge, width: 0.0 }
+        Self { symbol: symbol.into(), z, x, y, z_pos, charge, width: 0.0, alpha: 0.0 }
     }
 
     /// Create a QM/MM atom whose MM charge is Gaussian-smeared with the given
     /// `width` (Bohr, `> 0`). Validated at [`QmmmSystem::new`] / used at
     /// [`QmmmSystem::to_external_potential`] time, not here (this is a plain
-    /// data constructor).
+    /// data constructor). `alpha` (polarizability) is `0.0` — use
+    /// [`QmmmAtom::with_alpha`] to add one.
     #[allow(clippy::too_many_arguments)]
     pub fn new_smeared(
         symbol: impl Into<String>,
@@ -135,7 +148,15 @@ impl QmmmAtom {
         charge: f64,
         width: f64,
     ) -> Self {
-        Self { symbol: symbol.into(), z, x, y, z_pos, charge, width }
+        Self { symbol: symbol.into(), z, x, y, z_pos, charge, width, alpha: 0.0 }
+    }
+
+    /// Return a copy of this atom with its polarisability set (Bohr^3).
+    /// `alpha <= 0.0` means "not a polarizable site" (see
+    /// [`QmmmSystem::to_polarizable_sites`]).
+    pub fn with_alpha(mut self, alpha: f64) -> Self {
+        self.alpha = alpha;
+        self
     }
 
     #[inline]
@@ -805,6 +826,26 @@ impl QmmmSystem {
             }
         }
         Some(ExternalPotential { point_charges, smeared_charges, field: None })
+    }
+
+    /// Every MM atom with a nonzero polarisability (`alpha > 0.0`), as
+    /// [`crate::polarizable::PolarizableSite`]s ready for
+    /// `RhfConfig.polarizable`, in ascending full-structure atom index
+    /// order (boundary/midpoint charges from RC/RCD are never polarizable
+    /// — they have no `alpha`). Returns an empty `Vec` (never `None`, unlike
+    /// `to_external_potential`) when no MM atom is polarizable, matching
+    /// `PolarizableSites { sites: vec![], .. }`'s own bit-identical-to-off
+    /// exactness anchor (see `crate::polarizable`'s module doc and
+    /// `polarizable_empty_sites_is_bit_identical_to_plain_scf`).
+    pub fn to_polarizable_sites(&self) -> Vec<crate::polarizable::PolarizableSite> {
+        self.mm_indices
+            .iter()
+            .filter(|&&i| self.atoms[i].alpha > 0.0)
+            .map(|&i| {
+                let a = &self.atoms[i];
+                crate::polarizable::PolarizableSite { x: a.x, y: a.y, z: a.z_pos, alpha: a.alpha }
+            })
+            .collect()
     }
 
     /// Number of real QM atoms, excluding link hydrogens. Link atoms occupy
