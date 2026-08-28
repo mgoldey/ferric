@@ -26,6 +26,19 @@ env:
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
   CARGO_PROFILE_DEV_INCREMENTAL: "false"
   CARGO_INCREMENTAL: "0"
+  # Force OpenBLAS's runtime kernel choice to the mature AVX2 (Haswell) set.
+  # ferric links the DISTRO OpenBLAS (0.3.20 on ubuntu-22.04, via the
+  # `system` features of openblas-src / ndarray-linalg), whose DYNAMIC_ARCH
+  # dispatch predates the Zen 4 / Sapphire Rapids VMs GitHub now allocates.
+  # Run 33213558759 (2026-08-28) produced GARBAGE from that library on a cold
+  # rebuild -- 2.5 electrons integrated instead of 10, dsyevd eigenvectors
+  # off by O(1), `V cholesky failed: LAPACK return_code 22`, GEMM results
+  # changing by O(1) with the thread count -- while the identical binaries
+  # are correct locally and were correct on the runner that built the
+  # 2026-08-26 cache. Nothing in the tree touches BLAS; the hardware moved.
+  # The 'Runner hardware / BLAS' step below prints the CPU model and the
+  # active BLAS/LAPACK alternatives so the next such drift is diagnosable.
+  OPENBLAS_CORETYPE: Haswell
   LIBINT_VERSION: "2.7.2"
   LIBINT2_PREFIX: /home/runner/libint2
 
@@ -62,6 +75,16 @@ jobs:
             build-essential cmake g++ gfortran \
             libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
             libxc-dev
+
+      - name: Runner hardware / BLAS
+        run: |
+          lscpu | grep -E 'Model name|Vendor ID|CPU\(s\)|Flags' | cut -c1-240
+          nproc; free -g | head -2
+          dpkg -l | awk '/^ii +lib(openblas|lapack|blas)/ {print $2, $3}'
+          for a in libblas.so.3-x86_64-linux-gnu liblapack.so.3-x86_64-linux-gnu; do
+            update-alternatives --display "$a" 2>/dev/null | grep -E "link currently|^/" | head -4
+          done
+          echo "OPENBLAS_CORETYPE=${OPENBLAS_CORETYPE:-unset}"
 
       # RESTORE-only. actions/cache saves in a post-step that runs ONLY when the
       # job succeeds, so while any test was failing libint2 never got cached and
