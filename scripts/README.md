@@ -24,7 +24,11 @@ This wires `scripts/ci-gate.sh` as a `pre-push` hook. Git hooks live in the
 *common* `.git/hooks` dir, shared across every linked worktree of this repo
 (not per-worktree) -- installing once from any worktree covers all of them.
 After installing, every `git push` runs the gate first and blocks the push
-on a nonzero exit.
+on a nonzero exit. The hook gates **the worktree the push is made from**
+(it resolves `git rev-parse --show-toplevel` at push time and runs that
+tree's `scripts/ci-gate.sh`); if that tree has no gate script the push is
+blocked rather than silently allowed (`PRE_PUSH_ALLOW_NO_GATE=1` to bypass
+once).
 
 Run it by hand any time without pushing:
 

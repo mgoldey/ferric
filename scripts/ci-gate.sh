@@ -35,6 +35,7 @@
 #   CI_GATE_SKIP_CLIPPY=1  skip the clippy step (test-only gate).
 #   CI_GATE_SKIP_TESTS=1   skip the test step (clippy-only gate).
 #   CI_GATE_SKIP_COMPLEXITY=1  skip the complexity-regression step.
+#   CI_GATE_SKIP_PYTEST=1  skip the (soft) Python-binding pytest step.
 #   CI_GATE_FAST=1         defer the 4 slowest integration test binaries
 #                          (~160s of ~407s). Set by the pre-push hook so a
 #                          push is not blocked on the full suite; running
@@ -364,6 +365,9 @@ echo
 # Python-side regressions slip through steps 1-3. This step runs pytest if the
 # compiled extension is available; if not, it prints a note and moves on
 # without setting FAILED (soft gate -- does not block the push).
+if [[ "${CI_GATE_SKIP_PYTEST:-0}" == "1" ]]; then
+    echo "-- pytest: SKIPPED (CI_GATE_SKIP_PYTEST=1) --"
+else
 echo "-- pytest (Python bindings, soft gate) --"
 SO_PATH="$(find .venv -name '*.so' -path '*/ferric/*' 2>/dev/null | head -1)"
 if [[ -z "$SO_PATH" ]]; then
@@ -379,6 +383,7 @@ if [[ -f "$SO_PATH" ]]; then
 else
     echo "-- pytest: SKIPPED (extension not built;"
     echo "   cargo build --release -p ferric-python to enable) --"
+fi
 fi
 echo
 
