@@ -16,6 +16,15 @@ fails, the correct action is to report the metric as unusable, not to publish a
 candidate ranking from it. Per CLAUDE.md: a negative result needs the same bar
 as a positive one.
 
+**OUTCOME (2026-08-29): the gate failed, and NEITHER branch above was the
+reason.** The size hypothesis was measured and is false: r(MW, fit_mean) =
++0.132, no correlation, wrong sign. NC1 (charge anchor removed) is discriminated
+by +96.9 kcal/mol; NC2 (keeps the carboxylate, deletes a distal nitrile) is
+within noise. The limit is POSE DETERMINATION — a rigid scaffold overlay cannot
+place a substituent 10+ A from the anchor well enough to resolve it. Recorded
+here because a pre-registered hypothesis that turns out wrong is still sitting
+in the docstring above, and the next reader must not act on it.
+
 ## Why a Pareto front and not a weighted score
 
 Combining liability, fit and strain into one number requires exchange rates

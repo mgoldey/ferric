@@ -137,10 +137,16 @@ class Analogue:
 
     `is_negative_control=True` marks a variant designed to BREAK a
     pharmacophore feature on purpose. These are kept in the set so the fit
-    metric can be shown to discriminate: if a control that deletes the potency
-    anchor scores as well as the parent, the fit metric is measuring size or
-    noise, not complementarity. Per CLAUDE.md's protocol, this is the stated
-    artifact hypothesis made executable.
+    metric can be shown to discriminate: a control that deletes the potency
+    anchor and still scores as well as the parent means the metric is not
+    measuring complementarity. Per CLAUDE.md's protocol, this is the stated
+    artifact hypothesis made executable — and it earned its place, catching
+    three independent errors in this campaign (see scripts/danuglipron/
+    RESULTS.md).
+
+    On what a failure means: the original guess was "measuring size or noise".
+    Measured 2026-08-29, SIZE is ruled out (r(MW, fit) = +0.132). NOISE was real
+    but fixable (SEM 6.5 kcal/mol at n=40). What remains is pose determination.
 
     `smiles_ionized` / `net_charge` carry the state the molecule is actually IN
     at physiological pH, and they are the ones that must be scored.

@@ -23,11 +23,25 @@ cheap enough to run over a whole analogue set.
 
 The stated artifact hypothesis (`scripts/danuglipron/PLAN.md`): if this metric
 works, `NC1-methyl-ester` (acid anchor deleted) and `NC2-decyano` (Trp33
-terminus deleted) must score CLEARLY WORSE than the parent. If instead fit
-tracks atom count, the metric is measuring size, not complementarity, and no
-candidate ranking from it means anything. `fit_discriminates_controls` in
-`rank.py` performs that check and it is a gate on the whole campaign, not a
-diagnostic.
+terminus deleted) must score CLEARLY WORSE than the parent. `rank.
+fit_discriminates_controls` performs that check, and it is a gate on the whole
+campaign, not a diagnostic: a metric that cannot separate a known-inactive
+control licenses no candidate ranking.
+
+WHAT THE CONTROLS ACTUALLY FOUND (measured 2026-08-29, and it is a mixed
+verdict worth knowing before reusing this module):
+
+- **NC1 is discriminated decisively**: +96.9 kcal/mol worse than the parent.
+  The metric resolves the ionized carboxylate anchor, which is what it was
+  designed around.
+- **NC2 is NOT**: -17.8 kcal/mol, within noise. A rigid electrostatic overlay
+  does not resolve deleting a nitrile from an aryl ring 10+ A away.
+
+So the gate FAILS, correctly. Note also what the failure is NOT: the original
+hypothesis was that the metric "tracks atom count". That was measured and is
+**false** -- r(MW, fit_mean) = +0.132, no correlation and the wrong sign. The
+real limit is pose determination (see `align.py`), not the scoring function and
+not molecular size. Do not reuse the size explanation; it was checked.
 
 ## Reference-state discipline
 
@@ -40,6 +54,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .xtb_engine import HARTREE_TO_KCAL_MOL, singlepoint
+
+# Sourced from tools.active_site.pocket_charges rather than redeclared, so the
+# ligand->Bohr conversion here cannot drift from the one the pocket charges were
+# generated with. A mismatch would put ligand and pocket in different unit
+# systems, which shows up as "no pocket charges near this pose" -- an
+# UNEVALUATED result rather than a wrong number, but a confusing one to debug.
+from tools.active_site.pocket_charges import ANGSTROM_TO_BOHR
 
 # Pocket charges beyond this distance from every ligand atom contribute
 # negligibly (a 1 e charge at 25 Bohr is ~0.025 Ha*e, and the pocket is
@@ -98,9 +119,6 @@ def pose_fit(
     file expects. Both energies come from the same `coords_angstrom`, so the
     difference contains no relaxation energy.
     """
-    from .xtb_engine import _xtb_env  # noqa: F401  (import proves env is wired)
-
-    ANGSTROM_TO_BOHR = 1.0 / 0.529_177_210_92
     ligand_bohr = [
         (x * ANGSTROM_TO_BOHR, y * ANGSTROM_TO_BOHR, z * ANGSTROM_TO_BOHR)
         for x, y, z in coords_angstrom
