@@ -48,7 +48,18 @@ OUT = Path("scripts/danuglipron/out/fit_and_rank.json")
 # the poses ARE samples from one distribution and averaging does converge. 40
 # poses gives ~1.4 kcal/mol precision, which is the scale needed to resolve a
 # pharmacophore contact. 6 (the earlier value) gave ~5 kcal/mol and could not.
-N_CONF = 40
+# Raised 40 -> 100 after a power analysis on the n=40 data (2026-08-29). The
+# parent-vs-NC2 gap is 17.8 kcal/mol against per-pose standard deviations of
+# 46-50, so resolving that pair at 2 sigma needs
+#   n >= 4*(sd_p^2 + sd_n^2)/gap^2 = 59
+# poses per candidate. 100 clears it with margin.
+#
+# What this does NOT fix, and the number is worth writing down: the smallest gap
+# worth resolving among the real candidates (parent vs H1b, 1.4 kcal/mol) would
+# need n >= 7350. Sampling can rescue the metric GATE (a control that must be
+# grossly separated) but cannot rescue a fine-grained candidate RANKING. That
+# separation is the point of running this -- see RESULTS.md M4.
+N_CONF = 100
 
 
 def main() -> int:

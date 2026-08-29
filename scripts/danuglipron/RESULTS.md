@@ -196,6 +196,33 @@ recommendations did not pass.
 - **GFN2-xTB, not DFT.** Adequate for ranking conformers and electrostatic
   interactions of this size; not a benchmark energy.
 
+## M4. Power analysis — what sampling can and cannot fix (2026-08-29)
+
+Computed from the n=40 anion data, before spending compute on a bigger run.
+For two independent means, resolving a gap `g` at 2σ needs
+
+    n >= 4 * (sd_a^2 + sd_b^2) / g^2
+
+| pair | gap (kcal/mol) | per-pose sd | poses needed |
+|---|---|---|---|
+| parent vs **NC2-decyano** (the control the gate fails on) | 17.84 | 46.3 / 50.4 | **n ≥ 59** |
+| parent vs **H1b** (finest real candidate gap) | 1.38 | 46.3 / 37.1 | **n ≥ 7350** |
+
+**Measured:** the failing control is ~60 poses away from being resolvable; the
+finest candidate-to-candidate distinction is ~7000 poses away.
+
+**Interpretation (provisional):** these are qualitatively different problems and
+were previously conflated. More sampling **can** rescue the metric *gate* — a
+control is supposed to be grossly separated, and 59 poses is an afternoon. More
+sampling **cannot** rescue a fine-grained candidate *ranking*: at ~46 kcal/mol
+per-pose scatter, resolving 1.4 kcal/mol by averaging is not a compute problem,
+it is the wrong instrument.
+
+That is the quantitative statement of the earlier qualitative verdict ("the gap
+is pose determination, not scoring"). Reducing the per-pose sd — by letting
+poses settle, or by a real pose search — is the only route to a ranking. Driving
+n up is the route to a defensible gate, and nothing more.
+
 ---
 
 ## Summary of what this campaign established
