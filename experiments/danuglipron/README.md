@@ -1,4 +1,4 @@
-# `scripts/danuglipron/` — toxicity-reduction campaign
+# `experiments/danuglipron/` — toxicity-reduction campaign
 
 Experiment asking whether other conformers or structural modifications of
 danuglipron (PF-06882961) reduce toxicity liability while keeping GLP-1R
@@ -20,9 +20,9 @@ subdir, and `pdb2pqr30` for the pocket charges:
 ```bash
 export LD_LIBRARY_PATH=$HOME/.local/lib/x86_64-linux-gnu:$HOME/.local/lib:$LD_LIBRARY_PATH
 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 \
-  uv run --no-sync python scripts/danuglipron/run_arm_a_free.py   # ~3.5 min
+  uv run --no-sync python experiments/danuglipron/run_arm_a_free.py   # ~3.5 min
 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 \
-  uv run --no-sync python scripts/danuglipron/run_fit.py          # ~25 min at N_CONF=40
+  uv run --no-sync python experiments/danuglipron/run_fit.py          # ~25 min at N_CONF=40
 ```
 
 `OMP_NUM_THREADS=1` is not optional: **libxtb is not thread-safe** (process-global

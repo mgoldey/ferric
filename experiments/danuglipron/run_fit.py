@@ -12,7 +12,7 @@ molecular size and no candidate ranking is reported.
 
 Run:
     LD_LIBRARY_PATH=$HOME/.local/lib/x86_64-linux-gnu:$HOME/.local/lib \
-    OPENBLAS_NUM_THREADS=1 uv run --no-sync python scripts/danuglipron/run_fit.py
+    OPENBLAS_NUM_THREADS=1 uv run --no-sync python experiments/danuglipron/run_fit.py
 """
 from __future__ import annotations
 
@@ -35,14 +35,17 @@ from tools.campaign.rank import (  # noqa: E402
 )
 from tools.campaign.strain import load_xyz_ensemble  # noqa: E402
 from tools.campaign.xtb_engine import verify_xtb_build  # noqa: E402
-from tools.morph.design import DANUGLIPRON_SMILES, danuglipron_analogues  # noqa: E402
+from experiments.danuglipron.design import (  # noqa: E402
+    DANUGLIPRON_SMILES,
+    danuglipron_analogues,
+)
 from tools.morph.embed import embed_analogue  # noqa: E402
 from tools.tox.alerts import RdkitAlertsProvider  # noqa: E402
 from tools.tox.assess import assess_smiles  # noqa: E402
 
 POCKET_PDB = "testdata/molecules/c9_systems/danuglipron/7LCJ_pocket.pdb"
 ENSEMBLE = "testdata/molecules/c9_systems/danuglipron"
-OUT = Path("scripts/danuglipron/out/fit_and_rank.json")
+OUT = Path("experiments/danuglipron/out/fit_and_rank.json")
 # Pose count per candidate. Measured convergence of the fit estimator
 # (out/convergence.log, 2026-08-29): the standard error of the mean falls as
 # 1/sqrt(n) -- 5.66 -> 3.33 -> 1.99 -> 1.35 kcal/mol at n = 5, 10, 20, 40 -- so
@@ -82,7 +85,7 @@ def main() -> int:
 
     # Free-conformer strain, from Arm A (run_arm_a_free.py), if available.
     strain_by_label: dict[str, float] = {}
-    free_json = Path("scripts/danuglipron/out/arm_a_free.json")
+    free_json = Path("experiments/danuglipron/out/arm_a_free.json")
     free_min = None
     if free_json.exists():
         d = json.loads(free_json.read_text())

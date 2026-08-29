@@ -94,4 +94,4 @@ gfnff_topo
 terf-tables/*.bin
 
 # danuglipron campaign scratch output (promote evidence with `git add -f`)
-scripts/danuglipron/out/
+experiments/danuglipron/out/

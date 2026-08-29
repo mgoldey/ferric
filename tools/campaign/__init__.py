@@ -1,6 +1,6 @@
 """Danuglipron toxicity-reduction campaign: strain, fit, and liability.
 
-See `scripts/danuglipron/PLAN.md` for the experiment design. This package holds
+See `experiments/danuglipron/PLAN.md` for the experiment design. This package holds
 the measurement drivers:
 
 - `xtb_engine.py` — GFN2-xTB via the `xtb` CLI (separate processes, because

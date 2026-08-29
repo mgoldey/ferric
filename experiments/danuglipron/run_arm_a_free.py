@@ -2,11 +2,11 @@
 
 Relaxes all 20 committed conformers in vacuum with GFN2-xTB and identifies the
 global free minimum, which is the reference state every strain number is
-measured against. Writes JSON to scripts/danuglipron/out/.
+measured against. Writes JSON to experiments/danuglipron/out/.
 
 Run:
     LD_LIBRARY_PATH=$HOME/.local/lib/x86_64-linux-gnu:$HOME/.local/lib \
-    OPENBLAS_NUM_THREADS=1 uv run --no-sync python scripts/danuglipron/run_arm_a_free.py
+    OPENBLAS_NUM_THREADS=1 uv run --no-sync python experiments/danuglipron/run_arm_a_free.py
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from tools.campaign.strain import free_reference, load_xyz_ensemble  # noqa: E40
 from tools.campaign.xtb_engine import HARTREE_TO_KCAL_MOL, verify_xtb_build  # noqa: E402
 
 ENSEMBLE = "testdata/molecules/c9_systems/danuglipron"
-OUT = Path("scripts/danuglipron/out/arm_a_free.json")
+OUT = Path("experiments/danuglipron/out/arm_a_free.json")
 
 
 def main() -> int:

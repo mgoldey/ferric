@@ -366,9 +366,9 @@ echo
 # compiled extension is available; if not, it prints a note and moves on
 # without setting FAILED (soft gate -- does not block the push).
 #
-# SCOPE: both crates/ferric-python/tests/ (the binding suite) AND tools/ (the
-# active-site / tox / morph / campaign packages). tools/ was previously covered
-# by NOTHING -- .github/workflows/ci.yml is Rust-only, and this step used to
+# SCOPE: crates/ferric-python/tests/ (the binding suite), tools/ (the reusable
+# libraries) and experiments/ (per-campaign hypothesis sets and their tests).
+# tools/ was previously covered by NOTHING -- .github/workflows/ci.yml is Rust-only, and this step used to
 # name only the binding path, so every test under tools/ ran solely when someone
 # invoked pytest by hand. Individual suites skip themselves when their optional
 # dependency is absent (rdkit, pdb2pqr30, the xtb binary), so adding the path is
@@ -383,6 +383,7 @@ if [[ -z "$SO_PATH" ]]; then
 fi
 PYTEST_PATHS=(crates/ferric-python/tests/)
 [[ -d tools ]] && PYTEST_PATHS+=(tools/)
+[[ -d experiments ]] && PYTEST_PATHS+=(experiments/)
 if [[ -f "$SO_PATH" ]]; then
     echo "   extension: $SO_PATH"
     echo "   paths:     ${PYTEST_PATHS[*]}"

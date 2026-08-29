@@ -21,7 +21,7 @@ cheap enough to run over a whole analogue set.
 
 ## Why the negative controls matter more than the candidates
 
-The stated artifact hypothesis (`scripts/danuglipron/PLAN.md`): if this metric
+The stated artifact hypothesis (`experiments/danuglipron/PLAN.md`): if this metric
 works, `NC1-methyl-ester` (acid anchor deleted) and `NC2-decyano` (Trp33
 terminus deleted) must score CLEARLY WORSE than the parent. `rank.
 fit_discriminates_controls` performs that check, and it is a gate on the whole
@@ -57,7 +57,7 @@ reverses it -- among the ten anions the size correlation is +0.490. Both numbers
 are right about their own set; the mixed-charge one is the misleading one.
 
 So this metric is REFUTED for ranking these analogues, not merely imprecise, and
-the fix is not more poses. See scripts/danuglipron/RESULTS.md M5.
+the fix is not more poses. See experiments/danuglipron/RESULTS.md M5.
 
 ## Reference-state discipline
 

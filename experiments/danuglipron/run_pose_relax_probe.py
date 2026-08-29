@@ -32,7 +32,7 @@ only the energy spread could not distinguish them.
 Run:
     LD_LIBRARY_PATH=$HOME/.local/lib/x86_64-linux-gnu:$HOME/.local/lib \
     OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 \
-    uv run --no-sync python scripts/danuglipron/run_pose_relax_probe.py
+    uv run --no-sync python experiments/danuglipron/run_pose_relax_probe.py
 """
 from __future__ import annotations
 
@@ -51,12 +51,15 @@ from tools.campaign.align import align_to_reference  # noqa: E402
 from tools.campaign.fit import DEFAULT_FIELD_CUTOFF_BOHR, _trim_charges, pose_fit  # noqa: E402
 from tools.campaign.strain import load_xyz_ensemble  # noqa: E402
 from tools.campaign.xtb_engine import relax, verify_xtb_build  # noqa: E402
-from tools.morph.design import DANUGLIPRON_SMILES, danuglipron_analogues  # noqa: E402
+from experiments.danuglipron.design import (  # noqa: E402
+    DANUGLIPRON_SMILES,
+    danuglipron_analogues,
+)
 from tools.morph.embed import embed_analogue  # noqa: E402
 
 POCKET_PDB = "testdata/molecules/c9_systems/danuglipron/7LCJ_pocket.pdb"
 ENSEMBLE = "testdata/molecules/c9_systems/danuglipron"
-OUT = Path("scripts/danuglipron/out/pose_relax_probe.json")
+OUT = Path("experiments/danuglipron/out/pose_relax_probe.json")
 
 # The two candidates whose separation the metric gate turns on. Keeping the set
 # small matters: each pose here costs a full in-field GEOMETRY OPTIMIZATION of a

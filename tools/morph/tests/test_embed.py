@@ -12,16 +12,22 @@ import math
 
 import pytest
 
-from tools.morph.design import Analogue, danuglipron_analogues
+from tools.morph.design import Analogue, PharmacophoreSpec
 from tools.morph.embed import embed_analogue
 
 # Small and fast: embedding the 71-atom parent many times over would dominate
 # the suite's runtime for no extra coverage of the code paths here.
+# A minimal spec: the library must not depend on any campaign's pharmacophore.
+CARBOXYLIC_ACID = PharmacophoreSpec(
+    features=(("acid", "[CX3](=O)[OX2H1]", 1),)
+)
+
 SMALL = Analogue(
     label="ibuprofen-like",
     smiles="CC(C)Cc1ccc(cc1)C(C)C(=O)O",
     hypothesis="test-fixture",
     rationale="small, well-behaved, MMFF-typable molecule for embedding tests",
+    pharmacophore=CARBOXYLIC_ACID,
 )
 
 
@@ -92,7 +98,8 @@ def test_different_seeds_can_give_different_geometries():
 
 
 def test_unparseable_smiles_is_reported_not_raised():
-    bad = Analogue(label="bad", smiles="C1CC(((", hypothesis="h", rationale="r")
+    bad = Analogue(label="bad", smiles="C1CC(((", hypothesis="h", rationale="r",
+                   pharmacophore=CARBOXYLIC_ACID)
     e = embed_analogue(bad)
     assert not e.usable
     assert e.error is not None and "unparseable" in e.error
@@ -114,6 +121,7 @@ def test_impossible_geometry_is_reported_as_unevaluated():
         smiles="C12C3C1C1C2C31",
         hypothesis="h",
         rationale="deliberately over-constrained cage to exercise the failure path",
+        pharmacophore=CARBOXYLIC_ACID,
     )
     e = embed_analogue(hard, n_conformers=2)
     assert e.usable == (e.error is None), (
@@ -122,19 +130,6 @@ def test_impossible_geometry_is_reported_as_unevaluated():
     )
     if not e.usable:
         assert e.error and len(e.error) > 20
-
-
-def test_all_designed_analogues_embed():
-    """The real check on the design set: every proposed structure must actually
-    produce 3D geometry, or that arm of the campaign silently has no data.
-    One conformer each keeps this affordable.
-    """
-    failures = []
-    for a in danuglipron_analogues():
-        e = embed_analogue(a, n_conformers=1)
-        if not e.usable:
-            failures.append((a.label, e.error))
-    assert not failures, f"analogues that failed to embed: {failures}"
 
 
 def test_write_xyz_round_trips_through_the_active_site_reader():

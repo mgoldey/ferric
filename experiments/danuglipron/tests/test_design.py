@@ -22,13 +22,12 @@ import pytest
 from rdkit import Chem
 from rdkit.Chem import Crippen, Descriptors
 
-from tools.morph.design import (
+from experiments.danuglipron.design import (
     DANUGLIPRON_SMILES,
     GLP1R_PHARMACOPHORE,
-    Analogue,
-    PharmacophoreSpec,
     danuglipron_analogues,
 )
+from tools.morph.design import Analogue, PharmacophoreSpec
 
 
 def test_every_analogue_smiles_parses():
@@ -92,6 +91,7 @@ def test_zero_modification_analogue_is_identical_to_parent():
         smiles=DANUGLIPRON_SMILES,
         hypothesis="anchor",
         rationale="trivial limit: no modification at all",
+        pharmacophore=GLP1R_PHARMACOPHORE,
     )
 
     p_mol, n_mol = Chem.MolFromSmiles(parent.smiles), Chem.MolFromSmiles(null.smiles)
@@ -177,7 +177,8 @@ def test_invalid_smarts_in_a_spec_raises():
 
 
 def test_unparseable_analogue_smiles_raises_on_check():
-    a = Analogue(label="bad", smiles="C1CC(((", hypothesis="h", rationale="r")
+    a = Analogue(label="bad", smiles="C1CC(((", hypothesis="h", rationale="r",
+                 pharmacophore=GLP1R_PHARMACOPHORE)
     with pytest.raises(ValueError, match="unparseable SMILES"):
         a.check_pharmacophore()
 
@@ -285,7 +286,7 @@ def test_ionized_forms_still_satisfy_the_pharmacophore():
     """Deprotonation must not break the acid_or_bioisostere feature -- if the
     SMARTS only matched the protonated form, every scored species would read as
     pharmacophore-breaking."""
-    from tools.morph.design import GLP1R_PHARMACOPHORE
+    from experiments.danuglipron.design import GLP1R_PHARMACOPHORE
 
     for a in danuglipron_analogues():
         if a.smiles_ionized is None or a.is_negative_control:
