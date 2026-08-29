@@ -489,6 +489,94 @@ against the known bound pose.** Vina's published redocking success is ~60-80%
 under 2 A; if it cannot reproduce a pose we already hold, that is known in
 minutes rather than after committing to the analogue set.
 
+## M9. Docking closes the pose gap — 0.95 A (2026-08-29)
+
+Added tier 1 (AutoDock Vina 1.2.7 + Meeko 0.8.0, pure pip, Apache-2.0 engine)
+and ran the self-validating test: **redock danuglipron into 7LCJ and measure
+RMSD against the crystal pose we already hold.** The ligand was re-embedded from
+SMILES with a fresh seed, so the search starts from a geometry carrying no
+information about the answer.
+
+| metric | value |
+|---|---|
+| **best-of-20 RMSD** | **0.95 A** |
+| top-ranked pose RMSD | **0.95 A** (rank 0) |
+| poses within 5 A of the known site | 20/20 |
+| verdict (pass < 2.0 A) | **PASS** |
+
+For scale: every method tried before this topped out at **2.41 A** after 62
+minutes of GFN2 MD. Docking reached 0.95 A in ~2 minutes.
+
+**Pose generation is solved for this target.** M7's root cause is closed.
+
+### The cheap score finds the pose but cannot rank it
+
+Measured on the same run: r(vina_score, RMSD) = **+0.461**, and only **4 of 20**
+poses are under 2.0 A. Vina put the right pose first here, but the correlation
+is weak enough that it did so partly by luck.
+
+That is the empirical justification for the whole hierarchy: **the cheap tier
+generates the right answer among its candidates and cannot reliably pick it
+out.** If it could, no rescoring would be needed and tiers 2-4 would be
+decoration.
+
+### Two bugs this exposed, both silent
+
+1. **AutoDock types are not element symbols.** PDBQT's last column is a docking
+   type -- `OA` is an H-bond-accepting oxygen, `NA` an accepting nitrogen -- and
+   `.capitalize()` turns `OA` into the non-existent element "Oa" (and `NA` into
+   sodium). The first run reported **NO ALIGNABLE POSE** on 20 perfectly good
+   poses. Fixed with an explicit type->element table.
+2. **PDBQT is united-atom.** Nonpolar hydrogens are merged into their carbons,
+   so a docked danuglipron has 41 atoms where the RDKit mol has 70. The
+   alignment's identity check demanded a full-formula match and rejected every
+   pose as "not this molecule". Now compares HEAVY-atom formula, which still
+   catches a wrong molecule -- the thing the guard is actually for.
+
+Both produced a confident, wrong, *negative* verdict on a working pipeline. Both
+were found by reading the reported error instead of the headline.
+
+---
+
+## Systematizing the methods: the cost hierarchy
+
+`tools/campaign/hierarchy.py` (types and rules) +
+`experiments/danuglipron/hierarchy.py` (this system's measured costs).
+
+| tier | method | s/pose (measured) | poses | job | validated |
+|---|---|---|---|---|---|
+| 1 | AutoDock Vina | 1e-5 | 10^5-10^6 | **search** pose space | yes -- 0.95 A redock |
+| 2 | MMFF94 | 1e-3 | 10^2-10^3 | relax, declash | yes -- adequate to declash, NOT to rank |
+| 3 | GFN2-xTB | 5e-1 | 10-10^2 | rank survivors | yes -- 143 kcal/mol anion/neutral split |
+| 4 | ferric DFT + dispersion | 6e+2 | 1-10 | final energetics | **NO -- never used** |
+
+Each tier exists to DISCARD, cheaply, what the next cannot afford to examine. A
+tier is chosen for cost and discrimination, not for being "best": the best
+method on the wrong candidates is waste, and a cheap method asked for a fine
+distinction is noise.
+
+**The campaign's central failure was a hierarchy failure, not a physics one.**
+It ran tier 3 alone, fed by tier-2 output that had never seen the receptor.
+
+### Rules (encoded in `hierarchy.py`, tested in `tests/test_hierarchy.py`)
+
+1. **Validate each tier against ground truth before trusting it.** For poses
+   that means redocking a known complex. It costs minutes and is the difference
+   between a pipeline and a guess.
+2. **A tier's output is only as good as its input.** No tier-4 rigour rescues a
+   tier-1 failure. **Diagnose downward** -- check the cheapest tier first,
+   because that is where the candidate population is set.
+3. **Never ask a tier for a distinction finer than its noise.** Quantify with
+   the standard error, never a sample range (which grows with n).
+4. **Retire a tier when a cheaper one matches it, or when its job belongs to
+   someone else.** MD-as-pose-search was retired on the second ground.
+5. **Keep each tier's failure visible.** A tier that cannot answer returns
+   None/UNEVALUATED, never a neutral-looking number.
+
+**Tier 4 is the standing gap: ferric's own DFT has never been used in this
+campaign.** Every energy reported anywhere above is GFN2. That is now the next
+step, and for the first time it has geometries worth spending it on.
+
 ---
 
 ## Summary of what this campaign established

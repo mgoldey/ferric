@@ -237,12 +237,27 @@ def align_to_reference(
             return None, f"unparseable SMILES {smiles!r}"
         from collections import Counter
 
-        want = Counter(a.GetSymbol() for a in Chem.AddHs(declared).GetAtoms())
-        got = Counter(a.GetSymbol() for a in mol.GetAtoms())
+        # HEAVY ATOMS ONLY. A geometry may legitimately carry all hydrogens
+        # (RDKit/xyz), only polar ones, or none at all -- AutoDock PDBQT is
+        # UNITED-ATOM, merging nonpolar H into their carbons, so a docked
+        # danuglipron pose has 41 atoms where the RDKit mol has 70. Demanding a
+        # full-formula match rejected every docked pose as "not this molecule",
+        # which surfaced as a bogus NO-ALIGNABLE-POSE verdict on a run whose
+        # poses were in fact all within 2.8 A of the site.
+        #
+        # Alignment is heavy-atom anyway (H positions from two different tools
+        # are not comparable), so the heavy-atom formula is the right identity
+        # check: it still catches a geometry that is the wrong MOLECULE, which
+        # is what this guard is for.
+        want = Counter(a.GetSymbol() for a in declared.GetAtoms()
+                       if a.GetSymbol() != "H")
+        got = Counter(a.GetSymbol() for a in mol.GetAtoms()
+                      if a.GetSymbol() != "H")
         if want != got:
             return None, (
-                f"the geometry's formula {dict(sorted(got.items()))} does not "
-                f"match the declared SMILES {dict(sorted(want.items()))}"
+                f"the geometry's heavy-atom formula {dict(sorted(got.items()))} "
+                f"does not match the declared SMILES "
+                f"{dict(sorted(want.items()))}"
             )
         return mol, None
 

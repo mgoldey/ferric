@@ -1,0 +1,162 @@
+{
+  "receptor": "testdata/molecules/c9_systems/danuglipron/7LCJ_pocket.pdb",
+  "box_center": [
+    125.41969416845073,
+    157.01620184197185,
+    113.29102827338026
+  ],
+  "box_size": [
+    19.788495929999996,
+    20.854094369999984,
+    21.30689221
+  ],
+  "exhaustiveness": 32,
+  "n_poses": 20,
+  "best_rmsd": 0.9545029119801338,
+  "top1_rmsd": 0.9545029119801338,
+  "verdict": "PASS",
+  "bar_pass": 2.0,
+  "bar_marginal": 2.5,
+  "poses": [
+    {
+      "rank": 0,
+      "vina_score": -12.231,
+      "rmsd_to_bound": 0.9545029119801338,
+      "centroid_dev": 0.3883299313384738,
+      "align_error": null
+    },
+    {
+      "rank": 1,
+      "vina_score": -12.077,
+      "rmsd_to_bound": 2.5182706119425577,
+      "centroid_dev": 1.9572944857957304,
+      "align_error": null
+    },
+    {
+      "rank": 2,
+      "vina_score": -12.054,
+      "rmsd_to_bound": 3.3141408511961163,
+      "centroid_dev": 1.4135805424232182,
+      "align_error": null
+    },
+    {
+      "rank": 3,
+      "vina_score": -11.927,
+      "rmsd_to_bound": 1.5092671957715995,
+      "centroid_dev": 0.43367278531275194,
+      "align_error": null
+    },
+    {
+      "rank": 4,
+      "vina_score": -11.874,
+      "rmsd_to_bound": 3.1764113337479354,
+      "centroid_dev": 1.3190158342889686,
+      "align_error": null
+    },
+    {
+      "rank": 5,
+      "vina_score": -11.755,
+      "rmsd_to_bound": 1.1781935937296604,
+      "centroid_dev": 0.34172276883596825,
+      "align_error": null
+    },
+    {
+      "rank": 6,
+      "vina_score": -11.735,
+      "rmsd_to_bound": 1.9777047136986032,
+      "centroid_dev": 0.43692143167370184,
+      "align_error": null
+    },
+    {
+      "rank": 7,
+      "vina_score": -11.732,
+      "rmsd_to_bound": 3.2592789827757382,
+      "centroid_dev": 0.374125420820707,
+      "align_error": null
+    },
+    {
+      "rank": 8,
+      "vina_score": -11.608,
+      "rmsd_to_bound": 3.2481550060809328,
+      "centroid_dev": 1.1661495881144335,
+      "align_error": null
+    },
+    {
+      "rank": 9,
+      "vina_score": -11.284,
+      "rmsd_to_bound": 2.064215249441556,
+      "centroid_dev": 0.561973466843607,
+      "align_error": null
+    },
+    {
+      "rank": 10,
+      "vina_score": -11.196,
+      "rmsd_to_bound": 2.8439701602769416,
+      "centroid_dev": 1.9763330234721783,
+      "align_error": null
+    },
+    {
+      "rank": 11,
+      "vina_score": -11.094,
+      "rmsd_to_bound": 3.4916605403483123,
+      "centroid_dev": 0.3993461031041858,
+      "align_error": null
+    },
+    {
+      "rank": 12,
+      "vina_score": -11.057,
+      "rmsd_to_bound": 2.5650513188823725,
+      "centroid_dev": 1.0001928642111313,
+      "align_error": null
+    },
+    {
+      "rank": 13,
+      "vina_score": -10.82,
+      "rmsd_to_bound": 2.6580072100795,
+      "centroid_dev": 1.7906444752098694,
+      "align_error": null
+    },
+    {
+      "rank": 14,
+      "vina_score": -10.734,
+      "rmsd_to_bound": 3.1015484918923044,
+      "centroid_dev": 1.8098440937701694,
+      "align_error": null
+    },
+    {
+      "rank": 15,
+      "vina_score": -10.712,
+      "rmsd_to_bound": 3.2252566447887356,
+      "centroid_dev": 0.2714773418480017,
+      "align_error": null
+    },
+    {
+      "rank": 16,
+      "vina_score": -10.71,
+      "rmsd_to_bound": 2.7271083313479654,
+      "centroid_dev": 0.5796315613355657,
+      "align_error": null
+    },
+    {
+      "rank": 17,
+      "vina_score": -10.377,
+      "rmsd_to_bound": 2.026810955659126,
+      "centroid_dev": 1.4830277563064123,
+      "align_error": null
+    },
+    {
+      "rank": 18,
+      "vina_score": -10.335,
+      "rmsd_to_bound": 3.645619162566012,
+      "centroid_dev": 2.25041553501222,
+      "align_error": null
+    },
+    {
+      "rank": 19,
+      "vina_score": -10.105,
+      "rmsd_to_bound": 3.7434427911679284,
+      "centroid_dev": 2.790886879774437,
+      "align_error": null
+    }
+  ]
+}
