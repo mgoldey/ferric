@@ -1,0 +1,166 @@
+"""Arms A/B: active-site fit — pocket electrostatic complementarity of a pose.
+
+## What this measures, stated narrowly on purpose
+
+`pocket_interaction_kcal` is the interaction of the ligand's electron density
+with the pocket's fixed classical point-charge field:
+
+    E_int = E(ligand, in pocket field) - E(ligand, vacuum)     [same geometry]
+
+It is **one term of a binding free energy** — the electrostatic/polarization
+term. It is NOT a binding affinity and NOT a potency prediction. Missing:
+desolvation of both partners, the pocket's own reorganization, dispersion beyond
+what the Hamiltonian carries, entropy, and any protein flexibility. A ranking on
+this number is a ranking on electrostatic complementarity alone.
+
+That narrowness is the point. Electrostatic complementarity is the term the
+danuglipron pharmacophore is built around — the carboxylate anchor and the
+electron-poor aryl near Trp33 — so it is the term most likely to discriminate a
+modification that keeps those contacts from one that breaks them. And it is
+cheap enough to run over a whole analogue set.
+
+## Why the negative controls matter more than the candidates
+
+The stated artifact hypothesis (`scripts/danuglipron/PLAN.md`): if this metric
+works, `NC1-methyl-ester` (acid anchor deleted) and `NC2-decyano` (Trp33
+terminus deleted) must score CLEARLY WORSE than the parent. If instead fit
+tracks atom count, the metric is measuring size, not complementarity, and no
+candidate ranking from it means anything. `fit_discriminates_controls` in
+`rank.py` performs that check and it is a gate on the whole campaign, not a
+diagnostic.
+
+## Reference-state discipline
+
+Vacuum and in-field energies must be at the SAME geometry, or the difference
+picks up a relaxation energy as well. `pose_fit` enforces that by construction:
+it computes both from one coordinate array.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from .xtb_engine import HARTREE_TO_KCAL_MOL, singlepoint
+
+# Pocket charges beyond this distance from every ligand atom contribute
+# negligibly (a 1 e charge at 25 Bohr is ~0.025 Ha*e, and the pocket is
+# near-neutral so contributions cancel further). Trimming them keeps the xtb
+# pcharge file small; the cut is on the SAME criterion for every pose so it
+# cannot bias a comparison.
+DEFAULT_FIELD_CUTOFF_BOHR = 30.0
+
+
+@dataclass
+class FitResult:
+    """Electrostatic fit of one pose in one pocket."""
+    label: str
+    e_vacuum: float | None            # Hartree
+    e_in_field: float | None          # Hartree
+    interaction_kcal: float | None    # negative = favorable
+    n_pocket_charges: int
+    error: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.error is None and self.interaction_kcal is not None
+
+
+def _trim_charges(
+    point_charges,
+    ligand_coords_bohr,
+    cutoff_bohr: float,
+):
+    """Drop charges far from every ligand atom. Same rule for every pose."""
+    if cutoff_bohr is None:
+        return list(point_charges)
+    keep = []
+    c2 = cutoff_bohr * cutoff_bohr
+    for q, x, y, z in point_charges:
+        for lx, ly, lz in ligand_coords_bohr:
+            dx, dy, dz = x - lx, y - ly, z - lz
+            if dx * dx + dy * dy + dz * dz <= c2:
+                keep.append((q, x, y, z))
+                break
+    return keep
+
+
+def pose_fit(
+    symbols: list[str],
+    coords_angstrom: list[tuple[float, float, float]],
+    point_charges,
+    label: str = "pose",
+    charge: int = 0,
+    field_cutoff_bohr: float | None = DEFAULT_FIELD_CUTOFF_BOHR,
+) -> FitResult:
+    """Interaction energy of one pose with a fixed point-charge pocket.
+
+    `point_charges` is a list of `(q, x, y, z)` with coordinates in BOHR — the
+    convention `tools.active_site.pocket_charges` produces and xtb's `pcharge`
+    file expects. Both energies come from the same `coords_angstrom`, so the
+    difference contains no relaxation energy.
+    """
+    from .xtb_engine import _xtb_env  # noqa: F401  (import proves env is wired)
+
+    ANGSTROM_TO_BOHR = 1.0 / 0.529_177_210_92
+    ligand_bohr = [
+        (x * ANGSTROM_TO_BOHR, y * ANGSTROM_TO_BOHR, z * ANGSTROM_TO_BOHR)
+        for x, y, z in coords_angstrom
+    ]
+    charges = _trim_charges(point_charges, ligand_bohr, field_cutoff_bohr)
+
+    if not charges:
+        return FitResult(
+            label, None, None, None, 0,
+            error=(
+                "no pocket charges within the field cutoff of this pose -- the "
+                "pose is outside the pocket, or the coordinate frames of ligand "
+                "and pocket disagree. Reporting UNEVALUATED rather than an "
+                "interaction of 0, which would rank as perfectly neutral."
+            ),
+        )
+
+    vac = singlepoint(symbols, coords_angstrom, charge=charge)
+    if not vac.ok:
+        return FitResult(label, None, None, None, len(charges),
+                         error=f"vacuum single point failed: {vac.error}")
+
+    fld = singlepoint(symbols, coords_angstrom, charge=charge, point_charges=charges)
+    if not fld.ok:
+        return FitResult(label, vac.energy, None, None, len(charges),
+                         error=f"in-field single point failed: {fld.error}")
+
+    return FitResult(
+        label=label,
+        e_vacuum=vac.energy,
+        e_in_field=fld.energy,
+        interaction_kcal=(fld.energy - vac.energy) * HARTREE_TO_KCAL_MOL,
+        n_pocket_charges=len(charges),
+    )
+
+
+def best_pose_fit(
+    symbols_per_conformer: list[list[str]],
+    conformers: list[list[tuple[float, float, float]]],
+    point_charges,
+    labels: list[str] | None = None,
+    charge: int = 0,
+    field_cutoff_bohr: float | None = DEFAULT_FIELD_CUTOFF_BOHR,
+) -> tuple[FitResult | None, list[FitResult]]:
+    """Score every conformer, return (best, all).
+
+    "Best" is the most negative interaction energy. Note this scores each
+    conformer AT ITS OWN COORDINATES: for a docked ensemble those share the
+    pocket frame, but for a freely-generated analogue ensemble they do NOT --
+    such conformers need aligning into the pocket first (see
+    `align.py`/`tools.active_site`), or every one of them will fall outside the
+    field cutoff and be reported UNEVALUATED. That is the intended, loud
+    failure rather than a silent zero.
+    """
+    labels = labels or [f"conf_{i:02d}" for i in range(len(conformers))]
+    results = [
+        pose_fit(syms, coords, point_charges, label=lbl, charge=charge,
+                 field_cutoff_bohr=field_cutoff_bohr)
+        for syms, coords, lbl in zip(symbols_per_conformer, conformers, labels)
+    ]
+    good = [r for r in results if r.ok]
+    best = min(good, key=lambda r: r.interaction_kcal) if good else None
+    return best, results

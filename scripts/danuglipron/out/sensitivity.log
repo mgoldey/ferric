@@ -1,0 +1,7 @@
+cryo-EM pose, neutral acid :   -22.86 kcal/mol
+  carboxyl H = atom 70 (O-H 0.980 A)
+cryo-EM pose, ANION        :  -165.81 kcal/mol   (delta vs neutral -142.94)
+
+zeroing 59 pocket charges within 6 A of the carboxyl O:
+  fit   -11.55 kcal/mol  (delta +11.32 kcal/mol)
+  -> a large delta means the metric IS sensitive to that region.

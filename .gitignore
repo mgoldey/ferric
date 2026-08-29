@@ -92,3 +92,6 @@ gfnff_topo
 # local Claude Code project instructions (internal, not shared)
 /CLAUDE.md
 terf-tables/*.bin
+
+# danuglipron campaign scratch output (promote evidence with `git add -f`)
+scripts/danuglipron/out/
