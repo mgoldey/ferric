@@ -71,6 +71,13 @@ jobs:
           # workflow passed hours earlier on an older image, so this fails
           # intermittently as GitHub rolls images, which makes it look like a
           # branch-specific failure when it is not.
+          #
+          # Why the apt package is sufficient even though crates/ferric-integrals/
+          # build.rs never passes -I/usr/include: libboost-dev pulls in
+          # libboost<ver>-dev, which owns /usr/include/boost/preprocessor.hpp,
+          # and /usr/include is the compiler's DEFAULT system include path. That
+          # is also why the build works on a developer box and not on the runner
+          # -- a local machine usually has boost installed already.
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
             /opt/hostedtoolcache/CodeQL /usr/share/swift /usr/local/share/boost \
             "$AGENT_TOOLSDIRECTORY/CodeQL" 2>/dev/null || true
