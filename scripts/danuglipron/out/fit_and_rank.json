@@ -7,14 +7,14 @@
   "n_conformers_per_analogue": 40,
   "free_min_energy_ha": -117.32863092973,
   "gate_passed": false,
-  "gate_detail": "FIT METRIC DOES NOT DISCRIMINATE. A control that deletes a pharmacophore contact scored as well as or better than the parent: NC2-decyano fit -137.66 vs parent -119.82 kcal/mol (needs to be at least 1.0 worse). No candidate fit ranking derived from this metric should be reported. NOISE-DOMINATED: mean pose-to-pose fit spread is 170.4 kcal/mol while the entire candidate-to-candidate range is only 142.7 kcal/mol. The estimator cannot resolve the differences being ranked. The rigid-overlay pose is underdetermined -- fixing this needs either a genuine pose search (docking) or many more poses per candidate with an explicit ensemble average, not a different scoring function.",
-  "gate_parent_fit_kcal": -119.81900736351842,
+  "gate_detail": "FIT METRIC DOES NOT DISCRIMINATE. A control that deletes a pharmacophore contact scored as well as or better than the parent: NC2-decyano fit -137.66 vs parent -119.82 kcal/mol (needs to be at least 22.0 worse). No candidate fit ranking derived from this metric should be reported. Cause not established by this gate alone. Check, in order: (a) is the pose noise larger than the candidate-to-candidate range? (`noise_exceeds_signal` below); (b) are all candidates treated identically (same pose count, same estimator)?; (c) does fit correlate with molecular size?",
+  "gate_parent_fit_kcal": -119.8190073635184,
   "gate_control_fits_kcal": {
     "NC1-methyl-ester": -22.900545866794126,
-    "NC2-decyano": -137.65899853923258
+    "NC2-decyano": -137.6589985392326
   },
-  "precision_passed": false,
-  "precision_detail": "NOISE-DOMINATED: mean pose-to-pose fit spread is 170.4 kcal/mol while the entire candidate-to-candidate range is only 142.7 kcal/mol. The estimator cannot resolve the differences being ranked. The rigid-overlay pose is underdetermined -- fixing this needs either a genuine pose search (docking) or many more poses per candidate with an explicit ensemble average, not a different scoring function.",
+  "precision_passed": true,
+  "precision_detail": "precision adequate: candidate range 142.7 kcal/mol vs a 18.4 kcal/mol resolution limit (2 sigma on a 6.5 kcal/mol standard error). NOTE this licenses only differences that individually clear that limit -- check pairwise before ranking two close candidates.",
   "ranking_axis": "mean interaction energy over a fixed number of aligned poses (NOT the min, which is a biased estimator whose bias grows with sample count)",
   "cryo_em_reference_fit_kcal_anion": -165.8062838574095,
   "cryo_em_reference_fit_kcal_neutral": -22.861791548041168,
@@ -30,8 +30,8 @@
       "scoring_smiles": "C1CO[C@@H]1CN2C3=C(C=CC(=C3)C(=O)[O-])N=C2CN4CCC(CC4)C5=NC(=CC=C5)OCC6=C(C=C(C=C6)C#N)F",
       "best_pose": "conf_15",
       "scaffold_rmsd_angstrom": 2.1143551625046397,
-      "fit_kcal_mol": -119.81900736351842,
-      "fit_mean_kcal_mol": -119.81900736351842,
+      "fit_kcal_mol": -119.8190073635184,
+      "fit_mean_kcal_mol": -119.8190073635184,
       "fit_min_kcal_mol": -226.04786508875617,
       "fit_spread_kcal_mol": 179.0718246963502,
       "e_vacuum_ha": -117.021430406946,
@@ -79,7 +79,9 @@
       ],
       "notes": [
         "pose-to-pose fit spread 179.1 kcal/mol over 37 poses -- the rigid-overlay pose is poorly determined for this analogue, so its fit number is imprecise"
-      ]
+      ],
+      "fit_sem_kcal_mol": 7.614939425752507,
+      "distinguishable_from_parent_2sigma": null
     },
     {
       "label": "H1a-defluoro",
@@ -91,8 +93,8 @@
       "scoring_smiles": "C1CO[C@@H]1CN2C3=C(C=CC(=C3)C(=O)[O-])N=C2CN4CCC(CC4)C5=NC(=CC=C5)OCC6=CC=C(C=C6)C#N",
       "best_pose": "conf_09",
       "scaffold_rmsd_angstrom": 3.338101862388395,
-      "fit_kcal_mol": -123.06248331828108,
-      "fit_mean_kcal_mol": -123.06248331828108,
+      "fit_kcal_mol": -123.06248331828105,
+      "fit_mean_kcal_mol": -123.06248331828105,
       "fit_min_kcal_mol": -214.38564936339793,
       "fit_spread_kcal_mol": 173.69171932652705,
       "e_vacuum_ha": -112.79946767531,
@@ -143,7 +145,9 @@
       ],
       "notes": [
         "pose-to-pose fit spread 173.7 kcal/mol over 40 poses -- the rigid-overlay pose is poorly determined for this analogue, so its fit number is imprecise"
-      ]
+      ],
+      "fit_sem_kcal_mol": 7.470722034492141,
+      "distinguishable_from_parent_2sigma": false
     },
     {
       "label": "H1b-des-oxetane-methyl",
@@ -155,8 +159,8 @@
       "scoring_smiles": "CN2C3=C(C=CC(=C3)C(=O)[O-])N=C2CN4CCC(CC4)C5=NC(=CC=C5)OCC6=C(C=C(C=C6)C#N)F",
       "best_pose": "conf_27",
       "scaffold_rmsd_angstrom": 2.0390798621111577,
-      "fit_kcal_mol": -121.1960071834087,
-      "fit_mean_kcal_mol": -121.1960071834087,
+      "fit_kcal_mol": -121.19600718340868,
+      "fit_mean_kcal_mol": -121.19600718340868,
       "fit_min_kcal_mol": -189.69410311939663,
       "fit_spread_kcal_mol": 155.53349853334493,
       "e_vacuum_ha": -104.512496305019,
@@ -206,7 +210,9 @@
       ],
       "notes": [
         "pose-to-pose fit spread 155.5 kcal/mol over 39 poses -- the rigid-overlay pose is poorly determined for this analogue, so its fit number is imprecise"
-      ]
+      ],
+      "fit_sem_kcal_mol": 5.858368290368101,
+      "distinguishable_from_parent_2sigma": false
     },
     {
       "label": "H1c-azetidine-for-piperidine",
@@ -218,8 +224,8 @@
       "scoring_smiles": "C1CO[C@@H]1CN2C3=C(C=CC(=C3)C(=O)[O-])N=C2CN4CC(C4)C5=NC(=CC=C5)OCC6=C(C=C(C=C6)C#N)F",
       "best_pose": "conf_08",
       "scaffold_rmsd_angstrom": 1.5707789993996137,
-      "fit_kcal_mol": -165.62600015399636,
-      "fit_mean_kcal_mol": -165.62600015399636,
+      "fit_kcal_mol": -165.62600015399633,
+      "fit_mean_kcal_mol": -165.62600015399633,
       "fit_min_kcal_mol": -220.12772442360784,
       "fit_spread_kcal_mol": 118.51368140181856,
       "e_vacuum_ha": -110.66014323979,
@@ -265,7 +271,9 @@
       ],
       "notes": [
         "pose-to-pose fit spread 118.5 kcal/mol over 35 poses -- the rigid-overlay pose is poorly determined for this analogue, so its fit number is imprecise"
-      ]
+      ],
+      "fit_sem_kcal_mol": 4.6836865407853,
+      "distinguishable_from_parent_2sigma": true
     },
     {
       "label": "H2a-difluoro-benzylic",
@@ -322,7 +330,9 @@
       ],
       "notes": [
         "pose-to-pose fit spread 159.6 kcal/mol over 33 poses -- the rigid-overlay pose is poorly determined for this analogue, so its fit number is imprecise"
-      ]
+      ],
+      "fit_sem_kcal_mol": 5.919000830491299,
+      "distinguishable_from_parent_2sigma": false
     },
     {
       "label": "H2b-oxetane-to-gem-dimethyl-oxetane",
@@ -334,8 +344,8 @@
       "scoring_smiles": "CC1(C)CO[C@@H]1CN2C3=C(C=CC(=C3)C(=O)[O-])N=C2CN4CCC(CC4)C5=NC(=CC=C5)OCC6=C(C=C(C=C6)C#N)F",
       "best_pose": "conf_03",
       "scaffold_rmsd_angstrom": 3.0641870473376502,
-      "fit_kcal_mol": -127.45719905717003,
-      "fit_mean_kcal_mol": -127.45719905717003,
+      "fit_kcal_mol": -127.45719905717,
+      "fit_mean_kcal_mol": -127.45719905717,
       "fit_min_kcal_mol": -234.97097291428517,
       "fit_spread_kcal_mol": 215.29147065904561,
       "e_vacuum_ha": -123.356832622106,
@@ -382,7 +392,9 @@
       ],
       "notes": [
         "pose-to-pose fit spread 215.3 kcal/mol over 36 poses -- the rigid-overlay pose is poorly determined for this analogue, so its fit number is imprecise"
-      ]
+      ],
+      "fit_sem_kcal_mol": 8.02422552284471,
+      "distinguishable_from_parent_2sigma": false
     },
     {
       "label": "H3a-tetrazole",
@@ -446,7 +458,9 @@
       ],
       "notes": [
         "pose-to-pose fit spread 151.6 kcal/mol over 40 poses -- the rigid-overlay pose is poorly determined for this analogue, so its fit number is imprecise"
-      ]
+      ],
+      "fit_sem_kcal_mol": 6.519506440544127,
+      "distinguishable_from_parent_2sigma": false
     },
     {
       "label": "H3b-acylsulfonamide",
@@ -458,8 +472,8 @@
       "scoring_smiles": "C1CO[C@@H]1CN2C3=C(C=CC(=C3)C(=O)[N-]S(=O)(=O)C)N=C2CN4CCC(CC4)C5=NC(=CC=C5)OCC6=C(C=C(C=C6)C#N)F",
       "best_pose": "conf_20",
       "scaffold_rmsd_angstrom": 3.061441643857694,
-      "fit_kcal_mol": -107.33145247616918,
-      "fit_mean_kcal_mol": -107.33145247616918,
+      "fit_kcal_mol": -107.33145247616913,
+      "fit_mean_kcal_mol": -107.33145247616913,
       "fit_min_kcal_mol": -198.37412825947214,
       "fit_spread_kcal_mol": 173.3720726444992,
       "e_vacuum_ha": -130.925656997801,
@@ -500,7 +514,9 @@
       ],
       "notes": [
         "pose-to-pose fit spread 173.4 kcal/mol over 30 poses -- the rigid-overlay pose is poorly determined for this analogue, so its fit number is imprecise"
-      ]
+      ],
+      "fit_sem_kcal_mol": 8.128273805556248,
+      "distinguishable_from_parent_2sigma": false
     },
     {
       "label": "H3c-oxadiazolone",
@@ -564,7 +580,9 @@
       ],
       "notes": [
         "pose-to-pose fit spread 252.4 kcal/mol over 40 poses -- the rigid-overlay pose is poorly determined for this analogue, so its fit number is imprecise"
-      ]
+      ],
+      "fit_sem_kcal_mol": 7.753595277551053,
+      "distinguishable_from_parent_2sigma": false
     },
     {
       "label": "NC1-methyl-ester",
@@ -628,7 +646,9 @@
       ],
       "notes": [
         "pose-to-pose fit spread 42.6 kcal/mol over 40 poses -- the rigid-overlay pose is poorly determined for this analogue, so its fit number is imprecise"
-      ]
+      ],
+      "fit_sem_kcal_mol": 1.6542753454062704,
+      "distinguishable_from_parent_2sigma": true
     },
     {
       "label": "NC2-decyano",
@@ -640,8 +660,8 @@
       "scoring_smiles": "C1CO[C@@H]1CN2C3=C(C=CC(=C3)C(=O)[O-])N=C2CN4CCC(CC4)C5=NC(=CC=C5)OCC6=CC=CC=C6",
       "best_pose": "conf_14",
       "scaffold_rmsd_angstrom": 2.7948821818883114,
-      "fit_kcal_mol": -137.65899853923258,
-      "fit_mean_kcal_mol": -137.65899853923258,
+      "fit_kcal_mol": -137.6589985392326,
+      "fit_mean_kcal_mol": -137.6589985392326,
       "fit_min_kcal_mol": -274.2959682843923,
       "fit_spread_kcal_mol": 252.79817216120944,
       "e_vacuum_ha": -108.274433324591,
@@ -692,7 +712,10 @@
       ],
       "notes": [
         "pose-to-pose fit spread 252.8 kcal/mol over 40 poses -- the rigid-overlay pose is poorly determined for this analogue, so its fit number is imprecise"
-      ]
+      ],
+      "fit_sem_kcal_mol": 7.966424131762413,
+      "distinguishable_from_parent_2sigma": false
     }
-  ]
+  ],
+  "statistics_note": "fit_kcal_mol is the MEAN over aligned poses; fit_sem_kcal_mol is its standard error (falls as 1/sqrt(n)). fit_spread_kcal_mol is the pose RANGE and is reported for context only -- it GROWS with n and must never be used as a precision measure."
 }
