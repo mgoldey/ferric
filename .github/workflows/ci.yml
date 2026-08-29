@@ -62,6 +62,15 @@ jobs:
       - name: Free runner disk space
         run: |
           echo "--- before"; df -h / | tail -1
+          # NOTE /usr/local/share/boost is deleted here, and libint2's
+          # engine.impl.h does `#include <boost/preprocessor.hpp>`. That is why
+          # `libboost-dev` is in the apt list below and must stay there: without
+          # it the shim compile dies with "boost/preprocessor.hpp: No such file
+          # or directory", and only on runner images that were relying on the
+          # bundled boost this step removes. Observed 2026-08-29 -- the same
+          # workflow passed hours earlier on an older image, so this fails
+          # intermittently as GitHub rolls images, which makes it look like a
+          # branch-specific failure when it is not.
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
             /opt/hostedtoolcache/CodeQL /usr/share/swift /usr/local/share/boost \
             "$AGENT_TOOLSDIRECTORY/CodeQL" 2>/dev/null || true
@@ -74,7 +83,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake g++ gfortran \
             libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
-            libxc-dev
+            libxc-dev libboost-dev
 
       - name: Runner hardware / BLAS
         run: |
@@ -275,7 +284,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake g++ gfortran \
             libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
-            libxc-dev libint2-dev
+            libxc-dev libint2-dev libboost-dev
 
       - name: Restore libint2 cache
         id: cache-libint
