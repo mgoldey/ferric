@@ -31,17 +31,33 @@ control licenses no candidate ranking.
 WHAT THE CONTROLS ACTUALLY FOUND (measured 2026-08-29, and it is a mixed
 verdict worth knowing before reusing this module):
 
-- **NC1 is discriminated decisively**: +96.9 kcal/mol worse than the parent.
-  The metric resolves the ionized carboxylate anchor, which is what it was
-  designed around.
-- **NC2 is NOT**: -17.8 kcal/mol, within noise. A rigid electrostatic overlay
-  does not resolve deleting a nitrile from an aryl ring 10+ A away.
+- **NC1 is discriminated decisively**: +103.7 kcal/mol worse than the parent
+  (n=100). But see below -- NC1 is the only NEUTRAL species in the set, so this
+  separation is charge detection, not pharmacophore recognition.
+- **NC2 scores significantly BETTER than the parent**: -18.5 kcal/mol against a
+  13.5 kcal/mol 2-sigma bar at n=100. A pharmacophore-deleted inactive
+  outranking the parent REFUTES the metric.
 
-So the gate FAILS, correctly. Note also what the failure is NOT: the original
-hypothesis was that the metric "tracks atom count". That was measured and is
-**false** -- r(MW, fit_mean) = +0.132, no correlation and the wrong sign. The
-real limit is pose determination (see `align.py`), not the scoring function and
-not molecular size. Do not reuse the size explanation; it was checked.
+At n=40 NC2 was merely unresolved (gap 17.8, bar 22.0) and this docstring said
+the metric "cannot resolve" it. That was a precision statement and it is now
+retracted: raising to n=100 dropped the SEM as 1/sqrt(n) exactly as predicted
+(sd flat at ~46, SEM 7.6 -> 4.9) and the pair resolved -- on the WRONG SIDE.
+More sampling made the refutation stronger, not weaker.
+
+WHAT THE METRIC ACTUALLY MEASURES (2026-08-29, n=100):
+
+  anion (q=-1) vs neutral (q=0)        -109.5 kcal/mol
+  full spread among the 10 anions        41.4 kcal/mol
+  r(MW, fit) among anions only            +0.490
+
+It is dominated by formal charge. And note the correction to an earlier claim in
+this file: "size is ruled out (r = +0.132)" was measured on the MIXED-charge set,
+where a ~110 kcal/mol charge term swamped everything else. Controlling for charge
+reverses it -- among the ten anions the size correlation is +0.490. Both numbers
+are right about their own set; the mixed-charge one is the misleading one.
+
+So this metric is REFUTED for ranking these analogues, not merely imprecise, and
+the fix is not more poses. See scripts/danuglipron/RESULTS.md M5.
 
 ## Reference-state discipline
 

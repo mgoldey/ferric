@@ -223,6 +223,66 @@ is pose determination, not scoring"). Reducing the per-pose sd — by letting
 poses settle, or by a real pose search — is the only route to a ranking. Driving
 n up is the route to a defensible gate, and nothing more.
 
+## M5. n=100 run — the power analysis held, and the metric is refuted (2026-08-29)
+
+Raised to 100 poses/candidate per M4. `out/fit_and_rank.json`; n=40 data kept at
+`out/fit_and_rank_n40.json`.
+
+**The power analysis was correct.** Per-pose sd stayed flat (parent 46.3 → 46.3,
+NC2 50.4 → 46.7) while the SEM fell as 1/√n (7.6 → 4.9 and 8.0 → 4.7). The
+parent-vs-NC2 pair is now **resolved at 2σ**: gap 18.51 against a 13.46 bar,
+where at n=40 it was 17.84 against 22.04. Precision check **PASSES** (4.3
+kcal/mol typical SEM, 12.2 kcal/mol resolution limit).
+
+**RETRACTION.** M3 said the metric "cannot resolve deleting the distal nitrile".
+That was a statement about precision at n=40 and it is now **wrong**. At n=100
+NC2 is resolved — and it resolves on the **wrong side**:
+
+| candidate | fit (kcal/mol) | gap vs parent | 2σ bar | verdict |
+|---|---|---|---|---|
+| H1c-azetidine | −159.81 | −33.74 | 11.81 | **BETTER** |
+| **NC2-decyano** *(control)* | −144.57 | **−18.51** | 13.46 | **BETTER** ← refutation |
+| H2a-difluoro-benzylic | −135.30 | −9.23 | 12.39 | within noise |
+| H1a-defluoro | −131.48 | −5.41 | 13.68 | within noise |
+| H3c-oxadiazolone | −130.63 | −4.56 | 14.02 | within noise |
+| H1b-des-oxetane-methyl | −126.31 | −0.25 | 13.19 | within noise |
+| **parent** | **−126.07** | — | — | reference |
+| H2b-gem-dimethyl-oxetane | −124.56 | +1.51 | 13.74 | within noise |
+| H3b-acylsulfonamide | −121.12 | +4.95 | 14.70 | within noise |
+| H3a-tetrazole | −118.36 | +7.71 | 13.71 | within noise |
+| **NC1-methyl-ester** *(control)* | −22.33 | **+103.74** | 9.91 | **WORSE** ✓ |
+
+A known-inactive control scoring **significantly better** than the parent is a
+refutation of the metric, not a precision problem. More sampling made the
+verdict *stronger*, not weaker.
+
+### What the metric actually measures
+
+| comparison | magnitude |
+|---|---|
+| anion (q=−1) vs neutral (q=0) | **−109.5 kcal/mol** |
+| full spread among the 10 anions | 41.4 kcal/mol |
+| r(MW, fit) among anions only | **+0.490** |
+
+The metric is dominated by **formal charge**, which is why NC1 (the only neutral)
+separates so cleanly — that is charge detection, not pharmacophore recognition.
+With charge held constant, a size correlation appears (r = +0.490 across the ten
+anions), which was *absent* in the mixed-charge n=40 set (r = +0.132). The
+earlier "size is ruled out" statement was made on a set where a ±109 kcal/mol
+charge term swamped it; controlling for charge reverses it.
+
+**Verdict (dated, provisional): the rigid-overlay electrostatic fit metric is
+REFUTED for ranking these analogues** — not merely imprecise. It resolves formal
+charge and molecular size, and it ranks a pharmacophore-deleted control above the
+parent. No candidate ranking is reported, and `H1c`'s apparent −33.7 kcal/mol
+advantage must be read in that light: it is the largest anion-subset effect in a
+metric that correlates with size at r = +0.49.
+
+**This closes the "more sampling" route.** M4 predicted sampling could rescue the
+gate; it could not, because the gate's failure was never a precision failure.
+M4's other prediction stands and is now the operative one: the per-pose scatter
+must be *reduced* (real pose determination), not averaged down.
+
 ---
 
 ## Summary of what this campaign established
@@ -231,10 +291,10 @@ n up is the route to a defensible gate, and nothing more.
 |---|---|---|
 | 1 | Danuglipron trips **zero** structural alerts across six published catalogs; its only flag is MW 556 > 500 with cLogP 4.89. The liability is **exposure/dose**, not a toxicophore. | Measured |
 | 2 | The bound cryo-EM conformer is only **2.28 kcal/mol** above the free minimum (rank 3 of 20, spread 10.9). **Strain relief is not an available dose-reduction lever.** | Measured, negative |
-| 3 | The pocket-fit metric resolves the **ionized carboxylate anchor** decisively (+96.9 kcal/mol on the ester control) but **cannot** resolve deleting the distal nitrile (−17.8, within noise). | Measured |
-| 4 | Exactly one analogue is statistically distinguishable from the parent: **H1c-azetidine-for-piperidine**, −45.8 kcal/mol better fit, 28 Da lighter, one fewer rotatable bond. | Measured, single hypothesis |
+| 3 | The pocket-fit metric is **dominated by formal charge** (−109.5 kcal/mol anion-vs-neutral, against a 41.4 kcal/mol spread among anions). With charge controlled, it correlates with molecular size (r = +0.490). | Measured (M5) |
+| 4 | At n=100 the **NC2 control scores significantly BETTER than the parent** (−18.5, 2σ bar 13.5). A pharmacophore-deleted inactive outranking the parent **refutes** the metric — it is not a precision problem. | Measured, refutation |
 | 5 | The **H3 acid-bioisostere arm shows no electrostatic advantage** — all three within 2σ of the parent. Neither confirmed nor refuted. | Inconclusive |
-| 6 | The metric gate **FAILS** on the NC2 control, so **no candidate ranking is licensed** and none is reported. | Gate held |
+| 6 | The metric gate **FAILS**, so **no candidate ranking is licensed** and none is reported. `H1c`'s apparent advantage is confounded with size. | Gate held |
 
 ### Three self-inflicted errors this campaign caught, and how
 

@@ -16,14 +16,26 @@ fails, the correct action is to report the metric as unusable, not to publish a
 candidate ranking from it. Per CLAUDE.md: a negative result needs the same bar
 as a positive one.
 
-**OUTCOME (2026-08-29): the gate failed, and NEITHER branch above was the
-reason.** The size hypothesis was measured and is false: r(MW, fit_mean) =
-+0.132, no correlation, wrong sign. NC1 (charge anchor removed) is discriminated
-by +96.9 kcal/mol; NC2 (keeps the carboxylate, deletes a distal nitrile) is
-within noise. The limit is POSE DETERMINATION — a rigid scaffold overlay cannot
-place a substituent 10+ A from the anchor well enough to resolve it. Recorded
-here because a pre-registered hypothesis that turns out wrong is still sitting
-in the docstring above, and the next reader must not act on it.
+**OUTCOME (2026-08-29, updated after the n=100 run): the gate failed, and the
+SECOND branch above turned out to be right — but only once charge was
+controlled for.**
+
+At n=40 the size hypothesis looked false (r(MW, fit) = +0.132) and NC2 was
+merely unresolved. At n=100 both readings changed:
+
+- NC2 resolves at 2σ and scores 18.5 kcal/mol BETTER than the parent. A
+  pharmacophore-deleted inactive outranking the parent is a refutation, not a
+  precision problem — and more sampling made it stronger.
+- The metric is dominated by FORMAL CHARGE: −109.5 kcal/mol anion-vs-neutral
+  against a 41.4 kcal/mol spread among the anions. That is why NC1 (the only
+  neutral) separates so cleanly.
+- Among the ten anions, with charge held constant, r(MW, fit) = **+0.490**. The
+  earlier "+0.132, size ruled out" was measured on the mixed-charge set where
+  the charge term swamped it.
+
+So: it measures charge, then size. Recorded here because the pre-registered
+hypotheses above are still in the docstring, and the next reader must act on
+this outcome rather than on either prediction.
 
 ## Why a Pareto front and not a weighted score
 
