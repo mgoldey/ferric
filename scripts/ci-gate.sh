@@ -360,22 +360,36 @@ else
 fi
 echo
 
-# ---- 4. Python binding tests (soft gate) ---------------------------------
+# ---- 4. Python tests (soft gate) -----------------------------------------
 # The ferric-python crate is a cdylib -- cargo test cannot exercise it, so
 # Python-side regressions slip through steps 1-3. This step runs pytest if the
 # compiled extension is available; if not, it prints a note and moves on
 # without setting FAILED (soft gate -- does not block the push).
+#
+# SCOPE: both crates/ferric-python/tests/ (the binding suite) AND tools/ (the
+# active-site / tox / morph / campaign packages). tools/ was previously covered
+# by NOTHING -- .github/workflows/ci.yml is Rust-only, and this step used to
+# name only the binding path, so every test under tools/ ran solely when someone
+# invoked pytest by hand. Individual suites skip themselves when their optional
+# dependency is absent (rdkit, pdb2pqr30, the xtb binary), so adding the path is
+# safe on a machine that has none of them.
 if [[ "${CI_GATE_SKIP_PYTEST:-0}" == "1" ]]; then
     echo "-- pytest: SKIPPED (CI_GATE_SKIP_PYTEST=1) --"
 else
-echo "-- pytest (Python bindings, soft gate) --"
+echo "-- pytest (Python bindings + tools/, soft gate) --"
 SO_PATH="$(find .venv -name '*.so' -path '*/ferric/*' 2>/dev/null | head -1)"
 if [[ -z "$SO_PATH" ]]; then
     SO_PATH="target/release/libferric.so"
 fi
+PYTEST_PATHS=(crates/ferric-python/tests/)
+[[ -d tools ]] && PYTEST_PATHS+=(tools/)
 if [[ -f "$SO_PATH" ]]; then
     echo "   extension: $SO_PATH"
-    if OPENBLAS_NUM_THREADS=1 uv run --no-sync pytest crates/ferric-python/tests/ -q 2>&1; then
+    echo "   paths:     ${PYTEST_PATHS[*]}"
+    # libxtb resolves from the multiarch subdir; harmless when xtb is absent
+    # (those suites skip themselves).
+    if LD_LIBRARY_PATH="$HOME/.local/lib/x86_64-linux-gnu:$HOME/.local/lib:${LD_LIBRARY_PATH:-}" \
+       OPENBLAS_NUM_THREADS=1 uv run --no-sync pytest "${PYTEST_PATHS[@]}" -q 2>&1; then
         echo "-- pytest: PASS --"
     else
         echo "-- pytest: FAIL (soft gate -- not blocking push) --"
