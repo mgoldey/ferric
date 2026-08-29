@@ -25,6 +25,7 @@ import pytest
 
 from tools.campaign.xtb_engine import (
     HARTREE_TO_KCAL_MOL,
+    anneal,
     relax,
     singlepoint,
     verify_xtb_build,
@@ -162,3 +163,99 @@ def test_relax_refuses_to_run_when_the_build_check_fails(monkeypatch):
     assert r.energy is None
     assert "refusing to optimize" in (r.error or "")
     assert "simulated bad build" in (r.error or "")
+
+
+# ── annealing (MD pose search) ──
+#
+# `anneal` exists because geometry OPTIMIZATION cannot fix a torsional error.
+# Measured on danuglipron: relaxing a generated pose improved its RMSD to the
+# bound pose by only 0.04-0.16 A, against a 0.3-2.1 A gap to the success bar,
+# because relaxation settles bonds and angles and stays in its starting basin.
+# MD at elevated temperature crosses torsional barriers, so it can reach a
+# different basin -- which is the only mechanism here that can.
+
+def test_anneal_returns_multiple_distinct_frames():
+    frames, run = anneal(WATER_SYMBOLS, WATER, picoseconds=0.3,
+                         dump_every_fs=50.0, skip_build_check=True)
+    assert run.ok, run.error
+    assert run.n_frames == len(frames) >= 2
+    assert all(len(f) == len(WATER_SYMBOLS) for f in frames)
+    # Frames must actually differ -- identical frames would mean the dynamics
+    # never ran and we are just re-reading the input geometry.
+    assert frames[0] != frames[-1], "trajectory frames are identical; MD did not move"
+
+
+def test_anneal_frames_are_physical():
+    """Hot MD frames are distorted, but not broken: bonds must stay bonds."""
+    frames, run = anneal(WATER_SYMBOLS, WATER, picoseconds=0.3,
+                         dump_every_fs=50.0, skip_build_check=True)
+    assert run.ok, run.error
+    for f in frames:
+        oh = math.dist(f[0], f[1])
+        assert 0.7 < oh < 1.4, f"O-H {oh:.3f} A is not a bond -- frame is broken"
+
+
+def test_anneal_respects_the_pocket_field():
+    """THE reason to anneal in-pocket rather than in vacuum: the receptor must
+    bias which torsions get populated. If the field were ignored during MD (as
+    opposed to during single points), in-pocket annealing would be no better
+    than free-solution conformer generation -- the exact failure it exists to
+    fix.
+    """
+    vac, rv = anneal(WATER_SYMBOLS, WATER, picoseconds=0.3, dump_every_fs=50.0,
+                     skip_build_check=True)
+    fld, rf = anneal(WATER_SYMBOLS, WATER, picoseconds=0.3, dump_every_fs=50.0,
+                     point_charges=[(-2.0, 0.0, 0.0, 4.0)], skip_build_check=True)
+    assert rv.ok and rf.ok, (rv.error, rf.error)
+    assert vac[-1] != fld[-1], (
+        "a -2 point charge 4 Bohr away did not change the trajectory -- the "
+        "pcharge file is being ignored during MD, so in-pocket annealing would "
+        "silently be vacuum annealing"
+    )
+
+
+def test_anneal_refuses_without_a_build_check(monkeypatch):
+    """Same interlock as `relax`: MD uses GRADIENTS, which are what the
+    gfortran -O3 miscompile breaks while leaving energies intact."""
+    import tools.campaign.xtb_engine as eng
+
+    monkeypatch.setattr(eng, "verify_xtb_build", lambda: (False, "simulated bad build"))
+    frames, run = eng.anneal(WATER_SYMBOLS, WATER, picoseconds=0.1)
+    assert frames == []
+    assert not run.ok
+    assert "refusing to run MD" in (run.error or "")
+
+
+def test_anneal_reports_a_missing_binary_rather_than_raising(monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda _: None)
+    frames, run = anneal(WATER_SYMBOLS, WATER, picoseconds=0.1,
+                         skip_build_check=True)
+    assert frames == [] and not run.ok
+    assert "not on PATH" in (run.error or "")
+
+
+def test_anneal_run_never_reports_ok_without_frames():
+    """The contract `XtbRun` could not express, and which the first version of
+    `anneal` violated: ok=False with error=None. AnnealRun must always pair a
+    failure with a reason."""
+    from tools.campaign.xtb_engine import AnnealRun
+
+    bad = AnnealRun(0, False, None)
+    assert not bad.ok
+    # An ok run must have frames and no error.
+    good = AnnealRun(5, True, None)
+    assert good.ok and good.n_frames == 5 and good.error is None
+
+
+def test_trajectory_parser_handles_a_truncated_final_frame(tmp_path):
+    """xtb can be killed mid-write. A half-frame must be dropped, not returned
+    with missing atoms -- a short coordinate list would silently misalign every
+    downstream per-atom operation."""
+    from tools.campaign.xtb_engine import _read_trajectory
+
+    trj = tmp_path / "t.trj"
+    frame = "3\n energy: -5.0\nO 0.0 0.0 0.0\nH 0.96 0.0 0.0\nH -0.24 0.93 0.0\n"
+    trj.write_text(frame + frame + "3\n energy: -5.0\nO 0.0 0.0 0.0\n")
+    frames = _read_trajectory(trj, 3)
+    assert len(frames) == 2, f"expected the truncated frame to be dropped, got {len(frames)}"
+    assert all(len(f) == 3 for f in frames)

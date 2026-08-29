@@ -88,6 +88,21 @@ class XtbRun:
         return self.error is None and self.energy is not None
 
 
+@dataclass
+class AnnealRun:
+    """Outcome of an MD/annealing run.
+
+    Separate from `XtbRun` on purpose: a trajectory has no single energy, so
+    reusing `XtbRun` would leave `ok` False (it requires `energy is not None`)
+    while `error` was None -- a contradictory state that the first version of
+    `anneal` actually produced.
+    """
+    n_frames: int
+    ok: bool
+    error: str | None = None
+    stdout_tail: str = ""
+
+
 def _write_xyz(path: Path, symbols, coords_angstrom, comment="") -> None:
     lines = [str(len(symbols)), comment]
     for s, (x, y, z) in zip(symbols, coords_angstrom):
@@ -239,6 +254,132 @@ def relax(
             run.error = f"could not read xtbopt.xyz: {e}"
     shutil.rmtree(workdir, ignore_errors=True)
     return run
+
+
+def anneal(
+    symbols,
+    coords_angstrom,
+    charge: int = 0,
+    uhf: int = 0,
+    point_charges=None,
+    temperature_k: float = 500.0,
+    picoseconds: float = 5.0,
+    dump_every_fs: float = 250.0,
+    timestep_fs: float = 1.0,
+    timeout: float = 7200.0,
+    skip_build_check: bool = False,
+) -> "tuple[list[list[tuple[float, float, float]]], XtbRun]":
+    """GFN2 molecular dynamics, returning every dumped frame as a candidate pose.
+
+    ## What this is for
+
+    Conformer *generation* (ETKDG) samples free-solution torsional space. For a
+    ligand with many rotatable bonds the bound conformer is one receptor-selected
+    point in that space, and unbiased generation misses it -- measured on
+    danuglipron (9 rotatable bonds): the best of 20 generated conformers was
+    2.23 A from the bound pose against a 2.0 A success bar, and geometry
+    OPTIMIZATION only improved that by 0.04-0.16 A because relaxation settles
+    bonds and angles, not torsions.
+
+    MD at elevated temperature crosses torsional barriers, so it *can* reach a
+    different basin. Run with `point_charges` (the pocket field), the receptor
+    biases which torsions are populated -- which is the whole point. Verified
+    2026-08-29 that xtb applies the `pcharge` field during MD, not just to
+    single points: water at frame 0 gives -5.046870 Ha in a test field vs
+    -5.070374 Ha in vacuum, a 14.7 kcal/mol shift.
+
+    ## Returns
+
+    `(frames, run)` -- every dumped geometry, plus an `AnnealRun` record. Frames are
+    RAW MD snapshots: hot, unrelaxed, and NOT energy-ordered. The caller is
+    expected to relax and score them; scoring a raw frame directly compares
+    a thermally excited geometry against a relaxed one.
+
+    An empty frame list with `run.ok == False` means the MD did not run;
+    `run.error` says why.
+
+    ## Cost
+
+    5 ps at 1 fs on a 70-atom molecule is 5000 GFN2 gradient calls -- tens of
+    minutes. This is a *pose search*, priced accordingly; it is not a screening
+    step.
+    """
+    if not skip_build_check:
+        ok, err = verify_xtb_build()
+        if not ok:
+            return [], AnnealRun(
+                0, False, f"refusing to run MD: xtb build check failed -- {err}")
+
+    if not xtb_available():
+        return [], AnnealRun(0, False, "the `xtb` binary is not on PATH")
+
+    workdir = tempfile.mkdtemp(prefix="ferric-xtb-md-")
+    wd = Path(workdir)
+    _write_xyz(wd / "mol.xyz", symbols, coords_angstrom)
+    (wd / "md.inp").write_text(
+        "$md\n"
+        f"   temp={temperature_k}\n"
+        f"   time={picoseconds}\n"
+        f"   step={timestep_fs}\n"
+        f"   dump={dump_every_fs}\n"
+        "   shake=2\n"     # constrain X-H, so a 1 fs step is stable
+        "   hmass=4\n"     # hydrogen mass repartitioning, same reason
+        "$end\n"
+    )
+    if point_charges:
+        rows = [str(len(point_charges))]
+        for q, x, y, z in point_charges:
+            rows.append(f"{q:18.10f} {x:18.10f} {y:18.10f} {z:18.10f}")
+        (wd / "pcharge").write_text("\n".join(rows) + "\n")
+
+    cmd = ["xtb", "mol.xyz", "--gfn", "2", "--chrg", str(charge), "--uhf",
+           str(uhf), "--md", "--input", "md.inp"]
+    try:
+        proc = subprocess.run(cmd, cwd=workdir, env=_xtb_env(),
+                              capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        shutil.rmtree(workdir, ignore_errors=True)
+        return [], AnnealRun(0, False, f"xtb MD timed out after {timeout:.0f}s")
+
+    trj = wd / "xtb.trj"
+    if proc.returncode != 0 or not trj.exists():
+        tail = "\n".join(proc.stdout.splitlines()[-20:])
+        shutil.rmtree(workdir, ignore_errors=True)
+        return [], AnnealRun(
+            0, False,
+            f"xtb MD exited {proc.returncode} with no trajectory; "
+            f"stderr: {proc.stderr.strip()[:300]}",
+            stdout_tail=tail,
+        )
+
+    frames = _read_trajectory(trj, len(symbols))
+    shutil.rmtree(workdir, ignore_errors=True)
+    if not frames:
+        return [], AnnealRun(0, False, "xtb wrote a trajectory but no frame parsed")
+    return frames, AnnealRun(len(frames), True, None)
+
+
+def _read_trajectory(path: Path, natoms: int):
+    """Parse a multi-frame xyz trajectory into a list of coordinate arrays."""
+    lines = path.read_text().splitlines()
+    frames, i = [], 0
+    while i + 1 + natoms <= len(lines):
+        try:
+            n = int(lines[i].split()[0])
+        except (ValueError, IndexError):
+            break
+        if n != natoms:
+            break
+        coords = []
+        for row in lines[i + 2:i + 2 + n]:
+            p = row.split()
+            if len(p) < 4:
+                break
+            coords.append((float(p[1]), float(p[2]), float(p[3])))
+        if len(coords) == n:
+            frames.append(coords)
+        i += 2 + n
+    return frames
 
 
 # ── the build-provenance check ──
