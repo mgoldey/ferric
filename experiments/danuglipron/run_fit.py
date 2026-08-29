@@ -21,7 +21,25 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+# Repo root, located by a marker rather than a parent-count. `parents[2]`
+# happened to stay correct when this moved scripts/ -> experiments/ (same
+# depth), but only by luck -- a move one level deeper would have broken it
+# silently, with the driver importing nothing and failing at the first `tools.`
+# reference.
+_root = Path(__file__).resolve()
+while not (_root / "pyproject.toml").is_file():
+    if _root.parent == _root:
+        raise RuntimeError(
+            "could not locate the repo root (no pyproject.toml in any parent "
+            f"of {Path(__file__).resolve()})"
+        )
+    _root = _root.parent
+sys.path.insert(0, str(_root))
+
+# Every data path below is anchored to `_root`, not the cwd. These drivers were
+# previously cwd-relative and only worked when launched from the repo root --
+# from anywhere else they failed at the first file read with a confusing
+# "no files matching 'conf_*.xyz'".
 
 from tools.active_site.pocket_charges import derive_pocket_charges  # noqa: E402
 from tools.campaign.align import align_to_reference  # noqa: E402
@@ -43,9 +61,9 @@ from tools.morph.embed import embed_analogue  # noqa: E402
 from tools.tox.alerts import RdkitAlertsProvider  # noqa: E402
 from tools.tox.assess import assess_smiles  # noqa: E402
 
-POCKET_PDB = "testdata/molecules/c9_systems/danuglipron/7LCJ_pocket.pdb"
-ENSEMBLE = "testdata/molecules/c9_systems/danuglipron"
-OUT = Path("experiments/danuglipron/out/fit_and_rank.json")
+POCKET_PDB = _root / "testdata/molecules/c9_systems/danuglipron/7LCJ_pocket.pdb"
+ENSEMBLE = _root / "testdata/molecules/c9_systems/danuglipron"
+OUT = _root / "experiments/danuglipron/out/fit_and_rank.json"
 # Pose count per candidate. Measured convergence of the fit estimator
 # (out/convergence.log, 2026-08-29): the standard error of the mean falls as
 # 1/sqrt(n) -- 5.66 -> 3.33 -> 1.99 -> 1.35 kcal/mol at n = 5, 10, 20, 40 -- so
@@ -85,7 +103,7 @@ def main() -> int:
 
     # Free-conformer strain, from Arm A (run_arm_a_free.py), if available.
     strain_by_label: dict[str, float] = {}
-    free_json = Path("experiments/danuglipron/out/arm_a_free.json")
+    free_json = _root / "experiments/danuglipron/out/arm_a_free.json"
     free_min = None
     if free_json.exists():
         d = json.loads(free_json.read_text())

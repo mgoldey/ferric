@@ -15,13 +15,31 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+# Repo root, located by a marker rather than a parent-count. `parents[2]`
+# happened to stay correct when this moved scripts/ -> experiments/ (same
+# depth), but only by luck -- a move one level deeper would have broken it
+# silently, with the driver importing nothing and failing at the first `tools.`
+# reference.
+_root = Path(__file__).resolve()
+while not (_root / "pyproject.toml").is_file():
+    if _root.parent == _root:
+        raise RuntimeError(
+            "could not locate the repo root (no pyproject.toml in any parent "
+            f"of {Path(__file__).resolve()})"
+        )
+    _root = _root.parent
+sys.path.insert(0, str(_root))
+
+# Every data path below is anchored to `_root`, not the cwd. These drivers were
+# previously cwd-relative and only worked when launched from the repo root --
+# from anywhere else they failed at the first file read with a confusing
+# "no files matching 'conf_*.xyz'".
 
 from tools.campaign.strain import free_reference, load_xyz_ensemble  # noqa: E402
 from tools.campaign.xtb_engine import HARTREE_TO_KCAL_MOL, verify_xtb_build  # noqa: E402
 
-ENSEMBLE = "testdata/molecules/c9_systems/danuglipron"
-OUT = Path("experiments/danuglipron/out/arm_a_free.json")
+ENSEMBLE = _root / "testdata/molecules/c9_systems/danuglipron"
+OUT = _root / "experiments/danuglipron/out/arm_a_free.json"
 
 
 def main() -> int:
