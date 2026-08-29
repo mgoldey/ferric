@@ -283,6 +283,56 @@ gate; it could not, because the gate's failure was never a precision failure.
 M4's other prediction stands and is now the operative one: the per-pose scatter
 must be *reduced* (real pose determination), not averaged down.
 
+## M6. In-field pose relaxation — helps, but nowhere near enough (2026-08-29)
+
+M5 closed the "more sampling" route, leaving one option: *reduce* the per-pose
+scatter by letting each overlaid pose settle in the pocket field before scoring.
+`run_pose_relax_probe.py`. **PARTIAL RUN** — the parent completed (9 of 12 poses;
+3 dropped on rescoring), NC2 was interrupted part-way. Numbers below are the
+parent's.
+
+| | mean (kcal/mol) | sd | range | geometric spread |
+|---|---|---|---|---|
+| rigid overlay | −107.31 | 34.23 | 99.0 | 3.98 Å |
+| relaxed in field | −159.98 | 29.07 | 80.2 | 3.84 Å |
+
+**The artifact check passed.** The hypothesis stated before measuring was that a
+sd reduction would be meaningless if it came from every pose collapsing onto one
+geometry. It did not: the mean pairwise all-atom RMSD moved only 3.98 → 3.84 Å
+(4%), so the poses stay geometrically distinct. The **15% sd reduction is a real
+energetic tightening**, not a collapse.
+
+**And it is nowhere near enough.** At sd = 29.1, the SEM at n=100 would be 2.9
+kcal/mol, while the parent-vs-H1b gap that a ranking must resolve is 0.25
+kcal/mol (n=100 data). That needs
+
+    n >= 4 * 2 * 29.07^2 / 0.25^2  ≈  108,000 poses per candidate
+
+each of which is now a full in-field geometry optimization rather than a single
+point. Relaxation buys roughly a 15% sd reduction against a requirement that is
+three orders of magnitude away.
+
+**Verdict (dated, provisional): in-field relaxation is a real but marginal
+effect and does NOT rescue the metric.** Combined with M5, both routes that do
+not require new capability are now closed:
+
+| route | status |
+|---|---|
+| more poses (M4/M5) | **closed** — the failure was never precision; the metric is refuted |
+| relax poses in field (M6) | **closed** — real 15% effect, ~3 orders of magnitude short |
+| real pose search (docking) | **untested** — no docking engine available in this repo |
+
+### Known limitation in this probe
+
+3 of 12 parent poses were dropped when rescoring reported failure. Re-running
+two of them (poses 05, 07) in isolation **succeeded**, so the failures are not
+properties of those geometries — they are transient, and libxtb is not
+thread-safe, so concurrent load is the likely cause. The probe discards
+`FitResult.error` in its progress line, which is why the cause could not be read
+off the log; that is a defect in the probe's reporting, not in the measurement.
+Fix before re-running: print `fr2.error`, and do not run the probe alongside
+other xtb work.
+
 ---
 
 ## Summary of what this campaign established
@@ -318,9 +368,23 @@ next reader.
 
 ### Recommended next step, if this were continued
 
-The single blocking gap is **pose determination**, not scoring. `H1c`'s result
-is interesting but rests on a rigid scaffold overlay; and NC2 is unresolvable
-for the same reason. That needs a real pose search (docking) — not a better
-Hamiltonian, since a formal charge is already resolved cleanly at GFN2. Until
-then, `H1c-azetidine-for-piperidine` is a **hypothesis worth testing**, not a
-recommendation.
+**Both routes reachable without new capability are now closed** (M5, M6). More
+sampling cannot help — the metric is refuted, not imprecise. In-field relaxation
+is a real effect but ~3 orders of magnitude too small.
+
+What remains is a **real pose search (docking)**, which this repo has no engine
+for — checked 2026-08-29: no vina, smina, gnina, obabel, rdock, meeko. Adding one
+is a dependency decision, not a coding task, and it is the only thing that would
+make a fit ranking meaningful here.
+
+A second, independent objection stands regardless of pose quality: the metric is
+**charge-dominated** (−109.5 kcal/mol anion-vs-neutral vs a 41.4 kcal/mol spread
+among anions) and, with charge controlled, size-correlated (r = +0.490). Better
+poses would sharpen a quantity that is still measuring the wrong things. A
+scoring function with desolvation and a flexible pocket is the other half of the
+gap.
+
+`H1c-azetidine-for-piperidine` remains a **hypothesis**, and a weaker one after
+M5 than before it: its −33.7 kcal/mol advantage is the largest anion-subset
+effect in a metric that correlates with molecular size. It is not a
+recommendation and this campaign does not make one.

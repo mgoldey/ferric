@@ -143,9 +143,17 @@ def main() -> int:
             if fr2.ok:
                 relaxed_fits.append(fr2.interaction_kcal)
                 relaxed_geoms.append(rx.coords_angstrom)
-            print(f"  pose {k:02d}: rigid {fr.interaction_kcal:+8.2f} -> "
-                  f"relaxed {fr2.interaction_kcal:+8.2f} kcal/mol"
-                  if fr2.ok else f"  pose {k:02d}: rescoring failed", flush=True)
+            if fr2.ok:
+                print(f"  pose {k:02d}: rigid {fr.interaction_kcal:+8.2f} -> "
+                      f"relaxed {fr2.interaction_kcal:+8.2f} kcal/mol", flush=True)
+            else:
+                # Print the REASON. The first run swallowed it and reported a
+                # bare "rescoring failed" for 3 of 12 poses, which made a 25%
+                # dropout rate undiagnosable from the log. (Re-running two of
+                # them in isolation succeeded, so they are transient -- libxtb
+                # is not thread-safe, so do not run this alongside other xtb
+                # work.)
+                print(f"  pose {k:02d}: rescoring failed -- {fr2.error}", flush=True)
 
         dt = time.time() - t0
         rec = {"n_rigid": len(rigid_fits), "n_relaxed": len(relaxed_fits),

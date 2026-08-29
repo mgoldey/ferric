@@ -1,0 +1,31 @@
+xtb build check: PASS
+pocket: 6458 charges
+
+=== parent (q=-1) ===
+  pose 00: rigid   -52.65 -> relaxed  -190.92 kcal/mol
+  pose 01: rigid  -118.70 -> relaxed  -195.74 kcal/mol
+  pose 02: rigid   -88.60 -> relaxed  -115.52 kcal/mol
+  pose 03: rigid   -70.18 -> relaxed  -136.23 kcal/mol
+  pose 04: rigid  -151.62 -> relaxed  -156.77 kcal/mol
+  pose 05: rescoring failed
+  pose 06: rigid  -141.24 -> relaxed  -184.14 kcal/mol
+  pose 07: rescoring failed
+  pose 08: rescoring failed
+  pose 09: rigid  -116.89 -> relaxed  -162.43 kcal/mol
+  pose 10: rigid   -87.93 -> relaxed  -172.96 kcal/mol
+  pose 11: rigid  -138.02 -> relaxed  -125.13 kcal/mol
+  -> rigid   mean  -110.11  sd  37.73  geom spread 3.98 A
+  -> relaxed mean  -159.98  sd  29.07  geom spread 3.84 A
+  (272s)
+
+=== NC2-decyano (q=-1) ===
+  pose 00: rigid  -144.54 -> relaxed  -215.74 kcal/mol
+  pose 01: rigid  -131.65 -> relaxed  -195.56 kcal/mol
+  pose 02: rigid  -184.94 -> relaxed  -174.37 kcal/mol
+  pose 03: rigid  -202.83 -> relaxed  -204.41 kcal/mol
+  pose 04: rigid   -65.14 -> relaxed  -214.59 kcal/mol
+  pose 05: rigid  -160.46 -> relaxed  -188.42 kcal/mol
+  pose 06: rigid  -161.09 -> relaxed  -138.71 kcal/mol
+  pose 07: rigid  -138.44 -> relaxed  -257.69 kcal/mol
+  pose 08: rigid  -120.17 -> relaxed  -216.91 kcal/mol
+  pose 09: rigid  -161.47 -> relaxed  -224.97 kcal/mol
