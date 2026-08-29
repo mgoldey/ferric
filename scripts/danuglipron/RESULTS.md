@@ -333,6 +333,75 @@ off the log; that is a defect in the probe's reporting, not in the measurement.
 Fix before re-running: print `fr2.error`, and do not run the probe alongside
 other xtb work.
 
+## M7. The real root cause: CANDIDATE GENERATION, not scoring (2026-08-29)
+
+Prompted by the observation that the same molecule spans ~5x more energy across
+its own poses (228 kcal/mol) than the entire designed candidate set spans between
+molecules (41 kcal/mol). That ratio is diagnostic: it says the pose ensemble, not
+the chemistry, is what the metric is responding to.
+
+Tracing back past the fit stage:
+
+**The alignment code is correct.** Aligning the bound pose onto itself gives
+**RMSD = 0.0000 Å** over all 41 heavy atoms. So the 2–4 Å scaffold fits reported
+throughout M3–M6 are not an alignment defect — they are real conformational
+mismatch.
+
+**Every generated conformer misses the bound pose:**
+
+| conformer | scaffold RMSD vs bound pose |
+|---|---|
+| `conf_00_cryo_em` (the reference itself) | 0.00 Å |
+| `conf_02_rdkit` — **best generated** | **2.23 Å** |
+| `conf_14_rdkit` | 2.70 Å |
+| `conf_01_pubchem` | 3.05 Å |
+| remaining 16 RDKit conformers | 3.14 – 3.70 Å |
+
+The conventional bar for a successful docking pose is **RMSD < 2.0 Å**. **Not one
+of the 20 committed conformers clears it**, and freshly embedded ensembles behave
+the same (2.3–4.1 Å across 12 poses of the parent).
+
+### Why this was inevitable, not bad luck
+
+Danuglipron has **9 rotatable bonds** over 41 heavy atoms. ETKDG samples the
+*free-solution* torsional space; the bound conformer is one specific point in
+that space, selected by the receptor. The chance that unbiased conformer
+generation lands within 2 Å of it is small, and it does not improve with more
+conformers in any practical number — the 20-member ensemble's best is 2.23 Å and
+100 freshly embedded poses did no better.
+
+So the campaign was **scoring the wrong geometries from the start**. Every
+downstream measurement inherits it:
+
+- the ~46 kcal/mol per-pose scatter (M4) is the spread over *non-bound* poses;
+- the charge/size domination (M5) is what a scoring function reports when the
+  specific contacts are absent — with no salt bridge in place, only the
+  monopole and molecular volume remain;
+- the 15% relaxation effect (M6) is small precisely because relaxation cannot
+  fix a torsional mismatch — it settles bond lengths and angles, not a 3 Å
+  scaffold displacement.
+
+**This supersedes the M5/M6 framing.** Those measurements are still valid as
+measurements, but the verdict "the metric is refuted" is too narrow: the metric
+was never given a fair test. The correct statement is that **candidate pose
+generation failed**, and no scoring function — ferric's or anyone's — can rank
+poses that are 3 Å from the binding mode.
+
+### What this changes about the next step
+
+Previously recorded as "needs docking". That is still true but now for a sharper
+reason: the missing capability is not pose *refinement*, it is pose *search* —
+something that biases conformer generation toward the receptor rather than
+sampling free-solution torsions and hoping. A constrained embed against the bound
+scaffold (RDKit `ConstrainedEmbed` / core-constrained ETKDG) is the cheap version
+of that and is available here; full docking is the proper version.
+
+**That is the single highest-value next experiment**, and it is testable with the
+existing pipeline: constrain each analogue's shared scaffold to the bound pose's
+coordinates, generate only the modified region, and re-run. If pose generation is
+really the root cause, the per-pose scatter should collapse and the controls
+should separate correctly.
+
 ---
 
 ## Summary of what this campaign established
@@ -340,13 +409,13 @@ other xtb work.
 | # | Finding | Status |
 |---|---|---|
 | 1 | Danuglipron trips **zero** structural alerts across six published catalogs; its only flag is MW 556 > 500 with cLogP 4.89. The liability is **exposure/dose**, not a toxicophore. | Measured |
-| 2 | The bound cryo-EM conformer is only **2.28 kcal/mol** above the free minimum (rank 3 of 20, spread 10.9). **Strain relief is not an available dose-reduction lever.** | Measured, negative |
-| 3 | The pocket-fit metric is **dominated by formal charge** (−109.5 kcal/mol anion-vs-neutral, against a 41.4 kcal/mol spread among anions). With charge controlled, it correlates with molecular size (r = +0.490). | Measured (M5) |
-| 4 | At n=100 the **NC2 control scores significantly BETTER than the parent** (−18.5, 2σ bar 13.5). A pharmacophore-deleted inactive outranking the parent **refutes** the metric — it is not a precision problem. | Measured, refutation |
-| 5 | The **H3 acid-bioisostere arm shows no electrostatic advantage** — all three within 2σ of the parent. Neither confirmed nor refuted. | Inconclusive |
-| 6 | The metric gate **FAILS**, so **no candidate ranking is licensed** and none is reported. `H1c`'s apparent advantage is confounded with size. | Gate held |
+| 2 | The bound cryo-EM conformer is only **2.28 kcal/mol** above the free minimum (rank 3 of 20, spread 10.9). **Strain relief is not an available dose-reduction lever.** This result is independent of #3 — it uses the committed bound geometry directly and never relies on generated poses. | Measured, negative |
+| 3 | **ROOT CAUSE — candidate pose generation failed.** No generated conformer reaches the bound pose: best is **2.23 Å**, against the conventional **< 2.0 Å** docking-success bar; the other 19 are 2.7–3.7 Å. The alignment code is correct (self-alignment = 0.0000 Å), so this is real conformational mismatch. With 9 rotatable bonds, unbiased ETKDG was never likely to hit the receptor-selected torsion set. | Measured (M7) |
+| 4 | Everything downstream inherits #3. The pocket-fit metric being **charge-dominated** (−109.5 vs a 41.4 kcal/mol anion spread) and size-correlated (r = +0.490) is what a scoring function reports when the specific contacts are simply **absent from the geometry**. | Measured (M5), reinterpreted |
+| 5 | At n=100 the **NC2 control scores significantly BETTER than the parent** (−18.5, 2σ bar 13.5) — consistent with #3: poses 3 Å off the binding mode cannot express a pharmacophore difference. | Measured (M5) |
+| 6 | The metric gate **FAILS**, so **no candidate ranking is licensed** and none is reported. `H1c`'s apparent advantage is confounded with both size and pose error. | Gate held |
 
-### Three self-inflicted errors this campaign caught, and how
+### Four self-inflicted errors this campaign caught, and how
 
 Recorded because the catching mechanism is the transferable part:
 
@@ -358,6 +427,14 @@ Recorded because the catching mechanism is the transferable part:
 3. **Wrong noise statistic** — precision judged by a pose *range*, which grows
    with n, instead of the SEM, which shrinks as 1/√n. Caught by a
    **convergence probe** that measured whether the estimator converged at all.
+4. **Never validated the input geometries** (M7) — the most expensive error, and
+   the one that invalidated the most work. Four measurement rounds were spent
+   characterising a metric that was being fed poses 2–4 Å from the binding mode.
+   The check that would have caught it on day one costs one line: align the
+   generated conformers onto the known bound pose and look at the RMSD. It was
+   never run because the bound pose was treated as a *scoring reference* rather
+   than as *ground truth for pose generation* — the campaign had it in hand the
+   whole time and never used it that way.
 
 Error 2 is the one worth dwelling on: the gate's original failure message
 *asserted* the cause was "tracking molecular size". That was measured and found

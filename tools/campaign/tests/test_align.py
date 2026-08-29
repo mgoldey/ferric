@@ -236,3 +236,89 @@ def test_relabelled_atoms_are_a_known_limitation_not_a_silent_win(ensemble):
         "label permutation is now detected -- good; update this test and the "
         "align.py docstring, which currently document it as undetected"
     )
+
+
+# ── the pose-quality gate ──
+#
+# This gate exists because its absence was the most expensive error in the
+# campaign (RESULTS.md M7). Four rounds of measurement characterised a scoring
+# metric that was being fed poses 2-4 A from the binding mode. The check costs
+# one alignment per pose and would have caught it immediately.
+
+def test_pose_quality_gate_rejects_an_all_bad_ensemble():
+    from tools.campaign.align import AlignedPose, pose_quality_gate
+
+    poses = [AlignedPose(["C"], [(0.0, 0.0, 0.0)], 10, r) for r in (2.23, 3.1, 3.7)]
+    passed, detail = pose_quality_gate(poses)
+    assert not passed
+    assert "NO USABLE POSE" in detail
+    assert "2.23" in detail
+
+
+def test_pose_quality_gate_accepts_one_good_pose():
+    """Reachability: a single sub-2 A pose is enough to proceed, or the gate
+    would reject every ensemble regardless of quality."""
+    from tools.campaign.align import AlignedPose, pose_quality_gate
+
+    poses = [AlignedPose(["C"], [(0.0, 0.0, 0.0)], 10, r) for r in (1.4, 3.1, 3.7)]
+    passed, detail = pose_quality_gate(poses)
+    assert passed
+    assert "1/3 poses within 2.0" in detail
+
+
+def test_pose_quality_gate_handles_an_empty_or_failed_ensemble():
+    from tools.campaign.align import AlignedPose, pose_quality_gate
+
+    assert not pose_quality_gate([])[0]
+    failed = [AlignedPose(["C"], [], 0, float("nan"), error="boom")]
+    passed, detail = pose_quality_gate(failed)
+    assert not passed
+    assert "nothing to assess" in detail
+
+
+def test_committed_danuglipron_ensemble_fails_the_pose_quality_gate(ensemble):
+    """Pins the M7 finding on the real data: not one of the 20 committed
+    conformers reaches the bound pose within 2 A.
+
+    If a future data refresh adds a genuinely bound-like conformer, this test
+    fails and the campaign's central limitation has changed -- which is exactly
+    when someone should be told.
+    """
+    from tools.campaign.align import align_to_reference, pose_quality_gate
+
+    i_ref = ensemble.labels.index("conf_00_cryo_em")
+    aligned = []
+    for lbl, syms, coords in zip(ensemble.labels, ensemble.symbols_per_conformer,
+                                 ensemble.conformers):
+        if lbl == "conf_00_cryo_em":
+            continue  # the reference itself is trivially 0.00 A
+        aligned.append(align_to_reference(
+            DANU, syms, coords,
+            DANU, ensemble.symbols_per_conformer[i_ref], ensemble.conformers[i_ref],
+        ))
+
+    passed, detail = pose_quality_gate(aligned)
+    assert not passed, (
+        "a committed conformer now reaches the bound pose within 2 A -- the "
+        f"M7 limitation may no longer hold: {detail}"
+    )
+    assert "NO USABLE POSE" in detail
+
+
+def test_reference_aligned_onto_itself_is_exactly_zero(ensemble):
+    """The anchor that proved the alignment code was NOT the problem. If this
+    ever drifts, the M7 diagnosis (real conformational mismatch, not an
+    alignment defect) must be re-examined."""
+    from tools.campaign.align import align_to_reference
+
+    i = ensemble.labels.index("conf_00_cryo_em")
+    al = align_to_reference(
+        DANU, ensemble.symbols_per_conformer[i], ensemble.conformers[i],
+        DANU, ensemble.symbols_per_conformer[i], ensemble.conformers[i],
+    )
+    assert al.ok
+    assert al.n_matched_atoms == 41, "all 41 heavy atoms must match"
+    assert al.rmsd_angstrom < 1e-9, (
+        f"self-alignment gave {al.rmsd_angstrom:.6f} A, not ~0 -- the alignment "
+        "itself is now suspect and M7's diagnosis needs re-checking"
+    )

@@ -94,6 +94,63 @@ def kabsch(mobile: np.ndarray, target: np.ndarray) -> tuple[np.ndarray, np.ndarr
     return R, ct - cm @ R.T, rmsd
 
 
+# Conventional bar for a successful docking pose (Kramer/Gedeck and the wider
+# docking literature). A pose beyond this is not "slightly off" -- it is a
+# different binding mode, and no scoring function can rank it meaningfully.
+DOCKING_SUCCESS_RMSD_ANGSTROM = 2.0
+
+
+def pose_quality_gate(
+    aligned: "list[AlignedPose]",
+    threshold_angstrom: float = DOCKING_SUCCESS_RMSD_ANGSTROM,
+) -> tuple[bool, str]:
+    """Are ANY generated poses close enough to a known bound pose to score?
+
+    **Run this before scoring anything.** It is the check whose absence cost
+    this campaign four measurement rounds (2026-08-29): the fit metric was
+    characterised in detail -- precision, charge confound, size correlation,
+    relaxation response -- while being fed poses 2-4 A from the binding mode.
+    Every one of those measurements was valid and none of them mattered,
+    because the geometries could not express the differences being ranked.
+
+    The measurement that should have come first: align the generated conformers
+    onto the experimentally determined pose and look at the RMSD. On the
+    committed danuglipron ensemble the best of 20 was **2.23 A** and the rest
+    2.70-3.70 A, against a 2.0 A success bar -- i.e. zero usable poses.
+
+    Why unbiased conformer generation fails here, and will fail again on any
+    similar target: danuglipron has 9 rotatable bonds over 41 heavy atoms.
+    ETKDG samples FREE-SOLUTION torsional space; the bound conformer is one
+    receptor-selected point in it. More conformers does not fix this in any
+    practical number (100 fresh poses did no better than the committed 20).
+    The fix is to CONSTRAIN generation to the bound scaffold, or to dock.
+
+    Returns `(passed, detail)`. `passed` is True only if at least one pose is
+    within `threshold_angstrom`.
+    """
+    usable = [a for a in aligned if a.ok]
+    if not usable:
+        return False, "no pose could be aligned at all; nothing to assess"
+
+    rmsds = sorted(a.rmsd_angstrom for a in usable)
+    best = rmsds[0]
+    n_ok = sum(1 for r in rmsds if r <= threshold_angstrom)
+    if n_ok == 0:
+        return False, (
+            f"NO USABLE POSE: best scaffold RMSD vs the reference pose is "
+            f"{best:.2f} A over {len(usable)} poses, against a "
+            f"{threshold_angstrom:.1f} A docking-success bar. These geometries "
+            "are a different binding mode, so no scoring function can rank them "
+            "meaningfully -- any fit number computed from them measures the "
+            "pose error, not the chemistry. Constrain conformer generation to "
+            "the bound scaffold, or dock."
+        )
+    return True, (
+        f"{n_ok}/{len(usable)} poses within {threshold_angstrom:.1f} A "
+        f"(best {best:.2f} A)"
+    )
+
+
 def align_by_index_map(
     symbols: list[str],
     coords_angstrom: list[tuple[float, float, float]],
