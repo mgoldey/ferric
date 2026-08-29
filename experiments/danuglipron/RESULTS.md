@@ -402,6 +402,93 @@ coordinates, generate only the modified region, and re-run. If pose generation i
 really the root cause, the per-pose scatter should collapse and the controls
 should separate correctly.
 
+## M8. Simulated annealing as a pose search — closed (2026-08-29)
+
+M7 showed the error is TORSIONAL, and relaxation cannot fix a torsional error
+(0.04-0.16 A). MD at elevated temperature can cross torsional barriers, so it
+was the one mechanism available here that could. Tested on the parent, where the
+bound pose is known exactly. 4 ps at 500 K, 20 frames, 3 independent starts, run
+BOTH in the pocket field and in vacuum as the control.
+
+| start | start RMSD | in-field best | vacuum best |
+|---|---|---|---|
+| 0 | 3.29 | 3.17 | **2.41** |
+| 1 | 2.70 | 2.70 | **2.43** |
+| 2 | 4.08 | **2.98** | 3.20 |
+| **mean of best** | 3.36 | 2.95 | **2.68** |
+
+**Best frame anywhere: 2.41 A. The 2.0 A bar is not reached from any start, in
+either condition.**
+
+Against the three hypotheses stated before measuring:
+
+- **"annealing works"** — NO. Mean improvement +0.41 A. Better than relaxation's
+  0.04-0.16 A, and still ~0.4 A short.
+- **"thermal noise"** — largely YES. The MEAN over frames got *worse* than the
+  starting pose in the in-field runs (3.42 vs a 3.36 mean start), i.e. a typical
+  frame is worse than where it began; only the best frame improves, which is
+  what sampling noise looks like.
+- **"the field does nothing"** — worse than nothing: **vacuum BEAT in-field on 2
+  of 3 starts** (2.68 vs 2.95 A mean best). But the 0.27 A difference is only
+  **25% of the 1.07 A within-run spread**, so at n=3 this does NOT support "the
+  field hurts". The supportable claim is that the pocket field provides **no
+  detectable guidance at this timescale**.
+
+### Why 4 ps was never going to be enough — and why that is my error
+
+At 500 K, kT = 0.99 kcal/mol. A 5 kcal/mol benzylic torsional barrier has a
+Boltzmann factor of 6.5e-3; reorganizing **9 rotatable bonds** requires crossing
+several such barriers, which is a **nanosecond** process. 4 ps is ~3 orders of
+magnitude short.
+
+So this run was underpowered by construction, in the same way the campaign's
+original pose generation was — and I nearly filed it as a clean method failure.
+The measured cost of doing it properly (141 s/ps on this system):
+
+| timescale | per anneal | 11 candidates x 3 starts |
+|---|---|---|
+| 4 ps (run) | 9 min | — |
+| 20 ps | 47 min | 26 h serial / ~2 h on 12 cores |
+| 100 ps | 3.9 h | 129 h serial / ~11 h on 12 cores |
+
+**Verdict (dated, provisional): MD-as-pose-search is CLOSED as a practical
+route** — not because it was disproven at an adequate timescale, but because
+reaching an adequate timescale means using a 141 s/ps method for a job a
+purpose-built search does in seconds. Metadynamics (`xtb --metadyn`) would reach
+in tens of ps what plain MD needs ns for, but that is still working around a
+missing dependency rather than fixing the gap.
+
+### What we built vs what docking is
+
+| | this pipeline | docking |
+|---|---|---|
+| search | **none** — Kabsch is a least-squares FIT of a fixed internal geometry | MC + BFGS over 6 rigid-body DOF + 9 torsions |
+| poses evaluated | ~10^2 | 10^5 - 10^7 |
+| per-pose cost | ~0.5 s (GFN2 SP) | ~10 us (empirical sum) |
+| pocket | rigid classical charges | rigid, but pose-aware scoring |
+| score | electrostatics/polarization only | empirical, calibrated to binding data |
+
+Nothing in this pipeline ever proposes a pose and asks whether the pocket likes
+it. Conformers are generated in FREE SOLUTION, ignoring the receptor, then
+rigidly superimposed. That is a **rescoring** pipeline — a legitimate and
+standard technique, but one that presupposes poses from elsewhere. We built the
+second half of "dock, then rescore" and never had the first.
+
+Where this pipeline is genuinely better: GIVEN a correct pose, GFN2 in a real
+point-charge field captures polarization no empirical function does — which is
+why the anion/neutral distinction showed up as a clean 143 kcal/mol effect (M5).
+
+### The unblocking step
+
+**AutoDock Vina 1.2.7 + Meeko 0.8.0**, both pure-pip with no compilation
+(checked 2026-08-29); Apache-2.0 on the engine, LGPL-2.1 on the prep layer.
+gnina is not on PyPI (needs a CUDA source build).
+
+First test is self-validating: **redock danuglipron into 7LCJ and measure RMSD
+against the known bound pose.** Vina's published redocking success is ~60-80%
+under 2 A; if it cannot reproduce a pose we already hold, that is known in
+minutes rather than after committing to the analogue set.
+
 ---
 
 ## Summary of what this campaign established

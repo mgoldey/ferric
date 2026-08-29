@@ -1,0 +1,24 @@
+xtb build check: PASS
+pocket: 6458 charges; target bar 2.0 A
+
+=== start 0: rigid overlay is 3.29 A from bound ===
+  in_field  20 frames  best  3.17  mean  3.38  worst  3.75  (start 3.29, gain +0.12)  564s
+  vacuum    20 frames  best  2.41  mean  2.79  worst  3.29  (start 3.29, gain +0.88)  681s
+
+=== start 1: rigid overlay is 2.70 A from bound ===
+  in_field  20 frames  best  2.70  mean  3.47  worst  4.22  (start 2.70, gain +0.00)  581s
+  vacuum    20 frames  best  2.43  mean  2.75  worst  3.02  (start 2.70, gain +0.27)  657s
+
+=== start 2: rigid overlay is 4.08 A from bound ===
+  in_field  20 frames  best  2.98  mean  3.40  worst  4.08  (start 4.08, gain +1.10)  577s
+  vacuum    20 frames  best  3.20  mean  3.78  worst  4.26  (start 4.08, gain +0.88)  680s
+
+==========================================================================
+best in-field frame:        2.70 A (over the 2.0 A bar)
+mean improvement vs start:  +0.41 A
+  (plain relaxation achieves only 0.04-0.16 A, RESULTS.md M7)
+best VACUUM frame:          2.41 A
+  field advantage:          -0.28 A (field does NOT help)
+==========================================================================
+
+wrote /home/matt/qc/ferric/experiments/danuglipron/out/anneal_poses.json
