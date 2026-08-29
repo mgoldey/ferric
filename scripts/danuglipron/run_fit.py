@@ -28,6 +28,7 @@ from tools.campaign.align import align_to_reference  # noqa: E402
 from tools.campaign.fit import pose_fit  # noqa: E402
 from tools.campaign.rank import (  # noqa: E402
     Candidate,
+    charge_confound,
     fit_discriminates_controls,
     format_table,
     noise_exceeds_signal,
@@ -102,6 +103,7 @@ def main() -> int:
         cand = Candidate(
             label=ana.label, smiles=ana.smiles, hypothesis=ana.hypothesis,
             is_negative_control=ana.is_negative_control,
+            net_charge=ana.net_charge,
         )
 
         tox = assess_smiles(ana.smiles, providers=[tox_provider], label=ana.label)
@@ -263,6 +265,13 @@ def main() -> int:
     print("PRECISION CHECK:", "PASS" if precision.passed else "FAIL")
     print(" ", precision.detail)
     print()
+    # Reported BEFORE the metric gate, because a charge-dominated set makes the
+    # gate's verdict uninterpretable in both directions: a control that
+    # separates cleanly may be separating on ionization state alone.
+    confound = charge_confound(candidates)
+    print("CHARGE CONFOUND:", "PASS" if confound.passed else "FAIL")
+    print(" ", confound.detail)
+    print()
     gate = fit_discriminates_controls(candidates)
     print("METRIC GATE:", "PASS" if gate.passed else "FAIL")
     print(" ", gate.detail)
@@ -285,6 +294,8 @@ def main() -> int:
         "gate_control_fits_kcal": gate.control_fits,
         "precision_passed": precision.passed,
         "precision_detail": precision.detail,
+        "charge_confound_passed": confound.passed,
+        "charge_confound_detail": confound.detail,
         "ranking_axis": "mean interaction energy over a fixed number of aligned poses "
                         "(NOT the min, which is a biased estimator whose bias grows "
                         "with sample count)",

@@ -306,3 +306,64 @@ def test_precision_check_ignores_candidates_missing_either_value():
     ]
     r = noise_exceeds_signal(cands)
     assert not r.passed, "the precision-free candidate diluted the mean SEM"
+
+
+# ── the charge confound ──
+#
+# This check exists because the campaign was misled by exactly this. The one
+# neutral candidate (the methyl-ester control) separated from the ten anions by
+# 109.5 kcal/mol against a 41.4 kcal/mol spread among the anions themselves.
+# That clean separation read as "the metric discriminates the pharmacophore"
+# when it was measuring ionization state.
+
+def test_charge_confound_flags_a_mixed_charge_set():
+    from tools.campaign.rank import charge_confound
+
+    cands = [Candidate(f"anion{i}", fit_kcal=f, net_charge=-1)
+             for i, f in enumerate([-120.0, -140.0, -160.0])]
+    cands.append(Candidate("neutral", fit_kcal=-22.0, net_charge=0))
+    r = charge_confound(cands)
+    assert not r.passed
+    assert "CHARGE-DOMINATED" in r.detail
+    assert "ionization" in r.detail
+
+
+def test_charge_confound_passes_for_a_single_charge_state():
+    """The clean case: everything at the same charge, nothing to confound."""
+    from tools.campaign.rank import charge_confound
+
+    cands = [Candidate(f"a{i}", fit_kcal=f, net_charge=-1)
+             for i, f in enumerate([-120.0, -140.0, -160.0])]
+    r = charge_confound(cands)
+    assert r.passed
+    assert "every scored candidate has net charge -1" in r.detail
+
+
+def test_charge_confound_passes_when_within_spread_exceeds_between():
+    """Reachability the other way: a mixed-charge set where charge is NOT the
+    dominant axis must pass, or the check is an unconditional rejection of any
+    mixed set rather than a measurement."""
+    from tools.campaign.rank import charge_confound
+
+    cands = [Candidate("a", fit_kcal=-10.0, net_charge=-1),
+             Candidate("b", fit_kcal=-90.0, net_charge=-1),
+             Candidate("c", fit_kcal=-45.0, net_charge=0),
+             Candidate("d", fit_kcal=-55.0, net_charge=0)]
+    r = charge_confound(cands)
+    assert r.passed, r.detail
+
+
+def test_charge_confound_reproduces_the_campaign_numbers():
+    """Pin the real case: 10 anions plus 1 neutral must be flagged."""
+    from tools.campaign.rank import charge_confound
+
+    anions = [-159.8, -144.6, -135.3, -131.5, -130.6, -126.3, -126.1, -124.6,
+              -121.1, -118.4]
+    cands = [Candidate(f"a{i}", fit_kcal=f, net_charge=-1)
+             for i, f in enumerate(anions)]
+    cands.append(Candidate("NC1-methyl-ester", fit_kcal=-22.3, net_charge=0,
+                           is_negative_control=True))
+    r = charge_confound(cands)
+    assert not r.passed
+    # between ~ -132 vs -22 = ~110; within (anions) ~ 41
+    assert "109" in r.detail or "110" in r.detail or "111" in r.detail

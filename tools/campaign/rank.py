@@ -63,6 +63,10 @@ class Candidate:
     smiles: str = ""
     hypothesis: str = ""
     is_negative_control: bool = False
+    # Net formal charge of the SCORED species. Carried because an electrostatic
+    # fit scales with it: comparing across charge states measures ionization
+    # rather than structure (see `charge_confound`).
+    net_charge: int = 0
     # Higher = more liability (from tools.tox). Rank-only, dimensionless.
     liability: float | None = None
     # Interaction energy with the pocket, kcal/mol. MORE NEGATIVE IS BETTER.
@@ -270,6 +274,65 @@ def noise_exceeds_signal(candidates: list[Candidate]) -> GateResult:
         f"({SIGNIFICANCE_SIGMA:g} sigma on a {sem:.1f} kcal/mol standard error). "
         "NOTE this licenses only differences that individually clear that limit "
         "-- check pairwise before ranking two close candidates.",
+    )
+
+
+def charge_confound(candidates: list[Candidate]) -> GateResult:
+    """Is the fit metric dominated by net formal charge rather than structure?
+
+    An electrostatic interaction with a charged pocket scales with the ligand's
+    net charge, so a candidate set that MIXES charge states will separate on
+    charge first and on everything else second. Comparing a q=-1 candidate with
+    a q=0 one then measures ionization state, not complementarity.
+
+    Measured on this campaign (2026-08-29, n=100): the anion-vs-neutral gap was
+    **-109.5 kcal/mol** against a **41.4 kcal/mol** spread among the ten anions.
+    The one neutral in the set (the methyl-ester control) separated cleanly for
+    that reason alone -- which looked like the metric working, and was not.
+
+    `passed=True` means charge does NOT dominate: either every candidate shares
+    a charge state, or the between-charge gap is smaller than the within-charge
+    spread.
+    """
+    scored = [c for c in candidates if c.fit_kcal is not None]
+    if len(scored) < 2:
+        return GateResult(False, "cannot assess: fewer than two scored candidates")
+
+    by_q: dict[int, list[float]] = {}
+    for c in scored:
+        by_q.setdefault(c.net_charge, []).append(c.fit_kcal)
+
+    if len(by_q) == 1:
+        q = next(iter(by_q))
+        return GateResult(
+            True,
+            f"no charge confound possible: every scored candidate has net "
+            f"charge {q:+d}",
+        )
+
+    means = {q: sum(v) / len(v) for q, v in by_q.items()}
+    between = max(means.values()) - min(means.values())
+    within = max(
+        (max(v) - min(v)) for v in by_q.values() if len(v) > 1
+    ) if any(len(v) > 1 for v in by_q.values()) else 0.0
+
+    detail_groups = ", ".join(
+        f"q={q:+d}: n={len(by_q[q])}, mean {means[q]:.1f}" for q in sorted(by_q)
+    )
+    if between > within:
+        return GateResult(
+            False,
+            f"CHARGE-DOMINATED: the between-charge-state gap is {between:.1f} "
+            f"kcal/mol while the widest within-state spread is only "
+            f"{within:.1f} kcal/mol ({detail_groups}). Comparisons ACROSS charge "
+            "states measure ionization, not complementarity -- compare within a "
+            "charge state, and treat a cleanly separating mixed-charge control "
+            "as charge detection rather than evidence the metric works.",
+        )
+    return GateResult(
+        True,
+        f"charge does not dominate: between-state gap {between:.1f} vs "
+        f"within-state spread {within:.1f} kcal/mol ({detail_groups})",
     )
 
 
