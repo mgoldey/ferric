@@ -34,6 +34,10 @@
 //! surface small: [`resolve_budget_bytes`], [`resolve_budget`],
 //! [`detect_available_bytes`], and [`gib_to_bytes`].
 
+/// [`MemoryPlan`](plan::MemoryPlan): a memory budget as a value you spend and
+/// account for, rather than a ceiling every call site re-reads independently.
+pub mod plan;
+
 /// Final fallback budget when nothing else resolves: 2 GiB.
 pub const DEFAULT_BUDGET_BYTES: usize = 2 * 1024 * 1024 * 1024;
 
