@@ -364,8 +364,15 @@ pub fn laplace_ri_mp2(
     rhf: &ScfResult,
     n_quad: usize,
     frozen_core: usize,
+    memory_budget_bytes: Option<usize>,
 ) -> Result<LaplaceMp2Result, FerricError> {
     let mut laplace = LaplaceMp2::new(n_quad);
+    // Without this the CLI's `laplace-mp2` arm discarded `[memory] budget_gb`
+    // entirely: `LaplaceMp2::memory_budget_bytes` exists precisely so callers
+    // can set a budget without changing `compute_ao`'s signature (see the
+    // field's own doc), but this entry point never set it — so only the
+    // sibling `laplace-sos-mp2` arm was ever rewired when that bug was fixed.
+    laplace.memory_budget_bytes = memory_budget_bytes;
     let (mp2_corr, e_os, e_ss) = laplace.compute_ao(mol, obs, dfbs, op, rhf, frozen_core, None)?;
     Ok(LaplaceMp2Result {
         total_energy: rhf.energy + mp2_corr,

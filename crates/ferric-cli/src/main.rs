@@ -519,7 +519,7 @@ pub fn main() {
         "ksdft" => run_ksdft(&cfg, &bs, &prep, &result),
         "rimp2" => run_rimp2(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
         "lmp2" => run_lmp2(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
-        "mp3" => run_mp3(&cfg, &mol, &bs, &prep, op, &result),
+        "mp3" => run_mp3(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
         "oo-rimp2" => run_oo_rimp2(&cfg, &mol, &bs, &prep, op, &bounds, &result, budget_bytes, rhf_config.external_potential.as_ref()),
         "att-rimp2" => run_att_rimp2(&cfg, &mol, &bs, &prep, &result, budget_bytes),
         "mp2-v" => run_mp2_v(&cfg, &mol, &bs, &prep, &result, budget_bytes),
@@ -528,7 +528,7 @@ pub fn main() {
         "scs-mp2-2terfc" => run_scs_mp2_2terfc(&cfg, &mol, &bs, &prep, &result, budget_bytes),
         "ccsd" => run_ccsd(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
         "linlccd" => run_linlccd(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
-        "laplace-mp2" => run_laplace_mp2(&cfg, &mol, &bs, &prep, op, &result),
+        "laplace-mp2" => run_laplace_mp2(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
         "laplace-sos-mp2" => {
             run_laplace_sos_mp2(&cfg, &mol, &bs, &prep, op, &result, budget_bytes)
         }
@@ -681,6 +681,7 @@ fn run_mp3(
     prep: &PreparedBasis,
     op: Operator,
     result: &ferric_scf::result::ScfResult,
+    budget_bytes: Option<usize>,
 ) {
     let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
@@ -691,7 +692,7 @@ fn run_mp3(
         eprintln!("error: {e}");
         std::process::exit(1);
     });
-    let mp3_result = mp3_energy(mol, prep, &dfbs, op, result, cfg.mp2.frozen_core)
+    let mp3_result = mp3_energy(mol, prep, &dfbs, op, result, cfg.mp2.frozen_core, budget_bytes)
         .unwrap_or_else(|e| {
             eprintln!("error: {e}");
             std::process::exit(1);
@@ -1471,6 +1472,7 @@ fn run_laplace_mp2(
     prep: &PreparedBasis,
     op: Operator,
     result: &ferric_scf::result::ScfResult,
+    budget_bytes: Option<usize>,
 ) {
     let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
@@ -1490,6 +1492,7 @@ fn run_laplace_mp2(
         result,
         n_quad,
         cfg.mp2.frozen_core,
+        budget_bytes,
     )
     .unwrap_or_else(|e| {
         eprintln!("error: {e}");
@@ -3098,7 +3101,7 @@ fn run_tddft_arm(
     _bs: &BasisSet,
     prep: &PreparedBasis,
     result: &ferric_scf::result::ScfResult,
-    _budget_bytes: Option<usize>,
+    budget_bytes: Option<usize>,
     method: &str,
 ) {
     use ferric_tddft::{TddftConfig, TddftMethod};
@@ -3135,6 +3138,9 @@ fn run_tddft_arm(
     let config = TddftConfig {
         n_roots: cfg.tddft.n_roots,
         method: tddft_method,
+        // `[memory] budget_gb` now reaches the dense (ia,jb) matrices; this
+        // parameter used to be `_budget_bytes`, accepted and dropped.
+        memory_budget_bytes: budget_bytes,
     };
 
     let r = ferric_tddft::run_tddft(mol, prep, &dfbs, result, &config, c_hf)

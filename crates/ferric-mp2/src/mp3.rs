@@ -52,6 +52,7 @@ pub fn mp3_energy(
     op: Operator,
     rhf: &ScfResult,
     frozen_core: usize,
+    memory_budget_bytes: Option<usize>,
 ) -> Result<Mp3Result, FerricError> {
     let nbas = obs.nbasis();
     let nelec = mol.nelec() as usize;
@@ -67,14 +68,15 @@ pub fn mp3_energy(
 
     // Fail-fast size guard: peak is the spin-orbital VVVV block v_vvvv (:96) —
     // a (2nv)⁴ f64 tensor built from the einsum! g_abcd intermediate (:98) held
-    // co-resident with the asym_same result → ~2× (2nv)⁴. No config budget on
-    // this reference path. Keep next to that allocation.
+    // co-resident with the asym_same result → ~2× (2nv)⁴. Keep next to that
+    // allocation. `memory_budget_bytes` used to be hardcoded `None` here, so
+    // the CLI's `mp3` arm silently discarded a user's `[memory] budget_gb`.
     let nv2 = 2 * nv;
     let peak_vvvv = nv2.saturating_pow(4).saturating_mul(2).saturating_mul(8); // ~2× (2nv)⁴ f64
     ferric_core::memory::check_alloc(
         &format!("MP3 (no={no}, nv={nv} spatial; VVVV block over {nv2} spin-orbital virtuals)"),
         peak_vvvv,
-        ferric_core::memory::resolve_budget_bytes(None),
+        ferric_core::memory::resolve_budget_bytes(memory_budget_bytes),
     )?;
 
     // V^{-1/2} metric and AO 3-center integrals.
@@ -242,7 +244,7 @@ mod tests {
         let ctx = ParallelContext::default();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
-        mp3_energy(&mol, &obs, &dfbs, op, &rhf, 0).unwrap()
+        mp3_energy(&mol, &obs, &dfbs, op, &rhf, 0, None).unwrap()
     }
 
     // FERRIC_MEM_BUDGET_GB is process-global; serialize env-mutating tests.
@@ -260,7 +262,7 @@ mod tests {
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
         std::env::set_var("FERRIC_MEM_BUDGET_GB", "0.000001");
-        let res = mp3_energy(&mol, &obs, &dfbs, op, &rhf, 0);
+        let res = mp3_energy(&mol, &obs, &dfbs, op, &rhf, 0, None);
         std::env::remove_var("FERRIC_MEM_BUDGET_GB");
         let err = res.unwrap_err();
         let msg = err.to_string();
@@ -286,7 +288,7 @@ mod tests {
         let ctx = ParallelContext::default();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
-        let res = mp3_energy(&mol, &obs, &dfbs, op, &rhf, 2);
+        let res = mp3_energy(&mol, &obs, &dfbs, op, &rhf, 2, None);
         assert!(res.is_err(), "expected Err for frozen_core > nocc_total, got {res:?}");
     }
 

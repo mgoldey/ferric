@@ -2925,22 +2925,24 @@ impl PyMp3Result {
 }
 
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None))]
 fn run_mp3(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
-           frozen_core: Option<usize>, k_builder: Option<&str>) -> PyResult<PyMp3Result> {
+           frozen_core: Option<usize>, k_builder: Option<&str>,
+           memory_budget_gb: Option<f64>) -> PyResult<PyMp3Result> {
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
     let ctx = ParallelContext::default();
-    let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &rhf_config(k_builder)).map_err(make_err)?;
+    let budget = budget_bytes_from_gb(memory_budget_gb);
+    let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &rhf_config_budgeted(k_builder, budget)).map_err(make_err)?;
     if !rhf.converged {
         return Err(make_err(ferric_core::FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy }));
     }
-    // mp3_energy has no memory-budget parameter (unlike ri_mp2/laplace_ri_mp2);
-    // its internal VVVV size guard resolves the budget itself via
-    // ferric_core::memory::resolve_budget_bytes(None) (env/auto-detect only).
-    let mp3 = mp3_energy(&mol.inner, &prep, &dfbs, op, &rhf, frozen_core.unwrap_or(0)).map_err(make_err)?;
+    // The VVVV size guard inside mp3_energy used to resolve the budget itself
+    // with a hardcoded `None` (env/auto-detect only), so a caller's budget
+    // never reached it; it is now a parameter.
+    let mp3 = mp3_energy(&mol.inner, &prep, &dfbs, op, &rhf, frozen_core.unwrap_or(0), budget).map_err(make_err)?;
     Ok(PyMp3Result { e_hf: mp3.e_hf, e_mp2: mp3.e_mp2, e_mp3: mp3.e_mp3, e_corr: mp3.e_corr, e_total: mp3.e_total })
 }
 
@@ -2969,21 +2971,23 @@ impl PyLaplaceMp2Result {
 }
 
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, n_quad=None, frozen_core=None, k_builder=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, n_quad=None, frozen_core=None, k_builder=None, memory_budget_gb=None))]
 fn run_laplace_mp2(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
                    n_quad: Option<usize>, frozen_core: Option<usize>,
-                   k_builder: Option<&str>) -> PyResult<PyLaplaceMp2Result> {
+                   k_builder: Option<&str>,
+                   memory_budget_gb: Option<f64>) -> PyResult<PyLaplaceMp2Result> {
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
     let ctx = ParallelContext::default();
-    let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &rhf_config(k_builder)).map_err(make_err)?;
+    let budget = budget_bytes_from_gb(memory_budget_gb);
+    let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &rhf_config_budgeted(k_builder, budget)).map_err(make_err)?;
     if !rhf.converged {
         return Err(make_err(ferric_core::FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy }));
     }
     let r = laplace_ri_mp2(&mol.inner, &prep, &dfbs, op, &rhf,
-                           n_quad.unwrap_or(7), frozen_core.unwrap_or(0)).map_err(make_err)?;
+                           n_quad.unwrap_or(7), frozen_core.unwrap_or(0), budget).map_err(make_err)?;
     Ok(PyLaplaceMp2Result {
         total_energy: r.total_energy,
         mp2_corr: r.mp2_corr,
