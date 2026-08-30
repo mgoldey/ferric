@@ -82,9 +82,9 @@ fn ab_min_eigs(
     let nvir = nmo - nocc_total;
     let n = nocc * nvir;
 
-    let mob = mo_b::build_full_b(mol, obs, dfbs, op, ks, 0).unwrap();
+    let mob = mo_b::build_full_b(mol, obs, dfbs, op, ks, 0, None).unwrap();
     let (v_dressed, _dev) = w_pdep::redress_with_check(&mob.v_inv_sqrt, &pdep.eigenpotentials).unwrap();
-    let m_proj = ferric_gw::cohsex::project_b_into_pdep(&mob, &v_dressed);
+    let m_proj = ferric_gw::cohsex::project_b_into_pdep(&mob, &v_dressed, None).unwrap();
     let m_modes = m_proj.shape()[0];
     let w_red: Vec<f64> = pdep.eigenvalues_static.iter().map(|&l| 1.0 / l - 1.0).collect();
     let b = &mob.b_full;

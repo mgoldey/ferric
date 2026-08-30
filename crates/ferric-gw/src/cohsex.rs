@@ -22,29 +22,54 @@ use ferric_scf::ScfResult;
 use ndarray::{Array1, Array2};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Warn (once) if the projected M tensor (m_modes, n_act, n_act) would exceed
-/// `FERRIC_ERI3_BUDGET_GB`. `project_b_into_pdep` is infallible and called from
-/// many sites (including per-iteration evGW rebuilds and both U-GW spins), so we
-/// surface the concrete GB number rather than change the signature to `Result`.
-/// M2 owns the hard allocation guards; this keeps the documented formula in sync.
+/// Gate the projected M tensor (m_modes, n_act, n_act) against the memory
+/// budget.
+///
+/// # Why this now returns `Err` instead of only printing
+///
+/// This was a warn-once `eprintln!`, with a doc comment that justified itself
+/// by saying `project_b_into_pdep` "is infallible ... so we surface the
+/// concrete GB number rather than change the signature to `Result`". That made
+/// it a *diagnostic*, not a gate: the allocation went ahead regardless, one
+/// line of stderr scrolled past in a long GW log, and the OOM killer arrived
+/// seconds later — the exact failure mode the budget machinery exists to
+/// retire. A guard that cannot refuse is not a guard. `project_b_into_pdep` is
+/// therefore fallible now and every caller propagates.
+///
+/// The warn-once latch is kept for the *stderr* advice (the truncation hint is
+/// worth printing once per process, not once per evGW iteration), but the
+/// `Err` itself is unconditional.
+///
+/// # Why `budget` is a parameter
+///
+/// It used to read `resolve_budget_bytes(None)`, which discards
+/// [`GwConfig::memory_budget_bytes`](crate::GwConfig::memory_budget_bytes) and
+/// substitutes the env / cgroup / RAM-auto-detected ceiling instead — so a run
+/// pinned to 4 GB could be gated against ~0.8× of a 23 GB box. Same defect,
+/// same fix, as `ferric_rpa::properties::pdep_polarizability_static`; ferric-gw
+/// simply never got it.
 static M_PROJ_WARNED: AtomicBool = AtomicBool::new(false);
-fn guard_m_proj(m_modes: usize, n_act: usize) {
-    let budget = ferric_core::memory::resolve_budget_bytes(None);
+fn guard_m_proj(m_modes: usize, n_act: usize, budget: Option<usize>) -> Result<(), FerricError> {
+    let budget = ferric_core::memory::resolve_budget_bytes(budget);
     let need = m_modes
         .saturating_mul(n_act)
         .saturating_mul(n_act)
         .saturating_mul(8);
-    if need > budget && !M_PROJ_WARNED.swap(true, Ordering::Relaxed) {
-        eprintln!(
-            "ferric-gw WARNING: projected M tensor ({m_modes}×{n_act}×{n_act} f64 = \
-             {:.2} GB) exceeds FERRIC_ERI3_BUDGET_GB ({:.2} GB) and is rebuilt every \
-             evGW iteration (×2 for U-GW). Full-rank GW at this scale needs \
-             trunc_thresh > 0 (rank truncation shrinks this quadratically), a smaller \
-             active space, or a larger budget.",
-            need as f64 / 1e9,
-            budget as f64 / 1e9,
-        );
+    if need <= budget {
+        return Ok(());
     }
+    let msg = format!(
+        "projected M tensor ({m_modes}×{n_act}×{n_act} f64 = {:.2} GB) exceeds the memory \
+         budget ({:.2} GB) and is rebuilt every evGW iteration (×2 for U-GW). Full-rank GW \
+         at this scale needs trunc_thresh > 0 (rank truncation shrinks this quadratically), \
+         a smaller active space, or a larger budget.",
+        need as f64 / 1e9,
+        budget as f64 / 1e9,
+    );
+    if !M_PROJ_WARNED.swap(true, Ordering::Relaxed) {
+        eprintln!("ferric-gw: {msg}");
+    }
+    Err(FerricError::General(format!("project_b_into_pdep: {msg}")))
 }
 
 /// Σ_x(m) = −Σ_i Σ_P B̃^P_{mi}²  (closed-shell RHF exchange diagonal, MO basis).
@@ -85,13 +110,22 @@ pub fn sigma_x_diag(mo_b: &MoB) -> Array1<f64> {
 /// (`trunc_thresh = 0`, the default) m_modes = naux, so this is the same
 /// ~12.5 GB footprint as `b_full` and it is REBUILT every evGW outer iteration
 /// (and once per spin for U-GW). Rank truncation (`trunc_thresh > 0`) shrinks
-/// m_modes and this tensor quadratically. We warn (once) with the concrete GB
-/// number if the projection would exceed `FERRIC_ERI3_BUDGET_GB`.
-pub fn project_b_into_pdep(mo_b: &MoB, v_dressed: &Array2<f64>) -> ndarray::Array3<f64> {
+/// m_modes and this tensor quadratically.
+///
+/// Gated by [`guard_m_proj`] against `memory_budget_bytes` (the caller's
+/// [`GwConfig::memory_budget_bytes`](crate::GwConfig::memory_budget_bytes), or
+/// `None` to fall back to the env/auto ceiling). This function is FALLIBLE for
+/// that reason — see `guard_m_proj`'s docs for why the old warn-only form was
+/// not a gate.
+pub fn project_b_into_pdep(
+    mo_b: &MoB,
+    v_dressed: &Array2<f64>,
+    memory_budget_bytes: Option<usize>,
+) -> Result<ndarray::Array3<f64>, FerricError> {
     let naux = mo_b.naux;
     let n_act = mo_b.n_act;
     let m_modes = v_dressed.ncols();
-    guard_m_proj(m_modes, n_act);
+    guard_m_proj(m_modes, n_act, memory_budget_bytes)?;
     // Reshape b_full (naux, n_act, n_act) → (naux, n_act*n_act) for one GEMM.
     let b_flat = mo_b
         .b_full
@@ -121,9 +155,9 @@ pub fn project_b_into_pdep(mo_b: &MoB, v_dressed: &Array2<f64>) -> ndarray::Arra
     // assumption.
     let m_flat: Array2<f64> =
         with_blas_threads(opt_in_blas_threads(), || v_dressed.t().dot(&b_flat));
-    m_flat
+    Ok(m_flat
         .into_shape_with_order((m_modes, n_act, n_act))
-        .expect("reshape M")
+        .expect("reshape M"))
 }
 
 /// Per-MO static COHSEX pieces from a projected M tensor (one spin channel;
@@ -205,7 +239,7 @@ pub fn run_cohsex(
     assert_eq!(w_static.len(), m_modes);
 
     // Project B̃ → M[(α,m,n)].
-    let m_proj = project_b_into_pdep(mo_b, v_dressed);
+    let m_proj = project_b_into_pdep(mo_b, v_dressed, gw_cfg.memory_budget_bytes)?;
 
     // ΔΣ_SEX(m) = −Σ_i Σ_α [1/λ_α(0) − 1] M[(α,m,i)]² = −Σ_i Σ_α w_α M²
     // Σ_COH(m)  = +½ Σ_p Σ_α  w_α                     M[(α,m,p)]²
@@ -386,4 +420,62 @@ mod tests {
             );
         }
     }
+
+    /// The M-projection guard must REFUSE, not merely warn.
+    ///
+    /// `guard_m_proj` was a warn-once `eprintln!` returning `()`, justified in
+    /// its own doc comment by `project_b_into_pdep` being infallible. A guard
+    /// that cannot refuse is a diagnostic: the allocation proceeded, the line
+    /// scrolled past in a long evGW log, and the OOM killer followed. This
+    /// pins that the over-budget path is an `Err` reaching the caller.
+    #[test]
+    fn project_b_into_pdep_refuses_an_over_budget_projection() {
+        let mo_b = synthetic_mo_b(8, 6, 3);
+        let v_dressed = Array2::<f64>::eye(8);
+        // 8 modes x 6 x 6 x 8 bytes = 2304 bytes. A 1 kB ceiling cannot hold it.
+        let err = project_b_into_pdep(&mo_b, &v_dressed, Some(1_000))
+            .expect_err("an over-budget M projection must be an Err, not a warning")
+            .to_string();
+        assert!(err.contains("project_b_into_pdep"), "must name the site: {err}");
+        assert!(err.contains("projected M tensor"), "must name the term: {err}");
+        assert!(err.contains("trunc_thresh"), "must keep the actionable advice: {err}");
+    }
+
+    /// An over-estimating guard is also a bug. The SAME shape under an ample
+    /// ceiling must run to completion and return the correct tensor, so the
+    /// refusal above is attributable to the budget and not to the shape.
+    #[test]
+    fn project_b_into_pdep_still_runs_under_an_ample_budget() {
+        let mo_b = synthetic_mo_b(8, 6, 3);
+        let v_dressed = Array2::<f64>::eye(8);
+        let m = project_b_into_pdep(&mo_b, &v_dressed, Some(1_000_000_000))
+            .expect("an ample 1 GB budget must not be refused for a 2.3 kB tensor");
+        assert_eq!(m.shape(), &[8, 6, 6]);
+        // With v_dressed = I the projection is the identity on b_full, so this
+        // also pins that adding the guard did not perturb the numerics.
+        for p in 0..8 {
+            for i in 0..6 {
+                for j in 0..6 {
+                    assert_eq!(m[(p, i, j)], mo_b.b_full[(p, i, j)]);
+                }
+            }
+        }
+    }
+
+    /// The plumbing pin, distinct from the guard tests above: the ONLY
+    /// difference between these two calls is `memory_budget_bytes`. The site
+    /// used to pass `resolve_budget_bytes(None)`, discarding
+    /// `GwConfig::memory_budget_bytes` and substituting the env / cgroup /
+    /// RAM-auto ceiling — under which both calls would have succeeded.
+    #[test]
+    fn project_b_into_pdep_honours_the_caller_budget_rather_than_discarding_it() {
+        let mo_b = synthetic_mo_b(8, 6, 3);
+        let v_dressed = Array2::<f64>::eye(8);
+        assert!(project_b_into_pdep(&mo_b, &v_dressed, Some(1_000_000_000)).is_ok());
+        assert!(
+            project_b_into_pdep(&mo_b, &v_dressed, Some(1_000)).is_err(),
+            "a caller-supplied 1 kB ceiling was ignored — the budget is not reaching the guard"
+        );
+    }
+
 }

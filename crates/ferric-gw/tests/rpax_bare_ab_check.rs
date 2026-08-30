@@ -37,7 +37,7 @@ fn bare_ab_min_eig_water() {
     let nvir = nmo - nocc_total;
     let n = nocc * nvir;
 
-    let mob = mo_b::build_full_b(&mol, &obs, &dfbs, op, &rhf, 0).unwrap();
+    let mob = mo_b::build_full_b(&mol, &obs, &dfbs, op, &rhf, 0, None).unwrap();
     let b = &mob.b_full;
     let naux = mob.naux;
     let bare = |p: usize, q: usize, r: usize, s: usize| -> f64 {
