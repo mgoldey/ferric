@@ -24,7 +24,14 @@ DANUGLIPRON_HIERARCHY: tuple[TierSpec, ...] = (
              "rank survivors; polarization in a point-charge field",
              validated_by="anion-vs-neutral separation of 143 kcal/mol at a "
                           "fixed geometry, i.e. it resolves formal charge"),
-    TierSpec(Tier.QUANTUM, "ferric DFT + dispersion", 600.0, "1-10",
+    # MEASURED 2026-08-30 and found unaffordable at this size: a single STO-3G
+    # (~234 basis function) point on the 70-atom anion ran >57 min without
+    # finishing, at 9.5 GB peak RSS -- while the same code does def2-SVP
+    # (~450 bf) on a 32-atom alkane in 96 s. That is not a size effect and the
+    # cause is undiagnosed. The cost below is the MEASURED floor, not an
+    # estimate, and validated_by stays None because the tier has still never
+    # produced a usable number here. See RESULTS.md M10.
+    TierSpec(Tier.QUANTUM, "ferric DFT + dispersion", 3420.0, "1-10",
              "final energetics on the handful that survive",
-             validated_by=None),   # NOT YET USED IN THIS CAMPAIGN
+             validated_by=None),
 )

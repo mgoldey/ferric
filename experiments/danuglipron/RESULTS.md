@@ -577,6 +577,82 @@ It ran tier 3 alone, fed by tier-2 output that had never seen the receptor.
 campaign.** Every energy reported anywhere above is GFN2. That is now the next
 step, and for the first time it has geometries worth spending it on.
 
+## M10. The isomer pipeline runs end to end; tier 4 does not fit (2026-08-30)
+
+Built `tools/isomers` (enumeration) + `tools/pipeline` (the funnel) and ran the
+full four-tier stack on danuglipron. Plan:
+`experiments/danuglipron/plans/2026-08-30-isomer-pipeline.md`.
+
+### Enumeration replaces hand-writing
+
+61 candidates generated from ONE SMILES -> 60 after dedup (54 substitutional,
+5 structural), versus the 11 analogues previously written by hand. It
+independently rediscovers three of those hand designs -- tetrazole,
+acylsulfonamide, piperidine->azetidine -- which is the closest thing to a
+correctness check this stage has.
+
+### The funnel works
+
+| tier | stage | in | out | failed |
+|---|---|---|---|---|
+| 1 | Vina dock | 60 | 24 | 2 |
+| 2 | MMFF94 | 24 | 12 | 0 |
+| 3 | GFN2-xTB | 12 | 5 | 0 |
+| 4 | ferric DFT | 5 | **0** | **5** |
+
+55 minutes for tiers 1-3. The per-tier bookkeeping is what made the tier-4
+failure visible at all: the driver still printed "tier 4 reordered tier 3 ->
+DFT is load-bearing", which was **meaningless**, because nothing had been
+computed. A funnel that reported only survivors would have shown an empty list
+and no reason.
+
+### Two bugs the run exposed, both mine
+
+**1. Ionization state (physics).** Every tier-4 candidate failed with
+`inconsistent charge/multiplicity: 325 electrons with multiplicity 1 implies
+n_alpha = 325/2`. The driver set `net_charge=-1` on **neutral** structures.
+Removing H+ takes a bare proton and leaves its electrons behind, so an anion has
+the **same** electron count as its acid; declaring -1 on the neutral SMILES asks
+for an electron that does not exist, and makes an even count odd. ferric was
+right to refuse. Fixed by deprotonating the STRUCTURE
+(`Isomer.deprotonated()`), with tests pinning that electron count is CONSERVED.
+
+**2. Disconnected fragments.** A ring-contraction transform can sever a ring
+rather than shrink it. Two candidates reached tier 1 as fragment pairs and died
+in Meeko. Now rejected at enumeration with a readable reason.
+
+### Tier 4 is not affordable at this size — measured, not estimated
+
+After the ionization fix, a single tier-4 point on the 70-atom anion:
+
+| | |
+|---|---|
+| basis | STO-3G (~234 basis functions) |
+| runtime | **>57 min, did not finish** |
+| peak RSS | **9.5 GB** |
+
+For comparison, the same code does def2-SVP (~450 bf) on a 32-atom alkane in
+**96 s**. So the anion is not merely bigger — something in this path scales far
+worse than the N^3 the plan assumed, and 234 basis functions taking >57 min
+while 450 takes 96 s is not a size effect. **The cause is not yet diagnosed.**
+
+**Verdict (dated, provisional): tier 4 as configured cannot process even ONE
+70-atom candidate in a usable time, so the four-tier stack is validated only
+through tier 3.** Candidate next steps, in order of cheapness: check whether the
+SCF is converging at all (an anion with a diffuse HOMO may be cycling), try
+`level_shift`, and profile where the 9.5 GB goes before assuming the basis is
+the problem.
+
+### A shared-box near-miss worth recording
+
+The first tier-4 probe ran **unbounded** and reached 9.5 GB with 1 GB free while
+another user's `mel-flow-tts` training job was on the same machine. This repo
+has documented that exact collateral OOM three times. Re-running under
+`scripts/ferric-limited` (12 GB cgroup cap) contained it — measured
+`memory.current` 9.57 GB against `memory.max` 12 GB, and the other job survived.
+**Any ferric job on a drug-sized system should start under that launcher, not
+be moved there after watching RSS climb.**
+
 ---
 
 ## Summary of what this campaign established
