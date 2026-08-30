@@ -1,0 +1,14 @@
+
+=== parent: 40 aligned poses ===
+  full: mean  -22.89  sd   8.52  min  -45.11  max   -7.45
+  n=  5  mean  -27.15  sem  5.66
+  n= 10  mean  -24.78  sem  3.33
+  n= 20  mean  -24.56  sem  1.99
+  n= 40  mean  -22.89  sem  1.35
+
+=== NC1-methyl-ester: 40 aligned poses ===
+  full: mean  -22.90  sd  10.46  min  -47.11  max   -4.48
+  n=  5  mean  -32.23  sem  4.57
+  n= 10  mean  -28.10  sem  3.38
+  n= 20  mean  -25.10  sem  2.30
+  n= 40  mean  -22.90  sem  1.65

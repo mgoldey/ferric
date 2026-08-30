@@ -12,6 +12,12 @@ authors = [{ name = "Matthew Goldey", email = "matthew.goldey@gmail.com" }]
 requires-python = ">=3.9"
 dependencies = [
     "numpy>=2.0.0",
+    # Docking (tier 1 of the cost hierarchy -- see
+    # tools/campaign/hierarchy.py). Vina SEARCHES pose space; nothing
+    # else in this repo does. Apache-2.0 engine, LGPL-2.1 prep layer.
+    "vina>=1.2.7",
+    "meeko>=0.8.0",
+    "gemmi>=0.7",
 ]
 
 [project.optional-dependencies]
@@ -39,3 +45,17 @@ features = ["pyo3/extension-module"]
 # The maturin editable install in .venv is the source of truth; cargo is invoked explicitly.
 no-build-isolation-package = ["ferric"]
 
+
+[tool.pytest.ini_options]
+# Make the repo root importable so `tools.tox`, `tools.morph`, `tools.campaign`
+# and `tools.active_site` resolve regardless of HOW pytest is invoked.
+#
+# Without this, `python -m pytest` works (it prepends the cwd to sys.path) while
+# a bare `pytest` does NOT, so the suites passed by hand and failed under
+# scripts/ci-gate.sh, which calls `uv run --no-sync pytest`. That cost all 17
+# tools/ suites -- including the pre-existing active_site ones -- with
+# `ModuleNotFoundError: No module named 'tools'` at collection time.
+#
+# `tools/` is a namespace package (no __init__.py at its root) by design, so
+# pythonpath is the fix rather than adding package markers.
+pythonpath = ["."]

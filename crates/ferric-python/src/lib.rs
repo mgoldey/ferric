@@ -104,6 +104,60 @@ impl PyMolecule {
     fn symbols(&self) -> Vec<String> {
         self.inner.atoms.iter().map(|a| a.symbol.clone()).collect()
     }
+    /// Atomic numbers in atom order.
+    ///
+    /// Reports each element's true `Z`; it is **not** reduced by ECP core
+    /// electrons even when an ECP-carrying basis has been applied (`nelec()` is
+    /// the accessor that accounts for those).
+    fn atomic_numbers(&self) -> Vec<i32> {
+        self.inner.atoms.iter().map(|a| a.z).collect()
+    }
+    /// Per-atom ghost (basis-only center) flags, in atom order.
+    ///
+    /// A ghost carries basis functions but zero nuclear charge and zero
+    /// electrons, so it appears in `symbols()`/`coords()` while contributing
+    /// nothing to `nuclear_repulsion()` or `nelec()`. `symbols()` returns the
+    /// plain element symbol for a ghost, so this flag is the only way to tell
+    /// one apart.
+    fn is_ghost(&self) -> Vec<bool> {
+        self.inner.atoms.iter().map(|a| a.ghost).collect()
+    }
+    /// XYZ-format string (Ångström), ready to write to a file or feed back to
+    /// `from_xyz_string`.
+    ///
+    /// The comment line records charge and multiplicity, which the XYZ format
+    /// itself cannot carry. `from_xyz_string` does **not** parse them back, so
+    /// pass them explicitly on any round-trip involving an ion or an open-shell
+    /// species — otherwise the geometry survives and the electron count
+    /// silently reverts to neutral singlet.
+    fn to_xyz_string(&self) -> String {
+        molecule_to_xyz_string(&self.inner)
+    }
+}
+
+/// Render a molecule as an XYZ-format string in Ångström.
+///
+/// A free function rather than an inherent method so the `#[pymethods]` block
+/// stays a thin dispatch layer — its maintainability index is gated by
+/// `scripts/complexity_gate.py` — and so the formatting is reusable from any
+/// future binding that needs to emit a geometry.
+fn molecule_to_xyz_string(mol: &Molecule) -> String {
+    let mut s = format!(
+        "{}\ncharge={} multiplicity={}\n",
+        mol.atoms.len(),
+        mol.charge,
+        mol.multiplicity
+    );
+    for a in &mol.atoms {
+        s.push_str(&format!(
+            "{:<3} {:18.12} {:18.12} {:18.12}\n",
+            a.symbol,
+            a.x / ANGSTROM_TO_BOHR,
+            a.y / ANGSTROM_TO_BOHR,
+            a.zpos / ANGSTROM_TO_BOHR,
+        ));
+    }
+    s
 }
 
 // ── BasisSet ──

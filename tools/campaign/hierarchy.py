@@ -1,0 +1,120 @@
+"""The cost hierarchy: which method does which job, and how a tier is retired.
+
+## The principle
+
+Every tier exists to DISCARD, cheaply, what the next tier cannot afford to
+examine. A tier is chosen for its COST and its DISCRIMINATION, not for being
+"the best method" — the best method applied to the wrong candidates is waste,
+and a cheap method asked to make a fine distinction is noise.
+
+    tier                cost/pose      poses      job
+    ------------------  -------------  ---------  --------------------------
+    1  Vina (empirical) ~10 us         10^5-10^6  SEARCH pose space
+    2  MMFF / GFN-FF    ~ms            10^2-10^3  relax, drop clashes
+    3  GFN2-xTB (DFTB)  ~0.5 s         10-10^2    rank survivors
+    4  DFT + dispersion minutes-hours  1-10       final energetics
+
+## Why this campaign needed it stated
+
+The danuglipron campaign ran tier 3 alone, fed by free-solution conformers. It
+had no tier 1, so it never searched; and no tier 4, so no number was ever better
+than semiempirical. Four rounds of increasingly careful statistics were spent
+characterising a metric fed geometries 2.2-4.1 A from the binding mode. See
+`experiments/danuglipron/RESULTS.md` M3-M8.
+
+Measured, once tier 1 was added: Vina reproduced the crystal pose at **0.95 A**
+in ~2 minutes. The best any tier-3 method achieved in 62 minutes was 2.41 A.
+
+## The division of labour is empirical, not assumed
+
+Also measured on that run: r(vina_score, pose RMSD) = **+0.461**, and only 4 of
+20 poses were under 2.0 A. So the cheap score is weakly informative about pose
+quality — it FINDS the right pose but cannot reliably RANK it. That is the
+justification for tiers 2-4 existing at all: if the tier-1 score could pick its
+own best pose, no rescoring would be needed.
+
+## Rules for using this, and for retiring a tier
+
+1.  **VALIDATE EACH TIER AGAINST GROUND TRUTH BEFORE TRUSTING IT.** For pose
+    generation that means redocking a known complex and measuring RMSD; the
+    check costs minutes and is the difference between a pipeline and a
+    guess. `tools.campaign.align.pose_quality_gate` is the gate.
+2.  **A TIER'S OUTPUT IS ONLY AS GOOD AS ITS INPUT.** No amount of tier-4 rigour
+    rescues a tier-1 failure. Diagnose DOWNWARD: when results look wrong, check
+    the cheapest tier first, because that is where the population is set.
+3.  **DO NOT ASK A TIER FOR A DISTINCTION FINER THAN ITS NOISE.** Quantify it:
+    compare the candidate-to-candidate range against the standard error of the
+    estimate (`rank.noise_exceeds_signal`), and never against a sample range,
+    which grows with n.
+4.  **A TIER IS RETIRED WHEN A CHEAPER ONE MATCHES IT, OR WHEN ITS JOB IS
+    SOMEONE ELSE'S.** MD-as-pose-search was retired here not because it failed
+    at an adequate timescale — it was never run at one — but because reaching
+    that timescale (141 s/ps, ~26 h for the analogue set at 20 ps) means using a
+    quantum method for a job an empirical search does in seconds.
+5.  **KEEP EACH TIER'S FAILURE VISIBLE.** A tier that cannot answer returns
+    None/UNEVALUATED, never a neutral-looking number. A fabricated zero in a
+    liability score reads as "maximally safe"; a fabricated pose reads as a
+    binding mode.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from enum import IntEnum
+
+
+class Tier(IntEnum):
+    """Cost tiers, ordered cheapest first."""
+    SEARCH = 1          # empirical docking -- generates poses
+    FORCE_FIELD = 2     # MMFF / GFN-FF -- relax, declash
+    SEMIEMPIRICAL = 3   # GFN2-xTB -- rank
+    QUANTUM = 4         # DFT + dispersion -- final energetics
+
+
+@dataclass(frozen=True)
+class TierSpec:
+    """What one tier costs, what it is for, and how it was validated."""
+    tier: Tier
+    method: str
+    seconds_per_pose: float
+    typical_poses: str
+    job: str
+    validated_by: str | None = None
+
+    @property
+    def validated(self) -> bool:
+        return self.validated_by is not None
+
+
+@dataclass
+class TierOutcome:
+    """What a tier did to a candidate population, for an auditable funnel."""
+    tier: Tier
+    n_in: int
+    n_out: int
+    n_failed: int = 0
+    note: str = ""
+    errors: list[str] = field(default_factory=list)
+
+    @property
+    def retained_fraction(self) -> float | None:
+        return None if self.n_in == 0 else self.n_out / self.n_in
+
+
+def unvalidated_tiers(hierarchy: "tuple[TierSpec, ...]") -> list[TierSpec]:
+    """Tiers with no ground-truth validation recorded.
+
+    Using one of these is not forbidden -- it is UNVERIFIED, which is a
+    different claim and should be reported as such.
+    """
+    return [t for t in hierarchy if not t.validated]
+
+
+def describe(hierarchy: "tuple[TierSpec, ...]") -> str:
+    lines = [f"{'tier':>4s}  {'method':26s} {'s/pose':>9s} {'poses':>10s}  validated",
+             "-" * 78]
+    for t in hierarchy:
+        lines.append(
+            f"{int(t.tier):>4d}  {t.method:26s} {t.seconds_per_pose:9.0e} "
+            f"{t.typical_poses:>10s}  {'yes' if t.validated else 'NO'}"
+        )
+    return "\n".join(lines)

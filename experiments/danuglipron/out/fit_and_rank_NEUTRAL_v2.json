@@ -1,0 +1,324 @@
+{
+  "pocket_pdb": "testdata/molecules/c9_systems/danuglipron/7LCJ_pocket.pdb",
+  "n_pocket_charges": 6458,
+  "method_fit": "GFN2-xTB in-field minus vacuum, same geometry",
+  "method_align": "rigid Kabsch on MCS scaffold vs 7LCJ bound pose (NOT docking)",
+  "method_tox": "RDKit FilterCatalog alert sets + Lipinski/Veber (offline baseline)",
+  "n_conformers_per_analogue": 6,
+  "free_min_energy_ha": -117.32863092973,
+  "gate_passed": false,
+  "gate_detail": "FIT METRIC DOES NOT DISCRIMINATE. A control that deletes a pharmacophore contact scored as well as or better than the parent: NC1-methyl-ester fit -29.68 vs parent -20.06 kcal/mol (needs to be at least 1.0 worse); NC2-decyano fit -23.96 vs parent -20.06 kcal/mol (needs to be at least 1.0 worse). No candidate fit ranking derived from this metric should be reported. NOISE-DOMINATED: mean pose-to-pose fit spread is 31.6 kcal/mol while the entire candidate-to-candidate range is only 16.1 kcal/mol. The estimator cannot resolve the differences being ranked. The rigid-overlay pose is underdetermined -- fixing this needs either a genuine pose search (docking) or many more poses per candidate with an explicit ensemble average, not a different scoring function.",
+  "gate_parent_fit_kcal": -20.060340489418948,
+  "gate_control_fits_kcal": {
+    "NC1-methyl-ester": -29.67981942368708,
+    "NC2-decyano": -23.958431212283045
+  },
+  "precision_passed": false,
+  "precision_detail": "NOISE-DOMINATED: mean pose-to-pose fit spread is 31.6 kcal/mol while the entire candidate-to-candidate range is only 16.1 kcal/mol. The estimator cannot resolve the differences being ranked. The rigid-overlay pose is underdetermined -- fixing this needs either a genuine pose search (docking) or many more poses per candidate with an explicit ensemble average, not a different scoring function.",
+  "ranking_axis": "mean interaction energy over a fixed number of aligned poses (NOT the min, which is a biased estimator whose bias grows with sample count)",
+  "cryo_em_reference_fit_kcal": -22.861791548041168,
+  "candidates": [
+    {
+      "label": "parent",
+      "smiles": "C1CO[C@@H]1CN2C3=C(C=CC(=C3)C(=O)O)N=C2CN4CCC(CC4)C5=NC(=CC=C5)OCC6=C(C=C(C=C6)C#N)F",
+      "hypothesis": "H0-reference",
+      "is_negative_control": false,
+      "liability": 0.03125,
+      "best_pose": "conf_00",
+      "scaffold_rmsd_angstrom": 3.4866322864181134,
+      "fit_kcal_mol": -20.060340489418948,
+      "fit_mean_kcal_mol": -20.060340489418948,
+      "fit_min_kcal_mol": -25.5725358828298,
+      "fit_spread_kcal_mol": 13.161169890160041,
+      "e_vacuum_ha": -117.308524397533,
+      "e_in_field_ha": -117.34927682748,
+      "n_pocket_charges": 2692,
+      "n_poses_scored": 6,
+      "all_pose_fits_kcal": [
+        -25.5725358828298,
+        -22.263842630891293,
+        -16.315709932774855,
+        -24.84701499053483,
+        -12.41136599266976,
+        -18.95157350681314
+      ],
+      "notes": []
+    },
+    {
+      "label": "H1a-defluoro",
+      "smiles": "C1CO[C@@H]1CN2C3=C(C=CC(=C3)C(=O)O)N=C2CN4CCC(CC4)C5=NC(=CC=C5)OCC6=CC=C(C=C6)C#N",
+      "hypothesis": "H1-size-lipophilicity",
+      "is_negative_control": false,
+      "liability": 0.03125,
+      "best_pose": "conf_00",
+      "scaffold_rmsd_angstrom": 2.7659562156433264,
+      "fit_kcal_mol": -16.45035400381161,
+      "fit_mean_kcal_mol": -16.45035400381161,
+      "fit_min_kcal_mol": -25.91602793428211,
+      "fit_spread_kcal_mol": 19.96691144124175,
+      "e_vacuum_ha": -113.082961259788,
+      "e_in_field_ha": -113.124261079162,
+      "n_pocket_charges": 2371,
+      "n_poses_scored": 6,
+      "all_pose_fits_kcal": [
+        -25.91602793428211,
+        -23.899884122462883,
+        -6.102054418577413,
+        -5.94911649304036,
+        -14.982567187790105,
+        -21.852473866716814
+      ],
+      "notes": []
+    },
+    {
+      "label": "H1b-des-oxetane-methyl",
+      "smiles": "CN2C3=C(C=CC(=C3)C(=O)O)N=C2CN4CCC(CC4)C5=NC(=CC=C5)OCC6=C(C=C(C=C6)C#N)F",
+      "hypothesis": "H1-size-lipophilicity",
+      "is_negative_control": false,
+      "liability": 0.0,
+      "best_pose": "conf_00",
+      "scaffold_rmsd_angstrom": 2.098131487055677,
+      "fit_kcal_mol": -21.939177609616568,
+      "fit_mean_kcal_mol": -21.939177609616568,
+      "fit_min_kcal_mol": -42.490999279126605,
+      "fit_spread_kcal_mol": 34.53434120860245,
+      "e_vacuum_ha": -104.796489869347,
+      "e_in_field_ha": -104.864203586885,
+      "n_pocket_charges": 2312,
+      "n_poses_scored": 6,
+      "all_pose_fits_kcal": [
+        -42.490999279126605,
+        -33.83042457267802,
+        -19.486413629863492,
+        -10.354149692808004,
+        -7.956658070524155,
+        -17.516420412699144
+      ],
+      "notes": [
+        "pose-to-pose fit spread 34.5 kcal/mol over 6 poses -- the rigid-overlay pose is poorly determined for this analogue, so its fit number is imprecise"
+      ]
+    },
+    {
+      "label": "H1c-azetidine-for-piperidine",
+      "smiles": "C1CO[C@@H]1CN2C3=C(C=CC(=C3)C(=O)O)N=C2CN4CC(C4)C5=NC(=CC=C5)OCC6=C(C=C(C=C6)C#N)F",
+      "hypothesis": "H1-size-lipophilicity",
+      "is_negative_control": false,
+      "liability": 0.03125,
+      "best_pose": "conf_01",
+      "scaffold_rmsd_angstrom": 1.9317091653233343,
+      "fit_kcal_mol": -26.478799659576737,
+      "fit_mean_kcal_mol": -26.478799659576737,
+      "fit_min_kcal_mol": -39.09089832977736,
+      "fit_spread_kcal_mol": 29.262397870344287,
+      "e_vacuum_ha": -110.935886282921,
+      "e_in_field_ha": -110.998181594698,
+      "n_pocket_charges": 2454,
+      "n_poses_scored": 6,
+      "all_pose_fits_kcal": [
+        -26.923316962816124,
+        -39.09089832977736,
+        -9.828500459433075,
+        -20.713296584918815,
+        -31.70595191906794,
+        -30.610833701447135
+      ],
+      "notes": [
+        "pose-to-pose fit spread 29.3 kcal/mol over 6 poses -- the rigid-overlay pose is poorly determined for this analogue, so its fit number is imprecise"
+      ]
+    },
+    {
+      "label": "H2a-difluoro-benzylic",
+      "smiles": "C1CO[C@@H]1CN2C3=C(C=CC(=C3)C(=O)O)N=C2CN4CCC(CC4)C5=NC(=CC=C5)OC(F)(F)C6=C(C=C(C=C6)C#N)F",
+      "hypothesis": "H2-metabolic-soft-spot",
+      "is_negative_control": false,
+      "liability": 0.0625,
+      "best_pose": "conf_03",
+      "scaffold_rmsd_angstrom": 2.5078315553093624,
+      "fit_kcal_mol": -16.682647684079512,
+      "fit_mean_kcal_mol": -16.682647684079512,
+      "fit_min_kcal_mol": -33.666353325106066,
+      "fit_spread_kcal_mol": 29.77442157008992,
+      "e_vacuum_ha": -125.758026862629,
+      "e_in_field_ha": -125.811677611688,
+      "n_pocket_charges": 2469,
+      "n_poses_scored": 6,
+      "all_pose_fits_kcal": [
+        -11.89170782756027,
+        -5.069266522470803,
+        -13.553553570446901,
+        -33.666353325106066,
+        -32.02307310387689,
+        -3.891931755016147
+      ],
+      "notes": [
+        "pose-to-pose fit spread 29.8 kcal/mol over 6 poses -- the rigid-overlay pose is poorly determined for this analogue, so its fit number is imprecise"
+      ]
+    },
+    {
+      "label": "H2b-oxetane-to-gem-dimethyl-oxetane",
+      "smiles": "CC1(C)CO[C@@H]1CN2C3=C(C=CC(=C3)C(=O)O)N=C2CN4CCC(CC4)C5=NC(=CC=C5)OCC6=C(C=C(C=C6)C#N)F",
+      "hypothesis": "H2-metabolic-soft-spot",
+      "is_negative_control": false,
+      "liability": 0.0625,
+      "best_pose": "conf_05",
+      "scaffold_rmsd_angstrom": 2.1807997057445587,
+      "fit_kcal_mol": -24.047358760276722,
+      "fit_mean_kcal_mol": -24.047358760276722,
+      "fit_min_kcal_mol": -32.96639310126268,
+      "fit_spread_kcal_mol": 14.133496302152679,
+      "e_vacuum_ha": -123.635028028448,
+      "e_in_field_ha": -123.687563319888,
+      "n_pocket_charges": 2597,
+      "n_poses_scored": 6,
+      "all_pose_fits_kcal": [
+        -22.300410184505125,
+        -21.321400421371983,
+        -23.469241257952692,
+        -25.393810797457846,
+        -18.832896799110003,
+        -32.96639310126268
+      ],
+      "notes": []
+    },
+    {
+      "label": "H3a-tetrazole",
+      "smiles": "C1CO[C@@H]1CN2C3=C(C=CC(=C3)C4=NN=NN4)N=C2CN5CCC(CC5)C6=NC(=CC=C6)OCC7=C(C=C(C=C7)C#N)F",
+      "hypothesis": "H3-acid-bioisostere",
+      "is_negative_control": false,
+      "liability": 0.03125,
+      "best_pose": "conf_02",
+      "scaffold_rmsd_angstrom": 3.456004006853823,
+      "fit_kcal_mol": -28.162317390423837,
+      "fit_mean_kcal_mol": -28.162317390423837,
+      "fit_min_kcal_mol": -49.35756940233211,
+      "fit_spread_kcal_mol": 42.36588340617978,
+      "e_vacuum_ha": -120.808819280456,
+      "e_in_field_ha": -120.887475574014,
+      "n_pocket_charges": 2815,
+      "n_poses_scored": 6,
+      "all_pose_fits_kcal": [
+        -6.991685996152328,
+        -16.229649427460206,
+        -49.35756940233211,
+        -43.02689160504934,
+        -18.957821980081377,
+        -34.41028593146765
+      ],
+      "notes": [
+        "pose-to-pose fit spread 42.4 kcal/mol over 6 poses -- the rigid-overlay pose is poorly determined for this analogue, so its fit number is imprecise"
+      ]
+    },
+    {
+      "label": "H3b-acylsulfonamide",
+      "smiles": "C1CO[C@@H]1CN2C3=C(C=CC(=C3)C(=O)NS(=O)(=O)C)N=C2CN4CCC(CC4)C5=NC(=CC=C5)OCC6=C(C=C(C=C6)C#N)F",
+      "hypothesis": "H3-acid-bioisostere",
+      "is_negative_control": false,
+      "liability": 0.03125,
+      "best_pose": "conf_00",
+      "scaffold_rmsd_angstrom": 2.165360597955657,
+      "fit_kcal_mol": -14.472929414508705,
+      "fit_mean_kcal_mol": -14.472929414508705,
+      "fit_min_kcal_mol": -45.64964545508286,
+      "fit_spread_kcal_mol": 64.21375223312779,
+      "e_vacuum_ha": -131.197264387303,
+      "e_in_field_ha": -131.270011727928,
+      "n_pocket_charges": 2518,
+      "n_poses_scored": 6,
+      "all_pose_fits_kcal": [
+        -45.64964545508286,
+        18.564106778044927,
+        -10.736460707100411,
+        -18.824858789291035,
+        -15.421632962620397,
+        -14.769085351002463
+      ],
+      "notes": [
+        "pose-to-pose fit spread 64.2 kcal/mol over 6 poses -- the rigid-overlay pose is poorly determined for this analogue, so its fit number is imprecise"
+      ]
+    },
+    {
+      "label": "H3c-oxadiazolone",
+      "smiles": "C1CO[C@@H]1CN2C3=C(C=CC(=C3)C4=NC(=O)ON4)N=C2CN5CCC(CC5)C6=NC(=CC=C6)OCC7=C(C=C(C=C7)C#N)F",
+      "hypothesis": "H3-acid-bioisostere",
+      "is_negative_control": false,
+      "liability": 0.03125,
+      "best_pose": "conf_00",
+      "scaffold_rmsd_angstrom": 3.381933780060168,
+      "fit_kcal_mol": -30.56571175305253,
+      "fit_mean_kcal_mol": -30.56571175305253,
+      "fit_min_kcal_mol": -49.08515128777906,
+      "fit_spread_kcal_mol": 42.863339951006104,
+      "e_vacuum_ha": -125.27514922433,
+      "e_in_field_ha": -125.353371391989,
+      "n_pocket_charges": 2275,
+      "n_poses_scored": 6,
+      "all_pose_fits_kcal": [
+        -49.08515128777906,
+        -29.058585853537114,
+        -6.221811336772959,
+        -27.08708105014772,
+        -43.871319868734304,
+        -28.070321121344023
+      ],
+      "notes": [
+        "pose-to-pose fit spread 42.9 kcal/mol over 6 poses -- the rigid-overlay pose is poorly determined for this analogue, so its fit number is imprecise"
+      ]
+    },
+    {
+      "label": "NC1-methyl-ester",
+      "smiles": "C1CO[C@@H]1CN2C3=C(C=CC(=C3)C(=O)OC)N=C2CN4CCC(CC4)C5=NC(=CC=C5)OCC6=C(C=C(C=C6)C#N)F",
+      "hypothesis": "negative-control",
+      "is_negative_control": true,
+      "liability": 0.03125,
+      "best_pose": "conf_00",
+      "scaffold_rmsd_angstrom": 2.5561467486715075,
+      "fit_kcal_mol": -29.67981942368708,
+      "fit_mean_kcal_mol": -29.67981942368708,
+      "fit_min_kcal_mol": -47.11130121854521,
+      "fit_spread_kcal_mol": 29.823633482880886,
+      "e_vacuum_ha": -120.463141322221,
+      "e_in_field_ha": -120.538217959572,
+      "n_pocket_charges": 2622,
+      "n_poses_scored": 6,
+      "all_pose_fits_kcal": [
+        -47.11130121854521,
+        -39.012663153123995,
+        -31.25448921578407,
+        -19.29143334265241,
+        -24.12136187635248,
+        -17.28766773566432
+      ],
+      "notes": [
+        "pose-to-pose fit spread 29.8 kcal/mol over 6 poses -- the rigid-overlay pose is poorly determined for this analogue, so its fit number is imprecise"
+      ]
+    },
+    {
+      "label": "NC2-decyano",
+      "smiles": "C1CO[C@@H]1CN2C3=C(C=CC(=C3)C(=O)O)N=C2CN4CCC(CC4)C5=NC(=CC=C5)OCC6=CC=CC=C6",
+      "hypothesis": "negative-control",
+      "is_negative_control": true,
+      "liability": 0.03125,
+      "best_pose": "conf_04",
+      "scaffold_rmsd_angstrom": 2.385158049916067,
+      "fit_kcal_mol": -23.958431212283045,
+      "fit_mean_kcal_mol": -23.958431212283045,
+      "fit_min_kcal_mol": -38.11006217648299,
+      "fit_spread_kcal_mol": 27.372663960185513,
+      "e_vacuum_ha": -108.55843074922,
+      "e_in_field_ha": -108.619162999093,
+      "n_pocket_charges": 2524,
+      "n_poses_scored": 6,
+      "all_pose_fits_kcal": [
+        -28.337915580615395,
+        -24.374934965868913,
+        -10.737398216297477,
+        -22.824655993568687,
+        -38.11006217648299,
+        -19.365620340864798
+      ],
+      "notes": [
+        "pose-to-pose fit spread 27.4 kcal/mol over 6 poses -- the rigid-overlay pose is poorly determined for this analogue, so its fit number is imprecise"
+      ]
+    }
+  ]
+}
