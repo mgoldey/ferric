@@ -75,7 +75,17 @@ def enumerate_with_report(
     kept: list[Isomer] = []
     lo, hi = mw_range
     for iso in deduped:
-        mw = Descriptors.MolWt(Chem.MolFromSmiles(iso.canonical))
+        mol = Chem.MolFromSmiles(iso.canonical)
+        # A transform can sever a ring instead of contracting it, leaving two
+        # disconnected fragments. That is not a candidate molecule, and it
+        # fails much later (in ligand prep) with an opaque message if kept.
+        n_frags = len(Chem.GetMolFrags(mol))
+        if n_frags > 1:
+            rep.rejected.append(
+                f"{iso.transform} ({iso.canonical}): {n_frags} disconnected fragments"
+            )
+            continue
+        mw = Descriptors.MolWt(mol)
         if not (lo <= mw <= hi):
             rep.rejected.append(
                 f"{iso.transform} ({iso.canonical}): MW {mw:.1f} outside [{lo}, {hi}]"

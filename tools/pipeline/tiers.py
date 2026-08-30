@@ -105,6 +105,14 @@ def tier1_dock(iso: Isomer, context: dict) -> TierResult:
     mol = Chem.MolFromSmiles(iso.canonical)
     if mol is None:
         return TierResult(iso.canonical, None, "unparseable SMILES")
+    # Meeko requires a single connected molecule. A transform can split one --
+    # e.g. a ring contraction that severs the ring rather than shrinking it --
+    # and the resulting salt/fragment pair is not a dockable ligand. Rejected
+    # here with a readable reason rather than 300 lines of Meeko traceback.
+    if len(Chem.GetMolFrags(mol)) > 1:
+        return TierResult(iso.canonical, None,
+                          f"not a single connected molecule "
+                          f"({len(Chem.GetMolFrags(mol))} fragments)")
     mol = Chem.AddHs(mol)
     params = AllChem.ETKDGv3()
     params.randomSeed = context.get("seed", 0xF00D)
