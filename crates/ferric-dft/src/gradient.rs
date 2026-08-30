@@ -16,13 +16,17 @@
 //! one contribution; when ν ∈ A the symmetric one. D is symmetric, so these
 //! are equal — hence the 2.)
 
+use ferric_core::memory::plan::{Lifetime, MemoryPlan};
 use ferric_core::mol::Molecule;
 use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
+use crate::ao_grid::AoGridKind;
 use ndarray::{Array2, Array3, ArrayView1, ArrayView2, Axis, Zip};
 use rayon::prelude::*;
 
 use crate::density_on_grid::{eval_density_closed, eval_density_uks, eval_tau_closed};
-use crate::grid::{build_atomic_grid, build_atomic_grid_with_response, AtomicGridConfig};
+use crate::grid::{
+    build_atomic_grid, build_atomic_grid_with_response, grid_response_bytes, AtomicGridConfig,
+};
 use crate::libxc::{xc_def_from_name, xc_def_from_name_nspin, FunctionalFamily, LibxcError, XcDef};
 
 /// Total element-count (`nbf·npts`) below which the row/column contractions stay
@@ -296,6 +300,132 @@ pub enum KsGradError {
     Libxc(LibxcError),
     #[error("AO eval failed: {0:?}")]
     AoEval(crate::ao_grid::GtoEvalError),
+    /// The gradient's declared working set does not fit the memory budget.
+    /// Carries the per-term breakdown from [`MemoryPlan::check`], so the
+    /// message names which tensor blew up rather than only the total.
+    #[error("{0}")]
+    OverBudget(ferric_core::error::FerricError),
+}
+
+impl From<ferric_core::error::FerricError> for KsGradError {
+    fn from(e: ferric_core::error::FerricError) -> Self {
+        Self::OverBudget(e)
+    }
+}
+
+/// Declare the full working set of a KS-DFT XC nuclear-gradient path.
+///
+/// # Why this exists
+///
+/// `ao_grid::check_ao_grid_budget(ValueGradHess, …)` correctly approves the 13
+/// `(nbf, npts)` planes of χ + ∇χ + ∇∇χ that
+/// `eval_basis_grad_hess_on_points` allocates — and then every function in this
+/// module allocates *more*, after that check has already returned `Ok`. The
+/// UKS meta-GGA path peaks around 24 planes against a gate that approved 13,
+/// and there was no `check_alloc` anywhere in this file to catch the
+/// difference. This plan is the missing gate: it is built and checked **before
+/// the AO evaluation**, and it declares everything, not just the AO tensors.
+///
+/// # The plane census, by allocation site
+///
+/// Resident for the whole call:
+///
+/// | planes | what | site |
+/// |---|---|---|
+/// | `kind.planes()` | χ (+ ∇χ, + ∇∇χ) | `ao_grid::eval_basis_grad_hess_on_points` |
+/// | 1 (×2 UKS) | `m` = `D·χ` | `let m = d.dot(&chi)` in every path |
+/// | 3 (×2 UKS) | `mdchi` = `D·∂χ` | `build_mdchi`, and its open-coded twins |
+///
+/// Largest transient stage (these do not coexist — each is dropped before the
+/// next allocates):
+///
+/// | planes | what | site |
+/// |---|---|---|
+/// | 3 | `mt`, `mdchi_b_scaled`, `m_scaled` | `gga_ao_partials` |
+/// | 3 | `psi[0..3]` | `eval_tau_closed`, meta-GGA only |
+/// | 2 | `pa`/`pb` per direction | the UKS `mdchi_a`/`mdchi_b` build loop |
+/// | 1 (×2 UKS) | `phi` = `D·χ` | `eval_density_closed`/`_uks` |
+///
+/// so 3 covers all of them.
+///
+/// # Where this is deliberately conservative
+///
+/// `xc_gradient_uks_from_density` builds one spin's `m`/`mdchi` at a time in
+/// its AO-derivative phase (4 planes + 3 transient) and only later holds both
+/// spins' (8 planes + 2 transient); its true peak is 23, not the 24 declared
+/// here. One plane of slack out of 24 is worth not making the caller reason
+/// about which phase it is in — but it is slack, not an unaccounted term, and
+/// it is stated so nobody "fixes" it by shaving the real terms.
+///
+/// `natoms` is only used for the grid-response `weight1` term; pass
+/// `with_grid_response = false` for the paths (VV10) that do not build it.
+fn xc_gradient_plan(
+    label: &'static str,
+    nbf: usize,
+    npts: usize,
+    natoms: usize,
+    kind: AoGridKind,
+    is_uks: bool,
+    with_grid_response: bool,
+) -> MemoryPlan {
+    let plane = nbf.saturating_mul(npts);
+    let mut plan = MemoryPlan::resolve(None, label);
+
+    // Already allocated by the time this runs (the grid is built first, since
+    // it is what determines `npts`) — declared so the AO tensors are sized
+    // against what is left, not against an empty budget.
+    if with_grid_response {
+        plan.reserve_sized(
+            "grid + weight1 dw/dR (already resident)",
+            grid_response_bytes(npts, natoms),
+            1,
+            Lifetime::Resident,
+            1,
+        );
+    } else {
+        plan.reserve_sized(
+            "grid points (already resident)",
+            npts,
+            std::mem::size_of::<crate::grid::GridPoint>(),
+            Lifetime::Resident,
+            1,
+        );
+    }
+
+    plan.reserve(
+        match kind {
+            AoGridKind::ValueOnly => "chi",
+            AoGridKind::ValueAndGrad => "chi + dchi",
+            AoGridKind::ValueGradHess => "chi + dchi + ddchi",
+        },
+        kind.planes().saturating_mul(plane),
+        Lifetime::Resident,
+    );
+
+    // m = D·chi (1) and mdchi = D·dchi (3), per spin.
+    let spins: usize = if is_uks { 2 } else { 1 };
+    plan.reserve(
+        if is_uks { "M = D_s·chi and Mdchi = D_s·dchi (both spins)" } else { "M = D·chi and Mdchi = D·dchi" },
+        spins.saturating_mul(4).saturating_mul(plane),
+        Lifetime::Resident,
+    );
+
+    // Largest transient stage — see the census above.
+    plan.reserve("AO-partial scratch (scale_cols / psi)", 3usize.saturating_mul(plane), Lifetime::Transient);
+
+    // O(npts) companion vectors: the libxc in/out buffers, the pre-scaled
+    // per-point coefficients, ρ/∇ρ/σ (and τ), the GGA weight columns, and the
+    // `pts`/`weights` copies of the grid. Counted the same way as `ks.rs`'s
+    // `batch_point_doubles` — negligible against a plane at production `nbf`,
+    // but not at small-basis/large-grid shapes, where they would otherwise be
+    // the whole unaccounted difference.
+    plan.reserve(
+        "per-grid-point work vectors",
+        (if is_uks { 48usize } else { 24 }).saturating_mul(npts),
+        Lifetime::Resident,
+    );
+
+    plan
 }
 
 impl From<LibxcError> for KsGradError { fn from(e: LibxcError) -> Self { Self::Libxc(e) } }
@@ -442,7 +572,21 @@ pub fn xc_gradient_closed_lda_from_density(
     shell_dims: &[usize],
 ) -> Result<Array2<f64>, KsGradError> {
     let nbf = d_total.nrows();
-    let (grid, weight1) = build_atomic_grid_with_response(mol, grid_cfg);
+    let (grid, weight1) = build_atomic_grid_with_response(mol, grid_cfg)?;
+    // Gate the AO tensors (and everything allocated on top of them) against
+    // what the grid + weight1 already left resident — see `xc_gradient_plan`.
+    // The LDA path needs only χ + ∇χ, and never builds `mdchi`, but declaring
+    // the shared shape keeps one census for the whole module.
+    xc_gradient_plan(
+        "KS-DFT LDA XC gradient",
+        nbf,
+        grid.len(),
+        mol.atoms.len(),
+        crate::ao_grid::AoGridKind::ValueAndGrad,
+        false,
+        true,
+    )
+    .check()?;
     let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
     let (chi, dchi) = crate::ao_grid::eval_basis_and_grad_on_points(mol, bs, &pts)?;
     let weights: Vec<f64> = grid.iter().map(|g| g.weight).collect();
@@ -588,6 +732,19 @@ pub fn vv10_gradient_from_density(
 ) -> Result<Array2<f64>, KsGradError> {
     let nbf = d_total.nrows();
     let grid = build_atomic_grid(mol, nlc_grid_cfg);
+    // No grid response on this path (`build_atomic_grid`, not
+    // `_with_response`), so no `weight1` term — but the AO Hessian and the
+    // `m`/`mdchi` planes inside `gga_gradient_from_potentials` are the same.
+    xc_gradient_plan(
+        "VV10 nonlocal gradient",
+        nbf,
+        grid.len(),
+        mol.atoms.len(),
+        crate::ao_grid::AoGridKind::ValueGradHess,
+        false,
+        false,
+    )
+    .check()?;
     let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
     let (chi, dchi, ddchi) = crate::ao_grid::eval_basis_grad_hess_on_points(mol, bs, &pts)?;
 
@@ -644,7 +801,20 @@ pub fn xc_gradient_closed_gga_from_density(
     // LDA family also accepted — falls back to vsigma=0.
 
     let nbf = d_total.nrows();
-    let (grid, weight1) = build_atomic_grid_with_response(mol, grid_cfg);
+    let (grid, weight1) = build_atomic_grid_with_response(mol, grid_cfg)?;
+    // Gate the whole working set — the 13 AO planes AND the m/mdchi planes
+    // allocated after `check_ao_grid_budget` has already returned — against
+    // what the grid + weight1 left resident. See `xc_gradient_plan`.
+    xc_gradient_plan(
+        "KS-DFT GGA XC gradient",
+        nbf,
+        grid.len(),
+        mol.atoms.len(),
+        crate::ao_grid::AoGridKind::ValueGradHess,
+        false,
+        true,
+    )
+    .check()?;
     let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
     let (chi, dchi, ddchi) = crate::ao_grid::eval_basis_grad_hess_on_points(mol, bs, &pts)?;
     let weights: Vec<f64> = grid.iter().map(|g| g.weight).collect();
@@ -806,7 +976,20 @@ pub fn xc_gradient_closed_mgga_from_density(
     let xc: XcDef = xc_def_from_name(xc_name)?;
 
     let nbf = d_total.nrows();
-    let (grid, weight1) = build_atomic_grid_with_response(mol, grid_cfg);
+    let (grid, weight1) = build_atomic_grid_with_response(mol, grid_cfg)?;
+    // Gate the whole working set — the 13 AO planes AND the m/mdchi planes
+    // allocated after `check_ao_grid_budget` has already returned — against
+    // what the grid + weight1 left resident. See `xc_gradient_plan`.
+    xc_gradient_plan(
+        "KS-DFT meta-GGA XC gradient",
+        nbf,
+        grid.len(),
+        mol.atoms.len(),
+        crate::ao_grid::AoGridKind::ValueGradHess,
+        false,
+        true,
+    )
+    .check()?;
     let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
     let (chi, dchi, ddchi) = crate::ao_grid::eval_basis_grad_hess_on_points(mol, bs, &pts)?;
     let weights: Vec<f64> = grid.iter().map(|g| g.weight).collect();
@@ -965,7 +1148,20 @@ pub fn xc_gradient_uks_from_density(
     let xc: XcDef = xc_def_from_name_nspin(xc_name, 2)?;
 
     let nbf = d_a.nrows();
-    let (grid, weight1) = build_atomic_grid_with_response(mol, grid_cfg);
+    let (grid, weight1) = build_atomic_grid_with_response(mol, grid_cfg)?;
+    // Gate the whole working set — the 13 AO planes AND the m/mdchi planes
+    // allocated after `check_ao_grid_budget` has already returned — against
+    // what the grid + weight1 left resident. See `xc_gradient_plan`.
+    xc_gradient_plan(
+        "KS-DFT UKS GGA XC gradient",
+        nbf,
+        grid.len(),
+        mol.atoms.len(),
+        crate::ao_grid::AoGridKind::ValueGradHess,
+        true,
+        true,
+    )
+    .check()?;
     let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
     let (chi, dchi, ddchi) = crate::ao_grid::eval_basis_grad_hess_on_points(mol, bs, &pts)?;
     let weights: Vec<f64> = grid.iter().map(|g| g.weight).collect();
@@ -1207,7 +1403,20 @@ pub fn xc_gradient_uks_mgga_from_density(
     let xc: XcDef = xc_def_from_name_nspin(xc_name, 2)?;
 
     let nbf = d_a.nrows();
-    let (grid, weight1) = build_atomic_grid_with_response(mol, grid_cfg);
+    let (grid, weight1) = build_atomic_grid_with_response(mol, grid_cfg)?;
+    // Gate the whole working set — the 13 AO planes AND the m/mdchi planes
+    // allocated after `check_ao_grid_budget` has already returned — against
+    // what the grid + weight1 left resident. See `xc_gradient_plan`.
+    xc_gradient_plan(
+        "KS-DFT UKS meta-GGA XC gradient",
+        nbf,
+        grid.len(),
+        mol.atoms.len(),
+        crate::ao_grid::AoGridKind::ValueGradHess,
+        true,
+        true,
+    )
+    .check()?;
     let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
     let (chi, dchi, ddchi) = crate::ao_grid::eval_basis_grad_hess_on_points(mol, bs, &pts)?;
     let weights: Vec<f64> = grid.iter().map(|g| g.weight).collect();
@@ -1395,4 +1604,128 @@ pub fn xc_gradient_uks_mgga_from_density(
     }
 
     Ok(grad)
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+
+    // FERRIC_MEM_BUDGET_GB is process-global; serialize every test that sets
+    // it against the crate-wide lock (same convention as ks.rs / ao_grid.rs).
+    use crate::TEST_BUDGET_ENV_LOCK as ENV_LOCK;
+    const VAR: &str = ferric_core::memory::ENV_UNIFIED;
+
+    /// A shape whose declared working set exceeds the budget must be refused
+    /// **before** the AO Hessian is allocated, and the message must name the
+    /// term that dominates — a bare total is what made the historical
+    /// incidents slow to diagnose.
+    #[test]
+    fn the_gate_rejects_an_over_budget_shape_and_names_the_largest_term() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var(VAR, "1"); // 1 GiB
+
+        // 2000 basis functions on a 500k-point grid: the AO tensors alone are
+        // 13 · 2000 · 500_000 · 8 = 104 TB. Nothing subtle about this one.
+        let plan = xc_gradient_plan(
+            "KS-DFT UKS meta-GGA XC gradient",
+            2000,
+            500_000,
+            50,
+            AoGridKind::ValueGradHess,
+            true,
+            true,
+        );
+        let err = plan.check().unwrap_err().to_string();
+        std::env::remove_var(VAR);
+
+        assert!(err.contains("KS-DFT UKS meta-GGA XC gradient"), "{err}");
+        assert!(err.contains("chi + dchi + ddchi"), "breakdown must name the AO term: {err}");
+        // Largest contributor sorts first, so it is the first row of the table.
+        let ao = err.find("chi + dchi + ddchi").expect("AO term present");
+        let md = err.find("Mdchi").expect("m/mdchi term present");
+        assert!(ao < md, "largest term must sort first:\n{err}");
+    }
+
+    /// The UKS peak really is larger than the closed-shell one, and both are
+    /// larger than the 13 planes `check_ao_grid_budget` approves on its own —
+    /// which is the entire bug this gate closes.
+    #[test]
+    fn the_declared_peak_exceeds_what_check_ao_grid_budget_alone_approves() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var(VAR, "1024"); // large, so check() is not the subject here
+
+        let (nbf, npts, natoms) = (300usize, 200_000usize, 20usize);
+        let plane_bytes = nbf * npts * 8;
+        let ao_only = AoGridKind::ValueGradHess.planes() * plane_bytes;
+
+        let closed =
+            xc_gradient_plan("closed", nbf, npts, natoms, AoGridKind::ValueGradHess, false, true);
+        let uks =
+            xc_gradient_plan("uks", nbf, npts, natoms, AoGridKind::ValueGradHess, true, true);
+        std::env::remove_var(VAR);
+
+        // Closed shell: 13 AO + 4 (m, mdchi) resident + 3 transient = 20 planes.
+        assert!(
+            closed.peak_bytes() >= ao_only + 7 * plane_bytes,
+            "closed peak {} must exceed the AO-only gate {} by >= 7 planes",
+            closed.peak_bytes(),
+            ao_only,
+        );
+        // UKS: 13 + 8 + 3 = 24 planes.
+        assert!(
+            uks.peak_bytes() >= ao_only + 11 * plane_bytes,
+            "UKS peak {} must exceed the AO-only gate {} by >= 11 planes",
+            uks.peak_bytes(),
+            ao_only,
+        );
+        assert!(uks.peak_bytes() > closed.peak_bytes(), "UKS holds two spins' m/mdchi");
+    }
+
+    /// An over-estimating guard is also a bug: a budget that genuinely fits the
+    /// declared peak must pass, and a real (small) molecular shape must not be
+    /// refused under an ordinary budget.
+    #[test]
+    fn an_ample_budget_still_passes_the_gate() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var(VAR, "8"); // 8 GiB — an unremarkable desktop budget
+
+        // H2O-sized: nbf 25, a default 75x302 grid over 3 atoms ~ 68k points.
+        for &(kind, uks) in &[
+            (AoGridKind::ValueAndGrad, false),
+            (AoGridKind::ValueGradHess, false),
+            (AoGridKind::ValueGradHess, true),
+        ] {
+            let plan = xc_gradient_plan("t", 25, 68_000, 3, kind, uks, true);
+            assert!(
+                plan.check().is_ok(),
+                "a 25-function, 68k-point gradient must fit 8 GiB:\n{}",
+                plan.report(),
+            );
+        }
+
+        // And a mid-size one: 300 functions, 200k points, 20 atoms — 24 planes
+        // is ~11.5 GB, so it must NOT fit 8 GiB, but must fit 32.
+        let plan = xc_gradient_plan("t", 300, 200_000, 20, AoGridKind::ValueGradHess, true, true);
+        assert!(plan.check().is_err(), "24 planes of 300x200k does not fit 8 GiB");
+        std::env::set_var(VAR, "32");
+        let plan = xc_gradient_plan("t", 300, 200_000, 20, AoGridKind::ValueGradHess, true, true);
+        assert!(plan.check().is_ok(), "...but it does fit 32 GiB:\n{}", plan.report());
+
+        std::env::remove_var(VAR);
+    }
+
+    /// `weight1` scales as `npts × natoms`, and the gate must see that: the
+    /// same grid on ten times the atoms must cost about ten times as much.
+    #[test]
+    fn the_weight1_term_scales_with_both_npts_and_natoms() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var(VAR, "1024");
+        let small = crate::grid::grid_response_plan(100_000, 5).peak_bytes();
+        let many_atoms = crate::grid::grid_response_plan(100_000, 50).peak_bytes();
+        let many_pts = crate::grid::grid_response_plan(1_000_000, 5).peak_bytes();
+        std::env::remove_var(VAR);
+
+        assert!(many_atoms > 5 * small, "{many_atoms} vs {small}");
+        assert!(many_pts > 9 * small, "{many_pts} vs {small}");
+    }
 }
