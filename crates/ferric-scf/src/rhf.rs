@@ -491,7 +491,18 @@ pub fn solve_rhf(
     // pure-Pulay driver whose `step` is byte-identical to `Diis::step`;
     // ADIIS/EDIIS activate only when a caller opts in.
     let mut diis = DiisDriver::new(config.diis_flavor, config.diis_size, config.diis_switch_thresh);
-    crate::driver::warn_if_diis_history_large("RHF", n, config.diis_size, ooc_budget);
+    // RHF extrapolates with `step` (α-only), so two matrices per subspace
+    // entry; an ADIIS/EDIIS flavor additionally keeps an EnergyDiis pair live
+    // alongside the Pulay history (DiisDriver::new forces switch_thresh to 0
+    // for Pulay, so a pure-Pulay run correctly charges nothing extra).
+    crate::driver::warn_if_diis_history_large(
+        "RHF",
+        n,
+        config.diis_size,
+        crate::diis::DiisHistoryShape::SingleSpin,
+        config.diis_flavor != crate::diis::DiisFlavor::Pulay && config.diis_switch_thresh > 0.0,
+        ooc_budget,
+    );
     // MOM reference: last accepted occupied MO block (None until armed).
     let mut mom_ref: Option<Array2<f64>> = None;
     // Convergence bookkeeping (prev energy, carried ΔP signals, divergence

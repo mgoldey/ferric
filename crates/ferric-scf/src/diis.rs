@@ -147,6 +147,62 @@ impl std::fmt::Debug for Diis {
     }
 }
 
+/// Number of `nbf × nbf` history buffers a [`Diis`] holds once its subspace is
+/// full, by driver variant.
+///
+/// This lives next to the [`Diis`] fields it counts so that adding a history
+/// buffer and forgetting to update the memory projection is a change to two
+/// adjacent lines rather than to two files. The projection in
+/// `driver::warn_if_diis_history_large` previously hardcoded `2` and was called
+/// only from RHF — so UHF, the variant that populates *twice* as many
+/// buffers, projected nothing at all.
+///
+/// [`Diis::new`] always *allocates* four `RingHistory`s, but a `RingHistory` is
+/// empty until pushed into: the α-only `step` path fills `fock_hist` and
+/// `err_hist`, while `step_pair` additionally fills `fock_hist_b` and
+/// `err_hist_b`. So the resident count is the number of buffers the driver's
+/// step function actually pushes, not the number the struct declares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiisHistoryShape {
+    /// RHF / ROHF: `step` fills `fock_hist` + `err_hist`.
+    SingleSpin,
+    /// UHF: `step_pair` additionally fills `fock_hist_b` + `err_hist_b`.
+    PairSpin,
+}
+
+impl DiisHistoryShape {
+    /// `nbf × nbf` matrices retained at a full subspace, per subspace entry.
+    pub const fn matrices_per_entry(self) -> usize {
+        match self {
+            DiisHistoryShape::SingleSpin => 2,
+            DiisHistoryShape::PairSpin => 4,
+        }
+    }
+}
+
+/// Bytes a [`Diis`] holds at a full subspace: `entries × matrices × nbf² × 8`.
+///
+/// `energy_diis` adds [`EnergyDiis`]'s two further histories (`fock_hist` +
+/// `dens_hist`, [`EnergyDiis::new`]), which the ADIIS/EDIIS drivers hold
+/// *alongside* the Pulay `Diis` rather than instead of it — a term the old
+/// projection omitted entirely.
+pub fn diis_history_bytes(
+    nbf: usize,
+    diis_size: usize,
+    shape: DiisHistoryShape,
+    energy_diis: bool,
+) -> usize {
+    let matrices = shape
+        .matrices_per_entry()
+        .saturating_add(if energy_diis { 2 } else { 0 });
+    diis_size
+        .max(1)
+        .saturating_mul(matrices)
+        .saturating_mul(nbf)
+        .saturating_mul(nbf)
+        .saturating_mul(std::mem::size_of::<f64>())
+}
+
 impl Diis {
     /// Create a DIIS accelerator with the given maximum subspace size.
     pub fn new(max_subspace: usize) -> Self {
