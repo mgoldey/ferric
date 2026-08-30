@@ -60,11 +60,33 @@ pub struct CcConfig {
     pub energy_conv: f64,
     pub diis_start: usize,
     pub diis_subspace: usize,
-    /// Optional resident-bytes ceiling for RI integral transforms feeding the
-    /// CC amplitude equations. `None` → resolved via
-    /// [`ferric_core::memory::resolve_budget_bytes`]. Currently wiring-only:
-    /// the dense CC contractions dominate memory, but the field lets callers
-    /// propagate the unified budget uniformly.
+    /// Optional resident-bytes ceiling for the dense tensors a CC method
+    /// materializes. `None` → resolved via
+    /// [`ferric_core::memory::resolve_budget_bytes`].
+    ///
+    /// This field used to be documented as "wiring-only", and for the
+    /// local-correlation family that was literally true: it was threaded through
+    /// the whole crate and read by nobody on the `dlpno_*` path. The consequence
+    /// was a production incident — the LNO-coupled path predicted a 0.055 GB
+    /// working set and peaked at 7.3 GB. The predicted number was not wrong
+    /// about what it described; it described the *compressed, pair-shaped*
+    /// iteration (`HhFlopCount`, `virtual_retention`), which is genuinely tiny,
+    /// while the allocator was serving the *dense canonical setup* that has to
+    /// run before the first PNO exists. Nothing reconciled the two, so the only
+    /// feedback was the OOM killer.
+    ///
+    /// It is now read on every path that materializes a size-dependent dense
+    /// tensor, via [`ferric_core::memory::plan::MemoryPlan`], which fails fast
+    /// with a per-reservation breakdown naming the term that blew up:
+    ///
+    /// * `ccd`, `ccsd`, `ccsd_closed_shell`, `ccsd_t`, `ccsd_t_closed_shell`,
+    ///   `linlccd`, `linlccd_u`, `linlccd_exact` — via `check_alloc`.
+    /// * [`dlpno_linlccd::dlpno_linlccd_hh`] — a `MemoryPlan` over the dense
+    ///   setup, composed with the `S^{P,Q}` cache guard below.
+    /// * [`dlpno_ccsd_kernel::PairOverlaps::build_within_budget`] — the
+    ///   `O(nocc⁴·nvir²)` pair-pair overlap cache, the worst asymptotic here.
+    /// * [`dlpno_ccsd_t_virtual::TripleTnoBasis::build_within_budget`] — the
+    ///   pair-PNO and per-triple-TNO transform sets.
     pub memory_budget_bytes: Option<usize>,
 }
 

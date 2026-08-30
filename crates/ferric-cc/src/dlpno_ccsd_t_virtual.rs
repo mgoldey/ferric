@@ -240,6 +240,51 @@ impl TripleTnoBasis {
     where
         F: FnMut(usize, usize) -> Array2<f64>,
     {
+        Self::build_within_budget(domains, nvir, eps_vir, t_cut_tno, t2_pair, usize::MAX)
+    }
+
+    /// [`Self::build`], refusing once the transforms accumulated so far exceed
+    /// `budget_bytes`.
+    ///
+    /// WHY THIS EXISTS. This routine holds two dense transform sets at once —
+    /// the COMPLETE `i <= j` pair PNO set (`n_pairs · nvir · npno`, and the pair
+    /// list is complete by construction, see the note above, so no screen bounds
+    /// it) and the per-triple TNO set (`n_triples · nvir · ntno`). With complete
+    /// domains that is `O(nocc³·nvir²)`, and until now nothing on the path
+    /// consulted [`crate::CcConfig::memory_budget_bytes`] at all.
+    ///
+    /// That is the same defect that produced the LNO-coupled incident, where a
+    /// path reported a 0.055 GB pair-shaped working set and peaked at 7.3 GB
+    /// because the number it reported described the compressed amplitudes while
+    /// the allocator was serving the dense construction that built them. The
+    /// only signal was the OOM killer.
+    ///
+    /// The accounting here is **incremental and exact**: each `Q`/`Q̃` is charged
+    /// at the size it actually came back with, after truncation, never at a
+    /// pre-truncation `nvir` upper bound. A bound would over-estimate by exactly
+    /// the factor the truncation is buying, and an over-estimating guard is also
+    /// a bug — it refuses jobs that would have fit. The cost is that the refusal
+    /// lands partway through the build rather than before it; that is the right
+    /// trade, since the alternative is either an over-estimate or no guard.
+    ///
+    /// Numerics are untouched: `budget_bytes = usize::MAX` reproduces
+    /// [`Self::build`] exactly, which is how [`Self::build`] is now implemented.
+    ///
+    /// # Errors
+    ///
+    /// Everything [`Self::build`] returns, plus [`FerricError::General`] with a
+    /// per-reservation breakdown when the transforms exceed `budget_bytes`.
+    pub fn build_within_budget<F>(
+        domains: &TripleDomains,
+        nvir: usize,
+        eps_vir: &[f64],
+        t_cut_tno: f64,
+        t2_pair: F,
+        budget_bytes: usize,
+    ) -> Result<Self, FerricError>
+    where
+        F: FnMut(usize, usize) -> Array2<f64>,
+    {
         if eps_vir.len() != nvir {
             return Err(FerricError::General(format!(
                 "TripleTnoBasis::build: eps_vir has {} entries, expected nvir = {nvir}",
@@ -256,14 +301,38 @@ impl TripleTnoBasis {
             }
         }
 
+        use ferric_core::memory::plan::{Lifetime, MemoryPlan};
+        let mut plan = MemoryPlan::with_budget_bytes(
+            budget_bytes,
+            format!(
+                "DLPNO-(T) TNO basis ({} triples, nvir = {nvir})",
+                domains.triples.len()
+            ),
+        );
+
         // Per-pair PNOs over the COMPLETE i <= j pair list (see the doc above).
         let pair_domains = complete_pair_domains(&domains.centers)?;
         let pnos: PnoTransforms =
             build_pno_transforms(&pair_domains, nvir, t_cut_tno, t2_pair)?;
+        // Charged at the POST-truncation size that actually came back.
+        let pno_elems: usize = pnos
+            .pairs
+            .iter()
+            .map(|p| p.transform.len())
+            .fold(0usize, usize::saturating_add);
+        plan.reserve("pair PNO transforms Q^(ij)", pno_elems, Lifetime::Resident);
+        plan.check()?;
 
         let mut triples = Vec::with_capacity(domains.triples.len());
+        let mut tno_elems = 0usize;
         for &(i, j, k) in &domains.triples {
-            triples.push(build_one_tno(&pnos, nvir, eps_vir, i, j, k)?);
+            let t = build_one_tno(&pnos, nvir, eps_vir, i, j, k)?;
+            tno_elems = tno_elems.saturating_add(t.transform.len());
+            triples.push(t);
+            // Re-declaring the same label REPLACES it (see `MemoryPlan::reserve`),
+            // so this refines one running total rather than double-counting.
+            plan.reserve("triple TNO transforms Q^(ijk)", tno_elems, Lifetime::Resident);
+            plan.check()?;
         }
         Ok(Self { triples, nvir, t_cut_tno })
     }
@@ -1476,5 +1545,98 @@ mod tests {
         assert_eq!(b.virtual_retention(), 1.0);
         assert_eq!(b.max_ntno(), 0);
     }
-}
 
+    // ==================================================================
+    // MEMORY BUDGET — the TNO transform sets, both directions
+    // ==================================================================
+
+    /// A budget below the transform sets must be refused, naming the term.
+    #[test]
+    fn tno_build_within_budget_refuses_a_tiny_budget_and_names_the_term() {
+        let (nocc, nvir) = (4, 5);
+        let (eo, ev) = (eps_occ(nocc), eps_vir(nvir));
+        let ovov = ovov_block(nocc, nvir);
+        let t2 = mp2_t2(&ovov, &eo, &ev);
+        let d = complete_triple_domains(&line_centers(nocc, 1.5)).unwrap();
+
+        let err = TripleTnoBasis::build_within_budget(
+            &d,
+            nvir,
+            &ev,
+            0.0,
+            |i, j| Array2::from_shape_fn((nvir, nvir), |(a, b)| t2[[i, j, a, b]]),
+            8,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("DLPNO-(T) TNO basis"), "must name the method: {err}");
+        assert!(err.contains("transforms"), "breakdown must name a term: {err}");
+    }
+
+    /// AN OVER-ESTIMATING GUARD IS ALSO A BUG. An ample budget must build the
+    /// basis bit-for-bit identically to the unguarded path — the guard may not
+    /// perturb anything, and may not refuse a job that fits.
+    #[test]
+    fn tno_ample_budget_is_bit_identical_to_the_unguarded_build() {
+        for t_cut in [0.0, 1e-3] {
+            let (nocc, nvir) = (4, 6);
+            let (eo, ev) = (eps_occ(nocc), eps_vir(nvir));
+            let ovov = ovov_block(nocc, nvir);
+            let t2 = mp2_t2(&ovov, &eo, &ev);
+            let d = complete_triple_domains(&line_centers(nocc, 1.5)).unwrap();
+            let block =
+                |i: usize, j: usize| Array2::from_shape_fn((nvir, nvir), |(a, b)| t2[[i, j, a, b]]);
+
+            let reference = TripleTnoBasis::build(&d, nvir, &ev, t_cut, block).unwrap();
+            let guarded = TripleTnoBasis::build_within_budget(
+                &d,
+                nvir,
+                &ev,
+                t_cut,
+                block,
+                1usize << 30,
+            )
+            .unwrap();
+
+            assert_eq!(guarded.triples.len(), reference.triples.len());
+            for (g, r) in guarded.triples.iter().zip(reference.triples.iter()) {
+                assert_eq!(g.ijk, r.ijk);
+                assert_eq!(g.transform, r.transform, "the guard perturbed a transform");
+                assert_eq!(g.eps, r.eps);
+            }
+        }
+    }
+
+    /// The guard must charge the POST-truncation size. If it charged a
+    /// pre-truncation `nvir` bound instead it would over-estimate by exactly the
+    /// factor truncation buys, refusing truncated jobs that fit.
+    #[test]
+    fn tno_guard_charges_the_truncated_size_not_an_nvir_bound() {
+        let (nocc, nvir) = (4, 6);
+        let (eo, ev) = (eps_occ(nocc), eps_vir(nvir));
+        let ovov = ovov_block(nocc, nvir);
+        let t2 = mp2_t2(&ovov, &eo, &ev);
+        let d = complete_triple_domains(&line_centers(nocc, 1.5)).unwrap();
+        let block =
+            |i: usize, j: usize| Array2::from_shape_fn((nvir, nvir), |(a, b)| t2[[i, j, a, b]]);
+
+        let truncated = TripleTnoBasis::build(&d, nvir, &ev, 1e-3, block).unwrap();
+        assert!(!truncated.is_complete(), "test premise: something must truncate");
+
+        // Exactly the bytes the truncated build actually holds.
+        let pair_d = complete_pair_domains(&d.centers).unwrap();
+        let pnos = build_pno_transforms(&pair_d, nvir, 1e-3, block).unwrap();
+        let need = (pnos.pairs.iter().map(|p| p.transform.len()).sum::<usize>()
+            + truncated.triples.iter().map(|t| t.transform.len()).sum::<usize>())
+            * 8;
+
+        assert!(
+            TripleTnoBasis::build_within_budget(&d, nvir, &ev, 1e-3, block, need).is_ok(),
+            "a budget equal to what the truncated build holds must be accepted"
+        );
+        assert!(
+            TripleTnoBasis::build_within_budget(&d, nvir, &ev, 1e-3, block, need - 8).is_err(),
+            "one element short must be refused"
+        );
+    }
+}

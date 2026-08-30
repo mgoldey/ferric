@@ -148,7 +148,69 @@ pub struct PairOverlaps {
 }
 
 impl PairOverlaps {
+    /// Exact element count of the cache this basis would produce:
+    /// `Σ_P Σ_Q npno_P · npno_Q  =  (Σ_P npno_P)²`.
+    ///
+    /// This is not an estimate. It is the same sum the build loop performs, in
+    /// closed form, so it cannot drift from what is allocated — which is the
+    /// whole point: the historical failures in this repo came from a *second*,
+    /// hand-written implementation of an allocation's shape silently diverging
+    /// from the allocator.
+    ///
+    /// Note the asymptotics this number hides: with complete domains
+    /// `n_pairs ~ nocc²` and `npno ~ nvir`, so this is `O(nocc⁴ · nvir²)` — the
+    /// worst scaling in the crate, and the only unbounded allocation on the
+    /// DLPNO path.
+    pub fn plan_elements(basis: &PairPnoBasis) -> usize {
+        let total_pno: usize =
+            basis.pairs.iter().map(|p| p.transform.ncols()).fold(0usize, usize::saturating_add);
+        total_pno.saturating_mul(total_pno)
+    }
+
+    /// Build every `S^{P,Q}`, refusing up front if the cache cannot fit
+    /// `budget_bytes`.
+    ///
+    /// WHY THIS GUARD EXISTS. [`Self::build`] materializes the **whole**
+    /// `n_pairs² × npno²` block. That is deliberate and stays deliberate — the
+    /// retention policy is documented on the type: keeping every `S`, including
+    /// the off-diagonals a production screen would drop, is what stops the
+    /// exactness tests from passing by never touching one. Nothing here changes
+    /// the numerics or which overlaps are kept.
+    ///
+    /// What it changes is the failure mode. `Σ npno` grows like `nocc²·nvir`, so
+    /// this cache grows like its square, faster than anything else on the DLPNO
+    /// path, and it was allocated with no reference to
+    /// [`crate::CcConfig::memory_budget_bytes`] at all. That is precisely the
+    /// shape of the LNO-coupled incident: the reported working set was the
+    /// compressed pair-shaped one (0.055 GB predicted) while the allocator
+    /// served the dense setup (7.3 GB peak), and the first signal a user got was
+    /// the OOM killer. A job that cannot fit should say so, in one line, naming
+    /// the term — before it starts allocating.
+    ///
+    /// # Errors
+    ///
+    /// [`FerricError::General`] when the cache exceeds `budget_bytes`, carrying
+    /// the per-reservation breakdown.
+    pub fn build_within_budget(
+        basis: &PairPnoBasis,
+        budget_bytes: usize,
+    ) -> Result<Self, FerricError> {
+        use ferric_core::memory::plan::{Lifetime, MemoryPlan};
+        let n = basis.pairs.len();
+        let mut plan = MemoryPlan::with_budget_bytes(
+            budget_bytes,
+            format!("PairOverlaps S^(P,Q) cache ({n} pairs)"),
+        );
+        plan.reserve("S^(P,Q) dense pair-pair overlap cache", Self::plan_elements(basis), Lifetime::Resident);
+        plan.check()?;
+        Ok(Self::build(basis))
+    }
+
     /// Build every `S^{P,Q}`.
+    ///
+    /// Unguarded. Prefer [`Self::build_within_budget`] on any path that has a
+    /// [`crate::CcConfig`] to hand; this remains for the exactness tests and
+    /// small fixtures, where the cache is kilobytes.
     pub fn build(basis: &PairPnoBasis) -> Self {
         let n = basis.pairs.len();
         let mut s = Vec::with_capacity(n * n);
@@ -1925,6 +1987,75 @@ mod tests {
         assert!(
             ct.foo_flops.0 <= c0.foo_flops.0,
             "truncation increased the F_oo flop count on the real system"
+        );
+    }
+
+    // ==================================================================
+    // PairOverlaps BUDGET GUARD
+    // ==================================================================
+    //
+    // `PairOverlaps::build` is `O(nocc⁴·nvir²)` — the worst asymptotic in the
+    // crate — and was allocated with no reference to the memory budget at all.
+    // That is the shape of the LNO-coupled incident (0.055 GB predicted, 7.3 GB
+    // peak): the reported working set was pair-shaped while the allocator served
+    // a dense block nothing had declared.
+
+    /// `plan_elements` must equal what `build` actually allocates, exactly. If
+    /// these can disagree the guard is just a second estimator, which is the
+    /// defect class it exists to retire.
+    #[test]
+    fn plan_elements_matches_the_allocation_exactly() {
+        for t_cut in [0.0, 1e-6, 1e-4] {
+            let f = fixture(4, 6, t_cut);
+            let built: usize = (0..f.overlaps.n_pairs())
+                .flat_map(|p| (0..f.overlaps.n_pairs()).map(move |q| (p, q)))
+                .map(|(p, q)| f.overlaps.get(p, q).len())
+                .sum();
+            assert_eq!(
+                PairOverlaps::plan_elements(&f.basis),
+                built,
+                "the plan must count exactly what build allocates (t_cut = {t_cut})"
+            );
+        }
+    }
+
+    /// A budget below the cache must be refused, naming the term.
+    #[test]
+    fn build_within_budget_refuses_a_tiny_budget_and_names_the_term() {
+        let f = fixture(4, 6, 0.0);
+        let err = PairOverlaps::build_within_budget(&f.basis, 8).unwrap_err().to_string();
+        assert!(err.contains("PairOverlaps"), "must name the allocation: {err}");
+        assert!(err.contains("overlap"), "breakdown must name the reservation: {err}");
+    }
+
+    /// AN OVER-ESTIMATING GUARD IS ALSO A BUG: an ample budget must still build,
+    /// and must produce the identical cache the unguarded path produces.
+    #[test]
+    fn build_within_budget_is_identical_to_build_when_it_fits() {
+        let f = fixture(4, 6, 0.0);
+        let guarded = PairOverlaps::build_within_budget(&f.basis, 1 << 30).unwrap();
+        assert_eq!(guarded.n_pairs(), f.overlaps.n_pairs());
+        for p in 0..guarded.n_pairs() {
+            for q in 0..guarded.n_pairs() {
+                assert_eq!(
+                    guarded.get(p, q),
+                    f.overlaps.get(p, q),
+                    "the guard must not perturb S^({p},{q})"
+                );
+            }
+        }
+    }
+
+    /// The budget that EXACTLY fits must pass — an off-by-one in the guard is
+    /// the over-estimating bug in miniature.
+    #[test]
+    fn a_budget_exactly_equal_to_the_requirement_fits() {
+        let f = fixture(3, 5, 0.0);
+        let need = PairOverlaps::plan_elements(&f.basis) * 8;
+        assert!(PairOverlaps::build_within_budget(&f.basis, need).is_ok(), "exact fit must pass");
+        assert!(
+            PairOverlaps::build_within_budget(&f.basis, need - 1).is_err(),
+            "one byte short must fail"
         );
     }
 }
