@@ -66,6 +66,43 @@ pub struct UMp2Amplitudes {
     pub components: URiMp2Components,
 }
 
+/// The `(naux, nocc_α, nvir_α, nocc_β, nvir_β)` shapes
+/// [`compute_rpa_intermediates_spin`] will produce, derived WITHOUT building
+/// them.
+///
+/// This exists so the pre-flight gate can run *before* the two spin
+/// intermediates are allocated rather than after. Previously both entry points
+/// built `inter_a` and `inter_b` first and only then called
+/// `check_u_mo_side_alloc` — a guard that charges those very buffers. On a job
+/// too large for the budget the process died inside the allocation the guard
+/// was meant to refuse, and the error message was an OOM kill rather than the
+/// actionable "raise budget_gb" diagnostic.
+///
+/// The occupancy arithmetic MIRRORS `compute_rpa_intermediates_spin` exactly
+/// (`nocc_σ = (N ± 2S)/2`, `nvir_σ = nbas − nocc_total_σ`, active occupied via
+/// [`active_occ`]). That is a duplication, but a small, closed-form one over
+/// integer counts — not a second implementation of the ALLOCATION shapes, which
+/// is the drift class this pass is removing. Returning an error for a bad
+/// frozen-core count matches what the builder would have done.
+fn u_mo_side_dims(
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    scf: &ScfResult,
+    mol: &Molecule,
+    config: &RiMp2Config,
+) -> Result<(usize, usize, usize, usize, usize), FerricError> {
+    let nbas = obs.nbasis();
+    let naux = dfbs.nbasis();
+    let nelec_total = mol.nelec() as usize;
+    let two_s = mol.multiplicity as i32 - 1;
+    let nocc_total_a = ((nelec_total as i32 + two_s) / 2) as usize;
+    let nocc_total_b = ((nelec_total as i32 - two_s) / 2) as usize;
+    let no_a = crate::rimp2::active_occ(nocc_total_a, config.frozen_core)?;
+    let no_b = crate::rimp2::active_occ(nocc_total_b, config.frozen_core)?;
+    let _ = scf; // shapes depend only on the molecule/basis, not the MO values
+    Ok((naux, no_a, nbas - nocc_total_a, no_b, nbas - nocc_total_b))
+}
+
 /// Compute the U-RI-MP2 correlation energy from a UHF or ROHF reference.
 ///
 /// Reuses `compute_rpa_intermediates_spin` to build per-spin
@@ -84,22 +121,42 @@ pub fn u_ri_mp2(
         ));
     }
 
-    let inter_a = compute_rpa_intermediates_spin(mol, obs, dfbs, op, scf, config, true)?;
-    let inter_b = compute_rpa_intermediates_spin(mol, obs, dfbs, op, scf, config, false)?;
-
-    // Gate the MO side before the dense amplitude/energy work. Both spin
-    // intermediates are already resident here; this bounds what is built on
-    // top of them (u_rimp2.rs previously had NO check_alloc at all).
+    // Gate BEFORE the spin intermediates, not after.
+    //
+    // `check_u_mo_side_alloc`'s own doc says it charges the "TWO spin
+    // intermediates ... retained simultaneously", and `check_alloc`'s doc says
+    // a pre-flight gate belongs "before the first large allocation". Both were
+    // violated here: `inter_a` and `inter_b` — the very `(naux, nocc_σ·nvir_σ)`
+    // buffers the guard charges — were allocated FIRST, so on a job too large
+    // for the budget the process OOM-killed inside
+    // `compute_rpa_intermediates_spin` and the guard never ran. A gate that
+    // runs after the allocation it bounds is not a gate.
+    //
+    // The shapes are derived from the SCF result rather than from the built
+    // intermediates, which is what makes the reordering possible at all.
+    let (naux, no_a, nv_a, no_b, nv_b) = u_mo_side_dims(obs, dfbs, scf, mol, config)?;
     crate::rimp2::check_u_mo_side_alloc(
         "U-RI-MP2",
-        inter_a.naux,
-        inter_a.nocc,
-        inter_a.nvir,
-        inter_b.nocc,
-        inter_b.nvir,
+        naux,
+        no_a,
+        nv_a,
+        no_b,
+        nv_b,
         0,
         crate::rimp2::eri3_budget_bytes(config.memory_budget_bytes),
     )?;
+
+    let inter_a = compute_rpa_intermediates_spin(mol, obs, dfbs, op, scf, config, true)?;
+    let inter_b = compute_rpa_intermediates_spin(mol, obs, dfbs, op, scf, config, false)?;
+
+    // Stage-seam RSS safety net: both spin intermediates are now resident, so
+    // this is the first point where the pre-flight estimate above can be
+    // compared against reality. Observational only, never an error.
+    ferric_core::memory::warn_if_rss_over(
+        "U-RI-MP2 spin intermediates built",
+        crate::rimp2::eri3_budget_bytes(config.memory_budget_bytes),
+        1.1,
+    );
 
     let eps_a: &[f64] = &scf.eps_alpha;
     // ROHF has no eps_beta — fall back to eps_alpha (ROHF MOs are shared).
@@ -139,22 +196,32 @@ pub fn compute_u_mp2_amplitudes(
         ));
     }
 
-    let inter_a = compute_rpa_intermediates_spin(mol, obs, dfbs, op, scf, config, true)?;
-    let inter_b = compute_rpa_intermediates_spin(mol, obs, dfbs, op, scf, config, false)?;
-
-    // Gate the MO side before the dense amplitude/energy work. Both spin
-    // intermediates are already resident here; this bounds what is built on
-    // top of them (u_rimp2.rs previously had NO check_alloc at all).
+    // Gate BEFORE the spin intermediates — same defect and same reasoning as in
+    // `u_ri_mp2` above: this guard charges `inter_a`/`inter_b` themselves, so
+    // running it after they are built means an over-budget job OOMs inside the
+    // allocation the guard exists to refuse. See `u_mo_side_dims`.
+    let (naux, no_a, nv_a, no_b, nv_b) = u_mo_side_dims(obs, dfbs, scf, mol, config)?;
     crate::rimp2::check_u_mo_side_alloc(
         "U-MP2 amplitudes",
-        inter_a.naux,
-        inter_a.nocc,
-        inter_a.nvir,
-        inter_b.nocc,
-        inter_b.nvir,
+        naux,
+        no_a,
+        nv_a,
+        no_b,
+        nv_b,
         3,
         crate::rimp2::eri3_budget_bytes(config.memory_budget_bytes),
     )?;
+
+    let inter_a = compute_rpa_intermediates_spin(mol, obs, dfbs, op, scf, config, true)?;
+    let inter_b = compute_rpa_intermediates_spin(mol, obs, dfbs, op, scf, config, false)?;
+
+    // Stage-seam RSS safety net: both spin intermediates resident, amplitudes
+    // not yet built. Observational only, never an error.
+    ferric_core::memory::warn_if_rss_over(
+        "U-MP2 spin intermediates built",
+        crate::rimp2::eri3_budget_bytes(config.memory_budget_bytes),
+        1.1,
+    );
 
     let eps_a_vec: Vec<f64> = scf.eps_alpha.clone();
     let eps_b_vec: Vec<f64> = match scf.eps_beta.as_ref() {
@@ -749,8 +816,20 @@ pub fn compute_u_mp2_orbital_gradient_blocks(
     // against `budget_bytes` (the caller's already-resolved ceiling), NOT a
     // fresh `resolve_budget_bytes(None)` — the live/unconfigured full budget
     // would ignore that `amps`/`b_full_a`/`b_full_b` already occupy most of it.
-    let panel_width = |nvir: usize, nov: usize| -> usize {
-        let row_bytes = nvir.saturating_mul(nov).saturating_mul(8).max(1);
+    // `nov_total` is the SUM of the `nov` widths of every panel held at once,
+    // not the max. The α loop below builds `vvov_a` (`nov_a` columns) and
+    // `vvov_ab` (`nov_b` columns) from the SAME `bvv_panel` and holds both live
+    // across the whole `c` body, so one c-value costs `nvir·(nov_a+nov_b)·8`
+    // bytes. This previously took `nov_a.max(nov_b)`, sizing the panel for ONE
+    // buffer while the loop allocated two — a real peak of up to ~2× the
+    // intended ceiling, and exactly 2× when the two spins have equal
+    // dimensions (the common near-closed-shell case).
+    //
+    // `laplace.rs`'s `mu_row_bytes = naux·nbas·8·2` with its "hold two panels
+    // (M, N)" comment is the correct in-tree precedent; this now follows it,
+    // generalized to unequal panel widths.
+    let panel_width = |nvir: usize, nov_total: usize| -> usize {
+        let row_bytes = nvir.saturating_mul(nov_total).saturating_mul(8).max(1);
         (budget_bytes / row_bytes).max(1).min(nvir.max(1))
     };
 
@@ -761,7 +840,8 @@ pub fn compute_u_mp2_orbital_gradient_blocks(
     // The VVOV blocks read below (rows confined to the c-panel [c0,c1)):
     //   vvov_a[(c·nvir_a+a), (j·nvir_a+b)] = (ca|jb)_α   (same-spin α GEMM)
     //   vvov_ab[(c·nvir_a+a), (J·nvir_b+B)] = (ca_α | JB_β)  (cross-spin)
-    let panel_c_a = panel_width(nvir_a, nov_a.max(nov_b));
+    // Two panels live at once here (vvov_a and vvov_ab) — charge their SUM.
+    let panel_c_a = panel_width(nvir_a, nov_a.saturating_add(nov_b));
     let mut c0 = 0;
     while c0 < nvir_a {
         let c1 = (c0 + panel_c_a).min(nvir_a);
@@ -865,7 +945,12 @@ pub fn compute_u_mp2_orbital_gradient_blocks(
     //   ovvv_ab[(i·nvir_a+a), (c·nvir_b+B)] = (ia_α | CB_β)  (cross-spin, c on β side)
     // ovvv_ab keeps the β-vir index in its columns, so we panel it over `c` by
     // slicing bvv_b down to the panel columns; its α-ov rows stay full.
-    let panel_c_b = panel_width(nvir_b, nov_b);
+    // Two panels live at once here too — `vvov_b` costs `nvir_b·nov_b` per
+    // c-value and `ovvv_ab` costs `nov_a·nvir_b` (its β-vir index is in the
+    // COLUMNS, so it scales with the panel width just as `vvov_b` does). Both
+    // are held across the whole `c` body below, so charge their sum. The old
+    // `panel_width(nvir_b, nov_b)` saw only the first of the two.
+    let panel_c_b = panel_width(nvir_b, nov_b.saturating_add(nov_a));
     let mut c0 = 0;
     while c0 < nvir_b {
         let c1 = (c0 + panel_c_b).min(nvir_b);

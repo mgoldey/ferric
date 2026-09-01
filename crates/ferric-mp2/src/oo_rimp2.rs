@@ -397,6 +397,55 @@ fn check_t2_pair_alloc(
     )
 }
 
+/// Fail-fast pre-flight guard for the **full-MO** `b_full` tensor
+/// [`compute_b_full_mo_with`] builds each OO-MP2 macro-iteration, plus the
+/// co-resident `(nov, nov)` t2/eri_ov pair that follows it.
+///
+/// # The gap this closes
+///
+/// `compute_b_full_mo_with` allocates a dense `(naux, nmo, nmo)` f64 tensor and
+/// carries NO guard of its own. At `naux=2200`/`nmo=960` that is ~16 GB — on
+/// its own larger than a typical budget. Two separate accounting mistakes let
+/// it through:
+///
+/// * The caller's `check_t2_pair_alloc` ran AFTER `compute_b_full_mo_with`
+///   returned, so even the check that did exist could not refuse the job; the
+///   allocation had already happened.
+/// * Neither guard charged `b_full` at all. `check_t2_pair_alloc` charges the
+///   `nov²` pair, and `check_gradient_intermediates_alloc` charges the SLICES
+///   the gradient extracts out of `b_full` (`b_ov`, `b_vv`, `b_oo`, `b_diag`) —
+///   never the parent tensor those slices are cut from, which stays live
+///   alongside them for the whole gradient evaluation.
+///
+/// This charges `b_full` and the t2 pair together, because they ARE co-resident:
+/// `b_full` is built first and then passed to `compute_orbital_gradient` after
+/// `t2` exists. Callers must invoke it BEFORE `compute_b_full_mo_with`.
+///
+/// `budget_bytes` is the already-resolved
+/// [`ferric_core::memory::resolve_budget_bytes`] value, same convention as
+/// [`check_t2_pair_alloc`]. Pure arithmetic: never allocates.
+fn check_b_full_and_t2_alloc(
+    label: &str,
+    nocc: usize,
+    nvir: usize,
+    naux: usize,
+    nmo: usize,
+    budget_bytes: usize,
+) -> Result<(), FerricError> {
+    let nov = nocc.saturating_mul(nvir);
+    let b_full = naux.saturating_mul(nmo).saturating_mul(nmo);
+    let t2_pair = nov.saturating_mul(nov).saturating_mul(2);
+    let peak = b_full.saturating_add(t2_pair).saturating_mul(8);
+    ferric_core::memory::check_alloc(
+        &format!(
+            "{label} (nocc={nocc}, nvir={nvir}, naux={naux}, nmo={nmo}; \
+             b_full (naux·nmo²) co-resident with t2+eri_ov_mat (nov={nov})²)"
+        ),
+        peak,
+        budget_bytes,
+    )
+}
+
 /// Fail-fast pre-flight guard for the dense MO-space intermediates
 /// [`compute_orbital_gradient_panelled`] allocates unconditionally BEFORE its
 /// c-panel loop: `b_ov` (naux×nov), `b_vv` (naux×nvir²), `b_oo` (naux×nocc²),
@@ -1158,20 +1207,48 @@ pub fn oo_ri_mp2(
     };
 
     for iter in 1..=config.max_iter {
+        // Fail-fast guard BEFORE the first large allocation of the iteration.
+        //
+        // Two things are charged together because they are co-resident: the
+        // full-MO `b_full` tensor built on the next line (naux·nmo², ~16 GB at
+        // naux=2200/nmo=960) and the pair of `(nov,nov)` buffers
+        // `compute_t2_and_integrals` returns and this loop retains.
+        //
+        // Previously `b_full` was allocated FIRST and the guard — which
+        // charged only the t2 pair, never `b_full` — ran afterwards, so the
+        // single largest allocation in the loop was both unaccounted and
+        // unguardable. See `check_b_full_and_t2_alloc`.
+        //
+        // Guarded here (the call site) rather than inside
+        // `compute_t2_and_integrals`, since that function is also called from
+        // rimp2.rs/oo_rimp2_gradient.rs/ferric-rpa::pno with an infallible
+        // signature this pass must not disturb.
+        let naux = dfbs.nbasis();
+        check_b_full_and_t2_alloc(
+            &format!("OO-RI-MP2 b_full/t2/eri_ov (iter {iter})"),
+            nocc,
+            nvir,
+            naux,
+            nmo,
+            budget_bytes,
+        )?;
+
         // Compute full-MO B tensor for gradient evaluation
         let b_full = compute_b_full_mo_with(&ao, &c)?;
 
-        // Build t2 amplitudes. Fail-fast guard: compute_t2_and_integrals
-        // returns (and this loop retains, at least for the rest of the
-        // iteration) BOTH eri_ov_mat and t2 — two co-resident (nov,nov) f64
-        // buffers with zero pre-flight check before this fix (the AO-tensor
-        // stage above was budgeted via build_with_budget; this MO-space
-        // allocation was not). Guarded here (the call site) rather than
-        // inside compute_t2_and_integrals itself, since that function is also
-        // called from rimp2.rs/oo_rimp2_gradient.rs/ferric-rpa::pno with an
-        // infallible signature this pass must not disturb.
-        check_t2_pair_alloc(&format!("OO-RI-MP2 t2/eri_ov (iter {iter})"), nocc, nvir, budget_bytes)?;
-        let naux = dfbs.nbasis();
+        // Stage-seam RSS safety net: `b_full` and the amplitudes are the two
+        // largest allocations of the iteration. Checked on the first pass only
+        // — the footprint does not grow with `iter`, and a
+        // `/proc/self/status` read per macro-iteration would be pure overhead.
+        // Observational only, never an error.
+        if iter == 1 {
+            ferric_core::memory::warn_if_rss_over(
+                "OO-RI-MP2 b_full built",
+                budget_bytes,
+                1.1,
+            );
+        }
+
         let (t2, _eri_ov) = compute_t2_and_integrals(
             &b_ov, &eps, nocc, nvir, nocc_total, first_occ, naux,
         );
@@ -1346,14 +1423,19 @@ pub fn oo_ri_mp2(
 
         if de < config.energy_conv && iter > 1 {
             // Energy converged; recompute gradient to check convergence.
-            // Same co-resident t2/eri_ov_mat guard as the main-loop call site
-            // above — this is a second, independent (nov,nov)-pair build.
-            check_t2_pair_alloc(
-                &format!("OO-RI-MP2 t2/eri_ov (iter {iter}, convergence recheck)"),
-                nocc, nvir, budget_bytes,
+            // Same co-resident b_full/t2/eri_ov guard as the main-loop call
+            // site above — this is a second, independent build of both, and it
+            // likewise must run BEFORE `compute_b_full_mo_with`.
+            let naux2 = dfbs.nbasis();
+            check_b_full_and_t2_alloc(
+                &format!("OO-RI-MP2 b_full/t2/eri_ov (iter {iter}, convergence recheck)"),
+                nocc,
+                nvir,
+                naux2,
+                nmo,
+                budget_bytes,
             )?;
             let b_full2 = compute_b_full_mo_with(&ao, &c)?;
-            let naux2 = dfbs.nbasis();
             let (t2_2, _) = compute_t2_and_integrals(
                 &b_ov, &eps, nocc, nvir, nocc_total, first_occ, naux2,
             );
