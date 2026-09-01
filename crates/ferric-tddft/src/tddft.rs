@@ -407,6 +407,20 @@ pub fn run_tddft(
         });
     }
 
+    // The (ia|f_xc|jb) XC-kernel response is NOT implemented (see the TODO in
+    // `build_a_matrix`). At c_hf = 1.0 it is identically zero and the result is
+    // exactly CIS/TDHF, so only a DFT reference is affected — there the omitted
+    // term makes the excitation energies approximate. Say so, rather than
+    // returning silently-incomplete numbers that look converged: a caller
+    // cannot tell from the result alone that a term is missing.
+    if c_hf != 1.0 {
+        eprintln!(
+            "[tddft] WARNING: the XC-kernel response (ia|f_xc|jb) is not implemented; \
+             with c_hf = {c_hf} (a DFT reference) the excitation energies omit that term \
+             and are APPROXIMATE. Only a pure-HF reference (c_hf = 1.0) is exact here."
+        );
+    }
+
     let nbas = obs.nbasis();
     let nelec = mol.nelec() as usize;
     let nocc = nelec / 2;

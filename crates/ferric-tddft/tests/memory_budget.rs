@@ -148,3 +148,34 @@ fn caller_budget_is_honoured_not_discarded() {
          allocations, which is the entire defect this field exists to fix"
     );
 }
+
+/// A hybrid/DFT reference (`c_hf != 1.0`) must still produce a result — the
+/// missing-XC-kernel WARNING is a diagnostic, not a failure path.
+///
+/// `run_tddft` warns on stderr when `c_hf != 1.0` because the `(ia|f_xc|jb)`
+/// kernel response is unimplemented, so those excitation energies omit a
+/// physical term. That warning exists because the omission was previously
+/// SILENT: a caller running TDDFT on a DFT reference got approximate numbers
+/// that looked converged and complete.
+///
+/// This test pins the two things that must remain true: the warning path does
+/// not turn a working calculation into an error, and it does not corrupt the
+/// result. It deliberately does NOT assert the excitation energy against a
+/// reference value — with the kernel term missing, no such reference is
+/// meaningful, which is precisely why the warning is there.
+#[test]
+fn hybrid_c_hf_still_returns_a_result_despite_the_missing_xc_kernel() {
+    let (mol, obs, dfbs, rhf) = fixture();
+    let cfg = TddftConfig { n_roots: 1, method: TddftMethod::Tda, memory_budget_bytes: Some(AMPLE) };
+
+    // B3LYP-like exact-exchange fraction: exercises the c_hf != 1.0 branch.
+    let r = run_tddft(&mol, &obs, &dfbs, &rhf, &cfg, 0.2)
+        .expect("a hybrid c_hf must still run; the missing f_xc term is a warning, not an error");
+
+    assert!(!r.excitation_energies.is_empty(), "no roots returned for a hybrid reference");
+    assert!(
+        r.excitation_energies[0].is_finite(),
+        "hybrid c_hf produced a non-finite excitation energy: {:?}",
+        r.excitation_energies
+    );
+}
