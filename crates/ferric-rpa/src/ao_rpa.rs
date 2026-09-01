@@ -595,9 +595,47 @@ pub fn ao_rpa_correlation_energy(
     n_tau: usize,
     b_ov_fallback: Option<&Array2<f64>>,
 ) -> Result<(f64, usize, usize, usize), FerricError> {
+    use ferric_core::memory::plan::{Lifetime, MemoryPlan};
     use ferric_integrals::blas_threads::with_blas_threads;
     use ndarray_linalg::{Eigh, UPLO};
     use rayon::prelude::*;
+
+    // Fail-fast size guard, mirroring `ao_rpa_correlation_energy_minimax`'s.
+    // This sibling allocates the SAME shapes — the dense input `eri3`
+    // co-resident with `dress_eri3_with_metric`'s copy, plus the `n_tau`-deep
+    // χ⁰(τ) stack — but had no gate at all, so the identical footprint was
+    // governed on one entry point and ungoverned on the other.
+    //
+    // It also charges a term the minimax gate misses: the per-frequency
+    // closure below builds `eps_mat` (an `naux x naux` from `pi`) and hands it
+    // to `eigh`, whose eigenvector output is a second `naux²` — all inside a
+    // `par_iter`, so both scale with the rayon worker count.
+    {
+        let (naux_g, nbf1, nbf2) = eri3.dim();
+        let n_workers = rayon::current_num_threads().max(1);
+        let mut plan = MemoryPlan::with_budget_bytes(
+            ferric_core::memory::resolve_budget_bytes(None),
+            format!(
+                "AO-RPA (naux={naux_g}, nbf={nbf1}, n_tau={n_tau}, n_omega={}, \
+                 n_workers={n_workers})",
+                quad_freqs.len()
+            ),
+        );
+        let eri3_elems = naux_g.saturating_mul(nbf1).saturating_mul(nbf2);
+        plan.reserve("eri3 (naux,nbf,nbf) input", eri3_elems, Lifetime::Resident);
+        plan.reserve("eri3 dressed copy", eri3_elems, Lifetime::Resident);
+        plan.reserve(
+            "chi0(tau) stack (n_tau,naux,naux)",
+            n_tau.saturating_mul(naux_g).saturating_mul(naux_g),
+            Lifetime::Resident,
+        );
+        plan.reserve_per_worker(
+            "per-omega eps_mat + eigh evecs",
+            naux_g.saturating_mul(naux_g).saturating_mul(2),
+            n_workers,
+        );
+        plan.check()?;
+    }
 
     // Step 1: dress ERI.
     let eri3_dressed = dress_eri3_with_metric(eri3, v_inv_sqrt);

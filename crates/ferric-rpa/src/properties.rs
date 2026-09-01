@@ -212,6 +212,18 @@ pub fn pdep_polarizability_static(
     let nov = nocc * nvir;
     debug_assert_eq!(b_ov.shape(), &[naux, nov]);
 
+    // Pre-flight before `b_scaled` and `eps_mat` allocate. A public entry
+    // point with no ceiling of any kind until now: it is not a grid path, so
+    // it fell outside the 2026-07-13 sweep, but it still builds a full
+    // `naux x nov` scaled copy plus an `naux x naux` dielectric.
+    preflight_molecular_path(
+        &format!("pdep_polarizability_static (naux={naux}, nocc={nocc}, nvir={nvir})"),
+        cfg.memory_budget_bytes,
+        naux,
+        nov,
+        1,
+    )?;
+
     let eps = rhf.eps_r();
     let eps_occ: Vec<f64> = eps[first_occ..first_occ + nocc].to_vec();
     let eps_vir: Vec<f64> = eps[nocc_total..nocc_total + nvir].to_vec();
@@ -409,6 +421,20 @@ pub fn dielectric_spectrum_static(
     let naux = inter.naux;
     let nov = nocc * nvir;
 
+    // Pre-flight before `b_scaled` and `eps_mat` allocate. Another public
+    // entry point that had no ceiling. It additionally runs an `eigh` on the
+    // `naux x naux` dielectric, whose eigenvector output is a second `naux²`
+    // buffer co-resident with the input — charged here as the `n_spin = 2`
+    // arm's second dielectric-sized term is not, so this is deliberately the
+    // conservative side of the estimate.
+    preflight_molecular_path(
+        &format!("dielectric_spectrum_static (naux={naux}, nocc={nocc}, nvir={nvir})"),
+        memory_budget_bytes,
+        naux,
+        nov,
+        1,
+    )?;
+
     let eps = rhf.eps_r();
     let eps_occ: Vec<f64> = eps[first_occ..first_occ + nocc].to_vec();
     let eps_vir: Vec<f64> = eps[nocc_total..nocc_total + nvir].to_vec();
@@ -495,6 +521,22 @@ pub fn pdep_polarizability_static_unrestricted(
     let inter_b = compute_rpa_intermediates_spin(mol, obs, dfbs, op, rhf, &mp2_cfg, false)?;
     let naux = inter_a.naux;
     debug_assert_eq!(inter_a.naux, inter_b.naux);
+
+    // Pre-flight before the per-spin `b_scaled` copies and the shared
+    // `eps_mat` allocate. Ungated until now, and the heaviest of the three
+    // molecular entry points: it holds BOTH spin channels' intermediates
+    // resident simultaneously, so every `naux x nov` term counts twice.
+    preflight_molecular_path(
+        &format!(
+            "pdep_polarizability_static_unrestricted (naux={naux}, nov_a={}, nov_b={})",
+            inter_a.nocc * inter_a.nvir,
+            inter_b.nocc * inter_b.nvir,
+        ),
+        cfg.memory_budget_bytes,
+        naux,
+        (inter_a.nocc * inter_a.nvir).max(inter_b.nocc * inter_b.nvir),
+        2,
+    )?;
 
     // Orbital-energy slices per spin (ROHF reuses α-MOs for β; see run_u_pdep_rpa).
     let eps_b_full: &[f64] = if matches!(rhf.spin, Spin::RestrictedOpen) {
@@ -726,6 +768,129 @@ pub(crate) fn preflight_grid_path(
     Ok(budget)
 }
 
+/// Pre-flight gate for the **Hirshfeld** per-atom property paths.
+///
+/// Separate from [`preflight_grid_path`] because the two model different
+/// grids and different allocations, and conflating them would be the
+/// estimator-drift defect all over again:
+///
+/// * [`preflight_grid_path`] models the **Becke** path, whose `npts` comes from
+///   an atom-centred Lebedev grid (grows with atom COUNT) and whose `chi` is
+///   evaluated per chunk inside `accumulate_atom_centred_dipoles`.
+/// * This models the **Hirshfeld** path, whose `npts` comes from
+///   `GridSpec::bounding_box` — a regular real-space lattice, so `npts` grows
+///   with molecular VOLUME and is typically far larger — and whose `chi` is a
+///   single monolithic `(nbf, npts)` block that is genuinely READ, point by
+///   point, for the whole method. It cannot be chunked away the way the Becke
+///   path's was; it has to be charged.
+///
+/// Both Hirshfeld entry points had NO gate whatsoever: `grep` for
+/// `check_alloc`/`preflight_grid_path` found the Becke path and nothing else,
+/// even though these paths hold strictly MORE memory than the path that was
+/// judged dangerous enough to need a gate on 2026-07-13.
+///
+/// Terms charged (all live simultaneously at the peak — the AO-dipole
+/// assembly reads `chi` while `combined` is being filled, and both sit on top
+/// of the resident RI intermediates):
+///
+/// | term | shape | why |
+/// |---|---|---|
+/// | `b_ov` | `naux · nov` | resident RI intermediate |
+/// | `b_scaled` | `naux · nov` | column-scaled copy; a genuine copy, not aliasing (the scaling must not clobber `b_ov`, which is read again) |
+/// | `eps_mat` | `naux²` | the dressed dielectric |
+/// | `chi` | `nbf · npts` | AO-on-grid, monolithic and genuinely read |
+/// | `combined` | `nbf · npts` | per-Cartesian scratch built from `chi`, co-resident with it |
+/// | `rho_free` | `natoms · npts` | free-atom densities, one row per atom |
+/// | `rho_sum`, `ri_grid` | `4 · npts` | grid side arrays |
+///
+/// `per_worker` covers the `_dynamic` variant's `map_init` scratch, which
+/// seeds a full `b_ov`-shaped `(naux, nov)` buffer AND forms a `(naux, naux)`
+/// `eps_mat` inside the rayon closure — the same worker-count-scaled shape as
+/// the 2026-07-13 incident. Pass 1 for the static path, which runs serially.
+pub(crate) fn preflight_hirshfeld_path(
+    label: &str,
+    memory_budget_bytes: Option<usize>,
+    naux: usize,
+    nov: usize,
+    npts: usize,
+    nbf: usize,
+    natoms: usize,
+    n_workers: usize,
+) -> Result<usize, FerricError> {
+    use ferric_core::memory::plan::{Lifetime, MemoryPlan};
+
+    let budget = ferric_core::memory::resolve_budget_bytes(memory_budget_bytes);
+    let mut plan = MemoryPlan::with_budget_bytes(budget, label);
+
+    // Resident RI intermediates and the dressed dielectric.
+    plan.reserve("b_ov (naux,nov)", naux.saturating_mul(nov), Lifetime::Resident);
+    plan.reserve("b_scaled (naux,nov)", naux.saturating_mul(nov), Lifetime::Resident);
+    plan.reserve("eps_mat (naux,naux)", naux.saturating_mul(naux), Lifetime::Resident);
+
+    // Grid-side terms. `chi` and `combined` are the two that make this path
+    // heavier than the Becke one, and they are co-resident by construction.
+    plan.reserve("chi (nbf,npts)", nbf.saturating_mul(npts), Lifetime::Resident);
+    plan.reserve("combined (nbf,npts)", nbf.saturating_mul(npts), Lifetime::Resident);
+    plan.reserve("rho_free (natoms,npts)", natoms.saturating_mul(npts), Lifetime::Resident);
+    plan.reserve("rho_sum + ri_grid (4,npts)", npts.saturating_mul(4), Lifetime::Resident);
+
+    // The `_dynamic` variant's per-frequency rayon scratch. `n_workers == 1`
+    // makes this the static path's (serial) footprint without special-casing.
+    if n_workers > 1 {
+        plan.reserve_per_worker(
+            "per-omega b_scaled + eps_mat",
+            naux.saturating_mul(nov).saturating_add(naux.saturating_mul(naux)),
+            n_workers,
+        );
+    }
+
+    plan.check()?;
+    Ok(budget)
+}
+
+/// Pre-flight gate for the **molecular** (non-grid) static property paths:
+/// [`pdep_polarizability_static`], [`dielectric_spectrum_static`], and
+/// [`pdep_polarizability_static_unrestricted`].
+///
+/// These are public entry points that touch no grid at all, which is why they
+/// escaped the 2026-07-13 grid-path sweep — but "no grid" is not "no memory":
+/// each builds a full column-scaled copy of `b_ov` (`naux · nov`) plus an
+/// `naux²` dielectric on top of the resident RI intermediates, and each was
+/// reachable from Python and the CLI with no ceiling of any kind.
+///
+/// `n_spin` is 1 for the restricted paths and 2 for the unrestricted one,
+/// which builds a complete per-spin intermediate set.
+pub(crate) fn preflight_molecular_path(
+    label: &str,
+    memory_budget_bytes: Option<usize>,
+    naux: usize,
+    nov: usize,
+    n_spin: usize,
+) -> Result<usize, FerricError> {
+    use ferric_core::memory::plan::{Lifetime, MemoryPlan};
+
+    let budget = ferric_core::memory::resolve_budget_bytes(memory_budget_bytes);
+    let mut plan = MemoryPlan::with_budget_bytes(budget, label);
+    let n_spin = n_spin.max(1);
+
+    plan.reserve(
+        "b_ov (naux,nov) per spin",
+        naux.saturating_mul(nov).saturating_mul(n_spin),
+        Lifetime::Resident,
+    );
+    // The column-scaled copy is a real second buffer: `b_ov` is read again
+    // after the scaling, so the scaling cannot be done in place.
+    plan.reserve(
+        "b_scaled (naux,nov) per spin",
+        naux.saturating_mul(nov).saturating_mul(n_spin),
+        Lifetime::Resident,
+    );
+    plan.reserve("eps_mat (naux,naux)", naux.saturating_mul(naux), Lifetime::Resident);
+
+    plan.check()?;
+    Ok(budget)
+}
+
 /// Test-only re-export of [`dipole_band_width_with_threads`] so the
 /// budget-contract MWEs in `tests/mwe_budget_respected.rs` can exercise the
 /// band-width policy at an EXPLICIT worker count, without standing up an SCF
@@ -929,8 +1094,13 @@ pub fn pdep_polarizability_becke(
     op: Operator,
     cfg: &PdepRpaConfig,
 ) -> Result<Vec<[[f64; 3]; 3]>, FerricError> {
+    // `eval_basis_on_points` is deliberately NOT imported here: the only call
+    // in this function was the monolithic full-grid chi evaluation removed
+    // above, and the chunked evaluation now lives entirely inside
+    // `accumulate_atom_centred_dipoles`. The absent import is the guard — a
+    // future re-introduction of a whole-grid chi here will not compile
+    // silently.
     use ferric_dft::grid::{build_atomic_grid, AtomicGridConfig};
-    use ferric_integrals::ao_grid::eval_basis_on_points;
 
     // Open-shell: the dynamic Becke path has a complete per-spin (U) branch, and
     // ω=0 reproduces the static per-atom α exactly. Delegate to it rather than
@@ -1020,12 +1190,32 @@ pub fn pdep_polarizability_becke(
         natoms,
     )?;
 
-    // Evaluate AO basis on the grid: χ has shape (nbf, npts).
-    let chi = eval_basis_on_points(mol, obs_bs, &points).map_err(|e| {
-        FerricError::General(format!("pdep_polarizability_becke: chi eval failed: {e}"))
-    })?;
-    let nbf = chi.nrows();
-    debug_assert_eq!(nbf, obs.nbasis());
+    // nbf from the prepared basis, NOT from a materialized chi.
+    //
+    // WHY THIS LINE USED TO ALLOCATE ~3.75 GB: this path read `nbf` from
+    // `eval_basis_on_points(mol, obs_bs, &points).nrows()` — evaluating the AO
+    // basis over the FULL point list to build one contiguous (nbf, npts)
+    // block, and then using that block for nothing but its row count. Every
+    // real consumer of chi lives inside `accumulate_atom_centred_dipoles`,
+    // which was fused to evaluate chi per grid CHUNK (see its body). The
+    // monolithic evaluation here was simply left behind by that fusion: the
+    // `_dynamic` siblings were converted to `obs.nbasis()` at the same time,
+    // this one was not.
+    //
+    // That left the pre-flight gate above wrong in the dangerous direction.
+    // `estimate_grid_bytes` deliberately models chi as chunked
+    // (`nbf * (npts/1024) * 8 * n_workers`, ~44 MB at nbf=800/npts=586k)
+    // because that is what the fused accumulation actually holds — so the
+    // 3.75 GB block allocated one line later was charged as ~44 MB: an ~85x
+    // under-estimate on the single largest allocation in the method. The gate
+    // approved jobs that then OOMed a moment after being approved, which is
+    // the exact 2026-07-13 failure mode the gate was added to prevent.
+    //
+    // `obs.nbasis()` is the same integer by construction — the deleted
+    // `debug_assert_eq!(chi.nrows(), obs.nbasis())` asserted precisely that —
+    // so this is a pure deletion. No arithmetic, no fold order, and no result
+    // changes; the estimator simply becomes true about this path.
+    let nbf = obs.nbasis();
 
     // Build per-atom Becke-weighted AO dipole using the ATOM-CENTRED position
     // operator (r − R_A). This yields the intrinsic atomic polarizability:
@@ -1711,12 +1901,30 @@ pub fn pdep_polarizability_hirshfeld(
     let dv = spacing * spacing * spacing;
     let npts = grid.n_x * grid.n_y * grid.n_z;
 
+    // Pre-flight BEFORE chi allocates — the last point at which refusing is
+    // still cheap. `npts` is the live bounding-box point count, never an
+    // assumed grid size, and it grows with molecular VOLUME here (not with
+    // atom count as on the Becke path), so this is the larger of the two grid
+    // paths and the one that most needed a ceiling. It had none.
+    let nbf = obs.nbasis();
+    preflight_hirshfeld_path(
+        &format!(
+            "pdep_polarizability_hirshfeld (natoms={natoms}, nbf={nbf}, npts={npts}, naux={naux})"
+        ),
+        cfg.memory_budget_bytes,
+        naux,
+        nov,
+        npts,
+        nbf,
+        natoms,
+        1, // serial path: no per-frequency rayon fan-out
+    )?;
+
     // χ_μ(r_g) on grid: shape (nbf_obs, npts).
     let chi = eval_basis_on_grid(mol, obs_bs, &grid).map_err(|e| {
         FerricError::General(format!("pdep_polarizability_hirshfeld: chi eval failed: {e}"))
     })?;
-    let nbf = chi.nrows();
-    debug_assert_eq!(nbf, obs.nbasis());
+    debug_assert_eq!(chi.nrows(), nbf);
 
     // ---------------------------------------------------------------------
     // 3. Build Hirshfeld weights w^A(r_g) on the grid.
@@ -1981,10 +2189,31 @@ pub fn pdep_polarizability_hirshfeld_dynamic(
     let dv = spacing * spacing * spacing;
     let npts = grid.n_x * grid.n_y * grid.n_z;
 
+    // Pre-flight BEFORE chi allocates. This is the heaviest of the property
+    // paths and had no ceiling at all: on top of the static Hirshfeld
+    // footprint it adds the per-frequency `map_init` scratch — a full
+    // `b_ov`-shaped `(naux, nov)` buffer plus an `(naux, naux)` `eps_mat` PER
+    // RAYON WORKER — which is precisely the worker-count-scaled shape that
+    // took the box down three times on 2026-07-13, here left ungoverned.
+    let nbf = obs.nbasis();
+    preflight_hirshfeld_path(
+        &format!(
+            "pdep_polarizability_hirshfeld_dynamic (natoms={natoms}, nbf={nbf}, npts={npts}, \
+             naux={naux}, nfreq={nfreq})"
+        ),
+        cfg.memory_budget_bytes,
+        naux,
+        nov,
+        npts,
+        nbf,
+        natoms,
+        rayon::current_num_threads().max(1),
+    )?;
+
     let chi = eval_basis_on_grid(mol, obs_bs, &grid).map_err(|e| {
         FerricError::General(format!("pdep_polarizability_hirshfeld_dynamic: chi eval failed: {e}"))
     })?;
-    let nbf = chi.nrows();
+    debug_assert_eq!(chi.nrows(), nbf);
 
     // Proatom densities and Hirshfeld weights. With a `proatom` provider, use
     // the validated same-basis free-atom density (fixes H-starvation); else the
@@ -2862,11 +3091,19 @@ pub fn hirshfeld_charges(
     // legacy single-Slater proatom.
     let mut rho_free: Vec<Vec<f64>> = vec![vec![0.0; npts]; natoms];
     let mut rho_sum: Vec<f64> = vec![0.0; npts];
+    // Atoms that fell back to the crude single-Slater proatom model. Collected
+    // and reported ONCE after the loop: mixing two different proatom sources
+    // across atoms of one molecule changes the partitioning, and the caller
+    // cannot tell from the returned charges that it happened.
+    let mut fallback_atoms: Vec<usize> = Vec::new();
     for a in 0..natoms {
         let z_a = mol.atoms[a].z;
         let xi = slater_xi_for_z(z_a);
         let prefac = z_a as f64 * xi.powi(3) / std::f64::consts::PI;
         let pa = proatom.and_then(|p| p(z_a, 0));
+        if pa.is_none() {
+            fallback_atoms.push(a);
+        }
         let rax = mol.atoms[a].x;
         let ray = mol.atoms[a].y;
         let raz = mol.atoms[a].zpos;
@@ -2891,6 +3128,16 @@ pub fn hirshfeld_charges(
                 }
             }
         }
+    }
+
+    if !fallback_atoms.is_empty() {
+        eprintln!(
+            "[hirshfeld] WARNING: {} of {natoms} atoms (indices {fallback_atoms:?}) had no \
+             free-atom SCF proatom density and fell back to a crude single-Slater model. \
+             The other atoms used the SCF density, so these charges mix two different \
+             proatom sources and the partitioning is NOT uniformly converged.",
+            fallback_atoms.len()
+        );
     }
 
     let eps_floor = 1e-12;

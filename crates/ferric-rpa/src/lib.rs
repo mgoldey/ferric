@@ -944,12 +944,38 @@ pub fn run_u_pdep_rpa(
 
     // Eigensolve. Lanczos is preferred per [[ferric-rpa-status]]; Davidson
     // is kept as fallback to mirror the closed-shell dispatch.
-    let b_a = inter_a.b_ov.clone();
-    let b_b = inter_b.b_ov.clone();
-    let ea_o = eps_occ_a.clone();
-    let ea_v = eps_vir_a.clone();
-    let eb_o = eps_occ_b.clone();
-    let eb_v = eps_vir_b.clone();
+    // NOTE (memory fix): these were `inter_a.b_ov.clone()` / `inter_b.b_ov
+    // .clone()` plus owned copies of the four eigenvalue vectors, so the
+    // matvec closures below could `move` owned data into themselves.
+    //
+    // The closed-shell path above already removed exactly these clones (see
+    // its "NOTE (2026-07-21 memory fix)"), for reasons that apply verbatim
+    // here: neither `run_lanczos_full_rank_budgeted` nor `run_davidson_static`
+    // requires `'static` — both call `matvec` synchronously inside their own
+    // call frame, never spawning a thread and never storing the closure past
+    // the call — so a plain borrow suffices. The U path was simply never
+    // given the same treatment.
+    //
+    // The cost of the omission is worse here than it was closed-shell,
+    // because `inter_a`/`inter_b` are NOT dropped after the eigensolve: they
+    // are read again below (`inter_a.v_inv_sqrt`, and both `b_ov`s feed the
+    // frequency channels), so each clone was co-resident with its original for
+    // the entire eigensolve AND quadrature stage — `2 * naux * (nocc_a*nvir_a
+    // + nocc_b*nvir_b) * 8` bytes of pure duplicate.
+    //
+    // It also made the pre-flight gate above under-count: that gate sums
+    // `estimate_peak_bytes` once per spin, i.e. ONE b_ov per spin, so it
+    // missed the dominant term by ~2x — the guard under-reported exactly the
+    // allocation that dominates this path.
+    //
+    // Pure aliasing change: the closures read the same values from the same
+    // buffers, so every number produced is bit-identical.
+    let b_a = &inter_a.b_ov;
+    let b_b = &inter_b.b_ov;
+    let ea_o = &eps_occ_a;
+    let ea_v = &eps_vir_a;
+    let eb_o = &eps_occ_b;
+    let eb_v = &eps_vir_b;
     let lap_for_solver = laplace_pair.clone();
 
     let davidson_result = match (config.eigensolver, lap_for_solver) {
@@ -962,8 +988,8 @@ pub fn run_u_pdep_rpa(
             let nov = inter_a.nocc * inter_a.nvir + inter_b.nocc * inter_b.nvir;
             let lap = lap_opt;
             let matvec = move |v: &Array2<f64>| -> Array2<f64> {
-                let chan_a = channel::RpaChannel::new(&b_a, &ea_o, &ea_v);
-                let chan_b = channel::RpaChannel::new(&b_b, &eb_o, &eb_v);
+                let chan_a = channel::RpaChannel::new(b_a, ea_o, ea_v);
+                let chan_b = channel::RpaChannel::new(b_b, eb_o, eb_v);
                 match &lap {
                     None => sternheimer::dielectric_apply_unrestricted(v, &chan_a, &chan_b, 0.0),
                     Some((qa, qb)) => laplace_chi0::dielectric_matrix_laplace_unrestricted(
@@ -985,8 +1011,8 @@ pub fn run_u_pdep_rpa(
             davidson::run_davidson_static(
                 naux,
                 move |v_mat: &Array2<f64>, omega: f64| {
-                    let chan_a = channel::RpaChannel::new(&b_a, &ea_o, &ea_v);
-                    let chan_b = channel::RpaChannel::new(&b_b, &eb_o, &eb_v);
+                    let chan_a = channel::RpaChannel::new(b_a, ea_o, ea_v);
+                    let chan_b = channel::RpaChannel::new(b_b, eb_o, eb_v);
                     match &lap {
                         None => sternheimer::dielectric_apply_unrestricted(v_mat, &chan_a, &chan_b, omega),
                         Some((qa, qb)) => laplace_chi0::dielectric_matrix_laplace_unrestricted(

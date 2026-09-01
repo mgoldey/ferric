@@ -238,7 +238,30 @@ pub fn estimate_peak_bytes(shape: PeakEstimateShape) -> usize {
     // thread count — the crux of the incident). Plus the shared
     // frequency-independent projection y = Vᵀ·B_ov (m × nov), computed once
     // (energy.rs line ~228) and held for the whole loop.
-    let per_worker_scratch = m.saturating_mul(nov).saturating_add(m.saturating_mul(m)).saturating_mul(F64_BYTES);
+    //
+    // The property paths' per-worker pair is NOT (m, nov) + (m, m): the
+    // map_init closures in `properties.rs` (the Becke/Hirshfeld dynamic
+    // loops) seed a buffer of `b_ov.raw_dim()` — i.e. the FULL (naux, nov) —
+    // and then form `eps_mat = b_scaled.dot(&b_scaled.t())`, a full
+    // (naux, naux). Those shapes are naux-wide, not m-wide.
+    //
+    // That distinction used to be invisible because every caller passes
+    // `n_keep = naux` (pre-eigensolve the retained count is unknown, and the
+    // production `trunc_thresh = 0.0` keeps every mode anyway), so `m == naux`
+    // and the m-based figure happened to land on the right number. It was
+    // coincidence, not coverage: a caller that DID pass a truncated
+    // `n_keep < naux` would silently under-charge the property paths by
+    // `(naux - m) * (nov + naux + m)` elements per worker.
+    //
+    // So charge the per-worker term at the width the allocation actually uses:
+    // `max(m, naux)` reduces to `m` for the energy path (where m == naux too)
+    // and stays honest for a truncated property call. Deliberately over- not
+    // under-estimating remains this estimator's stated contract.
+    let per_worker_width = m.max(naux);
+    let per_worker_scratch = per_worker_width
+        .saturating_mul(nov)
+        .saturating_add(per_worker_width.saturating_mul(per_worker_width))
+        .saturating_mul(F64_BYTES);
     let quad_scratch_peak = per_worker_scratch.saturating_mul(n_workers);
     let y_projection_bytes = m.saturating_mul(nov).saturating_mul(F64_BYTES);
 

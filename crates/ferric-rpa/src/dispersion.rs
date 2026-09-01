@@ -665,7 +665,19 @@ pub fn pdep_dynamic_polarizability_truncated(
         freqs
             .par_iter()
             .map_init(
-                || ct_b.clone(),
+                // Zeros, not `.clone()`: the closure's first statement is
+                // `ct_b_g.assign(&ct_b)`, which overwrites every element
+                // before any of them is read, so the cloned contents are
+                // copied and then immediately discarded. That is
+                // `n_workers * m_modes * nov * 8` bytes of pure copy cost for
+                // a buffer whose initial value is unobservable.
+                //
+                // Five sites in `properties.rs` were changed from clone to
+                // zeros for exactly this reason (see the "Zeros, not
+                // `.clone()`" note there); this one was missed. Identical
+                // resident footprint, identical numbers — only the wasted
+                // memcpy goes away.
+                || Array2::<f64>::zeros(ct_b.raw_dim()),
                 |ct_b_g, &omega| -> Result<Vec<[[f64; 3]; 3]>, FerricError> {
                     let omega2 = omega * omega;
                     let mut g = ndarray::Array1::<f64>::zeros(nov);
