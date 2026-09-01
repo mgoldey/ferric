@@ -527,7 +527,7 @@ const PAR_PERMUTE_MIN_ELEMS: usize = 1 << 16;
 /// BLAS is untouched: this is rayon-only, so it composes with the
 /// `blas_threads` hazard model (rayon owns parallelism, OpenBLAS pinned to 1)
 /// without needing a thread-count decision.
-fn permute_to_owned(permuted: ndarray::ArrayViewD<f64>) -> ArrayD<f64> {
+pub fn permute_to_owned(permuted: ndarray::ArrayViewD<f64>) -> ArrayD<f64> {
     use rayon::prelude::*;
 
     // Already contiguous in the requested order: ndarray hands back a view with
@@ -1488,6 +1488,77 @@ mod tests {
         let out = einsum_binary(a.view(), &[], &[0,1], b.view(), &[], &[0,1], &[]).unwrap();
         assert_eq!(out.len(), 1);
         assert!((out.iter().next().unwrap() - 10.0).abs() < 1e-12);
+    }
+
+    /// `permute_to_owned` must be bit-identical to ndarray's own serial
+    /// `as_standard_layout().into_owned()`, at every thread count.
+    ///
+    /// This is the invariant the CC/MP2 antisymmetrizers rely on. They used to
+    /// call ndarray's serial path directly; they now call this function, and
+    /// that substitution is only safe because the two produce *the same bytes*.
+    /// A permutation is pure data movement — every output element is written
+    /// exactly once, by one worker, with a value copied from one input element
+    /// — so unlike a reduction there is no summation order to perturb, and the
+    /// result cannot depend on how the outer axis is split across workers.
+    ///
+    /// The test pins that claim rather than trusting it: if someone ever adds
+    /// accumulation to the permute path, or splits on an axis other than the
+    /// outermost, this fails loudly instead of silently perturbing CCSD
+    /// amplitudes. Shapes straddle `PAR_PERMUTE_MIN_ELEMS` (64K) so both the
+    /// serial-fallback and the parallel branch are exercised.
+    #[test]
+    fn permute_to_owned_is_bit_identical_across_thread_counts() {
+        // (shape, axis permutation, label) — the last two clear 64K elements
+        // and so take the rayon path; the first two fall back to serial.
+        let cases: &[(&[usize], &[usize], &str)] = &[
+            (&[8, 8, 8, 8], &[1, 0, 3, 2], "small 4-D, below threshold"),
+            (&[6, 5, 7, 4], &[3, 1, 0, 2], "ragged 4-D, below threshold"),
+            (&[16, 16, 16, 16], &[1, 0, 3, 2], "P(ij)P(ab)-shaped, above threshold"),
+            (&[12, 14, 13, 15], &[2, 0, 3, 1], "ragged 4-D, above threshold"),
+        ];
+
+        for (shape, axes, label) in cases {
+            let n: usize = shape.iter().product();
+            // Deterministic LCG, with occasional huge magnitudes so that any
+            // accidental arithmetic (rather than pure movement) would show up.
+            let mut s: u64 = 0x9E37_79B9_7F4A_7C15;
+            let src = ArrayD::from_shape_fn(IxDyn(shape), |_| {
+                s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                let v = (s >> 11) as f64 / (1u64 << 53) as f64 - 0.5;
+                if s.is_multiple_of(41) { v * 1e9 } else { v }
+            });
+
+            // Reference: ndarray's serial path — exactly what the call sites
+            // used before this function existed.
+            let want = src.view().permuted_axes(IxDyn(axes)).as_standard_layout().into_owned();
+
+            for threads in [1usize, 2, 3, 4, 8, 13] {
+                let pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(threads)
+                    .build()
+                    .expect("thread pool builds");
+                let got =
+                    pool.install(|| permute_to_owned(src.view().permuted_axes(IxDyn(axes))));
+
+                assert_eq!(
+                    got.shape(),
+                    want.shape(),
+                    "{label}: shape changed at {threads} workers"
+                );
+                let bad = got
+                    .iter()
+                    .zip(want.iter())
+                    .filter(|(g, w)| g.to_bits() != w.to_bits())
+                    .count();
+                assert_eq!(
+                    bad, 0,
+                    "{label} (n={n}): {bad}/{n} elements differ from the serial \
+                     reference at {threads} workers — a permutation is pure data \
+                     movement and MUST be bit-identical regardless of how the \
+                     outermost axis is banded across workers"
+                );
+            }
+        }
     }
 
     #[test]

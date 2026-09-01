@@ -31,5 +31,5 @@ pub use axis::Axis;
 pub mod tensor;
 pub use tensor::{MaybeLabeled, Tensor};
 pub mod einsum;
-pub use einsum::{einsum_binary, einsum_binary_batched, TensorError};
+pub use einsum::{einsum_binary, einsum_binary_batched, permute_to_owned, TensorError};
 pub use ferric_tensor_macro::einsum;

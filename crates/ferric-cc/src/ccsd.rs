@@ -20,7 +20,7 @@ use ferric_mp2::mo_transform::{transform_3center_oo, transform_3center_ov, trans
 use ferric_mp2::rimp2::{active_occ, cholesky_inverse_sqrt};
 use ferric_mp2::spinorbital::{asym_phys, build_b, transpose_b};
 use ferric_scf::ScfResult;
-use ferric_tensors::{einsum, Axis, Tensor};
+use ferric_tensors::{einsum, permute_to_owned, Axis, Tensor};
 use ndarray::{ArrayD, IxDyn};
 
 // Permutation antisymmetrizers P(ij)/P(ab)/P(ij)P(ab) on the i,j,a,b axes are
@@ -222,10 +222,7 @@ pub fn ccsd(
         // t_ia t_jb. einsum! emits left-free (i,a) before right-free (j,b) as
         // (i,a,j,b); permute to the (i,j,a,b) layout the antisymmetrizers expect.
         let oo1_iajb: ArrayD<f64> = einsum!("ia,jb->iajb", &t1_t, &t1_t);
-        let oo1: ArrayD<f64> = oo1_iajb
-            .permuted_axes(IxDyn(&[0, 2, 1, 3]))
-            .as_standard_layout()
-            .into_owned();
+        let oo1: ArrayD<f64> = permute_to_owned(oo1_iajb.permuted_axes(IxDyn(&[0, 2, 1, 3])).view());
         let taus = &t2 + &(0.5 * p_ij_ab(&oo1));
         let tau = &t2 + &p_ij(&oo1); // P(ij) of (t_ia t_jb) == t_ia t_jb - t_ib t_ja... see note
         // NOTE: tau = t2 + t_ia t_jb - t_ib t_ja. p_ij(oo1) = oo1 - swap_ij(oo1).
@@ -264,15 +261,15 @@ pub fn ccsd(
             // term: einsum('je,mnie->mnij', t1, ooov): contract e ; left-free j ;
             // right-free m,n,i -> 'jmni'; want 'mnij' = permute [1,2,3,0].
             let jmni: ArrayD<f64> = einsum!("je,mnie->jmni", &t1_t, &ooov);
-            let mnij = jmni.view().permuted_axes(IxDyn(&[1, 2, 3, 0])).as_standard_layout().into_owned();
+            let mnij = permute_to_owned(jmni.view().permuted_axes(IxDyn(&[1, 2, 3, 0])));
             // P(ij) acts on the last two indices (i,j) of mnij. Our p_ij swaps axes 0,1.
             // Build pij over (i,j) = axes 2,3: do manual swap.
-            let swapped = mnij.view().permuted_axes(IxDyn(&[0, 1, 3, 2])).as_standard_layout().into_owned();
+            let swapped = permute_to_owned(mnij.view().permuted_axes(IxDyn(&[0, 1, 3, 2])));
             w = w + &mnij - &swapped;
             // 0.25 einsum('ijef,mnef->mnij', tau, oovv): contract e,f ; left-free i,j ;
             // right-free m,n -> 'ijmn'; want 'mnij' = permute [2,3,0,1].
             let ijmn: ArrayD<f64> = einsum!("ijef,mnef->ijmn", &tau_t, &oovv);
-            let mnij2 = ijmn.view().permuted_axes(IxDyn(&[2, 3, 0, 1])).as_standard_layout().into_owned();
+            let mnij2 = permute_to_owned(ijmn.view().permuted_axes(IxDyn(&[2, 3, 0, 1])));
             w = w + 0.25 * mnij2;
             w
         };
@@ -285,7 +282,7 @@ pub fn ccsd(
             // einsum('mb,amef->abef', t1, vovv): contract m ; left-free b ;
             // right-free a,e,f -> 'baef'; want 'abef' = permute [1,0,2,3].
             let baef: ArrayD<f64> = einsum!("mb,amef->baef", &t1_t, &vovv);
-            let abef = baef.view().permuted_axes(IxDyn(&[1, 0, 2, 3])).as_standard_layout().into_owned();
+            let abef = permute_to_owned(baef.view().permuted_axes(IxDyn(&[1, 0, 2, 3])));
             w -= &abef;
             // + einsum('ma,bmef->abef', t1, vovv): contract m ; left-free a ;
             // right-free b,e,f -> 'abef' directly.
@@ -306,22 +303,19 @@ pub fn ccsd(
             // einsum('jf,mbef->mbej', t1, ovvv): contract f ; left-free j ;
             // right-free m,b,e -> 'jmbe'; want 'mbej' = permute [1,2,3,0].
             let jmbe: ArrayD<f64> = einsum!("jf,mbef->jmbe", &t1_t, &ovvv);
-            let mbej = jmbe.view().permuted_axes(IxDyn(&[1, 2, 3, 0])).as_standard_layout().into_owned();
+            let mbej = permute_to_owned(jmbe.view().permuted_axes(IxDyn(&[1, 2, 3, 0])));
             w += &mbej;
             // - einsum('nb,mnej->mbej', t1, oovo): contract n ; left-free b ;
             // right-free m,e,j -> 'bmej'; want 'mbej' = permute [1,0,2,3].
             let bmej: ArrayD<f64> = einsum!("nb,mnej->bmej", &t1_t, &oovo);
-            let mbej2 = bmej.view().permuted_axes(IxDyn(&[1, 0, 2, 3])).as_standard_layout().into_owned();
+            let mbej2 = permute_to_owned(bmej.view().permuted_axes(IxDyn(&[1, 0, 2, 3])));
             w -= &mbej2;
             // - einsum('jnfb,mnef->mbej', X, oovv) where X = 0.5 t2 + t1 outer t1.
             // X[j,n,f,b] = 0.5 t2[j,n,f,b] + t1[j,f] t1[n,b].
             // einsum! emits left-free (j,f) before right-free (n,b) as (j,f,n,b);
             // permute to the (j,n,f,b) layout used below.
             let tt_jfnb: ArrayD<f64> = einsum!("jf,nb->jfnb", &t1_t, &t1_t);
-            let tt: ArrayD<f64> = tt_jfnb
-                .permuted_axes(IxDyn(&[0, 2, 1, 3]))
-                .as_standard_layout()
-                .into_owned();
+            let tt: ArrayD<f64> = permute_to_owned(tt_jfnb.permuted_axes(IxDyn(&[0, 2, 1, 3])).view());
             let x_jnfb = &(0.5 * &t2) + &tt;
             let x_t = lbl4(x_jnfb, [O, O, V, V]);
             // contract n,f ; from X left indices j,b ; from oovv right indices m,e.
@@ -329,7 +323,7 @@ pub fn ccsd(
             // right-free m,e -> 'jbme'; want 'mbej' = permute mapping:
             // src [j=0,b=1,m=2,e=3] -> want [m,b,e,j] = src[2,1,3,0].
             let jbme: ArrayD<f64> = einsum!("jnfb,mnef->jbme", &x_t, &oovv);
-            let mbej3 = jbme.view().permuted_axes(IxDyn(&[2, 1, 3, 0])).as_standard_layout().into_owned();
+            let mbej3 = permute_to_owned(jbme.view().permuted_axes(IxDyn(&[2, 1, 3, 0])));
             w -= &mbej3;
             w
         };
@@ -402,14 +396,14 @@ pub fn ccsd(
             // einsum('imab,mj->ijab', t2, mj): contract m ; left-free i,a,b ;
             // right-free j -> 'iabj'; want 'ijab' = permute src[i=0,a=1,b=2,j=3]->[0,3,1,2].
             let iabj: ArrayD<f64> = einsum!("imab,mj->iabj", &t2_t, &mj_t);
-            let x = iabj.view().permuted_axes(IxDyn(&[0, 3, 1, 2])).as_standard_layout().into_owned();
+            let x = permute_to_owned(iabj.view().permuted_axes(IxDyn(&[0, 3, 1, 2])));
             r2 = r2 - p_ij(&x);
         }
         // + 0.5 einsum('mnab,mnij->ijab', tau, Wmnij): contract m,n ; left-free a,b ;
         // right-free i,j -> 'abij'; want 'ijab' = permute [2,3,0,1].
         {
             let abij: ArrayD<f64> = einsum!("mnab,mnij->abij", &tau_t, &wmnij_t);
-            let x = abij.view().permuted_axes(IxDyn(&[2, 3, 0, 1])).as_standard_layout().into_owned();
+            let x = permute_to_owned(abij.view().permuted_axes(IxDyn(&[2, 3, 0, 1])));
             r2 = r2 + 0.5 * x;
         }
         // + 0.5 einsum('ijef,abef->ijab', tau, Wabef): contract e,f ; left-free i,j ;
@@ -425,7 +419,7 @@ pub fn ccsd(
             // right-free b,j -> 'iabj'; want 'ijab' = permute [0,3,1,2]? src [i,a,b,j]
             // -> want [i,j,a,b] = src[0,3,1,2].
             let iabj: ArrayD<f64> = einsum!("imae,mbej->iabj", &t2_t, &wmbej_t);
-            let mut x = iabj.view().permuted_axes(IxDyn(&[0, 3, 1, 2])).as_standard_layout().into_owned();
+            let mut x = permute_to_owned(iabj.view().permuted_axes(IxDyn(&[0, 3, 1, 2])));
             // - einsum('ie,ma,mbej->ijab', t1, t1, ovvo). Do in two binary steps.
             // First P[i,e,b,j] = einsum('ma,mbej->...'): wait, group t1_ie outer with
             // (t1_ma contracted into ovvo). Build Q[a,b,e,j] = einsum('ma,mbej->abej', t1, ovvo):
@@ -435,7 +429,7 @@ pub fn ccsd(
             // then einsum('ie,abej->iabj', t1, Q): contract e ; left-free i ;
             // right-free a,b,j -> 'iabj'; want 'ijab' = src[i,a,b,j]->[0,3,1,2].
             let iabj2: ArrayD<f64> = einsum!("ie,abej->iabj", &t1_t, &abej_t);
-            let x2 = iabj2.view().permuted_axes(IxDyn(&[0, 3, 1, 2])).as_standard_layout().into_owned();
+            let x2 = permute_to_owned(iabj2.view().permuted_axes(IxDyn(&[0, 3, 1, 2])));
             x -= &x2;
             r2 = r2 + p_ij_ab(&x);
         }
@@ -444,7 +438,7 @@ pub fn ccsd(
             // contract e ; left-free i ; right-free a,b,j -> 'iabj'; want 'ijab' =
             // src[i,a,b,j]->[0,3,1,2].
             let iabj: ArrayD<f64> = einsum!("ie,abej->iabj", &t1_t, &vvvo);
-            let x = iabj.view().permuted_axes(IxDyn(&[0, 3, 1, 2])).as_standard_layout().into_owned();
+            let x = permute_to_owned(iabj.view().permuted_axes(IxDyn(&[0, 3, 1, 2])));
             r2 = r2 + p_ij(&x);
         }
         // - P(ab)[ einsum('ma,mbij->ijab', t1, ovoo) ]
@@ -452,7 +446,7 @@ pub fn ccsd(
             // contract m ; left-free a ; right-free b,i,j -> 'abij'; want 'ijab' =
             // src[a,b,i,j]->[2,3,0,1].
             let abij: ArrayD<f64> = einsum!("ma,mbij->abij", &t1_t, &ovoo);
-            let x = abij.view().permuted_axes(IxDyn(&[2, 3, 0, 1])).as_standard_layout().into_owned();
+            let x = permute_to_owned(abij.view().permuted_axes(IxDyn(&[2, 3, 0, 1])));
             r2 = r2 - p_ab(&x);
         }
 

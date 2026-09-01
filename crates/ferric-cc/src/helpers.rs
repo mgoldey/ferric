@@ -1,17 +1,30 @@
-use ferric_tensors::{einsum, Axis, Tensor};
+use ferric_tensors::{einsum, permute_to_owned, Axis, Tensor};
 use ndarray::{Array4, ArrayD, IxDyn};
 
 // --- Permutation antisymmetrizers on the i,j,a,b axes of X[i,j,a,b] ---
 // Shared by the spin-orbital CCD and CCSD residual builders (ccd.rs, ccsd.rs),
 // which apply the same P(ij)/P(ab) projectors to their `[O,O,V,V]` tensors.
 
+// Both swaps go through `permute_to_owned` rather than ndarray's bare
+// `as_standard_layout().into_owned()`. The gather is the same; the difference
+// is that `permute_to_owned` fans it out over rayon above 64K elements, and
+// these run on `[O,O,V,V]` residual tensors — (2·no)²(2·nv)² in the
+// spin-orbital drivers — every CC iteration, so they clear that threshold at
+// any interesting system size. `einsum.rs` measures this exact strided copy at
+// 47% of a comparable contraction at nv=40 and 70% at nv=80: it is
+// memory-bandwidth-bound and gets relatively WORSE with size.
+//
+// Safe by construction: a permutation is pure data movement with no
+// accumulation, so every output element is written exactly once with the same
+// value regardless of thread count. Bit-identical, unlike a reduction.
+
 /// Swap the i,j axes (0,1) of an `[i,j,a,b]` tensor.
 fn swap_ij(x: &ArrayD<f64>) -> ArrayD<f64> {
-    x.view().permuted_axes(IxDyn(&[1, 0, 2, 3])).as_standard_layout().into_owned()
+    permute_to_owned(x.view().permuted_axes(IxDyn(&[1, 0, 2, 3])))
 }
 /// Swap the a,b axes (2,3) of an `[i,j,a,b]` tensor.
 fn swap_ab(x: &ArrayD<f64>) -> ArrayD<f64> {
-    x.view().permuted_axes(IxDyn(&[0, 1, 3, 2])).as_standard_layout().into_owned()
+    permute_to_owned(x.view().permuted_axes(IxDyn(&[0, 1, 3, 2])))
 }
 /// P(ij) x = x - swap_ij(x)
 pub fn p_ij(x: &ArrayD<f64>) -> ArrayD<f64> {
@@ -47,10 +60,7 @@ pub fn contract_pp_ladder(b_ab_t: &Tensor<3>, t2_t: &Tensor<4>) -> Array4<f64> {
 
     // R[a,b,i,j] = sum_P B^P_ab X[P,i,j]; then permute (a,b,i,j)->(i,a,j,b) = axes [2,0,3,1]
     let r_abij: ndarray::ArrayD<f64> = einsum!("Pab,Pij->abij", b_ab_t, &x_t);
-    let res = r_abij
-        .permuted_axes(IxDyn(&[2, 0, 3, 1]))
-        .as_standard_layout()
-        .into_owned();
+    let res = permute_to_owned(r_abij.permuted_axes(IxDyn(&[2, 0, 3, 1])).view());
     res.into_dimensionality::<ndarray::Ix4>()
         .unwrap()
         .into_shape_with_order((nocc, nvir, nocc, nvir))
@@ -75,10 +85,7 @@ pub fn contract_hh_ladder(b_ij_t: &Tensor<3>, t2_t: &Tensor<4>) -> Array4<f64> {
 
     // R[i,j,a,b] = sum_P B^P_ij Y[P,a,b]; then permute (i,j,a,b)->(i,a,j,b) = axes [0,2,1,3]
     let r_ijab: ndarray::ArrayD<f64> = einsum!("Pij,Pab->ijab", b_ij_t, &y_t);
-    let res = r_ijab
-        .permuted_axes(IxDyn(&[0, 2, 1, 3]))
-        .as_standard_layout()
-        .into_owned();
+    let res = permute_to_owned(r_ijab.permuted_axes(IxDyn(&[0, 2, 1, 3])).view());
     res.into_dimensionality::<ndarray::Ix4>()
         .unwrap()
         .into_shape_with_order((nocc, nvir, nocc, nvir))

@@ -46,6 +46,7 @@
 //! Reproduce via `perf_closed_shell_vs_spin_orbital_h2o_ccpvdz` (`--ignored`).
 
 use super::{CcConfig, CcResult};
+use ferric_core::memory::plan::{Lifetime, MemoryPlan};
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -54,7 +55,7 @@ use ferric_mp2::mo_transform::{transform_3center_oo, transform_3center_ov, trans
 use ferric_mp2::rimp2::{active_occ, cholesky_inverse_sqrt};
 use ferric_mp2::spinorbital::{build_b, transpose_b};
 use ferric_scf::ScfResult;
-use ferric_tensors::{einsum, Axis, Tensor};
+use ferric_tensors::{einsum, permute_to_owned, Axis, Tensor};
 use ndarray::{Array2, ArrayD, IxDyn};
 
 // --- small array helpers (spatial-orbital, i,j,a,b axes) ---
@@ -63,10 +64,7 @@ use ndarray::{Array2, ArrayD, IxDyn};
 /// This is the `P(ij,ab)` symmetrizer partner used all over the Hirata T2
 /// equation: `tmp + tmp.transpose(1,0,3,2)`.
 fn t_ijab(x: &ArrayD<f64>) -> ArrayD<f64> {
-    x.view()
-        .permuted_axes(IxDyn(&[1, 0, 3, 2]))
-        .as_standard_layout()
-        .into_owned()
+    permute_to_owned(x.view().permuted_axes(IxDyn(&[1, 0, 3, 2])))
 }
 
 fn lbl2(a: ArrayD<f64>, l: [Axis; 2]) -> Tensor<2> {
@@ -77,7 +75,7 @@ fn lbl4(a: ArrayD<f64>, l: [Axis; 4]) -> Tensor<4> {
 }
 /// `permute` a dyn array by an axis map, return standard-layout owned.
 fn perm(x: &ArrayD<f64>, ax: &[usize]) -> ArrayD<f64> {
-    x.view().permuted_axes(IxDyn(ax)).as_standard_layout().into_owned()
+    permute_to_owned(x.view().permuted_axes(IxDyn(ax)))
 }
 
 /// Spin-adapted closed-shell (RHF-reference) CCSD via `einsum!` + DIIS.
@@ -103,19 +101,97 @@ pub fn ccsd_closed_shell(
     let c_occ = c.slice(ndarray::s![.., first_occ..nocc_total]).to_owned();
     let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
 
-    // Fail-fast size guard: peak is the chemist VVVV block g_vvvv (nv⁴ f64) plus
-    // the dense AO 3-center eri3_ao (naux·nbf²). Mirrors the spin-orbital guard
-    // but over nv (not 2·nv) virtuals — the whole memory-saving point.
+    // Fail-fast size guard, expressed as a [`MemoryPlan`] rather than a
+    // hand-written byte sum.
+    //
+    // # Why this changed shape
+    //
+    // The previous guard charged `3·nv⁴ + naux·nbas²` and nothing else. That is
+    // a SECOND implementation of this function's allocation shapes, kept in sync
+    // with the allocator by hand, and it had already drifted: essentially
+    // everything between here and the iteration loop was uncharged. In
+    // particular `ovvv` (`no·nv³`, built ~40 lines below) is immediately cloned
+    // into `ovvv_t` and BOTH copies live for the whole loop, so `2·no·nv³` was
+    // absent from the estimate entirely. At `no/nv = 1/8` each copy is `nv⁴/8`,
+    // i.e. the omission is the same order as the `nv⁴` term the guard was built
+    // around — never a rounding error, and it grows with `no`.
+    //
+    // Declaring shapes on a plan makes the estimate and the allocation one
+    // expression, and `check()` names the dominant term in its breakdown rather
+    // than reporting a bare total. See `ferric_core::memory::plan` for the full
+    // rationale.
+    //
+    // Lifetimes, chosen deliberately in BOTH directions (an over-estimating
+    // guard refuses jobs that would have fit, which is also a bug):
+    //
+    // * `eri3_ao` is TRANSIENT — it is consumed by the four `build_b`
+    //   transforms below and is dead before the chemist blocks are formed.
+    // * The dressed `b_*` blocks and the seven chemist blocks are RESIDENT:
+    //   every one is read inside the iteration loop.
+    // * `ovov_t`/`ovoo_t`/`ovvv_t` are full clones of three of those blocks,
+    //   also held for the whole loop. The `ovvv` clone is what the old guard
+    //   missed outright.
+    // * The `no²·nv²`-shaped working set (`dijab`, `t2`, `t2_prev`, the
+    //   per-iteration `t2.clone()`, `r2`, `tau`, `ovov_ijab`, `t2_new`) is
+    //   charged as one aggregate reservation rather than one per name: they are
+    //   the same shape and co-resident within an iteration, and enumerating
+    //   each einsum temporary separately would be a second drift surface.
+    // * The `wvvvv` build is the per-iteration `nv⁴` peak: `a1`, `a2` and `a3`
+    //   are live simultaneously alongside the resident `vvvv` they are formed
+    //   from, so three further `nv⁴` buffers are charged as the largest
+    //   transient. (The old `3·nv⁴` was in the right ballpark for THIS term
+    //   alone, which is why the omissions above went unnoticed.)
     let naux = dfbs.nbasis();
-    let peak_vvvv = nv.saturating_pow(4).saturating_mul(3).saturating_mul(8); // ~3× nv⁴ f64
-    let eri3_bytes = naux.saturating_mul(nbas).saturating_mul(nbas).saturating_mul(8);
-    let peak = peak_vvvv.saturating_add(eri3_bytes);
-    let budget = ferric_core::memory::resolve_budget_bytes(cfg.memory_budget_bytes);
-    ferric_core::memory::check_alloc(
-        &format!("closed-shell CCSD (no={no}, nv={nv} spatial; VVVV block nv⁴={})", nv.saturating_pow(4)),
-        peak,
-        budget,
-    )?;
+    let nv2 = nv.saturating_pow(2);
+    let nv3 = nv.saturating_pow(3);
+    let nv4 = nv.saturating_pow(4);
+    let no2 = no.saturating_pow(2);
+    let mut plan = MemoryPlan::resolve(
+        cfg.memory_budget_bytes,
+        format!("closed-shell CCSD (no={no}, nv={nv} spatial)"),
+    );
+    plan.reserve(
+        "eri3_ao (P|mn)",
+        naux.saturating_mul(nbas).saturating_mul(nbas),
+        Lifetime::Transient,
+    );
+    plan.reserve(
+        "b_ov/b_vo/b_oo/b_vv dressed RI blocks",
+        naux.saturating_mul(
+            no.saturating_mul(nv)
+                .saturating_mul(2)
+                .saturating_add(no2)
+                .saturating_add(nv2),
+        ),
+        Lifetime::Resident,
+    );
+    plan.reserve("vvvv (ab|cd)", nv4, Lifetime::Resident);
+    plan.reserve("ovvv (ia|bc)", no.saturating_mul(nv3), Lifetime::Resident);
+    plan.reserve("ovvv_t clone (ia|bc)", no.saturating_mul(nv3), Lifetime::Resident);
+    plan.reserve(
+        "oooo/ovov/oovv/ovvo/ovoo chemist blocks",
+        no2.saturating_mul(no2)
+            .saturating_add(no2.saturating_mul(nv2).saturating_mul(3))
+            .saturating_add(no2.saturating_mul(no).saturating_mul(nv)),
+        Lifetime::Resident,
+    );
+    plan.reserve(
+        "ovov_t + ovoo_t clones",
+        no2.saturating_mul(nv2)
+            .saturating_add(no2.saturating_mul(no).saturating_mul(nv)),
+        Lifetime::Resident,
+    );
+    plan.reserve(
+        "t2-shaped no^2*nv^2 working set (t2, t2_prev, dijab, r2, tau, ...)",
+        no2.saturating_mul(nv2).saturating_mul(8),
+        Lifetime::Resident,
+    );
+    plan.reserve(
+        "wvvvv build (a1,a2,a3 nv^4 temporaries)",
+        nv4.saturating_mul(3),
+        Lifetime::Transient,
+    );
+    plan.check()?;
 
     // V^{-1/2} metric and AO 3-center integrals, then dressed RI MO blocks.
     let v2c = ferric_integrals::threeindex::coulomb_metric_2c(op, dfbs)?;
@@ -145,6 +221,19 @@ pub fn ccsd_closed_shell(
     let ovov_t = lbl4(ovov.clone(), [O, V, O, V]); // (i,a,j,b)=(ia|jb), also used as 'kcld'
     let ovoo_t = lbl4(ovoo.clone(), [O, V, O, O]); // (i,a,j,k)=(ia|jk), also used as 'kcli'/'kclj'
     let ovvv_t = lbl4(ovvv.clone(), [O, V, V, V]); // (i,a,b,c)=(ia|bc), also used as 'kcad'
+
+    // Stage-seam RSS safety net. Everything the plan above declared as resident
+    // is now actually allocated, so this is the first point where the estimate
+    // can be compared against reality. Purely observational — it never errors
+    // (see `warn_if_rss_over`) — and it exists precisely because the pre-flight
+    // estimate for this function had silently under-counted `ovvv` and its
+    // clone before the plan rewrite above. Convention (`over_factor = 1.1`)
+    // follows the `ferric-rpa` stage seams.
+    ferric_core::memory::warn_if_rss_over(
+        "closed-shell CCSD AO->MO transform complete",
+        plan.budget_bytes(),
+        1.1,
+    );
 
     // orbital energies (spatial) and denominators
     let eo: Vec<f64> = (0..no).map(|i| eps[first_occ + i]).collect();
@@ -182,6 +271,20 @@ pub fn ccsd_closed_shell(
     for iter in 0..cfg.max_iter {
         let t1_t = lbl2(t1.clone(), [O, V]);
         let t2_t = lbl4(t2.clone(), [O, O, V, V]);
+
+        // Second stage seam: the amplitude working set and the per-iteration
+        // `nv⁴` W intermediates are the largest thing this method builds, and
+        // they are rebuilt identically every pass. Checked once, on the first
+        // iteration, rather than every pass: the footprint does not grow with
+        // `iter`, and a `/proc/self/status` read per CCSD iteration would be
+        // pure overhead. Observational only.
+        if iter == 1 {
+            ferric_core::memory::warn_if_rss_over(
+                "closed-shell CCSD amplitude iteration",
+                plan.budget_bytes(),
+                1.1,
+            );
+        }
 
         // ============ F intermediates (Eqs. 37-39, fock terms zero) ============
         // Foo (Fki): Fki = 2 (kc|ld) t2[il,cd] - (kd|lc) t2[il,cd]
@@ -540,7 +643,7 @@ pub fn ccsd_closed_shell(
 fn tau_t1t1(t1: &ArrayD<f64>) -> ArrayD<f64> {
     let t1_t = Tensor::new(t1.clone(), [Axis::O, Axis::V]);
     let prqs: ArrayD<f64> = einsum!("pr,qs->prqs", &t1_t, &t1_t);
-    prqs.permuted_axes(IxDyn(&[0, 2, 1, 3])).as_standard_layout().into_owned()
+    permute_to_owned(prqs.permuted_axes(IxDyn(&[0, 2, 1, 3])).view())
 }
 
 /// Run one DIIS step over the concatenated (t1,t2) vector. The spin-orbital
@@ -679,6 +782,104 @@ mod tests {
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig { energy_conv: 1e-11, ..Default::default() }).unwrap();
         (mol, obs, dfbs, op, rhf)
+    }
+
+    /// The `ovvv` block AND its clone must be charged by the pre-flight plan.
+    ///
+    /// The regression: the old guard charged `3·nv⁴ + naux·nbas²` and nothing
+    /// else, so `ovvv` (`no·nv³`) — built below the guard and immediately
+    /// cloned into `ovvv_t`, both live for the whole iteration loop — was
+    /// entirely absent from the estimate. At `no/nv = 1/8` each copy is
+    /// `nv⁴/8`, the same order as the `nv⁴` term the guard was built around.
+    ///
+    /// The test does NOT re-derive the plan's arithmetic — that would
+    /// reintroduce exactly the second-estimator drift this pass removes.
+    /// Instead it probes the guard with a budget of exactly `2·no·nv³·8`, a
+    /// size computed from the INPUT dimensions: since the driver allocates
+    /// those two copies PLUS `vvvv`, the `b_*` blocks and the amplitudes, a
+    /// correct guard must refuse that budget. The old guard, which charged
+    /// neither copy, accepted it.
+    #[test]
+    fn cs_ccsd_guard_charges_ovvv_and_its_clone() {
+        let (mol, obs, dfbs, op, rhf) =
+            setup("3\n\nO 0.0 0.0 0.1173\nH 0.0 0.7572 -0.4692\nH 0.0 -0.7572 -0.4692\n",
+                  "cc-pvdz", "cc-pvdz-ri");
+
+        let accepts = |bytes: usize| -> bool {
+            let cfg = CcConfig {
+                frozen_core: 0,
+                max_iter: 1,
+                memory_budget_bytes: Some(bytes),
+                ..Default::default()
+            };
+            match ccsd_closed_shell(&mol, &obs, &dfbs, op, &rhf, &cfg) {
+                Err(e) => !e.to_string().contains("budget is"),
+                Ok(_) => true,
+            }
+        };
+
+        // Dimensions read off the inputs, exactly as the driver derives them.
+        let nbas = obs.nbasis();
+        let nocc_total = rhf.eps_r().iter().filter(|&&e| e < 0.0).count();
+        let (no, nv) = (nocc_total, nbas - nocc_total);
+        let ovvv_pair_bytes = 2 * no * nv.pow(3) * 8;
+
+        assert!(
+            !accepts(ovvv_pair_bytes),
+            "the guard accepted a budget of exactly {ovvv_pair_bytes} bytes — \
+             the size of ovvv and its clone alone, with nothing left for vvvv, \
+             the b_* blocks or the amplitudes. Those copies are still uncharged"
+        );
+    }
+
+    /// The refusal message must NAME the dominant term, not just report a
+    /// total. That per-reservation breakdown is the reason this guard is a
+    /// `MemoryPlan` rather than a bare `check_alloc`.
+    #[test]
+    fn cs_ccsd_refusal_names_the_terms() {
+        let (mol, obs, dfbs, op, rhf) =
+            setup("3\n\nO 0.0 0.0 0.1173\nH 0.0 0.7572 -0.4692\nH 0.0 -0.7572 -0.4692\n",
+                  "cc-pvdz", "cc-pvdz-ri");
+        let cfg = CcConfig {
+            frozen_core: 0,
+            max_iter: 1,
+            memory_budget_bytes: Some(1024),
+            ..Default::default()
+        };
+        let err = ccsd_closed_shell(&mol, &obs, &dfbs, op, &rhf, &cfg)
+            .expect_err("a 1 KB budget must be refused");
+        let msg = err.to_string();
+        assert!(msg.contains("budget is"), "not a budget refusal: {msg}");
+        assert!(msg.contains("memory plan"), "no plan breakdown: {msg}");
+        assert!(msg.contains("ovvv"), "breakdown must name ovvv: {msg}");
+        assert!(msg.contains("vvvv"), "breakdown must name vvvv: {msg}");
+    }
+
+    /// An ample budget must still run, and must produce the SAME energy. An
+    /// over-estimating guard is also a bug (it refuses jobs that would have
+    /// fit), and this pass ADDED terms to the estimate, so the over-count
+    /// direction needs explicit coverage.
+    #[test]
+    fn cs_ccsd_ample_budget_runs_and_energy_is_unchanged() {
+        let (mol, obs, dfbs, op, rhf) =
+            setup("2\nH2\nH 0 0 0\nH 0 0 0.74\n", "sto-3g", "def2-qzvpp-rifit");
+        let base = CcConfig { frozen_core: 0, max_iter: 100, energy_conv: 1e-10,
+                              ..Default::default() };
+        let unbudgeted = ccsd_closed_shell(&mol, &obs, &dfbs, op, &rhf, &base).unwrap();
+        let budgeted = ccsd_closed_shell(
+            &mol, &obs, &dfbs, op, &rhf,
+            &CcConfig {
+                memory_budget_bytes: Some(ferric_core::memory::gib_to_bytes(4.0)),
+                ..base
+            },
+        )
+        .expect("4 GiB must be ample for H2/STO-3G CCSD");
+        // Guards and accounting only: the gate must not perturb the number it
+        // gates, to the last bit.
+        assert_eq!(
+            budgeted.correlation_energy, unbudgeted.correlation_energy,
+            "the memory guard changed the energy"
+        );
     }
 
     /// `expand_amplitudes_to_spin_orbital` must reproduce the SPIN-ORBITAL
