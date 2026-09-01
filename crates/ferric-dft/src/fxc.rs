@@ -153,7 +153,7 @@ impl LdaFxcKernel {
         // LDA piece. One reused (nbf, npts) scratch serves both spins
         // sequentially (a's GEMM completes before b refills), replacing the two
         // full `chi.clone()` copies this call used to make every Newton step.
-        let mut scratch = self.scratch.lock().expect("fxc scratch mutex poisoned");
+        let mut scratch = self.scratch.lock().unwrap_or_else(|e| e.into_inner());
         let buf = scratch.ensure((nbf, npts));
 
         let fac_a: Array1<f64> =
@@ -465,7 +465,7 @@ impl GgaFxcKernel {
         }
 
         // ── Back-project to AO basis, one GEMM per term (mirrors vxc.rs). ──
-        let mut scratch = self.scratch.lock().expect("gga fxc scratch mutex poisoned");
+        let mut scratch = self.scratch.lock().unwrap_or_else(|e| e.into_inner());
         let buf = scratch.ensure((nbf, npts));
 
         // Build V^σ = (scalar u term) + Σ_axis (w-vector axis term).
