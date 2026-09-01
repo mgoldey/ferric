@@ -116,6 +116,30 @@ impl QqrBounds3 {
         let nsh_obs = obs.nshells();
         let nsh_aux = aux.nshells();
 
+        // Fail-fast guard on the dense nsh_obs² pair tables below (defect E).
+        //
+        // These three tables are DENSE over ordered obs shell pairs by design —
+        // O(1) indexed lookup by `i * nsh_obs + j` is what makes the screening
+        // predicate cheap enough to be worth applying, and sparsifying them
+        // would defeat the purpose. That design is deliberate and is NOT changed
+        // here. What was missing is any check at all: the three `vec![...]`
+        // allocations went straight to the allocator with no reference to the
+        // memory budget, so an oversized system walked into a multi-gigabyte
+        // allocation and was killed by the OOM killer rather than told why.
+        //
+        // Per ordered pair: `[f64; 3]` center (24 B) + `f64` extent (8 B) +
+        // `f64` alpha (8 B) = 40 B. At nsh_obs = 5000 that is 1.0 GB.
+        let pair_bytes = nsh_obs
+            .saturating_mul(nsh_obs)
+            .saturating_mul(std::mem::size_of::<[f64; 3]>() + 2 * std::mem::size_of::<f64>());
+        ferric_core::memory::check_alloc(
+            &format!(
+                "QQR-3 obs pair tables (nsh_obs={nsh_obs} ordered pairs, dense by design)"
+            ),
+            pair_bytes,
+            ferric_core::memory::resolve_budget_bytes(None),
+        )?;
+
         // Obs pair centers/extents: same definition as 4-center QQR.
         let mut obs_pair_centers = vec![[0.0; 3]; nsh_obs * nsh_obs];
         let mut obs_pair_extents = vec![0.0; nsh_obs * nsh_obs];
