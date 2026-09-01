@@ -363,6 +363,7 @@ impl PyRhfResult {
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_rhf(
+    py: Python<'_>,
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
     max_iter: Option<usize>,
@@ -415,7 +416,17 @@ fn run_rhf(
         ..Default::default()
     };
     let ctx = ParallelContext::default();
-    let r = solve_rhf(&ctx, &emol, &prep, op, &bounds, &config).map_err(make_err)?;
+    // Release the GIL for the duration of the SCF. Every argument below is an
+    // owned Rust value (`emol` is a clone; `prep`/`bounds`/`config` are built
+    // above), so nothing Python-borrowed crosses the closure boundary.
+    //
+    // Without this, a second Python thread cannot even ENTER this function
+    // until the first call returns, so independent jobs submitted from a
+    // ThreadPoolExecutor serialize at the FFI boundary no matter how many
+    // cores rayon could use. The compute itself never touches the interpreter.
+    let r = py
+        .allow_threads(|| solve_rhf(&ctx, &emol, &prep, op, &bounds, &config))
+        .map_err(make_err)?;
     Ok(PyRhfResult {
         energy: r.energy, converged: r.converged, iterations: r.iterations,
         computed_quartets: r.computed_quartets,
@@ -1287,6 +1298,7 @@ impl PyUhfResult {
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_uhf(
+    py: Python<'_>,
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
     max_iter: Option<usize>,
@@ -1327,7 +1339,12 @@ fn run_uhf(
         ..Default::default()
     };
     let ctx = ParallelContext::default();
-    let r = solve_uhf(&ctx, &emol, &prep, &bounds, &config).map_err(make_err)?;
+    // Release the GIL for the duration of the SCF. Every argument below is an
+    // owned Rust value (`emol` is a clone; `prep`/`bounds`/`config` are built
+    // above), so nothing Python-borrowed crosses the closure boundary.
+    let r = py
+        .allow_threads(|| solve_uhf(&ctx, &emol, &prep, &bounds, &config))
+        .map_err(make_err)?;
     // density_beta / mos_beta / eps_beta are always populated for the UHF path.
     Ok(PyUhfResult {
         energy: r.energy,
@@ -1363,6 +1380,7 @@ fn run_uhf(
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_rohf(
+    py: Python<'_>,
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
     max_iter: Option<usize>,
@@ -1403,7 +1421,12 @@ fn run_rohf(
         ..Default::default()
     };
     let ctx = ParallelContext::default();
-    let r = solve_rohf(&ctx, &emol, &prep, op, &bounds, &config).map_err(make_err)?;
+    // Release the GIL for the duration of the SCF. Every argument below is an
+    // owned Rust value (`emol` is a clone; `prep`/`bounds`/`config` are built
+    // above), so nothing Python-borrowed crosses the closure boundary.
+    let r = py
+        .allow_threads(|| solve_rohf(&ctx, &emol, &prep, op, &bounds, &config))
+        .map_err(make_err)?;
     Ok(PyUhfResult {
         energy: r.energy,
         converged: r.converged,
@@ -2540,20 +2563,33 @@ impl PyRiMp2Result {
 /// correlation energy alone, always negative).
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, kappa=None))]
-fn run_rimp2(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
+fn run_rimp2(py: Python<'_>, mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
              frozen_core: Option<usize>, k_builder: Option<&str>,
              memory_budget_gb: Option<f64>, kappa: Option<f64>) -> PyResult<PyRiMp2Result> {
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
-    let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb))).map_err(make_err)?;
-    if !rhf.converged {
-        return Err(make_err(ferric_core::FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy }));
-    }
-    let mp2 = ri_mp2(&mol.inner, &prep, &dfbs, op, &rhf,
-                      &RiMp2Config { frozen_core: frozen_core.unwrap_or(0), memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb), kappa, ..Default::default() }).map_err(make_err)?;
+    let emol = mol.inner.clone();
+    let ebasis = basis_set.inner.clone();
+    let eaux = auxbasis.inner.clone();
+    let rhf_config = rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb));
+    let mp2_budget = budget_bytes_from_gb(memory_budget_gb);
+    // Release the GIL for the SCF + RI-MP2 compute. All captured values are
+    // owned clones/locals built above, so nothing Python-borrowed crosses
+    // the closure boundary.
+    let (rhf, mp2) = py
+        .allow_threads(|| -> Result<_, ferric_core::FerricError> {
+            let prep = PreparedBasis::new(&emol, &ebasis)?;
+            let dfbs = PreparedBasis::new(&emol, &eaux)?;
+            let op = Operator::coulomb();
+            let bounds = SchwarzBounds::compute(op, &prep)?;
+            let ctx = ParallelContext::default();
+            let rhf = solve_rhf(&ctx, &emol, &prep, op, &bounds, &rhf_config)?;
+            if !rhf.converged {
+                return Err(ferric_core::FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy });
+            }
+            let mp2 = ri_mp2(&emol, &prep, &dfbs, op, &rhf,
+                              &RiMp2Config { frozen_core: frozen_core.unwrap_or(0), memory_budget_bytes: mp2_budget, kappa, ..Default::default() })?;
+            Ok((rhf, mp2))
+        })
+        .map_err(make_err)?;
     Ok(PyRiMp2Result { total_energy: mp2.total_energy, rhf_energy: rhf.energy, mp2_corr: mp2.mp2_corr })
 }
 
@@ -3643,7 +3679,7 @@ fn run_double_hybrid(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasi
     point_charges=None, external_field=None, memory_budget_gb=None,
 ))]
 #[allow(clippy::too_many_arguments)]
-fn run_dft(mol: &PyMolecule, basis_set: &PyBasisSet,
+fn run_dft(py: Python<'_>, mol: &PyMolecule, basis_set: &PyBasisSet,
            functional: Option<&str>, k_builder: Option<&str>,
            with_gradient: bool,
            max_iter: Option<usize>, energy_conv: Option<f64>, density_conv: Option<f64>,
@@ -3651,7 +3687,10 @@ fn run_dft(mol: &PyMolecule, basis_set: &PyBasisSet,
            point_charges: Option<Vec<(f64, f64, f64, f64)>>,
            external_field: Option<(f64, f64, f64)>,
            memory_budget_gb: Option<f64>) -> PyResult<PyDftResult> {
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    // Owned clone so the compute closure below never borrows the PyMolecule
+    // pyclass field across the allow_threads boundary.
+    let emol = mol.inner.clone();
+    let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
     let ctx = ParallelContext::default();
@@ -3675,7 +3714,12 @@ fn run_dft(mol: &PyMolecule, basis_set: &PyBasisSet,
     // The base cfg carries xc / grid / DF-JK aux into every rung. Only surface
     // a convergence error if the whole ladder fails to converge.
     let ladder = ferric_scf::ladder::ksdft_ladder(&cfg);
-    let lr = ferric_scf::ladder::solve_rhf_ladder(&ctx, &mol.inner, &prep, op, &bounds, &ladder)
+    // Release the GIL for the duration of the SCF ladder. Every argument
+    // below is an owned Rust value (`emol` is a clone; `ctx`/`prep`/`bounds`/
+    // `ladder` are built above), so nothing Python-borrowed crosses the
+    // closure boundary.
+    let lr = py
+        .allow_threads(|| ferric_scf::ladder::solve_rhf_ladder(&ctx, &emol, &prep, op, &bounds, &ladder))
         .map_err(make_err)?;
     let rhf = lr.result;
     if !rhf.converged {
@@ -3710,7 +3754,7 @@ fn run_dft(mol: &PyMolecule, basis_set: &PyBasisSet,
     point_charges=None, external_field=None, memory_budget_gb=None,
 ))]
 #[allow(clippy::too_many_arguments)]
-fn run_ksdft(mol: &PyMolecule, basis_set: &PyBasisSet,
+fn run_ksdft(py: Python<'_>, mol: &PyMolecule, basis_set: &PyBasisSet,
              functional: Option<&str>, k_builder: Option<&str>,
              with_gradient: bool,
              max_iter: Option<usize>, energy_conv: Option<f64>, density_conv: Option<f64>,
@@ -3718,7 +3762,7 @@ fn run_ksdft(mol: &PyMolecule, basis_set: &PyBasisSet,
              point_charges: Option<Vec<(f64, f64, f64, f64)>>,
              external_field: Option<(f64, f64, f64)>,
              memory_budget_gb: Option<f64>) -> PyResult<PyDftResult> {
-    run_dft(mol, basis_set, functional, k_builder, with_gradient,
+    run_dft(py, mol, basis_set, functional, k_builder, with_gradient,
             max_iter, energy_conv, density_conv, level_shift, mom_after_iter,
             point_charges, external_field, memory_budget_gb)
 }
@@ -3781,19 +3825,18 @@ fn run_ccd(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
 
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None))]
-fn run_ccsd(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
+fn run_ccsd(py: Python<'_>, mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
             frozen_core: Option<usize>, k_builder: Option<&str>,
             memory_budget_gb: Option<f64>) -> PyResult<PyCcResult> {
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
-    let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb))).map_err(make_err)?;
-    if !rhf.converged {
-        return Err(make_err(ferric_core::FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy }));
-    }
+    let emol = mol.inner.clone();
+    let ebasis = basis_set.inner.clone();
+    let eaux = auxbasis.inner.clone();
+    let rhf_config = rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb));
     let cfg = CcConfig { frozen_core: frozen_core.unwrap_or(0), memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb), ..Default::default() };
+    // Release the GIL for the SCF + CCSD compute. All captured values are
+    // owned clones/locals built above, so nothing Python-borrowed crosses
+    // the closure boundary.
+    //
     // `solve_rhf` always yields a restricted reference, so this is the
     // spin-adapted path unconditionally: same CCSD energy, but over spatial
     // orbitals (no/nv) rather than spin orbitals (2no/2nv), so the O(N^6) VVVV
@@ -3801,25 +3844,37 @@ fn run_ccsd(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
     // (22x) and peak RSS 1.82 GB -> 0.48 GB.
     //
     // NOTE `run_ccsd_t` below deliberately does NOT switch — see its comment.
-    let r = run_ccsd_cs_inner(&mol.inner, &prep, &dfbs, op, &rhf, &cfg).map_err(make_err)?;
+    let r = py
+        .allow_threads(|| -> Result<_, ferric_core::FerricError> {
+            let prep = PreparedBasis::new(&emol, &ebasis)?;
+            let dfbs = PreparedBasis::new(&emol, &eaux)?;
+            let op = Operator::coulomb();
+            let bounds = SchwarzBounds::compute(op, &prep)?;
+            let ctx = ParallelContext::default();
+            let rhf = solve_rhf(&ctx, &emol, &prep, op, &bounds, &rhf_config)?;
+            if !rhf.converged {
+                return Err(ferric_core::FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy });
+            }
+            run_ccsd_cs_inner(&emol, &prep, &dfbs, op, &rhf, &cfg)
+        })
+        .map_err(make_err)?;
     Ok(PyCcResult { correlation_energy: r.correlation_energy, t_correction: None })
 }
 
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None))]
-fn run_ccsd_t(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
+fn run_ccsd_t(py: Python<'_>, mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
               frozen_core: Option<usize>, k_builder: Option<&str>,
               memory_budget_gb: Option<f64>) -> PyResult<PyCcResult> {
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
-    let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb))).map_err(make_err)?;
-    if !rhf.converged {
-        return Err(make_err(ferric_core::FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy }));
-    }
+    let emol = mol.inner.clone();
+    let ebasis = basis_set.inner.clone();
+    let eaux = auxbasis.inner.clone();
+    let rhf_config = rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb));
     let cfg = CcConfig { frozen_core: frozen_core.unwrap_or(0), memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb), ..Default::default() };
+    // Release the GIL for the SCF + CCSD + (T) compute. All captured values
+    // are owned clones/locals built above, so nothing Python-borrowed
+    // crosses the closure boundary.
+    //
     // `solve_rhf` always yields a restricted reference, so both halves take the
     // spin-adapted path: `ccsd_closed_shell` for the amplitudes and
     // `ccsd_t_closed_shell` for the triples. Both work over spatial orbitals
@@ -3833,8 +3888,21 @@ fn run_ccsd_t(mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
     // i.e. ~26.6 s -> under a second for the pair. The two (T) implementations
     // agree to 1.9e-16 when fed identical amplitudes, and to 7.8e-10..6.9e-7
     // against PySCF's `ccsd_t()` — inside the ~5e-6 Ha RI floor.
-    let r_cs = run_ccsd_cs_inner(&mol.inner, &prep, &dfbs, op, &rhf, &cfg).map_err(make_err)?;
-    let e_t = run_ccsd_t_cs_inner(&mol.inner, &prep, &dfbs, op, &rhf, &r_cs, &cfg)
+    let (r_cs, e_t) = py
+        .allow_threads(|| -> Result<_, ferric_core::FerricError> {
+            let prep = PreparedBasis::new(&emol, &ebasis)?;
+            let dfbs = PreparedBasis::new(&emol, &eaux)?;
+            let op = Operator::coulomb();
+            let bounds = SchwarzBounds::compute(op, &prep)?;
+            let ctx = ParallelContext::default();
+            let rhf = solve_rhf(&ctx, &emol, &prep, op, &bounds, &rhf_config)?;
+            if !rhf.converged {
+                return Err(ferric_core::FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy });
+            }
+            let r_cs = run_ccsd_cs_inner(&emol, &prep, &dfbs, op, &rhf, &cfg)?;
+            let e_t = run_ccsd_t_cs_inner(&emol, &prep, &dfbs, op, &rhf, &r_cs, &cfg)?;
+            Ok((r_cs, e_t))
+        })
         .map_err(make_err)?;
     Ok(PyCcResult { correlation_energy: r_cs.correlation_energy, t_correction: Some(e_t) })
 }
@@ -4126,6 +4194,7 @@ impl PyGwResult {
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_gw(
+    py: Python<'_>,
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
     auxbasis: &PyBasisSet,
@@ -4235,7 +4304,14 @@ fn run_gw(
         verbose: false,
     };
 
-    let r = run_gw_inner(&mol.inner, &prep, &dfbs, op, &scf, &pdep_cfg, &gw_cfg, vxc_diag.as_ref())
+    // All closure arguments are owned Rust values (an owned Molecule clone
+    // plus locals built above) so nothing Python-borrowed crosses the
+    // boundary; safe to release the GIL for the expensive GW compute.
+    let emol_gw = mol.inner.clone();
+    let r = py
+        .allow_threads(|| {
+            run_gw_inner(&emol_gw, &prep, &dfbs, op, &scf, &pdep_cfg, &gw_cfg, vxc_diag.as_ref())
+        })
         .map_err(make_err)?;
     if !r.outer_converged {
         eprintln!(
@@ -4899,6 +4975,7 @@ impl PyTddftResult {
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, functional=None, n_roots=3, method="tda"))]
 fn run_tddft(
+    py: Python<'_>,
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
     auxbasis: &PyBasisSet,
@@ -4949,7 +5026,12 @@ fn run_tddft(
     }
 
     let config = TddftConfig { n_roots, method: tddft_method, ..Default::default() };
-    let r = ferric_tddft::run_tddft(&mol.inner, &prep, &dfbs, &scf, &config, c_hf)
+    // All closure arguments are owned Rust values (an owned Molecule clone
+    // plus locals built above) so nothing Python-borrowed crosses the
+    // boundary; safe to release the GIL for the TDDFT compute.
+    let emol_tddft = mol.inner.clone();
+    let r = py
+        .allow_threads(|| ferric_tddft::run_tddft(&emol_tddft, &prep, &dfbs, &scf, &config, c_hf))
         .map_err(make_err)?;
 
     Ok(PyTddftResult {
