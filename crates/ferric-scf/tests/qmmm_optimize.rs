@@ -182,10 +182,14 @@ fn optimize_qmmm_capped_ethane_converges_with_small_final_gradient() {
         "[F2-2] capped ethane RCD: {} steps, converged={}, E_final = {:.10} Ha",
         result.steps, result.converged, result.energy
     );
-    // converged==true already certifies g_max < opt.g_max_thresh AND
-    // g_rms < opt.g_rms_thresh via optimize_coordinates's own convergence
-    // check on the SAME projected gradient BFGS saw -- re-derive it directly
-    // as an independent check rather than only trusting the flag.
+    // `converged == true` (asserted above) already certifies g_max <
+    // opt.g_max_thresh AND g_rms < opt.g_rms_thresh, via
+    // optimize_coordinates's own check on the SAME projected gradient BFGS
+    // saw. This line is only a cheap sanity floor on the returned energy; it
+    // does NOT independently re-derive the gradient norms. (An earlier comment
+    // here claimed it did — it never has. The discriminating assertions in
+    // this test are the `converged` flag, the monotone energy decrease, and
+    // the bit-identical MM coordinates below.)
     assert!(result.energy.is_finite());
 
     // HONEST COUNTERPART to the MoveMm::All assertion below: under
