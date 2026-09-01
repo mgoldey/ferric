@@ -90,18 +90,83 @@ pub fn default_band_bytes() -> usize {
     resolve_band_bytes(ferric_core::memory::resolve_budget_bytes(None))
 }
 
-/// Compute a band width (number of `nbf×nbf` partials held live at once) from the
-/// byte budget. Floored at the rayon worker count so the byte budget never
-/// throttles parallelism below one group per worker (band width affects ONLY the
-/// live set and the degree of parallelism — the fold order is always ascending
-/// group index regardless of banding, so a thread-count-dependent band width
-/// cannot perturb the result). Always ≥ 1 so an oversized partial still
-/// makes progress.
+/// Compute a band width (number of `nbf×nbf` partials held live at once) from
+/// the byte budget.
+///
+/// # Why the worker floor was removed
+///
+/// This used to read `(budget_bytes / per_partial).max(rayon::current_num_threads())`.
+/// The `.max(nthreads)` was there for a good reason — a band narrower than the
+/// pool leaves workers idle — but it made the byte budget **not a ceiling at
+/// all**. On a many-core box with a tight budget the band came out `nthreads`
+/// partials wide *regardless of the budget*, so `resolve_band_bytes`'s careful
+/// `min(512 MiB, budget/4)` was silently discarded: at nbf = 2000 and 12
+/// threads the floor alone pins 12 × 2000² × 8 = 384 MB live, whatever the
+/// budget said. A budget that is quietly overridden is worse than no budget,
+/// because callers reason as though it held.
+///
+/// The conflict is now resolved in favour of the budget, by **reducing
+/// concurrency to what the budget affords** rather than by exceeding it. This
+/// is the safe direction of the two the trade-off allows:
+///
+/// * It cannot change any result. The fold is always the strict ascending
+///   group order `0, 1, …, n_groups-1`, independent of how the groups are
+///   partitioned into bands (see [`grouped_deterministic_sum`]), so a narrower
+///   band costs parallelism and nothing else. `grouped_sum_matches_flat_serial_sum_and_is_thread_independent`
+///   pins that.
+/// * It cannot deadlock or stall: the width still floors at **1**, so progress
+///   is always possible; the degenerate case is a serial fold, which is slow
+///   but correct.
+/// * The alternative — keep the floor and warn — leaves the process actually
+///   holding memory it was told not to. On this codebase that has meant a
+///   46-minute reclaim stall inside a cgroup rather than a clean failure, which
+///   is far harder to diagnose than reduced throughput.
+///
+/// A caller who would rather have the parallelism than the ceiling can raise
+/// the ceiling: `FERRIC_REDUCE_BAND_BYTES` overrides it verbatim (see
+/// [`resolve_band_bytes`]).
 pub fn band_width(nbf: usize, budget_bytes: usize) -> usize {
     let per_partial = nbf.max(1) * nbf.max(1) * std::mem::size_of::<f64>();
-    (budget_bytes / per_partial.max(1))
-        .max(rayon::current_num_threads())
-        .max(1)
+    // Floor of 1, NOT of the worker count: a single partial must always be
+    // representable (otherwise no progress is possible), but nothing wider is
+    // owed to the pool at the budget's expense.
+    (budget_bytes / per_partial.max(1)).max(1)
+}
+
+/// Band bytes left for the collected partials after the per-worker scratch a
+/// `make` closure holds *while producing* one partial is subtracted.
+///
+/// # Why this exists (defect C)
+///
+/// [`band_width`] sizes the band from the partials it *collects* — one `nbf²`
+/// matrix per group. But a `make` closure is not free: it allocates its own
+/// working buffers, and rayon runs one closure per worker concurrently, so that
+/// scratch is live `workers` times over at exactly the moment the band is also
+/// live. `df_k`'s density path holds `3·c·n²` doubles per worker (the `bswap`,
+/// `zt`, and `bt` repack/GEMM buffers) and its occupied path holds `n·c·nocc`;
+/// none of it reached the sizing. The 3·c·n² figure was even written down in
+/// `build_impl`'s own comment — it simply never made it into a number the
+/// budget saw. At n = 2000, c = 4, 12 threads that is ~4.6 GB outside any
+/// budget.
+///
+/// Subtracting it here keeps the ONE knob (`band_bytes`) governing the whole
+/// live set: scratch first, because it is not optional, then as many partials
+/// as the remainder affords. [`band_width`] still floors at one partial, so a
+/// budget entirely consumed by scratch degrades to a serial fold rather than
+/// failing — and, as ever, band width cannot change the fold order or the
+/// result.
+///
+/// `per_worker_elems` is the element count (not bytes) one worker's scratch
+/// holds; `workers` is the concurrent fan-out (`rayon::current_num_threads()`).
+pub fn band_bytes_after_worker_scratch(
+    band_bytes: usize,
+    per_worker_elems: usize,
+    workers: usize,
+) -> usize {
+    let scratch = per_worker_elems
+        .saturating_mul(std::mem::size_of::<f64>())
+        .saturating_mul(workers.max(1));
+    band_bytes.saturating_sub(scratch)
 }
 
 /// Fixed target group count for partitioning a work list ahead of
@@ -153,6 +218,15 @@ where
             .map(&make)
             .collect::<Result<Vec<_>, FerricError>>()?;
         // Serial fold in group order — the determinism anchor.
+        //
+        // Do NOT "parallelize" this with a pairwise/tree reduction to shorten
+        // the O(band_width) serial chain. A tree-fold is deterministic, but it
+        // is not bit-identical: FP addition is non-associative, so re-bracketing
+        // the sum returns different bits than this linear scan and would shift
+        // every SCF energy in the codebase. The guarantee documented above —
+        // identical results across RAYON_NUM_THREADS and across band budgets —
+        // is exactly this ascending order. Parallelism here is only available
+        // at the cost of the invariant, which is not a trade worth making.
         for p in &partials {
             *acc += p;
         }
@@ -201,16 +275,89 @@ mod tests {
 
     #[test]
     fn band_width_respects_budget_and_floors() {
-        // Pin the worker count so the parallelism floor is known.
+        // Pin the worker count so any lingering thread-count dependence shows.
         let pool = rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap();
         pool.install(|| {
             // 100×100 f64 = 80_000 bytes/partial; 800_000 byte budget → 10.
             assert_eq!(band_width(100, 800_000), 10);
-            // Budget below one partial floors at the worker count (band width
-            // affects only memory/parallelism, never the fold order).
-            assert_eq!(band_width(100, 1), 2);
-            assert_eq!(band_width(0, 1), 2);
+            // Budget below one partial floors at ONE, not at the worker count:
+            // a single partial must be representable so progress is possible,
+            // but the pool is not owed extra width at the budget's expense.
+            assert_eq!(band_width(100, 1), 1);
+            assert_eq!(band_width(0, 1), 1);
         });
+    }
+
+    /// REGRESSION (defect B): the byte budget is a HARD ceiling.
+    ///
+    /// `band_width` used to end in `.max(rayon::current_num_threads())`, so on
+    /// a many-core box with a tight budget the live set was `nthreads` partials
+    /// wide no matter what the budget said — `resolve_band_bytes` was not a
+    /// ceiling at all. The floor is now 1. The live set must therefore never
+    /// exceed the budget except in the single unavoidable case where one
+    /// partial alone is already over it.
+    #[test]
+    fn band_width_never_exceeds_the_byte_budget() {
+        let per_partial = 100 * 100 * std::mem::size_of::<f64>(); // 80_000
+        for threads in [1usize, 2, 8, 32] {
+            let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+            pool.install(|| {
+                // A budget affording exactly 3 partials must yield 3 at EVERY
+                // thread count — 32 workers must not widen it to 32.
+                let budget = 3 * per_partial;
+                let bw = band_width(100, budget);
+                assert_eq!(bw, 3, "thread count {threads} must not widen the band");
+                assert!(
+                    bw * per_partial <= budget,
+                    "live set {} exceeds budget {budget} at {threads} threads",
+                    bw * per_partial
+                );
+                // Sub-partial budget: floors at 1 (progress), and that single
+                // partial is the ONLY sanctioned overshoot.
+                assert_eq!(band_width(100, 1), 1, "must floor at 1, not at {threads}");
+            });
+        }
+    }
+
+    /// The other direction: narrowing the band must not change the answer.
+    ///
+    /// Removing the worker floor makes bands narrower on tight budgets. That is
+    /// only acceptable because the fold order is the strict ascending group
+    /// index regardless of banding. Pin it: a one-partial-wide band and a
+    /// band-everything budget must agree bit-for-bit, at several thread counts.
+    #[test]
+    fn narrow_bands_are_bit_identical_to_wide_bands() {
+        let n = 6;
+        let n_groups = 41;
+        let make = |g: usize| -> Result<Array2<f64>, FerricError> {
+            let mut a = Array2::<f64>::zeros((n, n));
+            for i in 0..n {
+                for j in 0..n {
+                    a[(i, j)] = ((g as f64) + 1.0) * 0.1 * (((i * 3 + j * 5 + g) % 13) as f64)
+                        / ((g as f64) + 1.7);
+                }
+            }
+            Ok(a)
+        };
+        let run = |threads: usize, band_bytes: usize| -> Array2<f64> {
+            let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+            pool.install(|| {
+                let mut acc = Array2::<f64>::zeros((n, n));
+                grouped_deterministic_sum(&mut acc, n_groups, n, band_bytes, make).unwrap();
+                acc
+            })
+        };
+        let per_partial = n * n * std::mem::size_of::<f64>();
+        // Widest possible band (all groups live) as the reference.
+        let wide = run(1, n_groups * per_partial);
+        for threads in [1usize, 2, 4, 8] {
+            // Narrowest possible band: 1 byte → width 1.
+            assert_eq!(
+                run(threads, 1),
+                wide,
+                "a 1-wide band must be bit-identical to a full-width band ({threads} threads)"
+            );
+        }
     }
 
     #[test]

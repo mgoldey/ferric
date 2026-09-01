@@ -36,6 +36,10 @@ impl QqrBounds {
     /// Needs the raw `BasisSet` to access per-shell exponents (the minimum exponent of
     /// each shell determines the pair center and extent). The `Molecule` and `PreparedBasis`
     /// provide atom coordinates and the shell-to-atom mapping.
+    /// Infallible wrapper over [`Self::try_new`], for call sites that have
+    /// already established the system fits (the tests in this crate). Panics
+    /// with the budget breakdown if the dense pair tables do not fit — prefer
+    /// [`Self::try_new`] anywhere the size is not known in advance.
     pub fn new(
         schwarz: SchwarzBounds,
         mol: &Molecule,
@@ -43,7 +47,37 @@ impl QqrBounds {
         prep: &PreparedBasis,
         op: Operator,
     ) -> Self {
+        Self::try_new(schwarz, mol, bs, prep, op)
+            .unwrap_or_else(|e| panic!("QqrBounds::new: {e}"))
+    }
+
+    /// Fallible constructor: refuses up front when the dense `nshells²` pair
+    /// tables would not fit the memory budget (defect E).
+    ///
+    /// The tables are DENSE over ordered shell pairs by design — the screening
+    /// predicate's value comes from an O(1) `i * nshells + j` lookup, and that
+    /// layout is deliberately NOT changed here. What was missing is any check:
+    /// `vec![[0.0; 3]; nsh * nsh]` and `vec![0.0; nsh * nsh]` were allocated
+    /// with no reference to the budget, so an oversized system met the OOM
+    /// killer instead of an error naming the term.
+    ///
+    /// Per ordered pair: `[f64; 3]` center (24 B) + `f64` extent (8 B) = 32 B.
+    pub fn try_new(
+        schwarz: SchwarzBounds,
+        mol: &Molecule,
+        bs: &BasisSet,
+        prep: &PreparedBasis,
+        op: Operator,
+    ) -> Result<Self, ferric_core::FerricError> {
         let nsh = prep.nshells();
+        let pair_bytes = nsh
+            .saturating_mul(nsh)
+            .saturating_mul(std::mem::size_of::<[f64; 3]>() + std::mem::size_of::<f64>());
+        ferric_core::memory::check_alloc(
+            &format!("QQR pair tables (nshells={nsh} ordered pairs, dense by design)"),
+            pair_bytes,
+            ferric_core::memory::resolve_budget_bytes(None),
+        )?;
 
         // Collect the minimum exponent per shell and the atom coordinates per shell.
         // We iterate atoms in order, collecting shells per atom, mirroring PreparedBasis::new.
@@ -84,13 +118,13 @@ impl QqrBounds {
             }
         }
 
-        QqrBounds {
+        Ok(QqrBounds {
             schwarz,
             pair_centers,
             pair_extents,
             op,
             nshells: nsh,
-        }
+        })
     }
 
     /// Access the underlying Schwarz bounds.

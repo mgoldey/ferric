@@ -284,7 +284,21 @@ impl DfK<'_> {
             // still bit-identical across thread counts), but the live set is one
             // band (≤512 MiB), not every chunk.
             let n_chunks = b.div_ceil(chunk);
-            let band_bytes = crate::reduce::resolve_band_bytes(self.budget_bytes);
+            // Defect C: `band_width` budgets ONLY the `kc` partials it collects
+            // (n² each). The closure below additionally holds, PER RAYON
+            // WORKER, three c·n² buffers — `bswap`/`bswap_flat`, `zt`/`zt_wide`,
+            // and `bt`/`bt_flat` (each pair is one allocation: the `_flat`
+            // reshape consumes its source rather than copying). That is the
+            // `3·c·n²` this function's own comment above names, and until now
+            // it never reached the sizing: at n = 2000, c = 4, 12 threads it is
+            // ~4.6 GB entirely outside the budget. Charge it before sizing the
+            // band, so the one knob covers the whole live set.
+            let workers = rayon::current_num_threads().max(1).min(n_chunks.max(1));
+            let band_bytes = crate::reduce::band_bytes_after_worker_scratch(
+                crate::reduce::resolve_band_bytes(self.budget_bytes),
+                3 * chunk * n * n,
+                workers,
+            );
             crate::reduce::grouped_deterministic_sum(
                 k,
                 n_chunks,
@@ -390,7 +404,17 @@ impl DfK<'_> {
         self.dressed.for_each_block(|blk| {
             let b = blk.data.shape()[0];
             let n_chunks = b.div_ceil(chunk);
-            let band_bytes = crate::reduce::resolve_band_bytes(self.budget_bytes);
+            // Defect C, occupied path: the per-worker scratch here is the
+            // half-transform panel `m_chunk` (n × c·nocc), which scales with
+            // nocc rather than n — smaller than the density path's 3·c·n², but
+            // equally absent from the sizing before this. `kc` (n²) is the
+            // collected partial and is already covered by `band_width`.
+            let workers = rayon::current_num_threads().max(1).min(n_chunks.max(1));
+            let band_bytes = crate::reduce::band_bytes_after_worker_scratch(
+                crate::reduce::resolve_band_bytes(self.budget_bytes),
+                n * chunk * nocc,
+                workers,
+            );
             crate::reduce::grouped_deterministic_sum(
                 k,
                 n_chunks,

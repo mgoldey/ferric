@@ -20,6 +20,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::operator::Operator;
 use ferric_core::parallel::ParallelContext;
+use ndarray::linalg::general_mat_mul;
 use ndarray::Array2;
 use ndarray_linalg::Eigh;
 
@@ -487,6 +488,29 @@ pub fn solve_rhf(
     let mut f = Array2::zeros((n, n));
     let mut j_buf = Array2::<f64>::zeros((n, n));
     let mut k_buf = Array2::<f64>::zeros((n, n));
+    // DIIS commutator scratch, hoisted out of the SCF loop for the same reason
+    // `f`/`j_buf`/`k_buf` above are (defect F).
+    //
+    // The loop body used to compute the commutator as
+    //     let (fds, sdf) = (f.dot(&d).dot(&s), s.dot(&d).dot(&f));
+    //     let err = &fds - &sdf;
+    // which allocates FIVE n² matrices every single iteration: the two
+    // unnamed intermediates from the inner `.dot()`s, the two named products,
+    // and the difference — none reused, while the far larger `j_buf`/`k_buf`
+    // beside them were correctly hoisted. `driver::density_change` was
+    // explicitly rewritten zero-alloc for exactly this reason, so the
+    // convention already existed; this brings the commutator in line with it.
+    //
+    // `general_mat_mul(1.0, a, b, 0.0, &mut c)` is precisely what `a.dot(&b)`
+    // performs internally for `f64` (one dgemm, alpha = 1, beta = 0) — the same
+    // call, with the destination supplied instead of freshly allocated. Nothing
+    // is reassociated: the products are formed in the identical order,
+    // `(F·D)·S` and `(S·D)·F`, so the commutator is bit-identical and the SCF
+    // trajectory is unchanged.
+    let mut fd_tmp = Array2::<f64>::zeros((n, n));
+    let mut fds = Array2::<f64>::zeros((n, n));
+    let mut sdf = Array2::<f64>::zeros((n, n));
+    let mut err = Array2::<f64>::zeros((n, n));
     // Combined DIIS driver. With the default `diis_flavor = Pulay` this is a
     // pure-Pulay driver whose `step` is byte-identical to `Diis::step`;
     // ADIIS/EDIIS activate only when a caller opts in.
@@ -845,10 +869,21 @@ pub fn solve_rhf(
         // protects the SAD/free-atom path, which calls solve_rhf from inside
         // guess.rs's run_serial_pool (a 1-thread rayon pool — still "inside
         // rayon" for the guard's purposes, so it always resolves to 1 there).
-        let (fds, sdf) = with_blas_threads(opt_in_blas_threads(), || {
-            (f.dot(&d).dot(&s), s.dot(&d).dot(&f))
+        // Zero-alloc: writes into the buffers hoisted above the loop. Same
+        // dgemm calls in the same association as `f.dot(&d).dot(&s)` /
+        // `s.dot(&d).dot(&f)`, so bit-identical (see the hoist comment).
+        with_blas_threads(opt_in_blas_threads(), || {
+            general_mat_mul(1.0, &f, &d, 0.0, &mut fd_tmp);
+            general_mat_mul(1.0, &fd_tmp, &s, 0.0, &mut fds);
+            general_mat_mul(1.0, &s, &d, 0.0, &mut fd_tmp);
+            general_mat_mul(1.0, &fd_tmp, &f, 0.0, &mut sdf);
         });
-        let err = &fds - &sdf;
+        // err = fds - sdf, in place; `Zip` visits in the same (row-major)
+        // element order `&fds - &sdf` produced.
+        ndarray::Zip::from(&mut err)
+            .and(&fds)
+            .and(&sdf)
+            .for_each(|e, &a, &b| *e = a - b);
 
         let sig = mon.signals(energy);
         let de = sig.de;
