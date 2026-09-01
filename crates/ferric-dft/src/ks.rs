@@ -485,6 +485,34 @@ impl KsXc {
         nlc: &AtomicGridConfig,
         omega: Option<f64>,
     ) -> Result<Self, KsXcError> {
+        Self::new_with_omega_budgeted(mol, bs, xc_name, main, nlc, omega, None)
+    }
+
+    /// [`Self::new_with_omega`] plus an explicit memory budget in bytes.
+    ///
+    /// # Why this exists
+    ///
+    /// The grid AO cache is the largest single allocation in a DFT job, and
+    /// the constructors resolved it with `resolve_budget_bytes(None)` — the
+    /// env / cgroup / RAM-auto-detected ceiling — which silently DISCARDS a
+    /// user's `[memory] budget_gb`. Setting `budget_gb = 4` on a 64 GB box
+    /// still sized the grid cache against ~51 GB. The guard message even
+    /// tells the user to raise `FERRIC_MEM_BUDGET_GB`, which works, while the
+    /// documented primary knob did not.
+    ///
+    /// `None` preserves the previous behaviour exactly (resolve from env /
+    /// auto-detect); `Some(bytes)` is an explicit ceiling that takes
+    /// precedence, per `ferric_core::memory::resolve_budget`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_omega_budgeted(
+        mol: &Molecule,
+        bs: &BasisSet,
+        xc_name: &str,
+        main: &AtomicGridConfig,
+        nlc: &AtomicGridConfig,
+        omega: Option<f64>,
+        memory_budget_bytes: Option<usize>,
+    ) -> Result<Self, KsXcError> {
         let xc = match omega {
             None => xc_def_from_name(xc_name)?,
             Some(w) => crate::libxc::xc_def_from_name_nspin_omega(xc_name, 1, w)?,
@@ -497,7 +525,7 @@ impl KsXc {
         // batch — see `check_grid_budget`'s doc comment for why re-resolving
         // (a live, SCF-allocation-shrinking reading in the auto-detect case)
         // between these two steps would be unsound.
-        let budget = ferric_core::memory::resolve_budget_bytes(None);
+        let budget = ferric_core::memory::resolve_budget_bytes(memory_budget_bytes);
         // The plane count depends on the functional rung, so `is_mgga` has to
         // be known *before* the Full-vs-Batched decision and the batch sizing
         // — not just before the Fock builds that consume it.
@@ -533,7 +561,16 @@ impl KsXc {
 
 impl XcContribution for KsXc {
     fn add_xc(&self, d: &Array2<f64>, f: &mut Array2<f64>) -> f64 {
-        let mut scratch = self.scratch.lock().expect("vxc scratch mutex poisoned");
+        // Recover from poisoning rather than panicking on it (all six scratch
+        // locks in this crate now do the same). The guard is held across real
+        // compute, and those regions contain live `.expect()`s; if one ever
+        // fires the mutex is poisoned, and every LATER lock would then panic on
+        // the poison itself — turning one bad iteration into a permanently
+        // wedged KsXc. `VxcScratch` is reusable buffer space, fully overwritten
+        // before use and carrying no invariant a panic could leave
+        // half-updated, so adopting the poisoned value is safe. This is the
+        // idiom the test locks at the bottom of this file already use.
+        let mut scratch = self.scratch.lock().unwrap_or_else(|e| e.into_inner());
         let e_xc = match &self.cache {
             GridCache::Full { chi, dchi } => {
                 let dens = eval_density_closed(d, chi, dchi);
@@ -572,7 +609,7 @@ impl XcContribution for KsXc {
         ) {
             let nlc_dens = eval_density_closed(d, c, dc);
             let mut nlc_scratch =
-                self.nlc_scratch.lock().expect("vv10 scratch mutex poisoned");
+                self.nlc_scratch.lock().unwrap_or_else(|e| e.into_inner());
             add_vv10_scratch(g, c, dc, &nlc_dens, params, f, &mut nlc_scratch)
         } else {
             0.0
@@ -642,6 +679,34 @@ impl KsXcUks {
         nlc: &AtomicGridConfig,
         omega: Option<f64>,
     ) -> Result<Self, KsXcError> {
+        Self::new_with_omega_budgeted(mol, bs, xc_name, main, nlc, omega, None)
+    }
+
+    /// [`Self::new_with_omega`] plus an explicit memory budget in bytes.
+    ///
+    /// # Why this exists
+    ///
+    /// The grid AO cache is the largest single allocation in a DFT job, and
+    /// the constructors resolved it with `resolve_budget_bytes(None)` — the
+    /// env / cgroup / RAM-auto-detected ceiling — which silently DISCARDS a
+    /// user's `[memory] budget_gb`. Setting `budget_gb = 4` on a 64 GB box
+    /// still sized the grid cache against ~51 GB. The guard message even
+    /// tells the user to raise `FERRIC_MEM_BUDGET_GB`, which works, while the
+    /// documented primary knob did not.
+    ///
+    /// `None` preserves the previous behaviour exactly (resolve from env /
+    /// auto-detect); `Some(bytes)` is an explicit ceiling that takes
+    /// precedence, per `ferric_core::memory::resolve_budget`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_omega_budgeted(
+        mol: &Molecule,
+        bs: &BasisSet,
+        xc_name: &str,
+        main: &AtomicGridConfig,
+        nlc: &AtomicGridConfig,
+        omega: Option<f64>,
+        memory_budget_bytes: Option<usize>,
+    ) -> Result<Self, KsXcError> {
         let xc = match omega {
             None => xc_def_from_name_nspin(xc_name, 2)?,
             Some(w) => crate::libxc::xc_def_from_name_nspin_omega(xc_name, 2, w)?,
@@ -651,7 +716,7 @@ impl KsXcUks {
         let nbf = nbasis(mol, bs)?;
         // See `KsXc::new` — resolve the budget ONCE and reuse it for both the
         // decision and the batch sizing.
-        let budget = ferric_core::memory::resolve_budget_bytes(None);
+        let budget = ferric_core::memory::resolve_budget_bytes(memory_budget_bytes);
         // See `KsXc::new_with_omega` — the rung feeds the plane count, so it
         // must be known before the budget decision, not after it.
         let is_mgga = xc.funcs.iter().any(|f| matches!(f.family(), FunctionalFamily::MetaGga));
@@ -694,7 +759,7 @@ impl UksXcContribution for KsXcUks {
     ) -> f64 {
         // Semilocal: build (ρ_α, ρ_β, σ_αα, σ_αβ, σ_ββ) on the main grid
         // then call the polarized libxc path.
-        let mut scratch = self.scratch.lock().expect("vxc scratch mutex poisoned");
+        let mut scratch = self.scratch.lock().unwrap_or_else(|e| e.into_inner());
         let e_xc = match &self.cache {
             GridCache::Full { chi, dchi } => {
                 let dens = eval_density_uks(d_a, d_b, chi, dchi);
@@ -733,7 +798,7 @@ impl UksXcContribution for KsXcUks {
             let dens_total: DensityGrid = eval_density_closed(&d_total, c, dc);
             // Apply VV10 to a single Fock buffer, then add to both spins.
             let mut nlc_scratch =
-                self.nlc_scratch.lock().expect("vv10 scratch mutex poisoned");
+                self.nlc_scratch.lock().unwrap_or_else(|e| e.into_inner());
             let mut v_nl = Array2::<f64>::zeros(f_a.dim());
             let e = add_vv10_scratch(g, c, dc, &dens_total, params, &mut v_nl, &mut nlc_scratch);
             *f_a += &v_nl;
