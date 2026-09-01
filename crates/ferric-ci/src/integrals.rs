@@ -64,6 +64,7 @@ pub fn build_active_space_integrals(
     rhf: &ScfResult,
     active_start: usize,
     n_active: usize,
+    memory_budget_bytes: Option<usize>,
 ) -> Result<ActiveSpaceIntegrals, FerricError> {
     let nbas = prep.nbasis();
     let c = rhf.mos_r();
@@ -99,10 +100,18 @@ pub fn build_active_space_integrals(
 
     let n4 = nbas * nbas * nbas * nbas;
     // Guard the dense AO-ERI allocation against the memory budget.
+    //
+    // `memory_budget_bytes` used to be a hardcoded `None` here, which resolves
+    // the env / cgroup / RAM-auto-detected ceiling and so silently discarded
+    // `CasCiConfig::memory_budget_bytes` — the very field whose doc describes
+    // it as bounding the CAS-CI peak. The nbas^4 AO-ERI block is allocated
+    // before the Davidson bases that field was written for, so a caller who
+    // set a budget got it honoured on the later, smaller allocation and
+    // ignored on the earlier, larger one.
     ferric_core::memory::check_alloc(
         &format!("CAS-CI dense AO ERIs (nbas={nbas}; nbas^4 = {n4} f64)"),
         n4.saturating_mul(8),
-        ferric_core::memory::resolve_budget_bytes(None),
+        ferric_core::memory::resolve_budget_bytes(memory_budget_bytes),
     )?;
     let mut ao_eri = vec![0.0f64; n4];
     let idx4 = |mu: usize, nu: usize, la: usize, sg: usize| -> usize {

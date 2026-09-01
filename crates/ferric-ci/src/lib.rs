@@ -185,7 +185,9 @@ pub fn run_cas_ci(
     }
 
     // ---- Active-space integrals ---------------------------------------
-    let ints = integrals::build_active_space_integrals(mol, prep, rhf, active_start, n_active)?;
+    let ints = integrals::build_active_space_integrals(
+        mol, prep, rhf, active_start, n_active, config.memory_budget_bytes,
+    )?;
 
     // ---- Determinant space --------------------------------------------
     let alpha_strings = strings::enumerate_strings(n_active, n_alpha);
@@ -341,8 +343,13 @@ mod tests {
             Err(e) => e.to_string(),
         };
         assert!(msg.contains("CAS-CI"), "message must name the method: {msg}");
-        assert!(msg.contains("N_det="), "message must name N_det: {msg}");
         assert!(msg.contains("budget is"), "message must name the budget: {msg}");
+        // NOT asserted here: that the message names `N_det`. At H2/STO-3G the
+        // dense-AO-ERI gate is reached first, so a 1-byte budget can only ever
+        // refuse there -- the Davidson N_det gate is downstream of it and never
+        // runs. Pinning N_det at this scale would assert on a path this system
+        // cannot take. The N_det term is covered where it actually bites, in
+        // tests/mwe_casci_has_no_guard.rs.
     }
 
     /// The complement: an ample budget must still RUN. A gate that only ever
@@ -554,7 +561,7 @@ mod tests {
             ..Default::default()
         };
         let ints =
-            integrals::build_active_space_integrals(&mol, &prep, &rhf, 1, 6).unwrap();
+            integrals::build_active_space_integrals(&mol, &prep, &rhf, 1, 6, None).unwrap();
         let space = hamiltonian::DeterminantSpace {
             alpha_strings: strings::enumerate_strings(6, 4),
             beta_strings: strings::enumerate_strings(6, 4),
