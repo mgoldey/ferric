@@ -492,8 +492,14 @@ pub fn main() {
         // Run the single-atom SCF on a 1-thread pool — see run_serial.
         let adens = run_serial(|| {
             if proatom_gs_mult(z) == 1 {
+                // `.filter(|r| r.converged)`: solve_rhf returns Ok even when it
+                // hits max_iter (see rhf.rs), so a bare `.ok()` accepts a
+                // NON-CONVERGED free-atom density exactly like a converged one
+                // and silently blends it into the Hirshfeld charges. Reject it
+                // here so this atom falls to the documented fallback instead.
                 solve_rhf(&ctx, &amol, &aobs, op, &abounds, &acfg)
                     .ok()
+                    .filter(|r| r.converged)
                     .map(|r| r.density_r().to_owned())
             } else {
                 acfg.mom_after_iter = 5;
@@ -506,8 +512,10 @@ pub fn main() {
                 if acfg.xc.is_some() {
                     acfg.fractional_occ = true;
                 }
+                // Same convergence gate as the closed-shell branch above.
                 solve_uhf(&ctx, &amol, &aobs, &abounds, &acfg)
                     .ok()
+                    .filter(|r| r.converged)
                     .map(|r| r.density_total().to_owned())
             }
         })?;
@@ -863,7 +871,13 @@ fn run_rs_mp2_rpa(
     // scan for ~1 SCF instead of N).
     let r0_sweep: Option<Vec<f64>> = cfg.mp2.r0_sweep.as_ref().map(|v| {
         let mut s: Vec<f64> = v.clone();
-        s.sort_by(|a, b| a.partial_cmp(b).expect("r0_sweep must not contain NaN"));
+        // NaN must NOT panic here. TOML accepts the `nan` literal, so this is
+        // reachable from user config — and the finiteness check below is
+        // written precisely to reject it with an actionable message. An
+        // `.expect()` here fired FIRST and turned that clean diagnostic into a
+        // raw backtrace, defeating the validation. Sort NaN-tolerantly and let
+        // the real check do its job.
+        s.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         s.dedup();
         s
     });
