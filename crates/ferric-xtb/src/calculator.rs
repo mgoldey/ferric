@@ -485,3 +485,111 @@ pub fn xtb_singlepoint(mol: &Molecule, config: XtbConfig) -> Result<XtbResult, F
 pub fn gfn2_energy(mol: &Molecule) -> Result<f64, FerricError> {
     XtbCalculator::new_gfn2(mol)?.energy()
 }
+
+/// Compile-time guard: `XtbCalculator` MUST remain `!Send` and `!Sync`.
+///
+/// The threading section above documents the reason: libxtb keeps
+/// process-global mutable state, so two calculators driven concurrently --
+/// even from private, non-aliased handles -- corrupt each other. The struct
+/// gets `!Send`/`!Sync` today only incidentally, by containing raw pointers
+/// (`XtbEnv`/`XtbMol`/`XtbCalc`/`XtbRes`, each a newtype over
+/// `*mut std::ffi::c_void`); nothing stops a future edit -- a derived
+/// `Clone`, a stray `unsafe impl Send`, a refactor that swaps a raw pointer
+/// field for an `Arc<Mutex<..>>` -- from making that incidental property
+/// silently disappear.
+///
+/// This probe fails to compile (not just fails a test) the moment
+/// `XtbCalculator: Send` or `XtbCalculator: Sync` becomes true. It uses the
+/// "autoref specialization" idiom: an inherent method is always preferred
+/// over a same-signature trait method reachable on the same receiver, so the
+/// `impl<T: Send> IsSend<T>` (resp. `IsSync`) inherent method below is
+/// selected -- and only compiles -- when `T: Send` (resp. `Sync`) actually
+/// holds; otherwise method resolution falls back to the always-available
+/// trait default, which reports `false`. No nightly features, no negative
+/// trait bounds required.
+#[cfg(test)]
+mod send_sync_guard {
+    use super::XtbCalculator;
+    use std::marker::PhantomData;
+
+    struct IsSend<T>(PhantomData<T>);
+    struct IsSync<T>(PhantomData<T>);
+
+    /// Fallback, available for every `T`: reports "not Send"/"not Sync".
+    trait AmbientSend {
+        fn probe(&self) -> bool {
+            false
+        }
+    }
+    trait AmbientSync {
+        fn probe(&self) -> bool {
+            false
+        }
+    }
+    impl<T> AmbientSend for IsSend<T> {}
+    impl<T> AmbientSync for IsSync<T> {}
+
+    /// Shadowing inherent impl, only present when `T: Send` / `T: Sync`.
+    /// Inherent methods always win over trait methods on the same receiver,
+    /// so this is selected -- reporting `true` -- whenever it applies.
+    impl<T: Send> IsSend<T> {
+        fn probe(&self) -> bool {
+            true
+        }
+    }
+    impl<T: Sync> IsSync<T> {
+        fn probe(&self) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn xtb_calculator_is_not_send() {
+        assert!(
+            !IsSend::<XtbCalculator>(PhantomData).probe(),
+            "XtbCalculator became Send -- libxtb's process-global state means \
+             this MUST NOT happen; see the threading doc on XtbCalculator"
+        );
+    }
+
+    #[test]
+    fn xtb_calculator_is_not_sync() {
+        assert!(
+            !IsSync::<XtbCalculator>(PhantomData).probe(),
+            "XtbCalculator became Sync -- libxtb's process-global state means \
+             this MUST NOT happen; see the threading doc on XtbCalculator"
+        );
+    }
+}
+
+#[cfg(test)]
+mod send_sync_guard_selfcheck {
+    // Keeps the guard above HONEST. The autoref-specialization idiom it uses
+    // has a known failure mode: inside an unconstrained generic function the
+    // inherent impl is never a resolution candidate, so `probe()` silently
+    // returns `false` for EVERY type — including `Send` ones — with no compile
+    // error. A probe stuck at `false` would make both `!Send`/`!Sync`
+    // assertions above pass vacuously while proving nothing.
+    //
+    // This test pins the other direction: `u64` is unambiguously `Send`, so it
+    // must report `true`. If this ever fails, the guard has degenerated and the
+    // assertions above are worthless, whatever they say.
+    use std::marker::PhantomData;
+    struct IsSend<T>(PhantomData<T>);
+    trait AmbientSend {
+        fn probe(&self) -> bool {
+            false
+        }
+    }
+    impl<T> AmbientSend for IsSend<T> {}
+    impl<T: Send> IsSend<T> {
+        fn probe(&self) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn probe_reports_true_for_a_send_type() {
+        assert!(IsSend::<u64>(PhantomData).probe(), "probe is broken: u64 IS Send");
+    }
+}
