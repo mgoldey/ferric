@@ -23,6 +23,7 @@
 
 use crate::linlccd::LadderVariant;
 use crate::{CcConfig, CcResult};
+use ferric_core::memory::plan::{Lifetime, MemoryPlan};
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -92,12 +93,85 @@ pub fn u_linlccd(
 
     let (no2, nv2) = interleaved_dims(no_a, no_b, nv_a, nv_b);
 
-    let peak = (no2 * no2 * nv2 * nv2).saturating_mul(2).saturating_mul(8);
-    ferric_core::memory::check_alloc(
-        &format!("U-LinLCCD {variant:?} (no_a={no_a}, no_b={no_b}, nv_a={nv_a}, nv_b={nv_b})"),
-        peak,
-        ferric_core::memory::resolve_budget_bytes(cfg.memory_budget_bytes),
-    )?;
+    // Fail-fast size guard, expressed as a [`MemoryPlan`].
+    //
+    // # Why this changed shape
+    //
+    // The old estimate was a bare `2·no2²·nv2²` and omitted two things.
+    //
+    // 1. `eri3_ao` (`naux·nbas²`) was never charged, although it is live across
+    //    every `transform_3center_ov` below — the explicit `drop(eri3_ao)`
+    //    further down exists because of exactly that. The sibling `ccsd.rs`
+    //    guard charges the same term, so this was a straight inconsistency.
+    // 2. The unrestricted path builds THREE spin blocks (`g_aa`, `g_ab`,
+    //    `g_bb`) co-resident before `u_asym_*` folds them into one interleaved
+    //    tensor, which the restricted sibling does not. Those spatial blocks
+    //    are individually ~1/16 of the interleaved output, but three of them
+    //    plus the output is a real transient peak the old figure never saw.
+    //
+    // The variant conditioning matches the allocation sites exactly: OOOO is
+    // built only for Hh/Full, VVVV only for Full. Charging a block that is
+    // never allocated would refuse jobs that fit.
+    let naux = dfbs.nbasis();
+    let oovv_elems = no2.saturating_pow(2).saturating_mul(nv2.saturating_pow(2));
+    let mut plan = MemoryPlan::resolve(
+        cfg.memory_budget_bytes,
+        format!("U-LinLCCD {variant:?} (no_a={no_a}, no_b={no_b}, nv_a={nv_a}, nv_b={nv_b})"),
+    );
+    plan.reserve(
+        "eri3_ao (P|mn)",
+        naux.saturating_mul(nbas).saturating_mul(nbas),
+        Lifetime::Transient,
+    );
+    plan.reserve(
+        "b_ov_a/b_ov_b dressed RI blocks",
+        naux.saturating_mul(
+            no_a.saturating_mul(nv_a).saturating_add(no_b.saturating_mul(nv_b)),
+        ),
+        Lifetime::Resident,
+    );
+    plan.reserve(
+        "v_oovv <ij||ab> + oovv_t clone",
+        oovv_elems.saturating_mul(2),
+        Lifetime::Resident,
+    );
+    // `d`, `t`, the per-iteration `t.clone()`, `r` and one `einsum!` output.
+    plan.reserve(
+        "d denominator + t/r/x amplitude working set (x5)",
+        oovv_elems.saturating_mul(5),
+        Lifetime::Resident,
+    );
+    // The three spatial (ia|jb) spin blocks held together while u_asym_oovv
+    // builds the interleaved result above.
+    plan.reserve(
+        "g_ovov aa/ab/bb spin blocks",
+        no_a.saturating_mul(nv_a)
+            .saturating_pow(2)
+            .saturating_add(no_a.saturating_mul(nv_a).saturating_mul(no_b).saturating_mul(nv_b))
+            .saturating_add(no_b.saturating_mul(nv_b).saturating_pow(2)),
+        Lifetime::Transient,
+    );
+    if matches!(variant, LadderVariant::Hh | LadderVariant::Full) {
+        plan.reserve("v_oooo <ij||kl>", no2.saturating_pow(4), Lifetime::Resident);
+        plan.reserve(
+            "g_oooo aa/ab/bb spin blocks",
+            no_a.saturating_pow(4)
+                .saturating_add(no_a.saturating_pow(2).saturating_mul(no_b.saturating_pow(2)))
+                .saturating_add(no_b.saturating_pow(4)),
+            Lifetime::Transient,
+        );
+    }
+    if matches!(variant, LadderVariant::Full) {
+        plan.reserve("v_vvvv <ab||cd>", nv2.saturating_pow(4), Lifetime::Resident);
+        plan.reserve(
+            "g_vvvv aa/ab/bb spin blocks",
+            nv_a.saturating_pow(4)
+                .saturating_add(nv_a.saturating_pow(2).saturating_mul(nv_b.saturating_pow(2)))
+                .saturating_add(nv_b.saturating_pow(4)),
+            Lifetime::Transient,
+        );
+    }
+    plan.check()?;
 
     let eps_a = &scf.eps_alpha;
     let eps_b = scf
@@ -161,6 +235,15 @@ pub fn u_linlccd(
     drop(eri3_ao);
 
     let oovv_t = Tensor::new(v_oovv.clone(), [Axis::O, Axis::O, Axis::V, Axis::V]);
+
+    // Stage-seam RSS safety net: the transient `eri3_ao` and the spatial spin
+    // blocks are freed and every resident tensor exists, so RSS here is
+    // directly comparable to the plan's projected peak. Observational only.
+    ferric_core::memory::warn_if_rss_over(
+        "U-LinLCCD MO blocks built",
+        plan.budget_bytes(),
+        1.1,
+    );
 
     // Interleaved spin-orbital energies. Padded slots (where one spin has fewer
     // orbitals) get a large gap so any residual amplitude there is driven to zero;
