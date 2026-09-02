@@ -669,7 +669,14 @@ not diagnosed.**
   mid-run, the box went to `/proc/pressure/memory full avg300=89` with swap
   fully consumed, and any timing taken under that contention is worthless. I
   killed my own job rather than compete for the memory. **Unmeasured, still open.**
-- **Batching is a candidate, not a finding.** `ks.rs` falls back to walking the
+- **Batching is RULED OUT (2026-09-02).** Measured on the neutral acid under
+  the 12 GB cap: RSS plateaus at **6.28 GB** and stays there. That matches the
+  predicted full AO cache (nbf=235, npts=585,750 -> 4.40 GB) plus SCF matrices,
+  and sits well under the ~9.6 GB budget (`0.8 x` the cap), so `check_grid_budget`
+  returned `Ok(true)` and `GridCache::Full` was used. **The grid was never
+  batched**, so the batching cliff cannot explain tier 4's cost. Superseded
+  reasoning below, kept for the record:
+- ~~**Batching is a candidate, not a finding.**~~ `ks.rs` falls back to walking the
   grid in point-batches (recomputing AO values per batch) when the cache exceeds
   the resolved budget. Under `ferric-limited`'s 12 GB cap the budget is
   ~9.6 GB and the 4.32 GB cache should fit -- consistent with the observed
