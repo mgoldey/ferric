@@ -74,6 +74,15 @@ class DftSize:
                62      134.3 s  130.2 s
 
         Within 10% across a 54x span of cost.
+
+        **Calibrated on alkanes; underestimates heteroatom-rich molecules.**
+        Measured 2026-09-02: danuglipron (71 atoms, nbf 235) predicted at
+        6.8 min from alkane_20, actual >8.7 min on a verified-quiet box --
+        the model is >28% optimistic there while holding within 10% inside
+        the alkane series. A plausible cause (NOT verified) is that N/O/F
+        have sharper core densities than carbon, so the radial grid does more
+        work per basis function. Treat predictions for drug-like molecules as
+        a LOWER BOUND, and do not use this to promise a wall time.
         """
         return (self.n_basis_functions ** 2) * self.grid_points
 

@@ -118,3 +118,18 @@ def test_xc_fock_work_is_quadratic_in_basis_not_linear():
     big = DftSize(n_atoms=10, n_basis_functions=100)
     assert big.xc_fock_work == 4 * small.xc_fock_work
     assert big.xc_work == 2 * small.xc_work        # the one-pass term is linear
+
+
+def test_model_is_documented_as_a_lower_bound_for_heteroatoms():
+    """The calibration is alkane-only; drug-like molecules run slower.
+
+    Measured: danuglipron predicted 6.8 min, actual >8.7 min (>28% optimistic)
+    while the same model holds within 10% across the alkane series. This test
+    pins the DOCUMENTATION of that limit, because the failure mode is someone
+    quoting a predicted wall time as a promise.
+    """
+    from tools.pipeline.cost import DftSize
+
+    doc = DftSize.xc_fock_work.__doc__ or ""
+    assert "LOWER BOUND" in doc
+    assert "underestimates" in doc.lower()
