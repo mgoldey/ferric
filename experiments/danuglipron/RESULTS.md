@@ -676,6 +676,52 @@ not diagnosed.**
   9.5 GB peak being a FULL cache plus SCF matrices, i.e. batching probably never
   engaged. Testing this needs an uncontended box.
 
+### The size hypothesis is REFUTED (2026-09-02, measured on a quiet box)
+
+Homologous alkane series, STO-3G/PBE, all converged, each under
+`scripts/ferric-limited`:
+
+| molecule | atoms | nelec | time |
+|---|---|---|---|
+| alkane_5 | 17 | 42 | 2.5 s |
+| alkane_10 | 32 | 82 | 20.1 s |
+| alkane_15 | 47 | 122 | 60.6 s |
+| **alkane_20** | **62** | **162** | **123.5 s** |
+
+Pairwise exponents **3.30 -> 2.87 -> 2.57** (global log-log fit **N^3.03**).
+The exponent DECLINES with size, consistent with the O(natoms^3) grid
+construction being amortized as the linear-scaling parts grow. Per the
+protocol's "fit the TAIL, not the whole series", the tail exponent 2.57 is the
+one to extrapolate with.
+
+**alkane_20 has 62 atoms -- within 12% of danuglipron's 70 -- and finishes in
+just over two minutes.** Extrapolating on the composition-aware axis (XC work
+= nbf x npts, ratio 1.86x) gives **3.8 min** if cost is linear in that work and
+**10.2 min** at the tail exponent.
+
+**Observed for danuglipron: >57 min, did not finish.** At least a **6x** gap
+that size does not explain.
+
+So the anomaly is real, and it is NOT:
+
+- **basis size** -- STO-3G is the smallest bundled set, and the alkane series
+  used the same one;
+- **atom count** -- a 62-atom molecule of the same class runs in 123.5 s;
+- **composition / heavy-atom content** -- accounted for by scaling on
+  nbf x npts (danuglipron is 1.86x alkane_20's XC work, nowhere near 6x).
+
+Composition deserves an explicit note because atom count HIDES it: alkane_20 is
+hydrogen-padded (20 C + 42 H = 142 STO-3G functions) while danuglipron is
+heavy-atom rich (41 heavy + 29 H = 234). A 1.13x atom ratio conceals a 1.86x
+work ratio. `tools/pipeline/cost.py::sto3g_basis_functions` exists so the
+comparison is made on the right axis -- I nearly used alkane_20 as a
+"size-matched control" that was matched on the wrong variable.
+
+**What remains, by elimination:** SCF convergence behaviour -- how many
+iterations, and how many rungs of the level-shift ladder -- rather than the
+cost of any one iteration. The neutral-vs-anion control at fixed size and basis
+is the experiment that tests it.
+
 ### Leads from reading the code (2026-09-02, NOT yet confirmed by timing)
 
 Two structural facts about ferric's KS grid, both read from source rather than
