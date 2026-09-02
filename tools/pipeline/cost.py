@@ -1,0 +1,68 @@
+"""Cost model for the DFT tier — what actually drives its size.
+
+This module exists because of a REASONING error, not a coding one. The
+campaign record twice claimed tier 4's blowup "is not a size effect" on the
+grounds that a 234-basis-function job outran a 330-function one. That
+comparison is void: in ferric, KS-DFT's grid is a flat 75x110 Becke-Lebedev
+grid **per atom** (`crates/ferric-dft/src/grid.rs`), so the exchange-correlation
+cost scales with ATOM COUNT and is independent of the basis set.
+
+The practical consequence is counter-intuitive enough to be worth encoding:
+**shrinking the basis can INCREASE resident memory**, because the AO cache is
+`4 * nbf * npts * 8` bytes and `npts` is fixed by the geometry. Going from a
+32-atom alkane at def2-SVP to a 70-atom drug at STO-3G cuts nbf by 0.71x but
+raises npts by 2.19x, for a net 1.55x -- a bigger cache from a smaller basis.
+
+Numbers here are structural (grid dimensions read from the Rust source), not
+timings, so they carry no machine dependence.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+# ferric-dft/src/grid.rs AtomicGridConfig default: the "fine" production grid.
+N_RADIAL = 75
+N_ANGULAR = 110
+GRID_POINTS_PER_ATOM = N_RADIAL * N_ANGULAR
+
+# ks.rs: chi + dchi = AoGridKind::ValueAndGrad.planes() == 4 planes of f64.
+AO_CACHE_PLANES = 4
+BYTES_PER_F64 = 8
+
+
+@dataclass(frozen=True)
+class DftSize:
+    """The two axes that set a KS-DFT job's cost, kept separate on purpose."""
+
+    n_atoms: int
+    n_basis_functions: int
+
+    @property
+    def grid_points(self) -> int:
+        """Total XC grid points. Depends ONLY on atom count."""
+        return self.n_atoms * GRID_POINTS_PER_ATOM
+
+    @property
+    def ao_cache_bytes(self) -> int:
+        """Resident chi + grad-chi cache: 4 * nbf * npts * 8."""
+        return (AO_CACHE_PLANES * self.n_basis_functions
+                * self.grid_points * BYTES_PER_F64)
+
+    @property
+    def ao_cache_gb(self) -> float:
+        return self.ao_cache_bytes / 1e9
+
+    @property
+    def xc_work(self) -> int:
+        """nbf x npts -- the size of the XC pass, the honest comparison axis."""
+        return self.n_basis_functions * self.grid_points
+
+
+def fits_in_budget(size: DftSize, budget_gb: float) -> bool:
+    """Whether the full AO cache fits, i.e. whether ferric avoids batching.
+
+    ks.rs falls back to walking the grid in point-batches (recomputing AO
+    values per batch) when the cache exceeds the resolved budget. That is a
+    performance cliff, so a caller that cares about wall time should check.
+    """
+    return size.ao_cache_gb <= budget_gb

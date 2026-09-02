@@ -26,11 +26,21 @@ DANUGLIPRON_HIERARCHY: tuple[TierSpec, ...] = (
                           "fixed geometry, i.e. it resolves formal charge"),
     # MEASURED 2026-08-30 and found unaffordable at this size: a single STO-3G
     # (~234 basis function) point on the 70-atom anion ran >57 min without
-    # finishing, at 9.5 GB peak RSS -- while the same code does def2-SVP
-    # (~450 bf) on a 32-atom alkane in 96 s. That is not a size effect and the
-    # cause is undiagnosed. The cost below is the MEASURED floor, not an
-    # estimate, and validated_by stays None because the tier has still never
-    # produced a usable number here. See RESULTS.md M10.
+    # finishing, at 9.5 GB peak RSS -- while the same code does def2-SVP on a
+    # 32-atom alkane in 96 s (re-measured 2026-09-02: 99.0 s).
+    #
+    # Do NOT restate this as "fewer basis functions took longer, so it is not a
+    # size effect" (the original wording, CORRECTED 2026-09-02). ferric's KS
+    # grid is 75x110 PER ATOM, so grid cost tracks ATOM COUNT and ignores the
+    # basis: danuglipron has 2.19x the alkane's grid points, and its STO-3G AO
+    # cache (4.32 GB) is LARGER than the alkane's def2-SVP cache (2.79 GB).
+    # The real anomaly is that nbf x npts grew 1.55x while runtime grew >35x.
+    # Cause still undiagnosed; the neutral-vs-anion control that would separate
+    # charge from size has not been run on an uncontended box.
+    #
+    # The cost below is the MEASURED floor, not an estimate, and validated_by
+    # stays None because the tier has still never produced a usable number
+    # here. See RESULTS.md M10.
     TierSpec(Tier.QUANTUM, "ferric DFT + dispersion", 3420.0, "1-10",
              "final energetics on the handful that survive",
              validated_by=None),

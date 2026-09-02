@@ -631,10 +631,58 @@ After the ionization fix, a single tier-4 point on the 70-atom anion:
 | runtime | **>57 min, did not finish** |
 | peak RSS | **9.5 GB** |
 
-For comparison, the same code does def2-SVP (~450 bf) on a 32-atom alkane in
-**96 s**. So the anion is not merely bigger — something in this path scales far
-worse than the N^3 the plan assumed, and 234 basis functions taking >57 min
-while 450 takes 96 s is not a size effect. **The cause is not yet diagnosed.**
+For comparison, the same code does def2-SVP on a 32-atom alkane in **96 s**
+(re-measured 2026-09-02: **99.0 s**, so that figure reproduces).
+
+**CORRECTION (2026-09-02).** The comparison as originally written -- "234 basis
+functions taking >57 min while 450 takes 96 s is not a size effect" -- was wrong
+in two ways, and the second one matters.
+
+1. The alkane's def2-SVP basis is ~330 functions, not 450. Minor.
+2. **Basis-function count is the wrong cost axis for the part that dominates.**
+   ferric's KS-DFT grid is a flat 75x110 Becke-Lebedev grid **per atom**
+   (`ferric-dft/src/grid.rs`), so the XC grid scales with ATOM COUNT and is
+   completely independent of the basis:
+
+   | | atoms | grid points | nbf | AO cache (4*nbf*npts*8) |
+   |---|---|---|---|---|
+   | alkane_10 / def2-SVP | 32 | 264,000 | ~330 | 2.79 GB |
+   | danuglipron / STO-3G | 70 | **577,500** | ~234 | **4.32 GB** |
+
+   Shrinking the basis to STO-3G cut nbf but RAISED the resident AO cache,
+   because 2.19x the grid points outweighs 0.71x the basis functions.
+
+So the honest statement of the anomaly is: the XC grid work grew **1.55x**
+(nbf x npts) while runtime grew **>35x**. The disproportion is real -- it just
+is not the basis-size paradox the original text claimed. **The cause is still
+not diagnosed.**
+
+### What was ruled out, and what was not (2026-09-02)
+
+- **Ruled out -- the 96 s anchor being bogus.** It had NO recorded run behind it
+  anywhere in the repo; every mention was a citation of the same number. Re-run
+  from scratch: **99.0 s**, converged. The anchor is sound; its provenance was
+  not, and now is.
+- **Not established -- the anion/diffuse-HOMO hypothesis.** The neutral-vs-anion
+  control at identical size and basis is the experiment that separates "charge"
+  from "size", and it did NOT complete: another user's `llama-server` job started
+  mid-run, the box went to `/proc/pressure/memory full avg300=89` with swap
+  fully consumed, and any timing taken under that contention is worthless. I
+  killed my own job rather than compete for the memory. **Unmeasured, still open.**
+- **Batching is a candidate, not a finding.** `ks.rs` falls back to walking the
+  grid in point-batches (recomputing AO values per batch) when the cache exceeds
+  the resolved budget. Under `ferric-limited`'s 12 GB cap the budget is
+  ~9.6 GB and the 4.32 GB cache should fit -- consistent with the observed
+  9.5 GB peak being a FULL cache plus SCF matrices, i.e. batching probably never
+  engaged. Testing this needs an uncontended box.
+
+**Method note:** two of my probe scripts failed on ferric's API (`charge` belongs
+to `Molecule.from_xyz`, not `run_dft`), and one of those failures printed a
+`291 electrons` error that looked like a physics bug in the geometry. It was
+not -- both geometry files check out (neutral 71 atoms/292 e-, anion 70
+atoms/291 nuclear charge, 292 e- at q=-1, electron count conserved exactly as
+the M10 fix intends). A broken probe imitating a physics failure is the same
+trap as M9's two silent bugs: read the error, don't trust the headline.
 
 **Verdict (dated, provisional): tier 4 as configured cannot process even ONE
 70-atom candidate in a usable time, so the four-tier stack is validated only
