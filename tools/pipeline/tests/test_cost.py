@@ -167,11 +167,13 @@ def test_ri_tensor_is_a_first_class_memory_term():
 
 
 def test_aux_basis_dwarfs_the_orbital_basis_at_sto3g():
-    """def2-universal-jkfit is sized for LARGE orbital bases.
+    """At STO-3G the aux basis is 15x the orbital basis.
 
-    At STO-3G it is 15x the orbital basis, so the fitting tensor costs more
-    than the accuracy it can deliver. Pinned because the fix (a right-sized
-    JK-fitting basis) is worth ~1.6 GB and is easy to forget.
+    Documented as an ACCOUNTING term, not a tuning knob: the docstring must
+    keep saying so. def2-universal-jkfit is already the smallest JK-fitting
+    set ferric bundles (75 aux fns/carbon vs 79 for cc-pVTZ-JKFIT, 106 for
+    cc-pVQZ-JKFIT), so "use a smaller aux basis" -- which I wrote first -- is
+    not something a caller can act on today.
     """
     from tools.pipeline.cost import ri_tensor_gb
 
@@ -179,3 +181,6 @@ def test_aux_basis_dwarfs_the_orbital_basis_at_sto3g():
     assert naux / nbf > 10
     # The tensor is larger than the entire SCF matrix working set.
     assert ri_tensor_gb(nbf, naux) > 100 * (nbf * nbf * 8 / 1e9)
+
+    doc = ri_tensor_gb.__doc__ or ""
+    assert "not a tuning knob" in doc or "SMALLEST" in doc

@@ -873,8 +873,15 @@ guessing naux ~700-950. Counted from the basis JSON it is **3,635 auxiliary
 functions** -- `def2-universal-jkfit` is built for large orbital bases and
 `run_dft` always enables it, so at STO-3G the aux basis is **15x** the orbital
 basis (3,635 vs 235). That single correction moved 1.2 GB from "unexplained"
-into "accounted for", and is the most actionable memory finding here: **a
-JK-fitting basis matched to STO-3G would cut ~1.6 GB.**
+into "accounted for".
+
+**But it is NOT the actionable win I first wrote it up as.** I claimed "a
+JK-fitting basis matched to STO-3G would cut ~1.6 GB", then checked: 
+`def2-universal-jkfit` is already the **smallest** JK-fitting set ferric
+bundles -- 75 aux functions per carbon, against 79 for cc-pVTZ-JKFIT and 106
+for cc-pVQZ-JKFIT. The 15x ratio comes from STO-3G being tiny, not from this
+aux basis being large, and acting on it would mean ADDING a small-basis JK set
+to the repo, not selecting a different one. Recorded as accounting, not advice.
 
 The remaining 3.63 GB is plausibly transient copies during the RI build (form
 the tensor, then contract it) plus Fock/DIIS/grid working set, but that is NOT
