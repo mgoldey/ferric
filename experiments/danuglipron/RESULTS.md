@@ -579,6 +579,18 @@ step, and for the first time it has geometries worth spending it on.
 
 ## M10. The isomer pipeline runs end to end; tier 4 does not fit (2026-08-30)
 
+> **STATUS as of 2026-09-02: the title of this section is WRONG and kept for
+> the record.** Tier 4 DOES fit -- **612.4 s (10.2 min), 18 iterations,
+> converged** for the 71-atom neutral acid at STO-3G/PBE. The ">57 min, did not
+> finish" recorded below was **memory contention**, not DFT cost: that run
+> auto-resolved a 7.26 GB budget from live MemAvailable while needing ~9.5 GB
+> and paged until the kernel OOM-killed it.
+>
+> This section is left in chronological order, with the wrong turns intact,
+> because the sequence of corrections is the useful part. Read
+> **"RESOLVED: tier 4 costs 10.2 min"** below for the current verdict, and
+> treat every ">57 min" above it as superseded.
+
 Built `tools/isomers` (enumeration) + `tools/pipeline` (the funnel) and ran the
 full four-tier stack on danuglipron. Plan:
 `experiments/danuglipron/plans/2026-08-30-isomer-pipeline.md`.
@@ -776,6 +788,10 @@ finishing without swap traffic. Every attempt so far has been interrupted by
 competing jobs (three separate occasions on 2026-09-02). Until then M10's
 ">57 min" stands as recorded, with this caveat attached.
 
+> **CONFIRMED later the same day.** The fourth attempt got a clean box:
+> **612.4 s, 18 iterations, converged.** The hypothesis above was right. See
+> "RESOLVED: tier 4 costs 10.2 min" above.
+
 ### Iteration count is CONSTANT; the N^3 lives INSIDE each iteration (2026-09-02)
 
 Built the `iterations` / `exit_reason` getters on `PyDftResult` and re-ran the
@@ -822,8 +838,15 @@ just over two minutes.** Extrapolating on the composition-aware axis (XC work
 = nbf x npts, ratio 1.86x) gives **3.8 min** if cost is linear in that work and
 **10.2 min** at the tail exponent.
 
-**Observed for danuglipron: >57 min, did not finish.** At least a **6x** gap
-that size does not explain.
+**Observed for danuglipron at the time: >57 min, did not finish.** At least a
+**6x** gap that size does not explain.
+
+> **SUPERSEDED.** That ">57 min" was memory contention, not compute; the real
+> figure is **612.4 s (10.2 min)**. So the 6x gap was an artefact and there is
+> no size anomaly to explain. Note the tail-exponent extrapolation just above
+> predicted **10.2 min** -- it was correct, and only the number it was being
+> compared against was wrong. The reasoning in this section about atom count vs
+> composition still stands; the verdict it reaches does not.
 
 So the anomaly is real, and it is NOT:
 
