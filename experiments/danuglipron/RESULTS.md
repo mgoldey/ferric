@@ -683,6 +683,56 @@ not diagnosed.**
   9.5 GB peak being a FULL cache plus SCF matrices, i.e. batching probably never
   engaged. Testing this needs an uncontended box.
 
+### RESOLVED: tier 4 costs 10.2 min, not >57. M10's number was contention.
+
+**Measured 2026-09-02 on a box verified quiet throughout** (`pressure avg10=0.00`
+and zero swap traffic for the whole run, budget pinned at 11 GB, cap 14 GB):
+
+| | |
+|---|---|
+| molecule | danuglipron neutral acid, 71 atoms, 292 e- |
+| basis / functional | STO-3G / PBE |
+| **wall** | **612.4 s = 10.2 min** |
+| **iterations** | **18** |
+| exit | **Converged** |
+
+**M10 recorded ">57 min, did not finish" for this system. The real cost is
+10.2 minutes.** That run auto-resolved a **7.26 GB** budget from live
+MemAvailable while needing ~9.5-9.9 GB, and spent its time paging until the
+kernel OOM-killed it (`anon-rss 9,945,236 kB`, `global_oom`). **It measured
+memory contention, not DFT.** Three further attempts today died the same way
+before one finally got a clean box.
+
+**Tier 4 is therefore AFFORDABLE for the handful of candidates the funnel
+delivers** -- ~10 min each at STO-3G, so the 5 survivors of a run are under an
+hour. The fix was the budget pin plus headroom, not a cheaper method.
+
+### Why 10.2 min and not the predicted 6.8
+
+The cost model (work-scaled from alkane_20) predicted 6.8 min. The gap is
+**iteration count, not per-iteration cost**:
+
+| | alkanes (17-62 atoms) | danuglipron |
+|---|---|---|
+| iterations | **10** (all three) | **18** |
+
+Correcting the work-scaled 408 s by the real ratio 18/10 gives 734 s against a
+measured 612.4 s -- **within 20%, erring conservative**. Work-scaling alone is
+off by 50%.
+
+**RETRACTED:** I attributed that gap to N/O/F having sharper core densities
+than carbon, making the radial grid costlier per basis function. That was a
+guess made before the run finished, and it is wrong -- the extra time is
+mostly extra ITERATIONS. The per-iteration model was fine.
+
+So a wall-time estimate needs BOTH factors:
+
+    wall ~ xc_fock_work x (s per iteration) x (iterations)
+
+and the iteration count is NOT transferable across chemistries. Encoded in
+`tools/pipeline/cost.py`, which now documents `predicted_seconds` as a lower
+bound whenever the target may converge more slowly than the reference.
+
 ### The cost term is IDENTIFIED, and ">57 min" is probably not a cost result
 
 `vxc.rs` assembles V_xc with `buf.dot(&chi.t())` -- an `(nbf, npts) x (npts, nbf)`

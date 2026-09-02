@@ -120,16 +120,34 @@ def test_xc_fock_work_is_quadratic_in_basis_not_linear():
     assert big.xc_work == 2 * small.xc_work        # the one-pass term is linear
 
 
-def test_model_is_documented_as_a_lower_bound_for_heteroatoms():
-    """The calibration is alkane-only; drug-like molecules run slower.
+def test_model_is_documented_as_per_iteration_not_total():
+    """`predicted_seconds` assumes a comparable ITERATION COUNT, and that
+    assumption fails across chemistries.
 
-    Measured: danuglipron predicted 6.8 min, actual >8.7 min (>28% optimistic)
-    while the same model holds within 10% across the alkane series. This test
-    pins the DOCUMENTATION of that limit, because the failure mode is someone
-    quoting a predicted wall time as a promise.
+    Measured 2026-09-02: every alkane converged in exactly 10 iterations,
+    danuglipron in 18. Scaling by work alone predicts 6.8 min against an
+    actual 10.2 min. This pins the DOCUMENTATION of that limit, because the
+    failure mode is quoting a predicted wall time as a promise.
     """
     from tools.pipeline.cost import DftSize
 
     doc = DftSize.xc_fock_work.__doc__ or ""
     assert "LOWER BOUND" in doc
-    assert "underestimates" in doc.lower()
+    assert "PER ITERATION" in doc
+
+
+def test_correcting_for_iteration_count_recovers_the_measurement():
+    """Work-scaling plus the real iteration ratio predicts danuglipron.
+
+    408 s (work-scaled from alkane_20, implicitly 10 iterations) x 18/10
+    = 734 s against a measured 612.4 s -- within 20%, erring conservative.
+    Scaling by work ALONE is off by 50%, which is the point of the test.
+    """
+    a20 = DftSize(n_atoms=62, n_basis_functions=142)
+    danu = DftSize(n_atoms=71, n_basis_functions=235)
+
+    work_only = danu.predicted_seconds(a20, 130.2)
+    assert abs(work_only - 612.4) / 612.4 > 0.3          # work alone: way off
+
+    with_iters = work_only * (18 / 10)
+    assert abs(with_iters - 612.4) / 612.4 < 0.25        # with iterations: close

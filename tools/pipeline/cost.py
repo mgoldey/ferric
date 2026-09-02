@@ -75,14 +75,23 @@ class DftSize:
 
         Within 10% across a 54x span of cost.
 
-        **Calibrated on alkanes; underestimates heteroatom-rich molecules.**
-        Measured 2026-09-02: danuglipron (71 atoms, nbf 235) predicted at
-        6.8 min from alkane_20, actual >8.7 min on a verified-quiet box --
-        the model is >28% optimistic there while holding within 10% inside
-        the alkane series. A plausible cause (NOT verified) is that N/O/F
-        have sharper core densities than carbon, so the radial grid does more
-        work per basis function. Treat predictions for drug-like molecules as
-        a LOWER BOUND, and do not use this to promise a wall time.
+        **This term is PER ITERATION; the iteration count is a separate
+        factor and it is NOT constant across chemistries.** Every alkane
+        converged in exactly 10 iterations, but danuglipron took **18**
+        (measured 2026-09-02, 612.4 s, converged, on a verified-quiet box).
+        So predicting a wall time needs BOTH factors:
+
+            wall ~ xc_fock_work x (seconds per iteration) x (iterations)
+
+        Scaling alkane_20's 130.2 s by work alone predicts 6.8 min and the
+        actual is 10.2 min (1.50x). Multiply through by the real iteration
+        ratio (18/10) instead and the per-iteration model lands within 20%,
+        slightly conservative.
+
+        `predicted_seconds` assumes a COMPARABLE iteration count and is
+        therefore a LOWER BOUND for a molecule that converges more slowly than
+        the reference. Do not quote it as a promised wall time; use
+        `PyDftResult.iterations` from a real run to calibrate a new chemistry.
         """
         return (self.n_basis_functions ** 2) * self.grid_points
 
