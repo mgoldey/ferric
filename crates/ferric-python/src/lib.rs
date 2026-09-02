@@ -3494,6 +3494,24 @@ impl PyDftResult {
         PyArray2::from_array(py, &self.density_data)
     }
 
+    /// Number of SCF iterations actually performed.
+    ///
+    /// Exposed because wall time alone cannot distinguish "each iteration is
+    /// expensive" from "the SCF took many iterations to converge" — a
+    /// distinction with opposite fixes (cheaper grid/basis vs. a better guess,
+    /// level shift, or damping). Note `run_dft` walks a convergence *ladder*,
+    /// so this is the iteration count of the rung that finally succeeded, not
+    /// the total across all rungs — see `ferric_scf::ladder`.
+    #[getter]
+    fn iterations(&self) -> usize { self.scf_data.iterations }
+
+    /// SCF exit reason: one of `"Converged"`, `"Plateau"`, `"Stalled"`,
+    /// `"Diverged"`, `"MaxIter"` (the `ScfExit` variant name). Strictly more
+    /// informative than the `converged` bool, which collapses every failure
+    /// mode into `false` — a `Plateau` and a `Diverged` need different fixes.
+    #[getter]
+    fn exit_reason(&self) -> String { format!("{:?}", self.scf_data.exit) }
+
     /// Return the cached analytic nuclear gradient as an (natoms, 3) array.
     /// Returns `None` if the result was produced without `with_gradient=True`.
     fn gradient<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {

@@ -683,6 +683,29 @@ not diagnosed.**
   9.5 GB peak being a FULL cache plus SCF matrices, i.e. batching probably never
   engaged. Testing this needs an uncontended box.
 
+### Iteration count is CONSTANT; the N^3 lives INSIDE each iteration (2026-09-02)
+
+Built the `iterations` / `exit_reason` getters on `PyDftResult` and re-ran the
+alkane series with the memory budget PINNED (`FERRIC_MEM_BUDGET_GB=9`) so the
+AO-cache path could not drift with box load:
+
+| atoms | wall | iterations | exit | s/iter |
+|---|---|---|---|---|
+| 17 | 2.5 s | **10** | Converged | 0.25 |
+| 32 | 19.6 s | **10** | Converged | 1.96 |
+| 62 | 130.2 s | **10** | Converged | 13.02 |
+
+**The iteration count is identical -- 10 -- across a 3.6x size range.** So none
+of the alkane scaling comes from convergence behaviour; ALL of it is
+per-iteration cost, scaling at N^3.26 then N^2.86.
+
+**This refutes my own leading hypothesis.** I had attributed the ~N^3 term to
+one-time grid construction (`becke_weights_all`, O(natoms^2) per point x O(natoms)
+points). But a ONE-TIME cost cannot produce N^3 scaling *per iteration*. The
+cubic term is inside the SCF loop, not in setup. The grid-setup reasoning
+recorded above stands as an accurate description of that function's complexity
+and a WRONG explanation of where the time goes.
+
 ### The size hypothesis is REFUTED (2026-09-02, measured on a quiet box)
 
 Homologous alkane series, STO-3G/PBE, all converged, each under
@@ -736,6 +759,29 @@ The run did not finish, so there is no timing to quote -- but the memory
 trajectory alone rules charge out as the driver, since the neutral species
 behaves the same way. **Do not re-run the anion first**: the neutral is the
 cheaper falsification and it already fired.
+
+**A second, separate anomaly: the memory does not add up (2026-09-02).** The
+neutral acid was OOM-killed at **9.48 GB** (`anon-rss 9,945,236 kB`, kernel
+`global_oom` — the SYSTEM ran out while other workloads competed, not the
+cgroup; the cap did its job and my process died in its own scope rather than
+taking the box down). Breaking that down:
+
+| term | size |
+|---|---|
+| full AO cache (nbf=235, npts=585,750) | 4.40 GB |
+| **everything else** | **5.08 GB** |
+
+At 235 basis functions a Fock matrix is **0.44 MB**, so 5.08 GB is the
+equivalent of ~11,500 of them. It is not DIIS history (~20 matrices, ~9 MB) and
+it is not the RI three-index tensors (`def2-universal-jkfit`, naux ~700-950 ->
+**0.31-0.42 GB**). **Where the other 5 GB goes is unidentified.** Recorded as an
+open question rather than guessed at; it may or may not be related to the
+runtime anomaly.
+
+Note also that the budget auto-resolved to **7.26 GB**, not the ~9.6 GB expected
+from `0.8 x` the 12 GB cap, because auto-detect reads *live* MemAvailable and
+other jobs had depressed it. ferric warned that usage exceeded it. This is
+precisely the nondeterminism `tier4_dft`'s `mem_budget_gb` pin exists to remove.
 
 **What remains, by elimination:** SCF convergence behaviour -- iteration count
 and level-shift ladder rungs -- rather than the cost of any one iteration.
