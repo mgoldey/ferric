@@ -12,8 +12,10 @@ on:
     branches: [main]
     paths:
       - 'site/**'
-      - 'crates/**/src/**'
       - '.github/workflows/docs.yml'
+      # `crates/**/src/**` was here to rebuild the API docs when source
+      # changed. With rustdoc out of this job, a Rust change cannot alter the
+      # published output, so triggering on it would only burn runner minutes.
   workflow_dispatch:
 
 # Least privilege: read the tree, write Pages, and mint the OIDC token the
@@ -38,18 +40,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo registry and doc target
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target/doc
-          key: docs-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: docs-${{ runner.os }}-
+      # No Rust toolchain and no cargo cache: this job builds the book only.
+      # Both were here for a rustdoc step that had to be removed (see the
+      # comment above "Assemble the site"), and an unused toolchain install is
+      # just a slower job that looks like it does more than it does.
 
       - name: Install mdBook
         run: |
@@ -64,46 +58,28 @@ jobs:
       - name: Build the book
         run: mdbook build site
 
-      - name: Build rustdoc
-        # --no-deps keeps this to ferric's own crates; documenting the full
-        # dependency graph triples the build for no reader benefit.
-        #
-        # NOT `-D warnings`. Turning broken intra-doc links into errors is the
-        # right long-term policy, but there are currently 33 pre-existing ones
-        # (private-item links, renamed functions, moved modules) and gating
-        # publication of the whole site on unrelated doc debt would mean no site
-        # at all. Warnings are still printed, so the count is visible in the log
-        # and can be driven down; flip this to `-D warnings` once it reaches 0.
-        env:
-          RUSTDOCFLAGS: '-W warnings'
-        # `--exclude ferric-python` is REQUIRED, not tidiness: that crate's lib
-        # is deliberately named `ferric` (so Python's `import ferric` works),
-        # which collides with the `ferric` facade crate's lib. rustdoc emits
-        # both to target/doc/ferric/ and hard-errors:
-        #   "Only one may be documented at once since they output to the same path"
-        # Excluding the pyo3 crate is the right side to drop — it is a `cdylib`
-        # whose rustdoc output is of no use to a Rust reader, and its API is
-        # documented for Python callers in site/src/using/python.md instead.
-        #
-        # This does NOT reproduce on a warm local target/ where one crate
-        # already won the path, which is how it reached main: run 33582452053
-        # failed in 12s on a clean runner.
-        run: cargo doc --workspace --no-deps --exclude ferric-python
+      # rustdoc is NOT built here, and the reason is worth recording because the
+      # opposite was assumed when this workflow was written.
+      #
+      # `cargo doc` does not LINK, but it does run build scripts — and
+      # ferric-integrals' build.rs compiles shim/shim.cc, which needs
+      # libint2.hpp. On a runner without libint2 that fails outright
+      # (run 33583179631: "libint2.hpp: No such file or directory"). So
+      # documenting this workspace requires the same ~30-minute native build
+      # ci.yml caches, which is far too much to pay on every docs edit.
+      #
+      # The book is the valuable half and needs no Rust at all, so it publishes
+      # on its own. To add the API docs later, the options are (a) reuse
+      # ci.yml's libint2 cache here, or (b) have ci.yml upload target/doc as an
+      # artifact that this job downloads. Until then site/src/reference/api.md
+      # tells readers to run `cargo doc` locally, and the /api link is left
+      # out of the deployed tree rather than published broken.
 
       - name: Assemble the site
         run: |
-          # rustdoc lands under book/api/, which is where site/src/reference/api.md
-          # points. If that path changes, fix the link in the same commit.
-          cp -r target/doc site/book/api
-          # rustdoc's index is a redirect stub only when there is one root crate;
-          # in a workspace there is none, so point /api at the facade crate.
-          cat > site/book/api/index.html <<'HTML'
-          <!doctype html>
-          <meta charset="utf-8">
-          <title>ferric API documentation</title>
-          <meta http-equiv="refresh" content="0; url=ferric/index.html">
-          <a href="ferric/index.html">ferric API documentation</a>
-          HTML
+          # Deployed as-is. If a rustdoc step is added back, it must write into
+          # site/book/api/ — that is the path site/src/reference/api.md links to.
+          test -f site/book/index.html
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3

@@ -5,11 +5,14 @@ book.
 
 <div class="warning">
 
-**[Browse the API documentation →](../api/ferric/index.html)**
+**The API docs are not published yet — generate them locally with
+`cargo doc --workspace --no-deps --open`.**
 
-That link resolves on the published site, where the Pages workflow generates
-rustdoc into `book/api/`. It will 404 under a bare local `mdbook serve` — see
-below for generating it locally.
+Publishing them from CI turns out to require the full libint2 build:
+`cargo doc` does not link, but it *does* run build scripts, and
+`ferric-integrals`' build script compiles a C++ shim that needs `libint2.hpp`.
+That is a ~30-minute native build, which is too much to pay on every
+documentation edit, so the book publishes on its own for now.
 
 </div>
 
@@ -21,6 +24,13 @@ cargo doc --workspace --no-deps --open
 
 Drop `--no-deps` to include dependency documentation as well (much slower, and
 much larger).
+
+If that fails with *"Only one may be documented at once since they output to
+the same path"*, add `--exclude ferric-python`. The pyo3 crate's lib is
+deliberately named `ferric` — that is what makes Python's `import ferric` work
+— which collides with the `ferric` facade crate. Excluding it costs nothing:
+it is a `cdylib`, and its surface is documented in
+[Python bindings](../using/python.md).
 
 ## Entry points
 
