@@ -1,0 +1,53 @@
+/* Minimal additions to mdBook's default themes. Deliberately small: the point
+   is readable technical prose, not a redesign. Everything here inherits the
+   active theme's variables so it works in light and dark alike. */
+
+/* Tables carry a lot of the load in these pages (capability matrices, method
+   comparisons). The default has no vertical rhythm at width. */
+table {
+    margin: 1.25rem 0;
+}
+
+table thead th {
+    border-bottom: 2px solid var(--table-border-color);
+    font-weight: 600;
+}
+
+table td,
+table th {
+    padding: 0.4rem 0.75rem;
+}
+
+/* Wide tables must scroll inside their own box rather than pushing the page
+   into a horizontal scroll. */
+.table-wrapper {
+    overflow-x: auto;
+}
+
+/* The architecture diagram is ASCII art: it must not wrap or re-flow, and it
+   needs to stay legible on a narrow viewport. */
+pre code.language-text {
+    line-height: 1.2;
+}
+
+/* Blockquotes are used for the "implemented != validated" caveats, which are
+   the most important text on several pages. Give them weight without shouting. */
+blockquote {
+    border-left: 4px solid var(--quote-border);
+    padding: 0.5rem 1rem;
+    margin: 1.25rem 0;
+}
+
+/* mdBook ships a .warning class in some themes but does not style it in all;
+   define it so the API page's callout renders consistently. */
+.warning {
+    border-left: 4px solid #d9822b;
+    padding: 0.75rem 1rem;
+    margin: 1.25rem 0;
+    background: var(--quote-bg);
+}
+
+/* MathJax blocks sit tight against surrounding prose by default. */
+mjx-container[display="true"] {
+    margin: 1rem 0 !important;
+}

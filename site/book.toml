@@ -1,0 +1,34 @@
+[book]
+title = "ferric"
+description = "Rust-native quantum chemistry engine organized around electronic response"
+authors = ["Matthew Goldey"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+# A dead cross-reference in a science doc is worse than a build failure: it
+# usually means a method page was renamed and the physics no longer lines up.
+create-missing = false
+
+[output.html]
+default-theme = "rust"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/mgoldey/ferric"
+edit-url-template = "https://github.com/mgoldey/ferric/edit/main/site/{path}"
+# rustdoc is generated into book/api by the Pages workflow, so this link
+# resolves on the published site (it will 404 in a bare `mdbook serve`).
+additional-css = ["theme/custom.css"]
+# Built-in MathJax rather than the KaTeX preprocessor: the response-function
+# algebra needs \( \) / \[ \] rendering, and MathJax ships with mdBook so the
+# Pages build needs no extra cargo-install step that could break CI.
+mathjax-support = true
+
+[output.html.fold]
+enable = true
+level = 1
+
+[output.html.search]
+enable = true
+limit-results = 20
+use-boolean-and = true
