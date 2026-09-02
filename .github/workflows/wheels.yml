@@ -1,0 +1,468 @@
+name: Wheels
+
+# Builds self-contained manylinux x86_64 Python wheels so `pip install ferric`
+# works WITHOUT the user building libint2 (a ~30 min C++ build) or installing
+# OpenBLAS/LAPACK/Eigen/libxc themselves. See ci.yml for the from-source
+# libint2 build this workflow reuses the same mpqc4 tarball + version for; this
+# file does NOT reuse ci.yml's *cache entries*, because the manylinux_2_28
+# container (AlmaLinux 8 glibc/libstdc++, used for auditwheel-repair
+# compliance) is a different ABI than the ubuntu-22.04 runner ci.yml builds
+# on -- a `.so`/`.a` built on one is not guaranteed loadable/linkable on the
+# other, so this workflow builds its own native deps inside the container.
+#
+# Linux x86_64 ONLY. No macOS, no Windows -- ferric's build.rs hardcodes
+# `/usr/include/eigen3` and links `libint2`/`libecpint` as Unix static
+# archives (`cargo:rustc-link-lib=static=...`) with a C++ shim compiled by
+# `cc`; none of that is portable to a MSVC or Apple-clang toolchain without
+# work nobody has scoped, let alone tested. Scope this to what is proven.
+#
+# THIS WORKFLOW IS UNTESTED. It has never been run end-to-end (see the PR
+# description) -- it was written by reading ci.yml and the crate build
+# scripts, not by a green CI run. Treat the first real run as a debugging
+# session, not a confirmation.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch: {}
+
+env:
+  CARGO_TERM_COLOR: always
+  # Same reasoning as ci.yml: rayon owns ferric's parallelism, OpenBLAS must
+  # not also spawn a thread pool underneath it.
+  OPENBLAS_NUM_THREADS: "1"
+  # Same reasoning as ci.yml's OPENBLAS_CORETYPE=Haswell (see the long
+  # comment there): OpenBLAS's DYNAMIC_ARCH runtime dispatch produced GARBAGE
+  # numerics on a Zen 4 GitHub runner (run 33213558759, 2026-08-28) that never
+  # reproduced locally. A wheel is worse exposure than ci.yml's own binary:
+  # ci.yml runs on GitHub-chosen hardware we can inspect after the fact, but
+  # a wheel built here runs on WHATEVER CPU the eventual `pip install` user
+  # has, unknown to us and never inspectable. Forcing the mature Haswell/AVX2
+  # kernel set at import time (ferric's pymodule init reads this env var --
+  # see crates/ferric-python/src/lib.rs) trades peak throughput on newer
+  # chips for not shipping a numerics bug to a stranger's machine. If this
+  # ever needs lifting, it should be re-derived from a NEWER measurement, not
+  # assumed fixed by "later OpenBLAS", since the failure never reproduced
+  # locally and so was never root-caused to a specific dispatch table.
+  OPENBLAS_CORETYPE: Haswell
+  LIBINT_VERSION: "2.7.2"
+  # Deliberately pinned well past 0.3.20 (the version ci.yml documents as
+  # producing garbage on Zen 4/Sapphire Rapids) rather than "latest" at build
+  # time. Building from source (below) rather than trusting whatever the
+  # manylinux image or a distro repo happens to carry is the whole point:
+  # nobody has re-run the ci.yml incident's reproduction against this
+  # version, so this is a documented BEST GUESS, not a cleared hazard -- see
+  # the "OpenBLAS build" step and the PR description.
+  OPENBLAS_VERSION: "0.3.27"
+  LIBXC_VERSION: "6.2.2"
+  EIGEN_VERSION: "3.4.0"
+  # Bump this to invalidate every native-deps cache entry below at once (e.g.
+  # after changing a pinned version or a CMake flag) without having to hunt
+  # down every individual cache key.
+  NATIVE_DEPS_CACHE_VERSION: v1
+
+jobs:
+  build-wheels:
+    runs-on: ubuntu-22.04
+    # Four Python versions x a from-scratch OpenBLAS+libxc+libint2 build (the
+    # cache below only helps from the SECOND matrix leg onward, since all
+    # four legs start in parallel with nothing cached yet) -- generous
+    # headroom on the same reasoning as ci.yml's 170 min.
+    timeout-minutes: 180
+    strategy:
+      # false: a numerics or link failure on one CPython version is likely
+      # present on all of them (same native deps, same shim), so let every
+      # leg finish and report instead of burning runner time four times over
+      # discovering the same root cause serially.
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same rationale as ci.yml's "Free runner disk space" step: the
+      # manylinux_2_28 image maturin-action pulls is itself several GB, on
+      # top of which this job builds OpenBLAS + libxc + libint2 from source
+      # and then a maturin/auditwheel output tree. Not copying ci.yml's exact
+      # deletions here because this job never touches dotnet/Android/etc via
+      # the runner's OWN toolchain (everything native happens inside the
+      # container) -- but the container image pull alone is large enough that
+      # a full disk is still the likeliest first failure, hence this stays.
+      - name: Free runner disk space
+        run: |
+          echo "--- before"; df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/share/swift \
+            "$AGENT_TOOLSDIRECTORY/CodeQL" 2>/dev/null || true
+          sudo docker image prune --all --force > /dev/null 2>&1 || true
+          echo "--- after"; df -h / | tail -1
+
+      # Cache the BUILT native deps (OpenBLAS + libxc + libint2 + libecpint's
+      # own build is per-crate via CARGO's own cache, not here), keyed on
+      # their pinned versions plus the container tag, so a bump to any one
+      # version invalidates cleanly. This is restore-only for the same reason
+      # as ci.yml's libint2 cache: actions/cache saves in a post-step that
+      # runs only on success, so a red run must not be the thing that decides
+      # whether the next run pays the ~20+ min native build again. The
+      # matching save step below runs on success() specifically (not
+      # always()) for the same "don't poison the cache with a
+      # cancelled/truncated tree" reasoning ci.yml documents.
+      #
+      # Cached under the WORKSPACE, not /tmp: maturin-action's Docker build
+      # mounts only $GITHUB_WORKSPACE into the manylinux container (see its
+      # source -- the `docker run` call bind-mounts the workspace at the same
+      # path and mounts nothing else host-side, not even /tmp). A path under
+      # /tmp would build fine inside the container's OWN, unrelated /tmp, but
+      # actions/cache runs on the HOST runner and would then be saving and
+      # restoring an always-empty host directory -- a cache that "hits" but
+      # never actually skips the ~20+ min source build. native-deps-cache/ is
+      # .gitignore'd immediately below so it never gets committed.
+      - name: Restore native deps cache
+        id: cache-native
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/native-deps-cache
+          key: native-deps-${{ env.NATIVE_DEPS_CACHE_VERSION }}-manylinux_2_28-openblas${{ env.OPENBLAS_VERSION }}-libxc${{ env.LIBXC_VERSION }}-libint${{ env.LIBINT_VERSION }}-eigen${{ env.EIGEN_VERSION }}
+
+      - name: Keep native-deps-cache out of the wheel / git
+        run: echo "native-deps-cache/" >> .git/info/exclude
+
+      # Runs INSIDE the manylinux_2_28 (AlmaLinux 8) container, before
+      # `maturin build`. Everything ferric's build.rs links against (Eigen
+      # headers, libint2 + libecpint statically, OpenBLAS + libxc
+      # dynamically -- see crates/ferric-integrals/build.rs and
+      # crates/ferric-dft/build.rs) has to exist inside THIS container, not
+      # the ubuntu-22.04 host: the host's apt packages are the wrong glibc/ABI
+      # to link into a manylinux_2_28 wheel.
+      #
+      # OpenBLAS and libxc are linked `dylib` by ferric's build.rs (not
+      # `static`), so they end up as `.so`s that `maturin --manylinux`'s
+      # built-in auditwheel-equivalent (patchelf-based repair) vendors INTO
+      # the wheel -- that vendoring is what makes the wheel self-contained
+      # for those two libraries. libint2 and libecpint are already linked
+      # `static` in build.rs (PIC-enabled per ci.yml's convention), so they
+      # end up inside the `.so` directly and need no repair step at all.
+      #
+      # Building all three from source here (rather than dnf-installing
+      # whatever AlmaLinux/EPEL happens to carry) is deliberate: it is the
+      # only way to KNOW the OpenBLAS version being shipped, which matters
+      # given the Zen 4 garbage-numerics incident ci.yml documents -- an
+      # unpinned distro package could silently reintroduce exactly that.
+      #
+      # Written into the WORKSPACE (not /tmp) for the same mount reason as
+      # the cache step above: this file has to be visible from inside the
+      # container, and only $GITHUB_WORKSPACE is guaranteed to be.
+      - name: Write native-deps build script
+        # Quoted heredoc ('SCRIPT_EOF') so nothing here is expanded while
+        # WRITING the file -- every $VAR below is meant to be interpreted
+        # when the script later RUNS inside the container, not now on the
+        # host. Version numbers and PREFIX are passed as positional args
+        # ($1-$5) from the before-script-linux invocation instead of being
+        # baked in as literals or exported: this step's `run:` executes on
+        # the ubuntu-22.04 HOST, not inside the manylinux container, and
+        # maturin-action forwards only an allowlisted subset of env var
+        # NAMES into the container (see the before-script-linux comment
+        # below), which does not include these.
+        run: |
+          mkdir -p native-deps-cache
+          cat > native-deps-cache/build-native-deps.sh << 'SCRIPT_EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          PREFIX="$1"
+          EIGEN_VERSION="$2"
+          OPENBLAS_VERSION="$3"
+          LIBXC_VERSION="$4"
+          LIBINT_VERSION="$5"
+          mkdir -p "$PREFIX"
+
+          # AlmaLinux 8 base image: gcc-toolset-12 gets us a C++17 compiler new
+          # enough for libint2's engine.impl.h (same requirement ci.yml notes
+          # for Ubuntu's g++). gfortran is OpenBLAS's reference-LAPACK path.
+          # perl-IPC-Cmd is OpenSSL's (transitive, via wget/cmake) build dep on
+          # this image; harmless to include even if not strictly needed here.
+          # Unconditional (NOT behind the cache-hit check below): every
+          # matrix leg starts a BRAND NEW container, so even when the
+          # expensive source builds are cache-hit, this fresh container still
+          # needs the compiler toolchain to build ferric ITSELF afterward
+          # (the C++ shims in ferric-integrals/build.rs, ferric-dft's cc
+          # build, etc.), and Eigen's headers (copied below) are cheap enough
+          # that fetching them on every run is simpler than caching a handful
+          # of header files separately.
+          dnf install -y gcc-toolset-12 gcc-toolset-12-gfortran cmake \
+            wget tar gzip patch perl-IPC-Cmd python3 which
+          source /opt/rh/gcc-toolset-12/enable
+
+          # --- Eigen (header-only; libint2/libecpint's shim needs
+          # /usr/include/eigen3, hardcoded in ferric-integrals/build.rs) ---
+          cd /tmp
+          wget -q https://gitlab.com/libeigen/eigen/-/archive/${EIGEN_VERSION}/eigen-${EIGEN_VERSION}.tar.gz
+          tar xzf eigen-${EIGEN_VERSION}.tar.gz
+          mkdir -p /usr/include/eigen3
+          cp -r eigen-${EIGEN_VERSION}/Eigen /usr/include/eigen3/
+          cp -r eigen-${EIGEN_VERSION}/unsupported /usr/include/eigen3/
+
+          if [ -f "$PREFIX/.done" ]; then
+            echo "native deps cache hit -- skipping OpenBLAS/libxc/libint2 source builds"
+            exit 0
+          fi
+
+          NPROC=$(nproc)
+
+          # --- OpenBLAS (dynamic; auditwheel/maturin vendors the .so) ---
+          # DYNAMIC_ARCH=1 is OpenBLAS's OWN runtime-dispatch feature -- the
+          # exact mechanism ci.yml's incident blames for the Zen 4 garbage
+          # result. Turning it OFF and building a single fixed TARGET instead
+          # trades "picks the best kernel per-CPU at runtime" for "always
+          # runs the kernel we tested", which is the safer default for a
+          # binary artifact going to unknown hardware. TARGET=HASWELL matches
+          # the OPENBLAS_CORETYPE=Haswell runtime workaround above -- if that
+          # env var is ever lifted, this TARGET must be reconsidered too, they
+          # are the same tradeoff made twice.
+          cd /tmp
+          wget -q https://github.com/OpenMathLib/OpenBLAS/releases/download/v${OPENBLAS_VERSION}/OpenBLAS-${OPENBLAS_VERSION}.tar.gz
+          tar xzf OpenBLAS-${OPENBLAS_VERSION}.tar.gz
+          cd OpenBLAS-${OPENBLAS_VERSION}
+          make -j"$NPROC" DYNAMIC_ARCH=0 TARGET=HASWELL USE_THREAD=1 USE_OPENMP=0 NO_STATIC=0 NO_SHARED=0
+          make PREFIX="$PREFIX" install
+
+          # --- libxc (dynamic; ferric-dft/build.rs: `cargo:rustc-link-lib=xc`) ---
+          cd /tmp
+          wget -q https://gitlab.com/libxc/libxc/-/archive/${LIBXC_VERSION}/libxc-${LIBXC_VERSION}.tar.gz
+          tar xzf libxc-${LIBXC_VERSION}.tar.gz
+          cd libxc-${LIBXC_VERSION}
+          mkdir build && cd build
+          cmake .. -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_INSTALL_LIBDIR=lib \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DDISABLE_KXC=OFF
+          make -j"$NPROC"
+          make install
+
+          # -DCMAKE_INSTALL_LIBDIR=lib on both libxc and libint2 (below): AlmaLinux
+          # 8 is RPM/RHEL-family, where CMake's GNUInstallDirs module defaults
+          # CMAKE_INSTALL_LIBDIR to "lib64" on a 64-bit target -- unlike
+          # ci.yml's ubuntu-22.04 runner, where it defaults to "lib" and the
+          # libint2 build there has therefore never exercised this. ferric's
+          # build.rs (crates/ferric-integrals/build.rs) hardcodes
+          # `{LIBINT2_PREFIX}/lib` as its native-link search path with no
+          # lib64 fallback, so leaving CMake's RHEL default in place here
+          # would silently build a libint2.a this workflow's own cargo build
+          # can never find. Forcing "lib" makes this container match the
+          # path ci.yml's build has always produced.
+          #
+          # --- libint2 (static; same mpqc4 tarball + version + PIC flag as
+          # ci.yml -- see that file for why INCLUDE_ERI/INCLUDE_ONEBODY both
+          # matter and why the mpqc4 build, not Ubuntu's libint2-dev, is used) ---
+          cd /tmp
+          wget -q https://github.com/evaleev/libint/releases/download/v${LIBINT_VERSION}/libint-${LIBINT_VERSION}-mpqc4.tgz
+          tar xzf libint-${LIBINT_VERSION}-mpqc4.tgz
+          cd libint-${LIBINT_VERSION}
+          mkdir build && cd build
+          cmake .. -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_INSTALL_LIBDIR=lib \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCMAKE_BUILD_TYPE=Release
+          make -j"$NPROC"
+          make install
+
+          touch "$PREFIX/.done"
+          SCRIPT_EOF
+          chmod +x native-deps-cache/build-native-deps.sh
+
+      - name: Build wheel (manylinux_2_28 container)
+        uses: PyO3/maturin-action@v1
+        with:
+          rust-toolchain: stable
+          target: x86_64
+          manylinux: 2_28
+          # `--release` for a real optimized wheel; `--out dist` collects
+          # every matrix leg's wheel into the same relative path for the
+          # upload step below. `-i` pins the exact interpreter this leg
+          # targets -- manylinux_2_28's image ships several CPythons under
+          # /opt/python, and without `-i` maturin builds abi3/whatever it
+          # finds first rather than the version this matrix leg is for.
+          args: --release --out dist -i python${{ matrix.python-version }}
+          # Runs BEFORE the build, INSIDE THE SAME SHELL SCRIPT that then
+          # invokes `maturin build` (maturin-action concatenates
+          # before-script-linux and the build command into one generated
+          # bash script run in a single `docker run`, per its source --
+          # there is no separate `docker exec`), so plain `export` here is
+          # visible to the build step. Deliberately NOT using
+          # `>> "$GITHUB_ENV"`: that file lives on the HOST runner and is
+          # not proven to be mounted into this container, and maturin-action
+          # only forwards host env vars whose names match a fixed allowlist
+          # of prefixes (CARGO_/CC/CMAKE_/LD_/RUST.../etc -- see its
+          # ALLOWED_ENV_PREFIXES) into `docker run -e`, which does not cover
+          # PKG_CONFIG_PATH, CPATH, or LIBINT2_PREFIX. Exporting inline is
+          # the only path proven to reach the build.
+          #
+          # This is also where OpenBLAS/libxc/libint2/Eigen get built (via
+          # the script written above, into $GITHUB_WORKSPACE/native-deps-cache
+          # so the actions/cache steps around this one can see the result).
+          before-script-linux: |
+            set -euo pipefail
+            NATIVE_PREFIX="$(pwd)/native-deps-cache"
+            bash "$NATIVE_PREFIX/build-native-deps.sh" "$NATIVE_PREFIX" \
+              "${{ env.EIGEN_VERSION }}" "${{ env.OPENBLAS_VERSION }}" \
+              "${{ env.LIBXC_VERSION }}" "${{ env.LIBINT_VERSION }}"
+            export LIBINT2_PREFIX="$NATIVE_PREFIX"
+            export PKG_CONFIG_PATH="$NATIVE_PREFIX/lib/pkgconfig:$NATIVE_PREFIX/lib64/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+            export LD_LIBRARY_PATH="$NATIVE_PREFIX/lib:$NATIVE_PREFIX/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            export LIBRARY_PATH="$NATIVE_PREFIX/lib:$NATIVE_PREFIX/lib64${LIBRARY_PATH:+:$LIBRARY_PATH}"
+            export CPATH="$NATIVE_PREFIX/include${CPATH:+:$CPATH}"
+
+      # Same success()-only, not always(), reasoning as ci.yml's libint2 save:
+      # this is an EXTERNAL-dependency build cache. Whether ferric's own
+      # wheel build succeeds afterward says nothing about whether OpenBLAS/
+      # libxc/libint2 were built correctly; saving unconditionally on a
+      # CANCELLED run would write a truncated tree that poisons every later
+      # restore, which is why this is success() and not !cancelled().
+      - name: Save native deps cache
+        if: success() && steps.cache-native.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/native-deps-cache
+          key: native-deps-${{ env.NATIVE_DEPS_CACHE_VERSION }}-manylinux_2_28-openblas${{ env.OPENBLAS_VERSION }}-libxc${{ env.LIBXC_VERSION }}-libint${{ env.LIBINT_VERSION }}-eigen${{ env.EIGEN_VERSION }}
+
+      - name: Wheel size / contents sanity check
+        run: |
+          set -euo pipefail
+          ls -lh dist/
+          for whl in dist/*.whl; do
+            echo "--- $whl ---"
+            python3 -m zipfile -l "$whl" | grep -iE '\.so$|openblas|libxc' || true
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-cp${{ matrix.python-version }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+  # Installs each BUILT WHEEL (never the source tree -- a wheel that builds
+  # but does not import/run is worse than no wheel, since it fails silently
+  # at `pip install` time for a real user rather than loudly here) into a
+  # throwaway venv and runs a real RHF calculation against it. This is the
+  # only step in this workflow that proves the auditwheel/patchelf-repaired
+  # .so actually loads and produces a correct number outside the build
+  # container -- everything above only proves it COMPILED.
+  smoke-test:
+    needs: build-wheels
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheels-cp${{ matrix.python-version }}
+          path: dist
+
+      - name: Install wheel into a fresh venv
+        run: |
+          set -euo pipefail
+          python3 -m venv /tmp/smoke-venv
+          source /tmp/smoke-venv/bin/activate
+          pip install --upgrade pip
+          # Install ONLY numpy alongside the wheel -- ferric's runtime
+          # dependency per pyproject.toml -- deliberately not the repo's
+          # source tree or its [dev]/[reference] extras (pyscf, vina, ...),
+          # since the point is to prove the WHEEL is self-contained, not to
+          # reproduce the dev environment.
+          pip install numpy
+          pip install dist/*.whl
+          pip show ferric
+
+      - name: Smoke test -- import + RHF energy on the built wheel
+        run: |
+          set -euo pipefail
+          source /tmp/smoke-venv/bin/activate
+          cd /tmp  # deliberately NOT the repo checkout -- there isn't one in
+                   # this job, which is the point: nothing here can fall back
+                   # to a source-tree `ferric` on sys.path.
+          python3 - << 'PYEOF'
+          import ferric
+
+          # H2 at the standard 0.74 Angstrom bond length, STO-3G. This is not
+          # a ferric-specific reference value pulled from one of the repo's
+          # PySCF-comparison test fixtures (none was pulled in here, since
+          # this job has no source checkout) -- it is the textbook RHF/STO-3G
+          # H2 result, well outside any plausible last-few-digit convention
+          # difference. The bound below is intentionally loose (asserts the
+          # right BASIN, not the last decimal) so it catches the failure
+          # modes this smoke test exists for -- wrong/missing OpenBLAS
+          # producing garbage eigenvalues (the exact Zen 4 incident ci.yml
+          # documents), a mis-linked libint2 giving wrong integrals, wrong
+          # electron count, or an import that silently no-ops -- without
+          # requiring bit-identical agreement with ferric's own internal
+          # convergence convention, which this job has no reference for.
+          mol = ferric.Molecule.from_xyz_string(
+              "2\nH2\nH 0 0 0\nH 0 0 0.74\n", charge=0, multiplicity=1
+          )
+          basis = ferric.BasisSet.bundled("sto-3g")
+          result = ferric.run_rhf(mol, basis)
+
+          print(f"RHF/STO-3G H2 energy: {result.energy:.10f} Ha "
+                f"(converged={result.converged}, iters={result.iterations})")
+
+          assert result.converged, "SCF did not converge -- wheel's numerics are suspect"
+          # Textbook value is about -1.1167 Ha; -1.30 .. -1.05 is a wide berth
+          # around it that a working RHF/STO-3G H2 calculation cannot miss,
+          # while a nuclear-repulsion-only, garbage-BLAS, or wrong-integral
+          # failure mode would.
+          assert -1.30 < result.energy < -1.05, (
+              f"RHF energy {result.energy} is outside the expected basin for "
+              "H2/STO-3G at r=0.74 A -- suspect broken BLAS/libint2 linkage "
+              "in this wheel, not a legitimate different answer"
+          )
+
+          # Also exercise the numpy-array return path (PyArray2/PyArray1 via
+          # rust-numpy) -- a separate FFI surface from the scalar `.energy`
+          # float above, and the one most likely to break from an ABI/version
+          # mismatch between the wheel's compiled numpy C-API expectations
+          # and the numpy actually installed in this venv.
+          import numpy as np
+          density = result.density()
+          orbital_energies = result.orbital_energies()
+          assert density.shape == (2, 2), f"unexpected AO density shape {density.shape}"
+          assert orbital_energies.shape == (2,), f"unexpected orbital energy count {orbital_energies.shape}"
+          assert np.isfinite(density).all() and np.isfinite(orbital_energies).all()
+
+          print("Smoke test PASSED.")
+          PYEOF
+
+  # Not implemented: publishing to PyPI. This workflow proves the wheel
+  # BUILDS and RUNS; it deliberately stops short of `maturin publish` /
+  # `pypa/gh-action-pypi-publish` (trusted publishing or a token) so that
+  # the first several tag pushes can be inspected by a human before anything
+  # public happens automatically. Wire this up once:
+  #   1. At least one tag push has produced wheels a human downloaded and
+  #      actually exercised beyond this workflow's smoke test.
+  #   2. PyPI trusted publishing (OIDC) is configured for this project, OR a
+  #      PYPI_API_TOKEN secret is added -- prefer trusted publishing, no
+  #      long-lived token to leak.
+  #   3. Someone has confirmed the wheel size against PyPI's per-file limit
+  #      (see the PR description -- expect roughly 100-200 MB given the
+  #      bundled OpenBLAS/libxc/libint2/libecpint; PyPI's DEFAULT cap is
+  #      100 MB per file and a raise has to be requested from PyPI support
+  #      before a large wheel can be uploaded at all).
+  #
+  # publish:
+  #   needs: [build-wheels, smoke-test]
+  #   if: startsWith(github.ref, 'refs/tags/v')
+  #   runs-on: ubuntu-22.04
+  #   environment: pypi
+  #   permissions:
+  #     id-token: write  # OIDC trusted publishing
+  #   steps:
+  #     - uses: actions/download-artifact@v4
+  #       with:
+  #         pattern: wheels-*
+  #         path: dist
+  #         merge-multiple: true
+  #     - uses: pypa/gh-action-pypi-publish@release/v1
