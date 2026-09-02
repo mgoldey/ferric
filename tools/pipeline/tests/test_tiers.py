@@ -84,7 +84,36 @@ def test_tier1_reports_a_missing_receptor_rather_than_raising():
                            "box_size": (10.0, 10.0, 10.0)})
     assert not r.ok
     assert r.value is None
-    assert "receptor" in (r.error or "").lower()
+    # vina/meeko are an optional extra, so on an install without them the
+    # honest answer is "docking unavailable", not "receptor missing" -- but it
+    # must still be a REPORTED failure, never a raised ImportError.
+    err = (r.error or "").lower()
+    assert "receptor" in err or "docking unavailable" in err
+
+
+def test_tier1_names_the_missing_package_when_docking_is_not_installed(monkeypatch):
+    """An uninstalled optional dep must not masquerade as a docking failure.
+
+    Reporting ImportError as a generic tier-1 failure would send a reader
+    hunting for a bad receptor or a bad ligand when the real fix is
+    `pip install ferric[docking]`.
+    """
+    import tools.pipeline.tiers as tiers
+
+    def boom(*a, **k):
+        raise ImportError("No module named 'vina'")
+
+    monkeypatch.setattr(tiers, "dock_ligand", boom, raising=False)
+    monkeypatch.setitem(
+        __import__("sys").modules, "tools.docking",
+        type("M", (), {"dock_ligand": staticmethod(boom)})())
+
+    r = tiers.tier1_dock(SMALL, {"receptor_pdbqt": "/nonexistent.pdbqt",
+                                 "box_center": (0.0, 0.0, 0.0),
+                                 "box_size": (10.0, 10.0, 10.0)})
+    assert not r.ok and r.value is None
+    assert "docking unavailable" in (r.error or "").lower()
+    assert "vina" in (r.error or "").lower()
 
 
 def test_every_adapter_shares_the_same_signature():

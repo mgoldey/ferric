@@ -124,11 +124,21 @@ def tier1_dock(iso: Isomer, context: dict) -> TierResult:
     except Exception as e:  # noqa: BLE001
         return TierResult(iso.canonical, None, f"prep failed: {type(e).__name__}: {e}")
 
-    res = dock_ligand(mol, context["receptor_pdbqt"], context["box_center"],
-                      context.get("box_size", (24.0, 24.0, 24.0)),
-                      exhaustiveness=context.get("exhaustiveness", 16),
-                      n_poses=context.get("n_poses", 10),
-                      seed=context.get("seed", 0xF00D))
+    try:
+        res = dock_ligand(mol, context["receptor_pdbqt"], context["box_center"],
+                          context.get("box_size", (24.0, 24.0, 24.0)),
+                          exhaustiveness=context.get("exhaustiveness", 16),
+                          n_poses=context.get("n_poses", 10),
+                          seed=context.get("seed", 0xF00D))
+    except ImportError as e:
+        # vina/meeko are an optional extra (`pip install ferric[docking]`),
+        # because they are not installable on every Python the wheel targets.
+        # A tier that cannot run must say WHY it cannot run -- reporting this
+        # as a docking failure would send the reader hunting for a receptor or
+        # a bad ligand when the real answer is an uninstalled package.
+        return TierResult(iso.canonical, None,
+                          f"docking unavailable ({e}); "
+                          f"install the 'docking' extra to enable tier 1")
     if not res.ok:
         return TierResult(iso.canonical, None, res.error)
     best = res.best
