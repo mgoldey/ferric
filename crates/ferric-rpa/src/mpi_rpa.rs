@@ -20,7 +20,7 @@
 //! still need the full tensor to process even one frequency. `b_ov` is
 //! already fully assembled (replicated on every rank) by the time this
 //! module's functions run, exactly as it was pre-T10 (see module docs on
-//! [`run_pdep_rpa_mpi`] for what remains undistributed).
+//! [`crate::mpi_rpa::run_pdep_rpa_mpi`] for what remains undistributed).
 //!
 //! What DOES have T8/T9's "disjoint, embarrassingly parallel, summed at the
 //! end" shape is the **frequency axis itself**: `rayon` already parallelizes
@@ -63,9 +63,9 @@
 //! ## GW inherits the W-construction half of this for free
 //!
 //! `ferric-gw`'s Σ_c evaluation consumes `PdepRpaResult.inv_dielectric_freq`
-//! (see `ferric-gw/src/sigma.rs`/`u_sigma.rs`). Since [`run_pdep_rpa_mpi`]
-//! fills that field via [`eval_inv_dielectric_matrices_mpi`], any caller that
-//! builds its `PdepRpaResult` via [`run_pdep_rpa_mpi`] instead of
+//! (see `ferric-gw/src/sigma.rs`/`u_sigma.rs`). Since [`crate::mpi_rpa::run_pdep_rpa_mpi`]
+//! fills that field via [`crate::mpi_rpa::eval_inv_dielectric_matrices_mpi`], any caller that
+//! builds its `PdepRpaResult` via [`crate::mpi_rpa::run_pdep_rpa_mpi`] instead of
 //! [`crate::run_pdep_rpa`] gets an MPI-distributed W for free. The
 //! GW-specific axis named in the T10 task brief — distributing the per-MO
 //! `solve_qp_for_mo`/Σ_c(iω) Padé-continuation loop in `ferric-gw::sigma`

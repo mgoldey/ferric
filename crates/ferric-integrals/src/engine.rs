@@ -1,6 +1,6 @@
 //! Integral evaluation engines wrapping libint2 compute calls.
 //!
-//! Each [`Engine`] owns a libint2 engine handle and a scratch buffer.
+//! Each [`crate::engine::Engine`] owns a libint2 engine handle and a scratch buffer.
 //! Engines are created for specific integral types (1e, 2e, 3-center, derivatives)
 //! and reused across shell loops.
 

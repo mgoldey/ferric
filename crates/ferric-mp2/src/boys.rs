@@ -163,7 +163,7 @@ pub fn boys_localize(
 pub struct LmpDomains {
     /// For each orbital i: sorted AO indices within cutoff_bohr of its Boys center.
     pub orbital_domains: Vec<Vec<usize>>,
-    /// Union mask over all orbitals: ao_mask[μ] = true if μ is in any domain.
+    /// Union mask over all orbitals: `ao_mask[μ] = true` if μ is in any domain.
     pub ao_mask: Vec<bool>,
     /// Sorted list of AO indices that appear in any domain.
     pub active_aos: Vec<usize>,

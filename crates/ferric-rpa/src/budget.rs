@@ -13,7 +13,7 @@
 //! frequency-quadrature scratch in `energy::eval_eigenvalues_at_frequencies`,
 //! which scales with the **rayon thread count**, not with any budget knob.
 //!
-//! [`estimate_peak_bytes`] is a conservative (i.e. deliberately over-, never
+//! [`crate::budget::estimate_peak_bytes`] is a conservative (i.e. deliberately over-, never
 //! under-, estimating) upper bound on the resident bytes the pipeline can hold
 //! at once, covering:
 //!

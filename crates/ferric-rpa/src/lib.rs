@@ -680,10 +680,10 @@ pub(crate) fn run_pdep_rpa_eigensolve(
 /// dRPA energy from PRE-BUILT RI intermediates, skipping the (P|op|ia) transform.
 ///
 /// See the original doc comment (still accurate): this composes
-/// [`run_pdep_rpa_eigensolve`] (Steps 1-5, replicated/local eigensolve) with
+/// `run_pdep_rpa_eigensolve` (Steps 1-5, replicated/local eigensolve) with
 /// the serial imaginary-frequency quadrature evaluation (Steps 6-8). The
 /// eigensolve helper is shared verbatim with
-/// [`crate::mpi_rpa::run_pdep_rpa_mpi`], which instead routes Steps 6-8
+/// `crate::mpi_rpa::run_pdep_rpa_mpi` (behind the `mpi` feature), which instead routes Steps 6-8
 /// through the MPI-distributed frequency evaluators — the two entry points
 /// cannot silently diverge on the (replicated) Davidson/Lanczos setup because
 /// they call the exact same function for it.

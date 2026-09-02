@@ -7,9 +7,9 @@
 //! the RI-MP2 `B^P_{ia}` tensor and correlation-energy contraction:
 //!
 //! * **Aux-band ownership.** `naux` is split into contiguous, disjoint,
-//!   balanced bands via [`ParallelContext::aux_band`]. Each rank builds and
+//!   balanced bands via [`ferric_core::parallel::ParallelContext::aux_band`]. Each rank builds and
 //!   holds ONLY its own band of the dressed `B^P_{ia}` tensor
-//!   ([`crate::rimp2::eri3_mo_block_dressed_band`], the same private helper
+//!   (`crate::rimp2::eri3_mo_block_dressed_band`, the same private helper
 //!   `df_k.rs`'s `build_dressed_band` mirrors) — the resident B_ov footprint
 //!   per rank is `(band) · nocc·nvir · 8` bytes ≈ (full tensor) / N, a real
 //!   memory reduction, not just compute striping.
@@ -64,7 +64,7 @@
 //! ## Hybrid rank x thread binding
 //!
 //! `run_mpi_ri_mp2` installs a rayon pool of
-//! [`ParallelContext::rayon_threads`] workers around its whole body, so N local
+//! [`ferric_core::parallel::ParallelContext::rayon_threads`] workers around its whole body, so N local
 //! ranks each take `floor(physical_cores / N)` threads instead of a full-width
 //! pool apiece. See `ferric_core::parallel::threads_per_rank` for the policy
 //! (floor, never oversubscribe, physical not logical cores) and why a

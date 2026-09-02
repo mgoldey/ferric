@@ -91,15 +91,15 @@ impl Chi0Sparsity {
     /// and `auto` forms sets the G6 centroid distance pre-filter length scale
     /// `dist_cutoff` (Bohr); omitting it leaves `dist_cutoff = ∞` (the filter is
     /// a no-op and the retained set is byte-identical to the pre-G6 path):
-    ///   None / "dense"                 → Dense (default; backward compatible)
-    ///   "boys"                         → BoysScreened { thresh: 1e-4, dist: ∞ }
-    ///   "boys:<thresh>"                → BoysScreened with that threshold, dist ∞
-    ///   "boys:<thresh>@<radius>"       → …and that distance-cutoff radius (Bohr)
-    ///   "boys@<radius>"                → default threshold, that radius
-    ///   "auto"                         → Auto { cutoff: 30, thresh: 1e-4, dist ∞ }
-    ///   "auto:<cutoff>"                → Auto with that atom cutoff
-    ///   "auto:<cutoff>:<thresh>"       → …and that Boys threshold
-    ///   "auto:<cutoff>:<thresh>@<rad>" → …and that distance-cutoff radius (Bohr)
+    ///   None / `"dense"`                 → Dense (default; backward compatible)
+    ///   `"boys"`                         → BoysScreened { thresh: 1e-4, dist: ∞ }
+    ///   `"boys:<thresh>"`                → BoysScreened with that threshold, dist ∞
+    ///   `"boys:<thresh>@<radius>"`       → …and that distance-cutoff radius (Bohr)
+    ///   `"boys@<radius>"`                → default threshold, that radius
+    ///   `"auto"`                         → Auto { cutoff: 30, thresh: 1e-4, dist ∞ }
+    ///   `"auto:<cutoff>"`                → Auto with that atom cutoff
+    ///   `"auto:<cutoff>:<thresh>"`       → …and that Boys threshold
+    ///   `"auto:<cutoff>:<thresh>@<rad>"` → …and that distance-cutoff radius (Bohr)
     pub fn parse_config_str(s: Option<&str>) -> Result<Chi0Sparsity, String> {
         const DEF_THRESH: f64 = 1e-4;
         const DEF_CUTOFF: usize = 30;

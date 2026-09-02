@@ -280,6 +280,56 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # rustdoc is built HERE, not in docs.yml, and the reason is structural:
+      # `cargo doc` does not link, but it DOES run build scripts, and
+      # ferric-integrals' build.rs compiles shim/shim.cc against libint2.hpp.
+      # So documenting this workspace needs the same libint2 this job has
+      # already built and cached — whereas docs.yml has no libint2 and failed
+      # outright when it tried (run 33583179631: "libint2.hpp: No such file").
+      # Publishing the API docs from the workflow that already pays for the
+      # native build is strictly cheaper than making the docs job pay again.
+      #
+      # `--exclude ferric-python` is REQUIRED: that crate's lib is deliberately
+      # named `ferric` (so Python's `import ferric` works), which collides with
+      # the `ferric` facade crate's lib. Both emit to target/doc/ferric/ and
+      # rustdoc hard-errors "Only one may be documented at once". Dropping the
+      # pyo3 crate is the right side of that trade — it is a cdylib whose
+      # rustdoc output is of no use to a Rust reader, and its surface is
+      # documented for Python callers in site/src/using/python.md.
+      #
+      # `-D warnings` is ON, and it should stay on. The count went 373 → 0 in
+      # one pass; the whole point of getting there was to make the next broken
+      # link fail loudly instead of joining a pile nobody reads. Most of the
+      # 373 were not stale references at all — a bare [`Foo`] inside a
+      # module-level `//!` doc does not resolve against that module's own
+      # items (rustdoc resolves it in the PARENT's scope), so the fix was to
+      # qualify the path, not delete the link.
+      - name: Build API docs
+        if: ${{ github.ref == 'refs/heads/main' }}
+        env:
+          RUSTDOCFLAGS: '-D warnings'
+        run: |
+          cargo doc --workspace --no-deps --exclude ferric-python
+          # A workspace has no single root crate, so rustdoc writes no top-level
+          # redirect. Point /api at the facade crate explicitly.
+          cat > target/doc/index.html <<'HTML'
+          <!doctype html>
+          <meta charset="utf-8">
+          <title>ferric API documentation</title>
+          <meta http-equiv="refresh" content="0; url=ferric/index.html">
+          <a href="ferric/index.html">ferric API documentation</a>
+          HTML
+
+      - name: Upload API docs artifact
+        # Consumed by docs.yml, which cannot build these itself. Retention is
+        # short on purpose: this is a build-to-build handoff, not an archive.
+        if: ${{ github.ref == 'refs/heads/main' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-docs
+          path: target/doc
+          retention-days: 1
+
       - name: Save cargo cache
         # Same reasoning as the libint2 save: !cancelled() keeps the save on a
         # RED test run (the whole point) but drops it when cancelled, which

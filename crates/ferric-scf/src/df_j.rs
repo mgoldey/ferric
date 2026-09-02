@@ -15,13 +15,13 @@
 //! DF-K (`df_k.rs::build`) here is about *parallelism and determinism*, not
 //! GEMM shape:
 //!
-//!   Pass 1: d_P = Σ_μν B[P,μν] D[μν]. Each block is split into rayon-parallel
+//!   Pass 1: d_P = Σ_μν B\[P,μν\] D\[μν\]. Each block is split into rayon-parallel
 //!   aux-chunks; every chunk writes its GEMV result into a *disjoint* slice of
 //!   `d_p` (indexed by aux row), so this pass needs no reduction at all — the
 //!   result is bit-identical and thread-count independent by construction
 //!   (disjoint writes, not summed partials).
 //!
-//!   Pass 2: J[μν] = Σ_P B[P,μν] c_P is a true reduction (every P contributes
+//!   Pass 2: J\[μν\] = Σ_P B\[P,μν\] c_P is a true reduction (every P contributes
 //!   to the same μν output), so it uses `crate::reduce::grouped_deterministic_sum`
 //!   — the same bounded, thread-count-independent accumulator DF-K uses — over
 //!   the same rayon aux-chunks.

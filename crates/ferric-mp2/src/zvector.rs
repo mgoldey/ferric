@@ -33,7 +33,7 @@ pub(crate) fn zvec_trace() -> bool {
 ///
 /// Returns `(z, imat)` where `z` is the (nvir, nocc) occupied-virtual block of the
 /// relaxed density in MO basis, and `imat` is the (nmo, nmo) RI-MP2 Lagrangian
-/// matrix [`build_imat_ri`] (needed downstream for the overlap/Pulay term).
+/// matrix `build_imat_ri` (needed downstream for the overlap/Pulay term).
 ///
 /// The right-hand side is PySCF's `Xvo` (`grad/mp2.py::grad_elec` lines 138-140):
 /// `Xvo = C_vir^T · vhf · C_occ + Imat[occ,vir]^T − Imat[vir,occ]`, with

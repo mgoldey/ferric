@@ -468,7 +468,7 @@ pub fn electric_field_at_atoms(
 /// ```text
 ///   v_A = ∫ w^A_Becke(r) ρ(r) |r − R_A|³ dr
 /// ```
-/// Returned in a.u. (Bohr³·e). The TS volume *ratio* is v_A / v_free[Z_A],
+/// Returned in a.u. (Bohr³·e). The TS volume *ratio* is `v_A / v_free[Z_A]`,
 /// where `v_free` is computed by running this same integral on a live
 /// free-atom SCF density (ferric-cli's TS-C6 branch), NOT read from a table:
 /// `ferric_rpa::dispersion::free_atom_ref::ts_free_atom`'s `vol_free` is `None`
@@ -585,7 +585,7 @@ pub fn becke_charges(
 /// Hirshfeld atomic charges q_A = Z_A − ∫ ρ(r) w^A(r) dr.
 ///
 /// Uses the same Slater-proatom Hirshfeld weights as
-/// [`pdep_polarizability_hirshfeld`] and a regular real-space grid, so
+/// `pdep_polarizability_hirshfeld` and a regular real-space grid, so
 /// charge magnitudes and signs are directly comparable to the per-atom
 /// polarizability tensors exported alongside.
 ///
@@ -1013,7 +1013,7 @@ fn chelpg_grid_esp(
 /// − Σ_μν D_μν ⟨μ|1/|r−r||ν⟩` at an explicit, caller-supplied list of
 /// points (in Bohr).
 ///
-/// The general-purpose primitive behind [`chelpg_grid_esp`] (which supplies
+/// The general-purpose primitive behind `chelpg_grid_esp` (which supplies
 /// the CHELPG/RESP vdW-filtered grid) — factored out so it can also be
 /// called directly against a fixed point list for a strict apples-to-apples
 /// cross-check against an external reference (see
@@ -1196,7 +1196,7 @@ fn solve_chelpg_normal_equations(
 /// Molecular Electrostatic Potentials." *J. Comput. Chem.* **1990**, *11*,
 /// 361–373.
 ///
-/// Structurally different from [`hirshfeld_charges`]/[`lowdin_charges`]/
+/// Structurally different from `hirshfeld_charges`/[`lowdin_charges`]/
 /// [`mulliken_charges`]: those are **population-partition** schemes that
 /// split the electron density directly among atoms. CHELPG instead chooses
 /// atom-centered point charges `q_A` that best reproduce the *molecular
@@ -1219,7 +1219,7 @@ fn solve_chelpg_normal_equations(
 ///
 /// Solves the Lagrange-multiplier-constrained normal equations (a single
 /// `(natoms+1)×(natoms+1)` linear solve, not an iterative optimizer) — see
-/// [`solve_chelpg_normal_equations`].
+/// `solve_chelpg_normal_equations`.
 ///
 /// Returns `Vec<f64>` of length `mol.atoms.len()`, units of e, summing to
 /// `mol.charge` (up to the linear solve's numerical precision — see the
@@ -1277,7 +1277,7 @@ fn chelpg_outer_cutoff() -> f64 {
 /// Atomic Charges: The RESP Model." *J. Phys. Chem.* **1993**, *97*,
 /// 10269–10280.
 ///
-/// Same ESP grid ([`chelpg_grid_esp`]) and least-squares objective as
+/// Same ESP grid (`chelpg_grid_esp`) and least-squares objective as
 /// [`chelpg_charges`], plus a hyperbolic restraint that damps charges on
 /// **non-hydrogen** atoms toward zero (mitigates overfitting/unphysically
 /// large charges on buried heavy atoms):

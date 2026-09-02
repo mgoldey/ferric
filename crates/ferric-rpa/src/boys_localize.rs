@@ -18,7 +18,7 @@ use ndarray::{s, Array2};
 pub struct BoysOccupied {
     /// Localized occupied MO coefficients, shape (nbas, nocc_active).
     pub c_loc: Array2<f64>,
-    /// Per-orbital Boys centroid ⟨i_loc | r | i_loc⟩, [nocc_active][3] (Bohr).
+    /// Per-orbital Boys centroid ⟨i_loc | r | i_loc⟩, `[nocc_active][3]` (Bohr).
     pub centroids: Vec<[f64; 3]>,
     /// Per-orbital Boys "spread" (Σ_α ⟨i|r_α²|i⟩ − ⟨i|r_α|i⟩² is the canonical
     /// definition, but here we report ‖centroid − centroid_mean‖ as a cheap

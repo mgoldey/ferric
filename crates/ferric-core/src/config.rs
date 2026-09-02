@@ -7,15 +7,15 @@
 //! pattern that replaces those, generalizing the [`crate::memory`] budget
 //! resolver from one setting to a reusable per-setting descriptor.
 //!
-//! A setting is declared once as a [`ConfigVar<T>`] (env name + default + parse +
-//! validate). [`ConfigVar::resolve`] applies the uniform precedence
-//! **config/TOML > env > default** and returns a [`Resolved<T>`] that can emit an
-//! [`Resolved::audit_line`] — the same auditability [`crate::memory`] gives the
+//! A setting is declared once as a [`crate::config::ConfigVar<T>`](crate::config::ConfigVar) (env name + default + parse +
+//! validate). [`crate::config::ConfigVar::resolve`] applies the uniform precedence
+//! **config/TOML > env > default** and returns a [`crate::config::Resolved<T>`](crate::config::Resolved) that can emit an
+//! [`crate::config::Resolved::audit_line`] — the same auditability [`crate::memory`] gives the
 //! budget. A malformed *explicitly-set* override (env or TOML) is a loud `Err`,
 //! never a silent fallback to the default: a typo in a result-affecting knob must
 //! not quietly change the answer.
 //!
-//! Debug-trace toggles route through the shared [`parse_toggle`] so `FERRIC_X=0`
+//! Debug-trace toggles route through the shared [`crate::config::parse_toggle`] so `FERRIC_X=0`
 //! means off everywhere. See `docs/config-style.md` for the dev-facing rules.
 //!
 //! This is the foundational module (migration Group 1); call-site substitutions

@@ -18,7 +18,7 @@
 //! so the masked solve carries MP2-style Hylleraas protection — solver error
 //! enters quadratically, only dropped integrals enter linearly.
 //!
-//! The canonical anchor is [`super::linlccd::linlccd`] — ferric's
+//! The canonical anchor is [`crate::linlccd::linlccd`] — ferric's
 //! spin-orbital einsum implementation (Carter-Fenk JPCA 2025), an
 //! independent formulation sharing only the RI integrals. `LadderVariant`
 //! is reused directly so each tier (DriversOnly ≡ RI-MP2 / Hh / Full)

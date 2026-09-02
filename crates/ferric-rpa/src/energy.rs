@@ -284,7 +284,7 @@ fn quad_panel_width(m: usize, nov: usize, n_workers: usize, memory_budget_bytes:
 /// around this one); the only behavioral difference is which BLAS assembly
 /// path (`dielectric_matrix_from_projection_into` vs the nov-panelled
 /// `..._into_panelled`) each rayon worker's `map_init` closure calls, chosen
-/// once via [`quad_panel_width`] before the parallel region starts.
+/// once via `quad_panel_width` before the parallel region starts.
 ///
 /// `memory_budget_bytes`: the caller's resolved `[memory] budget_gb` /
 /// `PdepRpaConfig::memory_budget_bytes` (already resolved via

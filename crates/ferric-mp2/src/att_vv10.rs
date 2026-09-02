@@ -31,8 +31,8 @@
 //! 4161). So the *same* r₀ appears in the MP2 operator and in the VV10 damping.
 //! Feeding bare VV10 (the `Vv10Damping::None` path that ωB97X-V uses) into Eq. 1
 //! would double-count short-range correlation and is NOT the published method;
-//! [`AttVv10Config::vv10_damping`] exists so that difference is measurable, but
-//! [`AttVv10Config::mp2_v_terfc_atz`] — the only parameterization the paper
+//! [`crate::att_vv10::AttVv10Config::vv10_damping`] exists so that difference is measurable, but
+//! [`crate::att_vv10::AttVv10Config::mp2_v_terfc_atz`] — the only parameterization the paper
 //! actually fits — turns the damping on.
 //!
 //! ## Which attenuator
@@ -44,12 +44,12 @@
 //!     terfc(r, r₀) = 1 − terf(r, r₀)
 //! ```
 //!
-//! ferric has both. [`AttVv10Attenuator::Terfc`] is the published operator and
+//! ferric has both. [`crate::att_vv10::AttVv10Attenuator::Terfc`] is the published operator and
 //! requires the interpolation tables (`FERRIC_TERF_TABLE_DIR`);
-//! [`AttVv10Attenuator::Erfc`] is offered as a table-free variant for smoke
+//! [`crate::att_vv10::AttVv10Attenuator::Erfc`] is offered as a table-free variant for smoke
 //! testing and for comparison against ferric's PySCF-validated erfc path.
 //! **The fitted (r₀, b, C) below belong to terfc and do NOT transfer to erfc** —
-//! see [`AttVv10Config`].
+//! see [`crate::att_vv10::AttVv10Config`].
 //!
 //! # Published parameters
 //!
@@ -119,8 +119,8 @@
 //!  * **Grid.** The paper used SG-1. ferric has no SG-1; the default is
 //!    ferric's own NLC grid (50 radial × 50 angular, matching what
 //!    `ferric_scf`'s KS drivers pass for wB97X-V). Configurable via
-//!    [`AttVv10Config::nlc_grid`].
-//!  * **Frozen core.** The paper froze cores; [`AttVv10Config::frozen_core`]
+//!    [`crate::att_vv10::AttVv10Config::nlc_grid`].
+//!  * **Frozen core.** The paper froze cores; [`crate::att_vv10::AttVv10Config::frozen_core`]
 //!    defaults to `0` because ferric has no element-aware core counter and
 //!    guessing one silently is worse than defaulting to all-electron. Set it.
 //!  * **Self-consistency.** This is the post-HF variant (see above): E_nl is
@@ -136,9 +136,9 @@
 //! and Python (`run_mp2_v`, closed-shell). See the crate docs / VALIDATION.md
 //! for what is proven.
 //!
-//! [`att_mp2_vv10`] accepts **restricted (RHF)** references;
-//! [`u_att_mp2_vv10`] accepts **unrestricted (UHF) and restricted-open (ROHF)**
-//! references. Both share [`AttVv10Config`] and the identical VV10 evaluator.
+//! [`crate::att_vv10::att_mp2_vv10`] accepts **restricted (RHF)** references;
+//! [`crate::att_vv10::u_att_mp2_vv10`] accepts **unrestricted (UHF) and restricted-open (ROHF)**
+//! references. Both share [`crate::att_vv10::AttVv10Config`] and the identical VV10 evaluator.
 //!
 //! ## OPEN SHELL IS UNPARAMETERIZED — read this before quoting an open-shell number
 //!
@@ -147,7 +147,7 @@
 //! core. There is **no open-shell MP2-V parameterization anywhere in that
 //! paper** — no open-shell training set, no re-fit, not even a spot check.
 //!
-//! [`u_att_mp2_vv10`] therefore runs the **closed-shell-fitted parameters on an
+//! [`crate::att_vv10::u_att_mp2_vv10`] therefore runs the **closed-shell-fitted parameters on an
 //! open-shell reference**. That is unparameterized extrapolation, in the same
 //! sense (and for the same reason) as running the aTZ parameters in a different
 //! basis. This module will not adjust the parameters "for open shell" — there is
@@ -203,7 +203,7 @@ pub enum AttVv10Attenuator {
 /// Configuration for [`att_mp2_vv10`].
 #[derive(Debug, Clone)]
 pub struct AttVv10Config {
-    /// Range-separation length r₀ in **Bohr**. Use [`AttVv10Config::from_r0_angstrom`]
+    /// Range-separation length r₀ in **Bohr**. Use [`crate::att_vv10::AttVv10Config::from_r0_angstrom`]
     /// or the named constructors rather than converting by hand.
     pub r0_bohr: f64,
     /// VV10 semiempirical parameters (C, b).
@@ -225,7 +225,7 @@ pub struct AttVv10Config {
     /// `Some(ω)` applies the SAME (r₀, ω) to both halves of Eq. 11 in
     /// lockstep: the MP2 attenuator becomes `terfc(r; r₀, ω)/r` and the VV10
     /// damping becomes `1 − terfc(R; r₀, ω)²` (derived at evaluation time via
-    /// [`AttVv10Config::effective_vv10_damping`], so the two cannot silently
+    /// [`crate::att_vv10::AttVv10Config::effective_vv10_damping`], so the two cannot silently
     /// diverge — a divergence would double-count correlation in the seam
     /// region). Terfc-attenuator only: combining it with the erfc control is
     /// a hard error (erfc's width IS 1/(r₀√2) by that arm's definition), and
@@ -487,7 +487,7 @@ pub struct AttVv10Result {
     pub e_hf: f64,
     /// Attenuated MP2 correlation energy under the configured attenuator.
     pub e_c_att_mp2: f64,
-    /// VV10 nonlocal correlation energy, damped per [`AttVv10Config::vv10_damping`].
+    /// VV10 nonlocal correlation energy, damped per [`crate::att_vv10::AttVv10Config::vv10_damping`].
     pub e_nl_vv10: f64,
     /// `e_hf + e_c_att_mp2 + e_nl_vv10`.
     pub total: f64,

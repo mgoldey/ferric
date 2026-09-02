@@ -35,9 +35,9 @@
 //!
 //! LinLCCD(hh) is size-consistent, size-extensive, and orbital-invariant.
 //!
-//! Relative to [`super::ccd`], this module builds strictly fewer integral blocks: the
+//! Relative to [`crate::ccd`], this module builds strictly fewer integral blocks: the
 //! `(2n_v)⁴` VVVV tensor that dominates CCD's memory is never formed for
-//! [`LadderVariant::Hh`], nor is OVVO. See
+//! [`crate::linlccd::LadderVariant::Hh`], nor is OVVO. See
 //! `docs/superpowers/specs/2026-07-26-linlccd-hh-design.md`.
 
 use super::{CcConfig, CcResult};

@@ -806,7 +806,7 @@ impl QmmmSystem {
     ///
     /// Point charges (`width == 0.0`) go into `point_charges`, smeared
     /// charges (`width > 0.0`) into `smeared_charges` — the RELATIVE order
-    /// within each list matches [`QmmmSystem::active_charges`]'s single
+    /// within each list matches `QmmmSystem::active_charges`'s single
     /// ordering (atom-centred ascending, then boundary charges), but the two
     /// lists are separate, so [`QmmmSystem::mm_charge_positions`] (which
     /// walks `active_charges` directly, unsplit) is the ordering
@@ -865,7 +865,7 @@ impl QmmmSystem {
 
     /// Positions (Bohr) of the MM charges (point AND Gaussian-smeared) that
     /// actually enter the embedding potential, in
-    /// [`QmmmSystem::active_charges`]'s single order (atom-centred ascending,
+    /// `QmmmSystem::active_charges`'s single order (atom-centred ascending,
     /// then boundary charges) — this is the canonical ordering [`mm_forces`]
     /// and [`full_gradient`] use; it is NOT the same as concatenating
     /// `to_external_potential()`'s `point_charges` then `smeared_charges`
@@ -1194,7 +1194,7 @@ pub fn electric_field_at_points(
 /// [`crate::gradient::smeared_site_forces`] (negated: that function returns
 /// `dE/dR`, this function returns the force `-dE/dR`). Point and smeared
 /// sites are each computed by their own correct formula and merged back into
-/// [`QmmmSystem::active_charges`]'s single canonical order.
+/// `QmmmSystem::active_charges`'s single canonical order.
 pub fn mm_forces(
     system: &QmmmSystem,
     mol: &Molecule,
@@ -1355,7 +1355,7 @@ pub fn full_gradient(
 
 /// `dE_pol/dR_site` for every polarizable MM atom of `system`, mapped from
 /// [`crate::polarizable::site_gradient`]'s site-indexed rows onto
-/// full-structure atom indices — via [`QmmmSystem::polarizable_site_full_indices`],
+/// full-structure atom indices — via `QmmmSystem::polarizable_site_full_indices`,
 /// the SAME helper [`QmmmSystem::to_polarizable_sites`] uses, so the two
 /// orderings cannot drift apart.
 ///
@@ -1399,7 +1399,7 @@ pub fn polarizable_site_gradient(
 }
 
 /// `dE_pol/dR_charge` for every ACTIVE embedding charge of `system` (atom-
-/// centred, then boundary/midpoint charges — [`QmmmSystem::active_charges`]'s
+/// centred, then boundary/midpoint charges — `QmmmSystem::active_charges`'s
 /// order, the same one [`mm_forces`]/[`full_gradient`] use), from
 /// [`crate::polarizable::charge_gradient_contribution`] — the reaction force
 /// a permanent charge feels from every OTHER polarizable site's induced

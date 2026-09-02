@@ -792,7 +792,7 @@ fn veff_vo_mo(
 /// VALIDATED static relaxed MP2 1-PDM in AO (matches PySCF to machine precision —
 /// see scripts/cpks/mp2_alpha_pyscf.py). The recipe, pinned vs PySCF on water/STO-3G:
 ///   • P_oo, P_vv from `build_mp2_density`, assembled as P + Pᵀ  (the ×2).
-///   • Xvo = L + (2J−K)[dm_P]_vo   (L = build_lagrangian; dm_P = the P+Pᵀ density).
+///   • `Xvo = L + (2J−K)[dm_P]_vo`   (L = build_lagrangian; dm_P = the P+Pᵀ density).
 ///   • (Δε + A) z = −Xvo           (the sign! A = full orbital Hessian).
 ///   • D = 2δ_core + (P_oo+P_ooᵀ) + (P_vv+P_vvᵀ) + z_vo/ov.
 /// NOTE: ferric's shared `build_relaxed_density_ao`/`solve_zvector` are BUGGY for this
@@ -1531,7 +1531,7 @@ fn build_apb_amb(
 
 /// W-screened singlet (A±B) for BSE-flavoured correlation/response.
 ///
-/// Generalises [`build_apb_amb`]: the **Hartree/coupling** term `4(ai|bj)` keeps
+/// Generalises `build_apb_amb`: the **Hartree/coupling** term `4(ai|bj)` keeps
 /// the BARE Coulomb interaction, while the two **exchange** integrals are replaced
 /// by their statically SCREENED counterparts `(··|W|··)` built from PDEP modes:
 ///
@@ -1542,7 +1542,7 @@ fn build_apb_amb(
 ///   (A−B)_W = Δε_qp δ            + (aj|bi)_W − (ab|ij)_W
 /// ```
 ///
-/// matching the convention in [`build_apb_amb`] term-for-term (only the two
+/// matching the convention in `build_apb_amb` term-for-term (only the two
 /// exchange integrals carry the W; the 4(ai|bj) Hartree term stays bare).
 ///
 /// # Arguments
@@ -1555,7 +1555,7 @@ fn build_apb_amb(
 /// * `eps_qp` — quasiparticle (or HF/KS) orbital energies for the Δε diagonal.
 ///
 /// GATE-0 invariant (no physics): with `g_modes = b_full` and `weights = 1`,
-/// this reproduces [`build_apb_amb`] (with the same `eps`) bit-for-bit. That
+/// this reproduces `build_apb_amb` (with the same `eps`) bit-for-bit. That
 /// pins every sign/factor of the screened-exchange contraction before any W or
 /// GW energy is introduced. See `bse_gate0_bare_v_collapses_to_tdhf`.
 pub fn build_apb_amb_screened(

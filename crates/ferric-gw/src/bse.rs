@@ -21,13 +21,13 @@
 //!
 //! This module also holds the related TDHF/RPAx dense-(A±B) polarizability
 //! family (`run_bse_c6`, `run_bse_c6_ks`, `run_rpax_static_polarizability`).
-//! Of these, only [`run_rpax_static_polarizability`] is wired into the
+//! Of these, only `run_rpax_static_polarizability` is wired into the
 //! CLI/Python surface — it is **static (ω=0) polarizability only**.
 //! `run_bse_c6`/`run_bse_c6_ks` (dynamic α(iω) and C6) are deliberately
 //! library-only: `docs/VALIDATION.md` records a validated negative result
 //! (C6 from this exact kernel stays ~63% low regardless of the HOMO-LUMO
 //! gap, worse than ferric's production dRPA/PDEP C6). See
-//! [`run_rpax_static_polarizability`]'s doc for the full caveat.
+//! `run_rpax_static_polarizability`'s doc for the full caveat.
 
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
@@ -79,7 +79,7 @@ pub struct BseResult {
     /// GW quasiparticle energies used for the diagonal (active block, Ha).
     pub eps_qp: Vec<f64>,
     /// Length-gauge oscillator strengths f_n (dimensionless), same ordering
-    /// and length as `omega`. See [`tda_oscillator_strengths`] for the
+    /// and length as `omega`. See `tda_oscillator_strengths` for the
     /// convention and its PySCF cross-check.
     pub oscillator_strength: Vec<f64>,
 }

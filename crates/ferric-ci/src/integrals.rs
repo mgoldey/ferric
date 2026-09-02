@@ -7,7 +7,7 @@
 //! the fully-occupied inactive (frozen-core) orbitals contribute a constant
 //! plus an effective one-electron potential folded into `h_pq`.
 //!
-//! The AO→MO transform mirrors [`ferric_mp2::canonical`]'s dense shell-quartet
+//! The AO→MO transform mirrors `ferric_mp2::canonical`'s dense shell-quartet
 //! loop, but restricted to the active-orbital subset
 //! `active_start .. active_start + n_active` (plus, for the effective potential,
 //! contractions over the inactive orbitals). This is O(N^4) in the *full* AO

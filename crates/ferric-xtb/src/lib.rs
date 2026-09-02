@@ -59,7 +59,7 @@
 //!
 //! ferric and xtb agree on atomic units, so nothing is rescaled at the boundary:
 //! coordinates in **Bohr** in, energy in **Hartree** out, gradient in
-//! **Hartree/Bohr**. See [`calculator`] for the verification of that claim.
+//! **Hartree/Bohr**. See `calculator` for the verification of that claim.
 //!
 //! # Validation status (2026-07-27, xtb 6.7.1 commit a59bca3)
 //!
@@ -96,18 +96,18 @@
 //! # Threading
 //!
 //! libxtb is **not thread-safe** (process-global state -- measured, see
-//! [`calculator`]). Parallelise across processes, not threads.
+//! `calculator`). Parallelise across processes, not threads.
 //!
-//! [`XtbCalculator`] is `!Send`/`!Sync` on purpose, and a `#[cfg(test)]`
+//! `XtbCalculator` is `!Send`/`!Sync` on purpose, and a `#[cfg(test)]`
 //! compile-time guard in `calculator.rs` (`send_sync_guard`) fails the build
 //! if that ever stops being true. That property is load-bearing, not
 //! decorative:
 //!
 //! - **Never** add `unsafe impl Send`/`unsafe impl Sync` for
-//!   [`XtbCalculator`] or its handle newtypes -- the process-global state
+//!   `XtbCalculator` or its handle newtypes -- the process-global state
 //!   inside libxtb means two calculators driven concurrently corrupt each
 //!   other even though each owns private handles.
-//! - **Never** drive an [`XtbCalculator`] from inside a `rayon` parallel
+//! - **Never** drive an `XtbCalculator` from inside a `rayon` parallel
 //!   iterator (`par_iter`, `join`, a thread pool, ...) in the same process.
 //!   Screen conformers with process-level parallelism instead -- one
 //!   molecule per process, `OMP_NUM_THREADS=1` per process -- matching how

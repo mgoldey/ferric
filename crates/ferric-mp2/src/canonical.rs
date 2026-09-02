@@ -24,7 +24,7 @@
 //! The AO integrals are built once into a dense `nbas^4` buffer using the
 //! 8-fold permutational symmetry of `(mu nu|la sg)` (only the
 //! `s1>=s2, s3>=s4, pair12>=pair34` triangle is evaluated, then scattered to
-//! its images), parallel over canonical shell pairs via [`EnginePool`] -- one
+//! its images), parallel over canonical shell pairs via [`ferric_integrals::engine_pool::EnginePool`] -- one
 //! libint2 engine per rayon worker, since constructing one per work-chunk is
 //! the documented contention footgun (see `ferric_integrals::engine_pool`).
 //!

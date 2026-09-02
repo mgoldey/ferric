@@ -21,7 +21,7 @@
 //!
 //! 1. **Union.** Form `M^{ijk} = Σ_{(p,q) ⊂ {i,j,k}} P^{pq} (P^{pq})ᵀ`, a sum of
 //!    orthogonal projectors, and take the range. This is the technique
-//!    [`ferric_rpa::dlpno_rpa`] already uses for its per-orbital unions and it
+//!    `ferric_rpa::dlpno_rpa` already uses for its per-orbital unions and it
 //!    is chosen for a numerical reason, not a stylistic one: a sum of orthogonal
 //!    projectors has every nonzero eigenvalue `≥ 1` and every out-of-span
 //!    eigenvalue exactly `0`, so the rank test sits in an **O(1) gap** rather
@@ -41,16 +41,16 @@
 //!   D[a,b,c] = ε_i + ε_j + ε_k − ε_a − ε_b − ε_c
 //! ```
 //!
-//! is only meaningful in a Fock-diagonal basis. [`TripleTnoBasis::build`]
+//! is only meaningful in a Fock-diagonal basis. [`crate::dlpno_ccsd_t_virtual::TripleTnoBasis::build`]
 //! therefore forms `F^{ijk} = Q ᵀ diag(ε_v) Q`, **re-diagonalizes it** with
-//! [`eigh_dc`], and stores the composite `Q̃ = Q·U` together with the resulting
+//! [`ferric_core::linalg::eigh_dc`], and stores the composite `Q̃ = Q·U` together with the resulting
 //! TNO orbital energies. Callers never see a non-semicanonical basis.
 //!
 //! Taking only the diagonal `f_ãã = Σ_c Q_cã² ε_c` is WRONG and fails
 //! **silently** — the energy stays plausible. That is not hypothetical: it broke
 //! DLPNO-MP2's exactness contract by 0.117 Ha before an exactness test caught
-//! it. [`tests::stage1_semicanonical_fock_is_diagonal`] pins the fix and
-//! [`tests::stage1_naive_diagonal_fock_would_be_wrong`] pins its premise by
+//! it. `tests::stage1_semicanonical_fock_is_diagonal` pins the fix and
+//! `tests::stage1_naive_diagonal_fock_would_be_wrong` pins its premise by
 //! MEASURING the off-diagonal magnitude in the raw TNO basis, so the shortcut is
 //! demonstrably not an approximation *here* either.
 //!
@@ -82,7 +82,7 @@
 //!   permutation-independent — the resulting basis is **bit-identical** across
 //!   all 6 orderings, not merely equal to tolerance.
 //!
-//! [`tests::stage1_tno_basis_is_permutation_invariant`] pins that over all 6
+//! `tests::stage1_tno_basis_is_permutation_invariant` pins that over all 6
 //! orderings of every triple, on bits.
 //!
 //! # Exactness contract
@@ -98,40 +98,40 @@
 //! that rotates, it is the diagonal of a Fock-like operator, and the identity
 //! `Σ W̃V/D` holds in the new basis exactly when the new `ε̃` really are the Fock
 //! eigenvalues there. This is the concrete reason step 3 is load-bearing rather
-//! than cosmetic, and [`tests::stage3_tno_triple_energy_matches_dense`] is what
+//! than cosmetic, and `tests::stage3_tno_triple_energy_matches_dense` is what
 //! demonstrates it.
 //!
 //! | Stage | What | Exactness test |
 //! |-------|------|----------------|
-//! | 1 | [`TripleTnoBasis`] — union + semicanonical transform | [`tests::stage1_transforms_are_square_orthogonal_at_zero_cut`] |
-//! | 2 | [`w3_to_tno`] / [`w3_from_tno`] — `[nv,nv,nv]` block round trip | [`tests::stage2_w3_round_trip_is_exact_at_zero_cut`] |
-//! | 3 | [`tno_triple_contribution`] — the per-triple `Σ W̃V/D` | [`tests::stage3_tno_triple_energy_matches_dense`] |
+//! | 1 | [`crate::dlpno_ccsd_t_virtual::TripleTnoBasis`] — union + semicanonical transform | `tests::stage1_transforms_are_square_orthogonal_at_zero_cut` |
+//! | 2 | [`crate::dlpno_ccsd_t_virtual::w3_to_tno`] / [`crate::dlpno_ccsd_t_virtual::w3_from_tno`] — `[nv,nv,nv]` block round trip | `tests::stage2_w3_round_trip_is_exact_at_zero_cut` |
+//! | 3 | [`crate::dlpno_ccsd_t_virtual::tno_triple_contribution`] — the per-triple `Σ W̃V/D` | `tests::stage3_tno_triple_energy_matches_dense` |
 //!
 //! # What is NOT claimed
 //!
 //! * **No timing, no speedup, no cost model.** Truncating here changes the
 //!   *evaluation*; it does not make [`crate::ccsd_t_closed_shell`]'s kernel
 //!   cheaper, because that kernel still builds its `W` blocks densely. What is
-//!   reported is COUNTS ([`TripleTnoBasis::virtual_retention`],
-//!   [`TripleTnoBasis::block_elements`]) and ENERGIES.
+//!   reported is COUNTS ([`crate::dlpno_ccsd_t_virtual::TripleTnoBasis::virtual_retention`],
+//!   [`crate::dlpno_ccsd_t_virtual::TripleTnoBasis::block_elements`]) and ENERGIES.
 //! * **The `(T)` kernel is not rewritten in the TNO basis.** Doing that means
 //!   re-deriving [`crate::ccsd_t_closed_shell`]'s two `raw_w_block` GEMMs, the
 //!   six-permutation `W`, the `r3` pattern and the `V` singles terms in a basis
 //!   that differs per triple, with cross-triple overlap matrices wherever a
 //!   contraction couples two triples. That is a much larger change whose failure
 //!   mode is a plausible-but-wrong energy. What is here is the tested substrate
-//!   that change needs, and [`tno_triple_contribution`] consumes a
+//!   that change needs, and [`crate::dlpno_ccsd_t_virtual::tno_triple_contribution`] consumes a
 //!   *dense-built* `W`/`V` — honest, and exact, but not yet the cheap path.
 //! * **No claim that this compresses on ferric's systems.** ferric has a
 //!   MEASURED negative result for virtual truncation at small N (the OSV sweep:
 //!   100% retention at accurate thresholds, 48–76 mHa at loose ones). A union
 //!   can only ever be **at least as large** as its largest constituent pair, so
 //!   a per-pair PNO retention is never a valid proxy for a triple's dimension;
-//!   [`TripleTnoBasis::virtual_retention`] is the number to quote.
+//!   [`crate::dlpno_ccsd_t_virtual::TripleTnoBasis::virtual_retention`] is the number to quote.
 //!
 //!   How much *worse* than the per-pair numbers is threshold-dependent, and
-//!   [`tests::stage1_union_is_at_least_as_large_as_its_pairs`] measures it
-//!   rather than asserting the analogy with [`ferric_rpa::dlpno_rpa`]'s
+//!   `tests::stage1_union_is_at_least_as_large_as_its_pairs` measures it
+//!   rather than asserting the analogy with `ferric_rpa::dlpno_rpa`'s
 //!   re-inflating per-orbital unions. On the toy fixture (nocc=4, nvir=6) the
 //!   three constituent PNO subspaces are still **nested** at `t_cut = 1e-3` — no
 //!   triple's union exceeds its largest pair — and re-inflation only switches on
@@ -340,7 +340,7 @@ impl TripleTnoBasis {
     /// True when nothing was truncated: every triple kept all `nvir` virtuals.
     ///
     /// The exactness precondition. At `t_cut_tno = 0` this must hold, which
-    /// [`tests::stage1_transforms_are_square_orthogonal_at_zero_cut`] pins.
+    /// `tests::stage1_transforms_are_square_orthogonal_at_zero_cut` pins.
     pub fn is_complete(&self) -> bool {
         self.triples.iter().all(|t| t.ntno() == self.nvir)
     }

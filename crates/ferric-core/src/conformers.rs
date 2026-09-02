@@ -19,15 +19,15 @@
 //! Conformer **generation** is deliberately NOT implemented here. RDKit does
 //! that well, and the `esp-conditioning` consumer already runs
 //! SMILES → RDKit → ferric. Conformers are taken as *input*: either a
-//! `Vec<Molecule>` or a multi-frame XYZ file ([`parse_multi_xyz`]).
+//! `Vec<Molecule>` or a multi-frame XYZ file ([`crate::conformers::parse_multi_xyz`]).
 //!
 //! # Why the standard deviation is not optional
 //!
 //! A conformer-averaged number without a spread is misleading: it hides whether
 //! the average came from one dominant conformer (in which case the ensemble was
 //! unnecessary) or from fifty comparable ones (in which case any
-//! single-conformer result is simply wrong). [`WeightedStats`] always carries
-//! both, and [`EnsembleDiagnostics`] reports the population structure that
+//! single-conformer result is simply wrong). [`crate::conformers::WeightedStats`] always carries
+//! both, and [`crate::conformers::EnsembleDiagnostics`] reports the population structure that
 //! produced them.
 //!
 //! # Example

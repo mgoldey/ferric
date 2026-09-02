@@ -26,9 +26,9 @@
 //!
 //! | Stage | What | Exactness test |
 //! |-------|------|----------------|
-//! | 1 | [`PairPnoBasis`] — semicanonical per-pair transform + PNO orbital energies | [`tests::stage1_transforms_are_orthogonal_at_zero_truncation`] |
-//! | 2 | [`t2_to_pno`] / [`t2_from_pno`] — amplitude round trip | [`tests::stage2_t2_round_trip_is_exact_at_zero_truncation`] |
-//! | 3 | [`pno_ccsd_energy`] — the CCSD energy from PNO-basis amplitudes | [`tests::stage3_pno_energy_matches_dense_ccsd_water_631g`] |
+//! | 1 | [`crate::dlpno_ccsd_virtual::PairPnoBasis`] — semicanonical per-pair transform + PNO orbital energies | `tests::stage1_transforms_are_orthogonal_at_zero_truncation` |
+//! | 2 | [`crate::dlpno_ccsd_virtual::t2_to_pno`] / [`crate::dlpno_ccsd_virtual::t2_from_pno`] — amplitude round trip | `tests::stage2_t2_round_trip_is_exact_at_zero_truncation` |
+//! | 3 | [`crate::dlpno_ccsd_virtual::pno_ccsd_energy`] — the CCSD energy from PNO-basis amplitudes | `tests::stage3_pno_energy_matches_dense_ccsd_water_631g` |
 //!
 //! Stage 2 is load-bearing: if a converged dense `t2` cannot survive a trip
 //! through the per-pair basis and back, nothing downstream can be trusted.
@@ -43,7 +43,7 @@
 //! PNOs diagonalize the pair density, **not** the virtual Fock matrix. So after
 //! rotating into a pair's PNO basis the Fock matrix is no longer diagonal and
 //! neither the CCSD denominators nor any `ε_a`-indexed quantity is meaningful.
-//! [`PairPnoBasis::build`] therefore constructs `F^ij = Q ᵀ diag(ε_v) Q`,
+//! [`crate::dlpno_ccsd_virtual::PairPnoBasis::build`] therefore constructs `F^ij = Q ᵀ diag(ε_v) Q`,
 //! **re-diagonalizes it**, and folds the resulting `U` into the stored transform
 //! (`Q̃ = Q·U`), carrying the PNO orbital energies alongside.
 //!
@@ -51,8 +51,8 @@
 //! **silently**. It is not a hypothetical: it broke DLPNO-MP2's exactness
 //! contract by 0.117 Ha, with a MEASURED off-diagonal maximum of 0.137 on a 5×5
 //! rotation, before the exactness test caught it.
-//! [`tests::stage1_semicanonical_fock_is_diagonal`] pins the fix directly, and
-//! [`tests::stage1_naive_diagonal_fock_would_be_wrong`] pins the *premise* — that
+//! `tests::stage1_semicanonical_fock_is_diagonal` pins the fix directly, and
+//! `tests::stage1_naive_diagonal_fock_would_be_wrong` pins the *premise* — that
 //! the un-rediagonalized Fock really does have large off-diagonal elements, so
 //! the diagonal shortcut is measurably not an approximation.
 //!
@@ -61,7 +61,7 @@
 //! With `t_cut_pno = 0` and complete domains every transform is a square
 //! orthogonal rotation. Rotating a pair's amplitudes and its integrals by the
 //! *same* rotation leaves the energy contraction — a trace — invariant, so
-//! [`pno_ccsd_energy`] reproduces [`crate::ccsd_closed_shell`] exactly. That is
+//! [`crate::dlpno_ccsd_virtual::pno_ccsd_energy`] reproduces [`crate::ccsd_closed_shell`] exactly. That is
 //! the property every later claim about a truncated run depends on.
 //!
 //! # What is NOT claimed

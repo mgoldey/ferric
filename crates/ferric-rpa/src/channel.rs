@@ -4,7 +4,7 @@
 //! the same three quantities for a given spin: the RI three-index block
 //! `B^P_{ia}`, the occupied orbital energies, and the virtual orbital energies.
 //! In the unrestricted path these arrive as an α/β pair, so the loose form is
-//! six positional arguments that must stay correctly ordered. [`RpaChannel`]
+//! six positional arguments that must stay correctly ordered. [`crate::channel::RpaChannel`]
 //! bundles the triple so the two spins travel as two values instead of six.
 
 use ndarray::Array2;

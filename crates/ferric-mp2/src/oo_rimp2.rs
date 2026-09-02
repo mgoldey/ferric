@@ -575,7 +575,7 @@ pub fn compute_t2_and_integrals(
 /// Indexing matches: t2[ia*nov + jb], ia = i*nvir + a.
 ///
 /// `memory_budget_bytes` gates the momentary co-resident `t2`+`eri_ov_mat`
-/// pair (see [`check_t2_pair_alloc`]) — `None` resolves via
+/// pair (see `check_t2_pair_alloc`) — `None` resolves via
 /// [`ferric_core::memory::resolve_budget_bytes`], matching every other
 /// budget-aware entry point in this crate. This function currently has no
 /// callers outside its own test (see the doc comment above for the intended

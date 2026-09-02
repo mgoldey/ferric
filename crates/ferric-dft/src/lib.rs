@@ -57,7 +57,7 @@ pub mod vv10;
 pub mod vxc;
 /// XC kernel (f_xc) for Newton-step SCF solvers (LDA and GGA).
 pub mod fxc;
-/// [`XcFunctional`](xc_trait::XcFunctional) trait: abstract interface to XC evaluators.
+/// [`XcContribution`](xc_trait::XcContribution) trait: abstract interface to XC evaluators.
 pub mod xc_trait;
 
 /// Crate-wide serialization for tests that SET or transitively READ the

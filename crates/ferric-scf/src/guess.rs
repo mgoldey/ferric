@@ -666,7 +666,7 @@ fn atomic_hcore_density(
 ///
 ///  * **Heavy atoms** — transition metals and heavier (`Z ≥ 21`) or any element
 ///    whose target shells include high angular momentum (`l ≥ 4`, g functions):
-///    a **no-SCF** GWH atomic block from [`atomic_hcore_density`] built directly
+///    a **no-SCF** GWH atomic block from `atomic_hcore_density` built directly
 ///    in the target basis (one small eigensolve; ONE-electron integrals only, so
 ///    even Cu/aug-cc-pVTZ g functions cost nothing). This is exactly the class the
 ///    guess exists to fix: a free-atom SCF on Cu/aug-cc-pVDZ (no g, but a heavy
@@ -675,7 +675,7 @@ fn atomic_hcore_density(
 ///    physical −3280.641 Ha / HOMO −0.174 Ha / 1.70 eV-gap state (matches PySCF).
 ///
 ///  * **Light main-group atoms** (`Z ≤ 20`, no g functions): a proper free-atom
-///    SCF block via [`free_atom_density`]. These solves are milliseconds (they were
+///    SCF block via `free_atom_density`. These solves are milliseconds (they were
 ///    never the pathology), and their self-consistent blocks are a higher-quality
 ///    seed than GWH — enough that tight-gate light-molecule DFT SCFs (methane/water
 ///    cc-pVDZ PBE at energy_conv 1e-10) still converge cleanly, matching the prior

@@ -1,8 +1,8 @@
 //! Pair list infrastructure for linear-scaling exchange (LinK).
 //!
-//! - [`SignificantPairs`]: geometry-dependent pair lists built once per geometry.
-//! - [`DensityPairs`]: density-dependent pair lists rebuilt each SCF cycle.
-//! - [`intersect_sorted`]: O(n) merge intersection of two sorted slices.
+//! - [`crate::pairs::SignificantPairs`]: geometry-dependent pair lists built once per geometry.
+//! - [`crate::pairs::DensityPairs`]: density-dependent pair lists rebuilt each SCF cycle.
+//! - [`crate::pairs::intersect_sorted`]: O(n) merge intersection of two sorted slices.
 
 use crate::screening::Bound;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -85,7 +85,7 @@ impl DensityPairs {
     /// exceeds `threshold`.
     ///
     /// Parallelized over the outer shell index `j` once `nsh` clears
-    /// [`PAR_DENSITY_PAIRS_THRESHOLD`]. Each `j` reads only `d`/`bound`/`prep`
+    /// `PAR_DENSITY_PAIRS_THRESHOLD`. Each `j` reads only `d`/`bound`/`prep`
     /// (shared, read-only) and *produces* its own `row: Vec<usize>` — there is
     /// no shared mutable state or scatter to reason about, just a per-index
     /// pure function `j ↦ row(j)`. `into_par_iter().map(..).collect()` is

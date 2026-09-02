@@ -27,7 +27,7 @@
 //!
 //! # Kohn–Sham references
 //!
-//! Passing an [`XcSpec`] builds an unrestricted **Kohn–Sham** `F_σ`: semilocal `V^σ_xc`
+//! Passing an [`crate::semicanonical::XcSpec`] builds an unrestricted **Kohn–Sham** `F_σ`: semilocal `V^σ_xc`
 //! (plus VV10) from the named functional, with exact exchange following that
 //! functional's own `KMix` — full `K` for Hartree–Fock, scaled `K` for a plain hybrid,
 //! and the split `c_sr·K_SR + c_lr·K_LR` for a range-separated one such as ωB97X-L-V.

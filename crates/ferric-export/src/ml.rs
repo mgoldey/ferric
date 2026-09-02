@@ -88,7 +88,7 @@ pub struct NpzBundle<'a> {
     pub density_matrix: Option<&'a Array2<f64>>,
     /// Per-MO centroids (n, 3) Bohr — pairs with `orbital_spreads`.
     pub orbital_centers: Option<&'a Array2<f64>>,
-    /// Per-MO spatial spreads sigma = sqrt(<r^2> - |<r>|^2), Bohr.
+    /// Per-MO spatial spreads `sigma = sqrt(<r^2> - |<r>|^2)`, Bohr.
     pub orbital_spreads: Option<&'a [f64]>,
     /// Electronic-density second-moment tensor (3, 3) about the origin.
     pub density_second_moment: Option<&'a Array2<f64>>,

@@ -16,9 +16,9 @@
 //!   * meta-GGA functionals (no τ f_xc kernel — `GgaFxcKernel::new` rejects
 //!     them and that error propagates),
 //!   * VV10 nonlocal correlation response (silently absent from the kernel —
-//!     see [`run_tda_dft`]'s hard rejection of VV10-carrying functionals),
+//!     see `run_tda_dft`'s hard rejection of VV10-carrying functionals),
 //!   * range-separated hybrids (the long-range exchange kernel term is not
-//!     assembled — see the `KMix` handling in [`run_tda_dft`], which rejects
+//!     assembled — see the `KMix` handling in `run_tda_dft`, which rejects
 //!     `omega != 0`).
 //!
 //! It is library-only and deliberately NOT wired into the CLI or the Python
@@ -39,8 +39,8 @@
 //! `add_hf_` contributes `2·(ia|jb) − hyb·(ij|ab)`, and its XC block adds
 //! `iajb = 2 · Σ_g w_g f_xc^{eff}(r_g) ρ_ov^{ia}(r_g) ρ_ov^{jb}(r_g)`).
 //!
-//! `c_HF` is the exact-exchange fraction from the functional's [`KMix`]
-//! (0 for a pure LDA/GGA, e.g. 0.2 for B3LYP).
+//! `c_HF` is the exact-exchange fraction from the functional's
+//! [`KMix`](ferric_dft::xc_trait::KMix) (0 for a pure LDA/GGA, e.g. 0.2 for B3LYP).
 //!
 //! ## The f_xc adapter — the one genuinely new piece
 //!
@@ -65,7 +65,7 @@
 //! **This factor is not asserted from theory here — it is pinned numerically
 //! against PySCF `tddft.TDA` in `crates/ferric-gw/tests/tda_dft_pyscf.rs`, and
 //! the whole f_xc-free limit is pinned against `run_cis_tda` by
-//! [`run_tda_dft`]'s exactness anchor test.**
+//! `run_tda_dft`'s exactness anchor test.**
 //!
 //! # Validation status
 //!
@@ -571,7 +571,7 @@ impl TdaDftResult {
 }
 
 /// Transition dipole vector (a.u., length gauge) of state `n`, in the same
-/// convention as [`tda_oscillator_strengths`]. Exposed separately from the
+/// convention as `tda_oscillator_strengths`. Exposed separately from the
 /// oscillator strength because a DIRECTION is a much stronger state-matching
 /// fingerprint than a scalar magnitude.
 pub fn transition_dipole(

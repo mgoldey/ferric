@@ -1,6 +1,6 @@
 //! Exact-integral (non-RI) LinLCCD — a reference path for quantifying the RI error.
 //!
-//! [`super::linlccd`] builds its integrals by density fitting, which carries an error
+//! [`crate::linlccd`] builds its integrals by density fitting, which carries an error
 //! floor (~1e-5 Ha on water/cc-pVDZ for ferric's other RI methods). That floor is
 //! invisible from inside the RI path: it looks like a converged answer. This module
 //! solves the *same* amplitude equations from exact 4-center integrals, so the two can

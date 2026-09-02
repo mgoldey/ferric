@@ -14,7 +14,7 @@
 //! the SAME Hylleraas functional whose integral-response terms the gradient
 //! needs: `dE_total/dkappa_ai = 0` at convergence (that is literally
 //! [`crate::oo_rimp2::oo_ri_mp2`]'s convergence criterion, `grad_norm <
-//! grad_conv`, on [`crate::oo_rimp2::compute_orbital_gradient`]). So by the
+//! grad_conv`, on `crate::oo_rimp2::compute_orbital_gradient`). So by the
 //! same envelope-theorem argument that drops the orbital-response term from
 //! the Hellmann-Feynman force at a variational stationary point (e.g. plain
 //! HF's gradient needing no CPHF term), OO-MP2's Z-vector-equivalent
@@ -32,7 +32,7 @@
 //! Hypothesis and fix were checked numerically before porting: a scratch
 //! PySCF script (`oomp2_converge.py`, session scratch, not in-repo) built a
 //! from-scratch OO-MP2 orbital optimizer (reusing the already-verified
-//! [`crate::oo_rimp2::compute_orbital_gradient`] formula) and cross-checks
+//! `crate::oo_rimp2::compute_orbital_gradient` formula) and cross-checks
 //! against `ferric-mp2`'s own `oo_ri_mp2`, which independently agrees with
 //! Psi4's conventional OMP2 to ~1.3e-4 Ha on H2O/cc-pVDZ (see
 //! `test_oo_rimp2_h2o_ccpvdz_matches_psi4_omp2_reference`). The correct

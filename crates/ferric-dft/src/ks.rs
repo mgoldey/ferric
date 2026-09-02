@@ -425,7 +425,7 @@ enum GridCache {
 
 /// Caches everything needed to compute V_xc and V_nl per SCF iteration:
 /// a Becke-Lebedev grid plus precomputed χ, ∇χ on its points (or, over
-/// budget, a batch size to reconstruct them on demand — see [`GridCache`]).
+/// budget, a batch size to reconstruct them on demand — see `GridCache`).
 /// If the XC definition includes VV10, also caches a smaller NLC grid + AO
 /// (VV10's O(npts²) pair sum needs its own grid fully resident regardless —
 /// see `check_grid_budget` — so the NLC cache is never batched).

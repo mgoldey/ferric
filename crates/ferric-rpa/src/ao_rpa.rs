@@ -460,7 +460,7 @@ pub fn chi0_ao_full_time(
     Ok(out)
 }
 
-/// Dress the 3-index ERI with V^{-1/2}: B̃[P,μ,ν] = Σ_Q V^{-1/2}[P,Q] · eri3[Q,μ,ν].
+/// Dress the 3-index ERI with V^{-1/2}: `B̃[P,μ,ν] = Σ_Q V^{-1/2}[P,Q] · eri3[Q,μ,ν]`.
 ///
 /// This is the AO analogue of the standard MO `b_ov = V^{-1/2} · (P|ia)`
 /// dressing: by absorbing the metric inverse into one factor of the

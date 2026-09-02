@@ -10,7 +10,7 @@
 //! ```
 //!
 //! That is `6N` gradient evaluations (each a full SCF plus a gradient), the
-//! same displacement pattern [`ferric_mp2::gradient::rimp2_gradient_fd`] uses
+//! same displacement pattern `ferric_mp2::gradient::rimp2_gradient_fd` uses
 //! one derivative order lower. Differentiating an analytic gradient once is
 //! numerically far better conditioned than differencing energies twice: the
 //! error is `O(delta^2)` truncation plus `O(eps_scf / delta)` noise, rather
@@ -66,7 +66,7 @@
 //! every atom; the rotation vectors are `sqrt(m_A) * (e_k x (R_A - R_com))`.
 //! For a linear molecule the rotation about the molecular axis vanishes
 //! identically, so Gram-Schmidt finds only 2 independent rotations and the
-//! subspace has rank 5 — [`detect_linear`] and the rank found by
+//! subspace has rank 5 — [`crate::frequencies::detect_linear`] and the rank found by
 //! orthonormalization are cross-checked against each other.
 //!
 //! # Mass convention

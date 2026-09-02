@@ -112,7 +112,7 @@ pub fn sigma_x_diag(mo_b: &MoB) -> Array1<f64> {
 /// (and once per spin for U-GW). Rank truncation (`trunc_thresh > 0`) shrinks
 /// m_modes and this tensor quadratically.
 ///
-/// Gated by [`guard_m_proj`] against `memory_budget_bytes` (the caller's
+/// Gated by `guard_m_proj` against `memory_budget_bytes` (the caller's
 /// [`GwConfig::memory_budget_bytes`](crate::GwConfig::memory_budget_bytes), or
 /// `None` to fall back to the env/auto ceiling). This function is FALLIBLE for
 /// that reason — see `guard_m_proj`'s docs for why the old warn-only form was

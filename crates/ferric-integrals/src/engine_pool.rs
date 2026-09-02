@@ -1,6 +1,6 @@
 //! Per-thread 2e integral-engine pool.
 //!
-//! Lives in `ferric-integrals` (next to [`Engine`]) rather than `ferric-scf` so
+//! Lives in `ferric-integrals` (next to [`crate::engine::Engine`]) rather than `ferric-scf` so
 //! that lower-level integral code — Schwarz bounds, 3-index drivers — can use it
 //! too. `ferric_scf::engine_pool` re-exports it, so existing callers are
 //! unaffected. It was originally written for the direct (exact-ERI) Fock

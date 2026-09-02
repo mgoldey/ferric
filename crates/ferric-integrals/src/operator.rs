@@ -204,7 +204,7 @@ impl Operator {
     /// standard 6-term fit by a sum of Gaussians, exp(-gamma r) ≈ Σ cᵢ exp(-αᵢ r²).
     ///
     /// Coefficients/exponents are the Tew–Klopper (2005) least-squares fit of
-    /// exp(-r) on [0,10] a.u.; scaling r→gamma·r maps the exponents by gamma².
+    /// exp(-r) on `[0,10]` a.u.; scaling r→gamma·r maps the exponents by gamma².
     /// The −1/gamma prefactor of the Slater geminal is folded into the
     /// coefficients so the carried geminal IS f12 (not exp(-gamma r)).
     ///

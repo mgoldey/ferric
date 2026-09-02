@@ -24,7 +24,7 @@
 //!
 //! # Exactness contract
 //!
-//! With complete domains, [`apply_pair_mask`] is the identity on `t2`, so a CCSD
+//! With complete domains, [`crate::dlpno_ccsd::apply_pair_mask`] is the identity on `t2`, so a CCSD
 //! run through it reproduces the unscreened one bit for bit.
 //! `pair_mask_is_identity_when_complete` pins that.
 

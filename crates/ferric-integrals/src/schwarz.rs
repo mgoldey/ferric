@@ -42,7 +42,7 @@ fn schwarz_pair(eng: &mut Engine, prep: &PreparedBasis, i: usize, j: usize) -> f
 /// Q(i,j) * Q(k,l) provides an upper bound on |(ij|kl)|, enabling integral screening.
 ///
 /// Parallelized over upper-triangle shell pairs once `nsh` clears
-/// [`PAR_SCHWARZ_SHELL_THRESHOLD`] — the historical `scf_compute_schwarz` FFI
+/// `PAR_SCHWARZ_SHELL_THRESHOLD` — the historical `scf_compute_schwarz` FFI
 /// call ran the whole O(nsh²) diagonal-quartet loop serially on one engine,
 /// which dominated setup on large direct jobs. Each rayon worker builds its own
 /// [`Engine`] via `map_init` (construction is serialized behind a global ctor
@@ -137,15 +137,15 @@ pub fn schwarz(op: Operator, prep: &PreparedBasis) -> Result<Array2<f64>, Ferric
 const PAR_AUX_SHELL_THRESHOLD: usize = 64;
 
 /// Per-shell Schwarz bound for an auxiliary (density-fitting) basis:
-/// Q3[P] = sqrt(max_a |(P_a | P_a)|) over the functions a in aux shell P.
+/// `Q3[P] = sqrt(max_a |(P_a | P_a)|)` over the functions a in aux shell P.
 ///
 /// Combined with the orbital-pair matrix Q(μ,ν) = sqrt(|(μν|μν)|), this gives
 /// the rigorous 3-index Cauchy–Schwarz bound
-///   |(P | μν)|  ≤  Q3[P] · Q(μ,ν)
+///   `|(P | μν)|  ≤  Q3[P] · Q(μ,ν)`
 /// which lets `eri3_tensor_screened` skip shell triples whose contribution
 /// is below threshold without computing them.
 ///
-/// Parallelized over `p` once `nsh` clears [`PAR_AUX_SHELL_THRESHOLD`]: each
+/// Parallelized over `p` once `nsh` clears `PAR_AUX_SHELL_THRESHOLD`: each
 /// rayon worker builds its own `Engine` via `for_each_init` (never per-item —
 /// construction runs under a global ctor mutex). Each iteration writes only
 /// `q3[p]` — a single distinct index per task, so the write set is trivially

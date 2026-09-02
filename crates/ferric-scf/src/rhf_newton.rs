@@ -16,7 +16,7 @@
 //! we use g_ai = F_ai and gap = F_aa − F_ii consistently, matching the UHF path.)
 //!
 //! The Hessian matvec builds the AO restricted density perturbation
-//!   δD = 2 · (C δD_MO Cᵀ),   δD_MO[a,i] = δD_MO[i,a] = κ_{ai}
+//!   δD = 2 · (C δD_MO Cᵀ),   δD_MO\[a,i\] = δD_MO\[i,a\] = κ_{ai}
 //! (the factor 2 is the closed-shell double occupation, matching D = 2·C_occ·C_occᵀ),
 //! rebuilds J on δD and K on δD, and — for KS — adds the XC-kernel response using
 //! the SAME `FxcKernelStore`/`FxcResponse` closure the ROKS/UKS paths use, called

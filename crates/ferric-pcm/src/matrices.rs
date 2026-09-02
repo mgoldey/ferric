@@ -4,7 +4,7 @@
 //!
 //! # Two S/D formulations
 //!
-//! [`SdKind::PointCharge`] (the module's original formulation) models each
+//! `SdKind::PointCharge` (the module's original formulation) models each
 //! tessera as a bare point charge:
 //!
 //! ```text
@@ -18,7 +18,7 @@
 //! with `ξ = 1.0694` the standard GEPOL point-charge self-energy constant
 //! (Cancès, Mennucci, Tomasi, J. Chem. Phys. 107, 3032 (1997)).
 //!
-//! [`SdKind::GaussianSmeared`] (PySCF `pcm.py::get_D_S`'s formulation, Li &
+//! `SdKind::GaussianSmeared` (PySCF `pcm.py::get_D_S`'s formulation, Li &
 //! Frisch/Scalmani, "Continuous Surface Charge Polarizable Continuum
 //! Models", J. Chem. Phys. 122, 194110 (2005)) instead treats each tessera as
 //! a Gaussian charge distribution of width `xi_k` set by the LOCAL Lebedev
@@ -38,10 +38,10 @@
 //! where `nrij = (r_i − r_j)·n_j` (normal at the source point `j`, same
 //! convention as `PointCharge`'s `D`). This is ported directly from PySCF's
 //! `get_D_S` (equation-level cross-check only, no code copied) and mirrors
-//! the [`ferric_scf::cosmo`] crate's `SMatrixKind::GaussianSmeared`, which
+//! the `ferric_scf::cosmo` crate's `SMatrixKind::GaussianSmeared`, which
 //! closed most of that sibling (conductor-limit) model's gap to a PySCF
 //! reference — see that crate's module doc. This is the default here (see
-//! [`SdKind::default`]); `PointCharge` is kept only for the regression test
+//! `SdKind::default`); `PointCharge` is kept only for the regression test
 //! that measures the isolated S/D formulation effect and to reproduce
 //! pre-2026-07-19 numbers.
 //!

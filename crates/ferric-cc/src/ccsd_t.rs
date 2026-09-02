@@ -51,13 +51,13 @@
 //! term reshapes `bcei[:,:,:,i]` to `(nv2·nv2, nv2)` and right-multiplies by
 //! `t2[j,k,:,:]ᵀ`; the second reshapes `t2[i,:,:,:]` to `(no2, nv2·nv2)` and
 //! left-multiplies by `majk[:,:,j,k]ᵀ`; `raw_v` is a plain outer product) —
-//! see [`raw_w_block`] / [`raw_v_block`]. The full antisymmetrized `W`/`V`
+//! see `raw_w_block` / `raw_v_block`. The full antisymmetrized `W`/`V`
 //! blocks for a canonical triple `i0<j0<k0` are then the signed sum over the
 //! 3 occupied permutations `{(i0,j0,k0):+, (j0,i0,k0):−, (k0,j0,i0):−}`
-//! (exactly `P(i/jk)`, transcribed from [`p_i_jk`]) crossed with the 3
+//! (exactly `P(i/jk)`, transcribed from `p_i_jk`) crossed with the 3
 //! virtual permutations `{(a,b,c):+, (b,a,c):−, (c,b,a):−}` applied to the
 //! *free* `a,b,c` axes of each raw block (exactly `P(a/bc)`, transcribed from
-//! [`p_a_bc`]) — see [`triple_block`]. This is verified to reproduce the
+//! `p_a_bc`) — see `triple_block`. This is verified to reproduce the
 //! OLD dense path bit-for-bit (to ~1e-10) on H2O/cc-pVDZ in
 //! `streaming_matches_dense_h2o_ccpvdz` below before the dense code was
 //! removed, and the two existing correctness-gate tests
@@ -85,7 +85,7 @@
 //!
 //! Peak per-triple footprint is a handful of `[2nv,2nv,2nv]` f64 buffers
 //! (`raw_w`, `raw_v`, `w_block`, `v_block`, `d_block`, one scratch) — see
-//! [`peak_triple_block_bytes`] and the updated size guard below, which now
+//! `peak_triple_block_bytes` and the updated size guard below, which now
 //! bounds that per-triple footprint (plus the O(no·nv³)-class precomputed
 //! intermediates) instead of the old O((no2·nv2)³) dense ceiling.
 

@@ -3,7 +3,7 @@
 //! # Why this module exists
 //!
 //! The symmetric/Hermitian eigensolver reached through `ndarray-linalg`'s
-//! [`Eigh`](ndarray_linalg::Eigh) trait resolves (via the `lax` crate) to the
+//! `Eigh` (`ndarray_linalg::Eigh`) trait resolves (via the `lax` crate) to the
 //! QR-algorithm LAPACK drivers `dsyev_`/`zheev_`. `lax` hardcodes those and
 //! exposes **no** divide-and-conquer variant — there is no feature flag or
 //! parameter to switch. For the large symmetric Fock / dielectric / metric
@@ -12,7 +12,7 @@
 //! faster (~5x measured at n=414 single-threaded: 99 ms → 21 ms) while
 //! computing the *same* decomposition.
 //!
-//! [`eigh_dc`] wraps `dsyevd_` directly (through the already-linked
+//! [`crate::linalg::eigh_dc`] wraps `dsyevd_` directly (through the already-linked
 //! `lapack-sys` bindings and the OpenBLAS backend the rest of the workspace
 //! uses) with the standard LAPACK workspace-query calling convention, and
 //! returns results in the **same convention as `ndarray_linalg::Eigh::eigh`**:
@@ -27,7 +27,7 @@
 //! without transposing the input (this is why we require a symmetric matrix).
 //! On output `dsyevd_` overwrites that buffer with the eigenvectors as
 //! **columns in column-major order**. Read back as a row-major `ndarray`,
-//! those columns land in the **rows**, so [`eigh_dc`] transposes once at the
+//! those columns land in the **rows**, so [`crate::linalg::eigh_dc`] transposes once at the
 //! end to restore the "eigenvectors in columns" convention that every ferric
 //! call site (and `ndarray_linalg`) expects.
 //!
@@ -39,7 +39,7 @@
 //! and the two algorithms make different (equally correct) choices.
 //!
 //! - **Safe:** consumers that use only the eigen*values*
-//!   ([`eigvalsh_dc`] — e.g. RPA per-frequency dielectric trace-log sweeps),
+//!   ([`crate::linalg::eigvalsh_dc`] — e.g. RPA per-frequency dielectric trace-log sweeps),
 //!   and consumers that build a **symmetric matrix function** `U f(Λ) Uᵀ`
 //!   (S^{±1/2}, V^{-1/2}) whose result is invariant to degenerate-subspace
 //!   rotation.

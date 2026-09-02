@@ -7,24 +7,24 @@
 //!          ≈ Σ_P Σ_{λσ} B^P_{μλ} B^P_{νσ} D_{λσ}        (RI with V^{-1/2}-dressed B)
 //!
 //! Computed as two passes over (P,μ,ν):
-//!   Z[P,μ,σ] = Σ_λ B[P,μ,λ] · D[λ,σ]
-//!   K[μ,ν]   = Σ_{P,σ} Z[P,μ,σ] · B[P,ν,σ]
+//!   Z\[P,μ,σ\] = Σ_λ B\[P,μ,λ\] · D\[λ,σ\]
+//!   K\[μ,ν\]   = Σ_{P,σ} Z\[P,μ,σ\] · B\[P,ν,σ\]
 //!
 //! Each aux-block is contracted in rayon-parallel aux-chunks; BLAS stays
 //! single-threaded (OPENBLAS_NUM_THREADS=1 under rayon), so chunks are the
 //! parallel unit. The two builders differ in how a chunk is contracted:
 //!
-//! * [`KBuilder::build`] (density path) collapses the per-P (n,n)×(n,n) GEMM
+//! * [`crate::fock::KBuilder::build`] (density path) collapses the per-P (n,n)×(n,n) GEMM
 //!   stack into two wide GEMMs on repacked operands — O(naux·n³).
-//! * [`KBuilder::build_from_occ`] (occupied path, used once MOs exist) never
-//!   repacks: B[P] is already a contiguous symmetric (n,n) slice, so each P is
+//! * [`crate::fock::KBuilder::build_from_occ`] (occupied path, used once MOs exist) never
+//!   repacks: B\[P\] is already a contiguous symmetric (n,n) slice, so each P is
 //!   one DSYMM into a stacked (n, c·nocc) panel, reduced by ONE DSYRK per chunk
 //!   — O(naux·n²·nocc), with both symmetries taken. At benzene/aug-cc-pVTZ
 //!   (n=414, nocc=21) that is ~12.8x faster than the density path per build.
 //!   The repack the density path amortizes over an n-wide contraction was 35%
 //!   of the occ path's runtime, since its contraction is only nocc-wide.
 //!
-//! The dressed 3-center tensor B[P,μ,ν] = Σ_Q V^{-1/2}_{PQ} (Q|μν) is built once
+//! The dressed 3-center tensor B\[P,μ,ν\] = Σ_Q V^{-1/2}_{PQ} (Q|μν) is built once
 //! at construction (via ThreeIndexSource::build_dressed) and reused every SCF
 //! iteration.  The dressed source is budget-bounded: in-core when
 //! naux·nao²·8 ≤ budget_bytes, else aux-blocked disk-spill.
@@ -85,7 +85,7 @@ extern "C" {
 /// ## MPI aux-band striping
 /// Under MPI (`new_banded` with a multi-rank [`ParallelContext`]), each rank
 /// dresses and holds ONLY its own contiguous aux band `[band_p0, band_p1)` of
-/// B[P,μ,ν] — the resident B footprint scales with rank count. Because
+/// `B[P,μ,ν]` — the resident B footprint scales with rank count. Because
 /// K = Σ_P B_P D B_Pᵀ is a plain sum over P, each rank's band-restricted `build`
 /// yields a partial K and one final all_reduce sums them. (Dressing a band still
 /// reads all Q of the raw tensor — that raw is budget-bounded / spillable, so it
@@ -93,7 +93,7 @@ extern "C" {
 /// feature off) the band is `0..naux` and the reduction is skipped, so behavior
 /// is byte-identical to the serial path.
 pub struct DfK<'a> {
-    /// Budget-bounded dressed 3-center source B[P,μ,ν] = Σ_Q V^{-1/2}_{PQ} (Q|μν)
+    /// Budget-bounded dressed 3-center source B\[P,μ,ν\] = Σ_Q V^{-1/2}_{PQ} (Q|μν)
     /// — holds only this rank's aux band `[band_p0, band_p1)`.
     dressed: ThreeIndexSource,
     /// Parallel context for the final cross-rank K reduction. `None` → serial /
@@ -161,7 +161,7 @@ impl<'a> DfK<'a> {
     /// serial / single-rank — byte-identical to the pre-MPI path).
     ///
     /// Computes V^{-1/2} = U · diag(λ^{-1/2}) · U^T from the symmetric eigendecomp
-    /// of the (P|Q) Coulomb metric, then forms B[P,μ,ν] = Σ_Q V^{-1/2}_{PQ} (Q|μν)
+    /// of the (P|Q) Coulomb metric, then forms `B[P,μ,ν] = Σ_Q V^{-1/2}_{PQ} (Q|μν)`
     /// via ThreeIndexSource::build_dressed, honouring `budget_bytes`.
     pub fn new(
         op: Operator,

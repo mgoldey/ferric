@@ -80,7 +80,7 @@ const ATOMIC_MASSES: &[f64] = &[
 /// Isotope-averaged standard atomic weight for atomic number `z`, in unified
 /// atomic mass units (u). Returns `None` outside Z = 1..=54.
 ///
-/// See [`ATOMIC_MASSES`] for the data source (IUPAC 2013) and for why these
+/// See `ATOMIC_MASSES` for the data source (IUPAC 2013) and for why these
 /// are natural-abundance averages rather than single-isotope masses.
 pub fn atomic_mass(z: i32) -> Option<f64> {
     if z < 1 {

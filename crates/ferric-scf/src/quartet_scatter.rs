@@ -11,10 +11,10 @@
 //! ## What varies across callers
 //!
 //! - **What gets accumulated**: J only, K only, or both from the same
-//!   integral (see [`Accumulate`] / [`JkMode`]).
+//!   integral (see `JkMode`).
 //! - **The density screen**: `build_jk`/`DirectJK` use the full six-pairwise
 //!   `d_max_shell` table (`max(d12,d34,d13,d14,d23,d24)`); `DirectJ`/`DirectK`
-//!   use a single global `max_d` scalar. Parameterized via [`DensityScreen`]
+//!   use a single global `max_d` scalar. Parameterized via `DensityScreen`
 //!   — this is a difference in SCREENING TIGHTNESS only: a looser screen can
 //!   only *admit* quartets a tighter one would also admit (never the
 //!   reverse), so the semantics of each existing caller are preserved

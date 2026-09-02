@@ -45,7 +45,7 @@
 //!
 //! # THE MULTIPLICITY / DIVISOR INVARIANT
 //!
-//! [`triple_contribution_in_tno`] returns the **unweighted** per-triple sum
+//! [`crate::dlpno_ccsd_t_kernel::triple_contribution_in_tno`] returns the **unweighted** per-triple sum
 //! `Σ_ãb̃c̃ W̃·V/D`. It applies neither the multiplicity `m ∈ {1,3,6}` nor the
 //! divisor `3`: those belong to
 //! [`crate::dlpno_ccsd_t::screened_triple_energy`], and keeping them there is
@@ -53,19 +53,19 @@
 //! >50% error — see [`crate::ccsd_t_closed_shell`]'s "Combinatorial factor").
 //!
 //! The six-permutation `W` is built over the SAME `Q` for all six orderings of
-//! `(i,j,k)`, because [`TripleTno`] is a function of the unordered multiset
+//! `(i,j,k)`, because [`crate::dlpno_ccsd_t_virtual::TripleTno`] is a function of the unordered multiset
 //! (pinned bit-for-bit by `dlpno_ccsd_t_virtual`). A basis that varied with the
 //! ordering would break the banded-weight identity silently.
 //!
 //! # SEMICANONICALIZATION
 //!
-//! The denominator uses [`TripleTno::eps`] — the eigenvalues of `Qᵀ diag(ε_v) Q`
+//! The denominator uses [`crate::dlpno_ccsd_t_virtual::TripleTno::eps`] — the eigenvalues of `Qᵀ diag(ε_v) Q`
 //! — never the canonical `ε_v` and never the diagonal-only shortcut
 //! `f_ãã = Σ_c Q_cã² ε_c`. `W̃` and `V` are honest tensors and rotate; `D` is the
 //! diagonal of a Fock-like operator and only stays diagonal because `ε̃` really
 //! are the Fock eigenvalues in this basis. The shortcut is measurably wrong
 //! (`dlpno_ccsd_t_virtual::tests::stage3_diagonal_only_fock_shortcut_is_measurably_wrong`)
-//! and is not reachable from here: [`TripleTno`] only ever exposes the
+//! and is not reachable from here: [`crate::dlpno_ccsd_t_virtual::TripleTno`] only ever exposes the
 //! semicanonical composite.
 //!
 //! # THE COST CLAIM — structural, not a wall clock
@@ -74,32 +74,32 @@
 //! is shared and contested; a wall clock there is not evidence). Cost is instead
 //! reported as two quantities that are *pure functions of the dimensions*:
 //!
-//! * [`TripleCost::working_set_elements`] — the `[n,n,n]` block footprint, `n³`
+//! * [`crate::dlpno_ccsd_t_kernel::TripleCost::working_set_elements`] — the `[n,n,n]` block footprint, `n³`
 //!   against the dense `nvir³`;
-//! * [`TripleCost::kernel_flops`] — the multiply-add count of the GEMMs the
+//! * [`crate::dlpno_ccsd_t_kernel::TripleCost::kernel_flops`] — the multiply-add count of the GEMMs the
 //!   kernel actually issues, a closed-form polynomial in `(no, n)`.
 //!
-//! Both are computed by [`triple_cost`] from `ntno` alone and are asserted to
+//! Both are computed by [`crate::dlpno_ccsd_t_kernel::triple_cost`] from `ntno` alone and are asserted to
 //! decrease strictly with `t_cut_tno` by
-//! [`tests::cost_strictly_decreases_with_truncation`].
+//! `tests::cost_strictly_decreases_with_truncation`.
 //!
 //! ## And the honest other half of that claim: the transform is not free
 //!
 //! Projecting `ovvv[i]` costs `O(no · nv³ · n)`-class work — *more* than the
 //! `O(nv³ · n)`-class per-triple GEMM it feeds when the triple count is small.
-//! [`TripleCost::transform_flops`] counts it separately and
-//! [`TripleCost::total_flops`] adds it, so the break-even is visible rather than
+//! [`crate::dlpno_ccsd_t_kernel::TripleCost::transform_flops`] counts it separately and
+//! [`crate::dlpno_ccsd_t_kernel::TripleCost::total_flops`] adds it, so the break-even is visible rather than
 //! hidden.
 //!
 //! Two things follow, and both are measured in the tests rather than asserted:
 //!
 //! 1. The `ovvv` projection depends only on `(i, Q)`, not on the full triple, so
 //!    it is hoisted per-triple and reused across all six permutations of
-//!    `(i,j,k)` (three distinct `i` values at most). [`TripleWorkspace`] is that
+//!    `(i,j,k)` (three distinct `i` values at most). [`crate::dlpno_ccsd_t_kernel::TripleWorkspace`] is that
 //!    cache.
 //! 2. Even hoisted, at ferric's system sizes the transform DOMINATES.
 //!    Even hoisted, at ferric's system sizes the transform DOMINATES.
-//!    [`tests::transform_overhead_is_reported_honestly`] prints the measured
+//!    `tests::transform_overhead_is_reported_honestly` prints the measured
 //!    table: at `(no=5, nv=19)` the transform is already **1.76×** the kernel at
 //!    zero truncation, and truncating to half the virtuals makes it **6.67×**,
 //!    because the kernel falls as `n⁴` while the transform's leading `nv³·n`
@@ -118,9 +118,9 @@
 //!
 //! | Gate | What | Test |
 //! |------|------|------|
-//! | 1 | per-triple contribution ≡ `dense_triple_contribution` at `t_cut_tno = 0` | [`tests::exactness_matches_dense_triple_contribution`] |
-//! | 2 | banded energy ≡ dense band through `screened_triple_energy` | [`tests::exactness_matches_dense_band`] |
-//! | 3 | end-to-end ≡ [`crate::ccsd_t_closed_shell`] on a real molecule | [`tests::exactness_matches_ccsd_t_closed_shell_h2o_sto3g`] |
+//! | 1 | per-triple contribution ≡ `dense_triple_contribution` at `t_cut_tno = 0` | `tests::exactness_matches_dense_triple_contribution` |
+//! | 2 | banded energy ≡ dense band through `screened_triple_energy` | `tests::exactness_matches_dense_band` |
+//! | 3 | end-to-end ≡ [`crate::ccsd_t_closed_shell`] on a real molecule | `tests::exactness_matches_ccsd_t_closed_shell_h2o_sto3g` |
 
 use ferric_core::FerricError;
 use ndarray::{Array2, Array3, Array4};
@@ -593,7 +593,7 @@ impl TripleCost {
 /// indices.
 ///
 /// Counted term by term against the code above; the correspondence is checked by
-/// [`tests::cost_model_matches_the_dense_formula_at_zero_cut`], which asserts
+/// `tests::cost_model_matches_the_dense_formula_at_zero_cut`, which asserts
 /// that at `n = nvir` the kernel count equals the dense kernel's own count.
 ///
 /// # Errors

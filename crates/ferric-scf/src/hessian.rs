@@ -15,7 +15,7 @@
 //! flow for all five terms is laid out here with TODO markers at the integral
 //! engine boundaries.
 //!
-//! The existing finite-difference Hessian in [`super::frequencies`] remains the
+//! The existing finite-difference Hessian in [`crate::frequencies`] remains the
 //! production path until these stubs are filled in.
 
 use crate::result::ScfResult;

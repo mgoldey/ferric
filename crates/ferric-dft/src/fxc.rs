@@ -9,8 +9,8 @@
 //! `xc_lda_fxc` / `xc_gga_fxc`).
 //!
 //! Two kernels live here:
-//!   - [`LdaFxcKernel`]: purely local response, δV_σ = f_ρρ · δρ.
-//!   - [`GgaFxcKernel`]: adds the ∇ρ / σ = |∇ρ|² coupling terms (v2rhosigma,
+//!   - `LdaFxcKernel`: purely local response, δV_σ = f_ρρ · δρ.
+//!   - `GgaFxcKernel`: adds the ∇ρ / σ = |∇ρ|² coupling terms (v2rhosigma,
 //!     v2sigma2). This is the general (semilocal) GGA/hybrid/RSH-GGA kernel —
 //!     the exact-exchange fraction of a hybrid/RSH is the SCF's job (folded in
 //!     via `k_mix_sr` at the call site), so the fxc kernel only ever sees the

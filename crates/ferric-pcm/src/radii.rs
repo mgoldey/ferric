@@ -9,7 +9,7 @@
 //!
 //! Elements not in the table fall back to a generic 2.0 A radius (a common
 //! default for "unknown/heavy" elements in several codes) rather than
-//! failing the whole cavity build — but see [`bondi_radius_bohr`] which
+//! failing the whole cavity build — but see `bondi_radius_bohr` which
 //! returns `None` so callers can choose to hard-error instead if they want
 //! stricter behavior.
 
@@ -68,7 +68,7 @@ const BONDI_AZ: &[(i32, f64)] = &[
 const FALLBACK_RADIUS_ANGSTROM: f64 = 2.0;
 
 /// Bondi van der Waals radius for atomic number `z`, in Bohr, unscaled.
-/// Returns the tabulated value when known, else [`FALLBACK_RADIUS_ANGSTROM`]
+/// Returns the tabulated value when known, else `FALLBACK_RADIUS_ANGSTROM`
 /// (converted to Bohr) — cavity construction should never hard-fail merely
 /// because an exotic element lacks a literature radius, but callers that want
 /// stricter behavior can check [`has_tabulated_radius`] first.

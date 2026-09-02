@@ -29,9 +29,9 @@
 //!
 //! # Exactness contract
 //!
-//! With an infinite cutoff [`build_triple_domains`] retains every `i<=j<=k`
-//! triple, [`TripleDomains::is_complete`] is true, and
-//! [`screened_triple_energy`] reproduces the unscreened weighted sum **bit for
+//! With an infinite cutoff [`crate::dlpno_ccsd_t::build_triple_domains`] retains every `i<=j<=k`
+//! triple, [`crate::dlpno_ccsd_t::TripleDomains::is_complete`] is true, and
+//! [`crate::dlpno_ccsd_t::screened_triple_energy`] reproduces the unscreened weighted sum **bit for
 //! bit** — same accumulation order, so it is identity rather than agreement to
 //! tolerance. `triple_domains_infinite_cutoff_is_complete` and
 //! `screened_energy_is_identity_when_complete` pin that.
@@ -56,7 +56,7 @@
 //!    the same triple, all of which the unrestricted sum would evaluate. A
 //!    predicate that could accept one ordering and reject another would make the
 //!    banded weighted sum stop equalling the unrestricted sum, and the `/3`
-//!    divisor would silently become wrong. [`triple_is_retained`] is built from
+//!    divisor would silently become wrong. [`crate::dlpno_ccsd_t::triple_is_retained`] is built from
 //!    the max pairwise Boys separation, which is manifestly symmetric;
 //!    `retention_is_permutation_invariant` pins it over all 6 orderings.
 //!
@@ -71,7 +71,7 @@
 //!    pins both classes.
 //!
 //! Because screening only ever removes whole multiset classes and never
-//! reweights a retained one, [`TripleDomains`] carries the same `m(i,j,k)` and
+//! reweights a retained one, [`crate::dlpno_ccsd_t::TripleDomains`] carries the same `m(i,j,k)` and
 //! the same `/3` divisor as the dense path. `multiplicity_classes_are_preserved`
 //! and `complete_domains_reproduce_the_unrestricted_count` pin that the weights
 //! coming out of this module are the dense weights, unmodified.
@@ -79,15 +79,15 @@
 //! # What is NOT claimed
 //!
 //! No wall-clock measurement, no speedup claim. Screening is reported as
-//! *counts* ([`TripleDomains::triple_retention`],
-//! [`TripleDomains::weighted_retention`]) and validated on *energies*.
+//! *counts* ([`crate::dlpno_ccsd_t::TripleDomains::triple_retention`],
+//! [`crate::dlpno_ccsd_t::TripleDomains::weighted_retention`]) and validated on *energies*.
 //!
 //! Note the two retention numbers are NOT interchangeable, and the plain triple
 //! count is the flattering one. Screening can only ever remove the all-distinct
 //! `m=6` class, so every dropped triple costs 1 band entry but 6 of the `nocc³`
 //! weighted orderings — measured on the two-cluster fixture at nocc=4, a cutoff
 //! that retains 0.8 of the band retains only 0.625 of the weighted sum. Quote
-//! [`TripleDomains::weighted_retention`] when the question is how much physics
+//! [`crate::dlpno_ccsd_t::TripleDomains::weighted_retention`] when the question is how much physics
 //! was dropped. Whether
 //! a retention below 1 is affordable at a target accuracy is an empirical
 //! question this module deliberately leaves to measurement. Small molecules do

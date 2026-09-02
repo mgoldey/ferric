@@ -182,8 +182,8 @@ impl DiisHistoryShape {
 
 /// Bytes a [`Diis`] holds at a full subspace: `entries × matrices × nbf² × 8`.
 ///
-/// `energy_diis` adds [`EnergyDiis`]'s two further histories (`fock_hist` +
-/// `dens_hist`, [`EnergyDiis::new`]), which the ADIIS/EDIIS drivers hold
+/// `energy_diis` adds `EnergyDiis`'s two further histories (`fock_hist` +
+/// `dens_hist`, `EnergyDiis::new`), which the ADIIS/EDIIS drivers hold
 /// *alongside* the Pulay `Diis` rather than instead of it — a term the old
 /// projection omitted entirely.
 pub fn diis_history_bytes(

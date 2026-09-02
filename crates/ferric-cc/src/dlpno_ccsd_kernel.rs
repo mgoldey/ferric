@@ -18,8 +18,8 @@
 //!
 //! At `t_cut_pno = 0` every `Q` is square orthogonal, so every `S` is an
 //! *orthogonal* matrix (the identity only when the two pairs' PNOs coincide;
-//! generally a rotation). [`pair_overlap`] builds it and
-//! [`tests::stage_a_overlaps_are_orthogonal_at_zero_truncation`] pins that
+//! generally a rotation). [`crate::dlpno_ccsd_kernel::pair_overlap`] builds it and
+//! `tests::stage_a_overlaps_are_orthogonal_at_zero_truncation` pins that
 //! property — it is the invariant that makes the whole rewrite well-posed,
 //! because a contraction written with `S` inserted collapses back to the dense
 //! one exactly when `S Sᵀ = 1`.
@@ -28,7 +28,7 @@
 //!
 //! | Stage | What | Status |
 //! |-------|------|--------|
-//! | A | [`PairIndex`] + [`pair_overlap`] + [`PairOverlaps`] | done, tested |
+//! | A | [`crate::dlpno_ccsd_kernel::PairIndex`] + [`crate::dlpno_ccsd_kernel::pair_overlap`] + [`crate::dlpno_ccsd_kernel::PairOverlaps`] | done, tested |
 //! | B | `kcld,ilcd->ki` (`F_oo`) in the PNO basis, S-inserted | done, exact to ~1e-15 |
 //! | C | the remaining pair-coupling contractions: `F_vv`, `W_oooo`, `W_voov`/`W_vovo`, `L`-driven `t2` terms | done, each tested |
 //! | D | a full PNO-basis residual + iteration reproducing dense CCSD | **NOT done** — see "What is not here" |
@@ -39,8 +39,8 @@
 //! developed on is contested and a timing there would be noise dressed as
 //! evidence. The cost claim is made *structurally* instead: every PNO contraction
 //! here has a FLOP count that is a pure function of the per-pair `npno`, computed
-//! by [`FlopCount`] from the basis alone with no arithmetic performed, and
-//! [`tests::cost_strictly_decreases_with_truncation`] asserts that count strictly
+//! by [`crate::dlpno_ccsd_kernel::FlopCount`] from the basis alone with no arithmetic performed, and
+//! `tests::cost_strictly_decreases_with_truncation` asserts that count strictly
 //! decreases as `t_cut_pno` rises while the dense count stays fixed. That is a
 //! statement about the *algorithm*, which is what "truncation changes the cost"
 //! actually means; a wall-clock measurement would additionally be a statement
@@ -48,10 +48,10 @@
 //!
 //! # SEMICANONICALIZATION
 //!
-//! Denominators use [`PairPno::eps`] — the eigenvalues of `Q ᵀ diag(ε_v) Q`,
+//! Denominators use [`crate::dlpno_ccsd_virtual::PairPno::eps`] — the eigenvalues of `Q ᵀ diag(ε_v) Q`,
 //! i.e. the orbital energies *in the pair's own basis*. The diagonal-only
 //! shortcut `f_aa = Σ_c Q_ca² ε_c` is a MEASURED 0.117 Ha error in the MP2
-//! sibling and is not used here. [`pno_denominators`] is the only place
+//! sibling and is not used here. [`crate::dlpno_ccsd_kernel::pno_denominators`] is the only place
 //! denominators are formed.
 //!
 //! # What is not here, and why

@@ -924,7 +924,7 @@ impl LaplaceMp2 {
     /// This is the formulation that can in principle go sub-quintic: `P(t)` and
     /// `Q(t)` become sparse for localized occupied orbitals and local basis
     /// sets, and `B^P` is already stored row-sparse
-    /// ([`SparseBSlice`]) — so the `B^P·P(t)` products are O(nnz) rather than
+    /// (`SparseBSlice`) — so the `B^P·P(t)` products are O(nnz) rather than
     /// O(nbas³), and no MO transform appears anywhere in the quadrature loop.
     /// The dense-`P`/`Q` path implemented here is the correctness reference for
     /// that sparse limit; `domain_cutoff_bohr` switches on the Boys-localized,

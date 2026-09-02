@@ -4,7 +4,7 @@
 //!
 //! Textbook DLPNO-CCSD spends its effort truncating the *virtual* space, because the
 //! pp ladder `<ab||cd> t_ij^cd` costs O(n_o²n_v⁴) and n_v ≫ n_o. LinLCCD(hh) has
-//! already deleted that term (see [`crate::linlccd`]), so PNO's usual target is gone.
+//! already deleted that term (see `ferric_cc::linlccd`), so PNO's usual target is gone.
 //! What remains dominant is the hh ladder
 //!
 //! ```text

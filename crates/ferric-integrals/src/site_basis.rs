@@ -1,4 +1,4 @@
-//! `SiteBasis`: one Gaussian per MM site, packaged as a [`PreparedBasis`] so
+//! `SiteBasis`: one Gaussian per MM site, packaged as a [`crate::basis_bridge::PreparedBasis`] so
 //! the existing 3-centre engines (`Engine::new_3center`/`compute_eri3`,
 //! `Engine::new_3center_deriv`/`compute_eri3_deriv`) can be reused to compute
 //! the Gaussian-smeared-charge potential and its analytic gradient without any

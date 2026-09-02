@@ -34,7 +34,7 @@
 //! w0[a,b,c] = Σ_d (ia|bd) · t2[k,j,c,d]  −  Σ_l (ia|lj) · t2[l,k,b,c]
 //! ```
 //!
-//! (both BLAS3 GEMMs on `[nv*nv, nv]`-shaped reshapes — see [`raw_w_block`]).
+//! (both BLAS3 GEMMs on `[nv*nv, nv]`-shaped reshapes — see `raw_w_block`).
 //! The physical `W` is the sum of `w0` over the **6 simultaneous permutations
 //! of the three (occupied, virtual) PAIRS** `(i,a) (j,b) (k,c)`:
 //!
@@ -43,7 +43,7 @@
 //! ```
 //!
 //! i.e. each permuted raw block has its *virtual* axes permuted back by the
-//! inverse permutation before accumulation (see [`w_block`]). `W` is therefore
+//! inverse permutation before accumulation (see `w_block`). `W` is therefore
 //! invariant under any simultaneous pair relabeling — the property the
 //! occupied-triple banding rests on.
 //!
@@ -103,7 +103,7 @@
 //!          = 6  if all three distinct
 //! ```
 //!
-//! reproducing the unrestricted sum exactly. See [`occ_triple_multiplicity`].
+//! reproducing the unrestricted sum exactly. See `occ_triple_multiplicity`.
 //! The `i<=j<=k` banded weighted sum divided by 3 reproduced PySCF to 7.8e-16
 //! in scratch (`step5.py`, `step6.py`) before this file existed.
 //!
@@ -126,7 +126,7 @@
 //! # Memory and determinism
 //!
 //! Same structure as the spin-orbital sibling: peak resident is a handful of
-//! `[nv,nv,nv]` f64 buffers per in-flight triple ([`peak_triple_block_bytes`],
+//! `[nv,nv,nv]` f64 buffers per in-flight triple (`peak_triple_block_bytes`,
 //! `nv` not `2nv`, i.e. 8× smaller per buffer) plus the precomputed
 //! `O(no·nv³)`-class chemist blocks. Parallel reduction is the same
 //! chunk-then-collect-then-serial-fold idiom: chunk width is a pure function

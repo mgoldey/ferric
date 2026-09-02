@@ -51,7 +51,7 @@
 //! [`crate::dlpno_ccsd_virtual`] is written against a generic
 //! `(nocc, nvir, eps_vir)` and is agnostic to what those indices *mean*, so it is
 //! used here over the **spin-orbital** indices directly: `nvir = nv2`, `eps_vir`
-//! the spin-orbital virtual energies, and [`PairDomains`] built over `no2`
+//! the spin-orbital virtual energies, and [`ferric_mp2::pair_domains::PairDomains`] built over `no2`
 //! occupied spin orbitals whose centers are the spatial centers duplicated.
 //!
 //! That choice is deliberate and is what makes the amplitude blocks map 1:1 onto
@@ -61,26 +61,26 @@
 //! [`crate::dlpno_ccsd_virtual::t2_from_pno`] assumes. So this module does its own
 //! per-pair transforms rather than reusing `t2_to_pno`/`t2_from_pno`, whose mirror
 //! convention is wrong for a spin-orbital tensor. Reusing them would have been a
-//! plausible-but-wrong energy; see [`so_t2_to_pno`].
+//! plausible-but-wrong energy; see [`crate::dlpno_linlccd::so_t2_to_pno`].
 //!
 //! # Staging
 //!
 //! | Stage | What | Exactness test |
 //! |-------|------|----------------|
-//! | 1 | [`pno_hh_ladder`] — the hh ladder with `S` inserted | [`tests::stage1_hh_ladder_is_exact_at_zero_truncation`] |
-//! | 2 | [`dlpno_linlccd_hh`] — a **CLOSED iteration** | [`tests::stage2_closed_iteration_reproduces_dense_water_sto3g`] |
-//! | 3 | [`HhFlopCount`] — structural cost as a function of `npno` | [`tests::stage3_cost_strictly_decreases_with_truncation`] |
+//! | 1 | [`crate::dlpno_linlccd::pno_hh_ladder`] — the hh ladder with `S` inserted | `tests::stage1_hh_ladder_is_exact_at_zero_truncation` |
+//! | 2 | [`crate::dlpno_linlccd::dlpno_linlccd_hh`] — a **CLOSED iteration** | `tests::stage2_closed_iteration_reproduces_dense_water_sto3g` |
+//! | 3 | [`crate::dlpno_linlccd::HhFlopCount`] — structural cost as a function of `npno` | `tests::stage3_cost_strictly_decreases_with_truncation` |
 //!
 //! # SEMICANONICALIZATION
 //!
-//! Jacobi denominators use [`PairPno::eps`] — the eigenvalues of `Q ᵀ diag(ε_v) Q`
+//! Jacobi denominators use [`crate::dlpno_ccsd_virtual::PairPno::eps`] — the eigenvalues of `Q ᵀ diag(ε_v) Q`
 //! — via [`crate::dlpno_ccsd_kernel::pno_denominators`]. The diagonal-only
 //! shortcut `f_aa = Σ_c Q_ca² ε_c` is a MEASURED 0.117 Ha error in the DLPNO-MP2
 //! sibling and is not available here.
 //!
 //! # No wall clock
 //!
-//! Cost is claimed **structurally**: [`HhFlopCount`] is a pure function of the
+//! Cost is claimed **structurally**: [`crate::dlpno_linlccd::HhFlopCount`] is a pure function of the
 //! per-pair `npno`, performs no arithmetic, and its dense column uses the same
 //! pair list so the ratio isolates *virtual* truncation. It also reports the
 //! **transform overhead** separately, because for the DLPNO-(T) sibling the

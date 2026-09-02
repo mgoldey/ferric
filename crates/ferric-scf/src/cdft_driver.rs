@@ -1,6 +1,6 @@
 //! cDFT outer driver: nested optimization. For fixed λ the inner UHF/UKS solve
 //! adds Σ_C λ_C W^C to the Fock; the outer Newton drives the residual
-//! c_C(λ) = N_C[ρ_λ] − target_C to zero. c(λ) is monotonic in λ, so a few
+//! c_C(λ) = N_C\[ρ_λ\] − target_C to zero. c(λ) is monotonic in λ, so a few
 //! outer iterations suffice. Written k-dimensional (k×k Jacobian) but exercised
 //! at k=1; the Jacobian is finite-difference.
 
@@ -27,7 +27,7 @@ pub struct CdftResult {
     pub scf: ScfResult,
     /// Converged Lagrange multipliers, one per constraint.
     pub lambdas: Vec<f64>,
-    /// Final fragment populations N_C[ρ_λ].
+    /// Final fragment populations `N_C[ρ_λ]`.
     pub populations: Vec<f64>,
     /// Outer-loop iterations taken.
     pub outer_iters: usize,

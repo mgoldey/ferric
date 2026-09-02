@@ -22,13 +22,13 @@
 //!    a hard binary keep/discard cut. See `switch_h`/`switching_weight`
 //!    below.
 //! 2. **Segment interaction matrix** `S` (called `A` in some papers), default
-//!    formulation [`SMatrixKind::GaussianSmeared`] (PySCF `pcm.py`
+//!    formulation [`crate::cosmo::SMatrixKind::GaussianSmeared`] (PySCF `pcm.py`
 //!    convention, Li/Scalmani/Frisch, J. Chem. Phys. 122, 194110 (2005)):
 //!    each segment is a Gaussian charge distribution of width `xi_k` set by
 //!    the LOCAL Lebedev grid density, giving off-diagonal `S_kl = erf(xi_kl *
 //!    r_kl) / r_kl` (`xi_kl` the harmonic-combined width of segments k,l) and
 //!    diagonal `S_kk = xi_k * sqrt(2/pi) / switch_fun_k`. The original
-//!    [`SMatrixKind::PointCharge`] formulation is still available (for two
+//!    [`crate::cosmo::SMatrixKind::PointCharge`] formulation is still available (for two
 //!    distinct segments k != l, `S_kl = 1 / |s_k - s_l|`, bare Coulomb
 //!    interaction between point charges at the segment centers; diagonal
 //!    `S_kk = xi * sqrt(4*pi / a_k)`, `xi = 3.8`, derived by treating each
@@ -74,7 +74,7 @@
 //!   the same physics as the angular grid is refined.
 //! * **Point-charge vs Gaussian-smeared segment representation
 //!   (RESOLVED 2026-07-19)**: the `S`-matrix now defaults to
-//!   [`SMatrixKind::GaussianSmeared`] (PySCF `pcm.py` convention). This was
+//!   [`crate::cosmo::SMatrixKind::GaussianSmeared`] (PySCF `pcm.py` convention). This was
 //!   the single largest lever found across two investigation rounds on this
 //!   module: on water/cc-pVDZ/eps=78.39 it moved the self-consistent
 //!   solvation energy from -3.39 kcal/mol (old `PointCharge` default, ~43%
@@ -368,7 +368,7 @@ impl CosmoCavity {
     /// point-in-sphere visibility trim: a grid point on atom A's sphere gets
     /// its area scaled by `prod_{B != A} h(d_AB)`, where `d_AB` measures how
     /// far the point sits into (or out of) atom B's switching zone
-    /// (`h`=[`switch_h`]). A point that is far outside every other sphere
+    /// (`h`=`switch_h`). A point that is far outside every other sphere
     /// keeps its full area (`h -> 1`); a point deep inside another sphere is
     /// smoothly suppressed to zero area (`h -> 0`) rather than discarded in
     /// one hard step. Points whose total switching weight underflows
@@ -574,7 +574,7 @@ pub struct CosmoResult {
 /// This is the per-SCF-iteration entry point: computes the solute's
 /// electrostatic potential at each cavity segment (nuclear + electronic,
 /// via the same "nuclear attraction with a point charge at an arbitrary
-/// point" primitive used by [`ferric_rpa::properties::esp_at_atoms`], just
+/// point" primitive used by [`crate::properties::esp_at_atoms`], just
 /// evaluated at cavity segments instead of atoms), solves the COSMO linear
 /// system for the apparent surface charges, and builds the reaction-field
 /// matrix to add to the Fock/hcore.

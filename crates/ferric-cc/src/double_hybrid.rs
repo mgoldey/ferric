@@ -9,7 +9,7 @@
 //!
 //! The wave-function correlation replaces MP2, which is what makes the functional
 //! robust to static correlation: MP2 diverges as the gap closes, LinLCCD(hh) does not
-//! (see [`super::linlccd`]).
+//! (see [`crate::linlccd`]).
 //!
 //! # Why this is post-SCF
 //!
@@ -26,8 +26,8 @@
 //! Kalai–Toulouse, who obtain λ² directly. Here that shows up concretely: the
 //! short-range integrals entering the amplitude equations are scaled by λ, so we solve
 //! the amplitude equations under a λ-scaled operator and then scale the resulting
-//! energy by λ once more. See [`DoubleHybridConfig::lambda`] and the amplitude
-//! discussion in [`solve_wb97x_l_v`].
+//! energy by λ once more. See [`crate::double_hybrid::DoubleHybridConfig::lambda`] and the amplitude
+//! discussion in [`crate::double_hybrid::solve_wb97x_l_v`].
 
 use crate::linlccd::{linlccd, LadderVariant};
 use crate::{CcConfig, CcResult};

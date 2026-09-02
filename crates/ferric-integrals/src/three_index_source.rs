@@ -112,7 +112,7 @@ fn drop_page_cache(file: &File) {
     }
 }
 
-/// One aux-block of raw (P|μν), rows [p0, p0+data.shape()[0]).
+/// One aux-block of raw (P|μν), rows `[p0, p0+data.shape()[0])`.
 #[derive(Debug)]
 pub struct AuxBlock<'a> {
     pub p0: usize,
@@ -253,7 +253,7 @@ impl ThreeIndexSource {
         }
     }
 
-    /// Build a DRESSED source: out[P,:,:] = Σ_Q m[P,Q] · raw[Q,:,:], honoring budget.
+    /// Build a DRESSED source: `out[P,:,:] = Σ_Q m[P,Q] · raw[Q,:,:]`, honoring budget.
     /// `raw` is consumed (streamed) and `m` is (naux, naux). Produces the FULL
     /// aux range `[0, naux)`.
     pub fn build_dressed(
@@ -264,12 +264,12 @@ impl ThreeIndexSource {
     }
 
     /// Build a DRESSED source restricted to the GLOBAL aux band `[band_p0,
-    /// band_p1)`:  out[P,:,:] = Σ_Q m[P,Q] · raw[Q,:,:]  for P ∈ [band_p0,
-    /// band_p1). The dressing SUM runs over ALL Q, so `raw` MUST be the FULL
+    /// band_p1)`:  `out[P,:,:] = Σ_Q m[P,Q] · raw[Q,:,:]`  for P ∈ `[band_p0,
+    /// band_p1)`. The dressing SUM runs over ALL Q, so `raw` MUST be the FULL
     /// `[0, naux)` source (it is streamed block-by-block; `raw` may itself be
     /// budget-bounded / disk-spilled so its full footprint need not be resident).
     /// The OUTPUT holds only the band — this is the memory lever for MPI DF-K:
-    /// each rank dresses/holds only its own aux-band of B[P,μ,ν].
+    /// each rank dresses/holds only its own aux-band of `B[P,μ,ν]`.
     pub fn build_dressed_band(
         raw: &mut ThreeIndexSource, m: &Array2<f64>, budget_bytes: usize,
         band_p0: usize, band_p1: usize,

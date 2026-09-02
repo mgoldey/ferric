@@ -13,12 +13,12 @@
 //!
 //! Only `n_quad ∈ {3, 5, 7}` are tabulated, and each table only covers `R` up
 //! to a finite maximum (100 for k=3, 1000 for k=5/7). Requesting an
-//! unsupported `n_quad` or an `R` beyond the table is a hard [`FerricError`]
+//! unsupported `n_quad` or an `R` beyond the table is a hard [`ferric_core::FerricError`]
 //! — earlier versions silently coerced both (falling back to the k=7 table,
 //! clamping to the largest tabulated `R`), which handed callers a different
 //! quadrature than requested with no signal. Callers that want the old
 //! "round to nearest supported size" behavior can opt in explicitly via
-//! [`nearest_supported_n_quad`].
+//! [`crate::minimax::nearest_supported_n_quad`].
 
 use ferric_core::FerricError;
 

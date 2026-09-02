@@ -11,7 +11,7 @@
 //!
 //! # Resolution precedence
 //!
-//! [`resolve_budget_bytes`] takes an optional caller-supplied `explicit` value
+//! `resolve_budget_bytes` takes an optional caller-supplied `explicit` value
 //! (from TOML `[memory]` / a Python kwarg / a config field) and returns the byte
 //! ceiling using this precedence, highest first:
 //!
@@ -22,19 +22,19 @@
 //!    conservative ceiling).
 //! 4. Auto: `0.8 × detect_available_bytes()` — 80% of detected available RAM
 //!    (cgroup limit ∧ `/proc/meminfo MemAvailable`), leaving headroom.
-//! 5. Final fallback: [`DEFAULT_BUDGET_BYTES`] (2 GiB) when detection fails.
+//! 5. Final fallback: `DEFAULT_BUDGET_BYTES` (2 GiB) when detection fails.
 //!
 //! The resolved value and the source it came from are returned together by
-//! [`resolve_budget`] (see [`BudgetResolution`]) so callers can log the audit
-//! line; [`resolve_budget_bytes`] is the thin wrapper that returns just the bytes.
+//! `resolve_budget` (see `BudgetResolution`) so callers can log the audit
+//! line; `resolve_budget_bytes` is the thin wrapper that returns just the bytes.
 //!
 //! # M2 consumers
 //!
 //! This is the stable API the fail-fast-guard task (M2) builds on. Keep the
-//! surface small: [`resolve_budget_bytes`], [`resolve_budget`],
-//! [`detect_available_bytes`], and [`gib_to_bytes`].
+//! surface small: `resolve_budget_bytes`, `resolve_budget`,
+//! `detect_available_bytes`, and `gib_to_bytes`.
 
-/// [`MemoryPlan`](plan::MemoryPlan): a memory budget as a value you spend and
+/// `MemoryPlan` (`plan::MemoryPlan`): a memory budget as a value you spend and
 /// account for, rather than a ceiling every call site re-reads independently.
 pub mod plan;
 

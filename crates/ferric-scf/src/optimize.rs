@@ -141,7 +141,7 @@ fn run_bfgs(
 /// closure agrees with itself on — this function never interprets the
 /// coordinates as atoms). Returns `(x_final, energy, steps, converged)`.
 ///
-/// This is the exact algorithm [`run_bfgs`] used before being rewritten on
+/// This is the exact algorithm `run_bfgs` used before being rewritten on
 /// top of this function (same line search, same convergence tests, same
 /// Hessian update) — only the `Molecule`-specific flatten/unflatten at the
 /// boundary moved out. Pinned bit-for-bit by

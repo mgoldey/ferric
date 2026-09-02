@@ -14,7 +14,7 @@
 //!      now-null directions). Survivors, scaled by λ^{-1/2}, are the CABS
 //!      vectors expressed in the RIBS AO basis:  C_cabs (nri × ncabs).
 //!
-//! The RIBS coefficients of a CABS vector k are C_cabs[:,k]; ⟨CABS_k|CABS_l⟩ in
+//! The RIBS coefficients of a CABS vector k are `C_cabs[:,k]`; ⟨CABS_k|CABS_l⟩ in
 //! the RIBS metric S_RR is δ_kl, and ⟨CABS_k|OBS_p⟩ = 0 by construction.
 
 use ferric_core::basis::BasisSet;

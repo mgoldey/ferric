@@ -56,7 +56,7 @@ pub const MPI_ENABLED: bool = cfg!(feature = "mpi");
 /// Handles both single-node (Rayon) and multi-node (MPI) parallelization.
 /// Deliberately holds NO MPI object (only `rank`/`size`/`mpi_active`) so it is
 /// `Send + Sync` and can be borrowed into rayon parallel regions. Obtain the
-/// world communicator for a collective via [`ParallelContext::world`].
+/// world communicator for a collective via `ParallelContext::world`.
 pub struct ParallelContext {
     /// Whether a real, multi-rank MPI world is active (feature on, initialized,
     /// size > 1). When false, [`world`](Self::world) returns `None` and every

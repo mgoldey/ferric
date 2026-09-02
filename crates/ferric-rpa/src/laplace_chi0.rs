@@ -100,7 +100,7 @@ pub fn build_laplace_for_gaps(
 
 /// Laplace-separable dielectric matrix builder.
 ///
-/// Same in-place signature as [`crate::sternheimer::dielectric_matrix_into`] but
+/// Same in-place signature as [`crate::sternheimer::dielectric_matrix_from_projection_into`] but
 /// uses the Laplace-quadrature form of `4·e_ia/(ω²+e_ia²)`. Numerically matches
 /// the Dense path to the quadrature tolerance (~1e-3 relative elementwise for
 /// the tabulated `n_quad = 7`). Only `n_quad ∈ {3, 5, 7}` are tabulated — the

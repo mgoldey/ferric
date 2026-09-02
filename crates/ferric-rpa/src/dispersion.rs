@@ -1,12 +1,12 @@
 //! Many-body-dispersion C6 coefficients (data-product track).
 //!
 //! Two sources of the per-atom dynamic polarizability α^A(iω):
-//!   * [`ts_dynamic_polarizability`] — Tkatchenko-Scheffler single-pole London
+//!   * [`crate::dispersion::ts_dynamic_polarizability`] — Tkatchenko-Scheffler single-pole London
 //!     model (Phase 1).
 //!   * `pdep_dynamic_polarizability` — PDEP-RPA imaginary-frequency SMW
 //!     (Phase 2, added later).
 //!
-//! Both feed [`casimir_polder_c6`], which contracts α^A(iω):α^B(iω) over the
+//! Both feed [`crate::dispersion::casimir_polder_c6`], which contracts α^A(iω):α^B(iω) over the
 //! imaginary-frequency quadrature to give isotropic and anisotropic C6^{AB}.
 
 pub mod free_atom_ref;
@@ -252,7 +252,7 @@ pub fn casimir_polder_c6(dyn_pol: &DynamicPolarizability) -> C6Result {
 ///
 /// Inputs:
 ///   * `z`            — atomic numbers, length N.
-///   * `vol_ratio`    — effective-volume ratio v_A / v_free[Z_A], length N.
+///   * `vol_ratio`    — effective-volume ratio v_A / v_free\[Z_A\], length N.
 ///   * `alpha_static` — static per-atom α^A_{ij} tensors (a.u.), length N.
 ///   * `freqs`,`weights` — imaginary-frequency quadrature (a.u.).
 ///

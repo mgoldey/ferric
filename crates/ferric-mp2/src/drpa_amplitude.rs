@@ -271,7 +271,7 @@ pub fn amplitude_drpa_with_virtuals(
 /// eps-dependent ragged assembly + fixed-point solve still run once per
 /// eps. Byte-identical per-point results vs calling
 /// [`amplitude_drpa_with_virtuals`] at each eps separately (both funnel
-/// through [`amplitude_drpa_from_basis`] on the same `LocalizedBasis`);
+/// through `amplitude_drpa_from_basis` on the same `LocalizedBasis`);
 /// the only difference is the prefix (RHF/localization/VV-HV/assemble_basis)
 /// is paid once instead of once per eps.
 pub fn amplitude_drpa_scan(

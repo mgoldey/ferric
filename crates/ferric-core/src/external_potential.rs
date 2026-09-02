@@ -225,7 +225,7 @@ impl ExternalPotential {
     /// `R_i` through `R_Ai = |R_A − R_i|` exactly as it depends on `R_A`, so
     /// `dE/dR_i = −dE/dR_A` for each atom pair (chain rule: `dR/dR_i =
     /// −(R_A−R_i)/R = −dR/dR_A`). This is what
-    /// [`crate::gradient`]'s (ferric-scf) `smeared_site_forces` needs to add
+    /// `ferric_scf::gradient`'s `smeared_site_forces` needs to add
     /// to the ELECTRONIC Hellmann–Feynman site derivative — omitting it
     /// silently drops the (usually dominant, since Z_A ≥ 1 vs the fractional
     /// AO density) classical nuclear-charge/site-charge term from the site's

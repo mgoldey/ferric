@@ -57,7 +57,7 @@
 //! Fock matrix is built in the reduced basis and **re-diagonalized**. Taking only its
 //! diagonal is wrong and fails silently — in the MP2 sibling that mistake broke the
 //! exactness contract by 0.117 Ha before it was caught (see
-//! [`ferric_mp2::dlpno_mp2`]). [`dlpno_rpa_zero_threshold_matches_canonical_h2o`]
+//! [`ferric_mp2::dlpno_mp2`]). `dlpno_rpa_zero_threshold_matches_canonical_h2o`
 //! pins the fix here.
 //!
 //! # Exactness contract
@@ -74,7 +74,7 @@
 //! accurate thresholds (zero compression), and 48–76 mHa error at `t_osv = 1e-3`. A
 //! cliff, not a tradeoff. This module does not assume PNOs fix that. It measures it,
 //! side by side on the same system, via
-//! [`compare_osv_vs_pno`] and the `osv_vs_pno_retention_and_error_sweep` test.
+//! [`crate::dlpno_rpa::compare_osv_vs_pno`] and the `osv_vs_pno_retention_and_error_sweep` test.
 //!
 //! **No wall-clock quantity is measured or reported anywhere in this module**, by
 //! design: retention counts and energies are reproducible, timings on a contested box
@@ -406,7 +406,7 @@ fn rpa_energy_in_reduced_basis(
 ///
 /// Returns `(E_c, n_vir_reduced, transform)`. `t_cut_pno = 0` must reproduce
 /// untruncated PDEP-RPA — that is the exactness contract, pinned by
-/// [`dlpno_rpa_zero_threshold_matches_canonical_h2o`].
+/// `dlpno_rpa_zero_threshold_matches_canonical_h2o`.
 ///
 /// Occupied-side pair screening is deliberately disabled here (complete domains): this
 /// entry point exists to answer the *virtual-side* question, and mixing in a second

@@ -472,9 +472,9 @@ pub(crate) fn mo_stream_chunk_for(width: usize, budget_bytes: usize) -> usize {
 /// optional output aux-band restriction.
 ///
 /// Streams raw AO aux-blocks from `src` (which may itself be budget-bounded /
-/// disk-spilled), MO-transforms each in chunks of at most [`MO_STREAM_CHUNK`]
+/// disk-spilled), MO-transforms each in chunks of at most `MO_STREAM_CHUNK`
 /// aux rows (BLAS3: `half = (B^Q_AO)·c_right`, then `c_left^T·half`, rayon-
-/// parallel across chunk rows above [`PAR_MO_TRANSFORM_WORK_THRESHOLD`]), and
+/// parallel across chunk rows above `PAR_MO_TRANSFORM_WORK_THRESHOLD`), and
 /// dresses each chunk into the output with `V^{-1/2}` on the fly (in place,
 /// `beta=1` — no second full-size copy). Exactness: the same contraction as
 /// `v_inv_sqrt.dot(transform_3center(eri3_tensor(..), c_left, c_right))`,
@@ -504,10 +504,10 @@ pub fn stream_dressed_mo_band(
 /// Budget-aware [`stream_dressed_mo_band`].
 ///
 /// `memory_budget_bytes = None` keeps the historical fixed
-/// [`MO_STREAM_CHUNK`], so every existing caller is bit-identical. `Some(b)`
-/// derives the chunk width from `b` via [`mo_stream_chunk_for`] — which caps at
+/// `MO_STREAM_CHUNK`, so every existing caller is bit-identical. `Some(b)`
+/// derives the chunk width from `b` via `mo_stream_chunk_for` — which caps at
 /// `MO_STREAM_CHUNK`, so an ample budget is ALSO bit-identical and only
-/// memory-constrained runs narrow the chunk. See [`mo_stream_chunk_for`] for
+/// memory-constrained runs narrow the chunk. See `mo_stream_chunk_for` for
 /// why narrowing changes the last digits and why that is safe to depend on.
 pub fn stream_dressed_mo_band_budgeted(
     src: &mut ThreeIndexSource,

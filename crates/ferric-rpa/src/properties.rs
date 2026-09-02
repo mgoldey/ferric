@@ -4,14 +4,14 @@
 //!
 //! Currently exposes:
 //!
-//! * [`pdep_polarizability_static`] — closed-shell static (ω=0) electronic
+//! * [`crate::properties::pdep_polarizability_static`] — closed-shell static (ω=0) electronic
 //!   polarizability tensor α_ij(0) reconstructed from PDEP eigenpairs in the
 //!   RI auxiliary basis.
-//! * [`pdep_polarizability_becke`], [`pdep_polarizability_becke_dynamic`],
-//!   [`pdep_polarizability_hirshfeld`], [`pdep_polarizability_hirshfeld_dynamic`] —
+//! * [`crate::properties::pdep_polarizability_becke`], [`crate::properties::pdep_polarizability_becke_dynamic`],
+//!   [`crate::properties::pdep_polarizability_hirshfeld`], [`crate::properties::pdep_polarizability_hirshfeld_dynamic`] —
 //!   per-atom (static and dynamic) polarizability via Becke/Hirshfeld
 //!   partitioning of the PDEP response.
-//! * [`molecular_dynamic_polarizability`], [`molecular_dynamic_polarizability_pdep`] —
+//! * [`crate::properties::molecular_dynamic_polarizability`], [`crate::properties::molecular_dynamic_polarizability_pdep`] —
 //!   molecular dynamic α(iω) on the full dielectric vs. the PDEP-truncated one.
 //!
 //! ## Density/charge/ESP properties moved to `ferric-scf`
@@ -2682,7 +2682,7 @@ pub fn molecular_dynamic_polarizability(
 /// Algebra (derived from `molecular_dynamic_polarizability`):
 ///   α_dj(iω) = 4·μ_d·(μ_j⊙g) − 16·p_dᵀ (W̃_k + I) p_j,
 ///   p_d = y(μ_d⊙g),  y = Uᵀ B̃,  U = dressed_eigenvectors,
-///   W̃_k = inv_dielectric_freq[k] = ε̃_proj⁻¹ − I.
+///   W̃_k = inv_dielectric_freq\[k\] = ε̃_proj⁻¹ − I.
 /// At M = naux (thresh 0) this equals the full-naux result to round-off.
 ///
 /// `memory_budget_bytes` is the caller's explicit memory ceiling, threaded into

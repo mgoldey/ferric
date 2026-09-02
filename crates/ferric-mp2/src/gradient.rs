@@ -92,7 +92,7 @@ pub fn rimp2_gradient_fd(
 /// a single `F·P_relax` object (the old, ~50%-wrong construction):
 ///
 /// 1. **Imat / overlap** (`+Σ dS·(im1+im1^T)`): the RI-MP2 Lagrangian matrix
-///    [`crate::zvector::build_imat_ri`] rotated to AO (`im1 = C·Imat·C^T`, with the
+///    `crate::zvector::build_imat_ri` rotated to AO (`im1 = C·Imat·C^T`, with the
 ///    vir-occ block set to the occ-vir transpose per PySCF line 145). This is the
 ///    RI analog of the 2-particle-density-derived Lagrangian block — built from the
 ///    same `x_ov`/`b_full` RI intermediates, no 4-index AO tensor. PySCF lines 121,
@@ -116,7 +116,7 @@ pub fn rimp2_gradient_fd(
 ///    BILINEAR two-electron gradient (`twoelectron_gradient_bilinear`), NOT
 ///    `Γ(P_relax,P_relax)`. Verified equal to PySCF's `vhf1·dm1p` element-by-element.
 ///    PySCF lines 103-109, 167, 184.
-/// 6. **RI 3c/2c integral response** [`integral_response_gradient_3c2c`]: the RI
+/// 6. **RI 3c/2c integral response** `integral_response_gradient_3c2c`: the RI
 ///    analog of PySCF's `part_dm2·int2e_ip1` (the separable 2-PDM contracted with
 ///    the differentiated integrals). Carries the closed-shell 2-PDM factor
 ///    Γ2 = 2·(2t−t̄): 3-center uses `2·y_ov = 2·V^{-1/2}·x_ov`; 2-center uses

@@ -1,10 +1,10 @@
 //! Second-order Moller-Plesset perturbation theory (MP2) implementations.
 //!
-//! - [`rimp2`] -- Resolution-of-identity MP2 (density-fitted) using 3-center integrals
-//! - [`oo_rimp2`] -- Orbital-optimized RI-MP2 with analytic gradients and Cayley rotations
-//! - [`canonical`] -- Canonical MP2 via full 4-center AO-to-MO transformation (for validation)
-//! - [`gradient`] -- RI-MP2 nuclear gradient via finite differences
-//! - [`mo_transform`] -- AO-to-MO integral transformation utilities
+//! - [`crate::rimp2`] -- Resolution-of-identity MP2 (density-fitted) using 3-center integrals
+//! - [`crate::oo_rimp2`] -- Orbital-optimized RI-MP2 with analytic gradients and Cayley rotations
+//! - [`crate::canonical`] -- Canonical MP2 via full 4-center AO-to-MO transformation (for validation)
+//! - [`crate::gradient`] -- RI-MP2 nuclear gradient via finite differences
+//! - [`crate::mo_transform`] -- AO-to-MO integral transformation utilities
 
 // op_ref: ndarray expressions like `4.0 * &jz - &kz - &kz.t()` reference `kz`
 // because it is reused (`.t()`) on the same line; dropping `&` would move it.

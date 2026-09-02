@@ -1,6 +1,6 @@
 //! Bridge between Rust basis/molecule types and the libint2 C++ engine.
 //!
-//! [`PreparedBasis`] translates a [`Molecule`] + [`BasisSet`] pair into the
+//! [`crate::basis_bridge::PreparedBasis`] translates a [`ferric_core::mol::Molecule`] + [`ferric_core::basis::BasisSet`] pair into the
 //! internal libint2 representation, managing the C++ handle lifetime.
 
 use crate::ffi::{self, CAtom, CShell};

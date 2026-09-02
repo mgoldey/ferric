@@ -33,21 +33,21 @@
 //!
 //! which is the same expression [`crate::rimp2::spin_components_from_g`] sums over
 //! `i <= j`. That is deliberate: with the `i < j` mirror factor of 2 applied, the
-//! pair energies produced by [`estimate_pair_energies`] sum **exactly** to the
+//! pair energies produced by [`crate::pair_energy_screen::estimate_pair_energies`] sum **exactly** to the
 //! RI-MP2 correlation energy, so the threshold is denominated in the same units as
 //! the quantity being approximated. `pair_energies_sum_to_mp2_correlation` pins it.
 //!
 //! # Exactness
 //!
 //! `t_cut_pairs = 0.0` retains every pair (the test is `|e_ij| >= t`, and
-//! `|e_ij| >= 0` always holds), so the resulting [`PairDomains`] is
-//! [`PairDomains::is_complete`] and every downstream consumer — DLPNO-MP2,
+//! `|e_ij| >= 0` always holds), so the resulting [`crate::pair_domains::PairDomains`] is
+//! [`crate::pair_domains::PairDomains::is_complete`] and every downstream consumer — DLPNO-MP2,
 //! DLPNO-CCSD, DLPNO-CCSD(T), LinLCCD — is unchanged. That is the load-bearing
 //! guarantee and `zero_threshold_retains_every_pair` tests it first.
 //!
 //! # What this module does NOT claim
 //!
-//! It builds the same [`PairDomains`] type the distance screen builds, so the
+//! It builds the same [`crate::pair_domains::PairDomains`] type the distance screen builds, so the
 //! *coupling* screen is still geometric (pair-centroid distance). Only the pair
 //! list itself is energy-screened. See `crates/ferric-mp2/tests/pair_screen_criteria.rs`
 //! for the head-to-head measurement of the two pair criteria.
@@ -186,7 +186,7 @@ pub fn estimate_pair_energies(
 /// carry the bulk of the correlation energy, and dropping them is not a locality
 /// approximation but an error.
 ///
-/// The returned value is the same [`PairDomains`] the distance screen produces, so
+/// The returned value is the same [`crate::pair_domains::PairDomains`] the distance screen produces, so
 /// every existing consumer works unchanged. The `coupling_cutoff_bohr` screen is
 /// still geometric — only the *pair list* criterion is replaced.
 ///
@@ -196,7 +196,7 @@ pub fn estimate_pair_energies(
 /// # Exactness
 ///
 /// `t_cut_pairs = 0.0` (with an infinite coupling cutoff) retains everything and the
-/// result is [`PairDomains::is_complete`], so downstream energies are unchanged.
+/// result is [`crate::pair_domains::PairDomains::is_complete`], so downstream energies are unchanged.
 ///
 /// # Errors
 ///

@@ -25,7 +25,7 @@
 //! E_LCCD = Σ_iajb (ia|jb) (2 T_iajb − T_ibja)
 //! ```
 //!
-//! # This is NOT [`ferric_cc::linlccd`]
+//! # This is NOT `ferric_cc::linlccd`
 //!
 //! That module implements Carter-Fenk's LinLCCD/LinLCCD(hh), which
 //! DELIBERATELY REMOVES the ring and crossed-ring contractions (its whole

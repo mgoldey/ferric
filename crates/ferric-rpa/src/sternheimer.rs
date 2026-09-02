@@ -268,7 +268,7 @@ fn is_plausibly_diagonal(v: &[f64]) -> bool {
 /// Self-consistently updated quasiparticle energies (evGW) may cross and end up
 /// out of ascending order while the underlying basis is still exactly canonical;
 /// that is legitimate and the scalar denominator stays correct. See
-/// [`is_plausibly_diagonal`] for how the guard below draws that distinction.
+/// `is_plausibly_diagonal` for how the guard below draws that distinction.
 ///
 /// This is not hypothetical. `screen.rs` fed exactly this function per-orbital
 /// energies taken as `diag(C_locᵀ F C_loc)` from Boys-localized orbitals; the

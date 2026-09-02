@@ -1,21 +1,26 @@
 name: docs
 
-# Builds the mdBook site plus rustdoc API docs and publishes both to GitHub
-# Pages.
+# Builds the mdBook site and publishes it to GitHub Pages, together with the
+# rustdoc API docs that the CI workflow produces.
 #
-# Deliberately does NOT build libint2. `mdbook` needs no Rust at all, and
-# `cargo doc` type-checks without linking, so the ~30 min native build the CI
-# workflow caches is not on this path. Keep it that way: if this workflow ever
-# starts needing libint2, it stops being a docs job and becomes a second CI job.
+# This job deliberately builds NO Rust. `cargo doc` looks like it should be
+# cheap here — it does not link — but it DOES run build scripts, and
+# ferric-integrals' build.rs compiles shim/shim.cc against libint2.hpp. With no
+# libint2 on the runner that fails outright (run 33583179631: "libint2.hpp: No
+# such file or directory"). Rather than make this job pay for a ~30-minute
+# native build on every docs edit, ci.yml — which already builds and caches
+# libint2 — emits target/doc as the `api-docs` artifact, and this job downloads
+# it.
+#
+# Hence `workflow_run`: it fires AFTER CI finishes on main, so the artifact
+# exists. A plain `push` trigger would race CI and find nothing.
 on:
-  push:
+  workflow_run:
+    workflows: ['CI']
+    types: [completed]
     branches: [main]
-    paths:
-      - 'site/**'
-      - '.github/workflows/docs.yml'
-      # `crates/**/src/**` was here to rebuild the API docs when source
-      # changed. With rustdoc out of this job, a Rust change cannot alter the
-      # published output, so triggering on it would only burn runner minutes.
+  # Manual runs publish the book with whatever api-docs artifact the most
+  # recent successful CI run left behind (or without API docs, if none).
   workflow_dispatch:
 
 # Least privilege: read the tree, write Pages, and mint the OIDC token the
@@ -58,28 +63,34 @@ jobs:
       - name: Build the book
         run: mdbook build site
 
-      # rustdoc is NOT built here, and the reason is worth recording because the
-      # opposite was assumed when this workflow was written.
-      #
-      # `cargo doc` does not LINK, but it does run build scripts — and
-      # ferric-integrals' build.rs compiles shim/shim.cc, which needs
-      # libint2.hpp. On a runner without libint2 that fails outright
-      # (run 33583179631: "libint2.hpp: No such file or directory"). So
-      # documenting this workspace requires the same ~30-minute native build
-      # ci.yml caches, which is far too much to pay on every docs edit.
-      #
-      # The book is the valuable half and needs no Rust at all, so it publishes
-      # on its own. To add the API docs later, the options are (a) reuse
-      # ci.yml's libint2 cache here, or (b) have ci.yml upload target/doc as an
-      # artifact that this job downloads. Until then site/src/reference/api.md
-      # tells readers to run `cargo doc` locally, and the /api link is left
-      # out of the deployed tree rather than published broken.
+      # The API docs come from ci.yml's `api-docs` artifact (see the header).
+      # `continue-on-error` is deliberate: if CI did not produce the artifact —
+      # a red run, a docs-only push that ci.yml's paths-ignore skipped, or a
+      # manual dispatch with no recent CI — the book must still publish. A site
+      # missing its /api subtree is a degraded site; a site that failed to
+      # deploy is no site.
+      - name: Download API docs from CI
+        id: api
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: api-docs
+          path: site/book/api
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id || github.run_id }}
 
       - name: Assemble the site
         run: |
-          # Deployed as-is. If a rustdoc step is added back, it must write into
-          # site/book/api/ — that is the path site/src/reference/api.md links to.
           test -f site/book/index.html
+          # site/src/reference/api.md links to ../api/ferric/index.html, so the
+          # artifact must land at site/book/api/ferric/. Report which way this
+          # run went instead of leaving it to be inferred from a 404.
+          if [ -f site/book/api/ferric/index.html ]; then
+            echo "API docs present — /api will resolve."
+          else
+            echo "::warning::api-docs artifact missing or empty; publishing the book WITHOUT /api. The API link on the reference page will 404."
+            rm -rf site/book/api
+          fi
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3

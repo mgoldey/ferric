@@ -4,7 +4,7 @@
 //!
 //! T8/T9 band the `naux` axis of a large B tensor because a genuine per-rank
 //! ROW SUBSET can be built and held — real memory reduction. GW's per-MO QP
-//! loop has no such tensor: each MO's [`crate::sigma::solve_qp_for_mo`] call
+//! loop has no such tensor: each MO's `crate::sigma::solve_qp_for_mo` call
 //! needs the FULL `m_proj` (M × n_act × n_act) projection and the FULL
 //! per-frequency inverse-dielectric stack `inv_diel_freq` (length N_quad, each
 //! M × M) to sample Σ_c(iω_k) at its own Padé support nodes and Newton-solve
@@ -35,7 +35,7 @@
 //! ## What is NOT distributed here
 //!
 //! * The upstream W construction (`PdepRpaResult`) — callers get that for
-//!   free by building `pdep` via [`ferric_rpa::mpi_rpa::run_pdep_rpa_mpi`]
+//!   free by building `pdep` via `ferric_rpa::mpi_rpa::run_pdep_rpa_mpi`
 //!   instead of [`ferric_rpa::run_pdep_rpa`] (T10's own note in
 //!   `docs/superpowers/mpi.md` Section 5).
 //! * `m_proj` (the M × n_act × n_act projected B̃ tensor) and
@@ -51,7 +51,7 @@
 //!   complete-but-unverified, following T10's own precedent). Open-shell
 //!   U-G0W0 (`u_sigma::run_u_g0w0`) is likewise not wired here; its QP loop
 //!   has the identical independent-per-MO shape (twice, once per spin) and
-//!   is a natural next increment reusing [`solve_qp_for_mos_mpi`] directly.
+//!   is a natural next increment reusing `solve_qp_for_mos_mpi` directly.
 
 #[cfg(feature = "mpi")]
 mod inner {

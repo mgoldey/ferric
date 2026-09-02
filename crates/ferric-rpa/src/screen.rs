@@ -52,7 +52,7 @@
 //! For each Boys-localized occupied i_loc:
 //!   * `p_lists[i_loc]`: sorted ascending list of retained aux function indices.
 //!   * `tiles[i_loc]`: dense (m_i × nvir) row-major matrix of dressed
-//!     B-tensor values. m_i = p_lists[i_loc].len().
+//!     B-tensor values. `m_i = p_lists[i_loc].len()`.
 
 use crate::boys_localize::boys_localize_occupied;
 use ferric_core::linalg::{eigh_dc, Uplo};
@@ -77,7 +77,7 @@ pub struct ScreenedBov {
     pub naux: usize,
     /// Per-orbital retained aux index list, sorted ascending.
     pub p_lists: Vec<Vec<usize>>,
-    /// Per-orbital tile: tiles[i_loc] has shape (p_lists[i_loc].len(), nvir).
+    /// Per-orbital tile: `tiles[i_loc]` has shape `(p_lists[i_loc].len(), nvir)`.
     pub tiles: Vec<Array2<f64>>,
     /// Per-orbital Boys centroid (Bohr) — diagnostic.
     pub centroids: Vec<[f64; 3]>,

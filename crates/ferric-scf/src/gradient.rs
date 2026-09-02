@@ -1,7 +1,7 @@
 //! Analytical nuclear gradients.
 //!
 //! Provides both the RHF gradient and a density-parameterized core
-//! ([`hf_gradient_with_density`]) that correlated methods reuse with relaxed densities.
+//! ([`crate::gradient::hf_gradient_with_density`]) that correlated methods reuse with relaxed densities.
 
 use crate::result::{ScfResult, Spin};
 use crate::screening::SchwarzBounds;
@@ -781,7 +781,7 @@ fn smeared_charge_qm_gradient(
 /// dE/dR of the SCF energy with respect to each Gaussian-smeared MM site's
 /// OWN position (i.e. the force convention `mm_forces` needs is `-` this),
 /// from the same `V_μν = -Σ_i q_i (μν|g_i)/norm_i` term
-/// [`smeared_charge_qm_gradient`] differentiates.
+/// `smeared_charge_qm_gradient` differentiates.
 ///
 /// By translational invariance of the 3-centre integral `(μν|g_i)` (site
 /// center + the two obs shell centers, three centers total — proved by

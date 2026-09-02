@@ -15,7 +15,7 @@ const PAR_METRIC_SHELL_THRESHOLD: usize = 64;
 /// Build the 2-center Coulomb metric (P|Q), shape (naux, naux).
 ///
 /// Parallelized over the outer aux-shell index `sp` (independent row bands)
-/// once `nsh` clears [`PAR_METRIC_SHELL_THRESHOLD`]; each rayon worker builds
+/// once `nsh` clears `PAR_METRIC_SHELL_THRESHOLD`; each rayon worker builds
 /// its own `Engine` via `for_each_init` (never per-item — construction runs
 /// under a global ctor mutex). For a fixed `sp`, the write set is
 /// `{(offs[sp]+p, offs[sq]+q), (offs[sq]+q, offs[sp]+p) : sq ≤ sp}` — every

@@ -97,13 +97,13 @@
 //! -1417.0, -25198.0, -448090, -7968290` for `zeta = 1e2..1e6` matches
 //! `-norm_int_p(zeta)` to 4-7 significant figures (converging as
 //! `zeta -> infinity`, tracked in `p_shell_zeta_convergence_sweep`) — see
-//! [`p_axis_for_field_axis`] and [`norm_int_p_shell`].
+//! `p_axis_for_field_axis` and `norm_int_p_shell`.
 //!
 //! **A second, separate sign subtlety** bit the first implementation of
-//! [`build_v_induced`] even after this pin passed: the RAW derivative
+//! `build_v_induced` even after this pin passed: the RAW derivative
 //! convention just measured above is NOT the same sign as the PHYSICAL
 //! electric field [`crate::qmmm::electric_field_at_points`] (and therefore
-//! `induce()`'s `E_i^QM`) actually uses — see [`build_v_induced`]'s doc
+//! `induce()`'s `E_i^QM`) actually uses — see `build_v_induced`'s doc
 //! comment for the full correction history (a wrong-sign `V_ind` still
 //! produces a stable, self-consistent-LOOKING SCF fixed point, just the
 //! WRONG one; it was caught only by comparing against the independent
@@ -637,7 +637,7 @@ pub fn mm_only_polarization_energy(ext: Option<&ExternalPotential>, sites: &Pola
 ///    changes `E_i^{QM,nuc}` exactly like moving any other point charge
 ///    does (`E_i^{QM,nuc} = sum_A Z_A (R_i-R_A)/|R_i-R_A|^3`), contributing
 ///    `-mu_i . dE_i^{QM,nuc}/dR_A` — via the SAME
-///    [`point_charge_field_grad_wrt_site`] formula [`site_gradient`] uses
+///    `point_charge_field_grad_wrt_site` formula [`site_gradient`] uses
 ///    for the analogous MM-permanent-charge and site-nuclear terms (here
 ///    read at "dR_charge" since atom A plays the role of the FIXED charge
 ///    while the site is the fixed probe). MEASURED: omitting this term
@@ -733,7 +733,7 @@ pub fn qm_gradient_contribution(
 /// [`qm_gradient_contribution`] needs and forwards to it. This exists so
 /// every `*_gradient_with_polarizable` wrapper (see `crate::gradient` and
 /// `crate::ks_gradient`) shares ONE construction of `site_basis_p` instead
-/// of duplicating it per SCF variant — [`rhf_gradient_with_polarizable`]
+/// of duplicating it per SCF variant — [`crate::gradient::rhf_gradient_with_polarizable`]
 /// used to build it inline; this function factors that out byte-for-byte
 /// (same `SiteBasis::new(&site_xyz, 1)` call, same field order), pinned by
 /// `polarizable_gradient_term_matches_old_inline_construction` in
@@ -779,14 +779,14 @@ pub fn polarizable_gradient_term(
 ///    coupling to worry about).
 /// 2. `-mu_i . dE_i^{QM,nuc}/dR_i` — the QM NUCLEAR contribution to
 ///    `E_i^QM` is a plain point-charge field (nuclei are point charges from
-///    a site's point of view), handled by [`point_charge_field_grad_wrt_site`].
+///    a site's point of view), handled by `point_charge_field_grad_wrt_site`.
 /// 3. `-mu_i . dE_i^perm/dR_i` for every OTHER permanent MM charge in `ext`
 ///    (respecting colocation-based exclusions, same convention as
-///    [`permanent_field_at_sites`]), via the same point-charge-field
+///    `permanent_field_at_sites`), via the same point-charge-field
 ///    formula, PLUS `-1/2 sum_{j!=i} mu_i . dT_ij/dR_i . mu_j` (the Thole
 ///    tensor's OWN geometric derivative — this term has NO analogue in the
 ///    Fock/QM path). `dT_ij/dR` is evaluated by central finite difference
-///    of the (cheap, closed-form) [`thole_tensor`] function itself — NOT a
+///    of the (cheap, closed-form) `thole_tensor` function itself — NOT a
 ///    finite difference of any SCF energy — since deriving the analytic
 ///    rank-3 tensor derivative by hand carries real sign/algebra risk (this
 ///    module already found two independent sign bugs elsewhere) for a
@@ -980,7 +980,7 @@ pub fn site_gradient(
 /// module note gives for the site side, `dE_pol/dR_charge = sum_i
 /// -mu_i . dE_i^perm/dR_charge` for every site `i` that sees this charge
 /// (i.e. not colocated with/excluded from it). This is exactly the
-/// `d/dR_charge` half of [`point_charge_field_grad_wrt_site`] that
+/// `d/dR_charge` half of `point_charge_field_grad_wrt_site` that
 /// `site_gradient` computes but discards (`let (contrib, _) = ...`) —
 /// discarding it there was correct FOR THAT FUNCTION's contract (it only
 /// ever returns site-indexed rows), but it means the charge's own row was
@@ -994,7 +994,7 @@ pub fn site_gradient(
 /// function closes only the `mu`-charge coupling piece of `E_pol`; it says
 /// nothing about `Z_A q_c / |R_A - R_c|`.
 ///
-/// Colocation/exclusion follows [`permanent_field_at_sites`]'s own
+/// Colocation/exclusion follows `permanent_field_at_sites`'s own
 /// convention exactly (a charge colocated with site `i` contributes no
 /// `E_i^perm`, hence no reaction force on that SAME charge from site `i`'s
 /// own dipole — but it still feels every OTHER site's dipole normally).

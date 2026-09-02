@@ -959,9 +959,9 @@ pub fn xc_gradient_closed_gga_from_density(
 ///   grid response:   ∂E/∂R_{A,α} += Σ_{g: home=A} w_g v_τ ∂_α τ(r_g)
 /// ```
 ///
-/// See [`mgga_tau_partials`] for the derivation of the first (including why the
+/// See `mgga_tau_partials` for the derivation of the first (including why the
 /// ½ in τ's definition cancels against the μ↔ν doubling) and
-/// [`tau_spatial_grad`] for the second.
+/// `tau_spatial_grad` for the second.
 #[allow(clippy::too_many_arguments)]
 pub fn xc_gradient_closed_mgga_from_density(
     mol: &Molecule,
@@ -1387,7 +1387,7 @@ pub fn xc_gradient_uks_from_density(
 ///   grid response:  ∂E/∂R_{A,α} += Σ_σ Σ_{g: home=A} w_g v_τσ ∂_α τ_σ(r_g)
 /// ```
 ///
-/// See [`mgga_tau_partials`] for the derivation (with D → D_σ, τ → τ_σ).
+/// See `mgga_tau_partials` for the derivation (with D → D_σ, τ → τ_σ).
 #[allow(clippy::too_many_arguments)]
 pub fn xc_gradient_uks_mgga_from_density(
     mol: &Molecule,

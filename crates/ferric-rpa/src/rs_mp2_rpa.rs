@@ -24,9 +24,9 @@ use crate::{run_pdep_rpa_from_intermediates, PdepRpaConfig};
 /// E_c^B = E_MP2[Coulomb] + (E_dRPA[erf_ω] − 2·E_OS[erf_ω])
 /// ```
 ///
-/// Resums pure long-range rings via a single dRPA[erf] solve. Drops all mixed
+/// Resums pure long-range rings via a single dRPA\[erf\] solve. Drops all mixed
 /// SR×LR rings at 3rd order and above (leading residual: 3·k_s·k_l·(k_s+k_l)/(4Δ²)
-/// in the one-mode ring model). Cost: 1 dRPA[erf] call.
+/// in the one-mode ring model). Cost: 1 dRPA\[erf\] call.
 ///
 /// ## Formulation T — coupled rings (`CoupledRings`)
 ///
@@ -41,7 +41,7 @@ use crate::{run_pdep_rpa_from_intermediates, PdepRpaConfig};
 /// dRPA's short-range self-correlation hole).
 ///
 /// Same exact limits as B: ω→0 ⇒ erfc→Coulomb, the two ΔdRPA terms cancel ⇒
-/// plain MP2; ω→∞ ⇒ erfc→0 ⇒ MP2 + ΔdRPA[Coulomb]. Cost: 2 dRPA calls
+/// plain MP2; ω→∞ ⇒ erfc→0 ⇒ MP2 + ΔdRPA\[Coulomb\]. Cost: 2 dRPA calls
 /// (Coulomb + erfc).
 ///
 /// ## TOML / Python knob
@@ -51,11 +51,11 @@ use crate::{run_pdep_rpa_from_intermediates, PdepRpaConfig};
 ///         `formulation="coupled-rings"`
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RsMp2RpaFormulation {
-    /// Δ-form (formulation B): E_MP2[Coulomb] + (E_dRPA[erf] − 2·E_OS[erf]).
+    /// Δ-form (formulation B): E_MP2\[Coulomb\] + (E_dRPA\[erf\] − 2·E_OS\[erf\]).
     /// Pure-LR rings only; mixed SR×LR rings dropped. Default.
     #[default]
     DeltaLr,
-    /// Coupled-rings (formulation T): MP2 + ΔdRPA[Coulomb] − ΔdRPA[erfc].
+    /// Coupled-rings (formulation T): MP2 + ΔdRPA\[Coulomb\] − ΔdRPA\[erfc\].
     /// Adds all mixed SR×LR rings vs DeltaLr; no pure-SR rings ≥3rd order.
     CoupledRings,
 }
@@ -148,13 +148,13 @@ impl Default for RsMp2RpaConfig {
 ///
 /// ## Formulation-specific fields
 ///
-/// - `e_drpa_lr` (`Some` for `DeltaLr`, `None` for `CoupledRings`): dRPA[erf] energy.
+/// - `e_drpa_lr` (`Some` for `DeltaLr`, `None` for `CoupledRings`): dRPA\[erf\] energy.
 /// - `e_corr_naive` (`Some` for `DeltaLr`, `None` for `CoupledRings`): diagnostic
-///   formulation A = E_MP2[erfc] + E_dRPA[erf]; missing SR×LR cross-range terms.
+///   formulation A = E_MP2\[erfc\] + E_dRPA\[erf\]; missing SR×LR cross-range terms.
 /// - `e_delta_drpa_full` (`Some` for `CoupledRings`, `None` for `DeltaLr`):
-///   ΔdRPA[Coulomb] = E_dRPA[Coulomb] − 2·E_OS[Coulomb].
+///   ΔdRPA\[Coulomb\] = E_dRPA\[Coulomb\] − 2·E_OS\[Coulomb\].
 /// - `e_delta_drpa_sr` (`Some` for `CoupledRings`, `None` for `DeltaLr`):
-///   ΔdRPA[erfc] = E_dRPA[erfc] − 2·E_OS[erfc] (the short-range ring contribution
+///   ΔdRPA\[erfc\] = E_dRPA\[erfc\] − 2·E_OS\[erfc\] (the short-range ring contribution
 ///   that is subtracted to avoid double-counting pure-SR rings).
 #[derive(Debug, Clone)]
 #[must_use]
@@ -162,17 +162,17 @@ pub struct RsMp2RpaResult {
     pub e_mp2_full: f64,
     pub e_sr_mp2: f64,
     pub e_lr_mp2: f64,
-    /// Direct (ring) second-order term with the erf kernel = 2·E_OS[erf].
+    /// Direct (ring) second-order term with the erf kernel = 2·E_OS\[erf\].
     pub e_dmp2_lr: f64,
-    /// E_dRPA[erf] (formulation B / DeltaLr only; None for CoupledRings).
+    /// E_dRPA\[erf\] (formulation B / DeltaLr only; None for CoupledRings).
     pub e_drpa_lr: Option<f64>,
-    /// Naive sum E_MP2[erfc] + E_dRPA[erf] (formulation A, diagnostic, DeltaLr only).
+    /// Naive sum E_MP2\[erfc\] + E_dRPA\[erf\] (formulation A, diagnostic, DeltaLr only).
     /// Missing the 2·v_sr·v_lr cross-range correlation; reported to make that visible.
     pub e_corr_naive: Option<f64>,
-    /// ΔdRPA[Coulomb] = E_dRPA[Coulomb] − 2·E_OS[Coulomb] (CoupledRings only).
+    /// ΔdRPA\[Coulomb\] = E_dRPA\[Coulomb\] − 2·E_OS\[Coulomb\] (CoupledRings only).
     pub e_delta_drpa_full: Option<f64>,
-    /// ΔdRPA[erfc] = E_dRPA[erfc] − 2·E_OS[erfc] (CoupledRings only).
-    /// Subtracted from ΔdRPA[Coulomb] to exclude pure-SR rings beyond 2nd order.
+    /// ΔdRPA\[erfc\] = E_dRPA\[erfc\] − 2·E_OS\[erfc\] (CoupledRings only).
+    /// Subtracted from ΔdRPA\[Coulomb\] to exclude pure-SR rings beyond 2nd order.
     pub e_delta_drpa_sr: Option<f64>,
     /// Correlation energy of the selected formulation.
     pub e_corr: f64,
@@ -188,11 +188,11 @@ impl std::fmt::Display for RsMp2RpaResult {
 
 /// SR-MP2 + LR-RPA, Δ-form (B) or coupled-rings (T).
 ///
-/// **DeltaLr (B)**: replaces MP2's long-range direct ring series with its dRPA[erf]
+/// **DeltaLr (B)**: replaces MP2's long-range direct ring series with its dRPA\[erf\]
 /// resummation. Exact limits: ω→0 ⇒ plain MP2; ω→∞ ⇒ MP2 + (dRPA − dMP2).
 ///
-/// **CoupledRings (T)**: screens all rings (ΔdRPA[Coulomb]) then un-screens the
-/// pure-SR rings (−ΔdRPA[erfc]). Same exact limits; additionally includes all
+/// **CoupledRings (T)**: screens all rings (ΔdRPA\[Coulomb\]) then un-screens the
+/// pure-SR rings (−ΔdRPA\[erfc\]). Same exact limits; additionally includes all
 /// mixed SR×LR ring diagrams. Cost: 2 dRPA calls instead of 1.
 pub fn rs_mp2_lr_rpa(
     mol: &Molecule,

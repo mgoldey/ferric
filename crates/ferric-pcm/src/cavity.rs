@@ -21,7 +21,7 @@
 //!    directly from `ferric_quadrature::lebedev`, which is already validated for
 //!    DFT quadrature).
 //! 3. A point's area is scaled by `prod_{B != A} h(d_AB)`, a smooth quintic
-//!    switching weight (`h`=[`switch_h`]) that is 1 far outside every other
+//!    switching weight (`h`=`switch_h`) that is 1 far outside every other
 //!    sphere and smoothly goes to 0 deep inside one — rather than the old
 //!    hard binary keep/discard cut. Points whose total switching weight
 //!    underflows a numerical floor (matching PySCF's `w*swf > 1e-16` keep

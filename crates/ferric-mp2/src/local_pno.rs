@@ -50,7 +50,7 @@ use ndarray::{Array1, Array2};
 /// Per-pair virtual transforms produced by [`build_pno_transforms`].
 #[derive(Debug, Clone)]
 pub struct PnoTransforms {
-    /// One entry per pair in the originating [`PairDomains::pairs`], in the same order.
+    /// One entry per pair in the originating [`crate::pair_domains::PairDomains::pairs`], in the same order.
     pub pairs: Vec<PnoPair>,
     /// Full (untruncated) virtual count the transforms map from.
     pub nvir: usize,

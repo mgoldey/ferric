@@ -23,13 +23,13 @@
 //! already smaller than Coulomb.  But the erfc Schwarz integral `(P|P)_erfc` is
 //! a *self*-overlap: both electron coordinates are pinned to the aux center P, so
 //! r₁₂ ≈ 0 there and `erfc(ω·0)/0 → 1/0` — the self-overlap integral sees no
-//! attenuation at all.  As a result, Q₃[P]_erfc ≈ Q₃[P]_Coulomb, and the Schwarz
+//! attenuation at all.  As a result, Q₃\[P\]_erfc ≈ Q₃\[P\]_Coulomb, and the Schwarz
 //! bound does not shrink with ω.  Empirically on decane at ω = 0.222 Bohr⁻¹:
 //! **Schwarz alone drops 0 additional shell triples vs the unscreened calculation.**
 //!
 //! ## The QQR-3 fix: explicit distance × operator envelope
 //!
-//! [`crate::qqr3::QqrBounds3`] augments the Schwarz estimate with a bra–ket
+//! [`ferric_integrals::qqr3::QqrBounds3`] augments the Schwarz estimate with a bra–ket
 //! distance term:
 //! ```text
 //!   |(P|μν)| ≤ Q₃[P] · Q(μ,ν) · min(1, ext_P · ext_μν / R) · exp(-ω²R²)

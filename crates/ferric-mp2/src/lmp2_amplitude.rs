@@ -33,7 +33,7 @@
 //!   set spans the same space); only domain compactness depends on it.
 //! - The dense global-metric J (`assemble_localized`) survives only as the
 //!   test/cross-check path. Production assembly is
-//!   [`assemble_ragged_direct_aux`]: integral-free R⁻⁶ pair gate before any
+//!   [`crate::lmp2_amplitude::assemble_ragged_direct_aux`]: integral-free R⁻⁶ pair gate before any
 //!   GEMM (`pair_gate_cal`), per-unique-pair whitened Gram GEMMs over
 //!   exact-Schwarz candidate subsets, optional per-pair domain-local
 //!   same-kernel fits (`fit_radius_bohr`) and ε-linked aux truncation

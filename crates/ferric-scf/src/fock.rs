@@ -1,6 +1,6 @@
 //! Fock matrix builder traits and composite builder.
 //!
-//! The [`JBuilder`] and [`KBuilder`] traits abstract the Coulomb and exchange
+//! The [`crate::fock::JBuilder`] and [`crate::fock::KBuilder`] traits abstract the Coulomb and exchange
 //! matrix construction, allowing future pluggable implementations (e.g., LinK, CFMM).
 
 use ferric_core::FerricError;

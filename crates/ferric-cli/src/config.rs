@@ -221,14 +221,14 @@ pub struct Mp2Cfg {
     pub domain_cutoff_bohr: Option<f64>,
     /// SR-MP2 + LR-RPA formulation (for rs-mp2-rpa):
     ///
-    ///   "delta-lr"      (default) — Δ-form B: E_MP2[Coulomb] + (E_dRPA[erf] − 2·E_OS[erf]).
-    ///                   Pure-LR rings; mixed SR×LR rings dropped. Cost: 1 dRPA[erf] call.
+    ///   "delta-lr"      (default) — Δ-form B: E_MP2\[Coulomb\] + (E_dRPA\[erf\] − 2·E_OS\[erf\]).
+    ///                   Pure-LR rings; mixed SR×LR rings dropped. Cost: 1 dRPA\[erf\] call.
     ///
-    ///   "coupled-rings" — formulation T: E_MP2[Coulomb] + ΔdRPA[Coulomb] − ΔdRPA[erfc].
-    ///                   Screens all rings (ΔdRPA[Coulomb]), un-screens pure-SR rings
-    ///                   (−ΔdRPA[erfc]). Adds all mixed SR×LR rings. Cost: 2 dRPA calls.
+    ///   "coupled-rings" — formulation T: E_MP2\[Coulomb\] + ΔdRPA\[Coulomb\] − ΔdRPA\[erfc\].
+    ///                   Screens all rings (ΔdRPA\[Coulomb\]), un-screens pure-SR rings
+    ///                   (−ΔdRPA\[erfc\]). Adds all mixed SR×LR rings. Cost: 2 dRPA calls.
     ///
-    /// Both formulations have the same exact limits: ω→0 ⇒ plain MP2; ω→∞ ⇒ MP2+ΔdRPA[Coulomb].
+    /// Both formulations have the same exact limits: ω→0 ⇒ plain MP2; ω→∞ ⇒ MP2+ΔdRPA\[Coulomb\].
     pub formulation: Option<String>,
     /// SR-MP2 + LR-RPA range-separation kernel (for rs-mp2-rpa):
     ///
@@ -508,10 +508,10 @@ pub struct RpaCfg {
     /// χ₀ sparsity strategy. One of:
     ///   "dense"            — dense MO-basis χ₀ (default; fastest ≤~20 atoms)
     ///   "boys"             — Boys-screened, default thresh 1e-4
-    ///   "boys:<thresh>"    — Boys-screened with explicit threshold, e.g. "boys:1e-3"
+    ///   `"boys:<thresh>"`    — Boys-screened with explicit threshold, e.g. "boys:1e-3"
     ///   "auto"             — pick Dense/Boys by atom count (cutoff 30, thresh 1e-4)
-    ///   "auto:<cutoff>"    — auto with explicit atom cutoff, e.g. "auto:24"
-    ///   "auto:<cutoff>:<thresh>" — auto with explicit cutoff and Boys threshold
+    ///   `"auto:<cutoff>"`    — auto with explicit atom cutoff, e.g. "auto:24"
+    ///   `"auto:<cutoff>:<thresh>"` — auto with explicit cutoff and Boys threshold
     ///
     /// Recommendations (see `boys-screening-crossover`): Boys-screening's
     /// per-orbital tile overhead makes it SLOWER than Dense below ~20 atoms and a
@@ -637,25 +637,25 @@ pub struct RpaCfg {
 }
 
 impl RpaCfg {
-    /// Parse the `chi0_sparsity` TOML string into a [`Chi0Sparsity`].
+    /// Parse the `chi0_sparsity` TOML string into a [`ferric_rpa::config::Chi0Sparsity`].
     ///
     /// Accepted forms (case-insensitive, whitespace-trimmed); an optional
     /// `@<radius_bohr>` suffix on the boys/auto forms sets the G6 centroid
     /// distance pre-filter (omit → ∞ = filter off, byte-identical to pre-G6):
     ///   None / "dense"                 → Dense (default; backward compatible)
     ///   "boys"                         → BoysScreened { thresh: 1e-4, dist: ∞ }
-    ///   "boys:<thresh>"                → BoysScreened with that threshold
-    ///   "boys:<thresh>@<radius>"       → …and that distance-cutoff radius (Bohr)
+    ///   `"boys:<thresh>"`                → BoysScreened with that threshold
+    ///   `"boys:<thresh>@<radius>"`       → …and that distance-cutoff radius (Bohr)
     ///   "auto"                         → Auto { cutoff: 30, thresh: 1e-4, dist ∞ }
-    ///   "auto:<cutoff>"                → Auto with that atom cutoff
-    ///   "auto:<cutoff>:<thresh>"       → …and that Boys threshold
-    ///   "auto:<cutoff>:<thresh>@<rad>" → …and that distance-cutoff radius (Bohr)
+    ///   `"auto:<cutoff>"`                → Auto with that atom cutoff
+    ///   `"auto:<cutoff>:<thresh>"`       → …and that Boys threshold
+    ///   `"auto:<cutoff>:<thresh>@<rad>"` → …and that distance-cutoff radius (Bohr)
     pub fn parse_chi0_sparsity(&self) -> Result<ferric_rpa::config::Chi0Sparsity, String> {
         // Canonical parser lives on the type (shared with the Python bindings).
         ferric_rpa::config::Chi0Sparsity::parse_config_str(self.chi0_sparsity.as_deref())
     }
 
-    /// Parse the `[rpa] quadrature` TOML string into a [`QuadratureScheme`],
+    /// Parse the `[rpa] quadrature` TOML string into a [`ferric_rpa::config::QuadratureScheme`],
     /// warning if `u0` was set but the chosen scheme ignores it.
     ///
     /// Unknown strings are an error (they used to silently run Gauss-Legendre).

@@ -62,7 +62,7 @@ where
 /// BLAS threading: the whole iteration (dielectric-matrix matvec via the
 /// caller-supplied `dielectric_fn`, `eigh`, the Ritz-vector GEMMs, and QR
 /// re-orthonormalization) runs under one `with_blas_threads` scope — see
-/// [`run_davidson_seeded_impl`]. Default 1 (unchanged behavior); opt-in via
+/// `run_davidson_seeded_impl`. Default 1 (unchanged behavior); opt-in via
 /// `FERRIC_BLAS_THREADS`/`FERRIC_LANCZOS_BLAS_THREADS` closes the
 /// Davidson/Lanczos gating asymmetry (Lanczos has had this since the
 /// FERRIC_LANCZOS_BLAS_THREADS precedent; Davidson did not).

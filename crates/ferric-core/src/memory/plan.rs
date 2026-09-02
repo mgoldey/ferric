@@ -1,11 +1,11 @@
-//! [`MemoryPlan`]: a memory budget as a *value* you spend, not a place you read.
+//! [`crate::memory::plan::MemoryPlan`]: a memory budget as a *value* you spend, not a place you read.
 //!
 //! # Why this exists
 //!
-//! [`resolve_budget_bytes`](super::resolve_budget_bytes) answers "what is the
+//! `resolve_budget_bytes` (`super::resolve_budget_bytes`) answers "what is the
 //! ceiling?". It does that well. But it hands the *whole* ceiling to every
 //! caller that asks, and on the tree at `0e876a75` there were 121 such callers
-//! across 48 files, against 32 [`check_alloc`](super::check_alloc) gates. Three
+//! across 48 files, against 32 `check_alloc` (`super::check_alloc`) gates. Three
 //! consequences, all observed in this repo:
 //!
 //! 1. **The gates do not compose.** Two stages that each independently pass
@@ -13,7 +13,7 @@
 //!    what the other left resident. Exactly one site in the tree accounts for
 //!    prior residency (`ferric_rpa::energy::quad_panel_width`, which does
 //!    `budget.saturating_sub(y_bytes)`); everywhere else the
-//!    [`Share`](super::Share) enum stands in with an author-time guess
+//!    `Share` (`super::Share`) enum stands in with an author-time guess
 //!    (`budget/4`, `budget/2`). A constant fraction cannot track what is
 //!    actually resident at run time.
 //!
@@ -48,14 +48,14 @@
 //! # Ok::<(), ferric_core::FerricError>(())
 //! ```
 //!
-//! [`MemoryPlan::alloc2`] is the part that kills defect (2): an array can only
+//! `MemoryPlan::alloc2` is the part that kills defect (2): an array can only
 //! be allocated under a label that was declared, and its element count is
 //! checked against the declaration. A forgotten term becomes a loud failure at
 //! the allocation site instead of a silent underestimate found later by the OOM
 //! killer. The estimate and the allocation are the same expression, so they
 //! cannot disagree.
 //!
-//! [`MemoryPlan::remaining`] and [`MemoryPlan::sub_plan`] address defect (1):
+//! `MemoryPlan::remaining` and `MemoryPlan::sub_plan` address defect (1):
 //! what is left is a real subtraction over what has been declared, not a
 //! fraction chosen when the code was written.
 //!
@@ -63,7 +63,7 @@
 //!
 //! Reservations happen once per stage, not once per loop iteration, so the
 //! bookkeeping is a handful of integer adds on a path that is about to touch
-//! hundreds of megabytes. [`MemoryPlan::alloc2`] allocates exactly what
+//! hundreds of megabytes. `MemoryPlan::alloc2` allocates exactly what
 //! `Array2::zeros` would; the plan adds a `HashMap` lookup.
 
 use std::collections::HashMap;
