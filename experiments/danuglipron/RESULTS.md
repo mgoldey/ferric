@@ -676,6 +676,41 @@ not diagnosed.**
   9.5 GB peak being a FULL cache plus SCF matrices, i.e. batching probably never
   engaged. Testing this needs an uncontended box.
 
+### Leads from reading the code (2026-09-02, NOT yet confirmed by timing)
+
+Two structural facts about ferric's KS grid, both read from source rather than
+inferred from a benchmark:
+
+1. **Grid setup is O(natoms^3).** `becke_weights_all` (becke.rs:115) is
+   O(natoms^2) per point via its nested a/b loop, and the number of grid points
+   is itself O(natoms). Predicted setup ratio danuglipron:alkane_10 = **10.5x**,
+   against **1.55x** for the XC pass. This is the only term found so far that
+   scales anywhere near the observed runtime gap.
+   - **But it is a ONE-TIME cost**, paid in `KsXc::new`, not per SCF iteration,
+     and it is parallelized (order-preserving `into_par_iter`). So it cannot by
+     itself explain a large per-ITERATION cost.
+   - The energy path uses `becke_weights_all` (O(natoms^2)/point); the
+     O(natoms^3)/point comment at grid.rs:247 belongs to the GRADIENT variant
+     `becke_weights_and_grad`, which an energy-only run does not call. Do not
+     quote grid.rs:247 as if it applied here.
+
+2. **The AO cache is built once and reused** (`GridCache::Full`, ks.rs:372), so
+   AO values are NOT re-evaluated per iteration unless batching engaged.
+
+**What would settle it:** a run that separates one-time setup from per-iteration
+cost, e.g. t(max_iter=1) vs t(max_iter=3), giving per_iter = (t3-t1)/2 and
+setup = t1 - per_iter. Written as `scratchpad/split.py`; **not yet run to
+completion on an uncontended box.**
+
+**Measurement hygiene note.** Several timings attempted this session are
+discarded, not reported: load average reached 19.65 on 12 cores with 2.8 GB
+available while other users' `llama-server` jobs and my own probes overlapped.
+An earlier reading of "alkane_10 at STO-3G did not finish in 1800 s" was also
+WRONG -- it converges in 3 iterations / 23.5 s; I had misread an empty output
+file (the ladder was stuck on a later, larger case) as a result for the first
+entry. Timings taken under contention are not evidence, and an empty file is
+not a measurement.
+
 **Method note:** two of my probe scripts failed on ferric's API (`charge` belongs
 to `Molecule.from_xyz`, not `run_dft`), and one of those failures printed a
 `291 electrons` error that looked like a physics bug in the geometry. It was
