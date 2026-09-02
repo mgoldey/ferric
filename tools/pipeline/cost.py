@@ -54,8 +54,39 @@ class DftSize:
 
     @property
     def xc_work(self) -> int:
-        """nbf x npts -- the size of the XC pass, the honest comparison axis."""
+        """nbf x npts -- the size of one pass over the grid."""
         return self.n_basis_functions * self.grid_points
+
+    @property
+    def xc_fock_work(self) -> int:
+        """nbf^2 x npts -- the XC Fock assembly, done EVERY SCF iteration.
+
+        This is the term that actually sets KS-DFT wall time at drug scale.
+        `vxc.rs` assembles V_xc with `buf.dot(&chi.t())`, an (nbf, npts) x
+        (npts, nbf) GEMM. Since npts is proportional to atom count, this is
+        cubic in molecular size -- and it is paid per iteration, not once.
+
+        Calibrated against measured alkane runs (STO-3G/PBE, 10 iterations
+        each), predicting from alkane_5 alone:
+
+            atoms   predicted   actual
+               32       17.8 s   19.6 s
+               62      134.3 s  130.2 s
+
+        Within 10% across a 54x span of cost.
+        """
+        return (self.n_basis_functions ** 2) * self.grid_points
+
+    def predicted_seconds(self, reference: "DftSize", reference_seconds: float) -> float:
+        """Scale a measured runtime from `reference` to this system.
+
+        Uses `xc_fock_work`, NOT atom count and NOT nbf alone -- both of those
+        mispredict badly (see the module docstring). Assumes a comparable
+        iteration count, which held at exactly 10 across 17-62 atoms.
+        """
+        if reference.xc_fock_work == 0:
+            raise ValueError("reference system has zero XC work")
+        return reference_seconds * self.xc_fock_work / reference.xc_fock_work
 
 
 # STO-3G contracted functions per atom, by row. Enough to compare two

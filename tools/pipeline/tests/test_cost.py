@@ -80,3 +80,41 @@ def test_atom_count_alone_hides_composition():
     assert abs(atom_ratio - 1.13) < 0.02
     assert abs(work_ratio - 1.86) < 0.02
     assert work_ratio > 1.6 * atom_ratio      # composition dominates
+
+
+def test_xc_fock_work_predicts_measured_alkane_runtimes():
+    """The cost model is calibrated against real runs, not asserted.
+
+    STO-3G/PBE, 10 SCF iterations each, quiet box, budget pinned. Predicting
+    from alkane_5 alone must land within 15% at both larger sizes -- a span of
+    54x in cost. If this drifts, the O(nbf^2 x npts) attribution is wrong.
+    """
+    a5 = DftSize(n_atoms=17, n_basis_functions=37)
+    a10 = DftSize(n_atoms=32, n_basis_functions=72)
+    a20 = DftSize(n_atoms=62, n_basis_functions=142)
+
+    assert abs(a10.predicted_seconds(a5, 2.5) - 19.6) / 19.6 < 0.15
+    assert abs(a20.predicted_seconds(a5, 2.5) - 130.2) / 130.2 < 0.15
+
+
+def test_atom_count_alone_mispredicts_badly():
+    """Guards against reverting to the axis that produced the wrong story.
+
+    Scaling alkane_5 -> alkane_20 by ATOM COUNT (cubed, the naive reading of
+    the observed exponent) misses the measured 130.2 s substantially, because
+    it ignores that nbf grows too. The nbf^2 x npts model does not.
+    """
+    a5 = DftSize(n_atoms=17, n_basis_functions=37)
+    a20 = DftSize(n_atoms=62, n_basis_functions=142)
+
+    by_atoms = 2.5 * (62 / 17) ** 3
+    by_model = a20.predicted_seconds(a5, 2.5)
+    assert abs(by_model - 130.2) < abs(by_atoms - 130.2)
+
+
+def test_xc_fock_work_is_quadratic_in_basis_not_linear():
+    """nbf^2, not nbf: doubling the basis quadruples the Fock assembly."""
+    small = DftSize(n_atoms=10, n_basis_functions=50)
+    big = DftSize(n_atoms=10, n_basis_functions=100)
+    assert big.xc_fock_work == 4 * small.xc_fock_work
+    assert big.xc_work == 2 * small.xc_work        # the one-pass term is linear
