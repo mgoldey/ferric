@@ -189,9 +189,26 @@ jobs:
           # build, etc.), and Eigen's headers (copied below) are cheap enough
           # that fetching them on every run is simpler than caching a handful
           # of header files separately.
-          dnf install -y gcc-toolset-12 gcc-toolset-12-gfortran cmake \
+          # The Fortran compiler package is `gcc-toolset-12-gcc-gfortran`, NOT
+          # `gcc-toolset-12-gfortran`. RHEL8/AlmaLinux names the toolset's
+          # compilers `gcc-toolset-N-gcc-<lang>` (the bare `gcc-toolset-12`
+          # metapackage pulls C/C++ only). The wrong name failed all four
+          # matrix legs identically in run 33584794617 with
+          # "Unable to find a match: gcc-toolset-12-gfortran" — dnf resolved
+          # every other package in this list, so this was the sole blocker.
+          dnf install -y gcc-toolset-12 gcc-toolset-12-gcc-gfortran cmake \
             wget tar gzip patch perl-IPC-Cmd python3 which
           source /opt/rh/gcc-toolset-12/enable
+          # Fail here, not 20 minutes later. Without gfortran, OpenBLAS builds
+          # a crippled LAPACK and the breakage surfaces as missing symbols at
+          # ferric's link step — far from the cause. `dnf install` succeeding
+          # is not proof the compiler is on PATH, since the toolset needs the
+          # `enable` script sourced first.
+          command -v gfortran >/dev/null 2>&1 || {
+            echo "::error::gcc-toolset-12 has no gfortran on PATH after sourcing enable; OpenBLAS's LAPACK needs it"
+            exit 1
+          }
+          gfortran --version | head -1
 
           # --- Eigen (header-only; libint2/libecpint's shim needs
           # /usr/include/eigen3, hardcoded in ferric-integrals/build.rs) ---
