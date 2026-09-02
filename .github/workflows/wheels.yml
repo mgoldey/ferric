@@ -249,7 +249,18 @@ jobs:
           tar xzf libxc-${LIBXC_VERSION}.tar.gz
           cd libxc-${LIBXC_VERSION}
           mkdir build && cd build
+          # -DCMAKE_POLICY_VERSION_MINIMUM=3.5: libxc 6.2.2's CMakeLists.txt
+          # declares a cmake_minimum_required below 3.5, and CMake 4.x REMOVED
+          # compatibility with those — it hard-errors rather than warning
+          # ("Compatibility with CMake < 3.5 has been removed from CMake",
+          # run 33635089264). The manylinux_2_28 image ships a CMake new
+          # enough to refuse. The flag is CMake's own documented escape hatch
+          # for exactly this, and it only relaxes the policy floor; it does
+          # not change any build setting of libxc itself. Pinning an older
+          # CMake would work too, but that trades a one-line flag for a whole
+          # extra toolchain to keep current.
           cmake .. -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_INSTALL_LIBDIR=lib \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
             -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
             -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DDISABLE_KXC=OFF
           make -j"$NPROC"
@@ -275,7 +286,14 @@ jobs:
           tar xzf libint-${LIBINT_VERSION}-mpqc4.tgz
           cd libint-${LIBINT_VERSION}
           mkdir build && cd build
+          # -DCMAKE_POLICY_VERSION_MINIMUM=3.5 for the same reason as libxc
+          # above: the mpqc4 export is a 2021-era tarball whose
+          # cmake_minimum_required predates 3.5, which CMake 4.x refuses
+          # outright. Set pre-emptively rather than waiting for a third failed
+          # run to prove it — libint2 is the OLDER of the two sources, so if
+          # libxc tripped this, libint2 was going to as well.
           cmake .. -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_INSTALL_LIBDIR=lib \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
             -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
             -DCMAKE_BUILD_TYPE=Release
           make -j"$NPROC"
