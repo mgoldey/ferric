@@ -717,10 +717,49 @@ work ratio. `tools/pipeline/cost.py::sto3g_basis_functions` exists so the
 comparison is made on the right axis -- I nearly used alkane_20 as a
 "size-matched control" that was matched on the wrong variable.
 
-**What remains, by elimination:** SCF convergence behaviour -- how many
-iterations, and how many rungs of the level-shift ladder -- rather than the
-cost of any one iteration. The neutral-vs-anion control at fixed size and basis
-is the experiment that tests it.
+**Charge is NOT the explanation either (partial, 2026-09-02).** The
+neutral-vs-anion control was started on a quiet box. The **neutral** acid
+(71 atoms, q=0) reached **9.4 GB RSS within 2 minutes** -- the same memory
+signature previously seen on the anion, and far past the ~2 min in which the
+62-atom alkane finishes ENTIRELY. I stopped it there: another user's
+`llama-server` started and free memory fell to 260 MB, so continuing would have
+risked the box for a number I could already tell was going to be large.
+
+The run did not finish, so there is no timing to quote -- but the memory
+trajectory alone rules charge out as the driver, since the neutral species
+behaves the same way. **Do not re-run the anion first**: the neutral is the
+cheaper falsification and it already fired.
+
+**What remains, by elimination:** SCF convergence behaviour -- iteration count
+and level-shift ladder rungs -- rather than the cost of any one iteration.
+Something about this molecule's electronic structure (not its size, basis,
+composition, or charge) makes the SCF expensive. The next probe should report
+ITERATIONS and RUNGS, which `PyDftResult` does not currently expose; that is a
+small addition to `crates/ferric-python/src/lib.rs` (`ScfResult` already
+carries `iterations` and a typed `exit`, and `LadderResult.rung_outcomes`
+carries the per-rung counts). Exact patch, written and then reverted UNBUILT
+because the box hit load 59 with 255 MB free and a cold libint2 shim compile
+needs ~8 GB:
+
+```rust
+// in `impl PyDftResult`, alongside `gradient`:
+#[getter]
+fn iterations(&self) -> usize { self.scf_data.iterations }
+
+#[getter]
+fn exit_reason(&self) -> String { format!("{:?}", self.scf_data.exit) }
+```
+
+`ScfExit` derives `Debug`, so `exit_reason` yields the variant name
+(`"Converged"`, `"Plateau"`, `"Stalled"`, `"Diverged"`, `"MaxIter"`) — strictly
+more informative than the `converged` bool, which collapses every failure mode
+into `false`. Build with `cargo build --release -p ferric-python` and re-run
+the control.
+
+**Operational note:** `pkill` on the wrapper does NOT kill a ferric process
+running inside a `scripts/ferric-limited` systemd scope -- the child survives
+its parent. Kill the PID inside the scope directly (`kill -TERM <pid>`, then
+`-KILL`). This bit twice today; the 9.4 GB process outlived two wrapper kills.
 
 ### Leads from reading the code (2026-09-02, NOT yet confirmed by timing)
 
