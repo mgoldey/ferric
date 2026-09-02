@@ -55,3 +55,28 @@ def test_budget_gate_detects_the_batching_cliff():
 def test_ample_budget_still_fits():
     """An over-estimating guard is also a bug: ample budgets must pass."""
     assert fits_in_budget(DftSize(1, 10), budget_gb=64.0)
+
+
+def test_atom_count_alone_hides_composition():
+    """Two molecules of similar SIZE can differ ~2x in XC work.
+
+    alkane_20 (62 atoms) is hydrogen-padded: 20 C + 42 H = 142 STO-3G
+    functions. Danuglipron (70 atoms) is heavy-atom rich: 41 heavy + 29 H =
+    234. So a 1.13x atom ratio conceals a 1.86x XC-work ratio. Comparing
+    "same atom count" molecules without checking composition is a trap.
+    """
+    from tools.pipeline.cost import sto3g_basis_functions
+
+    alkane = ["C"] * 20 + ["H"] * 42
+    drug = ["C"] * 31 + ["N"] * 5 + ["O"] * 4 + ["F"] + ["H"] * 29
+
+    assert sto3g_basis_functions(alkane) == 142
+    assert sto3g_basis_functions(drug) == 234
+
+    a = DftSize(len(alkane), sto3g_basis_functions(alkane))
+    d = DftSize(len(drug), sto3g_basis_functions(drug))
+    atom_ratio = d.n_atoms / a.n_atoms
+    work_ratio = d.xc_work / a.xc_work
+    assert abs(atom_ratio - 1.13) < 0.02
+    assert abs(work_ratio - 1.86) < 0.02
+    assert work_ratio > 1.6 * atom_ratio      # composition dominates

@@ -58,6 +58,23 @@ class DftSize:
         return self.n_basis_functions * self.grid_points
 
 
+# STO-3G contracted functions per atom, by row. Enough to compare two
+# molecules' XC work without building a basis; NOT a general basis-set model.
+_STO3G_NBF = {"H": 1, "He": 1,
+              "C": 5, "N": 5, "O": 5, "F": 5, "B": 5, "Be": 5, "Li": 5, "Ne": 5}
+
+
+def sto3g_basis_functions(symbols: list[str]) -> int:
+    """Rough nbf for a symbol list at STO-3G. Unknown elements count as 5.
+
+    Exists so two candidates can be compared on XC work (nbf x npts) rather
+    than on atom count, which hides composition. An alkane is hydrogen-padded
+    (1 function per H) while a drug is heavy-atom rich (5 per C/N/O/F), so
+    two molecules with the SAME atom count can differ ~2x in XC work.
+    """
+    return sum(_STO3G_NBF.get(s, 5) for s in symbols)
+
+
 def fits_in_budget(size: DftSize, budget_gb: float) -> bool:
     """Whether the full AO cache fits, i.e. whether ferric avoids batching.
 
