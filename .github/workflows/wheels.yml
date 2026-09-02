@@ -433,13 +433,21 @@ jobs:
           python3 -m venv /tmp/smoke-venv
           source /tmp/smoke-venv/bin/activate
           pip install --upgrade pip
-          # Install ONLY numpy alongside the wheel -- ferric's runtime
-          # dependency per pyproject.toml -- deliberately not the repo's
-          # source tree or its [dev]/[reference] extras (pyscf, vina, ...),
-          # since the point is to prove the WHEEL is self-contained, not to
-          # reproduce the dev environment.
-          pip install numpy
-          pip install dist/*.whl
+          # Install ONLY the wheel and let pip resolve its declared runtime
+          # dependencies (numpy and gemmi per pyproject.toml) -- deliberately
+          # not the repo's source tree or any of its extras (pyscf, vina,
+          # meeko, ...), since the point is to prove the WHEEL is
+          # self-contained, not to reproduce the dev environment.
+          #
+          # --only-binary=:all: is what keeps that claim honest. A dependency
+          # with no wheel for this interpreter would otherwise fall back to an
+          # sdist and start compiling, which is how the cp313 smoke test
+          # failed before `vina` was moved to the `docking` extra: PyPI's vina
+          # ships cp38-cp312 wheels only, so 3.13 tried to build it from
+          # source and died on missing Boost headers -- a failure that had
+          # nothing to do with the wheel under test. Fail fast and loudly
+          # instead of silently invoking a compiler in a test job.
+          pip install --only-binary=:all: dist/*.whl
           pip show ferric
 
       - name: Smoke test -- import + RHF energy on the built wheel

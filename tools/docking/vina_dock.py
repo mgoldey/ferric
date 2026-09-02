@@ -34,6 +34,26 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# Vina and Meeko are the `docking` extra, not core dependencies (see
+# pyproject.toml for why). Every import of them below is deferred to call time
+# and routed through this, so that a missing extra says what to install instead
+# of surfacing a bare ModuleNotFoundError from three frames down.
+_INSTALL_HINT = (
+    "install the docking extra: `pip install 'ferric[docking]'` "
+    "(or `uv sync --extra docking`). Note that PyPI's vina ships wheels for "
+    "CPython 3.8-3.12 only; on 3.13+ it builds from source and needs Boost."
+)
+
+
+def _require(module: str):
+    """Import an optional docking dependency, or raise an actionable error."""
+    import importlib
+
+    try:
+        return importlib.import_module(module)
+    except ImportError as e:
+        raise ImportError(f"{module} is required for docking -- {_INSTALL_HINT}") from e
+
 
 @dataclass
 class DockedPose:
@@ -72,7 +92,7 @@ def prepare_receptor(pdb_path: str | Path, out_pdbqt: str | Path) -> Path:
     returning a half-prepared file, because a silently malformed receptor gives
     poses that look plausible and are meaningless.
     """
-    from meeko import MoleculePreparation  # noqa: F401  (import check)
+    _require("meeko")  # fail here, not inside the CLI subprocess below
 
     pdb_path, out_pdbqt = Path(pdb_path), Path(out_pdbqt)
     if not pdb_path.is_file():
@@ -106,13 +126,13 @@ def prepare_receptor(pdb_path: str | Path, out_pdbqt: str | Path) -> Path:
 
 def _ligand_pdbqt_from_rdkit(mol) -> str:
     """Meeko-prepared PDBQT string for an RDKit mol WITH 3D coordinates."""
-    from meeko import MoleculePreparation, PDBQTWriterLegacy
+    meeko = _require("meeko")
 
-    prep = MoleculePreparation()
+    prep = meeko.MoleculePreparation()
     setups = prep.prepare(mol)
     if not setups:
         raise RuntimeError("Meeko produced no setup for this ligand")
-    pdbqt, ok, err = PDBQTWriterLegacy.write_string(setups[0])
+    pdbqt, ok, err = meeko.PDBQTWriterLegacy.write_string(setups[0])
     if not ok:
         raise RuntimeError(f"Meeko PDBQT write failed: {err}")
     return pdbqt
@@ -200,7 +220,7 @@ def dock_ligand(
     8; 32 is used here because the failure being fixed is a SEARCH failure, and
     under-searching would reproduce it in a new form.
     """
-    from vina import Vina
+    Vina = _require("vina").Vina
 
     receptor_pdbqt = Path(receptor_pdbqt)
     if not receptor_pdbqt.is_file():

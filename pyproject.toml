@@ -12,15 +12,25 @@ authors = [{ name = "Matthew Goldey", email = "matthew.goldey@gmail.com" }]
 requires-python = ">=3.9"
 dependencies = [
     "numpy>=2.0.0",
-    # Docking (tier 1 of the cost hierarchy -- see
-    # tools/campaign/hierarchy.py). Vina SEARCHES pose space; nothing
-    # else in this repo does. Apache-2.0 engine, LGPL-2.1 prep layer.
-    "vina>=1.2.7",
-    "meeko>=0.8.0",
     "gemmi>=0.7",
 ]
 
 [project.optional-dependencies]
+# Docking (tier 1 of the cost hierarchy -- see tools/campaign/hierarchy.py).
+# Vina SEARCHES pose space; nothing else in this repo does. Apache-2.0
+# engine, LGPL-2.1 prep layer.
+#
+# These are an EXTRA rather than a core dependency because the compiled
+# `ferric` extension does not use them -- only `tools/docking` does, and it
+# imports them at call time. Keeping them core made `pip install ferric`
+# fail outright on Python 3.13: PyPI's vina 1.2.7 ships wheels for cp38-cp312
+# only, so 3.13 falls back to the sdist, which needs Boost headers that are
+# not present on a stock runner. That broke the wheel smoke test for a
+# reason having nothing to do with the wheel.
+docking = [
+    "vina>=1.2.7",
+    "meeko>=0.8.0",
+]
 dev = [
     "ipython>=9.13.0",
     "matplotlib>=3.8",
