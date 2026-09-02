@@ -1,10 +1,29 @@
 name: CI
 
+# `paths-ignore` on push/pull_request ONLY. A docs-only branch pays the full
+# ~30-minute libint2 build plus the whole workspace test suite for a Markdown
+# edit that cannot affect any of it — measured on the PR that added `site/`.
+#
+# Deliberately conservative: this lists only paths that CANNOT change compiled
+# behaviour or test outcomes. `crates/**`, `Cargo.*`, `scripts/`, `testdata/`
+# and `examples/` are all absent on purpose — an examples TOML is an input to
+# an integration test, and a scripts/ change can move the gate itself.
+#
+# NOT applied to `schedule` or `workflow_dispatch`: the nightly run exists to
+# catch drift that a path filter would by definition hide, and a manual
+# dispatch is someone explicitly asking for a full run.
 on:
   push:
     branches: [main]
+    paths-ignore: &docs_only
+      - '**/*.md'
+      - 'site/**'
+      - 'LICENSE-*'
+      - '.gitignore'
+      - '.github/workflows/docs.yml'
   pull_request:
     branches: [main]
+    paths-ignore: *docs_only
   schedule:
     # 04:17 UTC daily -- runs the tests the push job defers, so deferring is a
     # latency tradeoff and not a coverage loss. Off-the-hour on purpose.

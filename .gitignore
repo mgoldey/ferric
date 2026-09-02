@@ -95,3 +95,6 @@ terf-tables/*.bin
 
 # danuglipron campaign scratch output (promote evidence with `git add -f`)
 experiments/danuglipron/out/
+
+# mdBook build output (site/ is the source; site/book is generated)
+site/book/
