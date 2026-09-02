@@ -42,18 +42,28 @@ def test_cost_spans_many_orders_of_magnitude():
     assert hi / lo > 1e6, f"only {hi / lo:.0e}x between cheapest and dearest tier"
 
 
-def test_the_quantum_tier_is_reported_as_unvalidated():
-    """ferric's DFT is tier 4 and has NEVER been used in this campaign. That is
-    a real gap and must not be papered over: every fit number to date is GFN2.
+def test_quantum_tier_is_validated_with_a_converged_measurement():
+    """Tier 4 was unvalidated until 2026-09-02; this pins what changed.
 
-    When tier 4 is finally validated against something, this test fails and the
-    claim gets updated deliberately rather than by drift.
+    The previous version of this test asserted the OPPOSITE -- that the
+    quantum tier appeared in `unvalidated_tiers` -- and its docstring said it
+    would fail when the tier was finally validated, so the claim would be
+    updated deliberately instead of drifting. It fired exactly as intended.
+
+    Evidence: 612.4 s, 18 iterations, converged, on the 71-atom neutral acid
+    at STO-3G/PBE, on a box verified free of memory pressure for the whole
+    run. The prior ">57 min, did not finish" was memory contention (a 7.26 GB
+    auto-budget against a ~9.5 GB need), not DFT cost. See RESULTS.md.
     """
-    unval = [t.method for t in unvalidated_tiers(DANUGLIPRON_HIERARCHY)]
-    assert "ferric DFT + dispersion" in unval, (
-        "the quantum tier is now marked validated -- update this test and say "
-        "in RESULTS.md what it was validated against"
+    quantum = [t for t in DANUGLIPRON_HIERARCHY if t.tier is Tier.QUANTUM]
+    assert len(quantum) == 1
+    spec = quantum[0]
+    assert spec.validated, "the quantum tier has a converged measurement now"
+    assert "612" in spec.validated_by or "18 iterations" in spec.validated_by, (
+        "the validating measurement must stay attached to the claim"
     )
+    assert spec.method not in [t.method for t in
+                               unvalidated_tiers(DANUGLIPRON_HIERARCHY)]
 
 
 def test_every_validated_tier_states_its_evidence():
@@ -77,9 +87,21 @@ def test_search_tier_records_the_redocking_result():
 
 
 def test_unvalidated_tiers_is_reachable_in_both_directions():
-    """Reachability: the detector must be able to return empty AND non-empty,
-    or it is not measuring anything."""
-    assert unvalidated_tiers(DANUGLIPRON_HIERARCHY), "expected >=1 unvalidated"
+    """Reachability: the detector must return empty AND non-empty, or it is
+    not measuring anything.
+
+    Both fixtures are built explicitly. This used to assert that the REAL
+    hierarchy had at least one unvalidated tier, which stopped being true when
+    tier 4 was validated -- coupling a reachability check to a contingent fact
+    about the campaign. Now it tests the detector.
+    """
+    none_validated = tuple(
+        TierSpec(t.tier, t.method, t.seconds_per_pose, t.typical_poses, t.job,
+                 validated_by=None)
+        for t in DANUGLIPRON_HIERARCHY
+    )
+    assert len(unvalidated_tiers(none_validated)) == len(DANUGLIPRON_HIERARCHY)
+
     all_validated = tuple(
         TierSpec(t.tier, t.method, t.seconds_per_pose, t.typical_poses, t.job,
                  validated_by=t.validated_by or "validated in this fixture " * 2)
@@ -87,11 +109,30 @@ def test_unvalidated_tiers_is_reachable_in_both_directions():
     )
     assert unvalidated_tiers(all_validated) == []
 
+    # And the real hierarchy is currently fully validated -- if a tier is ever
+    # added without evidence, that is a deliberate change, not a silent one.
+    assert unvalidated_tiers(DANUGLIPRON_HIERARCHY) == []
+
 
 def test_describe_flags_unvalidated_tiers_in_its_output():
+    """`describe` must make a missing validation visible.
+
+    Driven by an explicitly-unvalidated fixture: the real hierarchy is fully
+    validated now, so asserting on it would test the campaign's state rather
+    than the rendering.
+    """
+    unvalidated = tuple(
+        TierSpec(t.tier, t.method, t.seconds_per_pose, t.typical_poses, t.job,
+                 validated_by=None)
+        for t in DANUGLIPRON_HIERARCHY
+    )
+    assert "NO" in describe(unvalidated), (
+        "describe() must make an unvalidated tier visible"
+    )
+
     out = describe(DANUGLIPRON_HIERARCHY)
-    assert "NO" in out, "describe() must make an unvalidated tier visible"
     assert "ferric DFT" in out
+    assert "NO" not in out, "every tier is validated as of 2026-09-02"
 
 
 def test_tier_outcome_reports_the_funnel_honestly():

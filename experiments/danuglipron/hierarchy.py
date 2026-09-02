@@ -24,7 +24,27 @@ DANUGLIPRON_HIERARCHY: tuple[TierSpec, ...] = (
              "rank survivors; polarization in a point-charge field",
              validated_by="anion-vs-neutral separation of 143 kcal/mol at a "
                           "fixed geometry, i.e. it resolves formal charge"),
-    TierSpec(Tier.QUANTUM, "ferric DFT + dispersion", 600.0, "1-10",
+    # MEASURED 2026-09-02 on a verified-quiet box: 612.4 s (10.2 min),
+    # 18 iterations, CONVERGED, for the 71-atom neutral acid at STO-3G/PBE.
+    #
+    # This SUPERSEDES the 2026-08-30 figure of ">57 min, did not finish", which
+    # was NOT a measurement of DFT cost. That run auto-resolved a 7.26 GB
+    # memory budget from live MemAvailable while needing ~9.5-9.9 GB, and spent
+    # its time paging until the kernel OOM-killed it. It measured contention.
+    # Pin the budget (tier4_dft's mem_budget_gb) and give it headroom.
+    #
+    # Cost driver, for estimating a new candidate: vxc.rs assembles V_xc with
+    # an O(nbf^2 x npts) GEMM EVERY iteration, and ferric's grid is 75x110 per
+    # ATOM, so nbf and atom count both matter and the basis alone does not
+    # predict cost. See tools/pipeline/cost.py. The iteration count is a
+    # SEPARATE factor and is not transferable: alkanes converge in 10, this
+    # molecule in 18.
+    #
+    # validated_by is now set: the tier produced a converged number at this
+    # system's real size, which is what it had never done before.
+    TierSpec(Tier.QUANTUM, "ferric DFT + dispersion", 612.4, "1-10",
              "final energetics on the handful that survive",
-             validated_by=None),   # NOT YET USED IN THIS CAMPAIGN
+             validated_by="612.4 s / 18 iterations / converged on the 71-atom "
+                          "neutral acid at STO-3G/PBE, on a box verified free "
+                          "of memory pressure for the whole run"),
 )

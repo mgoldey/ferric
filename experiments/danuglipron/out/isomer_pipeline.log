@@ -1,0 +1,22 @@
+=== ENUMERATION ===
+  generated 61 -> dedup 60 -> filtered 60
+  by kind: {'parent': 1, 'structural': 5, 'substitutional': 54}
+
+=== RECEPTOR ===
+  preparing 7LCJ_pocket.pdb ...
+  7LCJ_receptor.pdbqt; box centre [125.4 157.  113.3] size [19.8 20.9 21.3]
+
+=== FUNNEL (60 candidates) ===
+tier  stage           in   out  failed  note
+------------------------------------------------------------------------
+   1  dock            60    24       2  dock: kept 24 of 58 scored
+   2  mmff            24    12       0  mmff: kept 12 of 24 scored
+   3  gfn2            12     5       0  gfn2: kept 5 of 12 scored
+   4  dft              5     0       5  dft: kept 0 of 0 scored
+
+=== SURVIVORS ===
+
+tier 4 reordered tier 3's ranking: True
+  -> DFT is load-bearing here
+
+wrote /home/matt/qc/ferric/experiments/danuglipron/out/isomer_pipeline.json  (3326s total)

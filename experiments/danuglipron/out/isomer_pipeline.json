@@ -1,0 +1,577 @@
+{
+  "parent": "C1CO[C@@H]1CN2C3=C(C=CC(=C3)C(=O)O)N=C2CN4CCC(CC4)C5=NC(=CC=C5)OCC6=C(C=C(C=C6)C#N)F",
+  "seed": 61453,
+  "keeps": [
+    24,
+    12,
+    5,
+    3
+  ],
+  "enumeration": {
+    "n_generated": 61,
+    "n_after_dedup": 60,
+    "n_after_filter": 60,
+    "rejected": []
+  },
+  "outcomes": [
+    {
+      "tier": 1,
+      "n_in": 60,
+      "n_out": 24,
+      "n_failed": 2,
+      "note": "dock: kept 24 of 58 scored",
+      "errors": [
+        "ligand preparation failed: ValueError: RDKit molecule has 2 fragments. Must have 1.",
+        "ligand preparation failed: ValueError: RDKit molecule has 2 fragments. Must have 1."
+      ]
+    },
+    {
+      "tier": 2,
+      "n_in": 24,
+      "n_out": 12,
+      "n_failed": 0,
+      "note": "mmff: kept 12 of 24 scored",
+      "errors": []
+    },
+    {
+      "tier": 3,
+      "n_in": 12,
+      "n_out": 5,
+      "n_failed": 0,
+      "note": "gfn2: kept 5 of 12 scored",
+      "errors": []
+    },
+    {
+      "tier": 4,
+      "n_in": 5,
+      "n_out": 0,
+      "n_failed": 5,
+      "note": "dft: kept 0 of 0 scored",
+      "errors": [
+        "DFT failed: ValueError: General error: inconsistent charge/multiplicity: 325 electrons with multiplicity 1 implies n_alpha = (325 + 1 - 1) / 2 = 325/2, which is not a non-negative integer no greater than the electron count. An odd electron count needs an even multiplicity (2, 4, ...) and vice versa; multiplicity - 1 (unpaired electrons) must also not exceed the electron count.",
+        "DFT failed: ValueError: General error: inconsistent charge/multiplicity: 325 electrons with multiplicity 1 implies n_alpha = (325 + 1 - 1) / 2 = 325/2, which is not a non-negative integer no greater than the electron count. An odd electron count needs an even multiplicity (2, 4, ...) and vice versa; multiplicity - 1 (unpaired electrons) must also not exceed the electron count.",
+        "DFT failed: ValueError: General error: inconsistent charge/multiplicity: 325 electrons with multiplicity 1 implies n_alpha = (325 + 1 - 1) / 2 = 325/2, which is not a non-negative integer no greater than the electron count. An odd electron count needs an even multiplicity (2, 4, ...) and vice versa; multiplicity - 1 (unpaired electrons) must also not exceed the electron count.",
+        "DFT failed: ValueError: General error: inconsistent charge/multiplicity: 309 electrons with multiplicity 1 implies n_alpha = (309 + 1 - 1) / 2 = 309/2, which is not a non-negative integer no greater than the electron count. An odd electron count needs an even multiplicity (2, 4, ...) and vice versa; multiplicity - 1 (unpaired electrons) must also not exceed the electron count.",
+        "DFT failed: ValueError: General error: inconsistent charge/multiplicity: 305 electrons with multiplicity 1 implies n_alpha = (305 + 1 - 1) / 2 = 305/2, which is not a non-negative integer no greater than the electron count. An odd electron count needs an even multiplicity (2, 4, ...) and vice versa; multiplicity - 1 (unpaired electrons) must also not exceed the electron count."
+      ]
+    }
+  ],
+  "results": {
+    "dock": [
+      {
+        "id": "N#Cc1ccc(COc2cccc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)c1",
+        "value": -12.264,
+        "error": null
+      },
+      {
+        "id": "CS(=O)(=O)NC(=O)c1ccc2nc(CN3CCC(c4cccc(OCc5ccc(C#N)cc5F)n4)CC3)n(C[C@@H]3CCO3)c2c1",
+        "value": -12.577,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2cccc(C3CCN(Cc4nc5ccc(C(=O)NO)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)c1",
+        "value": -13.462,
+        "error": null
+      },
+      {
+        "id": "Cc1nc2ccc(C(=O)O)cc2n1C[C@@H]1CCO1.N#Cc1ccc(COc2cccc(C3CNC3)n2)c(F)c1",
+        "value": null,
+        "error": "ligand preparation failed: ValueError: RDKit molecule has 2 fragments. Must have 1."
+      },
+      {
+        "id": "Cc1nc2ccc(C(=O)O)cc2n1C[C@@H]1CCO1.N#Cc1ccc(COc2cccc(C3CCNC3)n2)c(F)c1",
+        "value": null,
+        "error": "ligand preparation failed: ValueError: RDKit molecule has 2 fragments. Must have 1."
+      },
+      {
+        "id": "N#Cc1ccc(COc2cccc(C3CCN(Cc4nc5ccc(-c6nn[nH]n6)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)c1",
+        "value": -14.281,
+        "error": null
+      },
+      {
+        "id": "N#Cc1cc(F)c(COc2cccc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(C(F)(F)F)c1",
+        "value": -12.2,
+        "error": null
+      },
+      {
+        "id": "N#Cc1cc(F)c(COc2cccc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)cc1C(F)(F)F",
+        "value": -13.263,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2cc(C(F)(F)F)cc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)c1",
+        "value": -12.854,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2ccc(C(F)(F)F)c(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)c1",
+        "value": -13.003,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2cccc(C3CCN(Cc4nc5c(C(F)(F)F)cc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)c1",
+        "value": -13.556,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2cccc(C3CCN(Cc4nc5cc(C(F)(F)F)c(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)c1",
+        "value": -11.883,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2cccc(C3CCN(Cc4nc5ccc(C(=O)O)c(C(F)(F)F)c5n4C[C@@H]4CCO4)CC3)n2)c(F)c1",
+        "value": -12.524,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2cccc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)c1C(F)(F)F",
+        "value": -12.638,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2nc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)ccc2C(F)(F)F)c(F)c1",
+        "value": -13.465,
+        "error": null
+      },
+      {
+        "id": "N#Cc1cc(F)c(COc2cccc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(C#N)c1",
+        "value": -12.708,
+        "error": null
+      },
+      {
+        "id": "N#Cc1cc(F)c(COc2cccc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)cc1C#N",
+        "value": -13.447,
+        "error": null
+      },
+      {
+        "id": "N#Cc1cc(OCc2ccc(C#N)cc2F)nc(C2CCN(Cc3nc4ccc(C(=O)O)cc4n3C[C@@H]3CCO3)CC2)c1",
+        "value": -12.7,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2ccc(C#N)c(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)c1",
+        "value": -12.296,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2cccc(C3CCN(Cc4nc5c(C#N)cc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)c1",
+        "value": -12.193,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2cccc(C3CCN(Cc4nc5cc(C#N)c(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)c1",
+        "value": -13.574,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2cccc(C3CCN(Cc4nc5ccc(C(=O)O)c(C#N)c5n4C[C@@H]4CCO4)CC3)n2)c(F)c1",
+        "value": -12.673,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2cccc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)c1C#N",
+        "value": -13.243,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2nc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)ccc2C#N)c(F)c1",
+        "value": -13.247,
+        "error": null
+      },
+      {
+        "id": "N#Cc1cc(F)c(COc2cccc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(Cl)c1",
+        "value": -12.817,
+        "error": null
+      },
+      {
+        "id": "N#Cc1cc(F)c(COc2cccc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)cc1Cl",
+        "value": -12.121,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2cc(Cl)cc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)c1",
+        "value": -10.784,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2ccc(Cl)c(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)c1",
+        "value": -12.789,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2cccc(C3CCN(Cc4nc5c(Cl)cc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)c1",
+        "value": -11.81,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2cccc(C3CCN(Cc4nc5cc(Cl)c(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)c1",
+        "value": -13.18,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2cccc(C3CCN(Cc4nc5ccc(C(=O)O)c(Cl)c5n4C[C@@H]4CCO4)CC3)n2)c(F)c1",
+        "value": -12.346,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2cccc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)c1Cl",
+        "value": -11.653,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2nc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)ccc2Cl)c(F)c1",
+        "value": -12.849,
+        "error": null
+      },
+      {
+        "id": "N#Cc1cc(F)c(COc2cccc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)c1",
+        "value": -12.626,
+        "error": null
+      },
+      {
+        "id": "N#Cc1cc(F)c(COc2cccc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)cc1F",
+        "value": -12.564,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2cc(F)cc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)c1",
+        "value": -12.126,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2ccc(F)c(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)c1",
+        "value": -12.9,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2cccc(C3CCN(Cc4nc5c(F)cc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)c1",
+        "value": -13.314,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2cccc(C3CCN(Cc4nc5cc(F)c(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)c1",
+        "value": -13.166,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2cccc(C3CCN(Cc4nc5ccc(C(=O)O)c(F)c5n4C[C@@H]4CCO4)CC3)n2)c(F)c1",
+        "value": -12.726,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2cccc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)c1F",
+        "value": -13.281,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2nc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)ccc2F)c(F)c1",
+        "value": -12.727,
+        "error": null
+      },
+      {
+        "id": "Cc1c(C#N)ccc(COc2cccc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c1F",
+        "value": -13.115,
+        "error": null
+      },
+      {
+        "id": "Cc1c(C(=O)O)ccc2nc(CN3CCC(c4cccc(OCc5ccc(C#N)cc5F)n4)CC3)n(C[C@@H]3CCO3)c12",
+        "value": -11.99,
+        "error": null
+      },
+      {
+        "id": "Cc1cc(C#N)cc(F)c1COc1cccc(C2CCN(Cc3nc4ccc(C(=O)O)cc4n3C[C@@H]3CCO3)CC2)n1",
+        "value": -12.401,
+        "error": null
+      },
+      {
+        "id": "Cc1cc(C(=O)O)cc2c1nc(CN1CCC(c3cccc(OCc4ccc(C#N)cc4F)n3)CC1)n2C[C@@H]1CCO1",
+        "value": -12.7,
+        "error": null
+      },
+      {
+        "id": "Cc1cc(COc2cccc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)cc1C#N",
+        "value": -12.531,
+        "error": null
+      },
+      {
+        "id": "Cc1cc(OCc2ccc(C#N)cc2F)nc(C2CCN(Cc3nc4ccc(C(=O)O)cc4n3C[C@@H]3CCO3)CC2)c1",
+        "value": -12.6,
+        "error": null
+      },
+      {
+        "id": "Cc1cc2nc(CN3CCC(c4cccc(OCc5ccc(C#N)cc5F)n4)CC3)n(C[C@@H]3CCO3)c2cc1C(=O)O",
+        "value": -11.787,
+        "error": null
+      },
+      {
+        "id": "Cc1ccc(C2CCN(Cc3nc4ccc(C(=O)O)cc4n3C[C@@H]3CCO3)CC2)nc1OCc1ccc(C#N)cc1F",
+        "value": -11.888,
+        "error": null
+      },
+      {
+        "id": "Cc1ccc(OCc2ccc(C#N)cc2F)nc1C1CCN(Cc2nc3ccc(C(=O)O)cc3n2C[C@@H]2CCO2)CC1",
+        "value": -13.087,
+        "error": null
+      },
+      {
+        "id": "COc1c(C#N)ccc(COc2cccc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c1F",
+        "value": -12.652,
+        "error": null
+      },
+      {
+        "id": "COc1c(C(=O)O)ccc2nc(CN3CCC(c4cccc(OCc5ccc(C#N)cc5F)n4)CC3)n(C[C@@H]3CCO3)c12",
+        "value": -12.423,
+        "error": null
+      },
+      {
+        "id": "COc1cc(C#N)cc(F)c1COc1cccc(C2CCN(Cc3nc4ccc(C(=O)O)cc4n3C[C@@H]3CCO3)CC2)n1",
+        "value": -12.49,
+        "error": null
+      },
+      {
+        "id": "COc1cc(C(=O)O)cc2c1nc(CN1CCC(c3cccc(OCc4ccc(C#N)cc4F)n3)CC1)n2C[C@@H]1CCO1",
+        "value": -11.478,
+        "error": null
+      },
+      {
+        "id": "COc1cc(COc2cccc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)cc1C#N",
+        "value": -12.831,
+        "error": null
+      },
+      {
+        "id": "COc1cc(OCc2ccc(C#N)cc2F)nc(C2CCN(Cc3nc4ccc(C(=O)O)cc4n3C[C@@H]3CCO3)CC2)c1",
+        "value": -11.967,
+        "error": null
+      },
+      {
+        "id": "COc1cc2nc(CN3CCC(c4cccc(OCc5ccc(C#N)cc5F)n4)CC3)n(C[C@@H]3CCO3)c2cc1C(=O)O",
+        "value": -11.885,
+        "error": null
+      },
+      {
+        "id": "COc1ccc(C2CCN(Cc3nc4ccc(C(=O)O)cc4n3C[C@@H]3CCO3)CC2)nc1OCc1ccc(C#N)cc1F",
+        "value": -12.481,
+        "error": null
+      },
+      {
+        "id": "COc1ccc(OCc2ccc(C#N)cc2F)nc1C1CCN(Cc2nc3ccc(C(=O)O)cc3n2C[C@@H]2CCO2)CC1",
+        "value": -12.617,
+        "error": null
+      }
+    ],
+    "mmff": [
+      {
+        "id": "N#Cc1ccc(COc2cccc(C3CCN(Cc4nc5ccc(-c6nn[nH]n6)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)c1",
+        "value": 86.56864409280996,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2cccc(C3CCN(Cc4nc5cc(C#N)c(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)c1",
+        "value": 45.30224614119594,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2cccc(C3CCN(Cc4nc5c(C(F)(F)F)cc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)c1",
+        "value": 63.1906454926782,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2nc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)ccc2C(F)(F)F)c(F)c1",
+        "value": 53.19865409397019,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2cccc(C3CCN(Cc4nc5ccc(C(=O)NO)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)c1",
+        "value": 101.08294371870227,
+        "error": null
+      },
+      {
+        "id": "N#Cc1cc(F)c(COc2cccc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)cc1C#N",
+        "value": 51.619567744395866,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2cccc(C3CCN(Cc4nc5c(F)cc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)c1",
+        "value": 69.57577699000962,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2cccc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)c1F",
+        "value": 56.05327783838687,
+        "error": null
+      },
+      {
+        "id": "N#Cc1cc(F)c(COc2cccc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)cc1C(F)(F)F",
+        "value": 58.830996771719796,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2nc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)ccc2C#N)c(F)c1",
+        "value": 68.6844709512952,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2cccc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)c1C#N",
+        "value": 45.45123034427535,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2cccc(C3CCN(Cc4nc5cc(Cl)c(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)c1",
+        "value": 47.819936272072695,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2cccc(C3CCN(Cc4nc5cc(F)c(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)c1",
+        "value": 41.171000637903504,
+        "error": null
+      },
+      {
+        "id": "Cc1c(C#N)ccc(COc2cccc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c1F",
+        "value": 63.77277347858425,
+        "error": null
+      },
+      {
+        "id": "Cc1ccc(OCc2ccc(C#N)cc2F)nc1C1CCN(Cc2nc3ccc(C(=O)O)cc3n2C[C@@H]2CCO2)CC1",
+        "value": 66.57946716075404,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2ccc(C(F)(F)F)c(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)c1",
+        "value": 67.4069049305154,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2ccc(F)c(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)c1",
+        "value": 67.88897669988434,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2cc(C(F)(F)F)cc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)c1",
+        "value": 65.86671955967563,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2nc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)ccc2Cl)c(F)c1",
+        "value": 72.87080945271254,
+        "error": null
+      },
+      {
+        "id": "COc1cc(COc2cccc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)cc1C#N",
+        "value": 60.43772442852616,
+        "error": null
+      },
+      {
+        "id": "N#Cc1cc(F)c(COc2cccc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(Cl)c1",
+        "value": 33.96740150746713,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2ccc(Cl)c(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)c1",
+        "value": 69.36827686002205,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2nc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)ccc2F)c(F)c1",
+        "value": 73.16801077184435,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2cccc(C3CCN(Cc4nc5ccc(C(=O)O)c(F)c5n4C[C@@H]4CCO4)CC3)n2)c(F)c1",
+        "value": 47.39517824869583,
+        "error": null
+      }
+    ],
+    "gfn2": [
+      {
+        "id": "N#Cc1cc(F)c(COc2cccc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(Cl)c1",
+        "value": -121.576556017912,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2cccc(C3CCN(Cc4nc5cc(F)c(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)c1",
+        "value": -121.757622416567,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2cccc(C3CCN(Cc4nc5cc(C#N)c(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)c1",
+        "value": -122.042824571319,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2cccc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)c1C#N",
+        "value": -122.049620681909,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2cccc(C3CCN(Cc4nc5ccc(C(=O)O)c(F)c5n4C[C@@H]4CCO4)CC3)n2)c(F)c1",
+        "value": -121.750213902245,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2cccc(C3CCN(Cc4nc5cc(Cl)c(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)c1",
+        "value": -121.575480931306,
+        "error": null
+      },
+      {
+        "id": "N#Cc1cc(F)c(COc2cccc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)cc1C#N",
+        "value": -122.05881483404,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2nc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)ccc2C(F)(F)F)c(F)c1",
+        "value": -133.390780115101,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2cccc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)c1F",
+        "value": -121.753950195398,
+        "error": null
+      },
+      {
+        "id": "N#Cc1cc(F)c(COc2cccc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)cc1C(F)(F)F",
+        "value": -133.380556128781,
+        "error": null
+      },
+      {
+        "id": "COc1cc(COc2cccc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)cc1C#N",
+        "value": -124.754303326828,
+        "error": null
+      },
+      {
+        "id": "N#Cc1ccc(COc2cccc(C3CCN(Cc4nc5c(C(F)(F)F)cc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)c1",
+        "value": -133.383848555434,
+        "error": null
+      }
+    ],
+    "dft": [
+      {
+        "id": "N#Cc1ccc(COc2nc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)ccc2C(F)(F)F)c(F)c1",
+        "value": null,
+        "error": "DFT failed: ValueError: General error: inconsistent charge/multiplicity: 325 electrons with multiplicity 1 implies n_alpha = (325 + 1 - 1) / 2 = 325/2, which is not a non-negative integer no greater than the electron count. An odd electron count needs an even multiplicity (2, 4, ...) and vice versa; multiplicity - 1 (unpaired electrons) must also not exceed the electron count."
+      },
+      {
+        "id": "N#Cc1ccc(COc2cccc(C3CCN(Cc4nc5c(C(F)(F)F)cc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)c1",
+        "value": null,
+        "error": "DFT failed: ValueError: General error: inconsistent charge/multiplicity: 325 electrons with multiplicity 1 implies n_alpha = (325 + 1 - 1) / 2 = 325/2, which is not a non-negative integer no greater than the electron count. An odd electron count needs an even multiplicity (2, 4, ...) and vice versa; multiplicity - 1 (unpaired electrons) must also not exceed the electron count."
+      },
+      {
+        "id": "N#Cc1cc(F)c(COc2cccc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)cc1C(F)(F)F",
+        "value": null,
+        "error": "DFT failed: ValueError: General error: inconsistent charge/multiplicity: 325 electrons with multiplicity 1 implies n_alpha = (325 + 1 - 1) / 2 = 325/2, which is not a non-negative integer no greater than the electron count. An odd electron count needs an even multiplicity (2, 4, ...) and vice versa; multiplicity - 1 (unpaired electrons) must also not exceed the electron count."
+      },
+      {
+        "id": "COc1cc(COc2cccc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)c(F)cc1C#N",
+        "value": null,
+        "error": "DFT failed: ValueError: General error: inconsistent charge/multiplicity: 309 electrons with multiplicity 1 implies n_alpha = (309 + 1 - 1) / 2 = 309/2, which is not a non-negative integer no greater than the electron count. An odd electron count needs an even multiplicity (2, 4, ...) and vice versa; multiplicity - 1 (unpaired electrons) must also not exceed the electron count."
+      },
+      {
+        "id": "N#Cc1cc(F)c(COc2cccc(C3CCN(Cc4nc5ccc(C(=O)O)cc5n4C[C@@H]4CCO4)CC3)n2)cc1C#N",
+        "value": null,
+        "error": "DFT failed: ValueError: General error: inconsistent charge/multiplicity: 305 electrons with multiplicity 1 implies n_alpha = (305 + 1 - 1) / 2 = 305/2, which is not a non-negative integer no greater than the electron count. An odd electron count needs an even multiplicity (2, 4, ...) and vice versa; multiplicity - 1 (unpaired electrons) must also not exceed the electron count."
+      }
+    ]
+  },
+  "survivors": [],
+  "tier4_reordered_tier3": true,
+  "wall_seconds": 3326.2265181541443
+}

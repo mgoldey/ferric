@@ -577,6 +577,437 @@ It ran tier 3 alone, fed by tier-2 output that had never seen the receptor.
 campaign.** Every energy reported anywhere above is GFN2. That is now the next
 step, and for the first time it has geometries worth spending it on.
 
+## M10. The isomer pipeline runs end to end; tier 4 does not fit (2026-08-30)
+
+> **STATUS as of 2026-09-02: the title of this section is WRONG and kept for
+> the record.** Tier 4 DOES fit -- **612.4 s (10.2 min), 18 iterations,
+> converged** for the 71-atom neutral acid at STO-3G/PBE. The ">57 min, did not
+> finish" recorded below was **memory contention**, not DFT cost: that run
+> auto-resolved a 7.26 GB budget from live MemAvailable while needing ~9.5 GB
+> and paged until the kernel OOM-killed it.
+>
+> This section is left in chronological order, with the wrong turns intact,
+> because the sequence of corrections is the useful part. Read
+> **"RESOLVED: tier 4 costs 10.2 min"** below for the current verdict, and
+> treat every ">57 min" above it as superseded.
+
+Built `tools/isomers` (enumeration) + `tools/pipeline` (the funnel) and ran the
+full four-tier stack on danuglipron. Plan:
+`experiments/danuglipron/plans/2026-08-30-isomer-pipeline.md`.
+
+### Enumeration replaces hand-writing
+
+61 candidates generated from ONE SMILES -> 60 after dedup (54 substitutional,
+5 structural), versus the 11 analogues previously written by hand. It
+independently rediscovers three of those hand designs -- tetrazole,
+acylsulfonamide, piperidine->azetidine -- which is the closest thing to a
+correctness check this stage has.
+
+### The funnel works
+
+| tier | stage | in | out | failed |
+|---|---|---|---|---|
+| 1 | Vina dock | 60 | 24 | 2 |
+| 2 | MMFF94 | 24 | 12 | 0 |
+| 3 | GFN2-xTB | 12 | 5 | 0 |
+| 4 | ferric DFT | 5 | **0** | **5** |
+
+55 minutes for tiers 1-3. The per-tier bookkeeping is what made the tier-4
+failure visible at all: the driver still printed "tier 4 reordered tier 3 ->
+DFT is load-bearing", which was **meaningless**, because nothing had been
+computed. A funnel that reported only survivors would have shown an empty list
+and no reason.
+
+### Two bugs the run exposed, both mine
+
+**1. Ionization state (physics).** Every tier-4 candidate failed with
+`inconsistent charge/multiplicity: 325 electrons with multiplicity 1 implies
+n_alpha = 325/2`. The driver set `net_charge=-1` on **neutral** structures.
+Removing H+ takes a bare proton and leaves its electrons behind, so an anion has
+the **same** electron count as its acid; declaring -1 on the neutral SMILES asks
+for an electron that does not exist, and makes an even count odd. ferric was
+right to refuse. Fixed by deprotonating the STRUCTURE
+(`Isomer.deprotonated()`), with tests pinning that electron count is CONSERVED.
+
+**2. Disconnected fragments.** A ring-contraction transform can sever a ring
+rather than shrink it. Two candidates reached tier 1 as fragment pairs and died
+in Meeko. Now rejected at enumeration with a readable reason.
+
+### Tier 4 is not affordable at this size — measured, not estimated
+
+After the ionization fix, a single tier-4 point on the 70-atom anion:
+
+| | |
+|---|---|
+| basis | STO-3G (~234 basis functions) |
+| runtime | **>57 min, did not finish** |
+| peak RSS | **9.5 GB** |
+
+For comparison, the same code does def2-SVP on a 32-atom alkane in **96 s**
+(re-measured 2026-09-02: **99.0 s**, so that figure reproduces).
+
+**CORRECTION (2026-09-02).** The comparison as originally written -- "234 basis
+functions taking >57 min while 450 takes 96 s is not a size effect" -- was wrong
+in two ways, and the second one matters.
+
+1. The alkane's def2-SVP basis is ~330 functions, not 450. Minor.
+2. **Basis-function count is the wrong cost axis for the part that dominates.**
+   ferric's KS-DFT grid is a flat 75x110 Becke-Lebedev grid **per atom**
+   (`ferric-dft/src/grid.rs`), so the XC grid scales with ATOM COUNT and is
+   completely independent of the basis:
+
+   | | atoms | grid points | nbf | AO cache (4*nbf*npts*8) |
+   |---|---|---|---|---|
+   | alkane_10 / def2-SVP | 32 | 264,000 | ~330 | 2.79 GB |
+   | danuglipron / STO-3G | 70 | **577,500** | ~234 | **4.32 GB** |
+
+   Shrinking the basis to STO-3G cut nbf but RAISED the resident AO cache,
+   because 2.19x the grid points outweighs 0.71x the basis functions.
+
+So the honest statement of the anomaly is: the XC grid work grew **1.55x**
+(nbf x npts) while runtime grew **>35x**. The disproportion is real -- it just
+is not the basis-size paradox the original text claimed. **The cause is still
+not diagnosed.**
+
+### What was ruled out, and what was not (2026-09-02)
+
+- **Ruled out -- the 96 s anchor being bogus.** It had NO recorded run behind it
+  anywhere in the repo; every mention was a citation of the same number. Re-run
+  from scratch: **99.0 s**, converged. The anchor is sound; its provenance was
+  not, and now is.
+- **Not established -- the anion/diffuse-HOMO hypothesis.** The neutral-vs-anion
+  control at identical size and basis is the experiment that separates "charge"
+  from "size", and it did NOT complete: another user's `llama-server` job started
+  mid-run, the box went to `/proc/pressure/memory full avg300=89` with swap
+  fully consumed, and any timing taken under that contention is worthless. I
+  killed my own job rather than compete for the memory. **Unmeasured, still open.**
+- **Batching is RULED OUT (2026-09-02).** Measured on the neutral acid under
+  the 12 GB cap: RSS plateaus at **6.28 GB** and stays there. That matches the
+  predicted full AO cache (nbf=235, npts=585,750 -> 4.40 GB) plus SCF matrices,
+  and sits well under the ~9.6 GB budget (`0.8 x` the cap), so `check_grid_budget`
+  returned `Ok(true)` and `GridCache::Full` was used. **The grid was never
+  batched**, so the batching cliff cannot explain tier 4's cost. Superseded
+  reasoning below, kept for the record:
+- ~~**Batching is a candidate, not a finding.**~~ `ks.rs` falls back to walking the
+  grid in point-batches (recomputing AO values per batch) when the cache exceeds
+  the resolved budget. Under `ferric-limited`'s 12 GB cap the budget is
+  ~9.6 GB and the 4.32 GB cache should fit -- consistent with the observed
+  9.5 GB peak being a FULL cache plus SCF matrices, i.e. batching probably never
+  engaged. Testing this needs an uncontended box.
+
+### RESOLVED: tier 4 costs 10.2 min, not >57. M10's number was contention.
+
+**Measured 2026-09-02 on a box verified quiet throughout** (`pressure avg10=0.00`
+and zero swap traffic for the whole run, budget pinned at 11 GB, cap 14 GB):
+
+| | |
+|---|---|
+| molecule | danuglipron neutral acid, 71 atoms, 292 e- |
+| basis / functional | STO-3G / PBE |
+| **wall** | **612.4 s = 10.2 min** |
+| **iterations** | **18** |
+| exit | **Converged** |
+
+**M10 recorded ">57 min, did not finish" for this system. The real cost is
+10.2 minutes.** That run auto-resolved a **7.26 GB** budget from live
+MemAvailable while needing ~9.5-9.9 GB, and spent its time paging until the
+kernel OOM-killed it (`anon-rss 9,945,236 kB`, `global_oom`). **It measured
+memory contention, not DFT.** Three further attempts today died the same way
+before one finally got a clean box.
+
+**Tier 4 is therefore AFFORDABLE for the handful of candidates the funnel
+delivers** -- ~10 min each at STO-3G, so the 5 survivors of a run are under an
+hour. The fix was the budget pin plus headroom, not a cheaper method.
+
+### Why 10.2 min and not the predicted 6.8
+
+The cost model (work-scaled from alkane_20) predicted 6.8 min. The gap is
+**iteration count, not per-iteration cost**:
+
+| | alkanes (17-62 atoms) | danuglipron |
+|---|---|---|
+| iterations | **10** (all three) | **18** |
+
+Correcting the work-scaled 408 s by the real ratio 18/10 gives 734 s against a
+measured 612.4 s -- **within 20%, erring conservative**. Work-scaling alone is
+off by 50%.
+
+**RETRACTED:** I attributed that gap to N/O/F having sharper core densities
+than carbon, making the radial grid costlier per basis function. That was a
+guess made before the run finished, and it is wrong -- the extra time is
+mostly extra ITERATIONS. The per-iteration model was fine.
+
+So a wall-time estimate needs BOTH factors:
+
+    wall ~ xc_fock_work x (s per iteration) x (iterations)
+
+and the iteration count is NOT transferable across chemistries. Encoded in
+`tools/pipeline/cost.py`, which now documents `predicted_seconds` as a lower
+bound whenever the target may converge more slowly than the reference.
+
+### The cost term is IDENTIFIED, and ">57 min" is probably not a cost result
+
+`vxc.rs` assembles V_xc with `buf.dot(&chi.t())` -- an `(nbf, npts) x (npts, nbf)`
+GEMM, i.e. **O(nbf^2 x npts)**, executed **every SCF iteration**. Since npts is
+proportional to atom count, that is cubic in molecular size and paid per
+iteration, which is exactly the shape the constant-iteration measurement
+demanded.
+
+Calibrated on the alkane runs, predicting from **alkane_5 alone**:
+
+| atoms | predicted | actual |
+|---|---|---|
+| 32 | 17.8 s | 19.6 s |
+| 62 | 134.3 s | 130.2 s |
+
+Within 10% across a **54x** span of cost. Encoded as
+`tools/pipeline/cost.py::xc_fock_work` / `predicted_seconds()`.
+
+**Applied to danuglipron (nbf=235, npts=585,750) the model predicts 6.8 min** --
+not the >57 min recorded in M10.
+
+**What the re-run actually showed.** With the budget PINNED at 9 GB and the cap
+raised to 11 GB, the neutral acid ran to **7:26** and was still going. But at
+that point its CPU had fallen from 250-600% to **77%**, `/proc/pressure/memory`
+read `some avg10=49`, and **swap was 100% consumed (1.9/1.9 GiB) with active
+si/so traffic**. The job was THRASHING, so its wall time was I/O-bound, not
+compute-bound. I killed it: past that point the clock measures paging, not
+chemistry.
+
+**Revised reading of M10's ">57 min", stated as a hypothesis and not a
+conclusion:** that run auto-resolved a **7.26 GB** budget (live MemAvailable,
+depressed by other jobs), needed ~9.5-9.9 GB, and spent its time paging before
+being OOM-killed. The cost model says the *compute* is ~7 min. If that is
+right, tier 4's headline number was never a measurement of DFT cost -- it was a
+measurement of memory contention, and the fix is the budget pin plus enough
+headroom, not a cheaper method.
+
+**This is NOT yet established.** Confirming it needs one clean run of the
+neutral acid on a box with >=12 GB genuinely free, reporting `iterations` and
+finishing without swap traffic. Every attempt so far has been interrupted by
+competing jobs (three separate occasions on 2026-09-02). Until then M10's
+">57 min" stands as recorded, with this caveat attached.
+
+> **CONFIRMED later the same day.** The fourth attempt got a clean box:
+> **612.4 s, 18 iterations, converged.** The hypothesis above was right. See
+> "RESOLVED: tier 4 costs 10.2 min" above.
+
+### Iteration count is CONSTANT; the N^3 lives INSIDE each iteration (2026-09-02)
+
+Built the `iterations` / `exit_reason` getters on `PyDftResult` and re-ran the
+alkane series with the memory budget PINNED (`FERRIC_MEM_BUDGET_GB=9`) so the
+AO-cache path could not drift with box load:
+
+| atoms | wall | iterations | exit | s/iter |
+|---|---|---|---|---|
+| 17 | 2.5 s | **10** | Converged | 0.25 |
+| 32 | 19.6 s | **10** | Converged | 1.96 |
+| 62 | 130.2 s | **10** | Converged | 13.02 |
+
+**The iteration count is identical -- 10 -- across a 3.6x size range.** So none
+of the alkane scaling comes from convergence behaviour; ALL of it is
+per-iteration cost, scaling at N^3.26 then N^2.86.
+
+**This refutes my own leading hypothesis.** I had attributed the ~N^3 term to
+one-time grid construction (`becke_weights_all`, O(natoms^2) per point x O(natoms)
+points). But a ONE-TIME cost cannot produce N^3 scaling *per iteration*. The
+cubic term is inside the SCF loop, not in setup. The grid-setup reasoning
+recorded above stands as an accurate description of that function's complexity
+and a WRONG explanation of where the time goes.
+
+### The size hypothesis is REFUTED (2026-09-02, measured on a quiet box)
+
+Homologous alkane series, STO-3G/PBE, all converged, each under
+`scripts/ferric-limited`:
+
+| molecule | atoms | nelec | time |
+|---|---|---|---|
+| alkane_5 | 17 | 42 | 2.5 s |
+| alkane_10 | 32 | 82 | 20.1 s |
+| alkane_15 | 47 | 122 | 60.6 s |
+| **alkane_20** | **62** | **162** | **123.5 s** |
+
+Pairwise exponents **3.30 -> 2.87 -> 2.57** (global log-log fit **N^3.03**).
+The exponent DECLINES with size, consistent with the O(natoms^3) grid
+construction being amortized as the linear-scaling parts grow. Per the
+protocol's "fit the TAIL, not the whole series", the tail exponent 2.57 is the
+one to extrapolate with.
+
+**alkane_20 has 62 atoms -- within 12% of danuglipron's 70 -- and finishes in
+just over two minutes.** Extrapolating on the composition-aware axis (XC work
+= nbf x npts, ratio 1.86x) gives **3.8 min** if cost is linear in that work and
+**10.2 min** at the tail exponent.
+
+**Observed for danuglipron at the time: >57 min, did not finish.** At least a
+**6x** gap that size does not explain.
+
+> **SUPERSEDED.** That ">57 min" was memory contention, not compute; the real
+> figure is **612.4 s (10.2 min)**. So the 6x gap was an artefact and there is
+> no size anomaly to explain. Note the tail-exponent extrapolation just above
+> predicted **10.2 min** -- it was correct, and only the number it was being
+> compared against was wrong. The reasoning in this section about atom count vs
+> composition still stands; the verdict it reaches does not.
+
+So the anomaly is real, and it is NOT:
+
+- **basis size** -- STO-3G is the smallest bundled set, and the alkane series
+  used the same one;
+- **atom count** -- a 62-atom molecule of the same class runs in 123.5 s;
+- **composition / heavy-atom content** -- accounted for by scaling on
+  nbf x npts (danuglipron is 1.86x alkane_20's XC work, nowhere near 6x).
+
+Composition deserves an explicit note because atom count HIDES it: alkane_20 is
+hydrogen-padded (20 C + 42 H = 142 STO-3G functions) while danuglipron is
+heavy-atom rich (41 heavy + 29 H = 234). A 1.13x atom ratio conceals a 1.86x
+work ratio. `tools/pipeline/cost.py::sto3g_basis_functions` exists so the
+comparison is made on the right axis -- I nearly used alkane_20 as a
+"size-matched control" that was matched on the wrong variable.
+
+**Charge is NOT the explanation either (partial, 2026-09-02).** The
+neutral-vs-anion control was started on a quiet box. The **neutral** acid
+(71 atoms, q=0) reached **9.4 GB RSS within 2 minutes** -- the same memory
+signature previously seen on the anion, and far past the ~2 min in which the
+62-atom alkane finishes ENTIRELY. I stopped it there: another user's
+`llama-server` started and free memory fell to 260 MB, so continuing would have
+risked the box for a number I could already tell was going to be large.
+
+The run did not finish, so there is no timing to quote -- but the memory
+trajectory alone rules charge out as the driver, since the neutral species
+behaves the same way. **Do not re-run the anion first**: the neutral is the
+cheaper falsification and it already fired.
+
+**A second, separate anomaly: the memory does not add up (2026-09-02).** The
+neutral acid was OOM-killed at **9.48 GB** (`anon-rss 9,945,236 kB`, kernel
+`global_oom` — the SYSTEM ran out while other workloads competed, not the
+cgroup; the cap did its job and my process died in its own scope rather than
+taking the box down). Breaking that down:
+
+| term | size |
+|---|---|
+| full AO cache (chi + grad-chi, nbf=235, npts=585,750) | 4.40 GB |
+| RI three-index `(P\|mn)` tensor | **1.61 GB** |
+| RI metric `(P\|Q)` | 0.11 GB |
+| **subtotal** | **6.12 GB** |
+| observed peak | ~9.75 GB |
+| unaccounted | 3.63 GB |
+
+**Corrected 2026-09-02:** I first estimated the RI tensor at 0.31-0.42 GB by
+guessing naux ~700-950. Counted from the basis JSON it is **3,635 auxiliary
+functions** -- `def2-universal-jkfit` is built for large orbital bases and
+`run_dft` always enables it, so at STO-3G the aux basis is **15x** the orbital
+basis (3,635 vs 235). That single correction moved 1.2 GB from "unexplained"
+into "accounted for".
+
+**But it is NOT the actionable win I first wrote it up as.** I claimed "a
+JK-fitting basis matched to STO-3G would cut ~1.6 GB", then checked: 
+`def2-universal-jkfit` is already the **smallest** JK-fitting set ferric
+bundles -- 75 aux functions per carbon, against 79 for cc-pVTZ-JKFIT and 106
+for cc-pVQZ-JKFIT. The 15x ratio comes from STO-3G being tiny, not from this
+aux basis being large, and acting on it would mean ADDING a small-basis JK set
+to the repo, not selecting a different one. Recorded as accounting, not advice.
+
+The remaining 3.63 GB is plausibly transient copies during the RI build (form
+the tensor, then contract it) plus Fock/DIIS/grid working set, but that is NOT
+measured. DIIS history is ruled out: `diis.rs` uses a FIXED-capacity ring
+buffer, so it cannot grow with iteration count, and at 0.44 MB per matrix it is
+~9 MB regardless.
+
+Note also that the budget auto-resolved to **7.26 GB**, not the ~9.6 GB expected
+from `0.8 x` the 12 GB cap, because auto-detect reads *live* MemAvailable and
+other jobs had depressed it. ferric warned that usage exceeded it. This is
+precisely the nondeterminism `tier4_dft`'s `mem_budget_gb` pin exists to remove.
+
+**What remains, by elimination:** SCF convergence behaviour -- iteration count
+and level-shift ladder rungs -- rather than the cost of any one iteration.
+Something about this molecule's electronic structure (not its size, basis,
+composition, or charge) makes the SCF expensive. The next probe should report
+ITERATIONS and RUNGS, which `PyDftResult` does not currently expose; that is a
+small addition to `crates/ferric-python/src/lib.rs` (`ScfResult` already
+carries `iterations` and a typed `exit`, and `LadderResult.rung_outcomes`
+carries the per-rung counts). Exact patch, written and then reverted UNBUILT
+because the box hit load 59 with 255 MB free and a cold libint2 shim compile
+needs ~8 GB:
+
+```rust
+// in `impl PyDftResult`, alongside `gradient`:
+#[getter]
+fn iterations(&self) -> usize { self.scf_data.iterations }
+
+#[getter]
+fn exit_reason(&self) -> String { format!("{:?}", self.scf_data.exit) }
+```
+
+`ScfExit` derives `Debug`, so `exit_reason` yields the variant name
+(`"Converged"`, `"Plateau"`, `"Stalled"`, `"Diverged"`, `"MaxIter"`) — strictly
+more informative than the `converged` bool, which collapses every failure mode
+into `false`. Build with `cargo build --release -p ferric-python` and re-run
+the control.
+
+**Operational note:** `pkill` on the wrapper does NOT kill a ferric process
+running inside a `scripts/ferric-limited` systemd scope -- the child survives
+its parent. Kill the PID inside the scope directly (`kill -TERM <pid>`, then
+`-KILL`). This bit twice today; the 9.4 GB process outlived two wrapper kills.
+
+### Leads from reading the code (2026-09-02, NOT yet confirmed by timing)
+
+Two structural facts about ferric's KS grid, both read from source rather than
+inferred from a benchmark:
+
+1. **Grid setup is O(natoms^3).** `becke_weights_all` (becke.rs:115) is
+   O(natoms^2) per point via its nested a/b loop, and the number of grid points
+   is itself O(natoms). Predicted setup ratio danuglipron:alkane_10 = **10.5x**,
+   against **1.55x** for the XC pass. This is the only term found so far that
+   scales anywhere near the observed runtime gap.
+   - **But it is a ONE-TIME cost**, paid in `KsXc::new`, not per SCF iteration,
+     and it is parallelized (order-preserving `into_par_iter`). So it cannot by
+     itself explain a large per-ITERATION cost.
+   - The energy path uses `becke_weights_all` (O(natoms^2)/point); the
+     O(natoms^3)/point comment at grid.rs:247 belongs to the GRADIENT variant
+     `becke_weights_and_grad`, which an energy-only run does not call. Do not
+     quote grid.rs:247 as if it applied here.
+
+2. **The AO cache is built once and reused** (`GridCache::Full`, ks.rs:372), so
+   AO values are NOT re-evaluated per iteration unless batching engaged.
+
+**What would settle it:** a run that separates one-time setup from per-iteration
+cost, e.g. t(max_iter=1) vs t(max_iter=3), giving per_iter = (t3-t1)/2 and
+setup = t1 - per_iter. Written as `scratchpad/split.py`; **not yet run to
+completion on an uncontended box.**
+
+**Measurement hygiene note.** Several timings attempted this session are
+discarded, not reported: load average reached 19.65 on 12 cores with 2.8 GB
+available while other users' `llama-server` jobs and my own probes overlapped.
+An earlier reading of "alkane_10 at STO-3G did not finish in 1800 s" was also
+WRONG -- it converges in 3 iterations / 23.5 s; I had misread an empty output
+file (the ladder was stuck on a later, larger case) as a result for the first
+entry. Timings taken under contention are not evidence, and an empty file is
+not a measurement.
+
+**Method note:** two of my probe scripts failed on ferric's API (`charge` belongs
+to `Molecule.from_xyz`, not `run_dft`), and one of those failures printed a
+`291 electrons` error that looked like a physics bug in the geometry. It was
+not -- both geometry files check out (neutral 71 atoms/292 e-, anion 70
+atoms/291 nuclear charge, 292 e- at q=-1, electron count conserved exactly as
+the M10 fix intends). A broken probe imitating a physics failure is the same
+trap as M9's two silent bugs: read the error, don't trust the headline.
+
+**Verdict (dated, provisional): tier 4 as configured cannot process even ONE
+70-atom candidate in a usable time, so the four-tier stack is validated only
+through tier 3.** Candidate next steps, in order of cheapness: check whether the
+SCF is converging at all (an anion with a diffuse HOMO may be cycling), try
+`level_shift`, and profile where the 9.5 GB goes before assuming the basis is
+the problem.
+
+### A shared-box near-miss worth recording
+
+The first tier-4 probe ran **unbounded** and reached 9.5 GB with 1 GB free while
+another user's `mel-flow-tts` training job was on the same machine. This repo
+has documented that exact collateral OOM three times. Re-running under
+`scripts/ferric-limited` (12 GB cgroup cap) contained it — measured
+`memory.current` 9.57 GB against `memory.max` 12 GB, and the other job survived.
+**Any ferric job on a drug-sized system should start under that launcher, not
+be moved there after watching RSS climb.**
+
 ---
 
 ## Summary of what this campaign established
