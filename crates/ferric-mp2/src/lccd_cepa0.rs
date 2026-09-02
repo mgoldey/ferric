@@ -61,6 +61,7 @@
 
 use ndarray::{Array2, Array4};
 
+use ferric_core::memory::plan::{Lifetime, MemoryPlan};
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -86,6 +87,15 @@ pub struct LccdConfig {
     /// the iteration lands on a spurious fixed point with a small residual
     /// (notebook §4). Set `None` to disable (not recommended).
     pub max_corr_vs_mp2: Option<f64>,
+    /// Explicit memory ceiling in bytes for the pre-flight guard. `None`
+    /// resolves through `FERRIC_MEM_BUDGET_GB` -> detected RAM -> 2 GiB, the
+    /// standard chain — same convention as every other config in this crate.
+    ///
+    /// Added because this module had NO memory accounting of any kind, while
+    /// [`restart`](Self::restart) sizes an `O(restart)` Krylov basis of
+    /// `no²·nv²` tensors with no relationship to any budget. See the guard in
+    /// [`lccd`].
+    pub memory_budget_bytes: Option<usize>,
 }
 
 impl Default for LccdConfig {
@@ -100,6 +110,7 @@ impl Default for LccdConfig {
             // edge case). A 10x blowup past MP2 is not a physical LCCD
             // energy; the measured spurious fixed point was ~100x.
             max_corr_vs_mp2: Some(10.0),
+            memory_budget_bytes: None,
         }
     }
 }
@@ -509,8 +520,64 @@ pub fn lccd(
     rhf: &ScfResult,
     cfg: &LccdConfig,
 ) -> Result<LccdResult, FerricError> {
+    // Fail-fast size guard. This module had NO memory accounting at all — no
+    // `check_alloc`, no `resolve_budget_bytes`, nothing — which matters most
+    // for the GMRES Krylov basis: `gmres` builds a `Vec<Array4<f64>>` with
+    // capacity `cfg.restart + 1`, each element a full `no²·nv²` tensor. That
+    // makes `restart` a knob that multiplies peak memory with no budget
+    // relationship whatsoever; at the default `restart = 60` the basis alone is
+    // 61 amplitude-sized tensors, i.e. it dominates everything else this
+    // function allocates, including the `nv⁴` ladder block on small-virtual
+    // systems.
+    //
+    // Charged here, ahead of `build_blocks`, so an over-sized job is refused
+    // before the first large allocation rather than by the OOM killer.
+    // Lifetimes: the MO blocks and the Krylov basis are all resident (the basis
+    // grows monotonically within a restart cycle and is only freed between
+    // cycles, so it must be charged at full width); `d`, `t_mp2`, `t`, `x`,
+    // `rhs`, `w` and the per-iteration `precond`/`apply_operator` outputs are
+    // the same `no²·nv²` shape and co-resident, charged as one aggregate.
+    {
+        let nocc_total = (mol.nelec() as usize) / 2;
+        let no = active_occ(nocc_total, cfg.frozen_core)?;
+        let nv = obs.nbasis() - nocc_total;
+        let amp = no.saturating_pow(2).saturating_mul(nv.saturating_pow(2));
+        let mut plan = MemoryPlan::resolve(
+            cfg.memory_budget_bytes,
+            format!("LCCD/CEPA(0) (no={no}, nv={nv}, GMRES restart={})", cfg.restart),
+        );
+        plan.reserve("g_vvvv (ac|bd)", nv.saturating_pow(4), Lifetime::Resident);
+        plan.reserve("g_oooo (ik|jl)", no.saturating_pow(4), Lifetime::Resident);
+        plan.reserve(
+            "j_ovov (ia|jb) + g_oovv (ij|ab)",
+            amp.saturating_mul(2),
+            Lifetime::Resident,
+        );
+        plan.reserve(
+            "GMRES Krylov basis v[0..=restart]",
+            amp.saturating_mul(cfg.restart.max(1).saturating_add(1)),
+            Lifetime::Resident,
+        );
+        plan.reserve(
+            "d/t_mp2/t/x/rhs/w amplitude working set (x8)",
+            amp.saturating_mul(8),
+            Lifetime::Resident,
+        );
+        plan.check()?;
+    }
+
     let bl = build_blocks(mol, obs, dfbs, op, rhf, cfg)?;
     let d = denominators(&bl)?;
+
+    // Stage-seam RSS safety net: every MO block is resident, the Krylov basis
+    // is not yet built. Observational only, never an error — this is the
+    // backstop for the estimate above undershooting, which is exactly the class
+    // of defect that left this module unguarded in the first place.
+    ferric_core::memory::warn_if_rss_over(
+        "LCCD/CEPA(0) MO blocks built",
+        ferric_core::memory::resolve_budget_bytes(cfg.memory_budget_bytes),
+        1.1,
+    );
 
     // MP2 amplitude/energy from the SAME blocks — both the GMRES start and
     // the scale the sanity bound is measured against.

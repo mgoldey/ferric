@@ -169,7 +169,7 @@ fn prepare_h2o_gw_inputs() -> (
 
     let pcfg = pdep_cfg();
     let pdep = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &pcfg).unwrap();
-    let mo_b = mo_b::build_full_b(&mol, &obs, &dfbs, op, &rhf, 0).unwrap();
+    let mo_b = mo_b::build_full_b(&mol, &obs, &dfbs, op, &rhf, 0, None).unwrap();
     let (v_dressed, _dev) = w_pdep::redress_with_check(&mo_b.v_inv_sqrt, &pdep.eigenpotentials).unwrap();
 
     (mol, obs, dfbs, rhf, mo_b, v_dressed)
@@ -314,7 +314,7 @@ fn mpi_gw_qp_compute_probe() {
     );
     let pcfg = pdep_cfg();
     let pdep = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &pcfg).unwrap();
-    let mo_b = mo_b::build_full_b(&mol, &obs, &dfbs, op, &rhf, 0).unwrap();
+    let mo_b = mo_b::build_full_b(&mol, &obs, &dfbs, op, &rhf, 0, None).unwrap();
     let (v_dressed, _dev) = w_pdep::redress_with_check(&mo_b.v_inv_sqrt, &pdep.eigenpotentials).unwrap();
     let setup_elapsed = t_setup0.elapsed();
 

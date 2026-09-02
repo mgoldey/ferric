@@ -188,27 +188,47 @@ pub(crate) fn density_change(d_new: &Array2<f64>, d_old: &Array2<f64>) -> (f64, 
 
 /// Observational-only warning for the DIIS-history memory footprint.
 ///
-/// The DIIS drivers retain up to `diis_size` (Fock, error) matrix pairs, each
-/// `n × n` `f64` — `diis_size × 2 × n² × 8` bytes total (RHF/UHF/ROHF all
-/// share this shape; UHF's coupled driver keeps separate α/β histories but
-/// the *combined* error vector is still one logical DIIS slot per iteration,
-/// so the same projection is used uniformly across all three variants rather
-/// than chasing an exact per-variant byte count — this is an observability
-/// heads-up, not a precise accounting). At `nbf=2000, diis_size=8` this is
-/// ~0.5 GB, big enough to matter against a small `ooc_budget` but usually
-/// negligible against the 3-index tensor it sits alongside.
+/// The DIIS drivers retain up to `diis_size` entries, each holding some number
+/// of `n × n` `f64` matrices — see [`crate::diis::diis_history_bytes`], which
+/// lives next to the buffers it counts.
+///
+/// # Why this used to be wrong
+///
+/// The projection was hardcoded as `diis_size × 2 × n² × 8` for every variant,
+/// justified by the argument that "UHF's coupled driver keeps separate α/β
+/// histories but the *combined* error vector is still one logical DIIS slot per
+/// iteration, so the same projection is used uniformly across all three
+/// variants."
+///
+/// That reasoning counts the wrong thing. What consumes memory is the number of
+/// `n × n` **buffers**, not the number of logical slots: `step_pair`
+/// (`diis.rs`) pushes `fock_hist_b` and `err_hist_b` in addition to
+/// `fock_hist`/`err_hist`, so UHF holds **four** matrices per slot, not two.
+/// ADIIS/EDIIS runs hold an [`crate::diis::EnergyDiis`]'s `fock_hist` +
+/// `dens_hist` *alongside* the Pulay `Diis`, adding two more. The old figure
+/// was therefore 2× low for UHF and up to 3× low for RHF with ADIIS/EDIIS
+/// enabled — and it was called from RHF only, so UHF, the variant it
+/// under-counted most, projected nothing at all.
+///
+/// At `nbf=2000, diis_size=8` the single-spin Pulay figure is ~0.5 GB, big
+/// enough to matter against a small `ooc_budget` but usually negligible against
+/// the 3-index tensor it sits alongside; the UHF+EnergyDiis figure is ~1.5 GB.
 ///
 /// Emits ONE stderr warning when the projection exceeds `ooc_budget / 4` —
 /// mirroring `ferric_core::memory::warn_if_rss_over`'s philosophy: purely
 /// observational, NEVER an error. A working job must never start failing
 /// because of this check; it only ever prints a heads-up line.
-pub(crate) fn warn_if_diis_history_large(label: &str, n: usize, diis_size: usize, ooc_budget: usize) {
-    let projected = diis_size
-        .saturating_mul(2)
-        .saturating_mul(n)
-        .saturating_mul(n)
-        .saturating_mul(std::mem::size_of::<f64>());
-    let threshold = ooc_budget / 4;
+pub(crate) fn warn_if_diis_history_large(
+    label: &str,
+    n: usize,
+    diis_size: usize,
+    shape: crate::diis::DiisHistoryShape,
+    energy_diis: bool,
+    ooc_budget: usize,
+) {
+    let projected = crate::diis::diis_history_bytes(n, diis_size, shape, energy_diis);
+    let threshold =
+        ferric_core::memory::transient_share(ooc_budget, ferric_core::memory::Share::Quarter);
     if projected > threshold {
         eprintln!(
             "ferric WARNING [{label}]: projected DIIS history {:.2} GB (diis_size={diis_size}, \

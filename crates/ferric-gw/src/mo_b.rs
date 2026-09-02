@@ -42,12 +42,32 @@ fn b_full_bytes(naux: usize, n_act: usize) -> usize {
         .saturating_mul(8)
 }
 
-/// Fail-fast if the requested `b_full` allocation exceeds `FERRIC_ERI3_BUDGET_GB`.
+/// Fail-fast if the requested `b_full` allocation exceeds the memory budget.
 /// The MoB peak is a single (naux, n_act, n_act) f64 buffer with the aux-blocked
 /// transform (the old code held eri3_mm + b_flat simultaneously → 2×). The AO
 /// source is streamed aux-blocked under the same budget, so it is not the peak.
-fn guard_b_full(naux: usize, n_act: usize, label: &str) -> Result<(), FerricError> {
-    guard_b_full_at(ferric_core::memory::resolve_budget_bytes(None), naux, n_act, label)
+///
+/// `memory_budget_bytes` is the caller's explicit ceiling
+/// ([`GwConfig::memory_budget_bytes`](crate::GwConfig::memory_budget_bytes)),
+/// threaded down rather than the `resolve_budget_bytes(None)` this used to
+/// pass. `None` silently DISCARDED a pinned `[memory] budget_gb` and let
+/// `resolve_budget` substitute the env / cgroup / RAM-auto-detected value
+/// (~0.8× available RAM) instead, so a job pinned to 4 GB was gated at ~18 GB
+/// on a 23 GB box and the pin did nothing. `ferric_rpa` fixed exactly this
+/// three times (see `ferric_rpa::properties::pdep_polarizability_static`);
+/// ferric-gw was never fixed until now.
+fn guard_b_full(
+    naux: usize,
+    n_act: usize,
+    label: &str,
+    memory_budget_bytes: Option<usize>,
+) -> Result<(), FerricError> {
+    guard_b_full_at(
+        ferric_core::memory::resolve_budget_bytes(memory_budget_bytes),
+        naux,
+        n_act,
+        label,
+    )
 }
 
 fn guard_b_full_at(
@@ -60,7 +80,7 @@ fn guard_b_full_at(
     if need > budget {
         return Err(FerricError::General(format!(
             "{label}: dressed MO tensor b_full ({naux}×{n_act}×{n_act} f64 = \
-             {:.2} GB) exceeds FERRIC_ERI3_BUDGET_GB ({:.2} GB). Reduce the active \
+             {:.2} GB) exceeds the memory budget ({:.2} GB). Reduce the active \
              space (frozen_core / smaller basis) or raise the budget.",
             need as f64 / 1e9,
             budget as f64 / 1e9,
@@ -99,6 +119,7 @@ pub fn build_full_b(
     op: Operator,
     rhf: &ScfResult,
     frozen_core: usize,
+    memory_budget_bytes: Option<usize>,
 ) -> Result<MoB, FerricError> {
     if !matches!(rhf.spin, Spin::Restricted) {
         return Err(FerricError::General(
@@ -107,7 +128,16 @@ pub fn build_full_b(
     }
     let nelec = mol.nelec() as usize;
     let nocc_total = nelec / 2;
-    build_full_b_with_mos(obs, dfbs, op, rhf.mos_r(), rhf.eps_r(), nocc_total, frozen_core)
+    build_full_b_with_mos(
+        obs,
+        dfbs,
+        op,
+        rhf.mos_r(),
+        rhf.eps_r(),
+        nocc_total,
+        frozen_core,
+        memory_budget_bytes,
+    )
 }
 
 /// Build per-spin B̃^P_{mn} for an open-shell reference (UHF, ROHF, UKS).
@@ -127,6 +157,7 @@ pub fn build_full_b_spin(
     scf: &ScfResult,
     is_alpha: bool,
     frozen_core: usize,
+    memory_budget_bytes: Option<usize>,
 ) -> Result<MoB, FerricError> {
     if matches!(scf.spin, Spin::Restricted) {
         return Err(FerricError::General(
@@ -147,7 +178,16 @@ pub fn build_full_b_spin(
             Spin::Restricted => unreachable!(),
         }
     };
-    build_full_b_with_mos(obs, dfbs, op, mos, eps_slice, nocc, frozen_core)
+    build_full_b_with_mos(
+        obs,
+        dfbs,
+        op,
+        mos,
+        eps_slice,
+        nocc,
+        frozen_core,
+        memory_budget_bytes,
+    )
 }
 
 fn build_full_b_with_mos(
@@ -158,15 +198,29 @@ fn build_full_b_with_mos(
     eps_full: &[f64],
     nocc_total: usize,
     frozen_core: usize,
+    memory_budget_bytes: Option<usize>,
 ) -> Result<MoB, FerricError> {
     let v2c = threeindex::coulomb_metric_2c(op, dfbs)?;
     let v_inv_sqrt = cholesky_inverse_sqrt(&v2c)?;
-    // Stream the AO 3-index tensor aux-blocked under FERRIC_ERI3_BUDGET_GB rather
-    // than materializing the dense (naux, nbf, nbf) tensor (~37 GB at dimer/aTZ).
+    // Stream the AO 3-index tensor aux-blocked under the SAME budget the
+    // `b_full` guard uses, rather than materializing the dense (naux, nbf, nbf)
+    // tensor (~37 GB at dimer/aTZ). The explicit budget is threaded in; this
+    // used to be `resolve_budget_bytes(None)`, which discarded it.
     let mut ao_src = ThreeIndexSource::build(
-        op, obs, dfbs, ferric_core::memory::resolve_budget_bytes(None),
+        op,
+        obs,
+        dfbs,
+        ferric_core::memory::resolve_budget_bytes(memory_budget_bytes),
     )?;
-    build_mo_b_from_source(&mut ao_src, &v_inv_sqrt, c, eps_full, nocc_total, frozen_core)
+    build_mo_b_from_source(
+        &mut ao_src,
+        &v_inv_sqrt,
+        c,
+        eps_full,
+        nocc_total,
+        frozen_core,
+        memory_budget_bytes,
+    )
 }
 
 /// Build MoB from an aux-blocked AO source and V^{-1/2}.
@@ -188,6 +242,7 @@ fn build_mo_b_from_source(
     eps_full: &[f64],
     nocc_total: usize,
     frozen_core: usize,
+    memory_budget_bytes: Option<usize>,
 ) -> Result<MoB, FerricError> {
     let nbas = ao_src.nao();
     let nmo = nbas;
@@ -208,7 +263,7 @@ fn build_mo_b_from_source(
 
     // Guard the (single) b_full allocation against the byte budget before we
     // allocate it. The AO source is already budget-bounded (streamed).
-    guard_b_full(naux, n_act, "build_full_b")?;
+    guard_b_full(naux, n_act, "build_full_b", memory_budget_bytes)?;
 
     let c_act = c.slice(s![.., frozen_core..nmo]).to_owned();
 
@@ -241,6 +296,7 @@ pub fn build_full_b_both_spins(
     op: Operator,
     scf: &ScfResult,
     frozen_core: usize,
+    memory_budget_bytes: Option<usize>,
 ) -> Result<(MoB, MoB), FerricError> {
     if matches!(scf.spin, Spin::Restricted) {
         return Err(FerricError::General(
@@ -260,11 +316,20 @@ pub fn build_full_b_both_spins(
     // (the caller holds both), but no separate MO intermediate is co-resident.
     // The AO source stays budget-bounded across both passes.
     let mut ao_src = ThreeIndexSource::build(
-        op, obs, dfbs, ferric_core::memory::resolve_budget_bytes(None),
+        op,
+        obs,
+        dfbs,
+        ferric_core::memory::resolve_budget_bytes(memory_budget_bytes),
     )?;
 
     let mo_b_a = build_mo_b_from_source(
-        &mut ao_src, &v_inv_sqrt, scf.mos_a(), scf.eps_a(), nocc_a, frozen_core,
+        &mut ao_src,
+        &v_inv_sqrt,
+        scf.mos_a(),
+        scf.eps_a(),
+        nocc_a,
+        frozen_core,
+        memory_budget_bytes,
     )?;
     let (mos_b, eps_b_slice) = match scf.spin {
         Spin::RestrictedOpen => (scf.mos_a(), scf.eps_a()),
@@ -272,7 +337,13 @@ pub fn build_full_b_both_spins(
         Spin::Restricted => unreachable!(),
     };
     let mo_b_b = build_mo_b_from_source(
-        &mut ao_src, &v_inv_sqrt, mos_b, eps_b_slice, nocc_b, frozen_core,
+        &mut ao_src,
+        &v_inv_sqrt,
+        mos_b,
+        eps_b_slice,
+        nocc_b,
+        frozen_core,
+        memory_budget_bytes,
     )?;
     Ok((mo_b_a, mo_b_b))
 }
@@ -328,7 +399,7 @@ mod tests {
         let mut src_full = ThreeIndexSource::build(op, &obs, &dfbs, usize::MAX).unwrap();
         assert_eq!(src_full.n_blocks(), 1);
         let full = build_mo_b_from_source(
-            &mut src_full, &v_inv_sqrt, &c, &eps, nocc_total, frozen_core,
+            &mut src_full, &v_inv_sqrt, &c, &eps, nocc_total, frozen_core, None,
         )
         .unwrap();
 
@@ -337,7 +408,7 @@ mod tests {
         let mut src_tiny = ThreeIndexSource::build(op, &obs, &dfbs, tiny).unwrap();
         assert!(src_tiny.n_blocks() > 1, "expected multi-block spill");
         let blocked = build_mo_b_from_source(
-            &mut src_tiny, &v_inv_sqrt, &c, &eps, nocc_total, frozen_core,
+            &mut src_tiny, &v_inv_sqrt, &c, &eps, nocc_total, frozen_core, None,
         )
         .unwrap();
 
@@ -365,9 +436,44 @@ mod tests {
         assert!(guard_b_full_at(need, 100, 50, "test").is_ok());
         let err = guard_b_full_at(need - 1, 100, 50, "test").unwrap_err();
         let msg = format!("{err}");
+        // The message used to name `FERRIC_ERI3_BUDGET_GB` specifically. It now
+        // says "the memory budget", because the ceiling is no longer env-only:
+        // `guard_b_full` takes the caller's explicit
+        // `GwConfig::memory_budget_bytes` and only falls back to the env /
+        // cgroup / RAM-auto chain when that is `None`. Naming one env var was
+        // actively misleading once a config budget could set it.
         assert!(
-            msg.contains("FERRIC_ERI3_BUDGET_GB") && msg.contains("100×50×50"),
+            msg.contains("memory budget") && msg.contains("100×50×50"),
             "unexpected guard message: {msg}"
         );
     }
+
+    /// `guard_b_full` must honour the caller's explicit ceiling.
+    ///
+    /// It resolved `resolve_budget_bytes(None)` unconditionally, which
+    /// DISCARDS `GwConfig::memory_budget_bytes` and substitutes the env /
+    /// cgroup / RAM-auto-detected value (~0.8× available RAM). A run pinned to
+    /// 4 GB was therefore gated at ~18 GB on a 23 GB box and the pin did
+    /// nothing. Same defect and same fix as
+    /// `ferric_rpa::properties::pdep_polarizability_static`.
+    ///
+    /// naux = 100, n_act = 50 → 100·50·50·8 = 2 MB. Under a 1 kB explicit
+    /// ceiling it must fail; under a 1 GB ceiling it must pass. Both directions
+    /// are asserted, because a guard that always fails is as broken as one that
+    /// always passes.
+    #[test]
+    fn guard_b_full_honours_the_caller_budget_rather_than_discarding_it() {
+        let err = guard_b_full(100, 50, "test", Some(1_000))
+            .expect_err("an explicit 1 kB ceiling was ignored — the budget is not reaching \
+                         the guard")
+            .to_string();
+        assert!(err.contains("b_full"), "must name the tensor: {err}");
+        assert!(err.contains("100×50×50"), "must name the shape: {err}");
+        assert!(
+            guard_b_full(100, 50, "test", Some(1_000_000_000)).is_ok(),
+            "an ample 1 GB budget must not refuse a 2 MB tensor — an over-estimating \
+             guard is also a bug"
+        );
+    }
+
 }

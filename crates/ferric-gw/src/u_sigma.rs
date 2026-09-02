@@ -38,8 +38,8 @@ pub fn run_u_g0w0(
             "pdep eigenvalues_freq mode count does not match dressed eigenpotentials".into(),
         ));
     }
-    let m_proj_a = project_b_into_pdep(mo_b_a, v_dressed);
-    let m_proj_b = project_b_into_pdep(mo_b_b, v_dressed);
+    let m_proj_a = project_b_into_pdep(mo_b_a, v_dressed, gw_cfg.memory_budget_bytes)?;
+    let m_proj_b = project_b_into_pdep(mo_b_b, v_dressed, gw_cfg.memory_budget_bytes)?;
     let sigma_x_a_all = sigma_x_diag(mo_b_a);
     let sigma_x_b_all = sigma_x_diag(mo_b_b);
     let inv_diel_freq = pdep.inv_dielectric_freq.as_ref().ok_or_else(|| {
@@ -139,8 +139,8 @@ pub fn run_u_evgw0(
             "pdep eigenvalues_freq mode count does not match dressed eigenpotentials".into(),
         ));
     }
-    let m_proj_a = project_b_into_pdep(mo_b_a, v_dressed);
-    let m_proj_b = project_b_into_pdep(mo_b_b, v_dressed);
+    let m_proj_a = project_b_into_pdep(mo_b_a, v_dressed, gw_cfg.memory_budget_bytes)?;
+    let m_proj_b = project_b_into_pdep(mo_b_b, v_dressed, gw_cfg.memory_budget_bytes)?;
     let sigma_x_a_all = sigma_x_diag(mo_b_a);
     let sigma_x_b_all = sigma_x_diag(mo_b_b);
     let inv_diel_freq = pdep.inv_dielectric_freq.as_ref().ok_or_else(|| {
@@ -321,8 +321,10 @@ pub fn run_u_evgw(
                 &mo_b_a.v_inv_sqrt, &current_pdep.eigenpotentials,
             )?;
         }
-        let m_proj_a = project_b_into_pdep(mo_b_a, &current_v_dressed);
-        let m_proj_b = project_b_into_pdep(mo_b_b, &current_v_dressed);
+        let m_proj_a =
+            project_b_into_pdep(mo_b_a, &current_v_dressed, gw_cfg.memory_budget_bytes)?;
+        let m_proj_b =
+            project_b_into_pdep(mo_b_b, &current_v_dressed, gw_cfg.memory_budget_bytes)?;
         let inv_diel_freq = current_pdep.inv_dielectric_freq.as_ref().ok_or_else(|| {
             FerricError::General(
                 "PDEP result missing inv_dielectric_freq (GW requires the dense χ₀ path)".into(),

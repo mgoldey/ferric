@@ -236,6 +236,18 @@ pub fn solve_uhf_fockmod(
     // 421 iterations to converge with independent DIIS; coupled converges
     // in ~15-25 cycles).
     let mut diis = Diis::new(config.diis_size);
+    // UHF extrapolates with `step_pair`, which fills the β histories as well —
+    // FOUR n×n matrices per subspace entry, twice RHF's. This projection was
+    // missing entirely until 2026-08-30: the warning was called from RHF only,
+    // so the variant that holds the most DIIS memory reported none of it.
+    crate::driver::warn_if_diis_history_large(
+        "UHF",
+        n,
+        config.diis_size,
+        crate::diis::DiisHistoryShape::PairSpin,
+        false,
+        ooc_budget,
+    );
     // Convergence bookkeeping (prev energy, ΔP over the TOTAL α+β density,
     // divergence streak, stall history) — shared driver::ScfMonitor; ΔP is
     // INFINITY until the first rebuild (see rhf::scf_converged).

@@ -589,6 +589,41 @@ fn induce_rejects_more_sites_than_max_sites_dense() {
     assert!(result.is_err(), "exceeding max_sites_dense must be a typed error");
 }
 
+/// A non-positive or non-finite polarizability must be REFUSED, not fed to the
+/// induction solve.
+///
+/// `solve_induction` puts `1.0 / alpha` on the diagonal of the induction
+/// matrix, so `alpha <= 0` would silently place an infinity (or a negative
+/// stiffness) there and return a finite-looking but meaningless energy. The
+/// guard exists; nothing exercised it, so a change to its condition could not
+/// be caught. Note the sibling `alpha_zero_gives_zero_polarization_energy`
+/// test deliberately uses `alpha: 1e-12` to stay on the LEGAL side of this
+/// guard — that is the complement of this test, not a duplicate of it.
+#[test]
+fn induce_rejects_non_positive_alpha() {
+    let mol = water_bohr();
+    let prep = sto3g_prep(&mol);
+    let site_basis_p = SiteBasis::new(&[[0.0, 0.0, 5.0, 1e4]], 1).unwrap();
+    let d = Array2::<f64>::zeros((prep.nbasis(), prep.nbasis()));
+
+    // Both illegal values must be refused: a negative stiffness and a NaN.
+    for bad in [-1.0_f64, f64::NAN] {
+        let sites = PolarizableSites {
+            sites: vec![PolarizableSite { x: 0.0, y: 0.0, z: 5.0, alpha: bad }],
+            thole_a: Some(2.1304),
+            exclusions: vec![],
+            dipole_zeta: 1e4,
+            max_sites_dense: 8,
+        };
+        let result = induce(&mol, &prep, None, &sites, &site_basis_p, &d);
+        assert!(
+            result.is_err(),
+            "alpha = {bad} must be refused: 1/alpha lands on the induction \
+             diagonal, so accepting it yields a finite-looking meaningless energy"
+        );
+    }
+}
+
 
 
 

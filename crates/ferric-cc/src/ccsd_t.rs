@@ -102,6 +102,8 @@ use ferric_scf::ScfResult;
 use ferric_tensors::{einsum, Axis};
 use ndarray::{Array2, Array3, ArrayD, Axis as NdAxis};
 #[cfg(test)]
+use ferric_tensors::permute_to_owned;
+#[cfg(test)]
 use ndarray::IxDyn;
 use rayon::prelude::*;
 
@@ -113,8 +115,8 @@ use rayon::prelude::*;
 /// exists to permute).
 #[cfg(test)]
 fn p_a_bc(x: ArrayD<f64>) -> ArrayD<f64> {
-    let s_ab = x.view().permuted_axes(IxDyn(&[0, 1, 2, 4, 3, 5])).as_standard_layout().into_owned();
-    let s_ac = x.view().permuted_axes(IxDyn(&[0, 1, 2, 5, 4, 3])).as_standard_layout().into_owned();
+    let s_ab = permute_to_owned(x.view().permuted_axes(IxDyn(&[0, 1, 2, 4, 3, 5])));
+    let s_ac = permute_to_owned(x.view().permuted_axes(IxDyn(&[0, 1, 2, 5, 4, 3])));
     let mut out = x;
     out -= &s_ab;
     drop(s_ab);
@@ -124,8 +126,8 @@ fn p_a_bc(x: ArrayD<f64>) -> ArrayD<f64> {
 /// P(i/jk) on the (i,j,k,…) axes 0,1,2: x − x.swap(i,j) − x.swap(i,k).
 #[cfg(test)]
 fn p_i_jk(x: ArrayD<f64>) -> ArrayD<f64> {
-    let s_ij = x.view().permuted_axes(IxDyn(&[1, 0, 2, 3, 4, 5])).as_standard_layout().into_owned();
-    let s_ik = x.view().permuted_axes(IxDyn(&[2, 1, 0, 3, 4, 5])).as_standard_layout().into_owned();
+    let s_ij = permute_to_owned(x.view().permuted_axes(IxDyn(&[1, 0, 2, 3, 4, 5])));
+    let s_ik = permute_to_owned(x.view().permuted_axes(IxDyn(&[2, 1, 0, 3, 4, 5])));
     let mut out = x;
     out -= &s_ij;
     drop(s_ij);
@@ -833,9 +835,9 @@ mod tests {
         let t2 = Tensor::new(ccsd_res.t2.clone().into_dyn(), [O, O, V, V]);
 
         let term1: ArrayD<f64> = einsum!("jkae,bcei->jkabci", &t2, &bcei_t);
-        let term1 = term1.permuted_axes(IxDyn(&[5, 0, 1, 2, 3, 4])).as_standard_layout().into_owned();
+        let term1 = permute_to_owned(term1.permuted_axes(IxDyn(&[5, 0, 1, 2, 3, 4])).view());
         let term2: ArrayD<f64> = einsum!("imbc,majk->ibcajk", &t2, &majk_t);
-        let term2 = term2.permuted_axes(IxDyn(&[0, 4, 5, 3, 1, 2])).as_standard_layout().into_owned();
+        let term2 = permute_to_owned(term2.permuted_axes(IxDyn(&[0, 4, 5, 3, 1, 2])).view());
         let mut t3c = term1;
         t3c -= &term2;
         drop(term2);
@@ -844,7 +846,7 @@ mod tests {
         t3c /= &d3;
 
         let t3d: ArrayD<f64> = einsum!("ia,bcjk->iabcjk", &t1, &bcjk_t);
-        let t3d = t3d.permuted_axes(IxDyn(&[0, 4, 5, 1, 2, 3])).as_standard_layout().into_owned();
+        let t3d = permute_to_owned(t3d.permuted_axes(IxDyn(&[0, 4, 5, 1, 2, 3])).view());
         let mut t3d = p_a_bc(t3d);
         t3d = p_i_jk(t3d);
         t3d /= &d3;

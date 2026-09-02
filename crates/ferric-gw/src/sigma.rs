@@ -307,7 +307,7 @@ pub fn run_g0w0(
     let sigma_x_all = sigma_x_diag(mo_b);
 
     // Project B̃ → M[(α,m,n)] (shape M × n_act × n_act).
-    let m_proj = project_b_into_pdep(mo_b, v_dressed);
+    let m_proj = project_b_into_pdep(mo_b, v_dressed, gw_cfg.memory_budget_bytes)?;
 
     // Full per-frequency inverse-dielectric matrices W̃_d(iω_k) in the PDEP basis.
     let inv_diel_freq = pdep.inv_dielectric_freq.as_ref().ok_or_else(|| {
@@ -332,8 +332,22 @@ pub fn run_g0w0(
     let mut z_out = Array1::<f64>::ones(mo_indices.len());
     let mut qp_converged = vec![true; mo_indices.len()];
 
-    // Each MO's QP solve is independent (scalar math only — no BLAS inside),
-    // so parallelize over the QP index; per-state summation order is unchanged.
+    // Each MO's QP solve is independent, so parallelize over the QP index;
+    // per-state summation order is unchanged.
+    //
+    // NOT "no BLAS inside" — `solve_qp_for_mo` reaches `sigma_c_at_z`, which
+    // runs a real `inv_diel_freq[k].dot(&v)` GEMM per quadrature node. This is
+    // safe because `opt_in_blas_threads` (ferric-core/src/blas_threads.rs)
+    // force-pins BLAS to 1 thread whenever it is called from inside a rayon
+    // worker, so the nesting hazard is neutralized at runtime rather than by
+    // the absence of BLAS. Stating it correctly matters: a future reader must
+    // not conclude that any BLAS call added here is automatically fine — it is
+    // fine only because of that specific pinning mechanism.
+    //
+    // Do NOT parallelize the `k` loop inside `sigma_c_at_z` to widen this: it
+    // is a sequential FP accumulation (`inner += ...`, then `sigma += ...`)
+    // feeding a Newton root-find that is fragile near Σc poles, so reordering
+    // the summation would perturb eps_qp in a thread-count-dependent way.
     let qp_rows = mo_indices
         .par_iter()
         .map(|&mo_abs| {
@@ -424,7 +438,7 @@ pub fn run_evgw0(
         ));
     }
     let sigma_x_all = sigma_x_diag(mo_b);
-    let m_proj = project_b_into_pdep(mo_b, v_dressed);
+    let m_proj = project_b_into_pdep(mo_b, v_dressed, gw_cfg.memory_budget_bytes)?;
     let inv_diel_freq = pdep.inv_dielectric_freq.as_ref().ok_or_else(|| {
         FerricError::General(
             "PDEP result missing inv_dielectric_freq (GW requires the dense χ₀ path)".into(),
@@ -627,7 +641,7 @@ pub fn run_evgw(
                 &current_pdep.eigenpotentials,
             )?;
         }
-        let m_proj = project_b_into_pdep(mo_b, &current_v_dressed);
+        let m_proj = project_b_into_pdep(mo_b, &current_v_dressed, gw_cfg.memory_budget_bytes)?;
         let inv_diel_freq = current_pdep.inv_dielectric_freq.as_ref().ok_or_else(|| {
             FerricError::General(
                 "PDEP result missing inv_dielectric_freq (GW requires the dense χ₀ path)".into(),

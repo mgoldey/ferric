@@ -127,6 +127,15 @@ pub struct TdaDftConfig {
     pub grid: AtomicGridConfig,
     /// Freeze the lowest `frozen_core` occupied orbitals out of the (ia) space.
     pub frozen_core: usize,
+    /// Optional resident-bytes ceiling for the dense `(n, n)` matrices and the
+    /// RI 3-index build. `None` → resolved via
+    /// [`ferric_core::memory::resolve_budget_bytes`] (env / cgroup / RAM
+    /// auto-detect).
+    ///
+    /// Both guards on this path previously passed `None` unconditionally,
+    /// which discarded a caller's pinned budget outright. Same defect and same
+    /// fix as `ferric_rpa::properties::pdep_polarizability_static`.
+    pub memory_budget_bytes: Option<usize>,
 }
 
 impl Default for TdaDftConfig {
@@ -136,18 +145,37 @@ impl Default for TdaDftConfig {
             c_hf_override: None,
             grid: AtomicGridConfig::default(),
             frozen_core: 0,
+            memory_budget_bytes: None,
         }
     }
 }
 
-/// Fail-fast pre-flight for the dense `(n, n)` TDA matrix plus the co-resident
-/// `eigh` eigenvector output. Same shape of guard as `bse::check_dense_response_alloc`.
-fn check_tda_alloc(n: usize) -> Result<(), FerricError> {
-    let bytes = n.saturating_mul(n).saturating_mul(8).saturating_mul(2);
+/// Fail-fast pre-flight for the dense `(n, n)` matrices [`run_tda_dft`] holds.
+///
+/// # Why the count is 3n², not 2n²
+///
+/// This guard used to charge `n² · 8 · 2` — `a_mat` plus the `eigh`
+/// eigenvector output. That misses `k_fxc`: [`build_fxc_block`] returns a full
+/// `(n, n)` matrix which is live at the same time as `a_mat` when they are
+/// added (`a_mat += &k_fxc`), so with `include_fxc = true` — the DEFAULT, see
+/// [`TdaDftConfig::default`] — the true peak is `a_mat` + `k_fxc` + the `eigh`
+/// output = `3n²`. The old count under-reported by 50% on the default path,
+/// which is precisely the direction that OOMs instead of erroring cleanly.
+/// (`build_fxc_block` also allocates the pre-symmetrization `k` and the
+/// symmetrized `k_sym` together, but `k` is dropped when the function returns,
+/// before `a_mat += &k_fxc`, so it does not stack onto the peak above.)
+///
+/// With `include_fxc = false` the kernel is never constructed and the old
+/// `2n²` is correct, so the charge is conditional rather than uniformly raised
+/// — an over-estimating guard is also a bug: it refuses jobs that would fit.
+fn check_tda_alloc(n: usize, include_fxc: bool, budget: Option<usize>) -> Result<(), FerricError> {
+    let matrices = if include_fxc { 3 } else { 2 };
+    let bytes = n.saturating_mul(n).saturating_mul(8).saturating_mul(matrices);
+    let what = if include_fxc { ", + f_xc block, + eigh output" } else { ", + eigh output" };
     ferric_core::memory::check_alloc(
-        &format!("TDA-DFT dense (ia) matrix (n = nocc*nvir = {n}, + eigh output)"),
+        &format!("TDA-DFT dense (ia) matrix (n = nocc*nvir = {n}{what})"),
         bytes,
-        ferric_core::memory::resolve_budget_bytes(None),
+        ferric_core::memory::resolve_budget_bytes(budget),
     )
 }
 
@@ -333,7 +361,7 @@ pub fn run_tda_dft(
     if n == 0 {
         return Err(FerricError::General("run_tda_dft: empty (ia) space".into()));
     }
-    check_tda_alloc(n)?;
+    check_tda_alloc(n, cfg.include_fxc && xc_name.is_some(), cfg.memory_budget_bytes)?;
 
     // ── Exact-exchange fraction, and the f_xc kernel (if any) ───────────────
     //
@@ -403,7 +431,8 @@ pub fn run_tda_dft(
     let c_hf = cfg.c_hf_override.unwrap_or(c_hf_from_xc);
 
     // ── RI integrals over the active MO square (same tensor BSE/CIS uses) ───
-    let mob = mo_b::build_full_b(mol, obs, dfbs, op, ks, cfg.frozen_core)?;
+    let mob =
+        mo_b::build_full_b(mol, obs, dfbs, op, ks, cfg.frozen_core, cfg.memory_budget_bytes)?;
     let b = &mob.b_full;
     let naux = mob.naux;
     let bare = |p: usize, q: usize, r: usize, s: usize| -> f64 {
@@ -567,4 +596,81 @@ pub fn transition_dipole(
         }
         std::f64::consts::SQRT_2 * acc
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `n = 1000` → one dense (n, n) f64 matrix is 8 MB. Round numbers so the
+    /// 2× / 3× boundary is exact and the assertions below are not
+    /// off-by-rounding.
+    const N: usize = 1000;
+    const ONE_MAT: usize = N * N * 8; // 8_000_000 bytes
+
+    #[test]
+    fn check_tda_alloc_charges_three_matrices_when_fxc_is_included() {
+        // The bug: this guard charged 2n² (a_mat + eigh output) and MISSED
+        // k_fxc, which `build_fxc_block` returns as a full (n, n) matrix that
+        // is live at the same time as a_mat when they are added
+        // (`a_mat += &k_fxc`). include_fxc is the DEFAULT, so the guard
+        // under-reported by 50% on the normal path — the direction that OOMs
+        // rather than erroring cleanly.
+        //
+        // A budget that fits exactly 2 matrices must now be REFUSED with fxc
+        // on, and a budget that fits 3 must be accepted. That pair pins the
+        // count at exactly 3: neither 2 (the old bug) nor 4 (which would refuse
+        // jobs that fit) satisfies both.
+        assert!(
+            check_tda_alloc(N, true, Some(2 * ONE_MAT)).is_err(),
+            "2n² was the OLD, under-counting charge — a_mat + k_fxc + eigh is 3n²"
+        );
+        assert!(
+            check_tda_alloc(N, true, Some(3 * ONE_MAT)).is_ok(),
+            "3n² is the true peak with f_xc; refusing it would be over-estimating"
+        );
+    }
+
+    #[test]
+    fn check_tda_alloc_charges_only_two_matrices_without_fxc() {
+        // With include_fxc = false the kernel is never constructed and no
+        // k_fxc exists, so the old 2n² is correct there. Raising the charge
+        // uniformly to 3n² would refuse jobs that would have fit — an
+        // over-estimating guard is also a bug.
+        assert!(
+            check_tda_alloc(N, false, Some(2 * ONE_MAT)).is_ok(),
+            "without f_xc the peak is a_mat + eigh = 2n²; do not over-charge"
+        );
+        assert!(
+            check_tda_alloc(N, false, Some(ONE_MAT)).is_err(),
+            "one matrix is not enough for a_mat + the eigh output"
+        );
+    }
+
+    #[test]
+    fn check_tda_alloc_honours_the_caller_budget_rather_than_discarding_it() {
+        // The plumbing pin. This used to pass `resolve_budget_bytes(None)`
+        // unconditionally, so `TdaDftConfig::memory_budget_bytes` was accepted
+        // by the config and then dropped on the floor: a run pinned to a small
+        // ceiling was silently gated against the env / cgroup / RAM-auto value
+        // instead. Same defect `ferric_rpa` fixed three times.
+        //
+        // A tiny explicit budget MUST refuse a shape that an auto-resolved
+        // whole-box budget would happily pass.
+        assert!(
+            check_tda_alloc(N, true, Some(1_000)).is_err(),
+            "an explicit 1 kB ceiling was ignored — the budget is not reaching the guard"
+        );
+        // The same shape under a huge explicit ceiling must pass, so the
+        // failure above is attributable to the budget and not to the shape.
+        assert!(check_tda_alloc(N, true, Some(100 * ONE_MAT)).is_ok());
+    }
+
+    #[test]
+    fn check_tda_alloc_saturates_instead_of_wrapping_on_an_absurd_shape() {
+        // n² overflows usize well before the byte product does. Saturating
+        // arithmetic must report a huge requirement rather than wrapping to a
+        // small number that would sail through the comparison.
+        assert!(check_tda_alloc(usize::MAX / 2, true, Some(ONE_MAT)).is_err());
+    }
 }

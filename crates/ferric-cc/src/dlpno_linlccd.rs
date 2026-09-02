@@ -432,6 +432,63 @@ pub fn dlpno_linlccd_hh(
     let nv = nbas - nocc_total;
     let (no2, nv2) = (2 * no, 2 * nv);
 
+    // ---- MEMORY PRE-FLIGHT: the setup, not the iteration ----
+    //
+    // WHY THIS EXISTS. Everything this module *claims* about memory is about the
+    // ITERATION, and that claim is true: `HhFlopCount::of` and
+    // `PairPnoBasis::virtual_retention` describe per-pair `npno²` blocks, and the
+    // loop below never leaves them. What neither describes is the SETUP that has
+    // to run before the first PNO exists — which materializes several dense
+    // canonical tensors on the full `no2²·nv2²` and `naux·nbas²` grids.
+    //
+    // That gap is a real production incident, not a hypothetical: the LNO-coupled
+    // path reported a predicted 0.055 GB working set and peaked at 7.3 GB, because
+    // the number it reported was the compressed pair-shaped one while the
+    // allocator was serving the dense setup. `CcConfig::memory_budget_bytes` was
+    // threaded into this crate but never read here, so nothing reconciled the two
+    // and the only feedback was the OOM killer.
+    //
+    // A `MemoryPlan` closes it by making the estimate and the allocation the same
+    // statement: every dense block below is declared here, BEFORE the first one is
+    // allocated, and `check()` reports a per-reservation breakdown naming the term
+    // that blew up rather than a bare total. Lifetimes are read off the code, not
+    // guessed:
+    //
+    //   * `eri3_ao` is Transient — explicitly `drop`ped once `oooo` is built.
+    //   * `g_iajb` / `g_ijkl` are Transient — scoped to the block that folds them
+    //     into `v_oovv` / `oooo`.
+    //   * `v_oovv` AND `v4` are BOTH Resident: `v4` is a `.clone()` of `v_oovv`
+    //     into a static-rank view and `v_oovv` is never dropped, so the pair is
+    //     genuinely co-resident. Declaring only one would under-estimate by a
+    //     factor of two on the largest term in the method.
+    //   * `t_guess` is Resident — the closure handed to `PairPnoBasis::build`
+    //     borrows it, so it outlives the whole PNO construction.
+    //
+    // Deliberately NOT declared: the per-pair PNO blocks themselves. They are
+    // bounded by the dense terms already counted (`Σ_pairs npno² ≤ n_pairs·nv2²`)
+    // and adding them would over-estimate — and an over-estimating guard is also
+    // a bug, since it refuses jobs that would have fit.
+    let naux = dfbs.nbasis();
+    let no2_sq = no2.saturating_mul(no2);
+    let nv2_sq = nv2.saturating_mul(nv2);
+    let oovv_elems = no2_sq.saturating_mul(nv2_sq);
+    let mut plan = ferric_core::memory::plan::MemoryPlan::resolve(
+        cfg.memory_budget_bytes,
+        format!("DLPNO-LinLCCD(hh) setup (no={no}, nv={nv} spatial, naux={naux})"),
+    );
+    {
+        use ferric_core::memory::plan::Lifetime::{Resident, Transient};
+        plan.reserve("eri3_ao (P|mu nu)", naux.saturating_mul(nbas).saturating_mul(nbas), Transient);
+        plan.reserve("g_iajb (ia|jb)", (no * nv).saturating_pow(2), Transient);
+        plan.reserve("g_ijkl (ij|kl)", no.saturating_pow(4), Transient);
+        plan.reserve("b_ov B(P|ia)", naux.saturating_mul(no).saturating_mul(nv), Resident);
+        plan.reserve("v_oovv <ij||ab>", oovv_elems, Resident);
+        plan.reserve("v4 <ij||ab> (clone)", oovv_elems, Resident);
+        plan.reserve("oooo <ij||kl>", no2_sq.saturating_mul(no2_sq), Resident);
+        plan.reserve("t_guess t2[i,j,a,b]", oovv_elems, Resident);
+    }
+    plan.check()?;
+
     let eps = rhf.eps_r();
     let c = rhf.mos_r();
     let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + no]).to_owned();
@@ -514,7 +571,13 @@ pub fn dlpno_linlccd_hh(
     let basis = PairPnoBasis::build(domains, nv2, &ev, t_cut_pno, |i, j| {
         Array2::from_shape_fn((nv2, nv2), |(a, b)| t_guess[[i, j, a, b]])
     })?;
-    let overlaps = PairOverlaps::build(&basis);
+    // The `S^{P,Q}` cache is the worst-scaling allocation on this path
+    // (`O(nocc⁴·nvir²)`) and is NOT covered by the setup plan above, whose terms
+    // are all canonical-grid. Charge it against what the setup plan LEFT, rather
+    // than against the whole budget: the dense blocks declared above are still
+    // resident here, and two guards that each pass in isolation are exactly how
+    // a composed peak escapes both.
+    let overlaps = PairOverlaps::build_within_budget(&basis, plan.remaining())?;
     let index = PairIndex::new(&basis, no2)?;
     let denoms = pno_denominators(&basis, &eo)?;
 
@@ -1388,5 +1451,116 @@ mod tests {
             );
             prev_flops = r.flops.ladder_flops.0;
         }
+    }
+
+    // ==================================================================
+    // MEMORY BUDGET — the 0.055 GB vs 7.3 GB gap, pinned in both directions
+    // ==================================================================
+    //
+    // `CcConfig::memory_budget_bytes` was threaded through this crate but never
+    // read by the DLPNO family. The reported cost was pair-shaped
+    // (`HhFlopCount`, `virtual_retention`) while the setup allocated on the dense
+    // canonical grid, so the LNO-coupled sibling predicted 0.055 GB and peaked at
+    // 7.3 GB with nothing in between to notice. These two tests pin BOTH
+    // failure directions, because only pinning the first produces the opposite
+    // defect: a guard that refuses jobs which would have fit.
+
+    /// A budget far below the dense setup must be refused BEFORE allocating, and
+    /// the message must name the term that blew up — a bare total is what made
+    /// the historical incidents slow to diagnose.
+    #[test]
+    fn tiny_budget_is_refused_and_the_breakdown_names_the_largest_term() {
+        let s = water("sto-3g");
+        let cfg = CcConfig {
+            // 1 kB: smaller than any block this method forms.
+            memory_budget_bytes: Some(1_000),
+            ..cfg()
+        };
+        let err = dlpno_linlccd_hh(&s.mol, &s.obs, &s.dfbs, s.op, &s.rhf, &cfg, 0.0, None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("DLPNO-LinLCCD(hh) setup"), "must name the method: {err}");
+        assert!(
+            err.contains("v_oovv") || err.contains("t_guess") || err.contains("v4"),
+            "breakdown must name a dense setup term: {err}"
+        );
+        assert!(err.contains("budget"), "must say what the ceiling was: {err}");
+    }
+
+    /// AN OVER-ESTIMATING GUARD IS ALSO A BUG. A budget that comfortably holds
+    /// the real working set must still run to the same energy as the unguarded
+    /// path — the guard may not cost a single job that would have fit.
+    #[test]
+    fn ample_budget_still_runs_and_is_unchanged() {
+        let s = water("sto-3g");
+        let base = cfg();
+        let reference =
+            dlpno_linlccd_hh(&s.mol, &s.obs, &s.dfbs, s.op, &s.rhf, &base, 0.0, None).unwrap();
+
+        // 4 GB is ample for water/STO-3G by orders of magnitude, and is an
+        // EXPLICIT budget, so it does not depend on the ambient env/cgroup.
+        let cfg = CcConfig {
+            memory_budget_bytes: Some(ferric_core::memory::gib_to_bytes(4.0)),
+            ..base
+        };
+        let guarded =
+            dlpno_linlccd_hh(&s.mol, &s.obs, &s.dfbs, s.op, &s.rhf, &cfg, 0.0, None).unwrap();
+
+        assert_eq!(
+            guarded.correlation_energy, reference.correlation_energy,
+            "the budget guard must not perturb the numerics"
+        );
+        assert_eq!(guarded.iterations, reference.iterations);
+    }
+
+    /// The setup plan and the `PairOverlaps` guard must COMPOSE.
+    ///
+    /// The overlap cache is charged against `plan.remaining()`, not against the
+    /// whole budget, because the dense setup blocks are still resident when it is
+    /// built. Two guards that each pass in isolation are exactly how a composed
+    /// peak escapes both — the first of the three defects `MemoryPlan`'s module
+    /// docs enumerate.
+    ///
+    /// The boundary is found by search rather than by a hand-mirrored byte count:
+    /// re-deriving the plan's arithmetic in the test would reintroduce the second
+    /// estimator whose drift is the defect under repair.
+    #[test]
+    fn overlap_cache_is_charged_against_the_setup_plans_remainder() {
+        let s = water("sto-3g");
+        let base = cfg();
+        let run = |bytes: usize| {
+            let c = CcConfig { memory_budget_bytes: Some(bytes), ..base.clone() };
+            dlpno_linlccd_hh(&s.mol, &s.obs, &s.dfbs, s.op, &s.rhf, &c, 0.0, None)
+                .err()
+                .map(|e| e.to_string())
+        };
+
+        // Walk the budget up from "nothing fits" and record which guard speaks.
+        // Somewhere below the fully-ample budget the setup must fit while the
+        // overlap cache does not; if it never does, the overlaps are being
+        // charged against the whole budget and the guards are not composing.
+        let ample = ferric_core::memory::gib_to_bytes(4.0);
+        let mut saw_overlap_failure = false;
+        let mut probe = 1_024usize;
+        while probe < ample {
+            match run(probe) {
+                None => break, // everything fits from here up
+                Some(err) if err.contains("PairOverlaps") => {
+                    saw_overlap_failure = true;
+                    break;
+                }
+                Some(err) => assert!(
+                    err.contains("DLPNO-LinLCCD(hh) setup"),
+                    "the only two guards on this path are the setup plan and the \
+                     overlap cache; got: {err}"
+                ),
+            }
+            probe *= 2;
+        }
+        assert!(
+            saw_overlap_failure,
+            "no budget refused the overlap cache while admitting the setup — the \
+             S^(P,Q) cache is not being charged against the setup plan's remainder"
+        );
     }
 }

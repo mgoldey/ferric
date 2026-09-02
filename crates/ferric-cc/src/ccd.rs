@@ -1,4 +1,5 @@
 use super::{CcConfig, CcResult};
+use ferric_core::memory::plan::{Lifetime, MemoryPlan};
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -7,7 +8,7 @@ use ferric_scf::ScfResult;
 use ferric_mp2::mo_transform::{transform_3center_oo, transform_3center_ov, transform_3center_vv};
 use ferric_mp2::rimp2::{active_occ, cholesky_inverse_sqrt};
 use ferric_mp2::spinorbital::{asym_oovv, asym_ovvo, asym_same, build_b, transpose_b};
-use ferric_tensors::{einsum, Axis, Tensor};
+use ferric_tensors::{einsum, permute_to_owned, Axis, Tensor};
 use ndarray::{ArrayD, IxDyn};
 
 // Permutation antisymmetrizers P(ij)/P(ab)/P(ij)P(ab) on the i,j,a,b axes are
@@ -67,17 +68,80 @@ pub fn ccd_spinorbital(
     let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + no]).to_owned();
     let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
 
-    // Fail-fast size guard: peak is the antisymmetrized VVVV ladder block v_vvvv
-    // (:110) — a (2nv)⁴ f64 tensor held co-resident with the einsum! g_abcd
-    // intermediate (:111) → ~2× (2nv)⁴. Keep this next to that allocation.
+    // Fail-fast size guard, expressed as a [`MemoryPlan`].
+    //
+    // # Why this changed shape
+    //
+    // The previous guard charged ONLY `2·(2nv)⁴` — the VVVV ladder and its
+    // `einsum!` intermediate. It never charged the dense AO 3-center tensor
+    // `eri3_ao` (`naux·nbas²`), even though the sibling `ccsd.rs` guard DOES
+    // charge exactly that term, and `eri3_ao` is live here across all four
+    // `build_b` MO-block transforms below (it is the input to each). The
+    // omission is not small: at `nbas=200`/`naux=800` it is 0.26 GB, and for a
+    // small-virtual system it can dominate the VVVV term outright.
+    //
+    // Also previously uncharged and now declared: the antisymmetrized spatial
+    // blocks `v_oovv` (plus its full clone into `oovv_t`), `v_oooo` and
+    // `v_ovvo`, and the `d` denominator — all resident for the whole
+    // amplitude loop.
+    //
+    // `eri3_ao` is TRANSIENT: it is dead once the `b_*` blocks are built,
+    // before the `(2nv)⁴` ladder is formed. Charging it as resident would
+    // over-estimate and refuse jobs that fit.
     let nv2 = 2 * nv;
-    let peak_vvvv = nv2.saturating_pow(4).saturating_mul(2).saturating_mul(8); // ~2× (2nv)⁴ f64
-    let budget = ferric_core::memory::resolve_budget_bytes(cfg.memory_budget_bytes);
-    ferric_core::memory::check_alloc(
-        &format!("CCD (no={no}, nv={nv} spatial; VVVV ladder over {nv2} spin-orbital virtuals)"),
-        peak_vvvv,
-        budget,
-    )?;
+    let no2 = 2 * no;
+    let naux = dfbs.nbasis();
+    let mut plan = MemoryPlan::resolve(
+        cfg.memory_budget_bytes,
+        format!("CCD (no={no}, nv={nv} spatial; {no2}o/{nv2}v spin-orbital)"),
+    );
+    plan.reserve(
+        "eri3_ao (P|mn)",
+        naux.saturating_mul(nbas).saturating_mul(nbas),
+        Lifetime::Transient,
+    );
+    plan.reserve(
+        "b_ov/b_vo/b_oo/b_vv dressed RI blocks",
+        naux.saturating_mul(
+            no.saturating_mul(nv)
+                .saturating_mul(2)
+                .saturating_add(no.saturating_pow(2))
+                .saturating_add(nv.saturating_pow(2)),
+        ),
+        Lifetime::Resident,
+    );
+    plan.reserve("v_vvvv <ab||cd>", nv2.saturating_pow(4), Lifetime::Resident);
+    plan.reserve(
+        "g_abcd einsum! intermediate",
+        nv2.saturating_pow(4),
+        Lifetime::Transient,
+    );
+    plan.reserve(
+        "v_oovv <ij||ab> + oovv_t clone",
+        no2.saturating_pow(2)
+            .saturating_mul(nv2.saturating_pow(2))
+            .saturating_mul(2),
+        Lifetime::Resident,
+    );
+    plan.reserve("v_oooo <ij||kl>", no2.saturating_pow(4), Lifetime::Resident);
+    plan.reserve(
+        "v_ovvo <ia||bj>",
+        no2.saturating_pow(2).saturating_mul(nv2.saturating_pow(2)),
+        Lifetime::Resident,
+    );
+    // `d`, `t`, the per-iteration `t.clone()` behind `t_t`, the residual `r`
+    // (seeded from a `v_oovv.clone()`), and one `einsum!` output `x` live at a
+    // time inside the loop — six same-shaped buffers, charged as one aggregate
+    // rather than one reservation per name (they are the same shape, and
+    // enumerating each temporary separately would be a second drift surface).
+    plan.reserve(
+        "d denominator + t/r/x amplitude working set (x6)",
+        no2.saturating_pow(2)
+            .saturating_mul(nv2.saturating_pow(2))
+            .saturating_mul(6),
+        Lifetime::Resident,
+    );
+    plan.check()?;
 
     // V^{-1/2} metric and AO 3-center integrals.
     let v2c = ferric_integrals::threeindex::coulomb_metric_2c(op, dfbs)?;
@@ -119,6 +183,17 @@ pub fn ccd_spinorbital(
     let vvvv_t = Tensor::new(v_vvvv, [Axis::V, Axis::V, Axis::V, Axis::V]);
     let oooo_t = Tensor::new(v_oooo, [Axis::O, Axis::O, Axis::O, Axis::O]);
     let ovvo_t = Tensor::new(v_ovvo, [Axis::O, Axis::V, Axis::V, Axis::O]);
+
+    // Stage-seam RSS safety net: every block the plan declared resident is now
+    // allocated, so this is the first point at which the pre-flight estimate
+    // can be compared against reality. Observational only, never an error —
+    // this file's guard had silently omitted `eri3_ao` entirely before the plan
+    // rewrite above, which is exactly the undershoot class this net catches.
+    ferric_core::memory::warn_if_rss_over(
+        "CCD AO->MO transform complete",
+        plan.budget_bytes(),
+        1.1,
+    );
 
     // --- Spin-orbital energies ---
     let no2 = 2 * no; // nv2 computed above for the size guard
@@ -192,7 +267,7 @@ pub fn ccd_spinorbital(
         // [i,j,a,b] = src[2,1,3,0].
         {
             let bjia: ArrayD<f64> = einsum!("kbcj,ikac->bjia", &ovvo_t, &t_t);
-            let x = bjia.view().permuted_axes(IxDyn(&[2, 1, 3, 0])).as_standard_layout().into_owned();
+            let x = permute_to_owned(bjia.view().permuted_axes(IxDyn(&[2, 1, 3, 0])));
             r = r + p_ij_ab(&x);
         }
         // quad 1: 0.25 <kl||cd> t_ijcd t_klab.
@@ -210,7 +285,7 @@ pub fn ccd_spinorbital(
             let i2: ArrayD<f64> = einsum!("ikac,klcd->iald", &t_t, &oovv_t);
             let i2_t = Tensor::new(i2, [Axis::O, Axis::V, Axis::O, Axis::V]);
             let iajb: ArrayD<f64> = einsum!("iald,jlbd->iajb", &i2_t, &t_t);
-            let x = iajb.view().permuted_axes(IxDyn(&[0, 2, 1, 3])).as_standard_layout().into_owned();
+            let x = permute_to_owned(iajb.view().permuted_axes(IxDyn(&[0, 2, 1, 3])));
             r = r + 0.5 * p_ij_ab(&x);
         }
         // quad 3: -0.5 P(ab) <kl||cd> t_ijac t_klbd.
@@ -228,7 +303,7 @@ pub fn ccd_spinorbital(
             let z_t = Tensor::new(z, [Axis::O, Axis::O]);
             // contract k: left-free i,a,b; right-free j -> 'iabj'; permute to ijab.
             let iabj: ArrayD<f64> = einsum!("ikab,kj->iabj", &t_t, &z_t);
-            let x = iabj.view().permuted_axes(IxDyn(&[0, 3, 1, 2])).as_standard_layout().into_owned();
+            let x = permute_to_owned(iabj.view().permuted_axes(IxDyn(&[0, 3, 1, 2])));
             r = r - 0.5 * p_ij(&x);
         }
 
@@ -318,6 +393,103 @@ mod tests {
         };
         let msg = err.to_string();
         assert!(msg.contains("CCD") && msg.contains("budget is"), "unexpected: {msg}");
+        // The plan's breakdown must NAME the terms, not just report a total —
+        // that breakdown is the whole reason `check_alloc` was replaced by a
+        // `MemoryPlan` here (a bare "needs X GB" is what made the historical
+        // incidents slow to diagnose).
+        assert!(msg.contains("memory plan"), "no plan breakdown: {msg}");
+        assert!(msg.contains("v_vvvv"), "breakdown must name the ladder: {msg}");
+    }
+
+    /// `eri3_ao` must be charged by the guard.
+    ///
+    /// The regression: this file's guard charged only the VVVV ladder and
+    /// silently omitted the dense AO 3-center tensor, even though the sibling
+    /// `ccsd.rs` guard charges exactly that term and `eri3_ao` is live across
+    /// every `build_b` below the guard.
+    ///
+    /// The test does NOT re-derive the plan's arithmetic — doing so would
+    /// reintroduce the second-estimator drift this pass removes. Instead it
+    /// BISECTS for the smallest budget the guard accepts, then asserts that
+    /// figure is larger than `eri3_ao` alone. `eri3_ao`'s size is read off the
+    /// basis dimensions (`naux·nbas²·8`), which is a property of the INPUT, not
+    /// a restatement of the plan.
+    #[test]
+    fn ccd_guard_charges_eri3_ao() {
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        // A deliberately LARGE aux basis: this makes eri3_ao the dominant term,
+        // so a guard that omits it is caught by the bisection below.
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("def2-qzvpp-rifit").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let ctx = ParallelContext::default();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
+
+        let accepts = |bytes: usize| -> bool {
+            let cfg = CcConfig {
+                frozen_core: 0,
+                max_iter: 1,
+                memory_budget_bytes: Some(bytes),
+                ..Default::default()
+            };
+            // Only the guard's verdict matters: a budget error is a REFUSAL,
+            // anything else (including a converged/unconverged energy) means
+            // the guard let it through.
+            match ccd(&mol, &obs, &dfbs, op, &rhf, &cfg) {
+                Err(e) => !e.to_string().contains("budget is"),
+                Ok(_) => true,
+            }
+        };
+
+        let eri3_ao_bytes = dfbs.nbasis() * obs.nbasis() * obs.nbasis() * 8;
+
+        // A budget of exactly `eri3_ao_bytes` cannot possibly hold `eri3_ao`
+        // PLUS everything else this driver allocates, so a correct guard must
+        // refuse it. The old guard, which never charged `eri3_ao` at all,
+        // accepted it. One probe rather than a bisection: each probe is a full
+        // CCD driver entry, so the cheap direct contradiction is preferred over
+        // ~30 of them.
+        assert!(
+            !accepts(eri3_ao_bytes),
+            "the guard accepted a budget of exactly eri3_ao's own size \
+             ({eri3_ao_bytes} bytes) — that tensor is still uncharged"
+        );
+    }
+
+    /// An AMPLE budget must still run. An over-estimating guard is also a bug:
+    /// it refuses jobs that would have fit, and this pass ADDED terms to the
+    /// estimate, so the over-count direction needs its own coverage.
+    #[test]
+    fn ccd_ample_budget_still_runs() {
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let ctx = ParallelContext::default();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
+        let base =
+            CcConfig { frozen_core: 0, max_iter: 50, energy_conv: 1e-8, ..Default::default() };
+        let unbudgeted = ccd(&mol, &obs, &dfbs, op, &rhf, &base).unwrap();
+        let budgeted = ccd(
+            &mol,
+            &obs,
+            &dfbs,
+            op,
+            &rhf,
+            &CcConfig {
+                memory_budget_bytes: Some(ferric_core::memory::gib_to_bytes(4.0)),
+                ..base
+            },
+        )
+        .expect("4 GiB must be ample for H2/cc-pVDZ CCD");
+        // Guards and accounting only: the gate must not perturb the number it
+        // gates, to the last bit.
+        assert_eq!(
+            budgeted.correlation_energy, unbudgeted.correlation_energy,
+            "the memory guard changed the energy"
+        );
     }
 
     #[test]

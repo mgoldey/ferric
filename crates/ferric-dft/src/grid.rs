@@ -20,6 +20,7 @@
 //! is what distinguishes per-atom from total.)
 
 use ferric_core::error::FerricError;
+use ferric_core::memory::plan::{Lifetime, MemoryPlan};
 use ferric_core::mol::Molecule;
 use rayon::prelude::*;
 
@@ -34,6 +35,55 @@ use crate::radial::treutler_ahlrichs_m4;
 /// `PAR_WORK_THRESHOLD` (per-point Becke weight is O(natoms) to O(natoms²)
 /// work, comparable to a handful of AO evaluations per point).
 const PAR_WORK_THRESHOLD: usize = 2_000;
+
+/// Everything [`build_atomic_grid_with_response`] holds resident, declared as
+/// a plan so the check names the term that blew up rather than just a total.
+///
+/// Exposed to `gradient.rs` (via [`grid_response_bytes`]) so a gradient's own
+/// plan can account for the grid it is handed instead of pretending it starts
+/// from an empty budget — the composition failure the `MemoryPlan` type was
+/// introduced to fix.
+pub(crate) fn grid_response_plan(npts: usize, natoms: usize) -> MemoryPlan {
+    let mut plan = MemoryPlan::resolve(None, "DFT grid + Becke weight response");
+    // `pre`: the (home atom, xyz, w_r·w_l) staging vector, dropped once the
+    // grid is built — but live *alongside* grid and weight1 while `unzip`
+    // runs, so it is not a transient in the peak-forming sense.
+    plan.reserve_sized(
+        "grid staging (home, xyz, w)",
+        npts,
+        std::mem::size_of::<(usize, [f64; 3], f64)>(),
+        Lifetime::Resident,
+        1,
+    );
+    plan.reserve_sized("grid points", npts, std::mem::size_of::<GridPoint>(), Lifetime::Resident, 1);
+    // The payload: weight1[g][b][α], npts · natoms · 3 f64.
+    plan.reserve(
+        "weight1 dw/dR [point][atom][xyz]",
+        npts.saturating_mul(natoms).saturating_mul(3),
+        Lifetime::Resident,
+    );
+    // ...and one Vec header per grid point, which is NOT negligible: 24 bytes
+    // × npts is ~12 MB at 500k points, and it is 500k separate heap blocks.
+    plan.reserve_sized(
+        "weight1 per-point Vec headers",
+        npts,
+        std::mem::size_of::<Vec<[f64; 3]>>(),
+        Lifetime::Resident,
+        1,
+    );
+    plan
+}
+
+/// Bytes [`build_atomic_grid_with_response`] leaves resident for its caller
+/// (grid + `weight1`), for callers that must budget around it.
+pub(crate) fn grid_response_bytes(npts: usize, natoms: usize) -> usize {
+    grid_response_plan(npts, natoms)
+        .reservations()
+        .iter()
+        .filter(|r| r.label != "grid staging (home, xyz, w)")
+        .map(|r| r.bytes())
+        .fold(0usize, |a, b| a.saturating_add(b))
+}
 
 /// One grid point.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -221,14 +271,40 @@ pub fn build_atomic_grid_pruned(
 /// (rigid-translation invariance, exact).
 ///
 /// Used by the XC gradient grid-response correction (P2.1).
+///
+/// # Memory
+///
+/// `weight1` is `npts × natoms × 3` `f64` — it grows with the *product* of the
+/// grid size and the atom count, which makes it the largest single allocation
+/// in this crate for anything past a few dozen atoms: at 50 atoms and 500k
+/// grid points it is ~600 MB of payload plus ~12 MB of per-point `Vec`
+/// headers. It was previously built with no guard at all, so an over-sized
+/// gradient job died in the allocator rather than at a budget check. The
+/// [`MemoryPlan`] below is that check; it runs before `pre` (the first big
+/// allocation) is filled, so nothing large is resident when it fires.
+///
+/// Follow-up, deliberately *not* done here: `weight1` is a
+/// `Vec<Vec<[f64; 3]>>`, i.e. one heap allocation **per grid point** (the
+/// `Vec::with_capacity(natoms)` in the per-point closure below). That is 500k
+/// separate allocations and 24 bytes of header each on the 50-atom case, and a
+/// flat `Array3<f64>` of `(npts, natoms, 3)` would remove both. Changing the
+/// layout would change the access pattern of every consumer in `gradient.rs`
+/// and is out of scope for a memory-accounting fix, so the plan below simply
+/// counts the headers as the real cost they are.
 pub fn build_atomic_grid_with_response(
     mol: &Molecule,
     cfg: &AtomicGridConfig,
-) -> (Vec<GridPoint>, Vec<Vec<[f64; 3]>>) {
+) -> Result<(Vec<GridPoint>, Vec<Vec<[f64; 3]>>), FerricError> {
     let (lebedev_pts, lebedev_w) = lebedev(cfg.n_angular);
     let natoms = mol.atoms.len();
-    let mut pre: Vec<(usize, [f64; 3], f64)> =
-        Vec::with_capacity(natoms * cfg.n_radial * lebedev_pts.len());
+    // Exact, not an estimate: this routine does not prune, so every atom
+    // contributes the same `n_radial × n_angular` product.
+    let npts = natoms
+        .saturating_mul(cfg.n_radial)
+        .saturating_mul(lebedev_pts.len());
+    grid_response_plan(npts, natoms).check()?;
+
+    let mut pre: Vec<(usize, [f64; 3], f64)> = Vec::with_capacity(npts);
 
     for (a_idx, atom) in mol.atoms.iter().enumerate() {
         let (rs, ws) = treutler_ahlrichs_m4(atom.z, cfg.n_radial);
@@ -290,7 +366,7 @@ pub fn build_atomic_grid_with_response(
         } else {
             pre.iter().map(build_point).unzip()
         };
-    (grid, weight1)
+    Ok((grid, weight1))
 }
 
 #[cfg(test)]
@@ -398,7 +474,7 @@ mod tests {
         // Serial reference for the with-response variant: pre-P2 loop, verbatim.
         let mol = h2();
         let cfg = AtomicGridConfig::default();
-        let (par_grid, par_w1) = build_atomic_grid_with_response(&mol, &cfg);
+        let (par_grid, par_w1) = build_atomic_grid_with_response(&mol, &cfg).unwrap();
 
         let (lebedev_pts, lebedev_w) = lebedev(cfg.n_angular);
         let natoms = mol.atoms.len();

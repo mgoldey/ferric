@@ -240,18 +240,29 @@ pub fn run_pdep_rpa_osv(
 
     let eps_occ: Vec<f64> = rhf.eps_r()[inter.first_occ..inter.first_occ + nocc].to_vec();
     let eps_vir = dnv.eps_vir_reduced.clone();
-    let b_ov = dnv.b_ov_pno.clone();
+    // Moved out of `dnv`, not cloned: `b_ov_pno` is never read through `dnv`
+    // again (only the scalar `n_vir_reduced` is, below), so the clone was one
+    // full extra `naux x (nocc*n_vir_reduced)` tensor held for the rest of the
+    // function purely to leave an unread copy behind in `dnv`.
+    let b_ov = dnv.b_ov_pno;
 
     // Davidson/Lanczos eigensolve with identity seed (matches the closed-
     // shell test path for trunc_thresh=0).
     let seed = Array2::<f64>::eye(naux);
     let max_iter = if config.eigensolver_max_vecs == 0 { 3 * naux } else { config.eigensolver_max_vecs };
 
-    let b_ref = b_ov.clone();
-    let eo = eps_occ.clone();
-    let ev = eps_vir.clone();
+    // Borrowed, not cloned: `run_lanczos_seeded` takes `F: Fn(&Array2<f64>) ->
+    // Array2<f64>` with no `'static` bound and calls `matvec` synchronously
+    // within its own call frame (it never spawns a thread and never stores the
+    // closure past the call), so the closure can capture references. Cloning
+    // put a THIRD copy of the same tensor live alongside `dnv.b_ov_pno` and
+    // `b_ov`; this is the same aliasing fix the closed-shell driver in `lib.rs`
+    // applied on 2026-07-21. Pure aliasing — the closure reads the same values.
+    let b_ref = &b_ov;
+    let eo = &eps_occ;
+    let ev = &eps_vir;
     let matvec = move |v: &Array2<f64>| -> Array2<f64> {
-        crate::sternheimer::dielectric_apply(v, &b_ref, &eo, &ev, 0.0)
+        crate::sternheimer::dielectric_apply(v, b_ref, eo, ev, 0.0)
     };
     let lz = lanczos::run_lanczos_seeded(
         seed, matvec, naux, max_iter, config.eigensolver_conv_thresh, config.verbose,
@@ -280,8 +291,9 @@ pub fn run_pdep_rpa_osv(
     )?;
     let e_c = crate::energy::rpa_correlation_energy_from_summands(&quad_weights, &summands);
 
-    let _ = n_vir_red; // returned below
-    Ok((e_c, dnv.n_vir_reduced, naux))
+    // `n_vir_red` was copied out of `dnv` above; use it rather than re-reading
+    // the (partially moved-from) struct.
+    Ok((e_c, n_vir_red, naux))
 }
 
 #[cfg(test)]

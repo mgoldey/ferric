@@ -41,6 +41,7 @@
 //! `docs/superpowers/specs/2026-07-26-linlccd-hh-design.md`.
 
 use super::{CcConfig, CcResult};
+use ferric_core::memory::plan::{Lifetime, MemoryPlan};
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -109,25 +110,83 @@ pub fn linlccd(
     let no2 = 2 * no;
     let nv2 = 2 * nv;
 
-    // Fail-fast size guard.
+    // Fail-fast size guard, expressed as a [`MemoryPlan`].
     //
-    // Deliberately NOT CCD's VVVV-based guard: for Hh/DriversOnly the VVVV block is
-    // never allocated, and guarding on a tensor we do not build would reject systems
-    // this method runs comfortably (an over-estimating guard is also a bug). Peak is the
-    // largest block actually formed, held co-resident with its einsum! intermediate.
-    let oovv_bytes = (no2 * no2 * nv2 * nv2).saturating_mul(8);
-    let oooo_bytes = no2.saturating_pow(4).saturating_mul(8);
-    let peak = if variant.needs_vvvv() {
-        nv2.saturating_pow(4).saturating_mul(2).saturating_mul(8)
-    } else {
-        oovv_bytes.saturating_mul(2).saturating_add(oooo_bytes)
-    };
-    let budget = ferric_core::memory::resolve_budget_bytes(cfg.memory_budget_bytes);
-    ferric_core::memory::check_alloc(
-        &format!("LinLCCD {variant:?} (no={no}, nv={nv} spatial)"),
-        peak,
-        budget,
-    )?;
+    // # Why this changed shape
+    //
+    // Two things. First, the VVVV/OOOO conditioning below is DELIBERATE and is
+    // preserved exactly: for Hh/DriversOnly those blocks are never built, and
+    // guarding on a tensor we do not allocate would reject systems this method
+    // runs comfortably (an over-estimating guard is also a bug). The plan
+    // expresses that by only reserving a block when `variant.needs_*()` says it
+    // is formed.
+    //
+    // Second, the old estimate omitted `eri3_ao` (`naux·nbas²`) entirely. That
+    // tensor is unambiguously live across every MO-block build here — the
+    // explicit `drop(eri3_ao)` further below exists precisely because it stays
+    // resident until then, and each conditional `build_b` reads it. The sibling
+    // `ccsd.rs` guard charges the same term, so this was a straight
+    // inconsistency. Also newly charged: the full `v_oovv.clone()` into
+    // `oovv_t`, and the `d`/`t`/`r` amplitude working set.
+    //
+    // `eri3_ao` is TRANSIENT (dead after `drop(eri3_ao)`, before the amplitude
+    // loop's peak); the MO blocks and amplitudes are resident.
+    let naux = dfbs.nbasis();
+    let oovv_elems = no2.saturating_pow(2).saturating_mul(nv2.saturating_pow(2));
+    let mut plan = MemoryPlan::resolve(
+        cfg.memory_budget_bytes,
+        format!("LinLCCD {variant:?} (no={no}, nv={nv} spatial)"),
+    );
+    plan.reserve(
+        "eri3_ao (P|mn)",
+        naux.saturating_mul(nbas).saturating_mul(nbas),
+        Lifetime::Transient,
+    );
+    plan.reserve(
+        "b_ov dressed RI block",
+        naux.saturating_mul(no).saturating_mul(nv),
+        Lifetime::Resident,
+    );
+    plan.reserve(
+        "v_oovv <ij||ab> + oovv_t clone",
+        oovv_elems.saturating_mul(2),
+        Lifetime::Resident,
+    );
+    // `d`, `t`, the per-iteration `t.clone()`, `r` (seeded from a
+    // `v_oovv.clone()`) and one `einsum!` output are the same shape and
+    // co-resident inside the loop.
+    plan.reserve(
+        "d denominator + t/r/x amplitude working set (x5)",
+        oovv_elems.saturating_mul(5),
+        Lifetime::Resident,
+    );
+    if variant.needs_oooo() {
+        plan.reserve(
+            "b_oo dressed RI block",
+            naux.saturating_mul(no).saturating_mul(no),
+            Lifetime::Resident,
+        );
+        plan.reserve("v_oooo <ij||kl>", no2.saturating_pow(4), Lifetime::Resident);
+        plan.reserve(
+            "g_ijkl einsum! intermediate",
+            no2.saturating_pow(4),
+            Lifetime::Transient,
+        );
+    }
+    if variant.needs_vvvv() {
+        plan.reserve(
+            "b_vv dressed RI block",
+            naux.saturating_mul(nv).saturating_mul(nv),
+            Lifetime::Resident,
+        );
+        plan.reserve("v_vvvv <ab||cd>", nv2.saturating_pow(4), Lifetime::Resident);
+        plan.reserve(
+            "g_abcd einsum! intermediate",
+            nv2.saturating_pow(4),
+            Lifetime::Transient,
+        );
+    }
+    plan.check()?;
 
     let eps = rhf.eps_r();
     let c = rhf.mos_r();
@@ -171,6 +230,17 @@ pub fn linlccd(
     };
 
     drop(eri3_ao);
+
+    // Stage-seam RSS safety net: the transient `eri3_ao` has just been freed and
+    // every resident MO block exists, so RSS here is directly comparable to the
+    // plan's projected peak. Observational only — it never errors. This file's
+    // guard had omitted `eri3_ao` outright before the plan rewrite above, which
+    // is precisely the estimator-undershoot class this net exists to surface.
+    ferric_core::memory::warn_if_rss_over(
+        "LinLCCD MO blocks built",
+        plan.budget_bytes(),
+        1.1,
+    );
 
     // --- Spin-orbital energies (even index = alpha, odd = beta) ---
     let mut eo = vec![0.0f64; no2];

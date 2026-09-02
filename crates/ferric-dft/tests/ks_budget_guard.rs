@@ -1,7 +1,10 @@
 //! Memory-budget behavior in `KsXc::new` / `KsXcUks::new`.
 //!
-//! The resident χ + ∇χ grid cache is 4·nbf·npts·8 bytes (×2 with VV10's NLC
-//! grid). When `FERRIC_ERI3_BUDGET_GB` says the *main*-grid cache alone
+//! The resident main-grid working set is `ks::batch_planes` planes of
+//! `nbf·npts·8` bytes (6-8 depending on spin and functional rung — χ + ∇χ, the
+//! `VxcScratch` buffer, and the largest of the density/τ GEMM stages) plus the
+//! O(npts) companion vectors, doubled with VV10's NLC grid. When
+//! `FERRIC_ERI3_BUDGET_GB` says the *main*-grid working set alone
 //! cannot fit, construction no longer fails: it falls back to a batched
 //! per-iteration evaluation (never materializing the full cache) — see
 //! `ks.rs`'s `GridCache::Batched`. VV10 is the one exception: its NLC grid's

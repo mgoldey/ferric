@@ -16,6 +16,7 @@ use ferric_integrals::oneelectron;
 use ferric_integrals::operator::Operator;
 use ferric_integrals::three_index_source::ThreeIndexSource;
 use ferric_integrals::threeindex;
+use ferric_core::memory::plan::{Lifetime, MemoryPlan};
 use ferric_mp2::rimp2::{eri3_budget_bytes, metric_inverse_sqrt, stream_dressed_mo_band};
 use ferric_scf::ScfResult;
 use ndarray::{Array1, Array2};
@@ -33,11 +34,24 @@ pub enum TddftMethod {
 pub struct TddftConfig {
     pub n_roots: usize,
     pub method: TddftMethod,
+    /// Optional resident-bytes ceiling for the dense `(ia, jb)` matrices and
+    /// the RI 3-index build. `None` → resolved via
+    /// [`ferric_core::memory::resolve_budget_bytes`] (env / cgroup / RAM
+    /// auto-detect).
+    ///
+    /// This field did not exist before: the crate had NO budget machinery at
+    /// all, so `[memory] budget_gb` and a caller-supplied ceiling were both
+    /// unreachable from here, and `build_b_tensors` hardcoded
+    /// `eri3_budget_bytes(None)` — the same "silently discarded budget" defect
+    /// ferric-rpa fixed three times (see `ferric_rpa::properties`). Threading
+    /// it makes a pinned budget actually reach the allocations; see
+    /// `caller_budget_is_honoured_not_discarded` in the tests below.
+    pub memory_budget_bytes: Option<usize>,
 }
 
 impl Default for TddftConfig {
     fn default() -> Self {
-        Self { n_roots: 3, method: TddftMethod::Tda }
+        Self { n_roots: 3, method: TddftMethod::Tda, memory_budget_bytes: None }
     }
 }
 
@@ -73,21 +87,123 @@ impl std::fmt::Display for TddftResult {
 ///   - `b_ov`: (naux, nocc*nvir)  — `(ia|jb) = Σ_P b_ov[P,ia] * b_ov[P,jb]`
 ///   - `b_oo`: (naux, nocc*nocc)  — for exchange `(ij|ab)`
 ///   - `b_vv`: (naux, nvir*nvir)  — for exchange `(ij|ab)`
+///
+/// All three are returned to the caller and stay live for the whole of
+/// [`run_tddft`], so all three are `Resident` in `plan`. `b_vv` is the largest
+/// (nvir ≫ nocc at any production basis), and it is the term that shows up
+/// first in the breakdown when this gate fires.
+///
+/// The `naux×nao²` AO source is streamed aux-blocked under the SAME budget
+/// (`ThreeIndexSource::build` spills to disk rather than allocating past it),
+/// so it is not charged here — but its ceiling now comes from
+/// `eri3_budget_bytes(memory_budget_bytes)` rather than the hardcoded
+/// `eri3_budget_bytes(None)` that used to discard a caller's budget outright.
 fn build_b_tensors(
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
     c_occ: &Array2<f64>,
     c_vir: &Array2<f64>,
+    plan: &mut MemoryPlan,
+    memory_budget_bytes: Option<usize>,
 ) -> Result<(Array2<f64>, Array2<f64>, Array2<f64>), FerricError> {
     let op = Operator::coulomb();
     let v2c = threeindex::coulomb_metric_2c(op, dfbs)?;
     let v2c_inv_sqrt = metric_inverse_sqrt(&v2c, op)?;
-    let budget = eri3_budget_bytes(None);
+    let budget = eri3_budget_bytes(memory_budget_bytes);
     let mut src = ThreeIndexSource::build(op, obs, dfbs, budget)?;
+
+    // naux is only known once the metric is built, so the RI reservations are
+    // declared here rather than at the entry point — still BEFORE the first
+    // large allocation (`stream_dressed_mo_band` below), which is the property
+    // that matters.
+    let naux = v2c_inv_sqrt.nrows();
+    let (nocc, nvir) = (c_occ.ncols(), c_vir.ncols());
+    plan.reserve("B(P|ia) [b_ov]", naux.saturating_mul(nocc * nvir), Lifetime::Resident);
+    plan.reserve("B(P|ij) [b_oo]", naux.saturating_mul(nocc * nocc), Lifetime::Resident);
+    plan.reserve("B(P|ab) [b_vv]", naux.saturating_mul(nvir * nvir), Lifetime::Resident);
+    plan.check()?;
     let b_ov = stream_dressed_mo_band(&mut src, &v2c_inv_sqrt, c_occ, c_vir, None)?;
     let b_oo = stream_dressed_mo_band(&mut src, &v2c_inv_sqrt, c_occ, c_occ, None)?;
     let b_vv = stream_dressed_mo_band(&mut src, &v2c_inv_sqrt, c_vir, c_vir, None)?;
     Ok((b_ov, b_oo, b_vv))
+}
+
+/// Declare every dense `(dim, dim)` matrix the requested method holds, with the
+/// lifetimes read off the source rather than guessed.
+///
+/// This is the single place the peak is written down, and it is deliberately
+/// verbose about WHICH matrices coexist, because co-residency is the part that
+/// goes stale silently. Getting it wrong in EITHER direction is a defect:
+/// under-counting OOMs, over-counting refuses jobs that would have fit.
+///
+/// # The scratch inside `build_a_matrix` / `build_b_matrix`
+///
+/// Two `dim²` buffers are live at once, regardless of `c_hf`:
+///
+/// * `coulomb = b_ovᵀ·b_ov` — `(dim, dim)`, in scope for the whole function.
+/// * plus EITHER the `2.0 * &coulomb` temporary in `a += &(2.0 * &coulomb)`
+///   (a full `dim²` materialization, live for that one statement), OR
+///   `k_ij_ab = b_ooᵀ·b_vv` when `c_hf != 0` — which is `(nocc², nvir²)`, i.e.
+///   exactly `dim²` elements. The scaled temporary is dropped at the end of its
+///   statement, before `k_ij_ab` is built, so they never make three.
+///
+/// So `2·dim²` of scratch, charged as ONE `Transient`. It is not charged
+/// per-worker: neither builder uses rayon.
+///
+/// # TDA
+///
+/// Stage 1 (`build_a_matrix`): `a` + `2·dim²` scratch = `3·dim²`.
+/// Stage 2 (`a.eigh`): `a` (still live — `eigh` takes `&self`) + the
+/// eigenvector output = `2·dim²`.
+///
+/// Peak is stage 1. Declared as `a` resident plus the two *alternatives* as
+/// transients, so the plan takes `a` + max(scratch, eigenvectors) = `3·dim²`
+/// and NOT `4·dim²` — charging the eigenvectors as resident on top of the
+/// scratch would over-estimate by a whole matrix.
+///
+/// # Casida
+///
+/// Nine `dim²` matrices are simultaneously live at the widest point (just after
+/// `m.eigh`), because nothing in the arm is dropped early: `a`, `b_mat`,
+/// `a_plus_b`, `a_minus_b`, `amb_vecs`, `amb_sqrt`, `m`, `z` (the eigenvector
+/// output) and `x = amb_sqrt·z`.
+///
+/// That is stage 3, and it dominates: the `build_a`/`build_b` stage peaks at
+/// `a` + `b_mat` + `2·dim²` scratch = `4·dim²`, well under nine. So the nine
+/// are declared resident and the earlier scratch adds NOTHING on top — it is
+/// long dropped by the time the peak is reached, and adding it would
+/// over-estimate by two matrices.
+fn reserve_dense_response(plan: &mut MemoryPlan, method: TddftMethod, dim: usize) {
+    let d2 = dim.saturating_mul(dim);
+    let build_scratch = 2usize.saturating_mul(d2);
+
+    match method {
+        TddftMethod::Tda => {
+            plan.reserve("A (ia,jb)", d2, Lifetime::Resident);
+            // These two are the alternating occupants of the second slot, one
+            // per stage — never simultaneous, so the plan takes the larger.
+            plan.reserve("build_a_matrix scratch", build_scratch, Lifetime::Transient);
+            plan.reserve("eigh eigenvectors", d2, Lifetime::Transient);
+        }
+        TddftMethod::Casida => {
+            for label in [
+                "A (ia,jb)",
+                "B (ia,jb)",
+                "A+B",
+                "A-B",
+                "(A-B) eigenvectors",
+                "(A-B)^1/2",
+                "M = (A-B)^1/2 (A+B) (A-B)^1/2",
+                "M eigenvectors Z",
+                "X = (A-B)^1/2 Z",
+            ] {
+                plan.reserve(label, d2, Lifetime::Resident);
+            }
+            // Deliberately NOT declared: the build-stage scratch is dropped
+            // long before the nine-matrix peak above, so charging it would
+            // over-estimate. See this function's docs.
+        }
+    }
 }
 
 /// Build the TDA A matrix in the (ia, jb) compound-index space.
@@ -291,6 +407,20 @@ pub fn run_tddft(
         });
     }
 
+    // The (ia|f_xc|jb) XC-kernel response is NOT implemented (see the TODO in
+    // `build_a_matrix`). At c_hf = 1.0 it is identically zero and the result is
+    // exactly CIS/TDHF, so only a DFT reference is affected — there the omitted
+    // term makes the excitation energies approximate. Say so, rather than
+    // returning silently-incomplete numbers that look converged: a caller
+    // cannot tell from the result alone that a term is missing.
+    if c_hf != 1.0 {
+        eprintln!(
+            "[tddft] WARNING: the XC-kernel response (ia|f_xc|jb) is not implemented; \
+             with c_hf = {c_hf} (a DFT reference) the excitation energies omit that term \
+             and are APPROXIMATE. Only a pure-HF reference (c_hf = 1.0) is exact here."
+        );
+    }
+
     let nbas = obs.nbasis();
     let nelec = mol.nelec() as usize;
     let nocc = nelec / 2;
@@ -308,7 +438,31 @@ pub fn run_tddft(
     let c_occ = c.slice(ndarray::s![.., ..nocc]).to_owned();
     let c_vir = c.slice(ndarray::s![.., nocc..]).to_owned();
 
-    let (b_ov, b_oo, b_vv) = build_b_tensors(obs, dfbs, &c_occ, &c_vir)?;
+    // ── Memory pre-flight ───────────────────────────────────────────────────
+    //
+    // WHY this gate exists. `dim = nocc*nvir` grows as N², so every dense
+    // matrix here is N⁴ — the steepest term in the whole crate — and until this
+    // guard landed the crate had NO budget machinery whatsoever: not one
+    // `check_alloc`, not one `resolve_budget`, and no budget field on
+    // `TddftConfig`, so a caller who WANTED to constrain it could not. A
+    // water/cc-pVTZ Casida run holds nine co-resident dim² matrices; at
+    // dim = 20k that is 9 × 3.2 GB with nothing between it and the OOM killer.
+    //
+    // The reservations below are counted from the actual live sets, not from a
+    // round number, in BOTH directions: under-counting OOMs, and over-counting
+    // refuses jobs that would have fit (this repo has been bitten by an
+    // over-estimating guard too — see `ample_budget_still_runs_to_completion`).
+    let mut plan = MemoryPlan::resolve(
+        config.memory_budget_bytes,
+        match config.method {
+            TddftMethod::Tda => "TDDFT/TDA",
+            TddftMethod::Casida => "TDDFT/Casida",
+        },
+    );
+    reserve_dense_response(&mut plan, config.method, dim);
+
+    let (b_ov, b_oo, b_vv) =
+        build_b_tensors(obs, dfbs, &c_occ, &c_vir, &mut plan, config.memory_budget_bytes)?;
 
     let n_roots = config.n_roots.min(dim);
 

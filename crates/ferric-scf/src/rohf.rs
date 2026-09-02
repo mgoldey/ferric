@@ -282,6 +282,16 @@ pub fn solve_rohf_best_effort(
     let mut k_b_buf = Array2::<f64>::zeros((n, n));
 
     let mut diis = Diis::new(config.diis_size);
+    // ROHF extrapolates the effective Fock with `step` (single-spin), so two
+    // n×n matrices per entry despite the α/β densities it tracks internally.
+    crate::driver::warn_if_diis_history_large(
+        "ROHF",
+        n,
+        config.diis_size,
+        crate::diis::DiisHistoryShape::SingleSpin,
+        false,
+        ooc_budget,
+    );
     // Convergence bookkeeping (prev energy, ΔP signals, divergence streak,
     // stall history) — shared driver::ScfMonitor.
     // Most recent Thole-damped polarizable-embedding dipoles (None when

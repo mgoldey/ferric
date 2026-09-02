@@ -1023,6 +1023,27 @@ impl CfmmJ {
         // Ordered (not canonical) pairs keep the near-field scatter free of
         // any symmetry folding — see `near_field`.
         let nsh = prep.nshells();
+        // Fail-fast guard on the dense ordered-pair table (defect E).
+        //
+        // ORDERED (not canonical) pairs are load-bearing: `near_field` relies on
+        // both (s1,s2) and (s2,s1) being present so the near-field scatter needs
+        // no symmetry folding. That design is deliberate and is NOT changed
+        // here — halving the table would silently change which contributions the
+        // scatter emits. What was missing is any budget check: this
+        // `Vec::with_capacity(nsh * nsh)` reserved the whole table in one go
+        // with no ceiling, so an oversized system was OOM-killed rather than
+        // told the table did not fit.
+        //
+        // `ShellPair` is 2×usize (16 B) + [f64; 3] center (24 B) + f64 extent
+        // (8 B) = 48 B per ordered pair; at nsh = 5000 that is 1.2 GB.
+        let pair_bytes = nsh
+            .saturating_mul(nsh)
+            .saturating_mul(std::mem::size_of::<ShellPair>());
+        ferric_core::memory::check_alloc(
+            &format!("CFMM shell-pair table (nshells={nsh} ORDERED pairs, dense by design)"),
+            pair_bytes,
+            ferric_core::memory::resolve_budget_bytes(None),
+        )?;
         let mut pairs = Vec::with_capacity(nsh * nsh);
         for s1 in 0..nsh {
             for s2 in 0..nsh {

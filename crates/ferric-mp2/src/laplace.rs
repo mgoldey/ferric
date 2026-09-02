@@ -44,18 +44,61 @@ use crate::boys::{boys_localize, build_domains, build_pseudo_density_occ_sparse,
 /// the number of rayon worker threads. We derive a per-task ceiling by dividing
 /// the process-wide 3-index budget (`FERRIC_ERI3_BUDGET_GB`, else unlimited) by
 /// the active thread count, then reserve a fraction of that for the blocked
-/// intermediates. Falls back to a fixed default when the budget is unlimited so
-/// the blocking still bounds a single point's footprint.
-fn per_task_budget_bytes() -> usize {
-    // Default per-task ceiling when no explicit process budget is set. 512 MiB
-    // is generous for the (naux, nbas²)-panel intermediates yet still forces
-    // blocking at the nbf=900/naux=2200 scale (a full-width buffer is 14 GB).
-    const DEFAULT_PER_TASK: usize = 512 * 1024 * 1024;
+/// intermediates.
+///
+/// # Two defects fixed here
+///
+/// **1. The caller's budget was discarded.** This function used to call
+/// `resolve_budget_bytes(None)`, throwing away `LaplaceMp2::memory_budget_bytes`
+/// and re-resolving from the environment. That is the exact bug
+/// [`LaplaceMp2::memory_budget_bytes`]'s own doc records fixing for the other
+/// paths in this file (`compute_mo`, `compute_ao`, `compute_sos_*` all thread it
+/// correctly) — this helper was simply missed in that pass, so a caller passing
+/// an explicit ceiling still had its per-task blocking sized against whatever
+/// the environment happened to say. It now takes `explicit` and threads it
+/// through, and every call site passes `self.memory_budget_bytes`.
+///
+/// **2. The 64 MiB floor could EXCEED the per-task share, silently.** The old
+/// `(total / threads).max(64 MiB)` looks conservative but inverts at small
+/// budgets: at a 2 GiB budget with 32 threads the derived share is exactly
+/// 64 MiB and the floor binds, so the real aggregate peak is
+/// `32 × 64 MiB = 2 GiB` — the entire budget, with the per-thread division
+/// defeated and nothing said about it. Below that the floor is strictly larger
+/// than the share and the aggregate OVERSHOOTS the budget outright.
+///
+/// The floor still exists — a per-task ceiling of a few bytes would block the
+/// panels down to width 1 and make no progress — but when it binds, that is now
+/// stated on stderr instead of silently absorbed. The message names the
+/// actionable fix (raise the budget or lower the thread count), matching how the
+/// floored-band warnings in `ferric-cc`'s (T) drivers read.
+///
+/// Note the old `usize::MAX` arm is gone: `resolve_budget_bytes` returns
+/// `usize::MAX` only for an explicitly infinite budget, never from the
+/// auto-detect or fallback paths, so `DEFAULT_PER_TASK` was effectively dead
+/// code. `usize::MAX / threads` is already an enormous per-task ceiling, which
+/// is the correct reading of "unlimited" anyway.
+fn per_task_budget_bytes(explicit: Option<usize>) -> usize {
+    /// Smallest per-task ceiling that still lets the blocked panels make
+    /// meaningful progress.
+    const MIN_PER_TASK: usize = 64 * 1024 * 1024;
     let threads = rayon::current_num_threads().max(1);
-    match ferric_core::memory::resolve_budget_bytes(None) {
-        usize::MAX => DEFAULT_PER_TASK,
-        total => (total / threads).max(64 * 1024 * 1024),
+    let total = ferric_core::memory::resolve_budget_bytes(explicit);
+    let share = total / threads;
+    if share < MIN_PER_TASK {
+        eprintln!(
+            "ferric WARNING [Laplace-MP2]: the {:.2} GiB memory budget split over {threads} \
+             rayon threads gives {:.0} MiB per task, below the {:.0} MiB floor the blocked \
+             quadrature panels need. Using the floor, so the aggregate peak may reach {:.2} GiB \
+             — ABOVE the budget. Raise [memory] budget_gb / FERRIC_MEM_BUDGET_GB, or lower \
+             RAYON_NUM_THREADS.",
+            total as f64 / (1024.0 * 1024.0 * 1024.0),
+            share as f64 / (1024.0 * 1024.0),
+            MIN_PER_TASK as f64 / (1024.0 * 1024.0),
+            (MIN_PER_TASK.saturating_mul(threads)) as f64 / (1024.0 * 1024.0 * 1024.0),
+        );
+        return MIN_PER_TASK;
     }
+    share
 }
 
 /// Row-sparse representation of a B^P slice (nbas × nbas matrix).
@@ -364,8 +407,15 @@ pub fn laplace_ri_mp2(
     rhf: &ScfResult,
     n_quad: usize,
     frozen_core: usize,
+    memory_budget_bytes: Option<usize>,
 ) -> Result<LaplaceMp2Result, FerricError> {
     let mut laplace = LaplaceMp2::new(n_quad);
+    // Without this the CLI's `laplace-mp2` arm discarded `[memory] budget_gb`
+    // entirely: `LaplaceMp2::memory_budget_bytes` exists precisely so callers
+    // can set a budget without changing `compute_ao`'s signature (see the
+    // field's own doc), but this entry point never set it — so only the
+    // sibling `laplace-sos-mp2` arm was ever rewired when that bug was fixed.
+    laplace.memory_budget_bytes = memory_budget_bytes;
     let (mp2_corr, e_os, e_ss) = laplace.compute_ao(mol, obs, dfbs, op, rhf, frozen_core, None)?;
     Ok(LaplaceMp2Result {
         total_energy: rhf.energy + mp2_corr,
@@ -528,7 +578,16 @@ impl LaplaceMp2 {
         // quadrature point, `b_flat` (geometry/basis) is constant.
         let occ_scale: Vec<f64> = (0..nocc).map(|i| eps[frozen_core + i]).collect();
         let vir_scale: Vec<f64> = (0..nvir).map(|a| eps[nocc_total + a]).collect();
-        let k_budget = per_task_budget_bytes();
+        // Stage-seam RSS safety net: the AO->MO transform is complete and
+        // `b_flat` is resident, before the per-point quadrature fan-out
+        // multiplies its scratch by the thread count. Observational only.
+        ferric_core::memory::warn_if_rss_over(
+            "Laplace-MP2 AO->MO transform complete",
+            ferric_core::memory::resolve_budget_bytes(self.memory_budget_bytes),
+            1.1,
+        );
+
+        let k_budget = per_task_budget_bytes(self.memory_budget_bytes);
 
         // 2. Parallel quadrature over points
         let e_corr: f64 = self.points.par_iter().zip(self.weights.par_iter()).map(|(&t, &w)| {
@@ -683,7 +742,7 @@ impl LaplaceMp2 {
         // are allocated INSIDE the per-point par_iter, so every buffer is
         // multiplied by the active rayon thread count — the budget is already
         // divided by that count in per_task_budget_bytes().
-        let task_budget = per_task_budget_bytes();
+        let task_budget = per_task_budget_bytes(self.memory_budget_bytes);
         // J-term panel width over the μ (leading AO) axis. Each open μ-row of the
         // M and N panels is (naux · nbas · 8) bytes; hold two panels (M, N), so
         //   block_mu · naux · nbas · 8 · 2 ≤ task_budget.
@@ -961,7 +1020,7 @@ impl LaplaceMp2 {
         // before entering the quadrature loop.
         drop(b_ao);
 
-        let task_budget = per_task_budget_bytes();
+        let task_budget = per_task_budget_bytes(self.memory_budget_bytes);
         let mu_row_bytes = naux.max(1) * nbas.max(1) * 8 * 2;
         let block_mu = (task_budget / mu_row_bytes.max(1)).clamp(1, nbas.max(1));
 

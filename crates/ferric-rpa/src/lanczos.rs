@@ -184,8 +184,34 @@ where
 
     // Symmetrize to wash out any asymmetry in the matvec's floating-point path
     // (the operator ε̃ = I + Π is symmetric by construction).
-    let a_sym: Array2<f64> = 0.5 * (&a + &a.t());
-    drop(a);
+    //
+    // MEMORY (why this is an in-place loop and not `0.5 * (&a + &a.t())`):
+    // the expression form allocated a fresh naux² for `&a + &a.t()`, which
+    // `0.5 * ...` then consumed into `a_sym` — with `a` still live, because
+    // the `drop(a)` came AFTER `a_sym` was materialized. So the true peak was
+    // THREE naux² buffers (a, the sum temporary, and shortly after the `eigh`
+    // eigenvector output `y`), while `budget::estimate_peak_bytes` charges
+    // `naux*naux*2*8` for this stage. At naux=2976 that is a 71 MB shortfall
+    // against a 141 MB charge — a 1.5x under-count on the Lanczos term.
+    //
+    // Symmetrizing in place fixes the accounting by fixing the allocation: `a`
+    // becomes its own symmetrized self, so only `a` and the subsequent `eigh`
+    // output are ever co-resident and the existing 2·naux² charge is exact.
+    //
+    // Bit-identical: the previous form computed element (i,j) as
+    // `0.5 * (a[(i,j)] + a[(j,i)])`, and so does this. Reading a[(j,i)] before
+    // either element is written, and writing the pair together, means the
+    // in-place update sees exactly the same operands in the same order — IEEE
+    // addition and the multiply by 0.5 (an exact power of two) are unchanged.
+    // The diagonal is 0.5*(x+x) == x exactly, so it is left untouched.
+    for i in 0..naux {
+        for j in (i + 1)..naux {
+            let avg = 0.5 * (a[(i, j)] + a[(j, i)]);
+            a[(i, j)] = avg;
+            a[(j, i)] = avg;
+        }
+    }
+    let a_sym = a;
 
     let (theta, y) = a_sym
         .eigh(UPLO::Upper)
@@ -865,6 +891,100 @@ mod tests {
     #[test]
     fn solver_blas_threads_defaults_to_one() {
         assert_eq!(solver_blas_threads_with(|_| None), 1);
+    }
+
+    /// The in-place symmetrization in `full_rank_paneled` must be BIT-identical
+    /// to the `0.5 * (&a + &a.t())` expression it replaced.
+    ///
+    /// That expression allocated a fresh `naux²` for `&a + &a.t()`, which
+    /// `0.5 * ...` consumed into `a_sym` while `a` was still live (the
+    /// `drop(a)` came AFTER), so the true peak was THREE `naux²` buffers
+    /// against a `budget.rs` charge of two — a 1.5x under-count on the Lanczos
+    /// term. Symmetrizing in place fixes the allocation, which is what makes
+    /// the existing charge correct.
+    ///
+    /// The replacement is only legitimate if it is numerically inert, and
+    /// "obviously equivalent" is exactly the claim that has burned this repo
+    /// before — so assert exact equality, not a tolerance. Random asymmetric
+    /// input, because a symmetric one would pass trivially.
+    #[test]
+    fn in_place_symmetrization_is_bit_identical_to_the_expression_form() {
+        let n = 37;
+        // Deterministic pseudo-random asymmetric fill; irrational-ish strides
+        // so no two entries coincide and cancellation is exercised.
+        let mut a = Array2::<f64>::zeros((n, n));
+        for i in 0..n {
+            for j in 0..n {
+                a[(i, j)] = ((i * 7 + j * 13) as f64).sin() * 1e3
+                    + ((i as f64) - (j as f64) * 0.5).cos() * 1e-7;
+            }
+        }
+
+        // Reference: the old expression form.
+        let reference: Array2<f64> = 0.5 * (&a + &a.t());
+
+        // Current: the in-place loop, copied verbatim from full_rank_paneled.
+        let mut got = a.clone();
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let avg = 0.5 * (got[(i, j)] + got[(j, i)]);
+                got[(i, j)] = avg;
+                got[(j, i)] = avg;
+            }
+        }
+
+        for i in 0..n {
+            for j in 0..n {
+                assert_eq!(
+                    got[(i, j)].to_bits(),
+                    reference[(i, j)].to_bits(),
+                    "element ({i},{j}) differs: in-place symmetrization must be \
+                     bit-identical to 0.5 * (&a + &a.t())"
+                );
+            }
+        }
+    }
+
+    /// The full-rank driver must still produce correct eigenpairs after the
+    /// symmetrization change — the end-to-end complement to the bit-identity
+    /// unit test above.
+    #[test]
+    fn full_rank_paneled_recovers_a_known_spectrum() {
+        // A small SPD operator with a known spectrum: A = I + w wᵀ has
+        // eigenvalue 1 + |w|² once and 1 with multiplicity n-1.
+        let n = 9;
+        let w: Array1<f64> = Array1::from_shape_fn(n, |i| (i as f64 + 1.0) * 0.25);
+        let norm2: f64 = w.iter().map(|x| x * x).sum();
+
+        let a_op = {
+            let w = w.clone();
+            move |v: &Array2<f64>| -> Array2<f64> {
+                // (I + w wᵀ) V = V + w (wᵀ V)
+                let wt_v = w.t().dot(v); // (ncols,)
+                let mut out = v.clone();
+                for (j, &s) in wt_v.iter().enumerate() {
+                    let mut col = out.column_mut(j);
+                    for i in 0..n {
+                        col[i] += w[i] * s;
+                    }
+                }
+                out
+            }
+        };
+
+        let res = run_lanczos_full_rank(n, n, a_op, n).expect("full-rank solve");
+        assert_eq!(res.eigenvalues.len(), n);
+
+        // Ordered by |lambda - 1| descending, so the rank-one mode is first.
+        assert!(
+            (res.eigenvalues[0] - (1.0 + norm2)).abs() < 1e-10,
+            "leading eigenvalue should be 1 + |w|^2 = {}; got {}",
+            1.0 + norm2,
+            res.eigenvalues[0]
+        );
+        for lam in &res.eigenvalues[1..] {
+            assert!((lam - 1.0).abs() < 1e-10, "remaining spectrum should be 1; got {lam}");
+        }
     }
 
     #[test]

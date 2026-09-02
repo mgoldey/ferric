@@ -63,7 +63,7 @@ fn build_full_b_consistent_across_blas_thread_counts() {
     // Fock builds never see a raised BLAS count.
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
 
-    let build = || mo_b::build_full_b(&mol, &obs, &dfbs, op, &rhf, 1).unwrap();
+    let build = || mo_b::build_full_b(&mol, &obs, &dfbs, op, &rhf, 1, None).unwrap();
 
     let baseline = build();
 
@@ -168,10 +168,10 @@ fn project_b_into_pdep_consistent_across_blas_thread_counts() {
         }
     }
 
-    let baseline = cohsex::project_b_into_pdep(&mo_b, &v_dressed);
+    let baseline = cohsex::project_b_into_pdep(&mo_b, &v_dressed, None).unwrap();
 
     std::env::set_var("FERRIC_BLAS_THREADS", "2");
-    let raised = cohsex::project_b_into_pdep(&mo_b, &v_dressed);
+    let raised = cohsex::project_b_into_pdep(&mo_b, &v_dressed, None).unwrap();
     std::env::remove_var("FERRIC_BLAS_THREADS");
 
     assert_eq!(baseline.dim(), raised.dim());

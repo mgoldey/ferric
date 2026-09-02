@@ -98,6 +98,25 @@
 //! libxtb is **not thread-safe** (process-global state -- measured, see
 //! [`calculator`]). Parallelise across processes, not threads.
 //!
+//! [`XtbCalculator`] is `!Send`/`!Sync` on purpose, and a `#[cfg(test)]`
+//! compile-time guard in `calculator.rs` (`send_sync_guard`) fails the build
+//! if that ever stops being true. That property is load-bearing, not
+//! decorative:
+//!
+//! - **Never** add `unsafe impl Send`/`unsafe impl Sync` for
+//!   [`XtbCalculator`] or its handle newtypes -- the process-global state
+//!   inside libxtb means two calculators driven concurrently corrupt each
+//!   other even though each owns private handles.
+//! - **Never** drive an [`XtbCalculator`] from inside a `rayon` parallel
+//!   iterator (`par_iter`, `join`, a thread pool, ...) in the same process.
+//!   Screen conformers with process-level parallelism instead -- one
+//!   molecule per process, `OMP_NUM_THREADS=1` per process -- matching how
+//!   the rest of the repo's throughput work is organised.
+//! - Drive libxtb from **one thread at a time**, for the lifetime of the
+//!   process. A single thread creating and dropping many `XtbCalculator`s in
+//!   sequence is fine; handing one to another thread, or holding two live at
+//!   once on different threads, is not.
+//!
 //! # Example
 //!
 //! ```ignore

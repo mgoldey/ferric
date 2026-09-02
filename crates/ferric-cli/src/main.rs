@@ -492,8 +492,14 @@ pub fn main() {
         // Run the single-atom SCF on a 1-thread pool — see run_serial.
         let adens = run_serial(|| {
             if proatom_gs_mult(z) == 1 {
+                // `.filter(|r| r.converged)`: solve_rhf returns Ok even when it
+                // hits max_iter (see rhf.rs), so a bare `.ok()` accepts a
+                // NON-CONVERGED free-atom density exactly like a converged one
+                // and silently blends it into the Hirshfeld charges. Reject it
+                // here so this atom falls to the documented fallback instead.
                 solve_rhf(&ctx, &amol, &aobs, op, &abounds, &acfg)
                     .ok()
+                    .filter(|r| r.converged)
                     .map(|r| r.density_r().to_owned())
             } else {
                 acfg.mom_after_iter = 5;
@@ -506,8 +512,10 @@ pub fn main() {
                 if acfg.xc.is_some() {
                     acfg.fractional_occ = true;
                 }
+                // Same convergence gate as the closed-shell branch above.
                 solve_uhf(&ctx, &amol, &aobs, &abounds, &acfg)
                     .ok()
+                    .filter(|r| r.converged)
                     .map(|r| r.density_total().to_owned())
             }
         })?;
@@ -519,7 +527,7 @@ pub fn main() {
         "ksdft" => run_ksdft(&cfg, &bs, &prep, &result),
         "rimp2" => run_rimp2(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
         "lmp2" => run_lmp2(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
-        "mp3" => run_mp3(&cfg, &mol, &bs, &prep, op, &result),
+        "mp3" => run_mp3(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
         "oo-rimp2" => run_oo_rimp2(&cfg, &mol, &bs, &prep, op, &bounds, &result, budget_bytes, rhf_config.external_potential.as_ref()),
         "att-rimp2" => run_att_rimp2(&cfg, &mol, &bs, &prep, &result, budget_bytes),
         "mp2-v" => run_mp2_v(&cfg, &mol, &bs, &prep, &result, budget_bytes),
@@ -528,7 +536,7 @@ pub fn main() {
         "scs-mp2-2terfc" => run_scs_mp2_2terfc(&cfg, &mol, &bs, &prep, &result, budget_bytes),
         "ccsd" => run_ccsd(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
         "linlccd" => run_linlccd(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
-        "laplace-mp2" => run_laplace_mp2(&cfg, &mol, &bs, &prep, op, &result),
+        "laplace-mp2" => run_laplace_mp2(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
         "laplace-sos-mp2" => {
             run_laplace_sos_mp2(&cfg, &mol, &bs, &prep, op, &result, budget_bytes)
         }
@@ -681,6 +689,7 @@ fn run_mp3(
     prep: &PreparedBasis,
     op: Operator,
     result: &ferric_scf::result::ScfResult,
+    budget_bytes: Option<usize>,
 ) {
     let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
@@ -691,7 +700,7 @@ fn run_mp3(
         eprintln!("error: {e}");
         std::process::exit(1);
     });
-    let mp3_result = mp3_energy(mol, prep, &dfbs, op, result, cfg.mp2.frozen_core)
+    let mp3_result = mp3_energy(mol, prep, &dfbs, op, result, cfg.mp2.frozen_core, budget_bytes)
         .unwrap_or_else(|e| {
             eprintln!("error: {e}");
             std::process::exit(1);
@@ -862,7 +871,13 @@ fn run_rs_mp2_rpa(
     // scan for ~1 SCF instead of N).
     let r0_sweep: Option<Vec<f64>> = cfg.mp2.r0_sweep.as_ref().map(|v| {
         let mut s: Vec<f64> = v.clone();
-        s.sort_by(|a, b| a.partial_cmp(b).expect("r0_sweep must not contain NaN"));
+        // NaN must NOT panic here. TOML accepts the `nan` literal, so this is
+        // reachable from user config — and the finiteness check below is
+        // written precisely to reject it with an actionable message. An
+        // `.expect()` here fired FIRST and turned that clean diagnostic into a
+        // raw backtrace, defeating the validation. Sort NaN-tolerantly and let
+        // the real check do its job.
+        s.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         s.dedup();
         s
     });
@@ -1471,6 +1486,7 @@ fn run_laplace_mp2(
     prep: &PreparedBasis,
     op: Operator,
     result: &ferric_scf::result::ScfResult,
+    budget_bytes: Option<usize>,
 ) {
     let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
@@ -1490,6 +1506,7 @@ fn run_laplace_mp2(
         result,
         n_quad,
         cfg.mp2.frozen_core,
+        budget_bytes,
     )
     .unwrap_or_else(|e| {
         eprintln!("error: {e}");
@@ -3098,7 +3115,7 @@ fn run_tddft_arm(
     _bs: &BasisSet,
     prep: &PreparedBasis,
     result: &ferric_scf::result::ScfResult,
-    _budget_bytes: Option<usize>,
+    budget_bytes: Option<usize>,
     method: &str,
 ) {
     use ferric_tddft::{TddftConfig, TddftMethod};
@@ -3135,6 +3152,9 @@ fn run_tddft_arm(
     let config = TddftConfig {
         n_roots: cfg.tddft.n_roots,
         method: tddft_method,
+        // `[memory] budget_gb` now reaches the dense (ia,jb) matrices; this
+        // parameter used to be `_budget_bytes`, accepted and dropped.
+        memory_budget_bytes: budget_bytes,
     };
 
     let r = ferric_tddft::run_tddft(mol, prep, &dfbs, result, &config, c_hf)

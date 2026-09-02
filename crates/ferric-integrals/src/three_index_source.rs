@@ -6,6 +6,7 @@
 
 use crate::basis_bridge::PreparedBasis;
 use crate::operator::Operator;
+use ferric_core::memory::plan::{Lifetime, MemoryPlan};
 use ferric_core::FerricError;
 use ndarray::{Array2, Array3, ArrayView3};
 use std::fs::File;
@@ -336,6 +337,36 @@ impl ThreeIndexSource {
             // count, memory budget, and execution order. Deriving them from
             // `nthreads` was the bug that perturbed the benzene/aTZ SCF energy by
             // 2.9e-6 Ha and made it vary with RAYON_NUM_THREADS.
+            // Memory accounting for this path. Historically NOTHING here was
+            // charged: the `in_core` decision above gates only `out_incore`
+            // (one `band·nao²·8` copy), yet this path used to `collect()` every
+            // output block into a `Vec<(usize, Array2)>` BEFORE scattering, so
+            // a full SECOND copy of the dressed band (another `band·nao²·8`)
+            // was co-resident with `out_incore` at the moment the collect
+            // finished. At benzene/aug-cc-pVTZ (naux=1512, nao=414) that is
+            // 2.1 GB charged as 1.05 GB — the classic under-count that OOMs.
+            // The per-worker `acc`/`contrib` scratch was unaccounted too.
+            //
+            // Two independent fixes, both applied:
+            //  1. The second copy is GONE, not merely charged for. Each block
+            //     now accumulates into its own destination rows of `arr`
+            //     directly via rayon's slice `par_chunks_mut`, so peak
+            //     residency is one copy of the band plus per-worker scratch.
+            //     This is a pure removal of a copy: the GEMM boundaries
+            //     (`DRESS_ROW_BLOCK`), the Q sweep, and the accumulation order
+            //     are byte-for-byte what they were, so the dressed tensor is
+            //     bit-identical (pinned by
+            //     `dressed_tensor_bitidentical_across_thread_counts`).
+            //  2. What genuinely remains resident is now DECLARED, so an
+            //     over-budget job fails fast with a breakdown instead of
+            //     walking into the allocation. `contrib` is the only real
+            //     per-worker term left (`acc` is gone with the copy).
+            //
+            // Note the asymmetry this repairs: the RAW spill path sizes blocks
+            // with `spill_block_naux_for` = `block_naux_for(budget/2, nao)`,
+            // HALVED because two blocks are live at once. This dressing path
+            // used the UN-halved `block_naux_for` while `accum` and `contrib`
+            // coexist on the sequential path below — see the guard there.
             let mut out_edges: Vec<(usize, usize)> = Vec::new();
             let mut l = 0usize;
             while l < band {
@@ -343,21 +374,53 @@ impl ThreeIndexSource {
                 out_edges.push((l, r));
                 l = r;
             }
-            // Compute each block independently into its own buffer, then scatter.
-            // (Collecting owned blocks avoids needing ndarray's `rayon` feature
-            // for a parallel mutable-chunk iterator; the blocks are disjoint, so
-            // the scatter is a pure copy.)
-            let parts: Vec<Result<(usize, Array2<f64>), FerricError>> = out_edges
-                .par_iter()
-                .map(|&(l0, l1)| {
+            // Concurrency is bounded by the number of blocks as well as by the
+            // pool: charging `nthreads` copies when there are only 3 blocks
+            // would over-count, and an over-estimating guard refuses jobs that
+            // would have fit — as much a defect as an under-estimate.
+            let workers = rayon::current_num_threads().max(1).min(out_edges.len().max(1));
+            let mut plan = MemoryPlan::with_budget_bytes(budget_bytes, "DF dressing (in-core)");
+            plan.reserve("dressed band B[P,mu,nu]", band * nao * nao, Lifetime::Resident);
+            // Each worker holds one `contrib` GEMM result: `b × nao²` where
+            // `b ≤ DRESS_ROW_BLOCK`. This is the term the old code never
+            // charged for at all.
+            plan.reserve_per_worker(
+                "dressing GEMM contrib (per worker)",
+                DRESS_ROW_BLOCK.min(band.max(1)) * nao * nao,
+                workers,
+            );
+            plan.check()?;
+            // Scatter-free: each block writes its OWN disjoint rows of `arr`.
+            // `arr` is a freshly-allocated contiguous `Array3`, so its backing
+            // slice is row-major and output row `l` occupies exactly
+            // `[l·nao², (l+1)·nao²)`. `par_chunks_mut(DRESS_ROW_BLOCK·nao²)`
+            // therefore yields precisely the `out_edges` blocks, in order, as
+            // disjoint mutable slices — the same partition the collect used,
+            // without ever materialising a second copy of the band.
+            let row_elems = nao * nao;
+            let arr_slice = arr.as_slice_mut().ok_or_else(|| {
+                FerricError::General("dress out: non-contiguous output band".into())
+            })?;
+            arr_slice
+                .par_chunks_mut(DRESS_ROW_BLOCK * row_elems)
+                .enumerate()
+                .try_for_each(|(bi, dst)| -> Result<(), FerricError> {
+                    let (l0, l1) = out_edges[bi];
                     let b = l1 - l0;
                     let p0 = band_p0 + l0;
-                    let mut acc = Array2::<f64>::zeros((b, nao * nao));
+                    let mut acc = ndarray::ArrayViewMut2::from_shape((b, row_elems), dst)
+                        .map_err(|e| {
+                            FerricError::General(format!("dress out reshape: {e}"))
+                        })?;
                     // Ascending Q sweep, sub-blocked to DRESS_K_BLOCK. The outer
                     // edges follow the source's own blocks (so a spilled source
                     // keeps its streaming order); the inner split is a fixed
                     // constant, which both pins the summation order and improves
                     // accuracy (see DRESS_K_BLOCK).
+                    //
+                    // `acc` starts at zero (`arr` was zero-initialised), so
+                    // `acc += contrib` accumulates the identical term sequence
+                    // the old private buffer did, in the identical order.
                     for &(q0, q1) in q_edges.iter() {
                         let mut qa = q0;
                         while qa < q1 {
@@ -369,18 +432,8 @@ impl ThreeIndexSource {
                             qa = qb;
                         }
                     }
-                    Ok((l0, acc))
-                })
-                .collect();
-            for part in parts {
-                let (l0, acc) = part?;
-                let b = acc.nrows();
-                let mut dst = arr
-                    .slice_mut(ndarray::s![l0..l0 + b, .., ..])
-                    .into_shape_with_order((b, nao * nao))
-                    .map_err(|e| FerricError::General(format!("dress out reshape: {e}")))?;
-                dst.assign(&acc);
-            }
+                    Ok(())
+                })?;
             return Ok(Self {
                 naux,
                 nao,
@@ -389,6 +442,45 @@ impl ThreeIndexSource {
                 band_p1,
                 backend: Backend::InCore(out_incore.expect("in_core implies Some")),
             });
+        }
+
+        // SEQUENTIAL path accounting.
+        //
+        // The defect: `block_naux` is `block_naux_for(budget_bytes, nao)` — one
+        // block sized to the WHOLE budget — yet the loop below holds TWO such
+        // blocks live simultaneously (`accum`, and the `contrib` GEMM result
+        // added into it), plus `out_incore` (band·nao²) underneath on the
+        // in-core branch. Compare `spill_block_naux_for` on the RAW path, which
+        // halves the budget for exactly this two-live-blocks reason; the
+        // dressing path never did, so its gate covered at most half of what it
+        // actually held.
+        //
+        // Why this is a WARNING and not a hard `check()?`: the block size is
+        // load-bearing for the RESULT. `block_naux` is the GEMM's m dimension
+        // (`m.slice(p0..p1)`), so shrinking it to make the pair fit would change
+        // BLAS's internal blocking, the summation order, and hence the dressed
+        // tensor and the SCF energy — precisely the class of change
+        // `DRESS_ROW_BLOCK` exists to prevent. And hard-failing instead would
+        // refuse every spilled dressing that runs correctly today, since
+        // `block_naux·nao²·8 ≈ budget` makes the honest two-block total ≈ 2×
+        // budget by construction. Over-counting that refuses jobs which would
+        // have fit is as much a bug as under-counting that OOMs, so the honest
+        // figure is REPORTED (with the breakdown) rather than enforced.
+        {
+            let mut plan = MemoryPlan::with_budget_bytes(budget_bytes, "DF dressing (blocked)");
+            if in_core {
+                plan.reserve("dressed band B[P,mu,nu]", band * nao * nao, Lifetime::Resident);
+            }
+            plan.reserve("dressing accum block", block_naux * nao * nao, Lifetime::Resident);
+            plan.reserve("dressing GEMM contrib block", block_naux * nao * nao, Lifetime::Resident);
+            if plan.check().is_err() && ooc_trace() {
+                eprintln!(
+                    "[OOC dress] blocked path exceeds the byte budget (two live blocks per \
+                     iteration; block size is fixed because it sets the GEMM shape and hence \
+                     the result):\n{}",
+                    plan.report()
+                );
+            }
         }
 
         let mut p0 = band_p0;
@@ -615,6 +707,137 @@ mod tests {
             "DRESS_ROW_BLOCK must be EVEN: an odd output-row split changes \
              OpenBLAS's accumulation order and makes the dressed tensor (and the \
              SCF energy) machine-dependent"
+        );
+    }
+
+    /// REGRESSION (defect A): removing the second copy must not move a bit.
+    ///
+    /// `build_dressed_band`'s parallel fast path used to `collect()` every
+    /// output block into a `Vec<(usize, Array2)>` and then scatter, so at the
+    /// instant the collect finished a FULL SECOND COPY of the dressed band was
+    /// co-resident with `out_incore` — while the `in_core` gate above charged
+    /// for only ONE. It now accumulates straight into the destination rows via
+    /// `par_chunks_mut`.
+    ///
+    /// `dressed_tensor_bitidentical_across_thread_counts` proves the new path
+    /// agrees with ITSELF at every thread count; it cannot prove it agrees with
+    /// the code that was replaced. This does: the reference below reproduces
+    /// the OLD structure literally (a private zeroed `Array2` per block,
+    /// accumulated, then assigned into the output), so any change to the GEMM
+    /// boundaries, the Q sweep, or the accumulation order shows up as a
+    /// differing bit.
+    #[test]
+    fn dressed_fast_path_bitidentical_to_owned_buffer_reference() {
+        let (mol,) = water();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let dfbs =
+            PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let naux = dfbs.nbasis();
+        let nao = obs.nbasis();
+        let mut m = Array2::<f64>::zeros((naux, naux));
+        for p in 0..naux {
+            for q in 0..naux {
+                m[(p, q)] = 0.001 * (((p * 7 + q * 3) % 13) as f64) + if p == q { 1.0 } else { 0.0 };
+            }
+        }
+        let budget = usize::MAX / 4; // force the in-core fast path
+
+        // Live path.
+        let mut raw = ThreeIndexSource::build(op, &obs, &dfbs, budget).unwrap();
+        let dressed = ThreeIndexSource::build_dressed(&mut raw, &m, budget).unwrap();
+        let got = match dressed.backend {
+            Backend::InCore(ref a) => a.clone(),
+            _ => panic!("expected the in-core fast path"),
+        };
+
+        // Reference: the OLD collect-into-owned-buffer-then-scatter structure,
+        // written out by hand and run SERIALLY.
+        let raw_ref = ThreeIndexSource::build(op, &obs, &dfbs, budget).unwrap();
+        let q_edges = raw_ref.block_edges();
+        let raw_flat = raw_ref.incore_flat().expect("in-core");
+        let raw_p0 = raw_ref.band().0;
+        let mut expect = Array3::<f64>::zeros((naux, nao, nao));
+        let mut l = 0usize;
+        while l < naux {
+            let r = (l + DRESS_ROW_BLOCK).min(naux);
+            let b = r - l;
+            // A PRIVATE owned buffer, exactly as the removed code allocated.
+            let mut acc = Array2::<f64>::zeros((b, nao * nao));
+            for &(q0, q1) in q_edges.iter() {
+                let mut qa = q0;
+                while qa < q1 {
+                    let qb = (qa + DRESS_K_BLOCK).min(q1);
+                    let msub = m.slice(ndarray::s![l..l + b, qa..qb]);
+                    let rblk = raw_flat.slice(ndarray::s![qa - raw_p0..qb - raw_p0, ..]);
+                    let contrib: Array2<f64> = msub.dot(&rblk);
+                    acc += &contrib;
+                    qa = qb;
+                }
+            }
+            // ...then scattered into the output.
+            let mut dst = expect
+                .slice_mut(ndarray::s![l..l + b, .., ..])
+                .into_shape_with_order((b, nao * nao))
+                .unwrap();
+            dst.assign(&acc);
+            l = r;
+        }
+
+        assert_eq!(got.dim(), expect.dim());
+        let differing = got
+            .iter()
+            .zip(expect.iter())
+            .filter(|(x, y)| x.to_bits() != y.to_bits())
+            .count();
+        assert_eq!(
+            differing, 0,
+            "removing the redundant second copy changed {differing} elements — the \
+             scatter-free path must be a pure memory fix, never a numerical one"
+        );
+    }
+
+    /// Defect A, the accounting half: the in-core dressing gate must refuse a
+    /// band that does not fit AND name the term in the breakdown.
+    ///
+    /// The old gate compared only `band·nao²·8` against the budget, so it was
+    /// impossible for it to fail here for the right reason. Both directions are
+    /// checked: a budget that genuinely cannot hold the band is refused, and an
+    /// ample budget still runs (an over-estimating guard that refuses a job
+    /// which would have fit is as much a defect as an under-estimate).
+    #[test]
+    fn dressed_over_budget_is_refused_and_named_ample_budget_still_runs() {
+        let (mol,) = water();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let naux = dfbs.nbasis();
+        let nao = obs.nbasis();
+        let mut m = Array2::<f64>::zeros((naux, naux));
+        for p in 0..naux {
+            m[(p, p)] = 1.0;
+        }
+
+        // AMPLE: the band plus every worker's contrib comfortably fits.
+        let ample = usize::MAX / 4;
+        let mut raw = ThreeIndexSource::build(op, &obs, &dfbs, ample).unwrap();
+        assert!(
+            ThreeIndexSource::build_dressed(&mut raw, &m, ample).is_ok(),
+            "an ample budget must still run — over-counting refuses jobs that fit"
+        );
+
+        // TIGHT-BUT-FAST-PATH: a budget that admits the band itself (so the
+        // in-core fast path is entered) but cannot also hold the per-worker
+        // GEMM scratch the old gate ignored entirely.
+        let band_bytes = naux * nao * nao * 8;
+        let mut raw2 = ThreeIndexSource::build(op, &obs, &dfbs, ample).unwrap();
+        let err = ThreeIndexSource::build_dressed(&mut raw2, &m, band_bytes)
+            .expect_err("band + per-worker scratch exceeds a band-sized budget");
+        let msg = err.to_string();
+        assert!(msg.contains("DF dressing (in-core)"), "must name the stage: {msg}");
+        assert!(
+            msg.contains("dressing GEMM contrib"),
+            "the breakdown must name the previously-uncharged per-worker term: {msg}"
         );
     }
 

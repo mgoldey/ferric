@@ -294,7 +294,15 @@ pub fn run_u_gw(
     // regardless of what the external caller left in `pdep_cfg` (M9 gate).
     let pdep_cfg = &with_inv_dielectric(pdep_cfg);
     let pdep = run_u_pdep_rpa(mol, obs, dfbs, op, scf, pdep_cfg)?;
-    let (mo_b_a, mo_b_b) = mo_b::build_full_b_both_spins(mol, obs, dfbs, op, scf, gw_cfg.frozen_core)?;
+    let (mo_b_a, mo_b_b) = mo_b::build_full_b_both_spins(
+        mol,
+        obs,
+        dfbs,
+        op,
+        scf,
+        gw_cfg.frozen_core,
+        gw_cfg.memory_budget_bytes,
+    )?;
     let (v_dressed, dress_dev) =
         w_pdep::redress_with_check(&mo_b_a.v_inv_sqrt, &pdep.eigenpotentials)?;
     eprintln!(
@@ -394,7 +402,15 @@ pub fn run_gw(
     let pdep = run_pdep_rpa(mol, obs, dfbs, op, rhf, pdep_cfg)?;
 
     // 2. Build dressed B̃ tensor over ALL (m,n) MO pairs needed for Σ.
-    let mo_b = mo_b::build_full_b(mol, obs, dfbs, op, rhf, gw_cfg.frozen_core)?;
+    let mo_b = mo_b::build_full_b(
+        mol,
+        obs,
+        dfbs,
+        op,
+        rhf,
+        gw_cfg.frozen_core,
+        gw_cfg.memory_budget_bytes,
+    )?;
 
     // 3. Re-dress the eigenpotentials from physical → V^{-1/2}-dressed.
     //    eigenpotentials_phys = V^{-1/2} · V_dressed, so

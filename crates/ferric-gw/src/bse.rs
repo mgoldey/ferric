@@ -232,9 +232,17 @@ pub fn run_bse_tda(
     check_bse_dense_alloc("BSE-TDA", n, 1, pdep_cfg.memory_budget_bytes)?;
 
     // 3. Dressed B̃^P_{pq} over all MO pairs + projection M[α,p,q] = Σ_P Ṽ_α b̃^P_pq.
-    let mob = mo_b::build_full_b(mol, obs, dfbs, op, rhf, frozen_core)?;
+    let mob = mo_b::build_full_b(
+        mol,
+        obs,
+        dfbs,
+        op,
+        rhf,
+        frozen_core,
+        pdep_cfg.memory_budget_bytes,
+    )?;
     let (v_dressed, _dev) = w_pdep::redress_with_check(&mob.v_inv_sqrt, &gw.pdep.eigenpotentials)?;
-    let m_proj = project_b_into_pdep(&mob, &v_dressed); // (M, n_act, n_act), local MO indices
+    let m_proj = project_b_into_pdep(&mob, &v_dressed, pdep_cfg.memory_budget_bytes)?; // (M, n_act, n_act), local MO indices
     let m_modes = m_proj.shape()[0];
 
     // Reduced screening weight w_α = 1/λ_α(0) − 1; screened W = bare v + Σ w_α MM
@@ -442,7 +450,10 @@ pub fn run_cis_tda(
     // config budget on this reference path, so resolve from env/auto.
     check_bse_dense_alloc("CIS-TDA", n, 1, None)?;
 
-    let mob = mo_b::build_full_b(mol, obs, dfbs, op, rhf, frozen_core)?;
+    // Same "no config budget on this reference path" reasoning as the guard
+    // above: `run_cis_tda` takes no config struct, so the RI build resolves
+    // from env/auto rather than from a caller ceiling.
+    let mob = mo_b::build_full_b(mol, obs, dfbs, op, rhf, frozen_core, None)?;
     let b = &mob.b_full;
     let naux = mob.naux;
     let bare = |p: usize, q: usize, r: usize, s: usize| -> f64 {
@@ -592,9 +603,17 @@ pub fn run_bse_c6(
     check_bse_dense_alloc("BSE-C6", n, 3, pdep_cfg.memory_budget_bytes)?;
 
     // Projected screened modes + bare integrals (same path as run_bse_tda).
-    let mob = mo_b::build_full_b(mol, obs, dfbs, op, rhf, frozen_core)?;
+    let mob = mo_b::build_full_b(
+        mol,
+        obs,
+        dfbs,
+        op,
+        rhf,
+        frozen_core,
+        pdep_cfg.memory_budget_bytes,
+    )?;
     let (v_dressed, _dev) = w_pdep::redress_with_check(&mob.v_inv_sqrt, &gw.pdep.eigenpotentials)?;
-    let m_proj = project_b_into_pdep(&mob, &v_dressed);
+    let m_proj = project_b_into_pdep(&mob, &v_dressed, pdep_cfg.memory_budget_bytes)?;
     let m_modes = m_proj.shape()[0];
     // Reduced screening weight; screened W = bare v + Σ w_α MM (mode-set-robust,
     // see run_bse_c6_ks).
@@ -802,9 +821,17 @@ pub fn run_bse_c6_ks(
     // 3 co-resident n×n f64 buffers).
     check_bse_dense_alloc("BSE-C6 (KS)", n, 3, pdep_cfg.memory_budget_bytes)?;
 
-    let mob = mo_b::build_full_b(mol, obs, dfbs, op, ks, frozen_core)?;
+    let mob = mo_b::build_full_b(
+        mol,
+        obs,
+        dfbs,
+        op,
+        ks,
+        frozen_core,
+        pdep_cfg.memory_budget_bytes,
+    )?;
     let (v_dressed, _dev) = w_pdep::redress_with_check(&mob.v_inv_sqrt, &pdep.eigenpotentials)?;
-    let m_proj = project_b_into_pdep(&mob, &v_dressed);
+    let m_proj = project_b_into_pdep(&mob, &v_dressed, pdep_cfg.memory_budget_bytes)?;
     let m_modes = m_proj.shape()[0];
     // Screened W = bare v + reduced-screening correction. Using the COMPLETE
     // b_full for the bare part and the reduced weight w_α = 1/λ_α − 1 for the
@@ -1047,9 +1074,17 @@ pub fn run_rpax_static_polarizability(
     // only ONE "frequency", ω=0, so peak residency is identical).
     check_bse_dense_alloc("RPAx static polarizability (KS)", n, 3, pdep_cfg.memory_budget_bytes)?;
 
-    let mob = mo_b::build_full_b(mol, obs, dfbs, op, ks, frozen_core)?;
+    let mob = mo_b::build_full_b(
+        mol,
+        obs,
+        dfbs,
+        op,
+        ks,
+        frozen_core,
+        pdep_cfg.memory_budget_bytes,
+    )?;
     let (v_dressed, _dev) = w_pdep::redress_with_check(&mob.v_inv_sqrt, &pdep.eigenpotentials)?;
-    let m_proj = project_b_into_pdep(&mob, &v_dressed);
+    let m_proj = project_b_into_pdep(&mob, &v_dressed, pdep_cfg.memory_budget_bytes)?;
     let m_modes = m_proj.shape()[0];
     let w_red: Vec<f64> = pdep.eigenvalues_static.iter().map(|&l| 1.0 / l - 1.0).collect();
     let b = &mob.b_full;

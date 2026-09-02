@@ -1522,7 +1522,7 @@ pub fn ri_mp2_einsum(
     rhf: &ScfResult,
     config: &RiMp2Config,
 ) -> Result<SpinComponents, FerricError> {
-    use ferric_tensors::{einsum, Axis, Tensor};
+    use ferric_tensors::{einsum, permute_to_owned, Axis, Tensor};
     use ndarray::IxDyn;
 
     let nbas = obs.nbasis();
@@ -1562,10 +1562,7 @@ pub fn ri_mp2_einsum(
     let g_iajb: ndarray::ArrayD<f64> = einsum!("Pia,Pjb->iajb", &b_ov, &b_ov);
 
     // Permute (i,a,j,b) -> (i,j,a,b): axes [0,2,1,3]
-    let v_arr = g_iajb
-        .permuted_axes(IxDyn(&[0, 2, 1, 3]))
-        .as_standard_layout()
-        .into_owned(); // shape (nocc, nocc, nvir, nvir)
+    let v_arr = permute_to_owned(g_iajb.permuted_axes(IxDyn(&[0, 2, 1, 3])).view()); // shape (nocc, nocc, nvir, nvir)
 
     // Build amplitude t[i,j,a,b] = V[i,j,a,b] / D_{ijab}
     // and accumulate e_os, e_ss with a denominator loop
@@ -1588,10 +1585,7 @@ pub fn ri_mp2_einsum(
     let v_t = Tensor::new(v_arr.clone(), [Axis::O, Axis::O, Axis::V, Axis::V]);
 
     // V - V.permuted([0,1,3,2]): (i,j,a,b) -> swap last two -> (ib|ja) term
-    let v_swap = v_arr.clone()
-        .permuted_axes(IxDyn(&[0, 1, 3, 2]))
-        .as_standard_layout()
-        .into_owned();
+    let v_swap = permute_to_owned(v_arr.clone().permuted_axes(IxDyn(&[0, 1, 3, 2])).view());
     let vmx_arr = &v_arr - &v_swap; // (ia|jb) - (ib|ja) = SS kernel
     let vmx_t = Tensor::new(vmx_arr, [Axis::O, Axis::O, Axis::V, Axis::V]);
 

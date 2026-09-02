@@ -14,6 +14,7 @@ use ndarray::{Array1, Array2, Array3};
 use thiserror::Error;
 
 use ferric_core::basis::BasisSet;
+use ferric_core::memory::plan::MemoryPlan;
 use ferric_core::mol::Molecule;
 
 use crate::ao_grid::{
@@ -59,36 +60,143 @@ impl From<KsXcError> for ferric_core::error::FerricError {
     fn from(e: KsXcError) -> Self { Self::General(e.to_string()) }
 }
 
-/// Number of resident `(nbf, batch_pts)` `f64` planes a batched semilocal
-/// V_xc pass keeps alive at once: `chi` + `dchi` (4, same as
-/// `AoGridKind::ValueAndGrad`) + 1 more for the `VxcScratch` GEMM operand
-/// buffer (`semilocal_vxc_closed_scratch` reuses one `(nbf, npts)` buffer
-/// across its LDA/GGA/τ terms, but it is sized to the *batch*, not the full
-/// grid, once batching is active).
-const BATCH_PLANES: usize = AoGridKind::ValueAndGrad.planes() + 1;
+/// Resident `(nbf, batch_pts)` `f64` planes one batched semilocal V_xc pass
+/// keeps alive at its peak, for a given spin treatment and functional rung.
+///
+/// # Why this is a function and not a constant
+///
+/// It used to be `const BATCH_PLANES: usize = AoGridKind::ValueAndGrad.planes()
+/// + 1` = 5. That counted only χ, ∇χ and the `VxcScratch` GEMM buffer, and
+/// missed every intermediate the density/τ evaluators allocate on this exact
+/// path — an undercount on the fallback that exists *because* the full cache
+/// did not fit, i.e. on the one code path where the estimate is load-bearing.
+/// The real count depends on the spin treatment (UKS runs two `D·χ` GEMMs, not
+/// one) and on the functional rung (meta-GGA adds a three-plane τ stage), so a
+/// single constant cannot be right for all four combinations.
+///
+/// # Derivation — every contributing plane, with its allocation site
+///
+/// Resident for the whole batch body (`batched_add_xc_closed` /
+/// `batched_add_xc_uks`):
+///
+/// | planes | what | allocated at |
+/// |---|---|---|
+/// | 1 | `chi` `(nbf, npts)` | `ao_grid::eval_basis_and_grad_on_points_unchecked` |
+/// | 3 | `dchi` `(3, nbf, npts)` | same |
+/// | 1 | `VxcScratch::buf` | `vxc::VxcScratch::ensure` |
+///
+/// `VxcScratch` is owned by `KsXc`/`KsXcUks` and survives between batches, so
+/// by batch 2 it is resident from the moment the batch starts — it is counted
+/// as resident, not transient.
+///
+/// Then exactly one of these stages is live at a time (each one's allocations
+/// are dropped when the function returns, before the next stage runs), so only
+/// the largest counts:
+///
+/// | planes | stage | allocated at |
+/// |---|---|---|
+/// | 1 | `phi = D·χ` in `eval_density_closed` | `density_on_grid.rs`, closed shell |
+/// | 2 | `phi_a`, `phi_b` in `eval_density_uks` | `density_on_grid.rs`, UKS |
+/// | 3 | `psi[0..3]` = `D·∂χ` in `eval_tau_closed` | `density_on_grid.rs`, meta-GGA only |
+///
+/// `eval_tau_uks` is two sequential `eval_tau_closed` calls, so its τ stage is
+/// still 3 planes, not 6.
+///
+/// # The `as_standard_layout()` copies are NOT counted, and that is deliberate
+///
+/// `eval_density_closed`/`_uks` and `eval_tau_closed` each call
+/// `.as_standard_layout()` on χ, ∇χ, Φ and Ψ. `CowArray::as_standard_layout`
+/// copies only when its input is not already in standard (C) layout, which on
+/// this path it always is:
+///
+/// * `chi`/`dchi` come straight from `Array2::zeros`/`Array3::zeros` in
+///   `eval_basis_and_grad_on_points_unchecked` — C-order by construction.
+/// * `phi`/`psi` come from `ndarray`'s `Dot for ArrayBase<_, Ix2>`, which picks
+///   an F-order output *only* when **both** operands have a leading stride of 1
+///   (`column_major = lhs_s0 == 1 && rhs_s0 == 1`, ndarray 0.16
+///   `linalg/impl_linalg.rs`). Here the operands are `D` `(nbf, nbf)` and a
+///   C-order `(nbf, npts)` array, whose leading strides are `nbf` and `npts`;
+///   both are 1 only for a 1×1 problem, which is standard-layout either way.
+///
+/// So the worst case and the actual case coincide at zero extra planes. If a
+/// future change feeds these evaluators a transposed or strided view, each
+/// `as_standard_layout()` becomes a real copy and this function must grow by
+/// 1 (χ) + 3 (∇χ) + 1 (Φ, ×2 for UKS) + 3 (Ψ) planes.
+///
+/// **If you change what `eval_density_*`/`eval_tau_*`/`semilocal_vxc_*`
+/// allocate, update this table and `batch_point_doubles` below.**
+fn batch_planes(is_uks: bool, needs_tau: bool) -> usize {
+    // chi + dchi, the same 4 planes `AoGridKind::ValueAndGrad` names.
+    let resident = AoGridKind::ValueAndGrad.planes()
+        // VxcScratch::ensure's reused (nbf, batch_pts) GEMM operand buffer.
+        + 1;
+    let density_stage = if is_uks { 2 } else { 1 };
+    let tau_stage = if needs_tau { 3 } else { 0 };
+    resident + density_stage.max(tau_stage)
+}
 
-/// Byte cost of the full-cache χ + ∇χ tensors (the same formula
-/// `check_grid_budget` has always used), used both to decide whether to fall
-/// back to batching and to size the batch itself.
-fn full_cache_bytes(nbf: usize, npts: usize) -> usize {
-    AoGridKind::ValueAndGrad
-        .planes()
+/// `f64`s **per grid point** that a batched pass allocates *independently of
+/// `nbf`* — the O(npts) companion vectors, as opposed to the O(nbf·npts)
+/// planes above.
+///
+/// These are negligible against a plane when `nbf` is in the hundreds (the
+/// regime that actually triggers batching), but they are not negligible when
+/// `nbf` is small: at `nbf = 7` (STO-3G water) the closed-shell 20 doubles per
+/// point outweigh a whole 7-double plane. Since they scale with `batch_pts`
+/// exactly as the planes do, folding them into the per-point cost keeps
+/// `resolve_batch_size` honest at both ends of the `nbf` range instead of
+/// silently over-committing on small-basis/large-grid systems.
+///
+/// Closed-shell enumeration (peak is the V_xc stage, which holds the density):
+/// `pts` 3 (ks.rs) + `DensityGrid{rho,grad,sigma}` 5 + `tau` 1 +
+/// `vxc.rs`: `w` 1, the four `*_total` accumulators 4, one functional's
+/// `exc`/`vrho`/`vsigma`/`vtau` 4, and the `s`/`f_ax` scale column 1 = 19,
+/// rounded to 20. (The `eval_density_closed` stage peaks lower, at
+/// `pts` 3 + `rho`/`grad` 4 + the `results` `Vec<(f64, [f64; 3])>` 4 = 11.)
+///
+/// UKS enumeration: `pts` 3 + `UksDensityGrid` 11 + `tau_a`/`tau_b` 2 +
+/// `vxc.rs` polarized: `w` 1, `rho_in` 2, `sigma_in` 3, `tau_in` 2,
+/// `exc_total` 1, `vrho_{a,b}` 2, `vsigma_{aa,ab,bb}` 3, `vtau_{a,b}` 2, and
+/// one functional's `exc` 1 + `vrho` 2 + `vsigma` 3 + `vtau` 2 = 40.
+fn batch_point_doubles(is_uks: bool) -> usize {
+    if is_uks { 40 } else { 20 }
+}
+
+/// `f64`s a batched pass needs per grid point, planes included — the divisor
+/// `resolve_batch_size` solves against, and the multiplier `full_cache_bytes`
+/// uses for the whole grid.
+fn batch_point_elems(nbf: usize, is_uks: bool, needs_tau: bool) -> usize {
+    batch_planes(is_uks, needs_tau)
         .saturating_mul(nbf)
+        .saturating_add(batch_point_doubles(is_uks))
+}
+
+/// Byte cost of holding the **whole** main grid resident at once — the peak of
+/// the non-batched (`GridCache::Full`) path.
+///
+/// Historically this was just χ + ∇χ (`AoGridKind::ValueAndGrad.planes()`).
+/// That is the cost of the *cache*, but the Full-vs-Batched decision is about
+/// the peak of the path the decision selects, and the Full path runs the same
+/// `eval_density_*` / `eval_tau_*` / `semilocal_vxc_*` chain the batched path
+/// does — over the entire grid rather than one batch. Sizing the decision on
+/// the cache alone let a job whose true peak is 6-8 planes be admitted on a
+/// 4-plane estimate, which is the undercount this whole module comment exists
+/// to retire; batching is the correct answer for those jobs, and it is
+/// available, so admitting them to the Full path was strictly worse.
+fn full_cache_bytes(nbf: usize, npts: usize, is_uks: bool, needs_tau: bool) -> usize {
+    batch_point_elems(nbf, is_uks, needs_tau)
         .saturating_mul(npts)
         .saturating_mul(8)
 }
 
-/// Fail fast if the resident χ + ∇χ cache would exceed the memory budget.
+/// Fail fast if the resident main-grid working set would exceed the memory
+/// budget.
 ///
-/// The cache is `chi (nbf·npts·8)` + `dchi (3·nbf·npts·8)` =
-/// `AoGridKind::ValueAndGrad.planes() (4) · nbf·npts·8` — the same per-plane
-/// formula `ao_grid::check_ao_grid_budget` uses internally for its own callers
-/// (this function predates that shared helper and is kept as its own error
-/// variant for the richer `OverBudget` message fields, but shares the byte
-/// count so the two never silently diverge). With VV10 a second (smaller) NLC
-/// grid's cache is resident too, so we bound by `2×` when `has_vv10`. This
-/// catches the 50-atom/aTZ case (~30 GB, doubling to ~60 GB with VV10) before
-/// the allocation aborts the process.
+/// The peak is `full_cache_bytes` — χ + ∇χ plus everything the per-iteration
+/// V_xc chain allocates on top of them (see `batch_planes` for the plane-by-
+/// plane derivation). With VV10 a second (smaller) NLC grid's cache is
+/// resident too, so we bound by `2×` when `has_vv10`. This catches the
+/// 50-atom/aTZ case (tens of GB) before the allocation aborts the process.
 ///
 /// `budget` is resolved ONCE by the caller (`KsXc::new`/`KsXcUks::new`, via
 /// [`ferric_core::memory::resolve_budget_bytes`]) and reused for both the
@@ -98,20 +206,27 @@ fn full_cache_bytes(nbf: usize, npts: usize) -> usize {
 /// per `KsXc`/`KsXcUks` construction risks the decision and the sizing being
 /// made against two different numbers.
 ///
-/// Returns `Ok(true)` when the full cache fits (use it as-is), `Ok(false)`
-/// when it does not fit but the NLC (VV10) grid alone still fits (fall back
-/// to batching the main grid only), and `Err` when even the always-resident
-/// VV10 NLC cache alone cannot fit (nothing left to fall back to — batching
-/// only ever shrinks the *main*-grid cache, so an over-budget NLC grid by
-/// itself is still a hard failure).
-fn check_grid_budget(nbf: usize, npts: usize, has_vv10: bool, budget: usize) -> Result<bool, KsXcError> {
-    let base = full_cache_bytes(nbf, npts);
+/// Returns `Ok(true)` when the full working set fits (use the cache as-is),
+/// `Ok(false)` when it does not fit but the NLC (VV10) grid alone still fits
+/// (fall back to batching the main grid only), and `Err` when even the
+/// always-resident VV10 NLC cache alone cannot fit (nothing left to fall back
+/// to — batching only ever shrinks the *main*-grid working set, so an
+/// over-budget NLC grid by itself is still a hard failure).
+fn check_grid_budget(
+    nbf: usize,
+    npts: usize,
+    has_vv10: bool,
+    budget: usize,
+    is_uks: bool,
+    needs_tau: bool,
+) -> Result<bool, KsXcError> {
+    let base = full_cache_bytes(nbf, npts, is_uks, needs_tau);
     let needed = if has_vv10 { base.saturating_mul(2) } else { base };
     if needed <= budget {
         return Ok(true);
     }
-    // Full cache (main + NLC, if any) doesn't fit. If there's no VV10, the
-    // main grid alone is the whole ask, and batching can always shrink it
+    // Full working set (main + NLC, if any) doesn't fit. If there's no VV10,
+    // the main grid alone is the whole ask, and batching can always shrink it
     // arbitrarily far (down to 1 point at a time) — so this is never a hard
     // failure once we can batch; return `Ok(false)` (batch it).
     //
@@ -132,17 +247,31 @@ fn check_grid_budget(nbf: usize, npts: usize, has_vv10: bool, budget: usize) -> 
 }
 
 /// Resolve the batch size (points per batch) for the batched semilocal V_xc
-/// fallback. A pure function of `(npts, nbf, budget)` only — NEVER of thread
-/// count — so batch boundaries (and therefore which grid points land in which
-/// batch) are identical no matter how many rayon workers are configured,
-/// which is what keeps the batched-path energy thread-count-invariant.
+/// fallback.
 ///
-/// Sizes the batch so `BATCH_PLANES` resident `(nbf, batch_pts)` planes fit
-/// the budget, clamped to `[1, npts]` (always makes forward progress, and
-/// never batches more finely than the whole grid when it already fits).
-fn resolve_batch_size(nbf: usize, npts: usize, budget: usize) -> usize {
-    let per_point = BATCH_PLANES.saturating_mul(nbf).saturating_mul(8).max(1);
-    let batch_pts = (budget / per_point).max(1);
+/// A pure function of `(nbf, npts, budget, is_uks, needs_tau)` only — NEVER of
+/// thread count — so batch boundaries (and therefore which grid points land in
+/// which batch) are identical no matter how many rayon workers are configured,
+/// which is what keeps the batched-path energy thread-count-invariant. The
+/// `workers` argument to [`MemoryPlan::fit_width`] is pinned to 1 for exactly
+/// that reason: the batch loop is serial across batches (only the work
+/// *inside* a batch fans out), so there is never more than one batch's worth of
+/// planes live, and letting a thread count in here would make the energy
+/// depend on it.
+///
+/// Sizes the batch so one batch's full working set (`batch_point_elems`
+/// `f64`s per point — planes plus the O(npts) companion vectors) fits the
+/// budget, clamped to `[1, npts]`: always makes forward progress, and never
+/// batches more finely than the whole grid when it already fits.
+fn resolve_batch_size(
+    nbf: usize,
+    npts: usize,
+    budget: usize,
+    is_uks: bool,
+    needs_tau: bool,
+) -> usize {
+    let plan = MemoryPlan::with_budget_bytes(budget, "KS-DFT batched V_xc");
+    let batch_pts = plan.fit_width(batch_point_elems(nbf, is_uks, needs_tau), 1);
     batch_pts.min(npts.max(1))
 }
 
@@ -156,7 +285,8 @@ fn resolve_batch_size(nbf: usize, npts: usize, budget: usize) -> usize {
 /// `eval_basis_and_grad_on_points`/`semilocal_vxc_closed_scratch` (rayon over
 /// that batch's points) is unchanged and still applies per batch. Because
 /// batch boundaries are a pure function of `(npts, nbf, budget)` — see
-/// `resolve_batch_size` — and batches are always summed in the same ascending
+/// `resolve_batch_size`, which pins `fit_width`'s worker count to 1 — and
+/// batches are always summed in the same ascending
 /// order, the result is thread-count independent, matching the invariant the
 /// `Full`/non-batched path already provides.
 ///
@@ -283,8 +413,8 @@ fn batched_add_xc_uks(
 /// budget: the main grid is walked in `batch_pts`-sized point-batches, each
 /// batch's χ/∇χ evaluated on demand (never all resident at once) and its
 /// V_xc/E_xc contribution accumulated into the running total. Batch
-/// boundaries are a pure function of `(npts, nbf, budget)` (`resolve_batch_size`)
-/// — never of thread count — so which points land in which batch is fixed
+/// boundaries are a pure function of `(nbf, npts, budget, spin, rung)`
+/// (`resolve_batch_size`) — never of thread count — so which points land in which batch is fixed
 /// for a given system/budget, independent of how rayon happens to schedule
 /// the intra-batch parallel work.
 #[derive(Debug)]
@@ -355,6 +485,34 @@ impl KsXc {
         nlc: &AtomicGridConfig,
         omega: Option<f64>,
     ) -> Result<Self, KsXcError> {
+        Self::new_with_omega_budgeted(mol, bs, xc_name, main, nlc, omega, None)
+    }
+
+    /// [`Self::new_with_omega`] plus an explicit memory budget in bytes.
+    ///
+    /// # Why this exists
+    ///
+    /// The grid AO cache is the largest single allocation in a DFT job, and
+    /// the constructors resolved it with `resolve_budget_bytes(None)` — the
+    /// env / cgroup / RAM-auto-detected ceiling — which silently DISCARDS a
+    /// user's `[memory] budget_gb`. Setting `budget_gb = 4` on a 64 GB box
+    /// still sized the grid cache against ~51 GB. The guard message even
+    /// tells the user to raise `FERRIC_MEM_BUDGET_GB`, which works, while the
+    /// documented primary knob did not.
+    ///
+    /// `None` preserves the previous behaviour exactly (resolve from env /
+    /// auto-detect); `Some(bytes)` is an explicit ceiling that takes
+    /// precedence, per `ferric_core::memory::resolve_budget`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_omega_budgeted(
+        mol: &Molecule,
+        bs: &BasisSet,
+        xc_name: &str,
+        main: &AtomicGridConfig,
+        nlc: &AtomicGridConfig,
+        omega: Option<f64>,
+        memory_budget_bytes: Option<usize>,
+    ) -> Result<Self, KsXcError> {
         let xc = match omega {
             None => xc_def_from_name(xc_name)?,
             Some(w) => crate::libxc::xc_def_from_name_nspin_omega(xc_name, 1, w)?,
@@ -367,14 +525,19 @@ impl KsXc {
         // batch — see `check_grid_budget`'s doc comment for why re-resolving
         // (a live, SCF-allocation-shrinking reading in the auto-detect case)
         // between these two steps would be unsound.
-        let budget = ferric_core::memory::resolve_budget_bytes(None);
-        let fits = check_grid_budget(nbf, grid.len(), xc.vv10.is_some(), budget)?;
+        let budget = ferric_core::memory::resolve_budget_bytes(memory_budget_bytes);
+        // The plane count depends on the functional rung, so `is_mgga` has to
+        // be known *before* the Full-vs-Batched decision and the batch sizing
+        // — not just before the Fock builds that consume it.
+        let is_mgga = xc.funcs.iter().any(|f| matches!(f.family(), FunctionalFamily::MetaGga));
+        let fits =
+            check_grid_budget(nbf, grid.len(), xc.vv10.is_some(), budget, false, is_mgga)?;
         let cache = if fits {
             let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
             let (chi, dchi) = eval_basis_and_grad_on_points(mol, bs, &pts)?;
             GridCache::Full { chi, dchi }
         } else {
-            let batch_pts = resolve_batch_size(nbf, grid.len(), budget);
+            let batch_pts = resolve_batch_size(nbf, grid.len(), budget, false, is_mgga);
             GridCache::Batched { batch_pts }
         };
 
@@ -387,7 +550,6 @@ impl KsXc {
             (None, None, None)
         };
 
-        let is_mgga = xc.funcs.iter().any(|f| matches!(f.family(), FunctionalFamily::MetaGga));
         Ok(Self {
             xc, grid, cache, mol: mol.clone(), bs: bs.clone(),
             nlc_grid, nlc_chi, nlc_dchi, is_mgga,
@@ -399,7 +561,16 @@ impl KsXc {
 
 impl XcContribution for KsXc {
     fn add_xc(&self, d: &Array2<f64>, f: &mut Array2<f64>) -> f64 {
-        let mut scratch = self.scratch.lock().expect("vxc scratch mutex poisoned");
+        // Recover from poisoning rather than panicking on it (all six scratch
+        // locks in this crate now do the same). The guard is held across real
+        // compute, and those regions contain live `.expect()`s; if one ever
+        // fires the mutex is poisoned, and every LATER lock would then panic on
+        // the poison itself — turning one bad iteration into a permanently
+        // wedged KsXc. `VxcScratch` is reusable buffer space, fully overwritten
+        // before use and carrying no invariant a panic could leave
+        // half-updated, so adopting the poisoned value is safe. This is the
+        // idiom the test locks at the bottom of this file already use.
+        let mut scratch = self.scratch.lock().unwrap_or_else(|e| e.into_inner());
         let e_xc = match &self.cache {
             GridCache::Full { chi, dchi } => {
                 let dens = eval_density_closed(d, chi, dchi);
@@ -438,7 +609,7 @@ impl XcContribution for KsXc {
         ) {
             let nlc_dens = eval_density_closed(d, c, dc);
             let mut nlc_scratch =
-                self.nlc_scratch.lock().expect("vv10 scratch mutex poisoned");
+                self.nlc_scratch.lock().unwrap_or_else(|e| e.into_inner());
             add_vv10_scratch(g, c, dc, &nlc_dens, params, f, &mut nlc_scratch)
         } else {
             0.0
@@ -508,6 +679,34 @@ impl KsXcUks {
         nlc: &AtomicGridConfig,
         omega: Option<f64>,
     ) -> Result<Self, KsXcError> {
+        Self::new_with_omega_budgeted(mol, bs, xc_name, main, nlc, omega, None)
+    }
+
+    /// [`Self::new_with_omega`] plus an explicit memory budget in bytes.
+    ///
+    /// # Why this exists
+    ///
+    /// The grid AO cache is the largest single allocation in a DFT job, and
+    /// the constructors resolved it with `resolve_budget_bytes(None)` — the
+    /// env / cgroup / RAM-auto-detected ceiling — which silently DISCARDS a
+    /// user's `[memory] budget_gb`. Setting `budget_gb = 4` on a 64 GB box
+    /// still sized the grid cache against ~51 GB. The guard message even
+    /// tells the user to raise `FERRIC_MEM_BUDGET_GB`, which works, while the
+    /// documented primary knob did not.
+    ///
+    /// `None` preserves the previous behaviour exactly (resolve from env /
+    /// auto-detect); `Some(bytes)` is an explicit ceiling that takes
+    /// precedence, per `ferric_core::memory::resolve_budget`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_omega_budgeted(
+        mol: &Molecule,
+        bs: &BasisSet,
+        xc_name: &str,
+        main: &AtomicGridConfig,
+        nlc: &AtomicGridConfig,
+        omega: Option<f64>,
+        memory_budget_bytes: Option<usize>,
+    ) -> Result<Self, KsXcError> {
         let xc = match omega {
             None => xc_def_from_name_nspin(xc_name, 2)?,
             Some(w) => crate::libxc::xc_def_from_name_nspin_omega(xc_name, 2, w)?,
@@ -517,14 +716,18 @@ impl KsXcUks {
         let nbf = nbasis(mol, bs)?;
         // See `KsXc::new` — resolve the budget ONCE and reuse it for both the
         // decision and the batch sizing.
-        let budget = ferric_core::memory::resolve_budget_bytes(None);
-        let fits = check_grid_budget(nbf, grid.len(), xc.vv10.is_some(), budget)?;
+        let budget = ferric_core::memory::resolve_budget_bytes(memory_budget_bytes);
+        // See `KsXc::new_with_omega` — the rung feeds the plane count, so it
+        // must be known before the budget decision, not after it.
+        let is_mgga = xc.funcs.iter().any(|f| matches!(f.family(), FunctionalFamily::MetaGga));
+        let fits =
+            check_grid_budget(nbf, grid.len(), xc.vv10.is_some(), budget, true, is_mgga)?;
         let cache = if fits {
             let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
             let (chi, dchi) = eval_basis_and_grad_on_points(mol, bs, &pts)?;
             GridCache::Full { chi, dchi }
         } else {
-            let batch_pts = resolve_batch_size(nbf, grid.len(), budget);
+            let batch_pts = resolve_batch_size(nbf, grid.len(), budget, true, is_mgga);
             GridCache::Batched { batch_pts }
         };
 
@@ -537,7 +740,6 @@ impl KsXcUks {
             (None, None, None)
         };
 
-        let is_mgga = xc.funcs.iter().any(|f| matches!(f.family(), FunctionalFamily::MetaGga));
         Ok(Self {
             xc, grid, cache, mol: mol.clone(), bs: bs.clone(),
             nlc_grid, nlc_chi, nlc_dchi, is_mgga,
@@ -557,7 +759,7 @@ impl UksXcContribution for KsXcUks {
     ) -> f64 {
         // Semilocal: build (ρ_α, ρ_β, σ_αα, σ_αβ, σ_ββ) on the main grid
         // then call the polarized libxc path.
-        let mut scratch = self.scratch.lock().expect("vxc scratch mutex poisoned");
+        let mut scratch = self.scratch.lock().unwrap_or_else(|e| e.into_inner());
         let e_xc = match &self.cache {
             GridCache::Full { chi, dchi } => {
                 let dens = eval_density_uks(d_a, d_b, chi, dchi);
@@ -596,7 +798,7 @@ impl UksXcContribution for KsXcUks {
             let dens_total: DensityGrid = eval_density_closed(&d_total, c, dc);
             // Apply VV10 to a single Fock buffer, then add to both spins.
             let mut nlc_scratch =
-                self.nlc_scratch.lock().expect("vv10 scratch mutex poisoned");
+                self.nlc_scratch.lock().unwrap_or_else(|e| e.into_inner());
             let mut v_nl = Array2::<f64>::zeros(f_a.dim());
             let e = add_vv10_scratch(g, c, dc, &dens_total, params, &mut v_nl, &mut nlc_scratch);
             *f_a += &v_nl;
@@ -643,16 +845,124 @@ mod batching_tests {
     fn resolve_batch_size_is_pure_function_of_npts_nbf_budget() {
         // Same inputs -> same batch size, regardless of anything
         // thread-count-related (the function doesn't even see a thread count).
-        let a = resolve_batch_size(25, 35_000, 10_000_000);
-        let b = resolve_batch_size(25, 35_000, 10_000_000);
+        let a = resolve_batch_size(25, 35_000, 10_000_000, false, false);
+        let b = resolve_batch_size(25, 35_000, 10_000_000, false, false);
         assert_eq!(a, b);
         // Sanity: never zero, never bigger than npts.
         assert!(a >= 1);
         assert!(a <= 35_000);
         // A tiny budget still makes forward progress (>=1 point per batch).
-        assert_eq!(resolve_batch_size(1500, 400_000, 1), 1);
+        assert_eq!(resolve_batch_size(1500, 400_000, 1, false, false), 1);
         // A huge budget batches to (at most) the whole grid in one go.
-        assert_eq!(resolve_batch_size(7, 100, usize::MAX / 2), 100);
+        assert_eq!(resolve_batch_size(7, 100, usize::MAX / 2, false, false), 100);
+    }
+
+    /// The batch size must not move when the rayon pool does — the batched
+    /// energy's thread-count invariance rests on batch boundaries being a pure
+    /// function of the *problem*, and `fit_width`'s `workers` argument is the
+    /// one place a thread count could have leaked in.
+    #[test]
+    fn resolve_batch_size_does_not_depend_on_the_rayon_pool() {
+        let run = |threads: usize| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap()
+                .install(|| resolve_batch_size(120, 250_000, 64_000_000, false, true))
+        };
+        assert_eq!(run(1), run(8));
+    }
+
+    /// `batch_planes` against a hand-enumeration of what each `(spin, rung)`
+    /// combination actually allocates. If someone adds a plane to
+    /// `eval_density_*` / `eval_tau_*` / `semilocal_vxc_*` without updating
+    /// `batch_planes`, this is the test that should fail.
+    #[test]
+    fn batch_planes_matches_an_explicit_enumeration() {
+        // chi (1) + dchi (3) + VxcScratch::buf (1), always resident.
+        let resident = 1 + 3 + 1;
+
+        // Closed-shell LDA/GGA: largest stage is phi = D·chi (1 plane).
+        assert_eq!(batch_planes(false, false), resident + 1, "closed-shell LDA/GGA");
+        // Closed-shell meta-GGA: eval_tau_closed's psi[0..3] (3) beats phi (1).
+        assert_eq!(batch_planes(false, true), resident + 3, "closed-shell meta-GGA");
+        // UKS LDA/GGA: eval_density_uks runs two GEMMs, phi_a + phi_b (2).
+        assert_eq!(batch_planes(true, false), resident + 2, "UKS LDA/GGA");
+        // UKS meta-GGA: eval_tau_uks is two *sequential* eval_tau_closed calls,
+        // so the tau stage is 3 planes, not 6 — and it still beats phi_a+phi_b.
+        assert_eq!(batch_planes(true, true), resident + 3, "UKS meta-GGA");
+
+        // Concrete numbers, so a change is visible in the diff rather than
+        // only in an expression.
+        assert_eq!(
+            [
+                batch_planes(false, false),
+                batch_planes(false, true),
+                batch_planes(true, false),
+                batch_planes(true, true),
+            ],
+            [6, 8, 7, 8],
+        );
+
+        // The old constant was 5 — strictly below every one of them. That is
+        // the bug this function replaced; guard against regressing to it.
+        for &(uks, tau) in &[(false, false), (false, true), (true, false), (true, true)] {
+            assert!(
+                batch_planes(uks, tau) > AoGridKind::ValueAndGrad.planes() + 1,
+                "the old 5-plane constant undercounted (is_uks={uks}, needs_tau={tau})"
+            );
+        }
+    }
+
+    /// A batch is sized by planes *and* by the O(npts) companion vectors, and
+    /// a richer path must never be sized as generously as a leaner one.
+    #[test]
+    fn batch_size_shrinks_monotonically_with_the_working_set() {
+        const NBF: usize = 200;
+        const NPTS: usize = 500_000;
+        const BUDGET: usize = 2_000_000_000; // 2 GB
+        let gga = resolve_batch_size(NBF, NPTS, BUDGET, false, false);
+        let mgga = resolve_batch_size(NBF, NPTS, BUDGET, false, true);
+        let uks_gga = resolve_batch_size(NBF, NPTS, BUDGET, true, false);
+        let uks_mgga = resolve_batch_size(NBF, NPTS, BUDGET, true, true);
+        assert!(mgga < gga, "meta-GGA holds more planes: {mgga} vs {gga}");
+        assert!(uks_gga < gga, "UKS holds more planes: {uks_gga} vs {gga}");
+        assert!(uks_mgga <= mgga, "UKS meta-GGA: {uks_mgga} vs {mgga}");
+
+        // And every one of them is smaller than the old 5-plane sizing, which
+        // is the whole point: the fallback used to over-commit by up to ~1.6×.
+        let old_5_plane = BUDGET / (5 * NBF * 8);
+        assert!(gga < old_5_plane, "{gga} must be below the old {old_5_plane}");
+        assert!(uks_mgga < old_5_plane);
+    }
+
+    /// A budget far too small for even one point must still yield a usable
+    /// batch size (>= 1) on every path, and must not panic or divide by zero.
+    #[test]
+    fn a_tiny_budget_still_yields_a_workable_batch_on_every_path() {
+        for &(uks, tau) in &[(false, false), (false, true), (true, false), (true, true)] {
+            for &budget in &[0usize, 1, 8] {
+                let b = resolve_batch_size(2000, 1_000_000, budget, uks, tau);
+                assert_eq!(b, 1, "budget={budget}, is_uks={uks}, needs_tau={tau}");
+            }
+            // Degenerate shapes must not panic either.
+            assert_eq!(resolve_batch_size(0, 0, 0, uks, tau), 1);
+        }
+    }
+
+    /// An ample budget must still admit the whole grid in one batch — an
+    /// over-estimating guard that refuses a job which would have fit is as
+    /// much a bug as an under-estimating one.
+    #[test]
+    fn an_ample_budget_still_takes_the_whole_grid_in_one_batch() {
+        for &(uks, tau) in &[(false, false), (false, true), (true, false), (true, true)] {
+            assert_eq!(resolve_batch_size(500, 200_000, usize::MAX / 2, uks, tau), 200_000);
+            // ...and check_grid_budget agrees that the Full cache fits.
+            assert!(
+                check_grid_budget(500, 200_000, false, usize::MAX / 2, uks, tau).unwrap(),
+                "an ample budget must take the Full cache, not batch needlessly"
+            );
+        }
     }
 
     /// Batched V_xc/E_xc must agree with the cached (`Full`) path to ≤1e-10 Ha

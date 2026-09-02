@@ -19,7 +19,7 @@ pub fn run_u_cohsex(
     mo_b_b: &MoB,
     pdep: PdepRpaResult,
     qp_range: std::ops::Range<usize>,
-    _gw_cfg: &GwConfig,
+    gw_cfg: &GwConfig,
     v_dressed: &Array2<f64>,
 ) -> Result<UGwResult, FerricError> {
     let m_modes = v_dressed.ncols();
@@ -28,8 +28,8 @@ pub fn run_u_cohsex(
 
     let sigma_x_a_all = sigma_x_diag(mo_b_a);
     let sigma_x_b_all = sigma_x_diag(mo_b_b);
-    let m_proj_a = project_b_into_pdep(mo_b_a, v_dressed);
-    let m_proj_b = project_b_into_pdep(mo_b_b, v_dressed);
+    let m_proj_a = project_b_into_pdep(mo_b_a, v_dressed, gw_cfg.memory_budget_bytes)?;
+    let m_proj_b = project_b_into_pdep(mo_b_b, v_dressed, gw_cfg.memory_budget_bytes)?;
 
     let (dsex_a, scoh_a) = cohsex_pieces(mo_b_a, &m_proj_a, &w_static);
     let (dsex_b, scoh_b) = cohsex_pieces(mo_b_b, &m_proj_b, &w_static);

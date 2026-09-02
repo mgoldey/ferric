@@ -203,7 +203,7 @@ mod inner {
         }
 
         let sigma_x_all = sigma_x_diag(mo_b);
-        let m_proj = project_b_into_pdep(mo_b, v_dressed);
+        let m_proj = project_b_into_pdep(mo_b, v_dressed, gw_cfg.memory_budget_bytes)?;
         let inv_diel_freq = pdep.inv_dielectric_freq.as_ref().ok_or_else(|| {
             FerricError::General(
                 "PDEP result missing inv_dielectric_freq (GW requires the dense χ₀ path)".into(),
