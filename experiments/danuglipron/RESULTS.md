@@ -683,6 +683,49 @@ not diagnosed.**
   9.5 GB peak being a FULL cache plus SCF matrices, i.e. batching probably never
   engaged. Testing this needs an uncontended box.
 
+### The cost term is IDENTIFIED, and ">57 min" is probably not a cost result
+
+`vxc.rs` assembles V_xc with `buf.dot(&chi.t())` -- an `(nbf, npts) x (npts, nbf)`
+GEMM, i.e. **O(nbf^2 x npts)**, executed **every SCF iteration**. Since npts is
+proportional to atom count, that is cubic in molecular size and paid per
+iteration, which is exactly the shape the constant-iteration measurement
+demanded.
+
+Calibrated on the alkane runs, predicting from **alkane_5 alone**:
+
+| atoms | predicted | actual |
+|---|---|---|
+| 32 | 17.8 s | 19.6 s |
+| 62 | 134.3 s | 130.2 s |
+
+Within 10% across a **54x** span of cost. Encoded as
+`tools/pipeline/cost.py::xc_fock_work` / `predicted_seconds()`.
+
+**Applied to danuglipron (nbf=235, npts=585,750) the model predicts 6.8 min** --
+not the >57 min recorded in M10.
+
+**What the re-run actually showed.** With the budget PINNED at 9 GB and the cap
+raised to 11 GB, the neutral acid ran to **7:26** and was still going. But at
+that point its CPU had fallen from 250-600% to **77%**, `/proc/pressure/memory`
+read `some avg10=49`, and **swap was 100% consumed (1.9/1.9 GiB) with active
+si/so traffic**. The job was THRASHING, so its wall time was I/O-bound, not
+compute-bound. I killed it: past that point the clock measures paging, not
+chemistry.
+
+**Revised reading of M10's ">57 min", stated as a hypothesis and not a
+conclusion:** that run auto-resolved a **7.26 GB** budget (live MemAvailable,
+depressed by other jobs), needed ~9.5-9.9 GB, and spent its time paging before
+being OOM-killed. The cost model says the *compute* is ~7 min. If that is
+right, tier 4's headline number was never a measurement of DFT cost -- it was a
+measurement of memory contention, and the fix is the budget pin plus enough
+headroom, not a cheaper method.
+
+**This is NOT yet established.** Confirming it needs one clean run of the
+neutral acid on a box with >=12 GB genuinely free, reporting `iterations` and
+finishing without swap traffic. Every attempt so far has been interrupted by
+competing jobs (three separate occasions on 2026-09-02). Until then M10's
+">57 min" stands as recorded, with this caveat attached.
+
 ### Iteration count is CONSTANT; the N^3 lives INSIDE each iteration (2026-09-02)
 
 Built the `iterations` / `exit_reason` getters on `PyDftResult` and re-ran the
