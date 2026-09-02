@@ -156,11 +156,39 @@ def tier3_gfn2(iso: Isomer, context: dict) -> TierResult:
 def tier4_dft(iso: Isomer, context: dict) -> TierResult:
     """ferric Kohn-Sham DFT -- the most expensive tier.
 
-    Measured 96.1 s at 32 atoms (def2-SVP/PBE), extrapolating to 17-37 min at
-    70 atoms, so this must only ever see the handful the tiers above left.
+    Measured 96.1 s at 32 atoms (def2-SVP/PBE; re-measured 99.0 s on
+    2026-09-02), so this must only ever see the handful the tiers above left.
+
+    Cost here is driven by ATOM COUNT, not basis size: ferric's KS grid is
+    75x110 per atom, so a smaller basis does NOT make a big molecule cheap.
+    See `tools/pipeline/cost.py`.
+
+    `mem_budget_gb` is forwarded to `FERRIC_MEM_BUDGET_GB` because ferric's
+    default is `0.8 x` *live* MemAvailable. That makes the internal
+    Full-vs-Batched AO-cache decision depend on whatever else happens to be
+    running on the box -- the same candidate can take the fast path or the
+    batching path between two runs of the SAME pipeline. Pinning it keeps the
+    tier reproducible; leaving it None preserves ferric's auto-detect.
     """
+    import os
+
     import ferric
 
+    budget = context.get("mem_budget_gb")
+    prior = os.environ.get("FERRIC_MEM_BUDGET_GB")
+    if budget is not None:
+        os.environ["FERRIC_MEM_BUDGET_GB"] = str(budget)
+    try:
+        return _tier4_dft_inner(iso, context, ferric)
+    finally:
+        if budget is not None:
+            if prior is None:
+                os.environ.pop("FERRIC_MEM_BUDGET_GB", None)
+            else:
+                os.environ["FERRIC_MEM_BUDGET_GB"] = prior
+
+
+def _tier4_dft_inner(iso: Isomer, context: dict, ferric) -> TierResult:
     symbols, coords = _embedded(iso, context)
     if symbols is None:
         return TierResult(iso.canonical, None, "no geometry for DFT")

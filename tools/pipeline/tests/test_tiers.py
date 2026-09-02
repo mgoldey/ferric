@@ -94,3 +94,61 @@ def test_every_adapter_shares_the_same_signature():
     for fn in (tier1_dock, tier2_forcefield, tier3_gfn2, tier4_dft):
         params = list(inspect.signature(fn).parameters)
         assert params == ["iso", "context"], f"{fn.__name__} has {params}"
+
+
+def test_tier4_pins_the_memory_budget_and_restores_it(monkeypatch):
+    """The Full-vs-Batched AO-cache decision must not depend on box load.
+
+    ferric's default budget is 0.8 x *live* MemAvailable, so an unrelated job
+    starting mid-pipeline can silently flip a candidate onto the batching
+    path. tier4 forwards `mem_budget_gb` to FERRIC_MEM_BUDGET_GB to make that
+    decision deterministic -- and must leave the environment as it found it.
+    """
+    import os
+
+    import tools.pipeline.tiers as tiers
+
+    seen = {}
+
+    def fake_inner(iso, context, ferric):
+        seen["budget"] = os.environ.get("FERRIC_MEM_BUDGET_GB")
+        return TierResult(iso.canonical, -1.0)
+
+    monkeypatch.setattr(tiers, "_tier4_dft_inner", fake_inner)
+    monkeypatch.delenv("FERRIC_MEM_BUDGET_GB", raising=False)
+
+    r = tiers.tier4_dft(SMALL, {"mem_budget_gb": 8})
+    assert r.ok
+    assert seen["budget"] == "8"                      # pinned during the call
+    assert "FERRIC_MEM_BUDGET_GB" not in os.environ   # and restored after
+
+
+def test_tier4_without_a_budget_leaves_ferric_autodetect_alone(monkeypatch):
+    import os
+
+    import tools.pipeline.tiers as tiers
+
+    seen = {}
+
+    def fake_inner(iso, context, ferric):
+        seen["budget"] = os.environ.get("FERRIC_MEM_BUDGET_GB")
+        return TierResult(iso.canonical, -1.0)
+
+    monkeypatch.setattr(tiers, "_tier4_dft_inner", fake_inner)
+    monkeypatch.delenv("FERRIC_MEM_BUDGET_GB", raising=False)
+
+    tiers.tier4_dft(SMALL, {})
+    assert seen["budget"] is None
+
+
+def test_tier4_restores_a_preexisting_budget(monkeypatch):
+    import os
+
+    import tools.pipeline.tiers as tiers
+
+    monkeypatch.setattr(tiers, "_tier4_dft_inner",
+                        lambda iso, ctx, f: TierResult(iso.canonical, -1.0))
+    monkeypatch.setenv("FERRIC_MEM_BUDGET_GB", "3")
+
+    tiers.tier4_dft(SMALL, {"mem_budget_gb": 8})
+    assert os.environ["FERRIC_MEM_BUDGET_GB"] == "3"
