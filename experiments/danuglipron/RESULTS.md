@@ -861,15 +861,26 @@ taking the box down). Breaking that down:
 
 | term | size |
 |---|---|
-| full AO cache (nbf=235, npts=585,750) | 4.40 GB |
-| **everything else** | **5.08 GB** |
+| full AO cache (chi + grad-chi, nbf=235, npts=585,750) | 4.40 GB |
+| RI three-index `(P\|mn)` tensor | **1.61 GB** |
+| RI metric `(P\|Q)` | 0.11 GB |
+| **subtotal** | **6.12 GB** |
+| observed peak | ~9.75 GB |
+| unaccounted | 3.63 GB |
 
-At 235 basis functions a Fock matrix is **0.44 MB**, so 5.08 GB is the
-equivalent of ~11,500 of them. It is not DIIS history (~20 matrices, ~9 MB) and
-it is not the RI three-index tensors (`def2-universal-jkfit`, naux ~700-950 ->
-**0.31-0.42 GB**). **Where the other 5 GB goes is unidentified.** Recorded as an
-open question rather than guessed at; it may or may not be related to the
-runtime anomaly.
+**Corrected 2026-09-02:** I first estimated the RI tensor at 0.31-0.42 GB by
+guessing naux ~700-950. Counted from the basis JSON it is **3,635 auxiliary
+functions** -- `def2-universal-jkfit` is built for large orbital bases and
+`run_dft` always enables it, so at STO-3G the aux basis is **15x** the orbital
+basis (3,635 vs 235). That single correction moved 1.2 GB from "unexplained"
+into "accounted for", and is the most actionable memory finding here: **a
+JK-fitting basis matched to STO-3G would cut ~1.6 GB.**
+
+The remaining 3.63 GB is plausibly transient copies during the RI build (form
+the tensor, then contract it) plus Fock/DIIS/grid working set, but that is NOT
+measured. DIIS history is ruled out: `diis.rs` uses a FIXED-capacity ring
+buffer, so it cannot grow with iteration count, and at 0.44 MB per matrix it is
+~9 MB regardless.
 
 Note also that the budget auto-resolved to **7.26 GB**, not the ~9.6 GB expected
 from `0.8 x` the 12 GB cap, because auto-detect reads *live* MemAvailable and

@@ -151,3 +151,31 @@ def test_correcting_for_iteration_count_recovers_the_measurement():
 
     with_iters = work_only * (18 / 10)
     assert abs(with_iters - 612.4) / 612.4 < 0.25        # with iterations: close
+
+
+def test_ri_tensor_is_a_first_class_memory_term():
+    """The RI (P|mn) tensor is ~a sixth of a drug-scale run's peak.
+
+    Measured on danuglipron: naux=3,635 (counted from the bundled
+    def2-universal-jkfit JSON), nbf=235 -> 1.61 GB. An earlier guess of
+    naux~700-950 was low by ~4x and left 1.2 GB filed as unexplained, which is
+    why this is computed rather than estimated.
+    """
+    from tools.pipeline.cost import ri_tensor_gb
+
+    assert abs(ri_tensor_gb(235, 3635) - 1.61) < 0.02
+
+
+def test_aux_basis_dwarfs_the_orbital_basis_at_sto3g():
+    """def2-universal-jkfit is sized for LARGE orbital bases.
+
+    At STO-3G it is 15x the orbital basis, so the fitting tensor costs more
+    than the accuracy it can deliver. Pinned because the fix (a right-sized
+    JK-fitting basis) is worth ~1.6 GB and is easy to forget.
+    """
+    from tools.pipeline.cost import ri_tensor_gb
+
+    nbf, naux = 235, 3635
+    assert naux / nbf > 10
+    # The tensor is larger than the entire SCF matrix working set.
+    assert ri_tensor_gb(nbf, naux) > 100 * (nbf * nbf * 8 / 1e9)

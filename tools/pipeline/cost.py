@@ -124,6 +124,22 @@ def sto3g_basis_functions(symbols: list[str]) -> int:
     return sum(_STO3G_NBF.get(s, 5) for s in symbols)
 
 
+def ri_tensor_gb(n_basis_functions: int, n_aux_functions: int) -> float:
+    """Resident RI three-index `(P|mn)` tensor: naux x nbf^2 x 8 bytes.
+
+    `run_dft` always enables RI-J with `def2-universal-jkfit`, which is sized
+    for large orbital bases. At STO-3G that aux basis is grossly oversized:
+    measured on danuglipron, **3,635 aux functions against 235 orbital
+    functions (15x)**, for a 1.61 GB tensor -- a sixth of the run's ~9.75 GB
+    peak, spent on fitting accuracy the orbital basis cannot use.
+
+    Counted from `crates/ferric-core/src/basis/bundled/def2-universal-jkfit.json`,
+    not estimated: a first guess of "naux ~700-950" was low by ~4x and left
+    1.2 GB wrongly filed as unexplained.
+    """
+    return n_aux_functions * n_basis_functions * n_basis_functions * 8 / 1e9
+
+
 def fits_in_budget(size: DftSize, budget_gb: float) -> bool:
     """Whether the full AO cache fits, i.e. whether ferric avoids batching.
 
