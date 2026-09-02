@@ -215,9 +215,31 @@ jobs:
           cd /tmp
           wget -q https://gitlab.com/libeigen/eigen/-/archive/${EIGEN_VERSION}/eigen-${EIGEN_VERSION}.tar.gz
           tar xzf eigen-${EIGEN_VERSION}.tar.gz
+          # TWO consumers with DIFFERENT requirements, hence two installs:
+          #
+          # 1. ferric's own build.rs hardcodes `/usr/include/eigen3` as an
+          #    include path (crates/ferric-integrals/build.rs) — a plain header
+          #    copy is all that needs.
+          # 2. libint2's CMake calls find_package(Eigen3), which needs Eigen's
+          #    generated CMake CONFIG files (Eigen3Config.cmake et al.), not
+          #    headers. Copying headers alone left it failing with
+          #    "C++ API cannot be built without Eigen3" (run 33636559804) even
+          #    though every header was present — find_package does not look for
+          #    headers, it looks for the config package.
+          #
+          # So: copy the headers for (1), and run Eigen's own trivial
+          # (header-only) CMake install into $PREFIX for (2), then point
+          # libint2 at it via CMAKE_PREFIX_PATH below.
           mkdir -p /usr/include/eigen3
           cp -r eigen-${EIGEN_VERSION}/Eigen /usr/include/eigen3/
           cp -r eigen-${EIGEN_VERSION}/unsupported /usr/include/eigen3/
+
+          mkdir -p eigen-${EIGEN_VERSION}/build && cd eigen-${EIGEN_VERSION}/build
+          cmake .. -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DBUILD_TESTING=OFF
+          make install
+          cd /tmp
 
           if [ -f "$PREFIX/.done" ]; then
             echo "native deps cache hit -- skipping OpenBLAS/libxc/libint2 source builds"
@@ -292,7 +314,14 @@ jobs:
           # outright. Set pre-emptively rather than waiting for a third failed
           # run to prove it — libint2 is the OLDER of the two sources, so if
           # libxc tripped this, libint2 was going to as well.
+          # CMAKE_PREFIX_PATH="$PREFIX" so libint2's find_package(Eigen3)
+          # locates the Eigen CMake config package installed above. Without it
+          # libint2 refuses to build its C++ API — "C++ API cannot be built
+          # without Eigen3" — even with every Eigen header present under
+          # /usr/include/eigen3, because find_package looks for the config
+          # package, not for headers.
           cmake .. -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_INSTALL_LIBDIR=lib \
+            -DCMAKE_PREFIX_PATH="$PREFIX" \
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
             -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
             -DCMAKE_BUILD_TYPE=Release
