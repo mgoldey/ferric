@@ -90,6 +90,33 @@ workflow.
 - The repo uses a pre-push hook (`scripts/install-hooks.sh`) that runs the CI
   gate. Install it after cloning.
 
+### The complexity gate
+
+`scripts/ci-gate.sh` includes a CC/MI regression gate
+(`scripts/complexity_gate.py`) that compares each function against a
+checked-in snapshot, `scripts/complexity_baseline.json`. It fails only on a
+regression versus that snapshot, not on an absolute threshold — several
+SCF/RPA kernels are legitimately complex and are not targets for mechanical
+splitting.
+
+Two things about it are worth knowing before it blocks a push:
+
+- **A stale baseline blocks everyone, not just you.** The snapshot is a
+  checked-in file, so it goes stale as unrelated commits land. When it does,
+  the gate reports regressions in code your branch never touched. Before
+  assuming your diff is at fault, run the gate on an unmodified checkout of
+  `main` **at the same filesystem path** and compare the two regression sets.
+  Regenerate with `python3 scripts/complexity_gate.py --update-baseline`, and
+  commit the refreshed JSON on its own so what it absorbs is visible in
+  review rather than folded into an unrelated change.
+- **Compare at the same path.** Baseline keys are repo-relative, so the gate
+  works from a worktree — but a baseline generated before that fix stored
+  absolute paths, matched nothing from any other directory, and passed
+  vacuously while comparing against zero entries. The gate now refuses to
+  report `PASS` when a non-empty baseline shares no keys with the scan; if you
+  see that error, regenerate the baseline. When in doubt, prefer a same-path
+  control: a gate run that measured nothing looks exactly like a clean one.
+
 ## Third-party licenses
 
 ferric itself is dual-licensed under MIT OR Apache-2.0. It links against
