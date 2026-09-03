@@ -96,61 +96,93 @@ def tier1_dock(iso: Isomer, context: dict) -> TierResult:
     The score is an empirical ranking heuristic, NOT a binding free energy, and
     is used here only to order poses for the tiers above. Validated on this
     target by redocking 7LCJ to 0.95 A.
+
+    **Spend the budget on SEEDS, not on exhaustiveness.** Measured on this
+    target (RESULTS.md M11): across an 8x range of `exhaustiveness` the mean
+    redock RMSD moved 0.097 A, which is SMALLER than the 0.131 A between-seed
+    SEM -- and no seed improved monotonically with effort. What did move the
+    number was the starting conformer. So `n_seeds` docks the ligand from
+    several independent ETKDG embeddings and keeps the best-scoring pose, which
+    buys real spread coverage where extra search effort bought noise.
+
+    `n_seeds=1` reproduces the old single-embedding behaviour exactly.
     """
     from rdkit import Chem
     from rdkit.Chem import AllChem
 
     from tools.docking import dock_ligand
 
-    mol = Chem.MolFromSmiles(iso.canonical)
-    if mol is None:
+    mol0 = Chem.MolFromSmiles(iso.canonical)
+    if mol0 is None:
         return TierResult(iso.canonical, None, "unparseable SMILES")
     # Meeko requires a single connected molecule. A transform can split one --
     # e.g. a ring contraction that severs the ring rather than shrinking it --
     # and the resulting salt/fragment pair is not a dockable ligand. Rejected
     # here with a readable reason rather than 300 lines of Meeko traceback.
-    if len(Chem.GetMolFrags(mol)) > 1:
+    if len(Chem.GetMolFrags(mol0)) > 1:
         return TierResult(iso.canonical, None,
                           f"not a single connected molecule "
-                          f"({len(Chem.GetMolFrags(mol))} fragments)")
-    mol = Chem.AddHs(mol)
-    params = AllChem.ETKDGv3()
-    params.randomSeed = context.get("seed", 0xF00D)
-    params.useSmallRingTorsions = True
-    try:
-        if AllChem.EmbedMolecule(mol, params) != 0:
-            return TierResult(iso.canonical, None, "ETKDG could not embed for docking")
-        AllChem.MMFFOptimizeMolecule(mol)
-    except Exception as e:  # noqa: BLE001
-        return TierResult(iso.canonical, None, f"prep failed: {type(e).__name__}: {e}")
+                          f"({len(Chem.GetMolFrags(mol0))} fragments)")
 
-    try:
-        res = dock_ligand(mol, context["receptor_pdbqt"], context["box_center"],
-                          context.get("box_size", (24.0, 24.0, 24.0)),
-                          exhaustiveness=context.get("exhaustiveness", 16),
-                          n_poses=context.get("n_poses", 10),
-                          seed=context.get("seed", 0xF00D),
-                          # Default 1, NOT Vina's 0: this tier runs inside a
-                          # funnel that fans out across ligands, and two levels
-                          # of parallelism oversubscribe the box. See
-                          # dock_ligand's `cpu` docs.
-                          cpu=context.get("vina_cpu", 1))
-    except ImportError as e:
-        # vina/meeko are an optional extra (`pip install ferric[docking]`),
-        # because they are not installable on every Python the wheel targets.
-        # A tier that cannot run must say WHY it cannot run -- reporting this
-        # as a docking failure would send the reader hunting for a receptor or
-        # a bad ligand when the real answer is an uninstalled package.
+    base_seed = context.get("seed", 0xF00D)
+    n_seeds = max(1, int(context.get("n_seeds", 1)))
+    best_overall = None
+    prep_errors: list[str] = []
+
+    for k in range(n_seeds):
+        seed = base_seed + k
+        mol = Chem.AddHs(Chem.Mol(mol0))
+        params = AllChem.ETKDGv3()
+        params.randomSeed = seed
+        params.useSmallRingTorsions = True
+        try:
+            if AllChem.EmbedMolecule(mol, params) != 0:
+                prep_errors.append(f"seed {seed}: ETKDG could not embed")
+                continue
+            AllChem.MMFFOptimizeMolecule(mol)
+        except Exception as e:  # noqa: BLE001
+            prep_errors.append(f"seed {seed}: {type(e).__name__}: {e}")
+            continue
+
+        try:
+            res = dock_ligand(mol, context["receptor_pdbqt"],
+                              context["box_center"],
+                              context.get("box_size", (24.0, 24.0, 24.0)),
+                              exhaustiveness=context.get("exhaustiveness", 16),
+                              n_poses=context.get("n_poses", 10),
+                              seed=seed,
+                              # Default 1, NOT Vina's 0: this tier runs inside a
+                              # funnel that fans out across ligands, and two
+                              # levels of parallelism oversubscribe the box.
+                              # See dock_ligand's `cpu` docs.
+                              cpu=context.get("vina_cpu", 1))
+        except ImportError as e:
+            # vina/meeko are an optional extra (`pip install ferric[docking]`),
+            # because they are not installable on every Python the wheel
+            # targets. A tier that cannot run must say WHY it cannot run --
+            # reporting this as a docking failure would send the reader hunting
+            # for a receptor or a bad ligand when the real answer is an
+            # uninstalled package.
+            return TierResult(iso.canonical, None,
+                              f"docking unavailable ({e}); "
+                              f"install the 'docking' extra to enable tier 1")
+        if not res.ok:
+            prep_errors.append(f"seed {seed}: {res.error}")
+            continue
+        cand = res.best
+        if best_overall is None or cand.vina_score < best_overall[0].vina_score:
+            best_overall = (cand, len(res.poses), seed)
+
+    if best_overall is None:
         return TierResult(iso.canonical, None,
-                          f"docking unavailable ({e}); "
-                          f"install the 'docking' extra to enable tier 1")
-    if not res.ok:
-        return TierResult(iso.canonical, None, res.error)
-    best = res.best
+                          "; ".join(prep_errors) or "docking produced no pose")
+    best, n_poses, winning_seed = best_overall
     return TierResult(iso.canonical, best.vina_score,
                       payload={"symbols": best.symbols,
                                "coords": best.coords_angstrom,
-                               "n_poses": len(res.poses)})
+                               "n_poses": n_poses,
+                               "n_seeds": n_seeds,
+                               "winning_seed": winning_seed})
 
 
 def tier3_gfn2(iso: Isomer, context: dict) -> TierResult:

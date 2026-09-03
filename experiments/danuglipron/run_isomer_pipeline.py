@@ -7,8 +7,8 @@ finally DFT'd -- with every tier's survivors, rejects and failures recorded.
 
 ## Cost, measured on this box
 
-    tier 1  Vina           26.4 s/ligand at exhaustiveness 4, cpu=0 (MEASURED)
-                           109.0 s at cpu=1 -- but 10 of those run concurrently
+    tier 1  Vina           26.4 s/dock at exhaustiveness 4, cpu=0 (MEASURED)
+                           109.0 s at cpu=1 -- but 10 run concurrently, x3 seeds
     tier 2  MMFF94         ~ms
     tier 3  GFN2-xTB       ~0.5 s single point
     tier 4  ferric DFT     612.4 s / 18 iterations, converged, at 71 atoms
@@ -132,6 +132,14 @@ def main() -> int:
         # Vina's own default (0) takes every core, and its internal
         # parallelism runs at only 34% efficiency (M11).
         "vina_cpu": 1,
+        # 3 independent ETKDG embeddings per ligand. M11 measured the starting
+        # conformer as the variable that MOVES redock RMSD (0.75-1.24 A across
+        # seeds) while exhaustiveness does not (0.097 A across an 8x range,
+        # below the 0.131 A between-seed SEM). Spending the budget freed by
+        # ex=16 -> 4 on seeds instead is strictly better sampling, and the whole
+        # screen is still ~2x faster than the single-seed ex=16 configuration
+        # it replaces.
+        "n_seeds": 3,
         "n_poses": 10,
         "basis": "def2-svp",
         "functional": "PBE",

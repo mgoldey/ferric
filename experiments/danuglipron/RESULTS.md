@@ -509,6 +509,15 @@ minutes of GFN2 MD. Docking reached 0.95 A in ~2 minutes.
 
 **Pose generation is solved for this target.** M7's root cause is closed.
 
+> **Refined by M11 (2026-09-02).** This was ONE seed at `exhaustiveness=32`,
+> `n_poses=20`. Repeating across 3 seeds and 4 effort levels puts 0.95 A
+> comfortably inside the observed 0.75-1.24 A band, so the headline conclusion
+> holds -- but the 32 is not load-bearing and was never the reason it worked.
+> Measured, `exhaustiveness=4` reaches the same accuracy for a quarter of the
+> cost, and 32 has the WORST mean of the four levels tried. The variable that
+> actually moves this number is the ETKDG SEED, not the search effort.
+> Do not cite the 32 as a validated requirement.
+
 ### The cheap score finds the pose but cannot rank it
 
 Measured on the same run: r(vina_score, RMSD) = **+0.461**, and only **4 of 20**
@@ -1088,16 +1097,29 @@ Redock danuglipron into 7LCJ, 3 ETKDG seeds per level, best-of-10 RMSD against
 the crystal pose. The ligand is re-embedded each time, so the search starts
 from a geometry carrying no information about the answer.
 
-| exhaustiveness | seed 61453 | 61454 | 61455 | mean | s/dock |
-|---|---|---|---|---|---|
-| 4 | 1.11 | 1.14 | 0.75 | **1.00** | 26.4 |
-| 8 | 1.11 | 1.14 | 0.75 | **1.00** | 34.5 |
-| 16 | 1.20 | 0.92 | 0.75 | **0.96** | 67.6 |
+| exhaustiveness | seed 61453 | 61454 | 61455 | mean | SEM | s/dock | cost |
+|---|---|---|---|---|---|---|---|
+| **4** | 1.11 | 1.14 | 0.75 | **1.00** | 0.13 | 26.4 | 1.0x |
+| 8 | 1.11 | 1.14 | 0.75 | **1.00** | 0.13 | 34.5 | 1.3x |
+| 16 | 1.20 | 0.92 | 0.75 | **0.96** | 0.13 | 67.6 | 2.6x |
+| 32 | 1.24 | 1.15 | 0.77 | **1.05** | 0.14 | 102.8 | 3.9x |
 
-**Every level passes the 2.0 A bar on every seed.** The between-level
-differences (<=0.03 A) sit an **order of magnitude below the within-level SEM
-(0.13 A)**, so they are not measurements of anything. Quoted as SEM and not as
-a range, because a range grows with n (M6).
+**Every level passes the 2.0 A bar on every seed**, and the spread of the means
+across an **8x range of search effort is 0.097 A -- SMALLER than the 0.131 A
+within-level SEM**. The differences are not measurements of anything. Quoted as
+SEM and not as a range, because a range grows with n (M6).
+
+**No seed improves monotonically with effort**, and the most expensive setting
+has the WORST mean (1.05 A at 32 vs 1.00 A at 4, for 3.9x the price):
+
+| seed | ex=4 -> 8 -> 16 -> 32 |
+|---|---|
+| 61453 | 1.11 -> 1.11 -> 1.20 -> 1.24 (monotonically WORSE) |
+| 61454 | 1.14 -> 1.14 -> 0.92 -> 1.15 (non-monotone) |
+| 61455 | 0.75 -> 0.75 -> 0.75 -> 0.77 (flat) |
+
+That is what search noise looks like. Anything read as a trend here would be
+reading noise as signal.
 
 **Seed matters more than search effort.** The 0.75-1.20 A spread tracks the
 starting conformer, not exhaustiveness -- at seed 61455 every level returns
