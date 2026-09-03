@@ -141,8 +141,28 @@ def main() -> int:
         # it replaces.
         "n_seeds": 3,
         "n_poses": 10,
-        "basis": "def2-svp",
+        # 6-31G, not def2-SVP. Sized with tools/pipeline/cost.py BEFORE
+        # spending the compute, which is the whole reason that model exists:
+        #
+        #   basis      nbf   AO cache   fits 9 GB   est/candidate
+        #   sto-3g     234     4.32 GB        yes        10.2 min
+        #   6-31g      434     8.02 GB        yes        35.1 min
+        #   def2-svp   719    13.29 GB         NO        96.3 min
+        #
+        # def2-SVP would need 13.29 GB of resident AO cache -- more than the
+        # pinned budget and more than this box has free -- so it would fall to
+        # the batching path or OOM, and cost ~4.8 h for KEEPS[-1]=3. That is
+        # M10's failure mode exactly. 6-31G is a genuine step up from minimal
+        # basis and fits with headroom.
+        "basis": "6-31g",
         "functional": "PBE",
+        # PIN the DFT memory budget. ferric's default is 0.8 x *live*
+        # MemAvailable, which makes the AO-cache Full-vs-Batched decision depend
+        # on whatever else is running -- and an under-resolved budget is exactly
+        # what turned tier 4's real ~10 min into M10's ">57 min, did not finish"
+        # (it paged until the kernel OOM-killed it). 9 GB fits the 4.4 GB AO
+        # cache plus SCF state with headroom on this 23 GB box.
+        "mem_budget_gb": 9,
     }
 
     stages = [
