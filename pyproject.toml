@@ -27,9 +27,28 @@ dependencies = [
 # only, so 3.13 falls back to the sdist, which needs Boost headers that are
 # not present on a stock runner. That broke the wheel smoke test for a
 # reason having nothing to do with the wheel.
+#
+# rdkit and scipy are listed explicitly even though only meeko imports them
+# directly: meeko 0.8.0 declares zero dependencies on PyPI (`pip show meeko`
+# reports an empty `Requires:`) despite needing several at import time.
+# Chased to the end in an isolated venv carrying ONLY docking's own declared
+# deps (not dev's): `import meeko` fails first on rdkit (preparation.py),
+# then on scipy (receptor_pdbqt.py), then on gemmi (chemtempgen.py) -- gemmi
+# is not re-listed here because it is already a core dependency above, so it
+# is always present alongside this extra, but rdkit and scipy are not.
+# Installing rdkit alone still fails on scipy: the extra is not usable until
+# all of its own gaps are filled, so guessing one fix and stopping there
+# would still leave `pip install 'ferric[docking]'` broken. Verified end to
+# end against the published wheel (ferric core + this extra, no [dev]):
+# meeko preparing a real RDKit molecule to PDBQT, and a bare `Vina(...)`
+# construction. Both rdkit and scipy ship wheels across cp310-cp313 (rdkit
+# also cp314), so neither reintroduces the source-build problem vina itself
+# had on 3.13.
 docking = [
     "vina>=1.2.7",
     "meeko>=0.8.0",
+    "rdkit>=2024.3",
+    "scipy>=1.11",
 ]
 dev = [
     "ipython>=9.13.0",
