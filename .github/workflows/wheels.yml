@@ -81,6 +81,48 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The tag IS the version -- pyproject.toml's checked-in "0.1.0" is a
+      # dev placeholder, never the version actually published. maturin has no
+      # dynamic-version support for the pyo3 backend (no `dynamic = ["version"]`
+      # equivalent; confirmed against `maturin build --help`, which offers no
+      # env/flag to override it), so the only way to make the tag the source
+      # of truth is to rewrite both files that hardcode the version BEFORE
+      # `maturin build` runs -- pyproject.toml (what maturin actually reads
+      # for the wheel filename/METADATA when `[project].version` is present)
+      # and crates/ferric-python/Cargo.toml (kept in lockstep so the two
+      # never drift, even though maturin itself doesn't consult the Cargo.toml
+      # version when pyproject.toml has one).
+      #
+      # Only runs on a tag push -- a workflow_dispatch run (no tag) leaves
+      # both files at their checked-in placeholder, since that path never
+      # reaches `publish` anyway (see its `if:` guard).
+      - name: Stamp the version from the tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          tag_version="${GITHUB_REF#refs/tags/v}"
+          # Require the tag to ALREADY be canonical PEP 440 -- no hyphens.
+          # PEP 440 normalization is not a simple strip/replace: "-rc1" drops
+          # the hyphen but "-post1"/"-dev1" gain a "." separator, and a bare
+          # "-1" means ".post1" (verified against `packaging.version.Version`
+          # by hand; not reimplementing that table in bash). Rather than risk
+          # this step and the publish job's wheel-filename check disagreeing
+          # on a normalized form neither reproduces exactly, tags MUST arrive
+          # pre-normalized: v1.2.3, v1.2.3rc1, v1.2.3.post1, v1.2.3.dev1,
+          # v1.2.3+local -- never v1.2.3-rc1. Every string this accepts is
+          # its own PEP 440 normalization (round-trips byte-identical through
+          # `Version()`), so the raw tag can be compared textually downstream
+          # with no normalization step anywhere.
+          if ! [[ "$tag_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+((a|b|rc)[0-9]+)?(\.post[0-9]+)?(\.dev[0-9]+)?(\+[a-zA-Z0-9.]+)?$ ]]; then
+            echo "::error::tag 'v${tag_version}' is not canonical PEP 440 (no hyphens -- use v1.2.3rc1, not v1.2.3-rc1) -- refusing to stamp"
+            exit 1
+          fi
+          echo "stamping version ${tag_version} from tag ${GITHUB_REF}"
+          sed -i "0,/^version = /s/^version = .*/version = \"${tag_version}\"/" pyproject.toml
+          sed -i "0,/^version = /s/^version = .*/version = \"${tag_version}\"/" crates/ferric-python/Cargo.toml
+          grep -m1 "^version" pyproject.toml
+          grep -m1 "^version" crates/ferric-python/Cargo.toml
+
       # Same rationale as ci.yml's "Free runner disk space" step: the
       # manylinux_2_28 image maturin-action pulls is itself several GB, on
       # top of which this job builds OpenBLAS + libxc + libint2 from source
@@ -508,33 +550,80 @@ jobs:
           print("Smoke test PASSED.")
           PYEOF
 
-  # Not implemented: publishing to PyPI. This workflow proves the wheel
-  # BUILDS and RUNS; it deliberately stops short of `maturin publish` /
-  # `pypa/gh-action-pypi-publish` (trusted publishing or a token) so that
-  # the first several tag pushes can be inspected by a human before anything
-  # public happens automatically. Wire this up once:
-  #   1. At least one tag push has produced wheels a human downloaded and
-  #      actually exercised beyond this workflow's smoke test.
-  #   2. PyPI trusted publishing (OIDC) is configured for this project, OR a
-  #      PYPI_API_TOKEN secret is added -- prefer trusted publishing, no
-  #      long-lived token to leak.
-  #   3. Someone has confirmed the wheel size against PyPI's per-file limit
-  #      (see the PR description -- expect roughly 100-200 MB given the
-  #      bundled OpenBLAS/libxc/libint2/libecpint; PyPI's DEFAULT cap is
-  #      100 MB per file and a raise has to be requested from PyPI support
-  #      before a large wheel can be uploaded at all).
+  # Publishes to PyPI via trusted publishing (OIDC) -- no long-lived token in
+  # this repo. All three prerequisites this job used to wait on are now met:
+  #   1. Wheels from a real run (33697177255, built from c87e7456) were
+  #      downloaded and exercised by hand beyond this workflow's own smoke
+  #      test -- installed into fresh venvs for all four Python versions and
+  #      used to run a real RI-MP2/aug-cc-pVDZ water calculation, cross-
+  #      checked against an independent PySCF reference to 6e-9 Ha.
+  #   2. Trusted publishing is configured on PyPI for this project (a
+  #      "pending publisher" registered with owner=mgoldey, repo=ferric,
+  #      workflow=wheels.yml, environment=pypi -- see pypi.org/manage/account
+  #      /publishing/). Nothing to store as a GitHub secret; the `id-token:
+  #      write` permission below is what lets this job mint the short-lived
+  #      OIDC token PyPI's Trusted Publishers API exchanges for upload
+  #      credentials, scoped to this one job run only.
+  #   3. Wheel size confirmed well under PyPI's 100 MB default per-file cap:
+  #      all four (cp310-cp313) measured ~65.5 MiB, not the 100-200 MB this
+  #      job's placeholder comment once guessed.
   #
-  # publish:
-  #   needs: [build-wheels, smoke-test]
-  #   if: startsWith(github.ref, 'refs/tags/v')
-  #   runs-on: ubuntu-22.04
-  #   environment: pypi
-  #   permissions:
-  #     id-token: write  # OIDC trusted publishing
-  #   steps:
-  #     - uses: actions/download-artifact@v4
-  #       with:
-  #         pattern: wheels-*
-  #         path: dist
-  #         merge-multiple: true
-  #     - uses: pypa/gh-action-pypi-publish@release/v1
+  # The `pypi` GitHub Environment referenced below does not need protection
+  # rules to make this job WORK, but adding a required reviewer there is the
+  # cheapest available brake on an accidental tag push publishing a bad
+  # wheel -- consider turning that on before the first real release.
+  publish:
+    needs: [build-wheels, smoke-test]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-22.04
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write  # OIDC trusted publishing -- no PYPI_API_TOKEN secret
+    steps:
+      # pattern + merge-multiple: pulls all four wheels-cp3.NN artifacts
+      # (built separately per Python version above) into one flat dist/ --
+      # gh-action-pypi-publish uploads everything it finds there in one go.
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+
+      - name: Sanity-check what is about to be uploaded
+        run: |
+          set -euo pipefail
+          echo "-- publishing from ref: ${GITHUB_REF} --"
+          ls -lh dist/
+          # Every wheel filename must carry the same version as the tag
+          # (v0.1.0 -> ferric-0.1.0-*), and there must be exactly one wheel
+          # per supported CPython tag. The "Stamp the version from the tag"
+          # step in build-wheels is what makes this true in the normal case
+          # -- pyproject.toml's version IS the tag by the time maturin builds
+          # -- so a mismatch here means that step's rewrite didn't reach this
+          # leg's build (a cache serving a pre-stamp checkout, a matrix leg
+          # that failed before stamping and got re-run against stale state,
+          # etc), not a hand-edited version drifting from the tag. Either
+          # way: fail before PyPI ever sees it, since a bad upload to a
+          # version that already exists cannot be overwritten or deleted,
+          # only yanked.
+          tag_version="${GITHUB_REF#refs/tags/v}"
+          count=$(ls dist/*.whl | wc -l)
+          echo "wheel count: $count (expect 4: cp310, cp311, cp312, cp313)"
+          if [[ "$count" -ne 4 ]]; then
+            echo "::error::expected 4 wheels, found $count -- refusing to publish a partial release"
+            exit 1
+          fi
+          for whl in dist/*.whl; do
+            case "$whl" in
+              *"ferric-${tag_version}-"*) ;;
+              *)
+                echo "::error::$whl does not match tag version $tag_version"
+                exit 1
+                ;;
+            esac
+          done
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
