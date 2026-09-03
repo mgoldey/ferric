@@ -57,80 +57,42 @@ env:
   OPENBLAS_VERSION: "0.3.27"
   LIBXC_VERSION: "6.2.2"
   EIGEN_VERSION: "3.4.0"
-  # Bump this to invalidate every native-deps cache entry below at once (e.g.
-  # after changing a pinned version or a CMake flag) without having to hunt
-  # down every individual cache key.
-  NATIVE_DEPS_CACHE_VERSION: v1
 
 jobs:
-  build-wheels:
+  # Builds OpenBLAS + libxc + libint2 + Eigen ONCE, inside the SAME
+  # manylinux_2_28 container build-wheels uses, and hands the result to all
+  # four matrix legs as a build artifact instead of each of them building
+  # its own copy.
+  #
+  # This replaced a 4-way actions/cache RACE that made the cache close to
+  # useless: all four build-wheels legs shared one cache key (native deps
+  # don't depend on the target Python version), all four started at the
+  # same time, all four missed the cache simultaneously on a cold cache, and
+  # only ONE of the four `actions/cache/save` calls could win -- the other
+  # three logged "Cache save failed" (a soft warning, not a failed step) and
+  # their ~75-125 min of native-build work was thrown away. Measured on run
+  # 33697177255: legs took 76/101/110/125 min despite starting together and
+  # building byte-identical output, and only build-wheels(3.10)'s save
+  # actually landed; the annotations for 3.11/3.12/3.13 read "Cache save
+  # failed." A WARM cache (the lucky leg that wins the race, or a later run
+  # reusing what it saved) is fast; this job makes EVERY run warm for all
+  # four legs, not one in four.
+  #
+  # actions/upload-artifact + download-artifact instead of actions/cache:
+  # a race is structurally impossible when exactly one job writes and N jobs
+  # only ever read -- there is no "who gets there first", no restore-vs-save
+  # ordering to reason about, and no silent partial-success like the cache
+  # save's soft-fail above.
+  build-native-deps:
     runs-on: ubuntu-22.04
-    # Four Python versions x a from-scratch OpenBLAS+libxc+libint2 build (the
-    # cache below only helps from the SECOND matrix leg onward, since all
-    # four legs start in parallel with nothing cached yet) -- generous
-    # headroom on the same reasoning as ci.yml's 170 min.
-    timeout-minutes: 180
-    strategy:
-      # false: a numerics or link failure on one CPython version is likely
-      # present on all of them (same native deps, same shim), so let every
-      # leg finish and report instead of burning runner time four times over
-      # discovering the same root cause serially.
-      fail-fast: false
-      matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
 
-      # The tag IS the version -- pyproject.toml's checked-in "0.1.0" is a
-      # dev placeholder, never the version actually published. maturin has no
-      # dynamic-version support for the pyo3 backend (no `dynamic = ["version"]`
-      # equivalent; confirmed against `maturin build --help`, which offers no
-      # env/flag to override it), so the only way to make the tag the source
-      # of truth is to rewrite both files that hardcode the version BEFORE
-      # `maturin build` runs -- pyproject.toml (what maturin actually reads
-      # for the wheel filename/METADATA when `[project].version` is present)
-      # and crates/ferric-python/Cargo.toml (kept in lockstep so the two
-      # never drift, even though maturin itself doesn't consult the Cargo.toml
-      # version when pyproject.toml has one).
-      #
-      # Only runs on a tag push -- a workflow_dispatch run (no tag) leaves
-      # both files at their checked-in placeholder, since that path never
-      # reaches `publish` anyway (see its `if:` guard).
-      - name: Stamp the version from the tag
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: |
-          set -euo pipefail
-          tag_version="${GITHUB_REF#refs/tags/v}"
-          # Require the tag to ALREADY be canonical PEP 440 -- no hyphens.
-          # PEP 440 normalization is not a simple strip/replace: "-rc1" drops
-          # the hyphen but "-post1"/"-dev1" gain a "." separator, and a bare
-          # "-1" means ".post1" (verified against `packaging.version.Version`
-          # by hand; not reimplementing that table in bash). Rather than risk
-          # this step and the publish job's wheel-filename check disagreeing
-          # on a normalized form neither reproduces exactly, tags MUST arrive
-          # pre-normalized: v1.2.3, v1.2.3rc1, v1.2.3.post1, v1.2.3.dev1,
-          # v1.2.3+local -- never v1.2.3-rc1. Every string this accepts is
-          # its own PEP 440 normalization (round-trips byte-identical through
-          # `Version()`), so the raw tag can be compared textually downstream
-          # with no normalization step anywhere.
-          if ! [[ "$tag_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+((a|b|rc)[0-9]+)?(\.post[0-9]+)?(\.dev[0-9]+)?(\+[a-zA-Z0-9.]+)?$ ]]; then
-            echo "::error::tag 'v${tag_version}' is not canonical PEP 440 (no hyphens -- use v1.2.3rc1, not v1.2.3-rc1) -- refusing to stamp"
-            exit 1
-          fi
-          echo "stamping version ${tag_version} from tag ${GITHUB_REF}"
-          sed -i "0,/^version = /s/^version = .*/version = \"${tag_version}\"/" pyproject.toml
-          sed -i "0,/^version = /s/^version = .*/version = \"${tag_version}\"/" crates/ferric-python/Cargo.toml
-          grep -m1 "^version" pyproject.toml
-          grep -m1 "^version" crates/ferric-python/Cargo.toml
-
-      # Same rationale as ci.yml's "Free runner disk space" step: the
-      # manylinux_2_28 image maturin-action pulls is itself several GB, on
-      # top of which this job builds OpenBLAS + libxc + libint2 from source
-      # and then a maturin/auditwheel output tree. Not copying ci.yml's exact
-      # deletions here because this job never touches dotnet/Android/etc via
-      # the runner's OWN toolchain (everything native happens inside the
-      # container) -- but the container image pull alone is large enough that
-      # a full disk is still the likeliest first failure, hence this stays.
+      # Same reasoning as build-wheels' own "Free runner disk space" step
+      # (unchanged below) -- this job pulls the same multi-GB manylinux_2_28
+      # image and does the same from-source native builds, just once instead
+      # of four times, so it hits the same disk-pressure risk on its own.
       - name: Free runner disk space
         run: |
           echo "--- before"; df -h / | tail -1
@@ -140,72 +102,13 @@ jobs:
           sudo docker image prune --all --force > /dev/null 2>&1 || true
           echo "--- after"; df -h / | tail -1
 
-      # Cache the BUILT native deps (OpenBLAS + libxc + libint2 + libecpint's
-      # own build is per-crate via CARGO's own cache, not here), keyed on
-      # their pinned versions plus the container tag, so a bump to any one
-      # version invalidates cleanly. This is restore-only for the same reason
-      # as ci.yml's libint2 cache: actions/cache saves in a post-step that
-      # runs only on success, so a red run must not be the thing that decides
-      # whether the next run pays the ~20+ min native build again. The
-      # matching save step below runs on success() specifically (not
-      # always()) for the same "don't poison the cache with a
-      # cancelled/truncated tree" reasoning ci.yml documents.
-      #
-      # Cached under the WORKSPACE, not /tmp: maturin-action's Docker build
-      # mounts only $GITHUB_WORKSPACE into the manylinux container (see its
-      # source -- the `docker run` call bind-mounts the workspace at the same
-      # path and mounts nothing else host-side, not even /tmp). A path under
-      # /tmp would build fine inside the container's OWN, unrelated /tmp, but
-      # actions/cache runs on the HOST runner and would then be saving and
-      # restoring an always-empty host directory -- a cache that "hits" but
-      # never actually skips the ~20+ min source build. native-deps-cache/ is
-      # .gitignore'd immediately below so it never gets committed.
-      - name: Restore native deps cache
-        id: cache-native
-        uses: actions/cache/restore@v4
-        with:
-          path: ${{ github.workspace }}/native-deps-cache
-          key: native-deps-${{ env.NATIVE_DEPS_CACHE_VERSION }}-manylinux_2_28-openblas${{ env.OPENBLAS_VERSION }}-libxc${{ env.LIBXC_VERSION }}-libint${{ env.LIBINT_VERSION }}-eigen${{ env.EIGEN_VERSION }}
-
-      - name: Keep native-deps-cache out of the wheel / git
-        run: echo "native-deps-cache/" >> .git/info/exclude
-
-      # Runs INSIDE the manylinux_2_28 (AlmaLinux 8) container, before
-      # `maturin build`. Everything ferric's build.rs links against (Eigen
-      # headers, libint2 + libecpint statically, OpenBLAS + libxc
-      # dynamically -- see crates/ferric-integrals/build.rs and
-      # crates/ferric-dft/build.rs) has to exist inside THIS container, not
-      # the ubuntu-22.04 host: the host's apt packages are the wrong glibc/ABI
-      # to link into a manylinux_2_28 wheel.
-      #
-      # OpenBLAS and libxc are linked `dylib` by ferric's build.rs (not
-      # `static`), so they end up as `.so`s that `maturin --manylinux`'s
-      # built-in auditwheel-equivalent (patchelf-based repair) vendors INTO
-      # the wheel -- that vendoring is what makes the wheel self-contained
-      # for those two libraries. libint2 and libecpint are already linked
-      # `static` in build.rs (PIC-enabled per ci.yml's convention), so they
-      # end up inside the `.so` directly and need no repair step at all.
-      #
-      # Building all three from source here (rather than dnf-installing
-      # whatever AlmaLinux/EPEL happens to carry) is deliberate: it is the
-      # only way to KNOW the OpenBLAS version being shipped, which matters
-      # given the Zen 4 garbage-numerics incident ci.yml documents -- an
-      # unpinned distro package could silently reintroduce exactly that.
-      #
-      # Written into the WORKSPACE (not /tmp) for the same mount reason as
-      # the cache step above: this file has to be visible from inside the
-      # container, and only $GITHUB_WORKSPACE is guaranteed to be.
+      # The FULL native-deps build -- compiler toolchain + Eigen + OpenBLAS +
+      # libxc + libint2 -- lives ONLY here now. build-wheels below has its
+      # own much smaller "Prepare container for maturin build" step that
+      # copies just the Eigen headers (the one piece a fresh per-leg
+      # container still needs on its own filesystem); it is not a second
+      # copy of this script.
       - name: Write native-deps build script
-        # Quoted heredoc ('SCRIPT_EOF') so nothing here is expanded while
-        # WRITING the file -- every $VAR below is meant to be interpreted
-        # when the script later RUNS inside the container, not now on the
-        # host. Version numbers and PREFIX are passed as positional args
-        # ($1-$5) from the before-script-linux invocation instead of being
-        # baked in as literals or exported: this step's `run:` executes on
-        # the ubuntu-22.04 HOST, not inside the manylinux container, and
-        # maturin-action forwards only an allowlisted subset of env var
-        # NAMES into the container (see the before-script-linux comment
-        # below), which does not include these.
         run: |
           mkdir -p native-deps-cache
           cat > native-deps-cache/build-native-deps.sh << 'SCRIPT_EOF'
@@ -223,14 +126,6 @@ jobs:
           # for Ubuntu's g++). gfortran is OpenBLAS's reference-LAPACK path.
           # perl-IPC-Cmd is OpenSSL's (transitive, via wget/cmake) build dep on
           # this image; harmless to include even if not strictly needed here.
-          # Unconditional (NOT behind the cache-hit check below): every
-          # matrix leg starts a BRAND NEW container, so even when the
-          # expensive source builds are cache-hit, this fresh container still
-          # needs the compiler toolchain to build ferric ITSELF afterward
-          # (the C++ shims in ferric-integrals/build.rs, ferric-dft's cc
-          # build, etc.), and Eigen's headers (copied below) are cheap enough
-          # that fetching them on every run is simpler than caching a handful
-          # of header files separately.
           # The Fortran compiler package is `gcc-toolset-12-gcc-gfortran`, NOT
           # `gcc-toolset-12-gfortran`. RHEL8/AlmaLinux names the toolset's
           # compilers `gcc-toolset-N-gcc-<lang>` (the bare `gcc-toolset-12`
@@ -261,7 +156,11 @@ jobs:
           #
           # 1. ferric's own build.rs hardcodes `/usr/include/eigen3` as an
           #    include path (crates/ferric-integrals/build.rs) — a plain header
-          #    copy is all that needs.
+          #    copy is all that needs. build-wheels' own "Prepare container
+          #    for maturin build" step repeats JUST this copy (not the
+          #    CMake install below) on every matrix leg's fresh container --
+          #    this job's copy exists so build-native-deps' OWN container can
+          #    build libint2 against it below, not for anything downstream.
           # 2. libint2's CMake calls find_package(Eigen3), which needs Eigen's
           #    generated CMake CONFIG files (Eigen3Config.cmake et al.), not
           #    headers. Copying headers alone left it failing with
@@ -282,11 +181,6 @@ jobs:
             -DBUILD_TESTING=OFF
           make install
           cd /tmp
-
-          if [ -f "$PREFIX/.done" ]; then
-            echo "native deps cache hit -- skipping OpenBLAS/libxc/libint2 source builds"
-            exit 0
-          fi
 
           NPROC=$(nproc)
 
@@ -374,6 +268,184 @@ jobs:
           SCRIPT_EOF
           chmod +x native-deps-cache/build-native-deps.sh
 
+      # Plain `docker run` against the SAME image maturin-action itself pulls
+      # for `manylinux: 2_28` (quay.io/pypa/manylinux_2_28_x86_64:latest,
+      # confirmed from a real run's log -- maturin-action does not publish
+      # this mapping anywhere easier to point at, so this is read off actual
+      # `docker pull` output, not guessed at from its README). Using the
+      # identical image is the whole point: the ABI compatibility this
+      # workflow's header comment explains (AlmaLinux 8 glibc/libstdc++,
+      # required for auditwheel-repair) only holds if what builds OpenBLAS/
+      # libxc/libint2 here is bit-for-bit the same environment build-wheels
+      # later links them from -- a different image, even a nearby one, would
+      # silently reopen exactly the ABI mismatch this file was written to
+      # avoid, and no test in this workflow would catch it before a user's
+      # `pip install` did. Bind-mounting the workspace at the SAME path the
+      # runner sees it at (rather than some container-local path) matches
+      # maturin-action's own mounting (confirmed in the same log), which
+      # matters because build-native-deps.sh assumes $PREFIX ends up at a
+      # path meaningful on the host afterward (it does not care about the
+      # path's value, only that it is consistent -- but matching keeps this
+      # job's invocation legible next to maturin-action's own docker run).
+      - name: Build native deps (manylinux_2_28 container)
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "${{ github.workspace }}:${{ github.workspace }}" \
+            -w "${{ github.workspace }}" \
+            quay.io/pypa/manylinux_2_28_x86_64:latest \
+            bash native-deps-cache/build-native-deps.sh \
+              "${{ github.workspace }}/native-deps-cache" \
+              "${{ env.EIGEN_VERSION }}" "${{ env.OPENBLAS_VERSION }}" \
+              "${{ env.LIBXC_VERSION }}" "${{ env.LIBINT_VERSION }}"
+
+      - name: Keep native-deps-cache out of the wheel / git
+        run: echo "native-deps-cache/" >> .git/info/exclude
+
+      # Artifact, not actions/cache: this is the one and only writer, so
+      # there is nothing to race. Every build-wheels leg downloads this by
+      # name below.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-deps
+          path: native-deps-cache/
+          if-no-files-found: error
+          # Native deps are only useful for the SAME run's build-wheels
+          # legs (they key off pinned versions from this run's env: block,
+          # not off anything persisted across runs) -- short retention keeps
+          # this from lingering as dead storage after the run completes.
+          retention-days: 1
+
+  build-wheels:
+    needs: build-native-deps
+    runs-on: ubuntu-22.04
+    # One from-scratch native build is now build-native-deps' job, not this
+    # one's -- each leg here only pays its own maturin build (compiling
+    # ferric's Rust workspace + linking against the downloaded native deps),
+    # which is the ~15-25 min ci.yml's own cargo build measures, not the
+    # ~75-125 min the pre-fix version of this job spent per leg rebuilding
+    # OpenBLAS/libxc/libint2/Eigen redundantly. Lower than the old 180 for
+    # that reason; see build-native-deps' own timeout for where the native
+    # build's headroom now lives.
+    timeout-minutes: 60
+    strategy:
+      # false: a numerics or link failure on one CPython version is likely
+      # present on all of them (same native deps, same shim), so let every
+      # leg finish and report instead of burning runner time four times over
+      # discovering the same root cause serially.
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      # The tag IS the version -- pyproject.toml's checked-in "0.1.0" is a
+      # dev placeholder, never the version actually published. maturin has no
+      # dynamic-version support for the pyo3 backend (no `dynamic = ["version"]`
+      # equivalent; confirmed against `maturin build --help`, which offers no
+      # env/flag to override it), so the only way to make the tag the source
+      # of truth is to rewrite both files that hardcode the version BEFORE
+      # `maturin build` runs -- pyproject.toml (what maturin actually reads
+      # for the wheel filename/METADATA when `[project].version` is present)
+      # and crates/ferric-python/Cargo.toml (kept in lockstep so the two
+      # never drift, even though maturin itself doesn't consult the Cargo.toml
+      # version when pyproject.toml has one).
+      #
+      # Only runs on a tag push -- a workflow_dispatch run (no tag) leaves
+      # both files at their checked-in placeholder, since that path never
+      # reaches `publish` anyway (see its `if:` guard).
+      - name: Stamp the version from the tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          tag_version="${GITHUB_REF#refs/tags/v}"
+          # Require the tag to ALREADY be canonical PEP 440 -- no hyphens.
+          # PEP 440 normalization is not a simple strip/replace: "-rc1" drops
+          # the hyphen but "-post1"/"-dev1" gain a "." separator, and a bare
+          # "-1" means ".post1" (verified against `packaging.version.Version`
+          # by hand; not reimplementing that table in bash). Rather than risk
+          # this step and the publish job's wheel-filename check disagreeing
+          # on a normalized form neither reproduces exactly, tags MUST arrive
+          # pre-normalized: v1.2.3, v1.2.3rc1, v1.2.3.post1, v1.2.3.dev1,
+          # v1.2.3+local -- never v1.2.3-rc1. Every string this accepts is
+          # its own PEP 440 normalization (round-trips byte-identical through
+          # `Version()`), so the raw tag can be compared textually downstream
+          # with no normalization step anywhere.
+          if ! [[ "$tag_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+((a|b|rc)[0-9]+)?(\.post[0-9]+)?(\.dev[0-9]+)?(\+[a-zA-Z0-9.]+)?$ ]]; then
+            echo "::error::tag 'v${tag_version}' is not canonical PEP 440 (no hyphens -- use v1.2.3rc1, not v1.2.3-rc1) -- refusing to stamp"
+            exit 1
+          fi
+          echo "stamping version ${tag_version} from tag ${GITHUB_REF}"
+          sed -i "0,/^version = /s/^version = .*/version = \"${tag_version}\"/" pyproject.toml
+          sed -i "0,/^version = /s/^version = .*/version = \"${tag_version}\"/" crates/ferric-python/Cargo.toml
+          grep -m1 "^version" pyproject.toml
+          grep -m1 "^version" crates/ferric-python/Cargo.toml
+
+      # Same rationale as ci.yml's "Free runner disk space" step: the
+      # manylinux_2_28 image maturin-action pulls is itself several GB, on
+      # top of which this job produces a maturin/auditwheel output tree.
+      - name: Free runner disk space
+        run: |
+          echo "--- before"; df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/share/swift \
+            "$AGENT_TOOLSDIRECTORY/CodeQL" 2>/dev/null || true
+          sudo docker image prune --all --force > /dev/null 2>&1 || true
+          echo "--- after"; df -h / | tail -1
+
+      # The built OpenBLAS/libxc/libint2/Eigen tree from build-native-deps --
+      # built ONCE for all four legs, see that job for why (was a 4-way
+      # actions/cache race before this). download-artifact, not cache: this
+      # is the ONLY place that reads it, so there is no restore-vs-save
+      # ordering to reason about, and a missing artifact is a hard failure
+      # here rather than a silent "start the ~75 min build over" cache miss.
+      - name: Download native deps
+        uses: actions/download-artifact@v4
+        with:
+          name: native-deps
+          path: native-deps-cache
+
+      - name: Keep native-deps-cache out of the wheel / git
+        run: echo "native-deps-cache/" >> .git/info/exclude
+
+      # Runs INSIDE the manylinux_2_28 (AlmaLinux 8) container, before
+      # `maturin build`. This is now everything a FRESH container needs that
+      # build-native-deps' one-time build could not already bake into the
+      # downloaded artifact -- every matrix leg here starts its own new
+      # container, and the artifact download above only puts files under
+      # native-deps-cache/; it does not touch this container's own
+      # filesystem.
+      #
+      # Eigen headers specifically: crates/ferric-integrals/build.rs hardcodes
+      # `/usr/include/eigen3` as a `cc` include path (a real filesystem path
+      # the crate's own build script looks for, independent of wherever the
+      # downloaded artifact happens to land), so it has to be copied into
+      # THIS container on every leg -- copying a few header files is cheap
+      # enough that doing it four times costs nothing next to what moved
+      # into build-native-deps.
+      #
+      # No gcc-toolset-12/gfortran install here anymore: that was ONLY for
+      # building OpenBLAS's reference LAPACK from source, which now happens
+      # once in build-native-deps. ferric's own build (the C++ shim compiled
+      # via the `cc` crate) needs a C++ compiler, which the manylinux_2_28
+      # image's base toolchain already provides -- it was never gfortran's
+      # job to satisfy that.
+      - name: Prepare container for maturin build
+        run: |
+          mkdir -p native-deps-cache
+          cat > native-deps-cache/prepare-container.sh << 'SCRIPT_EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          EIGEN_VERSION="$1"
+          cd /tmp
+          wget -q https://gitlab.com/libeigen/eigen/-/archive/${EIGEN_VERSION}/eigen-${EIGEN_VERSION}.tar.gz
+          tar xzf eigen-${EIGEN_VERSION}.tar.gz
+          mkdir -p /usr/include/eigen3
+          cp -r eigen-${EIGEN_VERSION}/Eigen /usr/include/eigen3/
+          cp -r eigen-${EIGEN_VERSION}/unsupported /usr/include/eigen3/
+          SCRIPT_EOF
+          chmod +x native-deps-cache/prepare-container.sh
+
       - name: Build wheel (manylinux_2_28 container)
         uses: PyO3/maturin-action@v1
         with:
@@ -401,33 +473,20 @@ jobs:
           # PKG_CONFIG_PATH, CPATH, or LIBINT2_PREFIX. Exporting inline is
           # the only path proven to reach the build.
           #
-          # This is also where OpenBLAS/libxc/libint2/Eigen get built (via
-          # the script written above, into $GITHUB_WORKSPACE/native-deps-cache
-          # so the actions/cache steps around this one can see the result).
+          # This is where the FRESH container gets Eigen headers (see
+          # "Prepare container for maturin build" above for why that's still
+          # done per-container) and the env vars pointing at the DOWNLOADED
+          # native-deps artifact -- no build happens here anymore, only
+          # placement + linking of what build-native-deps already produced.
           before-script-linux: |
             set -euo pipefail
             NATIVE_PREFIX="$(pwd)/native-deps-cache"
-            bash "$NATIVE_PREFIX/build-native-deps.sh" "$NATIVE_PREFIX" \
-              "${{ env.EIGEN_VERSION }}" "${{ env.OPENBLAS_VERSION }}" \
-              "${{ env.LIBXC_VERSION }}" "${{ env.LIBINT_VERSION }}"
+            bash "$NATIVE_PREFIX/prepare-container.sh" "${{ env.EIGEN_VERSION }}"
             export LIBINT2_PREFIX="$NATIVE_PREFIX"
             export PKG_CONFIG_PATH="$NATIVE_PREFIX/lib/pkgconfig:$NATIVE_PREFIX/lib64/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
             export LD_LIBRARY_PATH="$NATIVE_PREFIX/lib:$NATIVE_PREFIX/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
             export LIBRARY_PATH="$NATIVE_PREFIX/lib:$NATIVE_PREFIX/lib64${LIBRARY_PATH:+:$LIBRARY_PATH}"
             export CPATH="$NATIVE_PREFIX/include${CPATH:+:$CPATH}"
-
-      # Same success()-only, not always(), reasoning as ci.yml's libint2 save:
-      # this is an EXTERNAL-dependency build cache. Whether ferric's own
-      # wheel build succeeds afterward says nothing about whether OpenBLAS/
-      # libxc/libint2 were built correctly; saving unconditionally on a
-      # CANCELLED run would write a truncated tree that poisons every later
-      # restore, which is why this is success() and not !cancelled().
-      - name: Save native deps cache
-        if: success() && steps.cache-native.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: ${{ github.workspace }}/native-deps-cache
-          key: native-deps-${{ env.NATIVE_DEPS_CACHE_VERSION }}-manylinux_2_28-openblas${{ env.OPENBLAS_VERSION }}-libxc${{ env.LIBXC_VERSION }}-libint${{ env.LIBINT_VERSION }}-eigen${{ env.EIGEN_VERSION }}
 
       - name: Wheel size / contents sanity check
         run: |
