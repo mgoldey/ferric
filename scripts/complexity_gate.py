@@ -107,8 +107,28 @@ def scan() -> dict:
                         data = json.load(fh)
                 except (json.JSONDecodeError, OSError):
                     continue
-                # Recover the real source path relative to the repo root.
-                rel = os.path.relpath(fpath, tmp).removesuffix(".json")
+                # Recover the real source path, RELATIVE TO THE REPO ROOT.
+                #
+                # rust-code-analysis-cli mirrors its input's ABSOLUTE path
+                # under -o, so relpath(fpath, tmp) yields the absolute source
+                # path minus its leading "/" (e.g.
+                # "home/you/qc/ferric/crates/ferric-cc/src/ccd.rs"). Baking
+                # that into the key made every key machine- and
+                # checkout-specific: running the gate from a git worktree, a
+                # clone at another path, or CI produced keys that matched
+                # NOTHING in the baseline. Every function then read as
+                # brand-new, and brand-new functions only fail above
+                # NEW_FUNCTION_CC_CEILING -- so the gate PASSED vacuously
+                # while comparing against nothing at all. It reported
+                # "6102 functions checked, no regressions" from a worktree
+                # whose real regression count was 16.
+                #
+                # Keying on the repo-relative path makes the baseline portable
+                # and the comparison meaningful from any checkout. See
+                # assert_baseline_is_comparable() for the guard that makes a
+                # future recurrence of the vacuous-pass class loud.
+                abs_src = "/" + os.path.relpath(fpath, tmp).removesuffix(".json")
+                rel = os.path.relpath(abs_src, ROOT)
 
                 def walk(node):
                     if node.get("kind") == "function":
@@ -125,6 +145,55 @@ def scan() -> dict:
 
                 walk(data)
         return results
+
+
+def assert_baseline_is_comparable(baseline: dict, current: dict) -> None:
+    """Refuse to report PASS when the baseline cannot actually be compared.
+
+    A gate that silently compares against nothing is worse than no gate: it
+    reports PASS with real regressions in the tree. That is not hypothetical
+    -- it is exactly what absolute-path keys did from a worktree (see scan()).
+
+    Both failure modes below are LOUD (exit 1) rather than a soft-skip,
+    because both mean "this run measured nothing" and a soft-skip would
+    reintroduce the silent pass under a different name.
+    """
+    if not baseline:
+        return  # a genuinely empty baseline is handled by the caller
+
+    overlap = len(set(baseline) & set(current))
+    if overlap > 0:
+        return
+
+    # Zero overlap. Distinguish the known legacy cause (absolute-path keys
+    # from before this fix) from the generic case, so the message is
+    # actionable rather than merely alarming.
+    legacy = sum(1 for k in baseline if k.startswith(("/", "home/", "Users/")))
+    if legacy:
+        print(
+            f"complexity_gate.py: FAIL -- the baseline at {BASELINE_PATH} uses "
+            f"ABSOLUTE-path keys ({legacy} of {len(baseline)}), which this "
+            "version cannot compare against.\n"
+            "  Those keys were machine- and checkout-specific: the gate could "
+            "not match them from a worktree or another clone, matched nothing, "
+            "and PASSED while comparing against nothing.\n"
+            "  Regenerate with repo-relative keys:\n"
+            "    python3 scripts/complexity_gate.py --update-baseline\n"
+            "  and commit the result so the change is visible in review.",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            f"complexity_gate.py: FAIL -- the baseline at {BASELINE_PATH} has "
+            f"{len(baseline)} entries and the scan found {len(current)}, but "
+            "NONE of them match.\n"
+            "  Refusing to report PASS from a comparison against nothing. "
+            "Either the baseline is for a different tree, or the key format "
+            "changed; regenerate it after review:\n"
+            "    python3 scripts/complexity_gate.py --update-baseline",
+            file=sys.stderr,
+        )
+    sys.exit(1)
 
 
 def main():
@@ -155,6 +224,8 @@ def main():
 
     with open(BASELINE_PATH) as fh:
         baseline = json.load(fh)
+
+    assert_baseline_is_comparable(baseline, current)
 
     regressions = []
     new_functions = []
