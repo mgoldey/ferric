@@ -129,7 +129,12 @@ def tier1_dock(iso: Isomer, context: dict) -> TierResult:
                           context.get("box_size", (24.0, 24.0, 24.0)),
                           exhaustiveness=context.get("exhaustiveness", 16),
                           n_poses=context.get("n_poses", 10),
-                          seed=context.get("seed", 0xF00D))
+                          seed=context.get("seed", 0xF00D),
+                          # Default 1, NOT Vina's 0: this tier runs inside a
+                          # funnel that fans out across ligands, and two levels
+                          # of parallelism oversubscribe the box. See
+                          # dock_ligand's `cpu` docs.
+                          cpu=context.get("vina_cpu", 1))
     except ImportError as e:
         # vina/meeko are an optional extra (`pip install ferric[docking]`),
         # because they are not installable on every Python the wheel targets.

@@ -11,6 +11,8 @@ crashed and was quietly dropped" -- and those demand opposite responses.
 """
 from __future__ import annotations
 
+import time
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -28,6 +30,21 @@ class Stage:
     fn: TierFn
     keep: int
     name: str
+    workers: int = 1
+    """Processes to fan this tier's candidates across. 1 = run in-process.
+
+    PROCESSES, not threads: the expensive tiers call into libraries that are
+    not thread-safe (libxtb) or that hold the GIL, and ferric/OpenBLAS wants
+    one BLAS thread per process anyway. Candidates are independent, so this is
+    a pure fan-out with no shared state.
+
+    Results are re-ordered to match the input population before ranking, so
+    the survivor set is IDENTICAL to a serial run. That is not incidental --
+    the suite's reproducibility guarantee depends on it, and it is tested.
+
+    Leave at 1 for tiers whose per-candidate cost is already negligible: the
+    process-spawn and pickling overhead would dominate.
+    """
 
 
 @dataclass
@@ -51,6 +68,28 @@ class FunnelReport:
         return "\n".join(lines)
 
 
+def _run_stage(stage: Stage, population: list[Isomer],
+               context: dict[str, Any]) -> list[TierResult]:
+    """Evaluate one tier over a population, serially or fanned out.
+
+    The parallel path preserves INPUT ORDER (`executor.map` is ordered), so the
+    ranking it feeds is identical to the serial path's. A tier that returns
+    results in completion order would silently reorder ties and break the
+    suite's reproducibility guarantee.
+    """
+    if stage.workers <= 1 or len(population) < 2:
+        return [stage.fn(iso, context) for iso in population]
+    with ProcessPoolExecutor(max_workers=stage.workers) as pool:
+        return list(pool.map(_apply, [(stage.fn, iso, context)
+                                      for iso in population]))
+
+
+def _apply(args: tuple) -> TierResult:
+    """Top-level so it is picklable by ProcessPoolExecutor."""
+    fn, iso, context = args
+    return fn(iso, context)
+
+
 def run_funnel(candidates: list[Isomer], stages: list[Stage],
                context: dict[str, Any]) -> FunnelReport:
     """Narrow `candidates` through `stages`, cheapest first.
@@ -62,6 +101,10 @@ def run_funnel(candidates: list[Isomer], stages: list[Stage],
 
     Stops early on an empty population rather than running an expensive tier on
     nothing.
+
+    Each tier is TIMED. Without per-tier wall times a funnel cannot answer the
+    only question that matters for tuning it -- which tier is actually costing
+    the run -- and the answer is routinely not the one the cost table predicts.
     """
     rep = FunnelReport()
     population = list(candidates)
@@ -69,7 +112,9 @@ def run_funnel(candidates: list[Isomer], stages: list[Stage],
     for stage in stages:
         if not population:
             break
-        results = [stage.fn(iso, context) for iso in population]
+        t0 = time.time()
+        results = _run_stage(stage, population, context)
+        elapsed = time.time() - t0
         rep.results[stage.name] = results
 
         by_id = {r.candidate_id: r for r in results}
@@ -83,6 +128,7 @@ def run_funnel(candidates: list[Isomer], stages: list[Stage],
             n_failed=len(population) - len(ok),
             note=f"{stage.name}: kept {len(survivors)} of {len(ok)} scored",
             errors=[r.error for r in results if r.error][:10],
+            seconds=elapsed,
         ))
         population = survivors
 

@@ -94,10 +94,30 @@ class TierOutcome:
     n_failed: int = 0
     note: str = ""
     errors: list[str] = field(default_factory=list)
+    seconds: float | None = None
+    """Wall time this tier spent, or None if it was not timed.
+
+    None rather than 0.0 for an untimed tier: a funnel that reports 0.0 for
+    "not measured" invites exactly the arithmetic that produced this campaign's
+    worst claims -- a cost split inferred from numbers nobody recorded. The
+    hierarchy's whole premise is that each tier's cost justifies the one above
+    it, and that premise is untestable without per-tier times.
+    """
 
     @property
     def retained_fraction(self) -> float | None:
         return None if self.n_in == 0 else self.n_out / self.n_in
+
+    @property
+    def seconds_per_candidate(self) -> float | None:
+        """Wall seconds per candidate ENTERING this tier.
+
+        Per-entrant, not per-survivor: the cost a tier imposes is set by what
+        it must examine, not by what it lets through.
+        """
+        if self.seconds is None or self.n_in == 0:
+            return None
+        return self.seconds / self.n_in
 
 
 def unvalidated_tiers(hierarchy: "tuple[TierSpec, ...]") -> list[TierSpec]:
