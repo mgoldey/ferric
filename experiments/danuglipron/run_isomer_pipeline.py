@@ -41,6 +41,7 @@ Run:
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -166,11 +167,18 @@ def main() -> int:
         "mem_budget_gb": 9,
     }
 
+    # DOCK_WORKERS env override: the 10 default assumes a quiet 12-core box
+    # (M11). It is a real measured number for THAT condition, not a knob to
+    # edit here for a transient one -- override it at invocation time instead
+    # when something else is already on the machine.
+    dock_workers = int(os.environ.get("DOCK_WORKERS", "10"))
+
     stages = [
         # workers=10 on a 12-core box: fan-out beats Vina's internal threading
         # above ~4 workers (M11), and leaving 2 cores free keeps the box usable
         # for whoever else is on it.
-        Stage(Tier.SEARCH, tier1_dock, keep=KEEPS[0], name="dock", workers=10),
+        Stage(Tier.SEARCH, tier1_dock, keep=KEEPS[0], name="dock",
+              workers=dock_workers),
         Stage(Tier.FORCE_FIELD, tier2_forcefield, keep=KEEPS[1], name="mmff"),
         Stage(Tier.SEMIEMPIRICAL, tier3_gfn2, keep=KEEPS[2], name="gfn2"),
         Stage(Tier.QUANTUM, tier4_dft, keep=KEEPS[3], name="dft"),
