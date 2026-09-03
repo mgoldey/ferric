@@ -181,3 +181,93 @@ def test_tier4_restores_a_preexisting_budget(monkeypatch):
 
     tiers.tier4_dft(SMALL, {"mem_budget_gb": 8})
     assert os.environ["FERRIC_MEM_BUDGET_GB"] == "3"
+
+
+# ── multi-seed docking (RESULTS.md M11) ──────────────────────────────────────
+
+def _fake_dock_factory(scores_by_seed):
+    """Return a dock_ligand stand-in whose score depends on the seed."""
+    from types import SimpleNamespace
+
+    calls = []
+
+    def fake(mol, receptor, center, size=None, exhaustiveness=None,
+             n_poses=None, seed=None, cpu=None):
+        calls.append(seed)
+        score = scores_by_seed.get(seed)
+        if score is None:
+            return SimpleNamespace(ok=False, error=f"no pose for seed {seed}",
+                                   best=None, poses=[])
+        pose = SimpleNamespace(vina_score=score, symbols=["C"],
+                               coords_angstrom=[(0.0, 0.0, 0.0)])
+        return SimpleNamespace(ok=True, error=None, best=pose, poses=[pose])
+
+    return fake, calls
+
+
+def test_multi_seed_docks_each_seed_and_keeps_the_best(monkeypatch):
+    """M11: the starting conformer moves the answer more than search effort.
+
+    Spending the tier-1 budget on independent embeddings is the measured-better
+    trade, so the tier must actually try each one and keep the best score.
+    """
+    import tools.docking as docking
+
+    fake, calls = _fake_dock_factory({0xF00D: -8.0, 0xF00E: -11.5, 0xF00F: -9.0})
+    monkeypatch.setattr(docking, "dock_ligand", fake)
+
+    r = tier1_dock(BENZOIC, {"receptor_pdbqt": "r.pdbqt",
+                             "box_center": (0.0, 0.0, 0.0),
+                             "n_seeds": 3})
+    assert r.ok
+    assert r.value == -11.5                       # the best of the three
+    assert calls == [0xF00D, 0xF00E, 0xF00F]      # each seed actually tried
+    assert r.payload["winning_seed"] == 0xF00E
+    assert r.payload["n_seeds"] == 3
+
+
+def test_single_seed_is_the_old_behaviour(monkeypatch):
+    """n_seeds=1 must dock exactly once, from the base seed."""
+    import tools.docking as docking
+
+    fake, calls = _fake_dock_factory({0xF00D: -8.0})
+    monkeypatch.setattr(docking, "dock_ligand", fake)
+
+    r = tier1_dock(BENZOIC, {"receptor_pdbqt": "r.pdbqt",
+                             "box_center": (0.0, 0.0, 0.0)})
+    assert r.ok and r.value == -8.0
+    assert calls == [0xF00D]
+
+
+def test_multi_seed_survives_a_failing_seed(monkeypatch):
+    """One bad embedding must not lose the ligand.
+
+    A tier that dropped a candidate because one of its seeds failed would be
+    silently biased against flexible molecules -- exactly the population-level
+    error the funnel's failure accounting exists to prevent.
+    """
+    import tools.docking as docking
+
+    fake, calls = _fake_dock_factory({0xF00D: -8.0, 0xF00F: -9.5})  # 0xF00E fails
+    monkeypatch.setattr(docking, "dock_ligand", fake)
+
+    r = tier1_dock(BENZOIC, {"receptor_pdbqt": "r.pdbqt",
+                             "box_center": (0.0, 0.0, 0.0),
+                             "n_seeds": 3})
+    assert r.ok
+    assert r.value == -9.5
+    assert len(calls) == 3
+
+
+def test_all_seeds_failing_reports_every_reason(monkeypatch):
+    """A total failure must say what happened on each attempt."""
+    import tools.docking as docking
+
+    fake, _ = _fake_dock_factory({})
+    monkeypatch.setattr(docking, "dock_ligand", fake)
+
+    r = tier1_dock(BENZOIC, {"receptor_pdbqt": "r.pdbqt",
+                             "box_center": (0.0, 0.0, 0.0),
+                             "n_seeds": 2})
+    assert not r.ok and r.value is None
+    assert "no pose for seed" in r.error

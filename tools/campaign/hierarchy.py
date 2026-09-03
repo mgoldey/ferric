@@ -55,6 +55,25 @@ own best pose, no rescoring would be needed.
     None/UNEVALUATED, never a neutral-looking number. A fabricated zero in a
     liability score reads as "maximally safe"; a fabricated pose reads as a
     binding mode.
+6.  **DO NOT BUY PRECISION BELOW A METHOD'S OWN ERROR BAR.** A tier's tuning
+    knobs have the same noise floor its outputs do, so past some setting the
+    extra cost buys nothing measurable. Measured (RESULTS.md M11): raising
+    Vina's `exhaustiveness` from 4 to 32 cost **6.8x** and improved the top
+    score by **0.005 kcal/mol** — against a scoring function whose published
+    RMSE is ~2.5 kcal/mol, i.e. a gain ~500x smaller than its own error bar.
+    Redock RMSD across an 8x range of effort moved 0.097 A against a 0.131 A
+    between-seed SEM, so it was not resolvable either.
+
+    The corollary is where the budget SHOULD go: to whichever input the answer
+    is actually sensitive to. Here that was the starting conformer (0.75-1.24 A
+    across ETKDG seeds), so three seeds at the cheap setting beat one seed at
+    the expensive one — cheaper AND better sampled. Find the sensitive variable
+    by measuring, then spend there.
+7.  **TIME EVERY TIER.** "Which tier costs the run" decides where optimization
+    effort goes, and it is routinely not what the cost table predicts: this
+    campaign twice attributed a run's cost to the wrong tier from estimates
+    alone. `TierOutcome.seconds` is None when unmeasured, never 0.0, because a
+    zero reads as "free".
 """
 from __future__ import annotations
 
@@ -94,10 +113,30 @@ class TierOutcome:
     n_failed: int = 0
     note: str = ""
     errors: list[str] = field(default_factory=list)
+    seconds: float | None = None
+    """Wall time this tier spent, or None if it was not timed.
+
+    None rather than 0.0 for an untimed tier: a funnel that reports 0.0 for
+    "not measured" invites exactly the arithmetic that produced this campaign's
+    worst claims -- a cost split inferred from numbers nobody recorded. The
+    hierarchy's whole premise is that each tier's cost justifies the one above
+    it, and that premise is untestable without per-tier times.
+    """
 
     @property
     def retained_fraction(self) -> float | None:
         return None if self.n_in == 0 else self.n_out / self.n_in
+
+    @property
+    def seconds_per_candidate(self) -> float | None:
+        """Wall seconds per candidate ENTERING this tier.
+
+        Per-entrant, not per-survivor: the cost a tier imposes is set by what
+        it must examine, not by what it lets through.
+        """
+        if self.seconds is None or self.n_in == 0:
+            return None
+        return self.seconds / self.n_in
 
 
 def unvalidated_tiers(hierarchy: "tuple[TierSpec, ...]") -> list[TierSpec]:

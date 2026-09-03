@@ -367,3 +367,60 @@ def test_charge_confound_reproduces_the_campaign_numbers():
     assert not r.passed
     # between ~ -132 vs -22 = ~110; within (anions) ~ 41
     assert "109" in r.detail or "110" in r.detail or "111" in r.detail
+
+
+# ── tier agreement (does the expensive tier reorder the cheap one?) ──────────
+
+def test_tier_agreement_detects_identical_and_reversed_orders():
+    from tools.campaign.rank import tier_agreement
+
+    same = tier_agreement({"a": 1, "b": 2, "c": 3}, {"a": -1, "b": 0, "c": 5})
+    assert same["reordered"] is False
+    assert same["kendall_tau"] == 1.0
+
+    rev = tier_agreement({"a": 1, "b": 2, "c": 3}, {"a": 5, "b": 0, "c": -1})
+    assert rev["reordered"] is True
+    assert rev["kendall_tau"] == -1.0
+
+
+def test_tier_agreement_is_none_when_the_expensive_tier_scored_nothing():
+    """THE M10 BUG. A failed tier must not read as agreement OR as reordering.
+
+    M10's driver printed "tier 4 reordered tier 3's ranking: True -> DFT is
+    load-bearing" after DFT had computed nothing at all: it compared a top-N
+    list against an empty survivor list, and unequal lists read as reordering.
+    Returning None forces the caller to say "untestable" instead.
+    """
+    from tools.campaign.rank import tier_agreement
+
+    r = tier_agreement({"a": 1.0, "b": 2.0, "c": 3.0}, {})
+    assert r["reordered"] is None
+    assert r["n_common"] == 0
+    assert "untestable" in r["note"]
+
+
+def test_tier_agreement_needs_two_candidates_to_say_anything():
+    """One candidate cannot be out of order; claiming agreement would be false."""
+    from tools.campaign.rank import tier_agreement
+
+    r = tier_agreement({"a": 1.0, "b": 2.0}, {"a": 5.0})
+    assert r["reordered"] is None
+    assert r["n_common"] == 1
+
+
+def test_tier_agreement_compares_only_the_common_set():
+    """A tier that scored a subset must be judged on that subset alone.
+
+    Otherwise a partial failure is indistinguishable from a genuine
+    disagreement -- the two demand opposite responses (fix the tier vs. keep
+    paying for it).
+    """
+    from tools.campaign.rank import tier_agreement
+
+    cheap = {"a": 1.0, "b": 2.0, "c": 3.0, "d": 4.0}
+    expensive = {"c": 1.0, "a": 2.0}          # only 2 of 4, and in swapped order
+    r = tier_agreement(cheap, expensive)
+    assert r["n_common"] == 2
+    assert r["cheap_order"] == ["a", "c"]
+    assert r["expensive_order"] == ["c", "a"]
+    assert r["reordered"] is True

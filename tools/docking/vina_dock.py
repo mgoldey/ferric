@@ -209,6 +209,7 @@ def dock_ligand(
     exhaustiveness: int = 32,
     n_poses: int = 20,
     seed: int = 0xF00D,
+    cpu: int = 0,
 ) -> DockResult:
     """Search poses for an RDKit mol (with 3D coords) in a prepared receptor.
 
@@ -219,6 +220,22 @@ def dock_ligand(
     `exhaustiveness` trades wall time for search thoroughness. Vina's default is
     8; 32 is used here because the failure being fixed is a SEARCH failure, and
     under-searching would reproduce it in a new form.
+
+    `cpu` is Vina's thread count; **0 means "use every core on the box"**, which
+    is its own default and the right choice when docking ONE ligand. It is the
+    wrong choice for screening: Vina parallelizes across its internal search
+    runs, so at low exhaustiveness it cannot even fill the cores it took
+    ("WARNING: At low exhaustiveness, it may be impossible to utilize all
+    CPUs"), and a sequential loop over N ligands then leaves the machine partly
+    idle N times over. For a screen, pass `cpu=1` and fan out ACROSS ligands
+    (`Stage(..., workers=k)`) -- ligands are fully independent, so that scales
+    where the internal parallelism does not.
+
+    Note the search result depends on `cpu` even at a fixed `seed`: Vina's
+    threads race to fill the pose buffer, so thread count changes the outcome.
+    Reproducibility therefore requires pinning `cpu` as well as `seed` -- a
+    screen that varies core count between runs is not reproducible even with
+    identical seeds.
     """
     Vina = _require("vina").Vina
 
@@ -232,7 +249,7 @@ def dock_ligand(
         return DockResult(error=f"ligand preparation failed: {type(e).__name__}: {e}")
 
     try:
-        v = Vina(sf_name="vina", seed=seed, verbosity=0)
+        v = Vina(sf_name="vina", cpu=cpu, seed=seed, verbosity=0)
         v.set_receptor(str(receptor_pdbqt))
         v.set_ligand_from_string(lig_pdbqt)
         v.compute_vina_maps(center=list(box_center), box_size=list(box_size))

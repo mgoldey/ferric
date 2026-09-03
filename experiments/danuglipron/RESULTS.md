@@ -509,6 +509,15 @@ minutes of GFN2 MD. Docking reached 0.95 A in ~2 minutes.
 
 **Pose generation is solved for this target.** M7's root cause is closed.
 
+> **Refined by M11 (2026-09-02).** This was ONE seed at `exhaustiveness=32`,
+> `n_poses=20`. Repeating across 3 seeds and 4 effort levels puts 0.95 A
+> comfortably inside the observed 0.75-1.24 A band, so the headline conclusion
+> holds -- but the 32 is not load-bearing and was never the reason it worked.
+> Measured, `exhaustiveness=4` reaches the same accuracy for a quarter of the
+> cost, and 32 has the WORST mean of the four levels tried. The variable that
+> actually moves this number is the ETKDG SEED, not the search effort.
+> Do not cite the 32 as a validated requirement.
+
 ### The cheap score finds the pose but cannot rank it
 
 Measured on the same run: r(vina_score, RMSD) = **+0.461**, and only **4 of 20**
@@ -1071,3 +1080,122 @@ gap.
 M5 than before it: its −33.7 kcal/mol advantage is the largest anion-subset
 effect in a metric that correlates with molecular size. It is not a
 recommendation and this campaign does not make one.
+
+---
+
+## M11. Screening efficiency: the funnel spent 2.6x more than it needed to (2026-09-02)
+
+The pipeline docks at `exhaustiveness=16`, while the setting VALIDATED by
+redocking (M9, 0.95 A) was **32**. Neither number was measured against cost.
+Tier 1 is also the only tier that touches every candidate, so it sets the
+screen's price. `experiments/danuglipron/probes/exhaustiveness_sweep.py`
+measures both axes on the one system with ground truth.
+
+### Exhaustiveness is not resolvable on this target
+
+Redock danuglipron into 7LCJ, 3 ETKDG seeds per level, best-of-10 RMSD against
+the crystal pose. The ligand is re-embedded each time, so the search starts
+from a geometry carrying no information about the answer.
+
+| exhaustiveness | seed 61453 | 61454 | 61455 | mean | SEM | s/dock | cost |
+|---|---|---|---|---|---|---|---|
+| **4** | 1.11 | 1.14 | 0.75 | **1.00** | 0.13 | 26.4 | 1.0x |
+| 8 | 1.11 | 1.14 | 0.75 | **1.00** | 0.13 | 34.5 | 1.3x |
+| 16 | 1.20 | 0.92 | 0.75 | **0.96** | 0.13 | 67.6 | 2.6x |
+| 32 | 1.24 | 1.15 | 0.77 | **1.05** | 0.14 | 102.8 | 3.9x |
+
+**Every level passes the 2.0 A bar on every seed**, and the spread of the means
+across an **8x range of search effort is 0.097 A -- SMALLER than the 0.131 A
+within-level SEM**. The differences are not measurements of anything. Quoted as
+SEM and not as a range, because a range grows with n (M6).
+
+**No seed improves monotonically with effort**, and the most expensive setting
+has the WORST mean (1.05 A at 32 vs 1.00 A at 4, for 3.9x the price):
+
+| seed | ex=4 -> 8 -> 16 -> 32 |
+|---|---|
+| 61453 | 1.11 -> 1.11 -> 1.20 -> 1.24 (monotonically WORSE) |
+| 61454 | 1.14 -> 1.14 -> 0.92 -> 1.15 (non-monotone) |
+| 61455 | 0.75 -> 0.75 -> 0.75 -> 0.77 (flat) |
+
+That is what search noise looks like. Anything read as a trend here would be
+reading noise as signal.
+
+**Seed matters more than search effort.** The 0.75-1.20 A spread tracks the
+starting conformer, not exhaustiveness -- at seed 61455 every level returns
+0.75 A to two decimals. For a screen this inverts the usual instinct: **more
+seeds buy more than more exhaustiveness, at lower cost.**
+
+`dock_ligand`'s docstring justified 32 on the grounds that "the failure being
+fixed is a SEARCH failure, and under-searching would reproduce it in a new
+form." Reasonable prior, now measured: it does not, at least for this pocket.
+The claim was never wrong about M7's root cause -- free-solution conformers
+really were the problem -- it just does not follow that MORE search helps once
+docking is doing the searching at all.
+
+### "Too clean" nearly hid the answer
+
+Levels 4 and 8 returned RMSD **identical to two decimals on all three seeds**.
+Per the protocol that is a stop condition, not a result, so I tested the
+artifact hypothesis directly rather than writing it up: does exhaustiveness
+change Vina's output at all? The control, at FIXED seed and geometry, `cpu=1`:
+
+| exhaustiveness | wall | top score | poses returned |
+|---|---|---|---|
+| 1 | 32.2 s | -11.7930 | 2 |
+| 4 | 109.0 s | -11.8370 | 5 |
+| 32 | **738.0 s** | -11.8420 | 5 |
+
+**The parameter is live** -- it finds more poses and marginally better scores,
+and level 16 moved RMSD in BOTH directions (0.92 and 1.20 vs 1.14 and 1.11).
+So this is a real property of the pocket, not a plumbing bug.
+
+But it also quantifies the futility precisely: **ex=4 -> 32 costs 6.8x for a
+0.005 kcal/mol score gain.** Vina's scoring function has a published RMSE
+around 2.5 kcal/mol, so the purchased improvement is ~500x smaller than the
+score's own error bar. And per M9, r(vina_score, RMSD) = +0.461 -- the score
+only weakly tracks pose correctness anyway, so 0.005 kcal/mol of score is not
+even 0.005 kcal/mol of pose accuracy.
+
+**Buying score precision below a method's error bar is the general trap here**,
+and it is what "exhaustiveness=32 for safety" amounts to on this target.
+
+### The bigger lever was CPU allocation, and my first reading of it was wrong
+
+Vina's `cpu=0` -- its default, and what this repo used -- means **"take every
+core on the box"**. It also warns `At low exhaustiveness, it may be impossible
+to utilize all CPUs`, which I read as "sequential docking leaves the machine
+idle". Measured, that reading is too strong:
+
+| ex=4, per dock | wall |
+|---|---|
+| `cpu=0` (12 cores) | 26.4 s |
+| `cpu=1` (1 core) | 109.0 s |
+
+Giving up 11 of 12 cores costs only **4.1x**, i.e. Vina's internal parallelism
+runs at **34% efficiency** -- poor, but not idle. Fan-out across ligands
+therefore only wins above ~4 workers (`w > t_one/t_all = 4.1`), which is a
+narrower claim than "the machine sits idle".
+
+### What a 60-ligand screen costs
+
+| strategy | projected |
+|---|---|
+| today: ex=16, sequential, cpu=0 | **67.5 min** |
+| ex=4, sequential, cpu=0 | 26.4 min |
+| ex=4, 10 workers x cpu=1 | **10.9 min** |
+
+**6.2x**, from two independent measured changes. This also explains M10's
+missing time: the 55-minute run was tier 1 almost end to end, not the
+"15-30 s/ligand" its docstring claimed.
+
+Landed as `Stage(workers=k)` (process fan-out, results re-ordered to input
+order so survivors are bit-identical to a serial run -- tested and
+mutation-tested) and `dock_ligand(cpu=...)`, with tier 1 defaulting to `cpu=1`
+because it runs inside that fan-out and two levels of parallelism
+oversubscribe the box.
+
+**Reproducibility caveat:** Vina's threads race to fill the pose buffer, so its
+result depends on `cpu` as well as `seed`. A screen that varies core count
+between runs is not reproducible even with identical seeds. Both are now
+pinned.
