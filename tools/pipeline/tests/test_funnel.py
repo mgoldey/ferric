@@ -193,3 +193,48 @@ def test_table_survives_untimed_outcomes():
     out = rep.table()
     assert "dock" in out
     assert "TOTAL" not in out      # nothing was timed, so no total is claimed
+
+
+def _suicidal_scorer(iso, context):
+    """Hard-kills its own process for one specific candidate.
+
+    os._exit bypasses Python cleanup, which is what an OOM kill or a native
+    segfault looks like from the pool's side -- not a catchable exception.
+    """
+    import os
+    if iso.canonical == "CCO":
+        os._exit(1)
+    return TierResult(iso.canonical, float(len(iso.canonical)))
+
+
+def test_a_dead_worker_costs_one_candidate_not_the_run():
+    """The screen must survive an OS-level kill of a worker.
+
+    `list(pool.map(...))` raises BrokenProcessPool and discards EVERY result
+    already computed -- on a 174-dock screen, an hour of work lost to one
+    casualty, presenting as the pipeline vanishing with no traceback. That
+    happened twice on 2026-09-03 before this guard existed.
+    """
+    cands = [Isomer(s, "sub", "t", "CO") for s in ("CO", "CCO", "CCCO", "CCCCO")]
+    rep = run_funnel(cands, [Stage(Tier.SEARCH, _suicidal_scorer, 3, "s",
+                                   workers=2)], {})
+
+    # The run completed and the survivors are the healthy candidates.
+    assert len(rep.results["s"]) == 4
+    ok = [r for r in rep.results["s"] if r.ok]
+    assert len(ok) == 3
+    assert rep.outcomes[0].n_failed == 1
+
+    # The casualty is REPORTED, not silently dropped.
+    dead = [r for r in rep.results["s"] if not r.ok]
+    assert len(dead) == 1
+    assert "worker died" in dead[0].error or "no result" in dead[0].error
+
+
+def test_results_stay_positionally_aligned_when_a_worker_dies():
+    """Index-based placement must survive a casualty, or scores misattribute."""
+    cands = [Isomer(s, "sub", "t", "CO") for s in ("CO", "CCO", "CCCO")]
+    rep = run_funnel(cands, [Stage(Tier.SEARCH, _suicidal_scorer, 3, "s",
+                                   workers=3)], {})
+    assert [r.candidate_id for r in rep.results["s"]] == \
+           [i.canonical for i in cands]

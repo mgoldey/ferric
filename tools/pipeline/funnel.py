@@ -90,16 +90,40 @@ def _run_stage(stage: Stage, population: list[Isomer],
                context: dict[str, Any]) -> list[TierResult]:
     """Evaluate one tier over a population, serially or fanned out.
 
-    The parallel path preserves INPUT ORDER (`executor.map` is ordered), so the
-    ranking it feeds is identical to the serial path's. A tier that returns
-    results in completion order would silently reorder ties and break the
-    suite's reproducibility guarantee.
+    The parallel path preserves INPUT ORDER (results are placed back by index),
+    so the ranking it feeds is identical to the serial path's. A tier that
+    returned results in completion order would silently reorder ties and break
+    the suite's reproducibility guarantee.
+
+    **A dead worker costs one candidate, not the run.** `pool.map` raises
+    `BrokenProcessPool` if any worker dies -- an OS-level kill (OOM reaper,
+    cgroup pressure, a segfault in a native library) is not catchable inside
+    the worker -- and a bare `list(pool.map(...))` therefore discards every
+    result already computed. On a 174-dock screen that is an hour of work lost
+    to one casualty, and it presents as the whole pipeline vanishing with no
+    traceback, which is what happened twice on 2026-09-03.
+
+    Submitting per-future instead confines the damage: a dead worker yields a
+    failed `TierResult` for its own candidate, which the funnel already knows
+    how to count and report.
     """
     if stage.workers <= 1 or len(population) < 2:
         return [stage.fn(iso, context) for iso in population]
+
+    results: list[TierResult | None] = [None] * len(population)
     with ProcessPoolExecutor(max_workers=stage.workers) as pool:
-        return list(pool.map(_apply, [(stage.fn, iso, context)
-                                      for iso in population]))
+        futures = {pool.submit(_apply, (stage.fn, iso, context)): i
+                   for i, iso in enumerate(population)}
+        for fut, i in futures.items():
+            try:
+                results[i] = fut.result()
+            except Exception as e:  # noqa: BLE001 -- incl. BrokenProcessPool
+                results[i] = TierResult(
+                    population[i].canonical, None,
+                    f"worker died: {type(e).__name__}: {e}")
+    return [r if r is not None else
+            TierResult(population[i].canonical, None, "no result from worker")
+            for i, r in enumerate(results)]
 
 
 def _apply(args: tuple) -> TierResult:
