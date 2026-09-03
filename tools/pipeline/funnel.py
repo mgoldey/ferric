@@ -60,11 +60,29 @@ class FunnelReport:
         return None
 
     def table(self) -> str:
-        lines = [f"{'tier':>4s}  {'stage':12s} {'in':>5s} {'out':>5s} {'failed':>7s}  note",
-                 "-" * 72]
+        lines = [f"{'tier':>4s}  {'stage':12s} {'in':>5s} {'out':>5s} {'failed':>7s} "
+                 f"{'secs':>8s} {'s/cand':>8s}  note",
+                 "-" * 96]
         for o in self.outcomes:
+            secs = "-" if o.seconds is None else f"{o.seconds:.1f}"
+            per = ("-" if o.seconds_per_candidate is None
+                   else f"{o.seconds_per_candidate:.2f}")
             lines.append(f"{int(o.tier):>4d}  {o.note.split(':')[0]:12s} "
-                         f"{o.n_in:5d} {o.n_out:5d} {o.n_failed:7d}  {o.note}")
+                         f"{o.n_in:5d} {o.n_out:5d} {o.n_failed:7d} "
+                         f"{secs:>8s} {per:>8s}  {o.note}")
+        total = sum(o.seconds for o in self.outcomes if o.seconds is not None)
+        if total:
+            lines.append("-" * 96)
+            lines.append(f"{'':4s}  {'TOTAL':12s} {'':5s} {'':5s} {'':7s} "
+                         f"{total:8.1f}")
+            # Which tier actually cost the run? That is the tuning question,
+            # and the answer is routinely not the cost table's prediction.
+            worst = max((o for o in self.outcomes if o.seconds is not None),
+                        key=lambda o: o.seconds, default=None)
+            if worst is not None:
+                share = 100.0 * worst.seconds / total
+                lines.append(f"{'':4s}  dominant tier {int(worst.tier)} "
+                             f"({worst.note.split(':')[0]}) = {share:.0f}% of wall")
         return "\n".join(lines)
 
 

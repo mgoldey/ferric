@@ -7,14 +7,23 @@ finally DFT'd -- with every tier's survivors, rejects and failures recorded.
 
 ## Cost, measured on this box
 
-    tier 1  Vina           ~15-30 s/ligand at exhaustiveness 16
+    tier 1  Vina           26.4 s/ligand at exhaustiveness 4, cpu=0 (MEASURED)
+                           109.0 s at cpu=1 -- but 10 of those run concurrently
     tier 2  MMFF94         ~ms
     tier 3  GFN2-xTB       ~0.5 s single point
-    tier 4  ferric DFT     96.1 s at 32 atoms -> 17-37 min at 70 (N^3-N^4)
+    tier 4  ferric DFT     612.4 s / 18 iterations, converged, at 71 atoms
+                           (MEASURED 2026-09-02; the earlier ">57 min, did not
+                           finish" was memory contention, not cost -- M10)
 
-Tier 4 dominates: with KEEPS[-1] = 3 it is roughly 1-2 hours, and everything
-above it is minutes. That asymmetry is exactly why the funnel narrows hard
-before reaching it.
+**Tier 1 dominates, not tier 4.** It is the only tier that touches every
+candidate: 60 ligands x 26.4 s is ~26 min, while tier 4 sees KEEPS[-1]=3 and
+costs ~31 min. Those are the same order, which is what a well-balanced funnel
+looks like -- and is only visible because every tier is now TIMED. The previous
+run recorded a single 3326 s total and no way to attribute it.
+
+Exhaustiveness is 4, not 16: measured on this target, 4 / 8 / 16 differ by
+<=0.03 A in redock RMSD against a 0.13 A between-seed SEM, so the extra search
+buys nothing resolvable at 2.6x the price (RESULTS.md M11).
 
 ## What to look for in the output
 
@@ -114,14 +123,25 @@ def main() -> int:
         "receptor_pdbqt": receptor,
         "box_center": center,
         "box_size": size,
-        "exhaustiveness": 16,
+        # 4, not 16: RESULTS.md M11 measured 4/8/16 as indistinguishable on
+        # this target (<=0.03 A vs a 0.13 A between-seed SEM) at 2.6x the cost.
+        # Raise it for a NEW target until a redock says otherwise -- this is a
+        # measurement about 7LCJ, not a universal setting.
+        "exhaustiveness": 4,
+        # 1 core per dock, because the stage below fans out across ligands.
+        # Vina's own default (0) takes every core, and its internal
+        # parallelism runs at only 34% efficiency (M11).
+        "vina_cpu": 1,
         "n_poses": 10,
         "basis": "def2-svp",
         "functional": "PBE",
     }
 
     stages = [
-        Stage(Tier.SEARCH, tier1_dock, keep=KEEPS[0], name="dock"),
+        # workers=10 on a 12-core box: fan-out beats Vina's internal threading
+        # above ~4 workers (M11), and leaving 2 cores free keeps the box usable
+        # for whoever else is on it.
+        Stage(Tier.SEARCH, tier1_dock, keep=KEEPS[0], name="dock", workers=10),
         Stage(Tier.FORCE_FIELD, tier2_forcefield, keep=KEEPS[1], name="mmff"),
         Stage(Tier.SEMIEMPIRICAL, tier3_gfn2, keep=KEEPS[2], name="gfn2"),
         Stage(Tier.QUANTUM, tier4_dft, keep=KEEPS[3], name="dft"),

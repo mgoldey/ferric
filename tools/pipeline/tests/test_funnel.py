@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from tools.campaign.hierarchy import Tier
 from tools.isomers.model import Isomer
-from tools.pipeline.funnel import Stage, run_funnel
+from tools.pipeline.funnel import FunnelReport, Stage, run_funnel
 from tools.pipeline.tiers import TierResult
 
 P = "OC(=O)c1ccccc1"
@@ -156,3 +156,40 @@ def test_workers_of_one_stays_in_process():
     cands = [Isomer("CO", "sub", "t", "CO")]
     rep = run_funnel(cands, [Stage(Tier.SEARCH, _slow_scorer, 1, "s", workers=8)], {})
     assert rep.outcomes[0].n_out == 1
+
+
+def test_table_names_the_dominant_tier():
+    """The report must answer the tuning question, not leave it as arithmetic.
+
+    "Which tier cost the run" is the only question that decides where to spend
+    optimization effort, and this campaign has twice been wrong about the
+    answer from estimates alone.
+    """
+    def slow(iso, ctx):
+        import time as _t
+        _t.sleep(0.03)
+        return TierResult(iso.canonical, float(len(iso.canonical)))
+
+    def fast(iso, ctx):
+        return TierResult(iso.canonical, float(len(iso.canonical)))
+
+    cands = [Isomer(s, "sub", "t", "CO") for s in ("CO", "CCO", "CCCO")]
+    rep = run_funnel(cands, [Stage(Tier.SEARCH, slow, 2, "dock"),
+                             Stage(Tier.FORCE_FIELD, fast, 1, "mmff")], {})
+    out = rep.table()
+    assert "dominant tier 1" in out
+    assert "s/cand" in out
+    # The cheap tier must not be blamed.
+    assert "dominant tier 2" not in out
+
+
+def test_table_survives_untimed_outcomes():
+    """A hand-built outcome with seconds=None must not crash the report."""
+    from tools.campaign.hierarchy import TierOutcome
+
+    rep = FunnelReport()
+    rep.outcomes.append(TierOutcome(tier=Tier.SEARCH, n_in=3, n_out=1,
+                                    note="dock: kept 1 of 3 scored"))
+    out = rep.table()
+    assert "dock" in out
+    assert "TOTAL" not in out      # nothing was timed, so no total is claimed
