@@ -55,6 +55,25 @@ own best pose, no rescoring would be needed.
     None/UNEVALUATED, never a neutral-looking number. A fabricated zero in a
     liability score reads as "maximally safe"; a fabricated pose reads as a
     binding mode.
+6.  **DO NOT BUY PRECISION BELOW A METHOD'S OWN ERROR BAR.** A tier's tuning
+    knobs have the same noise floor its outputs do, so past some setting the
+    extra cost buys nothing measurable. Measured (RESULTS.md M11): raising
+    Vina's `exhaustiveness` from 4 to 32 cost **6.8x** and improved the top
+    score by **0.005 kcal/mol** — against a scoring function whose published
+    RMSE is ~2.5 kcal/mol, i.e. a gain ~500x smaller than its own error bar.
+    Redock RMSD across an 8x range of effort moved 0.097 A against a 0.131 A
+    between-seed SEM, so it was not resolvable either.
+
+    The corollary is where the budget SHOULD go: to whichever input the answer
+    is actually sensitive to. Here that was the starting conformer (0.75-1.24 A
+    across ETKDG seeds), so three seeds at the cheap setting beat one seed at
+    the expensive one — cheaper AND better sampled. Find the sensitive variable
+    by measuring, then spend there.
+7.  **TIME EVERY TIER.** "Which tier costs the run" decides where optimization
+    effort goes, and it is routinely not what the cost table predicts: this
+    campaign twice attributed a run's cost to the wrong tier from estimates
+    alone. `TierOutcome.seconds` is None when unmeasured, never 0.0, because a
+    zero reads as "free".
 """
 from __future__ import annotations
 

@@ -1138,10 +1138,27 @@ docking is doing the searching at all.
 Levels 4 and 8 returned RMSD **identical to two decimals on all three seeds**.
 Per the protocol that is a stop condition, not a result, so I tested the
 artifact hypothesis directly rather than writing it up: does exhaustiveness
-change Vina's output at all? It does -- at fixed seed and geometry, top scores
-were **-11.7930 (ex=1)**, **-11.8370 (ex=4)**, and level 16 moved RMSD in BOTH
-directions (0.92 and 1.20 vs 1.14 and 1.11). The parameter is live; the pocket
-is just easy enough that extra search finds the same pose.
+change Vina's output at all? The control, at FIXED seed and geometry, `cpu=1`:
+
+| exhaustiveness | wall | top score | poses returned |
+|---|---|---|---|
+| 1 | 32.2 s | -11.7930 | 2 |
+| 4 | 109.0 s | -11.8370 | 5 |
+| 32 | **738.0 s** | -11.8420 | 5 |
+
+**The parameter is live** -- it finds more poses and marginally better scores,
+and level 16 moved RMSD in BOTH directions (0.92 and 1.20 vs 1.14 and 1.11).
+So this is a real property of the pocket, not a plumbing bug.
+
+But it also quantifies the futility precisely: **ex=4 -> 32 costs 6.8x for a
+0.005 kcal/mol score gain.** Vina's scoring function has a published RMSE
+around 2.5 kcal/mol, so the purchased improvement is ~500x smaller than the
+score's own error bar. And per M9, r(vina_score, RMSD) = +0.461 -- the score
+only weakly tracks pose correctness anyway, so 0.005 kcal/mol of score is not
+even 0.005 kcal/mol of pose accuracy.
+
+**Buying score precision below a method's error bar is the general trap here**,
+and it is what "exhaustiveness=32 for safety" amounts to on this target.
 
 ### The bigger lever was CPU allocation, and my first reading of it was wrong
 
