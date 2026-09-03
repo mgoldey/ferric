@@ -416,3 +416,53 @@ def format_table(
             f"{fmt(ax['fit_loss'])} {fmt(c.strain_kcal)}  {tag:>5s}  {c.hypothesis}"
         )
     return "\n".join(lines)
+
+
+def tier_agreement(cheap: dict[str, float], expensive: dict[str, float]) -> dict:
+    """Does the expensive tier reorder the cheap tier's ranking?
+
+    This is a question about METHOD AGREEMENT, not about which candidate is
+    better, so it is answerable even where no ranking is licensed (see
+    RESULTS.md M5 on the size confound). If the orders agree, the expensive
+    tier is skippable for this system; if they disagree, it is load-bearing.
+
+    Compares only candidates BOTH tiers actually scored. That is the whole
+    point: a naive `cheap_top_n != expensive_survivors` comparison reports
+    "reordered" when the expensive tier merely FAILED and returned fewer
+    candidates -- which is what happened in M10, where the driver announced
+    "DFT is load-bearing" after DFT had computed nothing at all.
+
+    Returns `n_common`, the two orders over the common set, `reordered`, and
+    Kendall tau. `reordered` is None when fewer than 2 candidates are common,
+    because one candidate cannot be out of order -- reporting False there would
+    claim agreement that was never tested.
+    """
+    common = [k for k in cheap if k in expensive]
+    if len(common) < 2:
+        return {"n_common": len(common), "reordered": None,
+                "kendall_tau": None,
+                "note": "fewer than 2 candidates scored by both tiers; "
+                        "agreement is untestable, not confirmed"}
+
+    cheap_order = sorted(common, key=lambda k: cheap[k])
+    exp_order = sorted(common, key=lambda k: expensive[k])
+
+    # Kendall tau over the common set: +1 identical order, -1 reversed.
+    n = len(common)
+    rank_exp = {k: i for i, k in enumerate(exp_order)}
+    concordant = discordant = 0
+    for i in range(n):
+        for j in range(i + 1, n):
+            a, b = cheap_order[i], cheap_order[j]
+            if rank_exp[a] < rank_exp[b]:
+                concordant += 1
+            else:
+                discordant += 1
+    total = concordant + discordant
+    tau = (concordant - discordant) / total if total else None
+
+    return {"n_common": n, "reordered": cheap_order != exp_order,
+            "cheap_order": cheap_order, "expensive_order": exp_order,
+            "kendall_tau": tau,
+            "note": (f"{n} candidates scored by both tiers; "
+                     f"tau={tau:.3f}" if tau is not None else "")}

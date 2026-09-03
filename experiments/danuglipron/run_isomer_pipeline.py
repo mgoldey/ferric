@@ -55,6 +55,7 @@ sys.path.insert(0, str(_root))
 import numpy as np  # noqa: E402
 
 from tools.campaign.hierarchy import Tier  # noqa: E402
+from tools.campaign.rank import tier_agreement  # noqa: E402
 from tools.campaign.strain import load_xyz_ensemble  # noqa: E402
 from tools.docking import prepare_receptor  # noqa: E402
 from tools.isomers import enumerate_with_report  # noqa: E402
@@ -180,19 +181,34 @@ def main() -> int:
     print(report.table())
 
     # ── did the expensive tier change the cheap tier's mind? ──
-    gfn2_order = [i.canonical for i in sorted(
-        [c for c in cands if report.value("gfn2", c.canonical) is not None],
-        key=lambda c: report.value("gfn2", c.canonical))][:KEEPS[3]]
-    dft_order = [i.canonical for i in report.survivors]
-    reordered = gfn2_order != dft_order
+    #
+    # Compared over the candidates BOTH tiers actually scored. The previous
+    # version compared a GFN2 top-N list against the DFT survivor list, so when
+    # DFT failed on everything the lists differed by LENGTH and it announced
+    # "tier 4 reordered tier 3's ranking: True -> DFT is load-bearing" having
+    # computed nothing (RESULTS.md M10). `tier_agreement` returns None rather
+    # than a verdict when fewer than 2 candidates are common.
+    gfn2_scores = {c.canonical: report.value("gfn2", c.canonical)
+                   for c in cands if report.value("gfn2", c.canonical) is not None}
+    dft_scores = {c: v for c in gfn2_scores
+                  if (v := report.value("dft", c)) is not None}
+    agreement = tier_agreement(gfn2_scores, dft_scores)
 
     print("\n=== SURVIVORS ===")
     for n, iso in enumerate(report.survivors, 1):
         print(f"  {n}. {iso.transform:24s} gfn2 {report.value('gfn2', iso.canonical)}"
               f"  dft {report.value('dft', iso.canonical)}")
-    print(f"\ntier 4 reordered tier 3's ranking: {reordered}")
-    print("  -> DFT is load-bearing here" if reordered else
-          "  -> GFN2 ordering survived DFT; tier 4 is skippable for this system")
+
+    reordered = agreement["reordered"]
+    print(f"\ntier 4 vs tier 3 on the {agreement['n_common']} candidates both scored:")
+    if reordered is None:
+        print(f"  -> UNTESTABLE: {agreement['note']}")
+    elif reordered:
+        print(f"  -> DFT REORDERED GFN2 (tau={agreement['kendall_tau']:.3f}); "
+              f"tier 4 is load-bearing here")
+    else:
+        print(f"  -> GFN2 ordering survived DFT (tau={agreement['kendall_tau']:.3f}); "
+              f"tier 4 is skippable for this system")
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(json.dumps({
@@ -214,7 +230,7 @@ def main() -> int:
                        "gfn2": report.value("gfn2", i.canonical),
                        "dft": report.value("dft", i.canonical)}
                       for i in report.survivors],
-        "tier4_reordered_tier3": reordered,
+        "tier4_vs_tier3": agreement,
         "wall_seconds": time.time() - t_start,
     }, indent=2))
     print(f"\nwrote {OUT}  ({time.time() - t_start:.0f}s total)")
