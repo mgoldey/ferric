@@ -459,7 +459,19 @@ jobs:
           set -euo pipefail
           EIGEN_VERSION="$1"
           cd /tmp
-          wget -q https://gitlab.com/libeigen/eigen/-/archive/${EIGEN_VERSION}/eigen-${EIGEN_VERSION}.tar.gz
+          # curl, NOT wget: confirmed live -- a real run failed here with
+          # "wget: command not found". build-native-deps.sh's OWN wget calls
+          # work because that job's dnf install line explicitly includes
+          # wget; this script has no such install (see the comment above --
+          # gcc-toolset-12/gfortran/cmake/wget/etc. were all dropped from
+          # THIS container on purpose, since the native builds that needed
+          # them now happen once upstream). Checked what quay.io/pypa/
+          # manylinux_2_28_x86_64:latest actually ships rather than guessing
+          # a second time: curl.x86_64 is present by default (@baseos),
+          # wget is not. Using curl here means every leg's container needs
+          # zero extra packages for this step, not a dnf install added back
+          # just to get wget.
+          curl -sSLo eigen-${EIGEN_VERSION}.tar.gz https://gitlab.com/libeigen/eigen/-/archive/${EIGEN_VERSION}/eigen-${EIGEN_VERSION}.tar.gz
           tar xzf eigen-${EIGEN_VERSION}.tar.gz
           mkdir -p /usr/include/eigen3
           cp -r eigen-${EIGEN_VERSION}/Eigen /usr/include/eigen3/
