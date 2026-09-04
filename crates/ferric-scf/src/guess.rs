@@ -39,7 +39,7 @@ pub fn hcore_guess(
 
 /// Ground-state multiplicity for a neutral free atom (Z = 1..118).
 ///
-/// Matches the proatom_gs_mult closure in ferric-cli/src/main.rs so the
+/// Matches the proatom_gs_mult closure in ferric-cli/src/lib.rs so the
 /// SAD free-atom solves are consistent with the Hirshfeld proatom path.
 fn atom_ground_state_mult(z: i32) -> usize {
     match z {
@@ -815,7 +815,7 @@ pub fn minao_projection_guess(
 ///
 /// Free-atom SCFs are tiny (~10-30 basis functions) but the global rayon pool's
 /// work-stealing overhead makes them 18× slower than single-threaded execution.
-/// This matches the `run_serial` pattern in ferric-cli/src/main.rs.
+/// This matches the `run_serial` pattern in ferric-cli/src/lib.rs.
 fn run_serial_pool<F, R>(f: F) -> R
 where
     F: FnOnce() -> R + Send,

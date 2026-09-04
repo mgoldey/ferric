@@ -182,7 +182,7 @@ fn partition_dependence_becke_vs_hirshfeld_water() {
     // Ad-hoc same-basis neutral proatom provider (the CLI's standard choice
     // for the Hirshfeld partition today — see per-atom-c6-status memory,
     // commit 81df65a "wire ad-hoc same-basis proatom into ALL Hirshfeld paths",
-    // and ferric-cli/src/main.rs:408-465 for the reference closure this
+    // and ferric-cli/src/lib.rs:445-502 for the reference closure this
     // mirrors: neutral-only, atomic SCF in the molecule's own basis,
     // spherically averaged).
     let proatom_radii: Vec<f64> = (1..=600).map(|k| k as f64 * 0.05).collect();

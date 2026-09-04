@@ -158,13 +158,50 @@ fn warn_if_epistemically_unproven(method: &str) {
     }
 }
 
+/// Real entry point for the standalone `ferric`/`ferric-cli` binaries. Reads
+/// the live process argv, which for a native binary is exactly
+/// `[program_name, ...user_args]` -- `run()` below expects that same shape,
+/// so this is a one-line adapter, not where the actual logic lives.
 pub fn main() {
+    run(std::env::args().collect())
+}
+
+/// The actual CLI, taking argv explicitly instead of reading
+/// `std::env::args()` itself. Split out so a caller whose real OS-process
+/// argv does NOT match `[program_name, ...user_args]` can reconstruct that
+/// shape and pass it in directly, rather than being stuck with whatever
+/// `std::env::args()` happens to return in their process.
+///
+/// This exists because of a real, measured mismatch: `ferric-python`'s
+/// `_cli_main` #[pyfunction] (the `ferric` console-script entry point pip
+/// installs) is called from INSIDE an already-running Python interpreter,
+/// and `std::env::args()` there returns THREE elements for a two-argument
+/// invocation -- `[python_interpreter_path, script_path, "--help"]`, not
+/// `[script_path, "--help"]` -- confirmed by an inline debug print, not
+/// assumed: a real `strace -f -e trace=execve` on the shebang-launched
+/// wrapper script showed a completely ORDINARY two-element argv at the
+/// process's initial exec, so the extra element is something Python's own
+/// runtime does to the argv `std::env::args()`/`/proc/self/cmdline` report
+/// AFTER that point, not a shebang or wrapper-script artifact. The old
+/// `args[1] == "--help"` check therefore silently checked the WRONG
+/// element under the console script (the script's own path, never "--help"
+/// or a real TOML path), while working correctly for the native binaries
+/// this crate also builds -- caught because `ferric --help`'s exit code
+/// (2, not the documented 0) and truncated one-line output differed from
+/// the native binary's, not from a logic read of the diff.
+///
+/// `_cli_main` reconstructs argv from Python's own `sys.argv` (which the
+/// pip-generated wrapper script sets correctly -- confirmed against
+/// maturin's own docs) instead of trying to normalize `std::env::args()`'s
+/// extra element away, since `sys.argv` is the shape Python itself commits
+/// to being stable, not an implementation detail of how CPython's runtime
+/// happens to report process argv on this platform/version.
+pub fn run(args: Vec<String>) {
     // Safe-by-default threading: pin OpenBLAS to 1 thread (rayon owns ferric's
     // parallelism) unless the user explicitly set OPENBLAS_NUM_THREADS. Without
     // this, running the release binary directly oversubscribes rayon × BLAS.
     ferric_integrals::blas_threads::init_threading();
     let ctx = ParallelContext::new();
-    let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 || args[1] == "--help" || args[1] == "-h" {
         print_usage();
         std::process::exit(if args.len() < 2 { 2 } else { 0 });

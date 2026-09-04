@@ -881,7 +881,7 @@ mod tests {
         // occupation spreads the hole equally over the three 4p orbitals, restoring
         // spherical symmetry and converging the SCF.
         // Regression for the HBr TS/MBD aug-cc-pVTZ hang in the free-atom proatom
-        // solve (proatom closure in ferric-cli/src/main.rs).
+        // solve (proatom closure in ferric-cli/src/lib.rs).
         let mol = Molecule::parse_xyz("1\nBr\nBr 0 0 0\n", 0, 2).unwrap();
         let bs = basis::bundled("aug-cc-pvdz").unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();

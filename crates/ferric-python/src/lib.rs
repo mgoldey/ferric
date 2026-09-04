@@ -5282,6 +5282,55 @@ fn compute_metric_2c<'py>(
     Ok(PyArray2::from_array(py, &v2c))
 }
 
+/// Entry point for the `ferric` console script (pyproject.toml
+/// `[project.scripts]`) -- calls the SAME CLI logic the standalone
+/// `ferric`/`ferric-cli` Rust binaries call (`ferric_cli::run`), compiled
+/// into THIS `.so` rather than a second binary shipped in the wheel (see the
+/// maturin project's own documented "both binary and library?" guidance:
+/// shipping a second compiled binary would roughly double the wheel, since
+/// ferric-cli would link OpenBLAS/libxc/libint2 independently rather than
+/// reuse what this extension module already links).
+///
+/// Deliberately reconstructs argv from Python's `sys.argv`, NOT
+/// `ferric_cli::main()` (which reads `std::env::args()` itself) -- measured,
+/// not assumed, that those differ here: `std::env::args()` inside this
+/// pyfunction returns THREE elements for a two-argument invocation
+/// (`[python_interpreter_path, script_path, "--help"]`), not the two-element
+/// `[script_path, "--help"]` a native binary's argv has. See
+/// `ferric_cli::run`'s doc comment for the full story (an inline debug
+/// print plus a real `strace -f -e trace=execve` on the wrapper script,
+/// confirming the extra element comes from Python's own runtime, not from
+/// the shebang or the wrapper script maturin/pip generates) and why
+/// `sys.argv` -- not a hand-patched `std::env::args()` -- is the fix:
+/// `sys.argv` is the shape Python itself commits to being stable.
+///
+/// `sys.executable`/`sys.argv[0]` (the wrapper script's own path) is used as
+/// element 0, matching what a native binary's argv[0] would be -- ferric_cli
+/// never actually reads element 0's VALUE (only `args.len()` and
+/// `args[1..]`), so this only needs to be non-empty and present, not any
+/// particular string.
+///
+/// Calls `std::process::exit()` on every error path and on `--help` --
+/// deliberately NOT caught or converted to a Python exception here, because
+/// that IS this command's correct CLI behavior (a shell script or
+/// `subprocess` caller reads $?/returncode, not a Python traceback), and
+/// pyo3 has no supported way to make `std::process::exit` merely raise
+/// instead of terminating the process regardless.
+///
+/// `init_threading()`/the ctrlc handler already ran at `import ferric` (this
+/// module's own init, above) -- `ferric_cli::run` calls `init_threading()`
+/// again internally, which is idempotent (same reasoning as its own doc
+/// comment: it is safe-by-default, not order-sensitive).
+#[pyfunction]
+fn _cli_main(py: Python<'_>) -> PyResult<()> {
+    let argv: Vec<String> = py
+        .import("sys")?
+        .getattr("argv")?
+        .extract()?;
+    ferric_cli::run(argv);
+    Ok(())
+}
+
 // ── Module ──
 
 /// Python bindings for ferric (pyo3).
@@ -5357,6 +5406,10 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(weighted_stats, m)?)?;
     m.add_function(wrap_pyfunction!(weighted_stats_vector, m)?)?;
     m.add_function(wrap_pyfunction!(weighted_stats_tensor, m)?)?;
+    // Underscore-prefixed: not part of the documented Python API, only the
+    // `ferric` console script's entry point wires to this by name -- see
+    // pyproject.toml [project.scripts].
+    m.add_function(wrap_pyfunction!(_cli_main, m)?)?;
     m.add_function(wrap_pyfunction!(run_rhf, m)?)?;
     m.add_function(wrap_pyfunction!(run_uhf, m)?)?;
     m.add_function(wrap_pyfunction!(run_rohf, m)?)?;

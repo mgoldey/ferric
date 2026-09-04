@@ -14,7 +14,7 @@
 //! "flaky free-atom SCF" is worth catching.
 //!
 //! It reuses exactly the machinery `ferric-cli`'s TS-C6 branch uses (see
-//! `crates/ferric-cli/src/main.rs` around the "Compute free-atom vol_free"
+//! `crates/ferric-cli/src/lib.rs` around the "Compute free-atom vol_free"
 //! comment): a free neutral-atom SCF at the correct ground-state multiplicity
 //! (UKS-PBE with `fractional_occ: true` for open-shell atoms to avoid the
 //! degenerate-p-shell GGA oscillation, RHF-PBE for closed shells), followed by
@@ -53,9 +53,12 @@ use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf;
 
 /// Neutral free-atom ground-state multiplicity for Z=1..=18. Mirrors
-/// `ferric_cli::main::proatom_gs_mult` / `ferric_scf::guess::atom_ground_state_mult`
+/// `ferric_cli::run::proatom_gs_mult` / `ferric_scf::guess::atom_ground_state_mult`
 /// exactly (kept as a local literal copy since both are crate-private) —
-/// see crates/ferric-cli/src/main.rs:413-431.
+/// see crates/ferric-cli/src/lib.rs:500-517 (this reference was already
+/// stale before ferric-cli's main.rs -> lib.rs move -- 413-431 pointed at
+/// the SCF-ladder dispatch, not this closure -- corrected while fixing the
+/// line-number shift the rename caused).
 fn gs_mult(z: usize) -> usize {
     match z {
         1 | 3 | 5 | 9 | 11 | 13 | 17 => 2, // doublets: H, Li, B, F, Na, Al, Cl
@@ -119,7 +122,7 @@ fn free_atom_scf_converges_z1_18_pbe() {
         "The hardcoded vol_free table was removed (G8) — this live SCF is now \
          the ONLY source of the TS vol_free denominator, so an element that \
          fails here would have TS C6 silently skipped for any molecule \
-         containing it. Reuses the exact SCF convention ferric-cli/src/main.rs \
+         containing it. Reuses the exact SCF convention ferric-cli/src/lib.rs \
          uses (xc=PBE, fractional_occ for open shells, mom_after_iter=5, Becke \
          partition; single free atom => Becke w=1 everywhere, so this is exactly \
          v_free = integral rho(r) |r|^3 dr). Also prints the G7 aug-cc-pVTZ \
@@ -183,7 +186,7 @@ fn free_atom_scf_converges_z1_18_pbe() {
 /// Becke-Lebedev `atomic_effective_volumes_becke` quadrature used above
 /// against `atomic_effective_volumes_hirshfeld` — the fixed
 /// 6-Bohr-margin/0.2-Bohr-spacing real-space cubic grid that
-/// `ferric-cli/src/main.rs`'s ACTUAL free-atom TS fallback uses (see
+/// `ferric-cli/src/lib.rs`'s ACTUAL free-atom TS fallback uses (see
 /// "Compute free-atom vol_free using Hirshfeld on isolated atoms" there).
 /// Both reduce exactly for a single free atom (partition weight = 1
 /// everywhere in both schemes), so any gap between them is pure grid/
