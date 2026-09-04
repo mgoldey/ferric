@@ -22,6 +22,20 @@ ferric-gw = { path = "../ferric-gw" }
 ferric-dft = { path = "../ferric-dft" }
 ferric-cc = { path = "../ferric-cc" }
 ferric-tddft = { path = "../ferric-tddft" }
+# The `ferric` console-script entry point (pyproject.toml [project.scripts]):
+# calls ferric_cli::main() from a #[pyfunction] compiled into THIS .so, so
+# `pip install ferric` gets a `ferric input.toml` command with no second
+# compiled binary in the wheel -- see ferric-cli's Cargo.toml [lib] section
+# for why that crate exposes a library target now, not only bin/*.rs.
+# ferric-cli's own TOML-file CLI path uses ferric-export for NPZ export --
+# pulled in transitively through this dep, not listed explicitly here since
+# nothing in THIS crate calls it directly. Every OTHER crate ferric-cli
+# needs (ferric-core/integrals/scf/mp2/dft/rpa/gw/cc/tddft) was already
+# linked into this .so for the Python bindings themselves, so this adds no
+# new native (OpenBLAS/libxc/libint2) linkage -- only ferric-cli's own Rust
+# code (TOML parsing, dispatch) and the small pure-Rust toml/serde deps it
+# needs.
+ferric-cli = { path = "../ferric-cli" }
 pyo3 = { workspace = true }
 numpy = { workspace = true }
 ndarray = { workspace = true }

@@ -17,9 +17,15 @@
 
 use std::fs;
 
+/// Named `main_rs` for what it checks (the CLI's dispatch/println! logic),
+/// not for where the file is on disk any more: main() moved to lib.rs (was
+/// main.rs) so ferric-python could depend on it as a library and call it
+/// from a #[pyfunction] -- see crates/ferric-cli/Cargo.toml's [lib] section.
+/// The function name and this test's own doc comment stay accurate to WHAT
+/// is being guarded; only the file path underneath changed.
 fn main_rs() -> String {
-    fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"))
-        .expect("read main.rs")
+    fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"))
+        .expect("read lib.rs")
 }
 
 /// The five rs-mp2-rpa component lines must interpolate `{sr_name}`/`{lr_name}`,

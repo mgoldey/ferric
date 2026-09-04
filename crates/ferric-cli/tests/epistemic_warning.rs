@@ -1,7 +1,8 @@
 //! Confirms the CLI prints a one-line epistemic-status warning on stderr for
 //! Smoke/Stub-grade `method.kind` values (per docs/VALIDATION.md), and stays
 //! silent for Proven/Proven (narrow) methods. See
-//! `crates/ferric-cli/src/main.rs`'s `EPISTEMIC_WARNINGS` table.
+//! `crates/ferric-cli/src/lib.rs`'s `EPISTEMIC_WARNINGS` table (was
+//! main.rs -- moved to a [lib] target so ferric-python could depend on it).
 
 use std::path::PathBuf;
 use std::process::Command;

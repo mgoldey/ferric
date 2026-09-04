@@ -679,6 +679,52 @@ jobs:
           print("Smoke test PASSED.")
           PYEOF
 
+      # Exercises the `ferric` CONSOLE SCRIPT (pyproject.toml
+      # [project.scripts]) -- the pip-installed `ferric` command, not the
+      # `import ferric; ferric.run_rhf(...)` Python API the step above
+      # already covers. These are genuinely different code paths: the
+      # console script runs `ferric_cli::run(sys.argv)` from inside a
+      # pip-generated wrapper script, and a real bug there (argv shape
+      # mismatch between a native binary's `std::env::args()` and what a
+      # Python-embedded extension actually sees -- caught and fixed while
+      # wiring this up, not hypothetical) would NOT be caught by the Python
+      # API smoke test above, since that never touches sys.argv or the
+      # wrapper script at all.
+      #
+      # Checks the two things a silent regression here would break
+      # separately: `ferric --help` must exit 0 (not fall through to the
+      # `args.len() < 2` no-args path, which prints the same text but exits
+      # 2 -- the exact bug this test would have caught), and a real
+      # calculation from a TOML file must actually run and converge, not
+      # just parse its arguments correctly.
+      - name: Smoke test -- ferric console script (pip-installed CLI)
+        run: |
+          set -euo pipefail
+          source /tmp/smoke-venv/bin/activate
+          command -v ferric
+          ferric --help
+          test $? -eq 0 || { echo "::error::ferric --help exited nonzero"; exit 1; }
+
+          cd /tmp
+          cat > smoke-cli.toml << 'TOMLEOF'
+          [molecule]
+          xyz = "smoke-cli.xyz"
+
+          [basis]
+          name = "sto-3g"
+
+          [method]
+          kind = "rhf"
+          TOMLEOF
+          printf '2\nH2\nH 0 0 0\nH 0 0 0.74\n' > smoke-cli.xyz
+
+          OPENBLAS_NUM_THREADS=1 ferric smoke-cli.toml | tee smoke-cli.out
+          grep -q "converged  = true" smoke-cli.out || {
+            echo "::error::ferric console script ran but did not report converged=true"
+            exit 1
+          }
+          echo "Console-script smoke test PASSED."
+
   # Publishes to PyPI via trusted publishing (OIDC) -- no long-lived token in
   # this repo. All three prerequisites this job used to wait on are now met:
   #   1. Wheels from a real run (33697177255, built from c87e7456) were

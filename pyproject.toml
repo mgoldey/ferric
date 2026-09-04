@@ -15,6 +15,21 @@ dependencies = [
     "gemmi>=0.7",
 ]
 
+# `pip install ferric` puts `ferric` on PATH -- calls straight into
+# ferric_cli::main() (crates/ferric-cli/src/lib.rs) compiled into the SAME
+# .so this extension module already is, via the `_cli_main` #[pyfunction]
+# (crates/ferric-python/src/lib.rs). No second compiled binary in the wheel:
+# maturin's own docs recommend exactly this shape ("Both binary and
+# library?") over shipping ferric-cli's existing standalone binary
+# separately, which would roughly double the wheel by linking
+# OpenBLAS/libxc/libint2 a second time. Compiled-code performance is
+# identical to the standalone `ferric`/`ferric-cli` binaries -- same
+# --release-optimized Rust, same native linkage -- the only added cost is a
+# one-time Python-interpreter boot, noise against the SCF/MP2/RPA job
+# runtimes this CLI runs.
+[project.scripts]
+ferric = "ferric:_cli_main"
+
 [project.optional-dependencies]
 # Docking (tier 1 of the cost hierarchy -- see tools/campaign/hierarchy.py).
 # Vina SEARCHES pose space; nothing else in this repo does. Apache-2.0

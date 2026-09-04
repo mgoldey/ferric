@@ -580,6 +580,7 @@ version = "0.1.0"
 dependencies = [
  "ctrlc",
  "ferric-cc",
+ "ferric-cli",
  "ferric-core",
  "ferric-dft",
  "ferric-gw",

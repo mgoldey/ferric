@@ -7,12 +7,24 @@ edition = "2021"
 [lints]
 workspace = true
 
-# Primary CLI driver. Built under both names: `ferric-cli` (historical, used by
-# README/tutorials/scripts) and `ferric` (friendlier; the name `ferric-batch`
-# shells out to — see src/bin/ferric-batch.rs).
+# CLI logic (main() + config parsing) lives here as a LIBRARY, not only a
+# binary, so ferric-python can depend on this crate and call ferric_cli::main()
+# from a #[pyfunction] compiled into its OWN .so -- the `ferric` console-script
+# entry point pip installs, with no second compiled binary in the wheel (see
+# crates/ferric-python/src/lib.rs and pyproject.toml [project.scripts]).
+[lib]
+name = "ferric_cli"
+path = "src/lib.rs"
+
+# Primary CLI driver, still built as real binaries for `cargo build`/`cargo
+# run` and everything that already invokes them (README/tutorials/scripts,
+# ferric-batch's std::process::Command shellout). Both are now thin wrappers
+# over the lib above rather than main.rs directly: `ferric-cli` (historical
+# name) and `ferric` (friendlier; the name `ferric-batch` shells out to --
+# see src/bin/ferric-batch.rs).
 [[bin]]
 name = "ferric-cli"
-path = "src/main.rs"
+path = "src/bin/ferric-cli.rs"
 
 [[bin]]
 name = "ferric"
