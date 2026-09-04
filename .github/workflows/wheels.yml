@@ -78,21 +78,72 @@ jobs:
   # reusing what it saved) is fast; this job makes EVERY run warm for all
   # four legs, not one in four.
   #
-  # actions/upload-artifact + download-artifact instead of actions/cache:
-  # a race is structurally impossible when exactly one job writes and N jobs
-  # only ever read -- there is no "who gets there first", no restore-vs-save
-  # ordering to reason about, and no silent partial-success like the cache
-  # save's soft-fail above.
+  # actions/upload-artifact + download-artifact SHARES this run's build with
+  # the four build-wheels legs below: a race is structurally impossible when
+  # exactly one job writes and N jobs only ever read -- there is no "who
+  # gets there first", no restore-vs-save ordering to reason about, and no
+  # silent partial-success like the cache save's soft-fail above.
+  #
+  # That alone didn't fix wall-clock time: eliminating four REDUNDANT builds
+  # still leaves exactly one ~85 min build on the critical path of every
+  # tag push, since build-wheels needs() this job and cannot start without
+  # it. actions/cache is back (below, "Restore/Save native deps cache") for
+  # exactly the piece the artifact mechanism cannot provide -- persistence
+  # ACROSS separate workflow runs, not just within one -- and it is safe
+  # here for the same reason the artifact split is: this job is still the
+  # ONLY writer, so the old 4-way race this section describes cannot recur.
   build-native-deps:
     runs-on: ubuntu-22.04
     timeout-minutes: 150
+    env:
+      # Bump to invalidate every cache entry at once (e.g. after a CMake-flag
+      # or dnf-package-list change in build-native-deps.sh that doesn't touch
+      # one of the pinned versions above) without hunting down individual
+      # keys. Job-scoped rather than in the workflow-level env: block above:
+      # it isn't a source input like OPENBLAS_VERSION/LIBXC_VERSION/etc, and
+      # it's only ever read by this job's own cache key (both occurrences,
+      # restore and save, below).
+      NATIVE_DEPS_CACHE_VERSION: v2
     steps:
       - uses: actions/checkout@v4
+
+      # Persist the BUILT native deps across separate runs (different tag
+      # pushes, or a workflow_dispatch rerun days later).
+      #
+      # This is a REAL cache, unlike the actions/cache this workflow used to
+      # have here (removed in #16): that one was raced 4-way (every
+      # build-wheels leg shared the key, all four missed simultaneously, only
+      # one of four saves could win -- see the block comment above this job
+      # for the measured numbers). This job is now the ONLY writer, so there
+      # is no "who gets there first" to reason about: restore here, save
+      # there, exactly once per run, matching the ordinary actions/cache
+      # pattern this repo's own ci.yml already uses successfully for
+      # libint2. What #16 did NOT fix -- and this closes -- is that even a
+      # cache-hit run still paid the full ~85 min native build, because the
+      # in-script `.done`-file early exit that used to skip it was removed
+      # as part of the split (there was no cache-hit branch left to check).
+      # The skip now lives at the WORKFLOW level instead: `cache-hit` from
+      # this restore step gates the docker-build step below via `if:`.
+      #
+      # native-deps-v2, not v1: deliberately a DIFFERENT namespace than the
+      # pre-#16 cache key (which was native-deps-${{ NATIVE_DEPS_CACHE_VERSION
+      # == v1 }}-...), so a stale entry from before this job existed can never
+      # get restored here by coincidence.
+      - name: Restore native deps cache
+        id: cache-native
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/native-deps-cache
+          key: native-deps-${{ env.NATIVE_DEPS_CACHE_VERSION }}-manylinux_2_28-openblas${{ env.OPENBLAS_VERSION }}-libxc${{ env.LIBXC_VERSION }}-libint${{ env.LIBINT_VERSION }}-eigen${{ env.EIGEN_VERSION }}
 
       # Same reasoning as build-wheels' own "Free runner disk space" step
       # (unchanged below) -- this job pulls the same multi-GB manylinux_2_28
       # image and does the same from-source native builds, just once instead
       # of four times, so it hits the same disk-pressure risk on its own.
+      # Runs even on a cache hit: the manylinux_2_28 image pull itself is the
+      # dominant disk cost of this job regardless of whether the native
+      # build runs, and skipping this on a hit would leave that risk
+      # unguarded on exactly the runs it's cheapest to check on.
       - name: Free runner disk space
         run: |
           echo "--- before"; df -h / | tail -1
@@ -108,7 +159,12 @@ jobs:
       # copies just the Eigen headers (the one piece a fresh per-leg
       # container still needs on its own filesystem); it is not a second
       # copy of this script.
+      #
+      # Skipped on a cache hit -- writing the script is pointless if the
+      # docker-run step that would consume it (below, same `if:`) isn't
+      # going to execute.
       - name: Write native-deps build script
+        if: steps.cache-native.outputs.cache-hit != 'true'
         run: |
           mkdir -p native-deps-cache
           cat > native-deps-cache/build-native-deps.sh << 'SCRIPT_EOF'
@@ -288,6 +344,7 @@ jobs:
       # path's value, only that it is consistent -- but matching keeps this
       # job's invocation legible next to maturin-action's own docker run).
       - name: Build native deps (manylinux_2_28 container)
+        if: steps.cache-native.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           docker run --rm \
@@ -299,12 +356,39 @@ jobs:
               "${{ env.EIGEN_VERSION }}" "${{ env.OPENBLAS_VERSION }}" \
               "${{ env.LIBXC_VERSION }}" "${{ env.LIBINT_VERSION }}"
 
+      # Mirrors ci.yml's libint2 cache: save is a SEPARATE step that runs
+      # ONLY on success() (not always()), and only when this run actually did
+      # the build (cache-hit != 'true' -- saving on a hit would be a no-op at
+      # best, since actions/cache refuses to overwrite an existing key, but
+      # skipping the attempt entirely is cheaper and avoids a confusing "cache
+      # already exists" warning on every warm run). A cancelled or failed
+      # docker-run step must never save a truncated $PREFIX -- that would
+      # poison every later restore with a tree missing .done or a library.
+      - name: Save native deps cache
+        if: success() && steps.cache-native.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/native-deps-cache
+          key: native-deps-${{ env.NATIVE_DEPS_CACHE_VERSION }}-manylinux_2_28-openblas${{ env.OPENBLAS_VERSION }}-libxc${{ env.LIBXC_VERSION }}-libint${{ env.LIBINT_VERSION }}-eigen${{ env.EIGEN_VERSION }}
+
       - name: Keep native-deps-cache out of the wheel / git
         run: echo "native-deps-cache/" >> .git/info/exclude
 
-      # Artifact, not actions/cache: this is the one and only writer, so
-      # there is nothing to race. Every build-wheels leg downloads this by
-      # name below.
+      # Two DIFFERENT sharing mechanisms for two DIFFERENT audiences, both
+      # safe here because build-native-deps is the ONLY writer to either --
+      # there is nothing to race, unlike the pre-#16 4-way actions/cache mess
+      # this job replaced:
+      #   - actions/cache (above): persists the BUILD across separate
+      #     workflow RUNS (a later tag push, a workflow_dispatch rerun days
+      #     later), so a warm cache skips the ~85 min native build entirely.
+      #   - actions/upload-artifact (here): shares this SAME run's result
+      #     with the four build-wheels legs below, which cannot see a
+      #     sibling job's actions/cache restore (that's job-local) and have
+      #     no other way to reach files this job produced.
+      # Runs unconditionally (no cache-hit gate) because build-wheels needs
+      # the artifact whether this run built fresh or restored from cache --
+      # the restore step above already guarantees native-deps-cache/ is
+      # populated either way.
       #
       # !native-deps-cache/share/**: libint2's `make install` writes its own
       # bundled basis-set library under $PREFIX/share (Gaussian94-format
