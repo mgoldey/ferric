@@ -305,10 +305,31 @@ jobs:
       # Artifact, not actions/cache: this is the one and only writer, so
       # there is nothing to race. Every build-wheels leg downloads this by
       # name below.
+      #
+      # !native-deps-cache/share/**: libint2's `make install` writes its own
+      # bundled basis-set library under $PREFIX/share (Gaussian94-format
+      # files, e.g. 6-311g**.g94) that nothing downstream reads -- ferric
+      # bundles its OWN basis sets separately (crates/ferric-core/src/basis/
+      # bundled/*.json via include_str!, confirmed against build.rs: neither
+      # ferric-integrals' nor ferric-dft's build.rs references $PREFIX/share
+      # anywhere) -- but actions/upload-artifact rejects the upload outright
+      # if ANY file it would carry has a name actions considers unsafe for
+      # NTFS portability, and several of libint2's basis-set filenames
+      # contain a literal "*" (double-polarization notation, e.g. "**" for
+      # 6-311g**) -- confirmed live: run failed with "The path for one of
+      # the files in artifact is not valid: .../basis/6-311g**.g94 ...
+      # Invalid characters include: ... Asterisk *". Only lib/, lib64/,
+      # include/ and .done are ever read (see the exported LIBINT2_PREFIX/
+      # PKG_CONFIG_PATH/LD_LIBRARY_PATH/LIBRARY_PATH/CPATH below, which name
+      # exactly those four and nothing under share/), so excluding share/
+      # entirely costs nothing downstream and removes the only source of
+      # asterisk-bearing filenames in this tree.
       - uses: actions/upload-artifact@v4
         with:
           name: native-deps
-          path: native-deps-cache/
+          path: |
+            native-deps-cache/
+            !native-deps-cache/share/**
           if-no-files-found: error
           # Native deps are only useful for the SAME run's build-wheels
           # legs (they key off pinned versions from this run's env: block,
