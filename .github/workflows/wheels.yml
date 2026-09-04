@@ -392,13 +392,50 @@ jobs:
           # its own PEP 440 normalization (round-trips byte-identical through
           # `Version()`), so the raw tag can be compared textually downstream
           # with no normalization step anywhere.
-          if ! [[ "$tag_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+((a|b|rc)[0-9]+)?(\.post[0-9]+)?(\.dev[0-9]+)?(\+[a-zA-Z0-9.]+)?$ ]]; then
+          if ! [[ "$tag_version" =~ ^([0-9]+\.[0-9]+\.[0-9]+)((a|b|rc)[0-9]+)?(\.post[0-9]+)?(\.dev[0-9]+)?(\+[a-zA-Z0-9.]+)?$ ]]; then
             echo "::error::tag 'v${tag_version}' is not canonical PEP 440 (no hyphens -- use v1.2.3rc1, not v1.2.3-rc1) -- refusing to stamp"
             exit 1
           fi
           echo "stamping version ${tag_version} from tag ${GITHUB_REF}"
           sed -i "0,/^version = /s/^version = .*/version = \"${tag_version}\"/" pyproject.toml
-          sed -i "0,/^version = /s/^version = .*/version = \"${tag_version}\"/" crates/ferric-python/Cargo.toml
+
+          # Cargo.toml needs SemVer, not PEP 440 -- they are DIFFERENT grammars
+          # for the pre-release segment, and the same literal string is not
+          # valid in both. PEP 440 writes "0.1.0rc2" / "0.1.0.post1" with no
+          # separator or a bare ".". SemVer 2.0.0 requires a "-" before any
+          # pre-release identifier ("0.1.0-rc2" / "0.1.0-post1") -- with no
+          # hyphen, rustc/cargo's toml parser hard-errors:
+          #   error: unexpected character 'r' after patch version number
+          #    --> crates/ferric-python/Cargo.toml:3:11
+          #      | version = "0.1.0rc2"
+          # (confirmed live, run 33836001142 -- the v0.1.0rc2 tag's
+          # build-wheels legs all died here). Verified this conversion is
+          # both a real SemVer string (checked against the same regex shape
+          # used to validate PEP 440 acceptance above) AND accepted by a real
+          # `cargo check` for every shape this step's own PEP-440 regex
+          # allows: 0.1.0, 0.1.0-rc2, 0.1.0-a1, 0.1.0-b2, 0.1.0-post1,
+          # 0.1.0-dev1, 0.1.0+local, 0.1.0-rc1.post2.
+          #
+          # BASH_REMATCH from the SAME match above (not a second regex) gives
+          # the exact pieces: [1]=X.Y.Z, [2]=(a|b|rc)N pre-release, [4]=.postN,
+          # [5]=.devN, [6]=+local. Join whichever of pre/post/dev are present
+          # with "." after ONE leading "-"; append +local (SemVer's build
+          # metadata separator, unchanged from PEP 440's) last, outside the
+          # hyphen segment.
+          base="${BASH_REMATCH[1]}"
+          pre="${BASH_REMATCH[2]}"
+          post="${BASH_REMATCH[4]#.}"
+          dev="${BASH_REMATCH[5]#.}"
+          plus="${BASH_REMATCH[6]}"
+          semver_extra=""
+          for part in "$pre" "$post" "$dev"; do
+            [[ -n "$part" ]] && semver_extra="${semver_extra:+$semver_extra.}$part"
+          done
+          semver_version="$base"
+          [[ -n "$semver_extra" ]] && semver_version="$semver_version-$semver_extra"
+          semver_version="$semver_version$plus"
+
+          sed -i "0,/^version = /s/^version = .*/version = \"${semver_version}\"/" crates/ferric-python/Cargo.toml
           grep -m1 "^version" pyproject.toml
           grep -m1 "^version" crates/ferric-python/Cargo.toml
 
