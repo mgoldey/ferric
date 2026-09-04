@@ -173,7 +173,7 @@ pub fn main() {
 /// `std::env::args()` happens to return in their process.
 ///
 /// This exists because of a real, measured mismatch: `ferric-python`'s
-/// `_cli_main` #[pyfunction] (the `ferric` console-script entry point pip
+/// `_cli_main` `#[pyfunction]` (the `ferric` console-script entry point pip
 /// installs) is called from INSIDE an already-running Python interpreter,
 /// and `std::env::args()` there returns THREE elements for a two-argument
 /// invocation -- `[python_interpreter_path, script_path, "--help"]`, not
