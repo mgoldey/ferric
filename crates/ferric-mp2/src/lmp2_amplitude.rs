@@ -605,19 +605,37 @@ pub struct LocalizedBasis {
     pub v2c: Array2<f64>,
 }
 
-/// Basis stage of the assembly — no (no·nv)² object is ever formed here.
-pub fn assemble_basis(
+/// Everything the correlation stage needs about the LOCALIZED spaces, with
+/// no integral tensor attached — the shared front end of both the global
+/// (`assemble_basis`) and integral-direct (`crate::lmp2_direct`) assemblies.
+#[derive(Debug, Clone)]
+pub struct LocalizedSpaces {
+    pub c_locc: Array2<f64>,
+    /// Copy of the caller's VV-HV virtuals, (nao, nv).
+    pub c_vloc: Array2<f64>,
+    pub f_oo: Array2<f64>,
+    pub f_vv: Array2<f64>,
+    pub occ_centers: Array2<f64>,
+    pub occ_spreads: Vec<f64>,
+    /// Dipole centroids ⟨a|r|a⟩ of the localized virtuals, (nv, 3) Bohr —
+    /// the distance rule for the direct path's virtual domains.
+    pub virt_centers: Array2<f64>,
+    pub no: usize,
+    pub nv: usize,
+}
+
+/// Localized-space stage shared by all assembly paths: Boys occupieds,
+/// centroids/spreads, Fock blocks, virtual centroids. No RI work here.
+pub fn localized_spaces(
     mol: &Molecule,
     obs: &PreparedBasis,
-    dfbs: &PreparedBasis,
-    op: Operator,
     rhf: &ScfResult,
-    cfg: &AmplitudeLmp2Config,
+    frozen_core: usize,
     vvhv: &VvHv,
-) -> Result<LocalizedBasis, FerricError> {
+) -> Result<LocalizedSpaces, FerricError> {
     let nocc_total = (mol.nelec() as usize) / 2;
-    let no = active_occ(nocc_total, cfg.frozen_core)?;
-    let first_occ = cfg.frozen_core;
+    let no = active_occ(nocc_total, frozen_core)?;
+    let first_occ = frozen_core;
     let c_occ_can = rhf.mos_r().slice(s![.., first_occ..nocc_total]).to_owned();
     let dip = dipole(obs, [0.0, 0.0, 0.0])?;
     let boys = boys_localize(&c_occ_can, &dip, 200);
@@ -631,11 +649,34 @@ pub fn assemble_basis(
         let c2: f64 = (0..3).map(|x| occ_centers[(i, x)].powi(2)).sum();
         occ_spreads.push((r2v - c2).max(1e-10).sqrt());
     }
-    let c_vloc = &vvhv.c_vloc;
+    let c_vloc = vvhv.c_vloc.clone();
     let nv = c_vloc.ncols();
+    let mut virt_centers = Array2::<f64>::zeros((nv, 3));
+    for a in 0..nv {
+        let col = c_vloc.column(a);
+        for (x, dm) in dip.iter().enumerate() {
+            virt_centers[(a, x)] = col.dot(&dm.dot(&col));
+        }
+    }
     let f_ao = rhf.fock_r();
     let f_oo = c_locc.t().dot(&f_ao.dot(&c_locc));
-    let f_vv = c_vloc.t().dot(&f_ao.dot(c_vloc));
+    let f_vv = c_vloc.t().dot(&f_ao.dot(&c_vloc));
+    Ok(LocalizedSpaces { c_locc, c_vloc, f_oo, f_vv, occ_centers, occ_spreads, virt_centers, no, nv })
+}
+
+/// Basis stage of the assembly — no (no·nv)² object is ever formed here.
+pub fn assemble_basis(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &ScfResult,
+    cfg: &AmplitudeLmp2Config,
+    vvhv: &VvHv,
+) -> Result<LocalizedBasis, FerricError> {
+    let sp = localized_spaces(mol, obs, rhf, cfg.frozen_core, vvhv)?;
+    let LocalizedSpaces { c_locc, f_oo, f_vv, occ_centers, occ_spreads, no, nv, .. } = sp;
+    let c_vloc = &vvhv.c_vloc;
     let budget = eri3_budget_bytes(cfg.eri3_budget_bytes);
     let b3 = eri3_mo_ov_blocked(op, obs, dfbs, &c_locc, c_vloc, budget)?;
     let naux = b3.shape()[0];
@@ -769,6 +810,67 @@ fn domain_fit_pair(
 }
 
 
+/// The integral-free R⁻⁶ pair gate (paper's linked gate): returns the
+/// (no·no) keep mask and the count of gated UNIQUE off-diagonal pairs.
+/// Symmetric by construction; diagonal pairs are never gated; ε = 0 makes
+/// the gate inert (θ = 0). Extracted so every assembly path applies the
+/// EXACT same rule.
+pub fn pair_gate_keep(
+    occ_centers: &Array2<f64>,
+    occ_spreads: &[f64],
+    no: usize,
+    eps: f64,
+    cal: f64,
+) -> (Vec<bool>, usize) {
+    let theta = 1e-2 * eps;
+    let mut keep = vec![true; no * no];
+    let mut n_gated = 0usize;
+    for i in 0..no {
+        for j in 0..no {
+            if i == j {
+                continue;
+            }
+            let rij2: f64 = (0..3)
+                .map(|x| (occ_centers[(i, x)] - occ_centers[(j, x)]).powi(2))
+                .sum();
+            let est = cal * (occ_spreads[i] * occ_spreads[j]).powi(3) / rij2.powi(3).max(1e-12);
+            if est < theta {
+                keep[i * no + j] = false;
+                if i < j {
+                    n_gated += 1;
+                }
+            }
+        }
+    }
+    (keep, n_gated)
+}
+
+/// Hylleraas energy E = Σ (2 t_iajb − t_ibja) J_iajb over the retained
+/// pattern — t_ibja is read from the SAME pair block at swapped positions
+/// (zero outside the union domains). Shared by every driver in the family.
+pub fn hylleraas_energy(rg: &Ragged, t: &[Array2<f64>]) -> f64 {
+    let mut e_dir = 0.0;
+    let mut e_exx = 0.0;
+    for (p, pb) in rg.pairs.iter().enumerate() {
+        let nb = pb.db.len();
+        for (r, &a) in pb.da.iter().enumerate() {
+            for (c, &b) in pb.db.iter().enumerate() {
+                if !pb.pat[r * nb + c] {
+                    continue;
+                }
+                let jv = pb.j_blk[(r, c)];
+                e_dir += t[p][(r, c)] * jv;
+                let sr = pb.pos_da[b];
+                let sc = pb.pos_db[a];
+                if sr != usize::MAX && sc != usize::MAX {
+                    e_exx += t[p][(sr, sc)] * jv;
+                }
+            }
+        }
+    }
+    2.0 * e_dir - e_exx
+}
+
 /// Direct (never-dense) ragged assembly shared by the amplitude-threshold
 /// family: integral-free pair gate BEFORE any GEMM/fit, per-unique-pair
 /// whitened Gram GEMMs over exact-Schwarz candidate subsets (or per-pair
@@ -812,26 +914,8 @@ pub fn assemble_ragged_direct_aux(
     let (f_oo, f_vv) = (&lb.f_oo, &lb.f_vv);
     let mut n_pairs_gated = 0usize;
     let keep_pair: Option<Vec<bool>> = pair_gate_cal.map(|cal| {
-        let theta = 1e-2 * eps;
-        let mut keep = vec![true; no * no];
-        for i in 0..no {
-            for j in 0..no {
-                if i == j {
-                    continue;
-                }
-                let rij2: f64 = (0..3)
-                    .map(|x| (lb.occ_centers[(i, x)] - lb.occ_centers[(j, x)]).powi(2))
-                    .sum();
-                let est = cal * (lb.occ_spreads[i] * lb.occ_spreads[j]).powi(3)
-                    / rij2.powi(3).max(1e-12);
-                if est < theta {
-                    keep[i * no + j] = false;
-                    if i < j {
-                        n_pairs_gated += 1;
-                    }
-                }
-            }
-        }
+        let (keep, gated) = pair_gate_keep(&lb.occ_centers, &lb.occ_spreads, no, eps, cal);
+        n_pairs_gated = gated;
         keep
     });
 
@@ -1082,29 +1166,7 @@ pub fn amplitude_lmp2_with_virtuals(
         )));
     }
 
-    // Hylleraas energy E = Σ (2 t_iajb − t_ibja) J_iajb over the pattern
-    let mut e_dir = 0.0;
-    let mut e_exx = 0.0;
-    for (p, pb) in rg.pairs.iter().enumerate() {
-        let nb = pb.db.len();
-        for (r, &a) in pb.da.iter().enumerate() {
-            for (c, &b) in pb.db.iter().enumerate() {
-                if !pb.pat[r * nb + c] {
-                    continue;
-                }
-                let jv = pb.j_blk[(r, c)];
-                e_dir += t[p][(r, c)] * jv;
-                // t_ibja lives on the SAME pair block at swapped positions;
-                // zero (skip) when outside the union domains
-                let sr = pb.pos_da[b];
-                let sc = pb.pos_db[a];
-                if sr != usize::MAX && sc != usize::MAX {
-                    e_exx += t[p][(sr, sc)] * jv;
-                }
-            }
-        }
-    }
-    let e_corr = 2.0 * e_dir - e_exx;
+    let e_corr = hylleraas_energy(&rg, &t);
 
     // counters
     let total_el = (no * nv) as u64 * (no * nv) as u64;
