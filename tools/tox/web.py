@@ -56,7 +56,7 @@ def _post_json(url: str, payload: dict, timeout: float) -> dict:
         headers={"Content-Type": "application/json", "User-Agent": _UA},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with urllib.request.urlopen(req, timeout=timeout) as r:  # nosec B310 -- base_url defaults are fixed https:// endpoints; callers are local scripts
         return json.loads(r.read().decode())
 
 
@@ -196,7 +196,7 @@ class ProToxProvider:
             req = urllib.request.Request(
                 f"{self.base_url}/", headers={"User-Agent": _UA}, method="GET"
             )
-            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+            with urllib.request.urlopen(req, timeout=self.timeout) as r:  # nosec B310 -- same fixed https:// base_url
                 reachable = r.status == 200
         except Exception as e:  # noqa: BLE001 - reachability probe only
             self.last_error = f"ProTox-3.0 unreachable: {e}"
