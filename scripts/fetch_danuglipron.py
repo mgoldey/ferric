@@ -41,7 +41,7 @@ UA = "Mozilla/5.0 (ferric-c9 fetcher)"
 
 def fetch(url: str, timeout: int = 60) -> bytes:
     req = urllib.request.Request(url, headers={"User-Agent": UA})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with urllib.request.urlopen(req, timeout=timeout) as r:  # nosec B310 -- URL is a fixed https:// constant above, no user-supplied scheme
         return r.read()
 
 

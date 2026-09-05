@@ -7,7 +7,7 @@ For each system x omega: dimer, monoA, monoB, monoA+ghostB, monoB+ghostA via fer
 import re, subprocess, os, sys, json
 
 BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "target", "release", "ferric-cli")
-SRC = open("/tmp/a24/A24.py").read() if os.path.exists("/tmp/a24/A24.py") else open("/tmp/wd/A24.py").read()
+SRC = open("/tmp/a24/A24.py").read() if os.path.exists("/tmp/a24/A24.py") else open("/tmp/wd/A24.py").read()  # nosec B108 -- fixed scratch layout of a local benchmark harness, single-user box
 REFS = {2: -5.014, 5: -3.157, 14: -1.110, 19: -0.538}
 NAMES = {2: "H2O-H2O", 5: "NH3-NH3", 14: "C2H4-C2H4", 19: "CH4-CH4"}
 OMEGAS = ["0.1", "0.2", "0.3", "0.42", "0.6"]
@@ -46,7 +46,7 @@ ghost = lambda atoms: [("@"+s,x,y,z) for s,x,y,z in atoms]
 results = {}
 for idx in REFS:
     fA, fB = frags(idx)
-    sysd = f"/tmp/a24/{idx}"
+    sysd = f"/tmp/a24/{idx}"  # nosec B108 -- same local benchmark scratch layout
     os.makedirs(sysd, exist_ok=True)
     geos = {"dimer": fA+fB, "mA": fA, "mB": fB, "mA_cp": fA+ghost(fB), "mB_cp": ghost(fA)+fB}
     for tag, atoms in geos.items(): wxyz(f"{sysd}/{tag}.xyz", atoms, f"A24-{idx} {NAMES[idx]} {tag}")
@@ -77,4 +77,4 @@ print(f"{'omega':>5s} {'MP2':>7s} {'naiveA':>7s} {'DeltaB':>7s}")
 for w in OMEGAS:
     mae = lambda m: sum(abs(x) for x in err[m][w])/len(err[m][w])
     print(f"{w:>5s} {mae('mp2'):7.3f} {mae('A'):7.3f} {mae('B'):7.3f}")
-json.dump({f"{k[0]}|{k[1]}|{k[2]}": v for k,v in results.items()}, open("/tmp/a24/results.json","w"), indent=1)
+json.dump({f"{k[0]}|{k[1]}|{k[2]}": v for k,v in results.items()}, open("/tmp/a24/results.json","w"), indent=1)  # nosec B108 -- same local benchmark scratch layout

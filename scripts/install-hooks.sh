@@ -108,3 +108,44 @@ echo "To bypass once (e.g. box is under heavy load, see scripts/README.md):"
 echo "  git push --no-verify"
 echo "To uninstall:"
 echo "  rm '$HOOK_PATH'"
+
+# ---- pre-COMMIT hooks (bandit / ruff-critical / shellcheck / detect-secrets)
+#
+# Managed by the pre-commit framework against .pre-commit-config.yaml, not by
+# a bespoke wrapper: the framework owns per-hook tool environments (bandit and
+# and shellcheck are NOT on the box; pre-commit fetches them pinned),
+# runs only against STAGED files, and its generated hook works from linked
+# worktrees the same way the pre-push wrapper does (hooks dir is common).
+#
+# Soft-skip when the binary is missing, matching ci-gate.sh's convention for
+# machine-local dev tools: the pre-push gate above is the hard floor, commit
+# hooks are an earlier, cheaper tripwire.
+echo
+# `pre-commit install` hard-refuses when core.hooksPath is set. On this box
+# the local config sets it to the COMMON hooks dir -- i.e. the default
+# location, a behavioral no-op -- so unsetting it changes nothing and lets
+# the install proceed. A hooksPath pointing anywhere ELSE is a real user
+# choice we must not override: warn and skip the commit hooks instead.
+HOOKS_PATH_CFG="$(git -C "$REPO_ROOT" config --get core.hooksPath || true)"
+if [[ -n "$HOOKS_PATH_CFG" ]]; then
+    if [[ "$(readlink -f "$HOOKS_PATH_CFG" 2>/dev/null)" == "$(readlink -f "$HOOKS_DIR")" ]]; then
+        git -C "$REPO_ROOT" config --unset-all core.hooksPath
+        echo "note: removed redundant core.hooksPath (= the default common hooks dir) so pre-commit can install."
+    else
+        echo "NOTE: core.hooksPath is set to '$HOOKS_PATH_CFG' (not the default hooks dir)."
+        echo "      Skipping commit-hook install -- pre-commit refuses under a custom hooksPath,"
+        echo "      and overriding your config is not this script's call. Unset it and re-run if wanted."
+    fi
+fi
+if [[ -z "$(git -C "$REPO_ROOT" config --get core.hooksPath || true)" ]] && command -v pre-commit >/dev/null 2>&1; then
+    # `pre-commit install` refuses nothing: an existing hand-written
+    # pre-commit hook is moved to pre-commit.legacy and still chained, so the
+    # marker-guard used for pre-push above is unnecessary here.
+    (cd "$REPO_ROOT" && pre-commit install --install-hooks)
+    echo "Installed pre-commit hook (bandit -ll, ruff critical subset,"
+    echo "shellcheck --severity=error, detect-secrets, merge-conflict/large-file/yaml/toml checks)."
+    echo "To bypass once: git commit --no-verify"
+else
+    echo "NOTE: 'pre-commit' not found -- commit hooks NOT installed (pre-push gate is unaffected)."
+    echo "      Install with: uv tool install pre-commit   then re-run scripts/install-hooks.sh"
+fi
