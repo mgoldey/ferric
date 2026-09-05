@@ -304,8 +304,13 @@ jobs:
       # module-level `//!` doc does not resolve against that module's own
       # items (rustdoc resolves it in the PARENT's scope), so the fix was to
       # qualify the path, not delete the link.
+      # NOT gated on main: this step is the only thing that enforces
+      # `-D warnings` on rustdoc, and when it was main-only a PR (#21) merged
+      # green and then broke main on the very next push (an unescaped
+      # `#[pyfunction]` in a doc comment). The build is a few extra seconds
+      # on top of clippy's warm target; only the artifact UPLOAD below stays
+      # main-only, because it is a handoff to docs.yml, not a check.
       - name: Build API docs
-        if: ${{ github.ref == 'refs/heads/main' }}
         env:
           RUSTDOCFLAGS: '-D warnings'
         run: |
