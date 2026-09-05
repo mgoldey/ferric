@@ -246,6 +246,102 @@ fn bench_map_error_flatness() {
     }
 }
 
+/// TERFC PROBE — the Gate-0 reopen measurement. The 2026-07-09 kill of the
+/// terfc RI lane applies to the GLOBAL-inverse formulation only (the
+/// integrals bug behind the metric garbage was fixed on main, ea7fee6+);
+/// the lit-validated escape (Glasbrenner 2020) is "never form the global
+/// inverse" — which is what this path's per-pair domain V_DD inverses do
+/// by construction. This probe measures whether terfc survives the
+/// integral-direct route: (a) trivial-limit anchor vs canonical terfc
+/// ri_mp2 on water AND alkane_8 (the system that was −1.9e7 Ha garbage
+/// pre-fix), (b) the recorded detection invariants — |E| monotone toward
+/// Coulomb as r0 grows, |E(terfc)| ≤ |E(coulomb)| — and (c) production
+/// maps assemble without a V_DD Cholesky failure at C8.
+/// Needs the terf tables:
+///   FERRIC_TERF_TABLE_DIR=$PWD/terf-tables OPENBLAS_NUM_THREADS=1 \
+///     cargo test -p ferric-mp2 --release --test lmp2_direct -- \
+///     --ignored --nocapture terfc_direct_probe
+#[test]
+#[ignore]
+fn terfc_direct_probe() {
+    if std::env::var("FERRIC_TERF_TABLE_DIR").is_err() {
+        eprintln!("terfc_direct_probe SKIPPED: set FERRIC_TERF_TABLE_DIR (repo terf-tables/)");
+        return;
+    }
+    // r0 in Bohr; ≈ the 0.75/1.05/2.0 Å frontier rows of the 2026-07-09 table
+    let r0s = [1.4, 2.0, 3.8];
+    for (xyz, fc) in [("water.xyz", 0usize), ("alkane_8.xyz", 8)] {
+        let su = setup(xyz);
+        let cfg = AmplitudeLmp2Config { eps: 0.0, frozen_core: fc, ..Default::default() };
+        let (coul, _) = amplitude_lmp2_direct(
+            &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg,
+            &trivial_maps(),
+        )
+        .unwrap();
+        let mut prev = 0.0f64;
+        for &r0 in &r0s {
+            let op = Operator::terfc(r0);
+            let (dir, _) = amplitude_lmp2_direct(
+                &su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &cfg, &trivial_maps(),
+            )
+            .unwrap();
+            let de = (dir.e_corr - dir.e_corr_canonical_ri).abs();
+            eprintln!(
+                "TERFC {xyz} r0={r0}: E={:.10} canonical={:.10} |dE|={de:.3e} (coul {:.10})",
+                dir.e_corr, dir.e_corr_canonical_ri, coul.e_corr
+            );
+            assert!(de < 1e-9, "terfc trivial-limit anchor FAILED at {xyz} r0={r0}: {de:.3e}");
+            // Detection invariants per the 2026-07-09 record, WITH its stated
+            // ~5% tolerance: the pointwise-kernel argument does not bind
+            // tightly (measured: water r0=2 overshoots |E_coul| by 0.05%).
+            // The garbage these catch was off by SEVEN orders (−1.9e7 Ha).
+            assert!(
+                dir.e_corr.abs() > prev - 0.01 * coul.e_corr.abs()
+                    && dir.e_corr.abs() >= 0.5 * coul.e_corr.abs()
+                    && dir.e_corr.abs() <= 1.05 * coul.e_corr.abs(),
+                "terfc invariant violated at {xyz} r0={r0}: |E|={:.6} prev={prev:.6} coul={:.6}",
+                dir.e_corr.abs(),
+                coul.e_corr.abs()
+            );
+            prev = dir.e_corr.abs();
+        }
+    }
+    // (c) production maps at C8/eps=1e-3, r0=2.0 Bohr: assembly must succeed
+    // (a V_DD Cholesky failure here would be the local echo of the old
+    // global breakdown) and the map error must stay sub-dominant.
+    let su = setup("alkane_8.xyz");
+    let op = Operator::terfc(2.0);
+    let eps_cfg = AmplitudeLmp2Config { eps: 1e-3, frozen_core: 8, ..Default::default() };
+    let (triv, _) = amplitude_lmp2_direct(
+        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &eps_cfg, &trivial_maps(),
+    )
+    .unwrap();
+    let prod = DirectConfig {
+        aux_radius_bohr: 10.0,
+        virt_radius_bohr: Some(12.0),
+        ao_tail: 1e-3,
+        schwarz_skip: 0.0, // SchwarzBounds under the terfc table engine unverified — keep off here
+        ..Default::default()
+    };
+    let (pr, st) = amplitude_lmp2_direct(
+        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf,
+        &AmplitudeLmp2Config { compute_reference: false, ..eps_cfg },
+        &prod,
+    )
+    .unwrap();
+    let eps_err = (triv.e_corr - triv.e_corr_canonical_ri).abs();
+    let map_err = (pr.e_corr - triv.e_corr).abs();
+    eprintln!(
+        "TERFC C8 production maps: eps-err {eps_err:.3e} map-err {map_err:.3e} \
+         (strips {:.0}/{} rows, keep {:.4})",
+        st.strip_rows_mean, st.strip_rows_max, pr.keep_fraction
+    );
+    assert!(
+        map_err < eps_err,
+        "terfc locality-map error ({map_err:.3e}) dominates eps truncation ({eps_err:.3e})"
+    );
+}
+
 /// Schwarz-skip calibration: error vs triples saved at C16 (both ops),
 /// against the skip=0 baseline with otherwise-production maps.
 ///   OPENBLAS_NUM_THREADS=1 cargo test -p ferric-mp2 --release \
@@ -311,17 +407,27 @@ fn bench_direct_alkane_series() {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(20);
+    let min_c: usize = std::env::var("FERRIC_LMP2_BENCH_MIN_C")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(4);
     let prod = DirectConfig {
         aux_radius_bohr: 10.0,
         virt_radius_bohr: Some(12.0),
         ao_tail: 1e-3,
-        ..Default::default()
+        schwarz_skip: 1e-5, // calibrated: 66-69% triples cut for ~1e-8 Ha at C16
+        // pinned: the auto budget (0.8×RAM) ignores the bench's cgroup cap
+        // and memcg-OOMs the C32 reference — the budget-vs-enforcement trap
+        scratch_budget_bytes: 1usize << 30,
     };
     println!(
         "sys        op     eps    E_corr        dE_vs_can  keep    npair/gated dom(mn/mx) \
          strips(r mn/mx | c mn/mx) eri3_Mtriples t_maps t_eri3 t_metric t_pairs | t_asm t_solve t_ref(ri_mp2)"
     );
     for nc in [4usize, 8, 12, 16, 20, 32, 48] {
+        if nc < min_c {
+            continue;
+        }
         if nc > max_c {
             break;
         }
@@ -329,17 +435,29 @@ fn bench_direct_alkane_series() {
         for (opname, op, cal) in
             [("coul", Operator::coulomb(), 0.7), ("erfc1", Operator::erfc(1.0), 0.02)]
         {
+            let mut e_can = f64::NAN;
             for eps in [1e-3, 1e-4] {
                 let cfg = AmplitudeLmp2Config {
                     eps,
                     frozen_core: nc,
                     pair_gate_cal: Some(cal),
+                    eri3_budget_bytes: Some(2usize << 30), // see prod note; C32 ref needs 1.40 GB
+                    // ri_mp2 is eps-independent: one reference per (sys, op).
+                    // No reference at C48: its ~2 GB B doesn't fit the
+                    // contended box's headroom and its wall would be
+                    // throttle-noise; the crossover is decided at C32.
+                    compute_reference: eps == 1e-3 && nc <= 32,
                     ..Default::default()
                 };
-                let (r, st) = amplitude_lmp2_direct(
+                let (mut r, st) = amplitude_lmp2_direct(
                     &su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &cfg, &prod,
                 )
                 .unwrap();
+                if cfg.compute_reference {
+                    e_can = r.e_corr_canonical_ri;
+                } else {
+                    r.e_corr_canonical_ri = e_can;
+                }
                 println!(
                     "alkane_{:<3} {:6} {:6.0e} {:.8} {:+.3e} {:.4} {:5}/{:<5} {:4.0}/{:<4} {:5.0}/{:<5} {:4.0}/{:<4} \
                      {:8.2} {:6.2} {:6.2} {:8.2} {:7.2} | {:6.2} {:7.2} {:7.2}",
