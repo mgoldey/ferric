@@ -78,11 +78,12 @@ pub struct DirectConfig {
     /// Truncation is exactly "zero the small coefficients", applied
     /// symmetrically to both strips of a pair.
     pub ao_tail: f64,
-    /// Shell-pair Schwarz skip: batch triples whose obs-pair bound
-    /// Q(μν) = √(μν|μν) falls below this are never evaluated (their T
-    /// entries stay zero). 0.0 evaluates everything (trivial limit).
-    /// |(P|μν)| ≤ √(P|P)·Q(μν), so this is a bound-based absolute cut on
-    /// the raw 3-index entries feeding the strips.
+    /// Shell-pair Schwarz skip: batch triples whose Cauchy–Schwarz bound
+    /// √max(P|P) · Q(μν) (with Q(μν) = √(μν|μν), both under the same
+    /// operator) falls below this are never evaluated (their T entries
+    /// stay zero) — a rigorous upper-bound cut on the raw 3-index entries
+    /// feeding the strips, anchored by the conservativeness test. 0.0
+    /// evaluates everything (trivial limit).
     pub schwarz_skip: f64,
     /// GLOBAL integral-slab scratch cap (bytes), shared across all
     /// concurrently-running batch workers — each worker slabs under
@@ -269,9 +270,35 @@ pub fn assemble_ragged_direct_local(
     // ---- stage 3: batched integral evaluation + half-transform ----
     let t0 = Instant::now();
     Engine::new_3center(op, obs, dfbs, 1e-14)?; // surface construction errors serially
-    // shell-pair Schwarz bounds for the batch triple cut (same-op kernel)
-    let qpair: Option<Array2<f64>> = if dcfg.schwarz_skip > 0.0 {
-        Some(ferric_scf::screening::SchwarzBounds::compute(op, obs)?.q)
+    // Cauchy–Schwarz factors for the batch triple cut, same-op kernel:
+    // |(P|μν)| ≤ √(P|P) · Q(μν). The aux factor is per aux SHELL
+    // (√ of the max (P|P) diagonal over the shell — conservative at shell
+    // granularity); dropping it would make the cut non-conservative
+    // wherever √(P|P) > 1 (found in review before any merge).
+    // schwarz() supports Coulomb/erf/erfc only — name the knob in the error
+    // so a terfc/table-engine run knows the fix is schwarz_skip = 0.0.
+    let qpair: Option<(Array2<f64>, Vec<f64>)> = if dcfg.schwarz_skip > 0.0 {
+        let sb = ferric_scf::screening::SchwarzBounds::compute(op, obs).map_err(|e| {
+            FerricError::General(format!(
+                "lmp2_direct: schwarz_skip = {} requires shell-pair Schwarz bounds, \
+                 unavailable for operator {:?} ({e}); set schwarz_skip = 0.0 for this operator",
+                dcfg.schwarz_skip, op.kind
+            ))
+        })?;
+        let mut eng2 = Engine::new_2center(op, dfbs, 1e-14)?;
+        let dims_df = dfbs.shell_dims();
+        let qp_shell: Vec<f64> = (0..dfbs.nshells())
+            .map(|sp| {
+                let np = dims_df[sp];
+                let vals = eng2.compute_eri2(dfbs, sp, sp);
+                let mut m = 0.0f64;
+                for p in 0..np {
+                    m = m.max(vals[p * np + p].abs());
+                }
+                m.sqrt()
+            })
+            .collect();
+        Some((sb.q, qp_shell))
     } else {
         None
     };
@@ -399,8 +426,8 @@ pub fn assemble_ragged_direct_local(
                             if !(need_ab || need_ba) {
                                 continue;
                             }
-                            if let Some(q) = &qpair {
-                                if q[(ua, ub)] < dcfg.schwarz_skip {
+                            if let Some((q, qp_shell)) = &qpair {
+                                if qp_shell[sp] * q[(ua, ub)] < dcfg.schwarz_skip {
                                     n_skipped += 1;
                                     continue;
                                 }

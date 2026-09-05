@@ -246,6 +246,64 @@ fn bench_map_error_flatness() {
     }
 }
 
+/// BOUND-CONSERVATIVENESS ANCHOR for the Schwarz triple cut (review
+/// finding, fixed pre-merge: the first implementation compared only
+/// Q(μν) against the threshold, omitting the √(P|P) aux factor its own
+/// doc promised — non-conservative wherever √(P|P) > 1). For every shell
+/// triple the corrected cut drops at a production-scale threshold, the
+/// true max |(P|μν)| must not exceed the threshold; and the old
+/// Q-only rule must disagree with the corrected √(P|P)·Q(μν) rule on at
+/// least one triple, proving the aux factor genuinely changes decisions.
+#[test]
+fn schwarz_triple_cut_is_conservative() {
+    use ferric_integrals::engine::Engine;
+    let su = setup("alkane_4.xyz");
+    let op = Operator::coulomb();
+    let skip = 1e-5;
+    let q = ferric_scf::screening::SchwarzBounds::compute(op, &su.obs).unwrap().q;
+    let ddf = su.dfbs.shell_dims();
+    let mut eng2 = Engine::new_2center(op, &su.dfbs, 1e-14).unwrap();
+    let qp: Vec<f64> = (0..su.dfbs.nshells())
+        .map(|sp| {
+            let np = ddf[sp];
+            let vals = eng2.compute_eri2(&su.dfbs, sp, sp);
+            let mut m = 0.0f64;
+            for p in 0..np {
+                m = m.max(vals[p * np + p].abs());
+            }
+            m.sqrt()
+        })
+        .collect();
+    let mut eng3 = Engine::new_3center(op, &su.obs, &su.dfbs, 1e-14).unwrap();
+    let (mut n_dropped, mut n_disagree, mut worst) = (0usize, 0usize, 0.0f64);
+    for sp in 0..su.dfbs.nshells() {
+        for s1 in 0..su.obs.nshells() {
+            for s2 in 0..=s1 {
+                let old_drops = q[(s1, s2)] < skip;
+                let new_drops = qp[sp] * q[(s1, s2)] < skip;
+                if old_drops != new_drops {
+                    n_disagree += 1;
+                }
+                if new_drops {
+                    n_dropped += 1;
+                    if let Some(block) = eng3.compute_eri3(&su.obs, &su.dfbs, sp, s1, s2) {
+                        for v in block {
+                            worst = worst.max(v.abs());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    eprintln!(
+        "schwarz conservativeness: {n_dropped} triples dropped, worst dropped \
+         |(P|uv)| = {worst:.3e}, old-vs-new disagreements = {n_disagree}"
+    );
+    assert!(n_dropped > 1000, "cut dropped only {n_dropped} triples — test too small");
+    assert!(worst <= skip, "cut dropped a triple with |(P|uv)| = {worst:.3e} > {skip:.0e}");
+    assert!(n_disagree > 0, "aux factor changed no decisions — fix vacuous on this system?");
+}
+
 /// TERFC PROBE — the Gate-0 reopen measurement. The 2026-07-09 kill of the
 /// terfc RI lane applies to the GLOBAL-inverse formulation only (the
 /// integrals bug behind the metric garbage was fixed on main, ea7fee6+);
