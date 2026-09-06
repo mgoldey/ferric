@@ -930,6 +930,469 @@ pub fn assemble_ragged_direct_local(
     Ok((Ragged { pairs, by_i, by_j }, n_gated, stats))
 }
 
+/// Compact whitened occ-occ Gram `(ik|jl)` for the LinLCCD hh ladder —
+/// the occ-occ strip extension of the integral-direct path (the deferral
+/// note's PSD-safe block: WIKI-APPEND-drpa-direct.md).
+///
+/// Storage is over the gate-surviving unordered `(i,k)` columns only
+/// (`col_of` maps `i*no+k` to a compact column, `usize::MAX` = gated).
+/// A gated column is EXACTLY ZERO in the whitened Boo, so the Gram stays
+/// a Gram of one consistent whitened B — the CG-license structure is
+/// unchanged; the dropped-coupling energy error is a measured quantity
+/// (sub-dominance tests), never an assumed one.
+#[derive(Debug, Clone)]
+pub struct OoGram {
+    g: Array2<f64>,
+    col_of: Vec<usize>,
+    no: usize,
+}
+
+impl OoGram {
+    /// Wrap a DENSE `(no², no²)` `(ik|jl)` matrix (the global path's
+    /// `transform_3center_oo` + whitened Gram) — identical lookups, so the
+    /// shared solver reproduces the pre-refactor energies bit for bit.
+    pub fn dense(g: Array2<f64>, no: usize) -> Self {
+        let col_of = (0..no * no).collect();
+        Self { g, col_of, no }
+    }
+
+    /// hh coefficient `(ik|jl)`; 0.0 when either column is gated out.
+    #[inline]
+    pub fn coeff(&self, i: usize, k: usize, j: usize, l: usize) -> f64 {
+        let a = self.col_of[i * self.no + k];
+        if a == usize::MAX {
+            return 0.0;
+        }
+        let b = self.col_of[j * self.no + l];
+        if b == usize::MAX {
+            return 0.0;
+        }
+        self.g[(a, b)]
+    }
+
+    /// Surviving columns (the honesty counter for the gate restriction).
+    pub fn ncols(&self) -> usize {
+        self.g.nrows()
+    }
+}
+
+/// Occ-occ half-transform of one aux slab into the surviving columns of
+/// `boo`: per aux function, `M = C_occᵀ · T_p · C_occ`, then the compact
+/// `(i,k)` entries are read out.
+fn boo_transform_slab(
+    boo: &mut Array2<f64>,
+    t_slab: &Array3<f64>,
+    p_funcs: &[usize],
+    c_m: &Array2<f64>,
+    cols: &[(usize, usize)],
+) {
+    for (pl, &gp) in p_funcs.iter().enumerate() {
+        let tv = t_slab.index_axis(Axis(0), pl);
+        let t1 = c_m.t().dot(&tv); // (no, nuf)
+        let m = t1.dot(c_m); // (no, no)
+        for (cx, &(i, k)) in cols.iter().enumerate() {
+            boo[(gp, cx)] = m[(i, k)];
+        }
+    }
+}
+
+/// Integral-direct occ-occ RI Gram for the hh ladder: evaluates `(P|μν)`
+/// only over occupied AO supports (never the full AO `eri3_tensor`),
+/// half-transforms into unwhitened columns `(P|ik)` for the gate-surviving
+/// unordered pairs, then whitens with the GLOBAL metric — full aux rows,
+/// so the resulting `(ik|jl)` equals the global path's object exactly at
+/// `ao_tail = 0` (reassociation floor), and the hh matvec stays the Gram
+/// of ONE consistent whitened B (the PSD license of proof notebook 13).
+///
+/// The naux² metric IS formed here (like the global path); what is never
+/// formed is the `(naux, nao²)` AO tensor and the `(naux, no·nv)` B.
+/// Serial integral pass — the occ-occ volume is ~(occ-support)² per aux
+/// shell, small next to the main ov strip pass; parallelize only if a
+/// measurement says it matters.
+#[allow(clippy::too_many_arguments)]
+pub fn assemble_boo_direct(
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    spaces: &LocalizedSpaces,
+    eps: f64,
+    pair_gate_cal: Option<f64>,
+    dcfg: &DirectConfig,
+) -> Result<OoGram, FerricError> {
+    let no = spaces.no;
+    let naux = dfbs.nbasis();
+    let nao = obs.nbasis();
+    let (keep, _) = match pair_gate_cal {
+        Some(cal) => pair_gate_keep(&spaces.occ_centers, &spaces.occ_spreads, no, eps, cal),
+        None => (vec![true; no * no], 0),
+    };
+    let mut col_of = vec![usize::MAX; no * no];
+    let mut cols: Vec<(usize, usize)> = Vec::new();
+    for i in 0..no {
+        for k in i..no {
+            if keep[i * no + k] {
+                col_of[i * no + k] = cols.len();
+                col_of[k * no + i] = cols.len();
+                cols.push((i, k));
+            }
+        }
+    }
+    // occupied AO supports (ao_tail ≡ zeroing small coefficients, the same
+    // rule and trivial limit as the ov strips)
+    let occ_supp: Vec<Vec<usize>> =
+        (0..no).map(|i| supp_shells(obs, spaces.c_locc.column(i), dcfg.ao_tail)).collect();
+    let u_shells = sorted_union(occ_supp.iter().map(|s| s.iter().copied()));
+    let u_funcs = shell_funcs(obs, &u_shells);
+    let nuf = u_funcs.len();
+    let mut u_pos = vec![usize::MAX; nao];
+    for (k, &f) in u_funcs.iter().enumerate() {
+        u_pos[f] = k;
+    }
+    let dims_obs = obs.shell_dims();
+    let offs_obs = obs.shell_offsets();
+    let dims_df = dfbs.shell_dims();
+    let offs_df = dfbs.shell_offsets();
+    // support-masked occupied coefficients on the compact AO axis
+    let mut c_m = Array2::<f64>::zeros((nuf, no));
+    for (i, supp) in occ_supp.iter().enumerate() {
+        for &sh in supp {
+            for f in 0..dims_obs[sh] {
+                let g = offs_obs[sh] + f;
+                c_m[(u_pos[g], i)] = spaces.c_locc[(g, i)];
+            }
+        }
+    }
+    // slab ALL aux shells under the scratch budget (full aux rows — the
+    // global whitening below is exact, not domain-truncated)
+    let mut boo = Array2::<f64>::zeros((naux, cols.len()));
+    let mut eng = Engine::new_3center(op, obs, dfbs, 1e-14)?;
+    let per_func = nuf.max(1) * nuf.max(1) * 8;
+    let max_funcs = (dcfg.scratch_budget_bytes / per_func).max(1);
+    let nsh_df = dfbs.nshells();
+    let mut slab_start = 0usize;
+    while slab_start < nsh_df {
+        let mut slab_end = slab_start;
+        let mut nfuncs = 0usize;
+        while slab_end < nsh_df {
+            let add = dims_df[slab_end];
+            if nfuncs > 0 && nfuncs + add > max_funcs {
+                break;
+            }
+            nfuncs += add;
+            slab_end += 1;
+        }
+        let slab: Vec<usize> = (slab_start..slab_end).collect();
+        let p_funcs = shell_funcs(dfbs, &slab);
+        let mut p_local = vec![usize::MAX; naux];
+        for (k, &f) in p_funcs.iter().enumerate() {
+            p_local[f] = k;
+        }
+        let mut t_slab = Array3::<f64>::zeros((p_funcs.len(), nuf, nuf));
+        for &sp in &slab {
+            for (ux, &ua) in u_shells.iter().enumerate() {
+                for &ub in &u_shells[..=ux] {
+                    if let Some(block) = eng.compute_eri3(obs, dfbs, sp, ua, ub) {
+                        let (n1, n2) = (dims_obs[ua], dims_obs[ub]);
+                        for p in 0..dims_df[sp] {
+                            let pl = p_local[offs_df[sp] + p];
+                            for fa in 0..n1 {
+                                let ga = offs_obs[ua] + fa;
+                                for fb in 0..n2 {
+                                    let gb = offs_obs[ub] + fb;
+                                    let val = block[(p * n1 + fa) * n2 + fb];
+                                    t_slab[(pl, u_pos[ga], u_pos[gb])] = val;
+                                    t_slab[(pl, u_pos[gb], u_pos[ga])] = val;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        boo_transform_slab(&mut boo, &t_slab, &p_funcs, &c_m, &cols);
+        slab_start = slab_end;
+    }
+    // GLOBAL whitening: (ik|jl) = Boõᵀ Boõ, one consistent whitened B —
+    // gated columns are exactly zero, so this stays an exact Gram.
+    let v2c = ferric_integrals::threeindex::coulomb_metric_2c(op, dfbs)?;
+    let vis = crate::rimp2::metric_inverse_sqrt(&v2c, op)?;
+    let boo_t = vis.dot(&boo);
+    let g = boo_t.t().dot(&boo_t);
+    Ok(OoGram { g, col_of, no })
+}
+
+/// Per-pair FITTED pp-ladder factors for the integral-direct LinLCCD Full
+/// tier: the pair's block, rows (a,c) ∈ Da², cols (b,d) ∈ Db², is the
+/// domain-local same-kernel fit
+/// `(ac|bd)_fit = Σ_{P,Q ∈ D_ij} (ac|P) [V_DD⁻¹]_PQ (Q|bd)`,
+/// held factored — `m = a_rows · gb` is formed per solver iteration (the
+/// same per-iteration GEMM shape as the licensed whitened-Bvv gather).
+///
+/// PSD LICENSE (empirical, measured — NOT an algebraic Gram identity):
+/// one V_DD per pair domain means these blocks are NOT submatrices of one
+/// consistent whitened Gram; the ragged-CG SPD contract for them was
+/// MEASURED, not derived — `scripts/queue/proto_linlccd_pp_psd.py`
+/// (anchors A1-A4, mutation arms M1-M2, radius/eps/system sweeps recorded
+/// in WIKI-APPEND-linlccd-direct.md / wiki amplitude-threshold-drpa).
+/// The measurement also showed the LICENSED (global whitened Gram) block
+/// is itself slightly indefinite under erfc — the operative license for
+/// both constructions is bounded indefiniteness ≪ the Fock denominator
+/// floor (per-arm margins in the note). Do not extend this construction
+/// to new operators or regimes without re-running that measurement.
+#[derive(Debug, Clone)]
+pub struct PpFitted {
+    /// `(|Da|², d)` — rows (a,c), unwhitened `(ac|P ∈ D_ij)`.
+    pub a_rows: Array2<f64>,
+    /// `(d, |Db|²)` — `V_DD⁻¹ · Abᵀ`, cols (b,d).
+    pub gb: Array2<f64>,
+}
+
+/// Gathered V_DD for one aux-shell domain, evaluated shell pair by shell
+/// pair (no global metric).
+fn vdd_for_domain(
+    dfbs: &PreparedBasis,
+    op: Operator,
+    dsh: &[usize],
+    d: usize,
+) -> Result<Array2<f64>, FerricError> {
+    let dims_df = dfbs.shell_dims();
+    let mut eng = Engine::new_2center(op, dfbs, 1e-14)?;
+    let mut loc_off = Vec::with_capacity(dsh.len());
+    let mut acc = 0usize;
+    for &sh in dsh {
+        loc_off.push(acc);
+        acc += dims_df[sh];
+    }
+    let mut vdd = Array2::<f64>::zeros((d, d));
+    for (bx, &sp) in dsh.iter().enumerate() {
+        for (by, &sq) in dsh.iter().enumerate().take(bx + 1) {
+            let vals = eng.compute_eri2(dfbs, sp, sq);
+            for p in 0..dims_df[sp] {
+                for q in 0..dims_df[sq] {
+                    let v = vals[p * dims_df[sq] + q];
+                    vdd[(loc_off[bx] + p, loc_off[by] + q)] = v;
+                    vdd[(loc_off[by] + q, loc_off[bx] + p)] = v;
+                }
+            }
+        }
+    }
+    Ok(vdd)
+}
+
+/// One domain group's `(ac|P)` tensor over the group's union virtuals:
+/// `avv[(pl, u1, u2)]` with `pl` local to `dfuncs`, evaluated slab by slab
+/// over the domain's aux shells under the scratch budget share.
+#[allow(clippy::too_many_arguments)]
+fn avv_for_group(
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    spaces: &LocalizedSpaces,
+    dsh: &[usize],
+    uvirt: &[usize],
+    ao_tail: f64,
+    budget_bytes: usize,
+) -> Result<Array3<f64>, FerricError> {
+    let nao = obs.nbasis();
+    let naux = dfbs.nbasis();
+    let dims_obs = obs.shell_dims();
+    let offs_obs = obs.shell_offsets();
+    let dims_df = dfbs.shell_dims();
+    let offs_df = dfbs.shell_offsets();
+    let nu = uvirt.len();
+    // AO supports of the union virtuals (same ao_tail rule as the strips)
+    let v_supp: Vec<Vec<usize>> = uvirt
+        .iter()
+        .map(|&a| supp_shells(obs, spaces.c_vloc.column(a), ao_tail))
+        .collect();
+    let v_shells = sorted_union(v_supp.iter().map(|s| s.iter().copied()));
+    let v_funcs = shell_funcs(obs, &v_shells);
+    let nvf = v_funcs.len();
+    let mut v_pos = vec![usize::MAX; nao];
+    for (k, &f) in v_funcs.iter().enumerate() {
+        v_pos[f] = k;
+    }
+    let mut c_v = Array2::<f64>::zeros((nvf, nu));
+    for (ux, (&a, supp)) in uvirt.iter().zip(&v_supp).enumerate() {
+        for &sh in supp {
+            for f in 0..dims_obs[sh] {
+                let g = offs_obs[sh] + f;
+                c_v[(v_pos[g], ux)] = spaces.c_vloc[(g, a)];
+            }
+        }
+    }
+    let dfuncs = shell_funcs(dfbs, dsh);
+    let d = dfuncs.len();
+    let mut p_loc = vec![usize::MAX; naux];
+    for (k, &f) in dfuncs.iter().enumerate() {
+        p_loc[f] = k;
+    }
+    let mut avv = Array3::<f64>::zeros((d, nu, nu));
+    let mut eng = Engine::new_3center(op, obs, dfbs, 1e-14)?;
+    let per_func = nvf.max(1) * nvf.max(1) * 8;
+    let max_funcs = (budget_bytes / per_func).max(1);
+    let mut slab_start = 0usize;
+    while slab_start < dsh.len() {
+        let mut slab_end = slab_start;
+        let mut nfuncs = 0usize;
+        while slab_end < dsh.len() {
+            let add = dims_df[dsh[slab_end]];
+            if nfuncs > 0 && nfuncs + add > max_funcs {
+                break;
+            }
+            nfuncs += add;
+            slab_end += 1;
+        }
+        let slab = &dsh[slab_start..slab_end];
+        let mut sl_loc = vec![usize::MAX; naux];
+        let mut nps = 0usize;
+        for &sp in slab {
+            for f in 0..dims_df[sp] {
+                sl_loc[offs_df[sp] + f] = nps;
+                nps += 1;
+            }
+        }
+        let mut t_slab = Array3::<f64>::zeros((nps, nvf, nvf));
+        for &sp in slab {
+            for (ux, &ua) in v_shells.iter().enumerate() {
+                for &ub in &v_shells[..=ux] {
+                    if let Some(block) = eng.compute_eri3(obs, dfbs, sp, ua, ub) {
+                        let (n1, n2) = (dims_obs[ua], dims_obs[ub]);
+                        for p in 0..dims_df[sp] {
+                            let pl = sl_loc[offs_df[sp] + p];
+                            for fa in 0..n1 {
+                                let ga = offs_obs[ua] + fa;
+                                for fb in 0..n2 {
+                                    let gb = offs_obs[ub] + fb;
+                                    let val = block[(p * n1 + fa) * n2 + fb];
+                                    t_slab[(pl, v_pos[ga], v_pos[gb])] = val;
+                                    t_slab[(pl, v_pos[gb], v_pos[ga])] = val;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            for f in 0..dims_df[sp] {
+                let gp = offs_df[sp] + f;
+                let tv = t_slab.index_axis(Axis(0), sl_loc[gp]);
+                let m = c_v.t().dot(&tv).dot(&c_v); // (nu, nu)
+                avv.index_axis_mut(Axis(0), p_loc[gp]).assign(&m);
+            }
+        }
+        slab_start = slab_end;
+    }
+    Ok(avv)
+}
+
+/// Assemble the FITTED pp-ladder factors for every pair of an
+/// already-assembled ragged system (pattern-derived Da/Db), grouped by
+/// pair aux domain exactly like stage 5 of
+/// [`assemble_ragged_direct_local`]. See [`PpFitted`] for the license.
+pub fn assemble_pp_fitted_direct(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    spaces: &LocalizedSpaces,
+    rg: &Ragged,
+    dcfg: &DirectConfig,
+) -> Result<Vec<PpFitted>, FerricError> {
+    use ndarray_linalg::InverseC;
+    use rayon::prelude::*;
+    let no = spaces.no;
+    let atom_xyz: Vec<[f64; 3]> = mol.atoms.iter().map(|a| [a.x, a.y, a.zpos]).collect();
+    let occ_xyz: Vec<[f64; 3]> = (0..no)
+        .map(|i| [spaces.occ_centers[(i, 0)], spaces.occ_centers[(i, 1)], spaces.occ_centers[(i, 2)]])
+        .collect();
+    let df_shell_atom = dfbs.shell_to_atom();
+    let r_aux2 = dcfg.aux_radius_bohr * dcfg.aux_radius_bohr;
+    let aux_dom: Vec<Vec<usize>> = (0..no)
+        .map(|i| {
+            (0..dfbs.nshells())
+                .filter(|&sp| dist2(atom_xyz[df_shell_atom[sp]], occ_xyz[i]) <= r_aux2)
+                .collect()
+        })
+        .collect();
+    let mut dom_groups: HashMap<Vec<usize>, Vec<usize>> = HashMap::new();
+    for (px, pb) in rg.pairs.iter().enumerate() {
+        let dsh = sorted_union([aux_dom[pb.i].iter().copied(), aux_dom[pb.j].iter().copied()]);
+        dom_groups.entry(dsh).or_default().push(px);
+    }
+    let mut group_list: Vec<(Vec<usize>, Vec<usize>)> = dom_groups.into_iter().collect();
+    group_list.sort_unstable_by_key(|(_, pxs)| pxs[0]);
+    Engine::new_3center(op, obs, dfbs, 1e-14)?; // surface construction errors serially
+    let n_workers = rayon::current_num_threads().max(1).min(group_list.len().max(1));
+    let budget_share = (dcfg.scratch_budget_bytes / n_workers).max(1);
+    let group_out: Vec<Result<Vec<(usize, PpFitted)>, FerricError>> = group_list
+        .par_iter()
+        .map(|(dsh, pxs)| {
+            let (i0, j0) = (rg.pairs[pxs[0]].i, rg.pairs[pxs[0]].j);
+            let dfuncs = shell_funcs(dfbs, dsh);
+            let d = dfuncs.len();
+            if d == 0 {
+                return Err(FerricError::General(format!(
+                    "pp_fitted_direct: empty aux domain for pair ({i0},{j0}) at radius {} Bohr",
+                    dcfg.aux_radius_bohr
+                )));
+            }
+            let vdd = vdd_for_domain(dfbs, op, dsh, d)?;
+            let vdd_inv = vdd.invc().map_err(|e| {
+                FerricError::General(format!(
+                    "pp_fitted_direct V_DD Cholesky inverse (group of pair ({i0},{j0})): {e}"
+                ))
+            })?;
+            let uvirt = sorted_union(pxs.iter().map(|&px| {
+                let pb = &rg.pairs[px];
+                pb.da.iter().copied().chain(pb.db.iter().copied()).collect::<Vec<_>>()
+            }));
+            let mut u_pos = vec![usize::MAX; spaces.nv];
+            for (k, &a) in uvirt.iter().enumerate() {
+                u_pos[a] = k;
+            }
+            let avv = avv_for_group(
+                obs, dfbs, op, spaces, dsh, &uvirt, dcfg.ao_tail, budget_share,
+            )?;
+            let mut out = Vec::with_capacity(pxs.len());
+            for &px in pxs {
+                let pb = &rg.pairs[px];
+                let gather = |idx: &[usize]| {
+                    let n = idx.len();
+                    let mut a = Array2::<f64>::zeros((n * n, d));
+                    for (ra, &va) in idx.iter().enumerate() {
+                        for (rc, &vc) in idx.iter().enumerate() {
+                            for r in 0..d {
+                                a[(ra * n + rc, r)] = avv[(r, u_pos[va], u_pos[vc])];
+                            }
+                        }
+                    }
+                    a
+                };
+                let a_rows = gather(&pb.da);
+                let ab = gather(&pb.db);
+                let gb = vdd_inv.dot(&ab.t());
+                out.push((px, PpFitted { a_rows, gb }));
+            }
+            Ok(out)
+        })
+        .collect();
+    let mut slots: Vec<Option<PpFitted>> = (0..rg.pairs.len()).map(|_| None).collect();
+    for r in group_out {
+        for (px, f) in r? {
+            slots[px] = Some(f);
+        }
+    }
+    slots
+        .into_iter()
+        .enumerate()
+        .map(|(px, s)| {
+            s.ok_or_else(|| {
+                FerricError::General(format!("pp_fitted_direct: pair slot {px} never filled"))
+            })
+        })
+        .collect()
+}
+
 /// Integral-direct amplitude-threshold LMP2 driver — the direct-path
 /// sibling of [`crate::lmp2_amplitude::amplitude_lmp2`]. `cfg.fit_radius_bohr`
 /// and `cfg.aux_tail_frac` are ignored (the direct path's locality lives in
