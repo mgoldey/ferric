@@ -24,12 +24,12 @@
 //! (the Python rig measured masking to REMOVE ring coupling — iteration
 //! counts fall as ε loosens).
 //!
-//! ASSEMBLY PATHS: [`amplitude_drpa`] assembles B via the global
+//! ASSEMBLY PATHS: `amplitude_drpa` assembles B via the global
 //! (naux, no·nv) tensor (`assemble_ragged_direct` on a `LocalizedBasis`);
-//! [`amplitude_drpa_direct`] assembles the SAME ragged B integral-direct
+//! `amplitude_drpa_direct` assembles the SAME ragged B integral-direct
 //! (`crate::lmp2_direct::assemble_ragged_direct_local`, scale = 2.0 — no
 //! global B, no N⁵ whitening GEMM) and both feed the identical
-//! [`riccati_masked_solve`]. `amplitude_drpa_dense` (the original V1
+//! `riccati_masked_solve`. `amplitude_drpa_dense` (the original V1
 //! dense compound-space solver) is retained as the independent
 //! cross-check. Nothing here carries a cost or scaling claim of its own —
 //! the assembly's measured record lives in
@@ -539,7 +539,8 @@ fn riccati_masked_solve(
 /// front end, assembles B = 2 (ia|jb) via per-occupied sparse strips
 /// ([`assemble_ragged_direct_local`], scale = 2.0 — the Eq-8 mask acts on
 /// the SCALED integrals exactly as the global-B path), then runs the
-/// UNCHANGED masked Riccati fixed point ([`riccati_masked_solve`], shared
+/// UNCHANGED masked Riccati fixed point (`riccati_masked_solve` — private,
+/// so a code span, not a doc link; shared
 /// verbatim with [`amplitude_drpa`]). `dcfg` carries the locality maps;
 /// every map has a trivial no-op limit (the exactness-anchor
 /// configuration, see `tests/drpa_direct.rs`).
