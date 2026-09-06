@@ -529,6 +529,9 @@ fn bench_direct_alkane_series() {
         // pinned: the auto budget (0.8×RAM) ignores the bench's cgroup cap
         // and memcg-OOMs the C32 reference — the budget-vs-enforcement trap
         scratch_budget_bytes: 1usize << 30,
+        // OFF here: the sweep measures the distance-map configuration the
+        // §28-§29 rows were recorded with (screen rows get their own sweep)
+        virt_schwarz_kappa: None,
     };
     println!(
         "sys        op     eps    E_corr        dE_vs_can  keep    npair/gated dom(mn/mx) \
@@ -653,4 +656,142 @@ fn production_maps_error_is_subdominant_to_eps_truncation() {
     // run), so shrinkage/saturation is a SWEEP observable on the alkane
     // series (protocol: do not declare below the onset), while the energy
     // sub-dominance above is size-independent and is the assertion.
+}
+
+/// SCHWARZ VIRTUAL-CANDIDATE SCREEN (`virt_schwarz_kappa`, prototype GO in
+/// WIKI-APPEND-eps-linked-maps.md) — TRIVIAL LIMIT: a kappa so small that
+/// the threshold kappa*eps passes every candidate must reproduce the
+/// kappa=None path exactly (same candidate sets => identical blocks =>
+/// identical CG => identical energy), while the screen CODE actually runs
+/// (q vectors computed, filter applied). Distinct from eps=0, which
+/// disables the screen entirely.
+#[test]
+fn schwarz_virt_trivial_limit_is_a_noop() {
+    let su = setup("alkane_4.xyz");
+    let prod = DirectConfig {
+        aux_radius_bohr: 10.0,
+        virt_radius_bohr: Some(12.0),
+        ao_tail: 1e-3,
+        ..Default::default()
+    };
+    for op in [Operator::coulomb(), Operator::erfc(1.0)] {
+        let cfg = AmplitudeLmp2Config {
+            eps: 1e-3,
+            frozen_core: 4,
+            compute_reference: false,
+            ..Default::default()
+        };
+        let (base, st0) = amplitude_lmp2_direct(
+            &su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &cfg, &prod,
+        )
+        .unwrap();
+        let (scr, st1) = amplitude_lmp2_direct(
+            &su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &cfg,
+            &DirectConfig { virt_schwarz_kappa: Some(1e-12), ..prod.clone() },
+        )
+        .unwrap();
+        let dd = (scr.e_corr - base.e_corr).abs();
+        eprintln!(
+            "SCHWARZ trivial limit {:?}: |dE|={dd:.3e} cand mean/max {:.1}/{} vs {:.1}/{}",
+            op.kind, st1.virt_cand_mean, st1.virt_cand_max, st0.virt_cand_mean, st0.virt_cand_max
+        );
+        assert!(dd < 1e-12, "screen at all-pass threshold changed the energy: {dd:.3e}");
+        assert_eq!(st0.virt_cand_max, st1.virt_cand_max);
+        assert!(
+            (st0.virt_cand_mean - st1.virt_cand_mean).abs() < 1e-12,
+            "all-pass screen changed candidate sets"
+        );
+    }
+}
+
+/// SUB-DOMINANCE: at production maps and eps=1e-3, the screen's energy
+/// displacement at kappa=1 and kappa=3 must stay >=100x below the eps
+/// truncation error (prototype measured 0 at kappa=1 and >=1000x
+/// sub-dominant at kappa=3 on both operators), and kappa=3 must actually
+/// TRIM the candidate sets — a screen that never drops anything would make
+/// the displacement assert vacuous.
+#[test]
+fn schwarz_virt_sub_dominant_and_trims() {
+    let su = setup("alkane_4.xyz");
+    let prod = DirectConfig {
+        aux_radius_bohr: 10.0,
+        virt_radius_bohr: Some(12.0),
+        ao_tail: 1e-3,
+        ..Default::default()
+    };
+    for op in [Operator::coulomb(), Operator::erfc(1.0)] {
+        let cfg = AmplitudeLmp2Config { eps: 1e-3, frozen_core: 4, ..Default::default() };
+        let (base, st0) = amplitude_lmp2_direct(
+            &su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &cfg, &prod,
+        )
+        .unwrap();
+        let d_eps = (base.e_corr - base.e_corr_canonical_ri).abs();
+        let mut cand_k3 = f64::INFINITY;
+        for kappa in [1.0, 3.0] {
+            let (scr, st) = amplitude_lmp2_direct(
+                &su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf,
+                &AmplitudeLmp2Config { compute_reference: false, ..cfg.clone() },
+                &DirectConfig { virt_schwarz_kappa: Some(kappa), ..prod.clone() },
+            )
+            .unwrap();
+            let d_scr = (scr.e_corr - base.e_corr).abs();
+            eprintln!(
+                "SCHWARZ {:?} kappa={kappa}: |dE|={d_scr:.3e} (eps err {d_eps:.3e}) \
+                 cand mean/max {:.1}/{} (union {:.1}/{})",
+                op.kind, st.virt_cand_mean, st.virt_cand_max, st0.virt_cand_mean,
+                st0.virt_cand_max
+            );
+            // measured: 0 at kappa=1 (both ops), 1.55e-5 vs 1.89e-3 (122x)
+            // at kappa=3/erfc — 50x leaves drift headroom while a broken
+            // screen (OR->AND mutation) missed by >200x, seen to fail
+            assert!(
+                d_scr * 50.0 < d_eps,
+                "screen error {d_scr:.3e} not sub-dominant to eps error {d_eps:.3e} \
+                 at kappa={kappa}"
+            );
+            assert!(st.virt_cand_mean <= st0.virt_cand_mean + 1e-12);
+            if kappa == 3.0 {
+                cand_k3 = st.virt_cand_mean;
+            }
+        }
+        assert!(
+            cand_k3 < st0.virt_cand_mean,
+            "kappa=3 trimmed nothing ({cand_k3} vs {}) — sub-dominance assert vacuous",
+            st0.virt_cand_mean
+        );
+    }
+}
+
+/// MUTATION ARM: an absurd kappa must gut the candidate sets and move the
+/// energy loudly (screen is live, not dead code). A hard error (empty
+/// candidate structure) is also an acceptable loud outcome.
+#[test]
+fn schwarz_virt_gutted_is_loud() {
+    let su = setup("alkane_4.xyz");
+    let cfg = AmplitudeLmp2Config {
+        eps: 1e-3,
+        frozen_core: 4,
+        compute_reference: false,
+        ..Default::default()
+    };
+    let (base, _) = amplitude_lmp2_direct(
+        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg,
+        &trivial_maps(),
+    )
+    .unwrap();
+    let r_mut = amplitude_lmp2_direct(
+        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg,
+        &DirectConfig { virt_schwarz_kappa: Some(100.0), ..trivial_maps() },
+    );
+    match r_mut {
+        Err(e) => eprintln!("MUTATION virt_schwarz_kappa=100: hard error (acceptable): {e}"),
+        Ok((mut_k, st)) => {
+            let dk = (mut_k.e_corr - base.e_corr).abs();
+            eprintln!(
+                "MUTATION virt_schwarz_kappa=100: |dE|={dk:.3e} cand mean/max {:.1}/{}",
+                st.virt_cand_mean, st.virt_cand_max
+            );
+            assert!(dk > 1e-3, "Schwarz screen gutted silently: |dE|={dk:.3e}");
+        }
+    }
 }

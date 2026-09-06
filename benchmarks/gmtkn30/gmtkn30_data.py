@@ -182,7 +182,7 @@ def read_html(filename, dir='.'):
             for f in item.split(separator):
                 fs = f.strip()
                 try:
-                    v = eval(fs)
+                    v = eval(fs)  # nosec B307 -- parses numeric tokens from the checked-in GMTKN30 dataset, not user input; literal_eval raises different exceptions than the NameError/SyntaxError fallbacks below rely on
                     if fs.isdigit() and str(v) != fs: # e.g. undesirable eval('001') = 1
                         v = fs   
                 # string: NameError, .*[+-*], etc: SyntaxError
