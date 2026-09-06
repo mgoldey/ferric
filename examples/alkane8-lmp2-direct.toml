@@ -1,0 +1,22 @@
+# Integral-direct amplitude-threshold local MP2 (wiki/amplitude-threshold-lmp2.md §27-30).
+# Every locality knob shown at its measured production default; the run prints
+# the canonical ri_mp2 reference error alongside — nothing silently approximate.
+[molecule]
+xyz = "testdata/molecules/alkane_8.xyz"
+
+[basis]
+name = "6-31g"
+
+[method]
+kind = "lmp2-direct"
+
+[mp2]
+auxbasis = "cc-pvdz-ri"
+frozen_core = 8
+lmp2_eps = 1e-4
+direct_aux_radius = 10.0
+direct_virt_radius = 12.0
+direct_ao_tail = 1e-3
+direct_schwarz_skip = 1e-5   # set 0.0 for terfc (no Schwarz support)
+direct_batch_merge = 4
+direct_gate_cal = 0.7        # ~0.7 Coulomb / ~0.02 erfc(1); omit = gate off

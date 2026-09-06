@@ -237,7 +237,7 @@ pub fn run(args: Vec<String>) {
     cfg.scf.verbose = cfg.scf.verbose || cli_verbose;
     let method = cfg.method.kind.as_str();
     let task = cfg.method.task.as_str();
-    if !matches!(method, "rhf" | "uhf" | "rohf" | "ksdft" | "rimp2" | "lmp2" | "mp3" | "oo-rimp2" | "att-rimp2" | "mp2-v" | "scs-mp2" | "scs-mp2-2terfc" | "laplace-mp2" | "laplace-sos-mp2" | "pdep-rpa" | "rs-mp2-rpa" | "gw" | "bse-tda" | "tdhf-static-polarizability" | "ccsd" | "linlccd" | "wb97x-l-v" | "b2plyp" | "dsd-pbep86" | "tda" | "tddft") {
+    if !matches!(method, "rhf" | "uhf" | "rohf" | "ksdft" | "rimp2" | "lmp2" | "lmp2-direct" | "mp3" | "oo-rimp2" | "att-rimp2" | "mp2-v" | "scs-mp2" | "scs-mp2-2terfc" | "laplace-mp2" | "laplace-sos-mp2" | "pdep-rpa" | "rs-mp2-rpa" | "gw" | "bse-tda" | "tdhf-static-polarizability" | "ccsd" | "linlccd" | "wb97x-l-v" | "b2plyp" | "dsd-pbep86" | "tda" | "tddft") {
         eprintln!("error: unsupported method.kind = \"{method}\"; expected rhf, uhf, rohf, ksdft, rimp2, mp3, oo-rimp2, att-rimp2, mp2-v, scs-mp2, scs-mp2-2terfc, laplace-mp2, laplace-sos-mp2, pdep-rpa, rs-mp2-rpa, gw, bse-tda, tdhf-static-polarizability, ccsd, linlccd, wb97x-l-v, b2plyp, dsd-pbep86, tda, or tddft");
         std::process::exit(1);
     }
@@ -564,6 +564,7 @@ pub fn run(args: Vec<String>) {
         "ksdft" => run_ksdft(&cfg, &bs, &prep, &result),
         "rimp2" => run_rimp2(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
         "lmp2" => run_lmp2(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
+        "lmp2-direct" => run_lmp2_direct(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
         "mp3" => run_mp3(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
         "oo-rimp2" => run_oo_rimp2(&cfg, &mol, &bs, &prep, op, &bounds, &result, budget_bytes, rhf_config.external_potential.as_ref()),
         "att-rimp2" => run_att_rimp2(&cfg, &mol, &bs, &prep, &result, budget_bytes),
@@ -668,6 +669,106 @@ fn run_lmp2(
     println!(
         "  keep {:.4}  pairs {:.3}  dom(mean/max) {:.1}/{}  cg {}",
         r.keep_fraction, r.pair_fraction, r.dom_mean, r.dom_max, r.cg_iterations
+    );
+}
+
+/// `method.kind = "lmp2-direct"`: INTEGRAL-DIRECT amplitude-threshold local
+/// MP2 (`ferric_mp2::lmp2_direct`; closed-shell). Never forms the global
+/// 3-index tensor: per-atom-batched integral evaluation into per-occupied
+/// sparse strips + per-pair domain-local fits. Every locality knob defaults
+/// to its measured production value and is printed with the run, together
+/// with the canonical-reference error — nothing is silently approximate.
+/// Measured record: wiki/amplitude-threshold-lmp2.md §27-30 (C32 crossover
+/// vs canonical ri_mp2; C20→C48 tail N^1.2 erfc / N^1.4 coul).
+fn run_lmp2_direct(
+    cfg: &Config,
+    mol: &Molecule,
+    bs: &BasisSet,
+    prep: &PreparedBasis,
+    op: Operator,
+    result: &ferric_scf::result::ScfResult,
+    budget_bytes: Option<usize>,
+) {
+    use ferric_mp2::lmp2_amplitude::AmplitudeLmp2Config;
+    use ferric_mp2::lmp2_direct::{amplitude_lmp2_direct, DirectConfig};
+    if result.spin != ferric_scf::result::Spin::Restricted {
+        eprintln!("error: lmp2-direct is closed-shell (RHF/RKS reference) only");
+        std::process::exit(1);
+    }
+    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+    let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let dfbs = PreparedBasis::new(mol, &aux_bs).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let eps = cfg.mp2.lmp2_eps.unwrap_or(1e-4);
+    let dcfg = DirectConfig {
+        aux_radius_bohr: cfg.mp2.direct_aux_radius.unwrap_or(10.0),
+        virt_radius_bohr: Some(cfg.mp2.direct_virt_radius.unwrap_or(12.0)),
+        ao_tail: cfg.mp2.direct_ao_tail.unwrap_or(1e-3),
+        schwarz_skip: cfg.mp2.direct_schwarz_skip.unwrap_or(1e-5),
+        batch_merge: cfg.mp2.direct_batch_merge.unwrap_or(4),
+        ..Default::default()
+    };
+    let (r, st) = amplitude_lmp2_direct(
+        mol,
+        prep,
+        bs,
+        &dfbs,
+        op,
+        result,
+        &AmplitudeLmp2Config {
+            eps,
+            frozen_core: cfg.mp2.frozen_core,
+            eri3_budget_bytes: budget_bytes,
+            pair_gate_cal: cfg.mp2.direct_gate_cal,
+            ..Default::default()
+        },
+        &dcfg,
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    println!(
+        "Integral-direct amplitude-threshold LMP2 (aux: {aux_name}, eps = {eps:.1e}, \
+         r_aux = {} Bohr, r_virt = {} Bohr, ao_tail = {:.0e}, schwarz_skip = {:.0e}, \
+         batch_merge = {}, gate_cal = {})",
+        dcfg.aux_radius_bohr,
+        dcfg.virt_radius_bohr.unwrap_or(f64::INFINITY),
+        dcfg.ao_tail,
+        dcfg.schwarz_skip,
+        dcfg.batch_merge,
+        cfg.mp2.direct_gate_cal.map_or("off".to_string(), |c| format!("{c}")),
+    );
+    println!("  E_corr(direct LMP2)   = {:.10} Ha", r.e_corr);
+    println!("  E_corr(canonical RI)  = {:.10} Ha", r.e_corr_canonical_ri);
+    println!(
+        "  total error           = {:+.3e} Ha (eps truncation + locality maps)",
+        r.e_corr - r.e_corr_canonical_ri
+    );
+    println!("  total energy          = {:.10} Ha", r.e_total);
+    println!(
+        "  keep {:.4}  pairs {:.3}  gated {}  dom(mean/max) {:.1}/{}  cg {}",
+        r.keep_fraction, r.pair_fraction, r.n_pairs_gated, r.dom_mean, r.dom_max, r.cg_iterations
+    );
+    println!(
+        "  strips rows {:.0}/{} cols {:.0}/{}  eri3 {:.1}M evald / {:.1}M skipped  \
+         t maps/eri3/metric/pairs/solve {:.2}/{:.2}/{:.2}/{:.2}/{:.2} s",
+        st.strip_rows_mean,
+        st.strip_rows_max,
+        st.strip_cols_mean,
+        st.strip_cols_max,
+        st.n_eri3_shell_triples as f64 / 1e6,
+        st.n_eri3_skipped as f64 / 1e6,
+        st.t_maps_s,
+        st.t_eri3_s,
+        st.t_metric_s,
+        st.t_pairs_s,
+        r.timings.t_solve_s,
     );
 }
 

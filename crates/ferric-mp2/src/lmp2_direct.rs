@@ -85,6 +85,15 @@ pub struct DirectConfig {
     /// feeding the strips, anchored by the conservativeness test. 0.0
     /// evaluates everything (trivial limit).
     pub schwarz_skip: f64,
+    /// Nearest-atom batches merged per integral pass. 1 = one batch per
+    /// atom (the anchor limit). Per-atom batches re-evaluate shared shell
+    /// triples ~5-6× (measured on C20-C48 maps,
+    /// `scripts/queue/proto_batch_amortization.py`); merging 4 batches
+    /// along the molecule's long axis cuts evaluations to ~0.40× at the
+    /// cost of larger scratch slabs. Energies agree with k=1 to the
+    /// float-reassociation floor (anchored ≤1e-10), not bit-identically —
+    /// the per-occupied transform runs over the larger batch union.
+    pub batch_merge: usize,
     /// GLOBAL integral-slab scratch cap (bytes), shared across all
     /// concurrently-running batch workers — each worker slabs under
     /// budget/n_workers, so the co-resident scratch never exceeds this
@@ -100,6 +109,7 @@ impl Default for DirectConfig {
             virt_radius_bohr: None,
             ao_tail: 0.0,
             schwarz_skip: 0.0,
+            batch_merge: 1,
             scratch_budget_bytes: 2usize << 30,
         }
     }
@@ -265,6 +275,33 @@ pub fn assemble_ragged_direct_local(
     }
     let mut batches: Vec<(usize, Vec<usize>)> = batch_map.into_iter().collect();
     batches.sort_unstable_by_key(|(a, _)| *a);
+    if dcfg.batch_merge > 1 {
+        // order batches along the axis of maximal atomic spread, then merge
+        // consecutive runs of `batch_merge` — amortizes the shared shell
+        // triples neighboring batches re-evaluate (see the field doc)
+        let axis = {
+            let n = atom_xyz.len().max(1) as f64;
+            let mut best = (0usize, -1.0f64);
+            for x in 0..3 {
+                let mean = atom_xyz.iter().map(|a| a[x]).sum::<f64>() / n;
+                let var = atom_xyz.iter().map(|a| (a[x] - mean).powi(2)).sum::<f64>();
+                if var > best.1 {
+                    best = (x, var);
+                }
+            }
+            best.0
+        };
+        batches.sort_unstable_by(|(a1, _), (a2, _)| {
+            atom_xyz[*a1][axis]
+                .partial_cmp(&atom_xyz[*a2][axis])
+                .expect("NaN atom coordinate")
+                .then(a1.cmp(a2))
+        });
+        batches = batches
+            .chunks(dcfg.batch_merge)
+            .map(|ch| (ch[0].0, ch.iter().flat_map(|(_, is)| is.iter().copied()).collect()))
+            .collect();
+    }
     stats.t_maps_s = t0.elapsed().as_secs_f64();
 
     // ---- stage 3: batched integral evaluation + half-transform ----
@@ -544,7 +581,14 @@ pub fn assemble_ragged_direct_local(
         .collect();
     stats.t_metric_s = t0.elapsed().as_secs_f64();
 
-    // ---- stage 5: per-pair domain fits + Eq-8 mask ----
+    // ---- stage 5: per-pair domain fits + Eq-8 mask, GROUPED BY DOMAIN ----
+    // The C20-C48 maps put 6-9× more surviving pairs than DISTINCT pair
+    // domains (`scripts/queue/proto_batch_amortization.py`), so the d³
+    // V_DD Cholesky inverse is hoisted to once per group. The inverse is
+    // held per worker and dropped after its group (no cache memory);
+    // results are written back into original-pair-order slots, and the
+    // per-pair arithmetic is unchanged, so the assembled blocks — and the
+    // energies — are bit-identical to the ungrouped loop.
     let t0 = Instant::now();
     let fo: Vec<f64> = (0..no).map(|i| spaces.f_oo[(i, i)]).collect();
     let fv: Vec<f64> = (0..nv).map(|a| spaces.f_vv[(a, a)]).collect();
@@ -552,28 +596,32 @@ pub fn assemble_ragged_direct_local(
         .flat_map(|i| (i..no).map(move |j| (i, j)))
         .filter(|&(i, j)| keep[i * no + j])
         .collect();
-    let per_pair: Vec<Result<Vec<PairBlock>, FerricError>> = unique
+    let mut dom_groups: HashMap<Vec<usize>, Vec<usize>> = HashMap::new();
+    for (px, &(i, j)) in unique.iter().enumerate() {
+        let dsh = sorted_union([aux_dom[i].iter().copied(), aux_dom[j].iter().copied()]);
+        dom_groups.entry(dsh).or_default().push(px);
+    }
+    let mut group_list: Vec<(Vec<usize>, Vec<usize>)> = dom_groups.into_iter().collect();
+    group_list.sort_unstable_by_key(|(_, pxs)| pxs[0]);
+    type SlotOut = Vec<(usize, Vec<PairBlock>)>;
+    let group_out: Vec<Result<SlotOut, FerricError>> = group_list
         .par_iter()
-        .map(|&(i, j)| {
+        .map(|(dsh, pxs)| {
             use ndarray_linalg::InverseC;
-            let dsh = sorted_union([aux_dom[i].iter().copied(), aux_dom[j].iter().copied()]);
-            let dfuncs = shell_funcs(dfbs, &dsh);
+            let (i0, j0) = unique[pxs[0]];
+            let dfuncs = shell_funcs(dfbs, dsh);
             if dfuncs.is_empty() {
                 return Err(FerricError::General(format!(
-                    "lmp2_direct: empty aux domain for pair ({i},{j}) at radius {} Bohr",
+                    "lmp2_direct: empty aux domain for pair ({i0},{j0}) at radius {} Bohr",
                     dcfg.aux_radius_bohr
                 )));
             }
-            let cij = sorted_union([virt_dom[i].iter().copied(), virt_dom[j].iter().copied()]);
-            if cij.is_empty() {
-                return Ok(Vec::new());
-            }
             let d = dfuncs.len();
-            // V_DD gathered block-wise from the sparse metric
+            // V_DD gathered block-wise from the sparse metric, ONCE per group
             let mut vdd = Array2::<f64>::zeros((d, d));
             let mut loc_off = Vec::with_capacity(dsh.len());
             let mut acc = 0usize;
-            for &sh in &dsh {
+            for &sh in dsh {
                 loc_off.push(acc);
                 acc += dims_df[sh];
             }
@@ -582,7 +630,7 @@ pub fn assemble_ragged_direct_local(
                     let (key, transposed) = if sp >= sq { ((sp, sq), false) } else { ((sq, sp), true) };
                     let blk = metric_blocks.get(&key).ok_or_else(|| {
                         FerricError::General(format!(
-                            "lmp2_direct: metric block ({sp},{sq}) missing for pair ({i},{j})"
+                            "lmp2_direct: metric block ({sp},{sq}) missing for pair ({i0},{j0})"
                         ))
                     })?;
                     for p in 0..dims_df[sp] {
@@ -594,58 +642,79 @@ pub fn assemble_ragged_direct_local(
                 }
             }
             let vdd_inv = vdd.invc().map_err(|e| {
-                FerricError::General(format!("lmp2_direct V_DD Cholesky inverse ({i},{j}): {e}"))
+                FerricError::General(format!(
+                    "lmp2_direct V_DD Cholesky inverse (group of pair ({i0},{j0})): {e}"
+                ))
             })?;
-            // gather A_i, A_j from the strips (rows D_ij, cols C_ij)
-            let gather = |k: usize| -> Result<Array2<f64>, FerricError> {
-                let st = &strips[k];
-                let mut a = Array2::<f64>::zeros((d, cij.len()));
-                for (r, &gp) in dfuncs.iter().enumerate() {
-                    let sr = st.row_pos[gp];
-                    if sr == usize::MAX {
-                        return Err(FerricError::General(format!(
-                            "lmp2_direct: strip {k} missing aux row {gp} for pair ({i},{j}) — \
-                             extended domain does not cover the pair domain (construction bug)"
-                        )));
-                    }
-                    for (c, &av) in cij.iter().enumerate() {
-                        let sc = st.col_pos[av];
-                        if sc == usize::MAX {
+            let mut out_group: SlotOut = Vec::with_capacity(pxs.len());
+            for &px in pxs {
+                let (i, j) = unique[px];
+                let cij =
+                    sorted_union([virt_dom[i].iter().copied(), virt_dom[j].iter().copied()]);
+                if cij.is_empty() {
+                    out_group.push((px, Vec::new()));
+                    continue;
+                }
+                // gather A_i, A_j from the strips (rows D_ij, cols C_ij)
+                let gather = |k: usize| -> Result<Array2<f64>, FerricError> {
+                    let st = &strips[k];
+                    let mut a = Array2::<f64>::zeros((d, cij.len()));
+                    for (r, &gp) in dfuncs.iter().enumerate() {
+                        let sr = st.row_pos[gp];
+                        if sr == usize::MAX {
                             return Err(FerricError::General(format!(
-                                "lmp2_direct: strip {k} missing virtual {av} for pair ({i},{j})"
+                                "lmp2_direct: strip {k} missing aux row {gp} for pair ({i},{j}) — \
+                                 extended domain does not cover the pair domain (construction bug)"
                             )));
                         }
-                        a[(r, c)] = st.b[(sr, sc)];
+                        for (c, &av) in cij.iter().enumerate() {
+                            let sc = st.col_pos[av];
+                            if sc == usize::MAX {
+                                return Err(FerricError::General(format!(
+                                    "lmp2_direct: strip {k} missing virtual {av} for pair ({i},{j})"
+                                )));
+                            }
+                            a[(r, c)] = st.b[(sr, sc)];
+                        }
                     }
+                    Ok(a)
+                };
+                let a_i = gather(i)?;
+                let a_j = gather(j)?;
+                let mut g = a_i.t().dot(&vdd_inv.dot(&a_j));
+                if scale != 1.0 {
+                    g.mapv_inplace(|x| scale * x);
                 }
-                Ok(a)
-            };
-            let a_i = gather(i)?;
-            let a_j = gather(j)?;
-            let mut g = a_i.t().dot(&vdd_inv.dot(&a_j));
-            if scale != 1.0 {
-                g.mapv_inplace(|x| scale * x);
-            }
-            let mut out = Vec::with_capacity(2);
-            if let Some(pb) =
-                pair_block_from_g_cand(i, j, &g, &cij, nv, &spaces.f_vv, &fo, &fv, eps)
-            {
-                out.push(pb);
-            }
-            if i != j {
-                let gt = g.t().to_owned();
+                let mut out = Vec::with_capacity(2);
                 if let Some(pb) =
-                    pair_block_from_g_cand(j, i, &gt, &cij, nv, &spaces.f_vv, &fo, &fv, eps)
+                    pair_block_from_g_cand(i, j, &g, &cij, nv, &spaces.f_vv, &fo, &fv, eps)
                 {
                     out.push(pb);
                 }
+                if i != j {
+                    let gt = g.t().to_owned();
+                    if let Some(pb) =
+                        pair_block_from_g_cand(j, i, &gt, &cij, nv, &spaces.f_vv, &fo, &fv, eps)
+                    {
+                        out.push(pb);
+                    }
+                }
+                out_group.push((px, out));
             }
-            Ok(out)
+            Ok(out_group)
         })
         .collect();
+    let mut slots: Vec<Option<Vec<PairBlock>>> = (0..unique.len()).map(|_| None).collect();
+    for r in group_out {
+        for (px, blocks) in r? {
+            slots[px] = Some(blocks);
+        }
+    }
     let mut pairs: Vec<PairBlock> = Vec::new();
-    for r in per_pair {
-        pairs.extend(r?);
+    for (px, s) in slots.into_iter().enumerate() {
+        pairs.extend(s.ok_or_else(|| {
+            FerricError::General(format!("lmp2_direct: pair slot {px} never filled (grouping bug)"))
+        })?);
     }
     let mut by_i: HashMap<usize, Vec<usize>> = HashMap::new();
     let mut by_j: HashMap<usize, Vec<usize>> = HashMap::new();

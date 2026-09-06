@@ -246,6 +246,55 @@ fn bench_map_error_flatness() {
     }
 }
 
+/// BATCH-MERGE ANCHOR: merged batches (k=4) must reproduce per-atom
+/// batches (k=1) to the float-reassociation floor — the transform runs
+/// over the larger batch union with zero-masked coefficients, so exact
+/// zeros enter the sums in different groupings — AND must evaluate
+/// strictly fewer shell triples (prototype-predicted ~0.4×; the
+/// amortization must be real, not a no-op).
+#[test]
+fn batch_merge_matches_per_atom_and_saves_triples() {
+    let su = setup("alkane_8.xyz");
+    let op = Operator::erfc(1.0);
+    let cfg = AmplitudeLmp2Config {
+        eps: 1e-3,
+        frozen_core: 8,
+        pair_gate_cal: Some(0.02),
+        compute_reference: false,
+        ..Default::default()
+    };
+    let prod = |k: usize| DirectConfig {
+        aux_radius_bohr: 10.0,
+        virt_radius_bohr: Some(12.0),
+        ao_tail: 1e-3,
+        schwarz_skip: 1e-5,
+        batch_merge: k,
+        ..Default::default()
+    };
+    let (r1, s1) = amplitude_lmp2_direct(
+        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &cfg, &prod(1),
+    )
+    .unwrap();
+    let (r4, s4) = amplitude_lmp2_direct(
+        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &cfg, &prod(4),
+    )
+    .unwrap();
+    let dd = (r4.e_corr - r1.e_corr).abs();
+    eprintln!(
+        "batch_merge=4 vs 1: |dE|={dd:.3e}, eval triples {} -> {} ({:.2}x)",
+        s1.n_eri3_shell_triples,
+        s4.n_eri3_shell_triples,
+        s4.n_eri3_shell_triples as f64 / s1.n_eri3_shell_triples as f64
+    );
+    assert!(dd < 1e-10, "batch merge changed the energy: |dE|={dd:.3e}");
+    assert!(
+        s4.n_eri3_shell_triples < s1.n_eri3_shell_triples,
+        "batch merge saved nothing ({} vs {})",
+        s4.n_eri3_shell_triples,
+        s1.n_eri3_shell_triples
+    );
+}
+
 /// BOUND-CONSERVATIVENESS ANCHOR for the Schwarz triple cut (review
 /// finding, fixed pre-merge: the first implementation compared only
 /// Q(μν) against the threshold, omitting the √(P|P) aux factor its own
@@ -474,6 +523,9 @@ fn bench_direct_alkane_series() {
         virt_radius_bohr: Some(12.0),
         ao_tail: 1e-3,
         schwarz_skip: 1e-5, // calibrated: 66-69% triples cut for ~1e-8 Ha at C16
+        // merged batches (2026-09-05b): rows recorded before this date used
+        // batch_merge=1 — expect ~0.4× the eri3 evaluations vs those rows
+        batch_merge: 4,
         // pinned: the auto budget (0.8×RAM) ignores the bench's cgroup cap
         // and memcg-OOMs the C32 reference — the budget-vs-enforcement trap
         scratch_budget_bytes: 1usize << 30,

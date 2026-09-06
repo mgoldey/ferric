@@ -2636,6 +2636,75 @@ fn run_lmp2(py: Python<'_>, mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: 
 }
 
 
+/// INTEGRAL-DIRECT amplitude-threshold local MP2 (closed-shell): never
+/// forms the global 3-index tensor — per-atom-batched integral evaluation
+/// into per-occupied sparse strips + per-pair domain-local fits
+/// (`ferric_mp2::lmp2_direct`; measured record in
+/// wiki/amplitude-threshold-lmp2.md §27-30). Locality kwargs default to
+/// the measured production values; `schwarz_skip` must be 0.0 for terfc.
+/// `pair_gate_cal`: ~0.7 Coulomb / ~0.02 erfc(1); None = gate off.
+/// Returns the `run_lmp2` dict plus strip/eri3 counters and stage timings.
+#[pyfunction]
+#[pyo3(signature = (mol, basis_set, auxbasis, eps=None, frozen_core=None, aux_radius_bohr=None, virt_radius_bohr=None, ao_tail=None, schwarz_skip=None, batch_merge=None, pair_gate_cal=None, k_builder=None, memory_budget_gb=None, compute_reference=None))]
+#[allow(clippy::too_many_arguments)]
+fn run_lmp2_direct(py: Python<'_>, mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
+            eps: Option<f64>, frozen_core: Option<usize>, aux_radius_bohr: Option<f64>,
+            virt_radius_bohr: Option<f64>, ao_tail: Option<f64>, schwarz_skip: Option<f64>,
+            batch_merge: Option<usize>, pair_gate_cal: Option<f64>, k_builder: Option<&str>,
+            memory_budget_gb: Option<f64>, compute_reference: Option<bool>) -> PyResult<Py<pyo3::types::PyDict>> {
+    use ferric_mp2::lmp2_amplitude::AmplitudeLmp2Config;
+    use ferric_mp2::lmp2_direct::{amplitude_lmp2_direct, DirectConfig};
+    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
+    let ctx = ParallelContext::default();
+    let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb))).map_err(make_err)?;
+    if !rhf.converged {
+        return Err(make_err(ferric_core::FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy }));
+    }
+    let dcfg = DirectConfig {
+        aux_radius_bohr: aux_radius_bohr.unwrap_or(10.0),
+        virt_radius_bohr: Some(virt_radius_bohr.unwrap_or(12.0)),
+        ao_tail: ao_tail.unwrap_or(1e-3),
+        schwarz_skip: schwarz_skip.unwrap_or(1e-5),
+        batch_merge: batch_merge.unwrap_or(4),
+        ..Default::default()
+    };
+    let (r, st) = amplitude_lmp2_direct(&mol.inner, &prep, &basis_set.inner, &dfbs, op, &rhf,
+        &AmplitudeLmp2Config {
+            eps: eps.unwrap_or(1e-4),
+            frozen_core: frozen_core.unwrap_or(0),
+            eri3_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
+            pair_gate_cal,
+            compute_reference: compute_reference.unwrap_or(true),
+            ..Default::default()
+        }, &dcfg).map_err(make_err)?;
+    let d = pyo3::types::PyDict::new(py);
+    d.set_item("e_corr", r.e_corr)?;
+    d.set_item("e_corr_canonical_ri", r.e_corr_canonical_ri)?;
+    d.set_item("total_energy", r.e_total)?;
+    d.set_item("rhf_energy", rhf.energy)?;
+    d.set_item("keep_fraction", r.keep_fraction)?;
+    d.set_item("pair_fraction", r.pair_fraction)?;
+    d.set_item("n_pairs_gated", r.n_pairs_gated)?;
+    d.set_item("dom_mean", r.dom_mean)?;
+    d.set_item("dom_max", r.dom_max)?;
+    d.set_item("cg_iterations", r.cg_iterations)?;
+    d.set_item("strip_rows_mean", st.strip_rows_mean)?;
+    d.set_item("strip_rows_max", st.strip_rows_max)?;
+    d.set_item("strip_cols_mean", st.strip_cols_mean)?;
+    d.set_item("strip_cols_max", st.strip_cols_max)?;
+    d.set_item("n_eri3_shell_triples", st.n_eri3_shell_triples)?;
+    d.set_item("n_eri3_skipped", st.n_eri3_skipped)?;
+    d.set_item("t_maps_s", st.t_maps_s)?;
+    d.set_item("t_eri3_s", st.t_eri3_s)?;
+    d.set_item("t_metric_s", st.t_metric_s)?;
+    d.set_item("t_pairs_s", st.t_pairs_s)?;
+    Ok(d.into())
+}
+
+
 /// Build an `AmplitudeDrpaConfig` from the shared `run_drpa`/`run_drpa_scan`
 /// kwargs. `diis`/`eps_rtol_factor` default ON at the BINDING level
 /// (diis=8, eps_rtol_factor=0.1) — the Rust library default stays
@@ -5422,6 +5491,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(hirshfeld_charges, m)?)?;
     m.add_function(wrap_pyfunction!(lowdin_charges, m)?)?;
     m.add_function(wrap_pyfunction!(run_lmp2, m)?)?;
+    m.add_function(wrap_pyfunction!(run_lmp2_direct, m)?)?;
     m.add_function(wrap_pyfunction!(run_drpa, m)?)?;
     m.add_function(wrap_pyfunction!(run_drpa_scan, m)?)?;
     m.add_function(wrap_pyfunction!(run_linlccd_amplitude, m)?)?;

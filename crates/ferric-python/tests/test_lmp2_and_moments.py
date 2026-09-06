@@ -161,3 +161,30 @@ def test_tune_omega_h2_smoke():
     assert 0.3 < t["omega"] < 1.2
     assert abs(t["j"]) < 5e-3  # Koopmans residual driven down from ~1e-2
     assert len(t["evals"]) >= 2
+
+
+def test_run_lmp2_direct_trivial_maps_match_canonical(water_631g):
+    # eps=0 + trivial locality maps THROUGH the binding: integral-direct
+    # assembly == canonical RI-MP2 (the Rust suite anchors this at 1e-13;
+    # here we pin the kwarg plumbing at the same identity)
+    mol, obs, aux = water_631g
+    r = ferric.run_lmp2_direct(
+        mol, obs, aux, eps=0.0, frozen_core=1,
+        aux_radius_bohr=1e6, virt_radius_bohr=1e6, ao_tail=0.0,
+        schwarz_skip=0.0, batch_merge=1,
+    )
+    assert abs(r["e_corr"] - r["e_corr_canonical_ri"]) < 1e-9
+    assert r["strip_rows_max"] > 0 and r["n_eri3_shell_triples"] > 0
+    assert abs(r["total_energy"] - (r["rhf_energy"] + r["e_corr"])) < 1e-12
+
+
+def test_run_lmp2_direct_production_defaults_run_and_report(water_631g):
+    # production defaults (r_aux=10, r_virt=12, ao_tail=1e-3, skip=1e-5,
+    # batch_merge=4) must run, report the locality counters, and stay in
+    # the eps-truncation error class (water: maps are near-exact)
+    mol, obs, aux = water_631g
+    r = ferric.run_lmp2_direct(mol, obs, aux, eps=1e-3, frozen_core=1)
+    err = abs(r["e_corr"] - r["e_corr_canonical_ri"])
+    assert err < 5e-2, f"error out of class: {err:.3e}"
+    assert r["strip_rows_max"] > 0
+    assert r["t_eri3_s"] >= 0.0 and r["t_pairs_s"] >= 0.0
