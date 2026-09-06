@@ -24,10 +24,16 @@
 //! (the Python rig measured masking to REMOVE ring coupling — iteration
 //! counts fall as ε loosens).
 //!
-//! V1 SCOPE: the masked solve is DENSE over the (no·nv)² compound space —
-//! prototype parity (the Python rig is dense numpy too). The ragged
-//! pair-block ring product (triple-domain intersections) is future work;
-//! nothing here carries a cost or scaling claim. dRPA also has no
+//! ASSEMBLY PATHS: [`amplitude_drpa`] assembles B via the global
+//! (naux, no·nv) tensor (`assemble_ragged_direct` on a `LocalizedBasis`);
+//! [`amplitude_drpa_direct`] assembles the SAME ragged B integral-direct
+//! (`crate::lmp2_direct::assemble_ragged_direct_local`, scale = 2.0 — no
+//! global B, no N⁵ whitening GEMM) and both feed the identical
+//! [`riccati_masked_solve`]. `amplitude_drpa_dense` (the original V1
+//! dense compound-space solver) is retained as the independent
+//! cross-check. Nothing here carries a cost or scaling claim of its own —
+//! the assembly's measured record lives in
+//! `wiki/amplitude-threshold-lmp2.md` §27-§31. dRPA also has no
 //! same-spin exchange diagrams by FORMULATION (see the SS section of
 //! `wiki/amplitude-threshold-drpa.md`) — that is not a property of the
 //! threshold. Closed-shell, library-only.
@@ -44,9 +50,12 @@ use ferric_scf::result::ScfResult;
 
 use crate::lmp2_amplitude::{
     assemble_basis, assemble_localized, assemble_ragged_direct, build_vvhv, check_vvhv,
-    AmplitudeLmp2Config, VvHv,
+    localized_spaces, AmplitudeLmp2Config, VvHv,
 };
-use crate::ragged::{apply_pattern, matvec_indexed, ring_product, ring_product_planned, RingPlan};
+use crate::lmp2_direct::{assemble_ragged_direct_local, DirectConfig, DirectStats};
+use crate::ragged::{
+    apply_pattern, matvec_indexed, ring_product, ring_product_planned, Ragged, RingPlan,
+};
 use crate::rimp2::{
     active_occ, eri3_budget_bytes, eri3_mo_ov_blocked, metric_inverse_sqrt,
 };
@@ -383,6 +392,39 @@ fn amplitude_drpa_from_basis(
         cfg.pair_gate_cal,
         None,
     )?;
+    let (e_corr, it, relres) = riccati_masked_solve(&rg, &lb.f_oo, cfg)?;
+    let e_ref = if cfg.compute_reference {
+        canonical_plasmon_drpa(mol, obs, dfbs, op, rhf, cfg)?
+    } else {
+        f64::NAN
+    };
+    let n = lb.no * lb.nv;
+    let kept: usize = rg.pairs.iter().map(|pb| pb.pat.iter().filter(|&&x| x).count()).sum();
+    Ok(AmplitudeDrpaResult {
+        e_corr,
+        e_total: rhf.energy + e_corr,
+        e_corr_plasmon_canonical: e_ref,
+        keep_fraction: kept as f64 / (n * n) as f64,
+        pair_fraction: rg.pairs.len() as f64 / (lb.no * lb.no) as f64,
+        iterations: it,
+        relres,
+        converged: true,
+    })
+}
+
+/// Masked Riccati fixed-point solve on an already-assembled ragged
+/// B = 2(ia|jb) — the UNCHANGED solver shared by the global-B path
+/// ([`amplitude_drpa_from_basis`]) and the integral-direct path
+/// ([`amplitude_drpa_direct_with_virtuals`]): pattern-projected damped
+/// fixed point, optional DIIS (with the post-hoc residual honesty check on
+/// the extrapolated iterate), optional ε-linked rtol, then
+/// E = ½ Σ B ∘ T on the pattern. Returns `(e_corr, iterations, relres)`;
+/// non-convergence is a hard error, so an `Ok` implies convergence.
+fn riccati_masked_solve(
+    rg: &Ragged,
+    f_oo: &Array2<f64>,
+    cfg: &AmplitudeDrpaConfig,
+) -> Result<(f64, usize, f64), FerricError> {
     let b_blocks: Vec<Array2<f64>> = rg.pairs.iter().map(|pb| pb.j_blk.clone()).collect();
     let bnorm = b_blocks.iter().map(|b| b.iter().map(|x| x * x).sum::<f64>()).sum::<f64>().sqrt();
     // B is the CONSTANT first operand of `ring_product(rg, b_blocks, ·)`
@@ -391,7 +433,7 @@ fn amplitude_drpa_from_basis(
     // and intersection bookkeeping are paid a single time per solve
     // instead of every iteration (see RingPlan's doc for the measured
     // breakdown this amortizes).
-    let b_ring_plan = RingPlan::new(&rg, &b_blocks);
+    let b_ring_plan = RingPlan::new(rg, &b_blocks);
 
     // damped fixed point T <- T - R(T)/D on the pattern, all ragged
     let shapes: Vec<(usize, usize)> = rg.pairs.iter().map(|pb| (pb.da.len(), pb.db.len())).collect();
@@ -408,13 +450,13 @@ fn amplitude_drpa_from_basis(
     let mut diis = cfg.diis.map(Diis::new);
     while it < cfg.fp_max_iter && !converged {
         it += 1;
-        let f_t = matvec_indexed(&rg, &lb.f_oo, &t, &mut flops); // pattern-projected
+        let f_t = matvec_indexed(rg, f_oo, &t, &mut flops); // pattern-projected
         // BT + TB + TBT = BT + T*(B + BT): two ring products per iteration
         // instead of three (exact by linearity of the contraction in its
         // second operand; fp summation order shifts within anchor bars)
         let bt = ring_product_planned(&b_ring_plan, &t);
         let u: Vec<Array2<f64>> = b_blocks.iter().zip(&bt).map(|(b, c)| b + c).collect();
-        let tu = ring_product(&rg, &t, &u);
+        let tu = ring_product(rg, &t, &u);
         let mut r2 = 0.0f64;
         let mut new_t = Vec::with_capacity(rg.pairs.len());
         for (p, pb) in rg.pairs.iter().enumerate() {
@@ -458,10 +500,10 @@ fn amplitude_drpa_from_basis(
         // point relres describes). Re-measure the actual returned `t` so
         // the convergence claim is honest about what's returned, not what
         // was about to be replaced.
-        let f_t = matvec_indexed(&rg, &lb.f_oo, &t, &mut flops);
+        let f_t = matvec_indexed(rg, f_oo, &t, &mut flops);
         let bt = ring_product_planned(&b_ring_plan, &t);
         let u: Vec<Array2<f64>> = b_blocks.iter().zip(&bt).map(|(b, c)| b + c).collect();
-        let tu = ring_product(&rg, &t, &u);
+        let tu = ring_product(rg, &t, &u);
         let mut r2 = 0.0f64;
         for (p, pb) in rg.pairs.iter().enumerate() {
             let mut r = &f_t[p] + &u[p];
@@ -488,23 +530,94 @@ fn amplitude_drpa_from_basis(
             }
         }
     }
+    Ok((e_corr, it, relres))
+}
+
+/// Integral-direct amplitude-threshold dRPA — the direct-path sibling of
+/// [`amplitude_drpa`]: the global (naux, no·nv) B tensor and the N⁵
+/// whitening GEMM are never formed. Builds the shared [`localized_spaces`]
+/// front end, assembles B = 2 (ia|jb) via per-occupied sparse strips
+/// ([`assemble_ragged_direct_local`], scale = 2.0 — the Eq-8 mask acts on
+/// the SCALED integrals exactly as the global-B path), then runs the
+/// UNCHANGED masked Riccati fixed point ([`riccati_masked_solve`], shared
+/// verbatim with [`amplitude_drpa`]). `dcfg` carries the locality maps;
+/// every map has a trivial no-op limit (the exactness-anchor
+/// configuration, see `tests/drpa_direct.rs`).
+///
+/// NOTE `cfg.eri3_budget_bytes` only affects the OPTIONAL canonical
+/// plasmon reference, which still builds a global B for its independent
+/// construction — set `compute_reference: false` for a genuinely
+/// global-B-free run.
+#[allow(clippy::too_many_arguments)]
+pub fn amplitude_drpa_direct(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    obs_bs: &BasisSet,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &ScfResult,
+    cfg: &AmplitudeDrpaConfig,
+    dcfg: &DirectConfig,
+) -> Result<(AmplitudeDrpaResult, DirectStats), FerricError> {
+    let vvhv = build_vvhv(mol, obs, obs_bs, rhf)?;
+    let nocc_total = (mol.nelec() as usize) / 2;
+    let (dev_orth, dev_span) = check_vvhv(obs, rhf, nocc_total, &vvhv.c_vloc);
+    if dev_orth > 1e-8 || dev_span > 1e-8 {
+        return Err(FerricError::General(format!(
+            "drpa_amplitude(direct): VV-HV construction check failed (orth {dev_orth:.2e}, span {dev_span:.2e})"
+        )));
+    }
+    amplitude_drpa_direct_with_virtuals(mol, obs, dfbs, op, rhf, cfg, dcfg, &vvhv)
+}
+
+/// [`amplitude_drpa_direct`] with a caller-supplied virtual space (the
+/// mutation-test entry point, mirroring `amplitude_lmp2_direct_with_virtuals`).
+#[allow(clippy::too_many_arguments)]
+pub fn amplitude_drpa_direct_with_virtuals(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &ScfResult,
+    cfg: &AmplitudeDrpaConfig,
+    dcfg: &DirectConfig,
+    vvhv: &VvHv,
+) -> Result<(AmplitudeDrpaResult, DirectStats), FerricError> {
+    let spaces = localized_spaces(mol, obs, rhf, cfg.frozen_core, vvhv)?;
+    // B = 2 (ia|jb) on per-occupied sparse strips; the eps mask acts on
+    // the scaled integrals inside the assembly, exactly as the global path
+    let (rg, _n_gated, dstats) = assemble_ragged_direct_local(
+        mol,
+        obs,
+        dfbs,
+        op,
+        &spaces,
+        cfg.eps,
+        2.0,
+        cfg.pair_gate_cal,
+        dcfg,
+    )?;
+    let (e_corr, it, relres) = riccati_masked_solve(&rg, &spaces.f_oo, cfg)?;
     let e_ref = if cfg.compute_reference {
         canonical_plasmon_drpa(mol, obs, dfbs, op, rhf, cfg)?
     } else {
         f64::NAN
     };
-    let n = lb.no * lb.nv;
+    let n = spaces.no * spaces.nv;
     let kept: usize = rg.pairs.iter().map(|pb| pb.pat.iter().filter(|&&x| x).count()).sum();
-    Ok(AmplitudeDrpaResult {
-        e_corr,
-        e_total: rhf.energy + e_corr,
-        e_corr_plasmon_canonical: e_ref,
-        keep_fraction: kept as f64 / (n * n) as f64,
-        pair_fraction: rg.pairs.len() as f64 / (lb.no * lb.no) as f64,
-        iterations: it,
-        relres,
-        converged,
-    })
+    Ok((
+        AmplitudeDrpaResult {
+            e_corr,
+            e_total: rhf.energy + e_corr,
+            e_corr_plasmon_canonical: e_ref,
+            keep_fraction: kept as f64 / (n * n) as f64,
+            pair_fraction: rg.pairs.len() as f64 / (spaces.no * spaces.no) as f64,
+            iterations: it,
+            relres,
+            converged: true,
+        },
+        dstats,
+    ))
 }
 
 /// DENSE V1 solver (compound-matrix fixed point with FULL intermediates) —
