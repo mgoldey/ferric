@@ -244,6 +244,182 @@ fn shell_funcs(prep: &PreparedBasis, shells: &[usize]) -> Vec<usize> {
     out
 }
 
+/// Per-occupied Schwarz magnitudes q_ia = √(b_ia^T V_{D_i D_i}⁻¹ b_ia)
+/// over each i's OWN distance domain, from strip-local rows — the
+/// `virt_schwarz_kappa` screen's inputs (stage 5a). Returns (q per i,
+/// qmax per i). Extracted from the assembly driver (complexity ceiling).
+#[allow(clippy::too_many_arguments)]
+fn schwarz_virtual_q(
+    no: usize,
+    scale: f64,
+    aux_dom: &[Vec<usize>],
+    strips: &[Strip],
+    dims_df: &[usize],
+    metric_blocks: &HashMap<(usize, usize), Array2<f64>>,
+    dfbs: &PreparedBasis,
+    aux_radius_bohr: f64,
+) -> Result<(Vec<Vec<f64>>, Vec<f64>), FerricError> {
+    use ndarray_linalg::InverseC;
+    use rayon::prelude::*;
+    let sq = scale.abs().sqrt();
+    let per_i: Vec<Result<(Vec<f64>, f64), FerricError>> = (0..no)
+        .into_par_iter()
+        .map(|i| {
+            let dfuncs = shell_funcs(dfbs, &aux_dom[i]);
+            if dfuncs.is_empty() {
+                return Err(FerricError::General(format!(
+                    "lmp2_direct: empty aux domain for occupied {i} at radius {aux_radius_bohr} \
+                     Bohr (virt_schwarz_kappa needs a nonempty D_i)"
+                )));
+            }
+            let vdd = gather_vdd(
+                &aux_dom[i],
+                dims_df,
+                metric_blocks,
+                &format!("occupied {i} Schwarz diagonal"),
+            )?;
+            let vdd_inv = vdd.invc().map_err(|e| {
+                FerricError::General(format!(
+                    "lmp2_direct V_DD Cholesky inverse (Schwarz diagonal, occupied {i}): {e}"
+                ))
+            })?;
+            let st = &strips[i];
+            let mut b = Array2::<f64>::zeros((dfuncs.len(), st.cols.len()));
+            for (r, &gp) in dfuncs.iter().enumerate() {
+                let sr = st.row_pos[gp];
+                if sr == usize::MAX {
+                    return Err(FerricError::General(format!(
+                        "lmp2_direct: strip {i} missing aux row {gp} for the Schwarz diagonal — \
+                         D_i not covered by the extended domain (construction bug)"
+                    )));
+                }
+                b.row_mut(r).assign(&st.b.row(sr));
+            }
+            let x = vdd_inv.dot(&b); // (d, ncols)
+            let mut q = vec![0.0f64; st.cols.len()];
+            let mut qm = 0.0f64;
+            for (c, qc) in q.iter_mut().enumerate() {
+                let v = sq * b.column(c).dot(&x.column(c)).max(0.0).sqrt();
+                *qc = v;
+                qm = qm.max(v);
+            }
+            Ok((q, qm))
+        })
+        .collect();
+    let mut qs = Vec::with_capacity(no);
+    let mut qmax = Vec::with_capacity(no);
+    for r in per_i {
+        let (q, qm) = r?;
+        qs.push(q);
+        qmax.push(qm);
+    }
+    Ok((qs, qmax))
+}
+
+/// Per-slot output of one domain group's pair fits.
+type SlotOut = Vec<(usize, Vec<PairBlock>)>;
+
+/// Borrowed context for [`fit_domain_group`] — everything stage 5's group
+/// workers read but never write. Extracted from the assembly driver
+/// (complexity ceiling); the per-pair arithmetic is IDENTICAL to the
+/// pre-extraction inline loop, so blocks and energies are unchanged.
+struct PairFitCtx<'a> {
+    unique: &'a [(usize, usize)],
+    pair_cands: &'a [Vec<usize>],
+    strips: &'a [Strip],
+    dims_df: &'a [usize],
+    metric_blocks: &'a HashMap<(usize, usize), Array2<f64>>,
+    f_vv: &'a Array2<f64>,
+    fo: &'a [f64],
+    fv: &'a [f64],
+    eps: f64,
+    scale: f64,
+    nv: usize,
+    aux_radius_bohr: f64,
+    dfbs: &'a PreparedBasis,
+}
+
+/// One domain group's pair fits: V_DD Cholesky inverse ONCE, then every
+/// pair in the group gathers its strip blocks, fits, and Eq-8-masks.
+fn fit_domain_group(
+    ctx: &PairFitCtx<'_>,
+    dsh: &[usize],
+    pxs: &[usize],
+) -> Result<SlotOut, FerricError> {
+    use ndarray_linalg::InverseC;
+    let (i0, j0) = ctx.unique[pxs[0]];
+    let dfuncs = shell_funcs(ctx.dfbs, dsh);
+    if dfuncs.is_empty() {
+        return Err(FerricError::General(format!(
+            "lmp2_direct: empty aux domain for pair ({i0},{j0}) at radius {} Bohr",
+            ctx.aux_radius_bohr
+        )));
+    }
+    let d = dfuncs.len();
+    // V_DD gathered block-wise from the sparse metric, ONCE per group
+    let vdd = gather_vdd(dsh, ctx.dims_df, ctx.metric_blocks, &format!("pair ({i0},{j0})"))?;
+    let vdd_inv = vdd.invc().map_err(|e| {
+        FerricError::General(format!(
+            "lmp2_direct V_DD Cholesky inverse (group of pair ({i0},{j0})): {e}"
+        ))
+    })?;
+    let mut out_group: SlotOut = Vec::with_capacity(pxs.len());
+    for &px in pxs {
+        let (i, j) = ctx.unique[px];
+        let cij = &ctx.pair_cands[px];
+        if cij.is_empty() {
+            out_group.push((px, Vec::new()));
+            continue;
+        }
+        // gather A_i, A_j from the strips (rows D_ij, cols C_ij)
+        let gather = |k: usize| -> Result<Array2<f64>, FerricError> {
+            let st = &ctx.strips[k];
+            let mut a = Array2::<f64>::zeros((d, cij.len()));
+            for (r, &gp) in dfuncs.iter().enumerate() {
+                let sr = st.row_pos[gp];
+                if sr == usize::MAX {
+                    return Err(FerricError::General(format!(
+                        "lmp2_direct: strip {k} missing aux row {gp} for pair ({i},{j}) — \
+                         extended domain does not cover the pair domain (construction bug)"
+                    )));
+                }
+                for (c, &av) in cij.iter().enumerate() {
+                    let sc = st.col_pos[av];
+                    if sc == usize::MAX {
+                        return Err(FerricError::General(format!(
+                            "lmp2_direct: strip {k} missing virtual {av} for pair ({i},{j})"
+                        )));
+                    }
+                    a[(r, c)] = st.b[(sr, sc)];
+                }
+            }
+            Ok(a)
+        };
+        let a_i = gather(i)?;
+        let a_j = gather(j)?;
+        let mut g = a_i.t().dot(&vdd_inv.dot(&a_j));
+        if ctx.scale != 1.0 {
+            g.mapv_inplace(|x| ctx.scale * x);
+        }
+        let mut out = Vec::with_capacity(2);
+        if let Some(pb) =
+            pair_block_from_g_cand(i, j, &g, cij, ctx.nv, ctx.f_vv, ctx.fo, ctx.fv, ctx.eps)
+        {
+            out.push(pb);
+        }
+        if i != j {
+            let gt = g.t().to_owned();
+            if let Some(pb) =
+                pair_block_from_g_cand(j, i, &gt, cij, ctx.nv, ctx.f_vv, ctx.fo, ctx.fv, ctx.eps)
+            {
+                out.push(pb);
+            }
+        }
+        out_group.push((px, out));
+    }
+    Ok(out_group)
+}
+
 /// Integral-direct ragged assembly: never forms a global 3-index tensor or
 /// a global metric factorization. Returns
 /// `(ragged, gated_unique_pairs, stats)`. See the module doc for the
@@ -664,64 +840,16 @@ pub fn assemble_ragged_direct_local(
     };
     let qvirt: Option<(Vec<Vec<f64>>, Vec<f64>)> = match kappa_eps {
         None => None,
-        Some(_) => {
-            use ndarray_linalg::InverseC;
-            let sq = scale.abs().sqrt();
-            let per_i: Vec<Result<(Vec<f64>, f64), FerricError>> = (0..no)
-                .into_par_iter()
-                .map(|i| {
-                    let dfuncs = shell_funcs(dfbs, &aux_dom[i]);
-                    if dfuncs.is_empty() {
-                        return Err(FerricError::General(format!(
-                            "lmp2_direct: empty aux domain for occupied {i} at radius {} Bohr \
-                             (virt_schwarz_kappa needs a nonempty D_i)",
-                            dcfg.aux_radius_bohr
-                        )));
-                    }
-                    let vdd = gather_vdd(
-                        &aux_dom[i],
-                        dims_df,
-                        &metric_blocks,
-                        &format!("occupied {i} Schwarz diagonal"),
-                    )?;
-                    let vdd_inv = vdd.invc().map_err(|e| {
-                        FerricError::General(format!(
-                            "lmp2_direct V_DD Cholesky inverse (Schwarz diagonal, occupied {i}): {e}"
-                        ))
-                    })?;
-                    let st = &strips[i];
-                    let mut b = Array2::<f64>::zeros((dfuncs.len(), st.cols.len()));
-                    for (r, &gp) in dfuncs.iter().enumerate() {
-                        let sr = st.row_pos[gp];
-                        if sr == usize::MAX {
-                            return Err(FerricError::General(format!(
-                                "lmp2_direct: strip {i} missing aux row {gp} for the Schwarz \
-                                 diagonal — D_i not covered by the extended domain \
-                                 (construction bug)"
-                            )));
-                        }
-                        b.row_mut(r).assign(&st.b.row(sr));
-                    }
-                    let x = vdd_inv.dot(&b); // (d, ncols)
-                    let mut q = vec![0.0f64; st.cols.len()];
-                    let mut qm = 0.0f64;
-                    for (c, qc) in q.iter_mut().enumerate() {
-                        let v = sq * b.column(c).dot(&x.column(c)).max(0.0).sqrt();
-                        *qc = v;
-                        qm = qm.max(v);
-                    }
-                    Ok((q, qm))
-                })
-                .collect();
-            let mut qs = Vec::with_capacity(no);
-            let mut qmax = Vec::with_capacity(no);
-            for r in per_i {
-                let (q, qm) = r?;
-                qs.push(q);
-                qmax.push(qm);
-            }
-            Some((qs, qmax))
-        }
+        Some(_) => Some(schwarz_virtual_q(
+            no,
+            scale,
+            &aux_dom,
+            &strips,
+            dims_df,
+            &metric_blocks,
+            dfbs,
+            dcfg.aux_radius_bohr,
+        )?),
     };
     // per-pair candidate sets C_ij (screened union; the screen only ever
     // SHRINKS the union, so the strip-coverage invariant is untouched)
@@ -761,83 +889,24 @@ pub fn assemble_ragged_direct_local(
     }
     let mut group_list: Vec<(Vec<usize>, Vec<usize>)> = dom_groups.into_iter().collect();
     group_list.sort_unstable_by_key(|(_, pxs)| pxs[0]);
-    type SlotOut = Vec<(usize, Vec<PairBlock>)>;
+    let ctx = PairFitCtx {
+        unique: &unique,
+        pair_cands: &pair_cands,
+        strips: &strips,
+        dims_df,
+        metric_blocks: &metric_blocks,
+        f_vv: &spaces.f_vv,
+        fo: &fo,
+        fv: &fv,
+        eps,
+        scale,
+        nv,
+        aux_radius_bohr: dcfg.aux_radius_bohr,
+        dfbs,
+    };
     let group_out: Vec<Result<SlotOut, FerricError>> = group_list
         .par_iter()
-        .map(|(dsh, pxs)| {
-            use ndarray_linalg::InverseC;
-            let (i0, j0) = unique[pxs[0]];
-            let dfuncs = shell_funcs(dfbs, dsh);
-            if dfuncs.is_empty() {
-                return Err(FerricError::General(format!(
-                    "lmp2_direct: empty aux domain for pair ({i0},{j0}) at radius {} Bohr",
-                    dcfg.aux_radius_bohr
-                )));
-            }
-            let d = dfuncs.len();
-            // V_DD gathered block-wise from the sparse metric, ONCE per group
-            let vdd = gather_vdd(dsh, dims_df, &metric_blocks, &format!("pair ({i0},{j0})"))?;
-            let vdd_inv = vdd.invc().map_err(|e| {
-                FerricError::General(format!(
-                    "lmp2_direct V_DD Cholesky inverse (group of pair ({i0},{j0})): {e}"
-                ))
-            })?;
-            let mut out_group: SlotOut = Vec::with_capacity(pxs.len());
-            for &px in pxs {
-                let (i, j) = unique[px];
-                let cij = &pair_cands[px];
-                if cij.is_empty() {
-                    out_group.push((px, Vec::new()));
-                    continue;
-                }
-                // gather A_i, A_j from the strips (rows D_ij, cols C_ij)
-                let gather = |k: usize| -> Result<Array2<f64>, FerricError> {
-                    let st = &strips[k];
-                    let mut a = Array2::<f64>::zeros((d, cij.len()));
-                    for (r, &gp) in dfuncs.iter().enumerate() {
-                        let sr = st.row_pos[gp];
-                        if sr == usize::MAX {
-                            return Err(FerricError::General(format!(
-                                "lmp2_direct: strip {k} missing aux row {gp} for pair ({i},{j}) — \
-                                 extended domain does not cover the pair domain (construction bug)"
-                            )));
-                        }
-                        for (c, &av) in cij.iter().enumerate() {
-                            let sc = st.col_pos[av];
-                            if sc == usize::MAX {
-                                return Err(FerricError::General(format!(
-                                    "lmp2_direct: strip {k} missing virtual {av} for pair ({i},{j})"
-                                )));
-                            }
-                            a[(r, c)] = st.b[(sr, sc)];
-                        }
-                    }
-                    Ok(a)
-                };
-                let a_i = gather(i)?;
-                let a_j = gather(j)?;
-                let mut g = a_i.t().dot(&vdd_inv.dot(&a_j));
-                if scale != 1.0 {
-                    g.mapv_inplace(|x| scale * x);
-                }
-                let mut out = Vec::with_capacity(2);
-                if let Some(pb) =
-                    pair_block_from_g_cand(i, j, &g, cij, nv, &spaces.f_vv, &fo, &fv, eps)
-                {
-                    out.push(pb);
-                }
-                if i != j {
-                    let gt = g.t().to_owned();
-                    if let Some(pb) =
-                        pair_block_from_g_cand(j, i, &gt, cij, nv, &spaces.f_vv, &fo, &fv, eps)
-                    {
-                        out.push(pb);
-                    }
-                }
-                out_group.push((px, out));
-            }
-            Ok(out_group)
-        })
+        .map(|(dsh, pxs)| fit_domain_group(&ctx, dsh, pxs))
         .collect();
     let mut slots: Vec<Option<Vec<PairBlock>>> = (0..unique.len()).map(|_| None).collect();
     for r in group_out {
