@@ -1,0 +1,52 @@
+# Commit-time security/hygiene hooks (pre-commit framework).
+#
+# Install per clone (hooks are untracked local state, same as the pre-push
+# gate): scripts/install-hooks.sh runs `pre-commit install` for you when the
+# `pre-commit` binary is available (`uv tool install pre-commit`).
+#
+# Design constraints, deliberate:
+#   - NON-MUTATING only. No formatters/fixers here -- a commit hook that
+#     rewrites files conflicts with this repo's honesty conventions (a gate
+#     reports, it does not silently change the thing it gates).
+#   - Every hook must PASS on the current tree at add time. bandit runs at
+#     medium severity (-ll); the four pre-existing mediums carry justified
+#     `# nosec` annotations instead of a weakened gate.
+#   - ruff is pinned to the critical subset (E9/F63/F7/F82: syntax errors,
+#     invalid prints/comparisons, undefined names) because the tree has ~473
+#     style findings that are NOT this gate's business; widening the select
+#     list means fixing those first.
+#   - Rust is NOT gated here: clippy/fmt belong to the pre-push gate and CI
+#     (cargo fmt --check is currently red on benchmarks/, so it cannot land
+#     as a hook that must pass).
+repos:
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.9.4
+    hooks:
+      - id: bandit
+        args: ["-ll", "-q"]  # medium+ severity only; Low (e.g. B101 assert) is pytest's bread and butter
+        exclude: '^terf-tables/generate_interpolation_tables\.py$'  # frozen Python-2 dissertation artifact, kept as history
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.6
+    hooks:
+      - id: ruff-check
+        args: ["--select=E9,F63,F7,F82", "--no-fix"]  # critical subset only (syntax errors, undefined names); syntax diagnostics are unconditional, hence the exclude below
+        exclude: '^terf-tables/generate_interpolation_tables\.py$'  # frozen Python-2 dissertation artifact, kept as history
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.11.0.1-1
+    hooks:
+      - id: shellcheck
+        args: ["--severity=error"]
+        exclude: '^crates/ferric-integrals/shim/libecpint/'  # vendored third-party; not ours to lint
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args: ["--baseline", ".secrets.baseline"]
+        exclude: '^(testdata/|crates/ferric-core/src/basis/bundled/)|\.ipynb$'
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-merge-conflict
+      - id: check-added-large-files
+      - id: check-yaml
+      - id: check-toml

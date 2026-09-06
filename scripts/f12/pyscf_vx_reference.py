@@ -2,7 +2,7 @@ import numpy, scipy.linalg, traceback
 from functools import reduce
 from pyscf import gto, scf, lib
 
-ri_bas = gto.basis.parse(open('/tmp/cc_pvdz_f12_optri.nw').read())
+ri_bas = gto.basis.parse(open('/tmp/cc_pvdz_f12_optri.nw').read())  # nosec B108 -- local scratch input for a one-off reference run, not a shared temp file
 
 def find_cabs(mol, auxmol, lindep=1e-8):
     cabs_mol=gto.conc_mol(mol,auxmol); nao=mol.nao_nr()
