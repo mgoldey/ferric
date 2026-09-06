@@ -206,6 +206,13 @@ pub struct Mp2Cfg {
     /// Integral-direct LMP2: R⁻⁶ pair-gate calibration constant (p95:
     /// ~0.7 Coulomb, ~0.02 erfc ω=1). Omitted = gate OFF (keep all pairs).
     pub direct_gate_cal: Option<f64>,
+    /// Integral-direct LMP2: ε-linked Schwarz virtual-candidate screen —
+    /// keep a in C_ij iff q_ia·qmax_j ≥ κ·ε (either orientation), q from
+    /// strip-local fitted diagonals. Omitted = OFF (the validated distance
+    /// candidates alone). κ = 1 is conservative (measured escape-free at
+    /// C8, both operators); larger κ trades bounded sub-dominant error for
+    /// smaller pair blocks (WIKI-APPEND-eps-linked-maps.md).
+    pub direct_virt_schwarz_kappa: Option<f64>,
     /// κ-regularized MP2 (Lee/Head-Gordon JCTC 2018) for `kind = "rimp2"`:
     /// damps every amplitude by (1 − e^{−κΔ})², κ in inverse Hartree
     /// (κ→∞ recovers plain MP2; the paper's recommended value is ~1.45).

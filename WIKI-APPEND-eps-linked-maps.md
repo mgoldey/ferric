@@ -192,3 +192,39 @@ produced 29-35 escapes through the same code path).
   D_i-local metric Cholesky over strip columns, screen threshold
   κ·eps/qmax with the scale folded like the whitened path's √scale.
 
+## Rust landing (same day, feat/eps-linked-maps)
+
+`DirectConfig.virt_schwarz_kappa: Option<f64>` in
+`ferric_mp2::lmp2_direct` (stage 5a: per-i q_ia =
+√(b_ia^T V_{D_i D_i}⁻¹ b_ia) over strip columns, √scale folded; screen
+filters C_ij = V_i ∪ V_j before the fit — it only SHRINKS the union, so
+the strip-coverage invariant is untouched). `DirectStats` gains
+`virt_cand_mean/max`. Surface: CLI `[mp2] direct_virt_schwarz_kappa`
+(default OFF) + Python `run_lmp2_direct(virt_schwarz_kappa=)` +
+counters. gather_vdd factored out and shared with the group loop
+(byte-identical gather).
+
+Evidence (tests/lmp2_direct.rs, all arms seen to fail):
+- TRIVIAL LIMIT `schwarz_virt_trivial_limit_is_a_noop`: κ=1e-12 (all-pass
+  threshold, screen code LIVE) ≡ κ=None at eps=1e-3, |dE| = 0.0 exactly,
+  candidate sets identical — both operators.
+- SUB-DOMINANCE `schwarz_virt_sub_dominant_and_trims` (C4, production
+  maps): κ=1 dE = 0.0 both ops (trims 38.8 / 38.3 of 39); κ=3 coul
+  dE = 0.0 (37.8), erfc dE = 1.55e-5 vs eps err 1.89e-3 (122x; bar 50x).
+  MUTATION-TESTED: an OR→AND bug in the screen filter (plausible real
+  error) pushed κ=3/coul to 4.86e-4 and FAILED the bar by >2x — seen to
+  fail, then reverted.
+- GUTTED ARM `schwarz_virt_gutted_is_loud`: κ=100 gutted candidates to
+  3.3/4 mean/max and moved E by 1.39e-1 (loud).
+- Bindings: 13/13 lmp2 pytests via the worktree PYTHONPATH shim; C8
+  Python probe (coulomb/1e-3): κ=None/1/3 → cand 70.6/67.4/60.0 with
+  E identical to 10 printed decimals.
+
+HONEST COST NOTE (do not quote a speedup): at C8 t_pairs went 0.45 →
+0.53 s with the screen on — the per-i D_i Choleskys currently cost more
+than the trimmed columns save at this size. The landed value at ≤C8 is
+bounded sub-dominant error + eps-linked candidate safety (parity with
+the whitened path's exact screen); any wall win is a ≥C16 observable to
+be measured in the bench sweep (rows there record the screen OFF
+configuration unless said otherwise).
+
