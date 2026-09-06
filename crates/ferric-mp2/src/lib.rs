@@ -24,6 +24,8 @@ pub mod rccd_family;
 pub mod lccd_cepa0;
 /// Amplitude-threshold local MP2 (WSHG23 single-threshold scheme).
 pub mod lmp2_amplitude;
+
+pub mod lmp2_direct;
 /// Ragged per-pair domain-block storage for local correlation.
 pub mod ragged;
 /// Pair natural orbital (PNO) construction and truncation.

@@ -181,6 +181,31 @@ pub struct Mp2Cfg {
     /// is a controlled approximation — error one-sided and ~linear in ε (see
     /// wiki/amplitude-threshold-lmp2.md for the measured map).
     pub lmp2_eps: Option<f64>,
+    /// Integral-direct LMP2 (`kind = "lmp2-direct"`): aux fit-domain radius
+    /// in Bohr (pair (i,j) fits in aux functions within this radius of
+    /// either Boys centroid). Default 10.0 — the measured production value
+    /// (wiki/amplitude-threshold-lmp2.md §27-30); ≥1e5 ≈ global fit.
+    pub direct_aux_radius: Option<f64>,
+    /// Integral-direct LMP2: virtual domain radius in Bohr on dipole
+    /// centroids. Default 12.0 (production); omit-able only by setting a
+    /// huge value — every default here is a CONTROLLED approximation and
+    /// the run prints the canonical reference error alongside.
+    pub direct_virt_radius: Option<f64>,
+    /// Integral-direct LMP2: AO-support shell threshold on max |C|.
+    /// Default 1e-3 (production); 0.0 keeps every shell.
+    pub direct_ao_tail: Option<f64>,
+    /// Integral-direct LMP2: Cauchy–Schwarz triple cut √(P|P)·Q(μν) on the
+    /// batch integral stream. Default 1e-5 (calibrated ~1e-8 Ha at C16);
+    /// MUST be 0.0 for operators without Schwarz support (terfc) — the run
+    /// hard-errors otherwise, naming this knob.
+    pub direct_schwarz_skip: Option<f64>,
+    /// Integral-direct LMP2: nearest-atom batches merged per integral pass.
+    /// Default 4 (measured ~0.4× the evaluations of per-atom batches); 1 =
+    /// per-atom (the anchor limit).
+    pub direct_batch_merge: Option<usize>,
+    /// Integral-direct LMP2: R⁻⁶ pair-gate calibration constant (p95:
+    /// ~0.7 Coulomb, ~0.02 erfc ω=1). Omitted = gate OFF (keep all pairs).
+    pub direct_gate_cal: Option<f64>,
     /// κ-regularized MP2 (Lee/Head-Gordon JCTC 2018) for `kind = "rimp2"`:
     /// damps every amplitude by (1 − e^{−κΔ})², κ in inverse Hartree
     /// (κ→∞ recovers plain MP2; the paper's recommended value is ~1.45).
