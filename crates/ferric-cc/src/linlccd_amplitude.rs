@@ -250,61 +250,74 @@ fn linlccd_masked_solve(
     cfg: &AmplitudeLinLccdConfig,
 ) -> Result<(f64, usize, f64), FerricError> {
     let matvec = |t: &[Array2<f64>], flops: &mut u64| -> Vec<Array2<f64>> {
+        use rayon::prelude::*;
+        // F(t) is already rayon-parallel-over-output and deterministic
+        // (matvec_indexed); the hh/pp ladder terms below are added to each
+        // r[p] wholly inside ONE task keyed by the OUTPUT pair p, so every
+        // write targets a distinct r[p] slot — deterministic under any
+        // schedule, and the same per-block arithmetic order as the serial
+        // loop (see the "deterministic is not bit-identical" convention:
+        // disjoint writes only). Each task returns its own flop tally,
+        // summed after the parallel region.
         let mut r = matvec_indexed(rg, f_oo, t, flops); // F(t), pattern-projected
-        if let Some(oo) = oo {
-            // hh: out_ij += Σ_(k,l) (ik|jl) · gather(T_kl)
-            for (p_out, pb_out) in rg.pairs.iter().enumerate() {
-                for (p_src, pb_src) in rg.pairs.iter().enumerate() {
-                    let coeff = oo.coeff(pb_out.i, pb_src.i, pb_out.j, pb_src.j);
-                    if coeff == 0.0 {
-                        continue;
-                    }
-                    gather_into(&mut r[p_out], pb_src, pb_out, coeff, &t[p_src], flops);
-                }
-            }
-        }
-        match &pp {
-            PpSource::None => {}
-            PpSource::GlobalWhitened { bvv_t: bvv, nv } => {
-                // pp (block-local): out_ij[a,b] += Σ_cd (ac|bd) T_ij[c,d],
-                // (ac|bd) = Σ_P bvv[P,(a,c)] bvv[P,(b,d)] gathered on the
-                // pair's union domains — never a global VVVV
-                let naux = bvv.nrows();
-                for (p, pb) in rg.pairs.iter().enumerate() {
-                    let (da, db) = (&pb.da, &pb.db);
-                    let (nda, ndb) = (da.len(), db.len());
-                    // rows (a, c): a ∈ Da (output row), c ∈ Da (contraction)
-                    let mut ba = Array2::<f64>::zeros((naux, nda * nda));
-                    for (ra, &a) in da.iter().enumerate() {
-                        for (rc, &c) in da.iter().enumerate() {
-                            ba.column_mut(ra * nda + rc).assign(&bvv.column(a * nv + c));
+        let ladder: Vec<(Array2<f64>, u64)> = rg
+            .pairs
+            .par_iter()
+            .enumerate()
+            .map(|(p, pb)| {
+                let mut rp = Array2::<f64>::zeros((pb.da.len(), pb.db.len()));
+                let mut fl = 0u64;
+                // hh: out_ij += Σ_(k,l) (ik|jl) · gather(T_kl). For a FIXED
+                // output (i,j), sum over source pairs (k,l) = (p_src.i,
+                // p_src.j) with a nonzero OOOO coefficient. Iterate the
+                // source pairs (same set the serial loop scanned) but write
+                // only into THIS output's rp.
+                if let Some(oo) = oo {
+                    for (p_src, pb_src) in rg.pairs.iter().enumerate() {
+                        let coeff = oo.coeff(pb.i, pb_src.i, pb.j, pb_src.j);
+                        if coeff == 0.0 {
+                            continue;
                         }
+                        gather_into(&mut rp, pb_src, pb, coeff, &t[p_src], &mut fl);
                     }
-                    let mut bb = Array2::<f64>::zeros((naux, ndb * ndb));
-                    for (cb, &b) in db.iter().enumerate() {
-                        for (cd, &d) in db.iter().enumerate() {
-                            bb.column_mut(cb * ndb + cd).assign(&bvv.column(b * nv + d));
+                }
+                match &pp {
+                    PpSource::None => {}
+                    PpSource::GlobalWhitened { bvv_t: bvv, nv } => {
+                        let naux = bvv.nrows();
+                        let (da, db) = (&pb.da, &pb.db);
+                        let (nda, ndb) = (da.len(), db.len());
+                        let mut ba = Array2::<f64>::zeros((naux, nda * nda));
+                        for (ra, &a) in da.iter().enumerate() {
+                            for (rc, &c) in da.iter().enumerate() {
+                                ba.column_mut(ra * nda + rc).assign(&bvv.column(a * nv + c));
+                            }
                         }
+                        let mut bb = Array2::<f64>::zeros((naux, ndb * ndb));
+                        for (cb, &b) in db.iter().enumerate() {
+                            for (cd, &d) in db.iter().enumerate() {
+                                bb.column_mut(cb * ndb + cd).assign(&bvv.column(b * nv + d));
+                            }
+                        }
+                        let m = ba.t().dot(&bb); // rows (a,c), cols (b,d)
+                        fl += (nda * nda * ndb * ndb * naux) as u64;
+                        apply_pp_block(&mut rp, &m, nda, ndb, &t[p]);
                     }
-                    let m = ba.t().dot(&bb); // rows (a,c), cols (b,d)
-                    *flops += (nda * nda * ndb * ndb * naux) as u64;
-                    apply_pp_block(&mut r[p], &m, nda, ndb, &t[p]);
+                    PpSource::Fitted(factors) => {
+                        let (nda, ndb) = (pb.da.len(), pb.db.len());
+                        let f = &factors[p];
+                        let m = f.a_rows.dot(&f.gb); // rows (a,c), cols (b,d)
+                        fl += (nda * nda * ndb * ndb * f.gb.nrows()) as u64;
+                        apply_pp_block(&mut rp, &m, nda, ndb, &t[p]);
+                    }
                 }
-            }
-            PpSource::Fitted(factors) => {
-                // pp from the per-pair domain-fitted factors: the same
-                // per-iteration GEMM + accumulation, m = a_rows · gb
-                for (p, pb) in rg.pairs.iter().enumerate() {
-                    let (nda, ndb) = (pb.da.len(), pb.db.len());
-                    let f = &factors[p];
-                    let m = f.a_rows.dot(&f.gb); // rows (a,c), cols (b,d)
-                    *flops += (nda * nda * ndb * ndb * f.gb.nrows()) as u64;
-                    apply_pp_block(&mut r[p], &m, nda, ndb, &t[p]);
-                }
-            }
-        }
-        for (p, pb) in rg.pairs.iter().enumerate() {
-            apply_pattern(&mut r[p], &pb.pat, pb.db.len());
+                (rp, fl)
+            })
+            .collect();
+        for (p, (contrib, fl)) in ladder.into_iter().enumerate() {
+            r[p] += &contrib;
+            *flops += fl;
+            apply_pattern(&mut r[p], &rg.pairs[p].pat, rg.pairs[p].db.len());
         }
         r
     };
