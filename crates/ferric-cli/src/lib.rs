@@ -711,6 +711,7 @@ fn run_lmp2_direct(
         ao_tail: cfg.mp2.direct_ao_tail.unwrap_or(1e-3),
         schwarz_skip: cfg.mp2.direct_schwarz_skip.unwrap_or(1e-5),
         batch_merge: cfg.mp2.direct_batch_merge.unwrap_or(4),
+        virt_schwarz_kappa: cfg.mp2.direct_virt_schwarz_kappa,
         ..Default::default()
     };
     let (r, st) = amplitude_lmp2_direct(
@@ -736,13 +737,14 @@ fn run_lmp2_direct(
     println!(
         "Integral-direct amplitude-threshold LMP2 (aux: {aux_name}, eps = {eps:.1e}, \
          r_aux = {} Bohr, r_virt = {} Bohr, ao_tail = {:.0e}, schwarz_skip = {:.0e}, \
-         batch_merge = {}, gate_cal = {})",
+         batch_merge = {}, gate_cal = {}, virt_schwarz_kappa = {})",
         dcfg.aux_radius_bohr,
         dcfg.virt_radius_bohr.unwrap_or(f64::INFINITY),
         dcfg.ao_tail,
         dcfg.schwarz_skip,
         dcfg.batch_merge,
         cfg.mp2.direct_gate_cal.map_or("off".to_string(), |c| format!("{c}")),
+        dcfg.virt_schwarz_kappa.map_or("off".to_string(), |k| format!("{k}")),
     );
     println!("  E_corr(direct LMP2)   = {:.10} Ha", r.e_corr);
     println!("  E_corr(canonical RI)  = {:.10} Ha", r.e_corr_canonical_ri);
@@ -752,8 +754,16 @@ fn run_lmp2_direct(
     );
     println!("  total energy          = {:.10} Ha", r.e_total);
     println!(
-        "  keep {:.4}  pairs {:.3}  gated {}  dom(mean/max) {:.1}/{}  cg {}",
-        r.keep_fraction, r.pair_fraction, r.n_pairs_gated, r.dom_mean, r.dom_max, r.cg_iterations
+        "  keep {:.4}  pairs {:.3}  gated {}  dom(mean/max) {:.1}/{}  \
+         cand(mean/max) {:.1}/{}  cg {}",
+        r.keep_fraction,
+        r.pair_fraction,
+        r.n_pairs_gated,
+        r.dom_mean,
+        r.dom_max,
+        st.virt_cand_mean,
+        st.virt_cand_max,
+        r.cg_iterations
     );
     println!(
         "  strips rows {:.0}/{} cols {:.0}/{}  eri3 {:.1}M evald / {:.1}M skipped  \

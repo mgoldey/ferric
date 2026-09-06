@@ -2643,14 +2643,18 @@ fn run_lmp2(py: Python<'_>, mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: 
 /// wiki/amplitude-threshold-lmp2.md §27-30). Locality kwargs default to
 /// the measured production values; `schwarz_skip` must be 0.0 for terfc.
 /// `pair_gate_cal`: ~0.7 Coulomb / ~0.02 erfc(1); None = gate off.
+/// `virt_schwarz_kappa`: ε-linked Schwarz virtual-candidate screen (None =
+/// off; 1.0 = conservative, measured escape-free — see
+/// WIKI-APPEND-eps-linked-maps.md).
 /// Returns the `run_lmp2` dict plus strip/eri3 counters and stage timings.
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, eps=None, frozen_core=None, aux_radius_bohr=None, virt_radius_bohr=None, ao_tail=None, schwarz_skip=None, batch_merge=None, pair_gate_cal=None, k_builder=None, memory_budget_gb=None, compute_reference=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, eps=None, frozen_core=None, aux_radius_bohr=None, virt_radius_bohr=None, ao_tail=None, schwarz_skip=None, batch_merge=None, pair_gate_cal=None, virt_schwarz_kappa=None, k_builder=None, memory_budget_gb=None, compute_reference=None))]
 #[allow(clippy::too_many_arguments)]
 fn run_lmp2_direct(py: Python<'_>, mol: &PyMolecule, basis_set: &PyBasisSet, auxbasis: &PyBasisSet,
             eps: Option<f64>, frozen_core: Option<usize>, aux_radius_bohr: Option<f64>,
             virt_radius_bohr: Option<f64>, ao_tail: Option<f64>, schwarz_skip: Option<f64>,
-            batch_merge: Option<usize>, pair_gate_cal: Option<f64>, k_builder: Option<&str>,
+            batch_merge: Option<usize>, pair_gate_cal: Option<f64>, virt_schwarz_kappa: Option<f64>,
+            k_builder: Option<&str>,
             memory_budget_gb: Option<f64>, compute_reference: Option<bool>) -> PyResult<Py<pyo3::types::PyDict>> {
     use ferric_mp2::lmp2_amplitude::AmplitudeLmp2Config;
     use ferric_mp2::lmp2_direct::{amplitude_lmp2_direct, DirectConfig};
@@ -2669,6 +2673,7 @@ fn run_lmp2_direct(py: Python<'_>, mol: &PyMolecule, basis_set: &PyBasisSet, aux
         ao_tail: ao_tail.unwrap_or(1e-3),
         schwarz_skip: schwarz_skip.unwrap_or(1e-5),
         batch_merge: batch_merge.unwrap_or(4),
+        virt_schwarz_kappa,
         ..Default::default()
     };
     let (r, st) = amplitude_lmp2_direct(&mol.inner, &prep, &basis_set.inner, &dfbs, op, &rhf,
@@ -2697,6 +2702,8 @@ fn run_lmp2_direct(py: Python<'_>, mol: &PyMolecule, basis_set: &PyBasisSet, aux
     d.set_item("strip_cols_max", st.strip_cols_max)?;
     d.set_item("n_eri3_shell_triples", st.n_eri3_shell_triples)?;
     d.set_item("n_eri3_skipped", st.n_eri3_skipped)?;
+    d.set_item("virt_cand_mean", st.virt_cand_mean)?;
+    d.set_item("virt_cand_max", st.virt_cand_max)?;
     d.set_item("t_maps_s", st.t_maps_s)?;
     d.set_item("t_eri3_s", st.t_eri3_s)?;
     d.set_item("t_metric_s", st.t_metric_s)?;
