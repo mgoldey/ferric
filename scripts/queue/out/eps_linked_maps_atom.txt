@@ -1,0 +1,46 @@
+alkane_8 6-31g coul c2dom eps=0.001 kappa=0.5 r_aux=10 escapes=0 worst|Jdom|esc=0.00e+00 worst/eps=0.00
+alkane_8 6-31g coul c2dom eps=0.001 kappa=1 r_aux=10 escapes=0 worst|Jdom|esc=0.00e+00 worst/eps=0.00
+alkane_8 6-31g coul c2dom eps=0.0001 kappa=0.5 r_aux=10 escapes=0 worst|Jdom|esc=0.00e+00 worst/eps=0.00
+alkane_8 6-31g coul c2dom eps=0.0001 kappa=1 r_aux=10 escapes=0 worst|Jdom|esc=0.00e+00 worst/eps=0.00
+alkane_8 6-31g coul auxatom dist knob=4       pairdom=  337.9/ 560 of 700 dE=+1.070e-04 distinct=87/325 chol=1.83GF gemm=7.14GF tot=8.97GF solvefail=0 (2.0s)
+alkane_8 6-31g coul auxatom dist knob=5       pairdom=  473.6/ 700 of 700 dE=+2.041e-05 distinct=116/325 chol=5.41GF gemm=13.26GF tot=18.67GF solvefail=0 (2.8s)
+alkane_8 6-31g coul auxatom dist knob=6       pairdom=  524.2/ 700 of 700 dE=+6.276e-06 distinct=74/325 chol=4.03GF gemm=15.97GF tot=20.01GF solvefail=0 (3.0s)
+alkane_8 6-31g coul auxatom dist knob=7       pairdom=  539.4/ 700 of 700 dE=+5.315e-06 distinct=24/325 chol=1.28GF gemm=16.87GF tot=18.15GF solvefail=0 (3.0s)
+alkane_8 6-31g coul auxatom dist knob=8       pairdom=  574.9/ 700 of 700 dE=+2.721e-06 distinct=35/325 chol=1.88GF gemm=18.83GF tot=20.71GF solvefail=0 (3.9s)
+alkane_8 6-31g coul auxatom dist knob=10      pairdom=  644.7/ 700 of 700 dE=+3.807e-07 distinct=11/325 chol=0.65GF gemm=22.96GF tot=23.61GF solvefail=0 (7.1s)
+alkane_8 6-31g coul auxatom dist knob=12      pairdom=  664.2/ 700 of 700 dE=+1.489e-07 distinct=15/325 chol=1.02GF gemm=24.15GF tot=25.16GF solvefail=0 (7.5s)
+alkane_8 6-31g coul auxatom magt knob=0.03    pairdom=  680.9/ 700 of 700 dE=+1.205e-07 distinct=9/325 chol=0.70GF gemm=25.20GF tot=25.90GF solvefail=0 (5.2s)
+alkane_8 6-31g coul auxatom magt knob=0.01    pairdom=  700.0/ 700 of 700 dE=+7.605e-12 distinct=1/325 chol=0.11GF gemm=26.45GF tot=26.56GF solvefail=0 (4.4s)
+alkane_8 6-31g coul auxatom magt knob=0.003   pairdom=  700.0/ 700 of 700 dE=+7.605e-12 distinct=1/325 chol=0.11GF gemm=26.45GF tot=26.56GF solvefail=0 (4.5s)
+alkane_8 6-31g coul auxatom magt knob=0.001   pairdom=  700.0/ 700 of 700 dE=+7.605e-12 distinct=1/325 chol=0.11GF gemm=26.45GF tot=26.56GF solvefail=0 (4.4s)
+alkane_8 6-31g coul auxatom magt knob=0.0003  pairdom=  700.0/ 700 of 700 dE=+7.605e-12 distinct=1/325 chol=0.11GF gemm=26.45GF tot=26.56GF solvefail=0 (4.5s)
+alkane_8 6-31g coul auxatom magt knob=0.0001  pairdom=  700.0/ 700 of 700 dE=+7.605e-12 distinct=1/325 chol=0.11GF gemm=26.45GF tot=26.56GF solvefail=0 (4.3s)
+alkane_8 6-31g coul auxatom tail knob=0.3     pairdom=  630.5/ 700 of 700 dE=+8.062e-07 distinct=33/325 chol=2.41GF gemm=22.00GF tot=24.40GF solvefail=0 (6.7s)
+alkane_8 6-31g coul auxatom tail knob=0.1     pairdom=  676.7/ 700 of 700 dE=+7.546e-08 distinct=15/325 chol=1.33GF gemm=24.85GF tot=26.18GF solvefail=0 (4.2s)
+alkane_8 6-31g coul auxatom tail knob=0.03    pairdom=  695.3/ 700 of 700 dE=+9.810e-09 distinct=7/325 chol=0.73GF gemm=26.12GF tot=26.85GF solvefail=0 (4.4s)
+alkane_8 6-31g coul auxatom tail knob=0.01    pairdom=  700.0/ 700 of 700 dE=+7.605e-12 distinct=1/325 chol=0.11GF gemm=26.45GF tot=26.56GF solvefail=0 (4.4s)
+alkane_8 6-31g coul auxatom tail knob=0.003   pairdom=  700.0/ 700 of 700 dE=+7.605e-12 distinct=1/325 chol=0.11GF gemm=26.45GF tot=26.56GF solvefail=0 (4.5s)
+alkane_8 6-31g coul auxatom tail knob=0.001   pairdom=  700.0/ 700 of 700 dE=+7.605e-12 distinct=1/325 chol=0.11GF gemm=26.45GF tot=26.56GF solvefail=0 (4.5s)
+alkane_8 6-31g erfc1 c2dom eps=0.001 kappa=0.5 r_aux=10 escapes=0 worst|Jdom|esc=0.00e+00 worst/eps=0.00
+alkane_8 6-31g erfc1 c2dom eps=0.001 kappa=1 r_aux=10 escapes=0 worst|Jdom|esc=0.00e+00 worst/eps=0.00
+alkane_8 6-31g erfc1 c2dom eps=0.0001 kappa=0.5 r_aux=10 escapes=0 worst|Jdom|esc=0.00e+00 worst/eps=0.00
+alkane_8 6-31g erfc1 c2dom eps=0.0001 kappa=1 r_aux=10 escapes=0 worst|Jdom|esc=0.00e+00 worst/eps=0.00
+alkane_8 6-31g erfc1 auxatom dist knob=4       pairdom=  337.9/ 560 of 700 dE=+2.330e-05 distinct=87/325 chol=1.83GF gemm=7.14GF tot=8.97GF solvefail=0 (1.4s)
+alkane_8 6-31g erfc1 auxatom dist knob=5       pairdom=  473.6/ 700 of 700 dE=+6.005e-06 distinct=116/325 chol=5.41GF gemm=13.26GF tot=18.67GF solvefail=0 (2.3s)
+alkane_8 6-31g erfc1 auxatom dist knob=6       pairdom=  524.2/ 700 of 700 dE=+2.122e-06 distinct=74/325 chol=4.03GF gemm=15.97GF tot=20.01GF solvefail=0 (2.7s)
+alkane_8 6-31g erfc1 auxatom dist knob=7       pairdom=  539.4/ 700 of 700 dE=+1.796e-06 distinct=24/325 chol=1.28GF gemm=16.87GF tot=18.15GF solvefail=0 (3.2s)
+alkane_8 6-31g erfc1 auxatom dist knob=8       pairdom=  574.9/ 700 of 700 dE=+9.626e-07 distinct=35/325 chol=1.88GF gemm=18.83GF tot=20.71GF solvefail=0 (3.4s)
+alkane_8 6-31g erfc1 auxatom dist knob=10      pairdom=  644.7/ 700 of 700 dE=+1.200e-07 distinct=11/325 chol=0.65GF gemm=22.96GF tot=23.61GF solvefail=0 (3.8s)
+alkane_8 6-31g erfc1 auxatom dist knob=12      pairdom=  664.2/ 700 of 700 dE=+4.351e-08 distinct=15/325 chol=1.02GF gemm=24.15GF tot=25.16GF solvefail=0 (3.9s)
+alkane_8 6-31g erfc1 auxatom magt knob=0.03    pairdom=  337.9/ 560 of 700 dE=+2.330e-05 distinct=87/325 chol=1.83GF gemm=7.14GF tot=8.97GF solvefail=0 (1.3s)
+alkane_8 6-31g erfc1 auxatom magt knob=0.01    pairdom=  436.7/ 616 of 700 dE=+7.958e-06 distinct=200/325 chol=7.10GF gemm=11.36GF tot=18.45GF solvefail=0 (2.0s)
+alkane_8 6-31g erfc1 auxatom magt knob=0.003   pairdom=  556.2/ 700 of 700 dE=+1.466e-06 distinct=44/325 chol=2.48GF gemm=17.78GF tot=20.26GF solvefail=0 (9.1s)
+alkane_8 6-31g erfc1 auxatom magt knob=0.001   pairdom=  623.2/ 700 of 700 dE=+2.807e-07 distinct=38/325 chol=2.40GF gemm=21.64GF tot=24.04GF solvefail=0 (3.6s)
+alkane_8 6-31g erfc1 auxatom magt knob=0.0003  pairdom=  656.1/ 700 of 700 dE=+1.412e-07 distinct=24/325 chol=1.51GF gemm=23.65GF tot=25.16GF solvefail=0 (4.0s)
+alkane_8 6-31g erfc1 auxatom magt knob=0.0001  pairdom=  683.5/ 700 of 700 dE=+1.706e-08 distinct=15/325 chol=1.00GF gemm=25.38GF tot=26.38GF solvefail=0 (4.5s)
+alkane_8 6-31g erfc1 auxatom tail knob=0.3     pairdom=  174.5/ 308 of 700 dE=+1.773e-03 distinct=167/325 chol=0.45GF gemm=2.26GF tot=2.70GF solvefail=0 (0.5s)
+alkane_8 6-31g erfc1 auxatom tail knob=0.1     pairdom=  325.6/ 560 of 700 dE=+3.622e-05 distinct=110/325 chol=2.03GF gemm=6.71GF tot=8.74GF solvefail=0 (5.8s)
+alkane_8 6-31g erfc1 auxatom tail knob=0.03    pairdom=  478.8/ 672 of 700 dE=+5.325e-06 distinct=143/325 chol=7.43GF gemm=13.60GF tot=21.02GF solvefail=0 (2.5s)
+alkane_8 6-31g erfc1 auxatom tail knob=0.01    pairdom=  553.8/ 700 of 700 dE=+1.658e-06 distinct=100/325 chol=6.52GF gemm=17.62GF tot=24.15GF solvefail=0 (2.9s)
+alkane_8 6-31g erfc1 auxatom tail knob=0.003   pairdom=  627.0/ 700 of 700 dE=+3.375e-07 distinct=44/325 chol=3.07GF gemm=21.85GF tot=24.92GF solvefail=0 (3.7s)
+alkane_8 6-31g erfc1 auxatom tail knob=0.001   pairdom=  656.8/ 700 of 700 dE=+1.272e-07 distinct=35/325 chol=2.44GF gemm=23.66GF tot=26.10GF solvefail=0 (7.3s)
