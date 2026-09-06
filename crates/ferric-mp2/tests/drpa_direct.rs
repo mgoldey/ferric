@@ -303,6 +303,8 @@ fn each_map_gutted_is_loud() {
 #[ignore]
 fn bench_drpa_direct_vs_global() {
     use std::time::Instant;
+    // ..Default::default() so the NEXT DirectConfig field doesn't break this
+    // bench again (the #27×#28 cross-branch E0063 — each PR was green alone)
     let prod = DirectConfig {
         aux_radius_bohr: 10.0,
         virt_radius_bohr: Some(12.0),
@@ -310,6 +312,7 @@ fn bench_drpa_direct_vs_global() {
         schwarz_skip: 1e-5,
         batch_merge: 4,
         scratch_budget_bytes: 1usize << 30,
+        ..Default::default()
     };
     println!(
         "sys        eps    E(global)      E(direct)      |dE|      keep_d  iters g/d  t_global t_direct"
