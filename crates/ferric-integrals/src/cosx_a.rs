@@ -105,7 +105,7 @@ pub fn a_matrix_at_point_with(
             pairs_total += 1;
             if !screen.is_vacuous() {
                 if let Some(b) = bounds {
-                    if b.estimate(s1, s2, r) < screen.threshold {
+                    if !b.exceeds(s1, s2, r, screen.threshold) {
                         continue;
                     }
                 }
