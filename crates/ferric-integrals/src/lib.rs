@@ -45,6 +45,9 @@ pub mod ao_grid;
 /// Per-grid-point three-center-one-electron AO blocks `A^g_{mu,nu}` for
 /// seminumerical exchange (COSX / sn-LinK).
 pub mod cosx_a;
+/// Shell-pair screening bound shared by `cosx_a` and `md3c1e` (Hölder bound on
+/// the primitive expansion; never underestimates, decays as `K_AB / R`).
+pub mod cosx_screen;
 /// From-scratch McMurchie-Davidson 3-center-1-electron kernel producing the
 /// same `A^g` blocks as `cosx_a` for a BATCH of grid points, grid axis innermost.
 pub mod md3c1e;
