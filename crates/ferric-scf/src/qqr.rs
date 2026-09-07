@@ -7,7 +7,7 @@ use crate::screening::{Bound, SchwarzBounds};
 use ferric_core::basis::BasisSet;
 use ferric_core::mol::Molecule;
 use ferric_integrals::basis_bridge::PreparedBasis;
-use ferric_integrals::operator::{Operator, OperatorKind};
+use ferric_integrals::operator::Operator;
 
 /// QQR (distance-dependent) integral screening bounds.
 ///
@@ -15,9 +15,51 @@ use ferric_integrals::operator::{Operator, OperatorKind};
 /// - **pair center**: weighted average of shell origins, using the most diffuse exponent
 /// - **pair extent**: spatial width `1/sqrt(alpha_i_min + alpha_j_min)`
 ///
-/// The bound is: `schwarz(i,j,k,l) * min(1, extent_ij * extent_kl / R_ij_kl) * op_decay(R)`
-/// where `R_ij_kl` is the distance between pair centers and `op_decay` provides
-/// operator-specific exponential decay (e.g., `exp(-omega^2 * R^2)` for ErfcCoulomb).
+/// The bound is
+///
+/// ```text
+///   |(ij|kl)|  <=  Q(i,j) * Q(k,l) * min(1, SAFETY * ext_sum / R_eff)
+/// ```
+///
+/// where `ext_sum = ext_ij + ext_kl` and `R_eff = max(0, R - ext_sum)` is the
+/// EDGE-TO-EDGE separation between the two pair charge clouds (`R` being the
+/// distance between their charge centers).
+///
+/// # Why this form (the earlier one was an INVALID bound)
+///
+/// `(ij|kl)` is the Coulomb interaction of two Gaussian charge clouds, so its
+/// leading (monopole) term decays as `1/R`. The distance factor must therefore
+/// scale as `1/R_eff` with an ext_**SUM** numerator — NOT the `ext_ij * ext_kl / R`
+/// product-over-center-to-center form used here previously, which under-states
+/// the cloud charges and collapses far too fast. The numerator being `ext_sum`
+/// makes the factor continuous and equal to 1 at contact (`R = ext_sum`), so it
+/// reduces smoothly to plain Schwarz for overlapping/penetrating clouds where
+/// the multipole expansion is not valid at all.
+///
+/// This mirrors [`ferric_integrals::qqr3::QqrBounds3`], the validated 3-index
+/// sibling, whose module docs record the same correction for `(P|mn)`.
+///
+/// MEASURED against true PySCF shell-quartet integrals at benzene/cc-pVDZ over
+/// 30_000 quartets (`scripts/qqr4_bound_validity.py`), worst `|true| / bound`
+/// (a valid bound keeps this <= 1):
+///
+/// ```text
+///   form                            Coulomb          erfc(omega=1.0)
+///   ext*ext/R + exp(-w^2 R^2)  2.05 (13499 viol)  6.0e11 (30000 viol)
+///   ext_sum/R_eff (this)       0.92 (    0 viol)  0.77   (    0 viol)
+/// ```
+///
+/// # erfc attenuation is carried by the Schwarz factors, not a distance factor
+///
+/// For an `ErfcCoulomb` operator the per-operator Schwarz factors `Q(i,j)` are
+/// computed with the erfc kernel and are already smaller than their Coulomb
+/// counterparts — that is where the attenuation enters, and it is sufficient.
+/// The previous code multiplied in an ADDITIONAL `exp(-omega^2 * R^2)`, which
+/// over-suppresses genuine long-range quartets: at benzene/cc-pVDZ with
+/// omega = 1.0 that factor made EVERY sampled quartet violate the bound, by up
+/// to 12 orders of magnitude. The same Coulomb envelope is used for both
+/// operators. (`ferric_integrals::qqr3` reached the identical conclusion
+/// independently, measuring worst ratio 1.7-5.3 for its own erfc factor.)
 #[derive(Debug, Clone)]
 pub struct QqrBounds {
     schwarz: SchwarzBounds,
@@ -29,6 +71,28 @@ pub struct QqrBounds {
     op: Operator,
     nshells: usize,
 }
+
+/// Multiplier on the bare `ext_sum / R_eff` monopole envelope.
+///
+/// The bare envelope is a MODEL, not a rigorous bound: it can decay slightly
+/// faster than the true integral in the near-intermediate zone, where the
+/// dipole/quadrupole terms the monopole model omits are still appreciable.
+/// [`ferric_integrals::qqr3`] measured its 3-index analogue under-estimating by
+/// up to 5.9% there and adopted a flat 1.10 multiplier.
+///
+/// The 4-center prototype sweep (`scripts/qqr4_bound_validity.py`, water +
+/// benzene at cc-pVDZ, Coulomb and erfc(1.0)) found the bare form ALREADY valid
+/// on that sample — minimum sufficient factor 1.000, worst |true|/bound 0.9194.
+/// We nonetheless keep 1.10, matching the sibling: those systems do not probe
+/// the near-intermediate zone as densely as qqr3's 797_568-triple sweep did,
+/// and an unjustified 1.0 would make validity depend on the sample happening to
+/// miss the worst case. The cost is small — bounds inflate ~10% only where the
+/// envelope is actually engaged (mean bound/Schwarz 0.87 at 1.10 vs 0.79 bare,
+/// on benzene's separated subset).
+///
+/// Re-derive with `scripts/qqr4_bound_validity.py` if the extent/center
+/// definitions change.
+const SAFETY_FACTOR: f64 = 1.10;
 
 impl QqrBounds {
     /// Compute QQR bounds from an existing Schwarz bound, molecule, basis, and prepared basis.
@@ -172,16 +236,23 @@ impl Bound for QqrBounds {
             return schwarz_est;
         }
 
-        let extent_product = self.pair_extents[idx_bra] * self.pair_extents[idx_ket];
-        let mut decay = (extent_product / r).min(1.0);
+        // QQR multipole distance envelope; see the type-level docs for why this
+        // is `ext_sum / R_eff` and not the old `ext_ij * ext_kl / R`.
+        let ext_sum = self.pair_extents[idx_bra] + self.pair_extents[idx_ket];
+        // Edge-to-edge separation: while the clouds overlap (r <= ext_sum) the
+        // integral is dominated by the penetration region, where the 1/R decay
+        // has not set in, so the factor stays 1 and the bound is plain Schwarz.
+        let r_eff = (r - ext_sum).max(0.0);
+        let decay = if r_eff > 0.0 {
+            (SAFETY_FACTOR * ext_sum / r_eff).min(1.0)
+        } else {
+            1.0
+        };
 
-        // Operator-specific decay: ErfcCoulomb provides exponential decay at long range.
-        // Coulomb / ErfCoulomb add no extra decay.
-        if self.op.kind == OperatorKind::ErfcCoulomb {
-            let omega = self.op.omega;
-            decay *= (-omega * omega * r * r).exp();
-        }
-
+        // NOTE: deliberately NO operator-specific distance factor. For an
+        // ErfcCoulomb operator the attenuation already lives in the erfc Schwarz
+        // factors `Q(i,j)`; an extra exp(-omega^2 R^2) here made the bound
+        // invalid at every sampled quartet (see the type-level docs).
         schwarz_est * decay
     }
 }
@@ -206,9 +277,149 @@ mod tests {
         (qqr, nsh)
     }
 
+    /// THE validity anchor: `estimate` must be a TRUE UPPER BOUND on the actual
+    /// integral, for every shell quartet.
+    ///
+    /// This replaces a `QQR <= Schwarz` assertion that could never have caught
+    /// the defect it was nominally guarding. That test only checked TIGHTNESS,
+    /// and under-estimation — the one failure mode that makes a screening bound
+    /// unsound — is exactly what it rewarded: the more severely the bound
+    /// collapsed, the more comfortably it passed. The old `ext*ext/R` form
+    /// under-estimated the true integral by up to 2.05x under Coulomb and 6e11x
+    /// under erfc(1.0) (measured at benzene/cc-pVDZ) while passing that test at
+    /// every one of those quartets.
+    ///
+    /// `QQR <= Schwarz` is still asserted below, but as a secondary tightness
+    /// property — never as the validity criterion.
+    fn assert_estimate_bounds_true_integral(path: &str, basis: &str, op: Operator) {
+        let mol = Molecule::load_xyz(path).unwrap();
+        let bs = basis::bundled(basis).unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let schwarz = SchwarzBounds::compute(op, &prep).unwrap();
+        let qqr = QqrBounds::new(schwarz, &mol, &bs, &prep, op);
+        let nsh = prep.nshells();
+
+        // Tight precision so libint does not prescreen a small-but-real quartet
+        // to nothing and hand us a spuriously "satisfied" bound.
+        let mut eng = ferric_integrals::engine::Engine::new_2e(op, &prep, 1e-30).unwrap();
+
+        let mut worst_ratio = 0.0f64; // |true| / bound; must stay <= 1
+        let mut worst_at = (0, 0, 0, 0);
+        for i in 0..nsh {
+            for j in 0..=i {
+                for k in 0..=i {
+                    for l in 0..=k {
+                        let bound = qqr.estimate(i, j, k, l);
+                        let tru = match eng.compute_quartet(&prep, i, j, k, l) {
+                            Some(block) => block.iter().fold(0.0f64, |m, v| m.max(v.abs())),
+                            None => 0.0,
+                        };
+                        // The quantity under test is the DISTANCE ENVELOPE, so
+                        // the reference is the Schwarz bound this build actually
+                        // has. Schwarz itself is a separate (and separately
+                        // fixed) concern: ferric builds its table at libint
+                        // precision 1e-14, which rounds small self-integrals a
+                        // few ULP low, so `Q(i,j)*Q(k,l)` can sit a whisker under
+                        // |(ij|kl)| on diagonal quartets where Cauchy-Schwarz is
+                        // an equality. MEASURED at benzene/cc-pVDZ (12,0|12,0):
+                        // ferric 2.213197e-9 vs true 2.214871e-9, while the SAME
+                        // bound computed at full precision gives ratio
+                        // 0.9999999999999998 — i.e. valid. That deficit is the
+                        // `fix/schwarz-bound-validity` defect (Schwarz table
+                        // precision), NOT the envelope, and is out of scope here.
+                        //
+                        // So we require the envelope never to push the bound
+                        // below the true integral by more than whatever slack
+                        // Schwarz already gave away. Any genuine envelope defect
+                        // is orders of magnitude larger than this ULP-scale
+                        // effect (the old form under-estimated by 2.05x under
+                        // Coulomb and 6e11x under erfc).
+                        let schwarz_ref = qqr.schwarz().estimate(i, j, k, l);
+                        let floor = schwarz_ref.min(tru);
+                        assert!(
+                            bound >= floor - 1e-12 * floor.max(1.0),
+                            "QQR({i},{j},{k},{l}) = {bound:.6e} UNDER-estimates \
+                             min(true, Schwarz) = {floor:.6e} (true {tru:.6e}, \
+                             Schwarz {schwarz_ref:.6e}) — the distance envelope \
+                             is not a valid bound"
+                        );
+                        // Guard against a vacuous pass: a bound that is huge
+                        // everywhere would satisfy the assert above trivially.
+                        // Ratio is against min(true, Schwarz) for the reason
+                        // given above, so the Schwarz-precision slack does not
+                        // masquerade as an envelope violation.
+                        if floor > 1e-14 && bound > 0.0 {
+                            let ratio = floor / bound;
+                            if ratio > worst_ratio {
+                                worst_ratio = ratio;
+                                worst_at = (i, j, k, l);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!(
+            "{path}/{basis} {:?}: worst |true|/bound = {worst_ratio:.4} at {worst_at:?}",
+            op.kind
+        );
+        assert!(
+            worst_ratio <= 1.0 + 1e-9,
+            "bound is invalid: worst |true|/bound = {worst_ratio} > 1"
+        );
+        // REACHABILITY: the bound must be attained closely somewhere, otherwise
+        // "valid" would just mean "enormous" and the test would prove nothing.
+        assert!(
+            worst_ratio > 0.1,
+            "worst ratio {worst_ratio} is suspiciously loose — the bound may be \
+             vacuously large rather than genuinely tight"
+        );
+    }
+
+    #[test]
+    fn test_estimate_is_valid_upper_bound_water_coulomb() {
+        assert_estimate_bounds_true_integral(
+            "../../testdata/molecules/water.xyz",
+            "cc-pvdz",
+            Operator::coulomb(),
+        );
+    }
+
+    #[test]
+    fn test_estimate_is_valid_upper_bound_water_erfc() {
+        // The erfc case is the one the old exp(-omega^2 R^2) factor destroyed.
+        assert_estimate_bounds_true_integral(
+            "../../testdata/molecules/water.xyz",
+            "cc-pvdz",
+            Operator::erfc(1.0),
+        );
+    }
+
+    #[test]
+    fn test_estimate_is_valid_upper_bound_benzene_coulomb() {
+        // Benzene is the smallest system here where pair clouds actually
+        // separate (~69% of pairs have R > ext_sum), so the distance envelope
+        // is genuinely exercised rather than clamped to 1 by overlap.
+        assert_estimate_bounds_true_integral(
+            "../../testdata/molecules/benzene.xyz",
+            "cc-pvdz",
+            Operator::coulomb(),
+        );
+    }
+
+    #[test]
+    fn test_estimate_is_valid_upper_bound_benzene_erfc() {
+        assert_estimate_bounds_true_integral(
+            "../../testdata/molecules/benzene.xyz",
+            "cc-pvdz",
+            Operator::erfc(1.0),
+        );
+    }
+
     #[test]
     fn test_qqr_le_schwarz() {
-        // QQR estimate must be <= Schwarz estimate for all quartets.
+        // Secondary TIGHTNESS property (not a validity check — see
+        // assert_estimate_bounds_true_integral for why this cannot be one).
         let (qqr, nsh) = water_qqr();
         for i in 0..nsh {
             for j in 0..nsh {
@@ -228,10 +439,28 @@ mod tests {
 
     #[test]
     fn test_qqr_tighter_for_distant_pairs() {
-        // For water STO-3G, oxygen shells (0,1,2) are on atom 0 and
-        // hydrogen shells (3,4) are on atoms 1,2. Pairs crossing atoms
-        // should have QQR strictly less than Schwarz.
-        let (qqr, nsh) = water_qqr();
+        // The envelope must actually ENGAGE somewhere, or the "fix" would be a
+        // bound that is merely Schwarz under another name.
+        //
+        // This uses BENZENE, not water. Under the corrected edge-to-edge form
+        // the factor is 1 unless R > ext_ij + ext_kl, and water is too small for
+        // that to ever happen: at cc-pVDZ its extents are ~0.65-2.0 Bohr so
+        // ext_sum is ~1.8, while its largest pair-center separation is 2.86 Bohr
+        // — MEASURED 0/2211 quartets separated. Its clouds always penetrate, so
+        // falling back to Schwarz there is correct behaviour, not a regression.
+        // Benzene has ~69% of pair combinations separated and is the smallest
+        // molecule here that probes the regime the bound exists for.
+        //
+        // (The old center-to-center ext*ext/R form "passed" this on water only
+        // because it decayed even for overlapping clouds — the very behaviour
+        // that made it an invalid bound.)
+        let mol = Molecule::load_xyz("../../testdata/molecules/benzene.xyz").unwrap();
+        let bs = basis::bundled("cc-pvdz").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let schwarz = SchwarzBounds::compute(op, &prep).unwrap();
+        let nsh = prep.nshells();
+        let qqr = QqrBounds::new(schwarz, &mol, &bs, &prep, op);
         let mut found_tighter = false;
         for i in 0..nsh {
             for j in 0..nsh {
@@ -281,22 +510,34 @@ mod tests {
     }
 
     #[test]
-    fn test_erfccoulomb_qqr_tighter_than_coulomb_qqr() {
-        // ErfcCoulomb QQR bounds should be strictly tighter than Coulomb QQR bounds
-        // for distant shell pairs, because of the additional exp(-omega^2 * R^2) decay.
+    fn test_erfc_attenuation_comes_from_schwarz_factors_not_a_distance_factor() {
+        // erfc screening benefit must come ENTIRELY from the smaller erfc
+        // Schwarz factors, with the distance envelope identical to Coulomb's.
+        //
+        // The previous version of this test built both bounds from the SAME
+        // (Coulomb) Schwarz table and asserted the erfc bound was strictly
+        // smaller — which could only be satisfied by an extra distance factor,
+        // i.e. it actively pinned in place the exp(-omega^2 R^2) term that made
+        // the bound invalid (worst |true|/bound 6.0e11 at benzene/cc-pVDZ).
+        //
+        // So we assert the opposite structure: (a) with each operator's own
+        // Schwarz factors the erfc bound is genuinely tighter, and (b) the
+        // distance envelope itself is operator-INDEPENDENT.
         let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
         let bs = basis::bundled("sto-3g").unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
 
-        let op_coulomb = Operator::coulomb();
-        let schwarz_c = SchwarzBounds::compute(op_coulomb, &prep).unwrap();
-        let qqr_coulomb = QqrBounds::new(schwarz_c, &mol, &bs, &prep, op_coulomb);
+        let op_c = Operator::coulomb();
+        let op_e = Operator::erfc(0.5);
+        let qqr_c = QqrBounds::new(
+            SchwarzBounds::compute(op_c, &prep).unwrap(), &mol, &bs, &prep, op_c);
+        let qqr_e = QqrBounds::new(
+            SchwarzBounds::compute(op_e, &prep).unwrap(), &mol, &bs, &prep, op_e);
 
-        // ErfcCoulomb with omega=0.5 (moderate attenuation)
-        let op_erfc = Operator::erfc(0.5);
-        // Reuse the same Schwarz data for a fair comparison of just the decay factor.
-        let schwarz_e = SchwarzBounds::compute(op_coulomb, &prep).unwrap();
-        let qqr_erfc = QqrBounds::new(schwarz_e, &mol, &bs, &prep, op_erfc);
+        // (b) Same Schwarz table, differing only in operator => identical
+        // bounds, proving no operator-dependent distance factor survives.
+        let qqr_e_on_c_schwarz = QqrBounds::new(
+            SchwarzBounds::compute(op_c, &prep).unwrap(), &mol, &bs, &prep, op_e);
 
         let nsh = prep.nshells();
         let mut found_tighter = false;
@@ -304,24 +545,30 @@ mod tests {
             for j in 0..nsh {
                 for k in 0..nsh {
                     for l in 0..nsh {
-                        let c_est = qqr_coulomb.estimate(i, j, k, l);
-                        let e_est = qqr_erfc.estimate(i, j, k, l);
-                        // ErfcCoulomb should always be <= Coulomb (same Schwarz,
-                        // extra multiplicative factor <= 1).
+                        let c = qqr_c.estimate(i, j, k, l);
+                        let e = qqr_e.estimate(i, j, k, l);
                         assert!(
-                            e_est <= c_est + 1e-15,
-                            "ErfcCoulomb QQR({i},{j},{k},{l}) = {e_est} > Coulomb QQR = {c_est}"
+                            e <= c + 1e-15,
+                            "erfc QQR({i},{j},{k},{l}) = {e} > Coulomb QQR = {c}"
                         );
-                        if c_est > 1e-10 && (e_est / c_est) < 0.99 {
+                        if c > 1e-10 && (e / c) < 0.99 {
                             found_tighter = true;
                         }
+                        let same = qqr_e_on_c_schwarz.estimate(i, j, k, l);
+                        assert!(
+                            (same - c).abs() <= 1e-15 * c.max(1.0),
+                            "distance envelope is operator-dependent at \
+                             ({i},{j},{k},{l}): erfc-op {same} vs Coulomb-op {c} \
+                             on identical Schwarz factors"
+                        );
                     }
                 }
             }
         }
         assert!(
             found_tighter,
-            "ErfcCoulomb QQR should be strictly tighter than Coulomb QQR for some distant pairs"
+            "erfc QQR should be strictly tighter than Coulomb QQR somewhere, \
+             via its smaller Schwarz factors"
         );
     }
 }

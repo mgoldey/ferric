@@ -375,17 +375,29 @@ def screening_benefit(q, centers, extents, nsh, safety,
     property of the whole population, so we re-enumerate it here from the cheap
     bound tables alone (no integrals needed).
     """
-    pairs = [(i, j) for i in range(nsh) for j in range(i + 1)]
-    sch, qqr = [], []
-    for a in range(len(pairs)):
-        i, j = pairs[a]
-        for b in range(a + 1):
-            k, l = pairs[b]
-            s = q[i, j] * q[k, l]
-            sch.append(s)
-            qqr.append(s * decay_qqr3_style(centers, extents, i, j, k, l, safety))
-    sch = np.array(sch)
-    qqr = np.array(qqr)
+    # Vectorized over the npair x npair grid of pair-vs-pair combinations: the
+    # pure-Python double loop is O(npair^2) and does not finish at alkane_20
+    # (~10^8 iterations).
+    ii, jj = np.tril_indices(nsh)
+    pq = q[ii, jj]                     # Schwarz per pair
+    pc = centers[ii, jj]               # pair centers
+    pe = extents[ii, jj]               # pair extents
+
+    sch = np.outer(pq, pq)
+    r = np.linalg.norm(pc[:, None, :] - pc[None, :, :], axis=-1)
+    ext_sum = pe[:, None] + pe[None, :]
+    r_eff = np.maximum(0.0, r - ext_sum)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        decay = np.where(r_eff > 0.0,
+                         np.minimum(1.0, safety * ext_sum / r_eff),
+                         1.0)
+    qqr = sch * decay
+
+    # Keep only the unique (pairA >= pairB) combinations, matching the
+    # enumeration the validity sweep uses.
+    keep = np.tril_indices(len(pq))
+    sch = sch[keep]
+    qqr = qqr[keep]
     out = []
     for t in thresh_list:
         n_s = int((sch >= t).sum())
