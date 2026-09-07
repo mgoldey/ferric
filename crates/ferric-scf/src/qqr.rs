@@ -60,6 +60,71 @@ use ferric_integrals::operator::Operator;
 /// to 12 orders of magnitude. The same Coulomb envelope is used for both
 /// operators. (`ferric_integrals::qqr3` reached the identical conclusion
 /// independently, measuring worst ratio 1.7-5.3 for its own erfc factor.)
+///
+/// # NOT wired into the production LinK path — measured 2026-09-07, NO-GO
+///
+/// `QqrBounds` is correct (see the anchors in
+/// `crates/ferric-scf/tests/screening_exactness.rs`, which run the full
+/// threshold sweep and the trivial limit against it) but it is deliberately
+/// NOT used by `solve_rhf`, which builds plain [`SchwarzBounds`]. Wiring it in
+/// was measured and rejected. Do not re-propose it without reading this.
+///
+/// ## The measurement
+///
+/// alkane_16 / cc-pVDZ (50 atoms, 198 shells, 38.7 Bohr — past the ~30 Bohr
+/// locality onset), one fixed converged density, PSI-clean, best of 3:
+///
+/// ```text
+///   thresh   bound     K build   quartets computed   extra screened
+///   1e-8     Schwarz    7.574s        16_184_971
+///   1e-8     QQR        7.585s        16_183_454          0.009%
+///   1e-10    Schwarz   10.270s        24_228_150
+///   1e-10    QQR       10.640s        24_227_868          0.001%
+/// ```
+///
+/// QQR was never faster, at any size or threshold tested (alkane_8 and
+/// alkane_16, 1e-8 and 1e-10). The extra table costs ~0.4-0.5 ms to build,
+/// which is negligible — the point is that it buys nothing to offset even that.
+///
+/// ## Why the 2-5% benefit does not survive contact with LinK
+///
+/// The benefit IS real over the full quartet population, and reproduces:
+/// at alkane_16/1e-8 QQR screens 3.83% more of all 195_368_250 unique quartets.
+/// But that is not the population LinK walks. Restricted to quartets LinK's
+/// pair lists admit, the same comparison gives 0.273% — and only 0.009% survives
+/// to the innermost test (`tests/qqr_population_gap.rs`).
+///
+/// Two independent reasons, both structural:
+///
+/// 1. **The pair lists cannot see QQR at all.** Both `SignificantPairs::build`
+///    and `DensityPairs::build` screen on `estimate(i, j, i, j)` — a DIAGONAL
+///    quartet, bra pair == ket pair, so the separation between pair centers is
+///    zero and the envelope is identically 1. QQR is bit-identical to Schwarz
+///    there, proven over all 102² pairs by `tests/qqr_diagonal_noop.rs`. So
+///    swapping the bound cannot shrink either pair list; it acts only on LinK's
+///    innermost quartet test.
+/// 2. **LinK already screens on distance, by another mechanism.** The ket loop
+///    is restricted to `sp.partners(ish)` ∩ `dp.partners(jsh)`. A distant
+///    bra/ket pairing survives that intersection only if both pairs are locally
+///    significant AND the density couples them. That is the same long-range
+///    population QQR's envelope targets, so the second screen finds almost
+///    nothing the first has not already removed. The two are redundant.
+///
+/// ## Where QQR would still pay
+///
+/// The dilution is caused by LinK's pair-list prune specifically, so a builder
+/// that walks the quartet space without one would see far more of the 2-4%.
+/// The dense `build_jk` is such a builder, but it is NOT a drop-in candidate:
+/// it takes a concrete `&SchwarzBounds` and screens against `bounds.q`
+/// directly, rather than through the `Bound` trait, so pointing QQR at it means
+/// refactoring its signature first. It is also not the production exchange
+/// path, so that refactor was not attempted — and note the benefit there is
+/// unmeasured: the 3.83% figure above is a bound-vs-bound quartet count, not a
+/// measured wall-clock win against `build_jk`'s own screening.
+///
+/// The 3-index sibling [`ferric_integrals::qqr3::QqrBounds3`] is a different
+/// case again: it screens `(P|mn)` where no LinK-style pair-list prune
+/// precedes it, so this finding does not transfer to it.
 #[derive(Debug, Clone)]
 pub struct QqrBounds {
     schwarz: SchwarzBounds,
