@@ -592,4 +592,62 @@ mod tests {
         let h_shells = bs.for_element(1).unwrap();
         assert!(!h_shells.is_empty(), "def2-SVP-RIFIT should have hydrogen shells");
     }
+
+    /// s and p shells must NEVER be pure, in ANY bundled basis, even when the
+    /// basis-set JSON declares `gto_spherical` (def2-SVP does exactly that for
+    /// iodine's p shells). The loader enforces this via
+    /// `shell_pure = pure && l >= 2`.
+    ///
+    /// This is load-bearing beyond bookkeeping: `ferric_integrals::ao_grid`'s
+    /// l=1 arm emits Cartesian (x, y, z) order for BOTH the pure and Cartesian
+    /// cases. That is correct only while no pure p-shell exists, because
+    /// libint2 orders pure p as (y, z, x) — the m = -1, 0, +1 solid-harmonic
+    /// order. If this test ever fails, ao_grid's l=1 arm silently produces
+    /// permuted p-orbital values on the grid, which corrupts every KS-DFT
+    /// density, Vxc and XC gradient touching that basis.
+    #[test]
+    fn l_below_2_is_never_pure() {
+        // every bundled orbital/aux set we can load, not a hand-picked few
+        const ALL: [&str; 20] = [
+            "sto-3g",
+            "6-31g",
+            "cc-pvdz",
+            "def2-svp",
+            "cc-pvdz-ri",
+            "cc-pvdz-f12",
+            "cc-pvdz-f12-optri",
+            "def2-svp-rifit",
+            "def2-tzvp",
+            "def2-tzvp-rifit",
+            "def2-tzvpp-rifit",
+            "def2-qzvp",
+            "def2-qzvp-rifit",
+            "def2-qzvpp-rifit",
+            "aug-cc-pvdz",
+            "aug-cc-pvdz-pp",
+            "aug-cc-pvdz-rifit",
+            "aug-cc-pvtz",
+            "aug-cc-pvtz-pp",
+            "aug-cc-pvtz-rifit",
+        ];
+        let mut checked = 0usize;
+        for name in ALL {
+            let bs = bundled(name).unwrap_or_else(|e| panic!("bundled({name}): {e}"));
+            checked += 1;
+            for (z, shells) in &bs.shells {
+                for sh in shells {
+                    assert!(
+                        !(sh.pure && sh.l < 2),
+                        "{name}: Z={z} has a PURE l={} shell — ao_grid's l=1 arm \
+                         assumes Cartesian ordering and would silently permute \
+                         p values (libint2 pure p is y,z,x). See the comment at \
+                         ferric-integrals/src/ao_grid.rs's (1, _) arm.",
+                        sh.l
+                    );
+                }
+            }
+        }
+        // reachability: a typo'd list that loads nothing would pass vacuously
+        assert_eq!(checked, ALL.len(), "not every bundled basis was checked");
+    }
 }
