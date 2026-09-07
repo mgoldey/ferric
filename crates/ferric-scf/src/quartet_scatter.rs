@@ -38,14 +38,32 @@ use ndarray::Array2;
 /// What a single quartet-scatter pass accumulates. Each variant carries a
 /// zeroed `nbf×nbf` local partial for exactly the matrices this mode needs —
 /// no wasted allocation for J-only/K-only callers.
+///
+/// ## The `Uhf` variant and the `d` argument
+///
+/// `JOnly`/`KOnly`/`Both` are the CLOSED-SHELL modes: one density `d` drives
+/// both the J contraction and the K contraction, and it arrives as
+/// `scatter_bra_pair`'s `d` parameter.
+///
+/// `Uhf` is the OPEN-SHELL mode: J is contracted against the TOTAL density
+/// while K is contracted against each SPIN density separately
+/// (`F_σ = H + J[D_α+D_β] − c_K·K[D_σ]`). Its α/β densities therefore cannot
+/// come from the single `d` parameter and are carried in the variant itself;
+/// `d` supplies the J density (`D_total`) exactly as for `Both`. Every `add_k`
+/// call site in the scatter fires TWICE in this mode — once per spin — reusing
+/// the SAME integral `v`, which is the entire point: one quartet pass replaces
+/// the previous `DirectJ(D_total) + DirectK(D_α) + DirectK(D_β)` three-pass
+/// build.
 #[derive(Debug)]
-pub(crate) enum JkMode {
+pub(crate) enum JkMode<'d> {
     JOnly(Array2<f64>),
     KOnly(Array2<f64>),
     Both(Array2<f64>, Array2<f64>),
+    /// `(J, K_α, K_β, D_α, D_β)` — see the variant note above.
+    Uhf(Array2<f64>, Array2<f64>, Array2<f64>, &'d Array2<f64>, &'d Array2<f64>),
 }
 
-impl JkMode {
+impl<'d> JkMode<'d> {
     pub(crate) fn new_j(nbf: usize) -> Self {
         JkMode::JOnly(Array2::zeros((nbf, nbf)))
     }
@@ -55,6 +73,15 @@ impl JkMode {
     pub(crate) fn new_both(nbf: usize) -> Self {
         JkMode::Both(Array2::zeros((nbf, nbf)), Array2::zeros((nbf, nbf)))
     }
+    pub(crate) fn new_uhf(nbf: usize, d_a: &'d Array2<f64>, d_b: &'d Array2<f64>) -> Self {
+        JkMode::Uhf(
+            Array2::zeros((nbf, nbf)),
+            Array2::zeros((nbf, nbf)),
+            Array2::zeros((nbf, nbf)),
+            d_a,
+            d_b,
+        )
+    }
 
     /// `local_j[(row,col)] += d[(la,sg)] * v` — no-op when this mode has no J.
     #[inline(always)]
@@ -62,7 +89,7 @@ impl JkMode {
         match self {
             // SAFETY: indices are in [0, nbf) — guaranteed by the
             // shell offset/dim loop in scatter_quartet.
-            JkMode::JOnly(j) | JkMode::Both(j, _) => unsafe {
+            JkMode::JOnly(j) | JkMode::Both(j, _) | JkMode::Uhf(j, _, _, _, _) => unsafe {
                 *j.uget_mut((row, col)) += d.uget((la, sg)) * v;
             },
             JkMode::KOnly(_) => {}
@@ -70,6 +97,10 @@ impl JkMode {
     }
 
     /// `local_k[(row,col)] += d[(la,sg)] * v` — no-op when this mode has no K.
+    ///
+    /// In `Uhf` mode the caller-supplied `d` (the J/total density) is IGNORED
+    /// and the two spin densities carried by the variant are used instead, one
+    /// per spin buffer.
     #[inline(always)]
     fn add_k(&mut self, row: usize, col: usize, d: &Array2<f64>, la: usize, sg: usize, v: f64) {
         match self {
@@ -77,6 +108,10 @@ impl JkMode {
             // shell offset/dim loop in scatter_quartet.
             JkMode::KOnly(k) | JkMode::Both(_, k) => unsafe {
                 *k.uget_mut((row, col)) += d.uget((la, sg)) * v;
+            },
+            JkMode::Uhf(_, k_a, k_b, d_a, d_b) => unsafe {
+                *k_a.uget_mut((row, col)) += d_a.uget((la, sg)) * v;
+                *k_b.uget_mut((row, col)) += d_b.uget((la, sg)) * v;
             },
             JkMode::JOnly(_) => {}
         }
@@ -143,6 +178,61 @@ pub(crate) fn build_d_max_shell(prep: &PreparedBasis, d: &Array2<f64>) -> Array2
     d_max_shell
 }
 
+/// Shell-blocked density-max table for the OPEN-SHELL combined J+K build:
+/// `d_max_shell[(si,sj)] = max over (μ∈si, ν∈sj) of |D_α| + |D_β|`.
+///
+/// # Why the sum, and why this is the conservative choice
+///
+/// One quartet pass now feeds THREE contractions with a SINGLE screen
+/// decision: `J[D_α+D_β]`, `K[D_α]`, and `K[D_β]`. A screen that drops a
+/// quartet drops it from all three, so the table must be an elementwise upper
+/// bound on every density any of them contracts. Elementwise:
+///
+/// * `|D_α| ≤ |D_α| + |D_β|` and `|D_β| ≤ |D_α| + |D_β|`  (trivially), and
+/// * `|D_α + D_β| ≤ |D_α| + |D_β|`  (triangle inequality).
+///
+/// so `|D_α| + |D_β|` bounds all three WITHOUT assuming anything about the
+/// sign or definiteness of either spin density — it holds for the SCF
+/// densities, for the ΔD deltas of the incremental path (where the two
+/// channels routinely move in OPPOSITE directions and `|ΔD_total|` can be far
+/// smaller than either channel), and for any intermediate DIIS iterate.
+///
+/// Taking `max(|D_α|,|D_β|)` instead would be tighter by up to 2× but is NOT
+/// a bound on `|D_α + D_β|` (equal same-sign channels give `|D_total| = 2·max`),
+/// so it would under-screen J. The sum is the cheapest key that is correct for
+/// all three, and it is still dramatically tighter than the single global
+/// `max|D|` scalar the previous three-pass open-shell path screened on.
+pub(crate) fn build_d_max_shell_spin_sum(
+    prep: &PreparedBasis,
+    d_a: &Array2<f64>,
+    d_b: &Array2<f64>,
+) -> Array2<f64> {
+    let nsh = prep.nshells();
+    let dims = prep.shell_dims();
+    let offs = prep.shell_offsets();
+    let mut d_max_shell = Array2::<f64>::zeros((nsh, nsh));
+    for si in 0..nsh {
+        for sj in 0..nsh {
+            let (oi, ni) = (offs[si], dims[si]);
+            let (oj, nj) = (offs[sj], dims[sj]);
+            let mut m = 0.0f64;
+            for a in 0..ni {
+                for b in 0..nj {
+                    // SAFETY: oi+a < nbf and oj+b < nbf by shell offset/dim construction.
+                    let v = unsafe {
+                        d_a.uget((oi + a, oj + b)).abs() + d_b.uget((oi + a, oj + b)).abs()
+                    };
+                    if v > m {
+                        m = v;
+                    }
+                }
+            }
+            d_max_shell[(si, sj)] = m;
+        }
+    }
+    d_max_shell
+}
+
 /// The canonical (s1,s2) bra-pair work list `{(s1,s2) : 0<=s2<=s1<nsh}`,
 /// shared by every caller (before any caller-specific bra-thresh
 /// pre-filter or MPI striping is applied).
@@ -172,7 +262,7 @@ pub(crate) fn scatter_bra_pair(
     d: &Array2<f64>,
     s1: usize,
     s2: usize,
-    mode: &mut JkMode,
+    mode: &mut JkMode<'_>,
     check_interrupt: bool,
 ) -> usize {
     use std::sync::atomic::Ordering;

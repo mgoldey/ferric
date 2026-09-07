@@ -322,22 +322,58 @@ pub fn solve_rohf_best_effort(
     let (mut df_j, mut df_k) = crate::fock_assembly::build_df_jk(
         ctx, mol, coulomb_op, prep, j_aux_eff, k_aux_eff, ooc_budget,
     )?;
-    let mut direct_j: Option<DirectJ> = if df_j.is_none() {
+    // Combined open-shell direct J+K + incremental Fock — identical scheme and
+    // identical gating to `solve_uhf`; see the block comments there (and on
+    // `DirectJK::build_uhf` / `build_uhf_incremental`) for the rationale and for
+    // the |ΔD_α| + |ΔD_β| screening-key choice. ROHF's Fock build is
+    // structurally the same three-matrix (J[D_total], K[D_α], K[D_β]) problem as
+    // UHF — the ROHF-specific work is the Roothaan coupling applied to the
+    // ASSEMBLED f_a/f_b further below, which this does not touch.
+    let combined_direct_jk = df_j.is_none()
+        && df_k.is_none()
+        && need_k
+        && k_mix.omega == 0.0
+        && crate::direct_jk::combined_open_shell_jk_enabled();
+    let mut direct_jk: Option<crate::direct_jk::DirectJK> = if combined_direct_jk {
+        Some(crate::direct_jk::DirectJK::new(
+            ctx,
+            prep,
+            bounds,
+            config.integral_thresh,
+            ooc_budget,
+        ))
+    } else {
+        None
+    };
+    let mut direct_j: Option<DirectJ> = if df_j.is_none() && !combined_direct_jk {
         Some(DirectJ::new(ctx, prep, bounds, config.integral_thresh, ooc_budget))
     } else {
         None
     };
-    let mut direct_k: Option<DirectK> = if need_k && k_mix.omega == 0.0 && df_k.is_none() {
-        Some(DirectK::new(ctx, prep, bounds, config.integral_thresh, ooc_budget))
-    } else {
-        None
-    };
+    let mut direct_k: Option<DirectK> =
+        if need_k && k_mix.omega == 0.0 && df_k.is_none() && !combined_direct_jk {
+            Some(DirectK::new(ctx, prep, bounds, config.integral_thresh, ooc_budget))
+        } else {
+            None
+        };
+    // NOTE: opt-IN (default off), unlike the closed-shell path. See
+    // `direct_jk::open_shell_incremental_enabled` for the measurements behind
+    // that choice — the scheme is correct but measured ~1.00-1.05x here.
+    let incremental_direct =
+        direct_jk.is_some() && crate::direct_jk::open_shell_incremental_enabled();
+    let mut d_last_fock: Option<(Array2<f64>, Array2<f64>)> = None;
+    const INCREMENTAL_FULL_REBUILD_EVERY: usize = 8;
 
     for iter in 1..=config.max_iter {
         ctx.check_interrupted()?;
-        j_buf.fill(0.0);
-        k_a_buf.fill(0.0);
-        k_b_buf.fill(0.0);
+        let direct_full_rebuild = incremental_direct
+            && (d_last_fock.is_none() || iter % INCREMENTAL_FULL_REBUILD_EVERY == 1);
+        let direct_incremental = incremental_direct && !direct_full_rebuild;
+        if !direct_incremental {
+            j_buf.fill(0.0);
+            k_a_buf.fill(0.0);
+            k_b_buf.fill(0.0);
+        }
         let d_total = &d_a + &d_b;
         // ΔP vs the previous iteration's total density — the primary convergence
         // signal (see rhf::scf_converged). The monitor stays at INFINITY until
@@ -347,8 +383,35 @@ pub fn solve_rohf_best_effort(
         }
         prev_d_total = Some(d_total.clone());
 
-        // J from D_total — DF-J if configured, else direct.
-        if let Some(dfj) = df_j.as_mut() {
+        // Combined single-pass J + K_α + K_β when enabled; otherwise J alone here.
+        if let Some(djk) = direct_jk.as_mut() {
+            if direct_incremental {
+                let (da_prev, db_prev) =
+                    d_last_fock.as_ref().expect("d_last_fock set on full rebuild");
+                let delta_a = &d_a - da_prev;
+                let delta_b = &d_b - db_prev;
+                let delta_total = &delta_a + &delta_b;
+                total_quartets += djk.build_uhf_incremental(
+                    &delta_total,
+                    &delta_a,
+                    &delta_b,
+                    &mut j_buf,
+                    &mut k_a_buf,
+                    &mut k_b_buf,
+                )?;
+            } else {
+                total_quartets += djk.build_uhf(
+                    &d_total,
+                    &d_a,
+                    &d_b,
+                    &mut j_buf,
+                    &mut k_a_buf,
+                    &mut k_b_buf,
+                )?;
+            }
+            d_last_fock = Some((d_a.clone(), d_b.clone()));
+        } else if let Some(dfj) = df_j.as_mut() {
+            // J from D_total — DF-J if configured, else direct.
             dfj.build(&d_total, &mut j_buf)?;
         } else {
             let dj = direct_j.as_mut().expect("DirectJ built before loop");
@@ -376,7 +439,9 @@ pub fn solve_rohf_best_effort(
                 dfk_sr, dfk_lr, &d_b, None, 1.0, &mut f_b, k_mix.sr, k_mix.lr, 1.0,
             )?;
         } else if need_k {
-            if let Some(dfk) = df_k.as_mut() {
+            if direct_jk.is_some() {
+                // K_α/K_β already filled by the combined single-pass build above.
+            } else if let Some(dfk) = df_k.as_mut() {
                 dfk.build(&d_a, &mut k_a_buf)?;
                 dfk.build(&d_b, &mut k_b_buf)?;
             } else {

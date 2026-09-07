@@ -269,6 +269,46 @@ where
     Ok(())
 }
 
+/// Like [`grouped_deterministic_sum_pair`] but each group yields a **triple**
+/// `(J, K_α, K_β)` folded into `(acc0, acc1, acc2)` respectively. Used by the
+/// combined open-shell direct-JK builder, where one quartet pass produces the
+/// Coulomb matrix and both spin exchange matrices.
+///
+/// The fold is the same strict ascending group order as the pair/single
+/// variants, so results are bit-identical across `RAYON_NUM_THREADS` and
+/// across band budgets.
+pub fn grouped_deterministic_sum_triple<F>(
+    acc0: &mut Array2<f64>,
+    acc1: &mut Array2<f64>,
+    acc2: &mut Array2<f64>,
+    n_groups: usize,
+    nbf: usize,
+    band_bytes: usize,
+    make: F,
+) -> Result<(), FerricError>
+where
+    F: Fn(usize) -> Result<(Array2<f64>, Array2<f64>, Array2<f64>), FerricError> + Sync,
+{
+    // Three live matrices per group → a third of the byte budget per band so
+    // the total live set still respects it (same reasoning as the pair variant).
+    let bw = band_width(nbf, band_bytes / 3);
+    let mut g0 = 0usize;
+    while g0 < n_groups {
+        let g1 = (g0 + bw).min(n_groups);
+        let partials: Vec<(Array2<f64>, Array2<f64>, Array2<f64>)> = (g0..g1)
+            .into_par_iter()
+            .map(&make)
+            .collect::<Result<Vec<_>, FerricError>>()?;
+        for (p0, p1, p2) in &partials {
+            *acc0 += p0;
+            *acc1 += p1;
+            *acc2 += p2;
+        }
+        g0 = g1;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
