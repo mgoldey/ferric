@@ -21,12 +21,21 @@ Izsak & Neese, JCP 135, 144105 (2011):
     K_fitted      = 0.5 * (Q Ktilde + (Q Ktilde)^T),  Q = S S_num^{-1},
                     S_num = X X^T  (density-INDEPENDENT; Cholesky SOLVE only)
 
-Note the sign convention: PySCF's int1e_grids returns
-    <mu| -1/|r-C| |nu>  (an ATTRACTION, i.e. negative-definite-ish),
-matching libint2's nuclear-attraction operator with a unit probe charge.
-COSX needs the positive Coulomb kernel +1/|r-r_g|, so A = -int1e_grids.
-Getting this wrong flips the sign of K, which the exactness anchor catches
-immediately.
+Sign convention (VERIFIED, not assumed -- the first run of this script got it
+backwards and the pre-registered Y2 branch caught it):
+    PySCF's int1e_grids returns the POSITIVE Coulomb kernel
+        <mu| +1/|r-r_g| |nu>,
+    which is exactly what COSX needs, so A = +int1e_grids (NO negation).
+    Verified by independent construction: for H2/STO-3G at an off-centre
+    probe, int1e_grids[0,0] = 0.9133 vs a brute-force 120^3 cartesian
+    quadrature of +chi_0(r)^2/|r-r_g| = 0.9132 (ratio 1.0002, residual = the
+    coarse cartesian grid).
+    NOTE this DIFFERS from libint2's nuclear-attraction operator, which with a
+    unit probe charge yields the ATTRACTIVE -1/|r-r_g| (see ferric's
+    esp_at_points, which adds the resulting block with a + sign to get
+    V_elec).  Stage 1 in Rust must therefore NEGATE the libint2 block.
+    Getting this wrong flips the sign of K; it shows up as max|dK| plateauing
+    at ~2*||K||_max, which is precisely what happened.
 
 =====================================================================
 PRE-REGISTERED HYPOTHESES  (written and committed BEFORE running)
@@ -116,9 +125,10 @@ def cosx_k(mol, D, coords, weights, S=None, fitted=False, chunk=2000):
     G = np.empty((nbf, npts))
     for lo in range(0, npts, chunk):
         hi = min(lo + chunk, npts)
-        # int1e_grids -> (nchunk, nbf, nbf), the ATTRACTIVE -1/|r-C| operator.
-        # COSX wants +1/|r-r_g|, hence the negation.
-        Achunk = -mol.intor('int1e_grids', grids=coords[lo:hi])
+        # int1e_grids -> (nchunk, nbf, nbf), already the POSITIVE +1/|r-r_g|
+        # kernel COSX wants (verified against brute-force quadrature; see the
+        # module docstring). No negation.
+        Achunk = mol.intor('int1e_grids', grids=coords[lo:hi])
         # einsum over lam for each g in the chunk
         G[:, lo:hi] = np.einsum('gnl,lg->ng', Achunk, F[:, lo:hi], optimize=True)
 
