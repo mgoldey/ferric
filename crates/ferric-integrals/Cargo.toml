@@ -22,3 +22,7 @@ cc = { workspace = true }
 [dev-dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+# Lebedev angular sets for the md3c1e measurement harness (grid positions
+# rebuilt without a ferric-dft dependency); ferric-quadrature depends only
+# on ferric-core, so no cycle.
+ferric-quadrature = { path = "../ferric-quadrature" }
