@@ -879,6 +879,11 @@ pub struct ScfCfg {
     /// (water-favourable set); it is net-NEGATIVE on grids coarser than
     /// (50,110). Setting this with `k_builder != "cosx"` is a hard error.
     pub cosx_overlap_fit: Option<bool>,
+    /// COSX 3c1e kernel: `"md3c1e"` (default; batched McMurchie–Davidson) or
+    /// `"cosx-a"` (per-point libint2, 3.2–3.5x slower; the cross-check backend,
+    /// exact vs md3c1e to ~1e-15). Unknown values and setting this with
+    /// `k_builder != "cosx"` are hard errors.
+    pub cosx_backend: Option<String>,
     pub df_j_aux: Option<String>,
     pub df_k_aux: Option<String>,
     /// Optional virtual-virtual block level shift (Ha) for open-shell SCF
@@ -929,6 +934,7 @@ impl Default for ScfCfg {
             k_builder: None,
             cosx_grid: None,
             cosx_overlap_fit: None,
+            cosx_backend: None,
             df_j_aux: None,
             df_k_aux: None,
             level_shift: None,
@@ -950,16 +956,18 @@ pub struct CosxGridCfg {
 impl ScfCfg {
     /// Resolve the `[scf] cosx_*` knobs into a `CosxConfig` (strict).
     ///
-    /// A `cosx_grid` / `cosx_overlap_fit` key with `k_builder != "cosx"` is a
-    /// hard error (a knob that silently did nothing is exactly what the
-    /// config-honesty convention forbids); an untabulated Lebedev order is a
-    /// hard error here rather than a panic inside the grid builder.
+    /// A `cosx_grid` / `cosx_overlap_fit` / `cosx_backend` key with
+    /// `k_builder != "cosx"` is a hard error (a knob that silently did nothing
+    /// is exactly what the config-honesty convention forbids); an untabulated
+    /// Lebedev order is a hard error here rather than a panic inside the grid
+    /// builder; an unknown backend name is a hard error, never a default.
     pub fn cosx_config(&self) -> Result<ferric_scf::cosx_k::CosxConfig, String> {
-        use ferric_scf::cosx_k::{validate_grid, CosxConfig};
+        use ferric_scf::cosx_k::{validate_grid, CosxBackend, CosxConfig};
         let is_cosx = self.k_builder.as_deref() == Some("cosx");
-        if !is_cosx && (self.cosx_grid.is_some() || self.cosx_overlap_fit.is_some()) {
+        let any_cosx_knob = self.cosx_grid.is_some() || self.cosx_overlap_fit.is_some() || self.cosx_backend.is_some();
+        if !is_cosx && any_cosx_knob {
             return Err(format!(
-                "[scf] cosx_grid / cosx_overlap_fit are set but k_builder = {:?}; they are only read with k_builder = \"cosx\"",
+                "[scf] cosx_grid / cosx_overlap_fit / cosx_backend are set but k_builder = {:?}; they are only read with k_builder = \"cosx\"",
                 self.k_builder
             ));
         }
@@ -971,6 +979,9 @@ impl ScfCfg {
         }
         if let Some(fit) = self.cosx_overlap_fit {
             cfg.overlap_fit = fit;
+        }
+        if let Some(b) = self.cosx_backend.as_deref() {
+            cfg.backend = CosxBackend::parse_config_str(b).map_err(|e| format!("[scf] cosx_backend: {e}"))?;
         }
         Ok(cfg)
     }
@@ -1187,8 +1198,18 @@ mod tests {
             .unwrap();
         assert_eq!((c.grid.n_radial, c.grid.n_angular), (75, 302));
         assert!(!c.overlap_fit);
+        // Backend: default md3c1e; both spellings resolve; anything else errors.
+        use ferric_scf::cosx_k::CosxBackend;
+        assert_eq!(c.backend, CosxBackend::Md3c1e);
+        let c = parse("k_builder = \"cosx\"\ncosx_backend = \"cosx-a\"\n").scf.cosx_config().unwrap();
+        assert_eq!(c.backend, CosxBackend::CosxA);
+        let c = parse("k_builder = \"cosx\"\ncosx_backend = \"md3c1e\"\n").scf.cosx_config().unwrap();
+        assert_eq!(c.backend, CosxBackend::Md3c1e);
+        assert!(parse("k_builder = \"cosx\"\ncosx_backend = \"libint\"\n").scf.cosx_config().is_err());
+        assert!(parse("k_builder = \"cosx\"\ncosx_backend = \"cosx_a\"\n").scf.cosx_config().is_err());
         // Dead-knob refusal.
         assert!(parse("cosx_overlap_fit = false\n").scf.cosx_config().is_err());
+        assert!(parse("cosx_backend = \"md3c1e\"\n").scf.cosx_config().is_err());
         assert!(parse("k_builder = \"link\"\ncosx_grid = { radial = 50, angular = 110 }\n").scf.cosx_config().is_err());
         // Untabulated angular order is a typed error, not a panic.
         assert!(parse("k_builder = \"cosx\"\ncosx_grid = { radial = 50, angular = 194 }\n").scf.cosx_config().is_err());

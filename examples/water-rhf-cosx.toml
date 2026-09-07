@@ -8,7 +8,10 @@
 # fail the 0.1 kcal/mol isodesmic reaction-energy bar. angular must be one of
 # 6/14/26/50/110/302. cosx_overlap_fit defaults to true (at (50,110) it took
 # the reaction-energy error 0.2068 -> 0.0190 kcal/mol; it is net-negative on
-# coarser grids). Both keys are a hard error with any other k_builder.
+# coarser grids). cosx_backend selects the 3c1e kernel: "md3c1e" (default,
+# batched McMurchie-Davidson) or "cosx-a" (per-point libint2, ~3.2-3.5x slower,
+# exact vs md3c1e to ~1e-15 — the cross-check). All three keys are a hard error
+# with any other k_builder; unknown backend names are a hard error.
 #
 # Measured (water/cc-pVDZ, this file): E(COSX) - E(direct) is reported in
 # crates/ferric-scf/tests/cosx_scf.rs.
@@ -31,3 +34,4 @@ integral_thresh = 1e-12
 k_builder = "cosx"
 cosx_grid = { radial = 50, angular = 110 }
 cosx_overlap_fit = true
+cosx_backend = "md3c1e"
