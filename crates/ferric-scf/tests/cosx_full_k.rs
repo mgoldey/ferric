@@ -1,0 +1,229 @@
+//! FULL COSX K build timing (ignored; run explicitly, one process per cell).
+//!
+//! Measures what the L-axis harness (`cosx_l_axis.rs`) deliberately did NOT:
+//! the whole `CosxK::build` on a converged density — AO-on-grid evaluation,
+//! per-point A-build, per-point GEMVs, block GEMMs, overlap-fit finalization —
+//! and reports the split, so the working estimate "A-build is ~95% of the full
+//! K" is confirmed or refuted by a measurement rather than a proxy.
+//!
+//! Protocol (mirrors cosx_l_axis.rs): every timed segment runs in a fresh
+//! `COSX_FK_THREADS`-thread rayon pool (default 1) with OPENBLAS_NUM_THREADS=1
+//! set by the caller; cpu-s and wall-s are both printed (must agree to ~1% on
+//! one thread); `/proc/pressure/memory` full avg10 is printed before and after
+//! and any segment with a nonzero value is to be discarded.
+//!
+//! Env:
+//!   COSX_FK_SYSTEM      xyz stem under testdata/molecules (default alkane_4)
+//!   COSX_FK_BASIS       bundled basis (default def2-qzvp)
+//!   COSX_FK_DENSITY_OUT run the DF-JK SCF (default pool) and save (D, C_occ) here, then stop
+//!   COSX_FK_DENSITY_IN  load (D, C_occ) saved by an earlier process
+//!   COSX_FK_THREADS     rayon threads for timed segments (default 1)
+//!   COSX_FK_FIT         "0" disables the overlap fit (default on)
+//!   COSX_FK_LINK        "1" also times a warm LinK build and prints max|K_cosx - K_link|
+//!   COSX_FK_BUILDS      number of COSX builds (default 1; the first also factorizes S_num)
+
+use ferric_core::basis::bundled;
+use ferric_core::mol::Molecule;
+use ferric_core::parallel::ParallelContext;
+use ferric_integrals::basis_bridge::PreparedBasis;
+use ferric_integrals::operator::Operator;
+use ferric_scf::cosx_k::{CosxConfig, CosxK};
+use ferric_scf::fock::KBuilder;
+use ferric_scf::link_k::LinkK;
+use ferric_scf::rhf::{solve_rhf, RhfConfig};
+use ferric_scf::screening::SchwarzBounds;
+use ndarray::Array2;
+use std::time::Instant;
+
+const JKFIT: &str = "def2-universal-jkfit";
+const LINK_THRESH: f64 = 1e-12;
+
+fn testdata(rel: &str) -> String {
+    format!("{}/../../{rel}", env!("CARGO_MANIFEST_DIR"))
+}
+
+fn env_flag(name: &str) -> bool {
+    matches!(std::env::var(name).ok().as_deref(), Some("1") | Some("true") | Some("yes"))
+}
+
+fn env_num<T: std::str::FromStr>(name: &str, default: T) -> T {
+    std::env::var(name).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
+}
+
+fn psi_full_avg10() -> String {
+    std::fs::read_to_string("/proc/pressure/memory")
+        .ok()
+        .and_then(|s| {
+            s.lines().find(|l| l.starts_with("full")).and_then(|l| {
+                l.split_whitespace().find_map(|t| t.strip_prefix("avg10=").map(str::to_string))
+            })
+        })
+        .unwrap_or_else(|| "n/a".into())
+}
+
+fn cpu_seconds() -> f64 {
+    std::fs::read_to_string("/proc/self/stat")
+        .ok()
+        .and_then(|s| {
+            let rest = s.rsplit(')').next()?;
+            let f: Vec<&str> = rest.split_whitespace().collect();
+            let ut: f64 = f.get(11)?.parse().ok()?;
+            let st: f64 = f.get(12)?.parse().ok()?;
+            Some((ut + st) / 100.0)
+        })
+        .unwrap_or(f64::NAN)
+}
+
+fn timed<T>(label: &str, threads: usize, f: impl FnOnce() -> T + Send) -> (f64, f64, T)
+where
+    T: Send,
+{
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().expect("rayon pool");
+    let before = psi_full_avg10();
+    let c0 = cpu_seconds();
+    let t0 = Instant::now();
+    let v = pool.install(f);
+    let secs = t0.elapsed().as_secs_f64();
+    let cpu = cpu_seconds() - c0;
+    let after = psi_full_avg10();
+    println!("  [timed:{label}] wall {secs:.3} s  cpu {cpu:.2} s  threads={threads}  PSI full avg10 before={before} after={after}");
+    (secs, cpu, v)
+}
+
+fn save_density(path: &str, d: &Array2<f64>, c_occ: &Array2<f64>) {
+    let mut bytes = Vec::with_capacity((d.len() + c_occ.len()) * 8);
+    for v in d.iter().chain(c_occ.iter()) {
+        bytes.extend_from_slice(&v.to_le_bytes());
+    }
+    std::fs::write(path, bytes).expect("write density file");
+}
+
+fn load_density(path: &str, nbf: usize, nocc: usize) -> (Array2<f64>, Array2<f64>) {
+    let bytes = std::fs::read(path).expect("read density file");
+    let n_d = nbf * nbf;
+    let n_c = nbf * nocc;
+    assert_eq!(bytes.len(), (n_d + n_c) * 8, "density file length does not match nbf={nbf}, nocc={nocc}");
+    let vals: Vec<f64> = bytes.as_chunks::<8>().0.iter().map(|c| f64::from_le_bytes(*c)).collect();
+    let d = Array2::from_shape_vec((nbf, nbf), vals[..n_d].to_vec()).expect("D shape");
+    let c = Array2::from_shape_vec((nbf, nocc), vals[n_d..].to_vec()).expect("C_occ shape");
+    (d, c)
+}
+
+#[test]
+#[ignore = "full COSX K timing; run explicitly with --ignored --nocapture"]
+fn cosx_full_k_cell() {
+    let system = std::env::var("COSX_FK_SYSTEM").unwrap_or_else(|_| "alkane_4".into());
+    let basis = std::env::var("COSX_FK_BASIS").unwrap_or_else(|_| "def2-qzvp".into());
+    let threads: usize = env_num("COSX_FK_THREADS", 1);
+    let builds: usize = env_num("COSX_FK_BUILDS", 1);
+    let fit = !matches!(std::env::var("COSX_FK_FIT").ok().as_deref(), Some("0"));
+    let budget_bytes = ferric_core::memory::resolve_budget_bytes(None);
+
+    let mol = Molecule::load_xyz(&testdata(&format!("testdata/molecules/{system}.xyz"))).expect("xyz");
+    let bs = bundled(&basis).expect("basis");
+    let prep = PreparedBasis::new(&mol, &bs).expect("prep");
+    let nbf = prep.nbasis();
+    let nocc = (mol.nelec() / 2) as usize;
+    println!(
+        "\n=== COSX full-K cell: {system} / {basis}  natoms={} nbf={nbf} nocc={nocc} L_max={}  budget={:.2} GB  PSI now={} ===",
+        mol.atoms.len(),
+        prep.max_l(),
+        budget_bytes as f64 / 1e9,
+        psi_full_avg10()
+    );
+
+    let op = Operator::coulomb();
+    let ctx = ParallelContext::default();
+    let (d, _c_occ): (Array2<f64>, Array2<f64>) = if let Ok(path) = std::env::var("COSX_FK_DENSITY_IN") {
+        let (d, c) = load_density(&path, nbf, nocc);
+        println!("density loaded from {path} (provenance: earlier DF-JK SCF process)");
+        (d, c)
+    } else {
+        let schwarz = SchwarzBounds::compute(op, &prep).expect("Schwarz bounds");
+        let scf_cfg = RhfConfig {
+            df_j_aux: Some(JKFIT.to_string()),
+            df_k_aux: Some(JKFIT.to_string()),
+            ..RhfConfig::default()
+        };
+        let t0 = Instant::now();
+        let res = solve_rhf(&ctx, &mol, &prep, op, &schwarz, &scf_cfg).expect("DF-JK RHF");
+        println!(
+            "DF-JK RHF: E={:.8} converged={} iters={} in {:.1} s (default pool, not a timing)",
+            res.energy, res.converged, res.iterations, t0.elapsed().as_secs_f64()
+        );
+        assert!(res.converged, "refusing to time K builds on an unconverged density");
+        let d = res.density_total.clone();
+        let c_occ = res.mos_r().slice(ndarray::s![.., ..nocc]).to_owned();
+        if let Ok(path) = std::env::var("COSX_FK_DENSITY_OUT") {
+            save_density(&path, &d, &c_occ);
+            println!("density saved to {path}; stopping (run again with COSX_FK_DENSITY_IN)");
+            return;
+        }
+        (d, c_occ)
+    };
+
+    // ---------- full COSX K ----------
+    let cfg = CosxConfig { overlap_fit: fit, ..CosxConfig::default() };
+    let mut cosx = CosxK::new(&ctx, &mol, &prep, cfg, budget_bytes).expect("CosxK::new");
+    let npts = cosx.npts();
+    println!("COSX grid (50,110): {npts} points; overlap_fit={fit}");
+    let mut k_cosx = Array2::<f64>::zeros((nbf, nbf));
+    // COSX_FK_BUILDS=0: skip the COSX build (LinK-only process); K_cosx then
+    // comes from COSX_FK_K_IN if given.
+    for b in 0..builds {
+        let label = if b == 0 { "COSX K build #1 (engine pool + S_num factor + build)" } else { "COSX K build (warm)" };
+        let (wall, cpu, _) = timed(label, threads, || cosx.build(&d, &mut k_cosx).expect("COSX build"));
+        let t = *cosx.last_timings();
+        let acc = t.ao_eval_s + t.a_build_s + t.contract_s + t.blas_s + t.fit_s;
+        println!(
+            "COSX split (s): total {:.3} | ao_eval {:.3} | A-build {:.3} ({:.1}% of total) | per-point GEMV {:.3} | block GEMMs {:.3} | fit {:.3} | accounted {:.3} ({:.1}%) | pairs kept {}/{} | wall {wall:.3} cpu {cpu:.2}",
+            t.total_s,
+            t.ao_eval_s,
+            t.a_build_s,
+            100.0 * t.a_build_s / t.total_s,
+            t.contract_s,
+            t.blas_s,
+            t.fit_s,
+            acc,
+            100.0 * acc / t.total_s,
+            t.pairs_kept,
+            t.pairs_total
+        );
+        println!(
+            "COSX per-point A-build {:.4e} s/pt ({:.3e} s/pt/nbf^2); K/nbf^2 {:.3e} s",
+            t.a_build_s / npts as f64,
+            t.a_build_s / npts as f64 / (nbf * nbf) as f64,
+            t.total_s / (nbf * nbf) as f64
+        );
+    }
+
+    if let Ok(path) = std::env::var("COSX_FK_K_OUT") {
+        if builds > 0 {
+            save_density(&path, &k_cosx, &Array2::<f64>::zeros((nbf, 0)));
+            println!("K_cosx saved to {path}");
+        }
+    }
+    if let Ok(path) = std::env::var("COSX_FK_K_IN") {
+        let (k, _) = load_density(&path, nbf, 0);
+        k_cosx = k;
+        println!("K_cosx loaded from {path}");
+    }
+    let cosx_total_s = cosx.last_timings().total_s;
+
+    // ---------- optional LinK denominator + accuracy ----------
+    if env_flag("COSX_FK_LINK") {
+        let schwarz = SchwarzBounds::compute(op, &prep).expect("Schwarz bounds");
+        let mut link = LinkK::new(&ctx, &prep, &schwarz, op, LINK_THRESH, budget_bytes);
+        let mut k_link = Array2::<f64>::zeros((nbf, nbf));
+        let (wall, cpu, _) = timed("LinK K build (cold: pool + pairs + build)", threads, || {
+            link.update_density(&d);
+            link.build(&d, &mut k_link).expect("LinK build")
+        });
+        let dev = (&k_cosx - &k_link).mapv(f64::abs).fold(0.0_f64, |m, &v| m.max(v));
+        let kmax = k_link.mapv(f64::abs).fold(0.0_f64, |m, &v| m.max(v));
+        let ratio = if cosx_total_s > 0.0 { format!("{:.3}", cosx_total_s / wall) } else { "n/a (COSX not built in this process)".into() };
+        println!(
+            "LinK K: wall {wall:.3} s cpu {cpu:.2} s; COSX/LinK = {ratio}; max|K_cosx - K_link| = {dev:.3e} (||K||max {kmax:.3e})"
+        );
+    }
+}
