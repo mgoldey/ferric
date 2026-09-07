@@ -486,6 +486,10 @@ pub struct Md3c1eFlops {
     pub r_tensor: f64,
     /// Two flops per nonzero `E_t E_u E_v` coefficient per primitive pair.
     pub contraction: f64,
+    /// Surviving primitive pairs in the sweep — each costs one Boys
+    /// evaluation (with one `exp`) per grid point, which the FLOP columns
+    /// exclude; `prim_pairs * t_boys` is the Boys share of the per-point time.
+    pub prim_pairs: f64,
 }
 
 impl Md3c1eFlops {
@@ -1002,6 +1006,7 @@ impl Md3c1e {
         let mut scr = self.scratch();
         let mut r_tensor = 0.0_f64;
         let mut contraction = 0.0_f64;
+        let mut prim_pairs = 0.0_f64;
         let progs = r_programs();
         for s1 in 0..self.shells.len() {
             for s2 in 0..=s1 {
@@ -1016,11 +1021,12 @@ impl Md3c1e {
                         }
                         r_tensor += r_flops;
                         contraction += 2.0 * scr.coef_vals.len() as f64;
+                        prim_pairs += 1.0;
                     }
                 }
             }
         }
-        Md3c1eFlops { r_tensor, contraction }
+        Md3c1eFlops { r_tensor, contraction, prim_pairs }
     }
 }
 
