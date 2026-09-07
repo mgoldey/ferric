@@ -11,7 +11,7 @@
 //! `r_g`, **retained as a matrix** rather than contracted against a density.
 //! This is the piece a COSX exchange build needs (Neese, Chem. Phys. 356, 98
 //! (2009)); contracting it against `D` and summing over `g` instead recovers
-//! the electrostatic potential, which is what [`ferric_scf::properties::esp_at_points`]
+//! the electrostatic potential, which is what `ferric_scf::properties::esp_at_points`
 //! already does and which serves as this module's independent-construction
 //! anchor.
 //!
