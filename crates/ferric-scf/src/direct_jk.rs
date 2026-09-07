@@ -202,8 +202,9 @@ impl<'a> DirectJK<'a> {
     ///
     /// The screening key is `|D_α| + |D_β|` elementwise — the cheapest key that
     /// is simultaneously an upper bound on all three contracted densities; see
-    /// [`build_d_max_shell_spin_sum`](crate::quartet_scatter::build_d_max_shell_spin_sum)
-    /// for why the sum rather than the (tighter but unsound for J) max.
+    /// `quartet_scatter::build_d_max_shell_spin_sum` (private — a code span,
+    /// not a doc link) for why the sum rather than the (tighter but unsound
+    /// for J) max.
     ///
     /// `d_total` is passed explicitly rather than formed here so the caller's
     /// existing `&d_a + &d_b` temporary is reused, and so the INCREMENTAL path
