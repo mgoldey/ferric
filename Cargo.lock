@@ -523,6 +523,7 @@ dependencies = [
  "bytemuck",
  "cc",
  "ferric-core",
+ "ferric-quadrature",
  "libc",
  "ndarray",
  "rayon",

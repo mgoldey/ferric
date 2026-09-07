@@ -286,3 +286,46 @@ fn md3c1e_flop_count_calibration_water_ccpvdz() {
     assert_eq!(prep.nshells(), 12, "spec's segmented shell count for water/cc-pVDZ");
     assert!(f.total() > 0.0);
 }
+
+/// Time attribution without `perf` (blocked on this box): the Boys evaluator
+/// costs one `exp` + table Taylor + downward recursion per (primitive pair,
+/// point), which the FLOP count excludes. Times `md3c1e::boys` in isolation
+/// at `n_max = 0, 4, 8` over T drawn from the actual T distribution of the
+/// cell's own sweep is NOT available here, so T is uniform on [0, 60) (both
+/// branches exercised), and multiplies by the cell's surviving primitive
+/// pairs per point.
+#[test]
+#[ignore = "measurement; run with --ignored --nocapture"]
+fn md3c1e_boys_cost_attribution() {
+    let system = std::env::var("MD_BENCH_SYSTEM").unwrap_or_else(|_| "alkane_4".into());
+    let basis = std::env::var("MD_BENCH_BASIS").unwrap_or_else(|_| "def2-svp".into());
+    let mol = Molecule::load_xyz(&testdata(&format!("testdata/molecules/{system}.xyz"))).expect("xyz");
+    let bs = bundled(&basis).expect("basis");
+    let prep = PreparedBasis::new(&mol, &bs).expect("prep");
+    let kern = Md3c1e::new(&prep).expect("md3c1e");
+    let f = kern.flops_per_point();
+    let n_eval = 2_000_000usize;
+    let mut rng = Lcg(SEED);
+    let ts: Vec<f64> = (0..n_eval).map(|_| 60.0 * (rng.next() as f64) / ((1u64 << 53) as f64)).collect();
+    let mut out = [0.0_f64; 9];
+    let mut ns = [0.0_f64; 3];
+    for (k, nmax) in [0usize, 4, 8].iter().enumerate() {
+        let (secs, _, acc) = timed(&format!("boys n_max={nmax} x{n_eval}"), || {
+            let mut acc = 0.0;
+            for &t in &ts {
+                md3c1e::boys(*nmax, t, &mut out);
+                acc += out[*nmax];
+            }
+            acc
+        });
+        ns[k] = secs / n_eval as f64 * 1e9;
+        println!("    n_max={nmax}: {:.1} ns/eval (acc {acc:.3e})", ns[k]);
+    }
+    println!(
+        "{system}/{basis}: surviving primitive pairs per point = {:.0}; Boys share of per-point time if every pair cost the n_max=0 / 4 / 8 evaluator: {:.3e} / {:.3e} / {:.3e} s",
+        f.prim_pairs,
+        f.prim_pairs * ns[0] * 1e-9,
+        f.prim_pairs * ns[1] * 1e-9,
+        f.prim_pairs * ns[2] * 1e-9
+    );
+}
