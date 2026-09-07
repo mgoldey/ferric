@@ -83,6 +83,8 @@ pub mod df_j;
 pub mod df_k;
 /// LinK exchange builder: linear-scaling K via Schwarz-screened column lists.
 pub mod link_k;
+/// COSX seminumerical exchange builder (grid-based K, overlap-fitted).
+pub mod cosx_k;
 /// DIIS convergence accelerator for SCF iterations.
 pub mod diis;
 /// Initial guess generators: core Hamiltonian, SAD, read-in.
