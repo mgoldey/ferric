@@ -105,17 +105,29 @@ pub struct AtomicGridConfig {
     /// H2O/CH4/benzene at 75x110; 33.5% at 99x302) for a ΔE_xc of ~1e-10 Ha —
     /// roughly 10^5 inside the reference-test budget, i.e. effectively free.
     ///
-    /// NOT yet the default: it must first be validated through a live KS SCF
-    /// (the accuracy numbers above come from re-evaluating E_xc on a
-    /// flat-grid-converged density, which isolates the grid's contribution but
-    /// is not the same as running the reference suites with pruning on).
+    /// Read by `KsXc::new*` / `KsXcUks::new*` (both the main and the NLC grid
+    /// honour their own setting), and settable from the CLI via
+    /// `[dft] grid_prune = "nwchem"`.
     ///
-    /// CAUTION: pruning ERRORS for `n_angular = 50` rather than silently
+    /// NOT the default. See `crates/ferric-dft/tests/grid_prune_live_scf.rs`
+    /// for the live-SCF evidence behind that choice: the accuracy is fine, but
+    /// a pruned grid is not a free swap for the flat one everywhere (see the
+    /// two restrictions below), so it stays opt-in.
+    ///
+    /// CAUTION 1 — `n_angular = 50`: pruning ERRORS rather than silently
     /// returning a flat grid (NWChem's middle regions want order 74, which
     /// ferric would have to snap UP to 110, enlarging the grid — the
     /// config-honesty convention forbids the silent fallback). The NLC/fallback
     /// grids in `rhf.rs`/`uhf.rs`/`rohf.rs` use 50x50, so those must keep this
-    /// `None`.
+    /// `None`. They do: each is constructed with an explicit `..Default::
+    /// default()` over a `Default` whose `prune` is `None`. This is also why
+    /// flipping that `Default` is NOT a safe way to turn pruning on globally —
+    /// it would poison every 50x50 NLC grid in the workspace at once.
+    ///
+    /// CAUTION 2 — gradients: [`build_atomic_grid_with_response`] hard-errors
+    /// on a pruned config, because its weight-response term is only built for
+    /// the flat grid. Energy runs may prune; gradient / optimize / frequency
+    /// runs may not.
     pub prune: Option<crate::prune::PruneScheme>,
 }
 
@@ -295,6 +307,27 @@ pub fn build_atomic_grid_with_response(
     mol: &Molecule,
     cfg: &AtomicGridConfig,
 ) -> Result<(Vec<GridPoint>, Vec<Vec<[f64; 3]>>), FerricError> {
+    // Pruning is NOT implemented on the grid-response path, and silently
+    // ignoring `cfg.prune` here would be worse than not supporting it: the
+    // energy would be evaluated on a pruned grid while its gradient was
+    // evaluated on a flat one, so the returned vector would not be the
+    // gradient of the energy the SCF actually converged. That inconsistency
+    // is invisible in the output — it shows up only as a finite-difference
+    // mismatch — so it is a hard error rather than a silent fallback.
+    //
+    // Lifting this means giving `weight1` the same per-shell angular orders
+    // (the Becke weight-derivative algebra itself is order-agnostic, so it is
+    // a plumbing change, not a physics one) and re-validating the XC gradient
+    // against finite difference of the *pruned* energy.
+    if cfg.prune.is_some() {
+        return Err(FerricError::General(
+            "DFT grid pruning is not supported on the gradient (grid-response) path: \
+             the XC gradient's weight-response term is built on the unpruned grid, so a \
+             pruned energy and this gradient would be inconsistent. Set the grid's \
+             prune = None for gradient / optimize / frequency runs."
+                .to_string(),
+        ));
+    }
     let (lebedev_pts, lebedev_w) = lebedev(cfg.n_angular);
     let natoms = mol.atoms.len();
     // Exact, not an estimate: this routine does not prune, so every atom

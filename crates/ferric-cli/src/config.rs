@@ -90,6 +90,26 @@ pub struct DftCfg {
     /// published value carried by `DoubleHybridConfig::default()` (0.1).
     /// Only read by `method.kind = "wb97x-l-v"`.
     pub omega: Option<f64>,
+    /// Angular-grid pruning scheme for the MAIN DFT grid.
+    ///
+    ///   `"none"` (default) — flat grid, every radial shell at the full
+    ///                        Lebedev order. Byte-identical to the historical
+    ///                        behaviour.
+    ///   `"nwchem"`         — NWChem-style 5-region radial pruning. Removes
+    ///                        ~23% of grid points at the default 75x110 for a
+    ///                        live-SCF energy shift well inside the PySCF
+    ///                        reference tolerances (see
+    ///                        `ferric-dft/tests/grid_prune_live_scf.rs`).
+    ///
+    /// Unknown values are a hard error (`PruneScheme::parse_config_str`).
+    ///
+    /// Applies to the main grid ONLY — the VV10/NLC grid stays unpruned,
+    /// because pruning has no valid table at its 50x50 angular order.
+    ///
+    /// Energy runs only: `method.task = "optimize"` / `"frequencies"` go
+    /// through the XC gradient's grid-response path, which is built for the
+    /// unpruned grid and hard-errors on a pruned one.
+    pub grid_prune: Option<String>,
 }
 
 /// One `[[external_potential.point_charges]]` entry: a fixed point charge
@@ -1113,6 +1133,47 @@ trunc_threshold = 1e-12
             Err(e) => e.to_string(),
         };
         assert!(err.contains("trunc_threshold"), "error should name the bad key: {err}");
+    }
+
+    /// `[dft] grid_prune` reaches the strict parser, and unknown values are a
+    /// hard error rather than a silent flat grid.
+    #[test]
+    fn dft_grid_prune_parses_strictly() {
+        use ferric_dft::prune::PruneScheme;
+
+        let parse = |body: &str| -> Config {
+            toml::from_str(&format!(
+                "[molecule]\nxyz = \"water.xyz\"\n[basis]\nname = \"sto-3g\"\n\
+                 [method]\nkind = \"ksdft\"\n[dft]\nfunctional = \"PBE\"\n{body}"
+            ))
+            .unwrap()
+        };
+
+        // Absent → None → the flat default grid.
+        assert!(parse("").dft.grid_prune.is_none());
+
+        // Present and valid → the scheme the SCF will use.
+        let cfg = parse("grid_prune = \"nwchem\"\n");
+        assert_eq!(
+            PruneScheme::parse_config_str(cfg.dft.grid_prune.as_deref().unwrap()).unwrap(),
+            Some(PruneScheme::NwchemLike)
+        );
+
+        // Explicit "none" is accepted and means the flat grid.
+        let cfg = parse("grid_prune = \"none\"\n");
+        assert_eq!(
+            PruneScheme::parse_config_str(cfg.dft.grid_prune.as_deref().unwrap()).unwrap(),
+            None
+        );
+
+        // Unknown value: the TOML parses (it is a String), but the strict
+        // parser the CLI runs it through must REJECT it. A silent default here
+        // would be exactly the config-dishonesty this convention forbids.
+        let cfg = parse("grid_prune = \"sg1\"\n");
+        assert!(
+            PruneScheme::parse_config_str(cfg.dft.grid_prune.as_deref().unwrap()).is_err(),
+            "an unrecognised grid_prune must be a hard error, not a silent flat grid"
+        );
     }
 
     #[test]

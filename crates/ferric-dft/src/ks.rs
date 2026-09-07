@@ -25,7 +25,7 @@ use crate::density_on_grid::{
     eval_density_closed, eval_density_uks, eval_tau_closed, eval_tau_uks, DensityGrid,
 };
 use crate::libxc::FunctionalFamily;
-use crate::grid::{build_atomic_grid, AtomicGridConfig, GridPoint};
+use crate::grid::{build_atomic_grid_pruned, AtomicGridConfig, GridPoint};
 use crate::libxc::{xc_def_from_name, xc_def_from_name_nspin, LibxcError, XcDef};
 use crate::vv10::add_vv10_scratch;
 use crate::vxc::{semilocal_vxc_closed_scratch, semilocal_vxc_polarized_scratch, VxcScratch};
@@ -51,6 +51,13 @@ pub enum KsXcError {
         npts: usize,
         vv10: &'static str,
     },
+    /// Grid construction failed. In practice this is angular-order pruning
+    /// rejecting the requested `n_angular` (see [`crate::prune::region_orders`]
+    /// — notably `n_angular = 50`, which has no useful pruned table on ferric's
+    /// Lebedev set). Surfaced rather than silently falling back to a flat grid,
+    /// per the config-honesty convention.
+    #[error("DFT grid construction failed: {0}")]
+    Grid(ferric_core::error::FerricError),
 }
 
 impl From<GtoEvalError> for KsXcError { fn from(e: GtoEvalError) -> Self { Self::Eval(e) } }
@@ -518,7 +525,11 @@ impl KsXc {
             Some(w) => crate::libxc::xc_def_from_name_nspin_omega(xc_name, 1, w)?,
         };
 
-        let grid = build_atomic_grid(mol, main);
+        // Honour `main.prune`. `prune = None` (the default) delegates to
+        // `build_atomic_grid` and is bit-identical to the historical path;
+        // `Some(scheme)` drops the angular order on core/tail radial shells.
+        // Errors rather than silently un-pruning if the order has no table.
+        let grid = build_atomic_grid_pruned(mol, main, main.prune).map_err(KsXcError::Grid)?;
         let nbf = nbasis(mol, bs)?;
         // Resolve the memory budget ONCE here and reuse the same value for
         // both the Full-vs-Batched decision and (if batching) sizing the
@@ -542,7 +553,11 @@ impl KsXc {
         };
 
         let (nlc_grid, nlc_chi, nlc_dchi) = if xc.vv10.is_some() {
-            let g = build_atomic_grid(mol, nlc);
+            // The NLC grid carries its OWN prune setting, independent of the
+            // main grid's. Every construction site builds it at 50x50 with
+            // `prune: None`, and pruning has no table at n_angular = 50, so
+            // enabling pruning on the main grid must never reach this one.
+            let g = build_atomic_grid_pruned(mol, nlc, nlc.prune).map_err(KsXcError::Grid)?;
             let p: Vec<[f64; 3]> = g.iter().map(|gp| gp.xyz).collect();
             let (c, dc) = eval_basis_and_grad_on_points(mol, bs, &p)?;
             (Some(g), Some(c), Some(dc))
@@ -712,7 +727,9 @@ impl KsXcUks {
             Some(w) => crate::libxc::xc_def_from_name_nspin_omega(xc_name, 2, w)?,
         };
 
-        let grid = build_atomic_grid(mol, main);
+        // See the closed-shell twin: honour `main.prune`, error rather than
+        // silently un-prune.
+        let grid = build_atomic_grid_pruned(mol, main, main.prune).map_err(KsXcError::Grid)?;
         let nbf = nbasis(mol, bs)?;
         // See `KsXc::new` — resolve the budget ONCE and reuse it for both the
         // decision and the batch sizing.
@@ -732,7 +749,11 @@ impl KsXcUks {
         };
 
         let (nlc_grid, nlc_chi, nlc_dchi) = if xc.vv10.is_some() {
-            let g = build_atomic_grid(mol, nlc);
+            // The NLC grid carries its OWN prune setting, independent of the
+            // main grid's. Every construction site builds it at 50x50 with
+            // `prune: None`, and pruning has no table at n_angular = 50, so
+            // enabling pruning on the main grid must never reach this one.
+            let g = build_atomic_grid_pruned(mol, nlc, nlc.prune).map_err(KsXcError::Grid)?;
             let p: Vec<[f64; 3]> = g.iter().map(|gp| gp.xyz).collect();
             let (c, dc) = eval_basis_and_grad_on_points(mol, bs, &p)?;
             (Some(g), Some(c), Some(dc))
