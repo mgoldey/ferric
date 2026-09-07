@@ -28,7 +28,7 @@
 //! branch found grids coarser than (50,110) fail the 0.1 kcal/mol isodesmic
 //! reaction-energy bar, and at (50,110) the overlap fit took that error from
 //! 0.2068 to 0.0190 kcal/mol, so the fit defaults ON). Points are processed
-//! in fixed blocks of [`COSX_BLOCK_POINTS`]; per block the three `(nbf, B)`
+//! in fixed blocks of `COSX_BLOCK_POINTS` points; per block the three `(nbf, B)`
 //! planes `X`, `F`, `G` are resident, and the per-point `A^g` loop is
 //! parallel over points with one libint2 engine per rayon worker. Every
 //! parallel write is to its own column of `G`, and the two GEMMs per block
