@@ -71,6 +71,25 @@ pub const COSX_BLOCK_POINTS: usize = 1024;
 /// AO-evaluation chunk inside a block (parallel over chunks).
 const AO_EVAL_CHUNK: usize = 64;
 
+/// Lebedev orders ferric's quadrature tables provide. `ferric_quadrature::lebedev`
+/// PANICS on any other order, so a grid config is validated against this list
+/// up front and rejected with a typed error instead.
+pub const SUPPORTED_ANGULAR_ORDERS: [usize; 6] = [6, 14, 26, 50, 110, 302];
+
+/// Validate a COSX grid config: positive radial count and a tabulated Lebedev order.
+pub fn validate_grid(grid: &AtomicGridConfig) -> Result<(), FerricError> {
+    if grid.n_radial == 0 {
+        return Err(FerricError::General("cosx grid: radial point count must be > 0".into()));
+    }
+    if !SUPPORTED_ANGULAR_ORDERS.contains(&grid.n_angular) {
+        return Err(FerricError::General(format!(
+            "cosx grid: angular order {} is not tabulated (supported: {:?})",
+            grid.n_angular, SUPPORTED_ANGULAR_ORDERS
+        )));
+    }
+    Ok(())
+}
+
 /// User-facing COSX knobs. Carried in `RhfConfig::cosx`.
 #[derive(Debug, Clone)]
 pub struct CosxConfig {
@@ -211,6 +230,7 @@ impl<'a> CosxK<'a> {
                 ctx.size
             )));
         }
+        validate_grid(&cfg.grid)?;
         let grid = build_atomic_grid_pruned(mol, &cfg.grid, cfg.grid.prune)?;
         if grid.is_empty() {
             return Err(FerricError::General("CosxK: empty exchange grid".into()));
@@ -498,6 +518,16 @@ mod tests {
         let mut k = Array2::zeros((2, 2));
         finalize_plain(&kt, &mut k);
         assert_eq!(k, ndarray::arr2(&[[1.0, 3.0], [3.0, 3.0]]));
+    }
+
+    #[test]
+    fn grid_validation_rejects_untabulated_orders_and_accepts_tabulated() {
+        let ok = AtomicGridConfig { n_radial: 50, n_angular: 110, ..Default::default() };
+        assert!(validate_grid(&ok).is_ok());
+        let bad_ang = AtomicGridConfig { n_radial: 50, n_angular: 194, ..Default::default() };
+        assert!(validate_grid(&bad_ang).is_err(), "194 is not tabulated and must be refused, not panic");
+        let bad_rad = AtomicGridConfig { n_radial: 0, n_angular: 110, ..Default::default() };
+        assert!(validate_grid(&bad_rad).is_err());
     }
 
     #[test]

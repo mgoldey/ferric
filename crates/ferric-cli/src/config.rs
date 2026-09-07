@@ -865,7 +865,20 @@ pub struct ScfCfg {
     pub soscf: bool,
     #[serde(default = "default_integral_thresh")]
     pub integral_thresh: f64,
+    /// Exchange builder: "direct" (default), "link", or "cosx" (seminumerical
+    /// COSX exchange). RHF only; ignored with a warning when DF-J/DF-K is active.
     pub k_builder: Option<String>,
+    /// COSX exchange grid, `cosx_grid = { radial = 50, angular = 110 }`.
+    /// Omitted = (50,110), the measured operating point (coarser grids fail the
+    /// 0.1 kcal/mol isodesmic reaction-energy bar in the composed-budget audit).
+    /// `angular` must be a tabulated Lebedev order (6/14/26/50/110/302). Setting
+    /// this with any `k_builder` other than "cosx" is a hard error.
+    pub cosx_grid: Option<CosxGridCfg>,
+    /// COSX overlap fit (Izsák–Neese). Omitted = `true`. At (50,110) the fit
+    /// took the isodesmic reaction-energy error 0.2068 -> 0.0190 kcal/mol
+    /// (water-favourable set); it is net-NEGATIVE on grids coarser than
+    /// (50,110). Setting this with `k_builder != "cosx"` is a hard error.
+    pub cosx_overlap_fit: Option<bool>,
     pub df_j_aux: Option<String>,
     pub df_k_aux: Option<String>,
     /// Optional virtual-virtual block level shift (Ha) for open-shell SCF
@@ -914,6 +927,8 @@ impl Default for ScfCfg {
             soscf: false,
             integral_thresh: 1e-12,
             k_builder: None,
+            cosx_grid: None,
+            cosx_overlap_fit: None,
             df_j_aux: None,
             df_k_aux: None,
             level_shift: None,
@@ -924,7 +939,42 @@ impl Default for ScfCfg {
     }
 }
 
+/// `[scf] cosx_grid = { radial = .., angular = .. }` — the COSX exchange grid.
+#[derive(Deserialize, Debug, Clone, Copy)]
+#[serde(deny_unknown_fields)]
+pub struct CosxGridCfg {
+    pub radial: usize,
+    pub angular: usize,
+}
+
 impl ScfCfg {
+    /// Resolve the `[scf] cosx_*` knobs into a `CosxConfig` (strict).
+    ///
+    /// A `cosx_grid` / `cosx_overlap_fit` key with `k_builder != "cosx"` is a
+    /// hard error (a knob that silently did nothing is exactly what the
+    /// config-honesty convention forbids); an untabulated Lebedev order is a
+    /// hard error here rather than a panic inside the grid builder.
+    pub fn cosx_config(&self) -> Result<ferric_scf::cosx_k::CosxConfig, String> {
+        use ferric_scf::cosx_k::{validate_grid, CosxConfig};
+        let is_cosx = self.k_builder.as_deref() == Some("cosx");
+        if !is_cosx && (self.cosx_grid.is_some() || self.cosx_overlap_fit.is_some()) {
+            return Err(format!(
+                "[scf] cosx_grid / cosx_overlap_fit are set but k_builder = {:?}; they are only read with k_builder = \"cosx\"",
+                self.k_builder
+            ));
+        }
+        let mut cfg = CosxConfig::default();
+        if let Some(g) = self.cosx_grid {
+            cfg.grid.n_radial = g.radial;
+            cfg.grid.n_angular = g.angular;
+            validate_grid(&cfg.grid).map_err(|e| format!("[scf] cosx_grid: {e}"))?;
+        }
+        if let Some(fit) = self.cosx_overlap_fit {
+            cfg.overlap_fit = fit;
+        }
+        Ok(cfg)
+    }
+
     /// Parse the `diis` string into a `DiisFlavor` (strict — unknown values are a
     /// hard error, per the config-honesty convention). Absent = Pulay.
     pub fn diis_flavor(&self) -> ferric_scf::diis::DiisFlavor {
@@ -1112,6 +1162,39 @@ mod tests {
             n += 1;
         }
         assert!(n > 0, "no example TOMLs found in {}", dir.display());
+    }
+
+    /// `[scf] cosx_grid` / `cosx_overlap_fit`: parse, resolve, and refuse
+    /// when they would be dead knobs (k_builder != "cosx") or name an
+    /// untabulated Lebedev order.
+    #[test]
+    fn cosx_knobs_resolve_strictly() {
+        let parse = |scf: &str| -> Config {
+            toml::from_str(&format!(
+                "[molecule]\nxyz = \"w.xyz\"\n[basis]\nname = \"sto-3g\"\n[method]\nkind = \"rhf\"\n[scf]\n{scf}"
+            ))
+            .unwrap()
+        };
+        // Defaults: (50,110), fit on, no screen.
+        let c = parse("k_builder = \"cosx\"\n").scf.cosx_config().unwrap();
+        assert_eq!((c.grid.n_radial, c.grid.n_angular), (50, 110));
+        assert!(c.overlap_fit);
+        assert!(c.screen_thresh.is_none());
+        // Explicit knobs are honoured.
+        let c = parse("k_builder = \"cosx\"\ncosx_grid = { radial = 75, angular = 302 }\ncosx_overlap_fit = false\n")
+            .scf
+            .cosx_config()
+            .unwrap();
+        assert_eq!((c.grid.n_radial, c.grid.n_angular), (75, 302));
+        assert!(!c.overlap_fit);
+        // Dead-knob refusal.
+        assert!(parse("cosx_overlap_fit = false\n").scf.cosx_config().is_err());
+        assert!(parse("k_builder = \"link\"\ncosx_grid = { radial = 50, angular = 110 }\n").scf.cosx_config().is_err());
+        // Untabulated angular order is a typed error, not a panic.
+        assert!(parse("k_builder = \"cosx\"\ncosx_grid = { radial = 50, angular = 194 }\n").scf.cosx_config().is_err());
+        // Typo inside the inline table hard-errors at parse time.
+        let s = "[molecule]\nxyz = \"w.xyz\"\n[basis]\nname = \"sto-3g\"\n[method]\nkind = \"rhf\"\n[scf]\nk_builder = \"cosx\"\ncosx_grid = { radial = 50, angulr = 110 }\n";
+        assert!(toml::from_str::<Config>(s).is_err());
     }
 
     /// Unknown/typo'd keys must be a parse error, not silently ignored. A

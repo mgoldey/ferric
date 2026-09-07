@@ -44,8 +44,15 @@ pub struct RhfConfig {
     /// d-manifolds (TM dimers/metals). See `smearing.rs`.
     pub smearing_sigma: Option<f64>,
     pub integral_thresh: f64,
-    /// Choose K matrix builder: "direct" (default) or "link".
+    /// Choose K matrix builder: "direct" (default), "link", or "cosx"
+    /// (seminumerical exchange, see [`crate::cosx_k`]). Read by `solve_rhf`
+    /// ONLY — `solve_uhf` / `solve_rohf` ignore it (pre-existing; documented,
+    /// not fixed here). Ignored with a warning whenever density-fitted J/K is
+    /// active (`df_j_aux` / `df_k_aux` set, or auto-defaulted for a functional).
     pub k_builder: Option<String>,
+    /// COSX knobs (grid, overlap fit, screen); only read when
+    /// `k_builder == Some("cosx")`.
+    pub cosx: crate::cosx_k::CosxConfig,
     /// Optional auxiliary basis for density-fitted Coulomb (RI-J). When set, J is
     /// built from precomputed 3-center ERIs in O(N^2 · naux) per iteration instead
     /// of contracting full 4-index ERIs.
@@ -208,6 +215,7 @@ impl Default for RhfConfig {
             smearing_sigma: None,
             integral_thresh: 1e-12,
             k_builder: None,
+            cosx: crate::cosx_k::CosxConfig::default(),
             df_j_aux: None,
             df_k_aux: None,
             xc: None,
@@ -257,9 +265,14 @@ impl RhfConfig {
         self.level_shift = shift;
         self
     }
-    /// Set the K-matrix builder strategy ("direct" or "link").
+    /// Set the K-matrix builder strategy ("direct", "link" or "cosx").
     pub fn with_k_builder(mut self, builder: impl Into<String>) -> Self {
         self.k_builder = Some(builder.into());
+        self
+    }
+    /// Set the COSX knobs (only read when the builder is "cosx").
+    pub fn with_cosx(mut self, cosx: crate::cosx_k::CosxConfig) -> Self {
+        self.cosx = cosx;
         self
     }
     /// Set the auxiliary basis for density-fitted Coulomb (RI-J).
@@ -537,8 +550,8 @@ pub fn solve_rhf(
     let mut total_quartets = 0;
 
     if let Some(kb) = config.k_builder.as_deref() {
-        if kb != "direct" && kb != "link" {
-            return Err(FerricError::General(format!("unknown k_builder '{kb}': valid options are 'direct', 'link'")));
+        if kb != "direct" && kb != "link" && kb != "cosx" {
+            return Err(FerricError::General(format!("unknown k_builder '{kb}': valid options are 'direct', 'link', 'cosx'")));
         }
     }
 
@@ -577,9 +590,24 @@ pub fn solve_rhf(
         ctx, mol, op, prep, df_j_aux_eff.as_deref(), df_k_aux_eff.as_deref(), ooc_budget,
     )?;
 
+    // A pluggable K builder ("link" / "cosx") is only consumed on the
+    // non-DF path (see the iteration branch structure below): when DF-J or
+    // DF-K is active it would be built and then silently ignored — a
+    // pre-existing silent no-op for "link" — so warn and skip construction.
+    let df_any = df_j.is_some() || df_k.is_some();
+    let pluggable_k = config.k_builder.as_deref().filter(|kb| matches!(*kb, "link" | "cosx"));
+    if df_any && pluggable_k.is_some() {
+        eprintln!(
+            "[ferric] warning: k_builder = \"{}\" is IGNORED because density-fitted J/K is active \
+             (df_j_aux/df_k_aux set, or auto-defaulted for a functional); exchange comes from {}",
+            pluggable_k.unwrap_or_default(),
+            if df_k.is_some() { "DF-K" } else { "the direct 4-centre builder" }
+        );
+    }
+    let pluggable_k = if df_any { None } else { pluggable_k };
     // Build LinkK once — SignificantPairs is geometry-dependent and expensive per iteration.
     // When using the "link" builder, compute a fresh SchwarzBounds to own the lifetime.
-    let link_schwarz_opt = if config.k_builder.as_deref() == Some("link") {
+    let link_schwarz_opt = if pluggable_k == Some("link") {
         Some(SchwarzBounds::compute(op, prep)?)
     } else {
         None
@@ -589,6 +617,17 @@ pub fn solve_rhf(
         lk.update_density(&d);
         Box::new(lk) as Box<dyn KBuilder>
     });
+    if pluggable_k == Some("cosx") {
+        // Seminumerical exchange: own grid + (geometry-only) overlap-fit factor;
+        // built here once, reused every iteration. Coulomb operator only.
+        if op != Operator::coulomb() {
+            return Err(FerricError::General(
+                "k_builder = \"cosx\" supports the Coulomb operator only".into(),
+            ));
+        }
+        let ck = crate::cosx_k::CosxK::new(ctx, mol, prep, config.cosx.clone(), ooc_budget)?;
+        k_builder = Some(Box::new(ck) as Box<dyn KBuilder>);
+    }
 
     // Canonical orthogonalizer X = U_kept · diag(1/sqrt(λ_kept)), shape (n × m),
     // dropping eigenvectors of S with λ < LINDEP_THRESH (near-linear-dependence).
@@ -656,7 +695,6 @@ pub fn solve_rhf(
     // per-thread libint2 EnginePool on first use (engines are constructed behind
     // a global ctor mutex), so a loop-local builder would pay that construction
     // every iteration. Which builders exist mirrors the branch structure below.
-    let df_any = df_j.is_some() || df_k.is_some();
     let mut direct_j: Option<DirectJ> = if (df_any && df_j.is_none()) || (!df_any && k_builder.is_some()) {
         Some(DirectJ::new(ctx, prep, bounds, config.integral_thresh, ooc_budget))
     } else {
