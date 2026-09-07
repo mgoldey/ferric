@@ -26,7 +26,7 @@ use ferric_core::parallel::ParallelContext;
 use ferric_dft::grid::AtomicGridConfig;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_scf::cosx_k::{CosxConfig, CosxK};
+use ferric_scf::cosx_k::{CosxBackend, CosxConfig, CosxK};
 use ferric_scf::fock::KBuilder;
 use ferric_scf::rhf::{build_jk, solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
@@ -82,7 +82,7 @@ fn grid(n_radial: usize, n_angular: usize) -> AtomicGridConfig {
 }
 
 fn cosx_config(g: AtomicGridConfig, overlap_fit: bool, screen_thresh: Option<f64>) -> CosxConfig {
-    CosxConfig { grid: g, overlap_fit, screen_thresh }
+    CosxConfig { grid: g, overlap_fit, screen_thresh, ..CosxConfig::default() }
 }
 
 fn build_k(s: &Setup, ctx: &ParallelContext, cfg: CosxConfig, d: &Array2<f64>) -> Array2<f64> {
@@ -149,6 +149,51 @@ fn cosx_matches_direct_k_in_the_dense_grid_limit() {
         (plain[0] - fitted[0]).abs() > 1e-9,
         "fit changed nothing at (25,50) — Q is the identity, the fit is not wired"
     );
+}
+
+/// Anchor (e): the two A-build backends are the same K. Same config, same
+/// density, only `backend` differs: the batched md3c1e fold (default) vs the
+/// per-point libint2 `A^g` + GEMV (cosx_a). Both fit and no-fit, and both the
+/// density and the `C_occ` entry points, so the fold is checked on every path
+/// the SCF uses. Mutation proofs (applied by hand to `accumulate_pair`, recorded
+/// in the S3 swap report): negating the kernel block (the sign trap) and
+/// dropping the `s1 != s2` mirror each turn `max|dK|` from ~1e-14 to O(1).
+#[test]
+fn cosx_k_md3c1e_matches_cosx_a_backend() {
+    let s = setup();
+    let ctx = ParallelContext::default();
+    let n = s.prep.nbasis();
+    assert_eq!(CosxConfig::default().backend, CosxBackend::Md3c1e, "md3c1e must be the default backend");
+    for fit in [true, false] {
+        let mut cfg_md = cosx_config(grid(25, 50), fit, None);
+        cfg_md.backend = CosxBackend::Md3c1e;
+        let mut cfg_a = cfg_md.clone();
+        cfg_a.backend = CosxBackend::CosxA;
+
+        let k_md = build_k(&s, &ctx, cfg_md.clone(), &s.d);
+        let k_a = build_k(&s, &ctx, cfg_a.clone(), &s.d);
+        let scale = k_a.mapv(f64::abs).fold(0.0_f64, |m, &v| m.max(v));
+        assert!(scale > 0.05, "K ~ 0 ({scale:.3e}); vacuous");
+        let dev = max_abs_diff(&k_md, &k_a);
+        println!("backend anchor (fit={fit}, build): max|K_md3c1e - K_cosx_a| = {dev:.3e} (||K||max {scale:.3e})");
+        assert!(dev <= 1e-12, "md3c1e and cosx_a backends disagree (fit={fit}): {dev:.3e}");
+
+        // Same through the C_occ half transform.
+        let mut kb_md = CosxK::new(&ctx, &s.mol, &s.prep, cfg_md, usize::MAX).expect("md");
+        let mut kb_a = CosxK::new(&ctx, &s.mol, &s.prep, cfg_a, usize::MAX).expect("cosx_a");
+        let mut kc_md = Array2::zeros((n, n));
+        let mut kc_a = Array2::zeros((n, n));
+        kb_md.build_from_occ(&s.c_occ, &mut kc_md).expect("md occ");
+        kb_a.build_from_occ(&s.c_occ, &mut kc_a).expect("cosx_a occ");
+        let dev_c = max_abs_diff(&kc_md, &kc_a);
+        println!("backend anchor (fit={fit}, build_from_occ): max|dK| = {dev_c:.3e}");
+        assert!(dev_c <= 1e-12, "backends disagree on build_from_occ (fit={fit}): {dev_c:.3e}");
+        // Both carry the same (grid) error against the analytic K — the backend
+        // swap changed the kernel, not the quadrature.
+        let e_md = max_abs_diff(&k_md, &s.k_direct);
+        let e_a = max_abs_diff(&k_a, &s.k_direct);
+        assert!((e_md - e_a).abs() <= 1e-12, "grid errors differ: md {e_md:.3e} vs cosx_a {e_a:.3e}");
+    }
 }
 
 /// Anchor (b): the screen's trivial limit. A builder carrying pair bounds at

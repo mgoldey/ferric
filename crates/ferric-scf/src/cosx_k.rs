@@ -16,10 +16,19 @@
 //!                  S_num = X X^T  (density-independent; Cholesky, never inv)
 //! ```
 //!
-//! The per-point `A^g` comes from `ferric_integrals::cosx_a` (libint2
-//! nuclear-attraction engine with a unit probe charge, sign already flipped to
-//! the repulsive `+1/|r-r_g|` COSX needs). That A-build is the dominant cost;
-//! this module is the harness a faster 3c1e kernel drops into.
+//! The `A^g` blocks come from one of two backends (`CosxConfig::backend`):
+//!
+//! * `CosxBackend::Md3c1e` (default): `ferric_integrals::md3c1e`, a batched
+//!   McMurchie–Davidson 3c1e kernel. Per sub-batch of `COSX_SUB_BATCH_POINTS`
+//!   points it sweeps shell pairs `s1 >= s2` ONCE and the contraction
+//!   `G = A^g F` is accumulated straight from each `[nf1][nf2][g]` block —
+//!   `G[o1+i][g] += blk[i][j][g] F[o2+j][g]` plus the `s1 != s2` mirror
+//!   `G[o2+j][g] += blk[i][j][g] F[o1+i][g]` — so no `A^g` matrix is ever
+//!   materialized. Exact vs the libint2 path to round-off (anchored).
+//! * `CosxBackend::CosxA`: `ferric_integrals::cosx_a` (libint2
+//!   nuclear-attraction engine with a unit probe charge, sign already flipped
+//!   to the repulsive `+1/|r-r_g|` COSX needs), one dense `A^g` per point then
+//!   a GEMV. Measured 3.2–3.5x slower per point; kept as the cross-check.
 //!
 //! # Grid, blocking, determinism
 //!
@@ -29,11 +38,14 @@
 //! reaction-energy bar, and at (50,110) the overlap fit took that error from
 //! 0.2068 to 0.0190 kcal/mol, so the fit defaults ON). Points are processed
 //! in fixed blocks of `COSX_BLOCK_POINTS` points; per block the three `(nbf, B)`
-//! planes `X`, `F`, `G` are resident, and the per-point `A^g` loop is
-//! parallel over points with one libint2 engine per rayon worker. Every
-//! parallel write is to its own column of `G`, and the two GEMMs per block
-//! run in block order, so the result is bit-identical across thread counts
-//! (the block partition is a pure function of the point count).
+//! planes `X`, `F`, `G` are resident. The A-build inside a block is parallel
+//! over points (cosx_a: one libint2 engine per rayon worker) or over fixed
+//! sub-batches of `COSX_SUB_BATCH_POINTS` points (md3c1e: one kernel scratch
+//! per worker). Every parallel write is to its own columns of `G`, the
+//! accumulation order within a column is the fixed shell-pair order, and the
+//! two GEMMs per block run in block order, so the result is bit-identical
+//! across thread counts (block and sub-batch partitions are pure functions of
+//! the point count).
 //!
 //! # Scope
 //!
@@ -56,6 +68,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::cosx_a::{a_matrix_at_point_with, CosxScreen, PairBounds};
 use ferric_integrals::engine::Engine;
 use ferric_integrals::ffi;
+use ferric_integrals::md3c1e::{Md3c1e, Md3c1eScratch};
 use ndarray::Array2;
 use ndarray_linalg::{Cholesky, Diag, SolveTriangular, UPLO};
 use rayon::prelude::*;
@@ -68,8 +81,48 @@ use crate::fock::KBuilder;
 /// is ~300 MB at nbf = 12 800 (320 atoms / TZVP).
 pub const COSX_BLOCK_POINTS: usize = 1024;
 
+/// Grid points per md3c1e kernel call inside a block. Measured (butane,
+/// def2-SVP/TZVP/QZVP, `scripts/queue/out/md3c1e_results.md`): the per-batch
+/// primitive-pair setup is amortized by 256 points (B=64 -> 256 gained 7-14%,
+/// 256 -> 1024 was flat), so 256 is where the kernel saturates. Fixed, not
+/// budget-derived, for the same reason as `COSX_BLOCK_POINTS`.
+pub const COSX_SUB_BATCH_POINTS: usize = 256;
+
 /// AO-evaluation chunk inside a block (parallel over chunks).
 const AO_EVAL_CHUNK: usize = 64;
+
+/// Which 3c1e kernel supplies the `A^g` blocks (see the module doc).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CosxBackend {
+    /// Batched McMurchie–Davidson kernel (`ferric_integrals::md3c1e`). Default.
+    #[default]
+    Md3c1e,
+    /// libint2 nuclear-attraction engine, one dense `A^g` per point
+    /// (`ferric_integrals::cosx_a`). Slower; the cross-check backend.
+    CosxA,
+}
+
+impl CosxBackend {
+    /// Strict config-string parser: `"md3c1e"` or `"cosx-a"`; anything else is
+    /// an error (never a silent default), per the config-honesty convention.
+    pub fn parse_config_str(s: &str) -> Result<Self, FerricError> {
+        match s {
+            "md3c1e" => Ok(Self::Md3c1e),
+            "cosx-a" => Ok(Self::CosxA),
+            other => Err(FerricError::General(format!(
+                "unknown cosx_backend '{other}': valid options are 'md3c1e' (default) and 'cosx-a'"
+            ))),
+        }
+    }
+
+    /// The config-string spelling of this backend (inverse of `parse_config_str`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Md3c1e => "md3c1e",
+            Self::CosxA => "cosx-a",
+        }
+    }
+}
 
 /// Lebedev orders ferric's quadrature tables provide. `ferric_quadrature::lebedev`
 /// PANICS on any other order, so a grid config is validated against this list
@@ -117,6 +170,10 @@ pub struct CosxConfig {
     /// `cosx_a_screen_is_unsound_tripwire` in `tests/cosx_k_anchors.rs`; lift
     /// it when that tripwire fails (i.e. when the screen is fixed).
     pub screen_thresh: Option<f64>,
+    /// Which 3c1e kernel builds the `A^g` blocks. Default `Md3c1e`; `CosxA`
+    /// is the slower libint2 path, kept so the two stay cross-checkable
+    /// (`cosx_k_md3c1e_matches_cosx_a_backend` in `tests/cosx_k_anchors.rs`).
+    pub backend: CosxBackend,
 }
 
 impl Default for CosxConfig {
@@ -125,20 +182,23 @@ impl Default for CosxConfig {
             grid: AtomicGridConfig { n_radial: 50, n_angular: 110, ..Default::default() },
             overlap_fit: true,
             screen_thresh: None,
+            backend: CosxBackend::Md3c1e,
         }
     }
 }
 
 /// Wall-time split of the most recent `build`, for measurement. Seconds are
-/// summed over all worker threads for the per-point segments (`a_build_s`,
+/// summed over all worker threads for the A-build segments (`a_build_s`,
 /// `contract_s`), i.e. they equal wall time only on one thread.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CosxTimings {
     /// AO values on the grid (`X = sqrt(w) chi`), all blocks.
     pub ao_eval_s: f64,
-    /// Per-point `A^g` construction (the libint2 3c1e sweep), summed over threads.
+    /// `A^g` construction, summed over threads: the libint2 per-point sweep
+    /// (cosx_a) or the md3c1e kernel time with the callback time subtracted.
     pub a_build_s: f64,
-    /// Per-point `G_g = A^g F_g` GEMVs, summed over threads.
+    /// The `G = A^g F` contraction, summed over threads: per-point GEMVs
+    /// (cosx_a) or the in-callback block accumulation (md3c1e).
     pub contract_s: f64,
     /// Block GEMMs: `F = D X` (or `C (C^T X)`), `Ktilde += X G^T`, `S_num += X X^T`.
     pub blas_s: f64,
@@ -152,30 +212,37 @@ pub struct CosxTimings {
     pub pairs_total: usize,
 }
 
-/// One libint2 nuclear-attraction engine per rayon worker (plus a spare for
-/// non-pool threads) — same rationale as `ferric_integrals::engine_pool`,
-/// which only builds 2e engines.
-struct NuclearPool {
-    engines: Vec<Mutex<Engine>>,
+/// One `T` per rayon worker (plus a spare for non-pool threads) — same
+/// rationale as `ferric_integrals::engine_pool`, which only builds 2e
+/// engines. Holds libint2 nuclear engines (cosx_a) or kernel scratch (md3c1e).
+struct ThreadSlots<T> {
+    slots: Vec<Mutex<T>>,
 }
 
-impl NuclearPool {
-    fn new(prep: &PreparedBasis) -> Result<Self, FerricError> {
+impl<T> ThreadSlots<T> {
+    fn new(mut make: impl FnMut() -> Result<T, FerricError>) -> Result<Self, FerricError> {
         let n = rayon::current_num_threads().max(1) + 1;
-        let mut engines = Vec::with_capacity(n);
+        let mut slots = Vec::with_capacity(n);
         for _ in 0..n {
-            engines.push(Mutex::new(Engine::new_1e(ffi::OP_NUCLEAR, prep, 1e-14)?));
+            slots.push(Mutex::new(make()?));
         }
-        Ok(Self { engines })
+        Ok(Self { slots })
     }
 
     #[inline]
-    fn with<R>(&self, f: impl FnOnce(&mut Engine) -> R) -> R {
-        let idx = rayon::current_thread_index().unwrap_or(self.engines.len() - 1);
-        let slot = idx.min(self.engines.len() - 1);
-        let mut eng = self.engines[slot].lock().unwrap();
-        f(&mut eng)
+    fn with<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+        let idx = rayon::current_thread_index().unwrap_or(self.slots.len() - 1);
+        let slot = idx.min(self.slots.len() - 1);
+        let mut v = self.slots[slot].lock().unwrap();
+        f(&mut v)
     }
+}
+
+/// Backend-specific per-worker state, created on the first `build` (the slot
+/// count follows the rayon pool the build runs in).
+enum Workers {
+    CosxA(ThreadSlots<Engine>),
+    Md3c1e(ThreadSlots<Md3c1eScratch>),
 }
 
 /// Cached Cholesky factor of `S_num = X X^T` (lower `L` and its transpose,
@@ -198,7 +265,9 @@ pub struct CosxK<'a> {
     s_ao: Option<Array2<f64>>,
     /// Geometry-only; built during the first `build` and reused.
     snum: Option<SnumFactor>,
-    pool: Option<NuclearPool>,
+    /// md3c1e kernel state (`Some` iff `cfg.backend == Md3c1e`); geometry-only.
+    kernel: Option<Md3c1e>,
+    workers: Option<Workers>,
     last: CosxTimings,
 }
 
@@ -237,7 +306,15 @@ impl<'a> CosxK<'a> {
         }
         let points: Vec<[f64; 3]> = grid.iter().map(|p| p.xyz).collect();
         let sqrt_w: Vec<f64> = grid.iter().map(|p| p.weight.abs().sqrt()).collect();
-        check_budget(prep.nbasis(), mem_budget)?;
+        check_budget(prep.nbasis(), cfg.backend, mem_budget)?;
+        let kernel = match cfg.backend {
+            CosxBackend::Md3c1e => Some(Md3c1e::new(prep).map_err(|e| {
+                FerricError::General(format!(
+                    "CosxK: the md3c1e backend cannot handle this basis ({e}); select cosx_backend = \"cosx-a\""
+                ))
+            })?),
+            CosxBackend::CosxA => None,
+        };
 
         let bounds = match cfg.screen_thresh {
             Some(t) if t > 0.0 => {
@@ -263,7 +340,8 @@ impl<'a> CosxK<'a> {
             bounds,
             s_ao,
             snum: None,
-            pool: None,
+            kernel,
+            workers: None,
             last: CosxTimings::default(),
         })
     }
@@ -307,20 +385,46 @@ impl<'a> CosxK<'a> {
         Ok(x)
     }
 
-    /// Per-point loop: `G^T_{g,nu} = sum_lam A^g_{nu,lam} F_{lam,g}`, returned
-    /// as `(B, nbf)` so each point owns one contiguous row.
+    /// Screen arguments for the A-build (`None` bounds + vacuous screen unless
+    /// `screen_thresh` is set — and `Some(t > 0)` never gets past `new`).
+    fn screen_args(&self) -> (Option<&PairBounds>, CosxScreen) {
+        match self.cfg.screen_thresh {
+            None => (None, CosxScreen::none()),
+            Some(t) => (self.bounds.as_ref(), CosxScreen::at(t)),
+        }
+    }
+
+    /// `G_{nu,g} = sum_lam A^g_{nu,lam} F_{lam,g}` for one block, `(nbf, B)`,
+    /// dispatched on the backend's worker state.
     fn contract_block(
         &self,
-        pool: &NuclearPool,
+        workers: &Workers,
+        pts: &[[f64; 3]],
+        f: &Array2<f64>,
+        acc: &BlockCounters,
+    ) -> Result<Array2<f64>, FerricError> {
+        match workers {
+            Workers::CosxA(engines) => self.contract_block_cosx_a(engines, pts, f, acc),
+            Workers::Md3c1e(scratch) => {
+                let kern = self.kernel.as_ref().expect("md3c1e kernel built in new() for this backend");
+                self.contract_block_md3c1e(kern, scratch, pts, f, acc)
+            }
+        }
+    }
+
+    /// cosx_a backend: per-point dense `A^g` then a GEMV, parallel over
+    /// points; each point owns one contiguous row of `G^T` `(B, nbf)`, returned
+    /// transposed as a `(nbf, B)` view of the same memory (so the block GEMM
+    /// sees exactly the layout it always did).
+    fn contract_block_cosx_a(
+        &self,
+        engines: &ThreadSlots<Engine>,
         pts: &[[f64; 3]],
         f: &Array2<f64>,
         acc: &BlockCounters,
     ) -> Result<Array2<f64>, FerricError> {
         let nbf = self.prep.nbasis();
-        let (bounds, screen) = match self.cfg.screen_thresh {
-            None => (None, CosxScreen::none()),
-            Some(t) => (self.bounds.as_ref(), CosxScreen::at(t)),
-        };
+        let (bounds, screen) = self.screen_args();
         let prep = self.prep;
         let mut gt = Array2::<f64>::zeros((pts.len(), nbf));
         let rows = gt.as_slice_mut().expect("freshly allocated standard layout");
@@ -328,7 +432,7 @@ impl<'a> CosxK<'a> {
             .enumerate()
             .try_for_each(|(g, row)| -> Result<(), FerricError> {
                 let t0 = Instant::now();
-                let pt = pool.with(|eng| a_matrix_at_point_with(eng, prep, &pts[g], bounds, screen))?;
+                let pt = engines.with(|eng| a_matrix_at_point_with(eng, prep, &pts[g], bounds, screen))?;
                 let t1 = Instant::now();
                 let col = pt.a.dot(&f.column(g));
                 row.copy_from_slice(col.as_slice().expect("dot result contiguous"));
@@ -338,7 +442,62 @@ impl<'a> CosxK<'a> {
                 acc.total.fetch_add(pt.pairs_total, Ordering::Relaxed);
                 Ok(())
             })?;
-        Ok(gt)
+        Ok(gt.reversed_axes())
+    }
+
+    /// md3c1e backend: parallel over fixed sub-batches of
+    /// `COSX_SUB_BATCH_POINTS` points; each sub-batch sweeps the shell pairs
+    /// once and accumulates its own columns of `G` (see `accumulate_pair`).
+    /// `pairs_kept/total` are scaled by the sub-batch size so they stay
+    /// "summed over points" like the cosx_a path.
+    fn contract_block_md3c1e(
+        &self,
+        kern: &Md3c1e,
+        scratch: &ThreadSlots<Md3c1eScratch>,
+        pts: &[[f64; 3]],
+        f: &Array2<f64>,
+        acc: &BlockCounters,
+    ) -> Result<Array2<f64>, FerricError> {
+        let nbf = self.prep.nbasis();
+        let (bounds, screen) = self.screen_args();
+        let f_std = f.as_standard_layout();
+        let ys: Vec<Vec<f64>> = pts
+            .par_chunks(COSX_SUB_BATCH_POINTS)
+            .enumerate()
+            .map(|(c, sub)| -> Result<Vec<f64>, FerricError> {
+                let c0 = c * COSX_SUB_BATCH_POINTS;
+                let n = sub.len();
+                let fsub = copy_columns(&f_std.view(), c0, n);
+                let mut y = vec![0.0_f64; nbf * n];
+                let mut c_ns = 0u64;
+                let t0 = Instant::now();
+                let (kept, total) = scratch.with(|scr| {
+                    kern.for_each_pair(sub, bounds, screen, scr, |s1, s2, blk| {
+                        let t = Instant::now();
+                        accumulate_pair(kern, s1, s2, n, blk, &fsub, &mut y);
+                        c_ns += t.elapsed().as_nanos() as u64;
+                    })
+                })?;
+                let all_ns = t0.elapsed().as_nanos() as u64;
+                acc.a_ns.fetch_add(all_ns.saturating_sub(c_ns), Ordering::Relaxed);
+                acc.c_ns.fetch_add(c_ns, Ordering::Relaxed);
+                acc.kept.fetch_add(kept * n, Ordering::Relaxed);
+                acc.total.fetch_add(total * n, Ordering::Relaxed);
+                Ok(y)
+            })
+            .collect::<Result<_, _>>()?;
+        let mut g = Array2::<f64>::zeros((nbf, pts.len()));
+        for (c, y) in ys.iter().enumerate() {
+            let c0 = c * COSX_SUB_BATCH_POINTS;
+            let n = y.len() / nbf;
+            for (mu, row) in y.chunks_exact(n).enumerate() {
+                g.slice_mut(ndarray::s![mu, c0..c0 + n])
+                    .as_slice_mut()
+                    .expect("row segment of a standard-layout matrix is contiguous")
+                    .copy_from_slice(row);
+            }
+        }
+        Ok(g)
     }
 
     /// Shared driver for `build` / `build_from_occ`: `half` maps `X_blk` to
@@ -350,8 +509,8 @@ impl<'a> CosxK<'a> {
     ) -> Result<usize, FerricError> {
         let t_start = Instant::now();
         self.ctx.check_interrupted()?;
-        if self.pool.is_none() {
-            self.pool = Some(NuclearPool::new(self.prep)?);
+        if self.workers.is_none() {
+            self.workers = Some(self.make_workers()?);
         }
         let nbf = self.prep.nbasis();
         let need_snum = self.cfg.overlap_fit && self.snum.is_none();
@@ -360,7 +519,7 @@ impl<'a> CosxK<'a> {
         let acc = BlockCounters::default();
         let mut t = CosxTimings::default();
 
-        let pool = self.pool.as_ref().expect("pool initialized above");
+        let workers = self.workers.as_ref().expect("workers initialized above");
         for (pts, sw) in self.points.chunks(COSX_BLOCK_POINTS).zip(self.sqrt_w.chunks(COSX_BLOCK_POINTS)) {
             self.ctx.check_interrupted()?;
             let t0 = Instant::now();
@@ -374,10 +533,10 @@ impl<'a> CosxK<'a> {
             let f = half(&x);
             t.blas_s += t0.elapsed().as_secs_f64();
 
-            let gt = self.contract_block(pool, pts, &f, &acc)?;
+            let g = self.contract_block(workers, pts, &f, &acc)?;
 
             let t0 = Instant::now();
-            ktilde += &x.dot(&gt);
+            ktilde += &x.dot(&g.t());
             t.blas_s += t0.elapsed().as_secs_f64();
         }
 
@@ -404,6 +563,61 @@ impl<'a> CosxK<'a> {
         // SCF reports as `computed_quartets` gets 0 (see `last_timings` for pairs).
         Ok(0)
     }
+
+    /// Per-worker state for the configured backend.
+    fn make_workers(&self) -> Result<Workers, FerricError> {
+        Ok(match self.cfg.backend {
+            CosxBackend::CosxA => {
+                Workers::CosxA(ThreadSlots::new(|| Engine::new_1e(ffi::OP_NUCLEAR, self.prep, 1e-14))?)
+            }
+            CosxBackend::Md3c1e => {
+                let kern = self.kernel.as_ref().expect("md3c1e kernel built in new() for this backend");
+                Workers::Md3c1e(ThreadSlots::new(|| Ok(kern.scratch()))?)
+            }
+        })
+    }
+}
+
+/// `F[.., c0..c0+n]` as a contiguous `(nbf, n)` row-major buffer.
+fn copy_columns(f: &ndarray::ArrayView2<f64>, c0: usize, n: usize) -> Vec<f64> {
+    let nbf = f.nrows();
+    let mut out = vec![0.0_f64; nbf * n];
+    for (mu, dst) in out.chunks_exact_mut(n).enumerate() {
+        for (d, &v) in dst.iter_mut().zip(f.slice(ndarray::s![mu, c0..c0 + n]).iter()) {
+            *d = v;
+        }
+    }
+    out
+}
+
+/// `y += a * b` elementwise over one sub-batch row (length `n`).
+#[inline(always)]
+fn axpy_rows(a: &[f64], b: &[f64], y: &mut [f64]) {
+    for ((y, &a), &b) in y.iter_mut().zip(a).zip(b) {
+        *y += a * b;
+    }
+}
+
+/// Fold one kernel block into `Y = G` for the sub-batch (`n` points, all
+/// buffers `(nbf, n)` row-major): `Y[o1+i] += blk[i][j] F[o2+j]` and, for
+/// `s1 != s2`, the mirror `Y[o2+j] += blk[i][j] F[o1+i]` (the kernel emits
+/// only `s1 >= s2`; the diagonal block is already the full `nf x nf` square).
+/// The kernel's sign is already `+1/|r-r_g|` — nothing is negated here.
+#[inline]
+fn accumulate_pair(kern: &Md3c1e, s1: usize, s2: usize, n: usize, blk: &[f64], f: &[f64], y: &mut [f64]) {
+    let (o1, o2) = (kern.shell_offset(s1), kern.shell_offset(s2));
+    let (nf1, nf2) = (kern.shell_dim(s1), kern.shell_dim(s2));
+    for i in 0..nf1 {
+        let r1 = o1 + i;
+        for j in 0..nf2 {
+            let r2 = o2 + j;
+            let b = &blk[(i * nf2 + j) * n..(i * nf2 + j + 1) * n];
+            axpy_rows(b, &f[r2 * n..(r2 + 1) * n], &mut y[r1 * n..(r1 + 1) * n]);
+            if s1 != s2 {
+                axpy_rows(b, &f[r1 * n..(r1 + 1) * n], &mut y[r2 * n..(r2 + 1) * n]);
+            }
+        }
+    }
 }
 
 #[derive(Default)]
@@ -414,19 +628,26 @@ struct BlockCounters {
     total: AtomicUsize,
 }
 
-/// Fail fast if one block's scratch does not fit the budget.
-fn check_budget(nbf: usize, mem_budget: usize) -> Result<(), FerricError> {
+/// Fail fast if one block's scratch does not fit the budget. The per-thread
+/// footprint is one dense `A^g` (nbf^2) for cosx_a, or `Y` + `F` sub-batch
+/// planes (2 nbf x `COSX_SUB_BATCH_POINTS`) for md3c1e.
+fn check_budget(nbf: usize, backend: CosxBackend, mem_budget: usize) -> Result<(), FerricError> {
     let budget = if mem_budget == 0 { ferric_core::memory::resolve_budget_bytes(None) } else { mem_budget };
     let threads = rayon::current_num_threads().max(1) + 1;
     let planes = 3usize.saturating_mul(COSX_BLOCK_POINTS).saturating_mul(nbf).saturating_mul(8);
-    // per-thread A^g + Ktilde + S_num + S + L + L^T
-    let squares = (threads + 5).saturating_mul(nbf).saturating_mul(nbf).saturating_mul(8);
-    let needed = planes.saturating_add(squares);
+    let per_thread = match backend {
+        CosxBackend::CosxA => nbf.saturating_mul(nbf).saturating_mul(8),
+        CosxBackend::Md3c1e => 2usize.saturating_mul(nbf).saturating_mul(COSX_SUB_BATCH_POINTS).saturating_mul(8),
+    };
+    // Ktilde + S_num + S + L + L^T
+    let squares = 5usize.saturating_mul(nbf).saturating_mul(nbf).saturating_mul(8);
+    let needed = planes.saturating_add(squares).saturating_add(threads.saturating_mul(per_thread));
     if needed > budget {
         return Err(FerricError::General(format!(
-            "CosxK: one grid block needs {:.2} GB (nbf={nbf}, {COSX_BLOCK_POINTS} pts x 3 planes + {threads} per-thread A matrices) \
+            "CosxK: one grid block needs {:.2} GB (nbf={nbf}, {COSX_BLOCK_POINTS} pts x 3 planes + {threads} per-thread {} buffers) \
              but the memory budget is {:.2} GB — raise [memory] budget_gb / FERRIC_MEM_BUDGET_GB or use fewer threads",
             needed as f64 / 1e9,
+            backend.as_str(),
             budget as f64 / 1e9
         )));
     }
@@ -510,6 +731,62 @@ mod tests {
         assert_eq!((c.grid.n_radial, c.grid.n_angular), (50, 110));
         assert!(c.overlap_fit);
         assert!(c.screen_thresh.is_none());
+        assert_eq!(c.backend, CosxBackend::Md3c1e);
+    }
+
+    #[test]
+    fn backend_parser_is_strict_and_round_trips() {
+        for b in [CosxBackend::Md3c1e, CosxBackend::CosxA] {
+            assert_eq!(CosxBackend::parse_config_str(b.as_str()).unwrap(), b);
+        }
+        assert!(CosxBackend::parse_config_str("libint").is_err());
+        assert!(CosxBackend::parse_config_str("MD3C1E").is_err(), "case-sensitive: no silent coercion");
+        assert!(CosxBackend::parse_config_str("").is_err());
+    }
+
+    /// The fold must reproduce the dense `A F` product on a toy layout: two
+    /// shells (dims 1 and 2), three points, a hand-built symmetric A.
+    #[test]
+    fn accumulate_pair_matches_dense_product_on_toy_layout() {
+        // Use a real kernel only for offsets/dims: water/STO-3G has 5 shells;
+        // exercise shells 0 (s, dim 1) and 2 (p, dim 3).
+        let mol = ferric_core::mol::Molecule::parse_xyz(
+            "3\nw\nO 0 0 0.1173\nH 0 0.7572 -0.4692\nH 0 -0.7572 -0.4692\n", 0, 1,
+        )
+        .unwrap();
+        let bs = ferric_core::basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let kern = Md3c1e::new(&prep).unwrap();
+        let nbf = kern.nbasis();
+        let n = 3usize;
+        let (s1, s2) = (2usize, 0usize);
+        let (nf1, nf2) = (kern.shell_dim(s1), kern.shell_dim(s2));
+        let (o1, o2) = (kern.shell_offset(s1), kern.shell_offset(s2));
+        // blk[i][j][g] = 1 + i + 10 j + 100 g ; F[mu][g] = mu + 0.5 g
+        let blk: Vec<f64> = (0..nf1 * nf2 * n)
+            .map(|k| {
+                let (ij, g) = (k / n, k % n);
+                1.0 + (ij / nf2) as f64 + 10.0 * (ij % nf2) as f64 + 100.0 * g as f64
+            })
+            .collect();
+        let f: Vec<f64> = (0..nbf * n).map(|k| (k / n) as f64 + 0.5 * (k % n) as f64).collect();
+        let mut y = vec![0.0; nbf * n];
+        accumulate_pair(&kern, s1, s2, n, &blk, &f, &mut y);
+        // Dense reference: A has the block at (o1.., o2..) and its transpose.
+        let mut a = Array2::<f64>::zeros((nbf, nbf));
+        for g in 0..n {
+            for i in 0..nf1 {
+                for j in 0..nf2 {
+                    let v = blk[(i * nf2 + j) * n + g];
+                    a[(o1 + i, o2 + j)] = v;
+                    a[(o2 + j, o1 + i)] = v;
+                }
+            }
+            for mu in 0..nbf {
+                let want: f64 = (0..nbf).map(|lam| a[(mu, lam)] * f[lam * n + g]).sum();
+                assert!((y[mu * n + g] - want).abs() < 1e-12, "mu={mu} g={g}: {} vs {want}", y[mu * n + g]);
+            }
+        }
     }
 
     #[test]
@@ -532,7 +809,9 @@ mod tests {
 
     #[test]
     fn budget_check_errors_when_too_small_and_passes_when_ample() {
-        assert!(check_budget(100, 1).is_err());
-        assert!(check_budget(100, usize::MAX).is_ok());
+        for b in [CosxBackend::Md3c1e, CosxBackend::CosxA] {
+            assert!(check_budget(100, b, 1).is_err());
+            assert!(check_budget(100, b, usize::MAX).is_ok());
+        }
     }
 }
