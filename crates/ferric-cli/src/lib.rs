@@ -376,6 +376,10 @@ pub fn run(args: Vec<String>) {
         smearing_sigma: cfg.scf.smearing_sigma,
         integral_thresh: cfg.scf.integral_thresh,
         k_builder: cfg.scf.k_builder.clone(),
+        cosx: cfg.scf.cosx_config().unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }),
         df_j_aux: cfg.scf.df_j_aux.clone().or(df_j_default),
         df_k_aux: cfg.scf.df_k_aux.clone().or(df_k_default),
         xc,

@@ -1,0 +1,33 @@
+# RHF with COSX seminumerical exchange (Neese 2009; Izsak-Neese 2011 overlap fit).
+#
+# k_builder = "cosx" replaces the direct 4-centre K by a grid-based
+# seminumerical K; J stays integral-direct. RHF only (UHF/ROHF ignore
+# k_builder). Ignored with a warning if DF-J/DF-K is active.
+#
+# cosx_grid defaults to (50,110) — the measured operating point; coarser grids
+# fail the 0.1 kcal/mol isodesmic reaction-energy bar. angular must be one of
+# 6/14/26/50/110/302. cosx_overlap_fit defaults to true (at (50,110) it took
+# the reaction-energy error 0.2068 -> 0.0190 kcal/mol; it is net-negative on
+# coarser grids). Both keys are a hard error with any other k_builder.
+#
+# Measured (water/cc-pVDZ, this file): E(COSX) - E(direct) is reported in
+# crates/ferric-scf/tests/cosx_scf.rs.
+
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "cc-pvdz"
+
+[method]
+kind = "rhf"
+
+[scf]
+max_iter = 100
+energy_conv = 1e-8
+density_conv = 1e-7
+diis_size = 8
+integral_thresh = 1e-12
+k_builder = "cosx"
+cosx_grid = { radial = 50, angular = 110 }
+cosx_overlap_fit = true
