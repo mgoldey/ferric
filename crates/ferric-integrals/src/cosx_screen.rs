@@ -115,6 +115,11 @@ impl CosxScreen {
 /// (see the module doc). `1e-10` is ~1e6 ulps: far above any accumulated
 /// rounding in a few hundred flops, far below any screening threshold.
 const ROUNDING_SLACK: f64 = 1.0 + 1e-10;
+/// Extra relative slack on the coarse gate so `coarse >= fine` holds despite
+/// the two being summed in different orders (they tie to the ulp when
+/// `R_c <= 0`); the coarse bound only gates the fine evaluation, so this
+/// affects cost, never validity.
+const COARSE_SLACK: f64 = 1.0 + 1e-9;
 
 /// One primitive pair's contribution to a shell pair's bound.
 #[derive(Clone, Copy)]
@@ -143,8 +148,22 @@ pub struct PairBounds {
     /// `term_start[tri(s1,s2)] .. term_start[tri(s1,s2)+1]` indexes `terms`.
     term_start: Vec<u32>,
     terms: Vec<PrimTerm>,
-    /// `Σ (beta0 + beta1)` per pair: the bound at `R = 0`.
-    total: Vec<f64>,
+    /// Per pair, the single-sqrt coarse bound's data (see [`PairBounds::coarse_estimate`]).
+    coarse: Vec<Coarse>,
+}
+
+/// Per-shell-pair data for the coarse (one-sqrt) bound: every product centre
+/// `P_ij` lies on the segment `AB`, so `|P_ij - r| >= |M - r| - |AB|/2 =: R_c`
+/// with `M` the midpoint, and every term is non-increasing in its `R`.
+#[derive(Clone, Copy)]
+struct Coarse {
+    mid: [f64; 3],
+    /// `|A - B| / 2`.
+    half: f64,
+    /// `Σ (beta0 + beta1)`: the bound at `R = 0` (an upper bound everywhere).
+    total: f64,
+    /// `Σ (beta0 g0 + beta1 g1)`: the far-field numerator, `estimate <= sum_bg / R_c`.
+    sum_bg: f64,
 }
 
 #[inline]
@@ -192,7 +211,7 @@ impl PairBounds {
         let npair = nsh * (nsh + 1) / 2;
         let mut term_start = Vec::with_capacity(npair + 1);
         let mut terms = Vec::new();
-        let mut total = vec![0.0_f64; npair];
+        let mut coarse = Vec::with_capacity(npair);
 
         struct Sh {
             l: usize,
@@ -229,6 +248,7 @@ impl PairBounds {
                 let ab = ab2.sqrt();
                 let sfac = sa.sfac * sb.sfac;
                 let mut tot = 0.0_f64;
+                let mut sum_bg = 0.0_f64;
                 for (&a, &ca) in sa.exps.iter().zip(&sa.coefs) {
                     for (&b, &cb) in sb.exps.iter().zip(&sb.coefs) {
                         let p = a + b;
@@ -261,21 +281,31 @@ impl PairBounds {
                             }
                         }
                         let beta1 = w * (4.0 * PI / p) * s1k;
+                        let g0 = 0.5 * (PI / p).sqrt();
+                        let g1 = 0.5 * (2.0 * PI / p).sqrt();
                         tot += beta0 + beta1;
-                        terms.push(PrimTerm {
-                            cen,
-                            beta0: beta0 * ROUNDING_SLACK,
-                            beta1: beta1 * ROUNDING_SLACK,
-                            g0: 0.5 * (PI / p).sqrt(),
-                            g1: 0.5 * (2.0 * PI / p).sqrt(),
-                        });
+                        sum_bg += beta0 * g0 + beta1 * g1;
+                        terms.push(PrimTerm { cen, beta0: beta0 * ROUNDING_SLACK, beta1: beta1 * ROUNDING_SLACK, g0, g1 });
                     }
                 }
-                total[tri(s1, s2)] = tot * ROUNDING_SLACK;
+                // Heaviest terms first so the early-exit in `exceeds` usually
+                // needs one term for a kept pair.
+                let lo = *term_start.last().expect("pushed above") as usize;
+                terms[lo..].sort_by(|x, y| (y.beta0 + y.beta1).partial_cmp(&(x.beta0 + x.beta1)).expect("finite weights"));
+                coarse.push(Coarse {
+                    mid: [
+                        0.5 * (sa.center[0] + sb.center[0]),
+                        0.5 * (sa.center[1] + sb.center[1]),
+                        0.5 * (sa.center[2] + sb.center[2]),
+                    ],
+                    half: 0.5 * ab,
+                    total: tot * ROUNDING_SLACK * COARSE_SLACK,
+                    sum_bg: sum_bg * ROUNDING_SLACK * COARSE_SLACK,
+                });
             }
         }
         term_start.push(terms.len() as u32);
-        Ok(Self { nsh, term_start, terms, total })
+        Ok(Self { nsh, term_start, terms, coarse })
     }
 
     /// Number of shells this was built for.
@@ -293,7 +323,80 @@ impl PairBounds {
     #[inline]
     pub fn max_estimate(&self, s1: usize, s2: usize) -> f64 {
         let (s1, s2) = if s1 >= s2 { (s1, s2) } else { (s2, s1) };
-        self.total[tri(s1, s2)]
+        self.coarse[tri(s1, s2)].total
+    }
+
+    /// One-sqrt upper bound on [`PairBounds::estimate`]`(s1, s2, r)`:
+    /// `min(total, sum_bg / R_c)` with `R_c = max(0, |M - r| - |AB|/2)`.
+    /// Valid because every product centre lies on the segment `AB` (so its
+    /// `R >= R_c`) and each term is non-increasing in `R` with
+    /// `beta F_0^+(...) <= beta g / R`. Anchored as `coarse >= fine` on the
+    /// same probe set as the underestimation anchor.
+    #[inline]
+    pub fn coarse_estimate(&self, s1: usize, s2: usize, r: &[f64; 3]) -> f64 {
+        let (s1, s2) = if s1 >= s2 { (s1, s2) } else { (s2, s1) };
+        let c = &self.coarse[tri(s1, s2)];
+        let dx = r[0] - c.mid[0];
+        let dy = r[1] - c.mid[1];
+        let dz = r[2] - c.mid[2];
+        let rc = (dx * dx + dy * dy + dz * dz).sqrt() - c.half;
+        if rc <= 0.0 {
+            c.total
+        } else {
+            c.total.min(c.sum_bg / rc)
+        }
+    }
+
+    /// Upper bound on [`PairBounds::estimate`]`(s1, s2, r)` for EVERY `r`
+    /// within `radius` of `centre` — the coarse bound at
+    /// `R_c = max(0, |M - centre| - radius - |AB|/2)`. This is the O(1)-per-pair
+    /// test a K builder should run once per spatially local batch; only pairs
+    /// that pass it need any per-point work.
+    #[inline]
+    pub fn coarse_estimate_sphere(&self, s1: usize, s2: usize, centre: &[f64; 3], radius: f64) -> f64 {
+        let (s1, s2) = if s1 >= s2 { (s1, s2) } else { (s2, s1) };
+        let c = &self.coarse[tri(s1, s2)];
+        let dx = centre[0] - c.mid[0];
+        let dy = centre[1] - c.mid[1];
+        let dz = centre[2] - c.mid[2];
+        let rc = (dx * dx + dy * dy + dz * dz).sqrt() - radius - c.half;
+        if rc <= 0.0 {
+            c.total
+        } else {
+            c.total.min(c.sum_bg / rc)
+        }
+    }
+
+    /// `estimate(s1, s2, r) >= threshold`, evaluated cheaply: an O(1)
+    /// early-out on the `R = 0` value, then the one-sqrt coarse bound, then
+    /// the per-term sum (heaviest first) stopping as soon as the partial sum
+    /// reaches the threshold — valid because every term is non-negative.
+    /// Identical decisions to comparing [`PairBounds::estimate`] directly.
+    #[inline]
+    pub fn exceeds(&self, s1: usize, s2: usize, r: &[f64; 3], threshold: f64) -> bool {
+        let (s1, s2) = if s1 >= s2 { (s1, s2) } else { (s2, s1) };
+        let idx = tri(s1, s2);
+        if self.coarse[idx].total < threshold || self.coarse_estimate(s1, s2, r) < threshold {
+            return false;
+        }
+        let (lo, hi) = (self.term_start[idx] as usize, self.term_start[idx + 1] as usize);
+        let mut acc = 0.0_f64;
+        for t in &self.terms[lo..hi] {
+            let dx = r[0] - t.cen[0];
+            let dy = r[1] - t.cen[1];
+            let dz = r[2] - t.cen[2];
+            let d = (dx * dx + dy * dy + dz * dz).sqrt();
+            acc += if d <= t.g0 {
+                t.beta0 + t.beta1
+            } else {
+                let inv = 1.0 / d;
+                t.beta0 * (t.g0 * inv) + t.beta1 * (t.g1 * inv).min(1.0)
+            };
+            if acc >= threshold {
+                return true;
+            }
+        }
+        false
     }
 
     /// Upper bound on `max_{mu in s1, nu in s2} |A^g_{mu,nu}|` at point `r`.
@@ -326,6 +429,6 @@ impl PairBounds {
         if self.max_estimate(s1, s2) < threshold {
             return false;
         }
-        pts.iter().any(|r| self.estimate(s1, s2, r) >= threshold)
+        pts.iter().any(|r| self.exceeds(s1, s2, r, threshold))
     }
 }
