@@ -33,6 +33,13 @@ on:
 env:
   CARGO_TERM_COLOR: always
   OPENBLAS_NUM_THREADS: "1"
+  # Pin the memory budget so tests never auto-detect it from the runner.
+  # Auto-detect is min(cgroup limit, /proc/meminfo MemAvailable); on a shared
+  # runner MemAvailable can dip to ~0 for an instant mid-test-burst, and on
+  # 2026-09-07 that failed vv10::cutoff_energy_bounded_water with
+  # "needs 0.01 GB but the budget is 0.00 GB" on a PR that never touched
+  # ferric-dft. Explicit per-test budgets still override this (config > env).
+  FERRIC_MEM_BUDGET_GB: "3"
   # Disk, not CPU, is the binding constraint on a GitHub runner (~14 GB free).
   # Each of the ~190 integration-test binaries is 200-335 MB; measured
   # locally, a 236 MB ferric-scf test binary carries 82 MB of .debug_*
