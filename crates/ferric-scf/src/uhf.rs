@@ -292,26 +292,117 @@ pub fn solve_uhf_fockmod(
     let (mut df_j, mut df_k) = crate::fock_assembly::build_df_jk(
         ctx, mol, coulomb_op, prep, j_aux_eff, k_aux_eff, ooc_budget,
     )?;
-    let mut direct_j: Option<DirectJ> = if df_j.is_none() {
+    // ── Combined open-shell direct J+K (single quartet pass) ────────────────
+    // When BOTH J and K come from the direct (non-DF) path with an ordinary
+    // ω = 0 kernel, one `DirectJK::build_uhf` pass produces J[D_α+D_β], K[D_α]
+    // and K[D_β] together. This replaces three separate quartet traversals
+    // (`DirectJ(D_total)` + `DirectK(D_α)` + `DirectK(D_β)`), each of which
+    // re-evaluated the same integrals and screened on the loose global max|D|
+    // scalar instead of the tight six-pairwise shell table.
+    //
+    // Gated to exactly the case where all three matrices are direct and share
+    // the Coulomb operator: `df_j.is_none() && df_k.is_none() && need_k &&
+    // k_mix.omega == 0.0`. Every other combination (DF-J, DF-K, RSH, pure DFT
+    // with no K at all) keeps the previous per-matrix builders untouched.
+    //
+    // Escape hatch (test + debugging, mirroring `FERRIC_SCF_INCREMENTAL`):
+    // `FERRIC_SCF_COMBINED_JK=0` (or `off`/`false`) restores the historical
+    // three-pass open-shell build, so the combined path can be A/B'd for
+    // correctness and timing without a rebuild.
+    let combined_direct_jk = df_j.is_none()
+        && df_k.is_none()
+        && need_k
+        && k_mix.omega == 0.0
+        && crate::direct_jk::combined_open_shell_jk_enabled();
+    let mut direct_jk: Option<crate::direct_jk::DirectJK> = if combined_direct_jk {
+        Some(crate::direct_jk::DirectJK::new(
+            ctx,
+            prep,
+            bounds,
+            config.integral_thresh,
+            ooc_budget,
+        ))
+    } else {
+        None
+    };
+    let mut direct_j: Option<DirectJ> = if df_j.is_none() && !combined_direct_jk {
         Some(DirectJ::new(ctx, prep, bounds, config.integral_thresh, ooc_budget))
     } else {
         None
     };
-    let mut direct_k: Option<DirectK> = if need_k && k_mix.omega == 0.0 && df_k.is_none() {
-        Some(DirectK::new(ctx, prep, bounds, config.integral_thresh, ooc_budget))
-    } else {
-        None
-    };
+    let mut direct_k: Option<DirectK> =
+        if need_k && k_mix.omega == 0.0 && df_k.is_none() && !combined_direct_jk {
+            Some(DirectK::new(ctx, prep, bounds, config.integral_thresh, ooc_budget))
+        } else {
+            None
+        };
+
+    // ── Incremental (differential) Fock build, combined DirectJK path only ──
+    // Same scheme (and the same `FERRIC_SCF_INCREMENTAL` kill switch and
+    // 8-iteration periodic full rebuild) as `solve_rhf`; see that function for
+    // the full rationale. Restricted to the combined direct path for the same
+    // reason: the DF/RI paths carry a naux-dependent fitted-Fock noise floor
+    // that ΔD accumulation would compound.
+    //
+    // The open-shell specifics — screening on |ΔD_α| + |ΔD_β| rather than
+    // |ΔD_total|, and why — are documented on
+    // `DirectJK::build_uhf_incremental`.
+    // NOTE: opt-IN (default off), unlike the closed-shell path. See
+    // `direct_jk::open_shell_incremental_enabled` for the measurements behind
+    // that choice — the scheme is correct but measured ~1.00-1.05x here.
+    let incremental_direct =
+        direct_jk.is_some() && crate::direct_jk::open_shell_incremental_enabled();
+    // The (α, β) densities that produced the CURRENT contents of
+    // j_buf/k_a_buf/k_b_buf. `None` until the first full build.
+    let mut d_last_fock: Option<(Array2<f64>, Array2<f64>)> = None;
+    const INCREMENTAL_FULL_REBUILD_EVERY: usize = 8;
 
     for iter in 1..=config.max_iter {
         ctx.check_interrupted()?;
-        j_buf.fill(0.0);
-        k_a_buf.fill(0.0);
-        k_b_buf.fill(0.0);
         let d_total = &d_a + &d_b;
 
-        // J built from total density (one call). DF-J if configured, else direct.
-        if let Some(dfj) = df_j.as_mut() {
+        // On incremental iterations the buffers must KEEP the previous
+        // iteration's J/K_σ (the delta is accumulated onto them); every other
+        // path starts from zero exactly as before.
+        let direct_full_rebuild = incremental_direct
+            && (d_last_fock.is_none() || iter % INCREMENTAL_FULL_REBUILD_EVERY == 1);
+        let direct_incremental = incremental_direct && !direct_full_rebuild;
+        if !direct_incremental {
+            j_buf.fill(0.0);
+            k_a_buf.fill(0.0);
+            k_b_buf.fill(0.0);
+        }
+
+        // Combined single-pass J + K_α + K_β when enabled; otherwise J alone
+        // here (DF-J or DirectJ) and K below, as before.
+        if let Some(djk) = direct_jk.as_mut() {
+            if direct_incremental {
+                let (da_prev, db_prev) =
+                    d_last_fock.as_ref().expect("d_last_fock set on full rebuild");
+                let delta_a = &d_a - da_prev;
+                let delta_b = &d_b - db_prev;
+                let delta_total = &delta_a + &delta_b;
+                total_quartets += djk.build_uhf_incremental(
+                    &delta_total,
+                    &delta_a,
+                    &delta_b,
+                    &mut j_buf,
+                    &mut k_a_buf,
+                    &mut k_b_buf,
+                )?;
+            } else {
+                total_quartets += djk.build_uhf(
+                    &d_total,
+                    &d_a,
+                    &d_b,
+                    &mut j_buf,
+                    &mut k_a_buf,
+                    &mut k_b_buf,
+                )?;
+            }
+            d_last_fock = Some((d_a.clone(), d_b.clone()));
+        } else if let Some(dfj) = df_j.as_mut() {
+            // J built from total density (one call). DF-J if configured, else direct.
             dfj.build(&d_total, &mut j_buf)?;
         } else {
             let dj = direct_j.as_mut().expect("DirectJ built before loop");
@@ -334,7 +425,9 @@ pub fn solve_uhf_fockmod(
                 dfk_sr, dfk_lr, &d_b, d_occ_b.as_ref(), 1.0, &mut f_b, k_mix.sr, k_mix.lr, 1.0,
             )?;
         } else if need_k {
-            if let Some(dfk) = df_k.as_mut() {
+            if direct_jk.is_some() {
+                // K_α/K_β already filled by the combined single-pass build above.
+            } else if let Some(dfk) = df_k.as_mut() {
                 // C_occ half-transform per spin when available (D_σ = C_occ,σ·C_occ,σᵀ);
                 // the fractional-occupation ensemble path falls back to build(D_σ).
                 match d_occ_a.as_ref() {
