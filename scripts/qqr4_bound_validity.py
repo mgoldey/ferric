@@ -70,12 +70,27 @@ Tightness vs plain Schwarz -- extra quartets dropped, FULL quartet population:
     benzene      48       9.4    70.6%   0.14%    0.04%    0.01%
     alkane_6     72      15.2    80.7%   0.73%    0.51%    0.31%
     alkane_10   116      24.6    88.0%   2.57%    2.11%    1.42%
+    alkane_16   182      38.7      --    5.18%    4.38%    3.08%   (138.7M quartets)
 
-The benefit is NOT flat: it grows as roughly diameter^2.6-3.2 (tail fit over
-the last two points; a global fit over all three over-steepens to 3.0-5.2 by
-averaging in the pre-onset benzene point). Do NOT quote benzene's 0.14% as
-"QQR is not worth wiring" -- benzene (9.4 Bohr) and even alkane_10 (24.6 Bohr)
-sit below the ~30 Bohr locality onset where density-matrix decay sets in.
+The benefit is NOT flat -- it grows monotonically with system size, and
+alkane_16 at 38.7 Bohr is PAST the ~30 Bohr locality onset, so this is no
+longer an extrapolation. Do NOT quote benzene's 0.14% as "QQR is not worth
+wiring": benzene (9.4 Bohr) and alkane_10 (24.6 Bohr) both sit below the onset.
+
+Fit the TAIL, and re-fit it as points are added. Measured exponents vs
+diameter, showing how badly the pre-onset data misleads:
+
+    fit window                       @1e-8   @1e-10   @1e-12
+    global, benzene..alkane_10        3.02     4.12     5.15   (over-steepened)
+    tail alkane_6..alkane_10          2.61     2.95     3.16
+    global, benzene..alkane_16        2.56     3.29     3.97   (still contaminated)
+    tail alkane_10..alkane_16         1.55     1.61     1.71   <- current best
+
+Growth is real and sustained (2.0-2.2x from alkane_10 to alkane_16) but
+DECELERATING: the honest post-onset exponent is ~1.6, not the ~2.6-3.2 the
+pre-onset tail suggested. An earlier extrapolation from the pre-onset slope
+predicted ~40% at 70 Bohr; at the measured ~1.6 exponent that is far too
+aggressive. Extrapolate from the last two points only, and prefer measuring.
 
 Usage:
     python3 scripts/qqr4_bound_validity.py --systems water benzene
