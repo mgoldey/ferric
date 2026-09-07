@@ -192,8 +192,18 @@ pub fn eval_shell(shell: &LocatedShell, dx: f64, dy: f64, dz: f64, out: &mut [f6
             out[0] = rad;
         }
         (1, _) => {
-            // p shells: libint2 uses Cartesian order [px, py, pz] for both pure and cart
-            // (pure with l=1 reduces to Cartesian)
+            // p shells: Cartesian order [px, py, pz].
+            //
+            // The `_` arm is safe ONLY because ferric never constructs a pure
+            // l=1 shell: basis.rs's loader forces `shell_pure = pure && l >= 2`,
+            // so every l<2 shell is Cartesian regardless of what the basis-set
+            // JSON says (def2-svp DOES declare gto_spherical p shells on I).
+            // Pinned by basis::tests::l_below_2_is_never_pure.
+            //
+            // Do NOT relax that gate without fixing this arm: libint2 orders
+            // PURE p as (y, z, x) — the m = -1, 0, +1 solid-harmonic order —
+            // not (x, y, z). An earlier version of this comment claimed
+            // libint2 used Cartesian order for pure p too; that was wrong.
             out[0] = rad * dx;
             out[1] = rad * dy;
             out[2] = rad * dz;
