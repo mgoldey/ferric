@@ -49,9 +49,42 @@ METHODOLOGY NOTES (per the repo's experimental protocol)
   sweep is over ALL quartets for small systems (no subsampling needed at the
   sizes used here).
 
+MEASURED RESULTS (2026-09-07)
+----------------------------
+Validity, vs true PySCF quartets (anchor: plain Schwarz valid on the same
+sample, worst true/Schwarz 0.9194 at benzene):
+
+    system            op          n      A viol  A worst   B viol  B worst
+    water/cc-pVDZ     Coulomb     2211      342    2.273        0   1.0000
+    water/cc-pVDZ     erfc(1.0)   2211     1414 2581.475        0   1.0000
+    benzene/cc-pVDZ   Coulomb    30000    13499    2.055        0   0.9194
+    benzene/cc-pVDZ   erfc(1.0)  30000    30000  5.99e11        0   0.7697
+
+Minimum safety factor making form B valid on this sample: 1.000 (qqr3's 1.10
+suffices with margin; the Rust side keeps 1.10 so validity does not depend on
+the sample happening to miss the worst case).
+
+Tightness vs plain Schwarz -- extra quartets dropped, FULL quartet population:
+
+    system      nsh  diam(Bohr)  sep%    @1e-8   @1e-10   @1e-12
+    benzene      48       9.4    70.6%   0.14%    0.04%    0.01%
+    alkane_6     72      15.2    80.7%   0.73%    0.51%    0.31%
+    alkane_10   116      24.6    88.0%   2.57%    2.11%    1.42%
+
+The benefit is NOT flat: it grows as roughly diameter^2.6-3.2 (tail fit over
+the last two points; a global fit over all three over-steepens to 3.0-5.2 by
+averaging in the pre-onset benzene point). Do NOT quote benzene's 0.14% as
+"QQR is not worth wiring" -- benzene (9.4 Bohr) and even alkane_10 (24.6 Bohr)
+sit below the ~30 Bohr locality onset where density-matrix decay sets in.
+
 Usage:
     python3 scripts/qqr4_bound_validity.py --systems water benzene
     python3 scripts/qqr4_bound_validity.py --systems alkane_6 --omega 1.0
+
+NOTE on memory: `screening_benefit` is vectorized over the npair x npair grid,
+which is ~0.4 GB at alkane_10 but ~12 GB at alkane_16 and ~29 GB at alkane_20.
+Use a row-chunked sweep for anything larger than alkane_10 rather than letting
+this OOM the box.
 """
 
 from __future__ import annotations
