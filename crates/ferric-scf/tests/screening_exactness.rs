@@ -217,14 +217,14 @@ impl BoundKind {
 /// A constructed bound, kept as an owned enum so callers can hand out a
 /// `&dyn Bound` without the two arms needing the same concrete type.
 enum AnyBound {
-    Schwarz(SchwarzBounds),
+    Schwarz(Box<SchwarzBounds>),
     Qqr(Box<QqrBounds>),
 }
 
 impl AnyBound {
     fn as_dyn(&self) -> &dyn Bound {
         match self {
-            AnyBound::Schwarz(b) => b,
+            AnyBound::Schwarz(b) => b.as_ref(),
             AnyBound::Qqr(b) => b.as_ref(),
         }
     }
@@ -239,7 +239,7 @@ fn make_bound(
 ) -> AnyBound {
     let schwarz = SchwarzBounds::compute(op, prep).expect("Schwarz bounds");
     match kind {
-        BoundKind::Schwarz => AnyBound::Schwarz(schwarz),
+        BoundKind::Schwarz => AnyBound::Schwarz(Box::new(schwarz)),
         BoundKind::Qqr => AnyBound::Qqr(Box::new(QqrBounds::new(schwarz, mol, bs, prep, op))),
     }
 }
@@ -317,7 +317,7 @@ fn link_k(
     let mut k = Array2::zeros((n, n));
     match &bound {
         AnyBound::Schwarz(b) => {
-            let mut link = LinkK::new(&ctx, prep, b, op, thresh, usize::MAX);
+            let mut link = LinkK::new(&ctx, prep, b.as_ref(), op, thresh, usize::MAX);
             link.update_density(d);
             link.build(d, &mut k).expect("LinK build");
         }
