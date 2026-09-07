@@ -381,8 +381,7 @@ fn gradient_grid_rejects_a_pruned_config_instead_of_ignoring_it() {
         prune: Some(PruneScheme::NwchemLike),
     };
     let err = build_atomic_grid_with_response(&mol, &pruned)
-        .err()
-        .expect("a pruned config must be rejected on the grid-response path");
+        .expect_err("a pruned config must be rejected on the grid-response path");
     let msg = format!("{err}");
     assert!(
         msg.contains("prun"),
