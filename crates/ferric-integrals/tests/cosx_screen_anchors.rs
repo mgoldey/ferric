@@ -336,6 +336,59 @@ fn screen_bound_never_underestimates_any_shell_pair() {
     }
 }
 
+/// The one-sqrt coarse bound used by the fast path must dominate the fine
+/// bound at every (pair, probe) — otherwise `exceeds` could drop a pair the
+/// fine screen keeps. Also reports how often the coarse test alone would
+/// decide at 1e-7 (a coarse-only screen's kept count vs the fine one).
+#[test]
+fn coarse_bound_dominates_fine_bound_everywhere() {
+    for (name, xyz, basis, n_random) in CASES {
+        let mol = Molecule::load_xyz(&testdata(xyz)).expect("xyz");
+        let bs = bundled(basis).expect("basis");
+        let prep = PreparedBasis::new(&mol, &bs).expect("prep");
+        let bounds = PairBounds::build(&prep).expect("bounds");
+        let nsh = prep.nshells();
+        let pts = probes(&mol, n_random);
+        let (mut n, mut coarse_keep, mut fine_keep, mut worst) = (0usize, 0usize, 0usize, 0.0_f64);
+        // Bounding spheres of consecutive 16-probe batches: the per-batch
+        // sphere bound must dominate the per-point coarse bound inside it.
+        let mut spheres: Vec<([f64; 3], f64)> = Vec::new();
+        for chunk in pts.chunks(16) {
+            let mut c = [0.0_f64; 3];
+            for (_, r) in chunk {
+                for d in 0..3 {
+                    c[d] += r[d] / chunk.len() as f64;
+                }
+            }
+            let rad = chunk.iter().map(|(_, r)| ((r[0] - c[0]).powi(2) + (r[1] - c[1]).powi(2) + (r[2] - c[2]).powi(2)).sqrt()).fold(0.0, f64::max);
+            for _ in chunk {
+                spheres.push((c, rad));
+            }
+        }
+        for ((_, r), (sc, srad)) in pts.iter().zip(&spheres) {
+            for s1 in 0..nsh {
+                for s2 in 0..=s1 {
+                    let f = bounds.estimate(s1, s2, r);
+                    let c = bounds.coarse_estimate(s1, s2, r);
+                    assert!(c >= f, "{name}/{basis}: coarse {c:.4e} < fine {f:.4e} for pair ({s1},{s2}) at {r:?}");
+                    let sb = bounds.coarse_estimate_sphere(s1, s2, sc, *srad);
+                    assert!(sb >= c, "{name}/{basis}: sphere bound {sb:.4e} < coarse {c:.4e} for pair ({s1},{s2}) at {r:?}");
+                    worst = worst.max(f / c);
+                    n += 1;
+                    coarse_keep += (c >= 1e-7) as usize;
+                    fine_keep += (f >= 1e-7) as usize;
+                    assert_eq!(bounds.exceeds(s1, s2, r, 1e-7), f >= 1e-7, "{name}/{basis}: exceeds() disagrees with estimate() for ({s1},{s2}) at {r:?}");
+                }
+            }
+        }
+        println!(
+            "[{name}/{basis}] coarse >= fine on {n} samples (max fine/coarse {worst:.4}); kept at 1e-7: coarse-only {coarse_keep} vs fine {fine_keep} ({:.4} vs {:.4})",
+            coarse_keep as f64 / n as f64,
+            fine_keep as f64 / n as f64
+        );
+    }
+}
+
 /// Permanent mutation test: the legacy signed-overlap bound, run through the
 /// identical checker, MUST be caught underestimating same-centre mixed-l
 /// pairs by O(1). If this test ever fails, the checker has lost its teeth.
@@ -547,6 +600,68 @@ fn screen_drops_pairs_on_octane_def2svp_at_1e7() {
         idx.len()
     );
     assert!(frac < 0.95, "screen is vacuous at t={t:e}: kept fraction {frac:.4}");
+}
+
+/// The screen's DECISIONS on the sparsity harness's own grid sample: every
+/// pair dropped at `t = 1e-7` must have `max|A^g| < 1e-7` there. This is the
+/// direct check the pre-registration demands before any kept fraction is
+/// quoted (butane's 0.935 came in below the pre-registered >= 0.97). Also
+/// reports how many kept pairs were in fact below `t` (the bound's
+/// looseness, as missed opportunities).
+#[test]
+fn dropped_pairs_are_truly_negligible_on_grid_samples() {
+    let t = 1e-7_f64;
+    for (name, xyz, basis, npts) in [
+        ("butane", "testdata/molecules/alkane_4.xyz", "def2-svp", 2000usize),
+        ("octane", "testdata/molecules/alkane_8.xyz", "def2-svp", 600),
+    ] {
+        let mol = Molecule::load_xyz(&testdata(xyz)).expect("xyz");
+        let bs = bundled(basis).expect("basis");
+        let prep = PreparedBasis::new(&mol, &bs).expect("prep");
+        let kern = Md3c1e::new(&prep).expect("md3c1e");
+        let bounds = PairBounds::build(&prep).expect("bounds");
+        let mut scr = kern.scratch();
+        let grid = grid_positions(&mol, 50, 110);
+        let idx = sample_indices(grid.len(), npts, 20260907);
+        let pts: Vec<[f64; 3]> = idx.iter().map(|&g| grid[g]).collect();
+        let nsh = prep.nshells();
+        let (mut n_dropped, mut n_kept, mut kept_negligible) = (0usize, 0usize, 0usize);
+        let mut max_dropped_true = 0.0_f64;
+        for chunk in pts.chunks(64) {
+            let batch = kern.a_matrices(chunk, None, CosxScreen::none(), &mut scr).expect("md3c1e");
+            for (k, r) in chunk.iter().enumerate() {
+                let a = batch.a.index_axis(Axis(0), k);
+                for s1 in 0..nsh {
+                    for s2 in 0..=s1 {
+                        let (o1, n1) = (kern.shell_offset(s1), kern.shell_dim(s1));
+                        let (o2, n2) = (kern.shell_offset(s2), kern.shell_dim(s2));
+                        let mut tv = 0.0_f64;
+                        for i in 0..n1 {
+                            for j in 0..n2 {
+                                tv = tv.max(a[(o1 + i, o2 + j)].abs());
+                            }
+                        }
+                        if bounds.exceeds(s1, s2, r, t) {
+                            n_kept += 1;
+                            kept_negligible += (tv < t) as usize;
+                        } else {
+                            n_dropped += 1;
+                            max_dropped_true = max_dropped_true.max(tv);
+                            assert!(tv < t, "{name}/{basis}: pair ({s1},{s2}) dropped at {r:?} but max|A| = {tv:.3e} >= {t:e}");
+                        }
+                    }
+                }
+            }
+        }
+        let tot = n_kept + n_dropped;
+        println!(
+            "[{name}/{basis}] grid sample {} pts: kept {n_kept}/{tot} ({:.4}), dropped {n_dropped}; max true among dropped {max_dropped_true:.3e} (< {t:e}); kept-but-below-t {kept_negligible} ({:.4} of all pairs)",
+            pts.len(),
+            n_kept as f64 / tot as f64,
+            kept_negligible as f64 / tot as f64
+        );
+        assert!(n_dropped > 0, "{name}/{basis}: nothing was dropped; the decision check is vacuous");
+    }
 }
 
 /// Symmetric Jacobi eigensolver (small matrices only). Returns (eigenvalues, eigenvectors as columns).
