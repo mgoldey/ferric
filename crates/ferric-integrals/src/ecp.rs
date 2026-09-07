@@ -75,7 +75,19 @@ fn nsph(l: i32) -> usize {
 /// Per-shell Cartesian→spherical transform matrices `C` (ncart × nsph), in
 /// libcint convention, row-major. `V_sph = Cᵀ V_cart C`.
 /// Supported up to l = 4 (g) — covers def2 / cc-pVnZ-PP orbital bases.
-fn cart2sph(l: i32) -> &'static [f64] {
+///
+/// Convention note (load-bearing for other consumers): the Cartesian rows are
+/// in CCA order (`lx` descending, then `ly` descending) and the spherical
+/// columns are `m = -l..=+l` — both identical to libint2's STANDARD orderings.
+/// The INPUT Cartesians, however, are libcint's radially-normalized ones (the
+/// `(l,0,0)` component has self-overlap `4π/(2l+1)`), which is why `C2S0` is
+/// `1/√(4π)` rather than 1. ferric/libint2's Cartesian convention normalizes
+/// the `(l,0,0)` component to unity, so a consumer in that convention must
+/// scale this matrix by `√(4π/(2l+1))` (see `md3c1e::ferric_cart2sph`); the
+/// two conventions are related by exactly that shell-wide constant and by
+/// nothing else, because both leave the other Cartesian components
+/// un-normalized relative to `(l,0,0)`.
+pub(crate) fn cart2sph(l: i32) -> &'static [f64] {
     match l {
         0 => &C2S0,
         1 => &C2S1,

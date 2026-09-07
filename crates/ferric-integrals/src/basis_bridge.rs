@@ -3,6 +3,7 @@
 //! [`crate::basis_bridge::PreparedBasis`] translates a [`ferric_core::mol::Molecule`] + [`ferric_core::basis::BasisSet`] pair into the
 //! internal libint2 representation, managing the C++ handle lifetime.
 
+use crate::ao_grid::LocatedShell;
 use crate::ffi::{self, CAtom, CShell};
 use ferric_core::basis::BasisSet;
 use ferric_core::mol::Molecule;
@@ -30,6 +31,13 @@ pub struct PreparedBasis {
     shell_dims: Vec<usize>,
     shell_offsets: Vec<usize>,
     shell_to_atom: Vec<usize>,
+    /// Per-shell angular momentum, pure flag and primitive data, in shell
+    /// order (the same data handed to libint2; kept so pure-Rust kernels such
+    /// as `md3c1e` can be built from a `PreparedBasis` alone).
+    shell_l: Vec<i32>,
+    shell_pure: Vec<bool>,
+    shell_exps: Vec<Vec<f64>>,
+    shell_coefs: Vec<Vec<f64>>,
     nbasis: usize,
     nshells: usize,
     max_nprim: i32,
@@ -73,6 +81,8 @@ impl PreparedBasis {
 
         let mut c_shells = Vec::new();
         let mut shell_to_atom = Vec::new();
+        let mut shell_l = Vec::new();
+        let mut shell_pure = Vec::new();
         let mut keep_exps = Vec::new();
         let mut keep_coefs = Vec::new();
         for (ai, atom) in mol.atoms.iter().enumerate() {
@@ -94,6 +104,8 @@ impl PreparedBasis {
                     coefficients: coefs.as_ptr(),
                 });
                 shell_to_atom.push(ai);
+                shell_l.push(sh.l);
+                shell_pure.push(sh.pure);
                 keep_exps.push(exps);
                 keep_coefs.push(coefs);
             }
@@ -101,8 +113,9 @@ impl PreparedBasis {
 
         // SAFETY: c_shells and c_atoms are valid slices with matching lengths.
         // keep_exps/keep_coefs keep the pointed-to exponent/coefficient arrays
-        // alive until scf_basis_create returns (the C++ side copies the data).
-        // Null-checked below.
+        // alive until scf_basis_create returns (the C++ side copies the data);
+        // they are then retained as `shell_exps`/`shell_coefs` for Rust-side
+        // consumers. Null-checked below.
         let handle = unsafe {
             ffi::scf_basis_create(
                 c_shells.as_ptr(),
@@ -111,8 +124,6 @@ impl PreparedBasis {
                 c_atoms.len() as c_int,
             )
         };
-        drop(keep_exps);
-        drop(keep_coefs);
 
         if handle.is_null() {
             return Err(FerricError::Libint("scf_basis_create returned null".into()));
@@ -121,6 +132,15 @@ impl PreparedBasis {
         // These accessors read immutable metadata from the C++ BasisSet object.
         let nbasis = unsafe { ffi::scf_basis_nbasis(handle) } as usize;
         let nshells = unsafe { ffi::scf_basis_nshells(handle) } as usize;
+        if nshells != c_shells.len() {
+            // SAFETY: handle is non-null and was created just above; it is not
+            // used again after this point.
+            unsafe { ffi::scf_basis_destroy(handle) };
+            return Err(FerricError::Libint(format!(
+                "scf_basis_create: libint2 reports {nshells} shells, {} were passed",
+                c_shells.len()
+            )));
+        }
         let mut dims_raw = vec![0i32; nshells];
         // SAFETY: `dims_raw` has exactly `nshells` elements, matching the
         // number of shells in the C++ basis. The shim writes exactly that many.
@@ -141,6 +161,10 @@ impl PreparedBasis {
             shell_dims,
             shell_offsets,
             shell_to_atom,
+            shell_l,
+            shell_pure,
+            shell_exps: keep_exps,
+            shell_coefs: keep_coefs,
             nbasis,
             nshells,
             max_nprim: mp,
@@ -176,6 +200,28 @@ impl PreparedBasis {
             let a = &self.atoms[ai];
             [a.x, a.y, a.z]
         }).collect()
+    }
+    /// The shells of this basis, in `PreparedBasis` shell order, as located
+    /// shells (angular momentum, pure flag, primitive exponents and the
+    /// contraction coefficients exactly as stored in the `BasisSet`, i.e.
+    /// WITHOUT the per-primitive normalization — see `ao_grid`).
+    ///
+    /// This is the same shell list that was handed to libint2, so a Rust-side
+    /// kernel built from it produces blocks in the same AO order/offsets as
+    /// `shell_offsets()`. Centres are the parent atom's coordinates (Bohr).
+    pub fn located_shells(&self) -> Vec<LocatedShell<'_>> {
+        (0..self.nshells)
+            .map(|s| {
+                let a = &self.atoms[self.shell_to_atom[s]];
+                LocatedShell {
+                    l: self.shell_l[s],
+                    pure: self.shell_pure[s],
+                    exponents: &self.shell_exps[s],
+                    coefficients: &self.shell_coefs[s],
+                    center: [a.x, a.y, a.z],
+                }
+            })
+            .collect()
     }
 }
 
