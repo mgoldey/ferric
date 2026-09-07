@@ -405,14 +405,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Restore cargo cache
+        # No target/ (see the push job's restore step); v3 key to match.
         uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: cargo-v2-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: cargo-v2-${{ runner.os }}-
+          key: cargo-v3-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-v3-${{ runner.os }}-
 
       - name: Test (the deferred six)
         run: |
