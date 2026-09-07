@@ -206,6 +206,13 @@ jobs:
       # Same restore/save split as libint2 above: a red test step must not cost
       # the next run a full cold rebuild. Keyed on Cargo.lock so a dependency
       # change still invalidates it.
+      #
+      # `target` is deliberately NOT cached. Measured 2026-09-07: a target/
+      # cache is ~9 GB PER PR MERGE REF (two of them were 18.2 GB against the
+      # repo's 10 GB cache limit), so every save evicted the libint2 cache
+      # that takes ~80 min to rebuild, and every subsequent run on every PR
+      # paid that 80 min again -- to save ~5 min of incremental compile. The
+      # registry + git sources are a few hundred MB and are kept.
       - name: Restore cargo cache
         id: cache-cargo
         uses: actions/cache/restore@v4
@@ -213,9 +220,8 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: cargo-v2-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: cargo-v2-${{ runner.os }}-
+          key: cargo-v3-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-v3-${{ runner.os }}-
 
       - name: Check (all targets)
         timeout-minutes: 60
@@ -339,14 +345,14 @@ jobs:
         # Same reasoning as the libint2 save: !cancelled() keeps the save on a
         # RED test run (the whole point) but drops it when cancelled, which
         # previously wrote a 208-BYTE entry later runs would have restored.
+        # No `target` here either -- see the restore step for why.
         if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: cargo-v2-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          key: cargo-v3-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
 
   # The six binaries the push job defers. Nothing else -- this exists purely so
   # "deferred" means "runs later", not "stops running". Triggered on the daily
